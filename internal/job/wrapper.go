@@ -66,7 +66,19 @@ set -e
 ROOT=$(mktemp -d /tmp/boid-root-XXXXXX)
 
 `)
-	fmt.Fprintf(&b, "trap 'umount -R $ROOT 2>/dev/null; rm -rf $ROOT 2>/dev/null; rm -f %s %s %s' EXIT\n", outerPath, setupPath, innerPath)
+	fmt.Fprintf(&b, `cleanup() {
+    # Unmount all bind mounts under $ROOT
+    umount -R "$ROOT" 2>/dev/null || true
+    # Safety: only rm if no mounts remain (prevent deleting host files via stale bind mounts)
+    if ! findmnt --submounts --noheadings --output TARGET "$ROOT" | grep -q .; then
+        rm -rf "$ROOT"
+    else
+        echo "WARNING: mounts still active under $ROOT, skipping rm" >&2
+    fi
+    rm -f %s %s %s
+}
+trap cleanup EXIT
+`, outerPath, setupPath, innerPath)
 	b.WriteString(`
 # Host system directories (read-only)
 for d in bin sbin lib lib64 usr etc; do
