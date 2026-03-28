@@ -19,6 +19,10 @@ func (t *RealTmux) NewWindow(session, windowName string) error {
 	return exec.Command("tmux", "new-window", "-t", session, "-n", windowName).Run()
 }
 
+func (t *RealTmux) RunInWindow(session, windowName, command string) error {
+	return exec.Command("tmux", "new-window", "-t", session, "-n", windowName, "sh", "-c", command).Run()
+}
+
 func (t *RealTmux) SendKeys(session, window, keys string) error {
 	return exec.Command("tmux", "send-keys", "-t", session+":"+window, keys, "Enter").Run()
 }

@@ -27,6 +27,13 @@ func (m *MockTmux) NewWindow(session, windowName string) error {
 	return nil
 }
 
+func (m *MockTmux) RunInWindow(session, windowName, command string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Sessions[session] = append(m.Sessions[session], windowName)
+	return nil
+}
+
 func (m *MockTmux) SendKeys(session, window, keys string) error {
 	return nil
 }

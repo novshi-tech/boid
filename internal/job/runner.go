@@ -83,13 +83,10 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 		if err := r.Tmux.EnsureSession(session); err != nil {
 			return fmt.Errorf("ensure session: %w", err)
 		}
-		if err := r.Tmux.NewWindow(session, windowName); err != nil {
-			return fmt.Errorf("new window: %w", err)
-		}
 
 		cmd := fmt.Sprintf("bash %s", outerPath)
-		if err := r.Tmux.SendKeys(session, windowName, cmd); err != nil {
-			return fmt.Errorf("send keys: %w", err)
+		if err := r.Tmux.RunInWindow(session, windowName, cmd); err != nil {
+			return fmt.Errorf("run in window: %w", err)
 		}
 	}
 
