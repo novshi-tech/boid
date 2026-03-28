@@ -1,0 +1,126 @@
+package job_test
+
+import (
+	"context"
+	"testing"
+
+	"github.com/novshi-tech/boid/internal/job"
+	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/testutil"
+)
+
+func TestRunner_Execute(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	store := project.NewStore()
+	mockTmux := testutil.NewMockTmux()
+
+	// Create project in DB
+	proj := &model.Project{ID: "proj-1", WorkDir: t.TempDir()}
+	if err := db.CreateProject(proj); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	// Set meta in store
+	store.Set("proj-1", &model.ProjectMeta{
+		ID:   "proj-1",
+		Name: "Test Project",
+	})
+
+	// Create task in DB
+	task := &model.Task{
+		ProjectID: "proj-1",
+		Title:     "Test Task",
+		Behavior:  "implementation",
+	}
+	if err := db.CreateTask(task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	runner := &job.Runner{
+		DB:           db,
+		Store:        store,
+		Tmux:         mockTmux,
+		TmuxSession:  "boid-test",
+		BoidBinary:   "/usr/local/bin/boid",
+		ServerSocket: "/tmp/test-boid.sock",
+	}
+
+	event := &model.HookFireEvent{
+		EventID:   "evt-001",
+		TaskID:    task.ID,
+		ProjectID: "proj-1",
+		Hook: model.Hook{
+			ID:         "run-agent",
+			On:         "executing",
+			ScriptPath: "/some/path/run-agent.sh",
+		},
+	}
+
+	if err := runner.Execute(context.Background(), event); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	// Verify tmux session was created
+	if !mockTmux.HasSession("boid-test") {
+		t.Error("expected tmux session 'boid-test' to exist")
+	}
+
+	// Verify a window was created in the session
+	windows, err := mockTmux.ListWindows("boid-test")
+	if err != nil {
+		t.Fatalf("list windows: %v", err)
+	}
+	if len(windows) == 0 {
+		t.Error("expected at least one tmux window")
+	}
+
+	// Verify job was created in DB
+	jobs, err := db.ListJobsByTask(task.ID)
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs))
+	}
+	if jobs[0].ProjectID != "proj-1" {
+		t.Errorf("job project_id = %q, want %q", jobs[0].ProjectID, "proj-1")
+	}
+	if jobs[0].HookID != "run-agent" {
+		t.Errorf("job hook_id = %q, want %q", jobs[0].HookID, "run-agent")
+	}
+	if jobs[0].Status != model.JobStatusRunning {
+		t.Errorf("job status = %q, want %q", jobs[0].Status, model.JobStatusRunning)
+	}
+}
+
+func TestRunner_Execute_NoScriptPath_Error(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	store := project.NewStore()
+	mockTmux := testutil.NewMockTmux()
+
+	runner := &job.Runner{
+		DB:           db,
+		Store:        store,
+		Tmux:         mockTmux,
+		TmuxSession:  "boid-test",
+		BoidBinary:   "/usr/local/bin/boid",
+		ServerSocket: "/tmp/test-boid.sock",
+	}
+
+	event := &model.HookFireEvent{
+		EventID:   "evt-002",
+		TaskID:    "task-12345678",
+		ProjectID: "proj-1",
+		Hook: model.Hook{
+			ID:         "run-agent",
+			On:         "executing",
+			ScriptPath: "", // empty script path
+		},
+	}
+
+	err := runner.Execute(context.Background(), event)
+	if err == nil {
+		t.Fatal("expected error for empty ScriptPath, got nil")
+	}
+}

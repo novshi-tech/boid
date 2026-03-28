@@ -1,0 +1,16 @@
+# Binary
+/boid
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Test artifacts
+*.test
+
+# boid project config (for self-testing)
+.boid/
