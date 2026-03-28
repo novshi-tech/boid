@@ -34,12 +34,22 @@ func defaultDBPath() string {
 	return filepath.Join(dir, "boid.db")
 }
 
+func defaultMixinsDir() string {
+	dataDir := os.Getenv("XDG_DATA_HOME")
+	if dataDir == "" {
+		home, _ := os.UserHomeDir()
+		dataDir = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(dataDir, "boid", "mixins")
+}
+
 func runStart(cmd *cobra.Command, args []string) error {
 	cfg := server.Config{
 		DBPath:      defaultDBPath(),
 		SocketPath:  client.DefaultSocketPath(),
 		HTTPAddr:    ":8080",
 		TmuxSession: "boid",
+		MixinsDir:   defaultMixinsDir(),
 	}
 
 	srv, err := server.New(cfg)

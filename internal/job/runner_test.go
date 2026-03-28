@@ -12,7 +12,7 @@ import (
 
 func TestRunner_Execute(t *testing.T) {
 	db := testutil.NewTestDB(t)
-	store := project.NewStore()
+	store := project.NewStore(nil)
 	mockTmux := testutil.NewMockTmux()
 
 	// Create project in DB
@@ -96,7 +96,7 @@ func TestRunner_Execute(t *testing.T) {
 
 func TestRunner_Execute_NoScriptPath_Error(t *testing.T) {
 	db := testutil.NewTestDB(t)
-	store := project.NewStore()
+	store := project.NewStore(nil)
 	mockTmux := testutil.NewMockTmux()
 
 	runner := &job.Runner{

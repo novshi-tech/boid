@@ -18,6 +18,7 @@ type WrapperConfig struct {
 	Env                map[string]string // project environment variables
 	HostCommands       []string          // commands to shim via symlinks
 	AdditionalBindings []string          // extra host paths to bind-mount (read-only)
+	StagingDir         string            // if set, staging dir to clean up after job
 }
 
 // WriteSandboxScripts generates 3 sandbox scripts and writes them to /tmp.
@@ -77,9 +78,13 @@ ROOT=$(mktemp -d /tmp/boid-root-XXXXXX)
         echo "WARNING: mounts still active under $ROOT, skipping rm" >&2
     fi
     rm -f %s %s %s
-}
-trap cleanup EXIT
 `, outerPath, setupPath, innerPath)
+	if cfg.StagingDir != "" {
+		fmt.Fprintf(&b, "    rm -rf %s\n", cfg.StagingDir)
+	}
+	b.WriteString(`}
+trap cleanup EXIT
+`)
 	b.WriteString(`
 # Host system directories (read-only)
 for d in bin sbin lib lib64 usr etc; do

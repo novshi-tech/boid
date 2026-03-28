@@ -4,22 +4,26 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/novshi-tech/boid/internal/mixin"
 	"github.com/novshi-tech/boid/internal/model"
 )
 
 // Store holds project metadata in memory, loaded from project.yaml files.
 type Store struct {
-	mu    sync.RWMutex
-	metas map[string]*model.ProjectMeta // keyed by project ID
+	mu       sync.RWMutex
+	metas    map[string]*model.ProjectMeta // keyed by project ID
+	registry *mixin.Registry               // may be nil
 }
 
-func NewStore() *Store {
-	return &Store{metas: make(map[string]*model.ProjectMeta)}
+// NewStore creates a new Store. If registry is non-nil, mixin references
+// in project.yaml files will be resolved and merged at load time.
+func NewStore(registry *mixin.Registry) *Store {
+	return &Store{metas: make(map[string]*model.ProjectMeta), registry: registry}
 }
 
 // Load reads project.yaml from the work_dir and stores the meta in memory.
 func (s *Store) Load(workDir string) (*model.ProjectMeta, error) {
-	meta, err := ReadMeta(workDir)
+	meta, err := ReadMetaWithMixins(workDir, s.registry)
 	if err != nil {
 		return nil, err
 	}

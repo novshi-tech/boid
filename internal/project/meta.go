@@ -2,22 +2,14 @@ package project
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
+	"github.com/novshi-tech/boid/internal/mixin"
 	"github.com/novshi-tech/boid/internal/model"
 	"gopkg.in/yaml.v3"
 )
-
-var validHookOnValues = map[string]bool{
-	"pending":              true,
-	"executing":            true,
-	"verifying":            true,
-	"in_review":            true,
-	"collecting_feedback":  true,
-	"done":                 true,
-	"aborted":              true,
-}
 
 // ReadMeta reads and validates .boid/project.yaml from the given directory.
 func ReadMeta(dir string) (*model.ProjectMeta, error) {
@@ -42,10 +34,10 @@ func ReadMeta(dir string) (*model.ProjectMeta, error) {
 	hooksDir := filepath.Join(dir, ".boid", "hooks")
 	for i := range meta.Hooks {
 		h := &meta.Hooks[i]
-		if !validHookOnValues[h.On] {
+		if !model.ValidHookOnValues[h.On] {
 			return nil, fmt.Errorf("hook %q: invalid on value %q", h.ID, h.On)
 		}
-		scriptPath, err := resolveHookScript(hooksDir, h.ID)
+		scriptPath, err := model.ResolveHookScript(hooksDir, h.ID)
 		if err != nil {
 			return nil, fmt.Errorf("hook %q: %w", h.ID, err)
 		}
@@ -55,12 +47,31 @@ func ReadMeta(dir string) (*model.ProjectMeta, error) {
 	return &meta, nil
 }
 
-func resolveHookScript(hooksDir, hookID string) (string, error) {
-	for _, ext := range []string{".sh", ".py"} {
-		p := filepath.Join(hooksDir, hookID+ext)
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
+// ReadMetaWithMixins reads project.yaml and resolves mixin references.
+// If registry is nil, behaves identically to ReadMeta.
+func ReadMetaWithMixins(dir string, registry *mixin.Registry) (*model.ProjectMeta, error) {
+	meta, err := ReadMeta(dir)
+	if err != nil {
+		return nil, err
 	}
-	return "", fmt.Errorf("script not found: %s.(sh|py)", hookID)
+
+	if registry == nil || len(meta.Mixins) == 0 {
+		return meta, nil
+	}
+
+	var mixins []*mixin.MixinMeta
+	for _, ref := range meta.Mixins {
+		mixinDir, err := registry.Resolve(ref)
+		if err != nil {
+			return nil, fmt.Errorf("mixin %q: %w", ref, err)
+		}
+		m, err := mixin.ReadMixin(mixinDir)
+		if err != nil {
+			return nil, fmt.Errorf("mixin %q: %w", ref, err)
+		}
+		slog.Info("resolved mixin", "ref", ref, "hooks", len(m.Hooks))
+		mixins = append(mixins, m)
+	}
+
+	return mixin.MergeMixins(meta, mixins), nil
 }

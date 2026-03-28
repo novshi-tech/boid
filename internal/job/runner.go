@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/novshi-tech/boid/internal/db"
+	"github.com/novshi-tech/boid/internal/mixin"
 	"github.com/novshi-tech/boid/internal/model"
 	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/internal/tmux"
@@ -58,17 +59,32 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 		return fmt.Errorf("create job: %w", err)
 	}
 
+	// Determine hooks directory: stage if mixins provide hooks, otherwise use project dir
+	projectHooksDir := filepath.Join(proj.WorkDir, ".boid", "hooks")
+	hooksDir := projectHooksDir
+	var stagingDir string
+
+	if len(meta.MixinHooksDirs) > 0 {
+		staged, _, err := mixin.StageHooks(projectHooksDir, meta.MixinHooksDirs, j.ID)
+		if err != nil {
+			return fmt.Errorf("stage hooks: %w", err)
+		}
+		hooksDir = staged
+		stagingDir = staged
+	}
+
 	cfg := WrapperConfig{
 		JobID:              j.ID,
 		ProjectID:          meta.ID,
 		ProjectDir:         proj.WorkDir,
-		HooksDir:           filepath.Join(proj.WorkDir, ".boid", "hooks"),
+		HooksDir:           hooksDir,
 		HookScript:         hookFilename,
 		BoidBinary:         r.BoidBinary,
 		ServerSocket:       r.ServerSocket,
 		Env:                meta.Env,
 		HostCommands:       meta.HostCommands,
 		AdditionalBindings: meta.AdditionalBindings,
+		StagingDir:         stagingDir,
 	}
 
 	outerPath, err := WriteSandboxScripts(cfg)

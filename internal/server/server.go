@@ -15,6 +15,7 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/hook"
 	"github.com/novshi-tech/boid/internal/job"
+	"github.com/novshi-tech/boid/internal/mixin"
 	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/internal/reducer"
 	"github.com/novshi-tech/boid/internal/tmux"
@@ -26,7 +27,8 @@ type Config struct {
 	SocketPath  string
 	HTTPAddr    string
 	TmuxSession string
-	Tmux        tmux.TmuxManager // nil uses RealTmux
+	MixinsDir   string               // base dir for installed mixin repos
+	Tmux        tmux.TmuxManager     // nil uses RealTmux
 }
 
 type Server struct {
@@ -50,7 +52,11 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
-	store := project.NewStore()
+	var registry *mixin.Registry
+	if cfg.MixinsDir != "" {
+		registry = mixin.NewRegistry(cfg.MixinsDir)
+	}
+	store := project.NewStore(registry)
 
 	// Load meta for all registered projects
 	projects, err := d.ListProjects()
