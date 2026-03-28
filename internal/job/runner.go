@@ -59,15 +59,16 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 	}
 
 	cfg := WrapperConfig{
-		JobID:        j.ID,
-		ProjectID:    meta.ID,
-		ProjectDir:   proj.WorkDir,
-		HooksDir:     filepath.Join(proj.WorkDir, ".boid", "hooks"),
-		HookScript:   hookFilename,
-		BoidBinary:   r.BoidBinary,
-		ServerSocket: r.ServerSocket,
-		Env:          meta.Env,
-		HostCommands: meta.HostCommands,
+		JobID:              j.ID,
+		ProjectID:          meta.ID,
+		ProjectDir:         proj.WorkDir,
+		HooksDir:           filepath.Join(proj.WorkDir, ".boid", "hooks"),
+		HookScript:         hookFilename,
+		BoidBinary:         r.BoidBinary,
+		ServerSocket:       r.ServerSocket,
+		Env:                meta.Env,
+		HostCommands:       meta.HostCommands,
+		AdditionalBindings: meta.AdditionalBindings,
 	}
 
 	outerPath, err := WriteSandboxScripts(cfg)

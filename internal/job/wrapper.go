@@ -8,15 +8,16 @@ import (
 
 // WrapperConfig holds the parameters for sandbox script generation.
 type WrapperConfig struct {
-	JobID        string
-	ProjectID    string
-	ProjectDir   string            // host-side project directory
-	HooksDir     string            // host-side hooks directory
-	HookScript   string            // script filename, e.g. "run-build.sh"
-	BoidBinary   string            // host-side path to boid binary
-	ServerSocket string            // host-side server socket path
-	Env          map[string]string // project environment variables
-	HostCommands []string          // commands to shim via symlinks
+	JobID              string
+	ProjectID          string
+	ProjectDir         string            // host-side project directory
+	HooksDir           string            // host-side hooks directory
+	HookScript         string            // script filename, e.g. "run-build.sh"
+	BoidBinary         string            // host-side path to boid binary
+	ServerSocket       string            // host-side server socket path
+	Env                map[string]string // project environment variables
+	HostCommands       []string          // commands to shim via symlinks
+	AdditionalBindings []string          // extra host paths to bind-mount (read-only)
 }
 
 // WriteSandboxScripts generates 3 sandbox scripts and writes them to /tmp.
@@ -115,6 +116,16 @@ mount -t tmpfs tmpfs "$ROOT/tmp"
 	fmt.Fprintf(&b, "mount --bind %s \"$ROOT/workspace/.boid/hooks\"\n", cfg.HooksDir)
 	b.WriteString("mount -o remount,bind,ro \"$ROOT/workspace/.boid/hooks\"\n")
 
+	// Additional bindings (read-only)
+	if len(cfg.AdditionalBindings) > 0 {
+		b.WriteString("\n# Additional bindings\n")
+		for _, binding := range cfg.AdditionalBindings {
+			fmt.Fprintf(&b, "mkdir -p \"$ROOT%s\"\n", binding)
+			fmt.Fprintf(&b, "mount --bind %s \"$ROOT%s\"\n", binding, binding)
+			fmt.Fprintf(&b, "mount -o remount,bind,ro \"$ROOT%s\"\n", binding)
+		}
+	}
+
 	// Boid binary + command shims
 	b.WriteString("\n# Boid binary + command shims\n")
 	b.WriteString("mkdir -p \"$ROOT/opt/boid/bin\"\n")
@@ -142,13 +153,34 @@ mount -t tmpfs tmpfs "$ROOT/tmp"
 	return b.String()
 }
 
+// additionalPATH builds PATH entries from additional bindings.
+// Paths ending in /bin are added directly; others get /bin appended.
+func additionalPATH(bindings []string) string {
+	var parts []string
+	for _, b := range bindings {
+		if strings.HasSuffix(b, "/bin") {
+			parts = append(parts, b)
+		} else {
+			parts = append(parts, b+"/bin")
+		}
+	}
+	return strings.Join(parts, ":")
+}
+
 func generateInnerScript(cfg WrapperConfig) string {
 	var b strings.Builder
 
 	b.WriteString("#!/bin/bash\nset -e\n\n")
 	b.WriteString("export HOME=/workspace\n")
 	b.WriteString("export BOID_SOCKET=/run/boid/server.sock\n")
-	b.WriteString("export PATH=/opt/boid/bin:/usr/local/bin:/usr/bin:/bin\n")
+
+	pathPrefix := additionalPATH(cfg.AdditionalBindings)
+	basePath := "/opt/boid/bin:/usr/local/bin:/usr/bin:/bin"
+	if pathPrefix != "" {
+		fmt.Fprintf(&b, "export PATH=%s:%s\n", pathPrefix, basePath)
+	} else {
+		fmt.Fprintf(&b, "export PATH=%s\n", basePath)
+	}
 
 	for k, v := range cfg.Env {
 		fmt.Fprintf(&b, "export %s=%q\n", k, v)
@@ -156,7 +188,7 @@ func generateInnerScript(cfg WrapperConfig) string {
 
 	fmt.Fprintf(&b, "\ncd /workspace/%s\n\n", cfg.ProjectID)
 	fmt.Fprintf(&b, "trap 'boid job done %s --exit-code $?' EXIT\n", cfg.JobID)
-	fmt.Fprintf(&b, "exec /workspace/.boid/hooks/%s\n", cfg.HookScript)
+	fmt.Fprintf(&b, "/workspace/.boid/hooks/%s\n", cfg.HookScript)
 
 	return b.String()
 }
