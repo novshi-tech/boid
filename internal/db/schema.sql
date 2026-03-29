@@ -32,6 +32,14 @@ CREATE TABLE IF NOT EXISTS actions (
     created_at DATETIME NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS secrets (
+    id              TEXT PRIMARY KEY,
+    key             TEXT NOT NULL UNIQUE,
+    value_encrypted BLOB NOT NULL,
+    created_at      DATETIME NOT NULL DEFAULT (datetime('now')),
+    updated_at      DATETIME NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
     id         TEXT PRIMARY KEY,
     task_id    TEXT NOT NULL REFERENCES tasks(id),

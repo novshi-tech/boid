@@ -1,18 +1,22 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"github.com/novshi-tech/boid/internal/hostcmd"
+)
 
 type ProjectMeta struct {
-	ID                 string                 `yaml:"id" json:"id"`
-	WorkspaceID        string                 `yaml:"workspace_id" json:"workspace_id"`
-	Name               string                 `yaml:"name" json:"name"`
-	Mixins             []string               `yaml:"mixins" json:"mixins,omitempty"`
-	TaskBehaviors      map[string]TaskBehavior `yaml:"task_behaviors" json:"task_behaviors"`
-	Hooks              []Hook                 `yaml:"hooks" json:"hooks"`
-	HostCommands       []string               `yaml:"host_commands" json:"host_commands"`
-	AdditionalBindings []string               `yaml:"additional_bindings" json:"additional_bindings"`
-	Env                map[string]string      `yaml:"env" json:"env"`
-	AllowedDomains     []string               `yaml:"allowed_domains" json:"allowed_domains"`
+	ID                 string                        `yaml:"id" json:"id"`
+	WorkspaceID        string                        `yaml:"workspace_id" json:"workspace_id"`
+	Name               string                        `yaml:"name" json:"name"`
+	Mixins             []string                      `yaml:"mixins" json:"mixins,omitempty"`
+	TaskBehaviors      map[string]TaskBehavior        `yaml:"task_behaviors" json:"task_behaviors"`
+	Hooks              []Hook                        `yaml:"hooks" json:"hooks"`
+	HostCommands       map[string]hostcmd.CommandDef  `yaml:"host_commands" json:"host_commands"`
+	AdditionalBindings []string                      `yaml:"additional_bindings" json:"additional_bindings"`
+	Env                map[string]string             `yaml:"env" json:"env"`
+	AllowedDomains     []string                      `yaml:"allowed_domains" json:"allowed_domains"`
 
 	// Populated at load time after mixin resolution; not from YAML.
 	MixinHooksDirs []MixinHooksInfo `yaml:"-" json:"-"`

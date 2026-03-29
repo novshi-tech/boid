@@ -1,6 +1,9 @@
 package mixin
 
-import "github.com/novshi-tech/boid/internal/model"
+import (
+	"github.com/novshi-tech/boid/internal/hostcmd"
+	"github.com/novshi-tech/boid/internal/model"
+)
 
 // MergeMixins merges mixin configurations into a base ProjectMeta.
 // Mixins are applied in order. Project values take precedence.
@@ -44,8 +47,21 @@ func MergeMixins(base *model.ProjectMeta, mixins []*MixinMeta) *model.ProjectMet
 	allHooks = append(allHooks, base.Hooks...)
 	result.Hooks = dedupHooks(allHooks)
 
+	// HostCommands: layer mixins in order, then project overrides
+	mergedCmds := make(map[string]hostcmd.CommandDef)
+	for _, m := range mixins {
+		for k, v := range m.HostCommands {
+			mergedCmds[k] = v
+		}
+	}
+	for k, v := range base.HostCommands {
+		mergedCmds[k] = v
+	}
+	if len(mergedCmds) > 0 {
+		result.HostCommands = mergedCmds
+	}
+
 	// List fields: union
-	result.HostCommands = unionStrings(mixins, base.HostCommands, func(m *MixinMeta) []string { return m.HostCommands })
 	result.AdditionalBindings = unionStrings(mixins, base.AdditionalBindings, func(m *MixinMeta) []string { return m.AdditionalBindings })
 	result.AllowedDomains = unionStrings(mixins, base.AllowedDomains, func(m *MixinMeta) []string { return m.AllowedDomains })
 

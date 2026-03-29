@@ -3,6 +3,7 @@ package mixin_test
 import (
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/hostcmd"
 	"github.com/novshi-tech/boid/internal/mixin"
 	"github.com/novshi-tech/boid/internal/model"
 )
@@ -23,14 +24,14 @@ func TestMergeMixins_SingleMixin(t *testing.T) {
 	base := &model.ProjectMeta{
 		ID:           "proj",
 		Name:         "Project",
-		HostCommands: []string{"git"},
+		HostCommands: map[string]hostcmd.CommandDef{"git": {Path: "/usr/bin/git"}},
 		Hooks: []model.Hook{
 			{ID: "proj-hook", On: "executing"},
 		},
 		Env: map[string]string{"PROJECT_VAR": "pval"},
 	}
 	m := &mixin.MixinMeta{
-		HostCommands:       []string{"go", "git"},
+		HostCommands:       map[string]hostcmd.CommandDef{"go": {Path: "/usr/bin/go"}, "git": {Path: "/usr/bin/git"}},
 		AdditionalBindings: []string{"/usr/local/go"},
 		AllowedDomains:     []string{"proxy.golang.org"},
 		Hooks: []model.Hook{
@@ -98,12 +99,12 @@ func TestMergeMixins_MultipleMixins(t *testing.T) {
 	}
 	m1 := &mixin.MixinMeta{
 		Env:            map[string]string{"A": "from-m1", "SHARED": "m1"},
-		HostCommands:   []string{"go"},
+		HostCommands:   map[string]hostcmd.CommandDef{"go": {Path: "/usr/bin/go"}},
 		AllowedDomains: []string{"example.com"},
 	}
 	m2 := &mixin.MixinMeta{
 		Env:            map[string]string{"B": "from-m2", "SHARED": "m2"},
-		HostCommands:   []string{"go", "gh"},
+		HostCommands:   map[string]hostcmd.CommandDef{"go": {Path: "/usr/bin/go"}, "gh": {Path: "/usr/bin/gh"}},
 		AllowedDomains: []string{"example.com", "other.com"},
 	}
 

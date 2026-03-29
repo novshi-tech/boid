@@ -2,44 +2,55 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/hook"
+	"github.com/novshi-tech/boid/internal/hostcmd"
 	"github.com/novshi-tech/boid/internal/job"
 	"github.com/novshi-tech/boid/internal/mixin"
 	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/internal/reducer"
+	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/secret"
 	"github.com/novshi-tech/boid/internal/tmux"
 	"github.com/novshi-tech/boid/web"
 )
 
 type Config struct {
-	DBPath      string
-	SocketPath  string
-	HTTPAddr    string
-	TmuxSession string
-	MixinsDir   string               // base dir for installed mixin repos
-	Tmux        tmux.TmuxManager     // nil uses RealTmux
+	DBPath         string
+	SocketPath     string
+	HTTPAddr       string
+	TmuxSession    string
+	MixinsDir      string           // base dir for installed mixin repos
+	KeyFilePath    string           // path to secret encryption key file
+	AllowedDomains []string         // proxy allowed domains
+	Tmux           tmux.TmuxManager // nil uses RealTmux
 }
 
 type Server struct {
-	cfg        Config
-	db         *db.DB
-	store      *project.Store
-	router     chi.Router
-	unixLn     net.Listener
-	tcpLn      net.Listener
-	httpServer *http.Server
-	mu         sync.Mutex
+	cfg         Config
+	db          *db.DB
+	store       *project.Store
+	broker      *hostcmd.Broker
+	secretStore *secret.Store
+	proxy       *sandbox.Proxy
+	proxyPort   int
+	router      chi.Router
+	unixLn      net.Listener
+	tcpLn       net.Listener
+	httpServer  *http.Server
+	mu          sync.Mutex
 }
 
 func New(cfg Config) (*Server, error) {
@@ -70,11 +81,61 @@ func New(cfg Config) (*Server, error) {
 		}
 	}
 
+	brokerSocket := filepath.Join(filepath.Dir(cfg.SocketPath), "boid-broker.sock")
+	broker := &hostcmd.Broker{SocketPath: brokerSocket}
+
+	// Secret store
+	var secretStore *secret.Store
+	if cfg.KeyFilePath != "" {
+		key, err := secret.LoadOrCreateKey(cfg.KeyFilePath)
+		if err != nil {
+			d.Close()
+			return nil, fmt.Errorf("load secret key: %w", err)
+		}
+		secretStore, err = secret.NewStore(d, key)
+		if err != nil {
+			d.Close()
+			return nil, fmt.Errorf("secret store: %w", err)
+		}
+	}
+
 	r := chi.NewRouter()
+
+	srv := &Server{
+		cfg:         cfg,
+		db:          d,
+		store:       store,
+		broker:      broker,
+		secretStore: secretStore,
+		proxy:       sandbox.NewProxy(cfg.AllowedDomains),
+		router:      r,
+		httpServer: &http.Server{
+			Handler: r,
+		},
+	}
+
 	r.Get("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok"}`))
 	})
+
+	r.Get("/api/proxy", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"port":%d}`, srv.proxyPort)
+	})
+
+	r.Get("/api/broker", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"socket":%q}`, srv.BrokerSocket())
+	})
+
+	r.Post("/api/broker/register", srv.handleBrokerRegister)
+
+	// Secrets API
+	if secretStore != nil {
+		secretHandler := &api.SecretHandler{Store: secretStore}
+		r.Mount("/api/secrets", secretHandler.Routes())
+	}
 
 	projectHandler := &api.ProjectHandler{DB: d, Store: store}
 	r.Mount("/api/projects", projectHandler.Routes())
@@ -102,6 +163,9 @@ func New(cfg Config) (*Server, error) {
 		TmuxSession:  tmuxSession,
 		BoidBinary:   boidBin,
 		ServerSocket: cfg.SocketPath,
+		ProxyPort:    &srv.proxyPort,
+		Broker:       broker,
+		SecretStore:  secretStore,
 	}
 	dispatcher := &hook.Dispatcher{Runner: runner, MaxDepth: 3}
 
@@ -110,7 +174,7 @@ func New(cfg Config) (*Server, error) {
 		r.Mount("/", actionHandler.Routes())
 	})
 
-	jobHandler := &api.JobHandler{DB: d, Store: store, Registry: reg, Evaluator: eval}
+	jobHandler := &api.JobHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, Runner: runner}
 	r.Mount("/api/jobs", jobHandler.Routes())
 
 	// Web UI
@@ -121,15 +185,7 @@ func New(cfg Config) (*Server, error) {
 	staticFS, _ := fs.Sub(web.StaticFS, "static")
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
 
-	return &Server{
-		cfg:    cfg,
-		db:     d,
-		store:  store,
-		router: r,
-		httpServer: &http.Server{
-			Handler: r,
-		},
-	}, nil
+	return srv, nil
 }
 
 // DB returns the database instance.
@@ -148,6 +204,24 @@ func (s *Server) Router() chi.Router {
 }
 
 func (s *Server) Start(ctx context.Context) error {
+	// Start broker
+	if s.broker != nil {
+		if err := s.broker.Start(ctx); err != nil {
+			return fmt.Errorf("start broker: %w", err)
+		}
+		slog.Info("broker started", "socket", s.broker.SocketPath)
+	}
+
+	// Start proxy
+	if s.proxy != nil {
+		port, err := s.proxy.Start(ctx)
+		if err != nil {
+			return fmt.Errorf("start proxy: %w", err)
+		}
+		s.proxyPort = port
+		slog.Info("proxy started", "port", port)
+	}
+
 	// Remove stale socket
 	os.Remove(s.cfg.SocketPath)
 
@@ -185,6 +259,12 @@ func (s *Server) Stop() error {
 			errs = append(errs, err)
 		}
 	}
+	if s.proxy != nil {
+		s.proxy.Stop()
+	}
+	if s.broker != nil {
+		s.broker.Stop()
+	}
 	os.Remove(s.cfg.SocketPath)
 
 	if len(errs) > 0 {
@@ -193,9 +273,32 @@ func (s *Server) Stop() error {
 	return nil
 }
 
+// ProxyPort returns the proxy listening port.
+func (s *Server) ProxyPort() int {
+	return s.proxyPort
+}
+
 // SocketPath returns the UNIX socket path.
 func (s *Server) SocketPath() string {
 	return s.cfg.SocketPath
+}
+
+// BrokerSocket returns the broker UNIX socket path.
+func (s *Server) BrokerSocket() string {
+	if s.broker != nil {
+		return s.broker.SocketPath
+	}
+	return ""
+}
+
+// Broker returns the hostcmd broker.
+func (s *Server) Broker() *hostcmd.Broker {
+	return s.broker
+}
+
+// SecretStore returns the secret store.
+func (s *Server) SecretStore() *secret.Store {
+	return s.secretStore
 }
 
 // TCPAddr returns the TCP listener address.
@@ -204,4 +307,44 @@ func (s *Server) TCPAddr() string {
 		return s.tcpLn.Addr().String()
 	}
 	return ""
+}
+
+type brokerRegisterRequest struct {
+	Commands map[string]hostcmd.CommandDef `json:"commands"`
+}
+
+type brokerRegisterResponse struct {
+	Token  string `json:"token"`
+	Socket string `json:"socket"`
+}
+
+func (s *Server) handleBrokerRegister(w http.ResponseWriter, r *http.Request) {
+	if s.broker == nil {
+		http.Error(w, `{"error":"broker not available"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	var req brokerRegisterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Commands) == 0 {
+		http.Error(w, `{"error":"no commands"}`, http.StatusBadRequest)
+		return
+	}
+
+	var token string
+	if s.secretStore != nil {
+		token = s.broker.RegisterWithSecrets(req.Commands, s.secretStore.Get)
+	} else {
+		token = s.broker.Register(req.Commands)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(brokerRegisterResponse{
+		Token:  token,
+		Socket: s.broker.SocketPath,
+	})
 }

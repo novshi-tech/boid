@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/hostcmd"
 	"github.com/novshi-tech/boid/internal/model"
 	"gopkg.in/yaml.v3"
 )
@@ -26,8 +27,10 @@ hooks:
     requires_traits:
       - agent_prompt
 host_commands:
-  - git
-  - make
+  git:
+    path: /usr/bin/git
+  make:
+    path: /usr/bin/make
 env:
   FOO: bar
 allowed_domains:
@@ -102,7 +105,7 @@ func TestProjectMeta_JSONRoundTrip(t *testing.T) {
 				RequiresTraits: []model.TraitType{model.TraitAgentPrompt},
 			},
 		},
-		HostCommands: []string{"git"},
+		HostCommands: map[string]hostcmd.CommandDef{"git": {Path: "/usr/bin/git"}},
 		Env:          map[string]string{"KEY": "val"},
 	}
 

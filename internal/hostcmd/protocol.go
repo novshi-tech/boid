@@ -5,6 +5,7 @@ type ExecRequest struct {
 	Args    []string `json:"args"`
 	Cwd     string   `json:"cwd,omitempty"`
 	Stdin   []byte   `json:"stdin,omitempty"`
+	Token   string   `json:"token"`
 }
 
 type ExecResponse struct {

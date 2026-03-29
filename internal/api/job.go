@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/hook"
+	"github.com/novshi-tech/boid/internal/job"
 	"github.com/novshi-tech/boid/internal/model"
 	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/internal/reducer"
@@ -18,6 +19,7 @@ type JobHandler struct {
 	Store     *project.Store
 	Registry  *reducer.Registry
 	Evaluator *hook.Evaluator
+	Runner    *job.Runner
 }
 
 func (h *JobHandler) Routes() chi.Router {
@@ -139,6 +141,11 @@ func (h *JobHandler) Done(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("job done: auto-applied action", "job_id", j.ID, "action", actionType, "new_status", newTask.Status)
+
+	// Unregister broker token for this job
+	if h.Runner != nil {
+		h.Runner.UnregisterJob(j.ID)
+	}
 
 	writeJSON(w, http.StatusOK, j)
 }

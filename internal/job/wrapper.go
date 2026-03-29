@@ -15,10 +15,15 @@ type WrapperConfig struct {
 	HookScript         string            // script filename, e.g. "run-build.sh"
 	BoidBinary         string            // host-side path to boid binary
 	ServerSocket       string            // host-side server socket path
+	BrokerSocket       string            // host-side broker socket path
+	BrokerToken        string            // broker authentication token
 	Env                map[string]string // project environment variables
-	HostCommands       []string          // commands to shim via symlinks
+	HostCommands       []string          // command names to shim via symlinks
 	AdditionalBindings []string          // extra host paths to bind-mount (read-only)
+	WorkspaceDirs      map[string]string // project-id -> host-dir (read-only mounts)
+	ProxyPort          int               // host-side proxy port (0 = no proxy)
 	StagingDir         string            // if set, staging dir to clean up after job
+	Interactive        bool              // if true, launch interactive shell instead of hook
 }
 
 // WriteSandboxScripts generates 3 sandbox scripts and writes them to /tmp.
@@ -32,7 +37,7 @@ func WriteSandboxScripts(cfg WrapperConfig) (string, error) {
 
 	inner := generateInnerScript(cfg)
 	setup := generateSetupScript(cfg, innerPath, setupPath, outerPath)
-	outer := generateOuterScript(setupPath)
+	outer := generateOuterScript(cfg, setupPath)
 
 	for _, f := range []struct{ path, content string }{
 		{innerPath, inner},
@@ -47,12 +52,26 @@ func WriteSandboxScripts(cfg WrapperConfig) (string, error) {
 	return outerPath, nil
 }
 
-func generateOuterScript(setupPath string) string {
+func generateOuterScript(cfg WrapperConfig, setupPath string) string {
+	if cfg.Interactive {
+		// Save original stderr to fd 3, suppress pasta's warnings,
+		// then restore stderr in the child so the bash prompt is visible.
+		return fmt.Sprintf(`#!/bin/bash
+set -e
+exec 3>&2
+exec pasta --config-net \
+    -a 10.0.2.0 -n 24 -g 10.0.2.2 \
+    --dns-forward 10.0.2.3 \
+    -t none -u none \
+    2>/dev/null \
+    -- bash -c 'exec 2>&3 3>&-; exec unshare --mount -- bash %s'
+`, setupPath)
+	}
 	return fmt.Sprintf(`#!/bin/bash
 set -e
 exec pasta --config-net \
     -a 10.0.2.0 -n 24 -g 10.0.2.2 \
-    --dns-forward 10.0.2.3 --no-map-gw \
+    --dns-forward 10.0.2.3 \
     -t none -u none \
     2>/dev/null \
     -- unshare --mount -- bash %s
@@ -79,7 +98,7 @@ ROOT=$(mktemp -d /tmp/boid-root-XXXXXX)
     fi
     rm -f %s %s %s
 `, outerPath, setupPath, innerPath)
-	if cfg.StagingDir != "" {
+	if cfg.StagingDir != "" && !cfg.Interactive {
 		fmt.Fprintf(&b, "    rm -rf %s\n", cfg.StagingDir)
 	}
 	b.WriteString(`}
@@ -107,19 +126,36 @@ mount -t tmpfs tmpfs "$ROOT/tmp"
 	b.WriteString("mkdir -p \"$ROOT/run/systemd/resolve\"\n")
 	b.WriteString("echo \"nameserver 10.0.2.3\" > \"$ROOT/run/systemd/resolve/stub-resolv.conf\"\n\n")
 
-	// Workspace (tmpfs)
-	b.WriteString("# Workspace\n")
-	b.WriteString("mkdir -p \"$ROOT/workspace\"\n")
-	b.WriteString("mount -t tmpfs tmpfs \"$ROOT/workspace\"\n")
+	// Network filtering (nftables)
+	if cfg.ProxyPort > 0 {
+		b.WriteString("# Network filtering\n")
+		b.WriteString("nft add table inet filter\n")
+		b.WriteString("nft 'add chain inet filter output { type filter hook output priority 0 ; policy drop ; }'\n")
+		b.WriteString("nft add rule inet filter output oifname \"lo\" accept\n")
+		b.WriteString("nft add rule inet filter output ip daddr 10.0.2.2 accept\n")
+		b.WriteString("nft add rule inet filter output ip daddr 10.0.2.3 accept\n\n")
+	}
 
-	// Project directory (rw)
-	fmt.Fprintf(&b, "mkdir -p \"$ROOT/workspace/%s\"\n", cfg.ProjectID)
-	fmt.Fprintf(&b, "mount --bind %s \"$ROOT/workspace/%s\"\n", cfg.ProjectDir, cfg.ProjectID)
+	// Project directory (rw) — mounted at same path as host
+	fmt.Fprintf(&b, "mkdir -p \"$ROOT%s\"\n", cfg.ProjectDir)
+	fmt.Fprintf(&b, "mount --bind %s \"$ROOT%s\"\n", cfg.ProjectDir, cfg.ProjectDir)
 
-	// Hooks directory (ro)
-	b.WriteString("mkdir -p \"$ROOT/workspace/.boid/hooks\"\n")
-	fmt.Fprintf(&b, "mount --bind %s \"$ROOT/workspace/.boid/hooks\"\n", cfg.HooksDir)
-	b.WriteString("mount -o remount,bind,ro \"$ROOT/workspace/.boid/hooks\"\n")
+	// Workspace projects (ro) — same workspace, mounted at host paths
+	if len(cfg.WorkspaceDirs) > 0 {
+		b.WriteString("\n# Workspace projects (ro)\n")
+		for _, dir := range cfg.WorkspaceDirs {
+			fmt.Fprintf(&b, "mkdir -p \"$ROOT%s\"\n", dir)
+			fmt.Fprintf(&b, "mount --bind %s \"$ROOT%s\"\n", dir, dir)
+			fmt.Fprintf(&b, "mount -o remount,bind,ro \"$ROOT%s\"\n", dir)
+		}
+	}
+
+	// Hooks directory (ro) — not needed in interactive mode
+	if !cfg.Interactive {
+		fmt.Fprintf(&b, "mkdir -p \"$ROOT%s/.boid/hooks\"\n", cfg.ProjectDir)
+		fmt.Fprintf(&b, "mount --bind %s \"$ROOT%s/.boid/hooks\"\n", cfg.HooksDir, cfg.ProjectDir)
+		fmt.Fprintf(&b, "mount -o remount,bind,ro \"$ROOT%s/.boid/hooks\"\n", cfg.ProjectDir)
+	}
 
 	// Additional bindings (read-only)
 	if len(cfg.AdditionalBindings) > 0 {
@@ -145,6 +181,13 @@ mount -t tmpfs tmpfs "$ROOT/tmp"
 	b.WriteString("mkdir -p \"$ROOT/run/boid\"\n")
 	b.WriteString("touch \"$ROOT/run/boid/server.sock\"\n")
 	fmt.Fprintf(&b, "mount --bind %s \"$ROOT/run/boid/server.sock\"\n", cfg.ServerSocket)
+
+	// Broker socket
+	if cfg.BrokerSocket != "" {
+		b.WriteString("\n# Broker socket\n")
+		b.WriteString("touch \"$ROOT/run/boid/broker.sock\"\n")
+		fmt.Fprintf(&b, "mount --bind %s \"$ROOT/run/boid/broker.sock\"\n", cfg.BrokerSocket)
+	}
 
 	// Copy inner script into sandbox
 	b.WriteString("\n# Copy inner script\n")
@@ -176,8 +219,14 @@ func generateInnerScript(cfg WrapperConfig) string {
 	var b strings.Builder
 
 	b.WriteString("#!/bin/bash\nset -e\n\n")
-	b.WriteString("export HOME=/workspace\n")
+	fmt.Fprintf(&b, "export HOME=%s\n", cfg.ProjectDir)
 	b.WriteString("export BOID_SOCKET=/run/boid/server.sock\n")
+	if cfg.BrokerSocket != "" {
+		b.WriteString("export BOID_BROKER_SOCKET=/run/boid/broker.sock\n")
+	}
+	if cfg.BrokerToken != "" {
+		fmt.Fprintf(&b, "export BOID_BROKER_TOKEN=%s\n", cfg.BrokerToken)
+	}
 
 	pathPrefix := additionalPATH(cfg.AdditionalBindings)
 	basePath := "/opt/boid/bin:/usr/local/bin:/usr/bin:/bin"
@@ -187,13 +236,29 @@ func generateInnerScript(cfg WrapperConfig) string {
 		fmt.Fprintf(&b, "export PATH=%s\n", basePath)
 	}
 
+	// Proxy environment variables
+	if cfg.ProxyPort > 0 {
+		proxyURL := fmt.Sprintf("http://10.0.2.2:%d", cfg.ProxyPort)
+		fmt.Fprintf(&b, "export http_proxy=%s\n", proxyURL)
+		fmt.Fprintf(&b, "export https_proxy=%s\n", proxyURL)
+		fmt.Fprintf(&b, "export HTTP_PROXY=%s\n", proxyURL)
+		fmt.Fprintf(&b, "export HTTPS_PROXY=%s\n", proxyURL)
+		b.WriteString("export no_proxy=10.0.2.2,10.0.2.3,localhost,127.0.0.1\n")
+		b.WriteString("export NO_PROXY=10.0.2.2,10.0.2.3,localhost,127.0.0.1\n")
+	}
+
 	for k, v := range cfg.Env {
 		fmt.Fprintf(&b, "export %s=%q\n", k, v)
 	}
 
-	fmt.Fprintf(&b, "\ncd /workspace/%s\n\n", cfg.ProjectID)
-	fmt.Fprintf(&b, "trap 'boid job done %s --exit-code $?' EXIT\n", cfg.JobID)
-	fmt.Fprintf(&b, "/workspace/.boid/hooks/%s\n", cfg.HookScript)
+	fmt.Fprintf(&b, "\ncd %s\n\n", cfg.ProjectDir)
+
+	if cfg.Interactive {
+		b.WriteString("exec /bin/bash\n")
+	} else {
+		fmt.Fprintf(&b, "trap 'boid job done %s --exit-code $?' EXIT\n", cfg.JobID)
+		fmt.Fprintf(&b, "%s/.boid/hooks/%s\n", cfg.ProjectDir, cfg.HookScript)
+	}
 
 	return b.String()
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/novshi-tech/boid/internal/hostcmd"
 	"github.com/novshi-tech/boid/internal/model"
 	"gopkg.in/yaml.v3"
 )
@@ -25,7 +26,7 @@ func ReadMixin(dir string) (*MixinMeta, error) {
 
 	// Interpolate environment variables
 	interpolateEnvSlice(m.AdditionalBindings)
-	interpolateEnvSlice(m.HostCommands)
+	interpolateHostCommands(m.HostCommands)
 	interpolateEnvSlice(m.AllowedDomains)
 	interpolateEnvMap(m.Env)
 
@@ -63,5 +64,13 @@ func interpolateEnvSlice(ss []string) {
 func interpolateEnvMap(m map[string]string) {
 	for k, v := range m {
 		m[k] = interpolateEnv(v)
+	}
+}
+
+func interpolateHostCommands(cmds map[string]hostcmd.CommandDef) {
+	for name, def := range cmds {
+		def.Path = interpolateEnv(def.Path)
+		interpolateEnvMap(def.Env)
+		cmds[name] = def
 	}
 }

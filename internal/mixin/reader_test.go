@@ -26,7 +26,9 @@ hooks:
   - id: run-build
     on: executing
     requires_traits: [agent_prompt]
-host_commands: [go]
+host_commands:
+  go:
+    path: /usr/bin/go
 additional_bindings:
   - /usr/local/go
 env:
@@ -51,8 +53,11 @@ task_behaviors:
 	if m.Hooks[0].ScriptPath == "" {
 		t.Error("hook ScriptPath not resolved")
 	}
-	if len(m.HostCommands) != 1 || m.HostCommands[0] != "go" {
-		t.Errorf("host_commands = %v", m.HostCommands)
+	if len(m.HostCommands) != 1 {
+		t.Errorf("expected 1 host_command, got %d", len(m.HostCommands))
+	}
+	if _, ok := m.HostCommands["go"]; !ok {
+		t.Error("expected host_commands to contain 'go'")
 	}
 	if m.Env["GOPATH"] != "/home/user/go" {
 		t.Errorf("env GOPATH = %q", m.Env["GOPATH"])

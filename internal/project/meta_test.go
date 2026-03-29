@@ -33,7 +33,8 @@ hooks:
     requires_traits:
       - agent_prompt
 host_commands:
-  - git
+  git:
+    path: /usr/bin/git
 env:
   KEY: val
 `
@@ -69,8 +70,11 @@ env:
 	if meta.Hooks[0].ScriptPath != filepath.Join(hooksDir, "run-agent.sh") {
 		t.Fatalf("expected script path %s, got %s", filepath.Join(hooksDir, "run-agent.sh"), meta.Hooks[0].ScriptPath)
 	}
-	if len(meta.HostCommands) != 1 || meta.HostCommands[0] != "git" {
-		t.Fatalf("unexpected host_commands: %v", meta.HostCommands)
+	if len(meta.HostCommands) != 1 {
+		t.Fatalf("expected 1 host_command, got %d", len(meta.HostCommands))
+	}
+	if _, ok := meta.HostCommands["git"]; !ok {
+		t.Fatal("expected host_commands to contain 'git'")
 	}
 	if meta.Env["KEY"] != "val" {
 		t.Fatalf("expected env KEY=val, got %s", meta.Env["KEY"])
