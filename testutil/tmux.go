@@ -55,6 +55,10 @@ func (m *MockTmux) HasSession(name string) bool {
 	return ok
 }
 
+func (m *MockTmux) SwitchClient(session, window string) error {
+	return nil
+}
+
 func (m *MockTmux) Attach(session string) error {
 	return nil
 }

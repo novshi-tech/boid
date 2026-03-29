@@ -26,10 +26,10 @@ func TestBuildMounts(t *testing.T) {
 		byTarget[m.Target] = m
 	}
 
-	// Project directory (rw)
-	projMount, ok := byTarget["/workspace/myproj"]
+	// Project directory (rw) — mounted at host path
+	projMount, ok := byTarget[cfg.ProjectDir]
 	if !ok {
-		t.Fatal("missing project mount at /workspace/myproj")
+		t.Fatalf("missing project mount at %s", cfg.ProjectDir)
 	}
 	if projMount.ReadOnly {
 		t.Error("project mount should be rw")
@@ -38,19 +38,21 @@ func TestBuildMounts(t *testing.T) {
 		t.Errorf("project mount source = %q, want %q", projMount.Source, cfg.ProjectDir)
 	}
 
-	// Workspace project (ro)
-	wsMount, ok := byTarget["/workspace/other-proj"]
+	// Workspace project (ro) — mounted at host path
+	wsDir := cfg.WorkspaceDirs["other-proj"]
+	wsMount, ok := byTarget[wsDir]
 	if !ok {
-		t.Fatal("missing workspace mount at /workspace/other-proj")
+		t.Fatalf("missing workspace mount at %s", wsDir)
 	}
 	if !wsMount.ReadOnly {
 		t.Error("workspace mount should be ro")
 	}
 
 	// Hooks directory (ro)
-	hooksMount, ok := byTarget["/workspace/.boid/hooks"]
+	hooksTarget := cfg.ProjectDir + "/.boid/hooks"
+	hooksMount, ok := byTarget[hooksTarget]
 	if !ok {
-		t.Fatal("missing hooks mount")
+		t.Fatalf("missing hooks mount at %s", hooksTarget)
 	}
 	if !hooksMount.ReadOnly {
 		t.Error("hooks mount should be ro")

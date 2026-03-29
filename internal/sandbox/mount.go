@@ -16,19 +16,18 @@ type MountEntry struct {
 func BuildMounts(cfg SandboxConfig) []MountEntry {
 	var mounts []MountEntry
 
-	// Project directory (rw)
-	projectID := filepath.Base(cfg.ProjectDir)
+	// Project directory (rw) — mounted at same path as host
 	mounts = append(mounts, MountEntry{
 		Source:   cfg.ProjectDir,
-		Target:   fmt.Sprintf("/workspace/%s", projectID),
+		Target:   cfg.ProjectDir,
 		ReadOnly: false,
 	})
 
-	// Workspace projects (ro)
-	for id, dir := range cfg.WorkspaceDirs {
+	// Workspace projects (ro) — mounted at host paths
+	for _, dir := range cfg.WorkspaceDirs {
 		mounts = append(mounts, MountEntry{
 			Source:   dir,
-			Target:   fmt.Sprintf("/workspace/%s", id),
+			Target:   dir,
 			ReadOnly: true,
 		})
 	}
@@ -37,7 +36,7 @@ func BuildMounts(cfg SandboxConfig) []MountEntry {
 	if cfg.HooksDir != "" {
 		mounts = append(mounts, MountEntry{
 			Source:   cfg.HooksDir,
-			Target:   "/workspace/.boid/hooks",
+			Target:   filepath.Join(cfg.ProjectDir, ".boid", "hooks"),
 			ReadOnly: true,
 		})
 	}

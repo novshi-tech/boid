@@ -29,7 +29,7 @@ func (p *Proxy) Start(ctx context.Context) (int, error) {
 	p.listener = ln
 
 	p.server = &http.Server{
-		Handler: http.HandlerFunc(p.handleConnect),
+		Handler: http.HandlerFunc(p.serveHTTP),
 	}
 
 	go p.server.Serve(ln)
@@ -49,12 +49,15 @@ func (p *Proxy) Stop() {
 	}
 }
 
-func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodConnect {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodConnect {
+		p.handleConnect(w, r)
 		return
 	}
+	p.handleHTTP(w, r)
+}
 
+func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
@@ -89,10 +92,46 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	go io.Copy(clientConn, targetConn)
 }
 
+func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Host == "" {
+		http.Error(w, "missing host", http.StatusBadRequest)
+		return
+	}
+
+	host := r.URL.Hostname()
+	if !p.isDomainAllowed(host) {
+		http.Error(w, "domain not allowed", http.StatusForbidden)
+		return
+	}
+
+	r.RequestURI = ""
+	resp, err := http.DefaultTransport.RoundTrip(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+// isDomainAllowed checks if a domain matches the allowed list.
+// Entries starting with "." match as a suffix (e.g. ".docker.io" matches "registry-1.docker.io").
 func (p *Proxy) isDomainAllowed(domain string) bool {
 	domain = strings.ToLower(domain)
 	for _, d := range p.allowedDomains {
-		if strings.ToLower(d) == domain {
+		d = strings.ToLower(d)
+		if strings.HasPrefix(d, ".") {
+			if strings.HasSuffix(domain, d) || domain == d[1:] {
+				return true
+			}
+		} else if d == domain {
 			return true
 		}
 	}

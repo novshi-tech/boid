@@ -50,6 +50,28 @@ func runStart(cmd *cobra.Command, args []string) error {
 		HTTPAddr:    ":8080",
 		TmuxSession: "boid",
 		MixinsDir:   defaultMixinsDir(),
+		AllowedDomains: []string{
+			// AI agents
+			"api.anthropic.com",
+			"platform.claude.com",
+			".claude.ai",
+			"api.openai.com",
+			// Go
+			"proxy.golang.org",
+			"sum.golang.org",
+			// Node
+			"registry.npmjs.org",
+			// .NET
+			"api.nuget.org",
+			// Python
+			"pypi.org",
+			"files.pythonhosted.org",
+			// Docker
+			".docker.io",
+			"auth.docker.io",
+			// Azure DevOps
+			"dev.azure.com",
+		},
 	}
 
 	srv, err := server.New(cfg)

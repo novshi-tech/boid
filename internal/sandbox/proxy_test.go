@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
@@ -101,6 +102,85 @@ func TestProxy_BlockedDomain(t *testing.T) {
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("blocked domain status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+}
+
+func TestProxy_SuffixDomainMatch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Use a local TCP target so we don't depend on DNS resolution
+	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen target: %v", err)
+	}
+	defer targetLn.Close()
+	go func() {
+		for {
+			conn, err := targetLn.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+	_, targetPort, _ := net.SplitHostPort(targetLn.Addr().String())
+
+	// ".0.0.1" suffix matches "127.0.0.1"
+	proxy := sandbox.NewProxy([]string{".0.0.1"})
+	port, err := proxy.Start(ctx)
+	if err != nil {
+		t.Fatalf("start proxy: %v", err)
+	}
+	defer proxy.Stop()
+
+	proxyAddr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	// 127.0.0.1 should match .0.0.1 suffix
+	resp, conn, err := sendCONNECT(proxyAddr, fmt.Sprintf("127.0.0.1:%s", targetPort), 5*time.Second)
+	if err != nil {
+		t.Fatalf("sendCONNECT: %v", err)
+	}
+	conn.Close()
+	if resp.StatusCode == http.StatusForbidden {
+		t.Error("127.0.0.1 should match .0.0.1 suffix")
+	}
+
+	// 192.168.1.2 should be blocked (doesn't match .0.0.1)
+	resp2, conn2, err := sendCONNECT(proxyAddr, "192.168.1.2:443", 5*time.Second)
+	if err != nil {
+		t.Fatalf("sendCONNECT: %v", err)
+	}
+	conn2.Close()
+	if resp2.StatusCode != http.StatusForbidden {
+		t.Errorf("192.168.1.2 should be blocked, got %d", resp2.StatusCode)
+	}
+}
+
+func TestProxy_HTTPForward_Blocked(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	proxy := sandbox.NewProxy([]string{"allowed.com"})
+	port, err := proxy.Start(ctx)
+	if err != nil {
+		t.Fatalf("start proxy: %v", err)
+	}
+	defer proxy.Stop()
+
+	proxyURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	client := &http.Client{Transport: &http.Transport{Proxy: func(*http.Request) (*url.URL, error) {
+		return url.Parse(proxyURL)
+	}}}
+
+	resp, err := client.Get("http://blocked.com/test")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("blocked domain HTTP forward status = %d, want %d", resp.StatusCode, http.StatusForbidden)
 	}
 }
 

@@ -9,4 +9,5 @@ type TmuxManager interface {
 	ListWindows(session string) ([]string, error)
 	HasSession(name string) bool
 	Attach(session string) error
+	SwitchClient(session, window string) error
 }

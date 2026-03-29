@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -44,10 +45,14 @@ func (t *RealTmux) HasSession(name string) bool {
 	return exec.Command("tmux", "has-session", "-t", name).Run() == nil
 }
 
+func (t *RealTmux) SwitchClient(session, window string) error {
+	return exec.Command("tmux", "switch-client", "-t", session+":"+window).Run()
+}
+
 func (t *RealTmux) Attach(session string) error {
 	tmuxPath, err := exec.LookPath("tmux")
 	if err != nil {
 		return err
 	}
-	return syscall.Exec(tmuxPath, []string{"tmux", "attach-session", "-t", session}, nil)
+	return syscall.Exec(tmuxPath, []string{"tmux", "attach-session", "-t", session}, os.Environ())
 }
