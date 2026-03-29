@@ -16,7 +16,6 @@ type ProjectMeta struct {
 	HostCommands       map[string]hostcmd.CommandDef  `yaml:"host_commands" json:"host_commands"`
 	AdditionalBindings []string                      `yaml:"additional_bindings" json:"additional_bindings"`
 	Env                map[string]string             `yaml:"env" json:"env"`
-	AllowedDomains     []string                      `yaml:"allowed_domains" json:"allowed_domains"`
 
 	// Populated at load time after mixin resolution; not from YAML.
 	MixinHooksDirs []MixinHooksInfo `yaml:"-" json:"-"`

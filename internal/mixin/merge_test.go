@@ -33,7 +33,6 @@ func TestMergeMixins_SingleMixin(t *testing.T) {
 	m := &mixin.MixinMeta{
 		HostCommands:       map[string]hostcmd.CommandDef{"go": {Path: "/usr/bin/go"}, "git": {Path: "/usr/bin/git"}},
 		AdditionalBindings: []string{"/usr/local/go"},
-		AllowedDomains:     []string{"proxy.golang.org"},
 		Hooks: []model.Hook{
 			{ID: "mixin-hook", On: "verifying", ScriptPath: "/mixin/hooks/mixin-hook.sh"},
 		},
@@ -54,11 +53,6 @@ func TestMergeMixins_SingleMixin(t *testing.T) {
 	// AdditionalBindings: from mixin
 	if len(result.AdditionalBindings) != 1 || result.AdditionalBindings[0] != "/usr/local/go" {
 		t.Errorf("additional_bindings = %v", result.AdditionalBindings)
-	}
-
-	// AllowedDomains: from mixin
-	if len(result.AllowedDomains) != 1 {
-		t.Errorf("allowed_domains = %v", result.AllowedDomains)
 	}
 
 	// Hooks: mixin first, then project
@@ -100,12 +94,10 @@ func TestMergeMixins_MultipleMixins(t *testing.T) {
 	m1 := &mixin.MixinMeta{
 		Env:            map[string]string{"A": "from-m1", "SHARED": "m1"},
 		HostCommands:   map[string]hostcmd.CommandDef{"go": {Path: "/usr/bin/go"}},
-		AllowedDomains: []string{"example.com"},
 	}
 	m2 := &mixin.MixinMeta{
 		Env:            map[string]string{"B": "from-m2", "SHARED": "m2"},
 		HostCommands:   map[string]hostcmd.CommandDef{"go": {Path: "/usr/bin/go"}, "gh": {Path: "/usr/bin/gh"}},
-		AllowedDomains: []string{"example.com", "other.com"},
 	}
 
 	result := mixin.MergeMixins(base, []*mixin.MixinMeta{m1, m2})
@@ -129,10 +121,6 @@ func TestMergeMixins_MultipleMixins(t *testing.T) {
 		t.Errorf("host_commands = %v, want [go gh]", result.HostCommands)
 	}
 
-	// AllowedDomains: union [example.com other.com]
-	if len(result.AllowedDomains) != 2 {
-		t.Errorf("allowed_domains = %v, want 2 entries", result.AllowedDomains)
-	}
 }
 
 func TestMergeMixins_HookIDCollision(t *testing.T) {

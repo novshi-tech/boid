@@ -33,8 +33,6 @@ host_commands:
     path: /usr/bin/make
 env:
   FOO: bar
-allowed_domains:
-  - example.com
 `
 	var meta model.ProjectMeta
 	if err := yaml.Unmarshal([]byte(data), &meta); err != nil {
@@ -80,9 +78,6 @@ allowed_domains:
 	}
 	if meta.Env["FOO"] != "bar" {
 		t.Fatalf("expected env FOO=bar, got %s", meta.Env["FOO"])
-	}
-	if len(meta.AllowedDomains) != 1 || meta.AllowedDomains[0] != "example.com" {
-		t.Fatalf("unexpected allowed_domains: %v", meta.AllowedDomains)
 	}
 }
 

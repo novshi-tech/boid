@@ -12,7 +12,6 @@ type MixinMeta struct {
 	HostCommands       map[string]hostcmd.CommandDef         `yaml:"host_commands"`
 	AdditionalBindings []string                             `yaml:"additional_bindings"`
 	Env                map[string]string                    `yaml:"env"`
-	AllowedDomains     []string                             `yaml:"allowed_domains"`
 
 	// Set at load time, not from YAML.
 	HooksDir string `yaml:"-"`

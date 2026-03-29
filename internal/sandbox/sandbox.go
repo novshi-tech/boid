@@ -16,7 +16,6 @@ type SandboxConfig struct {
 	HostCommands   []string
 	Bindings       []string
 	Env            map[string]string
-	AllowedDomains []string
 	BoidBinary     string
 	BrokerSocket   string
 	ServerSocket   string

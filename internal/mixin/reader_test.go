@@ -33,8 +33,6 @@ additional_bindings:
   - /usr/local/go
 env:
   GOPATH: /home/user/go
-allowed_domains:
-  - proxy.golang.org
 task_behaviors:
   dev:
     name: development

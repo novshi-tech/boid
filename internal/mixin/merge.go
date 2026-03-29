@@ -63,7 +63,6 @@ func MergeMixins(base *model.ProjectMeta, mixins []*MixinMeta) *model.ProjectMet
 
 	// List fields: union
 	result.AdditionalBindings = unionStrings(mixins, base.AdditionalBindings, func(m *MixinMeta) []string { return m.AdditionalBindings })
-	result.AllowedDomains = unionStrings(mixins, base.AllowedDomains, func(m *MixinMeta) []string { return m.AllowedDomains })
 
 	// Collect MixinHooksDirs
 	for _, m := range mixins {

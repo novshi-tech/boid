@@ -27,7 +27,6 @@ func ReadMixin(dir string) (*MixinMeta, error) {
 	// Interpolate environment variables
 	interpolateEnvSlice(m.AdditionalBindings)
 	interpolateHostCommands(m.HostCommands)
-	interpolateEnvSlice(m.AllowedDomains)
 	interpolateEnvMap(m.Env)
 
 	// Validate and resolve hooks
