@@ -24,6 +24,7 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/secret"
 	"github.com/novshi-tech/boid/internal/tmux"
+	"github.com/novshi-tech/boid/internal/worktree"
 	"github.com/novshi-tech/boid/web"
 )
 
@@ -156,6 +157,12 @@ func New(cfg Config) (*Server, error) {
 		tmuxSession = "boid"
 	}
 	boidBin, _ := os.Executable()
+
+	// Worktree manager
+	wtRootDir := filepath.Join(filepath.Dir(cfg.DBPath), "worktrees")
+	os.MkdirAll(wtRootDir, 0o755)
+	wtMgr := &worktree.Manager{RootDir: wtRootDir, DB: d}
+
 	runner := &job.Runner{
 		DB:           d,
 		Store:        store,
@@ -166,15 +173,16 @@ func New(cfg Config) (*Server, error) {
 		ProxyPort:    &srv.proxyPort,
 		Broker:       broker,
 		SecretStore:  secretStore,
+		WorktreeMgr:  wtMgr,
 	}
 	dispatcher := &hook.Dispatcher{Runner: runner, MaxDepth: 3}
 
-	actionHandler := &api.ActionHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, Dispatcher: dispatcher}
+	actionHandler := &api.ActionHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, Dispatcher: dispatcher, WorktreeMgr: wtMgr}
 	r.Route("/api/tasks/{taskID}/actions", func(r chi.Router) {
 		r.Mount("/", actionHandler.Routes())
 	})
 
-	jobHandler := &api.JobHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, Runner: runner}
+	jobHandler := &api.JobHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, Runner: runner, WorktreeMgr: wtMgr}
 	r.Mount("/api/jobs", jobHandler.Routes())
 
 	// Web UI

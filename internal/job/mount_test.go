@@ -454,6 +454,107 @@ func TestBuildSandboxPlan_CleanupPaths_CommandMode(t *testing.T) {
 	}
 }
 
+func TestBuildSandboxPlan_Worktree(t *testing.T) {
+	cfg := WrapperConfig{
+		ProjectDir:   "/home/user/proj",
+		HomeDir:      "/home/user",
+		HooksDir:     "/tmp/staged-hooks",
+		HookScript:   "run.sh",
+		BoidBinary:   "/usr/local/bin/boid",
+		ServerSocket: "/run/boid/server.sock",
+		WorktreeDir:  "/home/user/.local/share/boid/worktrees/proj/task-abc",
+	}
+	plan := BuildSandboxPlan(cfg)
+
+	wt := "/home/user/.local/share/boid/worktrees/proj/task-abc"
+	origProj := "/home/user/proj"
+
+	// Worktree directory should be mounted rw
+	foundWT := false
+	for _, m := range plan.Mounts {
+		if m.Source == wt && m.Target == wt && m.Type == MountBind && !m.ReadOnly {
+			foundWT = true
+		}
+	}
+	if !foundWT {
+		t.Error("worktree dir rw mount not found")
+	}
+
+	// Original project dir should NOT be mounted (only .git)
+	for _, m := range plan.Mounts {
+		if m.Source == origProj && m.Target == origProj {
+			t.Error("original project dir should not be directly mounted in worktree mode")
+		}
+	}
+
+	// .git should be mounted rw at original path
+	gitDir := origProj + "/.git"
+	foundGit := false
+	for _, m := range plan.Mounts {
+		if m.Source == gitDir && m.Target == gitDir && m.Type == MountBind && !m.ReadOnly {
+			foundGit = true
+		}
+	}
+	if !foundGit {
+		t.Error(".git rw mount not found")
+	}
+
+	// .boid should come from original project dir, mounted at worktree path
+	boidSource := origProj + "/.boid"
+	boidTarget := wt + "/.boid"
+	foundBoid := false
+	for _, m := range plan.Mounts {
+		if m.Source == boidSource && m.Target == boidTarget && m.ReadOnly {
+			foundBoid = true
+		}
+	}
+	if !foundBoid {
+		t.Errorf(".boid mount not found: want source=%s target=%s ro", boidSource, boidTarget)
+	}
+
+	// Hooks should be mounted at worktree/.boid/hooks
+	hooksTarget := wt + "/.boid/hooks"
+	foundHooks := false
+	for _, m := range plan.Mounts {
+		if m.Source == "/tmp/staged-hooks" && m.Target == hooksTarget && m.ReadOnly {
+			foundHooks = true
+		}
+	}
+	if !foundHooks {
+		t.Errorf("hooks mount not found: want target=%s", hooksTarget)
+	}
+
+	// .git mount should come AFTER HOME tmpfs
+	homeIdx := -1
+	gitIdx := -1
+	for i, m := range plan.Mounts {
+		if m.Target == "/home/user" && m.Type == MountTmpfs {
+			homeIdx = i
+		}
+		if m.Source == gitDir && m.Target == gitDir {
+			gitIdx = i
+		}
+	}
+	if homeIdx >= 0 && gitIdx >= 0 && gitIdx <= homeIdx {
+		t.Error(".git mount should come after HOME tmpfs")
+	}
+}
+
+func TestBuildSandboxPlan_Worktree_NoGitInNonWorktreeMode(t *testing.T) {
+	cfg := WrapperConfig{
+		ProjectDir:   "/home/user/proj",
+		BoidBinary:   "/usr/local/bin/boid",
+		ServerSocket: "/run/boid/server.sock",
+	}
+	plan := BuildSandboxPlan(cfg)
+
+	for _, m := range plan.Mounts {
+		if m.Target == "/home/user/proj/.git" {
+			t.Error(".git should not be explicitly mounted in non-worktree mode")
+		}
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStr(s, substr))
 }

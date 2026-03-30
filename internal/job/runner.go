@@ -10,25 +10,27 @@ import (
 
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/hostcmd"
-	"github.com/novshi-tech/boid/internal/secret"
 	"github.com/novshi-tech/boid/internal/kit"
 	"github.com/novshi-tech/boid/internal/model"
 	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/secret"
 	"github.com/novshi-tech/boid/internal/tmux"
+	"github.com/novshi-tech/boid/internal/worktree"
 )
 
 type Runner struct {
-	DB           *db.DB
-	Store        *project.Store
-	Tmux         tmux.TmuxManager
-	TmuxSession  string           // defaults to "boid"
-	BoidBinary   string           // host-side path to boid binary
-	ServerSocket string           // host-side server socket path
-	ProxyPort    *int             // pointer to server's proxy port (populated after Start)
-	Broker       *hostcmd.Broker  // host command broker
-	SecretStore  *secret.Store    // secret store for resolving secret: env values
-	tokenMu      sync.Mutex
-	jobTokens    map[string]string // job ID -> broker token
+	DB              *db.DB
+	Store           *project.Store
+	Tmux            tmux.TmuxManager
+	TmuxSession     string              // defaults to "boid"
+	BoidBinary      string              // host-side path to boid binary
+	ServerSocket    string              // host-side server socket path
+	ProxyPort       *int                // pointer to server's proxy port (populated after Start)
+	Broker          *hostcmd.Broker     // host command broker
+	SecretStore     *secret.Store       // secret store for resolving secret: env values
+	WorktreeMgr     *worktree.Manager   // optional worktree manager
+	tokenMu         sync.Mutex
+	jobTokens       map[string]string   // job ID -> broker token
 }
 
 func (r *Runner) session() string {
@@ -131,6 +133,15 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 
 	homeDir, _ := os.UserHomeDir()
 
+	// Resolve worktree if behavior has worktree enabled
+	var worktreeDir string
+	if r.WorktreeMgr != nil {
+		worktreeDir, err = r.resolveWorktree(event, meta, proj)
+		if err != nil {
+			return fmt.Errorf("resolve worktree: %w", err)
+		}
+	}
+
 	cfg := WrapperConfig{
 		JobID:              j.ID,
 		TaskID:             event.TaskID,
@@ -149,6 +160,7 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 		WorkspaceDirs:      workspaceDirs,
 		ProxyPort:          proxyPort,
 		StagingDir:         stagingDir,
+		WorktreeDir:        worktreeDir,
 	}
 
 	outerPath, err := WriteSandboxScripts(cfg)
@@ -172,6 +184,42 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 
 	slog.Info("job started", "job_id", j.ID, "window", windowName)
 	return nil
+}
+
+// resolveWorktree checks if the task's behavior enables worktree isolation.
+// If so, it returns the worktree path (creating one if needed).
+func (r *Runner) resolveWorktree(event *model.HookFireEvent, meta *model.ProjectMeta, proj *model.Project) (string, error) {
+	task, err := r.DB.GetTask(event.TaskID)
+	if err != nil {
+		return "", fmt.Errorf("get task: %w", err)
+	}
+
+	behavior, ok := meta.TaskBehaviors[task.Behavior]
+	if !ok || !behavior.Worktree {
+		return "", nil
+	}
+
+	// Check if worktree already exists for this task
+	existing, err := r.WorktreeMgr.Get(event.TaskID)
+	if err != nil {
+		return "", fmt.Errorf("get worktree: %w", err)
+	}
+	if existing != nil && existing.CleanedAt == nil {
+		return existing.Path, nil
+	}
+
+	// Create new worktree
+	w, err := r.WorktreeMgr.Create(
+		proj.WorkDir,
+		event.ProjectID,
+		event.TaskID,
+		behavior.BranchPrefix,
+		behavior.BaseBranch,
+	)
+	if err != nil {
+		return "", err
+	}
+	return w.Path, nil
 }
 
 func hostCommandNames(cmds map[string]hostcmd.CommandDef) []string {

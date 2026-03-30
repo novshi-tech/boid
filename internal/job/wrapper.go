@@ -29,6 +29,16 @@ type WrapperConfig struct {
 	ProxyPort          int               // host-side proxy port (0 = no proxy)
 	StagingDir         string            // if set, staging dir to clean up after job
 	TTY                bool              // if true, preserve TTY through pasta (for interactive commands)
+	WorktreeDir        string            // if set, worktree mode: sandbox works here; .git/.boid come from ProjectDir
+}
+
+// workDir returns the effective working directory inside the sandbox.
+// In worktree mode this is WorktreeDir; otherwise ProjectDir.
+func (cfg WrapperConfig) workDir() string {
+	if cfg.WorktreeDir != "" {
+		return cfg.WorktreeDir
+	}
+	return cfg.ProjectDir
 }
 
 // homeDir returns the effective home directory.
@@ -151,13 +161,14 @@ func generateInnerScript(cfg WrapperConfig) string {
 		fmt.Fprintf(&b, "export %s=%q\n", k, v)
 	}
 
-	fmt.Fprintf(&b, "\ncd %s\n\n", cfg.ProjectDir)
+	wd := cfg.workDir()
+	fmt.Fprintf(&b, "\ncd %s\n\n", wd)
 
 	if cfg.Command != "" {
 		fmt.Fprintf(&b, "exec %s\n", cfg.Command)
 	} else {
 		fmt.Fprintf(&b, "trap 'boid job done %s --exit-code $?' EXIT\n", cfg.JobID)
-		fmt.Fprintf(&b, "%s/.boid/hooks/%s\n", cfg.ProjectDir, cfg.HookScript)
+		fmt.Fprintf(&b, "%s/.boid/hooks/%s\n", wd, cfg.HookScript)
 	}
 
 	return b.String()

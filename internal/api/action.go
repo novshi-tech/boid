@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -11,14 +12,16 @@ import (
 	"github.com/novshi-tech/boid/internal/model"
 	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/internal/reducer"
+	"github.com/novshi-tech/boid/internal/worktree"
 )
 
 type ActionHandler struct {
-	DB         *db.DB
-	Store      *project.Store
-	Registry   *reducer.Registry
-	Evaluator  *hook.Evaluator
-	Dispatcher *hook.Dispatcher
+	DB          *db.DB
+	Store       *project.Store
+	Registry    *reducer.Registry
+	Evaluator   *hook.Evaluator
+	Dispatcher  *hook.Dispatcher
+	WorktreeMgr *worktree.Manager
 }
 
 func (h *ActionHandler) Routes() chi.Router {
@@ -98,7 +101,14 @@ func (h *ActionHandler) Apply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 7. Evaluate hooks and dispatch
+	// 7. Cleanup worktree on terminal state
+	if h.WorktreeMgr != nil {
+		if err := h.WorktreeMgr.CleanupForTask(newTask.ID, newTask.Status); err != nil {
+			slog.Warn("worktree cleanup failed", "task_id", newTask.ID, "error", err)
+		}
+	}
+
+	// 8. Evaluate hooks and dispatch
 	matched := h.Evaluator.Evaluate(newTask, meta.Hooks)
 	resp := map[string]any{
 		"task":          newTask,

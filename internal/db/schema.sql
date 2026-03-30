@@ -51,3 +51,14 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_at DATETIME NOT NULL DEFAULT (datetime('now')),
     updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS worktrees (
+    id          TEXT PRIMARY KEY,
+    task_id     TEXT NOT NULL UNIQUE REFERENCES tasks(id),
+    project_id  TEXT NOT NULL REFERENCES projects(id),
+    path        TEXT NOT NULL,
+    branch      TEXT NOT NULL,
+    base_branch TEXT NOT NULL,
+    created_at  DATETIME NOT NULL DEFAULT (datetime('now')),
+    cleaned_at  DATETIME
+);

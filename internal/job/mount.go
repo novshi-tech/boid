@@ -94,10 +94,13 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 		}
 	}
 
-	// Project directory (rw)
+	// Working directory: worktree or project dir
+	workDir := cfg.workDir()
+
+	// Project/worktree directory (rw)
 	plan.Mounts = append(plan.Mounts, MountEntry{
-		Source: cfg.ProjectDir,
-		Target: cfg.ProjectDir,
+		Source: workDir,
+		Target: workDir,
 		Type:   MountBind,
 	})
 
@@ -118,21 +121,24 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 		Type:   MountTmpfs,
 	})
 
-	// Re-mount project directory on top of HOME tmpfs
+	// Re-mount working directory on top of HOME tmpfs
 	plan.Mounts = append(plan.Mounts, MountEntry{
-		Source: cfg.ProjectDir,
-		Target: cfg.ProjectDir,
+		Source: workDir,
+		Target: workDir,
 		Type:   MountBind,
 	})
 
 	// .boid directory (ro) with optional hooks overlay
-	boidDir := cfg.ProjectDir + "/.boid"
+	// In worktree mode, .boid comes from the original project dir
+	// but is mounted at the worktree path.
+	boidSource := cfg.ProjectDir + "/.boid"
+	boidTarget := workDir + "/.boid"
 	boidMount := MountEntry{
-		Source:   boidDir,
-		Target:   boidDir,
+		Source:   boidSource,
+		Target:   boidTarget,
 		Type:     MountBind,
 		ReadOnly: true,
-		Guard:    fmt.Sprintf("-d %s", boidDir),
+		Guard:    fmt.Sprintf("-d %s", boidSource),
 	}
 	if cfg.Command == "" && cfg.HooksDir != "" {
 		boidMount.NeedsDirs = []string{"hooks"}
@@ -142,10 +148,21 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 	if cfg.Command == "" && cfg.HooksDir != "" {
 		plan.Mounts = append(plan.Mounts, MountEntry{
 			Source:   cfg.HooksDir,
-			Target:   cfg.ProjectDir + "/.boid/hooks",
+			Target:   workDir + "/.boid/hooks",
 			Type:     MountBind,
 			ReadOnly: true,
-			Guard:    fmt.Sprintf("-d %s", boidDir),
+			Guard:    fmt.Sprintf("-d %s", boidSource),
+		})
+	}
+
+	// Worktree mode: re-mount .git inside sandbox for git worktree reference
+	if cfg.WorktreeDir != "" {
+		gitDir := cfg.ProjectDir + "/.git"
+		plan.Mounts = append(plan.Mounts, MountEntry{
+			Source: gitDir,
+			Target: gitDir,
+			Type:   MountBind,
+			Guard:  fmt.Sprintf("-d %s", gitDir),
 		})
 	}
 
