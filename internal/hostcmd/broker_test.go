@@ -10,7 +10,15 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/hostcmd"
+	"github.com/novshi-tech/boid/internal/model"
 )
+
+var testCtx = hostcmd.TokenContext{
+	JobID:     "job-1",
+	TaskID:    "task-1",
+	ProjectID: "proj-1",
+	Role:      string(model.RoleHook),
+}
 
 func TestBroker_ExecCommand(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -25,7 +33,7 @@ func TestBroker_ExecCommand(t *testing.T) {
 			Path:            "/bin/echo",
 			AllowedPatterns: []string{"*"},
 		},
-	})
+	}, testCtx)
 	defer broker.Unregister(token)
 
 	if err := broker.Start(ctx); err != nil {
@@ -65,7 +73,7 @@ func TestBroker_UnknownCommand(t *testing.T) {
 	broker := &hostcmd.Broker{}
 	token := broker.Register(map[string]hostcmd.CommandDef{
 		"echo": {Name: "echo", Path: "/bin/echo"},
-	})
+	}, testCtx)
 
 	resp := broker.Handle(&hostcmd.ExecRequest{
 		Command: "rm",
@@ -84,7 +92,7 @@ func TestBroker_InvalidToken(t *testing.T) {
 	broker := &hostcmd.Broker{}
 	broker.Register(map[string]hostcmd.CommandDef{
 		"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
-	})
+	}, testCtx)
 
 	resp := broker.Handle(&hostcmd.ExecRequest{
 		Command: "echo",
@@ -103,7 +111,7 @@ func TestBroker_EmptyToken(t *testing.T) {
 	broker := &hostcmd.Broker{}
 	broker.Register(map[string]hostcmd.CommandDef{
 		"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
-	})
+	}, testCtx)
 
 	resp := broker.Handle(&hostcmd.ExecRequest{
 		Command: "echo",
@@ -118,7 +126,7 @@ func TestBroker_Unregister(t *testing.T) {
 	broker := &hostcmd.Broker{}
 	token := broker.Register(map[string]hostcmd.CommandDef{
 		"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
-	})
+	}, testCtx)
 
 	// Before unregister: should work
 	resp := broker.Handle(&hostcmd.ExecRequest{
@@ -155,7 +163,7 @@ func TestBroker_CwdValidation(t *testing.T) {
 			RequireCwd:         true,
 			AllowedCwdPrefixes: []string{tmpDir},
 		},
-	})
+	}, testCtx)
 
 	// Valid cwd
 	resp := broker.Handle(&hostcmd.ExecRequest{
@@ -210,7 +218,7 @@ func TestBroker_PerCommandEnv(t *testing.T) {
 			AllowedPatterns: []string{"*"},
 			Env:             map[string]string{"TEST_VAR": "hello123"},
 		},
-	})
+	}, testCtx)
 
 	resp := broker.Handle(&hostcmd.ExecRequest{
 		Command: "env",
@@ -240,6 +248,8 @@ func TestBroker_SecretResolution(t *testing.T) {
 			AllowedPatterns: []string{"*"},
 			Env:             map[string]string{"GH_TOKEN": "secret:github/pat", "PLAIN": "value"},
 		},
+	}, hostcmd.TokenContext{
+		JobID: "job-1", TaskID: "task-1", ProjectID: "proj-1", Role: string(model.RoleGate),
 	}, resolver)
 
 	resp := broker.Handle(&hostcmd.ExecRequest{
@@ -263,9 +273,104 @@ func TestBroker_RegisterReturnsUniqueTokens(t *testing.T) {
 		"echo": {Name: "echo", Path: "/bin/echo"},
 	}
 
-	t1 := broker.Register(cmds)
-	t2 := broker.Register(cmds)
+	t1 := broker.Register(cmds, testCtx)
+	t2 := broker.Register(cmds, testCtx)
 	if t1 == t2 {
 		t.Error("Register should return unique tokens")
+	}
+}
+
+func TestBroker_GetContext(t *testing.T) {
+	broker := &hostcmd.Broker{}
+	ctx := hostcmd.TokenContext{
+		JobID:     "job-42",
+		TaskID:    "task-99",
+		ProjectID: "proj-7",
+		Role:      string(model.RoleGate),
+	}
+
+	token := broker.Register(map[string]hostcmd.CommandDef{
+		"echo": {Name: "echo", Path: "/bin/echo"},
+	}, ctx)
+
+	got, ok := broker.GetContext(token)
+	if !ok {
+		t.Fatal("expected GetContext to return true for valid token")
+	}
+	if got.JobID != "job-42" {
+		t.Errorf("JobID = %q, want %q", got.JobID, "job-42")
+	}
+	if got.TaskID != "task-99" {
+		t.Errorf("TaskID = %q, want %q", got.TaskID, "task-99")
+	}
+	if got.ProjectID != "proj-7" {
+		t.Errorf("ProjectID = %q, want %q", got.ProjectID, "proj-7")
+	}
+	if got.Role != string(model.RoleGate) {
+		t.Errorf("Role = %q, want %q", got.Role, string(model.RoleGate))
+	}
+
+	// Invalid token
+	_, ok = broker.GetContext("nonexistent")
+	if ok {
+		t.Error("expected GetContext to return false for invalid token")
+	}
+}
+
+func TestBroker_BoidBuiltinPolicy_HookRole(t *testing.T) {
+	broker := &hostcmd.Broker{}
+	hookCtx := hostcmd.TokenContext{
+		JobID: "j1", TaskID: "t1", ProjectID: "p1", Role: string(model.RoleHook),
+	}
+	token := broker.Register(map[string]hostcmd.CommandDef{}, hookCtx)
+
+	// hook can call: boid job done
+	resp := broker.Handle(&hostcmd.ExecRequest{
+		Command: "boid",
+		Args:    []string{"job", "done", "--exit-code", "0"},
+		Token:   token,
+	})
+	// The actual command execution may fail (no boid binary at expected path),
+	// but it should NOT be rejected by policy. Check that it's not "command not allowed".
+	if resp.Stderr == "command not allowed: boid" {
+		t.Error("hook should be allowed to call boid job done")
+	}
+
+	// hook cannot call: boid task create
+	resp = broker.Handle(&hostcmd.ExecRequest{
+		Command: "boid",
+		Args:    []string{"task", "create", "--title", "test"},
+		Token:   token,
+	})
+	if !strings.Contains(resp.Stderr, "not allowed") {
+		t.Errorf("hook should NOT be allowed to call boid task create, stderr: %q", resp.Stderr)
+	}
+}
+
+func TestBroker_BoidBuiltinPolicy_GateRole(t *testing.T) {
+	broker := &hostcmd.Broker{}
+	gateCtx := hostcmd.TokenContext{
+		JobID: "j1", TaskID: "t1", ProjectID: "p1", Role: string(model.RoleGate),
+	}
+	token := broker.Register(map[string]hostcmd.CommandDef{}, gateCtx)
+
+	// gate can call: boid job done
+	resp := broker.Handle(&hostcmd.ExecRequest{
+		Command: "boid",
+		Args:    []string{"job", "done", "--exit-code", "0"},
+		Token:   token,
+	})
+	if resp.Stderr == "command not allowed: boid" {
+		t.Error("gate should be allowed to call boid job done")
+	}
+
+	// gate can call: boid task create
+	resp = broker.Handle(&hostcmd.ExecRequest{
+		Command: "boid",
+		Args:    []string{"task", "create", "--title", "test"},
+		Token:   token,
+	})
+	if strings.Contains(resp.Stderr, "not allowed") {
+		t.Error("gate should be allowed to call boid task create")
 	}
 }

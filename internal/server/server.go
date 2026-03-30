@@ -343,11 +343,13 @@ func (s *Server) handleBrokerRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// boid exec uses gate role for maximum access
+	ctx := hostcmd.TokenContext{Role: "gate"}
 	var token string
 	if s.secretStore != nil {
-		token = s.broker.RegisterWithSecrets(req.Commands, s.secretStore.Get)
+		token = s.broker.RegisterWithSecrets(req.Commands, ctx, s.secretStore.Get)
 	} else {
-		token = s.broker.Register(req.Commands)
+		token = s.broker.Register(req.Commands, ctx)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -122,10 +122,16 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 	// Register host commands with broker
 	var brokerSocket, brokerToken string
 	if r.Broker != nil && len(meta.HostCommands) > 0 {
+		tokenCtx := hostcmd.TokenContext{
+			JobID:     j.ID,
+			TaskID:    event.TaskID,
+			ProjectID: event.ProjectID,
+			Role:      string(model.RoleHook),
+		}
 		if r.SecretStore != nil {
-			brokerToken = r.Broker.RegisterWithSecrets(meta.HostCommands, r.SecretStore.Get)
+			brokerToken = r.Broker.RegisterWithSecrets(meta.HostCommands, tokenCtx, r.SecretStore.Get)
 		} else {
-			brokerToken = r.Broker.Register(meta.HostCommands)
+			brokerToken = r.Broker.Register(meta.HostCommands, tokenCtx)
 		}
 		brokerSocket = r.Broker.SocketPath
 		r.trackToken(j.ID, brokerToken)

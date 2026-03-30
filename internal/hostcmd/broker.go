@@ -14,26 +14,44 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
 )
+
+// TokenContext carries the job/task/project context associated with a broker token.
+type TokenContext struct {
+	JobID     string
+	TaskID    string
+	ProjectID string
+	Role      string // "hook" or "gate" — use model.RoleHook/RoleGate constants
+}
+
+type tokenEntry struct {
+	Context  TokenContext
+	Commands map[string]CommandDef
+}
 
 type Broker struct {
 	SocketPath string
+	BoidBinary string // host-side boid binary path for built-in command
 	listener   net.Listener
 	mu         sync.RWMutex
-	registry   map[string]map[string]CommandDef // token -> command name -> def
+	registry   map[string]*tokenEntry // token -> entry
 }
 
 // Register registers a set of commands for a new token and returns the token.
-func (b *Broker) Register(commands map[string]CommandDef) string {
+func (b *Broker) Register(commands map[string]CommandDef, ctx TokenContext) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	if b.registry == nil {
-		b.registry = make(map[string]map[string]CommandDef)
+		b.registry = make(map[string]*tokenEntry)
 	}
 
 	token := generateToken()
-	b.registry[token] = commands
+	b.registry[token] = &tokenEntry{
+		Context:  ctx,
+		Commands: commands,
+	}
 	return token
 }
 
@@ -41,7 +59,7 @@ func (b *Broker) Register(commands map[string]CommandDef) string {
 type SecretResolver func(key string) (string, error)
 
 // RegisterWithSecrets registers commands and resolves secret: prefixed env values.
-func (b *Broker) RegisterWithSecrets(commands map[string]CommandDef, resolver SecretResolver) string {
+func (b *Broker) RegisterWithSecrets(commands map[string]CommandDef, ctx TokenContext, resolver SecretResolver) string {
 	resolved := make(map[string]CommandDef, len(commands))
 	for name, def := range commands {
 		if len(def.Env) > 0 {
@@ -63,7 +81,19 @@ func (b *Broker) RegisterWithSecrets(commands map[string]CommandDef, resolver Se
 		}
 		resolved[name] = def
 	}
-	return b.Register(resolved)
+	return b.Register(resolved, ctx)
+}
+
+// GetContext returns the token context for a given token.
+func (b *Broker) GetContext(token string) (TokenContext, bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	entry, ok := b.registry[token]
+	if !ok {
+		return TokenContext{}, false
+	}
+	return entry.Context, true
 }
 
 // Unregister removes the command set associated with the given token.
@@ -121,18 +151,68 @@ func (b *Broker) handleConn(conn net.Conn) {
 
 func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
 	b.mu.RLock()
-	commands, ok := b.registry[req.Token]
+	entry, ok := b.registry[req.Token]
 	b.mu.RUnlock()
 
 	if !ok {
 		return &ExecResponse{ExitCode: 1, Stderr: "invalid token"}
 	}
 
-	def, ok := commands[req.Command]
+	// Built-in boid command: enforce role-based policy
+	if req.Command == "boid" {
+		return b.handleBoidBuiltin(req, entry)
+	}
+
+	def, ok := entry.Commands[req.Command]
 	if !ok {
 		return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("command not allowed: %s", req.Command)}
 	}
 
+	return b.execCommand(req, def)
+}
+
+// handleBoidBuiltin enforces role-based policy for the built-in boid command.
+func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecResponse {
+	subcmd := extractSimpleSubcommand(req.Args)
+
+	allowed := false
+	switch entry.Context.Role {
+	case "hook":
+		// hook: only "job" subcommand (for "job done")
+		allowed = subcmd == "job"
+	case "gate":
+		// gate: "job" and "task" subcommands
+		allowed = subcmd == "job" || subcmd == "task"
+	}
+
+	if !allowed {
+		return &ExecResponse{
+			ExitCode: 1,
+			Stderr:   fmt.Sprintf("boid subcommand %q not allowed for role %s", subcmd, entry.Context.Role),
+		}
+	}
+
+	// Find boid binary path
+	boidPath := b.BoidBinary
+	if boidPath == "" {
+		// Fallback: look up from PATH
+		var err error
+		boidPath, err = exec.LookPath("boid")
+		if err != nil {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid binary not found"}
+		}
+	}
+
+	def := CommandDef{
+		Name:            "boid",
+		Path:            boidPath,
+		AllowedPatterns: []string{"*"},
+	}
+
+	return b.execCommand(req, def)
+}
+
+func (b *Broker) execCommand(req *ExecRequest, def CommandDef) *ExecResponse {
 	// cwd validation
 	if def.RequireCwd {
 		if req.Cwd == "" {
