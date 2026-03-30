@@ -528,6 +528,196 @@ func TestWriteSandboxScripts_Command(t *testing.T) {
 	}
 }
 
+func TestWriteSandboxScripts_HookRole(t *testing.T) {
+	cfg := job.WrapperConfig{
+		JobID:        "test-hook-role",
+		TaskID:       "task-hook-1",
+		ProjectID:    "proj-1",
+		ProjectDir:   "/home/user/projects/proj-1",
+		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
+		HookScript:   "run-agent.sh",
+		BoidBinary:   "/usr/local/bin/boid",
+		ServerSocket: "/run/boid/server.sock",
+		BrokerSocket: "/run/boid/broker.sock",
+		BrokerToken:  "test-token-hook",
+		Role:         "hook",
+		PayloadJSON:  `{"agent_prompt":"do stuff"}`,
+	}
+
+	outerPath, err := job.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-hook-role"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	// Should have BOID_BROKER_TOKEN
+	if !strings.Contains(inner, "BOID_BROKER_TOKEN=test-token-hook") {
+		t.Error("inner script missing BOID_BROKER_TOKEN")
+	}
+
+	// Should NOT have BOID_TASK_ID, BOID_JOB_ID, BOID_SOCKET
+	if strings.Contains(inner, "BOID_TASK_ID=") {
+		t.Error("hook role inner script should NOT contain BOID_TASK_ID")
+	}
+	if strings.Contains(inner, "BOID_JOB_ID=") {
+		t.Error("hook role inner script should NOT contain BOID_JOB_ID")
+	}
+	if strings.Contains(inner, "BOID_SOCKET=") {
+		t.Error("hook role inner script should NOT contain BOID_SOCKET")
+	}
+
+	// Should capture stdout and use token-based job done
+	if !strings.Contains(inner, "/tmp/boid-output") {
+		t.Error("hook role inner script should capture stdout to /tmp/boid-output")
+	}
+	if !strings.Contains(inner, "boid job done --exit-code") {
+		t.Error("hook role inner script should have token-based boid job done")
+	}
+	if strings.Contains(inner, "boid job done test-hook-role") {
+		t.Error("hook role inner script should NOT have job ID in boid job done")
+	}
+
+	// Should pipe payload to stdin
+	if !strings.Contains(inner, `agent_prompt`) {
+		t.Error("hook role inner script should contain payload for stdin piping")
+	}
+
+	// Setup script: should NOT mount server socket
+	setupContent, err := os.ReadFile(setupPath)
+	if err != nil {
+		t.Fatalf("read setup script: %v", err)
+	}
+	setup := string(setupContent)
+	if strings.Contains(setup, "server.sock") {
+		t.Error("hook role should NOT mount server socket")
+	}
+	// Should still mount broker socket
+	if !strings.Contains(setup, "broker.sock") {
+		t.Error("hook role should mount broker socket")
+	}
+}
+
+func TestWriteSandboxScripts_GateRole(t *testing.T) {
+	cfg := job.WrapperConfig{
+		JobID:        "test-gate-role",
+		TaskID:       "task-gate-1",
+		ProjectID:    "proj-1",
+		ProjectDir:   "/home/user/projects/proj-1",
+		BoidBinary:   "/usr/local/bin/boid",
+		ServerSocket: "/run/boid/server.sock",
+		BrokerSocket: "/run/boid/broker.sock",
+		BrokerToken:  "test-token-gate",
+		Role:         "gate",
+		TaskJSON:     `{"id":"task-gate-1","status":"executing","payload":{}}`,
+		HostCommands: []string{"git", "gh"},
+	}
+
+	outerPath, err := job.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-gate-role"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	// Should have BOID_BROKER_TOKEN only
+	if !strings.Contains(inner, "BOID_BROKER_TOKEN=test-token-gate") {
+		t.Error("gate inner script missing BOID_BROKER_TOKEN")
+	}
+	if strings.Contains(inner, "BOID_TASK_ID=") {
+		t.Error("gate inner script should NOT contain BOID_TASK_ID")
+	}
+	if strings.Contains(inner, "BOID_SOCKET=") {
+		t.Error("gate inner script should NOT contain BOID_SOCKET")
+	}
+
+	// Should pipe task JSON to stdin
+	if !strings.Contains(inner, `task-gate-1`) {
+		t.Error("gate inner script should contain task JSON for stdin piping")
+	}
+
+	// Setup script: no server socket, no project dir
+	setupContent, err := os.ReadFile(setupPath)
+	if err != nil {
+		t.Fatalf("read setup script: %v", err)
+	}
+	setup := string(setupContent)
+	if strings.Contains(setup, "server.sock") {
+		t.Error("gate should NOT mount server socket")
+	}
+	// Gate should NOT mount project dir
+	if strings.Contains(setup, fmt.Sprintf("mount --bind %s \"$ROOT%s\"", cfg.ProjectDir, cfg.ProjectDir)) {
+		t.Error("gate should NOT mount project dir")
+	}
+}
+
+func TestWriteSandboxScripts_ReadonlyHook(t *testing.T) {
+	cfg := job.WrapperConfig{
+		JobID:        "test-ro-hook",
+		ProjectDir:   "/home/user/projects/proj-1",
+		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
+		HookScript:   "review.sh",
+		BoidBinary:   "/usr/local/bin/boid",
+		ServerSocket: "/run/boid/server.sock",
+		BrokerSocket: "/run/boid/broker.sock",
+		BrokerToken:  "test-token-ro",
+		Role:         "hook",
+		Readonly:     true,
+		PayloadJSON:  `{}`,
+	}
+
+	outerPath, err := job.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-ro-hook"
+	setupPath := prefix + "-setup.sh"
+	innerPath := prefix + "-inner.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	setupContent, err := os.ReadFile(setupPath)
+	if err != nil {
+		t.Fatalf("read setup script: %v", err)
+	}
+	setup := string(setupContent)
+
+	// Working dir should be mounted read-only
+	if !strings.Contains(setup, fmt.Sprintf("mount -o remount,bind,ro \"$ROOT%s\"", cfg.ProjectDir)) {
+		t.Error("readonly hook should mount project dir as read-only")
+	}
+}
+
 // TestWriteSandboxScripts_TaskIDAndJobID verifies BOID_TASK_ID and BOID_JOB_ID are exported.
 func TestWriteSandboxScripts_TaskIDAndJobID(t *testing.T) {
 	cfg := job.WrapperConfig{

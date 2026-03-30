@@ -95,86 +95,98 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 	}
 
 	// Working directory: worktree or project dir
+	// Gates have no filesystem access, so skip project/workspace mounts.
 	workDir := cfg.workDir()
 
-	// Project/worktree directory (rw)
-	plan.Mounts = append(plan.Mounts, MountEntry{
-		Source: workDir,
-		Target: workDir,
-		Type:   MountBind,
-	})
-
-	// Workspace projects (ro)
-	for _, dir := range cfg.WorkspaceDirs {
+	if cfg.Role != "gate" {
+		// Project/worktree directory (rw, or ro if Readonly)
 		plan.Mounts = append(plan.Mounts, MountEntry{
-			Source:   dir,
-			Target:   dir,
+			Source:   workDir,
+			Target:   workDir,
 			Type:     MountBind,
-			ReadOnly: true,
+			ReadOnly: cfg.Readonly,
 		})
+
+		// Workspace projects (ro)
+		for _, dir := range cfg.WorkspaceDirs {
+			plan.Mounts = append(plan.Mounts, MountEntry{
+				Source:   dir,
+				Target:   dir,
+				Type:     MountBind,
+				ReadOnly: true,
+			})
+		}
 	}
 
 	// HOME as tmpfs
 	homeDir := cfg.homeDir()
+	if cfg.Role == "gate" {
+		homeDir = "/tmp" // gates use /tmp as home
+	}
 	plan.Mounts = append(plan.Mounts, MountEntry{
 		Target: homeDir,
 		Type:   MountTmpfs,
 	})
 
-	// Re-mount working directory on top of HOME tmpfs
-	plan.Mounts = append(plan.Mounts, MountEntry{
-		Source: workDir,
-		Target: workDir,
-		Type:   MountBind,
-	})
-
-	// .boid directory (ro) with optional hooks overlay
-	// In worktree mode, .boid comes from the original project dir
-	// but is mounted at the worktree path.
-	boidSource := cfg.ProjectDir + "/.boid"
-	boidTarget := workDir + "/.boid"
-	boidMount := MountEntry{
-		Source:   boidSource,
-		Target:   boidTarget,
-		Type:     MountBind,
-		ReadOnly: true,
-		Guard:    fmt.Sprintf("-d %s", boidSource),
-	}
-	if cfg.Command == "" && cfg.HooksDir != "" {
-		boidMount.NeedsDirs = []string{"hooks"}
-	}
-	plan.Mounts = append(plan.Mounts, boidMount)
-
-	if cfg.Command == "" && cfg.HooksDir != "" {
+	if cfg.Role != "gate" {
+		// Re-mount working directory on top of HOME tmpfs
 		plan.Mounts = append(plan.Mounts, MountEntry{
-			Source:   cfg.HooksDir,
-			Target:   workDir + "/.boid/hooks",
+			Source:   workDir,
+			Target:   workDir,
+			Type:     MountBind,
+			ReadOnly: cfg.Readonly,
+		})
+	}
+
+	if cfg.Role != "gate" {
+		// .boid directory (ro) with optional hooks overlay
+		// In worktree mode, .boid comes from the original project dir
+		// but is mounted at the worktree path.
+		boidSource := cfg.ProjectDir + "/.boid"
+		boidTarget := workDir + "/.boid"
+		boidMount := MountEntry{
+			Source:   boidSource,
+			Target:   boidTarget,
 			Type:     MountBind,
 			ReadOnly: true,
 			Guard:    fmt.Sprintf("-d %s", boidSource),
-		})
-	}
+		}
+		if cfg.Command == "" && cfg.HooksDir != "" {
+			boidMount.NeedsDirs = []string{"hooks"}
+		}
+		plan.Mounts = append(plan.Mounts, boidMount)
 
-	// Worktree mode: re-mount .git inside sandbox for git worktree reference
-	if cfg.WorktreeDir != "" {
-		gitDir := cfg.ProjectDir + "/.git"
-		plan.Mounts = append(plan.Mounts, MountEntry{
-			Source: gitDir,
-			Target: gitDir,
-			Type:   MountBind,
-			Guard:  fmt.Sprintf("-d %s", gitDir),
-		})
-	}
+		if cfg.Command == "" && cfg.HooksDir != "" {
+			plan.Mounts = append(plan.Mounts, MountEntry{
+				Source:   cfg.HooksDir,
+				Target:   workDir + "/.boid/hooks",
+				Type:     MountBind,
+				ReadOnly: true,
+				Guard:    fmt.Sprintf("-d %s", boidSource),
+			})
+		}
 
-	// Additional bindings
-	for _, bm := range cfg.AdditionalBindings {
-		plan.Mounts = append(plan.Mounts, MountEntry{
-			Source:     bm.Source,
-			Target:     bm.Source,
-			Type:       MountBind,
-			ReadOnly:   bm.Mode != "rw",
-			DetectType: true,
-		})
+		// Worktree mode: re-mount .git inside sandbox for git worktree reference
+		if cfg.WorktreeDir != "" {
+			gitDir := cfg.ProjectDir + "/.git"
+			plan.Mounts = append(plan.Mounts, MountEntry{
+				Source: gitDir,
+				Target: gitDir,
+				Type:   MountBind,
+				Guard:  fmt.Sprintf("-d %s", gitDir),
+			})
+		}
+
+		// Additional bindings
+		for _, bm := range cfg.AdditionalBindings {
+			plan.Mounts = append(plan.Mounts, MountEntry{
+				Source:     bm.Source,
+				Target:     bm.Source,
+				Type:       MountBind,
+				ReadOnly:   bm.Mode != "rw",
+				DetectType: true,
+			})
+		}
 	}
 
 	// Boid binary
@@ -192,13 +204,15 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 		})
 	}
 
-	// Server socket
-	plan.Mounts = append(plan.Mounts, MountEntry{
-		Source: cfg.ServerSocket,
-		Target: "/run/boid/server.sock",
-		Type:   MountBind,
-		IsFile: true,
-	})
+	// Server socket — only in legacy/command mode (hooks and gates use broker only)
+	if cfg.Role == "" && cfg.ServerSocket != "" {
+		plan.Mounts = append(plan.Mounts, MountEntry{
+			Source: cfg.ServerSocket,
+			Target: "/run/boid/server.sock",
+			Type:   MountBind,
+			IsFile: true,
+		})
+	}
 
 	// Broker socket
 	if cfg.BrokerSocket != "" {

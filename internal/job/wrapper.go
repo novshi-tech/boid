@@ -30,6 +30,10 @@ type WrapperConfig struct {
 	StagingDir         string            // if set, staging dir to clean up after job
 	TTY                bool              // if true, preserve TTY through pasta (for interactive commands)
 	WorktreeDir        string            // if set, worktree mode: sandbox works here; .git/.boid come from ProjectDir
+	Role               string            // "hook", "gate", or "" (legacy/command mode)
+	PayloadJSON        string            // task payload JSON for hook stdin
+	TaskJSON           string            // full task data JSON for gate stdin
+	Readonly           bool              // if true, mount working dir as read-only
 }
 
 // workDir returns the effective working directory inside the sandbox.
@@ -118,6 +122,73 @@ func additionalPATH(bindings []model.BindMount) string {
 }
 
 func generateInnerScript(cfg WrapperConfig) string {
+	switch cfg.Role {
+	case "hook":
+		return generateHookInnerScript(cfg)
+	case "gate":
+		return generateGateInnerScript(cfg)
+	default:
+		return generateLegacyInnerScript(cfg)
+	}
+}
+
+// generateHookInnerScript creates the inner script for hook execution.
+// Only BOID_BROKER_TOKEN is exported. Payload is piped via stdin.
+// Stdout is captured to /tmp/boid-output for payload_patch.
+func generateHookInnerScript(cfg WrapperConfig) string {
+	var b strings.Builder
+
+	b.WriteString("#!/bin/bash\nset -e\n\n")
+
+	fmt.Fprintf(&b, "export HOME=%s\n", cfg.homeDir())
+
+	if cfg.BrokerToken != "" {
+		fmt.Fprintf(&b, "export BOID_BROKER_TOKEN=%s\n", cfg.BrokerToken)
+	}
+	if cfg.BrokerSocket != "" {
+		b.WriteString("export BOID_BROKER_SOCKET=/run/boid/broker.sock\n")
+	}
+
+	writePathAndProxy(&b, cfg)
+
+	wd := cfg.workDir()
+	fmt.Fprintf(&b, "\ncd %s\n\n", wd)
+
+	b.WriteString("trap 'boid job done --exit-code $? --output-file /tmp/boid-output' EXIT\n")
+	fmt.Fprintf(&b, "echo '%s' | %s/.boid/hooks/%s > /tmp/boid-output\n", cfg.PayloadJSON, wd, cfg.HookScript)
+
+	return b.String()
+}
+
+// generateGateInnerScript creates the inner script for gate execution.
+// No filesystem access. Task data is piped via stdin.
+func generateGateInnerScript(cfg WrapperConfig) string {
+	var b strings.Builder
+
+	b.WriteString("#!/bin/bash\nset -e\n\n")
+
+	fmt.Fprintf(&b, "export HOME=/tmp\n")
+
+	if cfg.BrokerToken != "" {
+		fmt.Fprintf(&b, "export BOID_BROKER_TOKEN=%s\n", cfg.BrokerToken)
+	}
+	if cfg.BrokerSocket != "" {
+		b.WriteString("export BOID_BROKER_SOCKET=/run/boid/broker.sock\n")
+	}
+
+	writePathAndProxy(&b, cfg)
+
+	b.WriteString("\ncd /tmp\n\n")
+
+	b.WriteString("trap 'boid job done --exit-code $? --output-file /tmp/boid-output' EXIT\n")
+	fmt.Fprintf(&b, "echo '%s' | %s > /tmp/boid-output\n", cfg.TaskJSON, cfg.workDir()+"/.boid/gates/"+cfg.HookScript)
+
+	return b.String()
+}
+
+// generateLegacyInnerScript creates the inner script for legacy/command mode.
+// This preserves backward compatibility with existing behavior.
+func generateLegacyInnerScript(cfg WrapperConfig) string {
 	var b strings.Builder
 
 	b.WriteString("#!/bin/bash\nset -e\n\n")
@@ -138,28 +209,7 @@ func generateInnerScript(cfg WrapperConfig) string {
 		fmt.Fprintf(&b, "export BOID_BROKER_TOKEN=%s\n", cfg.BrokerToken)
 	}
 
-	pathPrefix := additionalPATH(cfg.AdditionalBindings)
-	basePath := "/opt/boid/bin:/usr/local/bin:/usr/bin:/bin"
-	if pathPrefix != "" {
-		fmt.Fprintf(&b, "export PATH=%s:%s\n", pathPrefix, basePath)
-	} else {
-		fmt.Fprintf(&b, "export PATH=%s\n", basePath)
-	}
-
-	// Proxy environment variables
-	if cfg.ProxyPort > 0 {
-		proxyURL := fmt.Sprintf("http://10.0.2.2:%d", cfg.ProxyPort)
-		fmt.Fprintf(&b, "export http_proxy=%s\n", proxyURL)
-		fmt.Fprintf(&b, "export https_proxy=%s\n", proxyURL)
-		fmt.Fprintf(&b, "export HTTP_PROXY=%s\n", proxyURL)
-		fmt.Fprintf(&b, "export HTTPS_PROXY=%s\n", proxyURL)
-		b.WriteString("export no_proxy=10.0.2.2,10.0.2.3,localhost,127.0.0.1\n")
-		b.WriteString("export NO_PROXY=10.0.2.2,10.0.2.3,localhost,127.0.0.1\n")
-	}
-
-	for k, v := range cfg.Env {
-		fmt.Fprintf(&b, "export %s=%q\n", k, v)
-	}
+	writePathAndProxy(&b, cfg)
 
 	wd := cfg.workDir()
 	fmt.Fprintf(&b, "\ncd %s\n\n", wd)
@@ -172,4 +222,29 @@ func generateInnerScript(cfg WrapperConfig) string {
 	}
 
 	return b.String()
+}
+
+// writePathAndProxy writes PATH and proxy environment variables.
+func writePathAndProxy(b *strings.Builder, cfg WrapperConfig) {
+	pathPrefix := additionalPATH(cfg.AdditionalBindings)
+	basePath := "/opt/boid/bin:/usr/local/bin:/usr/bin:/bin"
+	if pathPrefix != "" {
+		fmt.Fprintf(b, "export PATH=%s:%s\n", pathPrefix, basePath)
+	} else {
+		fmt.Fprintf(b, "export PATH=%s\n", basePath)
+	}
+
+	if cfg.ProxyPort > 0 {
+		proxyURL := fmt.Sprintf("http://10.0.2.2:%d", cfg.ProxyPort)
+		fmt.Fprintf(b, "export http_proxy=%s\n", proxyURL)
+		fmt.Fprintf(b, "export https_proxy=%s\n", proxyURL)
+		fmt.Fprintf(b, "export HTTP_PROXY=%s\n", proxyURL)
+		fmt.Fprintf(b, "export HTTPS_PROXY=%s\n", proxyURL)
+		b.WriteString("export no_proxy=10.0.2.2,10.0.2.3,localhost,127.0.0.1\n")
+		b.WriteString("export NO_PROXY=10.0.2.2,10.0.2.3,localhost,127.0.0.1\n")
+	}
+
+	for k, v := range cfg.Env {
+		fmt.Fprintf(b, "export %s=%q\n", k, v)
+	}
 }
