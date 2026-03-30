@@ -1,6 +1,7 @@
 package reducer_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -206,6 +207,154 @@ func TestFeedbackLoopMachine_FullCycle(t *testing.T) {
 	}
 	if next.Status != model.TaskStatusDone {
 		t.Fatalf("expected done, got %s", next.Status)
+	}
+}
+
+func TestStateMachine_Advance_ConditionMet(t *testing.T) {
+	sm := &reducer.StateMachine{
+		Name: "test",
+		Rules: []reducer.Rule{
+			{Action: "start", FromStatus: "pending", ToStatus: "executing"},
+			{
+				FromStatus: "executing",
+				ToStatus:   "verifying",
+				Condition: func(payload json.RawMessage) bool {
+					var m map[string]json.RawMessage
+					json.Unmarshal(payload, &m)
+					_, ok := m["pr"]
+					return ok
+				},
+			},
+		},
+	}
+
+	task := &model.Task{
+		Status:  model.TaskStatusExecuting,
+		Payload: json.RawMessage(`{"pr":{"url":"https://github.com/..."}}`),
+	}
+
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected Advance to return ok=true")
+	}
+	if next.Status != model.TaskStatusVerifying {
+		t.Fatalf("expected verifying, got %s", next.Status)
+	}
+}
+
+func TestStateMachine_Advance_ConditionNotMet(t *testing.T) {
+	sm := &reducer.StateMachine{
+		Name: "test",
+		Rules: []reducer.Rule{
+			{
+				FromStatus: "executing",
+				ToStatus:   "verifying",
+				Condition: func(payload json.RawMessage) bool {
+					var m map[string]json.RawMessage
+					json.Unmarshal(payload, &m)
+					_, ok := m["pr"]
+					return ok
+				},
+			},
+		},
+	}
+
+	task := &model.Task{
+		Status:  model.TaskStatusExecuting,
+		Payload: json.RawMessage(`{"agent_prompt":"working..."}`),
+	}
+
+	_, ok := sm.Advance(task)
+	if ok {
+		t.Fatal("expected Advance to return ok=false when condition not met")
+	}
+}
+
+func TestStateMachine_Advance_IgnoresActionRules(t *testing.T) {
+	sm := &reducer.StateMachine{
+		Name: "test",
+		Rules: []reducer.Rule{
+			{Action: "abort", FromStatus: "*", ToStatus: "aborted"},
+		},
+	}
+
+	task := &model.Task{
+		Status:  model.TaskStatusExecuting,
+		Payload: json.RawMessage(`{}`),
+	}
+
+	_, ok := sm.Advance(task)
+	if ok {
+		t.Fatal("Advance should ignore action-based rules")
+	}
+}
+
+func TestStateMachine_Apply_IgnoresConditionRules(t *testing.T) {
+	sm := &reducer.StateMachine{
+		Name: "test",
+		Rules: []reducer.Rule{
+			{
+				FromStatus: "executing",
+				ToStatus:   "verifying",
+				Condition: func(payload json.RawMessage) bool {
+					return true
+				},
+			},
+		},
+	}
+
+	task := &model.Task{Status: model.TaskStatusExecuting}
+	_, err := sm.Apply(task, &model.Action{Type: "verify"})
+	if err == nil {
+		t.Fatal("Apply should not match condition-based rules via action")
+	}
+}
+
+func TestStateMachine_ActionAndConditionCoexist(t *testing.T) {
+	conditionCalled := false
+	sm := &reducer.StateMachine{
+		Name: "hybrid",
+		Rules: []reducer.Rule{
+			{Action: "start", FromStatus: "pending", ToStatus: "executing"},
+			{
+				FromStatus: "executing",
+				ToStatus:   "done",
+				Condition: func(payload json.RawMessage) bool {
+					conditionCalled = true
+					return true
+				},
+			},
+			{Action: "abort", FromStatus: "*", ToStatus: "aborted"},
+		},
+	}
+
+	// Action-based: start
+	task := &model.Task{Status: model.TaskStatusPending}
+	next, err := sm.Apply(task, &model.Action{Type: "start"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if next.Status != model.TaskStatusExecuting {
+		t.Fatalf("expected executing, got %s", next.Status)
+	}
+
+	// Condition-based: advance
+	next, ok := sm.Advance(next)
+	if !ok || !conditionCalled {
+		t.Fatal("expected Advance to evaluate condition")
+	}
+	if next.Status != model.TaskStatusDone {
+		t.Fatalf("expected done, got %s", next.Status)
+	}
+
+	// Action-based: abort still works
+	task2 := &model.Task{Status: model.TaskStatusExecuting}
+	aborted, err := sm.Apply(task2, &model.Action{Type: "abort"})
+	if err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	if aborted.Status != model.TaskStatusAborted {
+		t.Fatalf("expected aborted, got %s", aborted.Status)
 	}
 }
 
