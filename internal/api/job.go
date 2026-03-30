@@ -144,8 +144,12 @@ func (h *JobHandler) Done(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("job done: auto-applied action", "job_id", j.ID, "action", actionType, "new_status", newTask.Status)
 
-	// Unregister broker token for this job
+	// Signal any waiting dispatcher that this job is complete
 	if h.Runner != nil {
+		h.Runner.CompleteJob(j.ID, job.JobCompletionResult{
+			Output:   req.Output,
+			ExitCode: req.ExitCode,
+		})
 		h.Runner.UnregisterJob(j.ID)
 	}
 

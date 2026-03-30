@@ -18,6 +18,12 @@ import (
 	"github.com/novshi-tech/boid/internal/worktree"
 )
 
+// JobCompletionResult is the result delivered via WaitForJob/CompleteJob.
+type JobCompletionResult struct {
+	Output   string // stdout capture (payload_patch JSON)
+	ExitCode int
+}
+
 type Runner struct {
 	DB              *db.DB
 	Store           *project.Store
@@ -31,6 +37,8 @@ type Runner struct {
 	WorktreeMgr     *worktree.Manager   // optional worktree manager
 	tokenMu         sync.Mutex
 	jobTokens       map[string]string   // job ID -> broker token
+	waiterMu        sync.Mutex
+	jobWaiters      map[string]chan JobCompletionResult // job ID -> completion channel
 }
 
 func (r *Runner) session() string {
@@ -243,6 +251,34 @@ func (r *Runner) trackToken(jobID, token string) {
 		r.jobTokens = make(map[string]string)
 	}
 	r.jobTokens[jobID] = token
+}
+
+// WaitForJob registers a channel that will receive the job completion result.
+// The dispatcher calls this before launching a job, then blocks on the channel.
+func (r *Runner) WaitForJob(jobID string) <-chan JobCompletionResult {
+	r.waiterMu.Lock()
+	defer r.waiterMu.Unlock()
+	if r.jobWaiters == nil {
+		r.jobWaiters = make(map[string]chan JobCompletionResult)
+	}
+	ch := make(chan JobCompletionResult, 1)
+	r.jobWaiters[jobID] = ch
+	return ch
+}
+
+// CompleteJob signals the waiting dispatcher that a job has completed.
+// Called by JobHandler.Done when boid job done is received.
+func (r *Runner) CompleteJob(jobID string, result JobCompletionResult) {
+	r.waiterMu.Lock()
+	ch, ok := r.jobWaiters[jobID]
+	if ok {
+		delete(r.jobWaiters, jobID)
+	}
+	r.waiterMu.Unlock()
+
+	if ok {
+		ch <- result
+	}
 }
 
 // UnregisterJob removes the broker token associated with the given job.

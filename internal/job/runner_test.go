@@ -94,6 +94,37 @@ func TestRunner_Execute(t *testing.T) {
 	}
 }
 
+func TestRunner_WaitForJob_CompleteJob(t *testing.T) {
+	runner := &job.Runner{}
+
+	// Register a wait channel
+	ch := runner.WaitForJob("job-123")
+
+	// Complete the job in a goroutine
+	go func() {
+		runner.CompleteJob("job-123", job.JobCompletionResult{
+			Output:   `{"payload_patch":{"agent_prompt":"done"}}`,
+			ExitCode: 0,
+		})
+	}()
+
+	// Wait should receive the completion
+	result := <-ch
+	if result.ExitCode != 0 {
+		t.Errorf("exit code = %d, want 0", result.ExitCode)
+	}
+	if result.Output != `{"payload_patch":{"agent_prompt":"done"}}` {
+		t.Errorf("output = %q", result.Output)
+	}
+}
+
+func TestRunner_WaitForJob_UnknownJobDropped(t *testing.T) {
+	runner := &job.Runner{}
+
+	// CompleteJob for unknown job should not panic
+	runner.CompleteJob("nonexistent", job.JobCompletionResult{ExitCode: 0})
+}
+
 func TestRunner_Execute_NoScriptPath_Error(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	store := project.NewStore(nil)
