@@ -182,11 +182,16 @@ mount -t tmpfs tmpfs "$ROOT/tmp"
 	fmt.Fprintf(&b, "mkdir -p \"$ROOT%s\"\n", cfg.ProjectDir)
 	fmt.Fprintf(&b, "mount --bind %s \"$ROOT%s\"\n", cfg.ProjectDir, cfg.ProjectDir)
 
-	// Additional bindings (read-only)
+	// Additional bindings (read-only, supports both files and directories)
 	if len(cfg.AdditionalBindings) > 0 {
 		b.WriteString("\n# Additional bindings\n")
 		for _, binding := range cfg.AdditionalBindings {
-			fmt.Fprintf(&b, "mkdir -p \"$ROOT%s\"\n", binding)
+			fmt.Fprintf(&b, "if [ -d %s ]; then\n", binding)
+			fmt.Fprintf(&b, "    mkdir -p \"$ROOT%s\"\n", binding)
+			fmt.Fprintf(&b, "elif [ -f %s ]; then\n", binding)
+			fmt.Fprintf(&b, "    mkdir -p \"$(dirname \"$ROOT%s\")\"\n", binding)
+			fmt.Fprintf(&b, "    touch \"$ROOT%s\"\n", binding)
+			fmt.Fprintf(&b, "fi\n")
 			fmt.Fprintf(&b, "mount --bind %s \"$ROOT%s\"\n", binding, binding)
 			fmt.Fprintf(&b, "mount -o remount,bind,ro \"$ROOT%s\"\n", binding)
 		}
