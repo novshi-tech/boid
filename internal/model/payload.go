@@ -74,6 +74,7 @@ func ValidatePayloadPatch(patch json.RawMessage, allowedTraits []TraitType) erro
 // trait-based write restrictions and merge modes.
 // For exclusive traits, the value replaces base[trait].
 // For shared traits, the value is placed at base[trait][hookID].
+// If allowedTraits is nil, validation is skipped (all traits allowed).
 func MergePayloadPatch(base, patch json.RawMessage, hookID string, allowedTraits []TraitType) (json.RawMessage, error) {
 	if len(patch) == 0 || string(patch) == "{}" || string(patch) == "null" {
 		if len(base) == 0 {
@@ -82,8 +83,10 @@ func MergePayloadPatch(base, patch json.RawMessage, hookID string, allowedTraits
 		return base, nil
 	}
 
-	if err := ValidatePayloadPatch(patch, allowedTraits); err != nil {
-		return nil, err
+	if allowedTraits != nil {
+		if err := ValidatePayloadPatch(patch, allowedTraits); err != nil {
+			return nil, err
+		}
 	}
 
 	var baseMap map[string]json.RawMessage

@@ -1,0 +1,300 @@
+package hook_test
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sync"
+	"testing"
+
+	"github.com/novshi-tech/boid/internal/hook"
+	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/reducer"
+)
+
+// mockExecutorWaiter implements HookExecutor, GateExecutor, and JobWaiter.
+type mockExecutorWaiter struct {
+	mu          sync.Mutex
+	hookCalls   []*model.HookFireEvent
+	gateCalls   []*model.GateFireEvent
+	jobCounter  int
+	completions map[string]hook.JobCompletion
+	execOrder   []string // tracks execution order for sequential tests
+}
+
+func newMockExecutorWaiter() *mockExecutorWaiter {
+	return &mockExecutorWaiter{
+		completions: make(map[string]hook.JobCompletion),
+	}
+}
+
+func (m *mockExecutorWaiter) setHookCompletion(hookID string, output string, exitCode int) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.jobCounter++
+	jobID := fmt.Sprintf("job-%s-%d", hookID, m.jobCounter)
+	m.completions[jobID] = hook.JobCompletion{
+		JobID:    jobID,
+		Output:   output,
+		ExitCode: exitCode,
+	}
+	return jobID
+}
+
+func (m *mockExecutorWaiter) setGateCompletion(gateID string, output string, exitCode int) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.jobCounter++
+	jobID := fmt.Sprintf("job-%s-%d", gateID, m.jobCounter)
+	m.completions[jobID] = hook.JobCompletion{
+		JobID:    jobID,
+		Output:   output,
+		ExitCode: exitCode,
+	}
+	return jobID
+}
+
+func (m *mockExecutorWaiter) findJobForID(id string) string {
+	prefix := "job-" + id + "-"
+	for jobID := range m.completions {
+		if len(jobID) >= len(prefix) && jobID[:len(prefix)] == prefix {
+			return jobID
+		}
+	}
+	return ""
+}
+
+func (m *mockExecutorWaiter) ExecuteHook(ctx context.Context, event *model.HookFireEvent) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.hookCalls = append(m.hookCalls, event)
+	m.execOrder = append(m.execOrder, "hook:"+event.Hook.ID)
+	if jobID := m.findJobForID(event.Hook.ID); jobID != "" {
+		return jobID, nil
+	}
+	m.jobCounter++
+	jobID := fmt.Sprintf("job-%s-%d", event.Hook.ID, m.jobCounter)
+	m.completions[jobID] = hook.JobCompletion{JobID: jobID, Output: `{"payload_patch":{}}`, ExitCode: 0}
+	return jobID, nil
+}
+
+func (m *mockExecutorWaiter) ExecuteGate(ctx context.Context, event *model.GateFireEvent) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gateCalls = append(m.gateCalls, event)
+	m.execOrder = append(m.execOrder, "gate:"+event.Gate.ID)
+	if jobID := m.findJobForID(event.Gate.ID); jobID != "" {
+		return jobID, nil
+	}
+	m.jobCounter++
+	jobID := fmt.Sprintf("job-%s-%d", event.Gate.ID, m.jobCounter)
+	m.completions[jobID] = hook.JobCompletion{JobID: jobID, Output: `{"payload_patch":{}}`, ExitCode: 0}
+	return jobID, nil
+}
+
+func (m *mockExecutorWaiter) WaitForJob(ctx context.Context, jobID string) (hook.JobCompletion, error) {
+	m.mu.Lock()
+	c, ok := m.completions[jobID]
+	m.mu.Unlock()
+	if !ok {
+		return hook.JobCompletion{}, fmt.Errorf("unknown job: %s", jobID)
+	}
+	if c.ExitCode != 0 {
+		return c, fmt.Errorf("job failed with exit code %d", c.ExitCode)
+	}
+	return c, nil
+}
+
+func simpleStateMachine() *reducer.StateMachine {
+	return &reducer.StateMachine{
+		Name: "test",
+		Rules: []reducer.Rule{
+			{Action: "start", FromStatus: "pending", ToStatus: "executing"},
+			{
+				FromStatus: "executing",
+				ToStatus:   "done",
+				Condition: func(p json.RawMessage) bool {
+					var m map[string]json.RawMessage
+					json.Unmarshal(p, &m)
+					_, ok := m["agent_prompt"]
+					return ok && string(m["agent_prompt"]) != "null"
+				},
+			},
+			{Action: "abort", FromStatus: "*", ToStatus: "aborted"},
+		},
+	}
+}
+
+func TestDispatchAndAdvance_HooksSequential(t *testing.T) {
+	mock := newMockExecutorWaiter()
+	mock.setHookCompletion("hook-a", `{"payload_patch":{"agent_prompt":"result-a"}}`, 0)
+	mock.setHookCompletion("hook-b", `{"payload_patch":{"pr":"http://example.com"}}`, 0)
+
+	eval := &hook.Evaluator{}
+	disp := &hook.AdvancedDispatcher{
+		Evaluator:    eval,
+		HookExecutor: mock,
+		GateExecutor: mock,
+		Waiter:       mock,
+		MaxDepth:     5,
+	}
+
+	task := &model.Task{
+		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		ProjectID: "proj-1",
+		Status:    model.TaskStatusExecuting,
+		Payload:   json.RawMessage(`{}`),
+	}
+	meta := &model.ProjectMeta{
+		Hooks: []model.Hook{
+			{ID: "hook-a", On: "executing", RequiresTraits: nil},
+			{ID: "hook-b", On: "executing", RequiresTraits: nil},
+		},
+	}
+	behavior := &model.TaskBehavior{Readonly: false}
+	sm := simpleStateMachine()
+
+	result, err := disp.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	// Should have 2 hook results
+	if len(result.Results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(result.Results))
+	}
+
+	// Payload should be merged
+	var payload map[string]json.RawMessage
+	json.Unmarshal(result.FinalPayload, &payload)
+	if _, ok := payload["agent_prompt"]; !ok {
+		t.Error("expected agent_prompt in final payload")
+	}
+
+	// Orchestrator should have advanced (agent_prompt is present)
+	if result.NewStatus != model.TaskStatusDone {
+		t.Errorf("expected new status done, got %q", result.NewStatus)
+	}
+}
+
+func TestDispatchAndAdvance_NoAdvanceWhenConditionNotMet(t *testing.T) {
+	mock := newMockExecutorWaiter()
+	// Hook outputs an empty patch — condition won't be met
+	mock.setHookCompletion("hook-a", `{"payload_patch":{}}`, 0)
+
+	eval := &hook.Evaluator{}
+	disp := &hook.AdvancedDispatcher{
+		Evaluator:    eval,
+		HookExecutor: mock,
+		GateExecutor: mock,
+		Waiter:       mock,
+		MaxDepth:     5,
+	}
+
+	task := &model.Task{
+		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		ProjectID: "proj-1",
+		Status:    model.TaskStatusExecuting,
+		Payload:   json.RawMessage(`{}`),
+	}
+	meta := &model.ProjectMeta{
+		Hooks: []model.Hook{
+			{ID: "hook-a", On: "executing"},
+		},
+	}
+	behavior := &model.TaskBehavior{Readonly: false}
+	sm := simpleStateMachine()
+
+	result, err := disp.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	// No advance
+	if result.NewStatus != "" {
+		t.Errorf("expected empty new status, got %q", result.NewStatus)
+	}
+}
+
+func TestDispatchAndAdvance_GatesExecuteAfterHooks(t *testing.T) {
+	mock := newMockExecutorWaiter()
+	mock.setHookCompletion("hook-a", `{"payload_patch":{"agent_prompt":"done"}}`, 0)
+	mock.setGateCompletion("gate-push", `{"payload_patch":{"pr":"http://pr-url"}}`, 0)
+
+	eval := &hook.Evaluator{}
+	disp := &hook.AdvancedDispatcher{
+		Evaluator:    eval,
+		HookExecutor: mock,
+		GateExecutor: mock,
+		Waiter:       mock,
+		MaxDepth:     5,
+	}
+
+	task := &model.Task{
+		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		ProjectID: "proj-1",
+		Status:    model.TaskStatusExecuting,
+		Payload:   json.RawMessage(`{}`),
+	}
+	meta := &model.ProjectMeta{
+		Hooks: []model.Hook{
+			{ID: "hook-a", On: "executing"},
+		},
+		Gates: []model.Gate{
+			{ID: "gate-push", On: "executing"},
+		},
+	}
+	behavior := &model.TaskBehavior{Readonly: false}
+	sm := simpleStateMachine()
+
+	result, err := disp.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	// Should have hook + gate results
+	if len(result.Results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(result.Results))
+	}
+
+	// Gates should execute after hooks
+	if len(mock.execOrder) != 2 {
+		t.Fatalf("expected 2 executions, got %d", len(mock.execOrder))
+	}
+	if mock.execOrder[0] != "hook:hook-a" {
+		t.Errorf("expected hook first, got %s", mock.execOrder[0])
+	}
+	if mock.execOrder[1] != "gate:gate-push" {
+		t.Errorf("expected gate second, got %s", mock.execOrder[1])
+	}
+}
+
+func TestDispatchAndAdvance_EmptyHooksAndGates(t *testing.T) {
+	mock := newMockExecutorWaiter()
+	eval := &hook.Evaluator{}
+	disp := &hook.AdvancedDispatcher{
+		Evaluator:    eval,
+		HookExecutor: mock,
+		GateExecutor: mock,
+		Waiter:       mock,
+		MaxDepth:     5,
+	}
+
+	task := &model.Task{
+		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		ProjectID: "proj-1",
+		Status:    model.TaskStatusExecuting,
+		Payload:   json.RawMessage(`{}`),
+	}
+	meta := &model.ProjectMeta{}
+	behavior := &model.TaskBehavior{}
+	sm := simpleStateMachine()
+
+	result, err := disp.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if len(result.Results) != 0 {
+		t.Fatalf("expected 0 results, got %d", len(result.Results))
+	}
+}
