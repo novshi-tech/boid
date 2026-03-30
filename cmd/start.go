@@ -34,13 +34,13 @@ func defaultDBPath() string {
 	return filepath.Join(dir, "boid.db")
 }
 
-func defaultMixinsDir() string {
+func defaultKitsDir() string {
 	dataDir := os.Getenv("XDG_DATA_HOME")
 	if dataDir == "" {
 		home, _ := os.UserHomeDir()
 		dataDir = filepath.Join(home, ".local", "share")
 	}
-	return filepath.Join(dataDir, "boid", "mixins")
+	return filepath.Join(dataDir, "boid", "kits")
 }
 
 func runStart(cmd *cobra.Command, args []string) error {
@@ -49,7 +49,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		SocketPath:  client.DefaultSocketPath(),
 		HTTPAddr:    ":8080",
 		TmuxSession: "boid",
-		MixinsDir:   defaultMixinsDir(),
+		KitsDir:     defaultKitsDir(),
 		AllowedDomains: []string{
 			// AI agents
 			"api.anthropic.com",

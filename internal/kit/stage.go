@@ -1,4 +1,4 @@
-package mixin
+package kit
 
 import (
 	"fmt"
@@ -10,10 +10,10 @@ import (
 )
 
 // StageHooks creates a temporary directory containing all hook scripts
-// from the project and all mixins. Project scripts override mixin scripts
+// from the project and all kits. Project scripts override kit scripts
 // with the same filename.
 // Returns the staging directory path and a cleanup function.
-func StageHooks(projectHooksDir string, mixinHooksDirs []model.MixinHooksInfo, jobID string) (string, func(), error) {
+func StageHooks(projectHooksDir string, kitHooksDirs []model.KitHooksInfo, jobID string) (string, func(), error) {
 	stagingDir := filepath.Join(os.TempDir(), fmt.Sprintf("boid-hooks-%s", jobID))
 	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
 		return "", nil, fmt.Errorf("create staging dir: %w", err)
@@ -23,15 +23,15 @@ func StageHooks(projectHooksDir string, mixinHooksDirs []model.MixinHooksInfo, j
 		os.RemoveAll(stagingDir)
 	}
 
-	// Copy mixin hooks first (later mixins overwrite earlier ones)
-	for _, m := range mixinHooksDirs {
+	// Copy kit hooks first (later kits overwrite earlier ones)
+	for _, m := range kitHooksDirs {
 		if err := copyHookScripts(m.HooksDir, stagingDir); err != nil {
 			cleanup()
-			return "", nil, fmt.Errorf("copy mixin hooks from %s: %w", m.HooksDir, err)
+			return "", nil, fmt.Errorf("copy kit hooks from %s: %w", m.HooksDir, err)
 		}
 	}
 
-	// Copy project hooks last (project overrides mixin)
+	// Copy project hooks last (project overrides kit)
 	if err := copyHookScripts(projectHooksDir, stagingDir); err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("copy project hooks: %w", err)

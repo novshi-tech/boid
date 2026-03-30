@@ -18,7 +18,7 @@ import (
 	"github.com/novshi-tech/boid/internal/hook"
 	"github.com/novshi-tech/boid/internal/hostcmd"
 	"github.com/novshi-tech/boid/internal/job"
-	"github.com/novshi-tech/boid/internal/mixin"
+	"github.com/novshi-tech/boid/internal/kit"
 	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/internal/reducer"
 	"github.com/novshi-tech/boid/internal/sandbox"
@@ -32,7 +32,7 @@ type Config struct {
 	SocketPath     string
 	HTTPAddr       string
 	TmuxSession    string
-	MixinsDir      string           // base dir for installed mixin repos
+	KitsDir        string           // base dir for installed kit repos
 	KeyFilePath    string           // path to secret encryption key file
 	AllowedDomains []string         // proxy allowed domains
 	Tmux           tmux.TmuxManager // nil uses RealTmux
@@ -63,9 +63,9 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
-	var registry *mixin.Registry
-	if cfg.MixinsDir != "" {
-		registry = mixin.NewRegistry(cfg.MixinsDir)
+	var registry *kit.Registry
+	if cfg.KitsDir != "" {
+		registry = kit.NewRegistry(cfg.KitsDir)
 	}
 	store := project.NewStore(registry)
 

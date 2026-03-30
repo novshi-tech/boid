@@ -1,12 +1,12 @@
-package mixin
+package kit
 
 import (
 	"github.com/novshi-tech/boid/internal/hostcmd"
 	"github.com/novshi-tech/boid/internal/model"
 )
 
-// MixinMeta holds the parsed content of a mixin.yaml file.
-type MixinMeta struct {
+// KitMeta holds the parsed content of a kit.yaml file.
+type KitMeta struct {
 	TaskBehaviors      map[string]model.TaskBehavior        `yaml:"task_behaviors"`
 	Hooks              []model.Hook                         `yaml:"hooks"`
 	HostCommands       map[string]hostcmd.CommandDef         `yaml:"host_commands"`

@@ -1,4 +1,4 @@
-package mixin
+package kit
 
 import (
 	"fmt"
@@ -10,18 +10,18 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ReadMixin reads and validates mixin.yaml from the given directory.
+// ReadKit reads and validates kit.yaml from the given directory.
 // Environment variables in string values are expanded using os.Expand.
-func ReadMixin(dir string) (*MixinMeta, error) {
-	yamlPath := filepath.Join(dir, "mixin.yaml")
+func ReadKit(dir string) (*KitMeta, error) {
+	yamlPath := filepath.Join(dir, "kit.yaml")
 	data, err := os.ReadFile(yamlPath)
 	if err != nil {
-		return nil, fmt.Errorf("read mixin.yaml: %w", err)
+		return nil, fmt.Errorf("read kit.yaml: %w", err)
 	}
 
-	var m MixinMeta
+	var m KitMeta
 	if err := yaml.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("parse mixin.yaml: %w", err)
+		return nil, fmt.Errorf("parse kit.yaml: %w", err)
 	}
 
 	// Interpolate environment variables

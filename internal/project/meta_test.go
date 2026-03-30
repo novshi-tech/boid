@@ -225,3 +225,238 @@ hooks:
 		t.Fatalf("expected 'invalid on value' error, got: %v", err)
 	}
 }
+
+// --- Append the following test functions to meta_test.go ---
+
+func TestReadMetaWithKits_LocalKit(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	kitsDir := filepath.Join(boidDir, "kits", "go-dev")
+	if err := os.MkdirAll(kitsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	projectYAML := `
+id: test-proj
+name: Test Project
+kits:
+  - go-dev
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
+		t.Fatalf("write project.yaml: %v", err)
+	}
+
+	kitYAML := `
+additional_bindings:
+  - /usr/local/go
+env:
+  GOPATH: /home/user/go
+`
+	if err := os.WriteFile(filepath.Join(kitsDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
+		t.Fatalf("write kit.yaml: %v", err)
+	}
+
+	meta, err := project.ReadMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadMetaWithKits: %v", err)
+	}
+
+	if meta.Env["GOPATH"] != "/home/user/go" {
+		t.Errorf("expected GOPATH=/home/user/go, got %s", meta.Env["GOPATH"])
+	}
+	if len(meta.AdditionalBindings) == 0 || meta.AdditionalBindings[0] != "/usr/local/go" {
+		t.Errorf("expected additional_bindings to contain /usr/local/go, got %v", meta.AdditionalBindings)
+	}
+}
+
+func TestReadMetaWithKits_LocalKitWithHooks(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	kitDir := filepath.Join(boidDir, "kits", "build")
+	kitHooksDir := filepath.Join(kitDir, "hooks")
+	if err := os.MkdirAll(kitHooksDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	projectYAML := `
+id: test-proj
+name: Test Project
+kits:
+  - build
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
+		t.Fatalf("write project.yaml: %v", err)
+	}
+
+	kitYAML := `
+hooks:
+  - id: run-build
+    on: executing
+    requires_traits:
+      - agent_prompt
+`
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
+		t.Fatalf("write kit.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(kitHooksDir, "run-build.sh"), []byte("#!/bin/bash\necho build"), 0o755); err != nil {
+		t.Fatalf("write hook: %v", err)
+	}
+
+	meta, err := project.ReadMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadMetaWithKits: %v", err)
+	}
+
+	if len(meta.Hooks) != 1 || meta.Hooks[0].ID != "run-build" {
+		t.Errorf("expected 1 hook with id run-build, got %v", meta.Hooks)
+	}
+	if len(meta.KitHooksDirs) != 1 {
+		t.Errorf("expected 1 KitHooksDirs entry, got %d", len(meta.KitHooksDirs))
+	}
+}
+
+func TestReadMetaWithKits_LocalKitEnvInterpolation(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	kitsDir := filepath.Join(boidDir, "kits", "go-dev")
+	if err := os.MkdirAll(kitsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	projectYAML := `
+id: test-proj
+name: Test Project
+kits:
+  - go-dev
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
+		t.Fatalf("write project.yaml: %v", err)
+	}
+
+	kitYAML := `
+additional_bindings:
+  - ${TEST_BOID_HOME}/.local/share/go
+env:
+  GOPATH: ${TEST_BOID_HOME}/go
+`
+	if err := os.WriteFile(filepath.Join(kitsDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
+		t.Fatalf("write kit.yaml: %v", err)
+	}
+
+	t.Setenv("TEST_BOID_HOME", "/home/testuser")
+
+	meta, err := project.ReadMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadMetaWithKits: %v", err)
+	}
+
+	if meta.Env["GOPATH"] != "/home/testuser/go" {
+		t.Errorf("expected GOPATH=/home/testuser/go, got %s", meta.Env["GOPATH"])
+	}
+	if meta.AdditionalBindings[0] != "/home/testuser/.local/share/go" {
+		t.Errorf("expected interpolated binding, got %s", meta.AdditionalBindings[0])
+	}
+}
+
+func TestReadMetaWithKits_LocalKitNotFound(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	projectYAML := `
+id: test-proj
+name: Test Project
+kits:
+  - nonexistent-kit
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
+		t.Fatalf("write project.yaml: %v", err)
+	}
+
+	_, err := project.ReadMetaWithKits(dir, nil)
+	if err == nil {
+		t.Fatal("expected error for nonexistent local kit")
+	}
+	if !strings.Contains(err.Error(), "kit.yaml not found") {
+		t.Fatalf("expected 'kit.yaml not found' error, got: %v", err)
+	}
+}
+
+func TestReadMetaWithKits_MultipleLocalKits(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+
+	// Create two local kits
+	for _, name := range []string{"go-dev", "git"} {
+		kitDir := filepath.Join(boidDir, "kits", name)
+		if err := os.MkdirAll(kitDir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+
+	projectYAML := `
+id: test-proj
+name: Test Project
+kits:
+  - go-dev
+  - git
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
+		t.Fatalf("write project.yaml: %v", err)
+	}
+
+	goKitYAML := `
+env:
+  GOPATH: /home/user/go
+additional_bindings:
+  - /usr/local/go
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "kits", "go-dev", "kit.yaml"), []byte(goKitYAML), 0o644); err != nil {
+		t.Fatalf("write go-dev kit.yaml: %v", err)
+	}
+
+	gitKitYAML := `
+host_commands:
+  git:
+    path: /usr/bin/git
+    extract_subcommand_fn: git
+    allowed_subcommands:
+      - status
+      - diff
+      - log
+      - add
+      - commit
+      - push
+      - pull
+      - fetch
+      - checkout
+      - branch
+      - merge
+      - rebase
+      - stash
+      - tag
+      - remote
+      - clone
+      - init
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "kits", "git", "kit.yaml"), []byte(gitKitYAML), 0o644); err != nil {
+		t.Fatalf("write git kit.yaml: %v", err)
+	}
+
+	meta, err := project.ReadMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadMetaWithKits: %v", err)
+	}
+
+	if meta.Env["GOPATH"] != "/home/user/go" {
+		t.Errorf("expected GOPATH from go-dev kit, got %s", meta.Env["GOPATH"])
+	}
+	if _, ok := meta.HostCommands["git"]; !ok {
+		t.Error("expected host_commands to contain 'git' from git kit")
+	}
+	if len(meta.AdditionalBindings) == 0 {
+		t.Error("expected additional_bindings from go-dev kit")
+	}
+}

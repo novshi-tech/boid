@@ -9,10 +9,13 @@ import (
 // WrapperConfig holds the parameters for sandbox script generation.
 type WrapperConfig struct {
 	JobID              string
+	TaskID             string
 	ProjectID          string
 	ProjectDir         string            // host-side project directory
+	HomeDir            string            // host-side user home directory (fallback to ProjectDir)
 	HooksDir           string            // host-side hooks directory
 	HookScript         string            // script filename, e.g. "run-build.sh"
+	Command            string            // command to execute (non-interactive, non-hook mode)
 	BoidBinary         string            // host-side path to boid binary
 	ServerSocket       string            // host-side server socket path
 	BrokerSocket       string            // host-side broker socket path
@@ -24,6 +27,14 @@ type WrapperConfig struct {
 	ProxyPort          int               // host-side proxy port (0 = no proxy)
 	StagingDir         string            // if set, staging dir to clean up after job
 	Interactive        bool              // if true, launch interactive shell instead of hook
+}
+
+// homeDir returns the effective home directory.
+func (cfg WrapperConfig) homeDir() string {
+	if cfg.HomeDir != "" {
+		return cfg.HomeDir
+	}
+	return cfg.ProjectDir
 }
 
 // WriteSandboxScripts generates 3 sandbox scripts and writes them to /tmp.
@@ -88,6 +99,11 @@ ROOT=$(mktemp -d /tmp/boid-root-XXXXXX)
 
 `)
 	fmt.Fprintf(&b, `cleanup() {
+    # Safety: refuse to rm if ROOT is not our tmpdir prefix
+    case "$ROOT" in
+        /tmp/boid-root-*) ;;
+        *) echo "FATAL: ROOT=$ROOT is not a boid tmpdir, refusing cleanup" >&2; return 1 ;;
+    esac
     # Unmount all bind mounts under $ROOT
     umount -R "$ROOT" 2>/dev/null || true
     # Safety: only rm if no mounts remain (prevent deleting host files via stale bind mounts)
@@ -136,11 +152,11 @@ mount -t tmpfs tmpfs "$ROOT/tmp"
 		b.WriteString("nft add rule inet filter output ip daddr 10.0.2.3 accept\n\n")
 	}
 
-	// Project directory (rw) — mounted at same path as host
+	// Project directory (rw) -- mounted at same path as host
 	fmt.Fprintf(&b, "mkdir -p \"$ROOT%s\"\n", cfg.ProjectDir)
 	fmt.Fprintf(&b, "mount --bind %s \"$ROOT%s\"\n", cfg.ProjectDir, cfg.ProjectDir)
 
-	// Workspace projects (ro) — same workspace, mounted at host paths
+	// Workspace projects (ro) -- same workspace, mounted at host paths
 	if len(cfg.WorkspaceDirs) > 0 {
 		b.WriteString("\n# Workspace projects (ro)\n")
 		for _, dir := range cfg.WorkspaceDirs {
@@ -150,12 +166,21 @@ mount -t tmpfs tmpfs "$ROOT/tmp"
 		}
 	}
 
-	// Hooks directory (ro) — not needed in interactive mode
-	if !cfg.Interactive {
+	// Hooks directory (ro) -- not needed in interactive mode or command mode
+	if !cfg.Interactive && cfg.Command == "" {
 		fmt.Fprintf(&b, "mkdir -p \"$ROOT%s/.boid/hooks\"\n", cfg.ProjectDir)
 		fmt.Fprintf(&b, "mount --bind %s \"$ROOT%s/.boid/hooks\"\n", cfg.HooksDir, cfg.ProjectDir)
 		fmt.Fprintf(&b, "mount -o remount,bind,ro \"$ROOT%s/.boid/hooks\"\n", cfg.ProjectDir)
 	}
+
+	// HOME as tmpfs with project re-mount on top
+	homeDir := cfg.homeDir()
+	b.WriteString("\n# HOME tmpfs\n")
+	fmt.Fprintf(&b, "mkdir -p \"$ROOT%s\"\n", homeDir)
+	fmt.Fprintf(&b, "mount -t tmpfs tmpfs \"$ROOT%s\"\n", homeDir)
+	// Re-mount project directory on top of HOME tmpfs
+	fmt.Fprintf(&b, "mkdir -p \"$ROOT%s\"\n", cfg.ProjectDir)
+	fmt.Fprintf(&b, "mount --bind %s \"$ROOT%s\"\n", cfg.ProjectDir, cfg.ProjectDir)
 
 	// Additional bindings (read-only)
 	if len(cfg.AdditionalBindings) > 0 {
@@ -196,7 +221,7 @@ mount -t tmpfs tmpfs "$ROOT/tmp"
 
 	// Enter sandbox
 	b.WriteString("\n# Enter sandbox\n")
-	b.WriteString("exec chroot \"$ROOT\" /bin/bash /tmp/inner.sh\n")
+	b.WriteString("exec unshare --user --map-user=1000 --map-group=1000 --root=\"$ROOT\" -- /bin/bash /tmp/inner.sh\n")
 
 	return b.String()
 }
@@ -219,7 +244,15 @@ func generateInnerScript(cfg WrapperConfig) string {
 	var b strings.Builder
 
 	b.WriteString("#!/bin/bash\nset -e\n\n")
-	fmt.Fprintf(&b, "export HOME=%s\n", cfg.ProjectDir)
+
+	homeDir := cfg.homeDir()
+	fmt.Fprintf(&b, "export HOME=%s\n", homeDir)
+
+	if cfg.TaskID != "" {
+		fmt.Fprintf(&b, "export BOID_TASK_ID=%s\n", cfg.TaskID)
+	}
+	fmt.Fprintf(&b, "export BOID_JOB_ID=%s\n", cfg.JobID)
+
 	b.WriteString("export BOID_SOCKET=/run/boid/server.sock\n")
 	if cfg.BrokerSocket != "" {
 		b.WriteString("export BOID_BROKER_SOCKET=/run/boid/broker.sock\n")
@@ -253,7 +286,9 @@ func generateInnerScript(cfg WrapperConfig) string {
 
 	fmt.Fprintf(&b, "\ncd %s\n\n", cfg.ProjectDir)
 
-	if cfg.Interactive {
+	if cfg.Command != "" {
+		fmt.Fprintf(&b, "%s\n", cfg.Command)
+	} else if cfg.Interactive {
 		b.WriteString("exec /bin/bash\n")
 	} else {
 		fmt.Fprintf(&b, "trap 'boid job done %s --exit-code $?' EXIT\n", cfg.JobID)

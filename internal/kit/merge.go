@@ -1,23 +1,23 @@
-package mixin
+package kit
 
 import (
 	"github.com/novshi-tech/boid/internal/hostcmd"
 	"github.com/novshi-tech/boid/internal/model"
 )
 
-// MergeMixins merges mixin configurations into a base ProjectMeta.
-// Mixins are applied in order. Project values take precedence.
+// MergeKits merges kit configurations into a base ProjectMeta.
+// Kits are applied in order. Project values take precedence.
 // Returns a new ProjectMeta; the input is not mutated.
-func MergeMixins(base *model.ProjectMeta, mixins []*MixinMeta) *model.ProjectMeta {
-	if len(mixins) == 0 {
+func MergeKits(base *model.ProjectMeta, kits []*KitMeta) *model.ProjectMeta {
+	if len(kits) == 0 {
 		return base
 	}
 
 	result := *base
 
-	// Env: layer mixins in order, then project overrides
+	// Env: layer kits in order, then project overrides
 	mergedEnv := make(map[string]string)
-	for _, m := range mixins {
+	for _, m := range kits {
 		for k, v := range m.Env {
 			mergedEnv[k] = v
 		}
@@ -27,9 +27,9 @@ func MergeMixins(base *model.ProjectMeta, mixins []*MixinMeta) *model.ProjectMet
 	}
 	result.Env = mergedEnv
 
-	// TaskBehaviors: layer mixins in order, then project overrides
+	// TaskBehaviors: layer kits in order, then project overrides
 	mergedBehaviors := make(map[string]model.TaskBehavior)
-	for _, m := range mixins {
+	for _, m := range kits {
 		for k, v := range m.TaskBehaviors {
 			mergedBehaviors[k] = v
 		}
@@ -39,17 +39,17 @@ func MergeMixins(base *model.ProjectMeta, mixins []*MixinMeta) *model.ProjectMet
 	}
 	result.TaskBehaviors = mergedBehaviors
 
-	// Hooks: mixin hooks first, then project hooks. Dedup by ID (last wins).
+	// Hooks: kit hooks first, then project hooks. Dedup by ID (last wins).
 	var allHooks []model.Hook
-	for _, m := range mixins {
+	for _, m := range kits {
 		allHooks = append(allHooks, m.Hooks...)
 	}
 	allHooks = append(allHooks, base.Hooks...)
 	result.Hooks = dedupHooks(allHooks)
 
-	// HostCommands: layer mixins in order, then project overrides
+	// HostCommands: layer kits in order, then project overrides
 	mergedCmds := make(map[string]hostcmd.CommandDef)
-	for _, m := range mixins {
+	for _, m := range kits {
 		for k, v := range m.HostCommands {
 			mergedCmds[k] = v
 		}
@@ -62,10 +62,10 @@ func MergeMixins(base *model.ProjectMeta, mixins []*MixinMeta) *model.ProjectMet
 	}
 
 	// List fields: union
-	result.AdditionalBindings = unionStrings(mixins, base.AdditionalBindings, func(m *MixinMeta) []string { return m.AdditionalBindings })
+	result.AdditionalBindings = unionStrings(kits, base.AdditionalBindings, func(m *KitMeta) []string { return m.AdditionalBindings })
 
-	// Collect MixinHooksDirs
-	for _, m := range mixins {
+	// Collect KitHooksDirs
+	for _, m := range kits {
 		if m.HooksDir == "" || len(m.Hooks) == 0 {
 			continue
 		}
@@ -73,7 +73,7 @@ func MergeMixins(base *model.ProjectMeta, mixins []*MixinMeta) *model.ProjectMet
 		for i, h := range m.Hooks {
 			ids[i] = h.ID
 		}
-		result.MixinHooksDirs = append(result.MixinHooksDirs, model.MixinHooksInfo{
+		result.KitHooksDirs = append(result.KitHooksDirs, model.KitHooksInfo{
 			HooksDir: m.HooksDir,
 			HookIDs:  ids,
 		})
@@ -84,7 +84,7 @@ func MergeMixins(base *model.ProjectMeta, mixins []*MixinMeta) *model.ProjectMet
 
 // dedupHooks keeps the last hook for each ID (project hooks come last, so they win).
 func dedupHooks(hooks []model.Hook) []model.Hook {
-	seen := make(map[string]int) // ID → index in result
+	seen := make(map[string]int) // ID -> index in result
 	var result []model.Hook
 	for _, h := range hooks {
 		if idx, ok := seen[h.ID]; ok {
@@ -97,10 +97,10 @@ func dedupHooks(hooks []model.Hook) []model.Hook {
 	return result
 }
 
-func unionStrings(mixins []*MixinMeta, base []string, extract func(*MixinMeta) []string) []string {
+func unionStrings(kits []*KitMeta, base []string, extract func(*KitMeta) []string) []string {
 	seen := make(map[string]bool)
 	var result []string
-	for _, m := range mixins {
+	for _, m := range kits {
 		for _, s := range extract(m) {
 			if !seen[s] {
 				seen[s] = true

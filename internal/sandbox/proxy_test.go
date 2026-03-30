@@ -215,3 +215,89 @@ func TestProxy_ContextCancellation(t *testing.T) {
 		t.Error("expected error after context cancellation, proxy should be stopped")
 	}
 }
+
+// --- Append the following test function to proxy_test.go ---
+
+func TestProxy_ConnectResponseFormat(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start a local TCP echo server as the tunnel target
+	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen target: %v", err)
+	}
+	defer targetLn.Close()
+	go func() {
+		for {
+			conn, err := targetLn.Accept()
+			if err != nil {
+				return
+			}
+			// Echo back what we receive
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 1024)
+				n, err := c.Read(buf)
+				if err != nil {
+					return
+				}
+				c.Write(buf[:n])
+			}(conn)
+		}
+	}()
+	_, targetPort, _ := net.SplitHostPort(targetLn.Addr().String())
+
+	proxy := sandbox.NewProxy([]string{"127.0.0.1"})
+	port, err := proxy.Start(ctx)
+	if err != nil {
+		t.Fatalf("start proxy: %v", err)
+	}
+	defer proxy.Stop()
+
+	proxyAddr := fmt.Sprintf("127.0.0.1:%d", port)
+	connectTarget := fmt.Sprintf("127.0.0.1:%s", targetPort)
+
+	// Send raw CONNECT and inspect the response
+	conn, err := net.DialTimeout("tcp", proxyAddr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", connectTarget, connectTarget)
+	if _, err := conn.Write([]byte(req)); err != nil {
+		t.Fatalf("write CONNECT: %v", err)
+	}
+
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Verify no Content-Length header (raw tunnel, not HTTP body)
+	if cl := resp.Header.Get("Content-Length"); cl != "" {
+		t.Errorf("CONNECT response should not have Content-Length header, got %q", cl)
+	}
+
+	// Verify tunnel works: send data through and get it echoed back
+	testData := "hello tunnel"
+	if _, err := conn.Write([]byte(testData)); err != nil {
+		t.Fatalf("write through tunnel: %v", err)
+	}
+
+	buf := make([]byte, len(testData))
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("read from tunnel: %v", err)
+	}
+	if string(buf[:n]) != testData {
+		t.Errorf("tunnel echo = %q, want %q", string(buf[:n]), testData)
+	}
+}

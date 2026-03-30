@@ -5,8 +5,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
-	"github.com/novshi-tech/boid/internal/mixin"
+	"github.com/novshi-tech/boid/internal/kit"
 	"github.com/novshi-tech/boid/internal/model"
 	"gopkg.in/yaml.v3"
 )
@@ -47,31 +48,54 @@ func ReadMeta(dir string) (*model.ProjectMeta, error) {
 	return &meta, nil
 }
 
-// ReadMetaWithMixins reads project.yaml and resolves mixin references.
-// If registry is nil, behaves identically to ReadMeta.
-func ReadMetaWithMixins(dir string, registry *mixin.Registry) (*model.ProjectMeta, error) {
+// resolveKitRef resolves a kit reference to a filesystem directory.
+// Single-segment refs (e.g. "go-dev") are resolved as local kits under .boid/kits/<ref>/.
+// 4+ segment refs (e.g. "github.com/user/repo/kit") are resolved via the registry.
+func resolveKitRef(ref, projectDir string, registry *kit.Registry) (string, error) {
+	parts := strings.Split(ref, "/")
+	if len(parts) < 4 {
+		// Local kit: .boid/kits/<ref>/
+		localDir := filepath.Join(projectDir, ".boid", "kits", ref)
+		yamlPath := filepath.Join(localDir, "kit.yaml")
+		if _, err := os.Stat(yamlPath); err != nil {
+			return "", fmt.Errorf("local kit %q: kit.yaml not found at %s", ref, localDir)
+		}
+		return localDir, nil
+	}
+
+	// Registry kit: 4+ segments
+	if registry == nil {
+		return "", fmt.Errorf("kit %q requires registry but none configured", ref)
+	}
+	return registry.Resolve(ref)
+}
+
+// ReadMetaWithKits reads project.yaml and resolves kit references.
+// Local kits (single-segment refs) are resolved from .boid/kits/<ref>/.
+// Registry kits (4+ segment refs) require a non-nil registry.
+func ReadMetaWithKits(dir string, registry *kit.Registry) (*model.ProjectMeta, error) {
 	meta, err := ReadMeta(dir)
 	if err != nil {
 		return nil, err
 	}
 
-	if registry == nil || len(meta.Mixins) == 0 {
+	if len(meta.Kits) == 0 {
 		return meta, nil
 	}
 
-	var mixins []*mixin.MixinMeta
-	for _, ref := range meta.Mixins {
-		mixinDir, err := registry.Resolve(ref)
+	var kits []*kit.KitMeta
+	for _, ref := range meta.Kits {
+		kitDir, err := resolveKitRef(ref, dir, registry)
 		if err != nil {
-			return nil, fmt.Errorf("mixin %q: %w", ref, err)
+			return nil, fmt.Errorf("kit %q: %w", ref, err)
 		}
-		m, err := mixin.ReadMixin(mixinDir)
+		k, err := kit.ReadKit(kitDir)
 		if err != nil {
-			return nil, fmt.Errorf("mixin %q: %w", ref, err)
+			return nil, fmt.Errorf("kit %q: %w", ref, err)
 		}
-		slog.Info("resolved mixin", "ref", ref, "hooks", len(m.Hooks))
-		mixins = append(mixins, m)
+		slog.Info("resolved kit", "ref", ref, "hooks", len(k.Hooks))
+		kits = append(kits, k)
 	}
 
-	return mixin.MergeMixins(meta, mixins), nil
+	return kit.MergeKits(meta, kits), nil
 }

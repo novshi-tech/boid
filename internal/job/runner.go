@@ -4,13 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync"
 
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/hostcmd"
 	"github.com/novshi-tech/boid/internal/secret"
-	"github.com/novshi-tech/boid/internal/mixin"
+	"github.com/novshi-tech/boid/internal/kit"
 	"github.com/novshi-tech/boid/internal/model"
 	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/internal/tmux"
@@ -94,13 +95,13 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 		return fmt.Errorf("create job: %w", err)
 	}
 
-	// Determine hooks directory: stage if mixins provide hooks, otherwise use project dir
+	// Determine hooks directory: stage if kits provide hooks, otherwise use project dir
 	projectHooksDir := filepath.Join(proj.WorkDir, ".boid", "hooks")
 	hooksDir := projectHooksDir
 	var stagingDir string
 
-	if len(meta.MixinHooksDirs) > 0 {
-		staged, _, err := mixin.StageHooks(projectHooksDir, meta.MixinHooksDirs, j.ID)
+	if len(meta.KitHooksDirs) > 0 {
+		staged, _, err := kit.StageHooks(projectHooksDir, meta.KitHooksDirs, j.ID)
 		if err != nil {
 			return fmt.Errorf("stage hooks: %w", err)
 		}
@@ -128,10 +129,14 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 		r.trackToken(j.ID, brokerToken)
 	}
 
+	homeDir, _ := os.UserHomeDir()
+
 	cfg := WrapperConfig{
 		JobID:              j.ID,
+		TaskID:             event.TaskID,
 		ProjectID:          meta.ID,
 		ProjectDir:         proj.WorkDir,
+		HomeDir:            homeDir,
 		HooksDir:           hooksDir,
 		HookScript:         hookFilename,
 		BoidBinary:         r.BoidBinary,

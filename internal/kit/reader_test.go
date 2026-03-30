@@ -1,27 +1,27 @@
-package mixin_test
+package kit_test
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/mixin"
+	"github.com/novshi-tech/boid/internal/kit"
 )
 
-func writeMixinYAML(t *testing.T, dir, content string) {
+func writeKitYAML(t *testing.T, dir, content string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, "mixin.yaml"), []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "kit.yaml"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestReadMixin_Valid(t *testing.T) {
+func TestReadKit_Valid(t *testing.T) {
 	dir := t.TempDir()
 	hooksDir := filepath.Join(dir, "hooks")
 	os.MkdirAll(hooksDir, 0o755)
 	os.WriteFile(filepath.Join(hooksDir, "run-build.sh"), []byte("#!/bin/bash\necho ok"), 0o755)
 
-	writeMixinYAML(t, dir, `
+	writeKitYAML(t, dir, `
 hooks:
   - id: run-build
     on: executing
@@ -40,9 +40,9 @@ task_behaviors:
     traits: [agent_prompt]
 `)
 
-	m, err := mixin.ReadMixin(dir)
+	m, err := kit.ReadKit(dir)
 	if err != nil {
-		t.Fatalf("ReadMixin: %v", err)
+		t.Fatalf("ReadKit: %v", err)
 	}
 
 	if len(m.Hooks) != 1 || m.Hooks[0].ID != "run-build" {
@@ -68,9 +68,9 @@ task_behaviors:
 	}
 }
 
-func TestReadMixin_EnvInterpolation(t *testing.T) {
+func TestReadKit_EnvInterpolation(t *testing.T) {
 	dir := t.TempDir()
-	writeMixinYAML(t, dir, `
+	writeKitYAML(t, dir, `
 additional_bindings:
   - ${TEST_BOID_HOME}/.local/share/go
 env:
@@ -79,9 +79,9 @@ env:
 
 	t.Setenv("TEST_BOID_HOME", "/home/testuser")
 
-	m, err := mixin.ReadMixin(dir)
+	m, err := kit.ReadKit(dir)
 	if err != nil {
-		t.Fatalf("ReadMixin: %v", err)
+		t.Fatalf("ReadKit: %v", err)
 	}
 
 	if m.AdditionalBindings[0] != "/home/testuser/.local/share/go" {
@@ -92,35 +92,35 @@ env:
 	}
 }
 
-func TestReadMixin_MissingFile(t *testing.T) {
+func TestReadKit_MissingFile(t *testing.T) {
 	dir := t.TempDir()
-	_, err := mixin.ReadMixin(dir)
+	_, err := kit.ReadKit(dir)
 	if err == nil {
-		t.Fatal("expected error for missing mixin.yaml")
+		t.Fatal("expected error for missing kit.yaml")
 	}
 }
 
-func TestReadMixin_InvalidHookOn(t *testing.T) {
+func TestReadKit_InvalidHookOn(t *testing.T) {
 	dir := t.TempDir()
-	writeMixinYAML(t, dir, `
+	writeKitYAML(t, dir, `
 hooks:
   - id: bad-hook
     on: invalid_status
 `)
-	_, err := mixin.ReadMixin(dir)
+	_, err := kit.ReadKit(dir)
 	if err == nil {
 		t.Fatal("expected error for invalid hook on value")
 	}
 }
 
-func TestReadMixin_MissingHookScript(t *testing.T) {
+func TestReadKit_MissingHookScript(t *testing.T) {
 	dir := t.TempDir()
-	writeMixinYAML(t, dir, `
+	writeKitYAML(t, dir, `
 hooks:
   - id: no-script
     on: executing
 `)
-	_, err := mixin.ReadMixin(dir)
+	_, err := kit.ReadKit(dir)
 	if err == nil {
 		t.Fatal("expected error for missing hook script")
 	}

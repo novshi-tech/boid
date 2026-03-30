@@ -64,8 +64,8 @@ func TestWriteSandboxScripts(t *testing.T) {
 		t.Fatalf("read setup script: %v", err)
 	}
 	setup := string(setupContent)
-	if !strings.Contains(setup, "chroot") {
-		t.Error("setup script missing 'chroot'")
+	if !strings.Contains(setup, "unshare --user") {
+		t.Error("setup script missing 'unshare --user'")
 	}
 	if !strings.Contains(setup, cfg.ProjectDir) {
 		t.Errorf("setup script missing project dir %q", cfg.ProjectDir)
@@ -189,8 +189,8 @@ func TestWriteSandboxScripts_Interactive(t *testing.T) {
 		t.Error("setup script must not mount hooks directory in interactive mode")
 	}
 	// But should still set up the sandbox environment
-	if !strings.Contains(setup, "chroot") {
-		t.Error("setup script missing 'chroot'")
+	if !strings.Contains(setup, "unshare --user") {
+		t.Error("setup script missing 'unshare --user'")
 	}
 	if !strings.Contains(setup, cfg.ProjectDir) {
 		t.Errorf("setup script missing project dir %q", cfg.ProjectDir)
@@ -421,5 +421,128 @@ func TestWriteSandboxScripts_AdditionalBindings(t *testing.T) {
 	// /home/user/go → /home/user/go/bin
 	if !strings.Contains(inner, "/home/user/go/bin") {
 		t.Error("inner script PATH missing /home/user/go/bin")
+	}
+}
+
+// --- Append the following test functions to wrapper_test.go ---
+// Also modify TestWriteSandboxScripts config to include TaskID: "task-abc-123"
+// and add assertions for BOID_TASK_ID and BOID_JOB_ID in the inner script.
+
+func TestWriteSandboxScripts_Command(t *testing.T) {
+	cfg := job.WrapperConfig{
+		JobID:        "test-cmd-001",
+		TaskID:       "task-cmd-001",
+		ProjectID:    "proj-1",
+		ProjectDir:   "/home/user/projects/proj-1",
+		HomeDir:      "/home/user",
+		BoidBinary:   "/usr/local/bin/boid",
+		ServerSocket: "/run/boid/server.sock",
+		Command:      "go test ./...",
+		Env: map[string]string{
+			"GOPATH": "/home/user/go",
+		},
+	}
+
+	outerPath, err := job.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-cmd-001"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	// Inner script: should run the command and have exit trap
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	if !strings.Contains(inner, "go test ./...") {
+		t.Error("inner script missing command 'go test ./...'")
+	}
+	if strings.Contains(inner, "boid job done") {
+		t.Error("inner script must not have job done trap in command mode")
+	}
+	if strings.Contains(inner, "exec /bin/bash") {
+		t.Error("inner script should not have exec /bin/bash in command mode")
+	}
+	if strings.Contains(inner, ".boid/hooks/") {
+		t.Error("inner script should not invoke hook in command mode")
+	}
+	if !strings.Contains(inner, "BOID_TASK_ID=task-cmd-001") {
+		t.Error("inner script missing BOID_TASK_ID")
+	}
+	if !strings.Contains(inner, "BOID_JOB_ID=test-cmd-001") {
+		t.Error("inner script missing BOID_JOB_ID")
+	}
+	if !strings.Contains(inner, "HOME=/home/user") {
+		t.Error("inner script missing HOME=/home/user")
+	}
+
+	// Setup script: should not mount hooks directory
+	setupContent, err := os.ReadFile(setupPath)
+	if err != nil {
+		t.Fatalf("read setup script: %v", err)
+	}
+	setup := string(setupContent)
+
+	if strings.Contains(setup, ".boid/hooks") {
+		t.Error("setup script must not mount hooks directory in command mode")
+	}
+	// Should have HOME tmpfs
+	if !strings.Contains(setup, "mount -t tmpfs tmpfs \"$ROOT/home/user\"") {
+		t.Error("setup script missing HOME tmpfs mount")
+	}
+	// Should use unshare --user instead of chroot
+	if !strings.Contains(setup, "unshare --user --map-user=1000 --map-group=1000") {
+		t.Error("setup script missing unshare --user")
+	}
+}
+
+// TestWriteSandboxScripts_TaskIDAndJobID verifies BOID_TASK_ID and BOID_JOB_ID are exported.
+func TestWriteSandboxScripts_TaskIDAndJobID(t *testing.T) {
+	cfg := job.WrapperConfig{
+		JobID:        "test-job-ids",
+		TaskID:       "task-abc-123",
+		ProjectID:    "proj-1",
+		ProjectDir:   "/home/user/projects/proj-1",
+		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
+		HookScript:   "run-agent.sh",
+		BoidBinary:   "/usr/local/bin/boid",
+		ServerSocket: "/run/boid/server.sock",
+	}
+
+	outerPath, err := job.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-job-ids"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	if !strings.Contains(inner, "BOID_TASK_ID=task-abc-123") {
+		t.Error("inner script missing BOID_TASK_ID=task-abc-123")
+	}
+	if !strings.Contains(inner, "BOID_JOB_ID=test-job-ids") {
+		t.Error("inner script missing BOID_JOB_ID=test-job-ids")
 	}
 }

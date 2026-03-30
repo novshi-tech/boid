@@ -81,15 +81,28 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	clientConn, _, err := hijacker.Hijack()
+	clientConn, buf, err := hijacker.Hijack()
 	if err != nil {
 		targetConn.Close()
 		return
 	}
 
-	go io.Copy(targetConn, clientConn)
-	go io.Copy(clientConn, targetConn)
+	buf.WriteString("HTTP/1.1 200 Connection established\r\n\r\n")
+	buf.Flush()
+
+	done := make(chan struct{})
+	go func() {
+		io.Copy(targetConn, clientConn)
+		done <- struct{}{}
+	}()
+	go func() {
+		io.Copy(clientConn, targetConn)
+		done <- struct{}{}
+	}()
+
+	<-done
+	clientConn.Close()
+	targetConn.Close()
 }
 
 func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {

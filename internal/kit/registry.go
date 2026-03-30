@@ -1,4 +1,4 @@
-package mixin
+package kit
 
 import (
 	"fmt"
@@ -8,9 +8,9 @@ import (
 	"strings"
 )
 
-// Registry manages installed mixin repositories under a base directory.
+// Registry manages installed kit repositories under a base directory.
 type Registry struct {
-	BaseDir string // e.g. ~/.local/share/boid/mixins
+	BaseDir string // e.g. ~/.local/share/boid/kits
 }
 
 // NewRegistry creates a new Registry with the given base directory.
@@ -18,24 +18,24 @@ func NewRegistry(baseDir string) *Registry {
 	return &Registry{BaseDir: baseDir}
 }
 
-// Resolve returns the absolute filesystem path for a mixin reference.
+// Resolve returns the absolute filesystem path for a kit reference.
 // A ref like "github.com/user/repo/go" is split into the repo path
-// (first 3 segments) and the mixin subpath (remainder).
+// (first 3 segments) and the kit subpath (remainder).
 func (r *Registry) Resolve(ref string) (string, error) {
 	parts := strings.Split(ref, "/")
 	if len(parts) < 4 {
-		return "", fmt.Errorf("mixin ref %q: need at least host/owner/repo/mixin", ref)
+		return "", fmt.Errorf("kit ref %q: need at least host/owner/repo/kit", ref)
 	}
 
 	dir := filepath.Join(r.BaseDir, ref)
-	yamlPath := filepath.Join(dir, "mixin.yaml")
+	yamlPath := filepath.Join(dir, "kit.yaml")
 	if _, err := os.Stat(yamlPath); err != nil {
-		return "", fmt.Errorf("mixin %q: mixin.yaml not found at %s", ref, dir)
+		return "", fmt.Errorf("kit %q: kit.yaml not found at %s", ref, dir)
 	}
 	return dir, nil
 }
 
-// Install clones a mixin repository from its conventional URL.
+// Install clones a kit repository from its conventional URL.
 // The repoRef should be like "github.com/user/repo".
 func (r *Registry) Install(repoRef string) error {
 	url := "https://" + repoRef + ".git"
@@ -46,7 +46,7 @@ func (r *Registry) Install(repoRef string) error {
 func (r *Registry) InstallFromURL(repoRef, url string) error {
 	dest := filepath.Join(r.BaseDir, repoRef)
 	if _, err := os.Stat(dest); err == nil {
-		return fmt.Errorf("mixin repo %q already installed at %s", repoRef, dest)
+		return fmt.Errorf("kit repo %q already installed at %s", repoRef, dest)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
@@ -60,7 +60,7 @@ func (r *Registry) InstallFromURL(repoRef, url string) error {
 	return nil
 }
 
-// List returns all installed mixin repository references.
+// List returns all installed kit repository references.
 // It finds directories containing .git under BaseDir.
 func (r *Registry) List() ([]string, error) {
 	var repos []string
@@ -78,20 +78,20 @@ func (r *Registry) List() ([]string, error) {
 	return repos, err
 }
 
-// Remove deletes an installed mixin repository.
+// Remove deletes an installed kit repository.
 func (r *Registry) Remove(repoRef string) error {
 	dest := filepath.Join(r.BaseDir, repoRef)
 	if _, err := os.Stat(dest); os.IsNotExist(err) {
-		return fmt.Errorf("mixin repo %q not installed", repoRef)
+		return fmt.Errorf("kit repo %q not installed", repoRef)
 	}
 	return os.RemoveAll(dest)
 }
 
-// Update runs git pull in an installed mixin repository.
+// Update runs git pull in an installed kit repository.
 func (r *Registry) Update(repoRef string) error {
 	dest := filepath.Join(r.BaseDir, repoRef)
 	if _, err := os.Stat(dest); os.IsNotExist(err) {
-		return fmt.Errorf("mixin repo %q not installed", repoRef)
+		return fmt.Errorf("kit repo %q not installed", repoRef)
 	}
 
 	cmd := exec.Command("git", "-C", dest, "pull")
