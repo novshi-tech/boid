@@ -94,7 +94,7 @@ templ TaskDetail(task *model.Task, actions []*model.Action, jobs []*model.Job) {
 					<tbody>
 						for _, j := range jobs {
 							<tr>
-								<td>{ j.HookID }</td>
+								<td>{ j.HandlerID }</td>
 								<td>{ string(j.Status) }</td>
 								<td>{ intToStr(j.ExitCode) }</td>
 								<td>{ j.CreatedAt.Format("2006-01-02 15:04:05") }</td>

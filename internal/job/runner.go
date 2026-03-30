@@ -98,7 +98,8 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 	j := &model.Job{
 		TaskID:    event.TaskID,
 		ProjectID: event.ProjectID,
-		HookID:    event.Hook.ID,
+		HandlerID: event.Hook.ID,
+		Role:      string(model.RoleHook),
 	}
 
 	if err := r.DB.CreateJob(j); err != nil {

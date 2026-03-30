@@ -20,7 +20,7 @@ func TestCreateJob(t *testing.T) {
 	job := &model.Job{
 		TaskID:    task.ID,
 		ProjectID: "proj-1",
-		HookID:    "hook-1",
+		HandlerID:    "hook-1",
 	}
 	if err := d.CreateJob(job); err != nil {
 		t.Fatalf("create job: %v", err)
@@ -48,7 +48,7 @@ func TestGetJob(t *testing.T) {
 	job := &model.Job{
 		TaskID:    task.ID,
 		ProjectID: "proj-1",
-		HookID:    "hook-1",
+		HandlerID:    "hook-1",
 	}
 	if err := d.CreateJob(job); err != nil {
 		t.Fatalf("create job: %v", err)
@@ -67,8 +67,8 @@ func TestGetJob(t *testing.T) {
 	if got.ProjectID != "proj-1" {
 		t.Fatalf("expected project_id proj-1, got %s", got.ProjectID)
 	}
-	if got.HookID != "hook-1" {
-		t.Fatalf("expected hook_id hook-1, got %s", got.HookID)
+	if got.HandlerID != "hook-1" {
+		t.Fatalf("expected handler_id hook-1, got %s", got.HandlerID)
 	}
 	if got.Status != model.JobStatusRunning {
 		t.Fatalf("expected running, got %s", got.Status)
@@ -100,11 +100,11 @@ func TestListJobsByTask(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
-		if err := d.CreateJob(&model.Job{TaskID: task1.ID, ProjectID: "proj-1", HookID: "hook-1"}); err != nil {
+		if err := d.CreateJob(&model.Job{TaskID: task1.ID, ProjectID: "proj-1", HandlerID: "hook-1"}); err != nil {
 			t.Fatalf("create job: %v", err)
 		}
 	}
-	if err := d.CreateJob(&model.Job{TaskID: task2.ID, ProjectID: "proj-1", HookID: "hook-1"}); err != nil {
+	if err := d.CreateJob(&model.Job{TaskID: task2.ID, ProjectID: "proj-1", HandlerID: "hook-1"}); err != nil {
 		t.Fatalf("create job: %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestUpdateJob(t *testing.T) {
 	job := &model.Job{
 		TaskID:    task.ID,
 		ProjectID: "proj-1",
-		HookID:    "hook-1",
+		HandlerID:    "hook-1",
 	}
 	if err := d.CreateJob(job); err != nil {
 		t.Fatalf("create job: %v", err)
@@ -195,7 +195,7 @@ func TestUpdateJob_Failed(t *testing.T) {
 	job := &model.Job{
 		TaskID:    task.ID,
 		ProjectID: "proj-1",
-		HookID:    "hook-1",
+		HandlerID:    "hook-1",
 	}
 	if err := d.CreateJob(job); err != nil {
 		t.Fatalf("create job: %v", err)

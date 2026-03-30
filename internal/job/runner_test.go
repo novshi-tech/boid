@@ -86,8 +86,8 @@ func TestRunner_Execute(t *testing.T) {
 	if jobs[0].ProjectID != "proj-1" {
 		t.Errorf("job project_id = %q, want %q", jobs[0].ProjectID, "proj-1")
 	}
-	if jobs[0].HookID != "run-agent" {
-		t.Errorf("job hook_id = %q, want %q", jobs[0].HookID, "run-agent")
+	if jobs[0].HandlerID != "run-agent" {
+		t.Errorf("job handler_id = %q, want %q", jobs[0].HandlerID, "run-agent")
 	}
 	if jobs[0].Status != model.JobStatusRunning {
 		t.Errorf("job status = %q, want %q", jobs[0].Status, model.JobStatusRunning)

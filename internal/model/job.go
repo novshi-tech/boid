@@ -14,7 +14,8 @@ type Job struct {
 	ID        string    `json:"id"`
 	TaskID    string    `json:"task_id"`
 	ProjectID string    `json:"project_id"`
-	HookID    string    `json:"hook_id"`
+	HandlerID string    `json:"handler_id"` // hook ID or gate ID
+	Role      string    `json:"role"`       // "hook" or "gate"
 	Status    JobStatus `json:"status"`
 	ExitCode  int       `json:"exit_code,omitempty"`
 	Output    string    `json:"output,omitempty"`

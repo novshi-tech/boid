@@ -20,10 +20,14 @@ func (d *DB) CreateJob(j *model.Job) error {
 		j.Status = model.JobStatusRunning
 	}
 
+	if j.Role == "" {
+		j.Role = "hook"
+	}
+
 	_, err := d.Conn.Exec(
-		`INSERT INTO jobs (id, task_id, project_id, hook_id, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		j.ID, j.TaskID, j.ProjectID, j.HookID, j.Status, j.CreatedAt, j.UpdatedAt,
+		`INSERT INTO jobs (id, task_id, project_id, handler_id, role, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		j.ID, j.TaskID, j.ProjectID, j.HandlerID, j.Role, j.Status, j.CreatedAt, j.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert job: %w", err)
@@ -33,14 +37,14 @@ func (d *DB) CreateJob(j *model.Job) error {
 
 func (d *DB) GetJob(id string) (*model.Job, error) {
 	row := d.Conn.QueryRow(
-		`SELECT id, task_id, project_id, hook_id, status, exit_code, output, created_at, updated_at FROM jobs WHERE id = ?`, id,
+		`SELECT id, task_id, project_id, handler_id, role, status, exit_code, output, created_at, updated_at FROM jobs WHERE id = ?`, id,
 	)
 	return scanJob(row)
 }
 
 func (d *DB) ListJobsByTask(taskID string) ([]*model.Job, error) {
 	rows, err := d.Conn.Query(
-		`SELECT id, task_id, project_id, hook_id, status, exit_code, output, created_at, updated_at FROM jobs WHERE task_id = ? ORDER BY created_at`, taskID,
+		`SELECT id, task_id, project_id, handler_id, role, status, exit_code, output, created_at, updated_at FROM jobs WHERE task_id = ? ORDER BY created_at`, taskID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
@@ -70,7 +74,7 @@ func (d *DB) UpdateJob(j *model.Job) error {
 func scanJob(s scanner) (*model.Job, error) {
 	var j model.Job
 	var exitCode sql.NullInt64
-	if err := s.Scan(&j.ID, &j.TaskID, &j.ProjectID, &j.HookID, &j.Status, &exitCode, &j.Output, &j.CreatedAt, &j.UpdatedAt); err != nil {
+	if err := s.Scan(&j.ID, &j.TaskID, &j.ProjectID, &j.HandlerID, &j.Role, &j.Status, &exitCode, &j.Output, &j.CreatedAt, &j.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("job not found")
 		}
