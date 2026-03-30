@@ -95,6 +95,77 @@ func TestEvaluate_NoRequiredTraits(t *testing.T) {
 	}
 }
 
+func TestEvaluateGates_MatchingGate(t *testing.T) {
+	eval := &hook.Evaluator{}
+
+	task := &model.Task{
+		Status:  model.TaskStatusExecuting,
+		Payload: json.RawMessage(`{"pr":"http://example.com"}`),
+	}
+	gates := []model.Gate{
+		{
+			ID:             "push-pr",
+			On:             "executing",
+			RequiresTraits: []model.TraitType{model.TraitPR},
+		},
+	}
+
+	matched := eval.EvaluateGates(task, gates)
+	if len(matched) != 1 {
+		t.Fatalf("expected 1 matched gate, got %d", len(matched))
+	}
+	if matched[0].ID != "push-pr" {
+		t.Fatalf("expected gate id push-pr, got %s", matched[0].ID)
+	}
+}
+
+func TestEvaluateGates_MultipleGatesAllowed(t *testing.T) {
+	eval := &hook.Evaluator{}
+
+	task := &model.Task{
+		Status:  model.TaskStatusExecuting,
+		Payload: json.RawMessage(`{"pr":"url","pipeline":"ci"}`),
+	}
+	gates := []model.Gate{
+		{
+			ID:             "push-pr",
+			On:             "executing",
+			RequiresTraits: []model.TraitType{model.TraitPR},
+		},
+		{
+			ID:             "run-ci",
+			On:             "executing",
+			RequiresTraits: []model.TraitType{model.TraitPipeline},
+		},
+	}
+
+	matched := eval.EvaluateGates(task, gates)
+	if len(matched) != 2 {
+		t.Fatalf("expected 2 matched gates (kit composition), got %d", len(matched))
+	}
+}
+
+func TestEvaluateGates_NonMatchingStatus(t *testing.T) {
+	eval := &hook.Evaluator{}
+
+	task := &model.Task{
+		Status:  model.TaskStatusPending,
+		Payload: json.RawMessage(`{"pr":"url"}`),
+	}
+	gates := []model.Gate{
+		{
+			ID:             "push-pr",
+			On:             "executing",
+			RequiresTraits: []model.TraitType{model.TraitPR},
+		},
+	}
+
+	matched := eval.EvaluateGates(task, gates)
+	if len(matched) != 0 {
+		t.Fatalf("expected 0 matched gates, got %d", len(matched))
+	}
+}
+
 func TestEvaluate_MultipleHooks(t *testing.T) {
 	eval := &hook.Evaluator{}
 

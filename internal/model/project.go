@@ -19,6 +19,7 @@ type ProjectMeta struct {
 	Kits               []string                      `yaml:"kits" json:"kits,omitempty"`
 	TaskBehaviors      map[string]TaskBehavior        `yaml:"task_behaviors" json:"task_behaviors"`
 	Hooks              []Hook                        `yaml:"hooks" json:"hooks"`
+	Gates              []Gate                        `yaml:"gates" json:"gates"`
 	HostCommands       map[string]hostcmd.CommandDef  `yaml:"host_commands" json:"host_commands"`
 	AdditionalBindings []BindMount                   `yaml:"additional_bindings" json:"additional_bindings"`
 	Env                map[string]string             `yaml:"env" json:"env"`

@@ -35,6 +35,7 @@ type TaskBehavior struct {
 	Name         string   `yaml:"name" json:"name"`
 	Transition   string   `yaml:"transition" json:"transition"`
 	Traits       []string `yaml:"traits" json:"traits"`
+	Readonly     bool     `yaml:"readonly" json:"readonly,omitempty"`
 	Worktree     bool     `yaml:"worktree" json:"worktree,omitempty"`
 	BranchPrefix string   `yaml:"branch_prefix" json:"branch_prefix,omitempty"`
 	BaseBranch   string   `yaml:"base_branch" json:"base_branch,omitempty"`

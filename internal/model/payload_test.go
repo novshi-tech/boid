@@ -118,6 +118,129 @@ func TestMergePayload_Merge(t *testing.T) {
 	}
 }
 
+func TestTraitMergeMode(t *testing.T) {
+	cases := []struct {
+		trait model.TraitType
+		want  model.MergeMode
+	}{
+		{model.TraitAgentPrompt, model.MergeModeExclusive},
+		{model.TraitPR, model.MergeModeExclusive},
+		{model.TraitPipeline, model.MergeModeExclusive},
+		{model.TraitTasks, model.MergeModeExclusive},
+		{model.TraitReview, model.MergeModeShared},
+	}
+
+	for _, tc := range cases {
+		got := model.TraitMergeMode(tc.trait)
+		if got != tc.want {
+			t.Errorf("TraitMergeMode(%q) = %q, want %q", tc.trait, got, tc.want)
+		}
+	}
+}
+
+func TestValidatePayloadPatch_AllowedTraits(t *testing.T) {
+	patch := json.RawMessage(`{"agent_prompt":"hello","pr":"http://example.com"}`)
+	allowed := []model.TraitType{model.TraitAgentPrompt, model.TraitPR}
+
+	if err := model.ValidatePayloadPatch(patch, allowed); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidatePayloadPatch_UnauthorizedTrait(t *testing.T) {
+	patch := json.RawMessage(`{"agent_prompt":"hello","pipeline":"ci"}`)
+	allowed := []model.TraitType{model.TraitAgentPrompt}
+
+	err := model.ValidatePayloadPatch(patch, allowed)
+	if err == nil {
+		t.Fatal("expected error for unauthorized trait")
+	}
+}
+
+func TestValidatePayloadPatch_EmptyPatch(t *testing.T) {
+	for _, patch := range []json.RawMessage{nil, json.RawMessage("{}"), json.RawMessage("null")} {
+		if err := model.ValidatePayloadPatch(patch, nil); err != nil {
+			t.Fatalf("unexpected error for empty patch: %v", err)
+		}
+	}
+}
+
+func TestMergePayloadPatch_Exclusive(t *testing.T) {
+	base := json.RawMessage(`{"agent_prompt":"old"}`)
+	patch := json.RawMessage(`{"agent_prompt":"new"}`)
+	allowed := []model.TraitType{model.TraitAgentPrompt}
+
+	result, err := model.MergePayloadPatch(base, patch, "hook-1", allowed)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var m map[string]json.RawMessage
+	json.Unmarshal(result, &m)
+
+	if string(m["agent_prompt"]) != `"new"` {
+		t.Fatalf("expected agent_prompt=new, got %s", string(m["agent_prompt"]))
+	}
+}
+
+func TestMergePayloadPatch_Shared(t *testing.T) {
+	base := json.RawMessage(`{}`)
+	allowed := []model.TraitType{model.TraitReview}
+
+	// First hook writes
+	patch1 := json.RawMessage(`{"review":{"passed":true,"score":9}}`)
+	result, err := model.MergePayloadPatch(base, patch1, "security-review", allowed)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Second hook writes
+	patch2 := json.RawMessage(`{"review":{"passed":false,"issues":["bug"]}}`)
+	result, err = model.MergePayloadPatch(result, patch2, "quality-review", allowed)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify namespaced merge
+	var m map[string]json.RawMessage
+	json.Unmarshal(result, &m)
+
+	var review map[string]json.RawMessage
+	if err := json.Unmarshal(m["review"], &review); err != nil {
+		t.Fatalf("unmarshal review: %v", err)
+	}
+
+	if _, ok := review["security-review"]; !ok {
+		t.Fatal("expected security-review sub-key")
+	}
+	if _, ok := review["quality-review"]; !ok {
+		t.Fatal("expected quality-review sub-key")
+	}
+}
+
+func TestMergePayloadPatch_UnauthorizedTraitRejected(t *testing.T) {
+	base := json.RawMessage(`{}`)
+	patch := json.RawMessage(`{"pipeline":"ci"}`)
+	allowed := []model.TraitType{model.TraitAgentPrompt}
+
+	_, err := model.MergePayloadPatch(base, patch, "hook-1", allowed)
+	if err == nil {
+		t.Fatal("expected error for unauthorized trait in patch")
+	}
+}
+
+func TestMergePayloadPatch_EmptyPatch(t *testing.T) {
+	base := json.RawMessage(`{"agent_prompt":"hello"}`)
+
+	result, err := model.MergePayloadPatch(base, nil, "hook-1", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(result) != string(base) {
+		t.Fatalf("expected base unchanged, got %s", string(result))
+	}
+}
+
 func TestMergePayload_NullHandling(t *testing.T) {
 	base := json.RawMessage(`{"a":"1","b":"2"}`)
 	update := json.RawMessage(`{"b":null,"c":"3"}`)

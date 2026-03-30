@@ -81,6 +81,70 @@ env:
 	}
 }
 
+func TestProjectMeta_YAMLWithGates(t *testing.T) {
+	data := `
+id: proj-1
+name: My Project
+gates:
+  - id: push-pr
+    on: executing
+    requires_traits:
+      - pr
+  - id: ci-check
+    on: verifying
+    requires_traits:
+      - pipeline
+`
+	var meta model.ProjectMeta
+	if err := yaml.Unmarshal([]byte(data), &meta); err != nil {
+		t.Fatalf("unmarshal yaml: %v", err)
+	}
+
+	if len(meta.Gates) != 2 {
+		t.Fatalf("expected 2 gates, got %d", len(meta.Gates))
+	}
+	if meta.Gates[0].ID != "push-pr" {
+		t.Fatalf("expected gate id push-pr, got %s", meta.Gates[0].ID)
+	}
+	if meta.Gates[1].On != "verifying" {
+		t.Fatalf("expected gate on verifying, got %s", meta.Gates[1].On)
+	}
+}
+
+func TestProjectMeta_YAMLWithReadonlyBehavior(t *testing.T) {
+	data := `
+id: proj-1
+name: My Project
+task_behaviors:
+  plan:
+    name: planning
+    transition: one-shot
+    readonly: true
+    traits:
+      - agent_prompt
+      - tasks
+  dev:
+    name: development
+    transition: feedback-loop
+    traits:
+      - agent_prompt
+`
+	var meta model.ProjectMeta
+	if err := yaml.Unmarshal([]byte(data), &meta); err != nil {
+		t.Fatalf("unmarshal yaml: %v", err)
+	}
+
+	plan := meta.TaskBehaviors["plan"]
+	if !plan.Readonly {
+		t.Fatal("expected plan behavior to be readonly")
+	}
+
+	dev := meta.TaskBehaviors["dev"]
+	if dev.Readonly {
+		t.Fatal("expected dev behavior to not be readonly")
+	}
+}
+
 func TestProjectMeta_JSONRoundTrip(t *testing.T) {
 	original := model.ProjectMeta{
 		ID:          "proj-1",
