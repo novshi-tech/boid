@@ -71,6 +71,21 @@ func TestWriteSandboxScripts(t *testing.T) {
 	if !strings.Contains(setup, cfg.ProjectDir) {
 		t.Errorf("setup script missing project dir %q", cfg.ProjectDir)
 	}
+	// Verify .boid directory is mounted read-only
+	if !strings.Contains(setup, fmt.Sprintf("mount --bind %s/.boid \"$ROOT%s/.boid\"", cfg.ProjectDir, cfg.ProjectDir)) {
+		t.Error("setup script missing .boid bind mount")
+	}
+	if !strings.Contains(setup, fmt.Sprintf("mount -o remount,bind,ro \"$ROOT%s/.boid\"", cfg.ProjectDir)) {
+		t.Error("setup script missing .boid read-only remount")
+	}
+	// Verify hooks overlay in hook mode
+	if !strings.Contains(setup, fmt.Sprintf("mount --bind %s \"$ROOT%s/.boid/hooks\"", cfg.HooksDir, cfg.ProjectDir)) {
+		t.Error("setup script missing hooks overlay bind mount")
+	}
+	if !strings.Contains(setup, fmt.Sprintf("mount -o remount,bind,ro \"$ROOT%s/.boid/hooks\"", cfg.ProjectDir)) {
+		t.Error("setup script missing hooks overlay read-only remount")
+	}
+
 	// Verify shim symlinks for host commands
 	if !strings.Contains(setup, `ln -sf boid "$ROOT/opt/boid/bin/git"`) {
 		t.Error("setup script missing git shim symlink")
@@ -173,13 +188,21 @@ func TestWriteSandboxScripts_TTY(t *testing.T) {
 		t.Error("inner script missing env var MY_VAR")
 	}
 
-	// Setup script: should not mount hooks directory in command mode
+	// Setup script
 	setupContent, err := os.ReadFile(setupPath)
 	if err != nil {
 		t.Fatalf("read setup script: %v", err)
 	}
 	setup := string(setupContent)
 
+	// .boid directory should be mounted read-only even in command mode
+	if !strings.Contains(setup, fmt.Sprintf("mount --bind %s/.boid \"$ROOT%s/.boid\"", cfg.ProjectDir, cfg.ProjectDir)) {
+		t.Error("setup script missing .boid bind mount in command mode")
+	}
+	if !strings.Contains(setup, fmt.Sprintf("mount -o remount,bind,ro \"$ROOT%s/.boid\"", cfg.ProjectDir)) {
+		t.Error("setup script missing .boid read-only remount in command mode")
+	}
+	// Should not mount hooks directory in command mode
 	if strings.Contains(setup, ".boid/hooks") {
 		t.Error("setup script must not mount hooks directory in command mode")
 	}
@@ -477,13 +500,21 @@ func TestWriteSandboxScripts_Command(t *testing.T) {
 		t.Error("inner script missing HOME=/home/user")
 	}
 
-	// Setup script: should not mount hooks directory
+	// Setup script
 	setupContent, err := os.ReadFile(setupPath)
 	if err != nil {
 		t.Fatalf("read setup script: %v", err)
 	}
 	setup := string(setupContent)
 
+	// .boid directory should be mounted read-only
+	if !strings.Contains(setup, fmt.Sprintf("mount --bind %s/.boid \"$ROOT%s/.boid\"", cfg.ProjectDir, cfg.ProjectDir)) {
+		t.Error("setup script missing .boid bind mount in command mode")
+	}
+	if !strings.Contains(setup, fmt.Sprintf("mount -o remount,bind,ro \"$ROOT%s/.boid\"", cfg.ProjectDir)) {
+		t.Error("setup script missing .boid read-only remount in command mode")
+	}
+	// Should not mount hooks directory in command mode
 	if strings.Contains(setup, ".boid/hooks") {
 		t.Error("setup script must not mount hooks directory in command mode")
 	}
