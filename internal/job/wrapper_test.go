@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/job"
+	"github.com/novshi-tech/boid/internal/model"
 )
 
 func TestWriteSandboxScripts(t *testing.T) {
@@ -366,10 +367,10 @@ func TestWriteSandboxScripts_AdditionalBindings(t *testing.T) {
 		HookScript:   "run-build.sh",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
-		AdditionalBindings: []string{
-			"/home/user/.local/bin",
-			"/home/user/.local/share/go",
-			"/home/user/go",
+		AdditionalBindings: []model.BindMount{
+			{Source: "/home/user/.local/bin"},
+			{Source: "/home/user/.local/share/go"},
+			{Source: "/home/user/go"},
 		},
 	}
 
@@ -395,11 +396,11 @@ func TestWriteSandboxScripts_AdditionalBindings(t *testing.T) {
 	setup := string(setupContent)
 
 	for _, binding := range cfg.AdditionalBindings {
-		if !strings.Contains(setup, fmt.Sprintf("mount --bind %s \"$ROOT%s\"", binding, binding)) {
-			t.Errorf("setup script missing bind mount for %s", binding)
+		if !strings.Contains(setup, fmt.Sprintf("mount --bind %s \"$ROOT%s\"", binding.Source, binding.Source)) {
+			t.Errorf("setup script missing bind mount for %s", binding.Source)
 		}
-		if !strings.Contains(setup, fmt.Sprintf("mount -o remount,bind,ro \"$ROOT%s\"", binding)) {
-			t.Errorf("setup script missing read-only remount for %s", binding)
+		if !strings.Contains(setup, fmt.Sprintf("mount -o remount,bind,ro \"$ROOT%s\"", binding.Source)) {
+			t.Errorf("setup script missing read-only remount for %s", binding.Source)
 		}
 	}
 

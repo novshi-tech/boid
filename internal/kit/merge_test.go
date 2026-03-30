@@ -32,7 +32,7 @@ func TestMergeKits_SingleKit(t *testing.T) {
 	}
 	m := &kit.KitMeta{
 		HostCommands:       map[string]hostcmd.CommandDef{"go": {Path: "/usr/bin/go"}, "git": {Path: "/usr/bin/git"}},
-		AdditionalBindings: []string{"/usr/local/go"},
+		AdditionalBindings: []model.BindMount{{Source: "/usr/local/go"}},
 		Hooks: []model.Hook{
 			{ID: "kit-hook", On: "verifying", ScriptPath: "/kit/hooks/kit-hook.sh"},
 		},
@@ -51,7 +51,7 @@ func TestMergeKits_SingleKit(t *testing.T) {
 	}
 
 	// AdditionalBindings: from kit
-	if len(result.AdditionalBindings) != 1 || result.AdditionalBindings[0] != "/usr/local/go" {
+	if len(result.AdditionalBindings) != 1 || result.AdditionalBindings[0].Source != "/usr/local/go" {
 		t.Errorf("additional_bindings = %v", result.AdditionalBindings)
 	}
 

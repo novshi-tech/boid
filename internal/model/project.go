@@ -6,6 +6,12 @@ import (
 	"github.com/novshi-tech/boid/internal/hostcmd"
 )
 
+// BindMount describes a host path to bind-mount into the sandbox.
+type BindMount struct {
+	Source string `yaml:"source" json:"source"`
+	Mode   string `yaml:"mode" json:"mode"` // "ro" (default) or "rw"
+}
+
 type ProjectMeta struct {
 	ID                 string                        `yaml:"id" json:"id"`
 	WorkspaceID        string                        `yaml:"workspace_id" json:"workspace_id"`
@@ -14,7 +20,7 @@ type ProjectMeta struct {
 	TaskBehaviors      map[string]TaskBehavior        `yaml:"task_behaviors" json:"task_behaviors"`
 	Hooks              []Hook                        `yaml:"hooks" json:"hooks"`
 	HostCommands       map[string]hostcmd.CommandDef  `yaml:"host_commands" json:"host_commands"`
-	AdditionalBindings []string                      `yaml:"additional_bindings" json:"additional_bindings"`
+	AdditionalBindings []BindMount                   `yaml:"additional_bindings" json:"additional_bindings"`
 	Env                map[string]string             `yaml:"env" json:"env"`
 
 	// Populated at load time after kit resolution; not from YAML.

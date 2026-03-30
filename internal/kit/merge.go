@@ -61,8 +61,8 @@ func MergeKits(base *model.ProjectMeta, kits []*KitMeta) *model.ProjectMeta {
 		result.HostCommands = mergedCmds
 	}
 
-	// List fields: union
-	result.AdditionalBindings = unionStrings(kits, base.AdditionalBindings, func(m *KitMeta) []string { return m.AdditionalBindings })
+	// List fields: union by source path
+	result.AdditionalBindings = unionBindMounts(kits, base.AdditionalBindings)
 
 	// Collect KitHooksDirs
 	for _, m := range kits {
@@ -97,21 +97,21 @@ func dedupHooks(hooks []model.Hook) []model.Hook {
 	return result
 }
 
-func unionStrings(kits []*KitMeta, base []string, extract func(*KitMeta) []string) []string {
+func unionBindMounts(kits []*KitMeta, base []model.BindMount) []model.BindMount {
 	seen := make(map[string]bool)
-	var result []string
+	var result []model.BindMount
 	for _, m := range kits {
-		for _, s := range extract(m) {
-			if !seen[s] {
-				seen[s] = true
-				result = append(result, s)
+		for _, b := range m.AdditionalBindings {
+			if !seen[b.Source] {
+				seen[b.Source] = true
+				result = append(result, b)
 			}
 		}
 	}
-	for _, s := range base {
-		if !seen[s] {
-			seen[s] = true
-			result = append(result, s)
+	for _, b := range base {
+		if !seen[b.Source] {
+			seen[b.Source] = true
+			result = append(result, b)
 		}
 	}
 	return result

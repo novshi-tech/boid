@@ -25,7 +25,7 @@ func ReadKit(dir string) (*KitMeta, error) {
 	}
 
 	// Interpolate environment variables
-	interpolateEnvSlice(m.AdditionalBindings)
+	interpolateBindMounts(m.AdditionalBindings)
 	interpolateHostCommands(m.HostCommands)
 	interpolateEnvMap(m.Env)
 
@@ -57,6 +57,12 @@ func interpolateEnv(s string) string {
 func interpolateEnvSlice(ss []string) {
 	for i, s := range ss {
 		ss[i] = interpolateEnv(s)
+	}
+}
+
+func interpolateBindMounts(mounts []model.BindMount) {
+	for i := range mounts {
+		mounts[i].Source = interpolateEnv(mounts[i].Source)
 	}
 }
 

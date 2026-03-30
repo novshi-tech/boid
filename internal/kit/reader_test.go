@@ -30,7 +30,7 @@ host_commands:
   go:
     path: /usr/bin/go
 additional_bindings:
-  - /usr/local/go
+  - source: /usr/local/go
 env:
   GOPATH: /home/user/go
 task_behaviors:
@@ -72,7 +72,7 @@ func TestReadKit_EnvInterpolation(t *testing.T) {
 	dir := t.TempDir()
 	writeKitYAML(t, dir, `
 additional_bindings:
-  - ${TEST_BOID_HOME}/.local/share/go
+  - source: ${TEST_BOID_HOME}/.local/share/go
 env:
   GOPATH: ${TEST_BOID_HOME}/go
 `)
@@ -84,8 +84,8 @@ env:
 		t.Fatalf("ReadKit: %v", err)
 	}
 
-	if m.AdditionalBindings[0] != "/home/testuser/.local/share/go" {
-		t.Errorf("binding = %q, want interpolated path", m.AdditionalBindings[0])
+	if m.AdditionalBindings[0].Source != "/home/testuser/.local/share/go" {
+		t.Errorf("binding = %q, want interpolated path", m.AdditionalBindings[0].Source)
 	}
 	if m.Env["GOPATH"] != "/home/testuser/go" {
 		t.Errorf("env GOPATH = %q, want interpolated", m.Env["GOPATH"])

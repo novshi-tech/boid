@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/novshi-tech/boid/internal/model"
 )
 
 // WrapperConfig holds the parameters for sandbox script generation.
@@ -22,7 +24,7 @@ type WrapperConfig struct {
 	BrokerToken        string            // broker authentication token
 	Env                map[string]string // project environment variables
 	HostCommands       []string          // command names to shim via symlinks
-	AdditionalBindings []string          // extra host paths to bind-mount (read-only)
+	AdditionalBindings []model.BindMount // extra host paths to bind-mount
 	WorkspaceDirs      map[string]string // project-id -> host-dir (read-only mounts)
 	ProxyPort          int               // host-side proxy port (0 = no proxy)
 	StagingDir         string            // if set, staging dir to clean up after job
@@ -182,18 +184,21 @@ mount -t tmpfs tmpfs "$ROOT/tmp"
 	fmt.Fprintf(&b, "mkdir -p \"$ROOT%s\"\n", cfg.ProjectDir)
 	fmt.Fprintf(&b, "mount --bind %s \"$ROOT%s\"\n", cfg.ProjectDir, cfg.ProjectDir)
 
-	// Additional bindings (read-only, supports both files and directories)
+	// Additional bindings
 	if len(cfg.AdditionalBindings) > 0 {
 		b.WriteString("\n# Additional bindings\n")
-		for _, binding := range cfg.AdditionalBindings {
-			fmt.Fprintf(&b, "if [ -d %s ]; then\n", binding)
-			fmt.Fprintf(&b, "    mkdir -p \"$ROOT%s\"\n", binding)
-			fmt.Fprintf(&b, "elif [ -f %s ]; then\n", binding)
-			fmt.Fprintf(&b, "    mkdir -p \"$(dirname \"$ROOT%s\")\"\n", binding)
-			fmt.Fprintf(&b, "    touch \"$ROOT%s\"\n", binding)
+		for _, bm := range cfg.AdditionalBindings {
+			src := bm.Source
+			fmt.Fprintf(&b, "if [ -d %s ]; then\n", src)
+			fmt.Fprintf(&b, "    mkdir -p \"$ROOT%s\"\n", src)
+			fmt.Fprintf(&b, "elif [ -f %s ]; then\n", src)
+			fmt.Fprintf(&b, "    mkdir -p \"$(dirname \"$ROOT%s\")\"\n", src)
+			fmt.Fprintf(&b, "    touch \"$ROOT%s\"\n", src)
 			fmt.Fprintf(&b, "fi\n")
-			fmt.Fprintf(&b, "mount --bind %s \"$ROOT%s\"\n", binding, binding)
-			fmt.Fprintf(&b, "mount -o remount,bind,ro \"$ROOT%s\"\n", binding)
+			fmt.Fprintf(&b, "mount --bind %s \"$ROOT%s\"\n", src, src)
+			if bm.Mode != "rw" {
+				fmt.Fprintf(&b, "mount -o remount,bind,ro \"$ROOT%s\"\n", src)
+			}
 		}
 	}
 
@@ -233,13 +238,13 @@ mount -t tmpfs tmpfs "$ROOT/tmp"
 
 // additionalPATH builds PATH entries from additional bindings.
 // Paths ending in /bin are added directly; others get /bin appended.
-func additionalPATH(bindings []string) string {
+func additionalPATH(bindings []model.BindMount) string {
 	var parts []string
-	for _, b := range bindings {
-		if strings.HasSuffix(b, "/bin") {
-			parts = append(parts, b)
+	for _, bm := range bindings {
+		if strings.HasSuffix(bm.Source, "/bin") {
+			parts = append(parts, bm.Source)
 		} else {
-			parts = append(parts, b+"/bin")
+			parts = append(parts, bm.Source+"/bin")
 		}
 	}
 	return strings.Join(parts, ":")

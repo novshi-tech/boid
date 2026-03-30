@@ -248,7 +248,7 @@ kits:
 
 	kitYAML := `
 additional_bindings:
-  - /usr/local/go
+  - source: /usr/local/go
 env:
   GOPATH: /home/user/go
 `
@@ -264,7 +264,7 @@ env:
 	if meta.Env["GOPATH"] != "/home/user/go" {
 		t.Errorf("expected GOPATH=/home/user/go, got %s", meta.Env["GOPATH"])
 	}
-	if len(meta.AdditionalBindings) == 0 || meta.AdditionalBindings[0] != "/usr/local/go" {
+	if len(meta.AdditionalBindings) == 0 || meta.AdditionalBindings[0].Source != "/usr/local/go" {
 		t.Errorf("expected additional_bindings to contain /usr/local/go, got %v", meta.AdditionalBindings)
 	}
 }
@@ -335,7 +335,7 @@ kits:
 
 	kitYAML := `
 additional_bindings:
-  - ${TEST_BOID_HOME}/.local/share/go
+  - source: ${TEST_BOID_HOME}/.local/share/go
 env:
   GOPATH: ${TEST_BOID_HOME}/go
 `
@@ -353,8 +353,8 @@ env:
 	if meta.Env["GOPATH"] != "/home/testuser/go" {
 		t.Errorf("expected GOPATH=/home/testuser/go, got %s", meta.Env["GOPATH"])
 	}
-	if meta.AdditionalBindings[0] != "/home/testuser/.local/share/go" {
-		t.Errorf("expected interpolated binding, got %s", meta.AdditionalBindings[0])
+	if meta.AdditionalBindings[0].Source != "/home/testuser/.local/share/go" {
+		t.Errorf("expected interpolated binding, got %s", meta.AdditionalBindings[0].Source)
 	}
 }
 
@@ -411,7 +411,7 @@ kits:
 env:
   GOPATH: /home/user/go
 additional_bindings:
-  - /usr/local/go
+  - source: /usr/local/go
 `
 	if err := os.WriteFile(filepath.Join(boidDir, "kits", "go-dev", "kit.yaml"), []byte(goKitYAML), 0o644); err != nil {
 		t.Fatalf("write go-dev kit.yaml: %v", err)
