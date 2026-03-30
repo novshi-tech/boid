@@ -121,6 +121,9 @@ func runExec(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	cfg.Command = command
+	if fileInfo, _ := os.Stdin.Stat(); fileInfo.Mode()&os.ModeCharDevice != 0 {
+		cfg.TTY = true
+	}
 
 	outerPath, err := job.WriteSandboxScripts(cfg)
 	if err != nil {

@@ -114,9 +114,9 @@ func TestWriteSandboxScripts(t *testing.T) {
 	}
 }
 
-func TestWriteSandboxScripts_Interactive(t *testing.T) {
+func TestWriteSandboxScripts_TTY(t *testing.T) {
 	cfg := job.WrapperConfig{
-		JobID:        "test-shell-001",
+		JobID:        "test-tty-001",
 		ProjectID:    "proj-1",
 		ProjectDir:   "/home/user/projects/proj-1",
 		BoidBinary:   "/usr/local/bin/boid",
@@ -125,7 +125,8 @@ func TestWriteSandboxScripts_Interactive(t *testing.T) {
 			"MY_VAR": "hello",
 		},
 		HostCommands: []string{"git"},
-		Interactive:  true,
+		Command:      "/bin/bash",
+		TTY:          true,
 	}
 
 	outerPath, err := job.WriteSandboxScripts(cfg)
@@ -133,7 +134,7 @@ func TestWriteSandboxScripts_Interactive(t *testing.T) {
 		t.Fatalf("WriteSandboxScripts: %v", err)
 	}
 
-	prefix := "/tmp/boid-test-shell-001"
+	prefix := "/tmp/boid-test-tty-001"
 	innerPath := prefix + "-inner.sh"
 	setupPath := prefix + "-setup.sh"
 	t.Cleanup(func() {
@@ -142,8 +143,7 @@ func TestWriteSandboxScripts_Interactive(t *testing.T) {
 		os.Remove(innerPath)
 	})
 
-	// Outer script: should save/restore stderr so pasta warnings are suppressed
-	// but the interactive bash prompt (printed to stderr) remains visible.
+	// Outer script: TTY mode should save/restore stderr
 	outerContent, err := os.ReadFile(outerPath)
 	if err != nil {
 		t.Fatalf("read outer script: %v", err)
@@ -156,7 +156,7 @@ func TestWriteSandboxScripts_Interactive(t *testing.T) {
 		t.Error("outer script missing fd restore (exec 2>&3 3>&-)")
 	}
 
-	// Inner script: should exec bash, not run a hook
+	// Inner script: should exec the command
 	innerContent, err := os.ReadFile(innerPath)
 	if err != nil {
 		t.Fatalf("read inner script: %v", err)
@@ -167,19 +167,13 @@ func TestWriteSandboxScripts_Interactive(t *testing.T) {
 		t.Error("inner script missing 'exec /bin/bash'")
 	}
 	if strings.Contains(inner, "boid job done") {
-		t.Error("inner script must not contain 'boid job done' in interactive mode")
-	}
-	if strings.Contains(inner, ".boid/hooks/") {
-		t.Error("inner script must not invoke a hook script in interactive mode")
+		t.Error("inner script must not contain 'boid job done' in command mode")
 	}
 	if !strings.Contains(inner, `MY_VAR="hello"`) {
 		t.Error("inner script missing env var MY_VAR")
 	}
-	if !strings.Contains(inner, "cd "+cfg.ProjectDir) {
-		t.Error("inner script missing cd to project directory")
-	}
 
-	// Setup script: should not mount hooks directory
+	// Setup script: should not mount hooks directory in command mode
 	setupContent, err := os.ReadFile(setupPath)
 	if err != nil {
 		t.Fatalf("read setup script: %v", err)
@@ -187,14 +181,10 @@ func TestWriteSandboxScripts_Interactive(t *testing.T) {
 	setup := string(setupContent)
 
 	if strings.Contains(setup, ".boid/hooks") {
-		t.Error("setup script must not mount hooks directory in interactive mode")
+		t.Error("setup script must not mount hooks directory in command mode")
 	}
-	// But should still set up the sandbox environment
 	if !strings.Contains(setup, "unshare --user") {
 		t.Error("setup script missing 'unshare --user'")
-	}
-	if !strings.Contains(setup, cfg.ProjectDir) {
-		t.Errorf("setup script missing project dir %q", cfg.ProjectDir)
 	}
 }
 

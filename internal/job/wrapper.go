@@ -28,7 +28,7 @@ type WrapperConfig struct {
 	WorkspaceDirs      map[string]string // project-id -> host-dir (read-only mounts)
 	ProxyPort          int               // host-side proxy port (0 = no proxy)
 	StagingDir         string            // if set, staging dir to clean up after job
-	Interactive        bool              // if true, launch interactive shell instead of hook
+	TTY                bool              // if true, preserve TTY through pasta (for interactive commands)
 }
 
 // homeDir returns the effective home directory.
@@ -66,9 +66,9 @@ func WriteSandboxScripts(cfg WrapperConfig) (string, error) {
 }
 
 func generateOuterScript(cfg WrapperConfig, setupPath string) string {
-	if cfg.Interactive {
+	if cfg.TTY {
 		// Save original stderr to fd 3, suppress pasta's warnings,
-		// then restore stderr in the child so the bash prompt is visible.
+		// then restore stderr in the child so the TTY is preserved.
 		return fmt.Sprintf(`#!/bin/bash
 set -e
 exec 3>&2
@@ -116,7 +116,7 @@ ROOT=$(mktemp -d /tmp/boid-root-XXXXXX)
     fi
     rm -f %s %s %s
 `, outerPath, setupPath, innerPath)
-	if cfg.StagingDir != "" && !cfg.Interactive {
+	if cfg.StagingDir != "" && cfg.Command == "" {
 		fmt.Fprintf(&b, "    rm -rf %s\n", cfg.StagingDir)
 	}
 	b.WriteString(`}
@@ -168,8 +168,8 @@ mount -t tmpfs tmpfs "$ROOT/tmp"
 		}
 	}
 
-	// Hooks directory (ro) -- not needed in interactive mode or command mode
-	if !cfg.Interactive && cfg.Command == "" {
+	// Hooks directory (ro) -- only needed in hook mode
+	if cfg.Command == "" {
 		fmt.Fprintf(&b, "mkdir -p \"$ROOT%s/.boid/hooks\"\n", cfg.ProjectDir)
 		fmt.Fprintf(&b, "mount --bind %s \"$ROOT%s/.boid/hooks\"\n", cfg.HooksDir, cfg.ProjectDir)
 		fmt.Fprintf(&b, "mount -o remount,bind,ro \"$ROOT%s/.boid/hooks\"\n", cfg.ProjectDir)
@@ -297,9 +297,7 @@ func generateInnerScript(cfg WrapperConfig) string {
 	fmt.Fprintf(&b, "\ncd %s\n\n", cfg.ProjectDir)
 
 	if cfg.Command != "" {
-		fmt.Fprintf(&b, "%s\n", cfg.Command)
-	} else if cfg.Interactive {
-		b.WriteString("exec /bin/bash\n")
+		fmt.Fprintf(&b, "exec %s\n", cfg.Command)
 	} else {
 		fmt.Fprintf(&b, "trap 'boid job done %s --exit-code $?' EXIT\n", cfg.JobID)
 		fmt.Fprintf(&b, "%s/.boid/hooks/%s\n", cfg.ProjectDir, cfg.HookScript)
