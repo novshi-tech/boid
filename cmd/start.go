@@ -52,8 +52,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		KitsDir:     defaultKitsDir(),
 		AllowedDomains: []string{
 			// AI agents
-			"api.anthropic.com",
-			"platform.claude.com",
+			".anthropic.com",
 			".claude.ai",
 			"api.openai.com",
 			// Go
