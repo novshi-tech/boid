@@ -198,6 +198,102 @@ hooks:
 	}
 }
 
+func TestReadMeta_WithGates(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	gatesDir := filepath.Join(boidDir, "gates")
+	if err := os.MkdirAll(gatesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	yaml := `
+id: test-proj
+name: Test
+gates:
+  - id: push-pr
+    on: executing
+    requires_traits:
+      - pr
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(gatesDir, "push-pr.sh"), []byte("#!/bin/bash\n"), 0o755); err != nil {
+		t.Fatalf("write gate: %v", err)
+	}
+
+	meta, err := project.ReadMeta(dir)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+
+	if len(meta.Gates) != 1 {
+		t.Fatalf("expected 1 gate, got %d", len(meta.Gates))
+	}
+	if meta.Gates[0].ID != "push-pr" {
+		t.Fatalf("expected gate id push-pr, got %s", meta.Gates[0].ID)
+	}
+	if meta.Gates[0].ScriptPath != filepath.Join(gatesDir, "push-pr.sh") {
+		t.Fatalf("expected gate script path, got %s", meta.Gates[0].ScriptPath)
+	}
+}
+
+func TestReadMeta_GateScriptMissing(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	gatesDir := filepath.Join(boidDir, "gates")
+	if err := os.MkdirAll(gatesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	yaml := `
+id: test-proj
+name: Test
+gates:
+  - id: missing-gate
+    on: executing
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	_, err := project.ReadMeta(dir)
+	if err == nil {
+		t.Fatal("expected error for missing gate script")
+	}
+	if !strings.Contains(err.Error(), "gate script not found") {
+		t.Fatalf("expected 'gate script not found' error, got: %v", err)
+	}
+}
+
+func TestReadMeta_InvalidGateOnValue(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	gatesDir := filepath.Join(boidDir, "gates")
+	if err := os.MkdirAll(gatesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	yaml := `
+id: test-proj
+name: Test
+gates:
+  - id: bad-gate
+    on: invalid_status
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	_, err := project.ReadMeta(dir)
+	if err == nil {
+		t.Fatal("expected error for invalid gate on value")
+	}
+	if !strings.Contains(err.Error(), "invalid on value") {
+		t.Fatalf("expected 'invalid on value' error, got: %v", err)
+	}
+}
+
 func TestReadMeta_InvalidHookOnValue(t *testing.T) {
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")

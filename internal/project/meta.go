@@ -45,6 +45,19 @@ func ReadMeta(dir string) (*model.ProjectMeta, error) {
 		h.ScriptPath = scriptPath
 	}
 
+	gatesDir := filepath.Join(dir, ".boid", "gates")
+	for i := range meta.Gates {
+		g := &meta.Gates[i]
+		if !model.ValidGateOnValues[g.On] {
+			return nil, fmt.Errorf("gate %q: invalid on value %q", g.ID, g.On)
+		}
+		scriptPath, err := model.ResolveGateScript(gatesDir, g.ID)
+		if err != nil {
+			return nil, fmt.Errorf("gate %q: %w", g.ID, err)
+		}
+		g.ScriptPath = scriptPath
+	}
+
 	return &meta, nil
 }
 
