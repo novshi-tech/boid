@@ -177,12 +177,21 @@ func New(cfg Config) (*Server, error) {
 	}
 	dispatcher := &hook.Dispatcher{Runner: runner, MaxDepth: 3}
 
-	actionHandler := &api.ActionHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, Dispatcher: dispatcher, WorktreeMgr: wtMgr}
+	adapter := &runnerAdapter{runner: runner}
+	advancedDispatcher := &hook.AdvancedDispatcher{
+		Evaluator:    eval,
+		HookExecutor: adapter,
+		GateExecutor: adapter,
+		Waiter:       adapter,
+		MaxDepth:     5,
+	}
+
+	actionHandler := &api.ActionHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, Dispatcher: dispatcher, AdvancedDispatcher: advancedDispatcher, WorktreeMgr: wtMgr}
 	r.Route("/api/tasks/{taskID}/actions", func(r chi.Router) {
 		r.Mount("/", actionHandler.Routes())
 	})
 
-	jobHandler := &api.JobHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, Runner: runner, WorktreeMgr: wtMgr}
+	jobHandler := &api.JobHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, Runner: runner, AdvancedDispatcher: advancedDispatcher, WorktreeMgr: wtMgr}
 	r.Mount("/api/jobs", jobHandler.Routes())
 
 	// Web UI

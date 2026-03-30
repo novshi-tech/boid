@@ -16,12 +16,13 @@ import (
 )
 
 type JobHandler struct {
-	DB          *db.DB
-	Store       *project.Store
-	Registry    *reducer.Registry
-	Evaluator   *hook.Evaluator
-	Runner      *job.Runner
-	WorktreeMgr *worktree.Manager
+	DB                 *db.DB
+	Store              *project.Store
+	Registry           *reducer.Registry
+	Evaluator          *hook.Evaluator
+	Runner             *job.Runner
+	AdvancedDispatcher *hook.AdvancedDispatcher
+	WorktreeMgr        *worktree.Manager
 }
 
 func (h *JobHandler) Routes() chi.Router {

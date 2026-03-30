@@ -16,12 +16,13 @@ import (
 )
 
 type ActionHandler struct {
-	DB          *db.DB
-	Store       *project.Store
-	Registry    *reducer.Registry
-	Evaluator   *hook.Evaluator
-	Dispatcher  *hook.Dispatcher
-	WorktreeMgr *worktree.Manager
+	DB                  *db.DB
+	Store               *project.Store
+	Registry            *reducer.Registry
+	Evaluator           *hook.Evaluator
+	Dispatcher          *hook.Dispatcher          // legacy dispatcher
+	AdvancedDispatcher  *hook.AdvancedDispatcher   // new hook→gate→advance dispatcher
+	WorktreeMgr         *worktree.Manager
 }
 
 func (h *ActionHandler) Routes() chi.Router {
