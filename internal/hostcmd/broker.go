@@ -192,6 +192,20 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 		}
 	}
 
+	// Inject context for task create: add --project if not present
+	if subcmd == "task" && len(req.Args) > 1 && req.Args[1] == "create" && entry.Context.ProjectID != "" {
+		hasProject := false
+		for _, a := range req.Args {
+			if a == "--project" {
+				hasProject = true
+				break
+			}
+		}
+		if !hasProject {
+			req.Args = append(req.Args, "--project", entry.Context.ProjectID)
+		}
+	}
+
 	// Find boid binary path
 	boidPath := b.BoidBinary
 	if boidPath == "" {

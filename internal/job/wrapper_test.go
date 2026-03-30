@@ -584,11 +584,8 @@ func TestWriteSandboxScripts_HookRole(t *testing.T) {
 	if !strings.Contains(inner, "/tmp/boid-output") {
 		t.Error("hook role inner script should capture stdout to /tmp/boid-output")
 	}
-	if !strings.Contains(inner, "boid job done --exit-code") {
-		t.Error("hook role inner script should have token-based boid job done")
-	}
-	if strings.Contains(inner, "boid job done test-hook-role") {
-		t.Error("hook role inner script should NOT have job ID in boid job done")
+	if !strings.Contains(inner, "boid job done test-hook-role --exit-code") {
+		t.Error("hook role inner script should have boid job done with job ID")
 	}
 
 	// Should pipe payload to stdin

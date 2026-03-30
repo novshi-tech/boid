@@ -154,7 +154,7 @@ func generateHookInnerScript(cfg WrapperConfig) string {
 	wd := cfg.workDir()
 	fmt.Fprintf(&b, "\ncd %s\n\n", wd)
 
-	b.WriteString("trap 'boid job done --exit-code $? --output-file /tmp/boid-output' EXIT\n")
+	fmt.Fprintf(&b, "trap 'boid job done %s --exit-code $? --output-file /tmp/boid-output' EXIT\n", cfg.JobID)
 	fmt.Fprintf(&b, "echo '%s' | %s/.boid/hooks/%s > /tmp/boid-output\n", cfg.PayloadJSON, wd, cfg.HookScript)
 
 	return b.String()
@@ -180,7 +180,7 @@ func generateGateInnerScript(cfg WrapperConfig) string {
 
 	b.WriteString("\ncd /tmp\n\n")
 
-	b.WriteString("trap 'boid job done --exit-code $? --output-file /tmp/boid-output' EXIT\n")
+	fmt.Fprintf(&b, "trap 'boid job done %s --exit-code $? --output-file /tmp/boid-output' EXIT\n", cfg.JobID)
 	fmt.Fprintf(&b, "echo '%s' | %s > /tmp/boid-output\n", cfg.TaskJSON, cfg.workDir()+"/.boid/gates/"+cfg.HookScript)
 
 	return b.String()
