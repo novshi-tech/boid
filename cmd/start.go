@@ -68,8 +68,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 			// Docker
 			".docker.io",
 			"auth.docker.io",
-			// Azure DevOps
-			"dev.azure.com",
 		},
 	}
 
