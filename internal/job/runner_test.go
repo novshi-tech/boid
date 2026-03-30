@@ -118,6 +118,53 @@ func TestRunner_WaitForJob_CompleteJob(t *testing.T) {
 	}
 }
 
+func TestRunner_WaitForJobCtx_Success(t *testing.T) {
+	runner := &job.Runner{}
+
+	go func() {
+		runner.CompleteJob("job-ctx-1", job.JobCompletionResult{
+			Output:   `{"payload_patch":{}}`,
+			ExitCode: 0,
+		})
+	}()
+
+	result, err := runner.WaitForJobCtx(context.Background(), "job-ctx-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("exit code = %d, want 0", result.ExitCode)
+	}
+}
+
+func TestRunner_WaitForJobCtx_Timeout(t *testing.T) {
+	runner := &job.Runner{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // immediately cancel
+
+	_, err := runner.WaitForJobCtx(ctx, "job-timeout")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+}
+
+func TestRunner_WaitForJobCtx_FailedJob(t *testing.T) {
+	runner := &job.Runner{}
+
+	go func() {
+		runner.CompleteJob("job-fail", job.JobCompletionResult{
+			Output:   "error",
+			ExitCode: 1,
+		})
+	}()
+
+	_, err := runner.WaitForJobCtx(context.Background(), "job-fail")
+	if err == nil {
+		t.Fatal("expected error for failed job")
+	}
+}
+
 func TestRunner_WaitForJob_UnknownJobDropped(t *testing.T) {
 	runner := &job.Runner{}
 

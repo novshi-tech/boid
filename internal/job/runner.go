@@ -2,6 +2,7 @@ package job
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -279,6 +280,232 @@ func (r *Runner) CompleteJob(jobID string, result JobCompletionResult) {
 
 	if ok {
 		ch <- result
+	}
+}
+
+// ExecuteHook implements hook.HookExecutor: creates a job, spawns sandbox, returns job ID.
+func (r *Runner) ExecuteHook(ctx context.Context, event *model.HookFireEvent) (string, error) {
+	slog.Info("executing hook (advanced)", "hook_id", event.Hook.ID, "task_id", event.TaskID)
+
+	hookFilename := filepath.Base(event.Hook.ScriptPath)
+	if hookFilename == "" || hookFilename == "." {
+		return "", fmt.Errorf("hook %q: no script path resolved", event.Hook.ID)
+	}
+
+	meta, ok := r.Store.Get(event.ProjectID)
+	if !ok {
+		return "", fmt.Errorf("project %q: meta not loaded", event.ProjectID)
+	}
+	proj, err := r.DB.GetProject(event.ProjectID)
+	if err != nil {
+		return "", fmt.Errorf("get project: %w", err)
+	}
+
+	task, err := r.DB.GetTask(event.TaskID)
+	if err != nil {
+		return "", fmt.Errorf("get task: %w", err)
+	}
+
+	j := &model.Job{
+		TaskID:    event.TaskID,
+		ProjectID: event.ProjectID,
+		HandlerID: event.Hook.ID,
+		Role:      string(model.RoleHook),
+	}
+	if err := r.DB.CreateJob(j); err != nil {
+		return "", fmt.Errorf("create job: %w", err)
+	}
+
+	projectHooksDir := filepath.Join(proj.WorkDir, ".boid", "hooks")
+	hooksDir := projectHooksDir
+	var stagingDir string
+	if len(meta.KitHooksDirs) > 0 {
+		staged, _, err := kit.StageHooks(projectHooksDir, meta.KitHooksDirs, j.ID)
+		if err != nil {
+			return "", fmt.Errorf("stage hooks: %w", err)
+		}
+		hooksDir = staged
+		stagingDir = staged
+	}
+
+	workspaceDirs := r.collectWorkspaceDirs(meta.WorkspaceID, event.ProjectID)
+
+	var proxyPort int
+	if r.ProxyPort != nil {
+		proxyPort = *r.ProxyPort
+	}
+
+	// Register broker with hook role (boid builtin only, no project host commands)
+	var brokerSocket, brokerToken string
+	if r.Broker != nil {
+		tokenCtx := hostcmd.TokenContext{
+			JobID: j.ID, TaskID: event.TaskID, ProjectID: event.ProjectID,
+			Role: string(model.RoleHook),
+		}
+		r.Broker.Register(nil, tokenCtx) // no project commands for hooks
+		brokerToken = r.Broker.Register(nil, tokenCtx)
+		brokerSocket = r.Broker.SocketPath
+		r.trackToken(j.ID, brokerToken)
+	}
+
+	behavior, _ := meta.TaskBehaviors[task.Behavior]
+	readonly := behavior.Readonly ||
+		task.Status == model.TaskStatusVerifying ||
+		task.Status == model.TaskStatusInReview
+
+	homeDir, _ := os.UserHomeDir()
+	var worktreeDir string
+	if r.WorktreeMgr != nil {
+		worktreeDir, _ = r.resolveWorktree(event, meta, proj)
+	}
+
+	payloadJSON := string(task.Payload)
+	if payloadJSON == "" {
+		payloadJSON = "{}"
+	}
+
+	cfg := WrapperConfig{
+		JobID:              j.ID,
+		TaskID:             event.TaskID,
+		ProjectID:          meta.ID,
+		ProjectDir:         proj.WorkDir,
+		HomeDir:            homeDir,
+		HooksDir:           hooksDir,
+		HookScript:         hookFilename,
+		BoidBinary:         r.BoidBinary,
+		ServerSocket:       r.ServerSocket,
+		BrokerSocket:       brokerSocket,
+		BrokerToken:        brokerToken,
+		Env:                meta.Env,
+		HostCommands:       []string{"boid"},
+		AdditionalBindings: meta.AdditionalBindings,
+		WorkspaceDirs:      workspaceDirs,
+		ProxyPort:          proxyPort,
+		StagingDir:         stagingDir,
+		WorktreeDir:        worktreeDir,
+		Role:               "hook",
+		PayloadJSON:        payloadJSON,
+		Readonly:           readonly,
+	}
+
+	return r.launchSandbox(j.ID, event.TaskID, event.Hook.ID, cfg)
+}
+
+// ExecuteGate implements hook.GateExecutor: creates a gate job, spawns sandbox, returns job ID.
+func (r *Runner) ExecuteGate(ctx context.Context, event *model.GateFireEvent) (string, error) {
+	slog.Info("executing gate", "gate_id", event.Gate.ID, "task_id", event.TaskID)
+
+	gateFilename := filepath.Base(event.Gate.ScriptPath)
+	if gateFilename == "" || gateFilename == "." {
+		return "", fmt.Errorf("gate %q: no script path resolved", event.Gate.ID)
+	}
+
+	meta, ok := r.Store.Get(event.ProjectID)
+	if !ok {
+		return "", fmt.Errorf("project %q: meta not loaded", event.ProjectID)
+	}
+	proj, err := r.DB.GetProject(event.ProjectID)
+	if err != nil {
+		return "", fmt.Errorf("get project: %w", err)
+	}
+
+	task, err := r.DB.GetTask(event.TaskID)
+	if err != nil {
+		return "", fmt.Errorf("get task: %w", err)
+	}
+
+	j := &model.Job{
+		TaskID:    event.TaskID,
+		ProjectID: event.ProjectID,
+		HandlerID: event.Gate.ID,
+		Role:      string(model.RoleGate),
+	}
+	if err := r.DB.CreateJob(j); err != nil {
+		return "", fmt.Errorf("create job: %w", err)
+	}
+
+	var proxyPort int
+	if r.ProxyPort != nil {
+		proxyPort = *r.ProxyPort
+	}
+
+	// Register broker with gate role (project host commands + boid builtin)
+	var brokerSocket, brokerToken string
+	if r.Broker != nil {
+		tokenCtx := hostcmd.TokenContext{
+			JobID: j.ID, TaskID: event.TaskID, ProjectID: event.ProjectID,
+			Role: string(model.RoleGate),
+		}
+		if r.SecretStore != nil {
+			brokerToken = r.Broker.RegisterWithSecrets(meta.HostCommands, tokenCtx, r.SecretStore.Get)
+		} else {
+			brokerToken = r.Broker.Register(meta.HostCommands, tokenCtx)
+		}
+		brokerSocket = r.Broker.SocketPath
+		r.trackToken(j.ID, brokerToken)
+	}
+
+	taskJSON, _ := json.Marshal(task)
+
+	cfg := WrapperConfig{
+		JobID:        j.ID,
+		TaskID:       event.TaskID,
+		ProjectID:    meta.ID,
+		ProjectDir:   proj.WorkDir,
+		HookScript:   gateFilename,
+		BoidBinary:   r.BoidBinary,
+		ServerSocket: r.ServerSocket,
+		BrokerSocket: brokerSocket,
+		BrokerToken:  brokerToken,
+		Env:          meta.Env,
+		HostCommands: append(hostCommandNames(meta.HostCommands), "boid"),
+		ProxyPort:    proxyPort,
+		Role:         "gate",
+		TaskJSON:     string(taskJSON),
+	}
+
+	return r.launchSandbox(j.ID, event.TaskID, event.Gate.ID, cfg)
+}
+
+// launchSandbox writes sandbox scripts and launches in tmux. Returns job ID.
+func (r *Runner) launchSandbox(jobID, taskID, handlerID string, cfg WrapperConfig) (string, error) {
+	outerPath, err := WriteSandboxScripts(cfg)
+	if err != nil {
+		return "", fmt.Errorf("write sandbox scripts: %w", err)
+	}
+
+	session := r.session()
+	prefix := "hook"
+	if cfg.Role == "gate" {
+		prefix = "gate"
+	}
+	windowName := fmt.Sprintf("%s-%s-%s", prefix, taskID[:min(8, len(taskID))], handlerID)
+
+	if r.Tmux != nil {
+		if err := r.Tmux.EnsureSession(session); err != nil {
+			return "", fmt.Errorf("ensure session: %w", err)
+		}
+		cmd := fmt.Sprintf("bash %s", outerPath)
+		if err := r.Tmux.RunInWindow(session, windowName, cmd); err != nil {
+			return "", fmt.Errorf("run in window: %w", err)
+		}
+	}
+
+	slog.Info("job started", "job_id", jobID, "window", windowName)
+	return jobID, nil
+}
+
+// WaitForJobCtx implements hook.JobWaiter: waits for a job to complete with context support.
+func (r *Runner) WaitForJobCtx(ctx context.Context, jobID string) (JobCompletionResult, error) {
+	ch := r.WaitForJob(jobID)
+	select {
+	case result := <-ch:
+		if result.ExitCode != 0 {
+			return result, fmt.Errorf("job %s failed with exit code %d", jobID, result.ExitCode)
+		}
+		return result, nil
+	case <-ctx.Done():
+		return JobCompletionResult{}, fmt.Errorf("wait for job %s: %w", jobID, ctx.Err())
 	}
 }
 
