@@ -21,7 +21,6 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/secret"
-	"github.com/novshi-tech/boid/internal/worktree"
 	"github.com/novshi-tech/boid/web"
 )
 
@@ -158,7 +157,7 @@ func New(cfg Config) (*Server, error) {
 	// Worktree manager
 	wtRootDir := filepath.Join(filepath.Dir(cfg.DBPath), "worktrees")
 	os.MkdirAll(wtRootDir, 0o755)
-	wtMgr := &worktree.Manager{RootDir: wtRootDir, DB: d}
+	wtMgr := &dispatcher.WorktreeManager{RootDir: wtRootDir, DB: d}
 
 	runner := dispatcher.Wire(dispatcher.WireConfig{
 		DB:          d,

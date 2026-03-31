@@ -9,7 +9,6 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/worktree"
 )
 
 type JobHandler struct {
@@ -19,7 +18,7 @@ type JobHandler struct {
 	Evaluator   *orchestrator.Evaluator
 	Runner      *dispatcher.Runner
 	Coordinator *orchestrator.Coordinator
-	WorktreeMgr *worktree.Manager
+	WorktreeMgr *dispatcher.WorktreeManager
 }
 
 func (h *JobHandler) Routes() chi.Router {
@@ -153,9 +152,7 @@ func (h *JobHandler) Done(w http.ResponseWriter, r *http.Request) {
 
 	// Cleanup worktree on terminal state
 	if h.WorktreeMgr != nil {
-		if err := h.WorktreeMgr.CleanupForTask(newTask.ID, newTask.Status); err != nil {
-			slog.Warn("worktree cleanup failed", "task_id", newTask.ID, "error", err)
-		}
+		cleanupWorktree(h.DB, h.WorktreeMgr, newTask.ID, j.ProjectID, newTask.Status)
 	}
 
 	writeJSON(w, http.StatusOK, j)

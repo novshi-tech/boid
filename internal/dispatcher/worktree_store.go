@@ -1,4 +1,4 @@
-package worktree
+package dispatcher
 
 import (
 	"database/sql"

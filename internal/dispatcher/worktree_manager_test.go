@@ -1,4 +1,4 @@
-package worktree_test
+package dispatcher_test
 
 import (
 	"os"
@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/worktree"
+	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/testutil"
 )
 
@@ -47,7 +47,7 @@ func TestManager_CreateAndRemove(t *testing.T) {
 	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-1', ?)`, repo)
 	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-abcd1234-5678', 'proj-1', 'test', 'dev')`)
 
-	mgr := &worktree.Manager{RootDir: wtRoot, DB: db, GitBin: gitBin}
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db, GitBin: gitBin}
 
 	// Create
 	w, err := mgr.Create(repo, "proj-1", "task-abcd1234-5678", "boid/", "HEAD")
@@ -133,7 +133,7 @@ func TestManager_RemoveWithBranchDelete(t *testing.T) {
 	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-1', ?)`, repo)
 	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-efgh5678-9012', 'proj-1', 'aborted', 'dev')`)
 
-	mgr := &worktree.Manager{RootDir: wtRoot, DB: db, GitBin: gitBin}
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db, GitBin: gitBin}
 
 	w, err := mgr.Create(repo, "proj-1", "task-efgh5678-9012", "", "HEAD")
 	if err != nil {
@@ -163,7 +163,7 @@ func TestManager_RemoveIdempotent(t *testing.T) {
 	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-1', ?)`, repo)
 	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-noop0000-0000', 'proj-1', 'noop', 'dev')`)
 
-	mgr := &worktree.Manager{RootDir: wtRoot, DB: db, GitBin: gitBin}
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db, GitBin: gitBin}
 
 	// Remove for task with no worktree should be a no-op
 	if err := mgr.Remove(repo, "task-noop0000-0000", false); err != nil {
@@ -179,7 +179,7 @@ func TestManager_DefaultBranchPrefix(t *testing.T) {
 	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-1', ?)`, repo)
 	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-dflt1234-5678', 'proj-1', 'defaults', 'dev')`)
 
-	mgr := &worktree.Manager{RootDir: wtRoot, DB: db, GitBin: gitBin}
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db, GitBin: gitBin}
 
 	// Empty prefix and base branch should use defaults
 	w, err := mgr.Create(repo, "proj-1", "task-dflt1234-5678", "", "")

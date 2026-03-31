@@ -47,7 +47,7 @@ PR 前提ではなく、ローカルで段階的に積み上げる。
 - [x] Phase 1: Package Mapping Fix
 - [x] Phase 2: Shared Models First
 - [x] Phase 3: Orchestrator Boundary Cleanup
-- [ ] Phase 4: Worktree Into Dispatcher
+- [x] Phase 4: Worktree Into Dispatcher
 - [ ] Phase 5: Secret Into Dispatcher
 - [ ] Phase 6: Host Command Policy Into Sandbox
 - [ ] Phase 7: Projectspec And Kit Into Orchestrator
@@ -190,6 +190,12 @@ Phase 3 実施メモ:
 
 - `internal/worktree` を削除できる、または package 内身が空になる
 - worktree cleanup / prepare が `dispatcher` 主導になる
+
+Phase 4 実施メモ:
+
+- `Worktree`, store, manager を `dispatcher` 配下へ移した
+- `server/worktree_adapter.go` は `dispatcher.WorktreeManager` を使う薄い adapter に縮小した
+- worktree cleanup 時の project lookup は `api` 側で行い、`dispatcher.WorktreeManager` は `projectDir` を受け取る
 
 ## Phase 5: Secret Into Dispatcher
 
@@ -376,9 +382,9 @@ Phase 0/1 時点の `internal` 直下 package:
 - `sandbox`
 - `secret`
 - `server`
-- `worktree`
 
 補足:
 
 - `internal/project` は空ディレクトリとして残っている
+- `internal/worktree` は削除済み
 - 現状の baseline と最終 target の両方を `scripts/check-internal-architecture.sh` で検査する

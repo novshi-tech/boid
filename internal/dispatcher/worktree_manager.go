@@ -1,4 +1,4 @@
-package worktree
+package dispatcher
 
 import (
 	"fmt"
@@ -9,27 +9,23 @@ import (
 	"strings"
 
 	"github.com/novshi-tech/boid/internal/db"
-	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// Manager handles git worktree lifecycle for task isolation.
-type Manager struct {
+// WorktreeManager handles git worktree lifecycle for task isolation.
+type WorktreeManager struct {
 	RootDir string // e.g. ~/.local/share/boid/worktrees
 	DB      *db.DB
 	GitBin  string // path to git binary; defaults to "git"
 }
 
-func (m *Manager) gitBin() string {
+func (m *WorktreeManager) gitBin() string {
 	if m.GitBin != "" {
 		return m.GitBin
 	}
 	return "git"
 }
 
-// Create creates a git worktree for the given task.
-// projectDir is the host-side project directory (the main git repo).
-// Returns the created worktree record.
-func (m *Manager) Create(projectDir, projectID, taskID, branchPrefix, baseBranch string) (*Worktree, error) {
+func (m *WorktreeManager) Create(projectDir, projectID, taskID, branchPrefix, baseBranch string) (*Worktree, error) {
 	if branchPrefix == "" {
 		branchPrefix = "boid/"
 	}
@@ -64,7 +60,6 @@ func (m *Manager) Create(projectDir, projectID, taskID, branchPrefix, baseBranch
 		BaseBranch: baseBranch,
 	}
 	if err := CreateWorktree(m.DB.Conn, w); err != nil {
-		// Best-effort cleanup on DB failure
 		exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", wtPath).Run()
 		return nil, fmt.Errorf("record worktree: %w", err)
 	}
@@ -73,25 +68,20 @@ func (m *Manager) Create(projectDir, projectID, taskID, branchPrefix, baseBranch
 	return w, nil
 }
 
-// Remove removes the git worktree and optionally deletes the local branch.
-// deleteBranch should be true for aborted tasks, false for done tasks
-// (where the branch lives on as a PR).
-func (m *Manager) Remove(projectDir, taskID string, deleteBranch bool) error {
+func (m *WorktreeManager) Remove(projectDir, taskID string, deleteBranch bool) error {
 	w, err := GetWorktreeByTask(m.DB.Conn, taskID)
 	if err != nil {
 		return fmt.Errorf("get worktree: %w", err)
 	}
 	if w == nil || w.CleanedAt != nil {
-		return nil // already cleaned or never existed
+		return nil
 	}
 
-	// git worktree remove
 	cmd := exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", w.Path)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		slog.Warn("git worktree remove failed, attempting manual cleanup",
 			"error", err, "output", strings.TrimSpace(string(out)))
 		os.RemoveAll(w.Path)
-		// Also prune stale worktree entries
 		exec.Command(m.gitBin(), "-C", projectDir, "worktree", "prune").Run()
 	}
 
@@ -111,16 +101,12 @@ func (m *Manager) Remove(projectDir, taskID string, deleteBranch bool) error {
 	return nil
 }
 
-// Get returns the worktree for the given task, or nil if none exists.
-func (m *Manager) Get(taskID string) (*Worktree, error) {
+func (m *WorktreeManager) Get(taskID string) (*Worktree, error) {
 	return GetWorktreeByTask(m.DB.Conn, taskID)
 }
 
-// CleanupForTask removes the worktree for a task that reached a terminal state.
-// For "done" tasks, the branch is kept (it lives on as a PR).
-// For "aborted" tasks, the branch is deleted.
-func (m *Manager) CleanupForTask(taskID string, newStatus orchestrator.TaskStatus) error {
-	if newStatus != orchestrator.TaskStatusDone && newStatus != orchestrator.TaskStatusAborted {
+func (m *WorktreeManager) CleanupForTask(taskID, projectDir, newStatus string) error {
+	if newStatus != "done" && newStatus != "aborted" {
 		return nil
 	}
 
@@ -132,41 +118,28 @@ func (m *Manager) CleanupForTask(taskID string, newStatus orchestrator.TaskStatu
 		return nil
 	}
 
-	proj, err := orchestrator.GetProject(m.DB.Conn, w.ProjectID)
-	if err != nil {
-		return fmt.Errorf("get project for worktree cleanup: %w", err)
-	}
-
-	deleteBranch := newStatus == orchestrator.TaskStatusAborted
-	return m.Remove(proj.WorkDir, taskID, deleteBranch)
+	deleteBranch := newStatus == "aborted"
+	return m.Remove(projectDir, taskID, deleteBranch)
 }
 
-// CleanOrphaned removes worktrees whose tasks have reached terminal states
-// but were not cleaned up (e.g., due to a crash).
-func (m *Manager) CleanOrphaned() error {
+func (m *WorktreeManager) CleanOrphaned(resolve func(taskID, projectID string) (string, string, error)) error {
 	active, err := ListActiveWorktrees(m.DB.Conn)
 	if err != nil {
 		return err
 	}
 
 	for _, w := range active {
-		task, err := orchestrator.GetTask(m.DB.Conn, w.TaskID)
+		status, projectDir, err := resolve(w.TaskID, w.ProjectID)
 		if err != nil {
-			slog.Warn("orphan check: task lookup failed", "task_id", w.TaskID, "error", err)
+			slog.Warn("orphan lookup failed", "task_id", w.TaskID, "project_id", w.ProjectID, "error", err)
 			continue
 		}
-		if task.Status != orchestrator.TaskStatusDone && task.Status != orchestrator.TaskStatusAborted {
+		if status != "done" && status != "aborted" {
 			continue
 		}
 
-		proj, err := orchestrator.GetProject(m.DB.Conn, w.ProjectID)
-		if err != nil {
-			slog.Warn("orphan check: project lookup failed", "project_id", w.ProjectID, "error", err)
-			continue
-		}
-
-		deleteBranch := task.Status == orchestrator.TaskStatusAborted
-		if err := m.Remove(proj.WorkDir, w.TaskID, deleteBranch); err != nil {
+		deleteBranch := status == "aborted"
+		if err := m.Remove(projectDir, w.TaskID, deleteBranch); err != nil {
 			slog.Warn("orphan cleanup failed", "task_id", w.TaskID, "error", err)
 		}
 	}

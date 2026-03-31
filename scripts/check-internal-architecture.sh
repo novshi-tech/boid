@@ -19,7 +19,6 @@ current_allowed=(
   sandbox
   secret
   server
-  worktree
 )
 
 target_allowed=(

@@ -1,12 +1,12 @@
 package server
 
 import (
+	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/worktree"
 )
 
 type worktreePreparer struct {
-	manager *worktree.Manager
+	manager *dispatcher.WorktreeManager
 }
 
 func (p worktreePreparer) Prepare(task *orchestrator.Task, proj *orchestrator.Project, behavior *orchestrator.TaskBehavior) (string, error) {

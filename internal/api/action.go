@@ -10,7 +10,6 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/worktree"
 )
 
 type ActionHandler struct {
@@ -20,7 +19,7 @@ type ActionHandler struct {
 	Evaluator   *orchestrator.Evaluator
 	Coordinator *orchestrator.Coordinator
 	Runner      *dispatcher.Runner
-	WorktreeMgr *worktree.Manager
+	WorktreeMgr *dispatcher.WorktreeManager
 }
 
 func (h *ActionHandler) Routes() chi.Router {
@@ -102,9 +101,7 @@ func (h *ActionHandler) Apply(w http.ResponseWriter, r *http.Request) {
 
 	// 7. Cleanup worktree on terminal state
 	if h.WorktreeMgr != nil {
-		if err := h.WorktreeMgr.CleanupForTask(newTask.ID, newTask.Status); err != nil {
-			slog.Warn("worktree cleanup failed", "task_id", newTask.ID, "error", err)
-		}
+		cleanupWorktree(h.DB, h.WorktreeMgr, newTask.ID, task.ProjectID, newTask.Status)
 	}
 
 	// 8. Dispatch hooks and gates asynchronously
@@ -169,9 +166,7 @@ func (h *ActionHandler) runDispatchLoop(task *orchestrator.Task, meta *orchestra
 
 		// Cleanup worktree on terminal state
 		if h.WorktreeMgr != nil {
-			if err := h.WorktreeMgr.CleanupForTask(current.ID, current.Status); err != nil {
-				slog.Warn("worktree cleanup failed", "task_id", current.ID, "error", err)
-			}
+			cleanupWorktree(h.DB, h.WorktreeMgr, current.ID, current.ProjectID, current.Status)
 		}
 
 		// If terminal state, cleanup and stop
