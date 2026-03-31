@@ -1,18 +1,16 @@
 package orchestrator
 
-import "github.com/novshi-tech/boid/internal/projectspec"
-
 type Evaluator struct{}
 
 // Evaluate returns hooks that should fire for the given task.
-func (e *Evaluator) Evaluate(task *Task, hooks []projectspec.Hook) []projectspec.Hook {
+func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 	activeTraits, _ := ActiveTraitTypes(task.Payload)
-	traitSet := make(map[projectspec.TraitType]bool, len(activeTraits))
+	traitSet := make(map[TraitType]bool, len(activeTraits))
 	for _, t := range activeTraits {
 		traitSet[t] = true
 	}
 
-	var matched []projectspec.Hook
+	var matched []Hook
 	for _, h := range hooks {
 		if h.On != string(task.Status) {
 			continue
@@ -27,14 +25,14 @@ func (e *Evaluator) Evaluate(task *Task, hooks []projectspec.Hook) []projectspec
 
 // EvaluateGates returns gates that should fire for the given task.
 // Unlike hooks, multiple gates may match the same state (kit composition).
-func (e *Evaluator) EvaluateGates(task *Task, gates []projectspec.Gate) []projectspec.Gate {
+func (e *Evaluator) EvaluateGates(task *Task, gates []Gate) []Gate {
 	activeTraits, _ := ActiveTraitTypes(task.Payload)
-	traitSet := make(map[projectspec.TraitType]bool, len(activeTraits))
+	traitSet := make(map[TraitType]bool, len(activeTraits))
 	for _, t := range activeTraits {
 		traitSet[t] = true
 	}
 
-	var matched []projectspec.Gate
+	var matched []Gate
 	for _, g := range gates {
 		if g.On != string(task.Status) {
 			continue
@@ -47,7 +45,7 @@ func (e *Evaluator) EvaluateGates(task *Task, gates []projectspec.Gate) []projec
 	return matched
 }
 
-func hasAllTraits(set map[projectspec.TraitType]bool, required []projectspec.TraitType) bool {
+func hasAllTraits(set map[TraitType]bool, required []TraitType) bool {
 	for _, t := range required {
 		if !set[t] {
 			return false

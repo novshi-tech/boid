@@ -50,7 +50,7 @@ PR 前提ではなく、ローカルで段階的に積み上げる。
 - [x] Phase 4: Worktree Into Dispatcher
 - [x] Phase 5: Secret Into Dispatcher
 - [x] Phase 6: Host Command Policy Into Sandbox
-- [ ] Phase 7: Projectspec And Kit Into Orchestrator
+- [x] Phase 7: Projectspec And Kit Into Orchestrator
 - [ ] Phase 8: Database Boundary Cleanup
 - [ ] Phase 9: Thin API And Thin Server
 - [ ] Phase 10: Final Convergence
@@ -272,6 +272,13 @@ Phase 6 実施メモ:
 
 - `internal/projectspec` と `internal/kit` を削除できる
 
+Phase 7 実施メモ:
+
+- `projectspec` の loader / payload / scripts / types を `orchestrator` 配下へ移した
+- `kit` の registry / stage を `orchestrator` 配下へ移した
+- wrapper file を削除し、外側の参照は `orchestrator` へ寄せた
+- `internal/projectspec` と `internal/kit` は削除済み
+
 ## Phase 8: Database Boundary Cleanup
 
 目的:
@@ -386,10 +393,8 @@ Phase 0/1 時点の `internal` 直下 package:
 - `client`
 - `db`
 - `dispatcher`
-- `kit`
 - `orchestrator`
 - `project`
-- `projectspec`
 - `sandbox`
 - `server`
 
@@ -399,4 +404,6 @@ Phase 0/1 時点の `internal` 直下 package:
 - `internal/worktree` は削除済み
 - `internal/secret` は削除済み
 - `internal/hostcmd` は削除済み
+- `internal/projectspec` は削除済み
+- `internal/kit` は削除済み
 - 現状の baseline と最終 target の両方を `scripts/check-internal-architecture.sh` で検査する

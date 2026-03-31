@@ -1,4 +1,4 @@
-package projectspec_test
+package orchestrator_test
 
 import (
 	"encoding/json"
@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/projectspec"
+	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 	"gopkg.in/yaml.v3"
 )
 

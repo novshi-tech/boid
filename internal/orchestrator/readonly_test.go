@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/projectspec"
+	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 func TestIsReadonly(t *testing.T) {

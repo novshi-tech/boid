@@ -17,7 +17,6 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
-	"github.com/novshi-tech/boid/internal/kit"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/web"
@@ -59,9 +58,9 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
-	var registry *kit.Registry
+	var registry *orchestrator.KitRegistry
 	if cfg.KitsDir != "" {
-		registry = kit.NewRegistry(cfg.KitsDir)
+		registry = orchestrator.NewRegistry(cfg.KitsDir)
 	}
 	store := orchestrator.NewProjectStore(registry)
 

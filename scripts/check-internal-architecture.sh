@@ -11,10 +11,8 @@ current_allowed=(
   client
   db
   dispatcher
-  kit
   orchestrator
   project
-  projectspec
   sandbox
   server
 )

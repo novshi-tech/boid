@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-
-	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
 // Coordinator orchestrates the hook → gate → advance flow.
@@ -28,8 +26,8 @@ type Coordinator struct {
 func (d *Coordinator) DispatchAndAdvance(
 	ctx context.Context,
 	task *Task,
-	meta *projectspec.ProjectMeta,
-	behavior *projectspec.TaskBehavior,
+	meta *ProjectMeta,
+	behavior *TaskBehavior,
 	sm *StateMachine,
 ) (*DispatchResult, error) {
 	readonly := IsReadonly(behavior, task.Status)
@@ -104,7 +102,7 @@ func (d *Coordinator) DispatchAndAdvance(
 func (d *Coordinator) dispatchHooks(
 	ctx context.Context,
 	task *Task,
-	hooks []projectspec.Hook,
+	hooks []Hook,
 	parallel bool,
 ) ([]HandlerResult, error) {
 	if parallel {
@@ -116,11 +114,11 @@ func (d *Coordinator) dispatchHooks(
 func (d *Coordinator) dispatchSequential(
 	ctx context.Context,
 	task *Task,
-	hooks []projectspec.Hook,
+	hooks []Hook,
 ) ([]HandlerResult, error) {
 	var results []HandlerResult
 	for _, h := range hooks {
-		event := &projectspec.HookFireEvent{
+		event := &HookFireEvent{
 			EventID:   fmt.Sprintf("evt-%s-%s", task.ID[:8], h.ID),
 			TaskID:    task.ID,
 			ProjectID: task.ProjectID,
@@ -137,7 +135,7 @@ func (d *Coordinator) dispatchSequential(
 			return results, fmt.Errorf("wait hook %q: %w", h.ID, err)
 		}
 
-		results = append(results, parseHandlerResult(h.ID, projectspec.RoleHook, completion))
+		results = append(results, parseHandlerResult(h.ID, RoleHook, completion))
 	}
 	return results, nil
 }
@@ -145,7 +143,7 @@ func (d *Coordinator) dispatchSequential(
 func (d *Coordinator) dispatchParallel(
 	ctx context.Context,
 	task *Task,
-	hooks []projectspec.Hook,
+	hooks []Hook,
 ) ([]HandlerResult, error) {
 	type jobInfo struct {
 		hookID string
@@ -155,7 +153,7 @@ func (d *Coordinator) dispatchParallel(
 	// Launch all hooks
 	var jobs []jobInfo
 	for _, h := range hooks {
-		event := &projectspec.HookFireEvent{
+		event := &HookFireEvent{
 			EventID:   fmt.Sprintf("evt-%s-%s", task.ID[:8], h.ID),
 			TaskID:    task.ID,
 			ProjectID: task.ProjectID,
@@ -188,7 +186,7 @@ func (d *Coordinator) dispatchParallel(
 				mu.Unlock()
 				return
 			}
-			results[idx] = parseHandlerResult(ji.hookID, projectspec.RoleHook, completion)
+			results[idx] = parseHandlerResult(ji.hookID, RoleHook, completion)
 		}(i, j)
 	}
 	wg.Wait()
@@ -203,7 +201,7 @@ func (d *Coordinator) dispatchParallel(
 func (d *Coordinator) dispatchGates(
 	ctx context.Context,
 	task *Task,
-	gates []projectspec.Gate,
+	gates []Gate,
 ) ([]HandlerResult, error) {
 	type jobInfo struct {
 		gateID string
@@ -212,7 +210,7 @@ func (d *Coordinator) dispatchGates(
 
 	var jobs []jobInfo
 	for _, g := range gates {
-		event := &projectspec.GateFireEvent{
+		event := &GateFireEvent{
 			EventID:   fmt.Sprintf("evt-%s-%s", task.ID[:8], g.ID),
 			TaskID:    task.ID,
 			ProjectID: task.ProjectID,
@@ -244,7 +242,7 @@ func (d *Coordinator) dispatchGates(
 				mu.Unlock()
 				return
 			}
-			results[idx] = parseHandlerResult(ji.gateID, projectspec.RoleGate, completion)
+			results[idx] = parseHandlerResult(ji.gateID, RoleGate, completion)
 		}(i, j)
 	}
 	wg.Wait()
@@ -267,7 +265,7 @@ func checkExclusiveCollision(patch json.RawMessage, writerID string, exclusiveWr
 	}
 
 	for key := range patchMap {
-		if TraitMergeMode(projectspec.TraitType(key)) == projectspec.MergeModeExclusive {
+		if TraitMergeMode(TraitType(key)) == MergeModeExclusive {
 			if prev, exists := exclusiveWriters[key]; exists {
 				return fmt.Errorf("exclusive trait %q written by both %q and %q", key, prev, writerID)
 			}
@@ -278,7 +276,7 @@ func checkExclusiveCollision(patch json.RawMessage, writerID string, exclusiveWr
 }
 
 // parseHandlerResult extracts payload_patch from job output.
-func parseHandlerResult(id string, role projectspec.Role, c JobCompletion) HandlerResult {
+func parseHandlerResult(id string, role Role, c JobCompletion) HandlerResult {
 	hr := HandlerResult{
 		ID:       id,
 		Role:     role,
@@ -339,7 +337,7 @@ func injectSourceState(patch json.RawMessage, state string) json.RawMessage {
 }
 
 // allowedTraits returns the requires_traits for this handler from the hook list.
-func (hr *HandlerResult) allowedTraits(hooks []projectspec.Hook) []projectspec.TraitType {
+func (hr *HandlerResult) allowedTraits(hooks []Hook) []TraitType {
 	for _, h := range hooks {
 		if h.ID == hr.ID {
 			return h.RequiresTraits

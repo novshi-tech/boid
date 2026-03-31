@@ -1,4 +1,4 @@
-package kit_test
+package orchestrator_test
 
 import (
 	"os"
@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/kit"
+	kit "github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 func TestRegistry_Resolve(t *testing.T) {

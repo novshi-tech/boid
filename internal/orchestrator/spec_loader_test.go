@@ -1,4 +1,4 @@
-package projectspec_test
+package orchestrator_test
 
 import (
 	"os"
@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/projectspec"
+	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 func writeKitYAML(t *testing.T, dir, content string) {

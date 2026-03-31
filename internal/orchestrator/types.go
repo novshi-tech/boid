@@ -3,8 +3,6 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
-
-	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
 // JobCompletion represents the result of a completed job.
@@ -16,12 +14,12 @@ type JobCompletion struct {
 
 // HookExecutor launches a hook and returns the job ID.
 type HookExecutor interface {
-	ExecuteHook(ctx context.Context, event *projectspec.HookFireEvent) (jobID string, err error)
+	ExecuteHook(ctx context.Context, event *HookFireEvent) (jobID string, err error)
 }
 
 // GateExecutor launches a gate and returns the job ID.
 type GateExecutor interface {
-	ExecuteGate(ctx context.Context, event *projectspec.GateFireEvent) (jobID string, err error)
+	ExecuteGate(ctx context.Context, event *GateFireEvent) (jobID string, err error)
 }
 
 // JobWaiter waits for a job to complete.
@@ -32,7 +30,7 @@ type JobWaiter interface {
 // HandlerResult is the result of a single hook or gate execution.
 type HandlerResult struct {
 	ID           string // hook or gate ID
-	Role         projectspec.Role
+	Role         Role
 	ExitCode     int
 	PayloadPatch json.RawMessage
 }

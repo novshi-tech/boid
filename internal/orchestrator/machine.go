@@ -3,8 +3,6 @@ package orchestrator
 import (
 	"encoding/json"
 	"fmt"
-
-	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
 // TransitionCondition evaluates whether a condition-based transition should fire.
@@ -57,11 +55,11 @@ func (sm *StateMachine) Advance(task *Task) (*Task, bool) {
 	return nil, false
 }
 
-type Registry struct {
+type TransitionRegistry struct {
 	machines map[string]*StateMachine
 }
 
-func (r *Registry) Resolve(meta *projectspec.ProjectMeta, behavior string) (*StateMachine, error) {
+func (r *TransitionRegistry) Resolve(meta *ProjectMeta, behavior string) (*StateMachine, error) {
 	b, ok := meta.TaskBehaviors[behavior]
 	if !ok {
 		return nil, fmt.Errorf("behavior %q not found", behavior)
@@ -73,8 +71,8 @@ func (r *Registry) Resolve(meta *projectspec.ProjectMeta, behavior string) (*Sta
 	return sm, nil
 }
 
-func NewDefaultRegistry() *Registry {
-	return &Registry{
+func NewDefaultRegistry() *TransitionRegistry {
+	return &TransitionRegistry{
 		machines: map[string]*StateMachine{
 			"one-shot":      OneShotMachine(),
 			"feedback-loop": FeedbackLoopMachine(),

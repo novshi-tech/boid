@@ -14,7 +14,7 @@ import (
 type JobHandler struct {
 	DB          *db.DB
 	Store       *orchestrator.ProjectStore
-	Registry    *orchestrator.Registry
+	Registry    *orchestrator.TransitionRegistry
 	Evaluator   *orchestrator.Evaluator
 	Runner      *dispatcher.Runner
 	Coordinator *orchestrator.Coordinator

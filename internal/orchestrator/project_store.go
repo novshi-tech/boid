@@ -3,17 +3,12 @@ package orchestrator
 import (
 	"fmt"
 	"sync"
-
-	"github.com/novshi-tech/boid/internal/projectspec"
 )
-
-// KitResolver resolves a kit reference string to a filesystem directory.
-type KitResolver = projectspec.KitResolver
 
 // ProjectStore holds project metadata in memory, loaded from project.yaml files.
 type ProjectStore struct {
 	mu       sync.RWMutex
-	metas    map[string]*projectspec.ProjectMeta
+	metas    map[string]*ProjectMeta
 	resolver KitResolver
 }
 
@@ -21,13 +16,13 @@ type ProjectStore struct {
 // in project.yaml files will be resolved and merged at load time.
 func NewProjectStore(resolver KitResolver) *ProjectStore {
 	return &ProjectStore{
-		metas:    make(map[string]*projectspec.ProjectMeta),
+		metas:    make(map[string]*ProjectMeta),
 		resolver: resolver,
 	}
 }
 
 // Load reads project.yaml from the work_dir and stores the meta in memory.
-func (s *ProjectStore) Load(workDir string) (*projectspec.ProjectMeta, error) {
+func (s *ProjectStore) Load(workDir string) (*ProjectMeta, error) {
 	meta, err := ReadProjectMetaWithKits(workDir, s.resolver)
 	if err != nil {
 		return nil, err
@@ -39,7 +34,7 @@ func (s *ProjectStore) Load(workDir string) (*projectspec.ProjectMeta, error) {
 }
 
 // Get returns the cached meta for a project.
-func (s *ProjectStore) Get(id string) (*projectspec.ProjectMeta, bool) {
+func (s *ProjectStore) Get(id string) (*ProjectMeta, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	meta, ok := s.metas[id]
@@ -47,7 +42,7 @@ func (s *ProjectStore) Get(id string) (*projectspec.ProjectMeta, bool) {
 }
 
 // Set stores meta directly.
-func (s *ProjectStore) Set(id string, meta *projectspec.ProjectMeta) {
+func (s *ProjectStore) Set(id string, meta *ProjectMeta) {
 	s.mu.Lock()
 	s.metas[id] = meta
 	s.mu.Unlock()
@@ -61,7 +56,7 @@ func (s *ProjectStore) Remove(id string) {
 }
 
 // LoadAll reads project.yaml for each registered project.
-func (s *ProjectStore) LoadAll(projects []*projectspec.Project) []error {
+func (s *ProjectStore) LoadAll(projects []*Project) []error {
 	var errs []error
 	for _, candidate := range projects {
 		if _, err := s.Load(candidate.WorkDir); err != nil {

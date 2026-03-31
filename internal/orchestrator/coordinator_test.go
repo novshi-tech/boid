@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/projectspec"
+	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 // mockExecutorWaiter implements HookExecutor, GateExecutor, and JobWaiter.

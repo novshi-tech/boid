@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"github.com/novshi-tech/boid/internal/kit"
 )
 
 type MetaCache interface {
@@ -55,7 +53,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 	hooksDir := projectHooksDir
 	var stagingDir string
 	if len(meta.KitHooksDirs) > 0 {
-		staged, _, err := kit.StageHooks(projectHooksDir, meta.KitHooksDirs, event.TaskID)
+		staged, _, err := StageHooks(projectHooksDir, meta.KitHooksDirs, event.TaskID)
 		if err != nil {
 			return nil, fmt.Errorf("stage hooks: %w", err)
 		}

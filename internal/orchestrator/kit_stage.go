@@ -1,19 +1,17 @@
-package kit
+package orchestrator
 
 import (
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-
-	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
 // StageHooks creates a temporary directory containing all hook scripts
 // from the project and all kits. Project scripts override kit scripts
 // with the same filename.
 // Returns the staging directory path and a cleanup function.
-func StageHooks(projectHooksDir string, kitHooksDirs []projectspec.KitHooksInfo, jobID string) (string, func(), error) {
+func StageHooks(projectHooksDir string, kitHooksDirs []KitHooksInfo, jobID string) (string, func(), error) {
 	stagingDir := filepath.Join(os.TempDir(), fmt.Sprintf("boid-hooks-%s", jobID))
 	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
 		return "", nil, fmt.Errorf("create staging dir: %w", err)

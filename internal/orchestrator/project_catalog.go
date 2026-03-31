@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/novshi-tech/boid/internal/db"
-	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
 type projectScanner interface {
@@ -14,7 +13,7 @@ type projectScanner interface {
 }
 
 // CreateProject inserts a new project record.
-func CreateProject(dbtx db.DBTX, project *projectspec.Project) error {
+func CreateProject(dbtx db.DBTX, project *Project) error {
 	now := time.Now().UTC()
 	project.CreatedAt = now
 	project.UpdatedAt = now
@@ -29,7 +28,7 @@ func CreateProject(dbtx db.DBTX, project *projectspec.Project) error {
 }
 
 // GetProject retrieves a project by ID.
-func GetProject(dbtx db.DBTX, id string) (*projectspec.Project, error) {
+func GetProject(dbtx db.DBTX, id string) (*Project, error) {
 	row := dbtx.QueryRow(
 		`SELECT id, work_dir, created_at, updated_at FROM projects WHERE id = ?`, id,
 	)
@@ -37,7 +36,7 @@ func GetProject(dbtx db.DBTX, id string) (*projectspec.Project, error) {
 }
 
 // ListProjects returns all projects ordered by creation time.
-func ListProjects(dbtx db.DBTX) ([]*projectspec.Project, error) {
+func ListProjects(dbtx db.DBTX) ([]*Project, error) {
 	rows, err := dbtx.Query(
 		`SELECT id, work_dir, created_at, updated_at FROM projects ORDER BY created_at`,
 	)
@@ -61,8 +60,8 @@ func DeleteProject(dbtx db.DBTX, id string) error {
 	return nil
 }
 
-func scanProject(scanner projectScanner) (*projectspec.Project, error) {
-	var project projectspec.Project
+func scanProject(scanner projectScanner) (*Project, error) {
+	var project Project
 	if err := scanner.Scan(&project.ID, &project.WorkDir, &project.CreatedAt, &project.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("project not found")
@@ -72,8 +71,8 @@ func scanProject(scanner projectScanner) (*projectspec.Project, error) {
 	return &project, nil
 }
 
-func scanProjects(rows *sql.Rows) ([]*projectspec.Project, error) {
-	var projects []*projectspec.Project
+func scanProjects(rows *sql.Rows) ([]*Project, error) {
+	var projects []*Project
 	for rows.Next() {
 		project, err := scanProject(rows)
 		if err != nil {

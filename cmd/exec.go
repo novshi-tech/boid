@@ -8,7 +8,7 @@ import (
 	"syscall"
 
 	"github.com/novshi-tech/boid/internal/client"
-	"github.com/novshi-tech/boid/internal/projectspec"
+	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/spf13/cobra"
 )

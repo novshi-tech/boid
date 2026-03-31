@@ -1,4 +1,4 @@
-package kit
+package orchestrator
 
 import (
 	"fmt"
@@ -8,20 +8,20 @@ import (
 	"strings"
 )
 
-// Registry manages installed kit repositories under a base directory.
-type Registry struct {
+// KitRegistry manages installed kit repositories under a base directory.
+type KitRegistry struct {
 	BaseDir string // e.g. ~/.local/share/boid/kits
 }
 
-// NewRegistry creates a new Registry with the given base directory.
-func NewRegistry(baseDir string) *Registry {
-	return &Registry{BaseDir: baseDir}
+// NewRegistry creates a new kit registry with the given base directory.
+func NewRegistry(baseDir string) *KitRegistry {
+	return &KitRegistry{BaseDir: baseDir}
 }
 
 // Resolve returns the absolute filesystem path for a kit reference.
 // A ref like "github.com/user/repo/go" is split into the repo path
 // (first 3 segments) and the kit subpath (remainder).
-func (r *Registry) Resolve(ref string) (string, error) {
+func (r *KitRegistry) Resolve(ref string) (string, error) {
 	parts := strings.Split(ref, "/")
 	if len(parts) < 4 {
 		return "", fmt.Errorf("kit ref %q: need at least host/owner/repo/kit", ref)
@@ -37,13 +37,13 @@ func (r *Registry) Resolve(ref string) (string, error) {
 
 // Install clones a kit repository from its conventional URL.
 // The repoRef should be like "github.com/user/repo".
-func (r *Registry) Install(repoRef string) error {
+func (r *KitRegistry) Install(repoRef string) error {
 	url := "https://" + repoRef + ".git"
 	return r.InstallFromURL(repoRef, url)
 }
 
 // InstallFromURL clones a git repo from the given URL into BaseDir/repoRef.
-func (r *Registry) InstallFromURL(repoRef, url string) error {
+func (r *KitRegistry) InstallFromURL(repoRef, url string) error {
 	dest := filepath.Join(r.BaseDir, repoRef)
 	if _, err := os.Stat(dest); err == nil {
 		return fmt.Errorf("kit repo %q already installed at %s", repoRef, dest)
@@ -62,7 +62,7 @@ func (r *Registry) InstallFromURL(repoRef, url string) error {
 
 // List returns all installed kit repository references.
 // It finds directories containing .git under BaseDir.
-func (r *Registry) List() ([]string, error) {
+func (r *KitRegistry) List() ([]string, error) {
 	var repos []string
 	err := filepath.WalkDir(r.BaseDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -79,7 +79,7 @@ func (r *Registry) List() ([]string, error) {
 }
 
 // Remove deletes an installed kit repository.
-func (r *Registry) Remove(repoRef string) error {
+func (r *KitRegistry) Remove(repoRef string) error {
 	dest := filepath.Join(r.BaseDir, repoRef)
 	if _, err := os.Stat(dest); os.IsNotExist(err) {
 		return fmt.Errorf("kit repo %q not installed", repoRef)
@@ -88,7 +88,7 @@ func (r *Registry) Remove(repoRef string) error {
 }
 
 // Update runs git pull in an installed kit repository.
-func (r *Registry) Update(repoRef string) error {
+func (r *KitRegistry) Update(repoRef string) error {
 	dest := filepath.Join(r.BaseDir, repoRef)
 	if _, err := os.Stat(dest); os.IsNotExist(err) {
 		return fmt.Errorf("kit repo %q not installed", repoRef)

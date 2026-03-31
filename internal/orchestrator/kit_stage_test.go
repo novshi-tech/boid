@@ -1,12 +1,12 @@
-package kit_test
+package orchestrator_test
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/kit"
-	"github.com/novshi-tech/boid/internal/projectspec"
+	kit "github.com/novshi-tech/boid/internal/orchestrator"
+	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 func TestStageHooks_ProjectOnly(t *testing.T) {

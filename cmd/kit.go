@@ -3,7 +3,7 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/novshi-tech/boid/internal/kit"
+	kit "github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
 )
 

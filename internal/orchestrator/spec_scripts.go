@@ -1,4 +1,4 @@
-package projectspec
+package orchestrator
 
 import (
 	"fmt"
