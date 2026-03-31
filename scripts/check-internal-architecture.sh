@@ -12,7 +12,6 @@ current_allowed=(
   db
   dispatcher
   orchestrator
-  project
   sandbox
   server
 )
@@ -20,6 +19,7 @@ current_allowed=(
 target_allowed=(
   api
   client
+  db
   dispatcher
   orchestrator
   sandbox
@@ -76,8 +76,8 @@ check_allowed_set() {
 check_empty_project_dir() {
   local project_dir="$INTERNAL_DIR/project"
   if [[ ! -d "$project_dir" ]]; then
-    echo "missing directory: internal/project" >&2
-    return 1
+    echo "confirmed missing directory: internal/project"
+    return 0
   fi
 
   if find "$project_dir" -mindepth 1 -print -quit | grep -q .; then
@@ -93,15 +93,71 @@ check_import_graph() {
   go list -f '{{.ImportPath}}|{{join .Imports ","}}' ./internal/... | sort
 }
 
+check_forbidden_imports() {
+  local failed=0
+  local line path imports
+
+  while IFS='|' read -r path imports; do
+    case "$path" in
+      github.com/novshi-tech/boid/internal/api)
+        if [[ "$imports" == *"github.com/novshi-tech/boid/internal/db"* ]]; then
+          echo "forbidden import: internal/api -> internal/db" >&2
+          failed=1
+        fi
+        if [[ "$imports" == *"github.com/novshi-tech/boid/internal/server"* ]]; then
+          echo "forbidden import: internal/api -> internal/server" >&2
+          failed=1
+        fi
+        ;;
+      github.com/novshi-tech/boid/internal/orchestrator)
+        if [[ "$imports" == *"github.com/novshi-tech/boid/internal/api"* ]]; then
+          echo "forbidden import: internal/orchestrator -> internal/api" >&2
+          failed=1
+        fi
+        if [[ "$imports" == *"github.com/novshi-tech/boid/internal/server"* ]]; then
+          echo "forbidden import: internal/orchestrator -> internal/server" >&2
+          failed=1
+        fi
+        ;;
+      github.com/novshi-tech/boid/internal/dispatcher)
+        if [[ "$imports" == *"github.com/novshi-tech/boid/internal/api"* ]]; then
+          echo "forbidden import: internal/dispatcher -> internal/api" >&2
+          failed=1
+        fi
+        if [[ "$imports" == *"github.com/novshi-tech/boid/internal/server"* ]]; then
+          echo "forbidden import: internal/dispatcher -> internal/server" >&2
+          failed=1
+        fi
+        ;;
+      github.com/novshi-tech/boid/internal/db)
+        if [[ "$imports" == *"github.com/novshi-tech/boid/internal/"* ]]; then
+          echo "forbidden import: internal/db should not depend on other internal packages" >&2
+          failed=1
+        fi
+        ;;
+      github.com/novshi-tech/boid/internal/client)
+        if [[ "$imports" == *"github.com/novshi-tech/boid/internal/"* ]]; then
+          echo "forbidden import: internal/client should not depend on other internal packages" >&2
+          failed=1
+        fi
+        ;;
+    esac
+  done < <(go list -f '{{.ImportPath}}|{{join .Imports ","}}' ./internal/...)
+
+  return "$failed"
+}
+
 case "$MODE" in
   current)
     check_allowed_set current_allowed
     check_empty_project_dir
     check_import_graph
+    check_forbidden_imports
     ;;
   target)
     check_allowed_set target_allowed
     check_import_graph
+    check_forbidden_imports
     ;;
   imports)
     check_import_graph

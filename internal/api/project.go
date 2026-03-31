@@ -5,12 +5,10 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 type ProjectHandler struct {
-	Projects ProjectRepository
-	Store    *orchestrator.ProjectStore
+	Service ProjectService
 }
 
 func (h *ProjectHandler) Routes() chi.Router {
@@ -38,93 +36,47 @@ func (h *ProjectHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	meta, err := h.Store.Load(req.WorkDir)
+	project, err := h.Service.CreateProject(req.WorkDir)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeServiceError(w, err)
 		return
 	}
-
-	p := &orchestrator.Project{
-		ID:      meta.ID,
-		WorkDir: req.WorkDir,
-	}
-
-	if err := h.Projects.CreateProject(p); err != nil {
-		h.Store.Remove(meta.ID)
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	p.Meta = *meta
-	writeJSON(w, http.StatusCreated, p)
+	writeJSON(w, http.StatusCreated, project)
 }
 
 func (h *ProjectHandler) List(w http.ResponseWriter, r *http.Request) {
-	wsID := r.URL.Query().Get("workspace_id")
-
-	projects, err := h.Projects.ListProjects()
+	projects, err := h.Service.ListProjects(r.URL.Query().Get("workspace_id"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeServiceError(w, err)
 		return
 	}
-
-	// Attach meta from store and filter by workspace_id if requested
-	var result []*orchestrator.Project
-	for _, p := range projects {
-		if meta, ok := h.Store.Get(p.ID); ok {
-			p.Meta = *meta
-		}
-		if wsID != "" && p.Meta.WorkspaceID != wsID {
-			continue
-		}
-		result = append(result, p)
-	}
-	if result == nil {
-		result = []*orchestrator.Project{}
-	}
-	writeJSON(w, http.StatusOK, result)
+	writeJSON(w, http.StatusOK, projects)
 }
 
 func (h *ProjectHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	p, err := h.Projects.GetProject(id)
+	project, err := h.Service.GetProject(id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeServiceError(w, err)
 		return
 	}
-	if meta, ok := h.Store.Get(p.ID); ok {
-		p.Meta = *meta
-	}
-	writeJSON(w, http.StatusOK, p)
+	writeJSON(w, http.StatusOK, project)
 }
 
 func (h *ProjectHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := h.Projects.DeleteProject(id); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+	if err := h.Service.DeleteProject(id); err != nil {
+		writeServiceError(w, err)
 		return
 	}
-	h.Store.Remove(id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (h *ProjectHandler) Reload(w http.ResponseWriter, r *http.Request) {
-	projects, err := h.Projects.ListProjects()
+	result, err := h.Service.ReloadProjects()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeServiceError(w, err)
 		return
 	}
-	errs := h.Store.LoadAll(projects)
-	if len(errs) > 0 {
-		msgs := make([]string, len(errs))
-		for i, e := range errs {
-			msgs[i] = e.Error()
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status": "partial",
-			"errors": msgs,
-		})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, result)
 }

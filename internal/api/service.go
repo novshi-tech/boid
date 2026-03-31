@@ -23,6 +23,187 @@ type ActionApplication struct {
 	Action *orchestrator.Action `json:"action"`
 }
 
+type ProjectReloadResult struct {
+	Status string   `json:"status"`
+	Errors []string `json:"errors,omitempty"`
+}
+
+type TaskDetailView struct {
+	Task    *orchestrator.Task
+	Actions []*orchestrator.Action
+	Jobs    []*dispatcher.Job
+}
+
+type ProjectAppService struct {
+	Projects ProjectRepository
+	Meta     interface {
+		Load(workDir string) (*orchestrator.ProjectMeta, error)
+		Get(id string) (*orchestrator.ProjectMeta, bool)
+		Remove(id string)
+		LoadAll(projects []*orchestrator.Project) []error
+	}
+}
+
+func (s *ProjectAppService) CreateProject(workDir string) (*orchestrator.Project, error) {
+	meta, err := s.Meta.Load(workDir)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+	}
+
+	project := &orchestrator.Project{
+		ID:      meta.ID,
+		WorkDir: workDir,
+	}
+	if err := s.Projects.CreateProject(project); err != nil {
+		s.Meta.Remove(meta.ID)
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+
+	project.Meta = *meta
+	return project, nil
+}
+
+func (s *ProjectAppService) ListProjects(workspaceID string) ([]*orchestrator.Project, error) {
+	projects, err := s.Projects.ListProjects()
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+
+	var result []*orchestrator.Project
+	for _, project := range projects {
+		if meta, ok := s.Meta.Get(project.ID); ok {
+			project.Meta = *meta
+		}
+		if workspaceID != "" && project.Meta.WorkspaceID != workspaceID {
+			continue
+		}
+		result = append(result, project)
+	}
+	if result == nil {
+		result = []*orchestrator.Project{}
+	}
+	return result, nil
+}
+
+func (s *ProjectAppService) GetProject(id string) (*orchestrator.Project, error) {
+	project, err := s.Projects.GetProject(id)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	if meta, ok := s.Meta.Get(project.ID); ok {
+		project.Meta = *meta
+	}
+	return project, nil
+}
+
+func (s *ProjectAppService) DeleteProject(id string) error {
+	if err := s.Projects.DeleteProject(id); err != nil {
+		return &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	s.Meta.Remove(id)
+	return nil
+}
+
+func (s *ProjectAppService) ReloadProjects() (*ProjectReloadResult, error) {
+	projects, err := s.Projects.ListProjects()
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+
+	errs := s.Meta.LoadAll(projects)
+	if len(errs) == 0 {
+		return &ProjectReloadResult{Status: "ok"}, nil
+	}
+
+	messages := make([]string, 0, len(errs))
+	for _, err := range errs {
+		messages = append(messages, err.Error())
+	}
+	return &ProjectReloadResult{
+		Status: "partial",
+		Errors: messages,
+	}, nil
+}
+
+type TaskAppService struct {
+	Tasks TaskStore
+}
+
+func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
+	task := &orchestrator.Task{
+		ProjectID:    req.ProjectID,
+		Title:        req.Title,
+		Description:  req.Description,
+		Behavior:     req.Behavior,
+		RemoteID:     req.RemoteID,
+		DataSourceID: req.DataSourceID,
+		Payload:      req.Payload,
+	}
+	if err := s.Tasks.CreateTask(task); err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return task, nil
+}
+
+func (s *TaskAppService) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
+	tasks, err := s.Tasks.ListTasks(filter)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	if tasks == nil {
+		tasks = []*orchestrator.Task{}
+	}
+	return tasks, nil
+}
+
+func (s *TaskAppService) GetTask(id string) (*orchestrator.Task, error) {
+	task, err := s.Tasks.GetTask(id)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	return task, nil
+}
+
+type WebAppService struct {
+	Tasks    TaskStore
+	Actions  ActionStore
+	Jobs     JobStore
+	Projects ProjectRepository
+	Meta     MetaStore
+}
+
+func (s *WebAppService) ListTasks(status string) ([]*orchestrator.Task, error) {
+	return s.Tasks.ListTasks(orchestrator.TaskFilter{Status: status})
+}
+
+func (s *WebAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
+	task, err := s.Tasks.GetTask(id)
+	if err != nil {
+		return nil, err
+	}
+
+	actions, _ := s.Actions.ListActionsByTask(task.ID)
+	jobs, _ := s.Jobs.ListJobsByTask(task.ID)
+	return &TaskDetailView{
+		Task:    task,
+		Actions: actions,
+		Jobs:    jobs,
+	}, nil
+}
+
+func (s *WebAppService) ListProjects() ([]*orchestrator.Project, error) {
+	projects, err := s.Projects.ListProjects()
+	if err != nil {
+		return nil, err
+	}
+	for _, project := range projects {
+		if meta, ok := s.Meta.Get(project.ID); ok {
+			project.Meta = *meta
+		}
+	}
+	return projects, nil
+}
+
 type TaskWorkflowService struct {
 	Tasks       TaskStore
 	Jobs        JobStore

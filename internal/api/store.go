@@ -29,6 +29,31 @@ type WorktreeCleaner interface {
 	CleanupForTask(taskID, projectDir, newStatus string) error
 }
 
+type ProjectService interface {
+	CreateProject(workDir string) (*orchestrator.Project, error)
+	ListProjects(workspaceID string) ([]*orchestrator.Project, error)
+	GetProject(id string) (*orchestrator.Project, error)
+	DeleteProject(id string) error
+	ReloadProjects() (*ProjectReloadResult, error)
+}
+
+type TaskService interface {
+	CreateTask(req CreateTaskRequest) (*orchestrator.Task, error)
+	ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error)
+	GetTask(id string) (*orchestrator.Task, error)
+}
+
+type WebService interface {
+	ListTasks(status string) ([]*orchestrator.Task, error)
+	GetTaskDetail(id string) (*TaskDetailView, error)
+	ListProjects() ([]*orchestrator.Project, error)
+}
+
+type WorkflowService interface {
+	ApplyAction(ctx context.Context, taskID string, req ApplyActionRequest) (*ActionApplication, error)
+	CompleteJob(ctx context.Context, jobID string, req JobDoneRequest) (*dispatcher.Job, error)
+}
+
 type TaskStore interface {
 	CreateTask(task *orchestrator.Task) error
 	GetTask(id string) (*orchestrator.Task, error)

@@ -1,8 +1,8 @@
 package templates
 
-import "github.com/novshi-tech/boid/internal/projectspec"
+import "github.com/novshi-tech/boid/internal/orchestrator"
 
-templ ProjectList(projects []*projectspec.Project) {
+templ ProjectList(projects []*orchestrator.Project) {
 	@Layout("Projects") {
 		<h1>Projects</h1>
 		if len(projects) > 0 {

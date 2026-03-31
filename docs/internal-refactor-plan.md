@@ -9,6 +9,7 @@
 - `client`
 - `orchestrator`
 - `dispatcher`
+- `db`
 - `sandbox`
 
 目標アーキテクチャの原則:
@@ -51,8 +52,8 @@ PR 前提ではなく、ローカルで段階的に積み上げる。
 - [x] Phase 5: Secret Into Dispatcher
 - [x] Phase 6: Host Command Policy Into Sandbox
 - [x] Phase 7: Projectspec And Kit Into Orchestrator
-- [ ] Phase 8: Database Boundary Cleanup
-- [ ] Phase 9: Thin API And Thin Server
+- [x] Phase 8: Database Boundary Cleanup
+- [x] Phase 9: Thin API And Thin Server
 - [ ] Phase 10: Final Convergence
 
 ## Definition of Done
@@ -106,7 +107,7 @@ PR 前提ではなく、ローカルで段階的に積み上げる。
 - `worktree` -> `dispatcher`
 - `secret` -> `dispatcher`
 - `hostcmd` -> `sandbox` を優先、難しければ `dispatcher`
-- `db` -> 共有 package として残さず、消費側インタフェース + 実装へ分解
+- `db` -> domain 所有 package ではなく、SQLite utility / transaction helper に縮退させる
 
 完了確認:
 
@@ -302,6 +303,15 @@ Phase 7 実施メモ:
 - `internal/db` を削除できる、または汎用ユーティリティに縮退している
 - `db.DBTX` への広域依存が解消されている
 
+Phase 8 実施メモ:
+
+- `api` は `*db.DB` を保持せず、消費側 interface と transaction interface を受ける形へ変更した
+- `orchestrator` / `dispatcher` の store は共有 utility としての `db.DBTX` を参照する
+- `internal/db` は SQLite open / transaction helper に縮退した
+- migration は `internal/db/migrate` へ分離した
+- query/store テストは `internal/db` から各責務 package へ移設した
+- `internal/db` は domain 所有 package ではなく低レベル utility package として扱う
+
 ## Phase 9: Thin API And Thin Server
 
 目的:
@@ -327,6 +337,20 @@ Phase 7 実施メモ:
 - `api` の import が薄い
 - `server.New` の責務が明確に縮小している
 
+Phase 9 実施メモ:
+
+- `ActionHandler` と `JobHandler` の状態遷移、dispatch loop、cleanup は `api.TaskWorkflowService` へ移した
+- `api` handler は HTTP request/response の decode / encode と service error 変換に寄せた
+- `ProjectHandler`, `TaskHandler`, `WebHandler` も service interface 経由に寄せた
+- `server.New` は DB open / migration / core object 構築に集中し、route 配線と runtime 組み立ては `internal/server/wire.go` へ分離した
+- `api/worktree.go` は削除し、worktree cleanup は service 内の workflow 処理として統合した
+
+Phase 9 残件:
+
+- `api.TaskWorkflowService` を `api` 配下に残すか、別 package へ逃がすかは現時点では保留だが、handler からは interface 越しにのみ参照される
+- `server/wire.go` の runtime 組み立ては現時点で許容し、追加分割は Phase 10 の最終レビューで判断する
+- `scripts/check-internal-architecture.sh current|target` と `go test ./...` が通ることを確認済み
+
 ## Phase 10: Final Convergence
 
 目的:
@@ -346,6 +370,7 @@ Phase 7 実施メモ:
 - `internal/client`
 - `internal/orchestrator`
 - `internal/dispatcher`
+- `internal/db`
 - `internal/sandbox`
 
 ## Suggested Execution Order
@@ -361,6 +386,12 @@ Phase 7 実施メモ:
 9. Phase 8
 10. Phase 9
 11. Phase 10
+
+## Current Remaining Work
+
+1. `internal/db` を utility package として残す前提で最終 package 構成を確定する
+2. 補助ファイルや generated source に残る古い参照を除去する
+3. Phase 10 で依存禁止ルールと最終収束を行う
 
 ## Commit Policy
 

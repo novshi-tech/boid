@@ -10,7 +10,7 @@ import (
 
 type JobHandler struct {
 	Jobs    JobStore
-	Service *TaskWorkflowService
+	Service WorkflowService
 }
 
 func (h *JobHandler) Routes() chi.Router {

@@ -9,7 +9,7 @@ import (
 )
 
 type TaskHandler struct {
-	Tasks TaskStore
+	Service TaskService
 }
 
 func (h *TaskHandler) Routes() chi.Router {
@@ -41,22 +41,12 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t := &orchestrator.Task{
-		ProjectID:    req.ProjectID,
-		Title:        req.Title,
-		Description:  req.Description,
-		Behavior:     req.Behavior,
-		RemoteID:     req.RemoteID,
-		DataSourceID: req.DataSourceID,
-		Payload:      req.Payload,
-	}
-
-	if err := h.Tasks.CreateTask(t); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	task, err := h.Service.CreateTask(req)
+	if err != nil {
+		writeServiceError(w, err)
 		return
 	}
-
-	writeJSON(w, http.StatusCreated, t)
+	writeJSON(w, http.StatusCreated, task)
 }
 
 func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -65,23 +55,20 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 		ProjectID: r.URL.Query().Get("project_id"),
 	}
 
-	tasks, err := h.Tasks.ListTasks(filter)
+	tasks, err := h.Service.ListTasks(filter)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeServiceError(w, err)
 		return
-	}
-	if tasks == nil {
-		tasks = []*orchestrator.Task{}
 	}
 	writeJSON(w, http.StatusOK, tasks)
 }
 
 func (h *TaskHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	t, err := h.Tasks.GetTask(id)
+	task, err := h.Service.GetTask(id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, t)
+	writeJSON(w, http.StatusOK, task)
 }

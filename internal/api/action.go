@@ -8,7 +8,7 @@ import (
 )
 
 type ActionHandler struct {
-	Service *TaskWorkflowService
+	Service WorkflowService
 }
 
 func (h *ActionHandler) Routes() chi.Router {

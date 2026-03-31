@@ -21,6 +21,9 @@ type appRuntime struct {
 	projectRepo *orchestrator.ProjectRepository
 	taskRepo    *orchestrator.TaskRepository
 	jobRepo     *dispatcher.JobRepository
+	projectSvc  *api.ProjectAppService
+	taskSvc     *api.TaskAppService
+	webSvc      *api.WebAppService
 	workflow    *api.TaskWorkflowService
 }
 
@@ -99,11 +102,28 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Lifecycle:   runner,
 		Worktrees:   wtMgr,
 	}
+	projectSvc := &api.ProjectAppService{
+		Projects: projectRepo,
+		Meta:     store,
+	}
+	taskSvc := &api.TaskAppService{
+		Tasks: taskRepo,
+	}
+	webSvc := &api.WebAppService{
+		Tasks:    taskRepo,
+		Actions:  taskRepo,
+		Jobs:     jobRepo,
+		Projects: projectRepo,
+		Meta:     store,
+	}
 
 	return &appRuntime{
 		projectRepo: projectRepo,
 		taskRepo:    taskRepo,
 		jobRepo:     jobRepo,
+		projectSvc:  projectSvc,
+		taskSvc:     taskSvc,
+		webSvc:      webSvc,
 		workflow:    workflow,
 	}, nil
 }
@@ -133,10 +153,10 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		r.Mount("/api/secrets", secretHandler.Routes())
 	}
 
-	projectHandler := &api.ProjectHandler{Projects: runtime.projectRepo, Store: srv.store}
+	projectHandler := &api.ProjectHandler{Service: runtime.projectSvc}
 	r.Mount("/api/projects", projectHandler.Routes())
 
-	taskHandler := &api.TaskHandler{Tasks: runtime.taskRepo}
+	taskHandler := &api.TaskHandler{Service: runtime.taskSvc}
 	r.Mount("/api/tasks", taskHandler.Routes())
 
 	actionHandler := &api.ActionHandler{Service: runtime.workflow}
@@ -147,7 +167,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	jobHandler := &api.JobHandler{Jobs: runtime.jobRepo, Service: runtime.workflow}
 	r.Mount("/api/jobs", jobHandler.Routes())
 
-	webHandler := &api.WebHandler{Tasks: runtime.taskRepo, Actions: runtime.taskRepo, Jobs: runtime.jobRepo, Projects: runtime.projectRepo, Store: srv.store}
+	webHandler := &api.WebHandler{Service: runtime.webSvc}
 	r.Mount("/", webHandler.Routes())
 
 	staticFS, err := fs.Sub(web.StaticFS, "static")
