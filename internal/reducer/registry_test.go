@@ -139,9 +139,9 @@ func TestOneShotMachine_JobFailedFromAny(t *testing.T) {
 func TestFeedbackLoopMachine_FullCycle(t *testing.T) {
 	sm := reducer.FeedbackLoopMachine()
 
-	task := &model.Task{Status: model.TaskStatusPending}
+	task := &model.Task{Status: model.TaskStatusPending, Payload: json.RawMessage(`{}`)}
 
-	// pending -> executing
+	// pending -> executing (action)
 	next, err := sm.Apply(task, &model.Action{Type: "start"})
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -150,63 +150,69 @@ func TestFeedbackLoopMachine_FullCycle(t *testing.T) {
 		t.Fatalf("expected executing, got %s", next.Status)
 	}
 
-	// executing -> verifying
-	next, err = sm.Apply(next, &model.Action{Type: "verify"})
-	if err != nil {
-		t.Fatalf("verify: %v", err)
+	// executing -> verifying (condition: artifact present)
+	next.Payload = json.RawMessage(`{"artifact":{"pr_url":"https://..."}}`)
+	advanced, ok := sm.Advance(next)
+	if !ok {
+		t.Fatal("expected advance from executing to verifying")
 	}
-	if next.Status != model.TaskStatusVerifying {
-		t.Fatalf("expected verifying, got %s", next.Status)
-	}
-
-	// verifying -> in_review
-	next, err = sm.Apply(next, &model.Action{Type: "review"})
-	if err != nil {
-		t.Fatalf("review: %v", err)
-	}
-	if next.Status != model.TaskStatusInReview {
-		t.Fatalf("expected in_review, got %s", next.Status)
+	if advanced.Status != model.TaskStatusVerifying {
+		t.Fatalf("expected verifying, got %s", advanced.Status)
 	}
 
-	// in_review -> collecting_feedback
-	next, err = sm.Apply(next, &model.Action{Type: "collect_feedback"})
+	// verifying -> in_review (condition: all verification passed)
+	advanced.Payload = json.RawMessage(`{"artifact":{"pr_url":"https://..."},"verification":{"ci":{"passed":true,"findings":[]},"review":{"passed":true,"findings":[]}}}`)
+	next2, ok := sm.Advance(advanced)
+	if !ok {
+		t.Fatal("expected advance from verifying to in_review")
+	}
+	if next2.Status != model.TaskStatusInReview {
+		t.Fatalf("expected in_review, got %s", next2.Status)
+	}
+
+	// in_review -> collecting_feedback (action)
+	next3, err := sm.Apply(next2, &model.Action{Type: "collect_feedback"})
 	if err != nil {
 		t.Fatalf("collect_feedback: %v", err)
 	}
-	if next.Status != model.TaskStatusCollectingFeedback {
-		t.Fatalf("expected collecting_feedback, got %s", next.Status)
+	if next3.Status != model.TaskStatusCollectingFeedback {
+		t.Fatalf("expected collecting_feedback, got %s", next3.Status)
 	}
 
-	// collecting_feedback -> executing (rework)
-	next, err = sm.Apply(next, &model.Action{Type: "rework"})
+	// collecting_feedback -> executing (rework action)
+	next4, err := sm.Apply(next3, &model.Action{Type: "rework"})
 	if err != nil {
 		t.Fatalf("rework: %v", err)
 	}
-	if next.Status != model.TaskStatusExecuting {
-		t.Fatalf("expected executing after rework, got %s", next.Status)
+	if next4.Status != model.TaskStatusExecuting {
+		t.Fatalf("expected executing after rework, got %s", next4.Status)
 	}
 
-	// Go through the cycle again and then finish
-	next, err = sm.Apply(next, &model.Action{Type: "verify"})
-	if err != nil {
-		t.Fatalf("verify 2: %v", err)
-	}
-	next, err = sm.Apply(next, &model.Action{Type: "review"})
-	if err != nil {
-		t.Fatalf("review 2: %v", err)
-	}
-	next, err = sm.Apply(next, &model.Action{Type: "collect_feedback"})
-	if err != nil {
-		t.Fatalf("collect_feedback 2: %v", err)
-	}
-
-	// collecting_feedback -> done
-	next, err = sm.Apply(next, &model.Action{Type: "done"})
+	// collecting_feedback -> done (action)
+	next5, err := sm.Apply(next3, &model.Action{Type: "done"})
 	if err != nil {
 		t.Fatalf("done: %v", err)
 	}
-	if next.Status != model.TaskStatusDone {
-		t.Fatalf("expected done, got %s", next.Status)
+	if next5.Status != model.TaskStatusDone {
+		t.Fatalf("expected done, got %s", next5.Status)
+	}
+}
+
+func TestFeedbackLoopMachine_VerificationFailed_Rework(t *testing.T) {
+	sm := reducer.FeedbackLoopMachine()
+
+	task := &model.Task{
+		Status:  model.TaskStatusVerifying,
+		Payload: json.RawMessage(`{"artifact":{"pr_url":"https://..."},"verification":{"ci":{"passed":false,"findings":["TestFoo failed"]}}}`),
+	}
+
+	// verifying -> executing (condition: any verification failed)
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance from verifying to executing on failure")
+	}
+	if next.Status != model.TaskStatusExecuting {
+		t.Fatalf("expected executing (rework), got %s", next.Status)
 	}
 }
 

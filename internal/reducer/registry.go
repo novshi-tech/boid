@@ -87,6 +87,14 @@ func OneShotMachine() *StateMachine {
 		Name: "one-shot",
 		Rules: []Rule{
 			{Action: "start", FromStatus: "pending", ToStatus: "executing"},
+			// Condition: tasks ready → auto-advance to done (for triage/plan tasks)
+			{FromStatus: "executing", ToStatus: "done", Condition: func(p json.RawMessage) bool {
+				return TasksReady(p)
+			}},
+			// Condition: artifact present → auto-advance to done (for simple impl tasks)
+			{FromStatus: "executing", ToStatus: "done", Condition: func(p json.RawMessage) bool {
+				return TraitNonNull(p, "artifact")
+			}},
 			{Action: "done", FromStatus: "executing", ToStatus: "done"},
 			{Action: "job_completed", FromStatus: "executing", ToStatus: "done"},
 			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},
@@ -100,12 +108,15 @@ func FeedbackLoopMachine() *StateMachine {
 		Name: "feedback-loop",
 		Rules: []Rule{
 			{Action: "start", FromStatus: "pending", ToStatus: "executing"},
-			{Action: "verify", FromStatus: "executing", ToStatus: "verifying"},
-			{Action: "job_completed", FromStatus: "executing", ToStatus: "verifying"},
-			{Action: "review", FromStatus: "verifying", ToStatus: "in_review"},
-			{Action: "job_completed", FromStatus: "verifying", ToStatus: "in_review"},
+			// Condition: artifact present → auto-advance to verifying
+			{FromStatus: "executing", ToStatus: "verifying", Condition: func(p json.RawMessage) bool {
+				return TraitNonNull(p, "artifact")
+			}},
+			// Condition: any verification failed → rework (back to executing)
+			{FromStatus: "verifying", ToStatus: "executing", Condition: AnySubkeyFailed},
+			// Condition: all verification passed → advance to in_review
+			{FromStatus: "verifying", ToStatus: "in_review", Condition: AllSubkeysPassed},
 			{Action: "collect_feedback", FromStatus: "in_review", ToStatus: "collecting_feedback"},
-			{Action: "job_completed", FromStatus: "in_review", ToStatus: "collecting_feedback"},
 			{Action: "rework", FromStatus: "collecting_feedback", ToStatus: "executing"},
 			{Action: "done", FromStatus: "collecting_feedback", ToStatus: "done"},
 			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},
