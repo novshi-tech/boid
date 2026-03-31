@@ -112,13 +112,15 @@ func FeedbackLoopMachine() *StateMachine {
 			{FromStatus: "executing", ToStatus: "verifying", Condition: func(p json.RawMessage) bool {
 				return TraitNonNull(p, "artifact")
 			}},
-			// Condition: any verification failed → rework (back to executing)
-			{FromStatus: "verifying", ToStatus: "executing", Condition: AnySubkeyFailed},
-			// Condition: all verification passed → advance to in_review
-			{FromStatus: "verifying", ToStatus: "in_review", Condition: AllSubkeysPassed},
+			// Condition: any finding unresolved → rework (back to executing)
+			{FromStatus: "verifying", ToStatus: "executing", Condition: AnyFindingUnresolvedForState("verifying")},
+			// Condition: all findings resolved → advance to in_review
+			{FromStatus: "verifying", ToStatus: "in_review", Condition: AllFindingsResolvedForState("verifying")},
 			{Action: "collect_feedback", FromStatus: "in_review", ToStatus: "collecting_feedback"},
-			{Action: "rework", FromStatus: "collecting_feedback", ToStatus: "executing"},
-			{Action: "done", FromStatus: "collecting_feedback", ToStatus: "done"},
+			// Condition: any feedback finding unresolved → rework
+			{FromStatus: "collecting_feedback", ToStatus: "executing", Condition: AnyFindingUnresolvedForState("collecting_feedback")},
+			// Condition: all feedback findings resolved → done
+			{FromStatus: "collecting_feedback", ToStatus: "done", Condition: AllFindingsResolvedForState("collecting_feedback")},
 			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},
 			{Action: "abort", FromStatus: "*", ToStatus: "aborted"},
 		},

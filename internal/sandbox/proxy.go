@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -64,10 +65,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !p.isDomainAllowed(host) {
+		slog.Warn("proxy CONNECT blocked", "host", r.Host)
 		http.Error(w, "domain not allowed", http.StatusForbidden)
 		return
 	}
 
+	slog.Debug("proxy CONNECT", "host", r.Host)
 	targetConn, err := net.Dial("tcp", r.Host)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)

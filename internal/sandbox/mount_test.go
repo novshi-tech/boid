@@ -48,14 +48,17 @@ func TestBuildMounts(t *testing.T) {
 		t.Error("workspace mount should be ro")
 	}
 
-	// Hooks directory (ro)
-	hooksTarget := cfg.ProjectDir + "/.boid/hooks"
-	hooksMount, ok := byTarget[hooksTarget]
+	// .boid directory (ro)
+	dotBoidTarget := cfg.ProjectDir + "/.boid"
+	dotBoidMount, ok := byTarget[dotBoidTarget]
 	if !ok {
-		t.Fatalf("missing hooks mount at %s", hooksTarget)
+		t.Fatalf("missing .boid mount at %s", dotBoidTarget)
 	}
-	if !hooksMount.ReadOnly {
-		t.Error("hooks mount should be ro")
+	if !dotBoidMount.ReadOnly {
+		t.Error(".boid mount should be ro")
+	}
+	if dotBoidMount.Source != dotBoidTarget {
+		t.Errorf(".boid mount source = %q, want %q", dotBoidMount.Source, dotBoidTarget)
 	}
 
 	// Boid binary

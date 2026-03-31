@@ -188,14 +188,14 @@ func TestMergePayloadPatch_Shared(t *testing.T) {
 	allowed := []model.TraitType{model.TraitVerification}
 
 	// First hook writes
-	patch1 := json.RawMessage(`{"verification":{"passed":true,"score":9}}`)
+	patch1 := json.RawMessage(`{"verification":{"source_state":"verifying","findings":[{"message":"secure","status":"resolved"}]}}`)
 	result, err := model.MergePayloadPatch(base, patch1, "security-review", allowed)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	// Second hook writes
-	patch2 := json.RawMessage(`{"verification":{"passed":false,"issues":["bug"]}}`)
+	patch2 := json.RawMessage(`{"verification":{"source_state":"verifying","findings":[{"message":"bug found","status":"open"}]}}`)
 	result, err = model.MergePayloadPatch(result, patch2, "quality-review", allowed)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

@@ -92,6 +92,34 @@ func TestCheckPolicy(t *testing.T) {
 			expected: true,
 		},
 		{
+			name: "allowed subcommands without patterns permits valid subcommand",
+			def: hostcmd.CommandDef{
+				AllowedSubcommands:  []string{"status", "log", "diff"},
+				ExtractSubcommandFn: "git",
+			},
+			args:     []string{"status"},
+			expected: true,
+		},
+		{
+			name: "allowed subcommands without patterns blocks invalid subcommand",
+			def: hostcmd.CommandDef{
+				AllowedSubcommands:  []string{"status", "log"},
+				ExtractSubcommandFn: "git",
+			},
+			args:     []string{"config", "--global", "user.email"},
+			expected: false,
+		},
+		{
+			name: "allowed subcommands without patterns respects denied patterns",
+			def: hostcmd.CommandDef{
+				AllowedSubcommands:  []string{"push"},
+				DeniedPatterns:      []string{"push *://*"},
+				ExtractSubcommandFn: "git",
+			},
+			args:     []string{"push", "https://evil.com/repo"},
+			expected: false,
+		},
+		{
 			name: "deny takes precedence over allow",
 			def: hostcmd.CommandDef{
 				AllowedPatterns: []string{"*"},

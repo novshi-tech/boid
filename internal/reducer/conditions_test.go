@@ -31,72 +31,113 @@ func TestTraitNonNull(t *testing.T) {
 	}
 }
 
-func TestAllSubkeysPassed(t *testing.T) {
+func TestAllFindingsResolvedForState(t *testing.T) {
 	cases := []struct {
 		name    string
 		payload string
+		state   string
 		want    bool
 	}{
 		{
-			"all passed",
-			`{"verification":{"ci":{"passed":true,"findings":[]},"review":{"passed":true,"findings":[]}}}`,
+			"all resolved for matching state",
+			`{"verification":{"ci":{"source_state":"verifying","findings":[{"message":"tests pass","status":"resolved"}]},"lint":{"source_state":"verifying","findings":[{"message":"clean","status":"resolved"}]}}}`,
+			"verifying",
 			true,
 		},
 		{
-			"one failed",
-			`{"verification":{"ci":{"passed":true,"findings":[]},"review":{"passed":false,"findings":["bug"]}}}`,
+			"one unresolved for matching state",
+			`{"verification":{"ci":{"source_state":"verifying","findings":[{"message":"tests pass","status":"resolved"}]},"lint":{"source_state":"verifying","findings":[{"message":"unused import","status":"open"}]}}}`,
+			"verifying",
 			false,
+		},
+		{
+			"resolved but wrong state",
+			`{"verification":{"pr-review":{"source_state":"collecting_feedback","findings":[{"message":"looks good","status":"resolved"}]}}}`,
+			"verifying",
+			false,
+		},
+		{
+			"empty findings for matching state",
+			`{"verification":{"ci":{"source_state":"verifying","findings":[]}}}`,
+			"verifying",
+			true,
+		},
+		{
+			"mixed states only matching resolved",
+			`{"verification":{"ci":{"source_state":"verifying","findings":[{"message":"ok","status":"resolved"}]},"pr-review":{"source_state":"collecting_feedback","findings":[{"message":"fix this","status":"open"}]}}}`,
+			"verifying",
+			true,
 		},
 		{
 			"empty verification",
 			`{"verification":{}}`,
-			false, // no sub-keys → not all passed
+			"verifying",
+			false,
 		},
 		{
 			"missing verification",
 			`{}`,
+			"verifying",
 			false,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := reducer.AllSubkeysPassed(json.RawMessage(tc.payload))
+			fn := reducer.AllFindingsResolvedForState(tc.state)
+			got := fn(json.RawMessage(tc.payload))
 			if got != tc.want {
-				t.Errorf("AllSubkeysPassed = %v, want %v", got, tc.want)
+				t.Errorf("AllFindingsResolvedForState(%q) = %v, want %v", tc.state, got, tc.want)
 			}
 		})
 	}
 }
 
-func TestAnySubkeyFailed(t *testing.T) {
+func TestAnyFindingUnresolvedForState(t *testing.T) {
 	cases := []struct {
 		name    string
 		payload string
+		state   string
 		want    bool
 	}{
 		{
-			"one failed",
-			`{"verification":{"ci":{"passed":false,"findings":["error"]},"review":{"passed":true,"findings":[]}}}`,
+			"one unresolved for matching state",
+			`{"verification":{"ci":{"source_state":"verifying","findings":[{"message":"test failed","status":"open"}]}}}`,
+			"verifying",
 			true,
 		},
 		{
-			"all passed",
-			`{"verification":{"ci":{"passed":true,"findings":[]},"review":{"passed":true,"findings":[]}}}`,
+			"all resolved for matching state",
+			`{"verification":{"ci":{"source_state":"verifying","findings":[{"message":"tests pass","status":"resolved"}]}}}`,
+			"verifying",
+			false,
+		},
+		{
+			"unresolved but wrong state",
+			`{"verification":{"pr-review":{"source_state":"collecting_feedback","findings":[{"message":"fix this","status":"open"}]}}}`,
+			"verifying",
+			false,
+		},
+		{
+			"no entries for state",
+			`{"verification":{"ci":{"source_state":"verifying","findings":[]}}}`,
+			"collecting_feedback",
 			false,
 		},
 		{
 			"missing verification",
 			`{}`,
+			"verifying",
 			false,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := reducer.AnySubkeyFailed(json.RawMessage(tc.payload))
+			fn := reducer.AnyFindingUnresolvedForState(tc.state)
+			got := fn(json.RawMessage(tc.payload))
 			if got != tc.want {
-				t.Errorf("AnySubkeyFailed = %v, want %v", got, tc.want)
+				t.Errorf("AnyFindingUnresolvedForState(%q) = %v, want %v", tc.state, got, tc.want)
 			}
 		})
 	}

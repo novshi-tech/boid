@@ -32,14 +32,12 @@ func BuildMounts(cfg SandboxConfig) []MountEntry {
 		})
 	}
 
-	// Hooks directory (ro)
-	if cfg.HooksDir != "" {
-		mounts = append(mounts, MountEntry{
-			Source:   cfg.HooksDir,
-			Target:   filepath.Join(cfg.ProjectDir, ".boid", "hooks"),
-			ReadOnly: true,
-		})
-	}
+	// .boid directory (ro) — project config not writable from sandbox
+	mounts = append(mounts, MountEntry{
+		Source:   filepath.Join(cfg.ProjectDir, ".boid"),
+		Target:   filepath.Join(cfg.ProjectDir, ".boid"),
+		ReadOnly: true,
+	})
 
 	// Boid binary
 	if cfg.BoidBinary != "" {

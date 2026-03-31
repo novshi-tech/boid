@@ -20,7 +20,8 @@ type CommandDef struct {
 //  1. AllowedSubcommands — if set, extract subcommand and check whitelist
 //  2. DeniedPatterns — if any match the joined args, deny
 //  3. AllowedPatterns — if any match the joined args, allow
-//  4. Default deny
+//  4. If AllowedSubcommands passed and no AllowedPatterns defined, allow
+//  5. Default deny
 func CheckPolicy(def CommandDef, args []string) bool {
 	if len(args) == 0 {
 		return true
@@ -29,6 +30,7 @@ func CheckPolicy(def CommandDef, args []string) bool {
 	joined := strings.Join(args, " ")
 
 	// 1. Subcommand whitelist
+	subcmdPassed := false
 	if len(def.AllowedSubcommands) > 0 {
 		var subcmd string
 		if def.ExtractSubcommandFn == "git" {
@@ -39,6 +41,7 @@ func CheckPolicy(def CommandDef, args []string) bool {
 		if subcmd == "" || !containsString(def.AllowedSubcommands, subcmd) {
 			return false
 		}
+		subcmdPassed = true
 	}
 
 	// 2. Deny-first: check denied patterns against joined args
@@ -48,6 +51,11 @@ func CheckPolicy(def CommandDef, args []string) bool {
 
 	// 3. Check allowed patterns against joined args
 	if matchesAnyPattern(def.AllowedPatterns, joined) {
+		return true
+	}
+
+	// 4. If subcommand whitelist passed and no allowed patterns defined, allow
+	if subcmdPassed && len(def.AllowedPatterns) == 0 {
 		return true
 	}
 

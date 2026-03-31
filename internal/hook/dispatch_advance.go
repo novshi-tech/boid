@@ -51,6 +51,7 @@ func (d *AdvancedDispatcher) DispatchAndAdvance(
 				return nil, err
 			}
 			if len(hr.PayloadPatch) > 0 && string(hr.PayloadPatch) != "{}" {
+				hr.PayloadPatch = injectSourceState(hr.PayloadPatch, string(task.Status))
 				merged, err := model.MergePayloadPatch(payload, hr.PayloadPatch, hr.ID, hr.allowedTraits(matchedHooks))
 				if err != nil {
 					slog.Warn("payload merge failed", "hook_id", hr.ID, "error", err)
@@ -74,6 +75,7 @@ func (d *AdvancedDispatcher) DispatchAndAdvance(
 				return nil, err
 			}
 			if len(gr.PayloadPatch) > 0 && string(gr.PayloadPatch) != "{}" {
+				gr.PayloadPatch = injectSourceState(gr.PayloadPatch, string(task.Status))
 				merged, err := model.MergePayloadPatch(payload, gr.PayloadPatch, gr.ID, gr.allowedTraits(nil))
 				if err != nil {
 					slog.Warn("payload merge failed", "gate_id", gr.ID, "error", err)
@@ -298,6 +300,46 @@ func parseHandlerResult(id string, role model.Role, c JobCompletion) HandlerResu
 	}
 	hr.PayloadPatch = output.PayloadPatch
 	return hr
+}
+
+// injectSourceState adds source_state to the verification value in a payload_patch.
+// If the patch contains a "verification" key, its value gets source_state set to state.
+// Non-verification patches are returned unchanged.
+func injectSourceState(patch json.RawMessage, state string) json.RawMessage {
+	if len(patch) == 0 || string(patch) == "{}" || string(patch) == "null" {
+		return patch
+	}
+
+	var patchMap map[string]json.RawMessage
+	if err := json.Unmarshal(patch, &patchMap); err != nil {
+		return patch
+	}
+
+	vRaw, ok := patchMap["verification"]
+	if !ok || string(vRaw) == "null" {
+		return patch
+	}
+
+	// Parse the verification value as a generic map, inject source_state
+	var vMap map[string]json.RawMessage
+	if err := json.Unmarshal(vRaw, &vMap); err != nil {
+		return patch
+	}
+
+	stateJSON, _ := json.Marshal(state)
+	vMap["source_state"] = stateJSON
+
+	vBytes, err := json.Marshal(vMap)
+	if err != nil {
+		return patch
+	}
+	patchMap["verification"] = vBytes
+
+	result, err := json.Marshal(patchMap)
+	if err != nil {
+		return patch
+	}
+	return result
 }
 
 // allowedTraits returns the requires_traits for this handler from the hook list.

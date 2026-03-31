@@ -308,8 +308,8 @@ func TestDispatchAndAdvance_ExclusiveTraitCollision(t *testing.T) {
 func TestDispatchAndAdvance_SharedTraitNoCollision(t *testing.T) {
 	mock := newMockExecutorWaiter()
 	// Two hooks both write to shared trait "verification" — should succeed
-	mock.setHookCompletion("hook-a", `{"payload_patch":{"verification":{"passed":true,"findings":[]}}}`, 0)
-	mock.setHookCompletion("hook-b", `{"payload_patch":{"verification":{"passed":false,"findings":["bug"]}}}`, 0)
+	mock.setHookCompletion("hook-a", `{"payload_patch":{"verification":{"findings":[{"message":"ok","status":"resolved"}]}}}`, 0)
+	mock.setHookCompletion("hook-b", `{"payload_patch":{"verification":{"findings":[{"message":"bug","status":"open"}]}}}`, 0)
 
 	eval := &hook.Evaluator{}
 	disp := &hook.AdvancedDispatcher{
@@ -350,6 +350,74 @@ func TestDispatchAndAdvance_SharedTraitNoCollision(t *testing.T) {
 	}
 	if _, ok := verification["hook-b"]; !ok {
 		t.Error("expected hook-b sub-key in verification")
+	}
+
+	// source_state should be injected automatically
+	for _, key := range []string{"hook-a", "hook-b"} {
+		var entry struct {
+			SourceState string `json:"source_state"`
+		}
+		if err := json.Unmarshal(verification[key], &entry); err != nil {
+			t.Fatalf("unmarshal %s: %v", key, err)
+		}
+		if entry.SourceState != "executing" {
+			t.Errorf("%s: source_state = %q, want %q", key, entry.SourceState, "executing")
+		}
+	}
+}
+
+func TestDispatchAndAdvance_GateInjectsSourceState(t *testing.T) {
+	mock := newMockExecutorWaiter()
+	mock.setGateCompletion("gate-ci", `{"payload_patch":{"verification":{"findings":[{"message":"ci passed","status":"resolved"}]}}}`, 0)
+
+	eval := &hook.Evaluator{}
+	disp := &hook.AdvancedDispatcher{
+		Evaluator:    eval,
+		HookExecutor: mock,
+		GateExecutor: mock,
+		Waiter:       mock,
+		MaxDepth:     5,
+	}
+
+	task := &model.Task{
+		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		ProjectID: "proj-1",
+		Status:    model.TaskStatusVerifying,
+		Payload:   json.RawMessage(`{"artifact":{"pr_url":"https://..."}}`),
+	}
+	meta := &model.ProjectMeta{
+		Gates: []model.Gate{
+			{ID: "gate-ci", On: "verifying"},
+		},
+	}
+	behavior := &model.TaskBehavior{Readonly: false}
+	sm := &reducer.StateMachine{Name: "test", Rules: []reducer.Rule{}}
+
+	result, err := disp.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	var payload map[string]json.RawMessage
+	json.Unmarshal(result.FinalPayload, &payload)
+	var verification map[string]json.RawMessage
+	json.Unmarshal(payload["verification"], &verification)
+
+	var entry struct {
+		SourceState string `json:"source_state"`
+		Findings    []struct {
+			Message string `json:"message"`
+			Status  string `json:"status"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal(verification["gate-ci"], &entry); err != nil {
+		t.Fatalf("unmarshal gate-ci: %v", err)
+	}
+	if entry.SourceState != "verifying" {
+		t.Errorf("source_state = %q, want %q", entry.SourceState, "verifying")
+	}
+	if len(entry.Findings) != 1 || entry.Findings[0].Message != "ci passed" {
+		t.Errorf("findings not preserved: %+v", entry.Findings)
 	}
 }
 

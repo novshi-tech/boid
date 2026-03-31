@@ -12,29 +12,44 @@ func TraitNonNull(payload json.RawMessage, trait string) bool {
 	return ok && string(v) != "null"
 }
 
-// AllSubkeysPassed returns true if all sub-keys under "verification" have passed=true.
-// Returns false if verification is missing, empty, or any sub-key has passed=false.
-func AllSubkeysPassed(payload json.RawMessage) bool {
-	sub := verificationSubkeys(payload)
-	if len(sub) == 0 {
-		return false
-	}
-	for _, entry := range sub {
-		if !entry.Passed {
-			return false
+// AllFindingsResolvedForState returns a condition that is true when all verification
+// subkeys matching the given source_state have no open findings.
+// Returns false if no subkeys match the given state.
+func AllFindingsResolvedForState(sourceState string) TransitionCondition {
+	return func(payload json.RawMessage) bool {
+		sub := verificationSubkeys(payload)
+		found := false
+		for _, entry := range sub {
+			if entry.SourceState != sourceState {
+				continue
+			}
+			found = true
+			for _, f := range entry.Findings {
+				if f.Status != "resolved" {
+					return false
+				}
+			}
 		}
+		return found
 	}
-	return true
 }
 
-// AnySubkeyFailed returns true if any sub-key under "verification" has passed=false.
-func AnySubkeyFailed(payload json.RawMessage) bool {
-	for _, entry := range verificationSubkeys(payload) {
-		if !entry.Passed {
-			return true
+// AnyFindingUnresolvedForState returns a condition that is true when any verification
+// subkey matching the given source_state has a non-resolved finding.
+func AnyFindingUnresolvedForState(sourceState string) TransitionCondition {
+	return func(payload json.RawMessage) bool {
+		for _, entry := range verificationSubkeys(payload) {
+			if entry.SourceState != sourceState {
+				continue
+			}
+			for _, f := range entry.Findings {
+				if f.Status != "resolved" {
+					return true
+				}
+			}
 		}
+		return false
 	}
-	return false
 }
 
 // TasksReady returns true if the "tasks" trait is a non-empty array.
@@ -54,8 +69,15 @@ func TasksReady(payload json.RawMessage) bool {
 	return len(arr) > 0
 }
 
+// Finding represents a single verification finding with a lifecycle status.
+type Finding struct {
+	Message string `json:"message"`
+	Status  string `json:"status"` // "open" or "resolved"
+}
+
 type verificationEntry struct {
-	Passed bool `json:"passed"`
+	SourceState string    `json:"source_state"`
+	Findings    []Finding `json:"findings"`
 }
 
 func verificationSubkeys(payload json.RawMessage) map[string]verificationEntry {
