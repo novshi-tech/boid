@@ -207,31 +207,19 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 		Name:            "boid",
 		Path:            boidPath,
 		AllowedPatterns: []string{"*"},
+		AllowStdin:      true,
 	}
 
 	return b.execCommand(req, def)
 }
 
 func (b *Broker) execCommand(req *ExecRequest, def CommandDef) *ExecResponse {
-	if def.RequireCwd {
-		if req.Cwd == "" {
-			return &ExecResponse{ExitCode: 1, Stderr: "cwd required"}
-		}
-		if !filepath.IsAbs(req.Cwd) {
-			return &ExecResponse{ExitCode: 1, Stderr: "cwd must be absolute"}
-		}
-		if len(def.AllowedCwdPrefixes) > 0 {
-			allowed := false
-			for _, prefix := range def.AllowedCwdPrefixes {
-				if req.Cwd == prefix || strings.HasPrefix(req.Cwd, prefix+"/") {
-					allowed = true
-					break
-				}
-			}
-			if !allowed {
-				return &ExecResponse{ExitCode: 1, Stderr: "cwd not in allowed prefixes"}
-			}
-		}
+	if err := validateCwd(def, req.Cwd); err != nil {
+		return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
+	}
+
+	if err := validateStdin(def, req.Stdin); err != nil {
+		return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
 	}
 
 	if !CheckPolicy(def, req.Args) {
@@ -268,6 +256,44 @@ func (b *Broker) execCommand(req *ExecRequest, def CommandDef) *ExecResponse {
 	}
 
 	return &ExecResponse{ExitCode: exitCode, Stdout: stdout.String(), Stderr: stderr.String()}
+}
+
+func validateCwd(def CommandDef, cwd string) error {
+	if !def.RequireCwd {
+		return nil
+	}
+	if cwd == "" {
+		return fmt.Errorf("cwd required")
+	}
+	if !filepath.IsAbs(cwd) {
+		return fmt.Errorf("cwd must be absolute")
+	}
+	info, err := os.Stat(cwd)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("cwd does not exist")
+		}
+		return fmt.Errorf("stat cwd: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("cwd must be a directory")
+	}
+	if len(def.AllowedCwdPrefixes) == 0 {
+		return nil
+	}
+	for _, prefix := range def.AllowedCwdPrefixes {
+		if cwd == prefix || strings.HasPrefix(cwd, prefix+"/") {
+			return nil
+		}
+	}
+	return fmt.Errorf("cwd not in allowed prefixes")
+}
+
+func validateStdin(def CommandDef, stdin []byte) error {
+	if len(stdin) > 0 && !def.AllowStdin {
+		return fmt.Errorf("stdin not allowed")
+	}
+	return nil
 }
 
 func generateToken() string {

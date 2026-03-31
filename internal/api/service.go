@@ -284,6 +284,22 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 	job.ExitCode = req.ExitCode
 	job.Output = req.Output
 
+	finalize := func() {
+		if s.Lifecycle == nil {
+			return
+		}
+		s.Lifecycle.CompleteJob(job.ID, dispatcher.JobCompletionResult{
+			Output:   req.Output,
+			ExitCode: req.ExitCode,
+		})
+		s.Lifecycle.UnregisterJob(job.ID)
+	}
+
+	if err := s.Jobs.UpdateJob(job); err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	defer finalize()
+
 	actionType := "job_completed"
 	if req.ExitCode != 0 {
 		actionType = "job_failed"
@@ -311,16 +327,10 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 	newTask, err := sm.Apply(task, action)
 	if err != nil {
 		slog.Warn("job done: transition not applicable", "action", actionType, "error", err)
-		if err := s.Jobs.UpdateJob(job); err != nil {
-			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
-		}
 		return job, nil
 	}
 
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
-		if err := tx.UpdateJob(job); err != nil {
-			return err
-		}
 		if err := tx.UpdateTask(newTask); err != nil {
 			return err
 		}
@@ -330,14 +340,6 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 	}
 
 	slog.Info("job done: auto-applied action", "job_id", job.ID, "action", actionType, "new_status", newTask.Status)
-
-	if s.Lifecycle != nil {
-		s.Lifecycle.CompleteJob(job.ID, dispatcher.JobCompletionResult{
-			Output:   req.Output,
-			ExitCode: req.ExitCode,
-		})
-		s.Lifecycle.UnregisterJob(job.ID)
-	}
 
 	s.cleanupWorktree(newTask.ID, job.ProjectID, newTask.Status)
 	return job, nil
