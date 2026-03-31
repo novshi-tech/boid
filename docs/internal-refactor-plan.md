@@ -46,7 +46,7 @@ PR 前提ではなく、ローカルで段階的に積み上げる。
 - [x] Phase 0: Baseline And Guardrails
 - [x] Phase 1: Package Mapping Fix
 - [x] Phase 2: Shared Models First
-- [ ] Phase 3: Orchestrator Boundary Cleanup
+- [x] Phase 3: Orchestrator Boundary Cleanup
 - [ ] Phase 4: Worktree Into Dispatcher
 - [ ] Phase 5: Secret Into Dispatcher
 - [ ] Phase 6: Host Command Policy Into Sandbox
@@ -163,6 +163,12 @@ Phase 2 実施メモ:
 
 - `orchestrator` の外部依存がモデル中心になっている
 - dispatcher 由来の詳細型露出が減っている
+
+Phase 3 実施メモ:
+
+- `DispatchPlanner` は `dispatcher.DispatchPlan` ではなく `orchestrator.DispatchRequest` を返す
+- `dispatch_adapter` が `DispatchRequest -> dispatcher.DispatchPlan` の境界変換を担当する
+- `dispatcher` 依存の詳細型は adapter 内部に閉じ込める
 
 ## Phase 4: Worktree Into Dispatcher
 

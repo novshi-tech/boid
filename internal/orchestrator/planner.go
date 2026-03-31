@@ -6,18 +6,16 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/kit"
-	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
 type MetaCache interface {
-	Get(id string) (*projectspec.ProjectMeta, bool)
+	Get(id string) (*ProjectMeta, bool)
 }
 
 type ProjectCatalog interface {
-	GetProject(id string) (*projectspec.Project, error)
-	ListProjects() ([]*projectspec.Project, error)
+	GetProject(id string) (*Project, error)
+	ListProjects() ([]*Project, error)
 }
 
 type TaskLookup interface {
@@ -25,7 +23,7 @@ type TaskLookup interface {
 }
 
 type WorktreePreparer interface {
-	Prepare(task *Task, proj *projectspec.Project, behavior *projectspec.TaskBehavior) (string, error)
+	Prepare(task *Task, proj *Project, behavior *TaskBehavior) (string, error)
 }
 
 type DispatchPlanner struct {
@@ -38,7 +36,7 @@ type DispatchPlanner struct {
 	ProxyPort    *int
 }
 
-func (p *DispatchPlanner) PlanHook(event *projectspec.HookFireEvent) (*dispatcher.DispatchPlan, error) {
+func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, error) {
 	if event == nil {
 		return nil, fmt.Errorf("hook event is required")
 	}
@@ -81,11 +79,11 @@ func (p *DispatchPlanner) PlanHook(event *projectspec.HookFireEvent) (*dispatche
 	}
 
 	homeDir, _ := os.UserHomeDir()
-	return &dispatcher.DispatchPlan{
+	return &DispatchRequest{
 		TaskID:             event.TaskID,
 		ProjectID:          event.ProjectID,
 		HandlerID:          event.Hook.ID,
-		Role:               string(projectspec.RoleHook),
+		Role:               RoleHook,
 		ProjectDir:         proj.WorkDir,
 		HomeDir:            homeDir,
 		HooksDir:           hooksDir,
@@ -93,8 +91,8 @@ func (p *DispatchPlanner) PlanHook(event *projectspec.HookFireEvent) (*dispatche
 		BoidBinary:         p.BoidBinary,
 		ServerSocket:       p.ServerSocket,
 		Env:                meta.Env,
-		HostCommands:       map[string]dispatcher.CommandDef{"boid": {Name: "boid"}},
-		AdditionalBindings: toDispatcherBindings(meta.AdditionalBindings),
+		HostCommands:       map[string]CommandDef{"boid": {Name: "boid"}},
+		AdditionalBindings: meta.AdditionalBindings,
 		WorkspaceDirs:      workspaceDirs,
 		ProxyPort:          p.proxyPort(),
 		StagingDir:         stagingDir,
@@ -104,7 +102,7 @@ func (p *DispatchPlanner) PlanHook(event *projectspec.HookFireEvent) (*dispatche
 	}, nil
 }
 
-func (p *DispatchPlanner) PlanGate(event *projectspec.GateFireEvent) (*dispatcher.DispatchPlan, error) {
+func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, error) {
 	if event == nil {
 		return nil, fmt.Errorf("gate event is required")
 	}
@@ -124,14 +122,14 @@ func (p *DispatchPlanner) PlanGate(event *projectspec.GateFireEvent) (*dispatche
 		return nil, fmt.Errorf("marshal task: %w", err)
 	}
 
-	hostCommands := toDispatcherCommands(meta.HostCommands)
-	hostCommands["boid"] = dispatcher.CommandDef{Name: "boid"}
+	hostCommands := cloneCommands(meta.HostCommands)
+	hostCommands["boid"] = CommandDef{Name: "boid"}
 
-	return &dispatcher.DispatchPlan{
+	return &DispatchRequest{
 		TaskID:       event.TaskID,
 		ProjectID:    event.ProjectID,
 		HandlerID:    event.Gate.ID,
-		Role:         string(projectspec.RoleGate),
+		Role:         RoleGate,
 		ProjectDir:   proj.WorkDir,
 		HookScript:   gateFilename,
 		BoidBinary:   p.BoidBinary,
@@ -143,7 +141,7 @@ func (p *DispatchPlanner) PlanGate(event *projectspec.GateFireEvent) (*dispatche
 	}, nil
 }
 
-func (p *DispatchPlanner) loadContext(projectID, taskID string) (*projectspec.ProjectMeta, *projectspec.Project, *Task, error) {
+func (p *DispatchPlanner) loadContext(projectID, taskID string) (*ProjectMeta, *Project, *Task, error) {
 	if p.Meta == nil || p.Projects == nil || p.Tasks == nil {
 		return nil, nil, nil, fmt.Errorf("dispatch planner is not fully configured")
 	}
@@ -189,7 +187,7 @@ func (p *DispatchPlanner) collectWorkspaceDirs(workspaceID, selfID string) (map[
 	return dirs, nil
 }
 
-func (p *DispatchPlanner) prepareWorktree(task *Task, proj *projectspec.Project, behavior *projectspec.TaskBehavior) (string, error) {
+func (p *DispatchPlanner) prepareWorktree(task *Task, proj *Project, behavior *TaskBehavior) (string, error) {
 	if p.Worktrees == nil || behavior == nil || !behavior.Worktree {
 		return "", nil
 	}
@@ -207,27 +205,13 @@ func (p *DispatchPlanner) proxyPort() int {
 	return *p.ProxyPort
 }
 
-func toDispatcherBindings(bindings []projectspec.BindMount) []dispatcher.BindMount {
-	if len(bindings) == 0 {
-		return nil
-	}
-	out := make([]dispatcher.BindMount, 0, len(bindings))
-	for _, binding := range bindings {
-		out = append(out, dispatcher.BindMount{
-			Source: binding.Source,
-			Mode:   binding.Mode,
-		})
-	}
-	return out
-}
-
-func toDispatcherCommands(cmds map[string]projectspec.CommandDef) map[string]dispatcher.CommandDef {
+func cloneCommands(cmds map[string]CommandDef) map[string]CommandDef {
 	if len(cmds) == 0 {
 		return nil
 	}
-	out := make(map[string]dispatcher.CommandDef, len(cmds))
+	out := make(map[string]CommandDef, len(cmds))
 	for name, def := range cmds {
-		out[name] = dispatcher.CommandDef(def)
+		out[name] = def
 	}
 	return out
 }
