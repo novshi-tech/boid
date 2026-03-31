@@ -22,14 +22,15 @@
 - 直通依存は共有モデルのみ
 - メソッドのインタフェースは消費側で定義する
 
-現状の主な残存パッケージ:
+現状のトップレベルパッケージ:
 
+- `api`
+- `client`
 - `db`
-- `projectspec`
-- `kit`
-- `worktree`
-- `secret`
-- `hostcmd`
+- `dispatcher`
+- `orchestrator`
+- `sandbox`
+- `server`
 
 ## Working Style
 
@@ -54,7 +55,7 @@ PR 前提ではなく、ローカルで段階的に積み上げる。
 - [x] Phase 7: Projectspec And Kit Into Orchestrator
 - [x] Phase 8: Database Boundary Cleanup
 - [x] Phase 9: Thin API And Thin Server
-- [ ] Phase 10: Final Convergence
+- [x] Phase 10: Final Convergence
 
 ## Definition of Done
 
@@ -389,9 +390,7 @@ Phase 9 残件:
 
 ## Current Remaining Work
 
-1. `internal/db` を utility package として残す前提で最終 package 構成を確定する
-2. 補助ファイルや generated source に残る古い参照を除去する
-3. Phase 10 で依存禁止ルールと最終収束を行う
+- 現時点のフェーズ残件はなし
 
 ## Commit Policy
 
@@ -431,10 +430,20 @@ Phase 0/1 時点の `internal` 直下 package:
 
 補足:
 
-- `internal/project` は空ディレクトリとして残っている
+- `internal/project` は削除済み
 - `internal/worktree` は削除済み
 - `internal/secret` は削除済み
 - `internal/hostcmd` は削除済み
 - `internal/projectspec` は削除済み
 - `internal/kit` は削除済み
 - 現状の baseline と最終 target の両方を `scripts/check-internal-architecture.sh` で検査する
+
+## Final State
+
+最終確認:
+
+- `go test ./...` が通る
+- `scripts/check-internal-architecture.sh current` が通る
+- `scripts/check-internal-architecture.sh target` が通る
+- `find internal -maxdepth 1 -type d` は `api`, `client`, `db`, `dispatcher`, `orchestrator`, `sandbox`, `server` のみを返す
+- `db` は domain package ではなく SQLite utility / transaction helper package として残す
