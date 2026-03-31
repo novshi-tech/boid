@@ -2,7 +2,7 @@ package server
 
 import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/projectspec"
 	"github.com/novshi-tech/boid/internal/worktree"
 )
 
@@ -10,7 +10,7 @@ type worktreePreparer struct {
 	manager *worktree.Manager
 }
 
-func (p worktreePreparer) Prepare(task *orchestrator.Task, proj *project.Project, behavior *project.TaskBehavior) (string, error) {
+func (p worktreePreparer) Prepare(task *orchestrator.Task, proj *projectspec.Project, behavior *projectspec.TaskBehavior) (string, error) {
 	if p.manager == nil {
 		return "", nil
 	}

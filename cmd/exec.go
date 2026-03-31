@@ -8,7 +8,7 @@ import (
 	"syscall"
 
 	"github.com/novshi-tech/boid/internal/client"
-	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/projectspec"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/spf13/cobra"
 )
@@ -29,7 +29,7 @@ func init() {
 // buildSandboxConfig creates a WrapperConfig from the server state for a given project.
 func buildSandboxConfig(projectID string) (sandbox.WrapperConfig, error) {
 	c := client.NewUnixClient(client.DefaultSocketPath())
-	var p project.Project
+	var p projectspec.Project
 	if err := c.Do("GET", "/api/projects/"+projectID, nil, &p); err != nil {
 		return sandbox.WrapperConfig{}, fmt.Errorf("get project: %w", err)
 	}
@@ -44,7 +44,7 @@ func buildSandboxConfig(projectID string) (sandbox.WrapperConfig, error) {
 	// Collect workspace peer projects (read-only mounts)
 	var workspaceDirs map[string]string
 	if p.Meta.WorkspaceID != "" {
-		var peers []project.Project
+		var peers []projectspec.Project
 		if err := c.Do("GET", "/api/projects?workspace_id="+p.Meta.WorkspaceID, nil, &peers); err == nil {
 			workspaceDirs = make(map[string]string)
 			for _, peer := range peers {
@@ -101,7 +101,7 @@ func buildSandboxConfig(projectID string) (sandbox.WrapperConfig, error) {
 	return cfg, nil
 }
 
-func toSandboxBindings(bindings []project.BindMount) []sandbox.BindMount {
+func toSandboxBindings(bindings []projectspec.BindMount) []sandbox.BindMount {
 	if len(bindings) == 0 {
 		return nil
 	}

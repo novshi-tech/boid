@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/novshi-tech/boid/internal/client"
-	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/projectspec"
 	"github.com/spf13/cobra"
 )
 
@@ -54,7 +54,7 @@ func runProjectAdd(cmd *cobra.Command, args []string) error {
 
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
-	var p project.Project
+	var p projectspec.Project
 	if err := c.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &p); err != nil {
 		return fmt.Errorf("register project: %w", err)
 	}
@@ -76,7 +76,7 @@ func runProjectAdd(cmd *cobra.Command, args []string) error {
 func runProjectList(cmd *cobra.Command, args []string) error {
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
-	var projects []project.Project
+	var projects []projectspec.Project
 	if err := c.Do("GET", "/api/projects", nil, &projects); err != nil {
 		return err
 	}

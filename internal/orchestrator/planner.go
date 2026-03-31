@@ -8,16 +8,16 @@ import (
 
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/kit"
-	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
 type MetaCache interface {
-	Get(id string) (*project.ProjectMeta, bool)
+	Get(id string) (*projectspec.ProjectMeta, bool)
 }
 
 type ProjectCatalog interface {
-	GetProject(id string) (*project.Project, error)
-	ListProjects() ([]*project.Project, error)
+	GetProject(id string) (*projectspec.Project, error)
+	ListProjects() ([]*projectspec.Project, error)
 }
 
 type TaskLookup interface {
@@ -25,7 +25,7 @@ type TaskLookup interface {
 }
 
 type WorktreePreparer interface {
-	Prepare(task *Task, proj *project.Project, behavior *project.TaskBehavior) (string, error)
+	Prepare(task *Task, proj *projectspec.Project, behavior *projectspec.TaskBehavior) (string, error)
 }
 
 type DispatchPlanner struct {
@@ -38,7 +38,7 @@ type DispatchPlanner struct {
 	ProxyPort    *int
 }
 
-func (p *DispatchPlanner) PlanHook(event *project.HookFireEvent) (*dispatcher.DispatchPlan, error) {
+func (p *DispatchPlanner) PlanHook(event *projectspec.HookFireEvent) (*dispatcher.DispatchPlan, error) {
 	if event == nil {
 		return nil, fmt.Errorf("hook event is required")
 	}
@@ -85,7 +85,7 @@ func (p *DispatchPlanner) PlanHook(event *project.HookFireEvent) (*dispatcher.Di
 		TaskID:             event.TaskID,
 		ProjectID:          event.ProjectID,
 		HandlerID:          event.Hook.ID,
-		Role:               string(project.RoleHook),
+		Role:               string(projectspec.RoleHook),
 		ProjectDir:         proj.WorkDir,
 		HomeDir:            homeDir,
 		HooksDir:           hooksDir,
@@ -104,7 +104,7 @@ func (p *DispatchPlanner) PlanHook(event *project.HookFireEvent) (*dispatcher.Di
 	}, nil
 }
 
-func (p *DispatchPlanner) PlanGate(event *project.GateFireEvent) (*dispatcher.DispatchPlan, error) {
+func (p *DispatchPlanner) PlanGate(event *projectspec.GateFireEvent) (*dispatcher.DispatchPlan, error) {
 	if event == nil {
 		return nil, fmt.Errorf("gate event is required")
 	}
@@ -131,7 +131,7 @@ func (p *DispatchPlanner) PlanGate(event *project.GateFireEvent) (*dispatcher.Di
 		TaskID:       event.TaskID,
 		ProjectID:    event.ProjectID,
 		HandlerID:    event.Gate.ID,
-		Role:         string(project.RoleGate),
+		Role:         string(projectspec.RoleGate),
 		ProjectDir:   proj.WorkDir,
 		HookScript:   gateFilename,
 		BoidBinary:   p.BoidBinary,
@@ -143,7 +143,7 @@ func (p *DispatchPlanner) PlanGate(event *project.GateFireEvent) (*dispatcher.Di
 	}, nil
 }
 
-func (p *DispatchPlanner) loadContext(projectID, taskID string) (*project.ProjectMeta, *project.Project, *Task, error) {
+func (p *DispatchPlanner) loadContext(projectID, taskID string) (*projectspec.ProjectMeta, *projectspec.Project, *Task, error) {
 	if p.Meta == nil || p.Projects == nil || p.Tasks == nil {
 		return nil, nil, nil, fmt.Errorf("dispatch planner is not fully configured")
 	}
@@ -189,7 +189,7 @@ func (p *DispatchPlanner) collectWorkspaceDirs(workspaceID, selfID string) (map[
 	return dirs, nil
 }
 
-func (p *DispatchPlanner) prepareWorktree(task *Task, proj *project.Project, behavior *project.TaskBehavior) (string, error) {
+func (p *DispatchPlanner) prepareWorktree(task *Task, proj *projectspec.Project, behavior *projectspec.TaskBehavior) (string, error) {
 	if p.Worktrees == nil || behavior == nil || !behavior.Worktree {
 		return "", nil
 	}
@@ -207,7 +207,7 @@ func (p *DispatchPlanner) proxyPort() int {
 	return *p.ProxyPort
 }
 
-func toDispatcherBindings(bindings []project.BindMount) []dispatcher.BindMount {
+func toDispatcherBindings(bindings []projectspec.BindMount) []dispatcher.BindMount {
 	if len(bindings) == 0 {
 		return nil
 	}
@@ -221,7 +221,7 @@ func toDispatcherBindings(bindings []project.BindMount) []dispatcher.BindMount {
 	return out
 }
 
-func toDispatcherCommands(cmds map[string]project.CommandDef) map[string]dispatcher.CommandDef {
+func toDispatcherCommands(cmds map[string]projectspec.CommandDef) map[string]dispatcher.CommandDef {
 	if len(cmds) == 0 {
 		return nil
 	}

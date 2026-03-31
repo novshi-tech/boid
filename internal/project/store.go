@@ -3,13 +3,13 @@ package project
 import (
 	"fmt"
 	"sync"
+
+	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
 // KitResolver resolves a kit reference string to a filesystem directory.
 // kit.Registry implements this interface.
-type KitResolver interface {
-	Resolve(ref string) (string, error)
-}
+type KitResolver = projectspec.KitResolver
 
 // Store holds project metadata in memory, loaded from project.yaml files.
 type Store struct {

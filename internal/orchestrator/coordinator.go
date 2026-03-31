@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
 // Coordinator orchestrates the hook → gate → advance flow.
@@ -28,8 +28,8 @@ type Coordinator struct {
 func (d *Coordinator) DispatchAndAdvance(
 	ctx context.Context,
 	task *Task,
-	meta *project.ProjectMeta,
-	behavior *project.TaskBehavior,
+	meta *projectspec.ProjectMeta,
+	behavior *projectspec.TaskBehavior,
 	sm *StateMachine,
 ) (*DispatchResult, error) {
 	readonly := IsReadonly(behavior, task.Status)
@@ -51,7 +51,7 @@ func (d *Coordinator) DispatchAndAdvance(
 			}
 			if len(hr.PayloadPatch) > 0 && string(hr.PayloadPatch) != "{}" {
 				hr.PayloadPatch = injectSourceState(hr.PayloadPatch, string(task.Status))
-				merged, err := project.MergePayloadPatch(payload, hr.PayloadPatch, hr.ID, hr.allowedTraits(matchedHooks))
+				merged, err := MergePayloadPatch(payload, hr.PayloadPatch, hr.ID, hr.allowedTraits(matchedHooks))
 				if err != nil {
 					slog.Warn("payload merge failed", "hook_id", hr.ID, "error", err)
 					continue
@@ -75,7 +75,7 @@ func (d *Coordinator) DispatchAndAdvance(
 			}
 			if len(gr.PayloadPatch) > 0 && string(gr.PayloadPatch) != "{}" {
 				gr.PayloadPatch = injectSourceState(gr.PayloadPatch, string(task.Status))
-				merged, err := project.MergePayloadPatch(payload, gr.PayloadPatch, gr.ID, gr.allowedTraits(nil))
+				merged, err := MergePayloadPatch(payload, gr.PayloadPatch, gr.ID, gr.allowedTraits(nil))
 				if err != nil {
 					slog.Warn("payload merge failed", "gate_id", gr.ID, "error", err)
 					continue
@@ -104,7 +104,7 @@ func (d *Coordinator) DispatchAndAdvance(
 func (d *Coordinator) dispatchHooks(
 	ctx context.Context,
 	task *Task,
-	hooks []project.Hook,
+	hooks []projectspec.Hook,
 	parallel bool,
 ) ([]HandlerResult, error) {
 	if parallel {
@@ -116,11 +116,11 @@ func (d *Coordinator) dispatchHooks(
 func (d *Coordinator) dispatchSequential(
 	ctx context.Context,
 	task *Task,
-	hooks []project.Hook,
+	hooks []projectspec.Hook,
 ) ([]HandlerResult, error) {
 	var results []HandlerResult
 	for _, h := range hooks {
-		event := &project.HookFireEvent{
+		event := &projectspec.HookFireEvent{
 			EventID:   fmt.Sprintf("evt-%s-%s", task.ID[:8], h.ID),
 			TaskID:    task.ID,
 			ProjectID: task.ProjectID,
@@ -137,7 +137,7 @@ func (d *Coordinator) dispatchSequential(
 			return results, fmt.Errorf("wait hook %q: %w", h.ID, err)
 		}
 
-		results = append(results, parseHandlerResult(h.ID, project.RoleHook, completion))
+		results = append(results, parseHandlerResult(h.ID, projectspec.RoleHook, completion))
 	}
 	return results, nil
 }
@@ -145,7 +145,7 @@ func (d *Coordinator) dispatchSequential(
 func (d *Coordinator) dispatchParallel(
 	ctx context.Context,
 	task *Task,
-	hooks []project.Hook,
+	hooks []projectspec.Hook,
 ) ([]HandlerResult, error) {
 	type jobInfo struct {
 		hookID string
@@ -155,7 +155,7 @@ func (d *Coordinator) dispatchParallel(
 	// Launch all hooks
 	var jobs []jobInfo
 	for _, h := range hooks {
-		event := &project.HookFireEvent{
+		event := &projectspec.HookFireEvent{
 			EventID:   fmt.Sprintf("evt-%s-%s", task.ID[:8], h.ID),
 			TaskID:    task.ID,
 			ProjectID: task.ProjectID,
@@ -188,7 +188,7 @@ func (d *Coordinator) dispatchParallel(
 				mu.Unlock()
 				return
 			}
-			results[idx] = parseHandlerResult(ji.hookID, project.RoleHook, completion)
+			results[idx] = parseHandlerResult(ji.hookID, projectspec.RoleHook, completion)
 		}(i, j)
 	}
 	wg.Wait()
@@ -203,7 +203,7 @@ func (d *Coordinator) dispatchParallel(
 func (d *Coordinator) dispatchGates(
 	ctx context.Context,
 	task *Task,
-	gates []project.Gate,
+	gates []projectspec.Gate,
 ) ([]HandlerResult, error) {
 	type jobInfo struct {
 		gateID string
@@ -212,7 +212,7 @@ func (d *Coordinator) dispatchGates(
 
 	var jobs []jobInfo
 	for _, g := range gates {
-		event := &project.GateFireEvent{
+		event := &projectspec.GateFireEvent{
 			EventID:   fmt.Sprintf("evt-%s-%s", task.ID[:8], g.ID),
 			TaskID:    task.ID,
 			ProjectID: task.ProjectID,
@@ -244,7 +244,7 @@ func (d *Coordinator) dispatchGates(
 				mu.Unlock()
 				return
 			}
-			results[idx] = parseHandlerResult(ji.gateID, project.RoleGate, completion)
+			results[idx] = parseHandlerResult(ji.gateID, projectspec.RoleGate, completion)
 		}(i, j)
 	}
 	wg.Wait()
@@ -267,7 +267,7 @@ func checkExclusiveCollision(patch json.RawMessage, writerID string, exclusiveWr
 	}
 
 	for key := range patchMap {
-		if project.TraitMergeMode(project.TraitType(key)) == project.MergeModeExclusive {
+		if TraitMergeMode(projectspec.TraitType(key)) == projectspec.MergeModeExclusive {
 			if prev, exists := exclusiveWriters[key]; exists {
 				return fmt.Errorf("exclusive trait %q written by both %q and %q", key, prev, writerID)
 			}
@@ -278,7 +278,7 @@ func checkExclusiveCollision(patch json.RawMessage, writerID string, exclusiveWr
 }
 
 // parseHandlerResult extracts payload_patch from job output.
-func parseHandlerResult(id string, role project.Role, c JobCompletion) HandlerResult {
+func parseHandlerResult(id string, role projectspec.Role, c JobCompletion) HandlerResult {
 	hr := HandlerResult{
 		ID:       id,
 		Role:     role,
@@ -339,7 +339,7 @@ func injectSourceState(patch json.RawMessage, state string) json.RawMessage {
 }
 
 // allowedTraits returns the requires_traits for this handler from the hook list.
-func (hr *HandlerResult) allowedTraits(hooks []project.Hook) []project.TraitType {
+func (hr *HandlerResult) allowedTraits(hooks []projectspec.Hook) []projectspec.TraitType {
 	for _, h := range hooks {
 		if h.ID == hr.ID {
 			return h.RequiresTraits

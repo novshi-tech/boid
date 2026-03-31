@@ -1,20 +1,20 @@
-package hostcmd
+package sandbox
 
-import (
-	"strings"
+import "strings"
 
-	"github.com/novshi-tech/boid/internal/sandbox"
-)
+type CommandDef struct {
+	Name                string
+	Path                string
+	AllowedPatterns     []string
+	DeniedPatterns      []string
+	AllowedSubcommands  []string
+	AllowStdin          bool
+	Env                 map[string]string
+	ExtractSubcommandFn string
+	RequireCwd          bool
+	AllowedCwdPrefixes  []string
+}
 
-type CommandDef = sandbox.CommandDef
-
-// CheckPolicy evaluates whether the given args are allowed for the command.
-// Evaluation order:
-//  1. AllowedSubcommands — if set, extract subcommand and check whitelist
-//  2. DeniedPatterns — if any match the joined args, deny
-//  3. AllowedPatterns — if any match the joined args, allow
-//  4. If AllowedSubcommands passed and no AllowedPatterns defined, allow
-//  5. Default deny
 func CheckPolicy(def CommandDef, args []string) bool {
 	if len(args) == 0 {
 		return true

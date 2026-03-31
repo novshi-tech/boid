@@ -1,15 +1,6 @@
 package hostcmd
 
-type ExecRequest struct {
-	Command string   `json:"command"`
-	Args    []string `json:"args"`
-	Cwd     string   `json:"cwd,omitempty"`
-	Stdin   []byte   `json:"stdin,omitempty"`
-	Token   string   `json:"token"`
-}
+import "github.com/novshi-tech/boid/internal/sandbox"
 
-type ExecResponse struct {
-	ExitCode int    `json:"exit_code"`
-	Stdout   string `json:"stdout"`
-	Stderr   string `json:"stderr"`
-}
+type ExecRequest = sandbox.ExecRequest
+type ExecResponse = sandbox.ExecResponse

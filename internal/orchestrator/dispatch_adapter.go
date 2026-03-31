@@ -6,6 +6,7 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
 type JobDispatcher interface {
@@ -23,7 +24,7 @@ func NewDispatchAdapter(dispatcher JobDispatcher, planner *DispatchPlanner) *Dis
 	return &DispatchAdapter{dispatcher: dispatcher, planner: planner}
 }
 
-func (a *DispatchAdapter) ExecuteHook(ctx context.Context, event *project.HookFireEvent) (string, error) {
+func (a *DispatchAdapter) ExecuteHook(ctx context.Context, event *projectspec.HookFireEvent) (string, error) {
 	plan, err := a.planner.PlanHook(event)
 	if err != nil {
 		return "", err
@@ -31,7 +32,7 @@ func (a *DispatchAdapter) ExecuteHook(ctx context.Context, event *project.HookFi
 	return a.dispatcher.Dispatch(ctx, plan)
 }
 
-func (a *DispatchAdapter) ExecuteGate(ctx context.Context, event *project.GateFireEvent) (string, error) {
+func (a *DispatchAdapter) ExecuteGate(ctx context.Context, event *projectspec.GateFireEvent) (string, error) {
 	plan, err := a.planner.PlanGate(event)
 	if err != nil {
 		return "", err
@@ -52,11 +53,11 @@ type DBProjectCatalog struct {
 	DB *db.DB
 }
 
-func (c DBProjectCatalog) GetProject(id string) (*project.Project, error) {
+func (c DBProjectCatalog) GetProject(id string) (*projectspec.Project, error) {
 	return project.GetProject(c.DB.Conn, id)
 }
 
-func (c DBProjectCatalog) ListProjects() ([]*project.Project, error) {
+func (c DBProjectCatalog) ListProjects() ([]*projectspec.Project, error) {
 	return project.ListProjects(c.DB.Conn)
 }
 

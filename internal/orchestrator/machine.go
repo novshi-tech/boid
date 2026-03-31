@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
 // TransitionCondition evaluates whether a condition-based transition should fire.
@@ -61,7 +61,7 @@ type Registry struct {
 	machines map[string]*StateMachine
 }
 
-func (r *Registry) Resolve(meta *project.ProjectMeta, behavior string) (*StateMachine, error) {
+func (r *Registry) Resolve(meta *projectspec.ProjectMeta, behavior string) (*StateMachine, error) {
 	b, ok := meta.TaskBehaviors[behavior]
 	if !ok {
 		return nil, fmt.Errorf("behavior %q not found", behavior)

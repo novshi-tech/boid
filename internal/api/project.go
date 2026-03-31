@@ -8,6 +8,7 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
 type ProjectHandler struct {
@@ -46,7 +47,7 @@ func (h *ProjectHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := &project.Project{
+	p := &projectspec.Project{
 		ID:      meta.ID,
 		WorkDir: req.WorkDir,
 	}
@@ -71,7 +72,7 @@ func (h *ProjectHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Attach meta from store and filter by workspace_id if requested
-	var result []*project.Project
+	var result []*projectspec.Project
 	for _, p := range projects {
 		if meta, ok := h.Store.Get(p.ID); ok {
 			p.Meta = *meta
@@ -82,7 +83,7 @@ func (h *ProjectHandler) List(w http.ResponseWriter, r *http.Request) {
 		result = append(result, p)
 	}
 	if result == nil {
-		result = []*project.Project{}
+		result = []*projectspec.Project{}
 	}
 	writeJSON(w, http.StatusOK, result)
 }
