@@ -8,8 +8,7 @@ import (
 	"syscall"
 
 	"github.com/novshi-tech/boid/internal/client"
-	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/spf13/cobra"
 )
 
@@ -26,17 +25,31 @@ func init() {
 	rootCmd.AddCommand(execCmd)
 }
 
-// buildSandboxConfig creates a WrapperConfig from the server state for a given project.
-func buildSandboxConfig(projectID string) (sandbox.WrapperConfig, error) {
+type execProjectMeta struct {
+	ID                 string                               `json:"id"`
+	WorkspaceID        string                               `json:"workspace_id"`
+	HostCommands       map[string]dispatcher.ExecCommandDef `json:"host_commands"`
+	AdditionalBindings []dispatcher.ExecBindMount           `json:"additional_bindings"`
+	Env                map[string]string                    `json:"env"`
+}
+
+type execProject struct {
+	ID      string          `json:"id"`
+	WorkDir string          `json:"work_dir"`
+	Meta    execProjectMeta `json:"meta"`
+}
+
+// buildExecRequest creates a dispatcher exec request from the server state for a project.
+func buildExecRequest(projectID string) (dispatcher.ExecRequest, error) {
 	c := client.NewUnixClient(client.DefaultSocketPath())
-	var p projectspec.Project
+	var p execProject
 	if err := c.Do("GET", "/api/projects/"+projectID, nil, &p); err != nil {
-		return sandbox.WrapperConfig{}, fmt.Errorf("get project: %w", err)
+		return dispatcher.ExecRequest{}, fmt.Errorf("get project: %w", err)
 	}
 
 	boidBinary, err := os.Executable()
 	if err != nil {
-		return sandbox.WrapperConfig{}, fmt.Errorf("resolve boid binary: %w", err)
+		return dispatcher.ExecRequest{}, fmt.Errorf("resolve boid binary: %w", err)
 	}
 
 	homeDir, _ := os.UserHomeDir()
@@ -44,7 +57,7 @@ func buildSandboxConfig(projectID string) (sandbox.WrapperConfig, error) {
 	// Collect workspace peer projects (read-only mounts)
 	var workspaceDirs map[string]string
 	if p.Meta.WorkspaceID != "" {
-		var peers []projectspec.Project
+		var peers []execProject
 		if err := c.Do("GET", "/api/projects?workspace_id="+p.Meta.WorkspaceID, nil, &peers); err == nil {
 			workspaceDirs = make(map[string]string)
 			for _, peer := range peers {
@@ -64,7 +77,6 @@ func buildSandboxConfig(projectID string) (sandbox.WrapperConfig, error) {
 
 	// Register host commands with broker
 	var brokerSocket, brokerToken string
-	var hostCommandNames []string
 	if len(p.Meta.HostCommands) > 0 {
 		var brokerResp struct {
 			Token  string `json:"token"`
@@ -77,12 +89,9 @@ func buildSandboxConfig(projectID string) (sandbox.WrapperConfig, error) {
 			brokerSocket = brokerResp.Socket
 			brokerToken = brokerResp.Token
 		}
-		for name := range p.Meta.HostCommands {
-			hostCommandNames = append(hostCommandNames, name)
-		}
 	}
 
-	cfg := sandbox.WrapperConfig{
+	req := dispatcher.ExecRequest{
 		JobID:              fmt.Sprintf("exec-%s", projectID),
 		ProjectID:          p.Meta.ID,
 		ProjectDir:         p.WorkDir,
@@ -92,27 +101,13 @@ func buildSandboxConfig(projectID string) (sandbox.WrapperConfig, error) {
 		BrokerSocket:       brokerSocket,
 		BrokerToken:        brokerToken,
 		Env:                p.Meta.Env,
-		HostCommands:       hostCommandNames,
-		AdditionalBindings: toSandboxBindings(p.Meta.AdditionalBindings),
+		HostCommands:       p.Meta.HostCommands,
+		AdditionalBindings: p.Meta.AdditionalBindings,
 		WorkspaceDirs:      workspaceDirs,
 		ProxyPort:          proxyInfo.Port,
 	}
 
-	return cfg, nil
-}
-
-func toSandboxBindings(bindings []projectspec.BindMount) []sandbox.BindMount {
-	if len(bindings) == 0 {
-		return nil
-	}
-	out := make([]sandbox.BindMount, 0, len(bindings))
-	for _, binding := range bindings {
-		out = append(out, sandbox.BindMount{
-			Source: binding.Source,
-			Mode:   binding.Mode,
-		})
-	}
-	return out
+	return req, nil
 }
 
 func runExec(cmd *cobra.Command, args []string) error {
@@ -130,16 +125,16 @@ func runExec(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("usage: boid exec <project-id> -- <command...>")
 	}
 
-	cfg, err := buildSandboxConfig(projectID)
+	req, err := buildExecRequest(projectID)
 	if err != nil {
 		return err
 	}
-	cfg.Command = command
+	req.Command = command
 	if fileInfo, _ := os.Stdin.Stat(); fileInfo.Mode()&os.ModeCharDevice != 0 {
-		cfg.TTY = true
+		req.TTY = true
 	}
 
-	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	outerPath, err := dispatcher.WriteExecScripts(req)
 	if err != nil {
 		return fmt.Errorf("write sandbox scripts: %w", err)
 	}
