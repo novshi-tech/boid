@@ -26,6 +26,7 @@ type ProjectMeta struct {
 
 	// Populated at load time after kit resolution; not from YAML.
 	KitHooksDirs []KitHooksInfo `yaml:"-" json:"-"`
+	KitGatesDirs []KitGatesInfo `yaml:"-" json:"-"`
 }
 
 // Project represents a registered project.

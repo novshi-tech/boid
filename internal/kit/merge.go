@@ -47,6 +47,14 @@ func MergeKits(base *model.ProjectMeta, kits []*KitMeta) *model.ProjectMeta {
 	allHooks = append(allHooks, base.Hooks...)
 	result.Hooks = dedupHooks(allHooks)
 
+	// Gates: kit gates first, then project gates. Dedup by ID (last wins).
+	var allGates []model.Gate
+	for _, m := range kits {
+		allGates = append(allGates, m.Gates...)
+	}
+	allGates = append(allGates, base.Gates...)
+	result.Gates = dedupGates(allGates)
+
 	// HostCommands: layer kits in order, then project overrides
 	mergedCmds := make(map[string]hostcmd.CommandDef)
 	for _, m := range kits {
@@ -79,6 +87,21 @@ func MergeKits(base *model.ProjectMeta, kits []*KitMeta) *model.ProjectMeta {
 		})
 	}
 
+	// Collect KitGatesDirs
+	for _, m := range kits {
+		if m.GatesDir == "" || len(m.Gates) == 0 {
+			continue
+		}
+		ids := make([]string, len(m.Gates))
+		for i, g := range m.Gates {
+			ids[i] = g.ID
+		}
+		result.KitGatesDirs = append(result.KitGatesDirs, model.KitGatesInfo{
+			GatesDir: m.GatesDir,
+			GateIDs:  ids,
+		})
+	}
+
 	return &result
 }
 
@@ -92,6 +115,21 @@ func dedupHooks(hooks []model.Hook) []model.Hook {
 		} else {
 			seen[h.ID] = len(result)
 			result = append(result, h)
+		}
+	}
+	return result
+}
+
+// dedupGates keeps the last gate for each ID (project gates come last, so they win).
+func dedupGates(gates []model.Gate) []model.Gate {
+	seen := make(map[string]int)
+	var result []model.Gate
+	for _, g := range gates {
+		if idx, ok := seen[g.ID]; ok {
+			result[idx] = g
+		} else {
+			seen[g.ID] = len(result)
+			result = append(result, g)
 		}
 	}
 	return result

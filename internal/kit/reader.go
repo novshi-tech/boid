@@ -47,6 +47,24 @@ func ReadKit(dir string) (*KitMeta, error) {
 		m.HooksDir = hooksDir
 	}
 
+	// Validate and resolve gates
+	gatesDir := filepath.Join(dir, "gates")
+	for i := range m.Gates {
+		g := &m.Gates[i]
+		if !model.ValidGateOnValues[g.On] {
+			return nil, fmt.Errorf("gate %q: invalid on value %q", g.ID, g.On)
+		}
+		scriptPath, err := model.ResolveGateScript(gatesDir, g.ID)
+		if err != nil {
+			return nil, fmt.Errorf("gate %q: %w", g.ID, err)
+		}
+		g.ScriptPath = scriptPath
+	}
+
+	if len(m.Gates) > 0 {
+		m.GatesDir = gatesDir
+	}
+
 	return &m, nil
 }
 
