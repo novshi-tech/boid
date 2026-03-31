@@ -21,8 +21,7 @@ type ActionHandler struct {
 	Store               *project.Store
 	Registry            *reducer.Registry
 	Evaluator           *hook.Evaluator
-	Dispatcher          *hook.Dispatcher          // legacy dispatcher
-	AdvancedDispatcher  *hook.AdvancedDispatcher   // new hook→gate→advance dispatcher
+	AdvancedDispatcher  *hook.AdvancedDispatcher
 	Runner              *job.Runner
 	WorktreeMgr         *worktree.Manager
 }

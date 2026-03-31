@@ -175,8 +175,6 @@ func New(cfg Config) (*Server, error) {
 		SecretStore:  secretStore,
 		WorktreeMgr:  wtMgr,
 	}
-	dispatcher := &hook.Dispatcher{Runner: runner, MaxDepth: 3}
-
 	adapter := &runnerAdapter{runner: runner}
 	advancedDispatcher := &hook.AdvancedDispatcher{
 		Evaluator:    eval,
@@ -186,7 +184,7 @@ func New(cfg Config) (*Server, error) {
 		MaxDepth:     5,
 	}
 
-	actionHandler := &api.ActionHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, Dispatcher: dispatcher, AdvancedDispatcher: advancedDispatcher, Runner: runner, WorktreeMgr: wtMgr}
+	actionHandler := &api.ActionHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, AdvancedDispatcher: advancedDispatcher, Runner: runner, WorktreeMgr: wtMgr}
 	r.Route("/api/tasks/{taskID}/actions", func(r chi.Router) {
 		r.Mount("/", actionHandler.Routes())
 	})
