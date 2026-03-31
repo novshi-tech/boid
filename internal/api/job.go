@@ -7,22 +7,21 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/db"
-	"github.com/novshi-tech/boid/internal/hook"
 	"github.com/novshi-tech/boid/internal/job"
 	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/project"
-	"github.com/novshi-tech/boid/internal/reducer"
 	"github.com/novshi-tech/boid/internal/worktree"
 )
 
 type JobHandler struct {
-	DB                 *db.DB
-	Store              *project.Store
-	Registry           *reducer.Registry
-	Evaluator          *hook.Evaluator
-	Runner             *job.Runner
-	AdvancedDispatcher *hook.AdvancedDispatcher
-	WorktreeMgr        *worktree.Manager
+	DB          *db.DB
+	Store       *project.Store
+	Registry    *orchestrator.Registry
+	Evaluator   *orchestrator.Evaluator
+	Runner      *job.Runner
+	Coordinator *orchestrator.Coordinator
+	WorktreeMgr *worktree.Manager
 }
 
 func (h *JobHandler) Routes() chi.Router {

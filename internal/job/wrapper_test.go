@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/job"
-	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/project"
 )
 
 func TestWriteSandboxScripts(t *testing.T) {
@@ -380,7 +380,7 @@ func TestWriteSandboxScripts_AdditionalBindings(t *testing.T) {
 		HookScript:   "run-build.sh",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
-		AdditionalBindings: []model.BindMount{
+		AdditionalBindings: []project.BindMount{
 			{Source: "/home/user/.local/bin"},
 			{Source: "/home/user/.local/share/go"},
 			{Source: "/home/user/go"},

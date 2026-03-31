@@ -1,4 +1,4 @@
-package reducer
+package orchestrator
 
 import (
 	"encoding/json"

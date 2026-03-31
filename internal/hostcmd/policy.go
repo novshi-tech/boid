@@ -1,19 +1,13 @@
 package hostcmd
 
-import "strings"
+import (
+	"strings"
 
-type CommandDef struct {
-	Name                string            `yaml:"name" json:"name"`
-	Path                string            `yaml:"path" json:"path"`
-	AllowedPatterns     []string          `yaml:"allowed_patterns" json:"allowed_patterns"`
-	DeniedPatterns      []string          `yaml:"denied_patterns" json:"denied_patterns"`
-	AllowedSubcommands  []string          `yaml:"allowed_subcommands" json:"allowed_subcommands"`
-	AllowStdin          bool              `yaml:"allow_stdin" json:"allow_stdin"`
-	Env                 map[string]string `yaml:"env" json:"env"`
-	ExtractSubcommandFn string            `yaml:"extract_subcommand_fn" json:"extract_subcommand_fn"`
-	RequireCwd          bool              `yaml:"require_cwd" json:"require_cwd"`
-	AllowedCwdPrefixes  []string          `yaml:"allowed_cwd_prefixes" json:"allowed_cwd_prefixes"`
-}
+	"github.com/novshi-tech/boid/internal/project"
+)
+
+// CommandDef is an alias for project.CommandDef for convenience within this package.
+type CommandDef = project.CommandDef
 
 // CheckPolicy evaluates whether the given args are allowed for the command.
 // Evaluation order:
@@ -29,7 +23,6 @@ func CheckPolicy(def CommandDef, args []string) bool {
 
 	joined := strings.Join(args, " ")
 
-	// 1. Subcommand whitelist
 	subcmdPassed := false
 	if len(def.AllowedSubcommands) > 0 {
 		var subcmd string
@@ -44,17 +37,14 @@ func CheckPolicy(def CommandDef, args []string) bool {
 		subcmdPassed = true
 	}
 
-	// 2. Deny-first: check denied patterns against joined args
 	if matchesAnyPattern(def.DeniedPatterns, joined) {
 		return false
 	}
 
-	// 3. Check allowed patterns against joined args
 	if matchesAnyPattern(def.AllowedPatterns, joined) {
 		return true
 	}
 
-	// 4. If subcommand whitelist passed and no allowed patterns defined, allow
 	if subcmdPassed && len(def.AllowedPatterns) == 0 {
 		return true
 	}
@@ -71,20 +61,16 @@ func matchesAnyPattern(patterns []string, s string) bool {
 	return false
 }
 
-// globMatch performs simple glob matching where * matches any characters
-// (including / and spaces), unlike filepath.Match.
 func globMatch(pattern, s string) bool {
 	for len(pattern) > 0 {
 		switch pattern[0] {
 		case '*':
-			// Trim consecutive stars
 			for len(pattern) > 0 && pattern[0] == '*' {
 				pattern = pattern[1:]
 			}
 			if len(pattern) == 0 {
-				return true // trailing * matches everything
+				return true
 			}
-			// Try matching rest of pattern at every position
 			for i := 0; i <= len(s); i++ {
 				if globMatch(pattern, s[i:]) {
 					return true
@@ -108,7 +94,6 @@ func globMatch(pattern, s string) bool {
 	return len(s) == 0
 }
 
-// extractSimpleSubcommand returns the first non-flag argument.
 func extractSimpleSubcommand(args []string) string {
 	for _, arg := range args {
 		if !strings.HasPrefix(arg, "-") {
@@ -127,33 +112,28 @@ func containsString(ss []string, s string) bool {
 	return false
 }
 
-// extractGitSubcommand extracts the git subcommand from args,
-// skipping global options like -C, -c, --git-dir, etc.
 func extractGitSubcommand(args []string) string {
-	// Global options that take a value argument
 	valueOpts := map[string]bool{
 		"-C":          true,
 		"-c":          true,
 		"--git-dir":   true,
 		"--work-tree": true,
-		"--namespace":  true,
+		"--namespace": true,
 	}
 
 	i := 0
 	for i < len(args) {
 		arg := args[i]
 		if valueOpts[arg] {
-			i += 2 // skip option and its value
+			i += 2
 			continue
 		}
-		// Handle --option=value style
 		if strings.HasPrefix(arg, "--git-dir=") ||
 			strings.HasPrefix(arg, "--work-tree=") ||
 			strings.HasPrefix(arg, "--namespace=") {
 			i++
 			continue
 		}
-		// Skip other flags (e.g., --bare, --no-pager)
 		if strings.HasPrefix(arg, "-") {
 			i++
 			continue

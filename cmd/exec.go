@@ -9,7 +9,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/job"
-	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/project"
 	"github.com/spf13/cobra"
 )
 
@@ -29,7 +29,7 @@ func init() {
 // buildSandboxConfig creates a WrapperConfig from the server state for a given project.
 func buildSandboxConfig(projectID string) (job.WrapperConfig, error) {
 	c := client.NewUnixClient(client.DefaultSocketPath())
-	var p model.Project
+	var p project.Project
 	if err := c.Do("GET", "/api/projects/"+projectID, nil, &p); err != nil {
 		return job.WrapperConfig{}, fmt.Errorf("get project: %w", err)
 	}
@@ -44,7 +44,7 @@ func buildSandboxConfig(projectID string) (job.WrapperConfig, error) {
 	// Collect workspace peer projects (read-only mounts)
 	var workspaceDirs map[string]string
 	if p.Meta.WorkspaceID != "" {
-		var peers []model.Project
+		var peers []project.Project
 		if err := c.Do("GET", "/api/projects?workspace_id="+p.Meta.WorkspaceID, nil, &peers); err == nil {
 			workspaceDirs = make(map[string]string)
 			for _, peer := range peers {

@@ -7,20 +7,18 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/novshi-tech/boid/internal/kit"
-	"github.com/novshi-tech/boid/internal/model"
 	"gopkg.in/yaml.v3"
 )
 
 // ReadMeta reads and validates .boid/project.yaml from the given directory.
-func ReadMeta(dir string) (*model.ProjectMeta, error) {
+func ReadMeta(dir string) (*ProjectMeta, error) {
 	yamlPath := filepath.Join(dir, ".boid", "project.yaml")
 	data, err := os.ReadFile(yamlPath)
 	if err != nil {
 		return nil, fmt.Errorf("read project.yaml: %w", err)
 	}
 
-	var meta model.ProjectMeta
+	var meta ProjectMeta
 	if err := yaml.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("parse project.yaml: %w", err)
 	}
@@ -35,10 +33,10 @@ func ReadMeta(dir string) (*model.ProjectMeta, error) {
 	hooksDir := filepath.Join(dir, ".boid", "hooks")
 	for i := range meta.Hooks {
 		h := &meta.Hooks[i]
-		if !model.ValidHookOnValues[h.On] {
+		if !ValidHookOnValues[h.On] {
 			return nil, fmt.Errorf("hook %q: invalid on value %q", h.ID, h.On)
 		}
-		scriptPath, err := model.ResolveHookScript(hooksDir, h.ID)
+		scriptPath, err := ResolveHookScript(hooksDir, h.ID)
 		if err != nil {
 			return nil, fmt.Errorf("hook %q: %w", h.ID, err)
 		}
@@ -48,10 +46,10 @@ func ReadMeta(dir string) (*model.ProjectMeta, error) {
 	gatesDir := filepath.Join(dir, ".boid", "gates")
 	for i := range meta.Gates {
 		g := &meta.Gates[i]
-		if !model.ValidGateOnValues[g.On] {
+		if !ValidGateOnValues[g.On] {
 			return nil, fmt.Errorf("gate %q: invalid on value %q", g.ID, g.On)
 		}
-		scriptPath, err := model.ResolveGateScript(gatesDir, g.ID)
+		scriptPath, err := ResolveGateScript(gatesDir, g.ID)
 		if err != nil {
 			return nil, fmt.Errorf("gate %q: %w", g.ID, err)
 		}
@@ -62,12 +60,11 @@ func ReadMeta(dir string) (*model.ProjectMeta, error) {
 }
 
 // resolveKitRef resolves a kit reference to a filesystem directory.
-// Single-segment refs (e.g. "go-dev") are resolved as local kits under .boid/kits/<ref>/.
-// 4+ segment refs (e.g. "github.com/user/repo/kit") are resolved via the registry.
-func resolveKitRef(ref, projectDir string, registry *kit.Registry) (string, error) {
+// Single-segment refs (e.g. "go-dev") resolve as local kits under .boid/kits/<ref>/.
+// 4+ segment refs require a non-nil resolver.
+func resolveKitRef(ref, projectDir string, resolver KitResolver) (string, error) {
 	parts := strings.Split(ref, "/")
 	if len(parts) < 4 {
-		// Local kit: .boid/kits/<ref>/
 		localDir := filepath.Join(projectDir, ".boid", "kits", ref)
 		yamlPath := filepath.Join(localDir, "kit.yaml")
 		if _, err := os.Stat(yamlPath); err != nil {
@@ -76,17 +73,14 @@ func resolveKitRef(ref, projectDir string, registry *kit.Registry) (string, erro
 		return localDir, nil
 	}
 
-	// Registry kit: 4+ segments
-	if registry == nil {
+	if resolver == nil {
 		return "", fmt.Errorf("kit %q requires registry but none configured", ref)
 	}
-	return registry.Resolve(ref)
+	return resolver.Resolve(ref)
 }
 
 // ReadMetaWithKits reads project.yaml and resolves kit references.
-// Local kits (single-segment refs) are resolved from .boid/kits/<ref>/.
-// Registry kits (4+ segment refs) require a non-nil registry.
-func ReadMetaWithKits(dir string, registry *kit.Registry) (*model.ProjectMeta, error) {
+func ReadMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, error) {
 	meta, err := ReadMeta(dir)
 	if err != nil {
 		return nil, err
@@ -96,13 +90,13 @@ func ReadMetaWithKits(dir string, registry *kit.Registry) (*model.ProjectMeta, e
 		return meta, nil
 	}
 
-	var kits []*kit.KitMeta
+	var kits []*KitMeta
 	for _, ref := range meta.Kits {
-		kitDir, err := resolveKitRef(ref, dir, registry)
+		kitDir, err := resolveKitRef(ref, dir, resolver)
 		if err != nil {
 			return nil, fmt.Errorf("kit %q: %w", ref, err)
 		}
-		k, err := kit.ReadKit(kitDir)
+		k, err := ReadKit(kitDir)
 		if err != nil {
 			return nil, fmt.Errorf("kit %q: %w", ref, err)
 		}
@@ -110,5 +104,5 @@ func ReadMetaWithKits(dir string, registry *kit.Registry) (*model.ProjectMeta, e
 		kits = append(kits, k)
 	}
 
-	return kit.MergeKits(meta, kits), nil
+	return MergeKits(meta, kits), nil
 }

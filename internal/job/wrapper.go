@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/project"
 )
 
 // WrapperConfig holds the parameters for sandbox script generation.
@@ -24,7 +24,7 @@ type WrapperConfig struct {
 	BrokerToken        string            // broker authentication token
 	Env                map[string]string // project environment variables
 	HostCommands       []string          // command names to shim via symlinks
-	AdditionalBindings []model.BindMount // extra host paths to bind-mount
+	AdditionalBindings []project.BindMount // extra host paths to bind-mount
 	WorkspaceDirs      map[string]string // project-id -> host-dir (read-only mounts)
 	ProxyPort          int               // host-side proxy port (0 = no proxy)
 	StagingDir         string            // if set, staging dir to clean up after job
@@ -109,7 +109,7 @@ exec pasta --config-net \
 
 // additionalPATH builds PATH entries from additional bindings.
 // Paths ending in /bin are added directly; others get /bin appended.
-func additionalPATH(bindings []model.BindMount) string {
+func additionalPATH(bindings []project.BindMount) string {
 	var parts []string
 	for _, bm := range bindings {
 		if strings.HasSuffix(bm.Source, "/bin") {

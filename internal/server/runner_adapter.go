@@ -3,12 +3,12 @@ package server
 import (
 	"context"
 
-	"github.com/novshi-tech/boid/internal/hook"
 	"github.com/novshi-tech/boid/internal/job"
 	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// runnerAdapter adapts job.Runner to hook.HookExecutor, hook.GateExecutor, and hook.JobWaiter.
+// runnerAdapter adapts job.Runner to orchestrator.HookExecutor, orchestrator.GateExecutor, and orchestrator.JobWaiter.
 type runnerAdapter struct {
 	runner *job.Runner
 }
@@ -21,9 +21,9 @@ func (a *runnerAdapter) ExecuteGate(ctx context.Context, event *model.GateFireEv
 	return a.runner.ExecuteGate(ctx, event)
 }
 
-func (a *runnerAdapter) WaitForJob(ctx context.Context, jobID string) (hook.JobCompletion, error) {
+func (a *runnerAdapter) WaitForJob(ctx context.Context, jobID string) (orchestrator.JobCompletion, error) {
 	result, err := a.runner.WaitForJobCtx(ctx, jobID)
-	return hook.JobCompletion{
+	return orchestrator.JobCompletion{
 		JobID:    jobID,
 		Output:   result.Output,
 		ExitCode: result.ExitCode,

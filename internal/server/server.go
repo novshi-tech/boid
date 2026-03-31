@@ -15,12 +15,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/db"
-	"github.com/novshi-tech/boid/internal/hook"
 	"github.com/novshi-tech/boid/internal/hostcmd"
 	"github.com/novshi-tech/boid/internal/job"
 	"github.com/novshi-tech/boid/internal/kit"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/project"
-	"github.com/novshi-tech/boid/internal/reducer"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/secret"
 	"github.com/novshi-tech/boid/internal/tmux"
@@ -144,8 +143,8 @@ func New(cfg Config) (*Server, error) {
 	taskHandler := &api.TaskHandler{DB: d}
 	r.Mount("/api/tasks", taskHandler.Routes())
 
-	reg := reducer.NewDefaultRegistry()
-	eval := &hook.Evaluator{}
+	reg := orchestrator.NewDefaultRegistry()
+	eval := &orchestrator.Evaluator{}
 
 	// Build job runner and dispatcher
 	tmuxMgr := cfg.Tmux
@@ -176,7 +175,7 @@ func New(cfg Config) (*Server, error) {
 		WorktreeMgr:  wtMgr,
 	}
 	adapter := &runnerAdapter{runner: runner}
-	advancedDispatcher := &hook.AdvancedDispatcher{
+	coordinator := &orchestrator.Coordinator{
 		Evaluator:    eval,
 		HookExecutor: adapter,
 		GateExecutor: adapter,
@@ -184,12 +183,12 @@ func New(cfg Config) (*Server, error) {
 		MaxDepth:     5,
 	}
 
-	actionHandler := &api.ActionHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, AdvancedDispatcher: advancedDispatcher, Runner: runner, WorktreeMgr: wtMgr}
+	actionHandler := &api.ActionHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, Coordinator: coordinator, Runner: runner, WorktreeMgr: wtMgr}
 	r.Route("/api/tasks/{taskID}/actions", func(r chi.Router) {
 		r.Mount("/", actionHandler.Routes())
 	})
 
-	jobHandler := &api.JobHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, Runner: runner, AdvancedDispatcher: advancedDispatcher, WorktreeMgr: wtMgr}
+	jobHandler := &api.JobHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, Runner: runner, Coordinator: coordinator, WorktreeMgr: wtMgr}
 	r.Mount("/api/jobs", jobHandler.Routes())
 
 	// Web UI

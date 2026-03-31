@@ -6,7 +6,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/db"
-	"github.com/novshi-tech/boid/internal/model"
 	"github.com/novshi-tech/boid/internal/project"
 )
 
@@ -46,12 +45,12 @@ func (h *ProjectHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := &model.Project{
+	p := &project.Project{
 		ID:      meta.ID,
 		WorkDir: req.WorkDir,
 	}
 
-	if err := h.DB.CreateProject(p); err != nil {
+	if err := project.CreateProject(h.DB.Conn, p); err != nil {
 		h.Store.Remove(meta.ID)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -64,14 +63,14 @@ func (h *ProjectHandler) Create(w http.ResponseWriter, r *http.Request) {
 func (h *ProjectHandler) List(w http.ResponseWriter, r *http.Request) {
 	wsID := r.URL.Query().Get("workspace_id")
 
-	projects, err := h.DB.ListProjects()
+	projects, err := project.ListProjects(h.DB.Conn)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	// Attach meta from store and filter by workspace_id if requested
-	var result []*model.Project
+	var result []*project.Project
 	for _, p := range projects {
 		if meta, ok := h.Store.Get(p.ID); ok {
 			p.Meta = *meta
@@ -82,14 +81,14 @@ func (h *ProjectHandler) List(w http.ResponseWriter, r *http.Request) {
 		result = append(result, p)
 	}
 	if result == nil {
-		result = []*model.Project{}
+		result = []*project.Project{}
 	}
 	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *ProjectHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	p, err := h.DB.GetProject(id)
+	p, err := project.GetProject(h.DB.Conn, id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -102,7 +101,7 @@ func (h *ProjectHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 func (h *ProjectHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := h.DB.DeleteProject(id); err != nil {
+	if err := project.DeleteProject(h.DB.Conn, id); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -111,7 +110,7 @@ func (h *ProjectHandler) Delete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ProjectHandler) Reload(w http.ResponseWriter, r *http.Request) {
-	projects, err := h.DB.ListProjects()
+	projects, err := project.ListProjects(h.DB.Conn)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

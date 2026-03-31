@@ -8,22 +8,21 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/db"
-	"github.com/novshi-tech/boid/internal/hook"
 	"github.com/novshi-tech/boid/internal/job"
 	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/project"
-	"github.com/novshi-tech/boid/internal/reducer"
 	"github.com/novshi-tech/boid/internal/worktree"
 )
 
 type ActionHandler struct {
-	DB                  *db.DB
-	Store               *project.Store
-	Registry            *reducer.Registry
-	Evaluator           *hook.Evaluator
-	AdvancedDispatcher  *hook.AdvancedDispatcher
-	Runner              *job.Runner
-	WorktreeMgr         *worktree.Manager
+	DB          *db.DB
+	Store       *project.Store
+	Registry    *orchestrator.Registry
+	Evaluator   *orchestrator.Evaluator
+	Coordinator *orchestrator.Coordinator
+	Runner      *job.Runner
+	WorktreeMgr *worktree.Manager
 }
 
 func (h *ActionHandler) Routes() chi.Router {
@@ -116,7 +115,7 @@ func (h *ActionHandler) Apply(w http.ResponseWriter, r *http.Request) {
 		"action": action,
 	}
 
-	if h.AdvancedDispatcher != nil {
+	if h.Coordinator != nil {
 		behavior, _ := meta.TaskBehaviors[newTask.Behavior]
 		go h.runDispatchLoop(newTask, meta, &behavior, sm)
 	}
@@ -126,12 +125,12 @@ func (h *ActionHandler) Apply(w http.ResponseWriter, r *http.Request) {
 
 // runDispatchLoop runs the dispatch→advance→re-dispatch loop asynchronously.
 // It persists payload and status changes after each cycle.
-func (h *ActionHandler) runDispatchLoop(task *model.Task, meta *model.ProjectMeta, behavior *model.TaskBehavior, sm *reducer.StateMachine) {
+func (h *ActionHandler) runDispatchLoop(task *model.Task, meta *model.ProjectMeta, behavior *model.TaskBehavior, sm *orchestrator.StateMachine) {
 	const maxCycles = 10
 	current := task
 
 	for cycle := 0; cycle < maxCycles; cycle++ {
-		result, err := h.AdvancedDispatcher.DispatchAndAdvance(
+		result, err := h.Coordinator.DispatchAndAdvance(
 			context.Background(), current, meta, behavior, sm,
 		)
 		if err != nil {

@@ -204,7 +204,7 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 
 // resolveWorktree checks if the task's behavior enables worktree isolation.
 // If so, it returns the worktree path (creating one if needed).
-func (r *Runner) resolveWorktree(event *model.HookFireEvent, meta *model.ProjectMeta, proj *model.Project) (string, error) {
+func (r *Runner) resolveWorktree(event *model.HookFireEvent, meta *project.ProjectMeta, proj *model.Project) (string, error) {
 	task, err := r.DB.GetTask(event.TaskID)
 	if err != nil {
 		return "", fmt.Errorf("get task: %w", err)

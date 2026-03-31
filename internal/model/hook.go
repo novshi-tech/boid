@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 )
 
-
 // ValidHookOnValues contains the allowed values for Hook.On.
 var ValidHookOnValues = map[string]bool{
 	"pending":             true,
