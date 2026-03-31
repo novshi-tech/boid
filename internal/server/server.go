@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -14,14 +13,12 @@ import (
 	"sync"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/db/migrate"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
-	"github.com/novshi-tech/boid/web"
 )
 
 type Config struct {
@@ -61,22 +58,11 @@ func New(cfg Config) (*Server, error) {
 	}
 	conn := d.Conn
 
-	var registry *orchestrator.KitRegistry
-	if cfg.KitsDir != "" {
-		registry = orchestrator.NewRegistry(cfg.KitsDir)
-	}
-	store := orchestrator.NewProjectStore(registry)
-
-	// Load meta for all registered projects
-	projects, err := orchestrator.ListProjects(conn)
+	projectRepo := orchestrator.NewProjectRepository(conn)
+	store, err := buildProjectStore(cfg, projectRepo)
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("list projects: %w", err)
-	}
-	if errs := store.LoadAll(projects); len(errs) > 0 {
-		for _, e := range errs {
-			slog.Warn("failed to load project meta", "error", e)
-		}
+		return nil, err
 	}
 
 	brokerSocket := filepath.Join(filepath.Dir(cfg.SocketPath), "boid-broker.sock")
@@ -97,8 +83,6 @@ func New(cfg Config) (*Server, error) {
 		}
 	}
 
-	r := chi.NewRouter()
-
 	srv := &Server{
 		cfg:         cfg,
 		db:          conn,
@@ -106,105 +90,21 @@ func New(cfg Config) (*Server, error) {
 		broker:      broker,
 		secretStore: secretStore,
 		proxy:       sandbox.WireProxy(cfg.AllowedDomains),
-		router:      r,
+		router:      chi.NewRouter(),
 		httpServer: &http.Server{
-			Handler: r,
+			Handler: nil,
 		},
 	}
-
-	r.Get("/api/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
-	})
-
-	r.Get("/api/proxy", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"port":%d}`, srv.proxyPort)
-	})
-
-	r.Get("/api/broker", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"socket":%q}`, srv.BrokerSocket())
-	})
-
-	r.Post("/api/broker/register", srv.handleBrokerRegister)
-
-	// Secrets API
-	if secretStore != nil {
-		secretHandler := &api.SecretHandler{Store: secretStore}
-		r.Mount("/api/secrets", secretHandler.Routes())
+	runtime, err := buildRuntime(srv, cfg, store, broker, secretStore)
+	if err != nil {
+		conn.Close()
+		return nil, err
 	}
-
-	projectRepo := orchestrator.NewProjectRepository(conn)
-	taskRepo := orchestrator.NewTaskRepository(conn)
-	jobRepo := dispatcher.NewJobRepository(conn)
-	tx := apiTransactor{db: conn}
-
-	projectHandler := &api.ProjectHandler{Projects: projectRepo, Store: store}
-	r.Mount("/api/projects", projectHandler.Routes())
-
-	taskHandler := &api.TaskHandler{Tasks: taskRepo}
-	r.Mount("/api/tasks", taskHandler.Routes())
-
-	reg := orchestrator.NewDefaultRegistry()
-	eval := &orchestrator.Evaluator{}
-
-	// Build job runner and dispatcher
-	tmuxMgr := cfg.Tmux
-	if tmuxMgr == nil {
-		tmuxMgr = &dtmux.RealTmux{}
+	if err := mountRoutes(srv, runtime); err != nil {
+		conn.Close()
+		return nil, err
 	}
-	tmuxSession := cfg.TmuxSession
-	if tmuxSession == "" {
-		tmuxSession = "boid"
-	}
-	boidBin, _ := os.Executable()
-
-	// Worktree manager
-	wtRootDir := filepath.Join(filepath.Dir(cfg.DBPath), "worktrees")
-	os.MkdirAll(wtRootDir, 0o755)
-	wtMgr := &dispatcher.WorktreeManager{RootDir: wtRootDir, DB: conn}
-
-	runner := dispatcher.Wire(dispatcher.WireConfig{
-		DB:          conn,
-		Tmux:        tmuxMgr,
-		TmuxSession: tmuxSession,
-		Broker:      broker,
-		SecretStore: secretStore,
-	})
-	planner := orchestrator.WireDispatchPlanner(orchestrator.PlannerWireConfig{
-		Meta:         store,
-		Projects:     orchestrator.DBProjectCatalog{DB: conn},
-		Tasks:        orchestrator.DBTaskLookup{DB: conn},
-		Worktrees:    worktreePreparer{manager: wtMgr},
-		BoidBinary:   boidBin,
-		ServerSocket: cfg.SocketPath,
-		ProxyPort:    &srv.proxyPort,
-	})
-	adapter := orchestrator.NewDispatchAdapter(runner, planner)
-	coordinator := &orchestrator.Coordinator{
-		Evaluator:    eval,
-		HookExecutor: adapter,
-		GateExecutor: adapter,
-		Waiter:       adapter,
-		MaxDepth:     5,
-	}
-
-	actionHandler := &api.ActionHandler{Tasks: taskRepo, Actions: taskRepo, Projects: projectRepo, Tx: tx, Store: store, Registry: reg, Evaluator: eval, Coordinator: coordinator, Runner: runner, WorktreeMgr: wtMgr}
-	r.Route("/api/tasks/{taskID}/actions", func(r chi.Router) {
-		r.Mount("/", actionHandler.Routes())
-	})
-
-	jobHandler := &api.JobHandler{Jobs: jobRepo, Tasks: taskRepo, Actions: taskRepo, Projects: projectRepo, Tx: tx, Store: store, Registry: reg, Evaluator: eval, Runner: runner, Coordinator: coordinator, WorktreeMgr: wtMgr}
-	r.Mount("/api/jobs", jobHandler.Routes())
-
-	// Web UI
-	webHandler := &api.WebHandler{Tasks: taskRepo, Actions: taskRepo, Jobs: jobRepo, Projects: projectRepo, Store: store}
-	r.Mount("/", webHandler.Routes())
-
-	// Static files
-	staticFS, _ := fs.Sub(web.StaticFS, "static")
-	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
+	srv.httpServer.Handler = srv.router
 
 	return srv, nil
 }

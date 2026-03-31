@@ -1,9 +1,33 @@
 package api
 
 import (
+	"context"
+
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
+
+type MetaStore interface {
+	Get(id string) (*orchestrator.ProjectMeta, bool)
+}
+
+type TransitionResolver interface {
+	Resolve(meta *orchestrator.ProjectMeta, behavior string) (*orchestrator.StateMachine, error)
+}
+
+type DispatchCoordinator interface {
+	DispatchAndAdvance(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, behavior *orchestrator.TaskBehavior, sm *orchestrator.StateMachine) (*orchestrator.DispatchResult, error)
+}
+
+type JobLifecycle interface {
+	CompleteJob(jobID string, result dispatcher.JobCompletionResult)
+	UnregisterJob(jobID string)
+	CleanupTaskWindow(taskID string)
+}
+
+type WorktreeCleaner interface {
+	CleanupForTask(taskID, projectDir, newStatus string) error
+}
 
 type TaskStore interface {
 	CreateTask(task *orchestrator.Task) error

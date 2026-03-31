@@ -14,3 +14,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
+
+func writeServiceError(w http.ResponseWriter, err error) {
+	if serr, ok := err.(*StatusError); ok {
+		writeError(w, serr.Code, serr.Message)
+		return
+	}
+	writeError(w, http.StatusInternalServerError, err.Error())
+}
