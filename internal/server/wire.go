@@ -91,7 +91,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		ServerSocket: cfg.SocketPath,
 		ProxyPort:    &srv.proxyPort,
 	})
-	adapter := orchestrator.NewDispatchAdapter(runner, planner)
+	adapter := dispatcher.NewOrchestratorAdapter(runner, planner)
 	workflow := &api.TaskWorkflowService{
 		Tasks:       taskRepo,
 		Jobs:        jobStore,

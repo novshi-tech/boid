@@ -158,7 +158,7 @@ Phase 2 実施メモ:
 対象:
 
 - `internal/orchestrator/planner.go`
-- `internal/orchestrator/dispatch_adapter.go`
+- `internal/dispatcher/orchestrator_adapter.go`
 - `internal/orchestrator/types.go`
 
 完了確認:
@@ -169,8 +169,8 @@ Phase 2 実施メモ:
 Phase 3 実施メモ:
 
 - `DispatchPlanner` は `dispatcher.DispatchPlan` ではなく `orchestrator.DispatchRequest` を返す
-- `dispatch_adapter` が `DispatchRequest -> dispatcher.DispatchPlan` の境界変換を担当する
-- `dispatcher` 依存の詳細型は adapter 内部に閉じ込める
+- `dispatcher/orchestrator_adapter` が `DispatchRequest -> dispatcher.DispatchPlan` の境界変換を担当する
+- `dispatcher` 依存の詳細型は dispatcher 側 adapter 内部に閉じ込める
 
 ## Phase 4: Worktree Into Dispatcher
 
