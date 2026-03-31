@@ -6,13 +6,16 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 type JobHandler struct {
-	DB          *db.DB
+	Jobs        JobStore
+	Tasks       TaskStore
+	Actions     ActionStore
+	Projects    ProjectRepository
+	Tx          Transactor
 	Store       *orchestrator.ProjectStore
 	Registry    *orchestrator.TransitionRegistry
 	Evaluator   *orchestrator.Evaluator
@@ -35,7 +38,7 @@ func (h *JobHandler) List(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "task_id query parameter required")
 		return
 	}
-	jobs, err := dispatcher.ListJobsByTask(h.DB.Conn, taskID)
+	jobs, err := h.Jobs.ListJobsByTask(taskID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -48,7 +51,7 @@ func (h *JobHandler) List(w http.ResponseWriter, r *http.Request) {
 
 func (h *JobHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	j, err := dispatcher.GetJob(h.DB.Conn, id)
+	j, err := h.Jobs.GetJob(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -70,7 +73,7 @@ func (h *JobHandler) Done(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	j, err := dispatcher.GetJob(h.DB.Conn, id)
+	j, err := h.Jobs.GetJob(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -91,7 +94,7 @@ func (h *JobHandler) Done(w http.ResponseWriter, r *http.Request) {
 		actionType = "job_failed"
 	}
 
-	task, err := orchestrator.GetTask(h.DB.Conn, j.TaskID)
+	task, err := h.Tasks.GetTask(j.TaskID)
 	if err != nil {
 		slog.Error("job done: task not found", "task_id", j.TaskID)
 		writeError(w, http.StatusInternalServerError, "task not found: "+err.Error())
@@ -117,7 +120,7 @@ func (h *JobHandler) Done(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Warn("job done: transition not applicable", "action", actionType, "error", err)
 		// Job update still needs to persist even if transition fails
-		if err := dispatcher.UpdateJob(h.DB.Conn, j); err != nil {
+		if err := h.Jobs.UpdateJob(j); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -126,14 +129,14 @@ func (h *JobHandler) Done(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Persist job update + task transition + action in one transaction
-	if err := db.InTxDB(h.DB.Conn, func(tx db.DBTX) error {
-		if err := dispatcher.UpdateJob(tx, j); err != nil {
+	if err := h.Tx.WithinTx(func(tx TxStore) error {
+		if err := tx.UpdateJob(j); err != nil {
 			return err
 		}
-		if err := orchestrator.UpdateTask(tx, newTask); err != nil {
+		if err := tx.UpdateTask(newTask); err != nil {
 			return err
 		}
-		return orchestrator.CreateAction(tx, action)
+		return tx.CreateAction(action)
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -152,7 +155,7 @@ func (h *JobHandler) Done(w http.ResponseWriter, r *http.Request) {
 
 	// Cleanup worktree on terminal state
 	if h.WorktreeMgr != nil {
-		cleanupWorktree(h.DB, h.WorktreeMgr, newTask.ID, j.ProjectID, newTask.Status)
+		cleanupWorktree(h.Projects, h.WorktreeMgr, newTask.ID, j.ProjectID, newTask.Status)
 	}
 
 	writeJSON(w, http.StatusOK, j)

@@ -19,7 +19,7 @@ func setupStore(t *testing.T) *dispatcher.SecretStore {
 	t.Cleanup(func() { d.Close() })
 
 	key := dispatcher.GenerateKey()
-	s, err := dispatcher.NewSecretStore(d, key)
+	s, err := dispatcher.NewSecretStore(d.Conn, key)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestStore_EncryptionIsReal(t *testing.T) {
 	t.Cleanup(func() { d.Close() })
 
 	key := dispatcher.GenerateKey()
-	s, _ := dispatcher.NewSecretStore(d, key)
+	s, _ := dispatcher.NewSecretStore(d.Conn, key)
 	s.Set("test", "plaintext-secret")
 
 	// Read raw encrypted value from DB
@@ -134,11 +134,11 @@ func TestStore_WrongKeyCannotDecrypt(t *testing.T) {
 	t.Cleanup(func() { d.Close() })
 
 	key1 := dispatcher.GenerateKey()
-	s1, _ := dispatcher.NewSecretStore(d, key1)
+	s1, _ := dispatcher.NewSecretStore(d.Conn, key1)
 	s1.Set("test", "secret-value")
 
 	key2 := dispatcher.GenerateKey()
-	s2, _ := dispatcher.NewSecretStore(d, key2)
+	s2, _ := dispatcher.NewSecretStore(d.Conn, key2)
 	_, err = s2.Get("test")
 	if err == nil {
 		t.Error("expected decryption failure with wrong key")

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -35,7 +36,7 @@ type Config struct {
 
 type Server struct {
 	cfg         Config
-	db          *db.DB
+	db          *sql.DB
 	store       *orchestrator.ProjectStore
 	broker      *sandbox.Broker
 	secretStore *dispatcher.SecretStore
@@ -57,6 +58,7 @@ func New(cfg Config) (*Server, error) {
 		d.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	conn := d.Conn
 
 	var registry *orchestrator.KitRegistry
 	if cfg.KitsDir != "" {
@@ -65,9 +67,9 @@ func New(cfg Config) (*Server, error) {
 	store := orchestrator.NewProjectStore(registry)
 
 	// Load meta for all registered projects
-	projects, err := orchestrator.ListProjects(d.Conn)
+	projects, err := orchestrator.ListProjects(conn)
 	if err != nil {
-		d.Close()
+		conn.Close()
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
 	if errs := store.LoadAll(projects); len(errs) > 0 {
@@ -84,12 +86,12 @@ func New(cfg Config) (*Server, error) {
 	if cfg.KeyFilePath != "" {
 		key, err := dispatcher.LoadOrCreateKey(cfg.KeyFilePath)
 		if err != nil {
-			d.Close()
+			conn.Close()
 			return nil, fmt.Errorf("load secret key: %w", err)
 		}
-		secretStore, err = dispatcher.NewSecretStore(d, key)
+		secretStore, err = dispatcher.NewSecretStore(conn, key)
 		if err != nil {
-			d.Close()
+			conn.Close()
 			return nil, fmt.Errorf("secret store: %w", err)
 		}
 	}
@@ -98,7 +100,7 @@ func New(cfg Config) (*Server, error) {
 
 	srv := &Server{
 		cfg:         cfg,
-		db:          d,
+		db:          conn,
 		store:       store,
 		broker:      broker,
 		secretStore: secretStore,
@@ -132,10 +134,15 @@ func New(cfg Config) (*Server, error) {
 		r.Mount("/api/secrets", secretHandler.Routes())
 	}
 
-	projectHandler := &api.ProjectHandler{DB: d, Store: store}
+	projectRepo := orchestrator.NewProjectRepository(conn)
+	taskRepo := orchestrator.NewTaskRepository(conn)
+	jobRepo := dispatcher.NewJobRepository(conn)
+	tx := apiTransactor{db: conn}
+
+	projectHandler := &api.ProjectHandler{Projects: projectRepo, Store: store}
 	r.Mount("/api/projects", projectHandler.Routes())
 
-	taskHandler := &api.TaskHandler{DB: d}
+	taskHandler := &api.TaskHandler{Tasks: taskRepo}
 	r.Mount("/api/tasks", taskHandler.Routes())
 
 	reg := orchestrator.NewDefaultRegistry()
@@ -155,10 +162,10 @@ func New(cfg Config) (*Server, error) {
 	// Worktree manager
 	wtRootDir := filepath.Join(filepath.Dir(cfg.DBPath), "worktrees")
 	os.MkdirAll(wtRootDir, 0o755)
-	wtMgr := &dispatcher.WorktreeManager{RootDir: wtRootDir, DB: d}
+	wtMgr := &dispatcher.WorktreeManager{RootDir: wtRootDir, DB: conn}
 
 	runner := dispatcher.Wire(dispatcher.WireConfig{
-		DB:          d,
+		DB:          conn,
 		Tmux:        tmuxMgr,
 		TmuxSession: tmuxSession,
 		Broker:      broker,
@@ -166,8 +173,8 @@ func New(cfg Config) (*Server, error) {
 	})
 	planner := orchestrator.WireDispatchPlanner(orchestrator.PlannerWireConfig{
 		Meta:         store,
-		Projects:     orchestrator.DBProjectCatalog{DB: d},
-		Tasks:        orchestrator.DBTaskLookup{DB: d},
+		Projects:     orchestrator.DBProjectCatalog{DB: conn},
+		Tasks:        orchestrator.DBTaskLookup{DB: conn},
 		Worktrees:    worktreePreparer{manager: wtMgr},
 		BoidBinary:   boidBin,
 		ServerSocket: cfg.SocketPath,
@@ -182,16 +189,16 @@ func New(cfg Config) (*Server, error) {
 		MaxDepth:     5,
 	}
 
-	actionHandler := &api.ActionHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, Coordinator: coordinator, Runner: runner, WorktreeMgr: wtMgr}
+	actionHandler := &api.ActionHandler{Tasks: taskRepo, Actions: taskRepo, Projects: projectRepo, Tx: tx, Store: store, Registry: reg, Evaluator: eval, Coordinator: coordinator, Runner: runner, WorktreeMgr: wtMgr}
 	r.Route("/api/tasks/{taskID}/actions", func(r chi.Router) {
 		r.Mount("/", actionHandler.Routes())
 	})
 
-	jobHandler := &api.JobHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, Runner: runner, Coordinator: coordinator, WorktreeMgr: wtMgr}
+	jobHandler := &api.JobHandler{Jobs: jobRepo, Tasks: taskRepo, Actions: taskRepo, Projects: projectRepo, Tx: tx, Store: store, Registry: reg, Evaluator: eval, Runner: runner, Coordinator: coordinator, WorktreeMgr: wtMgr}
 	r.Mount("/api/jobs", jobHandler.Routes())
 
 	// Web UI
-	webHandler := &api.WebHandler{DB: d, Store: store}
+	webHandler := &api.WebHandler{Tasks: taskRepo, Actions: taskRepo, Jobs: jobRepo, Projects: projectRepo, Store: store}
 	r.Mount("/", webHandler.Routes())
 
 	// Static files
@@ -202,7 +209,7 @@ func New(cfg Config) (*Server, error) {
 }
 
 // DB returns the database instance.
-func (s *Server) DB() *db.DB {
+func (s *Server) DB() *sql.DB {
 	return s.db
 }
 

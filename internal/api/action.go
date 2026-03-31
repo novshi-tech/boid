@@ -7,13 +7,15 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 type ActionHandler struct {
-	DB          *db.DB
+	Tasks       TaskStore
+	Actions     ActionStore
+	Projects    ProjectRepository
+	Tx          Transactor
 	Store       *orchestrator.ProjectStore
 	Registry    *orchestrator.TransitionRegistry
 	Evaluator   *orchestrator.Evaluator
@@ -47,7 +49,7 @@ func (h *ActionHandler) Apply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Get task
-	task, err := orchestrator.GetTask(h.DB.Conn, taskID)
+	task, err := h.Tasks.GetTask(taskID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -89,11 +91,11 @@ func (h *ActionHandler) Apply(w http.ResponseWriter, r *http.Request) {
 	newTask.Payload = merged
 
 	// 6. Save task + action in a transaction
-	if err := db.InTxDB(h.DB.Conn, func(tx db.DBTX) error {
-		if err := orchestrator.UpdateTask(tx, newTask); err != nil {
+	if err := h.Tx.WithinTx(func(tx TxStore) error {
+		if err := tx.UpdateTask(newTask); err != nil {
 			return err
 		}
-		return orchestrator.CreateAction(tx, action)
+		return tx.CreateAction(action)
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -101,7 +103,7 @@ func (h *ActionHandler) Apply(w http.ResponseWriter, r *http.Request) {
 
 	// 7. Cleanup worktree on terminal state
 	if h.WorktreeMgr != nil {
-		cleanupWorktree(h.DB, h.WorktreeMgr, newTask.ID, task.ProjectID, newTask.Status)
+		cleanupWorktree(h.Projects, h.WorktreeMgr, newTask.ID, task.ProjectID, newTask.Status)
 	}
 
 	// 8. Dispatch hooks and gates asynchronously
@@ -136,8 +138,8 @@ func (h *ActionHandler) runDispatchLoop(task *orchestrator.Task, meta *orchestra
 		// Persist merged payload
 		if len(result.FinalPayload) > 0 {
 			current.Payload = result.FinalPayload
-			if err := db.InTxDB(h.DB.Conn, func(tx db.DBTX) error {
-				return orchestrator.UpdateTask(tx, current)
+			if err := h.Tx.WithinTx(func(tx TxStore) error {
+				return tx.UpdateTask(current)
 			}); err != nil {
 				slog.Error("persist payload failed", "task_id", current.ID, "error", err)
 				return
@@ -152,11 +154,11 @@ func (h *ActionHandler) runDispatchLoop(task *orchestrator.Task, meta *orchestra
 		// Apply the auto-advance
 		action := &orchestrator.Action{TaskID: current.ID, Type: "auto_advance"}
 		current.Status = result.NewStatus
-		if err := db.InTxDB(h.DB.Conn, func(tx db.DBTX) error {
-			if err := orchestrator.UpdateTask(tx, current); err != nil {
+		if err := h.Tx.WithinTx(func(tx TxStore) error {
+			if err := tx.UpdateTask(current); err != nil {
 				return err
 			}
-			return orchestrator.CreateAction(tx, action)
+			return tx.CreateAction(action)
 		}); err != nil {
 			slog.Error("auto-advance persist failed", "task_id", current.ID, "error", err)
 			return
@@ -166,7 +168,7 @@ func (h *ActionHandler) runDispatchLoop(task *orchestrator.Task, meta *orchestra
 
 		// Cleanup worktree on terminal state
 		if h.WorktreeMgr != nil {
-			cleanupWorktree(h.DB, h.WorktreeMgr, current.ID, current.ProjectID, current.Status)
+			cleanupWorktree(h.Projects, h.WorktreeMgr, current.ID, current.ProjectID, current.Status)
 		}
 
 		// If terminal state, cleanup and stop

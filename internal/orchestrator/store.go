@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/novshi-tech/boid/internal/db"
 )
 
 type TaskFilter struct {
@@ -16,7 +15,7 @@ type TaskFilter struct {
 	ProjectID string
 }
 
-func CreateTask(dbtx db.DBTX, t *Task) error {
+func CreateTask(dbtx DBTX, t *Task) error {
 	if t.ID == "" {
 		t.ID = uuid.New().String()
 	}
@@ -41,7 +40,7 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 	return nil
 }
 
-func GetTask(dbtx db.DBTX, id string) (*Task, error) {
+func GetTask(dbtx DBTX, id string) (*Task, error) {
 	row := dbtx.QueryRow(
 		`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, payload, created_at, updated_at FROM tasks WHERE id = ?`, id,
 	)
@@ -56,7 +55,7 @@ func GetTask(dbtx db.DBTX, id string) (*Task, error) {
 	return t, err
 }
 
-func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
+func ListTasks(dbtx DBTX, filter TaskFilter) ([]*Task, error) {
 	var conditions []string
 	var args []any
 
@@ -92,7 +91,7 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	return tasks, rows.Err()
 }
 
-func UpdateTask(dbtx db.DBTX, t *Task) error {
+func UpdateTask(dbtx DBTX, t *Task) error {
 	t.UpdatedAt = time.Now().UTC()
 	_, err := dbtx.Exec(
 		`UPDATE tasks SET status = ?, payload = ?, updated_at = ? WHERE id = ?`,
@@ -101,7 +100,7 @@ func UpdateTask(dbtx db.DBTX, t *Task) error {
 	return err
 }
 
-func CreateAction(dbtx db.DBTX, a *Action) error {
+func CreateAction(dbtx DBTX, a *Action) error {
 	if a.ID == "" {
 		a.ID = uuid.New().String()
 	}
@@ -121,7 +120,7 @@ func CreateAction(dbtx db.DBTX, a *Action) error {
 	return nil
 }
 
-func ListActionsByTask(dbtx db.DBTX, taskID string) ([]*Action, error) {
+func ListActionsByTask(dbtx DBTX, taskID string) ([]*Action, error) {
 	rows, err := dbtx.Query(
 		`SELECT id, task_id, type, payload, created_at FROM actions WHERE task_id = ? ORDER BY created_at`, taskID,
 	)

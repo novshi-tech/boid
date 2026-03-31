@@ -2,17 +2,17 @@ package dispatcher
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"sync"
 
-	"github.com/novshi-tech/boid/internal/db"
 	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 type Runner struct {
-	DB          *db.DB
+	DB          *sql.DB
 	Tmux        dtmux.TmuxManager
 	TmuxSession string          // defaults to "boid"
 	Broker      *sandbox.Broker // host command broker
@@ -44,7 +44,7 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		HandlerID: plan.HandlerID,
 		Role:      plan.Role,
 	}
-	if err := CreateJob(r.DB.Conn, j); err != nil {
+	if err := CreateJob(r.DB, j); err != nil {
 		return "", fmt.Errorf("create job: %w", err)
 	}
 

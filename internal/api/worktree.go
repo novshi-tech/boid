@@ -3,17 +3,16 @@ package api
 import (
 	"log/slog"
 
-	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-func cleanupWorktree(d *db.DB, mgr *dispatcher.WorktreeManager, taskID, projectID string, status orchestrator.TaskStatus) {
-	if d == nil || mgr == nil || projectID == "" {
+func cleanupWorktree(projects ProjectRepository, mgr *dispatcher.WorktreeManager, taskID, projectID string, status orchestrator.TaskStatus) {
+	if projects == nil || mgr == nil || projectID == "" {
 		return
 	}
 
-	project, err := orchestrator.GetProject(d.Conn, projectID)
+	project, err := projects.GetProject(projectID)
 	if err != nil {
 		slog.Warn("worktree cleanup project lookup failed", "task_id", taskID, "project_id", projectID, "error", err)
 		return

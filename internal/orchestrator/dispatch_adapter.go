@@ -3,7 +3,6 @@ package orchestrator
 import (
 	"context"
 
-	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 )
 
@@ -48,23 +47,23 @@ func (a *DispatchAdapter) WaitForJob(ctx context.Context, jobID string) (JobComp
 }
 
 type DBProjectCatalog struct {
-	DB *db.DB
+	DB DBTX
 }
 
 func (c DBProjectCatalog) GetProject(id string) (*Project, error) {
-	return GetProject(c.DB.Conn, id)
+	return GetProject(c.DB, id)
 }
 
 func (c DBProjectCatalog) ListProjects() ([]*Project, error) {
-	return ListProjects(c.DB.Conn)
+	return ListProjects(c.DB)
 }
 
 type DBTaskLookup struct {
-	DB *db.DB
+	DB DBTX
 }
 
 func (l DBTaskLookup) GetTask(id string) (*Task, error) {
-	return GetTask(l.DB.Conn, id)
+	return GetTask(l.DB, id)
 }
 
 func toDispatcherPlan(request *DispatchRequest) *dispatcher.DispatchPlan {

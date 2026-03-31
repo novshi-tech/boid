@@ -1,13 +1,14 @@
 package dispatcher
 
 import (
-	"github.com/novshi-tech/boid/internal/db"
+	"database/sql"
+
 	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 type WireConfig struct {
-	DB          *db.DB
+	DB          *sql.DB
 	Tmux        dtmux.TmuxManager
 	TmuxSession string
 	Broker      *sandbox.Broker

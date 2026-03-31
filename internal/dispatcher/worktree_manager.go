@@ -1,20 +1,19 @@
 package dispatcher
 
 import (
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	"github.com/novshi-tech/boid/internal/db"
 )
 
 // WorktreeManager handles git worktree lifecycle for task isolation.
 type WorktreeManager struct {
 	RootDir string // e.g. ~/.local/share/boid/worktrees
-	DB      *db.DB
+	DB      *sql.DB
 	GitBin  string // path to git binary; defaults to "git"
 }
 
@@ -59,7 +58,7 @@ func (m *WorktreeManager) Create(projectDir, projectID, taskID, branchPrefix, ba
 		Branch:     branch,
 		BaseBranch: baseBranch,
 	}
-	if err := CreateWorktree(m.DB.Conn, w); err != nil {
+	if err := CreateWorktree(m.DB, w); err != nil {
 		exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", wtPath).Run()
 		return nil, fmt.Errorf("record worktree: %w", err)
 	}
@@ -69,7 +68,7 @@ func (m *WorktreeManager) Create(projectDir, projectID, taskID, branchPrefix, ba
 }
 
 func (m *WorktreeManager) Remove(projectDir, taskID string, deleteBranch bool) error {
-	w, err := GetWorktreeByTask(m.DB.Conn, taskID)
+	w, err := GetWorktreeByTask(m.DB, taskID)
 	if err != nil {
 		return fmt.Errorf("get worktree: %w", err)
 	}
@@ -93,7 +92,7 @@ func (m *WorktreeManager) Remove(projectDir, taskID string, deleteBranch bool) e
 		}
 	}
 
-	if err := MarkWorktreeCleaned(m.DB.Conn, taskID); err != nil {
+	if err := MarkWorktreeCleaned(m.DB, taskID); err != nil {
 		return fmt.Errorf("mark cleaned: %w", err)
 	}
 
@@ -102,7 +101,7 @@ func (m *WorktreeManager) Remove(projectDir, taskID string, deleteBranch bool) e
 }
 
 func (m *WorktreeManager) Get(taskID string) (*Worktree, error) {
-	return GetWorktreeByTask(m.DB.Conn, taskID)
+	return GetWorktreeByTask(m.DB, taskID)
 }
 
 func (m *WorktreeManager) CleanupForTask(taskID, projectDir, newStatus string) error {
@@ -123,7 +122,7 @@ func (m *WorktreeManager) CleanupForTask(taskID, projectDir, newStatus string) e
 }
 
 func (m *WorktreeManager) CleanOrphaned(resolve func(taskID, projectID string) (string, string, error)) error {
-	active, err := ListActiveWorktrees(m.DB.Conn)
+	active, err := ListActiveWorktrees(m.DB)
 	if err != nil {
 		return err
 	}

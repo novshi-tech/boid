@@ -4,15 +4,14 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"database/sql"
 	"fmt"
 	"io"
-
-	"github.com/novshi-tech/boid/internal/db"
 )
 
 // SecretStore provides encrypted secret storage backed by SQLite.
 type SecretStore struct {
-	db  *db.DB
+	db  *sql.DB
 	gcm cipher.AEAD
 }
 
@@ -26,7 +25,7 @@ func GenerateKey() []byte {
 }
 
 // NewSecretStore creates a store with the given database and encryption key.
-func NewSecretStore(d *db.DB, key []byte) (*SecretStore, error) {
+func NewSecretStore(d *sql.DB, key []byte) (*SecretStore, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("aes cipher: %w", err)
@@ -61,7 +60,7 @@ func (s *SecretStore) Set(key, value string) error {
 		return fmt.Errorf("encrypt: %w", err)
 	}
 
-	_, err = s.db.Conn.Exec(`
+	_, err = s.db.Exec(`
 		INSERT INTO secrets (id, key, value_encrypted)
 		VALUES (lower(hex(randomblob(8))), ?, ?)
 		ON CONFLICT(key) DO UPDATE SET
@@ -73,7 +72,7 @@ func (s *SecretStore) Set(key, value string) error {
 
 func (s *SecretStore) Get(key string) (string, error) {
 	var encrypted []byte
-	err := s.db.Conn.QueryRow("SELECT value_encrypted FROM secrets WHERE key = ?", key).Scan(&encrypted)
+	err := s.db.QueryRow("SELECT value_encrypted FROM secrets WHERE key = ?", key).Scan(&encrypted)
 	if err != nil {
 		return "", fmt.Errorf("secret %q: %w", key, err)
 	}
@@ -86,12 +85,12 @@ func (s *SecretStore) Get(key string) (string, error) {
 }
 
 func (s *SecretStore) Delete(key string) error {
-	_, err := s.db.Conn.Exec("DELETE FROM secrets WHERE key = ?", key)
+	_, err := s.db.Exec("DELETE FROM secrets WHERE key = ?", key)
 	return err
 }
 
 func (s *SecretStore) List() ([]string, error) {
-	rows, err := s.db.Conn.Query("SELECT key FROM secrets ORDER BY key")
+	rows, err := s.db.Query("SELECT key FROM secrets ORDER BY key")
 	if err != nil {
 		return nil, err
 	}

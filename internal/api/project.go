@@ -5,13 +5,12 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 type ProjectHandler struct {
-	DB    *db.DB
-	Store *orchestrator.ProjectStore
+	Projects ProjectRepository
+	Store    *orchestrator.ProjectStore
 }
 
 func (h *ProjectHandler) Routes() chi.Router {
@@ -50,7 +49,7 @@ func (h *ProjectHandler) Create(w http.ResponseWriter, r *http.Request) {
 		WorkDir: req.WorkDir,
 	}
 
-	if err := orchestrator.CreateProject(h.DB.Conn, p); err != nil {
+	if err := h.Projects.CreateProject(p); err != nil {
 		h.Store.Remove(meta.ID)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -63,7 +62,7 @@ func (h *ProjectHandler) Create(w http.ResponseWriter, r *http.Request) {
 func (h *ProjectHandler) List(w http.ResponseWriter, r *http.Request) {
 	wsID := r.URL.Query().Get("workspace_id")
 
-	projects, err := orchestrator.ListProjects(h.DB.Conn)
+	projects, err := h.Projects.ListProjects()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -88,7 +87,7 @@ func (h *ProjectHandler) List(w http.ResponseWriter, r *http.Request) {
 
 func (h *ProjectHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	p, err := orchestrator.GetProject(h.DB.Conn, id)
+	p, err := h.Projects.GetProject(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -101,7 +100,7 @@ func (h *ProjectHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 func (h *ProjectHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := orchestrator.DeleteProject(h.DB.Conn, id); err != nil {
+	if err := h.Projects.DeleteProject(id); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -110,7 +109,7 @@ func (h *ProjectHandler) Delete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ProjectHandler) Reload(w http.ResponseWriter, r *http.Request) {
-	projects, err := orchestrator.ListProjects(h.DB.Conn)
+	projects, err := h.Projects.ListProjects()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

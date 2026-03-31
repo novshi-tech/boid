@@ -5,12 +5,11 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 type TaskHandler struct {
-	DB *db.DB
+	Tasks TaskStore
 }
 
 func (h *TaskHandler) Routes() chi.Router {
@@ -52,7 +51,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Payload:      req.Payload,
 	}
 
-	if err := orchestrator.CreateTask(h.DB.Conn, t); err != nil {
+	if err := h.Tasks.CreateTask(t); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -66,7 +65,7 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 		ProjectID: r.URL.Query().Get("project_id"),
 	}
 
-	tasks, err := orchestrator.ListTasks(h.DB.Conn, filter)
+	tasks, err := h.Tasks.ListTasks(filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -79,7 +78,7 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 
 func (h *TaskHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	t, err := orchestrator.GetTask(h.DB.Conn, id)
+	t, err := h.Tasks.GetTask(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return

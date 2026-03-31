@@ -6,14 +6,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/novshi-tech/boid/internal/db"
 )
 
 type worktreeScanner interface {
 	Scan(dest ...any) error
 }
 
-func CreateWorktree(dbtx db.DBTX, w *Worktree) error {
+func CreateWorktree(dbtx DBTX, w *Worktree) error {
 	if w.ID == "" {
 		w.ID = uuid.New().String()
 	}
@@ -30,7 +29,7 @@ func CreateWorktree(dbtx db.DBTX, w *Worktree) error {
 	return nil
 }
 
-func GetWorktreeByTask(dbtx db.DBTX, taskID string) (*Worktree, error) {
+func GetWorktreeByTask(dbtx DBTX, taskID string) (*Worktree, error) {
 	row := dbtx.QueryRow(
 		`SELECT id, task_id, project_id, path, branch, base_branch, created_at, cleaned_at
 		 FROM worktrees WHERE task_id = ?`, taskID,
@@ -38,7 +37,7 @@ func GetWorktreeByTask(dbtx db.DBTX, taskID string) (*Worktree, error) {
 	return scanWorktree(row)
 }
 
-func MarkWorktreeCleaned(dbtx db.DBTX, taskID string) error {
+func MarkWorktreeCleaned(dbtx DBTX, taskID string) error {
 	now := time.Now().UTC()
 	res, err := dbtx.Exec(
 		`UPDATE worktrees SET cleaned_at = ? WHERE task_id = ? AND cleaned_at IS NULL`,
@@ -54,7 +53,7 @@ func MarkWorktreeCleaned(dbtx db.DBTX, taskID string) error {
 	return nil
 }
 
-func ListActiveWorktrees(dbtx db.DBTX) ([]*Worktree, error) {
+func ListActiveWorktrees(dbtx DBTX) ([]*Worktree, error) {
 	rows, err := dbtx.Query(
 		`SELECT id, task_id, project_id, path, branch, base_branch, created_at, cleaned_at
 		 FROM worktrees WHERE cleaned_at IS NULL ORDER BY created_at`,
