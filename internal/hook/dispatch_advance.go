@@ -36,6 +36,7 @@ func (d *AdvancedDispatcher) DispatchAndAdvance(
 	readonly := IsReadonly(behavior, task.Status)
 	payload := task.Payload
 	var allResults []HandlerResult
+	exclusiveWriters := map[string]string{} // trait key → first writer ID
 
 	// 1. Evaluate and dispatch hooks
 	matchedHooks := d.Evaluator.Evaluate(task, meta.Hooks)
@@ -46,6 +47,9 @@ func (d *AdvancedDispatcher) DispatchAndAdvance(
 		}
 		for _, hr := range hookResults {
 			allResults = append(allResults, hr)
+			if err := checkExclusiveCollision(hr.PayloadPatch, hr.ID, exclusiveWriters); err != nil {
+				return nil, err
+			}
 			if len(hr.PayloadPatch) > 0 && string(hr.PayloadPatch) != "{}" {
 				merged, err := model.MergePayloadPatch(payload, hr.PayloadPatch, hr.ID, hr.allowedTraits(matchedHooks))
 				if err != nil {
@@ -66,6 +70,9 @@ func (d *AdvancedDispatcher) DispatchAndAdvance(
 		}
 		for _, gr := range gateResults {
 			allResults = append(allResults, gr)
+			if err := checkExclusiveCollision(gr.PayloadPatch, gr.ID, exclusiveWriters); err != nil {
+				return nil, err
+			}
 			if len(gr.PayloadPatch) > 0 && string(gr.PayloadPatch) != "{}" {
 				merged, err := model.MergePayloadPatch(payload, gr.PayloadPatch, gr.ID, gr.allowedTraits(nil))
 				if err != nil {
@@ -245,6 +252,28 @@ func (d *AdvancedDispatcher) dispatchGates(
 		return nil, firstErr
 	}
 	return results, nil
+}
+
+// checkExclusiveCollision detects if an exclusive trait is written by multiple handlers.
+func checkExclusiveCollision(patch json.RawMessage, writerID string, exclusiveWriters map[string]string) error {
+	if len(patch) == 0 || string(patch) == "{}" || string(patch) == "null" {
+		return nil
+	}
+
+	var patchMap map[string]json.RawMessage
+	if err := json.Unmarshal(patch, &patchMap); err != nil {
+		return nil // invalid patch will be caught later
+	}
+
+	for key := range patchMap {
+		if model.TraitMergeMode(model.TraitType(key)) == model.MergeModeExclusive {
+			if prev, exists := exclusiveWriters[key]; exists {
+				return fmt.Errorf("exclusive trait %q written by both %q and %q", key, prev, writerID)
+			}
+			exclusiveWriters[key] = writerID
+		}
+	}
+	return nil
 }
 
 // parseHandlerResult extracts payload_patch from job output.

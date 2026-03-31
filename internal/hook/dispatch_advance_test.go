@@ -269,6 +269,90 @@ func TestDispatchAndAdvance_GatesExecuteAfterHooks(t *testing.T) {
 	}
 }
 
+func TestDispatchAndAdvance_ExclusiveTraitCollision(t *testing.T) {
+	mock := newMockExecutorWaiter()
+	// Two hooks both write to the same exclusive trait "prompt"
+	mock.setHookCompletion("hook-a", `{"payload_patch":{"prompt":"from-a"}}`, 0)
+	mock.setHookCompletion("hook-b", `{"payload_patch":{"prompt":"from-b"}}`, 0)
+
+	eval := &hook.Evaluator{}
+	disp := &hook.AdvancedDispatcher{
+		Evaluator:    eval,
+		HookExecutor: mock,
+		GateExecutor: mock,
+		Waiter:       mock,
+		MaxDepth:     5,
+	}
+
+	task := &model.Task{
+		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		ProjectID: "proj-1",
+		Status:    model.TaskStatusExecuting,
+		Payload:   json.RawMessage(`{}`),
+	}
+	meta := &model.ProjectMeta{
+		Hooks: []model.Hook{
+			{ID: "hook-a", On: "executing"},
+			{ID: "hook-b", On: "executing"},
+		},
+	}
+	behavior := &model.TaskBehavior{Readonly: false}
+	sm := simpleStateMachine()
+
+	_, err := disp.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	if err == nil {
+		t.Fatal("expected error for exclusive trait collision")
+	}
+}
+
+func TestDispatchAndAdvance_SharedTraitNoCollision(t *testing.T) {
+	mock := newMockExecutorWaiter()
+	// Two hooks both write to shared trait "verification" — should succeed
+	mock.setHookCompletion("hook-a", `{"payload_patch":{"verification":{"passed":true,"findings":[]}}}`, 0)
+	mock.setHookCompletion("hook-b", `{"payload_patch":{"verification":{"passed":false,"findings":["bug"]}}}`, 0)
+
+	eval := &hook.Evaluator{}
+	disp := &hook.AdvancedDispatcher{
+		Evaluator:    eval,
+		HookExecutor: mock,
+		GateExecutor: mock,
+		Waiter:       mock,
+		MaxDepth:     5,
+	}
+
+	task := &model.Task{
+		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		ProjectID: "proj-1",
+		Status:    model.TaskStatusExecuting,
+		Payload:   json.RawMessage(`{}`),
+	}
+	meta := &model.ProjectMeta{
+		Hooks: []model.Hook{
+			{ID: "hook-a", On: "executing"},
+			{ID: "hook-b", On: "executing"},
+		},
+	}
+	behavior := &model.TaskBehavior{Readonly: false}
+	sm := simpleStateMachine()
+
+	result, err := disp.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	if err != nil {
+		t.Fatalf("shared trait should not collide: %v", err)
+	}
+
+	// Both should be namespaced
+	var payload map[string]json.RawMessage
+	json.Unmarshal(result.FinalPayload, &payload)
+	var verification map[string]json.RawMessage
+	json.Unmarshal(payload["verification"], &verification)
+	if _, ok := verification["hook-a"]; !ok {
+		t.Error("expected hook-a sub-key in verification")
+	}
+	if _, ok := verification["hook-b"]; !ok {
+		t.Error("expected hook-b sub-key in verification")
+	}
+}
+
 func TestDispatchAndAdvance_EmptyHooksAndGates(t *testing.T) {
 	mock := newMockExecutorWaiter()
 	eval := &hook.Evaluator{}
