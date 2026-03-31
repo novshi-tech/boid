@@ -15,7 +15,7 @@ func TestGate_YAMLRoundTrip(t *testing.T) {
 id: push-pr
 on: executing
 requires_traits:
-  - pr
+  - artifact
 `
 	var gate model.Gate
 	if err := yaml.Unmarshal([]byte(data), &gate); err != nil {
@@ -28,7 +28,7 @@ requires_traits:
 	if gate.On != "executing" {
 		t.Fatalf("expected on executing, got %s", gate.On)
 	}
-	if len(gate.RequiresTraits) != 1 || gate.RequiresTraits[0] != model.TraitPR {
+	if len(gate.RequiresTraits) != 1 || gate.RequiresTraits[0] != model.TraitArtifact {
 		t.Fatalf("unexpected requires_traits: %v", gate.RequiresTraits)
 	}
 }
@@ -37,7 +37,7 @@ func TestGate_JSONRoundTrip(t *testing.T) {
 	original := model.Gate{
 		ID:             "ci-check",
 		On:             "verifying",
-		RequiresTraits: []model.TraitType{model.TraitPipeline},
+		RequiresTraits: []model.TraitType{model.TraitArtifact},
 	}
 
 	data, err := json.Marshal(original)
@@ -56,7 +56,7 @@ func TestGate_JSONRoundTrip(t *testing.T) {
 	if decoded.On != original.On {
 		t.Fatalf("expected on %s, got %s", original.On, decoded.On)
 	}
-	if len(decoded.RequiresTraits) != 1 || decoded.RequiresTraits[0] != model.TraitPipeline {
+	if len(decoded.RequiresTraits) != 1 || decoded.RequiresTraits[0] != model.TraitArtifact {
 		t.Fatalf("unexpected requires_traits: %v", decoded.RequiresTraits)
 	}
 }

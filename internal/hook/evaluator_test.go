@@ -13,13 +13,13 @@ func TestEvaluate_MatchingHookFires(t *testing.T) {
 
 	task := &model.Task{
 		Status:  model.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"agent_prompt":"do stuff"}`),
+		Payload: json.RawMessage(`{"prompt":"do stuff"}`),
 	}
 	hooks := []model.Hook{
 		{
 			ID:             "run-agent",
 			On:             "executing",
-			RequiresTraits: []model.TraitType{model.TraitAgentPrompt},
+			RequiresTraits: []model.TraitType{model.TraitPrompt},
 		},
 	}
 
@@ -37,13 +37,13 @@ func TestEvaluate_NonMatchingStatus(t *testing.T) {
 
 	task := &model.Task{
 		Status:  model.TaskStatusPending,
-		Payload: json.RawMessage(`{"agent_prompt":"do stuff"}`),
+		Payload: json.RawMessage(`{"prompt":"do stuff"}`),
 	}
 	hooks := []model.Hook{
 		{
 			ID:             "run-agent",
 			On:             "executing",
-			RequiresTraits: []model.TraitType{model.TraitAgentPrompt},
+			RequiresTraits: []model.TraitType{model.TraitPrompt},
 		},
 	}
 
@@ -58,13 +58,13 @@ func TestEvaluate_MissingTrait(t *testing.T) {
 
 	task := &model.Task{
 		Status:  model.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"pr":"http://example.com"}`),
+		Payload: json.RawMessage(`{"artifact":"http://example.com"}`),
 	}
 	hooks := []model.Hook{
 		{
 			ID:             "run-agent",
 			On:             "executing",
-			RequiresTraits: []model.TraitType{model.TraitAgentPrompt},
+			RequiresTraits: []model.TraitType{model.TraitPrompt},
 		},
 	}
 
@@ -100,13 +100,13 @@ func TestEvaluateGates_MatchingGate(t *testing.T) {
 
 	task := &model.Task{
 		Status:  model.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"pr":"http://example.com"}`),
+		Payload: json.RawMessage(`{"artifact":"http://example.com"}`),
 	}
 	gates := []model.Gate{
 		{
 			ID:             "push-pr",
 			On:             "executing",
-			RequiresTraits: []model.TraitType{model.TraitPR},
+			RequiresTraits: []model.TraitType{model.TraitArtifact},
 		},
 	}
 
@@ -124,18 +124,18 @@ func TestEvaluateGates_MultipleGatesAllowed(t *testing.T) {
 
 	task := &model.Task{
 		Status:  model.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"pr":"url","pipeline":"ci"}`),
+		Payload: json.RawMessage(`{"artifact":"url","artifact":"ci"}`),
 	}
 	gates := []model.Gate{
 		{
 			ID:             "push-pr",
 			On:             "executing",
-			RequiresTraits: []model.TraitType{model.TraitPR},
+			RequiresTraits: []model.TraitType{model.TraitArtifact},
 		},
 		{
 			ID:             "run-ci",
 			On:             "executing",
-			RequiresTraits: []model.TraitType{model.TraitPipeline},
+			RequiresTraits: []model.TraitType{model.TraitArtifact},
 		},
 	}
 
@@ -150,13 +150,13 @@ func TestEvaluateGates_NonMatchingStatus(t *testing.T) {
 
 	task := &model.Task{
 		Status:  model.TaskStatusPending,
-		Payload: json.RawMessage(`{"pr":"url"}`),
+		Payload: json.RawMessage(`{"artifact":"url"}`),
 	}
 	gates := []model.Gate{
 		{
 			ID:             "push-pr",
 			On:             "executing",
-			RequiresTraits: []model.TraitType{model.TraitPR},
+			RequiresTraits: []model.TraitType{model.TraitArtifact},
 		},
 	}
 
@@ -171,18 +171,18 @@ func TestEvaluate_MultipleHooks(t *testing.T) {
 
 	task := &model.Task{
 		Status:  model.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"agent_prompt":"go","pr":"http://ex.com"}`),
+		Payload: json.RawMessage(`{"prompt":"go","artifact":"http://ex.com"}`),
 	}
 	hooks := []model.Hook{
 		{
 			ID:             "hook-a",
 			On:             "executing",
-			RequiresTraits: []model.TraitType{model.TraitAgentPrompt},
+			RequiresTraits: []model.TraitType{model.TraitPrompt},
 		},
 		{
 			ID:             "hook-b",
 			On:             "executing",
-			RequiresTraits: []model.TraitType{model.TraitPR},
+			RequiresTraits: []model.TraitType{model.TraitArtifact},
 		},
 		{
 			ID:             "hook-c",
@@ -192,7 +192,7 @@ func TestEvaluate_MultipleHooks(t *testing.T) {
 		{
 			ID:             "hook-d",
 			On:             "executing",
-			RequiresTraits: []model.TraitType{model.TraitPipeline},
+			RequiresTraits: []model.TraitType{model.TraitVerification},
 		},
 	}
 

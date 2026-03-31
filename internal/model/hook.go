@@ -47,11 +47,10 @@ type HookFireEvent struct {
 type TraitType string
 
 const (
-	TraitAgentPrompt TraitType = "agent_prompt"
-	TraitPR          TraitType = "pr"
-	TraitPipeline    TraitType = "pipeline"
-	TraitTasks       TraitType = "tasks"
-	TraitReview      TraitType = "review"
+	TraitPrompt       TraitType = "prompt"
+	TraitArtifact     TraitType = "artifact"
+	TraitVerification TraitType = "verification"
+	TraitTasks        TraitType = "tasks"
 )
 
 // Role distinguishes hook execution context from gate execution context.

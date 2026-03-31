@@ -26,7 +26,7 @@ func TestActiveTraitTypes_Empty(t *testing.T) {
 }
 
 func TestActiveTraitTypes_WithTraits(t *testing.T) {
-	raw := json.RawMessage(`{"agent_prompt":"hello","pr":"http://example.com"}`)
+	raw := json.RawMessage(`{"prompt":"hello","artifact":"http://example.com"}`)
 	traits, err := model.ActiveTraitTypes(raw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -39,13 +39,13 @@ func TestActiveTraitTypes_WithTraits(t *testing.T) {
 		names[i] = string(tr)
 	}
 	sort.Strings(names)
-	if names[0] != "agent_prompt" || names[1] != "pr" {
+	if names[0] != "artifact" || names[1] != "prompt" {
 		t.Fatalf("unexpected traits: %v", names)
 	}
 }
 
 func TestActiveTraitTypes_WithNullValues(t *testing.T) {
-	raw := json.RawMessage(`{"agent_prompt":"hello","pr":null,"pipeline":"data"}`)
+	raw := json.RawMessage(`{"prompt":"hello","artifact":null,"tasks":"data"}`)
 	traits, err := model.ActiveTraitTypes(raw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -58,7 +58,7 @@ func TestActiveTraitTypes_WithNullValues(t *testing.T) {
 		names[i] = string(tr)
 	}
 	sort.Strings(names)
-	if names[0] != "agent_prompt" || names[1] != "pipeline" {
+	if names[0] != "prompt" || names[1] != "tasks" {
 		t.Fatalf("unexpected traits: %v", names)
 	}
 }
@@ -123,11 +123,11 @@ func TestTraitMergeMode(t *testing.T) {
 		trait model.TraitType
 		want  model.MergeMode
 	}{
-		{model.TraitAgentPrompt, model.MergeModeExclusive},
-		{model.TraitPR, model.MergeModeExclusive},
-		{model.TraitPipeline, model.MergeModeExclusive},
+		{model.TraitPrompt, model.MergeModeExclusive},
+		{model.TraitArtifact, model.MergeModeExclusive},
+		{model.TraitArtifact, model.MergeModeExclusive},
 		{model.TraitTasks, model.MergeModeExclusive},
-		{model.TraitReview, model.MergeModeShared},
+		{model.TraitVerification, model.MergeModeShared},
 	}
 
 	for _, tc := range cases {
@@ -139,8 +139,8 @@ func TestTraitMergeMode(t *testing.T) {
 }
 
 func TestValidatePayloadPatch_AllowedTraits(t *testing.T) {
-	patch := json.RawMessage(`{"agent_prompt":"hello","pr":"http://example.com"}`)
-	allowed := []model.TraitType{model.TraitAgentPrompt, model.TraitPR}
+	patch := json.RawMessage(`{"prompt":"hello","artifact":"http://example.com"}`)
+	allowed := []model.TraitType{model.TraitPrompt, model.TraitArtifact}
 
 	if err := model.ValidatePayloadPatch(patch, allowed); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -148,8 +148,8 @@ func TestValidatePayloadPatch_AllowedTraits(t *testing.T) {
 }
 
 func TestValidatePayloadPatch_UnauthorizedTrait(t *testing.T) {
-	patch := json.RawMessage(`{"agent_prompt":"hello","pipeline":"ci"}`)
-	allowed := []model.TraitType{model.TraitAgentPrompt}
+	patch := json.RawMessage(`{"prompt":"hello","artifact":"ci"}`)
+	allowed := []model.TraitType{model.TraitPrompt}
 
 	err := model.ValidatePayloadPatch(patch, allowed)
 	if err == nil {
@@ -166,9 +166,9 @@ func TestValidatePayloadPatch_EmptyPatch(t *testing.T) {
 }
 
 func TestMergePayloadPatch_Exclusive(t *testing.T) {
-	base := json.RawMessage(`{"agent_prompt":"old"}`)
-	patch := json.RawMessage(`{"agent_prompt":"new"}`)
-	allowed := []model.TraitType{model.TraitAgentPrompt}
+	base := json.RawMessage(`{"prompt":"old"}`)
+	patch := json.RawMessage(`{"prompt":"new"}`)
+	allowed := []model.TraitType{model.TraitPrompt}
 
 	result, err := model.MergePayloadPatch(base, patch, "hook-1", allowed)
 	if err != nil {
@@ -178,24 +178,24 @@ func TestMergePayloadPatch_Exclusive(t *testing.T) {
 	var m map[string]json.RawMessage
 	json.Unmarshal(result, &m)
 
-	if string(m["agent_prompt"]) != `"new"` {
-		t.Fatalf("expected agent_prompt=new, got %s", string(m["agent_prompt"]))
+	if string(m["prompt"]) != `"new"` {
+		t.Fatalf("expected prompt=new, got %s", string(m["prompt"]))
 	}
 }
 
 func TestMergePayloadPatch_Shared(t *testing.T) {
 	base := json.RawMessage(`{}`)
-	allowed := []model.TraitType{model.TraitReview}
+	allowed := []model.TraitType{model.TraitVerification}
 
 	// First hook writes
-	patch1 := json.RawMessage(`{"review":{"passed":true,"score":9}}`)
+	patch1 := json.RawMessage(`{"verification":{"passed":true,"score":9}}`)
 	result, err := model.MergePayloadPatch(base, patch1, "security-review", allowed)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	// Second hook writes
-	patch2 := json.RawMessage(`{"review":{"passed":false,"issues":["bug"]}}`)
+	patch2 := json.RawMessage(`{"verification":{"passed":false,"issues":["bug"]}}`)
 	result, err = model.MergePayloadPatch(result, patch2, "quality-review", allowed)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -206,7 +206,7 @@ func TestMergePayloadPatch_Shared(t *testing.T) {
 	json.Unmarshal(result, &m)
 
 	var review map[string]json.RawMessage
-	if err := json.Unmarshal(m["review"], &review); err != nil {
+	if err := json.Unmarshal(m["verification"], &review); err != nil {
 		t.Fatalf("unmarshal review: %v", err)
 	}
 
@@ -220,8 +220,8 @@ func TestMergePayloadPatch_Shared(t *testing.T) {
 
 func TestMergePayloadPatch_UnauthorizedTraitRejected(t *testing.T) {
 	base := json.RawMessage(`{}`)
-	patch := json.RawMessage(`{"pipeline":"ci"}`)
-	allowed := []model.TraitType{model.TraitAgentPrompt}
+	patch := json.RawMessage(`{"artifact":"ci"}`)
+	allowed := []model.TraitType{model.TraitPrompt}
 
 	_, err := model.MergePayloadPatch(base, patch, "hook-1", allowed)
 	if err == nil {
@@ -230,7 +230,7 @@ func TestMergePayloadPatch_UnauthorizedTraitRejected(t *testing.T) {
 }
 
 func TestMergePayloadPatch_EmptyPatch(t *testing.T) {
-	base := json.RawMessage(`{"agent_prompt":"hello"}`)
+	base := json.RawMessage(`{"prompt":"hello"}`)
 
 	result, err := model.MergePayloadPatch(base, nil, "hook-1", nil)
 	if err != nil {

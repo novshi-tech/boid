@@ -541,7 +541,7 @@ func TestWriteSandboxScripts_HookRole(t *testing.T) {
 		BrokerSocket: "/run/boid/broker.sock",
 		BrokerToken:  "test-token-hook",
 		Role:         "hook",
-		PayloadJSON:  `{"agent_prompt":"do stuff"}`,
+		PayloadJSON:  `{"prompt":"do stuff"}`,
 	}
 
 	outerPath, err := job.WriteSandboxScripts(cfg)
@@ -589,7 +589,7 @@ func TestWriteSandboxScripts_HookRole(t *testing.T) {
 	}
 
 	// Should pipe payload to stdin
-	if !strings.Contains(inner, `agent_prompt`) {
+	if !strings.Contains(inner, `prompt`) {
 		t.Error("hook role inner script should contain payload for stdin piping")
 	}
 

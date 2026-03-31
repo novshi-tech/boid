@@ -221,7 +221,7 @@ func TestStateMachine_Advance_ConditionMet(t *testing.T) {
 				Condition: func(payload json.RawMessage) bool {
 					var m map[string]json.RawMessage
 					json.Unmarshal(payload, &m)
-					_, ok := m["pr"]
+					_, ok := m["artifact"]
 					return ok
 				},
 			},
@@ -230,7 +230,7 @@ func TestStateMachine_Advance_ConditionMet(t *testing.T) {
 
 	task := &model.Task{
 		Status:  model.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"pr":{"url":"https://github.com/..."}}`),
+		Payload: json.RawMessage(`{"artifact":{"url":"https://github.com/..."}}`),
 	}
 
 	next, ok := sm.Advance(task)
@@ -252,7 +252,7 @@ func TestStateMachine_Advance_ConditionNotMet(t *testing.T) {
 				Condition: func(payload json.RawMessage) bool {
 					var m map[string]json.RawMessage
 					json.Unmarshal(payload, &m)
-					_, ok := m["pr"]
+					_, ok := m["artifact"]
 					return ok
 				},
 			},
@@ -261,7 +261,7 @@ func TestStateMachine_Advance_ConditionNotMet(t *testing.T) {
 
 	task := &model.Task{
 		Status:  model.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"agent_prompt":"working..."}`),
+		Payload: json.RawMessage(`{"prompt":"working..."}`),
 	}
 
 	_, ok := sm.Advance(task)

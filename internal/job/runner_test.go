@@ -103,7 +103,7 @@ func TestRunner_WaitForJob_CompleteJob(t *testing.T) {
 	// Complete the job in a goroutine
 	go func() {
 		runner.CompleteJob("job-123", job.JobCompletionResult{
-			Output:   `{"payload_patch":{"agent_prompt":"done"}}`,
+			Output:   `{"payload_patch":{"prompt":"done"}}`,
 			ExitCode: 0,
 		})
 	}()
@@ -113,7 +113,7 @@ func TestRunner_WaitForJob_CompleteJob(t *testing.T) {
 	if result.ExitCode != 0 {
 		t.Errorf("exit code = %d, want 0", result.ExitCode)
 	}
-	if result.Output != `{"payload_patch":{"agent_prompt":"done"}}` {
+	if result.Output != `{"payload_patch":{"prompt":"done"}}` {
 		t.Errorf("output = %q", result.Output)
 	}
 }

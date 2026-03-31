@@ -25,7 +25,7 @@ func TestReadKit_Valid(t *testing.T) {
 hooks:
   - id: run-build
     on: executing
-    requires_traits: [agent_prompt]
+    requires_traits: [prompt]
 host_commands:
   go:
     path: /usr/bin/go
@@ -37,7 +37,7 @@ task_behaviors:
   dev:
     name: development
     transition: one-shot
-    traits: [agent_prompt]
+    traits: [prompt]
 `)
 
 	m, err := kit.ReadKit(dir)

@@ -18,7 +18,7 @@ const (
 // TraitMergeMode returns the merge mode for a given trait type.
 func TraitMergeMode(t TraitType) MergeMode {
 	switch t {
-	case TraitReview:
+	case TraitVerification:
 		return MergeModeShared
 	default:
 		return MergeModeExclusive

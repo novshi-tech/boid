@@ -19,13 +19,13 @@ task_behaviors:
     name: development
     transition: one-shot
     traits:
-      - agent_prompt
-      - pr
+      - prompt
+      - artifact
 hooks:
   - id: run-agent
     on: executing
     requires_traits:
-      - agent_prompt
+      - prompt
 host_commands:
   git:
     path: /usr/bin/git
@@ -69,7 +69,7 @@ env:
 	if meta.Hooks[0].On != "executing" {
 		t.Fatalf("expected hook on executing, got %s", meta.Hooks[0].On)
 	}
-	if len(meta.Hooks[0].RequiresTraits) != 1 || meta.Hooks[0].RequiresTraits[0] != model.TraitAgentPrompt {
+	if len(meta.Hooks[0].RequiresTraits) != 1 || meta.Hooks[0].RequiresTraits[0] != model.TraitPrompt {
 		t.Fatalf("unexpected requires_traits: %v", meta.Hooks[0].RequiresTraits)
 	}
 
@@ -89,11 +89,11 @@ gates:
   - id: push-pr
     on: executing
     requires_traits:
-      - pr
+      - artifact
   - id: ci-check
     on: verifying
     requires_traits:
-      - pipeline
+      - artifact
 `
 	var meta model.ProjectMeta
 	if err := yaml.Unmarshal([]byte(data), &meta); err != nil {
@@ -121,13 +121,13 @@ task_behaviors:
     transition: one-shot
     readonly: true
     traits:
-      - agent_prompt
+      - prompt
       - tasks
   dev:
     name: development
     transition: feedback-loop
     traits:
-      - agent_prompt
+      - prompt
 `
 	var meta model.ProjectMeta
 	if err := yaml.Unmarshal([]byte(data), &meta); err != nil {
@@ -154,14 +154,14 @@ func TestProjectMeta_JSONRoundTrip(t *testing.T) {
 			"dev": {
 				Name:       "development",
 				Transition: "one-shot",
-				Traits:     []string{"agent_prompt"},
+				Traits:     []string{"prompt"},
 			},
 		},
 		Hooks: []model.Hook{
 			{
 				ID:             "hook-1",
 				On:             "executing",
-				RequiresTraits: []model.TraitType{model.TraitAgentPrompt},
+				RequiresTraits: []model.TraitType{model.TraitPrompt},
 			},
 		},
 		HostCommands: map[string]hostcmd.CommandDef{"git": {Path: "/usr/bin/git"}},

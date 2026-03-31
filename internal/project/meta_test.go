@@ -26,12 +26,12 @@ task_behaviors:
     name: development
     transition: one-shot
     traits:
-      - agent_prompt
+      - artifactompt
 hooks:
   - id: run-agent
     on: executing
     requires_traits:
-      - agent_prompt
+      - artifactompt
 host_commands:
   git:
     path: /usr/bin/git
@@ -213,7 +213,7 @@ gates:
   - id: push-pr
     on: executing
     requires_traits:
-      - pr
+      - artifact
 `
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
@@ -389,7 +389,7 @@ hooks:
   - id: run-build
     on: executing
     requires_traits:
-      - agent_prompt
+      - artifactompt
 `
 	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
 		t.Fatalf("write kit.yaml: %v", err)

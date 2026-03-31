@@ -116,8 +116,8 @@ func simpleStateMachine() *reducer.StateMachine {
 				Condition: func(p json.RawMessage) bool {
 					var m map[string]json.RawMessage
 					json.Unmarshal(p, &m)
-					_, ok := m["agent_prompt"]
-					return ok && string(m["agent_prompt"]) != "null"
+					_, ok := m["prompt"]
+					return ok && string(m["prompt"]) != "null"
 				},
 			},
 			{Action: "abort", FromStatus: "*", ToStatus: "aborted"},
@@ -127,7 +127,7 @@ func simpleStateMachine() *reducer.StateMachine {
 
 func TestDispatchAndAdvance_HooksSequential(t *testing.T) {
 	mock := newMockExecutorWaiter()
-	mock.setHookCompletion("hook-a", `{"payload_patch":{"agent_prompt":"result-a"}}`, 0)
+	mock.setHookCompletion("hook-a", `{"payload_patch":{"prompt":"result-a"}}`, 0)
 	mock.setHookCompletion("hook-b", `{"payload_patch":{"pr":"http://example.com"}}`, 0)
 
 	eval := &hook.Evaluator{}
@@ -167,11 +167,11 @@ func TestDispatchAndAdvance_HooksSequential(t *testing.T) {
 	// Payload should be merged
 	var payload map[string]json.RawMessage
 	json.Unmarshal(result.FinalPayload, &payload)
-	if _, ok := payload["agent_prompt"]; !ok {
-		t.Error("expected agent_prompt in final payload")
+	if _, ok := payload["prompt"]; !ok {
+		t.Error("expected prompt in final payload")
 	}
 
-	// Orchestrator should have advanced (agent_prompt is present)
+	// Orchestrator should have advanced (prompt is present)
 	if result.NewStatus != model.TaskStatusDone {
 		t.Errorf("expected new status done, got %q", result.NewStatus)
 	}
@@ -218,7 +218,7 @@ func TestDispatchAndAdvance_NoAdvanceWhenConditionNotMet(t *testing.T) {
 
 func TestDispatchAndAdvance_GatesExecuteAfterHooks(t *testing.T) {
 	mock := newMockExecutorWaiter()
-	mock.setHookCompletion("hook-a", `{"payload_patch":{"agent_prompt":"done"}}`, 0)
+	mock.setHookCompletion("hook-a", `{"payload_patch":{"prompt":"done"}}`, 0)
 	mock.setGateCompletion("gate-push", `{"payload_patch":{"pr":"http://pr-url"}}`, 0)
 
 	eval := &hook.Evaluator{}
