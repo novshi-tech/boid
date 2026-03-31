@@ -2,12 +2,20 @@ package hostcmd
 
 import (
 	"strings"
-
-	"github.com/novshi-tech/boid/internal/project"
 )
 
-// CommandDef is an alias for project.CommandDef for convenience within this package.
-type CommandDef = project.CommandDef
+type CommandDef struct {
+	Name                string
+	Path                string
+	AllowedPatterns     []string
+	DeniedPatterns      []string
+	AllowedSubcommands  []string
+	AllowStdin          bool
+	Env                 map[string]string
+	ExtractSubcommandFn string
+	RequireCwd          bool
+	AllowedCwdPrefixes  []string
+}
 
 // CheckPolicy evaluates whether the given args are allowed for the command.
 // Evaluation order:

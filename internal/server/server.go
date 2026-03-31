@@ -17,7 +17,6 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
-	"github.com/novshi-tech/boid/internal/hostcmd"
 	"github.com/novshi-tech/boid/internal/kit"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/project"
@@ -41,8 +40,8 @@ type Config struct {
 type Server struct {
 	cfg         Config
 	db          *db.DB
-	store       *project.Store
-	broker      *hostcmd.Broker
+	store       *orchestrator.ProjectStore
+	broker      *sandbox.Broker
 	secretStore *secret.Store
 	proxy       *sandbox.Proxy
 	proxyPort   int
@@ -67,7 +66,7 @@ func New(cfg Config) (*Server, error) {
 	if cfg.KitsDir != "" {
 		registry = kit.NewRegistry(cfg.KitsDir)
 	}
-	store := project.NewStore(registry)
+	store := orchestrator.NewProjectStore(registry)
 
 	// Load meta for all registered projects
 	projects, err := project.ListProjects(d.Conn)
@@ -82,7 +81,7 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	brokerSocket := filepath.Join(filepath.Dir(cfg.SocketPath), "boid-broker.sock")
-	broker := &hostcmd.Broker{SocketPath: brokerSocket}
+	broker := &sandbox.Broker{SocketPath: brokerSocket}
 
 	// Secret store
 	var secretStore *secret.Store
@@ -107,7 +106,7 @@ func New(cfg Config) (*Server, error) {
 		store:       store,
 		broker:      broker,
 		secretStore: secretStore,
-		proxy:       sandbox.NewProxy(cfg.AllowedDomains),
+		proxy:       sandbox.WireProxy(cfg.AllowedDomains),
 		router:      r,
 		httpServer: &http.Server{
 			Handler: r,
@@ -162,19 +161,23 @@ func New(cfg Config) (*Server, error) {
 	os.MkdirAll(wtRootDir, 0o755)
 	wtMgr := &worktree.Manager{RootDir: wtRootDir, DB: d}
 
-	runner := &dispatcher.Runner{
-		DB:           d,
+	runner := dispatcher.Wire(dispatcher.WireConfig{
+		DB:          d,
+		Tmux:        tmuxMgr,
+		TmuxSession: tmuxSession,
+		Broker:      broker,
+		SecretStore: secretStore,
+	})
+	planner := orchestrator.WireDispatchPlanner(orchestrator.PlannerWireConfig{
 		Meta:         store,
-		Tmux:         tmuxMgr,
-		TmuxSession:  tmuxSession,
+		Projects:     orchestrator.DBProjectCatalog{DB: d},
+		Tasks:        orchestrator.DBTaskLookup{DB: d},
+		Worktrees:    worktreePreparer{manager: wtMgr},
 		BoidBinary:   boidBin,
 		ServerSocket: cfg.SocketPath,
 		ProxyPort:    &srv.proxyPort,
-		Broker:       broker,
-		SecretStore:  secretStore,
-		WorktreeMgr:  wtMgr,
-	}
-	adapter := &runnerAdapter{runner: runner}
+	})
+	adapter := orchestrator.NewDispatchAdapter(runner, planner)
 	coordinator := &orchestrator.Coordinator{
 		Evaluator:    eval,
 		HookExecutor: adapter,
@@ -208,7 +211,7 @@ func (s *Server) DB() *db.DB {
 }
 
 // Store returns the project store.
-func (s *Server) Store() *project.Store {
+func (s *Server) Store() *orchestrator.ProjectStore {
 	return s.store
 }
 
@@ -305,8 +308,8 @@ func (s *Server) BrokerSocket() string {
 	return ""
 }
 
-// Broker returns the hostcmd broker.
-func (s *Server) Broker() *hostcmd.Broker {
+// Broker returns the sandbox broker.
+func (s *Server) Broker() *sandbox.Broker {
 	return s.broker
 }
 
@@ -324,7 +327,7 @@ func (s *Server) TCPAddr() string {
 }
 
 type brokerRegisterRequest struct {
-	Commands map[string]hostcmd.CommandDef `json:"commands"`
+	Commands map[string]sandbox.CommandDef `json:"commands"`
 }
 
 type brokerRegisterResponse struct {
@@ -350,7 +353,7 @@ func (s *Server) handleBrokerRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// boid exec uses gate role for maximum access
-	ctx := hostcmd.TokenContext{Role: "gate"}
+	ctx := sandbox.TokenContext{Role: "gate"}
 	var token string
 	if s.secretStore != nil {
 		token = s.broker.RegisterWithSecrets(req.Commands, ctx, s.secretStore.Get)

@@ -93,12 +93,26 @@ func buildSandboxConfig(projectID string) (sandbox.WrapperConfig, error) {
 		BrokerToken:        brokerToken,
 		Env:                p.Meta.Env,
 		HostCommands:       hostCommandNames,
-		AdditionalBindings: p.Meta.AdditionalBindings,
+		AdditionalBindings: toSandboxBindings(p.Meta.AdditionalBindings),
 		WorkspaceDirs:      workspaceDirs,
 		ProxyPort:          proxyInfo.Port,
 	}
 
 	return cfg, nil
+}
+
+func toSandboxBindings(bindings []project.BindMount) []sandbox.BindMount {
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make([]sandbox.BindMount, 0, len(bindings))
+	for _, binding := range bindings {
+		out = append(out, sandbox.BindMount{
+			Source: binding.Source,
+			Mode:   binding.Mode,
+		})
+	}
+	return out
 }
 
 func runExec(cmd *cobra.Command, args []string) error {

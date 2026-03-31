@@ -9,13 +9,12 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/internal/worktree"
 )
 
 type JobHandler struct {
 	DB          *db.DB
-	Store       *project.Store
+	Store       *orchestrator.ProjectStore
 	Registry    *orchestrator.Registry
 	Evaluator   *orchestrator.Evaluator
 	Runner      *dispatcher.Runner

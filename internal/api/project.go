@@ -6,12 +6,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/db"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/project"
 )
 
 type ProjectHandler struct {
 	DB    *db.DB
-	Store *project.Store
+	Store *orchestrator.ProjectStore
 }
 
 func (h *ProjectHandler) Routes() chi.Router {

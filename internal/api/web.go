@@ -13,7 +13,7 @@ import (
 
 type WebHandler struct {
 	DB    *db.DB
-	Store *project.Store
+	Store *orchestrator.ProjectStore
 }
 
 func (h *WebHandler) Routes() chi.Router {

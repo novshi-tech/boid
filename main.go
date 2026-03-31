@@ -7,11 +7,11 @@ import (
 	"time"
 
 	"github.com/novshi-tech/boid/cmd"
-	"github.com/novshi-tech/boid/internal/hostcmd"
+	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 func main() {
-	command := hostcmd.CommandFromArgv0(os.Args[0])
+	command := sandbox.CommandFromArgv0(os.Args[0])
 	if command != "boid" {
 		shimMain(command)
 		return
@@ -32,7 +32,7 @@ func shimMain(command string) {
 
 	stdin := readStdinNonBlocking()
 
-	resp, err := hostcmd.ShimExec(brokerSocket, command, os.Args[1:], stdin)
+	resp, err := sandbox.ShimExec(brokerSocket, command, os.Args[1:], stdin)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "boid shim: %v\n", err)
 		os.Exit(1)

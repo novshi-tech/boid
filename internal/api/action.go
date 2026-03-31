@@ -16,7 +16,7 @@ import (
 
 type ActionHandler struct {
 	DB          *db.DB
-	Store       *project.Store
+	Store       *orchestrator.ProjectStore
 	Registry    *orchestrator.Registry
 	Evaluator   *orchestrator.Evaluator
 	Coordinator *orchestrator.Coordinator

@@ -2,8 +2,6 @@ package sandbox
 
 import (
 	"testing"
-
-	"github.com/novshi-tech/boid/internal/project"
 )
 
 func TestBuildSandboxPlan_SystemDirs(t *testing.T) {
@@ -305,7 +303,7 @@ func TestBuildSandboxPlan_AdditionalBindings(t *testing.T) {
 		ProjectDir:   "/home/user/proj",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
-		AdditionalBindings: []project.BindMount{
+		AdditionalBindings: []BindMount{
 			{Source: "/home/user/.local/bin"},
 			{Source: "/home/user/go", Mode: "rw"},
 		},
