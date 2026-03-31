@@ -1,17 +1,26 @@
-package db_test
+package dispatcher_test
 
 import (
 	"strings"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/testutil"
 )
 
-func TestCreateJob(t *testing.T) {
+func createDispatcherTask(t *testing.T) *db.DB {
+	t.Helper()
 	d := testutil.NewTestDB(t)
-	createTestProject(t, d)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	return d
+}
+
+func TestCreateJob(t *testing.T) {
+	d := createDispatcherTask(t)
 
 	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
@@ -38,8 +47,7 @@ func TestCreateJob(t *testing.T) {
 }
 
 func TestGetJob(t *testing.T) {
-	d := testutil.NewTestDB(t)
-	createTestProject(t, d)
+	d := createDispatcherTask(t)
 
 	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
@@ -88,8 +96,7 @@ func TestGetJob_NotFound(t *testing.T) {
 }
 
 func TestListJobsByTask(t *testing.T) {
-	d := testutil.NewTestDB(t)
-	createTestProject(t, d)
+	d := createDispatcherTask(t)
 
 	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "Task1", Behavior: "dev"}
 	if err := orchestrator.CreateTask(d.Conn, task1); err != nil {
@@ -127,8 +134,7 @@ func TestListJobsByTask(t *testing.T) {
 }
 
 func TestListJobsByTask_Empty(t *testing.T) {
-	d := testutil.NewTestDB(t)
-	createTestProject(t, d)
+	d := createDispatcherTask(t)
 
 	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
@@ -145,8 +151,7 @@ func TestListJobsByTask_Empty(t *testing.T) {
 }
 
 func TestUpdateJob(t *testing.T) {
-	d := testutil.NewTestDB(t)
-	createTestProject(t, d)
+	d := createDispatcherTask(t)
 
 	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
@@ -185,8 +190,7 @@ func TestUpdateJob(t *testing.T) {
 }
 
 func TestUpdateJob_Failed(t *testing.T) {
-	d := testutil.NewTestDB(t)
-	createTestProject(t, d)
+	d := createDispatcherTask(t)
 
 	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
@@ -218,5 +222,94 @@ func TestUpdateJob_Failed(t *testing.T) {
 	}
 	if got.ExitCode != 1 {
 		t.Fatalf("expected exit_code 1, got %d", got.ExitCode)
+	}
+	if got.Output != "error occurred" {
+		t.Fatalf("expected output 'error occurred', got %s", got.Output)
+	}
+}
+
+func TestWorktreeCRUD(t *testing.T) {
+	d := testutil.NewTestDB(t)
+
+	d.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-1', '/tmp/proj')`)
+	d.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-1', 'proj-1', 'test', 'dev')`)
+
+	w := &dispatcher.Worktree{
+		TaskID:     "task-1",
+		ProjectID:  "proj-1",
+		Path:       "/home/user/.local/share/boid/worktrees/proj-1/task-1ab",
+		Branch:     "boid/task-1ab",
+		BaseBranch: "main",
+	}
+
+	if err := dispatcher.CreateWorktree(d.Conn, w); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	if w.ID == "" {
+		t.Fatal("expected ID to be set")
+	}
+	if w.CreatedAt.IsZero() {
+		t.Fatal("expected CreatedAt to be set")
+	}
+
+	got, err := dispatcher.GetWorktreeByTask(d.Conn, "task-1")
+	if err != nil {
+		t.Fatalf("GetWorktreeByTask: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected worktree, got nil")
+	}
+	if got.Path != w.Path {
+		t.Errorf("path: got %q, want %q", got.Path, w.Path)
+	}
+	if got.Branch != w.Branch {
+		t.Errorf("branch: got %q, want %q", got.Branch, w.Branch)
+	}
+	if got.CleanedAt != nil {
+		t.Error("expected CleanedAt to be nil")
+	}
+
+	active, err := dispatcher.ListActiveWorktrees(d.Conn)
+	if err != nil {
+		t.Fatalf("ListActiveWorktrees: %v", err)
+	}
+	if len(active) != 1 {
+		t.Fatalf("active: got %d, want 1", len(active))
+	}
+
+	if err := dispatcher.MarkWorktreeCleaned(d.Conn, "task-1"); err != nil {
+		t.Fatalf("MarkWorktreeCleaned: %v", err)
+	}
+
+	got, err = dispatcher.GetWorktreeByTask(d.Conn, "task-1")
+	if err != nil {
+		t.Fatalf("GetWorktreeByTask after clean: %v", err)
+	}
+	if got.CleanedAt == nil {
+		t.Error("expected CleanedAt to be set after MarkWorktreeCleaned")
+	}
+
+	active, err = dispatcher.ListActiveWorktrees(d.Conn)
+	if err != nil {
+		t.Fatalf("ListActiveWorktrees: %v", err)
+	}
+	if len(active) != 0 {
+		t.Errorf("active after clean: got %d, want 0", len(active))
+	}
+
+	if err := dispatcher.MarkWorktreeCleaned(d.Conn, "task-1"); err == nil {
+		t.Error("expected error on double MarkWorktreeCleaned")
+	}
+}
+
+func TestGetWorktreeByTask_NotFound(t *testing.T) {
+	d := testutil.NewTestDB(t)
+
+	got, err := dispatcher.GetWorktreeByTask(d.Conn, "nonexistent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Error("expected nil for nonexistent task")
 	}
 }

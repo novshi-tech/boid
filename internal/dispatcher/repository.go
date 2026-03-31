@@ -1,10 +1,12 @@
 package dispatcher
 
+import "github.com/novshi-tech/boid/internal/db"
+
 type JobRepository struct {
-	db DBTX
+	db db.DBTX
 }
 
-func NewJobRepository(db DBTX) *JobRepository {
+func NewJobRepository(db db.DBTX) *JobRepository {
 	return &JobRepository{db: db}
 }
 
@@ -25,10 +27,10 @@ func (r *JobRepository) UpdateJob(job *Job) error {
 }
 
 type WorktreeRepository struct {
-	db DBTX
+	db db.DBTX
 }
 
-func NewWorktreeRepository(db DBTX) *WorktreeRepository {
+func NewWorktreeRepository(db db.DBTX) *WorktreeRepository {
 	return &WorktreeRepository{db: db}
 }
 

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/db"
+	"github.com/novshi-tech/boid/internal/db/migrate"
 )
 
 func NewTestDB(t *testing.T) *db.DB {
@@ -12,7 +13,7 @@ func NewTestDB(t *testing.T) *db.DB {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := d.Migrate(); err != nil {
+	if err := migrate.Apply(d.Conn); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	t.Cleanup(func() { d.Close() })

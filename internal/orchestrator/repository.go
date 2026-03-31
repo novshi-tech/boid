@@ -1,10 +1,12 @@
 package orchestrator
 
+import "github.com/novshi-tech/boid/internal/db"
+
 type TaskRepository struct {
-	db DBTX
+	db db.DBTX
 }
 
-func NewTaskRepository(db DBTX) *TaskRepository {
+func NewTaskRepository(db db.DBTX) *TaskRepository {
 	return &TaskRepository{db: db}
 }
 
@@ -33,10 +35,10 @@ func (r *TaskRepository) ListActionsByTask(taskID string) ([]*Action, error) {
 }
 
 type ProjectRepository struct {
-	db DBTX
+	db db.DBTX
 }
 
-func NewProjectRepository(db DBTX) *ProjectRepository {
+func NewProjectRepository(db db.DBTX) *ProjectRepository {
 	return &ProjectRepository{db: db}
 }
 

@@ -6,13 +6,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/novshi-tech/boid/internal/db"
 )
 
 type jobScanner interface {
 	Scan(dest ...any) error
 }
 
-func CreateJob(dbtx DBTX, j *Job) error {
+func CreateJob(dbtx db.DBTX, j *Job) error {
 	if j.ID == "" {
 		j.ID = uuid.New().String()
 	}
@@ -37,14 +38,14 @@ func CreateJob(dbtx DBTX, j *Job) error {
 	return nil
 }
 
-func GetJob(dbtx DBTX, id string) (*Job, error) {
+func GetJob(dbtx db.DBTX, id string) (*Job, error) {
 	row := dbtx.QueryRow(
 		`SELECT id, task_id, project_id, handler_id, role, status, exit_code, output, created_at, updated_at FROM jobs WHERE id = ?`, id,
 	)
 	return scanJob(row)
 }
 
-func ListJobsByTask(dbtx DBTX, taskID string) ([]*Job, error) {
+func ListJobsByTask(dbtx db.DBTX, taskID string) ([]*Job, error) {
 	rows, err := dbtx.Query(
 		`SELECT id, task_id, project_id, handler_id, role, status, exit_code, output, created_at, updated_at FROM jobs WHERE task_id = ? ORDER BY created_at`, taskID,
 	)
@@ -64,7 +65,7 @@ func ListJobsByTask(dbtx DBTX, taskID string) ([]*Job, error) {
 	return jobs, rows.Err()
 }
 
-func UpdateJob(dbtx DBTX, j *Job) error {
+func UpdateJob(dbtx db.DBTX, j *Job) error {
 	j.UpdatedAt = time.Now().UTC()
 	_, err := dbtx.Exec(
 		`UPDATE jobs SET status = ?, exit_code = ?, output = ?, updated_at = ? WHERE id = ?`,

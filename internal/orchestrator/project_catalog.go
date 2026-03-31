@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/novshi-tech/boid/internal/db"
 )
 
 type projectScanner interface {
@@ -11,7 +13,7 @@ type projectScanner interface {
 }
 
 // CreateProject inserts a new project record.
-func CreateProject(dbtx DBTX, project *Project) error {
+func CreateProject(dbtx db.DBTX, project *Project) error {
 	now := time.Now().UTC()
 	project.CreatedAt = now
 	project.UpdatedAt = now
@@ -26,7 +28,7 @@ func CreateProject(dbtx DBTX, project *Project) error {
 }
 
 // GetProject retrieves a project by ID.
-func GetProject(dbtx DBTX, id string) (*Project, error) {
+func GetProject(dbtx db.DBTX, id string) (*Project, error) {
 	row := dbtx.QueryRow(
 		`SELECT id, work_dir, created_at, updated_at FROM projects WHERE id = ?`, id,
 	)
@@ -34,7 +36,7 @@ func GetProject(dbtx DBTX, id string) (*Project, error) {
 }
 
 // ListProjects returns all projects ordered by creation time.
-func ListProjects(dbtx DBTX) ([]*Project, error) {
+func ListProjects(dbtx db.DBTX) ([]*Project, error) {
 	rows, err := dbtx.Query(
 		`SELECT id, work_dir, created_at, updated_at FROM projects ORDER BY created_at`,
 	)
@@ -46,7 +48,7 @@ func ListProjects(dbtx DBTX) ([]*Project, error) {
 }
 
 // DeleteProject removes a project by ID.
-func DeleteProject(dbtx DBTX, id string) error {
+func DeleteProject(dbtx db.DBTX, id string) error {
 	res, err := dbtx.Exec(`DELETE FROM projects WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete project: %w", err)

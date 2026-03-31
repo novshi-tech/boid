@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/db"
+	"github.com/novshi-tech/boid/internal/db/migrate"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 )
 
@@ -13,7 +14,7 @@ func setupStore(t *testing.T) *dispatcher.SecretStore {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := d.Migrate(); err != nil {
+	if err := migrate.Apply(d.Conn); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	t.Cleanup(func() { d.Close() })
@@ -101,7 +102,7 @@ func TestStore_EncryptionIsReal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := d.Migrate(); err != nil {
+	if err := migrate.Apply(d.Conn); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	t.Cleanup(func() { d.Close() })
@@ -128,7 +129,7 @@ func TestStore_WrongKeyCannotDecrypt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := d.Migrate(); err != nil {
+	if err := migrate.Apply(d.Conn); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	t.Cleanup(func() { d.Close() })
