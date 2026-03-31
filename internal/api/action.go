@@ -109,17 +109,80 @@ func (h *ActionHandler) Apply(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 8. Evaluate hooks and dispatch
-	matched := h.Evaluator.Evaluate(newTask, meta.Hooks)
+	// 8. Dispatch hooks and gates asynchronously
 	resp := map[string]any{
-		"task":          newTask,
-		"action":        action,
-		"matched_hooks": len(matched),
+		"task":   newTask,
+		"action": action,
 	}
-	if h.Dispatcher != nil && len(matched) > 0 {
-		if err := h.Dispatcher.Dispatch(context.Background(), newTask, matched); err != nil {
-			resp["dispatch_error"] = err.Error()
-		}
+
+	if h.AdvancedDispatcher != nil {
+		behavior, _ := meta.TaskBehaviors[newTask.Behavior]
+		go h.runDispatchLoop(newTask, meta, &behavior, sm)
 	}
+
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// runDispatchLoop runs the dispatch→advance→re-dispatch loop asynchronously.
+// It persists payload and status changes after each cycle.
+func (h *ActionHandler) runDispatchLoop(task *model.Task, meta *model.ProjectMeta, behavior *model.TaskBehavior, sm *reducer.StateMachine) {
+	const maxCycles = 10
+	current := task
+
+	for cycle := 0; cycle < maxCycles; cycle++ {
+		result, err := h.AdvancedDispatcher.DispatchAndAdvance(
+			context.Background(), current, meta, behavior, sm,
+		)
+		if err != nil {
+			slog.Error("dispatch loop error", "task_id", current.ID, "cycle", cycle, "error", err)
+			return
+		}
+
+		// Persist merged payload
+		if len(result.FinalPayload) > 0 {
+			current.Payload = result.FinalPayload
+			if err := h.DB.InTx(func(tx *db.Tx) error {
+				return tx.UpdateTask(current)
+			}); err != nil {
+				slog.Error("persist payload failed", "task_id", current.ID, "error", err)
+				return
+			}
+		}
+
+		// If no auto-advance, stop
+		if result.NewStatus == "" {
+			return
+		}
+
+		// Apply the auto-advance
+		action := &model.Action{TaskID: current.ID, Type: "auto_advance"}
+		current.Status = result.NewStatus
+		if err := h.DB.InTx(func(tx *db.Tx) error {
+			if err := tx.UpdateTask(current); err != nil {
+				return err
+			}
+			return tx.CreateAction(action)
+		}); err != nil {
+			slog.Error("auto-advance persist failed", "task_id", current.ID, "error", err)
+			return
+		}
+
+		slog.Info("auto-advanced", "task_id", current.ID, "new_status", current.Status, "cycle", cycle)
+
+		// Cleanup worktree on terminal state
+		if h.WorktreeMgr != nil {
+			if err := h.WorktreeMgr.CleanupForTask(current.ID, current.Status); err != nil {
+				slog.Warn("worktree cleanup failed", "task_id", current.ID, "error", err)
+			}
+		}
+
+		// If terminal state, stop
+		if current.Status == model.TaskStatusDone || current.Status == model.TaskStatusAborted {
+			return
+		}
+
+		// Continue loop: dispatch for the new state
+	}
+
+	slog.Warn("dispatch loop max cycles reached", "task_id", current.ID, "max", maxCycles)
 }
