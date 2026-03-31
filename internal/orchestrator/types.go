@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/project"
 )
 
 // JobCompletion represents the result of a completed job.
@@ -16,12 +16,12 @@ type JobCompletion struct {
 
 // HookExecutor launches a hook and returns the job ID.
 type HookExecutor interface {
-	ExecuteHook(ctx context.Context, event *model.HookFireEvent) (jobID string, err error)
+	ExecuteHook(ctx context.Context, event *project.HookFireEvent) (jobID string, err error)
 }
 
 // GateExecutor launches a gate and returns the job ID.
 type GateExecutor interface {
-	ExecuteGate(ctx context.Context, event *model.GateFireEvent) (jobID string, err error)
+	ExecuteGate(ctx context.Context, event *project.GateFireEvent) (jobID string, err error)
 }
 
 // JobWaiter waits for a job to complete.
@@ -31,8 +31,8 @@ type JobWaiter interface {
 
 // HandlerResult is the result of a single hook or gate execution.
 type HandlerResult struct {
-	ID           string          // hook or gate ID
-	Role         model.Role
+	ID           string // hook or gate ID
+	Role         project.Role
 	ExitCode     int
 	PayloadPatch json.RawMessage
 }
@@ -41,5 +41,5 @@ type HandlerResult struct {
 type DispatchResult struct {
 	Results      []HandlerResult
 	FinalPayload json.RawMessage
-	NewStatus    model.TaskStatus // set if orchestrator advanced the state
+	NewStatus    TaskStatus // set if orchestrator advanced the state
 }

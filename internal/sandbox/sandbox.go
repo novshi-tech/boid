@@ -9,14 +9,14 @@ type Sandbox interface {
 
 // SandboxConfig holds configuration for sandbox setup.
 type SandboxConfig struct {
-	ProjectDir     string
-	WorkspaceDirs  map[string]string // project-id -> dir (readonly mounts)
-	HooksDir       string
-	TaskFile       string
-	HostCommands   []string
-	Bindings       []string
-	Env            map[string]string
-	BoidBinary     string
-	BrokerSocket   string
-	ServerSocket   string
+	ProjectDir    string
+	WorkspaceDirs map[string]string // project-id -> dir (readonly mounts)
+	HooksDir      string
+	TaskFile      string
+	HostCommands  []string
+	Bindings      []string
+	Env           map[string]string
+	BoidBinary    string
+	BrokerSocket  string
+	ServerSocket  string
 }

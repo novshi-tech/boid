@@ -6,7 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/db"
-	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 type TaskHandler struct {
@@ -42,7 +42,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t := &model.Task{
+	t := &orchestrator.Task{
 		ProjectID:    req.ProjectID,
 		Title:        req.Title,
 		Description:  req.Description,
@@ -52,7 +52,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Payload:      req.Payload,
 	}
 
-	if err := h.DB.CreateTask(t); err != nil {
+	if err := orchestrator.CreateTask(h.DB.Conn, t); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -61,25 +61,25 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
-	filter := db.TaskFilter{
+	filter := orchestrator.TaskFilter{
 		Status:    r.URL.Query().Get("status"),
 		ProjectID: r.URL.Query().Get("project_id"),
 	}
 
-	tasks, err := h.DB.ListTasks(filter)
+	tasks, err := orchestrator.ListTasks(h.DB.Conn, filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if tasks == nil {
-		tasks = []*model.Task{}
+		tasks = []*orchestrator.Task{}
 	}
 	writeJSON(w, http.StatusOK, tasks)
 }
 
 func (h *TaskHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	t, err := h.DB.GetTask(id)
+	t, err := orchestrator.GetTask(h.DB.Conn, id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return

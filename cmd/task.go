@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"github.com/novshi-tech/boid/internal/client"
-	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
 )
 
@@ -52,7 +52,7 @@ func runTaskList(cmd *cobra.Command, args []string) error {
 		path += "?status=" + status
 	}
 
-	var tasks []model.Task
+	var tasks []orchestrator.Task
 	if err := c.Do("GET", path, nil, &tasks); err != nil {
 		return err
 	}
@@ -84,7 +84,7 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 		"behavior":   behavior,
 	}
 
-	var task model.Task
+	var task orchestrator.Task
 	if err := c.Do("POST", "/api/tasks", req, &task); err != nil {
 		return fmt.Errorf("create task: %w", err)
 	}
@@ -96,7 +96,7 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 func runTaskShow(cmd *cobra.Command, args []string) error {
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
-	var task model.Task
+	var task orchestrator.Task
 	if err := c.Do("GET", "/api/tasks/"+args[0], nil, &task); err != nil {
 		return fmt.Errorf("get task: %w", err)
 	}

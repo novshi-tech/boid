@@ -1,6 +1,14 @@
 package worktree
 
-import "github.com/novshi-tech/boid/internal/model"
+import "time"
 
-// Worktree is a type alias for model.Worktree.
-type Worktree = model.Worktree
+type Worktree struct {
+	ID         string     `json:"id"`
+	TaskID     string     `json:"task_id"`
+	ProjectID  string     `json:"project_id"`
+	Path       string     `json:"path"`
+	Branch     string     `json:"branch"`
+	BaseBranch string     `json:"base_branch"`
+	CreatedAt  time.Time  `json:"created_at"`
+	CleanedAt  *time.Time `json:"cleaned_at,omitempty"`
+}

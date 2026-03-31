@@ -8,7 +8,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
-	"github.com/novshi-tech/boid/internal/model"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/internal/worktree"
@@ -38,20 +37,20 @@ func (h *JobHandler) List(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "task_id query parameter required")
 		return
 	}
-	jobs, err := h.DB.ListJobsByTask(taskID)
+	jobs, err := dispatcher.ListJobsByTask(h.DB.Conn, taskID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if jobs == nil {
-		jobs = []*model.Job{}
+		jobs = []*dispatcher.Job{}
 	}
 	writeJSON(w, http.StatusOK, jobs)
 }
 
 func (h *JobHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	j, err := h.DB.GetJob(id)
+	j, err := dispatcher.GetJob(h.DB.Conn, id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -73,7 +72,7 @@ func (h *JobHandler) Done(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	j, err := h.DB.GetJob(id)
+	j, err := dispatcher.GetJob(h.DB.Conn, id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -81,9 +80,9 @@ func (h *JobHandler) Done(w http.ResponseWriter, r *http.Request) {
 
 	// Update job status
 	if req.ExitCode == 0 {
-		j.Status = model.JobStatusCompleted
+		j.Status = dispatcher.JobStatusCompleted
 	} else {
-		j.Status = model.JobStatusFailed
+		j.Status = dispatcher.JobStatusFailed
 	}
 	j.ExitCode = req.ExitCode
 	j.Output = req.Output
@@ -94,7 +93,7 @@ func (h *JobHandler) Done(w http.ResponseWriter, r *http.Request) {
 		actionType = "job_failed"
 	}
 
-	task, err := h.DB.GetTask(j.TaskID)
+	task, err := orchestrator.GetTask(h.DB.Conn, j.TaskID)
 	if err != nil {
 		slog.Error("job done: task not found", "task_id", j.TaskID)
 		writeError(w, http.StatusInternalServerError, "task not found: "+err.Error())
@@ -115,12 +114,12 @@ func (h *JobHandler) Done(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	action := &model.Action{TaskID: task.ID, Type: actionType}
+	action := &orchestrator.Action{TaskID: task.ID, Type: actionType}
 	newTask, err := sm.Apply(task, action)
 	if err != nil {
 		slog.Warn("job done: transition not applicable", "action", actionType, "error", err)
 		// Job update still needs to persist even if transition fails
-		if err := h.DB.UpdateJob(j); err != nil {
+		if err := dispatcher.UpdateJob(h.DB.Conn, j); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -129,14 +128,14 @@ func (h *JobHandler) Done(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Persist job update + task transition + action in one transaction
-	if err := h.DB.InTx(func(tx *db.Tx) error {
-		if err := tx.UpdateJob(j); err != nil {
+	if err := db.InTxDB(h.DB.Conn, func(tx db.DBTX) error {
+		if err := dispatcher.UpdateJob(tx, j); err != nil {
 			return err
 		}
-		if err := tx.UpdateTask(newTask); err != nil {
+		if err := orchestrator.UpdateTask(tx, newTask); err != nil {
 			return err
 		}
-		return tx.CreateAction(action)
+		return orchestrator.CreateAction(tx, action)
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

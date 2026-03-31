@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-
 )
 
 // TokenContext carries the job/task/project context associated with a broker token.

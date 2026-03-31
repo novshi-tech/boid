@@ -7,14 +7,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/novshi-tech/boid/internal/db"
-	"github.com/novshi-tech/boid/internal/model"
 )
 
 type worktreeScanner interface {
 	Scan(dest ...any) error
 }
 
-func CreateWorktree(dbtx db.DBTX, w *model.Worktree) error {
+func CreateWorktree(dbtx db.DBTX, w *Worktree) error {
 	if w.ID == "" {
 		w.ID = uuid.New().String()
 	}
@@ -31,7 +30,7 @@ func CreateWorktree(dbtx db.DBTX, w *model.Worktree) error {
 	return nil
 }
 
-func GetWorktreeByTask(dbtx db.DBTX, taskID string) (*model.Worktree, error) {
+func GetWorktreeByTask(dbtx db.DBTX, taskID string) (*Worktree, error) {
 	row := dbtx.QueryRow(
 		`SELECT id, task_id, project_id, path, branch, base_branch, created_at, cleaned_at
 		 FROM worktrees WHERE task_id = ?`, taskID,
@@ -55,7 +54,7 @@ func MarkWorktreeCleaned(dbtx db.DBTX, taskID string) error {
 	return nil
 }
 
-func ListActiveWorktrees(dbtx db.DBTX) ([]*model.Worktree, error) {
+func ListActiveWorktrees(dbtx db.DBTX) ([]*Worktree, error) {
 	rows, err := dbtx.Query(
 		`SELECT id, task_id, project_id, path, branch, base_branch, created_at, cleaned_at
 		 FROM worktrees WHERE cleaned_at IS NULL ORDER BY created_at`,
@@ -65,7 +64,7 @@ func ListActiveWorktrees(dbtx db.DBTX) ([]*model.Worktree, error) {
 	}
 	defer rows.Close()
 
-	var wts []*model.Worktree
+	var wts []*Worktree
 	for rows.Next() {
 		w, err := scanWorktree(rows)
 		if err != nil {
@@ -76,8 +75,8 @@ func ListActiveWorktrees(dbtx db.DBTX) ([]*model.Worktree, error) {
 	return wts, rows.Err()
 }
 
-func scanWorktree(s worktreeScanner) (*model.Worktree, error) {
-	var w model.Worktree
+func scanWorktree(s worktreeScanner) (*Worktree, error) {
+	var w Worktree
 	var cleanedAt sql.NullTime
 	if err := s.Scan(&w.ID, &w.TaskID, &w.ProjectID, &w.Path, &w.Branch, &w.BaseBranch, &w.CreatedAt, &cleanedAt); err != nil {
 		if err == sql.ErrNoRows {

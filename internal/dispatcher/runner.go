@@ -13,7 +13,8 @@ import (
 	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
 	"github.com/novshi-tech/boid/internal/hostcmd"
 	"github.com/novshi-tech/boid/internal/kit"
-	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/secret"
 	"github.com/novshi-tech/boid/internal/worktree"
@@ -31,7 +32,7 @@ type Runner struct {
 	SecretStore  *secret.Store     // secret store for resolving secret: env values
 	WorktreeMgr  *worktree.Manager // optional worktree manager
 	tokenMu      sync.Mutex
-	jobTokens    map[string]string            // job ID -> broker token
+	jobTokens    map[string]string // job ID -> broker token
 	waiterMu     sync.Mutex
 	jobWaiters   map[string]chan JobCompletionResult // job ID -> completion channel
 }
@@ -48,7 +49,7 @@ func (r *Runner) collectWorkspaceDirs(workspaceID, selfID string) map[string]str
 	if workspaceID == "" {
 		return nil
 	}
-	projects, err := r.DB.ListProjects()
+	projects, err := project.ListProjects(r.DB.Conn)
 	if err != nil {
 		slog.Warn("list projects for workspace", "error", err)
 		return nil
@@ -71,7 +72,7 @@ func (r *Runner) collectWorkspaceDirs(workspaceID, selfID string) map[string]str
 }
 
 // Execute creates a job and runs the hook script in a sandboxed tmux window.
-func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error {
+func (r *Runner) Execute(ctx context.Context, event *project.HookFireEvent) error {
 	slog.Info("executing hook", "hook_id", event.Hook.ID, "task_id", event.TaskID)
 
 	hookFilename := filepath.Base(event.Hook.ScriptPath)
@@ -84,19 +85,19 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 		return fmt.Errorf("project %q: meta not loaded", event.ProjectID)
 	}
 
-	proj, err := r.DB.GetProject(event.ProjectID)
+	proj, err := project.GetProject(r.DB.Conn, event.ProjectID)
 	if err != nil {
 		return fmt.Errorf("get project: %w", err)
 	}
 
-	j := &model.Job{
+	j := &Job{
 		TaskID:    event.TaskID,
 		ProjectID: event.ProjectID,
 		HandlerID: event.Hook.ID,
-		Role:      string(model.RoleHook),
+		Role:      string(project.RoleHook),
 	}
 
-	if err := r.DB.CreateJob(j); err != nil {
+	if err := CreateJob(r.DB.Conn, j); err != nil {
 		return fmt.Errorf("create job: %w", err)
 	}
 
@@ -126,12 +127,12 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 			JobID:     j.ID,
 			TaskID:    event.TaskID,
 			ProjectID: event.ProjectID,
-			Role:      string(model.RoleHook),
+			Role:      string(project.RoleHook),
 		}
 		if r.SecretStore != nil {
-			brokerToken = r.Broker.RegisterWithSecrets(meta.HostCommands, tokenCtx, r.SecretStore.Get)
+			brokerToken = r.Broker.RegisterWithSecrets(hostCommandDefs(meta.HostCommands), tokenCtx, r.SecretStore.Get)
 		} else {
-			brokerToken = r.Broker.Register(meta.HostCommands, tokenCtx)
+			brokerToken = r.Broker.Register(hostCommandDefs(meta.HostCommands), tokenCtx)
 		}
 		brokerSocket = r.Broker.SocketPath
 		r.trackToken(j.ID, brokerToken)
@@ -192,8 +193,8 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 }
 
 // resolveWorktree checks if the task's behavior enables worktree isolation.
-func (r *Runner) resolveWorktree(event *model.HookFireEvent, meta *model.ProjectMeta, proj *model.Project) (string, error) {
-	task, err := r.DB.GetTask(event.TaskID)
+func (r *Runner) resolveWorktree(event *project.HookFireEvent, meta *project.ProjectMeta, proj *project.Project) (string, error) {
+	task, err := orchestrator.GetTask(r.DB.Conn, event.TaskID)
 	if err != nil {
 		return "", fmt.Errorf("get task: %w", err)
 	}
@@ -224,12 +225,23 @@ func (r *Runner) resolveWorktree(event *model.HookFireEvent, meta *model.Project
 	return w.Path, nil
 }
 
-func hostCommandNames(cmds map[string]hostcmd.CommandDef) []string {
+func hostCommandNames(cmds map[string]project.CommandDef) []string {
 	names := make([]string, 0, len(cmds))
 	for name := range cmds {
 		names = append(names, name)
 	}
 	return names
+}
+
+func hostCommandDefs(cmds map[string]project.CommandDef) map[string]hostcmd.CommandDef {
+	if len(cmds) == 0 {
+		return nil
+	}
+	out := make(map[string]hostcmd.CommandDef, len(cmds))
+	for name, def := range cmds {
+		out[name] = hostcmd.CommandDef(def)
+	}
+	return out
 }
 
 func (r *Runner) trackToken(jobID, token string) {
@@ -268,7 +280,7 @@ func (r *Runner) CompleteJob(jobID string, result JobCompletionResult) {
 }
 
 // ExecuteHook implements orchestrator.HookExecutor.
-func (r *Runner) ExecuteHook(ctx context.Context, event *model.HookFireEvent) (string, error) {
+func (r *Runner) ExecuteHook(ctx context.Context, event *project.HookFireEvent) (string, error) {
 	slog.Info("executing hook (advanced)", "hook_id", event.Hook.ID, "task_id", event.TaskID)
 
 	hookFilename := filepath.Base(event.Hook.ScriptPath)
@@ -280,23 +292,23 @@ func (r *Runner) ExecuteHook(ctx context.Context, event *model.HookFireEvent) (s
 	if !ok {
 		return "", fmt.Errorf("project %q: meta not loaded", event.ProjectID)
 	}
-	proj, err := r.DB.GetProject(event.ProjectID)
+	proj, err := project.GetProject(r.DB.Conn, event.ProjectID)
 	if err != nil {
 		return "", fmt.Errorf("get project: %w", err)
 	}
 
-	task, err := r.DB.GetTask(event.TaskID)
+	task, err := orchestrator.GetTask(r.DB.Conn, event.TaskID)
 	if err != nil {
 		return "", fmt.Errorf("get task: %w", err)
 	}
 
-	j := &model.Job{
+	j := &Job{
 		TaskID:    event.TaskID,
 		ProjectID: event.ProjectID,
 		HandlerID: event.Hook.ID,
-		Role:      string(model.RoleHook),
+		Role:      string(project.RoleHook),
 	}
-	if err := r.DB.CreateJob(j); err != nil {
+	if err := CreateJob(r.DB.Conn, j); err != nil {
 		return "", fmt.Errorf("create job: %w", err)
 	}
 
@@ -323,7 +335,7 @@ func (r *Runner) ExecuteHook(ctx context.Context, event *model.HookFireEvent) (s
 	if r.Broker != nil {
 		tokenCtx := hostcmd.TokenContext{
 			JobID: j.ID, TaskID: event.TaskID, ProjectID: event.ProjectID,
-			Role: string(model.RoleHook),
+			Role: string(project.RoleHook),
 		}
 		r.Broker.Register(nil, tokenCtx) // no project commands for hooks
 		brokerToken = r.Broker.Register(nil, tokenCtx)
@@ -333,8 +345,8 @@ func (r *Runner) ExecuteHook(ctx context.Context, event *model.HookFireEvent) (s
 
 	behavior, _ := meta.TaskBehaviors[task.Behavior]
 	readonly := behavior.Readonly ||
-		task.Status == model.TaskStatusVerifying ||
-		task.Status == model.TaskStatusInReview
+		task.Status == orchestrator.TaskStatusVerifying ||
+		task.Status == orchestrator.TaskStatusInReview
 
 	homeDir, _ := os.UserHomeDir()
 	var worktreeDir string
@@ -375,7 +387,7 @@ func (r *Runner) ExecuteHook(ctx context.Context, event *model.HookFireEvent) (s
 }
 
 // ExecuteGate implements orchestrator.GateExecutor.
-func (r *Runner) ExecuteGate(ctx context.Context, event *model.GateFireEvent) (string, error) {
+func (r *Runner) ExecuteGate(ctx context.Context, event *project.GateFireEvent) (string, error) {
 	slog.Info("executing gate", "gate_id", event.Gate.ID, "task_id", event.TaskID)
 
 	gateFilename := filepath.Base(event.Gate.ScriptPath)
@@ -387,23 +399,23 @@ func (r *Runner) ExecuteGate(ctx context.Context, event *model.GateFireEvent) (s
 	if !ok {
 		return "", fmt.Errorf("project %q: meta not loaded", event.ProjectID)
 	}
-	proj, err := r.DB.GetProject(event.ProjectID)
+	proj, err := project.GetProject(r.DB.Conn, event.ProjectID)
 	if err != nil {
 		return "", fmt.Errorf("get project: %w", err)
 	}
 
-	task, err := r.DB.GetTask(event.TaskID)
+	task, err := orchestrator.GetTask(r.DB.Conn, event.TaskID)
 	if err != nil {
 		return "", fmt.Errorf("get task: %w", err)
 	}
 
-	j := &model.Job{
+	j := &Job{
 		TaskID:    event.TaskID,
 		ProjectID: event.ProjectID,
 		HandlerID: event.Gate.ID,
-		Role:      string(model.RoleGate),
+		Role:      string(project.RoleGate),
 	}
-	if err := r.DB.CreateJob(j); err != nil {
+	if err := CreateJob(r.DB.Conn, j); err != nil {
 		return "", fmt.Errorf("create job: %w", err)
 	}
 
@@ -416,12 +428,12 @@ func (r *Runner) ExecuteGate(ctx context.Context, event *model.GateFireEvent) (s
 	if r.Broker != nil {
 		tokenCtx := hostcmd.TokenContext{
 			JobID: j.ID, TaskID: event.TaskID, ProjectID: event.ProjectID,
-			Role: string(model.RoleGate),
+			Role: string(project.RoleGate),
 		}
 		if r.SecretStore != nil {
-			brokerToken = r.Broker.RegisterWithSecrets(meta.HostCommands, tokenCtx, r.SecretStore.Get)
+			brokerToken = r.Broker.RegisterWithSecrets(hostCommandDefs(meta.HostCommands), tokenCtx, r.SecretStore.Get)
 		} else {
-			brokerToken = r.Broker.Register(meta.HostCommands, tokenCtx)
+			brokerToken = r.Broker.Register(hostCommandDefs(meta.HostCommands), tokenCtx)
 		}
 		brokerSocket = r.Broker.SocketPath
 		r.trackToken(j.ID, brokerToken)

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/testutil"
 )
 
@@ -50,7 +50,7 @@ func TestProjectAPI_CreateAndGet(t *testing.T) {
 
 	// Create project
 	reqBody := map[string]string{"work_dir": dir}
-	var created model.Project
+	var created project.Project
 	if err := ts.Client.Do("POST", "/api/projects", reqBody, &created); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestProjectAPI_CreateAndGet(t *testing.T) {
 	}
 
 	// Get project
-	var got model.Project
+	var got project.Project
 	if err := ts.Client.Do("GET", "/api/projects/test-project", nil, &got); err != nil {
 		t.Fatalf("get project: %v", err)
 	}
@@ -79,12 +79,12 @@ func TestProjectAPI_List(t *testing.T) {
 	dir := setupTestProject(t)
 
 	reqBody := map[string]string{"work_dir": dir}
-	var created model.Project
+	var created project.Project
 	if err := ts.Client.Do("POST", "/api/projects", reqBody, &created); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
-	var projects []*model.Project
+	var projects []*project.Project
 	if err := ts.Client.Do("GET", "/api/projects", nil, &projects); err != nil {
 		t.Fatalf("list projects: %v", err)
 	}
@@ -101,13 +101,13 @@ func TestProjectAPI_ListByWorkspace(t *testing.T) {
 	dir := setupTestProject(t)
 
 	reqBody := map[string]string{"work_dir": dir}
-	var created model.Project
+	var created project.Project
 	if err := ts.Client.Do("POST", "/api/projects", reqBody, &created); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
 	// Filter by correct workspace_id
-	var matched []*model.Project
+	var matched []*project.Project
 	if err := ts.Client.Do("GET", "/api/projects?workspace_id=ws-1", nil, &matched); err != nil {
 		t.Fatalf("list by workspace: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestProjectAPI_ListByWorkspace(t *testing.T) {
 	}
 
 	// Filter by wrong workspace_id
-	var empty []*model.Project
+	var empty []*project.Project
 	if err := ts.Client.Do("GET", "/api/projects?workspace_id=ws-999", nil, &empty); err != nil {
 		t.Fatalf("list by workspace: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestProjectAPI_Delete(t *testing.T) {
 	dir := setupTestProject(t)
 
 	reqBody := map[string]string{"work_dir": dir}
-	var created model.Project
+	var created project.Project
 	if err := ts.Client.Do("POST", "/api/projects", reqBody, &created); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestProjectAPI_Delete(t *testing.T) {
 	}
 
 	// Verify GET returns error
-	var got model.Project
+	var got project.Project
 	if err := ts.Client.Do("GET", "/api/projects/test-project", nil, &got); err == nil {
 		t.Error("expected error on GET after DELETE, got nil")
 	}
@@ -154,7 +154,7 @@ func TestProjectAPI_Delete(t *testing.T) {
 func TestProjectAPI_GetNotFound(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
-	var got model.Project
+	var got project.Project
 	if err := ts.Client.Do("GET", "/api/projects/nonexistent", nil, &got); err == nil {
 		t.Error("expected error for non-existent project, got nil")
 	}

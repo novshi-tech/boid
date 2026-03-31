@@ -13,8 +13,8 @@ const (
 
 // MountEntry describes a single mount operation inside the sandbox.
 type MountEntry struct {
-	Source     string    // host path (empty for tmpfs)
-	Target     string    // absolute path inside sandbox
+	Source     string // host path (empty for tmpfs)
+	Target     string // absolute path inside sandbox
 	Type       MountType
 	ReadOnly   bool
 	Slave      bool     // mount --make-rslave after mounting

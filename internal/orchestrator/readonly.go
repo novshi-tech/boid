@@ -1,12 +1,12 @@
 package orchestrator
 
-import "github.com/novshi-tech/boid/internal/model"
+import "github.com/novshi-tech/boid/internal/project"
 
 // IsReadonly returns true if the task's working directory should be mounted read-only.
 // This is the case when the behavior itself is readonly (e.g. plan tasks),
 // or when the task status is verifying or in_review.
-func IsReadonly(behavior *model.TaskBehavior, status model.TaskStatus) bool {
+func IsReadonly(behavior *project.TaskBehavior, status TaskStatus) bool {
 	return behavior.Readonly ||
-		status == model.TaskStatusVerifying ||
-		status == model.TaskStatusInReview
+		status == TaskStatusVerifying ||
+		status == TaskStatusInReview
 }

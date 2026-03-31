@@ -32,10 +32,10 @@ type Config struct {
 	SocketPath     string
 	HTTPAddr       string
 	TmuxSession    string
-	KitsDir        string              // base dir for installed kit repos
-	KeyFilePath    string              // path to secret encryption key file
-	AllowedDomains []string            // proxy allowed domains
-	Tmux           dtmux.TmuxManager   // nil uses RealTmux
+	KitsDir        string            // base dir for installed kit repos
+	KeyFilePath    string            // path to secret encryption key file
+	AllowedDomains []string          // proxy allowed domains
+	Tmux           dtmux.TmuxManager // nil uses RealTmux
 }
 
 type Server struct {
@@ -70,7 +70,7 @@ func New(cfg Config) (*Server, error) {
 	store := project.NewStore(registry)
 
 	// Load meta for all registered projects
-	projects, err := d.ListProjects()
+	projects, err := project.ListProjects(d.Conn)
 	if err != nil {
 		d.Close()
 		return nil, fmt.Errorf("list projects: %w", err)

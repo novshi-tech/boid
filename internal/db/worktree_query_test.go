@@ -3,7 +3,7 @@ package db_test
 import (
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/worktree"
 	"github.com/novshi-tech/boid/testutil"
 )
 
@@ -14,7 +14,7 @@ func TestWorktreeCRUD(t *testing.T) {
 	d.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-1', '/tmp/proj')`)
 	d.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-1', 'proj-1', 'test', 'dev')`)
 
-	w := &model.Worktree{
+	w := &worktree.Worktree{
 		TaskID:     "task-1",
 		ProjectID:  "proj-1",
 		Path:       "/home/user/.local/share/boid/worktrees/proj-1/task-1ab",
@@ -23,7 +23,7 @@ func TestWorktreeCRUD(t *testing.T) {
 	}
 
 	// Create
-	if err := d.CreateWorktree(w); err != nil {
+	if err := worktree.CreateWorktree(d.Conn, w); err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
 	if w.ID == "" {
@@ -34,7 +34,7 @@ func TestWorktreeCRUD(t *testing.T) {
 	}
 
 	// Get by task
-	got, err := d.GetWorktreeByTask("task-1")
+	got, err := worktree.GetWorktreeByTask(d.Conn, "task-1")
 	if err != nil {
 		t.Fatalf("GetWorktreeByTask: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestWorktreeCRUD(t *testing.T) {
 	}
 
 	// List active
-	active, err := d.ListActiveWorktrees()
+	active, err := worktree.ListActiveWorktrees(d.Conn)
 	if err != nil {
 		t.Fatalf("ListActiveWorktrees: %v", err)
 	}
@@ -61,11 +61,11 @@ func TestWorktreeCRUD(t *testing.T) {
 	}
 
 	// Mark cleaned
-	if err := d.MarkWorktreeCleaned("task-1"); err != nil {
+	if err := worktree.MarkWorktreeCleaned(d.Conn, "task-1"); err != nil {
 		t.Fatalf("MarkWorktreeCleaned: %v", err)
 	}
 
-	got, err = d.GetWorktreeByTask("task-1")
+	got, err = worktree.GetWorktreeByTask(d.Conn, "task-1")
 	if err != nil {
 		t.Fatalf("GetWorktreeByTask after clean: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestWorktreeCRUD(t *testing.T) {
 	}
 
 	// List active should be empty now
-	active, err = d.ListActiveWorktrees()
+	active, err = worktree.ListActiveWorktrees(d.Conn)
 	if err != nil {
 		t.Fatalf("ListActiveWorktrees: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestWorktreeCRUD(t *testing.T) {
 	}
 
 	// Double clean should error
-	if err := d.MarkWorktreeCleaned("task-1"); err == nil {
+	if err := worktree.MarkWorktreeCleaned(d.Conn, "task-1"); err == nil {
 		t.Error("expected error on double MarkWorktreeCleaned")
 	}
 }
@@ -91,7 +91,7 @@ func TestWorktreeCRUD(t *testing.T) {
 func TestGetWorktreeByTask_NotFound(t *testing.T) {
 	d := testutil.NewTestDB(t)
 
-	got, err := d.GetWorktreeByTask("nonexistent")
+	got, err := worktree.GetWorktreeByTask(d.Conn, "nonexistent")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -99,4 +99,3 @@ func TestGetWorktreeByTask_NotFound(t *testing.T) {
 		t.Error("expected nil for nonexistent task")
 	}
 }
-

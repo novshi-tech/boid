@@ -7,14 +7,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/novshi-tech/boid/internal/db"
-	"github.com/novshi-tech/boid/internal/model"
 )
 
 type jobScanner interface {
 	Scan(dest ...any) error
 }
 
-func CreateJob(dbtx db.DBTX, j *model.Job) error {
+func CreateJob(dbtx db.DBTX, j *Job) error {
 	if j.ID == "" {
 		j.ID = uuid.New().String()
 	}
@@ -22,7 +21,7 @@ func CreateJob(dbtx db.DBTX, j *model.Job) error {
 	j.CreatedAt = now
 	j.UpdatedAt = now
 	if j.Status == "" {
-		j.Status = model.JobStatusRunning
+		j.Status = JobStatusRunning
 	}
 	if j.Role == "" {
 		j.Role = "hook"
@@ -39,14 +38,14 @@ func CreateJob(dbtx db.DBTX, j *model.Job) error {
 	return nil
 }
 
-func GetJob(dbtx db.DBTX, id string) (*model.Job, error) {
+func GetJob(dbtx db.DBTX, id string) (*Job, error) {
 	row := dbtx.QueryRow(
 		`SELECT id, task_id, project_id, handler_id, role, status, exit_code, output, created_at, updated_at FROM jobs WHERE id = ?`, id,
 	)
 	return scanJob(row)
 }
 
-func ListJobsByTask(dbtx db.DBTX, taskID string) ([]*model.Job, error) {
+func ListJobsByTask(dbtx db.DBTX, taskID string) ([]*Job, error) {
 	rows, err := dbtx.Query(
 		`SELECT id, task_id, project_id, handler_id, role, status, exit_code, output, created_at, updated_at FROM jobs WHERE task_id = ? ORDER BY created_at`, taskID,
 	)
@@ -55,7 +54,7 @@ func ListJobsByTask(dbtx db.DBTX, taskID string) ([]*model.Job, error) {
 	}
 	defer rows.Close()
 
-	var jobs []*model.Job
+	var jobs []*Job
 	for rows.Next() {
 		j, err := scanJob(rows)
 		if err != nil {
@@ -66,7 +65,7 @@ func ListJobsByTask(dbtx db.DBTX, taskID string) ([]*model.Job, error) {
 	return jobs, rows.Err()
 }
 
-func UpdateJob(dbtx db.DBTX, j *model.Job) error {
+func UpdateJob(dbtx db.DBTX, j *Job) error {
 	j.UpdatedAt = time.Now().UTC()
 	_, err := dbtx.Exec(
 		`UPDATE jobs SET status = ?, exit_code = ?, output = ?, updated_at = ? WHERE id = ?`,
@@ -75,8 +74,8 @@ func UpdateJob(dbtx db.DBTX, j *model.Job) error {
 	return err
 }
 
-func scanJob(s jobScanner) (*model.Job, error) {
-	var j model.Job
+func scanJob(s jobScanner) (*Job, error) {
+	var j Job
 	var exitCode sql.NullInt64
 	if err := s.Scan(&j.ID, &j.TaskID, &j.ProjectID, &j.HandlerID, &j.Role, &j.Status, &exitCode, &j.Output, &j.CreatedAt, &j.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {

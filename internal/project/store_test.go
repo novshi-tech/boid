@@ -5,14 +5,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/model"
 	"github.com/novshi-tech/boid/internal/project"
 )
 
 func TestStore_SetGet(t *testing.T) {
 	s := project.NewStore(nil)
 
-	meta := &model.ProjectMeta{
+	meta := &project.ProjectMeta{
 		ID:   "proj-1",
 		Name: "Test",
 	}
@@ -42,7 +41,7 @@ func TestStore_Get_NotFound(t *testing.T) {
 func TestStore_Remove(t *testing.T) {
 	s := project.NewStore(nil)
 
-	s.Set("proj-1", &model.ProjectMeta{ID: "proj-1", Name: "Test"})
+	s.Set("proj-1", &project.ProjectMeta{ID: "proj-1", Name: "Test"})
 	s.Remove("proj-1")
 
 	_, ok := s.Get("proj-1")
@@ -112,7 +111,7 @@ func TestStore_LoadAll(t *testing.T) {
 	// Create one invalid project directory (no project.yaml)
 	dir3 := t.TempDir()
 
-	projects := []*model.Project{
+	projects := []*project.Project{
 		{ID: "proj-a", WorkDir: dir1},
 		{ID: "proj-b", WorkDir: dir2},
 		{ID: "proj-c", WorkDir: dir3},

@@ -18,7 +18,3 @@ func NewTestDB(t *testing.T) *db.DB {
 	t.Cleanup(func() { d.Close() })
 	return d
 }
-
-func EmptyTaskFilter() db.TaskFilter {
-	return db.TaskFilter{}
-}

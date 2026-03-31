@@ -5,6 +5,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/db"
+	"github.com/novshi-tech/boid/internal/dispatcher"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/web/templates"
 )
@@ -24,7 +26,7 @@ func (h *WebHandler) Routes() chi.Router {
 
 func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 	filter := r.URL.Query().Get("status")
-	tasks, err := h.DB.ListTasks(db.TaskFilter{Status: filter})
+	tasks, err := orchestrator.ListTasks(h.DB.Conn, orchestrator.TaskFilter{Status: filter})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -35,21 +37,21 @@ func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 
 func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	task, err := h.DB.GetTask(id)
+	task, err := orchestrator.GetTask(h.DB.Conn, id)
 	if err != nil {
 		http.Error(w, "Task not found", http.StatusNotFound)
 		return
 	}
 
-	actions, _ := h.DB.ListActionsByTask(task.ID)
-	jobs, _ := h.DB.ListJobsByTask(task.ID)
+	actions, _ := orchestrator.ListActionsByTask(h.DB.Conn, task.ID)
+	jobs, _ := dispatcher.ListJobsByTask(h.DB.Conn, task.ID)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	templates.TaskDetail(task, actions, jobs).Render(r.Context(), w)
 }
 
 func (h *WebHandler) ProjectList(w http.ResponseWriter, r *http.Request) {
-	projects, err := h.DB.ListProjects()
+	projects, err := project.ListProjects(h.DB.Conn)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -69,11 +69,11 @@ func defaultKitsDir() string {
 
 func runStart(cmd *cobra.Command, args []string) error {
 	cfg := server.Config{
-		DBPath:      defaultDBPath(),
-		SocketPath:  client.DefaultSocketPath(),
-		HTTPAddr:    ":8080",
-		TmuxSession: "boid",
-		KitsDir:     defaultKitsDir(),
+		DBPath:         defaultDBPath(),
+		SocketPath:     client.DefaultSocketPath(),
+		HTTPAddr:       ":8080",
+		TmuxSession:    "boid",
+		KitsDir:        defaultKitsDir(),
 		AllowedDomains: defaultAllowedDomains(),
 	}
 

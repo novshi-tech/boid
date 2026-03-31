@@ -1,19 +1,30 @@
 package dispatcher
 
-import "github.com/novshi-tech/boid/internal/model"
+import "time"
 
-// Type aliases re-export model job types so consumers can reference dispatcher.Job, etc.
-type Job = model.Job
-type JobStatus = model.JobStatus
+type JobStatus string
 
 const (
-	JobStatusRunning   = model.JobStatusRunning
-	JobStatusCompleted = model.JobStatusCompleted
-	JobStatusFailed    = model.JobStatusFailed
+	JobStatusRunning   JobStatus = "running"
+	JobStatusCompleted JobStatus = "completed"
+	JobStatusFailed    JobStatus = "failed"
 )
+
+type Job struct {
+	ID        string    `json:"id"`
+	TaskID    string    `json:"task_id"`
+	ProjectID string    `json:"project_id"`
+	HandlerID string    `json:"handler_id"`
+	Role      string    `json:"role"`
+	Status    JobStatus `json:"status"`
+	ExitCode  int       `json:"exit_code,omitempty"`
+	Output    string    `json:"output,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
 
 // JobCompletionResult is the result delivered via WaitForJobCtx/CompleteJob.
 type JobCompletionResult struct {
-	Output   string // stdout capture (payload_patch JSON)
+	Output   string
 	ExitCode int
 }

@@ -10,14 +10,14 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/hostcmd"
-	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/project"
 )
 
 var testCtx = hostcmd.TokenContext{
 	JobID:     "job-1",
 	TaskID:    "task-1",
 	ProjectID: "proj-1",
-	Role:      string(model.RoleHook),
+	Role:      string(project.RoleHook),
 }
 
 func TestBroker_ExecCommand(t *testing.T) {
@@ -249,7 +249,7 @@ func TestBroker_SecretResolution(t *testing.T) {
 			Env:             map[string]string{"GH_TOKEN": "secret:github/pat", "PLAIN": "value"},
 		},
 	}, hostcmd.TokenContext{
-		JobID: "job-1", TaskID: "task-1", ProjectID: "proj-1", Role: string(model.RoleGate),
+		JobID: "job-1", TaskID: "task-1", ProjectID: "proj-1", Role: string(project.RoleGate),
 	}, resolver)
 
 	resp := broker.Handle(&hostcmd.ExecRequest{
@@ -286,7 +286,7 @@ func TestBroker_GetContext(t *testing.T) {
 		JobID:     "job-42",
 		TaskID:    "task-99",
 		ProjectID: "proj-7",
-		Role:      string(model.RoleGate),
+		Role:      string(project.RoleGate),
 	}
 
 	token := broker.Register(map[string]hostcmd.CommandDef{
@@ -306,8 +306,8 @@ func TestBroker_GetContext(t *testing.T) {
 	if got.ProjectID != "proj-7" {
 		t.Errorf("ProjectID = %q, want %q", got.ProjectID, "proj-7")
 	}
-	if got.Role != string(model.RoleGate) {
-		t.Errorf("Role = %q, want %q", got.Role, string(model.RoleGate))
+	if got.Role != string(project.RoleGate) {
+		t.Errorf("Role = %q, want %q", got.Role, string(project.RoleGate))
 	}
 
 	// Invalid token
@@ -320,7 +320,7 @@ func TestBroker_GetContext(t *testing.T) {
 func TestBroker_BoidBuiltinPolicy_HookRole(t *testing.T) {
 	broker := &hostcmd.Broker{}
 	hookCtx := hostcmd.TokenContext{
-		JobID: "j1", TaskID: "t1", ProjectID: "p1", Role: string(model.RoleHook),
+		JobID: "j1", TaskID: "t1", ProjectID: "p1", Role: string(project.RoleHook),
 	}
 	token := broker.Register(map[string]hostcmd.CommandDef{}, hookCtx)
 
@@ -350,7 +350,7 @@ func TestBroker_BoidBuiltinPolicy_HookRole(t *testing.T) {
 func TestBroker_BoidBuiltinPolicy_GateRole(t *testing.T) {
 	broker := &hostcmd.Broker{}
 	gateCtx := hostcmd.TokenContext{
-		JobID: "j1", TaskID: "t1", ProjectID: "p1", Role: string(model.RoleGate),
+		JobID: "j1", TaskID: "t1", ProjectID: "p1", Role: string(project.RoleGate),
 	}
 	token := broker.Register(map[string]hostcmd.CommandDef{}, gateCtx)
 

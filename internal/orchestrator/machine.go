@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/novshi-tech/boid/internal/model"
 	"github.com/novshi-tech/boid/internal/project"
 )
 
@@ -12,8 +11,8 @@ import (
 type TransitionCondition func(payload json.RawMessage) bool
 
 type Rule struct {
-	Action     string              // manual transition trigger (mutually exclusive with Condition)
-	FromStatus string              // "*" matches any
+	Action     string // manual transition trigger (mutually exclusive with Condition)
+	FromStatus string // "*" matches any
 	ToStatus   string
 	Condition  TransitionCondition // auto transition trigger (mutually exclusive with Action)
 }
@@ -25,14 +24,14 @@ type StateMachine struct {
 
 // Apply finds an action-based rule matching the action type and current status.
 // Condition-based rules are ignored by Apply.
-func (sm *StateMachine) Apply(task *model.Task, action *model.Action) (*model.Task, error) {
+func (sm *StateMachine) Apply(task *Task, action *Action) (*Task, error) {
 	for _, r := range sm.Rules {
 		if r.Condition != nil {
 			continue // skip condition-based rules
 		}
 		if r.Action == action.Type && (r.FromStatus == "*" || r.FromStatus == string(task.Status)) {
 			newTask := *task
-			newTask.Status = model.TaskStatus(r.ToStatus)
+			newTask.Status = TaskStatus(r.ToStatus)
 			return &newTask, nil
 		}
 	}
@@ -41,7 +40,7 @@ func (sm *StateMachine) Apply(task *model.Task, action *model.Action) (*model.Ta
 
 // Advance evaluates condition-based rules for the task's current status and payload.
 // Returns the transitioned task and true if a condition was met, or (nil, false) otherwise.
-func (sm *StateMachine) Advance(task *model.Task) (*model.Task, bool) {
+func (sm *StateMachine) Advance(task *Task) (*Task, bool) {
 	for _, r := range sm.Rules {
 		if r.Condition == nil {
 			continue // skip action-based rules
@@ -51,7 +50,7 @@ func (sm *StateMachine) Advance(task *model.Task) (*model.Task, bool) {
 		}
 		if r.Condition(task.Payload) {
 			newTask := *task
-			newTask.Status = model.TaskStatus(r.ToStatus)
+			newTask.Status = TaskStatus(r.ToStatus)
 			return &newTask, true
 		}
 	}

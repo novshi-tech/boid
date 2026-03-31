@@ -5,14 +5,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/model"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/project"
 )
 
 func TestRegistry_Resolve_KnownBehavior(t *testing.T) {
 	reg := orchestrator.NewDefaultRegistry()
-	meta := &model.ProjectMeta{
-		TaskBehaviors: map[string]model.TaskBehavior{
+	meta := &project.ProjectMeta{
+		TaskBehaviors: map[string]project.TaskBehavior{
 			"dev": {
 				Name:       "development",
 				Transition: "one-shot",
@@ -31,8 +31,8 @@ func TestRegistry_Resolve_KnownBehavior(t *testing.T) {
 
 func TestRegistry_Resolve_UnknownBehavior(t *testing.T) {
 	reg := orchestrator.NewDefaultRegistry()
-	meta := &model.ProjectMeta{
-		TaskBehaviors: map[string]model.TaskBehavior{},
+	meta := &project.ProjectMeta{
+		TaskBehaviors: map[string]project.TaskBehavior{},
 	}
 
 	_, err := reg.Resolve(meta, "unknown")
@@ -46,8 +46,8 @@ func TestRegistry_Resolve_UnknownBehavior(t *testing.T) {
 
 func TestRegistry_Resolve_UnknownTransition(t *testing.T) {
 	reg := orchestrator.NewDefaultRegistry()
-	meta := &model.ProjectMeta{
-		TaskBehaviors: map[string]model.TaskBehavior{
+	meta := &project.ProjectMeta{
+		TaskBehaviors: map[string]project.TaskBehavior{
 			"custom": {
 				Name:       "custom",
 				Transition: "nonexistent-machine",
@@ -67,21 +67,21 @@ func TestRegistry_Resolve_UnknownTransition(t *testing.T) {
 func TestOneShotMachine_PendingToExecutingToDone(t *testing.T) {
 	sm := orchestrator.OneShotMachine()
 
-	task := &model.Task{Status: model.TaskStatusPending}
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusPending}
 
-	next, err := sm.Apply(task, &model.Action{Type: "start"})
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "start"})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if next.Status != model.TaskStatusExecuting {
+	if next.Status != orchestrator.TaskStatusExecuting {
 		t.Fatalf("expected executing, got %s", next.Status)
 	}
 
-	next, err = sm.Apply(next, &model.Action{Type: "done"})
+	next, err = sm.Apply(next, &orchestrator.Action{Type: "done"})
 	if err != nil {
 		t.Fatalf("done: %v", err)
 	}
-	if next.Status != model.TaskStatusDone {
+	if next.Status != orchestrator.TaskStatusDone {
 		t.Fatalf("expected done, got %s", next.Status)
 	}
 }
@@ -89,9 +89,9 @@ func TestOneShotMachine_PendingToExecutingToDone(t *testing.T) {
 func TestOneShotMachine_InvalidTransition(t *testing.T) {
 	sm := orchestrator.OneShotMachine()
 
-	task := &model.Task{Status: model.TaskStatusPending}
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusPending}
 
-	_, err := sm.Apply(task, &model.Action{Type: "done"})
+	_, err := sm.Apply(task, &orchestrator.Action{Type: "done"})
 	if err == nil {
 		t.Fatal("expected error for invalid transition pending -> done")
 	}
@@ -103,18 +103,18 @@ func TestOneShotMachine_InvalidTransition(t *testing.T) {
 func TestOneShotMachine_AbortFromAny(t *testing.T) {
 	sm := orchestrator.OneShotMachine()
 
-	statuses := []model.TaskStatus{
-		model.TaskStatusPending,
-		model.TaskStatusExecuting,
+	statuses := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusPending,
+		orchestrator.TaskStatusExecuting,
 	}
 
 	for _, status := range statuses {
-		task := &model.Task{Status: status}
-		next, err := sm.Apply(task, &model.Action{Type: "abort"})
+		task := &orchestrator.Task{Status: status}
+		next, err := sm.Apply(task, &orchestrator.Action{Type: "abort"})
 		if err != nil {
 			t.Fatalf("abort from %s: %v", status, err)
 		}
-		if next.Status != model.TaskStatusAborted {
+		if next.Status != orchestrator.TaskStatusAborted {
 			t.Fatalf("expected aborted from %s, got %s", status, next.Status)
 		}
 	}
@@ -123,13 +123,13 @@ func TestOneShotMachine_AbortFromAny(t *testing.T) {
 func TestFeedbackLoopMachine_FullCycle(t *testing.T) {
 	sm := orchestrator.FeedbackLoopMachine()
 
-	task := &model.Task{Status: model.TaskStatusPending, Payload: json.RawMessage(`{}`)}
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusPending, Payload: json.RawMessage(`{}`)}
 
-	next, err := sm.Apply(task, &model.Action{Type: "start"})
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "start"})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if next.Status != model.TaskStatusExecuting {
+	if next.Status != orchestrator.TaskStatusExecuting {
 		t.Fatalf("expected executing, got %s", next.Status)
 	}
 
@@ -138,7 +138,7 @@ func TestFeedbackLoopMachine_FullCycle(t *testing.T) {
 	if !ok {
 		t.Fatal("expected advance from executing to verifying")
 	}
-	if advanced.Status != model.TaskStatusVerifying {
+	if advanced.Status != orchestrator.TaskStatusVerifying {
 		t.Fatalf("expected verifying, got %s", advanced.Status)
 	}
 
@@ -147,15 +147,15 @@ func TestFeedbackLoopMachine_FullCycle(t *testing.T) {
 	if !ok {
 		t.Fatal("expected advance from verifying to in_review")
 	}
-	if next2.Status != model.TaskStatusInReview {
+	if next2.Status != orchestrator.TaskStatusInReview {
 		t.Fatalf("expected in_review, got %s", next2.Status)
 	}
 
-	next3, err := sm.Apply(next2, &model.Action{Type: "collect_feedback"})
+	next3, err := sm.Apply(next2, &orchestrator.Action{Type: "collect_feedback"})
 	if err != nil {
 		t.Fatalf("collect_feedback: %v", err)
 	}
-	if next3.Status != model.TaskStatusCollectingFeedback {
+	if next3.Status != orchestrator.TaskStatusCollectingFeedback {
 		t.Fatalf("expected collecting_feedback, got %s", next3.Status)
 	}
 
@@ -164,7 +164,7 @@ func TestFeedbackLoopMachine_FullCycle(t *testing.T) {
 	if !ok {
 		t.Fatal("expected advance from collecting_feedback to executing")
 	}
-	if next4.Status != model.TaskStatusExecuting {
+	if next4.Status != orchestrator.TaskStatusExecuting {
 		t.Fatalf("expected executing after rework, got %s", next4.Status)
 	}
 
@@ -173,7 +173,7 @@ func TestFeedbackLoopMachine_FullCycle(t *testing.T) {
 	if !ok {
 		t.Fatal("expected advance from collecting_feedback to done")
 	}
-	if next5.Status != model.TaskStatusDone {
+	if next5.Status != orchestrator.TaskStatusDone {
 		t.Fatalf("expected done, got %s", next5.Status)
 	}
 }
@@ -196,8 +196,8 @@ func TestStateMachine_Advance_ConditionMet(t *testing.T) {
 		},
 	}
 
-	task := &model.Task{
-		Status:  model.TaskStatusExecuting,
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusExecuting,
 		Payload: json.RawMessage(`{"artifact":{"url":"https://github.com/..."}}`),
 	}
 
@@ -205,7 +205,7 @@ func TestStateMachine_Advance_ConditionMet(t *testing.T) {
 	if !ok {
 		t.Fatal("expected Advance to return ok=true")
 	}
-	if next.Status != model.TaskStatusVerifying {
+	if next.Status != orchestrator.TaskStatusVerifying {
 		t.Fatalf("expected verifying, got %s", next.Status)
 	}
 }
@@ -224,8 +224,8 @@ func TestStateMachine_Apply_IgnoresConditionRules(t *testing.T) {
 		},
 	}
 
-	task := &model.Task{Status: model.TaskStatusExecuting}
-	_, err := sm.Apply(task, &model.Action{Type: "verify"})
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusExecuting}
+	_, err := sm.Apply(task, &orchestrator.Action{Type: "verify"})
 	if err == nil {
 		t.Fatal("Apply should not match condition-based rules via action")
 	}
@@ -234,21 +234,21 @@ func TestStateMachine_Apply_IgnoresConditionRules(t *testing.T) {
 func TestFeedbackLoopMachine_AbortFromAny(t *testing.T) {
 	sm := orchestrator.FeedbackLoopMachine()
 
-	statuses := []model.TaskStatus{
-		model.TaskStatusPending,
-		model.TaskStatusExecuting,
-		model.TaskStatusVerifying,
-		model.TaskStatusInReview,
-		model.TaskStatusCollectingFeedback,
+	statuses := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusPending,
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusVerifying,
+		orchestrator.TaskStatusInReview,
+		orchestrator.TaskStatusCollectingFeedback,
 	}
 
 	for _, status := range statuses {
-		task := &model.Task{Status: status}
-		next, err := sm.Apply(task, &model.Action{Type: "abort"})
+		task := &orchestrator.Task{Status: status}
+		next, err := sm.Apply(task, &orchestrator.Action{Type: "abort"})
 		if err != nil {
 			t.Fatalf("abort from %s: %v", status, err)
 		}
-		if next.Status != model.TaskStatusAborted {
+		if next.Status != orchestrator.TaskStatusAborted {
 			t.Fatalf("expected aborted from %s, got %s", status, next.Status)
 		}
 	}

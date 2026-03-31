@@ -3,10 +3,11 @@ package templates
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/dispatcher"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-templ TaskList(tasks []*model.Task, currentFilter string) {
+templ TaskList(tasks []*orchestrator.Task, currentFilter string) {
 	@Layout("Tasks") {
 		<h1>Tasks</h1>
 		<div class="filters">
@@ -43,7 +44,7 @@ templ TaskList(tasks []*model.Task, currentFilter string) {
 	}
 }
 
-templ TaskDetail(task *model.Task, actions []*model.Action, jobs []*model.Job) {
+templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*dispatcher.Job) {
 	@Layout(task.Title) {
 		<h1>{ task.Title }</h1>
 		<div class="section">

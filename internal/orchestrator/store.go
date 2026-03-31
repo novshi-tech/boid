@@ -9,7 +9,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/novshi-tech/boid/internal/db"
-	"github.com/novshi-tech/boid/internal/model"
 )
 
 type TaskFilter struct {
@@ -17,7 +16,7 @@ type TaskFilter struct {
 	ProjectID string
 }
 
-func CreateTask(dbtx db.DBTX, t *model.Task) error {
+func CreateTask(dbtx db.DBTX, t *Task) error {
 	if t.ID == "" {
 		t.ID = uuid.New().String()
 	}
@@ -25,7 +24,7 @@ func CreateTask(dbtx db.DBTX, t *model.Task) error {
 	t.CreatedAt = now
 	t.UpdatedAt = now
 	if t.Status == "" {
-		t.Status = model.TaskStatusPending
+		t.Status = TaskStatusPending
 	}
 	if len(t.Payload) == 0 {
 		t.Payload = json.RawMessage("{}")
@@ -42,7 +41,7 @@ func CreateTask(dbtx db.DBTX, t *model.Task) error {
 	return nil
 }
 
-func GetTask(dbtx db.DBTX, id string) (*model.Task, error) {
+func GetTask(dbtx db.DBTX, id string) (*Task, error) {
 	row := dbtx.QueryRow(
 		`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, payload, created_at, updated_at FROM tasks WHERE id = ?`, id,
 	)
@@ -57,7 +56,7 @@ func GetTask(dbtx db.DBTX, id string) (*model.Task, error) {
 	return t, err
 }
 
-func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*model.Task, error) {
+func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	var conditions []string
 	var args []any
 
@@ -82,7 +81,7 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*model.Task, error) {
 	}
 	defer rows.Close()
 
-	var tasks []*model.Task
+	var tasks []*Task
 	for rows.Next() {
 		t, err := scanTask(rows)
 		if err != nil {
@@ -93,7 +92,7 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*model.Task, error) {
 	return tasks, rows.Err()
 }
 
-func UpdateTask(dbtx db.DBTX, t *model.Task) error {
+func UpdateTask(dbtx db.DBTX, t *Task) error {
 	t.UpdatedAt = time.Now().UTC()
 	_, err := dbtx.Exec(
 		`UPDATE tasks SET status = ?, payload = ?, updated_at = ? WHERE id = ?`,
@@ -102,7 +101,7 @@ func UpdateTask(dbtx db.DBTX, t *model.Task) error {
 	return err
 }
 
-func CreateAction(dbtx db.DBTX, a *model.Action) error {
+func CreateAction(dbtx db.DBTX, a *Action) error {
 	if a.ID == "" {
 		a.ID = uuid.New().String()
 	}
@@ -122,7 +121,7 @@ func CreateAction(dbtx db.DBTX, a *model.Action) error {
 	return nil
 }
 
-func ListActionsByTask(dbtx db.DBTX, taskID string) ([]*model.Action, error) {
+func ListActionsByTask(dbtx db.DBTX, taskID string) ([]*Action, error) {
 	rows, err := dbtx.Query(
 		`SELECT id, task_id, type, payload, created_at FROM actions WHERE task_id = ? ORDER BY created_at`, taskID,
 	)
@@ -131,9 +130,9 @@ func ListActionsByTask(dbtx db.DBTX, taskID string) ([]*model.Action, error) {
 	}
 	defer rows.Close()
 
-	var actions []*model.Action
+	var actions []*Action
 	for rows.Next() {
-		var a model.Action
+		var a Action
 		var payload string
 		if err := rows.Scan(&a.ID, &a.TaskID, &a.Type, &payload, &a.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan action: %w", err)
@@ -148,8 +147,8 @@ type taskScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanTask(s taskScanner) (*model.Task, error) {
-	var t model.Task
+func scanTask(s taskScanner) (*Task, error) {
+	var t Task
 	var payload string
 	if err := s.Scan(&t.ID, &t.ProjectID, &t.RemoteID, &t.DataSourceID, &t.Title, &t.Description, &t.Status, &t.Behavior, &payload, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {

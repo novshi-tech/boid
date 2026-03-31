@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/novshi-tech/boid/internal/client"
-	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/project"
 	"github.com/spf13/cobra"
 )
 
@@ -55,7 +55,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 
 	// Check hook requires for registered projects
 	c := client.NewUnixClient(client.DefaultSocketPath())
-	var projects []model.Project
+	var projects []project.Project
 	if err := c.Do("GET", "/api/projects", nil, &projects); err != nil {
 		fmt.Printf("\n(server not running, skipping project hook checks)\n")
 		if !allOK {

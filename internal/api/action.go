@@ -9,7 +9,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
-	"github.com/novshi-tech/boid/internal/model"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/internal/worktree"
@@ -50,7 +49,7 @@ func (h *ActionHandler) Apply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Get task
-	task, err := h.DB.GetTask(taskID)
+	task, err := orchestrator.GetTask(h.DB.Conn, taskID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -71,7 +70,7 @@ func (h *ActionHandler) Apply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. Apply state transition
-	action := &model.Action{
+	action := &orchestrator.Action{
 		TaskID:  task.ID,
 		Type:    req.Type,
 		Payload: req.Payload,
@@ -84,7 +83,7 @@ func (h *ActionHandler) Apply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. Merge payload
-	merged, err := model.MergePayload(task.Payload, action.Payload)
+	merged, err := project.MergePayload(task.Payload, action.Payload)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "payload merge: "+err.Error())
 		return
@@ -92,11 +91,11 @@ func (h *ActionHandler) Apply(w http.ResponseWriter, r *http.Request) {
 	newTask.Payload = merged
 
 	// 6. Save task + action in a transaction
-	if err := h.DB.InTx(func(tx *db.Tx) error {
-		if err := tx.UpdateTask(newTask); err != nil {
+	if err := db.InTxDB(h.DB.Conn, func(tx db.DBTX) error {
+		if err := orchestrator.UpdateTask(tx, newTask); err != nil {
 			return err
 		}
-		return tx.CreateAction(action)
+		return orchestrator.CreateAction(tx, action)
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -125,7 +124,7 @@ func (h *ActionHandler) Apply(w http.ResponseWriter, r *http.Request) {
 
 // runDispatchLoop runs the dispatch→advance→re-dispatch loop asynchronously.
 // It persists payload and status changes after each cycle.
-func (h *ActionHandler) runDispatchLoop(task *model.Task, meta *model.ProjectMeta, behavior *model.TaskBehavior, sm *orchestrator.StateMachine) {
+func (h *ActionHandler) runDispatchLoop(task *orchestrator.Task, meta *project.ProjectMeta, behavior *project.TaskBehavior, sm *orchestrator.StateMachine) {
 	const maxCycles = 10
 	current := task
 
@@ -141,8 +140,8 @@ func (h *ActionHandler) runDispatchLoop(task *model.Task, meta *model.ProjectMet
 		// Persist merged payload
 		if len(result.FinalPayload) > 0 {
 			current.Payload = result.FinalPayload
-			if err := h.DB.InTx(func(tx *db.Tx) error {
-				return tx.UpdateTask(current)
+			if err := db.InTxDB(h.DB.Conn, func(tx db.DBTX) error {
+				return orchestrator.UpdateTask(tx, current)
 			}); err != nil {
 				slog.Error("persist payload failed", "task_id", current.ID, "error", err)
 				return
@@ -155,13 +154,13 @@ func (h *ActionHandler) runDispatchLoop(task *model.Task, meta *model.ProjectMet
 		}
 
 		// Apply the auto-advance
-		action := &model.Action{TaskID: current.ID, Type: "auto_advance"}
+		action := &orchestrator.Action{TaskID: current.ID, Type: "auto_advance"}
 		current.Status = result.NewStatus
-		if err := h.DB.InTx(func(tx *db.Tx) error {
-			if err := tx.UpdateTask(current); err != nil {
+		if err := db.InTxDB(h.DB.Conn, func(tx db.DBTX) error {
+			if err := orchestrator.UpdateTask(tx, current); err != nil {
 				return err
 			}
-			return tx.CreateAction(action)
+			return orchestrator.CreateAction(tx, action)
 		}); err != nil {
 			slog.Error("auto-advance persist failed", "task_id", current.ID, "error", err)
 			return
@@ -177,7 +176,7 @@ func (h *ActionHandler) runDispatchLoop(task *model.Task, meta *model.ProjectMet
 		}
 
 		// If terminal state, cleanup and stop
-		if current.Status == model.TaskStatusDone || current.Status == model.TaskStatusAborted {
+		if current.Status == orchestrator.TaskStatusDone || current.Status == orchestrator.TaskStatusAborted {
 			if h.Runner != nil {
 				h.Runner.CleanupTaskWindow(current.ID)
 			}

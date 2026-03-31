@@ -4,7 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/dispatcher"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/testutil"
 )
 
@@ -12,23 +13,23 @@ func TestCreateJob(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	createTestProject(t, d)
 
-	task := &model.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
-	if err := d.CreateTask(task); err != nil {
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 
-	job := &model.Job{
+	job := &dispatcher.Job{
 		TaskID:    task.ID,
 		ProjectID: "proj-1",
-		HandlerID:    "hook-1",
+		HandlerID: "hook-1",
 	}
-	if err := d.CreateJob(job); err != nil {
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
 		t.Fatalf("create job: %v", err)
 	}
 	if job.ID == "" {
 		t.Fatal("expected auto-generated ID")
 	}
-	if job.Status != model.JobStatusRunning {
+	if job.Status != dispatcher.JobStatusRunning {
 		t.Fatalf("expected default status running, got %s", job.Status)
 	}
 	if job.CreatedAt.IsZero() {
@@ -40,21 +41,21 @@ func TestGetJob(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	createTestProject(t, d)
 
-	task := &model.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
-	if err := d.CreateTask(task); err != nil {
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 
-	job := &model.Job{
+	job := &dispatcher.Job{
 		TaskID:    task.ID,
 		ProjectID: "proj-1",
-		HandlerID:    "hook-1",
+		HandlerID: "hook-1",
 	}
-	if err := d.CreateJob(job); err != nil {
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
 		t.Fatalf("create job: %v", err)
 	}
 
-	got, err := d.GetJob(job.ID)
+	got, err := dispatcher.GetJob(d.Conn, job.ID)
 	if err != nil {
 		t.Fatalf("get job: %v", err)
 	}
@@ -70,14 +71,14 @@ func TestGetJob(t *testing.T) {
 	if got.HandlerID != "hook-1" {
 		t.Fatalf("expected handler_id hook-1, got %s", got.HandlerID)
 	}
-	if got.Status != model.JobStatusRunning {
+	if got.Status != dispatcher.JobStatusRunning {
 		t.Fatalf("expected running, got %s", got.Status)
 	}
 }
 
 func TestGetJob_NotFound(t *testing.T) {
 	d := testutil.NewTestDB(t)
-	_, err := d.GetJob("nonexistent")
+	_, err := dispatcher.GetJob(d.Conn, "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent job")
 	}
@@ -90,25 +91,25 @@ func TestListJobsByTask(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	createTestProject(t, d)
 
-	task1 := &model.Task{ProjectID: "proj-1", Title: "Task1", Behavior: "dev"}
-	if err := d.CreateTask(task1); err != nil {
+	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "Task1", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task1); err != nil {
 		t.Fatalf("create task1: %v", err)
 	}
-	task2 := &model.Task{ProjectID: "proj-1", Title: "Task2", Behavior: "dev"}
-	if err := d.CreateTask(task2); err != nil {
+	task2 := &orchestrator.Task{ProjectID: "proj-1", Title: "Task2", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task2); err != nil {
 		t.Fatalf("create task2: %v", err)
 	}
 
 	for i := 0; i < 2; i++ {
-		if err := d.CreateJob(&model.Job{TaskID: task1.ID, ProjectID: "proj-1", HandlerID: "hook-1"}); err != nil {
+		if err := dispatcher.CreateJob(d.Conn, &dispatcher.Job{TaskID: task1.ID, ProjectID: "proj-1", HandlerID: "hook-1"}); err != nil {
 			t.Fatalf("create job: %v", err)
 		}
 	}
-	if err := d.CreateJob(&model.Job{TaskID: task2.ID, ProjectID: "proj-1", HandlerID: "hook-1"}); err != nil {
+	if err := dispatcher.CreateJob(d.Conn, &dispatcher.Job{TaskID: task2.ID, ProjectID: "proj-1", HandlerID: "hook-1"}); err != nil {
 		t.Fatalf("create job: %v", err)
 	}
 
-	jobs, err := d.ListJobsByTask(task1.ID)
+	jobs, err := dispatcher.ListJobsByTask(d.Conn, task1.ID)
 	if err != nil {
 		t.Fatalf("list jobs: %v", err)
 	}
@@ -116,7 +117,7 @@ func TestListJobsByTask(t *testing.T) {
 		t.Fatalf("expected 2 jobs for task1, got %d", len(jobs))
 	}
 
-	jobs, err = d.ListJobsByTask(task2.ID)
+	jobs, err = dispatcher.ListJobsByTask(d.Conn, task2.ID)
 	if err != nil {
 		t.Fatalf("list jobs: %v", err)
 	}
@@ -129,12 +130,12 @@ func TestListJobsByTask_Empty(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	createTestProject(t, d)
 
-	task := &model.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
-	if err := d.CreateTask(task); err != nil {
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 
-	jobs, err := d.ListJobsByTask(task.ID)
+	jobs, err := dispatcher.ListJobsByTask(d.Conn, task.ID)
 	if err != nil {
 		t.Fatalf("list jobs: %v", err)
 	}
@@ -147,32 +148,32 @@ func TestUpdateJob(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	createTestProject(t, d)
 
-	task := &model.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
-	if err := d.CreateTask(task); err != nil {
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 
-	job := &model.Job{
+	job := &dispatcher.Job{
 		TaskID:    task.ID,
 		ProjectID: "proj-1",
-		HandlerID:    "hook-1",
+		HandlerID: "hook-1",
 	}
-	if err := d.CreateJob(job); err != nil {
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
 		t.Fatalf("create job: %v", err)
 	}
 
-	job.Status = model.JobStatusCompleted
+	job.Status = dispatcher.JobStatusCompleted
 	job.ExitCode = 0
 	job.Output = "success"
-	if err := d.UpdateJob(job); err != nil {
+	if err := dispatcher.UpdateJob(d.Conn, job); err != nil {
 		t.Fatalf("update job: %v", err)
 	}
 
-	got, err := d.GetJob(job.ID)
+	got, err := dispatcher.GetJob(d.Conn, job.ID)
 	if err != nil {
 		t.Fatalf("get job: %v", err)
 	}
-	if got.Status != model.JobStatusCompleted {
+	if got.Status != dispatcher.JobStatusCompleted {
 		t.Fatalf("expected completed, got %s", got.Status)
 	}
 	if got.ExitCode != 0 {
@@ -187,32 +188,32 @@ func TestUpdateJob_Failed(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	createTestProject(t, d)
 
-	task := &model.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
-	if err := d.CreateTask(task); err != nil {
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 
-	job := &model.Job{
+	job := &dispatcher.Job{
 		TaskID:    task.ID,
 		ProjectID: "proj-1",
-		HandlerID:    "hook-1",
+		HandlerID: "hook-1",
 	}
-	if err := d.CreateJob(job); err != nil {
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
 		t.Fatalf("create job: %v", err)
 	}
 
-	job.Status = model.JobStatusFailed
+	job.Status = dispatcher.JobStatusFailed
 	job.ExitCode = 1
 	job.Output = "error occurred"
-	if err := d.UpdateJob(job); err != nil {
+	if err := dispatcher.UpdateJob(d.Conn, job); err != nil {
 		t.Fatalf("update job: %v", err)
 	}
 
-	got, err := d.GetJob(job.ID)
+	got, err := dispatcher.GetJob(d.Conn, job.ID)
 	if err != nil {
 		t.Fatalf("get job: %v", err)
 	}
-	if got.Status != model.JobStatusFailed {
+	if got.Status != dispatcher.JobStatusFailed {
 		t.Fatalf("expected failed, got %s", got.Status)
 	}
 	if got.ExitCode != 1 {

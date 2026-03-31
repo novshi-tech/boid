@@ -9,7 +9,8 @@ import (
 	"strings"
 
 	"github.com/novshi-tech/boid/internal/db"
-	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/project"
 )
 
 // Manager handles git worktree lifecycle for task isolation.
@@ -29,7 +30,7 @@ func (m *Manager) gitBin() string {
 // Create creates a git worktree for the given task.
 // projectDir is the host-side project directory (the main git repo).
 // Returns the created worktree record.
-func (m *Manager) Create(projectDir, projectID, taskID, branchPrefix, baseBranch string) (*model.Worktree, error) {
+func (m *Manager) Create(projectDir, projectID, taskID, branchPrefix, baseBranch string) (*Worktree, error) {
 	if branchPrefix == "" {
 		branchPrefix = "boid/"
 	}
@@ -56,7 +57,7 @@ func (m *Manager) Create(projectDir, projectID, taskID, branchPrefix, baseBranch
 		return nil, fmt.Errorf("git worktree add: %w\n%s", err, out)
 	}
 
-	w := &model.Worktree{
+	w := &Worktree{
 		TaskID:     taskID,
 		ProjectID:  projectID,
 		Path:       wtPath,
@@ -112,15 +113,15 @@ func (m *Manager) Remove(projectDir, taskID string, deleteBranch bool) error {
 }
 
 // Get returns the worktree for the given task, or nil if none exists.
-func (m *Manager) Get(taskID string) (*model.Worktree, error) {
+func (m *Manager) Get(taskID string) (*Worktree, error) {
 	return GetWorktreeByTask(m.DB.Conn, taskID)
 }
 
 // CleanupForTask removes the worktree for a task that reached a terminal state.
 // For "done" tasks, the branch is kept (it lives on as a PR).
 // For "aborted" tasks, the branch is deleted.
-func (m *Manager) CleanupForTask(taskID string, newStatus model.TaskStatus) error {
-	if newStatus != model.TaskStatusDone && newStatus != model.TaskStatusAborted {
+func (m *Manager) CleanupForTask(taskID string, newStatus orchestrator.TaskStatus) error {
+	if newStatus != orchestrator.TaskStatusDone && newStatus != orchestrator.TaskStatusAborted {
 		return nil
 	}
 
@@ -132,12 +133,12 @@ func (m *Manager) CleanupForTask(taskID string, newStatus model.TaskStatus) erro
 		return nil
 	}
 
-	proj, err := m.DB.GetProject(w.ProjectID)
+	proj, err := project.GetProject(m.DB.Conn, w.ProjectID)
 	if err != nil {
 		return fmt.Errorf("get project for worktree cleanup: %w", err)
 	}
 
-	deleteBranch := newStatus == model.TaskStatusAborted
+	deleteBranch := newStatus == orchestrator.TaskStatusAborted
 	return m.Remove(proj.WorkDir, taskID, deleteBranch)
 }
 
@@ -150,22 +151,22 @@ func (m *Manager) CleanOrphaned() error {
 	}
 
 	for _, w := range active {
-		task, err := m.DB.GetTask(w.TaskID)
+		task, err := orchestrator.GetTask(m.DB.Conn, w.TaskID)
 		if err != nil {
 			slog.Warn("orphan check: task lookup failed", "task_id", w.TaskID, "error", err)
 			continue
 		}
-		if task.Status != model.TaskStatusDone && task.Status != model.TaskStatusAborted {
+		if task.Status != orchestrator.TaskStatusDone && task.Status != orchestrator.TaskStatusAborted {
 			continue
 		}
 
-		proj, err := m.DB.GetProject(w.ProjectID)
+		proj, err := project.GetProject(m.DB.Conn, w.ProjectID)
 		if err != nil {
 			slog.Warn("orphan check: project lookup failed", "project_id", w.ProjectID, "error", err)
 			continue
 		}
 
-		deleteBranch := task.Status == model.TaskStatusAborted
+		deleteBranch := task.Status == orchestrator.TaskStatusAborted
 		if err := m.Remove(proj.WorkDir, w.TaskID, deleteBranch); err != nil {
 			slog.Warn("orphan cleanup failed", "task_id", w.TaskID, "error", err)
 		}

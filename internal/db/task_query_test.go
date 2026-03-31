@@ -5,14 +5,15 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/db"
-	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/testutil"
 )
 
-func createTestProject(t *testing.T, d *db.DB) *model.Project {
+func createTestProject(t *testing.T, d *db.DB) *project.Project {
 	t.Helper()
-	p := &model.Project{ID: "proj-1", WorkDir: "/tmp"}
-	if err := d.CreateProject(p); err != nil {
+	p := &project.Project{ID: "proj-1", WorkDir: "/tmp"}
+	if err := project.CreateProject(d.Conn, p); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	return p
@@ -22,18 +23,18 @@ func TestCreateTask(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	createTestProject(t, d)
 
-	task := &model.Task{
+	task := &orchestrator.Task{
 		ProjectID: "proj-1",
 		Title:     "Test Task",
 		Behavior:  "dev",
 	}
-	if err := d.CreateTask(task); err != nil {
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 	if task.ID == "" {
 		t.Fatal("expected auto-generated ID")
 	}
-	if task.Status != model.TaskStatusPending {
+	if task.Status != orchestrator.TaskStatusPending {
 		t.Fatalf("expected default status pending, got %s", task.Status)
 	}
 	if string(task.Payload) != "{}" {
@@ -48,16 +49,16 @@ func TestGetTask_ByID(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	createTestProject(t, d)
 
-	task := &model.Task{
+	task := &orchestrator.Task{
 		ProjectID: "proj-1",
 		Title:     "Test Task",
 		Behavior:  "dev",
 	}
-	if err := d.CreateTask(task); err != nil {
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 
-	got, err := d.GetTask(task.ID)
+	got, err := orchestrator.GetTask(d.Conn, task.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
@@ -73,18 +74,18 @@ func TestGetTask_ByPrefix(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	createTestProject(t, d)
 
-	task := &model.Task{
+	task := &orchestrator.Task{
 		ProjectID: "proj-1",
 		Title:     "Test Task",
 		Behavior:  "dev",
 	}
-	if err := d.CreateTask(task); err != nil {
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 
 	// Use first 8 characters as prefix
 	prefix := task.ID[:8]
-	got, err := d.GetTask(prefix)
+	got, err := orchestrator.GetTask(d.Conn, prefix)
 	if err != nil {
 		t.Fatalf("get task by prefix: %v", err)
 	}
@@ -95,7 +96,7 @@ func TestGetTask_ByPrefix(t *testing.T) {
 
 func TestGetTask_NotFound(t *testing.T) {
 	d := testutil.NewTestDB(t)
-	_, err := d.GetTask("nonexistent-id-that-is-long-enough")
+	_, err := orchestrator.GetTask(d.Conn, "nonexistent-id-that-is-long-enough")
 	if err == nil {
 		t.Fatal("expected error for nonexistent task")
 	}
@@ -109,17 +110,17 @@ func TestListTasks_NoFilter(t *testing.T) {
 	createTestProject(t, d)
 
 	for i := 0; i < 3; i++ {
-		task := &model.Task{
+		task := &orchestrator.Task{
 			ProjectID: "proj-1",
 			Title:     "Task",
 			Behavior:  "dev",
 		}
-		if err := d.CreateTask(task); err != nil {
+		if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 			t.Fatalf("create task %d: %v", i, err)
 		}
 	}
 
-	tasks, err := d.ListTasks(testutil.EmptyTaskFilter())
+	tasks, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{})
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
@@ -132,17 +133,17 @@ func TestListTasks_WithStatusFilter(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	createTestProject(t, d)
 
-	task := &model.Task{
+	task := &orchestrator.Task{
 		ProjectID: "proj-1",
 		Title:     "Task",
 		Behavior:  "dev",
-		Status:    model.TaskStatusExecuting,
+		Status:    orchestrator.TaskStatusExecuting,
 	}
-	if err := d.CreateTask(task); err != nil {
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	tasks, err := d.ListTasks(db.TaskFilter{Status: "executing"})
+	tasks, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "executing"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -150,7 +151,7 @@ func TestListTasks_WithStatusFilter(t *testing.T) {
 		t.Fatalf("expected 1, got %d", len(tasks))
 	}
 
-	tasks, err = d.ListTasks(db.TaskFilter{Status: "done"})
+	tasks, err = orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "done"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -162,18 +163,18 @@ func TestListTasks_WithStatusFilter(t *testing.T) {
 func TestListTasks_WithProjectFilter(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	createTestProject(t, d)
-	if err := d.CreateProject(&model.Project{ID: "proj-2", WorkDir: "/tmp/b"}); err != nil {
+	if err := project.CreateProject(d.Conn, &project.Project{ID: "proj-2", WorkDir: "/tmp/b"}); err != nil {
 		t.Fatalf("create proj-2: %v", err)
 	}
 
-	if err := d.CreateTask(&model.Task{ProjectID: "proj-1", Title: "A", Behavior: "dev"}); err != nil {
+	if err := orchestrator.CreateTask(d.Conn, &orchestrator.Task{ProjectID: "proj-1", Title: "A", Behavior: "dev"}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := d.CreateTask(&model.Task{ProjectID: "proj-2", Title: "B", Behavior: "dev"}); err != nil {
+	if err := orchestrator.CreateTask(d.Conn, &orchestrator.Task{ProjectID: "proj-2", Title: "B", Behavior: "dev"}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	tasks, err := d.ListTasks(db.TaskFilter{ProjectID: "proj-1"})
+	tasks, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{ProjectID: "proj-1"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -189,25 +190,25 @@ func TestUpdateTask(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	createTestProject(t, d)
 
-	task := &model.Task{
+	task := &orchestrator.Task{
 		ProjectID: "proj-1",
 		Title:     "Task",
 		Behavior:  "dev",
 	}
-	if err := d.CreateTask(task); err != nil {
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	task.Status = model.TaskStatusExecuting
-	if err := d.UpdateTask(task); err != nil {
+	task.Status = orchestrator.TaskStatusExecuting
+	if err := orchestrator.UpdateTask(d.Conn, task); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 
-	got, err := d.GetTask(task.ID)
+	got, err := orchestrator.GetTask(d.Conn, task.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Status != model.TaskStatusExecuting {
+	if got.Status != orchestrator.TaskStatusExecuting {
 		t.Fatalf("expected executing, got %s", got.Status)
 	}
 }

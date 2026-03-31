@@ -1,8 +1,8 @@
 package templates
 
-import "github.com/novshi-tech/boid/internal/model"
+import "github.com/novshi-tech/boid/internal/project"
 
-templ ProjectList(projects []*model.Project) {
+templ ProjectList(projects []*project.Project) {
 	@Layout("Projects") {
 		<h1>Projects</h1>
 		if len(projects) > 0 {

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/model"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/testutil"
 )
 
@@ -12,17 +12,17 @@ func TestCreateAction(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	createTestProject(t, d)
 
-	task := &model.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
-	if err := d.CreateTask(task); err != nil {
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 
-	action := &model.Action{
+	action := &orchestrator.Action{
 		TaskID:  task.ID,
 		Type:    "start",
 		Payload: json.RawMessage(`{"key":"value"}`),
 	}
-	if err := d.CreateAction(action); err != nil {
+	if err := orchestrator.CreateAction(d.Conn, action); err != nil {
 		t.Fatalf("create action: %v", err)
 	}
 	if action.ID == "" {
@@ -37,16 +37,16 @@ func TestCreateAction_DefaultPayload(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	createTestProject(t, d)
 
-	task := &model.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
-	if err := d.CreateTask(task); err != nil {
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 
-	action := &model.Action{
+	action := &orchestrator.Action{
 		TaskID: task.ID,
 		Type:   "start",
 	}
-	if err := d.CreateAction(action); err != nil {
+	if err := orchestrator.CreateAction(d.Conn, action); err != nil {
 		t.Fatalf("create action: %v", err)
 	}
 	if string(action.Payload) != "{}" {
@@ -58,27 +58,27 @@ func TestListActionsByTask(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	createTestProject(t, d)
 
-	task1 := &model.Task{ProjectID: "proj-1", Title: "Task1", Behavior: "dev"}
-	if err := d.CreateTask(task1); err != nil {
+	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "Task1", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task1); err != nil {
 		t.Fatalf("create task1: %v", err)
 	}
-	task2 := &model.Task{ProjectID: "proj-1", Title: "Task2", Behavior: "dev"}
-	if err := d.CreateTask(task2); err != nil {
+	task2 := &orchestrator.Task{ProjectID: "proj-1", Title: "Task2", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task2); err != nil {
 		t.Fatalf("create task2: %v", err)
 	}
 
 	// Create actions for task1
 	for _, typ := range []string{"start", "done"} {
-		if err := d.CreateAction(&model.Action{TaskID: task1.ID, Type: typ}); err != nil {
+		if err := orchestrator.CreateAction(d.Conn, &orchestrator.Action{TaskID: task1.ID, Type: typ}); err != nil {
 			t.Fatalf("create action: %v", err)
 		}
 	}
 	// Create action for task2
-	if err := d.CreateAction(&model.Action{TaskID: task2.ID, Type: "start"}); err != nil {
+	if err := orchestrator.CreateAction(d.Conn, &orchestrator.Action{TaskID: task2.ID, Type: "start"}); err != nil {
 		t.Fatalf("create action: %v", err)
 	}
 
-	actions, err := d.ListActionsByTask(task1.ID)
+	actions, err := orchestrator.ListActionsByTask(d.Conn, task1.ID)
 	if err != nil {
 		t.Fatalf("list actions: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestListActionsByTask(t *testing.T) {
 		t.Fatalf("expected second action type 'done', got %s", actions[1].Type)
 	}
 
-	actions, err = d.ListActionsByTask(task2.ID)
+	actions, err = orchestrator.ListActionsByTask(d.Conn, task2.ID)
 	if err != nil {
 		t.Fatalf("list actions: %v", err)
 	}
@@ -105,12 +105,12 @@ func TestListActionsByTask_Empty(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	createTestProject(t, d)
 
-	task := &model.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
-	if err := d.CreateTask(task); err != nil {
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 
-	actions, err := d.ListActionsByTask(task.ID)
+	actions, err := orchestrator.ListActionsByTask(d.Conn, task.ID)
 	if err != nil {
 		t.Fatalf("list actions: %v", err)
 	}

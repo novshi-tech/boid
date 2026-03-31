@@ -1,20 +1,40 @@
 package orchestrator
 
-import "github.com/novshi-tech/boid/internal/model"
+import (
+	"encoding/json"
+	"time"
+)
 
-// Type aliases: orchestrator is the canonical location for task/action types.
-// Underlying definitions live in model/ during the migration period.
-
-type Task = model.Task
-type TaskStatus = model.TaskStatus
-type Action = model.Action
+type TaskStatus string
 
 const (
-	TaskStatusPending            = model.TaskStatusPending
-	TaskStatusExecuting          = model.TaskStatusExecuting
-	TaskStatusVerifying          = model.TaskStatusVerifying
-	TaskStatusInReview           = model.TaskStatusInReview
-	TaskStatusCollectingFeedback = model.TaskStatusCollectingFeedback
-	TaskStatusDone               = model.TaskStatusDone
-	TaskStatusAborted            = model.TaskStatusAborted
+	TaskStatusPending            TaskStatus = "pending"
+	TaskStatusExecuting          TaskStatus = "executing"
+	TaskStatusVerifying          TaskStatus = "verifying"
+	TaskStatusInReview           TaskStatus = "in_review"
+	TaskStatusCollectingFeedback TaskStatus = "collecting_feedback"
+	TaskStatusDone               TaskStatus = "done"
+	TaskStatusAborted            TaskStatus = "aborted"
 )
+
+type Task struct {
+	ID           string          `json:"id"`
+	ProjectID    string          `json:"project_id"`
+	RemoteID     string          `json:"remote_id,omitempty"`
+	DataSourceID string          `json:"datasource_id,omitempty"`
+	Title        string          `json:"title"`
+	Description  string          `json:"description,omitempty"`
+	Status       TaskStatus      `json:"status"`
+	Behavior     string          `json:"behavior"`
+	Payload      json.RawMessage `json:"payload"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
+}
+
+type Action struct {
+	ID        string          `json:"id"`
+	TaskID    string          `json:"task_id"`
+	Type      string          `json:"type"`
+	Payload   json.RawMessage `json:"payload"`
+	CreatedAt time.Time       `json:"created_at"`
+}
