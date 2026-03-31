@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -88,7 +89,7 @@ func runSecretGet(cmd *cobra.Command, args []string) error {
 	var resp struct {
 		Value string `json:"value"`
 	}
-	if err := c.Do("GET", "/api/secrets/value?key="+args[0], nil, &resp); err != nil {
+	if err := c.Do("GET", "/api/secrets/"+url.PathEscape(args[0])+"/value", nil, &resp); err != nil {
 		return err
 	}
 	fmt.Print(resp.Value)
@@ -109,7 +110,7 @@ func runSecretList(cmd *cobra.Command, args []string) error {
 
 func runSecretDelete(cmd *cobra.Command, args []string) error {
 	c := client.NewUnixClient(client.DefaultSocketPath())
-	if err := c.Do("DELETE", "/api/secrets?key="+args[0], nil, nil); err != nil {
+	if err := c.Do("DELETE", "/api/secrets/"+url.PathEscape(args[0]), nil, nil); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "secret %q deleted\n", args[0])

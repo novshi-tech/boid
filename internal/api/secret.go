@@ -22,8 +22,8 @@ func (h *SecretHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.List)
 	r.Post("/", h.Set)
-	r.Delete("/", h.Delete)
-	r.Get("/value", h.GetValue)
+	r.Delete("/{key}", h.Delete)
+	r.Get("/{key}/value", h.GetValue)
 	return r
 }
 
@@ -62,9 +62,9 @@ func (h *SecretHandler) Set(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *SecretHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	key := r.URL.Query().Get("key")
+	key := chi.URLParam(r, "key")
 	if key == "" {
-		writeError(w, http.StatusBadRequest, "key query parameter required")
+		writeError(w, http.StatusBadRequest, "key path parameter required")
 		return
 	}
 	if err := h.Store.Delete(key); err != nil {
@@ -75,9 +75,9 @@ func (h *SecretHandler) Delete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *SecretHandler) GetValue(w http.ResponseWriter, r *http.Request) {
-	key := r.URL.Query().Get("key")
+	key := chi.URLParam(r, "key")
 	if key == "" {
-		writeError(w, http.StatusBadRequest, "key query parameter required")
+		writeError(w, http.StatusBadRequest, "key path parameter required")
 		return
 	}
 	val, err := h.Store.Get(key)

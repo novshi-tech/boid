@@ -39,7 +39,16 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	templates.TaskDetail(detail.Task, detail.Actions, detail.Jobs).Render(r.Context(), w)
+	jobs := make([]*templates.JobView, 0, len(detail.Jobs))
+	for _, job := range detail.Jobs {
+		jobs = append(jobs, &templates.JobView{
+			HandlerID: job.HandlerID,
+			Status:    string(job.Status),
+			ExitCode:  job.ExitCode,
+			CreatedAt: job.CreatedAt,
+		})
+	}
+	templates.TaskDetail(detail.Task, detail.Actions, jobs).Render(r.Context(), w)
 }
 
 func (h *WebHandler) ProjectList(w http.ResponseWriter, r *http.Request) {

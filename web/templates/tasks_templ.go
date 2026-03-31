@@ -11,9 +11,16 @@ import templruntime "github.com/a-h/templ/runtime"
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"time"
 )
+
+type JobView struct {
+	HandlerID string
+	Status    string
+	ExitCode  int
+	CreatedAt time.Time
+}
 
 func TaskList(tasks []*orchestrator.Task, currentFilter string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
@@ -280,7 +287,7 @@ func TaskList(tasks []*orchestrator.Task, currentFilter string) templ.Component 
 	})
 }
 
-func TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*dispatcher.Job) templ.Component {
+func TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {

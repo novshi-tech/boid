@@ -348,8 +348,8 @@ Phase 9 実施メモ:
 
 Phase 9 残件:
 
-- `api.TaskWorkflowService` を `api` 配下に残すか、別 package へ逃がすかは現時点では保留だが、handler からは interface 越しにのみ参照される
-- `server/wire.go` の runtime 組み立ては現時点で許容し、追加分割は Phase 10 の最終レビューで判断する
+- `api` から `dispatcher` 具体型依存を除去済み
+- broker register handler は `api` 配下へ移し、`server` は route mount のみを担当する
 - `scripts/check-internal-architecture.sh current|target` と `go test ./...` が通ることを確認済み
 
 ## Phase 10: Final Convergence

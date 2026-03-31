@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/novshi-tech/boid/internal/dispatcher"
 )
 
 type JobHandler struct {
@@ -33,7 +32,7 @@ func (h *JobHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if jobs == nil {
-		jobs = []*dispatcher.Job{}
+		jobs = []*Job{}
 	}
 	writeJSON(w, http.StatusOK, jobs)
 }

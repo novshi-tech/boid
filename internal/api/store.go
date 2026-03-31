@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 
-	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -20,9 +19,13 @@ type DispatchCoordinator interface {
 }
 
 type JobLifecycle interface {
-	CompleteJob(jobID string, result dispatcher.JobCompletionResult)
+	CompleteJob(jobID string, result JobCompletion)
 	UnregisterJob(jobID string)
 	CleanupTaskWindow(taskID string)
+}
+
+type BrokerRegistry interface {
+	RegisterBrokerCommands(commands map[string]orchestrator.CommandDef) (*BrokerRegisterResponse, error)
 }
 
 type WorktreeCleaner interface {
@@ -51,7 +54,7 @@ type WebService interface {
 
 type WorkflowService interface {
 	ApplyAction(ctx context.Context, taskID string, req ApplyActionRequest) (*ActionApplication, error)
-	CompleteJob(ctx context.Context, jobID string, req JobDoneRequest) (*dispatcher.Job, error)
+	CompleteJob(ctx context.Context, jobID string, req JobDoneRequest) (*Job, error)
 }
 
 type TaskStore interface {
@@ -74,9 +77,9 @@ type ProjectRepository interface {
 }
 
 type JobStore interface {
-	GetJob(id string) (*dispatcher.Job, error)
-	ListJobsByTask(taskID string) ([]*dispatcher.Job, error)
-	UpdateJob(job *dispatcher.Job) error
+	GetJob(id string) (*Job, error)
+	ListJobsByTask(taskID string) ([]*Job, error)
+	UpdateJob(job *Job) error
 }
 
 type TxStore interface {

@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -31,7 +30,7 @@ type ProjectReloadResult struct {
 type TaskDetailView struct {
 	Task    *orchestrator.Task
 	Actions []*orchestrator.Action
-	Jobs    []*dispatcher.Job
+	Jobs    []*Job
 }
 
 type ProjectAppService struct {
@@ -270,16 +269,16 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	}, nil
 }
 
-func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req JobDoneRequest) (*dispatcher.Job, error) {
+func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req JobDoneRequest) (*Job, error) {
 	job, err := s.Jobs.GetJob(jobID)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
 
 	if req.ExitCode == 0 {
-		job.Status = dispatcher.JobStatusCompleted
+		job.Status = JobStatusCompleted
 	} else {
-		job.Status = dispatcher.JobStatusFailed
+		job.Status = JobStatusFailed
 	}
 	job.ExitCode = req.ExitCode
 	job.Output = req.Output
@@ -288,7 +287,7 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 		if s.Lifecycle == nil {
 			return
 		}
-		s.Lifecycle.CompleteJob(job.ID, dispatcher.JobCompletionResult{
+		s.Lifecycle.CompleteJob(job.ID, JobCompletion{
 			Output:   req.Output,
 			ExitCode: req.ExitCode,
 		})

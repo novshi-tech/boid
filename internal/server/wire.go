@@ -20,7 +20,7 @@ import (
 type appRuntime struct {
 	projectRepo *orchestrator.ProjectRepository
 	taskRepo    *orchestrator.TaskRepository
-	jobRepo     *dispatcher.JobRepository
+	jobStore    api.JobStore
 	projectSvc  *api.ProjectAppService
 	taskSvc     *api.TaskAppService
 	webSvc      *api.WebAppService
@@ -64,6 +64,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	projectRepo := orchestrator.NewProjectRepository(srv.db)
 	taskRepo := orchestrator.NewTaskRepository(srv.db)
 	jobRepo := dispatcher.NewJobRepository(srv.db)
+	jobStore := jobStoreAdapter{repo: jobRepo}
 	tx := apiTransactor{db: srv.db}
 
 	wtRootDir := filepath.Join(filepath.Dir(cfg.DBPath), "worktrees")
@@ -93,13 +94,13 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	adapter := orchestrator.NewDispatchAdapter(runner, planner)
 	workflow := &api.TaskWorkflowService{
 		Tasks:       taskRepo,
-		Jobs:        jobRepo,
+		Jobs:        jobStore,
 		Projects:    projectRepo,
 		Tx:          tx,
 		Meta:        store,
 		Resolver:    orchestrator.NewDefaultRegistry(),
 		Coordinator: &orchestrator.Coordinator{Evaluator: &orchestrator.Evaluator{}, HookExecutor: adapter, GateExecutor: adapter, Waiter: adapter, MaxDepth: 5},
-		Lifecycle:   runner,
+		Lifecycle:   jobLifecycleAdapter{runner: runner},
 		Worktrees:   wtMgr,
 	}
 	projectSvc := &api.ProjectAppService{
@@ -112,7 +113,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	webSvc := &api.WebAppService{
 		Tasks:    taskRepo,
 		Actions:  taskRepo,
-		Jobs:     jobRepo,
+		Jobs:     jobStore,
 		Projects: projectRepo,
 		Meta:     store,
 	}
@@ -120,7 +121,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	return &appRuntime{
 		projectRepo: projectRepo,
 		taskRepo:    taskRepo,
-		jobRepo:     jobRepo,
+		jobStore:    jobStore,
 		projectSvc:  projectSvc,
 		taskSvc:     taskSvc,
 		webSvc:      webSvc,
@@ -146,7 +147,10 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		fmt.Fprintf(w, `{"socket":%q}`, srv.BrokerSocket())
 	})
 
-	r.Post("/api/broker/register", srv.handleBrokerRegister)
+	brokerHandler := &api.BrokerHandler{
+		Registry: brokerRegistry{broker: srv.broker, secretStore: srv.secretStore},
+	}
+	r.Mount("/api/broker", brokerHandler.Routes())
 
 	if srv.secretStore != nil {
 		secretHandler := &api.SecretHandler{Store: srv.secretStore}
@@ -164,7 +168,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		r.Mount("/", actionHandler.Routes())
 	})
 
-	jobHandler := &api.JobHandler{Jobs: runtime.jobRepo, Service: runtime.workflow}
+	jobHandler := &api.JobHandler{Jobs: runtime.jobStore, Service: runtime.workflow}
 	r.Mount("/api/jobs", jobHandler.Routes())
 
 	webHandler := &api.WebHandler{Service: runtime.webSvc}

@@ -3,9 +3,16 @@ package templates
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"time"
 )
+
+type JobView struct {
+	HandlerID string
+	Status    string
+	ExitCode  int
+	CreatedAt time.Time
+}
 
 templ TaskList(tasks []*orchestrator.Task, currentFilter string) {
 	@Layout("Tasks") {
@@ -44,7 +51,7 @@ templ TaskList(tasks []*orchestrator.Task, currentFilter string) {
 	}
 }
 
-templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*dispatcher.Job) {
+templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView) {
 	@Layout(task.Title) {
 		<h1>{ task.Title }</h1>
 		<div class="section">

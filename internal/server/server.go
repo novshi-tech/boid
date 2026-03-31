@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -212,62 +211,10 @@ func (s *Server) BrokerSocket() string {
 	return ""
 }
 
-// Broker returns the sandbox broker.
-func (s *Server) Broker() *sandbox.Broker {
-	return s.broker
-}
-
-// SecretStore returns the secret store.
-func (s *Server) SecretStore() *dispatcher.SecretStore {
-	return s.secretStore
-}
-
 // TCPAddr returns the TCP listener address.
 func (s *Server) TCPAddr() string {
 	if s.tcpLn != nil {
 		return s.tcpLn.Addr().String()
 	}
 	return ""
-}
-
-type brokerRegisterRequest struct {
-	Commands map[string]sandbox.CommandDef `json:"commands"`
-}
-
-type brokerRegisterResponse struct {
-	Token  string `json:"token"`
-	Socket string `json:"socket"`
-}
-
-func (s *Server) handleBrokerRegister(w http.ResponseWriter, r *http.Request) {
-	if s.broker == nil {
-		http.Error(w, `{"error":"broker not available"}`, http.StatusServiceUnavailable)
-		return
-	}
-
-	var req brokerRegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
-		return
-	}
-
-	if len(req.Commands) == 0 {
-		http.Error(w, `{"error":"no commands"}`, http.StatusBadRequest)
-		return
-	}
-
-	// boid exec uses gate role for maximum access
-	ctx := sandbox.TokenContext{Role: "gate"}
-	var token string
-	if s.secretStore != nil {
-		token = s.broker.RegisterWithSecrets(req.Commands, ctx, s.secretStore.Get)
-	} else {
-		token = s.broker.Register(req.Commands, ctx)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(brokerRegisterResponse{
-		Token:  token,
-		Socket: s.broker.SocketPath,
-	})
 }

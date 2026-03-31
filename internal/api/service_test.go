@@ -4,16 +4,15 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 func TestTaskWorkflowServiceCompleteJobFinalizesOnTransitionMiss(t *testing.T) {
-	job := &dispatcher.Job{
+	job := &Job{
 		ID:        "job-1",
 		TaskID:    "task-1",
 		ProjectID: "proj-1",
-		Status:    dispatcher.JobStatusRunning,
+		Status:    JobStatusRunning,
 	}
 	task := &orchestrator.Task{
 		ID:        "task-1",
@@ -36,8 +35,8 @@ func TestTaskWorkflowServiceCompleteJobFinalizesOnTransitionMiss(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompleteJob() error = %v", err)
 	}
-	if got.Status != dispatcher.JobStatusCompleted {
-		t.Fatalf("job status = %q, want %q", got.Status, dispatcher.JobStatusCompleted)
+	if got.Status != JobStatusCompleted {
+		t.Fatalf("job status = %q, want %q", got.Status, JobStatusCompleted)
 	}
 	if jobs.updateCalls != 1 {
 		t.Fatalf("UpdateJob calls = %d, want 1", jobs.updateCalls)
@@ -54,11 +53,11 @@ func TestTaskWorkflowServiceCompleteJobFinalizesOnTransitionMiss(t *testing.T) {
 }
 
 func TestTaskWorkflowServiceCompleteJobFinalizesOnResolverError(t *testing.T) {
-	job := &dispatcher.Job{
+	job := &Job{
 		ID:        "job-2",
 		TaskID:    "task-2",
 		ProjectID: "proj-2",
-		Status:    dispatcher.JobStatusRunning,
+		Status:    JobStatusRunning,
 	}
 	task := &orchestrator.Task{
 		ID:        "task-2",
@@ -84,8 +83,8 @@ func TestTaskWorkflowServiceCompleteJobFinalizesOnResolverError(t *testing.T) {
 	if jobs.updateCalls != 1 {
 		t.Fatalf("UpdateJob calls = %d, want 1", jobs.updateCalls)
 	}
-	if jobs.job.Status != dispatcher.JobStatusFailed {
-		t.Fatalf("job status = %q, want %q", jobs.job.Status, dispatcher.JobStatusFailed)
+	if jobs.job.Status != JobStatusFailed {
+		t.Fatalf("job status = %q, want %q", jobs.job.Status, JobStatusFailed)
 	}
 	if lifecycle.completedJobID != job.ID {
 		t.Fatalf("CompleteJob notified %q, want %q", lifecycle.completedJobID, job.ID)
@@ -119,13 +118,13 @@ func (s *stubTaskStore) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrat
 func (s *stubTaskStore) UpdateTask(task *orchestrator.Task) error { return nil }
 
 type stubJobStore struct {
-	job         *dispatcher.Job
+	job         *Job
 	getErr      error
 	updateErr   error
 	updateCalls int
 }
 
-func (s *stubJobStore) GetJob(id string) (*dispatcher.Job, error) {
+func (s *stubJobStore) GetJob(id string) (*Job, error) {
 	if s.getErr != nil {
 		return nil, s.getErr
 	}
@@ -134,8 +133,8 @@ func (s *stubJobStore) GetJob(id string) (*dispatcher.Job, error) {
 	}
 	return s.job, nil
 }
-func (s *stubJobStore) ListJobsByTask(taskID string) ([]*dispatcher.Job, error) { return nil, nil }
-func (s *stubJobStore) UpdateJob(job *dispatcher.Job) error {
+func (s *stubJobStore) ListJobsByTask(taskID string) ([]*Job, error) { return nil, nil }
+func (s *stubJobStore) UpdateJob(job *Job) error {
 	s.updateCalls++
 	s.job = job
 	return s.updateErr
@@ -168,10 +167,10 @@ type stubLifecycle struct {
 	completedJobID    string
 	unregisteredJobID string
 	cleanupTaskID     string
-	result            dispatcher.JobCompletionResult
+	result            JobCompletion
 }
 
-func (l *stubLifecycle) CompleteJob(jobID string, result dispatcher.JobCompletionResult) {
+func (l *stubLifecycle) CompleteJob(jobID string, result JobCompletion) {
 	l.completedJobID = jobID
 	l.result = result
 }
