@@ -1,9 +1,9 @@
-package hostcmd_test
+package sandbox_test
 
 import (
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/hostcmd"
+	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 func TestCommandFromArgv0(t *testing.T) {
@@ -20,7 +20,7 @@ func TestCommandFromArgv0(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.argv0, func(t *testing.T) {
-			got := hostcmd.CommandFromArgv0(tt.argv0)
+			got := sandbox.CommandFromArgv0(tt.argv0)
 			if got != tt.expected {
 				t.Errorf("CommandFromArgv0(%q) = %q, want %q", tt.argv0, got, tt.expected)
 			}

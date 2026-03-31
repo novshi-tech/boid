@@ -1,21 +1,21 @@
-package hostcmd_test
+package sandbox_test
 
 import (
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/hostcmd"
+	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 func TestCheckPolicy(t *testing.T) {
 	tests := []struct {
 		name     string
-		def      hostcmd.CommandDef
+		def      sandbox.CommandDef
 		args     []string
 		expected bool
 	}{
 		{
 			name: "wildcard allows everything",
-			def: hostcmd.CommandDef{
+			def: sandbox.CommandDef{
 				AllowedPatterns: []string{"*"},
 			},
 			args:     []string{"--flag", "value"},
@@ -23,7 +23,7 @@ func TestCheckPolicy(t *testing.T) {
 		},
 		{
 			name: "empty args always allowed",
-			def: hostcmd.CommandDef{
+			def: sandbox.CommandDef{
 				AllowedPatterns: []string{},
 			},
 			args:     []string{},
@@ -31,7 +31,7 @@ func TestCheckPolicy(t *testing.T) {
 		},
 		{
 			name: "empty patterns reject args",
-			def: hostcmd.CommandDef{
+			def: sandbox.CommandDef{
 				AllowedPatterns: []string{},
 			},
 			args:     []string{"something"},
@@ -39,7 +39,7 @@ func TestCheckPolicy(t *testing.T) {
 		},
 		{
 			name: "allowed pattern matches joined args",
-			def: hostcmd.CommandDef{
+			def: sandbox.CommandDef{
 				AllowedPatterns: []string{"status *"},
 			},
 			args:     []string{"status", "--short"},
@@ -47,7 +47,7 @@ func TestCheckPolicy(t *testing.T) {
 		},
 		{
 			name: "denied pattern blocks",
-			def: hostcmd.CommandDef{
+			def: sandbox.CommandDef{
 				AllowedPatterns: []string{"*"},
 				DeniedPatterns:  []string{"push *://*"},
 			},
@@ -56,7 +56,7 @@ func TestCheckPolicy(t *testing.T) {
 		},
 		{
 			name: "denied pattern does not block non-matching",
-			def: hostcmd.CommandDef{
+			def: sandbox.CommandDef{
 				AllowedPatterns: []string{"*"},
 				DeniedPatterns:  []string{"push *://*"},
 			},
@@ -65,7 +65,7 @@ func TestCheckPolicy(t *testing.T) {
 		},
 		{
 			name: "allowed subcommands permit valid subcommand",
-			def: hostcmd.CommandDef{
+			def: sandbox.CommandDef{
 				AllowedSubcommands: []string{"status", "log", "diff"},
 				AllowedPatterns:    []string{"*"},
 			},
@@ -74,7 +74,7 @@ func TestCheckPolicy(t *testing.T) {
 		},
 		{
 			name: "allowed subcommands block invalid subcommand",
-			def: hostcmd.CommandDef{
+			def: sandbox.CommandDef{
 				AllowedSubcommands: []string{"status", "log"},
 				AllowedPatterns:    []string{"*"},
 			},
@@ -83,7 +83,7 @@ func TestCheckPolicy(t *testing.T) {
 		},
 		{
 			name: "subcommand extraction skips global options",
-			def: hostcmd.CommandDef{
+			def: sandbox.CommandDef{
 				AllowedSubcommands:  []string{"status"},
 				AllowedPatterns:     []string{"*"},
 				ExtractSubcommandFn: "git",
@@ -93,7 +93,7 @@ func TestCheckPolicy(t *testing.T) {
 		},
 		{
 			name: "allowed subcommands without patterns permits valid subcommand",
-			def: hostcmd.CommandDef{
+			def: sandbox.CommandDef{
 				AllowedSubcommands:  []string{"status", "log", "diff"},
 				ExtractSubcommandFn: "git",
 			},
@@ -102,7 +102,7 @@ func TestCheckPolicy(t *testing.T) {
 		},
 		{
 			name: "allowed subcommands without patterns blocks invalid subcommand",
-			def: hostcmd.CommandDef{
+			def: sandbox.CommandDef{
 				AllowedSubcommands:  []string{"status", "log"},
 				ExtractSubcommandFn: "git",
 			},
@@ -111,7 +111,7 @@ func TestCheckPolicy(t *testing.T) {
 		},
 		{
 			name: "allowed subcommands without patterns respects denied patterns",
-			def: hostcmd.CommandDef{
+			def: sandbox.CommandDef{
 				AllowedSubcommands:  []string{"push"},
 				DeniedPatterns:      []string{"push *://*"},
 				ExtractSubcommandFn: "git",
@@ -121,7 +121,7 @@ func TestCheckPolicy(t *testing.T) {
 		},
 		{
 			name: "deny takes precedence over allow",
-			def: hostcmd.CommandDef{
+			def: sandbox.CommandDef{
 				AllowedPatterns: []string{"*"},
 				DeniedPatterns:  []string{"remote add *"},
 			},
@@ -130,7 +130,7 @@ func TestCheckPolicy(t *testing.T) {
 		},
 		{
 			name: "default deny when no patterns match",
-			def: hostcmd.CommandDef{
+			def: sandbox.CommandDef{
 				AllowedPatterns: []string{"status *"},
 			},
 			args:     []string{"push", "origin"},
@@ -140,7 +140,7 @@ func TestCheckPolicy(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := hostcmd.CheckPolicy(tt.def, tt.args)
+			result := sandbox.CheckPolicy(tt.def, tt.args)
 			if result != tt.expected {
 				t.Errorf("CheckPolicy(%v, %v) = %v, want %v", tt.def, tt.args, result, tt.expected)
 			}

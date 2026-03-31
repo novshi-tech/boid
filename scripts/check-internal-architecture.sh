@@ -11,7 +11,6 @@ current_allowed=(
   client
   db
   dispatcher
-  hostcmd
   kit
   orchestrator
   project

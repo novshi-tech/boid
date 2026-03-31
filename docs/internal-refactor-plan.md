@@ -49,7 +49,7 @@ PR 前提ではなく、ローカルで段階的に積み上げる。
 - [x] Phase 3: Orchestrator Boundary Cleanup
 - [x] Phase 4: Worktree Into Dispatcher
 - [x] Phase 5: Secret Into Dispatcher
-- [ ] Phase 6: Host Command Policy Into Sandbox
+- [x] Phase 6: Host Command Policy Into Sandbox
 - [ ] Phase 7: Projectspec And Kit Into Orchestrator
 - [ ] Phase 8: Database Boundary Cleanup
 - [ ] Phase 9: Thin API And Thin Server
@@ -244,6 +244,12 @@ Phase 5 実施メモ:
 
 - `internal/hostcmd` が不要になる
 
+Phase 6 実施メモ:
+
+- `hostcmd` の alias API はすべて `sandbox` に吸収した
+- policy / broker / protocol / shim のテストを `sandbox` package へ移した
+- `internal/hostcmd` は削除済み
+
 ## Phase 7: Projectspec And Kit Into Orchestrator
 
 目的:
@@ -380,7 +386,6 @@ Phase 0/1 時点の `internal` 直下 package:
 - `client`
 - `db`
 - `dispatcher`
-- `hostcmd`
 - `kit`
 - `orchestrator`
 - `project`
@@ -393,4 +398,5 @@ Phase 0/1 時点の `internal` 直下 package:
 - `internal/project` は空ディレクトリとして残っている
 - `internal/worktree` は削除済み
 - `internal/secret` は削除済み
+- `internal/hostcmd` は削除済み
 - 現状の baseline と最終 target の両方を `scripts/check-internal-architecture.sh` で検査する

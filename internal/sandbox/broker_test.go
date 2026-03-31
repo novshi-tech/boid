@@ -1,4 +1,4 @@
-package hostcmd_test
+package sandbox_test
 
 import (
 	"context"
@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/hostcmd"
 	"github.com/novshi-tech/boid/internal/projectspec"
+	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
-var testCtx = hostcmd.TokenContext{
+var testCtx = sandbox.TokenContext{
 	JobID:     "job-1",
 	TaskID:    "task-1",
 	ProjectID: "proj-1",
@@ -25,9 +25,9 @@ func TestBroker_ExecCommand(t *testing.T) {
 	defer cancel()
 
 	sockPath := filepath.Join(t.TempDir(), "broker.sock")
-	broker := &hostcmd.Broker{SocketPath: sockPath}
+	broker := &sandbox.Broker{SocketPath: sockPath}
 
-	token := broker.Register(map[string]hostcmd.CommandDef{
+	token := broker.Register(map[string]sandbox.CommandDef{
 		"echo": {
 			Name:            "echo",
 			Path:            "/bin/echo",
@@ -47,7 +47,7 @@ func TestBroker_ExecCommand(t *testing.T) {
 	}
 	defer conn.Close()
 
-	req := hostcmd.ExecRequest{
+	req := sandbox.ExecRequest{
 		Command: "echo",
 		Args:    []string{"hello", "world"},
 		Token:   token,
@@ -56,7 +56,7 @@ func TestBroker_ExecCommand(t *testing.T) {
 		t.Fatalf("encode request: %v", err)
 	}
 
-	var resp hostcmd.ExecResponse
+	var resp sandbox.ExecResponse
 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
@@ -70,12 +70,12 @@ func TestBroker_ExecCommand(t *testing.T) {
 }
 
 func TestBroker_UnknownCommand(t *testing.T) {
-	broker := &hostcmd.Broker{}
-	token := broker.Register(map[string]hostcmd.CommandDef{
+	broker := &sandbox.Broker{}
+	token := broker.Register(map[string]sandbox.CommandDef{
 		"echo": {Name: "echo", Path: "/bin/echo"},
 	}, testCtx)
 
-	resp := broker.Handle(&hostcmd.ExecRequest{
+	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "rm",
 		Args:    []string{"-rf", "/"},
 		Token:   token,
@@ -89,12 +89,12 @@ func TestBroker_UnknownCommand(t *testing.T) {
 }
 
 func TestBroker_InvalidToken(t *testing.T) {
-	broker := &hostcmd.Broker{}
-	broker.Register(map[string]hostcmd.CommandDef{
+	broker := &sandbox.Broker{}
+	broker.Register(map[string]sandbox.CommandDef{
 		"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
 	}, testCtx)
 
-	resp := broker.Handle(&hostcmd.ExecRequest{
+	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "echo",
 		Args:    []string{"hello"},
 		Token:   "bad-token",
@@ -108,12 +108,12 @@ func TestBroker_InvalidToken(t *testing.T) {
 }
 
 func TestBroker_EmptyToken(t *testing.T) {
-	broker := &hostcmd.Broker{}
-	broker.Register(map[string]hostcmd.CommandDef{
+	broker := &sandbox.Broker{}
+	broker.Register(map[string]sandbox.CommandDef{
 		"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
 	}, testCtx)
 
-	resp := broker.Handle(&hostcmd.ExecRequest{
+	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "echo",
 		Args:    []string{"hello"},
 	})
@@ -123,13 +123,13 @@ func TestBroker_EmptyToken(t *testing.T) {
 }
 
 func TestBroker_Unregister(t *testing.T) {
-	broker := &hostcmd.Broker{}
-	token := broker.Register(map[string]hostcmd.CommandDef{
+	broker := &sandbox.Broker{}
+	token := broker.Register(map[string]sandbox.CommandDef{
 		"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
 	}, testCtx)
 
 	// Before unregister: should work
-	resp := broker.Handle(&hostcmd.ExecRequest{
+	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "echo",
 		Args:    []string{"hello"},
 		Token:   token,
@@ -141,7 +141,7 @@ func TestBroker_Unregister(t *testing.T) {
 	broker.Unregister(token)
 
 	// After unregister: should fail
-	resp = broker.Handle(&hostcmd.ExecRequest{
+	resp = broker.Handle(&sandbox.ExecRequest{
 		Command: "echo",
 		Args:    []string{"hello"},
 		Token:   token,
@@ -154,8 +154,8 @@ func TestBroker_Unregister(t *testing.T) {
 func TestBroker_CwdValidation(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	broker := &hostcmd.Broker{}
-	token := broker.Register(map[string]hostcmd.CommandDef{
+	broker := &sandbox.Broker{}
+	token := broker.Register(map[string]sandbox.CommandDef{
 		"echo": {
 			Name:               "echo",
 			Path:               "/bin/echo",
@@ -166,7 +166,7 @@ func TestBroker_CwdValidation(t *testing.T) {
 	}, testCtx)
 
 	// Valid cwd
-	resp := broker.Handle(&hostcmd.ExecRequest{
+	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "echo",
 		Args:    []string{"hello"},
 		Token:   token,
@@ -177,7 +177,7 @@ func TestBroker_CwdValidation(t *testing.T) {
 	}
 
 	// Missing cwd when required
-	resp = broker.Handle(&hostcmd.ExecRequest{
+	resp = broker.Handle(&sandbox.ExecRequest{
 		Command: "echo",
 		Args:    []string{"hello"},
 		Token:   token,
@@ -187,7 +187,7 @@ func TestBroker_CwdValidation(t *testing.T) {
 	}
 
 	// Cwd outside allowed prefixes
-	resp = broker.Handle(&hostcmd.ExecRequest{
+	resp = broker.Handle(&sandbox.ExecRequest{
 		Command: "echo",
 		Args:    []string{"hello"},
 		Token:   token,
@@ -198,7 +198,7 @@ func TestBroker_CwdValidation(t *testing.T) {
 	}
 
 	// Relative path should be rejected
-	resp = broker.Handle(&hostcmd.ExecRequest{
+	resp = broker.Handle(&sandbox.ExecRequest{
 		Command: "echo",
 		Args:    []string{"hello"},
 		Token:   token,
@@ -210,8 +210,8 @@ func TestBroker_CwdValidation(t *testing.T) {
 }
 
 func TestBroker_PerCommandEnv(t *testing.T) {
-	broker := &hostcmd.Broker{}
-	token := broker.Register(map[string]hostcmd.CommandDef{
+	broker := &sandbox.Broker{}
+	token := broker.Register(map[string]sandbox.CommandDef{
 		"env": {
 			Name:            "env",
 			Path:            "/usr/bin/env",
@@ -220,7 +220,7 @@ func TestBroker_PerCommandEnv(t *testing.T) {
 		},
 	}, testCtx)
 
-	resp := broker.Handle(&hostcmd.ExecRequest{
+	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "env",
 		Token:   token,
 	})
@@ -233,7 +233,7 @@ func TestBroker_PerCommandEnv(t *testing.T) {
 }
 
 func TestBroker_SecretResolution(t *testing.T) {
-	broker := &hostcmd.Broker{}
+	broker := &sandbox.Broker{}
 	resolver := func(key string) (string, error) {
 		if key == "github/pat" {
 			return "ghp_secret123", nil
@@ -241,18 +241,18 @@ func TestBroker_SecretResolution(t *testing.T) {
 		return "", fmt.Errorf("not found: %s", key)
 	}
 
-	token := broker.RegisterWithSecrets(map[string]hostcmd.CommandDef{
+	token := broker.RegisterWithSecrets(map[string]sandbox.CommandDef{
 		"env": {
 			Name:            "env",
 			Path:            "/usr/bin/env",
 			AllowedPatterns: []string{"*"},
 			Env:             map[string]string{"GH_TOKEN": "secret:github/pat", "PLAIN": "value"},
 		},
-	}, hostcmd.TokenContext{
+	}, sandbox.TokenContext{
 		JobID: "job-1", TaskID: "task-1", ProjectID: "proj-1", Role: string(projectspec.RoleGate),
 	}, resolver)
 
-	resp := broker.Handle(&hostcmd.ExecRequest{
+	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "env",
 		Token:   token,
 	})
@@ -268,8 +268,8 @@ func TestBroker_SecretResolution(t *testing.T) {
 }
 
 func TestBroker_RegisterReturnsUniqueTokens(t *testing.T) {
-	broker := &hostcmd.Broker{}
-	cmds := map[string]hostcmd.CommandDef{
+	broker := &sandbox.Broker{}
+	cmds := map[string]sandbox.CommandDef{
 		"echo": {Name: "echo", Path: "/bin/echo"},
 	}
 
@@ -281,15 +281,15 @@ func TestBroker_RegisterReturnsUniqueTokens(t *testing.T) {
 }
 
 func TestBroker_GetContext(t *testing.T) {
-	broker := &hostcmd.Broker{}
-	ctx := hostcmd.TokenContext{
+	broker := &sandbox.Broker{}
+	ctx := sandbox.TokenContext{
 		JobID:     "job-42",
 		TaskID:    "task-99",
 		ProjectID: "proj-7",
 		Role:      string(projectspec.RoleGate),
 	}
 
-	token := broker.Register(map[string]hostcmd.CommandDef{
+	token := broker.Register(map[string]sandbox.CommandDef{
 		"echo": {Name: "echo", Path: "/bin/echo"},
 	}, ctx)
 
@@ -318,14 +318,14 @@ func TestBroker_GetContext(t *testing.T) {
 }
 
 func TestBroker_BoidBuiltinPolicy_HookRole(t *testing.T) {
-	broker := &hostcmd.Broker{}
-	hookCtx := hostcmd.TokenContext{
+	broker := &sandbox.Broker{}
+	hookCtx := sandbox.TokenContext{
 		JobID: "j1", TaskID: "t1", ProjectID: "p1", Role: string(projectspec.RoleHook),
 	}
-	token := broker.Register(map[string]hostcmd.CommandDef{}, hookCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, hookCtx)
 
 	// hook can call: boid job done
-	resp := broker.Handle(&hostcmd.ExecRequest{
+	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
 		Args:    []string{"job", "done", "--exit-code", "0"},
 		Token:   token,
@@ -337,7 +337,7 @@ func TestBroker_BoidBuiltinPolicy_HookRole(t *testing.T) {
 	}
 
 	// hook cannot call: boid task create
-	resp = broker.Handle(&hostcmd.ExecRequest{
+	resp = broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
 		Args:    []string{"task", "create", "--title", "test"},
 		Token:   token,
@@ -348,14 +348,14 @@ func TestBroker_BoidBuiltinPolicy_HookRole(t *testing.T) {
 }
 
 func TestBroker_BoidBuiltinPolicy_GateRole(t *testing.T) {
-	broker := &hostcmd.Broker{}
-	gateCtx := hostcmd.TokenContext{
+	broker := &sandbox.Broker{}
+	gateCtx := sandbox.TokenContext{
 		JobID: "j1", TaskID: "t1", ProjectID: "p1", Role: string(projectspec.RoleGate),
 	}
-	token := broker.Register(map[string]hostcmd.CommandDef{}, gateCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, gateCtx)
 
 	// gate can call: boid job done
-	resp := broker.Handle(&hostcmd.ExecRequest{
+	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
 		Args:    []string{"job", "done", "--exit-code", "0"},
 		Token:   token,
@@ -365,7 +365,7 @@ func TestBroker_BoidBuiltinPolicy_GateRole(t *testing.T) {
 	}
 
 	// gate can call: boid task create
-	resp = broker.Handle(&hostcmd.ExecRequest{
+	resp = broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
 		Args:    []string{"task", "create", "--title", "test"},
 		Token:   token,
