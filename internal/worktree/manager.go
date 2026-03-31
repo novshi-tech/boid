@@ -63,7 +63,7 @@ func (m *Manager) Create(projectDir, projectID, taskID, branchPrefix, baseBranch
 		Branch:     branch,
 		BaseBranch: baseBranch,
 	}
-	if err := m.DB.CreateWorktree(w); err != nil {
+	if err := CreateWorktree(m.DB.Conn, w); err != nil {
 		// Best-effort cleanup on DB failure
 		exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", wtPath).Run()
 		return nil, fmt.Errorf("record worktree: %w", err)
@@ -77,7 +77,7 @@ func (m *Manager) Create(projectDir, projectID, taskID, branchPrefix, baseBranch
 // deleteBranch should be true for aborted tasks, false for done tasks
 // (where the branch lives on as a PR).
 func (m *Manager) Remove(projectDir, taskID string, deleteBranch bool) error {
-	w, err := m.DB.GetWorktreeByTask(taskID)
+	w, err := GetWorktreeByTask(m.DB.Conn, taskID)
 	if err != nil {
 		return fmt.Errorf("get worktree: %w", err)
 	}
@@ -103,7 +103,7 @@ func (m *Manager) Remove(projectDir, taskID string, deleteBranch bool) error {
 		}
 	}
 
-	if err := m.DB.MarkWorktreeCleaned(taskID); err != nil {
+	if err := MarkWorktreeCleaned(m.DB.Conn, taskID); err != nil {
 		return fmt.Errorf("mark cleaned: %w", err)
 	}
 
@@ -113,7 +113,7 @@ func (m *Manager) Remove(projectDir, taskID string, deleteBranch bool) error {
 
 // Get returns the worktree for the given task, or nil if none exists.
 func (m *Manager) Get(taskID string) (*model.Worktree, error) {
-	return m.DB.GetWorktreeByTask(taskID)
+	return GetWorktreeByTask(m.DB.Conn, taskID)
 }
 
 // CleanupForTask removes the worktree for a task that reached a terminal state.
@@ -144,7 +144,7 @@ func (m *Manager) CleanupForTask(taskID string, newStatus model.TaskStatus) erro
 // CleanOrphaned removes worktrees whose tasks have reached terminal states
 // but were not cleaned up (e.g., due to a crash).
 func (m *Manager) CleanOrphaned() error {
-	active, err := m.DB.ListActiveWorktrees()
+	active, err := ListActiveWorktrees(m.DB.Conn)
 	if err != nil {
 		return err
 	}
