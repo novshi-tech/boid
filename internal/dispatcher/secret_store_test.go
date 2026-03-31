@@ -1,13 +1,13 @@
-package secret_test
+package dispatcher_test
 
 import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/db"
-	"github.com/novshi-tech/boid/internal/secret"
+	"github.com/novshi-tech/boid/internal/dispatcher"
 )
 
-func setupStore(t *testing.T) *secret.Store {
+func setupStore(t *testing.T) *dispatcher.SecretStore {
 	t.Helper()
 	d, err := db.Open(":memory:")
 	if err != nil {
@@ -18,8 +18,8 @@ func setupStore(t *testing.T) *secret.Store {
 	}
 	t.Cleanup(func() { d.Close() })
 
-	key := secret.GenerateKey()
-	s, err := secret.NewStore(d, key)
+	key := dispatcher.GenerateKey()
+	s, err := dispatcher.NewSecretStore(d, key)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
@@ -106,8 +106,8 @@ func TestStore_EncryptionIsReal(t *testing.T) {
 	}
 	t.Cleanup(func() { d.Close() })
 
-	key := secret.GenerateKey()
-	s, _ := secret.NewStore(d, key)
+	key := dispatcher.GenerateKey()
+	s, _ := dispatcher.NewSecretStore(d, key)
 	s.Set("test", "plaintext-secret")
 
 	// Read raw encrypted value from DB
@@ -133,12 +133,12 @@ func TestStore_WrongKeyCannotDecrypt(t *testing.T) {
 	}
 	t.Cleanup(func() { d.Close() })
 
-	key1 := secret.GenerateKey()
-	s1, _ := secret.NewStore(d, key1)
+	key1 := dispatcher.GenerateKey()
+	s1, _ := dispatcher.NewSecretStore(d, key1)
 	s1.Set("test", "secret-value")
 
-	key2 := secret.GenerateKey()
-	s2, _ := secret.NewStore(d, key2)
+	key2 := dispatcher.GenerateKey()
+	s2, _ := dispatcher.NewSecretStore(d, key2)
 	_, err = s2.Get("test")
 	if err == nil {
 		t.Error("expected decryption failure with wrong key")

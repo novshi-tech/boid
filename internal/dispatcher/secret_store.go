@@ -1,4 +1,4 @@
-package secret
+package dispatcher
 
 import (
 	"crypto/aes"
@@ -10,8 +10,8 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 )
 
-// Store provides encrypted secret storage backed by SQLite.
-type Store struct {
+// SecretStore provides encrypted secret storage backed by SQLite.
+type SecretStore struct {
 	db  *db.DB
 	gcm cipher.AEAD
 }
@@ -25,8 +25,8 @@ func GenerateKey() []byte {
 	return key
 }
 
-// NewStore creates a Store with the given database and encryption key.
-func NewStore(d *db.DB, key []byte) (*Store, error) {
+// NewSecretStore creates a store with the given database and encryption key.
+func NewSecretStore(d *db.DB, key []byte) (*SecretStore, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("aes cipher: %w", err)
@@ -35,10 +35,10 @@ func NewStore(d *db.DB, key []byte) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gcm: %w", err)
 	}
-	return &Store{db: d, gcm: gcm}, nil
+	return &SecretStore{db: d, gcm: gcm}, nil
 }
 
-func (s *Store) encrypt(plaintext []byte) ([]byte, error) {
+func (s *SecretStore) encrypt(plaintext []byte) ([]byte, error) {
 	nonce := make([]byte, s.gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, err
@@ -46,7 +46,7 @@ func (s *Store) encrypt(plaintext []byte) ([]byte, error) {
 	return s.gcm.Seal(nonce, nonce, plaintext, nil), nil
 }
 
-func (s *Store) decrypt(ciphertext []byte) ([]byte, error) {
+func (s *SecretStore) decrypt(ciphertext []byte) ([]byte, error) {
 	nonceSize := s.gcm.NonceSize()
 	if len(ciphertext) < nonceSize {
 		return nil, fmt.Errorf("ciphertext too short")
@@ -55,8 +55,7 @@ func (s *Store) decrypt(ciphertext []byte) ([]byte, error) {
 	return s.gcm.Open(nil, nonce, data, nil)
 }
 
-// Set stores or updates a secret.
-func (s *Store) Set(key, value string) error {
+func (s *SecretStore) Set(key, value string) error {
 	encrypted, err := s.encrypt([]byte(value))
 	if err != nil {
 		return fmt.Errorf("encrypt: %w", err)
@@ -72,8 +71,7 @@ func (s *Store) Set(key, value string) error {
 	return err
 }
 
-// Get retrieves and decrypts a secret by key.
-func (s *Store) Get(key string) (string, error) {
+func (s *SecretStore) Get(key string) (string, error) {
 	var encrypted []byte
 	err := s.db.Conn.QueryRow("SELECT value_encrypted FROM secrets WHERE key = ?", key).Scan(&encrypted)
 	if err != nil {
@@ -87,14 +85,12 @@ func (s *Store) Get(key string) (string, error) {
 	return string(plaintext), nil
 }
 
-// Delete removes a secret by key.
-func (s *Store) Delete(key string) error {
+func (s *SecretStore) Delete(key string) error {
 	_, err := s.db.Conn.Exec("DELETE FROM secrets WHERE key = ?", key)
 	return err
 }
 
-// List returns all secret keys (without values).
-func (s *Store) List() ([]string, error) {
+func (s *SecretStore) List() ([]string, error) {
 	rows, err := s.db.Conn.Query("SELECT key FROM secrets ORDER BY key")
 	if err != nil {
 		return nil, err

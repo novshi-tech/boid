@@ -48,7 +48,7 @@ PR 前提ではなく、ローカルで段階的に積み上げる。
 - [x] Phase 2: Shared Models First
 - [x] Phase 3: Orchestrator Boundary Cleanup
 - [x] Phase 4: Worktree Into Dispatcher
-- [ ] Phase 5: Secret Into Dispatcher
+- [x] Phase 5: Secret Into Dispatcher
 - [ ] Phase 6: Host Command Policy Into Sandbox
 - [ ] Phase 7: Projectspec And Kit Into Orchestrator
 - [ ] Phase 8: Database Boundary Cleanup
@@ -218,6 +218,12 @@ Phase 4 実施メモ:
 
 - `internal/secret` を削除できる、または package 外露出がなくなる
 
+Phase 5 実施メモ:
+
+- `SecretStore` と keyfile 処理を `dispatcher` 配下へ移した
+- `api.SecretHandler` は具体型ではなく `SecretStore` interface を受ける
+- `server` は `dispatcher.NewSecretStore` と `dispatcher.LoadOrCreateKey` を使う
+
 ## Phase 6: Host Command Policy Into Sandbox
 
 目的:
@@ -380,11 +386,11 @@ Phase 0/1 時点の `internal` 直下 package:
 - `project`
 - `projectspec`
 - `sandbox`
-- `secret`
 - `server`
 
 補足:
 
 - `internal/project` は空ディレクトリとして残っている
 - `internal/worktree` は削除済み
+- `internal/secret` は削除済み
 - 現状の baseline と最終 target の両方を `scripts/check-internal-architecture.sh` で検査する

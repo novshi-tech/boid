@@ -1,4 +1,4 @@
-package secret
+package dispatcher
 
 import (
 	"fmt"
@@ -20,7 +20,6 @@ func LoadOrCreateKey(path string) ([]byte, error) {
 		return nil, fmt.Errorf("read key: %w", err)
 	}
 
-	// Create new key
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("mkdir: %w", err)
 	}

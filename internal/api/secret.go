@@ -5,11 +5,17 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/novshi-tech/boid/internal/secret"
 )
 
+type SecretStore interface {
+	List() ([]string, error)
+	Set(key, value string) error
+	Delete(key string) error
+	Get(key string) (string, error)
+}
+
 type SecretHandler struct {
-	Store *secret.Store
+	Store SecretStore
 }
 
 func (h *SecretHandler) Routes() chi.Router {

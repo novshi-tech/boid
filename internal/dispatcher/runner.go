@@ -9,7 +9,6 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
 	"github.com/novshi-tech/boid/internal/sandbox"
-	"github.com/novshi-tech/boid/internal/secret"
 )
 
 type Runner struct {
@@ -17,7 +16,7 @@ type Runner struct {
 	Tmux        dtmux.TmuxManager
 	TmuxSession string          // defaults to "boid"
 	Broker      *sandbox.Broker // host command broker
-	SecretStore *secret.Store   // secret store for resolving secret: env values
+	SecretStore *SecretStore    // secret store for resolving secret: env values
 	tokenMu     sync.Mutex
 	jobTokens   map[string]string // job ID -> broker token
 	waiterMu    sync.Mutex

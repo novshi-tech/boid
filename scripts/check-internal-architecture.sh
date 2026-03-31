@@ -17,7 +17,6 @@ current_allowed=(
   project
   projectspec
   sandbox
-  secret
   server
 )
 

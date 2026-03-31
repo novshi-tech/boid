@@ -20,7 +20,6 @@ import (
 	"github.com/novshi-tech/boid/internal/kit"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
-	"github.com/novshi-tech/boid/internal/secret"
 	"github.com/novshi-tech/boid/web"
 )
 
@@ -40,7 +39,7 @@ type Server struct {
 	db          *db.DB
 	store       *orchestrator.ProjectStore
 	broker      *sandbox.Broker
-	secretStore *secret.Store
+	secretStore *dispatcher.SecretStore
 	proxy       *sandbox.Proxy
 	proxyPort   int
 	router      chi.Router
@@ -82,14 +81,14 @@ func New(cfg Config) (*Server, error) {
 	broker := &sandbox.Broker{SocketPath: brokerSocket}
 
 	// Secret store
-	var secretStore *secret.Store
+	var secretStore *dispatcher.SecretStore
 	if cfg.KeyFilePath != "" {
-		key, err := secret.LoadOrCreateKey(cfg.KeyFilePath)
+		key, err := dispatcher.LoadOrCreateKey(cfg.KeyFilePath)
 		if err != nil {
 			d.Close()
 			return nil, fmt.Errorf("load secret key: %w", err)
 		}
-		secretStore, err = secret.NewStore(d, key)
+		secretStore, err = dispatcher.NewSecretStore(d, key)
 		if err != nil {
 			d.Close()
 			return nil, fmt.Errorf("secret store: %w", err)
@@ -312,7 +311,7 @@ func (s *Server) Broker() *sandbox.Broker {
 }
 
 // SecretStore returns the secret store.
-func (s *Server) SecretStore() *secret.Store {
+func (s *Server) SecretStore() *dispatcher.SecretStore {
 	return s.secretStore
 }
 

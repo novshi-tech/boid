@@ -4,7 +4,6 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
 	"github.com/novshi-tech/boid/internal/sandbox"
-	"github.com/novshi-tech/boid/internal/secret"
 )
 
 type WireConfig struct {
@@ -12,7 +11,7 @@ type WireConfig struct {
 	Tmux        dtmux.TmuxManager
 	TmuxSession string
 	Broker      *sandbox.Broker
-	SecretStore *secret.Store
+	SecretStore *SecretStore
 }
 
 func Wire(cfg WireConfig) *Runner {
