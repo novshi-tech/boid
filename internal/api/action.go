@@ -10,7 +10,6 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/projectspec"
 	"github.com/novshi-tech/boid/internal/worktree"
 )
 
@@ -124,7 +123,7 @@ func (h *ActionHandler) Apply(w http.ResponseWriter, r *http.Request) {
 
 // runDispatchLoop runs the dispatch→advance→re-dispatch loop asynchronously.
 // It persists payload and status changes after each cycle.
-func (h *ActionHandler) runDispatchLoop(task *orchestrator.Task, meta *projectspec.ProjectMeta, behavior *projectspec.TaskBehavior, sm *orchestrator.StateMachine) {
+func (h *ActionHandler) runDispatchLoop(task *orchestrator.Task, meta *orchestrator.ProjectMeta, behavior *orchestrator.TaskBehavior, sm *orchestrator.StateMachine) {
 	const maxCycles = 10
 	current := task
 

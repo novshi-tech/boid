@@ -5,13 +5,12 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/projectspec"
 	"github.com/novshi-tech/boid/testutil"
 )
 
 func TestCreateProject(t *testing.T) {
 	d := testutil.NewTestDB(t)
-	p := &projectspec.Project{ID: "proj-1", WorkDir: "/tmp/proj1"}
+	p := &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj1"}
 	if err := orchestrator.CreateProject(d.Conn, p); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
@@ -25,7 +24,7 @@ func TestCreateProject(t *testing.T) {
 
 func TestGetProject(t *testing.T) {
 	d := testutil.NewTestDB(t)
-	p := &projectspec.Project{ID: "proj-1", WorkDir: "/tmp/proj1"}
+	p := &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj1"}
 	if err := orchestrator.CreateProject(d.Conn, p); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
@@ -64,10 +63,10 @@ func TestListProjects(t *testing.T) {
 		t.Fatalf("expected 0 projects, got %d", len(projects))
 	}
 
-	if err := orchestrator.CreateProject(d.Conn, &projectspec.Project{ID: "proj-1", WorkDir: "/tmp/a"}); err != nil {
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/a"}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := orchestrator.CreateProject(d.Conn, &projectspec.Project{ID: "proj-2", WorkDir: "/tmp/b"}); err != nil {
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-2", WorkDir: "/tmp/b"}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
@@ -82,7 +81,7 @@ func TestListProjects(t *testing.T) {
 
 func TestDeleteProject(t *testing.T) {
 	d := testutil.NewTestDB(t)
-	if err := orchestrator.CreateProject(d.Conn, &projectspec.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 

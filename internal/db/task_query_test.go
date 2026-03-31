@@ -6,13 +6,12 @@ import (
 
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/projectspec"
 	"github.com/novshi-tech/boid/testutil"
 )
 
-func createTestProject(t *testing.T, d *db.DB) *projectspec.Project {
+func createTestProject(t *testing.T, d *db.DB) *orchestrator.Project {
 	t.Helper()
-	p := &projectspec.Project{ID: "proj-1", WorkDir: "/tmp"}
+	p := &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}
 	if err := orchestrator.CreateProject(d.Conn, p); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
@@ -163,7 +162,7 @@ func TestListTasks_WithStatusFilter(t *testing.T) {
 func TestListTasks_WithProjectFilter(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	createTestProject(t, d)
-	if err := orchestrator.CreateProject(d.Conn, &projectspec.Project{ID: "proj-2", WorkDir: "/tmp/b"}); err != nil {
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-2", WorkDir: "/tmp/b"}); err != nil {
 		t.Fatalf("create proj-2: %v", err)
 	}
 

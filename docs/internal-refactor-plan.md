@@ -45,7 +45,7 @@ PR 前提ではなく、ローカルで段階的に積み上げる。
 
 - [x] Phase 0: Baseline And Guardrails
 - [x] Phase 1: Package Mapping Fix
-- [ ] Phase 2: Shared Models First
+- [x] Phase 2: Shared Models First
 - [ ] Phase 3: Orchestrator Boundary Cleanup
 - [ ] Phase 4: Worktree Into Dispatcher
 - [ ] Phase 5: Secret Into Dispatcher
@@ -135,6 +135,12 @@ PR 前提ではなく、ローカルで段階的に積み上げる。
 完了確認:
 
 - 共有モデルとロジックの所在が混ざっていない
+
+Phase 2 実施メモ:
+
+- `dispatcher.CommandDef` は `sandbox.CommandDef` の alias とする
+- `dispatcher.BindMount` は `sandbox.BindMount` の alias とする
+- 実行境界の command / bind モデルは `sandbox` 所有とする
 
 ## Phase 3: Orchestrator Boundary Cleanup
 

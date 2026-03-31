@@ -103,28 +103,11 @@ func hostCommandNames(cmds map[string]CommandDef) []string {
 }
 
 func hostCommandDefs(cmds map[string]CommandDef) map[string]sandbox.CommandDef {
-	if len(cmds) == 0 {
-		return nil
-	}
-	out := make(map[string]sandbox.CommandDef, len(cmds))
-	for name, def := range cmds {
-		out[name] = sandbox.CommandDef(def)
-	}
-	return out
+	return cmds
 }
 
 func toSandboxBindings(bindings []BindMount) []sandbox.BindMount {
-	if len(bindings) == 0 {
-		return nil
-	}
-	out := make([]sandbox.BindMount, 0, len(bindings))
-	for _, binding := range bindings {
-		out = append(out, sandbox.BindMount{
-			Source: binding.Source,
-			Mode:   binding.Mode,
-		})
-	}
-	return out
+	return bindings
 }
 
 func (r *Runner) trackToken(jobID, token string) {

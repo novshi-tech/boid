@@ -1,24 +1,12 @@
 package dispatcher
 
-// BindMount describes a host path to bind-mount into the sandbox.
-type BindMount struct {
-	Source string
-	Mode   string
-}
+import "github.com/novshi-tech/boid/internal/sandbox"
 
-// CommandDef defines a host command that can be executed via the broker.
-type CommandDef struct {
-	Name                string
-	Path                string
-	AllowedPatterns     []string
-	DeniedPatterns      []string
-	AllowedSubcommands  []string
-	AllowStdin          bool
-	Env                 map[string]string
-	ExtractSubcommandFn string
-	RequireCwd          bool
-	AllowedCwdPrefixes  []string
-}
+// BindMount is owned by sandbox and reused at the dispatcher boundary.
+type BindMount = sandbox.BindMount
+
+// CommandDef is owned by sandbox and reused at the dispatcher boundary.
+type CommandDef = sandbox.CommandDef
 
 // DispatchPlan is the fully resolved execution plan consumed by the runner.
 type DispatchPlan struct {
