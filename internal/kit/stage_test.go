@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/kit"
-	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
 func TestStageHooks_ProjectOnly(t *testing.T) {
@@ -35,7 +35,7 @@ func TestStageHooks_KitAndProject(t *testing.T) {
 	kitHooksDir := t.TempDir()
 	os.WriteFile(filepath.Join(kitHooksDir, "kit-hook.sh"), []byte("kit"), 0o755)
 
-	kitDirs := []project.KitHooksInfo{
+	kitDirs := []projectspec.KitHooksInfo{
 		{HooksDir: kitHooksDir, HookIDs: []string{"kit-hook"}},
 	}
 
@@ -61,7 +61,7 @@ func TestStageHooks_ProjectOverridesKit(t *testing.T) {
 	kitHooksDir := t.TempDir()
 	os.WriteFile(filepath.Join(kitHooksDir, "build.sh"), []byte("kit-version"), 0o755)
 
-	kitDirs := []project.KitHooksInfo{
+	kitDirs := []projectspec.KitHooksInfo{
 		{HooksDir: kitHooksDir, HookIDs: []string{"build"}},
 	}
 

@@ -6,13 +6,13 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
 func TestRegistry_Resolve_KnownBehavior(t *testing.T) {
 	reg := orchestrator.NewDefaultRegistry()
-	meta := &project.ProjectMeta{
-		TaskBehaviors: map[string]project.TaskBehavior{
+	meta := &projectspec.ProjectMeta{
+		TaskBehaviors: map[string]projectspec.TaskBehavior{
 			"dev": {
 				Name:       "development",
 				Transition: "one-shot",
@@ -31,8 +31,8 @@ func TestRegistry_Resolve_KnownBehavior(t *testing.T) {
 
 func TestRegistry_Resolve_UnknownBehavior(t *testing.T) {
 	reg := orchestrator.NewDefaultRegistry()
-	meta := &project.ProjectMeta{
-		TaskBehaviors: map[string]project.TaskBehavior{},
+	meta := &projectspec.ProjectMeta{
+		TaskBehaviors: map[string]projectspec.TaskBehavior{},
 	}
 
 	_, err := reg.Resolve(meta, "unknown")
@@ -46,8 +46,8 @@ func TestRegistry_Resolve_UnknownBehavior(t *testing.T) {
 
 func TestRegistry_Resolve_UnknownTransition(t *testing.T) {
 	reg := orchestrator.NewDefaultRegistry()
-	meta := &project.ProjectMeta{
-		TaskBehaviors: map[string]project.TaskBehavior{
+	meta := &projectspec.ProjectMeta{
+		TaskBehaviors: map[string]projectspec.TaskBehavior{
 			"custom": {
 				Name:       "custom",
 				Transition: "nonexistent-machine",

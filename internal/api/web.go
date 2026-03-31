@@ -7,7 +7,6 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/web/templates"
 )
 
@@ -51,7 +50,7 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WebHandler) ProjectList(w http.ResponseWriter, r *http.Request) {
-	projects, err := project.ListProjects(h.DB.Conn)
+	projects, err := orchestrator.ListProjects(h.DB.Conn)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

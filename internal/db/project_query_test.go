@@ -4,14 +4,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/projectspec"
 	"github.com/novshi-tech/boid/testutil"
 )
 
 func TestCreateProject(t *testing.T) {
 	d := testutil.NewTestDB(t)
-	p := &project.Project{ID: "proj-1", WorkDir: "/tmp/proj1"}
-	if err := project.CreateProject(d.Conn, p); err != nil {
+	p := &projectspec.Project{ID: "proj-1", WorkDir: "/tmp/proj1"}
+	if err := orchestrator.CreateProject(d.Conn, p); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	if p.CreatedAt.IsZero() {
@@ -24,12 +25,12 @@ func TestCreateProject(t *testing.T) {
 
 func TestGetProject(t *testing.T) {
 	d := testutil.NewTestDB(t)
-	p := &project.Project{ID: "proj-1", WorkDir: "/tmp/proj1"}
-	if err := project.CreateProject(d.Conn, p); err != nil {
+	p := &projectspec.Project{ID: "proj-1", WorkDir: "/tmp/proj1"}
+	if err := orchestrator.CreateProject(d.Conn, p); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
-	got, err := project.GetProject(d.Conn, "proj-1")
+	got, err := orchestrator.GetProject(d.Conn, "proj-1")
 	if err != nil {
 		t.Fatalf("get project: %v", err)
 	}
@@ -43,7 +44,7 @@ func TestGetProject(t *testing.T) {
 
 func TestGetProject_NotFound(t *testing.T) {
 	d := testutil.NewTestDB(t)
-	_, err := project.GetProject(d.Conn, "nonexistent")
+	_, err := orchestrator.GetProject(d.Conn, "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent project")
 	}
@@ -55,7 +56,7 @@ func TestGetProject_NotFound(t *testing.T) {
 func TestListProjects(t *testing.T) {
 	d := testutil.NewTestDB(t)
 
-	projects, err := project.ListProjects(d.Conn)
+	projects, err := orchestrator.ListProjects(d.Conn)
 	if err != nil {
 		t.Fatalf("list empty: %v", err)
 	}
@@ -63,14 +64,14 @@ func TestListProjects(t *testing.T) {
 		t.Fatalf("expected 0 projects, got %d", len(projects))
 	}
 
-	if err := project.CreateProject(d.Conn, &project.Project{ID: "proj-1", WorkDir: "/tmp/a"}); err != nil {
+	if err := orchestrator.CreateProject(d.Conn, &projectspec.Project{ID: "proj-1", WorkDir: "/tmp/a"}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := project.CreateProject(d.Conn, &project.Project{ID: "proj-2", WorkDir: "/tmp/b"}); err != nil {
+	if err := orchestrator.CreateProject(d.Conn, &projectspec.Project{ID: "proj-2", WorkDir: "/tmp/b"}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	projects, err = project.ListProjects(d.Conn)
+	projects, err = orchestrator.ListProjects(d.Conn)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -81,15 +82,15 @@ func TestListProjects(t *testing.T) {
 
 func TestDeleteProject(t *testing.T) {
 	d := testutil.NewTestDB(t)
-	if err := project.CreateProject(d.Conn, &project.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+	if err := orchestrator.CreateProject(d.Conn, &projectspec.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	if err := project.DeleteProject(d.Conn, "proj-1"); err != nil {
+	if err := orchestrator.DeleteProject(d.Conn, "proj-1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
-	_, err := project.GetProject(d.Conn, "proj-1")
+	_, err := orchestrator.GetProject(d.Conn, "proj-1")
 	if err == nil {
 		t.Fatal("expected not found after delete")
 	}
@@ -97,7 +98,7 @@ func TestDeleteProject(t *testing.T) {
 
 func TestDeleteProject_NotFound(t *testing.T) {
 	d := testutil.NewTestDB(t)
-	err := project.DeleteProject(d.Conn, "nonexistent")
+	err := orchestrator.DeleteProject(d.Conn, "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for deleting nonexistent project")
 	}

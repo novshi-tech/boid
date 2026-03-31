@@ -1,4 +1,4 @@
-package project
+package orchestrator
 
 import (
 	"database/sql"
@@ -6,20 +6,21 @@ import (
 	"time"
 
 	"github.com/novshi-tech/boid/internal/db"
+	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
-type scanner interface {
+type projectScanner interface {
 	Scan(dest ...any) error
 }
 
 // CreateProject inserts a new project record.
-func CreateProject(dbtx db.DBTX, p *Project) error {
+func CreateProject(dbtx db.DBTX, project *projectspec.Project) error {
 	now := time.Now().UTC()
-	p.CreatedAt = now
-	p.UpdatedAt = now
+	project.CreatedAt = now
+	project.UpdatedAt = now
 	_, err := dbtx.Exec(
 		`INSERT INTO projects (id, work_dir, created_at, updated_at) VALUES (?, ?, ?, ?)`,
-		p.ID, p.WorkDir, p.CreatedAt, p.UpdatedAt,
+		project.ID, project.WorkDir, project.CreatedAt, project.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert project: %w", err)
@@ -28,7 +29,7 @@ func CreateProject(dbtx db.DBTX, p *Project) error {
 }
 
 // GetProject retrieves a project by ID.
-func GetProject(dbtx db.DBTX, id string) (*Project, error) {
+func GetProject(dbtx db.DBTX, id string) (*projectspec.Project, error) {
 	row := dbtx.QueryRow(
 		`SELECT id, work_dir, created_at, updated_at FROM projects WHERE id = ?`, id,
 	)
@@ -36,7 +37,7 @@ func GetProject(dbtx db.DBTX, id string) (*Project, error) {
 }
 
 // ListProjects returns all projects ordered by creation time.
-func ListProjects(dbtx db.DBTX) ([]*Project, error) {
+func ListProjects(dbtx db.DBTX) ([]*projectspec.Project, error) {
 	rows, err := dbtx.Query(
 		`SELECT id, work_dir, created_at, updated_at FROM projects ORDER BY created_at`,
 	)
@@ -60,25 +61,25 @@ func DeleteProject(dbtx db.DBTX, id string) error {
 	return nil
 }
 
-func scanProject(s scanner) (*Project, error) {
-	var p Project
-	if err := s.Scan(&p.ID, &p.WorkDir, &p.CreatedAt, &p.UpdatedAt); err != nil {
+func scanProject(scanner projectScanner) (*projectspec.Project, error) {
+	var project projectspec.Project
+	if err := scanner.Scan(&project.ID, &project.WorkDir, &project.CreatedAt, &project.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("project not found")
 		}
 		return nil, fmt.Errorf("scan project: %w", err)
 	}
-	return &p, nil
+	return &project, nil
 }
 
-func scanProjects(rows *sql.Rows) ([]*Project, error) {
-	var projects []*Project
+func scanProjects(rows *sql.Rows) ([]*projectspec.Project, error) {
+	var projects []*projectspec.Project
 	for rows.Next() {
-		p, err := scanProject(rows)
+		project, err := scanProject(rows)
 		if err != nil {
 			return nil, err
 		}
-		projects = append(projects, p)
+		projects = append(projects, project)
 	}
 	return projects, rows.Err()
 }

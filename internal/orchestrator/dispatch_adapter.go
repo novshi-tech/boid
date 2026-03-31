@@ -5,7 +5,6 @@ import (
 
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
-	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
@@ -54,11 +53,11 @@ type DBProjectCatalog struct {
 }
 
 func (c DBProjectCatalog) GetProject(id string) (*projectspec.Project, error) {
-	return project.GetProject(c.DB.Conn, id)
+	return GetProject(c.DB.Conn, id)
 }
 
 func (c DBProjectCatalog) ListProjects() ([]*projectspec.Project, error) {
-	return project.ListProjects(c.DB.Conn)
+	return ListProjects(c.DB.Conn)
 }
 
 type DBTaskLookup struct {

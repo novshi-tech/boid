@@ -1,17 +1,18 @@
-package project_test
+package orchestrator_test
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
-func TestStore_SetGet(t *testing.T) {
-	s := project.NewStore(nil)
+func TestProjectStore_SetGet(t *testing.T) {
+	s := orchestrator.NewProjectStore(nil)
 
-	meta := &project.ProjectMeta{
+	meta := &projectspec.ProjectMeta{
 		ID:   "proj-1",
 		Name: "Test",
 	}
@@ -29,8 +30,8 @@ func TestStore_SetGet(t *testing.T) {
 	}
 }
 
-func TestStore_Get_NotFound(t *testing.T) {
-	s := project.NewStore(nil)
+func TestProjectStore_Get_NotFound(t *testing.T) {
+	s := orchestrator.NewProjectStore(nil)
 
 	_, ok := s.Get("nonexistent")
 	if ok {
@@ -38,10 +39,10 @@ func TestStore_Get_NotFound(t *testing.T) {
 	}
 }
 
-func TestStore_Remove(t *testing.T) {
-	s := project.NewStore(nil)
+func TestProjectStore_Remove(t *testing.T) {
+	s := orchestrator.NewProjectStore(nil)
 
-	s.Set("proj-1", &project.ProjectMeta{ID: "proj-1", Name: "Test"})
+	s.Set("proj-1", &projectspec.ProjectMeta{ID: "proj-1", Name: "Test"})
 	s.Remove("proj-1")
 
 	_, ok := s.Get("proj-1")
@@ -50,7 +51,7 @@ func TestStore_Remove(t *testing.T) {
 	}
 }
 
-func TestStore_Load(t *testing.T) {
+func TestProjectStore_Load(t *testing.T) {
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
 	hooksDir := filepath.Join(boidDir, "hooks")
@@ -72,7 +73,7 @@ hooks:
 		t.Fatalf("write hook: %v", err)
 	}
 
-	s := project.NewStore(nil)
+	s := orchestrator.NewProjectStore(nil)
 	meta, err := s.Load(dir)
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -90,42 +91,38 @@ hooks:
 	}
 }
 
-func TestStore_Load_InvalidYaml(t *testing.T) {
+func TestProjectStore_Load_InvalidYAML(t *testing.T) {
 	dir := t.TempDir()
 
-	s := project.NewStore(nil)
+	s := orchestrator.NewProjectStore(nil)
 	_, err := s.Load(dir)
 	if err == nil {
 		t.Fatal("expected error for missing project.yaml")
 	}
 }
 
-func TestStore_LoadAll(t *testing.T) {
-	// Create two valid project directories
+func TestProjectStore_LoadAll(t *testing.T) {
 	dir1 := t.TempDir()
 	setupProjectDir(t, dir1, "proj-a", "Project A")
 
 	dir2 := t.TempDir()
 	setupProjectDir(t, dir2, "proj-b", "Project B")
 
-	// Create one invalid project directory (no project.yaml)
 	dir3 := t.TempDir()
 
-	projects := []*project.Project{
+	projects := []*projectspec.Project{
 		{ID: "proj-a", WorkDir: dir1},
 		{ID: "proj-b", WorkDir: dir2},
 		{ID: "proj-c", WorkDir: dir3},
 	}
 
-	s := project.NewStore(nil)
+	s := orchestrator.NewProjectStore(nil)
 	errs := s.LoadAll(projects)
 
-	// Should have 1 error (for proj-c)
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
 	}
 
-	// proj-a and proj-b should be loaded
 	if _, ok := s.Get("proj-a"); !ok {
 		t.Fatal("expected proj-a to be loaded")
 	}

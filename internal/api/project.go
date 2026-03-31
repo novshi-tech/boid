@@ -7,7 +7,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
@@ -52,7 +51,7 @@ func (h *ProjectHandler) Create(w http.ResponseWriter, r *http.Request) {
 		WorkDir: req.WorkDir,
 	}
 
-	if err := project.CreateProject(h.DB.Conn, p); err != nil {
+	if err := orchestrator.CreateProject(h.DB.Conn, p); err != nil {
 		h.Store.Remove(meta.ID)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -65,7 +64,7 @@ func (h *ProjectHandler) Create(w http.ResponseWriter, r *http.Request) {
 func (h *ProjectHandler) List(w http.ResponseWriter, r *http.Request) {
 	wsID := r.URL.Query().Get("workspace_id")
 
-	projects, err := project.ListProjects(h.DB.Conn)
+	projects, err := orchestrator.ListProjects(h.DB.Conn)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -90,7 +89,7 @@ func (h *ProjectHandler) List(w http.ResponseWriter, r *http.Request) {
 
 func (h *ProjectHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	p, err := project.GetProject(h.DB.Conn, id)
+	p, err := orchestrator.GetProject(h.DB.Conn, id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -103,7 +102,7 @@ func (h *ProjectHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 func (h *ProjectHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := project.DeleteProject(h.DB.Conn, id); err != nil {
+	if err := orchestrator.DeleteProject(h.DB.Conn, id); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -112,7 +111,7 @@ func (h *ProjectHandler) Delete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ProjectHandler) Reload(w http.ResponseWriter, r *http.Request) {
-	projects, err := project.ListProjects(h.DB.Conn)
+	projects, err := orchestrator.ListProjects(h.DB.Conn)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

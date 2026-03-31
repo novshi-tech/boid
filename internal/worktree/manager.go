@@ -10,7 +10,6 @@ import (
 
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/project"
 )
 
 // Manager handles git worktree lifecycle for task isolation.
@@ -133,7 +132,7 @@ func (m *Manager) CleanupForTask(taskID string, newStatus orchestrator.TaskStatu
 		return nil
 	}
 
-	proj, err := project.GetProject(m.DB.Conn, w.ProjectID)
+	proj, err := orchestrator.GetProject(m.DB.Conn, w.ProjectID)
 	if err != nil {
 		return fmt.Errorf("get project for worktree cleanup: %w", err)
 	}
@@ -160,7 +159,7 @@ func (m *Manager) CleanOrphaned() error {
 			continue
 		}
 
-		proj, err := project.GetProject(m.DB.Conn, w.ProjectID)
+		proj, err := orchestrator.GetProject(m.DB.Conn, w.ProjectID)
 		if err != nil {
 			slog.Warn("orphan check: project lookup failed", "project_id", w.ProjectID, "error", err)
 			continue

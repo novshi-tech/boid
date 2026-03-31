@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
 func TestIsReadonly(t *testing.T) {
@@ -28,7 +28,7 @@ func TestIsReadonly(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			behavior := &project.TaskBehavior{Readonly: tc.readonly}
+			behavior := &projectspec.TaskBehavior{Readonly: tc.readonly}
 			got := orchestrator.IsReadonly(behavior, tc.status)
 			if got != tc.want {
 				t.Errorf("IsReadonly(readonly=%v, %q) = %v, want %v",

@@ -8,14 +8,14 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
 // mockExecutorWaiter implements HookExecutor, GateExecutor, and JobWaiter.
 type mockExecutorWaiter struct {
 	mu          sync.Mutex
-	hookCalls   []*project.HookFireEvent
-	gateCalls   []*project.GateFireEvent
+	hookCalls   []*projectspec.HookFireEvent
+	gateCalls   []*projectspec.GateFireEvent
 	jobCounter  int
 	completions map[string]orchestrator.JobCompletion
 	execOrder   []string
@@ -63,7 +63,7 @@ func (m *mockExecutorWaiter) findJobForID(id string) string {
 	return ""
 }
 
-func (m *mockExecutorWaiter) ExecuteHook(ctx context.Context, event *project.HookFireEvent) (string, error) {
+func (m *mockExecutorWaiter) ExecuteHook(ctx context.Context, event *projectspec.HookFireEvent) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.hookCalls = append(m.hookCalls, event)
@@ -77,7 +77,7 @@ func (m *mockExecutorWaiter) ExecuteHook(ctx context.Context, event *project.Hoo
 	return jobID, nil
 }
 
-func (m *mockExecutorWaiter) ExecuteGate(ctx context.Context, event *project.GateFireEvent) (string, error) {
+func (m *mockExecutorWaiter) ExecuteGate(ctx context.Context, event *projectspec.GateFireEvent) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.gateCalls = append(m.gateCalls, event)
@@ -144,13 +144,13 @@ func TestCoordinator_DispatchAndAdvance_HooksSequential(t *testing.T) {
 		Status:    orchestrator.TaskStatusExecuting,
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &project.ProjectMeta{
-		Hooks: []project.Hook{
+	meta := &projectspec.ProjectMeta{
+		Hooks: []projectspec.Hook{
 			{ID: "hook-a", On: "executing", RequiresTraits: nil},
 			{ID: "hook-b", On: "executing", RequiresTraits: nil},
 		},
 	}
-	behavior := &project.TaskBehavior{Readonly: false}
+	behavior := &projectspec.TaskBehavior{Readonly: false}
 	sm := simpleStateMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
@@ -192,12 +192,12 @@ func TestCoordinator_DispatchAndAdvance_NoAdvanceWhenConditionNotMet(t *testing.
 		Status:    orchestrator.TaskStatusExecuting,
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &project.ProjectMeta{
-		Hooks: []project.Hook{
+	meta := &projectspec.ProjectMeta{
+		Hooks: []projectspec.Hook{
 			{ID: "hook-a", On: "executing"},
 		},
 	}
-	behavior := &project.TaskBehavior{Readonly: false}
+	behavior := &projectspec.TaskBehavior{Readonly: false}
 	sm := simpleStateMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
@@ -230,15 +230,15 @@ func TestCoordinator_DispatchAndAdvance_GatesExecuteAfterHooks(t *testing.T) {
 		Status:    orchestrator.TaskStatusExecuting,
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &project.ProjectMeta{
-		Hooks: []project.Hook{
+	meta := &projectspec.ProjectMeta{
+		Hooks: []projectspec.Hook{
 			{ID: "hook-a", On: "executing"},
 		},
-		Gates: []project.Gate{
+		Gates: []projectspec.Gate{
 			{ID: "gate-push", On: "executing"},
 		},
 	}
-	behavior := &project.TaskBehavior{Readonly: false}
+	behavior := &projectspec.TaskBehavior{Readonly: false}
 	sm := simpleStateMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
@@ -281,13 +281,13 @@ func TestCoordinator_DispatchAndAdvance_ExclusiveTraitCollision(t *testing.T) {
 		Status:    orchestrator.TaskStatusExecuting,
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &project.ProjectMeta{
-		Hooks: []project.Hook{
+	meta := &projectspec.ProjectMeta{
+		Hooks: []projectspec.Hook{
 			{ID: "hook-a", On: "executing"},
 			{ID: "hook-b", On: "executing"},
 		},
 	}
-	behavior := &project.TaskBehavior{Readonly: false}
+	behavior := &projectspec.TaskBehavior{Readonly: false}
 	sm := simpleStateMachine()
 
 	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
@@ -316,13 +316,13 @@ func TestCoordinator_DispatchAndAdvance_SharedTraitNoCollision(t *testing.T) {
 		Status:    orchestrator.TaskStatusExecuting,
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &project.ProjectMeta{
-		Hooks: []project.Hook{
+	meta := &projectspec.ProjectMeta{
+		Hooks: []projectspec.Hook{
 			{ID: "hook-a", On: "executing"},
 			{ID: "hook-b", On: "executing"},
 		},
 	}
-	behavior := &project.TaskBehavior{Readonly: false}
+	behavior := &projectspec.TaskBehavior{Readonly: false}
 	sm := simpleStateMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
@@ -371,8 +371,8 @@ func TestCoordinator_DispatchAndAdvance_EmptyHooksAndGates(t *testing.T) {
 		Status:    orchestrator.TaskStatusExecuting,
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &project.ProjectMeta{}
-	behavior := &project.TaskBehavior{}
+	meta := &projectspec.ProjectMeta{}
+	behavior := &projectspec.TaskBehavior{}
 	sm := simpleStateMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)

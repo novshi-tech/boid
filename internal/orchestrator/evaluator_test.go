@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/projectspec"
 )
 
 func TestEvaluate_MatchingHookFires(t *testing.T) {
@@ -15,11 +15,11 @@ func TestEvaluate_MatchingHookFires(t *testing.T) {
 		Status:  orchestrator.TaskStatusExecuting,
 		Payload: json.RawMessage(`{"prompt":"do stuff"}`),
 	}
-	hooks := []project.Hook{
+	hooks := []projectspec.Hook{
 		{
 			ID:             "run-agent",
 			On:             "executing",
-			RequiresTraits: []project.TraitType{project.TraitPrompt},
+			RequiresTraits: []projectspec.TraitType{projectspec.TraitPrompt},
 		},
 	}
 
@@ -39,11 +39,11 @@ func TestEvaluate_NonMatchingStatus(t *testing.T) {
 		Status:  orchestrator.TaskStatusPending,
 		Payload: json.RawMessage(`{"prompt":"do stuff"}`),
 	}
-	hooks := []project.Hook{
+	hooks := []projectspec.Hook{
 		{
 			ID:             "run-agent",
 			On:             "executing",
-			RequiresTraits: []project.TraitType{project.TraitPrompt},
+			RequiresTraits: []projectspec.TraitType{projectspec.TraitPrompt},
 		},
 	}
 
@@ -60,11 +60,11 @@ func TestEvaluate_MissingTrait(t *testing.T) {
 		Status:  orchestrator.TaskStatusExecuting,
 		Payload: json.RawMessage(`{"artifact":"http://example.com"}`),
 	}
-	hooks := []project.Hook{
+	hooks := []projectspec.Hook{
 		{
 			ID:             "run-agent",
 			On:             "executing",
-			RequiresTraits: []project.TraitType{project.TraitPrompt},
+			RequiresTraits: []projectspec.TraitType{projectspec.TraitPrompt},
 		},
 	}
 
@@ -81,7 +81,7 @@ func TestEvaluate_NoRequiredTraits(t *testing.T) {
 		Status:  orchestrator.TaskStatusExecuting,
 		Payload: json.RawMessage(`{}`),
 	}
-	hooks := []project.Hook{
+	hooks := []projectspec.Hook{
 		{
 			ID:             "always-run",
 			On:             "executing",
@@ -102,11 +102,11 @@ func TestEvaluateGates_MatchingGate(t *testing.T) {
 		Status:  orchestrator.TaskStatusExecuting,
 		Payload: json.RawMessage(`{"artifact":"http://example.com"}`),
 	}
-	gates := []project.Gate{
+	gates := []projectspec.Gate{
 		{
 			ID:             "push-pr",
 			On:             "executing",
-			RequiresTraits: []project.TraitType{project.TraitArtifact},
+			RequiresTraits: []projectspec.TraitType{projectspec.TraitArtifact},
 		},
 	}
 
@@ -126,11 +126,11 @@ func TestEvaluateGates_NonMatchingStatus(t *testing.T) {
 		Status:  orchestrator.TaskStatusPending,
 		Payload: json.RawMessage(`{"artifact":"url"}`),
 	}
-	gates := []project.Gate{
+	gates := []projectspec.Gate{
 		{
 			ID:             "push-pr",
 			On:             "executing",
-			RequiresTraits: []project.TraitType{project.TraitArtifact},
+			RequiresTraits: []projectspec.TraitType{projectspec.TraitArtifact},
 		},
 	}
 

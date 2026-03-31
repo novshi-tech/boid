@@ -19,7 +19,6 @@ import (
 	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
 	"github.com/novshi-tech/boid/internal/kit"
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/secret"
 	"github.com/novshi-tech/boid/internal/worktree"
@@ -69,7 +68,7 @@ func New(cfg Config) (*Server, error) {
 	store := orchestrator.NewProjectStore(registry)
 
 	// Load meta for all registered projects
-	projects, err := project.ListProjects(d.Conn)
+	projects, err := orchestrator.ListProjects(d.Conn)
 	if err != nil {
 		d.Close()
 		return nil, fmt.Errorf("list projects: %w", err)

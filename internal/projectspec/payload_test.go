@@ -1,4 +1,4 @@
-package project_test
+package projectspec_test
 
 import (
 	"encoding/json"
@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/projectspec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -36,11 +36,11 @@ host_commands:
 env:
   FOO: bar
 `
-	var meta project.ProjectMeta
+	var meta projectspec.ProjectMeta
 	if err := yaml.Unmarshal([]byte(data), &meta); err != nil {
 		t.Fatalf("unmarshal yaml: %v", err)
 	}
-	if len(meta.Hooks) != 1 || meta.Hooks[0].RequiresTraits[0] != project.TraitPrompt {
+	if len(meta.Hooks) != 1 || meta.Hooks[0].RequiresTraits[0] != projectspec.TraitPrompt {
 		t.Fatalf("unexpected requires_traits: %v", meta.Hooks[0].RequiresTraits)
 	}
 }
@@ -55,7 +55,7 @@ gates:
     requires_traits:
       - artifact
 `
-	var meta project.ProjectMeta
+	var meta projectspec.ProjectMeta
 	if err := yaml.Unmarshal([]byte(data), &meta); err != nil {
 		t.Fatalf("unmarshal yaml: %v", err)
 	}
@@ -65,17 +65,15 @@ gates:
 }
 
 func TestProjectMeta_JSONRoundTrip(t *testing.T) {
-	original := project.ProjectMeta{
+	original := projectspec.ProjectMeta{
 		ID:          "proj-1",
 		WorkspaceID: "ws-1",
 		Name:        "Test Project",
-		TaskBehaviors: map[string]project.TaskBehavior{
+		TaskBehaviors: map[string]projectspec.TaskBehavior{
 			"dev": {Name: "development", Transition: "one-shot", Traits: []string{"prompt"}},
 		},
-		Hooks: []project.Hook{
-			{ID: "hook-1", On: "executing", RequiresTraits: []project.TraitType{project.TraitPrompt}},
-		},
-		HostCommands: map[string]project.CommandDef{"git": {Path: "/usr/bin/git"}},
+		Hooks:        []projectspec.Hook{{ID: "hook-1", On: "executing", RequiresTraits: []projectspec.TraitType{projectspec.TraitPrompt}}},
+		HostCommands: map[string]projectspec.CommandDef{"git": {Path: "/usr/bin/git"}},
 		Env:          map[string]string{"KEY": "val"},
 	}
 
@@ -83,7 +81,7 @@ func TestProjectMeta_JSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	var decoded project.ProjectMeta
+	var decoded projectspec.ProjectMeta
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -99,11 +97,11 @@ on: executing
 requires_traits:
   - artifact
 `
-	var gate project.Gate
+	var gate projectspec.Gate
 	if err := yaml.Unmarshal([]byte(data), &gate); err != nil {
 		t.Fatalf("unmarshal yaml: %v", err)
 	}
-	if len(gate.RequiresTraits) != 1 || gate.RequiresTraits[0] != project.TraitArtifact {
+	if len(gate.RequiresTraits) != 1 || gate.RequiresTraits[0] != projectspec.TraitArtifact {
 		t.Fatalf("unexpected requires_traits: %v", gate.RequiresTraits)
 	}
 }
@@ -118,27 +116,27 @@ func TestResolveGateScript(t *testing.T) {
 	if err := os.WriteFile(shPath, []byte("#!/bin/bash\n"), 0o755); err != nil {
 		t.Fatalf("write sh: %v", err)
 	}
-	got, err := project.ResolveGateScript(gatesDir, "push-pr")
+	got, err := projectspec.ResolveGateScript(gatesDir, "push-pr")
 	if err != nil || got != shPath {
 		t.Fatalf("ResolveGateScript() = %q, %v", got, err)
 	}
 }
 
 func TestRoleConstants(t *testing.T) {
-	if project.RoleHook != "hook" || project.RoleGate != "gate" {
-		t.Fatalf("unexpected roles: %q %q", project.RoleHook, project.RoleGate)
+	if projectspec.RoleHook != "hook" || projectspec.RoleGate != "gate" {
+		t.Fatalf("unexpected roles: %q %q", projectspec.RoleHook, projectspec.RoleGate)
 	}
 }
 
 func TestActiveTraitTypes(t *testing.T) {
 	raw := json.RawMessage(`{"prompt":"hello","artifact":"x"}`)
-	traits, err := project.ActiveTraitTypes(raw)
+	traits, err := projectspec.ActiveTraitTypes(raw)
 	if err != nil {
 		t.Fatalf("ActiveTraitTypes: %v", err)
 	}
 	names := make([]string, len(traits))
-	for i, tr := range traits {
-		names[i] = string(tr)
+	for i, trait := range traits {
+		names[i] = string(trait)
 	}
 	sort.Strings(names)
 	if len(names) != 2 || names[0] != "artifact" || names[1] != "prompt" {
@@ -149,35 +147,35 @@ func TestActiveTraitTypes(t *testing.T) {
 func TestMergePayload(t *testing.T) {
 	base := json.RawMessage(`{"a":"1","b":"2"}`)
 	update := json.RawMessage(`{"b":"3","c":"4"}`)
-	result, err := project.MergePayload(base, update)
+	result, err := projectspec.MergePayload(base, update)
 	if err != nil {
 		t.Fatalf("MergePayload: %v", err)
 	}
-	var m map[string]string
-	if err := json.Unmarshal(result, &m); err != nil {
+	var merged map[string]string
+	if err := json.Unmarshal(result, &merged); err != nil {
 		t.Fatalf("unmarshal result: %v", err)
 	}
-	if m["b"] != "3" || m["c"] != "4" {
-		t.Fatalf("unexpected merge result: %v", m)
+	if merged["b"] != "3" || merged["c"] != "4" {
+		t.Fatalf("unexpected merge result: %v", merged)
 	}
 }
 
 func TestTraitMergeMode(t *testing.T) {
-	if project.TraitMergeMode(project.TraitVerification) != project.MergeModeShared {
+	if projectspec.TraitMergeMode(projectspec.TraitVerification) != projectspec.MergeModeShared {
 		t.Fatal("verification should be shared")
 	}
-	if project.TraitMergeMode(project.TraitPrompt) != project.MergeModeExclusive {
+	if projectspec.TraitMergeMode(projectspec.TraitPrompt) != projectspec.MergeModeExclusive {
 		t.Fatal("prompt should be exclusive")
 	}
 }
 
 func TestValidatePayloadPatchAndMergePayloadPatch(t *testing.T) {
 	patch := json.RawMessage(`{"prompt":"hello"}`)
-	allowed := []project.TraitType{project.TraitPrompt}
-	if err := project.ValidatePayloadPatch(patch, allowed); err != nil {
+	allowed := []projectspec.TraitType{projectspec.TraitPrompt}
+	if err := projectspec.ValidatePayloadPatch(patch, allowed); err != nil {
 		t.Fatalf("ValidatePayloadPatch: %v", err)
 	}
-	result, err := project.MergePayloadPatch(json.RawMessage(`{}`), patch, "hook-1", allowed)
+	result, err := projectspec.MergePayloadPatch(json.RawMessage(`{}`), patch, "hook-1", allowed)
 	if err != nil {
 		t.Fatalf("MergePayloadPatch: %v", err)
 	}
@@ -188,23 +186,23 @@ func TestValidatePayloadPatchAndMergePayloadPatch(t *testing.T) {
 
 func TestMergePayloadPatch_Shared(t *testing.T) {
 	base := json.RawMessage(`{}`)
-	allowed := []project.TraitType{project.TraitVerification}
+	allowed := []projectspec.TraitType{projectspec.TraitVerification}
 	patch1 := json.RawMessage(`{"verification":{"findings":[{"message":"secure","status":"resolved"}]}}`)
-	result, err := project.MergePayloadPatch(base, patch1, "security-review", allowed)
+	result, err := projectspec.MergePayloadPatch(base, patch1, "security-review", allowed)
 	if err != nil {
 		t.Fatalf("MergePayloadPatch 1: %v", err)
 	}
 	patch2 := json.RawMessage(`{"verification":{"findings":[{"message":"bug","status":"open"}]}}`)
-	result, err = project.MergePayloadPatch(result, patch2, "quality-review", allowed)
+	result, err = projectspec.MergePayloadPatch(result, patch2, "quality-review", allowed)
 	if err != nil {
 		t.Fatalf("MergePayloadPatch 2: %v", err)
 	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(result, &m); err != nil {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(result, &payload); err != nil {
 		t.Fatalf("unmarshal result: %v", err)
 	}
 	var verification map[string]json.RawMessage
-	if err := json.Unmarshal(m["verification"], &verification); err != nil {
+	if err := json.Unmarshal(payload["verification"], &verification); err != nil {
 		t.Fatalf("unmarshal verification: %v", err)
 	}
 	if verification["security-review"] == nil || verification["quality-review"] == nil {
