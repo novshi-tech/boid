@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"github.com/novshi-tech/boid/internal/tmux"
+	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
 	"github.com/spf13/cobra"
 )
 
@@ -16,6 +16,6 @@ func init() {
 }
 
 func runAttach(cmd *cobra.Command, args []string) error {
-	t := &tmux.RealTmux{}
+	t := &dtmux.RealTmux{}
 	return t.Attach("boid")
 }

@@ -21,7 +21,7 @@ func TestBuildMounts(t *testing.T) {
 	mounts := sandbox.BuildMounts(cfg)
 
 	// Collect mounts by target for easier assertion
-	byTarget := make(map[string]sandbox.MountEntry)
+	byTarget := make(map[string]sandbox.BasicMountEntry)
 	for _, m := range mounts {
 		byTarget[m.Target] = m
 	}

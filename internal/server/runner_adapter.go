@@ -3,14 +3,14 @@ package server
 import (
 	"context"
 
-	"github.com/novshi-tech/boid/internal/job"
+	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/model"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// runnerAdapter adapts job.Runner to orchestrator.HookExecutor, orchestrator.GateExecutor, and orchestrator.JobWaiter.
+// runnerAdapter adapts dispatcher.Runner to orchestrator.HookExecutor, orchestrator.GateExecutor, and orchestrator.JobWaiter.
 type runnerAdapter struct {
-	runner *job.Runner
+	runner *dispatcher.Runner
 }
 
 func (a *runnerAdapter) ExecuteHook(ctx context.Context, event *model.HookFireEvent) (string, error) {
@@ -29,3 +29,4 @@ func (a *runnerAdapter) WaitForJob(ctx context.Context, jobID string) (orchestra
 		ExitCode: result.ExitCode,
 	}, err
 }
+

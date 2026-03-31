@@ -1,4 +1,4 @@
-package tmux
+package dtmux
 
 type TmuxManager interface {
 	EnsureSession(name string) error

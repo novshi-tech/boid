@@ -5,19 +5,19 @@ import (
 	"path/filepath"
 )
 
-// MountEntry describes a bind mount for the sandbox.
-type MountEntry struct {
+// BasicMountEntry describes a bind mount for the sandbox.
+type BasicMountEntry struct {
 	Source   string
 	Target   string
 	ReadOnly bool
 }
 
 // BuildMounts generates the mount entries for a sandbox configuration.
-func BuildMounts(cfg SandboxConfig) []MountEntry {
-	var mounts []MountEntry
+func BuildMounts(cfg SandboxConfig) []BasicMountEntry {
+	var mounts []BasicMountEntry
 
 	// Project directory (rw) — mounted at same path as host
-	mounts = append(mounts, MountEntry{
+	mounts = append(mounts, BasicMountEntry{
 		Source:   cfg.ProjectDir,
 		Target:   cfg.ProjectDir,
 		ReadOnly: false,
@@ -25,7 +25,7 @@ func BuildMounts(cfg SandboxConfig) []MountEntry {
 
 	// Workspace projects (ro) — mounted at host paths
 	for _, dir := range cfg.WorkspaceDirs {
-		mounts = append(mounts, MountEntry{
+		mounts = append(mounts, BasicMountEntry{
 			Source:   dir,
 			Target:   dir,
 			ReadOnly: true,
@@ -33,7 +33,7 @@ func BuildMounts(cfg SandboxConfig) []MountEntry {
 	}
 
 	// .boid directory (ro) — project config not writable from sandbox
-	mounts = append(mounts, MountEntry{
+	mounts = append(mounts, BasicMountEntry{
 		Source:   filepath.Join(cfg.ProjectDir, ".boid"),
 		Target:   filepath.Join(cfg.ProjectDir, ".boid"),
 		ReadOnly: true,
@@ -41,7 +41,7 @@ func BuildMounts(cfg SandboxConfig) []MountEntry {
 
 	// Boid binary
 	if cfg.BoidBinary != "" {
-		mounts = append(mounts, MountEntry{
+		mounts = append(mounts, BasicMountEntry{
 			Source:   cfg.BoidBinary,
 			Target:   "/usr/local/bin/boid",
 			ReadOnly: true,
@@ -50,7 +50,7 @@ func BuildMounts(cfg SandboxConfig) []MountEntry {
 
 	// Broker socket
 	if cfg.BrokerSocket != "" {
-		mounts = append(mounts, MountEntry{
+		mounts = append(mounts, BasicMountEntry{
 			Source:   cfg.BrokerSocket,
 			Target:   "/run/boid/broker.sock",
 			ReadOnly: false,
@@ -59,7 +59,7 @@ func BuildMounts(cfg SandboxConfig) []MountEntry {
 
 	// Server socket
 	if cfg.ServerSocket != "" {
-		mounts = append(mounts, MountEntry{
+		mounts = append(mounts, BasicMountEntry{
 			Source:   cfg.ServerSocket,
 			Target:   "/run/boid/server.sock",
 			ReadOnly: false,
@@ -68,7 +68,7 @@ func BuildMounts(cfg SandboxConfig) []MountEntry {
 
 	// Additional bindings
 	for _, b := range cfg.Bindings {
-		mounts = append(mounts, MountEntry{
+		mounts = append(mounts, BasicMountEntry{
 			Source:   b,
 			Target:   b,
 			ReadOnly: true,

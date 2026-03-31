@@ -1,4 +1,4 @@
-package job
+package sandbox
 
 import (
 	"fmt"
@@ -13,27 +13,27 @@ type WrapperConfig struct {
 	JobID              string
 	TaskID             string
 	ProjectID          string
-	ProjectDir         string            // host-side project directory
-	HomeDir            string            // host-side user home directory (fallback to ProjectDir)
-	HooksDir           string            // host-side hooks directory
-	HookScript         string            // script filename, e.g. "run-build.sh"
-	Command            string            // command to execute (non-interactive, non-hook mode)
-	BoidBinary         string            // host-side path to boid binary
-	ServerSocket       string            // host-side server socket path
-	BrokerSocket       string            // host-side broker socket path
-	BrokerToken        string            // broker authentication token
-	Env                map[string]string // project environment variables
-	HostCommands       []string          // command names to shim via symlinks
+	ProjectDir         string              // host-side project directory
+	HomeDir            string              // host-side user home directory (fallback to ProjectDir)
+	HooksDir           string              // host-side hooks directory
+	HookScript         string              // script filename, e.g. "run-build.sh"
+	Command            string              // command to execute (non-interactive, non-hook mode)
+	BoidBinary         string              // host-side path to boid binary
+	ServerSocket       string              // host-side server socket path
+	BrokerSocket       string              // host-side broker socket path
+	BrokerToken        string              // broker authentication token
+	Env                map[string]string   // project environment variables
+	HostCommands       []string            // command names to shim via symlinks
 	AdditionalBindings []project.BindMount // extra host paths to bind-mount
-	WorkspaceDirs      map[string]string // project-id -> host-dir (read-only mounts)
-	ProxyPort          int               // host-side proxy port (0 = no proxy)
-	StagingDir         string            // if set, staging dir to clean up after job
-	TTY                bool              // if true, preserve TTY through pasta (for interactive commands)
-	WorktreeDir        string            // if set, worktree mode: sandbox works here; .git/.boid come from ProjectDir
-	Role               string            // "hook", "gate", or "" (legacy/command mode)
-	PayloadJSON        string            // task payload JSON for hook stdin
-	TaskJSON           string            // full task data JSON for gate stdin
-	Readonly           bool              // if true, mount working dir as read-only
+	WorkspaceDirs      map[string]string   // project-id -> host-dir (read-only mounts)
+	ProxyPort          int                 // host-side proxy port (0 = no proxy)
+	StagingDir         string              // if set, staging dir to clean up after job
+	TTY                bool                // if true, preserve TTY through pasta (for interactive commands)
+	WorktreeDir        string              // if set, worktree mode: sandbox works here; .git/.boid come from ProjectDir
+	Role               string              // "hook", "gate", or "" (legacy/command mode)
+	PayloadJSON        string              // task payload JSON for hook stdin
+	TaskJSON           string              // full task data JSON for gate stdin
+	Readonly           bool                // if true, mount working dir as read-only
 }
 
 // workDir returns the effective working directory inside the sandbox.
@@ -105,7 +105,6 @@ exec pasta --config-net \
     -- unshare --mount -- bash %s
 `, setupPath)
 }
-
 
 // additionalPATH builds PATH entries from additional bindings.
 // Paths ending in /bin are added directly; others get /bin appended.

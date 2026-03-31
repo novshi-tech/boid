@@ -1,4 +1,4 @@
-package job
+package sandbox
 
 import "fmt"
 
@@ -17,11 +17,11 @@ type MountEntry struct {
 	Target     string    // absolute path inside sandbox
 	Type       MountType
 	ReadOnly   bool
-	Slave      bool      // mount --make-rslave after mounting
-	IsFile     bool      // target is a file, not a directory
-	DetectType bool      // detect file vs dir at runtime (if/elif)
-	Guard      string    // shell test expression; if non-empty, wrap in if [ $Guard ]; then
-	NeedsDirs  []string  // subdirs to create under Target before ro remount
+	Slave      bool     // mount --make-rslave after mounting
+	IsFile     bool     // target is a file, not a directory
+	DetectType bool     // detect file vs dir at runtime (if/elif)
+	Guard      string   // shell test expression; if non-empty, wrap in if [ $Guard ]; then
+	NeedsDirs  []string // subdirs to create under Target before ro remount
 }
 
 // FileEntry describes a file to write inside the sandbox.

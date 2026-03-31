@@ -7,7 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/db"
-	"github.com/novshi-tech/boid/internal/job"
+	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/model"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/project"
@@ -19,7 +19,7 @@ type JobHandler struct {
 	Store       *project.Store
 	Registry    *orchestrator.Registry
 	Evaluator   *orchestrator.Evaluator
-	Runner      *job.Runner
+	Runner      *dispatcher.Runner
 	Coordinator *orchestrator.Coordinator
 	WorktreeMgr *worktree.Manager
 }
@@ -146,7 +146,7 @@ func (h *JobHandler) Done(w http.ResponseWriter, r *http.Request) {
 
 	// Signal any waiting dispatcher that this job is complete
 	if h.Runner != nil {
-		h.Runner.CompleteJob(j.ID, job.JobCompletionResult{
+		h.Runner.CompleteJob(j.ID, dispatcher.JobCompletionResult{
 			Output:   req.Output,
 			ExitCode: req.ExitCode,
 		})

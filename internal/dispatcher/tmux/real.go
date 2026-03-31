@@ -1,4 +1,4 @@
-package tmux
+package dtmux
 
 import (
 	"os"

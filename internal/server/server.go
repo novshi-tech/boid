@@ -15,14 +15,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/db"
+	"github.com/novshi-tech/boid/internal/dispatcher"
+	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
 	"github.com/novshi-tech/boid/internal/hostcmd"
-	"github.com/novshi-tech/boid/internal/job"
 	"github.com/novshi-tech/boid/internal/kit"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/secret"
-	"github.com/novshi-tech/boid/internal/tmux"
 	"github.com/novshi-tech/boid/internal/worktree"
 	"github.com/novshi-tech/boid/web"
 )
@@ -32,10 +32,10 @@ type Config struct {
 	SocketPath     string
 	HTTPAddr       string
 	TmuxSession    string
-	KitsDir        string           // base dir for installed kit repos
-	KeyFilePath    string           // path to secret encryption key file
-	AllowedDomains []string         // proxy allowed domains
-	Tmux           tmux.TmuxManager // nil uses RealTmux
+	KitsDir        string              // base dir for installed kit repos
+	KeyFilePath    string              // path to secret encryption key file
+	AllowedDomains []string            // proxy allowed domains
+	Tmux           dtmux.TmuxManager   // nil uses RealTmux
 }
 
 type Server struct {
@@ -149,7 +149,7 @@ func New(cfg Config) (*Server, error) {
 	// Build job runner and dispatcher
 	tmuxMgr := cfg.Tmux
 	if tmuxMgr == nil {
-		tmuxMgr = &tmux.RealTmux{}
+		tmuxMgr = &dtmux.RealTmux{}
 	}
 	tmuxSession := cfg.TmuxSession
 	if tmuxSession == "" {
@@ -162,9 +162,9 @@ func New(cfg Config) (*Server, error) {
 	os.MkdirAll(wtRootDir, 0o755)
 	wtMgr := &worktree.Manager{RootDir: wtRootDir, DB: d}
 
-	runner := &job.Runner{
+	runner := &dispatcher.Runner{
 		DB:           d,
-		Store:        store,
+		Meta:         store,
 		Tmux:         tmuxMgr,
 		TmuxSession:  tmuxSession,
 		BoidBinary:   boidBin,

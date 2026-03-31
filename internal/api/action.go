@@ -8,7 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/db"
-	"github.com/novshi-tech/boid/internal/job"
+	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/model"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/project"
@@ -21,7 +21,7 @@ type ActionHandler struct {
 	Registry    *orchestrator.Registry
 	Evaluator   *orchestrator.Evaluator
 	Coordinator *orchestrator.Coordinator
-	Runner      *job.Runner
+	Runner      *dispatcher.Runner
 	WorktreeMgr *worktree.Manager
 }
 

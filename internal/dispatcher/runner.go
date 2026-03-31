@@ -1,4 +1,4 @@
-package job
+package dispatcher
 
 import (
 	"context"
@@ -10,36 +10,30 @@ import (
 	"sync"
 
 	"github.com/novshi-tech/boid/internal/db"
+	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
 	"github.com/novshi-tech/boid/internal/hostcmd"
 	"github.com/novshi-tech/boid/internal/kit"
 	"github.com/novshi-tech/boid/internal/model"
-	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/secret"
-	"github.com/novshi-tech/boid/internal/tmux"
 	"github.com/novshi-tech/boid/internal/worktree"
 )
 
-// JobCompletionResult is the result delivered via WaitForJob/CompleteJob.
-type JobCompletionResult struct {
-	Output   string // stdout capture (payload_patch JSON)
-	ExitCode int
-}
-
 type Runner struct {
-	DB              *db.DB
-	Store           *project.Store
-	Tmux            tmux.TmuxManager
-	TmuxSession     string              // defaults to "boid"
-	BoidBinary      string              // host-side path to boid binary
-	ServerSocket    string              // host-side server socket path
-	ProxyPort       *int                // pointer to server's proxy port (populated after Start)
-	Broker          *hostcmd.Broker     // host command broker
-	SecretStore     *secret.Store       // secret store for resolving secret: env values
-	WorktreeMgr     *worktree.Manager   // optional worktree manager
-	tokenMu         sync.Mutex
-	jobTokens       map[string]string   // job ID -> broker token
-	waiterMu        sync.Mutex
-	jobWaiters      map[string]chan JobCompletionResult // job ID -> completion channel
+	DB           *db.DB
+	Meta         MetaCache
+	Tmux         dtmux.TmuxManager
+	TmuxSession  string            // defaults to "boid"
+	BoidBinary   string            // host-side path to boid binary
+	ServerSocket string            // host-side server socket path
+	ProxyPort    *int              // pointer to server's proxy port (populated after Start)
+	Broker       *hostcmd.Broker   // host command broker
+	SecretStore  *secret.Store     // secret store for resolving secret: env values
+	WorktreeMgr  *worktree.Manager // optional worktree manager
+	tokenMu      sync.Mutex
+	jobTokens    map[string]string            // job ID -> broker token
+	waiterMu     sync.Mutex
+	jobWaiters   map[string]chan JobCompletionResult // job ID -> completion channel
 }
 
 func (r *Runner) session() string {
@@ -64,7 +58,7 @@ func (r *Runner) collectWorkspaceDirs(workspaceID, selfID string) map[string]str
 		if p.ID == selfID {
 			continue
 		}
-		m, ok := r.Store.Get(p.ID)
+		m, ok := r.Meta.Get(p.ID)
 		if !ok || m.WorkspaceID != workspaceID {
 			continue
 		}
@@ -85,8 +79,7 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 		return fmt.Errorf("hook %q: no script path resolved", event.Hook.ID)
 	}
 
-	// Get project info
-	meta, ok := r.Store.Get(event.ProjectID)
+	meta, ok := r.Meta.Get(event.ProjectID)
 	if !ok {
 		return fmt.Errorf("project %q: meta not loaded", event.ProjectID)
 	}
@@ -107,7 +100,6 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 		return fmt.Errorf("create job: %w", err)
 	}
 
-	// Determine hooks directory: stage if kits provide hooks, otherwise use project dir
 	projectHooksDir := filepath.Join(proj.WorkDir, ".boid", "hooks")
 	hooksDir := projectHooksDir
 	var stagingDir string
@@ -121,7 +113,6 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 		stagingDir = staged
 	}
 
-	// Collect workspace peer projects (read-only mounts)
 	workspaceDirs := r.collectWorkspaceDirs(meta.WorkspaceID, event.ProjectID)
 
 	var proxyPort int
@@ -129,7 +120,6 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 		proxyPort = *r.ProxyPort
 	}
 
-	// Register host commands with broker
 	var brokerSocket, brokerToken string
 	if r.Broker != nil && len(meta.HostCommands) > 0 {
 		tokenCtx := hostcmd.TokenContext{
@@ -149,7 +139,6 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 
 	homeDir, _ := os.UserHomeDir()
 
-	// Resolve worktree if behavior has worktree enabled
 	var worktreeDir string
 	if r.WorktreeMgr != nil {
 		worktreeDir, err = r.resolveWorktree(event, meta, proj)
@@ -158,7 +147,7 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 		}
 	}
 
-	cfg := WrapperConfig{
+	cfg := sandbox.WrapperConfig{
 		JobID:              j.ID,
 		TaskID:             event.TaskID,
 		ProjectID:          meta.ID,
@@ -179,7 +168,7 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 		WorktreeDir:        worktreeDir,
 	}
 
-	outerPath, err := WriteSandboxScripts(cfg)
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
 	if err != nil {
 		return fmt.Errorf("write sandbox scripts: %w", err)
 	}
@@ -203,8 +192,7 @@ func (r *Runner) Execute(ctx context.Context, event *model.HookFireEvent) error 
 }
 
 // resolveWorktree checks if the task's behavior enables worktree isolation.
-// If so, it returns the worktree path (creating one if needed).
-func (r *Runner) resolveWorktree(event *model.HookFireEvent, meta *project.ProjectMeta, proj *model.Project) (string, error) {
+func (r *Runner) resolveWorktree(event *model.HookFireEvent, meta *model.ProjectMeta, proj *model.Project) (string, error) {
 	task, err := r.DB.GetTask(event.TaskID)
 	if err != nil {
 		return "", fmt.Errorf("get task: %w", err)
@@ -215,7 +203,6 @@ func (r *Runner) resolveWorktree(event *model.HookFireEvent, meta *project.Proje
 		return "", nil
 	}
 
-	// Check if worktree already exists for this task
 	existing, err := r.WorktreeMgr.Get(event.TaskID)
 	if err != nil {
 		return "", fmt.Errorf("get worktree: %w", err)
@@ -224,7 +211,6 @@ func (r *Runner) resolveWorktree(event *model.HookFireEvent, meta *project.Proje
 		return existing.Path, nil
 	}
 
-	// Create new worktree
 	w, err := r.WorktreeMgr.Create(
 		proj.WorkDir,
 		event.ProjectID,
@@ -256,7 +242,6 @@ func (r *Runner) trackToken(jobID, token string) {
 }
 
 // WaitForJob registers a channel that will receive the job completion result.
-// The dispatcher calls this before launching a job, then blocks on the channel.
 func (r *Runner) WaitForJob(jobID string) <-chan JobCompletionResult {
 	r.waiterMu.Lock()
 	defer r.waiterMu.Unlock()
@@ -269,7 +254,6 @@ func (r *Runner) WaitForJob(jobID string) <-chan JobCompletionResult {
 }
 
 // CompleteJob signals the waiting dispatcher that a job has completed.
-// Called by JobHandler.Done when boid job done is received.
 func (r *Runner) CompleteJob(jobID string, result JobCompletionResult) {
 	r.waiterMu.Lock()
 	ch, ok := r.jobWaiters[jobID]
@@ -283,7 +267,7 @@ func (r *Runner) CompleteJob(jobID string, result JobCompletionResult) {
 	}
 }
 
-// ExecuteHook implements hook.HookExecutor: creates a job, spawns sandbox, returns job ID.
+// ExecuteHook implements orchestrator.HookExecutor.
 func (r *Runner) ExecuteHook(ctx context.Context, event *model.HookFireEvent) (string, error) {
 	slog.Info("executing hook (advanced)", "hook_id", event.Hook.ID, "task_id", event.TaskID)
 
@@ -292,7 +276,7 @@ func (r *Runner) ExecuteHook(ctx context.Context, event *model.HookFireEvent) (s
 		return "", fmt.Errorf("hook %q: no script path resolved", event.Hook.ID)
 	}
 
-	meta, ok := r.Store.Get(event.ProjectID)
+	meta, ok := r.Meta.Get(event.ProjectID)
 	if !ok {
 		return "", fmt.Errorf("project %q: meta not loaded", event.ProjectID)
 	}
@@ -335,7 +319,6 @@ func (r *Runner) ExecuteHook(ctx context.Context, event *model.HookFireEvent) (s
 		proxyPort = *r.ProxyPort
 	}
 
-	// Register broker with hook role (boid builtin only, no project host commands)
 	var brokerSocket, brokerToken string
 	if r.Broker != nil {
 		tokenCtx := hostcmd.TokenContext{
@@ -364,7 +347,7 @@ func (r *Runner) ExecuteHook(ctx context.Context, event *model.HookFireEvent) (s
 		payloadJSON = "{}"
 	}
 
-	cfg := WrapperConfig{
+	cfg := sandbox.WrapperConfig{
 		JobID:              j.ID,
 		TaskID:             event.TaskID,
 		ProjectID:          meta.ID,
@@ -391,7 +374,7 @@ func (r *Runner) ExecuteHook(ctx context.Context, event *model.HookFireEvent) (s
 	return r.launchSandbox(j.ID, event.TaskID, event.Hook.ID, cfg)
 }
 
-// ExecuteGate implements hook.GateExecutor: creates a gate job, spawns sandbox, returns job ID.
+// ExecuteGate implements orchestrator.GateExecutor.
 func (r *Runner) ExecuteGate(ctx context.Context, event *model.GateFireEvent) (string, error) {
 	slog.Info("executing gate", "gate_id", event.Gate.ID, "task_id", event.TaskID)
 
@@ -400,7 +383,7 @@ func (r *Runner) ExecuteGate(ctx context.Context, event *model.GateFireEvent) (s
 		return "", fmt.Errorf("gate %q: no script path resolved", event.Gate.ID)
 	}
 
-	meta, ok := r.Store.Get(event.ProjectID)
+	meta, ok := r.Meta.Get(event.ProjectID)
 	if !ok {
 		return "", fmt.Errorf("project %q: meta not loaded", event.ProjectID)
 	}
@@ -429,7 +412,6 @@ func (r *Runner) ExecuteGate(ctx context.Context, event *model.GateFireEvent) (s
 		proxyPort = *r.ProxyPort
 	}
 
-	// Register broker with gate role (project host commands + boid builtin)
 	var brokerSocket, brokerToken string
 	if r.Broker != nil {
 		tokenCtx := hostcmd.TokenContext{
@@ -447,7 +429,7 @@ func (r *Runner) ExecuteGate(ctx context.Context, event *model.GateFireEvent) (s
 
 	taskJSON, _ := json.Marshal(task)
 
-	cfg := WrapperConfig{
+	cfg := sandbox.WrapperConfig{
 		JobID:        j.ID,
 		TaskID:       event.TaskID,
 		ProjectID:    meta.ID,
@@ -468,16 +450,14 @@ func (r *Runner) ExecuteGate(ctx context.Context, event *model.GateFireEvent) (s
 }
 
 // launchSandbox writes sandbox scripts and launches in tmux. Returns job ID.
-func (r *Runner) launchSandbox(jobID, taskID, handlerID string, cfg WrapperConfig) (string, error) {
-	outerPath, err := WriteSandboxScripts(cfg)
+func (r *Runner) launchSandbox(jobID, taskID, handlerID string, cfg sandbox.WrapperConfig) (string, error) {
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
 	if err != nil {
 		return "", fmt.Errorf("write sandbox scripts: %w", err)
 	}
 
 	session := r.session()
 
-	// For hook/gate roles, use task-based window name (consistent across rework cycles).
-	// For legacy mode, use handler-based name.
 	var windowName string
 	if cfg.Role == "hook" || cfg.Role == "gate" {
 		windowName = fmt.Sprintf("task-%s", taskID[:min(8, len(taskID))])
@@ -489,7 +469,6 @@ func (r *Runner) launchSandbox(jobID, taskID, handlerID string, cfg WrapperConfi
 		if err := r.Tmux.EnsureSession(session); err != nil {
 			return "", fmt.Errorf("ensure session: %w", err)
 		}
-		// Kill existing window if present (clean slate for rework)
 		r.Tmux.KillWindow(session, windowName) // ignore error (window may not exist)
 		cmd := fmt.Sprintf("bash %s", outerPath)
 		if err := r.Tmux.RunInWindow(session, windowName, cmd); err != nil {
@@ -502,7 +481,6 @@ func (r *Runner) launchSandbox(jobID, taskID, handlerID string, cfg WrapperConfi
 }
 
 // CleanupTaskWindow kills the tmux window associated with a task.
-// Called by gates on done/aborted states.
 func (r *Runner) CleanupTaskWindow(taskID string) {
 	if r.Tmux == nil {
 		return
@@ -514,7 +492,7 @@ func (r *Runner) CleanupTaskWindow(taskID string) {
 	}
 }
 
-// WaitForJobCtx implements hook.JobWaiter: waits for a job to complete with context support.
+// WaitForJobCtx implements orchestrator.JobWaiter.
 func (r *Runner) WaitForJobCtx(ctx context.Context, jobID string) (JobCompletionResult, error) {
 	ch := r.WaitForJob(jobID)
 	select {
@@ -542,4 +520,3 @@ func (r *Runner) UnregisterJob(jobID string) {
 		slog.Info("unregistered broker token", "job_id", jobID)
 	}
 }
-

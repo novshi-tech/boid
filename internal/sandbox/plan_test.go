@@ -1,4 +1,4 @@
-package job
+package sandbox
 
 import (
 	"testing"
@@ -133,7 +133,6 @@ func TestBuildSandboxPlan_ProjectRemount(t *testing.T) {
 	plan := BuildSandboxPlan(cfg)
 
 	// After HOME tmpfs, project dir must be re-mounted.
-	// Find HOME tmpfs index and verify a project bind follows it.
 	homeIdx := -1
 	for i, m := range plan.Mounts {
 		if m.Target == "/home/user" && m.Type == MountTmpfs {
@@ -167,7 +166,6 @@ func TestBuildSandboxPlan_BoidDir_HookMode(t *testing.T) {
 	boidDir := "/home/user/proj/.boid"
 	hooksDir := "/home/user/proj/.boid/hooks"
 
-	// Find .boid mount
 	var boidMount *MountEntry
 	var hooksMount *MountEntry
 	for i := range plan.Mounts {

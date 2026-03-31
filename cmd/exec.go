@@ -8,8 +8,8 @@ import (
 	"syscall"
 
 	"github.com/novshi-tech/boid/internal/client"
-	"github.com/novshi-tech/boid/internal/job"
 	"github.com/novshi-tech/boid/internal/project"
+	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/spf13/cobra"
 )
 
@@ -27,16 +27,16 @@ func init() {
 }
 
 // buildSandboxConfig creates a WrapperConfig from the server state for a given project.
-func buildSandboxConfig(projectID string) (job.WrapperConfig, error) {
+func buildSandboxConfig(projectID string) (sandbox.WrapperConfig, error) {
 	c := client.NewUnixClient(client.DefaultSocketPath())
 	var p project.Project
 	if err := c.Do("GET", "/api/projects/"+projectID, nil, &p); err != nil {
-		return job.WrapperConfig{}, fmt.Errorf("get project: %w", err)
+		return sandbox.WrapperConfig{}, fmt.Errorf("get project: %w", err)
 	}
 
 	boidBinary, err := os.Executable()
 	if err != nil {
-		return job.WrapperConfig{}, fmt.Errorf("resolve boid binary: %w", err)
+		return sandbox.WrapperConfig{}, fmt.Errorf("resolve boid binary: %w", err)
 	}
 
 	homeDir, _ := os.UserHomeDir()
@@ -82,7 +82,7 @@ func buildSandboxConfig(projectID string) (job.WrapperConfig, error) {
 		}
 	}
 
-	cfg := job.WrapperConfig{
+	cfg := sandbox.WrapperConfig{
 		JobID:              fmt.Sprintf("exec-%s", projectID),
 		ProjectID:          p.Meta.ID,
 		ProjectDir:         p.WorkDir,
@@ -125,7 +125,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		cfg.TTY = true
 	}
 
-	outerPath, err := job.WriteSandboxScripts(cfg)
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
 	if err != nil {
 		return fmt.Errorf("write sandbox scripts: %w", err)
 	}
