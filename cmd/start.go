@@ -23,6 +23,30 @@ func init() {
 	rootCmd.AddCommand(startCmd)
 }
 
+func defaultAllowedDomains() []string {
+	return []string{
+		// AI agents
+		".anthropic.com",
+		".claude.ai",
+		"api.openai.com",
+		"auth.openai.com",
+		"chatgpt.com",
+		// Go
+		"proxy.golang.org",
+		"sum.golang.org",
+		// Node
+		"registry.npmjs.org",
+		// .NET
+		"api.nuget.org",
+		// Python
+		"pypi.org",
+		"files.pythonhosted.org",
+		// Docker
+		".docker.io",
+		"auth.docker.io",
+	}
+}
+
 func defaultDBPath() string {
 	dataDir := os.Getenv("XDG_DATA_HOME")
 	if dataDir == "" {
@@ -50,25 +74,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		HTTPAddr:    ":8080",
 		TmuxSession: "boid",
 		KitsDir:     defaultKitsDir(),
-		AllowedDomains: []string{
-			// AI agents
-			".anthropic.com",
-			".claude.ai",
-			"api.openai.com",
-			// Go
-			"proxy.golang.org",
-			"sum.golang.org",
-			// Node
-			"registry.npmjs.org",
-			// .NET
-			"api.nuget.org",
-			// Python
-			"pypi.org",
-			"files.pythonhosted.org",
-			// Docker
-			".docker.io",
-			"auth.docker.io",
-		},
+		AllowedDomains: defaultAllowedDomains(),
 	}
 
 	srv, err := server.New(cfg)
