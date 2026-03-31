@@ -454,6 +454,55 @@ env:
 	}
 }
 
+func TestReadMetaWithKits_LocalCodexKit(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	kitsDir := filepath.Join(boidDir, "kits", "codex")
+	if err := os.MkdirAll(kitsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	projectYAML := `
+id: test-proj
+name: Test Project
+kits:
+  - codex
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
+		t.Fatalf("write project.yaml: %v", err)
+	}
+
+	kitYAML := `
+additional_bindings:
+  - source: ${TEST_BOID_HOME}/.volta
+  - source: ${TEST_BOID_HOME}/.codex
+    mode: rw
+`
+	if err := os.WriteFile(filepath.Join(kitsDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
+		t.Fatalf("write kit.yaml: %v", err)
+	}
+
+	t.Setenv("TEST_BOID_HOME", "/home/testuser")
+
+	meta, err := project.ReadMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadMetaWithKits: %v", err)
+	}
+
+	if len(meta.AdditionalBindings) != 2 {
+		t.Fatalf("additional_bindings count = %d, want 2", len(meta.AdditionalBindings))
+	}
+	if meta.AdditionalBindings[0].Source != "/home/testuser/.volta" {
+		t.Errorf("binding[0].Source = %q, want /home/testuser/.volta", meta.AdditionalBindings[0].Source)
+	}
+	if meta.AdditionalBindings[1].Source != "/home/testuser/.codex" {
+		t.Errorf("binding[1].Source = %q, want /home/testuser/.codex", meta.AdditionalBindings[1].Source)
+	}
+	if meta.AdditionalBindings[1].Mode != "rw" {
+		t.Errorf("binding[1].Mode = %q, want rw", meta.AdditionalBindings[1].Mode)
+	}
+}
+
 func TestReadMetaWithKits_LocalKitNotFound(t *testing.T) {
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")

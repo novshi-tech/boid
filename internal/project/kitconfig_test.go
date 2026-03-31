@@ -93,6 +93,36 @@ env:
 	}
 }
 
+func TestReadKit_CodexBindings(t *testing.T) {
+	dir := t.TempDir()
+	writeKitYAML(t, dir, `
+additional_bindings:
+  - source: ${TEST_BOID_HOME}/.volta
+  - source: ${TEST_BOID_HOME}/.codex
+    mode: rw
+`)
+
+	t.Setenv("TEST_BOID_HOME", "/home/testuser")
+
+	m, err := project.ReadKit(dir)
+	if err != nil {
+		t.Fatalf("ReadKit: %v", err)
+	}
+
+	if len(m.AdditionalBindings) != 2 {
+		t.Fatalf("additional_bindings count = %d, want 2", len(m.AdditionalBindings))
+	}
+	if m.AdditionalBindings[0].Source != "/home/testuser/.volta" {
+		t.Errorf("binding[0].Source = %q, want /home/testuser/.volta", m.AdditionalBindings[0].Source)
+	}
+	if m.AdditionalBindings[1].Source != "/home/testuser/.codex" {
+		t.Errorf("binding[1].Source = %q, want /home/testuser/.codex", m.AdditionalBindings[1].Source)
+	}
+	if m.AdditionalBindings[1].Mode != "rw" {
+		t.Errorf("binding[1].Mode = %q, want rw", m.AdditionalBindings[1].Mode)
+	}
+}
+
 func TestReadKit_MissingFile(t *testing.T) {
 	dir := t.TempDir()
 	_, err := project.ReadKit(dir)
