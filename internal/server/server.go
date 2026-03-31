@@ -186,7 +186,7 @@ func New(cfg Config) (*Server, error) {
 		MaxDepth:     5,
 	}
 
-	actionHandler := &api.ActionHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, Dispatcher: dispatcher, AdvancedDispatcher: advancedDispatcher, WorktreeMgr: wtMgr}
+	actionHandler := &api.ActionHandler{DB: d, Store: store, Registry: reg, Evaluator: eval, Dispatcher: dispatcher, AdvancedDispatcher: advancedDispatcher, Runner: runner, WorktreeMgr: wtMgr}
 	r.Route("/api/tasks/{taskID}/actions", func(r chi.Router) {
 		r.Mount("/", actionHandler.Routes())
 	})

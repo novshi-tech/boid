@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/hook"
+	"github.com/novshi-tech/boid/internal/job"
 	"github.com/novshi-tech/boid/internal/model"
 	"github.com/novshi-tech/boid/internal/project"
 	"github.com/novshi-tech/boid/internal/reducer"
@@ -22,6 +23,7 @@ type ActionHandler struct {
 	Evaluator           *hook.Evaluator
 	Dispatcher          *hook.Dispatcher          // legacy dispatcher
 	AdvancedDispatcher  *hook.AdvancedDispatcher   // new hook→gate→advance dispatcher
+	Runner              *job.Runner
 	WorktreeMgr         *worktree.Manager
 }
 
@@ -176,8 +178,11 @@ func (h *ActionHandler) runDispatchLoop(task *model.Task, meta *model.ProjectMet
 			}
 		}
 
-		// If terminal state, stop
+		// If terminal state, cleanup and stop
 		if current.Status == model.TaskStatusDone || current.Status == model.TaskStatusAborted {
+			if h.Runner != nil {
+				h.Runner.CleanupTaskWindow(current.ID)
+			}
 			return
 		}
 

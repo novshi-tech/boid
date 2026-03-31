@@ -475,16 +475,22 @@ func (r *Runner) launchSandbox(jobID, taskID, handlerID string, cfg WrapperConfi
 	}
 
 	session := r.session()
-	prefix := "hook"
-	if cfg.Role == "gate" {
-		prefix = "gate"
+
+	// For hook/gate roles, use task-based window name (consistent across rework cycles).
+	// For legacy mode, use handler-based name.
+	var windowName string
+	if cfg.Role == "hook" || cfg.Role == "gate" {
+		windowName = fmt.Sprintf("task-%s", taskID[:min(8, len(taskID))])
+	} else {
+		windowName = fmt.Sprintf("hook-%s-%s", taskID[:min(8, len(taskID))], handlerID)
 	}
-	windowName := fmt.Sprintf("%s-%s-%s", prefix, taskID[:min(8, len(taskID))], handlerID)
 
 	if r.Tmux != nil {
 		if err := r.Tmux.EnsureSession(session); err != nil {
 			return "", fmt.Errorf("ensure session: %w", err)
 		}
+		// Kill existing window if present (clean slate for rework)
+		r.Tmux.KillWindow(session, windowName) // ignore error (window may not exist)
 		cmd := fmt.Sprintf("bash %s", outerPath)
 		if err := r.Tmux.RunInWindow(session, windowName, cmd); err != nil {
 			return "", fmt.Errorf("run in window: %w", err)
@@ -493,6 +499,19 @@ func (r *Runner) launchSandbox(jobID, taskID, handlerID string, cfg WrapperConfi
 
 	slog.Info("job started", "job_id", jobID, "window", windowName)
 	return jobID, nil
+}
+
+// CleanupTaskWindow kills the tmux window associated with a task.
+// Called by gates on done/aborted states.
+func (r *Runner) CleanupTaskWindow(taskID string) {
+	if r.Tmux == nil {
+		return
+	}
+	session := r.session()
+	windowName := fmt.Sprintf("task-%s", taskID[:min(8, len(taskID))])
+	if err := r.Tmux.KillWindow(session, windowName); err != nil {
+		slog.Debug("cleanup task window", "task_id", taskID, "error", err)
+	}
 }
 
 // WaitForJobCtx implements hook.JobWaiter: waits for a job to complete with context support.
