@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
@@ -43,20 +42,6 @@ var projectLocalRemoveKitCmd = &cobra.Command{
 	Short: "Add a kit ref to kits.remove",
 	Args:  cobra.RangeArgs(1, 2),
 	RunE:  runProjectLocalRemoveKit,
-}
-
-var projectLocalAddEditableKitCmd = &cobra.Command{
-	Use:   "add-editable-kit <ref> [dir]",
-	Short: "Mark a local kit as editable and ensure it is added",
-	Args:  cobra.RangeArgs(1, 2),
-	RunE:  runProjectLocalAddEditableKit,
-}
-
-var projectLocalRemoveEditableKitCmd = &cobra.Command{
-	Use:   "remove-editable-kit <ref> [dir]",
-	Short: "Remove a kit ref from kits.editable",
-	Args:  cobra.RangeArgs(1, 2),
-	RunE:  runProjectLocalRemoveEditableKit,
 }
 
 var projectLocalSetEnvCmd = &cobra.Command{
@@ -98,8 +83,6 @@ func init() {
 		projectLocalShowCmd,
 		projectLocalAddKitCmd,
 		projectLocalRemoveKitCmd,
-		projectLocalAddEditableKitCmd,
-		projectLocalRemoveEditableKitCmd,
 		projectLocalSetEnvCmd,
 		projectLocalUnsetEnvCmd,
 		projectLocalAddBindingCmd,
@@ -195,59 +178,6 @@ func runProjectLocalRemoveKit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Printf("removed kit: %s\n", ref)
-	return nil
-}
-
-func runProjectLocalAddEditableKit(cmd *cobra.Command, args []string) error {
-	projectDir, err := resolveProjectRoot(optionalDirArg(args[1:]))
-	if err != nil {
-		return err
-	}
-	meta, err := loadProjectLocalEditable(projectDir)
-	if err != nil {
-		return err
-	}
-
-	ref := args[0]
-	if !strings.HasPrefix(ref, "local/") {
-		return fmt.Errorf("editable kits must use local/ refs: %s", ref)
-	}
-
-	meta.Kits.Remove = removeString(meta.Kits.Remove, ref)
-	if !containsString(meta.Kits.Add, ref) {
-		meta.Kits.Add = append(meta.Kits.Add, ref)
-	}
-	if !containsString(meta.Kits.Editable, ref) {
-		meta.Kits.Editable = append(meta.Kits.Editable, ref)
-	}
-
-	if err := projectspec.WriteProjectLocalMeta(projectDir, meta); err != nil {
-		return err
-	}
-	fmt.Printf("marked editable kit: %s\n", ref)
-	return nil
-}
-
-func runProjectLocalRemoveEditableKit(cmd *cobra.Command, args []string) error {
-	projectDir, err := resolveProjectRoot(optionalDirArg(args[1:]))
-	if err != nil {
-		return err
-	}
-	meta, err := loadProjectLocalEditable(projectDir)
-	if err != nil {
-		return err
-	}
-
-	ref := args[0]
-	meta.Kits.Editable = removeString(meta.Kits.Editable, ref)
-	if len(meta.Kits.Editable) == 0 {
-		meta.Kits.Editable = nil
-	}
-
-	if err := projectspec.WriteProjectLocalMeta(projectDir, meta); err != nil {
-		return err
-	}
-	fmt.Printf("unmarked editable kit: %s\n", ref)
 	return nil
 }
 

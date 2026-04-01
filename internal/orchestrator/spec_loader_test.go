@@ -1,7 +1,6 @@
 package orchestrator_test
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -230,7 +229,6 @@ version: 1
 kits:
   add: [local/dev/repro-kit]
   remove: [github.com/acme/repo/default]
-  editable: [local/dev/repro-kit]
 env:
   GOPATH: ${TEST_BOID_HOME}/go
 host_commands:
@@ -253,9 +251,6 @@ additional_bindings:
 		}
 		if len(meta.Kits.Add) != 1 || meta.Kits.Add[0] != "local/dev/repro-kit" {
 			t.Fatalf("unexpected kits.add: %+v", meta.Kits.Add)
-		}
-		if len(meta.Kits.Editable) != 1 || meta.Kits.Editable[0] != "local/dev/repro-kit" {
-			t.Fatalf("unexpected kits.editable: %+v", meta.Kits.Editable)
 		}
 		if meta.Env["GOPATH"] != "/home/testuser/go" {
 			t.Fatalf("unexpected env: %+v", meta.Env)
@@ -289,18 +284,6 @@ additional_bindings:
 		_, err := projectspec.ReadProjectLocalMeta(dir)
 		if err == nil || !strings.Contains(err.Error(), "must be an absolute path") {
 			t.Fatalf("expected absolute path error, got %v", err)
-		}
-	})
-
-	t.Run("editable kit must use local prefix", func(t *testing.T) {
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		_ = os.MkdirAll(boidDir, 0o755)
-		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte("kits:\n  editable:\n    - github.com/acme/repo/default\n"), 0o644)
-
-		_, err := projectspec.ReadProjectLocalMeta(dir)
-		if err == nil || !strings.Contains(err.Error(), "must use local/ prefix") {
-			t.Fatalf("expected local/ prefix error, got %v", err)
 		}
 	})
 }
@@ -476,14 +459,15 @@ kits:
     - local/dev/repro-kit
   remove:
     - github.com/acme/repo/default
-  editable:
-    - local/dev/repro-kit
 env:
   FROM_PROJECT: local
   LOCAL_ONLY: enabled
 host_commands:
   uv:
     path: /custom/bin/uv
+additional_bindings:
+  - source: /opt/local-kit
+    mode: rw
 `
 	if err := os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(projectLocalYAML), 0o644); err != nil {
 		t.Fatalf("write project.local.yaml: %v", err)
@@ -508,51 +492,11 @@ host_commands:
 	if meta.HostCommands["git"].Path != "/usr/bin/git" {
 		t.Fatalf("project host command should be preserved: %+v", meta.HostCommands)
 	}
-	if len(meta.AdditionalBindings) != 3 {
+	if len(meta.AdditionalBindings) != 2 {
 		t.Fatalf("unexpected bindings: %+v", meta.AdditionalBindings)
 	}
-	if meta.AdditionalBindings[2].Source != localKitDir || meta.AdditionalBindings[2].Mode != "rw" {
-		t.Fatalf("expected editable local kit binding, got %+v", meta.AdditionalBindings)
-	}
-}
-
-func TestReadProjectMetaWithKits_ProjectLocalEditableBindingCanBeOverridden(t *testing.T) {
-	baseDir := t.TempDir()
-	registryDir := t.TempDir()
-	boidDir := filepath.Join(baseDir, ".boid")
-	if err := os.MkdirAll(boidDir, 0o755); err != nil {
-		t.Fatalf("mkdir boid dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\n"), 0o644); err != nil {
-		t.Fatalf("write project.yaml: %v", err)
-	}
-
-	localKitDir := filepath.Join(registryDir, "local", "dev", "repro-kit")
-	if err := os.MkdirAll(localKitDir, 0o755); err != nil {
-		t.Fatalf("mkdir local kit dir: %v", err)
-	}
-	writeKitYAML(t, localKitDir, "env:\n  FROM_LOCAL_KIT: yes\n")
-
-	projectLocalYAML := fmt.Sprintf(`
-kits:
-  add:
-    - local/dev/repro-kit
-  editable:
-    - local/dev/repro-kit
-additional_bindings:
-  - source: %s
-    mode: ro
-`, localKitDir)
-	if err := os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(projectLocalYAML), 0o644); err != nil {
-		t.Fatalf("write project.local.yaml: %v", err)
-	}
-
-	meta, err := projectspec.ReadProjectMetaWithKits(baseDir, projectspec.NewRegistry(registryDir))
-	if err != nil {
-		t.Fatalf("ReadProjectMetaWithKits: %v", err)
-	}
-	if len(meta.AdditionalBindings) != 1 || meta.AdditionalBindings[0].Source != localKitDir || meta.AdditionalBindings[0].Mode != "ro" {
-		t.Fatalf("expected manual binding override, got %+v", meta.AdditionalBindings)
+	if meta.AdditionalBindings[0].Source != "/opt/local-kit" || meta.AdditionalBindings[0].Mode != "rw" {
+		t.Fatalf("expected local binding override, got %+v", meta.AdditionalBindings)
 	}
 }
 
@@ -726,31 +670,6 @@ func TestEffectiveKitRefs(t *testing.T) {
 		})
 		if err == nil || !strings.Contains(err.Error(), "both kits.add and kits.remove") {
 			t.Fatalf("expected add/remove overlap error, got %v", err)
-		}
-	})
-}
-
-func TestEffectiveEditableKitRefs(t *testing.T) {
-	t.Run("valid editable refs", func(t *testing.T) {
-		got, err := projectspec.EffectiveEditableKitRefs(
-			[]string{"local/dev/repro-kit", "github.com/acme/repo/shared"},
-			[]string{"local/dev/repro-kit"},
-		)
-		if err != nil {
-			t.Fatalf("EffectiveEditableKitRefs: %v", err)
-		}
-		if len(got) != 1 || got[0] != "local/dev/repro-kit" {
-			t.Fatalf("got %v", got)
-		}
-	})
-
-	t.Run("editable ref must be active", func(t *testing.T) {
-		_, err := projectspec.EffectiveEditableKitRefs(
-			[]string{"github.com/acme/repo/shared"},
-			[]string{"local/dev/repro-kit"},
-		)
-		if err == nil || !strings.Contains(err.Error(), "is not active") {
-			t.Fatalf("expected inactive editable error, got %v", err)
 		}
 	})
 }

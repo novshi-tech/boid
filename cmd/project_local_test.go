@@ -43,7 +43,7 @@ func TestProjectLocalCommands(t *testing.T) {
 	}
 
 	execRootCmd(t, "project", "local", "init", projectDir)
-	execRootCmd(t, "project", "local", "add-editable-kit", "local/dev/repro-kit", projectDir)
+	execRootCmd(t, "project", "local", "add-kit", "local/dev/repro-kit", projectDir)
 	execRootCmd(t, "project", "local", "set-env", "FOO", "bar", projectDir)
 	execRootCmd(t, "project", "local", "add-binding", projectDir, projectDir, "--mode", "rw")
 
@@ -53,9 +53,6 @@ func TestProjectLocalCommands(t *testing.T) {
 	}
 	if len(meta.Kits.Add) != 1 || meta.Kits.Add[0] != "local/dev/repro-kit" {
 		t.Fatalf("unexpected kits.add: %+v", meta.Kits.Add)
-	}
-	if len(meta.Kits.Editable) != 1 || meta.Kits.Editable[0] != "local/dev/repro-kit" {
-		t.Fatalf("unexpected kits.editable: %+v", meta.Kits.Editable)
 	}
 	if meta.Env["FOO"] != "bar" {
 		t.Fatalf("unexpected env: %+v", meta.Env)
