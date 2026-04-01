@@ -2,14 +2,16 @@ package orchestrator
 
 import "time"
 
-// BindMount remains a plain shared DTO across orchestration and sandbox planning.
+// BindMount is a plain shared DTO across orchestration and sandbox planning.
+// It carries only mount source/mode data and does not encode provider behavior.
 type BindMount struct {
 	Source string `yaml:"source" json:"source"`
 	Mode   string `yaml:"mode" json:"mode"`
 }
 
 // CommandDef is the project-spec transport shape for sandbox command policy input.
-// sandbox remains the canonical owner of how these policy fields are enforced.
+// It is mirrored into dispatcher-owned transport data, while sandbox remains the
+// canonical owner of how these policy fields are enforced.
 type CommandDef struct {
 	Name                string            `yaml:"name" json:"name"`
 	Path                string            `yaml:"path" json:"path"`

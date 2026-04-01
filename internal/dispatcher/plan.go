@@ -1,12 +1,13 @@
 package dispatcher
 
-// BindMount remains a plain shared DTO at the dispatcher boundary.
+// BindMount is a plain shared DTO at the dispatcher boundary.
+// It carries only mount source/mode data and does not encode provider behavior.
 type BindMount struct {
 	Source string
 	Mode   string
 }
 
-// CommandDef is a transport shape used by dispatcher.
+// CommandDef is a dispatcher-side transport shape for sandbox command policy input.
 // sandbox remains the canonical owner of how these policy fields are interpreted.
 type CommandDef struct {
 	Name                string

@@ -139,7 +139,10 @@ behavior leakage の可能性がある。
 
 方針:
 
-- 本当に素朴な DTO は現行所有でもよい
+- `BindMount` は shared DTO として扱う
+- `CommandDef` は sandbox policy DSL を運ぶ transport shape として扱う
+- dispatcher / orchestrator は `CommandDef` を保持してもよいが、
+  解釈責務は sandbox に置く
 - provider-owned behavior DSL になっているものは後段で再評価する
 
 ## Current Status
@@ -278,7 +281,8 @@ shared data dependency と behavior leakage を見直す。
 Tasks:
 
 1. `BindMount` を shared DTO のまま残して問題ないか確認する
-2. `CommandDef` が provider-owned policy DSL になっていないか監査する
+2. `CommandDef` が provider-owned policy DSL であることを前提に、
+   その transport shape を dispatcher / orchestrator 側でどう保持するか明確化する
 3. 必要なら `CommandDef` を
    「共有してよい plain data」と
    「provider 実装へ閉じるべき policy detail」に分ける
@@ -286,8 +290,9 @@ Tasks:
 
 Decision rule:
 
-- fake 実装でも同じ意味で扱えるなら shared data のままよい
-- provider 固有アルゴリズム selector が漏れるなら再設計対象とする
+- fake 実装でも同じ意味で扱える mount data は shared DTO のままよい
+- policy DSL は consumer-owned transport shape として鏡写しに留め、
+  provider 固有アルゴリズム selector が漏れるなら再設計対象とする
 
 Completion criteria:
 
