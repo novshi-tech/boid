@@ -160,7 +160,7 @@ behavior leakage の可能性がある。
 - Phase 5 は完了
   - `sandbox` concrete type への参照は `server` package の wiring にのみ残っている
   - `api` / `orchestrator` / `dispatcher` は `sandbox` 具象へ直接依存していない
-- Phase 6 は進行中
+- Phase 6 は完了
   - `dispatcher` の broker/token/tmux/cleanup 系テストは追加済み
   - `server` に最小限の cross-layer smoke test は追加済み
   - `api` / `orchestrator` / `sandbox` / `dispatcher` / `server` を跨ぐ `go test ./...` / `go test -race ./...` が通過している
