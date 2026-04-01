@@ -13,6 +13,7 @@ import (
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/web"
 )
 
@@ -77,6 +78,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Tmux:        newTmuxManager(cfg),
 		TmuxSession: newTmuxSession(cfg),
 		Broker:      broker,
+		Sandbox:     sandbox.NewDispatcherPreparer(),
 		SecretStore: secretStore,
 	})
 

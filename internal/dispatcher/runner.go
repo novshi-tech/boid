@@ -5,10 +5,10 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 
 	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
-	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 type Runner struct {
@@ -16,11 +16,14 @@ type Runner struct {
 	Tmux        dtmux.TmuxManager
 	TmuxSession string        // defaults to "boid"
 	Broker      CommandBroker // host command broker
-	SecretStore *SecretStore  // secret store for resolving secret: env values
+	Sandbox     SandboxPreparer
+	SecretStore *SecretStore // secret store for resolving secret: env values
 	tokenMu     sync.Mutex
 	jobTokens   map[string]string // job ID -> broker token
 	waiterMu    sync.Mutex
 	jobWaiters  map[string]chan JobCompletionResult // job ID -> completion channel
+	windowMu    sync.Mutex
+	taskWindows map[string]map[string]struct{} // task ID -> tmux window names
 }
 
 func (r *Runner) session() string {
@@ -48,7 +51,7 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		return "", fmt.Errorf("create job: %w", err)
 	}
 
-	cfg := sandbox.WrapperConfig{
+	spec := SandboxSpec{
 		JobID:              j.ID,
 		TaskID:             plan.TaskID,
 		ProjectID:          plan.ProjectID,
@@ -60,7 +63,7 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		ServerSocket:       plan.ServerSocket,
 		Env:                plan.Env,
 		HostCommands:       hostCommandNames(plan.HostCommands),
-		AdditionalBindings: toSandboxBindings(plan.AdditionalBindings),
+		AdditionalBindings: plan.AdditionalBindings,
 		WorkspaceDirs:      plan.WorkspaceDirs,
 		ProxyPort:          plan.ProxyPort,
 		StagingDir:         plan.StagingDir,
@@ -82,12 +85,12 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		if r.SecretStore != nil {
 			resolve = r.SecretStore.Get
 		}
-		cfg.BrokerToken = r.Broker.RegisterCommands(plan.HostCommands, tokenCtx, resolve)
-		cfg.BrokerSocket = r.Broker.SocketPath()
-		r.trackToken(j.ID, cfg.BrokerToken)
+		spec.BrokerToken = r.Broker.RegisterCommands(plan.HostCommands, tokenCtx, resolve)
+		spec.BrokerSocket = r.Broker.SocketPath()
+		r.trackToken(j.ID, spec.BrokerToken)
 	}
 
-	return r.launchSandbox(j.ID, plan.TaskID, plan.HandlerID, cfg)
+	return r.launchSandbox(j.ID, plan.TaskID, plan.HandlerID, spec)
 }
 
 func hostCommandNames(cmds map[string]CommandDef) []string {
@@ -99,10 +102,6 @@ func hostCommandNames(cmds map[string]CommandDef) []string {
 		names = append(names, name)
 	}
 	return names
-}
-
-func toSandboxBindings(bindings []BindMount) []sandbox.BindMount {
-	return bindings
 }
 
 func (r *Runner) trackToken(jobID, token string) {
@@ -141,19 +140,26 @@ func (r *Runner) CompleteJob(jobID string, result JobCompletionResult) {
 }
 
 // launchSandbox writes sandbox scripts and launches in tmux. Returns job ID.
-func (r *Runner) launchSandbox(jobID, taskID, handlerID string, cfg sandbox.WrapperConfig) (string, error) {
-	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+func (r *Runner) launchSandbox(jobID, taskID, handlerID string, spec SandboxSpec) (string, error) {
+	if r.Sandbox == nil {
+		return "", fmt.Errorf("sandbox preparer is required")
+	}
+
+	prepared, err := r.Sandbox.PrepareSandbox(spec)
 	if err != nil {
-		return "", fmt.Errorf("write sandbox scripts: %w", err)
+		return "", fmt.Errorf("prepare sandbox: %w", err)
+	}
+	if prepared == nil || prepared.OuterPath == "" {
+		return "", fmt.Errorf("prepare sandbox: missing outer script path")
 	}
 
 	session := r.session()
 
 	var windowName string
-	if cfg.Role == "hook" || cfg.Role == "gate" {
-		windowName = fmt.Sprintf("task-%s", taskID[:min(8, len(taskID))])
+	if spec.Role == "hook" || spec.Role == "gate" {
+		windowName = fmt.Sprintf("job-%s-%s", shortID(taskID), shortID(jobID))
 	} else {
-		windowName = fmt.Sprintf("hook-%s-%s", taskID[:min(8, len(taskID))], handlerID)
+		windowName = fmt.Sprintf("hook-%s-%s", shortID(taskID), handlerID)
 	}
 
 	if r.Tmux != nil {
@@ -161,10 +167,11 @@ func (r *Runner) launchSandbox(jobID, taskID, handlerID string, cfg sandbox.Wrap
 			return "", fmt.Errorf("ensure session: %w", err)
 		}
 		r.Tmux.KillWindow(session, windowName)
-		cmd := fmt.Sprintf("bash %s", outerPath)
+		cmd := fmt.Sprintf("bash %s", prepared.OuterPath)
 		if err := r.Tmux.RunInWindow(session, windowName, cmd); err != nil {
 			return "", fmt.Errorf("run in window: %w", err)
 		}
+		r.trackTaskWindow(taskID, windowName)
 	}
 
 	slog.Info("job started", "job_id", jobID, "window", windowName)
@@ -177,9 +184,14 @@ func (r *Runner) CleanupTaskWindow(taskID string) {
 		return
 	}
 	session := r.session()
-	windowName := fmt.Sprintf("task-%s", taskID[:min(8, len(taskID))])
-	if err := r.Tmux.KillWindow(session, windowName); err != nil {
-		slog.Debug("cleanup task window", "task_id", taskID, "error", err)
+	windows := r.takeTaskWindows(taskID)
+	if len(windows) == 0 {
+		windows = []string{fmt.Sprintf("task-%s", shortID(taskID))}
+	}
+	for _, windowName := range windows {
+		if err := r.Tmux.KillWindow(session, windowName); err != nil {
+			slog.Debug("cleanup task window", "task_id", taskID, "window", windowName, "error", err)
+		}
 	}
 }
 
@@ -210,4 +222,43 @@ func (r *Runner) UnregisterJob(jobID string) {
 		r.Broker.UnregisterCommandToken(token)
 		slog.Info("unregistered broker token", "job_id", jobID)
 	}
+}
+
+func shortID(id string) string {
+	return id[:min(8, len(id))]
+}
+
+func (r *Runner) trackTaskWindow(taskID, windowName string) {
+	if taskID == "" || windowName == "" {
+		return
+	}
+
+	r.windowMu.Lock()
+	defer r.windowMu.Unlock()
+
+	if r.taskWindows == nil {
+		r.taskWindows = make(map[string]map[string]struct{})
+	}
+	if r.taskWindows[taskID] == nil {
+		r.taskWindows[taskID] = make(map[string]struct{})
+	}
+	r.taskWindows[taskID][windowName] = struct{}{}
+}
+
+func (r *Runner) takeTaskWindows(taskID string) []string {
+	r.windowMu.Lock()
+	defer r.windowMu.Unlock()
+
+	windows := r.taskWindows[taskID]
+	if len(windows) == 0 {
+		return nil
+	}
+	delete(r.taskWindows, taskID)
+
+	out := make([]string, 0, len(windows))
+	for windowName := range windows {
+		out = append(out, windowName)
+	}
+	sort.Strings(out)
+	return out
 }

@@ -71,6 +71,9 @@ func TestRunnerDispatch_UsesDispatcherOwnedBrokerInterface(t *testing.T) {
 		Tmux:        testutil.NewMockTmux(),
 		TmuxSession: "boid",
 		Broker:      broker,
+		Sandbox: &fakeSandboxPreparer{
+			outerPaths: []string{"/tmp/boid-phase2.sh"},
+		},
 	}
 
 	jobID, err := runner.Dispatch(context.Background(), &dispatcher.DispatchPlan{
@@ -90,7 +93,6 @@ func TestRunnerDispatch_UsesDispatcherOwnedBrokerInterface(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	t.Cleanup(func() { cleanupSandboxScripts(t, jobID) })
 
 	if len(broker.registers) != 1 {
 		t.Fatalf("RegisterCommands calls = %d, want 1", len(broker.registers))

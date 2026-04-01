@@ -9,6 +9,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/dispatcher"
+	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/spf13/cobra"
 )
 
@@ -134,7 +135,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		req.TTY = true
 	}
 
-	outerPath, err := dispatcher.WriteExecScripts(req)
+	outerPath, err := dispatcher.WriteExecScripts(req, sandbox.NewDispatcherPreparer())
 	if err != nil {
 		return fmt.Errorf("write sandbox scripts: %w", err)
 	}

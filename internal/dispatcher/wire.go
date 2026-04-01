@@ -11,6 +11,7 @@ type WireConfig struct {
 	Tmux        dtmux.TmuxManager
 	TmuxSession string
 	Broker      CommandBroker
+	Sandbox     SandboxPreparer
 	SecretStore *SecretStore
 }
 
@@ -20,6 +21,7 @@ func Wire(cfg WireConfig) *Runner {
 		Tmux:        cfg.Tmux,
 		TmuxSession: cfg.TmuxSession,
 		Broker:      cfg.Broker,
+		Sandbox:     cfg.Sandbox,
 		SecretStore: cfg.SecretStore,
 	}
 }

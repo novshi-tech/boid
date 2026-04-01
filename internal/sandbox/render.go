@@ -40,7 +40,7 @@ func RenderSetupScript(plan *SandboxPlan, innerPath, setupPath, outerPath string
 	}
 
 	// Copy inner script into sandbox
-	fmt.Fprintf(&b, "\ncp %s \"$ROOT/tmp/inner.sh\"\n", innerPath)
+	fmt.Fprintf(&b, "\ncp %s \"$ROOT/tmp/inner.sh\"\n", shellQuote(innerPath))
 	b.WriteString("chmod +x \"$ROOT/tmp/inner.sh\"\n")
 
 	// Enter sandbox
@@ -65,9 +65,9 @@ func renderCleanup(b *strings.Builder, cleanupPaths []string, innerPath, setupPa
         echo "WARNING: mounts still active under $ROOT, skipping rm" >&2
     fi
     rm -f %s %s %s
-`, outerPath, setupPath, innerPath)
+`, shellQuote(outerPath), shellQuote(setupPath), shellQuote(innerPath))
 	for _, p := range cleanupPaths {
-		fmt.Fprintf(b, "    rm -rf %s\n", p)
+		fmt.Fprintf(b, "    rm -rf %s\n", shellQuote(p))
 	}
 	b.WriteString("}\ntrap cleanup EXIT\n")
 }
@@ -82,9 +82,9 @@ func renderMount(b *strings.Builder, m MountEntry) {
 
 	// Create target
 	if m.DetectType {
-		fmt.Fprintf(b, "%sif [ -d %s ]; then\n", indent, m.Source)
+		fmt.Fprintf(b, "%sif [ -d %s ]; then\n", indent, shellQuote(m.Source))
 		fmt.Fprintf(b, "%s    mkdir -p \"$ROOT%s\"\n", indent, m.Target)
-		fmt.Fprintf(b, "%selif [ -f %s ]; then\n", indent, m.Source)
+		fmt.Fprintf(b, "%selif [ -f %s ]; then\n", indent, shellQuote(m.Source))
 		fmt.Fprintf(b, "%s    mkdir -p \"$(dirname \"$ROOT%s\")\"\n", indent, m.Target)
 		fmt.Fprintf(b, "%s    touch \"$ROOT%s\"\n", indent, m.Target)
 		fmt.Fprintf(b, "%sfi\n", indent)
@@ -99,9 +99,9 @@ func renderMount(b *strings.Builder, m MountEntry) {
 	// Mount command
 	switch m.Type {
 	case MountBind:
-		fmt.Fprintf(b, "%smount --bind %s \"$ROOT%s\"\n", indent, m.Source, m.Target)
+		fmt.Fprintf(b, "%smount --bind %s \"$ROOT%s\"\n", indent, shellQuote(m.Source), m.Target)
 	case MountRBind:
-		fmt.Fprintf(b, "%smount --rbind %s \"$ROOT%s\"\n", indent, m.Source, m.Target)
+		fmt.Fprintf(b, "%smount --rbind %s \"$ROOT%s\"\n", indent, shellQuote(m.Source), m.Target)
 	case MountTmpfs:
 		fmt.Fprintf(b, "%smount -t tmpfs tmpfs \"$ROOT%s\"\n", indent, m.Target)
 	}
@@ -125,18 +125,18 @@ func renderMount(b *strings.Builder, m MountEntry) {
 func renderFile(b *strings.Builder, f FileEntry) {
 	dir := filepath.Dir(f.Path)
 	fmt.Fprintf(b, "mkdir -p \"$ROOT%s\"\n", dir)
-	fmt.Fprintf(b, "echo \"%s\" > \"$ROOT%s\"\n", f.Content, f.Path)
+	fmt.Fprintf(b, "printf '%%s' %s > \"$ROOT%s\"\n", shellQuote(f.Content), f.Path)
 }
 
 func renderCopy(b *strings.Builder, c CopyEntry) {
 	dir := filepath.Dir(c.Target)
 	fmt.Fprintf(b, "mkdir -p \"$ROOT%s\"\n", dir)
-	fmt.Fprintf(b, "cp %s \"$ROOT%s\"\n", c.Source, c.Target)
+	fmt.Fprintf(b, "cp %s \"$ROOT%s\"\n", shellQuote(c.Source), c.Target)
 	if c.Executable {
 		fmt.Fprintf(b, "chmod +x \"$ROOT%s\"\n", c.Target)
 	}
 }
 
 func renderSymlink(b *strings.Builder, s SymlinkEntry) {
-	fmt.Fprintf(b, "ln -sf %s \"$ROOT%s\"\n", s.LinkTarget, s.LinkPath)
+	fmt.Fprintf(b, "ln -sf %s \"$ROOT%s\"\n", shellQuote(s.LinkTarget), s.LinkPath)
 }

@@ -80,7 +80,7 @@ func (m *statefulTmux) HasSession(name string) bool {
 	return ok
 }
 
-func (m *statefulTmux) Attach(session string) error              { return nil }
+func (m *statefulTmux) Attach(session string) error               { return nil }
 func (m *statefulTmux) SwitchClient(session, window string) error { return nil }
 
 func cleanupSandboxScripts(t *testing.T, jobIDs ...string) {
@@ -117,6 +117,9 @@ func TestRunnerDispatch_SameTaskJobsNeedDistinctTmuxWindows(t *testing.T) {
 		DB:          db.Conn,
 		Tmux:        tmux,
 		TmuxSession: "boid",
+		Sandbox: &fakeSandboxPreparer{
+			outerPaths: []string{"/tmp/boid-hook-a.sh", "/tmp/boid-hook-b.sh"},
+		},
 	}
 
 	planA := &dispatcher.DispatchPlan{
@@ -142,15 +145,14 @@ func TestRunnerDispatch_SameTaskJobsNeedDistinctTmuxWindows(t *testing.T) {
 		PayloadJSON: `{}`,
 	}
 
-	jobA, err := runner.Dispatch(context.Background(), planA)
+	_, err := runner.Dispatch(context.Background(), planA)
 	if err != nil {
 		t.Fatalf("dispatch hook-a: %v", err)
 	}
-	jobB, err := runner.Dispatch(context.Background(), planB)
+	_, err = runner.Dispatch(context.Background(), planB)
 	if err != nil {
 		t.Fatalf("dispatch hook-b: %v", err)
 	}
-	t.Cleanup(func() { cleanupSandboxScripts(t, jobA, jobB) })
 
 	windows, err := tmux.ListWindows("boid")
 	if err != nil {

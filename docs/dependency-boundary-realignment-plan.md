@@ -142,6 +142,26 @@ behavior leakage の可能性がある。
 - 本当に素朴な DTO は現行所有でもよい
 - provider-owned behavior DSL になっているものは後段で再評価する
 
+## Current Status
+
+2026-04-01 時点の branch 状態は以下。
+
+- Phase 0 は完了
+  - `docs/runtime-review-findings.md` を source of truth として固定済み
+- Phase 1 は「再現テストを追加する」という意味では完了
+  - ただし high priority issue の一部はまだ failing test のまま残っている
+- Phase 2 は完了
+  - `dispatcher` の broker dependency は consumer-side interface 化済み
+- Phase 3 は完了
+  - `dispatcher` の sandbox preparation dependency は consumer-side interface 化済み
+- 現時点の最優先は追加の境界整理ではなく、
+  Phase 1 で固定した既知不具合を green に戻すこと
+
+このため、
+以降の優先順位は
+「未修正の runtime issue を先に潰す」
+ことへ明示的に切り替える。
+
 ## Execution Plan
 
 ### Phase 0: Freeze Findings And Acceptance Criteria
@@ -219,6 +239,30 @@ Completion criteria:
 
 - `dispatcher` が `sandbox.WrapperConfig` を知らない
 - script generation の結果を fake で差し替えられる
+
+### Phase 3.5: Stabilize Known Runtime Issues Before More Boundary Cleanup
+
+目的:
+すでに追加済みの repro test を green に戻し、
+以降の boundary/data ownership 整理を
+安定した基準の上で進められるようにする。
+
+Tasks:
+
+1. `dispatcher` の tmux window 競合を job 単位 window で解消する
+2. `api` の background dispatch loop が request context cancel を継承しないようにする
+3. `orchestrator` の reload failure 時に stale meta を残さない挙動を固定する
+4. `sandbox` の gate 実行経路を mount/copy 方針と一致させる
+5. `sandbox` の shell quoting を修正し、
+   path / payload / setup script がスペースや quote を含んでも壊れないようにする
+6. `go test ./...` を回し、
+   Phase 1 で追加した known issue repro test がすべて green であることを確認する
+
+Completion criteria:
+
+- `docs/runtime-review-findings.md` の high priority issue が
+  failing test ではなく passing test として固定されている
+- 既知不具合の修正前提で次の boundary cleanup へ進める
 
 ### Phase 4: Re-check Shared Data Ownership
 
@@ -307,15 +351,20 @@ Completion criteria:
 2. Phase 1
 3. Phase 2
 4. Phase 3
-5. Phase 5
-6. Phase 4
-7. Phase 6
+5. Phase 3.5
+6. Phase 5
+7. Phase 4
+8. Phase 6
 
 理由:
 
-- 先に既知問題を再現できる形にする
-- 次に behavior dependency を切る
-- data ownership の再評価は interface 整理後の方が判断しやすい
+- 当初は「再現テスト追加 -> interface 整理 -> bug fix」の順を想定していた
+- 実際の branch は Phase 2 / 3 まで先行している
+- この状態でさらに先へ進むと、
+  failing repro test を抱えたまま boundary cleanup を重ねることになる
+- したがって次の critical path は
+  Phase 4 / 5 / 6 ではなく
+  Phase 3.5 として既知不具合の修正を先に完了させること
 
 ## Verification Commands
 

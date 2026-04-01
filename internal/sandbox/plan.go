@@ -1,7 +1,5 @@
 package sandbox
 
-import "fmt"
-
 // MountType represents the type of filesystem mount.
 type MountType string
 
@@ -66,7 +64,7 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 			Target: d,
 			Type:   MountRBind,
 			Slave:  true,
-			Guard:  fmt.Sprintf("-d %s", d),
+			Guard:  dirGuard(d),
 		})
 	}
 
@@ -149,7 +147,7 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 			Target:   boidTarget,
 			Type:     MountBind,
 			ReadOnly: true,
-			Guard:    fmt.Sprintf("-d %s", boidSource),
+			Guard:    dirGuard(boidSource),
 		}
 		if cfg.Command == "" && cfg.HooksDir != "" {
 			boidMount.NeedsDirs = []string{"hooks"}
@@ -162,7 +160,7 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 				Target:   workDir + "/.boid/hooks",
 				Type:     MountBind,
 				ReadOnly: true,
-				Guard:    fmt.Sprintf("-d %s", boidSource),
+				Guard:    dirGuard(boidSource),
 			})
 		}
 
@@ -173,7 +171,7 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 				Source: gitDir,
 				Target: gitDir,
 				Type:   MountBind,
-				Guard:  fmt.Sprintf("-d %s", gitDir),
+				Guard:  dirGuard(gitDir),
 			})
 		}
 
@@ -195,6 +193,13 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 		Target:     "/opt/boid/bin/boid",
 		Executable: true,
 	})
+	if cfg.Role == "gate" && cfg.HookScript != "" {
+		plan.Copies = append(plan.Copies, CopyEntry{
+			Source:     cfg.ProjectDir + "/.boid/gates/" + cfg.HookScript,
+			Target:     "/opt/boid/gates/" + cfg.HookScript,
+			Executable: true,
+		})
+	}
 
 	// Command shims
 	for _, cmd := range cfg.HostCommands {

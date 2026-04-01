@@ -3,6 +3,7 @@ package sandbox
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -137,10 +138,10 @@ func generateHookInnerScript(cfg WrapperConfig) string {
 
 	b.WriteString("#!/bin/bash\nset -e\n\n")
 
-	fmt.Fprintf(&b, "export HOME=%s\n", cfg.homeDir())
+	fmt.Fprintf(&b, "export HOME=%s\n", shellQuote(cfg.homeDir()))
 
 	if cfg.BrokerToken != "" {
-		fmt.Fprintf(&b, "export BOID_BROKER_TOKEN=%s\n", cfg.BrokerToken)
+		fmt.Fprintf(&b, "export BOID_BROKER_TOKEN=%s\n", shellQuote(cfg.BrokerToken))
 	}
 	if cfg.BrokerSocket != "" {
 		b.WriteString("export BOID_BROKER_SOCKET=/run/boid/broker.sock\n")
@@ -149,10 +150,11 @@ func generateHookInnerScript(cfg WrapperConfig) string {
 	writePathAndProxy(&b, cfg)
 
 	wd := cfg.workDir()
-	fmt.Fprintf(&b, "\ncd %s\n\n", wd)
+	hookPath := filepath.Join(wd, ".boid", "hooks", cfg.HookScript)
+	fmt.Fprintf(&b, "\ncd %s\n\n", shellQuote(wd))
 
 	fmt.Fprintf(&b, "trap 'boid job done %s --exit-code $? --output-file /tmp/boid-output' EXIT\n", cfg.JobID)
-	fmt.Fprintf(&b, "echo '%s' | %s/.boid/hooks/%s > /tmp/boid-output\n", cfg.PayloadJSON, wd, cfg.HookScript)
+	fmt.Fprintf(&b, "printf '%%s' %s | %s > /tmp/boid-output\n", shellQuote(cfg.PayloadJSON), shellQuote(hookPath))
 
 	return b.String()
 }
@@ -167,7 +169,7 @@ func generateGateInnerScript(cfg WrapperConfig) string {
 	fmt.Fprintf(&b, "export HOME=/tmp\n")
 
 	if cfg.BrokerToken != "" {
-		fmt.Fprintf(&b, "export BOID_BROKER_TOKEN=%s\n", cfg.BrokerToken)
+		fmt.Fprintf(&b, "export BOID_BROKER_TOKEN=%s\n", shellQuote(cfg.BrokerToken))
 	}
 	if cfg.BrokerSocket != "" {
 		b.WriteString("export BOID_BROKER_SOCKET=/run/boid/broker.sock\n")
@@ -178,7 +180,7 @@ func generateGateInnerScript(cfg WrapperConfig) string {
 	b.WriteString("\ncd /tmp\n\n")
 
 	fmt.Fprintf(&b, "trap 'boid job done %s --exit-code $? --output-file /tmp/boid-output' EXIT\n", cfg.JobID)
-	fmt.Fprintf(&b, "echo '%s' | %s > /tmp/boid-output\n", cfg.TaskJSON, cfg.workDir()+"/.boid/gates/"+cfg.HookScript)
+	fmt.Fprintf(&b, "printf '%%s' %s | %s > /tmp/boid-output\n", shellQuote(cfg.TaskJSON), shellQuote(filepath.Join("/opt/boid/gates", cfg.HookScript)))
 
 	return b.String()
 }
@@ -191,7 +193,7 @@ func generateLegacyInnerScript(cfg WrapperConfig) string {
 	b.WriteString("#!/bin/bash\nset -e\n\n")
 
 	homeDir := cfg.homeDir()
-	fmt.Fprintf(&b, "export HOME=%s\n", homeDir)
+	fmt.Fprintf(&b, "export HOME=%s\n", shellQuote(homeDir))
 
 	if cfg.TaskID != "" {
 		fmt.Fprintf(&b, "export BOID_TASK_ID=%s\n", cfg.TaskID)
@@ -203,19 +205,19 @@ func generateLegacyInnerScript(cfg WrapperConfig) string {
 		b.WriteString("export BOID_BROKER_SOCKET=/run/boid/broker.sock\n")
 	}
 	if cfg.BrokerToken != "" {
-		fmt.Fprintf(&b, "export BOID_BROKER_TOKEN=%s\n", cfg.BrokerToken)
+		fmt.Fprintf(&b, "export BOID_BROKER_TOKEN=%s\n", shellQuote(cfg.BrokerToken))
 	}
 
 	writePathAndProxy(&b, cfg)
 
 	wd := cfg.workDir()
-	fmt.Fprintf(&b, "\ncd %s\n\n", wd)
+	fmt.Fprintf(&b, "\ncd %s\n\n", shellQuote(wd))
 
 	if cfg.Command != "" {
 		fmt.Fprintf(&b, "exec %s\n", cfg.Command)
 	} else {
 		fmt.Fprintf(&b, "trap 'boid job done %s --exit-code $?' EXIT\n", cfg.JobID)
-		fmt.Fprintf(&b, "%s/.boid/hooks/%s\n", wd, cfg.HookScript)
+		fmt.Fprintf(&b, "%s\n", shellQuote(filepath.Join(wd, ".boid", "hooks", cfg.HookScript)))
 	}
 
 	return b.String()
@@ -226,17 +228,17 @@ func writePathAndProxy(b *strings.Builder, cfg WrapperConfig) {
 	pathPrefix := additionalPATH(cfg.AdditionalBindings)
 	basePath := "/opt/boid/bin:/usr/local/bin:/usr/bin:/bin"
 	if pathPrefix != "" {
-		fmt.Fprintf(b, "export PATH=%s:%s\n", pathPrefix, basePath)
+		fmt.Fprintf(b, "export PATH=%s\n", shellQuote(pathPrefix+":"+basePath))
 	} else {
-		fmt.Fprintf(b, "export PATH=%s\n", basePath)
+		fmt.Fprintf(b, "export PATH=%s\n", shellQuote(basePath))
 	}
 
 	if cfg.ProxyPort > 0 {
 		proxyURL := fmt.Sprintf("http://10.0.2.2:%d", cfg.ProxyPort)
-		fmt.Fprintf(b, "export http_proxy=%s\n", proxyURL)
-		fmt.Fprintf(b, "export https_proxy=%s\n", proxyURL)
-		fmt.Fprintf(b, "export HTTP_PROXY=%s\n", proxyURL)
-		fmt.Fprintf(b, "export HTTPS_PROXY=%s\n", proxyURL)
+		fmt.Fprintf(b, "export http_proxy=%s\n", shellQuote(proxyURL))
+		fmt.Fprintf(b, "export https_proxy=%s\n", shellQuote(proxyURL))
+		fmt.Fprintf(b, "export HTTP_PROXY=%s\n", shellQuote(proxyURL))
+		fmt.Fprintf(b, "export HTTPS_PROXY=%s\n", shellQuote(proxyURL))
 		b.WriteString("export no_proxy=10.0.2.2,10.0.2.3,localhost,127.0.0.1\n")
 		b.WriteString("export NO_PROXY=10.0.2.2,10.0.2.3,localhost,127.0.0.1\n")
 	}

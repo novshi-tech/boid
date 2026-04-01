@@ -260,7 +260,11 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 
 	if s.Coordinator != nil {
 		behavior, _ := meta.TaskBehaviors[newTask.Behavior]
-		go s.runDispatchLoop(ctx, newTask, meta, &behavior, sm)
+		dispatchCtx := context.Background()
+		if ctx != nil {
+			dispatchCtx = context.WithoutCancel(ctx)
+		}
+		go s.runDispatchLoop(dispatchCtx, newTask, meta, &behavior, sm)
 	}
 
 	return &ActionApplication{

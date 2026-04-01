@@ -23,12 +23,13 @@ func (a *sandboxBrokerAdapter) RegisterCommands(commands map[string]dispatcher.C
 		ProjectID: ctx.ProjectID,
 		Role:      ctx.Role,
 	}
+	sandboxCommands := toSandboxCommandDefs(commands)
 	if resolve != nil {
-		return a.broker.RegisterWithSecrets(commands, tokenCtx, func(key string) (string, error) {
+		return a.broker.RegisterWithSecrets(sandboxCommands, tokenCtx, func(key string) (string, error) {
 			return resolve(key)
 		})
 	}
-	return a.broker.Register(commands, tokenCtx)
+	return a.broker.Register(sandboxCommands, tokenCtx)
 }
 
 func (a *sandboxBrokerAdapter) UnregisterCommandToken(token string) {
@@ -37,4 +38,26 @@ func (a *sandboxBrokerAdapter) UnregisterCommandToken(token string) {
 
 func (a *sandboxBrokerAdapter) SocketPath() string {
 	return a.broker.SocketPath
+}
+
+func toSandboxCommandDefs(commands map[string]dispatcher.CommandDef) map[string]sandbox.CommandDef {
+	if len(commands) == 0 {
+		return nil
+	}
+	out := make(map[string]sandbox.CommandDef, len(commands))
+	for name, def := range commands {
+		out[name] = sandbox.CommandDef{
+			Name:                def.Name,
+			Path:                def.Path,
+			AllowedPatterns:     def.AllowedPatterns,
+			DeniedPatterns:      def.DeniedPatterns,
+			AllowedSubcommands:  def.AllowedSubcommands,
+			AllowStdin:          def.AllowStdin,
+			Env:                 def.Env,
+			ExtractSubcommandFn: def.ExtractSubcommandFn,
+			RequireCwd:          def.RequireCwd,
+			AllowedCwdPrefixes:  def.AllowedCwdPrefixes,
+		}
+	}
+	return out
 }

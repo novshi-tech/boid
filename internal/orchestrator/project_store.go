@@ -60,6 +60,7 @@ func (s *ProjectStore) LoadAll(projects []*Project) []error {
 	var errs []error
 	for _, candidate := range projects {
 		if _, err := s.Load(candidate.WorkDir); err != nil {
+			s.Remove(candidate.ID)
 			errs = append(errs, fmt.Errorf("project %q: %w", candidate.ID, err))
 		}
 	}

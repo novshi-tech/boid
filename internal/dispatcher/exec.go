@@ -2,8 +2,6 @@ package dispatcher
 
 import (
 	"fmt"
-
-	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 type ExecBindMount struct {
@@ -42,32 +40,42 @@ type ExecRequest struct {
 	TTY                bool
 }
 
-func WriteExecScripts(req ExecRequest) (string, error) {
-	cfg, err := buildExecWrapperConfig(req)
+func WriteExecScripts(req ExecRequest, preparer SandboxPreparer) (string, error) {
+	spec, err := buildExecSandboxSpec(req)
 	if err != nil {
 		return "", err
 	}
-	return sandbox.WriteSandboxScripts(cfg)
+	if preparer == nil {
+		return "", fmt.Errorf("sandbox preparer is required")
+	}
+	prepared, err := preparer.PrepareSandbox(spec)
+	if err != nil {
+		return "", err
+	}
+	if prepared == nil || prepared.OuterPath == "" {
+		return "", fmt.Errorf("prepare sandbox: missing outer script path")
+	}
+	return prepared.OuterPath, nil
 }
 
-func buildExecWrapperConfig(req ExecRequest) (sandbox.WrapperConfig, error) {
+func buildExecSandboxSpec(req ExecRequest) (SandboxSpec, error) {
 	if req.JobID == "" {
-		return sandbox.WrapperConfig{}, fmt.Errorf("job id is required")
+		return SandboxSpec{}, fmt.Errorf("job id is required")
 	}
 	if req.ProjectID == "" {
-		return sandbox.WrapperConfig{}, fmt.Errorf("project id is required")
+		return SandboxSpec{}, fmt.Errorf("project id is required")
 	}
 	if req.ProjectDir == "" {
-		return sandbox.WrapperConfig{}, fmt.Errorf("project dir is required")
+		return SandboxSpec{}, fmt.Errorf("project dir is required")
 	}
 	if req.Command == "" {
-		return sandbox.WrapperConfig{}, fmt.Errorf("command is required")
+		return SandboxSpec{}, fmt.Errorf("command is required")
 	}
 	if req.BoidBinary == "" {
-		return sandbox.WrapperConfig{}, fmt.Errorf("boid binary is required")
+		return SandboxSpec{}, fmt.Errorf("boid binary is required")
 	}
 
-	return sandbox.WrapperConfig{
+	return SandboxSpec{
 		JobID:              req.JobID,
 		ProjectID:          req.ProjectID,
 		ProjectDir:         req.ProjectDir,
@@ -97,13 +105,13 @@ func execHostCommandNames(cmds map[string]ExecCommandDef) []string {
 	return names
 }
 
-func execBindMounts(bindings []ExecBindMount) []sandbox.BindMount {
+func execBindMounts(bindings []ExecBindMount) []BindMount {
 	if len(bindings) == 0 {
 		return nil
 	}
-	out := make([]sandbox.BindMount, 0, len(bindings))
+	out := make([]BindMount, 0, len(bindings))
 	for _, binding := range bindings {
-		out = append(out, sandbox.BindMount{
+		out = append(out, BindMount{
 			Source: binding.Source,
 			Mode:   binding.Mode,
 		})
