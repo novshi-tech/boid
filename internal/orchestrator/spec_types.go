@@ -111,6 +111,19 @@ type ProjectMeta struct {
 	KitGatesDirs       []KitGatesInfo          `yaml:"-" json:"-"`
 }
 
+type ProjectLocalMeta struct {
+	Version            int                   `yaml:"version"`
+	Kits               ProjectLocalKits      `yaml:"kits"`
+	HostCommands       map[string]CommandDef `yaml:"host_commands"`
+	AdditionalBindings []BindMount           `yaml:"additional_bindings"`
+	Env                map[string]string     `yaml:"env"`
+}
+
+type ProjectLocalKits struct {
+	Add    []string `yaml:"add"`
+	Remove []string `yaml:"remove"`
+}
+
 type Project struct {
 	ID          string      `json:"id"`
 	WorkspaceID string      `json:"workspace_id"`

@@ -206,6 +206,88 @@ func TestReadProjectMeta_ScriptResolutionAndValidation(t *testing.T) {
 	})
 }
 
+func TestReadProjectLocalMeta(t *testing.T) {
+	t.Run("missing file", func(t *testing.T) {
+		meta, err := projectspec.ReadProjectLocalMeta(t.TempDir())
+		if err != nil {
+			t.Fatalf("ReadProjectLocalMeta: %v", err)
+		}
+		if meta != nil {
+			t.Fatalf("expected nil meta for missing file, got %+v", meta)
+		}
+	})
+
+	t.Run("valid", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		if err := os.MkdirAll(boidDir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		t.Setenv("TEST_BOID_HOME", "/home/testuser")
+		content := `
+version: 1
+kits:
+  add: [local/dev/repro-kit]
+  remove: [github.com/acme/repo/default]
+env:
+  GOPATH: ${TEST_BOID_HOME}/go
+host_commands:
+  uv:
+    path: ${TEST_BOID_HOME}/.local/bin/uv
+additional_bindings:
+  - source: ${TEST_BOID_HOME}/src/repro-kit
+    mode: rw
+`
+		if err := os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(content), 0o644); err != nil {
+			t.Fatalf("write project.local.yaml: %v", err)
+		}
+
+		meta, err := projectspec.ReadProjectLocalMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadProjectLocalMeta: %v", err)
+		}
+		if meta.Version != 1 {
+			t.Fatalf("version = %d, want 1", meta.Version)
+		}
+		if len(meta.Kits.Add) != 1 || meta.Kits.Add[0] != "local/dev/repro-kit" {
+			t.Fatalf("unexpected kits.add: %+v", meta.Kits.Add)
+		}
+		if meta.Env["GOPATH"] != "/home/testuser/go" {
+			t.Fatalf("unexpected env: %+v", meta.Env)
+		}
+		if meta.HostCommands["uv"].Path != "/home/testuser/.local/bin/uv" {
+			t.Fatalf("unexpected host command path: %+v", meta.HostCommands["uv"])
+		}
+		if len(meta.AdditionalBindings) != 1 || meta.AdditionalBindings[0].Source != "/home/testuser/src/repro-kit" || meta.AdditionalBindings[0].Mode != "rw" {
+			t.Fatalf("unexpected additional_bindings: %+v", meta.AdditionalBindings)
+		}
+	})
+
+	t.Run("unsupported field", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte("hooks: []\n"), 0o644)
+
+		_, err := projectspec.ReadProjectLocalMeta(dir)
+		if err == nil || !strings.Contains(err.Error(), "unsupported field") {
+			t.Fatalf("expected unsupported field error, got %v", err)
+		}
+	})
+
+	t.Run("invalid host command path", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte("host_commands:\n  uv:\n    path: relative/uv\n"), 0o644)
+
+		_, err := projectspec.ReadProjectLocalMeta(dir)
+		if err == nil || !strings.Contains(err.Error(), "must be an absolute path") {
+			t.Fatalf("expected absolute path error, got %v", err)
+		}
+	})
+}
+
 func TestReadProjectMetaWithKits_LocalKits(t *testing.T) {
 	t.Run("single local kit", func(t *testing.T) {
 		dir := t.TempDir()
@@ -312,6 +394,110 @@ func TestReadProjectMetaWithKits_LocalKits(t *testing.T) {
 			t.Fatal("expected host_commands to contain 'git' from git kit")
 		}
 	})
+}
+
+func TestReadProjectMetaWithKits_ProjectLocalOverlay(t *testing.T) {
+	baseDir := t.TempDir()
+	registryDir := t.TempDir()
+	boidDir := filepath.Join(baseDir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir boid dir: %v", err)
+	}
+
+	projectYAML := `
+id: test-proj
+name: Test Project
+kits:
+  - github.com/acme/repo/default
+env:
+  FROM_PROJECT: base
+host_commands:
+  git:
+    path: /usr/bin/git
+additional_bindings:
+  - source: /opt/base
+    mode: ro
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
+		t.Fatalf("write project.yaml: %v", err)
+	}
+
+	defaultKitDir := filepath.Join(registryDir, "github.com", "acme", "repo", "default")
+	if err := os.MkdirAll(defaultKitDir, 0o755); err != nil {
+		t.Fatalf("mkdir default kit dir: %v", err)
+	}
+	writeKitYAML(t, defaultKitDir, `
+env:
+  FROM_DEFAULT: kit
+host_commands:
+  git:
+    path: /usr/bin/git
+additional_bindings:
+  - source: /opt/default
+    mode: ro
+`)
+
+	localKitDir := filepath.Join(registryDir, "local", "dev", "repro-kit")
+	if err := os.MkdirAll(localKitDir, 0o755); err != nil {
+		t.Fatalf("mkdir local kit dir: %v", err)
+	}
+	writeKitYAML(t, localKitDir, `
+env:
+  FROM_LOCAL_KIT: yes
+  FROM_PROJECT: local-kit
+host_commands:
+  uv:
+    path: /usr/bin/uv
+additional_bindings:
+  - source: /opt/local-kit
+    mode: ro
+`)
+
+	projectLocalYAML := `
+kits:
+  add:
+    - local/dev/repro-kit
+  remove:
+    - github.com/acme/repo/default
+env:
+  FROM_PROJECT: local
+  LOCAL_ONLY: enabled
+host_commands:
+  uv:
+    path: /custom/bin/uv
+additional_bindings:
+  - source: /opt/local-kit
+    mode: rw
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(projectLocalYAML), 0o644); err != nil {
+		t.Fatalf("write project.local.yaml: %v", err)
+	}
+
+	meta, err := projectspec.ReadProjectMetaWithKits(baseDir, projectspec.NewRegistry(registryDir))
+	if err != nil {
+		t.Fatalf("ReadProjectMetaWithKits: %v", err)
+	}
+	if len(meta.Kits) != 1 || meta.Kits[0] != "local/dev/repro-kit" {
+		t.Fatalf("unexpected effective kits: %+v", meta.Kits)
+	}
+	if _, ok := meta.Env["FROM_DEFAULT"]; ok {
+		t.Fatalf("default kit should have been removed, env=%+v", meta.Env)
+	}
+	if meta.Env["FROM_LOCAL_KIT"] != "yes" || meta.Env["FROM_PROJECT"] != "local" || meta.Env["LOCAL_ONLY"] != "enabled" {
+		t.Fatalf("unexpected env merge: %+v", meta.Env)
+	}
+	if meta.HostCommands["uv"].Path != "/custom/bin/uv" {
+		t.Fatalf("unexpected host command override: %+v", meta.HostCommands["uv"])
+	}
+	if meta.HostCommands["git"].Path != "/usr/bin/git" {
+		t.Fatalf("project host command should be preserved: %+v", meta.HostCommands)
+	}
+	if len(meta.AdditionalBindings) != 2 {
+		t.Fatalf("unexpected bindings: %+v", meta.AdditionalBindings)
+	}
+	if meta.AdditionalBindings[0].Source != "/opt/local-kit" || meta.AdditionalBindings[0].Mode != "rw" {
+		t.Fatalf("expected local binding override, got %+v", meta.AdditionalBindings)
+	}
 }
 
 func TestReadKitMeta(t *testing.T) {
@@ -452,4 +638,84 @@ func TestMergeKitMeta(t *testing.T) {
 			t.Fatalf("expected project hook to win, got %+v", result.Hooks)
 		}
 	})
+}
+
+func TestEffectiveKitRefs(t *testing.T) {
+	t.Run("base plus add minus remove", func(t *testing.T) {
+		got, err := projectspec.EffectiveKitRefs(
+			[]string{"github.com/acme/repo/default", "github.com/acme/repo/shared"},
+			projectspec.ProjectLocalKits{
+				Add:    []string{"local/dev/repro-kit", "github.com/acme/repo/shared"},
+				Remove: []string{"github.com/acme/repo/default"},
+			},
+		)
+		if err != nil {
+			t.Fatalf("EffectiveKitRefs: %v", err)
+		}
+		want := []string{"github.com/acme/repo/shared", "local/dev/repro-kit"}
+		if len(got) != len(want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("got %v, want %v", got, want)
+			}
+		}
+	})
+
+	t.Run("reject overlap between add and remove", func(t *testing.T) {
+		_, err := projectspec.EffectiveKitRefs(nil, projectspec.ProjectLocalKits{
+			Add:    []string{"local/dev/repro-kit"},
+			Remove: []string{"local/dev/repro-kit"},
+		})
+		if err == nil || !strings.Contains(err.Error(), "both kits.add and kits.remove") {
+			t.Fatalf("expected add/remove overlap error, got %v", err)
+		}
+	})
+}
+
+func TestApplyProjectLocalMeta(t *testing.T) {
+	base := &projectspec.ProjectMeta{
+		ID:   "proj",
+		Name: "Project",
+		Env: map[string]string{
+			"BASE":   "yes",
+			"SHARED": "base",
+		},
+		HostCommands: map[string]projectspec.CommandDef{
+			"git": {Path: "/usr/bin/git"},
+			"uv":  {Path: "/usr/bin/uv"},
+		},
+		AdditionalBindings: []projectspec.BindMount{
+			{Source: "/opt/base", Mode: "ro"},
+			{Source: "/opt/shared", Mode: "ro"},
+		},
+	}
+	local := &projectspec.ProjectLocalMeta{
+		Env: map[string]string{
+			"LOCAL":  "yes",
+			"SHARED": "local",
+		},
+		HostCommands: map[string]projectspec.CommandDef{
+			"uv": {Path: "/custom/bin/uv"},
+		},
+		AdditionalBindings: []projectspec.BindMount{
+			{Source: "/opt/shared", Mode: "rw"},
+			{Source: "/opt/local", Mode: "ro"},
+		},
+	}
+
+	got := projectspec.ApplyProjectLocalMeta(base, local)
+	if got.Env["BASE"] != "yes" || got.Env["LOCAL"] != "yes" || got.Env["SHARED"] != "local" {
+		t.Fatalf("unexpected env merge: %+v", got.Env)
+	}
+	if got.HostCommands["git"].Path != "/usr/bin/git" || got.HostCommands["uv"].Path != "/custom/bin/uv" {
+		t.Fatalf("unexpected host command merge: %+v", got.HostCommands)
+	}
+	if len(got.AdditionalBindings) != 3 {
+		t.Fatalf("unexpected bindings: %+v", got.AdditionalBindings)
+	}
+	if got.AdditionalBindings[1].Source != "/opt/shared" || got.AdditionalBindings[1].Mode != "rw" {
+		t.Fatalf("expected binding override in place, got %+v", got.AdditionalBindings)
+	}
 }

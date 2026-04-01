@@ -22,6 +22,15 @@ func NewRegistry(baseDir string) *KitRegistry {
 // A ref like "github.com/user/repo/go" is split into the repo path
 // (first 3 segments) and the kit subpath (remainder).
 func (r *KitRegistry) Resolve(ref string) (string, error) {
+	if strings.HasPrefix(ref, "local/") {
+		dir := filepath.Join(r.BaseDir, ref)
+		yamlPath := filepath.Join(dir, "kit.yaml")
+		if _, err := os.Stat(yamlPath); err != nil {
+			return "", fmt.Errorf("kit %q: kit.yaml not found at %s", ref, dir)
+		}
+		return dir, nil
+	}
+
 	parts := strings.Split(ref, "/")
 	if len(parts) < 4 {
 		return "", fmt.Errorf("kit ref %q: need at least host/owner/repo/kit", ref)

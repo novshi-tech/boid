@@ -44,6 +44,22 @@ func TestRegistry_Resolve_ShortRef(t *testing.T) {
 	}
 }
 
+func TestRegistry_Resolve_LocalRef(t *testing.T) {
+	baseDir := t.TempDir()
+	kitDir := filepath.Join(baseDir, "local", "dev", "repro-kit")
+	os.MkdirAll(kitDir, 0o755)
+	os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte("env: {}"), 0o644)
+
+	reg := kit.NewRegistry(baseDir)
+	path, err := reg.Resolve("local/dev/repro-kit")
+	if err != nil {
+		t.Fatalf("Resolve local ref: %v", err)
+	}
+	if path != kitDir {
+		t.Errorf("path = %q, want %q", path, kitDir)
+	}
+}
+
 func TestRegistry_Install(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")

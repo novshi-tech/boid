@@ -91,6 +91,29 @@ hooks:
 	}
 }
 
+func TestProjectStore_Load_WithProjectLocalOverlay(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir boid dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: loaded-proj\nname: Loaded Project\n"), 0o644); err != nil {
+		t.Fatalf("write project yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte("env:\n  LOCAL: yes\n"), 0o644); err != nil {
+		t.Fatalf("write project.local.yaml: %v", err)
+	}
+
+	s := orchestrator.NewProjectStore(nil)
+	meta, err := s.Load(dir)
+	if err != nil {
+		t.Fatalf("load with local overlay: %v", err)
+	}
+	if meta.Env["LOCAL"] != "yes" {
+		t.Fatalf("expected LOCAL=yes, got %+v", meta.Env)
+	}
+}
+
 func TestProjectStore_Load_InvalidYAML(t *testing.T) {
 	dir := t.TempDir()
 
