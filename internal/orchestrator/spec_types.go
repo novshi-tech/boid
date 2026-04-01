@@ -120,8 +120,9 @@ type ProjectLocalMeta struct {
 }
 
 type ProjectLocalKits struct {
-	Add    []string `yaml:"add,omitempty"`
-	Remove []string `yaml:"remove,omitempty"`
+	Add      []string `yaml:"add,omitempty"`
+	Remove   []string `yaml:"remove,omitempty"`
+	Editable []string `yaml:"editable,omitempty"`
 }
 
 type Project struct {

@@ -135,7 +135,26 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 	if local == nil {
 		return merged, nil
 	}
-	return ApplyProjectLocalMeta(merged, local), nil
+
+	editableRefs, err := EffectiveEditableKitRefs(kitsToLoad, local.Kits.Editable)
+	if err != nil {
+		return nil, err
+	}
+
+	localOverlay := cloneProjectLocalMeta(local)
+	if len(editableRefs) > 0 {
+		editableBindings := make([]BindMount, 0, len(editableRefs))
+		for _, ref := range editableRefs {
+			kitDir, err := resolveKitRef(ref, dir, resolver)
+			if err != nil {
+				return nil, fmt.Errorf("%s: resolve editable kit %q: %w", projectLocalFilename, ref, err)
+			}
+			editableBindings = append(editableBindings, BindMount{Source: kitDir, Mode: "rw"})
+		}
+		localOverlay.AdditionalBindings = append(editableBindings, localOverlay.AdditionalBindings...)
+	}
+
+	return ApplyProjectLocalMeta(merged, localOverlay), nil
 }
 
 func ReadKitMeta(dir string) (*KitMeta, error) {
@@ -362,6 +381,31 @@ func EffectiveKitRefs(base []string, local ProjectLocalKits) ([]string, error) {
 	return result, nil
 }
 
+func EffectiveEditableKitRefs(effective []string, editable []string) ([]string, error) {
+	if len(editable) == 0 {
+		return nil, nil
+	}
+
+	effectiveSet := make(map[string]struct{}, len(effective))
+	for _, ref := range effective {
+		effectiveSet[ref] = struct{}{}
+	}
+
+	result := make([]string, 0, len(editable))
+	seen := make(map[string]struct{}, len(editable))
+	for _, ref := range editable {
+		if _, ok := seen[ref]; ok {
+			return nil, fmt.Errorf("%s: kits.editable contains duplicate ref %q", projectLocalFilename, ref)
+		}
+		seen[ref] = struct{}{}
+		if _, ok := effectiveSet[ref]; !ok {
+			return nil, fmt.Errorf("%s: kits.editable ref %q is not active in this project", projectLocalFilename, ref)
+		}
+		result = append(result, ref)
+	}
+	return result, nil
+}
+
 func ApplyProjectLocalMeta(base *ProjectMeta, local *ProjectLocalMeta) *ProjectMeta {
 	if local == nil {
 		return base
@@ -485,6 +529,17 @@ func validateProjectLocalFields(raw map[string]any) error {
 }
 
 func validateProjectLocalMeta(meta *ProjectLocalMeta) error {
+	editableSeen := make(map[string]struct{}, len(meta.Kits.Editable))
+	for _, ref := range meta.Kits.Editable {
+		if _, ok := editableSeen[ref]; ok {
+			return fmt.Errorf("%s: kits.editable contains duplicate ref %q", projectLocalFilename, ref)
+		}
+		editableSeen[ref] = struct{}{}
+		if !strings.HasPrefix(ref, "local/") {
+			return fmt.Errorf("%s: kits.editable ref %q must use local/ prefix", projectLocalFilename, ref)
+		}
+	}
+
 	for _, binding := range meta.AdditionalBindings {
 		if binding.Source == "" {
 			return fmt.Errorf("%s: additional_bindings.source is required", projectLocalFilename)
@@ -524,6 +579,23 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 	result.HostCommands = mergeCommandMaps(nil, meta.HostCommands)
 	result.AdditionalBindings = cloneBindMounts(meta.AdditionalBindings)
 	result.TaskBehaviors = mergeTaskBehaviorMaps(nil, meta.TaskBehaviors)
+	return &result
+}
+
+func cloneProjectLocalMeta(meta *ProjectLocalMeta) *ProjectLocalMeta {
+	if meta == nil {
+		return nil
+	}
+
+	result := *meta
+	result.Kits = ProjectLocalKits{
+		Add:      append([]string(nil), meta.Kits.Add...),
+		Remove:   append([]string(nil), meta.Kits.Remove...),
+		Editable: append([]string(nil), meta.Kits.Editable...),
+	}
+	result.Env = mergeStringMaps(nil, meta.Env)
+	result.HostCommands = mergeCommandMaps(nil, meta.HostCommands)
+	result.AdditionalBindings = cloneBindMounts(meta.AdditionalBindings)
 	return &result
 }
 
