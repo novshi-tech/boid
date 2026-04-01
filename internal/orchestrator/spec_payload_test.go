@@ -14,7 +14,6 @@ import (
 func TestProjectMeta_YAMLUnmarshal(t *testing.T) {
 	data := `
 id: proj-1
-workspace_id: ws-1
 name: My Project
 task_behaviors:
   dev:
@@ -66,9 +65,8 @@ gates:
 
 func TestProjectMeta_JSONRoundTrip(t *testing.T) {
 	original := projectspec.ProjectMeta{
-		ID:          "proj-1",
-		WorkspaceID: "ws-1",
-		Name:        "Test Project",
+		ID:   "proj-1",
+		Name: "Test Project",
 		TaskBehaviors: map[string]projectspec.TaskBehavior{
 			"dev": {Name: "development", Transition: "one-shot", Traits: []string{"prompt"}},
 		},

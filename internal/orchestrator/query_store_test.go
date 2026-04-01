@@ -91,10 +91,90 @@ func TestListProjects(t *testing.T) {
 	}
 }
 
+func TestSetProjectWorkspace(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/a"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-1", "ws-1"); err != nil {
+		t.Fatalf("set workspace: %v", err)
+	}
+
+	project, err := orchestrator.GetProject(d.Conn, "proj-1")
+	if err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if project.WorkspaceID != "ws-1" {
+		t.Fatalf("workspace_id = %q, want %q", project.WorkspaceID, "ws-1")
+	}
+
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-1", "ws-2"); err != nil {
+		t.Fatalf("update workspace: %v", err)
+	}
+	project, err = orchestrator.GetProject(d.Conn, "proj-1")
+	if err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if project.WorkspaceID != "ws-2" {
+		t.Fatalf("workspace_id = %q, want %q", project.WorkspaceID, "ws-2")
+	}
+
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-1", ""); err != nil {
+		t.Fatalf("clear workspace: %v", err)
+	}
+	project, err = orchestrator.GetProject(d.Conn, "proj-1")
+	if err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if project.WorkspaceID != "" {
+		t.Fatalf("workspace_id = %q, want empty", project.WorkspaceID)
+	}
+}
+
+func TestListWorkspaces(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	for _, project := range []*orchestrator.Project{
+		{ID: "proj-1", WorkDir: "/tmp/a"},
+		{ID: "proj-2", WorkDir: "/tmp/b"},
+		{ID: "proj-3", WorkDir: "/tmp/c"},
+	} {
+		if err := orchestrator.CreateProject(d.Conn, project); err != nil {
+			t.Fatalf("create project %s: %v", project.ID, err)
+		}
+	}
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-1", "ws-1"); err != nil {
+		t.Fatalf("set workspace: %v", err)
+	}
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-2", "ws-1"); err != nil {
+		t.Fatalf("set workspace: %v", err)
+	}
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-3", "ws-2"); err != nil {
+		t.Fatalf("set workspace: %v", err)
+	}
+
+	workspaces, err := orchestrator.ListWorkspaces(d.Conn)
+	if err != nil {
+		t.Fatalf("list workspaces: %v", err)
+	}
+	if len(workspaces) != 2 {
+		t.Fatalf("expected 2 workspaces, got %d", len(workspaces))
+	}
+	if workspaces[0].ID != "ws-1" || workspaces[0].ProjectCount != 2 {
+		t.Fatalf("unexpected workspace 0: %+v", workspaces[0])
+	}
+	if workspaces[1].ID != "ws-2" || workspaces[1].ProjectCount != 1 {
+		t.Fatalf("unexpected workspace 1: %+v", workspaces[1])
+	}
+}
+
 func TestDeleteProject(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
 		t.Fatalf("create: %v", err)
+	}
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-1", "ws-1"); err != nil {
+		t.Fatalf("set workspace: %v", err)
 	}
 
 	if err := orchestrator.DeleteProject(d.Conn, "proj-1"); err != nil {
@@ -104,6 +184,14 @@ func TestDeleteProject(t *testing.T) {
 	_, err := orchestrator.GetProject(d.Conn, "proj-1")
 	if err == nil {
 		t.Fatal("expected not found after delete")
+	}
+
+	workspaces, err := orchestrator.ListWorkspaces(d.Conn)
+	if err != nil {
+		t.Fatalf("list workspaces: %v", err)
+	}
+	if len(workspaces) != 0 {
+		t.Fatalf("expected workspace membership to be deleted, got %+v", workspaces)
 	}
 }
 

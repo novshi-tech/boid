@@ -99,7 +99,6 @@ type TaskBehavior struct {
 
 type ProjectMeta struct {
 	ID                 string                  `yaml:"id" json:"id"`
-	WorkspaceID        string                  `yaml:"workspace_id" json:"workspace_id"`
 	Name               string                  `yaml:"name" json:"name"`
 	Kits               []string                `yaml:"kits" json:"kits,omitempty"`
 	TaskBehaviors      map[string]TaskBehavior `yaml:"task_behaviors" json:"task_behaviors"`
@@ -113,11 +112,17 @@ type ProjectMeta struct {
 }
 
 type Project struct {
-	ID        string      `json:"id"`
-	WorkDir   string      `json:"work_dir"`
-	Meta      ProjectMeta `json:"meta"`
-	CreatedAt time.Time   `json:"created_at"`
-	UpdatedAt time.Time   `json:"updated_at"`
+	ID          string      `json:"id"`
+	WorkspaceID string      `json:"workspace_id"`
+	WorkDir     string      `json:"work_dir"`
+	Meta        ProjectMeta `json:"meta"`
+	CreatedAt   time.Time   `json:"created_at"`
+	UpdatedAt   time.Time   `json:"updated_at"`
+}
+
+type WorkspaceSummary struct {
+	ID           string `json:"id"`
+	ProjectCount int    `json:"project_count"`
 }
 
 // KitMeta holds the parsed content of a kit.yaml file.

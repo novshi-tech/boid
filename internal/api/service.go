@@ -43,6 +43,16 @@ type ProjectAppService struct {
 	}
 }
 
+func (s *ProjectAppService) hydrateProject(project *orchestrator.Project) *orchestrator.Project {
+	if project == nil {
+		return nil
+	}
+	if meta, ok := s.Meta.Get(project.ID); ok {
+		project.Meta = *meta
+	}
+	return project
+}
+
 func (s *ProjectAppService) CreateProject(workDir string) (*orchestrator.Project, error) {
 	meta, err := s.Meta.Load(workDir)
 	if err != nil {
@@ -70,10 +80,8 @@ func (s *ProjectAppService) ListProjects(workspaceID string) ([]*orchestrator.Pr
 
 	var result []*orchestrator.Project
 	for _, project := range projects {
-		if meta, ok := s.Meta.Get(project.ID); ok {
-			project.Meta = *meta
-		}
-		if workspaceID != "" && project.Meta.WorkspaceID != workspaceID {
+		s.hydrateProject(project)
+		if workspaceID != "" && project.WorkspaceID != workspaceID {
 			continue
 		}
 		result = append(result, project)
@@ -89,10 +97,30 @@ func (s *ProjectAppService) GetProject(id string) (*orchestrator.Project, error)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
-	if meta, ok := s.Meta.Get(project.ID); ok {
-		project.Meta = *meta
+	return s.hydrateProject(project), nil
+}
+
+func (s *ProjectAppService) SetProjectWorkspace(id, workspaceID string) (*orchestrator.Project, error) {
+	project, err := s.Projects.GetProject(id)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
-	return project, nil
+	if err := s.Projects.SetProjectWorkspace(id, workspaceID); err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	project.WorkspaceID = workspaceID
+	return s.hydrateProject(project), nil
+}
+
+func (s *ProjectAppService) ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error) {
+	workspaces, err := s.Projects.ListWorkspaces()
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	if workspaces == nil {
+		workspaces = []*orchestrator.WorkspaceSummary{}
+	}
+	return workspaces, nil
 }
 
 func (s *ProjectAppService) DeleteProject(id string) error {

@@ -54,6 +54,14 @@ func (r *ProjectRepository) ListProjects() ([]*Project, error) {
 	return ListProjects(r.db)
 }
 
+func (r *ProjectRepository) SetProjectWorkspace(projectID, workspaceID string) error {
+	return SetProjectWorkspace(r.db, projectID, workspaceID)
+}
+
+func (r *ProjectRepository) ListWorkspaces() ([]*WorkspaceSummary, error) {
+	return ListWorkspaces(r.db)
+}
+
 func (r *ProjectRepository) DeleteProject(id string) error {
 	return DeleteProject(r.db, id)
 }

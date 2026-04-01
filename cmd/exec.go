@@ -27,17 +27,16 @@ func init() {
 }
 
 type execProjectMeta struct {
-	ID                 string                               `json:"id"`
-	WorkspaceID        string                               `json:"workspace_id"`
 	HostCommands       map[string]dispatcher.ExecCommandDef `json:"host_commands"`
 	AdditionalBindings []dispatcher.ExecBindMount           `json:"additional_bindings"`
 	Env                map[string]string                    `json:"env"`
 }
 
 type execProject struct {
-	ID      string          `json:"id"`
-	WorkDir string          `json:"work_dir"`
-	Meta    execProjectMeta `json:"meta"`
+	ID          string          `json:"id"`
+	WorkspaceID string          `json:"workspace_id"`
+	WorkDir     string          `json:"work_dir"`
+	Meta        execProjectMeta `json:"meta"`
 }
 
 // buildExecRequest creates a dispatcher exec request from the server state for a project.
@@ -57,9 +56,9 @@ func buildExecRequest(projectID string) (dispatcher.ExecRequest, error) {
 
 	// Collect workspace peer projects (read-only mounts)
 	var workspaceDirs map[string]string
-	if p.Meta.WorkspaceID != "" {
+	if p.WorkspaceID != "" {
 		var peers []execProject
-		if err := c.Do("GET", "/api/projects?workspace_id="+p.Meta.WorkspaceID, nil, &peers); err == nil {
+		if err := c.Do("GET", "/api/projects?workspace_id="+p.WorkspaceID, nil, &peers); err == nil {
 			workspaceDirs = make(map[string]string)
 			for _, peer := range peers {
 				if peer.ID != projectID {
@@ -94,7 +93,7 @@ func buildExecRequest(projectID string) (dispatcher.ExecRequest, error) {
 
 	req := dispatcher.ExecRequest{
 		JobID:              fmt.Sprintf("exec-%s", projectID),
-		ProjectID:          p.Meta.ID,
+		ProjectID:          p.ID,
 		ProjectDir:         p.WorkDir,
 		HomeDir:            homeDir,
 		BoidBinary:         boidBinary,

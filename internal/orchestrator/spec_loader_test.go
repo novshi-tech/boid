@@ -27,7 +27,6 @@ func TestReadProjectMeta_Valid(t *testing.T) {
 	yaml := `
 id: test-proj
 name: Test Project
-workspace_id: ws-1
 task_behaviors:
   dev:
     name: development
@@ -57,7 +56,7 @@ env:
 		t.Fatalf("read meta: %v", err)
 	}
 
-	if meta.ID != "test-proj" || meta.Name != "Test Project" || meta.WorkspaceID != "ws-1" {
+	if meta.ID != "test-proj" || meta.Name != "Test Project" {
 		t.Fatalf("unexpected meta: %+v", meta)
 	}
 	if len(meta.TaskBehaviors) != 1 || len(meta.Hooks) != 1 {
@@ -103,6 +102,18 @@ func TestReadProjectMeta_Errors(t *testing.T) {
 		_, err := projectspec.ReadProjectMeta(t.TempDir())
 		if err == nil {
 			t.Fatal("expected error for missing project.yaml")
+		}
+	})
+
+	t.Run("deprecated workspace id", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test\nworkspace_id: ws-1\n"), 0o644)
+
+		_, err := projectspec.ReadProjectMeta(dir)
+		if err == nil || !strings.Contains(err.Error(), "workspace_id is no longer supported") {
+			t.Fatalf("expected deprecated workspace_id error, got %v", err)
 		}
 	})
 }

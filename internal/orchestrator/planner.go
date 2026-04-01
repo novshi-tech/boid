@@ -62,7 +62,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 	}
 
 	behavior, _ := meta.TaskBehaviors[task.Behavior]
-	workspaceDirs, err := p.collectWorkspaceDirs(meta.WorkspaceID, event.ProjectID)
+	workspaceDirs, err := p.collectWorkspaceDirs(proj.WorkspaceID, event.ProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -173,8 +173,7 @@ func (p *DispatchPlanner) collectWorkspaceDirs(workspaceID, selfID string) (map[
 		if candidate.ID == selfID {
 			continue
 		}
-		meta, ok := p.Meta.Get(candidate.ID)
-		if !ok || meta.WorkspaceID != workspaceID {
+		if candidate.WorkspaceID != workspaceID {
 			continue
 		}
 		dirs[candidate.ID] = candidate.WorkDir

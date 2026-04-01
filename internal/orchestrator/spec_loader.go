@@ -21,6 +21,14 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 		return nil, fmt.Errorf("read project.yaml: %w", err)
 	}
 
+	var raw map[string]any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parse project.yaml: %w", err)
+	}
+	if _, ok := raw["workspace_id"]; ok {
+		return nil, fmt.Errorf("project.yaml: workspace_id is no longer supported; assign workspace via boid workspace assign <project-id> <workspace-id>")
+	}
+
 	var meta ProjectMeta
 	if err := yaml.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("parse project.yaml: %w", err)

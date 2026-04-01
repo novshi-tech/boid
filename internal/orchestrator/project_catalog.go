@@ -30,7 +30,10 @@ func CreateProject(dbtx db.DBTX, project *Project) error {
 // GetProject retrieves a project by ID.
 func GetProject(dbtx db.DBTX, id string) (*Project, error) {
 	row := dbtx.QueryRow(
-		`SELECT id, work_dir, created_at, updated_at FROM projects WHERE id = ?`, id,
+		`SELECT p.id, p.work_dir, pw.workspace_id, p.created_at, p.updated_at
+		 FROM projects p
+		 LEFT JOIN project_workspaces pw ON pw.project_id = p.id
+		 WHERE p.id = ?`, id,
 	)
 	return scanProject(row)
 }
@@ -38,13 +41,60 @@ func GetProject(dbtx db.DBTX, id string) (*Project, error) {
 // ListProjects returns all projects ordered by creation time.
 func ListProjects(dbtx db.DBTX) ([]*Project, error) {
 	rows, err := dbtx.Query(
-		`SELECT id, work_dir, created_at, updated_at FROM projects ORDER BY created_at`,
+		`SELECT p.id, p.work_dir, pw.workspace_id, p.created_at, p.updated_at
+		 FROM projects p
+		 LEFT JOIN project_workspaces pw ON pw.project_id = p.id
+		 ORDER BY p.created_at`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
 	defer rows.Close()
 	return scanProjects(rows)
+}
+
+// SetProjectWorkspace updates a project's local workspace membership.
+func SetProjectWorkspace(dbtx db.DBTX, projectID, workspaceID string) error {
+	if workspaceID == "" {
+		if _, err := dbtx.Exec(`DELETE FROM project_workspaces WHERE project_id = ?`, projectID); err != nil {
+			return fmt.Errorf("clear project workspace: %w", err)
+		}
+		return nil
+	}
+
+	_, err := dbtx.Exec(
+		`INSERT INTO project_workspaces (project_id, workspace_id) VALUES (?, ?)
+		 ON CONFLICT(project_id) DO UPDATE SET workspace_id = excluded.workspace_id`,
+		projectID, workspaceID,
+	)
+	if err != nil {
+		return fmt.Errorf("set project workspace: %w", err)
+	}
+	return nil
+}
+
+// ListWorkspaces returns all configured workspaces with project counts.
+func ListWorkspaces(dbtx db.DBTX) ([]*WorkspaceSummary, error) {
+	rows, err := dbtx.Query(
+		`SELECT workspace_id, COUNT(*)
+		 FROM project_workspaces
+		 GROUP BY workspace_id
+		 ORDER BY workspace_id`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list workspaces: %w", err)
+	}
+	defer rows.Close()
+
+	var workspaces []*WorkspaceSummary
+	for rows.Next() {
+		var workspace WorkspaceSummary
+		if err := rows.Scan(&workspace.ID, &workspace.ProjectCount); err != nil {
+			return nil, fmt.Errorf("scan workspace: %w", err)
+		}
+		workspaces = append(workspaces, &workspace)
+	}
+	return workspaces, rows.Err()
 }
 
 // DeleteProject removes a project by ID.
@@ -62,11 +112,15 @@ func DeleteProject(dbtx db.DBTX, id string) error {
 
 func scanProject(scanner projectScanner) (*Project, error) {
 	var project Project
-	if err := scanner.Scan(&project.ID, &project.WorkDir, &project.CreatedAt, &project.UpdatedAt); err != nil {
+	var workspaceID sql.NullString
+	if err := scanner.Scan(&project.ID, &project.WorkDir, &workspaceID, &project.CreatedAt, &project.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("project not found")
 		}
 		return nil, fmt.Errorf("scan project: %w", err)
+	}
+	if workspaceID.Valid {
+		project.WorkspaceID = workspaceID.String
 	}
 	return &project, nil
 }

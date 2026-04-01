@@ -35,7 +35,9 @@ type WorktreeCleaner interface {
 type ProjectService interface {
 	CreateProject(workDir string) (*orchestrator.Project, error)
 	ListProjects(workspaceID string) ([]*orchestrator.Project, error)
+	ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error)
 	GetProject(id string) (*orchestrator.Project, error)
+	SetProjectWorkspace(id, workspaceID string) (*orchestrator.Project, error)
 	DeleteProject(id string) error
 	ReloadProjects() (*ProjectReloadResult, error)
 }
@@ -73,6 +75,8 @@ type ProjectRepository interface {
 	CreateProject(project *orchestrator.Project) error
 	GetProject(id string) (*orchestrator.Project, error)
 	ListProjects() ([]*orchestrator.Project, error)
+	SetProjectWorkspace(projectID, workspaceID string) error
+	ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error)
 	DeleteProject(id string) error
 }
 

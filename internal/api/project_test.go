@@ -9,8 +9,7 @@ import (
 	"github.com/novshi-tech/boid/testutil"
 )
 
-// setupTestProject creates a temp directory with .boid/project.yaml and a hook script.
-func setupTestProject(t *testing.T) string {
+func setupTestProject(t *testing.T, id, name string, includeDeprecatedWorkspace bool) string {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -20,10 +19,11 @@ func setupTestProject(t *testing.T) string {
 		t.Fatalf("mkdir hooks: %v", err)
 	}
 
-	yaml := `id: test-project
-workspace_id: ws-1
-name: Test Project
-task_behaviors:
+	yaml := "id: " + id + "\nname: " + name + "\n"
+	if includeDeprecatedWorkspace {
+		yaml += "workspace_id: ws-1\n"
+	}
+	yaml += `task_behaviors:
   planning:
     name: Planning
     transition: standard
@@ -44,24 +44,28 @@ hooks:
 	return dir
 }
 
-func TestProjectAPI_CreateAndGet(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-	dir := setupTestProject(t)
+func createProject(t *testing.T, ts *testutil.TestServer, id, name string) orchestrator.Project {
+	t.Helper()
 
-	// Create project
-	reqBody := map[string]string{"work_dir": dir}
-	var created orchestrator.Project
-	if err := ts.Client.Do("POST", "/api/projects", reqBody, &created); err != nil {
+	dir := setupTestProject(t, id, name, false)
+	var project orchestrator.Project
+	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
+	return project
+}
+
+func TestProjectAPI_CreateAndGet(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	created := createProject(t, ts, "test-project", "Test Project")
+
 	if created.ID != "test-project" {
 		t.Errorf("created project ID = %q, want %q", created.ID, "test-project")
 	}
-	if created.Meta.WorkspaceID != "ws-1" {
-		t.Errorf("created project meta workspace_id = %q, want %q", created.Meta.WorkspaceID, "ws-1")
+	if created.WorkspaceID != "" {
+		t.Errorf("created workspace_id = %q, want empty", created.WorkspaceID)
 	}
 
-	// Get project
 	var got orchestrator.Project
 	if err := ts.Client.Do("GET", "/api/projects/test-project", nil, &got); err != nil {
 		t.Fatalf("get project: %v", err)
@@ -69,20 +73,25 @@ func TestProjectAPI_CreateAndGet(t *testing.T) {
 	if got.ID != "test-project" {
 		t.Errorf("got project ID = %q, want %q", got.ID, "test-project")
 	}
-	if got.Meta.WorkspaceID != "ws-1" {
-		t.Errorf("got project meta workspace_id = %q, want %q", got.Meta.WorkspaceID, "ws-1")
+	if got.WorkspaceID != "" {
+		t.Errorf("got workspace_id = %q, want empty", got.WorkspaceID)
+	}
+}
+
+func TestProjectAPI_CreateRejectsDeprecatedWorkspaceID(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	dir := setupTestProject(t, "deprecated-project", "Deprecated Project", true)
+
+	var created orchestrator.Project
+	err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &created)
+	if err == nil {
+		t.Fatal("expected project creation to fail for deprecated workspace_id")
 	}
 }
 
 func TestProjectAPI_List(t *testing.T) {
 	ts := testutil.NewTestServer(t)
-	dir := setupTestProject(t)
-
-	reqBody := map[string]string{"work_dir": dir}
-	var created orchestrator.Project
-	if err := ts.Client.Do("POST", "/api/projects", reqBody, &created); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
+	createProject(t, ts, "test-project", "Test Project")
 
 	var projects []*orchestrator.Project
 	if err := ts.Client.Do("GET", "/api/projects", nil, &projects); err != nil {
@@ -96,17 +105,44 @@ func TestProjectAPI_List(t *testing.T) {
 	}
 }
 
-func TestProjectAPI_ListByWorkspace(t *testing.T) {
+func TestProjectAPI_SetWorkspaceAndGet(t *testing.T) {
 	ts := testutil.NewTestServer(t)
-	dir := setupTestProject(t)
+	createProject(t, ts, "test-project", "Test Project")
 
-	reqBody := map[string]string{"work_dir": dir}
-	var created orchestrator.Project
-	if err := ts.Client.Do("POST", "/api/projects", reqBody, &created); err != nil {
-		t.Fatalf("create project: %v", err)
+	var updated orchestrator.Project
+	if err := ts.Client.Do("PUT", "/api/projects/test-project/workspace", map[string]string{"workspace_id": "ws-1"}, &updated); err != nil {
+		t.Fatalf("set workspace: %v", err)
+	}
+	if updated.WorkspaceID != "ws-1" {
+		t.Fatalf("workspace_id = %q, want %q", updated.WorkspaceID, "ws-1")
 	}
 
-	// Filter by correct workspace_id
+	var got orchestrator.Project
+	if err := ts.Client.Do("GET", "/api/projects/test-project", nil, &got); err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if got.WorkspaceID != "ws-1" {
+		t.Fatalf("workspace_id = %q, want %q", got.WorkspaceID, "ws-1")
+	}
+
+	if err := ts.Client.Do("PUT", "/api/projects/test-project/workspace", map[string]string{"workspace_id": ""}, &updated); err != nil {
+		t.Fatalf("clear workspace: %v", err)
+	}
+	if updated.WorkspaceID != "" {
+		t.Fatalf("workspace_id = %q, want empty", updated.WorkspaceID)
+	}
+}
+
+func TestProjectAPI_ListByWorkspace(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	createProject(t, ts, "proj-1", "Project 1")
+	createProject(t, ts, "proj-2", "Project 2")
+
+	var updated orchestrator.Project
+	if err := ts.Client.Do("PUT", "/api/projects/proj-1/workspace", map[string]string{"workspace_id": "ws-1"}, &updated); err != nil {
+		t.Fatalf("set workspace: %v", err)
+	}
+
 	var matched []*orchestrator.Project
 	if err := ts.Client.Do("GET", "/api/projects?workspace_id=ws-1", nil, &matched); err != nil {
 		t.Fatalf("list by workspace: %v", err)
@@ -114,8 +150,10 @@ func TestProjectAPI_ListByWorkspace(t *testing.T) {
 	if len(matched) != 1 {
 		t.Fatalf("expected 1 project for ws-1, got %d", len(matched))
 	}
+	if matched[0].ID != "proj-1" {
+		t.Fatalf("matched project = %q, want %q", matched[0].ID, "proj-1")
+	}
 
-	// Filter by wrong workspace_id
 	var empty []*orchestrator.Project
 	if err := ts.Client.Do("GET", "/api/projects?workspace_id=ws-999", nil, &empty); err != nil {
 		t.Fatalf("list by workspace: %v", err)
@@ -125,17 +163,42 @@ func TestProjectAPI_ListByWorkspace(t *testing.T) {
 	}
 }
 
-func TestProjectAPI_Delete(t *testing.T) {
+func TestProjectAPI_ListWorkspaces(t *testing.T) {
 	ts := testutil.NewTestServer(t)
-	dir := setupTestProject(t)
+	createProject(t, ts, "proj-1", "Project 1")
+	createProject(t, ts, "proj-2", "Project 2")
+	createProject(t, ts, "proj-3", "Project 3")
 
-	reqBody := map[string]string{"work_dir": dir}
-	var created orchestrator.Project
-	if err := ts.Client.Do("POST", "/api/projects", reqBody, &created); err != nil {
-		t.Fatalf("create project: %v", err)
+	var updated orchestrator.Project
+	for projectID, workspaceID := range map[string]string{
+		"proj-1": "ws-1",
+		"proj-2": "ws-1",
+		"proj-3": "ws-2",
+	} {
+		if err := ts.Client.Do("PUT", "/api/projects/"+projectID+"/workspace", map[string]string{"workspace_id": workspaceID}, &updated); err != nil {
+			t.Fatalf("set workspace for %s: %v", projectID, err)
+		}
 	}
 
-	// Delete project
+	var workspaces []*orchestrator.WorkspaceSummary
+	if err := ts.Client.Do("GET", "/api/workspaces", nil, &workspaces); err != nil {
+		t.Fatalf("list workspaces: %v", err)
+	}
+	if len(workspaces) != 2 {
+		t.Fatalf("expected 2 workspaces, got %d", len(workspaces))
+	}
+	if workspaces[0].ID != "ws-1" || workspaces[0].ProjectCount != 2 {
+		t.Fatalf("unexpected workspace 0: %+v", workspaces[0])
+	}
+	if workspaces[1].ID != "ws-2" || workspaces[1].ProjectCount != 1 {
+		t.Fatalf("unexpected workspace 1: %+v", workspaces[1])
+	}
+}
+
+func TestProjectAPI_Delete(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	createProject(t, ts, "test-project", "Test Project")
+
 	var delResult map[string]string
 	if err := ts.Client.Do("DELETE", "/api/projects/test-project", nil, &delResult); err != nil {
 		t.Fatalf("delete project: %v", err)
@@ -144,7 +207,6 @@ func TestProjectAPI_Delete(t *testing.T) {
 		t.Errorf("delete status = %q, want %q", delResult["status"], "deleted")
 	}
 
-	// Verify GET returns error
 	var got orchestrator.Project
 	if err := ts.Client.Do("GET", "/api/projects/test-project", nil, &got); err == nil {
 		t.Error("expected error on GET after DELETE, got nil")

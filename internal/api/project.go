@@ -16,6 +16,7 @@ func (h *ProjectHandler) Routes() chi.Router {
 	r.Post("/", h.Create)
 	r.Get("/", h.List)
 	r.Post("/reload", h.Reload)
+	r.Put("/{id}/workspace", h.SetWorkspace)
 	r.Get("/{id}", h.Get)
 	r.Delete("/{id}", h.Delete)
 	return r
@@ -23,6 +24,10 @@ func (h *ProjectHandler) Routes() chi.Router {
 
 type CreateProjectRequest struct {
 	WorkDir string `json:"work_dir"`
+}
+
+type SetProjectWorkspaceRequest struct {
+	WorkspaceID string `json:"workspace_id"`
 }
 
 func (h *ProjectHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +61,23 @@ func (h *ProjectHandler) List(w http.ResponseWriter, r *http.Request) {
 func (h *ProjectHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	project, err := h.Service.GetProject(id)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, project)
+}
+
+func (h *ProjectHandler) SetWorkspace(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	var req SetProjectWorkspaceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	project, err := h.Service.SetProjectWorkspace(id, req.WorkspaceID)
 	if err != nil {
 		writeServiceError(w, err)
 		return

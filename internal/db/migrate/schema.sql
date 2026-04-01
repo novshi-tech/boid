@@ -7,6 +7,13 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS project_workspaces (
+    project_id    TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    workspace_id  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_project_workspaces_workspace_id
+    ON project_workspaces(workspace_id);
+
 CREATE TABLE IF NOT EXISTS tasks (
     id            TEXT PRIMARY KEY,
     project_id    TEXT NOT NULL REFERENCES projects(id),
