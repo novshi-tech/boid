@@ -14,9 +14,9 @@ import (
 type Runner struct {
 	DB          *sql.DB
 	Tmux        dtmux.TmuxManager
-	TmuxSession string          // defaults to "boid"
-	Broker      *sandbox.Broker // host command broker
-	SecretStore *SecretStore    // secret store for resolving secret: env values
+	TmuxSession string        // defaults to "boid"
+	Broker      CommandBroker // host command broker
+	SecretStore *SecretStore  // secret store for resolving secret: env values
 	tokenMu     sync.Mutex
 	jobTokens   map[string]string // job ID -> broker token
 	waiterMu    sync.Mutex
@@ -72,18 +72,18 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 	}
 
 	if r.Broker != nil {
-		tokenCtx := sandbox.TokenContext{
+		tokenCtx := BrokerContext{
 			JobID:     j.ID,
 			TaskID:    plan.TaskID,
 			ProjectID: plan.ProjectID,
 			Role:      plan.Role,
 		}
+		var resolve SecretResolver
 		if r.SecretStore != nil {
-			cfg.BrokerToken = r.Broker.RegisterWithSecrets(hostCommandDefs(plan.HostCommands), tokenCtx, r.SecretStore.Get)
-		} else {
-			cfg.BrokerToken = r.Broker.Register(hostCommandDefs(plan.HostCommands), tokenCtx)
+			resolve = r.SecretStore.Get
 		}
-		cfg.BrokerSocket = r.Broker.SocketPath
+		cfg.BrokerToken = r.Broker.RegisterCommands(plan.HostCommands, tokenCtx, resolve)
+		cfg.BrokerSocket = r.Broker.SocketPath()
 		r.trackToken(j.ID, cfg.BrokerToken)
 	}
 
@@ -99,10 +99,6 @@ func hostCommandNames(cmds map[string]CommandDef) []string {
 		names = append(names, name)
 	}
 	return names
-}
-
-func hostCommandDefs(cmds map[string]CommandDef) map[string]sandbox.CommandDef {
-	return cmds
 }
 
 func toSandboxBindings(bindings []BindMount) []sandbox.BindMount {
@@ -211,7 +207,7 @@ func (r *Runner) UnregisterJob(jobID string) {
 	r.tokenMu.Unlock()
 
 	if ok && r.Broker != nil {
-		r.Broker.Unregister(token)
+		r.Broker.UnregisterCommandToken(token)
 		slog.Info("unregistered broker token", "job_id", jobID)
 	}
 }

@@ -7,7 +7,6 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 type apiTxStore struct {
@@ -80,7 +79,7 @@ func (t apiTransactor) WithinTx(fn func(api.TxStore) error) error {
 }
 
 type brokerRegistry struct {
-	broker      *sandbox.Broker
+	broker      dispatcher.CommandBroker
 	secretStore *dispatcher.SecretStore
 }
 
@@ -89,10 +88,10 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 		return nil, sql.ErrConnDone
 	}
 
-	ctx := sandbox.TokenContext{Role: "gate"}
-	sandboxCommands := make(map[string]sandbox.CommandDef, len(commands))
+	ctx := dispatcher.BrokerContext{Role: "gate"}
+	dispatcherCommands := make(map[string]dispatcher.CommandDef, len(commands))
 	for name, def := range commands {
-		sandboxCommands[name] = sandbox.CommandDef{
+		dispatcherCommands[name] = dispatcher.CommandDef{
 			Name:                def.Name,
 			Path:                def.Path,
 			AllowedPatterns:     def.AllowedPatterns,
@@ -106,15 +105,14 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 		}
 	}
 
-	var token string
+	var resolve dispatcher.SecretResolver
 	if r.secretStore != nil {
-		token = r.broker.RegisterWithSecrets(sandboxCommands, ctx, r.secretStore.Get)
-	} else {
-		token = r.broker.Register(sandboxCommands, ctx)
+		resolve = r.secretStore.Get
 	}
+	token := r.broker.RegisterCommands(dispatcherCommands, ctx, resolve)
 	return &api.BrokerRegisterResponse{
 		Token:  token,
-		Socket: r.broker.SocketPath,
+		Socket: r.broker.SocketPath(),
 	}, nil
 }
 

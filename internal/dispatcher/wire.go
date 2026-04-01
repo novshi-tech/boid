@@ -4,14 +4,13 @@ import (
 	"database/sql"
 
 	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
-	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 type WireConfig struct {
 	DB          *sql.DB
 	Tmux        dtmux.TmuxManager
 	TmuxSession string
-	Broker      *sandbox.Broker
+	Broker      CommandBroker
 	SecretStore *SecretStore
 }
 

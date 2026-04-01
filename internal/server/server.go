@@ -94,7 +94,7 @@ func New(cfg Config) (*Server, error) {
 			Handler: nil,
 		},
 	}
-	runtime, err := buildRuntime(srv, cfg, store, broker, secretStore)
+	runtime, err := buildRuntime(srv, cfg, store, newCommandBroker(broker), secretStore)
 	if err != nil {
 		conn.Close()
 		return nil, err

@@ -13,7 +13,6 @@ import (
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/web"
 )
 
@@ -60,7 +59,7 @@ func newTmuxSession(cfg Config) string {
 	return "boid"
 }
 
-func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, broker *sandbox.Broker, secretStore *dispatcher.SecretStore) (*appRuntime, error) {
+func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, broker dispatcher.CommandBroker, secretStore *dispatcher.SecretStore) (*appRuntime, error) {
 	projectRepo := orchestrator.NewProjectRepository(srv.db)
 	taskRepo := orchestrator.NewTaskRepository(srv.db)
 	jobRepo := dispatcher.NewJobRepository(srv.db)
@@ -148,7 +147,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	})
 
 	brokerHandler := &api.BrokerHandler{
-		Registry: brokerRegistry{broker: srv.broker, secretStore: srv.secretStore},
+		Registry: brokerRegistry{broker: newCommandBroker(srv.broker), secretStore: srv.secretStore},
 	}
 	r.Mount("/api/broker", brokerHandler.Routes())
 

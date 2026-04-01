@@ -131,6 +131,34 @@ func TestProjectStore_LoadAll(t *testing.T) {
 	}
 }
 
+func TestProjectStore_LoadAll_InvalidatesStaleMetaOnReloadFailure(t *testing.T) {
+	dir := t.TempDir()
+	setupProjectDir(t, dir, "proj-a", "Project A")
+
+	s := orchestrator.NewProjectStore(nil)
+	if _, err := s.Load(dir); err != nil {
+		t.Fatalf("initial load: %v", err)
+	}
+
+	if _, ok := s.Get("proj-a"); !ok {
+		t.Fatal("expected proj-a to be loaded before reload")
+	}
+
+	boidDir := filepath.Join(dir, ".boid")
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: proj-a\nname: [\n"), 0o644); err != nil {
+		t.Fatalf("write invalid yaml: %v", err)
+	}
+
+	errs := s.LoadAll([]*projectspec.Project{{ID: "proj-a", WorkDir: dir}})
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 reload error, got %d: %v", len(errs), errs)
+	}
+
+	if _, ok := s.Get("proj-a"); ok {
+		t.Fatal("stale meta should be invalidated after reload failure")
+	}
+}
+
 func setupProjectDir(t *testing.T, dir, id, name string) {
 	t.Helper()
 	boidDir := filepath.Join(dir, ".boid")
