@@ -163,6 +163,7 @@ behavior leakage の可能性がある。
 - Phase 6 は進行中
   - `dispatcher` の broker/token/tmux/cleanup 系テストは追加済み
   - `server` に最小限の cross-layer smoke test は追加済み
+  - `api` / `orchestrator` / `sandbox` / `dispatcher` / `server` を跨ぐ `go test ./...` / `go test -race ./...` が通過している
 - 現時点の最優先は追加の境界整理ではなく、
   Phase 1 で固定した既知不具合を green に戻すこと
 
@@ -375,9 +376,18 @@ Completion criteria:
 
 Current status:
 
-- In progress
+- Complete
 - 追加済み:
-  - `dispatcher` の broker lifecycle / tmux window / cleanup coverage
+  - `api`
+    - background dispatch lifecycle の service-level repro test
+  - `orchestrator`
+    - evaluator / coordinator / state machine の統合系テスト
+  - `dispatcher`
+    - broker lifecycle / tmux window / wait / cleanup coverage
+  - `sandbox`
+    - broker / proxy / script generation / gate-hook 導線の統合系テスト
+  - `server`
+    - `start action -> dispatch -> job done -> auto-advance` の最小 cross-layer smoke test
   - `api` の background dispatch lifecycle repro coverage
   - `orchestrator` の reload failure semantics coverage
   - `sandbox` の gate path / quoting coverage
