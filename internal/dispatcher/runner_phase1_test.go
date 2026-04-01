@@ -163,3 +163,62 @@ func TestRunnerDispatch_SameTaskJobsNeedDistinctTmuxWindows(t *testing.T) {
 		t.Fatalf("same-task jobs should have distinct tmux windows; got %d windows: %v", len(windows), windows)
 	}
 }
+
+func TestRunnerCleanupTaskWindow_KillsAllTrackedJobWindows(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	projectDir := t.TempDir()
+	taskID := "task-cleanup-12345678-abcd-efgh"
+
+	if err := orchestrator.CreateProject(db.Conn, &orchestrator.Project{
+		ID:      "proj-1",
+		WorkDir: projectDir,
+	}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	if err := orchestrator.CreateTask(db.Conn, &orchestrator.Task{
+		ID:        taskID,
+		ProjectID: "proj-1",
+		Title:     "cleanup hooks",
+		Behavior:  "dev",
+	}); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	tmux := newStatefulTmux()
+	runner := &dispatcher.Runner{
+		DB:          db.Conn,
+		Tmux:        tmux,
+		TmuxSession: "boid",
+		Sandbox: &fakeSandboxPreparer{
+			outerPaths: []string{"/tmp/boid-cleanup-a.sh", "/tmp/boid-cleanup-b.sh"},
+		},
+	}
+
+	for _, handlerID := range []string{"hook-a", "hook-b"} {
+		_, err := runner.Dispatch(context.Background(), &dispatcher.DispatchPlan{
+			TaskID:      taskID,
+			ProjectID:   "proj-1",
+			HandlerID:   handlerID,
+			Role:        "hook",
+			ProjectDir:  projectDir,
+			HomeDir:     projectDir,
+			HookScript:  handlerID + ".sh",
+			BoidBinary:  "/bin/true",
+			PayloadJSON: `{}`,
+		})
+		if err != nil {
+			t.Fatalf("dispatch %s: %v", handlerID, err)
+		}
+	}
+
+	runner.CleanupTaskWindow(taskID)
+
+	windows, err := tmux.ListWindows("boid")
+	if err != nil {
+		t.Fatalf("list windows: %v", err)
+	}
+	if len(windows) != 0 {
+		t.Fatalf("cleanup should remove all tracked task windows, got %v", windows)
+	}
+}

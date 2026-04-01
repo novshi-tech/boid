@@ -157,6 +157,9 @@ behavior leakage の可能性がある。
 - Phase 5 は完了
   - `sandbox` concrete type への参照は `server` package の wiring にのみ残っている
   - `api` / `orchestrator` / `dispatcher` は `sandbox` 具象へ直接依存していない
+- Phase 6 は進行中
+  - `dispatcher` の broker/token/tmux/cleanup 系テストは追加済み
+  - `server` に最小限の cross-layer smoke test は追加済み
 - 現時点の最優先は追加の境界整理ではなく、
   Phase 1 で固定した既知不具合を green に戻すこと
 
@@ -364,6 +367,16 @@ Completion criteria:
 
 - known issue の再発防止がレイヤ単位テストで担保される
 - 各レイヤが他レイヤの具象なしで統合テストできる
+
+Current status:
+
+- In progress
+- 追加済み:
+  - `dispatcher` の broker lifecycle / tmux window / cleanup coverage
+  - `api` の background dispatch lifecycle repro coverage
+  - `orchestrator` の reload failure semantics coverage
+  - `sandbox` の gate path / quoting coverage
+  - `server` の最小 cross-layer smoke coverage
 
 ## Definition Of Done
 
