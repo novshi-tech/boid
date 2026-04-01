@@ -1,6 +1,6 @@
 package sandbox
 
-// BindMount describes a host path to bind-mount into the sandbox.
+// BindMount is a plain shared DTO consumed by sandbox setup planning.
 type BindMount struct {
 	Source string
 	Mode   string

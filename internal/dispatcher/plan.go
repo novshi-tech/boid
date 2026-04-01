@@ -1,12 +1,13 @@
 package dispatcher
 
-// BindMount describes a host path to bind-mount into the sandbox.
+// BindMount remains a plain shared DTO at the dispatcher boundary.
 type BindMount struct {
 	Source string
 	Mode   string
 }
 
-// CommandDef defines a host command allowed from inside the sandbox.
+// CommandDef is a transport shape used by dispatcher.
+// sandbox remains the canonical owner of how these policy fields are interpreted.
 type CommandDef struct {
 	Name                string
 	Path                string

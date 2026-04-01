@@ -288,6 +288,26 @@ Completion criteria:
 - shared data と behavior DSL の境界が説明できる
 - `dispatcher` のテストが `sandbox` 内部ルール理解なしに書ける
 
+Current decision:
+
+- `BindMount` は shared DTO のまま維持する
+  - `Source` と `Mode` だけの素朴なデータであり、
+    fake 実装でも同じ意味で扱える
+- `CommandDef` は canonical shared model に昇格させない
+  - `AllowedPatterns`
+  - `DeniedPatterns`
+  - `AllowedSubcommands`
+  - `ExtractSubcommandFn`
+  - `RequireCwd`
+  - `AllowedCwdPrefixes`
+    は `sandbox` の policy evaluator が意味を与える provider-side DSL である
+- したがって当面は
+  `orchestrator` / `dispatcher` / `sandbox` に
+  明示的な transport shape を置き、
+  境界で field-by-field conversion する方針を採る
+- neutral spec package への移管は、
+  `sandbox` 以外の provider が同じ DSL を本当に共有する必要が出た時点で再検討する
+
 ### Phase 5: Keep Server As Composition Root Only
 
 目的:

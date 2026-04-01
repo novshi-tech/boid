@@ -2,13 +2,14 @@ package orchestrator
 
 import "time"
 
-// BindMount describes a host path to bind-mount into the sandbox.
+// BindMount remains a plain shared DTO across orchestration and sandbox planning.
 type BindMount struct {
 	Source string `yaml:"source" json:"source"`
 	Mode   string `yaml:"mode" json:"mode"`
 }
 
-// CommandDef defines a host command that can be executed inside the sandbox.
+// CommandDef is the project-spec transport shape for sandbox command policy input.
+// sandbox remains the canonical owner of how these policy fields are enforced.
 type CommandDef struct {
 	Name                string            `yaml:"name" json:"name"`
 	Path                string            `yaml:"path" json:"path"`

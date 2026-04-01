@@ -2,6 +2,7 @@ package sandbox
 
 import "strings"
 
+// CommandDef is the canonical sandbox-side policy DSL for brokered host commands.
 type CommandDef struct {
 	Name                string
 	Path                string
