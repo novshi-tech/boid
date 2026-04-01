@@ -48,7 +48,7 @@ func TestBroker_GitBuiltinPushUsesTrustedSnapshot(t *testing.T) {
 		t.Fatalf("remote1 head = %q, want %q", remote1Head, localHead)
 	}
 
-	if cmd := exec.Command("git", "--git-dir", remote2, "rev-parse", "--verify", "refs/heads/main"); cmd.Run() == nil {
+	if cmd := exec.Command(realGitForTest, "--git-dir", remote2, "rev-parse", "--verify", "refs/heads/main"); cmd.Run() == nil {
 		t.Fatal("remote2 should not have received the push")
 	}
 }
@@ -156,8 +156,18 @@ func TestBroker_GitBuiltinRejectsUnknownRemote(t *testing.T) {
 	}
 }
 
+const realGitForTest = "/usr/bin/git"
+
+func skipWithoutRealGit(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat(realGitForTest); err != nil {
+		t.Skipf("%s not available", realGitForTest)
+	}
+}
+
 func initGitRepo(t *testing.T) string {
 	t.Helper()
+	skipWithoutRealGit(t)
 	dir := t.TempDir()
 	runGit(t, dir, "init", "-b", "main")
 	runGit(t, dir, "config", "user.name", "Boid Test")
@@ -195,7 +205,7 @@ func writeFile(t *testing.T, path, contents string) {
 
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command(realGitForTest, args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
