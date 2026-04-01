@@ -132,6 +132,79 @@ func TestRegistry_List(t *testing.T) {
 	}
 }
 
+func TestRegistry_IsInstalled(t *testing.T) {
+	baseDir := t.TempDir()
+	repoDir := filepath.Join(baseDir, "github.com", "user", "repo")
+	os.MkdirAll(repoDir, 0o755)
+
+	reg := kit.NewRegistry(baseDir)
+
+	if !reg.IsInstalled("github.com/user/repo") {
+		t.Error("expected IsInstalled=true for existing dir")
+	}
+	if reg.IsInstalled("github.com/user/nonexistent") {
+		t.Error("expected IsInstalled=false for missing dir")
+	}
+}
+
+func TestRepoRefsFromKitRefs(t *testing.T) {
+	tests := []struct {
+		name string
+		refs []string
+		want []string
+	}{
+		{
+			name: "all local",
+			refs: []string{"go-dev", "git", "build"},
+			want: nil,
+		},
+		{
+			name: "remote only",
+			refs: []string{"github.com/acme/kits/go-dev", "github.com/acme/kits/ci"},
+			want: []string{"github.com/acme/kits"},
+		},
+		{
+			name: "mixed local and remote",
+			refs: []string{"go-dev", "github.com/acme/kits/go-dev", "git"},
+			want: []string{"github.com/acme/kits"},
+		},
+		{
+			name: "local prefix skipped",
+			refs: []string{"local/dev/repro-kit"},
+			want: nil,
+		},
+		{
+			name: "multiple repos",
+			refs: []string{"github.com/acme/kits/go", "github.com/other/repo/ci"},
+			want: []string{"github.com/acme/kits", "github.com/other/repo"},
+		},
+		{
+			name: "dedup same repo",
+			refs: []string{"github.com/acme/kits/go", "github.com/acme/kits/ci"},
+			want: []string{"github.com/acme/kits"},
+		},
+		{
+			name: "empty",
+			refs: nil,
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := kit.RepoRefsFromKitRefs(tt.refs)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("got[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestRegistry_Remove(t *testing.T) {
 	baseDir := t.TempDir()
 	repoDir := filepath.Join(baseDir, "github.com", "user", "repo")

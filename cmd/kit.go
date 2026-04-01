@@ -13,17 +13,69 @@ var kitCmd = &cobra.Command{
 }
 
 var kitInstallCmd = &cobra.Command{
-	Use:   "install <repo>",
-	Short: "Install a kit repository (e.g. github.com/user/repo)",
-	Args:  cobra.ExactArgs(1),
+	Use:   "install [repo]",
+	Short: "Install kit repositories",
+	Long:  "Install a kit repository. Without arguments, installs all remote kit repos referenced by the current project.",
+	Args:  cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		reg := kit.NewRegistry(defaultKitsDir())
-		if err := reg.Install(args[0]); err != nil {
+		if len(args) == 1 {
+			return kitInstallSingle(args[0])
+		}
+		return kitInstallFromProject()
+	},
+}
+
+func kitInstallSingle(repoRef string) error {
+	reg := kit.NewRegistry(defaultKitsDir())
+	if err := reg.Install(repoRef); err != nil {
+		return err
+	}
+	fmt.Printf("installed: %s\n", repoRef)
+	return nil
+}
+
+func kitInstallFromProject() error {
+	projectDir, err := resolveProjectRoot("")
+	if err != nil {
+		return err
+	}
+
+	meta, err := kit.ReadProjectMeta(projectDir)
+	if err != nil {
+		return err
+	}
+
+	kitRefs := meta.Kits
+
+	local, err := kit.ReadProjectLocalMeta(projectDir)
+	if err != nil {
+		return err
+	}
+	if local != nil {
+		kitRefs, err = kit.EffectiveKitRefs(meta.Kits, local.Kits)
+		if err != nil {
 			return err
 		}
-		fmt.Printf("installed: %s\n", args[0])
+	}
+
+	repos := kit.RepoRefsFromKitRefs(kitRefs)
+	if len(repos) == 0 {
+		fmt.Println("no remote kit repos to install")
 		return nil
-	},
+	}
+
+	reg := kit.NewRegistry(defaultKitsDir())
+	for _, repo := range repos {
+		if reg.IsInstalled(repo) {
+			fmt.Printf("already installed: %s\n", repo)
+			continue
+		}
+		if err := reg.Install(repo); err != nil {
+			return err
+		}
+		fmt.Printf("installed: %s\n", repo)
+	}
+	return nil
 }
 
 var kitListCmd = &cobra.Command{

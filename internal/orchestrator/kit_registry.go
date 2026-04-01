@@ -44,6 +44,37 @@ func (r *KitRegistry) Resolve(ref string) (string, error) {
 	return dir, nil
 }
 
+// IsInstalled returns true if the repo directory already exists under BaseDir.
+func (r *KitRegistry) IsInstalled(repoRef string) bool {
+	dest := filepath.Join(r.BaseDir, repoRef)
+	_, err := os.Stat(dest)
+	return err == nil
+}
+
+// RepoRefsFromKitRefs extracts unique repo references (host/owner/repo)
+// from a list of kit refs. Only remote refs with 4+ path segments are
+// included. Local refs (< 4 segments) and "local/" prefix refs are skipped.
+func RepoRefsFromKitRefs(kitRefs []string) []string {
+	seen := make(map[string]struct{})
+	var repos []string
+	for _, ref := range kitRefs {
+		if strings.HasPrefix(ref, "local/") {
+			continue
+		}
+		parts := strings.Split(ref, "/")
+		if len(parts) < 4 {
+			continue
+		}
+		repo := strings.Join(parts[:3], "/")
+		if _, ok := seen[repo]; ok {
+			continue
+		}
+		seen[repo] = struct{}{}
+		repos = append(repos, repo)
+	}
+	return repos
+}
+
 // Install clones a kit repository from its conventional URL.
 // The repoRef should be like "github.com/user/repo".
 func (r *KitRegistry) Install(repoRef string) error {
