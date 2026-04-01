@@ -154,6 +154,9 @@ behavior leakage の可能性がある。
   - `dispatcher` の broker dependency は consumer-side interface 化済み
 - Phase 3 は完了
   - `dispatcher` の sandbox preparation dependency は consumer-side interface 化済み
+- Phase 5 は完了
+  - `sandbox` concrete type への参照は `server` package の wiring にのみ残っている
+  - `api` / `orchestrator` / `dispatcher` は `sandbox` 具象へ直接依存していない
 - 現時点の最優先は追加の境界整理ではなく、
   Phase 1 で固定した既知不具合を green に戻すこと
 
@@ -323,6 +326,13 @@ Completion criteria:
 
 - `server` だけが provider concrete type を new している
 - 他レイヤは interface で受ける
+
+Status:
+
+- Complete
+- 検証は
+  `rg "sandbox\\." internal/server internal/api internal/orchestrator internal/dispatcher -g'*.go'`
+  で確認できる
 
 ### Phase 6: Establish Independent Integration Test Suites
 
