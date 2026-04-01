@@ -113,15 +113,15 @@ type ProjectMeta struct {
 
 type ProjectLocalMeta struct {
 	Version            int                   `yaml:"version"`
-	Kits               ProjectLocalKits      `yaml:"kits"`
-	HostCommands       map[string]CommandDef `yaml:"host_commands"`
-	AdditionalBindings []BindMount           `yaml:"additional_bindings"`
-	Env                map[string]string     `yaml:"env"`
+	Kits               ProjectLocalKits      `yaml:"kits,omitempty"`
+	HostCommands       map[string]CommandDef `yaml:"host_commands,omitempty"`
+	AdditionalBindings []BindMount           `yaml:"additional_bindings,omitempty"`
+	Env                map[string]string     `yaml:"env,omitempty"`
 }
 
 type ProjectLocalKits struct {
-	Add    []string `yaml:"add"`
-	Remove []string `yaml:"remove"`
+	Add    []string `yaml:"add,omitempty"`
+	Remove []string `yaml:"remove,omitempty"`
 }
 
 type Project struct {
