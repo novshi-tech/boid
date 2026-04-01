@@ -71,7 +71,7 @@ func TestProjectMeta_JSONRoundTrip(t *testing.T) {
 			"dev": {Name: "development", Transition: "one-shot", Traits: []string{"prompt"}},
 		},
 		Hooks:        []projectspec.Hook{{ID: "hook-1", On: "executing", RequiresTraits: []projectspec.TraitType{projectspec.TraitPrompt}}},
-		HostCommands: map[string]projectspec.CommandDef{"git": {Path: "/usr/bin/git"}},
+		HostCommands: projectspec.HostCommands{"git": {Path: "/usr/bin/git"}},
 		Env:          map[string]string{"KEY": "val"},
 	}
 

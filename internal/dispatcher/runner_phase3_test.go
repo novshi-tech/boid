@@ -192,7 +192,7 @@ func TestWriteExecScripts_UsesSandboxPreparer(t *testing.T) {
 			"FOO": "bar",
 		},
 		HostCommands: map[string]dispatcher.ExecCommandDef{
-			"git": {Name: "git"},
+			"git": {},
 		},
 		AdditionalBindings: []dispatcher.ExecBindMount{
 			{Source: "/opt/tools", Mode: "rw"},

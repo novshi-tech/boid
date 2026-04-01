@@ -83,29 +83,27 @@ type brokerRegistry struct {
 	secretStore *dispatcher.SecretStore
 }
 
-func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.CommandDef, builtinCommands []string, projectDir, worktreeDir string) (*api.BrokerRegisterResponse, error) {
+func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.HostCommandSpec, builtinCommands []string, projectDir, worktreeDir string) (*api.BrokerRegisterResponse, error) {
 	if r.broker == nil {
 		return nil, sql.ErrConnDone
 	}
 
 	ctx := dispatcher.BrokerContext{
-		Role:       "gate",
-		ProjectDir: projectDir,
+		Role:        "gate",
+		ProjectDir:  projectDir,
 		WorktreeDir: worktreeDir,
 	}
-	dispatcherCommands := make(map[string]dispatcher.CommandDef, len(commands))
-	for name, def := range commands {
+	defs := orchestrator.HostCommands(commands).ToCommandDefs()
+	dispatcherCommands := make(map[string]dispatcher.CommandDef, len(defs))
+	for name, def := range defs {
 		dispatcherCommands[name] = dispatcher.CommandDef{
-			Name:                def.Name,
-			Path:                def.Path,
-			AllowedPatterns:     def.AllowedPatterns,
-			DeniedPatterns:      def.DeniedPatterns,
-			AllowedSubcommands:  def.AllowedSubcommands,
-			AllowStdin:          def.AllowStdin,
-			Env:                 def.Env,
-			ExtractSubcommandFn: def.ExtractSubcommandFn,
-			RequireCwd:          def.RequireCwd,
-			AllowedCwdPrefixes:  def.AllowedCwdPrefixes,
+			Name:               def.Name,
+			Path:               def.Path,
+			AllowedPatterns:    def.AllowedPatterns,
+			DeniedPatterns:     def.DeniedPatterns,
+			AllowedSubcommands: def.AllowedSubcommands,
+			AllowStdin:         def.AllowStdin,
+			Env:                def.Env,
 		}
 	}
 

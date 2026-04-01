@@ -10,16 +10,13 @@ type BindMount struct {
 // CommandDef is a dispatcher-side transport shape for sandbox command policy input.
 // sandbox remains the canonical owner of how these policy fields are interpreted.
 type CommandDef struct {
-	Name                string
-	Path                string
-	AllowedPatterns     []string
-	DeniedPatterns      []string
-	AllowedSubcommands  []string
-	AllowStdin          bool
-	Env                 map[string]string
-	ExtractSubcommandFn string
-	RequireCwd          bool
-	AllowedCwdPrefixes  []string
+	Name               string
+	Path               string
+	AllowedPatterns    []string
+	DeniedPatterns     []string
+	AllowedSubcommands []string
+	AllowStdin         bool
+	Env                map[string]string
 }
 
 // DispatchPlan is the fully resolved execution plan consumed by the runner.

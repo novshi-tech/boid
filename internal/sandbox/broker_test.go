@@ -151,64 +151,6 @@ func TestBroker_Unregister(t *testing.T) {
 	}
 }
 
-func TestBroker_CwdValidation(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	broker := &sandbox.Broker{}
-	token := broker.Register(map[string]sandbox.CommandDef{
-		"echo": {
-			Name:               "echo",
-			Path:               "/bin/echo",
-			AllowedPatterns:    []string{"*"},
-			RequireCwd:         true,
-			AllowedCwdPrefixes: []string{tmpDir},
-		},
-	}, nil, testCtx)
-
-	// Valid cwd
-	resp := broker.Handle(&sandbox.ExecRequest{
-		Command: "echo",
-		Args:    []string{"hello"},
-		Token:   token,
-		Cwd:     tmpDir,
-	})
-	if resp.ExitCode != 0 {
-		t.Errorf("valid cwd: exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
-	}
-
-	// Missing cwd when required
-	resp = broker.Handle(&sandbox.ExecRequest{
-		Command: "echo",
-		Args:    []string{"hello"},
-		Token:   token,
-	})
-	if resp.ExitCode != 1 {
-		t.Error("expected rejection for missing cwd")
-	}
-
-	// Cwd outside allowed prefixes
-	resp = broker.Handle(&sandbox.ExecRequest{
-		Command: "echo",
-		Args:    []string{"hello"},
-		Token:   token,
-		Cwd:     "/tmp/evil",
-	})
-	if resp.ExitCode != 1 {
-		t.Error("expected rejection for cwd outside allowed prefixes")
-	}
-
-	// Relative path should be rejected
-	resp = broker.Handle(&sandbox.ExecRequest{
-		Command: "echo",
-		Args:    []string{"hello"},
-		Token:   token,
-		Cwd:     "relative/path",
-	})
-	if resp.ExitCode != 1 {
-		t.Error("expected rejection for relative cwd")
-	}
-}
-
 func TestBroker_PerCommandEnv(t *testing.T) {
 	broker := &sandbox.Broker{}
 	token := broker.Register(map[string]sandbox.CommandDef{

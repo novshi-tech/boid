@@ -121,7 +121,10 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 		return nil, fmt.Errorf("marshal task: %w", err)
 	}
 
-	hostCommands := cloneCommands(meta.HostCommands)
+	hostCommands := meta.HostCommands.ToCommandDefs()
+	if hostCommands == nil {
+		hostCommands = make(map[string]CommandDef)
+	}
 	hostCommands["boid"] = CommandDef{Name: "boid"}
 
 	return &DispatchRequest{
@@ -202,17 +205,6 @@ func (p *DispatchPlanner) proxyPort() int {
 		return 0
 	}
 	return *p.ProxyPort
-}
-
-func cloneCommands(cmds map[string]CommandDef) map[string]CommandDef {
-	if len(cmds) == 0 {
-		return nil
-	}
-	out := make(map[string]CommandDef, len(cmds))
-	for name, def := range cmds {
-		out[name] = def
-	}
-	return out
 }
 
 func cloneStringSlice(values []string) []string {

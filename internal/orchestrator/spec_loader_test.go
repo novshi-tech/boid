@@ -664,12 +664,12 @@ func TestMergeKitMeta(t *testing.T) {
 		base := &projectspec.ProjectMeta{
 			ID:           "proj",
 			Name:         "Project",
-			HostCommands: map[string]projectspec.CommandDef{"git": {Path: "/usr/bin/git"}},
+			HostCommands: projectspec.HostCommands{"git": {Path: "/usr/bin/git"}},
 			Hooks:        []projectspec.Hook{{ID: "proj-hook", On: "executing"}},
 			Env:          map[string]string{"PROJECT_VAR": "pval"},
 		}
 		meta := &projectspec.KitMeta{
-			HostCommands:       map[string]projectspec.CommandDef{"go": {Path: "/usr/bin/go"}, "git": {Path: "/usr/bin/git"}},
+			HostCommands:       projectspec.HostCommands{"go": {Path: "/usr/bin/go"}, "git": {Path: "/usr/bin/git"}},
 			AdditionalBindings: []projectspec.BindMount{{Source: "/usr/local/go"}},
 			Hooks:              []projectspec.Hook{{ID: "kit-hook", On: "verifying", ScriptPath: "/kit/hooks/kit-hook.sh"}},
 			HooksDir:           "/kit/hooks",
@@ -694,8 +694,8 @@ func TestMergeKitMeta(t *testing.T) {
 
 	t.Run("multiple kits", func(t *testing.T) {
 		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project", Env: map[string]string{"PROJ": "yes"}}
-		m1 := &projectspec.KitMeta{Env: map[string]string{"A": "from-m1", "SHARED": "m1"}, HostCommands: map[string]projectspec.CommandDef{"go": {Path: "/usr/bin/go"}}}
-		m2 := &projectspec.KitMeta{Env: map[string]string{"B": "from-m2", "SHARED": "m2"}, HostCommands: map[string]projectspec.CommandDef{"go": {Path: "/usr/bin/go"}, "gh": {Path: "/usr/bin/gh"}}}
+		m1 := &projectspec.KitMeta{Env: map[string]string{"A": "from-m1", "SHARED": "m1"}, HostCommands: projectspec.HostCommands{"go": {Path: "/usr/bin/go"}}}
+		m2 := &projectspec.KitMeta{Env: map[string]string{"B": "from-m2", "SHARED": "m2"}, HostCommands: projectspec.HostCommands{"go": {Path: "/usr/bin/go"}, "gh": {Path: "/usr/bin/gh"}}}
 
 		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{m1, m2})
 		if result.Env["A"] != "from-m1" || result.Env["B"] != "from-m2" || result.Env["SHARED"] != "m2" || result.Env["PROJ"] != "yes" || len(result.HostCommands) != 2 {
@@ -756,7 +756,7 @@ func TestApplyProjectLocalMeta(t *testing.T) {
 			"BASE":   "yes",
 			"SHARED": "base",
 		},
-		HostCommands: map[string]projectspec.CommandDef{
+		HostCommands: projectspec.HostCommands{
 			"git": {Path: "/usr/bin/git"},
 			"uv":  {Path: "/usr/bin/uv"},
 		},
@@ -770,7 +770,7 @@ func TestApplyProjectLocalMeta(t *testing.T) {
 			"LOCAL":  "yes",
 			"SHARED": "local",
 		},
-		HostCommands: map[string]projectspec.CommandDef{
+		HostCommands: projectspec.HostCommands{
 			"uv": {Path: "/custom/bin/uv"},
 		},
 		AdditionalBindings: []projectspec.BindMount{
@@ -792,4 +792,184 @@ func TestApplyProjectLocalMeta(t *testing.T) {
 	if got.AdditionalBindings[1].Source != "/opt/shared" || got.AdditionalBindings[1].Mode != "rw" {
 		t.Fatalf("expected binding override in place, got %+v", got.AdditionalBindings)
 	}
+}
+
+func TestHostCommands_NewDSL(t *testing.T) {
+	t.Run("map form with policy", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+		yaml := `
+id: test-proj
+name: Test Project
+host_commands:
+  gh:
+    allow: [pr, issue, run]
+    deny: ["repo delete *"]
+    stdin: true
+    env:
+      GH_TOKEN: test-token
+  aws:
+    allow: [s3, "ecr get-login *"]
+`
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
+
+		meta, err := projectspec.ReadProjectMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadProjectMeta: %v", err)
+		}
+		if len(meta.HostCommands) != 2 {
+			t.Fatalf("expected 2 host commands, got %d", len(meta.HostCommands))
+		}
+		gh := meta.HostCommands["gh"]
+		if len(gh.Allow) != 3 || gh.Allow[0] != "pr" {
+			t.Fatalf("unexpected gh allow: %+v", gh.Allow)
+		}
+		if len(gh.Deny) != 1 || gh.Deny[0] != "repo delete *" {
+			t.Fatalf("unexpected gh deny: %+v", gh.Deny)
+		}
+		if !gh.Stdin {
+			t.Fatal("expected gh stdin=true")
+		}
+		if gh.Env["GH_TOKEN"] != "test-token" {
+			t.Fatalf("unexpected gh env: %+v", gh.Env)
+		}
+
+		defs := meta.HostCommands.ToCommandDefs()
+		ghDef := defs["gh"]
+		if ghDef.Name != "gh" {
+			t.Fatalf("expected name 'gh', got %q", ghDef.Name)
+		}
+		if len(ghDef.AllowedSubcommands) != 3 || ghDef.AllowedSubcommands[0] != "pr" {
+			t.Fatalf("unexpected subcommands: %+v", ghDef.AllowedSubcommands)
+		}
+		if len(ghDef.DeniedPatterns) != 1 {
+			t.Fatalf("unexpected denied patterns: %+v", ghDef.DeniedPatterns)
+		}
+		if !ghDef.AllowStdin {
+			t.Fatal("expected AllowStdin=true")
+		}
+
+		awsDef := defs["aws"]
+		if len(awsDef.AllowedSubcommands) != 1 || awsDef.AllowedSubcommands[0] != "s3" {
+			t.Fatalf("unexpected aws subcommands: %+v", awsDef.AllowedSubcommands)
+		}
+		if len(awsDef.AllowedPatterns) != 1 || awsDef.AllowedPatterns[0] != "ecr get-login *" {
+			t.Fatalf("unexpected aws patterns: %+v", awsDef.AllowedPatterns)
+		}
+	})
+
+	t.Run("list form", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+		yaml := `
+id: test-proj
+name: Test Project
+host_commands: [gh, aws, az]
+`
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
+
+		meta, err := projectspec.ReadProjectMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadProjectMeta: %v", err)
+		}
+		if len(meta.HostCommands) != 3 {
+			t.Fatalf("expected 3 host commands, got %d", len(meta.HostCommands))
+		}
+		for _, name := range []string{"gh", "aws", "az"} {
+			if _, ok := meta.HostCommands[name]; !ok {
+				t.Fatalf("expected host_commands to contain %q", name)
+			}
+		}
+
+		defs := meta.HostCommands.ToCommandDefs()
+		ghDef := defs["gh"]
+		if len(ghDef.AllowedSubcommands) != 0 && len(ghDef.AllowedPatterns) != 0 {
+			t.Fatalf("zero-config should have no restrictions: %+v", ghDef)
+		}
+	})
+
+	t.Run("zero-config map form", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+		yaml := `
+id: test-proj
+name: Test Project
+host_commands:
+  gh:
+  aws:
+`
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
+
+		meta, err := projectspec.ReadProjectMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadProjectMeta: %v", err)
+		}
+		if len(meta.HostCommands) != 2 {
+			t.Fatalf("expected 2 host commands, got %d", len(meta.HostCommands))
+		}
+	})
+
+	t.Run("kit with new DSL", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		kitDir := filepath.Join(boidDir, "kits", "cloud")
+		_ = os.MkdirAll(kitDir, 0o755)
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test\nkits:\n  - cloud\n"), 0o644)
+		writeKitYAML(t, kitDir, `
+host_commands:
+  aws:
+    allow: [s3, ecr, sts]
+    env:
+      AWS_PROFILE: sandbox
+  gh:
+    allow: [pr, issue]
+`)
+
+		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+		if err != nil {
+			t.Fatalf("ReadProjectMetaWithKits: %v", err)
+		}
+		if len(meta.HostCommands) != 2 {
+			t.Fatalf("expected 2 host commands, got %d", len(meta.HostCommands))
+		}
+		if meta.HostCommands["aws"].Env["AWS_PROFILE"] != "sandbox" {
+			t.Fatalf("unexpected aws env: %+v", meta.HostCommands["aws"])
+		}
+	})
+
+	t.Run("project.local.yaml optional path", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+		content := `
+version: 1
+host_commands:
+  gh:
+    allow: [pr, issue]
+`
+		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(content), 0o644)
+
+		meta, err := projectspec.ReadProjectLocalMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadProjectLocalMeta: %v", err)
+		}
+		if len(meta.HostCommands) != 1 || len(meta.HostCommands["gh"].Allow) != 2 {
+			t.Fatalf("unexpected host commands: %+v", meta.HostCommands)
+		}
+	})
+
+	t.Run("project.local.yaml rejects relative path", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte("host_commands:\n  gh:\n    path: relative/gh\n"), 0o644)
+
+		_, err := projectspec.ReadProjectLocalMeta(dir)
+		if err == nil || !strings.Contains(err.Error(), "must be an absolute path") {
+			t.Fatalf("expected absolute path error, got %v", err)
+		}
+	})
 }

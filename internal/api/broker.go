@@ -9,10 +9,10 @@ import (
 )
 
 type BrokerRegisterRequest struct {
-	Commands        map[string]orchestrator.CommandDef `json:"commands"`
-	BuiltinCommands []string                           `json:"builtin_commands,omitempty"`
-	ProjectDir      string                             `json:"project_dir,omitempty"`
-	WorktreeDir     string                             `json:"worktree_dir,omitempty"`
+	Commands        map[string]orchestrator.HostCommandSpec `json:"commands"`
+	BuiltinCommands []string                                `json:"builtin_commands,omitempty"`
+	ProjectDir      string                                  `json:"project_dir,omitempty"`
+	WorktreeDir     string                                  `json:"worktree_dir,omitempty"`
 }
 
 type BrokerRegisterResponse struct {

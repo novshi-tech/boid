@@ -1,6 +1,12 @@
 package orchestrator
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
 
 // BindMount is a plain shared DTO across orchestration and sandbox planning.
 // It carries only mount source/mode data and does not encode provider behavior.
@@ -9,20 +15,89 @@ type BindMount struct {
 	Mode   string `yaml:"mode" json:"mode"`
 }
 
-// CommandDef is the project-spec transport shape for sandbox command policy input.
-// It is mirrored into dispatcher-owned transport data, while sandbox remains the
-// canonical owner of how these policy fields are enforced.
+// CommandDef is the orchestrator-side transport shape for sandbox command policy input.
+// Dispatcher and sandbox mirror this shape; sandbox owns the enforcement semantics.
 type CommandDef struct {
-	Name                string            `yaml:"name" json:"name"`
-	Path                string            `yaml:"path" json:"path"`
-	AllowedPatterns     []string          `yaml:"allowed_patterns" json:"allowed_patterns"`
-	DeniedPatterns      []string          `yaml:"denied_patterns" json:"denied_patterns"`
-	AllowedSubcommands  []string          `yaml:"allowed_subcommands" json:"allowed_subcommands"`
-	AllowStdin          bool              `yaml:"allow_stdin" json:"allow_stdin"`
-	Env                 map[string]string `yaml:"env" json:"env"`
-	ExtractSubcommandFn string            `yaml:"extract_subcommand_fn" json:"extract_subcommand_fn"`
-	RequireCwd          bool              `yaml:"require_cwd" json:"require_cwd"`
-	AllowedCwdPrefixes  []string          `yaml:"allowed_cwd_prefixes" json:"allowed_cwd_prefixes"`
+	Name               string
+	Path               string
+	AllowedPatterns    []string
+	DeniedPatterns     []string
+	AllowedSubcommands []string
+	AllowStdin         bool
+	Env                map[string]string
+}
+
+// HostCommandSpec is the simplified YAML DSL for declaring host commands.
+type HostCommandSpec struct {
+	Allow []string          `yaml:"allow,omitempty" json:"allow,omitempty"`
+	Deny  []string          `yaml:"deny,omitempty" json:"deny,omitempty"`
+	Stdin bool              `yaml:"stdin,omitempty" json:"stdin,omitempty"`
+	Path  string            `yaml:"path,omitempty" json:"path,omitempty"`
+	Env   map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+}
+
+// ToCommandDef converts a HostCommandSpec into a CommandDef for internal use.
+func (s HostCommandSpec) ToCommandDef(name string) CommandDef {
+	var subcommands, patterns []string
+	for _, a := range s.Allow {
+		if strings.ContainsAny(a, " *?") {
+			patterns = append(patterns, a)
+		} else {
+			subcommands = append(subcommands, a)
+		}
+	}
+	return CommandDef{
+		Name:               name,
+		Path:               s.Path,
+		AllowedSubcommands: subcommands,
+		AllowedPatterns:    patterns,
+		DeniedPatterns:     s.Deny,
+		AllowStdin:         s.Stdin,
+		Env:                s.Env,
+	}
+}
+
+// HostCommands supports both list and map YAML forms:
+//
+//	host_commands: [gh, aws]
+//	host_commands:
+//	  gh:
+//	    allow: [pr, issue]
+//	  aws:
+type HostCommands map[string]HostCommandSpec
+
+func (h *HostCommands) UnmarshalYAML(value *yaml.Node) error {
+	// Try list form: [gh, aws, az]
+	var list []string
+	if value.Kind == yaml.SequenceNode {
+		if err := value.Decode(&list); err != nil {
+			return fmt.Errorf("host_commands: invalid list form: %w", err)
+		}
+		*h = make(HostCommands, len(list))
+		for _, name := range list {
+			(*h)[name] = HostCommandSpec{}
+		}
+		return nil
+	}
+	// Map form: gh: {allow: [...]}
+	var m map[string]HostCommandSpec
+	if err := value.Decode(&m); err != nil {
+		return fmt.Errorf("host_commands: %w", err)
+	}
+	*h = m
+	return nil
+}
+
+// ToCommandDefs converts the DSL specs to internal CommandDef map.
+func (h HostCommands) ToCommandDefs() map[string]CommandDef {
+	if len(h) == 0 {
+		return nil
+	}
+	out := make(map[string]CommandDef, len(h))
+	for name, spec := range h {
+		out[name] = spec.ToCommandDef(name)
+	}
+	return out
 }
 
 type TraitType string
@@ -105,7 +180,7 @@ type ProjectMeta struct {
 	Hooks              []Hook                  `yaml:"hooks" json:"hooks"`
 	Gates              []Gate                  `yaml:"gates" json:"gates"`
 	BuiltinCommands    []string                `yaml:"builtin_commands" json:"builtin_commands,omitempty"`
-	HostCommands       map[string]CommandDef   `yaml:"host_commands" json:"host_commands"`
+	HostCommands       HostCommands            `yaml:"host_commands" json:"host_commands"`
 	AdditionalBindings []BindMount             `yaml:"additional_bindings" json:"additional_bindings"`
 	Env                map[string]string       `yaml:"env" json:"env"`
 	KitHooksDirs       []KitHooksInfo          `yaml:"-" json:"-"`
@@ -115,10 +190,10 @@ type ProjectMeta struct {
 type ProjectLocalMeta struct {
 	Version            int                   `yaml:"version"`
 	Kits               ProjectLocalKits      `yaml:"kits,omitempty"`
-	BuiltinCommands    []string              `yaml:"builtin_commands,omitempty"`
-	HostCommands       map[string]CommandDef `yaml:"host_commands,omitempty"`
-	AdditionalBindings []BindMount           `yaml:"additional_bindings,omitempty"`
-	Env                map[string]string     `yaml:"env,omitempty"`
+	BuiltinCommands    []string          `yaml:"builtin_commands,omitempty"`
+	HostCommands       HostCommands      `yaml:"host_commands,omitempty"`
+	AdditionalBindings []BindMount       `yaml:"additional_bindings,omitempty"`
+	Env                map[string]string `yaml:"env,omitempty"`
 }
 
 type ProjectLocalKits struct {
@@ -145,10 +220,10 @@ type KitMeta struct {
 	TaskBehaviors      map[string]TaskBehavior `yaml:"task_behaviors"`
 	Hooks              []Hook                  `yaml:"hooks"`
 	Gates              []Gate                  `yaml:"gates"`
-	BuiltinCommands    []string                `yaml:"builtin_commands"`
-	HostCommands       map[string]CommandDef   `yaml:"host_commands"`
-	AdditionalBindings []BindMount             `yaml:"additional_bindings"`
-	Env                map[string]string       `yaml:"env"`
-	HooksDir           string                  `yaml:"-"`
-	GatesDir           string                  `yaml:"-"`
+	BuiltinCommands    []string          `yaml:"builtin_commands"`
+	HostCommands       HostCommands      `yaml:"host_commands"`
+	AdditionalBindings []BindMount       `yaml:"additional_bindings"`
+	Env                map[string]string `yaml:"env"`
+	HooksDir           string            `yaml:"-"`
+	GatesDir           string            `yaml:"-"`
 }

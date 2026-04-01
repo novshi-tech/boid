@@ -25,7 +25,7 @@ type JobLifecycle interface {
 }
 
 type BrokerRegistry interface {
-	RegisterBrokerCommands(commands map[string]orchestrator.CommandDef, builtinCommands []string, projectDir, worktreeDir string) (*BrokerRegisterResponse, error)
+	RegisterBrokerCommands(commands map[string]orchestrator.HostCommandSpec, builtinCommands []string, projectDir, worktreeDir string) (*BrokerRegisterResponse, error)
 }
 
 type WorktreeCleaner interface {

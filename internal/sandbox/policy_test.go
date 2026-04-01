@@ -82,20 +82,9 @@ func TestCheckPolicy(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "subcommand extraction skips global options",
-			def: sandbox.CommandDef{
-				AllowedSubcommands:  []string{"status"},
-				AllowedPatterns:     []string{"*"},
-				ExtractSubcommandFn: "git",
-			},
-			args:     []string{"-C", "/some/path", "status"},
-			expected: true,
-		},
-		{
 			name: "allowed subcommands without patterns permits valid subcommand",
 			def: sandbox.CommandDef{
-				AllowedSubcommands:  []string{"status", "log", "diff"},
-				ExtractSubcommandFn: "git",
+				AllowedSubcommands: []string{"status", "log", "diff"},
 			},
 			args:     []string{"status"},
 			expected: true,
@@ -103,8 +92,7 @@ func TestCheckPolicy(t *testing.T) {
 		{
 			name: "allowed subcommands without patterns blocks invalid subcommand",
 			def: sandbox.CommandDef{
-				AllowedSubcommands:  []string{"status", "log"},
-				ExtractSubcommandFn: "git",
+				AllowedSubcommands: []string{"status", "log"},
 			},
 			args:     []string{"config", "--global", "user.email"},
 			expected: false,
@@ -112,9 +100,8 @@ func TestCheckPolicy(t *testing.T) {
 		{
 			name: "allowed subcommands without patterns respects denied patterns",
 			def: sandbox.CommandDef{
-				AllowedSubcommands:  []string{"push"},
-				DeniedPatterns:      []string{"push *://*"},
-				ExtractSubcommandFn: "git",
+				AllowedSubcommands: []string{"push"},
+				DeniedPatterns:     []string{"push *://*"},
 			},
 			args:     []string{"push", "https://evil.com/repo"},
 			expected: false,
@@ -202,7 +189,6 @@ func TestCheckPolicy_GitKitPolicy(t *testing.T) {
 			"pull ~/*",
 			"fetch ~/*",
 		},
-		ExtractSubcommandFn: "git",
 	}
 
 	tests := []struct {

@@ -11,7 +11,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -228,10 +227,6 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 }
 
 func (b *Broker) execCommand(req *ExecRequest, def CommandDef) *ExecResponse {
-	if err := validateCwd(def, req.Cwd); err != nil {
-		return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
-	}
-
 	if err := validateStdin(def, req.Stdin); err != nil {
 		return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
 	}
@@ -289,37 +284,6 @@ func (e *tokenEntry) hasBuiltin(name string) bool {
 	}
 	_, ok := e.BuiltinCommands[name]
 	return ok
-}
-
-func validateCwd(def CommandDef, cwd string) error {
-	if !def.RequireCwd {
-		return nil
-	}
-	if cwd == "" {
-		return fmt.Errorf("cwd required")
-	}
-	if !filepath.IsAbs(cwd) {
-		return fmt.Errorf("cwd must be absolute")
-	}
-	info, err := os.Stat(cwd)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("cwd does not exist")
-		}
-		return fmt.Errorf("stat cwd: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("cwd must be a directory")
-	}
-	if len(def.AllowedCwdPrefixes) == 0 {
-		return nil
-	}
-	for _, prefix := range def.AllowedCwdPrefixes {
-		if cwd == prefix || strings.HasPrefix(cwd, prefix+"/") {
-			return nil
-		}
-	}
-	return fmt.Errorf("cwd not in allowed prefixes")
 }
 
 func validateStdin(def CommandDef, stdin []byte) error {

@@ -284,7 +284,7 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta) *ProjectMeta {
 	allGates = append(allGates, base.Gates...)
 	result.Gates = dedupGates(allGates)
 
-	mergedCmds := make(map[string]CommandDef)
+	mergedCmds := make(HostCommands)
 	for _, meta := range kits {
 		for k, v := range meta.HostCommands {
 			mergedCmds[k] = v
@@ -384,7 +384,7 @@ func ApplyProjectLocalMeta(base *ProjectMeta, local *ProjectLocalMeta) *ProjectM
 	result := cloneProjectMeta(base)
 	result.Env = mergeStringMaps(result.Env, local.Env)
 	result.BuiltinCommands = mergeBuiltinCommands(result.BuiltinCommands, local.BuiltinCommands)
-	result.HostCommands = mergeCommandMaps(result.HostCommands, local.HostCommands)
+	result.HostCommands = mergeHostCommands(result.HostCommands, local.HostCommands)
 	result.AdditionalBindings = mergeBindMounts(result.AdditionalBindings, local.AdditionalBindings)
 	return result
 }
@@ -475,11 +475,11 @@ func interpolateEnvMap(m map[string]string) {
 	}
 }
 
-func interpolateHostCommands(cmds map[string]CommandDef) {
-	for name, def := range cmds {
-		def.Path = interpolateEnv(def.Path)
-		interpolateEnvMap(def.Env)
-		cmds[name] = def
+func interpolateHostCommands(cmds HostCommands) {
+	for name, spec := range cmds {
+		spec.Path = interpolateEnv(spec.Path)
+		interpolateEnvMap(spec.Env)
+		cmds[name] = spec
 	}
 }
 
@@ -513,12 +513,9 @@ func validateProjectLocalMeta(meta *ProjectLocalMeta) error {
 		}
 	}
 
-	for name, def := range meta.HostCommands {
-		if def.Path == "" {
-			return fmt.Errorf("%s: host_commands.%s.path is required", projectLocalFilename, name)
-		}
-		if !filepath.IsAbs(def.Path) {
-			return fmt.Errorf("%s: host_commands.%s.path %q must be an absolute path", projectLocalFilename, name, def.Path)
+	for name, spec := range meta.HostCommands {
+		if spec.Path != "" && !filepath.IsAbs(spec.Path) {
+			return fmt.Errorf("%s: host_commands.%s.path %q must be an absolute path", projectLocalFilename, name, spec.Path)
 		}
 	}
 	if err := validateBuiltinCommands(projectLocalFilename, meta.BuiltinCommands, meta.HostCommands); err != nil {
@@ -541,10 +538,14 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 	result.KitHooksDirs = append([]KitHooksInfo(nil), meta.KitHooksDirs...)
 	result.KitGatesDirs = append([]KitGatesInfo(nil), meta.KitGatesDirs...)
 	result.Env = mergeStringMaps(nil, meta.Env)
-	result.HostCommands = mergeCommandMaps(nil, meta.HostCommands)
+	result.HostCommands = cloneHostCommands(meta.HostCommands)
 	result.AdditionalBindings = cloneBindMounts(meta.AdditionalBindings)
 	result.TaskBehaviors = mergeTaskBehaviorMaps(nil, meta.TaskBehaviors)
 	return &result
+}
+
+func cloneHostCommands(cmds HostCommands) HostCommands {
+	return mergeHostCommands(nil, cmds)
 }
 
 func cloneBindMounts(mounts []BindMount) []BindMount {
@@ -571,12 +572,12 @@ func mergeStringMaps(base, overlay map[string]string) map[string]string {
 	return result
 }
 
-func mergeCommandMaps(base, overlay map[string]CommandDef) map[string]CommandDef {
+func mergeHostCommands(base, overlay HostCommands) HostCommands {
 	if len(base) == 0 && len(overlay) == 0 {
 		return nil
 	}
 
-	result := make(map[string]CommandDef, len(base)+len(overlay))
+	result := make(HostCommands, len(base)+len(overlay))
 	for k, v := range base {
 		result[k] = v
 	}
@@ -625,7 +626,7 @@ func kitBuiltinCommandLists(kits []*KitMeta) [][]string {
 	return out
 }
 
-func validateBuiltinCommands(scope string, builtins []string, hostCommands map[string]CommandDef) error {
+func validateBuiltinCommands(scope string, builtins []string, hostCommands HostCommands) error {
 	if len(builtins) == 0 {
 		return nil
 	}

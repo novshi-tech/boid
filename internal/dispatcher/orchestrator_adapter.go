@@ -82,16 +82,13 @@ func toCommandDefs(cmds map[string]orchestrator.CommandDef) map[string]CommandDe
 	out := make(map[string]CommandDef, len(cmds))
 	for name, def := range cmds {
 		out[name] = CommandDef{
-			Name:                def.Name,
-			Path:                def.Path,
-			AllowedPatterns:     def.AllowedPatterns,
-			DeniedPatterns:      def.DeniedPatterns,
-			AllowedSubcommands:  def.AllowedSubcommands,
-			AllowStdin:          def.AllowStdin,
-			Env:                 def.Env,
-			ExtractSubcommandFn: def.ExtractSubcommandFn,
-			RequireCwd:          def.RequireCwd,
-			AllowedCwdPrefixes:  def.AllowedCwdPrefixes,
+			Name:               def.Name,
+			Path:               def.Path,
+			AllowedPatterns:    def.AllowedPatterns,
+			DeniedPatterns:     def.DeniedPatterns,
+			AllowedSubcommands: def.AllowedSubcommands,
+			AllowStdin:         def.AllowStdin,
+			Env:                def.Env,
 		}
 	}
 	return out

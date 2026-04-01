@@ -10,16 +10,11 @@ type ExecBindMount struct {
 }
 
 type ExecCommandDef struct {
-	Name                string            `json:"name"`
-	Path                string            `json:"path"`
-	AllowedPatterns     []string          `json:"allowed_patterns"`
-	DeniedPatterns      []string          `json:"denied_patterns"`
-	AllowedSubcommands  []string          `json:"allowed_subcommands"`
-	AllowStdin          bool              `json:"allow_stdin"`
-	Env                 map[string]string `json:"env"`
-	ExtractSubcommandFn string            `json:"extract_subcommand_fn"`
-	RequireCwd          bool              `json:"require_cwd"`
-	AllowedCwdPrefixes  []string          `json:"allowed_cwd_prefixes"`
+	Allow []string          `json:"allow,omitempty"`
+	Deny  []string          `json:"deny,omitempty"`
+	Stdin bool              `json:"stdin,omitempty"`
+	Path  string            `json:"path,omitempty"`
+	Env   map[string]string `json:"env,omitempty"`
 }
 
 type ExecRequest struct {

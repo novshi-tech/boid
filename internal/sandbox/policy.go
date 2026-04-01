@@ -2,20 +2,17 @@ package sandbox
 
 import "strings"
 
-// CommandDef is the canonical sandbox-side policy DSL for brokered host commands.
+// CommandDef is the canonical sandbox-side policy for brokered host commands.
 // Dispatcher and orchestrator mirror this shape as transport data, but the
 // policy semantics live here.
 type CommandDef struct {
-	Name                string
-	Path                string
-	AllowedPatterns     []string
-	DeniedPatterns      []string
-	AllowedSubcommands  []string
-	AllowStdin          bool
-	Env                 map[string]string
-	ExtractSubcommandFn string
-	RequireCwd          bool
-	AllowedCwdPrefixes  []string
+	Name               string
+	Path               string
+	AllowedPatterns    []string
+	DeniedPatterns     []string
+	AllowedSubcommands []string
+	AllowStdin         bool
+	Env                map[string]string
 }
 
 func CheckPolicy(def CommandDef, args []string) bool {
@@ -27,12 +24,7 @@ func CheckPolicy(def CommandDef, args []string) bool {
 
 	subcmdPassed := false
 	if len(def.AllowedSubcommands) > 0 {
-		var subcmd string
-		if def.ExtractSubcommandFn == "git" {
-			subcmd = extractGitSubcommand(args)
-		} else {
-			subcmd = extractSimpleSubcommand(args)
-		}
+		subcmd := extractSimpleSubcommand(args)
 		if subcmd == "" || !containsString(def.AllowedSubcommands, subcmd) {
 			return false
 		}
@@ -114,33 +106,3 @@ func containsString(ss []string, s string) bool {
 	return false
 }
 
-func extractGitSubcommand(args []string) string {
-	valueOpts := map[string]bool{
-		"-C":          true,
-		"-c":          true,
-		"--git-dir":   true,
-		"--work-tree": true,
-		"--namespace": true,
-	}
-
-	i := 0
-	for i < len(args) {
-		arg := args[i]
-		if valueOpts[arg] {
-			i += 2
-			continue
-		}
-		if strings.HasPrefix(arg, "--git-dir=") ||
-			strings.HasPrefix(arg, "--work-tree=") ||
-			strings.HasPrefix(arg, "--namespace=") {
-			i++
-			continue
-		}
-		if strings.HasPrefix(arg, "-") {
-			i++
-			continue
-		}
-		return arg
-	}
-	return ""
-}

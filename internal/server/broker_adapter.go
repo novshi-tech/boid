@@ -49,16 +49,13 @@ func toSandboxCommandDefs(commands map[string]dispatcher.CommandDef) map[string]
 	out := make(map[string]sandbox.CommandDef, len(commands))
 	for name, def := range commands {
 		out[name] = sandbox.CommandDef{
-			Name:                def.Name,
-			Path:                def.Path,
-			AllowedPatterns:     def.AllowedPatterns,
-			DeniedPatterns:      def.DeniedPatterns,
-			AllowedSubcommands:  def.AllowedSubcommands,
-			AllowStdin:          def.AllowStdin,
-			Env:                 def.Env,
-			ExtractSubcommandFn: def.ExtractSubcommandFn,
-			RequireCwd:          def.RequireCwd,
-			AllowedCwdPrefixes:  def.AllowedCwdPrefixes,
+			Name:               def.Name,
+			Path:               def.Path,
+			AllowedPatterns:    def.AllowedPatterns,
+			DeniedPatterns:     def.DeniedPatterns,
+			AllowedSubcommands: def.AllowedSubcommands,
+			AllowStdin:         def.AllowStdin,
+			Env:                def.Env,
 		}
 	}
 	return out
