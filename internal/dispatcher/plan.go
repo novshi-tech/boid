@@ -35,6 +35,7 @@ type DispatchPlan struct {
 	BoidBinary         string
 	ServerSocket       string
 	Env                map[string]string
+	BuiltinCommands    []string
 	HostCommands       map[string]CommandDef
 	AdditionalBindings []BindMount
 	WorkspaceDirs      map[string]string

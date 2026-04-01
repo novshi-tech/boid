@@ -104,6 +104,7 @@ type ProjectMeta struct {
 	TaskBehaviors      map[string]TaskBehavior `yaml:"task_behaviors" json:"task_behaviors"`
 	Hooks              []Hook                  `yaml:"hooks" json:"hooks"`
 	Gates              []Gate                  `yaml:"gates" json:"gates"`
+	BuiltinCommands    []string                `yaml:"builtin_commands" json:"builtin_commands,omitempty"`
 	HostCommands       map[string]CommandDef   `yaml:"host_commands" json:"host_commands"`
 	AdditionalBindings []BindMount             `yaml:"additional_bindings" json:"additional_bindings"`
 	Env                map[string]string       `yaml:"env" json:"env"`
@@ -114,6 +115,7 @@ type ProjectMeta struct {
 type ProjectLocalMeta struct {
 	Version            int                   `yaml:"version"`
 	Kits               ProjectLocalKits      `yaml:"kits,omitempty"`
+	BuiltinCommands    []string              `yaml:"builtin_commands,omitempty"`
 	HostCommands       map[string]CommandDef `yaml:"host_commands,omitempty"`
 	AdditionalBindings []BindMount           `yaml:"additional_bindings,omitempty"`
 	Env                map[string]string     `yaml:"env,omitempty"`
@@ -143,6 +145,7 @@ type KitMeta struct {
 	TaskBehaviors      map[string]TaskBehavior `yaml:"task_behaviors"`
 	Hooks              []Hook                  `yaml:"hooks"`
 	Gates              []Gate                  `yaml:"gates"`
+	BuiltinCommands    []string                `yaml:"builtin_commands"`
 	HostCommands       map[string]CommandDef   `yaml:"host_commands"`
 	AdditionalBindings []BindMount             `yaml:"additional_bindings"`
 	Env                map[string]string       `yaml:"env"`

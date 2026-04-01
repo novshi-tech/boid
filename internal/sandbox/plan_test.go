@@ -371,6 +371,23 @@ func TestBuildSandboxPlan_BoidBinary(t *testing.T) {
 	}
 }
 
+func TestBuildSandboxPlan_BuiltinCommands(t *testing.T) {
+	cfg := WrapperConfig{
+		ProjectDir:      "/home/user/proj",
+		BoidBinary:      "/usr/local/bin/boid",
+		BuiltinCommands: []string{"git"},
+	}
+	plan := BuildSandboxPlan(cfg)
+
+	if len(plan.Symlinks) != 1 {
+		t.Fatalf("symlinks: got %d, want 1", len(plan.Symlinks))
+	}
+	symlink := plan.Symlinks[0]
+	if symlink.LinkPath != "/opt/boid/bin/git" || symlink.LinkTarget != "boid" {
+		t.Fatalf("unexpected symlink: %+v", symlink)
+	}
+}
+
 func TestBuildSandboxPlan_Sockets(t *testing.T) {
 	cfg := WrapperConfig{
 		ProjectDir:   "/home/user/proj",

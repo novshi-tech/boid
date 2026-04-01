@@ -83,12 +83,16 @@ type brokerRegistry struct {
 	secretStore *dispatcher.SecretStore
 }
 
-func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.CommandDef) (*api.BrokerRegisterResponse, error) {
+func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.CommandDef, builtinCommands []string, projectDir, worktreeDir string) (*api.BrokerRegisterResponse, error) {
 	if r.broker == nil {
 		return nil, sql.ErrConnDone
 	}
 
-	ctx := dispatcher.BrokerContext{Role: "gate"}
+	ctx := dispatcher.BrokerContext{
+		Role:       "gate",
+		ProjectDir: projectDir,
+		WorktreeDir: worktreeDir,
+	}
 	dispatcherCommands := make(map[string]dispatcher.CommandDef, len(commands))
 	for name, def := range commands {
 		dispatcherCommands[name] = dispatcher.CommandDef{
@@ -109,7 +113,7 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 	if r.secretStore != nil {
 		resolve = r.secretStore.Get
 	}
-	token := r.broker.RegisterCommands(dispatcherCommands, ctx, resolve)
+	token := r.broker.RegisterCommands(dispatcherCommands, builtinCommands, ctx, resolve)
 	return &api.BrokerRegisterResponse{
 		Token:  token,
 		Socket: r.broker.SocketPath(),

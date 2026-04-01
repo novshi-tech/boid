@@ -17,7 +17,7 @@ func TestBroker_RejectsStdinWhenNotAllowed(t *testing.T) {
 			Path:            "/bin/cat",
 			AllowedPatterns: []string{"*"},
 		},
-	}, testCtx)
+	}, nil, testCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "cat",
@@ -41,7 +41,7 @@ func TestBroker_AllowsStdinWhenConfigured(t *testing.T) {
 			AllowedPatterns: []string{"*"},
 			AllowStdin:      true,
 		},
-	}, testCtx)
+	}, nil, testCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "cat",
@@ -72,7 +72,7 @@ func TestBroker_CwdMustExistAndBeDirectory(t *testing.T) {
 			RequireCwd:         true,
 			AllowedCwdPrefixes: []string{tmpDir},
 		},
-	}, testCtx)
+	}, nil, testCtx)
 
 	missing := broker.Handle(&sandbox.ExecRequest{
 		Command: "echo",

@@ -27,6 +27,7 @@ func init() {
 }
 
 type execProjectMeta struct {
+	BuiltinCommands    []string                             `json:"builtin_commands"`
 	HostCommands       map[string]dispatcher.ExecCommandDef `json:"host_commands"`
 	AdditionalBindings []dispatcher.ExecBindMount           `json:"additional_bindings"`
 	Env                map[string]string                    `json:"env"`
@@ -77,13 +78,15 @@ func buildExecRequest(projectID string) (dispatcher.ExecRequest, error) {
 
 	// Register host commands with broker
 	var brokerSocket, brokerToken string
-	if len(p.Meta.HostCommands) > 0 {
+	if len(p.Meta.HostCommands) > 0 || len(p.Meta.BuiltinCommands) > 0 {
 		var brokerResp struct {
 			Token  string `json:"token"`
 			Socket string `json:"socket"`
 		}
 		regReq := map[string]any{
-			"commands": p.Meta.HostCommands,
+			"commands":         p.Meta.HostCommands,
+			"builtin_commands": p.Meta.BuiltinCommands,
+			"project_dir":      p.WorkDir,
 		}
 		if err := c.Do("POST", "/api/broker/register", regReq, &brokerResp); err == nil {
 			brokerSocket = brokerResp.Socket
@@ -101,6 +104,7 @@ func buildExecRequest(projectID string) (dispatcher.ExecRequest, error) {
 		BrokerSocket:       brokerSocket,
 		BrokerToken:        brokerToken,
 		Env:                p.Meta.Env,
+		BuiltinCommands:    p.Meta.BuiltinCommands,
 		HostCommands:       p.Meta.HostCommands,
 		AdditionalBindings: p.Meta.AdditionalBindings,
 		WorkspaceDirs:      workspaceDirs,

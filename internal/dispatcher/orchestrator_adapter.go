@@ -62,6 +62,7 @@ func toDispatchPlan(request *orchestrator.DispatchRequest) *DispatchPlan {
 		BoidBinary:         request.BoidBinary,
 		ServerSocket:       request.ServerSocket,
 		Env:                request.Env,
+		BuiltinCommands:    append([]string(nil), request.BuiltinCommands...),
 		HostCommands:       toCommandDefs(request.HostCommands),
 		AdditionalBindings: toBindMounts(request.AdditionalBindings),
 		WorkspaceDirs:      request.WorkspaceDirs,

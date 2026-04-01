@@ -15,6 +15,7 @@ type SandboxSpec struct {
 	BrokerSocket       string
 	BrokerToken        string
 	Env                map[string]string
+	BuiltinCommands    []string
 	HostCommands       []string
 	AdditionalBindings []BindMount
 	WorkspaceDirs      map[string]string

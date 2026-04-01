@@ -33,6 +33,7 @@ type ExecRequest struct {
 	BrokerSocket       string
 	BrokerToken        string
 	Env                map[string]string
+	BuiltinCommands    []string
 	HostCommands       map[string]ExecCommandDef
 	AdditionalBindings []ExecBindMount
 	WorkspaceDirs      map[string]string
@@ -86,6 +87,7 @@ func buildExecSandboxSpec(req ExecRequest) (SandboxSpec, error) {
 		BrokerSocket:       req.BrokerSocket,
 		BrokerToken:        req.BrokerToken,
 		Env:                req.Env,
+		BuiltinCommands:    cloneStrings(req.BuiltinCommands),
 		HostCommands:       execHostCommandNames(req.HostCommands),
 		AdditionalBindings: execBindMounts(req.AdditionalBindings),
 		WorkspaceDirs:      req.WorkspaceDirs,
@@ -116,5 +118,14 @@ func execBindMounts(bindings []ExecBindMount) []BindMount {
 			Mode:   binding.Mode,
 		})
 	}
+	return out
+}
+
+func cloneStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, len(values))
+	copy(out, values)
 	return out
 }

@@ -89,6 +89,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 		BoidBinary:         p.BoidBinary,
 		ServerSocket:       p.ServerSocket,
 		Env:                meta.Env,
+		BuiltinCommands:    cloneStringSlice(meta.BuiltinCommands),
 		HostCommands:       map[string]CommandDef{"boid": {Name: "boid"}},
 		AdditionalBindings: meta.AdditionalBindings,
 		WorkspaceDirs:      workspaceDirs,
@@ -124,18 +125,19 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 	hostCommands["boid"] = CommandDef{Name: "boid"}
 
 	return &DispatchRequest{
-		TaskID:       event.TaskID,
-		ProjectID:    event.ProjectID,
-		HandlerID:    event.Gate.ID,
-		Role:         RoleGate,
-		ProjectDir:   proj.WorkDir,
-		HookScript:   gateFilename,
-		BoidBinary:   p.BoidBinary,
-		ServerSocket: p.ServerSocket,
-		Env:          meta.Env,
-		HostCommands: hostCommands,
-		ProxyPort:    p.proxyPort(),
-		TaskJSON:     string(taskJSON),
+		TaskID:          event.TaskID,
+		ProjectID:       event.ProjectID,
+		HandlerID:       event.Gate.ID,
+		Role:            RoleGate,
+		ProjectDir:      proj.WorkDir,
+		HookScript:      gateFilename,
+		BoidBinary:      p.BoidBinary,
+		ServerSocket:    p.ServerSocket,
+		Env:             meta.Env,
+		BuiltinCommands: nil,
+		HostCommands:    hostCommands,
+		ProxyPort:       p.proxyPort(),
+		TaskJSON:        string(taskJSON),
 	}, nil
 }
 
@@ -210,5 +212,14 @@ func cloneCommands(cmds map[string]CommandDef) map[string]CommandDef {
 	for name, def := range cmds {
 		out[name] = def
 	}
+	return out
+}
+
+func cloneStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, len(values))
+	copy(out, values)
 	return out
 }

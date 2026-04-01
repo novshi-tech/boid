@@ -22,6 +22,7 @@ type WrapperConfig struct {
 	BrokerSocket       string            // host-side broker socket path
 	BrokerToken        string            // broker authentication token
 	Env                map[string]string // project environment variables
+	BuiltinCommands    []string          // builtin command shims handled by boid itself
 	HostCommands       []string          // command names to shim via symlinks
 	AdditionalBindings []BindMount       // extra host paths to bind-mount
 	WorkspaceDirs      map[string]string // project-id -> host-dir (read-only mounts)

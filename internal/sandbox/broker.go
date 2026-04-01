@@ -18,15 +18,19 @@ import (
 
 // TokenContext carries the job/task/project context associated with a broker token.
 type TokenContext struct {
-	JobID     string
-	TaskID    string
-	ProjectID string
-	Role      string
+	JobID       string
+	TaskID      string
+	ProjectID   string
+	Role        string
+	ProjectDir  string
+	WorktreeDir string
 }
 
 type tokenEntry struct {
-	Context  TokenContext
-	Commands map[string]CommandDef
+	Context         TokenContext
+	Commands        map[string]CommandDef
+	BuiltinCommands map[string]struct{}
+	Git             *GitBinding
 }
 
 type Broker struct {
@@ -37,7 +41,7 @@ type Broker struct {
 	registry   map[string]*tokenEntry
 }
 
-func (b *Broker) Register(commands map[string]CommandDef, ctx TokenContext) string {
+func (b *Broker) Register(commands map[string]CommandDef, builtinCommands []string, ctx TokenContext) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -46,16 +50,23 @@ func (b *Broker) Register(commands map[string]CommandDef, ctx TokenContext) stri
 	}
 
 	token := generateToken()
-	b.registry[token] = &tokenEntry{
-		Context:  ctx,
-		Commands: commands,
+	entry := &tokenEntry{
+		Context:         ctx,
+		Commands:        commands,
+		BuiltinCommands: builtinCommandSet(builtinCommands),
 	}
+	if entry.hasBuiltin("git") {
+		var err error
+		entry.Git, err = captureGitBinding(ctx.ProjectDir, ctx.WorktreeDir)
+		logGitBindingSnapshot(ctx, entry.Git, err)
+	}
+	b.registry[token] = entry
 	return token
 }
 
 type SecretResolver func(key string) (string, error)
 
-func (b *Broker) RegisterWithSecrets(commands map[string]CommandDef, ctx TokenContext, resolver SecretResolver) string {
+func (b *Broker) RegisterWithSecrets(commands map[string]CommandDef, builtinCommands []string, ctx TokenContext, resolver SecretResolver) string {
 	resolved := make(map[string]CommandDef, len(commands))
 	for name, def := range commands {
 		if len(def.Env) > 0 {
@@ -77,7 +88,7 @@ func (b *Broker) RegisterWithSecrets(commands map[string]CommandDef, ctx TokenCo
 		}
 		resolved[name] = def
 	}
-	return b.Register(resolved, ctx)
+	return b.Register(resolved, builtinCommands, ctx)
 }
 
 func (b *Broker) GetContext(token string) (TokenContext, bool) {
@@ -153,6 +164,9 @@ func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
 
 	if req.Command == "boid" {
 		return b.handleBoidBuiltin(req, entry)
+	}
+	if req.Command == "git" {
+		return handleGitBuiltinRequest(req, entry)
 	}
 
 	def, ok := entry.Commands[req.Command]
@@ -256,6 +270,25 @@ func (b *Broker) execCommand(req *ExecRequest, def CommandDef) *ExecResponse {
 	}
 
 	return &ExecResponse{ExitCode: exitCode, Stdout: stdout.String(), Stderr: stderr.String()}
+}
+
+func builtinCommandSet(names []string) map[string]struct{} {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		out[name] = struct{}{}
+	}
+	return out
+}
+
+func (e *tokenEntry) hasBuiltin(name string) bool {
+	if e == nil || len(e.BuiltinCommands) == 0 {
+		return false
+	}
+	_, ok := e.BuiltinCommands[name]
+	return ok
 }
 
 func validateCwd(def CommandDef, cwd string) error {

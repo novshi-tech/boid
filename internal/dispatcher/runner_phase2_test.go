@@ -18,10 +18,11 @@ type fakeBroker struct {
 
 type fakeBrokerRegistration struct {
 	commands map[string]dispatcher.CommandDef
+	builtins []string
 	ctx      dispatcher.BrokerContext
 }
 
-func (b *fakeBroker) RegisterCommands(commands map[string]dispatcher.CommandDef, ctx dispatcher.BrokerContext, resolve dispatcher.SecretResolver) string {
+func (b *fakeBroker) RegisterCommands(commands map[string]dispatcher.CommandDef, builtins []string, ctx dispatcher.BrokerContext, resolve dispatcher.SecretResolver) string {
 	token := "token-1"
 	if len(b.tokens) > 0 {
 		token = b.tokens[0]
@@ -29,6 +30,7 @@ func (b *fakeBroker) RegisterCommands(commands map[string]dispatcher.CommandDef,
 	}
 	b.registers = append(b.registers, fakeBrokerRegistration{
 		commands: commands,
+		builtins: append([]string(nil), builtins...),
 		ctx:      ctx,
 	})
 	return token

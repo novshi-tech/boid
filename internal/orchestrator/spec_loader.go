@@ -35,6 +35,9 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	if err := yaml.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("parse project.yaml: %w", err)
 	}
+	if err := validateBuiltinCommands("project.yaml", meta.BuiltinCommands, meta.HostCommands); err != nil {
+		return nil, err
+	}
 
 	if meta.ID == "" {
 		return nil, fmt.Errorf("project.yaml: id is required")
@@ -132,10 +135,17 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 	}
 
 	merged := MergeKitMeta(meta, kits)
+	if err := validateBuiltinCommands("merged project meta", merged.BuiltinCommands, merged.HostCommands); err != nil {
+		return nil, err
+	}
 	if local == nil {
 		return merged, nil
 	}
-	return ApplyProjectLocalMeta(merged, local), nil
+	applied := ApplyProjectLocalMeta(merged, local)
+	if err := validateBuiltinCommands("effective project meta", applied.BuiltinCommands, applied.HostCommands); err != nil {
+		return nil, err
+	}
+	return applied, nil
 }
 
 func ReadKitMeta(dir string) (*KitMeta, error) {
@@ -148,6 +158,9 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 	var meta KitMeta
 	if err := yaml.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("parse kit.yaml: %w", err)
+	}
+	if err := validateBuiltinCommands("kit.yaml", meta.BuiltinCommands, meta.HostCommands); err != nil {
+		return nil, err
 	}
 
 	interpolateBindMounts(meta.AdditionalBindings)
@@ -283,6 +296,7 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta) *ProjectMeta {
 	if len(mergedCmds) > 0 {
 		result.HostCommands = mergedCmds
 	}
+	result.BuiltinCommands = mergeBuiltinCommands(result.BuiltinCommands, kitBuiltinCommandLists(kits)...)
 
 	result.AdditionalBindings = unionBindMounts(kits, base.AdditionalBindings)
 
@@ -369,6 +383,7 @@ func ApplyProjectLocalMeta(base *ProjectMeta, local *ProjectLocalMeta) *ProjectM
 
 	result := cloneProjectMeta(base)
 	result.Env = mergeStringMaps(result.Env, local.Env)
+	result.BuiltinCommands = mergeBuiltinCommands(result.BuiltinCommands, local.BuiltinCommands)
 	result.HostCommands = mergeCommandMaps(result.HostCommands, local.HostCommands)
 	result.AdditionalBindings = mergeBindMounts(result.AdditionalBindings, local.AdditionalBindings)
 	return result
@@ -472,6 +487,7 @@ func validateProjectLocalFields(raw map[string]any) error {
 	allowed := map[string]bool{
 		"version":             true,
 		"kits":                true,
+		"builtin_commands":    true,
 		"env":                 true,
 		"host_commands":       true,
 		"additional_bindings": true,
@@ -505,6 +521,9 @@ func validateProjectLocalMeta(meta *ProjectLocalMeta) error {
 			return fmt.Errorf("%s: host_commands.%s.path %q must be an absolute path", projectLocalFilename, name, def.Path)
 		}
 	}
+	if err := validateBuiltinCommands(projectLocalFilename, meta.BuiltinCommands, meta.HostCommands); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -518,6 +537,7 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 	result.Kits = append([]string(nil), meta.Kits...)
 	result.Hooks = append([]Hook(nil), meta.Hooks...)
 	result.Gates = append([]Gate(nil), meta.Gates...)
+	result.BuiltinCommands = append([]string(nil), meta.BuiltinCommands...)
 	result.KitHooksDirs = append([]KitHooksInfo(nil), meta.KitHooksDirs...)
 	result.KitGatesDirs = append([]KitGatesInfo(nil), meta.KitGatesDirs...)
 	result.Env = mergeStringMaps(nil, meta.Env)
@@ -564,6 +584,69 @@ func mergeCommandMaps(base, overlay map[string]CommandDef) map[string]CommandDef
 		result[k] = v
 	}
 	return result
+}
+
+func mergeBuiltinCommands(base []string, overlays ...[]string) []string {
+	seen := make(map[string]struct{})
+	var result []string
+	for _, name := range base {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		result = append(result, name)
+	}
+	for _, overlay := range overlays {
+		for _, name := range overlay {
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			result = append(result, name)
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func kitBuiltinCommandLists(kits []*KitMeta) [][]string {
+	if len(kits) == 0 {
+		return nil
+	}
+	out := make([][]string, 0, len(kits))
+	for _, meta := range kits {
+		if len(meta.BuiltinCommands) == 0 {
+			continue
+		}
+		out = append(out, meta.BuiltinCommands)
+	}
+	return out
+}
+
+func validateBuiltinCommands(scope string, builtins []string, hostCommands map[string]CommandDef) error {
+	if len(builtins) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(builtins))
+	for _, name := range builtins {
+		if _, ok := validBuiltinCommands[name]; !ok {
+			return fmt.Errorf("%s: unsupported builtin command %q", scope, name)
+		}
+		if _, ok := seen[name]; ok {
+			return fmt.Errorf("%s: duplicate builtin command %q", scope, name)
+		}
+		seen[name] = struct{}{}
+		if _, conflict := hostCommands[name]; conflict {
+			return fmt.Errorf("%s: %q cannot be declared in both builtin_commands and host_commands", scope, name)
+		}
+	}
+	return nil
+}
+
+var validBuiltinCommands = map[string]struct{}{
+	"git": {},
 }
 
 func mergeTaskBehaviorMaps(base, overlay map[string]TaskBehavior) map[string]TaskBehavior {

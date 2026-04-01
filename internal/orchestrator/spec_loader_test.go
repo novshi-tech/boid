@@ -286,6 +286,25 @@ additional_bindings:
 			t.Fatalf("expected absolute path error, got %v", err)
 		}
 	})
+
+	t.Run("builtin commands", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		if err := os.MkdirAll(boidDir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte("builtin_commands:\n  - git\n"), 0o644); err != nil {
+			t.Fatalf("write project.local.yaml: %v", err)
+		}
+
+		meta, err := projectspec.ReadProjectLocalMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadProjectLocalMeta: %v", err)
+		}
+		if len(meta.BuiltinCommands) != 1 || meta.BuiltinCommands[0] != "git" {
+			t.Fatalf("unexpected builtin_commands: %+v", meta.BuiltinCommands)
+		}
+	})
 }
 
 func TestReadProjectMetaWithKits_LocalKits(t *testing.T) {
@@ -551,6 +570,16 @@ task_behaviors:
 		}
 	})
 
+	t.Run("builtin command conflicts with host command", func(t *testing.T) {
+		dir := t.TempDir()
+		writeKitYAML(t, dir, "builtin_commands:\n  - git\nhost_commands:\n  git:\n    path: /usr/bin/git\n")
+
+		_, err := projectspec.ReadKitMeta(dir)
+		if err == nil || !strings.Contains(err.Error(), "both builtin_commands and host_commands") {
+			t.Fatalf("expected builtin/host conflict, got %v", err)
+		}
+	})
+
 	t.Run("missing file", func(t *testing.T) {
 		_, err := projectspec.ReadKitMeta(t.TempDir())
 		if err == nil {
@@ -573,6 +602,51 @@ task_behaviors:
 		_, err := projectspec.ReadKitMeta(dir)
 		if err == nil {
 			t.Fatal("expected error for missing hook script")
+		}
+	})
+}
+
+func TestReadProjectMetaWithKits_BuiltinCommands(t *testing.T) {
+	t.Run("merges builtin commands from kits and local overlay", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		gitKitDir := filepath.Join(boidDir, "kits", "git")
+		if err := os.MkdirAll(gitKitDir, 0o755); err != nil {
+			t.Fatalf("mkdir git kit: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\nkits:\n  - git\n"), 0o644); err != nil {
+			t.Fatalf("write project.yaml: %v", err)
+		}
+		writeKitYAML(t, gitKitDir, "builtin_commands:\n  - git\n")
+		if err := os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte("builtin_commands:\n  - git\n"), 0o644); err != nil {
+			t.Fatalf("write project.local.yaml: %v", err)
+		}
+
+		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+		if err != nil {
+			t.Fatalf("ReadProjectMetaWithKits: %v", err)
+		}
+		if len(meta.BuiltinCommands) != 1 || meta.BuiltinCommands[0] != "git" {
+			t.Fatalf("unexpected builtin_commands: %+v", meta.BuiltinCommands)
+		}
+	})
+
+	t.Run("rejects effective builtin and host command conflict", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		gitKitDir := filepath.Join(boidDir, "kits", "git")
+		if err := os.MkdirAll(gitKitDir, 0o755); err != nil {
+			t.Fatalf("mkdir git kit: %v", err)
+		}
+		projectYAML := "id: test-proj\nname: Test Project\nhost_commands:\n  git:\n    path: /usr/bin/git\nkits:\n  - git\n"
+		if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
+			t.Fatalf("write project.yaml: %v", err)
+		}
+		writeKitYAML(t, gitKitDir, "builtin_commands:\n  - git\n")
+
+		_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+		if err == nil || !strings.Contains(err.Error(), "both builtin_commands and host_commands") {
+			t.Fatalf("expected builtin/host conflict, got %v", err)
 		}
 	})
 }

@@ -9,7 +9,10 @@ import (
 )
 
 type BrokerRegisterRequest struct {
-	Commands map[string]orchestrator.CommandDef `json:"commands"`
+	Commands        map[string]orchestrator.CommandDef `json:"commands"`
+	BuiltinCommands []string                           `json:"builtin_commands,omitempty"`
+	ProjectDir      string                             `json:"project_dir,omitempty"`
+	WorktreeDir     string                             `json:"worktree_dir,omitempty"`
 }
 
 type BrokerRegisterResponse struct {
@@ -38,12 +41,12 @@ func (h *BrokerHandler) Register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
-	if len(req.Commands) == 0 {
-		writeError(w, http.StatusBadRequest, "no commands")
+	if len(req.Commands) == 0 && len(req.BuiltinCommands) == 0 {
+		writeError(w, http.StatusBadRequest, "no commands or builtins")
 		return
 	}
 
-	resp, err := h.Registry.RegisterBrokerCommands(req.Commands)
+	resp, err := h.Registry.RegisterBrokerCommands(req.Commands, req.BuiltinCommands, req.ProjectDir, req.WorktreeDir)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return

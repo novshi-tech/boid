@@ -62,6 +62,7 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		BoidBinary:         plan.BoidBinary,
 		ServerSocket:       plan.ServerSocket,
 		Env:                plan.Env,
+		BuiltinCommands:    append([]string(nil), plan.BuiltinCommands...),
 		HostCommands:       hostCommandNames(plan.HostCommands),
 		AdditionalBindings: plan.AdditionalBindings,
 		WorkspaceDirs:      plan.WorkspaceDirs,
@@ -76,16 +77,18 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 
 	if r.Broker != nil {
 		tokenCtx := BrokerContext{
-			JobID:     j.ID,
-			TaskID:    plan.TaskID,
-			ProjectID: plan.ProjectID,
-			Role:      plan.Role,
+			JobID:       j.ID,
+			TaskID:      plan.TaskID,
+			ProjectID:   plan.ProjectID,
+			Role:        plan.Role,
+			ProjectDir:  plan.ProjectDir,
+			WorktreeDir: plan.WorktreeDir,
 		}
 		var resolve SecretResolver
 		if r.SecretStore != nil {
 			resolve = r.SecretStore.Get
 		}
-		spec.BrokerToken = r.Broker.RegisterCommands(plan.HostCommands, tokenCtx, resolve)
+		spec.BrokerToken = r.Broker.RegisterCommands(plan.HostCommands, plan.BuiltinCommands, tokenCtx, resolve)
 		spec.BrokerSocket = r.Broker.SocketPath()
 		r.trackToken(j.ID, spec.BrokerToken)
 	}

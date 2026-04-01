@@ -24,6 +24,7 @@ func (dispatcherPreparer) PrepareSandbox(spec dispatcher.SandboxSpec) (*dispatch
 		BrokerSocket:       spec.BrokerSocket,
 		BrokerToken:        spec.BrokerToken,
 		Env:                spec.Env,
+		BuiltinCommands:    spec.BuiltinCommands,
 		HostCommands:       spec.HostCommands,
 		AdditionalBindings: toSandboxBindMounts(spec.AdditionalBindings),
 		WorkspaceDirs:      spec.WorkspaceDirs,

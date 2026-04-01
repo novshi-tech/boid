@@ -13,6 +13,14 @@ import (
 func main() {
 	command := sandbox.CommandFromArgv0(os.Args[0])
 	if command != "boid" {
+		if command == "git" {
+			exitCode, err := sandbox.RunGitShim(os.Args[1:])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			os.Exit(exitCode)
+		}
 		shimMain(command)
 		return
 	}

@@ -33,7 +33,7 @@ func TestBroker_ExecCommand(t *testing.T) {
 			Path:            "/bin/echo",
 			AllowedPatterns: []string{"*"},
 		},
-	}, testCtx)
+	}, nil, testCtx)
 	defer broker.Unregister(token)
 
 	if err := broker.Start(ctx); err != nil {
@@ -73,7 +73,7 @@ func TestBroker_UnknownCommand(t *testing.T) {
 	broker := &sandbox.Broker{}
 	token := broker.Register(map[string]sandbox.CommandDef{
 		"echo": {Name: "echo", Path: "/bin/echo"},
-	}, testCtx)
+	}, nil, testCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "rm",
@@ -92,7 +92,7 @@ func TestBroker_InvalidToken(t *testing.T) {
 	broker := &sandbox.Broker{}
 	broker.Register(map[string]sandbox.CommandDef{
 		"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
-	}, testCtx)
+	}, nil, testCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "echo",
@@ -111,7 +111,7 @@ func TestBroker_EmptyToken(t *testing.T) {
 	broker := &sandbox.Broker{}
 	broker.Register(map[string]sandbox.CommandDef{
 		"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
-	}, testCtx)
+	}, nil, testCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "echo",
@@ -126,7 +126,7 @@ func TestBroker_Unregister(t *testing.T) {
 	broker := &sandbox.Broker{}
 	token := broker.Register(map[string]sandbox.CommandDef{
 		"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
-	}, testCtx)
+	}, nil, testCtx)
 
 	// Before unregister: should work
 	resp := broker.Handle(&sandbox.ExecRequest{
@@ -163,7 +163,7 @@ func TestBroker_CwdValidation(t *testing.T) {
 			RequireCwd:         true,
 			AllowedCwdPrefixes: []string{tmpDir},
 		},
-	}, testCtx)
+	}, nil, testCtx)
 
 	// Valid cwd
 	resp := broker.Handle(&sandbox.ExecRequest{
@@ -218,7 +218,7 @@ func TestBroker_PerCommandEnv(t *testing.T) {
 			AllowedPatterns: []string{"*"},
 			Env:             map[string]string{"TEST_VAR": "hello123"},
 		},
-	}, testCtx)
+	}, nil, testCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "env",
@@ -248,10 +248,9 @@ func TestBroker_SecretResolution(t *testing.T) {
 			AllowedPatterns: []string{"*"},
 			Env:             map[string]string{"GH_TOKEN": "secret:github/pat", "PLAIN": "value"},
 		},
-	}, sandbox.TokenContext{
+	}, nil, sandbox.TokenContext{
 		JobID: "job-1", TaskID: "task-1", ProjectID: "proj-1", Role: string(projectspec.RoleGate),
 	}, resolver)
-
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "env",
 		Token:   token,
@@ -273,8 +272,8 @@ func TestBroker_RegisterReturnsUniqueTokens(t *testing.T) {
 		"echo": {Name: "echo", Path: "/bin/echo"},
 	}
 
-	t1 := broker.Register(cmds, testCtx)
-	t2 := broker.Register(cmds, testCtx)
+	t1 := broker.Register(cmds, nil, testCtx)
+	t2 := broker.Register(cmds, nil, testCtx)
 	if t1 == t2 {
 		t.Error("Register should return unique tokens")
 	}
@@ -291,7 +290,7 @@ func TestBroker_GetContext(t *testing.T) {
 
 	token := broker.Register(map[string]sandbox.CommandDef{
 		"echo": {Name: "echo", Path: "/bin/echo"},
-	}, ctx)
+	}, nil, ctx)
 
 	got, ok := broker.GetContext(token)
 	if !ok {
@@ -322,7 +321,7 @@ func TestBroker_BoidBuiltinPolicy_HookRole(t *testing.T) {
 	hookCtx := sandbox.TokenContext{
 		JobID: "j1", TaskID: "t1", ProjectID: "p1", Role: string(projectspec.RoleHook),
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, hookCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, nil, hookCtx)
 
 	// hook can call: boid job done
 	resp := broker.Handle(&sandbox.ExecRequest{
@@ -352,7 +351,7 @@ func TestBroker_BoidBuiltinPolicy_GateRole(t *testing.T) {
 	gateCtx := sandbox.TokenContext{
 		JobID: "j1", TaskID: "t1", ProjectID: "p1", Role: string(projectspec.RoleGate),
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, gateCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, nil, gateCtx)
 
 	// gate can call: boid job done
 	resp := broker.Handle(&sandbox.ExecRequest{

@@ -202,7 +202,7 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 	}
 
 	// Command shims
-	for _, cmd := range cfg.HostCommands {
+	for _, cmd := range shimCommands(cfg.BuiltinCommands, cfg.HostCommands) {
 		plan.Symlinks = append(plan.Symlinks, SymlinkEntry{
 			LinkTarget: "boid",
 			LinkPath:   "/opt/boid/bin/" + cmd,
@@ -235,4 +235,24 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 	}
 
 	return plan
+}
+
+func shimCommands(builtins, hostCommands []string) []string {
+	seen := make(map[string]struct{}, len(builtins)+len(hostCommands))
+	var out []string
+	for _, name := range builtins {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	for _, name := range hostCommands {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
 }
