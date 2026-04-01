@@ -147,3 +147,132 @@ func TestCheckPolicy(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckPolicy_GitKitPolicy(t *testing.T) {
+	def := sandbox.CommandDef{
+		AllowedSubcommands: []string{
+			"status",
+			"diff",
+			"log",
+			"add",
+			"commit",
+			"push",
+			"pull",
+			"fetch",
+			"checkout",
+			"branch",
+			"merge",
+			"rebase",
+			"stash",
+			"tag",
+			"rev-parse",
+			"show",
+			"ls-files",
+		},
+		DeniedPatterns: []string{
+			"-C *",
+			"* -C *",
+			"--git-dir *",
+			"* --git-dir *",
+			"--git-dir=*",
+			"* --git-dir=*",
+			"--work-tree *",
+			"* --work-tree *",
+			"--work-tree=*",
+			"* --work-tree=*",
+			"push *://*",
+			"pull *://*",
+			"fetch *://*",
+			"push git@*:*",
+			"pull git@*:*",
+			"fetch git@*:*",
+			"push file:*",
+			"pull file:*",
+			"fetch file:*",
+			"push /*",
+			"pull /*",
+			"fetch /*",
+			"push ./*",
+			"pull ./*",
+			"fetch ./*",
+			"push ../*",
+			"pull ../*",
+			"fetch ../*",
+			"push ~/*",
+			"pull ~/*",
+			"fetch ~/*",
+		},
+		ExtractSubcommandFn: "git",
+	}
+
+	tests := []struct {
+		name     string
+		args     []string
+		expected bool
+	}{
+		{
+			name:     "allow push to configured remote",
+			args:     []string{"push", "origin", "main"},
+			expected: true,
+		},
+		{
+			name:     "allow pull with options",
+			args:     []string{"pull", "--ff-only", "origin", "main"},
+			expected: true,
+		},
+		{
+			name:     "allow fetch from configured remote",
+			args:     []string{"fetch", "origin"},
+			expected: true,
+		},
+		{
+			name:     "deny remote subcommand",
+			args:     []string{"remote", "-v"},
+			expected: false,
+		},
+		{
+			name:     "deny clone subcommand",
+			args:     []string{"clone", "https://github.com/acme/repo.git"},
+			expected: false,
+		},
+		{
+			name:     "deny explicit repo switch via -C",
+			args:     []string{"-C", "/tmp/other-repo", "status"},
+			expected: false,
+		},
+		{
+			name:     "deny explicit repo switch via --git-dir",
+			args:     []string{"--git-dir=/tmp/other-repo/.git", "status"},
+			expected: false,
+		},
+		{
+			name:     "deny explicit repo switch via --work-tree",
+			args:     []string{"--work-tree", "/tmp/other-repo", "status"},
+			expected: false,
+		},
+		{
+			name:     "deny push to direct url",
+			args:     []string{"push", "https://github.com/acme/other.git", "main"},
+			expected: false,
+		},
+		{
+			name:     "deny fetch from ssh target",
+			args:     []string{"fetch", "git@github.com:acme/other.git"},
+			expected: false,
+		},
+		{
+			name:     "deny pull from relative path repo",
+			args:     []string{"pull", "../other-repo"},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sandbox.CheckPolicy(def, tt.args)
+			if result != tt.expected {
+				t.Errorf("CheckPolicy(%v, %v) = %v, want %v", def, tt.args, result, tt.expected)
+			}
+		})
+	}
+}
