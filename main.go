@@ -12,6 +12,20 @@ import (
 
 func main() {
 	command := sandbox.CommandFromArgv0(os.Args[0])
+	if shouldRunBoidBuiltinShim(command) {
+		resp, err := sandbox.RunBoidShim(os.Args[1:])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if resp.Stdout != "" {
+			os.Stdout.WriteString(resp.Stdout)
+		}
+		if resp.Stderr != "" {
+			os.Stderr.WriteString(resp.Stderr)
+		}
+		os.Exit(resp.ExitCode)
+	}
 	if command != "boid" {
 		if command == "git" {
 			exitCode, err := sandbox.RunGitShim(os.Args[1:])
@@ -29,6 +43,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func shouldRunBoidBuiltinShim(command string) bool {
+	return command == "boid" && os.Getenv("BOID_BUILTIN_SHIM") != ""
 }
 
 func shimMain(command string) {

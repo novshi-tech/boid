@@ -11,15 +11,16 @@ import (
 
 func TestWriteSandboxScripts(t *testing.T) {
 	cfg := sandbox.WrapperConfig{
-		JobID:        "test-job-001",
-		ProjectID:    "proj-1",
-		ProjectDir:   "/home/user/projects/proj-1",
-		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
-		HookScript:   "run-agent.sh",
-		BoidBinary:   "/usr/local/bin/boid",
-		ServerSocket: "/run/boid/server.sock",
-		BrokerSocket: "/run/boid/broker.sock",
-		BrokerToken:  "test-token-abc",
+		JobID:           "test-job-001",
+		ProjectID:       "proj-1",
+		ProjectDir:      "/home/user/projects/proj-1",
+		HooksDir:        "/home/user/projects/proj-1/.boid/hooks",
+		HookScript:      "run-agent.sh",
+		BoidBinary:      "/usr/local/bin/boid",
+		ServerSocket:    "/run/boid/server.sock",
+		BrokerSocket:    "/run/boid/broker.sock",
+		BrokerToken:     "test-token-abc",
+		BuiltinCommands: []string{"boid"},
 		Env: map[string]string{
 			"MY_VAR": "hello",
 		},
@@ -116,6 +117,9 @@ func TestWriteSandboxScripts(t *testing.T) {
 	if !strings.Contains(inner, `BOID_BROKER_TOKEN=test-token-abc`) {
 		t.Error("inner script missing BOID_BROKER_TOKEN")
 	}
+	if !strings.Contains(inner, "BOID_BUILTIN_SHIM=1") {
+		t.Error("inner script missing BOID_BUILTIN_SHIM")
+	}
 
 	if !strings.Contains(setup, `mount --bind /run/boid/broker.sock "$ROOT/run/boid/broker.sock"`) {
 		t.Error("setup script missing broker socket bind mount")
@@ -176,6 +180,9 @@ func TestWriteSandboxScripts_TTY(t *testing.T) {
 	}
 	if !strings.Contains(inner, `MY_VAR="hello"`) {
 		t.Error("inner script missing env var MY_VAR")
+	}
+	if strings.Contains(inner, "BOID_BUILTIN_SHIM=1") {
+		t.Error("inner script must not export BOID_BUILTIN_SHIM without boid builtin")
 	}
 
 	setupContent, err := os.ReadFile(setupPath)

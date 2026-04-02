@@ -13,12 +13,6 @@ func CommandFromArgv0(argv0 string) string {
 }
 
 func ShimExec(brokerSocket, command string, args []string, stdin []byte) (*ExecResponse, error) {
-	conn, err := net.Dial("unix", brokerSocket)
-	if err != nil {
-		return nil, fmt.Errorf("connect to broker: %w", err)
-	}
-	defer conn.Close()
-
 	cwd, _ := os.Getwd()
 	token := os.Getenv("BOID_BROKER_TOKEN")
 
@@ -29,6 +23,16 @@ func ShimExec(brokerSocket, command string, args []string, stdin []byte) (*ExecR
 		Token:   token,
 		Stdin:   stdin,
 	}
+	return sendExecRequest(brokerSocket, req)
+}
+
+func sendExecRequest(brokerSocket string, req ExecRequest) (*ExecResponse, error) {
+	conn, err := net.Dial("unix", brokerSocket)
+	if err != nil {
+		return nil, fmt.Errorf("connect to broker: %w", err)
+	}
+	defer conn.Close()
+
 	if err := json.NewEncoder(conn).Encode(&req); err != nil {
 		return nil, fmt.Errorf("send request: %w", err)
 	}

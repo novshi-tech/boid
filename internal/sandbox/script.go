@@ -147,6 +147,7 @@ func generateHookInnerScript(cfg WrapperConfig) string {
 	if cfg.BrokerSocket != "" {
 		b.WriteString("export BOID_BROKER_SOCKET=/run/boid/broker.sock\n")
 	}
+	writeBuiltinShimEnv(&b, cfg)
 
 	writePathAndProxy(&b, cfg)
 
@@ -175,6 +176,7 @@ func generateGateInnerScript(cfg WrapperConfig) string {
 	if cfg.BrokerSocket != "" {
 		b.WriteString("export BOID_BROKER_SOCKET=/run/boid/broker.sock\n")
 	}
+	writeBuiltinShimEnv(&b, cfg)
 
 	writePathAndProxy(&b, cfg)
 
@@ -208,6 +210,7 @@ func generateLegacyInnerScript(cfg WrapperConfig) string {
 	if cfg.BrokerToken != "" {
 		fmt.Fprintf(&b, "export BOID_BROKER_TOKEN=%s\n", shellQuote(cfg.BrokerToken))
 	}
+	writeBuiltinShimEnv(&b, cfg)
 
 	writePathAndProxy(&b, cfg)
 
@@ -246,5 +249,14 @@ func writePathAndProxy(b *strings.Builder, cfg WrapperConfig) {
 
 	for k, v := range cfg.Env {
 		fmt.Fprintf(b, "export %s=%q\n", k, v)
+	}
+}
+
+func writeBuiltinShimEnv(b *strings.Builder, cfg WrapperConfig) {
+	for _, name := range cfg.BuiltinCommands {
+		if name == "boid" {
+			b.WriteString("export BOID_BUILTIN_SHIM=1\n")
+			return
+		}
 	}
 }
