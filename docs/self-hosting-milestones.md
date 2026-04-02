@@ -5,6 +5,10 @@
 `boid` 自身の開発を `boid` 上でセルフホストできる状態まで、
 段階的に機能を揃える。
 
+関連 design note:
+
+- [`docs/job-runtime-presenter-separation.md`](/home/nosen/src/github.com/novshi-tech/boid/docs/job-runtime-presenter-separation.md)
+
 ここでいうセルフホストは、
 単に sandbox でコマンドが動くことではなく、
 以下の閉ループが成立することを指す。
