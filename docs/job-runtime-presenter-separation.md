@@ -36,6 +36,38 @@ process management と presentation を分離する。
 今回実際に起きた `tmux new-window` の target 指定不具合は、
 この結合の弱さをそのまま露呈した。
 
+## Current Boundary Snapshot
+
+移行前の責務境界を明示しておく。
+ここが曖昧なまま進めると、
+`tmux` を剥がす途中で責務が再混線する。
+
+### `Runner`
+
+- job record を作る
+- broker token を登録する
+- sandbox launch spec を組み立てる
+- 実行を起動し、job 完了待ちの受け口を持つ
+
+### `sandbox`
+
+- 実行境界を作る
+- sandbox script を生成する
+- hook/gate を child process として起動できる形にする
+
+### `tmux`
+
+- 現状は presenter ではなく execution bootstrapper になっている
+- `new-window` 失敗がそのまま job 起動失敗になる
+- 実行中 job の観測経路を tmux window に固定している
+
+### `boid job done`
+
+- hook/gate 完了を server に返す completion callback である
+- runtime 自体の child exit wait ではなく、
+  sandbox 内からの completion 契約として使われている
+- 移行中も「job 完了時に server 側 state machine を進める」契約は維持する
+
 ## Key Insight
 
 interactive な `codex` / `claude code` に必要なのは

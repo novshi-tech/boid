@@ -34,6 +34,41 @@
 
 ## Findings
 
+### 0. Job execution is still coupled to tmux bootstrap
+
+Severity:
+critical
+
+Symptoms:
+
+- `tmux new-window` failure becomes job dispatch failure
+- interactive job availability depends on tmux session health
+- attach path と execution path の障害が分離されていない
+
+Current behavior:
+
+- `dispatcher.Runner.launchSandbox()` が実行起動の前提として tmux window を作る
+- sandbox outer script は tmux window 内でのみ起動される
+- `boid attach` も job attach ではなく tmux session attach を行う
+
+Impact:
+
+- presenter failure が core execution failure に昇格する
+- headless / non-tmux 環境で interactive runtime を持てない
+- real tmux 固有障害が job runtime 障害として観測される
+
+Relevant areas:
+
+- `internal/dispatcher/runner.go`
+- `internal/dispatcher/tmux/real.go`
+- `cmd/attach.go`
+
+Expected direction:
+
+- execution path を runtime に寄せる
+- `tmux` は attach wrapper か optional presenter に落とす
+- `boid attach <job-id>` を runtime attach に切り替える
+
 ### 1. Concurrent hook/gate execution reuses the same tmux window
 
 Severity:
@@ -221,6 +256,8 @@ Expected direction:
 - tmux window naming
 - broker token lifecycle
 - job wait と cleanup の相互作用
+- real `tmux new-window` failure が dispatch failure に化ける経路
+- runtime attach path と presenter path の分離確認
 
 ### Sandbox layer
 
@@ -240,3 +277,14 @@ Expected direction:
 - 依存逆転の成果を
   「テストが書きやすくなった」だけでなく
   「既知不具合を再発させにくくなった」として評価できる
+
+## E2E Coverage Gap To Keep In Mind
+
+既存 E2E は sandbox / broker / task progression の smoke には寄与しているが、
+real `tmux` execution path を十分には守っていない。
+
+不足している観点:
+
+- `tmux new-window` 実行そのものの成否
+- attach 対象が session ではなく job runtime であること
+- presenter failure と job completion が独立していること
