@@ -35,6 +35,35 @@ type BoidRequest struct {
 	Payload     []byte `json:"payload,omitempty"`
 }
 
+type TokenContext struct {
+	JobID             string
+	TaskID            string
+	ProjectID         string
+	WorkspaceID       string
+	AllowedProjectIDs []string
+	Role              string
+	ProjectDir        string
+	WorktreeDir       string
+}
+
+func (c TokenContext) AllowsProject(projectID string) bool {
+	if projectID == "" {
+		projectID = c.ProjectID
+	}
+	if projectID == "" {
+		return false
+	}
+	if len(c.AllowedProjectIDs) == 0 {
+		return projectID == c.ProjectID
+	}
+	for _, allowed := range c.AllowedProjectIDs {
+		if allowed == projectID {
+			return true
+		}
+	}
+	return false
+}
+
 type GitOp string
 
 const (

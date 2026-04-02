@@ -86,7 +86,7 @@ func buildExecRequest(projectID string) (dispatcher.ExecRequest, error) {
 		regReq := map[string]any{
 			"commands":         p.Meta.HostCommands,
 			"builtin_commands": p.Meta.BuiltinCommands,
-			"project_dir":      p.WorkDir,
+			"project_id":       p.ID,
 		}
 		if err := c.Do("POST", "/api/broker/register", regReq, &brokerResp); err == nil {
 			brokerSocket = brokerResp.Socket

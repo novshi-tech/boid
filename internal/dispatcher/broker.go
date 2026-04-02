@@ -5,12 +5,14 @@ type SecretResolver func(key string) (string, error)
 
 // BrokerContext carries the dispatcher-side execution context associated with a broker token.
 type BrokerContext struct {
-	JobID       string
-	TaskID      string
-	ProjectID   string
-	Role        string
-	ProjectDir  string
-	WorktreeDir string
+	JobID             string
+	TaskID            string
+	ProjectID         string
+	WorkspaceID       string
+	AllowedProjectIDs []string
+	Role              string
+	ProjectDir        string
+	WorktreeDir       string
 }
 
 // CommandBroker is the dispatcher-owned behavior contract for host command brokering.

@@ -11,8 +11,7 @@ import (
 type BrokerRegisterRequest struct {
 	Commands        map[string]orchestrator.HostCommandSpec `json:"commands"`
 	BuiltinCommands []string                                `json:"builtin_commands,omitempty"`
-	ProjectDir      string                                  `json:"project_dir,omitempty"`
-	WorktreeDir     string                                  `json:"worktree_dir,omitempty"`
+	ProjectID       string                                  `json:"project_id,omitempty"`
 }
 
 type BrokerRegisterResponse struct {
@@ -45,8 +44,12 @@ func (h *BrokerHandler) Register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no commands or builtins")
 		return
 	}
+	if req.ProjectID == "" {
+		writeError(w, http.StatusBadRequest, "project_id is required")
+		return
+	}
 
-	resp, err := h.Registry.RegisterBrokerCommands(req.Commands, req.BuiltinCommands, req.ProjectDir, req.WorktreeDir)
+	resp, err := h.Registry.RegisterBrokerCommands(req.Commands, req.BuiltinCommands, req.ProjectID)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return

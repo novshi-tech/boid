@@ -2,6 +2,7 @@ package server
 
 import (
 	"database/sql"
+	"sort"
 
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/db"
@@ -80,18 +81,32 @@ func (t apiTransactor) WithinTx(fn func(api.TxStore) error) error {
 
 type brokerRegistry struct {
 	broker      dispatcher.CommandBroker
+	projects    api.ProjectRepository
 	secretStore *dispatcher.SecretStore
 }
 
-func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.HostCommandSpec, builtinCommands []string, projectDir, worktreeDir string) (*api.BrokerRegisterResponse, error) {
+func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.HostCommandSpec, builtinCommands []string, projectID string) (*api.BrokerRegisterResponse, error) {
 	if r.broker == nil {
 		return nil, sql.ErrConnDone
 	}
+	if r.projects == nil {
+		return nil, sql.ErrConnDone
+	}
+	project, err := r.projects.GetProject(projectID)
+	if err != nil {
+		return nil, err
+	}
+	allowedProjectIDs, err := r.allowedProjectIDs(project)
+	if err != nil {
+		return nil, err
+	}
 
 	ctx := dispatcher.BrokerContext{
-		Role:        "gate",
-		ProjectDir:  projectDir,
-		WorktreeDir: worktreeDir,
+		Role:              "gate",
+		ProjectID:         project.ID,
+		WorkspaceID:       project.WorkspaceID,
+		AllowedProjectIDs: allowedProjectIDs,
+		ProjectDir:        project.WorkDir,
 	}
 	defs := orchestrator.HostCommands(commands).ToCommandDefs()
 	dispatcherCommands := make(map[string]dispatcher.CommandDef, len(defs))
@@ -116,6 +131,41 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 		Token:  token,
 		Socket: r.broker.SocketPath(),
 	}, nil
+}
+
+func (r brokerRegistry) allowedProjectIDs(project *orchestrator.Project) ([]string, error) {
+	if project == nil {
+		return nil, sql.ErrNoRows
+	}
+	projects, err := r.projects.ListProjects()
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]struct{})
+	allowed := []string{project.ID}
+	seen[project.ID] = struct{}{}
+
+	if project.WorkspaceID == "" {
+		return allowed, nil
+	}
+
+	peers := make([]string, 0, len(projects))
+	for _, candidate := range projects {
+		if candidate == nil || candidate.ID == "" {
+			continue
+		}
+		if candidate.ID == project.ID || candidate.WorkspaceID != project.WorkspaceID {
+			continue
+		}
+		if _, ok := seen[candidate.ID]; ok {
+			continue
+		}
+		peers = append(peers, candidate.ID)
+		seen[candidate.ID] = struct{}{}
+	}
+	sort.Strings(peers)
+	return append(allowed, peers...), nil
 }
 
 func toAPIJob(job *dispatcher.Job) *api.Job {

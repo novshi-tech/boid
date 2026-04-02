@@ -18,12 +18,14 @@ type sandboxBrokerAdapter struct {
 
 func (a *sandboxBrokerAdapter) RegisterCommands(commands map[string]dispatcher.CommandDef, builtinCommands []string, ctx dispatcher.BrokerContext, resolve dispatcher.SecretResolver) string {
 	tokenCtx := sandbox.TokenContext{
-		JobID:      ctx.JobID,
-		TaskID:     ctx.TaskID,
-		ProjectID:  ctx.ProjectID,
-		Role:       ctx.Role,
-		ProjectDir: ctx.ProjectDir,
-		WorktreeDir: ctx.WorktreeDir,
+		JobID:             ctx.JobID,
+		TaskID:            ctx.TaskID,
+		ProjectID:         ctx.ProjectID,
+		WorkspaceID:       ctx.WorkspaceID,
+		AllowedProjectIDs: append([]string(nil), ctx.AllowedProjectIDs...),
+		Role:              ctx.Role,
+		ProjectDir:        ctx.ProjectDir,
+		WorktreeDir:       ctx.WorktreeDir,
 	}
 	sandboxCommands := toSandboxCommandDefs(commands)
 	if resolve != nil {

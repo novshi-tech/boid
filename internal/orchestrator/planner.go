@@ -80,6 +80,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 	return &DispatchRequest{
 		TaskID:             event.TaskID,
 		ProjectID:          event.ProjectID,
+		WorkspaceID:        proj.WorkspaceID,
 		HandlerID:          event.Hook.ID,
 		Role:               RoleHook,
 		ProjectDir:         proj.WorkDir,
@@ -126,6 +127,7 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 	return &DispatchRequest{
 		TaskID:          event.TaskID,
 		ProjectID:       event.ProjectID,
+		WorkspaceID:     proj.WorkspaceID,
 		HandlerID:       event.Gate.ID,
 		Role:            RoleGate,
 		ProjectDir:      proj.WorkDir,

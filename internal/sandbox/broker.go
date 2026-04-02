@@ -16,16 +16,6 @@ import (
 	"sync"
 )
 
-// TokenContext carries the job/task/project context associated with a broker token.
-type TokenContext struct {
-	JobID       string
-	TaskID      string
-	ProjectID   string
-	Role        string
-	ProjectDir  string
-	WorktreeDir string
-}
-
 type tokenEntry struct {
 	Context         TokenContext
 	Commands        map[string]CommandDef
@@ -226,6 +216,9 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 	case BoidOpTaskCreate:
 		if boidReq.ProjectID == "" {
 			boidReq.ProjectID = entry.Context.ProjectID
+		}
+		if !entry.Context.AllowsProject(boidReq.ProjectID) {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
 		}
 	}
 

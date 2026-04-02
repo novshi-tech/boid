@@ -240,12 +240,14 @@ func TestBroker_RegisterReturnsUniqueTokens(t *testing.T) {
 func TestBroker_GetContext(t *testing.T) {
 	broker := &sandbox.Broker{}
 	ctx := sandbox.TokenContext{
-		JobID:       "job-42",
-		TaskID:      "task-99",
-		ProjectID:   "proj-7",
-		Role:        string(projectspec.RoleGate),
-		ProjectDir:  "/workspace/proj-7",
-		WorktreeDir: "/workspace/proj-7-wt",
+		JobID:             "job-42",
+		TaskID:            "task-99",
+		ProjectID:         "proj-7",
+		WorkspaceID:       "ws-7",
+		AllowedProjectIDs: []string{"proj-7", "proj-8"},
+		Role:              string(projectspec.RoleGate),
+		ProjectDir:        "/workspace/proj-7",
+		WorktreeDir:       "/workspace/proj-7-wt",
 	}
 
 	token := broker.Register(map[string]sandbox.CommandDef{
@@ -267,6 +269,12 @@ func TestBroker_GetContext(t *testing.T) {
 	}
 	if got.Role != string(projectspec.RoleGate) {
 		t.Errorf("Role = %q, want %q", got.Role, string(projectspec.RoleGate))
+	}
+	if got.WorkspaceID != "ws-7" {
+		t.Errorf("WorkspaceID = %q, want %q", got.WorkspaceID, "ws-7")
+	}
+	if len(got.AllowedProjectIDs) != 2 {
+		t.Fatalf("AllowedProjectIDs = %#v, want 2 entries", got.AllowedProjectIDs)
 	}
 
 	_, ok = broker.GetContext("nonexistent")
@@ -372,6 +380,58 @@ func TestBroker_BoidBuiltinPolicy_GateRole(t *testing.T) {
 	}
 	if exec.calls[1].ProjectID != "p1" {
 		t.Fatalf("task create project id = %q, want current project", exec.calls[1].ProjectID)
+	}
+}
+
+func TestBroker_BoidBuiltinPolicy_RespectsAllowedProjectIDs(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	ctx := sandbox.TokenContext{
+		JobID:             "j2",
+		TaskID:            "t2",
+		ProjectID:         "p1",
+		WorkspaceID:       "ws-1",
+		AllowedProjectIDs: []string{"p1", "p2"},
+		Role:              string(projectspec.RoleGate),
+		ProjectDir:        projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:        sandbox.BoidOpTaskCreate,
+			Title:     "peer task",
+			Behavior:  "dev",
+			ProjectID: "p2",
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("same-workspace create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 || exec.calls[0].ProjectID != "p2" {
+		t.Fatalf("executor calls = %+v, want one call for p2", exec.calls)
+	}
+
+	resp = broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:        sandbox.BoidOpTaskCreate,
+			Title:     "cross task",
+			Behavior:  "dev",
+			ProjectID: "p3",
+		},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "restricted to the current workspace") {
+		t.Fatalf("cross-workspace create should be rejected, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor should not receive cross-workspace request, calls=%d", len(exec.calls))
 	}
 }
 

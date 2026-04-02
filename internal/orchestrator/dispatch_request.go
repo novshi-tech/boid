@@ -5,6 +5,7 @@ package orchestrator
 type DispatchRequest struct {
 	TaskID             string
 	ProjectID          string
+	WorkspaceID        string
 	HandlerID          string
 	Role               Role
 	ProjectDir         string

@@ -23,7 +23,7 @@ func newBoidBuiltinExecutor(workflow *api.TaskWorkflowService, tasks *api.TaskAp
 	}
 }
 
-func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(_ sandbox.TokenContext, req *sandbox.BoidRequest) *sandbox.ExecResponse {
+func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *sandbox.BoidRequest) *sandbox.ExecResponse {
 	if req == nil {
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: "missing boid request"}
 	}
@@ -45,6 +45,15 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(_ sandbox.TokenContext, req *sa
 	case sandbox.BoidOpTaskCreate:
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create unavailable"}
+		}
+		if req.ProjectID == "" {
+			req.ProjectID = ctx.ProjectID
+		}
+		if req.ProjectID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create requires a project"}
+		}
+		if !ctx.AllowsProject(req.ProjectID) {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
 		}
 		task, err := e.tasks.CreateTask(api.CreateTaskRequest{
 			ProjectID:   req.ProjectID,

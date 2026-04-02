@@ -23,6 +23,7 @@ type CommandDef struct {
 type DispatchPlan struct {
 	TaskID             string
 	ProjectID          string
+	WorkspaceID        string
 	HandlerID          string
 	Role               string
 	ProjectDir         string

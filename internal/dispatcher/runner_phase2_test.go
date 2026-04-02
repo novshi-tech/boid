@@ -2,6 +2,8 @@ package dispatcher_test
 
 import (
 	"context"
+	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/dispatcher"
@@ -81,6 +83,7 @@ func TestRunnerDispatch_UsesDispatcherOwnedBrokerInterface(t *testing.T) {
 	jobID, err := runner.Dispatch(context.Background(), &dispatcher.DispatchPlan{
 		TaskID:      "task-phase2-12345678",
 		ProjectID:   "proj-1",
+		WorkspaceID: "ws-1",
 		HandlerID:   "hook-a",
 		Role:        "hook",
 		ProjectDir:  projectDir,
@@ -90,6 +93,10 @@ func TestRunnerDispatch_UsesDispatcherOwnedBrokerInterface(t *testing.T) {
 		PayloadJSON: `{}`,
 		HostCommands: map[string]dispatcher.CommandDef{
 			"git": {Name: "git"},
+		},
+		WorkspaceDirs: map[string]string{
+			"proj-2": "/workspace/proj-2",
+			"proj-3": "/workspace/proj-3",
 		},
 	})
 	if err != nil {
@@ -107,6 +114,14 @@ func TestRunnerDispatch_UsesDispatcherOwnedBrokerInterface(t *testing.T) {
 	}
 	if broker.registers[0].ctx.Role != "hook" {
 		t.Fatalf("registered role = %q", broker.registers[0].ctx.Role)
+	}
+	if broker.registers[0].ctx.WorkspaceID != "ws-1" {
+		t.Fatalf("registered workspace id = %q, want %q", broker.registers[0].ctx.WorkspaceID, "ws-1")
+	}
+	allowed := append([]string(nil), broker.registers[0].ctx.AllowedProjectIDs...)
+	sort.Strings(allowed)
+	if !reflect.DeepEqual(allowed, []string{"proj-1", "proj-2", "proj-3"}) {
+		t.Fatalf("allowed project ids = %v, want [proj-1 proj-2 proj-3]", allowed)
 	}
 
 	runner.UnregisterJob(jobID)

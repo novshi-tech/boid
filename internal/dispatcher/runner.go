@@ -76,13 +76,16 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 	}
 
 	if r.Broker != nil {
+		allowedProjectIDs := allowedProjectIDs(plan.ProjectID, plan.WorkspaceDirs)
 		tokenCtx := BrokerContext{
-			JobID:       j.ID,
-			TaskID:      plan.TaskID,
-			ProjectID:   plan.ProjectID,
-			Role:        plan.Role,
-			ProjectDir:  plan.ProjectDir,
-			WorktreeDir: plan.WorktreeDir,
+			JobID:             j.ID,
+			TaskID:            plan.TaskID,
+			ProjectID:         plan.ProjectID,
+			WorkspaceID:       plan.WorkspaceID,
+			AllowedProjectIDs: allowedProjectIDs,
+			Role:              plan.Role,
+			ProjectDir:        plan.ProjectDir,
+			WorktreeDir:       plan.WorktreeDir,
 		}
 		var resolve SecretResolver
 		if r.SecretStore != nil {
@@ -105,6 +108,33 @@ func hostCommandNames(cmds map[string]CommandDef) []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+func allowedProjectIDs(selfID string, workspaceDirs map[string]string) []string {
+	seen := make(map[string]struct{})
+	var ids []string
+
+	if selfID != "" {
+		seen[selfID] = struct{}{}
+		ids = append(ids, selfID)
+	}
+
+	if len(workspaceDirs) == 0 {
+		return ids
+	}
+
+	var peers []string
+	for id := range workspaceDirs {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		peers = append(peers, id)
+	}
+	sort.Strings(peers)
+	return append(ids, peers...)
 }
 
 func (r *Runner) trackToken(jobID, token string) {

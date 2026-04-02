@@ -18,7 +18,7 @@ import (
 )
 
 type appRuntime struct {
-	projectRepo *orchestrator.ProjectRepository
+	projectRepo api.ProjectRepository
 	taskRepo    *orchestrator.TaskRepository
 	jobStore    api.JobStore
 	projectSvc  *api.ProjectAppService
@@ -152,7 +152,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	})
 
 	brokerHandler := &api.BrokerHandler{
-		Registry: brokerRegistry{broker: newCommandBroker(srv.broker), secretStore: srv.secretStore},
+		Registry: brokerRegistry{broker: newCommandBroker(srv.broker), projects: runtime.projectRepo, secretStore: srv.secretStore},
 	}
 	r.Mount("/api/broker", brokerHandler.Routes())
 
