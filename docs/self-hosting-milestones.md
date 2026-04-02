@@ -31,10 +31,11 @@
 - job API には一覧 / 取得 / 完了がある
 - 一方で CLI は `job done` のみで、呼び出し元から job 状態を見にくい
 - Web UI では task detail から jobs を見られるが、CLI 主体の自己ホスト運用にはまだ弱い
-- `TODO-hook-gate.md` に hook/gate 系 E2E の残タスクがある
-- black-box E2E harness は追加済み
-- `project-smoke` は通っている
-- `host-command-smoke` は `gh` と `systemctl` だけを使う最小契約確認として通っている
+- black-box E2E harness と fixture kit / fake host command 基盤は追加済み
+- `project-smoke` / `host-command-smoke` / `readonly-hook-gate` / `writable-chain` / `rework-cycle` / `feedback-loop-full` はローカルで通過済み
+- `e2e/run.sh` は引数なしで全 scenario を順次実行できる
+- GitHub Actions 向けに unit + black-box E2E workflow は追加済み
+- ただし hosted runner 上の初回実行結果はまだ未確認
 
 このため、直近の不足は概念設計よりも、
 観測性と実運用フローの完成度にある。
@@ -100,7 +101,7 @@ task / job / action / payload の観測手段を揃える。
 
 ### Scope
 
-- `TODO-hook-gate.md` の E2E を優先的に埋める
+- black-box E2E を継続実行できる状態を保つ
 - job 観測 CLI を追加する
 - task 観測 CLI / Web を強化する
 - 実行結果の追跡単位を明確にする
@@ -109,13 +110,16 @@ task / job / action / payload の観測手段を揃える。
 
 - `boid start` の E2E 向けパラメータ化
 - isolated temp root 上で `boid` を起動する black-box harness
-- fixture kit と fake host command を使った最小 gate E2E
+- fixture kit と fake host command を使った black-box scenario 群
+- hook/gate 並列実行、rework、自動遷移、feedback-loop 全サイクルの E2E
+- `e2e/run.sh` 引数なし実行による全 scenario 一括実行
+- GitHub Actions 用 black-box E2E workflow 追加
 
 ここからの残り:
 
-- hook/gate 並列実行の E2E
-- rework / feedback-loop の E2E
 - product CLI の job 観測導線
+- task 観測 CLI / Web の強化
+- hosted runner 上での初回 CI 実行結果確認
 
 ### Concrete Tasks
 
@@ -125,13 +129,14 @@ task / job / action / payload の観測手段を揃える。
 - `boid task watch <task-id>` または同等の監視導線
 - job に対して `handler_id`, `role`, `status`, `exit_code`, `updated_at` を見やすく出す
 - task detail から action / job / payload の対応を追えるようにする
-- hook/gate 並列実行、rework、自動遷移の E2E を追加する
+- GitHub Actions 上で black-box E2E の実行実績を確認する
 
 ### Completion Criteria
 
 - one-shot 実行後に、呼び出し元から task / job の成否を確認できる
 - job が詰まっている場合に、どの handler で止まっているか分かる
 - hook/gate の主要実行経路が E2E で守られている
+- black-box E2E を CI で継続実行できる
 
 ## M1. One-Shot Hook Execution On Orchestrator
 
@@ -330,7 +335,7 @@ PR ベースの修正ループを boid が自律的に回せる。
 
 今すぐ着手順を絞るなら以下。
 
-1. `TODO-hook-gate.md` の E2E を埋める
+1. hosted runner 上で black-box E2E workflow の初回実行結果を確認する
 2. job/task 観測 CLI を足す
 3. `boid-kits` の gate 契約を決める
 4. one-shot hook を boid 自身の小タスクで回す
