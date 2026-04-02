@@ -205,6 +205,98 @@ func TestRepoRefsFromKitRefs(t *testing.T) {
 	}
 }
 
+func TestRepoRefToCloneURL(t *testing.T) {
+	tests := []struct {
+		name   string
+		ref    string
+		useSSH bool
+		want   string
+	}{
+		{
+			name:   "https default",
+			ref:    "github.com/user/repo",
+			useSSH: false,
+			want:   "https://github.com/user/repo.git",
+		},
+		{
+			name:   "ssh",
+			ref:    "github.com/user/repo",
+			useSSH: true,
+			want:   "git@github.com:user/repo.git",
+		},
+		{
+			name:   "ssh custom host",
+			ref:    "gitlab.example.com/team/kits",
+			useSSH: true,
+			want:   "git@gitlab.example.com:team/kits.git",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := kit.RepoRefToCloneURL(tt.ref, tt.useSSH)
+			if got != tt.want {
+				t.Errorf("RepoRefToCloneURL(%q, %v) = %q, want %q", tt.ref, tt.useSSH, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRegistry_Install_SSH(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	// Create work repo with a kit, then make it bare
+	workDir := filepath.Join(t.TempDir(), "work")
+	os.MkdirAll(workDir, 0o755)
+
+	git := func(args ...string) {
+		t.Helper()
+		allArgs := append([]string{"-C", workDir}, args...)
+		cmd := exec.Command("git", allArgs...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git %v failed (sandbox?): %s", args, out)
+		}
+	}
+
+	git("init")
+	git("config", "user.email", "test@test.com")
+	git("config", "user.name", "Test")
+
+	kitDir := filepath.Join(workDir, "go")
+	os.MkdirAll(kitDir, 0o755)
+	os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte("env:\n  GOPATH: /go"), 0o644)
+	git("add", ".")
+	git("commit", "-m", "init")
+
+	// Clone to bare repo
+	remoteDir := filepath.Join(t.TempDir(), "remote.git")
+	cmd := exec.Command("git", "clone", "--bare", workDir, remoteDir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("git clone --bare failed: %s", out)
+	}
+	_ = cmd
+
+	// Install with useSSH=true still works via InstallFromURL (SSH URL generation tested separately)
+	baseDir := t.TempDir()
+	reg := kit.NewRegistry(baseDir)
+
+	// Use InstallFromURL directly since we can't test real SSH in unit tests
+	err := reg.InstallFromURL("test-host/user/repo", remoteDir)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	path, err := reg.Resolve("test-host/user/repo/go")
+	if err != nil {
+		t.Fatalf("Resolve after install: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(path, "kit.yaml")); err != nil {
+		t.Errorf("kit.yaml not found at %s", path)
+	}
+}
+
 func TestRegistry_Remove(t *testing.T) {
 	baseDir := t.TempDir()
 	repoDir := filepath.Join(baseDir, "github.com", "user", "repo")

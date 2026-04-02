@@ -75,10 +75,22 @@ func RepoRefsFromKitRefs(kitRefs []string) []string {
 	return repos
 }
 
+// RepoRefToCloneURL converts a repo reference to a git clone URL.
+// When useSSH is true, it returns an SSH URL (git@host:owner/repo.git).
+// Otherwise it returns an HTTPS URL (https://host/owner/repo.git).
+func RepoRefToCloneURL(repoRef string, useSSH bool) string {
+	if useSSH {
+		host, path, _ := strings.Cut(repoRef, "/")
+		return "git@" + host + ":" + path + ".git"
+	}
+	return "https://" + repoRef + ".git"
+}
+
 // Install clones a kit repository from its conventional URL.
 // The repoRef should be like "github.com/user/repo".
-func (r *KitRegistry) Install(repoRef string) error {
-	url := "https://" + repoRef + ".git"
+// When useSSH is true, the SSH protocol (git@host:path.git) is used.
+func (r *KitRegistry) Install(repoRef string, useSSH bool) error {
+	url := RepoRefToCloneURL(repoRef, useSSH)
 	return r.InstallFromURL(repoRef, url)
 }
 

@@ -12,6 +12,8 @@ var kitCmd = &cobra.Command{
 	Short: "Manage kits",
 }
 
+var kitInstallSSH bool
+
 var kitInstallCmd = &cobra.Command{
 	Use:   "install [repo]",
 	Short: "Install kit repositories",
@@ -27,7 +29,7 @@ var kitInstallCmd = &cobra.Command{
 
 func kitInstallSingle(repoRef string) error {
 	reg := kit.NewRegistry(defaultKitsDir())
-	if err := reg.Install(repoRef); err != nil {
+	if err := reg.Install(repoRef, kitInstallSSH); err != nil {
 		return err
 	}
 	fmt.Printf("installed: %s\n", repoRef)
@@ -70,7 +72,7 @@ func kitInstallFromProject() error {
 			fmt.Printf("already installed: %s\n", repo)
 			continue
 		}
-		if err := reg.Install(repo); err != nil {
+		if err := reg.Install(repo, kitInstallSSH); err != nil {
 			return err
 		}
 		fmt.Printf("installed: %s\n", repo)
@@ -127,6 +129,7 @@ var kitUpdateCmd = &cobra.Command{
 }
 
 func init() {
+	kitInstallCmd.Flags().BoolVar(&kitInstallSSH, "ssh", false, "Use SSH protocol (git@host:path) instead of HTTPS")
 	kitCmd.AddCommand(kitInstallCmd, kitListCmd, kitRemoveCmd, kitUpdateCmd)
 	rootCmd.AddCommand(kitCmd)
 }
