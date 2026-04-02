@@ -40,3 +40,17 @@ e2e_run() {
   e2e_log "run: $*"
   "$@"
 }
+
+e2e_wait_for_file() {
+  local path="$1"
+  local timeout="${2:-10}"
+  local interval="${3:-0.05}"
+  local deadline=$((SECONDS + timeout))
+
+  while [[ ! -f "$path" ]]; do
+    if (( SECONDS >= deadline )); then
+      e2e_fail "timed out waiting for file: $path"
+    fi
+    sleep "$interval"
+  done
+}

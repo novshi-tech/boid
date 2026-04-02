@@ -1,0 +1,14 @@
+env:
+  E2E_STATE_DIR: ${E2E_STATE_DIR}
+hooks:
+  - id: build-artifact
+    on: executing
+gates:
+  - id: verify-resolved
+    on: verifying
+    requires_traits:
+      - artifact
+  - id: feedback-cycle
+    on: collecting_feedback
+    requires_traits:
+      - artifact

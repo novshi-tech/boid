@@ -89,6 +89,22 @@ func TestRunListJobs_RequiresTaskID(t *testing.T) {
 	}
 }
 
+func TestCountJobsByRole(t *testing.T) {
+	jobs := []map[string]any{
+		{"role": "hook"},
+		{"role": "gate"},
+		{"role": "hook"},
+		{"role": "gate"},
+	}
+
+	if got := countJobsByRole(jobs, "hook"); got != 2 {
+		t.Fatalf("countJobsByRole hook = %d, want 2", got)
+	}
+	if got := countJobsByRole(jobs, "gate"); got != 2 {
+		t.Fatalf("countJobsByRole gate = %d, want 2", got)
+	}
+}
+
 func TestPrintJSON(t *testing.T) {
 	oldStdout := os.Stdout
 	r, w, err := os.Pipe()

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/client"
@@ -37,6 +38,10 @@ func run(args []string) error {
 		return runWaitTaskStatus(args[1:])
 	case "list-jobs":
 		return runListJobs(args[1:])
+	case "wait-job-count":
+		return runWaitJobCount(args[1:])
+	case "assert-job-role-count":
+		return runAssertJobRoleCount(args[1:])
 	default:
 		return usageError(fmt.Sprintf("unknown command %q", args[0]))
 	}
@@ -147,6 +152,64 @@ func runListJobs(args []string) error {
 	return printJSON(jobs)
 }
 
+func runWaitJobCount(args []string) error {
+	fs := flag.NewFlagSet("wait-job-count", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	timeout := fs.Duration("timeout", 15*time.Second, "maximum wait time")
+	interval := fs.Duration("interval", 100*time.Millisecond, "poll interval")
+	socketPath := fs.String("socket-path", client.DefaultSocketPath(), "UNIX socket path")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return usageError("wait-job-count requires <task-id> <count>")
+	}
+
+	wantCount, err := strconv.Atoi(fs.Arg(1))
+	if err != nil || wantCount < 0 {
+		return usageError("wait-job-count requires <task-id> <count>")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+
+	jobs, err := waitJobCount(ctx, *socketPath, fs.Arg(0), wantCount, *interval)
+	if err != nil {
+		return err
+	}
+	return printJSON(jobs)
+}
+
+func runAssertJobRoleCount(args []string) error {
+	fs := flag.NewFlagSet("assert-job-role-count", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	socketPath := fs.String("socket-path", client.DefaultSocketPath(), "UNIX socket path")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 3 {
+		return usageError("assert-job-role-count requires <task-id> <role> <count>")
+	}
+
+	wantCount, err := strconv.Atoi(fs.Arg(2))
+	if err != nil || wantCount < 0 {
+		return usageError("assert-job-role-count requires <task-id> <role> <count>")
+	}
+
+	jobs, err := listJobs(*socketPath, fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	gotCount := countJobsByRole(jobs, fs.Arg(1))
+	if gotCount != wantCount {
+		return fmt.Errorf("job role count mismatch for %q: got %d, want %d", fs.Arg(1), gotCount, wantCount)
+	}
+	return printJSON(jobs)
+}
+
 func resolveSocketPath(args []string) string {
 	if len(args) > 0 && args[0] != "" {
 		return args[0]
@@ -229,11 +292,39 @@ func listJobs(socketPath, taskID string) ([]map[string]any, error) {
 	return jobs, nil
 }
 
+func waitJobCount(ctx context.Context, socketPath, taskID string, wantCount int, interval time.Duration) ([]map[string]any, error) {
+	for {
+		jobs, err := listJobs(socketPath, taskID)
+		if err == nil && len(jobs) >= wantCount {
+			return jobs, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			if err != nil {
+				return nil, fmt.Errorf("%w: last error: %v", ctx.Err(), err)
+			}
+			return nil, fmt.Errorf("%w: task %s did not reach job count %d", ctx.Err(), taskID, wantCount)
+		case <-time.After(interval):
+		}
+	}
+}
+
+func countJobsByRole(jobs []map[string]any, role string) int {
+	count := 0
+	for _, job := range jobs {
+		if fmt.Sprint(job["role"]) == role {
+			count++
+		}
+	}
+	return count
+}
+
 func printJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)
 	return enc.Encode(v)
 }
 
 func usageError(msg string) error {
-	return errors.New(msg + "\nusage: boid-e2e <wait-unix-socket|wait-health|get-task|wait-task-status|list-jobs> ...")
+	return errors.New(msg + "\nusage: boid-e2e <wait-unix-socket|wait-health|get-task|wait-task-status|list-jobs|wait-job-count|assert-job-role-count> ...")
 }

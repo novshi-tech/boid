@@ -1,0 +1,10 @@
+env:
+  E2E_STATE_DIR: ${E2E_STATE_DIR}
+hooks:
+  - id: build-artifact
+    on: executing
+gates:
+  - id: verify-open
+    on: verifying
+    requires_traits:
+      - artifact
