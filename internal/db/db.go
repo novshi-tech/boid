@@ -24,8 +24,15 @@ func Open(path string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open: %w", err)
 	}
+	// SQLite is the sole persistence layer here, so a single pooled connection
+	// plus a busy timeout avoids transient SQLITE_BUSY during concurrent job completion.
+	conn.SetMaxOpenConns(1)
+	conn.SetMaxIdleConns(1)
+	conn.SetConnMaxLifetime(0)
+
 	conn.Exec("PRAGMA journal_mode=WAL")
 	conn.Exec("PRAGMA foreign_keys=ON")
+	conn.Exec("PRAGMA busy_timeout=5000")
 	return &DB{Conn: conn}, nil
 }
 
