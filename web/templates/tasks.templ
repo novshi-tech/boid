@@ -8,10 +8,14 @@ import (
 )
 
 type JobView struct {
+	ID        string
 	HandlerID string
+	Role      string
 	Status    string
 	ExitCode  int
 	CreatedAt time.Time
+	UpdatedAt time.Time
+	Output    string
 }
 
 templ TaskList(tasks []*orchestrator.Task, currentFilter string) {
@@ -72,15 +76,19 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 				<table>
 					<thead>
 						<tr>
+							<th>ID</th>
 							<th>Type</th>
 							<th>Created</th>
+							<th>Payload</th>
 						</tr>
 					</thead>
 					<tbody>
 						for _, a := range actions {
 							<tr>
+								<td>{ a.ID }</td>
 								<td>{ a.Type }</td>
 								<td>{ a.CreatedAt.Format("2006-01-02 15:04:05") }</td>
+								<td><pre>{ prettyJSON(a.Payload) }</pre></td>
 							</tr>
 						}
 					</tbody>
@@ -93,19 +101,27 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 				<table>
 					<thead>
 						<tr>
+							<th>ID</th>
 							<th>Hook</th>
+							<th>Role</th>
 							<th>Status</th>
 							<th>Exit Code</th>
 							<th>Created</th>
+							<th>Updated</th>
+							<th>Output</th>
 						</tr>
 					</thead>
 					<tbody>
 						for _, j := range jobs {
 							<tr>
+								<td>{ j.ID }</td>
 								<td>{ j.HandlerID }</td>
+								<td>{ j.Role }</td>
 								<td>{ string(j.Status) }</td>
 								<td>{ intToStr(j.ExitCode) }</td>
 								<td>{ j.CreatedAt.Format("2006-01-02 15:04:05") }</td>
+								<td>{ j.UpdatedAt.Format("2006-01-02 15:04:05") }</td>
+								<td><pre>{ prettyText(j.Output) }</pre></td>
 							</tr>
 						}
 					</tbody>
@@ -129,4 +145,14 @@ func prettyJSON(raw json.RawMessage) string {
 
 func intToStr(i int) string {
 	return fmt.Sprintf("%d", i)
+}
+
+func prettyText(s string) string {
+	if s == "" {
+		return ""
+	}
+	if json.Valid([]byte(s)) {
+		return prettyJSON(json.RawMessage(s))
+	}
+	return s
 }

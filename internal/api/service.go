@@ -153,7 +153,9 @@ func (s *ProjectAppService) ReloadProjects() (*ProjectReloadResult, error) {
 }
 
 type TaskAppService struct {
-	Tasks TaskStore
+	Tasks   TaskStore
+	Actions ActionStore
+	Jobs    JobStore
 }
 
 func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
@@ -189,6 +191,29 @@ func (s *TaskAppService) GetTask(id string) (*orchestrator.Task, error) {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
 	return task, nil
+}
+
+func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
+	task, err := s.GetTask(id)
+	if err != nil {
+		return nil, err
+	}
+
+	actions, err := s.Actions.ListActionsByTask(task.ID)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+
+	jobs, err := s.Jobs.ListJobsByTask(task.ID)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+
+	return &TaskDetailView{
+		Task:    task,
+		Actions: actions,
+		Jobs:    jobs,
+	}, nil
 }
 
 type WebAppService struct {

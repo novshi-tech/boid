@@ -42,10 +42,14 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	jobs := make([]*templates.JobView, 0, len(detail.Jobs))
 	for _, job := range detail.Jobs {
 		jobs = append(jobs, &templates.JobView{
+			ID:        job.ID,
 			HandlerID: job.HandlerID,
+			Role:      job.Role,
 			Status:    string(job.Status),
 			ExitCode:  job.ExitCode,
 			CreatedAt: job.CreatedAt,
+			UpdatedAt: job.UpdatedAt,
+			Output:    job.Output,
 		})
 	}
 	templates.TaskDetail(detail.Task, detail.Actions, jobs).Render(r.Context(), w)

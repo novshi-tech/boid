@@ -79,6 +79,57 @@ func TestServer_Smoke_StartDispatchJobDoneAndAutoAdvance(t *testing.T) {
 	}
 }
 
+func TestServer_TaskDetailIncludesActionsAndJobs(t *testing.T) {
+	ts := newSmokeServer(t)
+	projectDir := writeSmokeProject(t)
+
+	var project struct {
+		ID string `json:"id"`
+	}
+	if err := ts.Client.Do("POST", "/api/projects", map[string]any{
+		"work_dir": projectDir,
+	}, &project); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	var task orchestrator.Task
+	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
+		"project_id": project.ID,
+		"title":      "Smoke",
+		"behavior":   "impl",
+		"payload":    map[string]any{"prompt": "test"},
+	}, &task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	if err := ts.Client.Do("POST", "/api/tasks/"+task.ID+"/actions", map[string]any{
+		"type": "start",
+	}, nil); err != nil {
+		t.Fatalf("start action: %v", err)
+	}
+
+	job := waitForSingleJob(t, ts, task.ID)
+
+	var detail struct {
+		Task    orchestrator.Task     `json:"task"`
+		Actions []orchestrator.Action `json:"actions"`
+		Jobs    []jobView             `json:"jobs"`
+	}
+	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID+"/detail", nil, &detail); err != nil {
+		t.Fatalf("get task detail: %v", err)
+	}
+
+	if detail.Task.ID != task.ID {
+		t.Fatalf("task detail id = %q, want %q", detail.Task.ID, task.ID)
+	}
+	if len(detail.Actions) != 1 || detail.Actions[0].Type != "start" {
+		t.Fatalf("actions = %+v, want single start action", detail.Actions)
+	}
+	if len(detail.Jobs) != 1 || detail.Jobs[0].ID != job.ID {
+		t.Fatalf("jobs = %+v, want job %q", detail.Jobs, job.ID)
+	}
+}
+
 func newSmokeServer(t *testing.T) *testutil.TestServer {
 	t.Helper()
 

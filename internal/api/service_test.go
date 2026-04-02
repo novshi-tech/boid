@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -49,6 +50,51 @@ func TestTaskWorkflowServiceCompleteJobFinalizesOnTransitionMiss(t *testing.T) {
 	}
 	if lifecycle.result.ExitCode != 0 || lifecycle.result.Output != "ok" {
 		t.Fatalf("completion result = %+v, want exit 0 output ok", lifecycle.result)
+	}
+}
+
+func TestTaskAppServiceGetTaskDetail(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "task-1",
+		ProjectID: "proj-1",
+		Title:     "Implement observability",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "impl",
+		Payload:   json.RawMessage(`{"artifact":{"url":"https://example.com"}}`),
+	}
+	actions := []*orchestrator.Action{{
+		ID:      "action-1",
+		TaskID:  task.ID,
+		Type:    "start",
+		Payload: json.RawMessage(`{"source":"cli"}`),
+	}}
+	jobs := []*Job{{
+		ID:        "job-1",
+		TaskID:    task.ID,
+		ProjectID: task.ProjectID,
+		HandlerID: "build-artifact",
+		Role:      "hook",
+		Status:    JobStatusRunning,
+	}}
+
+	svc := &TaskAppService{
+		Tasks:   &stubTaskStore{task: task},
+		Actions: stubActionStore{actions: actions},
+		Jobs:    &stubJobStore{jobsByTask: map[string][]*Job{task.ID: jobs}},
+	}
+
+	got, err := svc.GetTaskDetail(task.ID)
+	if err != nil {
+		t.Fatalf("GetTaskDetail() error = %v", err)
+	}
+	if got.Task.ID != task.ID {
+		t.Fatalf("task id = %q, want %q", got.Task.ID, task.ID)
+	}
+	if len(got.Actions) != 1 || got.Actions[0].ID != "action-1" {
+		t.Fatalf("actions = %+v, want action-1", got.Actions)
+	}
+	if len(got.Jobs) != 1 || got.Jobs[0].ID != "job-1" {
+		t.Fatalf("jobs = %+v, want job-1", got.Jobs)
 	}
 }
 
@@ -119,6 +165,7 @@ func (s *stubTaskStore) UpdateTask(task *orchestrator.Task) error { return nil }
 
 type stubJobStore struct {
 	job         *Job
+	jobsByTask  map[string][]*Job
 	getErr      error
 	updateErr   error
 	updateCalls int
@@ -133,11 +180,25 @@ func (s *stubJobStore) GetJob(id string) (*Job, error) {
 	}
 	return s.job, nil
 }
-func (s *stubJobStore) ListJobsByTask(taskID string) ([]*Job, error) { return nil, nil }
+func (s *stubJobStore) ListJobsByTask(taskID string) ([]*Job, error) {
+	if s.jobsByTask == nil {
+		return nil, nil
+	}
+	return s.jobsByTask[taskID], nil
+}
 func (s *stubJobStore) UpdateJob(job *Job) error {
 	s.updateCalls++
 	s.job = job
 	return s.updateErr
+}
+
+type stubActionStore struct {
+	actions []*orchestrator.Action
+}
+
+func (s stubActionStore) CreateAction(action *orchestrator.Action) error { return nil }
+func (s stubActionStore) ListActionsByTask(taskID string) ([]*orchestrator.Action, error) {
+	return s.actions, nil
 }
 
 type stubMetaStore struct {

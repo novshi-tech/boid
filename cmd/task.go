@@ -3,8 +3,9 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"os"
+	"time"
 
+	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
@@ -34,12 +35,20 @@ var taskShowCmd = &cobra.Command{
 	RunE:  runTaskShow,
 }
 
+var taskWatchCmd = &cobra.Command{
+	Use:   "watch <id>",
+	Short: "Watch task progress",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTaskWatch,
+}
+
 func init() {
 	taskListCmd.Flags().String("status", "", "Filter by status")
 	taskCreateCmd.Flags().String("title", "", "Task title (required)")
 	taskCreateCmd.Flags().String("project", "", "Project ID (required)")
 	taskCreateCmd.Flags().String("behavior", "", "Task behavior (required)")
-	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd)
+	taskWatchCmd.Flags().Duration("interval", time.Second, "Polling interval")
+	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd)
 	rootCmd.AddCommand(taskCmd)
 }
 
@@ -96,26 +105,47 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 func runTaskShow(cmd *cobra.Command, args []string) error {
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
-	var task orchestrator.Task
-	if err := c.Do("GET", "/api/tasks/"+args[0], nil, &task); err != nil {
-		return fmt.Errorf("get task: %w", err)
+	var detail api.TaskDetailView
+	if err := c.Do("GET", "/api/tasks/"+args[0]+"/detail", nil, &detail); err != nil {
+		return fmt.Errorf("get task detail: %w", err)
 	}
 
-	fmt.Printf("ID:       %s\n", task.ID)
-	fmt.Printf("Project:  %s\n", task.ProjectID)
-	fmt.Printf("Title:    %s\n", task.Title)
-	fmt.Printf("Status:   %s\n", task.Status)
-	fmt.Printf("Behavior: %s\n", task.Behavior)
+	return renderTaskDetail(&detail)
+}
 
-	if len(task.Payload) > 0 {
-		var pretty json.RawMessage
-		if json.Unmarshal(task.Payload, &pretty) == nil {
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			fmt.Print("Payload:  ")
-			enc.Encode(pretty)
+func runTaskWatch(cmd *cobra.Command, args []string) error {
+	interval, _ := cmd.Flags().GetDuration("interval")
+	if interval <= 0 {
+		return fmt.Errorf("--interval must be positive")
+	}
+
+	c := client.NewUnixClient(client.DefaultSocketPath())
+	taskID := args[0]
+	var lastFingerprint string
+
+	for {
+		var detail api.TaskDetailView
+		if err := c.Do("GET", "/api/tasks/"+taskID+"/detail", nil, &detail); err != nil {
+			return fmt.Errorf("watch task: %w", err)
 		}
-	}
 
-	return nil
+		data, err := json.Marshal(detail)
+		if err != nil {
+			return fmt.Errorf("snapshot task detail: %w", err)
+		}
+		snapshot := string(data)
+		if snapshot != lastFingerprint {
+			printWatchHeader("task", detail.Task.ID)
+			if err := renderTaskDetail(&detail); err != nil {
+				return err
+			}
+			fmt.Println()
+			lastFingerprint = snapshot
+		}
+
+		if isTerminalTaskStatus(detail.Task.Status) {
+			return nil
+		}
+		time.Sleep(interval)
+	}
 }

@@ -46,6 +46,7 @@ type TaskService interface {
 	CreateTask(req CreateTaskRequest) (*orchestrator.Task, error)
 	ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error)
 	GetTask(id string) (*orchestrator.Task, error)
+	GetTaskDetail(id string) (*TaskDetailView, error)
 }
 
 type WebService interface {
