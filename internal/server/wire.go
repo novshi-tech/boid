@@ -60,6 +60,13 @@ func newTmuxSession(cfg Config) string {
 	return "boid"
 }
 
+func newJobRuntime(cfg Config) dispatcher.JobRuntime {
+	return &dispatcher.TmuxRuntime{
+		Tmux:    newTmuxManager(cfg),
+		Session: newTmuxSession(cfg),
+	}
+}
+
 func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, broker dispatcher.CommandBroker, secretStore *dispatcher.SecretStore) (*appRuntime, error) {
 	projectRepo := orchestrator.NewProjectRepository(srv.db)
 	taskRepo := orchestrator.NewTaskRepository(srv.db)
@@ -75,8 +82,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 
 	runner := dispatcher.Wire(dispatcher.WireConfig{
 		DB:          srv.db,
-		Tmux:        newTmuxManager(cfg),
-		TmuxSession: newTmuxSession(cfg),
+		Runtime:     newJobRuntime(cfg),
 		Broker:      broker,
 		Sandbox:     sandbox.NewDispatcherPreparer(),
 		SecretStore: secretStore,

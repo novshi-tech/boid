@@ -32,6 +32,13 @@ func Apply(conn *sql.DB) error {
 				return columnExists(tx, "jobs", "role")
 			},
 		},
+		{
+			version: "0004_add_jobs_runtime_metadata",
+			path:    "migrations/0004_add_jobs_runtime_metadata.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnExists(tx, "jobs", "runtime_id")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

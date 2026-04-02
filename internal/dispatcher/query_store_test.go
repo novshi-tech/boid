@@ -28,9 +28,12 @@ func TestCreateJob(t *testing.T) {
 	}
 
 	job := &dispatcher.Job{
-		TaskID:    task.ID,
-		ProjectID: "proj-1",
-		HandlerID: "hook-1",
+		TaskID:      task.ID,
+		ProjectID:   "proj-1",
+		HandlerID:   "hook-1",
+		RuntimeID:   "runtime-1",
+		Interactive: true,
+		TTY:         true,
 	}
 	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
 		t.Fatalf("create job: %v", err)
@@ -40,6 +43,15 @@ func TestCreateJob(t *testing.T) {
 	}
 	if job.Status != dispatcher.JobStatusRunning {
 		t.Fatalf("expected default status running, got %s", job.Status)
+	}
+	if job.RuntimeID != "runtime-1" {
+		t.Fatalf("expected runtime_id runtime-1, got %q", job.RuntimeID)
+	}
+	if !job.Interactive {
+		t.Fatal("expected interactive to be true")
+	}
+	if !job.TTY {
+		t.Fatal("expected tty to be true")
 	}
 	if job.CreatedAt.IsZero() {
 		t.Fatal("expected CreatedAt to be set")
@@ -78,6 +90,15 @@ func TestGetJob(t *testing.T) {
 	}
 	if got.HandlerID != "hook-1" {
 		t.Fatalf("expected handler_id hook-1, got %s", got.HandlerID)
+	}
+	if got.RuntimeID != "" {
+		t.Fatalf("expected empty runtime_id, got %q", got.RuntimeID)
+	}
+	if got.Interactive {
+		t.Fatal("expected interactive false")
+	}
+	if got.TTY {
+		t.Fatal("expected tty false")
 	}
 	if got.Status != dispatcher.JobStatusRunning {
 		t.Fatalf("expected running, got %s", got.Status)
@@ -170,6 +191,9 @@ func TestUpdateJob(t *testing.T) {
 	job.Status = dispatcher.JobStatusCompleted
 	job.ExitCode = 0
 	job.Output = "success"
+	job.RuntimeID = "runtime-success"
+	job.Interactive = true
+	job.TTY = true
 	if err := dispatcher.UpdateJob(d.Conn, job); err != nil {
 		t.Fatalf("update job: %v", err)
 	}
@@ -186,6 +210,15 @@ func TestUpdateJob(t *testing.T) {
 	}
 	if got.Output != "success" {
 		t.Fatalf("expected output 'success', got %s", got.Output)
+	}
+	if got.RuntimeID != "runtime-success" {
+		t.Fatalf("expected runtime_id runtime-success, got %q", got.RuntimeID)
+	}
+	if !got.Interactive {
+		t.Fatal("expected interactive true")
+	}
+	if !got.TTY {
+		t.Fatal("expected tty true")
 	}
 }
 
@@ -209,6 +242,7 @@ func TestUpdateJob_Failed(t *testing.T) {
 	job.Status = dispatcher.JobStatusFailed
 	job.ExitCode = 1
 	job.Output = "error occurred"
+	job.RuntimeID = "runtime-failed"
 	if err := dispatcher.UpdateJob(d.Conn, job); err != nil {
 		t.Fatalf("update job: %v", err)
 	}
@@ -225,6 +259,9 @@ func TestUpdateJob_Failed(t *testing.T) {
 	}
 	if got.Output != "error occurred" {
 		t.Fatalf("expected output 'error occurred', got %s", got.Output)
+	}
+	if got.RuntimeID != "runtime-failed" {
+		t.Fatalf("expected runtime_id runtime-failed, got %q", got.RuntimeID)
 	}
 }
 

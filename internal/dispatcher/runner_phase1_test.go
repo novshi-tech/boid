@@ -3,85 +3,12 @@ package dispatcher_test
 import (
 	"context"
 	"os"
-	"sort"
-	"sync"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/testutil"
 )
-
-type statefulTmux struct {
-	mu       sync.Mutex
-	sessions map[string]map[string]string
-}
-
-func newStatefulTmux() *statefulTmux {
-	return &statefulTmux{sessions: make(map[string]map[string]string)}
-}
-
-func (m *statefulTmux) EnsureSession(name string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.sessions[name]; !ok {
-		m.sessions[name] = make(map[string]string)
-	}
-	return nil
-}
-
-func (m *statefulTmux) NewWindow(session, windowName string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.sessions[session]; !ok {
-		m.sessions[session] = make(map[string]string)
-	}
-	m.sessions[session][windowName] = ""
-	return nil
-}
-
-func (m *statefulTmux) RunInWindow(session, windowName, command string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.sessions[session]; !ok {
-		m.sessions[session] = make(map[string]string)
-	}
-	m.sessions[session][windowName] = command
-	return nil
-}
-
-func (m *statefulTmux) SendKeys(session, window, keys string) error { return nil }
-
-func (m *statefulTmux) KillWindow(session, window string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.sessions[session]; ok {
-		delete(m.sessions[session], window)
-	}
-	return nil
-}
-
-func (m *statefulTmux) ListWindows(session string) ([]string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	windows := make([]string, 0, len(m.sessions[session]))
-	for name := range m.sessions[session] {
-		windows = append(windows, name)
-	}
-	sort.Strings(windows)
-	return windows, nil
-}
-
-func (m *statefulTmux) HasSession(name string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	_, ok := m.sessions[name]
-	return ok
-}
-
-func (m *statefulTmux) Attach(session string) error               { return nil }
-func (m *statefulTmux) SwitchClient(session, window string) error { return nil }
 
 func cleanupSandboxScripts(t *testing.T, jobIDs ...string) {
 	t.Helper()
@@ -92,7 +19,7 @@ func cleanupSandboxScripts(t *testing.T, jobIDs ...string) {
 	}
 }
 
-func TestRunnerDispatch_SameTaskJobsNeedDistinctTmuxWindows(t *testing.T) {
+func TestRunnerDispatch_StartsJobRuntimeAndPersistsMetadata(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	projectDir := t.TempDir()
 
@@ -103,8 +30,9 @@ func TestRunnerDispatch_SameTaskJobsNeedDistinctTmuxWindows(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
+	taskID := "task-12345678-abcd-efgh-ijkl-mnopqrstuvwx"
 	if err := orchestrator.CreateTask(db.Conn, &orchestrator.Task{
-		ID:        "task-12345678-abcd-efgh-ijkl-mnopqrstuvwx",
+		ID:        taskID,
 		ProjectID: "proj-1",
 		Title:     "parallel hooks",
 		Behavior:  "dev",
@@ -112,18 +40,17 @@ func TestRunnerDispatch_SameTaskJobsNeedDistinctTmuxWindows(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	tmux := newStatefulTmux()
+	runtime := newStatefulRuntime()
 	runner := &dispatcher.Runner{
-		DB:          db.Conn,
-		Tmux:        tmux,
-		TmuxSession: "boid",
+		DB:      db.Conn,
+		Runtime: runtime,
 		Sandbox: &fakeSandboxPreparer{
 			outerPaths: []string{"/tmp/boid-hook-a.sh", "/tmp/boid-hook-b.sh"},
 		},
 	}
 
 	planA := &dispatcher.DispatchPlan{
-		TaskID:      "task-12345678-abcd-efgh-ijkl-mnopqrstuvwx",
+		TaskID:      taskID,
 		ProjectID:   "proj-1",
 		HandlerID:   "hook-a",
 		Role:        "hook",
@@ -134,7 +61,7 @@ func TestRunnerDispatch_SameTaskJobsNeedDistinctTmuxWindows(t *testing.T) {
 		PayloadJSON: `{}`,
 	}
 	planB := &dispatcher.DispatchPlan{
-		TaskID:      "task-12345678-abcd-efgh-ijkl-mnopqrstuvwx",
+		TaskID:      taskID,
 		ProjectID:   "proj-1",
 		HandlerID:   "hook-b",
 		Role:        "hook",
@@ -145,26 +72,59 @@ func TestRunnerDispatch_SameTaskJobsNeedDistinctTmuxWindows(t *testing.T) {
 		PayloadJSON: `{}`,
 	}
 
-	_, err := runner.Dispatch(context.Background(), planA)
+	jobID1, err := runner.Dispatch(context.Background(), planA)
 	if err != nil {
 		t.Fatalf("dispatch hook-a: %v", err)
 	}
-	_, err = runner.Dispatch(context.Background(), planB)
+	jobID2, err := runner.Dispatch(context.Background(), planB)
 	if err != nil {
 		t.Fatalf("dispatch hook-b: %v", err)
 	}
 
-	windows, err := tmux.ListWindows("boid")
-	if err != nil {
-		t.Fatalf("list windows: %v", err)
+	runtimeIDs := runtime.ActiveRuntimeIDs()
+	if len(runtimeIDs) != 2 {
+		t.Fatalf("expected 2 active runtimes, got %v", runtimeIDs)
 	}
 
-	if len(windows) != 2 {
-		t.Fatalf("same-task jobs should have distinct tmux windows; got %d windows: %v", len(windows), windows)
+	spec1, ok := runtime.StartSpec(runtimeIDs[0])
+	if !ok {
+		t.Fatalf("missing runtime spec for %s", runtimeIDs[0])
+	}
+	spec2, ok := runtime.StartSpec(runtimeIDs[1])
+	if !ok {
+		t.Fatalf("missing runtime spec for %s", runtimeIDs[1])
+	}
+	if spec1.JobID == spec2.JobID {
+		t.Fatalf("runtime start specs should target distinct jobs, got %+v and %+v", spec1, spec2)
+	}
+
+	job1, err := dispatcher.GetJob(db.Conn, jobID1)
+	if err != nil {
+		t.Fatalf("get job1: %v", err)
+	}
+	if job1.RuntimeID == "" {
+		t.Fatal("job1 runtime_id is empty")
+	}
+	if job1.Interactive {
+		t.Fatal("job1 interactive = true, want false")
+	}
+	if job1.TTY {
+		t.Fatal("job1 tty = true, want false")
+	}
+
+	job2, err := dispatcher.GetJob(db.Conn, jobID2)
+	if err != nil {
+		t.Fatalf("get job2: %v", err)
+	}
+	if job2.RuntimeID == "" {
+		t.Fatal("job2 runtime_id is empty")
+	}
+	if job1.RuntimeID == job2.RuntimeID {
+		t.Fatalf("jobs should have distinct runtime ids, got %q", job1.RuntimeID)
 	}
 }
 
-func TestRunnerCleanupTaskWindow_KillsAllTrackedJobWindows(t *testing.T) {
+func TestRunnerCleanupTaskWindow_StopsAllTrackedRuntimes(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	projectDir := t.TempDir()
 	taskID := "task-cleanup-12345678-abcd-efgh"
@@ -185,11 +145,10 @@ func TestRunnerCleanupTaskWindow_KillsAllTrackedJobWindows(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	tmux := newStatefulTmux()
+	runtime := newStatefulRuntime()
 	runner := &dispatcher.Runner{
-		DB:          db.Conn,
-		Tmux:        tmux,
-		TmuxSession: "boid",
+		DB:      db.Conn,
+		Runtime: runtime,
 		Sandbox: &fakeSandboxPreparer{
 			outerPaths: []string{"/tmp/boid-cleanup-a.sh", "/tmp/boid-cleanup-b.sh"},
 		},
@@ -214,11 +173,10 @@ func TestRunnerCleanupTaskWindow_KillsAllTrackedJobWindows(t *testing.T) {
 
 	runner.CleanupTaskWindow(taskID)
 
-	windows, err := tmux.ListWindows("boid")
-	if err != nil {
-		t.Fatalf("list windows: %v", err)
+	if active := runtime.ActiveRuntimeIDs(); len(active) != 0 {
+		t.Fatalf("cleanup should remove all tracked runtimes, got %v", active)
 	}
-	if len(windows) != 0 {
-		t.Fatalf("cleanup should remove all tracked task windows, got %v", windows)
+	if stopped := runtime.StoppedRuntimeIDs(); len(stopped) != 2 {
+		t.Fatalf("cleanup should stop 2 runtimes, got %v", stopped)
 	}
 }

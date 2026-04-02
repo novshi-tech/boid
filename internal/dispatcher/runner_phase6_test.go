@@ -31,11 +31,10 @@ func TestRunnerDispatch_WaitCompleteAndCleanupTrackedWindows(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	tmux := newStatefulTmux()
+	runtime := newStatefulRuntime()
 	runner := &dispatcher.Runner{
-		DB:          db.Conn,
-		Tmux:        tmux,
-		TmuxSession: "boid",
+		DB:      db.Conn,
+		Runtime: runtime,
 		Sandbox: &fakeSandboxPreparer{
 			outerPaths: []string{"/tmp/boid-phase6.sh"},
 		},
@@ -56,12 +55,9 @@ func TestRunnerDispatch_WaitCompleteAndCleanupTrackedWindows(t *testing.T) {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
-	windows, err := tmux.ListWindows("boid")
-	if err != nil {
-		t.Fatalf("list windows: %v", err)
-	}
-	if len(windows) != 1 {
-		t.Fatalf("dispatch should create one tracked window, got %v", windows)
+	runtimeIDs := runtime.ActiveRuntimeIDs()
+	if len(runtimeIDs) != 1 {
+		t.Fatalf("dispatch should create one tracked runtime, got %v", runtimeIDs)
 	}
 
 	waitErrCh := make(chan error, 1)
@@ -88,11 +84,7 @@ func TestRunnerDispatch_WaitCompleteAndCleanupTrackedWindows(t *testing.T) {
 
 	runner.CleanupTaskWindow(taskID)
 
-	windows, err = tmux.ListWindows("boid")
-	if err != nil {
-		t.Fatalf("list windows after cleanup: %v", err)
-	}
-	if len(windows) != 0 {
-		t.Fatalf("cleanup should remove all tracked task windows, got %v", windows)
+	if runtimeIDs = runtime.ActiveRuntimeIDs(); len(runtimeIDs) != 0 {
+		t.Fatalf("cleanup should remove all tracked runtimes, got %v", runtimeIDs)
 	}
 }

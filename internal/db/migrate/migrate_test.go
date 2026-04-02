@@ -21,6 +21,7 @@ func TestApplyFreshDatabase(t *testing.T) {
 	assertVersionRecorded(t, d.Conn, "0001_initial")
 	assertVersionRecorded(t, d.Conn, "0002_add_jobs_handler_id")
 	assertVersionRecorded(t, d.Conn, "0003_add_jobs_role")
+	assertVersionRecorded(t, d.Conn, "0004_add_jobs_runtime_metadata")
 
 	hasColumn, err := columnExists(d.Conn, "jobs", "handler_id")
 	if err != nil {
@@ -35,6 +36,27 @@ func TestApplyFreshDatabase(t *testing.T) {
 	}
 	if !hasColumn {
 		t.Fatal("expected jobs.role to exist")
+	}
+	hasColumn, err = columnExists(d.Conn, "jobs", "runtime_id")
+	if err != nil {
+		t.Fatalf("check jobs.runtime_id: %v", err)
+	}
+	if !hasColumn {
+		t.Fatal("expected jobs.runtime_id to exist")
+	}
+	hasColumn, err = columnExists(d.Conn, "jobs", "interactive")
+	if err != nil {
+		t.Fatalf("check jobs.interactive: %v", err)
+	}
+	if !hasColumn {
+		t.Fatal("expected jobs.interactive to exist")
+	}
+	hasColumn, err = columnExists(d.Conn, "jobs", "tty")
+	if err != nil {
+		t.Fatalf("check jobs.tty: %v", err)
+	}
+	if !hasColumn {
+		t.Fatal("expected jobs.tty to exist")
 	}
 }
 
@@ -119,10 +141,32 @@ func TestApplyLegacyDatabaseAddsHandlerID(t *testing.T) {
 	if !hasColumn {
 		t.Fatal("expected jobs.role to be added")
 	}
+	hasColumn, err = columnExists(d.Conn, "jobs", "runtime_id")
+	if err != nil {
+		t.Fatalf("check jobs.runtime_id: %v", err)
+	}
+	if !hasColumn {
+		t.Fatal("expected jobs.runtime_id to be added")
+	}
+	hasColumn, err = columnExists(d.Conn, "jobs", "interactive")
+	if err != nil {
+		t.Fatalf("check jobs.interactive: %v", err)
+	}
+	if !hasColumn {
+		t.Fatal("expected jobs.interactive to be added")
+	}
+	hasColumn, err = columnExists(d.Conn, "jobs", "tty")
+	if err != nil {
+		t.Fatalf("check jobs.tty: %v", err)
+	}
+	if !hasColumn {
+		t.Fatal("expected jobs.tty to be added")
+	}
 
 	assertVersionRecorded(t, d.Conn, "0001_initial")
 	assertVersionRecorded(t, d.Conn, "0002_add_jobs_handler_id")
 	assertVersionRecorded(t, d.Conn, "0003_add_jobs_role")
+	assertVersionRecorded(t, d.Conn, "0004_add_jobs_runtime_metadata")
 }
 
 func TestApplyIsIdempotent(t *testing.T) {
@@ -143,8 +187,8 @@ func TestApplyIsIdempotent(t *testing.T) {
 	if err := d.Conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 3 {
-		t.Fatalf("schema_migrations count = %d, want 3", count)
+	if count != 4 {
+		t.Fatalf("schema_migrations count = %d, want 4", count)
 	}
 }
 

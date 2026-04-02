@@ -62,11 +62,10 @@ func TestRunnerDispatch_UsesDispatcherOwnedSandboxPreparer(t *testing.T) {
 		outerPaths: []string{"/tmp/boid-phase3.sh"},
 	}
 	runner := &dispatcher.Runner{
-		DB:          db.Conn,
-		Tmux:        testutil.NewMockTmux(),
-		TmuxSession: "boid",
-		Broker:      broker,
-		Sandbox:     preparer,
+		DB:      db.Conn,
+		Runtime: newStatefulRuntime(),
+		Broker:  broker,
+		Sandbox: preparer,
 	}
 
 	jobID, err := runner.Dispatch(context.Background(), &dispatcher.DispatchPlan{

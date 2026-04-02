@@ -27,22 +27,42 @@ func CreateJob(dbtx db.DBTX, j *Job) error {
 		j.Role = "hook"
 	}
 
-	hasHookID, err := jobColumnExists(dbtx, "hook_id")
+	cols, err := inspectJobColumns(dbtx)
 	if err != nil {
-		return fmt.Errorf("detect jobs.hook_id: %w", err)
+		return fmt.Errorf("inspect jobs columns: %w", err)
 	}
 
-	var query string
-	var args []any
-	if hasHookID {
-		query = `INSERT INTO jobs (id, task_id, project_id, hook_id, handler_id, role, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-		args = []any{j.ID, j.TaskID, j.ProjectID, j.HandlerID, j.HandlerID, j.Role, j.Status, j.CreatedAt, j.UpdatedAt}
-	} else {
-		query = `INSERT INTO jobs (id, task_id, project_id, handler_id, role, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-		args = []any{j.ID, j.TaskID, j.ProjectID, j.HandlerID, j.Role, j.Status, j.CreatedAt, j.UpdatedAt}
+	columns := []string{"id", "task_id", "project_id"}
+	args := []any{j.ID, j.TaskID, j.ProjectID}
+
+	if cols.hasHookID {
+		columns = append(columns, "hook_id")
+		args = append(args, j.HandlerID)
 	}
+	columns = append(columns, "handler_id", "role", "status")
+	args = append(args, j.HandlerID, j.Role, j.Status)
+
+	if cols.hasRuntimeID {
+		columns = append(columns, "runtime_id")
+		args = append(args, j.RuntimeID)
+	}
+	if cols.hasInteractive {
+		columns = append(columns, "interactive")
+		args = append(args, boolToInt(j.Interactive))
+	}
+	if cols.hasTTY {
+		columns = append(columns, "tty")
+		args = append(args, boolToInt(j.TTY))
+	}
+
+	columns = append(columns, "created_at", "updated_at")
+	args = append(args, j.CreatedAt, j.UpdatedAt)
+
+	query := fmt.Sprintf(
+		`INSERT INTO jobs (%s) VALUES (%s)`,
+		joinColumns(columns),
+		placeholders(len(columns)),
+	)
 
 	_, err = dbtx.Exec(query, args...)
 	if err != nil {
@@ -84,9 +104,38 @@ func ListJobsByTask(dbtx db.DBTX, taskID string) ([]*Job, error) {
 
 func UpdateJob(dbtx db.DBTX, j *Job) error {
 	j.UpdatedAt = time.Now().UTC()
-	_, err := dbtx.Exec(
-		`UPDATE jobs SET status = ?, exit_code = ?, output = ?, updated_at = ? WHERE id = ?`,
-		j.Status, j.ExitCode, j.Output, j.UpdatedAt, j.ID,
+
+	cols, err := inspectJobColumns(dbtx)
+	if err != nil {
+		return fmt.Errorf("inspect jobs columns: %w", err)
+	}
+
+	assignments := []string{
+		"status = ?",
+		"exit_code = ?",
+		"output = ?",
+	}
+	args := []any{j.Status, j.ExitCode, j.Output}
+
+	if cols.hasRuntimeID {
+		assignments = append(assignments, "runtime_id = ?")
+		args = append(args, j.RuntimeID)
+	}
+	if cols.hasInteractive {
+		assignments = append(assignments, "interactive = ?")
+		args = append(args, boolToInt(j.Interactive))
+	}
+	if cols.hasTTY {
+		assignments = append(assignments, "tty = ?")
+		args = append(args, boolToInt(j.TTY))
+	}
+
+	assignments = append(assignments, "updated_at = ?")
+	args = append(args, j.UpdatedAt, j.ID)
+
+	_, err = dbtx.Exec(
+		fmt.Sprintf(`UPDATE jobs SET %s WHERE id = ?`, joinAssignments(assignments)),
+		args...,
 	)
 	return err
 }
@@ -94,7 +143,8 @@ func UpdateJob(dbtx db.DBTX, j *Job) error {
 func scanJob(s jobScanner) (*Job, error) {
 	var j Job
 	var exitCode sql.NullInt64
-	if err := s.Scan(&j.ID, &j.TaskID, &j.ProjectID, &j.HandlerID, &j.Role, &j.Status, &exitCode, &j.Output, &j.CreatedAt, &j.UpdatedAt); err != nil {
+	var interactive, tty sql.NullInt64
+	if err := s.Scan(&j.ID, &j.TaskID, &j.ProjectID, &j.HandlerID, &j.Role, &j.RuntimeID, &interactive, &tty, &j.Status, &exitCode, &j.Output, &j.CreatedAt, &j.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("job not found")
 		}
@@ -103,18 +153,117 @@ func scanJob(s jobScanner) (*Job, error) {
 	if exitCode.Valid {
 		j.ExitCode = int(exitCode.Int64)
 	}
+	j.Interactive = interactive.Valid && interactive.Int64 != 0
+	j.TTY = tty.Valid && tty.Int64 != 0
 	return &j, nil
 }
 
 func jobSelectSQL(dbtx db.DBTX, suffix string) (string, error) {
-	hasHookID, err := jobColumnExists(dbtx, "hook_id")
+	cols, err := inspectJobColumns(dbtx)
 	if err != nil {
 		return "", err
 	}
-	if hasHookID {
-		return `SELECT id, task_id, project_id, COALESCE(NULLIF(handler_id, ''), hook_id) AS handler_id, role, status, exit_code, output, created_at, updated_at FROM jobs ` + suffix, nil
+
+	handlerExpr := "handler_id"
+	if cols.hasHookID {
+		handlerExpr = "COALESCE(NULLIF(handler_id, ''), hook_id)"
 	}
-	return `SELECT id, task_id, project_id, handler_id, role, status, exit_code, output, created_at, updated_at FROM jobs ` + suffix, nil
+	runtimeExpr := `'' AS runtime_id`
+	if cols.hasRuntimeID {
+		runtimeExpr = "runtime_id"
+	}
+	interactiveExpr := "0 AS interactive"
+	if cols.hasInteractive {
+		interactiveExpr = "interactive"
+	}
+	ttyExpr := "0 AS tty"
+	if cols.hasTTY {
+		ttyExpr = "tty"
+	}
+
+	return fmt.Sprintf(
+		`SELECT id, task_id, project_id, %s AS handler_id, role, %s, %s, %s, status, exit_code, output, created_at, updated_at FROM jobs %s`,
+		handlerExpr,
+		runtimeExpr,
+		interactiveExpr,
+		ttyExpr,
+		suffix,
+	), nil
+}
+
+type jobColumns struct {
+	hasHookID      bool
+	hasRuntimeID   bool
+	hasInteractive bool
+	hasTTY         bool
+}
+
+func inspectJobColumns(dbtx db.DBTX) (jobColumns, error) {
+	hasHookID, err := jobColumnExists(dbtx, "hook_id")
+	if err != nil {
+		return jobColumns{}, fmt.Errorf("detect jobs.hook_id: %w", err)
+	}
+	hasRuntimeID, err := jobColumnExists(dbtx, "runtime_id")
+	if err != nil {
+		return jobColumns{}, fmt.Errorf("detect jobs.runtime_id: %w", err)
+	}
+	hasInteractive, err := jobColumnExists(dbtx, "interactive")
+	if err != nil {
+		return jobColumns{}, fmt.Errorf("detect jobs.interactive: %w", err)
+	}
+	hasTTY, err := jobColumnExists(dbtx, "tty")
+	if err != nil {
+		return jobColumns{}, fmt.Errorf("detect jobs.tty: %w", err)
+	}
+	return jobColumns{
+		hasHookID:      hasHookID,
+		hasRuntimeID:   hasRuntimeID,
+		hasInteractive: hasInteractive,
+		hasTTY:         hasTTY,
+	}, nil
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
+func joinColumns(columns []string) string {
+	if len(columns) == 0 {
+		return ""
+	}
+	return joinWithSeparator(columns, ", ")
+}
+
+func joinAssignments(assignments []string) string {
+	if len(assignments) == 0 {
+		return ""
+	}
+	return joinWithSeparator(assignments, ", ")
+}
+
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	values := make([]string, n)
+	for i := range values {
+		values[i] = "?"
+	}
+	return joinWithSeparator(values, ", ")
+}
+
+func joinWithSeparator(values []string, sep string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	out := values[0]
+	for _, value := range values[1:] {
+		out += sep + value
+	}
+	return out
 }
 
 func jobColumnExists(dbtx db.DBTX, column string) (bool, error) {

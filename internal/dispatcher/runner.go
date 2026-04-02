@@ -7,30 +7,20 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
-
-	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
 )
 
 type Runner struct {
-	DB          *sql.DB
-	Tmux        dtmux.TmuxManager
-	TmuxSession string        // defaults to "boid"
-	Broker      CommandBroker // host command broker
-	Sandbox     SandboxPreparer
-	SecretStore *SecretStore // secret store for resolving secret: env values
-	tokenMu     sync.Mutex
-	jobTokens   map[string]string // job ID -> broker token
-	waiterMu    sync.Mutex
-	jobWaiters  map[string]chan JobCompletionResult // job ID -> completion channel
-	windowMu    sync.Mutex
-	taskWindows map[string]map[string]struct{} // task ID -> tmux window names
-}
-
-func (r *Runner) session() string {
-	if r.TmuxSession != "" {
-		return r.TmuxSession
-	}
-	return "boid"
+	DB           *sql.DB
+	Runtime      JobRuntime
+	Broker       CommandBroker // host command broker
+	Sandbox      SandboxPreparer
+	SecretStore  *SecretStore // secret store for resolving secret: env values
+	tokenMu      sync.Mutex
+	jobTokens    map[string]string // job ID -> broker token
+	waiterMu     sync.Mutex
+	jobWaiters   map[string]chan JobCompletionResult // job ID -> completion channel
+	runtimeMu    sync.Mutex
+	taskRuntimes map[string]map[string]struct{} // task ID -> runtime IDs
 }
 
 func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, error) {
@@ -42,10 +32,12 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 	}
 
 	j := &Job{
-		TaskID:    plan.TaskID,
-		ProjectID: plan.ProjectID,
-		HandlerID: plan.HandlerID,
-		Role:      plan.Role,
+		TaskID:      plan.TaskID,
+		ProjectID:   plan.ProjectID,
+		HandlerID:   plan.HandlerID,
+		Role:        plan.Role,
+		Interactive: false,
+		TTY:         false,
 	}
 	if err := CreateJob(r.DB, j); err != nil {
 		return "", fmt.Errorf("create job: %w", err)
@@ -97,7 +89,7 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		r.trackToken(j.ID, spec.BrokerToken)
 	}
 
-	return r.launchSandbox(j.ID, plan.TaskID, plan.HandlerID, spec)
+	return r.launchSandbox(ctx, j, spec)
 }
 
 func hostCommandNames(cmds map[string]CommandDef) []string {
@@ -173,10 +165,16 @@ func (r *Runner) CompleteJob(jobID string, result JobCompletionResult) {
 	}
 }
 
-// launchSandbox writes sandbox scripts and launches in tmux. Returns job ID.
-func (r *Runner) launchSandbox(jobID, taskID, handlerID string, spec SandboxSpec) (string, error) {
+// launchSandbox writes sandbox scripts and launches via the configured runtime. Returns job ID.
+func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec SandboxSpec) (string, error) {
+	if job == nil {
+		return "", fmt.Errorf("job is required")
+	}
 	if r.Sandbox == nil {
 		return "", fmt.Errorf("sandbox preparer is required")
+	}
+	if r.Runtime == nil {
+		return "", fmt.Errorf("job runtime is required")
 	}
 
 	prepared, err := r.Sandbox.PrepareSandbox(spec)
@@ -187,44 +185,42 @@ func (r *Runner) launchSandbox(jobID, taskID, handlerID string, spec SandboxSpec
 		return "", fmt.Errorf("prepare sandbox: missing outer script path")
 	}
 
-	session := r.session()
-
-	var windowName string
-	if spec.Role == "hook" || spec.Role == "gate" {
-		windowName = fmt.Sprintf("job-%s-%s", shortID(taskID), shortID(jobID))
-	} else {
-		windowName = fmt.Sprintf("hook-%s-%s", shortID(taskID), handlerID)
+	handle, err := r.Runtime.Start(ctx, RuntimeStartSpec{
+		JobID:       job.ID,
+		TaskID:      job.TaskID,
+		ProjectID:   job.ProjectID,
+		HandlerID:   job.HandlerID,
+		Role:        job.Role,
+		Command:     fmt.Sprintf("bash %s", prepared.OuterPath),
+		Interactive: spec.TTY,
+		TTY:         spec.TTY,
+	})
+	if err != nil {
+		return "", fmt.Errorf("start runtime: %w", err)
 	}
 
-	if r.Tmux != nil {
-		if err := r.Tmux.EnsureSession(session); err != nil {
-			return "", fmt.Errorf("ensure session: %w", err)
-		}
-		r.Tmux.KillWindow(session, windowName)
-		cmd := fmt.Sprintf("bash %s", prepared.OuterPath)
-		if err := r.Tmux.RunInWindow(session, windowName, cmd); err != nil {
-			return "", fmt.Errorf("run in window: %w", err)
-		}
-		r.trackTaskWindow(taskID, windowName)
+	job.RuntimeID = handle.ID
+	job.Interactive = handle.Interactive
+	job.TTY = handle.TTY
+	if err := UpdateJob(r.DB, job); err != nil {
+		_ = r.Runtime.Stop(context.Background(), handle.ID)
+		return "", fmt.Errorf("persist job runtime metadata: %w", err)
 	}
 
-	slog.Info("job started", "job_id", jobID, "window", windowName)
-	return jobID, nil
+	r.trackTaskRuntime(job.TaskID, handle.ID)
+	slog.Info("job started", "job_id", job.ID, "runtime_id", handle.ID)
+	return job.ID, nil
 }
 
-// CleanupTaskWindow kills the tmux window associated with a task.
+// CleanupTaskWindow stops all tracked runtimes associated with a task.
 func (r *Runner) CleanupTaskWindow(taskID string) {
-	if r.Tmux == nil {
+	if r.Runtime == nil {
 		return
 	}
-	session := r.session()
-	windows := r.takeTaskWindows(taskID)
-	if len(windows) == 0 {
-		windows = []string{fmt.Sprintf("task-%s", shortID(taskID))}
-	}
-	for _, windowName := range windows {
-		if err := r.Tmux.KillWindow(session, windowName); err != nil {
-			slog.Debug("cleanup task window", "task_id", taskID, "window", windowName, "error", err)
+	runtimeIDs := r.takeTaskRuntimes(taskID)
+	for _, runtimeID := range runtimeIDs {
+		if err := r.Runtime.Stop(context.Background(), runtimeID); err != nil {
+			slog.Debug("cleanup task runtime", "task_id", taskID, "runtime_id", runtimeID, "error", err)
 		}
 	}
 }
@@ -262,36 +258,36 @@ func shortID(id string) string {
 	return id[:min(8, len(id))]
 }
 
-func (r *Runner) trackTaskWindow(taskID, windowName string) {
-	if taskID == "" || windowName == "" {
+func (r *Runner) trackTaskRuntime(taskID, runtimeID string) {
+	if taskID == "" || runtimeID == "" {
 		return
 	}
 
-	r.windowMu.Lock()
-	defer r.windowMu.Unlock()
+	r.runtimeMu.Lock()
+	defer r.runtimeMu.Unlock()
 
-	if r.taskWindows == nil {
-		r.taskWindows = make(map[string]map[string]struct{})
+	if r.taskRuntimes == nil {
+		r.taskRuntimes = make(map[string]map[string]struct{})
 	}
-	if r.taskWindows[taskID] == nil {
-		r.taskWindows[taskID] = make(map[string]struct{})
+	if r.taskRuntimes[taskID] == nil {
+		r.taskRuntimes[taskID] = make(map[string]struct{})
 	}
-	r.taskWindows[taskID][windowName] = struct{}{}
+	r.taskRuntimes[taskID][runtimeID] = struct{}{}
 }
 
-func (r *Runner) takeTaskWindows(taskID string) []string {
-	r.windowMu.Lock()
-	defer r.windowMu.Unlock()
+func (r *Runner) takeTaskRuntimes(taskID string) []string {
+	r.runtimeMu.Lock()
+	defer r.runtimeMu.Unlock()
 
-	windows := r.taskWindows[taskID]
-	if len(windows) == 0 {
+	runtimes := r.taskRuntimes[taskID]
+	if len(runtimes) == 0 {
 		return nil
 	}
-	delete(r.taskWindows, taskID)
+	delete(r.taskRuntimes, taskID)
 
-	out := make([]string, 0, len(windows))
-	for windowName := range windows {
-		out = append(out, windowName)
+	out := make([]string, 0, len(runtimes))
+	for runtimeID := range runtimes {
+		out = append(out, runtimeID)
 	}
 	sort.Strings(out)
 	return out

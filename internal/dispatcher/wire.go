@@ -2,14 +2,11 @@ package dispatcher
 
 import (
 	"database/sql"
-
-	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
 )
 
 type WireConfig struct {
 	DB          *sql.DB
-	Tmux        dtmux.TmuxManager
-	TmuxSession string
+	Runtime     JobRuntime
 	Broker      CommandBroker
 	Sandbox     SandboxPreparer
 	SecretStore *SecretStore
@@ -18,8 +15,7 @@ type WireConfig struct {
 func Wire(cfg WireConfig) *Runner {
 	return &Runner{
 		DB:          cfg.DB,
-		Tmux:        cfg.Tmux,
-		TmuxSession: cfg.TmuxSession,
+		Runtime:     cfg.Runtime,
 		Broker:      cfg.Broker,
 		Sandbox:     cfg.Sandbox,
 		SecretStore: cfg.SecretStore,

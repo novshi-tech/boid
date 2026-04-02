@@ -71,10 +71,9 @@ func TestRunnerDispatch_UsesDispatcherOwnedBrokerInterface(t *testing.T) {
 		tokens:     []string{"token-phase2"},
 	}
 	runner := &dispatcher.Runner{
-		DB:          db.Conn,
-		Tmux:        testutil.NewMockTmux(),
-		TmuxSession: "boid",
-		Broker:      broker,
+		DB:      db.Conn,
+		Runtime: newStatefulRuntime(),
+		Broker:  broker,
 		Sandbox: &fakeSandboxPreparer{
 			outerPaths: []string{"/tmp/boid-phase2.sh"},
 		},
