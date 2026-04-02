@@ -13,13 +13,33 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	defaultStartHTTPAddr    = ":8080"
+	defaultStartTmuxSession = "boid"
+)
+
 var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the boid server",
 	RunE:  runStart,
 }
 
+var (
+	startDBPath      string
+	startSocketPath  string
+	startHTTPAddr    string
+	startTmuxSession string
+	startKitsDir     string
+	startKeyFilePath string
+)
+
 func init() {
+	startCmd.Flags().StringVar(&startDBPath, "db-path", "", "Path to the SQLite database")
+	startCmd.Flags().StringVar(&startSocketPath, "socket-path", "", "Path to the UNIX socket")
+	startCmd.Flags().StringVar(&startHTTPAddr, "http-addr", "", "HTTP listen address")
+	startCmd.Flags().StringVar(&startTmuxSession, "tmux-session", "", "tmux session name")
+	startCmd.Flags().StringVar(&startKitsDir, "kits-dir", "", "Base directory for installed kits")
+	startCmd.Flags().StringVar(&startKeyFilePath, "key-file-path", "", "Path to the secret encryption key file")
 	rootCmd.AddCommand(startCmd)
 }
 
@@ -67,15 +87,54 @@ func defaultKitsDir() string {
 	return filepath.Join(dataDir, "boid", "kits")
 }
 
-func runStart(cmd *cobra.Command, args []string) error {
+type startConfigOptions struct {
+	DBPath      string
+	SocketPath  string
+	HTTPAddr    string
+	TmuxSession string
+	KitsDir     string
+	KeyFilePath string
+}
+
+func buildStartConfig(opts startConfigOptions) server.Config {
 	cfg := server.Config{
-		DBPath:         defaultDBPath(),
-		SocketPath:     client.DefaultSocketPath(),
-		HTTPAddr:       ":8080",
-		TmuxSession:    "boid",
-		KitsDir:        defaultKitsDir(),
+		DBPath:         opts.DBPath,
+		SocketPath:     opts.SocketPath,
+		HTTPAddr:       opts.HTTPAddr,
+		TmuxSession:    opts.TmuxSession,
+		KitsDir:        opts.KitsDir,
+		KeyFilePath:    opts.KeyFilePath,
 		AllowedDomains: defaultAllowedDomains(),
 	}
+
+	if cfg.DBPath == "" {
+		cfg.DBPath = defaultDBPath()
+	}
+	if cfg.SocketPath == "" {
+		cfg.SocketPath = client.DefaultSocketPath()
+	}
+	if cfg.HTTPAddr == "" {
+		cfg.HTTPAddr = defaultStartHTTPAddr
+	}
+	if cfg.TmuxSession == "" {
+		cfg.TmuxSession = defaultStartTmuxSession
+	}
+	if cfg.KitsDir == "" {
+		cfg.KitsDir = defaultKitsDir()
+	}
+
+	return cfg
+}
+
+func runStart(cmd *cobra.Command, args []string) error {
+	cfg := buildStartConfig(startConfigOptions{
+		DBPath:      startDBPath,
+		SocketPath:  startSocketPath,
+		HTTPAddr:    startHTTPAddr,
+		TmuxSession: startTmuxSession,
+		KitsDir:     startKitsDir,
+		KeyFilePath: startKeyFilePath,
+	})
 
 	srv, err := server.New(cfg)
 	if err != nil {
