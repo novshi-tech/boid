@@ -89,8 +89,8 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 		BoidBinary:         p.BoidBinary,
 		ServerSocket:       p.ServerSocket,
 		Env:                meta.Env,
-		BuiltinCommands:    cloneStringSlice(meta.BuiltinCommands),
-		HostCommands:       map[string]CommandDef{"boid": {Name: "boid"}},
+		BuiltinCommands:    mergeBuiltinCommands(meta.BuiltinCommands, []string{"boid"}),
+		HostCommands:       nil,
 		AdditionalBindings: meta.AdditionalBindings,
 		WorkspaceDirs:      workspaceDirs,
 		ProxyPort:          p.proxyPort(),
@@ -122,10 +122,6 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 	}
 
 	hostCommands := meta.HostCommands.ToCommandDefs()
-	if hostCommands == nil {
-		hostCommands = make(map[string]CommandDef)
-	}
-	hostCommands["boid"] = CommandDef{Name: "boid"}
 
 	return &DispatchRequest{
 		TaskID:          event.TaskID,
@@ -137,7 +133,7 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 		BoidBinary:      p.BoidBinary,
 		ServerSocket:    p.ServerSocket,
 		Env:             meta.Env,
-		BuiltinCommands: nil,
+		BuiltinCommands: mergeBuiltinCommands(meta.BuiltinCommands, []string{"boid"}),
 		HostCommands:    hostCommands,
 		ProxyPort:       p.proxyPort(),
 		TaskJSON:        string(taskJSON),

@@ -375,7 +375,7 @@ func TestBuildSandboxPlan_BuiltinCommands(t *testing.T) {
 	cfg := WrapperConfig{
 		ProjectDir:      "/home/user/proj",
 		BoidBinary:      "/usr/local/bin/boid",
-		BuiltinCommands: []string{"git"},
+		BuiltinCommands: []string{"boid", "git"},
 	}
 	plan := BuildSandboxPlan(cfg)
 

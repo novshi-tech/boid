@@ -241,6 +241,9 @@ func shimCommands(builtins, hostCommands []string) []string {
 	seen := make(map[string]struct{}, len(builtins)+len(hostCommands))
 	var out []string
 	for _, name := range builtins {
+		if name == "boid" {
+			continue
+		}
 		if _, ok := seen[name]; ok {
 			continue
 		}

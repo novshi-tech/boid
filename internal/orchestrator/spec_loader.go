@@ -647,7 +647,8 @@ func validateBuiltinCommands(scope string, builtins []string, hostCommands HostC
 }
 
 var validBuiltinCommands = map[string]struct{}{
-	"git": {},
+	"git":  {},
+	"boid": {},
 }
 
 func mergeTaskBehaviorMaps(base, overlay map[string]TaskBehavior) map[string]TaskBehavior {

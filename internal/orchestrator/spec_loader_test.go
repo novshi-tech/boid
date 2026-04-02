@@ -38,6 +38,8 @@ hooks:
     on: executing
     requires_traits:
       - artifactompt
+builtin_commands:
+  - boid
 host_commands:
   git:
     path: /usr/bin/git
@@ -67,6 +69,9 @@ env:
 	}
 	if _, ok := meta.HostCommands["git"]; !ok {
 		t.Fatal("expected host_commands to contain 'git'")
+	}
+	if len(meta.BuiltinCommands) != 1 || meta.BuiltinCommands[0] != "boid" {
+		t.Fatalf("unexpected builtin commands: %+v", meta.BuiltinCommands)
 	}
 	if meta.Env["KEY"] != "val" {
 		t.Fatalf("expected env KEY=val, got %s", meta.Env["KEY"])
@@ -293,7 +298,7 @@ additional_bindings:
 		if err := os.MkdirAll(boidDir, 0o755); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
-		if err := os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte("builtin_commands:\n  - git\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte("builtin_commands:\n  - boid\n  - git\n"), 0o644); err != nil {
 			t.Fatalf("write project.local.yaml: %v", err)
 		}
 
@@ -301,8 +306,25 @@ additional_bindings:
 		if err != nil {
 			t.Fatalf("ReadProjectLocalMeta: %v", err)
 		}
-		if len(meta.BuiltinCommands) != 1 || meta.BuiltinCommands[0] != "git" {
+		if len(meta.BuiltinCommands) != 2 || meta.BuiltinCommands[0] != "boid" || meta.BuiltinCommands[1] != "git" {
 			t.Fatalf("unexpected builtin_commands: %+v", meta.BuiltinCommands)
+		}
+	})
+
+	t.Run("builtin commands conflict with host command", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		if err := os.MkdirAll(boidDir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		content := "builtin_commands:\n  - boid\nhost_commands:\n  boid:\n    path: /usr/bin/boid\n"
+		if err := os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(content), 0o644); err != nil {
+			t.Fatalf("write project.local.yaml: %v", err)
+		}
+
+		_, err := projectspec.ReadProjectLocalMeta(dir)
+		if err == nil || !strings.Contains(err.Error(), "both builtin_commands and host_commands") {
+			t.Fatalf("expected builtin/host conflict, got %v", err)
 		}
 	})
 }

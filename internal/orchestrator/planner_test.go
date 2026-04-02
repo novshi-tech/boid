@@ -44,3 +44,75 @@ func TestDispatchPlannerCollectWorkspaceDirs_UsesProjectWorkspaceMembership(t *t
 		t.Fatalf("unexpected workspace dir from another workspace: %#v", dirs)
 	}
 }
+
+type stubMetaCache struct {
+	meta *ProjectMeta
+}
+
+func (s stubMetaCache) Get(id string) (*ProjectMeta, bool) {
+	if s.meta == nil || s.meta.ID != id {
+		return nil, false
+	}
+	return s.meta, true
+}
+
+type stubTaskLookup struct {
+	task *Task
+}
+
+func (s stubTaskLookup) GetTask(id string) (*Task, error) {
+	if s.task == nil || s.task.ID != id {
+		return nil, nil
+	}
+	return s.task, nil
+}
+
+func TestDispatchPlannerAddsBoidAsBuiltinForHookAndGate(t *testing.T) {
+	meta := &ProjectMeta{
+		ID: "proj-1",
+		HostCommands: HostCommands{
+			"git": {Path: "/usr/bin/git"},
+		},
+		BuiltinCommands: []string{"git"},
+	}
+	proj := &Project{ID: "proj-1", WorkDir: "/workspace/proj-1"}
+	task := &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting}
+
+	planner := &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj}},
+		Tasks:    stubTaskLookup{task: task},
+	}
+
+	hookReq, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    task.ID,
+		ProjectID: proj.ID,
+		Hook:      Hook{ID: "hook-1", ScriptPath: "/workspace/proj-1/.boid/hooks/hook-1.sh"},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if len(hookReq.BuiltinCommands) != 2 || hookReq.BuiltinCommands[0] != "git" || hookReq.BuiltinCommands[1] != "boid" {
+		t.Fatalf("hook builtin commands = %#v, want [git boid]", hookReq.BuiltinCommands)
+	}
+	if hookReq.HostCommands != nil {
+		t.Fatalf("hook host commands = %#v, want nil", hookReq.HostCommands)
+	}
+
+	gateReq, err := planner.PlanGate(&GateFireEvent{
+		EventID:   "event-2",
+		TaskID:    task.ID,
+		ProjectID: proj.ID,
+		Gate:      Gate{ID: "gate-1", ScriptPath: "/workspace/proj-1/.boid/gates/gate-1.sh"},
+	})
+	if err != nil {
+		t.Fatalf("PlanGate: %v", err)
+	}
+	if len(gateReq.BuiltinCommands) != 2 || gateReq.BuiltinCommands[0] != "git" || gateReq.BuiltinCommands[1] != "boid" {
+		t.Fatalf("gate builtin commands = %#v, want [git boid]", gateReq.BuiltinCommands)
+	}
+	if _, ok := gateReq.HostCommands["boid"]; ok {
+		t.Fatalf("gate host commands should not contain boid: %#v", gateReq.HostCommands)
+	}
+}
