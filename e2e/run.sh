@@ -90,10 +90,6 @@ run_scenario() {
         wait "$SERVER_PID" >/dev/null 2>&1 || true
       fi
 
-      if [[ -n "${BOID_E2E_TMUX_SESSION:-}" ]] && command -v tmux >/dev/null 2>&1; then
-        TMUX_TMPDIR="${TMUX_TMPDIR:-}" tmux kill-session -t "$BOID_E2E_TMUX_SESSION" >/dev/null 2>&1 || true
-      fi
-
       if [[ $exit_code -ne 0 || $KEEP_TEMP -eq 1 ]]; then
         printf '[e2e] temp root preserved at %s\n' "$ROOT" >&2
       else
@@ -109,16 +105,14 @@ run_scenario() {
     export XDG_RUNTIME_DIR="$ROOT/run"
     export BOID_SOCKET="$ROOT/run/boid.sock"
     unset TMUX TMUX_PANE
-    export TMUX_TMPDIR="$ROOT/tmux"
     export E2E_ROOT="$ROOT"
     export E2E_STATE_DIR="$ROOT/state"
     export E2E_BIN_DIR="$ROOT/bin"
     export E2E_LOG_DIR="$ROOT/logs"
     export E2E_WORKSPACE_DIR="$ROOT/workspace"
-    export BOID_E2E_TMUX_SESSION="boid-e2e-${scenario}-$$"
     export PATH="$E2E_BIN_DIR:$PATH"
 
-    mkdir -p "$HOME" "$XDG_DATA_HOME/boid/kits" "$XDG_RUNTIME_DIR" "$TMUX_TMPDIR" "$E2E_STATE_DIR" "$E2E_BIN_DIR" "$E2E_LOG_DIR" "$E2E_WORKSPACE_DIR"
+    mkdir -p "$HOME" "$XDG_DATA_HOME/boid/kits" "$XDG_RUNTIME_DIR" "$E2E_STATE_DIR" "$E2E_BIN_DIR" "$E2E_LOG_DIR" "$E2E_WORKSPACE_DIR"
 
     cp -f "$BUILD_ROOT/boid" "$E2E_BIN_DIR/boid"
     cp -f "$BUILD_ROOT/boid-e2e" "$E2E_BIN_DIR/boid-e2e"
@@ -144,7 +138,6 @@ run_scenario() {
       --db-path "$XDG_DATA_HOME/boid/boid.db" \
       --socket-path "$BOID_SOCKET" \
       --http-addr "127.0.0.1:0" \
-      --tmux-session "$BOID_E2E_TMUX_SESSION" \
       --kits-dir "$XDG_DATA_HOME/boid/kits" \
       >"$E2E_LOG_DIR/server.stdout.log" \
       2>"$E2E_LOG_DIR/server.stderr.log" &

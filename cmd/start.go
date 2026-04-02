@@ -14,8 +14,7 @@ import (
 )
 
 const (
-	defaultStartHTTPAddr    = ":8080"
-	defaultStartTmuxSession = "boid"
+	defaultStartHTTPAddr = ":8080"
 )
 
 var startCmd = &cobra.Command{
@@ -28,7 +27,6 @@ var (
 	startDBPath      string
 	startSocketPath  string
 	startHTTPAddr    string
-	startTmuxSession string
 	startKitsDir     string
 	startKeyFilePath string
 )
@@ -37,7 +35,6 @@ func init() {
 	startCmd.Flags().StringVar(&startDBPath, "db-path", "", "Path to the SQLite database")
 	startCmd.Flags().StringVar(&startSocketPath, "socket-path", "", "Path to the UNIX socket")
 	startCmd.Flags().StringVar(&startHTTPAddr, "http-addr", "", "HTTP listen address")
-	startCmd.Flags().StringVar(&startTmuxSession, "tmux-session", "", "tmux session name")
 	startCmd.Flags().StringVar(&startKitsDir, "kits-dir", "", "Base directory for installed kits")
 	startCmd.Flags().StringVar(&startKeyFilePath, "key-file-path", "", "Path to the secret encryption key file")
 	rootCmd.AddCommand(startCmd)
@@ -91,7 +88,6 @@ type startConfigOptions struct {
 	DBPath      string
 	SocketPath  string
 	HTTPAddr    string
-	TmuxSession string
 	KitsDir     string
 	KeyFilePath string
 }
@@ -101,7 +97,6 @@ func buildStartConfig(opts startConfigOptions) server.Config {
 		DBPath:         opts.DBPath,
 		SocketPath:     opts.SocketPath,
 		HTTPAddr:       opts.HTTPAddr,
-		TmuxSession:    opts.TmuxSession,
 		KitsDir:        opts.KitsDir,
 		KeyFilePath:    opts.KeyFilePath,
 		AllowedDomains: defaultAllowedDomains(),
@@ -116,9 +111,6 @@ func buildStartConfig(opts startConfigOptions) server.Config {
 	if cfg.HTTPAddr == "" {
 		cfg.HTTPAddr = defaultStartHTTPAddr
 	}
-	if cfg.TmuxSession == "" {
-		cfg.TmuxSession = defaultStartTmuxSession
-	}
 	if cfg.KitsDir == "" {
 		cfg.KitsDir = defaultKitsDir()
 	}
@@ -131,7 +123,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 		DBPath:      startDBPath,
 		SocketPath:  startSocketPath,
 		HTTPAddr:    startHTTPAddr,
-		TmuxSession: startTmuxSession,
 		KitsDir:     startKitsDir,
 		KeyFilePath: startKeyFilePath,
 	})

@@ -22,7 +22,7 @@ func init() {
 	rootCmd.AddCommand(checkCmd)
 }
 
-var hostRequiredTools = []string{"passt", "tmux"}
+var hostRequiredTools = []string{"passt"}
 
 func runCheck(cmd *cobra.Command, args []string) error {
 	allOK := true

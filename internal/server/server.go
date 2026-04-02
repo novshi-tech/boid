@@ -15,7 +15,6 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/db/migrate"
 	"github.com/novshi-tech/boid/internal/dispatcher"
-	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
@@ -24,12 +23,10 @@ type Config struct {
 	DBPath         string
 	SocketPath     string
 	HTTPAddr       string
-	TmuxSession    string
 	KitsDir        string   // base dir for installed kit repos
 	KeyFilePath    string   // path to secret encryption key file
 	AllowedDomains []string // proxy allowed domains
 	JobRuntime     dispatcher.JobRuntime
-	Tmux           dtmux.TmuxManager // nil uses RealTmux
 }
 
 type Server struct {

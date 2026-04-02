@@ -11,7 +11,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/dispatcher"
-	dtmux "github.com/novshi-tech/boid/internal/dispatcher/tmux"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/web"
@@ -47,28 +46,19 @@ func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) 
 	return store, nil
 }
 
-func newTmuxManager(cfg Config) dtmux.TmuxManager {
-	if cfg.Tmux != nil {
-		return cfg.Tmux
-	}
-	return &dtmux.RealTmux{}
-}
-
-func newTmuxSession(cfg Config) string {
-	if cfg.TmuxSession != "" {
-		return cfg.TmuxSession
-	}
-	return "boid"
-}
-
-func newJobRuntime(cfg Config) dispatcher.JobRuntime {
+func newJobRuntime(cfg Config) (dispatcher.JobRuntime, error) {
 	if cfg.JobRuntime != nil {
-		return cfg.JobRuntime
+		return cfg.JobRuntime, nil
 	}
-	return &dispatcher.TmuxRuntime{
-		Tmux:    newTmuxManager(cfg),
-		Session: newTmuxSession(cfg),
+
+	rootDir := filepath.Join(filepath.Dir(cfg.SocketPath), "runtimes")
+	if cfg.DBPath != "" && cfg.DBPath != ":memory:" {
+		rootDir = filepath.Join(filepath.Dir(cfg.DBPath), "runtimes")
 	}
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir runtime root: %w", err)
+	}
+	return &dispatcher.LocalRuntime{RootDir: rootDir}, nil
 }
 
 func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, broker dispatcher.CommandBroker, secretStore *dispatcher.SecretStore) (*appRuntime, error) {
@@ -84,9 +74,14 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	}
 	wtMgr := &dispatcher.WorktreeManager{RootDir: wtRootDir, DB: srv.db}
 
+	jobRuntime, err := newJobRuntime(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	runner := dispatcher.Wire(dispatcher.WireConfig{
 		DB:          srv.db,
-		Runtime:     newJobRuntime(cfg),
+		Runtime:     jobRuntime,
 		Broker:      broker,
 		Sandbox:     sandbox.NewDispatcherPreparer(),
 		SecretStore: secretStore,
@@ -138,7 +133,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		projectRepo: projectRepo,
 		taskRepo:    taskRepo,
 		jobStore:    jobStore,
-		jobRuntime:  runner.Runtime,
+		jobRuntime:  jobRuntime,
 		projectSvc:  projectSvc,
 		taskSvc:     taskSvc,
 		webSvc:      webSvc,

@@ -55,7 +55,7 @@ func (cfg WrapperConfig) homeDir() string {
 }
 
 // WriteSandboxScripts generates 3 sandbox scripts and writes them to /tmp.
-// Returns the path to the outer script that should be executed in tmux.
+// Returns the path to the outer script that should be executed by the job runtime.
 func WriteSandboxScripts(cfg WrapperConfig) (string, error) {
 	prefix := fmt.Sprintf("/tmp/boid-%s", cfg.JobID)
 

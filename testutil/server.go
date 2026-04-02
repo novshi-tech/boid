@@ -26,7 +26,6 @@ func NewTestServer(t *testing.T) *TestServer {
 		DBPath:     ":memory:",
 		SocketPath: sockPath,
 		HTTPAddr:   "127.0.0.1:0",
-		Tmux:       NewMockTmux(),
 	}
 
 	srv, err := server.New(cfg)

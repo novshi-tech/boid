@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -10,17 +11,19 @@ import (
 )
 
 type Runner struct {
-	DB           *sql.DB
-	Runtime      JobRuntime
-	Broker       CommandBroker // host command broker
-	Sandbox      SandboxPreparer
-	SecretStore  *SecretStore // secret store for resolving secret: env values
-	tokenMu      sync.Mutex
-	jobTokens    map[string]string // job ID -> broker token
-	waiterMu     sync.Mutex
-	jobWaiters   map[string]chan JobCompletionResult // job ID -> completion channel
-	runtimeMu    sync.Mutex
-	taskRuntimes map[string]map[string]struct{} // task ID -> runtime IDs
+	DB            *sql.DB
+	Runtime       JobRuntime
+	Broker        CommandBroker // host command broker
+	Sandbox       SandboxPreparer
+	SecretStore   *SecretStore // secret store for resolving secret: env values
+	tokenMu       sync.Mutex
+	jobTokens     map[string]string // job ID -> broker token
+	waiterMu      sync.Mutex
+	jobWaiters    map[string]chan JobCompletionResult // job ID -> completion channel
+	runtimeMu     sync.Mutex
+	taskRuntimes  map[string]map[string]struct{} // task ID -> runtime IDs
+	completedMu   sync.Mutex
+	completedJobs map[string]JobCompletionResult
 }
 
 func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, error) {
@@ -66,6 +69,9 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		PayloadJSON:        plan.PayloadJSON,
 		TaskJSON:           plan.TaskJSON,
 		Readonly:           plan.Readonly,
+	}
+	if spec.Role == "hook" || spec.Role == "gate" {
+		spec.TTY = true
 	}
 
 	if r.Broker != nil {
@@ -153,6 +159,8 @@ func (r *Runner) WaitForJob(jobID string) <-chan JobCompletionResult {
 
 // CompleteJob signals the waiting dispatcher that a job has completed.
 func (r *Runner) CompleteJob(jobID string, result JobCompletionResult) {
+	r.markJobCompleted(jobID, result)
+
 	r.waiterMu.Lock()
 	ch, ok := r.jobWaiters[jobID]
 	if ok {
@@ -208,6 +216,7 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec SandboxSpec) 
 	}
 
 	r.trackTaskRuntime(job.TaskID, handle.ID)
+	go r.watchRuntime(job.ID, handle.ID)
 	slog.Info("job started", "job_id", job.ID, "runtime_id", handle.ID)
 	return job.ID, nil
 }
@@ -258,6 +267,24 @@ func shortID(id string) string {
 	return id[:min(8, len(id))]
 }
 
+func (r *Runner) markJobCompleted(jobID string, result JobCompletionResult) {
+	r.completedMu.Lock()
+	defer r.completedMu.Unlock()
+
+	if r.completedJobs == nil {
+		r.completedJobs = make(map[string]JobCompletionResult)
+	}
+	r.completedJobs[jobID] = result
+}
+
+func (r *Runner) isJobCompleted(jobID string) bool {
+	r.completedMu.Lock()
+	defer r.completedMu.Unlock()
+
+	_, ok := r.completedJobs[jobID]
+	return ok
+}
+
 func (r *Runner) trackTaskRuntime(taskID, runtimeID string) {
 	if taskID == "" || runtimeID == "" {
 		return
@@ -291,4 +318,53 @@ func (r *Runner) takeTaskRuntimes(taskID string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func (r *Runner) watchRuntime(jobID, runtimeID string) {
+	if r.Runtime == nil || runtimeID == "" {
+		return
+	}
+
+	result, err := r.Runtime.Wait(context.Background(), runtimeID)
+	if err != nil {
+		if errors.Is(err, ErrRuntimeUnsupported) {
+			return
+		}
+		slog.Warn("runtime wait failed", "job_id", jobID, "runtime_id", runtimeID, "error", err)
+		return
+	}
+	if r.isJobCompleted(jobID) {
+		return
+	}
+
+	job, err := GetJob(r.DB, jobID)
+	if err != nil {
+		slog.Warn("runtime exited for unknown job", "job_id", jobID, "runtime_id", runtimeID, "error", err)
+		return
+	}
+	if job.Status != JobStatusRunning {
+		return
+	}
+
+	exitCode := result.ExitCode
+	if exitCode == 0 {
+		exitCode = 1
+	}
+	output := fmt.Sprintf("job runtime exited without boid job done (runtime_id=%s, exit_code=%d)", runtimeID, result.ExitCode)
+
+	job.Status = JobStatusFailed
+	job.ExitCode = exitCode
+	job.Output = output
+	if err := UpdateJob(r.DB, job); err != nil {
+		slog.Warn("persist runtime exit failure state", "job_id", jobID, "runtime_id", runtimeID, "error", err)
+		return
+	}
+
+	r.CompleteJob(jobID, JobCompletionResult{
+		Output:   output,
+		ExitCode: exitCode,
+	})
+	r.UnregisterJob(jobID)
+
+	slog.Warn("runtime exited before boid job done", "job_id", jobID, "runtime_id", runtimeID, "exit_code", result.ExitCode)
 }

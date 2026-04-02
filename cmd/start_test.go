@@ -39,9 +39,6 @@ func TestBuildStartConfig_UsesDefaults(t *testing.T) {
 	if cfg.HTTPAddr != defaultStartHTTPAddr {
 		t.Fatalf("HTTPAddr = %q, want %q", cfg.HTTPAddr, defaultStartHTTPAddr)
 	}
-	if cfg.TmuxSession != defaultStartTmuxSession {
-		t.Fatalf("TmuxSession = %q, want %q", cfg.TmuxSession, defaultStartTmuxSession)
-	}
 	if cfg.KeyFilePath != "" {
 		t.Fatalf("KeyFilePath = %q, want empty", cfg.KeyFilePath)
 	}
@@ -55,7 +52,6 @@ func TestBuildStartConfig_UsesOverrides(t *testing.T) {
 		DBPath:      "/tmp/custom.db",
 		SocketPath:  "/tmp/custom.sock",
 		HTTPAddr:    "127.0.0.1:18080",
-		TmuxSession: "boid-e2e-test",
 		KitsDir:     "/tmp/kits",
 		KeyFilePath: "/tmp/boid.key",
 	})
@@ -68,9 +64,6 @@ func TestBuildStartConfig_UsesOverrides(t *testing.T) {
 	}
 	if cfg.HTTPAddr != "127.0.0.1:18080" {
 		t.Fatalf("HTTPAddr = %q, want %q", cfg.HTTPAddr, "127.0.0.1:18080")
-	}
-	if cfg.TmuxSession != "boid-e2e-test" {
-		t.Fatalf("TmuxSession = %q, want %q", cfg.TmuxSession, "boid-e2e-test")
 	}
 	if cfg.KitsDir != "/tmp/kits" {
 		t.Fatalf("KitsDir = %q, want %q", cfg.KitsDir, "/tmp/kits")

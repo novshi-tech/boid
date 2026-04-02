@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/novshi-tech/boid/internal/server"
-	"github.com/novshi-tech/boid/testutil"
 )
 
 func TestServer_StartAndStop(t *testing.T) {
@@ -22,7 +21,6 @@ func TestServer_StartAndStop(t *testing.T) {
 		SocketPath:     sockPath,
 		HTTPAddr:       "127.0.0.1:0",
 		AllowedDomains: []string{"example.com"},
-		Tmux:           testutil.NewMockTmux(),
 	}
 
 	srv, err := server.New(cfg)

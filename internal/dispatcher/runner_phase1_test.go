@@ -105,11 +105,11 @@ func TestRunnerDispatch_StartsJobRuntimeAndPersistsMetadata(t *testing.T) {
 	if job1.RuntimeID == "" {
 		t.Fatal("job1 runtime_id is empty")
 	}
-	if job1.Interactive {
-		t.Fatal("job1 interactive = true, want false")
+	if !job1.Interactive {
+		t.Fatal("job1 interactive = false, want true")
 	}
-	if job1.TTY {
-		t.Fatal("job1 tty = true, want false")
+	if !job1.TTY {
+		t.Fatal("job1 tty = false, want true")
 	}
 
 	job2, err := dispatcher.GetJob(db.Conn, jobID2)

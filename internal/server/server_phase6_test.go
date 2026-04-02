@@ -141,7 +141,6 @@ func newSmokeServer(t *testing.T) *testutil.TestServer {
 		DBPath:     dbPath,
 		SocketPath: sockPath,
 		HTTPAddr:   "127.0.0.1:0",
-		Tmux:       testutil.NewMockTmux(),
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)

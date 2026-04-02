@@ -16,7 +16,6 @@ e2e_require_cmd() {
 }
 
 e2e_require_sandbox_prereqs() {
-  e2e_require_cmd tmux
   e2e_require_cmd pasta
   e2e_require_cmd unshare
   e2e_require_cmd nft
