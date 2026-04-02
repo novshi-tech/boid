@@ -32,6 +32,9 @@
 - 一方で CLI は `job done` のみで、呼び出し元から job 状態を見にくい
 - Web UI では task detail から jobs を見られるが、CLI 主体の自己ホスト運用にはまだ弱い
 - `TODO-hook-gate.md` に hook/gate 系 E2E の残タスクがある
+- black-box E2E harness は追加済み
+- `project-smoke` は通っている
+- `host-command-smoke` は `gh` と `systemctl` だけを使う最小契約確認として通っている
 
 このため、直近の不足は概念設計よりも、
 観測性と実運用フローの完成度にある。
@@ -101,6 +104,18 @@ task / job / action / payload の観測手段を揃える。
 - job 観測 CLI を追加する
 - task 観測 CLI / Web を強化する
 - 実行結果の追跡単位を明確にする
+
+現在ここで完了済みのもの:
+
+- `boid start` の E2E 向けパラメータ化
+- isolated temp root 上で `boid` を起動する black-box harness
+- fixture kit と fake host command を使った最小 gate E2E
+
+ここからの残り:
+
+- hook/gate 並列実行の E2E
+- rework / feedback-loop の E2E
+- product CLI の job 観測導線
 
 ### Concrete Tasks
 

@@ -1,5 +1,26 @@
 # E2E Black-Box Test Plan
 
+## Status Snapshot
+
+2026-04-02 時点の実装状況を残す。
+
+完了済み:
+
+- Phase 1: `boid start` に `--db-path` `--socket-path` `--http-addr` `--tmux-session` `--kits-dir` `--key-file-path` を追加済み
+- Phase 2: `e2e/run.sh`、`e2e/lib/common.sh`、`e2e/cmd/boid-e2e` を追加済み
+- helper は `wait-unix-socket` `wait-health` `get-task` `wait-task-status` `list-jobs` を実装済み
+- `project-smoke` で isolated temp root 上の server 起動と project 登録を確認済み
+- `host-command-smoke` で fixture gate から host command を呼び、task payload へ `artifact` / `verification` が反映されることを確認済み
+
+未完了:
+
+- `TODO-hook-gate.md` を埋める本命 scenario 群は未着手
+- CI 組み込みは未着手
+- product 側の `job list/show/watch` 追加は未着手
+
+現時点の black-box E2E は「基盤と最小契約の確認」までは通っているが、
+hook/gate 並列実行や rework loop を守る段階にはまだ入っていない。
+
 ## Decision
 
 boid の E2E は `go test` の延長としては扱わない。
@@ -259,6 +280,12 @@ fake command の責務:
 - fake `gh pr view --json ...`: 固定 review state を返す
 - fake `systemctl restart boid`: `fake-systemctl.log` に記録して exit 0
 
+補足:
+
+- 現在の `host-command-smoke` は最小契約確認のため `git` を使わない
+- smoke で実際に使う fake host command は `gh` と `systemctl` のみ
+- fake `git` は将来の `push` 含み scenario 用 fixture として残してよい
+
 ## 3. project fixture は scenario ごとに持つ
 
 各 scenario は workspace fixture を持つ。
@@ -434,6 +461,11 @@ E2E は失敗時の調査性が重要なので、
 - fixture project を登録できる
 - 終了時に clean up できる
 
+進捗:
+
+- 完了
+- `project-smoke` で server 起動、health 待機、project 登録まで確認済み
+
 ## Phase 3: Add Common Fixture Kits And Fake Commands
 
 追加物:
@@ -445,6 +477,13 @@ E2E は失敗時の調査性が重要なので、
 
 - fake `git` / `gh` / `systemctl` を core から呼べる
 - PR 作成や restart の契約を実際に検証できる
+
+進捗:
+
+- 部分完了
+- fixture kits と fake host command の配置、sandbox prerequisite check、helper の task/job 監視 API は追加済み
+- `host-command-smoke` は `gh pr create` と `systemctl --user restart boid` だけを使う最小契約確認として通過済み
+- `git push` を含む scenario はまだ作っていない
 
 ## Phase 4: Add First Four Scenarios
 
@@ -458,6 +497,17 @@ E2E は失敗時の調査性が重要なので、
 完了条件:
 
 - `TODO-hook-gate.md` の未カバー項目を E2E で表現できる
+
+次に着手する内容:
+
+1. `readonly-hook-gate`
+2. `writable hook + gate + chain`
+3. `verification failed -> rework`
+4. `feedback-loop full cycle`
+
+この順で進める。
+最初の 2 本は `TODO-hook-gate.md` の空白を埋めることを優先し、
+`git push` のような外部連携よりも hook/gate の状態遷移確認を先に行う。
 
 ## Phase 5: CI Integration
 
@@ -514,3 +564,12 @@ core と kit の契約を固めることを優先する。
 - `job list/show/watch` を product CLI に追加する
 - E2E helper の一部を product CLI に還元する
 - scenario 定義を shell から YAML/Go へ移すかの見直し
+
+## Next Session Start Point
+
+次セッションは以下から始めるとよい。
+
+1. `TODO-hook-gate.md` の未カバー項目を scenario 名に落とす
+2. `readonly-hook-gate` fixture project を追加する
+3. `boid-e2e` に `wait-job-count` と `assert-job-role-count` を足す
+4. `readonly-hook-gate` を先に通してから writable/rework へ進む

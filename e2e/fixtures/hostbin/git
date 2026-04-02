@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+log_file="${E2E_STATE_DIR:?}/fake-git.log"
+{
+  printf 'cmd=git\n'
+  printf 'cwd=%s\n' "$PWD"
+  printf 'args=%s\n' "$*"
+  printf -- '---\n'
+} >>"$log_file"
+
+exit 0

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+log_file="${E2E_STATE_DIR:?}/fake-gh.log"
+{
+  printf 'cmd=gh\n'
+  printf 'cwd=%s\n' "$PWD"
+  printf 'args=%s\n' "$*"
+  printf -- '---\n'
+} >>"$log_file"
+
+if [[ "${1:-}" == "pr" && "${2:-}" == "create" ]]; then
+  printf '%s\n' "https://example.invalid/pr/123"
+  exit 0
+fi
+
+if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
+  printf '%s\n' '{"state":"OPEN","reviewDecision":"APPROVED"}'
+  exit 0
+fi
+
+exit 0
