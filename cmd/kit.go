@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/novshi-tech/boid/internal/client"
 	kit "github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
 )
@@ -33,6 +34,7 @@ func kitInstallSingle(repoRef string) error {
 		return err
 	}
 	fmt.Printf("installed: %s\n", repoRef)
+	reloadProjects()
 	return nil
 }
 
@@ -67,6 +69,7 @@ func kitInstallFromProject() error {
 	}
 
 	reg := kit.NewRegistry(defaultKitsDir())
+	installed := false
 	for _, repo := range repos {
 		if reg.IsInstalled(repo) {
 			fmt.Printf("already installed: %s\n", repo)
@@ -76,8 +79,20 @@ func kitInstallFromProject() error {
 			return err
 		}
 		fmt.Printf("installed: %s\n", repo)
+		installed = true
+	}
+	if installed {
+		reloadProjects()
 	}
 	return nil
+}
+
+func reloadProjects() {
+	c := client.NewUnixClient(client.DefaultSocketPath())
+	if err := c.Do("POST", "/api/projects/reload", nil, nil); err != nil {
+		return
+	}
+	fmt.Println("projects reloaded")
 }
 
 var kitListCmd = &cobra.Command{
