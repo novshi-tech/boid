@@ -111,6 +111,9 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	taskSvc := &api.TaskAppService{
 		Tasks: taskRepo,
 	}
+	if srv.broker != nil {
+		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc)
+	}
 	webSvc := &api.WebAppService{
 		Tasks:    taskRepo,
 		Actions:  taskRepo,

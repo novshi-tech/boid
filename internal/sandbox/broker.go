@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -33,11 +34,12 @@ type tokenEntry struct {
 }
 
 type Broker struct {
-	SocketPath string
-	BoidBinary string
-	listener   net.Listener
-	mu         sync.RWMutex
-	registry   map[string]*tokenEntry
+	SocketPath   string
+	BoidBinary   string
+	BoidExecutor BoidExecutor
+	listener     net.Listener
+	mu           sync.RWMutex
+	registry     map[string]*tokenEntry
 }
 
 func (b *Broker) Register(commands map[string]CommandDef, builtinCommands []string, ctx TokenContext) string {
@@ -177,53 +179,105 @@ func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
 }
 
 func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecResponse {
-	subcmd := extractSimpleSubcommand(req.Args)
+	if req.Boid == nil {
+		return &ExecResponse{ExitCode: 1, Stderr: "typed boid request required"}
+	}
+	if !entry.hasBuiltin("boid") {
+		return &ExecResponse{ExitCode: 1, Stderr: "command not allowed: boid"}
+	}
 
-	allowed := false
+	if err := validateBoidBuiltinCwd(req.Cwd, entry); err != nil {
+		return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
+	}
+
+	boidReq := *req.Boid
 	switch entry.Context.Role {
 	case "hook":
-		allowed = subcmd == "job"
-	case "gate":
-		allowed = subcmd == "job" || subcmd == "task"
-	}
-
-	if !allowed {
-		return &ExecResponse{
-			ExitCode: 1,
-			Stderr:   fmt.Sprintf("boid subcommand %q not allowed for role %s", subcmd, entry.Context.Role),
-		}
-	}
-
-	if subcmd == "task" && len(req.Args) > 1 && req.Args[1] == "create" && entry.Context.ProjectID != "" {
-		hasProject := false
-		for _, a := range req.Args {
-			if a == "--project" {
-				hasProject = true
-				break
+		if boidReq.Op != BoidOpJobDone {
+			return &ExecResponse{
+				ExitCode: 1,
+				Stderr:   fmt.Sprintf("boid op %q not allowed for role %s", boidReq.Op, entry.Context.Role),
 			}
 		}
-		if !hasProject {
-			req.Args = append(req.Args, "--project", entry.Context.ProjectID)
+	case "gate":
+		if boidReq.Op != BoidOpJobDone && boidReq.Op != BoidOpTaskCreate {
+			return &ExecResponse{
+				ExitCode: 1,
+				Stderr:   fmt.Sprintf("boid op %q not allowed for role %s", boidReq.Op, entry.Context.Role),
+			}
+		}
+	default:
+		if boidReq.Op != BoidOpJobDone && boidReq.Op != BoidOpTaskCreate {
+			return &ExecResponse{
+				ExitCode: 1,
+				Stderr:   fmt.Sprintf("boid op %q not allowed for role %s", boidReq.Op, entry.Context.Role),
+			}
 		}
 	}
 
-	boidPath := b.BoidBinary
-	if boidPath == "" {
-		var err error
-		boidPath, err = exec.LookPath("boid")
-		if err != nil {
-			return &ExecResponse{ExitCode: 1, Stderr: "boid binary not found"}
+	switch boidReq.Op {
+	case BoidOpJobDone:
+		if boidReq.JobID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid job done requires a job id"}
+		}
+		if boidReq.JobID != entry.Context.JobID {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid job done is restricted to the current job"}
+		}
+	case BoidOpTaskCreate:
+		if boidReq.ProjectID == "" {
+			boidReq.ProjectID = entry.Context.ProjectID
 		}
 	}
 
-	def := CommandDef{
-		Name:            "boid",
-		Path:            boidPath,
-		AllowedPatterns: []string{"*"},
-		AllowStdin:      true,
+	if b.BoidExecutor == nil {
+		return &ExecResponse{ExitCode: 1, Stderr: "boid builtin unavailable"}
+	}
+	return b.BoidExecutor.ExecuteBoidBuiltin(entry.Context, &boidReq)
+}
+
+func validateBoidBuiltinCwd(cwd string, entry *tokenEntry) error {
+	if cwd == "" {
+		return fmt.Errorf("cwd required")
+	}
+	if !filepath.IsAbs(cwd) {
+		return fmt.Errorf("cwd must be absolute")
+	}
+	info, err := os.Stat(cwd)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("cwd does not exist")
+		}
+		return fmt.Errorf("stat cwd: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("cwd must be a directory")
 	}
 
-	return b.execCommand(req, def)
+	if entry != nil && entry.Context.Role == "gate" && cwd == "/tmp" {
+		return nil
+	}
+
+	if root := entryRoot(entry); root != "" && isWithinRoot(cwd, root) {
+		return nil
+	}
+	return fmt.Errorf("boid builtin is restricted to the current project or worktree")
+}
+
+func entryRoot(entry *tokenEntry) string {
+	if entry == nil {
+		return ""
+	}
+	if entry.Context.WorktreeDir != "" {
+		return entry.Context.WorktreeDir
+	}
+	return entry.Context.ProjectDir
+}
+
+func isWithinRoot(path, root string) bool {
+	if path == root {
+		return true
+	}
+	return strings.HasPrefix(path, root+string(os.PathSeparator))
 }
 
 func (b *Broker) execCommand(req *ExecRequest, def CommandDef) *ExecResponse {

@@ -14,10 +14,26 @@ import (
 )
 
 var testCtx = sandbox.TokenContext{
-	JobID:     "job-1",
-	TaskID:    "task-1",
-	ProjectID: "proj-1",
-	Role:      string(projectspec.RoleHook),
+	JobID:      "job-1",
+	TaskID:     "task-1",
+	ProjectID:  "proj-1",
+	Role:       string(projectspec.RoleHook),
+	ProjectDir: "/workspace/proj-1",
+}
+
+type fakeBoidExecutor struct {
+	calls []sandbox.BoidRequest
+	resp  *sandbox.ExecResponse
+}
+
+func (f *fakeBoidExecutor) ExecuteBoidBuiltin(_ sandbox.TokenContext, req *sandbox.BoidRequest) *sandbox.ExecResponse {
+	if req != nil {
+		f.calls = append(f.calls, *req)
+	}
+	if f.resp != nil {
+		return f.resp
+	}
+	return &sandbox.ExecResponse{ExitCode: 0}
 }
 
 func TestBroker_ExecCommand(t *testing.T) {
@@ -224,10 +240,12 @@ func TestBroker_RegisterReturnsUniqueTokens(t *testing.T) {
 func TestBroker_GetContext(t *testing.T) {
 	broker := &sandbox.Broker{}
 	ctx := sandbox.TokenContext{
-		JobID:     "job-42",
-		TaskID:    "task-99",
-		ProjectID: "proj-7",
-		Role:      string(projectspec.RoleGate),
+		JobID:       "job-42",
+		TaskID:      "task-99",
+		ProjectID:   "proj-7",
+		Role:        string(projectspec.RoleGate),
+		ProjectDir:  "/workspace/proj-7",
+		WorktreeDir: "/workspace/proj-7-wt",
 	}
 
 	token := broker.Register(map[string]sandbox.CommandDef{
@@ -251,7 +269,6 @@ func TestBroker_GetContext(t *testing.T) {
 		t.Errorf("Role = %q, want %q", got.Role, string(projectspec.RoleGate))
 	}
 
-	// Invalid token
 	_, ok = broker.GetContext("nonexistent")
 	if ok {
 		t.Error("expected GetContext to return false for invalid token")
@@ -259,59 +276,164 @@ func TestBroker_GetContext(t *testing.T) {
 }
 
 func TestBroker_BoidBuiltinPolicy_HookRole(t *testing.T) {
-	broker := &sandbox.Broker{}
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
 	hookCtx := sandbox.TokenContext{
-		JobID: "j1", TaskID: "t1", ProjectID: "p1", Role: string(projectspec.RoleHook),
+		JobID:      "j1",
+		TaskID:     "t1",
+		ProjectID:  "p1",
+		Role:       string(projectspec.RoleHook),
+		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, nil, hookCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, hookCtx)
 
-	// hook can call: boid job done
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
-		Args:    []string{"job", "done", "--exit-code", "0"},
+		Cwd:     projectDir,
 		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:       sandbox.BoidOpJobDone,
+			JobID:    "j1",
+			ExitCode: 0,
+			Output:   "done",
+		},
 	})
-	// The actual command execution may fail (no boid binary at expected path),
-	// but it should NOT be rejected by policy. Check that it's not "command not allowed".
-	if resp.Stderr == "command not allowed: boid" {
-		t.Error("hook should be allowed to call boid job done")
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor calls = %d, want 1", len(exec.calls))
+	}
+	if exec.calls[0].Op != sandbox.BoidOpJobDone || exec.calls[0].JobID != "j1" {
+		t.Fatalf("unexpected boid request: %+v", exec.calls[0])
 	}
 
-	// hook cannot call: boid task create
 	resp = broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
-		Args:    []string{"task", "create", "--title", "test"},
+		Cwd:     projectDir,
 		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:       sandbox.BoidOpTaskCreate,
+			Title:    "test",
+			Behavior: "dev",
+		},
 	})
-	if !strings.Contains(resp.Stderr, "not allowed") {
-		t.Errorf("hook should NOT be allowed to call boid task create, stderr: %q", resp.Stderr)
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "not allowed") {
+		t.Fatalf("hook task create should be rejected, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
 	}
 }
 
 func TestBroker_BoidBuiltinPolicy_GateRole(t *testing.T) {
-	broker := &sandbox.Broker{}
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
 	gateCtx := sandbox.TokenContext{
-		JobID: "j1", TaskID: "t1", ProjectID: "p1", Role: string(projectspec.RoleGate),
+		JobID:      "j1",
+		TaskID:     "t1",
+		ProjectID:  "p1",
+		Role:       string(projectspec.RoleGate),
+		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, nil, gateCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, gateCtx)
 
-	// gate can call: boid job done
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
-		Args:    []string{"job", "done", "--exit-code", "0"},
+		Cwd:     "/tmp",
 		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:       sandbox.BoidOpJobDone,
+			JobID:    "j1",
+			ExitCode: 0,
+		},
 	})
-	if resp.Stderr == "command not allowed: boid" {
-		t.Error("gate should be allowed to call boid job done")
+	if resp.ExitCode != 0 {
+		t.Fatalf("job done exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor calls = %d, want 1", len(exec.calls))
 	}
 
-	// gate can call: boid task create
 	resp = broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
-		Args:    []string{"task", "create", "--title", "test"},
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:       sandbox.BoidOpTaskCreate,
+			Title:    "test",
+			Behavior: "dev",
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("task create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 2 {
+		t.Fatalf("executor calls = %d, want 2", len(exec.calls))
+	}
+	if exec.calls[1].ProjectID != "p1" {
+		t.Fatalf("task create project id = %q, want current project", exec.calls[1].ProjectID)
+	}
+}
+
+func TestBroker_BoidBuiltinRejectsWrongJobAndCwd(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	ctx := sandbox.TokenContext{
+		JobID:      "job-keep",
+		TaskID:     "task-keep",
+		ProjectID:  "proj-keep",
+		Role:       string(projectspec.RoleHook),
+		ProjectDir: projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:       sandbox.BoidOpJobDone,
+			JobID:    "other-job",
+			ExitCode: 0,
+		},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "restricted to the current job") {
+		t.Fatalf("expected job id rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+
+	resp = broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     t.TempDir(),
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:       sandbox.BoidOpJobDone,
+			JobID:    "job-keep",
+			ExitCode: 0,
+		},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "restricted to the current project or worktree") {
+		t.Fatalf("expected cwd rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+}
+
+func TestBroker_BoidBuiltinRequiresTypedRequest(t *testing.T) {
+	broker := &sandbox.Broker{}
+	cwd := t.TempDir()
+	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, sandbox.TokenContext{
+		JobID:      "job-1",
+		TaskID:     "task-1",
+		ProjectID:  "proj-1",
+		Role:       string(projectspec.RoleHook),
+		ProjectDir: cwd,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     cwd,
 		Token:   token,
 	})
-	if strings.Contains(resp.Stderr, "not allowed") {
-		t.Error("gate should be allowed to call boid task create")
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "typed boid request required") {
+		t.Fatalf("expected typed request rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
 	}
 }
