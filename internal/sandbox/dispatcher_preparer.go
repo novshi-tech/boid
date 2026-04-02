@@ -17,6 +17,7 @@ func (dispatcherPreparer) PrepareSandbox(spec dispatcher.SandboxSpec) (*dispatch
 		ProjectDir:         spec.ProjectDir,
 		HomeDir:            spec.HomeDir,
 		HooksDir:           spec.HooksDir,
+		GatesDir:           spec.GatesDir,
 		HookScript:         spec.HookScript,
 		Command:            spec.Command,
 		BoidBinary:         spec.BoidBinary,

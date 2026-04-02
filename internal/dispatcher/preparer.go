@@ -8,6 +8,7 @@ type SandboxSpec struct {
 	ProjectDir         string
 	HomeDir            string
 	HooksDir           string
+	GatesDir           string
 	HookScript         string
 	Command            string
 	BoidBinary         string

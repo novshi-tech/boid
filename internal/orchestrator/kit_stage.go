@@ -12,31 +12,64 @@ import (
 // with the same filename.
 // Returns the staging directory path and a cleanup function.
 func StageHooks(projectHooksDir string, kitHooksDirs []KitHooksInfo, jobID string) (string, func(), error) {
-	stagingDir := filepath.Join(os.TempDir(), fmt.Sprintf("boid-hooks-%s", jobID))
+	return stageScripts("boid-hooks", jobID, projectHooksDir, hookDirs(kitHooksDirs))
+}
+
+// StageGates creates a temporary directory containing all gate scripts
+// from the project and all kits. Project scripts override kit scripts
+// with the same filename.
+func StageGates(projectGatesDir string, kitGatesDirs []KitGatesInfo, jobID string) (string, func(), error) {
+	return stageScripts("boid-gates", jobID, projectGatesDir, gateDirs(kitGatesDirs))
+}
+
+func stageScripts(prefix, jobID, projectDir string, kitDirs []string) (string, func(), error) {
+	stagingDir := filepath.Join(os.TempDir(), fmt.Sprintf("%s-%s", prefix, jobID))
 	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
 		return "", nil, fmt.Errorf("create staging dir: %w", err)
 	}
 
 	cleanup := func() {
-		os.RemoveAll(stagingDir)
+		_ = os.RemoveAll(stagingDir)
 	}
 
-	for _, m := range kitHooksDirs {
-		if err := copyHookScripts(m.HooksDir, stagingDir); err != nil {
+	for _, dir := range kitDirs {
+		if err := copyScripts(dir, stagingDir); err != nil {
 			cleanup()
-			return "", nil, fmt.Errorf("copy kit hooks from %s: %w", m.HooksDir, err)
+			return "", nil, fmt.Errorf("copy kit scripts from %s: %w", dir, err)
 		}
 	}
 
-	if err := copyHookScripts(projectHooksDir, stagingDir); err != nil {
+	if err := copyScripts(projectDir, stagingDir); err != nil {
 		cleanup()
-		return "", nil, fmt.Errorf("copy project hooks: %w", err)
+		return "", nil, fmt.Errorf("copy project scripts: %w", err)
 	}
 
 	return stagingDir, cleanup, nil
 }
 
-func copyHookScripts(srcDir, dstDir string) error {
+func hookDirs(infos []KitHooksInfo) []string {
+	if len(infos) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(infos))
+	for _, info := range infos {
+		out = append(out, info.HooksDir)
+	}
+	return out
+}
+
+func gateDirs(infos []KitGatesInfo) []string {
+	if len(infos) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(infos))
+	for _, info := range infos {
+		out = append(out, info.GatesDir)
+	}
+	return out
+}
+
+func copyScripts(srcDir, dstDir string) error {
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
 		if os.IsNotExist(err) {

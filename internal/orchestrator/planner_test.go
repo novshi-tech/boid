@@ -1,6 +1,10 @@
 package orchestrator
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 type stubProjectCatalog struct {
 	projects []*Project
@@ -114,5 +118,49 @@ func TestDispatchPlannerAddsBoidAsBuiltinForHookAndGate(t *testing.T) {
 	}
 	if _, ok := gateReq.HostCommands["boid"]; ok {
 		t.Fatalf("gate host commands should not contain boid: %#v", gateReq.HostCommands)
+	}
+}
+
+func TestDispatchPlannerPlanGateStagesKitGates(t *testing.T) {
+	projectDir := t.TempDir()
+	kitGatesDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(kitGatesDir, "gate-1.sh"), []byte("#!/bin/bash\n"), 0o755); err != nil {
+		t.Fatalf("write kit gate: %v", err)
+	}
+
+	meta := &ProjectMeta{
+		ID:           "proj-1",
+		KitGatesDirs: []KitGatesInfo{{GatesDir: kitGatesDir, GateIDs: []string{"gate-1"}}},
+	}
+	proj := &Project{ID: "proj-1", WorkDir: projectDir}
+	task := &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting}
+
+	planner := &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj}},
+		Tasks:    stubTaskLookup{task: task},
+	}
+
+	req, err := planner.PlanGate(&GateFireEvent{
+		EventID:   "event-1",
+		TaskID:    task.ID,
+		ProjectID: proj.ID,
+		Gate:      Gate{ID: "gate-1", ScriptPath: filepath.Join(kitGatesDir, "gate-1.sh")},
+	})
+	if err != nil {
+		t.Fatalf("PlanGate: %v", err)
+	}
+
+	if req.GatesDir == "" || req.StagingDir == "" {
+		t.Fatalf("expected staged gates dir, got GatesDir=%q StagingDir=%q", req.GatesDir, req.StagingDir)
+	}
+	if req.GatesDir != req.StagingDir {
+		t.Fatalf("expected GatesDir and StagingDir to match, got %q vs %q", req.GatesDir, req.StagingDir)
+	}
+	if req.GatesDir == filepath.Join(projectDir, ".boid", "gates") {
+		t.Fatalf("expected kit gates to be staged, got project gates dir %q", req.GatesDir)
+	}
+	if _, err := os.Stat(filepath.Join(req.GatesDir, "gate-1.sh")); err != nil {
+		t.Fatalf("expected staged gate script: %v", err)
 	}
 }

@@ -16,6 +16,7 @@ func TestWriteSandboxScripts_GateRoleMustNotReferenceUnmountedProjectPath(t *tes
 		TaskID:       "task-gate-1",
 		ProjectID:    "proj-1",
 		ProjectDir:   "/tmp/project-gate",
+		GatesDir:     "/tmp/staged-gates",
 		BoidBinary:   "/bin/true",
 		BrokerSocket: "/run/boid/broker.sock",
 		BrokerToken:  "token",
@@ -49,7 +50,7 @@ func TestWriteSandboxScripts_GateRoleMustNotReferenceUnmountedProjectPath(t *tes
 
 	inner := string(innerContent)
 	setup := string(setupContent)
-	gatePath := cfg.ProjectDir + "/.boid/gates/" + cfg.HookScript
+	gatePath := cfg.GatesDir + "/" + cfg.HookScript
 
 	if strings.Contains(inner, gatePath) &&
 		!strings.Contains(setup, cfg.ProjectDir+"/.boid") &&

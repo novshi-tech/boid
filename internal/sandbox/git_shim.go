@@ -73,7 +73,7 @@ func RunGitShim(args []string) (int, error) {
 		return 1, fmt.Errorf("boid shim: BOID_BROKER_SOCKET not set")
 	}
 
-	resp, err := shimExecGit(brokerSocket, invocation.request)
+	resp, err := shimExecGit(brokerSocket, args, invocation.request)
 	if err != nil {
 		return 1, fmt.Errorf("boid shim: %w", err)
 	}
@@ -101,7 +101,7 @@ func runRealGit(args []string) (int, error) {
 	return 1, err
 }
 
-func shimExecGit(brokerSocket string, gitReq *GitRequest) (*ExecResponse, error) {
+func shimExecGit(brokerSocket string, args []string, gitReq *GitRequest) (*ExecResponse, error) {
 	conn, err := net.Dial("unix", brokerSocket)
 	if err != nil {
 		return nil, fmt.Errorf("connect to broker: %w", err)
@@ -112,6 +112,7 @@ func shimExecGit(brokerSocket string, gitReq *GitRequest) (*ExecResponse, error)
 	token := os.Getenv("BOID_BROKER_TOKEN")
 	req := ExecRequest{
 		Command: "git",
+		Args:    append([]string(nil), args...),
 		Cwd:     cwd,
 		Token:   token,
 		Git:     gitReq,

@@ -59,6 +59,7 @@ func toDispatchPlan(request *orchestrator.DispatchRequest) *DispatchPlan {
 		ProjectDir:         request.ProjectDir,
 		HomeDir:            request.HomeDir,
 		HooksDir:           request.HooksDir,
+		GatesDir:           request.GatesDir,
 		HookScript:         request.HookScript,
 		BoidBinary:         request.BoidBinary,
 		ServerSocket:       request.ServerSocket,

@@ -194,8 +194,12 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 		Executable: true,
 	})
 	if cfg.Role == "gate" && cfg.HookScript != "" {
+		gatesDir := cfg.GatesDir
+		if gatesDir == "" {
+			gatesDir = cfg.ProjectDir + "/.boid/gates"
+		}
 		plan.Copies = append(plan.Copies, CopyEntry{
-			Source:     cfg.ProjectDir + "/.boid/gates/" + cfg.HookScript,
+			Source:     gatesDir + "/" + cfg.HookScript,
 			Target:     "/opt/boid/gates/" + cfg.HookScript,
 			Executable: true,
 		})

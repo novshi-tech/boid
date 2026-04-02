@@ -190,6 +190,32 @@ func TestBroker_PerCommandEnv(t *testing.T) {
 	}
 }
 
+func TestBroker_GitFallsBackToHostCommandWhenBuiltinNotAllowed(t *testing.T) {
+	broker := &sandbox.Broker{}
+	token := broker.Register(map[string]sandbox.CommandDef{
+		"git": {
+			Name:               "git",
+			Path:               "/bin/echo",
+			AllowedSubcommands: []string{"push"},
+		},
+	}, nil, sandbox.TokenContext{
+		JobID: "job-1", TaskID: "task-1", ProjectID: "proj-1", Role: string(projectspec.RoleGate),
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Args:    []string{"push", "origin", "HEAD"},
+		Token:   token,
+		Git:     &sandbox.GitRequest{Op: sandbox.GitOpPush, Remote: "origin"},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if resp.Stdout != "push origin HEAD\n" {
+		t.Fatalf("stdout = %q, want %q", resp.Stdout, "push origin HEAD\n")
+	}
+}
+
 func TestBroker_SecretResolution(t *testing.T) {
 	broker := &sandbox.Broker{}
 	resolver := func(key string) (string, error) {

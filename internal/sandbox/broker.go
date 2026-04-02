@@ -157,7 +157,13 @@ func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
 		return b.handleBoidBuiltin(req, entry)
 	}
 	if req.Command == "git" {
-		return handleGitBuiltinRequest(req, entry)
+		if entry.hasBuiltin("git") {
+			return handleGitBuiltinRequest(req, entry)
+		}
+		if def, ok := entry.Commands["git"]; ok {
+			return b.execCommand(req, def)
+		}
+		return &ExecResponse{ExitCode: 1, Stderr: "command not allowed: git"}
 	}
 
 	def, ok := entry.Commands[req.Command]

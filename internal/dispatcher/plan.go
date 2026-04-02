@@ -29,6 +29,7 @@ type DispatchPlan struct {
 	ProjectDir         string
 	HomeDir            string
 	HooksDir           string
+	GatesDir           string
 	HookScript         string
 	BoidBinary         string
 	ServerSocket       string

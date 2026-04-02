@@ -117,6 +117,18 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 		return nil, err
 	}
 
+	projectGatesDir := filepath.Join(proj.WorkDir, ".boid", "gates")
+	gatesDir := filepath.Dir(event.Gate.ScriptPath)
+	var stagingDir string
+	if len(meta.KitGatesDirs) > 0 {
+		staged, _, err := StageGates(projectGatesDir, meta.KitGatesDirs, event.TaskID)
+		if err != nil {
+			return nil, fmt.Errorf("stage gates: %w", err)
+		}
+		gatesDir = staged
+		stagingDir = staged
+	}
+
 	taskJSON, err := json.Marshal(task)
 	if err != nil {
 		return nil, fmt.Errorf("marshal task: %w", err)
@@ -131,6 +143,7 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 		HandlerID:       event.Gate.ID,
 		Role:            RoleGate,
 		ProjectDir:      proj.WorkDir,
+		GatesDir:        gatesDir,
 		HookScript:      gateFilename,
 		BoidBinary:      p.BoidBinary,
 		ServerSocket:    p.ServerSocket,
@@ -138,6 +151,7 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 		BuiltinCommands: mergeBuiltinCommands(meta.BuiltinCommands, []string{"boid"}),
 		HostCommands:    hostCommands,
 		ProxyPort:       p.proxyPort(),
+		StagingDir:      stagingDir,
 		TaskJSON:        string(taskJSON),
 	}, nil
 }
