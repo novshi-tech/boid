@@ -1,5 +1,3 @@
--- boid schema
-
 CREATE TABLE IF NOT EXISTS projects (
     id         TEXT PRIMARY KEY,
     work_dir   TEXT NOT NULL,
@@ -51,7 +49,6 @@ CREATE TABLE IF NOT EXISTS jobs (
     id         TEXT PRIMARY KEY,
     task_id    TEXT NOT NULL REFERENCES tasks(id),
     project_id TEXT NOT NULL REFERENCES projects(id),
-    handler_id TEXT NOT NULL,
     role       TEXT NOT NULL DEFAULT 'hook',
     status     TEXT NOT NULL DEFAULT 'running',
     exit_code  INTEGER,

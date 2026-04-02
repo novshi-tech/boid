@@ -10,13 +10,17 @@ import (
 )
 
 type recordingTxStore struct {
+	task        *orchestrator.Task
 	updatedTask *orchestrator.Task
 	actions     []*orchestrator.Action
 }
 
 func (s *recordingTxStore) CreateTask(task *orchestrator.Task) error { return nil }
 func (s *recordingTxStore) GetTask(id string) (*orchestrator.Task, error) {
-	return nil, fmt.Errorf("not implemented")
+	if s.task == nil || s.task.ID != id {
+		return nil, fmt.Errorf("task not found: %s", id)
+	}
+	return s.task, nil
 }
 func (s *recordingTxStore) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
 	return nil, nil
@@ -123,5 +127,60 @@ func TestTaskWorkflowServiceApplyAction_BackgroundDispatchMustOutliveRequestCont
 	case <-probe.canceled:
 		t.Fatal("background dispatch inherited request context cancellation")
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+type fixedDispatchResult struct {
+	result *orchestrator.DispatchResult
+}
+
+func (d fixedDispatchResult) DispatchAndAdvance(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, behavior *orchestrator.TaskBehavior, sm *orchestrator.StateMachine) (*orchestrator.DispatchResult, error) {
+	return d.result, nil
+}
+
+func TestTaskWorkflowServiceRunDispatchLoop_MustNotOverwriteTerminalStatusWhenPersistingPayload(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "task-1",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "impl",
+		Payload:   []byte(`{"prompt":"start"}`),
+	}
+	completed := &orchestrator.Task{
+		ID:        task.ID,
+		ProjectID: task.ProjectID,
+		Status:    orchestrator.TaskStatusDone,
+		Behavior:  task.Behavior,
+		Payload:   task.Payload,
+	}
+
+	txStore := &recordingTxStore{task: completed}
+	lifecycle := &stubLifecycle{}
+	svc := &TaskWorkflowService{
+		Tx:        recordingTransactor{store: txStore},
+		Coordinator: fixedDispatchResult{
+			result: &orchestrator.DispatchResult{
+				FinalPayload: []byte(`{"prompt":"start","artifact":{"summary":"ok"}}`),
+			},
+		},
+		Lifecycle: lifecycle,
+	}
+
+	svc.runDispatchLoop(
+		context.Background(),
+		task,
+		&orchestrator.ProjectMeta{},
+		&orchestrator.TaskBehavior{},
+		orchestrator.OneShotMachine(),
+	)
+
+	if txStore.updatedTask == nil {
+		t.Fatal("expected payload persistence update")
+	}
+	if txStore.updatedTask.Status != orchestrator.TaskStatusDone {
+		t.Fatalf("updated task status = %q, want %q", txStore.updatedTask.Status, orchestrator.TaskStatusDone)
+	}
+	if lifecycle.cleanupTaskID != task.ID {
+		t.Fatalf("cleanup task id = %q, want %q", lifecycle.cleanupTaskID, task.ID)
 	}
 }

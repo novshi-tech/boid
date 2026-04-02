@@ -27,11 +27,24 @@ func CreateJob(dbtx db.DBTX, j *Job) error {
 		j.Role = "hook"
 	}
 
-	_, err := dbtx.Exec(
-		`INSERT INTO jobs (id, task_id, project_id, handler_id, role, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		j.ID, j.TaskID, j.ProjectID, j.HandlerID, j.Role, j.Status, j.CreatedAt, j.UpdatedAt,
-	)
+	hasHookID, err := jobColumnExists(dbtx, "hook_id")
+	if err != nil {
+		return fmt.Errorf("detect jobs.hook_id: %w", err)
+	}
+
+	var query string
+	var args []any
+	if hasHookID {
+		query = `INSERT INTO jobs (id, task_id, project_id, hook_id, handler_id, role, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		args = []any{j.ID, j.TaskID, j.ProjectID, j.HandlerID, j.HandlerID, j.Role, j.Status, j.CreatedAt, j.UpdatedAt}
+	} else {
+		query = `INSERT INTO jobs (id, task_id, project_id, handler_id, role, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+		args = []any{j.ID, j.TaskID, j.ProjectID, j.HandlerID, j.Role, j.Status, j.CreatedAt, j.UpdatedAt}
+	}
+
+	_, err = dbtx.Exec(query, args...)
 	if err != nil {
 		return fmt.Errorf("insert job: %w", err)
 	}
@@ -39,16 +52,20 @@ func CreateJob(dbtx db.DBTX, j *Job) error {
 }
 
 func GetJob(dbtx db.DBTX, id string) (*Job, error) {
-	row := dbtx.QueryRow(
-		`SELECT id, task_id, project_id, handler_id, role, status, exit_code, output, created_at, updated_at FROM jobs WHERE id = ?`, id,
-	)
+	selectSQL, err := jobSelectSQL(dbtx, `WHERE id = ?`)
+	if err != nil {
+		return nil, fmt.Errorf("build get job query: %w", err)
+	}
+	row := dbtx.QueryRow(selectSQL, id)
 	return scanJob(row)
 }
 
 func ListJobsByTask(dbtx db.DBTX, taskID string) ([]*Job, error) {
-	rows, err := dbtx.Query(
-		`SELECT id, task_id, project_id, handler_id, role, status, exit_code, output, created_at, updated_at FROM jobs WHERE task_id = ? ORDER BY created_at`, taskID,
-	)
+	selectSQL, err := jobSelectSQL(dbtx, `WHERE task_id = ? ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("build list jobs query: %w", err)
+	}
+	rows, err := dbtx.Query(selectSQL, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
 	}
@@ -87,4 +104,41 @@ func scanJob(s jobScanner) (*Job, error) {
 		j.ExitCode = int(exitCode.Int64)
 	}
 	return &j, nil
+}
+
+func jobSelectSQL(dbtx db.DBTX, suffix string) (string, error) {
+	hasHookID, err := jobColumnExists(dbtx, "hook_id")
+	if err != nil {
+		return "", err
+	}
+	if hasHookID {
+		return `SELECT id, task_id, project_id, COALESCE(NULLIF(handler_id, ''), hook_id) AS handler_id, role, status, exit_code, output, created_at, updated_at FROM jobs ` + suffix, nil
+	}
+	return `SELECT id, task_id, project_id, handler_id, role, status, exit_code, output, created_at, updated_at FROM jobs ` + suffix, nil
+}
+
+func jobColumnExists(dbtx db.DBTX, column string) (bool, error) {
+	rows, err := dbtx.Query(`PRAGMA table_info(jobs)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			typeName  string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &typeName, &notNull, &dfltValue, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }

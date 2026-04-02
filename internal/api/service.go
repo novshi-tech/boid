@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 
@@ -18,8 +19,9 @@ func (e *StatusError) Error() string {
 }
 
 type ActionApplication struct {
-	Task   *orchestrator.Task   `json:"task"`
-	Action *orchestrator.Action `json:"action"`
+	Task         *orchestrator.Task   `json:"task"`
+	Action       *orchestrator.Action `json:"action"`
+	MatchedHooks []string             `json:"matched_hooks,omitempty"`
 }
 
 type ProjectReloadResult struct {
@@ -320,9 +322,19 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		go s.runDispatchLoop(dispatchCtx, newTask, meta, &behavior, sm)
 	}
 
+	var matchedHooks []string
+	if s.Coordinator != nil {
+		if coord, ok := s.Coordinator.(*orchestrator.Coordinator); ok && coord.Evaluator != nil {
+			for _, hook := range coord.Evaluator.Evaluate(newTask, meta.Hooks) {
+				matchedHooks = append(matchedHooks, hook.ID)
+			}
+		}
+	}
+
 	return &ActionApplication{
-		Task:   newTask,
-		Action: action,
+		Task:         newTask,
+		Action:       action,
+		MatchedHooks: matchedHooks,
 	}, nil
 }
 
@@ -409,20 +421,37 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 		result, err := s.Coordinator.DispatchAndAdvance(ctx, current, meta, behavior, sm)
 		if err != nil {
 			slog.Error("dispatch loop error", "task_id", current.ID, "cycle", cycle, "error", err)
+			s.recordDispatchError(current.ID, err)
 			return
 		}
 
 		if len(result.FinalPayload) > 0 {
-			current.Payload = result.FinalPayload
+			var persisted *orchestrator.Task
 			if err := s.Tx.WithinTx(func(tx TxStore) error {
-				return tx.UpdateTask(current)
+				latest, err := tx.GetTask(current.ID)
+				if err != nil {
+					return err
+				}
+				latest.Payload = result.FinalPayload
+				if err := tx.UpdateTask(latest); err != nil {
+					return err
+				}
+				persisted = latest
+				return nil
 			}); err != nil {
 				slog.Error("persist payload failed", "task_id", current.ID, "error", err)
 				return
 			}
+			current = persisted
 		}
 
 		if result.NewStatus == "" {
+			if current.Status == orchestrator.TaskStatusDone || current.Status == orchestrator.TaskStatusAborted {
+				s.cleanupWorktree(current.ID, current.ProjectID, current.Status)
+				if s.Lifecycle != nil {
+					s.Lifecycle.CleanupTaskWindow(current.ID)
+				}
+			}
 			return
 		}
 
@@ -450,6 +479,29 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 	}
 
 	slog.Warn("dispatch loop max cycles reached", "task_id", current.ID, "max", maxCycles)
+}
+
+func (s *TaskWorkflowService) recordDispatchError(taskID string, err error) {
+	if s.Tx == nil || taskID == "" || err == nil {
+		return
+	}
+
+	payload, marshalErr := json.Marshal(map[string]string{"error": err.Error()})
+	if marshalErr != nil {
+		slog.Error("marshal dispatch error payload failed", "task_id", taskID, "error", marshalErr)
+		return
+	}
+
+	action := &orchestrator.Action{
+		TaskID:  taskID,
+		Type:    "dispatch_error",
+		Payload: payload,
+	}
+	if txErr := s.Tx.WithinTx(func(tx TxStore) error {
+		return tx.CreateAction(action)
+	}); txErr != nil {
+		slog.Error("persist dispatch error failed", "task_id", taskID, "error", txErr)
+	}
 }
 
 func (s *TaskWorkflowService) cleanupWorktree(taskID, projectID string, status orchestrator.TaskStatus) {

@@ -1,0 +1,1 @@
+ALTER TABLE jobs ADD COLUMN handler_id TEXT NOT NULL DEFAULT '';

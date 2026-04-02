@@ -9,6 +9,10 @@ import (
 
 type RealTmux struct{}
 
+func sessionTarget(name string) string {
+	return name + ":"
+}
+
 func (t *RealTmux) EnsureSession(name string) error {
 	if t.HasSession(name) {
 		return nil
@@ -17,11 +21,11 @@ func (t *RealTmux) EnsureSession(name string) error {
 }
 
 func (t *RealTmux) NewWindow(session, windowName string) error {
-	return exec.Command("tmux", "new-window", "-t", session, "-n", windowName).Run()
+	return exec.Command("tmux", "new-window", "-t", sessionTarget(session), "-n", windowName).Run()
 }
 
 func (t *RealTmux) RunInWindow(session, windowName, command string) error {
-	return exec.Command("tmux", "new-window", "-t", session, "-n", windowName, "sh", "-c", command).Run()
+	return exec.Command("tmux", "new-window", "-t", sessionTarget(session), "-n", windowName, "sh", "-c", command).Run()
 }
 
 func (t *RealTmux) SendKeys(session, window, keys string) error {
