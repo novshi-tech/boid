@@ -1,10 +1,13 @@
 package client
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -16,6 +19,8 @@ type Client struct {
 	socketPath string
 	httpClient *http.Client
 }
+
+var ErrAttachDetached = errors.New("attach detached")
 
 func NewUnixClient(socketPath string) *Client {
 	return &Client{
@@ -84,4 +89,105 @@ func (c *Client) Do(method, path string, body any, result any) error {
 		}
 	}
 	return nil
+}
+
+func (c *Client) AttachJob(jobID string, stdin io.Reader, stdout io.Writer) error {
+	if stdout == nil {
+		stdout = io.Discard
+	}
+
+	conn, err := net.Dial("unix", c.socketPath)
+	if err != nil {
+		return fmt.Errorf("dial attach socket: %w", err)
+	}
+	defer conn.Close()
+
+	req, err := http.NewRequest("POST", "http://boid/api/jobs/"+jobID+"/attach", nil)
+	if err != nil {
+		return fmt.Errorf("create attach request: %w", err)
+	}
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "boid-attach")
+
+	if err := req.Write(conn); err != nil {
+		return fmt.Errorf("write attach request: %w", err)
+	}
+
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, req)
+	if err != nil {
+		return fmt.Errorf("read attach response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		defer resp.Body.Close()
+		var errResp map[string]string
+		if decodeErr := json.NewDecoder(resp.Body).Decode(&errResp); decodeErr == nil {
+			if msg, ok := errResp["error"]; ok {
+				return fmt.Errorf("%s", msg)
+			}
+		}
+		return fmt.Errorf("attach failed: HTTP %d", resp.StatusCode)
+	}
+
+	outputErrCh := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(stdout, reader)
+		outputErrCh <- normalizeAttachIOError(err)
+	}()
+
+	if stdin == nil {
+		return <-outputErrCh
+	}
+
+	inputErrCh := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(conn, stdin)
+		if err == nil {
+			inputErrCh <- io.EOF
+			return
+		}
+		inputErrCh <- err
+	}()
+
+	for {
+		select {
+		case err := <-outputErrCh:
+			return normalizeAttachIOError(err)
+		case err := <-inputErrCh:
+			switch {
+			case errors.Is(err, ErrAttachDetached):
+				return nil
+			case err == nil || errors.Is(err, io.EOF):
+				_ = closeConnWrite(conn)
+				inputErrCh = nil
+			default:
+				return normalizeAttachIOError(err)
+			}
+		}
+	}
+}
+
+func (c *Client) ResizeJob(jobID string, rows, cols int) error {
+	return c.Do("POST", "/api/jobs/"+jobID+"/resize", map[string]int{
+		"rows": rows,
+		"cols": cols,
+	}, nil)
+}
+
+func normalizeAttachIOError(err error) error {
+	if err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return nil
+	}
+	return err
+}
+
+func closeConnWrite(conn net.Conn) error {
+	type closeWriter interface {
+		CloseWrite() error
+	}
+	if cw, ok := conn.(closeWriter); ok {
+		return cw.CloseWrite()
+	}
+	return conn.Close()
 }

@@ -97,3 +97,11 @@ func (r *statefulRuntime) StartSpec(runtimeID string) (dispatcher.RuntimeStartSp
 	spec, ok := r.starts[runtimeID]
 	return spec, ok
 }
+
+func (r *statefulRuntime) SupportsAttach(runtimeID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	_, ok := r.starts[runtimeID]
+	return ok
+}

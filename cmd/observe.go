@@ -72,6 +72,9 @@ func renderJob(job *api.Job) {
 	fmt.Printf("Project:    %s\n", job.ProjectID)
 	fmt.Printf("Handler:    %s\n", job.HandlerID)
 	fmt.Printf("Role:       %s\n", job.Role)
+	fmt.Printf("Runtime:    %s\n", valueOrDash(job.RuntimeID))
+	fmt.Printf("Attachable: %s\n", yesNo(job.RuntimeID != "" && job.Interactive))
+	fmt.Printf("TTY:        %s\n", yesNo(job.TTY))
 	fmt.Printf("Status:     %s\n", job.Status)
 	fmt.Printf("Exit Code:  %s\n", formatExitCode(job.Status, job.ExitCode))
 	fmt.Printf("Created At: %s\n", formatTime(job.CreatedAt))
@@ -130,6 +133,20 @@ func printPrettyJSONOrText(text string, indent string) {
 	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
 		fmt.Printf("%s%s\n", indent, line)
 	}
+}
+
+func yesNo(v bool) string {
+	if v {
+		return "yes"
+	}
+	return "no"
+}
+
+func valueOrDash(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "-"
+	}
+	return v
 }
 
 func formatTime(ts time.Time) string {

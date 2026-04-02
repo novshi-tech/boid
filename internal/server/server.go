@@ -25,9 +25,10 @@ type Config struct {
 	SocketPath     string
 	HTTPAddr       string
 	TmuxSession    string
-	KitsDir        string            // base dir for installed kit repos
-	KeyFilePath    string            // path to secret encryption key file
-	AllowedDomains []string          // proxy allowed domains
+	KitsDir        string   // base dir for installed kit repos
+	KeyFilePath    string   // path to secret encryption key file
+	AllowedDomains []string // proxy allowed domains
+	JobRuntime     dispatcher.JobRuntime
 	Tmux           dtmux.TmuxManager // nil uses RealTmux
 }
 

@@ -253,6 +253,11 @@ func (r *LocalRuntime) Stop(ctx context.Context, runtimeID string) error {
 	}
 }
 
+func (r *LocalRuntime) SupportsAttach(runtimeID string) bool {
+	_, err := r.session(runtimeID)
+	return err == nil
+}
+
 func (r *LocalRuntime) session(runtimeID string) (*localRuntimeSession, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

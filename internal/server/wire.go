@@ -21,6 +21,7 @@ type appRuntime struct {
 	projectRepo api.ProjectRepository
 	taskRepo    *orchestrator.TaskRepository
 	jobStore    api.JobStore
+	jobRuntime  dispatcher.JobRuntime
 	projectSvc  *api.ProjectAppService
 	taskSvc     *api.TaskAppService
 	webSvc      *api.WebAppService
@@ -61,6 +62,9 @@ func newTmuxSession(cfg Config) string {
 }
 
 func newJobRuntime(cfg Config) dispatcher.JobRuntime {
+	if cfg.JobRuntime != nil {
+		return cfg.JobRuntime
+	}
 	return &dispatcher.TmuxRuntime{
 		Tmux:    newTmuxManager(cfg),
 		Session: newTmuxSession(cfg),
@@ -134,6 +138,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		projectRepo: projectRepo,
 		taskRepo:    taskRepo,
 		jobStore:    jobStore,
+		jobRuntime:  runner.Runtime,
 		projectSvc:  projectSvc,
 		taskSvc:     taskSvc,
 		webSvc:      webSvc,
@@ -185,6 +190,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 
 	jobHandler := &api.JobHandler{Jobs: runtime.jobStore, Service: runtime.workflow}
 	r.Mount("/api/jobs", jobHandler.Routes())
+	mountJobRuntimeRoutes(r, runtime)
 
 	webHandler := &api.WebHandler{Service: runtime.webSvc}
 	r.Mount("/", webHandler.Routes())

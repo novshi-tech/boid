@@ -74,6 +74,10 @@ func (r *TmuxRuntime) Stop(_ context.Context, runtimeID string) error {
 	return r.Tmux.KillWindow(r.session(), windowName)
 }
 
+func (r *TmuxRuntime) SupportsAttach(_ string) bool {
+	return false
+}
+
 func (r *TmuxRuntime) track(runtimeID, windowName string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
