@@ -1,0 +1,22 @@
+id: boid
+name: boid
+builtin_commands:
+  - boid
+
+task_behaviors:
+  dev:
+    name: one-shot-dev
+    transition: one-shot
+    traits: [instructions]
+    default_payload:
+      instructions:
+        main:
+          type: execution
+          consumer: claude-code
+
+kits:
+  - github.com/novshi-tech/boid-kits/go-dev
+  - github.com/novshi-tech/boid-kits/git
+  - github.com/novshi-tech/boid-kits/github-cli
+  - github.com/novshi-tech/boid-kits/claude-code
+  - github.com/novshi-tech/boid-kits/codex
