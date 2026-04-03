@@ -1,0 +1,26 @@
+id: instructions-routing
+name: Instructions Routing
+kits:
+  - github.com/novshi-tech/boid-kits/instructions-agent-a
+  - github.com/novshi-tech/boid-kits/instructions-agent-b
+task_behaviors:
+  impl:
+    name: Implementation
+    transition: feedback-loop
+    traits: [instructions, artifact, verification]
+    default_payload:
+      instructions:
+        executor:
+          type: execution
+          consumer: agent-a
+          message: "implement the task"
+        reviewer:
+          type: verification
+          consumer: agent-b
+          message: "review correctness"
+        security:
+          type: verification
+          consumer: agent-b
+          message: "check security aspects"
+hooks: []
+gates: []

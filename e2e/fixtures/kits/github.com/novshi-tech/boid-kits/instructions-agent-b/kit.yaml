@@ -1,0 +1,8 @@
+env:
+  E2E_STATE_DIR: ${E2E_STATE_DIR}
+hooks:
+  - id: run-agent-b
+    on: verifying
+    traits:
+      consumes: [instructions, artifact, verification]
+      produces: [verification]

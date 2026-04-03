@@ -1,0 +1,8 @@
+env:
+  E2E_STATE_DIR: ${E2E_STATE_DIR}
+hooks:
+  - id: run-agent-a
+    on: executing
+    traits:
+      consumes: [instructions]
+      produces: [artifact]
