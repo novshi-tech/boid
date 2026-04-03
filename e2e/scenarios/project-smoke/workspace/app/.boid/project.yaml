@@ -1,0 +1,8 @@
+id: e2e-smoke
+name: E2E Smoke
+task_behaviors:
+  smoke:
+    name: Smoke
+    transition: one-shot
+hooks: []
+gates: []

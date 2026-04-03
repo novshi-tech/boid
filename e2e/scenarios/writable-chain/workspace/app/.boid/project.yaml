@@ -1,0 +1,10 @@
+id: writable-chain
+name: Writable Chain
+kits:
+  - github.com/novshi-tech/boid-kits/writable-chain
+task_behaviors:
+  writable:
+    name: Writable
+    transition: feedback-loop
+hooks: []
+gates: []

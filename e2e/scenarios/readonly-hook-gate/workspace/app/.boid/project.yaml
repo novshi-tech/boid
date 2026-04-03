@@ -1,0 +1,11 @@
+id: readonly-hook-gate
+name: Readonly Hook Gate
+kits:
+  - github.com/novshi-tech/boid-kits/readonly-hook-gate
+task_behaviors:
+  readonly:
+    name: Readonly
+    transition: feedback-loop
+    readonly: true
+hooks: []
+gates: []

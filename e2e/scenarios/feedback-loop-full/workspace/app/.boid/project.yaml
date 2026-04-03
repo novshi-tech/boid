@@ -1,0 +1,10 @@
+id: feedback-loop-full
+name: Feedback Loop Full
+kits:
+  - github.com/novshi-tech/boid-kits/feedback-loop-full
+task_behaviors:
+  feedback:
+    name: Feedback
+    transition: feedback-loop
+hooks: []
+gates: []
