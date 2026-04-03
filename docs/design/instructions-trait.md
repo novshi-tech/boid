@@ -474,13 +474,16 @@ func extractInstructionConsumers(payload json.RawMessage, instType InstructionTy
 
 ```go
 const (
-    TraitPrompt       TraitType = "prompt"
     TraitArtifact     TraitType = "artifact"
     TraitVerification TraitType = "verification"
     TraitTasks        TraitType = "tasks"
     TraitInstructions TraitType = "instructions"
 )
 ```
+
+`TraitPrompt` は廃止する。`instructions` が agent への指示伝達を完全に吸収するため、
+`prompt` トレイトは不要になる。既存の `agent_prompt` ペイロードキーへの依存も
+`instructions` に移行する。
 
 ### `ActiveTraitTypes()`
 
@@ -720,18 +723,20 @@ exec claude/codex with prompt
 後方互換レイヤは持たない。前提は次の通り。
 
 - `requires_traits` は廃止
+- `TraitPrompt` (`prompt` トレイト) は廃止。`instructions` に置き換え
 - hook / gate 定義は新しい `traits` 形式へ移行する
 - instructions ルーティング対象 hook は `consumer` を持つ
   - kit hook は kit consumer を継承
   - project 直定義 hook は YAML で明示
 - `default_payload` は専用型で受ける
+- 既存の `agent_prompt` ペイロードキーへの依存は `instructions` に移行する
 
 ## 実装ステップ
 
 ### Step 1: データ構造の追加
 
 - [ ] `InstructionType`, `Instruction`, `RoutedInstruction` を追加
-- [ ] `TraitInstructions` を追加
+- [ ] `TraitInstructions` を追加、`TraitPrompt` を削除
 - [ ] `HandlerTraits` を追加
 - [ ] `Hook` の `Traits`, `Consumer`, `Kit` を追加
 - [ ] `Gate` の `Traits`, `Kit` を追加
