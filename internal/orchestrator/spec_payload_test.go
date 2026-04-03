@@ -171,8 +171,8 @@ func TestTraitMergeMode(t *testing.T) {
 }
 
 func TestValidatePayloadPatchAndMergePayloadPatch(t *testing.T) {
-	patch := json.RawMessage(`{"instructions":"hello"}`)
-	allowed := []projectspec.TraitType{projectspec.TraitInstructions}
+	patch := json.RawMessage(`{"artifact":"http://example.com"}`)
+	allowed := []projectspec.TraitType{projectspec.TraitArtifact}
 	if err := projectspec.ValidatePayloadPatch(patch, allowed); err != nil {
 		t.Fatalf("ValidatePayloadPatch: %v", err)
 	}
@@ -180,8 +180,28 @@ func TestValidatePayloadPatchAndMergePayloadPatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MergePayloadPatch: %v", err)
 	}
-	if string(result) != `{"instructions":"hello"}` {
+	if string(result) != `{"artifact":"http://example.com"}` {
 		t.Fatalf("unexpected merged payload: %s", result)
+	}
+}
+
+func TestValidatePayloadPatch_InstructionsRejected(t *testing.T) {
+	patch := json.RawMessage(`{"instructions":"do something"}`)
+	// Even if instructions is listed in allowed produces, handlers must not write it.
+	allowed := []projectspec.TraitType{projectspec.TraitInstructions}
+	err := projectspec.ValidatePayloadPatch(patch, allowed)
+	if err == nil {
+		t.Fatal("expected error when instructions trait is in patch")
+	}
+}
+
+func TestMergePayloadPatch_ProducesOutsideAllowed(t *testing.T) {
+	patch := json.RawMessage(`{"artifact":"http://example.com"}`)
+	// artifact is not in allowed produces
+	allowed := []projectspec.TraitType{projectspec.TraitVerification}
+	_, err := projectspec.MergePayloadPatch(json.RawMessage(`{}`), patch, "hook-1", allowed)
+	if err == nil {
+		t.Fatal("expected error when patch trait is not in produces")
 	}
 }
 

@@ -73,7 +73,7 @@ func (d *Coordinator) DispatchAndAdvance(
 			}
 			if len(gr.PayloadPatch) > 0 && string(gr.PayloadPatch) != "{}" {
 				gr.PayloadPatch = injectSourceState(gr.PayloadPatch, string(task.Status))
-				merged, err := MergePayloadPatch(payload, gr.PayloadPatch, gr.ID, gr.allowedTraits(nil))
+				merged, err := MergePayloadPatch(payload, gr.PayloadPatch, gr.ID, gr.allowedTraitsFromGates(matchedGates))
 				if err != nil {
 					slog.Warn("payload merge failed", "gate_id", gr.ID, "error", err)
 					continue
@@ -341,6 +341,16 @@ func (hr *HandlerResult) allowedTraits(hooks []Hook) []TraitType {
 	for _, h := range hooks {
 		if h.ID == hr.ID {
 			return h.Traits.Produces
+		}
+	}
+	return nil
+}
+
+// allowedTraitsFromGates returns the produces traits for this handler from the gate list.
+func (hr *HandlerResult) allowedTraitsFromGates(gates []Gate) []TraitType {
+	for _, g := range gates {
+		if g.ID == hr.ID {
+			return g.Traits.Produces
 		}
 	}
 	return nil
