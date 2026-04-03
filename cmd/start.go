@@ -45,6 +45,7 @@ func defaultAllowedDomains() []string {
 		// AI agents
 		".anthropic.com",
 		".claude.ai",
+		".claude.com",
 		"api.openai.com",
 		"auth.openai.com",
 		"chatgpt.com",
