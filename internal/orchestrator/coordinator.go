@@ -336,11 +336,11 @@ func injectSourceState(patch json.RawMessage, state string) json.RawMessage {
 	return result
 }
 
-// allowedTraits returns the requires_traits for this handler from the hook list.
+// allowedTraits returns the produces traits for this handler from the hook list.
 func (hr *HandlerResult) allowedTraits(hooks []Hook) []TraitType {
 	for _, h := range hooks {
 		if h.ID == hr.ID {
-			return h.RequiresTraits
+			return h.Traits.Produces
 		}
 	}
 	return nil

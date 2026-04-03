@@ -13,13 +13,15 @@ func TestEvaluate_MatchingHookFires(t *testing.T) {
 
 	task := &orchestrator.Task{
 		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"prompt":"do stuff"}`),
+		Payload: json.RawMessage(`{"instructions":"do stuff"}`),
 	}
 	hooks := []projectspec.Hook{
 		{
-			ID:             "run-agent",
-			On:             "executing",
-			RequiresTraits: []projectspec.TraitType{projectspec.TraitPrompt},
+			ID: "run-agent",
+			On: "executing",
+			Traits: projectspec.HandlerTraits{
+				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
+			},
 		},
 	}
 
@@ -37,13 +39,15 @@ func TestEvaluate_NonMatchingStatus(t *testing.T) {
 
 	task := &orchestrator.Task{
 		Status:  orchestrator.TaskStatusPending,
-		Payload: json.RawMessage(`{"prompt":"do stuff"}`),
+		Payload: json.RawMessage(`{"instructions":"do stuff"}`),
 	}
 	hooks := []projectspec.Hook{
 		{
-			ID:             "run-agent",
-			On:             "executing",
-			RequiresTraits: []projectspec.TraitType{projectspec.TraitPrompt},
+			ID: "run-agent",
+			On: "executing",
+			Traits: projectspec.HandlerTraits{
+				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
+			},
 		},
 	}
 
@@ -62,9 +66,11 @@ func TestEvaluate_MissingTrait(t *testing.T) {
 	}
 	hooks := []projectspec.Hook{
 		{
-			ID:             "run-agent",
-			On:             "executing",
-			RequiresTraits: []projectspec.TraitType{projectspec.TraitPrompt},
+			ID: "run-agent",
+			On: "executing",
+			Traits: projectspec.HandlerTraits{
+				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
+			},
 		},
 	}
 
@@ -83,9 +89,8 @@ func TestEvaluate_NoRequiredTraits(t *testing.T) {
 	}
 	hooks := []projectspec.Hook{
 		{
-			ID:             "always-run",
-			On:             "executing",
-			RequiresTraits: nil,
+			ID: "always-run",
+			On: "executing",
 		},
 	}
 
@@ -104,9 +109,11 @@ func TestEvaluateGates_MatchingGate(t *testing.T) {
 	}
 	gates := []projectspec.Gate{
 		{
-			ID:             "push-pr",
-			On:             "executing",
-			RequiresTraits: []projectspec.TraitType{projectspec.TraitArtifact},
+			ID: "push-pr",
+			On: "executing",
+			Traits: projectspec.HandlerTraits{
+				Consumes: []projectspec.TraitType{projectspec.TraitArtifact},
+			},
 		},
 	}
 
@@ -128,9 +135,11 @@ func TestEvaluateGates_NonMatchingStatus(t *testing.T) {
 	}
 	gates := []projectspec.Gate{
 		{
-			ID:             "push-pr",
-			On:             "executing",
-			RequiresTraits: []projectspec.TraitType{projectspec.TraitArtifact},
+			ID: "push-pr",
+			On: "executing",
+			Traits: projectspec.HandlerTraits{
+				Consumes: []projectspec.TraitType{projectspec.TraitArtifact},
+			},
 		},
 	}
 

@@ -62,7 +62,11 @@ func kitInstallFromProject() error {
 		}
 	}
 
-	repos := kit.RepoRefsFromKitRefs(kitRefs)
+	kitRefStrs := make([]string, len(kitRefs))
+	for i, r := range kitRefs {
+		kitRefStrs[i] = r.Ref
+	}
+	repos := kit.RepoRefsFromKitRefs(kitRefStrs)
 	if len(repos) == 0 {
 		fmt.Println("no remote kit repos to install")
 		return nil

@@ -121,16 +121,16 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 	}
 
 	var kits []*KitMeta
-	for _, ref := range kitsToLoad {
-		kitDir, err := resolveKitRef(ref, dir, resolver)
+	for _, kitRef := range kitsToLoad {
+		kitDir, err := resolveKitRef(kitRef.Ref, dir, resolver)
 		if err != nil {
-			return nil, fmt.Errorf("kit %q: %w", ref, err)
+			return nil, fmt.Errorf("kit %q: %w", kitRef.Ref, err)
 		}
 		kitMeta, err := ReadKitMeta(kitDir)
 		if err != nil {
-			return nil, fmt.Errorf("kit %q: %w", ref, err)
+			return nil, fmt.Errorf("kit %q: %w", kitRef.Ref, err)
 		}
-		slog.Info("resolved kit", "ref", ref, "hooks", len(kitMeta.Hooks))
+		slog.Info("resolved kit", "ref", kitRef.Ref, "hooks", len(kitMeta.Hooks))
 		kits = append(kits, kitMeta)
 	}
 
@@ -331,7 +331,7 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta) *ProjectMeta {
 	return &result
 }
 
-func EffectiveKitRefs(base []string, local ProjectLocalKits) ([]string, error) {
+func EffectiveKitRefs(base []KitRef, local ProjectLocalKits) ([]KitRef, error) {
 	addSeen := make(map[string]struct{}, len(local.Add))
 	for _, ref := range local.Add {
 		if _, ok := addSeen[ref]; ok {
@@ -351,17 +351,17 @@ func EffectiveKitRefs(base []string, local ProjectLocalKits) ([]string, error) {
 		removeSeen[ref] = struct{}{}
 	}
 
-	result := make([]string, 0, len(base)+len(local.Add))
+	result := make([]KitRef, 0, len(base)+len(local.Add))
 	seen := make(map[string]struct{}, len(base)+len(local.Add))
-	for _, ref := range base {
-		if _, removed := removeSeen[ref]; removed {
+	for _, kitRef := range base {
+		if _, removed := removeSeen[kitRef.Ref]; removed {
 			continue
 		}
-		if _, ok := seen[ref]; ok {
+		if _, ok := seen[kitRef.Ref]; ok {
 			continue
 		}
-		seen[ref] = struct{}{}
-		result = append(result, ref)
+		seen[kitRef.Ref] = struct{}{}
+		result = append(result, kitRef)
 	}
 	for _, ref := range local.Add {
 		if _, removed := removeSeen[ref]; removed {
@@ -371,7 +371,7 @@ func EffectiveKitRefs(base []string, local ProjectLocalKits) ([]string, error) {
 			continue
 		}
 		seen[ref] = struct{}{}
-		result = append(result, ref)
+		result = append(result, KitRef{Ref: ref})
 	}
 	return result, nil
 }
@@ -531,7 +531,7 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 	}
 
 	result := *meta
-	result.Kits = append([]string(nil), meta.Kits...)
+	result.Kits = append([]KitRef(nil), meta.Kits...)
 	result.Hooks = append([]Hook(nil), meta.Hooks...)
 	result.Gates = append([]Gate(nil), meta.Gates...)
 	result.BuiltinCommands = append([]string(nil), meta.BuiltinCommands...)

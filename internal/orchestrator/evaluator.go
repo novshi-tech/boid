@@ -15,7 +15,7 @@ func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 		if h.On != string(task.Status) {
 			continue
 		}
-		if !hasAllTraits(traitSet, h.RequiresTraits) {
+		if !hasAllTraits(traitSet, h.Traits.Consumes) {
 			continue
 		}
 		matched = append(matched, h)
@@ -37,7 +37,7 @@ func (e *Evaluator) EvaluateGates(task *Task, gates []Gate) []Gate {
 		if g.On != string(task.Status) {
 			continue
 		}
-		if !hasAllTraits(traitSet, g.RequiresTraits) {
+		if !hasAllTraits(traitSet, g.Traits.Consumes) {
 			continue
 		}
 		matched = append(matched, g)

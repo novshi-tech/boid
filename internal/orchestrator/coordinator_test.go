@@ -146,8 +146,8 @@ func TestCoordinator_DispatchAndAdvance_HooksSequential(t *testing.T) {
 	}
 	meta := &projectspec.ProjectMeta{
 		Hooks: []projectspec.Hook{
-			{ID: "hook-a", On: "executing", RequiresTraits: nil},
-			{ID: "hook-b", On: "executing", RequiresTraits: nil},
+			{ID: "hook-a", On: "executing"},
+			{ID: "hook-b", On: "executing"},
 		},
 	}
 	behavior := &projectspec.TaskBehavior{Readonly: false}

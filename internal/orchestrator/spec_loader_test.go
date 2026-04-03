@@ -518,7 +518,7 @@ additional_bindings:
 	if err != nil {
 		t.Fatalf("ReadProjectMetaWithKits: %v", err)
 	}
-	if len(meta.Kits) != 1 || meta.Kits[0] != "local/dev/repro-kit" {
+	if len(meta.Kits) != 1 || meta.Kits[0].Ref != "local/dev/repro-kit" {
 		t.Fatalf("unexpected effective kits: %+v", meta.Kits)
 	}
 	if _, ok := meta.Env["FROM_DEFAULT"]; ok {
@@ -739,7 +739,7 @@ func TestMergeKitMeta(t *testing.T) {
 func TestEffectiveKitRefs(t *testing.T) {
 	t.Run("base plus add minus remove", func(t *testing.T) {
 		got, err := projectspec.EffectiveKitRefs(
-			[]string{"github.com/acme/repo/default", "github.com/acme/repo/shared"},
+			[]projectspec.KitRef{{Ref: "github.com/acme/repo/default"}, {Ref: "github.com/acme/repo/shared"}},
 			projectspec.ProjectLocalKits{
 				Add:    []string{"local/dev/repro-kit", "github.com/acme/repo/shared"},
 				Remove: []string{"github.com/acme/repo/default"},
@@ -753,7 +753,7 @@ func TestEffectiveKitRefs(t *testing.T) {
 			t.Fatalf("got %v, want %v", got, want)
 		}
 		for i := range want {
-			if got[i] != want[i] {
+			if got[i].Ref != want[i] {
 				t.Fatalf("got %v, want %v", got, want)
 			}
 		}

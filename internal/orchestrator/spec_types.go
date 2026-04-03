@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -100,14 +101,39 @@ func (h HostCommands) ToCommandDefs() map[string]CommandDef {
 	return out
 }
 
+type InstructionType string
+
+const (
+	InstructionTypeExecution    InstructionType = "execution"
+	InstructionTypeVerification InstructionType = "verification"
+)
+
+type Instruction struct {
+	Type     InstructionType `json:"type" yaml:"type"`
+	Consumer string          `json:"consumer" yaml:"consumer"`
+	Message  string          `json:"message" yaml:"message"`
+}
+
+type RoutedInstruction struct {
+	Role     string          `json:"role"`
+	Type     InstructionType `json:"type"`
+	Consumer string          `json:"consumer"`
+	Message  string          `json:"message"`
+}
+
 type TraitType string
 
 const (
-	TraitPrompt       TraitType = "prompt"
+	TraitInstructions TraitType = "instructions"
 	TraitArtifact     TraitType = "artifact"
 	TraitVerification TraitType = "verification"
 	TraitTasks        TraitType = "tasks"
 )
+
+type HandlerTraits struct {
+	Consumes []TraitType `json:"consumes,omitempty" yaml:"consumes,omitempty"`
+	Produces []TraitType `json:"produces,omitempty" yaml:"produces,omitempty"`
+}
 
 type MergeMode string
 
@@ -124,18 +150,21 @@ const (
 )
 
 type Hook struct {
-	ID             string      `yaml:"id" json:"id"`
-	On             string      `yaml:"on" json:"on"`
-	RequiresTraits []TraitType `yaml:"requires_traits" json:"requires_traits"`
-	Requires       []string    `yaml:"requires" json:"requires"`
-	ScriptPath     string      `yaml:"-" json:"-"`
+	ID         string        `yaml:"id" json:"id"`
+	On         string        `yaml:"on" json:"on"`
+	Traits     HandlerTraits `yaml:"traits" json:"traits"`
+	Requires   []string      `yaml:"requires" json:"requires"`
+	Consumer   string        `yaml:"consumer,omitempty" json:"consumer,omitempty"`
+	Kit        string        `yaml:"-" json:"kit,omitempty"`
+	ScriptPath string        `yaml:"-" json:"-"`
 }
 
 type Gate struct {
-	ID             string      `yaml:"id" json:"id"`
-	On             string      `yaml:"on" json:"on"`
-	RequiresTraits []TraitType `yaml:"requires_traits" json:"requires_traits"`
-	ScriptPath     string      `yaml:"-" json:"-"`
+	ID         string        `yaml:"id" json:"id"`
+	On         string        `yaml:"on" json:"on"`
+	Traits     HandlerTraits `yaml:"traits" json:"traits"`
+	Kit        string        `yaml:"-" json:"kit,omitempty"`
+	ScriptPath string        `yaml:"-" json:"-"`
 }
 
 type HookFireEvent struct {
@@ -162,20 +191,54 @@ type KitGatesInfo struct {
 	GateIDs  []string
 }
 
+type RawPayload json.RawMessage
+
+func (p *RawPayload) UnmarshalYAML(node *yaml.Node) error {
+	var v any
+	if err := node.Decode(&v); err != nil {
+		return err
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	*p = RawPayload(b)
+	return nil
+}
+
+func (p RawPayload) RawMessage() json.RawMessage {
+	return json.RawMessage(p)
+}
+
 type TaskBehavior struct {
-	Name         string   `yaml:"name" json:"name"`
-	Transition   string   `yaml:"transition" json:"transition"`
-	Traits       []string `yaml:"traits" json:"traits"`
-	Readonly     bool     `yaml:"readonly" json:"readonly,omitempty"`
-	Worktree     bool     `yaml:"worktree" json:"worktree,omitempty"`
-	BranchPrefix string   `yaml:"branch_prefix" json:"branch_prefix,omitempty"`
-	BaseBranch   string   `yaml:"base_branch" json:"base_branch,omitempty"`
+	Name           string     `yaml:"name" json:"name"`
+	Transition     string     `yaml:"transition" json:"transition"`
+	Traits         []string   `yaml:"traits" json:"traits"`
+	Readonly       bool       `yaml:"readonly" json:"readonly,omitempty"`
+	Worktree       bool       `yaml:"worktree" json:"worktree,omitempty"`
+	BranchPrefix   string     `yaml:"branch_prefix" json:"branch_prefix,omitempty"`
+	BaseBranch     string     `yaml:"base_branch" json:"base_branch,omitempty"`
+	DefaultPayload RawPayload `yaml:"default_payload" json:"default_payload,omitempty"`
+}
+
+type KitRef struct {
+	Ref   string `yaml:"ref" json:"ref"`
+	Alias string `yaml:"as,omitempty" json:"as,omitempty"`
+}
+
+func (k *KitRef) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		k.Ref = value.Value
+		return nil
+	}
+	type kitRefAlias KitRef
+	return value.Decode((*kitRefAlias)(k))
 }
 
 type ProjectMeta struct {
 	ID                 string                  `yaml:"id" json:"id"`
 	Name               string                  `yaml:"name" json:"name"`
-	Kits               []string                `yaml:"kits" json:"kits,omitempty"`
+	Kits               []KitRef                `yaml:"kits" json:"kits,omitempty"`
 	TaskBehaviors      map[string]TaskBehavior `yaml:"task_behaviors" json:"task_behaviors"`
 	Hooks              []Hook                  `yaml:"hooks" json:"hooks"`
 	Gates              []Gate                  `yaml:"gates" json:"gates"`

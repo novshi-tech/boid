@@ -20,13 +20,14 @@ task_behaviors:
     name: development
     transition: one-shot
     traits:
-      - prompt
+      - instructions
       - artifact
 hooks:
   - id: run-agent
     on: executing
-    requires_traits:
-      - prompt
+    traits:
+      consumes:
+        - instructions
 host_commands:
   git:
     path: /usr/bin/git
@@ -39,8 +40,8 @@ env:
 	if err := yaml.Unmarshal([]byte(data), &meta); err != nil {
 		t.Fatalf("unmarshal yaml: %v", err)
 	}
-	if len(meta.Hooks) != 1 || meta.Hooks[0].RequiresTraits[0] != projectspec.TraitPrompt {
-		t.Fatalf("unexpected requires_traits: %v", meta.Hooks[0].RequiresTraits)
+	if len(meta.Hooks) != 1 || meta.Hooks[0].Traits.Consumes[0] != projectspec.TraitInstructions {
+		t.Fatalf("unexpected traits.consumes: %v", meta.Hooks[0].Traits.Consumes)
 	}
 }
 
@@ -51,8 +52,9 @@ name: My Project
 gates:
   - id: push-pr
     on: executing
-    requires_traits:
-      - artifact
+    traits:
+      consumes:
+        - artifact
 `
 	var meta projectspec.ProjectMeta
 	if err := yaml.Unmarshal([]byte(data), &meta); err != nil {
@@ -68,9 +70,9 @@ func TestProjectMeta_JSONRoundTrip(t *testing.T) {
 		ID:   "proj-1",
 		Name: "Test Project",
 		TaskBehaviors: map[string]projectspec.TaskBehavior{
-			"dev": {Name: "development", Transition: "one-shot", Traits: []string{"prompt"}},
+			"dev": {Name: "development", Transition: "one-shot", Traits: []string{"instructions"}},
 		},
-		Hooks:        []projectspec.Hook{{ID: "hook-1", On: "executing", RequiresTraits: []projectspec.TraitType{projectspec.TraitPrompt}}},
+		Hooks:        []projectspec.Hook{{ID: "hook-1", On: "executing", Traits: projectspec.HandlerTraits{Consumes: []projectspec.TraitType{projectspec.TraitInstructions}}}},
 		HostCommands: projectspec.HostCommands{"git": {Path: "/usr/bin/git"}},
 		Env:          map[string]string{"KEY": "val"},
 	}
@@ -92,15 +94,16 @@ func TestGate_YAMLRoundTrip(t *testing.T) {
 	data := `
 id: push-pr
 on: executing
-requires_traits:
-  - artifact
+traits:
+  consumes:
+    - artifact
 `
 	var gate projectspec.Gate
 	if err := yaml.Unmarshal([]byte(data), &gate); err != nil {
 		t.Fatalf("unmarshal yaml: %v", err)
 	}
-	if len(gate.RequiresTraits) != 1 || gate.RequiresTraits[0] != projectspec.TraitArtifact {
-		t.Fatalf("unexpected requires_traits: %v", gate.RequiresTraits)
+	if len(gate.Traits.Consumes) != 1 || gate.Traits.Consumes[0] != projectspec.TraitArtifact {
+		t.Fatalf("unexpected traits.consumes: %v", gate.Traits.Consumes)
 	}
 }
 
@@ -162,14 +165,14 @@ func TestTraitMergeMode(t *testing.T) {
 	if projectspec.TraitMergeMode(projectspec.TraitVerification) != projectspec.MergeModeShared {
 		t.Fatal("verification should be shared")
 	}
-	if projectspec.TraitMergeMode(projectspec.TraitPrompt) != projectspec.MergeModeExclusive {
-		t.Fatal("prompt should be exclusive")
+	if projectspec.TraitMergeMode(projectspec.TraitInstructions) != projectspec.MergeModeExclusive {
+		t.Fatal("instructions should be exclusive")
 	}
 }
 
 func TestValidatePayloadPatchAndMergePayloadPatch(t *testing.T) {
-	patch := json.RawMessage(`{"prompt":"hello"}`)
-	allowed := []projectspec.TraitType{projectspec.TraitPrompt}
+	patch := json.RawMessage(`{"instructions":"hello"}`)
+	allowed := []projectspec.TraitType{projectspec.TraitInstructions}
 	if err := projectspec.ValidatePayloadPatch(patch, allowed); err != nil {
 		t.Fatalf("ValidatePayloadPatch: %v", err)
 	}
@@ -177,7 +180,7 @@ func TestValidatePayloadPatchAndMergePayloadPatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MergePayloadPatch: %v", err)
 	}
-	if string(result) != `{"prompt":"hello"}` {
+	if string(result) != `{"instructions":"hello"}` {
 		t.Fatalf("unexpected merged payload: %s", result)
 	}
 }
