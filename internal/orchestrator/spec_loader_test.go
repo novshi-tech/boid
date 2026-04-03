@@ -361,7 +361,7 @@ func TestReadProjectMetaWithKits_LocalKits(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ReadProjectMetaWithKits: %v", err)
 		}
-		if len(meta.Hooks) != 1 || meta.Hooks[0].ID != "run-build" || len(meta.KitHooksDirs) != 1 {
+		if len(meta.Hooks) != 1 || meta.Hooks[0].ID != "build/run-build" || len(meta.KitHooksDirs) != 1 {
 			t.Fatalf("unexpected merged hooks: %+v", meta)
 		}
 	})
@@ -703,7 +703,7 @@ func TestMergeKitMeta(t *testing.T) {
 		if len(result.HostCommands) != 2 || len(result.AdditionalBindings) != 1 || len(result.Hooks) != 2 {
 			t.Fatalf("unexpected merge result: %+v", result)
 		}
-		if result.Hooks[0].ID != "kit-hook" || result.Hooks[1].ID != "proj-hook" {
+		if result.Hooks[0].ID != "mykit/kit-hook" || result.Hooks[1].ID != "proj-hook" {
 			t.Fatalf("unexpected hook order: %+v", result.Hooks)
 		}
 		if result.Env["GOPATH"] != "/home/go" || result.Env["PROJECT_VAR"] != "pval" {
@@ -725,13 +725,19 @@ func TestMergeKitMeta(t *testing.T) {
 		}
 	})
 
-	t.Run("hook id collision", func(t *testing.T) {
+	t.Run("same raw hook id across kit and base both survive with qualified IDs", func(t *testing.T) {
 		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project", Hooks: []projectspec.Hook{{ID: "build", On: "executing", ScriptPath: "/proj/hooks/build.sh"}}}
 		meta := &projectspec.KitMeta{Hooks: []projectspec.Hook{{ID: "build", On: "executing", ScriptPath: "/kit/hooks/build.sh"}}, HooksDir: "/kit/hooks"}
 
 		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"mykit"})
-		if len(result.Hooks) != 1 || result.Hooks[0].ScriptPath != "/proj/hooks/build.sh" {
-			t.Fatalf("expected project hook to win, got %+v", result.Hooks)
+		if len(result.Hooks) != 2 {
+			t.Fatalf("expected 2 hooks (kit + base), got %d: %+v", len(result.Hooks), result.Hooks)
+		}
+		if result.Hooks[0].ID != "mykit/build" {
+			t.Errorf("hook[0].ID = %q, want %q", result.Hooks[0].ID, "mykit/build")
+		}
+		if result.Hooks[1].ID != "build" {
+			t.Errorf("hook[1].ID = %q, want %q", result.Hooks[1].ID, "build")
 		}
 	})
 }
@@ -862,6 +868,72 @@ func TestMergeKitMeta_KitConsumerFields(t *testing.T) {
 		g := result.Gates[0]
 		if g.Kit != "claude-code" {
 			t.Errorf("Gate.Kit = %q, want %q", g.Kit, "claude-code")
+		}
+	})
+
+	t.Run("kit hook ID is qualified with consumer prefix", func(t *testing.T) {
+		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
+		meta := &projectspec.KitMeta{
+			Hooks: []projectspec.Hook{{ID: "run-agent", On: "executing", ScriptPath: "/kit/hooks/run-agent.sh"}},
+		}
+
+		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"claude-code"})
+		if len(result.Hooks) != 1 {
+			t.Fatalf("expected 1 hook, got %d", len(result.Hooks))
+		}
+		if result.Hooks[0].ID != "claude-code/run-agent" {
+			t.Errorf("ID = %q, want %q", result.Hooks[0].ID, "claude-code/run-agent")
+		}
+	})
+
+	t.Run("kit gate ID is qualified with consumer prefix", func(t *testing.T) {
+		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
+		meta := &projectspec.KitMeta{
+			Gates: []projectspec.Gate{{ID: "check-quality", On: "verifying", ScriptPath: "/kit/gates/check-quality.sh"}},
+		}
+
+		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"my-kit"})
+		if len(result.Gates) != 1 {
+			t.Fatalf("expected 1 gate, got %d", len(result.Gates))
+		}
+		if result.Gates[0].ID != "my-kit/check-quality" {
+			t.Errorf("ID = %q, want %q", result.Gates[0].ID, "my-kit/check-quality")
+		}
+	})
+
+	t.Run("different kits with same hook ID both survive", func(t *testing.T) {
+		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
+		kitA := &projectspec.KitMeta{
+			Hooks: []projectspec.Hook{{ID: "run-agent", On: "executing", ScriptPath: "/a/hooks/run-agent.sh"}},
+		}
+		kitB := &projectspec.KitMeta{
+			Hooks: []projectspec.Hook{{ID: "run-agent", On: "executing", ScriptPath: "/b/hooks/run-agent.sh"}},
+		}
+
+		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{kitA, kitB}, []string{"claude-code", "codex"})
+		if len(result.Hooks) != 2 {
+			t.Fatalf("expected 2 hooks, got %d", len(result.Hooks))
+		}
+		if result.Hooks[0].ID != "claude-code/run-agent" {
+			t.Errorf("hook[0].ID = %q, want %q", result.Hooks[0].ID, "claude-code/run-agent")
+		}
+		if result.Hooks[1].ID != "codex/run-agent" {
+			t.Errorf("hook[1].ID = %q, want %q", result.Hooks[1].ID, "codex/run-agent")
+		}
+	})
+
+	t.Run("base hooks are not prefixed", func(t *testing.T) {
+		base := &projectspec.ProjectMeta{
+			ID:   "proj",
+			Name: "Project",
+			Hooks: []projectspec.Hook{{ID: "my-hook", On: "executing", ScriptPath: "/proj/hooks/my-hook.sh"}},
+		}
+		result := projectspec.MergeKitMeta(base, nil, nil)
+		if len(result.Hooks) != 1 {
+			t.Fatalf("expected 1 hook, got %d", len(result.Hooks))
+		}
+		if result.Hooks[0].ID != "my-hook" {
+			t.Errorf("base hook ID = %q, want %q", result.Hooks[0].ID, "my-hook")
 		}
 	})
 }

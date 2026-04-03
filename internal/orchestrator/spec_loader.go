@@ -301,6 +301,9 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) *Pr
 		}
 		for _, h := range meta.Hooks {
 			h.Kit = consumer
+			if consumer != "" {
+				h.ID = consumer + "/" + h.ID
+			}
 			if h.Consumer == "" {
 				h.Consumer = consumer
 			}
@@ -308,7 +311,7 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) *Pr
 		}
 	}
 	allHooks = append(allHooks, base.Hooks...)
-	result.Hooks = dedupHooks(allHooks)
+	result.Hooks = allHooks
 
 	var allGates []Gate
 	for i, meta := range kits {
@@ -318,11 +321,14 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) *Pr
 		}
 		for _, g := range meta.Gates {
 			g.Kit = consumer
+			if consumer != "" {
+				g.ID = consumer + "/" + g.ID
+			}
 			allGates = append(allGates, g)
 		}
 	}
 	allGates = append(allGates, base.Gates...)
-	result.Gates = dedupGates(allGates)
+	result.Gates = allGates
 
 	mergedCmds := make(HostCommands)
 	for _, meta := range kits {
@@ -428,34 +434,6 @@ func ApplyProjectLocalMeta(base *ProjectMeta, local *ProjectLocalMeta) *ProjectM
 	result.AdditionalBindings = mergeBindMounts(result.AdditionalBindings, local.AdditionalBindings)
 	if local.SecretNamespace != "" {
 		result.SecretNamespace = local.SecretNamespace
-	}
-	return result
-}
-
-func dedupHooks(hooks []Hook) []Hook {
-	seen := make(map[string]int)
-	var result []Hook
-	for _, hook := range hooks {
-		if idx, ok := seen[hook.ID]; ok {
-			result[idx] = hook
-		} else {
-			seen[hook.ID] = len(result)
-			result = append(result, hook)
-		}
-	}
-	return result
-}
-
-func dedupGates(gates []Gate) []Gate {
-	seen := make(map[string]int)
-	var result []Gate
-	for _, gate := range gates {
-		if idx, ok := seen[gate.ID]; ok {
-			result[idx] = gate
-		} else {
-			seen[gate.ID] = len(result)
-			result = append(result, gate)
-		}
 	}
 	return result
 }

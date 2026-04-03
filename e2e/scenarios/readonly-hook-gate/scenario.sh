@@ -35,5 +35,5 @@ task_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 20s --interval 1
 printf '%s\n' "$task_json"
 e2e_assert_contains "$task_json" '"status":"in_review"'
 e2e_assert_contains "$task_json" '"artifact"'
-e2e_assert_contains "$task_json" '"validate-a"'
-e2e_assert_contains "$task_json" '"validate-b"'
+e2e_assert_contains "$task_json" 'readonly-hook-gate/validate-a'
+e2e_assert_contains "$task_json" 'readonly-hook-gate/validate-b'
