@@ -8,9 +8,9 @@ hooks:
 gates:
   - id: validate-a
     on: verifying
-    requires_traits:
-      - artifact
+    traits:
+      consumes: [artifact]
   - id: validate-b
     on: verifying
-    requires_traits:
-      - artifact
+    traits:
+      consumes: [artifact]

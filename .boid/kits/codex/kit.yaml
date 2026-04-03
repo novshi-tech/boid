@@ -1,0 +1,11 @@
+additional_bindings:
+  - source: ${HOME}/.volta
+  - source: ${HOME}/.codex
+    mode: rw
+
+hooks:
+  - id: run-review
+    on: verifying
+    traits:
+      consumes: [instructions, artifact, verification]
+      produces: [verification]

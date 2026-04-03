@@ -6,9 +6,9 @@ hooks:
 gates:
   - id: verify-resolved
     on: verifying
-    requires_traits:
-      - artifact
+    traits:
+      consumes: [artifact]
   - id: feedback-cycle
     on: collecting_feedback
-    requires_traits:
-      - artifact
+    traits:
+      consumes: [artifact]

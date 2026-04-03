@@ -6,5 +6,5 @@ hooks:
 gates:
   - id: verify-open
     on: verifying
-    requires_traits:
-      - artifact
+    traits:
+      consumes: [artifact]
