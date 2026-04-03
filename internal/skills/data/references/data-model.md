@@ -3,8 +3,8 @@
 ## Contents
 
 - [task.yaml](#taskyaml)
-- [instructions.json](#instructionsjson)
-- [payload.json](#payloadjson)
+- [instructions.yaml](#instructionsyaml)
+- [payload.yaml](#payloadyaml)
 - [environment.yaml](#environmentyaml)
 
 ## task.yaml
@@ -25,19 +25,15 @@ behavior: "impl"
 | status | 現在の状態（[state-machine.md](state-machine.md) 参照） |
 | behavior | 遷移パターン名（one-shot / feedback-loop を決定） |
 
-## instructions.json
+## instructions.yaml
 
 あなた宛の指示の配列。複数の instruction が届くことがある。
 
-```json
-[
-  {
-    "role": "executor",
-    "type": "execution",
-    "consumer": "claude-code",
-    "message": "TDD で実装してください。テストを先に書くこと。"
-  }
-]
+```yaml
+- role: executor
+  type: execution
+  consumer: claude-code
+  message: "TDD で実装してください。テストを先に書くこと。"
 ```
 
 | フィールド | 説明 |
@@ -49,16 +45,14 @@ behavior: "impl"
 
 全ての message を読み、総合的に作業すること。
 
-## payload.json
+## payload.yaml
 
 タスクのペイロード全体。トップレベルキーが trait 名。
 
-```json
-{
-  "instructions": { ... },
-  "artifact": { ... },
-  "verification": { ... }
-}
+```yaml
+instructions: { ... }
+artifact: { ... }
+verification: { ... }
 ```
 
 ### Traits
@@ -74,18 +68,15 @@ behavior: "impl"
 
 複数レビュアーの結果が reviewer ID ごとに格納される:
 
-```json
-{
-  "verification": {
-    "security-reviewer": {
-      "source_state": "verifying",
-      "findings": [
-        {"message": "XSS チェック OK", "status": "resolved"},
-        {"message": "SQL インジェクションの可能性", "status": "open"}
-      ]
-    }
-  }
-}
+```yaml
+verification:
+  security-reviewer:
+    source_state: verifying
+    findings:
+      - message: "XSS チェック OK"
+        status: resolved
+      - message: "SQL インジェクションの可能性"
+        status: open
 ```
 
 - `source_state`: この検証が行われた時の task status（システム自動注入）

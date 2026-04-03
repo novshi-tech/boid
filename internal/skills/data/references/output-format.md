@@ -10,30 +10,29 @@
 
 ## 基本
 
-結果は `~/.boid/output/payload_patch.json` に書き出す。
+結果は `~/.boid/output/payload_patch.yaml` に書き出す。
 
-```json
-{
-  "artifact": { ... }
-}
+```yaml
+payload_patch:
+  artifact: { ... }
 ```
 
-トップレベルキーは trait 名。
+トップレベルに `payload_patch` キーを置き、その配下に trait 名をキーとして書く。
 
 出力が不要な場合（no-op）はファイルを作成しなくてよい。
 
 ## artifact
 
-実装成果物。任意の JSON オブジェクト。
+実装成果物。任意のマッピング。
 
-```json
-{
-  "artifact": {
-    "summary": "OAuth2 ログイン機能を実装",
-    "files_changed": ["auth.go", "auth_test.go"],
-    "commit": "abc1234"
-  }
-}
+```yaml
+payload_patch:
+  artifact:
+    summary: "OAuth2 ログイン機能を実装"
+    files_changed:
+      - auth.go
+      - auth_test.go
+    commit: abc1234
 ```
 
 スキーマは自由。実装内容を記述する。
@@ -43,15 +42,14 @@ status が `executing` または `collecting_feedback` のとき出力する。
 
 検証結果。findings 配列を含む。
 
-```json
-{
-  "verification": {
-    "findings": [
-      {"message": "テストが全て通過", "status": "resolved"},
-      {"message": "エラーハンドリング不足", "status": "open"}
-    ]
-  }
-}
+```yaml
+payload_patch:
+  verification:
+    findings:
+      - message: "テストが全て通過"
+        status: resolved
+      - message: "エラーハンドリング不足"
+        status: open
 ```
 
 - `message`: 指摘内容
@@ -67,13 +65,13 @@ status が `executing` または `collecting_feedback` のとき出力する。
 
 サブタスク配列。triage / planning 用途。
 
-```json
-{
-  "tasks": [
-    {"title": "認証モジュール", "description": "OAuth2 実装"},
-    {"title": "テスト追加", "description": "認証のユニットテスト"}
-  ]
-}
+```yaml
+payload_patch:
+  tasks:
+    - title: "認証モジュール"
+      description: "OAuth2 実装"
+    - title: "テスト追加"
+      description: "認証のユニットテスト"
 ```
 
 ## ルール

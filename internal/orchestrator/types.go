@@ -8,7 +8,7 @@ import (
 // JobCompletion represents the result of a completed job.
 type JobCompletion struct {
 	JobID    string
-	Output   string // stdout capture (payload_patch JSON)
+	Output   string // stdout capture or payload_patch.yaml content
 	ExitCode int
 }
 

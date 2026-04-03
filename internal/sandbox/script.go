@@ -1,10 +1,13 @@
 package sandbox
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // WrapperConfig holds the parameters for sandbox script generation.
@@ -268,7 +271,7 @@ func writePathAndProxy(b *strings.Builder, cfg WrapperConfig) {
 
 // writeOutputTrap writes the EXIT trap that prefers file-based output over stdout capture.
 func writeOutputTrap(b *strings.Builder, jobID, outputDir string) {
-	patchFile := outputDir + "/payload_patch.json"
+	patchFile := outputDir + "/payload_patch.yaml"
 	fmt.Fprintf(b, "mkdir -p %s\n", shellQuote(outputDir))
 	fmt.Fprintf(b, "trap '\n")
 	fmt.Fprintf(b, "  _exit=$?\n")
@@ -289,14 +292,27 @@ func writeContextFiles(b *strings.Builder, cfg WrapperConfig) {
 		fmt.Fprintf(b, "printf '%%s' %s > %s/task.yaml\n", shellQuote(cfg.TaskYAML), shellQuote(contextDir))
 	}
 	if cfg.InstructionsJSON != "" {
-		fmt.Fprintf(b, "printf '%%s' %s > %s/instructions.json\n", shellQuote(cfg.InstructionsJSON), shellQuote(contextDir))
+		fmt.Fprintf(b, "printf '%%s' %s > %s/instructions.yaml\n", shellQuote(jsonToYAML(cfg.InstructionsJSON)), shellQuote(contextDir))
 	}
 	if cfg.PayloadJSON != "" {
-		fmt.Fprintf(b, "printf '%%s' %s > %s/payload.json\n", shellQuote(cfg.PayloadJSON), shellQuote(contextDir))
+		fmt.Fprintf(b, "printf '%%s' %s > %s/payload.yaml\n", shellQuote(jsonToYAML(cfg.PayloadJSON)), shellQuote(contextDir))
 	}
 	if cfg.EnvironmentYAML != "" {
 		fmt.Fprintf(b, "printf '%%s' %s > %s/environment.yaml\n", shellQuote(cfg.EnvironmentYAML), shellQuote(contextDir))
 	}
+}
+
+// jsonToYAML converts a JSON string to YAML. Falls back to the original string on error.
+func jsonToYAML(s string) string {
+	var v interface{}
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return s
+	}
+	out, err := yaml.Marshal(v)
+	if err != nil {
+		return s
+	}
+	return string(out)
 }
 
 func writeBuiltinShimEnv(b *strings.Builder, cfg WrapperConfig) {

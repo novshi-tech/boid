@@ -858,14 +858,14 @@ func TestWriteSandboxScripts_HookRole_ContextFiles(t *testing.T) {
 		t.Error("inner script task.yaml missing task ID")
 	}
 
-	// instructions.json
-	if !strings.Contains(inner, "instructions.json") {
-		t.Error("inner script missing instructions.json write")
+	// instructions.yaml
+	if !strings.Contains(inner, "instructions.yaml") {
+		t.Error("inner script missing instructions.yaml write")
 	}
 
-	// payload.json
-	if !strings.Contains(inner, "payload.json") {
-		t.Error("inner script missing payload.json write")
+	// payload.yaml
+	if !strings.Contains(inner, "payload.yaml") {
+		t.Error("inner script missing payload.yaml write")
 	}
 
 	// environment.yaml
@@ -923,9 +923,9 @@ func TestWriteSandboxScripts_HookRole_NoContextFilesWhenEmpty(t *testing.T) {
 		t.Error("inner script should not write environment.yaml when EnvironmentYAML is empty")
 	}
 
-	// payload.json SHOULD be written (PayloadJSON is `{}`)
-	if !strings.Contains(inner, "payload.json") {
-		t.Error("inner script should write payload.json even with empty object")
+	// payload.yaml SHOULD be written (PayloadJSON is `{}`)
+	if !strings.Contains(inner, "payload.yaml") {
+		t.Error("inner script should write payload.yaml even with empty object")
 	}
 }
 
@@ -972,8 +972,8 @@ func TestWriteSandboxScripts_HookRole_OutputDir(t *testing.T) {
 	}
 
 	// Must have conditional trap that prefers file-based output
-	if !strings.Contains(inner, "payload_patch.json") {
-		t.Error("inner script missing payload_patch.json reference in trap")
+	if !strings.Contains(inner, "payload_patch.yaml") {
+		t.Error("inner script missing payload_patch.yaml reference in trap")
 	}
 
 	// Must still have fallback to /tmp/boid-output
@@ -1017,8 +1017,8 @@ func TestWriteSandboxScripts_GateRole_OutputDir(t *testing.T) {
 	inner := string(innerContent)
 
 	// Gate should also support file-based output
-	if !strings.Contains(inner, "payload_patch.json") {
-		t.Error("gate inner script missing payload_patch.json reference")
+	if !strings.Contains(inner, "payload_patch.yaml") {
+		t.Error("gate inner script missing payload_patch.yaml reference")
 	}
 }
 

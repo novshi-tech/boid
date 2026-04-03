@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Coordinator orchestrates the hook → gate → advance flow.
@@ -287,15 +289,22 @@ func parseHandlerResult(id string, role Role, c JobCompletion) HandlerResult {
 		return hr
 	}
 
-	// Parse {"payload_patch": {...}} from output
-	var output struct {
-		PayloadPatch json.RawMessage `json:"payload_patch"`
-	}
-	if err := json.Unmarshal([]byte(c.Output), &output); err != nil {
+	// Parse payload_patch from YAML output (JSON is also accepted as valid YAML)
+	var outputMap map[string]interface{}
+	if err := yaml.Unmarshal([]byte(c.Output), &outputMap); err != nil {
 		slog.Warn("failed to parse handler output", "id", id, "error", err)
 		return hr
 	}
-	hr.PayloadPatch = output.PayloadPatch
+	patchVal, ok := outputMap["payload_patch"]
+	if !ok {
+		return hr
+	}
+	patchJSON, err := json.Marshal(patchVal)
+	if err != nil {
+		slog.Warn("failed to marshal payload_patch", "id", id, "error", err)
+		return hr
+	}
+	hr.PayloadPatch = patchJSON
 	return hr
 }
 
