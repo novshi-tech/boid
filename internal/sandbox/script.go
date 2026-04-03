@@ -35,6 +35,7 @@ type WrapperConfig struct {
 	PayloadJSON        string            // task payload JSON for hook stdin
 	TaskJSON           string            // full task data JSON for gate stdin
 	Readonly           bool              // if true, mount working dir as read-only
+	InstructionsJSON   string            // JSON array of RoutedInstruction for BOID_INSTRUCTIONS env var
 }
 
 // workDir returns the effective working directory inside the sandbox.
@@ -147,6 +148,9 @@ func generateHookInnerScript(cfg WrapperConfig) string {
 	}
 	if cfg.BrokerSocket != "" {
 		b.WriteString("export BOID_BROKER_SOCKET=/run/boid/broker.sock\n")
+	}
+	if cfg.InstructionsJSON != "" {
+		fmt.Fprintf(&b, "export BOID_INSTRUCTIONS=%s\n", shellQuote(cfg.InstructionsJSON))
 	}
 	writeBuiltinShimEnv(&b, cfg)
 

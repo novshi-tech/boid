@@ -670,6 +670,141 @@ func TestWriteSandboxScripts_ReadonlyHook(t *testing.T) {
 	}
 }
 
+func TestWriteSandboxScripts_HookRole_BoidInstructions(t *testing.T) {
+	cfg := sandbox.WrapperConfig{
+		JobID:            "test-hook-instructions",
+		TaskID:           "task-inst-1",
+		ProjectID:        "proj-1",
+		ProjectDir:       "/home/user/projects/proj-1",
+		HooksDir:         "/home/user/projects/proj-1/.boid/hooks",
+		HookScript:       "run-agent.sh",
+		BoidBinary:       "/usr/local/bin/boid",
+		ServerSocket:     "/run/boid/server.sock",
+		BrokerSocket:     "/run/boid/broker.sock",
+		BrokerToken:      "test-token-inst",
+		Role:             "hook",
+		PayloadJSON:      `{"prompt":"do stuff"}`,
+		InstructionsJSON: `[{"role":"reviewer","type":"verification","consumer":"claude-code","message":"check style"}]`,
+	}
+
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-hook-instructions"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	if !strings.Contains(inner, "BOID_INSTRUCTIONS=") {
+		t.Error("hook inner script missing BOID_INSTRUCTIONS export")
+	}
+	if !strings.Contains(inner, "reviewer") {
+		t.Error("hook inner script BOID_INSTRUCTIONS missing role 'reviewer'")
+	}
+	if !strings.Contains(inner, "check style") {
+		t.Error("hook inner script BOID_INSTRUCTIONS missing message 'check style'")
+	}
+}
+
+func TestWriteSandboxScripts_HookRole_NoBoidInstructionsWhenEmpty(t *testing.T) {
+	cfg := sandbox.WrapperConfig{
+		JobID:        "test-hook-noinst",
+		TaskID:       "task-noinst-1",
+		ProjectID:    "proj-1",
+		ProjectDir:   "/home/user/projects/proj-1",
+		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
+		HookScript:   "run-agent.sh",
+		BoidBinary:   "/usr/local/bin/boid",
+		ServerSocket: "/run/boid/server.sock",
+		BrokerSocket: "/run/boid/broker.sock",
+		BrokerToken:  "test-token-noinst",
+		Role:         "hook",
+		PayloadJSON:  `{"prompt":"do stuff"}`,
+	}
+
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-hook-noinst"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	if strings.Contains(inner, "BOID_INSTRUCTIONS") {
+		t.Error("hook inner script should NOT contain BOID_INSTRUCTIONS when InstructionsJSON is empty")
+	}
+}
+
+func TestWriteSandboxScripts_HookRole_BoidInstructions_SingleQuoteEscape(t *testing.T) {
+	cfg := sandbox.WrapperConfig{
+		JobID:            "test-hook-sqescape",
+		TaskID:           "task-sq-1",
+		ProjectID:        "proj-1",
+		ProjectDir:       "/home/user/projects/proj-1",
+		HooksDir:         "/home/user/projects/proj-1/.boid/hooks",
+		HookScript:       "run-agent.sh",
+		BoidBinary:       "/usr/local/bin/boid",
+		ServerSocket:     "/run/boid/server.sock",
+		BrokerSocket:     "/run/boid/broker.sock",
+		BrokerToken:      "test-token-sq",
+		Role:             "hook",
+		PayloadJSON:      `{}`,
+		InstructionsJSON: `[{"role":"r","message":"it's important"}]`,
+	}
+
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-hook-sqescape"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	if !strings.Contains(inner, "BOID_INSTRUCTIONS=") {
+		t.Error("hook inner script missing BOID_INSTRUCTIONS export")
+	}
+	// Verify the single quote is properly escaped ('"'"' form)
+	if !strings.Contains(inner, `'"'"'`) {
+		t.Error("hook inner script should escape single quote in BOID_INSTRUCTIONS value")
+	}
+}
+
 func TestWriteSandboxScripts_TaskIDAndJobID(t *testing.T) {
 	cfg := sandbox.WrapperConfig{
 		JobID:        "test-job-ids",

@@ -26,4 +26,5 @@ type DispatchRequest struct {
 	PayloadJSON        string
 	TaskJSON           string
 	Readonly           bool
+	InstructionsJSON   string
 }

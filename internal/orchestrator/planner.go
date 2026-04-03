@@ -76,6 +76,15 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 		payloadJSON = "{}"
 	}
 
+	var instructionsJSON string
+	instType := InstructionTypeForStatus(task.Status)
+	myInstructions := FilterInstructions(task.Payload, instType, event.Hook.Consumer)
+	if len(myInstructions) > 0 {
+		if instJSON, err := json.Marshal(myInstructions); err == nil {
+			instructionsJSON = string(instJSON)
+		}
+	}
+
 	homeDir, _ := os.UserHomeDir()
 	return &DispatchRequest{
 		TaskID:             event.TaskID,
@@ -99,6 +108,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 		WorktreeDir:        worktreeDir,
 		PayloadJSON:        payloadJSON,
 		Readonly:           IsReadonly(&behavior, task.Status),
+		InstructionsJSON:   instructionsJSON,
 	}, nil
 }
 

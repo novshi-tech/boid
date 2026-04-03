@@ -1,8 +1,10 @@
 package orchestrator
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -163,4 +165,213 @@ func TestDispatchPlannerPlanGateStagesKitGates(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(req.GatesDir, "gate-1.sh")); err != nil {
 		t.Fatalf("expected staged gate script: %v", err)
 	}
+}
+
+func TestPlanHook_InstructionsJSON_MatchingConsumer(t *testing.T) {
+	payload := json.RawMessage(`{
+		"instructions": {
+			"reviewer": {"type":"verification","consumer":"claude-code","message":"check formatting"},
+			"executor": {"type":"execution","consumer":"claude-code","message":"run tests"}
+		}
+	}`)
+	meta := &ProjectMeta{
+		ID: "proj-1",
+	}
+	proj := &Project{ID: "proj-1", WorkDir: t.TempDir()}
+	task := &Task{
+		ID:        "task-1",
+		ProjectID: "proj-1",
+		Behavior:  "dev",
+		Status:    TaskStatusVerifying,
+		Payload:   payload,
+	}
+
+	planner := &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj}},
+		Tasks:    stubTaskLookup{task: task},
+	}
+
+	req, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    task.ID,
+		ProjectID: proj.ID,
+		Hook: Hook{
+			ID:         "hook-1",
+			ScriptPath: filepath.Join(proj.WorkDir, ".boid", "hooks", "hook-1.sh"),
+			Consumer:   "claude-code",
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+
+	if req.InstructionsJSON == "" {
+		t.Fatal("expected InstructionsJSON to be set")
+	}
+
+	var instructions []RoutedInstruction
+	if err := json.Unmarshal([]byte(req.InstructionsJSON), &instructions); err != nil {
+		t.Fatalf("unmarshal InstructionsJSON: %v", err)
+	}
+	if len(instructions) != 1 {
+		t.Fatalf("expected 1 instruction (only verification type for verifying status), got %d", len(instructions))
+	}
+	if instructions[0].Role != "reviewer" {
+		t.Errorf("expected role=reviewer, got %q", instructions[0].Role)
+	}
+	if instructions[0].Consumer != "claude-code" {
+		t.Errorf("expected consumer=claude-code, got %q", instructions[0].Consumer)
+	}
+	if instructions[0].Message != "check formatting" {
+		t.Errorf("expected message=%q, got %q", "check formatting", instructions[0].Message)
+	}
+}
+
+func TestPlanHook_InstructionsJSON_NoInstructions(t *testing.T) {
+	payload := json.RawMessage(`{"prompt":"do stuff"}`)
+	meta := &ProjectMeta{
+		ID: "proj-1",
+	}
+	proj := &Project{ID: "proj-1", WorkDir: t.TempDir()}
+	task := &Task{
+		ID:        "task-2",
+		ProjectID: "proj-1",
+		Behavior:  "dev",
+		Status:    TaskStatusExecuting,
+		Payload:   payload,
+	}
+
+	planner := &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj}},
+		Tasks:    stubTaskLookup{task: task},
+	}
+
+	req, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-2",
+		TaskID:    task.ID,
+		ProjectID: proj.ID,
+		Hook: Hook{
+			ID:         "hook-1",
+			ScriptPath: filepath.Join(proj.WorkDir, ".boid", "hooks", "hook-1.sh"),
+			Consumer:   "claude-code",
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+
+	if req.InstructionsJSON != "" {
+		t.Errorf("expected InstructionsJSON to be empty, got %q", req.InstructionsJSON)
+	}
+}
+
+func TestPlanHook_InstructionsJSON_ConsumerMismatch(t *testing.T) {
+	payload := json.RawMessage(`{
+		"instructions": {
+			"executor": {"type":"execution","consumer":"other-agent","message":"run tests"}
+		}
+	}`)
+	meta := &ProjectMeta{
+		ID: "proj-1",
+	}
+	proj := &Project{ID: "proj-1", WorkDir: t.TempDir()}
+	task := &Task{
+		ID:        "task-3",
+		ProjectID: "proj-1",
+		Behavior:  "dev",
+		Status:    TaskStatusExecuting,
+		Payload:   payload,
+	}
+
+	planner := &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj}},
+		Tasks:    stubTaskLookup{task: task},
+	}
+
+	req, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-3",
+		TaskID:    task.ID,
+		ProjectID: proj.ID,
+		Hook: Hook{
+			ID:         "hook-1",
+			ScriptPath: filepath.Join(proj.WorkDir, ".boid", "hooks", "hook-1.sh"),
+			Consumer:   "claude-code",
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+
+	if req.InstructionsJSON != "" {
+		t.Errorf("expected InstructionsJSON to be empty when consumer mismatches, got %q", req.InstructionsJSON)
+	}
+}
+
+func TestPlanHook_InstructionsJSON_MultipleRolesSorted(t *testing.T) {
+	payload := json.RawMessage(`{
+		"instructions": {
+			"zebra": {"type":"execution","consumer":"claude-code","message":"last"},
+			"alpha": {"type":"execution","consumer":"claude-code","message":"first"},
+			"middle": {"type":"execution","consumer":"claude-code","message":"middle"}
+		}
+	}`)
+	meta := &ProjectMeta{
+		ID: "proj-1",
+	}
+	proj := &Project{ID: "proj-1", WorkDir: t.TempDir()}
+	task := &Task{
+		ID:        "task-4",
+		ProjectID: "proj-1",
+		Behavior:  "dev",
+		Status:    TaskStatusExecuting,
+		Payload:   payload,
+	}
+
+	planner := &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj}},
+		Tasks:    stubTaskLookup{task: task},
+	}
+
+	req, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-4",
+		TaskID:    task.ID,
+		ProjectID: proj.ID,
+		Hook: Hook{
+			ID:         "hook-1",
+			ScriptPath: filepath.Join(proj.WorkDir, ".boid", "hooks", "hook-1.sh"),
+			Consumer:   "claude-code",
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+
+	if req.InstructionsJSON == "" {
+		t.Fatal("expected InstructionsJSON to be set")
+	}
+
+	var instructions []RoutedInstruction
+	if err := json.Unmarshal([]byte(req.InstructionsJSON), &instructions); err != nil {
+		t.Fatalf("unmarshal InstructionsJSON: %v", err)
+	}
+	if len(instructions) != 3 {
+		t.Fatalf("expected 3 instructions, got %d", len(instructions))
+	}
+
+	// Verify sorted order
+	roles := make([]string, len(instructions))
+	for i, inst := range instructions {
+		roles[i] = inst.Role
+	}
+	expected := []string{"alpha", "middle", "zebra"}
+	for i, want := range expected {
+		if roles[i] != want {
+			t.Errorf("instruction[%d].Role = %q, want %q", i, roles[i], want)
+		}
+	}
+	_ = strings.Join(roles, ",") // use the strings import
 }

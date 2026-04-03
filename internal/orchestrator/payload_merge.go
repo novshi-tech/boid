@@ -1,6 +1,9 @@
 package orchestrator
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"sort"
+)
 
 // MergeDefaultPayload merges behavior default payload with request payload.
 // Request payload takes precedence over default.
@@ -75,4 +78,47 @@ func mergeInstructions(base, override json.RawMessage) (json.RawMessage, error) 
 	}
 
 	return json.Marshal(baseMap)
+}
+
+// FilterInstructions extracts instructions matching the given type and consumer,
+// sorted by role name for deterministic ordering.
+func FilterInstructions(payload json.RawMessage, instType InstructionType, consumer string) []RoutedInstruction {
+	if instType == "" || consumer == "" {
+		return nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return nil
+	}
+	raw, ok := m["instructions"]
+	if !ok || string(raw) == "null" {
+		return nil
+	}
+	var instructions map[string]Instruction
+	if err := json.Unmarshal(raw, &instructions); err != nil {
+		return nil
+	}
+
+	var roles []string
+	for role, inst := range instructions {
+		if inst.Type == instType && inst.Consumer == consumer {
+			roles = append(roles, role)
+		}
+	}
+	if len(roles) == 0 {
+		return nil
+	}
+	sort.Strings(roles)
+
+	result := make([]RoutedInstruction, 0, len(roles))
+	for _, role := range roles {
+		inst := instructions[role]
+		result = append(result, RoutedInstruction{
+			Role:     role,
+			Type:     inst.Type,
+			Consumer: inst.Consumer,
+			Message:  inst.Message,
+		})
+	}
+	return result
 }
