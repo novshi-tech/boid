@@ -158,9 +158,26 @@ type TaskAppService struct {
 	Tasks   TaskStore
 	Actions ActionStore
 	Jobs    JobStore
+	Meta    MetaStore
 }
 
 func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
+	payload := req.Payload
+
+	if s.Meta != nil {
+		if meta, ok := s.Meta.Get(req.ProjectID); ok {
+			if behavior, ok := meta.TaskBehaviors[req.Behavior]; ok {
+				if len(behavior.DefaultPayload) > 0 {
+					merged, err := orchestrator.MergeDefaultPayload(behavior.DefaultPayload.RawMessage(), payload)
+					if err != nil {
+						return nil, &StatusError{Code: http.StatusBadRequest, Message: "payload merge: " + err.Error()}
+					}
+					payload = merged
+				}
+			}
+		}
+	}
+
 	task := &orchestrator.Task{
 		ProjectID:    req.ProjectID,
 		Title:        req.Title,
@@ -168,7 +185,7 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		Behavior:     req.Behavior,
 		RemoteID:     req.RemoteID,
 		DataSourceID: req.DataSourceID,
-		Payload:      req.Payload,
+		Payload:      payload,
 	}
 	if err := s.Tasks.CreateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
