@@ -375,3 +375,104 @@ func TestPlanHook_InstructionsJSON_MultipleRolesSorted(t *testing.T) {
 	}
 	_ = strings.Join(roles, ",") // use the strings import
 }
+
+func TestPlanHook_TaskYAML(t *testing.T) {
+	meta := &ProjectMeta{ID: "proj-1"}
+	proj := &Project{ID: "proj-1", WorkDir: t.TempDir()}
+	task := &Task{
+		ID:          "task-yaml-1",
+		ProjectID:   "proj-1",
+		Title:       "Implement OAuth",
+		Description: "Add OAuth2 login",
+		Behavior:    "impl",
+		Status:      TaskStatusExecuting,
+		Payload:     json.RawMessage(`{}`),
+	}
+
+	planner := &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj}},
+		Tasks:    stubTaskLookup{task: task},
+	}
+
+	req, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    task.ID,
+		ProjectID: proj.ID,
+		Hook:      Hook{ID: "hook-1", ScriptPath: filepath.Join(proj.WorkDir, ".boid", "hooks", "hook-1.sh")},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+
+	if req.TaskYAML == "" {
+		t.Fatal("expected TaskYAML to be set")
+	}
+	if !strings.Contains(req.TaskYAML, "task-yaml-1") {
+		t.Error("TaskYAML missing task ID")
+	}
+	if !strings.Contains(req.TaskYAML, "Implement OAuth") {
+		t.Error("TaskYAML missing title")
+	}
+	if !strings.Contains(req.TaskYAML, "executing") {
+		t.Error("TaskYAML missing status")
+	}
+	if !strings.Contains(req.TaskYAML, "impl") {
+		t.Error("TaskYAML missing behavior")
+	}
+	if !strings.Contains(req.TaskYAML, "Add OAuth2 login") {
+		t.Error("TaskYAML missing description")
+	}
+}
+
+func TestPlanHook_EnvironmentYAML(t *testing.T) {
+	meta := &ProjectMeta{
+		ID:              "proj-1",
+		BuiltinCommands: []string{"git", "python3"},
+	}
+	proj := &Project{ID: "proj-1", WorkDir: t.TempDir(), WorkspaceID: "ws-1"}
+	peer := &Project{ID: "proj-2", WorkDir: "/workspace/peer", WorkspaceID: "ws-1"}
+	task := &Task{
+		ID:        "task-env-1",
+		ProjectID: "proj-1",
+		Behavior:  "dev",
+		Status:    TaskStatusVerifying,
+		Payload:   json.RawMessage(`{}`),
+	}
+
+	planner := &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj, peer}},
+		Tasks:    stubTaskLookup{task: task},
+	}
+
+	req, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    task.ID,
+		ProjectID: proj.ID,
+		Hook:      Hook{ID: "hook-1", ScriptPath: filepath.Join(proj.WorkDir, ".boid", "hooks", "hook-1.sh")},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+
+	if req.EnvironmentYAML == "" {
+		t.Fatal("expected EnvironmentYAML to be set")
+	}
+	// verifying status → readonly should be true
+	if !strings.Contains(req.EnvironmentYAML, "readonly: true") {
+		t.Error("EnvironmentYAML should have readonly: true for verifying status")
+	}
+	if !strings.Contains(req.EnvironmentYAML, "restricted") {
+		t.Error("EnvironmentYAML missing network info")
+	}
+	if !strings.Contains(req.EnvironmentYAML, "git") {
+		t.Error("EnvironmentYAML missing git tool")
+	}
+	if !strings.Contains(req.EnvironmentYAML, "python3") {
+		t.Error("EnvironmentYAML missing python3 tool")
+	}
+	if !strings.Contains(req.EnvironmentYAML, "/workspace/peer") {
+		t.Error("EnvironmentYAML missing workspace project")
+	}
+}

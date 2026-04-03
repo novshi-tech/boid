@@ -805,6 +805,263 @@ func TestWriteSandboxScripts_HookRole_BoidInstructions_SingleQuoteEscape(t *test
 	}
 }
 
+func TestWriteSandboxScripts_HookRole_ContextFiles(t *testing.T) {
+	cfg := sandbox.WrapperConfig{
+		JobID:           "test-hook-ctx",
+		TaskID:          "task-ctx-1",
+		ProjectID:       "proj-1",
+		ProjectDir:      "/home/user/projects/proj-1",
+		HomeDir:         "/home/user",
+		HooksDir:        "/home/user/projects/proj-1/.boid/hooks",
+		HookScript:      "run-agent.sh",
+		BoidBinary:      "/usr/local/bin/boid",
+		ServerSocket:    "/run/boid/server.sock",
+		BrokerSocket:    "/run/boid/broker.sock",
+		BrokerToken:     "test-token-ctx",
+		Role:            "hook",
+		PayloadJSON:     `{"instructions":{"executor":{"type":"execution","consumer":"claude-code","message":"do it"}}}`,
+		InstructionsJSON: `[{"role":"executor","type":"execution","consumer":"claude-code","message":"do it"}]`,
+		TaskYAML:        "id: task-ctx-1\ntitle: Test Task\nstatus: executing\nbehavior: impl\n",
+		EnvironmentYAML: "readonly: false\nworktree: false\nnetwork:\n  restricted: true\ntools:\n- git\n",
+	}
+
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-hook-ctx"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	// Context directory creation
+	if !strings.Contains(inner, "mkdir -p") || !strings.Contains(inner, ".boid/context") {
+		t.Error("inner script missing mkdir for .boid/context")
+	}
+
+	// task.yaml
+	if !strings.Contains(inner, "task.yaml") {
+		t.Error("inner script missing task.yaml write")
+	}
+	if !strings.Contains(inner, "task-ctx-1") {
+		t.Error("inner script task.yaml missing task ID")
+	}
+
+	// instructions.json
+	if !strings.Contains(inner, "instructions.json") {
+		t.Error("inner script missing instructions.json write")
+	}
+
+	// payload.json
+	if !strings.Contains(inner, "payload.json") {
+		t.Error("inner script missing payload.json write")
+	}
+
+	// environment.yaml
+	if !strings.Contains(inner, "environment.yaml") {
+		t.Error("inner script missing environment.yaml write")
+	}
+	if !strings.Contains(inner, "restricted") {
+		t.Error("inner script environment.yaml missing network info")
+	}
+}
+
+func TestWriteSandboxScripts_HookRole_NoContextFilesWhenEmpty(t *testing.T) {
+	cfg := sandbox.WrapperConfig{
+		JobID:        "test-hook-noctx",
+		TaskID:       "task-noctx-1",
+		ProjectID:    "proj-1",
+		ProjectDir:   "/home/user/projects/proj-1",
+		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
+		HookScript:   "run-agent.sh",
+		BoidBinary:   "/usr/local/bin/boid",
+		ServerSocket: "/run/boid/server.sock",
+		BrokerSocket: "/run/boid/broker.sock",
+		BrokerToken:  "test-token-noctx",
+		Role:         "hook",
+		PayloadJSON:  `{}`,
+	}
+
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-hook-noctx"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	// task.yaml should not be written when TaskYAML is empty
+	if strings.Contains(inner, "task.yaml") {
+		t.Error("inner script should not write task.yaml when TaskYAML is empty")
+	}
+
+	// environment.yaml should not be written when EnvironmentYAML is empty
+	if strings.Contains(inner, "environment.yaml") {
+		t.Error("inner script should not write environment.yaml when EnvironmentYAML is empty")
+	}
+
+	// payload.json SHOULD be written (PayloadJSON is `{}`)
+	if !strings.Contains(inner, "payload.json") {
+		t.Error("inner script should write payload.json even with empty object")
+	}
+}
+
+func TestWriteSandboxScripts_HookRole_OutputDir(t *testing.T) {
+	cfg := sandbox.WrapperConfig{
+		JobID:        "test-hook-output",
+		TaskID:       "task-out-1",
+		ProjectID:    "proj-1",
+		ProjectDir:   "/home/user/projects/proj-1",
+		HomeDir:      "/home/user",
+		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
+		HookScript:   "run-agent.sh",
+		BoidBinary:   "/usr/local/bin/boid",
+		ServerSocket: "/run/boid/server.sock",
+		BrokerSocket: "/run/boid/broker.sock",
+		BrokerToken:  "test-token-out",
+		Role:         "hook",
+		PayloadJSON:  `{"prompt":"do stuff"}`,
+	}
+
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-hook-output"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	// Must create output directory
+	if !strings.Contains(inner, ".boid/output") {
+		t.Error("inner script missing .boid/output directory creation")
+	}
+
+	// Must have conditional trap that prefers file-based output
+	if !strings.Contains(inner, "payload_patch.json") {
+		t.Error("inner script missing payload_patch.json reference in trap")
+	}
+
+	// Must still have fallback to /tmp/boid-output
+	if !strings.Contains(inner, "/tmp/boid-output") {
+		t.Error("inner script missing /tmp/boid-output fallback")
+	}
+}
+
+func TestWriteSandboxScripts_GateRole_OutputDir(t *testing.T) {
+	cfg := sandbox.WrapperConfig{
+		JobID:        "test-gate-output",
+		TaskID:       "task-gout-1",
+		ProjectID:    "proj-1",
+		ProjectDir:   "/home/user/projects/proj-1",
+		BoidBinary:   "/usr/local/bin/boid",
+		ServerSocket: "/run/boid/server.sock",
+		BrokerSocket: "/run/boid/broker.sock",
+		BrokerToken:  "test-token-gout",
+		Role:         "gate",
+		TaskJSON:     `{"id":"task-gout-1"}`,
+	}
+
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-gate-output"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	// Gate should also support file-based output
+	if !strings.Contains(inner, "payload_patch.json") {
+		t.Error("gate inner script missing payload_patch.json reference")
+	}
+}
+
+func TestWriteSandboxScripts_GateRole_NoContextFiles(t *testing.T) {
+	cfg := sandbox.WrapperConfig{
+		JobID:        "test-gate-noctx",
+		TaskID:       "task-gate-noctx",
+		ProjectID:    "proj-1",
+		ProjectDir:   "/home/user/projects/proj-1",
+		BoidBinary:   "/usr/local/bin/boid",
+		ServerSocket: "/run/boid/server.sock",
+		BrokerSocket: "/run/boid/broker.sock",
+		BrokerToken:  "test-token-gate-noctx",
+		Role:         "gate",
+		TaskJSON:     `{"id":"task-gate-noctx"}`,
+	}
+
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-gate-noctx"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	// Gate should not have context files (gate uses stdin for task data)
+	if strings.Contains(inner, ".boid/context") {
+		t.Error("gate inner script should not create .boid/context")
+	}
+}
+
 func TestWriteSandboxScripts_TaskIDAndJobID(t *testing.T) {
 	cfg := sandbox.WrapperConfig{
 		JobID:        "test-job-ids",

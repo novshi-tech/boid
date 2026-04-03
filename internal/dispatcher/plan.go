@@ -46,4 +46,6 @@ type DispatchPlan struct {
 	Readonly           bool
 	InstructionsJSON   string
 	SecretNamespace    string
+	TaskYAML           string
+	EnvironmentYAML    string
 }

@@ -28,4 +28,6 @@ type DispatchRequest struct {
 	Readonly           bool
 	InstructionsJSON   string
 	SecretNamespace    string
+	TaskYAML           string // serialized task metadata for context/task.yaml
+	EnvironmentYAML    string // serialized sandbox environment for context/environment.yaml
 }

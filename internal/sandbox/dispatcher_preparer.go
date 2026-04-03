@@ -38,6 +38,8 @@ func (dispatcherPreparer) PrepareSandbox(spec dispatcher.SandboxSpec) (*dispatch
 		TaskJSON:           spec.TaskJSON,
 		Readonly:           spec.Readonly,
 		InstructionsJSON:   spec.InstructionsJSON,
+		TaskYAML:           spec.TaskYAML,
+		EnvironmentYAML:    spec.EnvironmentYAML,
 	})
 	if err != nil {
 		return nil, err

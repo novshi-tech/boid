@@ -29,6 +29,8 @@ type SandboxSpec struct {
 	TaskJSON           string
 	Readonly           bool
 	InstructionsJSON   string
+	TaskYAML           string
+	EnvironmentYAML    string
 }
 
 // PreparedSandbox is the concrete launch artifact returned by a provider.

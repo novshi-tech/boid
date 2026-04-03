@@ -17,6 +17,7 @@ import (
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/skills"
 )
 
 type Config struct {
@@ -53,6 +54,13 @@ func New(cfg Config) (*Server, error) {
 		d.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+
+	skillsDir := filepath.Join(filepath.Dir(cfg.DBPath), "skills", "boid-sandbox")
+	if err := skills.Deploy(skillsDir); err != nil {
+		d.Close()
+		return nil, fmt.Errorf("deploy skills: %w", err)
+	}
+
 	conn := d.Conn
 
 	projectRepo := orchestrator.NewProjectRepository(conn)

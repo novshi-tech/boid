@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+
+	"gopkg.in/yaml.v3"
 )
 
 type MetaCache interface {
@@ -89,6 +92,10 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 		}
 	}
 
+	readonly := IsReadonly(&behavior, task.Status)
+	taskYAML := buildTaskYAML(task)
+	environmentYAML := buildEnvironmentYAML(readonly, worktreeDir != "", p.proxyPort() > 0, workspaceDirs, meta.BuiltinCommands)
+
 	homeDir, _ := os.UserHomeDir()
 	return &DispatchRequest{
 		TaskID:             event.TaskID,
@@ -112,8 +119,10 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 		StagingDir:         stagingDir,
 		WorktreeDir:        worktreeDir,
 		PayloadJSON:        payloadJSON,
-		Readonly:           IsReadonly(&behavior, task.Status),
+		Readonly:           readonly,
 		InstructionsJSON:   instructionsJSON,
+		TaskYAML:           taskYAML,
+		EnvironmentYAML:    environmentYAML,
 	}, nil
 }
 
@@ -242,4 +251,74 @@ func cloneStringSlice(values []string) []string {
 	out := make([]string, len(values))
 	copy(out, values)
 	return out
+}
+
+// buildTaskYAML serializes task metadata for context/task.yaml.
+func buildTaskYAML(task *Task) string {
+	m := map[string]string{
+		"id":       task.ID,
+		"title":    task.Title,
+		"status":   string(task.Status),
+		"behavior": task.Behavior,
+	}
+	if task.Description != "" {
+		m["description"] = task.Description
+	}
+	out, _ := yaml.Marshal(m)
+	return string(out)
+}
+
+type workspaceProject struct {
+	Path string `yaml:"path"`
+	Name string `yaml:"name"`
+}
+
+type environmentData struct {
+	Readonly          bool               `yaml:"readonly"`
+	Worktree          bool               `yaml:"worktree"`
+	Network           map[string]bool    `yaml:"network"`
+	Tools             []string           `yaml:"tools,omitempty"`
+	WorkspaceProjects []workspaceProject `yaml:"workspace_projects,omitempty"`
+}
+
+// buildEnvironmentYAML serializes sandbox constraints for context/environment.yaml.
+func buildEnvironmentYAML(readonly, worktree, networkRestricted bool, workspaceDirs map[string]string, builtinCommands []string) string {
+	env := environmentData{
+		Readonly: readonly,
+		Worktree: worktree,
+		Network:  map[string]bool{"restricted": networkRestricted},
+		Tools:    builtinTools(builtinCommands),
+	}
+
+	if len(workspaceDirs) > 0 {
+		// Sort for deterministic output
+		ids := make([]string, 0, len(workspaceDirs))
+		for id := range workspaceDirs {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			dir := workspaceDirs[id]
+			env.WorkspaceProjects = append(env.WorkspaceProjects, workspaceProject{
+				Path: dir,
+				Name: filepath.Base(dir),
+			})
+		}
+	}
+
+	out, _ := yaml.Marshal(env)
+	return string(out)
+}
+
+// builtinTools returns the list of tools available in the sandbox.
+// Always includes "git"; adds other builtin commands that are not internal.
+func builtinTools(builtinCommands []string) []string {
+	tools := []string{"git"}
+	for _, cmd := range builtinCommands {
+		if cmd == "boid" || cmd == "git" {
+			continue
+		}
+		tools = append(tools, cmd)
+	}
+	return tools
 }

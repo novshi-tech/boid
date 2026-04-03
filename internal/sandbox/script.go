@@ -36,6 +36,8 @@ type WrapperConfig struct {
 	TaskJSON           string            // full task data JSON for gate stdin
 	Readonly           bool              // if true, mount working dir as read-only
 	InstructionsJSON   string            // JSON array of RoutedInstruction for BOID_INSTRUCTIONS env var
+	TaskYAML           string            // serialized task metadata for context/task.yaml
+	EnvironmentYAML    string            // serialized sandbox environment for context/environment.yaml
 }
 
 // workDir returns the effective working directory inside the sandbox.
@@ -159,11 +161,15 @@ func generateHookInnerScript(cfg WrapperConfig) string {
 
 	writePathAndProxy(&b, cfg)
 
+	// Context files
+	writeContextFiles(&b, cfg)
+
 	wd := cfg.workDir()
 	hookPath := filepath.Join(wd, ".boid", "hooks", cfg.HookScript)
 	fmt.Fprintf(&b, "\ncd %s\n\n", shellQuote(wd))
 
-	fmt.Fprintf(&b, "trap 'boid job done %s --exit-code $? --output-file /tmp/boid-output' EXIT\n", cfg.JobID)
+	outputDir := cfg.homeDir() + "/.boid/output"
+	writeOutputTrap(&b, cfg.JobID, outputDir)
 	fmt.Fprintf(&b, "printf '%%s' %s | %s > /tmp/boid-output\n", shellQuote(cfg.PayloadJSON), shellQuote(hookPath))
 
 	return b.String()
@@ -190,7 +196,7 @@ func generateGateInnerScript(cfg WrapperConfig) string {
 
 	b.WriteString("\ncd /tmp\n\n")
 
-	fmt.Fprintf(&b, "trap 'boid job done %s --exit-code $? --output-file /tmp/boid-output' EXIT\n", cfg.JobID)
+	writeOutputTrap(&b, cfg.JobID, "/tmp/.boid/output")
 	fmt.Fprintf(&b, "printf '%%s' %s | %s > /tmp/boid-output\n", shellQuote(cfg.TaskJSON), shellQuote(filepath.Join("/opt/boid/gates", cfg.HookScript)))
 
 	return b.String()
@@ -257,6 +263,39 @@ func writePathAndProxy(b *strings.Builder, cfg WrapperConfig) {
 
 	for k, v := range cfg.Env {
 		fmt.Fprintf(b, "export %s=%q\n", k, v)
+	}
+}
+
+// writeOutputTrap writes the EXIT trap that prefers file-based output over stdout capture.
+func writeOutputTrap(b *strings.Builder, jobID, outputDir string) {
+	patchFile := outputDir + "/payload_patch.json"
+	fmt.Fprintf(b, "mkdir -p %s\n", shellQuote(outputDir))
+	fmt.Fprintf(b, "trap '\n")
+	fmt.Fprintf(b, "  _exit=$?\n")
+	fmt.Fprintf(b, "  if [ -f %s ]; then\n", shellQuote(patchFile))
+	fmt.Fprintf(b, "    boid job done %s --exit-code $_exit --output-file %s\n", jobID, shellQuote(patchFile))
+	fmt.Fprintf(b, "  else\n")
+	fmt.Fprintf(b, "    boid job done %s --exit-code $_exit --output-file /tmp/boid-output\n", jobID)
+	fmt.Fprintf(b, "  fi\n")
+	fmt.Fprintf(b, "' EXIT\n")
+}
+
+// writeContextFiles generates ~/.boid/context/ files inside the sandbox.
+func writeContextFiles(b *strings.Builder, cfg WrapperConfig) {
+	contextDir := cfg.homeDir() + "/.boid/context"
+	fmt.Fprintf(b, "\nmkdir -p %s\n", shellQuote(contextDir))
+
+	if cfg.TaskYAML != "" {
+		fmt.Fprintf(b, "printf '%%s' %s > %s/task.yaml\n", shellQuote(cfg.TaskYAML), shellQuote(contextDir))
+	}
+	if cfg.InstructionsJSON != "" {
+		fmt.Fprintf(b, "printf '%%s' %s > %s/instructions.json\n", shellQuote(cfg.InstructionsJSON), shellQuote(contextDir))
+	}
+	if cfg.PayloadJSON != "" {
+		fmt.Fprintf(b, "printf '%%s' %s > %s/payload.json\n", shellQuote(cfg.PayloadJSON), shellQuote(contextDir))
+	}
+	if cfg.EnvironmentYAML != "" {
+		fmt.Fprintf(b, "printf '%%s' %s > %s/environment.yaml\n", shellQuote(cfg.EnvironmentYAML), shellQuote(contextDir))
 	}
 }
 
