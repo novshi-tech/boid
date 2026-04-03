@@ -104,16 +104,6 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 			Type:     MountBind,
 			ReadOnly: cfg.Readonly,
 		})
-
-		// Workspace projects (ro)
-		for _, dir := range cfg.WorkspaceDirs {
-			plan.Mounts = append(plan.Mounts, MountEntry{
-				Source:   dir,
-				Target:   dir,
-				Type:     MountBind,
-				ReadOnly: true,
-			})
-		}
 	}
 
 	// HOME as tmpfs
@@ -134,6 +124,16 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 			Type:     MountBind,
 			ReadOnly: cfg.Readonly,
 		})
+
+		// Workspace projects (ro) — after HOME tmpfs so paths under HOME remain accessible
+		for _, dir := range cfg.WorkspaceDirs {
+			plan.Mounts = append(plan.Mounts, MountEntry{
+				Source:   dir,
+				Target:   dir,
+				Type:     MountBind,
+				ReadOnly: true,
+			})
+		}
 	}
 
 	if cfg.Role != "gate" {
