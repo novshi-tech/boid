@@ -47,6 +47,7 @@ func init() {
 	taskCreateCmd.Flags().String("title", "", "Task title (required)")
 	taskCreateCmd.Flags().String("project", "", "Project ID (required)")
 	taskCreateCmd.Flags().String("behavior", "", "Task behavior (required)")
+	taskCreateCmd.Flags().String("payload", "", "Initial payload JSON (optional)")
 	taskWatchCmd.Flags().Duration("interval", time.Second, "Polling interval")
 	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd)
 	rootCmd.AddCommand(taskCmd)
@@ -81,18 +82,26 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 	title, _ := cmd.Flags().GetString("title")
 	projectID, _ := cmd.Flags().GetString("project")
 	behavior, _ := cmd.Flags().GetString("behavior")
+	payloadStr, _ := cmd.Flags().GetString("payload")
 
 	if title == "" || projectID == "" || behavior == "" {
 		return fmt.Errorf("--title, --project, and --behavior are required")
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
-	req := map[string]string{
+	req := map[string]any{
 		"project_id": projectID,
 		"title":      title,
 		"behavior":   behavior,
 	}
+	if payloadStr != "" {
+		var payload json.RawMessage
+		if err := json.Unmarshal([]byte(payloadStr), &payload); err != nil {
+			return fmt.Errorf("invalid --payload JSON: %w", err)
+		}
+		req["payload"] = payload
+	}
 
+	c := client.NewUnixClient(client.DefaultSocketPath())
 	var task orchestrator.Task
 	if err := c.Do("POST", "/api/tasks", req, &task); err != nil {
 		return fmt.Errorf("create task: %w", err)

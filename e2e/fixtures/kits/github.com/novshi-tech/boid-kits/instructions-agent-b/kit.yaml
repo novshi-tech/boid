@@ -4,5 +4,5 @@ hooks:
   - id: run-agent-b
     on: verifying
     traits:
-      consumes: [instructions, artifact, verification]
+      consumes: [instructions, artifact]
       produces: [verification]

@@ -1,8 +1,10 @@
 id: instructions-routing
 name: Instructions Routing
 kits:
-  - github.com/novshi-tech/boid-kits/instructions-agent-a
-  - github.com/novshi-tech/boid-kits/instructions-agent-b
+  - ref: github.com/novshi-tech/boid-kits/instructions-agent-a
+    as: agent-a
+  - ref: github.com/novshi-tech/boid-kits/instructions-agent-b
+    as: agent-b
 task_behaviors:
   impl:
     name: Implementation
