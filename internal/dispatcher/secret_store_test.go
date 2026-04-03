@@ -30,11 +30,11 @@ func setupStore(t *testing.T) *dispatcher.SecretStore {
 func TestStore_SetAndGet(t *testing.T) {
 	s := setupStore(t)
 
-	if err := s.Set("github/pat", "ghp_abc123"); err != nil {
+	if err := s.Set("default", "GH_TOKEN", "ghp_abc123"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
-	val, err := s.Get("github/pat")
+	val, err := s.Get("default", "GH_TOKEN")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestStore_SetAndGet(t *testing.T) {
 func TestStore_GetNotFound(t *testing.T) {
 	s := setupStore(t)
 
-	_, err := s.Get("nonexistent")
+	_, err := s.Get("default", "nonexistent")
 	if err == nil {
 		t.Error("expected error for nonexistent key")
 	}
@@ -55,10 +55,10 @@ func TestStore_GetNotFound(t *testing.T) {
 func TestStore_Update(t *testing.T) {
 	s := setupStore(t)
 
-	s.Set("key", "value1")
-	s.Set("key", "value2")
+	s.Set("default", "key", "value1")
+	s.Set("default", "key", "value2")
 
-	val, err := s.Get("key")
+	val, err := s.Get("default", "key")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -70,12 +70,12 @@ func TestStore_Update(t *testing.T) {
 func TestStore_Delete(t *testing.T) {
 	s := setupStore(t)
 
-	s.Set("key", "value")
-	if err := s.Delete("key"); err != nil {
+	s.Set("default", "key", "value")
+	if err := s.Delete("default", "key"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	_, err := s.Get("key")
+	_, err := s.Get("default", "key")
 	if err == nil {
 		t.Error("expected error after delete")
 	}
@@ -84,11 +84,11 @@ func TestStore_Delete(t *testing.T) {
 func TestStore_List(t *testing.T) {
 	s := setupStore(t)
 
-	s.Set("a/key1", "v1")
-	s.Set("b/key2", "v2")
-	s.Set("c/key3", "v3")
+	s.Set("default", "KEY1", "v1")
+	s.Set("default", "KEY2", "v2")
+	s.Set("default", "KEY3", "v3")
 
-	keys, err := s.List()
+	keys, err := s.List("default")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -109,16 +109,14 @@ func TestStore_EncryptionIsReal(t *testing.T) {
 
 	key := dispatcher.GenerateKey()
 	s, _ := dispatcher.NewSecretStore(d.Conn, key)
-	s.Set("test", "plaintext-secret")
+	s.Set("default", "test", "plaintext-secret")
 
-	// Read raw encrypted value from DB
 	var encrypted []byte
-	err = d.Conn.QueryRow("SELECT value_encrypted FROM secrets WHERE key = ?", "test").Scan(&encrypted)
+	err = d.Conn.QueryRow("SELECT value_encrypted FROM secrets WHERE namespace = 'default' AND key = ?", "test").Scan(&encrypted)
 	if err != nil {
 		t.Fatalf("query raw: %v", err)
 	}
 
-	// Encrypted value should not contain the plaintext
 	if string(encrypted) == "plaintext-secret" {
 		t.Error("value stored as plaintext, not encrypted")
 	}
@@ -136,12 +134,63 @@ func TestStore_WrongKeyCannotDecrypt(t *testing.T) {
 
 	key1 := dispatcher.GenerateKey()
 	s1, _ := dispatcher.NewSecretStore(d.Conn, key1)
-	s1.Set("test", "secret-value")
+	s1.Set("default", "test", "secret-value")
 
 	key2 := dispatcher.GenerateKey()
 	s2, _ := dispatcher.NewSecretStore(d.Conn, key2)
-	_, err = s2.Get("test")
+	_, err = s2.Get("default", "test")
 	if err == nil {
 		t.Error("expected decryption failure with wrong key")
+	}
+}
+
+func TestStore_NamespaceIsolation(t *testing.T) {
+	s := setupStore(t)
+
+	s.Set("ns-a", "GH_TOKEN", "token-a")
+	s.Set("ns-b", "GH_TOKEN", "token-b")
+
+	valA, err := s.Get("ns-a", "GH_TOKEN")
+	if err != nil {
+		t.Fatalf("Get ns-a: %v", err)
+	}
+	if valA != "token-a" {
+		t.Errorf("ns-a = %q, want %q", valA, "token-a")
+	}
+
+	valB, err := s.Get("ns-b", "GH_TOKEN")
+	if err != nil {
+		t.Fatalf("Get ns-b: %v", err)
+	}
+	if valB != "token-b" {
+		t.Errorf("ns-b = %q, want %q", valB, "token-b")
+	}
+
+	// ns-a should not see ns-b's secrets
+	keysA, _ := s.List("ns-a")
+	if len(keysA) != 1 {
+		t.Errorf("ns-a List = %d keys, want 1", len(keysA))
+	}
+}
+
+func TestStore_EmptyNamespaceDefaultsToDefault(t *testing.T) {
+	s := setupStore(t)
+
+	s.Set("", "KEY", "val")
+
+	val, err := s.Get("default", "KEY")
+	if err != nil {
+		t.Fatalf("Get with explicit default: %v", err)
+	}
+	if val != "val" {
+		t.Errorf("Get = %q, want %q", val, "val")
+	}
+
+	val2, err := s.Get("", "KEY")
+	if err != nil {
+		t.Fatalf("Get with empty namespace: %v", err)
+	}
+	if val2 != "val" {
+		t.Errorf("Get = %q, want %q", val2, "val")
 	}
 }

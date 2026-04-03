@@ -8,10 +8,10 @@ import (
 )
 
 type SecretStore interface {
-	List() ([]string, error)
-	Set(key, value string) error
-	Delete(key string) error
-	Get(key string) (string, error)
+	List(namespace string) ([]string, error)
+	Set(namespace, key, value string) error
+	Delete(namespace, key string) error
+	Get(namespace, key string) (string, error)
 }
 
 type SecretHandler struct {
@@ -27,8 +27,16 @@ func (h *SecretHandler) Routes() chi.Router {
 	return r
 }
 
+func secretNamespace(r *http.Request) string {
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		return "default"
+	}
+	return ns
+}
+
 func (h *SecretHandler) List(w http.ResponseWriter, r *http.Request) {
-	keys, err := h.Store.List()
+	keys, err := h.Store.List(secretNamespace(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -40,8 +48,9 @@ func (h *SecretHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 type secretSetRequest struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
+	Namespace string `json:"namespace"`
+	Key       string `json:"key"`
+	Value     string `json:"value"`
 }
 
 func (h *SecretHandler) Set(w http.ResponseWriter, r *http.Request) {
@@ -54,7 +63,10 @@ func (h *SecretHandler) Set(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "key and value required")
 		return
 	}
-	if err := h.Store.Set(req.Key, req.Value); err != nil {
+	if req.Namespace == "" {
+		req.Namespace = "default"
+	}
+	if err := h.Store.Set(req.Namespace, req.Key, req.Value); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -67,7 +79,7 @@ func (h *SecretHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "key path parameter required")
 		return
 	}
-	if err := h.Store.Delete(key); err != nil {
+	if err := h.Store.Delete(secretNamespace(r), key); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -80,7 +92,7 @@ func (h *SecretHandler) GetValue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "key path parameter required")
 		return
 	}
-	val, err := h.Store.Get(key)
+	val, err := h.Store.Get(secretNamespace(r), key)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return

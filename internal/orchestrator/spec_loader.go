@@ -426,6 +426,9 @@ func ApplyProjectLocalMeta(base *ProjectMeta, local *ProjectLocalMeta) *ProjectM
 	result.BuiltinCommands = mergeBuiltinCommands(result.BuiltinCommands, local.BuiltinCommands)
 	result.HostCommands = mergeHostCommands(result.HostCommands, local.HostCommands)
 	result.AdditionalBindings = mergeBindMounts(result.AdditionalBindings, local.AdditionalBindings)
+	if local.SecretNamespace != "" {
+		result.SecretNamespace = local.SecretNamespace
+	}
 	return result
 }
 
@@ -531,6 +534,7 @@ func validateProjectLocalFields(raw map[string]any) error {
 		"env":                 true,
 		"host_commands":       true,
 		"additional_bindings": true,
+		"secret_namespace":    true,
 	}
 	for key := range raw {
 		if !allowed[key] {

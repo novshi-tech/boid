@@ -54,43 +54,54 @@ func (s *SecretStore) decrypt(ciphertext []byte) ([]byte, error) {
 	return s.gcm.Open(nil, nonce, data, nil)
 }
 
-func (s *SecretStore) Set(key, value string) error {
+func normalizeNamespace(ns string) string {
+	if ns == "" {
+		return "default"
+	}
+	return ns
+}
+
+func (s *SecretStore) Set(namespace, key, value string) error {
+	namespace = normalizeNamespace(namespace)
 	encrypted, err := s.encrypt([]byte(value))
 	if err != nil {
 		return fmt.Errorf("encrypt: %w", err)
 	}
 
 	_, err = s.db.Exec(`
-		INSERT INTO secrets (id, key, value_encrypted)
-		VALUES (lower(hex(randomblob(8))), ?, ?)
-		ON CONFLICT(key) DO UPDATE SET
+		INSERT INTO secrets (id, namespace, key, value_encrypted)
+		VALUES (lower(hex(randomblob(8))), ?, ?, ?)
+		ON CONFLICT(namespace, key) DO UPDATE SET
 			value_encrypted = excluded.value_encrypted,
 			updated_at = datetime('now')
-	`, key, encrypted)
+	`, namespace, key, encrypted)
 	return err
 }
 
-func (s *SecretStore) Get(key string) (string, error) {
+func (s *SecretStore) Get(namespace, key string) (string, error) {
+	namespace = normalizeNamespace(namespace)
 	var encrypted []byte
-	err := s.db.QueryRow("SELECT value_encrypted FROM secrets WHERE key = ?", key).Scan(&encrypted)
+	err := s.db.QueryRow("SELECT value_encrypted FROM secrets WHERE namespace = ? AND key = ?", namespace, key).Scan(&encrypted)
 	if err != nil {
-		return "", fmt.Errorf("secret %q: %w", key, err)
+		return "", fmt.Errorf("secret %q/%q: %w", namespace, key, err)
 	}
 
 	plaintext, err := s.decrypt(encrypted)
 	if err != nil {
-		return "", fmt.Errorf("decrypt %q: %w", key, err)
+		return "", fmt.Errorf("decrypt %q/%q: %w", namespace, key, err)
 	}
 	return string(plaintext), nil
 }
 
-func (s *SecretStore) Delete(key string) error {
-	_, err := s.db.Exec("DELETE FROM secrets WHERE key = ?", key)
+func (s *SecretStore) Delete(namespace, key string) error {
+	namespace = normalizeNamespace(namespace)
+	_, err := s.db.Exec("DELETE FROM secrets WHERE namespace = ? AND key = ?", namespace, key)
 	return err
 }
 
-func (s *SecretStore) List() ([]string, error) {
-	rows, err := s.db.Query("SELECT key FROM secrets ORDER BY key")
+func (s *SecretStore) List(namespace string) ([]string, error) {
+	namespace = normalizeNamespace(namespace)
+	rows, err := s.db.Query("SELECT key FROM secrets WHERE namespace = ? ORDER BY key", namespace)
 	if err != nil {
 		return nil, err
 	}

@@ -27,4 +27,5 @@ type DispatchRequest struct {
 	TaskJSON           string
 	Readonly           bool
 	InstructionsJSON   string
+	SecretNamespace    string
 }

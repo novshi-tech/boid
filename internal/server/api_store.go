@@ -124,7 +124,9 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 
 	var resolve dispatcher.SecretResolver
 	if r.secretStore != nil {
-		resolve = r.secretStore.Get
+		resolve = func(key string) (string, error) {
+			return r.secretStore.Get("default", key)
+		}
 	}
 	token := r.broker.RegisterCommands(dispatcherCommands, builtinCommands, ctx, resolve)
 	return &api.BrokerRegisterResponse{

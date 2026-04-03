@@ -89,7 +89,13 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		}
 		var resolve SecretResolver
 		if r.SecretStore != nil {
-			resolve = r.SecretStore.Get
+			ns := plan.SecretNamespace
+			if ns == "" {
+				ns = "default"
+			}
+			resolve = func(key string) (string, error) {
+				return r.SecretStore.Get(ns, key)
+			}
 		}
 		spec.BrokerToken = r.Broker.RegisterCommands(plan.HostCommands, plan.BuiltinCommands, tokenCtx, resolve)
 		spec.BrokerSocket = r.Broker.SocketPath()

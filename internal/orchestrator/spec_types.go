@@ -246,6 +246,7 @@ type ProjectMeta struct {
 	HostCommands       HostCommands            `yaml:"host_commands" json:"host_commands"`
 	AdditionalBindings []BindMount             `yaml:"additional_bindings" json:"additional_bindings"`
 	Env                map[string]string       `yaml:"env" json:"env"`
+	SecretNamespace    string                  `yaml:"secret_namespace,omitempty" json:"secret_namespace,omitempty"`
 	KitHooksDirs       []KitHooksInfo          `yaml:"-" json:"-"`
 	KitGatesDirs       []KitGatesInfo          `yaml:"-" json:"-"`
 }
@@ -257,6 +258,7 @@ type ProjectLocalMeta struct {
 	HostCommands       HostCommands      `yaml:"host_commands,omitempty"`
 	AdditionalBindings []BindMount       `yaml:"additional_bindings,omitempty"`
 	Env                map[string]string `yaml:"env,omitempty"`
+	SecretNamespace    string            `yaml:"secret_namespace,omitempty"`
 }
 
 type ProjectLocalKits struct {

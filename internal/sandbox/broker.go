@@ -65,6 +65,9 @@ func (b *Broker) RegisterWithSecrets(commands map[string]CommandDef, builtinComm
 			for k, v := range def.Env {
 				if strings.HasPrefix(v, "secret:") {
 					secretKey := v[len("secret:"):]
+					if secretKey == "" {
+						secretKey = k // env var name as secret key
+					}
 					val, err := resolver(secretKey)
 					if err != nil {
 						slog.Warn("failed to resolve secret", "key", secretKey, "error", err)

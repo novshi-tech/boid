@@ -250,6 +250,40 @@ func TestBroker_SecretResolution(t *testing.T) {
 	}
 }
 
+func TestBroker_SecretResolutionEmptyKey(t *testing.T) {
+	broker := &sandbox.Broker{}
+	resolver := func(key string) (string, error) {
+		if key == "GH_TOKEN" {
+			return "ghp_from_env_name", nil
+		}
+		return "", fmt.Errorf("not found: %s", key)
+	}
+
+	token := broker.RegisterWithSecrets(map[string]sandbox.CommandDef{
+		"env": {
+			Name:            "env",
+			Path:            "/usr/bin/env",
+			AllowedPatterns: []string{"*"},
+			Env:             map[string]string{"GH_TOKEN": "secret:", "PLAIN": "value"},
+		},
+	}, nil, sandbox.TokenContext{
+		JobID: "job-1", TaskID: "task-1", ProjectID: "proj-1", Role: string(projectspec.RoleGate),
+	}, resolver)
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "env",
+		Token:   token,
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stdout, "GH_TOKEN=ghp_from_env_name") {
+		t.Errorf("expected GH_TOKEN resolved from env var name, got: %s", resp.Stdout)
+	}
+	if !strings.Contains(resp.Stdout, "PLAIN=value") {
+		t.Error("expected plain value in PLAIN")
+	}
+}
+
 func TestBroker_RegisterReturnsUniqueTokens(t *testing.T) {
 	broker := &sandbox.Broker{}
 	cmds := map[string]sandbox.CommandDef{

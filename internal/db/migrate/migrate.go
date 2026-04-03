@@ -39,6 +39,13 @@ func Apply(conn *sql.DB) error {
 				return columnExists(tx, "jobs", "runtime_id")
 			},
 		},
+		{
+			version: "0005_add_secrets_namespace",
+			path:    "migrations/0005_add_secrets_namespace.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnExists(tx, "secrets", "namespace")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {
