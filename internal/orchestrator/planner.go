@@ -39,9 +39,13 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 		return nil, fmt.Errorf("hook event is required")
 	}
 
-	hookFilename := filepath.Base(event.Hook.ScriptPath)
-	if hookFilename == "" || hookFilename == "." {
+	hookBase := filepath.Base(event.Hook.ScriptPath)
+	if hookBase == "" || hookBase == "." {
 		return nil, fmt.Errorf("hook %q: no script path resolved", event.Hook.ID)
+	}
+	hookFilename := hookBase
+	if event.Hook.Kit != "" {
+		hookFilename = event.Hook.Kit + "--" + hookBase
 	}
 
 	meta, proj, task, err := p.loadContext(event.ProjectID, event.TaskID)

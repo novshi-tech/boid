@@ -143,6 +143,9 @@ func generateHookInnerScript(cfg WrapperConfig) string {
 
 	fmt.Fprintf(&b, "export HOME=%s\n", shellQuote(cfg.homeDir()))
 
+	if cfg.TaskID != "" {
+		fmt.Fprintf(&b, "export BOID_TASK_ID=%s\n", shellQuote(cfg.TaskID))
+	}
 	if cfg.BrokerToken != "" {
 		fmt.Fprintf(&b, "export BOID_BROKER_TOKEN=%s\n", shellQuote(cfg.BrokerToken))
 	}

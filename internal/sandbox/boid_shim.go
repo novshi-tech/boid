@@ -42,10 +42,14 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 		}
 		return parseBoidJobDone(args[2:])
 	case "task":
-		if args[1] != "create" {
+		switch args[1] {
+		case "create":
+			return parseBoidTaskCreate(args[2:])
+		case "get":
+			return parseBoidTaskGet(args[2:])
+		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid task subcommand %q", args[1])
 		}
-		return parseBoidTaskCreate(args[2:])
 	default:
 		return nil, fmt.Errorf("boid shim: unsupported boid subcommand %q", args[0])
 	}
@@ -152,6 +156,39 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 	}
 	if req.Behavior == "" {
 		return nil, fmt.Errorf("boid shim: task create requires --behavior")
+	}
+
+	return req, nil
+}
+
+func parseBoidTaskGet(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpTaskGet}
+
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		req.TaskID = args[0]
+		args = args[1:]
+	}
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--field" || strings.HasPrefix(arg, "--field="):
+			value, next, err := takeStringFlagValue(args, i, "--field")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.TaskField = value
+		default:
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task get", arg)
+		}
+	}
+
+	if req.TaskID == "" {
+		return nil, fmt.Errorf("boid shim: task get requires a task id")
+	}
+	if req.TaskField == "" {
+		return nil, fmt.Errorf("boid shim: task get requires --field")
 	}
 
 	return req, nil

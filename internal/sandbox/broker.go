@@ -192,7 +192,7 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 	boidReq := *req.Boid
 	switch entry.Context.Role {
 	case "hook":
-		if boidReq.Op != BoidOpJobDone {
+		if boidReq.Op != BoidOpJobDone && boidReq.Op != BoidOpTaskGet {
 			return &ExecResponse{
 				ExitCode: 1,
 				Stderr:   fmt.Sprintf("boid op %q not allowed for role %s", boidReq.Op, entry.Context.Role),
@@ -228,6 +228,10 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 		}
 		if !entry.Context.AllowsProject(boidReq.ProjectID) {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
+		}
+	case BoidOpTaskGet:
+		if boidReq.TaskID == "" {
+			boidReq.TaskID = entry.Context.TaskID
 		}
 	}
 

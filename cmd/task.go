@@ -42,6 +42,13 @@ var taskWatchCmd = &cobra.Command{
 	RunE:  runTaskWatch,
 }
 
+var taskGetCmd = &cobra.Command{
+	Use:   "get <id>",
+	Short: "Get a single field from a task",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTaskGet,
+}
+
 func init() {
 	taskListCmd.Flags().String("status", "", "Filter by status")
 	taskCreateCmd.Flags().String("title", "", "Task title (required)")
@@ -49,7 +56,8 @@ func init() {
 	taskCreateCmd.Flags().String("behavior", "", "Task behavior (required)")
 	taskCreateCmd.Flags().String("payload", "", "Initial payload JSON (optional)")
 	taskWatchCmd.Flags().Duration("interval", time.Second, "Polling interval")
-	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd)
+	taskGetCmd.Flags().String("field", "", "Field name to retrieve (required)")
+	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd)
 	rootCmd.AddCommand(taskCmd)
 }
 
@@ -157,4 +165,30 @@ func runTaskWatch(cmd *cobra.Command, args []string) error {
 		}
 		time.Sleep(interval)
 	}
+}
+
+func runTaskGet(cmd *cobra.Command, args []string) error {
+	field, _ := cmd.Flags().GetString("field")
+	if field == "" {
+		return fmt.Errorf("--field is required")
+	}
+
+	c := client.NewUnixClient(client.DefaultSocketPath())
+
+	var task orchestrator.Task
+	if err := c.Do("GET", "/api/tasks/"+args[0], nil, &task); err != nil {
+		return fmt.Errorf("get task: %w", err)
+	}
+
+	switch field {
+	case "title":
+		fmt.Print(task.Title)
+	case "description":
+		fmt.Print(task.Description)
+	case "status":
+		fmt.Print(task.Status)
+	default:
+		return fmt.Errorf("unknown field %q (supported: title, description, status)", field)
+	}
+	return nil
 }

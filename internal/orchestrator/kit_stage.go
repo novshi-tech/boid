@@ -8,11 +8,33 @@ import (
 )
 
 // StageHooks creates a temporary directory containing all hook scripts
-// from the project and all kits. Project scripts override kit scripts
-// with the same filename.
+// from the project and all kits. Kit scripts are prefixed with the kit
+// consumer name (e.g. "claude-code--run-agent.sh") to avoid collisions.
+// Project scripts override kit scripts with the same filename.
 // Returns the staging directory path and a cleanup function.
 func StageHooks(projectHooksDir string, kitHooksDirs []KitHooksInfo, jobID string) (string, func(), error) {
-	return stageScripts("boid-hooks", jobID, projectHooksDir, hookDirs(kitHooksDirs))
+	stagingDir := filepath.Join(os.TempDir(), fmt.Sprintf("boid-hooks-%s", jobID))
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+		return "", nil, fmt.Errorf("create staging dir: %w", err)
+	}
+
+	cleanup := func() {
+		_ = os.RemoveAll(stagingDir)
+	}
+
+	for _, info := range kitHooksDirs {
+		if err := copyScriptsWithPrefix(info.HooksDir, stagingDir, info.Consumer); err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("copy kit scripts from %s: %w", info.HooksDir, err)
+		}
+	}
+
+	if err := copyScripts(projectHooksDir, stagingDir); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("copy project scripts: %w", err)
+	}
+
+	return stagingDir, cleanup, nil
 }
 
 // StageGates creates a temporary directory containing all gate scripts
@@ -47,17 +69,6 @@ func stageScripts(prefix, jobID, projectDir string, kitDirs []string) (string, f
 	return stagingDir, cleanup, nil
 }
 
-func hookDirs(infos []KitHooksInfo) []string {
-	if len(infos) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(infos))
-	for _, info := range infos {
-		out = append(out, info.HooksDir)
-	}
-	return out
-}
-
 func gateDirs(infos []KitGatesInfo) []string {
 	if len(infos) == 0 {
 		return nil
@@ -67,6 +78,35 @@ func gateDirs(infos []KitGatesInfo) []string {
 		out = append(out, info.GatesDir)
 	}
 	return out
+}
+
+// copyScriptsWithPrefix copies hook scripts from srcDir to dstDir, prefixing
+// each filename with "{consumer}--" when consumer is non-empty.
+func copyScriptsWithPrefix(srcDir, dstDir, consumer string) error {
+	if consumer == "" {
+		return copyScripts(srcDir, dstDir)
+	}
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := filepath.Ext(e.Name())
+		if ext != ".sh" && ext != ".py" {
+			continue
+		}
+		dstName := consumer + "--" + e.Name()
+		if err := copyFile(filepath.Join(srcDir, e.Name()), filepath.Join(dstDir, dstName)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func copyScripts(srcDir, dstDir string) error {

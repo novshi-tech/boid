@@ -21,11 +21,14 @@ type BoidOp string
 const (
 	BoidOpJobDone    BoidOp = "job_done"
 	BoidOpTaskCreate BoidOp = "task_create"
+	BoidOpTaskGet    BoidOp = "task_get"
 )
 
 type BoidRequest struct {
 	Op          BoidOp `json:"op"`
 	JobID       string `json:"job_id,omitempty"`
+	TaskID      string `json:"task_id,omitempty"`
+	TaskField   string `json:"task_field,omitempty"`
 	ProjectID   string `json:"project_id,omitempty"`
 	Title       string `json:"title,omitempty"`
 	Behavior    string `json:"behavior,omitempty"`

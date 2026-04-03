@@ -184,6 +184,7 @@ type GateFireEvent struct {
 type KitHooksInfo struct {
 	HooksDir string
 	HookIDs  []string
+	Consumer string
 }
 
 type KitGatesInfo struct {

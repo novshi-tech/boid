@@ -537,8 +537,8 @@ func TestWriteSandboxScripts_HookRole(t *testing.T) {
 	if !strings.Contains(inner, "BOID_BROKER_TOKEN=test-token-hook") {
 		t.Error("inner script missing BOID_BROKER_TOKEN")
 	}
-	if strings.Contains(inner, "BOID_TASK_ID=") {
-		t.Error("hook role inner script should NOT contain BOID_TASK_ID")
+	if !strings.Contains(inner, "BOID_TASK_ID=task-hook-1") {
+		t.Error("hook role inner script missing BOID_TASK_ID")
 	}
 	if strings.Contains(inner, "BOID_JOB_ID=") {
 		t.Error("hook role inner script should NOT contain BOID_JOB_ID")

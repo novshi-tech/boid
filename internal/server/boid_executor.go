@@ -68,6 +68,26 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 		return &sandbox.ExecResponse{
 			Stdout: fmt.Sprintf("task created: %s (%s)\n", task.ID, task.Status),
 		}
+	case sandbox.BoidOpTaskGet:
+		if e.tasks == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task get unavailable"}
+		}
+		task, err := e.tasks.GetTask(req.TaskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		var value string
+		switch req.TaskField {
+		case "title":
+			value = task.Title
+		case "description":
+			value = task.Description
+		case "status":
+			value = string(task.Status)
+		default:
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("unknown task field %q", req.TaskField)}
+		}
+		return &sandbox.ExecResponse{Stdout: value}
 	default:
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("unsupported boid op %q", req.Op)}
 	}

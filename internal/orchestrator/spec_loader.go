@@ -346,17 +346,22 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) *Pr
 
 	result.AdditionalBindings = unionBindMounts(kits, base.AdditionalBindings)
 
-	for _, meta := range kits {
+	for i, meta := range kits {
 		if meta.HooksDir == "" || len(meta.Hooks) == 0 {
 			continue
 		}
+		c := ""
+		if i < len(kitConsumers) {
+			c = kitConsumers[i]
+		}
 		ids := make([]string, len(meta.Hooks))
-		for i, h := range meta.Hooks {
-			ids[i] = h.ID
+		for j, h := range meta.Hooks {
+			ids[j] = h.ID
 		}
 		result.KitHooksDirs = append(result.KitHooksDirs, KitHooksInfo{
 			HooksDir: meta.HooksDir,
 			HookIDs:  ids,
+			Consumer: c,
 		})
 	}
 
