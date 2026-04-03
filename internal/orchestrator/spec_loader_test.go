@@ -676,7 +676,7 @@ func TestReadProjectMetaWithKits_BuiltinCommands(t *testing.T) {
 func TestMergeKitMeta(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project", Env: map[string]string{"KEY": "val"}}
-		result := projectspec.MergeKitMeta(base, nil)
+		result := projectspec.MergeKitMeta(base, nil, nil)
 		if result.Env["KEY"] != "val" {
 			t.Errorf("env KEY = %q, want val", result.Env["KEY"])
 		}
@@ -699,7 +699,7 @@ func TestMergeKitMeta(t *testing.T) {
 			TaskBehaviors:      map[string]projectspec.TaskBehavior{"dev": {Name: "dev", Transition: "one-shot"}},
 		}
 
-		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta})
+		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"mykit"})
 		if len(result.HostCommands) != 2 || len(result.AdditionalBindings) != 1 || len(result.Hooks) != 2 {
 			t.Fatalf("unexpected merge result: %+v", result)
 		}
@@ -719,7 +719,7 @@ func TestMergeKitMeta(t *testing.T) {
 		m1 := &projectspec.KitMeta{Env: map[string]string{"A": "from-m1", "SHARED": "m1"}, HostCommands: projectspec.HostCommands{"go": {Path: "/usr/bin/go"}}}
 		m2 := &projectspec.KitMeta{Env: map[string]string{"B": "from-m2", "SHARED": "m2"}, HostCommands: projectspec.HostCommands{"go": {Path: "/usr/bin/go"}, "gh": {Path: "/usr/bin/gh"}}}
 
-		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{m1, m2})
+		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{m1, m2}, []string{"kit-a", "kit-b"})
 		if result.Env["A"] != "from-m1" || result.Env["B"] != "from-m2" || result.Env["SHARED"] != "m2" || result.Env["PROJ"] != "yes" || len(result.HostCommands) != 2 {
 			t.Fatalf("unexpected merge result: %+v", result)
 		}
@@ -729,9 +729,139 @@ func TestMergeKitMeta(t *testing.T) {
 		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project", Hooks: []projectspec.Hook{{ID: "build", On: "executing", ScriptPath: "/proj/hooks/build.sh"}}}
 		meta := &projectspec.KitMeta{Hooks: []projectspec.Hook{{ID: "build", On: "executing", ScriptPath: "/kit/hooks/build.sh"}}, HooksDir: "/kit/hooks"}
 
-		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta})
+		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"mykit"})
 		if len(result.Hooks) != 1 || result.Hooks[0].ScriptPath != "/proj/hooks/build.sh" {
 			t.Fatalf("expected project hook to win, got %+v", result.Hooks)
+		}
+	})
+}
+
+func TestResolveKitConsumer(t *testing.T) {
+	tests := []struct {
+		name string
+		ref  projectspec.KitRef
+		want string
+	}{
+		{
+			name: "simple name",
+			ref:  projectspec.KitRef{Ref: "codex"},
+			want: "codex",
+		},
+		{
+			name: "local path",
+			ref:  projectspec.KitRef{Ref: "local/go-dev"},
+			want: "go-dev",
+		},
+		{
+			name: "deep github path",
+			ref:  projectspec.KitRef{Ref: "github.com/novshi-tech/boid-kits/claude-code"},
+			want: "claude-code",
+		},
+		{
+			name: "alias overrides basename",
+			ref:  projectspec.KitRef{Ref: "github.com/novshi-tech/boid-kits/claude-code", Alias: "myalias"},
+			want: "myalias",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := projectspec.ResolveKitConsumer(tc.ref)
+			if got != tc.want {
+				t.Errorf("ResolveKitConsumer(%+v) = %q, want %q", tc.ref, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReadProjectMetaWithKits_DuplicateConsumer(t *testing.T) {
+	t.Run("duplicate basename rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(filepath.Join(boidDir, "kits", "go-dev"), 0o755)
+		_ = os.MkdirAll(filepath.Join(boidDir, "kits", "other", "go-dev"), 0o755)
+		projectYAML := "id: test-proj\nname: Test Project\nkits:\n  - go-dev\n  - other/go-dev\n"
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644)
+		_ = os.WriteFile(filepath.Join(boidDir, "kits", "go-dev", "kit.yaml"), []byte("env:\n  A: a\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(boidDir, "kits", "other", "go-dev", "kit.yaml"), []byte("env:\n  B: b\n"), 0o644)
+
+		_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+		if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+			t.Fatalf("expected ambiguous consumer error, got %v", err)
+		}
+	})
+
+	t.Run("disambiguation with as alias", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(filepath.Join(boidDir, "kits", "go-dev"), 0o755)
+		_ = os.MkdirAll(filepath.Join(boidDir, "kits", "other", "go-dev"), 0o755)
+		projectYAML := "id: test-proj\nname: Test Project\nkits:\n  - go-dev\n  - ref: other/go-dev\n    as: other-go-dev\n"
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644)
+		_ = os.WriteFile(filepath.Join(boidDir, "kits", "go-dev", "kit.yaml"), []byte("env:\n  A: a\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(boidDir, "kits", "other", "go-dev", "kit.yaml"), []byte("env:\n  B: b\n"), 0o644)
+
+		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+		if err != nil {
+			t.Fatalf("ReadProjectMetaWithKits: %v", err)
+		}
+		if meta.Env["A"] != "a" || meta.Env["B"] != "b" {
+			t.Fatalf("unexpected env: %+v", meta.Env)
+		}
+	})
+}
+
+func TestMergeKitMeta_KitConsumerFields(t *testing.T) {
+	t.Run("kit hook without explicit consumer inherits kit consumer name", func(t *testing.T) {
+		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
+		meta := &projectspec.KitMeta{
+			Hooks: []projectspec.Hook{{ID: "kit-hook", On: "executing", ScriptPath: "/kit/hooks/kit-hook.sh"}},
+		}
+
+		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"claude-code"})
+		if len(result.Hooks) != 1 {
+			t.Fatalf("expected 1 hook, got %d", len(result.Hooks))
+		}
+		h := result.Hooks[0]
+		if h.Kit != "claude-code" {
+			t.Errorf("Kit = %q, want %q", h.Kit, "claude-code")
+		}
+		if h.Consumer != "claude-code" {
+			t.Errorf("Consumer = %q, want %q", h.Consumer, "claude-code")
+		}
+	})
+
+	t.Run("kit hook with explicit consumer retains its consumer", func(t *testing.T) {
+		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
+		meta := &projectspec.KitMeta{
+			Hooks: []projectspec.Hook{{ID: "kit-hook", On: "executing", ScriptPath: "/kit/hooks/kit-hook.sh", Consumer: "explicit-consumer"}},
+		}
+
+		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"claude-code"})
+		if len(result.Hooks) != 1 {
+			t.Fatalf("expected 1 hook, got %d", len(result.Hooks))
+		}
+		h := result.Hooks[0]
+		if h.Kit != "claude-code" {
+			t.Errorf("Kit = %q, want %q", h.Kit, "claude-code")
+		}
+		if h.Consumer != "explicit-consumer" {
+			t.Errorf("Consumer = %q, want %q", h.Consumer, "explicit-consumer")
+		}
+	})
+
+	t.Run("kit gate Kit field is set to kit consumer name", func(t *testing.T) {
+		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
+		meta := &projectspec.KitMeta{
+			Gates: []projectspec.Gate{{ID: "kit-gate", On: "executing", ScriptPath: "/kit/gates/kit-gate.sh"}},
+		}
+
+		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"claude-code"})
+		if len(result.Gates) != 1 {
+			t.Fatalf("expected 1 gate, got %d", len(result.Gates))
+		}
+		g := result.Gates[0]
+		if g.Kit != "claude-code" {
+			t.Errorf("Gate.Kit = %q, want %q", g.Kit, "claude-code")
 		}
 	})
 }

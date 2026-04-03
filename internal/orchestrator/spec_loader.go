@@ -99,6 +99,17 @@ func resolveKitRef(ref, projectDir string, resolver KitResolver) (string, error)
 	return resolver.Resolve(ref)
 }
 
+// ResolveKitConsumer derives the consumer name for a kit reference.
+// If an alias is set via 'as:', that alias is returned.
+// Otherwise the last path segment of the ref is used.
+func ResolveKitConsumer(ref KitRef) string {
+	if ref.Alias != "" {
+		return ref.Alias
+	}
+	parts := strings.Split(ref.Ref, "/")
+	return parts[len(parts)-1]
+}
+
 func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, error) {
 	meta, err := ReadProjectMeta(dir)
 	if err != nil {
@@ -120,6 +131,18 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		meta.Kits = kitsToLoad
 	}
 
+	// Resolve consumer names and validate uniqueness.
+	consumerNames := make([]string, 0, len(kitsToLoad))
+	seenConsumers := make(map[string]string) // consumer name → kit ref
+	for _, kitRef := range kitsToLoad {
+		consumer := ResolveKitConsumer(kitRef)
+		if prev, ok := seenConsumers[consumer]; ok {
+			return nil, fmt.Errorf("kit consumer %q is ambiguous: both %q and %q resolve to the same name; use 'as:' to disambiguate", consumer, prev, kitRef.Ref)
+		}
+		seenConsumers[consumer] = kitRef.Ref
+		consumerNames = append(consumerNames, consumer)
+	}
+
 	var kits []*KitMeta
 	for _, kitRef := range kitsToLoad {
 		kitDir, err := resolveKitRef(kitRef.Ref, dir, resolver)
@@ -134,7 +157,7 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		kits = append(kits, kitMeta)
 	}
 
-	merged := MergeKitMeta(meta, kits)
+	merged := MergeKitMeta(meta, kits, consumerNames)
 	if err := validateBuiltinCommands("merged project meta", merged.BuiltinCommands, merged.HostCommands); err != nil {
 		return nil, err
 	}
@@ -241,7 +264,7 @@ func ReadProjectLocalMeta(dir string) (*ProjectLocalMeta, error) {
 	return &meta, nil
 }
 
-func MergeKitMeta(base *ProjectMeta, kits []*KitMeta) *ProjectMeta {
+func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) *ProjectMeta {
 	if len(kits) == 0 {
 		return base
 	}
@@ -271,15 +294,32 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta) *ProjectMeta {
 	result.TaskBehaviors = mergedBehaviors
 
 	var allHooks []Hook
-	for _, meta := range kits {
-		allHooks = append(allHooks, meta.Hooks...)
+	for i, meta := range kits {
+		consumer := ""
+		if i < len(kitConsumers) {
+			consumer = kitConsumers[i]
+		}
+		for _, h := range meta.Hooks {
+			h.Kit = consumer
+			if h.Consumer == "" {
+				h.Consumer = consumer
+			}
+			allHooks = append(allHooks, h)
+		}
 	}
 	allHooks = append(allHooks, base.Hooks...)
 	result.Hooks = dedupHooks(allHooks)
 
 	var allGates []Gate
-	for _, meta := range kits {
-		allGates = append(allGates, meta.Gates...)
+	for i, meta := range kits {
+		consumer := ""
+		if i < len(kitConsumers) {
+			consumer = kitConsumers[i]
+		}
+		for _, g := range meta.Gates {
+			g.Kit = consumer
+			allGates = append(allGates, g)
+		}
 	}
 	allGates = append(allGates, base.Gates...)
 	result.Gates = dedupGates(allGates)
