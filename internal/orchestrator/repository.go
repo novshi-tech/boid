@@ -7,6 +7,7 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 )
 
+
 type TaskRepository struct {
 	db db.DBTX
 }
@@ -29,6 +30,16 @@ func (r *TaskRepository) ListTasks(filter TaskFilter) ([]*Task, error) {
 
 func (r *TaskRepository) UpdateTask(task *Task) error {
 	return UpdateTask(r.db, task)
+}
+
+func (r *TaskRepository) DeleteTask(id string) error {
+	conn, ok := r.db.(*sql.DB)
+	if !ok {
+		return DeleteTask(r.db, id)
+	}
+	return db.InTxDB(conn, func(tx db.DBTX) error {
+		return DeleteTask(tx, id)
+	})
 }
 
 func (r *TaskRepository) CreateAction(action *Action) error {

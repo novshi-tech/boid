@@ -48,6 +48,7 @@ type TaskService interface {
 	ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error)
 	GetTask(id string) (*orchestrator.Task, error)
 	GetTaskDetail(id string) (*TaskDetailView, error)
+	DeleteTask(id string, force bool) error
 }
 
 type WebService interface {
@@ -66,6 +67,7 @@ type TaskStore interface {
 	GetTask(id string) (*orchestrator.Task, error)
 	ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error)
 	UpdateTask(task *orchestrator.Task) error
+	DeleteTask(id string) error
 }
 
 type ActionStore interface {

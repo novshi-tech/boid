@@ -239,6 +239,21 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 	return result, nil
 }
 
+func DeleteTask(dbtx db.DBTX, id string) error {
+	if _, err := GetTask(dbtx, id); err != nil {
+		return err
+	}
+	for _, table := range []string{"actions", "jobs", "worktrees"} {
+		if _, err := dbtx.Exec(`DELETE FROM `+table+` WHERE task_id = ?`, id); err != nil {
+			return fmt.Errorf("delete %s: %w", table, err)
+		}
+	}
+	if _, err := dbtx.Exec(`DELETE FROM tasks WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete task: %w", err)
+	}
+	return nil
+}
+
 type taskScanner interface {
 	Scan(dest ...any) error
 }
