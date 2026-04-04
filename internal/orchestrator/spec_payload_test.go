@@ -205,6 +205,53 @@ func TestMergePayloadPatch_ProducesOutsideAllowed(t *testing.T) {
 	}
 }
 
+func TestFilterPayloadByTraits(t *testing.T) {
+	t.Run("empty consumes returns empty payload", func(t *testing.T) {
+		payload := json.RawMessage(`{"artifact":"url","instructions":{"r":{"type":"execution","consumer":"cc","message":"m"}}}`)
+		result := projectspec.FilterPayloadByTraits(payload, nil)
+		if string(result) != `{}` {
+			t.Fatalf("expected {}, got %s", result)
+		}
+	})
+	t.Run("filters to requested traits only", func(t *testing.T) {
+		payload := json.RawMessage(`{"artifact":"url","instructions":{"r":{"type":"execution","consumer":"cc","message":"m"}},"tasks":[]}`)
+		result := projectspec.FilterPayloadByTraits(payload, []projectspec.TraitType{projectspec.TraitArtifact})
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(result, &m); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if _, ok := m["artifact"]; !ok {
+			t.Error("expected artifact key")
+		}
+		if _, ok := m["instructions"]; ok {
+			t.Error("unexpected instructions key")
+		}
+		if _, ok := m["tasks"]; ok {
+			t.Error("unexpected tasks key")
+		}
+	})
+	t.Run("missing trait in payload is omitted silently", func(t *testing.T) {
+		payload := json.RawMessage(`{"artifact":"url"}`)
+		result := projectspec.FilterPayloadByTraits(payload, []projectspec.TraitType{projectspec.TraitArtifact, projectspec.TraitVerification})
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(result, &m); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if _, ok := m["artifact"]; !ok {
+			t.Error("expected artifact key")
+		}
+		if len(m) != 1 {
+			t.Errorf("expected 1 key, got %d", len(m))
+		}
+	})
+	t.Run("empty payload returns empty payload", func(t *testing.T) {
+		result := projectspec.FilterPayloadByTraits(json.RawMessage("{}"), []projectspec.TraitType{projectspec.TraitArtifact})
+		if string(result) != `{}` {
+			t.Fatalf("expected {}, got %s", result)
+		}
+	})
+}
+
 func TestMergePayloadPatch_Shared(t *testing.T) {
 	base := json.RawMessage(`{}`)
 	allowed := []projectspec.TraitType{projectspec.TraitVerification}

@@ -78,10 +78,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 		return nil, err
 	}
 
-	payloadJSON := string(task.Payload)
-	if payloadJSON == "" {
-		payloadJSON = "{}"
-	}
+	payloadJSON := string(FilterPayloadByTraits(task.Payload, event.Hook.Traits.Consumes))
 
 	var instructionsJSON string
 	instType := InstructionTypeForStatus(task.Status)

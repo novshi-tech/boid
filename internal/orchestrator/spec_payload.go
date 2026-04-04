@@ -115,6 +115,40 @@ func MergePayloadPatch(base, patch json.RawMessage, handlerID string, allowedTra
 	return result, nil
 }
 
+// FilterPayloadByTraits returns a payload containing only the top-level keys
+// matching the listed traits. If consumes is empty, an empty payload is returned.
+func FilterPayloadByTraits(payload json.RawMessage, consumes []TraitType) json.RawMessage {
+	if len(consumes) == 0 {
+		return json.RawMessage("{}")
+	}
+	if len(payload) == 0 || string(payload) == "{}" || string(payload) == "null" {
+		return json.RawMessage("{}")
+	}
+
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return json.RawMessage("{}")
+	}
+
+	allowed := make(map[TraitType]bool, len(consumes))
+	for _, t := range consumes {
+		allowed[t] = true
+	}
+
+	filtered := make(map[string]json.RawMessage, len(consumes))
+	for key, val := range m {
+		if allowed[TraitType(key)] {
+			filtered[key] = val
+		}
+	}
+
+	result, err := json.Marshal(filtered)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return result
+}
+
 func MergePayload(base, update json.RawMessage) (json.RawMessage, error) {
 	if len(update) == 0 || string(update) == "{}" || string(update) == "null" {
 		if len(base) == 0 {

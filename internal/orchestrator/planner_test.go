@@ -425,6 +425,92 @@ func TestPlanHook_TaskYAML(t *testing.T) {
 	}
 }
 
+func TestPlanHook_PayloadJSON_FilteredByConsumes(t *testing.T) {
+	payload := json.RawMessage(`{
+		"artifact": "http://example.com/artifact",
+		"instructions": {
+			"exec": {"type":"execution","consumer":"claude-code","message":"run tests"}
+		}
+	}`)
+	meta := &ProjectMeta{ID: "proj-1"}
+	proj := &Project{ID: "proj-1", WorkDir: t.TempDir()}
+	task := &Task{
+		ID:        "task-payload-filter-1",
+		ProjectID: "proj-1",
+		Behavior:  "dev",
+		Status:    TaskStatusExecuting,
+		Payload:   payload,
+	}
+
+	planner := &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj}},
+		Tasks:    stubTaskLookup{task: task},
+	}
+
+	req, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    task.ID,
+		ProjectID: proj.ID,
+		Hook: Hook{
+			ID:         "hook-1",
+			ScriptPath: filepath.Join(proj.WorkDir, ".boid", "hooks", "hook-1.sh"),
+			Consumer:   "claude-code",
+			Traits:     HandlerTraits{Consumes: []TraitType{TraitArtifact}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(req.PayloadJSON), &m); err != nil {
+		t.Fatalf("unmarshal PayloadJSON: %v", err)
+	}
+	if _, ok := m["artifact"]; !ok {
+		t.Error("expected artifact key in PayloadJSON")
+	}
+	if _, ok := m["instructions"]; ok {
+		t.Error("instructions should be filtered out of PayloadJSON when not in Consumes")
+	}
+}
+
+func TestPlanHook_PayloadJSON_EmptyConsumes(t *testing.T) {
+	payload := json.RawMessage(`{"artifact":"url"}`)
+	meta := &ProjectMeta{ID: "proj-1"}
+	proj := &Project{ID: "proj-1", WorkDir: t.TempDir()}
+	task := &Task{
+		ID:        "task-payload-filter-2",
+		ProjectID: "proj-1",
+		Behavior:  "dev",
+		Status:    TaskStatusExecuting,
+		Payload:   payload,
+	}
+
+	planner := &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj}},
+		Tasks:    stubTaskLookup{task: task},
+	}
+
+	req, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    task.ID,
+		ProjectID: proj.ID,
+		Hook: Hook{
+			ID:         "hook-1",
+			ScriptPath: filepath.Join(proj.WorkDir, ".boid", "hooks", "hook-1.sh"),
+			Traits:     HandlerTraits{Consumes: nil},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if req.PayloadJSON != "{}" {
+		t.Fatalf("expected empty payload when no consumes, got %q", req.PayloadJSON)
+	}
+}
+
 func TestPlanHook_EnvironmentYAML(t *testing.T) {
 	meta := &ProjectMeta{
 		ID:              "proj-1",
