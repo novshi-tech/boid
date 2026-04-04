@@ -3,12 +3,15 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var taskCmd = &cobra.Command{
@@ -51,10 +54,7 @@ var taskGetCmd = &cobra.Command{
 
 func init() {
 	taskListCmd.Flags().String("status", "", "Filter by status")
-	taskCreateCmd.Flags().String("title", "", "Task title (required)")
-	taskCreateCmd.Flags().String("project", "", "Project ID (required)")
-	taskCreateCmd.Flags().String("behavior", "", "Task behavior (required)")
-	taskCreateCmd.Flags().String("payload", "", "Initial payload JSON (optional)")
+	taskCreateCmd.Flags().StringP("file", "f", "", "YAML file to read task spec from (default: stdin)")
 	taskWatchCmd.Flags().Duration("interval", time.Second, "Polling interval")
 	taskGetCmd.Flags().String("field", "", "Field name to retrieve (required)")
 	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd)
@@ -86,27 +86,54 @@ func runTaskList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runTaskCreate(cmd *cobra.Command, args []string) error {
-	title, _ := cmd.Flags().GetString("title")
-	projectID, _ := cmd.Flags().GetString("project")
-	behavior, _ := cmd.Flags().GetString("behavior")
-	payloadStr, _ := cmd.Flags().GetString("payload")
+// taskCreateSpec is the YAML schema for task create input.
+type taskCreateSpec struct {
+	ProjectID string         `yaml:"project_id"`
+	Title     string         `yaml:"title"`
+	Behavior  string         `yaml:"behavior"`
+	Payload   map[string]any `yaml:"payload,omitempty"`
+}
 
-	if title == "" || projectID == "" || behavior == "" {
-		return fmt.Errorf("--title, --project, and --behavior are required")
+func runTaskCreate(cmd *cobra.Command, args []string) error {
+	filePath, _ := cmd.Flags().GetString("file")
+
+	var r io.Reader
+	if filePath != "" {
+		f, err := os.Open(filePath)
+		if err != nil {
+			return fmt.Errorf("open file: %w", err)
+		}
+		defer f.Close()
+		r = f
+	} else {
+		r = cmd.InOrStdin()
+	}
+
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return fmt.Errorf("read input: %w", err)
+	}
+
+	var spec taskCreateSpec
+	if err := yaml.Unmarshal(data, &spec); err != nil {
+		return fmt.Errorf("parse YAML: %w", err)
+	}
+
+	if spec.ProjectID == "" || spec.Title == "" || spec.Behavior == "" {
+		return fmt.Errorf("YAML must include project_id, title, and behavior")
 	}
 
 	req := map[string]any{
-		"project_id": projectID,
-		"title":      title,
-		"behavior":   behavior,
+		"project_id": spec.ProjectID,
+		"title":      spec.Title,
+		"behavior":   spec.Behavior,
 	}
-	if payloadStr != "" {
-		var payload json.RawMessage
-		if err := json.Unmarshal([]byte(payloadStr), &payload); err != nil {
-			return fmt.Errorf("invalid --payload JSON: %w", err)
+	if spec.Payload != nil {
+		payloadJSON, err := json.Marshal(spec.Payload)
+		if err != nil {
+			return fmt.Errorf("encode payload: %w", err)
 		}
-		req["payload"] = payload
+		req["payload"] = json.RawMessage(payloadJSON)
 	}
 
 	c := client.NewUnixClient(client.DefaultSocketPath())
