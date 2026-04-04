@@ -511,6 +511,86 @@ func TestPlanHook_PayloadJSON_EmptyConsumes(t *testing.T) {
 	}
 }
 
+func TestPlanHook_Interactive_PropagatedToDispatchRequest(t *testing.T) {
+	payload := json.RawMessage(`{
+		"instructions":{
+			"executor":{"type":"execution","consumer":"claude-code","message":"run it","interactive":true}
+		}
+	}`)
+	meta := &ProjectMeta{ID: "proj-1"}
+	proj := &Project{ID: "proj-1", WorkDir: t.TempDir()}
+	task := &Task{
+		ID:        "task-interactive-1",
+		ProjectID: "proj-1",
+		Behavior:  "dev",
+		Status:    TaskStatusExecuting,
+		Payload:   payload,
+	}
+
+	planner := &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj}},
+		Tasks:    stubTaskLookup{task: task},
+	}
+
+	req, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    task.ID,
+		ProjectID: proj.ID,
+		Hook: Hook{
+			ID:         "hook-1",
+			ScriptPath: filepath.Join(proj.WorkDir, ".boid", "hooks", "hook-1.sh"),
+			Consumer:   "claude-code",
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if !req.Interactive {
+		t.Fatal("expected Interactive=true, got false")
+	}
+}
+
+func TestPlanHook_Interactive_FalseWhenNotSet(t *testing.T) {
+	payload := json.RawMessage(`{
+		"instructions":{
+			"executor":{"type":"execution","consumer":"claude-code","message":"run it"}
+		}
+	}`)
+	meta := &ProjectMeta{ID: "proj-1"}
+	proj := &Project{ID: "proj-1", WorkDir: t.TempDir()}
+	task := &Task{
+		ID:        "task-interactive-2",
+		ProjectID: "proj-1",
+		Behavior:  "dev",
+		Status:    TaskStatusExecuting,
+		Payload:   payload,
+	}
+
+	planner := &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj}},
+		Tasks:    stubTaskLookup{task: task},
+	}
+
+	req, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-2",
+		TaskID:    task.ID,
+		ProjectID: proj.ID,
+		Hook: Hook{
+			ID:         "hook-1",
+			ScriptPath: filepath.Join(proj.WorkDir, ".boid", "hooks", "hook-1.sh"),
+			Consumer:   "claude-code",
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if req.Interactive {
+		t.Fatal("expected Interactive=false, got true")
+	}
+}
+
 func TestPlanHook_EnvironmentYAML(t *testing.T) {
 	meta := &ProjectMeta{
 		ID:              "proj-1",

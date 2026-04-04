@@ -74,6 +74,7 @@ func toDispatchPlan(request *orchestrator.DispatchRequest) *DispatchPlan {
 		PayloadJSON:        request.PayloadJSON,
 		TaskJSON:           request.TaskJSON,
 		Readonly:           request.Readonly,
+		Interactive:        request.Interactive,
 		InstructionsJSON:   request.InstructionsJSON,
 		SecretNamespace:    request.SecretNamespace,
 		TaskYAML:           request.TaskYAML,

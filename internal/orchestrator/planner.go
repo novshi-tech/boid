@@ -81,12 +81,14 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 	payloadJSON := string(FilterPayloadByTraits(task.Payload, event.Hook.Traits.Consumes))
 
 	var instructionsJSON string
+	var interactive bool
 	instType := InstructionTypeForStatus(task.Status)
 	myInstructions := FilterInstructions(task.Payload, instType, event.Hook.Consumer)
 	if len(myInstructions) > 0 {
 		if instJSON, err := json.Marshal(myInstructions); err == nil {
 			instructionsJSON = string(instJSON)
 		}
+		interactive = myInstructions[0].Interactive
 	}
 
 	readonly := IsReadonly(&behavior, task.Status)
@@ -117,6 +119,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 		WorktreeDir:        worktreeDir,
 		PayloadJSON:        payloadJSON,
 		Readonly:           readonly,
+		Interactive:        interactive,
 		InstructionsJSON:   instructionsJSON,
 		TaskYAML:           taskYAML,
 		EnvironmentYAML:    environmentYAML,

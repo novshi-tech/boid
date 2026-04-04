@@ -110,16 +110,18 @@ const (
 )
 
 type Instruction struct {
-	Type     InstructionType `json:"type" yaml:"type"`
-	Consumer string          `json:"consumer" yaml:"consumer"`
-	Message  string          `json:"message,omitempty" yaml:"message,omitempty"`
+	Type        InstructionType `json:"type" yaml:"type"`
+	Consumer    string          `json:"consumer" yaml:"consumer"`
+	Message     string          `json:"message,omitempty" yaml:"message,omitempty"`
+	Interactive bool            `json:"interactive,omitempty" yaml:"interactive,omitempty"`
 }
 
 type RoutedInstruction struct {
-	Role     string          `json:"role"`
-	Type     InstructionType `json:"type"`
-	Consumer string          `json:"consumer"`
-	Message  string          `json:"message"`
+	Role        string          `json:"role"`
+	Type        InstructionType `json:"type"`
+	Consumer    string          `json:"consumer"`
+	Message     string          `json:"message"`
+	Interactive bool            `json:"interactive,omitempty"`
 }
 
 type TraitType string
