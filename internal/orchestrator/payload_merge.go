@@ -148,10 +148,11 @@ func FilterInstructions(payload json.RawMessage, instType InstructionType, consu
 	for _, role := range roles {
 		inst := instructions[role]
 		result = append(result, RoutedInstruction{
-			Role:     role,
-			Type:     inst.Type,
-			Consumer: inst.Consumer,
-			Message:  resolveMessage(inst, instType, instructions),
+			Role:        role,
+			Type:        inst.Type,
+			Consumer:    inst.Consumer,
+			Message:     resolveMessage(inst, instType, instructions),
+			Interactive: inst.Interactive,
 		})
 	}
 	return result

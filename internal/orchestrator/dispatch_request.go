@@ -26,6 +26,7 @@ type DispatchRequest struct {
 	PayloadJSON        string
 	TaskJSON           string
 	Readonly           bool
+	Interactive        bool
 	InstructionsJSON   string
 	SecretNamespace    string
 	TaskYAML           string // serialized task metadata for context/task.yaml

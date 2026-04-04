@@ -187,6 +187,26 @@ func TestFilterInstructions_ExplicitMessageNotOverridden(t *testing.T) {
 	}
 }
 
+func TestFilterInstructions_Interactive_PropagatedToRoutedInstruction(t *testing.T) {
+	payload := json.RawMessage(`{
+		"instructions":{
+			"executor":{"type":"execution","consumer":"agent-a","message":"do it","interactive":true},
+			"reviewer":{"type":"execution","consumer":"agent-a","message":"check it"}
+		}
+	}`)
+	results := orchestrator.FilterInstructions(payload, orchestrator.InstructionTypeExecution, "agent-a")
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	// sorted: "executor" < "reviewer"
+	if !results[0].Interactive {
+		t.Errorf("executor: expected Interactive=true, got false")
+	}
+	if results[1].Interactive {
+		t.Errorf("reviewer: expected Interactive=false, got true")
+	}
+}
+
 func TestRawPayload_YAMLUnmarshal(t *testing.T) {
 	data := `
 name: impl

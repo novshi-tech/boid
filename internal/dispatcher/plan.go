@@ -44,6 +44,7 @@ type DispatchPlan struct {
 	PayloadJSON        string
 	TaskJSON           string
 	Readonly           bool
+	Interactive        bool
 	InstructionsJSON   string
 	SecretNamespace    string
 	TaskYAML           string
