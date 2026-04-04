@@ -80,8 +80,42 @@ func mergeInstructions(base, override json.RawMessage) (json.RawMessage, error) 
 	return json.Marshal(baseMap)
 }
 
+// defaultMessages maps InstructionType to a fallback message used when
+// a role's message field is omitted.
+var defaultMessages = map[InstructionType]string{
+	InstructionTypeExecution:    "タスクを実行してください",
+	InstructionTypeRework:       "verification findings の問題を修正してください",
+	InstructionTypeVerification: "成果物を検証してください",
+}
+
+// messageFallbackType maps an InstructionType to the type to consult when its
+// own message is empty and no default is sufficient. rework falls back to
+// execution so the original task description is reused as context.
+var messageFallbackType = map[InstructionType]InstructionType{
+	InstructionTypeRework: InstructionTypeExecution,
+}
+
+// resolveMessage returns the message for a role, applying a fallback chain:
+//  1. inst.Message if non-empty
+//  2. same-consumer instruction of the fallback type (e.g. rework → execution)
+//  3. default message for instType
+func resolveMessage(inst Instruction, instType InstructionType, all map[string]Instruction) string {
+	if inst.Message != "" {
+		return inst.Message
+	}
+	if fallback, ok := messageFallbackType[instType]; ok {
+		for _, fi := range all {
+			if fi.Type == fallback && fi.Consumer == inst.Consumer && fi.Message != "" {
+				return fi.Message
+			}
+		}
+	}
+	return defaultMessages[instType]
+}
+
 // FilterInstructions extracts instructions matching the given type and consumer,
 // sorted by role name for deterministic ordering.
+// When a role's message is empty, a fallback chain is applied (see resolveMessage).
 func FilterInstructions(payload json.RawMessage, instType InstructionType, consumer string) []RoutedInstruction {
 	if instType == "" || consumer == "" {
 		return nil
@@ -117,7 +151,7 @@ func FilterInstructions(payload json.RawMessage, instType InstructionType, consu
 			Role:     role,
 			Type:     inst.Type,
 			Consumer: inst.Consumer,
-			Message:  inst.Message,
+			Message:  resolveMessage(inst, instType, instructions),
 		})
 	}
 	return result

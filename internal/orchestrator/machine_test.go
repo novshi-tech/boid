@@ -273,7 +273,7 @@ func TestOneShotFeedbackMachine_AllFindingsResolved_Done(t *testing.T) {
 	}
 }
 
-func TestOneShotFeedbackMachine_OpenFindings_SelfLoop(t *testing.T) {
+func TestOneShotFeedbackMachine_OpenFindings_ToReworking(t *testing.T) {
 	sm := orchestrator.OneShotFeedbackMachine()
 
 	task := &orchestrator.Task{
@@ -291,10 +291,75 @@ func TestOneShotFeedbackMachine_OpenFindings_SelfLoop(t *testing.T) {
 
 	next, ok := sm.Advance(task)
 	if !ok {
-		t.Fatal("expected self-loop advance when findings open")
+		t.Fatal("expected transition to reworking when findings open")
 	}
-	if next.Status != orchestrator.TaskStatusExecuting {
-		t.Fatalf("expected executing (self-loop), got %s", next.Status)
+	if next.Status != orchestrator.TaskStatusReworking {
+		t.Fatalf("expected reworking, got %s", next.Status)
+	}
+}
+
+func TestOneShotFeedbackMachine_Reworking_OpenFindings_SelfLoop(t *testing.T) {
+	sm := orchestrator.OneShotFeedbackMachine()
+
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusReworking,
+		Payload: json.RawMessage(`{
+			"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"},
+			"verification":{
+				"github-pr-verification/pr-verify":{
+					"source_state":"reworking",
+					"findings":[{"message":"GitHub Actions failed: test","status":"open"}]
+				}
+			}
+		}`),
+	}
+
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected self-loop in reworking when findings still open")
+	}
+	if next.Status != orchestrator.TaskStatusReworking {
+		t.Fatalf("expected reworking (self-loop), got %s", next.Status)
+	}
+}
+
+func TestOneShotFeedbackMachine_Reworking_AllResolved_Done(t *testing.T) {
+	sm := orchestrator.OneShotFeedbackMachine()
+
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusReworking,
+		Payload: json.RawMessage(`{
+			"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"},
+			"verification":{
+				"github-pr-verification/pr-verify":{
+					"source_state":"reworking",
+					"findings":[{"message":"GitHub Actions passed","status":"resolved"}]
+				}
+			}
+		}`),
+	}
+
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected transition to done when reworking findings resolved")
+	}
+	if next.Status != orchestrator.TaskStatusDone {
+		t.Fatalf("expected done, got %s", next.Status)
+	}
+}
+
+func TestOneShotFeedbackMachine_Reworking_NoFindings_NoAdvance(t *testing.T) {
+	sm := orchestrator.OneShotFeedbackMachine()
+
+	// reworking 直後はまだ gate が発火していないので findings がない → Advance は false を返す
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusReworking,
+		Payload: json.RawMessage(`{"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"}}`),
+	}
+
+	_, ok := sm.Advance(task)
+	if ok {
+		t.Fatal("expected no advance in reworking when no reworking-state findings yet")
 	}
 }
 

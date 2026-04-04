@@ -102,16 +102,20 @@ func OneShotMachine() *StateMachine {
 	}
 }
 
-// OneShotFeedbackMachine is a one-shot variant that supports a CI modification
-// loop within the executing state.
+// OneShotFeedbackMachine is a one-shot variant with a dedicated reworking state
+// for the CI modification loop.
 //
-// A gate (e.g. github-pr-verification) running in executing produces
-// verification findings with source_state="executing". When findings are
-// unresolved, the machine self-loops executing → executing, causing the
-// dispatch loop (service.runDispatchLoop, max 10 cycles) to re-run hooks
-// and gates. The agent re-runs, sees the CI failure in its payload, fixes
-// the code, commits, and the gate re-checks CI. Once all findings are
-// resolved (or no verification findings exist), the task advances to done.
+// Flow:
+//
+//	pending → executing → (CI ok or no verification) → done
+//	                    → (CI open findings)         → reworking → (CI ok) → done
+//	                                                             → (CI open) → reworking (loop)
+//
+// The executing state runs the initial implementation hook and the
+// github-pr-verification gate. When the gate reports open findings the task
+// transitions to reworking, where a rework-type instruction drives the agent
+// to fix the CI failures. The gate re-runs under reworking and the cycle
+// repeats until all findings are resolved.
 func OneShotFeedbackMachine() *StateMachine {
 	return &StateMachine{
 		Name: "one-shot-feedback",
@@ -120,18 +124,22 @@ func OneShotFeedbackMachine() *StateMachine {
 			// Condition: tasks ready → done (for triage/plan tasks)
 			{FromStatus: "executing", ToStatus: "done", Condition: TasksReady},
 			// Condition: artifact present AND no unresolved executing-state findings → done.
-			// This covers three cases: no verification at all, no executing-state entries,
-			// and all executing-state findings resolved.
 			{FromStatus: "executing", ToStatus: "done", Condition: func(p json.RawMessage) bool {
 				return TraitNonNull(p, "artifact") && !AnyFindingUnresolvedForState("executing")(p)
 			}},
-			// Condition: artifact present AND executing-state CI findings still open →
-			// self-loop to re-run agent and gate (modification loop).
-			{FromStatus: "executing", ToStatus: "executing", Condition: func(p json.RawMessage) bool {
+			// Condition: artifact present AND executing-state CI findings open →
+			// enter reworking to drive the CI fix loop with a dedicated instruction.
+			{FromStatus: "executing", ToStatus: "reworking", Condition: func(p json.RawMessage) bool {
 				return TraitNonNull(p, "artifact") && AnyFindingUnresolvedForState("executing")(p)
 			}},
+			// Condition: reworking findings all resolved → done.
+			{FromStatus: "reworking", ToStatus: "done", Condition: AllFindingsResolvedForState("reworking")},
+			// Condition: reworking findings still open → stay in reworking.
+			{FromStatus: "reworking", ToStatus: "reworking", Condition: AnyFindingUnresolvedForState("reworking")},
 			{Action: "done", FromStatus: "executing", ToStatus: "done"},
+			{Action: "done", FromStatus: "reworking", ToStatus: "done"},
 			{Action: "job_completed", FromStatus: "executing", ToStatus: "done"},
+			{Action: "job_completed", FromStatus: "reworking", ToStatus: "done"},
 			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},
 			{Action: "abort", FromStatus: "*", ToStatus: "aborted"},
 		},

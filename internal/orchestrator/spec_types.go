@@ -105,13 +105,14 @@ type InstructionType string
 
 const (
 	InstructionTypeExecution    InstructionType = "execution"
+	InstructionTypeRework       InstructionType = "rework"
 	InstructionTypeVerification InstructionType = "verification"
 )
 
 type Instruction struct {
 	Type     InstructionType `json:"type" yaml:"type"`
 	Consumer string          `json:"consumer" yaml:"consumer"`
-	Message  string          `json:"message" yaml:"message"`
+	Message  string          `json:"message,omitempty" yaml:"message,omitempty"`
 }
 
 type RoutedInstruction struct {

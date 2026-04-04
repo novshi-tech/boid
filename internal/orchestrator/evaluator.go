@@ -9,6 +9,8 @@ func InstructionTypeForStatus(status TaskStatus) InstructionType {
 	switch status {
 	case TaskStatusExecuting, TaskStatusCollectingFeedback:
 		return InstructionTypeExecution
+	case TaskStatusReworking:
+		return InstructionTypeRework
 	case TaskStatusVerifying, TaskStatusInReview:
 		return InstructionTypeVerification
 	default:

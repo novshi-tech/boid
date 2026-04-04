@@ -121,6 +121,72 @@ func TestMergeDefaultPayload_TopLevelNull(t *testing.T) {
 	}
 }
 
+func TestFilterInstructions_MessageFallback_DefaultMessage(t *testing.T) {
+	// message 省略時、InstructionType のデフォルトメッセージが使われること
+	payload := json.RawMessage(`{
+		"instructions":{
+			"executor":{"type":"execution","consumer":"agent-a"}
+		}
+	}`)
+	results := orchestrator.FilterInstructions(payload, orchestrator.InstructionTypeExecution, "agent-a")
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Message == "" {
+		t.Fatal("expected default message, got empty")
+	}
+}
+
+func TestFilterInstructions_MessageFallback_ReworkInheritsExecution(t *testing.T) {
+	// rework の message 省略時、同 consumer の execution message を引き継ぐこと
+	payload := json.RawMessage(`{
+		"instructions":{
+			"executor":{"type":"execution","consumer":"agent-a","message":"タスクを実装してください"},
+			"reworker":{"type":"rework","consumer":"agent-a"}
+		}
+	}`)
+	results := orchestrator.FilterInstructions(payload, orchestrator.InstructionTypeRework, "agent-a")
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Message != "タスクを実装してください" {
+		t.Fatalf("expected execution message as fallback, got %q", results[0].Message)
+	}
+}
+
+func TestFilterInstructions_MessageFallback_ReworkDefaultWhenNoExecution(t *testing.T) {
+	// execution message もない場合、rework のデフォルトメッセージが使われること
+	payload := json.RawMessage(`{
+		"instructions":{
+			"reworker":{"type":"rework","consumer":"agent-a"}
+		}
+	}`)
+	results := orchestrator.FilterInstructions(payload, orchestrator.InstructionTypeRework, "agent-a")
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Message == "" {
+		t.Fatal("expected rework default message, got empty")
+	}
+}
+
+func TestFilterInstructions_ExplicitMessageNotOverridden(t *testing.T) {
+	// message が明示されている場合はフォールバックが適用されないこと
+	payload := json.RawMessage(`{
+		"instructions":{
+			"executor":{"type":"execution","consumer":"agent-a","message":"original message"},
+			"reworker":{"type":"rework","consumer":"agent-a","message":"custom rework message"}
+		}
+	}`)
+	results := orchestrator.FilterInstructions(payload, orchestrator.InstructionTypeRework, "agent-a")
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Message != "custom rework message" {
+		t.Fatalf("expected explicit message, got %q", results[0].Message)
+	}
+}
+
 func TestRawPayload_YAMLUnmarshal(t *testing.T) {
 	data := `
 name: impl
