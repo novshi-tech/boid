@@ -95,7 +95,6 @@ func OneShotMachine() *StateMachine {
 				return TraitNonNull(p, "artifact")
 			}},
 			{Action: "done", FromStatus: "executing", ToStatus: "done"},
-			{Action: "job_completed", FromStatus: "executing", ToStatus: "done"},
 			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},
 			{Action: "abort", FromStatus: "*", ToStatus: "aborted"},
 		},
@@ -138,8 +137,6 @@ func OneShotFeedbackMachine() *StateMachine {
 			{FromStatus: "reworking", ToStatus: "reworking", Condition: AnyFindingUnresolvedForState("reworking")},
 			{Action: "done", FromStatus: "executing", ToStatus: "done"},
 			{Action: "done", FromStatus: "reworking", ToStatus: "done"},
-			{Action: "job_completed", FromStatus: "executing", ToStatus: "done"},
-			{Action: "job_completed", FromStatus: "reworking", ToStatus: "done"},
 			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},
 			{Action: "abort", FromStatus: "*", ToStatus: "aborted"},
 		},

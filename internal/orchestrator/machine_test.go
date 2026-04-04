@@ -416,3 +416,30 @@ func TestFeedbackLoopMachine_AbortFromAny(t *testing.T) {
 		}
 	}
 }
+
+// TestJobCompletedNotAnAction verifies that job_completed does not trigger a
+// state transition in any machine. State transitions driven by hook/gate job
+// completion must happen exclusively through DispatchAndAdvance (condition-based
+// auto-advance), not through sm.Apply.
+func TestJobCompletedNotAnAction(t *testing.T) {
+	machines := []*orchestrator.StateMachine{
+		orchestrator.OneShotMachine(),
+		orchestrator.OneShotFeedbackMachine(),
+		orchestrator.FeedbackLoopMachine(),
+	}
+
+	statuses := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusReworking,
+	}
+
+	for _, sm := range machines {
+		for _, status := range statuses {
+			task := &orchestrator.Task{Status: status}
+			_, err := sm.Apply(task, &orchestrator.Action{Type: "job_completed"})
+			if err == nil {
+				t.Errorf("machine %q: job_completed from %q should not transition (got no error)", sm.Name, status)
+			}
+		}
+	}
+}

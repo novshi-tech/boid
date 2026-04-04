@@ -8,7 +8,11 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-func TestTaskWorkflowServiceCompleteJobFinalizesOnTransitionMiss(t *testing.T) {
+// TestCompleteJobSuccessNotifiesWithoutTransition verifies that a successful
+// (exit 0) job completion only records the job result and notifies Lifecycle.
+// No task state transition should occur: that is driven exclusively by
+// DispatchAndAdvance (condition-based auto-advance).
+func TestCompleteJobSuccessNotifiesWithoutTransition(t *testing.T) {
 	job := &Job{
 		ID:        "job-1",
 		TaskID:    "task-1",
@@ -18,14 +22,15 @@ func TestTaskWorkflowServiceCompleteJobFinalizesOnTransitionMiss(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
 		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusDone,
+		Status:    orchestrator.TaskStatusExecuting,
 		Behavior:  "impl",
 	}
 
+	taskStore := &stubTaskStore{task: task}
 	jobs := &stubJobStore{job: job}
 	lifecycle := &stubLifecycle{}
 	svc := &TaskWorkflowService{
-		Tasks:     &stubTaskStore{task: task},
+		Tasks:     taskStore,
 		Jobs:      jobs,
 		Meta:      stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {Transition: "one-shot"}}}},
 		Resolver:  stubResolver{sm: orchestrator.OneShotMachine()},
@@ -42,6 +47,10 @@ func TestTaskWorkflowServiceCompleteJobFinalizesOnTransitionMiss(t *testing.T) {
 	if jobs.updateCalls != 1 {
 		t.Fatalf("UpdateJob calls = %d, want 1", jobs.updateCalls)
 	}
+	// Task state must NOT be updated by CompleteJob for a successful job.
+	if taskStore.updateCalls != 0 {
+		t.Fatalf("UpdateTask calls = %d, want 0 (no state transition on job_completed)", taskStore.updateCalls)
+	}
 	if lifecycle.completedJobID != job.ID {
 		t.Fatalf("CompleteJob notified %q, want %q", lifecycle.completedJobID, job.ID)
 	}
@@ -50,6 +59,53 @@ func TestTaskWorkflowServiceCompleteJobFinalizesOnTransitionMiss(t *testing.T) {
 	}
 	if lifecycle.result.ExitCode != 0 || lifecycle.result.Output != "ok" {
 		t.Fatalf("completion result = %+v, want exit 0 output ok", lifecycle.result)
+	}
+}
+
+// TestCompleteJobFailureTransitionsToAborted verifies that a failed (exit != 0)
+// job completion applies the job_failed action and transitions the task to aborted.
+func TestCompleteJobFailureTransitionsToAborted(t *testing.T) {
+	job := &Job{
+		ID:        "job-3",
+		TaskID:    "task-3",
+		ProjectID: "proj-3",
+		Status:    JobStatusRunning,
+	}
+	task := &orchestrator.Task{
+		ID:        "task-3",
+		ProjectID: "proj-3",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "impl",
+	}
+
+	taskStore := &stubTaskStore{task: task}
+	jobs := &stubJobStore{job: job}
+	lifecycle := &stubLifecycle{}
+	tx := &stubTx{}
+	svc := &TaskWorkflowService{
+		Tasks:     taskStore,
+		Jobs:      jobs,
+		Meta:      stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {Transition: "one-shot"}}}},
+		Resolver:  stubResolver{sm: orchestrator.OneShotMachine()},
+		Lifecycle: lifecycle,
+		Tx:        tx,
+	}
+
+	got, err := svc.CompleteJob(t.Context(), job.ID, JobDoneRequest{ExitCode: 1, Output: "boom"})
+	if err != nil {
+		t.Fatalf("CompleteJob() error = %v", err)
+	}
+	if got.Status != JobStatusFailed {
+		t.Fatalf("job status = %q, want %q", got.Status, JobStatusFailed)
+	}
+	if tx.updatedTask == nil {
+		t.Fatal("UpdateTask not called, want aborted transition")
+	}
+	if tx.updatedTask.Status != orchestrator.TaskStatusAborted {
+		t.Fatalf("task status = %q, want %q", tx.updatedTask.Status, orchestrator.TaskStatusAborted)
+	}
+	if lifecycle.completedJobID != job.ID {
+		t.Fatalf("CompleteJob notified %q, want %q", lifecycle.completedJobID, job.ID)
 	}
 }
 
@@ -144,8 +200,9 @@ func TestTaskWorkflowServiceCompleteJobFinalizesOnResolverError(t *testing.T) {
 }
 
 type stubTaskStore struct {
-	task *orchestrator.Task
-	err  error
+	task        *orchestrator.Task
+	err         error
+	updateCalls int
 }
 
 func (s *stubTaskStore) CreateTask(task *orchestrator.Task) error { return nil }
@@ -161,7 +218,36 @@ func (s *stubTaskStore) GetTask(id string) (*orchestrator.Task, error) {
 func (s *stubTaskStore) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
 	return nil, nil
 }
-func (s *stubTaskStore) UpdateTask(task *orchestrator.Task) error { return nil }
+func (s *stubTaskStore) UpdateTask(task *orchestrator.Task) error {
+	s.updateCalls++
+	return nil
+}
+
+type stubTx struct {
+	updatedTask   *orchestrator.Task
+	createdAction *orchestrator.Action
+}
+
+func (s *stubTx) CreateTask(task *orchestrator.Task) error { return nil }
+func (s *stubTx) GetTask(id string) (*orchestrator.Task, error) {
+	return nil, fmt.Errorf("not found")
+}
+func (s *stubTx) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
+	return nil, nil
+}
+func (s *stubTx) UpdateTask(task *orchestrator.Task) error {
+	s.updatedTask = task
+	return nil
+}
+func (s *stubTx) CreateAction(action *orchestrator.Action) error {
+	s.createdAction = action
+	return nil
+}
+func (s *stubTx) ListActionsByTask(taskID string) ([]*orchestrator.Action, error) { return nil, nil }
+func (s *stubTx) GetJob(id string) (*Job, error)                                  { return nil, fmt.Errorf("not found") }
+func (s *stubTx) ListJobsByTask(taskID string) ([]*Job, error)                    { return nil, nil }
+func (s *stubTx) UpdateJob(job *Job) error                                        { return nil }
+func (s *stubTx) WithinTx(fn func(TxStore) error) error                          { return fn(s) }
 
 type stubJobStore struct {
 	job         *Job

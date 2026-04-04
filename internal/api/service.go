@@ -385,11 +385,16 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 	}
 	defer finalize()
 
-	actionType := "job_completed"
-	if req.ExitCode != 0 {
-		actionType = "job_failed"
+	// Successful job completion: no state transition here.
+	// The runDispatchLoop (hooks → gates → auto-advance) is responsible for
+	// evaluating conditions and advancing the task state once all handlers
+	// have completed. Transitioning in CompleteJob would race with the gate
+	// execution and clean up the worktree before gates can run.
+	if req.ExitCode == 0 {
+		return job, nil
 	}
 
+	// Failed job: apply job_failed → aborted.
 	task, err := s.Tasks.GetTask(job.TaskID)
 	if err != nil {
 		slog.Error("job done: task not found", "task_id", job.TaskID)
@@ -408,10 +413,10 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "resolve transition: " + err.Error()}
 	}
 
-	action := &orchestrator.Action{TaskID: task.ID, Type: actionType}
+	action := &orchestrator.Action{TaskID: task.ID, Type: "job_failed"}
 	newTask, err := sm.Apply(task, action)
 	if err != nil {
-		slog.Warn("job done: transition not applicable", "action", actionType, "error", err)
+		slog.Warn("job done: job_failed transition not applicable", "error", err)
 		return job, nil
 	}
 
@@ -424,8 +429,7 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 
-	slog.Info("job done: auto-applied action", "job_id", job.ID, "action", actionType, "new_status", newTask.Status)
-
+	slog.Info("job done: job_failed applied", "job_id", job.ID, "new_status", newTask.Status)
 	s.cleanupWorktree(newTask.ID, job.ProjectID, newTask.Status)
 	return job, nil
 }
