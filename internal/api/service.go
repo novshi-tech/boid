@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -166,14 +167,16 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 
 	if s.Meta != nil {
 		if meta, ok := s.Meta.Get(req.ProjectID); ok {
-			if behavior, ok := meta.TaskBehaviors[req.Behavior]; ok {
-				if len(behavior.DefaultPayload) > 0 {
-					merged, err := orchestrator.MergeDefaultPayload(behavior.DefaultPayload.RawMessage(), payload)
-					if err != nil {
-						return nil, &StatusError{Code: http.StatusBadRequest, Message: "payload merge: " + err.Error()}
-					}
-					payload = merged
+			behavior, ok := meta.TaskBehaviors[req.Behavior]
+			if !ok {
+				return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("behavior %q not found", req.Behavior)}
+			}
+			if len(behavior.DefaultPayload) > 0 {
+				merged, err := orchestrator.MergeDefaultPayload(behavior.DefaultPayload.RawMessage(), payload)
+				if err != nil {
+					return nil, &StatusError{Code: http.StatusBadRequest, Message: "payload merge: " + err.Error()}
 				}
+				payload = merged
 			}
 		}
 	}

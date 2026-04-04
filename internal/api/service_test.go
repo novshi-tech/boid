@@ -110,6 +110,57 @@ func TestCompleteJobFailureTransitionsToAborted(t *testing.T) {
 	}
 }
 
+func TestTaskAppServiceCreateTask_BehaviorNotFound(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {Transition: "one-shot"},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "test task",
+		Behavior:  "unknown-behavior",
+	})
+	if err == nil {
+		t.Fatal("CreateTask() error = nil, want error")
+	}
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("error type = %T, want *StatusError", err)
+	}
+	if se.Code != http.StatusBadRequest {
+		t.Fatalf("error code = %d, want %d", se.Code, http.StatusBadRequest)
+	}
+	want := `behavior "unknown-behavior" not found`
+	if se.Message != want {
+		t.Fatalf("error message = %q, want %q", se.Message, want)
+	}
+}
+
+func TestTaskAppServiceCreateTask_ProjectNotInMeta_Skips(t *testing.T) {
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: nil}, // Get returns false → skip validation
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-unknown",
+		Title:     "test task",
+		Behavior:  "any-behavior",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v, want nil", err)
+	}
+	if task == nil {
+		t.Fatal("CreateTask() task = nil, want task")
+	}
+}
+
 func TestTaskAppServiceGetTaskDetail(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
