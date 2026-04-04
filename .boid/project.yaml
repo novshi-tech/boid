@@ -5,8 +5,8 @@ builtin_commands:
 
 task_behaviors:
   dev:
-    name: one-shot-dev
-    transition: one-shot
+    name: one-shot-feedback-dev
+    transition: one-shot-feedback
     worktree: true
     traits: [instructions]
     default_payload:
@@ -15,6 +15,10 @@ task_behaviors:
           type: execution
           consumer: claude-code
           message: "task.yaml の title と description に記述された内容を実装せよ"
+        rework:
+          type: rework
+          consumer: claude-code
+          message: "verification findings に記載された問題を修正してください。"
 
 kits:
   - github.com/novshi-tech/boid-kits/go-dev
@@ -22,3 +26,4 @@ kits:
   - github.com/novshi-tech/boid-kits/github-cli
   - github.com/novshi-tech/boid-kits/claude-code
   - github.com/novshi-tech/boid-kits/codex
+  - github.com/novshi-tech/boid-kits/github-pr-verification
