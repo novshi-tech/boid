@@ -7,6 +7,7 @@ task_behaviors:
   dev:
     name: one-shot-dev
     transition: one-shot
+    worktree: true
     traits: [instructions]
     default_payload:
       instructions:
