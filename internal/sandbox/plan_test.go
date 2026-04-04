@@ -553,6 +553,34 @@ func TestBuildSandboxPlan_Worktree(t *testing.T) {
 	}
 }
 
+func TestBuildSandboxPlan_Gate_WorkDirTmpfs(t *testing.T) {
+	cfg := WrapperConfig{
+		ProjectDir: "/home/user/proj",
+		BoidBinary: "/usr/local/bin/boid",
+		Role:       "gate",
+	}
+	plan := BuildSandboxPlan(cfg)
+
+	// gate must NOT bind-mount the project dir
+	for _, m := range plan.Mounts {
+		if m.Source == "/home/user/proj" {
+			t.Errorf("gate must not bind-mount project dir, but found: %+v", m)
+		}
+	}
+
+	// gate must mount an empty tmpfs at workDir
+	found := false
+	for _, m := range plan.Mounts {
+		if m.Target == "/home/user/proj" && m.Type == MountTmpfs && m.Source == "" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("gate: tmpfs mount at workDir not found")
+	}
+}
+
 func TestBuildSandboxPlan_Worktree_NoGitInNonWorktreeMode(t *testing.T) {
 	cfg := WrapperConfig{
 		ProjectDir:   "/home/user/proj",

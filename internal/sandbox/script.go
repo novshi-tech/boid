@@ -197,7 +197,7 @@ func generateGateInnerScript(cfg WrapperConfig) string {
 
 	writePathAndProxy(&b, cfg)
 
-	b.WriteString("\ncd /tmp\n\n")
+	fmt.Fprintf(&b, "\ncd %s\n\n", shellQuote(cfg.workDir()))
 
 	writeOutputTrap(&b, cfg.JobID, "/tmp/.boid/output")
 	fmt.Fprintf(&b, "printf '%%s' %s | %s > /tmp/boid-output\n", shellQuote(cfg.TaskJSON), shellQuote(filepath.Join("/opt/boid/gates", cfg.HookScript)))

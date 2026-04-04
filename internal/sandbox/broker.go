@@ -259,8 +259,13 @@ func validateBoidBuiltinCwd(cwd string, entry *tokenEntry) error {
 		return fmt.Errorf("cwd must be a directory")
 	}
 
-	if entry != nil && entry.Context.Role == "gate" && cwd == "/tmp" {
-		return nil
+	if entry != nil && entry.Context.Role == "gate" {
+		if cwd == "/tmp" {
+			return nil
+		}
+		if entry.Context.ProjectDir != "" && isWithinRoot(cwd, entry.Context.ProjectDir) {
+			return nil
+		}
 	}
 
 	if root := entryRoot(entry); root != "" && isWithinRoot(cwd, root) {

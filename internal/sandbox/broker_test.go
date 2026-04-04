@@ -405,6 +405,7 @@ func TestBroker_BoidBuiltinPolicy_GateRole(t *testing.T) {
 	}
 	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, gateCtx)
 
+	// Cwd = /tmp (legacy) must still be accepted
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
 		Cwd:     "/tmp",
@@ -416,15 +417,16 @@ func TestBroker_BoidBuiltinPolicy_GateRole(t *testing.T) {
 		},
 	})
 	if resp.ExitCode != 0 {
-		t.Fatalf("job done exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+		t.Fatalf("job done (cwd=/tmp) exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
 	}
 	if len(exec.calls) != 1 {
 		t.Fatalf("executor calls = %d, want 1", len(exec.calls))
 	}
 
+	// Cwd = projectDir must also be accepted (gate now cds to workDir tmpfs)
 	resp = broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
-		Cwd:     "/tmp",
+		Cwd:     projectDir,
 		Token:   token,
 		Boid: &sandbox.BoidRequest{
 			Op:       sandbox.BoidOpTaskCreate,
@@ -433,7 +435,7 @@ func TestBroker_BoidBuiltinPolicy_GateRole(t *testing.T) {
 		},
 	})
 	if resp.ExitCode != 0 {
-		t.Fatalf("task create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+		t.Fatalf("task create (cwd=projectDir) exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
 	}
 	if len(exec.calls) != 2 {
 		t.Fatalf("executor calls = %d, want 2", len(exec.calls))

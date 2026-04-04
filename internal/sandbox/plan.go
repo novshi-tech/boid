@@ -110,6 +110,15 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 	homeDir := cfg.homeDir()
 	if cfg.Role == "gate" {
 		homeDir = "/tmp" // gates use /tmp as home
+
+		// Mount empty tmpfs at workDir so the gate can cd there.
+		// The broker runs host commands with the Cwd received from the shim,
+		// so this allows gh and similar tools to resolve the repo from the
+		// host-side .git/config without exposing any project files inside the sandbox.
+		plan.Mounts = append(plan.Mounts, MountEntry{
+			Target: workDir,
+			Type:   MountTmpfs,
+		})
 	}
 	plan.Mounts = append(plan.Mounts, MountEntry{
 		Target: homeDir,
