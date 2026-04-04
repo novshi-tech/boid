@@ -10,7 +10,12 @@ e2e_log "registering project from $PROJECT_DIR"
 e2e_run "$E2E_BIN_DIR/boid" project add "$PROJECT_DIR"
 
 e2e_log "creating abort task"
-abort_task_output="$("$E2E_BIN_DIR/boid" task create --title "Manual Abort" --project rework-cycle --behavior feedback)"
+abort_task_output="$("$E2E_BIN_DIR/boid" task create <<'YAML'
+project_id: rework-cycle
+title: Manual Abort
+behavior: feedback
+YAML
+)"
 printf '%s\n' "$abort_task_output"
 abort_task_id="$(printf '%s\n' "$abort_task_output" | sed -n 's/^task created: \([0-9a-f-]*\) (.*/\1/p')"
 [[ -n "$abort_task_id" ]] || e2e_fail "failed to parse abort task id"
@@ -28,7 +33,12 @@ touch "$RELEASE_HOOK"
 rm -f "$RELEASE_HOOK"
 
 e2e_log "creating rework task"
-task_create_output="$("$E2E_BIN_DIR/boid" task create --title "Verification Rework" --project rework-cycle --behavior feedback)"
+task_create_output="$("$E2E_BIN_DIR/boid" task create <<'YAML'
+project_id: rework-cycle
+title: Verification Rework
+behavior: feedback
+YAML
+)"
 printf '%s\n' "$task_create_output"
 task_id="$(printf '%s\n' "$task_create_output" | sed -n 's/^task created: \([0-9a-f-]*\) (.*/\1/p')"
 [[ -n "$task_id" ]] || e2e_fail "failed to parse task id"

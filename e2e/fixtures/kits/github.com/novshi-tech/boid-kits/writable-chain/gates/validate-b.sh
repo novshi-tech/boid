@@ -3,7 +3,11 @@ set -euo pipefail
 
 sleep 1
 
-boid task create --title "Writable Chain Follow-up" --project writable-chain --behavior writable >/tmp/writable-chain-follow-up.log
+boid task create >/tmp/writable-chain-follow-up.log <<'YAML'
+project_id: writable-chain
+title: Writable Chain Follow-up
+behavior: writable
+YAML
 
 cat <<'EOF'
 {"payload_patch":{"verification":{"findings":[{"message":"gate b ok","status":"resolved"}]}}}
