@@ -32,6 +32,10 @@ func (s apiTxStore) UpdateTask(task *orchestrator.Task) error {
 	return s.tasks.UpdateTask(task)
 }
 
+func (s apiTxStore) DeleteTask(id string) error {
+	return s.tasks.DeleteTask(id)
+}
+
 func (s apiTxStore) CreateAction(action *orchestrator.Action) error {
 	return s.actions.CreateAction(action)
 }

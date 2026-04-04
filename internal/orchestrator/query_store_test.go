@@ -496,3 +496,46 @@ func TestListActionsByTask_Empty(t *testing.T) {
 		t.Fatalf("expected 0 actions, got %d", len(actions))
 	}
 }
+
+func TestDeleteTask(t *testing.T) {
+	d := createTestProject(t)
+
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task to delete", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := orchestrator.CreateAction(d.Conn, &orchestrator.Action{TaskID: task.ID, Type: "start"}); err != nil {
+		t.Fatalf("create action: %v", err)
+	}
+
+	if err := orchestrator.DeleteTask(d.Conn, task.ID); err != nil {
+		t.Fatalf("delete task: %v", err)
+	}
+
+	_, err := orchestrator.GetTask(d.Conn, task.ID)
+	if err == nil {
+		t.Fatal("expected error after delete")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected not found error, got: %v", err)
+	}
+
+	actions, err := orchestrator.ListActionsByTask(d.Conn, task.ID)
+	if err != nil {
+		t.Fatalf("list actions after delete: %v", err)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("expected 0 actions after delete, got %d", len(actions))
+	}
+}
+
+func TestDeleteTask_NotFound(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	err := orchestrator.DeleteTask(d.Conn, "nonexistent-id-that-is-long-enough")
+	if err == nil {
+		t.Fatal("expected error for nonexistent task")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected not found error, got: %v", err)
+	}
+}

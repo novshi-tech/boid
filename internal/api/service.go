@@ -212,6 +212,30 @@ func (s *TaskAppService) GetTask(id string) (*orchestrator.Task, error) {
 	return task, nil
 }
 
+func (s *TaskAppService) DeleteTask(id string, force bool) error {
+	task, err := s.Tasks.GetTask(id)
+	if err != nil {
+		return &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	if !force {
+		switch task.Status {
+		case orchestrator.TaskStatusExecuting,
+			orchestrator.TaskStatusReworking,
+			orchestrator.TaskStatusVerifying,
+			orchestrator.TaskStatusInReview,
+			orchestrator.TaskStatusCollectingFeedback:
+			return &StatusError{
+				Code:    http.StatusConflict,
+				Message: "task is active (status: " + string(task.Status) + "); use --force to delete",
+			}
+		}
+	}
+	if err := s.Tasks.DeleteTask(id); err != nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return nil
+}
+
 func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 	task, err := s.GetTask(id)
 	if err != nil {

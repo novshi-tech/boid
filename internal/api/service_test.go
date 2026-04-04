@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -199,10 +200,90 @@ func TestTaskWorkflowServiceCompleteJobFinalizesOnResolverError(t *testing.T) {
 	}
 }
 
+func TestTaskAppServiceDeleteTask(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:       "task-1",
+		Status:   orchestrator.TaskStatusDone,
+		Behavior: "dev",
+	}
+	store := &stubTaskStore{task: task}
+	svc := &TaskAppService{Tasks: store}
+
+	if err := svc.DeleteTask("task-1", false); err != nil {
+		t.Fatalf("DeleteTask() error = %v", err)
+	}
+	if !store.deleted {
+		t.Fatal("expected store.DeleteTask to be called")
+	}
+}
+
+func TestTaskAppServiceDeleteTask_ActiveStatusBlockedWithoutForce(t *testing.T) {
+	activeStatuses := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusReworking,
+		orchestrator.TaskStatusVerifying,
+		orchestrator.TaskStatusInReview,
+		orchestrator.TaskStatusCollectingFeedback,
+	}
+	for _, status := range activeStatuses {
+		task := &orchestrator.Task{
+			ID:       "task-1",
+			Status:   status,
+			Behavior: "dev",
+		}
+		store := &stubTaskStore{task: task}
+		svc := &TaskAppService{Tasks: store}
+
+		err := svc.DeleteTask("task-1", false)
+		if err == nil {
+			t.Fatalf("status %s: expected error without --force", status)
+		}
+		se, ok := err.(*StatusError)
+		if !ok || se.Code != http.StatusConflict {
+			t.Fatalf("status %s: expected StatusConflict, got %v", status, err)
+		}
+		if store.deleted {
+			t.Fatalf("status %s: store.DeleteTask should not be called", status)
+		}
+	}
+}
+
+func TestTaskAppServiceDeleteTask_ActiveStatusAllowedWithForce(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:       "task-1",
+		Status:   orchestrator.TaskStatusExecuting,
+		Behavior: "dev",
+	}
+	store := &stubTaskStore{task: task}
+	svc := &TaskAppService{Tasks: store}
+
+	if err := svc.DeleteTask("task-1", true); err != nil {
+		t.Fatalf("DeleteTask with force error = %v", err)
+	}
+	if !store.deleted {
+		t.Fatal("expected store.DeleteTask to be called with force")
+	}
+}
+
+func TestTaskAppServiceDeleteTask_NotFound(t *testing.T) {
+	store := &stubTaskStore{err: fmt.Errorf("task not found")}
+	svc := &TaskAppService{Tasks: store}
+
+	err := svc.DeleteTask("nonexistent", false)
+	if err == nil {
+		t.Fatal("expected error for nonexistent task")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusNotFound {
+		t.Fatalf("expected StatusNotFound, got %v", err)
+	}
+}
+
 type stubTaskStore struct {
 	task        *orchestrator.Task
 	err         error
 	updateCalls int
+	deleted     bool
 }
 
 func (s *stubTaskStore) CreateTask(task *orchestrator.Task) error { return nil }
@@ -222,6 +303,10 @@ func (s *stubTaskStore) UpdateTask(task *orchestrator.Task) error {
 	s.updateCalls++
 	return nil
 }
+func (s *stubTaskStore) DeleteTask(id string) error {
+	s.deleted = true
+	return nil
+}
 
 type stubTx struct {
 	updatedTask   *orchestrator.Task
@@ -239,6 +324,7 @@ func (s *stubTx) UpdateTask(task *orchestrator.Task) error {
 	s.updatedTask = task
 	return nil
 }
+func (s *stubTx) DeleteTask(id string) error { return nil }
 func (s *stubTx) CreateAction(action *orchestrator.Action) error {
 	s.createdAction = action
 	return nil

@@ -52,12 +52,20 @@ var taskGetCmd = &cobra.Command{
 	RunE:  runTaskGet,
 }
 
+var taskDeleteCmd = &cobra.Command{
+	Use:   "delete <id>",
+	Short: "Delete a task",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTaskDelete,
+}
+
 func init() {
 	taskListCmd.Flags().String("status", "", "Filter by status")
 	taskCreateCmd.Flags().StringP("file", "f", "", "YAML file to read task spec from (default: stdin)")
 	taskWatchCmd.Flags().Duration("interval", time.Second, "Polling interval")
 	taskGetCmd.Flags().String("field", "", "Field name to retrieve (required)")
-	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd)
+	taskDeleteCmd.Flags().Bool("force", false, "Delete even if task is active")
+	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd, taskDeleteCmd)
 	rootCmd.AddCommand(taskCmd)
 }
 
@@ -196,6 +204,21 @@ func runTaskWatch(cmd *cobra.Command, args []string) error {
 		}
 		time.Sleep(interval)
 	}
+}
+
+func runTaskDelete(cmd *cobra.Command, args []string) error {
+	force, _ := cmd.Flags().GetBool("force")
+	c := client.NewUnixClient(client.DefaultSocketPath())
+
+	path := "/api/tasks/" + args[0]
+	if force {
+		path += "?force=true"
+	}
+	if err := c.Do("DELETE", path, nil, nil); err != nil {
+		return fmt.Errorf("delete task: %w", err)
+	}
+	fmt.Printf("task deleted: %s\n", args[0])
+	return nil
 }
 
 func runTaskGet(cmd *cobra.Command, args []string) error {

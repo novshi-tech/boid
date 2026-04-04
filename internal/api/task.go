@@ -18,6 +18,7 @@ func (h *TaskHandler) Routes() chi.Router {
 	r.Get("/", h.List)
 	r.Get("/{id}/detail", h.Detail)
 	r.Get("/{id}", h.Get)
+	r.Delete("/{id}", h.Delete)
 	return r
 }
 
@@ -82,4 +83,14 @@ func (h *TaskHandler) Detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)
+}
+
+func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	force := r.URL.Query().Get("force") == "true"
+	if err := h.Service.DeleteTask(id, force); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

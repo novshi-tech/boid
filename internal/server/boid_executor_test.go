@@ -31,6 +31,7 @@ func (s *capturingTaskStore) ListTasks(filter orchestrator.TaskFilter) ([]*orche
 func (s *capturingTaskStore) UpdateTask(task *orchestrator.Task) error {
 	return nil
 }
+func (s *capturingTaskStore) DeleteTask(id string) error { return nil }
 
 func TestBoidBuiltinExecutor_EnforcesWorkspaceScope(t *testing.T) {
 	store := &capturingTaskStore{}
