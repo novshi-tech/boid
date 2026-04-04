@@ -87,12 +87,13 @@ func TestBoidBuiltinIntegration_RegisterAndCreateAcrossWorkspace(t *testing.T) {
 		}
 	})
 
-	resp, err := sandbox.RunBoidShim([]string{
-		"task", "create",
-		"--title", "peer workspace task",
-		"--behavior", "planning",
-		"--project", "proj-2",
-	})
+	tmpDir := t.TempDir()
+
+	spec1Path := filepath.Join(tmpDir, "task1.yaml")
+	if err := os.WriteFile(spec1Path, []byte("project_id: proj-2\ntitle: peer workspace task\nbehavior: planning\n"), 0o644); err != nil {
+		t.Fatalf("write spec1: %v", err)
+	}
+	resp, err := sandbox.RunBoidShim([]string{"task", "create", "-f", spec1Path})
 	if err != nil {
 		t.Fatalf("RunBoidShim same workspace: %v", err)
 	}
@@ -111,12 +112,11 @@ func TestBoidBuiltinIntegration_RegisterAndCreateAcrossWorkspace(t *testing.T) {
 		t.Fatalf("tasks for proj-2 = %+v, want one created task", tasks)
 	}
 
-	resp, err = sandbox.RunBoidShim([]string{
-		"task", "create",
-		"--title", "cross workspace task",
-		"--behavior", "planning",
-		"--project", "proj-3",
-	})
+	spec2Path := filepath.Join(tmpDir, "task2.yaml")
+	if err := os.WriteFile(spec2Path, []byte("project_id: proj-3\ntitle: cross workspace task\nbehavior: planning\n"), 0o644); err != nil {
+		t.Fatalf("write spec2: %v", err)
+	}
+	resp, err = sandbox.RunBoidShim([]string{"task", "create", "-f", spec2Path})
 	if err != nil {
 		t.Fatalf("RunBoidShim cross workspace: %v", err)
 	}

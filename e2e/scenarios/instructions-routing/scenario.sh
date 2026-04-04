@@ -9,12 +9,17 @@ e2e_run "$E2E_BIN_DIR/boid" project add "$PROJECT_DIR"
 # --- default_payload + request payload merge テスト ---
 # reviewer の message を request payload で上書きする
 e2e_log "creating task with payload override (reviewer message)"
-task_create_output="$(
-  "$E2E_BIN_DIR/boid" task create \
-    --title "Instructions Routing Test" \
-    --project instructions-routing \
-    --behavior impl \
-    --payload '{"instructions":{"reviewer":{"type":"verification","consumer":"agent-b","message":"review correctness (overridden)"}}}'
+task_create_output="$("$E2E_BIN_DIR/boid" task create <<'YAML'
+project_id: instructions-routing
+title: Instructions Routing Test
+behavior: impl
+payload:
+  instructions:
+    reviewer:
+      type: verification
+      consumer: agent-b
+      message: "review correctness (overridden)"
+YAML
 )"
 printf '%s\n' "$task_create_output"
 task_id="$(printf '%s\n' "$task_create_output" | sed -n 's/^task created: \([0-9a-f-]*\) (.*/\1/p')"

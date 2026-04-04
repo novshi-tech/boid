@@ -1,11 +1,14 @@
 package sandbox
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 func RunBoidShim(args []string) (*ExecResponse, error) {
@@ -100,62 +103,68 @@ func parseBoidJobDone(args []string) (*BoidRequest, error) {
 }
 
 func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
-	req := &BoidRequest{
-		Op: BoidOpTaskCreate,
-	}
-
+	filePath := ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
-		case arg == "--project" || strings.HasPrefix(arg, "--project="):
-			value, next, err := takeStringFlagValue(args, i, "--project")
+		case arg == "-f" || arg == "--file" || strings.HasPrefix(arg, "--file="):
+			flagName := "--file"
+			if arg == "-f" {
+				flagName = "-f"
+			}
+			value, next, err := takeStringFlagValue(args, i, flagName)
 			if err != nil {
 				return nil, err
 			}
 			i = next
-			req.ProjectID = value
-		case arg == "--title" || strings.HasPrefix(arg, "--title="):
-			value, next, err := takeStringFlagValue(args, i, "--title")
-			if err != nil {
-				return nil, err
-			}
-			i = next
-			req.Title = value
-		case arg == "--behavior" || strings.HasPrefix(arg, "--behavior="):
-			value, next, err := takeStringFlagValue(args, i, "--behavior")
-			if err != nil {
-				return nil, err
-			}
-			i = next
-			req.Behavior = value
-		case arg == "--description" || strings.HasPrefix(arg, "--description="):
-			value, next, err := takeStringFlagValue(args, i, "--description")
-			if err != nil {
-				return nil, err
-			}
-			i = next
-			req.Description = value
-		case arg == "--payload" || strings.HasPrefix(arg, "--payload="):
-			value, next, err := takeStringFlagValue(args, i, "--payload")
-			if err != nil {
-				return nil, err
-			}
-			i = next
-			content, err := readFlagContent(value)
-			if err != nil {
-				return nil, err
-			}
-			req.Payload = content
+			filePath = value
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task create", arg)
 		}
 	}
 
-	if req.Title == "" {
-		return nil, fmt.Errorf("boid shim: task create requires --title")
+	var data []byte
+	var err error
+	if filePath != "" {
+		data, err = os.ReadFile(filePath)
+	} else {
+		data, err = io.ReadAll(os.Stdin)
 	}
-	if req.Behavior == "" {
-		return nil, fmt.Errorf("boid shim: task create requires --behavior")
+	if err != nil {
+		return nil, fmt.Errorf("boid shim: read task spec: %w", err)
+	}
+
+	var spec struct {
+		ProjectID   string         `yaml:"project_id"`
+		Title       string         `yaml:"title"`
+		Description string         `yaml:"description"`
+		Behavior    string         `yaml:"behavior"`
+		Payload     map[string]any `yaml:"payload"`
+	}
+	if err := yaml.Unmarshal(data, &spec); err != nil {
+		return nil, fmt.Errorf("boid shim: parse task spec: %w", err)
+	}
+
+	if spec.Title == "" {
+		return nil, fmt.Errorf("boid shim: task spec must include title")
+	}
+	if spec.Behavior == "" {
+		return nil, fmt.Errorf("boid shim: task spec must include behavior")
+	}
+
+	req := &BoidRequest{
+		Op:          BoidOpTaskCreate,
+		ProjectID:   spec.ProjectID,
+		Title:       spec.Title,
+		Description: spec.Description,
+		Behavior:    spec.Behavior,
+	}
+	if spec.Payload != nil {
+		payloadJSON, err := json.Marshal(spec.Payload)
+		if err != nil {
+			return nil, fmt.Errorf("boid shim: encode payload: %w", err)
+		}
+		req.Payload = payloadJSON
 	}
 
 	return req, nil
