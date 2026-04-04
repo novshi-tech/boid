@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -95,4 +96,12 @@ type TxStore interface {
 
 type Transactor interface {
 	WithinTx(func(TxStore) error) error
+}
+
+type GCStore interface {
+	GC(olderThan time.Duration, dryRun bool) (*orchestrator.GCResult, error)
+}
+
+type GCService interface {
+	Run(olderThan time.Duration, dryRun bool) (*orchestrator.GCResult, error)
 }

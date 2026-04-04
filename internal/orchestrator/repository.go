@@ -1,6 +1,11 @@
 package orchestrator
 
-import "github.com/novshi-tech/boid/internal/db"
+import (
+	"database/sql"
+	"time"
+
+	"github.com/novshi-tech/boid/internal/db"
+)
 
 type TaskRepository struct {
 	db db.DBTX
@@ -64,4 +69,23 @@ func (r *ProjectRepository) ListWorkspaces() ([]*WorkspaceSummary, error) {
 
 func (r *ProjectRepository) DeleteProject(id string) error {
 	return DeleteProject(r.db, id)
+}
+
+// TaskGCStore handles GC of tasks and their related data.
+type TaskGCStore struct {
+	conn *sql.DB
+}
+
+func NewTaskGCStore(conn *sql.DB) *TaskGCStore {
+	return &TaskGCStore{conn: conn}
+}
+
+func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool) (*GCResult, error) {
+	var result *GCResult
+	err := db.InTxDB(s.conn, func(dbtx db.DBTX) error {
+		r, err := GCTasks(dbtx, []string{"done", "aborted"}, olderThan, dryRun)
+		result = r
+		return err
+	})
+	return result, err
 }

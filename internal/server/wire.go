@@ -179,6 +179,9 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	taskHandler := &api.TaskHandler{Service: runtime.taskSvc}
 	r.Mount("/api/tasks", taskHandler.Routes())
 
+	gcHandler := &api.GCHandler{Service: &api.GCAppService{Store: orchestrator.NewTaskGCStore(srv.db)}}
+	r.Mount("/api/gc", gcHandler.Routes())
+
 	actionHandler := &api.ActionHandler{Service: runtime.workflow}
 	r.Route("/api/tasks/{taskID}/actions", func(r chi.Router) {
 		r.Mount("/", actionHandler.Routes())

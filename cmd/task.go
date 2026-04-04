@@ -88,10 +88,11 @@ func runTaskList(cmd *cobra.Command, args []string) error {
 
 // taskCreateSpec is the YAML schema for task create input.
 type taskCreateSpec struct {
-	ProjectID string         `yaml:"project_id"`
-	Title     string         `yaml:"title"`
-	Behavior  string         `yaml:"behavior"`
-	Payload   map[string]any `yaml:"payload,omitempty"`
+	ProjectID   string         `yaml:"project_id"`
+	Title       string         `yaml:"title"`
+	Description string         `yaml:"description,omitempty"`
+	Behavior    string         `yaml:"behavior"`
+	Payload     map[string]any `yaml:"payload,omitempty"`
 }
 
 func runTaskCreate(cmd *cobra.Command, args []string) error {
@@ -127,6 +128,9 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 		"project_id": spec.ProjectID,
 		"title":      spec.Title,
 		"behavior":   spec.Behavior,
+	}
+	if spec.Description != "" {
+		req["description"] = spec.Description
 	}
 	if spec.Payload != nil {
 		payloadJSON, err := json.Marshal(spec.Payload)

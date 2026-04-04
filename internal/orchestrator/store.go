@@ -143,6 +143,102 @@ func ListActionsByTask(dbtx db.DBTX, taskID string) ([]*Action, error) {
 	return actions, rows.Err()
 }
 
+// GCResult holds the count of records affected by GC.
+type GCResult struct {
+	Tasks     int64
+	Jobs      int64
+	Actions   int64
+	Worktrees int64
+}
+
+// GCTasks deletes terminal tasks older than olderThan and their related data
+// (actions, jobs, worktrees). If dryRun is true, counts only without deleting.
+// olderThan=0 disables the time filter (all matching tasks are affected).
+// Must be called within a transaction for atomicity.
+func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bool) (*GCResult, error) {
+	if len(statuses) == 0 {
+		return &GCResult{}, nil
+	}
+
+	ph := make([]string, len(statuses))
+	for i := range statuses {
+		ph[i] = "?"
+	}
+	placeholders := strings.Join(ph, ", ")
+
+	var taskCond string
+	var condArgs []any
+	if olderThan > 0 {
+		taskCond = `status IN (` + placeholders + `) AND (strftime('%s','now') - strftime('%s',updated_at)) > ?`
+		condArgs = make([]any, len(statuses)+1)
+		for i, s := range statuses {
+			condArgs[i] = s
+		}
+		condArgs[len(statuses)] = int64(olderThan.Seconds())
+	} else {
+		taskCond = `status IN (` + placeholders + `)`
+		condArgs = make([]any, len(statuses))
+		for i, s := range statuses {
+			condArgs[i] = s
+		}
+	}
+
+	subquery := `SELECT id FROM tasks WHERE ` + taskCond
+	result := &GCResult{}
+
+	if dryRun {
+		row := dbtx.QueryRow(`SELECT COUNT(*) FROM tasks WHERE `+taskCond, condArgs...)
+		if err := row.Scan(&result.Tasks); err != nil {
+			return nil, fmt.Errorf("count tasks: %w", err)
+		}
+		for _, table := range []string{"actions", "jobs", "worktrees"} {
+			row := dbtx.QueryRow(
+				`SELECT COUNT(*) FROM `+table+` WHERE task_id IN (`+subquery+`)`,
+				condArgs...,
+			)
+			var n int64
+			if err := row.Scan(&n); err != nil {
+				return nil, fmt.Errorf("count %s: %w", table, err)
+			}
+			switch table {
+			case "actions":
+				result.Actions = n
+			case "jobs":
+				result.Jobs = n
+			case "worktrees":
+				result.Worktrees = n
+			}
+		}
+		return result, nil
+	}
+
+	for _, table := range []string{"actions", "jobs", "worktrees"} {
+		res, err := dbtx.Exec(
+			`DELETE FROM `+table+` WHERE task_id IN (`+subquery+`)`,
+			condArgs...,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("delete %s: %w", table, err)
+		}
+		n, _ := res.RowsAffected()
+		switch table {
+		case "actions":
+			result.Actions = n
+		case "jobs":
+			result.Jobs = n
+		case "worktrees":
+			result.Worktrees = n
+		}
+	}
+
+	res, err := dbtx.Exec(`DELETE FROM tasks WHERE `+taskCond, condArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("delete tasks: %w", err)
+	}
+	result.Tasks, _ = res.RowsAffected()
+	return result, nil
+}
+
 type taskScanner interface {
 	Scan(dest ...any) error
 }
