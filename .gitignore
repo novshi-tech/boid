@@ -16,4 +16,4 @@
 *.log
 
 # boid project config (for self-testing)
-.local.*
+*.local.*
