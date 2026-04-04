@@ -103,9 +103,10 @@ func TestRunBoidShim_TaskCreateSendsTypedRequest(t *testing.T) {
 		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
 	}()
 
-	payloadPath := filepath.Join(dir, "payload.json")
-	if err := os.WriteFile(payloadPath, []byte(`{"name":"alice"}`), 0o644); err != nil {
-		t.Fatalf("write payload file: %v", err)
+	specPath := filepath.Join(dir, "task.yaml")
+	specYAML := "project_id: proj-1\ntitle: hello\nbehavior: dev\ndescription: desc\npayload:\n  name: alice\n"
+	if err := os.WriteFile(specPath, []byte(specYAML), 0o644); err != nil {
+		t.Fatalf("write task spec: %v", err)
 	}
 
 	t.Setenv("BOID_BROKER_SOCKET", sockPath)
@@ -113,11 +114,7 @@ func TestRunBoidShim_TaskCreateSendsTypedRequest(t *testing.T) {
 
 	resp, err := sandbox.RunBoidShim([]string{
 		"task", "create",
-		"--title", "hello",
-		"--project", "proj-1",
-		"--behavior", "dev",
-		"--description", "desc",
-		"--payload", payloadPath,
+		"-f", specPath,
 	})
 	if err != nil {
 		t.Fatalf("RunBoidShim: %v", err)
