@@ -14,6 +14,7 @@ task_behaviors:
         main:
           type: execution
           consumer: claude-code
+          message: "task.yaml の title と description に記述された内容を実装せよ"
 
 kits:
   - github.com/novshi-tech/boid-kits/go-dev
