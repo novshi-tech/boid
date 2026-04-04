@@ -152,9 +152,50 @@ const (
 	RoleGate Role = "gate"
 )
 
+// OnValues holds one or more task status values for hook/gate matching.
+// In YAML it accepts both a scalar string ("executing") and a sequence
+// (["executing", "reworking"]).
+type OnValues []string
+
+func (o *OnValues) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		*o = OnValues{node.Value}
+	case yaml.SequenceNode:
+		var vals []string
+		if err := node.Decode(&vals); err != nil {
+			return err
+		}
+		*o = vals
+	default:
+		return fmt.Errorf("on: expected string or sequence, got %v", node.Tag)
+	}
+	return nil
+}
+
+// Contains reports whether status is listed in this set.
+func (o OnValues) Contains(status string) bool {
+	for _, v := range o {
+		if v == status {
+			return true
+		}
+	}
+	return false
+}
+
+// AllValid reports whether every value in o is present in valid.
+func (o OnValues) AllValid(valid map[string]bool) bool {
+	for _, v := range o {
+		if !valid[v] {
+			return false
+		}
+	}
+	return true
+}
+
 type Hook struct {
 	ID         string        `yaml:"id" json:"id"`
-	On         string        `yaml:"on" json:"on"`
+	On         OnValues      `yaml:"on" json:"on"`
 	Traits     HandlerTraits `yaml:"traits" json:"traits"`
 	Requires   []string      `yaml:"requires" json:"requires"`
 	Consumer   string        `yaml:"consumer,omitempty" json:"consumer,omitempty"`
@@ -164,7 +205,7 @@ type Hook struct {
 
 type Gate struct {
 	ID         string        `yaml:"id" json:"id"`
-	On         string        `yaml:"on" json:"on"`
+	On         OnValues      `yaml:"on" json:"on"`
 	Traits     HandlerTraits `yaml:"traits" json:"traits"`
 	Kit        string        `yaml:"-" json:"kit,omitempty"`
 	ScriptPath string        `yaml:"-" json:"-"`

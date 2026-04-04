@@ -9,6 +9,7 @@ import (
 var ValidHookOnValues = map[string]bool{
 	"pending":             true,
 	"executing":           true,
+	"reworking":           true,
 	"verifying":           true,
 	"in_review":           true,
 	"collecting_feedback": true,
@@ -19,6 +20,7 @@ var ValidHookOnValues = map[string]bool{
 var ValidGateOnValues = map[string]bool{
 	"pending":             true,
 	"executing":           true,
+	"reworking":           true,
 	"verifying":           true,
 	"in_review":           true,
 	"collecting_feedback": true,

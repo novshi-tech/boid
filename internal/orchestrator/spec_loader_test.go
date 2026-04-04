@@ -687,13 +687,13 @@ func TestMergeKitMeta(t *testing.T) {
 			ID:           "proj",
 			Name:         "Project",
 			HostCommands: projectspec.HostCommands{"git": {Path: "/usr/bin/git"}},
-			Hooks:        []projectspec.Hook{{ID: "proj-hook", On: "executing"}},
+			Hooks:        []projectspec.Hook{{ID: "proj-hook", On: projectspec.OnValues{"executing"}}},
 			Env:          map[string]string{"PROJECT_VAR": "pval"},
 		}
 		meta := &projectspec.KitMeta{
 			HostCommands:       projectspec.HostCommands{"go": {Path: "/usr/bin/go"}, "git": {Path: "/usr/bin/git"}},
 			AdditionalBindings: []projectspec.BindMount{{Source: "/usr/local/go"}},
-			Hooks:              []projectspec.Hook{{ID: "kit-hook", On: "verifying", ScriptPath: "/kit/hooks/kit-hook.sh"}},
+			Hooks:              []projectspec.Hook{{ID: "kit-hook", On: projectspec.OnValues{"verifying"}, ScriptPath: "/kit/hooks/kit-hook.sh"}},
 			HooksDir:           "/kit/hooks",
 			Env:                map[string]string{"GOPATH": "/home/go", "PROJECT_VAR": "kit-overridden"},
 			TaskBehaviors:      map[string]projectspec.TaskBehavior{"dev": {Name: "dev", Transition: "one-shot"}},
@@ -726,8 +726,8 @@ func TestMergeKitMeta(t *testing.T) {
 	})
 
 	t.Run("same raw hook id across kit and base both survive with qualified IDs", func(t *testing.T) {
-		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project", Hooks: []projectspec.Hook{{ID: "build", On: "executing", ScriptPath: "/proj/hooks/build.sh"}}}
-		meta := &projectspec.KitMeta{Hooks: []projectspec.Hook{{ID: "build", On: "executing", ScriptPath: "/kit/hooks/build.sh"}}, HooksDir: "/kit/hooks"}
+		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project", Hooks: []projectspec.Hook{{ID: "build", On: projectspec.OnValues{"executing"}, ScriptPath: "/proj/hooks/build.sh"}}}
+		meta := &projectspec.KitMeta{Hooks: []projectspec.Hook{{ID: "build", On: projectspec.OnValues{"executing"}, ScriptPath: "/kit/hooks/build.sh"}}, HooksDir: "/kit/hooks"}
 
 		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"mykit"})
 		if len(result.Hooks) != 2 {
@@ -820,7 +820,7 @@ func TestMergeKitMeta_KitConsumerFields(t *testing.T) {
 	t.Run("kit hook without explicit consumer inherits kit consumer name", func(t *testing.T) {
 		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
 		meta := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{{ID: "kit-hook", On: "executing", ScriptPath: "/kit/hooks/kit-hook.sh"}},
+			Hooks: []projectspec.Hook{{ID: "kit-hook", On: projectspec.OnValues{"executing"}, ScriptPath: "/kit/hooks/kit-hook.sh"}},
 		}
 
 		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"claude-code"})
@@ -839,7 +839,7 @@ func TestMergeKitMeta_KitConsumerFields(t *testing.T) {
 	t.Run("kit hook with explicit consumer retains its consumer", func(t *testing.T) {
 		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
 		meta := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{{ID: "kit-hook", On: "executing", ScriptPath: "/kit/hooks/kit-hook.sh", Consumer: "explicit-consumer"}},
+			Hooks: []projectspec.Hook{{ID: "kit-hook", On: projectspec.OnValues{"executing"}, ScriptPath: "/kit/hooks/kit-hook.sh", Consumer: "explicit-consumer"}},
 		}
 
 		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"claude-code"})
@@ -858,7 +858,7 @@ func TestMergeKitMeta_KitConsumerFields(t *testing.T) {
 	t.Run("kit gate Kit field is set to kit consumer name", func(t *testing.T) {
 		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
 		meta := &projectspec.KitMeta{
-			Gates: []projectspec.Gate{{ID: "kit-gate", On: "executing", ScriptPath: "/kit/gates/kit-gate.sh"}},
+			Gates: []projectspec.Gate{{ID: "kit-gate", On: projectspec.OnValues{"executing"}, ScriptPath: "/kit/gates/kit-gate.sh"}},
 		}
 
 		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"claude-code"})
@@ -874,7 +874,7 @@ func TestMergeKitMeta_KitConsumerFields(t *testing.T) {
 	t.Run("kit hook ID is qualified with consumer prefix", func(t *testing.T) {
 		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
 		meta := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{{ID: "run-agent", On: "executing", ScriptPath: "/kit/hooks/run-agent.sh"}},
+			Hooks: []projectspec.Hook{{ID: "run-agent", On: projectspec.OnValues{"executing"}, ScriptPath: "/kit/hooks/run-agent.sh"}},
 		}
 
 		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"claude-code"})
@@ -889,7 +889,7 @@ func TestMergeKitMeta_KitConsumerFields(t *testing.T) {
 	t.Run("kit gate ID is qualified with consumer prefix", func(t *testing.T) {
 		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
 		meta := &projectspec.KitMeta{
-			Gates: []projectspec.Gate{{ID: "check-quality", On: "verifying", ScriptPath: "/kit/gates/check-quality.sh"}},
+			Gates: []projectspec.Gate{{ID: "check-quality", On: projectspec.OnValues{"verifying"}, ScriptPath: "/kit/gates/check-quality.sh"}},
 		}
 
 		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"my-kit"})
@@ -904,10 +904,10 @@ func TestMergeKitMeta_KitConsumerFields(t *testing.T) {
 	t.Run("different kits with same hook ID both survive", func(t *testing.T) {
 		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
 		kitA := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{{ID: "run-agent", On: "executing", ScriptPath: "/a/hooks/run-agent.sh"}},
+			Hooks: []projectspec.Hook{{ID: "run-agent", On: projectspec.OnValues{"executing"}, ScriptPath: "/a/hooks/run-agent.sh"}},
 		}
 		kitB := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{{ID: "run-agent", On: "executing", ScriptPath: "/b/hooks/run-agent.sh"}},
+			Hooks: []projectspec.Hook{{ID: "run-agent", On: projectspec.OnValues{"executing"}, ScriptPath: "/b/hooks/run-agent.sh"}},
 		}
 
 		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{kitA, kitB}, []string{"claude-code", "codex"})
@@ -926,7 +926,7 @@ func TestMergeKitMeta_KitConsumerFields(t *testing.T) {
 		base := &projectspec.ProjectMeta{
 			ID:   "proj",
 			Name: "Project",
-			Hooks: []projectspec.Hook{{ID: "my-hook", On: "executing", ScriptPath: "/proj/hooks/my-hook.sh"}},
+			Hooks: []projectspec.Hook{{ID: "my-hook", On: projectspec.OnValues{"executing"}, ScriptPath: "/proj/hooks/my-hook.sh"}},
 		}
 		result := projectspec.MergeKitMeta(base, nil, nil)
 		if len(result.Hooks) != 1 {

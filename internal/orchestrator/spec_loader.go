@@ -49,8 +49,8 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	hooksDir := filepath.Join(dir, ".boid", "hooks")
 	for i := range meta.Hooks {
 		h := &meta.Hooks[i]
-		if !ValidHookOnValues[h.On] {
-			return nil, fmt.Errorf("hook %q: invalid on value %q", h.ID, h.On)
+		if len(h.On) == 0 || !h.On.AllValid(ValidHookOnValues) {
+			return nil, fmt.Errorf("hook %q: invalid on value %v", h.ID, []string(h.On))
 		}
 		scriptPath, err := ResolveHookScript(hooksDir, h.ID)
 		if err != nil {
@@ -62,8 +62,8 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	gatesDir := filepath.Join(dir, ".boid", "gates")
 	for i := range meta.Gates {
 		g := &meta.Gates[i]
-		if !ValidGateOnValues[g.On] {
-			return nil, fmt.Errorf("gate %q: invalid on value %q", g.ID, g.On)
+		if len(g.On) == 0 || !g.On.AllValid(ValidGateOnValues) {
+			return nil, fmt.Errorf("gate %q: invalid on value %v", g.ID, []string(g.On))
 		}
 		scriptPath, err := ResolveGateScript(gatesDir, g.ID)
 		if err != nil {
@@ -193,8 +193,8 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 	hooksDir := filepath.Join(dir, "hooks")
 	for i := range meta.Hooks {
 		h := &meta.Hooks[i]
-		if !ValidHookOnValues[h.On] {
-			return nil, fmt.Errorf("hook %q: invalid on value %q", h.ID, h.On)
+		if len(h.On) == 0 || !h.On.AllValid(ValidHookOnValues) {
+			return nil, fmt.Errorf("hook %q: invalid on value %v", h.ID, []string(h.On))
 		}
 		scriptPath, err := ResolveHookScript(hooksDir, h.ID)
 		if err != nil {
@@ -209,8 +209,8 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 	gatesDir := filepath.Join(dir, "gates")
 	for i := range meta.Gates {
 		g := &meta.Gates[i]
-		if !ValidGateOnValues[g.On] {
-			return nil, fmt.Errorf("gate %q: invalid on value %q", g.ID, g.On)
+		if len(g.On) == 0 || !g.On.AllValid(ValidGateOnValues) {
+			return nil, fmt.Errorf("gate %q: invalid on value %v", g.ID, []string(g.On))
 		}
 		scriptPath, err := ResolveGateScript(gatesDir, g.ID)
 		if err != nil {

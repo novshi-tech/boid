@@ -146,8 +146,8 @@ func TestCoordinator_DispatchAndAdvance_HooksSequential(t *testing.T) {
 	}
 	meta := &projectspec.ProjectMeta{
 		Hooks: []projectspec.Hook{
-			{ID: "hook-a", On: "executing"},
-			{ID: "hook-b", On: "executing"},
+			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
+			{ID: "hook-b", On: orchestrator.OnValues{"executing"}},
 		},
 	}
 	behavior := &projectspec.TaskBehavior{Readonly: false}
@@ -194,7 +194,7 @@ func TestCoordinator_DispatchAndAdvance_NoAdvanceWhenConditionNotMet(t *testing.
 	}
 	meta := &projectspec.ProjectMeta{
 		Hooks: []projectspec.Hook{
-			{ID: "hook-a", On: "executing"},
+			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
 		},
 	}
 	behavior := &projectspec.TaskBehavior{Readonly: false}
@@ -232,10 +232,10 @@ func TestCoordinator_DispatchAndAdvance_GatesExecuteAfterHooks(t *testing.T) {
 	}
 	meta := &projectspec.ProjectMeta{
 		Hooks: []projectspec.Hook{
-			{ID: "hook-a", On: "executing"},
+			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
 		},
 		Gates: []projectspec.Gate{
-			{ID: "gate-push", On: "executing"},
+			{ID: "gate-push", On: orchestrator.OnValues{"executing"}},
 		},
 	}
 	behavior := &projectspec.TaskBehavior{Readonly: false}
@@ -283,8 +283,8 @@ func TestCoordinator_DispatchAndAdvance_ExclusiveTraitCollision(t *testing.T) {
 	}
 	meta := &projectspec.ProjectMeta{
 		Hooks: []projectspec.Hook{
-			{ID: "hook-a", On: "executing"},
-			{ID: "hook-b", On: "executing"},
+			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
+			{ID: "hook-b", On: orchestrator.OnValues{"executing"}},
 		},
 	}
 	behavior := &projectspec.TaskBehavior{Readonly: false}
@@ -318,8 +318,8 @@ func TestCoordinator_DispatchAndAdvance_SharedTraitNoCollision(t *testing.T) {
 	}
 	meta := &projectspec.ProjectMeta{
 		Hooks: []projectspec.Hook{
-			{ID: "hook-a", On: "executing"},
-			{ID: "hook-b", On: "executing"},
+			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
+			{ID: "hook-b", On: orchestrator.OnValues{"executing"}},
 		},
 	}
 	behavior := &projectspec.TaskBehavior{Readonly: false}

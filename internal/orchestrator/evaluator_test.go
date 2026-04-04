@@ -18,7 +18,7 @@ func TestEvaluate_MatchingHookFires(t *testing.T) {
 	hooks := []projectspec.Hook{
 		{
 			ID:       "run-agent",
-			On:       "executing",
+			On: projectspec.OnValues{"executing"},
 			Consumer: "claude-code",
 			Traits: projectspec.HandlerTraits{
 				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
@@ -45,7 +45,7 @@ func TestEvaluate_NonMatchingStatus(t *testing.T) {
 	hooks := []projectspec.Hook{
 		{
 			ID: "run-agent",
-			On: "executing",
+			On: projectspec.OnValues{"executing"},
 			Traits: projectspec.HandlerTraits{
 				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
 			},
@@ -68,7 +68,7 @@ func TestEvaluate_MissingTrait(t *testing.T) {
 	hooks := []projectspec.Hook{
 		{
 			ID: "run-agent",
-			On: "executing",
+			On: projectspec.OnValues{"executing"},
 			Traits: projectspec.HandlerTraits{
 				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
 			},
@@ -91,7 +91,7 @@ func TestEvaluate_NoRequiredTraits(t *testing.T) {
 	hooks := []projectspec.Hook{
 		{
 			ID: "always-run",
-			On: "executing",
+			On: projectspec.OnValues{"executing"},
 		},
 	}
 
@@ -130,7 +130,7 @@ func TestEvaluate_InstructionsRouting_ConsumerMatch(t *testing.T) {
 	hooks := []projectspec.Hook{
 		{
 			ID:       "run-claude",
-			On:       "executing",
+			On: projectspec.OnValues{"executing"},
 			Consumer: "claude-code",
 			Traits: projectspec.HandlerTraits{
 				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
@@ -157,7 +157,7 @@ func TestEvaluate_InstructionsRouting_ConsumerMismatch(t *testing.T) {
 	hooks := []projectspec.Hook{
 		{
 			ID:       "run-codex",
-			On:       "executing",
+			On: projectspec.OnValues{"executing"},
 			Consumer: "codex",
 			Traits: projectspec.HandlerTraits{
 				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
@@ -181,7 +181,7 @@ func TestEvaluate_NonInstructionsHook_NotFiltered(t *testing.T) {
 	hooks := []projectspec.Hook{
 		{
 			ID: "handle-artifact",
-			On: "executing",
+			On: projectspec.OnValues{"executing"},
 			Traits: projectspec.HandlerTraits{
 				Consumes: []projectspec.TraitType{projectspec.TraitArtifact},
 			},
@@ -209,7 +209,7 @@ func TestEvaluate_InstructionsRouting_WrongStatus(t *testing.T) {
 	hooks := []projectspec.Hook{
 		{
 			ID:       "run-claude",
-			On:       "verifying",
+			On: projectspec.OnValues{"verifying"},
 			Consumer: "claude-code",
 			Traits: projectspec.HandlerTraits{
 				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
@@ -233,7 +233,7 @@ func TestEvaluateGates_MatchingGate(t *testing.T) {
 	gates := []projectspec.Gate{
 		{
 			ID: "push-pr",
-			On: "executing",
+			On: projectspec.OnValues{"executing"},
 			Traits: projectspec.HandlerTraits{
 				Consumes: []projectspec.TraitType{projectspec.TraitArtifact},
 			},
@@ -259,7 +259,7 @@ func TestEvaluateGates_NonMatchingStatus(t *testing.T) {
 	gates := []projectspec.Gate{
 		{
 			ID: "push-pr",
-			On: "executing",
+			On: projectspec.OnValues{"executing"},
 			Traits: projectspec.HandlerTraits{
 				Consumes: []projectspec.TraitType{projectspec.TraitArtifact},
 			},
@@ -269,5 +269,49 @@ func TestEvaluateGates_NonMatchingStatus(t *testing.T) {
 	matched := eval.EvaluateGates(task, gates)
 	if len(matched) != 0 {
 		t.Fatalf("expected 0 matched gates, got %d", len(matched))
+	}
+}
+
+func TestEvaluateGates_OnMultipleValues_MatchesBothStatuses(t *testing.T) {
+	eval := &orchestrator.Evaluator{}
+
+	gates := []projectspec.Gate{
+		{
+			ID: "pr-verify",
+			On: projectspec.OnValues{"executing", "reworking"},
+		},
+	}
+
+	for _, status := range []orchestrator.TaskStatus{
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusReworking,
+	} {
+		task := &orchestrator.Task{
+			Status:  status,
+			Payload: json.RawMessage(`{}`),
+		}
+		matched := eval.EvaluateGates(task, gates)
+		if len(matched) != 1 {
+			t.Errorf("status %q: expected 1 matched gate, got %d", status, len(matched))
+		}
+	}
+}
+
+func TestEvaluateGates_OnMultipleValues_NoMatchOtherStatus(t *testing.T) {
+	eval := &orchestrator.Evaluator{}
+
+	gates := []projectspec.Gate{
+		{
+			ID: "pr-verify",
+			On: projectspec.OnValues{"executing", "reworking"},
+		},
+	}
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusDone,
+		Payload: json.RawMessage(`{}`),
+	}
+	matched := eval.EvaluateGates(task, gates)
+	if len(matched) != 0 {
+		t.Errorf("expected 0 matched gates for done, got %d", len(matched))
 	}
 }
