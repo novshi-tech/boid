@@ -20,10 +20,9 @@ type Runner struct {
 	jobTokens     map[string]string // job ID -> broker token
 	waiterMu      sync.Mutex
 	jobWaiters    map[string]chan JobCompletionResult // job ID -> completion channel
+	completedJobs map[string]JobCompletionResult     // job ID -> result (guarded by waiterMu)
 	runtimeMu     sync.Mutex
 	taskRuntimes  map[string]map[string]struct{} // task ID -> runtime IDs
-	completedMu   sync.Mutex
-	completedJobs map[string]JobCompletionResult
 }
 
 func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, error) {
@@ -155,22 +154,33 @@ func (r *Runner) trackToken(jobID, token string) {
 }
 
 // WaitForJob registers a channel that will receive the job completion result.
+// If the job has already completed, the result is sent immediately.
 func (r *Runner) WaitForJob(jobID string) <-chan JobCompletionResult {
 	r.waiterMu.Lock()
 	defer r.waiterMu.Unlock()
+
+	ch := make(chan JobCompletionResult, 1)
+
+	// If already completed, deliver immediately without blocking.
+	if result, ok := r.completedJobs[jobID]; ok {
+		ch <- result
+		return ch
+	}
+
 	if r.jobWaiters == nil {
 		r.jobWaiters = make(map[string]chan JobCompletionResult)
 	}
-	ch := make(chan JobCompletionResult, 1)
 	r.jobWaiters[jobID] = ch
 	return ch
 }
 
 // CompleteJob signals the waiting dispatcher that a job has completed.
 func (r *Runner) CompleteJob(jobID string, result JobCompletionResult) {
-	r.markJobCompleted(jobID, result)
-
 	r.waiterMu.Lock()
+	if r.completedJobs == nil {
+		r.completedJobs = make(map[string]JobCompletionResult)
+	}
+	r.completedJobs[jobID] = result
 	ch, ok := r.jobWaiters[jobID]
 	if ok {
 		delete(r.jobWaiters, jobID)
@@ -276,19 +286,9 @@ func shortID(id string) string {
 	return id[:min(8, len(id))]
 }
 
-func (r *Runner) markJobCompleted(jobID string, result JobCompletionResult) {
-	r.completedMu.Lock()
-	defer r.completedMu.Unlock()
-
-	if r.completedJobs == nil {
-		r.completedJobs = make(map[string]JobCompletionResult)
-	}
-	r.completedJobs[jobID] = result
-}
-
 func (r *Runner) isJobCompleted(jobID string) bool {
-	r.completedMu.Lock()
-	defer r.completedMu.Unlock()
+	r.waiterMu.Lock()
+	defer r.waiterMu.Unlock()
 
 	_, ok := r.completedJobs[jobID]
 	return ok
