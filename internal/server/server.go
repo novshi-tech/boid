@@ -55,10 +55,12 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
-	skillsDir := filepath.Join(filepath.Dir(cfg.DBPath), "skills", "boid-sandbox")
-	if err := skills.Deploy(skillsDir); err != nil {
-		d.Close()
-		return nil, fmt.Errorf("deploy skills: %w", err)
+	if cfg.DBPath != "" && cfg.DBPath != ":memory:" {
+		skillsDir := filepath.Join(filepath.Dir(cfg.DBPath), "skills", "boid-sandbox")
+		if err := skills.Deploy(skillsDir); err != nil {
+			d.Close()
+			return nil, fmt.Errorf("deploy skills: %w", err)
+		}
 	}
 
 	conn := d.Conn
