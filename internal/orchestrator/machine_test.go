@@ -231,6 +231,104 @@ func TestStateMachine_Apply_IgnoresConditionRules(t *testing.T) {
 	}
 }
 
+func TestOneShotFeedbackMachine_NoVerification_Done(t *testing.T) {
+	sm := orchestrator.OneShotFeedbackMachine()
+
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"}}`),
+	}
+
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to done when artifact present and no verification")
+	}
+	if next.Status != orchestrator.TaskStatusDone {
+		t.Fatalf("expected done, got %s", next.Status)
+	}
+}
+
+func TestOneShotFeedbackMachine_AllFindingsResolved_Done(t *testing.T) {
+	sm := orchestrator.OneShotFeedbackMachine()
+
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{
+			"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"},
+			"verification":{
+				"github-pr-verification/pr-verify":{
+					"source_state":"executing",
+					"findings":[{"message":"GitHub Actions passed","status":"resolved"}]
+				}
+			}
+		}`),
+	}
+
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to done when all findings resolved")
+	}
+	if next.Status != orchestrator.TaskStatusDone {
+		t.Fatalf("expected done, got %s", next.Status)
+	}
+}
+
+func TestOneShotFeedbackMachine_OpenFindings_SelfLoop(t *testing.T) {
+	sm := orchestrator.OneShotFeedbackMachine()
+
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{
+			"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"},
+			"verification":{
+				"github-pr-verification/pr-verify":{
+					"source_state":"executing",
+					"findings":[{"message":"GitHub Actions failed: test","status":"open"}]
+				}
+			}
+		}`),
+	}
+
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected self-loop advance when findings open")
+	}
+	if next.Status != orchestrator.TaskStatusExecuting {
+		t.Fatalf("expected executing (self-loop), got %s", next.Status)
+	}
+}
+
+func TestOneShotFeedbackMachine_NoArtifact_NoAdvance(t *testing.T) {
+	sm := orchestrator.OneShotFeedbackMachine()
+
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{}`),
+	}
+
+	_, ok := sm.Advance(task)
+	if ok {
+		t.Fatal("expected no advance when no artifact")
+	}
+}
+
+func TestOneShotFeedbackMachine_TasksReady_Done(t *testing.T) {
+	sm := orchestrator.OneShotFeedbackMachine()
+
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{"tasks":[{"title":"subtask"}]}`),
+	}
+
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to done when tasks ready")
+	}
+	if next.Status != orchestrator.TaskStatusDone {
+		t.Fatalf("expected done, got %s", next.Status)
+	}
+}
+
 func TestFeedbackLoopMachine_AbortFromAny(t *testing.T) {
 	sm := orchestrator.FeedbackLoopMachine()
 

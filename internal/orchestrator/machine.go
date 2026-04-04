@@ -74,8 +74,9 @@ func (r *TransitionRegistry) Resolve(meta *ProjectMeta, behavior string) (*State
 func NewDefaultRegistry() *TransitionRegistry {
 	return &TransitionRegistry{
 		machines: map[string]*StateMachine{
-			"one-shot":      OneShotMachine(),
-			"feedback-loop": FeedbackLoopMachine(),
+			"one-shot":          OneShotMachine(),
+			"one-shot-feedback": OneShotFeedbackMachine(),
+			"feedback-loop":     FeedbackLoopMachine(),
 		},
 	}
 }
@@ -92,6 +93,42 @@ func OneShotMachine() *StateMachine {
 			// Condition: artifact present → auto-advance to done (for simple impl tasks)
 			{FromStatus: "executing", ToStatus: "done", Condition: func(p json.RawMessage) bool {
 				return TraitNonNull(p, "artifact")
+			}},
+			{Action: "done", FromStatus: "executing", ToStatus: "done"},
+			{Action: "job_completed", FromStatus: "executing", ToStatus: "done"},
+			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},
+			{Action: "abort", FromStatus: "*", ToStatus: "aborted"},
+		},
+	}
+}
+
+// OneShotFeedbackMachine is a one-shot variant that supports a CI modification
+// loop within the executing state.
+//
+// A gate (e.g. github-pr-verification) running in executing produces
+// verification findings with source_state="executing". When findings are
+// unresolved, the machine self-loops executing → executing, causing the
+// dispatch loop (service.runDispatchLoop, max 10 cycles) to re-run hooks
+// and gates. The agent re-runs, sees the CI failure in its payload, fixes
+// the code, commits, and the gate re-checks CI. Once all findings are
+// resolved (or no verification findings exist), the task advances to done.
+func OneShotFeedbackMachine() *StateMachine {
+	return &StateMachine{
+		Name: "one-shot-feedback",
+		Rules: []Rule{
+			{Action: "start", FromStatus: "pending", ToStatus: "executing"},
+			// Condition: tasks ready → done (for triage/plan tasks)
+			{FromStatus: "executing", ToStatus: "done", Condition: TasksReady},
+			// Condition: artifact present AND no unresolved executing-state findings → done.
+			// This covers three cases: no verification at all, no executing-state entries,
+			// and all executing-state findings resolved.
+			{FromStatus: "executing", ToStatus: "done", Condition: func(p json.RawMessage) bool {
+				return TraitNonNull(p, "artifact") && !AnyFindingUnresolvedForState("executing")(p)
+			}},
+			// Condition: artifact present AND executing-state CI findings still open →
+			// self-loop to re-run agent and gate (modification loop).
+			{FromStatus: "executing", ToStatus: "executing", Condition: func(p json.RawMessage) bool {
+				return TraitNonNull(p, "artifact") && AnyFindingUnresolvedForState("executing")(p)
 			}},
 			{Action: "done", FromStatus: "executing", ToStatus: "done"},
 			{Action: "job_completed", FromStatus: "executing", ToStatus: "done"},
