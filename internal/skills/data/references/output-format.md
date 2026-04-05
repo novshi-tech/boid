@@ -69,10 +69,16 @@ payload_patch:
 payload_patch:
   tasks:
     - title: "認証モジュール"
-      description: "OAuth2 実装"
+      behavior: dev
+      description: "OAuth2 実装。..."
     - title: "テスト追加"
-      description: "認証のユニットテスト"
+      behavior: dev
+      description: "認証のユニットテスト。..."
 ```
+
+- `title`: タスクのタイトル（必須）
+- `behavior`: タスクの実行モデル名（必須）。プロジェクトの `task_behaviors` に定義されたキーを指定する
+- `description`: このタスクを実行するエージェントへの指示。何を・どのように実装するかを詳細に記述する（必須）
 
 ## ルール
 

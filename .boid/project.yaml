@@ -20,6 +20,29 @@ task_behaviors:
           consumer: claude-code
           message: "verification findings に記載された問題を修正してください。"
 
+  plan:
+    name: Plan
+    transition: one-shot
+    traits: [instructions, tasks]
+    default_payload:
+      instructions:
+        main:
+          type: execution
+          consumer: claude-code
+          interactive: true
+          message: |
+            task.yaml の title と description に記述されたテーマについて、実装計画を対話的に策定せよ。
+            ユーザーと対話しながらタスクを分解し、確定後に ~/.boid/output/payload_patch.yaml に以下の形式で書き出すこと：
+
+            payload_patch:
+              tasks:
+                - title: "タスクのタイトル"
+                  behavior: "実行モデル名（例: dev）"
+                  description: "このタスクを実行するエージェントへの指示。何を・どのように実装するかを詳細に記述する。"
+                - title: "次のタスク"
+                  behavior: "dev"
+                  description: "..."
+
 kits:
   - github.com/novshi-tech/boid-kits/go-dev
   - github.com/novshi-tech/boid-kits/git
