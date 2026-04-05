@@ -75,6 +75,7 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 	if spec.Role == "hook" || spec.Role == "gate" || plan.Interactive {
 		spec.TTY = true
 	}
+	spec.Interactive = plan.Interactive
 
 	if r.Broker != nil {
 		allowedProjectIDs := allowedProjectIDs(plan.ProjectID, plan.WorkspaceDirs)

@@ -32,6 +32,7 @@ func (dispatcherPreparer) PrepareSandbox(spec dispatcher.SandboxSpec) (*dispatch
 		ProxyPort:          spec.ProxyPort,
 		StagingDir:         spec.StagingDir,
 		TTY:                spec.TTY,
+		Interactive:        spec.Interactive,
 		WorktreeDir:        spec.WorktreeDir,
 		Role:               spec.Role,
 		PayloadJSON:        spec.PayloadJSON,

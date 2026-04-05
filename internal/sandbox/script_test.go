@@ -569,6 +569,68 @@ func TestWriteSandboxScripts_HookRole(t *testing.T) {
 	}
 }
 
+func TestWriteSandboxScripts_HookRole_Interactive(t *testing.T) {
+	cfg := sandbox.WrapperConfig{
+		JobID:        "test-hook-interactive",
+		TaskID:       "task-hook-ia-1",
+		ProjectID:    "proj-1",
+		ProjectDir:   "/home/user/projects/proj-1",
+		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
+		HookScript:   "run-agent.sh",
+		BoidBinary:   "/usr/local/bin/boid",
+		ServerSocket: "/run/boid/server.sock",
+		BrokerSocket: "/run/boid/broker.sock",
+		BrokerToken:  "test-token-ia",
+		Role:         "hook",
+		TTY:          true,
+		Interactive:  true,
+		PayloadJSON:  `{"prompt":"do stuff"}`,
+	}
+
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-hook-interactive"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	// Interactive mode: hook is not used as a pipe sink
+	if strings.Contains(inner, "| '") && strings.Contains(inner, "run-agent.sh") {
+		// If a pipe feeds into the hook path, that's the non-interactive pattern
+		for _, line := range strings.Split(inner, "\n") {
+			if strings.Contains(line, "| '") && strings.Contains(line, "run-agent.sh") {
+				t.Errorf("interactive hook inner script must NOT pipe payload to hook stdin, got: %s", line)
+			}
+		}
+	}
+	if strings.Contains(inner, "> /tmp/boid-output") {
+		t.Error("interactive hook inner script must NOT redirect stdout to /tmp/boid-output")
+	}
+
+	// Hook should be executed directly (not via pipe)
+	if !strings.Contains(inner, "run-agent.sh") {
+		t.Error("interactive hook inner script must execute hook directly")
+	}
+
+	// Job completion trap must still be present
+	if !strings.Contains(inner, "boid job done test-hook-interactive --exit-code") {
+		t.Error("interactive hook inner script must have boid job done trap")
+	}
+}
+
 func TestWriteSandboxScripts_GateRole(t *testing.T) {
 	cfg := sandbox.WrapperConfig{
 		JobID:        "test-gate-role",

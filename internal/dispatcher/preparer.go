@@ -23,6 +23,7 @@ type SandboxSpec struct {
 	ProxyPort          int
 	StagingDir         string
 	TTY                bool
+	Interactive        bool
 	WorktreeDir        string
 	Role               string
 	PayloadJSON        string

@@ -33,6 +33,7 @@ type WrapperConfig struct {
 	ProxyPort          int               // host-side proxy port (0 = no proxy)
 	StagingDir         string            // if set, staging dir to clean up after job
 	TTY                bool              // if true, preserve TTY through pasta (for interactive commands)
+	Interactive        bool              // if true, hook runs without payload pipe/stdout redirect (PTY I/O)
 	WorktreeDir        string            // if set, worktree mode: sandbox works here; .git/.boid come from ProjectDir
 	Role               string            // "hook", "gate", or "" (legacy/command mode)
 	PayloadJSON        string            // task payload JSON for hook stdin
@@ -173,7 +174,15 @@ func generateHookInnerScript(cfg WrapperConfig) string {
 
 	outputDir := cfg.homeDir() + "/.boid/output"
 	writeOutputTrap(&b, cfg.JobID, outputDir)
-	fmt.Fprintf(&b, "printf '%%s' %s | %s > /tmp/boid-output\n", shellQuote(cfg.PayloadJSON), shellQuote(hookPath))
+
+	if cfg.Interactive {
+		// Interactive mode: stdin/stdout stay connected to the PTY so the hook (e.g. Claude Code)
+		// can run as a full TUI. Payload is available in context/payload.yaml.
+		// Do NOT use "exec" here so that bash's EXIT trap fires when the hook exits.
+		fmt.Fprintf(&b, "%s\n", shellQuote(hookPath))
+	} else {
+		fmt.Fprintf(&b, "printf '%%s' %s | %s > /tmp/boid-output\n", shellQuote(cfg.PayloadJSON), shellQuote(hookPath))
+	}
 
 	return b.String()
 }
