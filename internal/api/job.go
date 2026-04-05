@@ -9,6 +9,7 @@ import (
 
 type JobHandler struct {
 	Jobs    JobStore
+	Global  GlobalJobStore // optional: enables cross-task listing when task_id is absent
 	Service WorkflowService
 }
 
@@ -23,7 +24,7 @@ func (h *JobHandler) Routes() chi.Router {
 func (h *JobHandler) List(w http.ResponseWriter, r *http.Request) {
 	taskID := r.URL.Query().Get("task_id")
 	if taskID == "" {
-		writeError(w, http.StatusBadRequest, "task_id query parameter required")
+		h.listGlobal(w, r)
 		return
 	}
 	jobs, err := h.Jobs.ListJobsByTask(taskID)
@@ -33,6 +34,32 @@ func (h *JobHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	if jobs == nil {
 		jobs = []*Job{}
+	}
+	writeJSON(w, http.StatusOK, jobs)
+}
+
+func (h *JobHandler) listGlobal(w http.ResponseWriter, r *http.Request) {
+	if h.Global == nil {
+		writeError(w, http.StatusBadRequest, "task_id query parameter required")
+		return
+	}
+	filter := JobListFilter{
+		Status: r.URL.Query().Get("status"),
+	}
+	if v := r.URL.Query().Get("interactive"); v == "true" {
+		t := true
+		filter.Interactive = &t
+	} else if v == "false" {
+		f := false
+		filter.Interactive = &f
+	}
+	jobs, err := h.Global.ListJobsWithContext(filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if jobs == nil {
+		jobs = []JobWithContext{}
 	}
 	writeJSON(w, http.StatusOK, jobs)
 }

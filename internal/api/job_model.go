@@ -30,3 +30,16 @@ type JobCompletion struct {
 	Output   string
 	ExitCode int
 }
+
+// JobWithContext extends Job with task and project metadata for the TUI global view.
+type JobWithContext struct {
+	Job
+	TaskTitle   string `json:"task_title"`
+	ProjectName string `json:"project_name"`
+}
+
+// JobListFilter specifies optional filters for global job listing.
+type JobListFilter struct {
+	Status      string
+	Interactive *bool // nil = no filter
+}

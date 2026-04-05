@@ -90,6 +90,11 @@ type JobStore interface {
 	UpdateJob(job *Job) error
 }
 
+// GlobalJobStore supports cross-task job listing with context (task title, project name).
+type GlobalJobStore interface {
+	ListJobsWithContext(filter JobListFilter) ([]JobWithContext, error)
+}
+
 type TxStore interface {
 	TaskStore
 	ActionStore

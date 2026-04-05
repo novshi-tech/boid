@@ -2,6 +2,7 @@ package server
 
 import (
 	"database/sql"
+	"path/filepath"
 	"sort"
 
 	"github.com/novshi-tech/boid/internal/api"
@@ -242,6 +243,36 @@ func (a jobStoreAdapter) ListJobsByTask(taskID string) ([]*api.Job, error) {
 
 func (a jobStoreAdapter) UpdateJob(job *api.Job) error {
 	return a.repo.UpdateJob(toDispatcherJob(job))
+}
+
+// globalJobStore implements api.GlobalJobStore for cross-task job listing with context.
+type globalJobStore struct {
+	jobs     *dispatcher.JobRepository
+	tasks    *orchestrator.TaskRepository
+	projects *orchestrator.ProjectRepository
+}
+
+func (s *globalJobStore) ListJobsWithContext(filter api.JobListFilter) ([]api.JobWithContext, error) {
+	jobs, err := s.jobs.ListJobsFiltered(dispatcher.JobFilter{
+		Status:      filter.Status,
+		Interactive: filter.Interactive,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]api.JobWithContext, 0, len(jobs))
+	for _, job := range jobs {
+		jwc := api.JobWithContext{Job: *toAPIJob(job)}
+		if task, err := s.tasks.GetTask(job.TaskID); err == nil {
+			jwc.TaskTitle = task.Title
+		}
+		if project, err := s.projects.GetProject(job.ProjectID); err == nil {
+			jwc.ProjectName = filepath.Base(project.WorkDir)
+		}
+		result = append(result, jwc)
+	}
+	return result, nil
 }
 
 type jobLifecycleAdapter struct {

@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -88,6 +89,56 @@ func ListJobsByTask(dbtx db.DBTX, taskID string) ([]*Job, error) {
 	rows, err := dbtx.Query(selectSQL, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []*Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+// JobFilter specifies optional filters for listing jobs globally.
+type JobFilter struct {
+	Status      string
+	Interactive *bool // nil = no filter
+}
+
+// ListJobsFiltered returns jobs across all tasks matching the given filter.
+func ListJobsFiltered(dbtx db.DBTX, filter JobFilter) ([]*Job, error) {
+	cols, err := inspectJobColumns(dbtx)
+	if err != nil {
+		return nil, fmt.Errorf("inspect jobs columns: %w", err)
+	}
+
+	var conditions []string
+	var args []any
+	if filter.Status != "" {
+		conditions = append(conditions, "status = ?")
+		args = append(args, filter.Status)
+	}
+	if filter.Interactive != nil && cols.hasInteractive {
+		conditions = append(conditions, "interactive = ?")
+		args = append(args, boolToInt(*filter.Interactive))
+	}
+
+	suffix := "ORDER BY created_at"
+	if len(conditions) > 0 {
+		suffix = "WHERE " + strings.Join(conditions, " AND ") + " ORDER BY created_at"
+	}
+
+	selectSQL, err := jobSelectSQL(dbtx, suffix)
+	if err != nil {
+		return nil, fmt.Errorf("build list jobs filtered query: %w", err)
+	}
+	rows, err := dbtx.Query(selectSQL, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list jobs filtered: %w", err)
 	}
 	defer rows.Close()
 

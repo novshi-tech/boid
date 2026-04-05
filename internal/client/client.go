@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/novshi-tech/boid/internal/api"
 )
 
 type Client struct {
@@ -89,6 +91,35 @@ func (c *Client) Do(method, path string, body any, result any) error {
 		}
 	}
 	return nil
+}
+
+// ListJobs - フィルタ付きで全プロジェクト横断のジョブ一覧を取得
+func (c *Client) ListJobs(filter api.JobListFilter) ([]api.JobWithContext, error) {
+	path := "/api/jobs"
+	var params []byte
+	if filter.Status != "" {
+		params = append(params, ("status=" + filter.Status)...)
+	}
+	if filter.Interactive != nil {
+		sep := ""
+		if len(params) > 0 {
+			sep = "&"
+		}
+		if *filter.Interactive {
+			params = append(params, (sep + "interactive=true")...)
+		} else {
+			params = append(params, (sep + "interactive=false")...)
+		}
+	}
+	if len(params) > 0 {
+		path += "?" + string(params)
+	}
+
+	var jobs []api.JobWithContext
+	if err := c.Do("GET", path, nil, &jobs); err != nil {
+		return nil, err
+	}
+	return jobs, nil
 }
 
 func (c *Client) AttachJob(jobID string, stdin io.Reader, stdout io.Writer) error {

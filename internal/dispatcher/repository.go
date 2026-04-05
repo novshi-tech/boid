@@ -22,6 +22,10 @@ func (r *JobRepository) ListJobsByTask(taskID string) ([]*Job, error) {
 	return ListJobsByTask(r.db, taskID)
 }
 
+func (r *JobRepository) ListJobsFiltered(filter JobFilter) ([]*Job, error) {
+	return ListJobsFiltered(r.db, filter)
+}
+
 func (r *JobRepository) UpdateJob(job *Job) error {
 	return UpdateJob(r.db, job)
 }
