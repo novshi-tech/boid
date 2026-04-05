@@ -511,6 +511,68 @@ func TestPlanHook_PayloadJSON_EmptyConsumes(t *testing.T) {
 	}
 }
 
+func TestPlanHook_InstructionsJSON_ReworkingStatus(t *testing.T) {
+	payload := json.RawMessage(`{
+		"instructions": {
+			"main":   {"type":"execution","consumer":"claude-code","message":"implement the feature"},
+			"rework": {"type":"rework","consumer":"claude-code","message":"CI \u5931\u6557\u3092\u4fee\u6b63\u3057\u3066\u304f\u3060\u3055\u3044"}
+		}
+	}`)
+	meta := &ProjectMeta{
+		ID: "proj-1",
+	}
+	proj := &Project{ID: "proj-1", WorkDir: t.TempDir()}
+	task := &Task{
+		ID:        "task-rework-1",
+		ProjectID: "proj-1",
+		Behavior:  "dev",
+		Status:    TaskStatusReworking,
+		Payload:   payload,
+	}
+
+	planner := &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj}},
+		Tasks:    stubTaskLookup{task: task},
+	}
+
+	req, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-rework-1",
+		TaskID:    task.ID,
+		ProjectID: proj.ID,
+		Hook: Hook{
+			ID:         "hook-1",
+			ScriptPath: filepath.Join(proj.WorkDir, ".boid", "hooks", "hook-1.sh"),
+			Consumer:   "claude-code",
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+
+	if req.InstructionsJSON == "" {
+		t.Fatal("expected InstructionsJSON to be set for reworking state")
+	}
+
+	var instructions []RoutedInstruction
+	if err := json.Unmarshal([]byte(req.InstructionsJSON), &instructions); err != nil {
+		t.Fatalf("unmarshal InstructionsJSON: %v", err)
+	}
+	// reworking \u72b6\u614b\u3067\u306f rework \u578b instruction \u306e\u307f\u304c\u30eb\u30fc\u30c6\u30a3\u30f3\u30b0\u3055\u308c\u308b
+	if len(instructions) != 1 {
+		t.Fatalf("expected 1 instruction (rework type only), got %d", len(instructions))
+	}
+	if instructions[0].Role != "rework" {
+		t.Errorf("expected role=rework, got %q", instructions[0].Role)
+	}
+	if instructions[0].Type != InstructionTypeRework {
+		t.Errorf("expected type=rework, got %q", instructions[0].Type)
+	}
+	if instructions[0].Consumer != "claude-code" {
+		t.Errorf("expected consumer=claude-code, got %q", instructions[0].Consumer)
+	}
+}
+
 func TestPlanHook_Interactive_PropagatedToDispatchRequest(t *testing.T) {
 	payload := json.RawMessage(`{
 		"instructions":{

@@ -108,6 +108,7 @@ func TestInstructionTypeForStatus(t *testing.T) {
 	}{
 		{orchestrator.TaskStatusExecuting, orchestrator.InstructionTypeExecution},
 		{orchestrator.TaskStatusCollectingFeedback, orchestrator.InstructionTypeExecution},
+		{orchestrator.TaskStatusReworking, orchestrator.InstructionTypeRework},
 		{orchestrator.TaskStatusVerifying, orchestrator.InstructionTypeVerification},
 		{orchestrator.TaskStatusInReview, orchestrator.InstructionTypeVerification},
 		{orchestrator.TaskStatusPending, orchestrator.InstructionType("")},
@@ -220,6 +221,58 @@ func TestEvaluate_InstructionsRouting_WrongStatus(t *testing.T) {
 	matched := eval.Evaluate(task, hooks)
 	if len(matched) != 0 {
 		t.Fatalf("expected 0 matched hooks (wrong instruction type), got %d", len(matched))
+	}
+}
+
+func TestEvaluate_ReworkingHook_MatchesWithReworkInstruction(t *testing.T) {
+	eval := &orchestrator.Evaluator{}
+
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusReworking,
+		Payload: json.RawMessage(`{"instructions":{"rework":{"type":"rework","consumer":"claude-code","message":"CI \u5931\u6557\u3092\u4fee\u6b63\u3057\u3066\u304f\u3060\u3055\u3044"}}}`),
+	}
+	hooks := []projectspec.Hook{
+		{
+			ID:       "run-agent",
+			On:       projectspec.OnValues{"reworking"},
+			Consumer: "claude-code",
+			Traits: projectspec.HandlerTraits{
+				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
+			},
+		},
+	}
+
+	matched := eval.Evaluate(task, hooks)
+	if len(matched) != 1 {
+		t.Fatalf("expected 1 matched hook for reworking state, got %d", len(matched))
+	}
+	if matched[0].ID != "run-agent" {
+		t.Fatalf("expected hook id run-agent, got %s", matched[0].ID)
+	}
+}
+
+func TestEvaluate_ReworkingHook_DoesNotMatchExecutionInstruction(t *testing.T) {
+	eval := &orchestrator.Evaluator{}
+
+	// reworking 状態では execution 型 instruction はマッチしない
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusReworking,
+		Payload: json.RawMessage(`{"instructions":{"main":{"type":"execution","consumer":"claude-code","message":"implement"}}}`),
+	}
+	hooks := []projectspec.Hook{
+		{
+			ID:       "run-agent",
+			On:       projectspec.OnValues{"reworking"},
+			Consumer: "claude-code",
+			Traits: projectspec.HandlerTraits{
+				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
+			},
+		},
+	}
+
+	matched := eval.Evaluate(task, hooks)
+	if len(matched) != 0 {
+		t.Fatalf("expected 0 matched hooks (execution instruction should not match reworking), got %d", len(matched))
 	}
 }
 
