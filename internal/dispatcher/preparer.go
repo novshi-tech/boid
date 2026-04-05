@@ -1,5 +1,11 @@
 package dispatcher
 
+// HookFile describes a single hook file to bind-mount into the sandbox.
+type HookFile struct {
+	Source     string // host-side absolute path
+	TargetName string // filename inside sandbox .boid/hooks/
+}
+
 // SandboxSpec is the dispatcher-owned execution spec required to prepare a sandbox launch.
 type SandboxSpec struct {
 	JobID              string
@@ -7,7 +13,7 @@ type SandboxSpec struct {
 	ProjectID          string
 	ProjectDir         string
 	HomeDir            string
-	HooksDir           string
+	HookFiles          []HookFile
 	GatesDir           string
 	HookScript         string
 	Command            string

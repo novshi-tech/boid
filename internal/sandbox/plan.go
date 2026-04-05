@@ -41,6 +41,12 @@ type SymlinkEntry struct {
 	LinkPath   string // absolute path inside sandbox
 }
 
+// HookFile describes a single hook file to bind-mount into the sandbox.
+type HookFile struct {
+	Source     string // host-side absolute path
+	TargetName string // filename inside sandbox .boid/hooks/
+}
+
 // SandboxPlan is a declarative description of the sandbox environment.
 // BuildSandboxPlan decides what to mount; RenderSetupScript generates shell.
 type SandboxPlan struct {
@@ -161,19 +167,30 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 			ReadOnly: true,
 			Guard:    dirGuard(boidSource),
 		}
-		if cfg.Command == "" && cfg.HooksDir != "" {
+		if cfg.Command == "" && len(cfg.HookFiles) > 0 {
 			boidMount.NeedsDirs = []string{"hooks"}
 		}
 		plan.Mounts = append(plan.Mounts, boidMount)
 
-		if cfg.Command == "" && cfg.HooksDir != "" {
+		if cfg.Command == "" && len(cfg.HookFiles) > 0 {
+			hooksTarget := workDir + "/.boid/hooks"
+			// Mount tmpfs at .boid/hooks to allow individual file bind-mounts
 			plan.Mounts = append(plan.Mounts, MountEntry{
-				Source:   cfg.HooksDir,
-				Target:   workDir + "/.boid/hooks",
-				Type:     MountBind,
-				ReadOnly: true,
-				Guard:    dirGuard(boidSource),
+				Target: hooksTarget,
+				Type:   MountTmpfs,
+				Guard:  dirGuard(boidSource),
 			})
+			// Bind-mount each hook file individually (read-only)
+			for _, hf := range cfg.HookFiles {
+				plan.Mounts = append(plan.Mounts, MountEntry{
+					Source:   hf.Source,
+					Target:   hooksTarget + "/" + hf.TargetName,
+					Type:     MountBind,
+					ReadOnly: true,
+					IsFile:   true,
+					Guard:    dirGuard(boidSource),
+				})
+			}
 		}
 
 		// Worktree mode: re-mount .git inside sandbox for git worktree reference

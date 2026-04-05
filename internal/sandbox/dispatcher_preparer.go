@@ -16,7 +16,7 @@ func (dispatcherPreparer) PrepareSandbox(spec dispatcher.SandboxSpec) (*dispatch
 		ProjectID:          spec.ProjectID,
 		ProjectDir:         spec.ProjectDir,
 		HomeDir:            spec.HomeDir,
-		HooksDir:           spec.HooksDir,
+		HookFiles:          toSandboxHookFiles(spec.HookFiles),
 		GatesDir:           spec.GatesDir,
 		HookScript:         spec.HookScript,
 		Command:            spec.Command,
@@ -46,6 +46,17 @@ func (dispatcherPreparer) PrepareSandbox(spec dispatcher.SandboxSpec) (*dispatch
 		return nil, err
 	}
 	return &dispatcher.PreparedSandbox{OuterPath: outerPath}, nil
+}
+
+func toSandboxHookFiles(files []dispatcher.HookFile) []HookFile {
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]HookFile, len(files))
+	for i, f := range files {
+		out[i] = HookFile{Source: f.Source, TargetName: f.TargetName}
+	}
+	return out
 }
 
 func toSandboxBindMounts(bindings []dispatcher.BindMount) []BindMount {

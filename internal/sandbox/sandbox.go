@@ -11,7 +11,6 @@ type Sandbox interface {
 type SandboxConfig struct {
 	ProjectDir      string
 	WorkspaceDirs   map[string]string // project-id -> dir (readonly mounts)
-	HooksDir        string
 	TaskFile        string
 	BuiltinCommands []string
 	HostCommands    []string

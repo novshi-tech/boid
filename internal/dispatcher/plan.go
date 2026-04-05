@@ -28,7 +28,7 @@ type DispatchPlan struct {
 	Role               string
 	ProjectDir         string
 	HomeDir            string
-	HooksDir           string
+	HookFiles          []HookFile
 	GatesDir           string
 	HookScript         string
 	BoidBinary         string

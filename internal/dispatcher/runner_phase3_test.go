@@ -75,7 +75,7 @@ func TestRunnerDispatch_UsesDispatcherOwnedSandboxPreparer(t *testing.T) {
 		Role:         "hook",
 		ProjectDir:   projectDir,
 		HomeDir:      "/home/tester",
-		HooksDir:     projectDir + "/.boid/hooks",
+		HookFiles:    []dispatcher.HookFile{{Source: projectDir + "/.boid/hooks/hook-a.sh", TargetName: "hook-a.sh"}},
 		HookScript:   "hook-a.sh",
 		BoidBinary:   "/bin/true",
 		ServerSocket: "/tmp/boid.sock",
@@ -122,8 +122,8 @@ func TestRunnerDispatch_UsesDispatcherOwnedSandboxPreparer(t *testing.T) {
 	if got.HomeDir != "/home/tester" {
 		t.Fatalf("sandbox spec home dir = %q", got.HomeDir)
 	}
-	if got.HooksDir != projectDir+"/.boid/hooks" {
-		t.Fatalf("sandbox spec hooks dir = %q", got.HooksDir)
+	if len(got.HookFiles) != 1 || got.HookFiles[0].Source != projectDir+"/.boid/hooks/hook-a.sh" || got.HookFiles[0].TargetName != "hook-a.sh" {
+		t.Fatalf("sandbox spec hook files = %#v", got.HookFiles)
 	}
 	if got.HookScript != "hook-a.sh" {
 		t.Fatalf("sandbox spec hook script = %q", got.HookScript)

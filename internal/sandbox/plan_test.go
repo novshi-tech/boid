@@ -153,8 +153,11 @@ func TestBuildSandboxPlan_ProjectRemount(t *testing.T) {
 
 func TestBuildSandboxPlan_BoidDir_HookMode(t *testing.T) {
 	cfg := WrapperConfig{
-		ProjectDir:   "/home/user/proj",
-		HooksDir:     "/tmp/staged-hooks",
+		ProjectDir: "/home/user/proj",
+		HookFiles: []HookFile{
+			{Source: "/kits/claude-code/hooks/run.sh", TargetName: "claude-code--run.sh"},
+			{Source: "/home/user/proj/.boid/hooks/local.sh", TargetName: "local.sh"},
+		},
 		HookScript:   "run.sh",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
@@ -165,13 +168,21 @@ func TestBuildSandboxPlan_BoidDir_HookMode(t *testing.T) {
 	hooksDir := "/home/user/proj/.boid/hooks"
 
 	var boidMount *MountEntry
-	var hooksMount *MountEntry
+	var hooksTmpfs *MountEntry
+	var fileMount1, fileMount2 *MountEntry
 	for i := range plan.Mounts {
-		if plan.Mounts[i].Target == boidDir && plan.Mounts[i].Type == MountBind {
-			boidMount = &plan.Mounts[i]
+		m := &plan.Mounts[i]
+		if m.Target == boidDir && m.Type == MountBind {
+			boidMount = m
 		}
-		if plan.Mounts[i].Target == hooksDir && plan.Mounts[i].Type == MountBind {
-			hooksMount = &plan.Mounts[i]
+		if m.Target == hooksDir && m.Type == MountTmpfs {
+			hooksTmpfs = m
+		}
+		if m.Target == hooksDir+"/claude-code--run.sh" {
+			fileMount1 = m
+		}
+		if m.Target == hooksDir+"/local.sh" {
+			fileMount2 = m
 		}
 	}
 
@@ -188,17 +199,34 @@ func TestBuildSandboxPlan_BoidDir_HookMode(t *testing.T) {
 		t.Errorf(".boid mount NeedsDirs: got %v, want [hooks]", boidMount.NeedsDirs)
 	}
 
-	if hooksMount == nil {
-		t.Fatal("hooks mount not found")
+	if hooksTmpfs == nil {
+		t.Fatal("hooks tmpfs mount not found")
 	}
-	if hooksMount.Source != "/tmp/staged-hooks" {
-		t.Errorf("hooks mount source: got %q, want /tmp/staged-hooks", hooksMount.Source)
+	if hooksTmpfs.Guard == "" {
+		t.Error("hooks tmpfs mount should have Guard")
 	}
-	if !hooksMount.ReadOnly {
-		t.Error("hooks mount should be ReadOnly")
+
+	if fileMount1 == nil {
+		t.Fatal("claude-code--run.sh file mount not found")
 	}
-	if hooksMount.Guard == "" {
-		t.Error("hooks mount should have Guard")
+	if fileMount1.Source != "/kits/claude-code/hooks/run.sh" {
+		t.Errorf("file mount source: got %q", fileMount1.Source)
+	}
+	if !fileMount1.ReadOnly {
+		t.Error("file mount should be ReadOnly")
+	}
+	if !fileMount1.IsFile {
+		t.Error("file mount should be IsFile")
+	}
+	if fileMount1.Guard == "" {
+		t.Error("file mount should have Guard")
+	}
+
+	if fileMount2 == nil {
+		t.Fatal("local.sh file mount not found")
+	}
+	if fileMount2.Source != "/home/user/proj/.boid/hooks/local.sh" {
+		t.Errorf("file mount source: got %q", fileMount2.Source)
 	}
 }
 
@@ -439,7 +467,6 @@ func TestBuildSandboxPlan_NoBroker(t *testing.T) {
 func TestBuildSandboxPlan_CleanupPaths(t *testing.T) {
 	cfg := WrapperConfig{
 		ProjectDir:   "/home/user/proj",
-		HooksDir:     "/home/user/proj/.boid/hooks",
 		HookScript:   "run.sh",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
@@ -469,9 +496,11 @@ func TestBuildSandboxPlan_CleanupPaths_CommandMode(t *testing.T) {
 
 func TestBuildSandboxPlan_Worktree(t *testing.T) {
 	cfg := WrapperConfig{
-		ProjectDir:   "/home/user/proj",
-		HomeDir:      "/home/user",
-		HooksDir:     "/tmp/staged-hooks",
+		ProjectDir: "/home/user/proj",
+		HomeDir:    "/home/user",
+		HookFiles: []HookFile{
+			{Source: "/kits/claude-code/hooks/run.sh", TargetName: "claude-code--run.sh"},
+		},
 		HookScript:   "run.sh",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
@@ -525,16 +554,23 @@ func TestBuildSandboxPlan_Worktree(t *testing.T) {
 		t.Errorf(".boid mount not found: want source=%s target=%s ro", boidSource, boidTarget)
 	}
 
-	// Hooks should be mounted at worktree/.boid/hooks
+	// Hooks tmpfs should be at worktree/.boid/hooks
 	hooksTarget := wt + "/.boid/hooks"
-	foundHooks := false
+	foundHooksTmpfs := false
+	foundHookFile := false
 	for _, m := range plan.Mounts {
-		if m.Source == "/tmp/staged-hooks" && m.Target == hooksTarget && m.ReadOnly {
-			foundHooks = true
+		if m.Target == hooksTarget && m.Type == MountTmpfs {
+			foundHooksTmpfs = true
+		}
+		if m.Source == "/kits/claude-code/hooks/run.sh" && m.Target == hooksTarget+"/claude-code--run.sh" && m.IsFile && m.ReadOnly {
+			foundHookFile = true
 		}
 	}
-	if !foundHooks {
-		t.Errorf("hooks mount not found: want target=%s", hooksTarget)
+	if !foundHooksTmpfs {
+		t.Errorf("hooks tmpfs not found at %s", hooksTarget)
+	}
+	if !foundHookFile {
+		t.Errorf("hook file mount not found at %s/claude-code--run.sh", hooksTarget)
 	}
 
 	// .git mount should come AFTER HOME tmpfs

@@ -11,10 +11,12 @@ import (
 
 func TestWriteSandboxScripts(t *testing.T) {
 	cfg := sandbox.WrapperConfig{
-		JobID:           "test-job-001",
-		ProjectID:       "proj-1",
-		ProjectDir:      "/home/user/projects/proj-1",
-		HooksDir:        "/home/user/projects/proj-1/.boid/hooks",
+		JobID:      "test-job-001",
+		ProjectID:  "proj-1",
+		ProjectDir: "/home/user/projects/proj-1",
+		HookFiles: []sandbox.HookFile{
+			{Source: "/kits/claude-code/hooks/run-agent.sh", TargetName: "claude-code--run-agent.sh"},
+		},
 		HookScript:      "run-agent.sh",
 		BoidBinary:      "/usr/local/bin/boid",
 		ServerSocket:    "/run/boid/server.sock",
@@ -76,11 +78,16 @@ func TestWriteSandboxScripts(t *testing.T) {
 	if !strings.Contains(setup, fmt.Sprintf("mount -o remount,bind,ro \"$ROOT%s/.boid\"", cfg.ProjectDir)) {
 		t.Error("setup script missing .boid read-only remount")
 	}
-	if !strings.Contains(setup, fmt.Sprintf("mount --bind %s \"$ROOT%s/.boid/hooks\"", cfg.HooksDir, cfg.ProjectDir)) {
-		t.Error("setup script missing hooks overlay bind mount")
+	hooksDir := cfg.ProjectDir + "/.boid/hooks"
+	if !strings.Contains(setup, fmt.Sprintf("mount -t tmpfs tmpfs \"$ROOT%s\"", hooksDir)) {
+		t.Error("setup script missing hooks tmpfs mount")
 	}
-	if !strings.Contains(setup, fmt.Sprintf("mount -o remount,bind,ro \"$ROOT%s/.boid/hooks\"", cfg.ProjectDir)) {
-		t.Error("setup script missing hooks overlay read-only remount")
+	hookFile := cfg.HookFiles[0]
+	if !strings.Contains(setup, fmt.Sprintf("mount --bind %s \"$ROOT%s/%s\"", hookFile.Source, hooksDir, hookFile.TargetName)) {
+		t.Error("setup script missing individual hook file bind mount")
+	}
+	if !strings.Contains(setup, fmt.Sprintf("mount -o remount,bind,ro \"$ROOT%s/%s\"", hooksDir, hookFile.TargetName)) {
+		t.Error("setup script missing hook file read-only remount")
 	}
 	if !strings.Contains(setup, `ln -sf boid "$ROOT/opt/boid/bin/git"`) {
 		t.Error("setup script missing git shim symlink")
@@ -209,7 +216,6 @@ func TestWriteSandboxScripts_Proxy(t *testing.T) {
 		JobID:        "test-job-proxy",
 		ProjectID:    "proj-1",
 		ProjectDir:   "/home/user/projects/proj-1",
-		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
 		HookScript:   "run-agent.sh",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
@@ -269,7 +275,6 @@ func TestWriteSandboxScripts_NoProxy(t *testing.T) {
 		JobID:        "test-job-noproxy",
 		ProjectID:    "proj-1",
 		ProjectDir:   "/home/user/projects/proj-1",
-		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
 		HookScript:   "run-agent.sh",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
@@ -312,7 +317,6 @@ func TestWriteSandboxScripts_WorkspaceDirs(t *testing.T) {
 		JobID:        "test-job-ws",
 		ProjectID:    "proj-1",
 		ProjectDir:   "/home/user/projects/proj-1",
-		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
 		HookScript:   "run-agent.sh",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
@@ -361,7 +365,6 @@ func TestWriteSandboxScripts_AdditionalBindings(t *testing.T) {
 		JobID:        "test-job-bind",
 		ProjectID:    "proj-1",
 		ProjectDir:   "/home/user/projects/proj-1",
-		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
 		HookScript:   "run-build.sh",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
@@ -504,7 +507,6 @@ func TestWriteSandboxScripts_HookRole(t *testing.T) {
 		TaskID:       "task-hook-1",
 		ProjectID:    "proj-1",
 		ProjectDir:   "/home/user/projects/proj-1",
-		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
 		HookScript:   "run-agent.sh",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
@@ -575,7 +577,6 @@ func TestWriteSandboxScripts_HookRole_Interactive(t *testing.T) {
 		TaskID:       "task-hook-ia-1",
 		ProjectID:    "proj-1",
 		ProjectDir:   "/home/user/projects/proj-1",
-		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
 		HookScript:   "run-agent.sh",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
@@ -706,7 +707,6 @@ func TestWriteSandboxScripts_ReadonlyHook(t *testing.T) {
 	cfg := sandbox.WrapperConfig{
 		JobID:        "test-ro-hook",
 		ProjectDir:   "/home/user/projects/proj-1",
-		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
 		HookScript:   "review.sh",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
@@ -748,7 +748,6 @@ func TestWriteSandboxScripts_HookRole_BoidInstructions(t *testing.T) {
 		TaskID:           "task-inst-1",
 		ProjectID:        "proj-1",
 		ProjectDir:       "/home/user/projects/proj-1",
-		HooksDir:         "/home/user/projects/proj-1/.boid/hooks",
 		HookScript:       "run-agent.sh",
 		BoidBinary:       "/usr/local/bin/boid",
 		ServerSocket:     "/run/boid/server.sock",
@@ -796,7 +795,6 @@ func TestWriteSandboxScripts_HookRole_NoBoidInstructionsWhenEmpty(t *testing.T) 
 		TaskID:       "task-noinst-1",
 		ProjectID:    "proj-1",
 		ProjectDir:   "/home/user/projects/proj-1",
-		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
 		HookScript:   "run-agent.sh",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
@@ -837,7 +835,6 @@ func TestWriteSandboxScripts_HookRole_BoidInstructions_SingleQuoteEscape(t *test
 		TaskID:           "task-sq-1",
 		ProjectID:        "proj-1",
 		ProjectDir:       "/home/user/projects/proj-1",
-		HooksDir:         "/home/user/projects/proj-1/.boid/hooks",
 		HookScript:       "run-agent.sh",
 		BoidBinary:       "/usr/local/bin/boid",
 		ServerSocket:     "/run/boid/server.sock",
@@ -884,7 +881,6 @@ func TestWriteSandboxScripts_HookRole_ContextFiles(t *testing.T) {
 		ProjectID:       "proj-1",
 		ProjectDir:      "/home/user/projects/proj-1",
 		HomeDir:         "/home/user",
-		HooksDir:        "/home/user/projects/proj-1/.boid/hooks",
 		HookScript:      "run-agent.sh",
 		BoidBinary:      "/usr/local/bin/boid",
 		ServerSocket:    "/run/boid/server.sock",
@@ -955,7 +951,6 @@ func TestWriteSandboxScripts_HookRole_NoContextFilesWhenEmpty(t *testing.T) {
 		TaskID:       "task-noctx-1",
 		ProjectID:    "proj-1",
 		ProjectDir:   "/home/user/projects/proj-1",
-		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
 		HookScript:   "run-agent.sh",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
@@ -1008,7 +1003,6 @@ func TestWriteSandboxScripts_HookRole_OutputDir(t *testing.T) {
 		ProjectID:    "proj-1",
 		ProjectDir:   "/home/user/projects/proj-1",
 		HomeDir:      "/home/user",
-		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
 		HookScript:   "run-agent.sh",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
@@ -1140,7 +1134,6 @@ func TestWriteSandboxScripts_TaskIDAndJobID(t *testing.T) {
 		TaskID:       "task-abc-123",
 		ProjectID:    "proj-1",
 		ProjectDir:   "/home/user/projects/proj-1",
-		HooksDir:     "/home/user/projects/proj-1/.boid/hooks",
 		HookScript:   "run-agent.sh",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",

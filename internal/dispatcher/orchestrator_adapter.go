@@ -58,7 +58,7 @@ func toDispatchPlan(request *orchestrator.DispatchRequest) *DispatchPlan {
 		Role:               string(request.Role),
 		ProjectDir:         request.ProjectDir,
 		HomeDir:            request.HomeDir,
-		HooksDir:           request.HooksDir,
+		HookFiles:          toDispatchHookFiles(request.HookFiles),
 		GatesDir:           request.GatesDir,
 		HookScript:         request.HookScript,
 		BoidBinary:         request.BoidBinary,
@@ -80,6 +80,17 @@ func toDispatchPlan(request *orchestrator.DispatchRequest) *DispatchPlan {
 		TaskYAML:           request.TaskYAML,
 		EnvironmentYAML:    request.EnvironmentYAML,
 	}
+}
+
+func toDispatchHookFiles(files []orchestrator.HookFile) []HookFile {
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]HookFile, len(files))
+	for i, f := range files {
+		out[i] = HookFile{Source: f.Source, TargetName: f.TargetName}
+	}
+	return out
 }
 
 func toCommandDefs(cmds map[string]orchestrator.CommandDef) map[string]CommandDef {

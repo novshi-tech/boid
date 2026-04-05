@@ -9,7 +9,6 @@ import (
 func TestBuildMounts(t *testing.T) {
 	cfg := sandbox.SandboxConfig{
 		ProjectDir:   "/home/user/projects/myproj",
-		HooksDir:     "/home/user/projects/myproj/.boid/hooks",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
 		BrokerSocket: "/run/boid/broker.sock",

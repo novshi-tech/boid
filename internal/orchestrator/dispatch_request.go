@@ -10,7 +10,7 @@ type DispatchRequest struct {
 	Role               Role
 	ProjectDir         string
 	HomeDir            string
-	HooksDir           string
+	HookFiles          []HookFile
 	GatesDir           string
 	HookScript         string
 	BoidBinary         string

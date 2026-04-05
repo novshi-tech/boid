@@ -65,7 +65,6 @@ func TestWriteSandboxScripts_HookRoleMustQuotePathsAndPayload(t *testing.T) {
 		ProjectID:    "proj-1",
 		ProjectDir:   "/tmp/project with spaces",
 		HomeDir:      "/tmp/home dir",
-		HooksDir:     "/tmp/project with spaces/.boid/hooks",
 		HookScript:   "review.sh",
 		BoidBinary:   "/bin/true",
 		BrokerSocket: "/run/boid/broker.sock",

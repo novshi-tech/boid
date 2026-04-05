@@ -51,7 +51,7 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		ProjectID:          plan.ProjectID,
 		ProjectDir:         plan.ProjectDir,
 		HomeDir:            plan.HomeDir,
-		HooksDir:           plan.HooksDir,
+		HookFiles:          plan.HookFiles,
 		GatesDir:           plan.GatesDir,
 		HookScript:         plan.HookScript,
 		BoidBinary:         plan.BoidBinary,

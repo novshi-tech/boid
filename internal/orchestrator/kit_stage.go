@@ -12,6 +12,9 @@ import (
 // consumer name (e.g. "claude-code--run-agent.sh") to avoid collisions.
 // Project scripts override kit scripts with the same filename.
 // Returns the staging directory path and a cleanup function.
+//
+// Deprecated: Use collectHookFiles in planner.go instead.
+// PlanHook no longer calls StageHooks; hooks are now bind-mounted individually.
 func StageHooks(projectHooksDir string, kitHooksDirs []KitHooksInfo, jobID string) (string, func(), error) {
 	stagingDir := filepath.Join(os.TempDir(), fmt.Sprintf("boid-hooks-%s", jobID))
 	if err := os.MkdirAll(stagingDir, 0o755); err != nil {

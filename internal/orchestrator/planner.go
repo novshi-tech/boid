@@ -10,6 +10,66 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// collectHookFiles builds the list of hook files to bind-mount into the sandbox.
+// Kit hooks are prefixed with "{consumer}--". Project hooks override kit hooks
+// when they share the same target filename.
+func collectHookFiles(projectHooksDir string, kitHooksDirs []KitHooksInfo) []HookFile {
+	files := make(map[string]HookFile)
+
+	for _, info := range kitHooksDirs {
+		entries, err := os.ReadDir(info.HooksDir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			ext := filepath.Ext(e.Name())
+			if ext != ".sh" && ext != ".py" {
+				continue
+			}
+			targetName := e.Name()
+			if info.Consumer != "" {
+				targetName = info.Consumer + "--" + e.Name()
+			}
+			files[targetName] = HookFile{
+				Source:     filepath.Join(info.HooksDir, e.Name()),
+				TargetName: targetName,
+			}
+		}
+	}
+
+	entries, err := os.ReadDir(projectHooksDir)
+	if err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			ext := filepath.Ext(e.Name())
+			if ext != ".sh" && ext != ".py" {
+				continue
+			}
+			files[e.Name()] = HookFile{
+				Source:     filepath.Join(projectHooksDir, e.Name()),
+				TargetName: e.Name(),
+			}
+		}
+	}
+
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]HookFile, 0, len(files))
+	for _, hf := range files {
+		out = append(out, hf)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].TargetName < out[j].TargetName
+	})
+	return out
+}
+
 type MetaCache interface {
 	Get(id string) (*ProjectMeta, bool)
 }
@@ -57,16 +117,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 	}
 
 	projectHooksDir := filepath.Join(proj.WorkDir, ".boid", "hooks")
-	hooksDir := projectHooksDir
-	var stagingDir string
-	if len(meta.KitHooksDirs) > 0 {
-		staged, _, err := StageHooks(projectHooksDir, meta.KitHooksDirs, event.TaskID)
-		if err != nil {
-			return nil, fmt.Errorf("stage hooks: %w", err)
-		}
-		hooksDir = staged
-		stagingDir = staged
-	}
+	hookFiles := collectHookFiles(projectHooksDir, meta.KitHooksDirs)
 
 	behavior, _ := meta.TaskBehaviors[task.Behavior]
 	workspaceDirs, err := p.collectWorkspaceDirs(proj.WorkspaceID, event.ProjectID)
@@ -104,7 +155,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 		Role:               RoleHook,
 		ProjectDir:         proj.WorkDir,
 		HomeDir:            homeDir,
-		HooksDir:           hooksDir,
+		HookFiles:          hookFiles,
 		HookScript:         hookFilename,
 		BoidBinary:         p.BoidBinary,
 		ServerSocket:       p.ServerSocket,
@@ -115,7 +166,6 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 		SecretNamespace:    meta.SecretNamespace,
 		WorkspaceDirs:      workspaceDirs,
 		ProxyPort:          p.proxyPort(),
-		StagingDir:         stagingDir,
 		WorktreeDir:        worktreeDir,
 		PayloadJSON:        payloadJSON,
 		Readonly:           readonly,

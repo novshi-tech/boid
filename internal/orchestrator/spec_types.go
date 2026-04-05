@@ -16,6 +16,12 @@ type BindMount struct {
 	Mode   string `yaml:"mode" json:"mode"`
 }
 
+// HookFile describes a single hook file to bind-mount into the sandbox.
+type HookFile struct {
+	Source     string // host-side absolute path
+	TargetName string // filename inside sandbox .boid/hooks/
+}
+
 // CommandDef is the orchestrator-side transport shape for sandbox command policy input.
 // Dispatcher and sandbox mirror this shape; sandbox owns the enforcement semantics.
 type CommandDef struct {

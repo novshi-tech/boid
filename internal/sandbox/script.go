@@ -17,7 +17,7 @@ type WrapperConfig struct {
 	ProjectID          string
 	ProjectDir         string            // host-side project directory
 	HomeDir            string            // host-side user home directory (fallback to ProjectDir)
-	HooksDir           string            // host-side hooks directory
+	HookFiles          []HookFile        // individual hook files to bind-mount
 	GatesDir           string            // host-side gates directory
 	HookScript         string            // script filename, e.g. "run-build.sh"
 	Command            string            // command to execute (non-interactive, non-hook mode)
