@@ -173,14 +173,19 @@ func generateHookInnerScript(cfg WrapperConfig) string {
 	fmt.Fprintf(&b, "\ncd %s\n\n", shellQuote(wd))
 
 	outputDir := cfg.homeDir() + "/.boid/output"
-	writeOutputTrap(&b, cfg.JobID, outputDir)
 
 	if cfg.Interactive {
 		// Interactive mode: stdin/stdout stay connected to the PTY so the hook (e.g. Claude Code)
 		// can run as a full TUI. Payload is available in context/payload.yaml.
+		// Set BOID_INTERACTIVE so the hook script can detect interactive mode reliably
+		// without relying on TTY detection (which can fail inside pasta/unshare sandboxes).
+		b.WriteString("export BOID_INTERACTIVE=1\n")
+		// Use a separate trap that does NOT reference /tmp/boid-output (which won't exist).
 		// Do NOT use "exec" here so that bash's EXIT trap fires when the hook exits.
+		writeInteractiveOutputTrap(&b, cfg.JobID, outputDir)
 		fmt.Fprintf(&b, "%s\n", shellQuote(hookPath))
 	} else {
+		writeOutputTrap(&b, cfg.JobID, outputDir)
 		fmt.Fprintf(&b, "printf '%%s' %s | %s > /tmp/boid-output\n", shellQuote(cfg.PayloadJSON), shellQuote(hookPath))
 	}
 
@@ -276,6 +281,22 @@ func writePathAndProxy(b *strings.Builder, cfg WrapperConfig) {
 	for k, v := range cfg.Env {
 		fmt.Fprintf(b, "export %s=%q\n", k, v)
 	}
+}
+
+// writeInteractiveOutputTrap writes the EXIT trap for interactive hooks.
+// Unlike writeOutputTrap, it does not fall back to /tmp/boid-output (which doesn't exist
+// in interactive mode since stdout is not redirected).
+func writeInteractiveOutputTrap(b *strings.Builder, jobID, outputDir string) {
+	patchFile := outputDir + "/payload_patch.yaml"
+	fmt.Fprintf(b, "mkdir -p %s\n", shellQuote(outputDir))
+	fmt.Fprintf(b, "trap '\n")
+	fmt.Fprintf(b, "  _exit=$?\n")
+	fmt.Fprintf(b, "  if [ -f %s ]; then\n", shellQuote(patchFile))
+	fmt.Fprintf(b, "    boid job done %s --exit-code $_exit --output-file %s\n", jobID, shellQuote(patchFile))
+	fmt.Fprintf(b, "  else\n")
+	fmt.Fprintf(b, "    boid job done %s --exit-code $_exit\n", jobID)
+	fmt.Fprintf(b, "  fi\n")
+	fmt.Fprintf(b, "' EXIT\n")
 }
 
 // writeOutputTrap writes the EXIT trap that prefers file-based output over stdout capture.

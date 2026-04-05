@@ -625,9 +625,19 @@ func TestWriteSandboxScripts_HookRole_Interactive(t *testing.T) {
 		t.Error("interactive hook inner script must execute hook directly")
 	}
 
-	// Job completion trap must still be present
+	// BOID_INTERACTIVE env var must be exported
+	if !strings.Contains(inner, "BOID_INTERACTIVE=1") {
+		t.Error("interactive hook inner script must export BOID_INTERACTIVE=1")
+	}
+
+	// Job completion trap must be present and must NOT reference /tmp/boid-output
 	if !strings.Contains(inner, "boid job done test-hook-interactive --exit-code") {
 		t.Error("interactive hook inner script must have boid job done trap")
+	}
+	for _, line := range strings.Split(inner, "\n") {
+		if strings.Contains(line, "boid job done") && strings.Contains(line, "--output-file /tmp/boid-output") {
+			t.Errorf("interactive hook EXIT trap must NOT use --output-file /tmp/boid-output, got: %s", line)
+		}
 	}
 }
 
