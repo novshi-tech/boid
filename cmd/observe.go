@@ -20,95 +20,76 @@ func isTerminalJobStatus(status api.JobStatus) bool {
 	return status == api.JobStatusCompleted || status == api.JobStatusFailed
 }
 
-type taskDetailYAML struct {
-	ID          string       `yaml:"id"`
-	ProjectID   string       `yaml:"project_id"`
-	Title       string       `yaml:"title"`
-	Description string       `yaml:"description,omitempty"`
-	Status      string       `yaml:"status"`
-	Behavior    string       `yaml:"behavior"`
-	CreatedAt   string       `yaml:"created_at"`
-	UpdatedAt   string       `yaml:"updated_at"`
-	Payload     any          `yaml:"payload,omitempty"`
-	Actions     []actionYAML `yaml:"actions,omitempty"`
-	Jobs        []jobYAML    `yaml:"jobs,omitempty"`
+func jsonToYAMLIndented(raw json.RawMessage, indent string) (string, error) {
+	var p any
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return "", err
+	}
+	b, err := yaml.Marshal(p)
+	if err != nil {
+		return "", err
+	}
+	var sb strings.Builder
+	for _, line := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+		sb.WriteString(indent)
+		sb.WriteString(line)
+		sb.WriteString("\n")
+	}
+	return sb.String(), nil
 }
 
-type actionYAML struct {
-	ID        string `yaml:"id"`
-	Type      string `yaml:"type"`
-	CreatedAt string `yaml:"created_at"`
-	Payload   any    `yaml:"payload,omitempty"`
-}
-
-type jobYAML struct {
-	ID        string `yaml:"id"`
-	HandlerID string `yaml:"handler_id"`
-	Role      string `yaml:"role"`
-	Status    string `yaml:"status"`
-	ExitCode  *int   `yaml:"exit_code,omitempty"`
-	UpdatedAt string `yaml:"updated_at"`
-	Output    string `yaml:"output,omitempty"`
+func hasPayload(raw json.RawMessage) bool {
+	s := string(raw)
+	return len(raw) > 0 && s != "{}" && s != "null"
 }
 
 func renderTaskDetail(detail *api.TaskDetailView) error {
 	task := detail.Task
-	out := taskDetailYAML{
-		ID:          task.ID,
-		ProjectID:   task.ProjectID,
-		Title:       task.Title,
-		Description: task.Description,
-		Status:      string(task.Status),
-		Behavior:    task.Behavior,
-		CreatedAt:   formatTime(task.CreatedAt),
-		UpdatedAt:   formatTime(task.UpdatedAt),
+	fmt.Printf("ID:          %s\n", task.ID)
+	fmt.Printf("Project:     %s\n", task.ProjectID)
+	fmt.Printf("Title:       %s\n", task.Title)
+	if task.Description != "" {
+		fmt.Printf("Description: %s\n", task.Description)
 	}
+	fmt.Printf("Status:      %s\n", task.Status)
+	fmt.Printf("Behavior:    %s\n", task.Behavior)
+	fmt.Printf("Created At:  %s\n", formatTime(task.CreatedAt))
+	fmt.Printf("Updated At:  %s\n", formatTime(task.UpdatedAt))
 
-	if len(task.Payload) > 0 && string(task.Payload) != "{}" && string(task.Payload) != "null" {
-		var p any
-		if err := json.Unmarshal(task.Payload, &p); err == nil {
-			out.Payload = p
+	if hasPayload(task.Payload) {
+		if yamlStr, err := jsonToYAMLIndented(task.Payload, "  "); err == nil {
+			fmt.Println("Payload:")
+			fmt.Print(yamlStr)
 		}
 	}
 
-	for _, action := range detail.Actions {
-		a := actionYAML{
-			ID:        action.ID,
-			Type:      action.Type,
-			CreatedAt: formatTime(action.CreatedAt),
-		}
-		if len(action.Payload) > 0 && string(action.Payload) != "{}" && string(action.Payload) != "null" {
-			var p any
-			if err := json.Unmarshal(action.Payload, &p); err == nil {
-				a.Payload = p
+	if len(detail.Actions) > 0 {
+		fmt.Println("Actions:")
+		for i, action := range detail.Actions {
+			fmt.Printf("  [%d] %s  %s  %s\n", i, action.ID, action.Type, formatTime(action.CreatedAt))
+			if hasPayload(action.Payload) {
+				if yamlStr, err := jsonToYAMLIndented(action.Payload, "      "); err == nil {
+					fmt.Println("      Payload:")
+					fmt.Print(yamlStr)
+				}
 			}
 		}
-		out.Actions = append(out.Actions, a)
 	}
 
-	for _, job := range detail.Jobs {
-		j := jobYAML{
-			ID:        job.ID,
-			HandlerID: job.HandlerID,
-			Role:      job.Role,
-			Status:    string(job.Status),
-			UpdatedAt: formatTime(job.UpdatedAt),
+	if len(detail.Jobs) > 0 {
+		fmt.Println("Jobs:")
+		for i, job := range detail.Jobs {
+			line := fmt.Sprintf("  [%d] %s  %s  %s  %s", i, job.ID, job.HandlerID, job.Role, job.Status)
+			if isTerminalJobStatus(job.Status) {
+				line += fmt.Sprintf("  exit=%d", job.ExitCode)
+			}
+			fmt.Println(line)
+			if strings.TrimSpace(job.Output) != "" {
+				fmt.Printf("      Output: %s\n", strings.TrimSpace(job.Output))
+			}
 		}
-		if isTerminalJobStatus(job.Status) {
-			code := job.ExitCode
-			j.ExitCode = &code
-		}
-		if strings.TrimSpace(job.Output) != "" {
-			j.Output = strings.TrimSpace(job.Output)
-		}
-		out.Jobs = append(out.Jobs, j)
 	}
 
-	b, err := yaml.Marshal(out)
-	if err != nil {
-		return fmt.Errorf("marshal task detail: %w", err)
-	}
-	fmt.Print(string(b))
 	return nil
 }
 
