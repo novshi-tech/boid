@@ -268,6 +268,8 @@ func writePathAndProxy(b *strings.Builder, cfg WrapperConfig) {
 		fmt.Fprintf(b, "export PATH=%s\n", shellQuote(basePath))
 	}
 
+	b.WriteString("export TERM=xterm-256color\n")
+
 	if cfg.ProxyPort > 0 {
 		proxyURL := fmt.Sprintf("http://10.0.2.2:%d", cfg.ProxyPort)
 		fmt.Fprintf(b, "export http_proxy=%s\n", shellQuote(proxyURL))

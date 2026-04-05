@@ -9,4 +9,8 @@ if [ ! -e "$SKILLS_LINK" ] && [ ! -L "$SKILLS_LINK" ]; then
     ln -s "$SKILLS_SRC" "$SKILLS_LINK"
 fi
 
-exec claude --dangerously-skip-permissions -p "/boid-sandbox"
+if [ "${BOID_INTERACTIVE:-0}" = "1" ]; then
+    exec claude --dangerously-skip-permissions "/boid-sandbox"
+else
+    exec claude --dangerously-skip-permissions -p "/boid-sandbox"
+fi
