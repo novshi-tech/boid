@@ -10,6 +10,22 @@ import (
 	"github.com/novshi-tech/boid/internal/client"
 )
 
+const pollInterval = 2 * time.Second
+
+// --- messages ---
+
+type tickMsg struct{}
+type jobsMsg struct {
+	jobs []api.JobWithContext
+	err  error
+}
+type openResultMsg struct {
+	jobID  string
+	paneID string
+	err    error
+}
+type clearStatusMsg struct{}
+
 // ActiveJobsScreen displays the list of active (running, interactive) jobs.
 type ActiveJobsScreen struct {
 	shared *SharedState

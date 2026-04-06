@@ -2,29 +2,11 @@ package tui
 
 import (
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
 )
-
-const pollInterval = 2 * time.Second
-
-// --- messages ---
-
-type tickMsg struct{}
-type jobsMsg struct {
-	jobs []api.JobWithContext
-	err  error
-}
-type openResultMsg struct {
-	jobID  string
-	paneID string
-	err    error
-}
-type clearStatusMsg struct{}
 
 // --- model ---
 
@@ -129,7 +111,7 @@ func (m *App) View() string {
 	if !m.shared.TmuxEnabled {
 		badge = styleWarn.Render("[no-tmux]")
 	}
-	title := styleHeader.Render("boid") + styleDim.Render(" ─ active jobs")
+	title := styleHeader.Render("boid")
 	header := lipgloss.JoinHorizontal(lipgloss.Top,
 		title,
 		strings.Repeat(" ", max(0, m.width-lipgloss.Width(title)-lipgloss.Width(badge))),
@@ -153,11 +135,4 @@ func (m *App) View() string {
 	sb.WriteString(styleFooter.Render(s.ShortHelp()))
 
 	return sb.String()
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
