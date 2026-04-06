@@ -548,8 +548,8 @@ func TestWriteSandboxScripts_HookRole(t *testing.T) {
 	if strings.Contains(inner, "BOID_SOCKET=") {
 		t.Error("hook role inner script should NOT contain BOID_SOCKET")
 	}
-	if !strings.Contains(inner, "/tmp/boid-output") {
-		t.Error("hook role inner script should capture stdout to /tmp/boid-output")
+	if strings.Contains(inner, "> /tmp/boid-output") {
+		t.Error("hook role inner script must NOT redirect stdout to /tmp/boid-output")
 	}
 	if !strings.Contains(inner, "boid job done test-hook-role --exit-code") {
 		t.Error("hook role inner script should have boid job done with job ID")
@@ -1042,9 +1042,9 @@ func TestWriteSandboxScripts_HookRole_OutputDir(t *testing.T) {
 		t.Error("inner script missing payload_patch.yaml reference in trap")
 	}
 
-	// Must still have fallback to /tmp/boid-output
-	if !strings.Contains(inner, "/tmp/boid-output") {
-		t.Error("inner script missing /tmp/boid-output fallback")
+	// Non-interactive hooks must NOT redirect stdout to /tmp/boid-output (result via payload_patch.yaml)
+	if strings.Contains(inner, "/tmp/boid-output") {
+		t.Error("inner script must NOT reference /tmp/boid-output")
 	}
 }
 

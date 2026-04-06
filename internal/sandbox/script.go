@@ -185,8 +185,11 @@ func generateHookInnerScript(cfg WrapperConfig) string {
 		writeInteractiveOutputTrap(&b, cfg.JobID, outputDir)
 		fmt.Fprintf(&b, "%s\n", shellQuote(hookPath))
 	} else {
-		writeOutputTrap(&b, cfg.JobID, outputDir)
-		fmt.Fprintf(&b, "printf '%%s' %s | %s > /tmp/boid-output\n", shellQuote(cfg.PayloadJSON), shellQuote(hookPath))
+		// Non-interactive (batch) mode: payload is piped via stdin, stdout is left on the PTY
+		// so real-time output is visible via boid attach. Result delivery relies on
+		// payload_patch.yaml written by the hook (preferred) or empty output otherwise.
+		writeInteractiveOutputTrap(&b, cfg.JobID, outputDir)
+		fmt.Fprintf(&b, "printf '%%s' %s | %s\n", shellQuote(cfg.PayloadJSON), shellQuote(hookPath))
 	}
 
 	return b.String()
