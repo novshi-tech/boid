@@ -123,10 +123,7 @@ func (m *App) View() string {
 	sb.WriteByte('\n')
 
 	// --- body ---
-	bodyHeight := m.height - 5 // header(2) + separator(1) + footer(2)
-	if bodyHeight < 1 {
-		bodyHeight = 1
-	}
+	bodyHeight := max(1, m.height-4) // header(1) + separator(1) + footer separator(1) + footer(1)
 	sb.WriteString(s.View(m.width, bodyHeight))
 
 	// --- footer ---

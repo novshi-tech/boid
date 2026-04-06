@@ -119,6 +119,12 @@ func (s *ActiveJobsScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 func (s *ActiveJobsScreen) View(width, height int) string {
 	var sb strings.Builder
 
+	maxJobs := height
+	if s.statusMsg != "" {
+		maxJobs -= 2 // blank line + message line
+	}
+	maxJobs = max(0, maxJobs)
+
 	if s.fetchErr != nil {
 		sb.WriteString(styleError.Render(fmt.Sprintf("error: %v", s.fetchErr)))
 		sb.WriteByte('\n')
@@ -127,8 +133,8 @@ func (s *ActiveJobsScreen) View(width, height int) string {
 		sb.WriteByte('\n')
 	} else {
 		visible := s.jobs
-		if len(visible) > height {
-			visible = visible[:height]
+		if len(visible) > maxJobs {
+			visible = visible[:maxJobs]
 		}
 		for i, job := range visible {
 			line := renderJobLine(job, i == s.cursor, width)

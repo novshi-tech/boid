@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -250,20 +251,7 @@ func TestViewRendersTopScreen(t *testing.T) {
 		t.Fatal("expected non-empty view")
 	}
 	// The body should contain screenB's view content
-	if !containsString(view, "B") {
+	if !strings.Contains(view, "B") {
 		t.Fatal("view should render top screen (B)")
 	}
-}
-
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && searchString(s, substr)
-}
-
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
