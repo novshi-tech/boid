@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -29,113 +28,88 @@ type clearStatusMsg struct{}
 
 // --- model ---
 
-// App is the top-level bubbletea model.
+// App is the top-level bubbletea model with a screen stack.
 type App struct {
-	client      *client.Client
-	tmuxEnabled bool
-
-	jobs      []api.JobWithContext
-	cursor    int
-	panes     map[string]string // jobID -> paneID
-	statusMsg string
-	isError   bool
-	width     int
-	height    int
-	loading   bool
-	fetchErr  error
+	shared *SharedState
+	stack  []Screen
+	width  int
+	height int
 }
 
 // NewApp creates a new TUI application model.
 func NewApp(c *client.Client, tmuxEnabled bool) *App {
-	return &App{
-		client:      c,
-		tmuxEnabled: tmuxEnabled,
-		panes:       make(map[string]string),
-		loading:     true,
+	shared := &SharedState{
+		Client:      c,
+		TmuxEnabled: tmuxEnabled,
+		Panes:       make(map[string]string),
 	}
+	initial := NewActiveJobsScreen(shared)
+	return &App{
+		shared: shared,
+		stack:  []Screen{initial},
+	}
+}
+
+func (m *App) top() Screen {
+	if len(m.stack) == 0 {
+		return nil
+	}
+	return m.stack[len(m.stack)-1]
 }
 
 // --- bubbletea interface ---
 
 func (m *App) Init() tea.Cmd {
-	return tea.Batch(fetchJobsCmd(m.client), tickCmd())
+	if s := m.top(); s != nil {
+		return s.Init()
+	}
+	return nil
 }
 
 func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-
-	case tickMsg:
-		return m, tea.Batch(fetchJobsCmd(m.client), tickCmd())
-
-	case jobsMsg:
-		m.loading = false
-		if msg.err != nil {
-			m.fetchErr = msg.err
-		} else {
-			m.fetchErr = nil
-			m.jobs = msg.jobs
-			if m.cursor >= len(m.jobs) && len(m.jobs) > 0 {
-				m.cursor = len(m.jobs) - 1
+		var cmds []tea.Cmd
+		for i, s := range m.stack {
+			updated, cmd := s.Update(msg)
+			m.stack[i] = updated
+			if cmd != nil {
+				cmds = append(cmds, cmd)
 			}
 		}
+		return m, tea.Batch(cmds...)
 
-	case openResultMsg:
-		if msg.err != nil {
-			m.statusMsg = "open failed: " + msg.err.Error()
-			m.isError = true
-			return m, clearStatusAfter(3 * time.Second)
-		}
-		if msg.paneID != "" {
-			m.panes[msg.jobID] = msg.paneID
-		}
+	case pushScreenMsg:
+		m.stack = append(m.stack, msg.screen)
+		return m, msg.screen.Init()
 
-	case clearStatusMsg:
-		m.statusMsg = ""
-		m.isError = false
+	case popScreenMsg:
+		if len(m.stack) > 1 {
+			m.stack = m.stack[:len(m.stack)-1]
+		}
+		return m, nil
 
 	case tea.KeyMsg:
-		return m, m.handleKey(msg)
+		switch msg.String() {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "esc", "backspace":
+			if len(m.stack) > 1 {
+				m.stack = m.stack[:len(m.stack)-1]
+				return m, nil
+			}
+		}
 	}
 
+	// Delegate to top screen
+	if s := m.top(); s != nil {
+		updated, cmd := s.Update(msg)
+		m.stack[len(m.stack)-1] = updated
+		return m, cmd
+	}
 	return m, nil
-}
-
-func (m *App) handleKey(msg tea.KeyMsg) tea.Cmd {
-	switch msg.String() {
-	case "q", "ctrl+c":
-		return tea.Quit
-
-	case "j", "down":
-		if m.cursor < len(m.jobs)-1 {
-			m.cursor++
-		}
-
-	case "k", "up":
-		if m.cursor > 0 {
-			m.cursor--
-		}
-
-	case "r":
-		m.loading = true
-		return fetchJobsCmd(m.client)
-
-	case "enter":
-		if len(m.jobs) == 0 {
-			break
-		}
-		if !m.tmuxEnabled {
-			m.statusMsg = "to open a job, launch `boid tui` inside tmux"
-			m.isError = false
-			return clearStatusAfter(4 * time.Second)
-		}
-		job := m.jobs[m.cursor]
-		return openJobCmd(job.ID, m.panes[job.ID])
-	}
-	return nil
 }
 
 func (m *App) View() string {
@@ -143,11 +117,16 @@ func (m *App) View() string {
 		return ""
 	}
 
+	s := m.top()
+	if s == nil {
+		return ""
+	}
+
 	var sb strings.Builder
 
 	// --- header ---
 	badge := styleBadge.Render("[tmux]")
-	if !m.tmuxEnabled {
+	if !m.shared.TmuxEnabled {
 		badge = styleWarn.Render("[no-tmux]")
 	}
 	title := styleHeader.Render("boid") + styleDim.Render(" ─ active jobs")
@@ -166,89 +145,14 @@ func (m *App) View() string {
 	if bodyHeight < 1 {
 		bodyHeight = 1
 	}
-
-	if m.fetchErr != nil {
-		sb.WriteString(styleError.Render(fmt.Sprintf("error: %v", m.fetchErr)))
-		sb.WriteByte('\n')
-	} else if len(m.jobs) == 0 && !m.loading {
-		sb.WriteString(styleDim.Render("  no active jobs"))
-		sb.WriteByte('\n')
-	} else {
-		visible := m.jobs
-		if len(visible) > bodyHeight {
-			visible = visible[:bodyHeight]
-		}
-		for i, job := range visible {
-			line := renderJobLine(job, i == m.cursor, m.width)
-			sb.WriteString(line)
-			sb.WriteByte('\n')
-		}
-	}
-
-	// --- status / no-tmux message ---
-	if m.statusMsg != "" {
-		var msg string
-		if m.isError {
-			msg = styleError.Render("  ! " + m.statusMsg)
-		} else {
-			msg = styleWarn.Render("  ! " + m.statusMsg)
-		}
-		sb.WriteByte('\n')
-		sb.WriteString(msg)
-		sb.WriteByte('\n')
-	}
+	sb.WriteString(s.View(m.width, bodyHeight))
 
 	// --- footer ---
 	sb.WriteString(strings.Repeat("─", m.width))
 	sb.WriteByte('\n')
-	footer := buildFooter(m.tmuxEnabled)
-	sb.WriteString(styleFooter.Render(footer))
+	sb.WriteString(styleFooter.Render(s.ShortHelp()))
 
 	return sb.String()
-}
-
-func buildFooter(tmuxEnabled bool) string {
-	if tmuxEnabled {
-		return " enter: open   j/k: move   r: refresh   q: quit"
-	}
-	return " j/k: move   r: refresh   q: quit"
-}
-
-// --- commands ---
-
-func tickCmd() tea.Cmd {
-	return tea.Tick(pollInterval, func(time.Time) tea.Msg {
-		return tickMsg{}
-	})
-}
-
-func fetchJobsCmd(c *client.Client) tea.Cmd {
-	return func() tea.Msg {
-		interactive := true
-		jobs, err := c.ListJobs(api.JobListFilter{
-			Status:      "running",
-			Interactive: &interactive,
-		})
-		return jobsMsg{jobs: jobs, err: err}
-	}
-}
-
-func openJobCmd(jobID, existingPaneID string) tea.Cmd {
-	return func() tea.Msg {
-		if PaneAlive(existingPaneID) {
-			if err := FocusPane(existingPaneID); err == nil {
-				return openResultMsg{jobID: jobID, paneID: existingPaneID}
-			}
-		}
-		paneID, err := OpenJobInPane(jobID)
-		return openResultMsg{jobID: jobID, paneID: paneID, err: err}
-	}
-}
-
-func clearStatusAfter(d time.Duration) tea.Cmd {
-	return tea.Tick(d, func(time.Time) tea.Msg {
-		return clearStatusMsg{}
-	})
 }
 
 func max(a, b int) int {
