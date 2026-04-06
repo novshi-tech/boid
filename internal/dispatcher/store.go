@@ -153,6 +153,16 @@ func ListJobsFiltered(dbtx db.DBTX, filter JobFilter) ([]*Job, error) {
 	return jobs, rows.Err()
 }
 
+// MarkStaleJobsFailed marks all running jobs as failed.
+// Call this on server startup to clean up jobs left in running state from a previous crash or restart.
+func MarkStaleJobsFailed(dbtx db.DBTX) error {
+	_, err := dbtx.Exec(
+		`UPDATE jobs SET status = ?, exit_code = -1, updated_at = ? WHERE status = ?`,
+		string(JobStatusFailed), time.Now().UTC(), string(JobStatusRunning),
+	)
+	return err
+}
+
 func UpdateJob(dbtx db.DBTX, j *Job) error {
 	j.UpdatedAt = time.Now().UTC()
 

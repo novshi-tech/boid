@@ -62,6 +62,11 @@ func newJobRuntime(cfg Config) (dispatcher.JobRuntime, error) {
 }
 
 func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, broker dispatcher.CommandBroker, secretStore *dispatcher.SecretStore) (*appRuntime, error) {
+	// Clean up jobs left in running state from a previous crash or restart.
+	if err := dispatcher.MarkStaleJobsFailed(srv.db); err != nil {
+		slog.Warn("failed to mark stale jobs as failed", "error", err)
+	}
+
 	projectRepo := orchestrator.NewProjectRepository(srv.db)
 	taskRepo := orchestrator.NewTaskRepository(srv.db)
 	jobRepo := dispatcher.NewJobRepository(srv.db)

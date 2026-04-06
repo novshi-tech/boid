@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -11,12 +13,24 @@ func InTmux() bool {
 	return os.Getenv("TMUX") != ""
 }
 
+// selfPath returns the path of the currently running executable.
+func selfPath() string {
+	if p, err := os.Executable(); err == nil {
+		return p
+	}
+	return "boid"
+}
+
 // OpenJobInPane opens the given job in a new horizontal tmux split.
 // Returns the pane ID of the newly created pane.
 func OpenJobInPane(jobID string) (string, error) {
-	cmd := exec.Command("tmux", "split-window", "-h", "-P", "-F", "#{pane_id}", "boid", "job", "attach", jobID)
+	cmd := exec.Command("tmux", "split-window", "-h", "-P", "-F", "#{pane_id}", selfPath(), "attach", jobID)
 	out, err := cmd.Output()
 	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
+		}
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
