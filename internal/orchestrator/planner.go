@@ -203,6 +203,14 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 		stagingDir = staged
 	}
 
+	// Use hook-updated payload if provided. This value is the result of merging all
+	// hook patches into the original payload inside DispatchAndAdvance, and may not
+	// have been persisted to DB yet. It is always a superset of the DB payload at
+	// this point in the dispatch cycle, so a direct replace (not merge) is correct.
+	if event.TaskPayloadJSON != "" {
+		task.Payload = json.RawMessage(event.TaskPayloadJSON)
+	}
+
 	taskJSON, err := json.Marshal(task)
 	if err != nil {
 		return nil, fmt.Errorf("marshal task: %w", err)

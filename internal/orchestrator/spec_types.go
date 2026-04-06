@@ -225,10 +225,11 @@ type HookFireEvent struct {
 }
 
 type GateFireEvent struct {
-	EventID   string
-	TaskID    string
-	ProjectID string
-	Gate      Gate
+	EventID         string
+	TaskID          string
+	ProjectID       string
+	Gate            Gate
+	TaskPayloadJSON string // hook-updated payload to override DB value; empty = use DB
 }
 
 type KitHooksInfo struct {

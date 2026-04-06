@@ -62,9 +62,12 @@ func (d *Coordinator) DispatchAndAdvance(
 	}
 
 	// 2. Evaluate and dispatch gates (always parallel)
-	matchedGates := d.Evaluator.EvaluateGates(task, meta.Gates)
+	// Use hook-updated payload so that traits produced by hooks are visible to gates.
+	gateTask := *task
+	gateTask.Payload = payload
+	matchedGates := d.Evaluator.EvaluateGates(&gateTask, meta.Gates)
 	if len(matchedGates) > 0 {
-		gateResults, err := d.dispatchGates(ctx, task, matchedGates)
+		gateResults, err := d.dispatchGates(ctx, &gateTask, matchedGates)
 		if err != nil {
 			return nil, fmt.Errorf("gate dispatch: %w", err)
 		}
@@ -213,10 +216,11 @@ func (d *Coordinator) dispatchGates(
 	var jobs []jobInfo
 	for _, g := range gates {
 		event := &GateFireEvent{
-			EventID:   fmt.Sprintf("evt-%s-%s", task.ID[:8], g.ID),
-			TaskID:    task.ID,
-			ProjectID: task.ProjectID,
-			Gate:      g,
+			EventID:         fmt.Sprintf("evt-%s-%s", task.ID[:8], g.ID),
+			TaskID:          task.ID,
+			ProjectID:       task.ProjectID,
+			Gate:            g,
+			TaskPayloadJSON: string(task.Payload),
 		}
 
 		jobID, err := d.GateExecutor.ExecuteGate(ctx, event)
