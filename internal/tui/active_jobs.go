@@ -39,7 +39,18 @@ func renderJobLine(job api.JobWithContext, selected bool, width int) string {
 		cursor = styleCursor.Render("▸ ")
 	}
 
-	dot := styleRunning.Render("●")
+	var dot string
+	switch job.Status {
+	case api.JobStatusRunning:
+		dot = styleRunning.Render("●")
+	case api.JobStatusCompleted:
+		dot = styleCompleted.Render("✓")
+	case api.JobStatusFailed:
+		dot = styleFailed.Render("✗")
+	default:
+		// pending など
+		dot = stylePending.Render("○")
+	}
 	id := styleTitle.Render(shortID(job.ID))
 
 	title := job.TaskTitle

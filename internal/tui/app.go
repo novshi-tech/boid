@@ -13,6 +13,8 @@ import (
 
 const pollInterval = 2 * time.Second
 
+var filterCycle = []string{"all", "running", "pending", "completed", "failed"}
+
 // --- messages ---
 
 type tickMsg struct{}
@@ -34,31 +36,33 @@ type App struct {
 	client      *client.Client
 	tmuxEnabled bool
 
-	jobs      []api.JobWithContext
-	cursor    int
-	panes     map[string]string // jobID -> paneID
-	statusMsg string
-	isError   bool
-	width     int
-	height    int
-	loading   bool
-	fetchErr  error
+	jobs         []api.JobWithContext
+	cursor       int
+	panes        map[string]string // jobID -> paneID
+	statusMsg    string
+	isError      bool
+	width        int
+	height       int
+	loading      bool
+	fetchErr     error
+	activeFilter string
 }
 
 // NewApp creates a new TUI application model.
 func NewApp(c *client.Client, tmuxEnabled bool) *App {
 	return &App{
-		client:      c,
-		tmuxEnabled: tmuxEnabled,
-		panes:       make(map[string]string),
-		loading:     true,
+		client:       c,
+		tmuxEnabled:  tmuxEnabled,
+		panes:        make(map[string]string),
+		loading:      true,
+		activeFilter: "running",
 	}
 }
 
 // --- bubbletea interface ---
 
 func (m *App) Init() tea.Cmd {
-	return tea.Batch(fetchJobsCmd(m.client), tickCmd())
+	return tea.Batch(fetchJobsCmd(m.client, m.activeFilter), tickCmd())
 }
 
 func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -69,7 +73,7 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 	case tickMsg:
-		return m, tea.Batch(fetchJobsCmd(m.client), tickCmd())
+		return m, tea.Batch(fetchJobsCmd(m.client, m.activeFilter), tickCmd())
 
 	case jobsMsg:
 		m.loading = false
@@ -121,7 +125,48 @@ func (m *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	case "r":
 		m.loading = true
-		return fetchJobsCmd(m.client)
+		return fetchJobsCmd(m.client, m.activeFilter)
+
+	case "1":
+		m.activeFilter = "all"
+		m.cursor = 0
+		m.loading = true
+		return fetchJobsCmd(m.client, m.activeFilter)
+
+	case "2":
+		m.activeFilter = "running"
+		m.cursor = 0
+		m.loading = true
+		return fetchJobsCmd(m.client, m.activeFilter)
+
+	case "3":
+		m.activeFilter = "pending"
+		m.cursor = 0
+		m.loading = true
+		return fetchJobsCmd(m.client, m.activeFilter)
+
+	case "4":
+		m.activeFilter = "completed"
+		m.cursor = 0
+		m.loading = true
+		return fetchJobsCmd(m.client, m.activeFilter)
+
+	case "5":
+		m.activeFilter = "failed"
+		m.cursor = 0
+		m.loading = true
+		return fetchJobsCmd(m.client, m.activeFilter)
+
+	case "tab":
+		for i, f := range filterCycle {
+			if f == m.activeFilter {
+				m.activeFilter = filterCycle[(i+1)%len(filterCycle)]
+				break
+			}
+		}
+		m.cursor = 0
+		m.loading = true
+		return fetchJobsCmd(m.client, m.activeFilter)
 
 	case "enter":
 		if len(m.jobs) == 0 {
@@ -161,8 +206,12 @@ func (m *App) View() string {
 	sb.WriteString(strings.Repeat("─", m.width))
 	sb.WriteByte('\n')
 
+	// --- filter bar ---
+	sb.WriteString(buildFilterBar(m.activeFilter))
+	sb.WriteByte('\n')
+
 	// --- body ---
-	bodyHeight := m.height - 5 // header(2) + separator(1) + footer(2)
+	bodyHeight := m.height - 6 // header(2) + separator(1) + filterbar(1) + footer(2)
 	if bodyHeight < 1 {
 		bodyHeight = 1
 	}
@@ -207,11 +256,31 @@ func (m *App) View() string {
 	return sb.String()
 }
 
+func buildFilterBar(active string) string {
+	labels := map[string]string{
+		"all":       "all",
+		"running":   "● running",
+		"pending":   "pending",
+		"completed": "completed",
+		"failed":    "failed",
+	}
+	var parts []string
+	for _, f := range filterCycle {
+		label := labels[f]
+		if f == active {
+			parts = append(parts, styleFilterActive.Render(" "+label+" "))
+		} else {
+			parts = append(parts, styleFilterInactive.Render(" "+label+" "))
+		}
+	}
+	return strings.Join(parts, "")
+}
+
 func buildFooter(tmuxEnabled bool) string {
 	if tmuxEnabled {
-		return " enter: open   j/k: move   r: refresh   q: quit"
+		return " 1-5/tab: filter   enter: open   j/k: move   r: refresh   q: quit"
 	}
-	return " j/k: move   r: refresh   q: quit"
+	return " 1-5/tab: filter   j/k: move   r: refresh   q: quit"
 }
 
 // --- commands ---
@@ -222,13 +291,13 @@ func tickCmd() tea.Cmd {
 	})
 }
 
-func fetchJobsCmd(c *client.Client) tea.Cmd {
+func fetchJobsCmd(c *client.Client, filter string) tea.Cmd {
 	return func() tea.Msg {
-		interactive := true
-		jobs, err := c.ListJobs(api.JobListFilter{
-			Status:      "running",
-			Interactive: &interactive,
-		})
+		f := api.JobListFilter{}
+		if filter != "all" {
+			f.Status = filter
+		}
+		jobs, err := c.ListJobs(f)
 		return jobsMsg{jobs: jobs, err: err}
 	}
 }

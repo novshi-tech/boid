@@ -12,4 +12,11 @@ var (
 	styleWarn    = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 	styleError   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	styleTitle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
+
+	stylePending   = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))  // 黄色
+	styleCompleted = lipgloss.NewStyle().Foreground(lipgloss.Color("240")) // グレー
+	styleFailed    = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))   // 赤
+
+	styleFilterActive   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
+	styleFilterInactive = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 )
