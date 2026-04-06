@@ -196,64 +196,6 @@ func TestPlanHook_CollectsKitAndProjectHookFiles(t *testing.T) {
 	}
 }
 
-func TestPlanHook_ProjectHookOverridesKitHook(t *testing.T) {
-	projectDir := t.TempDir()
-	kitHooksDir := t.TempDir()
-
-	// kit hook with same prefixed name as project override
-	if err := os.WriteFile(filepath.Join(kitHooksDir, "run.sh"), []byte("#!/bin/bash\n# kit"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// project hook with same final name as kit prefixed hook
-	projHooksDir := filepath.Join(projectDir, ".boid", "hooks")
-	if err := os.MkdirAll(projHooksDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(projHooksDir, "claude-code--run.sh"), []byte("#!/bin/bash\n# override"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	meta := &ProjectMeta{
-		ID:           "proj-1",
-		KitHooksDirs: []KitHooksInfo{{HooksDir: kitHooksDir, Consumer: "claude-code"}},
-	}
-	proj := &Project{ID: "proj-1", WorkDir: projectDir}
-	task := &Task{ID: "task-2", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting}
-
-	planner := &DispatchPlanner{
-		Meta:     stubMetaCache{meta: meta},
-		Projects: stubProjectCatalog{projects: []*Project{proj}},
-		Tasks:    stubTaskLookup{task: task},
-	}
-
-	req, err := planner.PlanHook(&HookFireEvent{
-		EventID:   "event-2",
-		TaskID:    task.ID,
-		ProjectID: proj.ID,
-		Hook: Hook{
-			ID:         "hook-1",
-			ScriptPath: filepath.Join(projHooksDir, "claude-code--run.sh"),
-		},
-	})
-	if err != nil {
-		t.Fatalf("PlanHook: %v", err)
-	}
-
-	byTarget := make(map[string]HookFile)
-	for _, hf := range req.HookFiles {
-		byTarget[hf.TargetName] = hf
-	}
-
-	// Project file should override kit file at same target name
-	hook, ok := byTarget["claude-code--run.sh"]
-	if !ok {
-		t.Fatal("hook missing: want target=claude-code--run.sh")
-	}
-	if hook.Source != filepath.Join(projHooksDir, "claude-code--run.sh") {
-		t.Errorf("project should override kit: source = %q, want project's %q", hook.Source, filepath.Join(projHooksDir, "claude-code--run.sh"))
-	}
-}
-
 func TestDispatchPlannerPlanGateStagesKitGates(t *testing.T) {
 	projectDir := t.TempDir()
 	kitGatesDir := t.TempDir()

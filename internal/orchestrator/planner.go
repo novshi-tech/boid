@@ -11,8 +11,8 @@ import (
 )
 
 // collectHookFiles builds the list of hook files to bind-mount into the sandbox.
-// Kit hooks are prefixed with "{consumer}--". Project hooks override kit hooks
-// when they share the same target filename.
+// Kit hooks are prefixed with "{consumer}--". Project hooks are added independently
+// and cannot override kit hooks.
 func collectHookFiles(projectHooksDir string, kitHooksDirs []KitHooksInfo) []HookFile {
 	files := make(map[string]HookFile)
 
@@ -50,9 +50,11 @@ func collectHookFiles(projectHooksDir string, kitHooksDirs []KitHooksInfo) []Hoo
 			if ext != ".sh" && ext != ".py" {
 				continue
 			}
-			files[e.Name()] = HookFile{
-				Source:     filepath.Join(projectHooksDir, e.Name()),
-				TargetName: e.Name(),
+			if _, exists := files[e.Name()]; !exists {
+				files[e.Name()] = HookFile{
+					Source:     filepath.Join(projectHooksDir, e.Name()),
+					TargetName: e.Name(),
+				}
 			}
 		}
 	}
