@@ -50,3 +50,4 @@ kits:
   - github.com/novshi-tech/boid-kits/claude-code
   - github.com/novshi-tech/boid-kits/codex
   - github.com/novshi-tech/boid-kits/github-pr-verification
+  - github.com/novshi-tech/boid-kits/boid-tasks
