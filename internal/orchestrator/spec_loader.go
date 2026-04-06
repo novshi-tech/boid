@@ -38,6 +38,9 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	if err := validateBuiltinCommands("project.yaml", meta.BuiltinCommands, meta.HostCommands); err != nil {
 		return nil, err
 	}
+	if err := resolveProjectHostCommandPaths(dir, meta.HostCommands); err != nil {
+		return nil, err
+	}
 
 	if meta.ID == "" {
 		return nil, fmt.Errorf("project.yaml: id is required")
@@ -73,6 +76,33 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	}
 
 	return &meta, nil
+}
+
+// resolveProjectHostCommandPaths resolves relative paths in host_commands
+// against the project root directory. It rejects paths that escape the project
+// directory via traversal (e.g. "../../etc/passwd") or symlinks.
+func resolveProjectHostCommandPaths(projectDir string, cmds HostCommands) error {
+	for name, spec := range cmds {
+		if spec.Path == "" || filepath.IsAbs(spec.Path) {
+			continue
+		}
+		joined := filepath.Join(projectDir, spec.Path)
+		resolved, err := filepath.EvalSymlinks(filepath.Dir(joined))
+		if err != nil {
+			// If the directory doesn't exist we can still detect traversal
+			// via a lexical clean.
+			resolved = filepath.Clean(joined)
+		} else {
+			resolved = filepath.Join(resolved, filepath.Base(joined))
+		}
+		absProject, _ := filepath.Abs(projectDir)
+		if !strings.HasPrefix(resolved, absProject+string(filepath.Separator)) && resolved != absProject {
+			return fmt.Errorf("project.yaml: host_commands.%s.path %q resolves outside project directory", name, spec.Path)
+		}
+		spec.Path = joined
+		cmds[name] = spec
+	}
+	return nil
 }
 
 func resolveKitRef(ref, projectDir string, resolver KitResolver) (string, error) {

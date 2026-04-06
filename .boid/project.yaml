@@ -43,6 +43,11 @@ task_behaviors:
                   behavior: "dev"
                   description: "..."
 
+host_commands:
+  boid-e2e:
+    path: e2e/run.sh
+    allow: ["*"]
+
 kits:
   - github.com/novshi-tech/boid-kits/go-dev
   - github.com/novshi-tech/boid-kits/git

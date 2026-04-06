@@ -1197,3 +1197,137 @@ host_commands:
 		}
 	})
 }
+
+func TestReadProjectMeta_HostCommandRelativePath(t *testing.T) {
+	t.Run("relative path resolved to project root", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+
+		scriptDir := filepath.Join(dir, "scripts")
+		_ = os.MkdirAll(scriptDir, 0o755)
+		_ = os.WriteFile(filepath.Join(scriptDir, "run.sh"), []byte("#!/bin/sh\necho ok"), 0o755)
+
+		yaml := `
+id: test-proj
+name: Test Project
+host_commands:
+  my-cmd:
+    path: scripts/run.sh
+    allow: ["*"]
+`
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
+
+		meta, err := projectspec.ReadProjectMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadProjectMeta: %v", err)
+		}
+
+		spec := meta.HostCommands["my-cmd"]
+		want := filepath.Join(dir, "scripts", "run.sh")
+		if spec.Path != want {
+			t.Fatalf("expected path %q, got %q", want, spec.Path)
+		}
+	})
+
+	t.Run("absolute path unchanged", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+
+		yaml := `
+id: test-proj
+name: Test Project
+host_commands:
+  my-cmd:
+    path: /usr/bin/some-cmd
+`
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
+
+		meta, err := projectspec.ReadProjectMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadProjectMeta: %v", err)
+		}
+
+		spec := meta.HostCommands["my-cmd"]
+		if spec.Path != "/usr/bin/some-cmd" {
+			t.Fatalf("expected path /usr/bin/some-cmd, got %q", spec.Path)
+		}
+	})
+
+	t.Run("directory traversal rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+
+		yaml := `
+id: test-proj
+name: Test Project
+host_commands:
+  my-cmd:
+    path: ../../../etc/passwd
+`
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
+
+		_, err := projectspec.ReadProjectMeta(dir)
+		if err == nil {
+			t.Fatal("expected error for directory traversal")
+		}
+		if !strings.Contains(err.Error(), "outside project directory") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("symlink traversal rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		scriptsDir := filepath.Join(dir, "scripts")
+		_ = os.MkdirAll(boidDir, 0o755)
+		_ = os.MkdirAll(scriptsDir, 0o755)
+
+		// Create a symlink that points outside the project
+		_ = os.Symlink("/etc", filepath.Join(scriptsDir, "escape"))
+
+		yaml := `
+id: test-proj
+name: Test Project
+host_commands:
+  my-cmd:
+    path: scripts/escape/passwd
+`
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
+
+		_, err := projectspec.ReadProjectMeta(dir)
+		if err == nil {
+			t.Fatal("expected error for symlink traversal")
+		}
+		if !strings.Contains(err.Error(), "outside project directory") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("empty path unchanged", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+
+		yaml := `
+id: test-proj
+name: Test Project
+host_commands:
+  gh:
+    allow: [pr]
+`
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
+
+		meta, err := projectspec.ReadProjectMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadProjectMeta: %v", err)
+		}
+
+		spec := meta.HostCommands["gh"]
+		if spec.Path != "" {
+			t.Fatalf("expected empty path, got %q", spec.Path)
+		}
+	})
+}

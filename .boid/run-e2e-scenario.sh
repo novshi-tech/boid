@@ -4,33 +4,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-usage() {
-  cat >&2 <<'EOF'
-usage: boid-e2e <scenario>
-
-Allowed scenarios:
-  project-smoke
-  host-command-smoke
-  readonly-hook-gate
-  writable-chain
-  rework-cycle
-  feedback-loop-full
-EOF
-}
-
 if [[ $# -ne 1 ]]; then
-  usage
+  printf 'usage: boid-e2e <scenario>\n' >&2
   exit 2
 fi
 
-case "$1" in
-  project-smoke|host-command-smoke|readonly-hook-gate|writable-chain|rework-cycle|feedback-loop-full)
-    ;;
-  *)
-    printf 'unsupported scenario: %s\n' "$1" >&2
-    usage
-    exit 2
-    ;;
-esac
+scenario_dir="$REPO_ROOT/e2e/scenarios/$1"
+if [[ ! -d "$scenario_dir" ]] || [[ ! -f "$scenario_dir/scenario.sh" ]]; then
+  printf 'unknown scenario: %s\n' "$1" >&2
+  exit 2
+fi
 
 exec "$REPO_ROOT/e2e/run.sh" "$1"
