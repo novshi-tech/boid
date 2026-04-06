@@ -7,6 +7,7 @@ done
 
 printf 'hook-a ready\n' > writable-ready.txt
 
-cat <<'EOF'
+mkdir -p "$HOME/.boid/output"
+cat > "$HOME/.boid/output/payload_patch.yaml" <<'EOF'
 {"payload_patch":{"verification":{"findings":[{"message":"hook a ready","status":"resolved"}]}}}
 EOF

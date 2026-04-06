@@ -5,6 +5,7 @@ set -euo pipefail
 # (.boid/ は sandbox 内で read-only のため、プロジェクトルートに書く)
 printf '%s' "${BOID_INSTRUCTIONS:-}" > "agent-a-instructions.json"
 
-cat <<'EOF'
+mkdir -p "$HOME/.boid/output"
+cat > "$HOME/.boid/output/payload_patch.yaml" <<'EOF'
 {"payload_patch":{"artifact":{"source":"agent-a"}}}
 EOF

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cat <<'EOF'
+mkdir -p "$HOME/.boid/output"
+cat > "$HOME/.boid/output/payload_patch.yaml" <<'EOF'
 {"payload_patch":{"artifact":{"branch":"boid/e2e","commit":"deadbeef"}}}
 EOF

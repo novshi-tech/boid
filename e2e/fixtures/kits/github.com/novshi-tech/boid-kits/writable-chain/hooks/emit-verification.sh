@@ -9,6 +9,7 @@ done
   printf 'missing writable-ready.txt\n' >&2
   exit 1
 }
-cat <<'EOF'
+mkdir -p "$HOME/.boid/output"
+cat > "$HOME/.boid/output/payload_patch.yaml" <<'EOF'
 {"payload_patch":{"artifact":{"source":"emit-verification"}}}
 EOF
