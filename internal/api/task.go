@@ -18,8 +18,14 @@ func (h *TaskHandler) Routes() chi.Router {
 	r.Get("/", h.List)
 	r.Get("/{id}/detail", h.Detail)
 	r.Get("/{id}", h.Get)
+	r.Patch("/{id}", h.Patch)
 	r.Delete("/{id}", h.Delete)
 	return r
+}
+
+type UpdateTaskRequest struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
 }
 
 type CreateTaskRequest struct {
@@ -83,6 +89,25 @@ func (h *TaskHandler) Detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)
+}
+
+func (h *TaskHandler) Patch(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req UpdateTaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Title == "" {
+		writeError(w, http.StatusBadRequest, "title is required")
+		return
+	}
+	task, err := h.Service.UpdateTask(id, req)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, task)
 }
 
 func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {

@@ -216,6 +216,19 @@ func (s *TaskAppService) GetTask(id string) (*orchestrator.Task, error) {
 	return task, nil
 }
 
+func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestrator.Task, error) {
+	task, err := s.Tasks.GetTask(id)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	task.Title = req.Title
+	task.Description = req.Description
+	if err := s.Tasks.UpdateTask(task); err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return task, nil
+}
+
 func (s *TaskAppService) DeleteTask(id string, force bool) error {
 	task, err := s.Tasks.GetTask(id)
 	if err != nil {

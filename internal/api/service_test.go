@@ -395,6 +395,46 @@ func TestTaskAppServiceDeleteTask_NotFound(t *testing.T) {
 	}
 }
 
+func TestTaskAppServiceUpdateTask(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		task := &orchestrator.Task{
+			ID:          "task-1",
+			Title:       "old title",
+			Description: "old desc",
+		}
+		store := &stubTaskStore{task: task}
+		svc := &TaskAppService{Tasks: store}
+
+		got, err := svc.UpdateTask("task-1", UpdateTaskRequest{Title: "new title", Description: "new desc"})
+		if err != nil {
+			t.Fatalf("UpdateTask() error = %v", err)
+		}
+		if got.Title != "new title" {
+			t.Fatalf("Title = %q, want %q", got.Title, "new title")
+		}
+		if got.Description != "new desc" {
+			t.Fatalf("Description = %q, want %q", got.Description, "new desc")
+		}
+		if store.updateCalls != 1 {
+			t.Fatalf("UpdateTask calls = %d, want 1", store.updateCalls)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		store := &stubTaskStore{err: fmt.Errorf("task not found")}
+		svc := &TaskAppService{Tasks: store}
+
+		_, err := svc.UpdateTask("nonexistent", UpdateTaskRequest{Title: "x"})
+		if err == nil {
+			t.Fatal("UpdateTask() error = nil, want error")
+		}
+		se, ok := err.(*StatusError)
+		if !ok || se.Code != http.StatusNotFound {
+			t.Fatalf("expected StatusNotFound, got %v", err)
+		}
+	})
+}
+
 type stubTaskStore struct {
 	task        *orchestrator.Task
 	err         error
