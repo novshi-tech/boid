@@ -25,4 +25,9 @@ var (
 	styleVerifying = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))  // 青系
 	styleTaskDim   = lipgloss.NewStyle().Foreground(lipgloss.Color("240")) // dim
 	styleAborted   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))   // 赤系
+
+	// Table component styles
+	styleTableHeader   = styleDim
+	styleTableCell     = lipgloss.NewStyle()
+	styleTableSelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 )

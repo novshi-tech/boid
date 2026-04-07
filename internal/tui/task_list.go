@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
@@ -55,9 +56,9 @@ type miniSelector struct {
 type TaskListScreen struct {
 	shared *SharedState
 
+	table        table.Model
 	tasks        []*orchestrator.Task
 	projects     []*orchestrator.Project
-	cursor       int
 	statusFilter string // active, pending, done, aborted, all
 	projectIdx   int    // 0=all, 1..N=project index
 	loading      bool
@@ -68,8 +69,25 @@ type TaskListScreen struct {
 }
 
 func NewTaskListScreen(shared *SharedState) *TaskListScreen {
+	cols := []table.Column{
+		{Title: "STATUS", Width: 11},
+		{Title: "TITLE", Width: 24},
+		{Title: "PROJECT", Width: 12},
+		{Title: "BEHAVIOR", Width: 8},
+		{Title: "AGE", Width: 6},
+	}
+	t := table.New(
+		table.WithColumns(cols),
+		table.WithFocused(true),
+		table.WithStyles(table.Styles{
+			Header:   styleTableHeader,
+			Cell:     styleTableCell,
+			Selected: styleTableSelected,
+		}),
+	)
 	return &TaskListScreen{
 		shared:       shared,
+		table:        t,
 		statusFilter: "active",
 		loading:      true,
 	}
@@ -98,12 +116,7 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		} else {
 			s.fetchErr = nil
 			s.tasks = msg.tasks
-			if s.cursor >= len(s.tasks) && len(s.tasks) > 0 {
-				s.cursor = len(s.tasks) - 1
-			}
-			if len(s.tasks) == 0 {
-				s.cursor = 0
-			}
+			s.syncTableRows()
 		}
 
 	case projectsMsg:
@@ -159,11 +172,19 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	case taskCreatedNotifyMsg:
 		s.statusMsg = "task created"
 		s.isError = false
-		return s, tea.Batch(fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID()), clearStatusAfter(3 * time.Second))
+		return s, tea.Batch(fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID()), clearStatusAfter(3*time.Second))
 
 	case clearStatusMsg:
 		s.statusMsg = ""
 		s.isError = false
+
+	case tea.WindowSizeMsg:
+		s.table.SetWidth(msg.Width)
+		bodyH := msg.Height - 2
+		if bodyH < 1 {
+			bodyH = 1
+		}
+		s.table.SetHeight(bodyH)
 
 	case tea.KeyMsg:
 		return s, s.handleKey(msg)
@@ -179,13 +200,13 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	switch msg.String() {
 	case "j", "down":
-		if s.cursor < len(s.tasks)-1 {
-			s.cursor++
+		if len(s.tasks) > 0 {
+			s.table.MoveDown(1)
 		}
 
 	case "k", "up":
-		if s.cursor > 0 {
-			s.cursor--
+		if len(s.tasks) > 0 {
+			s.table.MoveUp(1)
 		}
 
 	case "tab":
@@ -195,7 +216,7 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 				break
 			}
 		}
-		s.cursor = 0
+		s.table.SetCursor(0)
 		s.loading = true
 		return fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
 
@@ -206,14 +227,14 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 				break
 			}
 		}
-		s.cursor = 0
+		s.table.SetCursor(0)
 		s.loading = true
 		return fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
 
 	case "p":
 		total := len(s.projects) + 1 // +1 for "all"
 		s.projectIdx = (s.projectIdx + 1) % total
-		s.cursor = 0
+		s.table.SetCursor(0)
 		s.loading = true
 		return fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
 
@@ -225,7 +246,7 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if len(s.tasks) == 0 {
 			break
 		}
-		task := s.tasks[s.cursor]
+		task := s.tasks[s.table.Cursor()]
 		projectName := s.findProjectName(task.ProjectID)
 		return PushScreen(NewTaskDetailScreen(s.shared, task.ID, projectName))
 
@@ -233,7 +254,7 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if len(s.tasks) == 0 {
 			break
 		}
-		task := s.tasks[s.cursor]
+		task := s.tasks[s.table.Cursor()]
 		if task.Status != orchestrator.TaskStatusPending {
 			break
 		}
@@ -245,7 +266,7 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if len(s.tasks) == 0 {
 			break
 		}
-		task := s.tasks[s.cursor]
+		task := s.tasks[s.table.Cursor()]
 		s.statusMsg = "loading..."
 		s.isError = false
 		return fetchQuickOpenCmd(s.shared.Client, task.ID)
@@ -294,17 +315,10 @@ func (s *TaskListScreen) View(width, height int) string {
 		sb.WriteString(styleDim.Render("  no tasks"))
 		sb.WriteByte('\n')
 	} else {
-		scroll := 0
-		if s.cursor >= bodyHeight {
-			scroll = s.cursor - bodyHeight + 1
-		}
-		end := min(scroll+bodyHeight, len(s.tasks))
-		visible := s.tasks[scroll:end]
-		for i, task := range visible {
-			line := renderTaskLine(task, scroll+i == s.cursor, width, s.findProjectName(task.ProjectID))
-			sb.WriteString(line)
-			sb.WriteByte('\n')
-		}
+		s.table.SetWidth(width)
+		s.table.SetHeight(bodyHeight)
+		sb.WriteString(s.table.View())
+		sb.WriteByte('\n')
 	}
 
 	// --- mini selector (above footer) ---
@@ -362,35 +376,59 @@ func (s *TaskListScreen) findProjectName(projectID string) string {
 	return ""
 }
 
-// --- rendering ---
+// syncTableRows converts s.tasks to table rows and updates the table.
+func (s *TaskListScreen) syncTableRows() {
+	rows := make([]table.Row, len(s.tasks))
+	for i, task := range s.tasks {
+		dot, statusText := taskStatusDisplay(task.Status)
+		statusCell := stripANSI(dot) + " " + stripANSI(statusText)
 
-func renderTaskLine(task *orchestrator.Task, selected bool, width int, projectName string) string {
-	cursor := "  "
-	if selected {
-		cursor = styleCursor.Render("▸ ")
+		title := task.Title
+		if title == "" {
+			title = "(no title)"
+		}
+
+		projectCell := ""
+		if name := s.findProjectName(task.ProjectID); name != "" {
+			projectCell = "[" + truncate(name, 10) + "]"
+		}
+
+		rows[i] = table.Row{
+			statusCell,
+			truncate(title, 24),
+			projectCell,
+			task.Behavior,
+			formatTaskElapsed(task.CreatedAt),
+		}
 	}
-
-	dot, statusText := taskStatusDisplay(task.Status)
-
-	title := task.Title
-	if title == "" {
-		title = "(no title)"
+	s.table.SetRows(rows)
+	// Fix cursor if it became negative due to SetCursor being called with empty rows.
+	if len(rows) > 0 && s.table.Cursor() < 0 {
+		s.table.SetCursor(0)
 	}
-
-	proj := ""
-	if projectName != "" {
-		proj = styleDim.Render("[" + truncate(projectName, 10) + "]")
-	}
-
-	behavior := styleDim.Render(task.Behavior)
-	elapsed := styleDim.Render(formatTaskElapsed(task.CreatedAt))
-
-	line := fmt.Sprintf("%s%s %s  %-24s  %-14s  %-6s  %s",
-		cursor, dot, statusText, truncate(title, 24), proj, behavior, elapsed)
-
-	_ = width
-	return line
 }
+
+// stripANSI removes ANSI escape sequences from s.
+func stripANSI(s string) string {
+	var out strings.Builder
+	inEsc := false
+	for _, r := range s {
+		if r == '\x1b' {
+			inEsc = true
+			continue
+		}
+		if inEsc {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEsc = false
+			}
+			continue
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
+}
+
+// --- rendering ---
 
 func taskStatusDisplay(status orchestrator.TaskStatus) (dot, text string) {
 	switch status {
