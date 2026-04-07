@@ -291,6 +291,7 @@ type WebAppService struct {
 	Jobs     JobStore
 	Projects ProjectRepository
 	Meta     MetaStore
+	Workflow WorkflowService
 }
 
 func (s *WebAppService) ListTasks(status string) ([]*orchestrator.Task, error) {
@@ -324,6 +325,14 @@ func (s *WebAppService) ListProjects() ([]*orchestrator.Project, error) {
 		}
 	}
 	return projects, nil
+}
+
+func (s *WebAppService) ApplyAction(taskID string, actionType string) error {
+	if s.Workflow == nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
+	}
+	_, err := s.Workflow.ApplyAction(context.Background(), taskID, ApplyActionRequest{Type: actionType})
+	return err
 }
 
 type TaskWorkflowService struct {

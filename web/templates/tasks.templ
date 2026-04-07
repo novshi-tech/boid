@@ -79,7 +79,7 @@ templ TaskList(tasks []*orchestrator.Task, currentFilter string) {
 	}
 }
 
-templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView) {
+templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, availableActions []string, errorMsg string) {
 	@Layout(task.Title) {
 		<div class="section">
 			<h1>{ task.Title }</h1>
@@ -101,6 +101,31 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 				</div>
 			</div>
 		</div>
+		if errorMsg != "" {
+			<div class="section action-error">
+				{ errorMsg }
+			</div>
+		}
+		if len(availableActions) > 0 {
+			<div class="section">
+				<h2 class="section-title">アクション</h2>
+				<div class="action-buttons">
+					for _, act := range availableActions {
+						if act == "abort" {
+							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')">
+								<input type="hidden" name="type" value="abort"/>
+								<button type="submit" class="btn btn-danger">{ act }</button>
+							</form>
+						} else {
+							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") }>
+								<input type="hidden" name="type" value={ act }/>
+								<button type="submit" class="btn btn-primary">{ act }</button>
+							</form>
+						}
+					}
+				</div>
+			</div>
+		}
 		if len(task.Payload) > 0 && string(task.Payload) != "null" {
 			<div class="section">
 				<details>

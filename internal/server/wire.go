@@ -133,6 +133,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Jobs:     jobStore,
 		Projects: projectRepo,
 		Meta:     store,
+		Workflow: workflow,
 	}
 
 	return &appRuntime{
