@@ -206,6 +206,71 @@ func TestTaskAppServiceGetTaskDetail(t *testing.T) {
 	}
 }
 
+func TestTaskAppServiceGetTaskDetail_AvailableActions(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "task-aa",
+		ProjectID: "proj-aa",
+		Status:    orchestrator.TaskStatusPending,
+		Behavior:  "dev",
+	}
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {Transition: "one-shot"},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks:   &stubTaskStore{task: task},
+		Actions: stubActionStore{},
+		Jobs:    &stubJobStore{},
+		Meta:    stubMetaStore{meta: meta},
+	}
+
+	got, err := svc.GetTaskDetail(task.ID)
+	if err != nil {
+		t.Fatalf("GetTaskDetail() error = %v", err)
+	}
+	hasStart, hasAbort := false, false
+	for _, a := range got.AvailableActions {
+		switch a {
+		case "start":
+			hasStart = true
+		case "abort":
+			hasAbort = true
+		case "job_failed":
+			t.Errorf("job_failed must not appear in AvailableActions")
+		}
+	}
+	if !hasStart {
+		t.Errorf("AvailableActions should contain 'start' for pending task, got %v", got.AvailableActions)
+	}
+	if !hasAbort {
+		t.Errorf("AvailableActions should contain 'abort' for pending task, got %v", got.AvailableActions)
+	}
+}
+
+func TestTaskAppServiceGetTaskDetail_AvailableActions_NoMeta(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "task-bb",
+		ProjectID: "proj-bb",
+		Status:    orchestrator.TaskStatusPending,
+		Behavior:  "dev",
+	}
+	svc := &TaskAppService{
+		Tasks:   &stubTaskStore{task: task},
+		Actions: stubActionStore{},
+		Jobs:    &stubJobStore{},
+		// Meta is nil → AvailableActions should be nil/empty
+	}
+
+	got, err := svc.GetTaskDetail(task.ID)
+	if err != nil {
+		t.Fatalf("GetTaskDetail() error = %v", err)
+	}
+	if len(got.AvailableActions) != 0 {
+		t.Errorf("AvailableActions should be empty when Meta is nil, got %v", got.AvailableActions)
+	}
+}
+
 func TestTaskWorkflowServiceCompleteJobFinalizesOnResolverError(t *testing.T) {
 	job := &Job{
 		ID:        "job-2",

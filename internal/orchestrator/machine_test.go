@@ -417,6 +417,103 @@ func TestFeedbackLoopMachine_AbortFromAny(t *testing.T) {
 	}
 }
 
+func TestStateMachine_AvailableActions_OneShotPending(t *testing.T) {
+	sm := orchestrator.OneShotMachine()
+	actions := sm.AvailableActions(orchestrator.TaskStatusPending)
+	want := map[string]bool{"start": true, "abort": true}
+	if len(actions) != len(want) {
+		t.Fatalf("AvailableActions(pending) = %v, want %v", actions, want)
+	}
+	for _, a := range actions {
+		if !want[a] {
+			t.Errorf("unexpected action %q in AvailableActions(pending)", a)
+		}
+	}
+}
+
+func TestStateMachine_AvailableActions_OneShotExecuting(t *testing.T) {
+	sm := orchestrator.OneShotMachine()
+	actions := sm.AvailableActions(orchestrator.TaskStatusExecuting)
+	want := map[string]bool{"done": true, "abort": true}
+	if len(actions) != len(want) {
+		t.Fatalf("AvailableActions(executing) = %v, want %v", actions, want)
+	}
+	for _, a := range actions {
+		if !want[a] {
+			t.Errorf("unexpected action %q in AvailableActions(executing)", a)
+		}
+	}
+}
+
+func TestStateMachine_AvailableActions_ExcludesJobFailed(t *testing.T) {
+	for _, sm := range []*orchestrator.StateMachine{
+		orchestrator.OneShotMachine(),
+		orchestrator.OneShotFeedbackMachine(),
+		orchestrator.FeedbackLoopMachine(),
+	} {
+		for _, status := range []orchestrator.TaskStatus{
+			orchestrator.TaskStatusPending,
+			orchestrator.TaskStatusExecuting,
+			orchestrator.TaskStatusDone,
+			orchestrator.TaskStatusAborted,
+		} {
+			for _, a := range sm.AvailableActions(status) {
+				if a == "job_failed" {
+					t.Errorf("machine %q: job_failed must not appear in AvailableActions(%q)", sm.Name, status)
+				}
+			}
+		}
+	}
+}
+
+func TestStateMachine_AvailableActions_DoneIsEmpty(t *testing.T) {
+	for _, sm := range []*orchestrator.StateMachine{
+		orchestrator.OneShotMachine(),
+		orchestrator.OneShotFeedbackMachine(),
+		orchestrator.FeedbackLoopMachine(),
+	} {
+		for _, status := range []orchestrator.TaskStatus{orchestrator.TaskStatusDone, orchestrator.TaskStatusAborted} {
+			if actions := sm.AvailableActions(status); len(actions) != 0 {
+				t.Errorf("machine %q: AvailableActions(%q) = %v, want empty", sm.Name, status, actions)
+			}
+		}
+	}
+}
+
+func TestStateMachine_AvailableActions_FeedbackLoopInReview(t *testing.T) {
+	sm := orchestrator.FeedbackLoopMachine()
+	actions := sm.AvailableActions(orchestrator.TaskStatusInReview)
+	want := map[string]bool{"collect_feedback": true, "abort": true}
+	if len(actions) != len(want) {
+		t.Fatalf("AvailableActions(in_review) = %v, want %v", actions, want)
+	}
+	for _, a := range actions {
+		if !want[a] {
+			t.Errorf("unexpected action %q", a)
+		}
+	}
+}
+
+func TestGetMachine_KnownTransitions(t *testing.T) {
+	for _, name := range []string{"one-shot", "one-shot-feedback", "feedback-loop"} {
+		sm, ok := orchestrator.GetMachine(name)
+		if !ok {
+			t.Errorf("GetMachine(%q) not found", name)
+			continue
+		}
+		if sm.Name != name {
+			t.Errorf("GetMachine(%q).Name = %q, want %q", name, sm.Name, name)
+		}
+	}
+}
+
+func TestGetMachine_Unknown(t *testing.T) {
+	_, ok := orchestrator.GetMachine("nonexistent")
+	if ok {
+		t.Error("GetMachine(nonexistent) should return ok=false")
+	}
+}
+
 // TestJobCompletedNotAnAction verifies that job_completed does not trigger a
 // state transition in any machine. State transitions driven by hook/gate job
 // completion must happen exclusively through DispatchAndAdvance (condition-based

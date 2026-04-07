@@ -31,9 +31,10 @@ type ProjectReloadResult struct {
 }
 
 type TaskDetailView struct {
-	Task    *orchestrator.Task
-	Actions []*orchestrator.Action
-	Jobs    []*Job
+	Task             *orchestrator.Task
+	Actions          []*orchestrator.Action
+	Jobs             []*Job
+	AvailableActions []string `json:"available_actions"`
 }
 
 type ProjectAppService struct {
@@ -239,6 +240,27 @@ func (s *TaskAppService) DeleteTask(id string, force bool) error {
 	return nil
 }
 
+// computeAvailableActions resolves the StateMachine for the task's behavior and
+// returns the list of manual actions applicable to the task's current status.
+func computeAvailableActions(meta MetaStore, task *orchestrator.Task) []string {
+	if meta == nil {
+		return nil
+	}
+	m, ok := meta.Get(task.ProjectID)
+	if !ok {
+		return nil
+	}
+	behavior, ok := m.TaskBehaviors[task.Behavior]
+	if !ok {
+		return nil
+	}
+	sm, ok := orchestrator.GetMachine(behavior.Transition)
+	if !ok {
+		return nil
+	}
+	return sm.AvailableActions(task.Status)
+}
+
 func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 	task, err := s.GetTask(id)
 	if err != nil {
@@ -256,9 +278,10 @@ func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 	}
 
 	return &TaskDetailView{
-		Task:    task,
-		Actions: actions,
-		Jobs:    jobs,
+		Task:             task,
+		Actions:          actions,
+		Jobs:             jobs,
+		AvailableActions: computeAvailableActions(s.Meta, task),
 	}, nil
 }
 
@@ -283,9 +306,10 @@ func (s *WebAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 	actions, _ := s.Actions.ListActionsByTask(task.ID)
 	jobs, _ := s.Jobs.ListJobsByTask(task.ID)
 	return &TaskDetailView{
-		Task:    task,
-		Actions: actions,
-		Jobs:    jobs,
+		Task:             task,
+		Actions:          actions,
+		Jobs:             jobs,
+		AvailableActions: computeAvailableActions(s.Meta, task),
 	}, nil
 }
 

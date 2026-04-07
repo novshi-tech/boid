@@ -8,7 +8,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
-	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 const taskDetailPollInterval = 3 * time.Second
@@ -131,35 +130,6 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			s.cursor--
 		}
 
-	case "s":
-		if s.detail == nil || s.detail.Task == nil {
-			break
-		}
-		if s.detail.Task.Status != orchestrator.TaskStatusPending {
-			break
-		}
-		return applyActionCmd(s.shared.Client, s.taskID, "start")
-
-	case "x":
-		if s.detail == nil || s.detail.Task == nil {
-			break
-		}
-		st := s.detail.Task.Status
-		if st == orchestrator.TaskStatusDone || st == orchestrator.TaskStatusAborted {
-			break
-		}
-		if s.abortPending {
-			s.abortPending = false
-			s.statusMsg = ""
-			return applyActionCmd(s.shared.Client, s.taskID, "abort")
-		}
-		s.abortPending = true
-		s.statusMsg = "Press x again to abort"
-		s.isError = false
-		return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
-			return abortConfirmDeadlineMsg{}
-		})
-
 	case "r":
 		s.loading = true
 		return fetchTaskDetailCmd(s.shared.Client, s.taskID)
@@ -178,6 +148,31 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	case "esc", "backspace":
 		return func() tea.Msg { return popScreenMsg{} }
+
+	default:
+		if len(msg.Runes) != 1 {
+			break
+		}
+		ch := msg.Runes[0]
+		km := assignKeys(s.availableActions())
+		action, ok := km[ch]
+		if !ok {
+			break
+		}
+		if action == "abort" {
+			if s.abortPending {
+				s.abortPending = false
+				s.statusMsg = ""
+				return applyActionCmd(s.shared.Client, s.taskID, "abort")
+			}
+			s.abortPending = true
+			s.statusMsg = "Press " + string(ch) + " again to abort"
+			s.isError = false
+			return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+				return abortConfirmDeadlineMsg{}
+			})
+		}
+		return applyActionCmd(s.shared.Client, s.taskID, action)
 	}
 	return nil
 }
@@ -284,8 +279,46 @@ func (s *TaskDetailScreen) View(width, height int) string {
 	return sb.String()
 }
 
+func (s *TaskDetailScreen) availableActions() []string {
+	if s.detail == nil {
+		return nil
+	}
+	return s.detail.AvailableActions
+}
+
 func (s *TaskDetailScreen) ShortHelp() string {
-	return "j/k: move  s: start  x: abort  enter: open job  r: refresh  esc: back"
+	km := assignKeys(s.availableActions())
+	// Reverse map: action → key (for ordered output)
+	rev := map[string]rune{}
+	for ch, action := range km {
+		rev[action] = ch
+	}
+	var parts []string
+	for _, action := range s.availableActions() {
+		if ch, ok := rev[action]; ok {
+			parts = append(parts, string(ch)+": "+action)
+		}
+	}
+	fixed := "j/k: move  enter: open job  r: refresh  esc: back"
+	if len(parts) == 0 {
+		return fixed
+	}
+	return strings.Join(parts, "  ") + "  " + fixed
+}
+
+// assignKeys assigns a single-character key to each action name.
+// The first unused character of the action name is used as the key.
+func assignKeys(actions []string) map[rune]string {
+	m := map[rune]string{}
+	for _, a := range actions {
+		for _, ch := range a {
+			if _, used := m[ch]; !used {
+				m[ch] = a
+				break
+			}
+		}
+	}
+	return m
 }
 
 // --- job line rendering ---
