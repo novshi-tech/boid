@@ -53,6 +53,13 @@ func Apply(conn *sql.DB) error {
 				return columnExists(tx, "tasks", "auto_start")
 			},
 		},
+		{
+			version: "0007_embed_behavior_fields",
+			path:    "migrations/0007_embed_behavior_fields.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnExists(tx, "tasks", "transition")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

@@ -29,11 +29,15 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 	if len(t.Payload) == 0 {
 		t.Payload = json.RawMessage("{}")
 	}
+	traitsJSON, err := marshalTraits(t.Traits)
+	if err != nil {
+		return fmt.Errorf("marshal traits: %w", err)
+	}
 
-	_, err := dbtx.Exec(
-		`INSERT INTO tasks (id, project_id, remote_id, datasource_id, title, description, status, behavior, payload, auto_start, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.ProjectID, t.RemoteID, t.DataSourceID, t.Title, t.Description, t.Status, t.Behavior, string(t.Payload), t.AutoStart, t.CreatedAt, t.UpdatedAt,
+	_, err = dbtx.Exec(
+		`INSERT INTO tasks (id, project_id, remote_id, datasource_id, title, description, status, behavior, transition, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.ProjectID, t.RemoteID, t.DataSourceID, t.Title, t.Description, t.Status, t.Behavior, t.Transition, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), t.AutoStart, t.CreatedAt, t.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
@@ -43,13 +47,13 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 
 func GetTask(dbtx db.DBTX, id string) (*Task, error) {
 	row := dbtx.QueryRow(
-		`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, payload, auto_start, created_at, updated_at FROM tasks WHERE id = ?`, id,
+		`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, transition, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, created_at, updated_at FROM tasks WHERE id = ?`, id,
 	)
 	t, err := scanTask(row)
 	if err != nil && len(id) >= 8 {
 		// Try prefix match
 		row = dbtx.QueryRow(
-			`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, payload, auto_start, created_at, updated_at FROM tasks WHERE id LIKE ?`, id+"%",
+			`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, transition, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, created_at, updated_at FROM tasks WHERE id LIKE ?`, id+"%",
 		)
 		return scanTask(row)
 	}
@@ -69,7 +73,7 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 		args = append(args, filter.ProjectID)
 	}
 
-	query := `SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, payload, auto_start, created_at, updated_at FROM tasks`
+	query := `SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, transition, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, created_at, updated_at FROM tasks`
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
@@ -94,9 +98,13 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 
 func UpdateTask(dbtx db.DBTX, t *Task) error {
 	t.UpdatedAt = time.Now().UTC()
-	_, err := dbtx.Exec(
-		`UPDATE tasks SET status = ?, payload = ?, updated_at = ? WHERE id = ?`,
-		t.Status, string(t.Payload), t.UpdatedAt, t.ID,
+	traitsJSON, err := marshalTraits(t.Traits)
+	if err != nil {
+		return fmt.Errorf("marshal traits: %w", err)
+	}
+	_, err = dbtx.Exec(
+		`UPDATE tasks SET title = ?, description = ?, status = ?, transition = ?, traits = ?, readonly = ?, worktree = ?, branch_prefix = ?, base_branch = ?, payload = ?, updated_at = ? WHERE id = ?`,
+		t.Title, t.Description, t.Status, t.Transition, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), t.UpdatedAt, t.ID,
 	)
 	return err
 }
@@ -243,7 +251,7 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 // or nil if no matching task is found.
 func FindTaskByRemote(dbtx db.DBTX, remoteID, datasourceID string) (*Task, error) {
 	row := dbtx.QueryRow(
-		`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, payload, auto_start, created_at, updated_at FROM tasks WHERE remote_id = ? AND datasource_id = ?`,
+		`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, transition, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, created_at, updated_at FROM tasks WHERE remote_id = ? AND datasource_id = ?`,
 		remoteID, datasourceID,
 	)
 	t, err := scanTask(row)
@@ -278,12 +286,40 @@ type taskScanner interface {
 func scanTask(s taskScanner) (*Task, error) {
 	var t Task
 	var payload string
-	if err := s.Scan(&t.ID, &t.ProjectID, &t.RemoteID, &t.DataSourceID, &t.Title, &t.Description, &t.Status, &t.Behavior, &payload, &t.AutoStart, &t.CreatedAt, &t.UpdatedAt); err != nil {
+	var traitsJSON string
+	if err := s.Scan(&t.ID, &t.ProjectID, &t.RemoteID, &t.DataSourceID, &t.Title, &t.Description, &t.Status, &t.Behavior, &t.Transition, &traitsJSON, &t.Readonly, &t.Worktree, &t.BranchPrefix, &t.BaseBranch, &payload, &t.AutoStart, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("task not found")
 		}
 		return nil, fmt.Errorf("scan task: %w", err)
 	}
 	t.Payload = json.RawMessage(payload)
+	traits, err := unmarshalTraits(traitsJSON)
+	if err != nil {
+		return nil, fmt.Errorf("unmarshal traits: %w", err)
+	}
+	t.Traits = traits
 	return &t, nil
+}
+
+func marshalTraits(traits []string) (string, error) {
+	if traits == nil {
+		return "[]", nil
+	}
+	b, err := json.Marshal(traits)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func unmarshalTraits(s string) ([]string, error) {
+	if s == "" || s == "[]" {
+		return nil, nil
+	}
+	var traits []string
+	if err := json.Unmarshal([]byte(s), &traits); err != nil {
+		return nil, err
+	}
+	return traits, nil
 }

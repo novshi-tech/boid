@@ -27,6 +27,12 @@ type Task struct {
 	Description  string          `json:"description,omitempty"`
 	Status       TaskStatus      `json:"status"`
 	Behavior     string          `json:"behavior"`
+	Transition   string          `json:"transition"`
+	Traits       []string        `json:"traits,omitempty"`
+	Readonly     bool            `json:"readonly,omitempty"`
+	Worktree     bool            `json:"worktree,omitempty"`
+	BranchPrefix string          `json:"branch_prefix,omitempty"`
+	BaseBranch   string          `json:"base_branch,omitempty"`
 	Payload      json.RawMessage `json:"payload"`
 	AutoStart    bool            `json:"auto_start,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`
