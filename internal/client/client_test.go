@@ -87,3 +87,48 @@ func TestApplyAction_ServerError(t *testing.T) {
 		t.Errorf("error should mention 'task not found', got %q", err.Error())
 	}
 }
+
+func TestDeleteTask(t *testing.T) {
+	wantTaskID := "task-abc"
+
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		wantPath := "/api/tasks/" + wantTaskID
+		if req.URL.Path != wantPath {
+			t.Errorf("path: want %q, got %q", wantPath, req.URL.Path)
+		}
+		if req.Method != http.MethodDelete {
+			t.Errorf("method: want DELETE, got %s", req.Method)
+		}
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Body:       io.NopCloser(strings.NewReader("")),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	c := newTestClient(transport)
+	err := c.DeleteTask(wantTaskID)
+	if err != nil {
+		t.Fatalf("DeleteTask error: %v", err)
+	}
+}
+
+func TestDeleteTask_ServerError(t *testing.T) {
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		errBody := `{"error":"task is active"}`
+		return &http.Response{
+			StatusCode: http.StatusConflict,
+			Body:       io.NopCloser(strings.NewReader(errBody)),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	c := newTestClient(transport)
+	err := c.DeleteTask("active-task")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "task is active") {
+		t.Errorf("error should mention 'task is active', got %q", err.Error())
+	}
+}

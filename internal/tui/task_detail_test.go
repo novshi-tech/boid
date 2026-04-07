@@ -396,6 +396,101 @@ func TestAssignKeys_CollectFeedback(t *testing.T) {
 
 // --- assignKeys tests end ---
 
+// --- delete keybinding tests ---
+
+func TestDeleteKey_FirstPress_SetsPending(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusDone)
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if !s.deletePending {
+		t.Error("d first press: expected deletePending=true")
+	}
+	if s.statusMsg == "" {
+		t.Error("d first press: expected statusMsg to be set")
+	}
+	if cmd == nil {
+		t.Error("d first press: expected non-nil cmd (tick)")
+	}
+}
+
+func TestDeleteKey_SecondPress_ReturnsDeleteResultMsg(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusDone)
+	s.deletePending = true
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if cmd == nil {
+		t.Error("d second press: expected non-nil cmd (deleteTaskCmd)")
+	}
+}
+
+func TestDeleteConfirmDeadline_ResetsPending(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.deletePending = true
+	s.statusMsg = "Press d again to delete"
+
+	s.Update(deleteConfirmDeadlineMsg{})
+	if s.deletePending {
+		t.Error("deadline: expected deletePending=false")
+	}
+	if s.statusMsg != "" {
+		t.Errorf("deadline: expected empty statusMsg, got %q", s.statusMsg)
+	}
+}
+
+func TestDeleteResult_Success_PopScreen(t *testing.T) {
+	s := newTestTaskDetailScreen()
+
+	_, cmd := s.Update(deleteResultMsg{err: nil})
+	if cmd == nil {
+		t.Fatal("delete success: expected non-nil cmd (popScreenMsg)")
+	}
+	msg := cmd()
+	if _, ok := msg.(popScreenMsg); !ok {
+		t.Errorf("delete success: expected popScreenMsg, got %T", msg)
+	}
+}
+
+func TestDeleteResult_Error_SetsStatusMsg(t *testing.T) {
+	s := newTestTaskDetailScreen()
+
+	s.Update(deleteResultMsg{err: fmt.Errorf("task is active")})
+	if s.statusMsg == "" {
+		t.Error("delete error: expected statusMsg to be set")
+	}
+	if !s.isError {
+		t.Error("delete error: expected isError=true")
+	}
+}
+
+func TestShortHelp_DeleteShownForTerminalStatus(t *testing.T) {
+	for _, st := range []orchestrator.TaskStatus{orchestrator.TaskStatusDone, orchestrator.TaskStatusAborted} {
+		s := newTestTaskDetailScreen()
+		s.detail = makeDetailWithStatus(st)
+		help := s.ShortHelp()
+		if !containsStr(help, "d: delete") {
+			t.Errorf("ShortHelp for %q: expected 'd: delete', got %q", st, help)
+		}
+	}
+}
+
+func TestShortHelp_DeleteNotShownForActiveStatus(t *testing.T) {
+	for _, st := range []orchestrator.TaskStatus{
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusPending,
+	} {
+		s := newTestTaskDetailScreen()
+		s.detail = makeDetailWithStatus(st)
+		help := s.ShortHelp()
+		if containsStr(help, "d: delete") {
+			t.Errorf("ShortHelp for %q: should NOT contain 'd: delete', got %q", st, help)
+		}
+	}
+}
+
+// --- delete keybinding tests end ---
+
 // TestGetTaskDetail_JSONParsing verifies TaskDetailView decodes correctly from JSON.
 func TestGetTaskDetail_JSONParsing(t *testing.T) {
 	raw := `{

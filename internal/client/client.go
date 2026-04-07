@@ -273,6 +273,11 @@ func (c *Client) UpdateTask(id string, req api.UpdateTaskRequest) (*orchestrator
 	return &task, nil
 }
 
+// DeleteTask deletes a task via DELETE /api/tasks/{id}.
+func (c *Client) DeleteTask(id string) error {
+	return c.Do("DELETE", "/api/tasks/"+id, nil, nil)
+}
+
 // ApplyAction sends an action to POST /api/tasks/{taskID}/actions.
 func (c *Client) ApplyAction(taskID string, req api.ApplyActionRequest) (*api.ActionApplication, error) {
 	var result api.ActionApplication
