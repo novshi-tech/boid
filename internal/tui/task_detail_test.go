@@ -360,23 +360,29 @@ func TestAssignKeys_Empty(t *testing.T) {
 
 func TestAssignKeys_NoConflict(t *testing.T) {
 	m := assignKeys([]string{"start", "abort", "done"})
-	// "start" → 's', "abort" → 'a', "done" → 'd'
+	// "start" → 's', "abort" → 'a', "done" → 'o' ('d' is reserved for delete)
 	if m['s'] != "start" {
 		t.Errorf("key 's' = %q, want 'start'", m['s'])
 	}
 	if m['a'] != "abort" {
 		t.Errorf("key 'a' = %q, want 'abort'", m['a'])
 	}
-	if m['d'] != "done" {
-		t.Errorf("key 'd' = %q, want 'done'", m['d'])
+	if _, exists := m['d']; exists {
+		t.Errorf("key 'd' should not be assigned (reserved for delete), got %q", m['d'])
+	}
+	if m['o'] != "done" {
+		t.Errorf("key 'o' = %q, want 'done'", m['o'])
 	}
 }
 
 func TestAssignKeys_Conflict(t *testing.T) {
-	// "done" → 'd', "debug" → conflict on 'd', falls back to 'e'
+	// 'd' is reserved; "done" → 'o', "debug" → 'e'
 	m := assignKeys([]string{"done", "debug"})
-	if m['d'] != "done" {
-		t.Errorf("key 'd' = %q, want 'done'", m['d'])
+	if _, exists := m['d']; exists {
+		t.Errorf("key 'd' should not be assigned (reserved for delete), got %q", m['d'])
+	}
+	if m['o'] != "done" {
+		t.Errorf("key 'o' = %q, want 'done'", m['o'])
 	}
 	if m['e'] != "debug" {
 		t.Errorf("key 'e' = %q, want 'debug'", m['e'])
@@ -464,27 +470,22 @@ func TestDeleteResult_Error_SetsStatusMsg(t *testing.T) {
 	}
 }
 
-func TestShortHelp_DeleteShownForTerminalStatus(t *testing.T) {
-	for _, st := range []orchestrator.TaskStatus{orchestrator.TaskStatusDone, orchestrator.TaskStatusAborted} {
+func TestShortHelp_DeleteAlwaysShown(t *testing.T) {
+	statuses := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusDone,
+		orchestrator.TaskStatusAborted,
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusPending,
+		orchestrator.TaskStatusVerifying,
+		orchestrator.TaskStatusCollectingFeedback,
+		orchestrator.TaskStatusInReview,
+	}
+	for _, st := range statuses {
 		s := newTestTaskDetailScreen()
 		s.detail = makeDetailWithStatus(st)
 		help := s.ShortHelp()
 		if !containsStr(help, "d: delete") {
 			t.Errorf("ShortHelp for %q: expected 'd: delete', got %q", st, help)
-		}
-	}
-}
-
-func TestShortHelp_DeleteNotShownForActiveStatus(t *testing.T) {
-	for _, st := range []orchestrator.TaskStatus{
-		orchestrator.TaskStatusExecuting,
-		orchestrator.TaskStatusPending,
-	} {
-		s := newTestTaskDetailScreen()
-		s.detail = makeDetailWithStatus(st)
-		help := s.ShortHelp()
-		if containsStr(help, "d: delete") {
-			t.Errorf("ShortHelp for %q: should NOT contain 'd: delete', got %q", st, help)
 		}
 	}
 }

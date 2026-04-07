@@ -332,30 +332,21 @@ func (s *TaskDetailScreen) ShortHelp() string {
 			parts = append(parts, string(ch)+": "+action)
 		}
 	}
-	if s.isTerminalStatus() {
-		parts = append(parts, "d: delete")
-	}
+	parts = append(parts, "d: delete")
 	fixed := "j/k: move  enter: open job  r: refresh  esc: back"
-	if len(parts) == 0 {
-		return fixed
-	}
 	return strings.Join(parts, "  ") + "  " + fixed
-}
-
-func (s *TaskDetailScreen) isTerminalStatus() bool {
-	if s.detail == nil || s.detail.Task == nil {
-		return false
-	}
-	st := s.detail.Task.Status
-	return st == "done" || st == "aborted"
 }
 
 // assignKeys assigns a single-character key to each action name.
 // The first unused character of the action name is used as the key.
+// Key 'd' is reserved for the delete shortcut and cannot be assigned to actions.
 func assignKeys(actions []string) map[rune]string {
 	m := map[rune]string{}
 	for _, a := range actions {
 		for _, ch := range a {
+			if ch == 'd' { // reserved for delete
+				continue
+			}
 			if _, used := m[ch]; !used {
 				m[ch] = a
 				break
