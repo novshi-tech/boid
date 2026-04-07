@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -229,6 +230,174 @@ func TestFormatTaskElapsed(t *testing.T) {
 	}
 }
 
+// --- quick open tests ---
+
+func TestQuickOpenKeyNoTasks(t *testing.T) {
+	s := newTestTaskListScreen()
+	// No tasks: o key should do nothing (no statusMsg set)
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	if s.statusMsg != "" {
+		t.Errorf("o with no tasks: want empty statusMsg, got %q", s.statusMsg)
+	}
+}
+
+func TestQuickOpenKeySetLoadingMsg(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = makeDummyTasks(1)
+	// o key should set "loading..." immediately
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	if s.statusMsg != "loading..." {
+		t.Errorf("o with task: want statusMsg %q, got %q", "loading...", s.statusMsg)
+	}
+}
+
+func TestQuickOpenResultNoJobs(t *testing.T) {
+	s := newTestTaskListScreen()
+	_, cmd := s.Update(quickOpenResultMsg{taskID: "t1", jobs: nil})
+	if s.statusMsg != "no active job" {
+		t.Errorf("0 jobs: want statusMsg %q, got %q", "no active job", s.statusMsg)
+	}
+	if s.mini.active {
+		t.Error("0 jobs: mini selector should not be active")
+	}
+	if cmd == nil {
+		t.Error("0 jobs: expected clearStatus cmd")
+	}
+}
+
+func TestQuickOpenResultOneJobTmuxDisabled(t *testing.T) {
+	s := newTestTaskListScreen() // TmuxEnabled=false
+	jobs := makeDummyJobs(1)
+	_, cmd := s.Update(quickOpenResultMsg{taskID: "t1", jobs: jobs})
+	if s.mini.active {
+		t.Error("1 job: mini selector should not be active")
+	}
+	if cmd == nil {
+		t.Error("1 job: expected a cmd")
+	}
+}
+
+func TestQuickOpenResultOneJobTmuxEnabled(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.shared.TmuxEnabled = true
+	jobs := makeDummyJobs(1)
+	_, cmd := s.Update(quickOpenResultMsg{taskID: "t1", jobs: jobs})
+	if s.mini.active {
+		t.Error("1 job tmux: mini selector should not be active")
+	}
+	if cmd == nil {
+		t.Error("1 job tmux: expected openJobCmd")
+	}
+}
+
+func TestQuickOpenResultMultipleJobs(t *testing.T) {
+	s := newTestTaskListScreen()
+	jobs := makeDummyJobs(3)
+	_, cmd := s.Update(quickOpenResultMsg{taskID: "t1", jobs: jobs})
+	if !s.mini.active {
+		t.Error("multiple jobs: mini selector should be active")
+	}
+	if s.mini.cursor != 0 {
+		t.Errorf("multiple jobs: want cursor 0, got %d", s.mini.cursor)
+	}
+	if len(s.mini.jobs) != 3 {
+		t.Errorf("multiple jobs: want 3 jobs in mini, got %d", len(s.mini.jobs))
+	}
+	if cmd != nil {
+		t.Error("multiple jobs: expected nil cmd (no action yet)")
+	}
+}
+
+// --- mini selector tests ---
+
+func TestMiniSelectorCursorMovement(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.mini = miniSelector{jobs: makeDummyJobs(3), cursor: 0, active: true}
+
+	// right key moves cursor forward
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if s.mini.cursor != 1 {
+		t.Errorf("j: want cursor 1, got %d", s.mini.cursor)
+	}
+	s.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if s.mini.cursor != 2 {
+		t.Errorf("right: want cursor 2, got %d", s.mini.cursor)
+	}
+	// Can't go past end
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if s.mini.cursor != 2 {
+		t.Errorf("j at end: cursor should stay 2, got %d", s.mini.cursor)
+	}
+
+	// k/left moves cursor back
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if s.mini.cursor != 1 {
+		t.Errorf("k: want cursor 1, got %d", s.mini.cursor)
+	}
+	s.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	if s.mini.cursor != 0 {
+		t.Errorf("left: want cursor 0, got %d", s.mini.cursor)
+	}
+	// Can't go below 0
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if s.mini.cursor != 0 {
+		t.Errorf("k at start: cursor should stay 0, got %d", s.mini.cursor)
+	}
+}
+
+func TestMiniSelectorEsc(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.mini = miniSelector{jobs: makeDummyJobs(2), cursor: 1, active: true}
+
+	s.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if s.mini.active {
+		t.Error("esc: mini selector should be closed")
+	}
+}
+
+func TestMiniSelectorEnterTmuxDisabled(t *testing.T) {
+	s := newTestTaskListScreen() // TmuxEnabled=false
+	s.mini = miniSelector{jobs: makeDummyJobs(2), cursor: 1, active: true}
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if s.mini.active {
+		t.Error("enter: mini selector should be closed")
+	}
+	if cmd == nil {
+		t.Error("enter: expected a cmd (clearStatus)")
+	}
+}
+
+func TestMiniSelectorEnterTmuxEnabled(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.shared.TmuxEnabled = true
+	s.mini = miniSelector{jobs: makeDummyJobs(2), cursor: 0, active: true}
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if s.mini.active {
+		t.Error("enter: mini selector should be closed")
+	}
+	if cmd == nil {
+		t.Error("enter tmux: expected openJobCmd")
+	}
+}
+
+func TestMiniSelectorBlocksNormalKeys(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = makeDummyTasks(3)
+	s.cursor = 0
+	s.mini = miniSelector{jobs: makeDummyJobs(2), cursor: 0, active: true}
+
+	// j should move mini cursor, not task cursor
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if s.cursor != 0 {
+		t.Errorf("mini active: task cursor should not move, got %d", s.cursor)
+	}
+	if s.mini.cursor != 1 {
+		t.Errorf("mini active: mini cursor should be 1, got %d", s.mini.cursor)
+	}
+}
+
 // --- helpers ---
 
 func makeDummyTasks(n int) []*orchestrator.Task {
@@ -243,6 +412,24 @@ func makeDummyTasks(n int) []*orchestrator.Task {
 		}
 	}
 	return tasks
+}
+
+func makeDummyJobs(n int) []*api.Job {
+	jobs := make([]*api.Job, n)
+	roles := []string{"main", "verification", "review"}
+	for i := range jobs {
+		role := ""
+		if i < len(roles) {
+			role = roles[i]
+		}
+		jobs[i] = &api.Job{
+			ID:        fmt.Sprintf("job-%08d", i),
+			Status:    api.JobStatusRunning,
+			Role:      role,
+			CreatedAt: time.Now().Add(-time.Duration(i) * time.Minute),
+		}
+	}
+	return jobs
 }
 
 func containsStr(s, substr string) bool {
