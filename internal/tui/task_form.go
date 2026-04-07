@@ -250,6 +250,20 @@ func (s *TaskFormScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return func() tea.Msg { return popScreenMsg{} }
 	}
 
+	// Backspace: text input フォーカス中はフィールドに委譲、それ以外は pop。
+	if msg.Type == tea.KeyBackspace || msg.Type == tea.KeyCtrlH {
+		switch s.focus {
+		case focusTitle:
+			s.titleInput.handleKey(msg)
+			return nil
+		case focusDescription:
+			s.descArea.handleKey(msg)
+			return nil
+		default:
+			return func() tea.Msg { return popScreenMsg{} }
+		}
+	}
+
 	// Tab / Shift+Tab for focus navigation (blocked while a selector is expanded).
 	if !s.projectField.expanded && !s.behaviorField.expanded {
 		switch msg.String() {

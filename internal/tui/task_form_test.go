@@ -424,6 +424,64 @@ func TestFormCancelButton(t *testing.T) {
 	}
 }
 
+// --- Backspace の動作テスト ---
+
+// TestFormBackspaceTitleDeletes: Title フォーカス中に backspace → 文字が削除されること
+func TestFormBackspaceTitleDeletes(t *testing.T) {
+	s := newTestFormScreen()
+	s.focus = focusTitle
+	s.titleInput.value = []rune("hello")
+
+	s.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+
+	if got := s.titleInput.Value(); got != "hell" {
+		t.Errorf("backspace on title: want 'hell', got %q", got)
+	}
+}
+
+// TestFormBackspaceDescriptionDeletes: Description フォーカス中に backspace → 文字が削除されること
+func TestFormBackspaceDescriptionDeletes(t *testing.T) {
+	s := newTestFormScreen()
+	s.focus = focusDescription
+	s.descArea.lines = []string{"hello"}
+
+	s.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+
+	if got := s.descArea.Value(); got != "hell" {
+		t.Errorf("backspace on description: want 'hell', got %q", got)
+	}
+}
+
+// TestFormBackspaceProjectFocusPops: Project フォーカス中に backspace → 前の画面に戻ること
+func TestFormBackspaceProjectFocusPops(t *testing.T) {
+	s := newTestFormScreen()
+	s.focus = focusProject
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if cmd == nil {
+		t.Fatal("backspace on project focus: expected non-nil cmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(popScreenMsg); !ok {
+		t.Errorf("backspace on project focus: expected popScreenMsg, got %T", msg)
+	}
+}
+
+// TestFormBackspaceSubmitFocusPops: Submit ボタンフォーカス中に backspace → 前の画面に戻ること
+func TestFormBackspaceSubmitFocusPops(t *testing.T) {
+	s := newTestFormScreen()
+	s.focus = focusSubmit
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if cmd == nil {
+		t.Fatal("backspace on submit focus: expected non-nil cmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(popScreenMsg); !ok {
+		t.Errorf("backspace on submit focus: expected popScreenMsg, got %T", msg)
+	}
+}
+
 // --- View smoke test ---
 
 func TestFormView(t *testing.T) {

@@ -135,7 +135,7 @@ func TestEsc_DepthOne_DelegatesToScreen(t *testing.T) {
 	}
 }
 
-func TestEsc_DepthTwo_Pops(t *testing.T) {
+func TestEsc_DepthTwo_DelegatesToTopScreen(t *testing.T) {
 	s1 := &stubScreen{name: "s1"}
 	s2 := &stubScreen{name: "s2"}
 	app := newTestAppWithScreens(s1, s2)
@@ -143,11 +143,13 @@ func TestEsc_DepthTwo_Pops(t *testing.T) {
 	msg := tea.KeyMsg{Type: tea.KeyEscape}
 	app.Update(msg)
 
-	if len(app.stack) != 1 {
-		t.Fatalf("depth = %d, want 1 (esc should pop at depth 2)", len(app.stack))
+	// esc はトップスクリーン(s2)に委譲される
+	if len(s2.received) == 0 {
+		t.Fatal("esc at depth 2 should be delegated to top screen")
 	}
-	if app.stack[0] != s1 {
-		t.Fatal("after pop, top should be s1")
+	// s1 には届かない
+	if len(s1.received) != 0 {
+		t.Fatal("esc should not be delivered to non-top screen")
 	}
 }
 
@@ -166,7 +168,7 @@ func TestBackspace_DepthOne_DelegatesToScreen(t *testing.T) {
 	}
 }
 
-func TestBackspace_DepthTwo_Pops(t *testing.T) {
+func TestBackspace_DepthTwo_DelegatesToTopScreen(t *testing.T) {
 	s1 := &stubScreen{name: "s1"}
 	s2 := &stubScreen{name: "s2"}
 	app := newTestAppWithScreens(s1, s2)
@@ -174,8 +176,13 @@ func TestBackspace_DepthTwo_Pops(t *testing.T) {
 	msg := tea.KeyMsg{Type: tea.KeyBackspace}
 	app.Update(msg)
 
-	if len(app.stack) != 1 {
-		t.Fatalf("depth = %d, want 1", len(app.stack))
+	// backspace はトップスクリーン(s2)に委譲される
+	if len(s2.received) == 0 {
+		t.Fatal("backspace at depth 2 should be delegated to top screen")
+	}
+	// s1 には届かない
+	if len(s1.received) != 0 {
+		t.Fatal("backspace should not be delivered to non-top screen")
 	}
 }
 
