@@ -38,19 +38,10 @@ func (d *Coordinator) DispatchAndAdvance(
 	var allResults []HandlerResult
 	exclusiveWriters := map[string]string{} // trait key → first writer ID
 
-	// Acquire worktree lock for non-readonly, non-worktree tasks
-	if d.Locker != nil && !readonly && !behavior.Worktree {
-		release, err := d.Locker.Acquire(ctx, task.ProjectID)
-		if err != nil {
-			return nil, fmt.Errorf("worktree lock: %w", err)
-		}
-		defer release()
-	}
-
 	// 1. Evaluate and dispatch hooks
 	matchedHooks := d.Evaluator.Evaluate(task, meta.Hooks)
 	if len(matchedHooks) > 0 {
-		hookResults, err := d.dispatchHooks(ctx, task, matchedHooks, readonly)
+		hookResults, err := d.dispatchHooksLocked(ctx, task, matchedHooks, readonly, behavior)
 		if err != nil {
 			return nil, fmt.Errorf("hook dispatch: %w", err)
 		}
@@ -111,6 +102,26 @@ func (d *Coordinator) DispatchAndAdvance(
 	}
 
 	return result, nil
+}
+
+// dispatchHooksLocked wraps dispatchHooks with an optional worktree lock.
+// The lock is acquired for non-readonly, non-worktree tasks and released
+// via defer after dispatchHooks completes (gates are excluded from the lock scope).
+func (d *Coordinator) dispatchHooksLocked(
+	ctx context.Context,
+	task *Task,
+	hooks []Hook,
+	readonly bool,
+	behavior *TaskBehavior,
+) ([]HandlerResult, error) {
+	if d.Locker != nil && !readonly && !behavior.Worktree {
+		release, err := d.Locker.Acquire(ctx, task.ProjectID)
+		if err != nil {
+			return nil, fmt.Errorf("worktree lock: %w", err)
+		}
+		defer release()
+	}
+	return d.dispatchHooks(ctx, task, hooks, readonly)
 }
 
 // dispatchHooks executes hooks, either in parallel (readonly) or sequentially.
