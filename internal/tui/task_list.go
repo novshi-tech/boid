@@ -144,6 +144,15 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.shared.Panes[msg.jobID] = msg.paneID
 		}
 
+	case applyActionResultMsg:
+		if msg.err != nil {
+			s.statusMsg = "action failed: " + msg.err.Error()
+			s.isError = true
+			return s, clearStatusAfter(4 * time.Second)
+		}
+		s.statusMsg = ""
+		return s, fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
+
 	case taskCreatedNotifyMsg:
 		s.statusMsg = "task created"
 		s.isError = false
@@ -216,6 +225,16 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		task := s.tasks[s.cursor]
 		projectName := s.findProjectName(task.ProjectID)
 		return PushScreen(NewTaskDetailScreen(s.shared, task.ID, projectName))
+
+	case "s":
+		if len(s.tasks) == 0 {
+			break
+		}
+		task := s.tasks[s.cursor]
+		if task.Status != orchestrator.TaskStatusPending {
+			break
+		}
+		return applyActionCmd(s.shared.Client, task.ID, "start")
 
 	case "o":
 		if len(s.tasks) == 0 {
@@ -303,7 +322,7 @@ func (s *TaskListScreen) View(width, height int) string {
 }
 
 func (s *TaskListScreen) ShortHelp() string {
-	return "enter: detail  o: open job  n: new  tab/shift+tab: filter  p: project  r: refresh  q: quit"
+	return "enter: detail  s: start  o: open job  n: new  tab/shift+tab: filter  p: project  r: refresh  q: quit"
 }
 
 func (s *TaskListScreen) buildTaskFilterBar(width int) string {

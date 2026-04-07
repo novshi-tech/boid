@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 const taskDetailPollInterval = 3 * time.Second
@@ -19,6 +20,8 @@ type taskDetailMsg struct {
 	detail *api.TaskDetailView
 	err    error
 }
+type applyActionResultMsg struct{ err error }
+type abortConfirmDeadlineMsg struct{}
 
 // --- TaskDetailScreen ---
 
@@ -27,13 +30,14 @@ type TaskDetailScreen struct {
 	taskID      string
 	projectName string
 
-	detail     *api.TaskDetailView
-	cursor     int
-	descScroll int
-	statusMsg  string
-	isError    bool
-	loading    bool
-	fetchErr   error
+	detail       *api.TaskDetailView
+	cursor       int
+	descScroll   int
+	statusMsg    string
+	isError      bool
+	loading      bool
+	fetchErr     error
+	abortPending bool
 }
 
 func NewTaskDetailScreen(shared *SharedState, taskID, projectName string) *TaskDetailScreen {
@@ -86,6 +90,23 @@ func (s *TaskDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.statusMsg = ""
 		s.isError = false
 
+	case applyActionResultMsg:
+		if msg.err != nil {
+			s.statusMsg = "action failed: " + msg.err.Error()
+			s.isError = true
+			return s, clearStatusAfter(4 * time.Second)
+		}
+		s.abortPending = false
+		s.statusMsg = ""
+		return s, fetchTaskDetailCmd(s.shared.Client, s.taskID)
+
+	case abortConfirmDeadlineMsg:
+		if s.abortPending {
+			s.abortPending = false
+			s.statusMsg = ""
+			s.isError = false
+		}
+
 	case tea.KeyMsg:
 		return s, s.handleKey(msg)
 	}
@@ -109,6 +130,35 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if s.cursor > 0 {
 			s.cursor--
 		}
+
+	case "s":
+		if s.detail == nil || s.detail.Task == nil {
+			break
+		}
+		if s.detail.Task.Status != orchestrator.TaskStatusPending {
+			break
+		}
+		return applyActionCmd(s.shared.Client, s.taskID, "start")
+
+	case "x":
+		if s.detail == nil || s.detail.Task == nil {
+			break
+		}
+		st := s.detail.Task.Status
+		if st == orchestrator.TaskStatusDone || st == orchestrator.TaskStatusAborted {
+			break
+		}
+		if s.abortPending {
+			s.abortPending = false
+			s.statusMsg = ""
+			return applyActionCmd(s.shared.Client, s.taskID, "abort")
+		}
+		s.abortPending = true
+		s.statusMsg = "Press x again to abort"
+		s.isError = false
+		return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+			return abortConfirmDeadlineMsg{}
+		})
 
 	case "r":
 		s.loading = true
@@ -235,7 +285,7 @@ func (s *TaskDetailScreen) View(width, height int) string {
 }
 
 func (s *TaskDetailScreen) ShortHelp() string {
-	return "j/k: move  enter: open job  r: refresh  esc: back"
+	return "j/k: move  s: start  x: abort  enter: open job  r: refresh  esc: back"
 }
 
 // --- job line rendering ---
@@ -290,5 +340,12 @@ func fetchTaskDetailCmd(c *client.Client, taskID string) tea.Cmd {
 	return func() tea.Msg {
 		detail, err := c.GetTaskDetail(taskID)
 		return taskDetailMsg{detail: detail, err: err}
+	}
+}
+
+func applyActionCmd(c *client.Client, taskID, actionType string) tea.Cmd {
+	return func() tea.Msg {
+		_, err := c.ApplyAction(taskID, api.ApplyActionRequest{Type: actionType})
+		return applyActionResultMsg{err: err}
 	}
 }

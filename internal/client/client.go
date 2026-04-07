@@ -264,6 +264,15 @@ func (c *Client) GetProject(id string) (*orchestrator.Project, error) {
 	return &project, nil
 }
 
+// ApplyAction sends an action to POST /api/tasks/{taskID}/actions.
+func (c *Client) ApplyAction(taskID string, req api.ApplyActionRequest) (*api.ActionApplication, error) {
+	var result api.ActionApplication
+	if err := c.Do("POST", "/api/tasks/"+taskID+"/actions", req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 func (c *Client) ResizeJob(jobID string, rows, cols int) error {
 	return c.Do("POST", "/api/jobs/"+jobID+"/resize", map[string]int{
 		"rows": rows,

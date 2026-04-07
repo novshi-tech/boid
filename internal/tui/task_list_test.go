@@ -382,6 +382,60 @@ func TestMiniSelectorEnterTmuxEnabled(t *testing.T) {
 	}
 }
 
+// --- start keybinding tests ---
+
+func TestStartKey_PendingTaskInList(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = []*orchestrator.Task{
+		{ID: "task-1", Title: "Pending", Status: orchestrator.TaskStatusPending, Behavior: "dev", CreatedAt: time.Now()},
+	}
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if cmd == nil {
+		t.Error("s on pending task: expected non-nil cmd (applyActionCmd)")
+	}
+}
+
+func TestStartKey_NonPendingTaskInList(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = []*orchestrator.Task{
+		{ID: "task-1", Title: "Running", Status: orchestrator.TaskStatusExecuting, Behavior: "dev", CreatedAt: time.Now()},
+	}
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if cmd != nil {
+		t.Error("s on executing task: expected nil cmd")
+	}
+}
+
+func TestStartKey_NoTasksInList(t *testing.T) {
+	s := newTestTaskListScreen()
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if cmd != nil {
+		t.Error("s with no tasks: expected nil cmd")
+	}
+}
+
+func TestApplyActionResult_Success_RefreshesTaskList(t *testing.T) {
+	s := newTestTaskListScreen()
+	_, cmd := s.Update(applyActionResultMsg{err: nil})
+	if cmd == nil {
+		t.Error("success result: expected fetchTasksCmd")
+	}
+	if s.statusMsg != "" {
+		t.Errorf("success result: expected empty statusMsg, got %q", s.statusMsg)
+	}
+}
+
+func TestApplyActionResult_Error_SetsStatusMsgInList(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.Update(applyActionResultMsg{err: fmt.Errorf("server error")})
+	if s.statusMsg == "" {
+		t.Error("error result: expected statusMsg to be set")
+	}
+	if !s.isError {
+		t.Error("error result: expected isError=true")
+	}
+}
+
 func TestMiniSelectorBlocksNormalKeys(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = makeDummyTasks(3)
