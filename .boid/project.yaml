@@ -15,13 +15,16 @@ task_behaviors:
           type: execution
           consumer: claude-code
           model: sonnet
-          message: "task.yaml の title と description に記述された内容を実装せよ"
+          message: |
+            task.yaml の title と description に記述された内容を実装せよ
+            コミットする前にユニットテストとE2Eテストの通過を確認すること
         rework:
           type: rework
           consumer: claude-code
           model: sonnet
-          message: "verification findings に記載された問題を修正してください。"
-
+          message: |
+            verification findings に記載された問題を修正せよ。
+            コミットする前にユニットテストとE2Eテストの通過を確認すること
   plan:
     name: Plan
     transition: one-shot
