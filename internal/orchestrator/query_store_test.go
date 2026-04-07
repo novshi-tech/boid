@@ -539,3 +539,82 @@ func TestDeleteTask_NotFound(t *testing.T) {
 		t.Fatalf("expected not found error, got: %v", err)
 	}
 }
+
+func TestFindTaskByRemote_Found(t *testing.T) {
+	d := createTestProject(t)
+
+	task := &orchestrator.Task{
+		ProjectID:    "proj-1",
+		Title:        "Remote Task",
+		Behavior:     "dev",
+		RemoteID:     "PROJ-1",
+		DataSourceID: "jira",
+	}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	got, err := orchestrator.FindTaskByRemote(d.Conn, "PROJ-1", "jira")
+	if err != nil {
+		t.Fatalf("FindTaskByRemote() error = %v", err)
+	}
+	if got == nil {
+		t.Fatal("FindTaskByRemote() = nil, want task")
+	}
+	if got.ID != task.ID {
+		t.Fatalf("ID = %q, want %q", got.ID, task.ID)
+	}
+	if got.RemoteID != "PROJ-1" {
+		t.Fatalf("RemoteID = %q, want %q", got.RemoteID, "PROJ-1")
+	}
+	if got.DataSourceID != "jira" {
+		t.Fatalf("DataSourceID = %q, want %q", got.DataSourceID, "jira")
+	}
+}
+
+func TestFindTaskByRemote_NotFound(t *testing.T) {
+	d := createTestProject(t)
+
+	got, err := orchestrator.FindTaskByRemote(d.Conn, "PROJ-NONE", "jira")
+	if err != nil {
+		t.Fatalf("FindTaskByRemote() error = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("FindTaskByRemote() = %+v, want nil", got)
+	}
+}
+
+func TestFindTaskByRemote_MatchesBothFields(t *testing.T) {
+	d := createTestProject(t)
+
+	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "T1", Behavior: "dev", RemoteID: "PROJ-1", DataSourceID: "jira"}
+	task2 := &orchestrator.Task{ProjectID: "proj-1", Title: "T2", Behavior: "dev", RemoteID: "PROJ-1", DataSourceID: "github"}
+	if err := orchestrator.CreateTask(d.Conn, task1); err != nil {
+		t.Fatalf("create task1: %v", err)
+	}
+	if err := orchestrator.CreateTask(d.Conn, task2); err != nil {
+		t.Fatalf("create task2: %v", err)
+	}
+
+	got, err := orchestrator.FindTaskByRemote(d.Conn, "PROJ-1", "jira")
+	if err != nil {
+		t.Fatalf("FindTaskByRemote() error = %v", err)
+	}
+	if got == nil {
+		t.Fatal("FindTaskByRemote() = nil, want task")
+	}
+	if got.ID != task1.ID {
+		t.Fatalf("ID = %q, want %q", got.ID, task1.ID)
+	}
+
+	got2, err := orchestrator.FindTaskByRemote(d.Conn, "PROJ-1", "github")
+	if err != nil {
+		t.Fatalf("FindTaskByRemote() error = %v", err)
+	}
+	if got2 == nil {
+		t.Fatal("FindTaskByRemote() = nil, want task2")
+	}
+	if got2.ID != task2.ID {
+		t.Fatalf("ID = %q, want %q", got2.ID, task2.ID)
+	}
+}

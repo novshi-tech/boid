@@ -50,6 +50,19 @@ type TaskService interface {
 	GetTaskDetail(id string) (*TaskDetailView, error)
 	UpdateTask(id string, req UpdateTaskRequest) (*orchestrator.Task, error)
 	DeleteTask(id string, force bool) error
+	ImportTasks(reqs []CreateTaskRequest) (*ImportResult, error)
+}
+
+type ImportError struct {
+	Line     int    `json:"line"`
+	RemoteID string `json:"remote_id"`
+	Error    string `json:"error"`
+}
+
+type ImportResult struct {
+	Created int           `json:"created"`
+	Skipped int           `json:"skipped"`
+	Errors  []ImportError `json:"errors"`
 }
 
 type WebService interface {
@@ -72,6 +85,7 @@ type TaskStore interface {
 	ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error)
 	UpdateTask(task *orchestrator.Task) error
 	DeleteTask(id string) error
+	FindTaskByRemote(remoteID, datasourceID string) (*orchestrator.Task, error)
 }
 
 type ActionStore interface {

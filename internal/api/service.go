@@ -197,6 +197,41 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 	return task, nil
 }
 
+func (s *TaskAppService) ImportTasks(reqs []CreateTaskRequest) (*ImportResult, error) {
+	result := &ImportResult{Errors: []ImportError{}}
+	for i, req := range reqs {
+		if req.RemoteID == "" && req.DataSourceID == "" {
+			result.Errors = append(result.Errors, ImportError{
+				Line:     i + 1,
+				RemoteID: req.RemoteID,
+				Error:    "remote_id and datasource_id are required",
+			})
+			continue
+		}
+
+		existing, err := s.Tasks.FindTaskByRemote(req.RemoteID, req.DataSourceID)
+		if err != nil {
+			result.Errors = append(result.Errors, ImportError{Line: i + 1, RemoteID: req.RemoteID, Error: err.Error()})
+			continue
+		}
+		if existing != nil {
+			result.Skipped++
+			continue
+		}
+
+		if _, err := s.CreateTask(req); err != nil {
+			msg := err.Error()
+			if se, ok := err.(*StatusError); ok {
+				msg = se.Message
+			}
+			result.Errors = append(result.Errors, ImportError{Line: i + 1, RemoteID: req.RemoteID, Error: msg})
+			continue
+		}
+		result.Created++
+	}
+	return result, nil
+}
+
 func (s *TaskAppService) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
 	tasks, err := s.Tasks.ListTasks(filter)
 	if err != nil {

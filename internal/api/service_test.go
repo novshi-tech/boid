@@ -435,11 +435,144 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 	})
 }
 
+func TestTaskAppServiceImportTasks_AllCreated(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {Transition: "one-shot"},
+		},
+	}
+	store := &stubTaskStore{}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	reqs := []CreateTaskRequest{
+		{ProjectID: "proj-1", Title: "Task 1", Behavior: "dev", RemoteID: "PROJ-1", DataSourceID: "jira"},
+		{ProjectID: "proj-1", Title: "Task 2", Behavior: "dev", RemoteID: "PROJ-2", DataSourceID: "jira"},
+	}
+	result, err := svc.ImportTasks(reqs)
+	if err != nil {
+		t.Fatalf("ImportTasks() error = %v", err)
+	}
+	if result.Created != 2 {
+		t.Fatalf("Created = %d, want 2", result.Created)
+	}
+	if result.Skipped != 0 {
+		t.Fatalf("Skipped = %d, want 0", result.Skipped)
+	}
+	if len(result.Errors) != 0 {
+		t.Fatalf("Errors = %v, want empty", result.Errors)
+	}
+}
+
+func TestTaskAppServiceImportTasks_SkipsDuplicate(t *testing.T) {
+	existingTask := &orchestrator.Task{
+		ID:           "existing-id",
+		RemoteID:     "PROJ-1",
+		DataSourceID: "jira",
+	}
+	store := &stubTaskStore{
+		remoteTasks: map[string]*orchestrator.Task{
+			"PROJ-1:jira": existingTask,
+		},
+	}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: nil},
+	}
+
+	reqs := []CreateTaskRequest{
+		{ProjectID: "proj-1", Title: "Task 1", Behavior: "any", RemoteID: "PROJ-1", DataSourceID: "jira"},
+		{ProjectID: "proj-1", Title: "Task 2", Behavior: "any", RemoteID: "PROJ-2", DataSourceID: "jira"},
+	}
+	result, err := svc.ImportTasks(reqs)
+	if err != nil {
+		t.Fatalf("ImportTasks() error = %v", err)
+	}
+	if result.Created != 1 {
+		t.Fatalf("Created = %d, want 1", result.Created)
+	}
+	if result.Skipped != 1 {
+		t.Fatalf("Skipped = %d, want 1", result.Skipped)
+	}
+}
+
+func TestTaskAppServiceImportTasks_ValidationError_BothEmpty(t *testing.T) {
+	store := &stubTaskStore{}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: nil},
+	}
+
+	reqs := []CreateTaskRequest{
+		{ProjectID: "proj-1", Title: "No Remote", Behavior: "any"},
+	}
+	result, err := svc.ImportTasks(reqs)
+	if err != nil {
+		t.Fatalf("ImportTasks() error = %v", err)
+	}
+	if result.Created != 0 {
+		t.Fatalf("Created = %d, want 0", result.Created)
+	}
+	if len(result.Errors) != 1 {
+		t.Fatalf("Errors = %d, want 1", len(result.Errors))
+	}
+	if result.Errors[0].Line != 1 {
+		t.Fatalf("Errors[0].Line = %d, want 1", result.Errors[0].Line)
+	}
+}
+
+func TestTaskAppServiceImportTasks_BehaviorError(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {Transition: "one-shot"},
+		},
+	}
+	store := &stubTaskStore{}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	reqs := []CreateTaskRequest{
+		{ProjectID: "proj-1", Title: "Task 1", Behavior: "unknown", RemoteID: "PROJ-1", DataSourceID: "jira"},
+	}
+	result, err := svc.ImportTasks(reqs)
+	if err != nil {
+		t.Fatalf("ImportTasks() error = %v", err)
+	}
+	if result.Created != 0 {
+		t.Fatalf("Created = %d, want 0", result.Created)
+	}
+	if len(result.Errors) != 1 {
+		t.Fatalf("Errors = %d, want 1", len(result.Errors))
+	}
+	if result.Errors[0].Line != 1 {
+		t.Fatalf("Errors[0].Line = %d, want 1", result.Errors[0].Line)
+	}
+	if result.Errors[0].RemoteID != "PROJ-1" {
+		t.Fatalf("Errors[0].RemoteID = %q, want PROJ-1", result.Errors[0].RemoteID)
+	}
+}
+
+func TestTaskAppServiceImportTasks_EmptyInput(t *testing.T) {
+	svc := &TaskAppService{Tasks: &stubTaskStore{}}
+	result, err := svc.ImportTasks(nil)
+	if err != nil {
+		t.Fatalf("ImportTasks() error = %v", err)
+	}
+	if result.Created != 0 || result.Skipped != 0 || len(result.Errors) != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
 type stubTaskStore struct {
 	task        *orchestrator.Task
 	err         error
 	updateCalls int
 	deleted     bool
+	remoteTasks map[string]*orchestrator.Task // "remoteID:datasourceID" → task
 }
 
 func (s *stubTaskStore) CreateTask(task *orchestrator.Task) error { return nil }
@@ -463,6 +596,12 @@ func (s *stubTaskStore) DeleteTask(id string) error {
 	s.deleted = true
 	return nil
 }
+func (s *stubTaskStore) FindTaskByRemote(remoteID, datasourceID string) (*orchestrator.Task, error) {
+	if s.remoteTasks != nil {
+		return s.remoteTasks[remoteID+":"+datasourceID], nil
+	}
+	return nil, nil
+}
 
 type stubTx struct {
 	updatedTask   *orchestrator.Task
@@ -481,6 +620,9 @@ func (s *stubTx) UpdateTask(task *orchestrator.Task) error {
 	return nil
 }
 func (s *stubTx) DeleteTask(id string) error { return nil }
+func (s *stubTx) FindTaskByRemote(remoteID, datasourceID string) (*orchestrator.Task, error) {
+	return nil, nil
+}
 func (s *stubTx) CreateAction(action *orchestrator.Action) error {
 	s.createdAction = action
 	return nil

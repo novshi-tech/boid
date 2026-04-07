@@ -30,6 +30,9 @@ func (s *recordingTxStore) UpdateTask(task *orchestrator.Task) error {
 	return nil
 }
 func (s *recordingTxStore) DeleteTask(id string) error { return nil }
+func (s *recordingTxStore) FindTaskByRemote(remoteID, datasourceID string) (*orchestrator.Task, error) {
+	return nil, nil
+}
 func (s *recordingTxStore) CreateAction(action *orchestrator.Action) error {
 	s.actions = append(s.actions, action)
 	return nil
