@@ -49,6 +49,27 @@ task_behaviors:
                 - title: "次のタスク"
                   behavior: "dev"
                   description: "..."
+  auto_plan:
+    name: Auto Plan
+    transition: one-shot
+    readonly: true
+    traits: [instructions, tasks]
+    default_payload:
+      instructions:
+        main:
+          type: execution
+          consumer: claude-code
+          model: sonnet
+          interactive: false
+          message: |
+            task.yaml の title と description に記述されたテーマについて、実装計画を策定せよ。
+            結果は一つのタスクとして、 ~/.boid/output/payload_patch.yaml に以下の形式で書き出すこと：
+
+            payload_patch:
+              tasks:
+                - title: "タスクのタイトル"
+                  behavior: "実行モデル名（例: dev）"
+                  description: "このタスクを実行するエージェントへの指示。何を・どのように実装するかを詳細に記述する。"
 
 host_commands:
   boid-e2e:
