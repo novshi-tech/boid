@@ -417,7 +417,7 @@ func (s *TaskListScreen) syncTableRows() {
 	rows := make([]table.Row, len(s.tasks))
 	for i, task := range s.tasks {
 		dot, statusText := taskStatusDisplay(task.Status)
-		statusCell := stripANSI(dot) + " " + stripANSI(statusText)
+		statusCell := dot + " " + statusText
 
 		title := task.Title
 		if title == "" {
@@ -442,26 +442,6 @@ func (s *TaskListScreen) syncTableRows() {
 	if len(rows) > 0 && s.table.Cursor() < 0 {
 		s.table.SetCursor(0)
 	}
-}
-
-// stripANSI removes ANSI escape sequences from s.
-func stripANSI(s string) string {
-	var out strings.Builder
-	inEsc := false
-	for _, r := range s {
-		if r == '\x1b' {
-			inEsc = true
-			continue
-		}
-		if inEsc {
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-				inEsc = false
-			}
-			continue
-		}
-		out.WriteRune(r)
-	}
-	return out.String()
 }
 
 // --- rendering ---
