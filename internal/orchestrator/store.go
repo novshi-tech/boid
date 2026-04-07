@@ -169,12 +169,12 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 	var taskCond string
 	var condArgs []any
 	if olderThan > 0 {
-		taskCond = `status IN (` + placeholders + `) AND (strftime('%s','now') - strftime('%s',updated_at)) > ?`
+		taskCond = `status IN (` + placeholders + `) AND updated_at < ?`
 		condArgs = make([]any, len(statuses)+1)
 		for i, s := range statuses {
 			condArgs[i] = s
 		}
-		condArgs[len(statuses)] = int64(olderThan.Seconds())
+		condArgs[len(statuses)] = time.Now().UTC().Add(-olderThan)
 	} else {
 		taskCond = `status IN (` + placeholders + `)`
 		condArgs = make([]any, len(statuses))

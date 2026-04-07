@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -20,7 +21,13 @@ type DB struct {
 }
 
 func Open(path string) (*DB, error) {
-	conn, err := sql.Open("sqlite", path)
+	dsn := path
+	if strings.Contains(dsn, "?") {
+		dsn += "&_time_format=sqlite"
+	} else {
+		dsn += "?_time_format=sqlite"
+	}
+	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open: %w", err)
 	}

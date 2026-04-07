@@ -118,9 +118,10 @@ func TestGCTasks_OlderThanFilter(t *testing.T) {
 	}
 
 	// old タスクの updated_at を 60 日前に設定
+	sixtyDaysAgo := time.Now().UTC().Add(-60 * 24 * time.Hour)
 	if _, err := d.Conn.Exec(
-		`UPDATE tasks SET updated_at = datetime('now', '-60 days') WHERE id = ?`,
-		oldTask.ID,
+		`UPDATE tasks SET updated_at = ? WHERE id = ?`,
+		sixtyDaysAgo, oldTask.ID,
 	); err != nil {
 		t.Fatalf("update updated_at: %v", err)
 	}
