@@ -10,11 +10,27 @@ templ Layout(title string) {
 			<link rel="stylesheet" href="/static/style.css"/>
 		</head>
 		<body>
-			<nav>
-				<a href="/">Tasks</a>
-				<a href="/projects">Projects</a>
+			<header class="header">
+				<div class="header-inner">
+					<a href="/" class="header-title">boid</a>
+				</div>
+				<button class="nav-toggle" aria-label="Menu" aria-expanded="false" onclick="this.setAttribute('aria-expanded',this.getAttribute('aria-expanded')==='false');document.getElementById('nav').classList.toggle('open')">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+						<line x1="3" y1="6" x2="21" y2="6"></line>
+						<line x1="3" y1="12" x2="21" y2="12"></line>
+						<line x1="3" y1="18" x2="21" y2="18"></line>
+					</svg>
+				</button>
+			</header>
+			<nav id="nav" class="nav">
+				<ul class="nav-list">
+					<li><a href="/">Tasks</a></li>
+					<li><a href="/projects">Projects</a></li>
+				</ul>
 			</nav>
-			{ children... }
+			<main class="main">
+				{ children... }
+			</main>
 		</body>
 	</html>
 }

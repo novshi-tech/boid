@@ -4,30 +4,6 @@ import "github.com/novshi-tech/boid/internal/orchestrator"
 
 templ ProjectList(projects []*orchestrator.Project) {
 	@Layout("Projects") {
-		<h1>Projects</h1>
-		if len(projects) > 0 {
-			<table>
-				<thead>
-					<tr>
-						<th>ID</th>
-						<th>Name</th>
-						<th>Workspace</th>
-						<th>Directory</th>
-					</tr>
-				</thead>
-				<tbody>
-					for _, p := range projects {
-						<tr>
-							<td>{ p.ID }</td>
-							<td>{ p.Meta.Name }</td>
-							<td>{ p.WorkspaceID }</td>
-							<td>{ p.WorkDir }</td>
-						</tr>
-					}
-				</tbody>
-			</table>
-		} else {
-			<p>No projects registered</p>
-		}
+		<p class="empty">Coming soon</p>
 	}
 }
