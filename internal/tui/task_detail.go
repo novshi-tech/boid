@@ -21,6 +21,8 @@ type taskDetailMsg struct {
 }
 type applyActionResultMsg struct{ err error }
 type abortConfirmDeadlineMsg struct{}
+type deleteResultMsg struct{ err error }
+type deleteConfirmDeadlineMsg struct{}
 
 // --- TaskDetailScreen ---
 
@@ -29,14 +31,15 @@ type TaskDetailScreen struct {
 	taskID      string
 	projectName string
 
-	detail       *api.TaskDetailView
-	cursor       int
-	descScroll   int
-	statusMsg    string
-	isError      bool
-	loading      bool
-	fetchErr     error
-	abortPending bool
+	detail        *api.TaskDetailView
+	cursor        int
+	descScroll    int
+	statusMsg     string
+	isError       bool
+	loading       bool
+	fetchErr      error
+	abortPending  bool
+	deletePending bool
 }
 
 func NewTaskDetailScreen(shared *SharedState, taskID, projectName string) *TaskDetailScreen {
@@ -106,6 +109,21 @@ func (s *TaskDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.isError = false
 		}
 
+	case deleteResultMsg:
+		if msg.err != nil {
+			s.statusMsg = "delete failed: " + msg.err.Error()
+			s.isError = true
+			return s, clearStatusAfter(4 * time.Second)
+		}
+		return s, func() tea.Msg { return popScreenMsg{} }
+
+	case deleteConfirmDeadlineMsg:
+		if s.deletePending {
+			s.deletePending = false
+			s.statusMsg = ""
+			s.isError = false
+		}
+
 	case tea.KeyMsg:
 		return s, s.handleKey(msg)
 	}
@@ -148,6 +166,18 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	case "esc", "backspace":
 		return func() tea.Msg { return popScreenMsg{} }
+
+	case "d":
+		if s.deletePending {
+			s.deletePending = false
+			return deleteTaskCmd(s.shared.Client, s.taskID)
+		}
+		s.deletePending = true
+		s.statusMsg = "Press d again to delete"
+		s.isError = false
+		return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+			return deleteConfirmDeadlineMsg{}
+		})
 
 	default:
 		if len(msg.Runes) != 1 {
@@ -302,11 +332,22 @@ func (s *TaskDetailScreen) ShortHelp() string {
 			parts = append(parts, string(ch)+": "+action)
 		}
 	}
+	if s.isTerminalStatus() {
+		parts = append(parts, "d: delete")
+	}
 	fixed := "j/k: move  enter: open job  r: refresh  esc: back"
 	if len(parts) == 0 {
 		return fixed
 	}
 	return strings.Join(parts, "  ") + "  " + fixed
+}
+
+func (s *TaskDetailScreen) isTerminalStatus() bool {
+	if s.detail == nil || s.detail.Task == nil {
+		return false
+	}
+	st := s.detail.Task.Status
+	return st == "done" || st == "aborted"
 }
 
 // assignKeys assigns a single-character key to each action name.
@@ -383,6 +424,13 @@ func applyActionCmd(c *client.Client, taskID, actionType string) tea.Cmd {
 	return func() tea.Msg {
 		_, err := c.ApplyAction(taskID, api.ApplyActionRequest{Type: actionType})
 		return applyActionResultMsg{err: err}
+	}
+}
+
+func deleteTaskCmd(c *client.Client, taskID string) tea.Cmd {
+	return func() tea.Msg {
+		err := c.DeleteTask(taskID)
+		return deleteResultMsg{err: err}
 	}
 }
 
