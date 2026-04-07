@@ -16,6 +16,7 @@ type Coordinator struct {
 	HookExecutor HookExecutor
 	GateExecutor GateExecutor
 	Waiter       JobWaiter
+	Locker       WorktreeLocker
 	MaxDepth     int
 }
 
@@ -36,6 +37,15 @@ func (d *Coordinator) DispatchAndAdvance(
 	payload := task.Payload
 	var allResults []HandlerResult
 	exclusiveWriters := map[string]string{} // trait key → first writer ID
+
+	// 0. Acquire worktree lock for non-readonly, non-worktree tasks
+	if d.Locker != nil && !readonly && !behavior.Worktree {
+		release, err := d.Locker.Acquire(ctx, task.ProjectID)
+		if err != nil {
+			return nil, fmt.Errorf("worktree lock: %w", err)
+		}
+		defer release()
+	}
 
 	// 1. Evaluate and dispatch hooks
 	matchedHooks := d.Evaluator.Evaluate(task, meta.Hooks)

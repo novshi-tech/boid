@@ -5,11 +5,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 )
+
+// mockWorktreeLocker tracks Acquire calls for testing.
+type mockWorktreeLocker struct {
+	mu       sync.Mutex
+	acquired []string // keys passed to Acquire
+}
+
+func (m *mockWorktreeLocker) Acquire(ctx context.Context, key string) (func(), error) {
+	m.mu.Lock()
+	m.acquired = append(m.acquired, key)
+	m.mu.Unlock()
+	return func() {}, nil
+}
+
+func (m *mockWorktreeLocker) acquiredKeys() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.acquired))
+	copy(out, m.acquired)
+	return out
+}
 
 // mockExecutorWaiter implements HookExecutor, GateExecutor, and JobWaiter.
 type mockExecutorWaiter struct {
@@ -382,4 +404,210 @@ func TestCoordinator_DispatchAndAdvance_EmptyHooksAndGates(t *testing.T) {
 	if len(result.Results) != 0 {
 		t.Fatalf("expected 0 results, got %d", len(result.Results))
 	}
+}
+
+func TestCoordinator_DispatchAndAdvance_LockerAcquiredForNonReadonlyNonWorktree(t *testing.T) {
+	mock := newMockExecutorWaiter()
+	mock.setHookCompletion("hook-a", `{"payload_patch":{"prompt":"done"}}`, 0)
+	locker := &mockWorktreeLocker{}
+
+	coord := &orchestrator.Coordinator{
+		Evaluator:    &orchestrator.Evaluator{},
+		HookExecutor: mock,
+		GateExecutor: mock,
+		Waiter:       mock,
+		Locker:       locker,
+		MaxDepth:     5,
+	}
+
+	task := &orchestrator.Task{
+		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusExecuting,
+		Payload:   json.RawMessage(`{}`),
+	}
+	meta := &projectspec.ProjectMeta{
+		Hooks: []projectspec.Hook{
+			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
+		},
+	}
+	behavior := &projectspec.TaskBehavior{Readonly: false, Worktree: false}
+	sm := simpleStateMachine()
+
+	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	keys := locker.acquiredKeys()
+	if len(keys) != 1 || keys[0] != "proj-1" {
+		t.Errorf("expected locker acquired for proj-1, got %v", keys)
+	}
+}
+
+func TestCoordinator_DispatchAndAdvance_LockerSkippedForReadonly(t *testing.T) {
+	mock := newMockExecutorWaiter()
+	mock.setHookCompletion("hook-a", `{"payload_patch":{"verification":{"findings":[]}}}`, 0)
+	locker := &mockWorktreeLocker{}
+
+	coord := &orchestrator.Coordinator{
+		Evaluator:    &orchestrator.Evaluator{},
+		HookExecutor: mock,
+		GateExecutor: mock,
+		Waiter:       mock,
+		Locker:       locker,
+		MaxDepth:     5,
+	}
+
+	task := &orchestrator.Task{
+		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusVerifying,
+		Payload:   json.RawMessage(`{}`),
+	}
+	meta := &projectspec.ProjectMeta{
+		Hooks: []projectspec.Hook{
+			{ID: "hook-a", On: orchestrator.OnValues{"verifying"}},
+		},
+	}
+	behavior := &projectspec.TaskBehavior{Readonly: false, Worktree: false}
+	sm := simpleStateMachine()
+
+	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	keys := locker.acquiredKeys()
+	if len(keys) != 0 {
+		t.Errorf("expected no lock acquired for readonly state, got %v", keys)
+	}
+}
+
+func TestCoordinator_DispatchAndAdvance_LockerSkippedForWorktree(t *testing.T) {
+	mock := newMockExecutorWaiter()
+	mock.setHookCompletion("hook-a", `{"payload_patch":{"prompt":"done"}}`, 0)
+	locker := &mockWorktreeLocker{}
+
+	coord := &orchestrator.Coordinator{
+		Evaluator:    &orchestrator.Evaluator{},
+		HookExecutor: mock,
+		GateExecutor: mock,
+		Waiter:       mock,
+		Locker:       locker,
+		MaxDepth:     5,
+	}
+
+	task := &orchestrator.Task{
+		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusExecuting,
+		Payload:   json.RawMessage(`{}`),
+	}
+	meta := &projectspec.ProjectMeta{
+		Hooks: []projectspec.Hook{
+			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
+		},
+	}
+	behavior := &projectspec.TaskBehavior{Readonly: false, Worktree: true}
+	sm := simpleStateMachine()
+
+	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	keys := locker.acquiredKeys()
+	if len(keys) != 0 {
+		t.Errorf("expected no lock acquired for worktree=true, got %v", keys)
+	}
+}
+
+func TestCoordinator_DispatchAndAdvance_NilLockerWorks(t *testing.T) {
+	mock := newMockExecutorWaiter()
+	mock.setHookCompletion("hook-a", `{"payload_patch":{"prompt":"done"}}`, 0)
+
+	coord := &orchestrator.Coordinator{
+		Evaluator:    &orchestrator.Evaluator{},
+		HookExecutor: mock,
+		GateExecutor: mock,
+		Waiter:       mock,
+		Locker:       nil,
+		MaxDepth:     5,
+	}
+
+	task := &orchestrator.Task{
+		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusExecuting,
+		Payload:   json.RawMessage(`{}`),
+	}
+	meta := &projectspec.ProjectMeta{
+		Hooks: []projectspec.Hook{
+			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
+		},
+	}
+	behavior := &projectspec.TaskBehavior{Readonly: false, Worktree: false}
+	sm := simpleStateMachine()
+
+	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if result.NewStatus != orchestrator.TaskStatusDone {
+		t.Errorf("expected done, got %q", result.NewStatus)
+	}
+}
+
+func TestCoordinator_DispatchAndAdvance_LockerReleasedAfterHooks(t *testing.T) {
+	var released atomic.Bool
+	locker := &funcLocker{
+		acquireFn: func(ctx context.Context, key string) (func(), error) {
+			return func() { released.Store(true) }, nil
+		},
+	}
+
+	mock := newMockExecutorWaiter()
+	mock.setHookCompletion("hook-a", `{"payload_patch":{"prompt":"done"}}`, 0)
+
+	coord := &orchestrator.Coordinator{
+		Evaluator:    &orchestrator.Evaluator{},
+		HookExecutor: mock,
+		GateExecutor: mock,
+		Waiter:       mock,
+		Locker:       locker,
+		MaxDepth:     5,
+	}
+
+	task := &orchestrator.Task{
+		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusExecuting,
+		Payload:   json.RawMessage(`{}`),
+	}
+	meta := &projectspec.ProjectMeta{
+		Hooks: []projectspec.Hook{
+			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
+		},
+	}
+	behavior := &projectspec.TaskBehavior{Readonly: false, Worktree: false}
+	sm := simpleStateMachine()
+
+	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	if !released.Load() {
+		t.Error("expected locker to be released after dispatch")
+	}
+}
+
+// funcLocker is a WorktreeLocker backed by a function, for testing release behavior.
+type funcLocker struct {
+	acquireFn func(ctx context.Context, key string) (func(), error)
+}
+
+func (f *funcLocker) Acquire(ctx context.Context, key string) (func(), error) {
+	return f.acquireFn(ctx, key)
 }
