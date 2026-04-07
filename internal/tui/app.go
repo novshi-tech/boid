@@ -75,11 +75,6 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
-		case "esc", "backspace":
-			if len(m.stack) > 1 {
-				m.stack = m.stack[:len(m.stack)-1]
-				return m, nil
-			}
 		}
 	}
 
