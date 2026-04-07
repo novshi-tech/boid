@@ -1,8 +1,6 @@
 package templates
 
 import (
-	"encoding/json"
-	"fmt"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"time"
 )
@@ -20,139 +18,12 @@ type JobView struct {
 
 templ TaskList(tasks []*orchestrator.Task, currentFilter string) {
 	@Layout("Tasks") {
-		<h1>Tasks</h1>
-		<div class="filters">
-			<a href="/" class={ templ.KV("active", currentFilter == "") }>All</a>
-			<a href="/?status=pending" class={ templ.KV("active", currentFilter == "pending") }>Pending</a>
-			<a href="/?status=executing" class={ templ.KV("active", currentFilter == "executing") }>Executing</a>
-			<a href="/?status=done" class={ templ.KV("active", currentFilter == "done") }>Done</a>
-			<a href="/?status=aborted" class={ templ.KV("active", currentFilter == "aborted") }>Aborted</a>
-		</div>
-		if len(tasks) > 0 {
-			<table>
-				<thead>
-					<tr>
-						<th>Title</th>
-						<th>Status</th>
-						<th>Behavior</th>
-						<th>Project</th>
-					</tr>
-				</thead>
-				<tbody>
-					for _, t := range tasks {
-						<tr>
-							<td><a href={ templ.SafeURL("/tasks/" + t.ID) }>{ t.Title }</a></td>
-							<td><span class={ "status status-" + string(t.Status) }>{ string(t.Status) }</span></td>
-							<td>{ t.Behavior }</td>
-							<td>{ t.ProjectID }</td>
-						</tr>
-					}
-				</tbody>
-			</table>
-		} else {
-			<p>No tasks found</p>
-		}
+		<p class="empty">Coming soon</p>
 	}
 }
 
 templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView) {
 	@Layout(task.Title) {
-		<h1>{ task.Title }</h1>
-		<div class="section">
-			<p><strong>ID:</strong> { task.ID }</p>
-			<p><strong>Status:</strong> <span class={ "status status-" + string(task.Status) }>{ string(task.Status) }</span></p>
-			<p><strong>Behavior:</strong> { task.Behavior }</p>
-			<p><strong>Project:</strong> { task.ProjectID }</p>
-		</div>
-		if len(task.Payload) > 0 && string(task.Payload) != "{}" {
-			<div class="section">
-				<h2>Payload</h2>
-				<pre>{ prettyJSON(task.Payload) }</pre>
-			</div>
-		}
-		if len(actions) > 0 {
-			<div class="section">
-				<h2>Actions</h2>
-				<table>
-					<thead>
-						<tr>
-							<th>ID</th>
-							<th>Type</th>
-							<th>Created</th>
-							<th>Payload</th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, a := range actions {
-							<tr>
-								<td>{ a.ID }</td>
-								<td>{ a.Type }</td>
-								<td>{ a.CreatedAt.Format("2006-01-02 15:04:05") }</td>
-								<td><pre>{ prettyJSON(a.Payload) }</pre></td>
-							</tr>
-						}
-					</tbody>
-				</table>
-			</div>
-		}
-		if len(jobs) > 0 {
-			<div class="section">
-				<h2>Jobs</h2>
-				<table>
-					<thead>
-						<tr>
-							<th>ID</th>
-							<th>Hook</th>
-							<th>Role</th>
-							<th>Status</th>
-							<th>Exit Code</th>
-							<th>Created</th>
-							<th>Updated</th>
-							<th>Output</th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, j := range jobs {
-							<tr>
-								<td>{ j.ID }</td>
-								<td>{ j.HandlerID }</td>
-								<td>{ j.Role }</td>
-								<td>{ string(j.Status) }</td>
-								<td>{ intToStr(j.ExitCode) }</td>
-								<td>{ j.CreatedAt.Format("2006-01-02 15:04:05") }</td>
-								<td>{ j.UpdatedAt.Format("2006-01-02 15:04:05") }</td>
-								<td><pre>{ prettyText(j.Output) }</pre></td>
-							</tr>
-						}
-					</tbody>
-				</table>
-			</div>
-		}
+		<p class="empty">Coming soon</p>
 	}
-}
-
-func prettyJSON(raw json.RawMessage) string {
-	var out json.RawMessage
-	if json.Unmarshal(raw, &out) != nil {
-		return string(raw)
-	}
-	b, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
-		return string(raw)
-	}
-	return string(b)
-}
-
-func intToStr(i int) string {
-	return fmt.Sprintf("%d", i)
-}
-
-func prettyText(s string) string {
-	if s == "" {
-		return ""
-	}
-	if json.Valid([]byte(s)) {
-		return prettyJSON(json.RawMessage(s))
-	}
-	return s
 }

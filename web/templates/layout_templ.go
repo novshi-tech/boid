@@ -36,13 +36,13 @@ func Layout(title string) templ.Component {
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layout.templ`, Line: 9, Col: 17}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `layout.templ`, Line: 9, Col: 17}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, " - boid</title><link rel=\"stylesheet\" href=\"/static/style.css\"></head><body><nav><a href=\"/\">Tasks</a> <a href=\"/projects\">Projects</a></nav>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, " - boid</title><link rel=\"stylesheet\" href=\"/static/style.css\"></head><body><header class=\"header\"><div class=\"header-inner\"><a href=\"/\" class=\"header-title\">boid</a></div><button class=\"nav-toggle\" aria-label=\"Menu\" aria-expanded=\"false\" onclick=\"this.setAttribute('aria-expanded',this.getAttribute('aria-expanded')==='false');document.getElementById('nav').classList.toggle('open')\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"><line x1=\"3\" y1=\"6\" x2=\"21\" y2=\"6\"></line> <line x1=\"3\" y1=\"12\" x2=\"21\" y2=\"12\"></line> <line x1=\"3\" y1=\"18\" x2=\"21\" y2=\"18\"></line></svg></button></header><nav id=\"nav\" class=\"nav\"><ul class=\"nav-list\"><li><a href=\"/\">Tasks</a></li><li><a href=\"/projects\">Projects</a></li></ul></nav><main class=\"main\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -50,7 +50,7 @@ func Layout(title string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</body></html>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</main></body></html>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
