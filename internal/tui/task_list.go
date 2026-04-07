@@ -144,6 +144,11 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.shared.Panes[msg.jobID] = msg.paneID
 		}
 
+	case taskCreatedNotifyMsg:
+		s.statusMsg = "task created"
+		s.isError = false
+		return s, clearStatusAfter(3 * time.Second)
+
 	case clearStatusMsg:
 		s.statusMsg = ""
 		s.isError = false
@@ -222,7 +227,7 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return fetchQuickOpenCmd(s.shared.Client, task.ID)
 
 	case "n":
-		// New task form (placeholder - to be implemented in a later task)
+		return PushScreen(NewTaskFormScreen(s.shared))
 	}
 	return nil
 }
