@@ -14,10 +14,12 @@ task_behaviors:
         main:
           type: execution
           consumer: claude-code
+          model: sonnet
           message: "task.yaml の title と description に記述された内容を実装せよ"
         rework:
           type: rework
           consumer: claude-code
+          model: sonnet
           message: "verification findings に記載された問題を修正してください。"
 
   plan:
@@ -30,6 +32,7 @@ task_behaviors:
         main:
           type: execution
           consumer: claude-code
+          model: opus
           interactive: true
           message: |
             task.yaml の title と description に記述されたテーマについて、ユーザーと対話しながら実装計画を策定せよ。
