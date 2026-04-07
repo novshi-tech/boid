@@ -28,6 +28,7 @@ type Task struct {
 	Status       TaskStatus      `json:"status"`
 	Behavior     string          `json:"behavior"`
 	Payload      json.RawMessage `json:"payload"`
+	AutoStart    bool            `json:"auto_start,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
 }

@@ -40,6 +40,7 @@ type CreateTaskRequest struct {
 	RemoteID     string          `json:"remote_id,omitempty"`
 	DataSourceID string          `json:"datasource_id,omitempty"`
 	Payload      json.RawMessage `json:"payload,omitempty"`
+	AutoStart    bool            `json:"auto_start,omitempty"`
 }
 
 func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {

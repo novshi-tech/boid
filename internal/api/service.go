@@ -157,10 +157,11 @@ func (s *ProjectAppService) ReloadProjects() (*ProjectReloadResult, error) {
 }
 
 type TaskAppService struct {
-	Tasks   TaskStore
-	Actions ActionStore
-	Jobs    JobStore
-	Meta    MetaStore
+	Tasks    TaskStore
+	Actions  ActionStore
+	Jobs     JobStore
+	Meta     MetaStore
+	Workflow WorkflowService
 }
 
 func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
@@ -190,9 +191,18 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		RemoteID:     req.RemoteID,
 		DataSourceID: req.DataSourceID,
 		Payload:      payload,
+		AutoStart:    req.AutoStart,
 	}
 	if err := s.Tasks.CreateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	if req.AutoStart && s.Workflow != nil {
+		result, err := s.Workflow.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
+		if err != nil {
+			slog.Error("auto_start: failed to apply start action", "task_id", task.ID, "error", err)
+		} else {
+			task = result.Task
+		}
 	}
 	return task, nil
 }

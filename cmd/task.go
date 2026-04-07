@@ -111,6 +111,7 @@ type taskCreateSpec struct {
 	Title       string         `yaml:"title"`
 	Description string         `yaml:"description,omitempty"`
 	Behavior    string         `yaml:"behavior"`
+	AutoStart   bool           `yaml:"auto_start,omitempty"`
 	Payload     map[string]any `yaml:"payload,omitempty"`
 }
 
@@ -150,6 +151,9 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 	}
 	if spec.Description != "" {
 		req["description"] = spec.Description
+	}
+	if spec.AutoStart {
+		req["auto_start"] = spec.AutoStart
 	}
 	if spec.Payload != nil {
 		payloadJSON, err := json.Marshal(spec.Payload)
