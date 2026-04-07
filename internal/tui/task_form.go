@@ -1,14 +1,11 @@
 package tui
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
@@ -70,7 +67,7 @@ var defaultTaskFormKeys = taskFormKeyMap{
 		key.WithKeys("backspace"),
 		key.WithHelp("backspace", "back"),
 	),
-	Up: key.NewBinding(key.WithKeys("k", "up")),
+	Up:   key.NewBinding(key.WithKeys("k", "up")),
 	Down: key.NewBinding(key.WithKeys("j", "down")),
 }
 
@@ -102,8 +99,8 @@ type TaskFormScreen struct {
 
 	projectField  SelectModel
 	behaviorField SelectModel
-	titleInput    textinput.Model
-	descArea      textarea.Model
+	titleField    TextFieldModel
+	descArea      TextAreaModel
 	createBtn     ButtonModel
 	cancelBtn     ButtonModel
 
@@ -116,13 +113,14 @@ type TaskFormScreen struct {
 }
 
 func NewTaskFormScreen(shared *SharedState) *TaskFormScreen {
-	ti := textinput.New()
-	ti.Placeholder = "Task title"
+	tf := NewTextField()
+	tf.SetLabel("Title")
+	tf.SetPlaceholder("Task title")
 
-	ta := textarea.New()
-	ta.Placeholder = "Description (optional)"
+	ta := NewTextArea()
+	ta.SetLabel("Desc")
+	ta.SetPlaceholder("Description (optional)")
 	ta.SetHeight(4)
-	ta.ShowLineNumbers = false
 
 	pf := NewSelect()
 	pf.SetLabel("Project")
@@ -137,7 +135,7 @@ func NewTaskFormScreen(shared *SharedState) *TaskFormScreen {
 		shared:        shared,
 		projectField:  pf,
 		behaviorField: bf,
-		titleInput:    ti,
+		titleField:    tf,
 		descArea:      ta,
 		createBtn:     NewButton("Create"),
 		cancelBtn:     NewButton("Cancel"),
@@ -171,7 +169,7 @@ func (s *TaskFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			}
 			s.behaviorField.SetOptions(opts)
 		}
-		s.behaviorField.selected = -1
+		s.behaviorField.ResetSelection()
 
 	case taskCreatedMsg:
 		s.submitting = false
@@ -183,6 +181,14 @@ func (s *TaskFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			func() tea.Msg { return popScreenMsg{} },
 			func() tea.Msg { return taskCreatedNotifyMsg{} },
 		)
+
+	case ButtonPressedMsg:
+		switch msg.Label {
+		case "Create":
+			return s, s.submit()
+		case "Cancel":
+			return s, func() tea.Msg { return popScreenMsg{} }
+		}
 
 	case tea.KeyMsg:
 		return s, s.handleKey(msg)
@@ -199,7 +205,7 @@ func (s *TaskFormScreen) moveFocus(newFocus formFocus) tea.Cmd {
 	case focusBehavior:
 		s.behaviorField.Blur()
 	case focusTitle:
-		s.titleInput.Blur()
+		s.titleField.Blur()
 	case focusDescription:
 		s.descArea.Blur()
 	case focusSubmit:
@@ -215,7 +221,7 @@ func (s *TaskFormScreen) moveFocus(newFocus formFocus) tea.Cmd {
 	case focusBehavior:
 		return s.behaviorField.Focus()
 	case focusTitle:
-		return s.titleInput.Focus()
+		return s.titleField.Focus()
 	case focusDescription:
 		return s.descArea.Focus()
 	case focusSubmit:
@@ -265,8 +271,8 @@ func (s *TaskFormScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		s.projectField, selectCmd = s.projectField.Update(msg)
 		newValue := s.projectField.Value()
 		if newValue != prevValue && newValue != "" {
-			s.behaviorField.selected = -1
-			s.behaviorField.options = nil
+			s.behaviorField.ResetSelection()
+			s.behaviorField.ClearOptions()
 			return tea.Batch(selectCmd, fetchBehaviorsCmd(s.shared.Client, newValue))
 		}
 		return selectCmd
@@ -281,7 +287,7 @@ func (s *TaskFormScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	case focusTitle:
 		var cmd tea.Cmd
-		s.titleInput, cmd = s.titleInput.Update(msg)
+		s.titleField, cmd = s.titleField.Update(msg)
 		return cmd
 
 	case focusDescription:
@@ -290,14 +296,14 @@ func (s *TaskFormScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return cmd
 
 	case focusSubmit:
-		if key.Matches(msg, s.keys.Enter) {
-			return s.submit()
-		}
+		var cmd tea.Cmd
+		s.createBtn, cmd = s.createBtn.Update(msg)
+		return cmd
 
 	case focusCancel:
-		if key.Matches(msg, s.keys.Enter) {
-			return func() tea.Msg { return popScreenMsg{} }
-		}
+		var cmd tea.Cmd
+		s.cancelBtn, cmd = s.cancelBtn.Update(msg)
+		return cmd
 	}
 	return nil
 }
@@ -311,7 +317,7 @@ func (s *TaskFormScreen) submit() tea.Cmd {
 		s.errMsg = "behavior is required"
 		return nil
 	}
-	title := strings.TrimSpace(s.titleInput.Value())
+	title := strings.TrimSpace(s.titleField.Value())
 	if title == "" {
 		s.errMsg = "title is required"
 		return nil
@@ -342,33 +348,18 @@ func (s *TaskFormScreen) View(width, height int) string {
 	{
 		bf := s.behaviorField
 		if s.projectField.Value() == "" {
-			bf.placeholder = "(select project first)"
+			bf.SetPlaceholder("(select project first)")
 		} else {
-			bf.placeholder = "(select behavior)"
+			bf.SetPlaceholder("(select behavior)")
 		}
 		sb.WriteString(bf.View())
 	}
 
 	// Title input
-	{
-		labelStr := fmt.Sprintf("%-10s", "Title:")
-		cursor := " "
-		if s.focus == focusTitle {
-			cursor = styleCursor.Render("▸")
-		}
-		sb.WriteString("  " + labelStr + " " + cursor + " " + s.titleInput.View() + "\n")
-	}
+	sb.WriteString(s.titleField.View())
 
 	// Description textarea
-	{
-		labelStr := fmt.Sprintf("%-10s", "Desc:")
-		cursor := " "
-		if s.focus == focusDescription {
-			cursor = styleCursor.Render("▸")
-		}
-		sb.WriteString("  " + labelStr + " " + cursor + "\n")
-		sb.WriteString(s.descArea.View() + "\n")
-	}
+	sb.WriteString(s.descArea.View())
 
 	// Buttons
 	sb.WriteString("\n  " + s.createBtn.View() + "    " + s.cancelBtn.View() + "\n")

@@ -51,11 +51,23 @@ func TestFormFocusCycleShiftTab(t *testing.T) {
 
 // --- バリデーションテスト ---
 
+// pressCreateBtn は Create ボタンにフォーカスを当てて Enter を送信し、
+// ButtonPressedMsg を処理するまでの2ステップを実行する。
+func pressCreateBtn(s *TaskFormScreen) tea.Cmd {
+	s.focus = focusSubmit
+	s.createBtn.focused = true
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		return nil
+	}
+	_, cmd2 := s.Update(cmd())
+	return cmd2
+}
+
 func TestFormValidationAllEmpty(t *testing.T) {
 	s := newTestFormScreen()
-	s.focus = focusSubmit
 
-	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pressCreateBtn(s)
 	if s.errMsg == "" {
 		t.Error("expected error when submitting empty form")
 	}
@@ -65,10 +77,9 @@ func TestFormValidationNoProject(t *testing.T) {
 	s := newTestFormScreen()
 	s.behaviorField.options = []SelectOption{{Value: "dev", Label: "dev"}}
 	s.behaviorField.selected = 0
-	s.titleInput.SetValue("My Task")
-	s.focus = focusSubmit
+	s.titleField.SetValue("My Task")
 
-	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pressCreateBtn(s)
 	if s.errMsg == "" {
 		t.Error("expected error: project required")
 	}
@@ -78,10 +89,9 @@ func TestFormValidationNoBehavior(t *testing.T) {
 	s := newTestFormScreen()
 	s.projectField.options = []SelectOption{{Value: "p1", Label: "proj1"}}
 	s.projectField.selected = 0
-	s.titleInput.SetValue("My Task")
-	s.focus = focusSubmit
+	s.titleField.SetValue("My Task")
 
-	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pressCreateBtn(s)
 	if s.errMsg == "" {
 		t.Error("expected error: behavior required")
 	}
@@ -93,9 +103,8 @@ func TestFormValidationNoTitle(t *testing.T) {
 	s.projectField.selected = 0
 	s.behaviorField.options = []SelectOption{{Value: "dev", Label: "dev"}}
 	s.behaviorField.selected = 0
-	s.focus = focusSubmit
 
-	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pressCreateBtn(s)
 	if s.errMsg == "" {
 		t.Error("expected error: title required")
 	}
@@ -107,10 +116,9 @@ func TestFormValidationWhitespaceTitle(t *testing.T) {
 	s.projectField.selected = 0
 	s.behaviorField.options = []SelectOption{{Value: "dev", Label: "dev"}}
 	s.behaviorField.selected = 0
-	s.titleInput.SetValue("   ")
-	s.focus = focusSubmit
+	s.titleField.SetValue("   ")
 
-	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pressCreateBtn(s)
 	if s.errMsg == "" {
 		t.Error("expected error: title is whitespace only")
 	}
@@ -189,12 +197,10 @@ func TestFormSubmitBuildsRequest(t *testing.T) {
 	s.projectField.selected = 0
 	s.behaviorField.options = []SelectOption{{Value: "dev", Label: "dev"}}
 	s.behaviorField.selected = 0
-	s.titleInput.SetValue("Fix the bug")
+	s.titleField.SetValue("Fix the bug")
 	s.descArea.SetValue("some detail")
-	s.focus = focusSubmit
-	s.createBtn.focused = true
 
-	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	cmd := pressCreateBtn(s)
 
 	if s.errMsg != "" {
 		t.Errorf("unexpected error: %q", s.errMsg)
@@ -322,9 +328,51 @@ func TestFormCancelButton(t *testing.T) {
 	s.focus = focusCancel
 	s.cancelBtn.focused = true
 
+	// Enter on Cancel → ButtonPressedMsg{Label: "Cancel"}
 	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Error("cancel button should return popScreen cmd")
+		t.Fatal("cancel button should return cmd")
+	}
+	// ButtonPressedMsg を処理 → popScreenMsg を返す cmd
+	_, cmd2 := s.Update(cmd())
+	if cmd2 == nil {
+		t.Error("ButtonPressedMsg Cancel should return popScreen cmd")
+	}
+}
+
+// --- ButtonPressedMsg ハンドリングテスト ---
+
+func TestFormButtonPressedCreate(t *testing.T) {
+	s := newTestFormScreen()
+	s.projectField.options = []SelectOption{{Value: "proj-id", Label: "My Project"}}
+	s.projectField.selected = 0
+	s.behaviorField.options = []SelectOption{{Value: "dev", Label: "dev"}}
+	s.behaviorField.selected = 0
+	s.titleField.SetValue("Test task")
+
+	_, cmd := s.Update(ButtonPressedMsg{Label: "Create"})
+
+	if s.errMsg != "" {
+		t.Errorf("unexpected error: %q", s.errMsg)
+	}
+	if !s.submitting {
+		t.Error("expected submitting=true after ButtonPressedMsg Create")
+	}
+	if cmd == nil {
+		t.Error("expected createTaskCmd after ButtonPressedMsg Create")
+	}
+}
+
+func TestFormButtonPressedCancel(t *testing.T) {
+	s := newTestFormScreen()
+
+	_, cmd := s.Update(ButtonPressedMsg{Label: "Cancel"})
+	if cmd == nil {
+		t.Fatal("ButtonPressedMsg Cancel should return cmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(popScreenMsg); !ok {
+		t.Errorf("ButtonPressedMsg Cancel: expected popScreenMsg, got %T", msg)
 	}
 }
 
@@ -334,11 +382,11 @@ func TestFormCancelButton(t *testing.T) {
 func TestFormBackspaceTitleDeletes(t *testing.T) {
 	s := newTestFormScreen()
 	s.moveFocus(focusTitle)
-	s.titleInput.SetValue("hello")
+	s.titleField.SetValue("hello")
 
 	s.Update(tea.KeyMsg{Type: tea.KeyBackspace})
 
-	if got := s.titleInput.Value(); got != "hell" {
+	if got := s.titleField.Value(); got != "hell" {
 		t.Errorf("backspace on title: want 'hell', got %q", got)
 	}
 }

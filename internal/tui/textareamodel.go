@@ -46,6 +46,9 @@ func (m TextAreaModel) Focused() bool { return m.area.Focused() }
 // Value returns the current text value.
 func (m TextAreaModel) Value() string { return m.area.Value() }
 
+// SetValue sets the current text value.
+func (m *TextAreaModel) SetValue(v string) { m.area.SetValue(v) }
+
 // Update processes a tea.Msg and delegates key input to the inner textarea.
 // Input is ignored when the component is not focused.
 func (m TextAreaModel) Update(msg tea.Msg) (TextAreaModel, tea.Cmd) {
