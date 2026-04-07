@@ -452,6 +452,72 @@ func TestMiniSelectorBlocksNormalKeys(t *testing.T) {
 	}
 }
 
+// --- scroll tests ---
+
+func TestViewScrollFollowsCursorDown(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = makeDummyTasks(10)
+	s.cursor = 0
+
+	// bodyHeight = height - 2 (filterbar + sep)
+	// With height=5, bodyHeight=3: only 3 tasks visible at a time.
+	// Move cursor to index 3 (out of initial viewport).
+	s.cursor = 3
+	view := s.View(120, 5)
+
+	// Task 0 should NOT be visible (scrolled away).
+	if containsStr(view, "Task 0") {
+		t.Error("Task 0 should not be visible when cursor=3 and bodyHeight=3")
+	}
+	// Task 3 (cursor) should be visible.
+	if !containsStr(view, "Task 3") {
+		t.Error("Task 3 (cursor) should be visible")
+	}
+}
+
+func TestViewScrollFollowsCursorUp(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = makeDummyTasks(10)
+
+	// Start at cursor=5 with bodyHeight=3: tasks 3,4,5 visible.
+	s.cursor = 5
+	view := s.View(120, 5)
+	if containsStr(view, "Task 0") {
+		t.Error("Task 0 should not be visible when cursor=5")
+	}
+
+	// Move cursor back to 0: tasks 0,1,2 should be visible.
+	s.cursor = 0
+	view = s.View(120, 5)
+	if !containsStr(view, "Task 0") {
+		t.Error("Task 0 should be visible when cursor=0")
+	}
+	if containsStr(view, "Task 5") {
+		t.Error("Task 5 should not be visible when cursor=0 and bodyHeight=3")
+	}
+}
+
+func TestViewCursorHighlightedCorrectlyWhenScrolled(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = makeDummyTasks(10)
+	// cursor=4, bodyHeight=3 => scroll=2, visible=[2,3,4]
+	// Task 4 should show cursor marker "▸"
+	s.cursor = 4
+	view := s.View(120, 5)
+	// The cursor marker "▸" should appear on the same line as Task 4.
+	lines := splitLines(view)
+	found := false
+	for _, line := range lines {
+		if containsStr(line, "Task 4") && containsStr(line, "▸") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("cursor marker '▸' should appear on Task 4's line when scrolled")
+	}
+}
+
 // --- helpers ---
 
 func makeDummyTasks(n int) []*orchestrator.Task {
@@ -484,6 +550,21 @@ func makeDummyJobs(n int) []*api.Job {
 		}
 	}
 	return jobs
+}
+
+func splitLines(s string) []string {
+	var lines []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			lines = append(lines, s[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		lines = append(lines, s[start:])
+	}
+	return lines
 }
 
 func containsStr(s, substr string) bool {
