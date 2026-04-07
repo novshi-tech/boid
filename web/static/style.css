@@ -397,6 +397,55 @@ details[open] > summary {
     color: #dc3545;
 }
 
+/* --- Action Buttons --- */
+.action-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.action-buttons form {
+    display: contents;
+}
+
+.btn {
+    display: block;
+    width: 100%;
+    padding: 14px 16px;
+    border: none;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: center;
+    -webkit-tap-highlight-color: transparent;
+    min-height: 48px;
+}
+
+.btn-primary {
+    background: #0066cc;
+    color: #fff;
+}
+
+.btn-primary:hover {
+    background: #0052a3;
+}
+
+.btn-danger {
+    background: #dc3545;
+    color: #fff;
+}
+
+.btn-danger:hover {
+    background: #b02a37;
+}
+
+.action-error {
+    background: #f8d7da;
+    color: #721c24;
+    border-radius: 8px;
+}
+
 /* ========================================
    Tablet / Desktop (min-width: 768px)
    ======================================== */
