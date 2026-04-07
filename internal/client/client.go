@@ -246,6 +246,24 @@ func (c *Client) GetTaskDetail(id string) (*api.TaskDetailView, error) {
 	return &detail, nil
 }
 
+// CreateTask creates a new task via POST /api/tasks.
+func (c *Client) CreateTask(req api.CreateTaskRequest) (*orchestrator.Task, error) {
+	var task orchestrator.Task
+	if err := c.Do("POST", "/api/tasks", req, &task); err != nil {
+		return nil, err
+	}
+	return &task, nil
+}
+
+// GetProject fetches a single project by ID via GET /api/projects/{id}.
+func (c *Client) GetProject(id string) (*orchestrator.Project, error) {
+	var project orchestrator.Project
+	if err := c.Do("GET", "/api/projects/"+id, nil, &project); err != nil {
+		return nil, err
+	}
+	return &project, nil
+}
+
 func (c *Client) ResizeJob(jobID string, rows, cols int) error {
 	return c.Do("POST", "/api/jobs/"+jobID+"/resize", map[string]int{
 		"rows": rows,
