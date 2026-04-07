@@ -11,6 +11,18 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
+func makeDetailWithStatus(status orchestrator.TaskStatus) *api.TaskDetailView {
+	return &api.TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:        "test-task-id",
+			Title:     "Test Task",
+			Status:    status,
+			Behavior:  "dev",
+			CreatedAt: time.Now().Add(-5 * time.Minute),
+		},
+	}
+}
+
 func newTestTaskDetailScreen() *TaskDetailScreen {
 	shared := &SharedState{
 		Panes:       make(map[string]string),
@@ -177,6 +189,117 @@ func TestTaskDetailView_Loading(t *testing.T) {
 	view := s.View(80, 20)
 	if !containsStr(view, "Loading") {
 		t.Error("View should show loading indicator when detail is nil")
+	}
+}
+
+// --- start / abort keybinding tests ---
+
+func TestStartKey_PendingTask(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusPending)
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if cmd == nil {
+		t.Error("s on pending task: expected non-nil cmd (applyActionCmd)")
+	}
+}
+
+func TestStartKey_NonPendingTask(t *testing.T) {
+	statuses := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusDone,
+		orchestrator.TaskStatusAborted,
+	}
+	for _, st := range statuses {
+		s := newTestTaskDetailScreen()
+		s.detail = makeDetailWithStatus(st)
+		_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+		if cmd != nil {
+			t.Errorf("s on %q task: expected nil cmd", st)
+		}
+	}
+}
+
+func TestAbortKey_FirstPress_SetsConfirmState(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusExecuting)
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if !s.abortPending {
+		t.Error("x first press: expected abortPending=true")
+	}
+	if s.statusMsg == "" {
+		t.Error("x first press: expected statusMsg to be set")
+	}
+	if cmd == nil {
+		t.Error("x first press: expected non-nil cmd (tick)")
+	}
+}
+
+func TestAbortKey_SecondPress_ExecutesAbort(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusExecuting)
+	s.abortPending = true
+	s.statusMsg = "Press x again to abort"
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if s.abortPending {
+		t.Error("x second press: expected abortPending=false")
+	}
+	if cmd == nil {
+		t.Error("x second press: expected non-nil cmd (applyActionCmd)")
+	}
+}
+
+func TestAbortKey_DoneTask_Ignored(t *testing.T) {
+	for _, st := range []orchestrator.TaskStatus{orchestrator.TaskStatusDone, orchestrator.TaskStatusAborted} {
+		s := newTestTaskDetailScreen()
+		s.detail = makeDetailWithStatus(st)
+		_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+		if s.abortPending {
+			t.Errorf("x on %q: abortPending should remain false", st)
+		}
+		if cmd != nil {
+			t.Errorf("x on %q: expected nil cmd", st)
+		}
+	}
+}
+
+func TestAbortConfirmDeadline_ClearsPending(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.abortPending = true
+	s.statusMsg = "Press x again to abort"
+
+	s.Update(abortConfirmDeadlineMsg{})
+	if s.abortPending {
+		t.Error("deadline: expected abortPending=false")
+	}
+	if s.statusMsg != "" {
+		t.Errorf("deadline: expected empty statusMsg, got %q", s.statusMsg)
+	}
+}
+
+func TestApplyActionResult_Success_RefreshesDetail(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.abortPending = true
+
+	_, cmd := s.Update(applyActionResultMsg{err: nil})
+	if s.abortPending {
+		t.Error("success result: expected abortPending=false")
+	}
+	if cmd == nil {
+		t.Error("success result: expected fetchTaskDetailCmd")
+	}
+}
+
+func TestApplyActionResult_Error_SetsStatusMsg(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.Update(applyActionResultMsg{err: fmt.Errorf("permission denied")})
+	if s.statusMsg == "" {
+		t.Error("error result: expected statusMsg to be set")
+	}
+	if !s.isError {
+		t.Error("error result: expected isError=true")
 	}
 }
 
