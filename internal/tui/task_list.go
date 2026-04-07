@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -35,6 +36,19 @@ type projectsMsg struct {
 	projects []*orchestrator.Project
 	err      error
 }
+type quickOpenResultMsg struct {
+	taskID string
+	jobs   []*api.Job
+	err    error
+}
+
+// --- miniSelector ---
+
+type miniSelector struct {
+	jobs   []*api.Job
+	cursor int
+	active bool
+}
 
 // --- TaskListScreen ---
 
@@ -48,6 +62,9 @@ type TaskListScreen struct {
 	projectIdx   int    // 0=all, 1..N=project index
 	loading      bool
 	fetchErr     error
+	statusMsg    string
+	isError      bool
+	mini         miniSelector
 }
 
 func NewTaskListScreen(shared *SharedState) *TaskListScreen {
@@ -94,6 +111,43 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.projects = msg.projects
 		}
 
+	case quickOpenResultMsg:
+		s.statusMsg = ""
+		if msg.err != nil {
+			s.statusMsg = "error: " + msg.err.Error()
+			s.isError = true
+			return s, clearStatusAfter(3 * time.Second)
+		}
+		switch len(msg.jobs) {
+		case 0:
+			s.statusMsg = "no active job"
+			s.isError = false
+			return s, clearStatusAfter(3 * time.Second)
+		case 1:
+			if !s.shared.TmuxEnabled {
+				s.statusMsg = "to open a job, launch `boid tui` inside tmux"
+				s.isError = false
+				return s, clearStatusAfter(4 * time.Second)
+			}
+			return s, openJobCmd(msg.jobs[0].ID, s.shared.Panes[msg.jobs[0].ID])
+		default:
+			s.mini = miniSelector{jobs: msg.jobs, cursor: 0, active: true}
+		}
+
+	case openResultMsg:
+		if msg.err != nil {
+			s.statusMsg = "open failed: " + msg.err.Error()
+			s.isError = true
+			return s, clearStatusAfter(3 * time.Second)
+		}
+		if msg.paneID != "" {
+			s.shared.Panes[msg.jobID] = msg.paneID
+		}
+
+	case clearStatusMsg:
+		s.statusMsg = ""
+		s.isError = false
+
 	case tea.KeyMsg:
 		return s, s.handleKey(msg)
 	}
@@ -102,6 +156,10 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 }
 
 func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
+	if s.mini.active {
+		return s.handleMiniKey(msg)
+	}
+
 	switch msg.String() {
 	case "j", "down":
 		if s.cursor < len(s.tasks)-1 {
@@ -155,7 +213,13 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return PushScreen(NewTaskDetailScreen(s.shared, task.ID, projectName))
 
 	case "o":
-		// Quick open (placeholder - to be implemented in a later task)
+		if len(s.tasks) == 0 {
+			break
+		}
+		task := s.tasks[s.cursor]
+		s.statusMsg = "loading..."
+		s.isError = false
+		return fetchQuickOpenCmd(s.shared.Client, task.ID)
 
 	case "n":
 		// New task form (placeholder - to be implemented in a later task)
@@ -210,6 +274,24 @@ func (s *TaskListScreen) View(width, height int) string {
 			sb.WriteString(line)
 			sb.WriteByte('\n')
 		}
+	}
+
+	// --- mini selector (above footer) ---
+	if s.mini.active {
+		sb.WriteString(renderMiniSelector(s.mini, width))
+		sb.WriteByte('\n')
+	}
+
+	// --- status message ---
+	if s.statusMsg != "" {
+		var line string
+		if s.isError {
+			line = styleError.Render("  ! " + s.statusMsg)
+		} else {
+			line = styleDim.Render("  " + s.statusMsg)
+		}
+		sb.WriteString(line)
+		sb.WriteByte('\n')
 	}
 
 	return sb.String()
@@ -391,4 +473,68 @@ func fetchProjectsCmd(c *client.Client) tea.Cmd {
 		projects, err := c.ListProjects()
 		return projectsMsg{projects: projects, err: err}
 	}
+}
+
+func fetchQuickOpenCmd(c *client.Client, taskID string) tea.Cmd {
+	return func() tea.Msg {
+		detail, err := c.GetTaskDetail(taskID)
+		if err != nil {
+			return quickOpenResultMsg{taskID: taskID, err: err}
+		}
+		var running []*api.Job
+		for _, j := range detail.Jobs {
+			if j.Status == api.JobStatusRunning {
+				running = append(running, j)
+			}
+		}
+		return quickOpenResultMsg{taskID: taskID, jobs: running}
+	}
+}
+
+// handleMiniKey processes key events when the mini selector is active.
+func (s *TaskListScreen) handleMiniKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "j", "right":
+		if s.mini.cursor < len(s.mini.jobs)-1 {
+			s.mini.cursor++
+		}
+	case "k", "left":
+		if s.mini.cursor > 0 {
+			s.mini.cursor--
+		}
+	case "enter":
+		job := s.mini.jobs[s.mini.cursor]
+		s.mini.active = false
+		if !s.shared.TmuxEnabled {
+			s.statusMsg = "to open a job, launch `boid tui` inside tmux"
+			s.isError = false
+			return clearStatusAfter(4 * time.Second)
+		}
+		return openJobCmd(job.ID, s.shared.Panes[job.ID])
+	case "esc":
+		s.mini.active = false
+	}
+	return nil
+}
+
+// renderMiniSelector renders the horizontal job selector row.
+func renderMiniSelector(m miniSelector, width int) string {
+	var sb strings.Builder
+	sb.WriteString(styleDim.Render("Select job: "))
+	for i, job := range m.jobs {
+		label := shortID(job.ID)
+		if job.Role != "" {
+			label += " [" + job.Role + "]"
+		}
+		if i == m.cursor {
+			sb.WriteString(styleFilterActive.Render("▸ " + label))
+		} else {
+			sb.WriteString(styleFilterInactive.Render("  " + label))
+		}
+		if i < len(m.jobs)-1 {
+			sb.WriteString("   ")
+		}
+	}
+	_ = width
+	return sb.String()
 }
