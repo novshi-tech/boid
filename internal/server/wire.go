@@ -17,14 +17,15 @@ import (
 )
 
 type appRuntime struct {
-	projectRepo api.ProjectRepository
-	taskRepo    *orchestrator.TaskRepository
-	jobStore    api.JobStore
-	jobRuntime  dispatcher.JobRuntime
-	projectSvc  *api.ProjectAppService
-	taskSvc     *api.TaskAppService
-	webSvc      *api.WebAppService
-	workflow    *api.TaskWorkflowService
+	projectRepo    api.ProjectRepository
+	taskRepo       *orchestrator.TaskRepository
+	jobStore       api.JobStore
+	globalJobStore api.GlobalJobStore
+	jobRuntime     dispatcher.JobRuntime
+	projectSvc     *api.ProjectAppService
+	taskSvc        *api.TaskAppService
+	webSvc         *api.WebAppService
+	workflow       *api.TaskWorkflowService
 }
 
 func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) (*orchestrator.ProjectStore, error) {
@@ -127,24 +128,31 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	if srv.broker != nil {
 		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc)
 	}
+	globalJobSvc := &globalJobStore{
+		jobs:     jobRepo,
+		tasks:    taskRepo,
+		projects: projectRepo,
+	}
 	webSvc := &api.WebAppService{
-		Tasks:    taskRepo,
-		Actions:  taskRepo,
-		Jobs:     jobStore,
-		Projects: projectRepo,
-		Meta:     store,
-		Workflow: workflow,
+		Tasks:      taskRepo,
+		Actions:    taskRepo,
+		Jobs:       jobStore,
+		GlobalJobs: globalJobSvc,
+		Projects:   projectRepo,
+		Meta:       store,
+		Workflow:   workflow,
 	}
 
 	return &appRuntime{
-		projectRepo: projectRepo,
-		taskRepo:    taskRepo,
-		jobStore:    jobStore,
-		jobRuntime:  jobRuntime,
-		projectSvc:  projectSvc,
-		taskSvc:     taskSvc,
-		webSvc:      webSvc,
-		workflow:    workflow,
+		projectRepo:    projectRepo,
+		taskRepo:       taskRepo,
+		jobStore:       jobStore,
+		globalJobStore: globalJobSvc,
+		jobRuntime:     jobRuntime,
+		projectSvc:     projectSvc,
+		taskSvc:        taskSvc,
+		webSvc:         webSvc,
+		workflow:       workflow,
 	}, nil
 }
 
@@ -193,12 +201,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		r.Mount("/", actionHandler.Routes())
 	})
 
-	globalStore := &globalJobStore{
-		jobs:     dispatcher.NewJobRepository(srv.db),
-		tasks:    orchestrator.NewTaskRepository(srv.db),
-		projects: orchestrator.NewProjectRepository(srv.db),
-	}
-	jobHandler := &api.JobHandler{Jobs: runtime.jobStore, Global: globalStore, Service: runtime.workflow}
+	jobHandler := &api.JobHandler{Jobs: runtime.jobStore, Global: runtime.globalJobStore, Service: runtime.workflow}
 	r.Mount("/api/jobs", jobHandler.Routes())
 	mountJobRuntimeRoutes(r, runtime)
 

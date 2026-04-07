@@ -299,12 +299,13 @@ func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 }
 
 type WebAppService struct {
-	Tasks    TaskStore
-	Actions  ActionStore
-	Jobs     JobStore
-	Projects ProjectRepository
-	Meta     MetaStore
-	Workflow WorkflowService
+	Tasks      TaskStore
+	Actions    ActionStore
+	Jobs       JobStore
+	GlobalJobs GlobalJobStore
+	Projects   ProjectRepository
+	Meta       MetaStore
+	Workflow   WorkflowService
 }
 
 func (s *WebAppService) ListTasks(status string) ([]*orchestrator.Task, error) {
@@ -346,6 +347,29 @@ func (s *WebAppService) ApplyAction(taskID string, actionType string) error {
 	}
 	_, err := s.Workflow.ApplyAction(context.Background(), taskID, ApplyActionRequest{Type: actionType})
 	return err
+}
+
+func (s *WebAppService) ListJobs(status string) ([]JobWithContext, error) {
+	jobs, err := s.GlobalJobs.ListJobsWithContext(JobListFilter{Status: status})
+	if err != nil {
+		return nil, err
+	}
+	if jobs == nil {
+		jobs = []JobWithContext{}
+	}
+	return jobs, nil
+}
+
+func (s *WebAppService) GetJob(id string) (*JobWithContext, error) {
+	job, err := s.Jobs.GetJob(id)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	result := &JobWithContext{Job: *job}
+	if task, err := s.Tasks.GetTask(job.TaskID); err == nil {
+		result.TaskTitle = task.Title
+	}
+	return result, nil
 }
 
 type TaskWorkflowService struct {
