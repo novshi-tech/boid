@@ -207,6 +207,34 @@ func TestTaskDetailView_Loading(t *testing.T) {
 
 // --- start / abort keybinding tests ---
 
+func TestStartKey_SetsLoadingMsgInDetail(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusPending)
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if s.statusMsg != "starting..." {
+		t.Errorf("s on pending task: want statusMsg %q, got %q", "starting...", s.statusMsg)
+	}
+	if s.isError {
+		t.Error("s on pending task: expected isError=false")
+	}
+}
+
+func TestAbortKey_SecondPress_SetsLoadingMsg(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusExecuting)
+	s.abortPending = true
+	s.statusMsg = "Press a again to abort"
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if s.statusMsg != "aborting..." {
+		t.Errorf("abort confirmed: want statusMsg %q, got %q", "aborting...", s.statusMsg)
+	}
+	if s.isError {
+		t.Error("abort confirmed: expected isError=false")
+	}
+}
+
 func TestStartKey_PendingTask(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	s.detail = makeDetailWithStatus(orchestrator.TaskStatusPending)

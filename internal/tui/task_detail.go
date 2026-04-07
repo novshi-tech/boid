@@ -162,7 +162,8 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if action == "abort" {
 			if s.abortPending {
 				s.abortPending = false
-				s.statusMsg = ""
+				s.statusMsg = "aborting..."
+				s.isError = false
 				return applyActionCmd(s.shared.Client, s.taskID, "abort")
 			}
 			s.abortPending = true
@@ -172,6 +173,8 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 				return abortConfirmDeadlineMsg{}
 			})
 		}
+		s.statusMsg = actionLoadingMsg(action)
+		s.isError = false
 		return applyActionCmd(s.shared.Client, s.taskID, action)
 	}
 	return nil
@@ -380,5 +383,14 @@ func applyActionCmd(c *client.Client, taskID, actionType string) tea.Cmd {
 	return func() tea.Msg {
 		_, err := c.ApplyAction(taskID, api.ApplyActionRequest{Type: actionType})
 		return applyActionResultMsg{err: err}
+	}
+}
+
+func actionLoadingMsg(action string) string {
+	switch action {
+	case "start":
+		return "starting..."
+	default:
+		return action + "..."
 	}
 }
