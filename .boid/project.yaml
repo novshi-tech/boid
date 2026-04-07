@@ -31,8 +31,8 @@ task_behaviors:
           consumer: claude-code
           interactive: true
           message: |
-            task.yaml の title と description に記述されたテーマについて、実装計画を対話的に策定せよ。
-            ユーザーと対話しながらタスクを分解し、確定後に ~/.boid/output/payload_patch.yaml に以下の形式で書き出すこと：
+            task.yaml の title と description に記述されたテーマについて、ユーザーと対話しながら実装計画を策定せよ。
+            タスクが大きい場合は適切な粒度に分解すること。確定後に ~/.boid/output/payload_patch.yaml に以下の形式で書き出すこと：
 
             payload_patch:
               tasks:
