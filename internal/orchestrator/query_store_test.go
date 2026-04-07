@@ -584,6 +584,134 @@ func TestFindTaskByRemote_NotFound(t *testing.T) {
 	}
 }
 
+func TestCreateTask_WithBehaviorFields(t *testing.T) {
+	d := createTestProject(t)
+
+	task := &orchestrator.Task{
+		ProjectID:    "proj-1",
+		Title:        "Task with behavior fields",
+		Behavior:     "dev",
+		Transition:   "feedback-loop",
+		Traits:       []string{"git", "sandbox"},
+		Readonly:     true,
+		Worktree:     true,
+		BranchPrefix: "feat/",
+		BaseBranch:   "main",
+	}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	got, err := orchestrator.GetTask(d.Conn, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Transition != "feedback-loop" {
+		t.Fatalf("Transition = %q, want %q", got.Transition, "feedback-loop")
+	}
+	if len(got.Traits) != 2 || got.Traits[0] != "git" || got.Traits[1] != "sandbox" {
+		t.Fatalf("Traits = %v, want [git sandbox]", got.Traits)
+	}
+	if !got.Readonly {
+		t.Fatal("Readonly = false, want true")
+	}
+	if !got.Worktree {
+		t.Fatal("Worktree = false, want true")
+	}
+	if got.BranchPrefix != "feat/" {
+		t.Fatalf("BranchPrefix = %q, want %q", got.BranchPrefix, "feat/")
+	}
+	if got.BaseBranch != "main" {
+		t.Fatalf("BaseBranch = %q, want %q", got.BaseBranch, "main")
+	}
+}
+
+func TestCreateTask_TraitsNilRoundtrip(t *testing.T) {
+	d := createTestProject(t)
+
+	task := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Title:     "Task without traits",
+		Behavior:  "dev",
+	}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	got, err := orchestrator.GetTask(d.Conn, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Traits != nil {
+		t.Fatalf("Traits = %v, want nil", got.Traits)
+	}
+	if got.Transition != "" {
+		t.Fatalf("Transition = %q, want empty", got.Transition)
+	}
+	if got.Readonly {
+		t.Fatal("Readonly = true, want false")
+	}
+	if got.Worktree {
+		t.Fatal("Worktree = true, want false")
+	}
+}
+
+func TestUpdateTask_BehaviorFields(t *testing.T) {
+	d := createTestProject(t)
+
+	task := &orchestrator.Task{
+		ProjectID:  "proj-1",
+		Title:      "Original Title",
+		Behavior:   "dev",
+		Transition: "one-shot",
+	}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	task.Title = "Updated Title"
+	task.Description = "Updated description"
+	task.Transition = "feedback-loop"
+	task.Traits = []string{"docker"}
+	task.Readonly = true
+	task.Worktree = true
+	task.BranchPrefix = "fix/"
+	task.BaseBranch = "develop"
+	task.Status = orchestrator.TaskStatusExecuting
+	if err := orchestrator.UpdateTask(d.Conn, task); err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	got, err := orchestrator.GetTask(d.Conn, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Title != "Updated Title" {
+		t.Fatalf("Title = %q, want %q", got.Title, "Updated Title")
+	}
+	if got.Description != "Updated description" {
+		t.Fatalf("Description = %q, want %q", got.Description, "Updated description")
+	}
+	if got.Transition != "feedback-loop" {
+		t.Fatalf("Transition = %q, want %q", got.Transition, "feedback-loop")
+	}
+	if len(got.Traits) != 1 || got.Traits[0] != "docker" {
+		t.Fatalf("Traits = %v, want [docker]", got.Traits)
+	}
+	if !got.Readonly {
+		t.Fatal("Readonly = false, want true")
+	}
+	if !got.Worktree {
+		t.Fatal("Worktree = false, want true")
+	}
+	if got.BranchPrefix != "fix/" {
+		t.Fatalf("BranchPrefix = %q, want %q", got.BranchPrefix, "fix/")
+	}
+	if got.BaseBranch != "develop" {
+		t.Fatalf("BaseBranch = %q, want %q", got.BaseBranch, "develop")
+	}
+}
+
 func TestFindTaskByRemote_MatchesBothFields(t *testing.T) {
 	d := createTestProject(t)
 
