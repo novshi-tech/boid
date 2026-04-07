@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -15,6 +18,7 @@ type TaskHandler struct {
 func (h *TaskHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/", h.Create)
+	r.Post("/import", h.Import)
 	r.Get("/", h.List)
 	r.Get("/{id}/detail", h.Detail)
 	r.Get("/{id}", h.Get)
@@ -108,6 +112,45 @@ func (h *TaskHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, task)
+}
+
+func (h *TaskHandler) Import(w http.ResponseWriter, r *http.Request) {
+	ct := r.Header.Get("Content-Type")
+	var reqs []CreateTaskRequest
+
+	if strings.Contains(ct, "application/x-ndjson") {
+		scanner := bufio.NewScanner(r.Body)
+		lineNum := 0
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			lineNum++
+			var req CreateTaskRequest
+			if err := json.Unmarshal([]byte(line), &req); err != nil {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("line %d: invalid JSON: %s", lineNum, err))
+				return
+			}
+			reqs = append(reqs, req)
+		}
+		if err := scanner.Err(); err != nil {
+			writeError(w, http.StatusBadRequest, "reading request body: "+err.Error())
+			return
+		}
+	} else {
+		if err := json.NewDecoder(r.Body).Decode(&reqs); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+	}
+
+	result, err := h.Service.ImportTasks(reqs)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {

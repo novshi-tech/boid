@@ -32,6 +32,9 @@ func (s *capturingTaskStore) UpdateTask(task *orchestrator.Task) error {
 	return nil
 }
 func (s *capturingTaskStore) DeleteTask(id string) error { return nil }
+func (s *capturingTaskStore) FindTaskByRemote(remoteID, datasourceID string) (*orchestrator.Task, error) {
+	return nil, nil
+}
 
 func TestBoidBuiltinExecutor_EnforcesWorkspaceScope(t *testing.T) {
 	store := &capturingTaskStore{}

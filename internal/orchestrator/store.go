@@ -239,6 +239,23 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 	return result, nil
 }
 
+// FindTaskByRemote returns the task matching the given remote_id and datasource_id,
+// or nil if no matching task is found.
+func FindTaskByRemote(dbtx db.DBTX, remoteID, datasourceID string) (*Task, error) {
+	row := dbtx.QueryRow(
+		`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, payload, created_at, updated_at FROM tasks WHERE remote_id = ? AND datasource_id = ?`,
+		remoteID, datasourceID,
+	)
+	t, err := scanTask(row)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return t, nil
+}
+
 func DeleteTask(dbtx db.DBTX, id string) error {
 	if _, err := GetTask(dbtx, id); err != nil {
 		return err

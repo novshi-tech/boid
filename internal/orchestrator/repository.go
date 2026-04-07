@@ -42,6 +42,10 @@ func (r *TaskRepository) DeleteTask(id string) error {
 	})
 }
 
+func (r *TaskRepository) FindTaskByRemote(remoteID, datasourceID string) (*Task, error) {
+	return FindTaskByRemote(r.db, remoteID, datasourceID)
+}
+
 func (r *TaskRepository) CreateAction(action *Action) error {
 	return CreateAction(r.db, action)
 }

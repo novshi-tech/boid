@@ -95,6 +95,44 @@ func (c *Client) Do(method, path string, body any, result any) error {
 	return nil
 }
 
+// DoWithContentType performs an HTTP request with a custom Content-Type and raw body.
+func (c *Client) DoWithContentType(method, path, contentType string, body []byte, result any) error {
+	var reqBody *bytes.Buffer
+	if body != nil {
+		reqBody = bytes.NewBuffer(body)
+	} else {
+		reqBody = &bytes.Buffer{}
+	}
+
+	req, err := http.NewRequest(method, "http://boid"+path, reqBody)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		var errResp map[string]string
+		json.NewDecoder(resp.Body).Decode(&errResp)
+		if msg, ok := errResp["error"]; ok {
+			return fmt.Errorf("%s", msg)
+		}
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	if result != nil {
+		if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
+			return fmt.Errorf("decode response: %w", err)
+		}
+	}
+	return nil
+}
+
 // ListJobs - フィルタ付きで全プロジェクト横断のジョブ一覧を取得
 func (c *Client) ListJobs(filter api.JobListFilter) ([]api.JobWithContext, error) {
 	path := "/api/jobs"
