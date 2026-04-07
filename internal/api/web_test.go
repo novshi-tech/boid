@@ -47,6 +47,14 @@ func (s *stubWebService) ApplyAction(taskID string, actionType string) error {
 	return s.applyActionErr
 }
 
+func (s *stubWebService) ListJobs(status string) ([]JobWithContext, error) {
+	return nil, nil
+}
+
+func (s *stubWebService) GetJob(id string) (*JobWithContext, error) {
+	return nil, fmt.Errorf("job not found: %s", id)
+}
+
 // stubWorkflowService implements WorkflowService for WebAppService tests.
 type stubWorkflowService struct {
 	applyActionErr error

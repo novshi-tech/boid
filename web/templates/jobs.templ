@@ -1,0 +1,120 @@
+package templates
+
+import (
+	"fmt"
+	"time"
+)
+
+type JobContextView struct {
+	ID        string
+	TaskID    string
+	TaskTitle string
+	HandlerID string
+	Role      string
+	Status    string
+	ExitCode  int
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Output    string
+}
+
+var jobFilterOptions = []filterOption{
+	{"", "All"},
+	{"running", "Running"},
+	{"completed", "Completed"},
+	{"failed", "Failed"},
+}
+
+templ JobList(jobs []*JobContextView, currentFilter string) {
+	@Layout("Jobs") {
+		<div class="filter-scroll">
+			<div class="filters">
+				for _, f := range jobFilterOptions {
+					if f.Value == currentFilter {
+						<a href={ templ.SafeURL("/jobs?status=" + f.Value) } class="active">{ f.Label }</a>
+					} else {
+						<a href={ templ.SafeURL("/jobs?status=" + f.Value) }>{ f.Label }</a>
+					}
+				}
+			</div>
+		</div>
+		if len(jobs) == 0 {
+			<p class="empty">ジョブがありません</p>
+		} else {
+			<div class="tasks-grid">
+				for _, job := range jobs {
+					<a href={ templ.SafeURL("/jobs/" + job.ID) } class="task-card">
+						<div class="task-card-title">
+							if job.TaskTitle != "" {
+								{ job.TaskTitle }
+							} else {
+								{ job.TaskID }
+							}
+						</div>
+						<div class="task-card-meta">
+							<span class={ taskStatusClass(job.Status) }>{ job.Status }</span>
+							<span class="job-id">{ shortID(job.ID) }</span>
+							if job.Role != "" {
+								<span>{ job.Role }</span>
+							}
+							<span>{ job.UpdatedAt.Format("2006-01-02 15:04") }</span>
+						</div>
+					</a>
+				}
+			</div>
+		}
+	}
+}
+
+templ JobDetail(job *JobContextView) {
+	@Layout("Job " + shortID(job.ID)) {
+		<div class="section">
+			<h1>Job <span class="job-id">{ shortID(job.ID) }</span></h1>
+			<div class="card-meta" style="margin-top:8px">
+				<span class={ taskStatusClass(job.Status) }>{ job.Status }</span>
+				if job.Role != "" {
+					<span>{ job.Role }</span>
+				}
+				if job.ExitCode != 0 {
+					<span class="exit-code">exit: { fmt.Sprintf("%d", job.ExitCode) }</span>
+				}
+			</div>
+			<div style="margin-top:12px">
+				<div class="detail-field">
+					<strong>Job ID</strong>
+					<span class="job-id">{ job.ID }</span>
+				</div>
+				<div class="detail-field">
+					<strong>タスク</strong>
+					<a href={ templ.SafeURL("/tasks/" + job.TaskID) }>
+						if job.TaskTitle != "" {
+							{ job.TaskTitle }
+						} else {
+							{ job.TaskID }
+						}
+					</a>
+				</div>
+				if job.HandlerID != "" {
+					<div class="detail-field">
+						<strong>Handler</strong>
+						{ job.HandlerID }
+					</div>
+				}
+				<div class="detail-field">
+					<strong>作成日時</strong>
+					{ job.CreatedAt.Format("2006-01-02 15:04:05") }
+				</div>
+				<div class="detail-field">
+					<strong>更新日時</strong>
+					{ job.UpdatedAt.Format("2006-01-02 15:04:05") }
+				</div>
+			</div>
+		</div>
+		if job.Output != "" {
+			<div class="section">
+				<h2 class="section-title">出力</h2>
+				<pre style="max-height:60vh;overflow-y:auto">{ job.Output }</pre>
+			</div>
+		}
+	}
+}

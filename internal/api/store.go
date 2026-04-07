@@ -56,6 +56,8 @@ type WebService interface {
 	GetTaskDetail(id string) (*TaskDetailView, error)
 	ListProjects() ([]*orchestrator.Project, error)
 	ApplyAction(taskID string, actionType string) error
+	ListJobs(status string) ([]JobWithContext, error)
+	GetJob(id string) (*JobWithContext, error)
 }
 
 type WorkflowService interface {
