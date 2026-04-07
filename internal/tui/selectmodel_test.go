@@ -260,3 +260,51 @@ func TestSelectModelView(t *testing.T) {
 		t.Error("expanded View should contain all options")
 	}
 }
+
+// --- ResetSelection ---
+
+func TestSelectModelResetSelection(t *testing.T) {
+	m := NewSelect()
+	m.SetOptions([]SelectOption{{Value: "a", Label: "A"}, {Value: "b", Label: "B"}})
+	m.Focus()
+
+	// 選択確定
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // expand
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // confirm index=0
+
+	if m.Value() != "a" {
+		t.Fatalf("precondition: want value 'a', got %q", m.Value())
+	}
+
+	m.ResetSelection()
+
+	if m.Value() != "" {
+		t.Errorf("after ResetSelection: want empty value, got %q", m.Value())
+	}
+	if m.SelectedLabel() != "" {
+		t.Errorf("after ResetSelection: want empty label, got %q", m.SelectedLabel())
+	}
+}
+
+// --- ClearOptions ---
+
+func TestSelectModelClearOptions(t *testing.T) {
+	m := NewSelect()
+	m.SetOptions([]SelectOption{{Value: "a", Label: "A"}, {Value: "b", Label: "B"}})
+	m.Focus()
+
+	// 選択確定してから ClearOptions
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	m.ClearOptions()
+
+	if m.Value() != "" {
+		t.Errorf("after ClearOptions: want empty value, got %q", m.Value())
+	}
+	// options が空なので展開しないこと
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m2.Expanded() {
+		t.Error("after ClearOptions: should not expand (no options)")
+	}
+}

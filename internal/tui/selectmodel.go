@@ -44,6 +44,15 @@ func (m *SelectModel) SetPlaceholder(placeholder string) { m.placeholder = place
 // SetOptions replaces the available options.
 func (m *SelectModel) SetOptions(opts []SelectOption) { m.options = opts }
 
+// ResetSelection clears the current selection (sets selected to -1).
+func (m *SelectModel) ResetSelection() { m.selected = -1 }
+
+// ClearOptions removes all options and resets the selection.
+func (m *SelectModel) ClearOptions() {
+	m.options = nil
+	m.selected = -1
+}
+
 // Focus marks the component as focused. Implements the bubbles focus pattern.
 func (m *SelectModel) Focus() tea.Cmd {
 	m.focused = true
