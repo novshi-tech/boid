@@ -66,6 +66,7 @@ type TaskListScreen struct {
 	statusMsg    string
 	isError      bool
 	mini         miniSelector
+	titleWidth   int // current TITLE column width; default 24
 }
 
 func NewTaskListScreen(shared *SharedState) *TaskListScreen {
@@ -90,6 +91,7 @@ func NewTaskListScreen(shared *SharedState) *TaskListScreen {
 		table:        t,
 		statusFilter: "active",
 		loading:      true,
+		titleWidth:   24,
 	}
 }
 
@@ -179,12 +181,14 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.isError = false
 
 	case tea.WindowSizeMsg:
+		s.recalcColumns(msg.Width)
 		s.table.SetWidth(msg.Width)
 		bodyH := msg.Height - 2
 		if bodyH < 1 {
 			bodyH = 1
 		}
 		s.table.SetHeight(bodyH)
+		s.syncTableRows()
 
 	case tea.KeyMsg:
 		return s, s.handleKey(msg)
@@ -315,6 +319,7 @@ func (s *TaskListScreen) View(width, height int) string {
 		sb.WriteString(styleDim.Render("  no tasks"))
 		sb.WriteByte('\n')
 	} else {
+		s.recalcColumns(width)
 		s.table.SetWidth(width)
 		s.table.SetHeight(bodyHeight)
 		sb.WriteString(s.table.View())
@@ -376,6 +381,37 @@ func (s *TaskListScreen) findProjectName(projectID string) string {
 	return ""
 }
 
+// recalcColumns recalculates column widths based on terminal width and updates
+// the table. Fixed widths: STATUS(11), PROJECT(12), BEHAVIOR(10), AGE(6).
+// The remainder (minus separator overhead) is assigned to TITLE with a minimum
+// of 20. The calculated TITLE width is stored in s.titleWidth for use by
+// syncTableRows.
+func (s *TaskListScreen) recalcColumns(width int) {
+	const (
+		statusWidth   = 11
+		projectWidth  = 12
+		behaviorWidth = 10
+		ageWidth      = 6
+		minTitle      = 20
+		numCols       = 5
+	)
+	fixedTotal := statusWidth + projectWidth + behaviorWidth + ageWidth
+	separators := numCols + 1 // approximate separator overhead from bubbles/table
+	titleWidth := width - fixedTotal - separators
+	if titleWidth < minTitle {
+		titleWidth = minTitle
+	}
+	s.titleWidth = titleWidth
+	cols := []table.Column{
+		{Title: "STATUS", Width: statusWidth},
+		{Title: "TITLE", Width: titleWidth},
+		{Title: "PROJECT", Width: projectWidth},
+		{Title: "BEHAVIOR", Width: behaviorWidth},
+		{Title: "AGE", Width: ageWidth},
+	}
+	s.table.SetColumns(cols)
+}
+
 // syncTableRows converts s.tasks to table rows and updates the table.
 func (s *TaskListScreen) syncTableRows() {
 	rows := make([]table.Row, len(s.tasks))
@@ -390,12 +426,12 @@ func (s *TaskListScreen) syncTableRows() {
 
 		projectCell := ""
 		if name := s.findProjectName(task.ProjectID); name != "" {
-			projectCell = "[" + truncate(name, 10) + "]"
+			projectCell = truncate(name, 12)
 		}
 
 		rows[i] = table.Row{
 			statusCell,
-			truncate(title, 24),
+			truncate(title, s.titleWidth),
 			projectCell,
 			task.Behavior,
 			formatTaskElapsed(task.CreatedAt),
