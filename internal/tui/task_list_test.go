@@ -2,13 +2,23 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
+
+func TestMain(m *testing.M) {
+	// Force TrueColor so lipgloss emits ANSI codes regardless of TTY.
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	os.Exit(m.Run())
+}
 
 func newTestTaskListScreen() *TaskListScreen {
 	shared := &SharedState{Panes: make(map[string]string)}
@@ -182,6 +192,23 @@ func TestTaskListView(t *testing.T) {
 	}
 	if !containsStr(view, "project: all") {
 		t.Error("View should contain 'project: all'")
+	}
+}
+
+func TestTaskStatusDisplayContainsANSI(t *testing.T) {
+	statuses := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusReworking,
+		orchestrator.TaskStatusCollectingFeedback,
+	}
+	for _, s := range statuses {
+		dot, text := taskStatusDisplay(s)
+		if !strings.Contains(dot, "\x1b") {
+			t.Errorf("status %q: dot should contain ANSI code, got %q", s, dot)
+		}
+		if !strings.Contains(text, "\x1b") {
+			t.Errorf("status %q: text should contain ANSI code, got %q", s, text)
+		}
 	}
 }
 
