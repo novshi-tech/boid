@@ -289,12 +289,14 @@ func (s *TaskListScreen) View(width, height int) string {
 		sb.WriteString(styleDim.Render("  no tasks"))
 		sb.WriteByte('\n')
 	} else {
-		visible := s.tasks
-		if len(visible) > bodyHeight {
-			visible = visible[:bodyHeight]
+		scroll := 0
+		if s.cursor >= bodyHeight {
+			scroll = s.cursor - bodyHeight + 1
 		}
+		end := min(scroll+bodyHeight, len(s.tasks))
+		visible := s.tasks[scroll:end]
 		for i, task := range visible {
-			line := renderTaskLine(task, i == s.cursor, width, s.findProjectName(task.ProjectID))
+			line := renderTaskLine(task, scroll+i == s.cursor, width, s.findProjectName(task.ProjectID))
 			sb.WriteString(line)
 			sb.WriteByte('\n')
 		}
