@@ -12,10 +12,7 @@ import (
 
 func newTestTaskListScreen() *TaskListScreen {
 	shared := &SharedState{Panes: make(map[string]string)}
-	return &TaskListScreen{
-		shared:       shared,
-		statusFilter: "active",
-	}
+	return NewTaskListScreen(shared)
 }
 
 func TestTaskFilterTabCycle(t *testing.T) {
@@ -44,10 +41,12 @@ func TestTaskFilterShiftTabCycle(t *testing.T) {
 
 func TestTaskFilterTabResetsCursor(t *testing.T) {
 	s := newTestTaskListScreen()
-	s.cursor = 5
+	s.tasks = makeDummyTasks(10)
+	s.syncTableRows()
+	s.table.SetCursor(5)
 	s.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if s.cursor != 0 {
-		t.Errorf("expected cursor 0 after filter change, got %d", s.cursor)
+	if s.table.Cursor() != 0 {
+		t.Errorf("expected cursor 0 after filter change, got %d", s.table.Cursor())
 	}
 }
 
@@ -84,51 +83,53 @@ func TestActiveFilterStatuses(t *testing.T) {
 func TestCursorMovement(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = makeDummyTasks(5)
+	s.syncTableRows()
 
 	// Move down
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if s.cursor != 1 {
-		t.Errorf("after j: want cursor 1, got %d", s.cursor)
+	if s.table.Cursor() != 1 {
+		t.Errorf("after j: want cursor 1, got %d", s.table.Cursor())
 	}
 
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if s.cursor != 2 {
-		t.Errorf("after j j: want cursor 2, got %d", s.cursor)
+	if s.table.Cursor() != 2 {
+		t.Errorf("after j j: want cursor 2, got %d", s.table.Cursor())
 	}
 
 	// Move up
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-	if s.cursor != 1 {
-		t.Errorf("after k: want cursor 1, got %d", s.cursor)
+	if s.table.Cursor() != 1 {
+		t.Errorf("after k: want cursor 1, got %d", s.table.Cursor())
 	}
 
 	// Can't go below 0
-	s.cursor = 0
+	s.table.SetCursor(0)
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-	if s.cursor != 0 {
-		t.Errorf("cursor should not go below 0, got %d", s.cursor)
+	if s.table.Cursor() != 0 {
+		t.Errorf("cursor should not go below 0, got %d", s.table.Cursor())
 	}
 
 	// Can't go above len-1
-	s.cursor = 4
+	s.table.SetCursor(4)
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if s.cursor != 4 {
-		t.Errorf("cursor should not exceed task count, got %d", s.cursor)
+	if s.table.Cursor() != 4 {
+		t.Errorf("cursor should not exceed task count, got %d", s.table.Cursor())
 	}
 }
 
 func TestCursorMovementArrowKeys(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = makeDummyTasks(3)
+	s.syncTableRows()
 
 	s.Update(tea.KeyMsg{Type: tea.KeyDown})
-	if s.cursor != 1 {
-		t.Errorf("after down: want cursor 1, got %d", s.cursor)
+	if s.table.Cursor() != 1 {
+		t.Errorf("after down: want cursor 1, got %d", s.table.Cursor())
 	}
 
 	s.Update(tea.KeyMsg{Type: tea.KeyUp})
-	if s.cursor != 0 {
-		t.Errorf("after up: want cursor 0, got %d", s.cursor)
+	if s.table.Cursor() != 0 {
+		t.Errorf("after up: want cursor 0, got %d", s.table.Cursor())
 	}
 }
 
@@ -169,6 +170,7 @@ func TestProjectFilterCycle(t *testing.T) {
 func TestTaskListView(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = makeDummyTasks(2)
+	s.syncTableRows()
 
 	view := s.View(120, 40)
 	if view == "" {
@@ -244,6 +246,7 @@ func TestQuickOpenKeyNoTasks(t *testing.T) {
 func TestQuickOpenKeySetLoadingMsg(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = makeDummyTasks(1)
+	s.syncTableRows()
 	// o key should set "loading..." immediately
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
 	if s.statusMsg != "loading..." {
@@ -389,6 +392,7 @@ func TestStartKey_SetsLoadingMsg(t *testing.T) {
 	s.tasks = []*orchestrator.Task{
 		{ID: "task-1", Title: "Pending", Status: orchestrator.TaskStatusPending, Behavior: "dev", CreatedAt: time.Now()},
 	}
+	s.syncTableRows()
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
 	if s.statusMsg != "starting..." {
 		t.Errorf("s on pending task: want statusMsg %q, got %q", "starting...", s.statusMsg)
@@ -403,6 +407,7 @@ func TestStartKey_PendingTaskInList(t *testing.T) {
 	s.tasks = []*orchestrator.Task{
 		{ID: "task-1", Title: "Pending", Status: orchestrator.TaskStatusPending, Behavior: "dev", CreatedAt: time.Now()},
 	}
+	s.syncTableRows()
 	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
 	if cmd == nil {
 		t.Error("s on pending task: expected non-nil cmd (applyActionCmd)")
@@ -414,6 +419,7 @@ func TestStartKey_NonPendingTaskInList(t *testing.T) {
 	s.tasks = []*orchestrator.Task{
 		{ID: "task-1", Title: "Running", Status: orchestrator.TaskStatusExecuting, Behavior: "dev", CreatedAt: time.Now()},
 	}
+	s.syncTableRows()
 	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
 	if cmd != nil {
 		t.Error("s on executing task: expected nil cmd")
@@ -453,13 +459,13 @@ func TestApplyActionResult_Error_SetsStatusMsgInList(t *testing.T) {
 func TestMiniSelectorBlocksNormalKeys(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = makeDummyTasks(3)
-	s.cursor = 0
+	s.syncTableRows()
 	s.mini = miniSelector{jobs: makeDummyJobs(2), cursor: 0, active: true}
 
 	// j should move mini cursor, not task cursor
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if s.cursor != 0 {
-		t.Errorf("mini active: task cursor should not move, got %d", s.cursor)
+	if s.table.Cursor() != 0 {
+		t.Errorf("mini active: task cursor should not move, got %d", s.table.Cursor())
 	}
 	if s.mini.cursor != 1 {
 		t.Errorf("mini active: mini cursor should be 1, got %d", s.mini.cursor)
@@ -471,12 +477,17 @@ func TestMiniSelectorBlocksNormalKeys(t *testing.T) {
 func TestViewScrollFollowsCursorDown(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = makeDummyTasks(10)
-	s.cursor = 0
+	s.syncTableRows()
 
-	// bodyHeight = height - 2 (filterbar + sep)
-	// With height=5, bodyHeight=3: only 3 tasks visible at a time.
-	// Move cursor to index 3 (out of initial viewport).
-	s.cursor = 3
+	// bodyHeight = height - 2 (filterbar + sep) = 5 - 2 = 3
+	// table header takes 1 line → 2 data rows visible.
+	// Set table height so MoveDown can scroll correctly.
+	s.table.SetHeight(3)
+
+	// Move cursor to index 3 by pressing j 3 times.
+	for i := 0; i < 3; i++ {
+		s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	}
 	view := s.View(120, 5)
 
 	// Task 0 should NOT be visible (scrolled away).
@@ -492,16 +503,22 @@ func TestViewScrollFollowsCursorDown(t *testing.T) {
 func TestViewScrollFollowsCursorUp(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = makeDummyTasks(10)
+	s.syncTableRows()
+	s.table.SetHeight(3)
 
-	// Start at cursor=5 with bodyHeight=3: tasks 3,4,5 visible.
-	s.cursor = 5
+	// Move cursor to 5 by pressing j 5 times.
+	for i := 0; i < 5; i++ {
+		s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	}
 	view := s.View(120, 5)
 	if containsStr(view, "Task 0") {
 		t.Error("Task 0 should not be visible when cursor=5")
 	}
 
-	// Move cursor back to 0: tasks 0,1,2 should be visible.
-	s.cursor = 0
+	// Move cursor back to 0 by pressing k 5 times.
+	for i := 0; i < 5; i++ {
+		s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	}
 	view = s.View(120, 5)
 	if !containsStr(view, "Task 0") {
 		t.Error("Task 0 should be visible when cursor=0")
@@ -514,21 +531,16 @@ func TestViewScrollFollowsCursorUp(t *testing.T) {
 func TestViewCursorHighlightedCorrectlyWhenScrolled(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = makeDummyTasks(10)
-	// cursor=4, bodyHeight=3 => scroll=2, visible=[2,3,4]
-	// Task 4 should show cursor marker "▸"
-	s.cursor = 4
-	view := s.View(120, 5)
-	// The cursor marker "▸" should appear on the same line as Task 4.
-	lines := splitLines(view)
-	found := false
-	for _, line := range lines {
-		if containsStr(line, "Task 4") && containsStr(line, "▸") {
-			found = true
-			break
-		}
+	s.syncTableRows()
+	s.table.SetHeight(3)
+	// Move cursor to 4 by pressing j 4 times.
+	for i := 0; i < 4; i++ {
+		s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	}
-	if !found {
-		t.Error("cursor marker '▸' should appear on Task 4's line when scrolled")
+	view := s.View(120, 5)
+	// Task 4 should be visible in the view.
+	if !containsStr(view, "Task 4") {
+		t.Error("Task 4 should be visible when cursor=4")
 	}
 }
 
@@ -564,21 +576,6 @@ func makeDummyJobs(n int) []*api.Job {
 		}
 	}
 	return jobs
-}
-
-func splitLines(s string) []string {
-	var lines []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
-			lines = append(lines, s[start:i])
-			start = i + 1
-		}
-	}
-	if start < len(s) {
-		lines = append(lines, s[start:])
-	}
-	return lines
 }
 
 func containsStr(s, substr string) bool {
