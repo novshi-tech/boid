@@ -38,13 +38,17 @@ func (d *Coordinator) DispatchAndAdvance(
 	var allResults []HandlerResult
 	exclusiveWriters := map[string]string{} // trait key → first writer ID
 
-	// 0. Acquire worktree lock for non-readonly, non-worktree tasks
-	if d.Locker != nil && !readonly && !behavior.Worktree {
+	// 0. Prepare worktree lock for non-readonly, non-worktree tasks.
+	// Lock scope covers dispatchHooks only (gates are excluded).
+	needLock := d.Locker != nil && !readonly && !behavior.Worktree
+	var releaseLock func()
+	if needLock {
 		release, err := d.Locker.Acquire(ctx, task.ProjectID)
 		if err != nil {
 			return nil, fmt.Errorf("worktree lock: %w", err)
 		}
-		defer release()
+		releaseLock = release
+		defer release() // safety net for error-return paths (sync.Once makes double-call harmless)
 	}
 
 	// 1. Evaluate and dispatch hooks
@@ -69,6 +73,11 @@ func (d *Coordinator) DispatchAndAdvance(
 				payload = merged
 			}
 		}
+	}
+
+	// Release worktree lock before gates (gates have no FS access).
+	if releaseLock != nil {
+		releaseLock()
 	}
 
 	// 2. Evaluate and dispatch gates (always parallel)

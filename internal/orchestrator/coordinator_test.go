@@ -559,7 +559,7 @@ func TestCoordinator_DispatchAndAdvance_NilLockerWorks(t *testing.T) {
 	}
 }
 
-func TestCoordinator_DispatchAndAdvance_LockerReleasedAfterHooks(t *testing.T) {
+func TestCoordinator_DispatchAndAdvance_LockerReleasedBeforeGates(t *testing.T) {
 	var released atomic.Bool
 	locker := &funcLocker{
 		acquireFn: func(ctx context.Context, key string) (func(), error) {
@@ -569,11 +569,23 @@ func TestCoordinator_DispatchAndAdvance_LockerReleasedAfterHooks(t *testing.T) {
 
 	mock := newMockExecutorWaiter()
 	mock.setHookCompletion("hook-a", `{"payload_patch":{"prompt":"done"}}`, 0)
+	mock.setGateCompletion("gate-push", `{"payload_patch":{}}`, 0)
+
+	// Wrap mock to check lock state when gate executes
+	var lockReleasedBeforeGate atomic.Bool
+	gateWrapper := &gateExecutorFunc{
+		executeFn: func(ctx context.Context, event *projectspec.GateFireEvent) (string, error) {
+			if released.Load() {
+				lockReleasedBeforeGate.Store(true)
+			}
+			return mock.ExecuteGate(ctx, event)
+		},
+	}
 
 	coord := &orchestrator.Coordinator{
 		Evaluator:    &orchestrator.Evaluator{},
 		HookExecutor: mock,
-		GateExecutor: mock,
+		GateExecutor: gateWrapper,
 		Waiter:       mock,
 		Locker:       locker,
 		MaxDepth:     5,
@@ -589,6 +601,9 @@ func TestCoordinator_DispatchAndAdvance_LockerReleasedAfterHooks(t *testing.T) {
 		Hooks: []projectspec.Hook{
 			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
 		},
+		Gates: []projectspec.Gate{
+			{ID: "gate-push", On: orchestrator.OnValues{"executing"}},
+		},
 	}
 	behavior := &projectspec.TaskBehavior{Readonly: false, Worktree: false}
 	sm := simpleStateMachine()
@@ -599,7 +614,10 @@ func TestCoordinator_DispatchAndAdvance_LockerReleasedAfterHooks(t *testing.T) {
 	}
 
 	if !released.Load() {
-		t.Error("expected locker to be released after dispatch")
+		t.Error("expected locker to be released after hooks")
+	}
+	if !lockReleasedBeforeGate.Load() {
+		t.Error("expected locker to be released before gate execution")
 	}
 }
 
@@ -610,4 +628,13 @@ type funcLocker struct {
 
 func (f *funcLocker) Acquire(ctx context.Context, key string) (func(), error) {
 	return f.acquireFn(ctx, key)
+}
+
+// gateExecutorFunc wraps a function as a GateExecutor for testing.
+type gateExecutorFunc struct {
+	executeFn func(ctx context.Context, event *projectspec.GateFireEvent) (string, error)
+}
+
+func (g *gateExecutorFunc) ExecuteGate(ctx context.Context, event *projectspec.GateFireEvent) (string, error) {
+	return g.executeFn(ctx, event)
 }
