@@ -56,6 +56,14 @@ func (m *InMemoryWorktreeLockManager) Acquire(ctx context.Context, key string) (
 		return m.releaseFunc(key), nil
 	case <-ctx.Done():
 		m.removeWaiter(key, w)
+		// Race: release may have already dequeued us and sent on w.ch
+		// while we were selecting on ctx.Done(). Drain the signal and
+		// release the lock so it doesn't get permanently stuck.
+		select {
+		case <-w.ch:
+			m.releaseFunc(key)()
+		default:
+		}
 		return nil, ctx.Err()
 	}
 }

@@ -209,3 +209,43 @@ func TestWorktreeLock_ContextCancelRemovesWaiter(t *testing.T) {
 		t.Fatal("timed out waiting for third goroutine")
 	}
 }
+
+func TestWorktreeLock_CancelRaceWithRelease(t *testing.T) {
+	// Verify that a simultaneous cancel and release don't leave the lock stuck.
+	lm := NewInMemoryWorktreeLockManager()
+
+	for i := range 100 {
+		release1, err := lm.Acquire(context.Background(), "proj-1")
+		if err != nil {
+			t.Fatalf("iter %d: acquire 1: %v", i, err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			rel, err := lm.Acquire(ctx, "proj-1")
+			if err == nil {
+				rel()
+			}
+			close(done)
+		}()
+
+		// Give time to enqueue
+		time.Sleep(1 * time.Millisecond)
+
+		// Release and cancel simultaneously to trigger the race
+		go release1()
+		go cancel()
+
+		<-done
+
+		// The lock must not be stuck: a subsequent acquire should succeed quickly.
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		rel, err := lm.Acquire(ctx2, "proj-1")
+		cancel2()
+		if err != nil {
+			t.Fatalf("iter %d: lock stuck after cancel/release race: %v", i, err)
+		}
+		rel()
+	}
+}
