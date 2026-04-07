@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"fmt"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"time"
 )
@@ -16,14 +17,140 @@ type JobView struct {
 	Output    string
 }
 
+func taskStatusClass(s string) string {
+	return "status status-" + s
+}
+
+func shortID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
+}
+
+type filterOption struct {
+	Value string
+	Label string
+}
+
+var taskFilterOptions = []filterOption{
+	{"", "All"},
+	{"pending", "Pending"},
+	{"executing", "Executing"},
+	{"verifying", "Verifying"},
+	{"in_review", "In Review"},
+	{"collecting_feedback", "Collecting"},
+	{"done", "Done"},
+	{"aborted", "Aborted"},
+}
+
 templ TaskList(tasks []*orchestrator.Task, currentFilter string) {
 	@Layout("Tasks") {
-		<p class="empty">Coming soon</p>
+		<div class="filter-scroll">
+			<div class="filters">
+				for _, f := range taskFilterOptions {
+					if f.Value == currentFilter {
+						<a href={ templ.SafeURL("/?status=" + f.Value) } class="active">{ f.Label }</a>
+					} else {
+						<a href={ templ.SafeURL("/?status=" + f.Value) }>{ f.Label }</a>
+					}
+				}
+			</div>
+		</div>
+		if len(tasks) == 0 {
+			<p class="empty">タスクがありません</p>
+		} else {
+			<div class="tasks-grid">
+				for _, task := range tasks {
+					<a href={ templ.SafeURL("/tasks/" + task.ID) } class="task-card">
+						<div class="task-card-title">{ task.Title }</div>
+						<div class="task-card-meta">
+							<span class={ taskStatusClass(string(task.Status)) }>{ string(task.Status) }</span>
+							<span>{ task.Behavior }</span>
+							if task.ProjectID != "" {
+								<span>{ task.ProjectID }</span>
+							}
+							<span>{ task.UpdatedAt.Format("2006-01-02 15:04") }</span>
+						</div>
+					</a>
+				}
+			</div>
+		}
 	}
 }
 
 templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView) {
 	@Layout(task.Title) {
-		<p class="empty">Coming soon</p>
+		<div class="section">
+			<h1>{ task.Title }</h1>
+			<div class="card-meta" style="margin-top:8px">
+				<span class={ taskStatusClass(string(task.Status)) }>{ string(task.Status) }</span>
+				<span>{ task.Behavior }</span>
+				if task.ProjectID != "" {
+					<span>{ task.ProjectID }</span>
+				}
+			</div>
+			<div style="margin-top:12px">
+				<div class="detail-field">
+					<strong>作成日時</strong>
+					{ task.CreatedAt.Format("2006-01-02 15:04:05") }
+				</div>
+				<div class="detail-field">
+					<strong>更新日時</strong>
+					{ task.UpdatedAt.Format("2006-01-02 15:04:05") }
+				</div>
+			</div>
+		</div>
+		if len(task.Payload) > 0 && string(task.Payload) != "null" {
+			<div class="section">
+				<details>
+					<summary>Payload</summary>
+					<pre>{ string(task.Payload) }</pre>
+				</details>
+			</div>
+		}
+		if len(actions) > 0 {
+			<div class="section">
+				<h2 class="section-title">アクション履歴</h2>
+				<div class="timeline">
+					for _, action := range actions {
+						<div class="timeline-item">
+							<div class="timeline-type">{ action.Type }</div>
+							<div class="timeline-time">{ action.CreatedAt.Format("2006-01-02 15:04:05") }</div>
+							if len(action.Payload) > 0 && string(action.Payload) != "null" {
+								<details>
+									<summary>payload</summary>
+									<pre>{ string(action.Payload) }</pre>
+								</details>
+							}
+						</div>
+					}
+				</div>
+			</div>
+		}
+		if len(jobs) > 0 {
+			<div class="section">
+				<h2 class="section-title">ジョブ</h2>
+				for _, job := range jobs {
+					<div class="job-card">
+						<div class="job-card-header">
+							<span class="job-id">{ shortID(job.ID) }</span>
+							<span class={ taskStatusClass(job.Status) }>{ job.Status }</span>
+							<span>{ job.Role }</span>
+							if job.ExitCode != 0 {
+								<span class="exit-code">exit: { fmt.Sprintf("%d", job.ExitCode) }</span>
+							}
+						</div>
+						<div class="timeline-time">{ job.CreatedAt.Format("2006-01-02 15:04:05") } – { job.UpdatedAt.Format("15:04:05") }</div>
+						if job.Output != "" {
+							<details>
+								<summary>output</summary>
+								<pre>{ job.Output }</pre>
+							</details>
+						}
+					</div>
+				}
+			</div>
+		}
 	}
 }
