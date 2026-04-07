@@ -1166,3 +1166,77 @@ func TestWriteSandboxScripts_TaskIDAndJobID(t *testing.T) {
 		t.Error("inner script missing BOID_JOB_ID=test-job-ids")
 	}
 }
+
+func TestWriteSandboxScripts_HookRole_BoidModel_ExportedWhenSet(t *testing.T) {
+	cfg := sandbox.WrapperConfig{
+		JobID:      "test-job-model",
+		TaskID:     "task-model-1",
+		ProjectID:  "proj-1",
+		ProjectDir: "/home/user/projects/proj-1",
+		HookScript: "run-agent.sh",
+		BoidBinary: "/usr/local/bin/boid",
+		Role:       "hook",
+		Model:      "claude-opus-4-6",
+	}
+
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-job-model"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	if !strings.Contains(inner, "BOID_MODEL=claude-opus-4-6") {
+		t.Error("inner script missing BOID_MODEL=claude-opus-4-6")
+	}
+}
+
+func TestWriteSandboxScripts_HookRole_BoidModel_NotExportedWhenEmpty(t *testing.T) {
+	cfg := sandbox.WrapperConfig{
+		JobID:      "test-job-nomodel",
+		TaskID:     "task-nomodel-1",
+		ProjectID:  "proj-1",
+		ProjectDir: "/home/user/projects/proj-1",
+		HookScript: "run-agent.sh",
+		BoidBinary: "/usr/local/bin/boid",
+		Role:       "hook",
+		Model:      "",
+	}
+
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-job-nomodel"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	if strings.Contains(inner, "BOID_MODEL") {
+		t.Error("inner script must not export BOID_MODEL when Model is empty")
+	}
+}

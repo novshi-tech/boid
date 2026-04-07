@@ -207,6 +207,26 @@ func TestFilterInstructions_Interactive_PropagatedToRoutedInstruction(t *testing
 	}
 }
 
+func TestFilterInstructions_Model_PropagatedToRoutedInstruction(t *testing.T) {
+	payload := json.RawMessage(`{
+		"instructions":{
+			"executor":{"type":"execution","consumer":"agent-a","message":"do it","model":"claude-opus-4-6"},
+			"reviewer":{"type":"execution","consumer":"agent-a","message":"check it"}
+		}
+	}`)
+	results := orchestrator.FilterInstructions(payload, orchestrator.InstructionTypeExecution, "agent-a")
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	// sorted: "executor" < "reviewer"
+	if results[0].Model != "claude-opus-4-6" {
+		t.Errorf("executor: expected Model=%q, got %q", "claude-opus-4-6", results[0].Model)
+	}
+	if results[1].Model != "" {
+		t.Errorf("reviewer: expected Model empty, got %q", results[1].Model)
+	}
+}
+
 func TestRawPayload_YAMLUnmarshal(t *testing.T) {
 	data := `
 name: impl

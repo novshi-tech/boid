@@ -79,6 +79,7 @@ func toDispatchPlan(request *orchestrator.DispatchRequest) *DispatchPlan {
 		SecretNamespace:    request.SecretNamespace,
 		TaskYAML:           request.TaskYAML,
 		EnvironmentYAML:    request.EnvironmentYAML,
+		Model:              request.Model,
 	}
 }
 

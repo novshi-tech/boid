@@ -120,6 +120,7 @@ type Instruction struct {
 	Consumer    string          `json:"consumer" yaml:"consumer"`
 	Message     string          `json:"message,omitempty" yaml:"message,omitempty"`
 	Interactive bool            `json:"interactive,omitempty" yaml:"interactive,omitempty"`
+	Model       string          `json:"model,omitempty" yaml:"model,omitempty"`
 }
 
 type RoutedInstruction struct {
@@ -128,6 +129,7 @@ type RoutedInstruction struct {
 	Consumer    string          `json:"consumer"`
 	Message     string          `json:"message"`
 	Interactive bool            `json:"interactive,omitempty"`
+	Model       string          `json:"model,omitempty"`
 }
 
 type TraitType string

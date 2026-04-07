@@ -31,4 +31,5 @@ type DispatchRequest struct {
 	SecretNamespace    string
 	TaskYAML           string // serialized task metadata for context/task.yaml
 	EnvironmentYAML    string // serialized sandbox environment for context/environment.yaml
+	Model              string // AI model to use (from instruction's model field)
 }

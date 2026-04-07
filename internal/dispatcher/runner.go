@@ -71,6 +71,7 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		InstructionsJSON:   plan.InstructionsJSON,
 		TaskYAML:           plan.TaskYAML,
 		EnvironmentYAML:    plan.EnvironmentYAML,
+		Model:              plan.Model,
 	}
 	if spec.Role == "hook" || spec.Role == "gate" || plan.Interactive {
 		spec.TTY = true

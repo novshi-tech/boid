@@ -42,6 +42,7 @@ type WrapperConfig struct {
 	InstructionsJSON   string            // JSON array of RoutedInstruction for BOID_INSTRUCTIONS env var
 	TaskYAML           string            // serialized task metadata for context/task.yaml
 	EnvironmentYAML    string            // serialized sandbox environment for context/environment.yaml
+	Model              string            // AI model identifier exported as BOID_MODEL
 }
 
 // workDir returns the effective working directory inside the sandbox.
@@ -160,6 +161,9 @@ func generateHookInnerScript(cfg WrapperConfig) string {
 	}
 	if cfg.InstructionsJSON != "" {
 		fmt.Fprintf(&b, "export BOID_INSTRUCTIONS=%s\n", shellQuote(cfg.InstructionsJSON))
+	}
+	if cfg.Model != "" {
+		fmt.Fprintf(&b, "export BOID_MODEL=%s\n", shellQuote(cfg.Model))
 	}
 	writeBuiltinShimEnv(&b, cfg)
 

@@ -49,4 +49,5 @@ type DispatchPlan struct {
 	SecretNamespace    string
 	TaskYAML           string
 	EnvironmentYAML    string
+	Model              string
 }

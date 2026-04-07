@@ -153,6 +153,7 @@ func FilterInstructions(payload json.RawMessage, instType InstructionType, consu
 			Consumer:    inst.Consumer,
 			Message:     resolveMessage(inst, instType, instructions),
 			Interactive: inst.Interactive,
+			Model:       inst.Model,
 		})
 	}
 	return result
