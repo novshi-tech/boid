@@ -71,6 +71,7 @@ payload_patch:
     - title: "認証モジュール"
       behavior: dev
       description: "OAuth2 実装。..."
+      auto_start: true
     - title: "テスト追加"
       behavior: dev
       description: "認証のユニットテスト。..."
@@ -79,6 +80,7 @@ payload_patch:
 - `title`: タスクのタイトル（必須）
 - `behavior`: タスクの実行モデル名（必須）。プロジェクトの `task_behaviors` に定義されたキーを指定する
 - `description`: このタスクを実行するエージェントへの指示。何を・どのように実装するかを詳細に記述する（必須）
+- `auto_start`: bool（デフォルト: false）。true にするとタスク作成直後に自動で `start` アクションが発火され、即座に実行が開始される
 
 ## ルール
 

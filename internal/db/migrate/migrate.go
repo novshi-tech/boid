@@ -46,6 +46,13 @@ func Apply(conn *sql.DB) error {
 				return columnExists(tx, "secrets", "namespace")
 			},
 		},
+		{
+			version: "0006_add_tasks_auto_start",
+			path:    "migrations/0006_add_tasks_auto_start.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnExists(tx, "tasks", "auto_start")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {
