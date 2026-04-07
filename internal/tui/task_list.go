@@ -156,7 +156,7 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	case taskCreatedNotifyMsg:
 		s.statusMsg = "task created"
 		s.isError = false
-		return s, clearStatusAfter(3 * time.Second)
+		return s, tea.Batch(fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID()), clearStatusAfter(3 * time.Second))
 
 	case clearStatusMsg:
 		s.statusMsg = ""
