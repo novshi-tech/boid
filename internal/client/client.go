@@ -264,6 +264,15 @@ func (c *Client) GetProject(id string) (*orchestrator.Project, error) {
 	return &project, nil
 }
 
+// UpdateTask updates the title and description of a task via PATCH /api/tasks/{id}.
+func (c *Client) UpdateTask(id string, req api.UpdateTaskRequest) (*orchestrator.Task, error) {
+	var task orchestrator.Task
+	if err := c.Do("PATCH", "/api/tasks/"+id, req, &task); err != nil {
+		return nil, err
+	}
+	return &task, nil
+}
+
 // ApplyAction sends an action to POST /api/tasks/{taskID}/actions.
 func (c *Client) ApplyAction(taskID string, req api.ApplyActionRequest) (*api.ActionApplication, error) {
 	var result api.ActionApplication

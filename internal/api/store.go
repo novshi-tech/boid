@@ -48,6 +48,7 @@ type TaskService interface {
 	ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error)
 	GetTask(id string) (*orchestrator.Task, error)
 	GetTaskDetail(id string) (*TaskDetailView, error)
+	UpdateTask(id string, req UpdateTaskRequest) (*orchestrator.Task, error)
 	DeleteTask(id string, force bool) error
 }
 
