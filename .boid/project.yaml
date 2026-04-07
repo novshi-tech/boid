@@ -23,6 +23,7 @@ task_behaviors:
   plan:
     name: Plan
     transition: one-shot
+    readonly: true
     traits: [instructions, tasks]
     default_payload:
       instructions:
