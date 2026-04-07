@@ -19,4 +19,10 @@ var (
 
 	styleFilterActive   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
 	styleFilterInactive = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+	// Task status styles
+	styleExecuting = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))  // 緑系
+	styleVerifying = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))  // 青系
+	styleTaskDim   = lipgloss.NewStyle().Foreground(lipgloss.Color("240")) // dim
+	styleAborted   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))   // 赤系
 )

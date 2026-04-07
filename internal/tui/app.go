@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -31,18 +30,19 @@ type clearStatusMsg struct{}
 
 // --- model ---
 
-// App is the top-level bubbletea model.
+// App is the top-level bubbletea model with a navigation stack.
 type App struct {
-	client      *client.Client
-	tmuxEnabled bool
+	shared *SharedState
 
+	// Navigation stack
+	screens []Screen
+
+	// Legacy fields for job list screen (will be migrated to a Screen later)
 	jobs         []api.JobWithContext
 	cursor       int
 	panes        map[string]string // jobID -> paneID
 	statusMsg    string
 	isError      bool
-	width        int
-	height       int
 	loading      bool
 	fetchErr     error
 	activeFilter string
@@ -50,9 +50,12 @@ type App struct {
 
 // NewApp creates a new TUI application model.
 func NewApp(c *client.Client, tmuxEnabled bool) *App {
+	shared := &SharedState{
+		Client:      c,
+		TmuxEnabled: tmuxEnabled,
+	}
 	return &App{
-		client:       c,
-		tmuxEnabled:  tmuxEnabled,
+		shared:       shared,
 		panes:        make(map[string]string),
 		loading:      true,
 		activeFilter: "running",
@@ -62,129 +65,49 @@ func NewApp(c *client.Client, tmuxEnabled bool) *App {
 // --- bubbletea interface ---
 
 func (m *App) Init() tea.Cmd {
-	return tea.Batch(fetchJobsCmd(m.client, m.activeFilter), tickCmd())
+	// Push TaskListScreen as the home screen
+	home := NewTaskListScreen(m.shared)
+	m.screens = []Screen{home}
+	return home.Init()
 }
 
 func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
+		m.shared.Width = msg.Width
+		m.shared.Height = msg.Height
 
-	case tickMsg:
-		return m, tea.Batch(fetchJobsCmd(m.client, m.activeFilter), tickCmd())
+	case PushScreenMsg:
+		m.screens = append(m.screens, msg.Screen)
+		return m, msg.Screen.Init()
 
-	case jobsMsg:
-		m.loading = false
-		if msg.err != nil {
-			m.fetchErr = msg.err
-		} else {
-			m.fetchErr = nil
-			m.jobs = msg.jobs
-			if m.cursor >= len(m.jobs) && len(m.jobs) > 0 {
-				m.cursor = len(m.jobs) - 1
-			}
+	case PopScreenMsg:
+		if len(m.screens) > 1 {
+			m.screens = m.screens[:len(m.screens)-1]
 		}
-
-	case openResultMsg:
-		if msg.err != nil {
-			m.statusMsg = "open failed: " + msg.err.Error()
-			m.isError = true
-			return m, clearStatusAfter(3 * time.Second)
-		}
-		if msg.paneID != "" {
-			m.panes[msg.jobID] = msg.paneID
-		}
-
-	case clearStatusMsg:
-		m.statusMsg = ""
-		m.isError = false
+		return m, nil
 
 	case tea.KeyMsg:
-		return m, m.handleKey(msg)
+		// Let q/ctrl+c quit from anywhere
+		if msg.String() == "q" || msg.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+	}
+
+	// Delegate to current screen
+	if len(m.screens) > 0 {
+		current := m.screens[len(m.screens)-1]
+		newScreen, cmd := current.Update(msg)
+		m.screens[len(m.screens)-1] = newScreen
+		return m, cmd
 	}
 
 	return m, nil
 }
 
-func (m *App) handleKey(msg tea.KeyMsg) tea.Cmd {
-	switch msg.String() {
-	case "q", "ctrl+c":
-		return tea.Quit
-
-	case "j", "down":
-		if m.cursor < len(m.jobs)-1 {
-			m.cursor++
-		}
-
-	case "k", "up":
-		if m.cursor > 0 {
-			m.cursor--
-		}
-
-	case "r":
-		m.loading = true
-		return fetchJobsCmd(m.client, m.activeFilter)
-
-	case "1":
-		m.activeFilter = "all"
-		m.cursor = 0
-		m.loading = true
-		return fetchJobsCmd(m.client, m.activeFilter)
-
-	case "2":
-		m.activeFilter = "running"
-		m.cursor = 0
-		m.loading = true
-		return fetchJobsCmd(m.client, m.activeFilter)
-
-	case "3":
-		m.activeFilter = "pending"
-		m.cursor = 0
-		m.loading = true
-		return fetchJobsCmd(m.client, m.activeFilter)
-
-	case "4":
-		m.activeFilter = "completed"
-		m.cursor = 0
-		m.loading = true
-		return fetchJobsCmd(m.client, m.activeFilter)
-
-	case "5":
-		m.activeFilter = "failed"
-		m.cursor = 0
-		m.loading = true
-		return fetchJobsCmd(m.client, m.activeFilter)
-
-	case "tab":
-		for i, f := range filterCycle {
-			if f == m.activeFilter {
-				m.activeFilter = filterCycle[(i+1)%len(filterCycle)]
-				break
-			}
-		}
-		m.cursor = 0
-		m.loading = true
-		return fetchJobsCmd(m.client, m.activeFilter)
-
-	case "enter":
-		if len(m.jobs) == 0 {
-			break
-		}
-		if !m.tmuxEnabled {
-			m.statusMsg = "to open a job, launch `boid tui` inside tmux"
-			m.isError = false
-			return clearStatusAfter(4 * time.Second)
-		}
-		job := m.jobs[m.cursor]
-		return openJobCmd(job.ID, m.panes[job.ID])
-	}
-	return nil
-}
-
 func (m *App) View() string {
-	if m.width == 0 {
+	if m.shared.Width == 0 {
 		return ""
 	}
 
@@ -192,66 +115,24 @@ func (m *App) View() string {
 
 	// --- header ---
 	badge := styleBadge.Render("[tmux]")
-	if !m.tmuxEnabled {
+	if !m.shared.TmuxEnabled {
 		badge = styleWarn.Render("[no-tmux]")
 	}
-	title := styleHeader.Render("boid") + styleDim.Render(" ─ active jobs")
+	title := styleHeader.Render("boid") + styleDim.Render(" ─ tasks")
 	header := lipgloss.JoinHorizontal(lipgloss.Top,
 		title,
-		strings.Repeat(" ", max(0, m.width-lipgloss.Width(title)-lipgloss.Width(badge))),
+		strings.Repeat(" ", max(0, m.shared.Width-lipgloss.Width(title)-lipgloss.Width(badge))),
 		badge,
 	)
 	sb.WriteString(header)
 	sb.WriteByte('\n')
-	sb.WriteString(strings.Repeat("─", m.width))
+	sb.WriteString(strings.Repeat("─", m.shared.Width))
 	sb.WriteByte('\n')
 
-	// --- filter bar ---
-	sb.WriteString(buildFilterBar(m.activeFilter))
-	sb.WriteByte('\n')
-
-	// --- body ---
-	bodyHeight := m.height - 6 // header(2) + separator(1) + filterbar(1) + footer(2)
-	if bodyHeight < 1 {
-		bodyHeight = 1
+	// --- screen body ---
+	if len(m.screens) > 0 {
+		sb.WriteString(m.screens[len(m.screens)-1].View())
 	}
-
-	if m.fetchErr != nil {
-		sb.WriteString(styleError.Render(fmt.Sprintf("error: %v", m.fetchErr)))
-		sb.WriteByte('\n')
-	} else if len(m.jobs) == 0 && !m.loading {
-		sb.WriteString(styleDim.Render("  no active jobs"))
-		sb.WriteByte('\n')
-	} else {
-		visible := m.jobs
-		if len(visible) > bodyHeight {
-			visible = visible[:bodyHeight]
-		}
-		for i, job := range visible {
-			line := renderJobLine(job, i == m.cursor, m.width)
-			sb.WriteString(line)
-			sb.WriteByte('\n')
-		}
-	}
-
-	// --- status / no-tmux message ---
-	if m.statusMsg != "" {
-		var msg string
-		if m.isError {
-			msg = styleError.Render("  ! " + m.statusMsg)
-		} else {
-			msg = styleWarn.Render("  ! " + m.statusMsg)
-		}
-		sb.WriteByte('\n')
-		sb.WriteString(msg)
-		sb.WriteByte('\n')
-	}
-
-	// --- footer ---
-	sb.WriteString(strings.Repeat("─", m.width))
-	sb.WriteByte('\n')
-	footer := buildFooter(m.tmuxEnabled)
-	sb.WriteString(styleFooter.Render(footer))
 
 	return sb.String()
 }
@@ -326,3 +207,4 @@ func max(a, b int) int {
 	}
 	return b
 }
+
