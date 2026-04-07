@@ -100,7 +100,7 @@ func (t *simpleInput) handleKey(msg tea.KeyMsg) {
 		if len(t.value) > 0 {
 			t.value = t.value[:len(t.value)-1]
 		}
-	case tea.KeyRunes:
+	case tea.KeyRunes, tea.KeySpace:
 		t.value = append(t.value, msg.Runes...)
 	}
 }
@@ -137,7 +137,7 @@ func (a *simpleTextArea) handleKey(msg tea.KeyMsg) {
 		} else if last > 0 {
 			a.lines = a.lines[:last]
 		}
-	case tea.KeyRunes:
+	case tea.KeyRunes, tea.KeySpace:
 		last := len(a.lines) - 1
 		a.lines[last] += string(msg.Runes)
 	}

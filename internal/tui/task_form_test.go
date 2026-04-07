@@ -482,6 +482,56 @@ func TestFormBackspaceSubmitFocusPops(t *testing.T) {
 	}
 }
 
+// --- スペースキー入力テスト ---
+
+// TestSimpleInputSpaceKey: simpleInput でスペースキーが入力できること
+func TestSimpleInputSpaceKey(t *testing.T) {
+	inp := simpleInput{}
+	inp.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello")})
+	inp.handleKey(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
+	inp.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("world")})
+
+	if got := inp.Value(); got != "hello world" {
+		t.Errorf("want 'hello world', got %q", got)
+	}
+}
+
+// TestSimpleInputSpaceKeyOnly: simpleInput でスペースのみの入力ができること
+func TestSimpleInputSpaceKeyOnly(t *testing.T) {
+	inp := simpleInput{}
+	inp.handleKey(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
+
+	if got := inp.Value(); got != " " {
+		t.Errorf("want ' ', got %q", got)
+	}
+}
+
+// TestSimpleTextAreaSpaceKey: simpleTextArea でスペースキーが入力できること
+func TestSimpleTextAreaSpaceKey(t *testing.T) {
+	area := newSimpleTextArea("", 4)
+	area.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("foo")})
+	area.handleKey(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
+	area.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("bar")})
+
+	if got := area.Value(); got != "foo bar" {
+		t.Errorf("want 'foo bar', got %q", got)
+	}
+}
+
+// TestSimpleTextAreaSpaceKeyMultiLine: simpleTextArea で改行後もスペースが入力できること
+func TestSimpleTextAreaSpaceKeyMultiLine(t *testing.T) {
+	area := newSimpleTextArea("", 4)
+	area.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("line1")})
+	area.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	area.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	area.handleKey(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
+	area.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+
+	if got := area.Value(); got != "line1\na b" {
+		t.Errorf("want 'line1\\na b', got %q", got)
+	}
+}
+
 // --- View smoke test ---
 
 func TestFormView(t *testing.T) {
