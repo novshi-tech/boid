@@ -13,8 +13,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 type Client struct {
@@ -197,6 +199,42 @@ func (c *Client) AttachJob(jobID string, stdin io.Reader, stdout io.Writer) erro
 			}
 		}
 	}
+}
+
+// TaskListFilter holds filters for listing tasks.
+type TaskListFilter struct {
+	Status    string
+	ProjectID string
+}
+
+// ListTasks fetches tasks with optional status and project filters.
+func (c *Client) ListTasks(filter TaskListFilter) ([]*orchestrator.Task, error) {
+	path := "/api/tasks"
+	var params []string
+	if filter.Status != "" {
+		params = append(params, "status="+filter.Status)
+	}
+	if filter.ProjectID != "" {
+		params = append(params, "project_id="+filter.ProjectID)
+	}
+	if len(params) > 0 {
+		path += "?" + strings.Join(params, "&")
+	}
+
+	var tasks []*orchestrator.Task
+	if err := c.Do("GET", path, nil, &tasks); err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}
+
+// ListProjects fetches all projects.
+func (c *Client) ListProjects() ([]*orchestrator.Project, error) {
+	var projects []*orchestrator.Project
+	if err := c.Do("GET", "/api/projects", nil, &projects); err != nil {
+		return nil, err
+	}
+	return projects, nil
 }
 
 func (c *Client) ResizeJob(jobID string, rows, cols int) error {

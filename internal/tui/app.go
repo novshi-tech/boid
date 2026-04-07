@@ -25,7 +25,7 @@ func NewApp(c *client.Client, tmuxEnabled bool) *App {
 	}
 	return &App{
 		shared: shared,
-		stack:  []Screen{NewActiveJobsScreen(shared)},
+		stack:  []Screen{NewTaskListScreen(shared)},
 	}
 }
 
@@ -104,7 +104,7 @@ func (m *App) View() string {
 	if !m.shared.TmuxEnabled {
 		badge = styleWarn.Render("[no-tmux]")
 	}
-	title := styleHeader.Render("boid") + styleDim.Render(" ─ active jobs")
+	title := styleHeader.Render("boid") + styleDim.Render(" ─ tasks")
 	header := lipgloss.JoinHorizontal(lipgloss.Top,
 		title,
 		strings.Repeat(" ", max(0, m.width-lipgloss.Width(title)-lipgloss.Width(badge))),
@@ -133,4 +133,3 @@ func (m *App) View() string {
 
 	return sb.String()
 }
-

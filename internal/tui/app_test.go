@@ -59,3 +59,13 @@ func TestTabCycle(t *testing.T) {
 		}
 	}
 }
+
+func TestNewApp_HomeIsTaskListScreen(t *testing.T) {
+	app := NewApp(nil, false)
+	if len(app.stack) != 1 {
+		t.Fatalf("expected 1 screen on stack, got %d", len(app.stack))
+	}
+	if _, ok := app.stack[0].(*TaskListScreen); !ok {
+		t.Errorf("expected TaskListScreen as home screen, got %T", app.stack[0])
+	}
+}
