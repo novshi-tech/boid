@@ -578,6 +578,39 @@ func makeDummyJobs(n int) []*api.Job {
 	return jobs
 }
 
+// --- recalcColumns tests ---
+
+func TestRecalcColumns_NormalWidth(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.recalcColumns(100)
+
+	// TITLE should get the remainder: 100 - (11+12+10+6) - 6 = 55
+	if s.titleWidth <= 20 {
+		t.Errorf("width=100: expected titleWidth > 20, got %d", s.titleWidth)
+	}
+
+	// Check that column slice was updated (TITLE column should match titleWidth).
+	cols := s.table.Columns()
+	var titleCol int = -1
+	for _, c := range cols {
+		if c.Title == "TITLE" {
+			titleCol = c.Width
+		}
+	}
+	if titleCol != s.titleWidth {
+		t.Errorf("width=100: TITLE column width %d != titleWidth %d", titleCol, s.titleWidth)
+	}
+}
+
+func TestRecalcColumns_SmallWidth(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.recalcColumns(10)
+
+	if s.titleWidth != 20 {
+		t.Errorf("very small width: expected titleWidth=20 (minimum), got %d", s.titleWidth)
+	}
+}
+
 func containsStr(s, substr string) bool {
 	return len(s) >= len(substr) && searchStr(s, substr)
 }
