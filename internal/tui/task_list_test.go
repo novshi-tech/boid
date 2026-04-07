@@ -10,7 +10,7 @@ import (
 )
 
 func newTestTaskListScreen() *TaskListScreen {
-	shared := &SharedState{Width: 120, Height: 40}
+	shared := &SharedState{Panes: make(map[string]string)}
 	return &TaskListScreen{
 		shared:       shared,
 		statusFilter: "active",
@@ -169,7 +169,7 @@ func TestTaskListView(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = makeDummyTasks(2)
 
-	view := s.View()
+	view := s.View(120, 40)
 	if view == "" {
 		t.Error("View() returned empty string")
 	}

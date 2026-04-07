@@ -172,19 +172,19 @@ func (s *TaskListScreen) selectedProjectName() string {
 	return s.projects[s.projectIdx-1].Meta.Name
 }
 
-func (s *TaskListScreen) View() string {
+func (s *TaskListScreen) View(width, height int) string {
 	var sb strings.Builder
 
 	// --- filter bar ---
-	sb.WriteString(s.buildTaskFilterBar())
+	sb.WriteString(s.buildTaskFilterBar(width))
 	sb.WriteByte('\n')
 
 	// --- separator ---
-	sb.WriteString(strings.Repeat("─", s.shared.Width))
+	sb.WriteString(strings.Repeat("─", width))
 	sb.WriteByte('\n')
 
 	// --- body ---
-	bodyHeight := s.shared.Height - 6 // header(2) + filterbar(1) + sep(1) + footer(2)
+	bodyHeight := height - 2 // filterbar(1) + sep(1)
 	if bodyHeight < 1 {
 		bodyHeight = 1
 	}
@@ -201,23 +201,20 @@ func (s *TaskListScreen) View() string {
 			visible = visible[:bodyHeight]
 		}
 		for i, task := range visible {
-			line := renderTaskLine(task, i == s.cursor, s.shared.Width, s.findProjectName(task.ProjectID))
+			line := renderTaskLine(task, i == s.cursor, width, s.findProjectName(task.ProjectID))
 			sb.WriteString(line)
 			sb.WriteByte('\n')
 		}
 	}
 
-	// --- separator ---
-	sb.WriteString(strings.Repeat("─", s.shared.Width))
-	sb.WriteByte('\n')
-
-	// --- footer ---
-	sb.WriteString(styleFooter.Render(" enter: detail  o: open job  n: new  tab: filter  p: project  r: refresh  q: quit"))
-
 	return sb.String()
 }
 
-func (s *TaskListScreen) buildTaskFilterBar() string {
+func (s *TaskListScreen) ShortHelp() string {
+	return "enter: detail  o: open job  n: new  tab/shift+tab: filter  p: project  r: refresh  q: quit"
+}
+
+func (s *TaskListScreen) buildTaskFilterBar(width int) string {
 	var parts []string
 	for _, f := range taskFilterCycle {
 		label := f
@@ -231,7 +228,7 @@ func (s *TaskListScreen) buildTaskFilterBar() string {
 	projLabel := styleDim.Render("project: " + s.selectedProjectName())
 	filterStr := strings.Join(parts, "  ")
 
-	gap := s.shared.Width - lipglossWidth(filterStr) - lipglossWidth(projLabel)
+	gap := width - lipglossWidth(filterStr) - lipglossWidth(projLabel)
 	if gap < 2 {
 		gap = 2
 	}

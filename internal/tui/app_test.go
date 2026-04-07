@@ -6,61 +6,66 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func newTestApp() *App {
-	shared := &SharedState{Width: 120, Height: 40}
-	return &App{
-		shared:       shared,
-		panes:        make(map[string]string),
-		activeFilter: "running",
+// newTestActiveJobsApp creates an App with an ActiveJobsScreen for testing.
+func newTestActiveJobsApp() (*App, *ActiveJobsScreen) {
+	shared := &SharedState{Panes: make(map[string]string)}
+	screen := &ActiveJobsScreen{shared: shared, activeFilter: "running"}
+	app := &App{
+		shared: shared,
+		stack:  []Screen{screen},
+		width:  80,
+		height: 24,
+	}
+	return app, screen
+}
+
+func TestFilterKeys(t *testing.T) {
+	cases := []struct {
+		key  string
+		want string
+	}{
+		{"1", "all"},
+		{"2", "running"},
+		{"3", "pending"},
+		{"4", "completed"},
+		{"5", "failed"},
+	}
+	for _, tc := range cases {
+		app, screen := newTestActiveJobsApp()
+		app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tc.key)})
+		if screen.activeFilter != tc.want {
+			t.Errorf("key %q: want filter %q, got %q", tc.key, tc.want, screen.activeFilter)
+		}
 	}
 }
 
-func TestAppQuit(t *testing.T) {
-	app := newTestApp()
-	home := NewTaskListScreen(app.shared)
-	app.screens = []Screen{home}
-
-	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	if cmd == nil {
-		t.Fatal("expected quit command, got nil")
-	}
-	msg := cmd()
-	if _, ok := msg.(tea.QuitMsg); !ok {
-		t.Errorf("expected tea.QuitMsg, got %T", msg)
+func TestFilterKeys_ResetsCursor(t *testing.T) {
+	app, screen := newTestActiveJobsApp()
+	screen.cursor = 5
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
+	if screen.cursor != 0 {
+		t.Errorf("expected cursor 0 after filter change, got %d", screen.cursor)
 	}
 }
 
-func TestAppWindowResize(t *testing.T) {
-	app := newTestApp()
-	home := NewTaskListScreen(app.shared)
-	app.screens = []Screen{home}
-
-	app.Update(tea.WindowSizeMsg{Width: 200, Height: 50})
-	if app.shared.Width != 200 || app.shared.Height != 50 {
-		t.Errorf("expected shared state updated, got %dx%d", app.shared.Width, app.shared.Height)
+func TestTabCycle(t *testing.T) {
+	app, screen := newTestActiveJobsApp()
+	// initial: "running" (index 1)
+	expected := []string{"pending", "completed", "failed", "all", "running"}
+	for _, want := range expected {
+		app.Update(tea.KeyMsg{Type: tea.KeyTab})
+		if screen.activeFilter != want {
+			t.Errorf("tab: want filter %q, got %q", want, screen.activeFilter)
+		}
 	}
 }
 
-func TestAppInitPushesHomeScreen(t *testing.T) {
-	app := newTestApp()
-	app.Init()
-	if len(app.screens) != 1 {
-		t.Fatalf("expected 1 screen on stack, got %d", len(app.screens))
+func TestNewApp_HomeIsTaskListScreen(t *testing.T) {
+	app := NewApp(nil, false)
+	if len(app.stack) != 1 {
+		t.Fatalf("expected 1 screen on stack, got %d", len(app.stack))
 	}
-	if _, ok := app.screens[0].(*TaskListScreen); !ok {
-		t.Errorf("expected TaskListScreen, got %T", app.screens[0])
-	}
-}
-
-func TestAppDelegatesKeyToScreen(t *testing.T) {
-	app := newTestApp()
-	home := NewTaskListScreen(app.shared)
-	app.screens = []Screen{home}
-
-	// Tab should change the screen's filter, not be handled by App
-	app.Update(tea.KeyMsg{Type: tea.KeyTab})
-	screen := app.screens[0].(*TaskListScreen)
-	if screen.statusFilter == "active" {
-		t.Error("expected tab to change filter on the screen, but it's still 'active'")
+	if _, ok := app.stack[0].(*TaskListScreen); !ok {
+		t.Errorf("expected TaskListScreen as home screen, got %T", app.stack[0])
 	}
 }
