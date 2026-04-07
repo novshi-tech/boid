@@ -69,6 +69,11 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.stack) > 1 {
 			m.stack = m.stack[:len(m.stack)-1]
 		}
+		if top := m.top(); top != nil {
+			updated, cmd := top.Update(screenResumedMsg{})
+			m.stack[len(m.stack)-1] = updated
+			return m, cmd
+		}
 		return m, nil
 
 	case tea.KeyMsg:

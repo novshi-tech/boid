@@ -153,6 +153,9 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.statusMsg = ""
 		return s, fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
 
+	case screenResumedMsg:
+		return s, fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
+
 	case taskCreatedNotifyMsg:
 		s.statusMsg = "task created"
 		s.isError = false
