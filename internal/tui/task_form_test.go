@@ -65,7 +65,7 @@ func TestFormValidationNoProject(t *testing.T) {
 	s := newTestFormScreen()
 	s.behaviorField.options = []selectOption{{Value: "dev", Label: "dev"}}
 	s.behaviorField.selected = 0
-	s.titleInput.value = []rune("My Task")
+	s.titleInput.SetValue("My Task")
 	s.focus = focusSubmit
 
 	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -78,7 +78,7 @@ func TestFormValidationNoBehavior(t *testing.T) {
 	s := newTestFormScreen()
 	s.projectField.options = []selectOption{{Value: "p1", Label: "proj1"}}
 	s.projectField.selected = 0
-	s.titleInput.value = []rune("My Task")
+	s.titleInput.SetValue("My Task")
 	s.focus = focusSubmit
 
 	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -107,7 +107,7 @@ func TestFormValidationWhitespaceTitle(t *testing.T) {
 	s.projectField.selected = 0
 	s.behaviorField.options = []selectOption{{Value: "dev", Label: "dev"}}
 	s.behaviorField.selected = 0
-	s.titleInput.value = []rune("   ")
+	s.titleInput.SetValue("   ")
 	s.focus = focusSubmit
 
 	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -288,8 +288,8 @@ func TestFormSubmitBuildsRequest(t *testing.T) {
 	s.projectField.selected = 0
 	s.behaviorField.options = []selectOption{{Value: "dev", Label: "dev"}}
 	s.behaviorField.selected = 0
-	s.titleInput.value = []rune("Fix the bug")
-	s.descArea.lines = []string{"some detail"}
+	s.titleInput.SetValue("Fix the bug")
+	s.descArea.SetValue("some detail")
 	s.focus = focusSubmit
 
 	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -429,8 +429,8 @@ func TestFormCancelButton(t *testing.T) {
 // TestFormBackspaceTitleDeletes: Title フォーカス中に backspace → 文字が削除されること
 func TestFormBackspaceTitleDeletes(t *testing.T) {
 	s := newTestFormScreen()
-	s.focus = focusTitle
-	s.titleInput.value = []rune("hello")
+	s.moveFocus(focusTitle)
+	s.titleInput.SetValue("hello")
 
 	s.Update(tea.KeyMsg{Type: tea.KeyBackspace})
 
@@ -442,8 +442,8 @@ func TestFormBackspaceTitleDeletes(t *testing.T) {
 // TestFormBackspaceDescriptionDeletes: Description フォーカス中に backspace → 文字が削除されること
 func TestFormBackspaceDescriptionDeletes(t *testing.T) {
 	s := newTestFormScreen()
-	s.focus = focusDescription
-	s.descArea.lines = []string{"hello"}
+	s.moveFocus(focusDescription)
+	s.descArea.SetValue("hello")
 
 	s.Update(tea.KeyMsg{Type: tea.KeyBackspace})
 
@@ -479,56 +479,6 @@ func TestFormBackspaceSubmitFocusPops(t *testing.T) {
 	msg := cmd()
 	if _, ok := msg.(popScreenMsg); !ok {
 		t.Errorf("backspace on submit focus: expected popScreenMsg, got %T", msg)
-	}
-}
-
-// --- スペースキー入力テスト ---
-
-// TestSimpleInputSpaceKey: simpleInput でスペースキーが入力できること
-func TestSimpleInputSpaceKey(t *testing.T) {
-	inp := simpleInput{}
-	inp.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello")})
-	inp.handleKey(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
-	inp.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("world")})
-
-	if got := inp.Value(); got != "hello world" {
-		t.Errorf("want 'hello world', got %q", got)
-	}
-}
-
-// TestSimpleInputSpaceKeyOnly: simpleInput でスペースのみの入力ができること
-func TestSimpleInputSpaceKeyOnly(t *testing.T) {
-	inp := simpleInput{}
-	inp.handleKey(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
-
-	if got := inp.Value(); got != " " {
-		t.Errorf("want ' ', got %q", got)
-	}
-}
-
-// TestSimpleTextAreaSpaceKey: simpleTextArea でスペースキーが入力できること
-func TestSimpleTextAreaSpaceKey(t *testing.T) {
-	area := newSimpleTextArea("", 4)
-	area.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("foo")})
-	area.handleKey(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
-	area.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("bar")})
-
-	if got := area.Value(); got != "foo bar" {
-		t.Errorf("want 'foo bar', got %q", got)
-	}
-}
-
-// TestSimpleTextAreaSpaceKeyMultiLine: simpleTextArea で改行後もスペースが入力できること
-func TestSimpleTextAreaSpaceKeyMultiLine(t *testing.T) {
-	area := newSimpleTextArea("", 4)
-	area.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("line1")})
-	area.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	area.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
-	area.handleKey(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
-	area.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
-
-	if got := area.Value(); got != "line1\na b" {
-		t.Errorf("want 'line1\\na b', got %q", got)
 	}
 }
 

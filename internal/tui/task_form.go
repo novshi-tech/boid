@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
@@ -87,66 +89,6 @@ func (f *selectField) handleKey(msg tea.KeyMsg) {
 	}
 }
 
-// --- simpleInput: single-line text input ---
-
-type simpleInput struct {
-	value       []rune
-	placeholder string
-}
-
-func (t *simpleInput) handleKey(msg tea.KeyMsg) {
-	switch msg.Type {
-	case tea.KeyBackspace, tea.KeyCtrlH:
-		if len(t.value) > 0 {
-			t.value = t.value[:len(t.value)-1]
-		}
-	case tea.KeyRunes, tea.KeySpace:
-		t.value = append(t.value, msg.Runes...)
-	}
-}
-
-func (t *simpleInput) Value() string {
-	return string(t.value)
-}
-
-// --- simpleTextArea: multi-line text area ---
-
-type simpleTextArea struct {
-	lines       []string
-	placeholder string
-	height      int
-}
-
-func newSimpleTextArea(placeholder string, height int) simpleTextArea {
-	return simpleTextArea{
-		lines:       []string{""},
-		placeholder: placeholder,
-		height:      height,
-	}
-}
-
-func (a *simpleTextArea) handleKey(msg tea.KeyMsg) {
-	switch msg.Type {
-	case tea.KeyEnter:
-		a.lines = append(a.lines, "")
-	case tea.KeyBackspace, tea.KeyCtrlH:
-		last := len(a.lines) - 1
-		if len(a.lines[last]) > 0 {
-			runes := []rune(a.lines[last])
-			a.lines[last] = string(runes[:len(runes)-1])
-		} else if last > 0 {
-			a.lines = a.lines[:last]
-		}
-	case tea.KeyRunes, tea.KeySpace:
-		last := len(a.lines) - 1
-		a.lines[last] += string(msg.Runes)
-	}
-}
-
-func (a *simpleTextArea) Value() string {
-	return strings.Join(a.lines, "\n")
-}
-
 // --- messages ---
 
 type projectsLoadedMsg struct {
@@ -175,21 +117,29 @@ type TaskFormScreen struct {
 
 	projectField  selectField
 	behaviorField selectField
-	titleInput    simpleInput
-	descArea      simpleTextArea
+	titleInput    textinput.Model
+	descArea      textarea.Model
 
-	focus     formFocus
-	errMsg    string
+	focus      formFocus
+	errMsg     string
 	submitting bool
 }
 
 func NewTaskFormScreen(shared *SharedState) *TaskFormScreen {
+	ti := textinput.New()
+	ti.Placeholder = "Task title"
+
+	ta := textarea.New()
+	ta.Placeholder = "Description (optional)"
+	ta.SetHeight(4)
+	ta.ShowLineNumbers = false
+
 	return &TaskFormScreen{
 		shared:        shared,
 		projectField:  newSelectField("Project"),
 		behaviorField: newSelectField("Behavior"),
-		titleInput:    simpleInput{placeholder: "Task title"},
-		descArea:      newSimpleTextArea("Description (optional)", 4),
+		titleInput:    ti,
+		descArea:      ta,
 		focus:         focusProject,
 	}
 }
@@ -236,6 +186,24 @@ func (s *TaskFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	return s, nil
 }
 
+// moveFocus calls Blur() on the previously focused field and Focus() on the new one.
+func (s *TaskFormScreen) moveFocus(newFocus formFocus) tea.Cmd {
+	switch s.focus {
+	case focusTitle:
+		s.titleInput.Blur()
+	case focusDescription:
+		s.descArea.Blur()
+	}
+	s.focus = newFocus
+	switch newFocus {
+	case focusTitle:
+		return s.titleInput.Focus()
+	case focusDescription:
+		return s.descArea.Focus()
+	}
+	return nil
+}
+
 func (s *TaskFormScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 	// Esc: close expanded selector first, otherwise pop screen.
 	if msg.Type == tea.KeyEsc {
@@ -250,30 +218,23 @@ func (s *TaskFormScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return func() tea.Msg { return popScreenMsg{} }
 	}
 
-	// Backspace: text input フォーカス中はフィールドに委譲、それ以外は pop。
-	if msg.Type == tea.KeyBackspace || msg.Type == tea.KeyCtrlH {
-		switch s.focus {
-		case focusTitle:
-			s.titleInput.handleKey(msg)
-			return nil
-		case focusDescription:
-			s.descArea.handleKey(msg)
-			return nil
-		default:
-			return func() tea.Msg { return popScreenMsg{} }
-		}
-	}
-
 	// Tab / Shift+Tab for focus navigation (blocked while a selector is expanded).
 	if !s.projectField.expanded && !s.behaviorField.expanded {
 		switch msg.String() {
 		case "tab":
-			s.focus = (s.focus + 1) % focusCount
-			return nil
+			return s.moveFocus((s.focus + 1) % focusCount)
 		case "shift+tab":
-			s.focus = (s.focus - 1 + focusCount) % focusCount
-			return nil
+			return s.moveFocus((s.focus - 1 + focusCount) % focusCount)
 		}
+	}
+
+	// Backspace: text input フォーカス中は bubbles に委譲（switch へ fall-through）、
+	// それ以外は前の画面に戻る。
+	if msg.Type == tea.KeyBackspace || msg.Type == tea.KeyCtrlH {
+		if s.focus != focusTitle && s.focus != focusDescription {
+			return func() tea.Msg { return popScreenMsg{} }
+		}
+		// fall through to the switch below for text fields
 	}
 
 	switch s.focus {
@@ -294,11 +255,14 @@ func (s *TaskFormScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		s.behaviorField.handleKey(msg)
 
 	case focusTitle:
-		s.titleInput.handleKey(msg)
+		var cmd tea.Cmd
+		s.titleInput, cmd = s.titleInput.Update(msg)
+		return cmd
 
 	case focusDescription:
-		// Tab / shift+tab are already consumed above; pass everything else.
-		s.descArea.handleKey(msg)
+		var cmd tea.Cmd
+		s.descArea, cmd = s.descArea.Update(msg)
+		return cmd
 
 	case focusSubmit:
 		if msg.String() == "enter" {
@@ -357,10 +321,25 @@ func (s *TaskFormScreen) View(width, height int) string {
 	sb.WriteString(s.viewSelectField(&s.behaviorField, s.focus == focusBehavior, behPlaceholder, width))
 
 	// Title input
-	sb.WriteString(viewInputLine("Title", s.titleInput.Value(), s.titleInput.placeholder, s.focus == focusTitle, width))
+	{
+		labelStr := fmt.Sprintf("%-10s", "Title:")
+		cursor := " "
+		if s.focus == focusTitle {
+			cursor = styleCursor.Render("▸")
+		}
+		sb.WriteString("  " + labelStr + " " + cursor + " " + s.titleInput.View() + "\n")
+	}
 
 	// Description textarea
-	sb.WriteString(s.viewTextArea(width))
+	{
+		labelStr := fmt.Sprintf("%-10s", "Desc:")
+		cursor := " "
+		if s.focus == focusDescription {
+			cursor = styleCursor.Render("▸")
+		}
+		sb.WriteString("  " + labelStr + " " + cursor + "\n")
+		sb.WriteString(s.descArea.View() + "\n")
+	}
 
 	// Buttons
 	sb.WriteString(s.viewButtons())
@@ -409,98 +388,6 @@ func (s *TaskFormScreen) viewSelectField(f *selectField, focused bool, placehold
 	}
 
 	_ = width
-	return sb.String()
-}
-
-func viewInputLine(label, value, placeholder string, focused bool, width int) string {
-	labelStr := fmt.Sprintf("%-10s", label+":")
-	cursor := " "
-	if focused {
-		cursor = styleCursor.Render("▸")
-	}
-
-	// prefix: "  " + 10-char label + " X [" = 16 chars; suffix: "]" = 1 char
-	inputWidth := width - 16
-	if inputWidth < 10 {
-		inputWidth = 10
-	}
-
-	var displayVal string
-	if value == "" {
-		if focused {
-			displayVal = "█"
-		} else {
-			displayVal = styleDim.Render(placeholder)
-		}
-	} else if focused {
-		r := []rune(value)
-		if len(r) > inputWidth-1 {
-			displayVal = string(r[len(r)-(inputWidth-1):]) + "█"
-		} else {
-			displayVal = value + "█"
-		}
-	} else {
-		displayVal = value
-	}
-
-	// Right-pad to inputWidth using visible-char width.
-	visible := lipglossWidth(displayVal)
-	if visible < inputWidth {
-		displayVal += strings.Repeat(" ", inputWidth-visible)
-	}
-
-	return "  " + labelStr + " " + cursor + " [" + displayVal + "]\n"
-}
-
-func (s *TaskFormScreen) viewTextArea(width int) string {
-	var sb strings.Builder
-
-	labelStr := fmt.Sprintf("%-10s", "Desc:")
-	cursor := " "
-	if s.focus == focusDescription {
-		cursor = styleCursor.Render("▸")
-	}
-
-	inputWidth := width - 16
-	if inputWidth < 10 {
-		inputWidth = 10
-	}
-
-	h := s.descArea.height
-	srcLines := s.descArea.lines
-
-	// Show the last h lines when content overflows.
-	start := 0
-	if len(srcLines) > h {
-		start = len(srcLines) - h
-	}
-	displayLines := make([]string, h)
-	for i, l := range srcLines[start:] {
-		if i < h {
-			displayLines[i] = l
-		}
-	}
-
-	// Append cursor block to the last active display line.
-	if s.focus == focusDescription {
-		lastDisplayIdx := len(srcLines) - 1 - start
-		if lastDisplayIdx >= 0 && lastDisplayIdx < h {
-			displayLines[lastDisplayIdx] += "█"
-		}
-	}
-
-	for i, l := range displayLines {
-		visible := lipglossWidth(l)
-		if visible < inputWidth {
-			l += strings.Repeat(" ", inputWidth-visible)
-		}
-		if i == 0 {
-			sb.WriteString("  " + labelStr + " " + cursor + " [" + l + "]\n")
-		} else {
-			sb.WriteString("  " + fmt.Sprintf("%-10s", "") + "   [" + l + "]\n")
-		}
-	}
-
 	return sb.String()
 }
 
