@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -27,66 +29,49 @@ const (
 	focusCount
 )
 
-// --- selectField ---
+// --- key map ---
 
-type selectOption struct {
-	Value string
-	Label string
+type taskFormKeyMap struct {
+	Tab      key.Binding
+	ShiftTab key.Binding
+	Enter    key.Binding
+	Esc      key.Binding
+	Back     key.Binding
+	Up       key.Binding
+	Down     key.Binding
 }
 
-type selectField struct {
-	label    string
-	options  []selectOption
-	selected int // -1 = unselected
-	expanded bool
-	cursor   int
+func (k taskFormKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Tab, k.Enter, k.Esc}
 }
 
-func newSelectField(label string) selectField {
-	return selectField{label: label, selected: -1}
+func (k taskFormKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{{k.Tab, k.ShiftTab, k.Enter, k.Esc, k.Back}}
 }
 
-func (f *selectField) selectedValue() string {
-	if f.selected < 0 || f.selected >= len(f.options) {
-		return ""
-	}
-	return f.options[f.selected].Value
-}
-
-func (f *selectField) selectedLabel() string {
-	if f.selected < 0 || f.selected >= len(f.options) {
-		return ""
-	}
-	return f.options[f.selected].Label
-}
-
-func (f *selectField) handleKey(msg tea.KeyMsg) {
-	if !f.expanded {
-		if msg.String() == "enter" && len(f.options) > 0 {
-			f.expanded = true
-			if f.selected >= 0 {
-				f.cursor = f.selected
-			} else {
-				f.cursor = 0
-			}
-		}
-		return
-	}
-	switch msg.String() {
-	case "j", "down":
-		if f.cursor < len(f.options)-1 {
-			f.cursor++
-		}
-	case "k", "up":
-		if f.cursor > 0 {
-			f.cursor--
-		}
-	case "enter":
-		f.selected = f.cursor
-		f.expanded = false
-	case "esc":
-		f.expanded = false
-	}
+var defaultTaskFormKeys = taskFormKeyMap{
+	Tab: key.NewBinding(
+		key.WithKeys("tab"),
+		key.WithHelp("tab", "next"),
+	),
+	ShiftTab: key.NewBinding(
+		key.WithKeys("shift+tab"),
+		key.WithHelp("shift-tab", "prev"),
+	),
+	Enter: key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("enter", "submit/select"),
+	),
+	Esc: key.NewBinding(
+		key.WithKeys("esc"),
+		key.WithHelp("esc", "cancel"),
+	),
+	Back: key.NewBinding(
+		key.WithKeys("backspace"),
+		key.WithHelp("backspace", "back"),
+	),
+	Up: key.NewBinding(key.WithKeys("k", "up")),
+	Down: key.NewBinding(key.WithKeys("j", "down")),
 }
 
 // --- messages ---
@@ -115,14 +100,19 @@ type taskCreatedNotifyMsg struct{}
 type TaskFormScreen struct {
 	shared *SharedState
 
-	projectField  selectField
-	behaviorField selectField
+	projectField  SelectModel
+	behaviorField SelectModel
 	titleInput    textinput.Model
 	descArea      textarea.Model
+	createBtn     ButtonModel
+	cancelBtn     ButtonModel
 
 	focus      formFocus
 	errMsg     string
 	submitting bool
+
+	keys taskFormKeyMap
+	help help.Model
 }
 
 func NewTaskFormScreen(shared *SharedState) *TaskFormScreen {
@@ -134,14 +124,28 @@ func NewTaskFormScreen(shared *SharedState) *TaskFormScreen {
 	ta.SetHeight(4)
 	ta.ShowLineNumbers = false
 
-	return &TaskFormScreen{
+	pf := NewSelect()
+	pf.SetLabel("Project")
+	pf.SetPlaceholder("(select project)")
+	pf.Focus() // initial focus
+
+	bf := NewSelect()
+	bf.SetLabel("Behavior")
+	bf.SetPlaceholder("(select project first)")
+
+	s := &TaskFormScreen{
 		shared:        shared,
-		projectField:  newSelectField("Project"),
-		behaviorField: newSelectField("Behavior"),
+		projectField:  pf,
+		behaviorField: bf,
 		titleInput:    ti,
 		descArea:      ta,
+		createBtn:     NewButton("Create"),
+		cancelBtn:     NewButton("Cancel"),
 		focus:         focusProject,
+		keys:          defaultTaskFormKeys,
+		help:          help.New(),
 	}
+	return s
 }
 
 func (s *TaskFormScreen) Init() tea.Cmd {
@@ -152,20 +156,20 @@ func (s *TaskFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch msg := msg.(type) {
 	case projectsLoadedMsg:
 		if msg.err == nil {
-			opts := make([]selectOption, len(msg.projects))
+			opts := make([]SelectOption, len(msg.projects))
 			for i, p := range msg.projects {
-				opts[i] = selectOption{Value: p.ID, Label: p.Meta.Name}
+				opts[i] = SelectOption{Value: p.ID, Label: p.Meta.Name}
 			}
-			s.projectField.options = opts
+			s.projectField.SetOptions(opts)
 		}
 
 	case behaviorsLoadedMsg:
 		if msg.err == nil {
-			opts := make([]selectOption, len(msg.behaviors))
+			opts := make([]SelectOption, len(msg.behaviors))
 			for i, b := range msg.behaviors {
-				opts[i] = selectOption{Value: b, Label: b}
+				opts[i] = SelectOption{Value: b, Label: b}
 			}
-			s.behaviorField.options = opts
+			s.behaviorField.SetOptions(opts)
 		}
 		s.behaviorField.selected = -1
 
@@ -188,48 +192,65 @@ func (s *TaskFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 
 // moveFocus calls Blur() on the previously focused field and Focus() on the new one.
 func (s *TaskFormScreen) moveFocus(newFocus formFocus) tea.Cmd {
+	// blur current
 	switch s.focus {
+	case focusProject:
+		s.projectField.Blur()
+	case focusBehavior:
+		s.behaviorField.Blur()
 	case focusTitle:
 		s.titleInput.Blur()
 	case focusDescription:
 		s.descArea.Blur()
+	case focusSubmit:
+		s.createBtn.Blur()
+	case focusCancel:
+		s.cancelBtn.Blur()
 	}
 	s.focus = newFocus
+	// focus new
 	switch newFocus {
+	case focusProject:
+		return s.projectField.Focus()
+	case focusBehavior:
+		return s.behaviorField.Focus()
 	case focusTitle:
 		return s.titleInput.Focus()
 	case focusDescription:
 		return s.descArea.Focus()
+	case focusSubmit:
+		return s.createBtn.Focus()
+	case focusCancel:
+		return s.cancelBtn.Focus()
 	}
 	return nil
 }
 
 func (s *TaskFormScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
-	// Esc: close expanded selector first, otherwise pop screen.
-	if msg.Type == tea.KeyEsc {
-		if s.projectField.expanded {
-			s.projectField.expanded = false
+	// Esc: close expanded selector first; otherwise pop screen.
+	if key.Matches(msg, s.keys.Esc) {
+		if s.projectField.Expanded() {
+			s.projectField, _ = s.projectField.Update(msg)
 			return nil
 		}
-		if s.behaviorField.expanded {
-			s.behaviorField.expanded = false
+		if s.behaviorField.Expanded() {
+			s.behaviorField, _ = s.behaviorField.Update(msg)
 			return nil
 		}
 		return func() tea.Msg { return popScreenMsg{} }
 	}
 
 	// Tab / Shift+Tab for focus navigation (blocked while a selector is expanded).
-	if !s.projectField.expanded && !s.behaviorField.expanded {
-		switch msg.String() {
-		case "tab":
+	if !s.projectField.Expanded() && !s.behaviorField.Expanded() {
+		if key.Matches(msg, s.keys.Tab) {
 			return s.moveFocus((s.focus + 1) % focusCount)
-		case "shift+tab":
+		}
+		if key.Matches(msg, s.keys.ShiftTab) {
 			return s.moveFocus((s.focus - 1 + focusCount) % focusCount)
 		}
 	}
 
-	// Backspace: text input フォーカス中は bubbles に委譲（switch へ fall-through）、
-	// それ以外は前の画面に戻る。
+	// Backspace: text input フォーカス中は bubbles に委譲、それ以外は前の画面に戻る。
 	if msg.Type == tea.KeyBackspace || msg.Type == tea.KeyCtrlH {
 		if s.focus != focusTitle && s.focus != focusDescription {
 			return func() tea.Msg { return popScreenMsg{} }
@@ -239,20 +260,24 @@ func (s *TaskFormScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	switch s.focus {
 	case focusProject:
-		prevSelected := s.projectField.selected
-		s.projectField.handleKey(msg)
-		// When project changes, reset behavior and fetch new behaviors.
-		if s.projectField.selected != prevSelected && s.projectField.selected >= 0 {
+		prevValue := s.projectField.Value()
+		var selectCmd tea.Cmd
+		s.projectField, selectCmd = s.projectField.Update(msg)
+		newValue := s.projectField.Value()
+		if newValue != prevValue && newValue != "" {
 			s.behaviorField.selected = -1
 			s.behaviorField.options = nil
-			return fetchBehaviorsCmd(s.shared.Client, s.projectField.selectedValue())
+			return tea.Batch(selectCmd, fetchBehaviorsCmd(s.shared.Client, newValue))
 		}
+		return selectCmd
 
 	case focusBehavior:
-		if s.projectField.selected < 0 {
+		if s.projectField.Value() == "" {
 			return nil // project must be selected first
 		}
-		s.behaviorField.handleKey(msg)
+		var cmd tea.Cmd
+		s.behaviorField, cmd = s.behaviorField.Update(msg)
+		return cmd
 
 	case focusTitle:
 		var cmd tea.Cmd
@@ -265,12 +290,12 @@ func (s *TaskFormScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return cmd
 
 	case focusSubmit:
-		if msg.String() == "enter" {
+		if key.Matches(msg, s.keys.Enter) {
 			return s.submit()
 		}
 
 	case focusCancel:
-		if msg.String() == "enter" {
+		if key.Matches(msg, s.keys.Enter) {
 			return func() tea.Msg { return popScreenMsg{} }
 		}
 	}
@@ -278,11 +303,11 @@ func (s *TaskFormScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 func (s *TaskFormScreen) submit() tea.Cmd {
-	if s.projectField.selected < 0 {
+	if s.projectField.Value() == "" {
 		s.errMsg = "project is required"
 		return nil
 	}
-	if s.behaviorField.selected < 0 {
+	if s.behaviorField.Value() == "" {
 		s.errMsg = "behavior is required"
 		return nil
 	}
@@ -294,8 +319,8 @@ func (s *TaskFormScreen) submit() tea.Cmd {
 	s.errMsg = ""
 	s.submitting = true
 	req := api.CreateTaskRequest{
-		ProjectID:   s.projectField.selectedValue(),
-		Behavior:    s.behaviorField.selectedValue(),
+		ProjectID:   s.projectField.Value(),
+		Behavior:    s.behaviorField.Value(),
 		Title:       title,
 		Description: s.descArea.Value(),
 	}
@@ -311,14 +336,18 @@ func (s *TaskFormScreen) View(width, height int) string {
 	sb.WriteByte('\n')
 
 	// Project selector
-	sb.WriteString(s.viewSelectField(&s.projectField, s.focus == focusProject, "(select project)", width))
+	sb.WriteString(s.projectField.View())
 
-	// Behavior selector
-	behPlaceholder := "(select project first)"
-	if s.projectField.selected >= 0 {
-		behPlaceholder = "(select behavior)"
+	// Behavior selector — placeholder depends on whether a project is selected.
+	{
+		bf := s.behaviorField
+		if s.projectField.Value() == "" {
+			bf.placeholder = "(select project first)"
+		} else {
+			bf.placeholder = "(select behavior)"
+		}
+		sb.WriteString(bf.View())
 	}
-	sb.WriteString(s.viewSelectField(&s.behaviorField, s.focus == focusBehavior, behPlaceholder, width))
 
 	// Title input
 	{
@@ -342,7 +371,7 @@ func (s *TaskFormScreen) View(width, height int) string {
 	}
 
 	// Buttons
-	sb.WriteString(s.viewButtons())
+	sb.WriteString("\n  " + s.createBtn.View() + "    " + s.cancelBtn.View() + "\n")
 
 	// Error message
 	if s.errMsg != "" {
@@ -354,57 +383,8 @@ func (s *TaskFormScreen) View(width, height int) string {
 	return sb.String()
 }
 
-func (s *TaskFormScreen) viewSelectField(f *selectField, focused bool, placeholder string, width int) string {
-	var sb strings.Builder
-
-	labelStr := fmt.Sprintf("%-10s", f.label+":")
-	cursor := " "
-	if focused {
-		cursor = styleCursor.Render("▸")
-	}
-
-	sel := f.selectedLabel()
-	if sel == "" {
-		if focused {
-			sel = placeholder
-		} else {
-			sel = styleDim.Render(placeholder)
-		}
-	} else if focused {
-		sel = styleTitle.Render(sel)
-	}
-
-	sb.WriteString("  " + labelStr + " " + cursor + " " + sel + "\n")
-
-	// Inline expanded list
-	if f.expanded {
-		for i, opt := range f.options {
-			if i == f.cursor {
-				sb.WriteString("             " + styleCursor.Render("▸ "+opt.Label) + "\n")
-			} else {
-				sb.WriteString("               " + styleDim.Render(opt.Label) + "\n")
-			}
-		}
-	}
-
-	_ = width
-	return sb.String()
-}
-
-func (s *TaskFormScreen) viewButtons() string {
-	create := "[Create]"
-	cancel := "[Cancel]"
-	if s.focus == focusSubmit {
-		create = styleCursor.Render("[Create]")
-	}
-	if s.focus == focusCancel {
-		cancel = styleCursor.Render("[Cancel]")
-	}
-	return "\n  " + create + "    " + cancel + "\n"
-}
-
 func (s *TaskFormScreen) ShortHelp() string {
-	return "tab: next  shift-tab: prev  enter: submit/select  esc: cancel"
+	return s.help.View(s.keys)
 }
 
 // --- commands ---

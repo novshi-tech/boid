@@ -63,7 +63,7 @@ func TestFormValidationAllEmpty(t *testing.T) {
 
 func TestFormValidationNoProject(t *testing.T) {
 	s := newTestFormScreen()
-	s.behaviorField.options = []selectOption{{Value: "dev", Label: "dev"}}
+	s.behaviorField.options = []SelectOption{{Value: "dev", Label: "dev"}}
 	s.behaviorField.selected = 0
 	s.titleInput.SetValue("My Task")
 	s.focus = focusSubmit
@@ -76,7 +76,7 @@ func TestFormValidationNoProject(t *testing.T) {
 
 func TestFormValidationNoBehavior(t *testing.T) {
 	s := newTestFormScreen()
-	s.projectField.options = []selectOption{{Value: "p1", Label: "proj1"}}
+	s.projectField.options = []SelectOption{{Value: "p1", Label: "proj1"}}
 	s.projectField.selected = 0
 	s.titleInput.SetValue("My Task")
 	s.focus = focusSubmit
@@ -89,9 +89,9 @@ func TestFormValidationNoBehavior(t *testing.T) {
 
 func TestFormValidationNoTitle(t *testing.T) {
 	s := newTestFormScreen()
-	s.projectField.options = []selectOption{{Value: "p1", Label: "proj1"}}
+	s.projectField.options = []SelectOption{{Value: "p1", Label: "proj1"}}
 	s.projectField.selected = 0
-	s.behaviorField.options = []selectOption{{Value: "dev", Label: "dev"}}
+	s.behaviorField.options = []SelectOption{{Value: "dev", Label: "dev"}}
 	s.behaviorField.selected = 0
 	s.focus = focusSubmit
 
@@ -103,9 +103,9 @@ func TestFormValidationNoTitle(t *testing.T) {
 
 func TestFormValidationWhitespaceTitle(t *testing.T) {
 	s := newTestFormScreen()
-	s.projectField.options = []selectOption{{Value: "p1", Label: "proj1"}}
+	s.projectField.options = []SelectOption{{Value: "p1", Label: "proj1"}}
 	s.projectField.selected = 0
-	s.behaviorField.options = []selectOption{{Value: "dev", Label: "dev"}}
+	s.behaviorField.options = []SelectOption{{Value: "dev", Label: "dev"}}
 	s.behaviorField.selected = 0
 	s.titleInput.SetValue("   ")
 	s.focus = focusSubmit
@@ -120,13 +120,14 @@ func TestFormValidationWhitespaceTitle(t *testing.T) {
 
 func TestFormProjectChangeResetsBehavior(t *testing.T) {
 	s := newTestFormScreen()
-	s.projectField.options = []selectOption{
+	s.projectField.options = []SelectOption{
 		{Value: "p1", Label: "proj1"},
 		{Value: "p2", Label: "proj2"},
 	}
 	s.projectField.selected = 0
-	s.behaviorField.options = []selectOption{{Value: "dev", Label: "dev"}}
+	s.behaviorField.options = []SelectOption{{Value: "dev", Label: "dev"}}
 	s.behaviorField.selected = 0
+	s.projectField.focused = true
 
 	s.focus = focusProject
 
@@ -158,12 +159,13 @@ func TestFormProjectChangeResetsBehavior(t *testing.T) {
 
 func TestFormSameProjectNoReset(t *testing.T) {
 	s := newTestFormScreen()
-	s.projectField.options = []selectOption{
+	s.projectField.options = []SelectOption{
 		{Value: "p1", Label: "proj1"},
 	}
 	s.projectField.selected = 0
-	s.behaviorField.options = []selectOption{{Value: "dev", Label: "dev"}}
+	s.behaviorField.options = []SelectOption{{Value: "dev", Label: "dev"}}
 	s.behaviorField.selected = 0
+	s.projectField.focused = true
 
 	s.focus = focusProject
 
@@ -179,118 +181,18 @@ func TestFormSameProjectNoReset(t *testing.T) {
 	}
 }
 
-// --- selectField 展開/選択テスト ---
-
-func TestSelectFieldExpandOnEnter(t *testing.T) {
-	f := newSelectField("Test")
-	f.options = []selectOption{{Value: "a", Label: "A"}, {Value: "b", Label: "B"}}
-
-	f.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if !f.expanded {
-		t.Error("expected field to expand on enter")
-	}
-}
-
-func TestSelectFieldNoExpandWhenEmpty(t *testing.T) {
-	f := newSelectField("Test")
-	// no options
-
-	f.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if f.expanded {
-		t.Error("should not expand when options are empty")
-	}
-}
-
-func TestSelectFieldCursorNavigation(t *testing.T) {
-	f := newSelectField("Test")
-	f.options = []selectOption{
-		{Value: "a", Label: "A"},
-		{Value: "b", Label: "B"},
-		{Value: "c", Label: "C"},
-	}
-	f.handleKey(tea.KeyMsg{Type: tea.KeyEnter}) // expand
-
-	f.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if f.cursor != 1 {
-		t.Errorf("j: want cursor 1, got %d", f.cursor)
-	}
-
-	f.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if f.cursor != 2 {
-		t.Errorf("j j: want cursor 2, got %d", f.cursor)
-	}
-
-	// Can't go past end
-	f.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if f.cursor != 2 {
-		t.Errorf("j at end: want cursor 2, got %d", f.cursor)
-	}
-
-	f.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-	if f.cursor != 1 {
-		t.Errorf("k: want cursor 1, got %d", f.cursor)
-	}
-
-	// Can't go below 0
-	f.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-	f.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-	if f.cursor != 0 {
-		t.Errorf("k at start: want cursor 0, got %d", f.cursor)
-	}
-}
-
-func TestSelectFieldConfirmSelection(t *testing.T) {
-	f := newSelectField("Test")
-	f.options = []selectOption{
-		{Value: "a", Label: "A"},
-		{Value: "b", Label: "B"},
-	}
-	f.handleKey(tea.KeyMsg{Type: tea.KeyEnter}) // expand
-	f.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}) // cursor → B
-	f.handleKey(tea.KeyMsg{Type: tea.KeyEnter}) // confirm
-
-	if f.selected != 1 {
-		t.Errorf("want selected=1, got %d", f.selected)
-	}
-	if f.expanded {
-		t.Error("selector should be collapsed after selection")
-	}
-	if f.selectedValue() != "b" {
-		t.Errorf("want value 'b', got %q", f.selectedValue())
-	}
-	if f.selectedLabel() != "B" {
-		t.Errorf("want label 'B', got %q", f.selectedLabel())
-	}
-}
-
-func TestSelectFieldEscCloses(t *testing.T) {
-	f := newSelectField("Test")
-	f.options = []selectOption{{Value: "a", Label: "A"}}
-	f.handleKey(tea.KeyMsg{Type: tea.KeyEnter}) // expand
-	if !f.expanded {
-		t.Fatal("expected expanded")
-	}
-
-	f.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
-	if f.expanded {
-		t.Error("esc should close the selector")
-	}
-	if f.selected != -1 {
-		t.Error("esc should not change selection")
-	}
-}
-
 // --- CreateTask リクエスト構築テスト ---
 
 func TestFormSubmitBuildsRequest(t *testing.T) {
 	s := newTestFormScreen()
-	s.projectField.options = []selectOption{{Value: "proj-id", Label: "My Project"}}
+	s.projectField.options = []SelectOption{{Value: "proj-id", Label: "My Project"}}
 	s.projectField.selected = 0
-	s.behaviorField.options = []selectOption{{Value: "dev", Label: "dev"}}
+	s.behaviorField.options = []SelectOption{{Value: "dev", Label: "dev"}}
 	s.behaviorField.selected = 0
 	s.titleInput.SetValue("Fix the bug")
 	s.descArea.SetValue("some detail")
 	s.focus = focusSubmit
+	s.createBtn.focused = true
 
 	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
@@ -378,7 +280,7 @@ func TestFormTaskCreatedError(t *testing.T) {
 
 func TestFormEscClosesExpandedProject(t *testing.T) {
 	s := newTestFormScreen()
-	s.projectField.options = []selectOption{{Value: "p1", Label: "p1"}}
+	s.projectField.options = []SelectOption{{Value: "p1", Label: "p1"}}
 	s.projectField.expanded = true
 
 	s.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -402,7 +304,8 @@ func TestFormEscPopsScreenWhenNothingExpanded(t *testing.T) {
 func TestFormBehaviorBlockedWithoutProject(t *testing.T) {
 	s := newTestFormScreen()
 	s.projectField.selected = -1
-	s.behaviorField.options = []selectOption{{Value: "dev", Label: "dev"}}
+	s.behaviorField.options = []SelectOption{{Value: "dev", Label: "dev"}}
+	s.behaviorField.focused = true
 	s.focus = focusBehavior
 
 	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -417,6 +320,7 @@ func TestFormBehaviorBlockedWithoutProject(t *testing.T) {
 func TestFormCancelButton(t *testing.T) {
 	s := newTestFormScreen()
 	s.focus = focusCancel
+	s.cancelBtn.focused = true
 
 	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
