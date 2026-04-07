@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/api"
@@ -59,13 +61,22 @@ var taskDeleteCmd = &cobra.Command{
 	RunE:  runTaskDelete,
 }
 
+var taskImportCmd = &cobra.Command{
+	Use:   "import",
+	Short: "Import tasks from JSONL file or stdin",
+	RunE:  runTaskImport,
+}
+
 func init() {
 	taskListCmd.Flags().String("status", "", "Filter by status")
 	taskCreateCmd.Flags().StringP("file", "f", "", "YAML file to read task spec from (default: stdin)")
 	taskWatchCmd.Flags().Duration("interval", time.Second, "Polling interval")
 	taskGetCmd.Flags().String("field", "", "Field name to retrieve (required)")
 	taskDeleteCmd.Flags().Bool("force", false, "Delete even if task is active")
-	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd, taskDeleteCmd)
+	taskImportCmd.Flags().StringP("file", "f", "", "JSONL file to import (default: stdin)")
+	taskImportCmd.Flags().String("project", "", "Override project_id for all tasks")
+	taskImportCmd.Flags().String("datasource", "", "Override datasource_id for all tasks")
+	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd, taskDeleteCmd, taskImportCmd)
 	rootCmd.AddCommand(taskCmd)
 }
 
@@ -245,4 +256,78 @@ func runTaskGet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unknown field %q (supported: title, description, status)", field)
 	}
 	return nil
+}
+
+func runTaskImport(cmd *cobra.Command, args []string) error {
+	filePath, _ := cmd.Flags().GetString("file")
+	projectID, _ := cmd.Flags().GetString("project")
+	datasourceID, _ := cmd.Flags().GetString("datasource")
+
+	var r io.Reader
+	if filePath != "" {
+		f, err := os.Open(filePath)
+		if err != nil {
+			return fmt.Errorf("open file: %w", err)
+		}
+		defer f.Close()
+		r = f
+	} else {
+		r = cmd.InOrStdin()
+	}
+
+	reqs, err := parseImportLines(r)
+	if err != nil {
+		return err
+	}
+
+	reqs = applyImportFlags(reqs, projectID, datasourceID)
+
+	c := client.NewUnixClient(client.DefaultSocketPath())
+	var result api.ImportResult
+	if err := c.Do("POST", "/api/tasks/import", reqs, &result); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Created: %d, Skipped: %d, Errors: %d\n",
+		result.Created, result.Skipped, len(result.Errors))
+
+	for _, e := range result.Errors {
+		fmt.Fprintf(cmd.ErrOrStderr(), "error line %d (remote_id=%s): %s\n",
+			e.Line, e.RemoteID, e.Error)
+	}
+	return nil
+}
+
+func parseImportLines(r io.Reader) ([]api.CreateTaskRequest, error) {
+	var reqs []api.CreateTaskRequest
+	scanner := bufio.NewScanner(r)
+	lineNum := 0
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		lineNum++
+		var req api.CreateTaskRequest
+		if err := json.Unmarshal([]byte(line), &req); err != nil {
+			return nil, fmt.Errorf("line %d: invalid JSON: %w", lineNum, err)
+		}
+		reqs = append(reqs, req)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read input: %w", err)
+	}
+	return reqs, nil
+}
+
+func applyImportFlags(reqs []api.CreateTaskRequest, projectID, datasourceID string) []api.CreateTaskRequest {
+	for i := range reqs {
+		if projectID != "" {
+			reqs[i].ProjectID = projectID
+		}
+		if datasourceID != "" {
+			reqs[i].DataSourceID = datasourceID
+		}
+	}
+	return reqs
 }
