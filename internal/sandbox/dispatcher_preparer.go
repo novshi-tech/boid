@@ -41,6 +41,7 @@ func (dispatcherPreparer) PrepareSandbox(spec dispatcher.SandboxSpec) (*dispatch
 		InstructionsJSON:   spec.InstructionsJSON,
 		TaskYAML:           spec.TaskYAML,
 		EnvironmentYAML:    spec.EnvironmentYAML,
+		Model:              spec.Model,
 	})
 	if err != nil {
 		return nil, err
