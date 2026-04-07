@@ -384,6 +384,20 @@ func TestMiniSelectorEnterTmuxEnabled(t *testing.T) {
 
 // --- start keybinding tests ---
 
+func TestStartKey_SetsLoadingMsg(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = []*orchestrator.Task{
+		{ID: "task-1", Title: "Pending", Status: orchestrator.TaskStatusPending, Behavior: "dev", CreatedAt: time.Now()},
+	}
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if s.statusMsg != "starting..." {
+		t.Errorf("s on pending task: want statusMsg %q, got %q", "starting...", s.statusMsg)
+	}
+	if s.isError {
+		t.Error("s on pending task: expected isError=false")
+	}
+}
+
 func TestStartKey_PendingTaskInList(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = []*orchestrator.Task{

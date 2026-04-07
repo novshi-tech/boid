@@ -234,6 +234,8 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if task.Status != orchestrator.TaskStatusPending {
 			break
 		}
+		s.statusMsg = "starting..."
+		s.isError = false
 		return applyActionCmd(s.shared.Client, task.ID, "start")
 
 	case "o":
