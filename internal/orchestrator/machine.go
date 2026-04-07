@@ -13,6 +13,7 @@ type Rule struct {
 	FromStatus string // "*" matches any
 	ToStatus   string
 	Condition  TransitionCondition // auto transition trigger (mutually exclusive with Action)
+	Manual     bool                // true if the action is user-initiated (shown in available_actions)
 }
 
 type StateMachine struct {
@@ -55,8 +56,37 @@ func (sm *StateMachine) Advance(task *Task) (*Task, bool) {
 	return nil, false
 }
 
+// AvailableActions returns the list of manual actions that can be applied to a
+// task in the given status. Condition-based (automatic) rules and non-manual
+// rules are excluded. Terminal statuses (done, aborted) return an empty list.
+func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
+	if status == TaskStatusDone || status == TaskStatusAborted {
+		return nil
+	}
+	var actions []string
+	seen := map[string]bool{}
+	for _, r := range sm.Rules {
+		if r.Condition != nil || !r.Manual {
+			continue
+		}
+		if r.FromStatus == "*" || r.FromStatus == string(status) {
+			if !seen[r.Action] {
+				seen[r.Action] = true
+				actions = append(actions, r.Action)
+			}
+		}
+	}
+	return actions
+}
+
 type TransitionRegistry struct {
 	machines map[string]*StateMachine
+}
+
+// Get returns the StateMachine for the given transition model name.
+func (r *TransitionRegistry) Get(transition string) (*StateMachine, bool) {
+	sm, ok := r.machines[transition]
+	return sm, ok
 }
 
 func (r *TransitionRegistry) Resolve(meta *ProjectMeta, behavior string) (*StateMachine, error) {
@@ -81,11 +111,19 @@ func NewDefaultRegistry() *TransitionRegistry {
 	}
 }
 
+// defaultRegistry is the package-level registry used by GetMachine.
+var defaultRegistry = NewDefaultRegistry()
+
+// GetMachine returns a built-in StateMachine by transition model name.
+func GetMachine(transition string) (*StateMachine, bool) {
+	return defaultRegistry.Get(transition)
+}
+
 func OneShotMachine() *StateMachine {
 	return &StateMachine{
 		Name: "one-shot",
 		Rules: []Rule{
-			{Action: "start", FromStatus: "pending", ToStatus: "executing"},
+			{Action: "start", FromStatus: "pending", ToStatus: "executing", Manual: true},
 			// Condition: tasks ready → auto-advance to done (for triage/plan tasks)
 			{FromStatus: "executing", ToStatus: "done", Condition: func(p json.RawMessage) bool {
 				return TasksReady(p)
@@ -94,9 +132,9 @@ func OneShotMachine() *StateMachine {
 			{FromStatus: "executing", ToStatus: "done", Condition: func(p json.RawMessage) bool {
 				return TraitNonNull(p, "artifact")
 			}},
-			{Action: "done", FromStatus: "executing", ToStatus: "done"},
+			{Action: "done", FromStatus: "executing", ToStatus: "done", Manual: true},
 			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},
-			{Action: "abort", FromStatus: "*", ToStatus: "aborted"},
+			{Action: "abort", FromStatus: "*", ToStatus: "aborted", Manual: true},
 		},
 	}
 }
@@ -119,7 +157,7 @@ func OneShotFeedbackMachine() *StateMachine {
 	return &StateMachine{
 		Name: "one-shot-feedback",
 		Rules: []Rule{
-			{Action: "start", FromStatus: "pending", ToStatus: "executing"},
+			{Action: "start", FromStatus: "pending", ToStatus: "executing", Manual: true},
 			// Condition: tasks ready → done (for triage/plan tasks)
 			{FromStatus: "executing", ToStatus: "done", Condition: TasksReady},
 			// Condition: artifact present AND no unresolved executing-state findings → done.
@@ -135,10 +173,10 @@ func OneShotFeedbackMachine() *StateMachine {
 			{FromStatus: "reworking", ToStatus: "done", Condition: AllFindingsResolvedForState("reworking")},
 			// Condition: reworking findings still open → stay in reworking.
 			{FromStatus: "reworking", ToStatus: "reworking", Condition: AnyFindingUnresolvedForState("reworking")},
-			{Action: "done", FromStatus: "executing", ToStatus: "done"},
-			{Action: "done", FromStatus: "reworking", ToStatus: "done"},
+			{Action: "done", FromStatus: "executing", ToStatus: "done", Manual: true},
+			{Action: "done", FromStatus: "reworking", ToStatus: "done", Manual: true},
 			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},
-			{Action: "abort", FromStatus: "*", ToStatus: "aborted"},
+			{Action: "abort", FromStatus: "*", ToStatus: "aborted", Manual: true},
 		},
 	}
 }
@@ -147,7 +185,7 @@ func FeedbackLoopMachine() *StateMachine {
 	return &StateMachine{
 		Name: "feedback-loop",
 		Rules: []Rule{
-			{Action: "start", FromStatus: "pending", ToStatus: "executing"},
+			{Action: "start", FromStatus: "pending", ToStatus: "executing", Manual: true},
 			// Condition: artifact present → auto-advance to verifying
 			{FromStatus: "executing", ToStatus: "verifying", Condition: func(p json.RawMessage) bool {
 				return TraitNonNull(p, "artifact")
@@ -156,13 +194,13 @@ func FeedbackLoopMachine() *StateMachine {
 			{FromStatus: "verifying", ToStatus: "executing", Condition: AnyFindingUnresolvedForState("verifying")},
 			// Condition: all findings resolved → advance to in_review
 			{FromStatus: "verifying", ToStatus: "in_review", Condition: AllFindingsResolvedForState("verifying")},
-			{Action: "collect_feedback", FromStatus: "in_review", ToStatus: "collecting_feedback"},
+			{Action: "collect_feedback", FromStatus: "in_review", ToStatus: "collecting_feedback", Manual: true},
 			// Condition: any feedback finding unresolved → rework
 			{FromStatus: "collecting_feedback", ToStatus: "executing", Condition: AnyFindingUnresolvedForState("collecting_feedback")},
 			// Condition: all feedback findings resolved → done
 			{FromStatus: "collecting_feedback", ToStatus: "done", Condition: AllFindingsResolvedForState("collecting_feedback")},
 			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},
-			{Action: "abort", FromStatus: "*", ToStatus: "aborted"},
+			{Action: "abort", FromStatus: "*", ToStatus: "aborted", Manual: true},
 		},
 	}
 }

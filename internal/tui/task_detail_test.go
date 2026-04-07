@@ -12,6 +12,18 @@ import (
 )
 
 func makeDetailWithStatus(status orchestrator.TaskStatus) *api.TaskDetailView {
+	var available []string
+	switch status {
+	case orchestrator.TaskStatusPending:
+		available = []string{"start", "abort"}
+	case orchestrator.TaskStatusExecuting, orchestrator.TaskStatusReworking:
+		available = []string{"done", "abort"}
+	case orchestrator.TaskStatusInReview:
+		available = []string{"collect_feedback", "abort"}
+	case orchestrator.TaskStatusVerifying, orchestrator.TaskStatusCollectingFeedback:
+		available = []string{"abort"}
+	// done, aborted: empty
+	}
 	return &api.TaskDetailView{
 		Task: &orchestrator.Task{
 			ID:        "test-task-id",
@@ -20,6 +32,7 @@ func makeDetailWithStatus(status orchestrator.TaskStatus) *api.TaskDetailView {
 			Behavior:  "dev",
 			CreatedAt: time.Now().Add(-5 * time.Minute),
 		},
+		AvailableActions: available,
 	}
 }
 
@@ -223,16 +236,17 @@ func TestStartKey_NonPendingTask(t *testing.T) {
 func TestAbortKey_FirstPress_SetsConfirmState(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	s.detail = makeDetailWithStatus(orchestrator.TaskStatusExecuting)
+	// abort action maps to key 'a' (first char of "abort", since 'd' is taken by "done")
 
-	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
 	if !s.abortPending {
-		t.Error("x first press: expected abortPending=true")
+		t.Error("a first press: expected abortPending=true")
 	}
 	if s.statusMsg == "" {
-		t.Error("x first press: expected statusMsg to be set")
+		t.Error("a first press: expected statusMsg to be set")
 	}
 	if cmd == nil {
-		t.Error("x first press: expected non-nil cmd (tick)")
+		t.Error("a first press: expected non-nil cmd (tick)")
 	}
 }
 
@@ -240,14 +254,14 @@ func TestAbortKey_SecondPress_ExecutesAbort(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	s.detail = makeDetailWithStatus(orchestrator.TaskStatusExecuting)
 	s.abortPending = true
-	s.statusMsg = "Press x again to abort"
+	s.statusMsg = "Press a again to abort"
 
-	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
 	if s.abortPending {
-		t.Error("x second press: expected abortPending=false")
+		t.Error("a second press: expected abortPending=false")
 	}
 	if cmd == nil {
-		t.Error("x second press: expected non-nil cmd (applyActionCmd)")
+		t.Error("a second press: expected non-nil cmd (applyActionCmd)")
 	}
 }
 
@@ -255,12 +269,12 @@ func TestAbortKey_DoneTask_Ignored(t *testing.T) {
 	for _, st := range []orchestrator.TaskStatus{orchestrator.TaskStatusDone, orchestrator.TaskStatusAborted} {
 		s := newTestTaskDetailScreen()
 		s.detail = makeDetailWithStatus(st)
-		_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+		_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
 		if s.abortPending {
-			t.Errorf("x on %q: abortPending should remain false", st)
+			t.Errorf("a on %q: abortPending should remain false", st)
 		}
 		if cmd != nil {
-			t.Errorf("x on %q: expected nil cmd", st)
+			t.Errorf("a on %q: expected nil cmd", st)
 		}
 	}
 }
@@ -302,6 +316,57 @@ func TestApplyActionResult_Error_SetsStatusMsg(t *testing.T) {
 		t.Error("error result: expected isError=true")
 	}
 }
+
+// --- assignKeys tests ---
+
+func TestAssignKeys_Empty(t *testing.T) {
+	m := assignKeys(nil)
+	if len(m) != 0 {
+		t.Errorf("assignKeys(nil) = %v, want empty", m)
+	}
+	m = assignKeys([]string{})
+	if len(m) != 0 {
+		t.Errorf("assignKeys([]) = %v, want empty", m)
+	}
+}
+
+func TestAssignKeys_NoConflict(t *testing.T) {
+	m := assignKeys([]string{"start", "abort", "done"})
+	// "start" → 's', "abort" → 'a', "done" → 'd'
+	if m['s'] != "start" {
+		t.Errorf("key 's' = %q, want 'start'", m['s'])
+	}
+	if m['a'] != "abort" {
+		t.Errorf("key 'a' = %q, want 'abort'", m['a'])
+	}
+	if m['d'] != "done" {
+		t.Errorf("key 'd' = %q, want 'done'", m['d'])
+	}
+}
+
+func TestAssignKeys_Conflict(t *testing.T) {
+	// "done" → 'd', "debug" → conflict on 'd', falls back to 'e'
+	m := assignKeys([]string{"done", "debug"})
+	if m['d'] != "done" {
+		t.Errorf("key 'd' = %q, want 'done'", m['d'])
+	}
+	if m['e'] != "debug" {
+		t.Errorf("key 'e' = %q, want 'debug'", m['e'])
+	}
+}
+
+func TestAssignKeys_CollectFeedback(t *testing.T) {
+	// "collect_feedback" and "abort" → 'c' and 'a'
+	m := assignKeys([]string{"collect_feedback", "abort"})
+	if m['c'] != "collect_feedback" {
+		t.Errorf("key 'c' = %q, want 'collect_feedback'", m['c'])
+	}
+	if m['a'] != "abort" {
+		t.Errorf("key 'a' = %q, want 'abort'", m['a'])
+	}
+}
+
+// --- assignKeys tests end ---
 
 // TestGetTaskDetail_JSONParsing verifies TaskDetailView decodes correctly from JSON.
 func TestGetTaskDetail_JSONParsing(t *testing.T) {
