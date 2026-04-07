@@ -42,6 +42,9 @@ func (m TextFieldModel) Focused() bool { return m.input.Focused() }
 // Value returns the current text value.
 func (m TextFieldModel) Value() string { return m.input.Value() }
 
+// SetValue sets the current text value.
+func (m *TextFieldModel) SetValue(v string) { m.input.SetValue(v) }
+
 // Update processes a tea.Msg and delegates key input to the inner textinput.
 // Input is ignored when the component is not focused.
 func (m TextFieldModel) Update(msg tea.Msg) (TextFieldModel, tea.Cmd) {
