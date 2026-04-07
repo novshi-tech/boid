@@ -147,7 +147,12 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
 
 	case "enter":
-		// Task detail screen (placeholder - to be implemented in a later task)
+		if len(s.tasks) == 0 {
+			break
+		}
+		task := s.tasks[s.cursor]
+		projectName := s.findProjectName(task.ProjectID)
+		return PushScreen(NewTaskDetailScreen(s.shared, task.ID, projectName))
 
 	case "o":
 		// Quick open (placeholder - to be implemented in a later task)

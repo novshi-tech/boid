@@ -237,6 +237,15 @@ func (c *Client) ListProjects() ([]*orchestrator.Project, error) {
 	return projects, nil
 }
 
+// GetTaskDetail fetches task metadata + actions + jobs for a given task ID.
+func (c *Client) GetTaskDetail(id string) (*api.TaskDetailView, error) {
+	var detail api.TaskDetailView
+	if err := c.Do("GET", "/api/tasks/"+id+"/detail", nil, &detail); err != nil {
+		return nil, err
+	}
+	return &detail, nil
+}
+
 func (c *Client) ResizeJob(jobID string, rows, cols int) error {
 	return c.Do("POST", "/api/jobs/"+jobID+"/resize", map[string]int{
 		"rows": rows,
