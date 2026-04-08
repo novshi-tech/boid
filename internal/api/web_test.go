@@ -15,11 +15,13 @@ import (
 
 // stubWebService is a full implementation of WebService for testing.
 type stubWebService struct {
-	tasks            []*orchestrator.Task
-	taskDetail       *TaskDetailView
-	projects         []*orchestrator.Project
-	applyActionErr   error
-	applyActionCalls []applyActionCall
+	tasks              []*orchestrator.Task
+	taskDetail         *TaskDetailView
+	projects           []*orchestrator.Project
+	applyActionErr     error
+	applyActionCalls   []applyActionCall
+	duplicateTaskNewID string
+	duplicateTaskErr   error
 }
 
 type applyActionCall struct {
@@ -45,6 +47,10 @@ func (s *stubWebService) ListProjects() ([]*orchestrator.Project, error) {
 func (s *stubWebService) ApplyAction(taskID string, actionType string) error {
 	s.applyActionCalls = append(s.applyActionCalls, applyActionCall{taskID: taskID, actionType: actionType})
 	return s.applyActionErr
+}
+
+func (s *stubWebService) DuplicateTask(id string) (string, error) {
+	return s.duplicateTaskNewID, s.duplicateTaskErr
 }
 
 func (s *stubWebService) ListJobs(status string) ([]JobWithContext, error) {
@@ -127,6 +133,7 @@ func newTestWebHandler(svc WebService) *chi.Mux {
 	r := chi.NewRouter()
 	r.Get("/tasks/{id}", h.TaskDetail)
 	r.Post("/tasks/{id}/action", h.PostAction)
+	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	return r
 }
 
@@ -199,5 +206,84 @@ func TestWebHandlerPostAction_ServiceError(t *testing.T) {
 	}
 	if !strings.Contains(loc, "/tasks/task-1") {
 		t.Errorf("Location = %q, want redirect to task detail", loc)
+	}
+}
+
+func TestWebHandlerPostDuplicate_Success(t *testing.T) {
+	svc := &stubWebService{duplicateTaskNewID: "new-task-id"}
+	r := newTestWebHandler(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/duplicate", nil)
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	loc := w.Header().Get("Location")
+	if loc != "/tasks/new-task-id" {
+		t.Errorf("Location = %q, want /tasks/new-task-id", loc)
+	}
+}
+
+func TestWebHandlerPostDuplicate_Error(t *testing.T) {
+	svc := &stubWebService{duplicateTaskErr: fmt.Errorf("task not found")}
+	r := newTestWebHandler(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/duplicate", nil)
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "/tasks/task-1") {
+		t.Errorf("Location = %q, want redirect to original task", loc)
+	}
+	if !strings.Contains(loc, "error=") {
+		t.Errorf("Location = %q, want error param", loc)
+	}
+}
+
+func TestWebAppServiceDuplicateTask_Success(t *testing.T) {
+	original := &orchestrator.Task{
+		ID:           "orig-id",
+		ProjectID:    "proj-1",
+		Title:        "My Task",
+		Description:  "desc",
+		Behavior:     "dev",
+		Transition:   "one-shot",
+		Traits:       []string{"trait1"},
+		Readonly:     false,
+		Worktree:     true,
+		BranchPrefix: "feature/",
+		BaseBranch:   "main",
+	}
+	store := &stubTaskStore{task: original}
+	svc := &WebAppService{Tasks: store}
+
+	newID, err := svc.DuplicateTask("orig-id")
+	if err != nil {
+		t.Fatalf("DuplicateTask() error = %v", err)
+	}
+	if newID == "" {
+		t.Error("DuplicateTask() returned empty ID")
+	}
+}
+
+func TestWebAppServiceDuplicateTask_NotFound(t *testing.T) {
+	store := &stubTaskStore{err: fmt.Errorf("task not found")}
+	svc := &WebAppService{Tasks: store}
+
+	_, err := svc.DuplicateTask("missing-id")
+	if err == nil {
+		t.Fatal("DuplicateTask() error = nil, want error")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusNotFound {
+		t.Fatalf("expected StatusNotFound, got %v", err)
 	}
 }

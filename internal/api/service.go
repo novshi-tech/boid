@@ -422,6 +422,30 @@ func (s *WebAppService) ListProjects() ([]*orchestrator.Project, error) {
 	return projects, nil
 }
 
+func (s *WebAppService) DuplicateTask(id string) (string, error) {
+	task, err := s.Tasks.GetTask(id)
+	if err != nil {
+		return "", &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	newTask := &orchestrator.Task{
+		ProjectID:    task.ProjectID,
+		Title:        task.Title,
+		Description:  task.Description,
+		Behavior:     task.Behavior,
+		Transition:   task.Transition,
+		Traits:       task.Traits,
+		Readonly:     task.Readonly,
+		Worktree:     task.Worktree,
+		BranchPrefix: task.BranchPrefix,
+		BaseBranch:   task.BaseBranch,
+		Payload:      task.Payload,
+	}
+	if err := s.Tasks.CreateTask(newTask); err != nil {
+		return "", &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return newTask.ID, nil
+}
+
 func (s *WebAppService) ApplyAction(taskID string, actionType string) error {
 	if s.Workflow == nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}

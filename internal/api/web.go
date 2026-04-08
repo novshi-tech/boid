@@ -17,6 +17,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/", h.TaskList)
 	r.Get("/tasks/{id}", h.TaskDetail)
 	r.Post("/tasks/{id}/action", h.PostAction)
+	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	r.Get("/projects", h.ProjectList)
 	r.Get("/jobs", h.JobList)
 	r.Get("/jobs/{id}", h.JobDetail)
@@ -72,6 +73,16 @@ func (h *WebHandler) PostAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
+}
+
+func (h *WebHandler) PostDuplicate(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	newID, err := h.Service.DuplicateTask(id)
+	if err != nil {
+		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/tasks/"+newID, http.StatusSeeOther)
 }
 
 func (h *WebHandler) ProjectList(w http.ResponseWriter, r *http.Request) {

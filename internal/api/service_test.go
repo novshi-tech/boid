@@ -843,7 +843,12 @@ type stubTaskStore struct {
 	remoteTasks map[string]*orchestrator.Task // "remoteID:datasourceID" → task
 }
 
-func (s *stubTaskStore) CreateTask(task *orchestrator.Task) error { return nil }
+func (s *stubTaskStore) CreateTask(task *orchestrator.Task) error {
+	if task.ID == "" {
+		task.ID = "stub-task-id"
+	}
+	return nil
+}
 func (s *stubTaskStore) GetTask(id string) (*orchestrator.Task, error) {
 	if s.err != nil {
 		return nil, s.err
