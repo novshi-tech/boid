@@ -355,6 +355,20 @@ func computeAvailableActions(task *orchestrator.Task) []string {
 	return sm.AvailableActions(task.Status)
 }
 
+func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orchestrator.Task, error) {
+	source, err := s.GetTask(sourceID)
+	if err != nil {
+		return nil, err
+	}
+	return s.CreateTask(CreateTaskRequest{
+		ProjectID:   source.ProjectID,
+		Title:       source.Title,
+		Description: source.Description,
+		Behavior:    source.Behavior,
+		AutoStart:   autoStart,
+	})
+}
+
 func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 	task, err := s.GetTask(id)
 	if err != nil {
