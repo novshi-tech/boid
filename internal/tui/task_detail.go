@@ -23,6 +23,11 @@ type applyActionResultMsg struct{ err error }
 type abortConfirmDeadlineMsg struct{}
 type deleteResultMsg struct{ err error }
 type deleteConfirmDeadlineMsg struct{}
+type duplicateResultMsg struct {
+	newTaskID string
+	err       error
+}
+type duplicateConfirmDeadlineMsg struct{}
 
 // --- TaskDetailScreen ---
 
@@ -38,8 +43,9 @@ type TaskDetailScreen struct {
 	isError       bool
 	loading       bool
 	fetchErr      error
-	abortPending  bool
-	deletePending bool
+	abortPending     bool
+	deletePending    bool
+	duplicatePending bool
 }
 
 func NewTaskDetailScreen(shared *SharedState, taskID, projectName string) *TaskDetailScreen {
@@ -124,6 +130,23 @@ func (s *TaskDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.isError = false
 		}
 
+	case duplicateResultMsg:
+		if msg.err != nil {
+			s.statusMsg = "duplicate failed: " + msg.err.Error()
+			s.isError = true
+			return s, clearStatusAfter(4 * time.Second)
+		}
+		return s, func() tea.Msg {
+			return pushScreenMsg{screen: NewTaskDetailScreen(s.shared, msg.newTaskID, s.projectName)}
+		}
+
+	case duplicateConfirmDeadlineMsg:
+		if s.duplicatePending {
+			s.duplicatePending = false
+			s.statusMsg = ""
+			s.isError = false
+		}
+
 	case screenResumedMsg:
 		s.loading = true
 		return s, fetchTaskDetailCmd(s.shared.Client, s.taskID)
@@ -189,6 +212,18 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		s.isError = false
 		return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
 			return deleteConfirmDeadlineMsg{}
+		})
+
+	case "D":
+		if s.duplicatePending {
+			s.duplicatePending = false
+			return duplicateTaskCmd(s.shared.Client, s.taskID)
+		}
+		s.duplicatePending = true
+		s.statusMsg = "Press D again to duplicate"
+		s.isError = false
+		return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+			return duplicateConfirmDeadlineMsg{}
 		})
 
 	default:
@@ -344,7 +379,7 @@ func (s *TaskDetailScreen) ShortHelp() string {
 			parts = append(parts, string(ch)+": "+action)
 		}
 	}
-	parts = append(parts, "d: delete")
+	parts = append(parts, "d: delete", "D: duplicate")
 	fixed := "e: edit  j/k: move  enter: open job  r: refresh  esc: back"
 	return strings.Join(parts, "  ") + "  " + fixed
 }
@@ -434,6 +469,16 @@ func deleteTaskCmd(c *client.Client, taskID string) tea.Cmd {
 	return func() tea.Msg {
 		err := c.DeleteTask(taskID)
 		return deleteResultMsg{err: err}
+	}
+}
+
+func duplicateTaskCmd(c *client.Client, taskID string) tea.Cmd {
+	return func() tea.Msg {
+		task, err := c.DuplicateTask(taskID)
+		if err != nil {
+			return duplicateResultMsg{err: err}
+		}
+		return duplicateResultMsg{newTaskID: task.ID}
 	}
 }
 

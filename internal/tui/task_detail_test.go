@@ -492,6 +492,91 @@ func TestShortHelp_DeleteAlwaysShown(t *testing.T) {
 
 // --- delete keybinding tests end ---
 
+// --- duplicate keybinding tests ---
+
+func TestDuplicateKey_FirstPress_SetsPending(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusDone)
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+	if !s.duplicatePending {
+		t.Error("D first press: expected duplicatePending=true")
+	}
+	if s.statusMsg == "" {
+		t.Error("D first press: expected statusMsg to be set")
+	}
+	if cmd == nil {
+		t.Error("D first press: expected non-nil cmd (tick)")
+	}
+}
+
+func TestDuplicateKey_SecondPress_ExecutesDuplicate(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusDone)
+	s.duplicatePending = true
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+	if cmd == nil {
+		t.Error("D second press: expected non-nil cmd (duplicateTaskCmd)")
+	}
+}
+
+func TestDuplicateConfirmDeadline_ResetsPending(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.duplicatePending = true
+	s.statusMsg = "Press D again to duplicate"
+
+	s.Update(duplicateConfirmDeadlineMsg{})
+	if s.duplicatePending {
+		t.Error("deadline: expected duplicatePending=false")
+	}
+	if s.statusMsg != "" {
+		t.Errorf("deadline: expected empty statusMsg, got %q", s.statusMsg)
+	}
+}
+
+func TestDuplicateResult_Success_NavigatesToNewTask(t *testing.T) {
+	s := newTestTaskDetailScreen()
+
+	_, cmd := s.Update(duplicateResultMsg{newTaskID: "new-task-id"})
+	if cmd == nil {
+		t.Fatal("duplicate success: expected non-nil cmd (pushScreenMsg)")
+	}
+	msg := cmd()
+	if push, ok := msg.(pushScreenMsg); !ok {
+		t.Errorf("duplicate success: expected pushScreenMsg, got %T", msg)
+	} else {
+		if detail, ok := push.screen.(*TaskDetailScreen); !ok {
+			t.Errorf("duplicate success: expected *TaskDetailScreen, got %T", push.screen)
+		} else if detail.taskID != "new-task-id" {
+			t.Errorf("duplicate success: want taskID %q, got %q", "new-task-id", detail.taskID)
+		}
+	}
+}
+
+func TestDuplicateResult_Error_SetsStatusMsg(t *testing.T) {
+	s := newTestTaskDetailScreen()
+
+	s.Update(duplicateResultMsg{err: fmt.Errorf("duplicate failed")})
+	if s.statusMsg == "" {
+		t.Error("duplicate error: expected statusMsg to be set")
+	}
+	if !s.isError {
+		t.Error("duplicate error: expected isError=true")
+	}
+}
+
+func TestShortHelp_DuplicateAlwaysShown(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusDone)
+	help := s.ShortHelp()
+	if !containsStr(help, "D: duplicate") {
+		t.Errorf("ShortHelp: expected 'D: duplicate', got %q", help)
+	}
+}
+
+// --- duplicate keybinding tests end ---
+
 // TestGetTaskDetail_JSONParsing verifies TaskDetailView decodes correctly from JSON.
 func TestGetTaskDetail_JSONParsing(t *testing.T) {
 	raw := `{

@@ -316,6 +316,16 @@ func (c *Client) DeleteTask(id string) error {
 	return c.Do("DELETE", "/api/tasks/"+id, nil, nil)
 }
 
+// DuplicateTask duplicates a task via POST /api/tasks/{id}/duplicate.
+func (c *Client) DuplicateTask(id string) (*orchestrator.Task, error) {
+	req := api.DuplicateTaskRequest{AutoStart: false}
+	var task orchestrator.Task
+	if err := c.Do("POST", "/api/tasks/"+id+"/duplicate", req, &task); err != nil {
+		return nil, err
+	}
+	return &task, nil
+}
+
 // ApplyAction sends an action to POST /api/tasks/{taskID}/actions.
 func (c *Client) ApplyAction(taskID string, req api.ApplyActionRequest) (*api.ActionApplication, error) {
 	var result api.ActionApplication
