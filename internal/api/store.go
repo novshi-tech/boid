@@ -51,6 +51,7 @@ type TaskService interface {
 	UpdateTask(id string, req UpdateTaskRequest) (*orchestrator.Task, error)
 	DeleteTask(id string, force bool) error
 	ImportTasks(reqs []CreateTaskRequest) (*ImportResult, error)
+	DuplicateTask(sourceID string, autoStart bool) (*orchestrator.Task, error)
 }
 
 type ImportError struct {
@@ -70,6 +71,7 @@ type WebService interface {
 	GetTaskDetail(id string) (*TaskDetailView, error)
 	ListProjects() ([]*orchestrator.Project, error)
 	ApplyAction(taskID string, actionType string) error
+	DuplicateTask(id string) (string, error)
 	ListJobs(status string) ([]JobWithContext, error)
 	GetJob(id string) (*JobWithContext, error)
 }

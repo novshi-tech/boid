@@ -106,6 +106,13 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 				{ errorMsg }
 			</div>
 		}
+		<div class="section">
+			<div class="action-buttons">
+				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/duplicate") }>
+					<button type="submit" class="btn btn-secondary">duplicate</button>
+				</form>
+			</div>
+		</div>
 		if len(availableActions) > 0 {
 			<div class="section">
 				<h2 class="section-title">アクション</h2>

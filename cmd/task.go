@@ -67,6 +67,13 @@ var taskImportCmd = &cobra.Command{
 	RunE:  runTaskImport,
 }
 
+var taskDuplicateCmd = &cobra.Command{
+	Use:   "duplicate <source_id>",
+	Short: "Duplicate a task",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTaskDuplicate,
+}
+
 func init() {
 	taskListCmd.Flags().String("status", "", "Filter by status")
 	taskCreateCmd.Flags().StringP("file", "f", "", "YAML file to read task spec from (default: stdin)")
@@ -76,7 +83,8 @@ func init() {
 	taskImportCmd.Flags().StringP("file", "f", "", "JSONL file to import (default: stdin)")
 	taskImportCmd.Flags().String("project", "", "Override project_id for all tasks")
 	taskImportCmd.Flags().String("datasource", "", "Override datasource_id for all tasks")
-	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd, taskDeleteCmd, taskImportCmd)
+	taskDuplicateCmd.Flags().Bool("auto-start", false, "Automatically start the duplicated task")
+	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd, taskDeleteCmd, taskImportCmd, taskDuplicateCmd)
 	rootCmd.AddCommand(taskCmd)
 }
 
@@ -307,6 +315,23 @@ func runTaskImport(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "error line %d (remote_id=%s): %s\n",
 			e.Line, e.RemoteID, e.Error)
 	}
+	return nil
+}
+
+func runTaskDuplicate(cmd *cobra.Command, args []string) error {
+	autoStart, _ := cmd.Flags().GetBool("auto-start")
+	c := client.NewUnixClient(client.DefaultSocketPath())
+
+	req := map[string]any{
+		"auto_start": autoStart,
+	}
+
+	var task orchestrator.Task
+	if err := c.Do("POST", "/api/tasks/"+args[0]+"/duplicate", req, &task); err != nil {
+		return fmt.Errorf("duplicate task: %w", err)
+	}
+
+	fmt.Fprintln(cmd.OutOrStdout(), task.ID)
 	return nil
 }
 

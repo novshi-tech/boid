@@ -24,6 +24,7 @@ func (h *TaskHandler) Routes() chi.Router {
 	r.Get("/{id}", h.Get)
 	r.Patch("/{id}", h.Patch)
 	r.Delete("/{id}", h.Delete)
+	r.Post("/{id}/duplicate", h.Duplicate)
 	return r
 }
 
@@ -34,22 +35,23 @@ type UpdateTaskRequest struct {
 }
 
 type CreateTaskRequest struct {
-	ID           string          `json:"id,omitempty"`
-	ProjectID    string          `json:"project_id"`
-	Title        string          `json:"title"`
-	Description  string          `json:"description,omitempty"`
-	Behavior     string          `json:"behavior"`
-	RemoteID     string          `json:"remote_id,omitempty"`
-	DataSourceID string          `json:"datasource_id,omitempty"`
-	Payload      json.RawMessage `json:"payload,omitempty"`
-	AutoStart    bool            `json:"auto_start,omitempty"`
-	Transition   *string         `json:"transition,omitempty"`
-	Traits       []string        `json:"traits,omitempty"`
-	Readonly     *bool           `json:"readonly,omitempty"`
-	Worktree     *bool           `json:"worktree,omitempty"`
-	BranchPrefix *string         `json:"branch_prefix,omitempty"`
-	BaseBranch   *string         `json:"base_branch,omitempty"`
-	DependsOn    []string        `json:"depends_on,omitempty"`
+	ID           string                  `json:"id,omitempty"`
+	ProjectID    string                  `json:"project_id"`
+	Title        string                  `json:"title"`
+	Description  string                  `json:"description,omitempty"`
+	Behavior     string                  `json:"behavior"`
+	RemoteID     string                  `json:"remote_id,omitempty"`
+	DataSourceID string                  `json:"datasource_id,omitempty"`
+	Payload      json.RawMessage         `json:"payload,omitempty"`
+	AutoStart    bool                    `json:"auto_start,omitempty"`
+	Transition   *string                 `json:"transition,omitempty"`
+	Traits       []string                `json:"traits,omitempty"`
+	Readonly     *bool                   `json:"readonly,omitempty"`
+	Worktree     *bool                   `json:"worktree,omitempty"`
+	BranchPrefix *string                 `json:"branch_prefix,omitempty"`
+	BaseBranch   *string                 `json:"base_branch,omitempty"`
+	DependsOn    []string                `json:"depends_on,omitempty"`
+	StartGate    *orchestrator.StartGate `json:"start_gate,omitempty"`
 }
 
 func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -171,4 +173,23 @@ func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type DuplicateTaskRequest struct {
+	AutoStart bool `json:"auto_start"`
+}
+
+func (h *TaskHandler) Duplicate(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req DuplicateTaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	task, err := h.Service.DuplicateTask(id, req.AutoStart)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, task)
 }

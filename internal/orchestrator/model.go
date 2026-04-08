@@ -18,6 +18,11 @@ const (
 	TaskStatusAborted            TaskStatus = "aborted"
 )
 
+type StartGate struct {
+	Type   string            `json:"type"`
+	Params map[string]string `json:"params"`
+}
+
 type Task struct {
 	ID           string          `json:"id"`
 	ProjectID    string          `json:"project_id"`
@@ -36,6 +41,7 @@ type Task struct {
 	Payload      json.RawMessage `json:"payload"`
 	AutoStart    bool            `json:"auto_start,omitempty"`
 	DependsOn    []string        `json:"depends_on,omitempty"`
+	StartGate    *StartGate      `json:"start_gate,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
 }

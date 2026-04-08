@@ -240,6 +240,7 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		Payload:      payload,
 		AutoStart:    req.AutoStart,
 		DependsOn:    req.DependsOn,
+		StartGate:    req.StartGate,
 	}
 	if err := s.Tasks.CreateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
@@ -363,6 +364,20 @@ func computeAvailableActions(task *orchestrator.Task) []string {
 	return sm.AvailableActions(task.Status)
 }
 
+func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orchestrator.Task, error) {
+	source, err := s.GetTask(sourceID)
+	if err != nil {
+		return nil, err
+	}
+	return s.CreateTask(CreateTaskRequest{
+		ProjectID:   source.ProjectID,
+		Title:       source.Title,
+		Description: source.Description,
+		Behavior:    source.Behavior,
+		AutoStart:   autoStart,
+	})
+}
+
 func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 	task, err := s.GetTask(id)
 	if err != nil {
@@ -428,6 +443,30 @@ func (s *WebAppService) ListProjects() ([]*orchestrator.Project, error) {
 		}
 	}
 	return projects, nil
+}
+
+func (s *WebAppService) DuplicateTask(id string) (string, error) {
+	task, err := s.Tasks.GetTask(id)
+	if err != nil {
+		return "", &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	newTask := &orchestrator.Task{
+		ProjectID:    task.ProjectID,
+		Title:        task.Title,
+		Description:  task.Description,
+		Behavior:     task.Behavior,
+		Transition:   task.Transition,
+		Traits:       task.Traits,
+		Readonly:     task.Readonly,
+		Worktree:     task.Worktree,
+		BranchPrefix: task.BranchPrefix,
+		BaseBranch:   task.BaseBranch,
+		Payload:      task.Payload,
+	}
+	if err := s.Tasks.CreateTask(newTask); err != nil {
+		return "", &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return newTask.ID, nil
 }
 
 func (s *WebAppService) ApplyAction(taskID string, actionType string) error {
