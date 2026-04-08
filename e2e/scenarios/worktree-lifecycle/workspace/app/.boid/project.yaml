@@ -1,0 +1,11 @@
+id: worktree-lifecycle
+name: Worktree Lifecycle
+kits:
+  - github.com/novshi-tech/boid-kits/worktree-simple
+task_behaviors:
+  dev:
+    name: Dev
+    transition: one-shot
+    worktree: true
+hooks: []
+gates: []

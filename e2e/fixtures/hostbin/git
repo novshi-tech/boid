@@ -9,4 +9,49 @@ log_file="${E2E_STATE_DIR:?}/fake-git.log"
   printf -- '---\n'
 } >>"$log_file"
 
+# Parse args: skip leading -C <dir> flag pairs to find the effective subcommand
+_args=("$@")
+_i=0
+while [[ $_i -lt ${#_args[@]} ]]; do
+  case "${_args[$_i]}" in
+    -C)
+      _i=$((_i + 2))
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+_sub="${_args[$_i]:-}"
+_sub2="${_args[$((_i + 1))]:-}"
+
+if [[ "$_sub" == "worktree" && "$_sub2" == "add" ]]; then
+  # Find the worktree path: worktree add [-b <branch>] <path> [<base>]
+  _j=$((_i + 2))
+  while [[ $_j -lt ${#_args[@]} ]]; do
+    case "${_args[$_j]}" in
+      -b)
+        _j=$((_j + 2))
+        ;;
+      -*)
+        _j=$((_j + 1))
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+  _wt_path="${_args[$_j]:-}"
+  if [[ -n "$_wt_path" ]]; then
+    mkdir -p "$_wt_path"
+  fi
+elif [[ "$_sub" == "worktree" && "$_sub2" == "remove" ]]; then
+  # Last argument is the worktree path
+  _last="${_args[-1]}"
+  if [[ "${_last:0:1}" != "-" ]]; then
+    rm -rf "$_last"
+  fi
+fi
+
 exit 0
