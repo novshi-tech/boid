@@ -13,6 +13,18 @@ type capturingTaskStore struct {
 	created []*orchestrator.Task
 }
 
+// executorMetaStub provides a minimal MetaStore for boid executor tests.
+type executorMetaStub struct {
+	meta *orchestrator.ProjectMeta
+}
+
+func (s executorMetaStub) Get(_ string) (*orchestrator.ProjectMeta, bool) {
+	if s.meta == nil {
+		return nil, false
+	}
+	return s.meta, true
+}
+
 func (s *capturingTaskStore) CreateTask(task *orchestrator.Task) error {
 	task.ID = "task-1"
 	task.Status = orchestrator.TaskStatusPending
@@ -38,8 +50,13 @@ func (s *capturingTaskStore) FindTaskByRemote(remoteID, datasourceID string) (*o
 
 func TestBoidBuiltinExecutor_EnforcesWorkspaceScope(t *testing.T) {
 	store := &capturingTaskStore{}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {Transition: "one-shot"},
+		},
+	}}
 	exec := &boidBuiltinExecutor{
-		tasks: &api.TaskAppService{Tasks: store},
+		tasks: &api.TaskAppService{Tasks: store, Meta: meta},
 	}
 	ctx := sandbox.TokenContext{
 		ProjectID:         "proj-1",

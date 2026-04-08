@@ -167,12 +167,23 @@ type TaskAppService struct {
 func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
 	payload := req.Payload
 
+	var transition string
+	var traits []string
+	var readonly, worktree bool
+	var branchPrefix, baseBranch string
+
 	if s.Meta != nil {
 		if meta, ok := s.Meta.Get(req.ProjectID); ok {
 			behavior, ok := meta.TaskBehaviors[req.Behavior]
 			if !ok {
 				return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("behavior %q not found", req.Behavior)}
 			}
+			transition = behavior.Transition
+			traits = behavior.Traits
+			readonly = behavior.Readonly
+			worktree = behavior.Worktree
+			branchPrefix = behavior.BranchPrefix
+			baseBranch = behavior.BaseBranch
 			if len(behavior.DefaultPayload) > 0 {
 				merged, err := orchestrator.MergeDefaultPayload(behavior.DefaultPayload.RawMessage(), payload)
 				if err != nil {
@@ -183,11 +194,40 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		}
 	}
 
+	if req.Transition != nil {
+		transition = *req.Transition
+	}
+	if req.Traits != nil {
+		traits = req.Traits
+	}
+	if req.Readonly != nil {
+		readonly = *req.Readonly
+	}
+	if req.Worktree != nil {
+		worktree = *req.Worktree
+	}
+	if req.BranchPrefix != nil {
+		branchPrefix = *req.BranchPrefix
+	}
+	if req.BaseBranch != nil {
+		baseBranch = *req.BaseBranch
+	}
+
+	if transition == "" {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: "transition is required"}
+	}
+
 	task := &orchestrator.Task{
 		ProjectID:    req.ProjectID,
 		Title:        req.Title,
 		Description:  req.Description,
 		Behavior:     req.Behavior,
+		Transition:   transition,
+		Traits:       traits,
+		Readonly:     readonly,
+		Worktree:     worktree,
+		BranchPrefix: branchPrefix,
+		BaseBranch:   baseBranch,
 		RemoteID:     req.RemoteID,
 		DataSourceID: req.DataSourceID,
 		Payload:      payload,

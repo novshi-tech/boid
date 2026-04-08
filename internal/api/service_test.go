@@ -4,10 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
+
+func strPtr(s string) *string { return &s }
+func boolPtr(b bool) *bool    { return &b }
 
 // TestCompleteJobSuccessNotifiesWithoutTransition verifies that a successful
 // (exit 0) job completion only records the job result and notifies Lifecycle.
@@ -149,9 +153,10 @@ func TestTaskAppServiceCreateTask_ProjectNotInMeta_Skips(t *testing.T) {
 	}
 
 	task, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID: "proj-unknown",
-		Title:     "test task",
-		Behavior:  "any-behavior",
+		ProjectID:  "proj-unknown",
+		Title:      "test task",
+		Behavior:   "any-behavior",
+		Transition: strPtr("one-shot"), // meta なし時はリクエストで transition を指定
 	})
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v, want nil", err)
@@ -483,8 +488,8 @@ func TestTaskAppServiceImportTasks_SkipsDuplicate(t *testing.T) {
 	}
 
 	reqs := []CreateTaskRequest{
-		{ProjectID: "proj-1", Title: "Task 1", Behavior: "any", RemoteID: "PROJ-1", DataSourceID: "jira"},
-		{ProjectID: "proj-1", Title: "Task 2", Behavior: "any", RemoteID: "PROJ-2", DataSourceID: "jira"},
+		{ProjectID: "proj-1", Title: "Task 1", Behavior: "any", RemoteID: "PROJ-1", DataSourceID: "jira", Transition: strPtr("one-shot")},
+		{ProjectID: "proj-1", Title: "Task 2", Behavior: "any", RemoteID: "PROJ-2", DataSourceID: "jira", Transition: strPtr("one-shot")},
 	}
 	result, err := svc.ImportTasks(reqs)
 	if err != nil {
@@ -564,6 +569,165 @@ func TestTaskAppServiceImportTasks_EmptyInput(t *testing.T) {
 	}
 	if result.Created != 0 || result.Skipped != 0 || len(result.Errors) != 0 {
 		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestCreateTask_BehaviorFieldsExpandedToTask(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {
+				Transition:   "one-shot",
+				Traits:       []string{"artifact", "verification"},
+				Readonly:     false,
+				Worktree:     true,
+				BranchPrefix: "feature/",
+				BaseBranch:   "main",
+			},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "test task",
+		Behavior:  "dev",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if task.Transition != "one-shot" {
+		t.Errorf("Transition = %q, want %q", task.Transition, "one-shot")
+	}
+	if !reflect.DeepEqual(task.Traits, []string{"artifact", "verification"}) {
+		t.Errorf("Traits = %v, want %v", task.Traits, []string{"artifact", "verification"})
+	}
+	if task.Worktree != true {
+		t.Errorf("Worktree = %v, want true", task.Worktree)
+	}
+	if task.BranchPrefix != "feature/" {
+		t.Errorf("BranchPrefix = %q, want %q", task.BranchPrefix, "feature/")
+	}
+	if task.BaseBranch != "main" {
+		t.Errorf("BaseBranch = %q, want %q", task.BaseBranch, "main")
+	}
+}
+
+func TestCreateTask_RequestOverridesTemplateFields(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {
+				Transition:   "one-shot",
+				Traits:       []string{"artifact"},
+				Readonly:     false,
+				Worktree:     true,
+				BranchPrefix: "feature/",
+				BaseBranch:   "main",
+			},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID:    "proj-1",
+		Title:        "test task",
+		Behavior:     "dev",
+		Transition:   strPtr("custom"),
+		Traits:       []string{"tasks"},
+		Readonly:     boolPtr(true),
+		Worktree:     boolPtr(false),
+		BranchPrefix: strPtr("task/"),
+		BaseBranch:   strPtr("develop"),
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if task.Transition != "custom" {
+		t.Errorf("Transition = %q, want %q", task.Transition, "custom")
+	}
+	if !reflect.DeepEqual(task.Traits, []string{"tasks"}) {
+		t.Errorf("Traits = %v, want %v", task.Traits, []string{"tasks"})
+	}
+	if task.Readonly != true {
+		t.Errorf("Readonly = %v, want true", task.Readonly)
+	}
+	if task.Worktree != false {
+		t.Errorf("Worktree = %v, want false", task.Worktree)
+	}
+	if task.BranchPrefix != "task/" {
+		t.Errorf("BranchPrefix = %q, want %q", task.BranchPrefix, "task/")
+	}
+	if task.BaseBranch != "develop" {
+		t.Errorf("BaseBranch = %q, want %q", task.BaseBranch, "develop")
+	}
+}
+
+func TestCreateTask_NoOverrideUsesTemplateValue(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {
+				Transition: "one-shot",
+				Traits:     []string{"artifact"},
+				Worktree:   true,
+			},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "test task",
+		Behavior:  "dev",
+		// no override fields
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if task.Transition != "one-shot" {
+		t.Errorf("Transition = %q, want template value %q", task.Transition, "one-shot")
+	}
+	if !reflect.DeepEqual(task.Traits, []string{"artifact"}) {
+		t.Errorf("Traits = %v, want template value %v", task.Traits, []string{"artifact"})
+	}
+	if task.Worktree != true {
+		t.Errorf("Worktree = %v, want template value true", task.Worktree)
+	}
+}
+
+func TestCreateTask_TransitionMissing_Error(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {Transition: ""}, // no transition in behavior
+		},
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "test task",
+		Behavior:  "dev",
+		// no Transition override
+	})
+	if err == nil {
+		t.Fatal("CreateTask() error = nil, want error for missing transition")
+	}
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("error type = %T, want *StatusError", err)
+	}
+	if se.Code != http.StatusBadRequest {
+		t.Fatalf("error code = %d, want %d", se.Code, http.StatusBadRequest)
 	}
 }
 
