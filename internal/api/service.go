@@ -232,6 +232,7 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		DataSourceID: req.DataSourceID,
 		Payload:      payload,
 		AutoStart:    req.AutoStart,
+		StartGate:    req.StartGate,
 	}
 	if err := s.Tasks.CreateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
@@ -356,38 +357,17 @@ func computeAvailableActions(task *orchestrator.Task) []string {
 }
 
 func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orchestrator.Task, error) {
-	source, err := s.Tasks.GetTask(sourceID)
+	source, err := s.GetTask(sourceID)
 	if err != nil {
-		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+		return nil, err
 	}
-
-	newTask := &orchestrator.Task{
-		ProjectID:    source.ProjectID,
-		Title:        source.Title,
-		Description:  source.Description,
-		Behavior:     source.Behavior,
-		Transition:   source.Transition,
-		Traits:       source.Traits,
-		Readonly:     source.Readonly,
-		Worktree:     source.Worktree,
-		BranchPrefix: source.BranchPrefix,
-		BaseBranch:   source.BaseBranch,
-		Payload:      source.Payload,
-	}
-	if err := s.Tasks.CreateTask(newTask); err != nil {
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
-	}
-
-	if autoStart && s.Workflow != nil {
-		result, err := s.Workflow.ApplyAction(context.Background(), newTask.ID, ApplyActionRequest{Type: "start"})
-		if err != nil {
-			slog.Error("auto_start: failed to apply start action", "task_id", newTask.ID, "error", err)
-		} else {
-			newTask = result.Task
-		}
-	}
-
-	return newTask, nil
+	return s.CreateTask(CreateTaskRequest{
+		ProjectID:   source.ProjectID,
+		Title:       source.Title,
+		Description: source.Description,
+		Behavior:    source.Behavior,
+		AutoStart:   autoStart,
+	})
 }
 
 func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
@@ -455,6 +435,30 @@ func (s *WebAppService) ListProjects() ([]*orchestrator.Project, error) {
 		}
 	}
 	return projects, nil
+}
+
+func (s *WebAppService) DuplicateTask(id string) (string, error) {
+	task, err := s.Tasks.GetTask(id)
+	if err != nil {
+		return "", &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	newTask := &orchestrator.Task{
+		ProjectID:    task.ProjectID,
+		Title:        task.Title,
+		Description:  task.Description,
+		Behavior:     task.Behavior,
+		Transition:   task.Transition,
+		Traits:       task.Traits,
+		Readonly:     task.Readonly,
+		Worktree:     task.Worktree,
+		BranchPrefix: task.BranchPrefix,
+		BaseBranch:   task.BaseBranch,
+		Payload:      task.Payload,
+	}
+	if err := s.Tasks.CreateTask(newTask); err != nil {
+		return "", &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return newTask.ID, nil
 }
 
 func (s *WebAppService) ApplyAction(taskID string, actionType string) error {

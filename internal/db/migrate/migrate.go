@@ -60,6 +60,13 @@ func Apply(conn *sql.DB) error {
 				return columnExists(tx, "tasks", "transition")
 			},
 		},
+		{
+			version: "0008_add_tasks_start_gate",
+			path:    "migrations/0008_add_tasks_start_gate.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnExists(tx, "tasks", "start_gate")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {
