@@ -124,6 +124,10 @@ func (s *TaskDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.isError = false
 		}
 
+	case screenResumedMsg:
+		s.loading = true
+		return s, fetchTaskDetailCmd(s.shared.Client, s.taskID)
+
 	case tea.KeyMsg:
 		return s, s.handleKey(msg)
 	}
@@ -163,6 +167,14 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		job := s.detail.Jobs[s.cursor]
 		return openJobCmd(job.ID, s.shared.Panes[job.ID])
+
+	case "e":
+		if s.detail == nil || s.detail.Task == nil {
+			break
+		}
+		return func() tea.Msg {
+			return pushScreenMsg{screen: NewTaskEditScreen(s.shared.Client, s.detail.Task)}
+		}
 
 	case "esc", "backspace":
 		return func() tea.Msg { return popScreenMsg{} }
@@ -333,7 +345,7 @@ func (s *TaskDetailScreen) ShortHelp() string {
 		}
 	}
 	parts = append(parts, "d: delete")
-	fixed := "j/k: move  enter: open job  r: refresh  esc: back"
+	fixed := "e: edit  j/k: move  enter: open job  r: refresh  esc: back"
 	return strings.Join(parts, "  ") + "  " + fixed
 }
 
