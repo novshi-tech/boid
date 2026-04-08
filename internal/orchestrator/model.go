@@ -35,6 +35,7 @@ type Task struct {
 	BaseBranch   string          `json:"base_branch,omitempty"`
 	Payload      json.RawMessage `json:"payload"`
 	AutoStart    bool            `json:"auto_start,omitempty"`
+	DependsOn    []string        `json:"depends_on,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
 }

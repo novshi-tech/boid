@@ -34,6 +34,7 @@ type UpdateTaskRequest struct {
 }
 
 type CreateTaskRequest struct {
+	ID           string          `json:"id,omitempty"`
 	ProjectID    string          `json:"project_id"`
 	Title        string          `json:"title"`
 	Description  string          `json:"description,omitempty"`
@@ -48,6 +49,7 @@ type CreateTaskRequest struct {
 	Worktree     *bool           `json:"worktree,omitempty"`
 	BranchPrefix *string         `json:"branch_prefix,omitempty"`
 	BaseBranch   *string         `json:"base_branch,omitempty"`
+	DependsOn    []string        `json:"depends_on,omitempty"`
 }
 
 func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {

@@ -42,7 +42,33 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
 	}
+	for _, depID := range t.DependsOn {
+		if _, err := dbtx.Exec(
+			`INSERT INTO task_dependencies (task_id, depends_on) VALUES (?, ?)`,
+			t.ID, depID,
+		); err != nil {
+			return fmt.Errorf("insert task dependency %s: %w", depID, err)
+		}
+	}
 	return nil
+}
+
+func loadTaskDependencies(dbtx db.DBTX, t *Task) error {
+	rows, err := dbtx.Query(
+		`SELECT depends_on FROM task_dependencies WHERE task_id = ? ORDER BY depends_on`, t.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("load task dependencies: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var dep string
+		if err := rows.Scan(&dep); err != nil {
+			return fmt.Errorf("scan task dependency: %w", err)
+		}
+		t.DependsOn = append(t.DependsOn, dep)
+	}
+	return rows.Err()
 }
 
 func GetTask(dbtx db.DBTX, id string) (*Task, error) {
@@ -55,9 +81,15 @@ func GetTask(dbtx db.DBTX, id string) (*Task, error) {
 		row = dbtx.QueryRow(
 			`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, transition, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, created_at, updated_at FROM tasks WHERE id LIKE ?`, id+"%",
 		)
-		return scanTask(row)
+		t, err = scanTask(row)
 	}
-	return t, err
+	if err != nil {
+		return nil, err
+	}
+	if err := loadTaskDependencies(dbtx, t); err != nil {
+		return nil, err
+	}
+	return t, nil
 }
 
 func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
@@ -93,7 +125,15 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 		}
 		tasks = append(tasks, t)
 	}
-	return tasks, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, t := range tasks {
+		if err := loadTaskDependencies(dbtx, t); err != nil {
+			return nil, err
+		}
+	}
+	return tasks, nil
 }
 
 func UpdateTask(dbtx db.DBTX, t *Task) error {
@@ -220,6 +260,14 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 		return result, nil
 	}
 
+	depArgs := append(condArgs, condArgs...)
+	if _, err := dbtx.Exec(
+		`DELETE FROM task_dependencies WHERE task_id IN (`+subquery+`) OR depends_on IN (`+subquery+`)`,
+		depArgs...,
+	); err != nil {
+		return nil, fmt.Errorf("delete task_dependencies: %w", err)
+	}
+
 	for _, table := range []string{"actions", "jobs", "worktrees"} {
 		res, err := dbtx.Exec(
 			`DELETE FROM `+table+` WHERE task_id IN (`+subquery+`)`,
@@ -267,6 +315,11 @@ func FindTaskByRemote(dbtx db.DBTX, remoteID, datasourceID string) (*Task, error
 func DeleteTask(dbtx db.DBTX, id string) error {
 	if _, err := GetTask(dbtx, id); err != nil {
 		return err
+	}
+	if _, err := dbtx.Exec(
+		`DELETE FROM task_dependencies WHERE task_id = ? OR depends_on = ?`, id, id,
+	); err != nil {
+		return fmt.Errorf("delete task_dependencies: %w", err)
 	}
 	for _, table := range []string{"actions", "jobs", "worktrees"} {
 		if _, err := dbtx.Exec(`DELETE FROM `+table+` WHERE task_id = ?`, id); err != nil {

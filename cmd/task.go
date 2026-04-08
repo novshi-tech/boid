@@ -107,12 +107,14 @@ func runTaskList(cmd *cobra.Command, args []string) error {
 
 // taskCreateSpec is the YAML schema for task create input.
 type taskCreateSpec struct {
+	ID          string         `yaml:"id,omitempty"`
 	ProjectID   string         `yaml:"project_id"`
 	Title       string         `yaml:"title"`
 	Description string         `yaml:"description,omitempty"`
 	Behavior    string         `yaml:"behavior"`
 	AutoStart   bool           `yaml:"auto_start,omitempty"`
 	Payload     map[string]any `yaml:"payload,omitempty"`
+	DependsOn   []string       `yaml:"depends_on,omitempty"`
 }
 
 func runTaskCreate(cmd *cobra.Command, args []string) error {
@@ -149,6 +151,9 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 		"title":      spec.Title,
 		"behavior":   spec.Behavior,
 	}
+	if spec.ID != "" {
+		req["id"] = spec.ID
+	}
 	if spec.Description != "" {
 		req["description"] = spec.Description
 	}
@@ -161,6 +166,9 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("encode payload: %w", err)
 		}
 		req["payload"] = json.RawMessage(payloadJSON)
+	}
+	if len(spec.DependsOn) > 0 {
+		req["depends_on"] = spec.DependsOn
 	}
 
 	c := client.NewUnixClient(client.DefaultSocketPath())
