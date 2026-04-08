@@ -86,7 +86,7 @@ type TaskLookup interface {
 }
 
 type WorktreePreparer interface {
-	Prepare(task *Task, proj *Project, behavior *TaskBehavior) (string, error)
+	Prepare(task *Task, proj *Project) (string, error)
 }
 
 type DispatchPlanner struct {
@@ -121,12 +121,11 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 	projectHooksDir := filepath.Join(proj.WorkDir, ".boid", "hooks")
 	hookFiles := collectHookFiles(projectHooksDir, meta.KitHooksDirs)
 
-	behavior, _ := meta.TaskBehaviors[task.Behavior]
 	workspaceDirs, err := p.collectWorkspaceDirs(proj.WorkspaceID, event.ProjectID)
 	if err != nil {
 		return nil, err
 	}
-	worktreeDir, err := p.prepareWorktree(task, proj, &behavior)
+	worktreeDir, err := p.prepareWorktree(task, proj)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +145,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 		model = myInstructions[0].Model
 	}
 
-	readonly := IsReadonly(&behavior, task.Status)
+	readonly := IsReadonly(task)
 	taskYAML := buildTaskYAML(task)
 	environmentYAML := buildEnvironmentYAML(readonly, worktreeDir != "", p.proxyPort() > 0, workspaceDirs, meta.BuiltinCommands)
 
@@ -289,11 +288,11 @@ func (p *DispatchPlanner) collectWorkspaceDirs(workspaceID, selfID string) (map[
 	return dirs, nil
 }
 
-func (p *DispatchPlanner) prepareWorktree(task *Task, proj *Project, behavior *TaskBehavior) (string, error) {
-	if p.Worktrees == nil || behavior == nil || !behavior.Worktree {
+func (p *DispatchPlanner) prepareWorktree(task *Task, proj *Project) (string, error) {
+	if p.Worktrees == nil || !task.Worktree {
 		return "", nil
 	}
-	worktreeDir, err := p.Worktrees.Prepare(task, proj, behavior)
+	worktreeDir, err := p.Worktrees.Prepare(task, proj)
 	if err != nil {
 		return "", fmt.Errorf("resolve worktree: %w", err)
 	}

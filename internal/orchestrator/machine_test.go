@@ -6,21 +6,13 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-func TestRegistry_Resolve_KnownBehavior(t *testing.T) {
+func TestRegistry_Resolve_KnownTransition(t *testing.T) {
 	reg := orchestrator.NewDefaultRegistry()
-	meta := &projectspec.ProjectMeta{
-		TaskBehaviors: map[string]projectspec.TaskBehavior{
-			"dev": {
-				Name:       "development",
-				Transition: "one-shot",
-			},
-		},
-	}
+	task := &orchestrator.Task{Transition: "one-shot"}
 
-	sm, err := reg.Resolve(meta, "dev")
+	sm, err := reg.Resolve(task)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -29,33 +21,24 @@ func TestRegistry_Resolve_KnownBehavior(t *testing.T) {
 	}
 }
 
-func TestRegistry_Resolve_UnknownBehavior(t *testing.T) {
+func TestRegistry_Resolve_UnknownTransition(t *testing.T) {
 	reg := orchestrator.NewDefaultRegistry()
-	meta := &projectspec.ProjectMeta{
-		TaskBehaviors: map[string]projectspec.TaskBehavior{},
-	}
+	task := &orchestrator.Task{Transition: "unknown"}
 
-	_, err := reg.Resolve(meta, "unknown")
+	_, err := reg.Resolve(task)
 	if err == nil {
-		t.Fatal("expected error for unknown behavior")
+		t.Fatal("expected error for unknown transition model")
 	}
 	if !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("expected not found error, got: %v", err)
 	}
 }
 
-func TestRegistry_Resolve_UnknownTransition(t *testing.T) {
+func TestRegistry_Resolve_NonexistentTransitionModel(t *testing.T) {
 	reg := orchestrator.NewDefaultRegistry()
-	meta := &projectspec.ProjectMeta{
-		TaskBehaviors: map[string]projectspec.TaskBehavior{
-			"custom": {
-				Name:       "custom",
-				Transition: "nonexistent-machine",
-			},
-		},
-	}
+	task := &orchestrator.Task{Transition: "nonexistent-machine"}
 
-	_, err := reg.Resolve(meta, "custom")
+	_, err := reg.Resolve(task)
 	if err == nil {
 		t.Fatal("expected error for unknown transition model")
 	}

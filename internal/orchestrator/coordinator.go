@@ -30,10 +30,9 @@ func (d *Coordinator) DispatchAndAdvance(
 	ctx context.Context,
 	task *Task,
 	meta *ProjectMeta,
-	behavior *TaskBehavior,
 	sm *StateMachine,
 ) (*DispatchResult, error) {
-	readonly := IsReadonly(behavior, task.Status)
+	readonly := IsReadonly(task)
 	payload := task.Payload
 	var allResults []HandlerResult
 	exclusiveWriters := map[string]string{} // trait key → first writer ID
@@ -41,7 +40,7 @@ func (d *Coordinator) DispatchAndAdvance(
 	// 1. Evaluate and dispatch hooks
 	matchedHooks := d.Evaluator.Evaluate(task, meta.Hooks)
 	if len(matchedHooks) > 0 {
-		hookResults, err := d.dispatchHooksLocked(ctx, task, matchedHooks, readonly, behavior)
+		hookResults, err := d.dispatchHooksLocked(ctx, task, matchedHooks, readonly)
 		if err != nil {
 			return nil, fmt.Errorf("hook dispatch: %w", err)
 		}
@@ -112,9 +111,8 @@ func (d *Coordinator) dispatchHooksLocked(
 	task *Task,
 	hooks []Hook,
 	readonly bool,
-	behavior *TaskBehavior,
 ) ([]HandlerResult, error) {
-	if d.Locker != nil && !readonly && !behavior.Worktree {
+	if d.Locker != nil && !readonly && !task.Worktree {
 		release, err := d.Locker.Acquire(ctx, task.ProjectID)
 		if err != nil {
 			return nil, fmt.Errorf("worktree lock: %w", err)
