@@ -3,12 +3,15 @@ package server_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/server"
 	"github.com/novshi-tech/boid/testutil"
@@ -130,6 +133,33 @@ func TestServer_TaskDetailIncludesActionsAndJobs(t *testing.T) {
 	}
 }
 
+// noopJobRuntime is a JobRuntime that does not execute anything, allowing
+// tests to control job completion manually via the job done API.
+type noopJobRuntime struct {
+	counter atomic.Int64
+}
+
+func (r *noopJobRuntime) Start(_ context.Context, _ dispatcher.RuntimeStartSpec) (*dispatcher.RuntimeHandle, error) {
+	id := fmt.Sprintf("noop-runtime-%d", r.counter.Add(1))
+	return &dispatcher.RuntimeHandle{ID: id}, nil
+}
+
+func (r *noopJobRuntime) Attach(_ context.Context, _ string, _ dispatcher.RuntimeAttachRequest) error {
+	return dispatcher.ErrRuntimeUnsupported
+}
+
+func (r *noopJobRuntime) Resize(_ context.Context, _ string, _ dispatcher.TerminalSize) error {
+	return dispatcher.ErrRuntimeUnsupported
+}
+
+func (r *noopJobRuntime) Wait(_ context.Context, _ string) (dispatcher.RuntimeExit, error) {
+	return dispatcher.RuntimeExit{}, dispatcher.ErrRuntimeUnsupported
+}
+
+func (r *noopJobRuntime) Stop(_ context.Context, _ string) error {
+	return nil
+}
+
 func newSmokeServer(t *testing.T) *testutil.TestServer {
 	t.Helper()
 
@@ -141,6 +171,7 @@ func newSmokeServer(t *testing.T) *testutil.TestServer {
 		DBPath:     dbPath,
 		SocketPath: sockPath,
 		HTTPAddr:   "127.0.0.1:0",
+		JobRuntime: &noopJobRuntime{},
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
