@@ -845,6 +845,9 @@ type stubTaskStore struct {
 }
 
 func (s *stubTaskStore) CreateTask(task *orchestrator.Task) error {
+	if task.ID == "" {
+		task.ID = "stub-task-id"
+	}
 	s.createdTask = task
 	return nil
 }
