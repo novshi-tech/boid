@@ -3,7 +3,9 @@ package api
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -24,6 +26,7 @@ func (h *TaskHandler) Routes() chi.Router {
 	r.Get("/{id}", h.Get)
 	r.Patch("/{id}", h.Patch)
 	r.Delete("/{id}", h.Delete)
+	r.Post("/{id}/duplicate", h.Duplicate)
 	return r
 }
 
@@ -169,4 +172,23 @@ func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type DuplicateRequest struct {
+	AutoStart bool `json:"auto_start,omitempty"`
+}
+
+func (h *TaskHandler) Duplicate(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req DuplicateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	task, err := h.Service.DuplicateTask(id, req.AutoStart)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, task)
 }

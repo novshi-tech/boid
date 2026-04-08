@@ -841,9 +841,13 @@ type stubTaskStore struct {
 	updateCalls int
 	deleted     bool
 	remoteTasks map[string]*orchestrator.Task // "remoteID:datasourceID" → task
+	createdTask *orchestrator.Task            // captures the last created task
 }
 
-func (s *stubTaskStore) CreateTask(task *orchestrator.Task) error { return nil }
+func (s *stubTaskStore) CreateTask(task *orchestrator.Task) error {
+	s.createdTask = task
+	return nil
+}
 func (s *stubTaskStore) GetTask(id string) (*orchestrator.Task, error) {
 	if s.err != nil {
 		return nil, s.err
@@ -980,4 +984,169 @@ func (l *stubLifecycle) UnregisterJob(jobID string) {
 
 func (l *stubLifecycle) CleanupTaskWindow(taskID string) {
 	l.cleanupTaskID = taskID
+}
+
+func TestDuplicateTask_CopiesFields(t *testing.T) {
+	source := &orchestrator.Task{
+		ID:           "src-1",
+		ProjectID:    "proj-1",
+		Title:        "Original Task",
+		Description:  "task description",
+		Behavior:     "dev",
+		Status:       orchestrator.TaskStatusAborted,
+		Payload:      json.RawMessage(`{"old":"data"}`),
+		RemoteID:     "PROJ-1",
+		DataSourceID: "jira",
+	}
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {Transition: "one-shot"},
+		},
+	}
+	store := &stubTaskStore{task: source}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.DuplicateTask("src-1", false)
+	if err != nil {
+		t.Fatalf("DuplicateTask() error = %v", err)
+	}
+	if task.ProjectID != "proj-1" {
+		t.Errorf("ProjectID = %q, want %q", task.ProjectID, "proj-1")
+	}
+	if task.Title != "Original Task" {
+		t.Errorf("Title = %q, want %q", task.Title, "Original Task")
+	}
+	if task.Description != "task description" {
+		t.Errorf("Description = %q, want %q", task.Description, "task description")
+	}
+	if task.Behavior != "dev" {
+		t.Errorf("Behavior = %q, want %q", task.Behavior, "dev")
+	}
+	if task.RemoteID != "" {
+		t.Errorf("RemoteID = %q, want empty", task.RemoteID)
+	}
+	if task.DataSourceID != "" {
+		t.Errorf("DataSourceID = %q, want empty", task.DataSourceID)
+	}
+}
+
+func TestDuplicateTask_PayloadFromDefaultPayload(t *testing.T) {
+	source := &orchestrator.Task{
+		ID:        "src-2",
+		ProjectID: "proj-1",
+		Title:     "Task",
+		Behavior:  "dev",
+		Status:    orchestrator.TaskStatusDone,
+		Payload:   json.RawMessage(`{"old":"data"}`),
+	}
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {
+				Transition:     "one-shot",
+				DefaultPayload: orchestrator.RawPayload(`{"instructions":{"main":{"type":"execution","consumer":"claude-code","message":"do stuff"}}}`),
+			},
+		},
+	}
+	store := &stubTaskStore{task: source}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.DuplicateTask("src-2", false)
+	if err != nil {
+		t.Fatalf("DuplicateTask() error = %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(task.Payload, &m); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if _, ok := m["instructions"]; !ok {
+		t.Error("instructions key missing: payload should come from default_payload")
+	}
+	if _, ok := m["old"]; ok {
+		t.Error("old key present: source task payload should not be copied")
+	}
+}
+
+func TestDuplicateTask_AutoStart(t *testing.T) {
+	source := &orchestrator.Task{
+		ID:        "src-3",
+		ProjectID: "proj-1",
+		Title:     "Task",
+		Behavior:  "dev",
+		Status:    orchestrator.TaskStatusAborted,
+	}
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {Transition: "one-shot"},
+		},
+	}
+	workflow := &stubWorkflowService{}
+	store := &stubTaskStore{task: source}
+	svc := &TaskAppService{
+		Tasks:    store,
+		Meta:     stubMetaStore{meta: meta},
+		Workflow: workflow,
+	}
+
+	_, err := svc.DuplicateTask("src-3", true)
+	if err != nil {
+		t.Fatalf("DuplicateTask() error = %v", err)
+	}
+	if workflow.appliedType != "start" {
+		t.Errorf("workflow action = %q, want %q", workflow.appliedType, "start")
+	}
+}
+
+func TestDuplicateTask_AnySourceStatus(t *testing.T) {
+	statuses := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusPending,
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusDone,
+		orchestrator.TaskStatusAborted,
+	}
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {Transition: "one-shot"},
+		},
+	}
+
+	for _, status := range statuses {
+		t.Run(string(status), func(t *testing.T) {
+			source := &orchestrator.Task{
+				ID:        "src-1",
+				ProjectID: "proj-1",
+				Title:     "Task",
+				Behavior:  "dev",
+				Status:    status,
+			}
+			store := &stubTaskStore{task: source}
+			svc := &TaskAppService{
+				Tasks: store,
+				Meta:  stubMetaStore{meta: meta},
+			}
+			_, err := svc.DuplicateTask("src-1", false)
+			if err != nil {
+				t.Fatalf("DuplicateTask() from status %s: error = %v", status, err)
+			}
+		})
+	}
+}
+
+func TestDuplicateTask_NotFound(t *testing.T) {
+	store := &stubTaskStore{err: fmt.Errorf("task not found")}
+	svc := &TaskAppService{Tasks: store}
+
+	_, err := svc.DuplicateTask("nonexistent", false)
+	if err == nil {
+		t.Fatal("DuplicateTask() error = nil, want error")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusNotFound {
+		t.Fatalf("expected StatusNotFound, got %v", err)
+	}
 }
