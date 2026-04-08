@@ -2,6 +2,10 @@ package orchestrator
 
 import (
 	"database/sql"
+	"log/slog"
+	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/db"
@@ -88,14 +92,39 @@ func (r *ProjectRepository) DeleteProject(id string) error {
 
 // TaskGCStore handles GC of tasks and their related data.
 type TaskGCStore struct {
-	conn *sql.DB
+	conn              *sql.DB
+	resolveProjectDir func(projectID string) (string, error)
+	gitBin            string
 }
 
 func NewTaskGCStore(conn *sql.DB) *TaskGCStore {
 	return &TaskGCStore{conn: conn}
 }
 
+// NewTaskGCStoreWithWorktree creates a TaskGCStore that also cleans up
+// worktree directories on disk before deleting DB records.
+// resolveProjectDir returns the project's work directory given its ID.
+// gitBin is the path to the git binary; empty string defaults to "git".
+func NewTaskGCStoreWithWorktree(conn *sql.DB, resolveProjectDir func(projectID string) (string, error), gitBin string) *TaskGCStore {
+	return &TaskGCStore{
+		conn:              conn,
+		resolveProjectDir: resolveProjectDir,
+		gitBin:            gitBin,
+	}
+}
+
+func (s *TaskGCStore) gcGitBin() string {
+	if s.gitBin != "" {
+		return s.gitBin
+	}
+	return "git"
+}
+
 func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool) (*GCResult, error) {
+	if s.resolveProjectDir != nil && !dryRun {
+		s.cleanWorktrees(olderThan)
+	}
+
 	var result *GCResult
 	err := db.InTxDB(s.conn, func(dbtx db.DBTX) error {
 		r, err := GCTasks(dbtx, []string{"done", "aborted"}, olderThan, dryRun)
@@ -103,4 +132,75 @@ func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool) (*GCResult, error
 		return err
 	})
 	return result, err
+}
+
+type gcWorktreeRecord struct {
+	taskID    string
+	projectID string
+	path      string
+	branch    string
+	status    string
+}
+
+// cleanWorktrees performs disk-level cleanup of worktrees for GC target tasks.
+// Errors are logged as warnings; failures do not block subsequent DB deletion.
+func (s *TaskGCStore) cleanWorktrees(olderThan time.Duration) {
+	query := `
+		SELECT w.task_id, w.project_id, w.path, w.branch, t.status
+		FROM worktrees w
+		JOIN tasks t ON t.id = w.task_id
+		WHERE w.cleaned_at IS NULL
+		  AND t.status IN ('done', 'aborted')`
+	var args []any
+	if olderThan > 0 {
+		query += ` AND t.updated_at < ?`
+		args = append(args, time.Now().UTC().Add(-olderThan))
+	}
+
+	rows, err := s.conn.Query(query, args...)
+	if err != nil {
+		slog.Warn("gc worktrees: query failed", "error", err)
+		return
+	}
+	defer rows.Close()
+
+	var wts []gcWorktreeRecord
+	for rows.Next() {
+		var r gcWorktreeRecord
+		if err := rows.Scan(&r.taskID, &r.projectID, &r.path, &r.branch, &r.status); err != nil {
+			slog.Warn("gc worktrees: scan failed", "error", err)
+			return
+		}
+		wts = append(wts, r)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("gc worktrees: rows error", "error", err)
+		return
+	}
+
+	for _, w := range wts {
+		projectDir, err := s.resolveProjectDir(w.projectID)
+		if err != nil {
+			slog.Warn("gc worktrees: resolve project dir failed", "task_id", w.taskID, "project_id", w.projectID, "error", err)
+			continue
+		}
+
+		cmd := exec.Command(s.gcGitBin(), "-C", projectDir, "worktree", "remove", "--force", w.path)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			slog.Warn("gc worktrees: git worktree remove failed, attempting manual cleanup",
+				"task_id", w.taskID, "error", err, "output", strings.TrimSpace(string(out)))
+			os.RemoveAll(w.path)
+			exec.Command(s.gcGitBin(), "-C", projectDir, "worktree", "prune").Run()
+		}
+
+		if w.status == "aborted" {
+			cmd = exec.Command(s.gcGitBin(), "-C", projectDir, "branch", "-D", w.branch)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				slog.Warn("gc worktrees: git branch -D failed",
+					"task_id", w.taskID, "branch", w.branch, "error", err, "output", strings.TrimSpace(string(out)))
+			}
+		}
+
+		slog.Info("gc worktree removed", "task_id", w.taskID, "path", w.path)
+	}
 }

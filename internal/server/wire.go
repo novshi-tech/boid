@@ -193,7 +193,18 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	taskHandler := &api.TaskHandler{Service: runtime.taskSvc}
 	r.Mount("/api/tasks", taskHandler.Routes())
 
-	gcHandler := &api.GCHandler{Service: &api.GCAppService{Store: orchestrator.NewTaskGCStore(srv.db)}}
+	gcStore := orchestrator.NewTaskGCStoreWithWorktree(
+		srv.db,
+		func(projectID string) (string, error) {
+			proj, err := orchestrator.GetProject(srv.db, projectID)
+			if err != nil {
+				return "", err
+			}
+			return proj.WorkDir, nil
+		},
+		"",
+	)
+	gcHandler := &api.GCHandler{Service: &api.GCAppService{Store: gcStore}}
 	r.Mount("/api/gc", gcHandler.Routes())
 
 	actionHandler := &api.ActionHandler{Service: runtime.workflow}

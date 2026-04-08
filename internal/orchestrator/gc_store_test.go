@@ -1,12 +1,43 @@
 package orchestrator_test
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/testutil"
 )
+
+const gcTestGitBin = "/usr/bin/git"
+
+// initGitRepoForGC creates a temporary git repository with an initial commit.
+func initGitRepoForGC(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command(gcTestGitBin, args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	f := filepath.Join(dir, "README.md")
+	os.WriteFile(f, []byte("# test"), 0o644)
+	exec.Command(gcTestGitBin, "-C", dir, "add", ".").Run()
+	cmd := exec.Command(gcTestGitBin, "-C", dir, "commit", "-m", "initial")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+	return dir
+}
 
 func TestGCTasks_DeletesDoneAndAborted(t *testing.T) {
 	d := testutil.NewTestDB(t)
@@ -186,5 +217,107 @@ func TestGCTasks_NothingToDelete(t *testing.T) {
 	}
 	if result.Tasks != 0 {
 		t.Fatalf("expected 0 deleted tasks, got %d", result.Tasks)
+	}
+}
+
+func TestGCTasks_WorktreeDiskCleanup(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	repo := initGitRepoForGC(t)
+	wtRoot := t.TempDir()
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: repo}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	doneTask := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Title:     "Done Task",
+		Behavior:  "dev",
+		Status:    orchestrator.TaskStatusDone,
+	}
+	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: d.Conn, GitBin: gcTestGitBin}
+	w, err := mgr.Create(repo, "proj-1", doneTask.ID, "boid/", "HEAD")
+	if err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+
+	// worktree ディレクトリが存在することを確認
+	if _, err := os.Stat(w.Path); err != nil {
+		t.Fatalf("worktree dir should exist before GC: %v", err)
+	}
+
+	resolveProjectDir := func(projectID string) (string, error) {
+		proj, err := orchestrator.GetProject(d.Conn, projectID)
+		if err != nil {
+			return "", err
+		}
+		return proj.WorkDir, nil
+	}
+	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, resolveProjectDir, gcTestGitBin)
+
+	result, err := gcStore.GC(0, false)
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if result.Tasks != 1 {
+		t.Fatalf("expected 1 deleted task, got %d", result.Tasks)
+	}
+
+	// worktree ディレクトリが削除されていることを確認
+	if _, err := os.Stat(w.Path); !os.IsNotExist(err) {
+		t.Errorf("worktree dir should be removed after GC, err: %v", err)
+	}
+}
+
+func TestGCTasks_WorktreeDiskCleanup_DryRun(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	repo := initGitRepoForGC(t)
+	wtRoot := t.TempDir()
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: repo}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	doneTask := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Title:     "Done Task",
+		Behavior:  "dev",
+		Status:    orchestrator.TaskStatusDone,
+	}
+	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: d.Conn, GitBin: gcTestGitBin}
+	w, err := mgr.Create(repo, "proj-1", doneTask.ID, "boid/", "HEAD")
+	if err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+
+	resolveProjectDir := func(projectID string) (string, error) {
+		proj, err := orchestrator.GetProject(d.Conn, projectID)
+		if err != nil {
+			return "", err
+		}
+		return proj.WorkDir, nil
+	}
+	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, resolveProjectDir, gcTestGitBin)
+
+	// dry-run: ディスク操作はスキップされる
+	result, err := gcStore.GC(0, true)
+	if err != nil {
+		t.Fatalf("gc dry-run: %v", err)
+	}
+	if result.Tasks != 1 {
+		t.Fatalf("dry-run: expected 1 task, got %d", result.Tasks)
+	}
+
+	// worktree ディレクトリが残っていることを確認（dry-run なので削除されない）
+	if _, err := os.Stat(w.Path); err != nil {
+		t.Errorf("worktree dir should still exist after dry-run GC: %v", err)
 	}
 }
