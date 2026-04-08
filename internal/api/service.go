@@ -369,13 +369,17 @@ func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orches
 	if err != nil {
 		return nil, err
 	}
-	return s.CreateTask(CreateTaskRequest{
+	req := CreateTaskRequest{
 		ProjectID:   source.ProjectID,
 		Title:       source.Title,
 		Description: source.Description,
 		Behavior:    source.Behavior,
 		AutoStart:   autoStart,
-	})
+	}
+	if source.Transition != "" {
+		req.Transition = &source.Transition
+	}
+	return s.CreateTask(req)
 }
 
 func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
