@@ -3,9 +3,7 @@ package api
 import (
 	"bufio"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -175,14 +173,14 @@ func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-type DuplicateRequest struct {
-	AutoStart bool `json:"auto_start,omitempty"`
+type DuplicateTaskRequest struct {
+	AutoStart bool `json:"auto_start"`
 }
 
 func (h *TaskHandler) Duplicate(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	var req DuplicateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+	var req DuplicateTaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
