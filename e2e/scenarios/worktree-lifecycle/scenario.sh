@@ -39,8 +39,16 @@ task_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 30s --interval 1
 printf '%s\n' "$task_json"
 e2e_assert_contains "$task_json" '"status":"done"'
 
-e2e_log "verifying worktree remove was logged"
-git_log="$(cat "$GIT_LOG")"
+e2e_log "waiting for worktree remove to be logged"
+deadline=$((SECONDS + 10))
+while true; do
+  git_log="$(cat "$GIT_LOG" 2>/dev/null || echo "")"
+  if [[ "$git_log" == *"worktree remove"* ]]; then
+    break
+  fi
+  (( SECONDS >= deadline )) && e2e_fail "timed out waiting for worktree remove in fake-git.log"
+  sleep 0.1
+done
 printf '%s\n' "$git_log"
 e2e_assert_contains "$git_log" "worktree remove"
 
