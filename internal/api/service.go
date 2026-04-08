@@ -355,6 +355,41 @@ func computeAvailableActions(task *orchestrator.Task) []string {
 	return sm.AvailableActions(task.Status)
 }
 
+func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orchestrator.Task, error) {
+	source, err := s.Tasks.GetTask(sourceID)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+
+	newTask := &orchestrator.Task{
+		ProjectID:    source.ProjectID,
+		Title:        source.Title,
+		Description:  source.Description,
+		Behavior:     source.Behavior,
+		Transition:   source.Transition,
+		Traits:       source.Traits,
+		Readonly:     source.Readonly,
+		Worktree:     source.Worktree,
+		BranchPrefix: source.BranchPrefix,
+		BaseBranch:   source.BaseBranch,
+		Payload:      source.Payload,
+	}
+	if err := s.Tasks.CreateTask(newTask); err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+
+	if autoStart && s.Workflow != nil {
+		result, err := s.Workflow.ApplyAction(context.Background(), newTask.ID, ApplyActionRequest{Type: "start"})
+		if err != nil {
+			slog.Error("auto_start: failed to apply start action", "task_id", newTask.ID, "error", err)
+		} else {
+			newTask = result.Task
+		}
+	}
+
+	return newTask, nil
+}
+
 func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 	task, err := s.GetTask(id)
 	if err != nil {
