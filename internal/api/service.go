@@ -217,7 +217,14 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: "transition is required"}
 	}
 
+	for _, depID := range req.DependsOn {
+		if _, err := s.Tasks.GetTask(depID); err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("depends_on: task not found: %s", depID)}
+		}
+	}
+
 	task := &orchestrator.Task{
+		ID:           req.ID,
 		ProjectID:    req.ProjectID,
 		Title:        req.Title,
 		Description:  req.Description,
@@ -232,6 +239,7 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		DataSourceID: req.DataSourceID,
 		Payload:      payload,
 		AutoStart:    req.AutoStart,
+		DependsOn:    req.DependsOn,
 		StartGate:    req.StartGate,
 	}
 	if err := s.Tasks.CreateTask(task); err != nil {

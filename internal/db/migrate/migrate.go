@@ -67,6 +67,13 @@ func Apply(conn *sql.DB) error {
 				return columnExists(tx, "tasks", "start_gate")
 			},
 		},
+		{
+			version: "0009_add_task_dependencies",
+			path:    "migrations/0009_add_task_dependencies.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return tableExists(tx, "task_dependencies")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {
