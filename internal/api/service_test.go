@@ -440,6 +440,115 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 	})
 }
 
+func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
+	t.Run("no payload preserves existing payload", func(t *testing.T) {
+		task := &orchestrator.Task{
+			ID:      "task-1",
+			Title:   "old title",
+			Payload: json.RawMessage(`{"artifact":{"url":"https://example.com"}}`),
+		}
+		store := &stubTaskStore{task: task}
+		svc := &TaskAppService{Tasks: store}
+
+		got, err := svc.UpdateTask("task-1", UpdateTaskRequest{Title: "new title"})
+		if err != nil {
+			t.Fatalf("UpdateTask() error = %v", err)
+		}
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(got.Payload, &m); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		if _, ok := m["artifact"]; !ok {
+			t.Error("artifact key missing: existing payload not preserved")
+		}
+	})
+
+	t.Run("payload with instructions is applied", func(t *testing.T) {
+		task := &orchestrator.Task{
+			ID:    "task-2",
+			Title: "title",
+		}
+		store := &stubTaskStore{task: task}
+		svc := &TaskAppService{Tasks: store}
+
+		newPayload := json.RawMessage(`{"instructions":{"main":{"consumer":"claude-code","message":"do stuff","type":"execution"}}}`)
+		got, err := svc.UpdateTask("task-2", UpdateTaskRequest{Title: "title", Payload: newPayload})
+		if err != nil {
+			t.Fatalf("UpdateTask() error = %v", err)
+		}
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(got.Payload, &m); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		if _, ok := m["instructions"]; !ok {
+			t.Fatal("instructions key missing from payload")
+		}
+	})
+
+	t.Run("partial instructions update merges roles", func(t *testing.T) {
+		existingPayload := json.RawMessage(`{"instructions":{"main":{"consumer":"claude-code","message":"do stuff","type":"execution"}}}`)
+		task := &orchestrator.Task{
+			ID:      "task-3",
+			Title:   "title",
+			Payload: existingPayload,
+		}
+		store := &stubTaskStore{task: task}
+		svc := &TaskAppService{Tasks: store}
+
+		// rework ロールだけ追加
+		newPayload := json.RawMessage(`{"instructions":{"rework":{"consumer":"claude-code","message":"fix stuff","type":"rework"}}}`)
+		got, err := svc.UpdateTask("task-3", UpdateTaskRequest{Title: "title", Payload: newPayload})
+		if err != nil {
+			t.Fatalf("UpdateTask() error = %v", err)
+		}
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(got.Payload, &m); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		var instructions map[string]json.RawMessage
+		if err := json.Unmarshal(m["instructions"], &instructions); err != nil {
+			t.Fatalf("unmarshal instructions: %v", err)
+		}
+		if _, ok := instructions["main"]; !ok {
+			t.Error("main role missing after partial instructions update")
+		}
+		if _, ok := instructions["rework"]; !ok {
+			t.Error("rework role missing after partial instructions update")
+		}
+	})
+
+	t.Run("payload update preserves existing artifact and verification", func(t *testing.T) {
+		existingPayload := json.RawMessage(`{"artifact":{"url":"https://example.com"},"verification":{"agent-1":{"findings":"none"}}}`)
+		task := &orchestrator.Task{
+			ID:      "task-4",
+			Title:   "title",
+			Payload: existingPayload,
+		}
+		store := &stubTaskStore{task: task}
+		svc := &TaskAppService{Tasks: store}
+
+		// instructions だけ更新
+		newPayload := json.RawMessage(`{"instructions":{"main":{"consumer":"claude-code","message":"do stuff","type":"execution"}}}`)
+		got, err := svc.UpdateTask("task-4", UpdateTaskRequest{Title: "title", Payload: newPayload})
+		if err != nil {
+			t.Fatalf("UpdateTask() error = %v", err)
+		}
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(got.Payload, &m); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		if _, ok := m["artifact"]; !ok {
+			t.Error("artifact missing after payload update with instructions only")
+		}
+		if _, ok := m["verification"]; !ok {
+			t.Error("verification missing after payload update with instructions only")
+		}
+		if _, ok := m["instructions"]; !ok {
+			t.Error("instructions missing after payload update")
+		}
+	})
+}
+
 func TestTaskAppServiceImportTasks_AllCreated(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{

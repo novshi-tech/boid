@@ -28,8 +28,9 @@ func (h *TaskHandler) Routes() chi.Router {
 }
 
 type UpdateTaskRequest struct {
-	Title       string `json:"title"`
-	Description string `json:"description"`
+	Title       string          `json:"title"`
+	Description string          `json:"description"`
+	Payload     json.RawMessage `json:"payload,omitempty"`
 }
 
 type CreateTaskRequest struct {

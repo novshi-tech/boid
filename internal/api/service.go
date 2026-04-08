@@ -308,6 +308,13 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	}
 	task.Title = req.Title
 	task.Description = req.Description
+	if len(req.Payload) > 0 {
+		merged, err := orchestrator.MergeDefaultPayload(task.Payload, req.Payload)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: "payload merge: " + err.Error()}
+		}
+		task.Payload = merged
+	}
 	if err := s.Tasks.UpdateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
