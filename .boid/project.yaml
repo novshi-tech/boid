@@ -16,15 +16,17 @@ task_behaviors:
           consumer: claude-code
           model: sonnet
           message: |
-            task.yaml の title と description に記述された内容を実装せよ
-            コミットする前にユニットテストの通過を確認すること（E2Eテストは CI で検証される）
+            task.yaml の title と description に記述された内容を実装せよ。
+            コミットする前にユニットテストの通過を確認すること。
+            E2E テストはサンドボックス内では実行できない（nft/unshare 等の特権が必要）。E2E の検証は CI に任せること。
         rework:
           type: rework
           consumer: claude-code
           model: sonnet
           message: |
             verification findings に記載された問題を修正せよ。
-            コミットする前にユニットテストの通過を確認すること（E2Eテストは CI で検証される）
+            コミットする前にユニットテストの通過を確認すること。
+            E2E テストはサンドボックス内では実行できない（nft/unshare 等の特権が必要）。E2E の検証は CI に任せること。
   plan:
     name: Plan
     transition: one-shot
