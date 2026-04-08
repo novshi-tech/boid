@@ -68,7 +68,7 @@ func newDispatchContextProbe() *dispatchContextProbe {
 	}
 }
 
-func (p *dispatchContextProbe) DispatchAndAdvance(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, behavior *orchestrator.TaskBehavior, sm *orchestrator.StateMachine) (*orchestrator.DispatchResult, error) {
+func (p *dispatchContextProbe) DispatchAndAdvance(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine) (*orchestrator.DispatchResult, error) {
 	select {
 	case <-p.started:
 	default:
@@ -138,7 +138,7 @@ type fixedDispatchResult struct {
 	result *orchestrator.DispatchResult
 }
 
-func (d fixedDispatchResult) DispatchAndAdvance(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, behavior *orchestrator.TaskBehavior, sm *orchestrator.StateMachine) (*orchestrator.DispatchResult, error) {
+func (d fixedDispatchResult) DispatchAndAdvance(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine) (*orchestrator.DispatchResult, error) {
 	return d.result, nil
 }
 
@@ -174,7 +174,6 @@ func TestTaskWorkflowServiceRunDispatchLoop_MustNotOverwriteTerminalStatusWhenPe
 		context.Background(),
 		task,
 		&orchestrator.ProjectMeta{},
-		&orchestrator.TaskBehavior{},
 		orchestrator.OneShotMachine(),
 	)
 

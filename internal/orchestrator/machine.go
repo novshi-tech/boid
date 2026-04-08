@@ -89,14 +89,10 @@ func (r *TransitionRegistry) Get(transition string) (*StateMachine, bool) {
 	return sm, ok
 }
 
-func (r *TransitionRegistry) Resolve(meta *ProjectMeta, behavior string) (*StateMachine, error) {
-	b, ok := meta.TaskBehaviors[behavior]
+func (r *TransitionRegistry) Resolve(task *Task) (*StateMachine, error) {
+	sm, ok := r.machines[task.Transition]
 	if !ok {
-		return nil, fmt.Errorf("behavior %q not found", behavior)
-	}
-	sm, ok := r.machines[b.Transition]
-	if !ok {
-		return nil, fmt.Errorf("transition model %q not found", b.Transition)
+		return nil, fmt.Errorf("transition model %q not found", task.Transition)
 	}
 	return sm, nil
 }

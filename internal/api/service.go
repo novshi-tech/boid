@@ -338,21 +338,10 @@ func (s *TaskAppService) DeleteTask(id string, force bool) error {
 	return nil
 }
 
-// computeAvailableActions resolves the StateMachine for the task's behavior and
+// computeAvailableActions resolves the StateMachine for the task's transition model and
 // returns the list of manual actions applicable to the task's current status.
-func computeAvailableActions(meta MetaStore, task *orchestrator.Task) []string {
-	if meta == nil {
-		return nil
-	}
-	m, ok := meta.Get(task.ProjectID)
-	if !ok {
-		return nil
-	}
-	behavior, ok := m.TaskBehaviors[task.Behavior]
-	if !ok {
-		return nil
-	}
-	sm, ok := orchestrator.GetMachine(behavior.Transition)
+func computeAvailableActions(task *orchestrator.Task) []string {
+	sm, ok := orchestrator.GetMachine(task.Transition)
 	if !ok {
 		return nil
 	}
@@ -379,7 +368,7 @@ func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 		Task:             task,
 		Actions:          actions,
 		Jobs:             jobs,
-		AvailableActions: computeAvailableActions(s.Meta, task),
+		AvailableActions: computeAvailableActions(task),
 	}, nil
 }
 
@@ -409,7 +398,7 @@ func (s *WebAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 		Task:             task,
 		Actions:          actions,
 		Jobs:             jobs,
-		AvailableActions: computeAvailableActions(s.Meta, task),
+		AvailableActions: computeAvailableActions(task),
 	}, nil
 }
 
@@ -480,7 +469,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "project meta not loaded: " + task.ProjectID}
 	}
 
-	sm, err := s.Resolver.Resolve(meta, task.Behavior)
+	sm, err := s.Resolver.Resolve(task)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 	}
@@ -513,12 +502,11 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	s.cleanupWorktree(newTask.ID, task.ProjectID, newTask.Status)
 
 	if s.Coordinator != nil {
-		behavior, _ := meta.TaskBehaviors[newTask.Behavior]
 		dispatchCtx := context.Background()
 		if ctx != nil {
 			dispatchCtx = context.WithoutCancel(ctx)
 		}
-		go s.runDispatchLoop(dispatchCtx, newTask, meta, &behavior, sm)
+		go s.runDispatchLoop(dispatchCtx, newTask, meta, sm)
 	}
 
 	var matchedHooks []string
@@ -583,13 +571,12 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "task not found: " + err.Error()}
 	}
 
-	meta, ok := s.Meta.Get(job.ProjectID)
-	if !ok {
+	if _, ok := s.Meta.Get(job.ProjectID); !ok {
 		slog.Error("job done: project meta not loaded", "project_id", job.ProjectID)
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "project meta not loaded: " + job.ProjectID}
 	}
 
-	sm, err := s.Resolver.Resolve(meta, task.Behavior)
+	sm, err := s.Resolver.Resolve(task)
 	if err != nil {
 		slog.Error("job done: resolve transition", "error", err)
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "resolve transition: " + err.Error()}
@@ -616,12 +603,12 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 	return job, nil
 }
 
-func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, behavior *orchestrator.TaskBehavior, sm *orchestrator.StateMachine) {
+func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine) {
 	const maxCycles = 10
 	current := task
 
 	for cycle := 0; cycle < maxCycles; cycle++ {
-		result, err := s.Coordinator.DispatchAndAdvance(ctx, current, meta, behavior, sm)
+		result, err := s.Coordinator.DispatchAndAdvance(ctx, current, meta, sm)
 		if err != nil {
 			slog.Error("dispatch loop error", "task_id", current.ID, "cycle", cycle, "error", err)
 			s.recordDispatchError(current.ID, err)

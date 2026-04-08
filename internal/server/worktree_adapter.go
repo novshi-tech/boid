@@ -9,7 +9,7 @@ type worktreePreparer struct {
 	manager *dispatcher.WorktreeManager
 }
 
-func (p worktreePreparer) Prepare(task *orchestrator.Task, proj *orchestrator.Project, behavior *orchestrator.TaskBehavior) (string, error) {
+func (p worktreePreparer) Prepare(task *orchestrator.Task, proj *orchestrator.Project) (string, error) {
 	if p.manager == nil {
 		return "", nil
 	}
@@ -26,8 +26,8 @@ func (p worktreePreparer) Prepare(task *orchestrator.Task, proj *orchestrator.Pr
 		proj.WorkDir,
 		proj.ID,
 		task.ID,
-		behavior.BranchPrefix,
-		behavior.BaseBranch,
+		task.BranchPrefix,
+		task.BaseBranch,
 	)
 	if err != nil {
 		return "", err

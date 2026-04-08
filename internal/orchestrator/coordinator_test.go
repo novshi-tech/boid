@@ -150,10 +150,9 @@ func TestCoordinator_DispatchAndAdvance_HooksSequential(t *testing.T) {
 			{ID: "hook-b", On: orchestrator.OnValues{"executing"}},
 		},
 	}
-	behavior := &projectspec.TaskBehavior{Readonly: false}
 	sm := simpleStateMachine()
 
-	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -197,10 +196,9 @@ func TestCoordinator_DispatchAndAdvance_NoAdvanceWhenConditionNotMet(t *testing.
 			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
 		},
 	}
-	behavior := &projectspec.TaskBehavior{Readonly: false}
 	sm := simpleStateMachine()
 
-	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -238,10 +236,9 @@ func TestCoordinator_DispatchAndAdvance_GatesExecuteAfterHooks(t *testing.T) {
 			{ID: "gate-push", On: orchestrator.OnValues{"executing"}},
 		},
 	}
-	behavior := &projectspec.TaskBehavior{Readonly: false}
 	sm := simpleStateMachine()
 
-	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -287,10 +284,9 @@ func TestCoordinator_DispatchAndAdvance_ExclusiveTraitCollision(t *testing.T) {
 			{ID: "hook-b", On: orchestrator.OnValues{"executing"}},
 		},
 	}
-	behavior := &projectspec.TaskBehavior{Readonly: false}
 	sm := simpleStateMachine()
 
-	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
 	if err == nil {
 		t.Fatal("expected error for exclusive trait collision")
 	}
@@ -322,10 +318,9 @@ func TestCoordinator_DispatchAndAdvance_SharedTraitNoCollision(t *testing.T) {
 			{ID: "hook-b", On: orchestrator.OnValues{"executing"}},
 		},
 	}
-	behavior := &projectspec.TaskBehavior{Readonly: false}
 	sm := simpleStateMachine()
 
-	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
 	if err != nil {
 		t.Fatalf("shared trait should not collide: %v", err)
 	}
@@ -372,10 +367,9 @@ func TestCoordinator_DispatchAndAdvance_EmptyHooksAndGates(t *testing.T) {
 		Payload:   json.RawMessage(`{}`),
 	}
 	meta := &projectspec.ProjectMeta{}
-	behavior := &projectspec.TaskBehavior{}
 	sm := simpleStateMachine()
 
-	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -427,10 +421,9 @@ func TestCoordinator_DispatchAndAdvance_LockerAcquiredForNonReadonlyNonWorktree(
 			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
 		},
 	}
-	behavior := &projectspec.TaskBehavior{Readonly: false, Worktree: false}
 	sm := simpleStateMachine()
 
-	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -468,10 +461,9 @@ func TestCoordinator_DispatchAndAdvance_LockerSkippedForReadonly(t *testing.T) {
 			{ID: "hook-a", On: orchestrator.OnValues{"verifying"}},
 		},
 	}
-	behavior := &projectspec.TaskBehavior{Readonly: false}
 	sm := simpleStateMachine()
 
-	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -499,6 +491,7 @@ func TestCoordinator_DispatchAndAdvance_LockerSkippedForWorktree(t *testing.T) {
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Worktree:  true,
 		Payload:   json.RawMessage(`{}`),
 	}
 	meta := &projectspec.ProjectMeta{
@@ -506,10 +499,9 @@ func TestCoordinator_DispatchAndAdvance_LockerSkippedForWorktree(t *testing.T) {
 			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
 		},
 	}
-	behavior := &projectspec.TaskBehavior{Readonly: false, Worktree: true}
 	sm := simpleStateMachine()
 
-	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -543,10 +535,9 @@ func TestCoordinator_DispatchAndAdvance_NilLockerOK(t *testing.T) {
 			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
 		},
 	}
-	behavior := &projectspec.TaskBehavior{Readonly: false, Worktree: false}
 	sm := simpleStateMachine()
 
-	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, behavior, sm)
+	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
 	if err != nil {
 		t.Fatalf("dispatch with nil locker: %v", err)
 	}

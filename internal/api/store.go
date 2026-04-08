@@ -12,11 +12,11 @@ type MetaStore interface {
 }
 
 type TransitionResolver interface {
-	Resolve(meta *orchestrator.ProjectMeta, behavior string) (*orchestrator.StateMachine, error)
+	Resolve(task *orchestrator.Task) (*orchestrator.StateMachine, error)
 }
 
 type DispatchCoordinator interface {
-	DispatchAndAdvance(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, behavior *orchestrator.TaskBehavior, sm *orchestrator.StateMachine) (*orchestrator.DispatchResult, error)
+	DispatchAndAdvance(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine) (*orchestrator.DispatchResult, error)
 }
 
 type JobLifecycle interface {

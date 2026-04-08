@@ -213,21 +213,16 @@ func TestTaskAppServiceGetTaskDetail(t *testing.T) {
 
 func TestTaskAppServiceGetTaskDetail_AvailableActions(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:        "task-aa",
-		ProjectID: "proj-aa",
-		Status:    orchestrator.TaskStatusPending,
-		Behavior:  "dev",
-	}
-	meta := &orchestrator.ProjectMeta{
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
-		},
+		ID:         "task-aa",
+		ProjectID:  "proj-aa",
+		Status:     orchestrator.TaskStatusPending,
+		Behavior:   "dev",
+		Transition: "one-shot",
 	}
 	svc := &TaskAppService{
 		Tasks:   &stubTaskStore{task: task},
 		Actions: stubActionStore{},
 		Jobs:    &stubJobStore{},
-		Meta:    stubMetaStore{meta: meta},
 	}
 
 	got, err := svc.GetTaskDetail(task.ID)
@@ -253,18 +248,18 @@ func TestTaskAppServiceGetTaskDetail_AvailableActions(t *testing.T) {
 	}
 }
 
-func TestTaskAppServiceGetTaskDetail_AvailableActions_NoMeta(t *testing.T) {
+func TestTaskAppServiceGetTaskDetail_AvailableActions_UnknownTransition(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-bb",
 		ProjectID: "proj-bb",
 		Status:    orchestrator.TaskStatusPending,
 		Behavior:  "dev",
+		// Transition is empty → GetMachine("") returns ok=false → empty actions
 	}
 	svc := &TaskAppService{
 		Tasks:   &stubTaskStore{task: task},
 		Actions: stubActionStore{},
 		Jobs:    &stubJobStore{},
-		// Meta is nil → AvailableActions should be nil/empty
 	}
 
 	got, err := svc.GetTaskDetail(task.ID)
@@ -272,7 +267,7 @@ func TestTaskAppServiceGetTaskDetail_AvailableActions_NoMeta(t *testing.T) {
 		t.Fatalf("GetTaskDetail() error = %v", err)
 	}
 	if len(got.AvailableActions) != 0 {
-		t.Errorf("AvailableActions should be empty when Meta is nil, got %v", got.AvailableActions)
+		t.Errorf("AvailableActions should be empty when Transition is unknown, got %v", got.AvailableActions)
 	}
 }
 
@@ -851,7 +846,7 @@ type stubResolver struct {
 	err error
 }
 
-func (r stubResolver) Resolve(meta *orchestrator.ProjectMeta, behavior string) (*orchestrator.StateMachine, error) {
+func (r stubResolver) Resolve(task *orchestrator.Task) (*orchestrator.StateMachine, error) {
 	if r.err != nil {
 		return nil, r.err
 	}

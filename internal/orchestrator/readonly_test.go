@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 func TestIsReadonly(t *testing.T) {
@@ -14,22 +13,22 @@ func TestIsReadonly(t *testing.T) {
 		status   orchestrator.TaskStatus
 		want     bool
 	}{
-		{"behavior readonly, executing", true, orchestrator.TaskStatusExecuting, true},
-		{"behavior readonly, pending", true, orchestrator.TaskStatusPending, true},
-		{"behavior not readonly, executing", false, orchestrator.TaskStatusExecuting, false},
-		{"behavior not readonly, verifying", false, orchestrator.TaskStatusVerifying, true},
-		{"behavior not readonly, in_review", false, orchestrator.TaskStatusInReview, true},
-		{"behavior not readonly, pending", false, orchestrator.TaskStatusPending, false},
-		{"behavior not readonly, collecting_feedback", false, orchestrator.TaskStatusCollectingFeedback, false},
-		{"behavior not readonly, done", false, orchestrator.TaskStatusDone, false},
-		{"behavior not readonly, aborted", false, orchestrator.TaskStatusAborted, false},
-		{"behavior readonly, verifying", true, orchestrator.TaskStatusVerifying, true},
+		{"task readonly, executing", true, orchestrator.TaskStatusExecuting, true},
+		{"task readonly, pending", true, orchestrator.TaskStatusPending, true},
+		{"task not readonly, executing", false, orchestrator.TaskStatusExecuting, false},
+		{"task not readonly, verifying", false, orchestrator.TaskStatusVerifying, true},
+		{"task not readonly, in_review", false, orchestrator.TaskStatusInReview, true},
+		{"task not readonly, pending", false, orchestrator.TaskStatusPending, false},
+		{"task not readonly, collecting_feedback", false, orchestrator.TaskStatusCollectingFeedback, false},
+		{"task not readonly, done", false, orchestrator.TaskStatusDone, false},
+		{"task not readonly, aborted", false, orchestrator.TaskStatusAborted, false},
+		{"task readonly, verifying", true, orchestrator.TaskStatusVerifying, true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			behavior := &projectspec.TaskBehavior{Readonly: tc.readonly}
-			got := orchestrator.IsReadonly(behavior, tc.status)
+			task := &orchestrator.Task{Readonly: tc.readonly, Status: tc.status}
+			got := orchestrator.IsReadonly(task)
 			if got != tc.want {
 				t.Errorf("IsReadonly(readonly=%v, %q) = %v, want %v",
 					tc.readonly, tc.status, got, tc.want)
