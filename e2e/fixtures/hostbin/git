@@ -9,4 +9,55 @@ log_file="${E2E_STATE_DIR:?}/fake-git.log"
   printf -- '---\n'
 } >>"$log_file"
 
+# Parse args, handling leading -C <dir> flag
+args=("$@")
+idx=0
+
+if [[ "${#args[@]}" -ge 2 && "${args[0]}" == "-C" ]]; then
+  idx=2
+fi
+
+subcommand="${args[$idx]:-}"
+
+case "$subcommand" in
+  worktree)
+    sub2="${args[$((idx+1))]:-}"
+    case "$sub2" in
+      add)
+        # Find the worktree path: first non-flag positional arg after 'worktree add'
+        i=$((idx+2))
+        while [[ $i -lt ${#args[@]} ]]; do
+          arg="${args[$i]}"
+          if [[ "$arg" == "-b" || "$arg" == "--lock-reason" ]]; then
+            i=$((i+2))  # skip flag and its value
+          elif [[ "$arg" == --* || "$arg" == -* ]]; then
+            i=$((i+1))  # boolean flag, no value
+          else
+            # First positional arg is the worktree path
+            mkdir -p "$arg"
+            break
+          fi
+        done
+        ;;
+      remove)
+        # Last positional arg is the path
+        rm -rf "${args[${#args[@]}-1]}"
+        ;;
+      prune)
+        # no-op beyond logging
+        ;;
+      *)
+        exec /usr/bin/git "$@"
+        ;;
+    esac
+    ;;
+  branch)
+    # git branch -D <branch> → just log (already done above)
+    ;;
+  *)
+    # Pass other git commands to the real git
+    exec /usr/bin/git "$@"
+    ;;
+esac
+
 exit 0
