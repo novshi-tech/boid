@@ -132,7 +132,7 @@ func FilterPayloadByTraits(payload json.RawMessage, consumes []TraitType) json.R
 
 	allowed := make(map[TraitType]bool, len(consumes))
 	for _, t := range consumes {
-		allowed[t] = true
+		allowed[t.Base()] = true
 	}
 
 	filtered := make(map[string]json.RawMessage, len(consumes))

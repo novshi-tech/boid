@@ -744,6 +744,61 @@ func TestPlanHook_Model_EmptyWhenNotSet(t *testing.T) {
 	}
 }
 
+func TestPlanHook_PayloadJSON_OptionalVerificationIncludedDuringRework(t *testing.T) {
+	payload := json.RawMessage(`{
+		"instructions": {
+			"rework": {"type":"rework","consumer":"claude-code","message":"fix findings"}
+		},
+		"artifact": {"summary":"initial impl"},
+		"verification": {"pr-verify": {"findings": [{"message":"CI failed","status":"open"}]}}
+	}`)
+	meta := &ProjectMeta{ID: "proj-1"}
+	proj := &Project{ID: "proj-1", WorkDir: t.TempDir()}
+	task := &Task{
+		ID:        "task-rework-verify-1",
+		ProjectID: "proj-1",
+		Behavior:  "dev",
+		Status:    TaskStatusReworking,
+		Payload:   payload,
+	}
+
+	planner := &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj}},
+		Tasks:    stubTaskLookup{task: task},
+	}
+
+	// Hook that declares consumes: [instructions, verification?]
+	req, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    task.ID,
+		ProjectID: proj.ID,
+		Hook: Hook{
+			ID:         "hook-1",
+			ScriptPath: filepath.Join(proj.WorkDir, ".boid", "hooks", "hook-1.sh"),
+			Consumer:   "claude-code",
+			Traits:     HandlerTraits{Consumes: []TraitType{TraitInstructions, "verification?"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(req.PayloadJSON), &m); err != nil {
+		t.Fatalf("unmarshal PayloadJSON: %v", err)
+	}
+	if _, ok := m["verification"]; !ok {
+		t.Error("expected verification in PayloadJSON (optional trait present)")
+	}
+	if _, ok := m["instructions"]; !ok {
+		t.Error("expected instructions in PayloadJSON")
+	}
+	if _, ok := m["artifact"]; ok {
+		t.Error("artifact should be filtered out since not in consumes")
+	}
+}
+
 func TestPlanHook_EnvironmentYAML(t *testing.T) {
 	meta := &ProjectMeta{
 		ID:              "proj-1",

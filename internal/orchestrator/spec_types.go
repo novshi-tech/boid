@@ -141,6 +141,16 @@ const (
 	TraitTasks        TraitType = "tasks"
 )
 
+// IsOptional reports whether the trait is declared with a trailing "?".
+func (t TraitType) IsOptional() bool {
+	return strings.HasSuffix(string(t), "?")
+}
+
+// Base returns the trait name without the optional "?" suffix.
+func (t TraitType) Base() TraitType {
+	return TraitType(strings.TrimSuffix(string(t), "?"))
+}
+
 type HandlerTraits struct {
 	Consumes []TraitType `json:"consumes,omitempty" yaml:"consumes,omitempty"`
 	Produces []TraitType `json:"produces,omitempty" yaml:"produces,omitempty"`

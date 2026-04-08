@@ -297,6 +297,59 @@ func TestEvaluateGates_OnMultipleValues_MatchesBothStatuses(t *testing.T) {
 	}
 }
 
+func TestEvaluate_OptionalTrait_FiresWhenAbsent(t *testing.T) {
+	eval := &orchestrator.Evaluator{}
+
+	// executing: verification not in payload yet — hook should still fire
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{"instructions":{"exec":{"type":"execution","consumer":"claude-code","message":"impl"}}}`),
+	}
+	hooks := []projectspec.Hook{
+		{
+			ID:       "run-agent",
+			On:       projectspec.OnValues{"executing", "reworking"},
+			Consumer: "claude-code",
+			Traits: projectspec.HandlerTraits{
+				Consumes: []projectspec.TraitType{projectspec.TraitInstructions, "verification?"},
+			},
+		},
+	}
+
+	matched := eval.Evaluate(task, hooks)
+	if len(matched) != 1 {
+		t.Fatalf("expected 1 matched hook (optional trait absent), got %d", len(matched))
+	}
+}
+
+func TestEvaluate_OptionalTrait_FiresWhenPresent(t *testing.T) {
+	eval := &orchestrator.Evaluator{}
+
+	// reworking: verification present — hook should fire and get it
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusReworking,
+		Payload: json.RawMessage(`{
+			"instructions":{"rework":{"type":"rework","consumer":"claude-code","message":"fix"}},
+			"verification":{"pr-verify":{"findings":[{"message":"CI failed","status":"open"}]}}
+		}`),
+	}
+	hooks := []projectspec.Hook{
+		{
+			ID:       "run-agent",
+			On:       projectspec.OnValues{"executing", "reworking"},
+			Consumer: "claude-code",
+			Traits: projectspec.HandlerTraits{
+				Consumes: []projectspec.TraitType{projectspec.TraitInstructions, "verification?"},
+			},
+		},
+	}
+
+	matched := eval.Evaluate(task, hooks)
+	if len(matched) != 1 {
+		t.Fatalf("expected 1 matched hook (optional trait present), got %d", len(matched))
+	}
+}
+
 func TestEvaluateGates_OnMultipleValues_NoMatchOtherStatus(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 

@@ -51,7 +51,7 @@ func extractInstructionConsumers(payload json.RawMessage, instType InstructionTy
 // consumesInstructions reports whether the handler traits include the instructions trait.
 func consumesInstructions(traits HandlerTraits) bool {
 	for _, t := range traits.Consumes {
-		if t == TraitInstructions {
+		if t.Base() == TraitInstructions {
 			return true
 		}
 	}
@@ -117,6 +117,9 @@ func (e *Evaluator) EvaluateGates(task *Task, gates []Gate) []Gate {
 
 func hasAllTraits(set map[TraitType]bool, required []TraitType) bool {
 	for _, t := range required {
+		if t.IsOptional() {
+			continue
+		}
 		if !set[t] {
 			return false
 		}
