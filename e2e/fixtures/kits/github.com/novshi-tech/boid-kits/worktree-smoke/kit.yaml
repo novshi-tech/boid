@@ -1,0 +1,3 @@
+hooks:
+  - id: emit-artifact
+    on: executing
