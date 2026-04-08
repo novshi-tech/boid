@@ -17,14 +17,14 @@ task_behaviors:
           model: sonnet
           message: |
             task.yaml の title と description に記述された内容を実装せよ
-            コミットする前にユニットテストとE2Eテストの通過を確認すること
+            コミットする前にユニットテストの通過を確認すること（E2Eテストは CI で検証される）
         rework:
           type: rework
           consumer: claude-code
           model: sonnet
           message: |
             verification findings に記載された問題を修正せよ。
-            コミットする前にユニットテストとE2Eテストの通過を確認すること
+            コミットする前にユニットテストの通過を確認すること（E2Eテストは CI で検証される）
   plan:
     name: Plan
     transition: one-shot
@@ -70,11 +70,6 @@ task_behaviors:
                 - title: "タスクのタイトル"
                   behavior: "実行モデル名（例: dev）"
                   description: "このタスクを実行するエージェントへの指示。何を・どのように実装するかを詳細に記述する。"
-
-host_commands:
-  boid-e2e:
-    path: e2e/run.sh
-    allow: ["*"]
 
 kits:
   - github.com/novshi-tech/boid-kits/go-dev

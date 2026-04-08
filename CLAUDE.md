@@ -9,12 +9,10 @@ go build ./...          # ビルド
 go test ./...           # ユニットテスト
 go test -race ./...     # レースコンディション検出
 go vet ./...            # 静的解析
-boid-e2e <scenario>     # E2E テスト（サンドボックス内で実行）
 ```
 
-`boid-e2e` は `project.yaml` に定義されたホストコマンドで、サンドボックス内から実行する。
-シナリオ名は `e2e/scenarios/` 配下のディレクトリ名を指定する（例: `boid-e2e project-smoke`）。
-ホスト上で直接実行する場合は `./e2e/run.sh [scenario]` を使う。
+E2E テスト（`e2e/scenarios/` 配下）はサンドボックス内では実行できない（nft/unshare 等の特権が必要）。
+E2E の検証は CI（GitHub Actions）に任せること。ホスト上で直接実行する場合は `./e2e/run.sh [scenario]`。
 
 ## プロジェクト構成
 
