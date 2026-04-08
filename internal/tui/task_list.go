@@ -74,7 +74,7 @@ func NewTaskListScreen(shared *SharedState) *TaskListScreen {
 		{Title: "STATUS", Width: 11},
 		{Title: "TITLE", Width: 24},
 		{Title: "PROJECT", Width: 12},
-		{Title: "BEHAVIOR", Width: 8},
+		{Title: "BEHAVIOR", Width: 10},
 		{Title: "AGE", Width: 6},
 	}
 	t := table.New(
@@ -412,12 +412,32 @@ func (s *TaskListScreen) recalcColumns(width int) {
 	s.table.SetColumns(cols)
 }
 
+// stripANSI removes ANSI escape sequences from s.
+func stripANSI(s string) string {
+	var b strings.Builder
+	inEsc := false
+	for _, r := range s {
+		if r == '\x1b' {
+			inEsc = true
+			continue
+		}
+		if inEsc {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEsc = false
+			}
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // syncTableRows converts s.tasks to table rows and updates the table.
 func (s *TaskListScreen) syncTableRows() {
 	rows := make([]table.Row, len(s.tasks))
 	for i, task := range s.tasks {
 		dot, statusText := taskStatusDisplay(task.Status)
-		statusCell := dot + " " + statusText
+		statusCell := stripANSI(dot) + " " + stripANSI(statusText)
 
 		title := task.Title
 		if title == "" {

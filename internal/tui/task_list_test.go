@@ -605,6 +605,53 @@ func makeDummyJobs(n int) []*api.Job {
 	return jobs
 }
 
+// --- syncTableRows ANSI stripping tests ---
+
+func TestSyncTableRows_StatusCellNoANSI(t *testing.T) {
+	s := newTestTaskListScreen()
+	statuses := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusReworking,
+		orchestrator.TaskStatusVerifying,
+		orchestrator.TaskStatusInReview,
+		orchestrator.TaskStatusCollectingFeedback,
+		orchestrator.TaskStatusPending,
+		orchestrator.TaskStatusDone,
+		orchestrator.TaskStatusAborted,
+	}
+	for _, status := range statuses {
+		s.tasks = []*orchestrator.Task{
+			{ID: "t1", Title: "Test", Status: status, Behavior: "dev", CreatedAt: time.Now()},
+		}
+		s.syncTableRows()
+		rows := s.table.Rows()
+		if len(rows) == 0 {
+			t.Fatalf("status %q: no rows after syncTableRows", status)
+		}
+		statusCell := rows[0][0]
+		if strings.Contains(statusCell, "\x1b") {
+			t.Errorf("status %q: STATUS cell contains ANSI code: %q", status, statusCell)
+		}
+	}
+}
+
+// --- BEHAVIOR column initial width tests ---
+
+func TestBehaviorColumnInitialWidth(t *testing.T) {
+	s := newTestTaskListScreen()
+	const wantWidth = 10 // must match behaviorWidth in recalcColumns
+	cols := s.table.Columns()
+	for _, c := range cols {
+		if c.Title == "BEHAVIOR" {
+			if c.Width != wantWidth {
+				t.Errorf("BEHAVIOR initial width: want %d, got %d", wantWidth, c.Width)
+			}
+			return
+		}
+	}
+	t.Error("BEHAVIOR column not found in initial columns")
+}
+
 // --- recalcColumns tests ---
 
 func TestRecalcColumns_NormalWidth(t *testing.T) {
