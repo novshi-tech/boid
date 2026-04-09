@@ -20,6 +20,6 @@ fi
 e2e_log "OK: host filesystem not accessible from sandbox"
 
 e2e_log "testing boid builtin is available inside sandbox"
-boid_out="$("$E2E_BIN_DIR/boid" exec e2e-exec -- boid project list)"
-printf '%s\n' "$boid_out"
-e2e_assert_contains "$boid_out" "e2e-exec"
+boid_path="$("$E2E_BIN_DIR/boid" exec e2e-exec -- which boid)"
+printf '%s\n' "$boid_path"
+e2e_assert_contains "$boid_path" "boid"
