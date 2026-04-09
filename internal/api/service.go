@@ -540,6 +540,12 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 	}
 
+	if req.Type == "start" {
+		if err := checkDependencies(task, s.Tasks.GetTask); err != nil {
+			return nil, &StatusError{Code: http.StatusConflict, Message: "dependency not satisfied: " + err.Error()}
+		}
+	}
+
 	action := &orchestrator.Action{
 		TaskID:  task.ID,
 		Type:    req.Type,
