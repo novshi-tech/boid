@@ -79,6 +79,7 @@ type WebService interface {
 type WorkflowService interface {
 	ApplyAction(ctx context.Context, taskID string, req ApplyActionRequest) (*ActionApplication, error)
 	CompleteJob(ctx context.Context, jobID string, req JobDoneRequest) (*Job, error)
+	TriggerDependents(ctx context.Context, taskID string)
 }
 
 type TaskStore interface {
@@ -88,6 +89,7 @@ type TaskStore interface {
 	UpdateTask(task *orchestrator.Task) error
 	DeleteTask(id string) error
 	FindTaskByRemote(remoteID, datasourceID string) (*orchestrator.Task, error)
+	FindDependentTasks(taskID string) ([]*orchestrator.Task, error)
 }
 
 type ActionStore interface {

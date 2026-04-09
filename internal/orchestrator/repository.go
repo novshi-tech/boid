@@ -50,6 +50,10 @@ func (r *TaskRepository) FindTaskByRemote(remoteID, datasourceID string) (*Task,
 	return FindTaskByRemote(r.db, remoteID, datasourceID)
 }
 
+func (r *TaskRepository) FindDependentTasks(taskID string) ([]*Task, error) {
+	return FindDependentTasks(r.db, taskID)
+}
+
 func (r *TaskRepository) CreateAction(action *Action) error {
 	return CreateAction(r.db, action)
 }

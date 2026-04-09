@@ -34,6 +34,12 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 		return fmt.Errorf("marshal traits: %w", err)
 	}
 
+	if len(t.DependsOn) > 0 {
+		if err := detectCyclicDependency(dbtx, t.ID, t.DependsOn); err != nil {
+			return err
+		}
+	}
+
 	_, err = dbtx.Exec(
 		`INSERT INTO tasks (id, project_id, remote_id, datasource_id, title, description, status, behavior, transition, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, depends_on_payload, ref, parent_id, ephemeral, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -51,6 +57,87 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 		}
 	}
 	return nil
+}
+
+// detectCyclicDependency は BFS で依存グラフを走査し、newTaskID が
+// dependsOn の推移的依存に含まれるかを検出する。
+func detectCyclicDependency(dbtx db.DBTX, newTaskID string, dependsOn []string) error {
+	visited := make(map[string]bool)
+	queue := make([]string, len(dependsOn))
+	copy(queue, dependsOn)
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if current == newTaskID {
+			return fmt.Errorf("circular dependency detected: task %s", newTaskID)
+		}
+		if visited[current] {
+			continue
+		}
+		visited[current] = true
+		deps, err := loadDependencyIDs(dbtx, current)
+		if err != nil {
+			return fmt.Errorf("detect cycle: %w", err)
+		}
+		queue = append(queue, deps...)
+	}
+	return nil
+}
+
+func loadDependencyIDs(dbtx db.DBTX, taskID string) ([]string, error) {
+	rows, err := dbtx.Query(
+		`SELECT depends_on FROM task_dependencies WHERE task_id = ?`, taskID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("load dependency ids: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan dependency id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// FindDependentTasks は taskID に依存している pending 状態のタスクを返す。
+func FindDependentTasks(dbtx db.DBTX, taskID string) ([]*Task, error) {
+	rows, err := dbtx.Query(`
+		SELECT DISTINCT t.id, t.project_id, t.remote_id, t.datasource_id, t.title, t.description,
+		       t.status, t.behavior, t.transition, t.traits, t.readonly, t.worktree,
+		       t.branch_prefix, t.base_branch, t.payload, t.auto_start, t.depends_on_payload,
+		       t.ref, t.parent_id, t.ephemeral, t.created_at, t.updated_at
+		FROM tasks t
+		INNER JOIN task_dependencies td ON t.id = td.task_id
+		WHERE td.depends_on = ? AND t.status = ?
+		ORDER BY t.created_at`,
+		taskID, string(TaskStatusPending),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("find dependent tasks: %w", err)
+	}
+	defer rows.Close()
+
+	var tasks []*Task
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, t := range tasks {
+		if err := loadTaskDependencies(dbtx, t); err != nil {
+			return nil, err
+		}
+	}
+	return tasks, nil
 }
 
 func loadTaskDependencies(dbtx db.DBTX, t *Task) error {

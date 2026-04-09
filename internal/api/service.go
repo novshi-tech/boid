@@ -325,15 +325,20 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	}
 	task.Title = req.Title
 	task.Description = req.Description
+	payloadUpdated := false
 	if len(req.Payload) > 0 {
 		merged, err := orchestrator.MergeDefaultPayload(task.Payload, req.Payload)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: "payload merge: " + err.Error()}
 		}
 		task.Payload = merged
+		payloadUpdated = true
 	}
 	if err := s.Tasks.UpdateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	if payloadUpdated && s.Workflow != nil {
+		go s.Workflow.TriggerDependents(context.Background(), id)
 	}
 	return task, nil
 }
@@ -540,6 +545,12 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 	}
 
+	if req.Type == "start" {
+		if err := checkDependencies(task, s.Tasks.GetTask); err != nil {
+			return nil, &StatusError{Code: http.StatusConflict, Message: "dependency not satisfied: " + err.Error()}
+		}
+	}
+
 	action := &orchestrator.Action{
 		TaskID:  task.ID,
 		Type:    req.Type,
@@ -707,6 +718,9 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 				if s.Lifecycle != nil {
 					s.Lifecycle.CleanupTaskWindow(current.ID)
 				}
+				if current.Status == orchestrator.TaskStatusDone {
+					s.triggerDependentTasks(ctx, current.ID)
+				}
 			}
 			return
 		}
@@ -730,11 +744,39 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			if s.Lifecycle != nil {
 				s.Lifecycle.CleanupTaskWindow(current.ID)
 			}
+			if current.Status == orchestrator.TaskStatusDone {
+				s.triggerDependentTasks(ctx, current.ID)
+			}
 			return
 		}
 	}
 
 	slog.Warn("dispatch loop max cycles reached", "task_id", current.ID, "max", maxCycles)
+}
+
+// TriggerDependents は taskID に依存する pending タスクを評価し、
+// 依存条件が満たされた場合に自動 start する。
+func (s *TaskWorkflowService) TriggerDependents(ctx context.Context, taskID string) {
+	s.triggerDependentTasks(ctx, taskID)
+}
+
+func (s *TaskWorkflowService) triggerDependentTasks(ctx context.Context, taskID string) {
+	if s.Tasks == nil {
+		return
+	}
+	dependents, err := s.Tasks.FindDependentTasks(taskID)
+	if err != nil {
+		slog.Error("trigger dependent tasks: find dependents", "task_id", taskID, "error", err)
+		return
+	}
+	for _, dep := range dependents {
+		if err := checkDependencies(dep, s.Tasks.GetTask); err != nil {
+			continue
+		}
+		if _, err := s.ApplyAction(ctx, dep.ID, ApplyActionRequest{Type: "start"}); err != nil {
+			slog.Warn("trigger dependent tasks: start failed", "dependent_id", dep.ID, "error", err)
+		}
+	}
 }
 
 func (s *TaskWorkflowService) recordDispatchError(taskID string, err error) {
