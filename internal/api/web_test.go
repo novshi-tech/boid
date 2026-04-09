@@ -84,6 +84,8 @@ func (s *stubWorkflowService) CompleteJob(ctx context.Context, jobID string, req
 	return nil, nil
 }
 
+func (s *stubWorkflowService) TriggerDependents(ctx context.Context, taskID string) {}
+
 func TestWebAppServiceApplyAction_Success(t *testing.T) {
 	workflow := &stubWorkflowService{}
 	svc := &WebAppService{

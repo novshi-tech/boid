@@ -28,7 +28,14 @@ func (s *multiTaskStore) GetTask(id string) (*orchestrator.Task, error) {
 	return t, nil
 }
 func (s *multiTaskStore) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
-	return nil, nil
+	var result []*orchestrator.Task
+	for _, t := range s.tasks {
+		if filter.Status != "" && string(t.Status) != filter.Status {
+			continue
+		}
+		result = append(result, t)
+	}
+	return result, nil
 }
 func (s *multiTaskStore) UpdateTask(task *orchestrator.Task) error {
 	s.tasks[task.ID] = task
@@ -40,6 +47,21 @@ func (s *multiTaskStore) DeleteTask(id string) error {
 }
 func (s *multiTaskStore) FindTaskByRemote(remoteID, datasourceID string) (*orchestrator.Task, error) {
 	return nil, nil
+}
+func (s *multiTaskStore) FindDependentTasks(taskID string) ([]*orchestrator.Task, error) {
+	var result []*orchestrator.Task
+	for _, t := range s.tasks {
+		if t.Status != orchestrator.TaskStatusPending {
+			continue
+		}
+		for _, dep := range t.DependsOn {
+			if dep == taskID {
+				result = append(result, t)
+				break
+			}
+		}
+	}
+	return result, nil
 }
 
 // --- checkDependencies ユニットテスト ---

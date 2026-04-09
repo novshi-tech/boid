@@ -47,6 +47,9 @@ func (s *mapTaskStore) DeleteTask(id string) error { return nil }
 func (s *mapTaskStore) FindTaskByRemote(remoteID, datasourceID string) (*orchestrator.Task, error) {
 	return nil, nil
 }
+func (s *mapTaskStore) FindDependentTasks(taskID string) ([]*orchestrator.Task, error) {
+	return nil, nil
+}
 
 func TestRunDispatchLoop_ScriptTriggeredOnTaskDone(t *testing.T) {
 	parentTask := &orchestrator.Task{

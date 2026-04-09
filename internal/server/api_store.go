@@ -41,6 +41,10 @@ func (s apiTxStore) FindTaskByRemote(remoteID, datasourceID string) (*orchestrat
 	return s.tasks.FindTaskByRemote(remoteID, datasourceID)
 }
 
+func (s apiTxStore) FindDependentTasks(taskID string) ([]*orchestrator.Task, error) {
+	return s.tasks.FindDependentTasks(taskID)
+}
+
 func (s apiTxStore) CreateAction(action *orchestrator.Action) error {
 	return s.actions.CreateAction(action)
 }
