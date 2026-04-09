@@ -195,6 +195,11 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 		return nil, err
 	}
 
+	workspaceDirs, err := p.collectWorkspaceDirs(proj.WorkspaceID, event.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+
 	projectGatesDir := filepath.Join(proj.WorkDir, ".boid", "gates")
 	gatesDir := filepath.Dir(event.Gate.ScriptPath)
 	var stagingDir string
@@ -237,6 +242,7 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 		BuiltinCommands: mergeBuiltinCommands(meta.BuiltinCommands, []string{"boid"}),
 		HostCommands:    hostCommands,
 		SecretNamespace: meta.SecretNamespace,
+		WorkspaceDirs:   workspaceDirs,
 		ProxyPort:       p.proxyPort(),
 		StagingDir:      stagingDir,
 		TaskJSON:        string(taskJSON),

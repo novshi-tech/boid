@@ -850,3 +850,36 @@ func TestPlanHook_EnvironmentYAML(t *testing.T) {
 		t.Error("EnvironmentYAML missing workspace project")
 	}
 }
+
+func TestPlanGate_WorkspaceDirsPopulated(t *testing.T) {
+	meta := &ProjectMeta{ID: "proj-1"}
+	proj := &Project{ID: "proj-1", WorkDir: t.TempDir(), WorkspaceID: "ws-1"}
+	peer := &Project{ID: "proj-2", WorkDir: "/workspace/peer", WorkspaceID: "ws-1"}
+	task := &Task{
+		ID:        "task-gate-ws-1",
+		ProjectID: "proj-1",
+		Behavior:  "dev",
+		Status:    TaskStatusExecuting,
+		Payload:   json.RawMessage(`{}`),
+	}
+
+	planner := &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj, peer}},
+		Tasks:    stubTaskLookup{task: task},
+	}
+
+	req, err := planner.PlanGate(&GateFireEvent{
+		EventID:   "event-gate-1",
+		TaskID:    task.ID,
+		ProjectID: proj.ID,
+		Gate:      Gate{ID: "gate-1", ScriptPath: filepath.Join(proj.WorkDir, ".boid", "gates", "gate-1.sh")},
+	})
+	if err != nil {
+		t.Fatalf("PlanGate: %v", err)
+	}
+
+	if req.WorkspaceDirs["proj-2"] != "/workspace/peer" {
+		t.Errorf("WorkspaceDirs[proj-2] = %q, want %q", req.WorkspaceDirs["proj-2"], "/workspace/peer")
+	}
+}
