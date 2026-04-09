@@ -720,6 +720,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 				}
 				if current.Status == orchestrator.TaskStatusDone {
 					s.triggerDependentTasks(ctx, current.ID)
+					s.fireScriptTriggers(ctx, current, meta, orchestrator.ScriptTriggerTaskDone)
 				}
 			}
 			return
@@ -746,6 +747,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			}
 			if current.Status == orchestrator.TaskStatusDone {
 				s.triggerDependentTasks(ctx, current.ID)
+				s.fireScriptTriggers(ctx, current, meta, orchestrator.ScriptTriggerTaskDone)
 			}
 			return
 		}
@@ -775,6 +777,24 @@ func (s *TaskWorkflowService) triggerDependentTasks(ctx context.Context, taskID 
 		}
 		if _, err := s.ApplyAction(ctx, dep.ID, ApplyActionRequest{Type: "start"}); err != nil {
 			slog.Warn("trigger dependent tasks: start failed", "dependent_id", dep.ID, "error", err)
+		}
+	}
+}
+
+func (s *TaskWorkflowService) fireScriptTriggers(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, event orchestrator.ScriptTrigger) {
+	if task.Ephemeral {
+		return
+	}
+	matched := orchestrator.MatchScripts(meta.Scripts, event, task.Behavior)
+	for _, script := range matched {
+		scriptTask := orchestrator.BuildTriggeredScriptTask(script, event, task)
+		if err := s.Tasks.CreateTask(scriptTask); err != nil {
+			slog.Error("script trigger: create task failed", "script_id", script.ID, "task_id", task.ID, "error", err)
+			continue
+		}
+		slog.Info("script trigger: task created", "script_id", script.ID, "script_task_id", scriptTask.ID)
+		if _, err := s.ApplyAction(ctx, scriptTask.ID, ApplyActionRequest{Type: "start"}); err != nil {
+			slog.Error("script trigger: start failed", "script_id", script.ID, "script_task_id", scriptTask.ID, "error", err)
 		}
 	}
 }

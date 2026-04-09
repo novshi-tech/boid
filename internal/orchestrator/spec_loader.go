@@ -379,6 +379,7 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) *Pr
 	result.Gates = allGates
 
 	var allScripts []Script
+	var scriptGates []Gate
 	for i, meta := range kits {
 		consumer := ""
 		if i < len(kitConsumers) {
@@ -387,10 +388,26 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) *Pr
 		for _, s := range meta.Scripts {
 			s.Kit = consumer
 			allScripts = append(allScripts, s)
+
+			gateID := s.ID
+			if consumer != "" {
+				gateID = consumer + "/" + s.ID
+			}
+			scriptGates = append(scriptGates, Gate{
+				ID:       gateID,
+				On:       OnValues{"executing"},
+				Behavior: fmt.Sprintf("_script:%s/%s", consumer, s.ID),
+				Traits: HandlerTraits{
+					Produces: []TraitType{TraitArtifact, TraitTasks},
+				},
+				Kit:        consumer,
+				ScriptPath: s.ScriptPath,
+			})
 		}
 	}
 	allScripts = append(allScripts, base.Scripts...)
 	result.Scripts = allScripts
+	result.Gates = append(result.Gates, scriptGates...)
 
 	mergedCmds := make(HostCommands)
 	for _, meta := range kits {
@@ -438,6 +455,20 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) *Pr
 		result.KitGatesDirs = append(result.KitGatesDirs, KitGatesInfo{
 			GatesDir: meta.GatesDir,
 			GateIDs:  ids,
+		})
+	}
+
+	for _, meta := range kits {
+		if meta.ScriptsDir == "" || len(meta.Scripts) == 0 {
+			continue
+		}
+		ids := make([]string, len(meta.Scripts))
+		for i, s := range meta.Scripts {
+			ids[i] = s.ID
+		}
+		result.KitScriptsDirs = append(result.KitScriptsDirs, KitScriptsInfo{
+			ScriptsDir: meta.ScriptsDir,
+			ScriptIDs:  ids,
 		})
 	}
 
@@ -627,6 +658,7 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 	result.BuiltinCommands = append([]string(nil), meta.BuiltinCommands...)
 	result.KitHooksDirs = append([]KitHooksInfo(nil), meta.KitHooksDirs...)
 	result.KitGatesDirs = append([]KitGatesInfo(nil), meta.KitGatesDirs...)
+	result.KitScriptsDirs = append([]KitScriptsInfo(nil), meta.KitScriptsDirs...)
 	result.Env = mergeStringMaps(nil, meta.Env)
 	result.HostCommands = cloneHostCommands(meta.HostCommands)
 	result.AdditionalBindings = cloneBindMounts(meta.AdditionalBindings)

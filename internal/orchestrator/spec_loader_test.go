@@ -1320,6 +1320,114 @@ func TestMergeKitMeta_Scripts(t *testing.T) {
 	})
 }
 
+func TestMergeKitMeta_ScriptGates(t *testing.T) {
+	t.Run("gate generated from kit script", func(t *testing.T) {
+		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
+		meta := &projectspec.KitMeta{
+			ScriptsDir: "/kit/scripts",
+			Scripts: []projectspec.Script{
+				{ID: "detect-conflicts", ScriptPath: "/kit/scripts/detect-conflicts.sh"},
+			},
+		}
+
+		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"github-pr"})
+
+		var scriptGate *projectspec.Gate
+		for i := range result.Gates {
+			if result.Gates[i].ID == "github-pr/detect-conflicts" {
+				scriptGate = &result.Gates[i]
+				break
+			}
+		}
+		if scriptGate == nil {
+			t.Fatalf("expected gate github-pr/detect-conflicts, got gates: %+v", result.Gates)
+		}
+		if scriptGate.Behavior != "_script:github-pr/detect-conflicts" {
+			t.Errorf("Behavior = %q, want %q", scriptGate.Behavior, "_script:github-pr/detect-conflicts")
+		}
+		if len(scriptGate.On) != 1 || scriptGate.On[0] != "executing" {
+			t.Errorf("On = %v, want [executing]", scriptGate.On)
+		}
+		produces := scriptGate.Traits.Produces
+		if len(produces) != 2 {
+			t.Errorf("Produces = %v, want [artifact tasks]", produces)
+		}
+		if scriptGate.Kit != "github-pr" {
+			t.Errorf("Kit = %q, want %q", scriptGate.Kit, "github-pr")
+		}
+		if scriptGate.ScriptPath != "/kit/scripts/detect-conflicts.sh" {
+			t.Errorf("ScriptPath = %q, want %q", scriptGate.ScriptPath, "/kit/scripts/detect-conflicts.sh")
+		}
+	})
+
+	t.Run("KitScriptsDirs populated from kit scripts", func(t *testing.T) {
+		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
+		meta := &projectspec.KitMeta{
+			ScriptsDir: "/kit/scripts",
+			Scripts: []projectspec.Script{
+				{ID: "notify", ScriptPath: "/kit/scripts/notify.sh"},
+			},
+		}
+
+		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"mykit"})
+
+		if len(result.KitScriptsDirs) != 1 {
+			t.Fatalf("expected 1 KitScriptsDirs entry, got %d", len(result.KitScriptsDirs))
+		}
+		if result.KitScriptsDirs[0].ScriptsDir != "/kit/scripts" {
+			t.Errorf("ScriptsDir = %q, want %q", result.KitScriptsDirs[0].ScriptsDir, "/kit/scripts")
+		}
+		if len(result.KitScriptsDirs[0].ScriptIDs) != 1 || result.KitScriptsDirs[0].ScriptIDs[0] != "notify" {
+			t.Errorf("ScriptIDs = %v, want [notify]", result.KitScriptsDirs[0].ScriptIDs)
+		}
+	})
+
+	t.Run("no KitScriptsDirs when ScriptsDir is empty", func(t *testing.T) {
+		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
+		meta := &projectspec.KitMeta{
+			Scripts: []projectspec.Script{
+				{ID: "notify", ScriptPath: "/kit/scripts/notify.sh"},
+			},
+		}
+
+		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"mykit"})
+		if len(result.KitScriptsDirs) != 0 {
+			t.Errorf("expected no KitScriptsDirs, got %+v", result.KitScriptsDirs)
+		}
+	})
+}
+
+func TestBuildScriptTask(t *testing.T) {
+	t.Run("basic fields", func(t *testing.T) {
+		script := projectspec.Script{
+			ID:  "detect-conflicts",
+			Kit: "github-pr",
+		}
+		payload := []byte(`{"branch":"main"}`)
+
+		task := projectspec.BuildScriptTask(script, "proj-1", payload)
+
+		if task.ProjectID != "proj-1" {
+			t.Errorf("ProjectID = %q, want proj-1", task.ProjectID)
+		}
+		if task.Behavior != "_script:github-pr/detect-conflicts" {
+			t.Errorf("Behavior = %q, want _script:github-pr/detect-conflicts", task.Behavior)
+		}
+		if task.Title != "script: github-pr/detect-conflicts" {
+			t.Errorf("Title = %q, want 'script: github-pr/detect-conflicts'", task.Title)
+		}
+		if task.Transition != "one-shot" {
+			t.Errorf("Transition = %q, want one-shot", task.Transition)
+		}
+		if !task.Readonly || !task.Ephemeral || !task.AutoStart {
+			t.Errorf("Readonly=%v Ephemeral=%v AutoStart=%v, all want true", task.Readonly, task.Ephemeral, task.AutoStart)
+		}
+		if string(task.Payload) != string(payload) {
+			t.Errorf("Payload = %s, want %s", task.Payload, payload)
+		}
+	})
+}
+
 func TestReadProjectMeta_HostCommandRelativePath(t *testing.T) {
 	t.Run("relative path resolved to project root", func(t *testing.T) {
 		dir := t.TempDir()

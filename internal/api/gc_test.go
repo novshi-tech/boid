@@ -17,7 +17,7 @@ type stubGCStore struct {
 	err    error
 }
 
-func (s *stubGCStore) GC(olderThan time.Duration, dryRun bool) (*orchestrator.GCResult, error) {
+func (s *stubGCStore) GC(olderThan time.Duration, dryRun bool, ephemeral *bool) (*orchestrator.GCResult, error) {
 	return s.result, s.err
 }
 
@@ -124,7 +124,7 @@ type captureGCStore struct {
 	lastDryRun    bool
 }
 
-func (s *captureGCStore) GC(olderThan time.Duration, dryRun bool) (*orchestrator.GCResult, error) {
+func (s *captureGCStore) GC(olderThan time.Duration, dryRun bool, ephemeral *bool) (*orchestrator.GCResult, error) {
 	s.lastOlderThan = olderThan
 	s.lastDryRun = dryRun
 	return &orchestrator.GCResult{}, nil

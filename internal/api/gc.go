@@ -13,8 +13,8 @@ type GCAppService struct {
 	Store GCStore
 }
 
-func (s *GCAppService) Run(olderThan time.Duration, dryRun bool) (*orchestrator.GCResult, error) {
-	result, err := s.Store.GC(olderThan, dryRun)
+func (s *GCAppService) Run(olderThan time.Duration, dryRun bool, ephemeral *bool) (*orchestrator.GCResult, error) {
+	result, err := s.Store.GC(olderThan, dryRun, ephemeral)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
@@ -34,6 +34,7 @@ func (h *GCHandler) Routes() chi.Router {
 type gcRequest struct {
 	OlderThan string `json:"older_than,omitempty"`
 	DryRun    bool   `json:"dry_run,omitempty"`
+	Ephemeral *bool  `json:"ephemeral,omitempty"`
 }
 
 type gcResponse struct {
@@ -61,7 +62,7 @@ func (h *GCHandler) Run(w http.ResponseWriter, r *http.Request) {
 		olderThan = d
 	}
 
-	result, err := h.Service.Run(olderThan, req.DryRun)
+	result, err := h.Service.Run(olderThan, req.DryRun, req.Ephemeral)
 	if err != nil {
 		writeServiceError(w, err)
 		return

@@ -124,14 +124,14 @@ func (s *TaskGCStore) gcGitBin() string {
 	return "git"
 }
 
-func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool) (*GCResult, error) {
+func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool, ephemeral *bool) (*GCResult, error) {
 	if s.resolveProjectDir != nil && !dryRun {
-		s.cleanWorktrees(olderThan)
+		s.cleanWorktrees(olderThan, ephemeral)
 	}
 
 	var result *GCResult
 	err := db.InTxDB(s.conn, func(dbtx db.DBTX) error {
-		r, err := GCTasks(dbtx, []string{"done", "aborted"}, olderThan, dryRun)
+		r, err := GCTasks(dbtx, []string{"done", "aborted"}, olderThan, dryRun, ephemeral)
 		result = r
 		return err
 	})
@@ -148,7 +148,7 @@ type gcWorktreeRecord struct {
 
 // cleanWorktrees performs disk-level cleanup of worktrees for GC target tasks.
 // Errors are logged as warnings; failures do not block subsequent DB deletion.
-func (s *TaskGCStore) cleanWorktrees(olderThan time.Duration) {
+func (s *TaskGCStore) cleanWorktrees(olderThan time.Duration, ephemeral *bool) {
 	query := `
 		SELECT w.task_id, w.project_id, w.path, w.branch, t.status
 		FROM worktrees w
@@ -159,6 +159,10 @@ func (s *TaskGCStore) cleanWorktrees(olderThan time.Duration) {
 	if olderThan > 0 {
 		query += ` AND t.updated_at < ?`
 		args = append(args, time.Now().UTC().Add(-olderThan))
+	}
+	if ephemeral != nil {
+		query += ` AND t.ephemeral = ?`
+		args = append(args, *ephemeral)
 	}
 
 	rows, err := s.conn.Query(query, args...)

@@ -128,9 +128,9 @@ type Transactor interface {
 }
 
 type GCStore interface {
-	GC(olderThan time.Duration, dryRun bool) (*orchestrator.GCResult, error)
+	GC(olderThan time.Duration, dryRun bool, ephemeral *bool) (*orchestrator.GCResult, error)
 }
 
 type GCService interface {
-	Run(olderThan time.Duration, dryRun bool) (*orchestrator.GCResult, error)
+	Run(olderThan time.Duration, dryRun bool, ephemeral *bool) (*orchestrator.GCResult, error)
 }

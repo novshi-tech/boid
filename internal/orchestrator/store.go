@@ -289,8 +289,9 @@ type GCResult struct {
 // GCTasks deletes terminal tasks older than olderThan and their related data
 // (actions, jobs, worktrees). If dryRun is true, counts only without deleting.
 // olderThan=0 disables the time filter (all matching tasks are affected).
+// ephemeral=nil disables the ephemeral filter; true=ephemeral only, false=non-ephemeral only.
 // Must be called within a transaction for atomicity.
-func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bool) (*GCResult, error) {
+func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bool, ephemeral *bool) (*GCResult, error) {
 	if len(statuses) == 0 {
 		return &GCResult{}, nil
 	}
@@ -316,6 +317,10 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 		for i, s := range statuses {
 			condArgs[i] = s
 		}
+	}
+	if ephemeral != nil {
+		taskCond += ` AND ephemeral = ?`
+		condArgs = append(condArgs, *ephemeral)
 	}
 
 	subquery := `SELECT id FROM tasks WHERE ` + taskCond

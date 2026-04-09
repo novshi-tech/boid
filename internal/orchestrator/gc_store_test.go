@@ -70,7 +70,7 @@ func TestGCTasks_DeletesDoneAndAborted(t *testing.T) {
 	}
 
 	gcStore := orchestrator.NewTaskGCStore(d.Conn)
-	result, err := gcStore.GC(0, false)
+	result, err := gcStore.GC(0, false, nil)
 	if err != nil {
 		t.Fatalf("gc: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestGCTasks_EmptyStatuses(t *testing.T) {
 	}
 
 	// GCTasks を直接呼び出して空 statuses を確認
-	result, err := orchestrator.GCTasks(d.Conn, []string{}, 0, false)
+	result, err := orchestrator.GCTasks(d.Conn, []string{}, 0, false, nil)
 	if err != nil {
 		t.Fatalf("gc tasks: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestGCTasks_OlderThanFilter(t *testing.T) {
 	gcStore := orchestrator.NewTaskGCStore(d.Conn)
 
 	// dry-run: 30日以上経過したものが1件あるはず
-	result, err := gcStore.GC(30*24*time.Hour, true)
+	result, err := gcStore.GC(30*24*time.Hour, true, nil)
 	if err != nil {
 		t.Fatalf("gc dry-run: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestGCTasks_OlderThanFilter(t *testing.T) {
 	}
 
 	// 実際に削除
-	result, err = gcStore.GC(30*24*time.Hour, false)
+	result, err = gcStore.GC(30*24*time.Hour, false, nil)
 	if err != nil {
 		t.Fatalf("gc: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestGCTasks_NothingToDelete(t *testing.T) {
 	}
 
 	gcStore := orchestrator.NewTaskGCStore(d.Conn)
-	result, err := gcStore.GC(0, false)
+	result, err := gcStore.GC(0, false, nil)
 	if err != nil {
 		t.Fatalf("gc: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestGCTasks_WorktreeDiskCleanup(t *testing.T) {
 	}
 	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, resolveProjectDir, gcTestGitBin)
 
-	result, err := gcStore.GC(0, false)
+	result, err := gcStore.GC(0, false, nil)
 	if err != nil {
 		t.Fatalf("gc: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestGCTasks_WorktreeDiskCleanup_DryRun(t *testing.T) {
 	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, resolveProjectDir, gcTestGitBin)
 
 	// dry-run: ディスク操作はスキップされる
-	result, err := gcStore.GC(0, true)
+	result, err := gcStore.GC(0, true, nil)
 	if err != nil {
 		t.Fatalf("gc dry-run: %v", err)
 	}
@@ -319,5 +319,123 @@ func TestGCTasks_WorktreeDiskCleanup_DryRun(t *testing.T) {
 	// worktree ディレクトリが残っていることを確認（dry-run なので削除されない）
 	if _, err := os.Stat(w.Path); err != nil {
 		t.Errorf("worktree dir should still exist after dry-run GC: %v", err)
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+func TestGCTasks_EphemeralOnly(t *testing.T) {
+	d := testutil.NewTestDB(t)
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	ephemeralTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Ephemeral Done", Behavior: "dev", Status: orchestrator.TaskStatusDone, Ephemeral: true}
+	if err := orchestrator.CreateTask(d.Conn, ephemeralTask); err != nil {
+		t.Fatalf("create ephemeral task: %v", err)
+	}
+
+	normalTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Normal Done", Behavior: "dev", Status: orchestrator.TaskStatusDone, Ephemeral: false}
+	if err := orchestrator.CreateTask(d.Conn, normalTask); err != nil {
+		t.Fatalf("create normal task: %v", err)
+	}
+
+	result, err := orchestrator.GCTasks(d.Conn, []string{"done", "aborted"}, 0, false, boolPtr(true))
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if result.Tasks != 1 {
+		t.Fatalf("expected 1 deleted task (ephemeral only), got %d", result.Tasks)
+	}
+
+	tasks, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{})
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 remaining task, got %d", len(tasks))
+	}
+	if tasks[0].ID != normalTask.ID {
+		t.Fatalf("expected non-ephemeral task to remain, got %s", tasks[0].ID)
+	}
+}
+
+func TestGCTasks_NonEphemeralOnly(t *testing.T) {
+	d := testutil.NewTestDB(t)
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	ephemeralTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Ephemeral Done", Behavior: "dev", Status: orchestrator.TaskStatusDone, Ephemeral: true}
+	if err := orchestrator.CreateTask(d.Conn, ephemeralTask); err != nil {
+		t.Fatalf("create ephemeral task: %v", err)
+	}
+
+	normalTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Normal Done", Behavior: "dev", Status: orchestrator.TaskStatusDone, Ephemeral: false}
+	if err := orchestrator.CreateTask(d.Conn, normalTask); err != nil {
+		t.Fatalf("create normal task: %v", err)
+	}
+
+	result, err := orchestrator.GCTasks(d.Conn, []string{"done", "aborted"}, 0, false, boolPtr(false))
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if result.Tasks != 1 {
+		t.Fatalf("expected 1 deleted task (non-ephemeral only), got %d", result.Tasks)
+	}
+
+	tasks, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{})
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 remaining task, got %d", len(tasks))
+	}
+	if tasks[0].ID != ephemeralTask.ID {
+		t.Fatalf("expected ephemeral task to remain, got %s", tasks[0].ID)
+	}
+}
+
+func TestGCTasks_NoFilter(t *testing.T) {
+	d := testutil.NewTestDB(t)
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	ephemeralTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Ephemeral Done", Behavior: "dev", Status: orchestrator.TaskStatusDone, Ephemeral: true}
+	if err := orchestrator.CreateTask(d.Conn, ephemeralTask); err != nil {
+		t.Fatalf("create ephemeral task: %v", err)
+	}
+
+	normalTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Normal Done", Behavior: "dev", Status: orchestrator.TaskStatusDone, Ephemeral: false}
+	if err := orchestrator.CreateTask(d.Conn, normalTask); err != nil {
+		t.Fatalf("create normal task: %v", err)
+	}
+
+	pendingTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Pending", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, pendingTask); err != nil {
+		t.Fatalf("create pending task: %v", err)
+	}
+
+	result, err := orchestrator.GCTasks(d.Conn, []string{"done", "aborted"}, 0, false, nil)
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if result.Tasks != 2 {
+		t.Fatalf("expected 2 deleted tasks (no filter), got %d", result.Tasks)
+	}
+
+	tasks, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{})
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 remaining task, got %d", len(tasks))
+	}
+	if tasks[0].ID != pendingTask.ID {
+		t.Fatalf("expected pending task to remain, got %s", tasks[0].ID)
 	}
 }
