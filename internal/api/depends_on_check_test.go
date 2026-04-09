@@ -470,6 +470,74 @@ func TestTaskWorkflowServiceApplyAction_Start_DepsOnPayload_Falsy_Error(t *testi
 	}
 }
 
+// --- payloadGet ネストパス参照ユニットテスト ---
+
+func TestPayloadGet_NestedPath_Truthy(t *testing.T) {
+	payload := json.RawMessage(`{"artifact": {"pr": {"merge_status": "merged"}}}`)
+	v, err := payloadGet(payload, "artifact.pr.merge_status")
+	if err != nil {
+		t.Fatalf("payloadGet() error = %v, want nil", err)
+	}
+	if v != "merged" {
+		t.Fatalf("payloadGet() = %v, want %q", v, "merged")
+	}
+}
+
+func TestPayloadGet_NestedPath_Falsy(t *testing.T) {
+	payload := json.RawMessage(`{"artifact": {"pr": {"merge_status": ""}}}`)
+	v, err := payloadGet(payload, "artifact.pr.merge_status")
+	if err != nil {
+		t.Fatalf("payloadGet() error = %v, want nil", err)
+	}
+	if isTruthy(v) {
+		t.Fatal("payloadGet() value should be falsy but got truthy")
+	}
+}
+
+func TestPayloadGet_NestedPath_IntermediateMissing(t *testing.T) {
+	payload := json.RawMessage(`{"artifact": {}}`)
+	v, err := payloadGet(payload, "artifact.pr.merge_status")
+	if err != nil {
+		t.Fatalf("payloadGet() error = %v, want nil", err)
+	}
+	if v != nil {
+		t.Fatalf("payloadGet() = %v, want nil for missing intermediate path", v)
+	}
+}
+
+func TestPayloadGet_NestedPath_IntermediateNotMap(t *testing.T) {
+	payload := json.RawMessage(`{"artifact": "not-a-map"}`)
+	v, err := payloadGet(payload, "artifact.pr.merge_status")
+	if err != nil {
+		t.Fatalf("payloadGet() error = %v, want nil", err)
+	}
+	if v != nil {
+		t.Fatalf("payloadGet() = %v, want nil when intermediate is not a map", v)
+	}
+}
+
+func TestPayloadGet_DeepNest(t *testing.T) {
+	payload := json.RawMessage(`{"a": {"b": {"c": {"d": "deep"}}}}`)
+	v, err := payloadGet(payload, "a.b.c.d")
+	if err != nil {
+		t.Fatalf("payloadGet() error = %v, want nil", err)
+	}
+	if v != "deep" {
+		t.Fatalf("payloadGet() = %v, want %q for deep nesting", v, "deep")
+	}
+}
+
+func TestPayloadGet_TopLevelKey_Regression(t *testing.T) {
+	payload := json.RawMessage(`{"result": "ok"}`)
+	v, err := payloadGet(payload, "result")
+	if err != nil {
+		t.Fatalf("payloadGet() error = %v, want nil", err)
+	}
+	if v != "ok" {
+		t.Fatalf("payloadGet() = %v, want %q for top-level key", v, "ok")
+	}
+}
+
 // --- auto_start + 依存未充足 → pending 維持（エラーなし）テスト ---
 
 func TestTaskAppServiceCreateTask_AutoStart_DepNotSatisfied_StaysPending(t *testing.T) {

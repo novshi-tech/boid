@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -32,6 +33,7 @@ func checkDependencies(task *orchestrator.Task, getTask func(string) (*orchestra
 }
 
 // payloadGet は JSON ペイロードから指定キーの値を取り出す。
+// key はドット区切りのネストパス（例: "artifact.pr.merge_status"）を受け付ける。
 func payloadGet(payload json.RawMessage, key string) (any, error) {
 	if len(payload) == 0 {
 		return nil, nil
@@ -40,7 +42,16 @@ func payloadGet(payload json.RawMessage, key string) (any, error) {
 	if err := json.Unmarshal(payload, &m); err != nil {
 		return nil, err
 	}
-	return m[key], nil
+	segments := strings.Split(key, ".")
+	var cur any = m
+	for _, seg := range segments {
+		mm, ok := cur.(map[string]any)
+		if !ok {
+			return nil, nil
+		}
+		cur = mm[seg]
+	}
+	return cur, nil
 }
 
 // isTruthy は JSON 値が truthy かどうかを返す。
