@@ -64,8 +64,7 @@ e2e_log "=== Test 3: 依存充足後に start 可能 ==="
 e2e_run "$E2E_BIN_DIR/boid" action send --task "$dep2_id" --type start
 e2e_run "$E2E_BIN_DIR/boid" action send --task "$dep2_id" --type done
 
-e2e_run "$E2E_BIN_DIR/boid" action send --task "$child2_id" --type start
-
+# dep2 が done になると自動トリガーが child2 を自動 start するのを待つ
 child2_exec_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 10s --interval 100ms "$child2_id" executing)"
 printf '%s\n' "$child2_exec_json"
 e2e_assert_contains "$child2_exec_json" '"status":"executing"'
