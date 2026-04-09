@@ -72,6 +72,7 @@ func TestRunDispatchLoop_ScriptTriggeredOnTaskDone(t *testing.T) {
 		Scripts: []orchestrator.Script{
 			{
 				ID:          "notify",
+				Kit:         "my-kit",
 				Description: "Sends notification",
 				On:          []orchestrator.ScriptTrigger{orchestrator.ScriptTriggerTaskDone},
 			},
@@ -109,8 +110,14 @@ func TestRunDispatchLoop_ScriptTriggeredOnTaskDone(t *testing.T) {
 	if !scriptTask.Ephemeral {
 		t.Error("script task Ephemeral should be true")
 	}
-	if scriptTask.Title != "notify" {
-		t.Errorf("script task Title = %q, want %q", scriptTask.Title, "notify")
+	if !scriptTask.Readonly {
+		t.Error("script task Readonly should be true")
+	}
+	if scriptTask.Title != "script: my-kit/notify" {
+		t.Errorf("script task Title = %q, want %q", scriptTask.Title, "script: my-kit/notify")
+	}
+	if scriptTask.Behavior != "_script:my-kit/notify" {
+		t.Errorf("script task Behavior = %q, want %q", scriptTask.Behavior, "_script:my-kit/notify")
 	}
 	if scriptTask.ParentID != parentTask.ID {
 		t.Errorf("script task ParentID = %q, want %q", scriptTask.ParentID, parentTask.ID)

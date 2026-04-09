@@ -42,13 +42,15 @@ func BuildTriggeredScriptTask(script Script, event ScriptTrigger, parentTask *Ta
 			"behavior":   parentTask.Behavior,
 		},
 	})
+	behavior := fmt.Sprintf("_script:%s/%s", script.Kit, script.ID)
 	return &Task{
 		ProjectID:   parentTask.ProjectID,
-		Title:       script.ID,
+		Title:       fmt.Sprintf("script: %s/%s", script.Kit, script.ID),
 		Description: script.Description,
-		Behavior:    script.ID,
+		Behavior:    behavior,
 		Transition:  "one-shot",
 		Status:      TaskStatusPending,
+		Readonly:    true,
 		Ephemeral:   true,
 		ParentID:    parentTask.ID,
 		Payload:     json.RawMessage(payload),
