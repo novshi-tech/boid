@@ -195,6 +195,29 @@ func TestDeleteProject(t *testing.T) {
 	}
 }
 
+func TestDeleteProject_WithTasks(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	if err := orchestrator.DeleteProject(d.Conn, "proj-1"); err != nil {
+		t.Fatalf("delete project with tasks: %v", err)
+	}
+
+	tasks, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{ProjectID: "proj-1"})
+	if err != nil {
+		t.Fatalf("list tasks after project delete: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("expected tasks to be deleted with project, got %d", len(tasks))
+	}
+}
+
 func TestDeleteProject_NotFound(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	err := orchestrator.DeleteProject(d.Conn, "nonexistent")

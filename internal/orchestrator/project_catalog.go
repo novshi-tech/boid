@@ -98,7 +98,17 @@ func ListWorkspaces(dbtx db.DBTX) ([]*WorkspaceSummary, error) {
 }
 
 // DeleteProject removes a project by ID.
+// All tasks (and their dependent records) belonging to the project are deleted first.
 func DeleteProject(dbtx db.DBTX, id string) error {
+	tasks, err := ListTasks(dbtx, TaskFilter{ProjectID: id})
+	if err != nil {
+		return fmt.Errorf("list tasks for project: %w", err)
+	}
+	for _, t := range tasks {
+		if err := DeleteTask(dbtx, t.ID); err != nil {
+			return fmt.Errorf("delete task %s: %w", t.ID, err)
+		}
+	}
 	res, err := dbtx.Exec(`DELETE FROM projects WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete project: %w", err)
