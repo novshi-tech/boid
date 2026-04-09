@@ -32,6 +32,9 @@ func (m *TextAreaModel) SetPlaceholder(placeholder string) {
 // SetHeight sets the visible height of the textarea.
 func (m *TextAreaModel) SetHeight(h int) { m.area.SetHeight(h) }
 
+// SetWidth sets the visible width of the textarea.
+func (m *TextAreaModel) SetWidth(w int) { m.area.SetWidth(w) }
+
 // Focus marks the component as focused.
 func (m *TextAreaModel) Focus() tea.Cmd {
 	return m.area.Focus()

@@ -69,7 +69,14 @@ func TestTextAreaModelViewNoCursorWhenBlurred(t *testing.T) {
 	}
 }
 
-// --- SetPlaceholder / SetHeight ---
+// --- SetPlaceholder / SetHeight / SetWidth ---
+
+func TestTextAreaModelSetWidth(t *testing.T) {
+	m := NewTextArea()
+	m.SetWidth(80)
+	// クラッシュしないこと・View が呼べること
+	_ = m.View()
+}
 
 func TestTextAreaModelSetPlaceholder(t *testing.T) {
 	m := NewTextArea()
