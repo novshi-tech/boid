@@ -51,6 +51,18 @@ task_behaviors:
                 - title: "次のタスク"
                   behavior: "dev"
                   description: "..."
+                  depends_on: ["#0"]
+                  depends_on_payload: "artifact.pr.merged"
+                  auto_start: true
+
+            ## 依存タスク
+
+            タスク間に順序依存がある場合、後続タスクに以下を設定すること：
+            - depends_on: 依存先タスクを `#N`（N は tasks 配列の 0-based インデックス）で参照する。
+            - depends_on_payload: "artifact.pr.merged" — 依存先タスクの PR が auto-merge で正常にマージされるまで待機する。
+            - auto_start: true — 依存条件が満たされたら自動的に開始する。
+
+            順序依存がないタスクには depends_on を設定しないこと（並列実行される）。
   auto_plan:
     name: Auto Plan
     transition: one-shot
@@ -65,13 +77,28 @@ task_behaviors:
           interactive: false
           message: |
             task.yaml の title と description に記述されたテーマについて、実装計画を策定せよ。
-            結果は一つのタスクとして、 ~/.boid/output/payload_patch.yaml に以下の形式で書き出すこと：
+            ~/.boid/output/payload_patch.yaml に以下の形式で書き出すこと：
 
             payload_patch:
               tasks:
                 - title: "タスクのタイトル"
                   behavior: "実行モデル名（例: dev）"
                   description: "このタスクを実行するエージェントへの指示。何を・どのように実装するかを詳細に記述する。"
+                - title: "次のタスク"
+                  behavior: "dev"
+                  description: "..."
+                  depends_on: ["#0"]
+                  depends_on_payload: "artifact.pr.merged"
+                  auto_start: true
+
+            ## 依存タスク
+
+            タスク間に順序依存がある場合、後続タスクに以下を設定すること：
+            - depends_on: 依存先タスクを `#N`（N は tasks 配列の 0-based インデックス）で参照する。
+            - depends_on_payload: "artifact.pr.merged" — 依存先タスクの PR が auto-merge で正常にマージされるまで待機する。
+            - auto_start: true — 依存条件が満たされたら自動的に開始する。
+
+            順序依存がないタスクには depends_on を設定しないこと（並列実行される）。
 
 kits:
   - github.com/novshi-tech/boid-kits/go-dev
@@ -81,3 +108,4 @@ kits:
   - github.com/novshi-tech/boid-kits/codex
   - github.com/novshi-tech/boid-kits/github-pr-verification
   - github.com/novshi-tech/boid-kits/boid-tasks
+  - github.com/novshi-tech/boid-kits/github-auto-merge
