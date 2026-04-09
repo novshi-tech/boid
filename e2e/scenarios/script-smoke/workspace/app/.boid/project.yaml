@@ -1,0 +1,8 @@
+id: e2e-script-smoke
+name: E2E Script Smoke
+kits:
+  - github.com/novshi-tech/boid-kits/script-smoke
+task_behaviors:
+  dev:
+    name: development
+    transition: one-shot

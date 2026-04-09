@@ -1,0 +1,4 @@
+scripts:
+  - id: ping
+    description: "Simple ping script for testing"
+    on: [task_done]
