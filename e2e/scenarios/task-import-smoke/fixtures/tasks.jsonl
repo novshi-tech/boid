@@ -1,0 +1,3 @@
+{"project_id":"e2e-import","title":"Task A","behavior":"smoke","remote_id":"RA","datasource_id":"e2e"}
+{"project_id":"e2e-import","title":"Task B","behavior":"smoke","remote_id":"RB","datasource_id":"e2e"}
+{"project_id":"e2e-import","title":"Task C","behavior":"smoke","remote_id":"RC","datasource_id":"e2e"}
