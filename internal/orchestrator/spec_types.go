@@ -214,6 +214,7 @@ func (o OnValues) AllValid(valid map[string]bool) bool {
 type Hook struct {
 	ID         string        `yaml:"id" json:"id"`
 	On         OnValues      `yaml:"on" json:"on"`
+	Behavior   string        `yaml:"behavior,omitempty" json:"behavior,omitempty"`
 	Traits     HandlerTraits `yaml:"traits" json:"traits"`
 	Requires   []string      `yaml:"requires" json:"requires"`
 	Consumer   string        `yaml:"consumer,omitempty" json:"consumer,omitempty"`
@@ -224,6 +225,7 @@ type Hook struct {
 type Gate struct {
 	ID         string        `yaml:"id" json:"id"`
 	On         OnValues      `yaml:"on" json:"on"`
+	Behavior   string        `yaml:"behavior,omitempty" json:"behavior,omitempty"`
 	Traits     HandlerTraits `yaml:"traits" json:"traits"`
 	Kit        string        `yaml:"-" json:"kit,omitempty"`
 	ScriptPath string        `yaml:"-" json:"-"`

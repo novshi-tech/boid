@@ -74,6 +74,9 @@ func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 		if !h.On.Contains(string(task.Status)) {
 			continue
 		}
+		if h.Behavior != "" && h.Behavior != task.Behavior {
+			continue
+		}
 		if !hasAllTraits(traitSet, h.Traits.Consumes) {
 			continue
 		}
@@ -105,6 +108,9 @@ func (e *Evaluator) EvaluateGates(task *Task, gates []Gate) []Gate {
 	var matched []Gate
 	for _, g := range gates {
 		if !g.On.Contains(string(task.Status)) {
+			continue
+		}
+		if g.Behavior != "" && g.Behavior != task.Behavior {
 			continue
 		}
 		if !hasAllTraits(traitSet, g.Traits.Consumes) {
