@@ -61,6 +61,13 @@ var taskDeleteCmd = &cobra.Command{
 	RunE:  runTaskDelete,
 }
 
+var taskUpdateCmd = &cobra.Command{
+	Use:   "update <id>",
+	Short: "Update a task",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTaskUpdate,
+}
+
 var taskImportCmd = &cobra.Command{
 	Use:   "import",
 	Short: "Import tasks from JSONL file or stdin",
@@ -83,9 +90,58 @@ func init() {
 	taskImportCmd.Flags().StringP("file", "f", "", "JSONL file to import (default: stdin)")
 	taskImportCmd.Flags().String("project", "", "Override project_id for all tasks")
 	taskImportCmd.Flags().String("datasource", "", "Override datasource_id for all tasks")
+	taskUpdateCmd.Flags().String("title", "", "New title")
+	taskUpdateCmd.Flags().String("description", "", "New description")
+	taskUpdateCmd.Flags().String("payload-file", "", "Payload file (YAML/JSON), - for stdin")
 	taskDuplicateCmd.Flags().Bool("auto-start", false, "Automatically start the duplicated task")
-	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd, taskDeleteCmd, taskImportCmd, taskDuplicateCmd)
+	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd, taskDeleteCmd, taskUpdateCmd, taskImportCmd, taskDuplicateCmd)
 	rootCmd.AddCommand(taskCmd)
+}
+
+func runTaskUpdate(cmd *cobra.Command, args []string) error {
+	title, _ := cmd.Flags().GetString("title")
+	description, _ := cmd.Flags().GetString("description")
+	payloadFile, _ := cmd.Flags().GetString("payload-file")
+
+	if title == "" && description == "" && payloadFile == "" {
+		return fmt.Errorf("at least one of --title, --description, or --payload-file is required")
+	}
+
+	req := api.UpdateTaskRequest{
+		Title:       title,
+		Description: description,
+	}
+
+	if payloadFile != "" {
+		var data []byte
+		var err error
+		if payloadFile == "-" {
+			data, err = io.ReadAll(cmd.InOrStdin())
+		} else {
+			data, err = os.ReadFile(payloadFile)
+		}
+		if err != nil {
+			return fmt.Errorf("read payload file: %w", err)
+		}
+		var v any
+		if err := yaml.Unmarshal(data, &v); err != nil {
+			return fmt.Errorf("parse payload: %w", err)
+		}
+		payloadJSON, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Errorf("encode payload: %w", err)
+		}
+		req.Payload = json.RawMessage(payloadJSON)
+	}
+
+	c := client.NewUnixClient(client.DefaultSocketPath())
+	task, err := c.UpdateTask(args[0], req)
+	if err != nil {
+		return fmt.Errorf("update task: %w", err)
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "task updated: %s (%s)\n", task.ID, task.Status)
+	return nil
 }
 
 func runTaskList(cmd *cobra.Command, args []string) error {

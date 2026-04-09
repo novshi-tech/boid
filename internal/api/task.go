@@ -117,8 +117,8 @@ func (h *TaskHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Title == "" {
-		writeError(w, http.StatusBadRequest, "title is required")
+	if req.Title == "" && req.Description == "" && len(req.Payload) == 0 {
+		writeError(w, http.StatusBadRequest, "at least one of title, description, or payload is required")
 		return
 	}
 	task, err := h.Service.UpdateTask(id, req)

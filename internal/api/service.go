@@ -323,8 +323,12 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
-	task.Title = req.Title
-	task.Description = req.Description
+	if req.Title != "" {
+		task.Title = req.Title
+	}
+	if req.Description != "" {
+		task.Description = req.Description
+	}
 	payloadUpdated := false
 	if len(req.Payload) > 0 {
 		merged, err := orchestrator.MergeDefaultPayload(task.Payload, req.Payload)
