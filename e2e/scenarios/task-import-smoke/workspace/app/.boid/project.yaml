@@ -1,0 +1,8 @@
+id: e2e-import
+name: E2E Import
+task_behaviors:
+  smoke:
+    name: Smoke
+    transition: one-shot
+hooks: []
+gates: []
