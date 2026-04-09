@@ -1,0 +1,8 @@
+id: project-alpha
+name: Project Alpha
+task_behaviors:
+  alpha:
+    name: Alpha
+    transition: one-shot
+hooks: []
+gates: []
