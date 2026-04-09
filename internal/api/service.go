@@ -223,6 +223,11 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		}
 	}
 
+	var ephemeral bool
+	if req.Ephemeral != nil {
+		ephemeral = *req.Ephemeral
+	}
+
 	task := &orchestrator.Task{
 		ID:           req.ID,
 		ProjectID:    req.ProjectID,
@@ -243,6 +248,7 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		DependsOnPayload: req.DependsOnPayload,
 		Ref:              req.Ref,
 		ParentID:     req.ParentID,
+		Ephemeral:    ephemeral,
 	}
 	if err := s.Tasks.CreateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}

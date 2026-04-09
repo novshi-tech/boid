@@ -187,8 +187,8 @@ func TestApplyIsIdempotent(t *testing.T) {
 	if err := d.Conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 12 {
-		t.Fatalf("schema_migrations count = %d, want 12", count)
+	if count != 13 {
+		t.Fatalf("schema_migrations count = %d, want 13", count)
 	}
 }
 

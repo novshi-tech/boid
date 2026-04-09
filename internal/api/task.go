@@ -54,6 +54,7 @@ type CreateTaskRequest struct {
 	DependsOnPayload string   `json:"depends_on_payload,omitempty"`
 	Ref              string   `json:"ref,omitempty"`
 	ParentID     string                  `json:"parent_id,omitempty"`
+	Ephemeral    *bool                   `json:"ephemeral,omitempty"`
 }
 
 func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {

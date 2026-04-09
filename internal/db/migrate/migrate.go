@@ -96,6 +96,13 @@ func Apply(conn *sql.DB) error {
 				return columnExists(tx, "tasks", "depends_on_payload")
 			},
 		},
+		{
+			version: "0013_add_tasks_ephemeral",
+			path:    "migrations/0013_add_tasks_ephemeral.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnExists(tx, "tasks", "ephemeral")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {
