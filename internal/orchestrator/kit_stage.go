@@ -10,8 +10,9 @@ import (
 // StageGates creates a temporary directory containing all gate scripts
 // from the project and all kits. Project scripts override kit scripts
 // with the same filename.
-func StageGates(projectGatesDir string, kitGatesDirs []KitGatesInfo, jobID string) (string, func(), error) {
-	return stageScripts("boid-gates", jobID, projectGatesDir, gateDirs(kitGatesDirs))
+func StageGates(projectGatesDir string, kitGatesDirs []KitGatesInfo, kitScriptsDirs []KitScriptsInfo, jobID string) (string, func(), error) {
+	dirs := append(gateDirs(kitGatesDirs), scriptDirs(kitScriptsDirs)...)
+	return stageScripts("boid-gates", jobID, projectGatesDir, dirs)
 }
 
 func stageScripts(prefix, jobID, projectDir string, kitDirs []string) (string, func(), error) {
@@ -46,6 +47,17 @@ func gateDirs(infos []KitGatesInfo) []string {
 	out := make([]string, 0, len(infos))
 	for _, info := range infos {
 		out = append(out, info.GatesDir)
+	}
+	return out
+}
+
+func scriptDirs(infos []KitScriptsInfo) []string {
+	if len(infos) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(infos))
+	for _, info := range infos {
+		out = append(out, info.ScriptsDir)
 	}
 	return out
 }

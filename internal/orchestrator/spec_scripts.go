@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,4 +62,19 @@ func ResolveGateScript(gatesDir, gateID string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("gate script not found: %s.(sh|py)", gateID)
+}
+
+// BuildScriptTask creates an ephemeral task spec for a script execution.
+func BuildScriptTask(script Script, projectID string, triggerPayload json.RawMessage) *Task {
+	behavior := fmt.Sprintf("_script:%s/%s", script.Kit, script.ID)
+	return &Task{
+		ProjectID:  projectID,
+		Title:      fmt.Sprintf("script: %s/%s", script.Kit, script.ID),
+		Behavior:   behavior,
+		Transition: "one-shot",
+		Readonly:   true,
+		Ephemeral:  true,
+		AutoStart:  true,
+		Payload:    triggerPayload,
+	}
 }
