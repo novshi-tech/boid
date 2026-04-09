@@ -280,6 +280,11 @@ type KitGatesInfo struct {
 	GateIDs  []string
 }
 
+type KitScriptsInfo struct {
+	ScriptsDir string
+	ScriptIDs  []string
+}
+
 type RawPayload json.RawMessage
 
 func (p *RawPayload) UnmarshalYAML(node *yaml.Node) error {
@@ -339,6 +344,7 @@ type ProjectMeta struct {
 	Scripts            []Script                `yaml:"-" json:"scripts,omitempty"`
 	KitHooksDirs       []KitHooksInfo          `yaml:"-" json:"-"`
 	KitGatesDirs       []KitGatesInfo          `yaml:"-" json:"-"`
+	KitScriptsDirs     []KitScriptsInfo        `yaml:"-" json:"-"`
 }
 
 type ProjectLocalMeta struct {
