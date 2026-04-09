@@ -1,0 +1,7 @@
+id: e2e-exec
+name: E2E Exec
+builtin_commands:
+  - boid
+task_behaviors: {}
+hooks: []
+gates: []
