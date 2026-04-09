@@ -6,6 +6,21 @@ import (
 	"path/filepath"
 )
 
+var ValidScriptTriggerValues = map[string]bool{
+	"task_done":    true,
+	"task_aborted": true,
+}
+
+func ResolveScriptScript(scriptsDir, scriptID string) (string, error) {
+	for _, ext := range []string{".sh", ".py"} {
+		path := filepath.Join(scriptsDir, scriptID+ext)
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("script not found: %s.(sh|py)", scriptID)
+}
+
 var ValidHookOnValues = map[string]bool{
 	"pending":             true,
 	"executing":           true,

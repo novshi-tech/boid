@@ -252,6 +252,24 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 		meta.GatesDir = gatesDir
 	}
 
+	scriptsDir := filepath.Join(dir, "scripts")
+	for i := range meta.Scripts {
+		s := &meta.Scripts[i]
+		for _, t := range s.On {
+			if !ValidScriptTriggerValues[string(t)] {
+				return nil, fmt.Errorf("script %q: invalid trigger %q", s.ID, t)
+			}
+		}
+		scriptPath, err := ResolveScriptScript(scriptsDir, s.ID)
+		if err != nil {
+			return nil, fmt.Errorf("script %q: %w", s.ID, err)
+		}
+		s.ScriptPath = scriptPath
+	}
+	if len(meta.Scripts) > 0 {
+		meta.ScriptsDir = scriptsDir
+	}
+
 	return &meta, nil
 }
 
@@ -359,6 +377,20 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) *Pr
 	}
 	allGates = append(allGates, base.Gates...)
 	result.Gates = allGates
+
+	var allScripts []Script
+	for i, meta := range kits {
+		consumer := ""
+		if i < len(kitConsumers) {
+			consumer = kitConsumers[i]
+		}
+		for _, s := range meta.Scripts {
+			s.Kit = consumer
+			allScripts = append(allScripts, s)
+		}
+	}
+	allScripts = append(allScripts, base.Scripts...)
+	result.Scripts = allScripts
 
 	mergedCmds := make(HostCommands)
 	for _, meta := range kits {
@@ -591,6 +623,7 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 	result.Kits = append([]KitRef(nil), meta.Kits...)
 	result.Hooks = append([]Hook(nil), meta.Hooks...)
 	result.Gates = append([]Gate(nil), meta.Gates...)
+	result.Scripts = append([]Script(nil), meta.Scripts...)
 	result.BuiltinCommands = append([]string(nil), meta.BuiltinCommands...)
 	result.KitHooksDirs = append([]KitHooksInfo(nil), meta.KitHooksDirs...)
 	result.KitGatesDirs = append([]KitGatesInfo(nil), meta.KitGatesDirs...)
