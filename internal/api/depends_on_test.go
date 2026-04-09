@@ -7,12 +7,18 @@ import (
 	"github.com/novshi-tech/boid/testutil"
 )
 
-func createTaskForTest(t *testing.T, ts *testutil.TestServer, projectID, title string) orchestrator.Task {
+func createTaskForTest(t *testing.T, ts *testutil.TestServer, projectID, title, ref, parentID string) orchestrator.Task {
 	t.Helper()
 	req := map[string]any{
 		"project_id": projectID,
 		"title":      title,
 		"behavior":   "planning",
+	}
+	if ref != "" {
+		req["ref"] = ref
+	}
+	if parentID != "" {
+		req["parent_id"] = parentID
 	}
 	var task orchestrator.Task
 	if err := ts.Client.Do("POST", "/api/tasks", req, &task); err != nil {
@@ -74,14 +80,15 @@ func TestCreateTask_WithDependsOn(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	createProjectWithBehavior(t, ts, "proj-dep-test", "Dep Test")
 
-	dep1 := createTaskForTest(t, ts, "proj-dep-test", "Dep 1")
-	dep2 := createTaskForTest(t, ts, "proj-dep-test", "Dep 2")
+	dep1 := createTaskForTest(t, ts, "proj-dep-test", "Dep 1", "dep1", "pdep")
+	dep2 := createTaskForTest(t, ts, "proj-dep-test", "Dep 2", "dep2", "pdep")
 
 	req := map[string]any{
 		"project_id": "proj-dep-test",
 		"title":      "Main task",
 		"behavior":   "planning",
-		"depends_on": []string{dep1.ID, dep2.ID},
+		"parent_id":  "pdep",
+		"depends_on": []string{"dep1", "dep2"},
 	}
 	var task orchestrator.Task
 	if err := ts.Client.Do("POST", "/api/tasks", req, &task); err != nil {

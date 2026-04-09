@@ -48,6 +48,14 @@ func (s *multiTaskStore) DeleteTask(id string) error {
 func (s *multiTaskStore) FindTaskByRemote(remoteID, datasourceID string) (*orchestrator.Task, error) {
 	return nil, nil
 }
+func (s *multiTaskStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {
+	for _, t := range s.tasks {
+		if t.Ref == ref && t.ParentID == parentID {
+			return t, nil
+		}
+	}
+	return nil, nil
+}
 func (s *multiTaskStore) FindDependentTasks(taskID string) ([]*orchestrator.Task, error) {
 	var result []*orchestrator.Task
 	for _, t := range s.tasks {
@@ -547,8 +555,10 @@ func TestTaskAppServiceCreateTask_AutoStart_DepNotSatisfied_StaysPending(t *test
 		},
 	}
 	dep := &orchestrator.Task{
-		ID:     "dep-task-id",
-		Status: orchestrator.TaskStatusPending, // done でない
+		ID:       "dep-task-id",
+		Ref:      "dep-ref",
+		ParentID: "parent-1",
+		Status:   orchestrator.TaskStatusPending, // done でない
 	}
 	store := &multiTaskStore{tasks: map[string]*orchestrator.Task{
 		"dep-task-id": dep,
@@ -567,7 +577,8 @@ func TestTaskAppServiceCreateTask_AutoStart_DepNotSatisfied_StaysPending(t *test
 		Title:     "dependent task",
 		Behavior:  "dev",
 		AutoStart: true,
-		DependsOn: []string{"dep-task-id"},
+		ParentID:  "parent-1",
+		DependsOn: []string{"dep-ref"},
 	})
 	// CreateTask はエラーを返さない（タスクは pending で作成される）
 	if err != nil {

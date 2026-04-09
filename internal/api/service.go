@@ -217,10 +217,16 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: "transition is required"}
 	}
 
-	for _, depID := range req.DependsOn {
-		if _, err := s.Tasks.GetTask(depID); err != nil {
-			return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("depends_on: task not found: %s", depID)}
+	var resolvedDeps []string
+	for _, dep := range req.DependsOn {
+		t, err := s.Tasks.FindTaskByRef(dep, req.ParentID)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("depends_on: ref %q lookup failed: %v", dep, err)}
 		}
+		if t == nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("depends_on: ref %q not found (parent_id: %s)", dep, req.ParentID)}
+		}
+		resolvedDeps = append(resolvedDeps, t.ID)
 	}
 
 	var ephemeral bool
@@ -244,7 +250,7 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		DataSourceID: req.DataSourceID,
 		Payload:      payload,
 		AutoStart:        req.AutoStart,
-		DependsOn:        req.DependsOn,
+		DependsOn:        resolvedDeps,
 		DependsOnPayload: req.DependsOnPayload,
 		Ref:              req.Ref,
 		ParentID:     req.ParentID,

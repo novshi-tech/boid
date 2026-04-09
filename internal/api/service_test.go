@@ -877,6 +877,9 @@ func (s *stubTaskStore) FindTaskByRemote(remoteID, datasourceID string) (*orches
 	}
 	return nil, nil
 }
+func (s *stubTaskStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {
+	return nil, nil
+}
 func (s *stubTaskStore) FindDependentTasks(taskID string) ([]*orchestrator.Task, error) {
 	return nil, nil
 }
@@ -899,6 +902,9 @@ func (s *stubTx) UpdateTask(task *orchestrator.Task) error {
 }
 func (s *stubTx) DeleteTask(id string) error { return nil }
 func (s *stubTx) FindTaskByRemote(remoteID, datasourceID string) (*orchestrator.Task, error) {
+	return nil, nil
+}
+func (s *stubTx) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {
 	return nil, nil
 }
 func (s *stubTx) FindDependentTasks(taskID string) ([]*orchestrator.Task, error) {

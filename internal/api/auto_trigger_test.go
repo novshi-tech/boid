@@ -51,12 +51,18 @@ func waitForStatus(t *testing.T, ts *testutil.TestServer, taskID string, want or
 	}
 }
 
-func createImplTask(t *testing.T, ts *testutil.TestServer, projectID, title string, dependsOn []string, dependsOnPayload string) orchestrator.Task {
+func createImplTask(t *testing.T, ts *testutil.TestServer, projectID, title, ref, parentID string, dependsOn []string, dependsOnPayload string) orchestrator.Task {
 	t.Helper()
 	req := map[string]any{
 		"project_id": projectID,
 		"title":      title,
 		"behavior":   "impl",
+	}
+	if ref != "" {
+		req["ref"] = ref
+	}
+	if parentID != "" {
+		req["parent_id"] = parentID
 	}
 	if len(dependsOn) > 0 {
 		req["depends_on"] = dependsOn
@@ -85,8 +91,8 @@ func TestAutoTrigger_TaskDone_SingleDependent_AutoStarts(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	setupTriggerProject(t, ts, "proj-trigger-1")
 
-	taskA := createImplTask(t, ts, "proj-trigger-1", "Task A", nil, "")
-	taskB := createImplTask(t, ts, "proj-trigger-1", "Task B (depends on A)", []string{taskA.ID}, "")
+	taskA := createImplTask(t, ts, "proj-trigger-1", "Task A", "a", "p1", nil, "")
+	taskB := createImplTask(t, ts, "proj-trigger-1", "Task B (depends on A)", "b", "p1", []string{"a"}, "")
 
 	// B は pending のはず
 	if taskB.Status != orchestrator.TaskStatusPending {
@@ -107,10 +113,10 @@ func TestAutoTrigger_TaskDone_PartialDeps_StaysPending(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	setupTriggerProject(t, ts, "proj-trigger-2")
 
-	taskA := createImplTask(t, ts, "proj-trigger-2", "Task A", nil, "")
-	taskC := createImplTask(t, ts, "proj-trigger-2", "Task C", nil, "")
-	taskB := createImplTask(t, ts, "proj-trigger-2", "Task B (depends on A and C)",
-		[]string{taskA.ID, taskC.ID}, "")
+	taskA := createImplTask(t, ts, "proj-trigger-2", "Task A", "a", "p2", nil, "")
+	taskC := createImplTask(t, ts, "proj-trigger-2", "Task C", "c", "p2", nil, "")
+	taskB := createImplTask(t, ts, "proj-trigger-2", "Task B (depends on A and C)", "b", "p2",
+		[]string{"a", "c"}, "")
 
 	// A を done にする
 	applyImplAction(t, ts, taskA.ID, "start")
@@ -140,12 +146,12 @@ func TestAutoTrigger_PayloadUpdate_WithPayloadCondition_TriggersDependents(t *te
 	setupTriggerProject(t, ts, "proj-trigger-3")
 
 	// Task A: 依存元（done に遷移しておく）
-	taskA := createImplTask(t, ts, "proj-trigger-3", "Task A", nil, "")
+	taskA := createImplTask(t, ts, "proj-trigger-3", "Task A", "a", "p3", nil, "")
 	applyImplAction(t, ts, taskA.ID, "start")
 	applyImplAction(t, ts, taskA.ID, "done")
 
 	// Task B: A が done かつ A.payload["pr_merged"] が truthy のときだけ start できる
-	taskB := createImplTask(t, ts, "proj-trigger-3", "Task B (payload dep)", []string{taskA.ID}, "pr_merged")
+	taskB := createImplTask(t, ts, "proj-trigger-3", "Task B (payload dep)", "b", "p3", []string{"a"}, "pr_merged")
 
 	// A の payload に pr_merged=false をセット → B は pending 維持
 	patchFalse := map[string]any{
@@ -182,9 +188,9 @@ func TestAutoTrigger_CircularDep_CreateError(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	setupTriggerProject(t, ts, "proj-trigger-cycle")
 
-	taskA := createImplTask(t, ts, "proj-trigger-cycle", "Task A", nil, "")
-	taskB := createImplTask(t, ts, "proj-trigger-cycle", "Task B", []string{taskA.ID}, "")
-	taskC := createImplTask(t, ts, "proj-trigger-cycle", "Task C", []string{taskB.ID}, "")
+	taskA := createImplTask(t, ts, "proj-trigger-cycle", "Task A", "a", "pcyc", nil, "")
+	_ = createImplTask(t, ts, "proj-trigger-cycle", "Task B", "b", "pcyc", []string{"a"}, "")
+	_ = createImplTask(t, ts, "proj-trigger-cycle", "Task C", "c", "pcyc", []string{"b"}, "")
 
 	// taskA の ID で taskC に依存するタスクを作ろうとする → 循環依存エラー
 	cycleReq := map[string]any{
@@ -192,7 +198,8 @@ func TestAutoTrigger_CircularDep_CreateError(t *testing.T) {
 		"project_id": "proj-trigger-cycle",
 		"title":      "Cyclic A",
 		"behavior":   "impl",
-		"depends_on": []string{taskC.ID},
+		"parent_id":  "pcyc",
+		"depends_on": []string{"c"},
 	}
 	err := ts.Client.Do("POST", "/api/tasks", cycleReq, nil)
 	if err == nil {

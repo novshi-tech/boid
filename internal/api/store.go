@@ -89,6 +89,7 @@ type TaskStore interface {
 	UpdateTask(task *orchestrator.Task) error
 	DeleteTask(id string) error
 	FindTaskByRemote(remoteID, datasourceID string) (*orchestrator.Task, error)
+	FindTaskByRef(ref, parentID string) (*orchestrator.Task, error)
 	FindDependentTasks(taskID string) ([]*orchestrator.Task, error)
 }
 
