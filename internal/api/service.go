@@ -241,6 +241,8 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		AutoStart:    req.AutoStart,
 		DependsOn:    req.DependsOn,
 		StartGate:    req.StartGate,
+		Ref:          req.Ref,
+		ParentID:     req.ParentID,
 	}
 	if err := s.Tasks.CreateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}

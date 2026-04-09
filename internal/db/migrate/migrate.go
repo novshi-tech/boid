@@ -74,6 +74,13 @@ func Apply(conn *sql.DB) error {
 				return tableExists(tx, "task_dependencies")
 			},
 		},
+		{
+			version: "0010_add_task_ref_parent",
+			path:    "migrations/0010_add_task_ref_parent.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnExists(tx, "tasks", "ref")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {
