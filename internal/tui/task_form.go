@@ -358,7 +358,8 @@ func (s *TaskFormScreen) View(width, height int) string {
 	// Title input
 	sb.WriteString(s.titleField.View())
 
-	// Description textarea
+	// Description textarea — 画面幅いっぱいに広げる
+	s.descArea.SetWidth(width)
 	sb.WriteString(s.descArea.View())
 
 	// Buttons

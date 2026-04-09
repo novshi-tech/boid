@@ -457,6 +457,8 @@ func (s *TaskEditScreen) View(width, height int) string {
 	sb.WriteByte('\n')
 
 	sb.WriteString(s.titleField.View())
+	// Description — 画面幅いっぱいに広げる
+	s.descArea.SetWidth(width)
 	sb.WriteString(s.descArea.View())
 
 	// Instructions section (hidden when no instructions)
@@ -494,7 +496,9 @@ func (s *TaskEditScreen) View(width, height int) string {
 
 		sb.WriteString(ed.modelField.View())
 		sb.WriteString(ed.consumerField.View())
-		sb.WriteString(ed.messageArea.View())
+		// instruction message — 画面幅いっぱいに広げる
+		s.roleEditors[s.activeRole].messageArea.SetWidth(width)
+		sb.WriteString(s.roleEditors[s.activeRole].messageArea.View())
 		sb.WriteString(ed.interactive.View())
 	}
 
