@@ -350,6 +350,74 @@ func TestEvaluate_OptionalTrait_FiresWhenPresent(t *testing.T) {
 	}
 }
 
+func TestEvaluate_BehaviorFilter(t *testing.T) {
+	eval := &orchestrator.Evaluator{}
+
+	task := &orchestrator.Task{
+		Status:   orchestrator.TaskStatusExecuting,
+		Behavior: "dev",
+		Payload:  json.RawMessage(`{}`),
+	}
+	hooks := []projectspec.Hook{
+		{ID: "dev-hook", On: projectspec.OnValues{"executing"}, Behavior: "dev"},
+		{ID: "ci-hook", On: projectspec.OnValues{"executing"}, Behavior: "ci"},
+	}
+
+	matched := eval.Evaluate(task, hooks)
+	if len(matched) != 1 {
+		t.Fatalf("expected 1 matched hook, got %d", len(matched))
+	}
+	if matched[0].ID != "dev-hook" {
+		t.Fatalf("expected dev-hook, got %s", matched[0].ID)
+	}
+}
+
+func TestEvaluate_BehaviorFilter_Empty(t *testing.T) {
+	eval := &orchestrator.Evaluator{}
+
+	task := &orchestrator.Task{
+		Status:   orchestrator.TaskStatusExecuting,
+		Behavior: "dev",
+		Payload:  json.RawMessage(`{}`),
+	}
+	hooks := []projectspec.Hook{
+		{ID: "any-hook", On: projectspec.OnValues{"executing"}},
+		{ID: "dev-hook", On: projectspec.OnValues{"executing"}, Behavior: "dev"},
+	}
+
+	matched := eval.Evaluate(task, hooks)
+	if len(matched) != 2 {
+		t.Fatalf("expected 2 matched hooks (empty behavior matches all), got %d", len(matched))
+	}
+}
+
+func TestEvaluateGates_BehaviorFilter(t *testing.T) {
+	eval := &orchestrator.Evaluator{}
+
+	task := &orchestrator.Task{
+		Status:   orchestrator.TaskStatusExecuting,
+		Behavior: "dev",
+		Payload:  json.RawMessage(`{}`),
+	}
+	gates := []projectspec.Gate{
+		{ID: "dev-gate", On: projectspec.OnValues{"executing"}, Behavior: "dev"},
+		{ID: "ci-gate", On: projectspec.OnValues{"executing"}, Behavior: "ci"},
+		{ID: "any-gate", On: projectspec.OnValues{"executing"}},
+	}
+
+	matched := eval.EvaluateGates(task, gates)
+	if len(matched) != 2 {
+		t.Fatalf("expected 2 matched gates (dev-gate + any-gate), got %d", len(matched))
+	}
+	ids := map[string]bool{}
+	for _, g := range matched {
+		ids[g.ID] = true
+	}
+	if !ids["dev-gate"] || !ids["any-gate"] {
+		t.Fatalf("expected dev-gate and any-gate, got %v", ids)
+	}
+}
+
 func TestEvaluateGates_OnMultipleValues_NoMatchOtherStatus(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
