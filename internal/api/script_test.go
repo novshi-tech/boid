@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -137,6 +138,34 @@ func TestScriptHandler_Run(t *testing.T) {
 	triggerMap, ok := trigger.(map[string]any)
 	if !ok || triggerMap["event"] != "manual" {
 		t.Errorf("_trigger = %v, want {event: manual}", trigger)
+	}
+}
+
+func TestScriptHandler_Run_StartFails_TaskStillReturned(t *testing.T) {
+	script := orchestrator.Script{ID: "notify", Kit: "boid-kits"}
+	meta := &orchestrator.ProjectMeta{Scripts: []orchestrator.Script{script}}
+	store := &stubTaskStore{}
+	workflow := &stubWorkflowService{applyActionErr: fmt.Errorf("state machine error")}
+	h := &ScriptHandler{
+		Meta:     stubMetaStore{meta: meta},
+		Tasks:    store,
+		Workflow: workflow,
+	}
+	r := chi.NewRouter()
+	r.Route("/api/projects/{id}/scripts", func(r chi.Router) {
+		r.Mount("/", h.Routes())
+	})
+
+	req := httptest.NewRequest("POST", "/api/projects/proj-1/scripts/boid-kits/notify/run", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Task is still returned even if start fails
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+	if store.createdTask == nil {
+		t.Fatal("no task created")
 	}
 }
 

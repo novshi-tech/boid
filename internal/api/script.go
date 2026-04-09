@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -72,10 +73,10 @@ func (h *ScriptHandler) Run(w http.ResponseWriter, r *http.Request) {
 	if h.Workflow != nil {
 		result, err := h.Workflow.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
 		if err != nil {
-			writeServiceError(w, err)
-			return
+			slog.Error("script run: failed to start task", "task_id", task.ID, "error", err)
+		} else {
+			task = result.Task
 		}
-		task = result.Task
 	}
 
 	writeJSON(w, http.StatusCreated, task)
