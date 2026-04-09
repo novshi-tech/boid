@@ -1,10 +1,59 @@
 package orchestrator
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 )
+
+// MatchScripts returns scripts whose trigger and behavior filter match the given event.
+func MatchScripts(scripts []Script, event ScriptTrigger, taskBehavior string) []Script {
+	var matched []Script
+	for _, s := range scripts {
+		if !containsTrigger(s.On, event) {
+			continue
+		}
+		if s.Filter.Behavior != "" && s.Filter.Behavior != taskBehavior {
+			continue
+		}
+		matched = append(matched, s)
+	}
+	return matched
+}
+
+func containsTrigger(triggers []ScriptTrigger, event ScriptTrigger) bool {
+	for _, t := range triggers {
+		if t == event {
+			return true
+		}
+	}
+	return false
+}
+
+// BuildScriptTask creates an ephemeral Task for the given script triggered by parentTask.
+// The task payload includes a _trigger field with the event context.
+func BuildScriptTask(script Script, event ScriptTrigger, parentTask *Task) *Task {
+	payload, _ := json.Marshal(map[string]any{
+		"_trigger": map[string]string{
+			"event":      string(event),
+			"task_id":    parentTask.ID,
+			"project_id": parentTask.ProjectID,
+			"behavior":   parentTask.Behavior,
+		},
+	})
+	return &Task{
+		ProjectID:   parentTask.ProjectID,
+		Title:       script.ID,
+		Description: script.Description,
+		Behavior:    script.ID,
+		Transition:  "one-shot",
+		Status:      TaskStatusPending,
+		Ephemeral:   true,
+		ParentID:    parentTask.ID,
+		Payload:     json.RawMessage(payload),
+	}
+}
 
 var ValidScriptTriggerValues = map[string]bool{
 	"task_done":    true,

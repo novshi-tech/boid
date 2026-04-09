@@ -707,6 +707,9 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 				if s.Lifecycle != nil {
 					s.Lifecycle.CleanupTaskWindow(current.ID)
 				}
+				if current.Status == orchestrator.TaskStatusDone {
+					s.fireScriptTriggers(ctx, current, meta, orchestrator.ScriptTriggerTaskDone)
+				}
 			}
 			return
 		}
@@ -730,11 +733,32 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			if s.Lifecycle != nil {
 				s.Lifecycle.CleanupTaskWindow(current.ID)
 			}
+			if current.Status == orchestrator.TaskStatusDone {
+				s.fireScriptTriggers(ctx, current, meta, orchestrator.ScriptTriggerTaskDone)
+			}
 			return
 		}
 	}
 
 	slog.Warn("dispatch loop max cycles reached", "task_id", current.ID, "max", maxCycles)
+}
+
+func (s *TaskWorkflowService) fireScriptTriggers(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, event orchestrator.ScriptTrigger) {
+	if task.Ephemeral {
+		return
+	}
+	matched := orchestrator.MatchScripts(meta.Scripts, event, task.Behavior)
+	for _, script := range matched {
+		scriptTask := orchestrator.BuildScriptTask(script, event, task)
+		if err := s.Tasks.CreateTask(scriptTask); err != nil {
+			slog.Error("script trigger: create task failed", "script_id", script.ID, "task_id", task.ID, "error", err)
+			continue
+		}
+		slog.Info("script trigger: task created", "script_id", script.ID, "script_task_id", scriptTask.ID)
+		if _, err := s.ApplyAction(ctx, scriptTask.ID, ApplyActionRequest{Type: "start"}); err != nil {
+			slog.Error("script trigger: start failed", "script_id", script.ID, "script_task_id", scriptTask.ID, "error", err)
+		}
+	}
 }
 
 func (s *TaskWorkflowService) recordDispatchError(taskID string, err error) {
