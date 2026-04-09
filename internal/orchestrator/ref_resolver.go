@@ -10,12 +10,13 @@ import (
 
 // payloadTaskSpec is the JSON representation of a task in payload_patch.tasks.
 type payloadTaskSpec struct {
-	Title       string   `json:"title"`
-	Description string   `json:"description,omitempty"`
-	Behavior    string   `json:"behavior"`
-	Ref         string   `json:"ref,omitempty"`
-	DependsOn   []string `json:"depends_on,omitempty"`
-	AutoStart   bool     `json:"auto_start,omitempty"`
+	Title            string   `json:"title"`
+	Description      string   `json:"description,omitempty"`
+	Behavior         string   `json:"behavior"`
+	Ref              string   `json:"ref,omitempty"`
+	DependsOn        []string `json:"depends_on,omitempty"`
+	DependsOnPayload string   `json:"depends_on_payload,omitempty"`
+	AutoStart        bool     `json:"auto_start,omitempty"`
 }
 
 // uuidPattern matches a standard UUID (8-4-4-4-12 hex digits).
@@ -57,14 +58,15 @@ func ResolvePayloadTasks(parentID, projectID string, tasksJSON json.RawMessage) 
 	for i, spec := range specs {
 		id := uuid.New().String()
 		tasks[i] = &Task{
-			ID:        id,
-			ProjectID: projectID,
-			ParentID:  parentID,
-			Title:     spec.Title,
-			Description: spec.Description,
-			Behavior:  spec.Behavior,
-			Ref:       spec.Ref,
-			AutoStart: spec.AutoStart,
+			ID:               id,
+			ProjectID:        projectID,
+			ParentID:         parentID,
+			Title:            spec.Title,
+			Description:      spec.Description,
+			Behavior:         spec.Behavior,
+			Ref:              spec.Ref,
+			DependsOnPayload: spec.DependsOnPayload,
+			AutoStart:        spec.AutoStart,
 		}
 		if spec.Ref != "" {
 			refToID[spec.Ref] = id
