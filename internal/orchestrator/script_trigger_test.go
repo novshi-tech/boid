@@ -80,6 +80,7 @@ func TestMatchScripts_EmptyList(t *testing.T) {
 func TestBuildTriggeredScriptTask(t *testing.T) {
 	script := orchestrator.Script{
 		ID:          "notify",
+		Kit:         "my-kit",
 		Description: "Sends a notification",
 	}
 	parent := &orchestrator.Task{
@@ -93,11 +94,19 @@ func TestBuildTriggeredScriptTask(t *testing.T) {
 	if !task.Ephemeral {
 		t.Error("Ephemeral should be true")
 	}
+	if !task.Readonly {
+		t.Error("Readonly should be true")
+	}
 	if task.ProjectID != parent.ProjectID {
 		t.Errorf("ProjectID = %q, want %q", task.ProjectID, parent.ProjectID)
 	}
-	if task.Title != script.ID {
-		t.Errorf("Title = %q, want %q", task.Title, script.ID)
+	wantTitle := "script: my-kit/notify"
+	if task.Title != wantTitle {
+		t.Errorf("Title = %q, want %q", task.Title, wantTitle)
+	}
+	wantBehavior := "_script:my-kit/notify"
+	if task.Behavior != wantBehavior {
+		t.Errorf("Behavior = %q, want %q", task.Behavior, wantBehavior)
 	}
 	if task.Description != script.Description {
 		t.Errorf("Description = %q, want %q", task.Description, script.Description)

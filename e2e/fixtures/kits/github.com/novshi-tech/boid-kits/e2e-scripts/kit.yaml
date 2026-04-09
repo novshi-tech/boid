@@ -1,0 +1,18 @@
+env:
+  E2E_STATE_DIR: ${E2E_STATE_DIR}
+
+scripts:
+  - id: echo-task
+    description: "Echo script that creates a follow-up task"
+  - id: on-done
+    description: "Triggered on task_done"
+    on: [task_done]
+    filter:
+      behavior: simple
+
+gates:
+  - id: emit-artifact
+    on: [executing]
+    behavior: simple
+    traits:
+      produces: [artifact]
