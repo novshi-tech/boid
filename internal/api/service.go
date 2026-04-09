@@ -755,7 +755,7 @@ func (s *TaskWorkflowService) fireScriptTriggers(ctx context.Context, task *orch
 	}
 	matched := orchestrator.MatchScripts(meta.Scripts, event, task.Behavior)
 	for _, script := range matched {
-		scriptTask := orchestrator.BuildScriptTask(script, event, task)
+		scriptTask := orchestrator.BuildTriggeredScriptTask(script, event, task)
 		if err := s.Tasks.CreateTask(scriptTask); err != nil {
 			slog.Error("script trigger: create task failed", "script_id", script.ID, "task_id", task.ID, "error", err)
 			continue

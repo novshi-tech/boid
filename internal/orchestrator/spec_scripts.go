@@ -31,9 +31,9 @@ func containsTrigger(triggers []ScriptTrigger, event ScriptTrigger) bool {
 	return false
 }
 
-// BuildScriptTask creates an ephemeral Task for the given script triggered by parentTask.
+// BuildTriggeredScriptTask creates an ephemeral Task for the given script triggered by parentTask.
 // The task payload includes a _trigger field with the event context.
-func BuildScriptTask(script Script, event ScriptTrigger, parentTask *Task) *Task {
+func BuildTriggeredScriptTask(script Script, event ScriptTrigger, parentTask *Task) *Task {
 	payload, _ := json.Marshal(map[string]any{
 		"_trigger": map[string]string{
 			"event":      string(event),

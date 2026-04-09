@@ -77,7 +77,7 @@ func TestMatchScripts_EmptyList(t *testing.T) {
 	}
 }
 
-func TestBuildScriptTask(t *testing.T) {
+func TestBuildTriggeredScriptTask(t *testing.T) {
 	script := orchestrator.Script{
 		ID:          "notify",
 		Description: "Sends a notification",
@@ -88,7 +88,7 @@ func TestBuildScriptTask(t *testing.T) {
 		Behavior:  "dev",
 	}
 
-	task := orchestrator.BuildScriptTask(script, orchestrator.ScriptTriggerTaskDone, parent)
+	task := orchestrator.BuildTriggeredScriptTask(script, orchestrator.ScriptTriggerTaskDone, parent)
 
 	if !task.Ephemeral {
 		t.Error("Ephemeral should be true")
