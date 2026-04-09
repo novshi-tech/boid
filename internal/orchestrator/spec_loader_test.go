@@ -1198,6 +1198,128 @@ host_commands:
 	})
 }
 
+func TestReadKitMeta_Scripts(t *testing.T) {
+	t.Run("parses and resolves script path", func(t *testing.T) {
+		dir := t.TempDir()
+		scriptsDir := filepath.Join(dir, "scripts")
+		_ = os.MkdirAll(scriptsDir, 0o755)
+		_ = os.WriteFile(filepath.Join(scriptsDir, "notify.sh"), []byte("#!/bin/sh\necho ok"), 0o755)
+		writeKitYAML(t, dir, `
+scripts:
+  - id: notify
+    description: Sends notification
+    on: [task_done, task_aborted]
+    filter:
+      behavior: dev
+`)
+
+		meta, err := projectspec.ReadKitMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadKitMeta: %v", err)
+		}
+		if len(meta.Scripts) != 1 {
+			t.Fatalf("expected 1 script, got %d", len(meta.Scripts))
+		}
+		s := meta.Scripts[0]
+		if s.ID != "notify" {
+			t.Errorf("ID = %q, want %q", s.ID, "notify")
+		}
+		if s.Description != "Sends notification" {
+			t.Errorf("Description = %q, want %q", s.Description, "Sends notification")
+		}
+		if len(s.On) != 2 || s.On[0] != projectspec.ScriptTriggerTaskDone || s.On[1] != projectspec.ScriptTriggerTaskAborted {
+			t.Errorf("On = %v, want [task_done task_aborted]", s.On)
+		}
+		if s.Filter.Behavior != "dev" {
+			t.Errorf("Filter.Behavior = %q, want %q", s.Filter.Behavior, "dev")
+		}
+		if s.ScriptPath != filepath.Join(scriptsDir, "notify.sh") {
+			t.Errorf("ScriptPath = %q, want %q", s.ScriptPath, filepath.Join(scriptsDir, "notify.sh"))
+		}
+		if meta.ScriptsDir != scriptsDir {
+			t.Errorf("ScriptsDir = %q, want %q", meta.ScriptsDir, scriptsDir)
+		}
+	})
+
+	t.Run("resolves python script", func(t *testing.T) {
+		dir := t.TempDir()
+		scriptsDir := filepath.Join(dir, "scripts")
+		_ = os.MkdirAll(scriptsDir, 0o755)
+		_ = os.WriteFile(filepath.Join(scriptsDir, "post-done.py"), []byte("print('ok')"), 0o755)
+		writeKitYAML(t, dir, "scripts:\n  - id: post-done\n    on: [task_done]\n")
+
+		meta, err := projectspec.ReadKitMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadKitMeta: %v", err)
+		}
+		if len(meta.Scripts) != 1 || meta.Scripts[0].ScriptPath != filepath.Join(scriptsDir, "post-done.py") {
+			t.Fatalf("unexpected script: %+v", meta.Scripts)
+		}
+	})
+
+	t.Run("missing script file returns error", func(t *testing.T) {
+		dir := t.TempDir()
+		scriptsDir := filepath.Join(dir, "scripts")
+		_ = os.MkdirAll(scriptsDir, 0o755)
+		writeKitYAML(t, dir, "scripts:\n  - id: missing\n    on: [task_done]\n")
+
+		_, err := projectspec.ReadKitMeta(dir)
+		if err == nil || !strings.Contains(err.Error(), "script not found") {
+			t.Fatalf("expected script not found error, got %v", err)
+		}
+	})
+
+	t.Run("invalid trigger value returns error", func(t *testing.T) {
+		dir := t.TempDir()
+		writeKitYAML(t, dir, "scripts:\n  - id: bad\n    on: [invalid_trigger]\n")
+
+		_, err := projectspec.ReadKitMeta(dir)
+		if err == nil || !strings.Contains(err.Error(), "invalid trigger") {
+			t.Fatalf("expected invalid trigger error, got %v", err)
+		}
+	})
+}
+
+func TestMergeKitMeta_Scripts(t *testing.T) {
+	t.Run("scripts from kit get Kit field set", func(t *testing.T) {
+		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
+		meta := &projectspec.KitMeta{
+			Scripts: []projectspec.Script{
+				{ID: "notify", On: []projectspec.ScriptTrigger{projectspec.ScriptTriggerTaskDone}, ScriptPath: "/kit/scripts/notify.sh"},
+			},
+		}
+
+		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"mykit"})
+		if len(result.Scripts) != 1 {
+			t.Fatalf("expected 1 script, got %d", len(result.Scripts))
+		}
+		if result.Scripts[0].Kit != "mykit" {
+			t.Errorf("Kit = %q, want %q", result.Scripts[0].Kit, "mykit")
+		}
+		if result.Scripts[0].ID != "notify" {
+			t.Errorf("ID = %q, want %q", result.Scripts[0].ID, "notify")
+		}
+	})
+
+	t.Run("scripts from multiple kits are merged", func(t *testing.T) {
+		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
+		kitA := &projectspec.KitMeta{
+			Scripts: []projectspec.Script{{ID: "script-a", ScriptPath: "/a/scripts/script-a.sh"}},
+		}
+		kitB := &projectspec.KitMeta{
+			Scripts: []projectspec.Script{{ID: "script-b", ScriptPath: "/b/scripts/script-b.sh"}},
+		}
+
+		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"})
+		if len(result.Scripts) != 2 {
+			t.Fatalf("expected 2 scripts, got %d: %+v", len(result.Scripts), result.Scripts)
+		}
+		if result.Scripts[0].Kit != "kit-a" || result.Scripts[1].Kit != "kit-b" {
+			t.Errorf("unexpected Kit fields: %+v", result.Scripts)
+		}
+	})
+}
+
 func TestReadProjectMeta_HostCommandRelativePath(t *testing.T) {
 	t.Run("relative path resolved to project root", func(t *testing.T) {
 		dir := t.TempDir()
