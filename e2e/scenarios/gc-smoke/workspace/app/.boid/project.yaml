@@ -1,0 +1,8 @@
+id: gc-smoke
+name: GC Smoke
+task_behaviors:
+  smoke:
+    name: Smoke
+    transition: one-shot
+hooks: []
+gates: []
