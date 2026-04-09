@@ -139,6 +139,7 @@ run_scenario() {
       --socket-path "$BOID_SOCKET" \
       --http-addr "127.0.0.1:0" \
       --kits-dir "$XDG_DATA_HOME/boid/kits" \
+      --key-file-path "$XDG_DATA_HOME/boid/boid-secret.key" \
       >"$E2E_LOG_DIR/server.stdout.log" \
       2>"$E2E_LOG_DIR/server.stderr.log" &
     SERVER_PID=$!
