@@ -770,17 +770,14 @@ func TestFindTaskByRemote_MatchesBothFields(t *testing.T) {
 	}
 }
 
-func TestCreateTask_WithStartGate(t *testing.T) {
+func TestCreateTask_WithDependsOnPayload(t *testing.T) {
 	d := createTestProject(t)
 
 	task := &orchestrator.Task{
-		ProjectID: "proj-1",
-		Title:     "Task with start gate",
-		Behavior:  "dev",
-		StartGate: &orchestrator.StartGate{
-			Type:   "manual",
-			Params: map[string]string{"approver": "alice"},
-		},
+		ProjectID:        "proj-1",
+		Title:            "Task with depends_on_payload",
+		Behavior:         "dev",
+		DependsOnPayload: "branch_merged",
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
@@ -790,23 +787,17 @@ func TestCreateTask_WithStartGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.StartGate == nil {
-		t.Fatal("StartGate = nil, want non-nil")
-	}
-	if got.StartGate.Type != "manual" {
-		t.Fatalf("StartGate.Type = %q, want %q", got.StartGate.Type, "manual")
-	}
-	if got.StartGate.Params["approver"] != "alice" {
-		t.Fatalf("StartGate.Params[approver] = %q, want %q", got.StartGate.Params["approver"], "alice")
+	if got.DependsOnPayload != "branch_merged" {
+		t.Fatalf("DependsOnPayload = %q, want %q", got.DependsOnPayload, "branch_merged")
 	}
 }
 
-func TestCreateTask_WithoutStartGate(t *testing.T) {
+func TestCreateTask_WithoutDependsOnPayload(t *testing.T) {
 	d := createTestProject(t)
 
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
-		Title:     "Task without start gate",
+		Title:     "Task without depends_on_payload",
 		Behavior:  "dev",
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
@@ -817,31 +808,7 @@ func TestCreateTask_WithoutStartGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.StartGate != nil {
-		t.Fatalf("StartGate = %+v, want nil", got.StartGate)
-	}
-}
-
-func TestStartGate_JSONRoundtrip(t *testing.T) {
-	sg := &orchestrator.StartGate{
-		Type:   "cron",
-		Params: map[string]string{"schedule": "0 9 * * 1-5", "tz": "Asia/Tokyo"},
-	}
-	b, err := json.Marshal(sg)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var got orchestrator.StartGate
-	if err := json.Unmarshal(b, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got.Type != sg.Type {
-		t.Fatalf("Type = %q, want %q", got.Type, sg.Type)
-	}
-	if got.Params["schedule"] != sg.Params["schedule"] {
-		t.Fatalf("Params[schedule] = %q, want %q", got.Params["schedule"], sg.Params["schedule"])
-	}
-	if got.Params["tz"] != sg.Params["tz"] {
-		t.Fatalf("Params[tz] = %q, want %q", got.Params["tz"], sg.Params["tz"])
+	if got.DependsOnPayload != "" {
+		t.Fatalf("DependsOnPayload = %q, want empty", got.DependsOnPayload)
 	}
 }

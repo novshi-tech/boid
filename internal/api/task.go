@@ -50,9 +50,9 @@ type CreateTaskRequest struct {
 	Worktree     *bool                   `json:"worktree,omitempty"`
 	BranchPrefix *string                 `json:"branch_prefix,omitempty"`
 	BaseBranch   *string                 `json:"base_branch,omitempty"`
-	DependsOn    []string                `json:"depends_on,omitempty"`
-	StartGate    *orchestrator.StartGate `json:"start_gate,omitempty"`
-	Ref          string                  `json:"ref,omitempty"`
+	DependsOn        []string `json:"depends_on,omitempty"`
+	DependsOnPayload string   `json:"depends_on_payload,omitempty"`
+	Ref              string   `json:"ref,omitempty"`
 	ParentID     string                  `json:"parent_id,omitempty"`
 }
 

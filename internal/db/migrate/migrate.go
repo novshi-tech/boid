@@ -81,6 +81,21 @@ func Apply(conn *sql.DB) error {
 				return columnExists(tx, "tasks", "ref")
 			},
 		},
+		{
+			version: "0011_drop_tasks_start_gate",
+			path:    "migrations/0011_drop_tasks_start_gate.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				exists, err := columnExists(tx, "tasks", "start_gate")
+				return !exists, err
+			},
+		},
+		{
+			version: "0012_add_tasks_depends_on_payload",
+			path:    "migrations/0012_add_tasks_depends_on_payload.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnExists(tx, "tasks", "depends_on_payload")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {
