@@ -187,6 +187,15 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	projectHandler := &api.ProjectHandler{Service: runtime.projectSvc}
 	r.Mount("/api/projects", projectHandler.Routes())
 
+	scriptHandler := &api.ScriptHandler{
+		Meta:     runtime.taskSvc.Meta,
+		Tasks:    runtime.taskRepo,
+		Workflow: runtime.workflow,
+	}
+	r.Route("/api/projects/{id}/scripts", func(r chi.Router) {
+		r.Mount("/", scriptHandler.Routes())
+	})
+
 	workspaceHandler := &api.WorkspaceHandler{Service: runtime.projectSvc}
 	r.Mount("/api/workspaces", workspaceHandler.Routes())
 

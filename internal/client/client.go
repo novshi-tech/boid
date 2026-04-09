@@ -335,6 +335,22 @@ func (c *Client) ApplyAction(taskID string, req api.ApplyActionRequest) (*api.Ac
 	return &result, nil
 }
 
+func (c *Client) ListScripts(projectID string) ([]orchestrator.Script, error) {
+	var scripts []orchestrator.Script
+	if err := c.Do("GET", "/api/projects/"+projectID+"/scripts", nil, &scripts); err != nil {
+		return nil, err
+	}
+	return scripts, nil
+}
+
+func (c *Client) RunScript(projectID, kit, scriptID string) (*orchestrator.Task, error) {
+	var task orchestrator.Task
+	if err := c.Do("POST", "/api/projects/"+projectID+"/scripts/"+kit+"/"+scriptID+"/run", nil, &task); err != nil {
+		return nil, err
+	}
+	return &task, nil
+}
+
 func (c *Client) ResizeJob(jobID string, rows, cols int) error {
 	return c.Do("POST", "/api/jobs/"+jobID+"/resize", map[string]int{
 		"rows": rows,
