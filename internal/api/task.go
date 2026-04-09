@@ -52,6 +52,8 @@ type CreateTaskRequest struct {
 	BaseBranch   *string                 `json:"base_branch,omitempty"`
 	DependsOn    []string                `json:"depends_on,omitempty"`
 	StartGate    *orchestrator.StartGate `json:"start_gate,omitempty"`
+	Ref          string                  `json:"ref,omitempty"`
+	ParentID     string                  `json:"parent_id,omitempty"`
 }
 
 func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {

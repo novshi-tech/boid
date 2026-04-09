@@ -42,6 +42,8 @@ type Task struct {
 	AutoStart    bool            `json:"auto_start,omitempty"`
 	DependsOn    []string        `json:"depends_on,omitempty"`
 	StartGate    *StartGate      `json:"start_gate,omitempty"`
+	Ref          string          `json:"ref,omitempty"`
+	ParentID     string          `json:"parent_id,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
 }
