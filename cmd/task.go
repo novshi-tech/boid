@@ -180,6 +180,8 @@ type taskCreateSpec struct {
 	Payload          map[string]any `yaml:"payload,omitempty"`
 	DependsOn        []string       `yaml:"depends_on,omitempty"`
 	DependsOnPayload string         `yaml:"depends_on_payload,omitempty"`
+	Ref              string         `yaml:"ref,omitempty"`
+	ParentID         string         `yaml:"parent_id,omitempty"`
 }
 
 func runTaskCreate(cmd *cobra.Command, args []string) error {
@@ -237,6 +239,12 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 	}
 	if spec.DependsOnPayload != "" {
 		req["depends_on_payload"] = spec.DependsOnPayload
+	}
+	if spec.Ref != "" {
+		req["ref"] = spec.Ref
+	}
+	if spec.ParentID != "" {
+		req["parent_id"] = spec.ParentID
 	}
 
 	c := client.NewUnixClient(client.DefaultSocketPath())

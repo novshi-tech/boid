@@ -56,11 +56,16 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
 		}
 		task, err := e.tasks.CreateTask(api.CreateTaskRequest{
-			ProjectID:   req.ProjectID,
-			Title:       req.Title,
-			Behavior:    req.Behavior,
-			Description: req.Description,
-			Payload:     req.Payload,
+			ProjectID:        req.ProjectID,
+			Title:            req.Title,
+			Behavior:         req.Behavior,
+			Description:      req.Description,
+			Payload:          req.Payload,
+			Ref:              req.Ref,
+			ParentID:         req.ParentID,
+			DependsOn:        req.DependsOn,
+			DependsOnPayload: req.DependsOnPayload,
+			AutoStart:        req.AutoStart,
 		})
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}

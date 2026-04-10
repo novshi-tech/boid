@@ -25,17 +25,22 @@ const (
 )
 
 type BoidRequest struct {
-	Op          BoidOp `json:"op"`
-	JobID       string `json:"job_id,omitempty"`
-	TaskID      string `json:"task_id,omitempty"`
-	TaskField   string `json:"task_field,omitempty"`
-	ProjectID   string `json:"project_id,omitempty"`
-	Title       string `json:"title,omitempty"`
-	Behavior    string `json:"behavior,omitempty"`
-	Description string `json:"description,omitempty"`
-	ExitCode    int    `json:"exit_code,omitempty"`
-	Output      string `json:"output,omitempty"`
-	Payload     []byte `json:"payload,omitempty"`
+	Op               BoidOp   `json:"op"`
+	JobID            string   `json:"job_id,omitempty"`
+	TaskID           string   `json:"task_id,omitempty"`
+	TaskField        string   `json:"task_field,omitempty"`
+	ProjectID        string   `json:"project_id,omitempty"`
+	Title            string   `json:"title,omitempty"`
+	Behavior         string   `json:"behavior,omitempty"`
+	Description      string   `json:"description,omitempty"`
+	ExitCode         int      `json:"exit_code,omitempty"`
+	Output           string   `json:"output,omitempty"`
+	Payload          []byte   `json:"payload,omitempty"`
+	Ref              string   `json:"ref,omitempty"`
+	ParentID         string   `json:"parent_id,omitempty"`
+	DependsOn        []string `json:"depends_on,omitempty"`
+	DependsOnPayload string   `json:"depends_on_payload,omitempty"`
+	AutoStart        bool     `json:"auto_start,omitempty"`
 }
 
 type TokenContext struct {

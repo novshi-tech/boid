@@ -48,6 +48,11 @@ func (s *capturingTaskStore) FindTaskByRemote(remoteID, datasourceID string) (*o
 	return nil, nil
 }
 func (s *capturingTaskStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {
+	for _, t := range s.created {
+		if t.Ref == ref && t.ParentID == parentID {
+			return t, nil
+		}
+	}
 	return nil, nil
 }
 func (s *capturingTaskStore) FindDependentTasks(taskID string) ([]*orchestrator.Task, error) {
@@ -106,5 +111,59 @@ func TestBoidBuiltinExecutor_EnforcesWorkspaceScope(t *testing.T) {
 	}
 	if len(store.created) != 2 {
 		t.Fatalf("cross-workspace create should not reach task store, created=%d", len(store.created))
+	}
+}
+
+func TestBoidBuiltinExecutor_PropagatesDependencyFields(t *testing.T) {
+	store := &capturingTaskStore{}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {Transition: "one-shot"},
+		},
+	}}
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{Tasks: store, Meta: meta},
+	}
+	ctx := sandbox.TokenContext{
+		ProjectID:         "proj-1",
+		AllowedProjectIDs: []string{"proj-1"},
+	}
+
+	// Pre-populate dependency targets so depends_on resolution succeeds.
+	store.created = append(store.created,
+		&orchestrator.Task{ID: "id-a", Ref: "task-a", ParentID: "parent-1", ProjectID: "proj-1"},
+		&orchestrator.Task{ID: "id-b", Ref: "task-b", ParentID: "parent-1", ProjectID: "proj-1"},
+	)
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:               sandbox.BoidOpTaskCreate,
+		Title:            "child",
+		Behavior:         "dev",
+		Description:      "desc",
+		Ref:              "task-c",
+		ParentID:         "parent-1",
+		DependsOn:        []string{"task-a", "task-b"},
+		DependsOnPayload: "artifact.pr.merged",
+		AutoStart:        false, // disable to avoid Workflow nil
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+
+	if len(store.created) != 3 {
+		t.Fatalf("created tasks = %d, want 3", len(store.created))
+	}
+	got := store.created[2]
+	if got.Ref != "task-c" {
+		t.Errorf("ref = %q, want task-c", got.Ref)
+	}
+	if got.ParentID != "parent-1" {
+		t.Errorf("parent_id = %q, want parent-1", got.ParentID)
+	}
+	if got.DependsOnPayload != "artifact.pr.merged" {
+		t.Errorf("depends_on_payload = %q, want artifact.pr.merged", got.DependsOnPayload)
+	}
+	if want := []string{"id-a", "id-b"}; len(got.DependsOn) != len(want) || got.DependsOn[0] != want[0] || got.DependsOn[1] != want[1] {
+		t.Errorf("depends_on = %v, want %v (resolved IDs)", got.DependsOn, want)
 	}
 }

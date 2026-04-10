@@ -135,11 +135,16 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 	}
 
 	var spec struct {
-		ProjectID   string         `yaml:"project_id"`
-		Title       string         `yaml:"title"`
-		Description string         `yaml:"description"`
-		Behavior    string         `yaml:"behavior"`
-		Payload     map[string]any `yaml:"payload"`
+		ProjectID        string         `yaml:"project_id"`
+		Title            string         `yaml:"title"`
+		Description      string         `yaml:"description"`
+		Behavior         string         `yaml:"behavior"`
+		Payload          map[string]any `yaml:"payload"`
+		Ref              string         `yaml:"ref"`
+		ParentID         string         `yaml:"parent_id"`
+		DependsOn        []string       `yaml:"depends_on"`
+		DependsOnPayload string         `yaml:"depends_on_payload"`
+		AutoStart        bool           `yaml:"auto_start"`
 	}
 	if err := yaml.Unmarshal(data, &spec); err != nil {
 		return nil, fmt.Errorf("boid shim: parse task spec: %w", err)
@@ -153,11 +158,16 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 	}
 
 	req := &BoidRequest{
-		Op:          BoidOpTaskCreate,
-		ProjectID:   spec.ProjectID,
-		Title:       spec.Title,
-		Description: spec.Description,
-		Behavior:    spec.Behavior,
+		Op:               BoidOpTaskCreate,
+		ProjectID:        spec.ProjectID,
+		Title:            spec.Title,
+		Description:      spec.Description,
+		Behavior:         spec.Behavior,
+		Ref:              spec.Ref,
+		ParentID:         spec.ParentID,
+		DependsOn:        spec.DependsOn,
+		DependsOnPayload: spec.DependsOnPayload,
+		AutoStart:        spec.AutoStart,
 	}
 	if spec.Payload != nil {
 		payloadJSON, err := json.Marshal(spec.Payload)

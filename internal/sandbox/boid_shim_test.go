@@ -147,6 +147,80 @@ func TestRunBoidShim_TaskCreateSendsTypedRequest(t *testing.T) {
 	}
 }
 
+func TestRunBoidShim_TaskCreatePropagatesDependencyFields(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.Remove(sockPath)
+	})
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	specPath := filepath.Join(dir, "task.yaml")
+	specYAML := "project_id: proj-1\n" +
+		"title: dependent task\n" +
+		"behavior: dev\n" +
+		"description: desc\n" +
+		"ref: task-c\n" +
+		"parent_id: parent-xyz\n" +
+		"depends_on:\n  - task-a\n  - task-b\n" +
+		"depends_on_payload: artifact.pr.merged\n" +
+		"auto_start: true\n"
+	if err := os.WriteFile(specPath, []byte(specYAML), 0o644); err != nil {
+		t.Fatalf("write task spec: %v", err)
+	}
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-789")
+
+	resp, err := sandbox.RunBoidShim([]string{"task", "create", "-f", specPath})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Ref != "task-c" {
+		t.Errorf("ref = %q, want task-c", req.Boid.Ref)
+	}
+	if req.Boid.ParentID != "parent-xyz" {
+		t.Errorf("parent_id = %q, want parent-xyz", req.Boid.ParentID)
+	}
+	if got, want := req.Boid.DependsOn, []string{"task-a", "task-b"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("depends_on = %v, want %v", got, want)
+	}
+	if req.Boid.DependsOnPayload != "artifact.pr.merged" {
+		t.Errorf("depends_on_payload = %q, want artifact.pr.merged", req.Boid.DependsOnPayload)
+	}
+	if !req.Boid.AutoStart {
+		t.Errorf("auto_start = false, want true")
+	}
+}
+
 func TestRunBoidShim_RejectsUnknownSubcommand(t *testing.T) {
 	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
 
