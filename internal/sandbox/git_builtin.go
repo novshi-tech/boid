@@ -129,6 +129,40 @@ func handleGitBuiltinRequest(req *ExecRequest, entry *tokenEntry) *ExecResponse 
 		}
 		gitReq = invocation.request
 	}
+
+	// role 別 op 制限。
+	// hook (agent: claude-code 等) からは broker 経由の git 操作 (fetch/push) を許可しない。
+	// agent はホスト側のリモートに直接アクセスすべきでなく、外部通信は許可ドメインのみに
+	// 制限される。push/fetch はそれぞれ pr-verify gate と worktree 作成時に行われる。
+	// なお git commit/add 等のローカル操作はサンドボックス内の /usr/bin/git が直接実行する
+	// 別経路 (gitInvocationLocal) を通るため、本チェックの影響を受けない。
+	switch entry.Context.Role {
+	case "hook":
+		return &ExecResponse{
+			ExitCode: 1,
+			Stderr:   fmt.Sprintf("git op %q not allowed for role hook", gitReq.Op),
+		}
+	case "gate", "":
+		// gate (および単体テスト互換のための空 role) は全 git op を許可
+	default:
+		return &ExecResponse{
+			ExitCode: 1,
+			Stderr:   fmt.Sprintf("git op %q not allowed for role %s", gitReq.Op, entry.Context.Role),
+		}
+	}
+
+	if gitReq.Op == GitOpPush {
+		slog.Info("git builtin push requested",
+			"job_id", entry.Context.JobID,
+			"task_id", entry.Context.TaskID,
+			"project_id", entry.Context.ProjectID,
+			"role", entry.Context.Role,
+			"remote", gitReq.Remote,
+			"refspecs", gitReq.Refspecs,
+			"force_with_lease", gitReq.ForceWithLease,
+			"worktree_root", entry.Git.WorktreeRoot,
+		)
+	}
 	return execGitBuiltin(gitReq, entry.Git)
 }
 
@@ -190,6 +224,17 @@ func execGitBuiltin(req *GitRequest, binding *GitBinding) *ExecResponse {
 		} else {
 			return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
+	}
+
+	if req.Op == GitOpPush {
+		slog.Info("git builtin push completed",
+			"worktree_root", binding.WorktreeRoot,
+			"remote", remoteName,
+			"refspecs", req.Refspecs,
+			"exit_code", exitCode,
+			"stdout", strings.TrimSpace(stdout.String()),
+			"stderr", strings.TrimSpace(stderr.String()),
+		)
 	}
 
 	return &ExecResponse{

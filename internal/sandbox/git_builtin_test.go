@@ -156,6 +156,114 @@ func TestBroker_GitBuiltinRejectsUnknownRemote(t *testing.T) {
 	}
 }
 
+// hook role からの broker 経由 git push は拒否される。
+// agent (Claude 等) が直接 origin に push してしまうと pr-verify gate と
+// 競合して無限 rework ループを引き起こすため、role=hook では builtin git の
+// push 操作を一律禁止する。
+func TestBroker_GitBuiltinRejectsHookRolePush(t *testing.T) {
+	repo := initGitRepo(t)
+	remote := initBareRemote(t)
+
+	runGit(t, repo, "remote", "add", "origin", remote)
+	runGit(t, repo, "push", "-u", "origin", "main")
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, []string{"git"}, sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+		Role:       "hook",
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     repo,
+		Token:   token,
+		Git: &sandbox.GitRequest{
+			Op:     sandbox.GitOpPush,
+			Remote: "origin",
+		},
+	})
+	if resp.ExitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", resp.ExitCode)
+	}
+	if !strings.Contains(resp.Stderr, "not allowed for role hook") {
+		t.Fatalf("stderr = %q, want 'not allowed for role hook'", resp.Stderr)
+	}
+}
+
+// hook role からの broker 経由 git fetch も同様に拒否される。
+// fetch も外部リモートと通信するため、外部通信を許可ドメインのみに制限する
+// hook の方針と整合させる。
+func TestBroker_GitBuiltinRejectsHookRoleFetch(t *testing.T) {
+	repo := initGitRepo(t)
+	remote := initBareRemote(t)
+
+	runGit(t, repo, "remote", "add", "origin", remote)
+	runGit(t, repo, "push", "-u", "origin", "main")
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, []string{"git"}, sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+		Role:       "hook",
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     repo,
+		Token:   token,
+		Git: &sandbox.GitRequest{
+			Op:     sandbox.GitOpFetch,
+			Remote: "origin",
+		},
+	})
+	if resp.ExitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", resp.ExitCode)
+	}
+	if !strings.Contains(resp.Stderr, "not allowed for role hook") {
+		t.Fatalf("stderr = %q, want 'not allowed for role hook'", resp.Stderr)
+	}
+}
+
+// gate role からの push は引き続き許可される (pr-verify gate が使う経路)。
+func TestBroker_GitBuiltinAllowsGateRolePush(t *testing.T) {
+	repo := initGitRepo(t)
+	remote := initBareRemote(t)
+
+	runGit(t, repo, "remote", "add", "origin", remote)
+	runGit(t, repo, "push", "-u", "origin", "main")
+
+	writeFile(t, filepath.Join(repo, "gate.txt"), "gate change\n")
+	runGit(t, repo, "add", "gate.txt")
+	runGit(t, repo, "commit", "-m", "gate")
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, []string{"git"}, sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+		Role:       "gate",
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     repo,
+		Token:   token,
+		Git: &sandbox.GitRequest{
+			Op:     sandbox.GitOpPush,
+			Remote: "origin",
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("git push exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
+	}
+
+	localHead := runGit(t, repo, "rev-parse", "HEAD")
+	remoteHead := runGitBare(t, remote, "rev-parse", "refs/heads/main")
+	if remoteHead != localHead {
+		t.Fatalf("remote head = %q, want %q", remoteHead, localHead)
+	}
+}
+
 const realGitForTest = "/usr/bin/git"
 
 func skipWithoutRealGit(t *testing.T) {
