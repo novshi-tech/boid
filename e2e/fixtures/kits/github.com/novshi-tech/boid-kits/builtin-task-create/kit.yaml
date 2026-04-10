@@ -1,0 +1,6 @@
+gates:
+  - id: spawn
+    on: [executing]
+    behavior: parent
+    traits:
+      produces: [artifact]

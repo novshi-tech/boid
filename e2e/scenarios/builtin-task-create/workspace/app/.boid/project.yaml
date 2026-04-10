@@ -1,0 +1,13 @@
+id: e2e-builtin-task-create
+name: E2E Builtin Task Create
+builtin_commands:
+  - boid
+kits:
+  - github.com/novshi-tech/boid-kits/builtin-task-create
+task_behaviors:
+  parent:
+    transition: one-shot
+    traits: []
+  child:
+    transition: one-shot
+    traits: []
