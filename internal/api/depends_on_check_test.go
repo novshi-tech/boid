@@ -53,6 +53,10 @@ func (s *multiTaskStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task
 		if t.Ref == ref && t.ParentID == parentID {
 			return t, nil
 		}
+		// Also support UUID-based lookup for backward compatibility.
+		if t.ID == ref {
+			return t, nil
+		}
 	}
 	return nil, nil
 }
@@ -547,6 +551,43 @@ func TestPayloadGet_TopLevelKey_Regression(t *testing.T) {
 }
 
 // --- auto_start + 依存未充足 → pending 維持（エラーなし）テスト ---
+
+func TestTaskAppServiceCreateTask_DependsOnByUUID_Resolves(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {Transition: "one-shot"},
+		},
+	}
+	dep := &orchestrator.Task{
+		ID:       "550e8400-e29b-41d4-a716-446655440000",
+		ParentID: "",
+		Behavior: "dev",
+		Status:   orchestrator.TaskStatusPending,
+	}
+	store := &multiTaskStore{tasks: map[string]*orchestrator.Task{dep.ID: dep}}
+	svc := &TaskAppService{
+		Tasks:    store,
+		Meta:     stubMetaStore{meta: meta},
+		Workflow: &stubWorkflowService{},
+	}
+
+	// depends_on uses the task UUID directly (no ref name set)
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "child task",
+		Behavior:  "dev",
+		DependsOn: []string{dep.ID},
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v, want nil (UUID-based depends_on should resolve)", err)
+	}
+	if task == nil {
+		t.Fatal("CreateTask() returned nil task")
+	}
+	if len(task.DependsOn) != 1 || task.DependsOn[0] != dep.ID {
+		t.Errorf("DependsOn = %v, want [%q]", task.DependsOn, dep.ID)
+	}
+}
 
 func TestTaskAppServiceCreateTask_AutoStart_DepNotSatisfied_StaysPending(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
