@@ -24,12 +24,28 @@ func (m *WorktreeManager) gitBin() string {
 	return "git"
 }
 
+// resolveBaseBranch resolves a local branch name to its remote tracking counterpart.
+// If baseBranch is empty, "main" is used as default.
+// If origin/<baseBranch> exists, returns ("origin/<baseBranch>", true).
+// Otherwise returns (baseBranch, false).
+func (m *WorktreeManager) resolveBaseBranch(projectDir, baseBranch string) (string, bool) {
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+	if strings.HasPrefix(baseBranch, "origin/") {
+		return baseBranch, true
+	}
+	cmd := exec.Command(m.gitBin(), "rev-parse", "--verify", "origin/"+baseBranch)
+	cmd.Dir = projectDir
+	if err := cmd.Run(); err == nil {
+		return "origin/" + baseBranch, true
+	}
+	return baseBranch, false
+}
+
 func (m *WorktreeManager) Create(projectDir, projectID, taskID, branchPrefix, baseBranch string) (*Worktree, error) {
 	if branchPrefix == "" {
 		branchPrefix = "boid/"
-	}
-	if baseBranch == "" {
-		baseBranch = "HEAD"
 	}
 
 	shortID := taskID
@@ -44,7 +60,20 @@ func (m *WorktreeManager) Create(projectDir, projectID, taskID, branchPrefix, ba
 		return nil, fmt.Errorf("mkdir worktree parent: %w", err)
 	}
 
-	cmd := exec.Command(m.gitBin(), "worktree", "add", "-b", branch, wtPath, baseBranch)
+	resolvedBase, shouldFetch := m.resolveBaseBranch(projectDir, baseBranch)
+
+	if shouldFetch {
+		branchToFetch := strings.TrimPrefix(resolvedBase, "origin/")
+		fetchCmd := exec.Command(m.gitBin(), "fetch", "origin", branchToFetch)
+		fetchCmd.Dir = projectDir
+		if out, err := fetchCmd.CombinedOutput(); err != nil {
+			slog.Warn("git fetch failed, falling back to local branch",
+				"branch", branchToFetch, "error", err, "output", strings.TrimSpace(string(out)))
+			resolvedBase = branchToFetch
+		}
+	}
+
+	cmd := exec.Command(m.gitBin(), "worktree", "add", "-b", branch, wtPath, resolvedBase)
 	cmd.Dir = projectDir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -56,7 +85,7 @@ func (m *WorktreeManager) Create(projectDir, projectID, taskID, branchPrefix, ba
 		ProjectID:  projectID,
 		Path:       wtPath,
 		Branch:     branch,
-		BaseBranch: baseBranch,
+		BaseBranch: resolvedBase,
 	}
 	if err := CreateWorktree(m.DB, w); err != nil {
 		exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", wtPath).Run()
