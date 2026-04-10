@@ -404,11 +404,23 @@ func FindTaskByRemote(dbtx db.DBTX, remoteID, datasourceID string) (*Task, error
 	return t, nil
 }
 
-// FindTaskByRef returns the task with the given ref and parent_id,
+// FindTaskByRef returns the task matching the given ref within the given parent scope,
 // or nil if no matching task is found.
+// If ref is a UUID, the task is looked up by id directly (backward compatibility).
 func FindTaskByRef(dbtx db.DBTX, ref, parentID string) (*Task, error) {
 	if ref == "" {
 		return nil, nil
+	}
+	// UUID refs are looked up by task id for backward compatibility.
+	if isUUID(ref) {
+		t, err := GetTask(dbtx, ref)
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				return nil, nil
+			}
+			return nil, err
+		}
+		return t, nil
 	}
 	row := dbtx.QueryRow(
 		`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, transition, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, depends_on_payload, ref, parent_id, ephemeral, created_at, updated_at FROM tasks WHERE ref = ? AND parent_id = ?`,

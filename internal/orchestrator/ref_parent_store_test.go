@@ -173,6 +173,45 @@ func TestFindTaskByRef_NotFound_ReturnsNil(t *testing.T) {
 	}
 }
 
+func TestFindTaskByRef_UUID_LooksUpByID(t *testing.T) {
+	d := createTestProject(t)
+
+	task := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Title:     "Task without ref",
+		Behavior:  "dev",
+		// Ref is empty — only referenceable by UUID
+	}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	// Look up by the task's UUID (not by ref name)
+	got, err := orchestrator.FindTaskByRef(d.Conn, task.ID, "")
+	if err != nil {
+		t.Fatalf("FindTaskByRef(uuid): %v", err)
+	}
+	if got == nil {
+		t.Fatal("FindTaskByRef(uuid) returned nil, want task")
+	}
+	if got.ID != task.ID {
+		t.Errorf("ID = %q, want %q", got.ID, task.ID)
+	}
+}
+
+func TestFindTaskByRef_UUID_NotFound_ReturnsNil(t *testing.T) {
+	d := createTestProject(t)
+
+	// Non-existent UUID
+	got, err := orchestrator.FindTaskByRef(d.Conn, "00000000-0000-0000-0000-000000000000", "")
+	if err != nil {
+		t.Fatalf("FindTaskByRef(nonexistent uuid): %v", err)
+	}
+	if got != nil {
+		t.Fatalf("FindTaskByRef returned %+v, want nil for nonexistent UUID", got)
+	}
+}
+
 func TestFindTaskByRef_WrongParent_ReturnsNil(t *testing.T) {
 	d := createTestProject(t)
 
