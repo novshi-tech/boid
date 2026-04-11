@@ -164,35 +164,100 @@ type TaskAppService struct {
 	Workflow WorkflowService
 }
 
-func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
-	payload := req.Payload
+// behaviorResolution holds the resolved behavior fields after processing either
+// a named behavior or an inline behavior_spec.
+type behaviorResolution struct {
+	behaviorName string
+	transition   string
+	traits       []string
+	readonly     bool
+	worktree     bool
+	branchPrefix string
+	baseBranch   string
+	payload      json.RawMessage
+}
 
-	var transition string
-	var traits []string
-	var readonly, worktree bool
-	var branchPrefix, baseBranch string
+// resolveBehavior validates and resolves behavior fields from a CreateTaskRequest.
+// It handles both the named behavior path (meta lookup) and the inline behavior_spec path.
+func resolveBehavior(meta *orchestrator.ProjectMeta, req CreateTaskRequest) (*behaviorResolution, error) {
+	if req.Behavior == "" && req.BehaviorSpec == nil {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: "either behavior or behavior_spec is required"}
+	}
+	if req.Behavior != "" && req.BehaviorSpec != nil {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: "behavior and behavior_spec are mutually exclusive"}
+	}
 
-	if s.Meta != nil {
-		if meta, ok := s.Meta.Get(req.ProjectID); ok {
-			behavior, ok := meta.TaskBehaviors[req.Behavior]
-			if !ok {
-				return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("behavior %q not found", req.Behavior)}
+	res := &behaviorResolution{payload: req.Payload}
+
+	if req.BehaviorSpec != nil {
+		spec := req.BehaviorSpec
+		if spec.Name == "" {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: "behavior_spec.name is required"}
+		}
+		if spec.Transition == "" {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: "behavior_spec.transition is required"}
+		}
+		res.behaviorName = spec.Name
+		res.transition = spec.Transition
+		res.traits = spec.Traits
+		res.readonly = spec.Readonly
+		res.worktree = spec.Worktree
+		res.branchPrefix = spec.BranchPrefix
+		res.baseBranch = spec.BaseBranch
+		if len(spec.DefaultPayload) > 0 {
+			merged, err := orchestrator.MergeDefaultPayload(spec.DefaultPayload.RawMessage(), req.Payload)
+			if err != nil {
+				return nil, &StatusError{Code: http.StatusBadRequest, Message: "payload merge: " + err.Error()}
 			}
-			transition = behavior.Transition
-			traits = behavior.Traits
-			readonly = behavior.Readonly
-			worktree = behavior.Worktree
-			branchPrefix = behavior.BranchPrefix
-			baseBranch = behavior.BaseBranch
-			if len(behavior.DefaultPayload) > 0 {
-				merged, err := orchestrator.MergeDefaultPayload(behavior.DefaultPayload.RawMessage(), payload)
-				if err != nil {
-					return nil, &StatusError{Code: http.StatusBadRequest, Message: "payload merge: " + err.Error()}
-				}
-				payload = merged
+			res.payload = merged
+		}
+		return res, nil
+	}
+
+	// Named behavior path (existing logic).
+	res.behaviorName = req.Behavior
+	if meta != nil {
+		behavior, ok := meta.TaskBehaviors[req.Behavior]
+		if !ok {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("behavior %q not found", req.Behavior)}
+		}
+		res.transition = behavior.Transition
+		res.traits = behavior.Traits
+		res.readonly = behavior.Readonly
+		res.worktree = behavior.Worktree
+		res.branchPrefix = behavior.BranchPrefix
+		res.baseBranch = behavior.BaseBranch
+		if len(behavior.DefaultPayload) > 0 {
+			merged, err := orchestrator.MergeDefaultPayload(behavior.DefaultPayload.RawMessage(), req.Payload)
+			if err != nil {
+				return nil, &StatusError{Code: http.StatusBadRequest, Message: "payload merge: " + err.Error()}
 			}
+			res.payload = merged
 		}
 	}
+	return res, nil
+}
+
+func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
+	var meta *orchestrator.ProjectMeta
+	if s.Meta != nil {
+		if m, ok := s.Meta.Get(req.ProjectID); ok {
+			meta = m
+		}
+	}
+
+	res, err := resolveBehavior(meta, req)
+	if err != nil {
+		return nil, err
+	}
+
+	transition := res.transition
+	traits := res.traits
+	readonly := res.readonly
+	worktree := res.worktree
+	branchPrefix := res.branchPrefix
+	baseBranch := res.baseBranch
+	payload := res.payload
 
 	if req.Transition != nil {
 		transition = *req.Transition
@@ -235,26 +300,26 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 	}
 
 	task := &orchestrator.Task{
-		ID:           req.ID,
-		ProjectID:    req.ProjectID,
-		Title:        req.Title,
-		Description:  req.Description,
-		Behavior:     req.Behavior,
-		Transition:   transition,
-		Traits:       traits,
-		Readonly:     readonly,
-		Worktree:     worktree,
-		BranchPrefix: branchPrefix,
-		BaseBranch:   baseBranch,
-		RemoteID:     req.RemoteID,
-		DataSourceID: req.DataSourceID,
-		Payload:      payload,
+		ID:               req.ID,
+		ProjectID:        req.ProjectID,
+		Title:            req.Title,
+		Description:      req.Description,
+		Behavior:         res.behaviorName,
+		Transition:       transition,
+		Traits:           traits,
+		Readonly:         readonly,
+		Worktree:         worktree,
+		BranchPrefix:     branchPrefix,
+		BaseBranch:       baseBranch,
+		RemoteID:         req.RemoteID,
+		DataSourceID:     req.DataSourceID,
+		Payload:          payload,
 		AutoStart:        req.AutoStart,
 		DependsOn:        resolvedDeps,
 		DependsOnPayload: req.DependsOnPayload,
 		Ref:              req.Ref,
-		ParentID:     req.ParentID,
-		Ephemeral:    ephemeral,
+		ParentID:         req.ParentID,
+		Ephemeral:        ephemeral,
 	}
 	if err := s.Tasks.CreateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}

@@ -835,6 +835,220 @@ func TestCreateTask_TransitionMissing_Error(t *testing.T) {
 	}
 }
 
+// ---- behavior_spec tests ----
+
+func TestTaskAppServiceCreateTask_BehaviorSpec_Success(t *testing.T) {
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: nil},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "spec task",
+		BehaviorSpec: &orchestrator.BehaviorSpec{
+			Name:       "kit/my-behavior",
+			Transition: "one-shot",
+			Traits:     []string{"instructions"},
+			Worktree:   true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if task.Behavior != "kit/my-behavior" {
+		t.Errorf("Behavior = %q, want %q", task.Behavior, "kit/my-behavior")
+	}
+	if task.Transition != "one-shot" {
+		t.Errorf("Transition = %q, want %q", task.Transition, "one-shot")
+	}
+	if !reflect.DeepEqual(task.Traits, []string{"instructions"}) {
+		t.Errorf("Traits = %v, want [instructions]", task.Traits)
+	}
+	if !task.Worktree {
+		t.Errorf("Worktree = false, want true")
+	}
+}
+
+func TestTaskAppServiceCreateTask_BehaviorSpec_DefaultPayloadMerged(t *testing.T) {
+	defaultPayload := `{"instructions":{"main":{"consumer":"claude-code","message":"do it"}}}`
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: nil},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "spec task",
+		BehaviorSpec: &orchestrator.BehaviorSpec{
+			Name:           "kit/my-behavior",
+			Transition:     "one-shot",
+			DefaultPayload: orchestrator.RawPayload(defaultPayload),
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if len(task.Payload) == 0 {
+		t.Error("Payload is empty, want default_payload merged")
+	}
+}
+
+func TestTaskAppServiceCreateTask_BehaviorAndSpecMutuallyExclusive(t *testing.T) {
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: nil},
+	}
+
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "bad request",
+		Behavior:  "dev",
+		BehaviorSpec: &orchestrator.BehaviorSpec{
+			Name:       "kit/my-behavior",
+			Transition: "one-shot",
+		},
+	})
+	if err == nil {
+		t.Fatal("CreateTask() error = nil, want error for mutually exclusive fields")
+	}
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("error type = %T, want *StatusError", err)
+	}
+	if se.Code != http.StatusBadRequest {
+		t.Fatalf("error code = %d, want %d", se.Code, http.StatusBadRequest)
+	}
+	if se.Message != "behavior and behavior_spec are mutually exclusive" {
+		t.Errorf("message = %q, want %q", se.Message, "behavior and behavior_spec are mutually exclusive")
+	}
+}
+
+func TestTaskAppServiceCreateTask_NeitherBehaviorNorSpec(t *testing.T) {
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: nil},
+	}
+
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "bad request",
+	})
+	if err == nil {
+		t.Fatal("CreateTask() error = nil, want error for missing behavior")
+	}
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("error type = %T, want *StatusError", err)
+	}
+	if se.Code != http.StatusBadRequest {
+		t.Fatalf("error code = %d, want %d", se.Code, http.StatusBadRequest)
+	}
+	if se.Message != "either behavior or behavior_spec is required" {
+		t.Errorf("message = %q, want %q", se.Message, "either behavior or behavior_spec is required")
+	}
+}
+
+func TestTaskAppServiceCreateTask_BehaviorSpec_NameRequired(t *testing.T) {
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: nil},
+	}
+
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "bad request",
+		BehaviorSpec: &orchestrator.BehaviorSpec{
+			Transition: "one-shot",
+		},
+	})
+	if err == nil {
+		t.Fatal("CreateTask() error = nil, want error for missing name")
+	}
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("error type = %T, want *StatusError", err)
+	}
+	if se.Code != http.StatusBadRequest {
+		t.Fatalf("error code = %d, want %d", se.Code, http.StatusBadRequest)
+	}
+	if se.Message != "behavior_spec.name is required" {
+		t.Errorf("message = %q, want %q", se.Message, "behavior_spec.name is required")
+	}
+}
+
+func TestTaskAppServiceCreateTask_BehaviorSpec_TransitionRequired(t *testing.T) {
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: nil},
+	}
+
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "bad request",
+		BehaviorSpec: &orchestrator.BehaviorSpec{
+			Name: "kit/my-behavior",
+		},
+	})
+	if err == nil {
+		t.Fatal("CreateTask() error = nil, want error for missing transition")
+	}
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("error type = %T, want *StatusError", err)
+	}
+	if se.Code != http.StatusBadRequest {
+		t.Fatalf("error code = %d, want %d", se.Code, http.StatusBadRequest)
+	}
+	if se.Message != "behavior_spec.transition is required" {
+		t.Errorf("message = %q, want %q", se.Message, "behavior_spec.transition is required")
+	}
+}
+
+func TestTaskAppServiceImportTasks_BehaviorSpec_Success(t *testing.T) {
+	store := &stubTaskStore{}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: nil},
+	}
+
+	reqs := []CreateTaskRequest{
+		{
+			ProjectID:    "proj-1",
+			Title:        "Spec Task",
+			RemoteID:     "KIT-1",
+			DataSourceID: "github",
+			BehaviorSpec: &orchestrator.BehaviorSpec{
+				Name:       "kit/conflict-fix",
+				Transition: "one-shot-feedback",
+				Traits:     []string{"instructions"},
+				Worktree:   true,
+			},
+		},
+	}
+	result, err := svc.ImportTasks(reqs)
+	if err != nil {
+		t.Fatalf("ImportTasks() error = %v", err)
+	}
+	if result.Created != 1 {
+		t.Fatalf("Created = %d, want 1", result.Created)
+	}
+	if len(result.Errors) != 0 {
+		t.Fatalf("Errors = %v, want empty", result.Errors)
+	}
+	if store.createdTask == nil {
+		t.Fatal("createdTask is nil")
+	}
+	if store.createdTask.Behavior != "kit/conflict-fix" {
+		t.Errorf("Behavior = %q, want %q", store.createdTask.Behavior, "kit/conflict-fix")
+	}
+	if store.createdTask.Transition != "one-shot-feedback" {
+		t.Errorf("Transition = %q, want %q", store.createdTask.Transition, "one-shot-feedback")
+	}
+}
+
+// ---- end behavior_spec tests ----
+
 type stubTaskStore struct {
 	task        *orchestrator.Task
 	err         error

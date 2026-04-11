@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
@@ -55,7 +56,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 		if !ctx.AllowsProject(req.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
 		}
-		task, err := e.tasks.CreateTask(api.CreateTaskRequest{
+		createReq := api.CreateTaskRequest{
 			ProjectID:        req.ProjectID,
 			Title:            req.Title,
 			Behavior:         req.Behavior,
@@ -66,7 +67,20 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 			DependsOn:        req.DependsOn,
 			DependsOnPayload: req.DependsOnPayload,
 			AutoStart:        req.AutoStart,
-		})
+		}
+		if req.BehaviorSpec != nil {
+			createReq.BehaviorSpec = &orchestrator.BehaviorSpec{
+				Name:           req.BehaviorSpec.Name,
+				Transition:     req.BehaviorSpec.Transition,
+				Traits:         req.BehaviorSpec.Traits,
+				Readonly:       req.BehaviorSpec.Readonly,
+				Worktree:       req.BehaviorSpec.Worktree,
+				BranchPrefix:   req.BehaviorSpec.BranchPrefix,
+				BaseBranch:     req.BehaviorSpec.BaseBranch,
+				DefaultPayload: orchestrator.RawPayload(req.BehaviorSpec.DefaultPayload),
+			}
+		}
+		task, err := e.tasks.CreateTask(createReq)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}

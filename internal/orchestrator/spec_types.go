@@ -315,6 +315,20 @@ type TaskBehavior struct {
 	DefaultPayload RawPayload `yaml:"default_payload" json:"default_payload,omitempty"`
 }
 
+// BehaviorSpec is an inline behavior specification that can be used instead of
+// referencing a named behavior from project.yaml task_behaviors. This allows
+// kits to self-describe the behavior they need without depending on project config.
+type BehaviorSpec struct {
+	Name           string     `yaml:"name" json:"name"`
+	Transition     string     `yaml:"transition" json:"transition"`
+	Traits         []string   `yaml:"traits,omitempty" json:"traits,omitempty"`
+	Readonly       bool       `yaml:"readonly,omitempty" json:"readonly,omitempty"`
+	Worktree       bool       `yaml:"worktree,omitempty" json:"worktree,omitempty"`
+	BranchPrefix   string     `yaml:"branch_prefix,omitempty" json:"branch_prefix,omitempty"`
+	BaseBranch     string     `yaml:"base_branch,omitempty" json:"base_branch,omitempty"`
+	DefaultPayload RawPayload `yaml:"default_payload,omitempty" json:"default_payload,omitempty"`
+}
+
 type KitRef struct {
 	Ref   string `yaml:"ref" json:"ref"`
 	Alias string `yaml:"as,omitempty" json:"as,omitempty"`
