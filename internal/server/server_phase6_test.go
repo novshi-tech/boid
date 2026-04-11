@@ -9,10 +9,40 @@ import (
 	"time"
 
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/server"
 	"github.com/novshi-tech/boid/testutil"
 )
+
+// noopJobRuntime is a JobRuntime that starts jobs without executing them,
+// so tests can manually complete jobs via the API without requiring
+// sandbox privileges (pasta/unshare).
+type noopJobRuntime struct{}
+
+func (noopJobRuntime) Start(_ context.Context, spec dispatcher.RuntimeStartSpec) (*dispatcher.RuntimeHandle, error) {
+	return &dispatcher.RuntimeHandle{
+		ID:          spec.JobID,
+		Interactive: spec.Interactive,
+		TTY:         spec.TTY,
+	}, nil
+}
+
+func (noopJobRuntime) Attach(_ context.Context, _ string, _ dispatcher.RuntimeAttachRequest) error {
+	return dispatcher.ErrRuntimeUnsupported
+}
+
+func (noopJobRuntime) Resize(_ context.Context, _ string, _ dispatcher.TerminalSize) error {
+	return dispatcher.ErrRuntimeUnsupported
+}
+
+func (noopJobRuntime) Wait(_ context.Context, _ string) (dispatcher.RuntimeExit, error) {
+	return dispatcher.RuntimeExit{}, dispatcher.ErrRuntimeUnsupported
+}
+
+func (noopJobRuntime) Stop(_ context.Context, _ string) error {
+	return nil
+}
 
 func TestServer_Smoke_StartDispatchJobDoneAndAutoAdvance(t *testing.T) {
 	ts := newSmokeServer(t)
@@ -67,7 +97,8 @@ func TestServer_Smoke_StartDispatchJobDoneAndAutoAdvance(t *testing.T) {
 		t.Fatalf("complete job: %v", err)
 	}
 
-	finalTask := waitForTaskStatus(t, ts, task.ID, orchestrator.TaskStatusVerifying)
+	// DefaultMachine: executing→verifying→done (pass-through when no verify gate)
+	finalTask := waitForTaskStatus(t, ts, task.ID, orchestrator.TaskStatusDone)
 
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(finalTask.Payload, &payload); err != nil {
@@ -141,6 +172,7 @@ func newSmokeServer(t *testing.T) *testutil.TestServer {
 		DBPath:     dbPath,
 		SocketPath: sockPath,
 		HTTPAddr:   "127.0.0.1:0",
+		JobRuntime: noopJobRuntime{},
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -172,7 +204,6 @@ name: Smoke Project
 task_behaviors:
   impl:
     name: implementation
-    transition: feedback-loop
 hooks:
   - id: build-artifact
     on: executing

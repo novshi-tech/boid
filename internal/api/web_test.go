@@ -252,13 +252,12 @@ func TestWebHandlerPostDuplicate_Error(t *testing.T) {
 
 func TestWebAppServiceDuplicateTask_Success(t *testing.T) {
 	original := &orchestrator.Task{
-		ID:           "orig-id",
-		ProjectID:    "proj-1",
-		Title:        "My Task",
-		Description:  "desc",
-		Behavior:     "dev",
-		Transition:   "one-shot",
-		Traits:       []string{"trait1"},
+		ID:          "orig-id",
+		ProjectID:   "proj-1",
+		Title:       "My Task",
+		Description: "desc",
+		Behavior:    "dev",
+		Traits:      []string{"trait1"},
 		Readonly:     false,
 		Worktree:     true,
 		BranchPrefix: "feature/",

@@ -18,7 +18,6 @@ name: My Project
 task_behaviors:
   dev:
     name: development
-    transition: one-shot
     traits:
       - instructions
       - artifact
@@ -70,7 +69,7 @@ func TestProjectMeta_JSONRoundTrip(t *testing.T) {
 		ID:   "proj-1",
 		Name: "Test Project",
 		TaskBehaviors: map[string]projectspec.TaskBehavior{
-			"dev": {Name: "development", Transition: "one-shot", Traits: []string{"instructions"}},
+			"dev": {Name: "development", Traits: []string{"instructions"}},
 		},
 		Hooks:        []projectspec.Hook{{ID: "hook-1", On: projectspec.OnValues{"executing"}, Traits: projectspec.HandlerTraits{Consumes: []projectspec.TraitType{projectspec.TraitInstructions}}}},
 		HostCommands: projectspec.HostCommands{"git": {Path: "/usr/bin/git"}},

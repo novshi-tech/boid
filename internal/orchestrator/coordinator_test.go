@@ -543,7 +543,7 @@ func TestCoordinator_DispatchAndAdvance_ScriptGateExitZeroEmptyOutput_InjectsDef
 			},
 		},
 	}
-	sm := orchestrator.OneShotMachine()
+	sm := orchestrator.DefaultMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
 	if err != nil {
@@ -556,8 +556,8 @@ func TestCoordinator_DispatchAndAdvance_ScriptGateExitZeroEmptyOutput_InjectsDef
 		t.Error("expected artifact in final payload after script gate exit 0 with empty output")
 	}
 
-	if result.NewStatus != orchestrator.TaskStatusDone {
-		t.Errorf("expected done via one-shot machine, got %q", result.NewStatus)
+	if result.NewStatus != orchestrator.TaskStatusVerifying {
+		t.Errorf("expected verifying after artifact injection, got %q", result.NewStatus)
 	}
 }
 
@@ -590,7 +590,7 @@ func TestCoordinator_DispatchAndAdvance_NonScriptGateExitZeroEmptyOutput_NoArtif
 			},
 		},
 	}
-	sm := orchestrator.OneShotMachine()
+	sm := orchestrator.DefaultMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
 	if err != nil {

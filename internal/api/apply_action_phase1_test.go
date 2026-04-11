@@ -111,8 +111,7 @@ func TestTaskWorkflowServiceApplyAction_BackgroundDispatchMustOutliveRequestCont
 	svc := &TaskWorkflowService{
 		Tasks:    &stubTaskStore{task: task},
 		Tx:       recordingTransactor{store: txStore},
-		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {Transition: "one-shot"}}}},
-		Resolver: stubResolver{sm: orchestrator.OneShotMachine()},
+		Meta:        stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {}}}},
 		Coordinator: probe,
 	}
 
@@ -180,7 +179,7 @@ func TestTaskWorkflowServiceRunDispatchLoop_MustNotOverwriteTerminalStatusWhenPe
 		context.Background(),
 		task,
 		&orchestrator.ProjectMeta{},
-		orchestrator.OneShotMachine(),
+		orchestrator.DefaultMachine(),
 	)
 
 	if txStore.updatedTask == nil {

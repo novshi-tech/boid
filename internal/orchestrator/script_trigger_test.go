@@ -111,9 +111,7 @@ func TestBuildTriggeredScriptTask(t *testing.T) {
 	if task.Description != script.Description {
 		t.Errorf("Description = %q, want %q", task.Description, script.Description)
 	}
-	if task.Transition != "one-shot" {
-		t.Errorf("Transition = %q, want one-shot", task.Transition)
-	}
+
 	if task.ParentID != parent.ID {
 		t.Errorf("ParentID = %q, want %q", task.ParentID, parent.ID)
 	}

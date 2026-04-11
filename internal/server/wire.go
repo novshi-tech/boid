@@ -110,7 +110,6 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Projects:    projectRepo,
 		Tx:          tx,
 		Meta:        store,
-		Resolver:    orchestrator.NewDefaultRegistry(),
 		Coordinator: &orchestrator.Coordinator{Evaluator: &orchestrator.Evaluator{}, HookExecutor: adapter, GateExecutor: adapter, Waiter: adapter, MaxDepth: 5, Locker: orchestrator.NewInMemoryWorktreeLockManager()},
 		Lifecycle:   jobLifecycleAdapter{runner: runner},
 		Worktrees:   wtMgr,

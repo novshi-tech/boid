@@ -12,10 +12,6 @@ type MetaStore interface {
 	Get(id string) (*orchestrator.ProjectMeta, bool)
 }
 
-type TransitionResolver interface {
-	Resolve(task *orchestrator.Task) (*orchestrator.StateMachine, error)
-}
-
 type DispatchCoordinator interface {
 	DispatchAndAdvance(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine) (*orchestrator.DispatchResult, error)
 }

@@ -62,11 +62,9 @@ func TestTaskFilterTabResetsCursor(t *testing.T) {
 
 func TestActiveFilterStatuses(t *testing.T) {
 	want := map[orchestrator.TaskStatus]bool{
-		orchestrator.TaskStatusExecuting:          true,
-		orchestrator.TaskStatusReworking:          true,
-		orchestrator.TaskStatusVerifying:          true,
-		orchestrator.TaskStatusInReview:           true,
-		orchestrator.TaskStatusCollectingFeedback: true,
+		orchestrator.TaskStatusExecuting: true,
+		orchestrator.TaskStatusReworking: true,
+		orchestrator.TaskStatusVerifying: true,
 	}
 
 	if len(activeStatuses) != len(want) {
@@ -199,7 +197,7 @@ func TestTaskStatusDisplayContainsANSI(t *testing.T) {
 	statuses := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusExecuting,
 		orchestrator.TaskStatusReworking,
-		orchestrator.TaskStatusCollectingFeedback,
+		orchestrator.TaskStatusVerifying,
 	}
 	for _, s := range statuses {
 		dot, text := taskStatusDisplay(s)
@@ -221,8 +219,6 @@ func TestTaskStatusDisplay(t *testing.T) {
 		{orchestrator.TaskStatusExecuting, "●", "executing"},
 		{orchestrator.TaskStatusReworking, "●", "reworking"},
 		{orchestrator.TaskStatusVerifying, "●", "verifying"},
-		{orchestrator.TaskStatusInReview, "●", "in_review"},
-		{orchestrator.TaskStatusCollectingFeedback, "●", "feedback"},
 		{orchestrator.TaskStatusPending, "○", "pending"},
 		{orchestrator.TaskStatusDone, "✓", "done"},
 		{orchestrator.TaskStatusAborted, "✗", "aborted"},
@@ -613,8 +609,6 @@ func TestSyncTableRows_StatusCellNoANSI(t *testing.T) {
 		orchestrator.TaskStatusExecuting,
 		orchestrator.TaskStatusReworking,
 		orchestrator.TaskStatusVerifying,
-		orchestrator.TaskStatusInReview,
-		orchestrator.TaskStatusCollectingFeedback,
 		orchestrator.TaskStatusPending,
 		orchestrator.TaskStatusDone,
 		orchestrator.TaskStatusAborted,

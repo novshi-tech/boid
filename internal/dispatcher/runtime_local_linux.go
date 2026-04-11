@@ -200,6 +200,11 @@ func (r *LocalRuntime) Resize(_ context.Context, runtimeID string, size Terminal
 	if err != nil {
 		return err
 	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if !session.running {
+		return nil
+	}
 	return setPTYSize(session.master, size)
 }
 
@@ -296,10 +301,10 @@ func (s *localRuntimeSession) waitLoop() {
 	s.running = false
 	s.exit = RuntimeExit{ExitCode: exitCode(err)}
 	s.closeSubscribersLocked()
-	s.mu.Unlock()
-
 	_ = s.master.Close()
 	_ = s.transcriptFile.Close()
+	s.mu.Unlock()
+
 	close(s.done)
 }
 

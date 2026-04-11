@@ -26,10 +26,8 @@ func setupTestProject(t *testing.T, id, name string, includeDeprecatedWorkspace 
 	yaml += `task_behaviors:
   planning:
     name: Planning
-    transition: standard
   implementation:
     name: Implementation
-    transition: standard
 hooks:
   - id: run-agent
     on: executing

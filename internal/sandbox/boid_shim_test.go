@@ -342,7 +342,6 @@ func TestRunBoidShim_TaskCreate_BehaviorSpec(t *testing.T) {
 title: kit task
 behavior_spec:
   name: kit/conflict-fix
-  transition: one-shot-feedback
   traits:
     - instructions
   worktree: true
@@ -378,9 +377,7 @@ behavior_spec:
 	if req.Boid.BehaviorSpec.Name != "kit/conflict-fix" {
 		t.Errorf("behavior_spec.name = %q, want %q", req.Boid.BehaviorSpec.Name, "kit/conflict-fix")
 	}
-	if req.Boid.BehaviorSpec.Transition != "one-shot-feedback" {
-		t.Errorf("behavior_spec.transition = %q, want %q", req.Boid.BehaviorSpec.Transition, "one-shot-feedback")
-	}
+
 	if !req.Boid.BehaviorSpec.Worktree {
 		t.Error("behavior_spec.worktree = false, want true")
 	}
@@ -406,7 +403,7 @@ func TestRunBoidShim_TaskCreate_BothBehaviorAndSpec(t *testing.T) {
 
 	dir := t.TempDir()
 	specPath := filepath.Join(dir, "task.yaml")
-	specYAML := "project_id: proj-1\ntitle: bad task\nbehavior: dev\nbehavior_spec:\n  name: kit/x\n  transition: one-shot\n"
+	specYAML := "project_id: proj-1\ntitle: bad task\nbehavior: dev\nbehavior_spec:\n  name: kit/x\n"
 	if err := os.WriteFile(specPath, []byte(specYAML), 0o644); err != nil {
 		t.Fatalf("write task spec: %v", err)
 	}

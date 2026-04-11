@@ -56,13 +56,12 @@ func (s *mapTaskStore) FindDependentTasks(taskID string) ([]*orchestrator.Task, 
 
 func TestRunDispatchLoop_ScriptTriggeredOnTaskDone(t *testing.T) {
 	parentTask := &orchestrator.Task{
-		ID:         "parent-1",
-		ProjectID:  "proj-1",
-		Title:      "parent task",
-		Status:     orchestrator.TaskStatusDone,
-		Behavior:   "dev",
-		Transition: "one-shot",
-		Payload:    []byte(`{}`),
+		ID:        "parent-1",
+		ProjectID: "proj-1",
+		Title:     "parent task",
+		Status:    orchestrator.TaskStatusDone,
+		Behavior:  "dev",
+		Payload:   []byte(`{}`),
 	}
 
 	taskStore := newMapTaskStore(parentTask)
@@ -70,7 +69,7 @@ func TestRunDispatchLoop_ScriptTriggeredOnTaskDone(t *testing.T) {
 	txStore := &recordingTxStore{task: parentTask}
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
+			"dev": {},
 		},
 		Scripts: []orchestrator.Script{
 			{
@@ -83,10 +82,9 @@ func TestRunDispatchLoop_ScriptTriggeredOnTaskDone(t *testing.T) {
 	}
 
 	svc := &TaskWorkflowService{
-		Tasks:    taskStore,
-		Tx:       recordingTransactor{store: txStore},
-		Meta:     stubMetaStore{meta: meta},
-		Resolver: stubResolver{sm: orchestrator.OneShotMachine()},
+		Tasks: taskStore,
+		Tx:    recordingTransactor{store: txStore},
+		Meta:  stubMetaStore{meta: meta},
 		Coordinator: fixedDispatchResult{
 			result: &orchestrator.DispatchResult{
 				FinalPayload: parentTask.Payload,
@@ -98,7 +96,7 @@ func TestRunDispatchLoop_ScriptTriggeredOnTaskDone(t *testing.T) {
 		context.Background(),
 		parentTask,
 		meta,
-		orchestrator.OneShotMachine(),
+		orchestrator.DefaultMachine(),
 	)
 
 	// Verify a script task was created
@@ -132,14 +130,13 @@ func TestRunDispatchLoop_ScriptTriggeredOnTaskDone(t *testing.T) {
 
 func TestRunDispatchLoop_EphemeralTaskDoesNotFireScripts(t *testing.T) {
 	ephemeralTask := &orchestrator.Task{
-		ID:         "ephemeral-1",
-		ProjectID:  "proj-1",
-		Title:      "ephemeral task",
-		Status:     orchestrator.TaskStatusDone,
-		Behavior:   "notify",
-		Transition: "one-shot",
-		Ephemeral:  true,
-		Payload:    []byte(`{}`),
+		ID:        "ephemeral-1",
+		ProjectID: "proj-1",
+		Title:     "ephemeral task",
+		Status:    orchestrator.TaskStatusDone,
+		Behavior:  "notify",
+		Ephemeral: true,
+		Payload:   []byte(`{}`),
 	}
 
 	taskStore := newMapTaskStore(ephemeralTask)
@@ -169,7 +166,7 @@ func TestRunDispatchLoop_EphemeralTaskDoesNotFireScripts(t *testing.T) {
 		context.Background(),
 		ephemeralTask,
 		meta,
-		orchestrator.OneShotMachine(),
+		orchestrator.DefaultMachine(),
 	)
 
 	if len(taskStore.createdIDs) != 0 {
@@ -179,13 +176,12 @@ func TestRunDispatchLoop_EphemeralTaskDoesNotFireScripts(t *testing.T) {
 
 func TestRunDispatchLoop_ScriptNotFiredOnAbort(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:         "task-1",
-		ProjectID:  "proj-1",
-		Title:      "task",
-		Status:     orchestrator.TaskStatusAborted,
-		Behavior:   "dev",
-		Transition: "one-shot",
-		Payload:    []byte(`{}`),
+		ID:        "task-1",
+		ProjectID: "proj-1",
+		Title:     "task",
+		Status:    orchestrator.TaskStatusAborted,
+		Behavior:  "dev",
+		Payload:   []byte(`{}`),
 	}
 
 	taskStore := newMapTaskStore(task)
@@ -214,7 +210,7 @@ func TestRunDispatchLoop_ScriptNotFiredOnAbort(t *testing.T) {
 		context.Background(),
 		task,
 		meta,
-		orchestrator.OneShotMachine(),
+		orchestrator.DefaultMachine(),
 	)
 
 	if len(taskStore.createdIDs) != 0 {

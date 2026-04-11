@@ -306,7 +306,6 @@ func (p RawPayload) RawMessage() json.RawMessage {
 
 type TaskBehavior struct {
 	Name           string     `yaml:"name" json:"name"`
-	Transition     string     `yaml:"transition" json:"transition"`
 	Traits         []string   `yaml:"traits" json:"traits"`
 	Readonly       bool       `yaml:"readonly" json:"readonly,omitempty"`
 	Worktree       bool       `yaml:"worktree" json:"worktree,omitempty"`
@@ -320,7 +319,6 @@ type TaskBehavior struct {
 // kits to self-describe the behavior they need without depending on project config.
 type BehaviorSpec struct {
 	Name           string     `yaml:"name" json:"name"`
-	Transition     string     `yaml:"transition" json:"transition"`
 	Traits         []string   `yaml:"traits,omitempty" json:"traits,omitempty"`
 	Readonly       bool       `yaml:"readonly,omitempty" json:"readonly,omitempty"`
 	Worktree       bool       `yaml:"worktree,omitempty" json:"worktree,omitempty"`

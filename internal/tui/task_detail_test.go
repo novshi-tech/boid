@@ -18,9 +18,7 @@ func makeDetailWithStatus(status orchestrator.TaskStatus) *api.TaskDetailView {
 		available = []string{"start", "abort"}
 	case orchestrator.TaskStatusExecuting, orchestrator.TaskStatusReworking:
 		available = []string{"done", "abort"}
-	case orchestrator.TaskStatusInReview:
-		available = []string{"collect_feedback", "abort"}
-	case orchestrator.TaskStatusVerifying, orchestrator.TaskStatusCollectingFeedback:
+	case orchestrator.TaskStatusVerifying:
 		available = []string{"abort"}
 	// done, aborted: empty
 	}
@@ -508,8 +506,7 @@ func TestShortHelp_DeleteAlwaysShown(t *testing.T) {
 		orchestrator.TaskStatusExecuting,
 		orchestrator.TaskStatusPending,
 		orchestrator.TaskStatusVerifying,
-		orchestrator.TaskStatusCollectingFeedback,
-		orchestrator.TaskStatusInReview,
+		orchestrator.TaskStatusReworking,
 	}
 	for _, st := range statuses {
 		s := newTestTaskDetailScreen()

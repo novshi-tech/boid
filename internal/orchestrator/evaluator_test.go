@@ -107,9 +107,8 @@ func TestInstructionTypeForStatus(t *testing.T) {
 		expected orchestrator.InstructionType
 	}{
 		{orchestrator.TaskStatusExecuting, orchestrator.InstructionTypeExecution},
-		{orchestrator.TaskStatusCollectingFeedback, orchestrator.InstructionTypeExecution},
+		{orchestrator.TaskStatusReworking, orchestrator.InstructionTypeRework},
 		{orchestrator.TaskStatusVerifying, orchestrator.InstructionTypeVerification},
-		{orchestrator.TaskStatusInReview, orchestrator.InstructionTypeVerification},
 		{orchestrator.TaskStatusPending, orchestrator.InstructionType("")},
 	}
 	for _, tc := range cases {
