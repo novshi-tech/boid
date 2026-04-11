@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -135,6 +137,37 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 		return &sandbox.ExecResponse{
 			Stdout: fmt.Sprintf("task updated: %s (%s)\n", task.ID, task.Status),
 		}
+	case sandbox.BoidOpTaskImport:
+		if e.tasks == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task import unavailable"}
+		}
+		var reqs []api.CreateTaskRequest
+		for i, raw := range req.ImportTasks {
+			var r api.CreateTaskRequest
+			if err := json.Unmarshal(raw, &r); err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task import: line %d: invalid task json: %s", i+1, err)}
+			}
+			if req.ImportProjectOverride != "" {
+				r.ProjectID = req.ImportProjectOverride
+			}
+			if req.ImportDatasourceOverride != "" {
+				r.DataSourceID = req.ImportDatasourceOverride
+			}
+			if r.ProjectID == "" {
+				r.ProjectID = ctx.ProjectID
+			}
+			reqs = append(reqs, r)
+		}
+		result, err := e.tasks.ImportTasks(reqs)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		stdout := fmt.Sprintf("Created: %d, Skipped: %d, Errors: %d\n", result.Created, result.Skipped, len(result.Errors))
+		var stderrBuf strings.Builder
+		for _, importErr := range result.Errors {
+			fmt.Fprintf(&stderrBuf, "error line %d (remote_id=%s): %s\n", importErr.Line, importErr.RemoteID, importErr.Error)
+		}
+		return &sandbox.ExecResponse{Stdout: stdout, Stderr: stderrBuf.String()}
 	default:
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("unsupported boid op %q", req.Op)}
 	}

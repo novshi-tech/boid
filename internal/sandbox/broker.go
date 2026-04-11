@@ -199,14 +199,14 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 			}
 		}
 	case "gate":
-		if boidReq.Op != BoidOpJobDone && boidReq.Op != BoidOpTaskCreate && boidReq.Op != BoidOpTaskUpdate {
+		if boidReq.Op != BoidOpJobDone && boidReq.Op != BoidOpTaskCreate && boidReq.Op != BoidOpTaskUpdate && boidReq.Op != BoidOpTaskImport {
 			return &ExecResponse{
 				ExitCode: 1,
 				Stderr:   fmt.Sprintf("boid op %q not allowed for role %s", boidReq.Op, entry.Context.Role),
 			}
 		}
 	default:
-		if boidReq.Op != BoidOpJobDone && boidReq.Op != BoidOpTaskCreate && boidReq.Op != BoidOpTaskUpdate {
+		if boidReq.Op != BoidOpJobDone && boidReq.Op != BoidOpTaskCreate && boidReq.Op != BoidOpTaskUpdate && boidReq.Op != BoidOpTaskImport {
 			return &ExecResponse{
 				ExitCode: 1,
 				Stderr:   fmt.Sprintf("boid op %q not allowed for role %s", boidReq.Op, entry.Context.Role),
@@ -239,6 +239,29 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 		}
 		// 更新対象 task の project_id 検証は boid_executor 側で行う
 		// (broker は TaskStore を持たないため、ここでは ID の有無のみチェック)
+	case BoidOpTaskImport:
+		if len(boidReq.ImportTasks) == 0 {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task import requires at least one task"}
+		}
+		// バッチ全体の project_id 事前検証
+		for i, raw := range boidReq.ImportTasks {
+			var peek struct {
+				ProjectID string `json:"project_id"`
+			}
+			if err := json.Unmarshal(raw, &peek); err != nil {
+				return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task import: line %d: invalid task json: %s", i+1, err)}
+			}
+			projectID := peek.ProjectID
+			if boidReq.ImportProjectOverride != "" {
+				projectID = boidReq.ImportProjectOverride
+			}
+			if projectID == "" {
+				projectID = entry.Context.ProjectID
+			}
+			if !entry.Context.AllowsProject(projectID) {
+				return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task import: line %d: project %q is outside the current workspace", i+1, projectID)}
+			}
+		}
 	}
 
 	if b.BoidExecutor == nil {

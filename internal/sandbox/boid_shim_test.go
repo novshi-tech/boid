@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/sandbox"
@@ -412,5 +413,222 @@ func TestRunBoidShim_TaskCreate_BothBehaviorAndSpec(t *testing.T) {
 
 	if _, err := sandbox.RunBoidShim([]string{"task", "create", "-f", specPath}); err == nil {
 		t.Fatal("expected error when both behavior and behavior_spec are set")
+	}
+}
+
+// --- task import tests ---
+
+func newFakeBrokerForImport(t *testing.T) (sockPath string, reqCh chan sandbox.ExecRequest) {
+	t.Helper()
+	dir := t.TempDir()
+	sockPath = filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.Remove(sockPath)
+	})
+	reqCh = make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+	return sockPath, reqCh
+}
+
+func redirectStdinForTest(t *testing.T, content string) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	oldStdin := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = oldStdin })
+	if _, err := w.WriteString(content); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	w.Close()
+}
+
+func TestParseBoidTaskImport_Stdin(t *testing.T) {
+	sockPath, reqCh := newFakeBrokerForImport(t)
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-import")
+
+	ndjson := `{"title":"task1","behavior":"dev"}` + "\n" + `{"title":"task2","behavior":"dev"}` + "\n"
+	redirectStdinForTest(t, ndjson)
+
+	resp, err := sandbox.RunBoidShim([]string{"task", "import"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpTaskImport {
+		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskImport)
+	}
+	if len(req.Boid.ImportTasks) != 2 {
+		t.Fatalf("ImportTasks len = %d, want 2", len(req.Boid.ImportTasks))
+	}
+	if string(req.Boid.ImportTasks[0]) != `{"title":"task1","behavior":"dev"}` {
+		t.Errorf("ImportTasks[0] = %s, want %s", string(req.Boid.ImportTasks[0]), `{"title":"task1","behavior":"dev"}`)
+	}
+	if string(req.Boid.ImportTasks[1]) != `{"title":"task2","behavior":"dev"}` {
+		t.Errorf("ImportTasks[1] = %s, want %s", string(req.Boid.ImportTasks[1]), `{"title":"task2","behavior":"dev"}`)
+	}
+}
+
+func TestParseBoidTaskImport_File(t *testing.T) {
+	sockPath, reqCh := newFakeBrokerForImport(t)
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-import-file")
+
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "tasks.jsonl")
+	content := `{"title":"fileTask","behavior":"dev","remote_id":"r1"}` + "\n"
+	if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	resp, err := sandbox.RunBoidShim([]string{"task", "import", "-f", filePath})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpTaskImport {
+		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskImport)
+	}
+	if len(req.Boid.ImportTasks) != 1 {
+		t.Fatalf("ImportTasks len = %d, want 1", len(req.Boid.ImportTasks))
+	}
+}
+
+func TestParseBoidTaskImport_ProjectOverride(t *testing.T) {
+	sockPath, reqCh := newFakeBrokerForImport(t)
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-import-proj")
+
+	redirectStdinForTest(t, `{"title":"t1"}`+"\n")
+
+	resp, err := sandbox.RunBoidShim([]string{"task", "import", "--project=p1"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.ImportProjectOverride != "p1" {
+		t.Errorf("ImportProjectOverride = %q, want p1", req.Boid.ImportProjectOverride)
+	}
+}
+
+func TestParseBoidTaskImport_DatasourceOverride(t *testing.T) {
+	sockPath, reqCh := newFakeBrokerForImport(t)
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-import-ds")
+
+	redirectStdinForTest(t, `{"title":"t1"}`+"\n")
+
+	// スペース区切り
+	resp, err := sandbox.RunBoidShim([]string{"task", "import", "--datasource", "gh-am"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.ImportDatasourceOverride != "gh-am" {
+		t.Errorf("ImportDatasourceOverride = %q, want gh-am", req.Boid.ImportDatasourceOverride)
+	}
+}
+
+func TestParseBoidTaskImport_EmptyLines(t *testing.T) {
+	sockPath, reqCh := newFakeBrokerForImport(t)
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-import-empty")
+
+	// 空行を含む
+	ndjson := "\n" + `{"title":"t1"}` + "\n\n" + `{"title":"t2"}` + "\n\n"
+	redirectStdinForTest(t, ndjson)
+
+	resp, err := sandbox.RunBoidShim([]string{"task", "import"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if len(req.Boid.ImportTasks) != 2 {
+		t.Fatalf("ImportTasks len = %d, want 2 (empty lines skipped)", len(req.Boid.ImportTasks))
+	}
+}
+
+func TestParseBoidTaskImport_InvalidJSON(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+
+	// 1行目は valid、2行目は invalid
+	redirectStdinForTest(t, `{"valid":"json"}`+"\n"+`{not valid json}`+"\n")
+
+	_, err := sandbox.RunBoidShim([]string{"task", "import"})
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "line 2: invalid JSON") {
+		t.Errorf("error = %q, want 'line 2: invalid JSON'", err.Error())
+	}
+}
+
+func TestParseBoidTaskImport_EmptyBatch(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+
+	// 空行のみ
+	redirectStdinForTest(t, "\n\n")
+
+	_, err := sandbox.RunBoidShim([]string{"task", "import"})
+	if err == nil {
+		t.Fatal("expected error for empty batch")
+	}
+	if !strings.Contains(err.Error(), "at least one task") {
+		t.Errorf("error = %q, want 'at least one task'", err.Error())
 	}
 }

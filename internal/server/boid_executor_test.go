@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -11,8 +12,9 @@ import (
 )
 
 type capturingTaskStore struct {
-	created []*orchestrator.Task
-	updated []*orchestrator.Task
+	created           []*orchestrator.Task
+	updated           []*orchestrator.Task
+	findByRemoteFunc  func(remoteID, datasourceID string) (*orchestrator.Task, error)
 }
 
 // executorMetaStub provides a minimal MetaStore for boid executor tests.
@@ -59,6 +61,9 @@ func (s *capturingTaskStore) UpdateTask(task *orchestrator.Task) error {
 }
 func (s *capturingTaskStore) DeleteTask(id string) error { return nil }
 func (s *capturingTaskStore) FindTaskByRemote(remoteID, datasourceID string) (*orchestrator.Task, error) {
+	if s.findByRemoteFunc != nil {
+		return s.findByRemoteFunc(remoteID, datasourceID)
+	}
 	return nil, nil
 }
 func (s *capturingTaskStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {
@@ -296,5 +301,170 @@ func TestBoidBuiltinExecutor_PropagatesDependencyFields(t *testing.T) {
 	}
 	if want := []string{"id-a", "id-b"}; len(got.DependsOn) != len(want) || got.DependsOn[0] != want[0] || got.DependsOn[1] != want[1] {
 		t.Errorf("depends_on = %v, want %v (resolved IDs)", got.DependsOn, want)
+	}
+}
+
+// --- task import executor tests ---
+
+func newImportExecutor(t *testing.T) (*boidBuiltinExecutor, *capturingTaskStore) {
+	t.Helper()
+	store := &capturingTaskStore{}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {Transition: "one-shot"},
+		},
+	}}
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{Tasks: store, Meta: meta},
+	}
+	return exec, store
+}
+
+func TestBoidBuiltinExecutor_TaskImport_HappyPath(t *testing.T) {
+	exec, store := newImportExecutor(t)
+	ctx := sandbox.TokenContext{
+		ProjectID:         "proj-1",
+		AllowedProjectIDs: []string{"proj-1"},
+	}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op: sandbox.BoidOpTaskImport,
+		ImportTasks: []json.RawMessage{
+			json.RawMessage(`{"project_id":"proj-1","title":"t1","behavior":"dev","remote_id":"r1","datasource_id":"ds1"}`),
+			json.RawMessage(`{"project_id":"proj-1","title":"t2","behavior":"dev","remote_id":"r2","datasource_id":"ds1"}`),
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if resp.Stdout != "Created: 2, Skipped: 0, Errors: 0\n" {
+		t.Errorf("stdout = %q, want %q", resp.Stdout, "Created: 2, Skipped: 0, Errors: 0\n")
+	}
+	if len(store.created) != 2 {
+		t.Fatalf("created tasks = %d, want 2", len(store.created))
+	}
+}
+
+func TestBoidBuiltinExecutor_TaskImport_DatasourceOverride(t *testing.T) {
+	exec, store := newImportExecutor(t)
+	ctx := sandbox.TokenContext{
+		ProjectID:         "proj-1",
+		AllowedProjectIDs: []string{"proj-1"},
+	}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:                      sandbox.BoidOpTaskImport,
+		ImportDatasourceOverride: "ds-override",
+		ImportTasks: []json.RawMessage{
+			json.RawMessage(`{"project_id":"proj-1","title":"t1","behavior":"dev","remote_id":"r1","datasource_id":"ds-original"}`),
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("created tasks = %d, want 1", len(store.created))
+	}
+	if store.created[0].DataSourceID != "ds-override" {
+		t.Errorf("DataSourceID = %q, want ds-override", store.created[0].DataSourceID)
+	}
+}
+
+func TestBoidBuiltinExecutor_TaskImport_ProjectOverride(t *testing.T) {
+	exec, store := newImportExecutor(t)
+	ctx := sandbox.TokenContext{
+		ProjectID:         "proj-1",
+		AllowedProjectIDs: []string{"proj-1"},
+	}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:                   sandbox.BoidOpTaskImport,
+		ImportProjectOverride: "proj-1",
+		ImportTasks: []json.RawMessage{
+			json.RawMessage(`{"title":"t1","behavior":"dev","remote_id":"r1","datasource_id":"ds1"}`), // project_id 未指定
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("created tasks = %d, want 1", len(store.created))
+	}
+	if store.created[0].ProjectID != "proj-1" {
+		t.Errorf("ProjectID = %q, want proj-1", store.created[0].ProjectID)
+	}
+}
+
+func TestBoidBuiltinExecutor_TaskImport_Dedup(t *testing.T) {
+	exec, store := newImportExecutor(t)
+	// remote_id=r1 が既存として返される
+	store.findByRemoteFunc = func(remoteID, datasourceID string) (*orchestrator.Task, error) {
+		if remoteID == "r1" {
+			return &orchestrator.Task{ID: "existing-1", ProjectID: "proj-1"}, nil
+		}
+		return nil, nil
+	}
+	ctx := sandbox.TokenContext{
+		ProjectID:         "proj-1",
+		AllowedProjectIDs: []string{"proj-1"},
+	}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op: sandbox.BoidOpTaskImport,
+		ImportTasks: []json.RawMessage{
+			json.RawMessage(`{"project_id":"proj-1","title":"t1","behavior":"dev","remote_id":"r1","datasource_id":"ds1"}`), // dedup
+			json.RawMessage(`{"project_id":"proj-1","title":"t2","behavior":"dev","remote_id":"r2","datasource_id":"ds1"}`), // new
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if resp.Stdout != "Created: 1, Skipped: 1, Errors: 0\n" {
+		t.Errorf("stdout = %q, want %q", resp.Stdout, "Created: 1, Skipped: 1, Errors: 0\n")
+	}
+}
+
+func TestBoidBuiltinExecutor_TaskImport_PartialError(t *testing.T) {
+	exec, _ := newImportExecutor(t)
+	ctx := sandbox.TokenContext{
+		ProjectID:         "proj-1",
+		AllowedProjectIDs: []string{"proj-1"},
+	}
+
+	// 1件目: behavior 欠落 (remote_id/datasource_id あり) → CreateTask でエラー
+	// 2件目: 正常
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op: sandbox.BoidOpTaskImport,
+		ImportTasks: []json.RawMessage{
+			json.RawMessage(`{"project_id":"proj-1","title":"t1","remote_id":"r1","datasource_id":"ds1"}`),
+			json.RawMessage(`{"project_id":"proj-1","title":"t2","behavior":"dev","remote_id":"r2","datasource_id":"ds1"}`),
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d (partial errors should not set exit_code=1), stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if resp.Stdout != "Created: 1, Skipped: 0, Errors: 1\n" {
+		t.Errorf("stdout = %q, want %q", resp.Stdout, "Created: 1, Skipped: 0, Errors: 1\n")
+	}
+	if !strings.Contains(resp.Stderr, "error line 1") {
+		t.Errorf("stderr = %q, want 'error line 1'", resp.Stderr)
+	}
+}
+
+func TestBoidBuiltinExecutor_TaskImport_Unavailable(t *testing.T) {
+	exec := &boidBuiltinExecutor{tasks: nil}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op: sandbox.BoidOpTaskImport,
+		ImportTasks: []json.RawMessage{
+			json.RawMessage(`{"title":"t"}`),
+		},
+	})
+	if resp.ExitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", resp.ExitCode)
+	}
+	if !strings.Contains(resp.Stderr, "task import unavailable") {
+		t.Errorf("stderr = %q, want 'task import unavailable'", resp.Stderr)
 	}
 }
