@@ -72,21 +72,25 @@ func ResolveScriptScript(scriptsDir, scriptID string) (string, error) {
 }
 
 var ValidHookOnValues = map[string]bool{
-	"pending":   true,
-	"executing": true,
-	"reworking": true,
-	"verifying": true,
-	"done":      true,
-	"aborted":   true,
+	"pending":              true,
+	"executing":            true,
+	"reworking":            true,
+	"verifying":            true,
+	"done":                 true,
+	"aborted":              true,
+	"in_review":            true, // legacy: no longer reachable, accepted for backward compatibility
+	"collecting_feedback":  true, // legacy: no longer reachable, accepted for backward compatibility
 }
 
 var ValidGateOnValues = map[string]bool{
-	"pending":   true,
-	"executing": true,
-	"reworking": true,
-	"verifying": true,
-	"done":      true,
-	"aborted":   true,
+	"pending":              true,
+	"executing":            true,
+	"reworking":            true,
+	"verifying":            true,
+	"done":                 true,
+	"aborted":              true,
+	"in_review":            true, // legacy: no longer reachable, accepted for backward compatibility
+	"collecting_feedback":  true, // legacy: no longer reachable, accepted for backward compatibility
 }
 
 func ResolveHookScript(hooksDir, hookID string) (string, error) {
