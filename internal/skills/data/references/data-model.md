@@ -23,7 +23,7 @@ behavior: "impl"
 | title | タスクタイトル |
 | description | タスクの詳細説明 |
 | status | 現在の状態（[state-machine.md](state-machine.md) 参照） |
-| behavior | 遷移パターン名（one-shot / feedback-loop を決定） |
+| behavior | タスクの実行モデル名 |
 
 ## instructions.yaml
 
@@ -60,8 +60,8 @@ verification: { ... }
 | trait | 用途 | 読み書き |
 |-------|------|---------|
 | instructions | エージェントへの指示 | 読み取り専用 |
-| artifact | 実装成果物 | 書き込み可（executing / collecting_feedback） |
-| verification | 検証結果 | 書き込み可（verifying / in_review） |
+| artifact | 実装成果物 | 書き込み可（executing / reworking） |
+| verification | 検証結果 | 書き込み可（verifying） |
 | tasks | サブタスク配列 | 書き込み可（triage 用途） |
 
 ### verification の構造

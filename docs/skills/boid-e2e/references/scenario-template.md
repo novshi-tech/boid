@@ -25,7 +25,7 @@ e2e/fixtures/kits/github.com/novshi-tech/boid-kits/<kit-name>/
 
 ## project.yaml テンプレート
 
-### 最小構成（one-shot、hook/gate なし）
+### 最小構成（hook/gate なし）
 
 参照: `e2e/scenarios/project-smoke/workspace/app/.boid/project.yaml`
 
@@ -35,12 +35,11 @@ name: My Scenario
 task_behaviors:
   smoke:
     name: Smoke
-    transition: one-shot
 hooks: []
 gates: []
 ```
 
-### kit を使う構成（feedback-loop）
+### kit を使う構成（verify gate 付き）
 
 参照: `e2e/scenarios/readonly-hook-gate/workspace/app/.boid/project.yaml`
 
@@ -52,7 +51,6 @@ kits:
 task_behaviors:
   dev:
     name: Dev
-    transition: feedback-loop
 hooks: []
 gates: []
 ```
@@ -72,7 +70,7 @@ gates:
       consumes: [artifact]           # アクセスする trait を宣言
 ```
 
-**`on` に指定できるステータス**: `executing`, `verifying`, `in_review`, `collecting_feedback`
+**`on` に指定できるステータス**: `executing`, `verifying`, `reworking`
 
 ## scenario.sh テンプレート
 
