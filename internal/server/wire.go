@@ -12,7 +12,6 @@ import (
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/web"
 )
 
@@ -90,7 +89,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		DB:          srv.db,
 		Runtime:     jobRuntime,
 		Broker:      broker,
-		Sandbox:     sandbox.NewDispatcherPreparer(),
+		Sandbox:     dispatcher.NewSandboxPreparer(),
 		SecretStore: secretStore,
 	})
 

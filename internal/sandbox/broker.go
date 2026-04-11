@@ -19,7 +19,7 @@ import (
 type tokenEntry struct {
 	Context         TokenContext
 	Commands        map[string]CommandDef
-	BuiltinCommands map[string]struct{}
+	BuiltinPolicies map[string]BuiltinPolicy
 	Git             *GitBinding
 }
 
@@ -32,7 +32,7 @@ type Broker struct {
 	registry     map[string]*tokenEntry
 }
 
-func (b *Broker) Register(commands map[string]CommandDef, builtinCommands []string, ctx TokenContext) string {
+func (b *Broker) Register(commands map[string]CommandDef, builtinPolicies map[string]BuiltinPolicy, ctx TokenContext) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -44,9 +44,9 @@ func (b *Broker) Register(commands map[string]CommandDef, builtinCommands []stri
 	entry := &tokenEntry{
 		Context:         ctx,
 		Commands:        commands,
-		BuiltinCommands: builtinCommandSet(builtinCommands),
+		BuiltinPolicies: builtinPolicies,
 	}
-	if entry.hasBuiltin("git") {
+	if entry.hasBuiltinPolicy("git") {
 		var err error
 		entry.Git, err = captureGitBinding(ctx.ProjectDir, ctx.WorktreeDir)
 		logGitBindingSnapshot(ctx, entry.Git, err)
@@ -57,7 +57,7 @@ func (b *Broker) Register(commands map[string]CommandDef, builtinCommands []stri
 
 type SecretResolver func(key string) (string, error)
 
-func (b *Broker) RegisterWithSecrets(commands map[string]CommandDef, builtinCommands []string, ctx TokenContext, resolver SecretResolver) string {
+func (b *Broker) RegisterWithSecrets(commands map[string]CommandDef, builtinPolicies map[string]BuiltinPolicy, ctx TokenContext, resolver SecretResolver) string {
 	resolved := make(map[string]CommandDef, len(commands))
 	for name, def := range commands {
 		if len(def.Env) > 0 {
@@ -82,7 +82,7 @@ func (b *Broker) RegisterWithSecrets(commands map[string]CommandDef, builtinComm
 		}
 		resolved[name] = def
 	}
-	return b.Register(resolved, builtinCommands, ctx)
+	return b.Register(resolved, builtinPolicies, ctx)
 }
 
 func (b *Broker) GetContext(token string) (TokenContext, bool) {
@@ -160,7 +160,7 @@ func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
 		return b.handleBoidBuiltin(req, entry)
 	}
 	if req.Command == "git" {
-		if entry.hasBuiltin("git") {
+		if entry.hasBuiltinPolicy("git") {
 			return handleGitBuiltinRequest(req, entry)
 		}
 		if def, ok := entry.Commands["git"]; ok {
@@ -181,7 +181,7 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 	if req.Boid == nil {
 		return &ExecResponse{ExitCode: 1, Stderr: "typed boid request required"}
 	}
-	if !entry.hasBuiltin("boid") {
+	if !entry.hasBuiltinPolicy("boid") {
 		return &ExecResponse{ExitCode: 1, Stderr: "command not allowed: boid"}
 	}
 
@@ -190,27 +190,10 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 	}
 
 	boidReq := *req.Boid
-	switch entry.Context.Role {
-	case "hook":
-		if boidReq.Op != BoidOpJobDone && boidReq.Op != BoidOpTaskGet {
-			return &ExecResponse{
-				ExitCode: 1,
-				Stderr:   fmt.Sprintf("boid op %q not allowed for role %s", boidReq.Op, entry.Context.Role),
-			}
-		}
-	case "gate":
-		if boidReq.Op != BoidOpJobDone && boidReq.Op != BoidOpTaskCreate && boidReq.Op != BoidOpTaskUpdate && boidReq.Op != BoidOpTaskImport {
-			return &ExecResponse{
-				ExitCode: 1,
-				Stderr:   fmt.Sprintf("boid op %q not allowed for role %s", boidReq.Op, entry.Context.Role),
-			}
-		}
-	default:
-		if boidReq.Op != BoidOpJobDone && boidReq.Op != BoidOpTaskCreate && boidReq.Op != BoidOpTaskUpdate && boidReq.Op != BoidOpTaskImport {
-			return &ExecResponse{
-				ExitCode: 1,
-				Stderr:   fmt.Sprintf("boid op %q not allowed for role %s", boidReq.Op, entry.Context.Role),
-			}
+	if !entry.allowsBuiltinOp("boid", string(boidReq.Op)) {
+		return &ExecResponse{
+			ExitCode: 1,
+			Stderr:   fmt.Sprintf("boid op %q not allowed for role %s", boidReq.Op, entry.Context.Role),
 		}
 	}
 
@@ -361,23 +344,23 @@ func (b *Broker) execCommand(req *ExecRequest, def CommandDef) *ExecResponse {
 	return &ExecResponse{ExitCode: exitCode, Stdout: stdout.String(), Stderr: stderr.String()}
 }
 
-func builtinCommandSet(names []string) map[string]struct{} {
-	if len(names) == 0 {
-		return nil
-	}
-	out := make(map[string]struct{}, len(names))
-	for _, name := range names {
-		out[name] = struct{}{}
-	}
-	return out
-}
-
-func (e *tokenEntry) hasBuiltin(name string) bool {
-	if e == nil || len(e.BuiltinCommands) == 0 {
+func (e *tokenEntry) hasBuiltinPolicy(name string) bool {
+	if e == nil || len(e.BuiltinPolicies) == 0 {
 		return false
 	}
-	_, ok := e.BuiltinCommands[name]
+	_, ok := e.BuiltinPolicies[name]
 	return ok
+}
+
+func (e *tokenEntry) allowsBuiltinOp(name, op string) bool {
+	if e == nil || len(e.BuiltinPolicies) == 0 {
+		return false
+	}
+	policy, ok := e.BuiltinPolicies[name]
+	if !ok {
+		return false
+	}
+	return policy.Allows(op)
 }
 
 func validateStdin(def CommandDef, stdin []byte) error {

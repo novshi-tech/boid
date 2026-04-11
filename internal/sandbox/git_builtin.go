@@ -108,7 +108,7 @@ func gitOutput(dir string, args ...string) (string, error) {
 }
 
 func handleGitBuiltinRequest(req *ExecRequest, entry *tokenEntry) *ExecResponse {
-	if !entry.hasBuiltin("git") {
+	if !entry.hasBuiltinPolicy("git") {
 		return &ExecResponse{ExitCode: 1, Stderr: "command not allowed: git"}
 	}
 	if entry.Git == nil {
@@ -130,21 +130,9 @@ func handleGitBuiltinRequest(req *ExecRequest, entry *tokenEntry) *ExecResponse 
 		gitReq = invocation.request
 	}
 
-	// role 別 op 制限。
-	// hook (agent: claude-code 等) からは broker 経由の git 操作 (fetch/push) を許可しない。
-	// agent はホスト側のリモートに直接アクセスすべきでなく、外部通信は許可ドメインのみに
-	// 制限される。push/fetch はそれぞれ pr-verify gate と worktree 作成時に行われる。
-	// なお git commit/add 等のローカル操作はサンドボックス内の /usr/bin/git が直接実行する
-	// 別経路 (gitInvocationLocal) を通るため、本チェックの影響を受けない。
-	switch entry.Context.Role {
-	case "hook":
-		return &ExecResponse{
-			ExitCode: 1,
-			Stderr:   fmt.Sprintf("git op %q not allowed for role hook", gitReq.Op),
-		}
-	case "gate", "":
-		// gate (および単体テスト互換のための空 role) は全 git op を許可
-	default:
+	// op 制限は登録時にスタンプされた BuiltinPolicy で判定する。
+	// role 判定は planner.go の DefaultBuiltinPolicies で行われ、broker はそれを参照するのみ。
+	if !entry.allowsBuiltinOp("git", string(gitReq.Op)) {
 		return &ExecResponse{
 			ExitCode: 1,
 			Stderr:   fmt.Sprintf("git op %q not allowed for role %s", gitReq.Op, entry.Context.Role),

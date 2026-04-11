@@ -99,8 +99,14 @@ func TestDispatchPlannerAddsBoidAsBuiltinForHookAndGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanHook: %v", err)
 	}
-	if len(hookReq.BuiltinCommands) != 2 || hookReq.BuiltinCommands[0] != "git" || hookReq.BuiltinCommands[1] != "boid" {
-		t.Fatalf("hook builtin commands = %#v, want [git boid]", hookReq.BuiltinCommands)
+	if len(hookReq.BuiltinPolicies) != 2 {
+		t.Fatalf("hook builtin policies = %#v, want 2 entries (git, boid)", hookReq.BuiltinPolicies)
+	}
+	if _, ok := hookReq.BuiltinPolicies["git"]; !ok {
+		t.Fatalf("hook builtin policies missing git: %#v", hookReq.BuiltinPolicies)
+	}
+	if _, ok := hookReq.BuiltinPolicies["boid"]; !ok {
+		t.Fatalf("hook builtin policies missing boid: %#v", hookReq.BuiltinPolicies)
 	}
 	if hookReq.HostCommands != nil {
 		t.Fatalf("hook host commands = %#v, want nil", hookReq.HostCommands)
@@ -115,8 +121,14 @@ func TestDispatchPlannerAddsBoidAsBuiltinForHookAndGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanGate: %v", err)
 	}
-	if len(gateReq.BuiltinCommands) != 2 || gateReq.BuiltinCommands[0] != "git" || gateReq.BuiltinCommands[1] != "boid" {
-		t.Fatalf("gate builtin commands = %#v, want [git boid]", gateReq.BuiltinCommands)
+	if len(gateReq.BuiltinPolicies) != 2 {
+		t.Fatalf("gate builtin policies = %#v, want 2 entries (git, boid)", gateReq.BuiltinPolicies)
+	}
+	if _, ok := gateReq.BuiltinPolicies["git"]; !ok {
+		t.Fatalf("gate builtin policies missing git: %#v", gateReq.BuiltinPolicies)
+	}
+	if _, ok := gateReq.BuiltinPolicies["boid"]; !ok {
+		t.Fatalf("gate builtin policies missing boid: %#v", gateReq.BuiltinPolicies)
 	}
 	if _, ok := gateReq.HostCommands["boid"]; ok {
 		t.Fatalf("gate host commands should not contain boid: %#v", gateReq.HostCommands)

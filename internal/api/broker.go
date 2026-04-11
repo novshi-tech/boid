@@ -6,11 +6,12 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 type BrokerRegisterRequest struct {
 	Commands        map[string]orchestrator.HostCommandSpec `json:"commands"`
-	BuiltinCommands []string                                `json:"builtin_commands,omitempty"`
+	BuiltinPolicies map[string]sandbox.BuiltinPolicy        `json:"builtin_policies,omitempty"`
 	ProjectID       string                                  `json:"project_id,omitempty"`
 }
 
@@ -40,7 +41,7 @@ func (h *BrokerHandler) Register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
-	if len(req.Commands) == 0 && len(req.BuiltinCommands) == 0 {
+	if len(req.Commands) == 0 && len(req.BuiltinPolicies) == 0 {
 		writeError(w, http.StatusBadRequest, "no commands or builtins")
 		return
 	}
@@ -49,7 +50,7 @@ func (h *BrokerHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.Registry.RegisterBrokerCommands(req.Commands, req.BuiltinCommands, req.ProjectID)
+	resp, err := h.Registry.RegisterBrokerCommands(req.Commands, req.BuiltinPolicies, req.ProjectID)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return

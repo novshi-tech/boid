@@ -1,5 +1,7 @@
 package dispatcher
 
+import "github.com/novshi-tech/boid/internal/sandbox"
+
 // HookFile describes a single hook file to bind-mount into the sandbox.
 type HookFile struct {
 	Source     string // host-side absolute path
@@ -22,7 +24,7 @@ type SandboxSpec struct {
 	BrokerSocket       string
 	BrokerToken        string
 	Env                map[string]string
-	BuiltinCommands    []string
+	BuiltinPolicies    map[string]sandbox.BuiltinPolicy
 	HostCommands       []string
 	AdditionalBindings []BindMount
 	WorkspaceDirs      map[string]string

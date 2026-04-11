@@ -9,7 +9,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/dispatcher"
-	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
 )
 
@@ -77,15 +77,16 @@ func buildExecRequest(projectID string) (dispatcher.ExecRequest, error) {
 	c.Do("GET", "/api/proxy", nil, &proxyInfo)
 
 	// Register host commands with broker
+	builtinPolicies := orchestrator.DefaultBuiltinPolicies(orchestrator.RoleGate, p.Meta.BuiltinCommands)
 	var brokerSocket, brokerToken string
-	if len(p.Meta.HostCommands) > 0 || len(p.Meta.BuiltinCommands) > 0 {
+	if len(p.Meta.HostCommands) > 0 || len(builtinPolicies) > 0 {
 		var brokerResp struct {
 			Token  string `json:"token"`
 			Socket string `json:"socket"`
 		}
 		regReq := map[string]any{
 			"commands":         p.Meta.HostCommands,
-			"builtin_commands": p.Meta.BuiltinCommands,
+			"builtin_policies": builtinPolicies,
 			"project_id":       p.ID,
 		}
 		if err := c.Do("POST", "/api/broker/register", regReq, &brokerResp); err == nil {
@@ -104,7 +105,7 @@ func buildExecRequest(projectID string) (dispatcher.ExecRequest, error) {
 		BrokerSocket:       brokerSocket,
 		BrokerToken:        brokerToken,
 		Env:                p.Meta.Env,
-		BuiltinCommands:    p.Meta.BuiltinCommands,
+		BuiltinPolicies:    builtinPolicies,
 		HostCommands:       p.Meta.HostCommands,
 		AdditionalBindings: p.Meta.AdditionalBindings,
 		WorkspaceDirs:      workspaceDirs,
@@ -138,7 +139,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		req.TTY = true
 	}
 
-	outerPath, err := dispatcher.WriteExecScripts(req, sandbox.NewDispatcherPreparer())
+	outerPath, err := dispatcher.WriteExecScripts(req, dispatcher.NewSandboxPreparer())
 	if err != nil {
 		return fmt.Errorf("write sandbox scripts: %w", err)
 	}

@@ -1,5 +1,7 @@
 package dispatcher
 
+import "github.com/novshi-tech/boid/internal/sandbox"
+
 // BindMount is a plain shared DTO at the dispatcher boundary.
 // It carries only mount source/mode data and does not encode provider behavior.
 type BindMount struct {
@@ -34,7 +36,7 @@ type DispatchPlan struct {
 	BoidBinary         string
 	ServerSocket       string
 	Env                map[string]string
-	BuiltinCommands    []string
+	BuiltinPolicies    map[string]sandbox.BuiltinPolicy
 	HostCommands       map[string]CommandDef
 	AdditionalBindings []BindMount
 	WorkspaceDirs      map[string]string

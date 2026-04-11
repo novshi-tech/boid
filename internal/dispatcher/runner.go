@@ -57,7 +57,7 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		BoidBinary:         plan.BoidBinary,
 		ServerSocket:       plan.ServerSocket,
 		Env:                plan.Env,
-		BuiltinCommands:    append([]string(nil), plan.BuiltinCommands...),
+		BuiltinPolicies:    plan.BuiltinPolicies,
 		HostCommands:       hostCommandNames(plan.HostCommands),
 		AdditionalBindings: plan.AdditionalBindings,
 		WorkspaceDirs:      plan.WorkspaceDirs,
@@ -100,7 +100,7 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 				return r.SecretStore.Get(ns, key)
 			}
 		}
-		spec.BrokerToken = r.Broker.RegisterCommands(plan.HostCommands, plan.BuiltinCommands, tokenCtx, resolve)
+		spec.BrokerToken = r.Broker.RegisterCommands(plan.HostCommands, plan.BuiltinPolicies, tokenCtx, resolve)
 		spec.BrokerSocket = r.Broker.SocketPath()
 		r.trackToken(j.ID, spec.BrokerToken)
 	}
