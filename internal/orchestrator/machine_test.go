@@ -124,7 +124,9 @@ func TestDefaultMachine_JobFailed_FromAnyState(t *testing.T) {
 
 // ---- DefaultMachine: auto transitions from executing ----
 
-func TestDefaultMachine_Executing_TasksReady_Done(t *testing.T) {
+func TestDefaultMachine_Executing_TasksReady_Verifying(t *testing.T) {
+	// tasks trait は artifact と対称に扱われ、executing → verifying に進む。
+	// verifying で reviewer hook/gate を噛ませられる余地を残す設計。
 	sm := orchestrator.DefaultMachine()
 	task := &orchestrator.Task{
 		Status:  orchestrator.TaskStatusExecuting,
@@ -132,10 +134,43 @@ func TestDefaultMachine_Executing_TasksReady_Done(t *testing.T) {
 	}
 	next, ok := sm.Advance(task)
 	if !ok {
-		t.Fatal("expected advance to done when tasks ready")
+		t.Fatal("expected advance to verifying when tasks ready")
 	}
-	if next.Status != orchestrator.TaskStatusDone {
-		t.Fatalf("expected done, got %s", next.Status)
+	if next.Status != orchestrator.TaskStatusVerifying {
+		t.Fatalf("expected verifying, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_Executing_TasksReady_OpenExecutingFindings_Reworking(t *testing.T) {
+	// plan タスクでも executing 段階の finding が残っていれば reworking に戻す。
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{
+			"tasks":[{"title":"subtask"}],
+			"verification":{
+				"plan-sanity":{"source_state":"executing","findings":[{"message":"missing context","status":"open"}]}
+			}
+		}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to reworking when tasks present but executing findings open")
+	}
+	if next.Status != orchestrator.TaskStatusReworking {
+		t.Fatalf("expected reworking, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_Executing_NoTasks_NoAdvance(t *testing.T) {
+	// tasks trait が空配列のときは未完了扱いで advance しない。
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{"tasks":[]}`),
+	}
+	if _, ok := sm.Advance(task); ok {
+		t.Fatal("expected no advance when tasks array is empty")
 	}
 }
 

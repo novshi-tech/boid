@@ -91,9 +91,14 @@ func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
 //
 // Auto transitions from executing:
 //
-//	TasksReady(p)                                          → done    (plan tasks)
-//	artifact && AnyFindingUnresolvedForState("executing")  → reworking (CI failures)
-//	artifact && !AnyFindingUnresolvedForState("executing") → verifying (general forward)
+//	(artifact || tasks) && AnyFindingUnresolvedForState("executing")  → reworking
+//	(artifact || tasks) && !AnyFindingUnresolvedForState("executing") → verifying
+//
+// tasks trait と artifact trait は「executing での成果物が揃った」という
+// 対称のシグナルとして扱う。plan タスク（tasks を書く）も dev タスク
+// （artifact を書く）も同じ executing → verifying パスを辿り、verifying で
+// reviewer hook/gate を噛ませる余地を残す。verifying に reviewer が無ければ
+// pass-through で done に落ちる。
 //
 // Auto transitions from verifying:
 //
@@ -105,6 +110,9 @@ func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
 //	NoUnresolvedFindings()  → done
 //	!NoUnresolvedFindings() → reworking (self-loop until all findings resolved)
 func DefaultMachine() *StateMachine {
+	executionComplete := func(p json.RawMessage) bool {
+		return TraitNonNull(p, "artifact") || TasksReady(p)
+	}
 	return &StateMachine{
 		Name: "default",
 		Rules: []Rule{
@@ -118,12 +126,11 @@ func DefaultMachine() *StateMachine {
 			{Action: "abort", FromStatus: "*", ToStatus: "aborted", Manual: true},
 
 			// Auto transitions from executing
-			{FromStatus: "executing", ToStatus: "done", Condition: TasksReady},
 			{FromStatus: "executing", ToStatus: "reworking", Condition: func(p json.RawMessage) bool {
-				return TraitNonNull(p, "artifact") && AnyFindingUnresolvedForState("executing")(p)
+				return executionComplete(p) && AnyFindingUnresolvedForState("executing")(p)
 			}},
 			{FromStatus: "executing", ToStatus: "verifying", Condition: func(p json.RawMessage) bool {
-				return TraitNonNull(p, "artifact") && !AnyFindingUnresolvedForState("executing")(p)
+				return executionComplete(p) && !AnyFindingUnresolvedForState("executing")(p)
 			}},
 
 			// Auto transitions from verifying
