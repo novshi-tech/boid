@@ -482,6 +482,68 @@ func TestTaskWorkflowServiceApplyAction_Start_DepsOnPayload_Falsy_Error(t *testi
 	}
 }
 
+// --- cross-project checkDependencies テスト ---
+
+func TestCheckDependencies_CrossProject_AllDone_NoError(t *testing.T) {
+	dep := &orchestrator.Task{ID: "dep-1", ProjectID: "project-a", Status: orchestrator.TaskStatusDone}
+	task := &orchestrator.Task{ID: "t1", ProjectID: "project-b", DependsOn: []string{"dep-1"}}
+	if err := checkDependencies(task, func(id string) (*orchestrator.Task, error) {
+		return dep, nil
+	}); err != nil {
+		t.Fatalf("checkDependencies() error = %v, want nil (cross-project dep done)", err)
+	}
+}
+
+func TestCheckDependencies_CrossProject_DepNotDone_Error(t *testing.T) {
+	dep := &orchestrator.Task{ID: "dep-1", ProjectID: "project-a", Status: orchestrator.TaskStatusExecuting}
+	task := &orchestrator.Task{ID: "t1", ProjectID: "project-b", DependsOn: []string{"dep-1"}}
+	if err := checkDependencies(task, func(id string) (*orchestrator.Task, error) {
+		return dep, nil
+	}); err == nil {
+		t.Fatal("checkDependencies() error = nil, want error (cross-project dep not done)")
+	}
+}
+
+func TestCheckDependencies_CrossProject_DependsOnPayload_Truthy_NoError(t *testing.T) {
+	dep := &orchestrator.Task{
+		ID:        "dep-1",
+		ProjectID: "project-a",
+		Status:    orchestrator.TaskStatusDone,
+		Payload:   json.RawMessage(`{"result": "ok"}`),
+	}
+	task := &orchestrator.Task{
+		ID:               "t1",
+		ProjectID:        "project-b",
+		DependsOn:        []string{"dep-1"},
+		DependsOnPayload: "result",
+	}
+	if err := checkDependencies(task, func(id string) (*orchestrator.Task, error) {
+		return dep, nil
+	}); err != nil {
+		t.Fatalf("checkDependencies() error = %v, want nil (cross-project truthy payload)", err)
+	}
+}
+
+func TestCheckDependencies_CrossProject_DependsOnPayload_Falsy_Error(t *testing.T) {
+	dep := &orchestrator.Task{
+		ID:        "dep-1",
+		ProjectID: "project-a",
+		Status:    orchestrator.TaskStatusDone,
+		Payload:   json.RawMessage(`{"result": null}`),
+	}
+	task := &orchestrator.Task{
+		ID:               "t1",
+		ProjectID:        "project-b",
+		DependsOn:        []string{"dep-1"},
+		DependsOnPayload: "result",
+	}
+	if err := checkDependencies(task, func(id string) (*orchestrator.Task, error) {
+		return dep, nil
+	}); err == nil {
+		t.Fatal("checkDependencies() error = nil, want error (cross-project falsy payload)")
+	}
+}
+
 // --- payloadGet ネストパス参照ユニットテスト ---
 
 func TestPayloadGet_NestedPath_Truthy(t *testing.T) {
