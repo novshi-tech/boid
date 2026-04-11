@@ -662,3 +662,173 @@ func TestBroker_BoidBuiltinRequiresTypedRequest(t *testing.T) {
 		t.Fatalf("expected typed request rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
 	}
 }
+
+// --- task import broker tests ---
+
+func TestBroker_BoidTaskImport_GateAllowed(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	gateCtx := sandbox.TokenContext{
+		JobID:      "j1",
+		TaskID:     "t1",
+		ProjectID:  "p1",
+		Role:       string(projectspec.RoleGate),
+		ProjectDir: projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, gateCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op: sandbox.BoidOpTaskImport,
+			ImportTasks: []json.RawMessage{
+				json.RawMessage(`{"project_id":"p1","title":"t","behavior":"dev"}`),
+			},
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor calls = %d, want 1", len(exec.calls))
+	}
+	if exec.calls[0].Op != sandbox.BoidOpTaskImport {
+		t.Fatalf("op = %q, want %q", exec.calls[0].Op, sandbox.BoidOpTaskImport)
+	}
+}
+
+func TestBroker_BoidTaskImport_HookRejected(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	hookCtx := sandbox.TokenContext{
+		JobID:      "j1",
+		TaskID:     "t1",
+		ProjectID:  "p1",
+		Role:       string(projectspec.RoleHook),
+		ProjectDir: projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, hookCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op: sandbox.BoidOpTaskImport,
+			ImportTasks: []json.RawMessage{
+				json.RawMessage(`{"project_id":"p1","title":"t"}`),
+			},
+		},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "not allowed for role hook") {
+		t.Fatalf("hook task import should be rejected, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called, calls=%d", len(exec.calls))
+	}
+}
+
+func TestBroker_BoidTaskImport_DisallowedProject(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	gateCtx := sandbox.TokenContext{
+		JobID:             "j1",
+		TaskID:            "t1",
+		ProjectID:         "p1",
+		AllowedProjectIDs: []string{"p1"},
+		Role:              string(projectspec.RoleGate),
+		ProjectDir:        projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, gateCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op: sandbox.BoidOpTaskImport,
+			ImportTasks: []json.RawMessage{
+				json.RawMessage(`{"project_id":"p2","title":"t"}`), // p2 は許可外
+			},
+		},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "outside the current workspace") {
+		t.Fatalf("disallowed project should be rejected, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called, calls=%d", len(exec.calls))
+	}
+}
+
+func TestBroker_BoidTaskImport_ProjectOverrideValidated(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	gateCtx := sandbox.TokenContext{
+		JobID:             "j1",
+		TaskID:            "t1",
+		ProjectID:         "p1",
+		AllowedProjectIDs: []string{"p1"},
+		Role:              string(projectspec.RoleGate),
+		ProjectDir:        projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, gateCtx)
+
+	// ImportProjectOverride = "p2" は AllowedProjectIDs に含まれないので拒否
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op: sandbox.BoidOpTaskImport,
+			ImportTasks: []json.RawMessage{
+				json.RawMessage(`{"title":"t"}`),
+			},
+			ImportProjectOverride: "p2",
+		},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "outside the current workspace") {
+		t.Fatalf("project override outside workspace should be rejected, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called, calls=%d", len(exec.calls))
+	}
+}
+
+func TestBroker_BoidTaskImport_DefaultProjectFromContext(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	gateCtx := sandbox.TokenContext{
+		JobID:      "j1",
+		TaskID:     "t1",
+		ProjectID:  "p1",
+		Role:       string(projectspec.RoleGate),
+		ProjectDir: projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, gateCtx)
+
+	// project_id 未指定 → ctx.ProjectID = "p1" がデフォルト注入される
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op: sandbox.BoidOpTaskImport,
+			ImportTasks: []json.RawMessage{
+				json.RawMessage(`{"title":"t"}`),
+			},
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("default project from context should succeed, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor calls = %d, want 1", len(exec.calls))
+	}
+}

@@ -1,5 +1,7 @@
 package sandbox
 
+import "encoding/json"
+
 type ExecRequest struct {
 	Command string       `json:"command"`
 	Args    []string     `json:"args"`
@@ -23,6 +25,7 @@ const (
 	BoidOpTaskCreate BoidOp = "task_create"
 	BoidOpTaskGet    BoidOp = "task_get"
 	BoidOpTaskUpdate BoidOp = "task_update"
+	BoidOpTaskImport BoidOp = "task_import"
 )
 
 // BehaviorSpec is the inline behavior specification carried in BoidRequest.
@@ -57,6 +60,11 @@ type BoidRequest struct {
 	DependsOn        []string      `json:"depends_on,omitempty"`
 	DependsOnPayload string        `json:"depends_on_payload,omitempty"`
 	AutoStart        bool          `json:"auto_start,omitempty"`
+
+	// task import fields
+	ImportTasks              []json.RawMessage `json:"import_tasks,omitempty"`
+	ImportProjectOverride    string            `json:"import_project_override,omitempty"`
+	ImportDatasourceOverride string            `json:"import_datasource_override,omitempty"`
 }
 
 type TokenContext struct {

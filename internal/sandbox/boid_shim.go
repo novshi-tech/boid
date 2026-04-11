@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -52,6 +53,8 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 			return parseBoidTaskGet(args[2:])
 		case "update":
 			return parseBoidTaskUpdate(args[2:])
+		case "import":
+			return parseBoidTaskImport(args[2:])
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid task subcommand %q", args[1])
 		}
@@ -323,4 +326,84 @@ func readFlagContent(source string) ([]byte, error) {
 		return io.ReadAll(os.Stdin)
 	}
 	return os.ReadFile(source)
+}
+
+func parseBoidTaskImport(args []string) (*BoidRequest, error) {
+	var filePath string
+	var projectOverride string
+	var datasourceOverride string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-f" || arg == "--file" || strings.HasPrefix(arg, "--file="):
+			flagName := "--file"
+			if arg == "-f" {
+				flagName = "-f"
+			}
+			value, next, err := takeStringFlagValue(args, i, flagName)
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			filePath = value
+		case arg == "--project" || strings.HasPrefix(arg, "--project="):
+			value, next, err := takeStringFlagValue(args, i, "--project")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			projectOverride = value
+		case arg == "--datasource" || strings.HasPrefix(arg, "--datasource="):
+			value, next, err := takeStringFlagValue(args, i, "--datasource")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			datasourceOverride = value
+		default:
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task import", arg)
+		}
+	}
+
+	var reader io.Reader
+	if filePath != "" {
+		f, err := os.Open(filePath)
+		if err != nil {
+			return nil, fmt.Errorf("boid shim: open import file: %w", err)
+		}
+		defer f.Close()
+		reader = f
+	} else {
+		reader = os.Stdin
+	}
+
+	var tasks []json.RawMessage
+	scanner := bufio.NewScanner(reader)
+	lineNum := 0
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		lineNum++
+		if !json.Valid([]byte(line)) {
+			return nil, fmt.Errorf("boid shim: line %d: invalid JSON: %s", lineNum, line)
+		}
+		tasks = append(tasks, json.RawMessage(line))
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("boid shim: read import input: %w", err)
+	}
+
+	if len(tasks) == 0 {
+		return nil, fmt.Errorf("boid shim: task import requires at least one task")
+	}
+
+	return &BoidRequest{
+		Op:                      BoidOpTaskImport,
+		ImportTasks:             tasks,
+		ImportProjectOverride:   projectOverride,
+		ImportDatasourceOverride: datasourceOverride,
+	}, nil
 }
