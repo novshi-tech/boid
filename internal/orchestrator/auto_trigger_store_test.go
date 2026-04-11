@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/testutil"
 )
 
 // --- FindDependentTasks テスト ---
@@ -214,6 +215,45 @@ func TestCreateTask_NoCycle_OK(t *testing.T) {
 	taskC := &orchestrator.Task{ID: "id-z", ProjectID: "proj-1", Title: "Z", Behavior: "dev", DependsOn: []string{"id-y"}}
 	if err := orchestrator.CreateTask(d.Conn, taskC); err != nil {
 		t.Fatalf("CreateTask() error = %v, want nil for valid chain", err)
+	}
+}
+
+func TestFindDependentTasks_CrossProject_ReturnsDependentFromOtherProject(t *testing.T) {
+	d := testutil.NewTestDB(t)
+
+	// project_a と project_b の 2 プロジェクトを作成する
+	projectA := &orchestrator.Project{ID: "project-a", WorkDir: "/tmp/a"}
+	if err := orchestrator.CreateProject(d.Conn, projectA); err != nil {
+		t.Fatalf("create projectA: %v", err)
+	}
+	projectB := &orchestrator.Project{ID: "project-b", WorkDir: "/tmp/b"}
+	if err := orchestrator.CreateProject(d.Conn, projectB); err != nil {
+		t.Fatalf("create projectB: %v", err)
+	}
+
+	// taskA は project_a に属する
+	taskA := &orchestrator.Task{ProjectID: "project-a", Title: "A", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, taskA); err != nil {
+		t.Fatalf("create taskA: %v", err)
+	}
+	// taskB は project_b に属し、project_a の taskA に依存する
+	taskB := &orchestrator.Task{ProjectID: "project-b", Title: "B", Behavior: "dev", DependsOn: []string{taskA.ID}}
+	if err := orchestrator.CreateTask(d.Conn, taskB); err != nil {
+		t.Fatalf("create taskB: %v", err)
+	}
+
+	deps, err := orchestrator.FindDependentTasks(d.Conn, taskA.ID)
+	if err != nil {
+		t.Fatalf("FindDependentTasks() error = %v", err)
+	}
+	if len(deps) != 1 {
+		t.Fatalf("expected 1 dependent, got %d", len(deps))
+	}
+	if deps[0].ID != taskB.ID {
+		t.Fatalf("dependent ID = %q, want %q", deps[0].ID, taskB.ID)
+	}
+	if deps[0].ProjectID != "project-b" {
+		t.Fatalf("dependent ProjectID = %q, want %q", deps[0].ProjectID, "project-b")
 	}
 }
 
