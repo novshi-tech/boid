@@ -73,7 +73,6 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 		if req.BehaviorSpec != nil {
 			createReq.BehaviorSpec = &orchestrator.BehaviorSpec{
 				Name:           req.BehaviorSpec.Name,
-				Transition:     req.BehaviorSpec.Transition,
 				Traits:         req.BehaviorSpec.Traits,
 				Readonly:       req.BehaviorSpec.Readonly,
 				Worktree:       req.BehaviorSpec.Worktree,

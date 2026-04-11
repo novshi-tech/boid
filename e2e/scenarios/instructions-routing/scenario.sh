@@ -67,10 +67,10 @@ e2e_log "waiting for verifying hook (agent-b fires with verification type instru
 "$E2E_BIN_DIR/boid-e2e" wait-job-count "$task_id" 2
 "$E2E_BIN_DIR/boid-e2e" assert-job-role-count "$task_id" hook 2
 
-e2e_log "waiting for in_review (agent-b emits resolved verification)"
-task_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 20s --interval 100ms "$task_id" in_review)"
+e2e_log "waiting for done (agent-b emits resolved verification → verifying → done)"
+task_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 20s --interval 100ms "$task_id" done)"
 printf '%s\n' "$task_json"
-e2e_assert_contains "$task_json" '"status":"in_review"'
+e2e_assert_contains "$task_json" '"status":"done"'
 e2e_assert_contains "$task_json" '"artifact"'
 e2e_assert_contains "$task_json" '"verification"'
 

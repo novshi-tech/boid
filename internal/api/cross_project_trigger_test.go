@@ -22,7 +22,7 @@ func (s multiMetaStore) Get(id string) (*orchestrator.ProjectMeta, bool) {
 // triggerDependentTasks によって auto-start されることを検証する。
 func TestTriggerDependentTasks_CrossProject_AutoStartsDependentInOtherProject(t *testing.T) {
 	behavior := map[string]orchestrator.TaskBehavior{
-		"dev": {Transition: "one-shot"},
+		"dev": {},
 	}
 	metaA := &orchestrator.ProjectMeta{TaskBehaviors: behavior}
 	metaB := &orchestrator.ProjectMeta{TaskBehaviors: behavior}
@@ -57,7 +57,6 @@ func TestTriggerDependentTasks_CrossProject_AutoStartsDependentInOtherProject(t 
 			"project-a": metaA,
 			"project-b": metaB,
 		}},
-		Resolver: stubResolver{sm: orchestrator.OneShotMachine()},
 		// Coordinator は nil にしてバックグラウンドディスパッチを抑制する
 	}
 
@@ -80,7 +79,7 @@ func TestTriggerDependentTasks_CrossProject_AutoStartsDependentInOtherProject(t 
 // auto-start されない（pending のまま）ことを検証する。
 func TestTriggerDependentTasks_CrossProject_DepNotSatisfied_StaysPending(t *testing.T) {
 	behavior := map[string]orchestrator.TaskBehavior{
-		"dev": {Transition: "one-shot"},
+		"dev": {},
 	}
 	metaA := &orchestrator.ProjectMeta{TaskBehaviors: behavior}
 	metaB := &orchestrator.ProjectMeta{TaskBehaviors: behavior}
@@ -123,7 +122,6 @@ func TestTriggerDependentTasks_CrossProject_DepNotSatisfied_StaysPending(t *test
 			"project-a": metaA,
 			"project-b": metaB,
 		}},
-		Resolver: stubResolver{sm: orchestrator.OneShotMachine()},
 	}
 
 	// taskDoneA が done になっても、taskPendingC がまだ pending なので taskB は起動しない

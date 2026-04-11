@@ -37,8 +37,7 @@ func TestCompleteJobSuccessNotifiesWithoutTransition(t *testing.T) {
 	svc := &TaskWorkflowService{
 		Tasks:     taskStore,
 		Jobs:      jobs,
-		Meta:      stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {Transition: "one-shot"}}}},
-		Resolver:  stubResolver{sm: orchestrator.OneShotMachine()},
+		Meta:      stubMetaStore{meta: &orchestrator.ProjectMeta{}},
 		Lifecycle: lifecycle,
 	}
 
@@ -90,8 +89,7 @@ func TestCompleteJobFailureTransitionsToAborted(t *testing.T) {
 	svc := &TaskWorkflowService{
 		Tasks:     taskStore,
 		Jobs:      jobs,
-		Meta:      stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {Transition: "one-shot"}}}},
-		Resolver:  stubResolver{sm: orchestrator.OneShotMachine()},
+		Meta:      stubMetaStore{meta: &orchestrator.ProjectMeta{}},
 		Lifecycle: lifecycle,
 		Tx:        tx,
 	}
@@ -117,7 +115,7 @@ func TestCompleteJobFailureTransitionsToAborted(t *testing.T) {
 func TestTaskAppServiceCreateTask_BehaviorNotFound(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
+			"dev": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -153,10 +151,9 @@ func TestTaskAppServiceCreateTask_ProjectNotInMeta_Skips(t *testing.T) {
 	}
 
 	task, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID:  "proj-unknown",
-		Title:      "test task",
-		Behavior:   "any-behavior",
-		Transition: strPtr("one-shot"), // meta なし時はリクエストで transition を指定
+		ProjectID: "proj-unknown",
+		Title:     "test task",
+		Behavior:  "any-behavior",
 	})
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v, want nil", err)
@@ -213,11 +210,10 @@ func TestTaskAppServiceGetTaskDetail(t *testing.T) {
 
 func TestTaskAppServiceGetTaskDetail_AvailableActions(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:         "task-aa",
-		ProjectID:  "proj-aa",
-		Status:     orchestrator.TaskStatusPending,
-		Behavior:   "dev",
-		Transition: "one-shot",
+		ID:        "task-aa",
+		ProjectID: "proj-aa",
+		Status:    orchestrator.TaskStatusPending,
+		Behavior:  "dev",
 	}
 	svc := &TaskAppService{
 		Tasks:   &stubTaskStore{task: task},
@@ -248,30 +244,7 @@ func TestTaskAppServiceGetTaskDetail_AvailableActions(t *testing.T) {
 	}
 }
 
-func TestTaskAppServiceGetTaskDetail_AvailableActions_UnknownTransition(t *testing.T) {
-	task := &orchestrator.Task{
-		ID:        "task-bb",
-		ProjectID: "proj-bb",
-		Status:    orchestrator.TaskStatusPending,
-		Behavior:  "dev",
-		// Transition is empty → GetMachine("") returns ok=false → empty actions
-	}
-	svc := &TaskAppService{
-		Tasks:   &stubTaskStore{task: task},
-		Actions: stubActionStore{},
-		Jobs:    &stubJobStore{},
-	}
-
-	got, err := svc.GetTaskDetail(task.ID)
-	if err != nil {
-		t.Fatalf("GetTaskDetail() error = %v", err)
-	}
-	if len(got.AvailableActions) != 0 {
-		t.Errorf("AvailableActions should be empty when Transition is unknown, got %v", got.AvailableActions)
-	}
-}
-
-func TestTaskWorkflowServiceCompleteJobFinalizesOnResolverError(t *testing.T) {
+func TestTaskWorkflowServiceCompleteJobFailedProjectMetaMissing(t *testing.T) {
 	job := &Job{
 		ID:        "job-2",
 		TaskID:    "task-2",
@@ -290,8 +263,7 @@ func TestTaskWorkflowServiceCompleteJobFinalizesOnResolverError(t *testing.T) {
 	svc := &TaskWorkflowService{
 		Tasks:     &stubTaskStore{task: task},
 		Jobs:      jobs,
-		Meta:      stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {Transition: "one-shot"}}}},
-		Resolver:  stubResolver{err: fmt.Errorf("resolver failed")},
+		Meta:      stubMetaStore{meta: nil}, // meta not loaded → error on failed job
 		Lifecycle: lifecycle,
 	}
 
@@ -338,8 +310,6 @@ func TestTaskAppServiceDeleteTask_ActiveStatusBlockedWithoutForce(t *testing.T) 
 		orchestrator.TaskStatusExecuting,
 		orchestrator.TaskStatusReworking,
 		orchestrator.TaskStatusVerifying,
-		orchestrator.TaskStatusInReview,
-		orchestrator.TaskStatusCollectingFeedback,
 	}
 	for _, status := range activeStatuses {
 		task := &orchestrator.Task{
@@ -547,7 +517,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 func TestTaskAppServiceImportTasks_AllCreated(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
+			"dev": {},
 		},
 	}
 	store := &stubTaskStore{}
@@ -592,8 +562,8 @@ func TestTaskAppServiceImportTasks_SkipsDuplicate(t *testing.T) {
 	}
 
 	reqs := []CreateTaskRequest{
-		{ProjectID: "proj-1", Title: "Task 1", Behavior: "any", RemoteID: "PROJ-1", DataSourceID: "jira", Transition: strPtr("one-shot")},
-		{ProjectID: "proj-1", Title: "Task 2", Behavior: "any", RemoteID: "PROJ-2", DataSourceID: "jira", Transition: strPtr("one-shot")},
+		{ProjectID: "proj-1", Title: "Task 1", Behavior: "any", RemoteID: "PROJ-1", DataSourceID: "jira"},
+		{ProjectID: "proj-1", Title: "Task 2", Behavior: "any", RemoteID: "PROJ-2", DataSourceID: "jira"},
 	}
 	result, err := svc.ImportTasks(reqs)
 	if err != nil {
@@ -635,7 +605,7 @@ func TestTaskAppServiceImportTasks_ValidationError_BothEmpty(t *testing.T) {
 func TestTaskAppServiceImportTasks_BehaviorError(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
+			"dev": {},
 		},
 	}
 	store := &stubTaskStore{}
@@ -680,7 +650,6 @@ func TestCreateTask_BehaviorFieldsExpandedToTask(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
 			"dev": {
-				Transition:   "one-shot",
 				Traits:       []string{"artifact", "verification"},
 				Readonly:     false,
 				Worktree:     true,
@@ -702,9 +671,6 @@ func TestCreateTask_BehaviorFieldsExpandedToTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
-	if task.Transition != "one-shot" {
-		t.Errorf("Transition = %q, want %q", task.Transition, "one-shot")
-	}
 	if !reflect.DeepEqual(task.Traits, []string{"artifact", "verification"}) {
 		t.Errorf("Traits = %v, want %v", task.Traits, []string{"artifact", "verification"})
 	}
@@ -723,7 +689,6 @@ func TestCreateTask_RequestOverridesTemplateFields(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
 			"dev": {
-				Transition:   "one-shot",
 				Traits:       []string{"artifact"},
 				Readonly:     false,
 				Worktree:     true,
@@ -741,7 +706,6 @@ func TestCreateTask_RequestOverridesTemplateFields(t *testing.T) {
 		ProjectID:    "proj-1",
 		Title:        "test task",
 		Behavior:     "dev",
-		Transition:   strPtr("custom"),
 		Traits:       []string{"tasks"},
 		Readonly:     boolPtr(true),
 		Worktree:     boolPtr(false),
@@ -750,9 +714,6 @@ func TestCreateTask_RequestOverridesTemplateFields(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
-	}
-	if task.Transition != "custom" {
-		t.Errorf("Transition = %q, want %q", task.Transition, "custom")
 	}
 	if !reflect.DeepEqual(task.Traits, []string{"tasks"}) {
 		t.Errorf("Traits = %v, want %v", task.Traits, []string{"tasks"})
@@ -775,9 +736,8 @@ func TestCreateTask_NoOverrideUsesTemplateValue(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
 			"dev": {
-				Transition: "one-shot",
-				Traits:     []string{"artifact"},
-				Worktree:   true,
+				Traits:   []string{"artifact"},
+				Worktree: true,
 			},
 		},
 	}
@@ -795,43 +755,11 @@ func TestCreateTask_NoOverrideUsesTemplateValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
-	if task.Transition != "one-shot" {
-		t.Errorf("Transition = %q, want template value %q", task.Transition, "one-shot")
-	}
 	if !reflect.DeepEqual(task.Traits, []string{"artifact"}) {
 		t.Errorf("Traits = %v, want template value %v", task.Traits, []string{"artifact"})
 	}
 	if task.Worktree != true {
 		t.Errorf("Worktree = %v, want template value true", task.Worktree)
-	}
-}
-
-func TestCreateTask_TransitionMissing_Error(t *testing.T) {
-	meta := &orchestrator.ProjectMeta{
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: ""}, // no transition in behavior
-		},
-	}
-	svc := &TaskAppService{
-		Tasks: &stubTaskStore{},
-		Meta:  stubMetaStore{meta: meta},
-	}
-
-	_, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID: "proj-1",
-		Title:     "test task",
-		Behavior:  "dev",
-		// no Transition override
-	})
-	if err == nil {
-		t.Fatal("CreateTask() error = nil, want error for missing transition")
-	}
-	se, ok := err.(*StatusError)
-	if !ok {
-		t.Fatalf("error type = %T, want *StatusError", err)
-	}
-	if se.Code != http.StatusBadRequest {
-		t.Fatalf("error code = %d, want %d", se.Code, http.StatusBadRequest)
 	}
 }
 
@@ -847,10 +775,9 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_Success(t *testing.T) {
 		ProjectID: "proj-1",
 		Title:     "spec task",
 		BehaviorSpec: &orchestrator.BehaviorSpec{
-			Name:       "kit/my-behavior",
-			Transition: "one-shot",
-			Traits:     []string{"instructions"},
-			Worktree:   true,
+			Name:     "kit/my-behavior",
+			Traits:   []string{"instructions"},
+			Worktree: true,
 		},
 	})
 	if err != nil {
@@ -858,9 +785,6 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_Success(t *testing.T) {
 	}
 	if task.Behavior != "kit/my-behavior" {
 		t.Errorf("Behavior = %q, want %q", task.Behavior, "kit/my-behavior")
-	}
-	if task.Transition != "one-shot" {
-		t.Errorf("Transition = %q, want %q", task.Transition, "one-shot")
 	}
 	if !reflect.DeepEqual(task.Traits, []string{"instructions"}) {
 		t.Errorf("Traits = %v, want [instructions]", task.Traits)
@@ -882,7 +806,6 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_DefaultPayloadMerged(t *testing.T
 		Title:     "spec task",
 		BehaviorSpec: &orchestrator.BehaviorSpec{
 			Name:           "kit/my-behavior",
-			Transition:     "one-shot",
 			DefaultPayload: orchestrator.RawPayload(defaultPayload),
 		},
 	})
@@ -905,8 +828,7 @@ func TestTaskAppServiceCreateTask_BehaviorAndSpecMutuallyExclusive(t *testing.T)
 		Title:     "bad request",
 		Behavior:  "dev",
 		BehaviorSpec: &orchestrator.BehaviorSpec{
-			Name:       "kit/my-behavior",
-			Transition: "one-shot",
+			Name: "kit/my-behavior",
 		},
 	})
 	if err == nil {
@@ -958,9 +880,7 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_NameRequired(t *testing.T) {
 	_, err := svc.CreateTask(CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "bad request",
-		BehaviorSpec: &orchestrator.BehaviorSpec{
-			Transition: "one-shot",
-		},
+		BehaviorSpec: &orchestrator.BehaviorSpec{},
 	})
 	if err == nil {
 		t.Fatal("CreateTask() error = nil, want error for missing name")
@@ -974,34 +894,6 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_NameRequired(t *testing.T) {
 	}
 	if se.Message != "behavior_spec.name is required" {
 		t.Errorf("message = %q, want %q", se.Message, "behavior_spec.name is required")
-	}
-}
-
-func TestTaskAppServiceCreateTask_BehaviorSpec_TransitionRequired(t *testing.T) {
-	svc := &TaskAppService{
-		Tasks: &stubTaskStore{},
-		Meta:  stubMetaStore{meta: nil},
-	}
-
-	_, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID: "proj-1",
-		Title:     "bad request",
-		BehaviorSpec: &orchestrator.BehaviorSpec{
-			Name: "kit/my-behavior",
-		},
-	})
-	if err == nil {
-		t.Fatal("CreateTask() error = nil, want error for missing transition")
-	}
-	se, ok := err.(*StatusError)
-	if !ok {
-		t.Fatalf("error type = %T, want *StatusError", err)
-	}
-	if se.Code != http.StatusBadRequest {
-		t.Fatalf("error code = %d, want %d", se.Code, http.StatusBadRequest)
-	}
-	if se.Message != "behavior_spec.transition is required" {
-		t.Errorf("message = %q, want %q", se.Message, "behavior_spec.transition is required")
 	}
 }
 
@@ -1019,10 +911,9 @@ func TestTaskAppServiceImportTasks_BehaviorSpec_Success(t *testing.T) {
 			RemoteID:     "KIT-1",
 			DataSourceID: "github",
 			BehaviorSpec: &orchestrator.BehaviorSpec{
-				Name:       "kit/conflict-fix",
-				Transition: "one-shot-feedback",
-				Traits:     []string{"instructions"},
-				Worktree:   true,
+				Name:     "kit/conflict-fix",
+				Traits:   []string{"instructions"},
+				Worktree: true,
 			},
 		},
 	}
@@ -1041,9 +932,6 @@ func TestTaskAppServiceImportTasks_BehaviorSpec_Success(t *testing.T) {
 	}
 	if store.createdTask.Behavior != "kit/conflict-fix" {
 		t.Errorf("Behavior = %q, want %q", store.createdTask.Behavior, "kit/conflict-fix")
-	}
-	if store.createdTask.Transition != "one-shot-feedback" {
-		t.Errorf("Transition = %q, want %q", store.createdTask.Transition, "one-shot-feedback")
 	}
 }
 
@@ -1183,18 +1071,6 @@ func (s stubMetaStore) Get(id string) (*orchestrator.ProjectMeta, bool) {
 	return s.meta, true
 }
 
-type stubResolver struct {
-	sm  *orchestrator.StateMachine
-	err error
-}
-
-func (r stubResolver) Resolve(task *orchestrator.Task) (*orchestrator.StateMachine, error) {
-	if r.err != nil {
-		return nil, r.err
-	}
-	return r.sm, nil
-}
-
 type stubLifecycle struct {
 	completedJobID    string
 	unregisteredJobID string
@@ -1229,7 +1105,7 @@ func TestDuplicateTask_CopiesFields(t *testing.T) {
 	}
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
+			"dev": {},
 		},
 	}
 	store := &stubTaskStore{task: source}
@@ -1274,7 +1150,6 @@ func TestDuplicateTask_PayloadFromDefaultPayload(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
 			"dev": {
-				Transition:     "one-shot",
 				DefaultPayload: orchestrator.RawPayload(`{"instructions":{"main":{"type":"execution","consumer":"claude-code","message":"do stuff"}}}`),
 			},
 		},
@@ -1311,7 +1186,7 @@ func TestDuplicateTask_AutoStart(t *testing.T) {
 	}
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
+			"dev": {},
 		},
 	}
 	workflow := &stubWorkflowService{}
@@ -1340,7 +1215,7 @@ func TestDuplicateTask_AnySourceStatus(t *testing.T) {
 	}
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
+			"dev": {},
 		},
 	}
 

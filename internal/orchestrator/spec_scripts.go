@@ -48,7 +48,6 @@ func BuildTriggeredScriptTask(script Script, event ScriptTrigger, parentTask *Ta
 		Title:       fmt.Sprintf("script: %s/%s", script.Kit, script.ID),
 		Description: script.Description,
 		Behavior:    behavior,
-		Transition:  "one-shot",
 		Status:      TaskStatusPending,
 		Readonly:    true,
 		Ephemeral:   true,
@@ -73,25 +72,21 @@ func ResolveScriptScript(scriptsDir, scriptID string) (string, error) {
 }
 
 var ValidHookOnValues = map[string]bool{
-	"pending":             true,
-	"executing":           true,
-	"reworking":           true,
-	"verifying":           true,
-	"in_review":           true,
-	"collecting_feedback": true,
-	"done":                true,
-	"aborted":             true,
+	"pending":   true,
+	"executing": true,
+	"reworking": true,
+	"verifying": true,
+	"done":      true,
+	"aborted":   true,
 }
 
 var ValidGateOnValues = map[string]bool{
-	"pending":             true,
-	"executing":           true,
-	"reworking":           true,
-	"verifying":           true,
-	"in_review":           true,
-	"collecting_feedback": true,
-	"done":                true,
-	"aborted":             true,
+	"pending":   true,
+	"executing": true,
+	"reworking": true,
+	"verifying": true,
+	"done":      true,
+	"aborted":   true,
 }
 
 func ResolveHookScript(hooksDir, hookID string) (string, error) {
@@ -118,13 +113,12 @@ func ResolveGateScript(gatesDir, gateID string) (string, error) {
 func BuildScriptTask(script Script, projectID string, triggerPayload json.RawMessage) *Task {
 	behavior := fmt.Sprintf("_script:%s/%s", script.Kit, script.ID)
 	return &Task{
-		ProjectID:  projectID,
-		Title:      fmt.Sprintf("script: %s/%s", script.Kit, script.ID),
-		Behavior:   behavior,
-		Transition: "one-shot",
-		Readonly:   true,
-		Ephemeral:  true,
-		AutoStart:  true,
-		Payload:    triggerPayload,
+		ProjectID: projectID,
+		Title:     fmt.Sprintf("script: %s/%s", script.Kit, script.ID),
+		Behavior:  behavior,
+		Readonly:  true,
+		Ephemeral: true,
+		AutoStart: true,
+		Payload:   triggerPayload,
 	}
 }

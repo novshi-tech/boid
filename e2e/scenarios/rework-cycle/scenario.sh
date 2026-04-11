@@ -63,9 +63,9 @@ rm -f "$RELEASE_HOOK"
 e2e_log "waiting for rework cycle"
 "$E2E_BIN_DIR/boid-e2e" wait-job-count "$task_id" 3
 
-task_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 20s --interval 100ms "$task_id" executing)"
+task_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 20s --interval 100ms "$task_id" reworking)"
 printf '%s\n' "$task_json"
-e2e_assert_contains "$task_json" '"status":"executing"'
+e2e_assert_contains "$task_json" '"status":"reworking"'
 e2e_assert_contains "$task_json" '"source_state":"verifying"'
 e2e_assert_contains "$task_json" '"needs rework"'
 "$E2E_BIN_DIR/boid-e2e" assert-job-role-count "$task_id" hook 2

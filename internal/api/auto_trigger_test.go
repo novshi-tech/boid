@@ -19,7 +19,7 @@ func setupTriggerProject(t *testing.T, ts *testutil.TestServer, id string) {
 	if err := os.MkdirAll(boidDir, 0o755); err != nil {
 		t.Fatalf("mkdir boid: %v", err)
 	}
-	yaml := "id: " + id + "\nname: Trigger Test\ntask_behaviors:\n  impl:\n    name: Impl\n    transition: one-shot\n"
+	yaml := "id: " + id + "\nname: Trigger Test\ntask_behaviors:\n  impl:\n    name: Impl\n"
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatalf("write project.yaml: %v", err)
 	}

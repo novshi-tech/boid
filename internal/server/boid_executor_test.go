@@ -82,7 +82,7 @@ func TestBoidBuiltinExecutor_EnforcesWorkspaceScope(t *testing.T) {
 	store := &capturingTaskStore{}
 	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
+			"dev": {},
 		},
 	}}
 	exec := &boidBuiltinExecutor{
@@ -148,7 +148,7 @@ func TestBoidBuiltinExecutor_TaskUpdate_EnforcesWorkspaceScope(t *testing.T) {
 	}
 	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
+			"dev": {},
 		},
 	}}
 	exec := &boidBuiltinExecutor{
@@ -254,7 +254,7 @@ func TestBoidBuiltinExecutor_PropagatesDependencyFields(t *testing.T) {
 	store := &capturingTaskStore{}
 	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
+			"dev": {},
 		},
 	}}
 	exec := &boidBuiltinExecutor{
@@ -311,7 +311,7 @@ func newImportExecutor(t *testing.T) (*boidBuiltinExecutor, *capturingTaskStore)
 	store := &capturingTaskStore{}
 	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
+			"dev": {},
 		},
 	}}
 	exec := &boidBuiltinExecutor{

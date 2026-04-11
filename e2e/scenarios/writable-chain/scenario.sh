@@ -45,9 +45,9 @@ e2e_log "waiting for parallel gates"
 "$E2E_BIN_DIR/boid-e2e" assert-job-role-count "$task_id" hook 2
 "$E2E_BIN_DIR/boid-e2e" assert-job-role-count "$task_id" gate 2
 
-task_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 20s --interval 100ms "$task_id" in_review)"
+task_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 20s --interval 100ms "$task_id" done)"
 printf '%s\n' "$task_json"
-e2e_assert_contains "$task_json" '"status":"in_review"'
+e2e_assert_contains "$task_json" '"status":"done"'
 
 task_list="$("$E2E_BIN_DIR/boid" task list)"
 printf '%s\n' "$task_list"

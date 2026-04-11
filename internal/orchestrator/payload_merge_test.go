@@ -464,7 +464,6 @@ func TestFilterInstructions_Model_PropagatedToRoutedInstruction(t *testing.T) {
 func TestRawPayload_YAMLUnmarshal(t *testing.T) {
 	data := `
 name: impl
-transition: feedback-loop
 default_payload:
   instructions:
     executor:
@@ -479,9 +478,6 @@ default_payload:
 
 	if behavior.Name != "impl" {
 		t.Fatalf("expected name %q, got %q", "impl", behavior.Name)
-	}
-	if behavior.Transition != "feedback-loop" {
-		t.Fatalf("expected transition %q, got %q", "feedback-loop", behavior.Transition)
 	}
 
 	raw := behavior.DefaultPayload.RawMessage()

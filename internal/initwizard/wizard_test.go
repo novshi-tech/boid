@@ -21,7 +21,6 @@ func TestExpandScaffoldTemplate_Basic(t *testing.T) {
 	kitDir := t.TempDir()
 	tplContent := `dev:
   name: Development
-  transition: one-shot
   project_id: {{.ProjectID}}
   project_name: {{.ProjectName}}
 `
@@ -386,7 +385,7 @@ func createFakeKit(t *testing.T, kitsDir, ref, name, detectFile string, hasScaff
 	}
 	if hasScaffold {
 		sb.WriteString("scaffold:\n  task_behaviors:\n    description: Test scaffold\n    template: behaviors.tmpl\n")
-		tpl := "dev:\n  name: Development\n  transition: one-shot\n"
+		tpl := "dev:\n  name: Development\n"
 		if err := os.WriteFile(filepath.Join(kitDir, "behaviors.tmpl"), []byte(tpl), 0o644); err != nil {
 			t.Fatalf("write scaffold template: %v", err)
 		}

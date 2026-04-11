@@ -255,7 +255,7 @@ func writeImportTestProject(t *testing.T, id, name string) string {
 	if err := os.MkdirAll(boidDir, 0o755); err != nil {
 		t.Fatalf("mkdir .boid: %v", err)
 	}
-	yaml := "id: " + id + "\nname: " + name + "\ntask_behaviors:\n  dev:\n    name: development\n    transition: standard\n"
+	yaml := "id: " + id + "\nname: " + name + "\ntask_behaviors:\n  dev:\n    name: development\n"
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatalf("write project.yaml: %v", err)
 	}

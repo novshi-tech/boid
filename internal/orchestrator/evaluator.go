@@ -7,11 +7,11 @@ type Evaluator struct{}
 // InstructionTypeForStatus maps a task status to the corresponding InstructionType.
 func InstructionTypeForStatus(status TaskStatus) InstructionType {
 	switch status {
-	case TaskStatusExecuting, TaskStatusCollectingFeedback:
+	case TaskStatusExecuting:
 		return InstructionTypeExecution
 	case TaskStatusReworking:
 		return InstructionTypeRework
-	case TaskStatusVerifying, TaskStatusInReview:
+	case TaskStatusVerifying:
 		return InstructionTypeVerification
 	default:
 		return ""

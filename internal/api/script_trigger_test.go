@@ -61,7 +61,6 @@ func TestRunDispatchLoop_ScriptTriggeredOnTaskDone(t *testing.T) {
 		Title:      "parent task",
 		Status:     orchestrator.TaskStatusDone,
 		Behavior:   "dev",
-		Transition: "one-shot",
 		Payload:    []byte(`{}`),
 	}
 
@@ -70,7 +69,7 @@ func TestRunDispatchLoop_ScriptTriggeredOnTaskDone(t *testing.T) {
 	txStore := &recordingTxStore{task: parentTask}
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
+			"dev": {},
 		},
 		Scripts: []orchestrator.Script{
 			{
@@ -86,7 +85,6 @@ func TestRunDispatchLoop_ScriptTriggeredOnTaskDone(t *testing.T) {
 		Tasks:    taskStore,
 		Tx:       recordingTransactor{store: txStore},
 		Meta:     stubMetaStore{meta: meta},
-		Resolver: stubResolver{sm: orchestrator.OneShotMachine()},
 		Coordinator: fixedDispatchResult{
 			result: &orchestrator.DispatchResult{
 				FinalPayload: parentTask.Payload,
@@ -98,7 +96,7 @@ func TestRunDispatchLoop_ScriptTriggeredOnTaskDone(t *testing.T) {
 		context.Background(),
 		parentTask,
 		meta,
-		orchestrator.OneShotMachine(),
+		orchestrator.DefaultMachine(),
 	)
 
 	// Verify a script task was created
@@ -137,7 +135,6 @@ func TestRunDispatchLoop_EphemeralTaskDoesNotFireScripts(t *testing.T) {
 		Title:      "ephemeral task",
 		Status:     orchestrator.TaskStatusDone,
 		Behavior:   "notify",
-		Transition: "one-shot",
 		Ephemeral:  true,
 		Payload:    []byte(`{}`),
 	}
@@ -169,7 +166,7 @@ func TestRunDispatchLoop_EphemeralTaskDoesNotFireScripts(t *testing.T) {
 		context.Background(),
 		ephemeralTask,
 		meta,
-		orchestrator.OneShotMachine(),
+		orchestrator.DefaultMachine(),
 	)
 
 	if len(taskStore.createdIDs) != 0 {
@@ -184,7 +181,6 @@ func TestRunDispatchLoop_ScriptNotFiredOnAbort(t *testing.T) {
 		Title:      "task",
 		Status:     orchestrator.TaskStatusAborted,
 		Behavior:   "dev",
-		Transition: "one-shot",
 		Payload:    []byte(`{}`),
 	}
 
@@ -214,7 +210,7 @@ func TestRunDispatchLoop_ScriptNotFiredOnAbort(t *testing.T) {
 		context.Background(),
 		task,
 		meta,
-		orchestrator.OneShotMachine(),
+		orchestrator.DefaultMachine(),
 	)
 
 	if len(taskStore.createdIDs) != 0 {

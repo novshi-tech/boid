@@ -19,11 +19,9 @@ var taskFilterCycle = []string{"active", "pending", "done", "aborted", "all"}
 
 // activeStatuses defines which task statuses are considered "active".
 var activeStatuses = map[orchestrator.TaskStatus]bool{
-	orchestrator.TaskStatusExecuting:          true,
-	orchestrator.TaskStatusReworking:          true,
-	orchestrator.TaskStatusVerifying:          true,
-	orchestrator.TaskStatusInReview:           true,
-	orchestrator.TaskStatusCollectingFeedback: true,
+	orchestrator.TaskStatusExecuting: true,
+	orchestrator.TaskStatusReworking: true,
+	orchestrator.TaskStatusVerifying: true,
 }
 
 // --- messages ---
@@ -477,10 +475,6 @@ func taskStatusDisplay(status orchestrator.TaskStatus) (dot, text string) {
 		return styleExecuting.Render("●"), styleExecuting.Render("reworking")
 	case orchestrator.TaskStatusVerifying:
 		return styleVerifying.Render("●"), styleVerifying.Render("verifying")
-	case orchestrator.TaskStatusInReview:
-		return styleVerifying.Render("●"), styleVerifying.Render("in_review")
-	case orchestrator.TaskStatusCollectingFeedback:
-		return styleExecuting.Render("●"), styleExecuting.Render("feedback")
 	case orchestrator.TaskStatusPending:
 		return styleTaskDim.Render("○"), styleTaskDim.Render("pending")
 	case orchestrator.TaskStatusDone:

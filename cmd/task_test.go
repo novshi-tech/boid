@@ -69,7 +69,6 @@ project_id: proj-1
 title: Kit Task
 behavior_spec:
   name: kit/conflict-fix
-  transition: one-shot-feedback
   traits:
     - instructions
   worktree: true
@@ -88,9 +87,6 @@ behavior_spec:
 	if spec.BehaviorSpec.Name != "kit/conflict-fix" {
 		t.Errorf("Name = %q, want %q", spec.BehaviorSpec.Name, "kit/conflict-fix")
 	}
-	if spec.BehaviorSpec.Transition != "one-shot-feedback" {
-		t.Errorf("Transition = %q, want %q", spec.BehaviorSpec.Transition, "one-shot-feedback")
-	}
 	if len(spec.BehaviorSpec.Traits) != 1 || spec.BehaviorSpec.Traits[0] != "instructions" {
 		t.Errorf("Traits = %v, want [instructions]", spec.BehaviorSpec.Traits)
 	}
@@ -106,7 +102,6 @@ project_id: proj-1
 title: Kit Task
 behavior_spec:
   name: kit/test
-  transition: one-shot
 `
 	var spec taskCreateSpec
 	if err := yaml.Unmarshal([]byte(input), &spec); err != nil {

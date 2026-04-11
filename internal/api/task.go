@@ -45,7 +45,6 @@ type CreateTaskRequest struct {
 	DataSourceID string                     `json:"datasource_id,omitempty"`
 	Payload      json.RawMessage            `json:"payload,omitempty"`
 	AutoStart    bool                       `json:"auto_start,omitempty"`
-	Transition   *string                    `json:"transition,omitempty"`
 	Traits       []string                   `json:"traits,omitempty"`
 	Readonly     *bool                      `json:"readonly,omitempty"`
 	Worktree     *bool                      `json:"worktree,omitempty"`

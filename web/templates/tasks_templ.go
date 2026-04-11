@@ -46,8 +46,6 @@ var taskFilterOptions = []filterOption{
 	{"pending", "Pending"},
 	{"executing", "Executing"},
 	{"verifying", "Verifying"},
-	{"in_review", "In Review"},
-	{"collecting_feedback", "Collecting"},
 	{"done", "Done"},
 	{"aborted", "Aborted"},
 }

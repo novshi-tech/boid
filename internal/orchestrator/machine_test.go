@@ -8,50 +8,11 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-func TestRegistry_Resolve_KnownTransition(t *testing.T) {
-	reg := orchestrator.NewDefaultRegistry()
-	task := &orchestrator.Task{Transition: "one-shot"}
+// ---- DefaultMachine: manual transitions ----
 
-	sm, err := reg.Resolve(task)
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	if sm.Name != "one-shot" {
-		t.Fatalf("expected one-shot, got %s", sm.Name)
-	}
-}
-
-func TestRegistry_Resolve_UnknownTransition(t *testing.T) {
-	reg := orchestrator.NewDefaultRegistry()
-	task := &orchestrator.Task{Transition: "unknown"}
-
-	_, err := reg.Resolve(task)
-	if err == nil {
-		t.Fatal("expected error for unknown transition model")
-	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("expected not found error, got: %v", err)
-	}
-}
-
-func TestRegistry_Resolve_NonexistentTransitionModel(t *testing.T) {
-	reg := orchestrator.NewDefaultRegistry()
-	task := &orchestrator.Task{Transition: "nonexistent-machine"}
-
-	_, err := reg.Resolve(task)
-	if err == nil {
-		t.Fatal("expected error for unknown transition model")
-	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("expected not found error, got: %v", err)
-	}
-}
-
-func TestOneShotMachine_PendingToExecutingToDone(t *testing.T) {
-	sm := orchestrator.OneShotMachine()
-
+func TestDefaultMachine_PendingToExecuting(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
 	task := &orchestrator.Task{Status: orchestrator.TaskStatusPending}
-
 	next, err := sm.Apply(task, &orchestrator.Action{Type: "start"})
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -59,8 +20,12 @@ func TestOneShotMachine_PendingToExecutingToDone(t *testing.T) {
 	if next.Status != orchestrator.TaskStatusExecuting {
 		t.Fatalf("expected executing, got %s", next.Status)
 	}
+}
 
-	next, err = sm.Apply(next, &orchestrator.Action{Type: "done"})
+func TestDefaultMachine_ExecutingToDone_Manual(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusExecuting}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "done"})
 	if err != nil {
 		t.Fatalf("done: %v", err)
 	}
@@ -69,11 +34,45 @@ func TestOneShotMachine_PendingToExecutingToDone(t *testing.T) {
 	}
 }
 
-func TestOneShotMachine_InvalidTransition(t *testing.T) {
-	sm := orchestrator.OneShotMachine()
+func TestDefaultMachine_VerifyingToDone_Manual(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusVerifying}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "done"})
+	if err != nil {
+		t.Fatalf("done: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusDone {
+		t.Fatalf("expected done, got %s", next.Status)
+	}
+}
 
+func TestDefaultMachine_ReworkingToDone_Manual(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusReworking}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "done"})
+	if err != nil {
+		t.Fatalf("done: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusDone {
+		t.Fatalf("expected done, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_Reopen_DoneToReworking(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusDone}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "reopen"})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusReworking {
+		t.Fatalf("expected reworking, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_InvalidTransition(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
 	task := &orchestrator.Task{Status: orchestrator.TaskStatusPending}
-
 	_, err := sm.Apply(task, &orchestrator.Action{Type: "done"})
 	if err == nil {
 		t.Fatal("expected error for invalid transition pending -> done")
@@ -83,14 +82,14 @@ func TestOneShotMachine_InvalidTransition(t *testing.T) {
 	}
 }
 
-func TestOneShotMachine_AbortFromAny(t *testing.T) {
-	sm := orchestrator.OneShotMachine()
-
+func TestDefaultMachine_Abort_FromAnyState(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
 	statuses := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusPending,
 		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusVerifying,
+		orchestrator.TaskStatusReworking,
 	}
-
 	for _, status := range statuses {
 		task := &orchestrator.Task{Status: status}
 		next, err := sm.Apply(task, &orchestrator.Action{Type: "abort"})
@@ -103,63 +102,335 @@ func TestOneShotMachine_AbortFromAny(t *testing.T) {
 	}
 }
 
-func TestFeedbackLoopMachine_FullCycle(t *testing.T) {
-	sm := orchestrator.FeedbackLoopMachine()
-
-	task := &orchestrator.Task{Status: orchestrator.TaskStatusPending, Payload: json.RawMessage(`{}`)}
-
-	next, err := sm.Apply(task, &orchestrator.Action{Type: "start"})
-	if err != nil {
-		t.Fatalf("start: %v", err)
+func TestDefaultMachine_JobFailed_FromAnyState(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	statuses := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusPending,
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusVerifying,
+		orchestrator.TaskStatusReworking,
 	}
-	if next.Status != orchestrator.TaskStatusExecuting {
-		t.Fatalf("expected executing, got %s", next.Status)
-	}
-
-	next.Payload = json.RawMessage(`{"artifact":{"pr_url":"https://..."}}`)
-	advanced, ok := sm.Advance(next)
-	if !ok {
-		t.Fatal("expected advance from executing to verifying")
-	}
-	if advanced.Status != orchestrator.TaskStatusVerifying {
-		t.Fatalf("expected verifying, got %s", advanced.Status)
-	}
-
-	advanced.Payload = json.RawMessage(`{"artifact":{"pr_url":"https://..."},"verification":{"ci":{"source_state":"verifying","findings":[{"message":"tests pass","status":"resolved"}]},"review":{"source_state":"verifying","findings":[{"message":"clean","status":"resolved"}]}}}`)
-	next2, ok := sm.Advance(advanced)
-	if !ok {
-		t.Fatal("expected advance from verifying to in_review")
-	}
-	if next2.Status != orchestrator.TaskStatusInReview {
-		t.Fatalf("expected in_review, got %s", next2.Status)
-	}
-
-	next3, err := sm.Apply(next2, &orchestrator.Action{Type: "collect_feedback"})
-	if err != nil {
-		t.Fatalf("collect_feedback: %v", err)
-	}
-	if next3.Status != orchestrator.TaskStatusCollectingFeedback {
-		t.Fatalf("expected collecting_feedback, got %s", next3.Status)
-	}
-
-	next3.Payload = json.RawMessage(`{"artifact":{"pr_url":"https://..."},"verification":{"ci":{"source_state":"verifying","findings":[{"message":"tests pass","status":"resolved"}]},"pr-review":{"source_state":"collecting_feedback","findings":[{"message":"fix error handling","status":"open"}]}}}`)
-	next4, ok := sm.Advance(next3)
-	if !ok {
-		t.Fatal("expected advance from collecting_feedback to executing")
-	}
-	if next4.Status != orchestrator.TaskStatusExecuting {
-		t.Fatalf("expected executing after rework, got %s", next4.Status)
-	}
-
-	next3.Payload = json.RawMessage(`{"artifact":{"pr_url":"https://..."},"verification":{"ci":{"source_state":"verifying","findings":[{"message":"tests pass","status":"resolved"}]},"pr-review":{"source_state":"collecting_feedback","findings":[{"message":"looks good","status":"resolved"}]}}}`)
-	next5, ok := sm.Advance(next3)
-	if !ok {
-		t.Fatal("expected advance from collecting_feedback to done")
-	}
-	if next5.Status != orchestrator.TaskStatusDone {
-		t.Fatalf("expected done, got %s", next5.Status)
+	for _, status := range statuses {
+		task := &orchestrator.Task{Status: status}
+		next, err := sm.Apply(task, &orchestrator.Action{Type: "job_failed"})
+		if err != nil {
+			t.Fatalf("job_failed from %s: %v", status, err)
+		}
+		if next.Status != orchestrator.TaskStatusAborted {
+			t.Fatalf("expected aborted from %s, got %s", status, next.Status)
+		}
 	}
 }
+
+// ---- DefaultMachine: auto transitions from executing ----
+
+func TestDefaultMachine_Executing_TasksReady_Done(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{"tasks":[{"title":"subtask"}]}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to done when tasks ready")
+	}
+	if next.Status != orchestrator.TaskStatusDone {
+		t.Fatalf("expected done, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_Executing_Artifact_NoUnresolvedFindings_Verifying(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	// artifact present, no executing-state findings
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"}}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to verifying when artifact present and no unresolved executing findings")
+	}
+	if next.Status != orchestrator.TaskStatusVerifying {
+		t.Fatalf("expected verifying, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_Executing_Artifact_AllExecutingResolved_Verifying(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{
+			"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"},
+			"verification":{
+				"pr-verify":{"source_state":"executing","findings":[{"message":"CI passed","status":"resolved"}]}
+			}
+		}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to verifying when all executing findings resolved")
+	}
+	if next.Status != orchestrator.TaskStatusVerifying {
+		t.Fatalf("expected verifying, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_Executing_Artifact_OpenExecutingFindings_Reworking(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{
+			"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"},
+			"verification":{
+				"pr-verify":{"source_state":"executing","findings":[{"message":"CI failed","status":"open"}]}
+			}
+		}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to reworking when executing findings open")
+	}
+	if next.Status != orchestrator.TaskStatusReworking {
+		t.Fatalf("expected reworking, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_Executing_NoArtifact_NoAdvance(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{}`),
+	}
+	_, ok := sm.Advance(task)
+	if ok {
+		t.Fatal("expected no advance when no artifact and no tasks")
+	}
+}
+
+// ---- DefaultMachine: auto transitions from verifying ----
+
+func TestDefaultMachine_Verifying_OpenFindings_Reworking(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusVerifying,
+		Payload: json.RawMessage(`{
+			"artifact":{"pr_url":"https://..."},
+			"verification":{
+				"verify-gate":{"source_state":"verifying","findings":[{"message":"needs fix","status":"open"}]}
+			}
+		}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to reworking when verifying findings open")
+	}
+	if next.Status != orchestrator.TaskStatusReworking {
+		t.Fatalf("expected reworking, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_Verifying_AllResolved_Done(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusVerifying,
+		Payload: json.RawMessage(`{
+			"artifact":{"pr_url":"https://..."},
+			"verification":{
+				"verify-gate":{"source_state":"verifying","findings":[{"message":"looks good","status":"resolved"}]}
+			}
+		}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to done when verifying findings resolved")
+	}
+	if next.Status != orchestrator.TaskStatusDone {
+		t.Fatalf("expected done, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_Verifying_NoFindings_PassThrough_Done(t *testing.T) {
+	// verify gate を持たない単純タスク: executing → verifying → done の pass-through
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusVerifying,
+		Payload: json.RawMessage(`{"artifact":{"pr_url":"https://..."}}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to done when no verifying-state findings (pass-through)")
+	}
+	if next.Status != orchestrator.TaskStatusDone {
+		t.Fatalf("expected done, got %s", next.Status)
+	}
+}
+
+// ---- DefaultMachine: auto transitions from reworking ----
+
+func TestDefaultMachine_Reworking_AllResolved_Done(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusReworking,
+		Payload: json.RawMessage(`{
+			"artifact":{"pr_url":"https://..."},
+			"verification":{
+				"pr-verify":{"source_state":"reworking","findings":[{"message":"CI passed","status":"resolved"}]}
+			}
+		}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to done when all findings resolved")
+	}
+	if next.Status != orchestrator.TaskStatusDone {
+		t.Fatalf("expected done, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_Reworking_OpenFindings_SelfLoop(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusReworking,
+		Payload: json.RawMessage(`{
+			"artifact":{"pr_url":"https://..."},
+			"verification":{
+				"pr-verify":{"source_state":"reworking","findings":[{"message":"CI still failing","status":"open"}]}
+			}
+		}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected self-loop when unresolved findings in reworking")
+	}
+	if next.Status != orchestrator.TaskStatusReworking {
+		t.Fatalf("expected reworking (self-loop), got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_Reworking_NoFindings_Done(t *testing.T) {
+	// 検証エントリが一切ない場合: NoUnresolvedFindings() = true → done
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusReworking,
+		Payload: json.RawMessage(`{"artifact":{"pr_url":"https://..."}}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to done when no findings exist")
+	}
+	if next.Status != orchestrator.TaskStatusDone {
+		t.Fatalf("expected done, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_Reworking_MixedSourceStates_AnyOpenBlocksDone(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	// verifying-state entry still open, reworking-state resolved
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusReworking,
+		Payload: json.RawMessage(`{
+			"artifact":{"pr_url":"https://..."},
+			"verification":{
+				"gate-a":{"source_state":"verifying","findings":[{"message":"issue","status":"open"}]},
+				"gate-b":{"source_state":"reworking","findings":[{"message":"ok","status":"resolved"}]}
+			}
+		}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected self-loop when any finding is unresolved across all sources")
+	}
+	if next.Status != orchestrator.TaskStatusReworking {
+		t.Fatalf("expected reworking (self-loop), got %s", next.Status)
+	}
+}
+
+// ---- DefaultMachine: AvailableActions ----
+
+func TestDefaultMachine_AvailableActions_Pending(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	actions := sm.AvailableActions(orchestrator.TaskStatusPending)
+	want := map[string]bool{"start": true, "abort": true}
+	if len(actions) != len(want) {
+		t.Fatalf("AvailableActions(pending) = %v, want %v", actions, want)
+	}
+	for _, a := range actions {
+		if !want[a] {
+			t.Errorf("unexpected action %q in AvailableActions(pending)", a)
+		}
+	}
+}
+
+func TestDefaultMachine_AvailableActions_Executing(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	actions := sm.AvailableActions(orchestrator.TaskStatusExecuting)
+	want := map[string]bool{"done": true, "abort": true}
+	if len(actions) != len(want) {
+		t.Fatalf("AvailableActions(executing) = %v, want %v", actions, want)
+	}
+	for _, a := range actions {
+		if !want[a] {
+			t.Errorf("unexpected action %q in AvailableActions(executing)", a)
+		}
+	}
+}
+
+func TestDefaultMachine_AvailableActions_Verifying(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	actions := sm.AvailableActions(orchestrator.TaskStatusVerifying)
+	want := map[string]bool{"done": true, "abort": true}
+	if len(actions) != len(want) {
+		t.Fatalf("AvailableActions(verifying) = %v, want %v", actions, want)
+	}
+	for _, a := range actions {
+		if !want[a] {
+			t.Errorf("unexpected action %q in AvailableActions(verifying)", a)
+		}
+	}
+}
+
+func TestDefaultMachine_AvailableActions_Reworking(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	actions := sm.AvailableActions(orchestrator.TaskStatusReworking)
+	want := map[string]bool{"done": true, "abort": true}
+	if len(actions) != len(want) {
+		t.Fatalf("AvailableActions(reworking) = %v, want %v", actions, want)
+	}
+	for _, a := range actions {
+		if !want[a] {
+			t.Errorf("unexpected action %q in AvailableActions(reworking)", a)
+		}
+	}
+}
+
+func TestDefaultMachine_AvailableActions_DoneIsEmpty(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	for _, status := range []orchestrator.TaskStatus{orchestrator.TaskStatusDone, orchestrator.TaskStatusAborted} {
+		if actions := sm.AvailableActions(status); len(actions) != 0 {
+			t.Errorf("AvailableActions(%q) = %v, want empty", status, actions)
+		}
+	}
+}
+
+func TestDefaultMachine_AvailableActions_ExcludesJobFailed(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	for _, status := range []orchestrator.TaskStatus{
+		orchestrator.TaskStatusPending,
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusVerifying,
+		orchestrator.TaskStatusReworking,
+		orchestrator.TaskStatusDone,
+		orchestrator.TaskStatusAborted,
+	} {
+		for _, a := range sm.AvailableActions(status) {
+			if a == "job_failed" {
+				t.Errorf("job_failed must not appear in AvailableActions(%q)", status)
+			}
+		}
+	}
+}
+
+// ---- Generic StateMachine infrastructure tests ----
 
 func TestStateMachine_Advance_ConditionMet(t *testing.T) {
 	sm := &orchestrator.StateMachine{
@@ -214,334 +485,23 @@ func TestStateMachine_Apply_IgnoresConditionRules(t *testing.T) {
 	}
 }
 
-func TestOneShotFeedbackMachine_NoVerification_Done(t *testing.T) {
-	sm := orchestrator.OneShotFeedbackMachine()
-
-	task := &orchestrator.Task{
-		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"}}`),
-	}
-
-	next, ok := sm.Advance(task)
-	if !ok {
-		t.Fatal("expected advance to done when artifact present and no verification")
-	}
-	if next.Status != orchestrator.TaskStatusDone {
-		t.Fatalf("expected done, got %s", next.Status)
-	}
-}
-
-func TestOneShotFeedbackMachine_AllFindingsResolved_Done(t *testing.T) {
-	sm := orchestrator.OneShotFeedbackMachine()
-
-	task := &orchestrator.Task{
-		Status: orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{
-			"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"},
-			"verification":{
-				"github-pr-verification/pr-verify":{
-					"source_state":"executing",
-					"findings":[{"message":"GitHub Actions passed","status":"resolved"}]
-				}
-			}
-		}`),
-	}
-
-	next, ok := sm.Advance(task)
-	if !ok {
-		t.Fatal("expected advance to done when all findings resolved")
-	}
-	if next.Status != orchestrator.TaskStatusDone {
-		t.Fatalf("expected done, got %s", next.Status)
-	}
-}
-
-func TestOneShotFeedbackMachine_OpenFindings_ToReworking(t *testing.T) {
-	sm := orchestrator.OneShotFeedbackMachine()
-
-	task := &orchestrator.Task{
-		Status: orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{
-			"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"},
-			"verification":{
-				"github-pr-verification/pr-verify":{
-					"source_state":"executing",
-					"findings":[{"message":"GitHub Actions failed: test","status":"open"}]
-				}
-			}
-		}`),
-	}
-
-	next, ok := sm.Advance(task)
-	if !ok {
-		t.Fatal("expected transition to reworking when findings open")
-	}
-	if next.Status != orchestrator.TaskStatusReworking {
-		t.Fatalf("expected reworking, got %s", next.Status)
-	}
-}
-
-func TestOneShotFeedbackMachine_Reworking_OpenFindings_SelfLoop(t *testing.T) {
-	sm := orchestrator.OneShotFeedbackMachine()
-
-	task := &orchestrator.Task{
-		Status: orchestrator.TaskStatusReworking,
-		Payload: json.RawMessage(`{
-			"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"},
-			"verification":{
-				"github-pr-verification/pr-verify":{
-					"source_state":"reworking",
-					"findings":[{"message":"GitHub Actions failed: test","status":"open"}]
-				}
-			}
-		}`),
-	}
-
-	next, ok := sm.Advance(task)
-	if !ok {
-		t.Fatal("expected self-loop in reworking when findings still open")
-	}
-	if next.Status != orchestrator.TaskStatusReworking {
-		t.Fatalf("expected reworking (self-loop), got %s", next.Status)
-	}
-}
-
-func TestOneShotFeedbackMachine_Reworking_AllResolved_Done(t *testing.T) {
-	sm := orchestrator.OneShotFeedbackMachine()
-
-	task := &orchestrator.Task{
-		Status: orchestrator.TaskStatusReworking,
-		Payload: json.RawMessage(`{
-			"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"},
-			"verification":{
-				"github-pr-verification/pr-verify":{
-					"source_state":"reworking",
-					"findings":[{"message":"GitHub Actions passed","status":"resolved"}]
-				}
-			}
-		}`),
-	}
-
-	next, ok := sm.Advance(task)
-	if !ok {
-		t.Fatal("expected transition to done when reworking findings resolved")
-	}
-	if next.Status != orchestrator.TaskStatusDone {
-		t.Fatalf("expected done, got %s", next.Status)
-	}
-}
-
-func TestOneShotFeedbackMachine_Reworking_NoFindings_NoAdvance(t *testing.T) {
-	sm := orchestrator.OneShotFeedbackMachine()
-
-	// reworking 直後はまだ gate が発火していないので findings がない → Advance は false を返す
-	task := &orchestrator.Task{
-		Status:  orchestrator.TaskStatusReworking,
-		Payload: json.RawMessage(`{"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"}}`),
-	}
-
-	_, ok := sm.Advance(task)
-	if ok {
-		t.Fatal("expected no advance in reworking when no reworking-state findings yet")
-	}
-}
-
-func TestOneShotFeedbackMachine_NoArtifact_NoAdvance(t *testing.T) {
-	sm := orchestrator.OneShotFeedbackMachine()
-
-	task := &orchestrator.Task{
-		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{}`),
-	}
-
-	_, ok := sm.Advance(task)
-	if ok {
-		t.Fatal("expected no advance when no artifact")
-	}
-}
-
-func TestOneShotFeedbackMachine_TasksReady_Done(t *testing.T) {
-	sm := orchestrator.OneShotFeedbackMachine()
-
-	task := &orchestrator.Task{
-		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"tasks":[{"title":"subtask"}]}`),
-	}
-
-	next, ok := sm.Advance(task)
-	if !ok {
-		t.Fatal("expected advance to done when tasks ready")
-	}
-	if next.Status != orchestrator.TaskStatusDone {
-		t.Fatalf("expected done, got %s", next.Status)
-	}
-}
-
-func TestFeedbackLoopMachine_AbortFromAny(t *testing.T) {
-	sm := orchestrator.FeedbackLoopMachine()
-
-	statuses := []orchestrator.TaskStatus{
-		orchestrator.TaskStatusPending,
-		orchestrator.TaskStatusExecuting,
-		orchestrator.TaskStatusVerifying,
-		orchestrator.TaskStatusInReview,
-		orchestrator.TaskStatusCollectingFeedback,
-	}
-
-	for _, status := range statuses {
-		task := &orchestrator.Task{Status: status}
-		next, err := sm.Apply(task, &orchestrator.Action{Type: "abort"})
-		if err != nil {
-			t.Fatalf("abort from %s: %v", status, err)
-		}
-		if next.Status != orchestrator.TaskStatusAborted {
-			t.Fatalf("expected aborted from %s, got %s", status, next.Status)
-		}
-	}
-}
-
-func TestStateMachine_AvailableActions_OneShotPending(t *testing.T) {
-	sm := orchestrator.OneShotMachine()
-	actions := sm.AvailableActions(orchestrator.TaskStatusPending)
-	want := map[string]bool{"start": true, "abort": true}
-	if len(actions) != len(want) {
-		t.Fatalf("AvailableActions(pending) = %v, want %v", actions, want)
-	}
-	for _, a := range actions {
-		if !want[a] {
-			t.Errorf("unexpected action %q in AvailableActions(pending)", a)
-		}
-	}
-}
-
-func TestStateMachine_AvailableActions_OneShotExecuting(t *testing.T) {
-	sm := orchestrator.OneShotMachine()
-	actions := sm.AvailableActions(orchestrator.TaskStatusExecuting)
-	want := map[string]bool{"done": true, "abort": true}
-	if len(actions) != len(want) {
-		t.Fatalf("AvailableActions(executing) = %v, want %v", actions, want)
-	}
-	for _, a := range actions {
-		if !want[a] {
-			t.Errorf("unexpected action %q in AvailableActions(executing)", a)
-		}
-	}
-}
-
-func TestStateMachine_AvailableActions_ExcludesJobFailed(t *testing.T) {
-	for _, sm := range []*orchestrator.StateMachine{
-		orchestrator.OneShotMachine(),
-		orchestrator.OneShotFeedbackMachine(),
-		orchestrator.FeedbackLoopMachine(),
-	} {
-		for _, status := range []orchestrator.TaskStatus{
-			orchestrator.TaskStatusPending,
-			orchestrator.TaskStatusExecuting,
-			orchestrator.TaskStatusDone,
-			orchestrator.TaskStatusAborted,
-		} {
-			for _, a := range sm.AvailableActions(status) {
-				if a == "job_failed" {
-					t.Errorf("machine %q: job_failed must not appear in AvailableActions(%q)", sm.Name, status)
-				}
-			}
-		}
-	}
-}
-
-func TestStateMachine_AvailableActions_DoneIsEmpty(t *testing.T) {
-	for _, sm := range []*orchestrator.StateMachine{
-		orchestrator.OneShotMachine(),
-		orchestrator.OneShotFeedbackMachine(),
-		orchestrator.FeedbackLoopMachine(),
-	} {
-		for _, status := range []orchestrator.TaskStatus{orchestrator.TaskStatusDone, orchestrator.TaskStatusAborted} {
-			if actions := sm.AvailableActions(status); len(actions) != 0 {
-				t.Errorf("machine %q: AvailableActions(%q) = %v, want empty", sm.Name, status, actions)
-			}
-		}
-	}
-}
-
-func TestStateMachine_AvailableActions_FeedbackLoopInReview(t *testing.T) {
-	sm := orchestrator.FeedbackLoopMachine()
-	actions := sm.AvailableActions(orchestrator.TaskStatusInReview)
-	want := map[string]bool{"collect_feedback": true, "abort": true}
-	if len(actions) != len(want) {
-		t.Fatalf("AvailableActions(in_review) = %v, want %v", actions, want)
-	}
-	for _, a := range actions {
-		if !want[a] {
-			t.Errorf("unexpected action %q", a)
-		}
-	}
-}
-
-func TestGetMachine_KnownTransitions(t *testing.T) {
-	for _, name := range []string{"one-shot", "one-shot-feedback", "feedback-loop"} {
-		sm, ok := orchestrator.GetMachine(name)
-		if !ok {
-			t.Errorf("GetMachine(%q) not found", name)
-			continue
-		}
-		if sm.Name != name {
-			t.Errorf("GetMachine(%q).Name = %q, want %q", name, sm.Name, name)
-		}
-	}
-}
-
-func TestGetMachine_Unknown(t *testing.T) {
-	_, ok := orchestrator.GetMachine("nonexistent")
-	if ok {
-		t.Error("GetMachine(nonexistent) should return ok=false")
-	}
-}
-
-func TestOneShotFeedbackMachine_Reopen_DoneToReworking(t *testing.T) {
-	sm := orchestrator.OneShotFeedbackMachine()
-	task := &orchestrator.Task{Status: orchestrator.TaskStatusDone}
-	next, err := sm.Apply(task, &orchestrator.Action{Type: "reopen"})
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
-	if next.Status != orchestrator.TaskStatusReworking {
-		t.Fatalf("expected reworking, got %s", next.Status)
-	}
-}
-
-func TestOneShotFeedbackMachine_Reopen_OnlyInFeedbackMachine(t *testing.T) {
-	// reopen は OneShotFeedbackMachine にだけ存在し、OneShotMachine には存在しない
-	oneShot := orchestrator.OneShotMachine()
-	task := &orchestrator.Task{Status: orchestrator.TaskStatusDone}
-	_, err := oneShot.Apply(task, &orchestrator.Action{Type: "reopen"})
-	if err == nil {
-		t.Fatal("OneShotMachine should not support reopen action")
-	}
-}
-
 // TestJobCompletedNotAnAction verifies that job_completed does not trigger a
-// state transition in any machine. State transitions driven by hook/gate job
+// state transition in DefaultMachine. State transitions driven by hook/gate job
 // completion must happen exclusively through DispatchAndAdvance (condition-based
 // auto-advance), not through sm.Apply.
 func TestJobCompletedNotAnAction(t *testing.T) {
-	machines := []*orchestrator.StateMachine{
-		orchestrator.OneShotMachine(),
-		orchestrator.OneShotFeedbackMachine(),
-		orchestrator.FeedbackLoopMachine(),
-	}
+	sm := orchestrator.DefaultMachine()
 
 	statuses := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusExecuting,
 		orchestrator.TaskStatusReworking,
 	}
 
-	for _, sm := range machines {
-		for _, status := range statuses {
-			task := &orchestrator.Task{Status: status}
-			_, err := sm.Apply(task, &orchestrator.Action{Type: "job_completed"})
-			if err == nil {
-				t.Errorf("machine %q: job_completed from %q should not transition (got no error)", sm.Name, status)
-			}
+	for _, status := range statuses {
+		task := &orchestrator.Task{Status: status}
+		_, err := sm.Apply(task, &orchestrator.Action{Type: "job_completed"})
+		if err == nil {
+			t.Errorf("job_completed from %q should not transition (got no error)", status)
 		}
 	}
 }

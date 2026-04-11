@@ -8,14 +8,12 @@ import (
 type TaskStatus string
 
 const (
-	TaskStatusPending            TaskStatus = "pending"
-	TaskStatusExecuting          TaskStatus = "executing"
-	TaskStatusReworking          TaskStatus = "reworking"
-	TaskStatusVerifying          TaskStatus = "verifying"
-	TaskStatusInReview           TaskStatus = "in_review"
-	TaskStatusCollectingFeedback TaskStatus = "collecting_feedback"
-	TaskStatusDone               TaskStatus = "done"
-	TaskStatusAborted            TaskStatus = "aborted"
+	TaskStatusPending   TaskStatus = "pending"
+	TaskStatusExecuting TaskStatus = "executing"
+	TaskStatusReworking TaskStatus = "reworking"
+	TaskStatusVerifying TaskStatus = "verifying"
+	TaskStatusDone      TaskStatus = "done"
+	TaskStatusAborted   TaskStatus = "aborted"
 )
 
 type Task struct {
@@ -27,7 +25,6 @@ type Task struct {
 	Description      string          `json:"description,omitempty"`
 	Status           TaskStatus      `json:"status"`
 	Behavior         string          `json:"behavior"`
-	Transition       string          `json:"transition"`
 	Traits           []string        `json:"traits,omitempty"`
 	Readonly         bool            `json:"readonly,omitempty"`
 	Worktree         bool            `json:"worktree,omitempty"`

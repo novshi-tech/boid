@@ -2,7 +2,7 @@ env:
   E2E_STATE_DIR: ${E2E_STATE_DIR}
 hooks:
   - id: build-artifact
-    on: executing
+    on: [executing, reworking]
 gates:
   - id: verify-open
     on: verifying

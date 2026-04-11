@@ -168,7 +168,6 @@ type TaskAppService struct {
 // a named behavior or an inline behavior_spec.
 type behaviorResolution struct {
 	behaviorName string
-	transition   string
 	traits       []string
 	readonly     bool
 	worktree     bool
@@ -194,11 +193,7 @@ func resolveBehavior(meta *orchestrator.ProjectMeta, req CreateTaskRequest) (*be
 		if spec.Name == "" {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: "behavior_spec.name is required"}
 		}
-		if spec.Transition == "" {
-			return nil, &StatusError{Code: http.StatusBadRequest, Message: "behavior_spec.transition is required"}
-		}
 		res.behaviorName = spec.Name
-		res.transition = spec.Transition
 		res.traits = spec.Traits
 		res.readonly = spec.Readonly
 		res.worktree = spec.Worktree
@@ -221,7 +216,6 @@ func resolveBehavior(meta *orchestrator.ProjectMeta, req CreateTaskRequest) (*be
 		if !ok {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("behavior %q not found", req.Behavior)}
 		}
-		res.transition = behavior.Transition
 		res.traits = behavior.Traits
 		res.readonly = behavior.Readonly
 		res.worktree = behavior.Worktree
@@ -251,7 +245,6 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		return nil, err
 	}
 
-	transition := res.transition
 	traits := res.traits
 	readonly := res.readonly
 	worktree := res.worktree
@@ -259,9 +252,6 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 	baseBranch := res.baseBranch
 	payload := res.payload
 
-	if req.Transition != nil {
-		transition = *req.Transition
-	}
 	if req.Traits != nil {
 		traits = req.Traits
 	}
@@ -276,10 +266,6 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 	}
 	if req.BaseBranch != nil {
 		baseBranch = *req.BaseBranch
-	}
-
-	if transition == "" {
-		return nil, &StatusError{Code: http.StatusBadRequest, Message: "transition is required"}
 	}
 
 	var resolvedDeps []string
@@ -305,7 +291,6 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		Title:            req.Title,
 		Description:      req.Description,
 		Behavior:         res.behaviorName,
-		Transition:       transition,
 		Traits:           traits,
 		Readonly:         readonly,
 		Worktree:         worktree,
@@ -430,9 +415,7 @@ func (s *TaskAppService) DeleteTask(id string, force bool) error {
 		switch task.Status {
 		case orchestrator.TaskStatusExecuting,
 			orchestrator.TaskStatusReworking,
-			orchestrator.TaskStatusVerifying,
-			orchestrator.TaskStatusInReview,
-			orchestrator.TaskStatusCollectingFeedback:
+			orchestrator.TaskStatusVerifying:
 			return &StatusError{
 				Code:    http.StatusConflict,
 				Message: "task is active (status: " + string(task.Status) + "); use --force to delete",
@@ -445,14 +428,9 @@ func (s *TaskAppService) DeleteTask(id string, force bool) error {
 	return nil
 }
 
-// computeAvailableActions resolves the StateMachine for the task's transition model and
-// returns the list of manual actions applicable to the task's current status.
+// computeAvailableActions returns the list of manual actions applicable to the task's current status.
 func computeAvailableActions(task *orchestrator.Task) []string {
-	sm, ok := orchestrator.GetMachine(task.Transition)
-	if !ok {
-		return nil
-	}
-	return sm.AvailableActions(task.Status)
+	return orchestrator.DefaultMachine().AvailableActions(task.Status)
 }
 
 func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orchestrator.Task, error) {
@@ -466,9 +444,6 @@ func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orches
 		Description: source.Description,
 		Behavior:    source.Behavior,
 		AutoStart:   autoStart,
-	}
-	if source.Transition != "" {
-		req.Transition = &source.Transition
 	}
 	return s.CreateTask(req)
 }
@@ -550,7 +525,6 @@ func (s *WebAppService) DuplicateTask(id string) (string, error) {
 		Title:        task.Title,
 		Description:  task.Description,
 		Behavior:     task.Behavior,
-		Transition:   task.Transition,
 		Traits:       task.Traits,
 		Readonly:     task.Readonly,
 		Worktree:     task.Worktree,
@@ -601,7 +575,6 @@ type TaskWorkflowService struct {
 	Projects    ProjectRepository
 	Tx          Transactor
 	Meta        MetaStore
-	Resolver    TransitionResolver
 	Coordinator DispatchCoordinator
 	Lifecycle   JobLifecycle
 	Worktrees   WorktreeCleaner
@@ -618,10 +591,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "project meta not loaded: " + task.ProjectID}
 	}
 
-	sm, err := s.Resolver.Resolve(task)
-	if err != nil {
-		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
-	}
+	sm := orchestrator.DefaultMachine()
 
 	if req.Type == "start" {
 		if err := checkDependencies(task, s.Tasks.GetTask); err != nil {
@@ -731,11 +701,7 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "project meta not loaded: " + job.ProjectID}
 	}
 
-	sm, err := s.Resolver.Resolve(task)
-	if err != nil {
-		slog.Error("job done: resolve transition", "error", err)
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "resolve transition: " + err.Error()}
-	}
+	sm := orchestrator.DefaultMachine()
 
 	action := &orchestrator.Action{TaskID: task.ID, Type: "job_failed"}
 	newTask, err := sm.Apply(task, action)

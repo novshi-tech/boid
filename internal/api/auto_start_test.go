@@ -9,7 +9,7 @@ import (
 func TestTaskAppServiceCreateTask_AutoStart_TriggersStart(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
+			"dev": {},
 		},
 	}
 	store := &stubTaskStore{}
@@ -40,7 +40,7 @@ func TestTaskAppServiceCreateTask_AutoStart_TriggersStart(t *testing.T) {
 func TestTaskAppServiceCreateTask_AutoStartFalse_StaysPending(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
+			"dev": {},
 		},
 	}
 	store := &stubTaskStore{}
@@ -71,7 +71,7 @@ func TestTaskAppServiceCreateTask_AutoStartFalse_StaysPending(t *testing.T) {
 func TestTaskAppServiceCreateTask_AutoStart_NoWorkflow_NoError(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
+			"dev": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -97,7 +97,7 @@ func TestTaskAppServiceCreateTask_AutoStart_NoWorkflow_NoError(t *testing.T) {
 func TestTaskAppServiceCreateTask_AutoStart_StartFails_TaskStillCreated(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
+			"dev": {},
 		},
 	}
 	store := &stubTaskStore{}
