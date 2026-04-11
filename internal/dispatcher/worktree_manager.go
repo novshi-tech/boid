@@ -167,6 +167,19 @@ func (m *WorktreeManager) Recreate(projectDir string, taskID string) (*Worktree,
 		return nil, fmt.Errorf("git fetch origin %s: %w\n%s", w.Branch, err, strings.TrimSpace(string(out)))
 	}
 
+	// Also fetch the base branch so origin/<baseBranch> is up-to-date.
+	// This ensures that git merge origin/main in reworking state merges against the latest main.
+	// Failure is non-fatal: log a warning and continue (e.g. local-only projects without a remote base).
+	baseBranch := strings.TrimPrefix(w.BaseBranch, "origin/")
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+	fetchBaseCmd := exec.Command(m.gitBin(), "-C", projectDir, "fetch", "origin", baseBranch)
+	if out, err := fetchBaseCmd.CombinedOutput(); err != nil {
+		slog.Warn("git fetch base branch failed, continuing",
+			"base_branch", baseBranch, "error", err, "output", strings.TrimSpace(string(out)))
+	}
+
 	if err := os.MkdirAll(filepath.Dir(w.Path), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir worktree parent: %w", err)
 	}
