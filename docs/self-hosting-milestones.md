@@ -250,8 +250,8 @@ PR ベースの修正ループを boid が自律的に回せる。
 
 ### Scope
 
-- `executing -> verifying -> in_review -> collecting_feedback -> executing/done`
-  を実運用で閉じる
+- `executing -> verifying -> reworking -> verifying -> done`
+  を実運用で閉じる（旧モデルでいう feedback-loop フルサイクルに相当）
 - verification を追記して rework できるようにする
 - 外部レビュー / CI の結果を payload へ反映する
 
@@ -259,10 +259,9 @@ PR ベースの修正ループを boid が自律的に回せる。
 
 - gate で PR 作成
 - CI 成功待ち
-- CI 失敗時は verification を追記して `executing` に戻す
+- CI 失敗時は verification を追記して `reworking` に戻す
 - review 取得
-- 修正指摘があれば verification を追記して `executing` に戻す
-- `in_review` を単なる待機点として扱う運用を整える
+- 修正指摘があれば verification を追記して `reworking` に戻す
 - resolved なら `done`
 
 ### Important Note

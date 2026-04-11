@@ -256,7 +256,6 @@ func (p RawPayload) RawMessage() json.RawMessage {
 
 type TaskBehavior struct {
     Name           string     `yaml:"name" json:"name"`
-    Transition     string     `yaml:"transition" json:"transition"`
     Traits         []string   `yaml:"traits" json:"traits"`
     Readonly       bool       `yaml:"readonly" json:"readonly,omitempty"`
     Worktree       bool       `yaml:"worktree" json:"worktree,omitempty"`
@@ -271,7 +270,6 @@ type TaskBehavior struct {
 ```yaml
 task_behaviors:
   impl:
-    transition: feedback-loop
     traits: [instructions, artifact, verification]
     default_payload:
       instructions:
@@ -368,15 +366,15 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) *Pr
 
 | InstructionType | 発火する TaskStatus |
 |---|---|
-| `execution` | `executing`, `collecting_feedback` |
-| `verification` | `verifying`, `in_review` |
+| `execution` | `executing`, `reworking` |
+| `verification` | `verifying` |
 
 ```go
 func instructionTypeForStatus(status TaskStatus) InstructionType {
     switch status {
-    case TaskStatusExecuting, TaskStatusCollectingFeedback:
+    case TaskStatusExecuting, TaskStatusReworking:
         return InstructionTypeExecution
-    case TaskStatusVerifying, TaskStatusInReview:
+    case TaskStatusVerifying:
         return InstructionTypeVerification
     default:
         return ""

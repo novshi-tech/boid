@@ -36,7 +36,7 @@ payload_patch:
 ```
 
 スキーマは自由。実装内容を記述する。
-status が `executing` または `collecting_feedback` のとき出力する。
+status が `executing` または `reworking` のとき出力する。
 
 ## verification
 
@@ -54,7 +54,7 @@ payload_patch:
 
 - `message`: 指摘内容
 - `status`: `open`（要対応）または `resolved`（問題なし）
-- status が `verifying` または `in_review` のとき出力する
+- status が `verifying` のとき出力する
 
 `source_state` はシステムが自動注入する。含めないこと。
 

@@ -3,7 +3,7 @@
 ## Contents
 
 - [Status Overview](#status-overview)
-- [Behaviors](#behaviors)
+- [Unified Flow](#unified-flow)
 - [Per-Status Guide](#per-status-guide)
 - [Auto-Transition](#auto-transition)
 
@@ -13,68 +13,60 @@
 |--------|------|-----|-----------|
 | executing | 指示に従い実装する | RW | artifact |
 | verifying | 成果物を検証する | RO | verification |
-| in_review | 最終レビュー | RO | verification |
-| collecting_feedback | 指摘に基づき修正する | RW | artifact |
+| reworking | findings を修正する | RW | artifact |
 
 pending, done, aborted ではエージェントは起動されない。
 
-## Behaviors
+## Unified Flow
 
-`task.yaml` の `behavior` で遷移パターンが決まる。
+すべてのタスクは単一の state machine で動作する。
+`transition:` 指定は廃止されており、遷移は payload の内容に基づいてシステムが自動判定する。
 
-### one-shot
+### 動作パターン
 
-```
-pending → executing → done
-```
-
-executing で artifact を出力すると自動的に done へ遷移する。
-
-### feedback-loop
+**単純タスク**（verify gate が全 findings を resolved にする場合）:
 
 ```
-pending → executing → verifying → in_review → collecting_feedback → done
-                ↑          │                          │
-                └──────────┘                          │
-              (unresolved findings)                   │
-                ↑                                     │
-                └─────────────────────────────────────┘
-                          (unresolved findings)
+pending → executing → verifying → done
 ```
 
-verification の findings がすべて resolved なら前進、
-unresolved があれば executing に戻り修正する。
+**CI 系**（pr-verify gate が executing / reworking に反応する場合）:
+
+```
+pending → executing → reworking → done
+```
+
+**verify 系**（verifying gate が unresolved findings を返す場合）:
+
+```
+pending → executing → verifying → reworking → verifying → done
+                                      ↑              │
+                                      └──────────────┘
+                                    (unresolved findings)
+```
 
 ## Per-Status Guide
 
 ### executing
 
-instructions.json の指示に従って作業する。
-
-**rework の場合**: payload.json に既存の `verification` がある。
-`status: "open"` の findings が修正すべき指摘事項。対応すること。
+instructions.yaml の指示に従って作業する。
 
 作業完了時、artifact trait を出力する。
 
 ### verifying
 
-payload.json の `artifact` を検証する。
-instructions.json にレビュー観点が記載されている。
+payload.yaml の `artifact` を検証する。
+instructions.yaml にレビュー観点が記載されている。
 
 指摘事項を findings として verification trait に出力する。
 問題がなければ `status: "resolved"`、問題があれば `status: "open"` とする。
 
 プロジェクトディレクトリは読み取り専用。コードの変更はできない。
 
-### in_review
+### reworking
 
-verifying と同様の最終レビュー段階。
-
-### collecting_feedback
-
-executing と同じ権限（RW）で、フィードバック対応の修正作業を行う。
-payload.json の `verification` から `source_state: "collecting_feedback"` の
-findings を確認し、`status: "open"` の指摘に対応する。
+executing と同じ権限（RW）で、修正作業を行う。
+payload.yaml の `verification` に `status: "open"` の findings があるので確認し、対応する。
 
 修正完了時、artifact trait を更新出力する。
 
@@ -85,8 +77,9 @@ findings を確認し、`status: "open"` の指摘に対応する。
 
 | 条件 | 遷移 |
 |------|------|
-| artifact が non-null | executing → verifying (feedback-loop) / done (one-shot) |
-| 全 findings が resolved | verifying → in_review |
-| unresolved findings あり | verifying → executing |
-| 全 findings が resolved | collecting_feedback → done |
-| unresolved findings あり | collecting_feedback → executing |
+| artifact が non-null かつ executing 由来の unresolved findings なし | executing → verifying |
+| artifact が non-null かつ executing 由来の unresolved findings あり | executing → reworking |
+| verifying 由来の unresolved findings あり | verifying → reworking |
+| verifying 由来の unresolved findings なし | verifying → done |
+| 全 findings が resolved | reworking → done |
+| unresolved findings あり | reworking → reworking（継続） |
