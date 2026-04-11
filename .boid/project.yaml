@@ -66,6 +66,19 @@ task_behaviors:
             - auto_start: true — 依存条件が満たされたら自動的に開始する。
 
             順序依存がないタスクには depends_on を設定しないこと（並列実行される）。
+
+            ## boid-kits の更新
+
+            boid-kits（キットパッケージ群）の更新を伴うタスクは、`project_id: boid-kits` を明示的に設定すること。
+            設定しない場合、親タスクのプロジェクト（このリポジトリ = boid）にタスクが作成されてしまい、
+            boid-kits リポジトリへの変更として実行されない。
+
+            例:
+              tasks:
+                - title: "go-dev キットに lint gate を追加"
+                  behavior: "dev"
+                  description: "..."
+                  project_id: "boid-kits"
   auto_plan:
     name: Auto Plan
     transition: one-shot
@@ -105,6 +118,19 @@ task_behaviors:
             - auto_start: true — 依存条件が満たされたら自動的に開始する。
 
             順序依存がないタスクには depends_on を設定しないこと（並列実行される）。
+
+            ## boid-kits の更新
+
+            boid-kits（キットパッケージ群）の更新を伴うタスクは、`project_id: boid-kits` を明示的に設定すること。
+            設定しない場合、親タスクのプロジェクト（このリポジトリ = boid）にタスクが作成されてしまい、
+            boid-kits リポジトリへの変更として実行されない。
+
+            例:
+              tasks:
+                - title: "go-dev キットに lint gate を追加"
+                  behavior: "dev"
+                  description: "..."
+                  project_id: "boid-kits"
 
 kits:
   - github.com/novshi-tech/boid-kits/go-dev
