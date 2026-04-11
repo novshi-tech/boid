@@ -149,6 +149,54 @@ func (m *WorktreeManager) CleanupForTask(taskID, projectDir, newStatus string) e
 	return m.Remove(projectDir, taskID, true)
 }
 
+// Recreate reconstructs a previously cleaned worktree by fetching from the remote branch.
+// It reads the existing DB record (even if cleaned_at is set), fetches the remote branch,
+// creates a new worktree, and clears the cleaned_at timestamp.
+func (m *WorktreeManager) Recreate(projectDir string, taskID string) (*Worktree, error) {
+	w, err := GetWorktreeByTask(m.DB, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("get worktree: %w", err)
+	}
+	if w == nil {
+		return nil, fmt.Errorf("no worktree record found for task %s", taskID)
+	}
+
+	// Fetch the remote branch so origin/<branch> is up-to-date.
+	fetchCmd := exec.Command(m.gitBin(), "-C", projectDir, "fetch", "origin", w.Branch)
+	if out, err := fetchCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("git fetch origin %s: %w\n%s", w.Branch, err, strings.TrimSpace(string(out)))
+	}
+
+	if err := os.MkdirAll(filepath.Dir(w.Path), 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir worktree parent: %w", err)
+	}
+
+	// Check whether the local branch still exists (it may have been deleted by CleanupForTask).
+	localBranchCheck := exec.Command(m.gitBin(), "-C", projectDir, "rev-parse", "--verify", w.Branch)
+	var wtCmd *exec.Cmd
+	if localBranchCheck.Run() == nil {
+		// Local branch exists; check it out directly.
+		wtCmd = exec.Command(m.gitBin(), "worktree", "add", w.Path, w.Branch)
+		wtCmd.Dir = projectDir
+	} else {
+		// Local branch was deleted; recreate it from remote.
+		wtCmd = exec.Command(m.gitBin(), "worktree", "add", "-B", w.Branch, w.Path, "origin/"+w.Branch)
+		wtCmd.Dir = projectDir
+	}
+	if out, err := wtCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("git worktree add: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+
+	if err := ClearWorktreeCleaned(m.DB, taskID); err != nil {
+		exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", w.Path).Run()
+		return nil, fmt.Errorf("clear worktree cleaned: %w", err)
+	}
+
+	w.CleanedAt = nil
+	slog.Info("worktree recreated", "task_id", taskID, "path", w.Path, "branch", w.Branch)
+	return w, nil
+}
+
 func (m *WorktreeManager) CleanOrphaned(resolve func(taskID, projectID string) (string, string, error)) error {
 	active, err := ListActiveWorktrees(m.DB)
 	if err != nil {

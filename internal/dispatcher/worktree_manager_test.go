@@ -412,6 +412,154 @@ func TestManager_CleanupForTask_PendingNoop(t *testing.T) {
 	mgr.Remove(repo, "task-cfp10001-0001", true)
 }
 
+// TestRecreate_Success verifies that after done (worktree and local branch deleted),
+// Recreate reconstructs the worktree from the remote branch and restores the local branch.
+func TestRecreate_Success(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	local, _ := initGitRepoWithRemote(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-re1', ?)`, local)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-re001234-0001', 'proj-re1', 'recreate test', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	// Create worktree and push branch to remote.
+	w, err := mgr.Create(local, "proj-re1", "task-re001234-0001", "boid/", "main")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if out, err := exec.Command(gitBin, "-C", local, "push", "origin", w.Branch).CombinedOutput(); err != nil {
+		t.Fatalf("git push: %v\n%s", err, out)
+	}
+
+	// Simulate done: remove worktree and delete local branch.
+	if err := mgr.CleanupForTask("task-re001234-0001", local, "done"); err != nil {
+		t.Fatalf("CleanupForTask: %v", err)
+	}
+	if _, err := os.Stat(w.Path); !os.IsNotExist(err) {
+		t.Fatal("worktree dir should be removed after done")
+	}
+
+	// Recreate from remote branch.
+	recreated, err := mgr.Recreate(local, "task-re001234-0001")
+	if err != nil {
+		t.Fatalf("Recreate: %v", err)
+	}
+
+	// Worktree directory should exist.
+	if _, err := os.Stat(recreated.Path); err != nil {
+		t.Errorf("recreated worktree dir should exist: %v", err)
+	}
+
+	// .git should be a file (worktree metadata), not a directory.
+	gitFile := filepath.Join(recreated.Path, ".git")
+	info, err := os.Stat(gitFile)
+	if err != nil {
+		t.Fatalf(".git file should exist after recreate: %v", err)
+	}
+	if info.IsDir() {
+		t.Error(".git should be a file in worktree, not a directory")
+	}
+
+	// Local branch should be restored.
+	out, err := exec.Command(gitBin, "-C", local, "branch", "--list", recreated.Branch).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git branch --list: %v", err)
+	}
+	if len(out) == 0 {
+		t.Error("local branch should be restored after Recreate")
+	}
+
+	// DB: cleaned_at should be NULL.
+	got, err := mgr.Get("task-re001234-0001")
+	if err != nil {
+		t.Fatalf("Get after Recreate: %v", err)
+	}
+	if got == nil || got.CleanedAt != nil {
+		t.Error("cleaned_at should be NULL after Recreate")
+	}
+}
+
+// TestRecreate_RemoteBranchMissing verifies that Recreate returns an error when
+// the remote branch does not exist (branch was never pushed).
+func TestRecreate_RemoteBranchMissing(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	local, _ := initGitRepoWithRemote(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-re2', ?)`, local)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-re001234-0002', 'proj-re2', 'no remote branch', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	// Create worktree but do NOT push to remote.
+	_, err := mgr.Create(local, "proj-re2", "task-re001234-0002", "boid/", "main")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Simulate done: removes worktree and local branch; remote branch never existed.
+	if err := mgr.CleanupForTask("task-re001234-0002", local, "done"); err != nil {
+		t.Fatalf("CleanupForTask: %v", err)
+	}
+
+	// Recreate should fail because fetch from remote will fail.
+	_, err = mgr.Recreate(local, "task-re001234-0002")
+	if err == nil {
+		t.Error("Recreate should return an error when remote branch does not exist")
+	}
+}
+
+// TestRecreate_DBConsistency verifies that cleaned_at is NULL in the DB after a successful Recreate.
+func TestRecreate_DBConsistency(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	local, _ := initGitRepoWithRemote(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-re3', ?)`, local)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-re001234-0003', 'proj-re3', 'db consistency', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	w, err := mgr.Create(local, "proj-re3", "task-re001234-0003", "boid/", "main")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if out, err := exec.Command(gitBin, "-C", local, "push", "origin", w.Branch).CombinedOutput(); err != nil {
+		t.Fatalf("git push: %v\n%s", err, out)
+	}
+
+	if err := mgr.CleanupForTask("task-re001234-0003", local, "done"); err != nil {
+		t.Fatalf("CleanupForTask: %v", err)
+	}
+
+	// Verify cleaned_at is set before Recreate.
+	before, err := mgr.Get("task-re001234-0003")
+	if err != nil {
+		t.Fatalf("Get before Recreate: %v", err)
+	}
+	if before == nil || before.CleanedAt == nil {
+		t.Fatal("cleaned_at should be set after done cleanup")
+	}
+
+	if _, err := mgr.Recreate(local, "task-re001234-0003"); err != nil {
+		t.Fatalf("Recreate: %v", err)
+	}
+
+	// Verify cleaned_at is NULL after Recreate.
+	after, err := mgr.Get("task-re001234-0003")
+	if err != nil {
+		t.Fatalf("Get after Recreate: %v", err)
+	}
+	if after == nil {
+		t.Fatal("worktree record should exist after Recreate")
+	}
+	if after.CleanedAt != nil {
+		t.Errorf("cleaned_at should be NULL after Recreate, got %v", after.CleanedAt)
+	}
+}
+
 func TestManager_DefaultBranchPrefix(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	repo := initGitRepo(t)

@@ -21,6 +21,14 @@ func (p worktreePreparer) Prepare(task *orchestrator.Task, proj *orchestrator.Pr
 	if existing != nil && existing.CleanedAt == nil {
 		return existing.Path, nil
 	}
+	if existing != nil && existing.CleanedAt != nil {
+		// Worktree was cleaned (e.g. after done); recreate from remote branch.
+		w, err := p.manager.Recreate(proj.WorkDir, task.ID)
+		if err != nil {
+			return "", err
+		}
+		return w.Path, nil
+	}
 
 	w, err := p.manager.Create(
 		proj.WorkDir,

@@ -54,6 +54,22 @@ func MarkWorktreeCleaned(dbtx db.DBTX, taskID string) error {
 	return nil
 }
 
+// ClearWorktreeCleaned sets cleaned_at to NULL for the given task's worktree.
+func ClearWorktreeCleaned(dbtx db.DBTX, taskID string) error {
+	res, err := dbtx.Exec(
+		`UPDATE worktrees SET cleaned_at = NULL WHERE task_id = ?`,
+		taskID,
+	)
+	if err != nil {
+		return fmt.Errorf("clear worktree cleaned: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("no worktree found for task %s", taskID)
+	}
+	return nil
+}
+
 func ListActiveWorktrees(dbtx db.DBTX) ([]*Worktree, error) {
 	rows, err := dbtx.Query(
 		`SELECT id, task_id, project_id, path, branch, base_branch, created_at, cleaned_at
