@@ -694,7 +694,7 @@ func TestBroker_BoidBuiltinPolicy_HookRoleRejectsReopen(t *testing.T) {
 	}
 }
 
-// gate role は BoidOpTaskReopen を実行できる（detect-conflicts kit が done → reworking に戻すユースケース）。
+// gate role は BoidOpTaskReopen を実行できる（github-auto-merge kit がコンフリクト検出時に done → reworking に戻すユースケース）。
 func TestBroker_BoidBuiltinPolicy_GateRoleAllowsReopen(t *testing.T) {
 	exec := &fakeBoidExecutor{}
 	broker := &sandbox.Broker{BoidExecutor: exec}

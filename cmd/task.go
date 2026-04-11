@@ -84,7 +84,7 @@ var taskDuplicateCmd = &cobra.Command{
 var taskReopenCmd = &cobra.Command{
 	Use:   "reopen <id>",
 	Short: "Return a done task to reworking",
-	Long:  "done 済みタスクを reworking に戻す。\n主な用途: detect-conflicts kit がコンフリクトを検出した PR を修正させる",
+	Long:  "done 済みタスクを reworking に戻す。\n主な用途: github-auto-merge kit がマージコンフリクトを検出した PR を修正させる",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runTaskReopen,
 }
