@@ -1561,3 +1561,119 @@ host_commands:
 		}
 	})
 }
+
+func TestReadKitMeta_NewFields(t *testing.T) {
+	t.Run("parses meta/detect/requires/scaffold", func(t *testing.T) {
+		dir := t.TempDir()
+		writeKitYAML(t, dir, `
+meta:
+  name: go-kit
+  description: Go language kit
+  category: language
+detect:
+  files:
+    - go.mod
+    - go.sum
+requires:
+  commands:
+    - go
+scaffold:
+  task_behaviors:
+    description: Go task behaviors scaffold
+    template: scaffold/task_behaviors.yaml
+`)
+		meta, err := projectspec.ReadKitMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadKitMeta: %v", err)
+		}
+
+		if meta.Meta == nil {
+			t.Fatal("expected Meta to be set")
+		}
+		if meta.Meta.Name != "go-kit" {
+			t.Errorf("Meta.Name = %q, want %q", meta.Meta.Name, "go-kit")
+		}
+		if meta.Meta.Category != "language" {
+			t.Errorf("Meta.Category = %q, want %q", meta.Meta.Category, "language")
+		}
+
+		if meta.Detect == nil {
+			t.Fatal("expected Detect to be set")
+		}
+		if len(meta.Detect.Files) != 2 || meta.Detect.Files[0] != "go.mod" {
+			t.Errorf("Detect.Files = %v", meta.Detect.Files)
+		}
+
+		if meta.Requires == nil {
+			t.Fatal("expected Requires to be set")
+		}
+		if len(meta.Requires.Commands) != 1 || meta.Requires.Commands[0] != "go" {
+			t.Errorf("Requires.Commands = %v", meta.Requires.Commands)
+		}
+
+		if meta.Scaffold == nil || meta.Scaffold.TaskBehaviors == nil {
+			t.Fatal("expected Scaffold.TaskBehaviors to be set")
+		}
+		if meta.Scaffold.TaskBehaviors.Template != "scaffold/task_behaviors.yaml" {
+			t.Errorf("Scaffold.TaskBehaviors.Template = %q", meta.Scaffold.TaskBehaviors.Template)
+		}
+	})
+
+	t.Run("backward compatible: no new fields", func(t *testing.T) {
+		dir := t.TempDir()
+		writeKitYAML(t, dir, `
+task_behaviors:
+  dev:
+    name: development
+    transition: one-shot
+    traits: []
+`)
+		meta, err := projectspec.ReadKitMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadKitMeta: %v", err)
+		}
+		if meta.Meta != nil {
+			t.Error("expected Meta to be nil")
+		}
+		if meta.Detect != nil {
+			t.Error("expected Detect to be nil")
+		}
+		if meta.Requires != nil {
+			t.Error("expected Requires to be nil")
+		}
+		if meta.Scaffold != nil {
+			t.Error("expected Scaffold to be nil")
+		}
+	})
+
+	t.Run("new fields excluded from MergeKitMeta", func(t *testing.T) {
+		dir := t.TempDir()
+		writeKitYAML(t, dir, `
+meta:
+  name: test-kit
+detect:
+  files: [go.mod]
+requires:
+  commands: [go]
+scaffold:
+  task_behaviors:
+    description: desc
+    template: tmpl.yaml
+`)
+		kitMeta, err := projectspec.ReadKitMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadKitMeta: %v", err)
+		}
+
+		base := &projectspec.ProjectMeta{}
+		merged := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{kitMeta}, []string{"test-kit"})
+
+		// Scripts field (merged) should not be affected by init-time fields.
+		// Mainly verify the merged result has no side-effect from the new fields.
+		if len(merged.Scripts) != 0 {
+			t.Errorf("unexpected scripts in merged: %v", merged.Scripts)
+		}
+		// The merged ProjectMeta has no Meta/Detect/Requires/Scaffold fields —
+		// those live only on KitMeta (confirmed by having compiled without them).
+	})
+}
