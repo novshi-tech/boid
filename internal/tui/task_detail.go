@@ -199,7 +199,7 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			return pushScreenMsg{screen: NewTaskEditScreen(s.shared.Client, s.detail.Task)}
 		}
 
-	case "esc", "backspace":
+	case "esc", "backspace", "q":
 		return func() tea.Msg { return popScreenMsg{} }
 
 	case "d":
@@ -380,7 +380,7 @@ func (s *TaskDetailScreen) ShortHelp() string {
 		}
 	}
 	parts = append(parts, "d: delete", "D: duplicate")
-	fixed := "e: edit  j/k: move  enter: open job  r: refresh  esc: back"
+	fixed := "e: edit  j/k: move  enter: open job  r: refresh  esc/q: back"
 	return strings.Join(parts, "  ") + "  " + fixed
 }
 

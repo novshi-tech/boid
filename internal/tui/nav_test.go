@@ -89,33 +89,46 @@ func TestUpdate_PopScreenMsg_DepthOne(t *testing.T) {
 	}
 }
 
-func TestGlobalKey_Quit(t *testing.T) {
-	keys := []string{"q", "ctrl+c"}
-	for _, key := range keys {
-		for depth := 1; depth <= 3; depth++ {
-			screens := make([]Screen, depth)
-			for i := range screens {
-				screens[i] = &stubScreen{name: "s"}
-			}
-			app := newTestAppWithScreens(screens...)
-
-			var msg tea.KeyMsg
-			if key == "ctrl+c" {
-				msg = tea.KeyMsg{Type: tea.KeyCtrlC}
-			} else {
-				msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
-			}
-			_, cmd := app.Update(msg)
-
-			if cmd == nil {
-				t.Errorf("key=%q depth=%d: expected Quit cmd, got nil", key, depth)
-				continue
-			}
-			result := cmd()
-			if _, ok := result.(tea.QuitMsg); !ok {
-				t.Errorf("key=%q depth=%d: expected QuitMsg, got %T", key, depth, result)
-			}
+// TestCtrlC_AlwaysQuits verifies that ctrl+c produces tea.Quit regardless of stack depth.
+func TestCtrlC_AlwaysQuits(t *testing.T) {
+	for depth := 1; depth <= 3; depth++ {
+		screens := make([]Screen, depth)
+		for i := range screens {
+			screens[i] = &stubScreen{name: "s"}
 		}
+		app := newTestAppWithScreens(screens...)
+
+		_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+
+		if cmd == nil {
+			t.Errorf("depth=%d: expected Quit cmd, got nil", depth)
+			continue
+		}
+		result := cmd()
+		if _, ok := result.(tea.QuitMsg); !ok {
+			t.Errorf("depth=%d: expected QuitMsg, got %T", depth, result)
+		}
+	}
+}
+
+// TestQ_DelegatedToTopScreen verifies that q is no longer intercepted by App
+// and is instead delegated to the top screen.
+func TestQ_DelegatedToTopScreen(t *testing.T) {
+	s := &stubScreen{name: "s"}
+	app := newTestAppWithScreens(s)
+
+	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+
+	// stubScreen returns nil cmd, so app should also return nil (not tea.Quit)
+	if cmd != nil {
+		result := cmd()
+		if _, ok := result.(tea.QuitMsg); ok {
+			t.Error("q should not return tea.Quit from App directly (should be delegated to screen)")
+		}
+	}
+	// Screen should have received the q key message
+	if len(s.received) == 0 {
+		t.Error("q should be delegated to the top screen")
 	}
 }
 

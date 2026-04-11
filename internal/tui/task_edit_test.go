@@ -209,6 +209,38 @@ func TestTaskEditButtonPressedSave(t *testing.T) {
 	}
 }
 
+// --- q キー入力テスト（app.go の修正により q が text field に届くことの確認）---
+
+// TestTaskEditQKey_TitleFocused_AddedToField verifies q is added to the title field
+// (not intercepted as quit) when the title input has focus.
+func TestTaskEditQKey_TitleFocused_AddedToField(t *testing.T) {
+	s := newTestEditScreen()
+	s.focusIndex = editFocusTitle
+	s.titleField.Focus()
+	s.titleField.SetValue("")
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+
+	if s.titleField.Value() != "q" {
+		t.Errorf("q in title field: want 'q', got %q", s.titleField.Value())
+	}
+}
+
+// TestTaskEditQKey_DescFocused_AddedToField verifies q is added to the description
+// textarea when desc has focus.
+func TestTaskEditQKey_DescFocused_AddedToField(t *testing.T) {
+	s := newTestEditScreen()
+	s.moveFocus(editFocusDescription)
+	s.descArea.SetValue("")
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+
+	val := s.descArea.Value()
+	if !containsStr(val, "q") {
+		t.Errorf("q in desc area: expected 'q' in value, got %q", val)
+	}
+}
+
 // --- View smoke test ---
 
 func TestTaskEditView(t *testing.T) {

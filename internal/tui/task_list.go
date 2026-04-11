@@ -277,6 +277,9 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	case "n":
 		return PushScreen(NewTaskFormScreen(s.shared))
+
+	case "q":
+		return tea.Quit
 	}
 	return nil
 }
