@@ -187,7 +187,10 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		kits = append(kits, kitMeta)
 	}
 
-	merged := MergeKitMeta(meta, kits, consumerNames)
+	merged, err := MergeKitMeta(meta, kits, consumerNames)
+	if err != nil {
+		return nil, err
+	}
 	if err := validateBuiltinCommands("merged project meta", merged.BuiltinCommands, merged.HostCommands); err != nil {
 		return nil, err
 	}
@@ -312,9 +315,9 @@ func ReadProjectLocalMeta(dir string) (*ProjectLocalMeta, error) {
 	return &meta, nil
 }
 
-func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) *ProjectMeta {
+func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) (*ProjectMeta, error) {
 	if len(kits) == 0 {
-		return base
+		return base, nil
 	}
 
 	result := *base
@@ -410,8 +413,17 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) *Pr
 	result.Gates = append(result.Gates, scriptGates...)
 
 	mergedCmds := make(HostCommands)
-	for _, meta := range kits {
+	kitCmdSource := make(map[string]string)
+	for i, meta := range kits {
+		consumer := ""
+		if i < len(kitConsumers) {
+			consumer = kitConsumers[i]
+		}
 		for k, v := range meta.HostCommands {
+			if existingConsumer, ok := kitCmdSource[k]; ok {
+				return nil, fmt.Errorf("host_commands: command %q is defined in both kit %q and kit %q; remove the duplicate from one kit or override it in project.local.yaml", k, existingConsumer, consumer)
+			}
+			kitCmdSource[k] = consumer
 			mergedCmds[k] = v
 		}
 	}
@@ -472,7 +484,7 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) *Pr
 		})
 	}
 
-	return &result
+	return &result, nil
 }
 
 func EffectiveKitRefs(base []KitRef, local ProjectLocalKits) ([]KitRef, error) {
@@ -537,19 +549,27 @@ func ApplyProjectLocalMeta(base *ProjectMeta, local *ProjectLocalMeta) *ProjectM
 }
 
 func unionBindMounts(kits []*KitMeta, base []BindMount) []BindMount {
-	seen := make(map[string]bool)
+	indexBySource := make(map[string]int)
 	var result []BindMount
 	for _, meta := range kits {
 		for _, binding := range meta.AdditionalBindings {
-			if !seen[binding.Source] {
-				seen[binding.Source] = true
+			if idx, ok := indexBySource[binding.Source]; ok {
+				if binding.Mode == "rw" {
+					result[idx].Mode = "rw"
+				}
+			} else {
+				indexBySource[binding.Source] = len(result)
 				result = append(result, binding)
 			}
 		}
 	}
 	for _, binding := range base {
-		if !seen[binding.Source] {
-			seen[binding.Source] = true
+		if idx, ok := indexBySource[binding.Source]; ok {
+			if binding.Mode == "rw" {
+				result[idx].Mode = "rw"
+			}
+		} else {
+			indexBySource[binding.Source] = len(result)
 			result = append(result, binding)
 		}
 	}
