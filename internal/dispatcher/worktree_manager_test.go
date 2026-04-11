@@ -1,6 +1,7 @@
 package dispatcher_test
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -305,6 +306,202 @@ func TestResolveBase_FetchFailureFallback(t *testing.T) {
 		t.Errorf("expected main after fallback, got %q", w.BaseBranch)
 	}
 	mgr.Remove(local, "task-rb000005-0001", true)
+}
+
+func TestManager_CleanOrphaned_DoneTaskCleaned(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-co1', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-co1aaaaa-001', 'proj-co1', 'done task', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	w, err := mgr.Create(repo, "proj-co1", "task-co1aaaaa-001", "boid/", "HEAD")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := mgr.CleanOrphaned(func(taskID, projectID string) (string, string, error) {
+		return "done", repo, nil
+	}); err != nil {
+		t.Fatalf("CleanOrphaned: %v", err)
+	}
+
+	// worktree ディレクトリが削除されていること
+	if _, err := os.Stat(w.Path); !os.IsNotExist(err) {
+		t.Error("worktree dir should be removed after done cleanup")
+	}
+
+	// done モードはブランチを保持する
+	out, err := exec.Command(gitBin, "-C", repo, "branch", "--list", w.Branch).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git branch --list: %v", err)
+	}
+	if len(out) == 0 {
+		t.Error("branch should still exist after done cleanup")
+	}
+
+	// DB 上で cleaned_at がセットされていること
+	got, err := mgr.Get("task-co1aaaaa-001")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil || got.CleanedAt == nil {
+		t.Error("worktree should be marked as cleaned")
+	}
+}
+
+func TestManager_CleanOrphaned_AbortedTaskCleaned(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-co2', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-co2aaaaa-001', 'proj-co2', 'aborted task', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	w, err := mgr.Create(repo, "proj-co2", "task-co2aaaaa-001", "boid/", "HEAD")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := mgr.CleanOrphaned(func(taskID, projectID string) (string, string, error) {
+		return "aborted", repo, nil
+	}); err != nil {
+		t.Fatalf("CleanOrphaned: %v", err)
+	}
+
+	// worktree ディレクトリが削除されていること
+	if _, err := os.Stat(w.Path); !os.IsNotExist(err) {
+		t.Error("worktree dir should be removed after aborted cleanup")
+	}
+
+	// aborted モードはブランチも削除する
+	out, err := exec.Command(gitBin, "-C", repo, "branch", "--list", w.Branch).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git branch --list: %v", err)
+	}
+	if len(out) > 0 {
+		t.Error("branch should be deleted after aborted cleanup")
+	}
+}
+
+func TestManager_CleanOrphaned_ExecutingTaskSkipped(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-co3', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-co3aaaaa-001', 'proj-co3', 'executing task', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	w, err := mgr.Create(repo, "proj-co3", "task-co3aaaaa-001", "boid/", "HEAD")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := mgr.CleanOrphaned(func(taskID, projectID string) (string, string, error) {
+		return "executing", repo, nil
+	}); err != nil {
+		t.Fatalf("CleanOrphaned: %v", err)
+	}
+
+	// worktree ディレクトリが残っていること
+	if _, err := os.Stat(w.Path); err != nil {
+		t.Errorf("worktree dir should still exist for executing task: %v", err)
+	}
+
+	// cleaned_at がセットされていないこと
+	got, err := mgr.Get("task-co3aaaaa-001")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil || got.CleanedAt != nil {
+		t.Error("worktree should not be marked as cleaned for executing task")
+	}
+}
+
+func TestManager_CleanOrphaned_ResolveError(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-co4', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-re1aaaaa-001', 'proj-co4', 'error task', 'dev')`)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-re2aaaaa-001', 'proj-co4', 'done task', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	w1, err := mgr.Create(repo, "proj-co4", "task-re1aaaaa-001", "boid/", "HEAD")
+	if err != nil {
+		t.Fatalf("Create task1: %v", err)
+	}
+	w2, err := mgr.Create(repo, "proj-co4", "task-re2aaaaa-001", "boid/", "HEAD")
+	if err != nil {
+		t.Fatalf("Create task2: %v", err)
+	}
+
+	if err := mgr.CleanOrphaned(func(taskID, projectID string) (string, string, error) {
+		if taskID == "task-re1aaaaa-001" {
+			return "", "", errors.New("resolve failed")
+		}
+		return "done", repo, nil
+	}); err != nil {
+		t.Fatalf("CleanOrphaned: %v", err)
+	}
+
+	// エラーが返ったタスクの worktree は残っていること
+	if _, err := os.Stat(w1.Path); err != nil {
+		t.Errorf("task1 worktree dir should still exist (resolve errored): %v", err)
+	}
+
+	// 正常なタスクの worktree は削除されていること
+	if _, err := os.Stat(w2.Path); !os.IsNotExist(err) {
+		t.Error("task2 worktree dir should be removed")
+	}
+}
+
+func TestManager_CleanOrphaned_AlreadyCleaned(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-co5', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-co5aaaaa-001', 'proj-co5', 'cleaned task', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	w, err := mgr.Create(repo, "proj-co5", "task-co5aaaaa-001", "boid/", "HEAD")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// 事前に cleaned_at をセット（MarkWorktreeCleaned を利用）
+	if err := dispatcher.MarkWorktreeCleaned(db.Conn, "task-co5aaaaa-001"); err != nil {
+		t.Fatalf("MarkWorktreeCleaned: %v", err)
+	}
+
+	// resolve は呼ばれないはず
+	called := false
+	if err := mgr.CleanOrphaned(func(taskID, projectID string) (string, string, error) {
+		called = true
+		return "done", repo, nil
+	}); err != nil {
+		t.Fatalf("CleanOrphaned: %v", err)
+	}
+
+	if called {
+		t.Error("resolve should not be called for already-cleaned worktree")
+	}
+
+	// ディレクトリは削除されていないこと（CleanOrphaned が触っていない）
+	if _, err := os.Stat(w.Path); err != nil {
+		t.Errorf("worktree dir should still exist for already-cleaned task: %v", err)
+	}
 }
 
 func TestManager_DefaultBranchPrefix(t *testing.T) {

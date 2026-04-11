@@ -81,6 +81,20 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	}
 	wtMgr := &dispatcher.WorktreeManager{RootDir: wtRootDir, DB: srv.db}
 
+	if err := wtMgr.CleanOrphaned(func(taskID, projectID string) (string, string, error) {
+		task, err := taskRepo.GetTask(taskID)
+		if err != nil || task == nil {
+			return "", "", err
+		}
+		proj, err := projectRepo.GetProject(projectID)
+		if err != nil || proj == nil {
+			return "", "", err
+		}
+		return string(task.Status), proj.WorkDir, nil
+	}); err != nil {
+		slog.Warn("orphan worktree cleanup failed", "error", err)
+	}
+
 	jobRuntime, err := newJobRuntime(cfg)
 	if err != nil {
 		return nil, err
