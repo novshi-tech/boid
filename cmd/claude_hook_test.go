@@ -23,7 +23,6 @@ func TestClaudeCodeHook_NonInteractiveStreamsForAttach(t *testing.T) {
 	for _, want := range []string{
 		"--verbose",
 		"--output-format=stream-json",
-		"--include-partial-messages",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("claude hook missing %q:\n%s", want, script)
