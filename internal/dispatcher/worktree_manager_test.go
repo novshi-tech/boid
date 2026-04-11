@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/dispatcher"
@@ -557,6 +558,67 @@ func TestRecreate_DBConsistency(t *testing.T) {
 	}
 	if after.CleanedAt != nil {
 		t.Errorf("cleaned_at should be NULL after Recreate, got %v", after.CleanedAt)
+	}
+}
+
+// TestRecreate_FetchesBaseBranch verifies that Recreate also fetches origin/<baseBranch>,
+// so that the worktree sees commits that were added to the remote main after the worktree
+// was cleaned. This is required for correct conflict resolution in reworking state.
+func TestRecreate_FetchesBaseBranch(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	local, remote := initGitRepoWithRemote(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-rebb1', ?)`, local)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-rebb0001-0001', 'proj-rebb1', 'fetch base branch', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	// Create worktree and push feature branch to remote.
+	w, err := mgr.Create(local, "proj-rebb1", "task-rebb0001-0001", "boid/", "main")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if out, err := exec.Command(gitBin, "-C", local, "push", "origin", w.Branch).CombinedOutput(); err != nil {
+		t.Fatalf("git push: %v\n%s", err, out)
+	}
+
+	// Simulate done: remove worktree and delete local branch.
+	if err := mgr.CleanupForTask("task-rebb0001-0001", local, "done"); err != nil {
+		t.Fatalf("CleanupForTask: %v", err)
+	}
+
+	// Add a new commit to remote "main" (simulates upstream progress after worktree was cleaned).
+	f := filepath.Join(remote, "new_file.txt")
+	if err := os.WriteFile(f, []byte("new content"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	exec.Command(gitBin, "-C", remote, "add", ".").Run()
+	if out, err := exec.Command(gitBin, "-C", remote, "commit", "-m", "new commit on main").CombinedOutput(); err != nil {
+		t.Fatalf("git commit on remote: %v\n%s", err, out)
+	}
+
+	// Get the new commit hash from remote main.
+	out, err := exec.Command(gitBin, "-C", remote, "rev-parse", "main").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse remote main: %v\n%s", err, out)
+	}
+	newMainHash := strings.TrimSpace(string(out))
+
+	// Recreate the worktree — should also fetch origin/main.
+	recreated, err := mgr.Recreate(local, "task-rebb0001-0001")
+	if err != nil {
+		t.Fatalf("Recreate: %v", err)
+	}
+
+	// Verify that origin/main in the recreated worktree points to the new commit.
+	out, err = exec.Command(gitBin, "-C", recreated.Path, "rev-parse", "origin/main").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse origin/main in worktree: %v\n%s", err, out)
+	}
+	gotHash := strings.TrimSpace(string(out))
+	if gotHash != newMainHash {
+		t.Errorf("origin/main should be updated after Recreate: got %s, want %s", gotHash, newMainHash)
 	}
 }
 
