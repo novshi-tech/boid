@@ -46,17 +46,18 @@ func runGC(cmd *cobra.Command, args []string) error {
 		Jobs      int64 `json:"jobs"`
 		Actions   int64 `json:"actions"`
 		Worktrees int64 `json:"worktrees"`
+		Runtimes  int64 `json:"runtimes"`
 	}
 	if err := c.Do("POST", "/api/gc", body, &result); err != nil {
 		return err
 	}
 
 	if dryRun {
-		fmt.Printf("dry run: would delete %d tasks, %d jobs, %d actions, %d worktrees\n",
-			result.Tasks, result.Jobs, result.Actions, result.Worktrees)
+		fmt.Printf("dry run: would delete %d tasks, %d jobs, %d actions, %d worktrees, %d runtimes\n",
+			result.Tasks, result.Jobs, result.Actions, result.Worktrees, result.Runtimes)
 	} else {
-		fmt.Printf("deleted: %d tasks, %d jobs, %d actions, %d worktrees\n",
-			result.Tasks, result.Jobs, result.Actions, result.Worktrees)
+		fmt.Printf("deleted: %d tasks, %d jobs, %d actions, %d worktrees, %d runtimes\n",
+			result.Tasks, result.Jobs, result.Actions, result.Worktrees, result.Runtimes)
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -103,6 +104,7 @@ type TaskGCStore struct {
 	conn              *sql.DB
 	resolveProjectDir func(projectID string) (string, error)
 	gitBin            string
+	runtimesDir       string
 }
 
 func NewTaskGCStore(conn *sql.DB) *TaskGCStore {
@@ -113,11 +115,13 @@ func NewTaskGCStore(conn *sql.DB) *TaskGCStore {
 // worktree directories on disk before deleting DB records.
 // resolveProjectDir returns the project's work directory given its ID.
 // gitBin is the path to the git binary; empty string defaults to "git".
-func NewTaskGCStoreWithWorktree(conn *sql.DB, resolveProjectDir func(projectID string) (string, error), gitBin string) *TaskGCStore {
+// runtimesDir is the path to the runtimes root directory; empty string disables runtime cleanup.
+func NewTaskGCStoreWithWorktree(conn *sql.DB, resolveProjectDir func(projectID string) (string, error), gitBin string, runtimesDir string) *TaskGCStore {
 	return &TaskGCStore{
 		conn:              conn,
 		resolveProjectDir: resolveProjectDir,
 		gitBin:            gitBin,
+		runtimesDir:       runtimesDir,
 	}
 }
 
@@ -129,6 +133,10 @@ func (s *TaskGCStore) gcGitBin() string {
 }
 
 func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool, ephemeral *bool) (*GCResult, error) {
+	runtimesDeleted := 0
+	if s.runtimesDir != "" && !dryRun {
+		runtimesDeleted = s.cleanRuntimes(olderThan, ephemeral)
+	}
 	if s.resolveProjectDir != nil && !dryRun {
 		s.cleanWorktrees(olderThan, ephemeral)
 	}
@@ -139,7 +147,67 @@ func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool, ephemeral *bool) 
 		result = r
 		return err
 	})
-	return result, err
+	if err != nil {
+		return nil, err
+	}
+	if !dryRun {
+		result.Runtimes = int64(runtimesDeleted)
+	}
+	return result, nil
+}
+
+// cleanRuntimes deletes runtime directories for GC target tasks.
+// Errors are logged as warnings; failures do not block subsequent DB deletion.
+// Returns the number of runtime directories successfully deleted.
+func (s *TaskGCStore) cleanRuntimes(olderThan time.Duration, ephemeral *bool) int {
+	query := `
+		SELECT DISTINCT j.runtime_id
+		FROM jobs j
+		JOIN tasks t ON t.id = j.task_id
+		WHERE j.runtime_id != ''
+		  AND t.status IN ('done', 'aborted')`
+	var args []any
+	if olderThan > 0 {
+		query += ` AND t.updated_at < ?`
+		args = append(args, time.Now().UTC().Add(-olderThan))
+	}
+	if ephemeral != nil {
+		query += ` AND t.ephemeral = ?`
+		args = append(args, *ephemeral)
+	}
+
+	rows, err := s.conn.Query(query, args...)
+	if err != nil {
+		slog.Warn("gc runtimes: query failed", "error", err)
+		return 0
+	}
+	defer rows.Close()
+
+	var runtimeIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			slog.Warn("gc runtimes: scan failed", "error", err)
+			return 0
+		}
+		runtimeIDs = append(runtimeIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("gc runtimes: rows error", "error", err)
+		return 0
+	}
+
+	count := 0
+	for _, id := range runtimeIDs {
+		dir := filepath.Join(s.runtimesDir, id)
+		if err := os.RemoveAll(dir); err != nil {
+			slog.Warn("gc runtimes: remove failed", "runtime_id", id, "error", err)
+			continue
+		}
+		slog.Info("gc runtime removed", "runtime_id", id)
+		count++
+	}
+	return count
 }
 
 type gcWorktreeRecord struct {

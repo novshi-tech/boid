@@ -284,6 +284,7 @@ type GCResult struct {
 	Jobs      int64
 	Actions   int64
 	Worktrees int64
+	Runtimes  int64
 }
 
 // GCTasks deletes terminal tasks older than olderThan and their related data
@@ -348,6 +349,13 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 			case "worktrees":
 				result.Worktrees = n
 			}
+		}
+		row = dbtx.QueryRow(
+			`SELECT COUNT(DISTINCT runtime_id) FROM jobs WHERE runtime_id != '' AND task_id IN (`+subquery+`)`,
+			condArgs...,
+		)
+		if err := row.Scan(&result.Runtimes); err != nil {
+			return nil, fmt.Errorf("count runtimes: %w", err)
 		}
 		return result, nil
 	}
