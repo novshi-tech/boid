@@ -147,14 +147,13 @@ type gcWorktreeRecord struct {
 	projectID string
 	path      string
 	branch    string
-	status    string
 }
 
 // cleanWorktrees performs disk-level cleanup of worktrees for GC target tasks.
 // Errors are logged as warnings; failures do not block subsequent DB deletion.
 func (s *TaskGCStore) cleanWorktrees(olderThan time.Duration, ephemeral *bool) {
 	query := `
-		SELECT w.task_id, w.project_id, w.path, w.branch, t.status
+		SELECT w.task_id, w.project_id, w.path, w.branch
 		FROM worktrees w
 		JOIN tasks t ON t.id = w.task_id
 		WHERE w.cleaned_at IS NULL
@@ -179,7 +178,7 @@ func (s *TaskGCStore) cleanWorktrees(olderThan time.Duration, ephemeral *bool) {
 	var wts []gcWorktreeRecord
 	for rows.Next() {
 		var r gcWorktreeRecord
-		if err := rows.Scan(&r.taskID, &r.projectID, &r.path, &r.branch, &r.status); err != nil {
+		if err := rows.Scan(&r.taskID, &r.projectID, &r.path, &r.branch); err != nil {
 			slog.Warn("gc worktrees: scan failed", "error", err)
 			return
 		}
@@ -205,12 +204,10 @@ func (s *TaskGCStore) cleanWorktrees(olderThan time.Duration, ephemeral *bool) {
 			exec.Command(s.gcGitBin(), "-C", projectDir, "worktree", "prune").Run()
 		}
 
-		if w.status == "aborted" {
-			cmd = exec.Command(s.gcGitBin(), "-C", projectDir, "branch", "-D", w.branch)
-			if out, err := cmd.CombinedOutput(); err != nil {
-				slog.Warn("gc worktrees: git branch -D failed",
-					"task_id", w.taskID, "branch", w.branch, "error", err, "output", strings.TrimSpace(string(out)))
-			}
+		cmd = exec.Command(s.gcGitBin(), "-C", projectDir, "branch", "-D", w.branch)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			slog.Warn("gc worktrees: git branch -D failed",
+				"task_id", w.taskID, "branch", w.branch, "error", err, "output", strings.TrimSpace(string(out)))
 		}
 
 		slog.Info("gc worktree removed", "task_id", w.taskID, "path", w.path)
