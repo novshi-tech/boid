@@ -25,23 +25,38 @@ const (
 	BoidOpTaskUpdate BoidOp = "task_update"
 )
 
+// BehaviorSpec is the inline behavior specification carried in BoidRequest.
+// It mirrors orchestrator.BehaviorSpec but is defined here to keep the
+// sandbox package free of orchestrator dependencies.
+type BehaviorSpec struct {
+	Name           string   `yaml:"name" json:"name"`
+	Transition     string   `yaml:"transition" json:"transition"`
+	Traits         []string `yaml:"traits,omitempty" json:"traits,omitempty"`
+	Readonly       bool     `yaml:"readonly,omitempty" json:"readonly,omitempty"`
+	Worktree       bool     `yaml:"worktree,omitempty" json:"worktree,omitempty"`
+	BranchPrefix   string   `yaml:"branch_prefix,omitempty" json:"branch_prefix,omitempty"`
+	BaseBranch     string   `yaml:"base_branch,omitempty" json:"base_branch,omitempty"`
+	DefaultPayload []byte   `yaml:"-" json:"default_payload,omitempty"`
+}
+
 type BoidRequest struct {
-	Op               BoidOp   `json:"op"`
-	JobID            string   `json:"job_id,omitempty"`
-	TaskID           string   `json:"task_id,omitempty"`
-	TaskField        string   `json:"task_field,omitempty"`
-	ProjectID        string   `json:"project_id,omitempty"`
-	Title            string   `json:"title,omitempty"`
-	Behavior         string   `json:"behavior,omitempty"`
-	Description      string   `json:"description,omitempty"`
-	ExitCode         int      `json:"exit_code,omitempty"`
-	Output           string   `json:"output,omitempty"`
-	Payload          []byte   `json:"payload,omitempty"`
-	Ref              string   `json:"ref,omitempty"`
-	ParentID         string   `json:"parent_id,omitempty"`
-	DependsOn        []string `json:"depends_on,omitempty"`
-	DependsOnPayload string   `json:"depends_on_payload,omitempty"`
-	AutoStart        bool     `json:"auto_start,omitempty"`
+	Op               BoidOp        `json:"op"`
+	JobID            string        `json:"job_id,omitempty"`
+	TaskID           string        `json:"task_id,omitempty"`
+	TaskField        string        `json:"task_field,omitempty"`
+	ProjectID        string        `json:"project_id,omitempty"`
+	Title            string        `json:"title,omitempty"`
+	Behavior         string        `json:"behavior,omitempty"`
+	BehaviorSpec     *BehaviorSpec `json:"behavior_spec,omitempty"`
+	Description      string        `json:"description,omitempty"`
+	ExitCode         int           `json:"exit_code,omitempty"`
+	Output           string        `json:"output,omitempty"`
+	Payload          []byte        `json:"payload,omitempty"`
+	Ref              string        `json:"ref,omitempty"`
+	ParentID         string        `json:"parent_id,omitempty"`
+	DependsOn        []string      `json:"depends_on,omitempty"`
+	DependsOnPayload string        `json:"depends_on_payload,omitempty"`
+	AutoStart        bool          `json:"auto_start,omitempty"`
 }
 
 type TokenContext struct {

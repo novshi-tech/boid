@@ -171,17 +171,18 @@ func runTaskList(cmd *cobra.Command, args []string) error {
 
 // taskCreateSpec is the YAML schema for task create input.
 type taskCreateSpec struct {
-	ID               string         `yaml:"id,omitempty"`
-	ProjectID        string         `yaml:"project_id"`
-	Title            string         `yaml:"title"`
-	Description      string         `yaml:"description,omitempty"`
-	Behavior         string         `yaml:"behavior"`
-	AutoStart        bool           `yaml:"auto_start,omitempty"`
-	Payload          map[string]any `yaml:"payload,omitempty"`
-	DependsOn        []string       `yaml:"depends_on,omitempty"`
-	DependsOnPayload string         `yaml:"depends_on_payload,omitempty"`
-	Ref              string         `yaml:"ref,omitempty"`
-	ParentID         string         `yaml:"parent_id,omitempty"`
+	ID               string                     `yaml:"id,omitempty"`
+	ProjectID        string                     `yaml:"project_id"`
+	Title            string                     `yaml:"title"`
+	Description      string                     `yaml:"description,omitempty"`
+	Behavior         string                     `yaml:"behavior,omitempty"`
+	BehaviorSpec     *orchestrator.BehaviorSpec `yaml:"behavior_spec,omitempty"`
+	AutoStart        bool                       `yaml:"auto_start,omitempty"`
+	Payload          map[string]any             `yaml:"payload,omitempty"`
+	DependsOn        []string                   `yaml:"depends_on,omitempty"`
+	DependsOnPayload string                     `yaml:"depends_on_payload,omitempty"`
+	Ref              string                     `yaml:"ref,omitempty"`
+	ParentID         string                     `yaml:"parent_id,omitempty"`
 }
 
 func runTaskCreate(cmd *cobra.Command, args []string) error {
@@ -209,14 +210,25 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("parse YAML: %w", err)
 	}
 
-	if spec.ProjectID == "" || spec.Title == "" || spec.Behavior == "" {
-		return fmt.Errorf("YAML must include project_id, title, and behavior")
+	if spec.ProjectID == "" || spec.Title == "" {
+		return fmt.Errorf("YAML must include project_id and title")
+	}
+	if spec.Behavior == "" && spec.BehaviorSpec == nil {
+		return fmt.Errorf("YAML must include either behavior or behavior_spec")
+	}
+	if spec.Behavior != "" && spec.BehaviorSpec != nil {
+		return fmt.Errorf("YAML must not include both behavior and behavior_spec")
 	}
 
 	req := map[string]any{
 		"project_id": spec.ProjectID,
 		"title":      spec.Title,
-		"behavior":   spec.Behavior,
+	}
+	if spec.Behavior != "" {
+		req["behavior"] = spec.Behavior
+	}
+	if spec.BehaviorSpec != nil {
+		req["behavior_spec"] = spec.BehaviorSpec
 	}
 	if spec.ID != "" {
 		req["id"] = spec.ID

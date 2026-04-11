@@ -35,26 +35,27 @@ type UpdateTaskRequest struct {
 }
 
 type CreateTaskRequest struct {
-	ID           string                  `json:"id,omitempty"`
-	ProjectID    string                  `json:"project_id"`
-	Title        string                  `json:"title"`
-	Description  string                  `json:"description,omitempty"`
-	Behavior     string                  `json:"behavior"`
-	RemoteID     string                  `json:"remote_id,omitempty"`
-	DataSourceID string                  `json:"datasource_id,omitempty"`
-	Payload      json.RawMessage         `json:"payload,omitempty"`
-	AutoStart    bool                    `json:"auto_start,omitempty"`
-	Transition   *string                 `json:"transition,omitempty"`
-	Traits       []string                `json:"traits,omitempty"`
-	Readonly     *bool                   `json:"readonly,omitempty"`
-	Worktree     *bool                   `json:"worktree,omitempty"`
-	BranchPrefix *string                 `json:"branch_prefix,omitempty"`
-	BaseBranch   *string                 `json:"base_branch,omitempty"`
-	DependsOn        []string `json:"depends_on,omitempty"`
-	DependsOnPayload string   `json:"depends_on_payload,omitempty"`
-	Ref              string   `json:"ref,omitempty"`
-	ParentID     string                  `json:"parent_id,omitempty"`
-	Ephemeral    *bool                   `json:"ephemeral,omitempty"`
+	ID           string                     `json:"id,omitempty"`
+	ProjectID    string                     `json:"project_id"`
+	Title        string                     `json:"title"`
+	Description  string                     `json:"description,omitempty"`
+	Behavior     string                     `json:"behavior,omitempty"`
+	BehaviorSpec *orchestrator.BehaviorSpec `json:"behavior_spec,omitempty"`
+	RemoteID     string                     `json:"remote_id,omitempty"`
+	DataSourceID string                     `json:"datasource_id,omitempty"`
+	Payload      json.RawMessage            `json:"payload,omitempty"`
+	AutoStart    bool                       `json:"auto_start,omitempty"`
+	Transition   *string                    `json:"transition,omitempty"`
+	Traits       []string                   `json:"traits,omitempty"`
+	Readonly     *bool                      `json:"readonly,omitempty"`
+	Worktree     *bool                      `json:"worktree,omitempty"`
+	BranchPrefix *string                    `json:"branch_prefix,omitempty"`
+	BaseBranch   *string                    `json:"base_branch,omitempty"`
+	DependsOn        []string               `json:"depends_on,omitempty"`
+	DependsOnPayload string                 `json:"depends_on_payload,omitempty"`
+	Ref              string                 `json:"ref,omitempty"`
+	ParentID     string                     `json:"parent_id,omitempty"`
+	Ephemeral    *bool                      `json:"ephemeral,omitempty"`
 }
 
 func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -63,8 +64,8 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.ProjectID == "" || req.Title == "" || req.Behavior == "" {
-		writeError(w, http.StatusBadRequest, "project_id, title, and behavior are required")
+	if req.ProjectID == "" || req.Title == "" {
+		writeError(w, http.StatusBadRequest, "project_id and title are required")
 		return
 	}
 

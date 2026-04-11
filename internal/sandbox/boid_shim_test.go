@@ -307,3 +307,110 @@ func TestRunBoidShim_TaskUpdateRequiresTaskID(t *testing.T) {
 		t.Fatal("expected error when task id is missing")
 	}
 }
+
+func TestRunBoidShim_TaskCreate_BehaviorSpec(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.Remove(sockPath)
+	})
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	specPath := filepath.Join(dir, "task.yaml")
+	specYAML := `project_id: proj-1
+title: kit task
+behavior_spec:
+  name: kit/conflict-fix
+  transition: one-shot-feedback
+  traits:
+    - instructions
+  worktree: true
+`
+	if err := os.WriteFile(specPath, []byte(specYAML), 0o644); err != nil {
+		t.Fatalf("write task spec: %v", err)
+	}
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-spec")
+
+	resp, err := sandbox.RunBoidShim([]string{"task", "create", "-f", specPath})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpTaskCreate {
+		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskCreate)
+	}
+	if req.Boid.Behavior != "" {
+		t.Errorf("behavior = %q, want empty", req.Boid.Behavior)
+	}
+	if req.Boid.BehaviorSpec == nil {
+		t.Fatal("behavior_spec is nil, want non-nil")
+	}
+	if req.Boid.BehaviorSpec.Name != "kit/conflict-fix" {
+		t.Errorf("behavior_spec.name = %q, want %q", req.Boid.BehaviorSpec.Name, "kit/conflict-fix")
+	}
+	if req.Boid.BehaviorSpec.Transition != "one-shot-feedback" {
+		t.Errorf("behavior_spec.transition = %q, want %q", req.Boid.BehaviorSpec.Transition, "one-shot-feedback")
+	}
+	if !req.Boid.BehaviorSpec.Worktree {
+		t.Error("behavior_spec.worktree = false, want true")
+	}
+}
+
+func TestRunBoidShim_TaskCreate_NeitherBehaviorNorSpec(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "task.yaml")
+	specYAML := "project_id: proj-1\ntitle: bad task\n"
+	if err := os.WriteFile(specPath, []byte(specYAML), 0o644); err != nil {
+		t.Fatalf("write task spec: %v", err)
+	}
+
+	if _, err := sandbox.RunBoidShim([]string{"task", "create", "-f", specPath}); err == nil {
+		t.Fatal("expected error when neither behavior nor behavior_spec is set")
+	}
+}
+
+func TestRunBoidShim_TaskCreate_BothBehaviorAndSpec(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "task.yaml")
+	specYAML := "project_id: proj-1\ntitle: bad task\nbehavior: dev\nbehavior_spec:\n  name: kit/x\n  transition: one-shot\n"
+	if err := os.WriteFile(specPath, []byte(specYAML), 0o644); err != nil {
+		t.Fatalf("write task spec: %v", err)
+	}
+
+	if _, err := sandbox.RunBoidShim([]string{"task", "create", "-f", specPath}); err == nil {
+		t.Fatal("expected error when both behavior and behavior_spec are set")
+	}
+}

@@ -137,10 +137,20 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 	}
 
 	var spec struct {
-		ProjectID        string         `yaml:"project_id"`
-		Title            string         `yaml:"title"`
-		Description      string         `yaml:"description"`
-		Behavior         string         `yaml:"behavior"`
+		ProjectID    string         `yaml:"project_id"`
+		Title        string         `yaml:"title"`
+		Description  string         `yaml:"description"`
+		Behavior     string         `yaml:"behavior"`
+		BehaviorSpec *struct {
+			Name           string         `yaml:"name"`
+			Transition     string         `yaml:"transition"`
+			Traits         []string       `yaml:"traits,omitempty"`
+			Readonly       bool           `yaml:"readonly,omitempty"`
+			Worktree       bool           `yaml:"worktree,omitempty"`
+			BranchPrefix   string         `yaml:"branch_prefix,omitempty"`
+			BaseBranch     string         `yaml:"base_branch,omitempty"`
+			DefaultPayload map[string]any `yaml:"default_payload,omitempty"`
+		} `yaml:"behavior_spec"`
 		Payload          map[string]any `yaml:"payload"`
 		Ref              string         `yaml:"ref"`
 		ParentID         string         `yaml:"parent_id"`
@@ -155,8 +165,11 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 	if spec.Title == "" {
 		return nil, fmt.Errorf("boid shim: task spec must include title")
 	}
-	if spec.Behavior == "" {
-		return nil, fmt.Errorf("boid shim: task spec must include behavior")
+	if spec.Behavior == "" && spec.BehaviorSpec == nil {
+		return nil, fmt.Errorf("boid shim: task spec must include either behavior or behavior_spec")
+	}
+	if spec.Behavior != "" && spec.BehaviorSpec != nil {
+		return nil, fmt.Errorf("boid shim: task spec must not include both behavior and behavior_spec")
 	}
 
 	req := &BoidRequest{
@@ -170,6 +183,25 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 		DependsOn:        spec.DependsOn,
 		DependsOnPayload: spec.DependsOnPayload,
 		AutoStart:        spec.AutoStart,
+	}
+	if spec.BehaviorSpec != nil {
+		bs := &BehaviorSpec{
+			Name:         spec.BehaviorSpec.Name,
+			Transition:   spec.BehaviorSpec.Transition,
+			Traits:       spec.BehaviorSpec.Traits,
+			Readonly:     spec.BehaviorSpec.Readonly,
+			Worktree:     spec.BehaviorSpec.Worktree,
+			BranchPrefix: spec.BehaviorSpec.BranchPrefix,
+			BaseBranch:   spec.BehaviorSpec.BaseBranch,
+		}
+		if spec.BehaviorSpec.DefaultPayload != nil {
+			dpJSON, err := json.Marshal(spec.BehaviorSpec.DefaultPayload)
+			if err != nil {
+				return nil, fmt.Errorf("boid shim: encode behavior_spec.default_payload: %w", err)
+			}
+			bs.DefaultPayload = dpJSON
+		}
+		req.BehaviorSpec = bs
 	}
 	if spec.Payload != nil {
 		payloadJSON, err := json.Marshal(spec.Payload)
