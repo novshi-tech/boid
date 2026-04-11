@@ -389,4 +389,40 @@ type KitMeta struct {
 	HooksDir           string                  `yaml:"-"`
 	GatesDir           string                  `yaml:"-"`
 	ScriptsDir         string                  `yaml:"-"`
+
+	// Init-time metadata fields. Not merged into the runtime spec by MergeKitMeta;
+	// these are referenced only during `boid init`.
+	Meta     *KitMetaInfo `yaml:"meta,omitempty"`
+	Detect   *KitDetect   `yaml:"detect,omitempty"`
+	Requires *KitRequires `yaml:"requires,omitempty"`
+	Scaffold *KitScaffold `yaml:"scaffold,omitempty"`
+}
+
+// KitMetaInfo holds human-readable metadata for a kit.
+type KitMetaInfo struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	Category    string `yaml:"category"` // language / vcs / ci / agent / workflow / utility
+}
+
+// KitDetect defines filesystem signals used to detect kit applicability.
+type KitDetect struct {
+	// Files uses OR semantics: the kit is applicable when any listed path exists.
+	Files []string `yaml:"files"`
+}
+
+// KitRequires declares host commands that must be present in PATH.
+type KitRequires struct {
+	Commands []string `yaml:"commands"`
+}
+
+// KitScaffold declares scaffold templates bundled with this kit.
+type KitScaffold struct {
+	TaskBehaviors *ScaffoldTemplate `yaml:"task_behaviors,omitempty"`
+}
+
+// ScaffoldTemplate points to a template file relative to the kit directory.
+type ScaffoldTemplate struct {
+	Description string `yaml:"description"`
+	Template    string `yaml:"template"`
 }

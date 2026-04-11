@@ -1561,3 +1561,81 @@ host_commands:
 		}
 	})
 }
+
+func TestReadKitMeta_NewFields(t *testing.T) {
+	t.Run("parses meta, detect, requires, scaffold", func(t *testing.T) {
+		dir := t.TempDir()
+		writeKitYAML(t, dir, `
+meta:
+  name: Go Kit
+  description: Go language support
+  category: language
+detect:
+  files:
+    - go.mod
+    - go.sum
+requires:
+  commands:
+    - go
+scaffold:
+  task_behaviors:
+    description: Default task behaviors for Go projects
+    template: scaffold/task_behaviors.yaml
+`)
+		meta, err := projectspec.ReadKitMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadKitMeta: %v", err)
+		}
+		if meta.Meta == nil {
+			t.Fatal("expected Meta to be non-nil")
+		}
+		if meta.Meta.Name != "Go Kit" || meta.Meta.Category != "language" {
+			t.Errorf("unexpected Meta: %+v", meta.Meta)
+		}
+		if meta.Detect == nil || len(meta.Detect.Files) != 2 || meta.Detect.Files[0] != "go.mod" {
+			t.Errorf("unexpected Detect: %+v", meta.Detect)
+		}
+		if meta.Requires == nil || len(meta.Requires.Commands) != 1 || meta.Requires.Commands[0] != "go" {
+			t.Errorf("unexpected Requires: %+v", meta.Requires)
+		}
+		if meta.Scaffold == nil || meta.Scaffold.TaskBehaviors == nil {
+			t.Fatal("expected Scaffold.TaskBehaviors to be non-nil")
+		}
+		if meta.Scaffold.TaskBehaviors.Template != "scaffold/task_behaviors.yaml" {
+			t.Errorf("unexpected Template: %q", meta.Scaffold.TaskBehaviors.Template)
+		}
+	})
+
+	t.Run("backward compatible: missing new fields parse fine", func(t *testing.T) {
+		dir := t.TempDir()
+		writeKitYAML(t, dir, "env:\n  GOPATH: /home/user/go\n")
+		meta, err := projectspec.ReadKitMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadKitMeta: %v", err)
+		}
+		if meta.Meta != nil || meta.Detect != nil || meta.Requires != nil || meta.Scaffold != nil {
+			t.Errorf("expected nil new fields, got Meta=%v Detect=%v Requires=%v Scaffold=%v",
+				meta.Meta, meta.Detect, meta.Requires, meta.Scaffold)
+		}
+		if meta.Env["GOPATH"] != "/home/user/go" {
+			t.Errorf("unexpected env: %v", meta.Env)
+		}
+	})
+
+	t.Run("new fields not merged into runtime spec", func(t *testing.T) {
+		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
+		kitMeta := &projectspec.KitMeta{
+			Env:      map[string]string{"A": "b"},
+			Meta:     &projectspec.KitMetaInfo{Name: "My Kit", Category: "language"},
+			Detect:   &projectspec.KitDetect{Files: []string{"go.mod"}},
+			Requires: &projectspec.KitRequires{Commands: []string{"go"}},
+		}
+		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{kitMeta}, []string{"my-kit"})
+		if result.Env["A"] != "b" {
+			t.Errorf("expected env A=b after merge, got %v", result.Env)
+		}
+		if result.ID != "proj" {
+			t.Errorf("unexpected ID: %q", result.ID)
+		}
+	})
+}
