@@ -222,6 +222,10 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 		}
 		// 更新対象 task の project_id 検証は boid_executor 側で行う
 		// (broker は TaskStore を持たないため、ここでは ID の有無のみチェック)
+	case BoidOpTaskReopen:
+		if boidReq.TaskID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task reopen requires a task id"}
+		}
 	case BoidOpTaskImport:
 		if len(boidReq.ImportTasks) == 0 {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task import requires at least one task"}

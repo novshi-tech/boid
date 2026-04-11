@@ -39,6 +39,7 @@ func boidPolicy(role Role) sandbox.BuiltinPolicy {
 			string(sandbox.BoidOpTaskCreate): {},
 			string(sandbox.BoidOpTaskUpdate): {},
 			string(sandbox.BoidOpTaskImport): {},
+			string(sandbox.BoidOpTaskReopen): {},
 		}}
 	}
 }

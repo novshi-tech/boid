@@ -55,6 +55,8 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 			return parseBoidTaskUpdate(args[2:])
 		case "import":
 			return parseBoidTaskImport(args[2:])
+		case "reopen":
+			return parseBoidTaskReopen(args[2:])
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid task subcommand %q", args[1])
 		}
@@ -326,6 +328,13 @@ func readFlagContent(source string) ([]byte, error) {
 		return io.ReadAll(os.Stdin)
 	}
 	return os.ReadFile(source)
+}
+
+func parseBoidTaskReopen(args []string) (*BoidRequest, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("boid shim: task reopen requires a task id")
+	}
+	return &BoidRequest{Op: BoidOpTaskReopen, TaskID: args[0]}, nil
 }
 
 func parseBoidTaskImport(args []string) (*BoidRequest, error) {

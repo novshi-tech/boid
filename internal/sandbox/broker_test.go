@@ -663,6 +663,74 @@ func TestBroker_BoidBuiltinRequiresTypedRequest(t *testing.T) {
 	}
 }
 
+// hook role は BoidOpTaskReopen を実行できない（状態遷移は hook から禁止）。
+func TestBroker_BoidBuiltinPolicy_HookRoleRejectsReopen(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	hookCtx := sandbox.TokenContext{
+		JobID:      "j-hook",
+		TaskID:     "t-hook",
+		ProjectID:  "p1",
+		Role:       string(projectspec.RoleHook),
+		ProjectDir: projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleHook, []string{"boid"}), hookCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:     sandbox.BoidOpTaskReopen,
+			TaskID: "target-task",
+		},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "not allowed") {
+		t.Fatalf("hook task reopen should be rejected, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not receive hook reopen, calls=%d", len(exec.calls))
+	}
+}
+
+// gate role は BoidOpTaskReopen を実行できる（detect-conflicts kit が done → reworking に戻すユースケース）。
+func TestBroker_BoidBuiltinPolicy_GateRoleAllowsReopen(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	gateCtx := sandbox.TokenContext{
+		JobID:      "j-gate",
+		TaskID:     "t-gate",
+		ProjectID:  "p1",
+		Role:       string(projectspec.RoleGate),
+		ProjectDir: projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"boid"}), gateCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:     sandbox.BoidOpTaskReopen,
+			TaskID: "target-task",
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("gate task reopen exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor calls = %d, want 1", len(exec.calls))
+	}
+	if exec.calls[0].Op != sandbox.BoidOpTaskReopen {
+		t.Fatalf("op = %q, want %q", exec.calls[0].Op, sandbox.BoidOpTaskReopen)
+	}
+	if exec.calls[0].TaskID != "target-task" {
+		t.Fatalf("task id = %q, want target-task", exec.calls[0].TaskID)
+	}
+}
+
 // --- task import broker tests ---
 
 func TestBroker_BoidTaskImport_GateAllowed(t *testing.T) {

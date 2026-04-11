@@ -618,6 +618,64 @@ func TestParseBoidTaskImport_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestRunBoidShim_TaskReopen_SendsTypedRequest(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.Remove(sockPath)
+	})
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-reopen")
+
+	resp, err := sandbox.RunBoidShim([]string{"task", "reopen", "task-abc"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpTaskReopen {
+		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskReopen)
+	}
+	if req.Boid.TaskID != "task-abc" {
+		t.Fatalf("task id = %q, want task-abc", req.Boid.TaskID)
+	}
+}
+
+func TestRunBoidShim_TaskReopen_RequiresTaskID(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+
+	if _, err := sandbox.RunBoidShim([]string{"task", "reopen"}); err == nil {
+		t.Fatal("expected error when task id is missing")
+	}
+}
+
 func TestParseBoidTaskImport_EmptyBatch(t *testing.T) {
 	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
 

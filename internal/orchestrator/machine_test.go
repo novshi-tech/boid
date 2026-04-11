@@ -497,6 +497,28 @@ func TestGetMachine_Unknown(t *testing.T) {
 	}
 }
 
+func TestOneShotFeedbackMachine_Reopen_DoneToReworking(t *testing.T) {
+	sm := orchestrator.OneShotFeedbackMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusDone}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "reopen"})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusReworking {
+		t.Fatalf("expected reworking, got %s", next.Status)
+	}
+}
+
+func TestOneShotFeedbackMachine_Reopen_OnlyInFeedbackMachine(t *testing.T) {
+	// reopen は OneShotFeedbackMachine にだけ存在し、OneShotMachine には存在しない
+	oneShot := orchestrator.OneShotMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusDone}
+	_, err := oneShot.Apply(task, &orchestrator.Action{Type: "reopen"})
+	if err == nil {
+		t.Fatal("OneShotMachine should not support reopen action")
+	}
+}
+
 // TestJobCompletedNotAnAction verifies that job_completed does not trigger a
 // state transition in any machine. State transitions driven by hook/gate job
 // completion must happen exclusively through DispatchAndAdvance (condition-based
