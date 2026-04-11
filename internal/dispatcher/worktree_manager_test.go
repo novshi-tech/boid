@@ -121,7 +121,7 @@ func TestManager_CreateAndRemove(t *testing.T) {
 		t.Error("Get should return the created worktree")
 	}
 
-	// Remove (done mode — keep branch)
+	// Remove 低レベル API: deleteBranch=false の場合
 	if err := mgr.Remove(repo, "task-abcd1234-5678", false); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
@@ -305,6 +305,111 @@ func TestResolveBase_FetchFailureFallback(t *testing.T) {
 		t.Errorf("expected main after fallback, got %q", w.BaseBranch)
 	}
 	mgr.Remove(local, "task-rb000005-0001", true)
+}
+
+func TestManager_CleanupForTask_DoneDeletesBranch(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-cfd1', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-cfd10001-0001', 'proj-cfd1', 'done task', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	w, err := mgr.Create(repo, "proj-cfd1", "task-cfd10001-0001", "boid/", "HEAD")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := mgr.CleanupForTask("task-cfd10001-0001", repo, "done"); err != nil {
+		t.Fatalf("CleanupForTask done: %v", err)
+	}
+
+	// worktree ディレクトリが削除されていること
+	if _, err := os.Stat(w.Path); !os.IsNotExist(err) {
+		t.Error("worktree dir should be removed after done cleanup")
+	}
+
+	// ブランチが削除されていること
+	out, err := exec.Command(gitBin, "-C", repo, "branch", "--list", w.Branch).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git branch --list: %v", err)
+	}
+	if len(out) > 0 {
+		t.Errorf("branch should be deleted after done cleanup, got: %q", string(out))
+	}
+}
+
+func TestManager_CleanupForTask_AbortedDeletesBranch(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-cfa1', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-cfa10001-0001', 'proj-cfa1', 'aborted task', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	w, err := mgr.Create(repo, "proj-cfa1", "task-cfa10001-0001", "boid/", "HEAD")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := mgr.CleanupForTask("task-cfa10001-0001", repo, "aborted"); err != nil {
+		t.Fatalf("CleanupForTask aborted: %v", err)
+	}
+
+	// worktree ディレクトリが削除されていること
+	if _, err := os.Stat(w.Path); !os.IsNotExist(err) {
+		t.Error("worktree dir should be removed after aborted cleanup")
+	}
+
+	// ブランチが削除されていること
+	out, err := exec.Command(gitBin, "-C", repo, "branch", "--list", w.Branch).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git branch --list: %v", err)
+	}
+	if len(out) > 0 {
+		t.Errorf("branch should be deleted after aborted cleanup, got: %q", string(out))
+	}
+}
+
+func TestManager_CleanupForTask_PendingNoop(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-cfp1', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-cfp10001-0001', 'proj-cfp1', 'executing task', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	w, err := mgr.Create(repo, "proj-cfp1", "task-cfp10001-0001", "boid/", "HEAD")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := mgr.CleanupForTask("task-cfp10001-0001", repo, "executing"); err != nil {
+		t.Fatalf("CleanupForTask executing: %v", err)
+	}
+
+	// worktree ディレクトリが残っていること
+	if _, err := os.Stat(w.Path); err != nil {
+		t.Errorf("worktree dir should still exist for non-terminal status: %v", err)
+	}
+
+	// ブランチが残っていること
+	out, err := exec.Command(gitBin, "-C", repo, "branch", "--list", w.Branch).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git branch --list: %v", err)
+	}
+	if len(out) == 0 {
+		t.Error("branch should still exist for non-terminal status")
+	}
+
+	// クリーンアップ
+	mgr.Remove(repo, "task-cfp10001-0001", true)
 }
 
 func TestManager_DefaultBranchPrefix(t *testing.T) {

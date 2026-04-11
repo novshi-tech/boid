@@ -273,6 +273,63 @@ func TestGCTasks_WorktreeDiskCleanup(t *testing.T) {
 	}
 }
 
+func TestGCTasks_WorktreeDiskCleanup_DoneDeletesBranch(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	repo := initGitRepoForGC(t)
+	wtRoot := t.TempDir()
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-gcd1", WorkDir: repo}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	doneTask := &orchestrator.Task{
+		ProjectID: "proj-gcd1",
+		Title:     "Done Task Branch Delete",
+		Behavior:  "dev",
+		Status:    orchestrator.TaskStatusDone,
+	}
+	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: d.Conn, GitBin: gcTestGitBin}
+	w, err := mgr.Create(repo, "proj-gcd1", doneTask.ID, "boid/", "HEAD")
+	if err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+
+	resolveProjectDir := func(projectID string) (string, error) {
+		proj, err := orchestrator.GetProject(d.Conn, projectID)
+		if err != nil {
+			return "", err
+		}
+		return proj.WorkDir, nil
+	}
+	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, resolveProjectDir, gcTestGitBin)
+
+	result, err := gcStore.GC(0, false, nil)
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if result.Tasks != 1 {
+		t.Fatalf("expected 1 deleted task, got %d", result.Tasks)
+	}
+
+	// worktree ディレクトリが削除されていることを確認
+	if _, err := os.Stat(w.Path); !os.IsNotExist(err) {
+		t.Errorf("worktree dir should be removed after GC, err: %v", err)
+	}
+
+	// ブランチが削除されていることを確認
+	out, err := exec.Command(gcTestGitBin, "-C", repo, "branch", "--list", w.Branch).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git branch --list: %v", err)
+	}
+	if len(out) > 0 {
+		t.Errorf("branch should be deleted after GC of done task, got: %q", string(out))
+	}
+}
+
 func TestGCTasks_WorktreeDiskCleanup_DryRun(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	repo := initGitRepoForGC(t)

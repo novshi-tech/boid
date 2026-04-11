@@ -146,8 +146,7 @@ func (m *WorktreeManager) CleanupForTask(taskID, projectDir, newStatus string) e
 		return nil
 	}
 
-	deleteBranch := newStatus == "aborted"
-	return m.Remove(projectDir, taskID, deleteBranch)
+	return m.Remove(projectDir, taskID, true)
 }
 
 func (m *WorktreeManager) CleanOrphaned(resolve func(taskID, projectID string) (string, string, error)) error {
@@ -166,8 +165,7 @@ func (m *WorktreeManager) CleanOrphaned(resolve func(taskID, projectID string) (
 			continue
 		}
 
-		deleteBranch := status == "aborted"
-		if err := m.Remove(projectDir, w.TaskID, deleteBranch); err != nil {
+		if err := m.Remove(projectDir, w.TaskID, true); err != nil {
 			slog.Warn("orphan cleanup failed", "task_id", w.TaskID, "error", err)
 		}
 	}
