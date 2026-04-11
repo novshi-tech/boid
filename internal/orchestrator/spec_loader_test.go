@@ -39,7 +39,6 @@ name: Test Project
 task_behaviors:
   dev:
     name: development
-    transition: one-shot
     traits:
       - artifactompt
 hooks:
@@ -571,7 +570,6 @@ env:
 task_behaviors:
   dev:
     name: development
-    transition: one-shot
     traits: [prompt]
 `)
 
@@ -705,7 +703,7 @@ func TestMergeKitMeta(t *testing.T) {
 			Hooks:              []projectspec.Hook{{ID: "kit-hook", On: projectspec.OnValues{"verifying"}, ScriptPath: "/kit/hooks/kit-hook.sh"}},
 			HooksDir:           "/kit/hooks",
 			Env:                map[string]string{"GOPATH": "/home/go", "PROJECT_VAR": "kit-overridden"},
-			TaskBehaviors:      map[string]projectspec.TaskBehavior{"dev": {Name: "dev", Transition: "one-shot"}},
+			TaskBehaviors:      map[string]projectspec.TaskBehavior{"dev": {Name: "dev"}},
 		}
 
 		result := mustMergeKitMeta(t,base, []*projectspec.KitMeta{meta}, []string{"mykit"})
@@ -1425,9 +1423,6 @@ func TestBuildScriptTask(t *testing.T) {
 		if task.Title != "script: github-pr/detect-conflicts" {
 			t.Errorf("Title = %q, want 'script: github-pr/detect-conflicts'", task.Title)
 		}
-		if task.Transition != "one-shot" {
-			t.Errorf("Transition = %q, want one-shot", task.Transition)
-		}
 		if !task.Readonly || !task.Ephemeral || !task.AutoStart {
 			t.Errorf("Readonly=%v Ephemeral=%v AutoStart=%v, all want true", task.Readonly, task.Ephemeral, task.AutoStart)
 		}
@@ -1634,7 +1629,6 @@ scaffold:
 task_behaviors:
   dev:
     name: development
-    transition: one-shot
     traits: []
 `)
 		meta, err := projectspec.ReadKitMeta(dir)

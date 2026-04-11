@@ -52,6 +52,21 @@ func AnyFindingUnresolvedForState(sourceState string) TransitionCondition {
 	}
 }
 
+// NoUnresolvedFindings returns true when no verification findings are unresolved
+// across all source_states. Returns true when there are no verification entries at all.
+func NoUnresolvedFindings() TransitionCondition {
+	return func(payload json.RawMessage) bool {
+		for _, entry := range verificationSubkeys(payload) {
+			for _, f := range entry.Findings {
+				if f.Status != "resolved" {
+					return false
+				}
+			}
+		}
+		return true
+	}
+}
+
 // TasksReady returns true if the "tasks" trait is a non-empty array.
 func TasksReady(payload json.RawMessage) bool {
 	var m map[string]json.RawMessage

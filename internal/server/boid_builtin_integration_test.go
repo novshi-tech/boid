@@ -146,7 +146,7 @@ func writeBoidProject(t *testing.T, id, name string) string {
 		t.Fatalf("mkdir hooks: %v", err)
 	}
 
-	projectYAML := "id: " + id + "\nname: " + name + "\ntask_behaviors:\n  planning:\n    name: Planning\n    transition: standard\n  dev:\n    name: Development\n    transition: standard\n"
+	projectYAML := "id: " + id + "\nname: " + name + "\ntask_behaviors:\n  planning:\n    name: Planning\n  dev:\n    name: Development\n"
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
 		t.Fatalf("write project yaml: %v", err)
 	}

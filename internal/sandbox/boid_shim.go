@@ -148,7 +148,6 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 		Behavior     string         `yaml:"behavior"`
 		BehaviorSpec *struct {
 			Name           string         `yaml:"name"`
-			Transition     string         `yaml:"transition"`
 			Traits         []string       `yaml:"traits,omitempty"`
 			Readonly       bool           `yaml:"readonly,omitempty"`
 			Worktree       bool           `yaml:"worktree,omitempty"`
@@ -192,7 +191,6 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 	if spec.BehaviorSpec != nil {
 		bs := &BehaviorSpec{
 			Name:         spec.BehaviorSpec.Name,
-			Transition:   spec.BehaviorSpec.Transition,
 			Traits:       spec.BehaviorSpec.Traits,
 			Readonly:     spec.BehaviorSpec.Readonly,
 			Worktree:     spec.BehaviorSpec.Worktree,

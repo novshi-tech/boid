@@ -5,6 +5,5 @@ package orchestrator
 // or when the task status is verifying or in_review.
 func IsReadonly(task *Task) bool {
 	return task.Readonly ||
-		task.Status == TaskStatusVerifying ||
-		task.Status == TaskStatusInReview
+		task.Status == TaskStatusVerifying
 }

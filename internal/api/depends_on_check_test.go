@@ -291,8 +291,7 @@ func TestTaskWorkflowServiceApplyAction_Start_AllDepsDone_Success(t *testing.T) 
 	svc := &TaskWorkflowService{
 		Tasks:    store,
 		Tx:       recordingTransactor{store: txStore},
-		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {Transition: "one-shot"}}}},
-		Resolver: stubResolver{sm: orchestrator.OneShotMachine()},
+		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {}}}},
 	}
 
 	result, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
@@ -328,8 +327,7 @@ func TestTaskWorkflowServiceApplyAction_Start_DepNotDone_Error(t *testing.T) {
 	svc := &TaskWorkflowService{
 		Tasks:    store,
 		Tx:       recordingTransactor{store: txStore},
-		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {Transition: "one-shot"}}}},
-		Resolver: stubResolver{sm: orchestrator.OneShotMachine()},
+		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {}}}},
 	}
 
 	_, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
@@ -362,8 +360,7 @@ func TestTaskWorkflowServiceApplyAction_Start_ErrorMessageContainsDependencyID(t
 	svc := &TaskWorkflowService{
 		Tasks:    store,
 		Tx:       recordingTransactor{store: txStore},
-		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {Transition: "one-shot"}}}},
-		Resolver: stubResolver{sm: orchestrator.OneShotMachine()},
+		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {}}}},
 	}
 
 	_, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
@@ -394,8 +391,7 @@ func TestTaskWorkflowServiceApplyAction_Start_NoDeps_NotBlocked(t *testing.T) {
 	svc := &TaskWorkflowService{
 		Tasks:    store,
 		Tx:       recordingTransactor{store: txStore},
-		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {Transition: "one-shot"}}}},
-		Resolver: stubResolver{sm: orchestrator.OneShotMachine()},
+		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {}}}},
 	}
 
 	result, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
@@ -433,8 +429,7 @@ func TestTaskWorkflowServiceApplyAction_Start_DepsOnPayload_Truthy_Success(t *te
 	svc := &TaskWorkflowService{
 		Tasks:    store,
 		Tx:       recordingTransactor{store: txStore},
-		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {Transition: "one-shot"}}}},
-		Resolver: stubResolver{sm: orchestrator.OneShotMachine()},
+		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {}}}},
 	}
 
 	result, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
@@ -472,8 +467,7 @@ func TestTaskWorkflowServiceApplyAction_Start_DepsOnPayload_Falsy_Error(t *testi
 	svc := &TaskWorkflowService{
 		Tasks:    store,
 		Tx:       recordingTransactor{store: txStore},
-		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {Transition: "one-shot"}}}},
-		Resolver: stubResolver{sm: orchestrator.OneShotMachine()},
+		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {}}}},
 	}
 
 	_, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
@@ -617,7 +611,7 @@ func TestPayloadGet_TopLevelKey_Regression(t *testing.T) {
 func TestTaskAppServiceCreateTask_DependsOnByUUID_Resolves(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
+			"dev": {},
 		},
 	}
 	dep := &orchestrator.Task{
@@ -654,7 +648,7 @@ func TestTaskAppServiceCreateTask_DependsOnByUUID_Resolves(t *testing.T) {
 func TestTaskAppServiceCreateTask_AutoStart_DepNotSatisfied_StaysPending(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {Transition: "one-shot"},
+			"dev": {},
 		},
 	}
 	dep := &orchestrator.Task{
