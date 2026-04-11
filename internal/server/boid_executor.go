@@ -137,6 +137,19 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 		return &sandbox.ExecResponse{
 			Stdout: fmt.Sprintf("task updated: %s (%s)\n", task.ID, task.Status),
 		}
+	case sandbox.BoidOpTaskReopen:
+		if e.workflow == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task reopen unavailable"}
+		}
+		if req.TaskID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task reopen requires a task id"}
+		}
+		if _, err := e.workflow.ApplyAction(context.Background(), req.TaskID, api.ApplyActionRequest{Type: "reopen"}); err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{
+			Stdout: fmt.Sprintf("task %s reopened\n", req.TaskID),
+		}
 	case sandbox.BoidOpTaskImport:
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task import unavailable"}

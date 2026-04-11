@@ -171,6 +171,7 @@ func OneShotFeedbackMachine() *StateMachine {
 			{FromStatus: "reworking", ToStatus: "reworking", Condition: AnyFindingUnresolvedForState("reworking")},
 			{Action: "done", FromStatus: "executing", ToStatus: "done", Manual: true},
 			{Action: "done", FromStatus: "reworking", ToStatus: "done", Manual: true},
+			{Action: "reopen", FromStatus: "done", ToStatus: "reworking", Manual: true},
 			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},
 			{Action: "abort", FromStatus: "*", ToStatus: "aborted", Manual: true},
 		},

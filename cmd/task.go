@@ -81,6 +81,14 @@ var taskDuplicateCmd = &cobra.Command{
 	RunE:  runTaskDuplicate,
 }
 
+var taskReopenCmd = &cobra.Command{
+	Use:   "reopen <id>",
+	Short: "Return a done task to reworking",
+	Long:  "done 済みタスクを reworking に戻す。\n主な用途: detect-conflicts kit がコンフリクトを検出した PR を修正させる",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTaskReopen,
+}
+
 func init() {
 	taskListCmd.Flags().String("status", "", "Filter by status")
 	taskCreateCmd.Flags().StringP("file", "f", "", "YAML file to read task spec from (default: stdin)")
@@ -94,7 +102,7 @@ func init() {
 	taskUpdateCmd.Flags().String("description", "", "New description")
 	taskUpdateCmd.Flags().String("payload-file", "", "Payload file (YAML/JSON), - for stdin")
 	taskDuplicateCmd.Flags().Bool("auto-start", false, "Automatically start the duplicated task")
-	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd, taskDeleteCmd, taskUpdateCmd, taskImportCmd, taskDuplicateCmd)
+	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd, taskDeleteCmd, taskUpdateCmd, taskImportCmd, taskDuplicateCmd, taskReopenCmd)
 	rootCmd.AddCommand(taskCmd)
 }
 
@@ -395,6 +403,16 @@ func runTaskImport(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "error line %d (remote_id=%s): %s\n",
 			e.Line, e.RemoteID, e.Error)
 	}
+	return nil
+}
+
+func runTaskReopen(cmd *cobra.Command, args []string) error {
+	c := client.NewUnixClient(client.DefaultSocketPath())
+	result, err := c.ApplyAction(args[0], api.ApplyActionRequest{Type: "reopen"})
+	if err != nil {
+		return fmt.Errorf("reopen task: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "task reopened: %s (%s)\n", result.Task.ID, result.Task.Status)
 	return nil
 }
 

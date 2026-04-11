@@ -26,6 +26,7 @@ const (
 	BoidOpTaskGet    BoidOp = "task_get"
 	BoidOpTaskUpdate BoidOp = "task_update"
 	BoidOpTaskImport BoidOp = "task_import"
+	BoidOpTaskReopen BoidOp = "task.reopen"
 )
 
 // BehaviorSpec is the inline behavior specification carried in BoidRequest.
