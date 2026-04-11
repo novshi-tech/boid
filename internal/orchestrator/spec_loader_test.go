@@ -9,6 +9,15 @@ import (
 	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 )
 
+func mustMergeKitMeta(t *testing.T, base *projectspec.ProjectMeta, kits []*projectspec.KitMeta, consumers []string) *projectspec.ProjectMeta {
+	t.Helper()
+	result, err := projectspec.MergeKitMeta(base, kits, consumers)
+	if err != nil {
+		t.Fatalf("MergeKitMeta: unexpected error: %v", err)
+	}
+	return result
+}
+
 func writeKitYAML(t *testing.T, dir, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, "kit.yaml"), []byte(content), 0o644); err != nil {
@@ -676,7 +685,7 @@ func TestReadProjectMetaWithKits_BuiltinCommands(t *testing.T) {
 func TestMergeKitMeta(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project", Env: map[string]string{"KEY": "val"}}
-		result := projectspec.MergeKitMeta(base, nil, nil)
+		result := mustMergeKitMeta(t,base, nil, nil)
 		if result.Env["KEY"] != "val" {
 			t.Errorf("env KEY = %q, want val", result.Env["KEY"])
 		}
@@ -699,7 +708,7 @@ func TestMergeKitMeta(t *testing.T) {
 			TaskBehaviors:      map[string]projectspec.TaskBehavior{"dev": {Name: "dev", Transition: "one-shot"}},
 		}
 
-		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"mykit"})
+		result := mustMergeKitMeta(t,base, []*projectspec.KitMeta{meta}, []string{"mykit"})
 		if len(result.HostCommands) != 2 || len(result.AdditionalBindings) != 1 || len(result.Hooks) != 2 {
 			t.Fatalf("unexpected merge result: %+v", result)
 		}
@@ -717,9 +726,9 @@ func TestMergeKitMeta(t *testing.T) {
 	t.Run("multiple kits", func(t *testing.T) {
 		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project", Env: map[string]string{"PROJ": "yes"}}
 		m1 := &projectspec.KitMeta{Env: map[string]string{"A": "from-m1", "SHARED": "m1"}, HostCommands: projectspec.HostCommands{"go": {Path: "/usr/bin/go"}}}
-		m2 := &projectspec.KitMeta{Env: map[string]string{"B": "from-m2", "SHARED": "m2"}, HostCommands: projectspec.HostCommands{"go": {Path: "/usr/bin/go"}, "gh": {Path: "/usr/bin/gh"}}}
+		m2 := &projectspec.KitMeta{Env: map[string]string{"B": "from-m2", "SHARED": "m2"}, HostCommands: projectspec.HostCommands{"gh": {Path: "/usr/bin/gh"}}}
 
-		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{m1, m2}, []string{"kit-a", "kit-b"})
+		result := mustMergeKitMeta(t,base, []*projectspec.KitMeta{m1, m2}, []string{"kit-a", "kit-b"})
 		if result.Env["A"] != "from-m1" || result.Env["B"] != "from-m2" || result.Env["SHARED"] != "m2" || result.Env["PROJ"] != "yes" || len(result.HostCommands) != 2 {
 			t.Fatalf("unexpected merge result: %+v", result)
 		}
@@ -729,7 +738,7 @@ func TestMergeKitMeta(t *testing.T) {
 		base := &projectspec.ProjectMeta{ID: "proj", Name: "Project", Hooks: []projectspec.Hook{{ID: "build", On: projectspec.OnValues{"executing"}, ScriptPath: "/proj/hooks/build.sh"}}}
 		meta := &projectspec.KitMeta{Hooks: []projectspec.Hook{{ID: "build", On: projectspec.OnValues{"executing"}, ScriptPath: "/kit/hooks/build.sh"}}, HooksDir: "/kit/hooks"}
 
-		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"mykit"})
+		result := mustMergeKitMeta(t,base, []*projectspec.KitMeta{meta}, []string{"mykit"})
 		if len(result.Hooks) != 2 {
 			t.Fatalf("expected 2 hooks (kit + base), got %d: %+v", len(result.Hooks), result.Hooks)
 		}
@@ -823,7 +832,7 @@ func TestMergeKitMeta_KitConsumerFields(t *testing.T) {
 			Hooks: []projectspec.Hook{{ID: "kit-hook", On: projectspec.OnValues{"executing"}, ScriptPath: "/kit/hooks/kit-hook.sh"}},
 		}
 
-		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"claude-code"})
+		result := mustMergeKitMeta(t,base, []*projectspec.KitMeta{meta}, []string{"claude-code"})
 		if len(result.Hooks) != 1 {
 			t.Fatalf("expected 1 hook, got %d", len(result.Hooks))
 		}
@@ -842,7 +851,7 @@ func TestMergeKitMeta_KitConsumerFields(t *testing.T) {
 			Hooks: []projectspec.Hook{{ID: "kit-hook", On: projectspec.OnValues{"executing"}, ScriptPath: "/kit/hooks/kit-hook.sh", Consumer: "explicit-consumer"}},
 		}
 
-		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"claude-code"})
+		result := mustMergeKitMeta(t,base, []*projectspec.KitMeta{meta}, []string{"claude-code"})
 		if len(result.Hooks) != 1 {
 			t.Fatalf("expected 1 hook, got %d", len(result.Hooks))
 		}
@@ -861,7 +870,7 @@ func TestMergeKitMeta_KitConsumerFields(t *testing.T) {
 			Gates: []projectspec.Gate{{ID: "kit-gate", On: projectspec.OnValues{"executing"}, ScriptPath: "/kit/gates/kit-gate.sh"}},
 		}
 
-		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"claude-code"})
+		result := mustMergeKitMeta(t,base, []*projectspec.KitMeta{meta}, []string{"claude-code"})
 		if len(result.Gates) != 1 {
 			t.Fatalf("expected 1 gate, got %d", len(result.Gates))
 		}
@@ -877,7 +886,7 @@ func TestMergeKitMeta_KitConsumerFields(t *testing.T) {
 			Hooks: []projectspec.Hook{{ID: "run-agent", On: projectspec.OnValues{"executing"}, ScriptPath: "/kit/hooks/run-agent.sh"}},
 		}
 
-		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"claude-code"})
+		result := mustMergeKitMeta(t,base, []*projectspec.KitMeta{meta}, []string{"claude-code"})
 		if len(result.Hooks) != 1 {
 			t.Fatalf("expected 1 hook, got %d", len(result.Hooks))
 		}
@@ -892,7 +901,7 @@ func TestMergeKitMeta_KitConsumerFields(t *testing.T) {
 			Gates: []projectspec.Gate{{ID: "check-quality", On: projectspec.OnValues{"verifying"}, ScriptPath: "/kit/gates/check-quality.sh"}},
 		}
 
-		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"my-kit"})
+		result := mustMergeKitMeta(t,base, []*projectspec.KitMeta{meta}, []string{"my-kit"})
 		if len(result.Gates) != 1 {
 			t.Fatalf("expected 1 gate, got %d", len(result.Gates))
 		}
@@ -910,7 +919,7 @@ func TestMergeKitMeta_KitConsumerFields(t *testing.T) {
 			Hooks: []projectspec.Hook{{ID: "run-agent", On: projectspec.OnValues{"executing"}, ScriptPath: "/b/hooks/run-agent.sh"}},
 		}
 
-		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{kitA, kitB}, []string{"claude-code", "codex"})
+		result := mustMergeKitMeta(t,base, []*projectspec.KitMeta{kitA, kitB}, []string{"claude-code", "codex"})
 		if len(result.Hooks) != 2 {
 			t.Fatalf("expected 2 hooks, got %d", len(result.Hooks))
 		}
@@ -928,7 +937,7 @@ func TestMergeKitMeta_KitConsumerFields(t *testing.T) {
 			Name: "Project",
 			Hooks: []projectspec.Hook{{ID: "my-hook", On: projectspec.OnValues{"executing"}, ScriptPath: "/proj/hooks/my-hook.sh"}},
 		}
-		result := projectspec.MergeKitMeta(base, nil, nil)
+		result := mustMergeKitMeta(t,base, nil, nil)
 		if len(result.Hooks) != 1 {
 			t.Fatalf("expected 1 hook, got %d", len(result.Hooks))
 		}
@@ -1289,7 +1298,7 @@ func TestMergeKitMeta_Scripts(t *testing.T) {
 			},
 		}
 
-		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"mykit"})
+		result := mustMergeKitMeta(t,base, []*projectspec.KitMeta{meta}, []string{"mykit"})
 		if len(result.Scripts) != 1 {
 			t.Fatalf("expected 1 script, got %d", len(result.Scripts))
 		}
@@ -1310,7 +1319,7 @@ func TestMergeKitMeta_Scripts(t *testing.T) {
 			Scripts: []projectspec.Script{{ID: "script-b", ScriptPath: "/b/scripts/script-b.sh"}},
 		}
 
-		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"})
+		result := mustMergeKitMeta(t,base, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"})
 		if len(result.Scripts) != 2 {
 			t.Fatalf("expected 2 scripts, got %d: %+v", len(result.Scripts), result.Scripts)
 		}
@@ -1330,7 +1339,7 @@ func TestMergeKitMeta_ScriptGates(t *testing.T) {
 			},
 		}
 
-		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"github-pr"})
+		result := mustMergeKitMeta(t,base, []*projectspec.KitMeta{meta}, []string{"github-pr"})
 
 		var scriptGate *projectspec.Gate
 		for i := range result.Gates {
@@ -1369,7 +1378,7 @@ func TestMergeKitMeta_ScriptGates(t *testing.T) {
 			},
 		}
 
-		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"mykit"})
+		result := mustMergeKitMeta(t,base, []*projectspec.KitMeta{meta}, []string{"mykit"})
 
 		if len(result.KitScriptsDirs) != 1 {
 			t.Fatalf("expected 1 KitScriptsDirs entry, got %d", len(result.KitScriptsDirs))
@@ -1390,7 +1399,7 @@ func TestMergeKitMeta_ScriptGates(t *testing.T) {
 			},
 		}
 
-		result := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{meta}, []string{"mykit"})
+		result := mustMergeKitMeta(t,base, []*projectspec.KitMeta{meta}, []string{"mykit"})
 		if len(result.KitScriptsDirs) != 0 {
 			t.Errorf("expected no KitScriptsDirs, got %+v", result.KitScriptsDirs)
 		}
@@ -1666,7 +1675,7 @@ scaffold:
 		}
 
 		base := &projectspec.ProjectMeta{}
-		merged := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{kitMeta}, []string{"test-kit"})
+		merged := mustMergeKitMeta(t, base, []*projectspec.KitMeta{kitMeta}, []string{"test-kit"})
 
 		// Scripts field (merged) should not be affected by init-time fields.
 		// Mainly verify the merged result has no side-effect from the new fields.
@@ -1675,5 +1684,108 @@ scaffold:
 		}
 		// The merged ProjectMeta has no Meta/Detect/Requires/Scaffold fields —
 		// those live only on KitMeta (confirmed by having compiled without them).
+	})
+}
+
+func TestMergeKitMeta_HostCommandConflict(t *testing.T) {
+	base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
+
+	t.Run("same command in two kits returns error", func(t *testing.T) {
+		kitA := &projectspec.KitMeta{HostCommands: projectspec.HostCommands{"gh": {Path: "/usr/bin/gh"}}}
+		kitB := &projectspec.KitMeta{HostCommands: projectspec.HostCommands{"gh": {Path: "/usr/local/bin/gh"}}}
+
+		_, err := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"})
+		if err == nil {
+			t.Fatal("expected error for duplicate host_commands, got nil")
+		}
+		if !strings.Contains(err.Error(), `"gh"`) || !strings.Contains(err.Error(), "kit-a") || !strings.Contains(err.Error(), "kit-b") {
+			t.Errorf("error message should mention command name and both kits: %v", err)
+		}
+	})
+
+	t.Run("different commands across kits is fine", func(t *testing.T) {
+		kitA := &projectspec.KitMeta{HostCommands: projectspec.HostCommands{"go": {Path: "/usr/bin/go"}}}
+		kitB := &projectspec.KitMeta{HostCommands: projectspec.HostCommands{"gh": {Path: "/usr/bin/gh"}}}
+
+		result, err := projectspec.MergeKitMeta(base, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result.HostCommands) != 2 {
+			t.Errorf("expected 2 host_commands, got %d", len(result.HostCommands))
+		}
+	})
+
+	t.Run("base project overrides kit command without error", func(t *testing.T) {
+		kit := &projectspec.KitMeta{HostCommands: projectspec.HostCommands{"gh": {Path: "/usr/bin/gh"}}}
+		baseWithCmd := &projectspec.ProjectMeta{
+			ID:           "proj",
+			Name:         "Project",
+			HostCommands: projectspec.HostCommands{"gh": {Path: "/custom/gh"}},
+		}
+
+		result, err := projectspec.MergeKitMeta(baseWithCmd, []*projectspec.KitMeta{kit}, []string{"mykit"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.HostCommands["gh"].Path != "/custom/gh" {
+			t.Errorf("expected base override /custom/gh, got %q", result.HostCommands["gh"].Path)
+		}
+	})
+}
+
+func TestUnionBindMounts_ModePromotion(t *testing.T) {
+	base := &projectspec.ProjectMeta{ID: "proj", Name: "Project"}
+
+	t.Run("ro+rw promotes to rw", func(t *testing.T) {
+		kitA := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "ro"}}}
+		kitB := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "rw"}}}
+
+		result := mustMergeKitMeta(t, base, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"})
+		if len(result.AdditionalBindings) != 1 {
+			t.Fatalf("expected 1 binding, got %d", len(result.AdditionalBindings))
+		}
+		if result.AdditionalBindings[0].Mode != "rw" {
+			t.Errorf("expected mode rw after ro+rw, got %q", result.AdditionalBindings[0].Mode)
+		}
+	})
+
+	t.Run("rw+ro keeps rw", func(t *testing.T) {
+		kitA := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "rw"}}}
+		kitB := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "ro"}}}
+
+		result := mustMergeKitMeta(t, base, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"})
+		if len(result.AdditionalBindings) != 1 {
+			t.Fatalf("expected 1 binding, got %d", len(result.AdditionalBindings))
+		}
+		if result.AdditionalBindings[0].Mode != "rw" {
+			t.Errorf("expected mode rw, got %q", result.AdditionalBindings[0].Mode)
+		}
+	})
+
+	t.Run("ro+ro stays ro", func(t *testing.T) {
+		kitA := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "ro"}}}
+		kitB := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "ro"}}}
+
+		result := mustMergeKitMeta(t, base, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"})
+		if len(result.AdditionalBindings) != 1 {
+			t.Fatalf("expected 1 binding, got %d", len(result.AdditionalBindings))
+		}
+		if result.AdditionalBindings[0].Mode != "ro" {
+			t.Errorf("expected mode ro, got %q", result.AdditionalBindings[0].Mode)
+		}
+	})
+
+	t.Run("rw+rw stays rw", func(t *testing.T) {
+		kitA := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "rw"}}}
+		kitB := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "rw"}}}
+
+		result := mustMergeKitMeta(t, base, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"})
+		if len(result.AdditionalBindings) != 1 {
+			t.Fatalf("expected 1 binding, got %d", len(result.AdditionalBindings))
+		}
+		if result.AdditionalBindings[0].Mode != "rw" {
+			t.Errorf("expected mode rw, got %q", result.AdditionalBindings[0].Mode)
+		}
 	})
 }
