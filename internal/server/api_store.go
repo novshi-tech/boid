@@ -9,6 +9,7 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 type apiTxStore struct {
@@ -102,7 +103,7 @@ type brokerRegistry struct {
 	secretStore *dispatcher.SecretStore
 }
 
-func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.HostCommandSpec, builtinCommands []string, projectID string) (*api.BrokerRegisterResponse, error) {
+func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.HostCommandSpec, builtinPolicies map[string]sandbox.BuiltinPolicy, projectID string) (*api.BrokerRegisterResponse, error) {
 	if r.broker == nil {
 		return nil, sql.ErrConnDone
 	}
@@ -145,7 +146,7 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 			return r.secretStore.Get("default", key)
 		}
 	}
-	token := r.broker.RegisterCommands(dispatcherCommands, builtinCommands, ctx, resolve)
+	token := r.broker.RegisterCommands(dispatcherCommands, builtinPolicies, ctx, resolve)
 	return &api.BrokerRegisterResponse{
 		Token:  token,
 		Socket: r.broker.SocketPath(),

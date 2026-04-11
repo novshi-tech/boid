@@ -354,7 +354,7 @@ func TestBroker_BoidBuiltinPolicy_HookRole(t *testing.T) {
 		Role:       string(projectspec.RoleHook),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, hookCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleHook, []string{"boid"}), hookCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -403,7 +403,7 @@ func TestBroker_BoidBuiltinPolicy_GateRole(t *testing.T) {
 		Role:       string(projectspec.RoleGate),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, gateCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"boid"}), gateCtx)
 
 	// Cwd = /tmp (legacy) must still be accepted
 	resp := broker.Handle(&sandbox.ExecRequest{
@@ -458,7 +458,7 @@ func TestBroker_BoidBuiltinPolicy_RespectsAllowedProjectIDs(t *testing.T) {
 		Role:              string(projectspec.RoleGate),
 		ProjectDir:        projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, ctx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"boid"}), ctx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -510,7 +510,7 @@ func TestBroker_BoidBuiltinPolicy_GateRoleTaskUpdate(t *testing.T) {
 		Role:       string(projectspec.RoleGate),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, gateCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"boid"}), gateCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -549,7 +549,7 @@ func TestBroker_BoidBuiltinPolicy_HookRoleRejectsTaskUpdate(t *testing.T) {
 		Role:       string(projectspec.RoleHook),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, hookCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleHook, []string{"boid"}), hookCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -581,7 +581,7 @@ func TestBroker_BoidBuiltinTaskUpdateRequiresTaskID(t *testing.T) {
 		Role:       string(projectspec.RoleGate),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, gateCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"boid"}), gateCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -611,7 +611,7 @@ func TestBroker_BoidBuiltinRejectsWrongJobAndCwd(t *testing.T) {
 		Role:       string(projectspec.RoleHook),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, ctx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleHook, []string{"boid"}), ctx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -645,7 +645,7 @@ func TestBroker_BoidBuiltinRejectsWrongJobAndCwd(t *testing.T) {
 func TestBroker_BoidBuiltinRequiresTypedRequest(t *testing.T) {
 	broker := &sandbox.Broker{}
 	cwd := t.TempDir()
-	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, sandbox.TokenContext{
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleHook, []string{"boid"}), sandbox.TokenContext{
 		JobID:      "job-1",
 		TaskID:     "task-1",
 		ProjectID:  "proj-1",
@@ -676,7 +676,7 @@ func TestBroker_BoidTaskImport_GateAllowed(t *testing.T) {
 		Role:       string(projectspec.RoleGate),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, gateCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"boid"}), gateCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -711,7 +711,7 @@ func TestBroker_BoidTaskImport_HookRejected(t *testing.T) {
 		Role:       string(projectspec.RoleHook),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, hookCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleHook, []string{"boid"}), hookCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -744,7 +744,7 @@ func TestBroker_BoidTaskImport_DisallowedProject(t *testing.T) {
 		Role:              string(projectspec.RoleGate),
 		ProjectDir:        projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, gateCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"boid"}), gateCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -777,7 +777,7 @@ func TestBroker_BoidTaskImport_ProjectOverrideValidated(t *testing.T) {
 		Role:              string(projectspec.RoleGate),
 		ProjectDir:        projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, gateCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"boid"}), gateCtx)
 
 	// ImportProjectOverride = "p2" は AllowedProjectIDs に含まれないので拒否
 	resp := broker.Handle(&sandbox.ExecRequest{
@@ -811,7 +811,7 @@ func TestBroker_BoidTaskImport_DefaultProjectFromContext(t *testing.T) {
 		Role:       string(projectspec.RoleGate),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, gateCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"boid"}), gateCtx)
 
 	// project_id 未指定 → ctx.ProjectID = "p1" がデフォルト注入される
 	resp := broker.Handle(&sandbox.ExecRequest{

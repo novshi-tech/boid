@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 type MetaStore interface {
@@ -26,7 +27,7 @@ type JobLifecycle interface {
 }
 
 type BrokerRegistry interface {
-	RegisterBrokerCommands(commands map[string]orchestrator.HostCommandSpec, builtinCommands []string, projectID string) (*BrokerRegisterResponse, error)
+	RegisterBrokerCommands(commands map[string]orchestrator.HostCommandSpec, builtinPolicies map[string]sandbox.BuiltinPolicy, projectID string) (*BrokerRegisterResponse, error)
 }
 
 type WorktreeCleaner interface {

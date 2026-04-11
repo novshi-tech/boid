@@ -7,8 +7,18 @@ import (
 	"strings"
 	"testing"
 
+	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
+
+
+func gateGitPolicies() map[string]sandbox.BuiltinPolicy {
+	return projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"git"})
+}
+
+func hookGitPolicies() map[string]sandbox.BuiltinPolicy {
+	return projectspec.DefaultBuiltinPolicies(projectspec.RoleHook, []string{"git"})
+}
 
 func TestBroker_GitBuiltinPushUsesTrustedSnapshot(t *testing.T) {
 	repo := initGitRepo(t)
@@ -19,7 +29,7 @@ func TestBroker_GitBuiltinPushUsesTrustedSnapshot(t *testing.T) {
 	runGit(t, repo, "push", "-u", "origin", "main")
 
 	broker := &sandbox.Broker{}
-	token := broker.Register(nil, []string{"git"}, sandbox.TokenContext{
+	token := broker.Register(nil, gateGitPolicies(), sandbox.TokenContext{
 		ProjectID:  "proj-1",
 		ProjectDir: repo,
 	})
@@ -67,7 +77,7 @@ func TestBroker_GitBuiltinFetchWorks(t *testing.T) {
 	runGit(t, peer, "push", "origin", "main")
 
 	broker := &sandbox.Broker{}
-	token := broker.Register(nil, []string{"git"}, sandbox.TokenContext{
+	token := broker.Register(nil, gateGitPolicies(), sandbox.TokenContext{
 		ProjectID:  "proj-1",
 		ProjectDir: repo,
 	})
@@ -101,7 +111,7 @@ func TestBroker_GitBuiltinRestrictsWorktree(t *testing.T) {
 	runGit(t, repo, "push", "-u", "origin", "main")
 
 	broker := &sandbox.Broker{}
-	token := broker.Register(nil, []string{"git"}, sandbox.TokenContext{
+	token := broker.Register(nil, gateGitPolicies(), sandbox.TokenContext{
 		ProjectID:  "proj-1",
 		ProjectDir: repo,
 	})
@@ -131,7 +141,7 @@ func TestBroker_GitBuiltinRejectsUnknownRemote(t *testing.T) {
 	runGit(t, repo, "push", "-u", "origin", "main")
 
 	broker := &sandbox.Broker{}
-	token := broker.Register(nil, []string{"git"}, sandbox.TokenContext{
+	token := broker.Register(nil, gateGitPolicies(), sandbox.TokenContext{
 		ProjectID:  "proj-1",
 		ProjectDir: repo,
 	})
@@ -168,7 +178,7 @@ func TestBroker_GitBuiltinRejectsHookRolePush(t *testing.T) {
 	runGit(t, repo, "push", "-u", "origin", "main")
 
 	broker := &sandbox.Broker{}
-	token := broker.Register(nil, []string{"git"}, sandbox.TokenContext{
+	token := broker.Register(nil, hookGitPolicies(), sandbox.TokenContext{
 		ProjectID:  "proj-1",
 		ProjectDir: repo,
 		Role:       "hook",
@@ -202,7 +212,7 @@ func TestBroker_GitBuiltinRejectsHookRoleFetch(t *testing.T) {
 	runGit(t, repo, "push", "-u", "origin", "main")
 
 	broker := &sandbox.Broker{}
-	token := broker.Register(nil, []string{"git"}, sandbox.TokenContext{
+	token := broker.Register(nil, hookGitPolicies(), sandbox.TokenContext{
 		ProjectID:  "proj-1",
 		ProjectDir: repo,
 		Role:       "hook",
@@ -238,7 +248,7 @@ func TestBroker_GitBuiltinAllowsGateRolePush(t *testing.T) {
 	runGit(t, repo, "commit", "-m", "gate")
 
 	broker := &sandbox.Broker{}
-	token := broker.Register(nil, []string{"git"}, sandbox.TokenContext{
+	token := broker.Register(nil, gateGitPolicies(), sandbox.TokenContext{
 		ProjectID:  "proj-1",
 		ProjectDir: repo,
 		Role:       "gate",

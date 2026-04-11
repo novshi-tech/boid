@@ -103,6 +103,19 @@ const (
 	GitOpPush  GitOp = "push"
 )
 
+// BuiltinPolicy defines which operations are permitted for a named builtin command.
+// It is stamped at token registration time by the planner and checked at dispatch time
+// by the broker, keeping all role-based authorization logic outside the broker itself.
+type BuiltinPolicy struct {
+	AllowedOps map[string]struct{}
+}
+
+// Allows reports whether op is in the allowed set.
+func (p BuiltinPolicy) Allows(op string) bool {
+	_, ok := p.AllowedOps[op]
+	return ok
+}
+
 type GitRequest struct {
 	Op             GitOp    `json:"op"`
 	Remote         string   `json:"remote,omitempty"`

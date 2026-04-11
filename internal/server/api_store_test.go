@@ -8,6 +8,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 type capturingBroker struct {
@@ -15,7 +16,7 @@ type capturingBroker struct {
 	ctx   dispatcher.BrokerContext
 }
 
-func (b *capturingBroker) RegisterCommands(commands map[string]dispatcher.CommandDef, builtinCommands []string, ctx dispatcher.BrokerContext, resolve dispatcher.SecretResolver) string {
+func (b *capturingBroker) RegisterCommands(commands map[string]dispatcher.CommandDef, builtinPolicies map[string]sandbox.BuiltinPolicy, ctx dispatcher.BrokerContext, resolve dispatcher.SecretResolver) string {
 	b.ctx = ctx
 	if b.token == "" {
 		b.token = "token-1"
@@ -65,7 +66,7 @@ func TestBrokerRegistry_RegisterBrokerCommands_ResolvesWorkspaceScope(t *testing
 		}},
 	}
 
-	resp, err := registry.RegisterBrokerCommands(nil, []string{"boid"}, "proj-1")
+	resp, err := registry.RegisterBrokerCommands(nil, nil,"proj-1")
 	if err != nil {
 		t.Fatalf("RegisterBrokerCommands: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestBrokerRegistry_RegisterBrokerCommands_UnassignedWorkspaceDefaultsToSelf
 		}},
 	}
 
-	resp, err := registry.RegisterBrokerCommands(nil, []string{"boid"}, "proj-4")
+	resp, err := registry.RegisterBrokerCommands(nil, nil,"proj-4")
 	if err != nil {
 		t.Fatalf("RegisterBrokerCommands: %v", err)
 	}

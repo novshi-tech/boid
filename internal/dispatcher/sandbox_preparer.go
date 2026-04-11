@@ -1,16 +1,20 @@
-package sandbox
+package dispatcher
 
-import "github.com/novshi-tech/boid/internal/dispatcher"
+import (
+	"sort"
 
-type dispatcherPreparer struct{}
+	"github.com/novshi-tech/boid/internal/sandbox"
+)
 
-// NewDispatcherPreparer returns the sandbox provider adapter for dispatcher-owned sandbox specs.
-func NewDispatcherPreparer() dispatcher.SandboxPreparer {
-	return dispatcherPreparer{}
+type sandboxPreparerImpl struct{}
+
+// NewSandboxPreparer returns the sandbox provider adapter for dispatcher-owned sandbox specs.
+func NewSandboxPreparer() SandboxPreparer {
+	return sandboxPreparerImpl{}
 }
 
-func (dispatcherPreparer) PrepareSandbox(spec dispatcher.SandboxSpec) (*dispatcher.PreparedSandbox, error) {
-	outerPath, err := WriteSandboxScripts(WrapperConfig{
+func (sandboxPreparerImpl) PrepareSandbox(spec SandboxSpec) (*PreparedSandbox, error) {
+	outerPath, err := sandbox.WriteSandboxScripts(sandbox.WrapperConfig{
 		JobID:              spec.JobID,
 		TaskID:             spec.TaskID,
 		ProjectID:          spec.ProjectID,
@@ -25,7 +29,7 @@ func (dispatcherPreparer) PrepareSandbox(spec dispatcher.SandboxSpec) (*dispatch
 		BrokerSocket:       spec.BrokerSocket,
 		BrokerToken:        spec.BrokerToken,
 		Env:                spec.Env,
-		BuiltinCommands:    spec.BuiltinCommands,
+		BuiltinCommands:    sortedPolicyKeys(spec.BuiltinPolicies),
 		HostCommands:       spec.HostCommands,
 		AdditionalBindings: toSandboxBindMounts(spec.AdditionalBindings),
 		WorkspaceDirs:      spec.WorkspaceDirs,
@@ -46,27 +50,41 @@ func (dispatcherPreparer) PrepareSandbox(spec dispatcher.SandboxSpec) (*dispatch
 	if err != nil {
 		return nil, err
 	}
-	return &dispatcher.PreparedSandbox{OuterPath: outerPath}, nil
+	return &PreparedSandbox{OuterPath: outerPath}, nil
 }
 
-func toSandboxHookFiles(files []dispatcher.HookFile) []HookFile {
+// sortedPolicyKeys extracts the builtin command names from a policy map and
+// returns them as a sorted slice for deterministic shim creation.
+func sortedPolicyKeys(policies map[string]sandbox.BuiltinPolicy) []string {
+	if len(policies) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(policies))
+	for name := range policies {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func toSandboxHookFiles(files []HookFile) []sandbox.HookFile {
 	if len(files) == 0 {
 		return nil
 	}
-	out := make([]HookFile, len(files))
+	out := make([]sandbox.HookFile, len(files))
 	for i, f := range files {
-		out[i] = HookFile{Source: f.Source, TargetName: f.TargetName}
+		out[i] = sandbox.HookFile{Source: f.Source, TargetName: f.TargetName}
 	}
 	return out
 }
 
-func toSandboxBindMounts(bindings []dispatcher.BindMount) []BindMount {
+func toSandboxBindMounts(bindings []BindMount) []sandbox.BindMount {
 	if len(bindings) == 0 {
 		return nil
 	}
-	out := make([]BindMount, 0, len(bindings))
+	out := make([]sandbox.BindMount, 0, len(bindings))
 	for _, binding := range bindings {
-		out = append(out, BindMount{
+		out = append(out, sandbox.BindMount{
 			Source: binding.Source,
 			Mode:   binding.Mode,
 		})

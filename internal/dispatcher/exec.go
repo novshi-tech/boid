@@ -2,6 +2,8 @@ package dispatcher
 
 import (
 	"fmt"
+
+	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 type ExecBindMount struct {
@@ -28,7 +30,7 @@ type ExecRequest struct {
 	BrokerSocket       string
 	BrokerToken        string
 	Env                map[string]string
-	BuiltinCommands    []string
+	BuiltinPolicies    map[string]sandbox.BuiltinPolicy
 	HostCommands       map[string]ExecCommandDef
 	AdditionalBindings []ExecBindMount
 	WorkspaceDirs      map[string]string
@@ -82,7 +84,7 @@ func buildExecSandboxSpec(req ExecRequest) (SandboxSpec, error) {
 		BrokerSocket:       req.BrokerSocket,
 		BrokerToken:        req.BrokerToken,
 		Env:                req.Env,
-		BuiltinCommands:    cloneStrings(req.BuiltinCommands),
+		BuiltinPolicies:    req.BuiltinPolicies,
 		HostCommands:       execHostCommandNames(req.HostCommands),
 		AdditionalBindings: execBindMounts(req.AdditionalBindings),
 		WorkspaceDirs:      req.WorkspaceDirs,
@@ -116,11 +118,3 @@ func execBindMounts(bindings []ExecBindMount) []BindMount {
 	return out
 }
 
-func cloneStrings(values []string) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	out := make([]string, len(values))
-	copy(out, values)
-	return out
-}
