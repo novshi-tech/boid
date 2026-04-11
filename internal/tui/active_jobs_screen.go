@@ -161,6 +161,9 @@ func (s *ActiveJobsScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		job := s.jobs[s.cursor]
 		return openJobCmd(job.ID, s.shared.Panes[job.ID])
+
+	case "q":
+		return func() tea.Msg { return popScreenMsg{} }
 	}
 	return nil
 }
@@ -240,9 +243,9 @@ func buildFilterBar(active string) string {
 
 func buildFooter(tmuxEnabled bool) string {
 	if tmuxEnabled {
-		return " 1-5/tab: filter   enter: open   j/k: move   r: refresh   q: quit"
+		return " 1-5/tab: filter   enter: open   j/k: move   r: refresh   q: back"
 	}
-	return " 1-5/tab: filter   j/k: move   r: refresh   q: quit"
+	return " 1-5/tab: filter   j/k: move   r: refresh   q: back"
 }
 
 // --- commands ---

@@ -685,6 +685,36 @@ func TestRecalcColumns_SmallWidth(t *testing.T) {
 	}
 }
 
+// --- q key tests ---
+
+// TestQKey_ReturnsQuit verifies q returns tea.Quit when mini selector is not active.
+func TestQKey_ReturnsQuit(t *testing.T) {
+	s := newTestTaskListScreen()
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if cmd == nil {
+		t.Fatal("q key: expected non-nil cmd (tea.Quit)")
+	}
+	result := cmd()
+	if _, ok := result.(tea.QuitMsg); !ok {
+		t.Errorf("q key: expected QuitMsg, got %T", result)
+	}
+}
+
+// TestQKey_NoQuit_WhenMiniActive verifies q does not quit when mini selector is active.
+func TestQKey_NoQuit_WhenMiniActive(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.mini = miniSelector{jobs: makeDummyJobs(2), cursor: 0, active: true}
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if cmd != nil {
+		result := cmd()
+		if _, ok := result.(tea.QuitMsg); ok {
+			t.Error("q when mini active: should not return QuitMsg")
+		}
+	}
+}
+
 func containsStr(s, substr string) bool {
 	return len(s) >= len(substr) && searchStr(s, substr)
 }

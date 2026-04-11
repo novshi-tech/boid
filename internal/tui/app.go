@@ -78,7 +78,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "q", "ctrl+c":
+		// ctrl+c は緊急脱出として全画面共通で確実に終了する。
+		// q の終了処理は各画面に委譲している（TaskListScreen 等が自画面のキーバインドを責任持つ）。
+		case "ctrl+c":
 			return m, tea.Quit
 		}
 	}
