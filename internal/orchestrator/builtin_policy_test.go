@@ -109,7 +109,7 @@ func TestDefaultBuiltinPolicies_HookBoidOps(t *testing.T) {
 
 // gate×boid policy は {job_done, task_create, task_update, task_import, task.reopen} であること。
 // gate は verification 結果を task に反映する必要があるため task_create/task_update を許可。
-// task.reopen は detect-conflicts kit がコンフリクト検出時に done タスクを reworking に戻すために必要。
+// task.reopen は github-auto-merge kit がマージコンフリクト検出時に done タスクを reworking に戻すために必要。
 func TestDefaultBuiltinPolicies_GateBoidOps(t *testing.T) {
 	policies := DefaultBuiltinPolicies(RoleGate, []string{"boid"})
 	boidPolicy := policies["boid"]
