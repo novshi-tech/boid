@@ -42,6 +42,7 @@ type gcResponse struct {
 	Jobs      int64 `json:"jobs"`
 	Actions   int64 `json:"actions"`
 	Worktrees int64 `json:"worktrees"`
+	Runtimes  int64 `json:"runtimes"`
 	DryRun    bool  `json:"dry_run,omitempty"`
 }
 
@@ -72,6 +73,7 @@ func (h *GCHandler) Run(w http.ResponseWriter, r *http.Request) {
 		Jobs:      result.Jobs,
 		Actions:   result.Actions,
 		Worktrees: result.Worktrees,
+		Runtimes:  result.Runtimes,
 		DryRun:    req.DryRun,
 	})
 }

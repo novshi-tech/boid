@@ -257,7 +257,7 @@ func TestGCTasks_WorktreeDiskCleanup(t *testing.T) {
 		}
 		return proj.WorkDir, nil
 	}
-	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, resolveProjectDir, gcTestGitBin)
+	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, resolveProjectDir, gcTestGitBin, "")
 
 	result, err := gcStore.GC(0, false, nil)
 	if err != nil {
@@ -305,7 +305,7 @@ func TestGCTasks_WorktreeDiskCleanup_DoneDeletesBranch(t *testing.T) {
 		}
 		return proj.WorkDir, nil
 	}
-	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, resolveProjectDir, gcTestGitBin)
+	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, resolveProjectDir, gcTestGitBin, "")
 
 	result, err := gcStore.GC(0, false, nil)
 	if err != nil {
@@ -362,7 +362,7 @@ func TestGCTasks_WorktreeDiskCleanup_DryRun(t *testing.T) {
 		}
 		return proj.WorkDir, nil
 	}
-	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, resolveProjectDir, gcTestGitBin)
+	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, resolveProjectDir, gcTestGitBin, "")
 
 	// dry-run: ディスク操作はスキップされる
 	result, err := gcStore.GC(0, true, nil)
@@ -494,5 +494,163 @@ func TestGCTasks_NoFilter(t *testing.T) {
 	}
 	if tasks[0].ID != pendingTask.ID {
 		t.Fatalf("expected pending task to remain, got %s", tasks[0].ID)
+	}
+}
+
+// makeRuntimeDir は runtimesDir 配下に fake の runtime ディレクトリを作成する。
+func makeRuntimeDir(t *testing.T, runtimesDir, runtimeID string) string {
+	t.Helper()
+	dir := filepath.Join(runtimesDir, runtimeID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir runtime dir: %v", err)
+	}
+	// transcript.log を模したファイルを追加
+	if err := os.WriteFile(filepath.Join(dir, "transcript.log"), []byte("log content"), 0o644); err != nil {
+		t.Fatalf("write transcript.log: %v", err)
+	}
+	return dir
+}
+
+func TestGC_RuntimesDirCleanup(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	runtimesDir := t.TempDir()
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	doneTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Done Task", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	// runtime_id を持つ job を作成
+	const runtimeID = "runtime-abc123"
+	job := &dispatcher.Job{
+		TaskID:    doneTask.ID,
+		ProjectID: "proj-1",
+		HandlerID: "test-handler",
+		RuntimeID: runtimeID,
+		Status:    dispatcher.JobStatusCompleted,
+	}
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	runtimeDir := makeRuntimeDir(t, runtimesDir, runtimeID)
+
+	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, nil, "", runtimesDir)
+	result, err := gcStore.GC(0, false, nil)
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if result.Runtimes != 1 {
+		t.Fatalf("expected 1 runtime deleted, got %d", result.Runtimes)
+	}
+
+	// runtime ディレクトリが削除されていることを確認
+	if _, err := os.Stat(runtimeDir); !os.IsNotExist(err) {
+		t.Errorf("runtime dir should be removed after GC, err: %v", err)
+	}
+}
+
+func TestGC_RuntimesDirCleanup_DryRun(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	runtimesDir := t.TempDir()
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	doneTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Done Task", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	const runtimeID = "runtime-dryrun"
+	job := &dispatcher.Job{
+		TaskID:    doneTask.ID,
+		ProjectID: "proj-1",
+		HandlerID: "test-handler",
+		RuntimeID: runtimeID,
+		Status:    dispatcher.JobStatusCompleted,
+	}
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	runtimeDir := makeRuntimeDir(t, runtimesDir, runtimeID)
+
+	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, nil, "", runtimesDir)
+	result, err := gcStore.GC(0, true, nil)
+	if err != nil {
+		t.Fatalf("gc dry-run: %v", err)
+	}
+	// dry-run は GCTasks が DB の distinct runtime_id をカウントする
+	if result.Runtimes != 1 {
+		t.Fatalf("dry-run: expected 1 runtime counted, got %d", result.Runtimes)
+	}
+
+	// dry-run なので runtime ディレクトリは残っている
+	if _, err := os.Stat(runtimeDir); err != nil {
+		t.Errorf("runtime dir should still exist after dry-run GC: %v", err)
+	}
+}
+
+func TestGC_RuntimesDirCleanup_OlderThanFilter(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	runtimesDir := t.TempDir()
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	// 古いタスク（60日前）
+	oldTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Old Done", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	if err := orchestrator.CreateTask(d.Conn, oldTask); err != nil {
+		t.Fatalf("create old task: %v", err)
+	}
+	sixtyDaysAgo := time.Now().UTC().Add(-60 * 24 * time.Hour)
+	if _, err := d.Conn.Exec(`UPDATE tasks SET updated_at = ? WHERE id = ?`, sixtyDaysAgo, oldTask.ID); err != nil {
+		t.Fatalf("update updated_at: %v", err)
+	}
+
+	// 新しいタスク（今）
+	recentTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Recent Done", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	if err := orchestrator.CreateTask(d.Conn, recentTask); err != nil {
+		t.Fatalf("create recent task: %v", err)
+	}
+
+	const oldRuntimeID = "runtime-old"
+	const recentRuntimeID = "runtime-recent"
+
+	oldJob := &dispatcher.Job{TaskID: oldTask.ID, ProjectID: "proj-1", HandlerID: "h", RuntimeID: oldRuntimeID, Status: dispatcher.JobStatusCompleted}
+	if err := dispatcher.CreateJob(d.Conn, oldJob); err != nil {
+		t.Fatalf("create old job: %v", err)
+	}
+	recentJob := &dispatcher.Job{TaskID: recentTask.ID, ProjectID: "proj-1", HandlerID: "h", RuntimeID: recentRuntimeID, Status: dispatcher.JobStatusCompleted}
+	if err := dispatcher.CreateJob(d.Conn, recentJob); err != nil {
+		t.Fatalf("create recent job: %v", err)
+	}
+
+	oldRuntimeDir := makeRuntimeDir(t, runtimesDir, oldRuntimeID)
+	recentRuntimeDir := makeRuntimeDir(t, runtimesDir, recentRuntimeID)
+
+	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, nil, "", runtimesDir)
+	result, err := gcStore.GC(30*24*time.Hour, false, nil)
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if result.Runtimes != 1 {
+		t.Fatalf("expected 1 runtime deleted, got %d", result.Runtimes)
+	}
+
+	// 古い runtime は削除されている
+	if _, err := os.Stat(oldRuntimeDir); !os.IsNotExist(err) {
+		t.Errorf("old runtime dir should be removed, err: %v", err)
+	}
+	// 新しい runtime は残っている
+	if _, err := os.Stat(recentRuntimeDir); err != nil {
+		t.Errorf("recent runtime dir should still exist: %v", err)
 	}
 }

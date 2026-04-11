@@ -1,6 +1,7 @@
 package server
 
 import (
+	"database/sql"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -47,22 +48,69 @@ func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) 
 	return store, nil
 }
 
+// runtimesDirFor returns the runtimes root directory for the given config.
+func runtimesDirFor(cfg Config) string {
+	if cfg.DBPath != "" && cfg.DBPath != ":memory:" {
+		return filepath.Join(filepath.Dir(cfg.DBPath), "runtimes")
+	}
+	return filepath.Join(filepath.Dir(cfg.SocketPath), "runtimes")
+}
+
 func newJobRuntime(cfg Config) (dispatcher.JobRuntime, error) {
 	if cfg.JobRuntime != nil {
 		return cfg.JobRuntime, nil
 	}
 
-	rootDir := filepath.Join(filepath.Dir(cfg.SocketPath), "runtimes")
-	if cfg.DBPath != "" && cfg.DBPath != ":memory:" {
-		rootDir = filepath.Join(filepath.Dir(cfg.DBPath), "runtimes")
-	}
+	rootDir := runtimesDirFor(cfg)
 	if err := os.MkdirAll(rootDir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir runtime root: %w", err)
 	}
 	return &dispatcher.LocalRuntime{RootDir: rootDir}, nil
 }
 
+// cleanOrphanRuntimes removes runtime directories that have no corresponding
+// job row in the database. Call this on startup before MarkStaleJobsFailed
+// so that only truly orphaned dirs (no DB row) are removed.
+func cleanOrphanRuntimes(runtimesDir string, conn *sql.DB) {
+	entries, err := os.ReadDir(runtimesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return
+		}
+		slog.Warn("cleanup orphan runtimes: read dir failed", "error", err)
+		return
+	}
+
+	removed := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		runtimeID := entry.Name()
+		var count int
+		if err := conn.QueryRow(`SELECT COUNT(*) FROM jobs WHERE runtime_id = ?`, runtimeID).Scan(&count); err != nil {
+			slog.Warn("cleanup orphan runtimes: query failed", "runtime_id", runtimeID, "error", err)
+			continue
+		}
+		if count == 0 {
+			dir := filepath.Join(runtimesDir, runtimeID)
+			if err := os.RemoveAll(dir); err != nil {
+				slog.Warn("cleanup orphan runtimes: remove failed", "runtime_id", runtimeID, "error", err)
+				continue
+			}
+			removed++
+		}
+	}
+	if removed > 0 {
+		slog.Info("cleaned up orphan runtime dirs", "count", removed)
+	}
+}
+
 func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, broker dispatcher.CommandBroker, secretStore *dispatcher.SecretStore) (*appRuntime, error) {
+	// Clean up runtime dirs that have no corresponding job rows (must run before
+	// MarkStaleJobsFailed so we only remove truly orphaned dirs).
+	cleanOrphanRuntimes(runtimesDirFor(cfg), srv.db)
+
 	// Clean up jobs left in running state from a previous crash or restart.
 	if err := dispatcher.MarkStaleJobsFailed(srv.db); err != nil {
 		slog.Warn("failed to mark stale jobs as failed", "error", err)
@@ -204,6 +252,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 			return proj.WorkDir, nil
 		},
 		"",
+		runtimesDirFor(srv.cfg),
 	)
 	gcHandler := &api.GCHandler{Service: &api.GCAppService{Store: gcStore}}
 	r.Mount("/api/gc", gcHandler.Routes())
