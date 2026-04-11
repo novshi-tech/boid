@@ -52,6 +52,67 @@ func MergeDefaultPayload(defaultPayload, requestPayload json.RawMessage) (json.R
 	return json.Marshal(base)
 }
 
+// DeepMergePayload recursively merges update into base.
+//
+// Rules:
+//   - Both sides are objects: keys are merged recursively
+//   - Other types (scalars, arrays): update replaces base
+//   - null in update: delete the key from base
+//
+// This is used by TaskAppService.UpdateTask so that callers can update a
+// subset of a nested structure (e.g. artifact.pr) without clobbering
+// sibling keys (e.g. artifact.commit). Unlike MergeDefaultPayload (which
+// does a shallow top-level merge and has special handling for
+// "instructions"), DeepMergePayload is a pure structural merge with no
+// trait-specific logic.
+func DeepMergePayload(base, update json.RawMessage) (json.RawMessage, error) {
+	if len(update) == 0 || string(update) == "{}" || string(update) == "null" {
+		if len(base) == 0 {
+			return json.RawMessage("{}"), nil
+		}
+		return base, nil
+	}
+	if len(base) == 0 || string(base) == "{}" || string(base) == "null" {
+		return update, nil
+	}
+
+	var baseMap map[string]any
+	if err := json.Unmarshal(base, &baseMap); err != nil {
+		return nil, err
+	}
+	var updateMap map[string]any
+	if err := json.Unmarshal(update, &updateMap); err != nil {
+		return nil, err
+	}
+
+	merged := deepMergeMaps(baseMap, updateMap)
+	return json.Marshal(merged)
+}
+
+// deepMergeMaps merges update into base recursively and returns the result.
+// update wins on conflicts; nil values in update delete the corresponding key.
+func deepMergeMaps(base, update map[string]any) map[string]any {
+	if base == nil {
+		base = make(map[string]any)
+	}
+	for key, updateVal := range update {
+		if updateVal == nil {
+			delete(base, key)
+			continue
+		}
+		if baseVal, ok := base[key]; ok {
+			baseNested, baseIsMap := baseVal.(map[string]any)
+			updateNested, updateIsMap := updateVal.(map[string]any)
+			if baseIsMap && updateIsMap {
+				base[key] = deepMergeMaps(baseNested, updateNested)
+				continue
+			}
+		}
+		base[key] = updateVal
+	}
+	return base
+}
+
 // mergeInstructions merges two instructions maps at the role level.
 // Override roles replace base roles; override null role means deletion.
 func mergeInstructions(base, override json.RawMessage) (json.RawMessage, error) {

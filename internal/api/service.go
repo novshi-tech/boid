@@ -337,7 +337,10 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	}
 	payloadUpdated := false
 	if len(req.Payload) > 0 {
-		merged, err := orchestrator.MergeDefaultPayload(task.Payload, req.Payload)
+		// UpdateTask は nested deep merge を使う。auto-merge gate が
+		// artifact.pr.merged を追記する等、既存 nested フィールドを
+		// 温存したまま部分更新するユースケースに対応するため。
+		merged, err := orchestrator.DeepMergePayload(task.Payload, req.Payload)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: "payload merge: " + err.Error()}
 		}
