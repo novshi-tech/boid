@@ -228,3 +228,82 @@ func TestRunBoidShim_RejectsUnknownSubcommand(t *testing.T) {
 		t.Fatal("expected error for unsupported subcommand")
 	}
 }
+
+func TestRunBoidShim_TaskUpdateSendsTypedRequest(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.Remove(sockPath)
+	})
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	payloadPath := filepath.Join(dir, "payload.yaml")
+	payloadYAML := "artifact:\n  pr:\n    number: 42\n    merged: true\n    url: https://example/42\n"
+	if err := os.WriteFile(payloadPath, []byte(payloadYAML), 0o644); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-upd")
+
+	resp, err := sandbox.RunBoidShim([]string{
+		"task", "update", "task-target",
+		"--payload-file", payloadPath,
+	})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpTaskUpdate {
+		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskUpdate)
+	}
+	if req.Boid.TaskID != "task-target" {
+		t.Fatalf("task id = %q, want task-target", req.Boid.TaskID)
+	}
+	if got, want := string(req.Boid.Payload), `{"artifact":{"pr":{"merged":true,"number":42,"url":"https://example/42"}}}`; got != want {
+		t.Fatalf("payload = %s, want %s", got, want)
+	}
+}
+
+func TestRunBoidShim_TaskUpdateRequiresAtLeastOneField(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+
+	if _, err := sandbox.RunBoidShim([]string{"task", "update", "task-xyz"}); err == nil {
+		t.Fatal("expected error when no --title/--description/--payload-file is given")
+	}
+}
+
+func TestRunBoidShim_TaskUpdateRequiresTaskID(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+
+	if _, err := sandbox.RunBoidShim([]string{"task", "update", "--title", "x"}); err == nil {
+		t.Fatal("expected error when task id is missing")
+	}
+}

@@ -93,6 +93,34 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("unknown task field %q", req.TaskField)}
 		}
 		return &sandbox.ExecResponse{Stdout: value}
+	case sandbox.BoidOpTaskUpdate:
+		if e.tasks == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task update unavailable"}
+		}
+		if req.TaskID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task update requires a task id"}
+		}
+		existing, err := e.tasks.GetTask(req.TaskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		if !ctx.AllowsProject(existing.ProjectID) {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task update is restricted to the current workspace"}
+		}
+		updateReq := api.UpdateTaskRequest{
+			Title:       req.Title,
+			Description: req.Description,
+		}
+		if len(req.Payload) > 0 {
+			updateReq.Payload = req.Payload
+		}
+		task, err := e.tasks.UpdateTask(req.TaskID, updateReq)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{
+			Stdout: fmt.Sprintf("task updated: %s (%s)\n", task.ID, task.Status),
+		}
 	default:
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("unsupported boid op %q", req.Op)}
 	}

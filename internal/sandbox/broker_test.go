@@ -497,6 +497,109 @@ func TestBroker_BoidBuiltinPolicy_RespectsAllowedProjectIDs(t *testing.T) {
 	}
 }
 
+// gate role は BoidOpTaskUpdate を実行できる (auto-merge script が trigger
+// task の artifact.pr を書き戻すユースケース)。
+func TestBroker_BoidBuiltinPolicy_GateRoleTaskUpdate(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	gateCtx := sandbox.TokenContext{
+		JobID:      "j-gate",
+		TaskID:     "t-gate",
+		ProjectID:  "p1",
+		Role:       string(projectspec.RoleGate),
+		ProjectDir: projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, gateCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:      sandbox.BoidOpTaskUpdate,
+			TaskID:  "task-target",
+			Payload: []byte(`{"artifact":{"pr":{"merged":true}}}`),
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("gate task update exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor calls = %d, want 1", len(exec.calls))
+	}
+	if exec.calls[0].Op != sandbox.BoidOpTaskUpdate {
+		t.Fatalf("op = %q, want %q", exec.calls[0].Op, sandbox.BoidOpTaskUpdate)
+	}
+	if exec.calls[0].TaskID != "task-target" {
+		t.Fatalf("task id = %q, want task-target", exec.calls[0].TaskID)
+	}
+}
+
+// hook role は BoidOpTaskUpdate を実行できない (agent は task の書き換えを
+// 行ってはならず、書き換えは gate 経由で行う)。
+func TestBroker_BoidBuiltinPolicy_HookRoleRejectsTaskUpdate(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	hookCtx := sandbox.TokenContext{
+		JobID:      "j-hook",
+		TaskID:     "t-hook",
+		ProjectID:  "p1",
+		Role:       string(projectspec.RoleHook),
+		ProjectDir: projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, hookCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:      sandbox.BoidOpTaskUpdate,
+			TaskID:  "task-target",
+			Payload: []byte(`{"foo":"bar"}`),
+		},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "not allowed") {
+		t.Fatalf("hook task update should be rejected, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not receive hook task update, calls=%d", len(exec.calls))
+	}
+}
+
+// BoidOpTaskUpdate で TaskID を省略するとエラーになる。
+func TestBroker_BoidBuiltinTaskUpdateRequiresTaskID(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	gateCtx := sandbox.TokenContext{
+		JobID:      "j-gate",
+		TaskID:     "t-gate",
+		ProjectID:  "p1",
+		Role:       string(projectspec.RoleGate),
+		ProjectDir: projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, []string{"boid"}, gateCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:      sandbox.BoidOpTaskUpdate,
+			Payload: []byte(`{"foo":"bar"}`),
+		},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "task id") {
+		t.Fatalf("expected task id error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not receive request without task id, calls=%d", len(exec.calls))
+	}
+}
+
 func TestBroker_BoidBuiltinRejectsWrongJobAndCwd(t *testing.T) {
 	exec := &fakeBoidExecutor{}
 	broker := &sandbox.Broker{BoidExecutor: exec}

@@ -22,6 +22,7 @@ const (
 	BoidOpJobDone    BoidOp = "job_done"
 	BoidOpTaskCreate BoidOp = "task_create"
 	BoidOpTaskGet    BoidOp = "task_get"
+	BoidOpTaskUpdate BoidOp = "task_update"
 )
 
 type BoidRequest struct {

@@ -199,14 +199,14 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 			}
 		}
 	case "gate":
-		if boidReq.Op != BoidOpJobDone && boidReq.Op != BoidOpTaskCreate {
+		if boidReq.Op != BoidOpJobDone && boidReq.Op != BoidOpTaskCreate && boidReq.Op != BoidOpTaskUpdate {
 			return &ExecResponse{
 				ExitCode: 1,
 				Stderr:   fmt.Sprintf("boid op %q not allowed for role %s", boidReq.Op, entry.Context.Role),
 			}
 		}
 	default:
-		if boidReq.Op != BoidOpJobDone && boidReq.Op != BoidOpTaskCreate {
+		if boidReq.Op != BoidOpJobDone && boidReq.Op != BoidOpTaskCreate && boidReq.Op != BoidOpTaskUpdate {
 			return &ExecResponse{
 				ExitCode: 1,
 				Stderr:   fmt.Sprintf("boid op %q not allowed for role %s", boidReq.Op, entry.Context.Role),
@@ -233,6 +233,12 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 		if boidReq.TaskID == "" {
 			boidReq.TaskID = entry.Context.TaskID
 		}
+	case BoidOpTaskUpdate:
+		if boidReq.TaskID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task update requires a task id"}
+		}
+		// 更新対象 task の project_id 検証は boid_executor 側で行う
+		// (broker は TaskStore を持たないため、ここでは ID の有無のみチェック)
 	}
 
 	if b.BoidExecutor == nil {

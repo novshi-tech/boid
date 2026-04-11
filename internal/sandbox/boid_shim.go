@@ -50,6 +50,8 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 			return parseBoidTaskCreate(args[2:])
 		case "get":
 			return parseBoidTaskGet(args[2:])
+		case "update":
+			return parseBoidTaskUpdate(args[2:])
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid task subcommand %q", args[1])
 		}
@@ -208,6 +210,66 @@ func parseBoidTaskGet(args []string) (*BoidRequest, error) {
 	}
 	if req.TaskField == "" {
 		return nil, fmt.Errorf("boid shim: task get requires --field")
+	}
+
+	return req, nil
+}
+
+func parseBoidTaskUpdate(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpTaskUpdate}
+
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		req.TaskID = args[0]
+		args = args[1:]
+	}
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--title" || strings.HasPrefix(arg, "--title="):
+			value, next, err := takeStringFlagValue(args, i, "--title")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.Title = value
+		case arg == "--description" || strings.HasPrefix(arg, "--description="):
+			value, next, err := takeStringFlagValue(args, i, "--description")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.Description = value
+		case arg == "--payload-file" || strings.HasPrefix(arg, "--payload-file="):
+			value, next, err := takeStringFlagValue(args, i, "--payload-file")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			data, err := readFlagContent(value)
+			if err != nil {
+				return nil, err
+			}
+			// payload ファイルは YAML/JSON 両対応 (cmd/task.go update と同等)
+			var v any
+			if err := yaml.Unmarshal(data, &v); err != nil {
+				return nil, fmt.Errorf("boid shim: parse payload: %w", err)
+			}
+			payloadJSON, err := json.Marshal(v)
+			if err != nil {
+				return nil, fmt.Errorf("boid shim: encode payload: %w", err)
+			}
+			req.Payload = payloadJSON
+		default:
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task update", arg)
+		}
+	}
+
+	if req.TaskID == "" {
+		return nil, fmt.Errorf("boid shim: task update requires a task id")
+	}
+	if req.Title == "" && req.Description == "" && len(req.Payload) == 0 {
+		return nil, fmt.Errorf("boid shim: task update requires at least one of --title, --description, or --payload-file")
 	}
 
 	return req, nil
