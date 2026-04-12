@@ -67,11 +67,20 @@ boid が管理するディスクデータは2種類ある:
 
 ### コンフリクト発生後の復旧手順
 
-1. `auto-merge` gate が `task_done` 時に mergeable を確認し、CONFLICTING なら自動的に `boid task reopen` を発火して対象タスクを reworking に戻し、finding を書き込む
-2. 該当 task の worktree で Claude が `git merge origin/main` を実行してコンフリクトを解消する（rebase ではなく merge を使うこと）
-3. commit のみ。push は pr-verify gate が実行する
-4. pr-verify が通常 push し、再度 CI が回る
-5. 緑になれば auto-merge が動き、task が done に戻る
+auto-merge は 2 つの gate で構成される:
+- `mergeable-check` (exit gate on verifying): PR の mergeable 状態を検証し、conflict があれば finding を書き込む
+- `auto-merge` (entry gate on done): done 入場時に `gh pr merge` を実行する
+
+conflict 発生時のフロー (`verifying → reworking → verifying → done`):
+
+1. `mergeable-check` exit gate が verifying 退場時に PR の mergeable 状態を確認し、conflict があれば finding (open) を書き込む
+2. state machine が unresolved finding を検出し、自動的に reworking に遷移する
+3. 該当 task の worktree で Claude が `git merge origin/main` を実行してコンフリクトを解消する（rebase ではなく merge を使うこと）
+4. commit のみ。push は pr-verify gate が実行する
+5. pr-verify が通常 push し、再度 CI が回る
+6. findings が resolved になると state machine が reworking → verifying に自動遷移する
+7. `mergeable-check` が再実行され、conflict が解消されていれば verifying → done に進む
+8. `auto-merge` entry gate が done 入場時に `gh pr merge` を実行する
 
 重要な注意点:
 

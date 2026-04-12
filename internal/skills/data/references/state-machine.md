@@ -33,7 +33,7 @@ pending → executing → verifying → done
 **CI 系**（pr-verify gate が executing / reworking に反応する場合）:
 
 ```
-pending → executing → reworking → done
+pending → executing → reworking → verifying → done
 ```
 
 **verify 系**（verifying gate が unresolved findings を返す場合）:
@@ -81,5 +81,5 @@ payload.yaml の `verification` に `status: "open"` の findings があるの�
 | artifact が non-null かつ executing 由来の unresolved findings あり | executing → reworking |
 | verifying 由来の unresolved findings あり | verifying → reworking |
 | verifying 由来の unresolved findings なし | verifying → done |
-| 全 findings が resolved | reworking → done |
+| 全 findings が resolved | reworking → verifying |
 | unresolved findings あり | reworking → reworking（継続） |
