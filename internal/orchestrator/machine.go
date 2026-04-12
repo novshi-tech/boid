@@ -84,7 +84,7 @@ func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
 // Manual transitions:
 //
 //	start       : pending → executing
-//	done        : executing / verifying / reworking → done
+//	done        : executing / verifying → done
 //	reopen      : done → reworking
 //	job_failed  : * → aborted
 //	abort       : * → aborted
@@ -107,7 +107,7 @@ func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
 //
 // Auto transitions from reworking:
 //
-//	NoUnresolvedFindings()  → done
+//	NoUnresolvedFindings()  → verifying (re-enter verification gate)
 //	!NoUnresolvedFindings() → reworking (self-loop until all findings resolved)
 func DefaultMachine() *StateMachine {
 	executionComplete := func(p json.RawMessage) bool {
@@ -140,7 +140,7 @@ func DefaultMachine() *StateMachine {
 			}},
 
 			// Auto transitions from reworking
-			{FromStatus: "reworking", ToStatus: "done", Condition: NoUnresolvedFindings()},
+			{FromStatus: "reworking", ToStatus: "verifying", Condition: NoUnresolvedFindings()},
 			{FromStatus: "reworking", ToStatus: "reworking", Condition: func(p json.RawMessage) bool {
 				return !NoUnresolvedFindings()(p)
 			}},

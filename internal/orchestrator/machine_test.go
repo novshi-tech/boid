@@ -302,7 +302,7 @@ func TestDefaultMachine_Verifying_NoFindings_PassThrough_Done(t *testing.T) {
 
 // ---- DefaultMachine: auto transitions from reworking ----
 
-func TestDefaultMachine_Reworking_AllResolved_Done(t *testing.T) {
+func TestDefaultMachine_Reworking_AllResolved_TransitionsToVerifying(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
 	task := &orchestrator.Task{
 		Status: orchestrator.TaskStatusReworking,
@@ -315,10 +315,10 @@ func TestDefaultMachine_Reworking_AllResolved_Done(t *testing.T) {
 	}
 	next, ok := sm.Advance(task)
 	if !ok {
-		t.Fatal("expected advance to done when all findings resolved")
+		t.Fatal("expected advance to verifying when all findings resolved")
 	}
-	if next.Status != orchestrator.TaskStatusDone {
-		t.Fatalf("expected done, got %s", next.Status)
+	if next.Status != orchestrator.TaskStatusVerifying {
+		t.Fatalf("expected verifying, got %s", next.Status)
 	}
 }
 
@@ -342,8 +342,8 @@ func TestDefaultMachine_Reworking_OpenFindings_SelfLoop(t *testing.T) {
 	}
 }
 
-func TestDefaultMachine_Reworking_NoFindings_Done(t *testing.T) {
-	// 検証エントリが一切ない場合: NoUnresolvedFindings() = true → done
+func TestDefaultMachine_Reworking_NoFindings_TransitionsToVerifying(t *testing.T) {
+	// 検証エントリが一切ない場合: NoUnresolvedFindings() = true → verifying
 	sm := orchestrator.DefaultMachine()
 	task := &orchestrator.Task{
 		Status:  orchestrator.TaskStatusReworking,
@@ -351,10 +351,10 @@ func TestDefaultMachine_Reworking_NoFindings_Done(t *testing.T) {
 	}
 	next, ok := sm.Advance(task)
 	if !ok {
-		t.Fatal("expected advance to done when no findings exist")
+		t.Fatal("expected advance to verifying when no findings exist")
 	}
-	if next.Status != orchestrator.TaskStatusDone {
-		t.Fatalf("expected done, got %s", next.Status)
+	if next.Status != orchestrator.TaskStatusVerifying {
+		t.Fatalf("expected verifying, got %s", next.Status)
 	}
 }
 
@@ -378,6 +378,57 @@ func TestDefaultMachine_Reworking_MixedSourceStates_AnyOpenBlocksDone(t *testing
 	if next.Status != orchestrator.TaskStatusReworking {
 		t.Fatalf("expected reworking (self-loop), got %s", next.Status)
 	}
+}
+
+func TestDefaultMachine_ReworkCycle_VerifyingReworkingVerifyingDone(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+
+	// 1. verifying → reworking (open finding at verifying)
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusVerifying,
+		Payload: json.RawMessage(`{
+			"artifact":{"pr_url":"https://..."},
+			"verification":{
+				"reviewer":{"source_state":"verifying","findings":[{"message":"fix this","status":"open"}]}
+			}
+		}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok || next.Status != orchestrator.TaskStatusReworking {
+		t.Fatalf("step 1: expected reworking, got %s (ok=%v)", safeStatus(next), ok)
+	}
+
+	// 2. reworking self-loop (finding still open)
+	next.Status = orchestrator.TaskStatusReworking
+	step2, ok := sm.Advance(next)
+	if !ok || step2.Status != orchestrator.TaskStatusReworking {
+		t.Fatalf("step 2: expected reworking self-loop, got %s (ok=%v)", safeStatus(step2), ok)
+	}
+
+	// 3. reworking → verifying (all findings resolved)
+	step2.Payload = json.RawMessage(`{
+		"artifact":{"pr_url":"https://..."},
+		"verification":{
+			"reviewer":{"source_state":"verifying","findings":[{"message":"fix this","status":"resolved"}]}
+		}
+	}`)
+	step3, ok := sm.Advance(step2)
+	if !ok || step3.Status != orchestrator.TaskStatusVerifying {
+		t.Fatalf("step 3: expected verifying, got %s (ok=%v)", safeStatus(step3), ok)
+	}
+
+	// 4. verifying → done (no unresolved findings at verifying)
+	step4, ok := sm.Advance(step3)
+	if !ok || step4.Status != orchestrator.TaskStatusDone {
+		t.Fatalf("step 4: expected done, got %s (ok=%v)", safeStatus(step4), ok)
+	}
+}
+
+func safeStatus(t *orchestrator.Task) orchestrator.TaskStatus {
+	if t == nil {
+		return ""
+	}
+	return t.Status
 }
 
 // ---- DefaultMachine: AvailableActions ----
