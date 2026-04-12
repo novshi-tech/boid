@@ -230,15 +230,16 @@ func TestEvaluateGates_MatchingGate(t *testing.T) {
 	}
 	gates := []projectspec.Gate{
 		{
-			ID: "push-pr",
-			On: projectspec.OnValues{"executing"},
+			ID:    "push-pr",
+			On:    projectspec.OnValues{"executing"},
+			Phase: projectspec.GatePhaseExit,
 			Traits: projectspec.HandlerTraits{
 				Consumes: []projectspec.TraitType{projectspec.TraitArtifact},
 			},
 		},
 	}
 
-	matched := eval.EvaluateGates(task, gates)
+	matched := eval.EvaluateGates(task, gates, projectspec.GatePhaseExit)
 	if len(matched) != 1 {
 		t.Fatalf("expected 1 matched gate, got %d", len(matched))
 	}
@@ -264,7 +265,7 @@ func TestEvaluateGates_NonMatchingStatus(t *testing.T) {
 		},
 	}
 
-	matched := eval.EvaluateGates(task, gates)
+	matched := eval.EvaluateGates(task, gates, projectspec.GatePhaseExit)
 	if len(matched) != 0 {
 		t.Fatalf("expected 0 matched gates, got %d", len(matched))
 	}
@@ -275,8 +276,9 @@ func TestEvaluateGates_OnMultipleValues_MatchesBothStatuses(t *testing.T) {
 
 	gates := []projectspec.Gate{
 		{
-			ID: "pr-verify",
-			On: projectspec.OnValues{"executing", "reworking"},
+			ID:    "pr-verify",
+			On:    projectspec.OnValues{"executing", "reworking"},
+			Phase: projectspec.GatePhaseExit,
 		},
 	}
 
@@ -288,7 +290,7 @@ func TestEvaluateGates_OnMultipleValues_MatchesBothStatuses(t *testing.T) {
 			Status:  status,
 			Payload: json.RawMessage(`{}`),
 		}
-		matched := eval.EvaluateGates(task, gates)
+		matched := eval.EvaluateGates(task, gates, projectspec.GatePhaseExit)
 		if len(matched) != 1 {
 			t.Errorf("status %q: expected 1 matched gate, got %d", status, len(matched))
 		}
@@ -403,7 +405,7 @@ func TestEvaluateGates_BehaviorFilter(t *testing.T) {
 		{ID: "any-gate", On: projectspec.OnValues{"executing"}},
 	}
 
-	matched := eval.EvaluateGates(task, gates)
+	matched := eval.EvaluateGates(task, gates, projectspec.GatePhaseExit)
 	if len(matched) != 2 {
 		t.Fatalf("expected 2 matched gates (dev-gate + any-gate), got %d", len(matched))
 	}
@@ -421,16 +423,73 @@ func TestEvaluateGates_OnMultipleValues_NoMatchOtherStatus(t *testing.T) {
 
 	gates := []projectspec.Gate{
 		{
-			ID: "pr-verify",
-			On: projectspec.OnValues{"executing", "reworking"},
+			ID:    "pr-verify",
+			On:    projectspec.OnValues{"executing", "reworking"},
+			Phase: projectspec.GatePhaseExit,
 		},
 	}
 	task := &orchestrator.Task{
 		Status:  orchestrator.TaskStatusDone,
 		Payload: json.RawMessage(`{}`),
 	}
-	matched := eval.EvaluateGates(task, gates)
+	matched := eval.EvaluateGates(task, gates, projectspec.GatePhaseExit)
 	if len(matched) != 0 {
 		t.Errorf("expected 0 matched gates for done, got %d", len(matched))
+	}
+}
+
+func TestEvaluateGates_EntryOnly(t *testing.T) {
+	eval := &orchestrator.Evaluator{}
+	gates := []projectspec.Gate{
+		{ID: "entry-gate", On: projectspec.OnValues{"executing"}, Phase: projectspec.GatePhaseEntry},
+		{ID: "exit-gate", On: projectspec.OnValues{"executing"}, Phase: projectspec.GatePhaseExit},
+	}
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusExecuting, Payload: json.RawMessage(`{}`)}
+
+	matched := eval.EvaluateGates(task, gates, projectspec.GatePhaseEntry)
+	if len(matched) != 1 || matched[0].ID != "entry-gate" {
+		t.Fatalf("expected only entry-gate, got %v", matched)
+	}
+}
+
+func TestEvaluateGates_ExitDefault(t *testing.T) {
+	eval := &orchestrator.Evaluator{}
+	// Phase omitted in YAML would be set to GatePhaseExit by UnmarshalYAML.
+	// Here we test the evaluator's phase filter with an explicitly exit gate.
+	gates := []projectspec.Gate{
+		{ID: "default-gate", On: projectspec.OnValues{"executing"}, Phase: projectspec.GatePhaseExit},
+	}
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusExecuting, Payload: json.RawMessage(`{}`)}
+
+	matched := eval.EvaluateGates(task, gates, projectspec.GatePhaseExit)
+	if len(matched) != 1 || matched[0].ID != "default-gate" {
+		t.Fatalf("expected default-gate matched as exit, got %v", matched)
+	}
+
+	// Should not match entry phase
+	matched = eval.EvaluateGates(task, gates, projectspec.GatePhaseEntry)
+	if len(matched) != 0 {
+		t.Fatalf("exit gate should not match entry phase, got %v", matched)
+	}
+}
+
+func TestEvaluateGates_MixedPhases(t *testing.T) {
+	eval := &orchestrator.Evaluator{}
+	gates := []projectspec.Gate{
+		{ID: "fetch-jira", On: projectspec.OnValues{"executing"}, Phase: projectspec.GatePhaseEntry},
+		{ID: "pr-verify", On: projectspec.OnValues{"executing"}, Phase: projectspec.GatePhaseExit},
+		{ID: "auto-merge", On: projectspec.OnValues{"done"}, Phase: projectspec.GatePhaseEntry},
+	}
+
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusExecuting, Payload: json.RawMessage(`{}`)}
+
+	entry := eval.EvaluateGates(task, gates, projectspec.GatePhaseEntry)
+	if len(entry) != 1 || entry[0].ID != "fetch-jira" {
+		t.Fatalf("expected fetch-jira for entry, got %v", entry)
+	}
+
+	exit := eval.EvaluateGates(task, gates, projectspec.GatePhaseExit)
+	if len(exit) != 1 || exit[0].ID != "pr-verify" {
+		t.Fatalf("expected pr-verify for exit, got %v", exit)
 	}
 }

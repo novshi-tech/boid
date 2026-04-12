@@ -122,6 +122,60 @@ func TestResolveGateScript(t *testing.T) {
 	}
 }
 
+func TestGatePhase_YAMLUnmarshal(t *testing.T) {
+	tests := []struct {
+		name     string
+		yaml     string
+		expected projectspec.GatePhase
+	}{
+		{
+			name:     "explicit entry",
+			yaml:     "id: g1\non: executing\nphase: entry\n",
+			expected: projectspec.GatePhaseEntry,
+		},
+		{
+			name:     "explicit exit",
+			yaml:     "id: g1\non: executing\nphase: exit\n",
+			expected: projectspec.GatePhaseExit,
+		},
+		{
+			name:     "omitted defaults to exit",
+			yaml:     "id: g1\non: executing\n",
+			expected: projectspec.GatePhaseExit,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gate projectspec.Gate
+			if err := yaml.Unmarshal([]byte(tt.yaml), &gate); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if gate.Phase != tt.expected {
+				t.Fatalf("phase: got %q, want %q", gate.Phase, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGatePhase_JSONRoundTrip(t *testing.T) {
+	gate := projectspec.Gate{
+		ID:    "g1",
+		On:    projectspec.OnValues{"executing"},
+		Phase: projectspec.GatePhaseEntry,
+	}
+	data, err := json.Marshal(gate)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded projectspec.Gate
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.Phase != projectspec.GatePhaseEntry {
+		t.Fatalf("phase: got %q, want %q", decoded.Phase, projectspec.GatePhaseEntry)
+	}
+}
+
 func TestRoleConstants(t *testing.T) {
 	if projectspec.RoleHook != "hook" || projectspec.RoleGate != "gate" {
 		t.Fatalf("unexpected roles: %q %q", projectspec.RoleHook, projectspec.RoleGate)

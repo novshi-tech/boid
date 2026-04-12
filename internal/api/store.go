@@ -14,6 +14,7 @@ type MetaStore interface {
 
 type DispatchCoordinator interface {
 	DispatchAndAdvance(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine) (*orchestrator.DispatchResult, error)
+	DispatchEntryGates(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta) (*orchestrator.EntryGateResult, error)
 }
 
 type JobLifecycle interface {

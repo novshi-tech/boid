@@ -222,13 +222,36 @@ type Hook struct {
 	ScriptPath string        `yaml:"-" json:"-"`
 }
 
+// GatePhase determines when a gate fires relative to a state transition.
+type GatePhase string
+
+const (
+	GatePhaseEntry GatePhase = "entry"
+	GatePhaseExit  GatePhase = "exit"
+)
+
 type Gate struct {
 	ID         string        `yaml:"id" json:"id"`
 	On         OnValues      `yaml:"on" json:"on"`
+	Phase      GatePhase     `yaml:"phase,omitempty" json:"phase,omitempty"`
 	Behavior   string        `yaml:"behavior,omitempty" json:"behavior,omitempty"`
 	Traits     HandlerTraits `yaml:"traits" json:"traits"`
 	Kit        string        `yaml:"-" json:"kit,omitempty"`
 	ScriptPath string        `yaml:"-" json:"-"`
+}
+
+// UnmarshalYAML defaults Phase to GatePhaseExit when omitted.
+func (g *Gate) UnmarshalYAML(node *yaml.Node) error {
+	type gateAlias Gate
+	var alias gateAlias
+	if err := node.Decode(&alias); err != nil {
+		return err
+	}
+	*g = Gate(alias)
+	if g.Phase == "" {
+		g.Phase = GatePhaseExit
+	}
+	return nil
 }
 
 type HookFireEvent struct {

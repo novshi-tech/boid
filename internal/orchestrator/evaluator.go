@@ -96,9 +96,9 @@ func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 	return matched
 }
 
-// EvaluateGates returns gates that should fire for the given task.
+// EvaluateGates returns gates that should fire for the given task and phase.
 // Unlike hooks, multiple gates may match the same state (kit composition).
-func (e *Evaluator) EvaluateGates(task *Task, gates []Gate) []Gate {
+func (e *Evaluator) EvaluateGates(task *Task, gates []Gate, phase GatePhase) []Gate {
 	activeTraits, _ := ActiveTraitTypes(task.Payload)
 	traitSet := make(map[TraitType]bool, len(activeTraits))
 	for _, t := range activeTraits {
@@ -107,6 +107,13 @@ func (e *Evaluator) EvaluateGates(task *Task, gates []Gate) []Gate {
 
 	var matched []Gate
 	for _, g := range gates {
+		gPhase := g.Phase
+		if gPhase == "" {
+			gPhase = GatePhaseExit
+		}
+		if gPhase != phase {
+			continue
+		}
 		if !g.On.Contains(string(task.Status)) {
 			continue
 		}

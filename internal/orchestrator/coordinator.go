@@ -66,7 +66,7 @@ func (d *Coordinator) DispatchAndAdvance(
 	// Use hook-updated payload so that traits produced by hooks are visible to gates.
 	gateTask := *task
 	gateTask.Payload = payload
-	matchedGates := d.Evaluator.EvaluateGates(&gateTask, meta.Gates)
+	matchedGates := d.Evaluator.EvaluateGates(&gateTask, meta.Gates, GatePhaseExit)
 	if len(matchedGates) > 0 {
 		gateResults, err := d.dispatchGates(ctx, &gateTask, matchedGates)
 		if err != nil {
@@ -111,6 +111,47 @@ func (d *Coordinator) DispatchAndAdvance(
 	}
 
 	return result, nil
+}
+
+// DispatchEntryGates runs entry-phase gates for the given task's current status.
+// Unlike DispatchAndAdvance, this does NOT evaluate hooks/exit-gates or call sm.Advance.
+// The returned result reflects only entry gate payload patches.
+func (d *Coordinator) DispatchEntryGates(
+	ctx context.Context,
+	task *Task,
+	meta *ProjectMeta,
+) (*EntryGateResult, error) {
+	matchedGates := d.Evaluator.EvaluateGates(task, meta.Gates, GatePhaseEntry)
+	if len(matchedGates) == 0 {
+		return &EntryGateResult{FinalPayload: task.Payload}, nil
+	}
+
+	gateResults, err := d.dispatchGates(ctx, task, matchedGates)
+	if err != nil {
+		return nil, fmt.Errorf("entry gate dispatch: %w", err)
+	}
+
+	payload := task.Payload
+	exclusiveWriters := map[string]string{}
+	for _, gr := range gateResults {
+		if err := checkExclusiveCollision(gr.PayloadPatch, gr.ID, exclusiveWriters); err != nil {
+			return nil, err
+		}
+		if len(gr.PayloadPatch) > 0 && string(gr.PayloadPatch) != "{}" {
+			gr.PayloadPatch = injectSourceState(gr.PayloadPatch, string(task.Status))
+			merged, err := MergePayloadPatch(payload, gr.PayloadPatch, gr.ID, gr.allowedTraitsFromGates(matchedGates))
+			if err != nil {
+				slog.Warn("entry gate payload merge failed", "gate_id", gr.ID, "error", err)
+				continue
+			}
+			payload = merged
+		}
+	}
+
+	return &EntryGateResult{
+		Results:      gateResults,
+		FinalPayload: payload,
+	}, nil
 }
 
 // dispatchHooksLocked wraps dispatchHooks with an optional worktree lock.

@@ -736,6 +736,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			return
 		}
 
+		// Persist hook + exit gate payload
 		if len(result.FinalPayload) > 0 {
 			var persisted *orchestrator.Task
 			if err := s.Tx.WithinTx(func(tx TxStore) error {
@@ -757,6 +758,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 		}
 
 		if result.NewStatus == "" {
+			// No transition this cycle. Finalize if terminal.
 			if current.Status == orchestrator.TaskStatusDone || current.Status == orchestrator.TaskStatusAborted {
 				s.cleanupWorktree(current.ID, current.ProjectID, current.Status)
 				if s.Lifecycle != nil {
@@ -770,6 +772,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			return
 		}
 
+		prevStatus := current.Status
 		action := &orchestrator.Action{TaskID: current.ID, Type: "auto_advance"}
 		current.Status = result.NewStatus
 		if err := s.Tx.WithinTx(func(tx TxStore) error {
@@ -783,6 +786,26 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 		}
 
 		slog.Info("auto-advanced", "task_id", current.ID, "new_status", current.Status, "cycle", cycle)
+
+		// Run entry gates on the new state (skip for self-loops)
+		if prevStatus != current.Status {
+			entryResult, err := s.Coordinator.DispatchEntryGates(ctx, current, meta)
+			if err != nil {
+				slog.Error("entry gate dispatch failed", "task_id", current.ID, "error", err)
+				s.recordDispatchError(current.ID, err)
+				return
+			}
+			if len(entryResult.FinalPayload) > 0 {
+				current.Payload = entryResult.FinalPayload
+				if err := s.Tx.WithinTx(func(tx TxStore) error {
+					return tx.UpdateTask(current)
+				}); err != nil {
+					slog.Error("persist entry gate payload failed", "task_id", current.ID, "error", err)
+					return
+				}
+			}
+		}
+
 		s.cleanupWorktree(current.ID, current.ProjectID, current.Status)
 
 		if current.Status == orchestrator.TaskStatusDone || current.Status == orchestrator.TaskStatusAborted {

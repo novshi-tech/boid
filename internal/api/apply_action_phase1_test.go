@@ -94,6 +94,10 @@ func (p *dispatchContextProbe) DispatchAndAdvance(ctx context.Context, task *orc
 	}
 }
 
+func (p *dispatchContextProbe) DispatchEntryGates(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta) (*orchestrator.EntryGateResult, error) {
+	return &orchestrator.EntryGateResult{FinalPayload: task.Payload}, nil
+}
+
 func TestTaskWorkflowServiceApplyAction_BackgroundDispatchMustOutliveRequestContext(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
@@ -145,6 +149,10 @@ type fixedDispatchResult struct {
 
 func (d fixedDispatchResult) DispatchAndAdvance(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine) (*orchestrator.DispatchResult, error) {
 	return d.result, nil
+}
+
+func (d fixedDispatchResult) DispatchEntryGates(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta) (*orchestrator.EntryGateResult, error) {
+	return &orchestrator.EntryGateResult{FinalPayload: task.Payload}, nil
 }
 
 func TestTaskWorkflowServiceRunDispatchLoop_MustNotOverwriteTerminalStatusWhenPersistingPayload(t *testing.T) {

@@ -41,3 +41,10 @@ type DispatchResult struct {
 	FinalPayload json.RawMessage
 	NewStatus    TaskStatus // set if orchestrator advanced the state
 }
+
+// EntryGateResult holds the output of entry-phase gate dispatch.
+// Unlike DispatchResult it carries no NewStatus — entry gates only produce payload patches.
+type EntryGateResult struct {
+	Results      []HandlerResult
+	FinalPayload json.RawMessage
+}
