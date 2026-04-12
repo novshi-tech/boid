@@ -1361,9 +1361,7 @@ meta:
   description: Go language kit
   category: language
 detect:
-  files:
-    - go.mod
-    - go.sum
+  script: scripts/detect.sh
 requires:
   commands:
     - go
@@ -1390,8 +1388,8 @@ scaffold:
 		if meta.Detect == nil {
 			t.Fatal("expected Detect to be set")
 		}
-		if len(meta.Detect.Files) != 2 || meta.Detect.Files[0] != "go.mod" {
-			t.Errorf("Detect.Files = %v", meta.Detect.Files)
+		if meta.Detect.Script != "scripts/detect.sh" {
+			t.Errorf("Detect.Script = %q, want %q", meta.Detect.Script, "scripts/detect.sh")
 		}
 
 		if meta.Requires == nil {
