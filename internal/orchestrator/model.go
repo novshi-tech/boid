@@ -31,7 +31,6 @@ type Task struct {
 	BranchPrefix     string          `json:"branch_prefix,omitempty"`
 	BaseBranch       string          `json:"base_branch,omitempty"`
 	Payload          json.RawMessage `json:"payload"`
-	Ephemeral        bool            `json:"ephemeral,omitempty"`
 	AutoStart        bool            `json:"auto_start,omitempty"`
 	DependsOn        []string        `json:"depends_on,omitempty"`
 	DependsOnPayload string          `json:"depends_on_payload,omitempty"`

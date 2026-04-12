@@ -103,6 +103,22 @@ func Apply(conn *sql.DB) error {
 				return columnExists(tx, "tasks", "ephemeral")
 			},
 		},
+		{
+			version: "0014_drop_tasks_transition",
+			path:    "migrations/0014_drop_tasks_transition.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				exists, err := columnExists(tx, "tasks", "transition")
+				return !exists, err
+			},
+		},
+		{
+			version: "0015_drop_task_ephemeral",
+			path:    "migrations/0015_drop_task_ephemeral.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				exists, err := columnExists(tx, "tasks", "ephemeral")
+				return !exists, err
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

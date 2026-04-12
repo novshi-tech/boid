@@ -246,16 +246,6 @@ func (b BehaviorValues) Matches(taskBehavior string) bool {
 	return false
 }
 
-// HasPrefix reports whether any value in b starts with the given prefix.
-func (b BehaviorValues) HasPrefix(prefix string) bool {
-	for _, v := range b {
-		if strings.HasPrefix(v, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
 type Hook struct {
 	ID         string         `yaml:"id" json:"id"`
 	On         OnValues       `yaml:"on" json:"on"`
@@ -314,29 +304,6 @@ type GateFireEvent struct {
 	TaskPayloadJSON string // hook-updated payload to override DB value; empty = use DB
 }
 
-// ScriptTrigger defines events that auto-fire a script.
-type ScriptTrigger string
-
-const (
-	ScriptTriggerTaskDone    ScriptTrigger = "task_done"
-	ScriptTriggerTaskAborted ScriptTrigger = "task_aborted"
-)
-
-// ScriptFilter narrows which events match a script trigger.
-type ScriptFilter struct {
-	Behavior string `yaml:"behavior,omitempty" json:"behavior,omitempty"`
-}
-
-// Script defines a kit-bundled script that runs as an ephemeral task.
-type Script struct {
-	ID          string          `yaml:"id" json:"id"`
-	Description string          `yaml:"description,omitempty" json:"description,omitempty"`
-	On          []ScriptTrigger `yaml:"on,omitempty" json:"on,omitempty"`
-	Filter      ScriptFilter    `yaml:"filter,omitempty" json:"filter,omitempty"`
-	Kit         string          `yaml:"-" json:"kit,omitempty"`
-	ScriptPath  string          `yaml:"-" json:"-"`
-}
-
 type KitHooksInfo struct {
 	HooksDir string
 	HookIDs  []string
@@ -346,11 +313,6 @@ type KitHooksInfo struct {
 type KitGatesInfo struct {
 	GatesDir string
 	GateIDs  []string
-}
-
-type KitScriptsInfo struct {
-	ScriptsDir string
-	ScriptIDs  []string
 }
 
 type RawPayload json.RawMessage
@@ -421,10 +383,8 @@ type ProjectMeta struct {
 	AdditionalBindings []BindMount             `yaml:"additional_bindings" json:"additional_bindings"`
 	Env                map[string]string       `yaml:"env" json:"env"`
 	SecretNamespace    string                  `yaml:"secret_namespace,omitempty" json:"secret_namespace,omitempty"`
-	Scripts            []Script                `yaml:"-" json:"scripts,omitempty"`
 	KitHooksDirs       []KitHooksInfo          `yaml:"-" json:"-"`
 	KitGatesDirs       []KitGatesInfo          `yaml:"-" json:"-"`
-	KitScriptsDirs     []KitScriptsInfo        `yaml:"-" json:"-"`
 }
 
 type ProjectLocalMeta struct {
@@ -461,14 +421,12 @@ type KitMeta struct {
 	TaskBehaviors      map[string]TaskBehavior `yaml:"task_behaviors"`
 	Hooks              []Hook                  `yaml:"hooks"`
 	Gates              []Gate                  `yaml:"gates"`
-	Scripts            []Script                `yaml:"scripts"`
 	BuiltinCommands    []string                `yaml:"builtin_commands"`
 	HostCommands       HostCommands            `yaml:"host_commands"`
 	AdditionalBindings []BindMount             `yaml:"additional_bindings"`
 	Env                map[string]string       `yaml:"env"`
 	HooksDir           string                  `yaml:"-"`
 	GatesDir           string                  `yaml:"-"`
-	ScriptsDir         string                  `yaml:"-"`
 
 	// Init-time metadata — not merged into runtime spec by MergeKitMeta.
 	Meta     *KitMetaInfo `yaml:"meta,omitempty"`

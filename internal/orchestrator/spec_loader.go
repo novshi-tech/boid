@@ -255,22 +255,12 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 		meta.GatesDir = gatesDir
 	}
 
-	scriptsDir := filepath.Join(dir, "scripts")
-	for i := range meta.Scripts {
-		s := &meta.Scripts[i]
-		for _, t := range s.On {
-			if !ValidScriptTriggerValues[string(t)] {
-				return nil, fmt.Errorf("script %q: invalid trigger %q", s.ID, t)
-			}
+	// Reject legacy scripts: section in kit.yaml.
+	var rawMap map[string]any
+	if err := yaml.Unmarshal(data, &rawMap); err == nil {
+		if _, ok := rawMap["scripts"]; ok {
+			return nil, fmt.Errorf("kit.yaml: 'scripts:' section is no longer supported; migrate scripts to gates")
 		}
-		scriptPath, err := ResolveScriptScript(scriptsDir, s.ID)
-		if err != nil {
-			return nil, fmt.Errorf("script %q: %w", s.ID, err)
-		}
-		s.ScriptPath = scriptPath
-	}
-	if len(meta.Scripts) > 0 {
-		meta.ScriptsDir = scriptsDir
 	}
 
 	return &meta, nil
@@ -381,37 +371,6 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) (*P
 	allGates = append(allGates, base.Gates...)
 	result.Gates = allGates
 
-	var allScripts []Script
-	var scriptGates []Gate
-	for i, meta := range kits {
-		consumer := ""
-		if i < len(kitConsumers) {
-			consumer = kitConsumers[i]
-		}
-		for _, s := range meta.Scripts {
-			s.Kit = consumer
-			allScripts = append(allScripts, s)
-
-			gateID := s.ID
-			if consumer != "" {
-				gateID = consumer + "/" + s.ID
-			}
-			scriptGates = append(scriptGates, Gate{
-				ID:       gateID,
-				On:       OnValues{"executing"},
-				Behavior: BehaviorValues{fmt.Sprintf("_script:%s/%s", consumer, s.ID)},
-				Traits: HandlerTraits{
-					Produces: []TraitType{TraitArtifact, TraitTasks},
-				},
-				Kit:        consumer,
-				ScriptPath: s.ScriptPath,
-			})
-		}
-	}
-	allScripts = append(allScripts, base.Scripts...)
-	result.Scripts = allScripts
-	result.Gates = append(result.Gates, scriptGates...)
-
 	mergedCmds := make(HostCommands)
 	kitCmdSource := make(map[string]string)
 	for i, meta := range kits {
@@ -467,20 +426,6 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) (*P
 		result.KitGatesDirs = append(result.KitGatesDirs, KitGatesInfo{
 			GatesDir: meta.GatesDir,
 			GateIDs:  ids,
-		})
-	}
-
-	for _, meta := range kits {
-		if meta.ScriptsDir == "" || len(meta.Scripts) == 0 {
-			continue
-		}
-		ids := make([]string, len(meta.Scripts))
-		for i, s := range meta.Scripts {
-			ids[i] = s.ID
-		}
-		result.KitScriptsDirs = append(result.KitScriptsDirs, KitScriptsInfo{
-			ScriptsDir: meta.ScriptsDir,
-			ScriptIDs:  ids,
 		})
 	}
 
@@ -674,11 +619,9 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 	result.Kits = append([]KitRef(nil), meta.Kits...)
 	result.Hooks = append([]Hook(nil), meta.Hooks...)
 	result.Gates = append([]Gate(nil), meta.Gates...)
-	result.Scripts = append([]Script(nil), meta.Scripts...)
 	result.BuiltinCommands = append([]string(nil), meta.BuiltinCommands...)
 	result.KitHooksDirs = append([]KitHooksInfo(nil), meta.KitHooksDirs...)
 	result.KitGatesDirs = append([]KitGatesInfo(nil), meta.KitGatesDirs...)
-	result.KitScriptsDirs = append([]KitScriptsInfo(nil), meta.KitScriptsDirs...)
 	result.Env = mergeStringMaps(nil, meta.Env)
 	result.HostCommands = cloneHostCommands(meta.HostCommands)
 	result.AdditionalBindings = cloneBindMounts(meta.AdditionalBindings)

@@ -41,9 +41,9 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 	}
 
 	_, err = dbtx.Exec(
-		`INSERT INTO tasks (id, project_id, remote_id, datasource_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, depends_on_payload, ref, parent_id, ephemeral, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.ProjectID, t.RemoteID, t.DataSourceID, t.Title, t.Description, t.Status, t.Behavior, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), t.AutoStart, t.DependsOnPayload, t.Ref, t.ParentID, t.Ephemeral, t.CreatedAt, t.UpdatedAt,
+		`INSERT INTO tasks (id, project_id, remote_id, datasource_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, depends_on_payload, ref, parent_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.ProjectID, t.RemoteID, t.DataSourceID, t.Title, t.Description, t.Status, t.Behavior, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), t.AutoStart, t.DependsOnPayload, t.Ref, t.ParentID, t.CreatedAt, t.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
@@ -109,7 +109,7 @@ func FindDependentTasks(dbtx db.DBTX, taskID string) ([]*Task, error) {
 		SELECT DISTINCT t.id, t.project_id, t.remote_id, t.datasource_id, t.title, t.description,
 		       t.status, t.behavior, t.traits, t.readonly, t.worktree,
 		       t.branch_prefix, t.base_branch, t.payload, t.auto_start, t.depends_on_payload,
-		       t.ref, t.parent_id, t.ephemeral, t.created_at, t.updated_at
+		       t.ref, t.parent_id, t.created_at, t.updated_at
 		FROM tasks t
 		INNER JOIN task_dependencies td ON t.id = td.task_id
 		WHERE td.depends_on = ? AND t.status = ?
@@ -160,13 +160,13 @@ func loadTaskDependencies(dbtx db.DBTX, t *Task) error {
 
 func GetTask(dbtx db.DBTX, id string) (*Task, error) {
 	row := dbtx.QueryRow(
-		`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, depends_on_payload, ref, parent_id, ephemeral, created_at, updated_at FROM tasks WHERE id = ?`, id,
+		`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, depends_on_payload, ref, parent_id, created_at, updated_at FROM tasks WHERE id = ?`, id,
 	)
 	t, err := scanTask(row)
 	if err != nil && len(id) >= 8 {
 		// Try prefix match
 		row = dbtx.QueryRow(
-			`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, depends_on_payload, ref, parent_id, ephemeral, created_at, updated_at FROM tasks WHERE id LIKE ?`, id+"%",
+			`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, depends_on_payload, ref, parent_id, created_at, updated_at FROM tasks WHERE id LIKE ?`, id+"%",
 		)
 		t, err = scanTask(row)
 	}
@@ -192,7 +192,7 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 		args = append(args, filter.ProjectID)
 	}
 
-	query := `SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, depends_on_payload, ref, parent_id, ephemeral, created_at, updated_at FROM tasks`
+	query := `SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, depends_on_payload, ref, parent_id, created_at, updated_at FROM tasks`
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
@@ -290,9 +290,8 @@ type GCResult struct {
 // GCTasks deletes terminal tasks older than olderThan and their related data
 // (actions, jobs, worktrees). If dryRun is true, counts only without deleting.
 // olderThan=0 disables the time filter (all matching tasks are affected).
-// ephemeral=nil disables the ephemeral filter; true=ephemeral only, false=non-ephemeral only.
 // Must be called within a transaction for atomicity.
-func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bool, ephemeral *bool) (*GCResult, error) {
+func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bool) (*GCResult, error) {
 	if len(statuses) == 0 {
 		return &GCResult{}, nil
 	}
@@ -319,11 +318,6 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 			condArgs[i] = s
 		}
 	}
-	if ephemeral != nil {
-		taskCond += ` AND ephemeral = ?`
-		condArgs = append(condArgs, *ephemeral)
-	}
-
 	subquery := `SELECT id FROM tasks WHERE ` + taskCond
 	result := &GCResult{}
 
@@ -399,7 +393,7 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 // or nil if no matching task is found.
 func FindTaskByRemote(dbtx db.DBTX, remoteID, datasourceID string) (*Task, error) {
 	row := dbtx.QueryRow(
-		`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, depends_on_payload, ref, parent_id, ephemeral, created_at, updated_at FROM tasks WHERE remote_id = ? AND datasource_id = ?`,
+		`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, depends_on_payload, ref, parent_id, created_at, updated_at FROM tasks WHERE remote_id = ? AND datasource_id = ?`,
 		remoteID, datasourceID,
 	)
 	t, err := scanTask(row)
@@ -431,7 +425,7 @@ func FindTaskByRef(dbtx db.DBTX, ref, parentID string) (*Task, error) {
 		return t, nil
 	}
 	row := dbtx.QueryRow(
-		`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, depends_on_payload, ref, parent_id, ephemeral, created_at, updated_at FROM tasks WHERE ref = ? AND parent_id = ?`,
+		`SELECT id, project_id, remote_id, datasource_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, depends_on_payload, ref, parent_id, created_at, updated_at FROM tasks WHERE ref = ? AND parent_id = ?`,
 		ref, parentID,
 	)
 	t, err := scanTask(row)
@@ -475,7 +469,7 @@ func scanTask(s taskScanner) (*Task, error) {
 	var t Task
 	var payload string
 	var traitsJSON string
-	if err := s.Scan(&t.ID, &t.ProjectID, &t.RemoteID, &t.DataSourceID, &t.Title, &t.Description, &t.Status, &t.Behavior, &traitsJSON, &t.Readonly, &t.Worktree, &t.BranchPrefix, &t.BaseBranch, &payload, &t.AutoStart, &t.DependsOnPayload, &t.Ref, &t.ParentID, &t.Ephemeral, &t.CreatedAt, &t.UpdatedAt); err != nil {
+	if err := s.Scan(&t.ID, &t.ProjectID, &t.RemoteID, &t.DataSourceID, &t.Title, &t.Description, &t.Status, &t.Behavior, &traitsJSON, &t.Readonly, &t.Worktree, &t.BranchPrefix, &t.BaseBranch, &payload, &t.AutoStart, &t.DependsOnPayload, &t.Ref, &t.ParentID, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("task not found")
 		}

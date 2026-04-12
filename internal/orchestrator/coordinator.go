@@ -72,15 +72,6 @@ func (d *Coordinator) DispatchAndAdvance(
 			return nil, fmt.Errorf("gate dispatch: %w", err)
 		}
 		for _, gr := range gateResults {
-			// Inject default artifact for script gates that exit 0 with no payload output.
-			if gr.ExitCode == 0 && (len(gr.PayloadPatch) == 0 || string(gr.PayloadPatch) == "{}") {
-				for _, g := range matchedGates {
-					if g.ID == gr.ID && g.Behavior.HasPrefix("_script:") {
-						gr.PayloadPatch = json.RawMessage(`{"artifact":{"summary":"completed"}}`)
-						break
-					}
-				}
-			}
 			allResults = append(allResults, gr)
 			if err := checkExclusiveCollision(gr.PayloadPatch, gr.ID, exclusiveWriters); err != nil {
 				return nil, err

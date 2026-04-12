@@ -511,57 +511,7 @@ func TestCoordinator_DispatchAndAdvance_LockerSkippedForWorktree(t *testing.T) {
 	}
 }
 
-func TestCoordinator_DispatchAndAdvance_ScriptGateExitZeroEmptyOutput_InjectsDefaultArtifact(t *testing.T) {
-	mock := newMockExecutorWaiter()
-	mock.setGateCompletion("script-gate", "", 0) // exit 0, empty output
-
-	eval := &orchestrator.Evaluator{}
-	coord := &orchestrator.Coordinator{
-		Evaluator:    eval,
-		HookExecutor: mock,
-		GateExecutor: mock,
-		Waiter:       mock,
-		MaxDepth:     5,
-	}
-
-	task := &orchestrator.Task{
-		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "_script:my-kit/my-script",
-		Payload:   json.RawMessage(`{}`),
-	}
-	meta := &projectspec.ProjectMeta{
-		Gates: []projectspec.Gate{
-			{
-				ID:       "script-gate",
-				On:       orchestrator.OnValues{"executing"},
-				Behavior: projectspec.BehaviorValues{"_script:my-kit/my-script"},
-				Traits: orchestrator.HandlerTraits{
-					Produces: []orchestrator.TraitType{orchestrator.TraitArtifact, orchestrator.TraitTasks},
-				},
-			},
-		},
-	}
-	sm := orchestrator.DefaultMachine()
-
-	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
-	if err != nil {
-		t.Fatalf("dispatch: %v", err)
-	}
-
-	var payload map[string]json.RawMessage
-	json.Unmarshal(result.FinalPayload, &payload)
-	if _, ok := payload["artifact"]; !ok {
-		t.Error("expected artifact in final payload after script gate exit 0 with empty output")
-	}
-
-	if result.NewStatus != orchestrator.TaskStatusVerifying {
-		t.Errorf("expected verifying after script gate injects artifact, got %q", result.NewStatus)
-	}
-}
-
-func TestCoordinator_DispatchAndAdvance_NonScriptGateExitZeroEmptyOutput_NoArtifact(t *testing.T) {
+func TestCoordinator_DispatchAndAdvance_GateExitZeroEmptyOutput_NoArtifactInjected(t *testing.T) {
 	mock := newMockExecutorWaiter()
 	mock.setGateCompletion("regular-gate", "", 0) // exit 0, empty output
 
@@ -586,7 +536,7 @@ func TestCoordinator_DispatchAndAdvance_NonScriptGateExitZeroEmptyOutput_NoArtif
 			{
 				ID:       "regular-gate",
 				On:       orchestrator.OnValues{"executing"},
-				Behavior: projectspec.BehaviorValues{"custom-behavior"}, // NOT starting with "_script:"
+				Behavior: projectspec.BehaviorValues{"custom-behavior"},
 			},
 		},
 	}
@@ -600,11 +550,11 @@ func TestCoordinator_DispatchAndAdvance_NonScriptGateExitZeroEmptyOutput_NoArtif
 	var payload map[string]json.RawMessage
 	json.Unmarshal(result.FinalPayload, &payload)
 	if _, ok := payload["artifact"]; ok {
-		t.Error("expected no artifact injection for non-script gate with empty output")
+		t.Error("expected no artifact injection for gate with empty output")
 	}
 
 	if result.NewStatus != "" {
-		t.Errorf("expected no advance for non-script gate, got %q", result.NewStatus)
+		t.Errorf("expected no advance for gate with empty output, got %q", result.NewStatus)
 	}
 }
 

@@ -280,11 +280,6 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		resolvedDeps = append(resolvedDeps, t.ID)
 	}
 
-	var ephemeral bool
-	if req.Ephemeral != nil {
-		ephemeral = *req.Ephemeral
-	}
-
 	task := &orchestrator.Task{
 		ID:               req.ID,
 		ProjectID:        req.ProjectID,
@@ -304,7 +299,6 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		DependsOnPayload: req.DependsOnPayload,
 		Ref:              req.Ref,
 		ParentID:         req.ParentID,
-		Ephemeral:        ephemeral,
 	}
 	if err := s.Tasks.CreateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
@@ -766,7 +760,6 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 				}
 				if current.Status == orchestrator.TaskStatusDone {
 					s.triggerDependentTasks(ctx, current.ID)
-					s.fireScriptTriggers(ctx, current, meta, orchestrator.ScriptTriggerTaskDone)
 				}
 			}
 			return
@@ -814,7 +807,6 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			}
 			if current.Status == orchestrator.TaskStatusDone {
 				s.triggerDependentTasks(ctx, current.ID)
-				s.fireScriptTriggers(ctx, current, meta, orchestrator.ScriptTriggerTaskDone)
 			}
 			return
 		}
@@ -844,24 +836,6 @@ func (s *TaskWorkflowService) triggerDependentTasks(ctx context.Context, taskID 
 		}
 		if _, err := s.ApplyAction(ctx, dep.ID, ApplyActionRequest{Type: "start"}); err != nil {
 			slog.Warn("trigger dependent tasks: start failed", "dependent_id", dep.ID, "error", err)
-		}
-	}
-}
-
-func (s *TaskWorkflowService) fireScriptTriggers(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, event orchestrator.ScriptTrigger) {
-	if task.Ephemeral {
-		return
-	}
-	matched := orchestrator.MatchScripts(meta.Scripts, event, task.Behavior)
-	for _, script := range matched {
-		scriptTask := orchestrator.BuildTriggeredScriptTask(script, event, task)
-		if err := s.Tasks.CreateTask(scriptTask); err != nil {
-			slog.Error("script trigger: create task failed", "script_id", script.ID, "task_id", task.ID, "error", err)
-			continue
-		}
-		slog.Info("script trigger: task created", "script_id", script.ID, "script_task_id", scriptTask.ID)
-		if _, err := s.ApplyAction(ctx, scriptTask.ID, ApplyActionRequest{Type: "start"}); err != nil {
-			slog.Error("script trigger: start failed", "script_id", script.ID, "script_task_id", scriptTask.ID, "error", err)
 		}
 	}
 }

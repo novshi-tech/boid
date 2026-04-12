@@ -1,8 +1,0 @@
-id: e2e-script-manual
-name: E2E Script Manual
-kits:
-  - github.com/novshi-tech/boid-kits/e2e-scripts
-task_behaviors:
-  simple:
-    transition: one-shot
-    traits: []

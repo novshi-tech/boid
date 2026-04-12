@@ -17,26 +17,16 @@ var gcCmd = &cobra.Command{
 func init() {
 	gcCmd.Flags().Duration("older-than", 30*24*time.Hour, "Delete tasks older than this duration")
 	gcCmd.Flags().Bool("dry-run", false, "Show what would be deleted without actually deleting")
-	gcCmd.Flags().Bool("ephemeral", false, "Target only ephemeral tasks (default older-than becomes 24h)")
 	rootCmd.AddCommand(gcCmd)
 }
 
 func runGC(cmd *cobra.Command, args []string) error {
 	olderThan, _ := cmd.Flags().GetDuration("older-than")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
-	ephemeralFlag, _ := cmd.Flags().GetBool("ephemeral")
-
-	if ephemeralFlag && !cmd.Flags().Changed("older-than") {
-		olderThan = 24 * time.Hour
-	}
 
 	body := map[string]any{
 		"older_than": olderThan.String(),
 		"dry_run":    dryRun,
-	}
-	if ephemeralFlag {
-		v := true
-		body["ephemeral"] = v
 	}
 
 	c := client.NewUnixClient(client.DefaultSocketPath())

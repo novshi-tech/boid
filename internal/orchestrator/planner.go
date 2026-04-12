@@ -203,8 +203,8 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 	projectGatesDir := filepath.Join(proj.WorkDir, ".boid", "gates")
 	gatesDir := filepath.Dir(event.Gate.ScriptPath)
 	var stagingDir string
-	if len(meta.KitGatesDirs) > 0 || len(meta.KitScriptsDirs) > 0 {
-		staged, _, err := StageGates(projectGatesDir, meta.KitGatesDirs, meta.KitScriptsDirs, event.TaskID)
+	if len(meta.KitGatesDirs) > 0 {
+		staged, _, err := StageGates(projectGatesDir, meta.KitGatesDirs, event.TaskID)
 		if err != nil {
 			return nil, fmt.Errorf("stage gates: %w", err)
 		}

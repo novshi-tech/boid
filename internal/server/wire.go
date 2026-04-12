@@ -257,15 +257,6 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	gcHandler := &api.GCHandler{Service: &api.GCAppService{Store: gcStore}}
 	r.Mount("/api/gc", gcHandler.Routes())
 
-	scriptHandler := &api.ScriptHandler{Service: &api.ScriptAppService{
-		Meta:     runtime.meta,
-		Tasks:    runtime.taskRepo,
-		Workflow: runtime.workflow,
-	}}
-	r.Route("/api/projects/{id}/scripts", func(r chi.Router) {
-		r.Mount("/", scriptHandler.Routes())
-	})
-
 	actionHandler := &api.ActionHandler{Service: runtime.workflow}
 	r.Route("/api/tasks/{taskID}/actions", func(r chi.Router) {
 		r.Mount("/", actionHandler.Routes())
