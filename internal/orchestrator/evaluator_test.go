@@ -359,8 +359,8 @@ func TestEvaluate_BehaviorFilter(t *testing.T) {
 		Payload:  json.RawMessage(`{}`),
 	}
 	hooks := []projectspec.Hook{
-		{ID: "dev-hook", On: projectspec.OnValues{"executing"}, Behavior: "dev"},
-		{ID: "ci-hook", On: projectspec.OnValues{"executing"}, Behavior: "ci"},
+		{ID: "dev-hook", On: projectspec.OnValues{"executing"}, Behavior: projectspec.BehaviorValues{"dev"}},
+		{ID: "ci-hook", On: projectspec.OnValues{"executing"}, Behavior: projectspec.BehaviorValues{"ci"}},
 	}
 
 	matched := eval.Evaluate(task, hooks)
@@ -382,12 +382,32 @@ func TestEvaluate_BehaviorFilter_Empty(t *testing.T) {
 	}
 	hooks := []projectspec.Hook{
 		{ID: "any-hook", On: projectspec.OnValues{"executing"}},
-		{ID: "dev-hook", On: projectspec.OnValues{"executing"}, Behavior: "dev"},
+		{ID: "dev-hook", On: projectspec.OnValues{"executing"}, Behavior: projectspec.BehaviorValues{"dev"}},
 	}
 
 	matched := eval.Evaluate(task, hooks)
 	if len(matched) != 2 {
 		t.Fatalf("expected 2 matched hooks (empty behavior matches all), got %d", len(matched))
+	}
+}
+
+func TestEvaluate_BehaviorFilter_List(t *testing.T) {
+	eval := &orchestrator.Evaluator{}
+	task := &orchestrator.Task{
+		Status:   orchestrator.TaskStatusExecuting,
+		Behavior: "plan",
+		Payload:  json.RawMessage(`{}`),
+	}
+	hooks := []projectspec.Hook{
+		{ID: "plan-hook", On: projectspec.OnValues{"executing"}, Behavior: projectspec.BehaviorValues{"plan", "auto_plan"}},
+		{ID: "dev-hook", On: projectspec.OnValues{"executing"}, Behavior: projectspec.BehaviorValues{"dev"}},
+	}
+	matched := eval.Evaluate(task, hooks)
+	if len(matched) != 1 {
+		t.Fatalf("expected 1 matched hook, got %d", len(matched))
+	}
+	if matched[0].ID != "plan-hook" {
+		t.Fatalf("expected plan-hook, got %s", matched[0].ID)
 	}
 }
 
@@ -400,8 +420,8 @@ func TestEvaluateGates_BehaviorFilter(t *testing.T) {
 		Payload:  json.RawMessage(`{}`),
 	}
 	gates := []projectspec.Gate{
-		{ID: "dev-gate", On: projectspec.OnValues{"executing"}, Behavior: "dev"},
-		{ID: "ci-gate", On: projectspec.OnValues{"executing"}, Behavior: "ci"},
+		{ID: "dev-gate", On: projectspec.OnValues{"executing"}, Behavior: projectspec.BehaviorValues{"dev"}},
+		{ID: "ci-gate", On: projectspec.OnValues{"executing"}, Behavior: projectspec.BehaviorValues{"ci"}},
 		{ID: "any-gate", On: projectspec.OnValues{"executing"}},
 	}
 
@@ -415,6 +435,26 @@ func TestEvaluateGates_BehaviorFilter(t *testing.T) {
 	}
 	if !ids["dev-gate"] || !ids["any-gate"] {
 		t.Fatalf("expected dev-gate and any-gate, got %v", ids)
+	}
+}
+
+func TestEvaluateGates_BehaviorFilter_List(t *testing.T) {
+	eval := &orchestrator.Evaluator{}
+	task := &orchestrator.Task{
+		Status:   orchestrator.TaskStatusDone,
+		Behavior: "auto_plan",
+		Payload:  json.RawMessage(`{}`),
+	}
+	gates := []projectspec.Gate{
+		{ID: "create-subtasks", On: projectspec.OnValues{"done"}, Phase: projectspec.GatePhaseEntry, Behavior: projectspec.BehaviorValues{"plan", "auto_plan"}},
+		{ID: "dev-gate", On: projectspec.OnValues{"done"}, Phase: projectspec.GatePhaseEntry, Behavior: projectspec.BehaviorValues{"dev"}},
+	}
+	matched := eval.EvaluateGates(task, gates, projectspec.GatePhaseEntry)
+	if len(matched) != 1 {
+		t.Fatalf("expected 1 matched gate, got %d", len(matched))
+	}
+	if matched[0].ID != "create-subtasks" {
+		t.Fatalf("expected create-subtasks, got %s", matched[0].ID)
 	}
 }
 

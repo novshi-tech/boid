@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v3"
@@ -76,7 +75,7 @@ func (d *Coordinator) DispatchAndAdvance(
 			// Inject default artifact for script gates that exit 0 with no payload output.
 			if gr.ExitCode == 0 && (len(gr.PayloadPatch) == 0 || string(gr.PayloadPatch) == "{}") {
 				for _, g := range matchedGates {
-					if g.ID == gr.ID && strings.HasPrefix(g.Behavior, "_script:") {
+					if g.ID == gr.ID && g.Behavior.HasPrefix("_script:") {
 						gr.PayloadPatch = json.RawMessage(`{"artifact":{"summary":"completed"}}`)
 						break
 					}

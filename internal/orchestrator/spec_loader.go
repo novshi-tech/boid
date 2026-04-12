@@ -399,7 +399,7 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) (*P
 			scriptGates = append(scriptGates, Gate{
 				ID:       gateID,
 				On:       OnValues{"executing"},
-				Behavior: fmt.Sprintf("_script:%s/%s", consumer, s.ID),
+				Behavior: BehaviorValues{fmt.Sprintf("_script:%s/%s", consumer, s.ID)},
 				Traits: HandlerTraits{
 					Produces: []TraitType{TraitArtifact, TraitTasks},
 				},

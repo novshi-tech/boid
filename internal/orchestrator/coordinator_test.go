@@ -536,7 +536,7 @@ func TestCoordinator_DispatchAndAdvance_ScriptGateExitZeroEmptyOutput_InjectsDef
 			{
 				ID:       "script-gate",
 				On:       orchestrator.OnValues{"executing"},
-				Behavior: "_script:my-kit/my-script",
+				Behavior: projectspec.BehaviorValues{"_script:my-kit/my-script"},
 				Traits: orchestrator.HandlerTraits{
 					Produces: []orchestrator.TraitType{orchestrator.TraitArtifact, orchestrator.TraitTasks},
 				},
@@ -586,7 +586,7 @@ func TestCoordinator_DispatchAndAdvance_NonScriptGateExitZeroEmptyOutput_NoArtif
 			{
 				ID:       "regular-gate",
 				On:       orchestrator.OnValues{"executing"},
-				Behavior: "custom-behavior", // NOT starting with "_script:"
+				Behavior: projectspec.BehaviorValues{"custom-behavior"}, // NOT starting with "_script:"
 			},
 		},
 	}

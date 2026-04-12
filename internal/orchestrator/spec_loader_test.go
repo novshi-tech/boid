@@ -1349,8 +1349,8 @@ func TestMergeKitMeta_ScriptGates(t *testing.T) {
 		if scriptGate == nil {
 			t.Fatalf("expected gate github-pr/detect-conflicts, got gates: %+v", result.Gates)
 		}
-		if scriptGate.Behavior != "_script:github-pr/detect-conflicts" {
-			t.Errorf("Behavior = %q, want %q", scriptGate.Behavior, "_script:github-pr/detect-conflicts")
+		if len(scriptGate.Behavior) != 1 || scriptGate.Behavior[0] != "_script:github-pr/detect-conflicts" {
+			t.Errorf("Behavior = %v, want [_script:github-pr/detect-conflicts]", scriptGate.Behavior)
 		}
 		if len(scriptGate.On) != 1 || scriptGate.On[0] != "executing" {
 			t.Errorf("On = %v, want [executing]", scriptGate.On)

@@ -211,15 +211,60 @@ func (o OnValues) AllValid(valid map[string]bool) bool {
 	return true
 }
 
+// BehaviorValues holds one or more behavior names for hook/gate matching.
+// In YAML it accepts both a scalar string ("dev") and a sequence
+// (["plan", "auto_plan"]). An empty BehaviorValues matches any task behavior.
+type BehaviorValues []string
+
+func (b *BehaviorValues) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		*b = BehaviorValues{node.Value}
+	case yaml.SequenceNode:
+		var vals []string
+		if err := node.Decode(&vals); err != nil {
+			return err
+		}
+		*b = vals
+	default:
+		return fmt.Errorf("behavior: expected string or sequence, got %v", node.Tag)
+	}
+	return nil
+}
+
+// Matches reports whether the given task behavior is matched by this filter.
+// An empty BehaviorValues matches any behavior.
+func (b BehaviorValues) Matches(taskBehavior string) bool {
+	if len(b) == 0 {
+		return true
+	}
+	for _, v := range b {
+		if v == taskBehavior {
+			return true
+		}
+	}
+	return false
+}
+
+// HasPrefix reports whether any value in b starts with the given prefix.
+func (b BehaviorValues) HasPrefix(prefix string) bool {
+	for _, v := range b {
+		if strings.HasPrefix(v, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 type Hook struct {
-	ID         string        `yaml:"id" json:"id"`
-	On         OnValues      `yaml:"on" json:"on"`
-	Behavior   string        `yaml:"behavior,omitempty" json:"behavior,omitempty"`
-	Traits     HandlerTraits `yaml:"traits" json:"traits"`
-	Requires   []string      `yaml:"requires" json:"requires"`
-	Consumer   string        `yaml:"consumer,omitempty" json:"consumer,omitempty"`
-	Kit        string        `yaml:"-" json:"kit,omitempty"`
-	ScriptPath string        `yaml:"-" json:"-"`
+	ID         string         `yaml:"id" json:"id"`
+	On         OnValues       `yaml:"on" json:"on"`
+	Behavior   BehaviorValues `yaml:"behavior,omitempty" json:"behavior,omitempty"`
+	Traits     HandlerTraits  `yaml:"traits" json:"traits"`
+	Requires   []string       `yaml:"requires" json:"requires"`
+	Consumer   string         `yaml:"consumer,omitempty" json:"consumer,omitempty"`
+	Kit        string         `yaml:"-" json:"kit,omitempty"`
+	ScriptPath string         `yaml:"-" json:"-"`
 }
 
 // GatePhase determines when a gate fires relative to a state transition.
@@ -231,13 +276,13 @@ const (
 )
 
 type Gate struct {
-	ID         string        `yaml:"id" json:"id"`
-	On         OnValues      `yaml:"on" json:"on"`
-	Phase      GatePhase     `yaml:"phase,omitempty" json:"phase,omitempty"`
-	Behavior   string        `yaml:"behavior,omitempty" json:"behavior,omitempty"`
-	Traits     HandlerTraits `yaml:"traits" json:"traits"`
-	Kit        string        `yaml:"-" json:"kit,omitempty"`
-	ScriptPath string        `yaml:"-" json:"-"`
+	ID         string         `yaml:"id" json:"id"`
+	On         OnValues       `yaml:"on" json:"on"`
+	Phase      GatePhase      `yaml:"phase,omitempty" json:"phase,omitempty"`
+	Behavior   BehaviorValues `yaml:"behavior,omitempty" json:"behavior,omitempty"`
+	Traits     HandlerTraits  `yaml:"traits" json:"traits"`
+	Kit        string         `yaml:"-" json:"kit,omitempty"`
+	ScriptPath string         `yaml:"-" json:"-"`
 }
 
 // UnmarshalYAML defaults Phase to GatePhaseExit when omitted.
