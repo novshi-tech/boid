@@ -442,10 +442,18 @@ type KitMetaInfo struct {
 	Category    string `yaml:"category"` // language / vcs / ci / agent / workflow / utility
 }
 
-// KitDetect defines filesystem signals used to detect kit applicability.
+// KitDetect declares how to determine whether a kit is applicable to a
+// project. The referenced script is executed with POSIX sh in the project
+// directory; its first line of stdout — "required", "optional", or empty
+// — indicates the detection outcome.
 type KitDetect struct {
-	// Files uses OR semantics: the kit is applicable when any listed path exists.
-	Files []string `yaml:"files"`
+	// Script is a path (relative to the kit directory) to a POSIX sh
+	// script. boid init runs it with sh(1) using projectDir as CWD and a
+	// 5-second timeout. The first trimmed line of stdout is interpreted:
+	//   "required" → kit is auto-selected
+	//   "optional" → kit is shown as a candidate but not auto-selected
+	//   other / empty / non-zero exit → not applicable
+	Script string `yaml:"script"`
 }
 
 // KitRequires declares host commands that must be present in PATH.

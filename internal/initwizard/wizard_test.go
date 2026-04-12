@@ -365,11 +365,69 @@ func TestWizardRun_MissingRequirement(t *testing.T) {
 	}
 }
 
+func TestWizardRun_OptionalKit(t *testing.T) {
+	kitsDir := t.TempDir()
+
+	// Create a kit whose detect script always prints "optional".
+	kitRef := "github.com/test/repo/opt-kit"
+	kitDir := filepath.Join(kitsDir, kitRef)
+	if err := os.MkdirAll(kitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\necho optional\n"
+	if err := os.WriteFile(filepath.Join(kitDir, "detect.sh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	kitYAML := "meta:\n  name: opt-kit\ndetect:\n  script: detect.sh\n"
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	initFakeGitRepo(t, kitsDir, "github.com/test/repo")
+
+	projectDir := t.TempDir()
+
+	// Stdin: project name then Enter (keep defaults — optional kit stays OFF).
+	input := "opt-project\n\n"
+	var out bytes.Buffer
+
+	w := &initwizard.Wizard{
+		In:      strings.NewReader(input),
+		Out:     &out,
+		KitsDir: kitsDir,
+	}
+
+	if err := w.Run(projectDir); err != nil {
+		t.Fatalf("Run: %v\nOutput:\n%s", err, out.String())
+	}
+
+	// 1. Output must contain "(optional)" suffix.
+	if !strings.Contains(out.String(), "(optional)") {
+		t.Errorf("expected '(optional)' in output, got:\n%s", out.String())
+	}
+
+	// 2. project.yaml must NOT include the optional kit (default OFF).
+	data, err := os.ReadFile(filepath.Join(projectDir, ".boid", "project.yaml"))
+	if err != nil {
+		t.Fatalf("read project.yaml: %v", err)
+	}
+	var proj struct {
+		Kits []string `yaml:"kits"`
+	}
+	if err := yaml.Unmarshal(data, &proj); err != nil {
+		t.Fatalf("parse project.yaml: %v", err)
+	}
+	for _, k := range proj.Kits {
+		if strings.Contains(k, "opt-kit") {
+			t.Errorf("optional kit should not be selected by default, but found in kits: %v", proj.Kits)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 
-func createFakeKit(t *testing.T, kitsDir, ref, name, detectFile string, hasScaffold bool) {
+func createFakeKit(t *testing.T, kitsDir, ref, name, detectMarker string, hasScaffold bool) {
 	t.Helper()
 	kitDir := filepath.Join(kitsDir, ref)
 	if err := os.MkdirAll(kitDir, 0o755); err != nil {
@@ -380,8 +438,12 @@ func createFakeKit(t *testing.T, kitsDir, ref, name, detectFile string, hasScaff
 	if name != "" {
 		sb.WriteString("meta:\n  name: " + name + "\n")
 	}
-	if detectFile != "" {
-		sb.WriteString("detect:\n  files:\n    - " + detectFile + "\n")
+	if detectMarker != "" {
+		script := "#!/bin/sh\nif [ -e \"" + detectMarker + "\" ]; then\n    echo required\nfi\n"
+		if err := os.WriteFile(filepath.Join(kitDir, "detect.sh"), []byte(script), 0o755); err != nil {
+			t.Fatalf("write detect.sh: %v", err)
+		}
+		sb.WriteString("detect:\n  script: detect.sh\n")
 	}
 	if hasScaffold {
 		sb.WriteString("scaffold:\n  task_behaviors:\n    description: Test scaffold\n    template: behaviors.tmpl\n")
@@ -403,9 +465,14 @@ func createFakeKitWithRequires(t *testing.T, kitsDir, ref, name, command string)
 		t.Fatalf("mkdir kit: %v", err)
 	}
 
+	script := "#!/bin/sh\n[ -e go.mod ] && echo required\n"
+	if err := os.WriteFile(filepath.Join(kitDir, "detect.sh"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write detect.sh: %v", err)
+	}
+
 	content := "meta:\n  name: " + name + "\n" +
 		"requires:\n  commands:\n    - " + command + "\n" +
-		"detect:\n  files:\n    - go.mod\n"
+		"detect:\n  script: detect.sh\n"
 
 	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(content), 0o644); err != nil {
 		t.Fatalf("write kit.yaml: %v", err)

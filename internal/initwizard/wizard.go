@@ -241,8 +241,12 @@ func (w *Wizard) selectFeatureKits(scanner *bufio.Scanner, projectDir string, ki
 	}
 
 	selected := make([]bool, len(kits))
+	results := make([]kit.DetectResult, len(kits))
 	for i, ki := range kits {
-		selected[i] = kit.Detect(projectDir, *ki.Meta)
+		results[i] = kit.Detect(projectDir, ki.Dir, *ki.Meta)
+		// Required kits are pre-selected; optional kits are shown but not
+		// selected by default.
+		selected[i] = (results[i] == kit.DetectRequired)
 	}
 
 	fmt.Fprintln(w.Out, "\nAvailable kits (auto-detected marked with ✓):")
@@ -252,7 +256,11 @@ func (w *Wizard) selectFeatureKits(scanner *bufio.Scanner, projectDir string, ki
 			mark = "✓"
 		}
 		displayName := kitDisplayName(ki)
-		fmt.Fprintf(w.Out, "  [%s] %d. %s (%s)\n", mark, i+1, displayName, ki.Ref)
+		suffix := ""
+		if results[i] == kit.DetectOptional {
+			suffix = " (optional)"
+		}
+		fmt.Fprintf(w.Out, "  [%s] %d. %s (%s)%s\n", mark, i+1, displayName, ki.Ref, suffix)
 	}
 	fmt.Fprintln(w.Out, "Enable/disable kits (space-separated numbers, prefix - to deselect, Enter to keep defaults):")
 	fmt.Fprint(w.Out, "> ")
