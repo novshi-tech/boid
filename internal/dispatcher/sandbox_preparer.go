@@ -46,6 +46,9 @@ func (sandboxPreparerImpl) PrepareSandbox(spec SandboxSpec) (*PreparedSandbox, e
 		TaskYAML:           spec.TaskYAML,
 		EnvironmentYAML:    spec.EnvironmentYAML,
 		Model:              spec.Model,
+		InvokedRole:        spec.InvokedRole,
+		InvokedName:        spec.InvokedName,
+		InvokedType:        spec.InvokedType,
 	})
 	if err != nil {
 		return nil, err

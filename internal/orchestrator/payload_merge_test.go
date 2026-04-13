@@ -2,6 +2,7 @@ package orchestrator_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -281,5 +282,112 @@ default_payload:
 	}
 	if executorMap["message"] != "TDD で実装してください。" {
 		t.Fatalf("expected executor message %q, got %q", "TDD で実装してください。", executorMap["message"])
+	}
+}
+
+func TestInstruction_Name_YAMLRoundTrip(t *testing.T) {
+	data := `
+type: verification
+consumer: claude-code
+name: security
+message: "成果物を検証してください"
+`
+	var inst orchestrator.Instruction
+	if err := yaml.Unmarshal([]byte(data), &inst); err != nil {
+		t.Fatalf("yaml.Unmarshal: %v", err)
+	}
+	if inst.Name != "security" {
+		t.Fatalf("expected Name %q, got %q", "security", inst.Name)
+	}
+	if inst.Type != orchestrator.InstructionTypeVerification {
+		t.Fatalf("expected Type %q, got %q", orchestrator.InstructionTypeVerification, inst.Type)
+	}
+
+	out, err := yaml.Marshal(inst)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	var roundTripped orchestrator.Instruction
+	if err := yaml.Unmarshal(out, &roundTripped); err != nil {
+		t.Fatalf("yaml.Unmarshal round-trip: %v", err)
+	}
+	if roundTripped.Name != "security" {
+		t.Fatalf("round-trip Name: expected %q, got %q", "security", roundTripped.Name)
+	}
+}
+
+func TestInstruction_Name_JSONRoundTrip(t *testing.T) {
+	inst := orchestrator.Instruction{
+		Type:     orchestrator.InstructionTypeVerification,
+		Consumer: "claude-code",
+		Name:     "performance",
+		Message:  "パフォーマンスを検証してください",
+	}
+
+	b, err := json.Marshal(inst)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+
+	var roundTripped orchestrator.Instruction
+	if err := json.Unmarshal(b, &roundTripped); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if roundTripped.Name != "performance" {
+		t.Fatalf("round-trip Name: expected %q, got %q", "performance", roundTripped.Name)
+	}
+}
+
+func TestInstruction_Name_OmittedWhenEmpty(t *testing.T) {
+	inst := orchestrator.Instruction{
+		Type:     orchestrator.InstructionTypeExecution,
+		Consumer: "claude-code",
+		Message:  "タスクを実行してください",
+	}
+
+	b, err := json.Marshal(inst)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if strings.Contains(string(b), `"name"`) {
+		t.Errorf("JSON should not include 'name' key when empty, got: %s", b)
+	}
+}
+
+func TestFilterInstructions_Name_PropagatedToRoutedInstruction(t *testing.T) {
+	payload := json.RawMessage(`{
+		"instructions":{
+			"reviewer_security":{"type":"verification","consumer":"agent-a","name":"security","message":"check security"},
+			"reviewer_perf":{"type":"verification","consumer":"agent-a","name":"performance","message":"check performance"}
+		}
+	}`)
+	results := orchestrator.FilterInstructions(payload, orchestrator.InstructionTypeVerification, "agent-a")
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	names := map[string]string{}
+	for _, r := range results {
+		names[r.Role] = r.Name
+	}
+	if names["reviewer_security"] != "security" {
+		t.Errorf("reviewer_security: expected Name=%q, got %q", "security", names["reviewer_security"])
+	}
+	if names["reviewer_perf"] != "performance" {
+		t.Errorf("reviewer_perf: expected Name=%q, got %q", "performance", names["reviewer_perf"])
+	}
+}
+
+func TestFilterInstructions_Name_EmptyWhenNotSet(t *testing.T) {
+	payload := json.RawMessage(`{
+		"instructions":{
+			"main":{"type":"execution","consumer":"agent-a","message":"do it"}
+		}
+	}`)
+	results := orchestrator.FilterInstructions(payload, orchestrator.InstructionTypeExecution, "agent-a")
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Name != "" {
+		t.Errorf("expected empty Name, got %q", results[0].Name)
 	}
 }

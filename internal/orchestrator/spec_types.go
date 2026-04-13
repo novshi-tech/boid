@@ -118,6 +118,7 @@ const (
 type Instruction struct {
 	Type        InstructionType `json:"type" yaml:"type"`
 	Consumer    string          `json:"consumer" yaml:"consumer"`
+	Name        string          `json:"name,omitempty" yaml:"name,omitempty"`
 	Message     string          `json:"message,omitempty" yaml:"message,omitempty"`
 	Interactive bool            `json:"interactive,omitempty" yaml:"interactive,omitempty"`
 	Model       string          `json:"model,omitempty" yaml:"model,omitempty"`
@@ -127,6 +128,7 @@ type RoutedInstruction struct {
 	Role        string          `json:"role"`
 	Type        InstructionType `json:"type"`
 	Consumer    string          `json:"consumer"`
+	Name        string          `json:"name,omitempty"`
 	Message     string          `json:"message"`
 	Interactive bool            `json:"interactive,omitempty"`
 	Model       string          `json:"model,omitempty"`

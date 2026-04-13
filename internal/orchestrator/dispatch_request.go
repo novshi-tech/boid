@@ -34,4 +34,7 @@ type DispatchRequest struct {
 	TaskYAML           string // serialized task metadata for context/task.yaml
 	EnvironmentYAML    string // serialized sandbox environment for context/environment.yaml
 	Model              string // AI model to use (from instruction's model field)
+	InvokedRole        string // instruction map key name (e.g. "main", "executor", "reviewer_security")
+	InvokedName        string // instruction.Name value (e.g. "security", "performance"; empty if unset)
+	InvokedType        string // instruction.Type value (e.g. "execution", "rework", "verification")
 }

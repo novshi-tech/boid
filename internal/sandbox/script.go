@@ -43,6 +43,9 @@ type WrapperConfig struct {
 	TaskYAML           string            // serialized task metadata for context/task.yaml
 	EnvironmentYAML    string            // serialized sandbox environment for context/environment.yaml
 	Model              string            // AI model identifier exported as BOID_MODEL
+	InvokedRole        string            // instruction map key name (BOID_INVOKED_ROLE)
+	InvokedName        string            // instruction.Name value (BOID_INVOKED_NAME; empty if unset)
+	InvokedType        string            // instruction.Type value (BOID_INVOKED_TYPE)
 }
 
 // workDir returns the effective working directory inside the sandbox.
@@ -165,6 +168,9 @@ func generateHookInnerScript(cfg WrapperConfig) string {
 	if cfg.Model != "" {
 		fmt.Fprintf(&b, "export BOID_MODEL=%s\n", shellQuote(cfg.Model))
 	}
+	fmt.Fprintf(&b, "export BOID_INVOKED_ROLE=%s\n", shellQuote(cfg.InvokedRole))
+	fmt.Fprintf(&b, "export BOID_INVOKED_NAME=%s\n", shellQuote(cfg.InvokedName))
+	fmt.Fprintf(&b, "export BOID_INVOKED_TYPE=%s\n", shellQuote(cfg.InvokedType))
 	writeBuiltinShimEnv(&b, cfg)
 
 	writePathAndProxy(&b, cfg)
@@ -335,6 +341,9 @@ func writeContextFiles(b *strings.Builder, cfg WrapperConfig) {
 	}
 	if cfg.PayloadJSON != "" {
 		fmt.Fprintf(b, "printf '%%s' %s > %s/payload.yaml\n", shellQuote(jsonToYAML(cfg.PayloadJSON)), shellQuote(contextDir))
+		if cfg.Interactive {
+			fmt.Fprintf(b, "printf '%%s' %s > %s/payload.json\n", shellQuote(cfg.PayloadJSON), shellQuote(contextDir))
+		}
 	}
 	if cfg.EnvironmentYAML != "" {
 		fmt.Fprintf(b, "printf '%%s' %s > %s/environment.yaml\n", shellQuote(cfg.EnvironmentYAML), shellQuote(contextDir))

@@ -52,4 +52,7 @@ type DispatchPlan struct {
 	TaskYAML           string
 	EnvironmentYAML    string
 	Model              string
+	InvokedRole        string // instruction map key name
+	InvokedName        string // instruction.Name value (empty if unset)
+	InvokedType        string // instruction.Type value
 }

@@ -1240,3 +1240,183 @@ func TestWriteSandboxScripts_HookRole_BoidModel_NotExportedWhenEmpty(t *testing.
 		t.Error("inner script must not export BOID_MODEL when Model is empty")
 	}
 }
+
+func TestWriteSandboxScripts_HookRole_InvokedEnvVars_Exported(t *testing.T) {
+	cfg := sandbox.WrapperConfig{
+		JobID:       "test-job-invoked",
+		TaskID:      "task-invoked-1",
+		ProjectID:   "proj-1",
+		ProjectDir:  "/home/user/projects/proj-1",
+		HookScript:  "run-agent.sh",
+		BoidBinary:  "/usr/local/bin/boid",
+		Role:        "hook",
+		InvokedRole: "executor",
+		InvokedName: "security",
+		InvokedType: "verification",
+	}
+
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-job-invoked"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	if !strings.Contains(inner, "BOID_INVOKED_ROLE=executor") {
+		t.Error("inner script missing BOID_INVOKED_ROLE=executor")
+	}
+	if !strings.Contains(inner, "BOID_INVOKED_NAME=security") {
+		t.Error("inner script missing BOID_INVOKED_NAME=security")
+	}
+	if !strings.Contains(inner, "BOID_INVOKED_TYPE=verification") {
+		t.Error("inner script missing BOID_INVOKED_TYPE=verification")
+	}
+}
+
+func TestWriteSandboxScripts_HookRole_InvokedEnvVars_EmptyWhenUnset(t *testing.T) {
+	cfg := sandbox.WrapperConfig{
+		JobID:      "test-job-invoked-empty",
+		TaskID:     "task-invoked-2",
+		ProjectID:  "proj-1",
+		ProjectDir: "/home/user/projects/proj-1",
+		HookScript: "run-agent.sh",
+		BoidBinary: "/usr/local/bin/boid",
+		Role:       "hook",
+		// InvokedRole, InvokedName, InvokedType are intentionally empty
+	}
+
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-job-invoked-empty"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	// Must be exported (even as empty string) so hook can always check the var
+	if !strings.Contains(inner, "BOID_INVOKED_ROLE=") {
+		t.Error("inner script missing BOID_INVOKED_ROLE export")
+	}
+	if !strings.Contains(inner, "BOID_INVOKED_NAME=") {
+		t.Error("inner script missing BOID_INVOKED_NAME export")
+	}
+	if !strings.Contains(inner, "BOID_INVOKED_TYPE=") {
+		t.Error("inner script missing BOID_INVOKED_TYPE export")
+	}
+}
+
+func TestWriteSandboxScripts_HookRole_Interactive_PayloadJsonWritten(t *testing.T) {
+	payloadJSON := `{"instructions":{"main":{"type":"execution","consumer":"claude-code"}}}`
+	cfg := sandbox.WrapperConfig{
+		JobID:       "test-job-payload-json",
+		TaskID:      "task-pj-1",
+		ProjectID:   "proj-1",
+		ProjectDir:  "/home/user/projects/proj-1",
+		HomeDir:     "/home/user",
+		HookScript:  "run-agent.sh",
+		BoidBinary:  "/usr/local/bin/boid",
+		Role:        "hook",
+		Interactive: true,
+		TTY:         true,
+		PayloadJSON: payloadJSON,
+	}
+
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-job-payload-json"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	// payload.yaml must still be written (backward compat)
+	if !strings.Contains(inner, "payload.yaml") {
+		t.Error("inner script missing payload.yaml write")
+	}
+	// payload.json must also be written in interactive mode
+	if !strings.Contains(inner, "payload.json") {
+		t.Error("inner script missing payload.json write in interactive mode")
+	}
+}
+
+func TestWriteSandboxScripts_HookRole_NonInteractive_PayloadJsonNotWritten(t *testing.T) {
+	payloadJSON := `{"instructions":{"main":{"type":"execution","consumer":"claude-code"}}}`
+	cfg := sandbox.WrapperConfig{
+		JobID:       "test-job-payload-nonjson",
+		TaskID:      "task-pj-2",
+		ProjectID:   "proj-1",
+		ProjectDir:  "/home/user/projects/proj-1",
+		HomeDir:     "/home/user",
+		HookScript:  "run-agent.sh",
+		BoidBinary:  "/usr/local/bin/boid",
+		Role:        "hook",
+		Interactive: false,
+		PayloadJSON: payloadJSON,
+	}
+
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-job-payload-nonjson"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	innerContent, err := os.ReadFile(innerPath)
+	if err != nil {
+		t.Fatalf("read inner script: %v", err)
+	}
+	inner := string(innerContent)
+
+	// payload.yaml must still be written
+	if !strings.Contains(inner, "payload.yaml") {
+		t.Error("inner script missing payload.yaml write")
+	}
+	// payload.json must NOT be written in non-interactive mode
+	if strings.Contains(inner, "payload.json") {
+		t.Error("inner script must not write payload.json in non-interactive mode")
+	}
+}
