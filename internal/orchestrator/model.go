@@ -38,6 +38,11 @@ type Task struct {
 	ParentID         string          `json:"parent_id,omitempty"`
 	CreatedAt        time.Time       `json:"created_at"`
 	UpdatedAt        time.Time       `json:"updated_at"`
+	// 以下はDBに保存しない派生フィールド（list/get クエリ時にサブクエリで集計）
+	TotalChildCount   int `json:"total_child_count,omitempty"`
+	DoneChildCount    int `json:"done_child_count,omitempty"`
+	AbortedChildCount int `json:"aborted_child_count,omitempty"`
+	OpenChildCount    int `json:"open_child_count,omitempty"`
 }
 
 type Action struct {
