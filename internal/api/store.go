@@ -50,6 +50,7 @@ type TaskService interface {
 	DeleteTask(id string, force bool) error
 	ImportTasks(reqs []CreateTaskRequest) (*ImportResult, error)
 	DuplicateTask(sourceID string, autoStart bool) (*orchestrator.Task, error)
+	RerunTask(id string, autoStart bool) (*orchestrator.Task, error)
 }
 
 type ImportError struct {

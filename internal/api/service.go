@@ -462,6 +462,54 @@ func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orches
 	return s.CreateTask(req)
 }
 
+func (s *TaskAppService) RerunTask(id string, autoStart bool) (*orchestrator.Task, error) {
+	task, err := s.Tasks.GetTask(id)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	if task.Status != orchestrator.TaskStatusDone && task.Status != orchestrator.TaskStatusAborted {
+		return nil, &StatusError{
+			Code:    http.StatusConflict,
+			Message: fmt.Sprintf("task is not in a rerun-able state (status: %s)", task.Status),
+		}
+	}
+
+	// instructions キーのみ保持し、それ以外はクリア
+	var newPayload json.RawMessage
+	if len(task.Payload) > 0 && string(task.Payload) != "null" {
+		var payloadMap map[string]json.RawMessage
+		if err := json.Unmarshal(task.Payload, &payloadMap); err == nil {
+			if instructions, ok := payloadMap["instructions"]; ok {
+				m := map[string]json.RawMessage{"instructions": instructions}
+				b, err := json.Marshal(m)
+				if err == nil {
+					newPayload = b
+				}
+			}
+		}
+	}
+	if len(newPayload) == 0 {
+		newPayload = json.RawMessage("{}")
+	}
+
+	task.Status = orchestrator.TaskStatusPending
+	task.Payload = newPayload
+	if err := s.Tasks.UpdateTask(task); err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+
+	if autoStart && s.Workflow != nil {
+		result, err := s.Workflow.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
+		if err != nil {
+			slog.Error("rerun auto_start: failed to apply start action", "task_id", task.ID, "error", err)
+		} else {
+			task = result.Task
+		}
+	}
+
+	return task, nil
+}
+
 func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 	task, err := s.GetTask(id)
 	if err != nil {

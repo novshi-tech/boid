@@ -89,6 +89,13 @@ var taskReopenCmd = &cobra.Command{
 	RunE:  runTaskReopen,
 }
 
+var taskRerunCmd = &cobra.Command{
+	Use:   "rerun <id>",
+	Short: "Reset a done/aborted task to pending for re-execution with the same ID",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTaskRerun,
+}
+
 func init() {
 	taskListCmd.Flags().String("status", "", "Filter by status")
 	taskCreateCmd.Flags().StringP("file", "f", "", "YAML file to read task spec from (default: stdin)")
@@ -102,7 +109,8 @@ func init() {
 	taskUpdateCmd.Flags().String("description", "", "New description")
 	taskUpdateCmd.Flags().String("payload-file", "", "Payload file (YAML/JSON), - for stdin")
 	taskDuplicateCmd.Flags().Bool("auto-start", false, "Automatically start the duplicated task")
-	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd, taskDeleteCmd, taskUpdateCmd, taskImportCmd, taskDuplicateCmd, taskReopenCmd)
+	taskRerunCmd.Flags().Bool("auto-start", false, "Automatically start the rerun task")
+	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd, taskDeleteCmd, taskUpdateCmd, taskImportCmd, taskDuplicateCmd, taskReopenCmd, taskRerunCmd)
 	rootCmd.AddCommand(taskCmd)
 }
 
@@ -427,6 +435,23 @@ func runTaskDuplicate(cmd *cobra.Command, args []string) error {
 	var task orchestrator.Task
 	if err := c.Do("POST", "/api/tasks/"+args[0]+"/duplicate", req, &task); err != nil {
 		return fmt.Errorf("duplicate task: %w", err)
+	}
+
+	fmt.Fprintln(cmd.OutOrStdout(), task.ID)
+	return nil
+}
+
+func runTaskRerun(cmd *cobra.Command, args []string) error {
+	autoStart, _ := cmd.Flags().GetBool("auto-start")
+	c := client.NewUnixClient(client.DefaultSocketPath())
+
+	req := map[string]any{
+		"auto_start": autoStart,
+	}
+
+	var task orchestrator.Task
+	if err := c.Do("POST", "/api/tasks/"+args[0]+"/rerun", req, &task); err != nil {
+		return fmt.Errorf("rerun task: %w", err)
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout(), task.ID)

@@ -1255,3 +1255,208 @@ func TestDuplicateTask_NotFound(t *testing.T) {
 		t.Fatalf("expected StatusNotFound, got %v", err)
 	}
 }
+
+// ---- RerunTask unit tests ----
+
+func TestRerunTask_DoneToPending(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "task-done",
+		ProjectID: "proj-1",
+		Title:     "Done Task",
+		Behavior:  "dev",
+		Status:    orchestrator.TaskStatusDone,
+		Payload:   json.RawMessage(`{"artifact":{"url":"old"}}`),
+	}
+	store := &stubTaskStore{task: task}
+	svc := &TaskAppService{Tasks: store}
+
+	result, err := svc.RerunTask("task-done", false)
+	if err != nil {
+		t.Fatalf("RerunTask() error = %v", err)
+	}
+	if result.Status != orchestrator.TaskStatusPending {
+		t.Errorf("Status = %q, want %q", result.Status, orchestrator.TaskStatusPending)
+	}
+	if store.updateCalls != 1 {
+		t.Errorf("UpdateTask calls = %d, want 1", store.updateCalls)
+	}
+}
+
+func TestRerunTask_AbortedToPendingUnit(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:       "task-aborted",
+		Status:   orchestrator.TaskStatusAborted,
+		Behavior: "dev",
+	}
+	store := &stubTaskStore{task: task}
+	svc := &TaskAppService{Tasks: store}
+
+	result, err := svc.RerunTask("task-aborted", false)
+	if err != nil {
+		t.Fatalf("RerunTask() error = %v", err)
+	}
+	if result.Status != orchestrator.TaskStatusPending {
+		t.Errorf("Status = %q, want pending", result.Status)
+	}
+}
+
+func TestRerunTask_WrongStatusUnit(t *testing.T) {
+	wrongStatuses := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusPending,
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusReworking,
+		orchestrator.TaskStatusVerifying,
+	}
+	for _, status := range wrongStatuses {
+		t.Run(string(status), func(t *testing.T) {
+			task := &orchestrator.Task{
+				ID:       "task-1",
+				Status:   status,
+				Behavior: "dev",
+			}
+			store := &stubTaskStore{task: task}
+			svc := &TaskAppService{Tasks: store}
+
+			_, err := svc.RerunTask("task-1", false)
+			if err == nil {
+				t.Fatalf("RerunTask() error = nil for status %q, want error", status)
+			}
+			se, ok := err.(*StatusError)
+			if !ok || se.Code != http.StatusConflict {
+				t.Fatalf("expected StatusConflict, got %v", err)
+			}
+		})
+	}
+}
+
+func TestRerunTask_NotFoundUnit(t *testing.T) {
+	store := &stubTaskStore{err: fmt.Errorf("task not found")}
+	svc := &TaskAppService{Tasks: store}
+
+	_, err := svc.RerunTask("nonexistent", false)
+	if err == nil {
+		t.Fatal("RerunTask() error = nil, want error")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusNotFound {
+		t.Fatalf("expected StatusNotFound, got %v", err)
+	}
+}
+
+func TestRerunTask_ClearsPayloadUnit(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:       "task-1",
+		Status:   orchestrator.TaskStatusDone,
+		Behavior: "dev",
+		Payload:  json.RawMessage(`{"artifact":{"url":"old"},"verification":{"gate":{"findings":[]}}}`),
+	}
+	store := &stubTaskStore{task: task}
+	svc := &TaskAppService{Tasks: store}
+
+	result, err := svc.RerunTask("task-1", false)
+	if err != nil {
+		t.Fatalf("RerunTask() error = %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(result.Payload, &m); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if _, ok := m["artifact"]; ok {
+		t.Error("artifact should be cleared after rerun")
+	}
+	if _, ok := m["verification"]; ok {
+		t.Error("verification should be cleared after rerun")
+	}
+}
+
+func TestRerunTask_PreservesInstructionsUnit(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:       "task-1",
+		Status:   orchestrator.TaskStatusAborted,
+		Behavior: "dev",
+		Payload:  json.RawMessage(`{"instructions":{"main":{"type":"execution"}},"artifact":{"url":"old"}}`),
+	}
+	store := &stubTaskStore{task: task}
+	svc := &TaskAppService{Tasks: store}
+
+	result, err := svc.RerunTask("task-1", false)
+	if err != nil {
+		t.Fatalf("RerunTask() error = %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(result.Payload, &m); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if _, ok := m["instructions"]; !ok {
+		t.Error("instructions should be preserved after rerun")
+	}
+	if _, ok := m["artifact"]; ok {
+		t.Error("artifact should be cleared after rerun")
+	}
+}
+
+func TestRerunTask_AutoStartUnit(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:       "task-1",
+		Status:   orchestrator.TaskStatusDone,
+		Behavior: "dev",
+	}
+	workflow := &stubWorkflowService{}
+	store := &stubTaskStore{task: task}
+	svc := &TaskAppService{
+		Tasks:    store,
+		Workflow: workflow,
+	}
+
+	_, err := svc.RerunTask("task-1", true)
+	if err != nil {
+		t.Fatalf("RerunTask() error = %v", err)
+	}
+	if workflow.appliedType != "start" {
+		t.Errorf("workflow action = %q, want %q", workflow.appliedType, "start")
+	}
+}
+
+func TestRerunTask_PreservesTaskMetadata(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:               "task-meta",
+		ProjectID:        "proj-1",
+		Title:            "Meta Task",
+		Description:      "Some description",
+		Behavior:         "dev",
+		Status:           orchestrator.TaskStatusDone,
+		DependsOn:        []string{"dep-id-1"},
+		DependsOnPayload: "artifact.url",
+		Ref:              "my-ref",
+		AutoStart:        true,
+		Worktree:         true,
+	}
+	store := &stubTaskStore{task: task}
+	svc := &TaskAppService{Tasks: store}
+
+	result, err := svc.RerunTask("task-meta", false)
+	if err != nil {
+		t.Fatalf("RerunTask() error = %v", err)
+	}
+	if result.ID != "task-meta" {
+		t.Errorf("ID = %q, want %q", result.ID, "task-meta")
+	}
+	if result.Title != "Meta Task" {
+		t.Errorf("Title = %q, want %q", result.Title, "Meta Task")
+	}
+	if result.Description != "Some description" {
+		t.Errorf("Description = %q, want %q", result.Description, "Some description")
+	}
+	if result.Behavior != "dev" {
+		t.Errorf("Behavior = %q, want %q", result.Behavior, "dev")
+	}
+	if len(result.DependsOn) == 0 || result.DependsOn[0] != "dep-id-1" {
+		t.Errorf("DependsOn = %v, want [dep-id-1]", result.DependsOn)
+	}
+	if result.DependsOnPayload != "artifact.url" {
+		t.Errorf("DependsOnPayload = %q, want %q", result.DependsOnPayload, "artifact.url")
+	}
+	if result.Ref != "my-ref" {
+		t.Errorf("Ref = %q, want %q", result.Ref, "my-ref")
+	}
+}

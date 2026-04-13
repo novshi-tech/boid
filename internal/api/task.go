@@ -25,6 +25,7 @@ func (h *TaskHandler) Routes() chi.Router {
 	r.Patch("/{id}", h.Patch)
 	r.Delete("/{id}", h.Delete)
 	r.Post("/{id}/duplicate", h.Duplicate)
+	r.Post("/{id}/rerun", h.Rerun)
 	return r
 }
 
@@ -194,4 +195,23 @@ func (h *TaskHandler) Duplicate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, task)
+}
+
+type RerunTaskRequest struct {
+	AutoStart bool `json:"auto_start"`
+}
+
+func (h *TaskHandler) Rerun(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req RerunTaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	task, err := h.Service.RerunTask(id, req.AutoStart)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, task)
 }
