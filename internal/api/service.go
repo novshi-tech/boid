@@ -31,10 +31,12 @@ type ProjectReloadResult struct {
 }
 
 type TaskDetailView struct {
-	Task             *orchestrator.Task
-	Actions          []*orchestrator.Action
-	Jobs             []*Job
-	AvailableActions []string `json:"available_actions"`
+	Task              *orchestrator.Task
+	Actions           []*orchestrator.Action
+	Jobs              []*Job
+	AvailableActions  []string             `json:"available_actions"`
+	Dependents        []*orchestrator.Task `json:"dependents,omitempty"`
+	DependsOnResolved []*orchestrator.Task `json:"depends_on_resolved,omitempty"`
 }
 
 type ProjectAppService struct {
@@ -526,11 +528,27 @@ func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 
+	dependents, err := s.Tasks.FindDependentTasks(task.ID)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+
+	var dependsOnResolved []*orchestrator.Task
+	for _, depID := range task.DependsOn {
+		dep, err := s.Tasks.GetTask(depID)
+		if err != nil {
+			continue
+		}
+		dependsOnResolved = append(dependsOnResolved, dep)
+	}
+
 	return &TaskDetailView{
-		Task:             task,
-		Actions:          actions,
-		Jobs:             jobs,
-		AvailableActions: computeAvailableActions(task),
+		Task:              task,
+		Actions:           actions,
+		Jobs:              jobs,
+		AvailableActions:  computeAvailableActions(task),
+		Dependents:        dependents,
+		DependsOnResolved: dependsOnResolved,
 	}, nil
 }
 
@@ -556,11 +574,24 @@ func (s *WebAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 
 	actions, _ := s.Actions.ListActionsByTask(task.ID)
 	jobs, _ := s.Jobs.ListJobsByTask(task.ID)
+	dependents, _ := s.Tasks.FindDependentTasks(task.ID)
+
+	var dependsOnResolved []*orchestrator.Task
+	for _, depID := range task.DependsOn {
+		dep, err := s.Tasks.GetTask(depID)
+		if err != nil {
+			continue
+		}
+		dependsOnResolved = append(dependsOnResolved, dep)
+	}
+
 	return &TaskDetailView{
-		Task:             task,
-		Actions:          actions,
-		Jobs:             jobs,
-		AvailableActions: computeAvailableActions(task),
+		Task:              task,
+		Actions:           actions,
+		Jobs:              jobs,
+		AvailableActions:  computeAvailableActions(task),
+		Dependents:        dependents,
+		DependsOnResolved: dependsOnResolved,
 	}, nil
 }
 

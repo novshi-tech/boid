@@ -939,12 +939,14 @@ func TestTaskAppServiceImportTasks_BehaviorSpec_Success(t *testing.T) {
 // ---- end behavior_spec tests ----
 
 type stubTaskStore struct {
-	task        *orchestrator.Task
-	err         error
-	updateCalls int
-	deleted     bool
-	remoteTasks map[string]*orchestrator.Task // "remoteID:datasourceID" → task
-	createdTask *orchestrator.Task            // captures the last created task
+	task           *orchestrator.Task
+	tasks          map[string]*orchestrator.Task // id → task (for multi-task lookups)
+	dependentTasks []*orchestrator.Task          // returned by FindDependentTasks
+	err            error
+	updateCalls    int
+	deleted        bool
+	remoteTasks    map[string]*orchestrator.Task // "remoteID:datasourceID" → task
+	createdTask    *orchestrator.Task            // captures the last created task
 }
 
 func (s *stubTaskStore) CreateTask(task *orchestrator.Task) error {
@@ -958,10 +960,15 @@ func (s *stubTaskStore) GetTask(id string) (*orchestrator.Task, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
-	if s.task == nil || s.task.ID != id {
-		return nil, fmt.Errorf("task not found: %s", id)
+	if s.tasks != nil {
+		if t, ok := s.tasks[id]; ok {
+			return t, nil
+		}
 	}
-	return s.task, nil
+	if s.task != nil && s.task.ID == id {
+		return s.task, nil
+	}
+	return nil, fmt.Errorf("task not found: %s", id)
 }
 func (s *stubTaskStore) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
 	return nil, nil
@@ -984,7 +991,7 @@ func (s *stubTaskStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task,
 	return nil, nil
 }
 func (s *stubTaskStore) FindDependentTasks(taskID string) ([]*orchestrator.Task, error) {
-	return nil, nil
+	return s.dependentTasks, nil
 }
 
 type stubTx struct {
@@ -1458,5 +1465,103 @@ func TestRerunTask_PreservesTaskMetadata(t *testing.T) {
 	}
 	if result.Ref != "my-ref" {
 		t.Errorf("Ref = %q, want %q", result.Ref, "my-ref")
+	}
+}
+
+func TestGetTaskDetail_IncludesDependents(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "task-main",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusDone,
+		Behavior:  "dev",
+	}
+	dependent := &orchestrator.Task{
+		ID:        "task-dep",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusPending,
+		Behavior:  "dev",
+		DependsOn: []string{task.ID},
+	}
+
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{
+			task:           task,
+			dependentTasks: []*orchestrator.Task{dependent},
+		},
+		Actions: stubActionStore{},
+		Jobs:    &stubJobStore{},
+	}
+
+	got, err := svc.GetTaskDetail(task.ID)
+	if err != nil {
+		t.Fatalf("GetTaskDetail() error = %v", err)
+	}
+	if len(got.Dependents) != 1 {
+		t.Fatalf("Dependents len = %d, want 1", len(got.Dependents))
+	}
+	if got.Dependents[0].ID != dependent.ID {
+		t.Fatalf("Dependents[0].ID = %q, want %q", got.Dependents[0].ID, dependent.ID)
+	}
+	// タスク自身に DependsOn がない場合 DependsOnResolved は nil
+	if got.DependsOnResolved != nil {
+		t.Fatalf("DependsOnResolved = %v, want nil", got.DependsOnResolved)
+	}
+}
+
+func TestGetTaskDetail_IncludesDependsOnResolved(t *testing.T) {
+	dep1 := &orchestrator.Task{
+		ID:        "dep-task-1",
+		ProjectID: "proj-1",
+		Title:     "Dependency One",
+		Status:    orchestrator.TaskStatusDone,
+		Behavior:  "dev",
+	}
+	dep2 := &orchestrator.Task{
+		ID:        "dep-task-2",
+		ProjectID: "proj-1",
+		Title:     "Dependency Two",
+		Status:    orchestrator.TaskStatusDone,
+		Behavior:  "dev",
+	}
+	task := &orchestrator.Task{
+		ID:        "task-main",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusPending,
+		Behavior:  "dev",
+		DependsOn: []string{dep1.ID, dep2.ID},
+	}
+
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{
+			task: task,
+			tasks: map[string]*orchestrator.Task{
+				dep1.ID: dep1,
+				dep2.ID: dep2,
+			},
+		},
+		Actions: stubActionStore{},
+		Jobs:    &stubJobStore{},
+	}
+
+	got, err := svc.GetTaskDetail(task.ID)
+	if err != nil {
+		t.Fatalf("GetTaskDetail() error = %v", err)
+	}
+	if len(got.DependsOnResolved) != 2 {
+		t.Fatalf("DependsOnResolved len = %d, want 2", len(got.DependsOnResolved))
+	}
+	ids := make(map[string]bool)
+	for _, d := range got.DependsOnResolved {
+		ids[d.ID] = true
+	}
+	if !ids[dep1.ID] {
+		t.Errorf("DependsOnResolved missing %q", dep1.ID)
+	}
+	if !ids[dep2.ID] {
+		t.Errorf("DependsOnResolved missing %q", dep2.ID)
+	}
+	// 依存するタスクがいない場合 Dependents は nil
+	if got.Dependents != nil {
+		t.Fatalf("Dependents = %v, want nil", got.Dependents)
 	}
 }
