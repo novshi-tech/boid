@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
@@ -73,10 +74,14 @@ type TaskListScreen struct {
 
 	table             table.Model
 	tasks             []*orchestrator.Task
+	displayTasks      []*orchestrator.Task // tasks filtered by searchQuery
 	projects          []*orchestrator.Project
-	stateClosed       bool   // false=open, true=closed
-	selectedProjectID string // "" = all
-	behaviorFilter    string // "" = all
+	stateClosed       bool           // false=open, true=closed
+	selectedProjectID string         // "" = all
+	behaviorFilter    string         // "" = all
+	searchMode        bool           // true while typing a search query
+	searchQuery       string         // retained query ("" = no filter)
+	searchInput       textinput.Model // text input widget for search mode
 	popup             popupSelector
 	loading           bool
 	fetchErr          error
@@ -103,11 +108,13 @@ func NewTaskListScreen(shared *SharedState) *TaskListScreen {
 			Selected: styleTableSelected,
 		}),
 	)
+	si := textinput.New()
 	return &TaskListScreen{
-		shared:     shared,
-		table:      t,
-		loading:    true,
-		titleWidth: 24,
+		shared:      shared,
+		table:       t,
+		loading:     true,
+		titleWidth:  24,
+		searchInput: si,
 	}
 }
 
@@ -220,15 +227,18 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 	if s.mini.active {
 		return s.handleMiniKey(msg)
 	}
+	if s.searchMode {
+		return s.handleSearchKey(msg)
+	}
 
 	switch msg.String() {
 	case "j", "down":
-		if len(s.tasks) > 0 {
+		if len(s.displayTasks) > 0 {
 			s.table.MoveDown(1)
 		}
 
 	case "k", "up":
-		if len(s.tasks) > 0 {
+		if len(s.displayTasks) > 0 {
 			s.table.MoveUp(1)
 		}
 
@@ -244,23 +254,28 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "b":
 		s.popup = s.buildBehaviorPopup()
 
+	case "/":
+		s.searchMode = true
+		s.searchInput.SetValue(s.searchQuery)
+		return s.searchInput.Focus()
+
 	case "r":
 		s.loading = true
 		return fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter)
 
 	case "enter":
-		if len(s.tasks) == 0 {
+		if len(s.displayTasks) == 0 {
 			break
 		}
-		task := s.tasks[s.table.Cursor()]
+		task := s.displayTasks[s.table.Cursor()]
 		projectName := s.findProjectName(task.ProjectID)
 		return PushScreen(NewTaskDetailScreen(s.shared, task.ID, projectName))
 
 	case "s":
-		if len(s.tasks) == 0 {
+		if len(s.displayTasks) == 0 {
 			break
 		}
-		task := s.tasks[s.table.Cursor()]
+		task := s.displayTasks[s.table.Cursor()]
 		if task.Status != orchestrator.TaskStatusPending {
 			break
 		}
@@ -269,10 +284,10 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return applyActionCmd(s.shared.Client, task.ID, "start")
 
 	case "o":
-		if len(s.tasks) == 0 {
+		if len(s.displayTasks) == 0 {
 			break
 		}
-		task := s.tasks[s.table.Cursor()]
+		task := s.displayTasks[s.table.Cursor()]
 		s.statusMsg = "loading..."
 		s.isError = false
 		return fetchQuickOpenCmd(s.shared.Client, task.ID)
@@ -282,6 +297,33 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	case "q":
 		return tea.Quit
+	}
+	return nil
+}
+
+// handleSearchKey processes key events when search mode is active.
+func (s *TaskListScreen) handleSearchKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "esc":
+		s.searchMode = false
+		s.searchQuery = ""
+		s.searchInput.Blur()
+		s.searchInput.SetValue("")
+		s.syncTableRows()
+		s.table.SetCursor(0)
+	case "enter":
+		s.searchMode = false
+		s.searchQuery = s.searchInput.Value()
+		s.searchInput.Blur()
+	default:
+		var cmd tea.Cmd
+		s.searchInput, cmd = s.searchInput.Update(msg)
+		s.searchQuery = s.searchInput.Value()
+		s.syncTableRows()
+		if len(s.displayTasks) > 0 {
+			s.table.SetCursor(0)
+		}
+		return cmd
 	}
 	return nil
 }
@@ -445,7 +487,10 @@ func (s *TaskListScreen) View(width, height int) string {
 }
 
 func (s *TaskListScreen) ShortHelp() string {
-	return "enter: detail  s: start  o: open job  n: new  tab: state  p: project  b: behavior  r: refresh  q: quit"
+	if s.searchMode {
+		return "esc: cancel  enter: confirm"
+	}
+	return "enter: detail  s: start  o: open job  n: new  tab: state  /: search  p: project  b: behavior  r: refresh  q: quit"
 }
 
 func (s *TaskListScreen) buildTaskFilterBar(width int) string {
@@ -464,8 +509,16 @@ func (s *TaskListScreen) buildTaskFilterBar(width int) string {
 	projChip := styleDim.Render("proj: " + projLabel)
 	behChip := styleDim.Render("behavior: " + behLabel)
 
+	bar := stateChip + "    " + projChip + "    " + behChip
+
+	if s.searchMode {
+		bar += "    " + styleFilterActive.Render("q: ") + s.searchInput.View()
+	} else if s.searchQuery != "" {
+		bar += "    " + styleFilterActive.Render("q: "+s.searchQuery)
+	}
+
 	_ = width
-	return stateChip + "    " + projChip + "    " + behChip
+	return bar
 }
 
 // renderPopupSelector renders the popup selector list.
@@ -544,10 +597,25 @@ func stripANSI(s string) string {
 	return b.String()
 }
 
-// syncTableRows converts s.tasks to table rows and updates the table.
+// syncTableRows applies the searchQuery filter to s.tasks, stores the result in
+// s.displayTasks, then converts to table rows and updates the table.
 func (s *TaskListScreen) syncTableRows() {
-	rows := make([]table.Row, len(s.tasks))
-	for i, task := range s.tasks {
+	// Build displayTasks by filtering s.tasks by searchQuery (title, case-insensitive).
+	if s.searchQuery == "" {
+		s.displayTasks = s.tasks
+	} else {
+		q := strings.ToLower(s.searchQuery)
+		filtered := make([]*orchestrator.Task, 0, len(s.tasks))
+		for _, t := range s.tasks {
+			if strings.Contains(strings.ToLower(t.Title), q) {
+				filtered = append(filtered, t)
+			}
+		}
+		s.displayTasks = filtered
+	}
+
+	rows := make([]table.Row, len(s.displayTasks))
+	for i, task := range s.displayTasks {
 		dot, statusText := taskStatusDisplay(task.Status)
 		statusCell := stripANSI(dot) + " " + stripANSI(statusText)
 
