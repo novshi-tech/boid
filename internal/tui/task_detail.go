@@ -39,6 +39,7 @@ type TaskDetailScreen struct {
 	projectName string
 
 	detail        *api.TaskDetailView
+	activeTab     string
 	cursor        int
 	descScroll    int
 	statusMsg     string
@@ -56,6 +57,7 @@ func NewTaskDetailScreen(shared *SharedState, taskID, projectName string) *TaskD
 		shared:      shared,
 		taskID:      taskID,
 		projectName: projectName,
+		activeTab:   tabOverview,
 		loading:     true,
 	}
 }
@@ -189,14 +191,39 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 	}
 
 	switch msg.String() {
+	case "o":
+		s.activeTab = tabOverview
+
+	case "t":
+		s.activeTab = tabTimeline
+
+	case "p":
+		s.activeTab = tabPayload
+
 	case "j", "down":
-		if s.cursor < jobCount-1 {
-			s.cursor++
+		if s.activeTab == tabOverview {
+			// scroll description in Overview
+			if s.detail != nil && s.detail.Task != nil {
+				lines := strings.Split(s.detail.Task.Description, "\n")
+				if s.descScroll < len(lines)-1 {
+					s.descScroll++
+				}
+			}
+		} else {
+			if s.cursor < jobCount-1 {
+				s.cursor++
+			}
 		}
 
 	case "k", "up":
-		if s.cursor > 0 {
-			s.cursor--
+		if s.activeTab == tabOverview {
+			if s.descScroll > 0 {
+				s.descScroll--
+			}
+		} else {
+			if s.cursor > 0 {
+				s.cursor--
+			}
 		}
 
 	case "r":
@@ -204,7 +231,22 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return fetchTaskDetailCmd(s.shared.Client, s.taskID)
 
 	case "enter":
-		if s.detail == nil || len(s.detail.Jobs) == 0 {
+		if s.detail == nil {
+			break
+		}
+		var targetJob *api.Job
+		if s.activeTab == tabOverview {
+			// open first running job
+			for _, j := range s.detail.Jobs {
+				if j.Status == api.JobStatusRunning {
+					targetJob = j
+					break
+				}
+			}
+		} else if len(s.detail.Jobs) > 0 {
+			targetJob = s.detail.Jobs[s.cursor]
+		}
+		if targetJob == nil {
 			break
 		}
 		if !s.shared.TmuxEnabled {
@@ -212,8 +254,7 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			s.isError = false
 			return clearStatusAfter(4 * time.Second)
 		}
-		job := s.detail.Jobs[s.cursor]
-		return openJobCmd(job.ID, s.shared.Panes[job.ID])
+		return openJobCmd(targetJob.ID, s.shared.Panes[targetJob.ID])
 
 	case "e":
 		if s.detail == nil || s.detail.Task == nil {
@@ -303,6 +344,10 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 func (s *TaskDetailScreen) View(width, height int) string {
 	var sb strings.Builder
 
+	// --- tab bar (1 line) ---
+	sb.WriteString(renderTabBar(s.activeTab, width))
+	sb.WriteByte('\n')
+
 	// --- sub-header: title + status (1 line) ---
 	if s.detail != nil && s.detail.Task != nil {
 		task := s.detail.Task
@@ -326,64 +371,33 @@ func (s *TaskDetailScreen) View(width, height int) string {
 		sb.WriteByte('\n')
 	}
 
-	// --- separator ---
-	sb.WriteString(strings.Repeat("─", width))
-	sb.WriteByte('\n')
-
-	// Compute height budget: 2 sub-header + 1 sep already used
-	remaining := max(height-3, 4)
-
-	// Jobs section: "Jobs:" label + up to half the remaining for job rows
-	// Description section: "Description:" label + separator + rest
-	overhead := 3 // jobLabel + sep + descLabel
-
-	jobRowsMax := max((remaining-overhead)/2, 1)
-	descHeight := max(remaining-overhead-jobRowsMax, 1)
-
-	// --- jobs section ---
-	sb.WriteString(styleDim.Render("Jobs:"))
-	sb.WriteByte('\n')
-
+	// --- fetch error ---
 	if s.fetchErr != nil {
-		sb.WriteString(styleError.Render(fmt.Sprintf("error: %v", s.fetchErr)))
+		sb.WriteString(styleError.Render(fmt.Sprintf("  error: %v", s.fetchErr)))
 		sb.WriteByte('\n')
-	} else if s.detail == nil || len(s.detail.Jobs) == 0 {
-		if !s.loading {
-			sb.WriteString(styleDim.Render("  no jobs"))
-			sb.WriteByte('\n')
-		}
-	} else {
-		jobs := s.detail.Jobs
-		jobScroll := 0
-		if s.cursor >= jobRowsMax {
-			jobScroll = s.cursor - jobRowsMax + 1
-		}
-		end := min(jobScroll+jobRowsMax, len(jobs))
-		for i := jobScroll; i < end; i++ {
-			sb.WriteString(renderDetailJobLine(jobs[i], i == s.cursor, width))
-			sb.WriteByte('\n')
-		}
+		return sb.String()
 	}
 
-	// --- separator ---
-	sb.WriteString(strings.Repeat("─", width))
-	sb.WriteByte('\n')
+	// Height budget: tab bar (1) + title (1) + meta (1) = 3 lines used
+	statusLines := 0
+	if s.statusMsg != "" {
+		statusLines = 2
+	}
+	contentHeight := max(height-3-statusLines, 4)
 
-	// --- description section ---
-	sb.WriteString(styleDim.Render("Description:"))
-	sb.WriteByte('\n')
-
-	if s.detail != nil && s.detail.Task != nil && s.detail.Task.Description != "" {
-		lines := strings.Split(s.detail.Task.Description, "\n")
-		start := s.descScroll
-		if start >= len(lines) {
-			start = 0
-		}
-		end := min(start+descHeight, len(lines))
-		for _, line := range lines[start:end] {
-			sb.WriteString(line)
-			sb.WriteByte('\n')
-		}
+	// --- tab content ---
+	switch s.activeTab {
+	case tabOverview:
+		sb.WriteString(s.renderOverview(width, contentHeight))
+	case tabTimeline:
+		sb.WriteString(styleDim.Render("  (timeline — coming soon)"))
+		sb.WriteByte('\n')
+	case tabDeps:
+		sb.WriteString(styleDim.Render("  (deps — coming soon)"))
+		sb.WriteByte('\n')
+	case tabPayload:
+		sb.WriteString(styleDim.Render("  (payload — coming soon)"))
+		sb.WriteByte('\n')
 	}
 
 	// --- inline status message ---
@@ -429,7 +443,7 @@ func (s *TaskDetailScreen) ShortHelp() string {
 			parts = append(parts, "R: rerun")
 		}
 	}
-	fixed := "e: edit  j/k: move  enter: open job  r: refresh  esc/q: back"
+	fixed := "o/t/p: tab  e: edit  j/k: scroll  enter: open job  r: refresh  esc/q: back"
 	return strings.Join(parts, "  ") + "  " + fixed
 }
 

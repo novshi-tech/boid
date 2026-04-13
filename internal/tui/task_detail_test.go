@@ -65,46 +65,48 @@ func makeDetailWithJobs(n int) *api.TaskDetailView {
 	}
 }
 
-func TestTaskDetailCursorMovement(t *testing.T) {
+func TestTaskDetailDescriptionScroll_Overview(t *testing.T) {
 	s := newTestTaskDetailScreen()
+	// makeDetailWithJobs has description "Test description\nLine 2" (2 lines)
 	s.detail = makeDetailWithJobs(3)
 
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if s.cursor != 1 {
-		t.Errorf("after j: want cursor 1, got %d", s.cursor)
+	if s.descScroll != 1 {
+		t.Errorf("after j in overview: want descScroll 1, got %d", s.descScroll)
 	}
 
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-	if s.cursor != 0 {
-		t.Errorf("after k: want cursor 0, got %d", s.cursor)
+	if s.descScroll != 0 {
+		t.Errorf("after k in overview: want descScroll 0, got %d", s.descScroll)
 	}
 
 	// can't go below 0
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-	if s.cursor != 0 {
-		t.Errorf("cursor should not go below 0, got %d", s.cursor)
+	if s.descScroll != 0 {
+		t.Errorf("descScroll should not go below 0, got %d", s.descScroll)
 	}
 
-	// can't go past last index
-	s.cursor = 2
+	// can't go past last line (description has 2 lines, max scroll = 1)
+	s.descScroll = 1
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if s.cursor != 2 {
-		t.Errorf("cursor should not exceed job count, got %d", s.cursor)
+	if s.descScroll != 1 {
+		t.Errorf("descScroll should not exceed line count, got %d", s.descScroll)
 	}
 }
 
-func TestTaskDetailCursorArrowKeys(t *testing.T) {
+func TestTaskDetailDescriptionScrollArrowKeys_Overview(t *testing.T) {
 	s := newTestTaskDetailScreen()
+	// description "Test description\nLine 2" (2 lines)
 	s.detail = makeDetailWithJobs(2)
 
 	s.Update(tea.KeyMsg{Type: tea.KeyDown})
-	if s.cursor != 1 {
-		t.Errorf("after down: want cursor 1, got %d", s.cursor)
+	if s.descScroll != 1 {
+		t.Errorf("after down in overview: want descScroll 1, got %d", s.descScroll)
 	}
 
 	s.Update(tea.KeyMsg{Type: tea.KeyUp})
-	if s.cursor != 0 {
-		t.Errorf("after up: want cursor 0, got %d", s.cursor)
+	if s.descScroll != 0 {
+		t.Errorf("after up in overview: want descScroll 0, got %d", s.descScroll)
 	}
 }
 
@@ -214,11 +216,14 @@ func TestTaskDetailView_Renders(t *testing.T) {
 	if !containsStr(view, "Test Task") {
 		t.Error("View should contain task title")
 	}
-	if !containsStr(view, "Jobs:") {
-		t.Error("View should contain 'Jobs:'")
+	if !containsStr(view, "[O]verview") {
+		t.Error("View should contain tab bar with '[O]verview'")
 	}
-	if !containsStr(view, "Description:") {
-		t.Error("View should contain 'Description:'")
+	if !containsStr(view, "Active") {
+		t.Error("View should contain 'Active' section header")
+	}
+	if !containsStr(view, "Description") {
+		t.Error("View should contain 'Description' section header")
 	}
 	if !containsStr(view, "Test description") {
 		t.Error("View should contain description text")
@@ -653,5 +658,237 @@ func TestGetTaskDetail_JSONParsing(t *testing.T) {
 	}
 	if detail.Jobs[0].Status != api.JobStatusRunning {
 		t.Errorf("job status: want running, got %q", detail.Jobs[0].Status)
+	}
+}
+
+// --- tab switching tests ---
+
+func TestTabSwitch(t *testing.T) {
+	s := newTestTaskDetailScreen()
+
+	if s.activeTab != tabOverview {
+		t.Errorf("initial tab: want %q, got %q", tabOverview, s.activeTab)
+	}
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	if s.activeTab != tabTimeline {
+		t.Errorf("after t: want %q, got %q", tabTimeline, s.activeTab)
+	}
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	if s.activeTab != tabPayload {
+		t.Errorf("after p: want %q, got %q", tabPayload, s.activeTab)
+	}
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	if s.activeTab != tabOverview {
+		t.Errorf("after o: want %q, got %q", tabOverview, s.activeTab)
+	}
+}
+
+func TestTabSwitch_ViewShowsPlaceholder(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithJobs(1)
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	view := s.View(80, 20)
+	if !containsStr(view, "coming soon") {
+		t.Error("timeline tab: expected 'coming soon' placeholder")
+	}
+}
+
+// --- parseOpenFindings tests ---
+
+func TestParseOpenFindings_Empty(t *testing.T) {
+	findings := parseOpenFindings(nil)
+	if len(findings) != 0 {
+		t.Errorf("nil payload: want 0 findings, got %d", len(findings))
+	}
+
+	findings = parseOpenFindings([]byte("{}"))
+	if len(findings) != 0 {
+		t.Errorf("empty payload: want 0 findings, got %d", len(findings))
+	}
+}
+
+func TestParseOpenFindings_OpenAndResolved(t *testing.T) {
+	payload := []byte(`{
+		"verification": {
+			"mergeable-check": {
+				"source_state": "verifying",
+				"findings": [
+					{"message": "2 conflicts", "status": "open"},
+					{"message": "fixed", "status": "resolved"}
+				]
+			}
+		}
+	}`)
+
+	findings := parseOpenFindings(payload)
+	if len(findings) != 1 {
+		t.Fatalf("want 1 open finding, got %d", len(findings))
+	}
+	if findings[0].gate != "mergeable-check" {
+		t.Errorf("gate: want %q, got %q", "mergeable-check", findings[0].gate)
+	}
+	if findings[0].message != "2 conflicts" {
+		t.Errorf("message: want %q, got %q", "2 conflicts", findings[0].message)
+	}
+}
+
+func TestParseOpenFindings_MultipleGates(t *testing.T) {
+	payload := []byte(`{
+		"verification": {
+			"gate-a": {
+				"findings": [{"message": "err-a", "status": "open"}]
+			},
+			"gate-b": {
+				"findings": [{"message": "err-b", "status": "open"}]
+			}
+		}
+	}`)
+
+	findings := parseOpenFindings(payload)
+	if len(findings) != 2 {
+		t.Errorf("want 2 open findings, got %d", len(findings))
+	}
+}
+
+func TestParseOpenFindings_AllResolved(t *testing.T) {
+	payload := []byte(`{
+		"verification": {
+			"gate-a": {
+				"findings": [{"message": "ok", "status": "resolved"}]
+			}
+		}
+	}`)
+
+	findings := parseOpenFindings(payload)
+	if len(findings) != 0 {
+		t.Errorf("all resolved: want 0 open findings, got %d", len(findings))
+	}
+}
+
+// --- renderOverview tests ---
+
+func TestRenderOverview_WithRunningJob(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithJobs(2) // 2 running jobs
+
+	view := s.renderOverview(80, 20)
+	if !containsStr(view, "running job") {
+		t.Error("renderOverview: expected 'running job' for active job")
+	}
+	if !containsStr(view, "[main]") {
+		t.Error("renderOverview: expected '[main]' role label")
+	}
+}
+
+func TestRenderOverview_NoJobs(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = &api.TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:        "test",
+			Title:     "Test",
+			Status:    orchestrator.TaskStatusPending,
+			Behavior:  "dev",
+			CreatedAt: time.Now(),
+		},
+	}
+
+	view := s.renderOverview(80, 20)
+	if !containsStr(view, "no active job") {
+		t.Error("renderOverview: expected 'no active job' when no running jobs")
+	}
+}
+
+func TestRenderOverview_WithOpenFindings(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = &api.TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:       "test",
+			Title:    "Test",
+			Status:   orchestrator.TaskStatusVerifying,
+			Behavior: "dev",
+			Payload: []byte(`{
+				"verification": {
+					"mergeable-check": {
+						"findings": [{"message": "2 conflicts", "status": "open"}]
+					}
+				}
+			}`),
+			CreatedAt: time.Now(),
+		},
+	}
+
+	view := s.renderOverview(80, 20)
+	if !containsStr(view, "Findings") {
+		t.Error("renderOverview: expected 'Findings' section when open findings exist")
+	}
+	if !containsStr(view, "mergeable-check") {
+		t.Error("renderOverview: expected gate name in findings")
+	}
+	if !containsStr(view, "2 conflicts") {
+		t.Error("renderOverview: expected finding message")
+	}
+}
+
+func TestRenderOverview_WithDeps(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	depTask := &orchestrator.Task{
+		ID:     "dep-1",
+		Title:  "task-a",
+		Status: orchestrator.TaskStatusDone,
+	}
+	s.detail = &api.TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:        "test",
+			Title:     "Test",
+			Status:    orchestrator.TaskStatusPending,
+			Behavior:  "dev",
+			CreatedAt: time.Now(),
+		},
+		DependsOnResolved: []*orchestrator.Task{depTask},
+	}
+
+	view := s.renderOverview(80, 20)
+	if !containsStr(view, "Deps summary") {
+		t.Error("renderOverview: expected 'Deps summary' section")
+	}
+	if !containsStr(view, "task-a") {
+		t.Error("renderOverview: expected dep task title")
+	}
+	if !containsStr(view, "done") {
+		t.Error("renderOverview: expected dep task status")
+	}
+}
+
+func TestRenderOverview_DescriptionScroll(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = &api.TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:          "test",
+			Title:       "Test",
+			Status:      orchestrator.TaskStatusExecuting,
+			Behavior:    "dev",
+			Description: "line1\nline2\nline3\nline4\nline5",
+			CreatedAt:   time.Now(),
+		},
+	}
+
+	// With scroll = 0, line1 should appear
+	view := s.renderOverview(80, 20)
+	if !containsStr(view, "line1") {
+		t.Error("scroll=0: expected 'line1'")
+	}
+
+	// With scroll = 2, line3 should appear and line1 should not
+	s.descScroll = 2
+	view = s.renderOverview(80, 20)
+	if !containsStr(view, "line3") {
+		t.Error("scroll=2: expected 'line3'")
+	}
+	if containsStr(view, "line1") {
+		t.Error("scroll=2: 'line1' should not be visible")
 	}
 }
