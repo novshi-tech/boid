@@ -154,6 +154,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 // runDaemonParent spawns the daemon child, waits for the UNIX socket to become
 // ready, prints a status line, and exits.
 func runDaemonParent(cfg server.Config) error {
+	// 既存サーバが生きていれば二重起動を拒否する。socket ファイルが残って
+	// いるだけ (ECONNREFUSED) の場合は stale とみなし、子プロセスに clean up
+	// を任せる。
+	if daemon.IsSocketAlive(cfg.SocketPath, 500*time.Millisecond) {
+		return fmt.Errorf("boid server already running (socket: %s)", cfg.SocketPath)
+	}
+
 	pid, err := daemon.Spawn(os.Args)
 	if err != nil {
 		return fmt.Errorf("spawn daemon: %w", err)
@@ -170,7 +177,7 @@ func runDaemonParent(cfg server.Config) error {
 
 // runDaemonChild is executed by the daemon child process (BOID_DAEMON_CHILD=1).
 // It redirects stdin/stdout/stderr to the log file, detaches from the session,
-// manages the PID file, and runs the server until a termination signal arrives.
+// and runs the server until a termination signal arrives.
 func runDaemonChild(cfg server.Config) error {
 	logPath := daemon.LogFilePath()
 	if err := daemon.RedirectToLogRotating(logPath); err != nil {
@@ -180,15 +187,6 @@ func runDaemonChild(cfg server.Config) error {
 	if _, err := syscall.Setsid(); err != nil {
 		return fmt.Errorf("setsid: %w", err)
 	}
-
-	pidPath := daemon.PIDFilePath()
-	if err := daemon.CheckNotRunning(pidPath); err != nil {
-		return err
-	}
-	if err := daemon.WritePID(pidPath, os.Getpid()); err != nil {
-		return fmt.Errorf("write pid file: %w", err)
-	}
-	defer daemon.RemovePID(pidPath)
 
 	srv, err := server.New(cfg)
 	if err != nil {

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"syscall"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/api"
@@ -216,9 +218,19 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r.Post("/api/shutdown", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok"}`))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
 		go func() {
-			// レスポンスを送信してからシャットダウン
-			srv.Stop()
+			// レスポンスがクライアントに届く前にプロセスが死なないよう少し待つ。
+			time.Sleep(50 * time.Millisecond)
+			// 自プロセスに SIGTERM を送り、daemon child の signal handler
+			// (runDaemonChild) に srv.Stop() とプロセス終了を任せる。ここで
+			// srv.Stop() を直接呼ぶとプロセス本体が終了せず、次回 boid start が
+			// 生存中の socket/listen を検知できなくなる。
+			if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+				slog.Error("shutdown: send SIGTERM", "error", err)
+			}
 		}()
 	})
 

@@ -1,10 +1,12 @@
 package daemon
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // TestMain allows the test binary to act as a short-lived daemon child when
@@ -41,139 +43,36 @@ func TestLogFilePath_FallsBackToHome(t *testing.T) {
 	}
 }
 
-// --- PIDFilePath ---
+// --- IsSocketAlive ---
 
-func TestPIDFilePath_WithXDGRuntimeDir(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_RUNTIME_DIR", dir)
-
-	got := PIDFilePath()
-	want := filepath.Join(dir, "boid", "boid.pid")
-	if got != want {
-		t.Fatalf("PIDFilePath() = %q, want %q", got, want)
+func TestIsSocketAlive_NoSocketFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.sock")
+	if IsSocketAlive(path, 100*time.Millisecond) {
+		t.Fatal("IsSocketAlive() = true for missing socket, want false")
 	}
 }
 
-func TestPIDFilePath_FallsBackToStateHome(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_RUNTIME_DIR", "")
-	t.Setenv("XDG_STATE_HOME", dir)
-
-	got := PIDFilePath()
-	want := filepath.Join(dir, "boid", "boid.pid")
-	if got != want {
-		t.Fatalf("PIDFilePath() = %q, want %q", got, want)
+func TestIsSocketAlive_StaleSocketFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stale.sock")
+	// Create a plain file at socket path to simulate a stale socket file.
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if IsSocketAlive(path, 100*time.Millisecond) {
+		t.Fatal("IsSocketAlive() = true for stale socket file, want false")
 	}
 }
 
-// --- WritePID / ReadPID ---
-
-func TestWriteReadPID(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "boid.pid")
-
-	if err := WritePID(path, 12345); err != nil {
-		t.Fatalf("WritePID: %v", err)
-	}
-
-	got, err := ReadPID(path)
+func TestIsSocketAlive_Listening(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "live.sock")
+	ln, err := net.Listen("unix", path)
 	if err != nil {
-		t.Fatalf("ReadPID: %v", err)
+		t.Fatalf("listen: %v", err)
 	}
-	if got != 12345 {
-		t.Fatalf("ReadPID() = %d, want 12345", got)
-	}
-}
+	defer ln.Close()
 
-func TestWritePID_CreatesParentDir(t *testing.T) {
-	// Path whose parent directory does not yet exist.
-	path := filepath.Join(t.TempDir(), "sub", "dir", "boid.pid")
-
-	if err := WritePID(path, 99); err != nil {
-		t.Fatalf("WritePID: %v", err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("PID file not created: %v", err)
-	}
-}
-
-func TestReadPID_NotExist(t *testing.T) {
-	_, err := ReadPID(filepath.Join(t.TempDir(), "missing.pid"))
-	if !os.IsNotExist(err) {
-		t.Fatalf("ReadPID() error = %v, want os.ErrNotExist", err)
-	}
-}
-
-func TestReadPID_InvalidContent(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "boid.pid")
-	if err := os.WriteFile(path, []byte("not-a-number\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, err := ReadPID(path)
-	if err == nil {
-		t.Fatal("ReadPID() expected error for invalid content, got nil")
-	}
-}
-
-// --- RemovePID ---
-
-func TestRemovePID(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "boid.pid")
-	if err := WritePID(path, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := RemovePID(path); err != nil {
-		t.Fatalf("RemovePID: %v", err)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatal("PID file still exists after RemovePID")
-	}
-}
-
-func TestRemovePID_NotExistIsNoError(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nonexistent.pid")
-	if err := RemovePID(path); err != nil {
-		t.Fatalf("RemovePID on missing file: %v", err)
-	}
-}
-
-// --- CheckNotRunning ---
-
-func TestCheckNotRunning_NoPIDFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "boid.pid")
-	if err := CheckNotRunning(path); err != nil {
-		t.Fatalf("CheckNotRunning (no file): %v", err)
-	}
-}
-
-func TestCheckNotRunning_StalePID(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "boid.pid")
-
-	// Write a PID that is almost certainly not alive (PID 1 is init, but we
-	// want something guaranteed non-existent; use a large number and verify it
-	// is not our own process).
-	stalePID := 2000000 // exceeds Linux PID_MAX_LIMIT on most kernels
-	if err := WritePID(path, stalePID); err != nil {
-		t.Fatal(err)
-	}
-
-	// signal(0) on a non-existent PID returns ESRCH → CheckNotRunning returns nil.
-	if err := CheckNotRunning(path); err != nil {
-		// Might spuriously fail if the kernel has a process at that PID (very unlikely).
-		t.Skipf("PID %d unexpectedly alive (or system PID space is unusual): %v", stalePID, err)
-	}
-}
-
-func TestCheckNotRunning_RunningProcess(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "boid.pid")
-
-	// Write the current process's PID — it is definitely running.
-	if err := WritePID(path, os.Getpid()); err != nil {
-		t.Fatal(err)
-	}
-
-	err := CheckNotRunning(path)
-	if err == nil {
-		t.Fatal("CheckNotRunning expected error for running process, got nil")
+	if !IsSocketAlive(path, 500*time.Millisecond) {
+		t.Fatal("IsSocketAlive() = false for active listener, want true")
 	}
 }
 

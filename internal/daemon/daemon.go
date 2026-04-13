@@ -11,8 +11,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -37,72 +35,17 @@ func LogFilePath() string {
 	return filepath.Join(stateDir, "boid", "boid.log")
 }
 
-// PIDFilePath returns the path for the daemon PID file.
-// Prefers $XDG_RUNTIME_DIR/boid/boid.pid; falls back to
-// $XDG_STATE_HOME/boid/boid.pid (or ~/.local/state/boid/boid.pid).
-func PIDFilePath() string {
-	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
-		return filepath.Join(dir, "boid", "boid.pid")
-	}
-	stateDir := os.Getenv("XDG_STATE_HOME")
-	if stateDir == "" {
-		home, _ := os.UserHomeDir()
-		stateDir = filepath.Join(home, ".local", "state")
-	}
-	return filepath.Join(stateDir, "boid", "boid.pid")
-}
-
-// WritePID writes pid to path, creating the parent directory (mode 0o755) if needed.
-func WritePID(path string, pid int) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create pid dir: %w", err)
-	}
-	return os.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0o644)
-}
-
-// ReadPID reads a PID from path.
-func ReadPID(path string) (int, error) {
-	data, err := os.ReadFile(path)
+// IsSocketAlive reports whether something is actively listening on socketPath.
+// It returns true if a UNIX domain socket can be dialed within timeout, which
+// distinguishes a running server from a stale socket file (ECONNREFUSED) or
+// missing socket file (ENOENT).
+func IsSocketAlive(socketPath string, timeout time.Duration) bool {
+	conn, err := net.DialTimeout("unix", socketPath, timeout)
 	if err != nil {
-		return 0, err
+		return false
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		return 0, fmt.Errorf("invalid pid file content: %w", err)
-	}
-	return pid, nil
-}
-
-// CheckNotRunning checks that no living process owns the PID stored in path.
-// If path does not exist, it returns nil (not running).
-// If a living process is found, it returns a descriptive error.
-func CheckNotRunning(path string) error {
-	pid, err := ReadPID(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		// Unreadable / corrupt PID file — assume not running.
-		return nil
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return nil
-	}
-	// On Linux, FindProcess always succeeds; send signal 0 to probe liveness.
-	if err := proc.Signal(syscall.Signal(0)); err != nil {
-		return nil
-	}
-	return fmt.Errorf("boid server already running (pid: %d)", pid)
-}
-
-// RemovePID removes the PID file at path.  It ignores "not exist" errors.
-func RemovePID(path string) error {
-	err := os.Remove(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	return err
+	conn.Close()
+	return true
 }
 
 // RedirectToLog opens logPath (O_APPEND|O_CREATE|O_WRONLY, 0o644), creates the
