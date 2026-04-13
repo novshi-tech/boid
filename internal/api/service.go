@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -157,11 +158,21 @@ func (s *ProjectAppService) ReloadProjects() (*ProjectReloadResult, error) {
 }
 
 type TaskAppService struct {
-	Tasks    TaskStore
-	Actions  ActionStore
-	Jobs     JobStore
-	Meta     MetaStore
-	Workflow WorkflowService
+	Tasks       TaskStore
+	Actions     ActionStore
+	Jobs        JobStore
+	Meta        MetaStore
+	Workflow    WorkflowService
+	RuntimesDir string
+}
+
+// enrichJob fills WorkspacePath from RuntimesDir and the job's RuntimeID.
+// If either is empty the field is left unchanged (omitempty will omit it in JSON).
+func enrichJob(runtimesDir string, job *Job) {
+	if runtimesDir == "" || job.RuntimeID == "" {
+		return
+	}
+	job.WorkspacePath = filepath.Join(runtimesDir, job.RuntimeID)
 }
 
 // behaviorResolution holds the resolved behavior fields after processing either
@@ -524,6 +535,9 @@ func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 	jobs, err := s.Jobs.ListJobsByTask(task.ID)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	for _, j := range jobs {
+		enrichJob(s.RuntimesDir, j)
 	}
 
 	return &TaskDetailView{
