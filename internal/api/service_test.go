@@ -1565,3 +1565,76 @@ func TestGetTaskDetail_IncludesDependsOnResolved(t *testing.T) {
 		t.Fatalf("Dependents = %v, want nil", got.Dependents)
 	}
 }
+
+// TestGetTaskDetail_JobsIncludeWorkspacePath verifies that GetTaskDetail enriches
+// returned jobs with WorkspacePath derived from RuntimesDir + RuntimeID.
+// Both worktree=false and worktree=true tasks are covered; the derivation is
+// identical in both cases because WorkspacePath comes from the runtime directory.
+func TestGetTaskDetail_JobsIncludeWorkspacePath(t *testing.T) {
+	const runtimesDir = "/data/runtimes"
+
+	tests := []struct {
+		name      string
+		worktree  bool
+		runtimeID string
+		wantPath  string
+	}{
+		{
+			name:      "non-worktree task with runtime",
+			worktree:  false,
+			runtimeID: "abc-123",
+			wantPath:  "/data/runtimes/abc-123",
+		},
+		{
+			name:      "worktree task with runtime",
+			worktree:  true,
+			runtimeID: "def-456",
+			wantPath:  "/data/runtimes/def-456",
+		},
+		{
+			name:      "job without runtime ID returns empty path",
+			worktree:  false,
+			runtimeID: "",
+			wantPath:  "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			task := &orchestrator.Task{
+				ID:        "task-wp",
+				ProjectID: "proj-wp",
+				Title:     "workspace path test",
+				Status:    orchestrator.TaskStatusExecuting,
+				Behavior:  "dev",
+				Worktree:  tc.worktree,
+			}
+			job := &Job{
+				ID:        "job-wp",
+				TaskID:    task.ID,
+				ProjectID: task.ProjectID,
+				HandlerID: "main",
+				Role:      "main",
+				RuntimeID: tc.runtimeID,
+				Status:    JobStatusRunning,
+			}
+			svc := &TaskAppService{
+				Tasks:       &stubTaskStore{task: task},
+				Actions:     stubActionStore{},
+				Jobs:        &stubJobStore{jobsByTask: map[string][]*Job{task.ID: {job}}},
+				RuntimesDir: runtimesDir,
+			}
+
+			got, err := svc.GetTaskDetail(task.ID)
+			if err != nil {
+				t.Fatalf("GetTaskDetail() error = %v", err)
+			}
+			if len(got.Jobs) != 1 {
+				t.Fatalf("len(Jobs) = %d, want 1", len(got.Jobs))
+			}
+			if got.Jobs[0].WorkspacePath != tc.wantPath {
+				t.Errorf("WorkspacePath = %q, want %q", got.Jobs[0].WorkspacePath, tc.wantPath)
+			}
+		})
+	}
+}
