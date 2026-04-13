@@ -1403,3 +1403,342 @@ func searchStr(s, substr string) bool {
 	}
 	return false
 }
+
+// --- buildTreeOrder tests ---
+
+func TestBuildTreeOrder_FlatList(t *testing.T) {
+	tasks := []*orchestrator.Task{
+		{ID: "a", CreatedAt: time.Now()},
+		{ID: "b", CreatedAt: time.Now()},
+	}
+	ordered, depths := buildTreeOrder(tasks)
+	if len(ordered) != 2 {
+		t.Fatalf("want 2 tasks, got %d", len(ordered))
+	}
+	if ordered[0].ID != "a" || ordered[1].ID != "b" {
+		t.Errorf("want [a, b], got [%s, %s]", ordered[0].ID, ordered[1].ID)
+	}
+	if depths["a"] != 0 || depths["b"] != 0 {
+		t.Errorf("root tasks should have depth 0, got a=%d b=%d", depths["a"], depths["b"])
+	}
+}
+
+func TestBuildTreeOrder_TwoLevel(t *testing.T) {
+	tasks := []*orchestrator.Task{
+		{ID: "p", ParentID: "", CreatedAt: time.Now()},
+		{ID: "c1", ParentID: "p", CreatedAt: time.Now()},
+		{ID: "c2", ParentID: "p", CreatedAt: time.Now()},
+	}
+	ordered, depths := buildTreeOrder(tasks)
+	if len(ordered) != 3 {
+		t.Fatalf("want 3 tasks, got %d", len(ordered))
+	}
+	if ordered[0].ID != "p" {
+		t.Errorf("first should be p, got %s", ordered[0].ID)
+	}
+	if ordered[1].ID != "c1" || ordered[2].ID != "c2" {
+		t.Errorf("children should follow parent in input order: got %s, %s", ordered[1].ID, ordered[2].ID)
+	}
+	if depths["p"] != 0 || depths["c1"] != 1 || depths["c2"] != 1 {
+		t.Errorf("depths: want p=0,c1=1,c2=1; got p=%d,c1=%d,c2=%d", depths["p"], depths["c1"], depths["c2"])
+	}
+}
+
+func TestBuildTreeOrder_ThreeLevel(t *testing.T) {
+	tasks := []*orchestrator.Task{
+		{ID: "p", ParentID: ""},
+		{ID: "c", ParentID: "p"},
+		{ID: "gc", ParentID: "c"},
+	}
+	ordered, depths := buildTreeOrder(tasks)
+	if len(ordered) != 3 {
+		t.Fatalf("want 3, got %d", len(ordered))
+	}
+	if ordered[0].ID != "p" || ordered[1].ID != "c" || ordered[2].ID != "gc" {
+		t.Errorf("want order p,c,gc; got %s,%s,%s", ordered[0].ID, ordered[1].ID, ordered[2].ID)
+	}
+	if depths["p"] != 0 || depths["c"] != 1 || depths["gc"] != 2 {
+		t.Errorf("depths: want p=0,c=1,gc=2; got p=%d,c=%d,gc=%d", depths["p"], depths["c"], depths["gc"])
+	}
+}
+
+func TestBuildTreeOrder_OrphanedParent(t *testing.T) {
+	// "c" has a parent not in the set → treated as root
+	tasks := []*orchestrator.Task{
+		{ID: "c", ParentID: "missing"},
+	}
+	ordered, depths := buildTreeOrder(tasks)
+	if len(ordered) != 1 {
+		t.Fatalf("want 1 task, got %d", len(ordered))
+	}
+	if depths["c"] != 0 {
+		t.Errorf("orphaned task should have depth 0, got %d", depths["c"])
+	}
+}
+
+func TestBuildTreeOrder_SiblingOrder(t *testing.T) {
+	// Siblings appear in input order
+	tasks := []*orchestrator.Task{
+		{ID: "p", ParentID: ""},
+		{ID: "c2", ParentID: "p"},
+		{ID: "c1", ParentID: "p"},
+	}
+	ordered, _ := buildTreeOrder(tasks)
+	if len(ordered) != 3 {
+		t.Fatalf("want 3, got %d", len(ordered))
+	}
+	if ordered[1].ID != "c2" || ordered[2].ID != "c1" {
+		t.Errorf("siblings should preserve input order: got %s, %s", ordered[1].ID, ordered[2].ID)
+	}
+}
+
+func TestBuildTreeOrder_MultipleRoots(t *testing.T) {
+	tasks := []*orchestrator.Task{
+		{ID: "r1", ParentID: ""},
+		{ID: "r1c", ParentID: "r1"},
+		{ID: "r2", ParentID: ""},
+	}
+	ordered, depths := buildTreeOrder(tasks)
+	if len(ordered) != 3 {
+		t.Fatalf("want 3, got %d", len(ordered))
+	}
+	// r1 → r1c, then r2
+	if ordered[0].ID != "r1" || ordered[1].ID != "r1c" || ordered[2].ID != "r2" {
+		t.Errorf("want r1,r1c,r2; got %s,%s,%s", ordered[0].ID, ordered[1].ID, ordered[2].ID)
+	}
+	if depths["r2"] != 0 {
+		t.Errorf("r2 should have depth 0, got %d", depths["r2"])
+	}
+}
+
+// --- progressBadge tests ---
+
+func TestProgressBadge_NoChildren(t *testing.T) {
+	task := &orchestrator.Task{TotalChildCount: 0}
+	if got := progressBadge(task); got != "" {
+		t.Errorf("want empty badge for childless task, got %q", got)
+	}
+}
+
+func TestProgressBadge_WithChildren(t *testing.T) {
+	task := &orchestrator.Task{TotalChildCount: 7, DoneChildCount: 3}
+	if got := progressBadge(task); got != "3/7" {
+		t.Errorf("want '3/7', got %q", got)
+	}
+}
+
+func TestProgressBadge_WithAborted(t *testing.T) {
+	task := &orchestrator.Task{TotalChildCount: 7, DoneChildCount: 3, AbortedChildCount: 1}
+	if got := progressBadge(task); got != "3/7 [!1]" {
+		t.Errorf("want '3/7 [!1]', got %q", got)
+	}
+}
+
+func TestProgressBadge_ZeroAborted(t *testing.T) {
+	task := &orchestrator.Task{TotalChildCount: 5, DoneChildCount: 5, AbortedChildCount: 0}
+	if got := progressBadge(task); got != "5/5" {
+		t.Errorf("want '5/5', got %q", got)
+	}
+}
+
+// --- syncTableRows tree/progress tests ---
+
+func TestSyncTableRows_Indent_Depth1(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.recalcColumns(120)
+	parent := &orchestrator.Task{ID: "p", Title: "Parent", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()}
+	child := &orchestrator.Task{ID: "c", Title: "Child", ParentID: "p", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()}
+	s.tasks = []*orchestrator.Task{parent, child}
+	s.syncTableRows()
+
+	rows := s.table.Rows()
+	if len(rows) != 2 {
+		t.Fatalf("want 2 rows, got %d", len(rows))
+	}
+	parentTitle := rows[0][1]
+	if strings.HasPrefix(parentTitle, "  ") {
+		t.Errorf("parent row should not have 2-space indent, got %q", parentTitle)
+	}
+	childTitle := rows[1][1]
+	if !strings.HasPrefix(childTitle, "  ") {
+		t.Errorf("child row should start with 2-space indent, got %q", childTitle)
+	}
+	if !containsStr(childTitle, "Child") {
+		t.Errorf("child title should contain 'Child', got %q", childTitle)
+	}
+}
+
+func TestSyncTableRows_Indent_Depth2(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.recalcColumns(120)
+	parent := &orchestrator.Task{ID: "p", Title: "Parent", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()}
+	child := &orchestrator.Task{ID: "c", Title: "Child", ParentID: "p", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()}
+	grandchild := &orchestrator.Task{ID: "gc", Title: "GrandChild", ParentID: "c", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()}
+	s.tasks = []*orchestrator.Task{parent, child, grandchild}
+	s.syncTableRows()
+
+	rows := s.table.Rows()
+	if len(rows) != 3 {
+		t.Fatalf("want 3 rows, got %d", len(rows))
+	}
+	gcTitle := rows[2][1]
+	if !strings.HasPrefix(gcTitle, "    ") {
+		t.Errorf("grandchild should have 4-space indent, got %q", gcTitle)
+	}
+}
+
+func TestSyncTableRows_ProgressInTitle(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.recalcColumns(120)
+	parent := &orchestrator.Task{
+		ID:              "p",
+		Title:           "Parent",
+		Status:          orchestrator.TaskStatusExecuting,
+		TotalChildCount: 7,
+		DoneChildCount:  3,
+		CreatedAt:       time.Now(),
+	}
+	s.tasks = []*orchestrator.Task{parent}
+	s.syncTableRows()
+
+	rows := s.table.Rows()
+	titleCell := rows[0][1]
+	if !containsStr(titleCell, "3/7") {
+		t.Errorf("parent title should contain progress '3/7', got %q", titleCell)
+	}
+}
+
+func TestSyncTableRows_ProgressWithAbortedBadge(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.recalcColumns(120)
+	parent := &orchestrator.Task{
+		ID:                "p",
+		Title:             "Parent",
+		Status:            orchestrator.TaskStatusExecuting,
+		TotalChildCount:   7,
+		DoneChildCount:    3,
+		AbortedChildCount: 1,
+		CreatedAt:         time.Now(),
+	}
+	s.tasks = []*orchestrator.Task{parent}
+	s.syncTableRows()
+
+	rows := s.table.Rows()
+	titleCell := rows[0][1]
+	if !containsStr(titleCell, "[!1]") {
+		t.Errorf("parent title should contain aborted badge '[!1]', got %q", titleCell)
+	}
+}
+
+func TestSyncTableRows_NoProgressForChildless(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.recalcColumns(120)
+	task := &orchestrator.Task{
+		ID:              "t",
+		Title:           "Solo",
+		Status:          orchestrator.TaskStatusExecuting,
+		TotalChildCount: 0,
+		CreatedAt:       time.Now(),
+	}
+	s.tasks = []*orchestrator.Task{task}
+	s.syncTableRows()
+
+	rows := s.table.Rows()
+	titleCell := rows[0][1]
+	// Should not contain a progress separator like "0/0" or "N/M"
+	if containsStr(titleCell, "/") {
+		t.Errorf("childless task title should not contain '/', got %q", titleCell)
+	}
+}
+
+func TestSyncTableRows_TreeOrder(t *testing.T) {
+	// Verify displayTasks reflects tree order (parent before child).
+	s := newTestTaskListScreen()
+	s.recalcColumns(120)
+	parent := &orchestrator.Task{ID: "p", Title: "Parent", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()}
+	child := &orchestrator.Task{ID: "c", Title: "Child", ParentID: "p", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()}
+	s.tasks = []*orchestrator.Task{parent, child}
+	s.syncTableRows()
+
+	if len(s.displayTasks) != 2 {
+		t.Fatalf("want 2 displayTasks, got %d", len(s.displayTasks))
+	}
+	if s.displayTasks[0].ID != "p" || s.displayTasks[1].ID != "c" {
+		t.Errorf("displayTasks order: want [p, c], got [%s, %s]", s.displayTasks[0].ID, s.displayTasks[1].ID)
+	}
+}
+
+// --- applyStateFilter tests ---
+
+func TestApplyStateFilter_OpenMode_KeepsOpenTask(t *testing.T) {
+	tasks := []*orchestrator.Task{
+		{ID: "t", Status: orchestrator.TaskStatusExecuting, OpenChildCount: 0},
+	}
+	got := applyStateFilter(tasks, false)
+	if len(got) != 1 {
+		t.Errorf("open mode: executing task should pass filter, got %d tasks", len(got))
+	}
+}
+
+func TestApplyStateFilter_OpenMode_KeepsClosedParentWithOpenChild(t *testing.T) {
+	tasks := []*orchestrator.Task{
+		{ID: "t", Status: orchestrator.TaskStatusDone, OpenChildCount: 2},
+	}
+	got := applyStateFilter(tasks, false)
+	if len(got) != 1 {
+		t.Errorf("open mode: done parent with open children should pass, got %d tasks", len(got))
+	}
+}
+
+func TestApplyStateFilter_OpenMode_ExcludesClosedWithNoOpenChild(t *testing.T) {
+	tasks := []*orchestrator.Task{
+		{ID: "t", Status: orchestrator.TaskStatusDone, OpenChildCount: 0},
+	}
+	got := applyStateFilter(tasks, false)
+	if len(got) != 0 {
+		t.Errorf("open mode: done task with no open children should be excluded, got %d tasks", len(got))
+	}
+}
+
+func TestApplyStateFilter_ClosedMode_KeepsClosedTask(t *testing.T) {
+	tasks := []*orchestrator.Task{
+		{ID: "t", Status: orchestrator.TaskStatusDone, OpenChildCount: 0},
+	}
+	got := applyStateFilter(tasks, true)
+	if len(got) != 1 {
+		t.Errorf("closed mode: done task should pass filter, got %d tasks", len(got))
+	}
+}
+
+func TestApplyStateFilter_ClosedMode_ExcludesClosedWithOpenChild(t *testing.T) {
+	tasks := []*orchestrator.Task{
+		{ID: "t", Status: orchestrator.TaskStatusDone, OpenChildCount: 1},
+	}
+	got := applyStateFilter(tasks, true)
+	if len(got) != 0 {
+		t.Errorf("closed mode: done task with open children should be excluded, got %d tasks", len(got))
+	}
+}
+
+func TestApplyStateFilter_ClosedMode_ExcludesOpenTask(t *testing.T) {
+	tasks := []*orchestrator.Task{
+		{ID: "t", Status: orchestrator.TaskStatusExecuting, OpenChildCount: 0},
+	}
+	got := applyStateFilter(tasks, true)
+	if len(got) != 0 {
+		t.Errorf("closed mode: executing task should be excluded, got %d tasks", len(got))
+	}
+}
+
+func TestApplyStateFilter_OpenMode_AllStatuses(t *testing.T) {
+	openTasks := []*orchestrator.Task{
+		{Status: orchestrator.TaskStatusExecuting},
+		{Status: orchestrator.TaskStatusReworking},
+		{Status: orchestrator.TaskStatusVerifying},
+		{Status: orchestrator.TaskStatusPending},
+	}
+	got := applyStateFilter(openTasks, false)
+	if len(got) != 4 {
+		t.Errorf("open mode: all open statuses should pass, got %d", len(got))
+	}
+}
