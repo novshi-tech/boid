@@ -151,6 +151,7 @@ func FilterInstructions(payload json.RawMessage, instType InstructionType, consu
 			Role:        role,
 			Type:        inst.Type,
 			Consumer:    inst.Consumer,
+			Name:        inst.Name,
 			Message:     resolveMessage(inst, instType, instructions),
 			Interactive: inst.Interactive,
 			Model:       inst.Model,

@@ -72,6 +72,9 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		TaskYAML:           plan.TaskYAML,
 		EnvironmentYAML:    plan.EnvironmentYAML,
 		Model:              plan.Model,
+		InvokedRole:        plan.InvokedRole,
+		InvokedName:        plan.InvokedName,
+		InvokedType:        plan.InvokedType,
 	}
 	if spec.Role == "hook" || spec.Role == "gate" || plan.Interactive {
 		spec.TTY = true

@@ -80,6 +80,9 @@ func toDispatchPlan(request *orchestrator.DispatchRequest) *DispatchPlan {
 		TaskYAML:           request.TaskYAML,
 		EnvironmentYAML:    request.EnvironmentYAML,
 		Model:              request.Model,
+		InvokedRole:        request.InvokedRole,
+		InvokedName:        request.InvokedName,
+		InvokedType:        request.InvokedType,
 	}
 }
 

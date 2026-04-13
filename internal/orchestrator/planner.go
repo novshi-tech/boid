@@ -135,6 +135,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 	var instructionsJSON string
 	var interactive bool
 	var model string
+	var invokedRole, invokedName, invokedType string
 	instType := InstructionTypeForStatus(task.Status)
 	myInstructions := FilterInstructions(task.Payload, instType, event.Hook.Consumer)
 	if len(myInstructions) > 0 {
@@ -143,6 +144,9 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 		}
 		interactive = myInstructions[0].Interactive
 		model = myInstructions[0].Model
+		invokedRole = myInstructions[0].Role
+		invokedName = myInstructions[0].Name
+		invokedType = string(myInstructions[0].Type)
 	}
 
 	readonly := IsReadonly(task)
@@ -177,6 +181,9 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 		TaskYAML:           taskYAML,
 		EnvironmentYAML:    environmentYAML,
 		Model:              model,
+		InvokedRole:        invokedRole,
+		InvokedName:        invokedName,
+		InvokedType:        invokedType,
 	}, nil
 }
 
