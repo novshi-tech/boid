@@ -42,6 +42,7 @@ type TaskDetailScreen struct {
 	activeTab      string
 	cursor         int
 	timelineCursor int
+	depsCursor     int
 	descScroll     int
 	statusMsg      string
 	isError        bool
@@ -221,6 +222,11 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if s.timelineCursor < len(events)-1 {
 				s.timelineCursor++
 			}
+		} else if s.activeTab == tabDeps {
+			items := depSelectableItems(s.detail)
+			if s.depsCursor < len(items)-1 {
+				s.depsCursor++
+			}
 		} else {
 			if s.cursor < jobCount-1 {
 				s.cursor++
@@ -236,6 +242,10 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if s.timelineCursor > 0 {
 				s.timelineCursor--
 			}
+		} else if s.activeTab == tabDeps {
+			if s.depsCursor > 0 {
+				s.depsCursor--
+			}
 		} else {
 			if s.cursor > 0 {
 				s.cursor--
@@ -248,6 +258,19 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	case "enter":
 		if s.detail == nil {
+			break
+		}
+		// Deps tab: navigate to the selected dependency / dependent task.
+		if s.activeTab == tabDeps {
+			items := depSelectableItems(s.detail)
+			if s.depsCursor >= 0 && s.depsCursor < len(items) {
+				task := items[s.depsCursor]
+				// Use ProjectID as project name (resolution is a future improvement).
+				projectName := task.ProjectID
+				return func() tea.Msg {
+					return pushScreenMsg{screen: NewTaskDetailScreen(s.shared, task.ID, projectName)}
+				}
+			}
 			break
 		}
 		// Timeline tab: enter on a job event pushes JobDetailScreen.
@@ -423,8 +446,7 @@ func (s *TaskDetailScreen) View(width, height int) string {
 		events := buildTimeline(s.detail)
 		sb.WriteString(renderTimeline(events, width, contentHeight, s.timelineCursor))
 	case tabDeps:
-		sb.WriteString(styleDim.Render("  (deps — coming soon)"))
-		sb.WriteByte('\n')
+		sb.WriteString(renderDeps(s.detail, width, contentHeight, s.depsCursor))
 	case tabPayload:
 		sb.WriteString(styleDim.Render("  (payload — coming soon)"))
 		sb.WriteByte('\n')
@@ -473,7 +495,7 @@ func (s *TaskDetailScreen) ShortHelp() string {
 			parts = append(parts, "R: rerun")
 		}
 	}
-	fixed := "o/t/p: tab  e: edit  j/k: scroll  enter: open job  r: refresh  esc/q: back"
+	fixed := "o/t/p: tab  e: edit  j/k: scroll/cursor  enter: open/nav  r: refresh  esc/q: back"
 	return strings.Join(parts, "  ") + "  " + fixed
 }
 
