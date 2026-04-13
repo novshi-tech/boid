@@ -275,6 +275,15 @@ func (c *Client) ListProjects() ([]*orchestrator.Project, error) {
 	return projects, nil
 }
 
+// ListWorkspaces fetches all workspaces.
+func (c *Client) ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error) {
+	var workspaces []*orchestrator.WorkspaceSummary
+	if err := c.Do("GET", "/api/workspaces", nil, &workspaces); err != nil {
+		return nil, err
+	}
+	return workspaces, nil
+}
+
 // GetTaskDetail fetches task metadata + actions + jobs for a given task ID.
 func (c *Client) GetTaskDetail(id string) (*api.TaskDetailView, error) {
 	var detail api.TaskDetailView
