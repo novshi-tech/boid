@@ -7,6 +7,7 @@ package daemon
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/novshi-tech/boid/internal/logrotate"
 )
 
 const daemonEnvKey = "BOID_DAEMON_CHILD"
@@ -132,6 +135,57 @@ func RedirectToLog(logPath string) error {
 	if err := syscall.Dup2(int(logF.Fd()), 2); err != nil {
 		return fmt.Errorf("redirect stderr: %w", err)
 	}
+	return nil
+}
+
+// RedirectToLogRotating is the size-rotating variant of RedirectToLog.
+// It creates an OS pipe, redirects stdin to /dev/null, and redirects
+// stdout and stderr to the pipe write-end.  A background goroutine copies
+// from the pipe read-end into a logrotate.Writer so the log is rotated
+// automatically when it grows past MaxSize.
+//
+// The goroutine exits (and closes the writer) when all write-ends of the
+// pipe are closed, which happens naturally when the process exits.
+func RedirectToLogRotating(logPath string) error {
+	w := &logrotate.Writer{Path: logPath}
+
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("create log pipe: %w", err)
+	}
+
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		pr.Close()
+		pw.Close()
+		return fmt.Errorf("open /dev/null: %w", err)
+	}
+	defer devNull.Close()
+
+	if err := syscall.Dup2(int(devNull.Fd()), 0); err != nil {
+		pr.Close()
+		pw.Close()
+		return fmt.Errorf("redirect stdin: %w", err)
+	}
+	if err := syscall.Dup2(int(pw.Fd()), 1); err != nil {
+		pr.Close()
+		pw.Close()
+		return fmt.Errorf("redirect stdout: %w", err)
+	}
+	if err := syscall.Dup2(int(pw.Fd()), 2); err != nil {
+		pr.Close()
+		pw.Close()
+		return fmt.Errorf("redirect stderr: %w", err)
+	}
+	// The dup'd descriptors (fd 1, fd 2) keep the write-end alive.
+	pw.Close()
+
+	go func() {
+		defer pr.Close()
+		defer w.Close()
+		io.Copy(w, pr) //nolint:errcheck
+	}()
+
 	return nil
 }
 

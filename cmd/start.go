@@ -160,7 +160,7 @@ func runDaemonParent(cfg server.Config) error {
 // manages the PID file, and runs the server until a termination signal arrives.
 func runDaemonChild(cfg server.Config) error {
 	logPath := daemon.LogFilePath()
-	if err := daemon.RedirectToLog(logPath); err != nil {
+	if err := daemon.RedirectToLogRotating(logPath); err != nil {
 		return fmt.Errorf("redirect to log: %w", err)
 	}
 
