@@ -995,6 +995,206 @@ func TestQKey_NoQuit_WhenMiniActive(t *testing.T) {
 	}
 }
 
+// --- search mode tests ---
+
+func TestSearchMode_SlashOpens(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	if !s.searchMode {
+		t.Error("/ key: searchMode should be true")
+	}
+}
+
+func TestSearchMode_EscClearsAndExits(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = makeDummyTasks(5)
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	s.searchInput.SetValue("Task")
+	s.searchQuery = "Task"
+	s.syncTableRows()
+
+	s.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if s.searchMode {
+		t.Error("esc: searchMode should be false")
+	}
+	if s.searchQuery != "" {
+		t.Errorf("esc: searchQuery should be cleared, got %q", s.searchQuery)
+	}
+}
+
+func TestSearchMode_EnterKeepsQueryAndExits(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = makeDummyTasks(5)
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	s.searchInput.SetValue("Task 1")
+	s.searchQuery = "Task 1"
+
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if s.searchMode {
+		t.Error("enter: searchMode should be false")
+	}
+	if s.searchQuery != "Task 1" {
+		t.Errorf("enter: searchQuery should be retained as 'Task 1', got %q", s.searchQuery)
+	}
+}
+
+func TestSearchMode_SlashReopensWithRetainedQuery(t *testing.T) {
+	s := newTestTaskListScreen()
+	// Simulate retained query (not in search mode)
+	s.searchQuery = "hello"
+	s.searchInput.SetValue("hello")
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	if !s.searchMode {
+		t.Error("/: should re-enter searchMode")
+	}
+	if s.searchInput.Value() != "hello" {
+		t.Errorf("/: searchInput should carry retained query 'hello', got %q", s.searchInput.Value())
+	}
+}
+
+func TestSearchMode_IncrementalFilter(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = []*orchestrator.Task{
+		{ID: "t1", Title: "Alpha Task", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()},
+		{ID: "t2", Title: "Beta Work", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()},
+		{ID: "t3", Title: "Alpha Work", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()},
+	}
+	s.syncTableRows()
+
+	// Set query directly and re-sync (simulates typing)
+	s.searchMode = true
+	s.searchQuery = "alpha"
+	s.searchInput.SetValue("alpha")
+	s.syncTableRows()
+
+	if len(s.displayTasks) != 2 {
+		t.Errorf("filter 'alpha': want 2 displayTasks, got %d", len(s.displayTasks))
+	}
+}
+
+func TestSearchMode_CaseInsensitive(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = []*orchestrator.Task{
+		{ID: "t1", Title: "Alpha Task", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()},
+		{ID: "t2", Title: "Beta Work", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()},
+	}
+	s.searchQuery = "ALPHA"
+	s.syncTableRows()
+
+	if len(s.displayTasks) != 1 {
+		t.Errorf("filter 'ALPHA': want 1 displayTask, got %d", len(s.displayTasks))
+	}
+	if s.displayTasks[0].ID != "t1" {
+		t.Errorf("filter 'ALPHA': want task t1, got %s", s.displayTasks[0].ID)
+	}
+}
+
+func TestSearchMode_ChipShownWhenQueryNonEmpty(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.searchQuery = "hello"
+
+	view := s.View(120, 40)
+	if !containsStr(view, "q: hello") {
+		t.Error("View should contain 'q: hello' chip when query is non-empty")
+	}
+}
+
+func TestSearchMode_ChipHiddenWhenQueryEmpty(t *testing.T) {
+	s := newTestTaskListScreen()
+
+	view := s.View(120, 40)
+	if containsStr(view, "q:") {
+		t.Error("View should not contain 'q:' chip when query is empty")
+	}
+}
+
+func TestSearchMode_BlocksNormalKeys(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = makeDummyTasks(5)
+	s.syncTableRows()
+	s.table.SetCursor(0)
+
+	// Enter search mode
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	if !s.searchMode {
+		t.Fatal("/ key should enter search mode")
+	}
+
+	// 'j' in search mode should type 'j' into the search field, NOT do table MoveDown.
+	// Normal table navigation would move cursor from 0 → 1.
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if s.table.Cursor() == 1 {
+		t.Error("search mode: j should not navigate the task table (cursor moved to 1)")
+	}
+	// Confirm the key went to the search input.
+	if s.searchInput.Value() != "j" {
+		t.Errorf("search mode: searchInput should contain 'j', got %q", s.searchInput.Value())
+	}
+}
+
+func TestSearchMode_ShortHelp(t *testing.T) {
+	s := newTestTaskListScreen()
+
+	normal := s.ShortHelp()
+	if !containsStr(normal, "/: search") {
+		t.Error("normal mode ShortHelp should mention /: search")
+	}
+
+	s.searchMode = true
+	search := s.ShortHelp()
+	if !containsStr(search, "esc: cancel") {
+		t.Error("search mode ShortHelp should mention esc: cancel")
+	}
+	if !containsStr(search, "enter: confirm") {
+		t.Error("search mode ShortHelp should mention enter: confirm")
+	}
+}
+
+func TestSearchMode_ANDWithOtherFilters(t *testing.T) {
+	s := newTestTaskListScreen()
+	// Simulate fetchTasksCmd already filtered to "dev" behavior tasks only
+	s.tasks = []*orchestrator.Task{
+		{ID: "t1", Title: "Alpha Dev", Status: orchestrator.TaskStatusExecuting, Behavior: "dev", CreatedAt: time.Now()},
+		{ID: "t3", Title: "Beta Dev", Status: orchestrator.TaskStatusExecuting, Behavior: "dev", CreatedAt: time.Now()},
+	}
+	s.searchQuery = "alpha"
+	s.syncTableRows()
+
+	if len(s.displayTasks) != 1 {
+		t.Errorf("AND filter: want 1 displayTask, got %d", len(s.displayTasks))
+	}
+	if s.displayTasks[0].ID != "t1" {
+		t.Errorf("AND filter: want task t1, got %s", s.displayTasks[0].ID)
+	}
+}
+
+func TestSearchMode_EmptyQueryShowsAll(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = makeDummyTasks(5)
+	s.searchQuery = ""
+	s.syncTableRows()
+
+	if len(s.displayTasks) != 5 {
+		t.Errorf("empty query: want 5 displayTasks, got %d", len(s.displayTasks))
+	}
+}
+
+func TestSearchMode_CursorResetOnQueryChange(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = makeDummyTasks(5)
+	s.syncTableRows()
+	s.table.SetCursor(3)
+
+	// Enter search mode and type 't' — all "Task N" titles contain 't', so 5 tasks remain
+	// visible and the cursor should reset to 0.
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	if s.table.Cursor() != 0 {
+		t.Errorf("typing in search: cursor should reset to 0, got %d", s.table.Cursor())
+	}
+}
+
 func containsStr(s, substr string) bool {
 	return len(s) >= len(substr) && searchStr(s, substr)
 }
