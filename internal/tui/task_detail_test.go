@@ -896,3 +896,79 @@ func TestRenderOverview_DescriptionScroll(t *testing.T) {
 		t.Error("scroll=2: 'line1' should not be visible")
 	}
 }
+
+// --- DescriptionScreen transition tests ---
+
+func TestTaskDetail_VKey_Overview_PushesDescriptionScreen(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithJobs(0)
+	s.activeTab = tabOverview
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	if cmd == nil {
+		t.Fatal("v key in overview: expected non-nil cmd (pushScreenMsg)")
+	}
+	msg := cmd()
+	push, ok := msg.(pushScreenMsg)
+	if !ok {
+		t.Fatalf("v key in overview: expected pushScreenMsg, got %T", msg)
+	}
+	if _, ok := push.screen.(*DescriptionScreen); !ok {
+		t.Errorf("v key in overview: expected *DescriptionScreen, got %T", push.screen)
+	}
+}
+
+func TestTaskDetail_VKey_OtherTab_DoesNotPush(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithJobs(0)
+	s.activeTab = tabTimeline
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	if cmd != nil {
+		t.Error("v key outside overview: expected nil cmd")
+	}
+}
+
+func TestTaskDetail_Enter_Overview_NoRunningJob_PushesDescriptionScreen(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	// makeDetailWithJobs(0) has no jobs → no running job
+	s.detail = makeDetailWithJobs(0)
+	s.activeTab = tabOverview
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter in overview with no running job: expected non-nil cmd (pushScreenMsg)")
+	}
+	msg := cmd()
+	push, ok := msg.(pushScreenMsg)
+	if !ok {
+		t.Fatalf("enter in overview with no running job: expected pushScreenMsg, got %T", msg)
+	}
+	if _, ok := push.screen.(*DescriptionScreen); !ok {
+		t.Errorf("enter in overview with no running job: expected *DescriptionScreen, got %T", push.screen)
+	}
+}
+
+func TestTaskDetail_Enter_Overview_WithRunningJob_OpensJob(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithJobs(1) // has running job
+	s.activeTab = tabOverview
+	s.shared.TmuxEnabled = false // no tmux → status message instead of pane open
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// When tmux is disabled, enter on running job sets statusMsg, not pushScreenMsg
+	if s.statusMsg == "" {
+		t.Error("enter with running job: expected statusMsg (not DescriptionScreen push)")
+	}
+	_ = cmd
+}
+
+func TestShortHelp_IncludesViewDesc(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusExecuting)
+
+	help := s.ShortHelp()
+	if !containsStr(help, "v: view desc") {
+		t.Errorf("ShortHelp: expected 'v: view desc', got %q", help)
+	}
+}
