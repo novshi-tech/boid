@@ -75,6 +75,10 @@ var projectLocalRemoveBindingCmd = &cobra.Command{
 }
 
 func init() {
+	// project local commands operate on local files only and do not require
+	// a running boid server.
+	projectLocalCmd.Annotations = map[string]string{annotationSkipAutostart: "skip"}
+
 	projectLocalInitCmd.Flags().BoolVar(&projectLocalInitForce, "force", false, "overwrite existing project.local.yaml")
 	projectLocalAddBindingCmd.Flags().StringVar(&projectLocalBindingMode, "mode", "ro", "binding mode: ro or rw")
 

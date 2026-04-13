@@ -36,6 +36,7 @@ var (
 )
 
 func init() {
+	startCmd.Annotations = map[string]string{annotationSkipAutostart: "skip"}
 	startCmd.Flags().StringVar(&startDBPath, "db-path", "", "Path to the SQLite database")
 	startCmd.Flags().StringVar(&startSocketPath, "socket-path", "", "Path to the UNIX socket")
 	startCmd.Flags().StringVar(&startHTTPAddr, "http-addr", "", "HTTP listen address")
