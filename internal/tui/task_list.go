@@ -253,6 +253,9 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.selectedWorkspaceID)
 
 	case "w":
+		if len(s.workspaces) == 0 {
+			break
+		}
 		s.popup = s.buildWorkspacePopup()
 
 	case "p":
@@ -393,12 +396,14 @@ func (s *TaskListScreen) handlePopupKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 // buildWorkspacePopup constructs a popupSelector for workspace selection.
+// Label format: "<id> (<n> projects)" to help the user identify workspaces.
 func (s *TaskListScreen) buildWorkspacePopup() popupSelector {
 	labels := []string{"(all)"}
 	values := []string{""}
 	cursor := 0
 	for i, ws := range s.workspaces {
-		labels = append(labels, ws.ID)
+		label := fmt.Sprintf("%s (%d)", ws.ID, ws.ProjectCount)
+		labels = append(labels, label)
 		values = append(values, ws.ID)
 		if ws.ID == s.selectedWorkspaceID {
 			cursor = i + 1

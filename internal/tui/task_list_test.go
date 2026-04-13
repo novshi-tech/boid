@@ -269,8 +269,8 @@ func TestProjectModal_EscCancels(t *testing.T) {
 func TestWorkspaceModal_WKey_Opens(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.workspaces = []*orchestrator.WorkspaceSummary{
-		{ID: "ws-1"},
-		{ID: "ws-2"},
+		{ID: "ws-1", ProjectCount: 2},
+		{ID: "ws-2", ProjectCount: 1},
 	}
 
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
@@ -280,9 +280,21 @@ func TestWorkspaceModal_WKey_Opens(t *testing.T) {
 	if s.popup.kind != "workspace" {
 		t.Errorf("w key: popup kind should be 'workspace', got %q", s.popup.kind)
 	}
-	// labels: "(all)", "ws-1", "ws-2"
+	// labels: "(all)", "ws-1 (2)", "ws-2 (1)"
 	if len(s.popup.labels) != 3 {
 		t.Errorf("w key: want 3 popup labels, got %d", len(s.popup.labels))
+	}
+	if s.popup.labels[1] != "ws-1 (2)" {
+		t.Errorf("w key: label[1] should be 'ws-1 (2)', got %q", s.popup.labels[1])
+	}
+}
+
+func TestWorkspaceModal_WKey_NoOp_WhenEmpty(t *testing.T) {
+	s := newTestTaskListScreen()
+	// No workspaces loaded
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	if s.popup.active {
+		t.Error("w with no workspaces: popup should not open")
 	}
 }
 
