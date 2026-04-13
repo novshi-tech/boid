@@ -35,6 +35,7 @@ func (d *Coordinator) DispatchAndAdvance(
 	readonly := IsReadonly(task)
 	payload := task.Payload
 	var allResults []HandlerResult
+	var firedEvents []FiredEvent
 	exclusiveWriters := map[string]string{} // trait key → first writer ID
 
 	// 1. Evaluate and dispatch hooks
@@ -46,6 +47,7 @@ func (d *Coordinator) DispatchAndAdvance(
 		}
 		for _, hr := range hookResults {
 			allResults = append(allResults, hr)
+			firedEvents = append(firedEvents, buildFiredEvent(hr, "hook", string(task.Status), matchedHooks, nil))
 			if err := checkExclusiveCollision(hr.PayloadPatch, hr.ID, exclusiveWriters); err != nil {
 				return nil, err
 			}
@@ -73,6 +75,7 @@ func (d *Coordinator) DispatchAndAdvance(
 		}
 		for _, gr := range gateResults {
 			allResults = append(allResults, gr)
+			firedEvents = append(firedEvents, buildFiredEvent(gr, "exit_gate", string(task.Status), nil, matchedGates))
 			if err := checkExclusiveCollision(gr.PayloadPatch, gr.ID, exclusiveWriters); err != nil {
 				return nil, err
 			}
@@ -99,6 +102,7 @@ func (d *Coordinator) DispatchAndAdvance(
 	// 4. Evaluate auto-advance
 	result := &DispatchResult{
 		Results:      allResults,
+		FiredEvents:  firedEvents,
 		FinalPayload: payload,
 	}
 
@@ -138,7 +142,9 @@ func (d *Coordinator) DispatchEntryGates(
 		return nil, fmt.Errorf("entry gate dispatch: %w", err)
 	}
 	exclusiveWriters := map[string]string{}
+	var firedEvents []FiredEvent
 	for _, gr := range gateResults {
+		firedEvents = append(firedEvents, buildFiredEvent(gr, "entry_gate", string(task.Status), nil, matchedGates))
 		if err := checkExclusiveCollision(gr.PayloadPatch, gr.ID, exclusiveWriters); err != nil {
 			return nil, err
 		}
@@ -155,6 +161,7 @@ func (d *Coordinator) DispatchEntryGates(
 
 	return &EntryGateResult{
 		Results:      gateResults,
+		FiredEvents:  firedEvents,
 		FinalPayload: payload,
 	}, nil
 }
@@ -332,6 +339,35 @@ func (d *Coordinator) dispatchGates(
 		return nil, firstErr
 	}
 	return results, nil
+}
+
+// buildFiredEvent constructs a FiredEvent from a HandlerResult.
+// hooks is consulted for hook kind, gates for gate kinds; pass nil for the unused slice.
+func buildFiredEvent(hr HandlerResult, kind string, sourceState string, hooks []Hook, gates []Gate) FiredEvent {
+	kitID := ""
+	for _, h := range hooks {
+		if h.ID == hr.ID {
+			kitID = h.Kit
+			break
+		}
+	}
+	for _, g := range gates {
+		if g.ID == hr.ID {
+			kitID = g.Kit
+			break
+		}
+	}
+	fe := FiredEvent{
+		KitID:       kitID,
+		HandlerID:   hr.ID,
+		Kind:        kind,
+		SourceState: sourceState,
+		Success:     hr.ExitCode == 0,
+	}
+	if hr.ExitCode != 0 {
+		fe.Error = fmt.Sprintf("exit code %d", hr.ExitCode)
+	}
+	return fe
 }
 
 // checkExclusiveCollision detects if an exclusive trait is written by multiple handlers.

@@ -849,6 +849,8 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			return
 		}
 
+		s.persistFiredEvents(current.ID, current.Status, result.FiredEvents)
+
 		// Persist hook + exit gate payload
 		if len(result.FinalPayload) > 0 {
 			var persisted *orchestrator.Task
@@ -912,6 +914,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 				s.recordDispatchError(current.ID, current.Status, err)
 				return
 			}
+			s.persistFiredEvents(current.ID, current.Status, entryResult.FiredEvents)
 			if len(entryResult.FinalPayload) > 0 {
 				current.Payload = entryResult.FinalPayload
 				if err := s.Tx.WithinTx(func(tx TxStore) error {
@@ -987,6 +990,36 @@ func (s *TaskWorkflowService) recordDispatchError(taskID string, taskStatus orch
 		return tx.CreateAction(action)
 	}); txErr != nil {
 		slog.Error("persist dispatch error failed", "task_id", taskID, "error", txErr)
+	}
+}
+
+func (s *TaskWorkflowService) persistFiredEvents(taskID string, status orchestrator.TaskStatus, events []orchestrator.FiredEvent) {
+	if len(events) == 0 || s.Tx == nil {
+		return
+	}
+	if err := s.Tx.WithinTx(func(tx TxStore) error {
+		for _, fe := range events {
+			payload, _ := json.Marshal(map[string]any{
+				"kit_id":       fe.KitID,
+				"hook_id":      fe.HandlerID,
+				"source_state": fe.SourceState,
+				"success":      fe.Success,
+				"error":        fe.Error,
+			})
+			action := &orchestrator.Action{
+				TaskID:     taskID,
+				Type:       fe.Kind + "_fired",
+				Payload:    payload,
+				FromStatus: status,
+				ToStatus:   status,
+			}
+			if err := tx.CreateAction(action); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		slog.Warn("persist fired events failed", "task_id", taskID, "error", err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"time"
@@ -26,6 +27,44 @@ func shortID(id string) string {
 		return id
 	}
 	return id[:8]
+}
+
+// isFiredAction reports whether the action type is a hook/gate fired event.
+func isFiredAction(actionType string) bool {
+	return actionType == "hook_fired" || actionType == "exit_gate_fired" || actionType == "entry_gate_fired"
+}
+
+// firedActionLabel formats the payload of a hook_fired/exit_gate_fired/entry_gate_fired action
+// into a short readable label like "go-dev/pr-verify @executing ok".
+func firedActionLabel(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return ""
+	}
+	kitID, _ := m["kit_id"].(string)
+	hookID, _ := m["hook_id"].(string)
+	sourceState, _ := m["source_state"].(string)
+	success, _ := m["success"].(bool)
+	errMsg, _ := m["error"].(string)
+
+	label := hookID
+	if kitID != "" {
+		label = kitID + "/" + hookID
+	}
+	if sourceState != "" {
+		label += " @" + sourceState
+	}
+	if success {
+		label += " ok"
+	} else if errMsg != "" {
+		label += " fail: " + errMsg
+	} else {
+		label += " fail"
+	}
+	return label
 }
 
 type filterOption struct {
@@ -144,22 +183,31 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 				<h2 class="section-title">アクション履歴</h2>
 				<div class="timeline">
 					for _, action := range actions {
-						<div class="timeline-item">
-							if action.FromStatus != "" && action.ToStatus != "" && action.FromStatus != action.ToStatus {
-								<div class="timeline-type">{ action.Type }: { string(action.FromStatus) } → { string(action.ToStatus) }</div>
-							} else if action.FromStatus != "" && action.ToStatus != "" {
-								<div class="timeline-type">{ action.Type }: { string(action.FromStatus) }</div>
-							} else {
-								<div class="timeline-type">{ action.Type }</div>
-							}
-							<div class="timeline-time">{ action.CreatedAt.Format("2006-01-02 15:04:05") }</div>
-							if len(action.Payload) > 0 && string(action.Payload) != "null" {
-								<details>
-									<summary>payload</summary>
-									<pre>{ string(action.Payload) }</pre>
-								</details>
-							}
-						</div>
+						if isFiredAction(action.Type) {
+							<div class="timeline-item timeline-item-fired">
+								<div class="timeline-type timeline-type-fired">
+									[{ action.Type }] { firedActionLabel(action.Payload) }
+								</div>
+								<div class="timeline-time">{ action.CreatedAt.Format("2006-01-02 15:04:05") }</div>
+							</div>
+						} else {
+							<div class="timeline-item">
+								if action.FromStatus != "" && action.ToStatus != "" && action.FromStatus != action.ToStatus {
+									<div class="timeline-type">{ action.Type }: { string(action.FromStatus) } → { string(action.ToStatus) }</div>
+								} else if action.FromStatus != "" && action.ToStatus != "" {
+									<div class="timeline-type">{ action.Type }: { string(action.FromStatus) }</div>
+								} else {
+									<div class="timeline-type">{ action.Type }</div>
+								}
+								<div class="timeline-time">{ action.CreatedAt.Format("2006-01-02 15:04:05") }</div>
+								if len(action.Payload) > 0 && string(action.Payload) != "null" {
+									<details>
+										<summary>payload</summary>
+										<pre>{ string(action.Payload) }</pre>
+									</details>
+								}
+							</div>
+						}
 					}
 				</div>
 			</div>
