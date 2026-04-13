@@ -1,14 +1,18 @@
 package orchestrator
 
 import (
+	cryptorand "crypto/rand"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/novshi-tech/boid/internal/db"
+	"github.com/novshi-tech/boid/internal/orchestrator/refname"
 )
 
 type TaskFilter struct {
@@ -41,6 +45,14 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 	}
 	if len(t.Payload) == 0 {
 		t.Payload = json.RawMessage("{}")
+	}
+	// Auto-generate ref when ref is empty and a parent scope is provided.
+	if t.Ref == "" && t.ParentID != "" {
+		ref, err := generateUniqueRef(dbtx, t.ParentID)
+		if err != nil {
+			return fmt.Errorf("generate ref: %w", err)
+		}
+		t.Ref = ref
 	}
 	traitsJSON, err := marshalTraits(t.Traits)
 	if err != nil {
@@ -526,5 +538,61 @@ func unmarshalTraits(s string) ([]string, error) {
 		return nil, err
 	}
 	return traits, nil
+}
+
+// generateUniqueRef generates a unique ref for the given parent scope.
+// It retries up to 5 times with fresh adjective_noun candidates, then falls back
+// to appending a 4-character random suffix to guarantee uniqueness.
+func generateUniqueRef(dbtx db.DBTX, parentID string) (string, error) {
+	const maxRetries = 5
+	const suffixLen = 4
+
+	rng := newRNG()
+	for i := 0; i < maxRetries; i++ {
+		candidate := refname.Generate(rng)
+		exists, err := refExistsInParent(dbtx, candidate, parentID)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+	}
+	// Fallback: append a short random suffix to ensure uniqueness.
+	return refname.Generate(rng) + "_" + randomAlpha(rng, suffixLen), nil
+}
+
+// refExistsInParent checks whether a ref already exists within the given parent scope.
+func refExistsInParent(dbtx db.DBTX, ref, parentID string) (bool, error) {
+	row := dbtx.QueryRow(
+		`SELECT COUNT(*) FROM tasks WHERE ref = ? AND parent_id = ?`, ref, parentID,
+	)
+	var count int
+	if err := row.Scan(&count); err != nil {
+		return false, fmt.Errorf("check ref existence: %w", err)
+	}
+	return count > 0, nil
+}
+
+// newRNG creates a new random source seeded from crypto/rand.
+func newRNG() *rand.Rand {
+	var s1, s2 uint64
+	if err := binary.Read(cryptorand.Reader, binary.LittleEndian, &s1); err != nil {
+		s1 = uint64(time.Now().UnixNano())
+	}
+	if err := binary.Read(cryptorand.Reader, binary.LittleEndian, &s2); err != nil {
+		s2 = uint64(time.Now().UnixNano() >> 17)
+	}
+	return rand.New(rand.NewPCG(s1, s2))
+}
+
+// randomAlpha returns a random lowercase alphanumeric string of length n.
+func randomAlpha(rng *rand.Rand, n int) string {
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = chars[rng.IntN(len(chars))]
+	}
+	return string(b)
 }
 
