@@ -686,14 +686,18 @@ func TestTabSwitch(t *testing.T) {
 	}
 }
 
-func TestTabSwitch_ViewShowsPlaceholder(t *testing.T) {
+func TestTabSwitch_ViewShowsTimeline(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	s.detail = makeDetailWithJobs(1)
 
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
 	view := s.View(80, 20)
-	if !containsStr(view, "coming soon") {
-		t.Error("timeline tab: expected 'coming soon' placeholder")
+	// Timeline tab renders actual events; makeDetailWithJobs(1) has 1 running job
+	if !containsStr(view, "[main]") {
+		t.Error("timeline tab: expected job event '[main]' in timeline")
+	}
+	if !containsStr(view, "running") {
+		t.Error("timeline tab: expected 'running' label in timeline")
 	}
 }
 

@@ -38,14 +38,15 @@ type TaskDetailScreen struct {
 	taskID      string
 	projectName string
 
-	detail        *api.TaskDetailView
-	activeTab     string
-	cursor        int
-	descScroll    int
-	statusMsg     string
-	isError       bool
-	loading       bool
-	fetchErr      error
+	detail         *api.TaskDetailView
+	activeTab      string
+	cursor         int
+	timelineCursor int
+	descScroll     int
+	statusMsg      string
+	isError        bool
+	loading        bool
+	fetchErr       error
 	abortPending     bool
 	deletePending    bool
 	duplicatePending bool
@@ -86,6 +87,12 @@ func (s *TaskDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.detail = msg.detail
 			if s.detail != nil && s.cursor >= len(s.detail.Jobs) && len(s.detail.Jobs) > 0 {
 				s.cursor = len(s.detail.Jobs) - 1
+			}
+			if s.detail != nil {
+				events := buildTimeline(s.detail)
+				if s.timelineCursor >= len(events) && len(events) > 0 {
+					s.timelineCursor = len(events) - 1
+				}
 			}
 		}
 
@@ -209,6 +216,11 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 					s.descScroll++
 				}
 			}
+		} else if s.activeTab == tabTimeline {
+			events := buildTimeline(s.detail)
+			if s.timelineCursor < len(events)-1 {
+				s.timelineCursor++
+			}
 		} else {
 			if s.cursor < jobCount-1 {
 				s.cursor++
@@ -219,6 +231,10 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if s.activeTab == tabOverview {
 			if s.descScroll > 0 {
 				s.descScroll--
+			}
+		} else if s.activeTab == tabTimeline {
+			if s.timelineCursor > 0 {
+				s.timelineCursor--
 			}
 		} else {
 			if s.cursor > 0 {
@@ -232,6 +248,20 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	case "enter":
 		if s.detail == nil {
+			break
+		}
+		// Timeline tab: enter on a job event pushes JobDetailScreen.
+		if s.activeTab == tabTimeline {
+			events := buildTimeline(s.detail)
+			if s.timelineCursor >= 0 && s.timelineCursor < len(events) {
+				ev := events[s.timelineCursor]
+				if ev.Job != nil {
+					job := ev.Job
+					return func() tea.Msg {
+						return pushScreenMsg{screen: NewJobDetailScreen(s.shared, job)}
+					}
+				}
+			}
 			break
 		}
 		var targetJob *api.Job
@@ -390,8 +420,8 @@ func (s *TaskDetailScreen) View(width, height int) string {
 	case tabOverview:
 		sb.WriteString(s.renderOverview(width, contentHeight))
 	case tabTimeline:
-		sb.WriteString(styleDim.Render("  (timeline — coming soon)"))
-		sb.WriteByte('\n')
+		events := buildTimeline(s.detail)
+		sb.WriteString(renderTimeline(events, width, contentHeight, s.timelineCursor))
 	case tabDeps:
 		sb.WriteString(styleDim.Render("  (deps — coming soon)"))
 		sb.WriteByte('\n')
