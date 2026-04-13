@@ -706,6 +706,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		}
 	}
 
+	fromStatus := task.Status
 	action := &orchestrator.Action{
 		TaskID:  task.ID,
 		Type:    req.Type,
@@ -715,6 +716,8 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusConflict, Message: err.Error()}
 	}
+	action.FromStatus = fromStatus
+	action.ToStatus = newTask.Status
 
 	merged, err := orchestrator.MergePayload(task.Payload, action.Payload)
 	if err != nil {
@@ -810,12 +813,15 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 
 	sm := orchestrator.DefaultMachine()
 
+	jobFailedFrom := task.Status
 	action := &orchestrator.Action{TaskID: task.ID, Type: "job_failed"}
 	newTask, err := sm.Apply(task, action)
 	if err != nil {
 		slog.Warn("job done: job_failed transition not applicable", "error", err)
 		return job, nil
 	}
+	action.FromStatus = jobFailedFrom
+	action.ToStatus = newTask.Status
 
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
 		if err := tx.UpdateTask(newTask); err != nil {
@@ -839,7 +845,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 		result, err := s.Coordinator.DispatchAndAdvance(ctx, current, meta, sm)
 		if err != nil {
 			slog.Error("dispatch loop error", "task_id", current.ID, "cycle", cycle, "error", err)
-			s.recordDispatchError(current.ID, err)
+			s.recordDispatchError(current.ID, current.Status, err)
 			return
 		}
 
@@ -879,7 +885,12 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 		}
 
 		prevStatus := current.Status
-		action := &orchestrator.Action{TaskID: current.ID, Type: "auto_advance"}
+		action := &orchestrator.Action{
+			TaskID:     current.ID,
+			Type:       "auto_advance",
+			FromStatus: prevStatus,
+			ToStatus:   result.NewStatus,
+		}
 		current.Status = result.NewStatus
 		if err := s.Tx.WithinTx(func(tx TxStore) error {
 			if err := tx.UpdateTask(current); err != nil {
@@ -898,7 +909,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			entryResult, err := s.Coordinator.DispatchEntryGates(ctx, current, meta)
 			if err != nil {
 				slog.Error("entry gate dispatch failed", "task_id", current.ID, "error", err)
-				s.recordDispatchError(current.ID, err)
+				s.recordDispatchError(current.ID, current.Status, err)
 				return
 			}
 			if len(entryResult.FinalPayload) > 0 {
@@ -953,7 +964,7 @@ func (s *TaskWorkflowService) triggerDependentTasks(ctx context.Context, taskID 
 	}
 }
 
-func (s *TaskWorkflowService) recordDispatchError(taskID string, err error) {
+func (s *TaskWorkflowService) recordDispatchError(taskID string, taskStatus orchestrator.TaskStatus, err error) {
 	if s.Tx == nil || taskID == "" || err == nil {
 		return
 	}
@@ -964,10 +975,13 @@ func (s *TaskWorkflowService) recordDispatchError(taskID string, err error) {
 		return
 	}
 
+	// dispatch_error は状態遷移を伴わないため from_status = to_status = 現在のステータス
 	action := &orchestrator.Action{
-		TaskID:  taskID,
-		Type:    "dispatch_error",
-		Payload: payload,
+		TaskID:     taskID,
+		Type:       "dispatch_error",
+		Payload:    payload,
+		FromStatus: taskStatus,
+		ToStatus:   taskStatus,
 	}
 	if txErr := s.Tx.WithinTx(func(tx TxStore) error {
 		return tx.CreateAction(action)

@@ -41,9 +41,11 @@ type Task struct {
 }
 
 type Action struct {
-	ID        string          `json:"id"`
-	TaskID    string          `json:"task_id"`
-	Type      string          `json:"type"`
-	Payload   json.RawMessage `json:"payload"`
-	CreatedAt time.Time       `json:"created_at"`
+	ID         string          `json:"id"`
+	TaskID     string          `json:"task_id"`
+	Type       string          `json:"type"`
+	Payload    json.RawMessage `json:"payload"`
+	FromStatus TaskStatus      `json:"from_status,omitempty"`
+	ToStatus   TaskStatus      `json:"to_status,omitempty"`
+	CreatedAt  time.Time       `json:"created_at"`
 }
