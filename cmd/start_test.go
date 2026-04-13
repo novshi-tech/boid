@@ -39,8 +39,8 @@ func TestBuildStartConfig_UsesDefaults(t *testing.T) {
 	if cfg.HTTPAddr != defaultStartHTTPAddr {
 		t.Fatalf("HTTPAddr = %q, want %q", cfg.HTTPAddr, defaultStartHTTPAddr)
 	}
-	if cfg.KeyFilePath != "" {
-		t.Fatalf("KeyFilePath = %q, want empty", cfg.KeyFilePath)
+	if cfg.KeyFilePath != filepath.Join(wantDataDir, "secret.key") {
+		t.Fatalf("KeyFilePath = %q, want %q", cfg.KeyFilePath, filepath.Join(wantDataDir, "secret.key"))
 	}
 	if len(cfg.AllowedDomains) == 0 {
 		t.Fatal("AllowedDomains should not be empty")

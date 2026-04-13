@@ -90,6 +90,15 @@ func defaultKitsDir() string {
 	return filepath.Join(dataDir, "boid", "kits")
 }
 
+func defaultKeyFilePath() string {
+	dataDir := os.Getenv("XDG_DATA_HOME")
+	if dataDir == "" {
+		home, _ := os.UserHomeDir()
+		dataDir = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(dataDir, "boid", "secret.key")
+}
+
 type startConfigOptions struct {
 	DBPath      string
 	SocketPath  string
@@ -119,6 +128,9 @@ func buildStartConfig(opts startConfigOptions) server.Config {
 	}
 	if cfg.KitsDir == "" {
 		cfg.KitsDir = defaultKitsDir()
+	}
+	if cfg.KeyFilePath == "" {
+		cfg.KeyFilePath = defaultKeyFilePath()
 	}
 
 	return cfg
