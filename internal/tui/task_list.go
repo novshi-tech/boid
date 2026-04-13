@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,14 +15,18 @@ import (
 
 const taskPollInterval = 3 * time.Second
 
-// Status filter names and their cycle order.
-var taskFilterCycle = []string{"active", "pending", "done", "aborted", "all"}
-
-// activeStatuses defines which task statuses are considered "active".
-var activeStatuses = map[orchestrator.TaskStatus]bool{
+// openStatuses defines which task statuses are considered "open".
+var openStatuses = map[orchestrator.TaskStatus]bool{
 	orchestrator.TaskStatusExecuting: true,
 	orchestrator.TaskStatusReworking: true,
 	orchestrator.TaskStatusVerifying: true,
+	orchestrator.TaskStatusPending:   true,
+}
+
+// closedStatuses defines which task statuses are considered "closed".
+var closedStatuses = map[orchestrator.TaskStatus]bool{
+	orchestrator.TaskStatusDone:    true,
+	orchestrator.TaskStatusAborted: true,
 }
 
 // --- messages ---
@@ -49,22 +54,36 @@ type miniSelector struct {
 	active bool
 }
 
+// --- popupSelector ---
+
+// popupSelector is a small modal for selecting a value from a list.
+// labels[0] is always "(all)" with values[0] = "".
+type popupSelector struct {
+	active bool
+	kind   string   // "project" or "behavior"
+	labels []string // display labels
+	values []string // internal values ("" for all)
+	cursor int
+}
+
 // --- TaskListScreen ---
 
 type TaskListScreen struct {
 	shared *SharedState
 
-	table        table.Model
-	tasks        []*orchestrator.Task
-	projects     []*orchestrator.Project
-	statusFilter string // active, pending, done, aborted, all
-	projectIdx   int    // 0=all, 1..N=project index
-	loading      bool
-	fetchErr     error
-	statusMsg    string
-	isError      bool
-	mini         miniSelector
-	titleWidth   int // current TITLE column width; default 24
+	table             table.Model
+	tasks             []*orchestrator.Task
+	projects          []*orchestrator.Project
+	stateClosed       bool   // false=open, true=closed
+	selectedProjectID string // "" = all
+	behaviorFilter    string // "" = all
+	popup             popupSelector
+	loading           bool
+	fetchErr          error
+	statusMsg         string
+	isError           bool
+	mini              miniSelector
+	titleWidth        int // current TITLE column width; default 24
 }
 
 func NewTaskListScreen(shared *SharedState) *TaskListScreen {
@@ -85,17 +104,16 @@ func NewTaskListScreen(shared *SharedState) *TaskListScreen {
 		}),
 	)
 	return &TaskListScreen{
-		shared:       shared,
-		table:        t,
-		statusFilter: "active",
-		loading:      true,
-		titleWidth:   24,
+		shared:     shared,
+		table:      t,
+		loading:    true,
+		titleWidth: 24,
 	}
 }
 
 func (s *TaskListScreen) Init() tea.Cmd {
 	return tea.Batch(
-		fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID()),
+		fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter),
 		fetchProjectsCmd(s.shared.Client),
 		taskTickCmd(),
 	)
@@ -105,7 +123,7 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch msg := msg.(type) {
 	case taskTickMsg:
 		return s, tea.Batch(
-			fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID()),
+			fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter),
 			taskTickCmd(),
 		)
 
@@ -164,15 +182,15 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s, clearStatusAfter(4 * time.Second)
 		}
 		s.statusMsg = ""
-		return s, fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
+		return s, fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter)
 
 	case screenResumedMsg:
-		return s, fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
+		return s, fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter)
 
 	case taskCreatedNotifyMsg:
 		s.statusMsg = "task created"
 		s.isError = false
-		return s, tea.Batch(fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID()), clearStatusAfter(3*time.Second))
+		return s, tea.Batch(fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter), clearStatusAfter(3*time.Second))
 
 	case clearStatusMsg:
 		s.statusMsg = ""
@@ -196,6 +214,9 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 }
 
 func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
+	if s.popup.active {
+		return s.handlePopupKey(msg)
+	}
 	if s.mini.active {
 		return s.handleMiniKey(msg)
 	}
@@ -212,37 +233,20 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		}
 
 	case "tab":
-		for i, f := range taskFilterCycle {
-			if f == s.statusFilter {
-				s.statusFilter = taskFilterCycle[(i+1)%len(taskFilterCycle)]
-				break
-			}
-		}
+		s.stateClosed = !s.stateClosed
 		s.table.SetCursor(0)
 		s.loading = true
-		return fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
-
-	case "shift+tab":
-		for i, f := range taskFilterCycle {
-			if f == s.statusFilter {
-				s.statusFilter = taskFilterCycle[(i-1+len(taskFilterCycle))%len(taskFilterCycle)]
-				break
-			}
-		}
-		s.table.SetCursor(0)
-		s.loading = true
-		return fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
+		return fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter)
 
 	case "p":
-		total := len(s.projects) + 1 // +1 for "all"
-		s.projectIdx = (s.projectIdx + 1) % total
-		s.table.SetCursor(0)
-		s.loading = true
-		return fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
+		s.popup = s.buildProjectPopup()
+
+	case "b":
+		s.popup = s.buildBehaviorPopup()
 
 	case "r":
 		s.loading = true
-		return fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
+		return fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter)
 
 	case "enter":
 		if len(s.tasks) == 0 {
@@ -282,18 +286,104 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-func (s *TaskListScreen) selectedProjectID() string {
-	if s.projectIdx == 0 || s.projectIdx > len(s.projects) {
-		return ""
+// buildProjectPopup constructs a popupSelector for project selection.
+func (s *TaskListScreen) buildProjectPopup() popupSelector {
+	labels := []string{"(all)"}
+	values := []string{""}
+	cursor := 0
+	for i, p := range s.projects {
+		labels = append(labels, p.Meta.Name)
+		values = append(values, p.ID)
+		if p.ID == s.selectedProjectID {
+			cursor = i + 1
+		}
 	}
-	return s.projects[s.projectIdx-1].ID
+	return popupSelector{
+		active: true,
+		kind:   "project",
+		labels: labels,
+		values: values,
+		cursor: cursor,
+	}
 }
 
-func (s *TaskListScreen) selectedProjectName() string {
-	if s.projectIdx == 0 || s.projectIdx > len(s.projects) {
+// buildBehaviorPopup constructs a popupSelector for behavior selection.
+func (s *TaskListScreen) buildBehaviorPopup() popupSelector {
+	behaviors := distinctBehaviors(s.tasks)
+	labels := []string{"(all)"}
+	values := []string{""}
+	cursor := 0
+	for i, b := range behaviors {
+		labels = append(labels, b)
+		values = append(values, b)
+		if b == s.behaviorFilter {
+			cursor = i + 1
+		}
+	}
+	return popupSelector{
+		active: true,
+		kind:   "behavior",
+		labels: labels,
+		values: values,
+		cursor: cursor,
+	}
+}
+
+// handlePopupKey processes key events when the popup selector is active.
+func (s *TaskListScreen) handlePopupKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "j", "down":
+		if s.popup.cursor < len(s.popup.labels)-1 {
+			s.popup.cursor++
+		}
+	case "k", "up":
+		if s.popup.cursor > 0 {
+			s.popup.cursor--
+		}
+	case "enter":
+		val := s.popup.values[s.popup.cursor]
+		kind := s.popup.kind
+		s.popup.active = false
+		switch kind {
+		case "project":
+			s.selectedProjectID = val
+		case "behavior":
+			s.behaviorFilter = val
+		}
+		s.table.SetCursor(0)
+		s.loading = true
+		return fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter)
+	case "esc":
+		s.popup.active = false
+	}
+	return nil
+}
+
+// distinctBehaviors returns a sorted slice of unique non-empty behavior values
+// from the given tasks. Suitable for building the behavior selector options.
+func distinctBehaviors(tasks []*orchestrator.Task) []string {
+	seen := map[string]bool{}
+	var behaviors []string
+	for _, t := range tasks {
+		if t.Behavior != "" && !seen[t.Behavior] {
+			seen[t.Behavior] = true
+			behaviors = append(behaviors, t.Behavior)
+		}
+	}
+	sort.Strings(behaviors)
+	return behaviors
+}
+
+// projectName returns the display name for the current project filter.
+func (s *TaskListScreen) projectName() string {
+	if s.selectedProjectID == "" {
 		return "all"
 	}
-	return s.projects[s.projectIdx-1].Meta.Name
+	name := s.findProjectName(s.selectedProjectID)
+	if name == "" {
+		return s.selectedProjectID
+	}
+	return name
 }
 
 func (s *TaskListScreen) View(width, height int) string {
@@ -306,6 +396,12 @@ func (s *TaskListScreen) View(width, height int) string {
 	// --- separator ---
 	sb.WriteString(strings.Repeat("─", width))
 	sb.WriteByte('\n')
+
+	// --- popup overlay ---
+	if s.popup.active {
+		sb.WriteString(renderPopupSelector(s.popup, width))
+		return sb.String()
+	}
 
 	// --- body ---
 	bodyHeight := height - 2 // filterbar(1) + sep(1)
@@ -349,28 +445,43 @@ func (s *TaskListScreen) View(width, height int) string {
 }
 
 func (s *TaskListScreen) ShortHelp() string {
-	return "enter: detail  s: start  o: open job  n: new  tab/shift+tab: filter  p: project  r: refresh  q: quit"
+	return "enter: detail  s: start  o: open job  n: new  tab: state  p: project  b: behavior  r: refresh  q: quit"
 }
 
 func (s *TaskListScreen) buildTaskFilterBar(width int) string {
-	var parts []string
-	for _, f := range taskFilterCycle {
-		label := f
-		if f == s.statusFilter {
-			parts = append(parts, styleFilterActive.Render("["+label+"]"))
+	stateLabel := "open"
+	if s.stateClosed {
+		stateLabel = "closed"
+	}
+
+	projLabel := s.projectName()
+	behLabel := s.behaviorFilter
+	if behLabel == "" {
+		behLabel = "all"
+	}
+
+	stateChip := styleFilterActive.Render("state: " + stateLabel)
+	projChip := styleDim.Render("proj: " + projLabel)
+	behChip := styleDim.Render("behavior: " + behLabel)
+
+	_ = width
+	return stateChip + "    " + projChip + "    " + behChip
+}
+
+// renderPopupSelector renders the popup selector list.
+func renderPopupSelector(p popupSelector, width int) string {
+	var sb strings.Builder
+	title := "Select " + p.kind + ":"
+	sb.WriteString("  " + styleTitle.Render(title) + "\n")
+	for i, label := range p.labels {
+		if i == p.cursor {
+			sb.WriteString("    " + styleFilterActive.Render("▸ "+label) + "\n")
 		} else {
-			parts = append(parts, styleFilterInactive.Render(" "+label+" "))
+			sb.WriteString("      " + styleDim.Render(label) + "\n")
 		}
 	}
-
-	projLabel := styleDim.Render("project: " + s.selectedProjectName())
-	filterStr := strings.Join(parts, "  ")
-
-	gap := width - lipglossWidth(filterStr) - lipglossWidth(projLabel)
-	if gap < 2 {
-		gap = 2
-	}
-	return filterStr + strings.Repeat(" ", gap) + projLabel
+	_ = width
+	return sb.String()
 }
 
 func (s *TaskListScreen) findProjectName(projectID string) string {
@@ -529,25 +640,10 @@ func taskTickCmd() tea.Cmd {
 	})
 }
 
-func fetchTasksCmd(c *client.Client, statusFilter, projectID string) tea.Cmd {
+func fetchTasksCmd(c *client.Client, stateClosed bool, projectID, behaviorFilter string) tea.Cmd {
 	return func() tea.Msg {
 		filter := client.TaskListFilter{
 			ProjectID: projectID,
-		}
-
-		// "active" filter requires fetching all and filtering client-side,
-		// because the API only supports single status values.
-		switch statusFilter {
-		case "active":
-			// No status filter - fetch all, filter client-side
-		case "all":
-			// No status filter - fetch all
-		case "pending":
-			filter.Status = string(orchestrator.TaskStatusPending)
-		case "done":
-			filter.Status = string(orchestrator.TaskStatusDone)
-		case "aborted":
-			filter.Status = string(orchestrator.TaskStatusAborted)
 		}
 
 		tasks, err := c.ListTasks(filter)
@@ -555,18 +651,32 @@ func fetchTasksCmd(c *client.Client, statusFilter, projectID string) tea.Cmd {
 			return tasksMsg{err: err}
 		}
 
-		// Client-side filter for "active" statuses
-		if statusFilter == "active" {
-			var filtered []*orchestrator.Task
-			for _, t := range tasks {
-				if activeStatuses[t.Status] {
+		// Filter by open/closed state client-side.
+		var filtered []*orchestrator.Task
+		for _, t := range tasks {
+			if stateClosed {
+				if closedStatuses[t.Status] {
+					filtered = append(filtered, t)
+				}
+			} else {
+				if openStatuses[t.Status] {
 					filtered = append(filtered, t)
 				}
 			}
-			tasks = filtered
 		}
 
-		return tasksMsg{tasks: tasks}
+		// Filter by behavior.
+		if behaviorFilter != "" {
+			var byBehavior []*orchestrator.Task
+			for _, t := range filtered {
+				if t.Behavior == behaviorFilter {
+					byBehavior = append(byBehavior, t)
+				}
+			}
+			filtered = byBehavior
+		}
+
+		return tasksMsg{tasks: filtered}
 	}
 }
 
