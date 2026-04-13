@@ -28,6 +28,7 @@ type KitInfo struct {
 type ScaffoldTemplateData struct {
 	ProjectID   string
 	ProjectName string
+	Consumer    string
 }
 
 // Wizard runs the interactive project initialization flow.
@@ -140,6 +141,9 @@ func (w *Wizard) Run(projectDir string) error {
 	// [4] Select behavior kit
 	selectedBehaviorKit := w.selectBehaviorKit(scanner, behaviorKits)
 
+	// [4.5] Select consumer from feature kits that provide one
+	consumer := w.selectConsumer(scanner, selectedFeatureKits)
+
 	// Build combined kit list and metadata list for validation
 	var selectedKitRefs []string
 	var selectedKitMetas []orchestrator.KitMeta
@@ -182,6 +186,7 @@ func (w *Wizard) Run(projectDir string) error {
 		tplData := ScaffoldTemplateData{
 			ProjectID:   projectID,
 			ProjectName: name,
+			Consumer:    consumer,
 		}
 		expanded, expandErr := ExpandScaffoldTemplate(
 			selectedBehaviorKit.Dir,
@@ -341,6 +346,43 @@ func (w *Wizard) selectBehaviorKit(scanner *bufio.Scanner, kits []KitInfo) *KitI
 		return nil
 	}
 	return &kits[n-1]
+}
+
+func (w *Wizard) selectConsumer(scanner *bufio.Scanner, kits []KitInfo) string {
+	var consumerKits []KitInfo
+	for _, ki := range kits {
+		if ki.Meta.ProvidesConsumer != "" {
+			consumerKits = append(consumerKits, ki)
+		}
+	}
+
+	switch len(consumerKits) {
+	case 0:
+		return ""
+	case 1:
+		name := consumerKits[0].Meta.ProvidesConsumer
+		fmt.Fprintf(w.Out, "\nUsing consumer: %s\n", name)
+		return name
+	default:
+		fmt.Fprintln(w.Out, "\nSelect default AI agent (consumer):")
+		for i, ki := range consumerKits {
+			fmt.Fprintf(w.Out, "  %d. %s\n", i+1, ki.Meta.ProvidesConsumer)
+		}
+		fmt.Fprint(w.Out, "Choice [1]: ")
+
+		if !scanner.Scan() {
+			return consumerKits[0].Meta.ProvidesConsumer
+		}
+		input := strings.TrimSpace(scanner.Text())
+		if input == "" {
+			return consumerKits[0].Meta.ProvidesConsumer
+		}
+		n, err := strconv.Atoi(input)
+		if err != nil || n < 1 || n > len(consumerKits) {
+			return consumerKits[0].Meta.ProvidesConsumer
+		}
+		return consumerKits[n-1].Meta.ProvidesConsumer
+	}
 }
 
 func kitDisplayName(ki KitInfo) string {

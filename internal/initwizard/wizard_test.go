@@ -494,3 +494,205 @@ func mapKeys[K comparable, V any](m map[K]V) []K {
 	}
 	return keys
 }
+
+// createFakeKitWithConsumer creates a feature kit (no scaffold) with provides_consumer set.
+func createFakeKitWithConsumer(t *testing.T, kitsDir, ref, name, detectMarker, consumer string) {
+	t.Helper()
+	kitDir := filepath.Join(kitsDir, ref)
+	if err := os.MkdirAll(kitDir, 0o755); err != nil {
+		t.Fatalf("mkdir kit: %v", err)
+	}
+
+	var sb strings.Builder
+	if name != "" {
+		sb.WriteString("meta:\n  name: " + name + "\n")
+	}
+	if detectMarker != "" {
+		script := "#!/bin/sh\nif [ -e \"" + detectMarker + "\" ]; then\n    echo required\nfi\n"
+		if err := os.WriteFile(filepath.Join(kitDir, "detect.sh"), []byte(script), 0o755); err != nil {
+			t.Fatalf("write detect.sh: %v", err)
+		}
+		sb.WriteString("detect:\n  script: detect.sh\n")
+	}
+	if consumer != "" {
+		sb.WriteString("provides_consumer: " + consumer + "\n")
+	}
+
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(sb.String()), 0o644); err != nil {
+		t.Fatalf("write kit.yaml: %v", err)
+	}
+}
+
+// createFakeScaffoldKitConsumerTemplate creates a behavior kit whose scaffold template
+// uses {{.Consumer}}, so tests can verify Consumer injection.
+func createFakeScaffoldKitConsumerTemplate(t *testing.T, kitsDir, ref, name string) {
+	t.Helper()
+	kitDir := filepath.Join(kitsDir, ref)
+	if err := os.MkdirAll(kitDir, 0o755); err != nil {
+		t.Fatalf("mkdir kit: %v", err)
+	}
+	tpl := "dev:\n  consumer: {{.Consumer}}\n"
+	if err := os.WriteFile(filepath.Join(kitDir, "behaviors.tmpl"), []byte(tpl), 0o644); err != nil {
+		t.Fatalf("write behaviors.tmpl: %v", err)
+	}
+	kitYAML := "meta:\n  name: " + name + "\n" +
+		"scaffold:\n  task_behaviors:\n    description: Test scaffold\n    template: behaviors.tmpl\n"
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
+		t.Fatalf("write kit.yaml: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Consumer selection tests
+// ---------------------------------------------------------------------------
+
+// TestWizardRun_ConsumerAutoSelected verifies that when exactly one feature kit
+// provides a consumer, it is auto-selected without prompting and injected into
+// the scaffold template.
+func TestWizardRun_ConsumerAutoSelected(t *testing.T) {
+	kitsDir := t.TempDir()
+	// Feature kit: provides_consumer, auto-detected via claude-marker.txt
+	createFakeKitWithConsumer(t, kitsDir, "github.com/test/repo/claude-kit", "claude-code-kit", "claude-marker.txt", "claude-code")
+	// Behavior kit: scaffold template uses {{.Consumer}}
+	createFakeScaffoldKitConsumerTemplate(t, kitsDir, "github.com/test/repo/dev-kit", "dev-kit")
+	initFakeGitRepo(t, kitsDir, "github.com/test/repo")
+
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "claude-marker.txt"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Input: project name (default), keep kit defaults (claude-kit auto-selected), accept behavior kit (Y)
+	// Consumer: auto-selected — no additional input line needed
+	input := "consumer-project\n\nY\n"
+	var out bytes.Buffer
+
+	w := &initwizard.Wizard{In: strings.NewReader(input), Out: &out, KitsDir: kitsDir}
+	if err := w.Run(projectDir); err != nil {
+		t.Fatalf("Run: %v\nOutput:\n%s", err, out.String())
+	}
+
+	// Output should mention the consumer name
+	if !strings.Contains(out.String(), "claude-code") {
+		t.Errorf("expected 'claude-code' in output, got:\n%s", out.String())
+	}
+
+	// Verify Consumer was injected into the scaffold template
+	data, err := os.ReadFile(filepath.Join(projectDir, ".boid", "project.yaml"))
+	if err != nil {
+		t.Fatalf("read project.yaml: %v", err)
+	}
+	var proj struct {
+		TaskBehaviors map[string]any `yaml:"task_behaviors"`
+	}
+	if err := yaml.Unmarshal(data, &proj); err != nil {
+		t.Fatalf("parse project.yaml: %v", err)
+	}
+	devBehavior, ok := proj.TaskBehaviors["dev"]
+	if !ok {
+		t.Fatalf("expected 'dev' in task_behaviors, got keys: %v", mapKeys(proj.TaskBehaviors))
+	}
+	devMap, ok := devBehavior.(map[string]any)
+	if !ok {
+		t.Fatalf("expected dev to be map, got %T", devBehavior)
+	}
+	if devMap["consumer"] != "claude-code" {
+		t.Errorf("consumer = %v, want 'claude-code'", devMap["consumer"])
+	}
+}
+
+// TestWizardRun_ConsumerMenu verifies that when two feature kits provide consumers,
+// a menu is shown and the user's choice is injected into the scaffold template.
+func TestWizardRun_ConsumerMenu(t *testing.T) {
+	kitsDir := t.TempDir()
+	// Two feature kits with consumers (lexicographic order: kit-a-consumer < kit-b-consumer)
+	createFakeKitWithConsumer(t, kitsDir, "github.com/test/repo/kit-a-consumer", "agent-a-kit", "marker-a.txt", "agent-a")
+	createFakeKitWithConsumer(t, kitsDir, "github.com/test/repo/kit-b-consumer", "agent-b-kit", "marker-b.txt", "agent-b")
+	// Behavior kit
+	createFakeScaffoldKitConsumerTemplate(t, kitsDir, "github.com/test/repo/dev-kit", "dev-kit")
+	initFakeGitRepo(t, kitsDir, "github.com/test/repo")
+
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "marker-a.txt"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "marker-b.txt"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Input: default name, keep kit defaults (both auto-selected), accept behavior kit, select consumer #2 (agent-b)
+	input := "\n\nY\n2\n"
+	var out bytes.Buffer
+
+	w := &initwizard.Wizard{In: strings.NewReader(input), Out: &out, KitsDir: kitsDir}
+	if err := w.Run(projectDir); err != nil {
+		t.Fatalf("Run: %v\nOutput:\n%s", err, out.String())
+	}
+
+	// Verify consumer #2 (agent-b) was injected
+	data, err := os.ReadFile(filepath.Join(projectDir, ".boid", "project.yaml"))
+	if err != nil {
+		t.Fatalf("read project.yaml: %v", err)
+	}
+	var proj struct {
+		TaskBehaviors map[string]any `yaml:"task_behaviors"`
+	}
+	if err := yaml.Unmarshal(data, &proj); err != nil {
+		t.Fatalf("parse project.yaml: %v", err)
+	}
+	devBehavior, ok := proj.TaskBehaviors["dev"]
+	if !ok {
+		t.Fatalf("expected 'dev' in task_behaviors")
+	}
+	devMap := devBehavior.(map[string]any)
+	if devMap["consumer"] != "agent-b" {
+		t.Errorf("consumer = %v, want 'agent-b'", devMap["consumer"])
+	}
+}
+
+// TestWizardRun_ConsumerNone verifies that when no feature kit provides a consumer,
+// the Consumer field is empty and {{.Consumer}} renders to an empty string without error.
+func TestWizardRun_ConsumerNone(t *testing.T) {
+	kitsDir := t.TempDir()
+	// Feature kit without provides_consumer
+	createFakeKit(t, kitsDir, "github.com/test/repo/go-kit", "go-kit", "go.mod", false)
+	// Behavior kit with {{.Consumer}} template
+	createFakeScaffoldKitConsumerTemplate(t, kitsDir, "github.com/test/repo/dev-kit", "dev-kit")
+	initFakeGitRepo(t, kitsDir, "github.com/test/repo")
+
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "go.mod"), []byte("module test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Input: default name, keep kit defaults, accept behavior kit
+	// No consumer prompt since no consumer kits selected
+	input := "\n\nY\n"
+	var out bytes.Buffer
+
+	w := &initwizard.Wizard{In: strings.NewReader(input), Out: &out, KitsDir: kitsDir}
+	if err := w.Run(projectDir); err != nil {
+		t.Fatalf("Run: %v\nOutput:\n%s", err, out.String())
+	}
+
+	// Verify Consumer is empty (renders to empty string, not error)
+	data, err := os.ReadFile(filepath.Join(projectDir, ".boid", "project.yaml"))
+	if err != nil {
+		t.Fatalf("read project.yaml: %v", err)
+	}
+	var proj struct {
+		TaskBehaviors map[string]any `yaml:"task_behaviors"`
+	}
+	if err := yaml.Unmarshal(data, &proj); err != nil {
+		t.Fatalf("parse project.yaml: %v", err)
+	}
+	devBehavior, ok := proj.TaskBehaviors["dev"]
+	if !ok {
+		t.Fatalf("expected 'dev' in task_behaviors")
+	}
+	devMap := devBehavior.(map[string]any)
+	// consumer key should be nil/empty (YAML renders "" as null or empty string)
+	if v := devMap["consumer"]; v != nil && v != "" {
+		t.Errorf("consumer = %v, want empty/nil", v)
+	}
+}
