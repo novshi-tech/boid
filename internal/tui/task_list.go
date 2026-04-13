@@ -679,12 +679,82 @@ func stripANSI(s string) string {
 	return b.String()
 }
 
-// syncTableRows applies the searchQuery filter to s.tasks, stores the result in
-// s.displayTasks, then converts to table rows and updates the table.
+// buildTreeOrder takes a flat list of tasks and returns them in DFS tree order
+// (parent before children) along with a depth map keyed by task ID.
+// The original input order is preserved for roots and siblings.
+func buildTreeOrder(tasks []*orchestrator.Task) ([]*orchestrator.Task, map[string]int) {
+	idSet := make(map[string]bool, len(tasks))
+	for _, t := range tasks {
+		idSet[t.ID] = true
+	}
+
+	children := make(map[string][]*orchestrator.Task)
+	var roots []*orchestrator.Task
+	for _, t := range tasks {
+		if t.ParentID == "" || !idSet[t.ParentID] {
+			roots = append(roots, t)
+		} else {
+			children[t.ParentID] = append(children[t.ParentID], t)
+		}
+	}
+
+	result := make([]*orchestrator.Task, 0, len(tasks))
+	depths := make(map[string]int, len(tasks))
+
+	var dfs func(t *orchestrator.Task, depth int)
+	dfs = func(t *orchestrator.Task, depth int) {
+		result = append(result, t)
+		depths[t.ID] = depth
+		for _, child := range children[t.ID] {
+			dfs(child, depth+1)
+		}
+	}
+	for _, root := range roots {
+		dfs(root, 0)
+	}
+
+	return result, depths
+}
+
+// progressBadge returns a compact progress string for a parent task
+// (e.g. "3/7" or "3/7 [!1]"). Returns "" when TotalChildCount == 0.
+func progressBadge(task *orchestrator.Task) string {
+	if task.TotalChildCount == 0 {
+		return ""
+	}
+	s := fmt.Sprintf("%d/%d", task.DoneChildCount, task.TotalChildCount)
+	if task.AbortedChildCount > 0 {
+		s += fmt.Sprintf(" [!%d]", task.AbortedChildCount)
+	}
+	return s
+}
+
+// applyStateFilter filters tasks by open/closed state, taking child counts into account.
+// Open mode: keeps tasks that are open OR have open children.
+// Closed mode: keeps tasks that are closed AND have no open children.
+func applyStateFilter(tasks []*orchestrator.Task, stateClosed bool) []*orchestrator.Task {
+	var filtered []*orchestrator.Task
+	for _, t := range tasks {
+		if stateClosed {
+			if closedStatuses[t.Status] && t.OpenChildCount == 0 {
+				filtered = append(filtered, t)
+			}
+		} else {
+			if openStatuses[t.Status] || t.OpenChildCount > 0 {
+				filtered = append(filtered, t)
+			}
+		}
+	}
+	return filtered
+}
+
+// syncTableRows applies the searchQuery filter to s.tasks, builds the tree order,
+// stores the result in s.displayTasks, then converts to table rows and updates the table.
 func (s *TaskListScreen) syncTableRows() {
-	// Build displayTasks by filtering s.tasks by searchQuery (title, case-insensitive).
+	// Filter by searchQuery (title, case-insensitive).
+	var base []*orchestrator.Task
 	if s.searchQuery == "" {
-		s.displayTasks = s.tasks
+		base = s.tasks
 	} else {
 		q := strings.ToLower(s.searchQuery)
 		filtered := make([]*orchestrator.Task, 0, len(s.tasks))
@@ -693,8 +763,12 @@ func (s *TaskListScreen) syncTableRows() {
 				filtered = append(filtered, t)
 			}
 		}
-		s.displayTasks = filtered
+		base = filtered
 	}
+
+	// Build tree order (DFS: parent before children).
+	ordered, depths := buildTreeOrder(base)
+	s.displayTasks = ordered
 
 	rows := make([]table.Row, len(s.displayTasks))
 	for i, task := range s.displayTasks {
@@ -706,6 +780,25 @@ func (s *TaskListScreen) syncTableRows() {
 			title = "(no title)"
 		}
 
+		// Build title cell: indented by depth and with optional progress badge.
+		depth := depths[task.ID]
+		indent := strings.Repeat("  ", depth)
+		rawTitle := indent + title
+		progress := progressBadge(task)
+
+		var titleCell string
+		if progress != "" {
+			progressPart := " " + progress
+			maxTitle := s.titleWidth - len([]rune(progressPart))
+			if maxTitle < 1 {
+				maxTitle = 1
+			}
+			titlePart := strings.TrimRight(truncate(rawTitle, maxTitle), " ")
+			titleCell = truncate(titlePart+progressPart, s.titleWidth)
+		} else {
+			titleCell = truncate(rawTitle, s.titleWidth)
+		}
+
 		projectCell := ""
 		if name := s.findProjectName(task.ProjectID); name != "" {
 			projectCell = truncate(name, 12)
@@ -713,7 +806,7 @@ func (s *TaskListScreen) syncTableRows() {
 
 		rows[i] = table.Row{
 			statusCell,
-			truncate(title, s.titleWidth),
+			titleCell,
 			projectCell,
 			task.Behavior,
 			formatTaskElapsed(task.CreatedAt),
@@ -805,19 +898,8 @@ func fetchTasksCmd(c *client.Client, stateClosed bool, projectID, behaviorFilter
 			return tasksMsg{err: err}
 		}
 
-		// Filter by open/closed state client-side.
-		var filtered []*orchestrator.Task
-		for _, t := range tasks {
-			if stateClosed {
-				if closedStatuses[t.Status] {
-					filtered = append(filtered, t)
-				}
-			} else {
-				if openStatuses[t.Status] {
-					filtered = append(filtered, t)
-				}
-			}
-		}
+		// Filter by open/closed state client-side (child counts included).
+		filtered := applyStateFilter(tasks, stateClosed)
 
 		// Filter by workspace (only when no specific project is already selected).
 		if projectID == "" && len(workspaceProjectIDs) > 0 {
