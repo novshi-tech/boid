@@ -153,10 +153,11 @@ func Spawn(args []string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("start daemon process: %w", err)
 	}
+	pid := proc.Pid
 	if err := proc.Release(); err != nil {
 		return 0, fmt.Errorf("release daemon process: %w", err)
 	}
-	return proc.Pid, nil
+	return pid, nil
 }
 
 // WaitForSocket polls socketPath using net.Dial until a connection succeeds or
