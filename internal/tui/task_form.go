@@ -21,6 +21,7 @@ const (
 	focusBehavior
 	focusTitle
 	focusDescription
+	focusAutoStart
 	focusSubmit
 	focusCancel
 	focusCount
@@ -97,12 +98,13 @@ type taskCreatedNotifyMsg struct{}
 type TaskFormScreen struct {
 	shared *SharedState
 
-	projectField  SelectModel
-	behaviorField SelectModel
-	titleField    TextFieldModel
-	descArea      TextAreaModel
-	createBtn     ButtonModel
-	cancelBtn     ButtonModel
+	projectField   SelectModel
+	behaviorField  SelectModel
+	titleField     TextFieldModel
+	descArea       TextAreaModel
+	autoStartField CheckboxModel
+	createBtn      ButtonModel
+	cancelBtn      ButtonModel
 
 	focus      formFocus
 	errMsg     string
@@ -132,16 +134,17 @@ func NewTaskFormScreen(shared *SharedState) *TaskFormScreen {
 	bf.SetPlaceholder("(select project first)")
 
 	s := &TaskFormScreen{
-		shared:        shared,
-		projectField:  pf,
-		behaviorField: bf,
-		titleField:    tf,
-		descArea:      ta,
-		createBtn:     NewButton("Create"),
-		cancelBtn:     NewButton("Cancel"),
-		focus:         focusProject,
-		keys:          defaultTaskFormKeys,
-		help:          help.New(),
+		shared:         shared,
+		projectField:   pf,
+		behaviorField:  bf,
+		titleField:     tf,
+		descArea:       ta,
+		autoStartField: NewCheckbox("Auto start"),
+		createBtn:      NewButton("Create"),
+		cancelBtn:      NewButton("Cancel"),
+		focus:          focusProject,
+		keys:           defaultTaskFormKeys,
+		help:           help.New(),
 	}
 	return s
 }
@@ -208,6 +211,8 @@ func (s *TaskFormScreen) moveFocus(newFocus formFocus) tea.Cmd {
 		s.titleField.Blur()
 	case focusDescription:
 		s.descArea.Blur()
+	case focusAutoStart:
+		s.autoStartField.Blur()
 	case focusSubmit:
 		s.createBtn.Blur()
 	case focusCancel:
@@ -224,6 +229,8 @@ func (s *TaskFormScreen) moveFocus(newFocus formFocus) tea.Cmd {
 		return s.titleField.Focus()
 	case focusDescription:
 		return s.descArea.Focus()
+	case focusAutoStart:
+		return s.autoStartField.Focus()
 	case focusSubmit:
 		return s.createBtn.Focus()
 	case focusCancel:
@@ -295,6 +302,11 @@ func (s *TaskFormScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		s.descArea, cmd = s.descArea.Update(msg)
 		return cmd
 
+	case focusAutoStart:
+		var cmd tea.Cmd
+		s.autoStartField, cmd = s.autoStartField.Update(msg)
+		return cmd
+
 	case focusSubmit:
 		var cmd tea.Cmd
 		s.createBtn, cmd = s.createBtn.Update(msg)
@@ -329,6 +341,7 @@ func (s *TaskFormScreen) submit() tea.Cmd {
 		Behavior:    s.behaviorField.Value(),
 		Title:       title,
 		Description: s.descArea.Value(),
+		AutoStart:   s.autoStartField.Value(),
 	}
 	return createTaskCmd(s.shared.Client, req)
 }
@@ -361,6 +374,9 @@ func (s *TaskFormScreen) View(width, height int) string {
 	// Description textarea — 画面幅いっぱいに広げる
 	s.descArea.SetWidth(width)
 	sb.WriteString(s.descArea.View())
+
+	// Auto start checkbox
+	sb.WriteString(s.autoStartField.View())
 
 	// Buttons
 	sb.WriteString("\n  " + s.createBtn.View() + "    " + s.cancelBtn.View() + "\n")

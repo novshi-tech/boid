@@ -16,8 +16,9 @@ type Job struct {
 	ProjectID   string    `json:"project_id"`
 	HandlerID   string    `json:"handler_id"`
 	Role        string    `json:"role"`
-	RuntimeID   string    `json:"runtime_id,omitempty"`
-	Interactive bool      `json:"interactive"`
+	RuntimeID     string    `json:"runtime_id,omitempty"`
+	WorkspacePath string    `json:"workspace_path,omitempty"`
+	Interactive   bool      `json:"interactive"`
 	TTY         bool      `json:"tty"`
 	Status      JobStatus `json:"status"`
 	ExitCode    int       `json:"exit_code,omitempty"`

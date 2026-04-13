@@ -28,68 +28,98 @@ func newTestTaskListScreen() *TaskListScreen {
 	return s
 }
 
-func TestTaskFilterTabCycle(t *testing.T) {
+// --- state toggle tests ---
+
+func TestStateToggle_Tab(t *testing.T) {
 	s := newTestTaskListScreen()
-	// Default is "active" (index 0)
-	expected := []string{"pending", "done", "aborted", "all", "active"}
-	for _, want := range expected {
-		s.Update(tea.KeyMsg{Type: tea.KeyTab})
-		if s.statusFilter != want {
-			t.Errorf("tab: want filter %q, got %q", want, s.statusFilter)
-		}
+	// Default is open (stateClosed=false)
+	if s.stateClosed {
+		t.Fatal("initial stateClosed should be false")
+	}
+
+	// tab -> closed
+	s.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if !s.stateClosed {
+		t.Error("after tab: stateClosed should be true")
+	}
+
+	// tab -> open again
+	s.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if s.stateClosed {
+		t.Error("after tab tab: stateClosed should be false")
 	}
 }
 
-func TestTaskFilterShiftTabCycle(t *testing.T) {
-	s := newTestTaskListScreen()
-	// Default is "active" (index 0), shift-tab goes backwards
-	expected := []string{"all", "aborted", "done", "pending", "active"}
-	for _, want := range expected {
-		s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-		if s.statusFilter != want {
-			t.Errorf("shift+tab: want filter %q, got %q", want, s.statusFilter)
-		}
-	}
-}
-
-func TestTaskFilterTabResetsCursor(t *testing.T) {
+func TestStateToggle_TabResetsCursor(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = makeDummyTasks(10)
 	s.syncTableRows()
 	s.table.SetCursor(5)
 	s.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if s.table.Cursor() != 0 {
-		t.Errorf("expected cursor 0 after filter change, got %d", s.table.Cursor())
+		t.Errorf("expected cursor 0 after state toggle, got %d", s.table.Cursor())
 	}
 }
 
-func TestActiveFilterStatuses(t *testing.T) {
+// --- open/closed status maps tests ---
+
+func TestOpenStatuses(t *testing.T) {
 	want := map[orchestrator.TaskStatus]bool{
 		orchestrator.TaskStatusExecuting: true,
 		orchestrator.TaskStatusReworking: true,
 		orchestrator.TaskStatusVerifying: true,
+		orchestrator.TaskStatusPending:   true,
 	}
 
-	if len(activeStatuses) != len(want) {
-		t.Fatalf("activeStatuses has %d entries, want %d", len(activeStatuses), len(want))
+	if len(openStatuses) != len(want) {
+		t.Fatalf("openStatuses has %d entries, want %d", len(openStatuses), len(want))
 	}
 	for status := range want {
-		if !activeStatuses[status] {
-			t.Errorf("expected %q in activeStatuses", status)
+		if !openStatuses[status] {
+			t.Errorf("expected %q in openStatuses", status)
 		}
 	}
 
-	notActive := []orchestrator.TaskStatus{
-		orchestrator.TaskStatusPending,
+	notOpen := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusDone,
 		orchestrator.TaskStatusAborted,
 	}
-	for _, status := range notActive {
-		if activeStatuses[status] {
-			t.Errorf("expected %q NOT in activeStatuses", status)
+	for _, status := range notOpen {
+		if openStatuses[status] {
+			t.Errorf("expected %q NOT in openStatuses", status)
 		}
 	}
 }
+
+func TestClosedStatuses(t *testing.T) {
+	want := map[orchestrator.TaskStatus]bool{
+		orchestrator.TaskStatusDone:    true,
+		orchestrator.TaskStatusAborted: true,
+	}
+
+	if len(closedStatuses) != len(want) {
+		t.Fatalf("closedStatuses has %d entries, want %d", len(closedStatuses), len(want))
+	}
+	for status := range want {
+		if !closedStatuses[status] {
+			t.Errorf("expected %q in closedStatuses", status)
+		}
+	}
+
+	notClosed := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusReworking,
+		orchestrator.TaskStatusVerifying,
+		orchestrator.TaskStatusPending,
+	}
+	for _, status := range notClosed {
+		if closedStatuses[status] {
+			t.Errorf("expected %q NOT in closedStatuses", status)
+		}
+	}
+}
+
+// --- cursor movement tests ---
 
 func TestCursorMovement(t *testing.T) {
 	s := newTestTaskListScreen()
@@ -144,7 +174,9 @@ func TestCursorMovementArrowKeys(t *testing.T) {
 	}
 }
 
-func TestProjectFilterCycle(t *testing.T) {
+// --- project modal tests ---
+
+func TestProjectModal_PKey_Opens(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.allProjects = []*orchestrator.Project{
 		{ID: "p1", Meta: orchestrator.ProjectMeta{Name: "proj1"}},
@@ -152,68 +184,109 @@ func TestProjectFilterCycle(t *testing.T) {
 	}
 	s.projects = s.allProjects
 
-	// Start at all (0)
-	if s.selectedProjectName() != "all" {
-		t.Fatalf("initial project should be all, got %q", s.selectedProjectName())
-	}
-
-	// p -> proj1
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
-	if s.selectedProjectName() != "proj1" {
-		t.Errorf("after p: want proj1, got %q", s.selectedProjectName())
+	if !s.popup.active {
+		t.Error("p key: popup should be active")
 	}
-	if s.selectedProjectID() != "p1" {
-		t.Errorf("after p: want project ID p1, got %q", s.selectedProjectID())
+	if s.popup.kind != "project" {
+		t.Errorf("p key: popup kind should be 'project', got %q", s.popup.kind)
 	}
-
-	// p -> proj2
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
-	if s.selectedProjectName() != "proj2" {
-		t.Errorf("after p p: want proj2, got %q", s.selectedProjectName())
+	// labels: "(all)", "proj1", "proj2"
+	if len(s.popup.labels) != 3 {
+		t.Errorf("p key: want 3 popup labels (all + 2 projects), got %d", len(s.popup.labels))
 	}
-
-	// p -> back to all
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
-	if s.selectedProjectName() != "all" {
-		t.Errorf("after p p p: want all, got %q", s.selectedProjectName())
+	if s.popup.labels[0] != "(all)" {
+		t.Errorf("p key: first label should be '(all)', got %q", s.popup.labels[0])
 	}
 }
 
-func TestWorkspaceFilterCycle(t *testing.T) {
+func TestProjectModal_EnterConfirms(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.projects = []*orchestrator.Project{
+		{ID: "p1", Meta: orchestrator.ProjectMeta{Name: "proj1"}},
+		{ID: "p2", Meta: orchestrator.ProjectMeta{Name: "proj2"}},
+	}
+
+	// Open modal and move cursor to proj1 (index 1)
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if s.popup.cursor != 1 {
+		t.Fatalf("expected popup cursor 1, got %d", s.popup.cursor)
+	}
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if s.popup.active {
+		t.Error("enter: popup should be closed")
+	}
+	if s.selectedProjectID != "p1" {
+		t.Errorf("enter: selectedProjectID should be 'p1', got %q", s.selectedProjectID)
+	}
+	if cmd == nil {
+		t.Error("enter: expected fetchTasksCmd")
+	}
+}
+
+func TestProjectModal_EnterAll(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.projects = []*orchestrator.Project{
+		{ID: "p1", Meta: orchestrator.ProjectMeta{Name: "proj1"}},
+	}
+	s.selectedProjectID = "p1"
+
+	// Open modal — cursor should be at p1 (index 1)
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	// Move cursor to (all) at index 0
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if s.selectedProjectID != "" {
+		t.Errorf("selecting (all) should set selectedProjectID to '', got %q", s.selectedProjectID)
+	}
+}
+
+func TestProjectModal_EscCancels(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.projects = []*orchestrator.Project{
+		{ID: "p1", Meta: orchestrator.ProjectMeta{Name: "proj1"}},
+	}
+	s.selectedProjectID = "p1"
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	// Move cursor to (all)
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	s.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if s.popup.active {
+		t.Error("esc: popup should be closed")
+	}
+	if s.selectedProjectID != "p1" {
+		t.Errorf("esc: selectedProjectID should remain 'p1', got %q", s.selectedProjectID)
+	}
+}
+
+// --- workspace modal tests ---
+
+func TestWorkspaceModal_WKey_Opens(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.workspaces = []*orchestrator.WorkspaceSummary{
-		{ID: "ws-1", ProjectCount: 2},
-		{ID: "ws-2", ProjectCount: 1},
+		{ID: "ws-1"},
+		{ID: "ws-2"},
 	}
 
-	// Start at all (0)
-	if s.selectedWorkspaceName() != "all" {
-		t.Fatalf("initial workspace should be all, got %q", s.selectedWorkspaceName())
-	}
-
-	// w -> ws-1
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-	if s.selectedWorkspaceID() != "ws-1" {
-		t.Errorf("after w: want ws-1, got %q", s.selectedWorkspaceID())
+	if !s.popup.active {
+		t.Error("w key: popup should be active")
 	}
-	if s.selectedWorkspaceName() != "ws-1" {
-		t.Errorf("after w: want name ws-1, got %q", s.selectedWorkspaceName())
+	if s.popup.kind != "workspace" {
+		t.Errorf("w key: popup kind should be 'workspace', got %q", s.popup.kind)
 	}
-
-	// w -> ws-2
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-	if s.selectedWorkspaceID() != "ws-2" {
-		t.Errorf("after w w: want ws-2, got %q", s.selectedWorkspaceID())
-	}
-
-	// w -> back to all
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-	if s.selectedWorkspaceName() != "all" {
-		t.Errorf("after w w w: want all, got %q", s.selectedWorkspaceName())
+	// labels: "(all)", "ws-1", "ws-2"
+	if len(s.popup.labels) != 3 {
+		t.Errorf("w key: want 3 popup labels, got %d", len(s.popup.labels))
 	}
 }
 
-func TestWorkspaceChangeFiltersProjects(t *testing.T) {
+func TestWorkspaceModal_EnterConfirms(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.allProjects = []*orchestrator.Project{
 		{ID: "p1", WorkspaceID: "ws-1", Meta: orchestrator.ProjectMeta{Name: "proj1"}},
@@ -226,28 +299,40 @@ func TestWorkspaceChangeFiltersProjects(t *testing.T) {
 		{ID: "ws-2"},
 	}
 
-	// Select ws-1: should only show p1, p2
+	// Open modal, move to ws-1 (index 1)
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if s.popup.active {
+		t.Error("enter: popup should be closed")
+	}
+	if s.selectedWorkspaceID != "ws-1" {
+		t.Errorf("enter: selectedWorkspaceID should be 'ws-1', got %q", s.selectedWorkspaceID)
+	}
 	if len(s.projects) != 2 {
-		t.Fatalf("ws-1: expected 2 projects, got %d", len(s.projects))
+		t.Errorf("ws-1: expected 2 filtered projects, got %d", len(s.projects))
 	}
-	if s.projects[0].ID != "p1" || s.projects[1].ID != "p2" {
-		t.Errorf("ws-1: unexpected projects: %v", s.projects)
+	if cmd == nil {
+		t.Error("enter: expected fetchTasksCmd")
 	}
+}
 
-	// Select ws-2: should only show p3
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-	if len(s.projects) != 1 {
-		t.Fatalf("ws-2: expected 1 project, got %d", len(s.projects))
+func TestWorkspaceModal_EscCancels(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.workspaces = []*orchestrator.WorkspaceSummary{
+		{ID: "ws-1"},
 	}
-	if s.projects[0].ID != "p3" {
-		t.Errorf("ws-2: unexpected project: %v", s.projects[0])
-	}
+	s.selectedWorkspaceID = "ws-1"
 
-	// Back to all: all 3 projects visible
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-	if len(s.projects) != 3 {
-		t.Fatalf("all: expected 3 projects, got %d", len(s.projects))
+	s.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if s.popup.active {
+		t.Error("esc: popup should be closed")
+	}
+	if s.selectedWorkspaceID != "ws-1" {
+		t.Errorf("esc: selectedWorkspaceID should remain 'ws-1', got %q", s.selectedWorkspaceID)
 	}
 }
 
@@ -263,41 +348,197 @@ func TestWorkspaceChangeResetsProjectIfNotInWorkspace(t *testing.T) {
 		{ID: "ws-2"},
 	}
 
-	// Select p1 (ws-1 project)
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
-	if s.selectedProjectID() != "p1" {
-		t.Fatalf("expected p1 selected, got %q", s.selectedProjectID())
+	// Select p1 via project popup
+	s.selectedProjectID = "p1"
+
+	// Switch workspace to ws-1 via popup: p1 is in ws-1, so it stays selected
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}) // ws-1
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if s.selectedProjectID != "p1" {
+		t.Errorf("after ws-1: expected p1 still selected, got %q", s.selectedProjectID)
 	}
 
-	// Switch workspace to ws-1: p1 is in ws-1, so it stays selected
+	// Switch workspace to ws-2 via popup: p1 is NOT in ws-2, so project resets
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-	if s.selectedProjectID() != "p1" {
-		t.Errorf("after w to ws-1: expected p1 still selected, got %q", s.selectedProjectID())
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}) // ws-2
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if s.selectedProjectID != "" {
+		t.Errorf("after ws-2: expected project reset (all), got %q", s.selectedProjectID)
 	}
-
-	// Switch workspace to ws-2: p1 is NOT in ws-2, so project resets to all
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-	if s.selectedProjectID() != "" {
-		t.Errorf("after w to ws-2: expected project reset (all), got %q", s.selectedProjectID())
-	}
-	if s.selectedProjectName() != "all" {
-		t.Errorf("after w to ws-2: expected name 'all', got %q", s.selectedProjectName())
+	if s.selectedWorkspaceName() != "ws-2" {
+		t.Errorf("after ws-2: expected name 'ws-2', got %q", s.selectedWorkspaceName())
 	}
 }
 
-func TestWorkspaceNoOp_WhenNoWorkspaces(t *testing.T) {
+// --- behavior modal tests ---
+
+func TestBehaviorModal_BKey_Opens(t *testing.T) {
 	s := newTestTaskListScreen()
-	// No workspaces loaded
-	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-	if s.workspaceIdx != 0 {
-		t.Errorf("w with no workspaces: workspaceIdx should stay 0, got %d", s.workspaceIdx)
+	s.tasks = []*orchestrator.Task{
+		{ID: "t1", Title: "T1", Status: orchestrator.TaskStatusExecuting, Behavior: "dev", CreatedAt: time.Now()},
+		{ID: "t2", Title: "T2", Status: orchestrator.TaskStatusExecuting, Behavior: "review", CreatedAt: time.Now()},
 	}
-	if cmd != nil {
-		t.Error("w with no workspaces: expected nil cmd")
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	if !s.popup.active {
+		t.Error("b key: popup should be active")
+	}
+	if s.popup.kind != "behavior" {
+		t.Errorf("b key: popup kind should be 'behavior', got %q", s.popup.kind)
+	}
+	// labels: "(all)", "dev", "review" (sorted)
+	if len(s.popup.labels) != 3 {
+		t.Errorf("b key: want 3 popup labels, got %d", len(s.popup.labels))
 	}
 }
 
-func TestTaskListView(t *testing.T) {
+func TestBehaviorModal_EnterConfirms(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = []*orchestrator.Task{
+		{ID: "t1", Title: "T1", Status: orchestrator.TaskStatusExecuting, Behavior: "dev", CreatedAt: time.Now()},
+		{ID: "t2", Title: "T2", Status: orchestrator.TaskStatusExecuting, Behavior: "review", CreatedAt: time.Now()},
+	}
+
+	// Open modal, move to "dev" (index 1 after sort)
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if s.popup.active {
+		t.Error("enter: popup should be closed")
+	}
+	if s.behaviorFilter != "dev" {
+		t.Errorf("enter: behaviorFilter should be 'dev', got %q", s.behaviorFilter)
+	}
+	if cmd == nil {
+		t.Error("enter: expected fetchTasksCmd")
+	}
+}
+
+func TestBehaviorModal_EscCancels(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = []*orchestrator.Task{
+		{ID: "t1", Title: "T1", Status: orchestrator.TaskStatusExecuting, Behavior: "dev", CreatedAt: time.Now()},
+	}
+	s.behaviorFilter = "dev"
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	s.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if s.popup.active {
+		t.Error("esc: popup should be closed")
+	}
+	if s.behaviorFilter != "dev" {
+		t.Errorf("esc: behaviorFilter should remain 'dev', got %q", s.behaviorFilter)
+	}
+}
+
+// --- popup navigation tests ---
+
+func TestPopupCursorNavigation(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.projects = []*orchestrator.Project{
+		{ID: "p1", Meta: orchestrator.ProjectMeta{Name: "proj1"}},
+		{ID: "p2", Meta: orchestrator.ProjectMeta{Name: "proj2"}},
+		{ID: "p3", Meta: orchestrator.ProjectMeta{Name: "proj3"}},
+	}
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	// cursor starts at 0 (all)
+	if s.popup.cursor != 0 {
+		t.Fatalf("initial popup cursor should be 0, got %d", s.popup.cursor)
+	}
+
+	// j moves down
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if s.popup.cursor != 1 {
+		t.Errorf("j: want cursor 1, got %d", s.popup.cursor)
+	}
+
+	// down arrow moves down
+	s.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if s.popup.cursor != 2 {
+		t.Errorf("down: want cursor 2, got %d", s.popup.cursor)
+	}
+
+	// k moves up
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if s.popup.cursor != 1 {
+		t.Errorf("k: want cursor 1, got %d", s.popup.cursor)
+	}
+
+	// up arrow moves up
+	s.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if s.popup.cursor != 0 {
+		t.Errorf("up: want cursor 0, got %d", s.popup.cursor)
+	}
+
+	// Can't go below 0
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if s.popup.cursor != 0 {
+		t.Errorf("k at start: cursor should stay 0, got %d", s.popup.cursor)
+	}
+
+	// Move to end and check can't go past
+	s.popup.cursor = 3
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if s.popup.cursor != 3 {
+		t.Errorf("j at end: cursor should stay 3, got %d", s.popup.cursor)
+	}
+}
+
+func TestPopupBlocksNormalKeys(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = makeDummyTasks(5)
+	s.syncTableRows()
+	s.projects = []*orchestrator.Project{
+		{ID: "p1", Meta: orchestrator.ProjectMeta{Name: "proj1"}},
+	}
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	// j should move popup cursor, not task cursor
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if s.table.Cursor() != 0 {
+		t.Errorf("popup active: task cursor should not move, got %d", s.table.Cursor())
+	}
+	if s.popup.cursor != 1 {
+		t.Errorf("popup active: popup cursor should be 1, got %d", s.popup.cursor)
+	}
+}
+
+// --- distinctBehaviors tests ---
+
+func TestDistinctBehaviors_Empty(t *testing.T) {
+	result := distinctBehaviors(nil)
+	if len(result) != 0 {
+		t.Errorf("nil tasks: expected empty slice, got %v", result)
+	}
+}
+
+func TestDistinctBehaviors_Sorted(t *testing.T) {
+	tasks := []*orchestrator.Task{
+		{Behavior: "review"},
+		{Behavior: "dev"},
+		{Behavior: "dev"},
+		{Behavior: "audit"},
+		{Behavior: ""},
+	}
+	result := distinctBehaviors(tasks)
+	want := []string{"audit", "dev", "review"}
+	if len(result) != len(want) {
+		t.Fatalf("want %v, got %v", want, result)
+	}
+	for i, v := range want {
+		if result[i] != v {
+			t.Errorf("index %d: want %q, got %q", i, v, result[i])
+		}
+	}
+}
+
+// --- filter bar view tests ---
+
+func TestTaskListView_FilterBarNewFormat(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = makeDummyTasks(2)
 	s.syncTableRows()
@@ -306,17 +547,51 @@ func TestTaskListView(t *testing.T) {
 	if view == "" {
 		t.Error("View() returned empty string")
 	}
-	// Should contain filter labels
-	if !containsStr(view, "active") {
-		t.Error("View should contain 'active' filter label")
+	// Should contain new filter chip labels
+	if !containsStr(view, "state: open") {
+		t.Error("View should contain 'state: open' filter chip")
 	}
 	if !containsStr(view, "ws: all") {
-		t.Error("View should contain 'ws: all'")
+		t.Error("View should contain 'ws: all' filter chip")
 	}
 	if !containsStr(view, "proj: all") {
-		t.Error("View should contain 'proj: all'")
+		t.Error("View should contain 'proj: all' filter chip")
+	}
+	if !containsStr(view, "behavior: all") {
+		t.Error("View should contain 'behavior: all' filter chip")
 	}
 }
+
+func TestTaskListView_StateClosedFilterBar(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.stateClosed = true
+
+	view := s.View(120, 40)
+	if !containsStr(view, "state: closed") {
+		t.Error("View should contain 'state: closed' when stateClosed=true")
+	}
+}
+
+func TestTaskListView_PopupRendered(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.projects = []*orchestrator.Project{
+		{ID: "p1", Meta: orchestrator.ProjectMeta{Name: "proj1"}},
+	}
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+
+	view := s.View(120, 40)
+	if !containsStr(view, "Select project:") {
+		t.Error("View should contain 'Select project:' when popup is active")
+	}
+	if !containsStr(view, "(all)") {
+		t.Error("View should contain '(all)' option in popup")
+	}
+	if !containsStr(view, "proj1") {
+		t.Error("View should contain 'proj1' option in popup")
+	}
+}
+
+// --- task status display tests ---
 
 func TestTaskStatusDisplayContainsANSI(t *testing.T) {
 	statuses := []orchestrator.TaskStatus{
