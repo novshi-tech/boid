@@ -358,9 +358,12 @@ func TestDefaultMachine_Reworking_NoFindings_TransitionsToVerifying(t *testing.T
 	}
 }
 
-func TestDefaultMachine_Reworking_MixedSourceStates_AnyOpenBlocksDone(t *testing.T) {
+func TestDefaultMachine_Reworking_VerifyingSourceOpen_TransitionsToVerifying(t *testing.T) {
+	// reworking → verifying の判定は source_state=reworking のみを見る。
+	// verifying-source の open finding は verifying 再入場時に gate が
+	// 再実行されて subkey を上書きする設計なので、reworking を抜ける条件にしない。
+	// （全 source を見るとデッドロックする: mergeable-check による rework ループ不具合）
 	sm := orchestrator.DefaultMachine()
-	// verifying-state entry still open, reworking-state resolved
 	task := &orchestrator.Task{
 		Status: orchestrator.TaskStatusReworking,
 		Payload: json.RawMessage(`{
@@ -373,10 +376,10 @@ func TestDefaultMachine_Reworking_MixedSourceStates_AnyOpenBlocksDone(t *testing
 	}
 	next, ok := sm.Advance(task)
 	if !ok {
-		t.Fatal("expected self-loop when any finding is unresolved across all sources")
+		t.Fatal("expected transition when no reworking-source open findings")
 	}
-	if next.Status != orchestrator.TaskStatusReworking {
-		t.Fatalf("expected reworking (self-loop), got %s", next.Status)
+	if next.Status != orchestrator.TaskStatusVerifying {
+		t.Fatalf("expected verifying, got %s", next.Status)
 	}
 }
 
@@ -398,29 +401,33 @@ func TestDefaultMachine_ReworkCycle_VerifyingReworkingVerifyingDone(t *testing.T
 		t.Fatalf("step 1: expected reworking, got %s (ok=%v)", safeStatus(next), ok)
 	}
 
-	// 2. reworking self-loop (finding still open)
+	// 2. reworking → verifying: rework hook が走って reworking-source の finding が全て resolved に
+	//    なれば、verifying-source の open finding が残っていても verifying に戻す。
+	//    verifying 再入場時に同じ gate (例: mergeable-check) が再実行されて subkey を上書きする設計。
 	next.Status = orchestrator.TaskStatusReworking
+	next.Payload = json.RawMessage(`{
+		"artifact":{"pr_url":"https://..."},
+		"verification":{
+			"reviewer":{"source_state":"verifying","findings":[{"message":"fix this","status":"open"}]},
+			"pr-verify":{"source_state":"reworking","findings":[{"message":"CI passed","status":"resolved"}]}
+		}
+	}`)
 	step2, ok := sm.Advance(next)
-	if !ok || step2.Status != orchestrator.TaskStatusReworking {
-		t.Fatalf("step 2: expected reworking self-loop, got %s (ok=%v)", safeStatus(step2), ok)
+	if !ok || step2.Status != orchestrator.TaskStatusVerifying {
+		t.Fatalf("step 2: expected verifying (reworking-source resolved), got %s (ok=%v)", safeStatus(step2), ok)
 	}
 
-	// 3. reworking → verifying (all findings resolved)
+	// 3. verifying → done: verifying gate が再実行され subkey が上書きされて findings が空になる想定。
 	step2.Payload = json.RawMessage(`{
 		"artifact":{"pr_url":"https://..."},
 		"verification":{
-			"reviewer":{"source_state":"verifying","findings":[{"message":"fix this","status":"resolved"}]}
+			"reviewer":{"source_state":"verifying","findings":[]},
+			"pr-verify":{"source_state":"reworking","findings":[{"message":"CI passed","status":"resolved"}]}
 		}
 	}`)
 	step3, ok := sm.Advance(step2)
-	if !ok || step3.Status != orchestrator.TaskStatusVerifying {
-		t.Fatalf("step 3: expected verifying, got %s (ok=%v)", safeStatus(step3), ok)
-	}
-
-	// 4. verifying → done (no unresolved findings at verifying)
-	step4, ok := sm.Advance(step3)
-	if !ok || step4.Status != orchestrator.TaskStatusDone {
-		t.Fatalf("step 4: expected done, got %s (ok=%v)", safeStatus(step4), ok)
+	if !ok || step3.Status != orchestrator.TaskStatusDone {
+		t.Fatalf("step 3: expected done, got %s (ok=%v)", safeStatus(step3), ok)
 	}
 }
 

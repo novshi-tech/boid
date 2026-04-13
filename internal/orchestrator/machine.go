@@ -108,8 +108,14 @@ func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
 //
 // Auto transitions from reworking:
 //
-//	NoUnresolvedFindings()  → verifying (re-enter verification gate)
-//	!NoUnresolvedFindings() → reworking (self-loop until all findings resolved)
+//	!AnyFindingUnresolvedForState("reworking") → verifying (re-enter verification gate)
+//	AnyFindingUnresolvedForState("reworking")  → reworking (self-loop until rework fixes all findings)
+//
+// reworking 判定は source_state=reworking の finding のみを見る。
+// verifying-source の open finding (例: mergeable-check) は verifying 再入場時に
+// 同じ gate が再実行されて subkey が上書きされる設計なので、reworking 退場を
+// ブロックするべきではない。全 source を見る NoUnresolvedFindings() を使うと、
+// verifying で書かれた open finding が永久に解消されずデッドロックする。
 func DefaultMachine() *StateMachine {
 	executionComplete := func(p json.RawMessage) bool {
 		return TraitNonNull(p, "artifact") || TasksReady(p)
@@ -145,10 +151,10 @@ func DefaultMachine() *StateMachine {
 			}},
 
 			// Auto transitions from reworking
-			{FromStatus: "reworking", ToStatus: "verifying", Condition: NoUnresolvedFindings()},
-			{FromStatus: "reworking", ToStatus: "reworking", Condition: func(p json.RawMessage) bool {
-				return !NoUnresolvedFindings()(p)
+			{FromStatus: "reworking", ToStatus: "verifying", Condition: func(p json.RawMessage) bool {
+				return !AnyFindingUnresolvedForState("reworking")(p)
 			}},
+			{FromStatus: "reworking", ToStatus: "reworking", Condition: AnyFindingUnresolvedForState("reworking")},
 		},
 	}
 }

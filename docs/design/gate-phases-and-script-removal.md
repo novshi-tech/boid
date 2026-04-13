@@ -336,18 +336,17 @@ conflict 検出時の出力:
 ```yaml
 payload_patch:
   verification:
-    mergeable-check:
-      findings:
-        - message: |
-            PR #42 が base ブランチとマージコンフリクトしています。
-            worktree で以下を実行してコンフリクトを解消してください:
-              1. git merge origin/main
-              2. コンフリクトを解消
-              3. git add <files> && git commit
-          status: open
+    findings:
+      - message: |
+          PR #42 が base ブランチとマージコンフリクトしています。
+          worktree で以下を実行してコンフリクトを解消してください:
+            1. git merge origin/main
+            2. コンフリクトを解消
+            3. git add <files> && git commit
+        status: open
 ```
 
-この finding は `source_state=verifying` が `injectSourceState` (coordinator 側) で付与される。verifying 自動遷移ルール `AnyFindingUnresolvedForState("verifying") → reworking` により、task は reworking に戻る。
+この finding は `source_state=verifying` が `injectSourceState` (coordinator 側) で付与され、`MergePayloadPatch` が `verification.<gate_id>` の subkey (gate ID は `github-auto-merge/mergeable-check`) にラップする。verifying 自動遷移ルール `AnyFindingUnresolvedForState("verifying") → reworking` により、task は reworking に戻る。
 
 conflict 解消後の再実行:
 - `reworking → verifying` (§2.7 の変更) により、rework 完了後に再び verifying 状態になる
