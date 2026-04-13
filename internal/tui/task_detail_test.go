@@ -972,3 +972,173 @@ func TestShortHelp_IncludesViewDesc(t *testing.T) {
 		t.Errorf("ShortHelp: expected 'v: view desc', got %q", help)
 	}
 }
+
+// --- title inline editing tests ---
+
+func TestTitleEdit_EKey_StartsEditing(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithJobs(1)
+	s.activeTab = tabOverview
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if !s.titleEditing {
+		t.Error("e key in overview: expected titleEditing=true")
+	}
+	if s.titleInput.Value() != "Test Task" {
+		t.Errorf("e key: expected titleInput value %q, got %q", "Test Task", s.titleInput.Value())
+	}
+}
+
+func TestTitleEdit_EKey_NoDetail_DoesNothing(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	// detail is nil
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if s.titleEditing {
+		t.Error("e key with nil detail: expected titleEditing=false")
+	}
+}
+
+func TestTitleEdit_EscCancels(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithJobs(1)
+	s.titleEditing = true
+	tf := NewTextField()
+	tf.SetLabel("edit title")
+	tf.SetValue("Modified Title")
+	tf.Focus()
+	s.titleInput = tf
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	if s.titleEditing {
+		t.Error("esc during title edit: expected titleEditing=false")
+	}
+	if cmd != nil {
+		t.Errorf("esc during title edit: expected nil cmd, got non-nil")
+	}
+}
+
+func TestTitleEdit_EscCancels_DoesNotPopScreen(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithJobs(1)
+	s.titleEditing = true
+	tf := NewTextField()
+	tf.Focus()
+	s.titleInput = tf
+
+	// Esc while editing should cancel editing, NOT pop the screen
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	if s.titleEditing {
+		t.Error("esc during editing: expected titleEditing=false")
+	}
+	if cmd != nil {
+		// cmd should be nil (not popScreenMsg)
+		msg := cmd()
+		if _, ok := msg.(popScreenMsg); ok {
+			t.Error("esc during title edit: should not return popScreenMsg")
+		}
+	}
+}
+
+func TestTitleEdit_Enter_Saves(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithJobs(1)
+	s.titleEditing = true
+	tf := NewTextField()
+	tf.SetLabel("edit title")
+	tf.SetValue("New Title")
+	tf.Focus()
+	s.titleInput = tf
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if s.titleEditing {
+		t.Error("enter: expected titleEditing=false after save")
+	}
+	if s.statusMsg != "saving..." {
+		t.Errorf("enter: expected statusMsg %q, got %q", "saving...", s.statusMsg)
+	}
+	if s.isError {
+		t.Error("enter: expected isError=false")
+	}
+	if cmd == nil {
+		t.Error("enter: expected non-nil cmd (updateTitleCmd)")
+	}
+}
+
+func TestTitleEdit_Enter_EmptyTitle_DoesNotSave(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithJobs(1)
+	s.titleEditing = true
+	tf := NewTextField()
+	tf.SetValue("")
+	tf.Focus()
+	s.titleInput = tf
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if s.titleEditing {
+		t.Error("enter with empty title: expected titleEditing=false")
+	}
+	if s.statusMsg == "saving..." {
+		t.Error("enter with empty title: should not set saving... status")
+	}
+	if cmd != nil {
+		t.Error("enter with empty title: expected nil cmd")
+	}
+}
+
+func TestTitleUpdateResult_Success_ClearsStatusAndRefreshes(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.statusMsg = "saving..."
+
+	_, cmd := s.Update(titleUpdateResultMsg{err: nil})
+	if s.statusMsg != "" {
+		t.Errorf("success: expected empty statusMsg, got %q", s.statusMsg)
+	}
+	if s.isError {
+		t.Error("success: expected isError=false")
+	}
+	if cmd == nil {
+		t.Error("success: expected non-nil cmd (fetchTaskDetailCmd)")
+	}
+}
+
+func TestTitleUpdateResult_Error_SetsStatusMsg(t *testing.T) {
+	s := newTestTaskDetailScreen()
+
+	s.Update(titleUpdateResultMsg{err: fmt.Errorf("update failed")})
+	if s.statusMsg == "" {
+		t.Error("error: expected statusMsg to be set")
+	}
+	if !s.isError {
+		t.Error("error: expected isError=true")
+	}
+}
+
+func TestTitleEdit_View_ShowsTextField(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithJobs(1)
+	s.titleEditing = true
+	tf := NewTextField()
+	tf.SetLabel("edit title")
+	tf.SetValue("Test Task")
+	tf.Focus()
+	s.titleInput = tf
+
+	view := s.View(80, 20)
+	if !containsStr(view, "edit title") {
+		t.Error("titleEditing view: expected 'edit title' in view")
+	}
+	if !containsStr(view, "Enter: save") {
+		t.Error("titleEditing view: expected 'Enter: save' hint in view")
+	}
+}
+
+func TestShortHelp_IncludesEditTitle(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusExecuting)
+
+	help := s.ShortHelp()
+	if !containsStr(help, "e: edit title") {
+		t.Errorf("ShortHelp: expected 'e: edit title', got %q", help)
+	}
+}
