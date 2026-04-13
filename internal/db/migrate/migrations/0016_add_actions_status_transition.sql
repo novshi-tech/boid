@@ -1,0 +1,2 @@
+ALTER TABLE actions ADD COLUMN from_status TEXT NOT NULL DEFAULT '';
+ALTER TABLE actions ADD COLUMN to_status   TEXT NOT NULL DEFAULT '';

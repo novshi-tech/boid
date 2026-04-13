@@ -503,6 +503,104 @@ func TestListActionsByTask(t *testing.T) {
 	}
 }
 
+func TestCreateAction_WithStatusTransition(t *testing.T) {
+	d := createTestProject(t)
+
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	action := &orchestrator.Action{
+		TaskID:     task.ID,
+		Type:       "start",
+		FromStatus: orchestrator.TaskStatusPending,
+		ToStatus:   orchestrator.TaskStatusExecuting,
+	}
+	if err := orchestrator.CreateAction(d.Conn, action); err != nil {
+		t.Fatalf("create action: %v", err)
+	}
+
+	actions, err := orchestrator.ListActionsByTask(d.Conn, task.ID)
+	if err != nil {
+		t.Fatalf("list actions: %v", err)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+	if actions[0].FromStatus != orchestrator.TaskStatusPending {
+		t.Fatalf("FromStatus = %q, want %q", actions[0].FromStatus, orchestrator.TaskStatusPending)
+	}
+	if actions[0].ToStatus != orchestrator.TaskStatusExecuting {
+		t.Fatalf("ToStatus = %q, want %q", actions[0].ToStatus, orchestrator.TaskStatusExecuting)
+	}
+}
+
+func TestCreateAction_DispatchError_SameFromTo(t *testing.T) {
+	d := createTestProject(t)
+
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	action := &orchestrator.Action{
+		TaskID:     task.ID,
+		Type:       "dispatch_error",
+		FromStatus: orchestrator.TaskStatusExecuting,
+		ToStatus:   orchestrator.TaskStatusExecuting,
+	}
+	if err := orchestrator.CreateAction(d.Conn, action); err != nil {
+		t.Fatalf("create action: %v", err)
+	}
+
+	actions, err := orchestrator.ListActionsByTask(d.Conn, task.ID)
+	if err != nil {
+		t.Fatalf("list actions: %v", err)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+	if actions[0].FromStatus != orchestrator.TaskStatusExecuting {
+		t.Fatalf("FromStatus = %q, want %q", actions[0].FromStatus, orchestrator.TaskStatusExecuting)
+	}
+	if actions[0].ToStatus != orchestrator.TaskStatusExecuting {
+		t.Fatalf("ToStatus = %q, want %q", actions[0].ToStatus, orchestrator.TaskStatusExecuting)
+	}
+}
+
+func TestCreateAction_LegacyNoStatusTransition(t *testing.T) {
+	d := createTestProject(t)
+
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	// from/to を指定しない（既存レコード相当）
+	action := &orchestrator.Action{
+		TaskID: task.ID,
+		Type:   "start",
+	}
+	if err := orchestrator.CreateAction(d.Conn, action); err != nil {
+		t.Fatalf("create action: %v", err)
+	}
+
+	actions, err := orchestrator.ListActionsByTask(d.Conn, task.ID)
+	if err != nil {
+		t.Fatalf("list actions: %v", err)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+	if actions[0].FromStatus != "" {
+		t.Fatalf("FromStatus = %q, want empty", actions[0].FromStatus)
+	}
+	if actions[0].ToStatus != "" {
+		t.Fatalf("ToStatus = %q, want empty", actions[0].ToStatus)
+	}
+}
+
 func TestListActionsByTask_Empty(t *testing.T) {
 	d := createTestProject(t)
 

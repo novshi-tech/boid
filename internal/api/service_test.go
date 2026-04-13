@@ -112,6 +112,83 @@ func TestCompleteJobFailureTransitionsToAborted(t *testing.T) {
 	}
 }
 
+// TestApplyAction_RecordsFromToStatus verifies that ApplyAction records the
+// correct from/to status transition in the created Action.
+func TestApplyAction_RecordsFromToStatus(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "task-1",
+		ProjectID: "proj-1",
+		Title:     "test task",
+		Status:    orchestrator.TaskStatusPending,
+		Behavior:  "impl",
+		Payload:   []byte(`{}`),
+	}
+	txStore := &recordingTxStore{task: task}
+	svc := &TaskWorkflowService{
+		Tasks: &stubTaskStore{task: task},
+		Tx:    recordingTransactor{store: txStore},
+		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {}}}},
+	}
+
+	result, err := svc.ApplyAction(t.Context(), task.ID, ApplyActionRequest{Type: "start"})
+	if err != nil {
+		t.Fatalf("ApplyAction() error = %v", err)
+	}
+	if result.Task.Status != orchestrator.TaskStatusExecuting {
+		t.Fatalf("task status = %q, want %q", result.Task.Status, orchestrator.TaskStatusExecuting)
+	}
+	if len(txStore.actions) != 1 {
+		t.Fatalf("created actions = %d, want 1", len(txStore.actions))
+	}
+	action := txStore.actions[0]
+	if action.FromStatus != orchestrator.TaskStatusPending {
+		t.Fatalf("action.FromStatus = %q, want %q", action.FromStatus, orchestrator.TaskStatusPending)
+	}
+	if action.ToStatus != orchestrator.TaskStatusExecuting {
+		t.Fatalf("action.ToStatus = %q, want %q", action.ToStatus, orchestrator.TaskStatusExecuting)
+	}
+}
+
+// TestCompleteJob_JobFailed_RecordsFromToStatus verifies that a failed job
+// records the correct from/to status in the created Action.
+func TestCompleteJob_JobFailed_RecordsFromToStatus(t *testing.T) {
+	job := &Job{
+		ID:        "job-10",
+		TaskID:    "task-10",
+		ProjectID: "proj-10",
+		Status:    JobStatusRunning,
+	}
+	task := &orchestrator.Task{
+		ID:        "task-10",
+		ProjectID: "proj-10",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "impl",
+	}
+
+	tx := &stubTx{}
+	svc := &TaskWorkflowService{
+		Tasks:     &stubTaskStore{task: task},
+		Jobs:      &stubJobStore{job: job},
+		Meta:      stubMetaStore{meta: &orchestrator.ProjectMeta{}},
+		Lifecycle: &stubLifecycle{},
+		Tx:        tx,
+	}
+
+	_, err := svc.CompleteJob(t.Context(), job.ID, JobDoneRequest{ExitCode: 1})
+	if err != nil {
+		t.Fatalf("CompleteJob() error = %v", err)
+	}
+	if tx.createdAction == nil {
+		t.Fatal("expected action to be recorded")
+	}
+	if tx.createdAction.FromStatus != orchestrator.TaskStatusExecuting {
+		t.Fatalf("action.FromStatus = %q, want %q", tx.createdAction.FromStatus, orchestrator.TaskStatusExecuting)
+	}
+	if tx.createdAction.ToStatus != orchestrator.TaskStatusAborted {
+		t.Fatalf("action.ToStatus = %q, want %q", tx.createdAction.ToStatus, orchestrator.TaskStatusAborted)
+	}
+}
+
 func TestTaskAppServiceCreateTask_BehaviorNotFound(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
