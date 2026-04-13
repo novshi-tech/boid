@@ -22,7 +22,10 @@ func TestMain(m *testing.M) {
 
 func newTestTaskListScreen() *TaskListScreen {
 	shared := &SharedState{Panes: make(map[string]string)}
-	return NewTaskListScreen(shared)
+	s := NewTaskListScreen(shared)
+	// Pre-populate allProjects so findProjectName works correctly.
+	s.allProjects = nil
+	return s
 }
 
 func TestTaskFilterTabCycle(t *testing.T) {
@@ -143,10 +146,11 @@ func TestCursorMovementArrowKeys(t *testing.T) {
 
 func TestProjectFilterCycle(t *testing.T) {
 	s := newTestTaskListScreen()
-	s.projects = []*orchestrator.Project{
+	s.allProjects = []*orchestrator.Project{
 		{ID: "p1", Meta: orchestrator.ProjectMeta{Name: "proj1"}},
 		{ID: "p2", Meta: orchestrator.ProjectMeta{Name: "proj2"}},
 	}
+	s.projects = s.allProjects
 
 	// Start at all (0)
 	if s.selectedProjectName() != "all" {
@@ -175,6 +179,124 @@ func TestProjectFilterCycle(t *testing.T) {
 	}
 }
 
+func TestWorkspaceFilterCycle(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.workspaces = []*orchestrator.WorkspaceSummary{
+		{ID: "ws-1", ProjectCount: 2},
+		{ID: "ws-2", ProjectCount: 1},
+	}
+
+	// Start at all (0)
+	if s.selectedWorkspaceName() != "all" {
+		t.Fatalf("initial workspace should be all, got %q", s.selectedWorkspaceName())
+	}
+
+	// w -> ws-1
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	if s.selectedWorkspaceID() != "ws-1" {
+		t.Errorf("after w: want ws-1, got %q", s.selectedWorkspaceID())
+	}
+	if s.selectedWorkspaceName() != "ws-1" {
+		t.Errorf("after w: want name ws-1, got %q", s.selectedWorkspaceName())
+	}
+
+	// w -> ws-2
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	if s.selectedWorkspaceID() != "ws-2" {
+		t.Errorf("after w w: want ws-2, got %q", s.selectedWorkspaceID())
+	}
+
+	// w -> back to all
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	if s.selectedWorkspaceName() != "all" {
+		t.Errorf("after w w w: want all, got %q", s.selectedWorkspaceName())
+	}
+}
+
+func TestWorkspaceChangeFiltersProjects(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.allProjects = []*orchestrator.Project{
+		{ID: "p1", WorkspaceID: "ws-1", Meta: orchestrator.ProjectMeta{Name: "proj1"}},
+		{ID: "p2", WorkspaceID: "ws-1", Meta: orchestrator.ProjectMeta{Name: "proj2"}},
+		{ID: "p3", WorkspaceID: "ws-2", Meta: orchestrator.ProjectMeta{Name: "proj3"}},
+	}
+	s.projects = s.allProjects
+	s.workspaces = []*orchestrator.WorkspaceSummary{
+		{ID: "ws-1"},
+		{ID: "ws-2"},
+	}
+
+	// Select ws-1: should only show p1, p2
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	if len(s.projects) != 2 {
+		t.Fatalf("ws-1: expected 2 projects, got %d", len(s.projects))
+	}
+	if s.projects[0].ID != "p1" || s.projects[1].ID != "p2" {
+		t.Errorf("ws-1: unexpected projects: %v", s.projects)
+	}
+
+	// Select ws-2: should only show p3
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	if len(s.projects) != 1 {
+		t.Fatalf("ws-2: expected 1 project, got %d", len(s.projects))
+	}
+	if s.projects[0].ID != "p3" {
+		t.Errorf("ws-2: unexpected project: %v", s.projects[0])
+	}
+
+	// Back to all: all 3 projects visible
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	if len(s.projects) != 3 {
+		t.Fatalf("all: expected 3 projects, got %d", len(s.projects))
+	}
+}
+
+func TestWorkspaceChangeResetsProjectIfNotInWorkspace(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.allProjects = []*orchestrator.Project{
+		{ID: "p1", WorkspaceID: "ws-1", Meta: orchestrator.ProjectMeta{Name: "proj1"}},
+		{ID: "p2", WorkspaceID: "ws-2", Meta: orchestrator.ProjectMeta{Name: "proj2"}},
+	}
+	s.projects = s.allProjects
+	s.workspaces = []*orchestrator.WorkspaceSummary{
+		{ID: "ws-1"},
+		{ID: "ws-2"},
+	}
+
+	// Select p1 (ws-1 project)
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	if s.selectedProjectID() != "p1" {
+		t.Fatalf("expected p1 selected, got %q", s.selectedProjectID())
+	}
+
+	// Switch workspace to ws-1: p1 is in ws-1, so it stays selected
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	if s.selectedProjectID() != "p1" {
+		t.Errorf("after w to ws-1: expected p1 still selected, got %q", s.selectedProjectID())
+	}
+
+	// Switch workspace to ws-2: p1 is NOT in ws-2, so project resets to all
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	if s.selectedProjectID() != "" {
+		t.Errorf("after w to ws-2: expected project reset (all), got %q", s.selectedProjectID())
+	}
+	if s.selectedProjectName() != "all" {
+		t.Errorf("after w to ws-2: expected name 'all', got %q", s.selectedProjectName())
+	}
+}
+
+func TestWorkspaceNoOp_WhenNoWorkspaces(t *testing.T) {
+	s := newTestTaskListScreen()
+	// No workspaces loaded
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	if s.workspaceIdx != 0 {
+		t.Errorf("w with no workspaces: workspaceIdx should stay 0, got %d", s.workspaceIdx)
+	}
+	if cmd != nil {
+		t.Error("w with no workspaces: expected nil cmd")
+	}
+}
+
 func TestTaskListView(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = makeDummyTasks(2)
@@ -188,8 +310,11 @@ func TestTaskListView(t *testing.T) {
 	if !containsStr(view, "active") {
 		t.Error("View should contain 'active' filter label")
 	}
-	if !containsStr(view, "project: all") {
-		t.Error("View should contain 'project: all'")
+	if !containsStr(view, "ws: all") {
+		t.Error("View should contain 'ws: all'")
+	}
+	if !containsStr(view, "proj: all") {
+		t.Error("View should contain 'proj: all'")
 	}
 }
 

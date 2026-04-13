@@ -35,6 +35,10 @@ type projectsMsg struct {
 	projects []*orchestrator.Project
 	err      error
 }
+type workspacesMsg struct {
+	workspaces []*orchestrator.WorkspaceSummary
+	err        error
+}
 type quickOpenResultMsg struct {
 	taskID string
 	jobs   []*api.Job
@@ -56,9 +60,12 @@ type TaskListScreen struct {
 
 	table        table.Model
 	tasks        []*orchestrator.Task
-	projects     []*orchestrator.Project
+	allProjects  []*orchestrator.Project // unfiltered project list from server
+	projects     []*orchestrator.Project // filtered by selected workspace
+	workspaces   []*orchestrator.WorkspaceSummary
 	statusFilter string // active, pending, done, aborted, all
-	projectIdx   int    // 0=all, 1..N=project index
+	projectIdx   int    // 0=all, 1..N=project index in s.projects
+	workspaceIdx int    // 0=all, 1..N=workspace index in s.workspaces
 	loading      bool
 	fetchErr     error
 	statusMsg    string
@@ -95,8 +102,9 @@ func NewTaskListScreen(shared *SharedState) *TaskListScreen {
 
 func (s *TaskListScreen) Init() tea.Cmd {
 	return tea.Batch(
-		fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID()),
+		fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID(), s.selectedWorkspaceID()),
 		fetchProjectsCmd(s.shared.Client),
+		fetchWorkspacesCmd(s.shared.Client),
 		taskTickCmd(),
 	)
 }
@@ -105,7 +113,7 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch msg := msg.(type) {
 	case taskTickMsg:
 		return s, tea.Batch(
-			fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID()),
+			fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID(), s.selectedWorkspaceID()),
 			taskTickCmd(),
 		)
 
@@ -121,7 +129,13 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 
 	case projectsMsg:
 		if msg.err == nil {
-			s.projects = msg.projects
+			s.allProjects = msg.projects
+			s.applyWorkspaceProjectFilter()
+		}
+
+	case workspacesMsg:
+		if msg.err == nil {
+			s.workspaces = msg.workspaces
 		}
 
 	case quickOpenResultMsg:
@@ -164,15 +178,15 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s, clearStatusAfter(4 * time.Second)
 		}
 		s.statusMsg = ""
-		return s, fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
+		return s, fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID(), s.selectedWorkspaceID())
 
 	case screenResumedMsg:
-		return s, fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
+		return s, fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID(), s.selectedWorkspaceID())
 
 	case taskCreatedNotifyMsg:
 		s.statusMsg = "task created"
 		s.isError = false
-		return s, tea.Batch(fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID()), clearStatusAfter(3*time.Second))
+		return s, tea.Batch(fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID(), s.selectedWorkspaceID()), clearStatusAfter(3*time.Second))
 
 	case clearStatusMsg:
 		s.statusMsg = ""
@@ -220,7 +234,7 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		s.table.SetCursor(0)
 		s.loading = true
-		return fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
+		return fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID(), s.selectedWorkspaceID())
 
 	case "shift+tab":
 		for i, f := range taskFilterCycle {
@@ -231,18 +245,31 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		s.table.SetCursor(0)
 		s.loading = true
-		return fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
+		return fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID(), s.selectedWorkspaceID())
+
+	case "w":
+		if len(s.workspaces) == 0 {
+			break
+		}
+		prevProjectID := s.selectedProjectID()
+		total := len(s.workspaces) + 1 // +1 for "all"
+		s.workspaceIdx = (s.workspaceIdx + 1) % total
+		s.applyWorkspaceProjectFilter()
+		s.restoreProjectIdx(prevProjectID)
+		s.table.SetCursor(0)
+		s.loading = true
+		return fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID(), s.selectedWorkspaceID())
 
 	case "p":
 		total := len(s.projects) + 1 // +1 for "all"
 		s.projectIdx = (s.projectIdx + 1) % total
 		s.table.SetCursor(0)
 		s.loading = true
-		return fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
+		return fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID(), s.selectedWorkspaceID())
 
 	case "r":
 		s.loading = true
-		return fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID())
+		return fetchTasksCmd(s.shared.Client, s.statusFilter, s.selectedProjectID(), s.selectedWorkspaceID())
 
 	case "enter":
 		if len(s.tasks) == 0 {
@@ -294,6 +321,56 @@ func (s *TaskListScreen) selectedProjectName() string {
 		return "all"
 	}
 	return s.projects[s.projectIdx-1].Meta.Name
+}
+
+func (s *TaskListScreen) selectedWorkspaceID() string {
+	if s.workspaceIdx == 0 || s.workspaceIdx > len(s.workspaces) {
+		return ""
+	}
+	return s.workspaces[s.workspaceIdx-1].ID
+}
+
+func (s *TaskListScreen) selectedWorkspaceName() string {
+	if s.workspaceIdx == 0 || s.workspaceIdx > len(s.workspaces) {
+		return "all"
+	}
+	return s.workspaces[s.workspaceIdx-1].ID
+}
+
+// applyWorkspaceProjectFilter filters s.projects from s.allProjects based on the
+// currently selected workspace. When no workspace is selected, all projects are shown.
+func (s *TaskListScreen) applyWorkspaceProjectFilter() {
+	wsID := s.selectedWorkspaceID()
+	if wsID == "" {
+		s.projects = s.allProjects
+		return
+	}
+	var filtered []*orchestrator.Project
+	for _, p := range s.allProjects {
+		if p.WorkspaceID == wsID {
+			filtered = append(filtered, p)
+		}
+	}
+	s.projects = filtered
+	// Reset project index if it's out of bounds after filtering.
+	if s.projectIdx > len(s.projects) {
+		s.projectIdx = 0
+	}
+}
+
+// restoreProjectIdx finds prevProjectID in the current s.projects list and restores
+// projectIdx accordingly. If not found, resets to 0 (all).
+func (s *TaskListScreen) restoreProjectIdx(prevProjectID string) {
+	if prevProjectID == "" {
+		return
+	}
+	for i, p := range s.projects {
+		if p.ID == prevProjectID {
+			s.projectIdx = i + 1
+			return
+		}
+	}
+	s.projectIdx = 0
 }
 
 func (s *TaskListScreen) View(width, height int) string {
@@ -349,7 +426,7 @@ func (s *TaskListScreen) View(width, height int) string {
 }
 
 func (s *TaskListScreen) ShortHelp() string {
-	return "enter: detail  s: start  o: open job  n: new  tab/shift+tab: filter  p: project  r: refresh  q: quit"
+	return "enter: detail  s: start  o: open job  n: new  tab/shift+tab: filter  w: workspace  p: project  r: refresh  q: quit"
 }
 
 func (s *TaskListScreen) buildTaskFilterBar(width int) string {
@@ -363,18 +440,20 @@ func (s *TaskListScreen) buildTaskFilterBar(width int) string {
 		}
 	}
 
-	projLabel := styleDim.Render("project: " + s.selectedProjectName())
+	wsLabel := styleDim.Render("ws: " + s.selectedWorkspaceName())
+	projLabel := styleDim.Render("proj: " + s.selectedProjectName())
+	rightStr := wsLabel + "   " + projLabel
 	filterStr := strings.Join(parts, "  ")
 
-	gap := width - lipglossWidth(filterStr) - lipglossWidth(projLabel)
+	gap := width - lipglossWidth(filterStr) - lipglossWidth(rightStr)
 	if gap < 2 {
 		gap = 2
 	}
-	return filterStr + strings.Repeat(" ", gap) + projLabel
+	return filterStr + strings.Repeat(" ", gap) + rightStr
 }
 
 func (s *TaskListScreen) findProjectName(projectID string) string {
-	for _, p := range s.projects {
+	for _, p := range s.allProjects {
 		if p.ID == projectID {
 			return p.Meta.Name
 		}
@@ -529,7 +608,7 @@ func taskTickCmd() tea.Cmd {
 	})
 }
 
-func fetchTasksCmd(c *client.Client, statusFilter, projectID string) tea.Cmd {
+func fetchTasksCmd(c *client.Client, statusFilter, projectID, workspaceID string) tea.Cmd {
 	return func() tea.Msg {
 		filter := client.TaskListFilter{
 			ProjectID: projectID,
@@ -555,6 +634,26 @@ func fetchTasksCmd(c *client.Client, statusFilter, projectID string) tea.Cmd {
 			return tasksMsg{err: err}
 		}
 
+		// Client-side workspace filter: if workspace is selected and no specific
+		// project is selected, filter tasks to those belonging to the workspace.
+		if workspaceID != "" && projectID == "" {
+			wsProjects, err := c.ListProjectsByWorkspace(workspaceID)
+			if err != nil {
+				return tasksMsg{err: err}
+			}
+			wsProjectSet := make(map[string]bool, len(wsProjects))
+			for _, p := range wsProjects {
+				wsProjectSet[p.ID] = true
+			}
+			var wsFiltered []*orchestrator.Task
+			for _, t := range tasks {
+				if wsProjectSet[t.ProjectID] {
+					wsFiltered = append(wsFiltered, t)
+				}
+			}
+			tasks = wsFiltered
+		}
+
 		// Client-side filter for "active" statuses
 		if statusFilter == "active" {
 			var filtered []*orchestrator.Task
@@ -574,6 +673,13 @@ func fetchProjectsCmd(c *client.Client) tea.Cmd {
 	return func() tea.Msg {
 		projects, err := c.ListProjects()
 		return projectsMsg{projects: projects, err: err}
+	}
+}
+
+func fetchWorkspacesCmd(c *client.Client) tea.Cmd {
+	return func() tea.Msg {
+		workspaces, err := c.ListWorkspaces()
+		return workspacesMsg{workspaces: workspaces, err: err}
 	}
 }
 
