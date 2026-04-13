@@ -28,6 +28,8 @@ type duplicateResultMsg struct {
 	err       error
 }
 type duplicateConfirmDeadlineMsg struct{}
+type rerunResultMsg struct{ err error }
+type rerunConfirmDeadlineMsg struct{}
 
 // --- TaskDetailScreen ---
 
@@ -46,6 +48,7 @@ type TaskDetailScreen struct {
 	abortPending     bool
 	deletePending    bool
 	duplicatePending bool
+	rerunPending     bool
 }
 
 func NewTaskDetailScreen(shared *SharedState, taskID, projectName string) *TaskDetailScreen {
@@ -147,6 +150,27 @@ func (s *TaskDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.isError = false
 		}
 
+	case rerunResultMsg:
+		if msg.err != nil {
+			s.statusMsg = "rerun failed: " + msg.err.Error()
+			s.isError = true
+			return s, clearStatusAfter(4 * time.Second)
+		}
+		s.rerunPending = false
+		s.statusMsg = "rerun started"
+		s.isError = false
+		return s, tea.Batch(
+			fetchTaskDetailCmd(s.shared.Client, s.taskID),
+			clearStatusAfter(3*time.Second),
+		)
+
+	case rerunConfirmDeadlineMsg:
+		if s.rerunPending {
+			s.rerunPending = false
+			s.statusMsg = ""
+			s.isError = false
+		}
+
 	case screenResumedMsg:
 		s.loading = true
 		return s, fetchTaskDetailCmd(s.shared.Client, s.taskID)
@@ -224,6 +248,25 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		s.isError = false
 		return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
 			return duplicateConfirmDeadlineMsg{}
+		})
+
+	case "R":
+		if s.detail == nil || s.detail.Task == nil {
+			break
+		}
+		status := string(s.detail.Task.Status)
+		if status != "done" && status != "aborted" {
+			break
+		}
+		if s.rerunPending {
+			s.rerunPending = false
+			return rerunTaskCmd(s.shared.Client, s.taskID)
+		}
+		s.rerunPending = true
+		s.statusMsg = "Press R again to rerun"
+		s.isError = false
+		return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+			return rerunConfirmDeadlineMsg{}
 		})
 
 	default:
@@ -380,6 +423,12 @@ func (s *TaskDetailScreen) ShortHelp() string {
 		}
 	}
 	parts = append(parts, "d: delete", "D: duplicate")
+	if s.detail != nil && s.detail.Task != nil {
+		status := string(s.detail.Task.Status)
+		if status == "done" || status == "aborted" {
+			parts = append(parts, "R: rerun")
+		}
+	}
 	fixed := "e: edit  j/k: move  enter: open job  r: refresh  esc/q: back"
 	return strings.Join(parts, "  ") + "  " + fixed
 }
@@ -479,6 +528,13 @@ func duplicateTaskCmd(c *client.Client, taskID string) tea.Cmd {
 			return duplicateResultMsg{err: err}
 		}
 		return duplicateResultMsg{newTaskID: task.ID}
+	}
+}
+
+func rerunTaskCmd(c *client.Client, taskID string) tea.Cmd {
+	return func() tea.Msg {
+		_, err := c.RerunTask(taskID, false)
+		return rerunResultMsg{err: err}
 	}
 }
 

@@ -52,6 +52,9 @@ func (s *patchTaskService) ImportTasks(reqs []CreateTaskRequest) (*ImportResult,
 func (s *patchTaskService) DuplicateTask(id string, autoStart bool) (*orchestrator.Task, error) {
 	return nil, nil
 }
+func (s *patchTaskService) RerunTask(id string, autoStart bool) (*orchestrator.Task, error) {
+	return nil, nil
+}
 
 func patchRequest(t *testing.T, handler http.Handler, id string, body any) *httptest.ResponseRecorder {
 	t.Helper()

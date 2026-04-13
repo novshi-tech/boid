@@ -326,6 +326,16 @@ func (c *Client) DuplicateTask(id string) (*orchestrator.Task, error) {
 	return &task, nil
 }
 
+// RerunTask resets a done/aborted task to pending via POST /api/tasks/{id}/rerun.
+func (c *Client) RerunTask(id string, autoStart bool) (*orchestrator.Task, error) {
+	req := api.RerunTaskRequest{AutoStart: autoStart}
+	var task orchestrator.Task
+	if err := c.Do("POST", "/api/tasks/"+id+"/rerun", req, &task); err != nil {
+		return nil, err
+	}
+	return &task, nil
+}
+
 // ApplyAction sends an action to POST /api/tasks/{taskID}/actions.
 func (c *Client) ApplyAction(taskID string, req api.ApplyActionRequest) (*api.ActionApplication, error) {
 	var result api.ActionApplication
