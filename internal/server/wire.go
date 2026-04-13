@@ -213,6 +213,15 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
+	r.Post("/api/shutdown", func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"ok"}`))
+		go func() {
+			// レスポンスを送信してからシャットダウン
+			srv.Stop()
+		}()
+	})
+
 	r.Get("/api/proxy", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"port":%d}`, srv.proxyPort)
