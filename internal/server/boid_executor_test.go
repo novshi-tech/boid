@@ -134,14 +134,14 @@ func TestBoidBuiltinExecutor_EnforcesWorkspaceScope(t *testing.T) {
 }
 
 // BoidOpTaskUpdate は対象 task の project_id が現在の workspace に含まれるかを
-// 検証し、payload を nested deep merge する (DeepMergePayload の挙動)。
-// 既存の artifact.commit を保持したまま artifact.pr を追記するユースケースが
-// auto-merge gate の典型的な使い方。
+// 検証し、payload を top-level shallow merge する。
+// 案 B: artifact.<handler-role> が別 top-level キーになるため、
+// artifact.run-agent と artifact.auto-merge は別キーとして shallow merge で保持される。
 func TestBoidBuiltinExecutor_TaskUpdate_EnforcesWorkspaceScope(t *testing.T) {
 	store := &capturingTaskStore{
 		created: []*orchestrator.Task{
-			// target-1: 既存 payload に instructions と artifact.commit を持つ
-			{ID: "target-1", ProjectID: "proj-1", Payload: []byte(`{"instructions":{"main":{"consumer":"claude-code"}},"artifact":{"commit":"abc","branch":"boid/target"}}`)},
+			// target-1: 既存 payload に instructions と artifact.run-agent を持つ
+			{ID: "target-1", ProjectID: "proj-1", Payload: []byte(`{"instructions":{"main":{"consumer":"claude-code"}},"artifact.run-agent":{"commit":"abc","branch":"boid/target"}}`)},
 			{ID: "peer-1", ProjectID: "proj-2", Payload: []byte(`{}`)},
 			{ID: "foreign-1", ProjectID: "proj-3", Payload: []byte(`{}`)},
 		},
@@ -161,12 +161,12 @@ func TestBoidBuiltinExecutor_TaskUpdate_EnforcesWorkspaceScope(t *testing.T) {
 	}
 
 	// 自プロジェクトのタスクを更新できる。
-	// deep merge によって既存の artifact.commit/branch は保持され、
-	// artifact.pr が追記される。
+	// shallow merge のため artifact.run-agent (別 top-level キー) は保持され、
+	// artifact.auto-merge が追記される。
 	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
 		Op:      sandbox.BoidOpTaskUpdate,
 		TaskID:  "target-1",
-		Payload: []byte(`{"artifact":{"pr":{"merged":true,"number":42}}}`),
+		Payload: []byte(`{"artifact.auto-merge":{"pr":{"merged":true,"number":42}}}`),
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("self project update exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
@@ -179,17 +179,19 @@ func TestBoidBuiltinExecutor_TaskUpdate_EnforcesWorkspaceScope(t *testing.T) {
 	if !strings.Contains(got, `"instructions"`) {
 		t.Errorf("merged payload = %s, want instructions preserved", got)
 	}
-	// 既存の artifact.commit は保持される (deep merge の効果)
+	// 既存の artifact.run-agent は別 top-level キーなので shallow merge で保持される
+	if !strings.Contains(got, `"artifact.run-agent"`) {
+		t.Errorf("merged payload = %s, want artifact.run-agent key preserved", got)
+	}
 	if !strings.Contains(got, `"commit":"abc"`) {
-		t.Errorf("merged payload = %s, want existing artifact.commit preserved", got)
+		t.Errorf("merged payload = %s, want existing commit preserved", got)
 	}
-	// 既存の artifact.branch も保持される
-	if !strings.Contains(got, `"branch":"boid/target"`) {
-		t.Errorf("merged payload = %s, want existing artifact.branch preserved", got)
+	// 新規 artifact.auto-merge が追加される
+	if !strings.Contains(got, `"artifact.auto-merge"`) {
+		t.Errorf("merged payload = %s, want artifact.auto-merge key added", got)
 	}
-	// 新規 artifact.pr が追加される
 	if !strings.Contains(got, `"merged":true`) || !strings.Contains(got, `"number":42`) {
-		t.Errorf("merged payload = %s, want new artifact.pr fields", got)
+		t.Errorf("merged payload = %s, want new pr fields", got)
 	}
 
 	// workspace 内の peer プロジェクトのタスクも更新できる

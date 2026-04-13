@@ -450,7 +450,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		}
 	})
 
-	t.Run("partial instructions update merges roles", func(t *testing.T) {
+	t.Run("instructions top-level key is replaced by shallow merge", func(t *testing.T) {
 		existingPayload := json.RawMessage(`{"instructions":{"main":{"consumer":"claude-code","message":"do stuff","type":"execution"}}}`)
 		task := &orchestrator.Task{
 			ID:      "task-3",
@@ -460,7 +460,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
 
-		// rework ロールだけ追加
+		// top-level shallow merge: instructions キー全体が置換される
 		newPayload := json.RawMessage(`{"instructions":{"rework":{"consumer":"claude-code","message":"fix stuff","type":"rework"}}}`)
 		got, err := svc.UpdateTask("task-3", UpdateTaskRequest{Title: "title", Payload: newPayload})
 		if err != nil {
@@ -474,11 +474,12 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		if err := json.Unmarshal(m["instructions"], &instructions); err != nil {
 			t.Fatalf("unmarshal instructions: %v", err)
 		}
-		if _, ok := instructions["main"]; !ok {
-			t.Error("main role missing after partial instructions update")
+		// shallow merge では instructions top-level キーが置換されるため main は消える
+		if _, ok := instructions["main"]; ok {
+			t.Error("main role should be gone after shallow merge replaces instructions key")
 		}
 		if _, ok := instructions["rework"]; !ok {
-			t.Error("rework role missing after partial instructions update")
+			t.Error("rework role missing after instructions update")
 		}
 	})
 

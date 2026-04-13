@@ -381,10 +381,30 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	}
 	payloadUpdated := false
 	if len(req.Payload) > 0 {
-		// UpdateTask は nested deep merge を使う。auto-merge gate が
-		// artifact.pr.merged を追記する等、既存 nested フィールドを
-		// 温存したまま部分更新するユースケースに対応するため。
-		merged, err := orchestrator.DeepMergePayload(task.Payload, req.Payload)
+		// 案 B: artifact.<handler-role> が別 top-level キーになるため、
+		// top-level shallow merge で handler 間の書き込みが衝突しない。
+		// null は削除。instructions の特別扱いは不要。
+		var base map[string]json.RawMessage
+		if len(task.Payload) > 0 && string(task.Payload) != "null" {
+			if err := json.Unmarshal(task.Payload, &base); err != nil {
+				return nil, &StatusError{Code: http.StatusBadRequest, Message: "payload parse: " + err.Error()}
+			}
+		}
+		if base == nil {
+			base = make(map[string]json.RawMessage)
+		}
+		var override map[string]json.RawMessage
+		if err := json.Unmarshal(req.Payload, &override); err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: "payload merge: " + err.Error()}
+		}
+		for k, v := range override {
+			if string(v) == "null" {
+				delete(base, k)
+			} else {
+				base[k] = v
+			}
+		}
+		merged, err := json.Marshal(base)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: "payload merge: " + err.Error()}
 		}
