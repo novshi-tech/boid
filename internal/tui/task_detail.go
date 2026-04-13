@@ -44,6 +44,8 @@ type TaskDetailScreen struct {
 	timelineCursor int
 	depsCursor     int
 	descScroll     int
+	payloadCursor  int
+	payloadScroll  int
 	statusMsg      string
 	isError        bool
 	loading        bool
@@ -227,6 +229,14 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if s.depsCursor < len(items)-1 {
 				s.depsCursor++
 			}
+		} else if s.activeTab == tabPayload {
+			if s.detail != nil && s.detail.Task != nil {
+				sections := extractPayloadSections(s.detail.Task.Payload)
+				if s.payloadCursor < len(sections)-1 {
+					s.payloadCursor++
+					s.payloadScroll = 0
+				}
+			}
 		} else {
 			if s.cursor < jobCount-1 {
 				s.cursor++
@@ -245,6 +255,11 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		} else if s.activeTab == tabDeps {
 			if s.depsCursor > 0 {
 				s.depsCursor--
+			}
+		} else if s.activeTab == tabPayload {
+			if s.payloadCursor > 0 {
+				s.payloadCursor--
+				s.payloadScroll = 0
 			}
 		} else {
 			if s.cursor > 0 {
@@ -312,6 +327,17 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "e":
 		if s.detail == nil || s.detail.Task == nil {
 			break
+		}
+		if s.activeTab == tabPayload {
+			sections := extractPayloadSections(s.detail.Task.Payload)
+			if len(sections) == 0 || s.payloadCursor >= len(sections) {
+				break
+			}
+			sectionKey := sections[s.payloadCursor].key
+			task := s.detail.Task
+			return func() tea.Msg {
+				return pushScreenMsg{screen: NewPayloadSectionEditScreen(s.shared.Client, task, sectionKey)}
+			}
 		}
 		return func() tea.Msg {
 			return pushScreenMsg{screen: NewTaskEditScreen(s.shared.Client, s.detail.Task)}
@@ -448,8 +474,7 @@ func (s *TaskDetailScreen) View(width, height int) string {
 	case tabDeps:
 		sb.WriteString(renderDeps(s.detail, width, contentHeight, s.depsCursor))
 	case tabPayload:
-		sb.WriteString(styleDim.Render("  (payload — coming soon)"))
-		sb.WriteByte('\n')
+		sb.WriteString(renderPayload(s.detail, s.payloadCursor, s.payloadScroll, width, contentHeight))
 	}
 
 	// --- inline status message ---
