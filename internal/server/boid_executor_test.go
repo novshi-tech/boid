@@ -281,7 +281,7 @@ func TestBoidBuiltinExecutor_PropagatesDependencyFields(t *testing.T) {
 		Ref:              "task-c",
 		ParentID:         "parent-1",
 		DependsOn:        []string{"task-a", "task-b"},
-		DependsOnPayload: "artifact.pr.merged",
+		DependsOnPayload: "artifact.auto-merge.pr.merged",
 		AutoStart:        false, // disable to avoid Workflow nil
 	})
 	if resp.ExitCode != 0 {
@@ -298,8 +298,8 @@ func TestBoidBuiltinExecutor_PropagatesDependencyFields(t *testing.T) {
 	if got.ParentID != "parent-1" {
 		t.Errorf("parent_id = %q, want parent-1", got.ParentID)
 	}
-	if got.DependsOnPayload != "artifact.pr.merged" {
-		t.Errorf("depends_on_payload = %q, want artifact.pr.merged", got.DependsOnPayload)
+	if got.DependsOnPayload != "artifact.auto-merge.pr.merged" {
+		t.Errorf("depends_on_payload = %q, want artifact.auto-merge.pr.merged", got.DependsOnPayload)
 	}
 	if want := []string{"id-a", "id-b"}; len(got.DependsOn) != len(want) || got.DependsOn[0] != want[0] || got.DependsOn[1] != want[1] {
 		t.Errorf("depends_on = %v, want %v (resolved IDs)", got.DependsOn, want)

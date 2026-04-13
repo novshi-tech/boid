@@ -498,7 +498,7 @@ func TestBroker_BoidBuiltinPolicy_RespectsAllowedProjectIDs(t *testing.T) {
 }
 
 // gate role は BoidOpTaskUpdate を実行できる (auto-merge script が trigger
-// task の artifact.pr を書き戻すユースケース)。
+// task の artifact.auto-merge.pr を書き戻すユースケース)。
 func TestBroker_BoidBuiltinPolicy_GateRoleTaskUpdate(t *testing.T) {
 	exec := &fakeBoidExecutor{}
 	broker := &sandbox.Broker{BoidExecutor: exec}
