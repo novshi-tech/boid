@@ -315,6 +315,12 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			targetJob = s.detail.Jobs[s.cursor]
 		}
 		if targetJob == nil {
+			if s.activeTab == tabOverview && s.detail.Task != nil {
+				task := s.detail.Task
+				return func() tea.Msg {
+					return pushScreenMsg{screen: NewDescriptionScreen(s.shared.Client, task)}
+				}
+			}
 			break
 		}
 		if !s.shared.TmuxEnabled {
@@ -323,6 +329,17 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			return clearStatusAfter(4 * time.Second)
 		}
 		return openJobCmd(targetJob.ID, s.shared.Panes[targetJob.ID])
+
+	case "v":
+		if s.detail == nil || s.detail.Task == nil {
+			break
+		}
+		if s.activeTab == tabOverview {
+			task := s.detail.Task
+			return func() tea.Msg {
+				return pushScreenMsg{screen: NewDescriptionScreen(s.shared.Client, task)}
+			}
+		}
 
 	case "e":
 		if s.detail == nil || s.detail.Task == nil {
@@ -520,7 +537,7 @@ func (s *TaskDetailScreen) ShortHelp() string {
 			parts = append(parts, "R: rerun")
 		}
 	}
-	fixed := "o/t/p: tab  e: edit  j/k: scroll/cursor  enter: open/nav  r: refresh  esc/q: back"
+	fixed := "o/t/p: tab  e: edit  v: view desc  j/k: scroll/cursor  enter: open/nav  r: refresh  esc/q: back"
 	return strings.Join(parts, "  ") + "  " + fixed
 }
 
