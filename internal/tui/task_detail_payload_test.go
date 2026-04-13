@@ -292,22 +292,14 @@ func TestPayloadTab_EKey_EmptyPayload_NoOp(t *testing.T) {
 	}
 }
 
-func TestPayloadTab_EKey_OtherTabs_PushesTaskEditScreen(t *testing.T) {
+func TestPayloadTab_EKey_OtherTabs_StartsTitleEdit(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	s.activeTab = tabOverview
 	s.detail = makeDetailWithPayloadForNav(`{"instructions": {}}`)
 
-	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	if cmd == nil {
-		t.Fatal("e key on overview tab: expected non-nil cmd")
-	}
-	msg := cmd()
-	push, ok := msg.(pushScreenMsg)
-	if !ok {
-		t.Fatalf("e key on overview tab: expected pushScreenMsg, got %T", msg)
-	}
-	if _, ok := push.screen.(*TaskEditScreen); !ok {
-		t.Errorf("e key on overview tab: expected *TaskEditScreen, got %T", push.screen)
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if !s.titleEditing {
+		t.Error("e key on overview tab: expected titleEditing=true (inline title edit)")
 	}
 }
 

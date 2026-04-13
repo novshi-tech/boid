@@ -30,6 +30,7 @@ type duplicateResultMsg struct {
 type duplicateConfirmDeadlineMsg struct{}
 type rerunResultMsg struct{ err error }
 type rerunConfirmDeadlineMsg struct{}
+type titleUpdateResultMsg struct{ err error }
 
 // --- TaskDetailScreen ---
 
@@ -54,6 +55,9 @@ type TaskDetailScreen struct {
 	deletePending    bool
 	duplicatePending bool
 	rerunPending     bool
+
+	titleEditing bool
+	titleInput   TextFieldModel
 }
 
 func NewTaskDetailScreen(shared *SharedState, taskID, projectName string) *TaskDetailScreen {
@@ -183,15 +187,51 @@ func (s *TaskDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.isError = false
 		}
 
+	case titleUpdateResultMsg:
+		s.statusMsg = ""
+		s.isError = false
+		if msg.err != nil {
+			s.statusMsg = "save failed: " + msg.err.Error()
+			s.isError = true
+			return s, clearStatusAfter(4 * time.Second)
+		}
+		return s, fetchTaskDetailCmd(s.shared.Client, s.taskID)
+
 	case screenResumedMsg:
 		s.loading = true
 		return s, fetchTaskDetailCmd(s.shared.Client, s.taskID)
 
 	case tea.KeyMsg:
+		if s.titleEditing {
+			return s, s.handleTitleEditKey(msg)
+		}
 		return s, s.handleKey(msg)
 	}
 
 	return s, nil
+}
+
+func (s *TaskDetailScreen) handleTitleEditKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "enter":
+		title := strings.TrimSpace(s.titleInput.Value())
+		s.titleEditing = false
+		s.titleInput.Blur()
+		if title == "" {
+			return nil
+		}
+		s.statusMsg = "saving..."
+		s.isError = false
+		return updateTitleCmd(s.shared.Client, s.taskID, title)
+	case "esc":
+		s.titleEditing = false
+		s.titleInput.Blur()
+		return nil
+	default:
+		var cmd tea.Cmd
+		s.titleInput, cmd = s.titleInput.Update(msg)
+		return cmd
+	}
 }
 
 func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
@@ -356,9 +396,14 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 				return pushScreenMsg{screen: NewPayloadSectionEditScreen(s.shared.Client, task, sectionKey)}
 			}
 		}
-		return func() tea.Msg {
-			return pushScreenMsg{screen: NewTaskEditScreen(s.shared.Client, s.detail.Task)}
-		}
+		// Start inline title editing
+		s.titleEditing = true
+		s.titleInput = NewTextField()
+		s.titleInput.SetLabel("edit title")
+		s.titleInput.SetValue(s.detail.Task.Title)
+		s.statusMsg = ""
+		s.isError = false
+		return s.titleInput.Focus()
 
 	case "esc", "backspace", "q":
 		return func() tea.Msg { return popScreenMsg{} }
@@ -476,7 +521,7 @@ func (s *TaskDetailScreen) View(width, height int) string {
 
 	// Height budget: tab bar (1) + title (1) + meta (1) = 3 lines used
 	statusLines := 0
-	if s.statusMsg != "" {
+	if s.statusMsg != "" || s.titleEditing {
 		statusLines = 2
 	}
 	contentHeight := max(height-3-statusLines, 4)
@@ -494,8 +539,12 @@ func (s *TaskDetailScreen) View(width, height int) string {
 		sb.WriteString(renderPayload(s.detail, s.payloadCursor, s.payloadScroll, width, contentHeight))
 	}
 
-	// --- inline status message ---
-	if s.statusMsg != "" {
+	// --- inline status message / title edit ---
+	if s.titleEditing {
+		sb.WriteString(s.titleInput.View())
+		sb.WriteString(styleDim.Render("              (Enter: save  Esc: cancel)"))
+		sb.WriteByte('\n')
+	} else if s.statusMsg != "" {
 		var msg string
 		if s.isError {
 			msg = styleError.Render("  ! " + s.statusMsg)
@@ -537,7 +586,7 @@ func (s *TaskDetailScreen) ShortHelp() string {
 			parts = append(parts, "R: rerun")
 		}
 	}
-	fixed := "o/t/p: tab  e: edit  v: view desc  j/k: scroll/cursor  enter: open/nav  r: refresh  esc/q: back"
+	fixed := "o/t/p: tab  e: edit title  v: view desc  j/k: scroll/cursor  enter: open/nav  r: refresh  esc/q: back"
 	return strings.Join(parts, "  ") + "  " + fixed
 }
 
@@ -643,6 +692,13 @@ func rerunTaskCmd(c *client.Client, taskID string) tea.Cmd {
 	return func() tea.Msg {
 		_, err := c.RerunTask(taskID, false)
 		return rerunResultMsg{err: err}
+	}
+}
+
+func updateTitleCmd(c *client.Client, taskID, title string) tea.Cmd {
+	return func() tea.Msg {
+		_, err := c.UpdateTask(taskID, api.UpdateTaskRequest{Title: title})
+		return titleUpdateResultMsg{err: err}
 	}
 }
 
