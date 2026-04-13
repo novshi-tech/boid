@@ -88,7 +88,15 @@ func (d *Coordinator) DispatchAndAdvance(
 		}
 	}
 
-	// 3. Evaluate auto-advance
+	// 3. executing 状態で hook が実際に実行された場合のみ execution_complete を注入する。
+	// hook が1件も実行されなかった場合（hooks 未設定の behavior 等）は注入しない。
+	// これにより成果物なし（artifact も tasks も書かれなかった）ケースの
+	// executing → done 自動遷移が機能する。
+	if task.Status == TaskStatusExecuting && hasHookResult(allResults) {
+		payload = injectExecutionComplete(payload)
+	}
+
+	// 4. Evaluate auto-advance
 	result := &DispatchResult{
 		Results:      allResults,
 		FinalPayload: payload,
@@ -106,22 +114,29 @@ func (d *Coordinator) DispatchAndAdvance(
 // DispatchEntryGates runs entry-phase gates for the given task's current status.
 // Unlike DispatchAndAdvance, this does NOT evaluate hooks/exit-gates or call sm.Advance.
 // The returned result reflects only entry gate payload patches.
+//
+// executing 状態への入場時は execution_complete trait をクリアする。
+// これにより将来的に executing を再入場するケースでも stale な値が残らない。
 func (d *Coordinator) DispatchEntryGates(
 	ctx context.Context,
 	task *Task,
 	meta *ProjectMeta,
 ) (*EntryGateResult, error) {
+	// executing 入場時に execution_complete をリセットする
+	payload := task.Payload
+	if task.Status == TaskStatusExecuting {
+		payload = clearTraitFromPayload(payload, "execution_complete")
+	}
+
 	matchedGates := d.Evaluator.EvaluateGates(task, meta.Gates, GatePhaseEntry)
 	if len(matchedGates) == 0 {
-		return &EntryGateResult{FinalPayload: task.Payload}, nil
+		return &EntryGateResult{FinalPayload: payload}, nil
 	}
 
 	gateResults, err := d.dispatchGates(ctx, task, matchedGates)
 	if err != nil {
 		return nil, fmt.Errorf("entry gate dispatch: %w", err)
 	}
-
-	payload := task.Payload
 	exclusiveWriters := map[string]string{}
 	for _, gr := range gateResults {
 		if err := checkExclusiveCollision(gr.PayloadPatch, gr.ID, exclusiveWriters); err != nil {
@@ -405,6 +420,57 @@ func injectSourceState(patch json.RawMessage, state string) json.RawMessage {
 	result, err := json.Marshal(patchMap)
 	if err != nil {
 		return patch
+	}
+	return result
+}
+
+// hasHookResult reports whether any HandlerResult with RoleHook is present.
+// Used to gate execution_complete injection: only hooks (not gates) represent
+// the main execution agent job.
+func hasHookResult(results []HandlerResult) bool {
+	for _, hr := range results {
+		if hr.Role == RoleHook {
+			return true
+		}
+	}
+	return false
+}
+
+// injectExecutionComplete sets execution_complete=true in the payload.
+// This is called by the coordinator after all hooks/gates complete successfully
+// in executing state, signalling that the agent job finished without error.
+func injectExecutionComplete(payload json.RawMessage) json.RawMessage {
+	var m map[string]json.RawMessage
+	if len(payload) == 0 || string(payload) == "null" {
+		m = make(map[string]json.RawMessage)
+	} else if err := json.Unmarshal(payload, &m); err != nil {
+		return payload
+	}
+	m["execution_complete"] = json.RawMessage("true")
+	result, err := json.Marshal(m)
+	if err != nil {
+		return payload
+	}
+	return result
+}
+
+// clearTraitFromPayload removes the given trait key from the payload.
+// Used to reset execution_complete when re-entering executing state.
+func clearTraitFromPayload(payload json.RawMessage, trait string) json.RawMessage {
+	if len(payload) == 0 || string(payload) == "{}" || string(payload) == "null" {
+		return payload
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return payload
+	}
+	if _, ok := m[trait]; !ok {
+		return payload
+	}
+	delete(m, trait)
+	result, err := json.Marshal(m)
+	if err != nil {
+		return payload
 	}
 	return result
 }

@@ -571,6 +571,73 @@ func TestStateMachine_Apply_IgnoresConditionRules(t *testing.T) {
 	}
 }
 
+// ---- DefaultMachine: auto transitions from executing (execution_complete) ----
+
+func TestDefaultMachine_Executing_EmptyPayload_ExecutionComplete_Done(t *testing.T) {
+	// execution_complete=true かつ artifact も tasks も無い → done
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{"execution_complete":true}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to done when execution_complete=true and no artifact/tasks")
+	}
+	if next.Status != orchestrator.TaskStatusDone {
+		t.Fatalf("expected done, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_Executing_ExecutionCompleteWithArtifact_Verifying(t *testing.T) {
+	// execution_complete=true かつ artifact あり → verifying (既存ルート維持)
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{"execution_complete":true,"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"}}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to verifying when execution_complete=true and artifact present")
+	}
+	if next.Status != orchestrator.TaskStatusVerifying {
+		t.Fatalf("expected verifying, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_Executing_NoExecutionComplete_NoTransition(t *testing.T) {
+	// execution_complete 未設定、成果物も無し → executing のまま（早期遷移しない）
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{}`),
+	}
+	if _, ok := sm.Advance(task); ok {
+		t.Fatal("expected no advance when execution_complete not set and no artifact/tasks")
+	}
+}
+
+func TestDefaultMachine_Executing_ExecutionCompleteWithFindings_Done(t *testing.T) {
+	// 空成果物時は findings があっても done（成果物が無いので rework する対象が無い）
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{
+			"execution_complete":true,
+			"verification":{
+				"some-gate":{"source_state":"executing","findings":[{"message":"something","status":"open"}]}
+			}
+		}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to done when execution_complete=true, no artifact, even with findings")
+	}
+	if next.Status != orchestrator.TaskStatusDone {
+		t.Fatalf("expected done, got %s", next.Status)
+	}
+}
+
 // TestJobCompletedNotAnAction verifies that job_completed does not trigger a
 // state transition in DefaultMachine. State transitions driven by hook/gate job
 // completion must happen exclusively through DispatchAndAdvance (condition-based
