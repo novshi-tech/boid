@@ -1142,3 +1142,87 @@ func TestShortHelp_IncludesEditTitle(t *testing.T) {
 		t.Errorf("ShortHelp: expected 'e: edit title', got %q", help)
 	}
 }
+
+// --- Tab/Shift+Tab cycling tests ---
+
+func TestTabCycle_ForwardFromOverview(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.activeTab = tabOverview
+
+	s.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if s.activeTab != tabTimeline {
+		t.Errorf("tab from overview: want %q, got %q", tabTimeline, s.activeTab)
+	}
+}
+
+func TestTabCycle_ForwardFromTimeline(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.activeTab = tabTimeline
+
+	s.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if s.activeTab != tabDeps {
+		t.Errorf("tab from timeline: want %q, got %q", tabDeps, s.activeTab)
+	}
+}
+
+func TestTabCycle_ForwardFromDeps(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.activeTab = tabDeps
+
+	s.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if s.activeTab != tabPayload {
+		t.Errorf("tab from deps: want %q, got %q", tabPayload, s.activeTab)
+	}
+}
+
+func TestTabCycle_ForwardFromPayload_Wraps(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.activeTab = tabPayload
+
+	s.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if s.activeTab != tabOverview {
+		t.Errorf("tab from payload (wrap): want %q, got %q", tabOverview, s.activeTab)
+	}
+}
+
+func TestTabCycle_BackwardFromOverview_Wraps(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.activeTab = tabOverview
+
+	s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if s.activeTab != tabPayload {
+		t.Errorf("shift+tab from overview (wrap): want %q, got %q", tabPayload, s.activeTab)
+	}
+}
+
+func TestTabCycle_DepsTabReachable(t *testing.T) {
+	// Verify Deps tab is reachable via Tab from Timeline.
+	s := newTestTaskDetailScreen()
+	s.activeTab = tabTimeline
+
+	s.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if s.activeTab != tabDeps {
+		t.Errorf("deps tab not reachable via tab from timeline: got %q", s.activeTab)
+	}
+}
+
+func TestTabCycle_DepsTabReachable_Backward(t *testing.T) {
+	// Verify Deps tab is reachable via Shift+Tab from Payload.
+	s := newTestTaskDetailScreen()
+	s.activeTab = tabPayload
+
+	s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if s.activeTab != tabDeps {
+		t.Errorf("deps tab not reachable via shift+tab from payload: got %q", s.activeTab)
+	}
+}
+
+func TestShortHelp_IncludesTabCycle(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusExecuting)
+
+	help := s.ShortHelp()
+	if !containsStr(help, "tab") {
+		t.Errorf("ShortHelp: expected 'tab' in help, got %q", help)
+	}
+}

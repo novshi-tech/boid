@@ -250,6 +250,12 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "p":
 		s.activeTab = tabPayload
 
+	case "tab":
+		s.activeTab = cycleTab(s.activeTab, 1)
+
+	case "shift+tab":
+		s.activeTab = cycleTab(s.activeTab, -1)
+
 	case "j", "down":
 		if s.activeTab == tabOverview {
 			// scroll description in Overview
@@ -586,7 +592,7 @@ func (s *TaskDetailScreen) ShortHelp() string {
 			parts = append(parts, "R: rerun")
 		}
 	}
-	fixed := "o/t/p: tab  e: edit title  v: view desc  j/k: scroll/cursor  enter: open/nav  r: refresh  esc/q: back"
+	fixed := "o/t/p+tab: switch tab  e: edit title  v: view desc  j/k: scroll/cursor  enter: open/nav  r: refresh  esc/q: back"
 	return strings.Join(parts, "  ") + "  " + fixed
 }
 
