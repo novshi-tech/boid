@@ -33,7 +33,7 @@ func checkDependencies(task *orchestrator.Task, getTask func(string) (*orchestra
 }
 
 // payloadGet は JSON ペイロードから指定キーの値を取り出す。
-// key はドット区切りのネストパス（例: "artifact.pr.merge_status"）を受け付ける。
+// key はドット区切りのネストパス（例: "artifact.auto-merge.pr.merged"）を受け付ける。
 func payloadGet(payload json.RawMessage, key string) (any, error) {
 	if len(payload) == 0 {
 		return nil, nil

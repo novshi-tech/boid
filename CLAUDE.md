@@ -60,7 +60,7 @@ boid が管理するディスクデータは2種類ある:
 
 ### 予防ガイド
 
-- 同じファイルを編集する可能性のある dev タスク同士は `depends_on` + `depends_on_payload: "artifact.pr.merged"` で直列化すること
+- 同じファイルを編集する可能性のある dev タスク同士は `depends_on` + `depends_on_payload: "artifact.auto-merge.pr.merged"` で直列化すること
 - プランニング段階で「ファイル触る範囲の overlap」を見積もり、overlap があれば順序依存を入れる
 - 順序に意味がない場合でも、同じディレクトリを深く触るタスクは直列化を検討する
 - テストファイルや config ファイルなど、共有度が高いファイルは特に注意
