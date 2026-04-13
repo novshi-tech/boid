@@ -2,6 +2,16 @@ package orchestrator
 
 import "encoding/json"
 
+// TraitBool returns true if the given trait key exists and its value is the JSON literal true.
+func TraitBool(payload json.RawMessage, trait string) bool {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return false
+	}
+	v, ok := m[trait]
+	return ok && string(v) == "true"
+}
+
 // TraitNonNull returns true if the given trait key exists and is not null in the payload.
 func TraitNonNull(payload json.RawMessage, trait string) bool {
 	var m map[string]json.RawMessage
