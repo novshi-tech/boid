@@ -440,6 +440,9 @@ func TestTaskListView_FilterBarNewFormat(t *testing.T) {
 	if !containsStr(view, "state: open") {
 		t.Error("View should contain 'state: open' filter chip")
 	}
+	if !containsStr(view, "ws: all") {
+		t.Error("View should contain 'ws: all' filter chip")
+	}
 	if !containsStr(view, "proj: all") {
 		t.Error("View should contain 'proj: all' filter chip")
 	}
@@ -474,6 +477,199 @@ func TestTaskListView_PopupRendered(t *testing.T) {
 	}
 	if !containsStr(view, "proj1") {
 		t.Error("View should contain 'proj1' option in popup")
+	}
+}
+
+// --- workspace selector tests ---
+
+func TestWorkspaceModal_WKey_Opens(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.workspaces = []*orchestrator.WorkspaceSummary{
+		{ID: "ws1"},
+		{ID: "ws2"},
+	}
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	if !s.popup.active {
+		t.Error("w key: popup should be active")
+	}
+	if s.popup.kind != "workspace" {
+		t.Errorf("w key: popup kind should be 'workspace', got %q", s.popup.kind)
+	}
+	// labels: "(all)", "ws1", "ws2"
+	if len(s.popup.labels) != 3 {
+		t.Errorf("w key: want 3 popup labels (all + 2 workspaces), got %d", len(s.popup.labels))
+	}
+	if s.popup.labels[0] != "(all)" {
+		t.Errorf("w key: first label should be '(all)', got %q", s.popup.labels[0])
+	}
+}
+
+func TestWorkspaceModal_EnterConfirms(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.workspaces = []*orchestrator.WorkspaceSummary{
+		{ID: "ws1"},
+		{ID: "ws2"},
+	}
+
+	// Open modal and move cursor to ws1 (index 1)
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if s.popup.cursor != 1 {
+		t.Fatalf("expected popup cursor 1, got %d", s.popup.cursor)
+	}
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if s.popup.active {
+		t.Error("enter: popup should be closed")
+	}
+	if s.selectedWorkspaceID != "ws1" {
+		t.Errorf("enter: selectedWorkspaceID should be 'ws1', got %q", s.selectedWorkspaceID)
+	}
+	if cmd == nil {
+		t.Error("enter: expected fetchTasksCmd")
+	}
+}
+
+func TestWorkspaceModal_EnterAll(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.workspaces = []*orchestrator.WorkspaceSummary{
+		{ID: "ws1"},
+	}
+	s.selectedWorkspaceID = "ws1"
+
+	// Open modal — cursor should be at ws1 (index 1)
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	// Move cursor back to (all) at index 0
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if s.selectedWorkspaceID != "" {
+		t.Errorf("selecting (all) should set selectedWorkspaceID to '', got %q", s.selectedWorkspaceID)
+	}
+}
+
+func TestWorkspaceModal_EscCancels(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.workspaces = []*orchestrator.WorkspaceSummary{
+		{ID: "ws1"},
+	}
+	s.selectedWorkspaceID = "ws1"
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	s.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if s.popup.active {
+		t.Error("esc: popup should be closed")
+	}
+	if s.selectedWorkspaceID != "ws1" {
+		t.Errorf("esc: selectedWorkspaceID should remain 'ws1', got %q", s.selectedWorkspaceID)
+	}
+}
+
+func TestWorkspaceModal_ResetsProjectOnWorkspaceChange(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.workspaces = []*orchestrator.WorkspaceSummary{
+		{ID: "ws1"},
+		{ID: "ws2"},
+	}
+	s.projects = []*orchestrator.Project{
+		{ID: "p1", WorkspaceID: "ws1", Meta: orchestrator.ProjectMeta{Name: "proj1"}},
+		{ID: "p2", WorkspaceID: "ws2", Meta: orchestrator.ProjectMeta{Name: "proj2"}},
+	}
+	s.selectedProjectID = "p1"
+	s.selectedWorkspaceID = "ws1"
+
+	// Switch to ws2 — p1 does not belong to ws2, so project should reset.
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	s.popup.cursor = 2 // ws2 is index 2
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if s.selectedWorkspaceID != "ws2" {
+		t.Errorf("selectedWorkspaceID should be 'ws2', got %q", s.selectedWorkspaceID)
+	}
+	if s.selectedProjectID != "" {
+		t.Errorf("selectedProjectID should be reset to '' when project not in new workspace, got %q", s.selectedProjectID)
+	}
+}
+
+func TestWorkspaceModal_KeepsProjectWhenSameWorkspace(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.workspaces = []*orchestrator.WorkspaceSummary{
+		{ID: "ws1"},
+	}
+	s.projects = []*orchestrator.Project{
+		{ID: "p1", WorkspaceID: "ws1", Meta: orchestrator.ProjectMeta{Name: "proj1"}},
+	}
+	s.selectedProjectID = "p1"
+
+	// Select ws1 — p1 belongs to ws1, so project should remain.
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	s.popup.cursor = 1 // ws1
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if s.selectedWorkspaceID != "ws1" {
+		t.Errorf("selectedWorkspaceID should be 'ws1', got %q", s.selectedWorkspaceID)
+	}
+	if s.selectedProjectID != "p1" {
+		t.Errorf("selectedProjectID should remain 'p1' when project belongs to new workspace, got %q", s.selectedProjectID)
+	}
+}
+
+func TestProjectPopup_FilteredByWorkspace(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.projects = []*orchestrator.Project{
+		{ID: "p1", WorkspaceID: "ws1", Meta: orchestrator.ProjectMeta{Name: "proj1"}},
+		{ID: "p2", WorkspaceID: "ws2", Meta: orchestrator.ProjectMeta{Name: "proj2"}},
+	}
+	s.selectedWorkspaceID = "ws1"
+
+	// Open project popup — only proj1 should appear.
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	if !s.popup.active {
+		t.Fatal("p key: popup should be active")
+	}
+	// labels: "(all)", "proj1" — proj2 filtered out
+	if len(s.popup.labels) != 2 {
+		t.Errorf("want 2 labels (all + proj1), got %d: %v", len(s.popup.labels), s.popup.labels)
+	}
+	if s.popup.labels[1] != "proj1" {
+		t.Errorf("second label should be 'proj1', got %q", s.popup.labels[1])
+	}
+}
+
+func TestWorkspaceFilterBarChip(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.selectedWorkspaceID = "ws1"
+	view := s.View(120, 40)
+	if !containsStr(view, "ws: ws1") {
+		t.Error("View should contain 'ws: ws1' when workspace is selected")
+	}
+}
+
+func TestWorkspaceFilterBar_AllWhenNoWorkspace(t *testing.T) {
+	s := newTestTaskListScreen()
+	view := s.View(120, 40)
+	if !containsStr(view, "ws: all") {
+		t.Error("View should contain 'ws: all' when no workspace selected")
+	}
+}
+
+func TestWorkspaceMsg_Stored(t *testing.T) {
+	s := newTestTaskListScreen()
+	ws := []*orchestrator.WorkspaceSummary{{ID: "ws1"}, {ID: "ws2"}}
+	s.Update(workspacesMsg{workspaces: ws})
+	if len(s.workspaces) != 2 {
+		t.Errorf("expected 2 workspaces, got %d", len(s.workspaces))
+	}
+}
+
+func TestWorkspaceMsg_ErrorIgnored(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.Update(workspacesMsg{err: fmt.Errorf("network error")})
+	if len(s.workspaces) != 0 {
+		t.Errorf("expected workspaces unchanged on error, got %d", len(s.workspaces))
 	}
 }
 
