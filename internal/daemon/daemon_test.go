@@ -7,6 +7,16 @@ import (
 	"testing"
 )
 
+// TestMain allows the test binary to act as a short-lived daemon child when
+// BOID_DAEMON_CHILD=1 is present (as Spawn sets it). Without this guard, a
+// Spawn call inside a test would re-execute the full test suite recursively.
+func TestMain(m *testing.M) {
+	if IsChild() {
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
 // --- LogFilePath ---
 
 func TestLogFilePath_WithXDGStateHome(t *testing.T) {
@@ -184,6 +194,23 @@ func TestIsChild_True(t *testing.T) {
 }
 
 // --- RedirectToLog ---
+
+// --- Spawn ---
+
+// TestSpawn_PIDIsPositive verifies that Spawn returns a positive PID.
+// On Go 1.20+ with Linux pidfd, Process.Release() zeroes out Process.Pid to
+// -1.  Saving the PID before Release is required to return the real value.
+// TestMain short-circuits the re-executed test binary so it exits immediately
+// when BOID_DAEMON_CHILD=1 is detected, preventing recursive test execution.
+func TestSpawn_PIDIsPositive(t *testing.T) {
+	pid, err := Spawn(os.Args[:1])
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if pid <= 0 {
+		t.Fatalf("Spawn() returned pid %d, want > 0", pid)
+	}
+}
 
 // TestRedirectToLog verifies the log file is created at the requested path.
 // We spawn a subprocess so that redirecting fd 0/1/2 does not affect the test
