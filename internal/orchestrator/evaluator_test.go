@@ -533,3 +533,52 @@ func TestEvaluateGates_MixedPhases(t *testing.T) {
 		t.Fatalf("expected pr-verify for exit, got %v", exit)
 	}
 }
+
+func TestEvaluate_KitIDPreservedInMatchedHook(t *testing.T) {
+	eval := &orchestrator.Evaluator{}
+
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{}`),
+	}
+	hooks := []projectspec.Hook{
+		{
+			ID:  "go-dev/pr-verify",
+			On:  projectspec.OnValues{"executing"},
+			Kit: "go-dev",
+		},
+	}
+
+	matched := eval.Evaluate(task, hooks)
+	if len(matched) != 1 {
+		t.Fatalf("expected 1 matched hook, got %d", len(matched))
+	}
+	if matched[0].Kit != "go-dev" {
+		t.Fatalf("Kit = %q, want %q", matched[0].Kit, "go-dev")
+	}
+}
+
+func TestEvaluateGates_KitIDPreservedInMatchedGate(t *testing.T) {
+	eval := &orchestrator.Evaluator{}
+
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{}`),
+	}
+	gates := []projectspec.Gate{
+		{
+			ID:    "go-dev/auto-merge",
+			On:    projectspec.OnValues{"executing"},
+			Phase: projectspec.GatePhaseExit,
+			Kit:   "go-dev",
+		},
+	}
+
+	matched := eval.EvaluateGates(task, gates, projectspec.GatePhaseExit)
+	if len(matched) != 1 {
+		t.Fatalf("expected 1 matched gate, got %d", len(matched))
+	}
+	if matched[0].Kit != "go-dev" {
+		t.Fatalf("Kit = %q, want %q", matched[0].Kit, "go-dev")
+	}
+}

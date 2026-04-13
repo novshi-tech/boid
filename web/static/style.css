@@ -333,6 +333,21 @@ pre {
     margin-top: 2px;
 }
 
+.timeline-item-fired {
+    opacity: 0.75;
+}
+
+.timeline-item-fired::before {
+    background: #aaa;
+}
+
+.timeline-type-fired {
+    font-weight: normal;
+    font-size: 0.8rem;
+    color: #666;
+    font-family: monospace;
+}
+
 /* --- Details/Summary --- */
 details > summary {
     cursor: pointer;

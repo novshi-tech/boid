@@ -35,9 +35,20 @@ type HandlerResult struct {
 	PayloadPatch json.RawMessage
 }
 
+// FiredEvent records a single hook or gate execution for action logging.
+type FiredEvent struct {
+	KitID       string // kit that owns this handler; empty for project-local
+	HandlerID   string // hook or gate ID
+	Kind        string // "hook", "exit_gate", or "entry_gate"
+	SourceState string // task status at the time of dispatch
+	Success     bool
+	Error       string
+}
+
 // DispatchResult is the accumulated result of a full dispatch cycle.
 type DispatchResult struct {
 	Results      []HandlerResult
+	FiredEvents  []FiredEvent
 	FinalPayload json.RawMessage
 	NewStatus    TaskStatus // set if orchestrator advanced the state
 }
@@ -46,5 +57,6 @@ type DispatchResult struct {
 // Unlike DispatchResult it carries no NewStatus — entry gates only produce payload patches.
 type EntryGateResult struct {
 	Results      []HandlerResult
+	FiredEvents  []FiredEvent
 	FinalPayload json.RawMessage
 }
