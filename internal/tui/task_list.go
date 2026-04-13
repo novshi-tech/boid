@@ -41,6 +41,10 @@ type projectsMsg struct {
 	projects []*orchestrator.Project
 	err      error
 }
+type workspacesMsg struct {
+	workspaces []*orchestrator.WorkspaceSummary
+	err        error
+}
 type quickOpenResultMsg struct {
 	taskID string
 	jobs   []*api.Job
@@ -61,7 +65,7 @@ type miniSelector struct {
 // labels[0] is always "(all)" with values[0] = "".
 type popupSelector struct {
 	active bool
-	kind   string   // "project" or "behavior"
+	kind   string   // "project", "behavior", or "workspace"
 	labels []string // display labels
 	values []string // internal values ("" for all)
 	cursor int
@@ -72,23 +76,25 @@ type popupSelector struct {
 type TaskListScreen struct {
 	shared *SharedState
 
-	table             table.Model
-	tasks             []*orchestrator.Task
-	displayTasks      []*orchestrator.Task // tasks filtered by searchQuery
-	projects          []*orchestrator.Project
-	stateClosed       bool           // false=open, true=closed
-	selectedProjectID string         // "" = all
-	behaviorFilter    string         // "" = all
-	searchMode        bool           // true while typing a search query
-	searchQuery       string         // retained query ("" = no filter)
-	searchInput       textinput.Model // text input widget for search mode
-	popup             popupSelector
-	loading           bool
-	fetchErr          error
-	statusMsg         string
-	isError           bool
-	mini              miniSelector
-	titleWidth        int // current TITLE column width; default 24
+	table               table.Model
+	tasks               []*orchestrator.Task
+	displayTasks        []*orchestrator.Task // tasks filtered by searchQuery
+	projects            []*orchestrator.Project
+	workspaces          []*orchestrator.WorkspaceSummary
+	stateClosed         bool            // false=open, true=closed
+	selectedProjectID   string          // "" = all
+	selectedWorkspaceID string          // "" = all
+	behaviorFilter      string          // "" = all
+	searchMode          bool            // true while typing a search query
+	searchQuery         string          // retained query ("" = no filter)
+	searchInput         textinput.Model // text input widget for search mode
+	popup               popupSelector
+	loading             bool
+	fetchErr            error
+	statusMsg           string
+	isError             bool
+	mini                miniSelector
+	titleWidth          int // current TITLE column width; default 24
 }
 
 func NewTaskListScreen(shared *SharedState) *TaskListScreen {
@@ -120,8 +126,9 @@ func NewTaskListScreen(shared *SharedState) *TaskListScreen {
 
 func (s *TaskListScreen) Init() tea.Cmd {
 	return tea.Batch(
-		fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter),
+		fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, nil),
 		fetchProjectsCmd(s.shared.Client),
+		fetchWorkspacesCmd(s.shared.Client),
 		taskTickCmd(),
 	)
 }
@@ -130,7 +137,7 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch msg := msg.(type) {
 	case taskTickMsg:
 		return s, tea.Batch(
-			fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter),
+			fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs()),
 			taskTickCmd(),
 		)
 
@@ -147,6 +154,11 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	case projectsMsg:
 		if msg.err == nil {
 			s.projects = msg.projects
+		}
+
+	case workspacesMsg:
+		if msg.err == nil {
+			s.workspaces = msg.workspaces
 		}
 
 	case quickOpenResultMsg:
@@ -189,15 +201,15 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s, clearStatusAfter(4 * time.Second)
 		}
 		s.statusMsg = ""
-		return s, fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter)
+		return s, fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs())
 
 	case screenResumedMsg:
-		return s, fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter)
+		return s, fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs())
 
 	case taskCreatedNotifyMsg:
 		s.statusMsg = "task created"
 		s.isError = false
-		return s, tea.Batch(fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter), clearStatusAfter(3*time.Second))
+		return s, tea.Batch(fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs()), clearStatusAfter(3*time.Second))
 
 	case clearStatusMsg:
 		s.statusMsg = ""
@@ -246,7 +258,10 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		s.stateClosed = !s.stateClosed
 		s.table.SetCursor(0)
 		s.loading = true
-		return fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter)
+		return fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs())
+
+	case "w":
+		s.popup = s.buildWorkspacePopup()
 
 	case "p":
 		s.popup = s.buildProjectPopup()
@@ -261,7 +276,7 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	case "r":
 		s.loading = true
-		return fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter)
+		return fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs())
 
 	case "enter":
 		if len(s.displayTasks) == 0 {
@@ -328,17 +343,44 @@ func (s *TaskListScreen) handleSearchKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
+// buildWorkspacePopup constructs a popupSelector for workspace selection.
+func (s *TaskListScreen) buildWorkspacePopup() popupSelector {
+	labels := []string{"(all)"}
+	values := []string{""}
+	cursor := 0
+	for i, w := range s.workspaces {
+		labels = append(labels, w.ID)
+		values = append(values, w.ID)
+		if w.ID == s.selectedWorkspaceID {
+			cursor = i + 1
+		}
+	}
+	return popupSelector{
+		active: true,
+		kind:   "workspace",
+		labels: labels,
+		values: values,
+		cursor: cursor,
+	}
+}
+
 // buildProjectPopup constructs a popupSelector for project selection.
+// When a workspace is selected, only shows projects belonging to that workspace.
 func (s *TaskListScreen) buildProjectPopup() popupSelector {
 	labels := []string{"(all)"}
 	values := []string{""}
 	cursor := 0
-	for i, p := range s.projects {
+	idx := 1
+	for _, p := range s.projects {
+		if s.selectedWorkspaceID != "" && p.WorkspaceID != s.selectedWorkspaceID {
+			continue
+		}
 		labels = append(labels, p.Meta.Name)
 		values = append(values, p.ID)
 		if p.ID == s.selectedProjectID {
-			cursor = i + 1
+			cursor = idx
 		}
+		idx++
 	}
 	return popupSelector{
 		active: true,
@@ -387,6 +429,21 @@ func (s *TaskListScreen) handlePopupKey(msg tea.KeyMsg) tea.Cmd {
 		kind := s.popup.kind
 		s.popup.active = false
 		switch kind {
+		case "workspace":
+			s.selectedWorkspaceID = val
+			// Reset project if it no longer belongs to the selected workspace.
+			if val != "" && s.selectedProjectID != "" {
+				belongs := false
+				for _, p := range s.projects {
+					if p.ID == s.selectedProjectID && p.WorkspaceID == val {
+						belongs = true
+						break
+					}
+				}
+				if !belongs {
+					s.selectedProjectID = ""
+				}
+			}
 		case "project":
 			s.selectedProjectID = val
 		case "behavior":
@@ -394,7 +451,7 @@ func (s *TaskListScreen) handlePopupKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		s.table.SetCursor(0)
 		s.loading = true
-		return fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter)
+		return fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs())
 	case "esc":
 		s.popup.active = false
 	}
@@ -414,6 +471,29 @@ func distinctBehaviors(tasks []*orchestrator.Task) []string {
 	}
 	sort.Strings(behaviors)
 	return behaviors
+}
+
+// wsProjectIDs returns a set of project IDs that belong to the selected workspace,
+// or nil if no workspace is selected.
+func (s *TaskListScreen) wsProjectIDs() map[string]bool {
+	if s.selectedWorkspaceID == "" {
+		return nil
+	}
+	ids := map[string]bool{}
+	for _, p := range s.projects {
+		if p.WorkspaceID == s.selectedWorkspaceID {
+			ids[p.ID] = true
+		}
+	}
+	return ids
+}
+
+// workspaceName returns the display name for the current workspace filter.
+func (s *TaskListScreen) workspaceName() string {
+	if s.selectedWorkspaceID == "" {
+		return "all"
+	}
+	return s.selectedWorkspaceID
 }
 
 // projectName returns the display name for the current project filter.
@@ -490,7 +570,7 @@ func (s *TaskListScreen) ShortHelp() string {
 	if s.searchMode {
 		return "esc: cancel  enter: confirm"
 	}
-	return "enter: detail  s: start  o: open job  n: new  tab: state  /: search  p: project  b: behavior  r: refresh  q: quit"
+	return "enter: detail  s: start  o: open job  n: new  tab: state  /: search  w: workspace  p: project  b: behavior  r: refresh  q: quit"
 }
 
 func (s *TaskListScreen) buildTaskFilterBar(width int) string {
@@ -499,6 +579,7 @@ func (s *TaskListScreen) buildTaskFilterBar(width int) string {
 		stateLabel = "closed"
 	}
 
+	wsLabel := s.workspaceName()
 	projLabel := s.projectName()
 	behLabel := s.behaviorFilter
 	if behLabel == "" {
@@ -506,10 +587,11 @@ func (s *TaskListScreen) buildTaskFilterBar(width int) string {
 	}
 
 	stateChip := styleFilterActive.Render("state: " + stateLabel)
+	wsChip := styleDim.Render("ws: " + wsLabel)
 	projChip := styleDim.Render("proj: " + projLabel)
 	behChip := styleDim.Render("behavior: " + behLabel)
 
-	bar := stateChip + "    " + projChip + "    " + behChip
+	bar := stateChip + "    " + wsChip + "    " + projChip + "    " + behChip
 
 	if s.searchMode {
 		bar += "    " + styleFilterActive.Render("q: ") + s.searchInput.View()
@@ -708,7 +790,11 @@ func taskTickCmd() tea.Cmd {
 	})
 }
 
-func fetchTasksCmd(c *client.Client, stateClosed bool, projectID, behaviorFilter string) tea.Cmd {
+// fetchTasksCmd fetches tasks from the server applying server-side project filter,
+// then filters client-side by state, behavior, and workspace (via workspaceProjectIDs).
+// workspaceProjectIDs is a set of project IDs belonging to the selected workspace;
+// nil means no workspace filter.
+func fetchTasksCmd(c *client.Client, stateClosed bool, projectID, behaviorFilter string, workspaceProjectIDs map[string]bool) tea.Cmd {
 	return func() tea.Msg {
 		filter := client.TaskListFilter{
 			ProjectID: projectID,
@@ -733,6 +819,17 @@ func fetchTasksCmd(c *client.Client, stateClosed bool, projectID, behaviorFilter
 			}
 		}
 
+		// Filter by workspace (only when no specific project is already selected).
+		if projectID == "" && len(workspaceProjectIDs) > 0 {
+			var byWorkspace []*orchestrator.Task
+			for _, t := range filtered {
+				if workspaceProjectIDs[t.ProjectID] {
+					byWorkspace = append(byWorkspace, t)
+				}
+			}
+			filtered = byWorkspace
+		}
+
 		// Filter by behavior.
 		if behaviorFilter != "" {
 			var byBehavior []*orchestrator.Task
@@ -745,6 +842,13 @@ func fetchTasksCmd(c *client.Client, stateClosed bool, projectID, behaviorFilter
 		}
 
 		return tasksMsg{tasks: filtered}
+	}
+}
+
+func fetchWorkspacesCmd(c *client.Client) tea.Cmd {
+	return func() tea.Msg {
+		workspaces, err := c.ListWorkspaces()
+		return workspacesMsg{workspaces: workspaces, err: err}
 	}
 }
 
