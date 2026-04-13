@@ -22,9 +22,9 @@ func TestFormFocusCycleTab(t *testing.T) {
 		t.Fatalf("initial focus: want focusProject(%d), got %d", focusProject, s.focus)
 	}
 
-	// Tab: project → behavior → title → description → submit → cancel → project
+	// Tab: project → behavior → title → description → autoStart → submit → cancel → project
 	expected := []formFocus{
-		focusBehavior, focusTitle, focusDescription, focusSubmit, focusCancel, focusProject,
+		focusBehavior, focusTitle, focusDescription, focusAutoStart, focusSubmit, focusCancel, focusProject,
 	}
 	for _, want := range expected {
 		s.Update(tea.KeyMsg{Type: tea.KeyTab})
@@ -37,9 +37,9 @@ func TestFormFocusCycleTab(t *testing.T) {
 func TestFormFocusCycleShiftTab(t *testing.T) {
 	s := newTestFormScreen()
 
-	// Shift+Tab from project goes backwards: cancel → submit → description → ...
+	// Shift+Tab from project goes backwards: cancel → submit → autoStart → description → ...
 	expected := []formFocus{
-		focusCancel, focusSubmit, focusDescription, focusTitle, focusBehavior, focusProject,
+		focusCancel, focusSubmit, focusAutoStart, focusDescription, focusTitle, focusBehavior, focusProject,
 	}
 	for _, want := range expected {
 		s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
@@ -488,10 +488,99 @@ func TestFormView(t *testing.T) {
 	if !containsStr(view, "Desc") {
 		t.Error("View should contain 'Desc'")
 	}
+	if !containsStr(view, "Auto start") {
+		t.Error("View should contain 'Auto start'")
+	}
 	if !containsStr(view, "[Create]") {
 		t.Error("View should contain '[Create]'")
 	}
 	if !containsStr(view, "[Cancel]") {
 		t.Error("View should contain '[Cancel]'")
+	}
+}
+
+// --- Auto start チェックボックステスト ---
+
+func TestFormAutoStartInitiallyFalse(t *testing.T) {
+	s := newTestFormScreen()
+	if s.autoStartField.Value() {
+		t.Error("autoStartField should be false by default")
+	}
+}
+
+func TestFormAutoStartFocusViaTab(t *testing.T) {
+	s := newTestFormScreen()
+
+	// Tab 4 回で description → autoStart に到達する
+	for range 4 {
+		s.Update(tea.KeyMsg{Type: tea.KeyTab})
+	}
+	if s.focus != focusAutoStart {
+		t.Errorf("expected focusAutoStart after 4 tabs, got %d", s.focus)
+	}
+}
+
+func TestFormAutoStartFocusViaShiftTab(t *testing.T) {
+	s := newTestFormScreen()
+
+	// Shift+Tab 3 回で project → cancel → submit → autoStart
+	for range 3 {
+		s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	}
+	if s.focus != focusAutoStart {
+		t.Errorf("expected focusAutoStart after 3 shift+tabs, got %d", s.focus)
+	}
+}
+
+func TestFormAutoStartToggle(t *testing.T) {
+	s := newTestFormScreen()
+	s.moveFocus(focusAutoStart)
+
+	if s.autoStartField.Value() {
+		t.Fatal("autoStartField should be false before toggle")
+	}
+
+	// Space でトグル
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	if !s.autoStartField.Value() {
+		t.Error("autoStartField should be true after space toggle")
+	}
+
+	// もう一度トグルで false に戻る
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	if s.autoStartField.Value() {
+		t.Error("autoStartField should be false after second toggle")
+	}
+}
+
+func TestFormAutoStartSubmitWithAutoStartTrue(t *testing.T) {
+	s := newTestFormScreen()
+	s.projectField.options = []SelectOption{{Value: "proj-id", Label: "My Project"}}
+	s.projectField.selected = 0
+	s.behaviorField.options = []SelectOption{{Value: "dev", Label: "dev"}}
+	s.behaviorField.selected = 0
+	s.titleField.SetValue("My Task")
+
+	// auto_start をオンにする
+	s.moveFocus(focusAutoStart)
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	if !s.autoStartField.Value() {
+		t.Fatal("autoStartField should be true after toggle")
+	}
+
+	cmd := pressCreateBtn(s)
+
+	if s.errMsg != "" {
+		t.Errorf("unexpected error: %q", s.errMsg)
+	}
+	if !s.submitting {
+		t.Error("expected submitting=true after valid submit")
+	}
+	if cmd == nil {
+		t.Error("expected createTaskCmd to be returned")
+	}
+	// autoStartField の値が true のまま保持されていること（submit() が AutoStart: true で req を構築した証左）
+	if !s.autoStartField.Value() {
+		t.Error("autoStartField should remain true after submit")
 	}
 }
