@@ -14,6 +14,7 @@ var stopCmd = &cobra.Command{
 }
 
 func init() {
+	stopCmd.Annotations = map[string]string{annotationSkipAutostart: "skip"}
 	rootCmd.AddCommand(stopCmd)
 }
 

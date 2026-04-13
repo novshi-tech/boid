@@ -19,6 +19,7 @@ var checkCmd = &cobra.Command{
 }
 
 func init() {
+	checkCmd.Annotations = map[string]string{annotationSkipAutostart: "skip"}
 	rootCmd.AddCommand(checkCmd)
 }
 

@@ -15,6 +15,7 @@ var gcCmd = &cobra.Command{
 }
 
 func init() {
+	gcCmd.Annotations = map[string]string{annotationSkipAutostart: "skip"}
 	gcCmd.Flags().Duration("older-than", 30*24*time.Hour, "Delete tasks older than this duration")
 	gcCmd.Flags().Bool("dry-run", false, "Show what would be deleted without actually deleting")
 	rootCmd.AddCommand(gcCmd)

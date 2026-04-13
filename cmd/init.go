@@ -32,6 +32,7 @@ Example:
 }
 
 func init() {
+	initCmd.Annotations = map[string]string{annotationSkipAutostart: "skip"}
 	rootCmd.AddCommand(initCmd)
 }
 
