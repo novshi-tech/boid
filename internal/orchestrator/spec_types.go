@@ -429,10 +429,11 @@ type KitMeta struct {
 	GatesDir           string                  `yaml:"-"`
 
 	// Init-time metadata — not merged into runtime spec by MergeKitMeta.
-	Meta     *KitMetaInfo `yaml:"meta,omitempty"`
-	Detect   *KitDetect   `yaml:"detect,omitempty"`
-	Requires *KitRequires `yaml:"requires,omitempty"`
-	Scaffold *KitScaffold `yaml:"scaffold,omitempty"`
+	Meta             *KitMetaInfo `yaml:"meta,omitempty"`
+	Detect           *KitDetect   `yaml:"detect,omitempty"`
+	Requires         *KitRequires `yaml:"requires,omitempty"`
+	Scaffold         *KitScaffold `yaml:"scaffold,omitempty"`
+	ProvidesConsumer string       `yaml:"provides_consumer,omitempty"`
 }
 
 // KitMetaInfo holds human-readable metadata for a kit.
