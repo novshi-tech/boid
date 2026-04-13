@@ -19,8 +19,23 @@ type tabDef struct {
 var detailTabs = []tabDef{
 	{tabOverview, "[O]verview"},
 	{tabTimeline, "[T]imeline"},
-	{tabDeps, "[D]eps"},
+	{tabDeps, "Deps"},
 	{tabPayload, "[P]ayload"},
+}
+
+// cycleTab returns the tab id that is delta steps away from current in detailTabs.
+// delta=+1 moves forward; delta=-1 moves backward. Wraps around at the ends.
+func cycleTab(current string, delta int) string {
+	idx := 0
+	for i, t := range detailTabs {
+		if t.id == current {
+			idx = i
+			break
+		}
+	}
+	n := len(detailTabs)
+	next := ((idx+delta)%n + n) % n
+	return detailTabs[next].id
 }
 
 // renderTabBar returns a separator line with tab labels.
