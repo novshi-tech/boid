@@ -6,6 +6,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 // formatElapsed returns a human-readable elapsed time string (MM:SS or HH:MM:SS).
@@ -69,4 +72,18 @@ func clearStatusAfter(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg {
 		return clearStatusMsg{}
 	})
+}
+
+// taskUpdatedMsg is sent when a task update API call completes.
+type taskUpdatedMsg struct {
+	task *orchestrator.Task
+	err  error
+}
+
+// updateTaskCmd sends an UpdateTask request to the server.
+func updateTaskCmd(c *client.Client, taskID string, req api.UpdateTaskRequest) tea.Cmd {
+	return func() tea.Msg {
+		task, err := c.UpdateTask(taskID, req)
+		return taskUpdatedMsg{task: task, err: err}
+	}
 }
