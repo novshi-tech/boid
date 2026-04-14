@@ -51,10 +51,10 @@ func TestStateToggle_TabResetsCursor(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = makeDummyTasks(10)
 	s.syncTableRows()
-	s.table.SetCursor(5)
+	s.cursor = 5
 	s.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if s.table.Cursor() != 0 {
-		t.Errorf("expected cursor 0 after state toggle, got %d", s.table.Cursor())
+	if s.cursor != 0 {
+		t.Errorf("expected cursor 0 after state toggle, got %d", s.cursor)
 	}
 }
 
@@ -125,33 +125,33 @@ func TestCursorMovement(t *testing.T) {
 
 	// Move down
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if s.table.Cursor() != 1 {
-		t.Errorf("after j: want cursor 1, got %d", s.table.Cursor())
+	if s.cursor != 1 {
+		t.Errorf("after j: want cursor 1, got %d", s.cursor)
 	}
 
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if s.table.Cursor() != 2 {
-		t.Errorf("after j j: want cursor 2, got %d", s.table.Cursor())
+	if s.cursor != 2 {
+		t.Errorf("after j j: want cursor 2, got %d", s.cursor)
 	}
 
 	// Move up
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-	if s.table.Cursor() != 1 {
-		t.Errorf("after k: want cursor 1, got %d", s.table.Cursor())
+	if s.cursor != 1 {
+		t.Errorf("after k: want cursor 1, got %d", s.cursor)
 	}
 
 	// Can't go below 0
-	s.table.SetCursor(0)
+	s.cursor = 0
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-	if s.table.Cursor() != 0 {
-		t.Errorf("cursor should not go below 0, got %d", s.table.Cursor())
+	if s.cursor != 0 {
+		t.Errorf("cursor should not go below 0, got %d", s.cursor)
 	}
 
 	// Can't go above len-1
-	s.table.SetCursor(4)
+	s.cursor = 4
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if s.table.Cursor() != 4 {
-		t.Errorf("cursor should not exceed task count, got %d", s.table.Cursor())
+	if s.cursor != 4 {
+		t.Errorf("cursor should not exceed task count, got %d", s.cursor)
 	}
 }
 
@@ -161,13 +161,13 @@ func TestCursorMovementArrowKeys(t *testing.T) {
 	s.syncTableRows()
 
 	s.Update(tea.KeyMsg{Type: tea.KeyDown})
-	if s.table.Cursor() != 1 {
-		t.Errorf("after down: want cursor 1, got %d", s.table.Cursor())
+	if s.cursor != 1 {
+		t.Errorf("after down: want cursor 1, got %d", s.cursor)
 	}
 
 	s.Update(tea.KeyMsg{Type: tea.KeyUp})
-	if s.table.Cursor() != 0 {
-		t.Errorf("after up: want cursor 0, got %d", s.table.Cursor())
+	if s.cursor != 0 {
+		t.Errorf("after up: want cursor 0, got %d", s.cursor)
 	}
 }
 
@@ -388,8 +388,8 @@ func TestPopupBlocksNormalKeys(t *testing.T) {
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	// j should move popup cursor, not task cursor
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if s.table.Cursor() != 0 {
-		t.Errorf("popup active: task cursor should not move, got %d", s.table.Cursor())
+	if s.cursor != 0 {
+		t.Errorf("popup active: task cursor should not move, got %d", s.cursor)
 	}
 	if s.popup.cursor != 1 {
 		t.Errorf("popup active: popup cursor should be 1, got %d", s.popup.cursor)
@@ -969,8 +969,8 @@ func TestMiniSelectorBlocksNormalKeys(t *testing.T) {
 
 	// j should move mini cursor, not task cursor
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if s.table.Cursor() != 0 {
-		t.Errorf("mini active: task cursor should not move, got %d", s.table.Cursor())
+	if s.cursor != 0 {
+		t.Errorf("mini active: task cursor should not move, got %d", s.cursor)
 	}
 	if s.mini.cursor != 1 {
 		t.Errorf("mini active: mini cursor should be 1, got %d", s.mini.cursor)
@@ -987,7 +987,7 @@ func TestViewScrollFollowsCursorDown(t *testing.T) {
 	// bodyHeight = height - 2 (filterbar + sep) = 5 - 2 = 3
 	// table header takes 1 line → 2 data rows visible.
 	// Set table height so MoveDown can scroll correctly.
-	s.table.SetHeight(3)
+	s.tableBodyHeight = 2
 
 	// Move cursor to index 3 by pressing j 3 times.
 	for i := 0; i < 3; i++ {
@@ -1009,7 +1009,7 @@ func TestViewScrollFollowsCursorUp(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = makeDummyTasks(10)
 	s.syncTableRows()
-	s.table.SetHeight(3)
+	s.tableBodyHeight = 2
 
 	// Move cursor to 5 by pressing j 5 times.
 	for i := 0; i < 5; i++ {
@@ -1037,7 +1037,7 @@ func TestViewCursorHighlightedCorrectlyWhenScrolled(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = makeDummyTasks(10)
 	s.syncTableRows()
-	s.table.SetHeight(3)
+	s.tableBodyHeight = 2
 	// Move cursor to 4 by pressing j 4 times.
 	for i := 0; i < 4; i++ {
 		s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
@@ -1104,9 +1104,9 @@ func TestSyncTableRows_StatusCellContainsANSI(t *testing.T) {
 		}
 		// カーソルを 1 に移動して row 0 を非選択にする
 		s.syncTableRows()
-		s.table.SetCursor(1)
+		s.cursor = 1
 		s.syncTableRows()
-		rows := s.table.Rows()
+		rows := s.tableRows
 		if len(rows) == 0 {
 			t.Fatalf("status %q: no rows after syncTableRows", status)
 		}
@@ -1137,7 +1137,7 @@ func TestSyncTableRows_StatusCellContent(t *testing.T) {
 			{ID: "t1", Title: "Test", Status: tc.status, Behavior: "dev", CreatedAt: time.Now()},
 		}
 		s.syncTableRows()
-		rows := s.table.Rows()
+		rows := s.tableRows
 		if len(rows) == 0 {
 			t.Fatalf("status %q: no rows", tc.status)
 		}
@@ -1162,9 +1162,9 @@ func TestSyncTableRows_BlockedPending_DimStyle(t *testing.T) {
 	}
 	// カーソルを 1 に移動して row 0 を非選択にする
 	s.syncTableRows()
-	s.table.SetCursor(1)
+	s.cursor = 1
 	s.syncTableRows()
-	rows := s.table.Rows()
+	rows := s.tableRows
 	if len(rows) == 0 {
 		t.Fatal("no rows after syncTableRows")
 	}
@@ -1191,9 +1191,9 @@ func TestSyncTableRows_ExecutingTitle_NoColor(t *testing.T) {
 	}
 	// カーソルを 1 に移動して row 0 を非選択にする
 	s.syncTableRows()
-	s.table.SetCursor(1)
+	s.cursor = 1
 	s.syncTableRows()
-	rows := s.table.Rows()
+	rows := s.tableRows
 	if len(rows) == 0 {
 		t.Fatal("no rows")
 	}
@@ -1215,18 +1215,11 @@ func TestSyncTableRows_ExecutingTitle_NoColor(t *testing.T) {
 // --- BEHAVIOR column initial width tests ---
 
 func TestBehaviorColumnInitialWidth(t *testing.T) {
-	s := newTestTaskListScreen()
-	const wantWidth = 10 // must match behaviorWidth in recalcColumns
-	cols := s.table.Columns()
-	for _, c := range cols {
-		if c.Title == "BEHAVIOR" {
-			if c.Width != wantWidth {
-				t.Errorf("BEHAVIOR initial width: want %d, got %d", wantWidth, c.Width)
-			}
-			return
-		}
+	// colBehavior is the package-level constant used by recalcColumns.
+	const wantWidth = 10
+	if colBehavior != wantWidth {
+		t.Errorf("colBehavior constant: want %d, got %d", wantWidth, colBehavior)
 	}
-	t.Error("BEHAVIOR column not found in initial columns")
 }
 
 // --- recalcColumns tests ---
@@ -1240,16 +1233,11 @@ func TestRecalcColumns_NormalWidth(t *testing.T) {
 		t.Errorf("width=100: expected titleWidth > 20, got %d", s.titleWidth)
 	}
 
-	// Check that column slice was updated (TITLE column should match titleWidth).
-	cols := s.table.Columns()
-	var titleCol int = -1
-	for _, c := range cols {
-		if c.Title == "TITLE" {
-			titleCol = c.Width
-		}
-	}
-	if titleCol != s.titleWidth {
-		t.Errorf("width=100: TITLE column width %d != titleWidth %d", titleCol, s.titleWidth)
+	// s.titleWidth is the source of truth for the TITLE column width in the custom renderer.
+	// 100 - (11+12+10+6) - 4 = 57
+	const expectedTitle = 57
+	if s.titleWidth != expectedTitle {
+		t.Errorf("width=100: titleWidth want %d, got %d", expectedTitle, s.titleWidth)
 	}
 }
 
@@ -1410,7 +1398,7 @@ func TestSearchMode_BlocksNormalKeys(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = makeDummyTasks(5)
 	s.syncTableRows()
-	s.table.SetCursor(0)
+	s.cursor = 0
 
 	// Enter search mode
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
@@ -1421,7 +1409,7 @@ func TestSearchMode_BlocksNormalKeys(t *testing.T) {
 	// 'j' in search mode should type 'j' into the search field, NOT do table MoveDown.
 	// Normal table navigation would move cursor from 0 → 1.
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if s.table.Cursor() == 1 {
+	if s.cursor == 1 {
 		t.Error("search mode: j should not navigate the task table (cursor moved to 1)")
 	}
 	// Confirm the key went to the search input.
@@ -1481,14 +1469,14 @@ func TestSearchMode_CursorResetOnQueryChange(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.tasks = makeDummyTasks(5)
 	s.syncTableRows()
-	s.table.SetCursor(3)
+	s.cursor = 3
 
 	// Enter search mode and type 't' — all "Task N" titles contain 't', so 5 tasks remain
 	// visible and the cursor should reset to 0.
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
-	if s.table.Cursor() != 0 {
-		t.Errorf("typing in search: cursor should reset to 0, got %d", s.table.Cursor())
+	if s.cursor != 0 {
+		t.Errorf("typing in search: cursor should reset to 0, got %d", s.cursor)
 	}
 }
 
@@ -1673,7 +1661,7 @@ func TestSyncTableRows_Indent_Depth1(t *testing.T) {
 	s.tasks = []*orchestrator.Task{parent, child}
 	s.syncTableRows()
 
-	rows := s.table.Rows()
+	rows := s.tableRows
 	if len(rows) != 2 {
 		t.Fatalf("want 2 rows, got %d", len(rows))
 	}
@@ -1701,7 +1689,7 @@ func TestSyncTableRows_Indent_Depth2(t *testing.T) {
 	s.tasks = []*orchestrator.Task{parent, child, grandchild}
 	s.syncTableRows()
 
-	rows := s.table.Rows()
+	rows := s.tableRows
 	if len(rows) != 3 {
 		t.Fatalf("want 3 rows, got %d", len(rows))
 	}
@@ -1727,8 +1715,8 @@ func TestSyncTableRows_ProgressInTitle(t *testing.T) {
 	s.tasks = []*orchestrator.Task{parent}
 	s.syncTableRows()
 
-	rows := s.table.Rows()
-	titleCell := rows[0][1]
+	rows := s.tableRows
+	titleCell := stripANSI(rows[0][1])
 	if !containsStr(titleCell, "3/7") {
 		t.Errorf("parent title should contain progress '3/7', got %q", titleCell)
 	}
@@ -1749,8 +1737,8 @@ func TestSyncTableRows_ProgressWithAbortedBadge(t *testing.T) {
 	s.tasks = []*orchestrator.Task{parent}
 	s.syncTableRows()
 
-	rows := s.table.Rows()
-	titleCell := rows[0][1]
+	rows := s.tableRows
+	titleCell := stripANSI(rows[0][1])
 	if !containsStr(titleCell, "[!1]") {
 		t.Errorf("parent title should contain aborted badge '[!1]', got %q", titleCell)
 	}
@@ -1769,7 +1757,7 @@ func TestSyncTableRows_NoProgressForChildless(t *testing.T) {
 	s.tasks = []*orchestrator.Task{task}
 	s.syncTableRows()
 
-	rows := s.table.Rows()
+	rows := s.tableRows
 	titleCell := rows[0][1]
 	// Should not contain a progress separator like "0/0" or "N/M"
 	if containsStr(titleCell, "/") {

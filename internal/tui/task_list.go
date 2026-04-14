@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -18,9 +18,19 @@ import (
 const taskPollInterval = 3 * time.Second
 
 // statusWidth is the fixed column width for the STATUS column.
-// Ambiguous-width characters (●, ✓, ✗, ○) render as 2 cells in most
-// terminals, so "● executing" = 2+1+9 = 12 cells.
-const statusWidth = 12
+// "● executing" = 1+1+9 = 11 visible runes; ansi.StringWidth reports ● as 1 cell
+// via uniseg/GraphemeWidth, so we use 11 to match the actual measured width.
+const (
+	statusWidth = 11
+	colProject  = 12
+	colBehavior = 10
+	colAge      = 6
+	minTitle    = 20
+)
+
+// tableRow holds the pre-rendered cell strings for one table row.
+// Indices: 0=STATUS, 1=TITLE, 2=PROJECT, 3=BEHAVIOR, 4=AGE.
+type tableRow [5]string
 
 // openStatuses defines which task statuses are considered "open".
 var openStatuses = map[orchestrator.TaskStatus]bool{
@@ -82,7 +92,12 @@ type popupSelector struct {
 type TaskListScreen struct {
 	shared *SharedState
 
-	table               table.Model
+	// Custom table rendering (replaces bubbles/table).
+	cursor          int        // selected row index into displayTasks
+	viewStart       int        // first visible row index (scroll offset)
+	tableBodyHeight int        // visible data rows (excluding header); set in renderTable
+	tableRows       []tableRow // pre-rendered cell strings, built by syncTableRows
+
 	tasks               []*orchestrator.Task
 	displayTasks        []*orchestrator.Task // tasks filtered by searchQuery
 	projects            []*orchestrator.Project
@@ -104,26 +119,9 @@ type TaskListScreen struct {
 }
 
 func NewTaskListScreen(shared *SharedState) *TaskListScreen {
-	cols := []table.Column{
-		{Title: "STATUS", Width: 11},
-		{Title: "TITLE", Width: 24},
-		{Title: "PROJECT", Width: 12},
-		{Title: "BEHAVIOR", Width: 10},
-		{Title: "AGE", Width: 6},
-	}
-	t := table.New(
-		table.WithColumns(cols),
-		table.WithFocused(true),
-		table.WithStyles(table.Styles{
-			Header:   styleTableHeader,
-			Cell:     styleTableCell,
-			Selected: styleTableSelected,
-		}),
-	)
 	si := textinput.New()
 	return &TaskListScreen{
 		shared:      shared,
-		table:       t,
 		loading:     true,
 		titleWidth:  24,
 		searchInput: si,
@@ -223,12 +221,14 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		s.recalcColumns(msg.Width)
-		s.table.SetWidth(msg.Width)
 		bodyH := msg.Height - 2
 		if bodyH < 1 {
 			bodyH = 1
 		}
-		s.table.SetHeight(bodyH)
+		s.tableBodyHeight = bodyH - 1 // subtract header row
+		if s.tableBodyHeight < 0 {
+			s.tableBodyHeight = 0
+		}
 		s.syncTableRows()
 
 	case tea.KeyMsg:
@@ -251,20 +251,15 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	switch msg.String() {
 	case "j", "down":
-		if len(s.displayTasks) > 0 {
-			s.table.MoveDown(1)
-			s.syncTableRows()
-		}
+		s.moveCursor(1)
 
 	case "k", "up":
-		if len(s.displayTasks) > 0 {
-			s.table.MoveUp(1)
-			s.syncTableRows()
-		}
+		s.moveCursor(-1)
 
 	case "tab":
 		s.stateClosed = !s.stateClosed
-		s.table.SetCursor(0)
+		s.cursor = 0
+		s.viewStart = 0
 		s.loading = true
 		return fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs())
 
@@ -290,7 +285,7 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if len(s.displayTasks) == 0 {
 			break
 		}
-		task := s.displayTasks[s.table.Cursor()]
+		task := s.displayTasks[s.cursor]
 		projectName := s.findProjectName(task.ProjectID)
 		return PushScreen(NewTaskDetailScreen(s.shared, task.ID, projectName))
 
@@ -298,7 +293,7 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if len(s.displayTasks) == 0 {
 			break
 		}
-		task := s.displayTasks[s.table.Cursor()]
+		task := s.displayTasks[s.cursor]
 		if task.Status != orchestrator.TaskStatusPending {
 			break
 		}
@@ -310,7 +305,7 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if len(s.displayTasks) == 0 {
 			break
 		}
-		task := s.displayTasks[s.table.Cursor()]
+		task := s.displayTasks[s.cursor]
 		s.statusMsg = "loading..."
 		s.isError = false
 		return fetchQuickOpenCmd(s.shared.Client, task.ID)
@@ -333,7 +328,8 @@ func (s *TaskListScreen) handleSearchKey(msg tea.KeyMsg) tea.Cmd {
 		s.searchInput.Blur()
 		s.searchInput.SetValue("")
 		s.syncTableRows()
-		s.table.SetCursor(0)
+		s.cursor = 0
+		s.viewStart = 0
 	case "enter":
 		s.searchMode = false
 		s.searchQuery = s.searchInput.Value()
@@ -343,9 +339,8 @@ func (s *TaskListScreen) handleSearchKey(msg tea.KeyMsg) tea.Cmd {
 		s.searchInput, cmd = s.searchInput.Update(msg)
 		s.searchQuery = s.searchInput.Value()
 		s.syncTableRows()
-		if len(s.displayTasks) > 0 {
-			s.table.SetCursor(0)
-		}
+		s.cursor = 0
+		s.viewStart = 0
 		return cmd
 	}
 	return nil
@@ -457,7 +452,8 @@ func (s *TaskListScreen) handlePopupKey(msg tea.KeyMsg) tea.Cmd {
 		case "behavior":
 			s.behaviorFilter = val
 		}
-		s.table.SetCursor(0)
+		s.cursor = 0
+		s.viewStart = 0
 		s.loading = true
 		return fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs())
 	case "esc":
@@ -547,10 +543,7 @@ func (s *TaskListScreen) View(width, height int) string {
 		sb.WriteByte('\n')
 	} else {
 		s.recalcColumns(width)
-		s.table.SetWidth(width)
-		s.table.SetHeight(bodyHeight)
-		sb.WriteString(s.table.View())
-		sb.WriteByte('\n')
+		sb.WriteString(s.renderTable(bodyHeight, width))
 	}
 
 	// --- mini selector (above footer) ---
@@ -642,28 +635,27 @@ func (s *TaskListScreen) findProjectName(projectID string) string {
 // of 20. The calculated TITLE width is stored in s.titleWidth for use by
 // syncTableRows.
 func (s *TaskListScreen) recalcColumns(width int) {
-	const (
-		projectWidth  = 12
-		behaviorWidth = 10
-		ageWidth      = 6
-		minTitle      = 20
-		numCols       = 5
-	)
-	fixedTotal := statusWidth + projectWidth + behaviorWidth + ageWidth
-	separators := numCols + 1 // approximate separator overhead from bubbles/table
-	titleWidth := width - fixedTotal - separators
+	// 5 columns joined with " " → 4 separators.
+	fixedTotal := statusWidth + colProject + colBehavior + colAge
+	titleWidth := width - fixedTotal - 4
 	if titleWidth < minTitle {
 		titleWidth = minTitle
 	}
 	s.titleWidth = titleWidth
-	cols := []table.Column{
-		{Title: "STATUS", Width: statusWidth},
-		{Title: "TITLE", Width: titleWidth},
-		{Title: "PROJECT", Width: projectWidth},
-		{Title: "BEHAVIOR", Width: behaviorWidth},
-		{Title: "AGE", Width: ageWidth},
-	}
-	s.table.SetColumns(cols)
+}
+
+// selectedBgSGR is the SGR sequence for the selected-row background (color 237).
+// Kept in sync with styleTableSelected in style.go.
+const selectedBgSGR = "\x1b[48;5;237m"
+
+// reinforceSelectedBg re-applies the selected-row background after every SGR
+// reset (\x1b[0m or \x1b[m) in s. This preserves an outer background style
+// applied over a string that contains internal resets (e.g., colored cells),
+// which would otherwise cancel the outer background mid-string.
+func reinforceSelectedBg(s string) string {
+	s = strings.ReplaceAll(s, "\x1b[0m", "\x1b[0m"+selectedBgSGR)
+	s = strings.ReplaceAll(s, "\x1b[m", "\x1b[m"+selectedBgSGR)
+	return s
 }
 
 // stripANSI removes ANSI escape sequences from s.
@@ -816,8 +808,7 @@ func (s *TaskListScreen) syncTableRows() {
 	ordered, prefixes := buildTreeOrder(base)
 	s.displayTasks = ordered
 
-	cursorIdx := s.table.Cursor()
-	rows := make([]table.Row, len(s.displayTasks))
+	rows := make([]tableRow, len(s.displayTasks))
 	for i, task := range s.displayTasks {
 		rawDot, rawStatusText := taskStatusRaw(task.Status)
 
@@ -830,8 +821,9 @@ func (s *TaskListScreen) syncTableRows() {
 		progress := progressBadge(task)
 		isParent := task.TotalChildCount > 0
 
-		// TITLE セルの content 部分を truncate する（prefix 幅を除いた範囲で）
-		prefixWidth := len([]rune(prefix))
+		// TITLE セルの content 部分を truncate する（prefix 幅を除いた範囲で）。
+		// lipgloss.Width で表示幅ベースに計算する。
+		prefixWidth := lipgloss.Width(prefix)
 		availableWidth := s.titleWidth - prefixWidth
 		if availableWidth < 1 {
 			availableWidth = 1
@@ -839,76 +831,67 @@ func (s *TaskListScreen) syncTableRows() {
 		var truncatedContent string
 		if progress != "" {
 			progressPart := " " + progress
-			maxTitle := availableWidth - len([]rune(progressPart))
+			progressWidth := lipgloss.Width(progressPart)
+			maxTitle := availableWidth - progressWidth
 			if maxTitle < 1 {
 				maxTitle = 1
 			}
-			titlePart := strings.TrimRight(truncate(title, maxTitle), " ")
+			titlePart := truncate(title, maxTitle)
 			truncatedContent = truncate(titlePart+progressPart, availableWidth)
 		} else {
 			truncatedContent = truncate(title, availableWidth)
 		}
 
 		projectName := s.findProjectName(task.ProjectID)
-		projectCell := truncate(projectName, 12)
 
-		if i == cursorIdx {
-			// 無着色モード: ANSI を一切含めない。table.Selected.Reverse(true) がクリーンに効く。
-			rows[i] = table.Row{
-				truncate(rawDot+" "+rawStatusText, statusWidth),
-				prefix + truncatedContent,
-				projectCell,
-				task.Behavior,
-				formatTaskElapsed(task.CreatedAt),
-			}
+		// STATUS セル: ドットのみ着色、親タスクのテキストは Bold+Underline。
+		dot := taskCellStyle(task).Render(rawDot)
+		var statusText string
+		if isParent {
+			statusText = styleTreeParent.Render(rawStatusText)
 		} else {
-			// 通常モード: ドットのみ着色、親タスクは見出しスタイルを適用する。
-			dot := taskCellStyle(task).Render(rawDot)
-			var statusText string
-			if isParent {
-				statusText = styleTreeParent.Render(rawStatusText)
-			} else {
-				statusText = rawStatusText
-			}
-			statusCell := dot + " " + statusText
-
-			// TITLE セル: prefix を styleDim で着色し、content は親なら Bold+Underline。
-			var content string
-			if isParent {
-				content = styleTreeParent.Render(truncatedContent)
-			} else {
-				content = truncatedContent
-			}
-			var titleCell string
-			if prefix != "" {
-				titleCell = styleDim.Render(prefix) + content
-			} else {
-				titleCell = content
-			}
-
-			if isParent {
-				rows[i] = table.Row{
-					statusCell,
-					titleCell,
-					styleTreeParent.Render(projectCell),
-					styleTreeParent.Render(task.Behavior),
-					styleTreeParent.Render(formatTaskElapsed(task.CreatedAt)),
-				}
-			} else {
-				rows[i] = table.Row{
-					statusCell,
-					titleCell,
-					projectCell,
-					task.Behavior,
-					formatTaskElapsed(task.CreatedAt),
-				}
-			}
+			statusText = rawStatusText
 		}
+		statusCell := dot + " " + statusText
+
+		// TITLE セル: prefix を styleDim で着色し、content は親なら Bold+Underline。
+		var content string
+		if isParent {
+			content = styleTreeParent.Render(truncatedContent)
+		} else {
+			content = truncatedContent
+		}
+		var titleCell string
+		if prefix != "" {
+			titleCell = styleDim.Render(prefix) + content
+		} else {
+			titleCell = content
+		}
+
+		// PROJECT / BEHAVIOR / AGE セル: 親タスクは Bold+Underline。
+		var projectCell, behaviorCell, ageCell string
+		if isParent {
+			projectCell = styleTreeParent.Render(projectName)
+			behaviorCell = styleTreeParent.Render(task.Behavior)
+			ageCell = styleTreeParent.Render(formatTaskElapsed(task.CreatedAt))
+		} else {
+			projectCell = projectName
+			behaviorCell = task.Behavior
+			ageCell = formatTaskElapsed(task.CreatedAt)
+		}
+
+		rows[i] = tableRow{statusCell, titleCell, projectCell, behaviorCell, ageCell}
 	}
-	s.table.SetRows(rows)
-	// Fix cursor if it became negative due to SetCursor being called with empty rows.
-	if len(rows) > 0 && s.table.Cursor() < 0 {
-		s.table.SetCursor(0)
+
+	s.tableRows = rows
+
+	// Clip cursor to valid range.
+	n := len(rows)
+	if n == 0 {
+		s.cursor = 0
+		s.viewStart = 0
+	} else if s.cursor >= n {
+		s.cursor = n - 1
 	}
 }
 
@@ -992,24 +975,117 @@ func formatTaskElapsed(t time.Time) string {
 	}
 }
 
-func lipglossWidth(s string) int {
-	// Count visible characters (strip ANSI escape codes)
-	n := 0
-	inEsc := false
-	for _, r := range s {
-		if r == '\x1b' {
-			inEsc = true
-			continue
-		}
-		if inEsc {
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-				inEsc = false
-			}
-			continue
-		}
-		n++
+// --- custom table rendering ---
+
+// fitCell adjusts content to exactly colWidth display cells.
+// If content is shorter, spaces are appended. If wider, the tail is truncated
+// with "…". Correctly handles ANSI escape sequences via lipgloss.Width and
+// xansi.GraphemeWidth.Truncate.
+func fitCell(content string, colWidth int) string {
+	w := lipgloss.Width(content)
+	if w < colWidth {
+		return content + strings.Repeat(" ", colWidth-w)
 	}
-	return n
+	if w > colWidth {
+		return xansi.GraphemeWidth.Truncate(content, colWidth, "…")
+	}
+	return content
+}
+
+// moveCursor moves the cursor by delta rows and adjusts the scroll offset.
+func (s *TaskListScreen) moveCursor(delta int) {
+	n := len(s.displayTasks)
+	if n == 0 {
+		return
+	}
+	s.cursor += delta
+	if s.cursor < 0 {
+		s.cursor = 0
+	} else if s.cursor >= n {
+		s.cursor = n - 1
+	}
+	if s.tableBodyHeight > 0 {
+		if s.cursor < s.viewStart {
+			s.viewStart = s.cursor
+		} else if s.cursor >= s.viewStart+s.tableBodyHeight {
+			s.viewStart = s.cursor - s.tableBodyHeight + 1
+		}
+	}
+}
+
+// renderTableHeader renders the header row with fixed column widths.
+func (s *TaskListScreen) renderTableHeader() string {
+	cells := []string{
+		fitCell(styleTableHeader.Render("STATUS"), statusWidth),
+		fitCell(styleTableHeader.Render("TITLE"), s.titleWidth),
+		fitCell(styleTableHeader.Render("PROJECT"), colProject),
+		fitCell(styleTableHeader.Render("BEHAVIOR"), colBehavior),
+		fitCell(styleTableHeader.Render("AGE"), colAge),
+	}
+	return strings.Join(cells, " ")
+}
+
+// renderDataRow renders a single data row. The cursor row is highlighted with
+// Reverse style padded to lineWidth cells so the highlight spans the full line.
+func (s *TaskListScreen) renderDataRow(i, lineWidth int) string {
+	r := s.tableRows[i]
+	cells := []string{
+		fitCell(r[0], statusWidth),
+		fitCell(r[1], s.titleWidth),
+		fitCell(r[2], colProject),
+		fitCell(r[3], colBehavior),
+		fitCell(r[4], colAge),
+	}
+	line := strings.Join(cells, " ")
+	if i == s.cursor {
+		// Re-apply the selected-row background after every internal SGR
+		// reset so the highlight survives through embedded ANSI codes
+		// while keeping cell foreground colors intact.
+		reinforced := reinforceSelectedBg(line)
+		if w := lipgloss.Width(reinforced); w < lineWidth {
+			reinforced += strings.Repeat(" ", lineWidth-w)
+		}
+		return styleTableSelected.Render(reinforced)
+	}
+	return line
+}
+
+// renderTable renders the full table (header + visible data rows) for the given
+// body height and updates s.tableBodyHeight for scroll calculations.
+func (s *TaskListScreen) renderTable(bodyHeight, lineWidth int) string {
+	var sb strings.Builder
+
+	// Header row.
+	sb.WriteString(s.renderTableHeader())
+	sb.WriteByte('\n')
+
+	// Data rows: bodyHeight minus header row.
+	dataH := bodyHeight - 1
+	if dataH < 0 {
+		dataH = 0
+	}
+	s.tableBodyHeight = dataH
+
+	// Clamp viewStart so cursor is always visible.
+	if s.cursor < s.viewStart {
+		s.viewStart = s.cursor
+	} else if dataH > 0 && s.cursor >= s.viewStart+dataH {
+		s.viewStart = s.cursor - dataH + 1
+	}
+	if s.viewStart < 0 {
+		s.viewStart = 0
+	}
+
+	end := s.viewStart + dataH
+	if end > len(s.tableRows) {
+		end = len(s.tableRows)
+	}
+	for i := s.viewStart; i < end; i++ {
+		sb.WriteString(s.renderDataRow(i, lineWidth))
+		sb.WriteByte('\n')
+	}
+
+	return sb.String()
 }
 
 // --- commands ---

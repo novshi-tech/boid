@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
 )
@@ -490,9 +491,9 @@ func (s *TaskDetailScreen) View(width, height int) string {
 	if s.detail != nil && s.detail.Task != nil {
 		task := s.detail.Task
 		_, statusText := taskStatusDisplay(task.Status)
-		maxTitleWidth := max(width-lipglossWidth(statusText)-1, 10)
+		maxTitleWidth := max(width-lipgloss.Width(statusText)-1, 10)
 		titleStr := styleTitle.Render(truncate(task.Title, maxTitleWidth))
-		gap := max(width-lipglossWidth(titleStr)-lipglossWidth(statusText), 1)
+		gap := max(width-lipgloss.Width(titleStr)-lipgloss.Width(statusText), 1)
 		sb.WriteString(titleStr)
 		sb.WriteString(strings.Repeat(" ", gap))
 		sb.WriteString(statusText)
