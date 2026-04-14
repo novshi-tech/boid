@@ -314,21 +314,25 @@ func renderTreeTimeline(groups []statusGroup, width, height, cursor int) string 
 	}
 
 	type visualRow struct {
-		isHeader   bool
-		headerText string
-		ev         timelineEvent
-		prefix     string // "├─ " or "└─ "
-		evIdx      int    // index among selectable events; -1 for headers
+		isHeader     bool
+		status       string
+		enteredAt    time.Time
+		hasEnteredAt bool
+		ev           timelineEvent
+		prefix       string // "├─ " or "└─ "
+		evIdx        int    // index among selectable events; -1 for headers
 	}
 
 	rows := make([]visualRow, 0, totalEvents+len(groups))
 	evIdx := 0
 	for _, grp := range groups {
-		headerText := statusHeaderStyle(grp.Status).Render(grp.Status)
-		if grp.HasEnteredAt {
-			headerText += "  " + styleDim.Render(grp.EnteredAt.Local().Format("15:04:05"))
-		}
-		rows = append(rows, visualRow{isHeader: true, headerText: headerText, evIdx: -1})
+		rows = append(rows, visualRow{
+			isHeader:     true,
+			status:       grp.Status,
+			enteredAt:    grp.EnteredAt,
+			hasEnteredAt: grp.HasEnteredAt,
+			evIdx:        -1,
+		})
 		for i, ev := range grp.Events {
 			prefix := "├─ "
 			if i == len(grp.Events)-1 {
@@ -366,7 +370,16 @@ func renderTreeTimeline(groups []statusGroup, width, height, cursor int) string 
 		row := rows[i]
 
 		if row.isHeader {
-			sb.WriteString(row.headerText)
+			var headerTimeStr string
+			if row.hasEnteredAt {
+				headerTimeStr = row.enteredAt.Local().Format("15:04:05")
+			} else {
+				headerTimeStr = "--:--:--"
+			}
+			sb.WriteString(fmt.Sprintf("  %s  %s",
+				styleDim.Render(headerTimeStr),
+				statusHeaderStyle(row.status).Render(row.status),
+			))
 			sb.WriteByte('\n')
 			continue
 		}
@@ -415,10 +428,10 @@ func renderTreeTimeline(groups []statusGroup, width, height, cursor int) string 
 			icon = styleDim.Render("→")
 		}
 
-		line := fmt.Sprintf("%s%s%s  %s  %s",
+		line := fmt.Sprintf("%s%s  %s%s  %s",
 			cursorStr,
-			row.prefix,
 			styleDim.Render(timeStr),
+			row.prefix,
 			icon,
 			ev.Label,
 		)
