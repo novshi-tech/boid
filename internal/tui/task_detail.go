@@ -582,9 +582,17 @@ func (s *TaskDetailScreen) ShortHelp() string {
 // assignKeys assigns a single-character key to each action name.
 // The first unused character of the action name is used as the key.
 // Key 'd' is reserved for the delete shortcut and cannot be assigned to actions.
+//
+// "done" は意図的に除外する。executing から done への遷移は single keypress で
+// 走らせると、実行中の hook を誤って停止させて worktree/branch ごと破棄してしまう。
+// done は execution_complete による自動遷移、あるいは将来導入する専用モーダル経由で
+// 行う設計にする。
 func assignKeys(actions []string) map[rune]string {
 	m := map[rune]string{}
 	for _, a := range actions {
+		if a == "done" {
+			continue
+		}
 		for _, ch := range a {
 			if ch == 'd' { // reserved for delete
 				continue

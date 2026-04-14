@@ -458,7 +458,8 @@ func TestAssignKeys_Empty(t *testing.T) {
 
 func TestAssignKeys_NoConflict(t *testing.T) {
 	m := assignKeys([]string{"start", "abort", "done"})
-	// "start" → 's', "abort" → 'a', "done" → 'o' ('d' is reserved for delete)
+	// "start" → 's', "abort" → 'a'. "done" must not get any key:
+	// 一文字ミスタイプで実行中 hook を停止させないよう、キーボードからの発火を禁じている。
 	if m['s'] != "start" {
 		t.Errorf("key 's' = %q, want 'start'", m['s'])
 	}
@@ -468,22 +469,36 @@ func TestAssignKeys_NoConflict(t *testing.T) {
 	if _, exists := m['d']; exists {
 		t.Errorf("key 'd' should not be assigned (reserved for delete), got %q", m['d'])
 	}
-	if m['o'] != "done" {
-		t.Errorf("key 'o' = %q, want 'done'", m['o'])
+	for ch, action := range m {
+		if action == "done" {
+			t.Errorf("action %q must not be assigned to any key (got %q)", action, string(ch))
+		}
 	}
 }
 
 func TestAssignKeys_Conflict(t *testing.T) {
-	// 'd' is reserved; "done" → 'o', "debug" → 'e'
+	// 'd' is reserved; "done" is excluded entirely; "debug" → 'e' ('d' reserved, 'e' free).
 	m := assignKeys([]string{"done", "debug"})
 	if _, exists := m['d']; exists {
 		t.Errorf("key 'd' should not be assigned (reserved for delete), got %q", m['d'])
 	}
-	if m['o'] != "done" {
-		t.Errorf("key 'o' = %q, want 'done'", m['o'])
+	for ch, action := range m {
+		if action == "done" {
+			t.Errorf("action %q must not be assigned to any key (got %q)", action, string(ch))
+		}
 	}
 	if m['e'] != "debug" {
 		t.Errorf("key 'e' = %q, want 'debug'", m['e'])
+	}
+}
+
+func TestAssignKeys_DoneExcluded(t *testing.T) {
+	// "done" はキー割当から除外される。single key で state を done に飛ばすのは
+	// 実行中の hook を誤って停止させるリスクが大きいため UI 経由ではなく
+	// 自動遷移 (execution_complete 等) か専用モーダルで行う設計。
+	m := assignKeys([]string{"done"})
+	if len(m) != 0 {
+		t.Errorf("assignKeys([\"done\"]) = %v, want empty (done must not be reachable via single keypress)", m)
 	}
 }
 
