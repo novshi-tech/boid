@@ -1086,9 +1086,11 @@ func makeDummyJobs(n int) []*api.Job {
 // --- syncTableRows のスタイル検証テスト ---
 
 // TestSyncTableRows_StatusCellContainsANSI は executing/reworking/verifying/aborted の
-// STATUS セルが ANSI コードを含むことを検証する。
+// 非選択行 STATUS セルのドット部分が ANSI コードを含むことを検証する。
 func TestSyncTableRows_StatusCellContainsANSI(t *testing.T) {
 	s := newTestTaskListScreen()
+	s.recalcColumns(120)
+	dummy := &orchestrator.Task{ID: "dummy", Title: "Dummy", Status: orchestrator.TaskStatusPending, CreatedAt: time.Now()}
 	coloredStatuses := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusExecuting,
 		orchestrator.TaskStatusReworking,
@@ -1098,7 +1100,11 @@ func TestSyncTableRows_StatusCellContainsANSI(t *testing.T) {
 	for _, status := range coloredStatuses {
 		s.tasks = []*orchestrator.Task{
 			{ID: "t1", Title: "Test", Status: status, Behavior: "dev", CreatedAt: time.Now()},
+			dummy,
 		}
+		// カーソルを 1 に移動して row 0 を非選択にする
+		s.syncTableRows()
+		s.table.SetCursor(1)
 		s.syncTableRows()
 		rows := s.table.Rows()
 		if len(rows) == 0 {
@@ -1145,13 +1151,18 @@ func TestSyncTableRows_StatusCellContent(t *testing.T) {
 	}
 }
 
-// TestSyncTableRows_BlockedPending_DimStyle は blocked=true な pending タスクの STATUS セルが
+// TestSyncTableRows_BlockedPending_DimStyle は blocked=true な pending タスクの非選択行 STATUS セルが
 // dim スタイル (ANSI コード含む) で描画されることを検証する。
 func TestSyncTableRows_BlockedPending_DimStyle(t *testing.T) {
 	s := newTestTaskListScreen()
+	s.recalcColumns(120)
 	s.tasks = []*orchestrator.Task{
 		{ID: "t1", Title: "Blocked", Status: orchestrator.TaskStatusPending, Blocked: true, Behavior: "dev", CreatedAt: time.Now()},
+		{ID: "t2", Title: "Other", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()},
 	}
+	// カーソルを 1 に移動して row 0 を非選択にする
+	s.syncTableRows()
+	s.table.SetCursor(1)
 	s.syncTableRows()
 	rows := s.table.Rows()
 	if len(rows) == 0 {
@@ -1168,25 +1179,36 @@ func TestSyncTableRows_BlockedPending_DimStyle(t *testing.T) {
 	}
 }
 
-// TestSyncTableRows_ExecutingTitle_HasColor は executing タスクの TITLE セルが
-// ANSI カラーコードを含むことを検証する。
-func TestSyncTableRows_ExecutingTitle_HasColor(t *testing.T) {
+// TestSyncTableRows_ExecutingTitle_NoColor は非親 executing タスクの非選択行 TITLE セルが
+// ANSI カラーコードを含まない（content は無装飾白）ことを検証する。
+// STATUS セルのドット部分は着色されること。
+func TestSyncTableRows_ExecutingTitle_NoColor(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.recalcColumns(120)
 	s.tasks = []*orchestrator.Task{
 		{ID: "t1", Title: "Running Task", Status: orchestrator.TaskStatusExecuting, Behavior: "dev", CreatedAt: time.Now()},
+		{ID: "t2", Title: "Other", Status: orchestrator.TaskStatusPending, CreatedAt: time.Now()},
 	}
+	// カーソルを 1 に移動して row 0 を非選択にする
+	s.syncTableRows()
+	s.table.SetCursor(1)
 	s.syncTableRows()
 	rows := s.table.Rows()
 	if len(rows) == 0 {
 		t.Fatal("no rows")
 	}
 	titleCell := rows[0][1]
-	if !strings.Contains(titleCell, "\x1b") {
-		t.Errorf("executing TITLE cell should contain ANSI code, got %q", titleCell)
+	// 非親タスクの TITLE は無装飾
+	if strings.Contains(titleCell, "\x1b") {
+		t.Errorf("non-parent executing TITLE cell should NOT contain ANSI code, got %q", titleCell)
 	}
-	if !containsStr(stripANSI(titleCell), "Running Task") {
-		t.Errorf("executing TITLE cell should contain task title, got %q", stripANSI(titleCell))
+	if !containsStr(titleCell, "Running Task") {
+		t.Errorf("executing TITLE cell should contain task title, got %q", titleCell)
+	}
+	// STATUS セルのドットは着色されること
+	statusCell := rows[0][0]
+	if !strings.Contains(statusCell, "\x1b") {
+		t.Errorf("executing STATUS cell should contain ANSI code (colored dot), got %q", statusCell)
 	}
 }
 
@@ -1490,15 +1512,16 @@ func TestBuildTreeOrder_FlatList(t *testing.T) {
 		{ID: "a", CreatedAt: time.Now()},
 		{ID: "b", CreatedAt: time.Now()},
 	}
-	ordered, depths := buildTreeOrder(tasks)
+	ordered, prefixes := buildTreeOrder(tasks)
 	if len(ordered) != 2 {
 		t.Fatalf("want 2 tasks, got %d", len(ordered))
 	}
 	if ordered[0].ID != "a" || ordered[1].ID != "b" {
 		t.Errorf("want [a, b], got [%s, %s]", ordered[0].ID, ordered[1].ID)
 	}
-	if depths["a"] != 0 || depths["b"] != 0 {
-		t.Errorf("root tasks should have depth 0, got a=%d b=%d", depths["a"], depths["b"])
+	// ルートは prefix なし
+	if prefixes["a"] != "" || prefixes["b"] != "" {
+		t.Errorf("root tasks should have empty prefix, got a=%q b=%q", prefixes["a"], prefixes["b"])
 	}
 }
 
@@ -1508,7 +1531,7 @@ func TestBuildTreeOrder_TwoLevel(t *testing.T) {
 		{ID: "c1", ParentID: "p", CreatedAt: time.Now()},
 		{ID: "c2", ParentID: "p", CreatedAt: time.Now()},
 	}
-	ordered, depths := buildTreeOrder(tasks)
+	ordered, prefixes := buildTreeOrder(tasks)
 	if len(ordered) != 3 {
 		t.Fatalf("want 3 tasks, got %d", len(ordered))
 	}
@@ -1518,8 +1541,15 @@ func TestBuildTreeOrder_TwoLevel(t *testing.T) {
 	if ordered[1].ID != "c1" || ordered[2].ID != "c2" {
 		t.Errorf("children should follow parent in input order: got %s, %s", ordered[1].ID, ordered[2].ID)
 	}
-	if depths["p"] != 0 || depths["c1"] != 1 || depths["c2"] != 1 {
-		t.Errorf("depths: want p=0,c1=1,c2=1; got p=%d,c1=%d,c2=%d", depths["p"], depths["c1"], depths["c2"])
+	// p はルートなので prefix なし。c1 は末子でないので "├─"、c2 は末子なので "└─"
+	if prefixes["p"] != "" {
+		t.Errorf("p should have empty prefix, got %q", prefixes["p"])
+	}
+	if prefixes["c1"] != "├─" {
+		t.Errorf("c1 (not last) should have prefix \"├─\", got %q", prefixes["c1"])
+	}
+	if prefixes["c2"] != "└─" {
+		t.Errorf("c2 (last) should have prefix \"└─\", got %q", prefixes["c2"])
 	}
 }
 
@@ -1529,15 +1559,22 @@ func TestBuildTreeOrder_ThreeLevel(t *testing.T) {
 		{ID: "c", ParentID: "p"},
 		{ID: "gc", ParentID: "c"},
 	}
-	ordered, depths := buildTreeOrder(tasks)
+	ordered, prefixes := buildTreeOrder(tasks)
 	if len(ordered) != 3 {
 		t.Fatalf("want 3, got %d", len(ordered))
 	}
 	if ordered[0].ID != "p" || ordered[1].ID != "c" || ordered[2].ID != "gc" {
 		t.Errorf("want order p,c,gc; got %s,%s,%s", ordered[0].ID, ordered[1].ID, ordered[2].ID)
 	}
-	if depths["p"] != 0 || depths["c"] != 1 || depths["gc"] != 2 {
-		t.Errorf("depths: want p=0,c=1,gc=2; got p=%d,c=%d,gc=%d", depths["p"], depths["c"], depths["gc"])
+	// p はルート、c は唯一の末子なので "└─"、gc も唯一の末子で c が末子なので "  └─"
+	if prefixes["p"] != "" {
+		t.Errorf("p: want empty prefix, got %q", prefixes["p"])
+	}
+	if prefixes["c"] != "└─" {
+		t.Errorf("c: want \"└─\", got %q", prefixes["c"])
+	}
+	if prefixes["gc"] != "  └─" {
+		t.Errorf("gc: want \"  └─\", got %q", prefixes["gc"])
 	}
 }
 
@@ -1546,12 +1583,13 @@ func TestBuildTreeOrder_OrphanedParent(t *testing.T) {
 	tasks := []*orchestrator.Task{
 		{ID: "c", ParentID: "missing"},
 	}
-	ordered, depths := buildTreeOrder(tasks)
+	ordered, prefixes := buildTreeOrder(tasks)
 	if len(ordered) != 1 {
 		t.Fatalf("want 1 task, got %d", len(ordered))
 	}
-	if depths["c"] != 0 {
-		t.Errorf("orphaned task should have depth 0, got %d", depths["c"])
+	// 親がリストに存在しないため root 扱い → prefix なし
+	if prefixes["c"] != "" {
+		t.Errorf("orphaned task should have empty prefix, got %q", prefixes["c"])
 	}
 }
 
@@ -1577,7 +1615,7 @@ func TestBuildTreeOrder_MultipleRoots(t *testing.T) {
 		{ID: "r1c", ParentID: "r1"},
 		{ID: "r2", ParentID: ""},
 	}
-	ordered, depths := buildTreeOrder(tasks)
+	ordered, prefixes := buildTreeOrder(tasks)
 	if len(ordered) != 3 {
 		t.Fatalf("want 3, got %d", len(ordered))
 	}
@@ -1585,8 +1623,13 @@ func TestBuildTreeOrder_MultipleRoots(t *testing.T) {
 	if ordered[0].ID != "r1" || ordered[1].ID != "r1c" || ordered[2].ID != "r2" {
 		t.Errorf("want r1,r1c,r2; got %s,%s,%s", ordered[0].ID, ordered[1].ID, ordered[2].ID)
 	}
-	if depths["r2"] != 0 {
-		t.Errorf("r2 should have depth 0, got %d", depths["r2"])
+	// r2 はルートなので prefix なし
+	if prefixes["r2"] != "" {
+		t.Errorf("r2 should have empty prefix, got %q", prefixes["r2"])
+	}
+	// r1c は r1 の唯一の末子なので "└─"
+	if prefixes["r1c"] != "└─" {
+		t.Errorf("r1c should have prefix \"└─\", got %q", prefixes["r1c"])
 	}
 }
 
@@ -1625,7 +1668,7 @@ func TestProgressBadge_ZeroAborted(t *testing.T) {
 func TestSyncTableRows_Indent_Depth1(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.recalcColumns(120)
-	parent := &orchestrator.Task{ID: "p", Title: "Parent", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()}
+	parent := &orchestrator.Task{ID: "p", Title: "Parent", Status: orchestrator.TaskStatusExecuting, TotalChildCount: 1, CreatedAt: time.Now()}
 	child := &orchestrator.Task{ID: "c", Title: "Child", ParentID: "p", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()}
 	s.tasks = []*orchestrator.Task{parent, child}
 	s.syncTableRows()
@@ -1634,15 +1677,15 @@ func TestSyncTableRows_Indent_Depth1(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("want 2 rows, got %d", len(rows))
 	}
-	// ANSI コードを除いてインデントを確認する
+	// ANSI コードを除いてツリー prefix を確認する
 	parentTitle := stripANSI(rows[0][1])
-	if strings.HasPrefix(parentTitle, "  ") {
-		t.Errorf("parent row should not have 2-space indent, got %q", parentTitle)
+	if strings.HasPrefix(parentTitle, "├─") || strings.HasPrefix(parentTitle, "└─") {
+		t.Errorf("parent row should not have tree prefix, got %q", parentTitle)
 	}
-	childTitle := rows[1][1]
-	rawChildTitle := stripANSI(childTitle)
-	if !strings.HasPrefix(rawChildTitle, "  ") {
-		t.Errorf("child row should start with 2-space indent, got %q", rawChildTitle)
+	rawChildTitle := stripANSI(rows[1][1])
+	// 唯一の子なので末子 → "└─" prefix
+	if !strings.HasPrefix(rawChildTitle, "└─") {
+		t.Errorf("child row should start with \"└─\" tree prefix, got %q", rawChildTitle)
 	}
 	if !containsStr(rawChildTitle, "Child") {
 		t.Errorf("child title should contain 'Child', got %q", rawChildTitle)
@@ -1652,8 +1695,8 @@ func TestSyncTableRows_Indent_Depth1(t *testing.T) {
 func TestSyncTableRows_Indent_Depth2(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.recalcColumns(120)
-	parent := &orchestrator.Task{ID: "p", Title: "Parent", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()}
-	child := &orchestrator.Task{ID: "c", Title: "Child", ParentID: "p", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()}
+	parent := &orchestrator.Task{ID: "p", Title: "Parent", Status: orchestrator.TaskStatusExecuting, TotalChildCount: 1, CreatedAt: time.Now()}
+	child := &orchestrator.Task{ID: "c", Title: "Child", ParentID: "p", Status: orchestrator.TaskStatusExecuting, TotalChildCount: 1, CreatedAt: time.Now()}
 	grandchild := &orchestrator.Task{ID: "gc", Title: "GrandChild", ParentID: "c", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()}
 	s.tasks = []*orchestrator.Task{parent, child, grandchild}
 	s.syncTableRows()
@@ -1662,10 +1705,11 @@ func TestSyncTableRows_Indent_Depth2(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("want 3 rows, got %d", len(rows))
 	}
-	// ANSI コードを除いてインデントを確認する
+	// ANSI コードを除いてツリー prefix を確認する
+	// c は唯一の末子 → "└─"、gc も唯一の末子で c が末子 → "  └─"
 	gcTitle := stripANSI(rows[2][1])
-	if !strings.HasPrefix(gcTitle, "    ") {
-		t.Errorf("grandchild should have 4-space indent, got %q", gcTitle)
+	if !strings.HasPrefix(gcTitle, "  └─") {
+		t.Errorf("grandchild should have \"  └─\" prefix, got %q", gcTitle)
 	}
 }
 
