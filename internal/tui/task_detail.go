@@ -47,6 +47,7 @@ type TaskDetailScreen struct {
 	depsCursor     int
 	descScroll     int
 	descPageHeight int
+	descWidth      int
 	payloadCursor  int
 	payloadScroll  int
 	statusMsg      string
@@ -258,7 +259,7 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			}
 		case tabDescription:
 			if s.detail != nil && s.detail.Task != nil {
-				lines := strings.Split(s.detail.Task.Description, "\n")
+				lines := wrapLines(s.detail.Task.Description, s.descWidth)
 				if s.descScroll < len(lines)-1 {
 					s.descScroll++
 				}
@@ -302,7 +303,7 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "pgdown", "ctrl+f":
 		if s.activeTab == tabDescription {
 			if s.detail != nil && s.detail.Task != nil {
-				lines := strings.Split(s.detail.Task.Description, "\n")
+				lines := wrapLines(s.detail.Task.Description, s.descWidth)
 				pageSize := max(s.descPageHeight, 1)
 				s.descScroll = min(s.descScroll+pageSize, max(len(lines)-1, 0))
 			}
@@ -547,6 +548,7 @@ func (s *TaskDetailScreen) View(width, height int) string {
 		sb.WriteString(s.renderOverview(width, contentHeight))
 	case tabDescription:
 		s.descPageHeight = contentHeight
+		s.descWidth = width
 		sb.WriteString(renderDescription(s.detail, s.descScroll, width, contentHeight))
 	case tabDeps:
 		sb.WriteString(renderDeps(s.detail, width, contentHeight, s.depsCursor))
