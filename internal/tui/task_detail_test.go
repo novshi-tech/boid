@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -1239,5 +1240,33 @@ func TestShortHelp_IncludesTabCycle(t *testing.T) {
 	help := s.ShortHelp()
 	if !containsStr(help, "tab") {
 		t.Errorf("ShortHelp: expected 'tab' in help, got %q", help)
+	}
+}
+
+// TestTaskDetailView_TitleUsesFullScreenWidth verifies that the title in the
+// sub-header is not capped at a fixed 50-char limit but instead expands to fill
+// the available screen width.
+func TestTaskDetailView_TitleUsesFullScreenWidth(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	longTitle := strings.Repeat("X", 80)
+	s.detail = &api.TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:        "test-task-id",
+			Title:     longTitle,
+			Status:    orchestrator.TaskStatusExecuting,
+			Behavior:  "dev",
+			CreatedAt: time.Now().Add(-5 * time.Minute),
+		},
+		AvailableActions: []string{},
+	}
+
+	// Width 120: status "executing" is 9 visible chars.
+	// maxTitleWidth = 120 - 9 - 1 = 110, so the 80-char title fits untruncated.
+	view := s.View(120, 40)
+
+	// With the old fixed-50 limit the output would cut at char 49 and append "…".
+	// After the fix, all 80 X's must be present.
+	if !containsStr(view, strings.Repeat("X", 60)) {
+		t.Error("title of 80 chars should not be truncated to 50 when screen width is 120")
 	}
 }
