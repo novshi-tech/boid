@@ -68,8 +68,10 @@ func (s *JobDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			return clearStatusAfter(4 * time.Second)
 		}
 		return openJobCmd(s.job.ID, s.shared.Panes[s.job.ID])
-	case "esc", "backspace", "q":
+	case "esc", "backspace":
 		return func() tea.Msg { return popScreenMsg{} }
+	case "q":
+		return tea.Quit
 	}
 	return nil
 }
@@ -161,5 +163,5 @@ func (s *JobDetailScreen) View(width, height int) string {
 }
 
 func (s *JobDetailScreen) ShortHelp() string {
-	return "j/k: scroll output  o/enter: open in pane  esc/q: back"
+	return "j/k: scroll output  o/enter: open in pane  esc: back  q: quit"
 }

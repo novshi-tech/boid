@@ -91,8 +91,8 @@ func TestJobDetailEsc_ReturnsPopScreen(t *testing.T) {
 	}
 }
 
-// TestJobDetailQ_ReturnsPopScreen verifies q pops the screen.
-func TestJobDetailQ_ReturnsPopScreen(t *testing.T) {
+// TestJobDetailQ_ReturnsQuit verifies q quits the application.
+func TestJobDetailQ_ReturnsQuit(t *testing.T) {
 	s := newTestJobDetailScreen(makeTestJob(api.JobStatusCompleted))
 
 	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
@@ -100,8 +100,8 @@ func TestJobDetailQ_ReturnsPopScreen(t *testing.T) {
 		t.Fatal("q: expected non-nil cmd")
 	}
 	msg := cmd()
-	if _, ok := msg.(popScreenMsg); !ok {
-		t.Errorf("q: expected popScreenMsg, got %T", msg)
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Errorf("q: expected tea.QuitMsg, got %T", msg)
 	}
 }
 
