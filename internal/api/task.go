@@ -77,9 +77,14 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
 	filter := orchestrator.TaskFilter{
-		Status:    r.URL.Query().Get("status"),
-		ProjectID: r.URL.Query().Get("project_id"),
+		Status:       q.Get("status"),
+		ProjectID:    q.Get("project_id"),
+		Behavior:     q.Get("behavior"),
+		WorkspaceID:  q.Get("workspace_id"),
+		HasDependsOn: q.Get("has_depends_on") == "true",
+		NoDependsOn:  q.Get("no_depends_on") == "true",
 	}
 
 	tasks, err := h.Service.ListTasks(filter)

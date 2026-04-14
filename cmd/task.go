@@ -98,6 +98,10 @@ var taskRerunCmd = &cobra.Command{
 
 func init() {
 	taskListCmd.Flags().String("status", "", "Filter by status")
+	taskListCmd.Flags().String("workspace", "", "Filter by workspace ID")
+	taskListCmd.Flags().String("behavior", "", "Filter by behavior name")
+	taskListCmd.Flags().Bool("has-depends-on", false, "Show only tasks that have depends_on")
+	taskListCmd.Flags().Bool("no-depends-on", false, "Show only tasks that have no depends_on")
 	taskCreateCmd.Flags().StringP("file", "f", "", "YAML file to read task spec from (default: stdin)")
 	taskWatchCmd.Flags().Duration("interval", time.Second, "Polling interval")
 	taskGetCmd.Flags().String("field", "", "Field name to retrieve (required)")
@@ -162,11 +166,33 @@ func runTaskUpdate(cmd *cobra.Command, args []string) error {
 
 func runTaskList(cmd *cobra.Command, args []string) error {
 	status, _ := cmd.Flags().GetString("status")
+	workspace, _ := cmd.Flags().GetString("workspace")
+	behavior, _ := cmd.Flags().GetString("behavior")
+	hasDependsOn, _ := cmd.Flags().GetBool("has-depends-on")
+	noDependsOn, _ := cmd.Flags().GetBool("no-depends-on")
+
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
-	path := "/api/tasks"
+	var params []string
 	if status != "" {
-		path += "?status=" + status
+		params = append(params, "status="+status)
+	}
+	if workspace != "" {
+		params = append(params, "workspace_id="+workspace)
+	}
+	if behavior != "" {
+		params = append(params, "behavior="+behavior)
+	}
+	if hasDependsOn {
+		params = append(params, "has_depends_on=true")
+	}
+	if noDependsOn {
+		params = append(params, "no_depends_on=true")
+	}
+
+	path := "/api/tasks"
+	if len(params) > 0 {
+		path += "?" + strings.Join(params, "&")
 	}
 
 	var tasks []orchestrator.Task
@@ -175,12 +201,12 @@ func runTaskList(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(tasks) == 0 {
-		fmt.Println("no tasks")
+		fmt.Fprintln(cmd.OutOrStdout(), "no tasks")
 		return nil
 	}
 
 	for _, t := range tasks {
-		fmt.Printf("%-36s %-12s %s\n", t.ID, t.Status, t.Title)
+		fmt.Fprintf(cmd.OutOrStdout(), "%-36s %-12s %s\n", t.ID, t.Status, t.Title)
 	}
 	return nil
 }
