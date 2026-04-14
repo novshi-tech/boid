@@ -161,23 +161,29 @@ func TestTaskDetailDescriptionScrollArrowKeys_DescriptionTab(t *testing.T) {
 	}
 }
 
-// TestTaskDetailEnterOpenJob_Overview_NoTimelineEvents verifies that Enter in Overview
-// with no completed jobs (only running) is a no-op (no statusMsg).
-func TestTaskDetailEnterOpenJob_Overview_NoTimelineEvents(t *testing.T) {
+// TestTaskDetailEnterOpenJob_Overview_RunningJob_PushesJobDetail verifies that Enter
+// in Overview with a running job selected (cursor in Active section) pushes JobDetailScreen.
+func TestTaskDetailEnterOpenJob_Overview_RunningJob_PushesJobDetail(t *testing.T) {
 	s := newTestTaskDetailScreen()
-	s.detail = makeDetailWithJobs(1) // running job only → excluded from overview timeline
+	s.detail = makeDetailWithJobs(1) // 1 running job → cursor 0 = Active section
 	s.shared.TmuxEnabled = false
 	s.activeTab = tabOverview
+	s.timelineCursor = 0
 
 	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if s.statusMsg != "" {
-		t.Errorf("enter in overview with only running jobs: expected empty statusMsg, got %q", s.statusMsg)
+		t.Errorf("enter on Active job: expected empty statusMsg, got %q", s.statusMsg)
 	}
-	if cmd != nil {
-		msg := cmd()
-		if _, ok := msg.(pushScreenMsg); ok {
-			t.Error("enter in overview with no timeline events: should not push any screen")
-		}
+	if cmd == nil {
+		t.Fatal("enter on Active job: expected non-nil cmd (pushScreenMsg)")
+	}
+	msg := cmd()
+	push, ok := msg.(pushScreenMsg)
+	if !ok {
+		t.Fatalf("enter on Active job: expected pushScreenMsg, got %T", msg)
+	}
+	if _, ok := push.screen.(*JobDetailScreen); !ok {
+		t.Errorf("enter on Active job: expected *JobDetailScreen, got %T", push.screen)
 	}
 }
 
@@ -1028,23 +1034,23 @@ func TestTaskDetail_VKey_NoOp(t *testing.T) {
 }
 
 // TestTaskDetail_Enter_Overview_NoEvents_IsNoOp verifies that Enter in Overview
-// when there are no timeline events is a no-op.
+// is a no-op when there are no active jobs and no timeline events.
 func TestTaskDetail_Enter_Overview_NoEvents_IsNoOp(t *testing.T) {
 	s := newTestTaskDetailScreen()
-	// makeDetailWithJobs(1) has 1 running job which is excluded from overview timeline.
-	s.detail = makeDetailWithJobs(1)
+	// makeDetailWithJobs(0): no jobs at all → Active empty, Timeline empty.
+	s.detail = makeDetailWithJobs(0)
 	s.activeTab = tabOverview
 
 	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	// No completed jobs in timeline → no-op.
+	// No active jobs or timeline events → no-op.
 	if cmd != nil {
 		msg := cmd()
 		if _, ok := msg.(pushScreenMsg); ok {
-			t.Error("enter in overview with only running jobs: should not push any screen")
+			t.Error("enter in overview with no jobs at all: should not push any screen")
 		}
 	}
 	if s.statusMsg != "" {
-		t.Errorf("enter in overview with no timeline events: expected empty statusMsg, got %q", s.statusMsg)
+		t.Errorf("enter in overview with no events: expected empty statusMsg, got %q", s.statusMsg)
 	}
 }
 
@@ -1349,6 +1355,316 @@ func TestShortHelp_IncludesTabCycle(t *testing.T) {
 // TestTaskDetailView_TitleUsesFullScreenWidth verifies that the title in the
 // sub-header is not capped at a fixed 50-char limit but instead expands to fill
 // the available screen width.
+// --- Active section cursor management tests ---
+
+// makeDetailWithRunningJob creates a detail with one running job.
+// interactive controls the Interactive flag on the job.
+func makeDetailWithRunningJob(interactive bool) *api.TaskDetailView {
+	return &api.TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:        "test-task-id",
+			Title:     "Test Task",
+			Status:    orchestrator.TaskStatusExecuting,
+			Behavior:  "dev",
+			CreatedAt: time.Now().Add(-5 * time.Minute),
+		},
+		Jobs: []*api.Job{
+			{
+				ID:          "job-running",
+				Role:        "main",
+				Status:      api.JobStatusRunning,
+				Interactive: interactive,
+				CreatedAt:   time.Now().Add(-2 * time.Minute),
+			},
+		},
+	}
+}
+
+// TestActiveActiveCursor_JMovesToTimeline verifies that j from the last Active job
+// moves the cursor into the Timeline section when timeline events exist.
+func TestActiveActiveCursor_JMovesToTimeline(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	now := time.Now()
+	// 1 running job (Active) + 1 completed job (Timeline)
+	s.detail = &api.TaskDetailView{
+		Task: &orchestrator.Task{
+			ID: "t", Status: orchestrator.TaskStatusExecuting, CreatedAt: now,
+		},
+		Jobs: []*api.Job{
+			{ID: "j1", Role: "main", Status: api.JobStatusRunning, CreatedAt: now.Add(-2 * time.Minute)},
+			{ID: "j2", Role: "main", Status: api.JobStatusCompleted, CreatedAt: now.Add(-3 * time.Minute), UpdatedAt: now.Add(-1 * time.Minute)},
+		},
+	}
+	s.activeTab = tabOverview
+	s.timelineCursor = 0 // at Active job
+
+	// j from Active last → move to Timeline[0] (cursor = nActive + 0 = 1)
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if s.timelineCursor != 1 {
+		t.Errorf("j from Active last: want timelineCursor 1 (Timeline[0]), got %d", s.timelineCursor)
+	}
+}
+
+// TestActiveActiveCursor_KFromTimelineMovesToActive verifies that k from Timeline[0]
+// moves the cursor back into the Active section.
+func TestActiveActiveCursor_KFromTimelineMovesToActive(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	now := time.Now()
+	// 1 running job (Active) + 1 completed job (Timeline)
+	s.detail = &api.TaskDetailView{
+		Task: &orchestrator.Task{
+			ID: "t", Status: orchestrator.TaskStatusExecuting, CreatedAt: now,
+		},
+		Jobs: []*api.Job{
+			{ID: "j1", Role: "main", Status: api.JobStatusRunning, CreatedAt: now.Add(-2 * time.Minute)},
+			{ID: "j2", Role: "main", Status: api.JobStatusCompleted, CreatedAt: now.Add(-3 * time.Minute), UpdatedAt: now.Add(-1 * time.Minute)},
+		},
+	}
+	s.activeTab = tabOverview
+	s.timelineCursor = 1 // at Timeline[0] (nActive=1, so cursor=1)
+
+	// k from Timeline[0] → Active last job (cursor = 0)
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if s.timelineCursor != 0 {
+		t.Errorf("k from Timeline[0]: want timelineCursor 0 (Active[0]), got %d", s.timelineCursor)
+	}
+}
+
+// TestActiveActiveCursor_JAtEndStays verifies j at the last position does not exceed bounds.
+func TestActiveActiveCursor_JAtEndStays(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	// 1 running job only, no completed jobs → total = 1
+	s.detail = makeDetailWithRunningJob(false)
+	s.activeTab = tabOverview
+	s.timelineCursor = 0
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if s.timelineCursor != 0 {
+		t.Errorf("j at last position: want timelineCursor 0, got %d", s.timelineCursor)
+	}
+}
+
+// TestActiveActiveCursor_KAtStartStays verifies k at cursor=0 does not go below 0.
+func TestActiveActiveCursor_KAtStartStays(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithRunningJob(false)
+	s.activeTab = tabOverview
+	s.timelineCursor = 0
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if s.timelineCursor != 0 {
+		t.Errorf("k at start: want timelineCursor 0, got %d", s.timelineCursor)
+	}
+}
+
+// TestActiveActiveCursor_EmptyActiveEmptyTimeline verifies j/k are no-ops with no items.
+func TestActiveActiveCursor_EmptyActiveEmptyTimeline(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithJobs(0) // no jobs at all
+	s.activeTab = tabOverview
+	s.timelineCursor = 0
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if s.timelineCursor != 0 {
+		t.Errorf("j with no items: want 0, got %d", s.timelineCursor)
+	}
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if s.timelineCursor != 0 {
+		t.Errorf("k with no items: want 0, got %d", s.timelineCursor)
+	}
+}
+
+// --- o key behavior tests ---
+
+// TestOKey_ActiveInteractive_TmuxEnabled_OpensPane verifies that o on an interactive
+// running job with tmux enabled returns an openJobCmd (openResultMsg from the cmd).
+func TestOKey_ActiveInteractive_TmuxEnabled_OpensPane(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithRunningJob(true)
+	s.shared.TmuxEnabled = true
+	s.activeTab = tabOverview
+	s.timelineCursor = 0 // Active section
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	if s.statusMsg != "" {
+		t.Errorf("o on interactive job (tmux enabled): expected empty statusMsg, got %q", s.statusMsg)
+	}
+	if cmd == nil {
+		t.Fatal("o on interactive job (tmux enabled): expected non-nil cmd (openJobCmd)")
+	}
+	// openJobCmd tries to open a pane; the result is openResultMsg (not pushScreenMsg).
+	// We just verify the cmd exists since actual tmux operations can't run in tests.
+}
+
+// TestOKey_ActiveNonInteractive_SetsErrorFlash verifies that o on a non-interactive
+// running job sets an error flash message and returns a clearStatus cmd.
+func TestOKey_ActiveNonInteractive_SetsErrorFlash(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithRunningJob(false) // Interactive=false
+	s.shared.TmuxEnabled = true
+	s.activeTab = tabOverview
+	s.timelineCursor = 0
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	if s.statusMsg == "" {
+		t.Error("o on non-interactive job: expected statusMsg to be set")
+	}
+	if !s.isError {
+		t.Error("o on non-interactive job: expected isError=true")
+	}
+	if !containsStr(s.statusMsg, "not interactive") {
+		t.Errorf("o on non-interactive job: expected 'not interactive' in statusMsg, got %q", s.statusMsg)
+	}
+	if cmd == nil {
+		t.Error("o on non-interactive job: expected non-nil clearStatus cmd")
+	}
+}
+
+// TestOKey_ActiveInteractive_TmuxDisabled_SetsInfoMsg verifies that o on an interactive
+// job without tmux enabled shows an info message (not an error).
+func TestOKey_ActiveInteractive_TmuxDisabled_SetsInfoMsg(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithRunningJob(true)
+	s.shared.TmuxEnabled = false
+	s.activeTab = tabOverview
+	s.timelineCursor = 0
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	if s.statusMsg == "" {
+		t.Error("o without tmux: expected statusMsg to be set")
+	}
+	if s.isError {
+		t.Error("o without tmux: expected isError=false (info message, not error)")
+	}
+	if !containsStr(s.statusMsg, "tmux") {
+		t.Errorf("o without tmux: expected 'tmux' in statusMsg, got %q", s.statusMsg)
+	}
+	if cmd == nil {
+		t.Error("o without tmux: expected non-nil clearStatus cmd")
+	}
+}
+
+// TestOKey_CursorInTimeline_IsNoOp verifies that o is a no-op when cursor is in Timeline.
+func TestOKey_CursorInTimeline_IsNoOp(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithCompletedJob() // 0 running jobs, 1 completed (Timeline)
+	s.shared.TmuxEnabled = true
+	s.activeTab = tabOverview
+	s.timelineCursor = 0 // nActive=0, so cursor=0 is in Timeline
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	if s.statusMsg != "" {
+		t.Errorf("o with cursor in Timeline: expected empty statusMsg, got %q", s.statusMsg)
+	}
+	if cmd != nil {
+		t.Error("o with cursor in Timeline: expected nil cmd (no-op)")
+	}
+}
+
+// TestOKey_NotOverviewTab_IsNoOp verifies that o is ignored in non-Overview tabs.
+func TestOKey_NotOverviewTab_IsNoOp(t *testing.T) {
+	for _, tab := range []string{tabDescription, tabDeps, tabPayload} {
+		s := newTestTaskDetailScreen()
+		s.detail = makeDetailWithRunningJob(true)
+		s.shared.TmuxEnabled = true
+		s.activeTab = tab
+
+		_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+		if s.statusMsg != "" {
+			t.Errorf("o in %q tab: expected empty statusMsg, got %q", tab, s.statusMsg)
+		}
+		if cmd != nil {
+			t.Errorf("o in %q tab: expected nil cmd (no-op)", tab)
+		}
+	}
+}
+
+// TestAssignKeys_OReserved verifies 'o' is not assigned to any action.
+func TestAssignKeys_OReserved(t *testing.T) {
+	// An action starting with 'o' must skip 'o' and use the next available character.
+	m := assignKeys([]string{"open"})
+	if _, exists := m['o']; exists {
+		t.Errorf("key 'o' should not be assigned (reserved for tmux open), got %q", m['o'])
+	}
+	// "open": o→reserved, p→free
+	if m['p'] != "open" {
+		t.Errorf("key 'p' = %q, want 'open' (o is reserved)", m['p'])
+	}
+}
+
+// TestShortHelp_Overview_ActiveSelected_ShowsOKey verifies that ShortHelp shows
+// the 'o' shortcut when cursor is in the Active section.
+func TestShortHelp_Overview_ActiveSelected_ShowsOKey(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithRunningJob(true)
+	s.activeTab = tabOverview
+	s.timelineCursor = 0 // Active section (nActive=1, cursor=0)
+
+	help := s.ShortHelp()
+	if !containsStr(help, "o: open in tmux") {
+		t.Errorf("ShortHelp with Active selected: expected 'o: open in tmux', got %q", help)
+	}
+}
+
+// TestShortHelp_Overview_TimelineSelected_NoOKey verifies that ShortHelp does not
+// show 'o' when cursor is in the Timeline section.
+func TestShortHelp_Overview_TimelineSelected_NoOKey(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithCompletedJob() // no running jobs → cursor=0 is Timeline
+	s.activeTab = tabOverview
+	s.timelineCursor = 0 // Timeline section (nActive=0)
+
+	help := s.ShortHelp()
+	if containsStr(help, "o: open in tmux") {
+		t.Errorf("ShortHelp with Timeline selected: 'o: open in tmux' should not appear, got %q", help)
+	}
+}
+
+// TestRenderOverview_ActiveCursorShown verifies that the cursor indicator appears
+// on the selected Active job line.
+func TestRenderOverview_ActiveCursorShown(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithRunningJob(false)
+	s.activeTab = tabOverview
+	s.timelineCursor = 0 // Active job selected
+
+	view := s.renderOverview(80, 20)
+	if !containsStr(view, "▸") {
+		t.Error("renderOverview with Active selected: expected cursor indicator '▸'")
+	}
+}
+
+// TestRenderOverview_ActiveCursorNotShownInTimeline verifies no cursor appears
+// in Timeline rows when cursor is in Active section.
+func TestRenderOverview_ActiveCursorNotShownInTimeline(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	now := time.Now()
+	// 1 running job (Active) + 1 completed job (Timeline)
+	s.detail = &api.TaskDetailView{
+		Task: &orchestrator.Task{ID: "t", Status: orchestrator.TaskStatusExecuting, CreatedAt: now},
+		Jobs: []*api.Job{
+			{ID: "j1", Role: "main", Status: api.JobStatusRunning, CreatedAt: now.Add(-2 * time.Minute)},
+			{ID: "j2", Role: "main", Status: api.JobStatusCompleted, CreatedAt: now.Add(-3 * time.Minute), UpdatedAt: now.Add(-1 * time.Minute)},
+		},
+	}
+	s.activeTab = tabOverview
+	s.timelineCursor = 0 // Active section
+
+	view := s.renderOverview(80, 30)
+	lines := strings.Split(view, "\n")
+
+	// The cursor indicator must only appear in the Active section (before Timeline header).
+	inTimeline := false
+	for _, line := range lines {
+		if containsStr(line, "─── Timeline") {
+			inTimeline = true
+		}
+		if inTimeline && containsStr(line, "▸") {
+			t.Errorf("cursor '▸' should not appear in Timeline when cursor is in Active: line=%q", line)
+		}
+	}
+}
+
 func TestTaskDetailView_TitleUsesFullScreenWidth(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	longTitle := strings.Repeat("X", 80)
