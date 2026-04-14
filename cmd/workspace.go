@@ -55,15 +55,16 @@ func runWorkspaceList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("list workspaces: %w", err)
 	}
 
-	if len(workspaces) == 0 {
-		fmt.Println("no workspaces configured")
+	return renderOutput(cmd, workspaces, func() error {
+		if len(workspaces) == 0 {
+			fmt.Fprintln(cmd.OutOrStdout(), "no workspaces configured")
+			return nil
+		}
+		for _, workspace := range workspaces {
+			fmt.Fprintf(cmd.OutOrStdout(), "%-20s %d projects\n", workspace.ID, workspace.ProjectCount)
+		}
 		return nil
-	}
-
-	for _, workspace := range workspaces {
-		fmt.Printf("%-20s %d projects\n", workspace.ID, workspace.ProjectCount)
-	}
-	return nil
+	})
 }
 
 func runWorkspaceAssign(cmd *cobra.Command, args []string) error {
@@ -74,8 +75,10 @@ func runWorkspaceAssign(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("assign workspace: %w", err)
 	}
 
-	fmt.Printf("workspace assigned: %s -> %s\n", project.ID, project.WorkspaceID)
-	return nil
+	return renderOutput(cmd, &project, func() error {
+		fmt.Fprintf(cmd.OutOrStdout(), "workspace assigned: %s -> %s\n", project.ID, project.WorkspaceID)
+		return nil
+	})
 }
 
 func runWorkspaceShow(cmd *cobra.Command, args []string) error {
@@ -87,41 +90,62 @@ func runWorkspaceShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("list projects: %w", err)
 	}
 
-	if len(projects) == 0 {
-		fmt.Printf("workspace %s: no projects\n", workspaceID)
-		return nil
+	type projectEntry struct {
+		ID    string             `json:"id"    yaml:"id"`
+		Name  string             `json:"name"  yaml:"name"`
+		Tasks []*orchestrator.Task `json:"tasks" yaml:"tasks"`
+	}
+	type workspaceView struct {
+		WorkspaceID  string         `json:"workspace_id"  yaml:"workspace_id"`
+		ProjectCount int            `json:"project_count" yaml:"project_count"`
+		Projects     []projectEntry `json:"projects"      yaml:"projects"`
 	}
 
-	fmt.Printf("Workspace: %s\n", workspaceID)
-	fmt.Printf("Projects:  %d\n\n", len(projects))
+	view := workspaceView{
+		WorkspaceID:  workspaceID,
+		ProjectCount: len(projects),
+		Projects:     make([]projectEntry, 0, len(projects)),
+	}
 
 	for _, project := range projects {
-		name := filepath.Base(project.WorkDir)
-		fmt.Printf("Project: %s  (%s)\n", name, project.ID)
-
 		var tasks []*orchestrator.Task
 		if err := c.Do("GET", "/api/tasks?project_id="+project.ID, nil, &tasks); err != nil {
-			fmt.Printf("  (failed to list tasks: %v)\n\n", err)
-			continue
+			tasks = nil
 		}
-
 		sort.Slice(tasks, func(i, j int) bool {
 			return tasks[i].UpdatedAt.After(tasks[j].UpdatedAt)
 		})
 		if len(tasks) > 5 {
 			tasks = tasks[:5]
 		}
-
-		if len(tasks) == 0 {
-			fmt.Println("  (no tasks)")
-		} else {
-			for _, task := range tasks {
-				fmt.Printf("  %-10s %-36s %s\n", task.Status, task.ID, task.Title)
-			}
-		}
-		fmt.Println()
+		view.Projects = append(view.Projects, projectEntry{
+			ID:    project.ID,
+			Name:  filepath.Base(project.WorkDir),
+			Tasks: tasks,
+		})
 	}
-	return nil
+
+	return renderOutput(cmd, view, func() error {
+		out := cmd.OutOrStdout()
+		if len(projects) == 0 {
+			fmt.Fprintf(out, "workspace %s: no projects\n", workspaceID)
+			return nil
+		}
+		fmt.Fprintf(out, "Workspace: %s\n", workspaceID)
+		fmt.Fprintf(out, "Projects:  %d\n\n", len(projects))
+		for _, entry := range view.Projects {
+			fmt.Fprintf(out, "Project: %s  (%s)\n", entry.Name, entry.ID)
+			if len(entry.Tasks) == 0 {
+				fmt.Fprintln(out, "  (no tasks)")
+			} else {
+				for _, task := range entry.Tasks {
+					fmt.Fprintf(out, "  %-10s %-36s %s\n", task.Status, task.ID, task.Title)
+				}
+			}
+			fmt.Fprintln(out)
+		}
+		return nil
+	})
 }
 
 func runWorkspaceClear(cmd *cobra.Command, args []string) error {
@@ -132,6 +156,8 @@ func runWorkspaceClear(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("clear workspace: %w", err)
 	}
 
-	fmt.Printf("workspace cleared: %s\n", project.ID)
-	return nil
+	return renderOutput(cmd, &project, func() error {
+		fmt.Fprintf(cmd.OutOrStdout(), "workspace cleared: %s\n", project.ID)
+		return nil
+	})
 }

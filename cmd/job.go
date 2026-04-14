@@ -71,13 +71,14 @@ func runJobList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("list jobs: %w", err)
 	}
 
-	if len(jobs) == 0 {
-		fmt.Println("no jobs")
+	return renderOutput(cmd, jobs, func() error {
+		if len(jobs) == 0 {
+			fmt.Fprintln(cmd.OutOrStdout(), "no jobs")
+			return nil
+		}
+		renderJobList(jobs)
 		return nil
-	}
-
-	renderJobList(jobs)
-	return nil
+	})
 }
 
 func runJobShow(cmd *cobra.Command, args []string) error {
@@ -86,8 +87,10 @@ func runJobShow(cmd *cobra.Command, args []string) error {
 	if err := c.Do("GET", "/api/jobs/"+args[0], nil, &job); err != nil {
 		return fmt.Errorf("get job: %w", err)
 	}
-	renderJob(&job)
-	return nil
+	return renderOutput(cmd, &job, func() error {
+		renderJob(&job)
+		return nil
+	})
 }
 
 func runJobWatch(cmd *cobra.Command, args []string) error {
@@ -109,7 +112,12 @@ func runJobWatch(cmd *cobra.Command, args []string) error {
 		fingerprint := fmt.Sprintf("%s|%d|%s|%s", job.Status, job.ExitCode, formatTime(job.UpdatedAt), job.Output)
 		if fingerprint != lastFingerprint {
 			printWatchHeader("job", job.ID)
-			renderJob(&job)
+			if err := renderOutput(cmd, &job, func() error {
+				renderJob(&job)
+				return nil
+			}); err != nil {
+				return err
+			}
 			fmt.Println()
 			lastFingerprint = fingerprint
 		}

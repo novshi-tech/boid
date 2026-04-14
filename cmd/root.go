@@ -29,6 +29,10 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+func init() {
+	rootCmd.PersistentFlags().StringP("output", "o", "plain", "Output format: plain, json, yaml")
+}
+
 func Execute() error {
 	return rootCmd.Execute()
 }

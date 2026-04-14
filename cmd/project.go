@@ -75,18 +75,18 @@ func runProjectAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("register project: %w", err)
 	}
 
-	fmt.Printf("project registered: %s (%s)\n", p.ID, p.Meta.Name)
-
-	// Check hook requires
-	for _, h := range p.Meta.Hooks {
-		for _, req := range h.Requires {
-			if _, err := exec.LookPath(req); err != nil {
-				fmt.Printf("  warning: hook %q requires %q but it's not found in PATH\n", h.ID, req)
+	return renderOutput(cmd, &p, func() error {
+		fmt.Fprintf(cmd.OutOrStdout(), "project registered: %s (%s)\n", p.ID, p.Meta.Name)
+		// Check hook requires
+		for _, h := range p.Meta.Hooks {
+			for _, req := range h.Requires {
+				if _, err := exec.LookPath(req); err != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "  warning: hook %q requires %q but it's not found in PATH\n", h.ID, req)
+				}
 			}
 		}
-	}
-
-	return nil
+		return nil
+	})
 }
 
 func runProjectList(cmd *cobra.Command, args []string) error {
@@ -97,15 +97,16 @@ func runProjectList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if len(projects) == 0 {
-		fmt.Println("no projects registered")
+	return renderOutput(cmd, projects, func() error {
+		if len(projects) == 0 {
+			fmt.Fprintln(cmd.OutOrStdout(), "no projects registered")
+			return nil
+		}
+		for _, p := range projects {
+			fmt.Fprintf(cmd.OutOrStdout(), "%-20s %s  (%s)\n", p.ID, p.Meta.Name, p.WorkDir)
+		}
 		return nil
-	}
-
-	for _, p := range projects {
-		fmt.Printf("%-20s %s  (%s)\n", p.ID, p.Meta.Name, p.WorkDir)
-	}
-	return nil
+	})
 }
 
 func runProjectRemove(cmd *cobra.Command, args []string) error {
@@ -116,8 +117,10 @@ func runProjectRemove(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("remove project: %w", err)
 	}
 
-	fmt.Printf("project removed: %s\n", args[0])
-	return nil
+	return renderOutput(cmd, map[string]any{"id": args[0], "removed": true}, func() error {
+		fmt.Fprintf(cmd.OutOrStdout(), "project removed: %s\n", args[0])
+		return nil
+	})
 }
 
 func runProjectReload(cmd *cobra.Command, args []string) error {
@@ -128,14 +131,16 @@ func runProjectReload(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("reload: %w", err)
 	}
 
-	status := result["status"]
-	fmt.Printf("reload: %s\n", status)
-	if errs, ok := result["errors"]; ok {
-		for _, e := range errs.([]any) {
-			fmt.Printf("  error: %s\n", e)
+	return renderOutput(cmd, result, func() error {
+		status := result["status"]
+		fmt.Fprintf(cmd.OutOrStdout(), "reload: %s\n", status)
+		if errs, ok := result["errors"]; ok {
+			for _, e := range errs.([]any) {
+				fmt.Fprintf(cmd.OutOrStdout(), "  error: %s\n", e)
+			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 func runProjectShow(cmd *cobra.Command, args []string) error {
@@ -146,8 +151,10 @@ func runProjectShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("get project: %w", err)
 	}
 
-	renderProjectDetail(&p)
-	return nil
+	return renderOutput(cmd, &p, func() error {
+		renderProjectDetail(&p)
+		return nil
+	})
 }
 
 func runProjectBehaviors(cmd *cobra.Command, args []string) error {
@@ -158,8 +165,10 @@ func runProjectBehaviors(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("get project: %w", err)
 	}
 
-	renderProjectBehaviors(&p)
-	return nil
+	return renderOutput(cmd, p.Meta.TaskBehaviors, func() error {
+		renderProjectBehaviors(&p)
+		return nil
+	})
 }
 
 func renderProjectDetail(p *projectspec.Project) {
