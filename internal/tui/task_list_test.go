@@ -1110,7 +1110,7 @@ func TestSyncTableRows_StatusCellContainsANSI(t *testing.T) {
 		if len(rows) == 0 {
 			t.Fatalf("status %q: no rows after syncTableRows", status)
 		}
-		statusCell := rows[0][0]
+		statusCell := rows[0][1]
 		if !strings.Contains(statusCell, "\x1b") {
 			t.Errorf("status %q: STATUS cell should contain ANSI code, got %q", status, statusCell)
 		}
@@ -1141,7 +1141,7 @@ func TestSyncTableRows_StatusCellContent(t *testing.T) {
 		if len(rows) == 0 {
 			t.Fatalf("status %q: no rows", tc.status)
 		}
-		raw := stripANSI(rows[0][0])
+		raw := stripANSI(rows[0][1])
 		if !containsStr(raw, tc.wantDot) {
 			t.Errorf("status %q: dot want %q in %q", tc.status, tc.wantDot, raw)
 		}
@@ -1168,7 +1168,7 @@ func TestSyncTableRows_BlockedPending_DimStyle(t *testing.T) {
 	if len(rows) == 0 {
 		t.Fatal("no rows after syncTableRows")
 	}
-	statusCell := rows[0][0]
+	statusCell := rows[0][1]
 	// blocked pending は dim スタイルで ANSI コードを含むこと
 	if !strings.Contains(statusCell, "\x1b") {
 		t.Errorf("blocked pending STATUS cell should contain ANSI code (dim), got %q", statusCell)
@@ -1197,7 +1197,7 @@ func TestSyncTableRows_ExecutingTitle_NoColor(t *testing.T) {
 	if len(rows) == 0 {
 		t.Fatal("no rows")
 	}
-	titleCell := rows[0][1]
+	titleCell := rows[0][0]
 	// 非親タスクの TITLE は無装飾
 	if strings.Contains(titleCell, "\x1b") {
 		t.Errorf("non-parent executing TITLE cell should NOT contain ANSI code, got %q", titleCell)
@@ -1206,7 +1206,7 @@ func TestSyncTableRows_ExecutingTitle_NoColor(t *testing.T) {
 		t.Errorf("executing TITLE cell should contain task title, got %q", titleCell)
 	}
 	// STATUS セルのドットは着色されること
-	statusCell := rows[0][0]
+	statusCell := rows[0][1]
 	if !strings.Contains(statusCell, "\x1b") {
 		t.Errorf("executing STATUS cell should contain ANSI code (colored dot), got %q", statusCell)
 	}
@@ -1666,11 +1666,11 @@ func TestSyncTableRows_Indent_Depth1(t *testing.T) {
 		t.Fatalf("want 2 rows, got %d", len(rows))
 	}
 	// ANSI コードを除いてツリー prefix を確認する
-	parentTitle := stripANSI(rows[0][1])
+	parentTitle := stripANSI(rows[0][0])
 	if strings.HasPrefix(parentTitle, "├─") || strings.HasPrefix(parentTitle, "└─") {
 		t.Errorf("parent row should not have tree prefix, got %q", parentTitle)
 	}
-	rawChildTitle := stripANSI(rows[1][1])
+	rawChildTitle := stripANSI(rows[1][0])
 	// 唯一の子なので末子 → "└─" prefix
 	if !strings.HasPrefix(rawChildTitle, "└─") {
 		t.Errorf("child row should start with \"└─\" tree prefix, got %q", rawChildTitle)
@@ -1695,7 +1695,7 @@ func TestSyncTableRows_Indent_Depth2(t *testing.T) {
 	}
 	// ANSI コードを除いてツリー prefix を確認する
 	// c は唯一の末子 → "└─"、gc も唯一の末子で c が末子 → "  └─"
-	gcTitle := stripANSI(rows[2][1])
+	gcTitle := stripANSI(rows[2][0])
 	if !strings.HasPrefix(gcTitle, "  └─") {
 		t.Errorf("grandchild should have \"  └─\" prefix, got %q", gcTitle)
 	}
@@ -1716,7 +1716,7 @@ func TestSyncTableRows_ProgressInTitle(t *testing.T) {
 	s.syncTableRows()
 
 	rows := s.tableRows
-	titleCell := stripANSI(rows[0][1])
+	titleCell := stripANSI(rows[0][0])
 	if !containsStr(titleCell, "3/7") {
 		t.Errorf("parent title should contain progress '3/7', got %q", titleCell)
 	}
@@ -1738,7 +1738,7 @@ func TestSyncTableRows_ProgressWithAbortedBadge(t *testing.T) {
 	s.syncTableRows()
 
 	rows := s.tableRows
-	titleCell := stripANSI(rows[0][1])
+	titleCell := stripANSI(rows[0][0])
 	if !containsStr(titleCell, "[!1]") {
 		t.Errorf("parent title should contain aborted badge '[!1]', got %q", titleCell)
 	}
@@ -1758,7 +1758,7 @@ func TestSyncTableRows_NoProgressForChildless(t *testing.T) {
 	s.syncTableRows()
 
 	rows := s.tableRows
-	titleCell := rows[0][1]
+	titleCell := rows[0][0]
 	// Should not contain a progress separator like "0/0" or "N/M"
 	if containsStr(titleCell, "/") {
 		t.Errorf("childless task title should not contain '/', got %q", titleCell)
@@ -1952,12 +1952,12 @@ func TestSyncTableRows_BlockedPendingRowIsDim(t *testing.T) {
 	}
 
 	// STATUS セルのドット部分は dim ANSI コードを含む
-	if !strings.Contains(rows[0][0], "\x1b") {
-		t.Errorf("blocked pending STATUS cell should contain ANSI (dim), got %q", rows[0][0])
+	if !strings.Contains(rows[0][1], "\x1b") {
+		t.Errorf("blocked pending STATUS cell should contain ANSI (dim), got %q", rows[0][1])
 	}
 	// TITLE セルも dim ANSI コードを含む
-	if !strings.Contains(rows[0][1], "\x1b") {
-		t.Errorf("blocked pending TITLE cell should contain ANSI (dim), got %q", rows[0][1])
+	if !strings.Contains(rows[0][0], "\x1b") {
+		t.Errorf("blocked pending TITLE cell should contain ANSI (dim), got %q", rows[0][0])
 	}
 	// BEHAVIOR セルも dim ANSI コードを含む
 	if !strings.Contains(rows[0][3], "\x1b") {
@@ -1982,11 +1982,11 @@ func TestSyncTableRows_DoneRowIsDim(t *testing.T) {
 		t.Fatal("no rows after syncTableRows")
 	}
 
-	if !strings.Contains(rows[0][0], "\x1b") {
-		t.Errorf("done STATUS cell should contain ANSI (dim), got %q", rows[0][0])
-	}
 	if !strings.Contains(rows[0][1], "\x1b") {
-		t.Errorf("done TITLE cell should contain ANSI (dim), got %q", rows[0][1])
+		t.Errorf("done STATUS cell should contain ANSI (dim), got %q", rows[0][1])
+	}
+	if !strings.Contains(rows[0][0], "\x1b") {
+		t.Errorf("done TITLE cell should contain ANSI (dim), got %q", rows[0][0])
 	}
 	if !strings.Contains(rows[0][3], "\x1b") {
 		t.Errorf("done BEHAVIOR cell should contain ANSI (dim), got %q", rows[0][3])
@@ -2012,16 +2012,16 @@ func TestSyncTableRows_AbortedRowIsDim(t *testing.T) {
 	}
 
 	// STATUS セルは ANSI あり（赤の ✗）
-	if !strings.Contains(rows[0][0], "\x1b") {
-		t.Errorf("aborted STATUS cell should contain ANSI (red ✗), got %q", rows[0][0])
+	if !strings.Contains(rows[0][1], "\x1b") {
+		t.Errorf("aborted STATUS cell should contain ANSI (red ✗), got %q", rows[0][1])
 	}
 	// STATUS セルは styleAborted（赤）でレンダリングされる
 	wantDot := styleAborted.Render("✗")
-	if !strings.Contains(rows[0][0], wantDot) {
-		t.Errorf("aborted STATUS cell dot should be red (styleAborted), got %q", rows[0][0])
+	if !strings.Contains(rows[0][1], wantDot) {
+		t.Errorf("aborted STATUS cell dot should be red (styleAborted), got %q", rows[0][1])
 	}
-	if !strings.Contains(rows[0][1], "\x1b") {
-		t.Errorf("aborted TITLE cell should contain ANSI (dim), got %q", rows[0][1])
+	if !strings.Contains(rows[0][0], "\x1b") {
+		t.Errorf("aborted TITLE cell should contain ANSI (dim), got %q", rows[0][0])
 	}
 	if !strings.Contains(rows[0][3], "\x1b") {
 		t.Errorf("aborted BEHAVIOR cell should contain ANSI (dim), got %q", rows[0][3])
@@ -2043,12 +2043,12 @@ func TestBlink_ExecutingDotDimsWhenBlinkOff(t *testing.T) {
 	// blinkOn=false（デフォルト）: ドットは dim 色
 	s.blinkOn = false
 	s.syncTableRows()
-	statusBlinkOff := s.tableRows[0][0]
+	statusBlinkOff := s.tableRows[0][1]
 
 	// blinkOn=true: ドットは executing 色
 	s.blinkOn = true
 	s.syncTableRows()
-	statusBlinkOn := s.tableRows[0][0]
+	statusBlinkOn := s.tableRows[0][1]
 
 	if statusBlinkOff == statusBlinkOn {
 		t.Error("blinkOn/Off should produce different STATUS cell rendering")
