@@ -25,8 +25,7 @@ func buildDepsTreeRows(detail *api.TaskDetailView) []depsTreeRow {
 	var rows []depsTreeRow
 
 	// 1. Upstream: post-order DFS (children before parent = deeper ancestors first).
-	maxUp := treeMaxDepth(detail.DependsOnTree, 0)
-	upRows := flattenUpstream(detail.DependsOnTree, 0, maxUp)
+	upRows := flattenUpstream(detail.DependsOnTree, "")
 	rows = append(rows, upRows...)
 
 	// 2. Self
@@ -41,31 +40,27 @@ func buildDepsTreeRows(detail *api.TaskDetailView) []depsTreeRow {
 	return rows
 }
 
-// treeMaxDepth returns the maximum depth of a TaskNode tree (root = depth 0).
-func treeMaxDepth(nodes []*api.TaskNode, depth int) int {
-	maxD := depth
-	for _, n := range nodes {
-		if d := treeMaxDepth(n.Children, depth+1); d > maxD {
-			maxD = d
-		}
-	}
-	return maxD
-}
-
 // flattenUpstream collects upstream rows in post-order DFS (children before parent),
 // so deeper ancestors appear first (higher in the display).
-// depth = depth within DependsOnTree (0 = direct dep of self, 1 = grandparent, ...).
-// maxDepth = maximum depth in the whole DependsOnTree.
-// Visual indent = (maxDepth - depth) * 2 spaces, so deepest nodes have 0 indent.
-func flattenUpstream(nodes []*api.TaskNode, depth, maxDepth int) []depsTreeRow {
+// linePrefix is the continuation-line prefix accumulated from ancestor levels.
+// Connectors (├─/└─) are derived from each node's position among its siblings,
+// mirroring the downstream connector logic so the full tree looks consistent.
+func flattenUpstream(nodes []*api.TaskNode, linePrefix string) []depsTreeRow {
 	var rows []depsTreeRow
-	for _, node := range nodes {
-		// Children first (deeper ancestors appear higher in display).
-		childRows := flattenUpstream(node.Children, depth+1, maxDepth)
+	for i, node := range nodes {
+		isLast := i == len(nodes)-1
+		var nodeConnector, childContinuation string
+		if isLast {
+			nodeConnector = "└─ "
+			childContinuation = "   "
+		} else {
+			nodeConnector = "├─ "
+			childContinuation = "│  "
+		}
+		// Children first (deeper ancestors appear higher in display = post-order).
+		childRows := flattenUpstream(node.Children, linePrefix+childContinuation)
 		rows = append(rows, childRows...)
-		// Then the node itself.
-		indent := strings.Repeat("  ", maxDepth-depth)
-		rows = append(rows, depsTreeRow{task: node.Task, prefix: indent})
+		rows = append(rows, depsTreeRow{task: node.Task, prefix: linePrefix + nodeConnector})
 	}
 	return rows
 }
