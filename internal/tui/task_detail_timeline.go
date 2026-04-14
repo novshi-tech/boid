@@ -17,29 +17,14 @@ const (
 	timelineKindJob     = "job"
 )
 
-// userDrivenActionTypes is the allowlist of action types that are considered
-// user-driven. These are shown in the Overview timeline; internal engine
-// actions (hook_fired, exit_gate_fired, auto_advance, etc.) are excluded.
-var userDrivenActionTypes = map[string]bool{
-	"start":            true,
-	"abort":            true,
-	"rerun":            true,
-	"done":             true,
-	"collect_feedback": true,
-	"pause":            true,
-	"resume":           true,
-	"reject":           true,
-	"accept":           true,
-}
-
-// timelineEvent is a single row in the unified timeline view.
+// timelineEvent is a single row in the tree timeline view.
 type timelineEvent struct {
 	Time     time.Time
 	Kind     string
 	Label    string
 	Sub      string   // optional secondary info (e.g. worktree path)
 	Job      *api.Job // non-nil for job events
-	HasTime  bool     // false = no reliable timestamp; sorted to bottom
+	HasTime  bool     // false = no reliable timestamp (findings)
 	Resolved bool     // for finding events: true = resolved
 }
 
@@ -93,198 +78,20 @@ func parseAllFindings(payload json.RawMessage) []allFinding {
 	return result
 }
 
-// buildTimeline constructs the sorted unified timeline from all event sources in detail.
-func buildTimeline(detail *api.TaskDetailView) []timelineEvent {
-	if detail == nil {
-		return nil
-	}
-	var events []timelineEvent
-
-	// Actions → action events (◆)
-	for _, a := range detail.Actions {
-		events = append(events, timelineEvent{
-			Time:    a.CreatedAt,
-			Kind:    timelineKindAction,
-			Label:   a.Type + " applied",
-			HasTime: !a.CreatedAt.IsZero(),
-		})
-	}
-
-	// Jobs → job events (●)
-	for _, j := range detail.Jobs {
-		sub := ""
-		if j.WorkspacePath != "" {
-			sub = "worktree=" + j.WorkspacePath
-		}
-		events = append(events, timelineEvent{
-			Time:    j.CreatedAt,
-			Kind:    timelineKindJob,
-			Label:   buildJobTimelineLabel(j),
-			Sub:     sub,
-			Job:     j,
-			HasTime: !j.CreatedAt.IsZero(),
-		})
-	}
-
-	// Findings → finding events (! / ✓)
-	// Findings have no reliable timestamp; placed at the bottom of the timeline.
-	if detail.Task != nil {
-		for _, f := range parseAllFindings(detail.Task.Payload) {
-			status := "open"
-			if f.resolved {
-				status = "resolved"
-			}
-			events = append(events, timelineEvent{
-				Kind:     timelineKindFinding,
-				Label:    fmt.Sprintf("[%s] %s (%s)", f.gate, f.message, status),
-				HasTime:  false,
-				Resolved: f.resolved,
-			})
-		}
-	}
-
-	// Sort: timed events first (ascending), no-time events at bottom.
-	sort.SliceStable(events, func(i, j int) bool {
-		if events[i].HasTime != events[j].HasTime {
-			return events[i].HasTime
-		}
-		if !events[i].HasTime {
-			return false
-		}
-		return events[i].Time.Before(events[j].Time)
-	})
-
-	return events
-}
-
-// buildJobTimelineLabel returns the display label for a job timeline event.
-func buildJobTimelineLabel(j *api.Job) string {
-	role := j.Role
-	if role == "" {
-		role = "job"
-	}
-	switch j.Status {
-	case api.JobStatusRunning:
-		return fmt.Sprintf("[%s] running %s", role, formatElapsed(j.CreatedAt))
-	case api.JobStatusCompleted:
-		return fmt.Sprintf("[%s] exit=%d done", role, j.ExitCode)
-	case api.JobStatusFailed:
-		return fmt.Sprintf("[%s] exit=%d failed", role, j.ExitCode)
-	default:
-		return fmt.Sprintf("[%s] %s", role, string(j.Status))
-	}
-}
-
-// buildOverviewTimeline constructs a filtered timeline for the Overview tab.
-// Included:
-//   - User-driven actions only (filtered by userDrivenActionTypes allowlist)
-//   - Completed or failed jobs only (running jobs are shown in the Active section)
-//   - All verification findings (resolved and open)
-//
-// Excluded: internal engine actions (hook_fired, auto_advance, etc.) and running jobs.
-// Worktree paths are not included in Sub; use JobDetailScreen for those details.
-func buildOverviewTimeline(detail *api.TaskDetailView) []timelineEvent {
-	if detail == nil {
-		return nil
-	}
-	var events []timelineEvent
-
-	// User-driven actions only.
-	for _, a := range detail.Actions {
-		if !userDrivenActionTypes[a.Type] {
-			continue
-		}
-		events = append(events, timelineEvent{
-			Time:    a.CreatedAt,
-			Kind:    timelineKindAction,
-			Label:   a.Type + " applied",
-			HasTime: !a.CreatedAt.IsZero(),
-		})
-	}
-
-	// Completed/failed jobs only (running jobs appear in Active section).
-	for _, j := range detail.Jobs {
-		if j.Status == api.JobStatusRunning {
-			continue
-		}
-		events = append(events, timelineEvent{
-			Time:    j.CreatedAt,
-			Kind:    timelineKindJob,
-			Label:   buildOverviewJobLabel(j),
-			Job:     j,
-			HasTime: !j.CreatedAt.IsZero(),
-		})
-	}
-
-	// Findings (all — open and resolved).
-	if detail.Task != nil {
-		for _, f := range parseAllFindings(detail.Task.Payload) {
-			status := "open"
-			if f.resolved {
-				status = "resolved"
-			}
-			events = append(events, timelineEvent{
-				Kind:     timelineKindFinding,
-				Label:    fmt.Sprintf("[%s] %s (%s)", f.gate, f.message, status),
-				HasTime:  false,
-				Resolved: f.resolved,
-			})
-		}
-	}
-
-	// Sort: timed events ascending, no-time events at bottom.
-	sort.SliceStable(events, func(i, j int) bool {
-		if events[i].HasTime != events[j].HasTime {
-			return events[i].HasTime
-		}
-		if !events[i].HasTime {
-			return false
-		}
-		return events[i].Time.Before(events[j].Time)
-	})
-
-	return events
-}
-
-// buildOverviewJobLabel returns a compact summary for a completed/failed job
-// in the Overview timeline: "role  ✓ duration" or "role  ✗ duration".
-func buildOverviewJobLabel(j *api.Job) string {
-	role := j.Role
-	if role == "" {
-		role = "job"
-	}
-	dur := overviewJobDuration(j)
-	switch j.Status {
-	case api.JobStatusCompleted:
-		return fmt.Sprintf("[%s]  ✓ %s", role, dur)
-	case api.JobStatusFailed:
-		return fmt.Sprintf("[%s]  ✗ %s", role, dur)
-	default:
-		return fmt.Sprintf("[%s] %s", role, string(j.Status))
-	}
-}
-
-// overviewJobDuration returns a human-readable duration for a completed job.
-func overviewJobDuration(j *api.Job) string {
-	if j.UpdatedAt.IsZero() || !j.UpdatedAt.After(j.CreatedAt) {
-		return "?"
-	}
-	d := j.UpdatedAt.Sub(j.CreatedAt).Round(time.Second)
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	}
-	m := int(d.Minutes())
-	s := int(d.Seconds()) % 60
-	if s == 0 {
-		return fmt.Sprintf("%dm", m)
-	}
-	return fmt.Sprintf("%dm%ds", m, s)
-}
-
 // statusGroup groups timeline events under a single task status node in the tree view.
 type statusGroup struct {
 	Status string
 	Events []timelineEvent
+}
+
+// isHookOrGateFired reports whether an action type represents a hook or gate firing.
+func isHookOrGateFired(t string) bool {
+	return t == "hook_fired" || t == "exit_gate_fired" || t == "entry_gate_fired"
+}
+
+// isStateTransition reports whether an action represents a meaningful state transition.
+func isStateTransition(a *orchestrator.Action) bool {
+	return a.FromStatus != "" && a.ToStatus != "" && a.FromStatus != a.ToStatus
 }
 
 // extractSourceState reads the source_state field from an action payload.
@@ -303,11 +110,10 @@ func extractSourceState(payload json.RawMessage) string {
 }
 
 // buildActionTreeLabel returns the display label for an action in the tree timeline.
-// For hook/gate-fired actions it extracts the handler ID and success flag from payload.
-// For state-transition actions it appends " → <to_status>" to the type.
+// - hook/gate-fired: "<type>: <hook_id> ok|fail"
+// - state transition: "<type> → <to_status>"
 func buildActionTreeLabel(a *orchestrator.Action) string {
-	switch a.Type {
-	case "hook_fired", "exit_gate_fired", "entry_gate_fired":
+	if isHookOrGateFired(a.Type) {
 		var p struct {
 			HookID  string `json:"hook_id"`
 			Success bool   `json:"success"`
@@ -321,15 +127,51 @@ func buildActionTreeLabel(a *orchestrator.Action) string {
 		}
 		return a.Type
 	}
-	label := a.Type
-	if a.ToStatus != "" && a.FromStatus != a.ToStatus {
-		label += " → " + string(a.ToStatus)
+	if isStateTransition(a) {
+		return a.Type + " → " + string(a.ToStatus)
 	}
-	return label
+	return a.Type
 }
 
-// buildTreeTimeline groups all timeline events (actions, jobs, findings) by the
-// task status in which they occurred. Groups are ordered by first occurrence.
+// buildJobTimelineLabel returns the display label for a completed or failed job.
+// Format: "[role] ✓ 2m" / "[role] ✗ 2m".
+func buildJobTimelineLabel(j *api.Job) string {
+	role := j.Role
+	if role == "" {
+		role = "job"
+	}
+	dur := jobDuration(j)
+	switch j.Status {
+	case api.JobStatusCompleted:
+		return fmt.Sprintf("[%s] ✓ %s", role, dur)
+	case api.JobStatusFailed:
+		return fmt.Sprintf("[%s] ✗ %s", role, dur)
+	default:
+		return fmt.Sprintf("[%s] %s", role, string(j.Status))
+	}
+}
+
+// jobDuration returns a human-readable duration for a completed/failed job.
+func jobDuration(j *api.Job) string {
+	if j.UpdatedAt.IsZero() || !j.UpdatedAt.After(j.CreatedAt) {
+		return "?"
+	}
+	d := j.UpdatedAt.Sub(j.CreatedAt).Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	m := int(d.Minutes())
+	s := int(d.Seconds()) % 60
+	if s == 0 {
+		return fmt.Sprintf("%dm", m)
+	}
+	return fmt.Sprintf("%dm%ds", m, s)
+}
+
+// buildTreeTimeline groups filtered timeline events by the task status in which
+// they occurred. Only state-transition actions, hook/gate-fired actions,
+// completed/failed jobs, and findings are included — ephemeral running jobs and
+// non-transition bookkeeping actions are omitted to keep the view signal-heavy.
 func buildTreeTimeline(detail *api.TaskDetailView) []statusGroup {
 	if detail == nil {
 		return nil
@@ -344,9 +186,15 @@ func buildTreeTimeline(detail *api.TaskDetailView) []statusGroup {
 
 	var items []rawItem
 	for _, a := range detail.Actions {
+		if !isStateTransition(a) && !isHookOrGateFired(a.Type) {
+			continue
+		}
 		items = append(items, rawItem{t: a.CreatedAt, hasTime: !a.CreatedAt.IsZero(), action: a})
 	}
 	for _, j := range detail.Jobs {
+		if j.Status == api.JobStatusRunning {
+			continue
+		}
 		items = append(items, rawItem{t: j.CreatedAt, hasTime: !j.CreatedAt.IsZero(), job: j})
 	}
 
@@ -382,10 +230,8 @@ func buildTreeTimeline(detail *api.TaskDetailView) []statusGroup {
 			if groupStatus == "" {
 				groupStatus = currentStatus
 			}
-			// hook/gate fired: honour source_state from payload (same as FromStatus in practice,
-			// but use the payload field as specified in the requirements).
-			switch a.Type {
-			case "hook_fired", "exit_gate_fired", "entry_gate_fired":
+			// hook/gate fired: honour source_state from payload when present.
+			if isHookOrGateFired(a.Type) {
 				if ss := extractSourceState(a.Payload); ss != "" {
 					groupStatus = ss
 				}
@@ -398,7 +244,6 @@ func buildTreeTimeline(detail *api.TaskDetailView) []statusGroup {
 				HasTime: !a.CreatedAt.IsZero(),
 			})
 
-			// Advance current status on state transitions.
 			if string(a.ToStatus) != "" {
 				currentStatus = string(a.ToStatus)
 			} else if groupStatus != "" {
@@ -406,15 +251,10 @@ func buildTreeTimeline(detail *api.TaskDetailView) []statusGroup {
 			}
 		} else {
 			j := it.job
-			sub := ""
-			if j.WorkspacePath != "" {
-				sub = "worktree=" + j.WorkspacePath
-			}
 			addEvent(currentStatus, timelineEvent{
 				Time:    j.CreatedAt,
 				Kind:    timelineKindJob,
 				Label:   buildJobTimelineLabel(j),
-				Sub:     sub,
 				Job:     j,
 				HasTime: !j.CreatedAt.IsZero(),
 			})
@@ -464,7 +304,6 @@ func renderTreeTimeline(groups []statusGroup, width, height, cursor int) string 
 		return styleDim.Render("  (no timeline events)") + "\n"
 	}
 
-	// Build a flat slice of visual rows (headers + events interleaved).
 	type visualRow struct {
 		isHeader bool
 		header   string
@@ -492,7 +331,6 @@ func renderTreeTimeline(groups []statusGroup, width, height, cursor int) string 
 		}
 	}
 
-	// Find the visual row position of the cursor event.
 	cursorVisualRow := 0
 	for i, row := range rows {
 		if !row.isHeader && row.evIdx == cursor {
@@ -501,7 +339,6 @@ func renderTreeTimeline(groups []statusGroup, width, height, cursor int) string 
 		}
 	}
 
-	// Scroll window: keep cursor row visible.
 	scroll := 0
 	if cursorVisualRow >= height {
 		scroll = cursorVisualRow - height + 1
@@ -582,97 +419,6 @@ func renderTreeTimeline(groups []statusGroup, width, height, cursor int) string 
 
 	if end < len(rows) {
 		sb.WriteString(styleDim.Render(fmt.Sprintf("  ... %d more", len(rows)-end)))
-		sb.WriteByte('\n')
-	}
-
-	return sb.String()
-}
-
-// renderTimeline renders the timeline events as a string.
-// cursor selects the highlighted row; the view window follows the cursor.
-func renderTimeline(events []timelineEvent, width, height, cursor int) string {
-	_ = width
-	if len(events) == 0 {
-		return styleDim.Render("  (no timeline events)") + "\n"
-	}
-
-	// Compute scroll offset to keep cursor in view.
-	scroll := 0
-	if cursor >= height {
-		scroll = cursor - height + 1
-	}
-	if maxScroll := max(len(events)-height, 0); scroll > maxScroll {
-		scroll = maxScroll
-	}
-
-	var sb strings.Builder
-	end := min(scroll+height, len(events))
-	for i := scroll; i < end; i++ {
-		ev := events[i]
-		selected := i == cursor
-
-		// Cursor indicator
-		cursorStr := "  "
-		if selected {
-			cursorStr = styleCursor.Render("▸ ")
-		}
-
-		// Time column
-		var timeStr string
-		if ev.HasTime {
-			timeStr = ev.Time.Local().Format("15:04:05")
-		} else {
-			timeStr = "--:--:--"
-		}
-
-		// Icon
-		var icon string
-		switch ev.Kind {
-		case timelineKindJob:
-			if ev.Job != nil {
-				switch ev.Job.Status {
-				case api.JobStatusRunning:
-					icon = styleRunning.Render("●")
-				case api.JobStatusCompleted:
-					icon = styleCompleted.Render("●")
-				case api.JobStatusFailed:
-					icon = styleFailed.Render("●")
-				default:
-					icon = stylePending.Render("●")
-				}
-			} else {
-				icon = "●"
-			}
-		case timelineKindAction:
-			icon = styleVerifying.Render("◆")
-		case timelineKindFinding:
-			if ev.Resolved {
-				icon = styleTaskDim.Render("✓")
-			} else {
-				icon = styleWarn.Render("!")
-			}
-		default:
-			icon = styleDim.Render("→")
-		}
-
-		// Label with optional sub
-		labelPart := ev.Label
-		if ev.Sub != "" {
-			labelPart += "  " + styleDim.Render(ev.Sub)
-		}
-
-		line := fmt.Sprintf("%s%s  %s  %s",
-			cursorStr,
-			styleDim.Render(timeStr),
-			icon,
-			labelPart,
-		)
-		sb.WriteString(line)
-		sb.WriteByte('\n')
-	}
-
-	if end < len(events) {
-		sb.WriteString(styleDim.Render(fmt.Sprintf("  ... %d more", len(events)-end)))
 		sb.WriteByte('\n')
 	}
 

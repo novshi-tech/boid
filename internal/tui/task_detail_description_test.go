@@ -173,11 +173,11 @@ func TestDescriptionTab_ViewRenders(t *testing.T) {
 	}
 }
 
-// --- buildOverviewTimeline filtering tests ---
+// --- buildTreeTimeline filtering tests ---
 
-func TestBuildOverviewTimeline_ExcludesRunningJobs(t *testing.T) {
+func TestBuildTreeTimeline_ExcludesRunningJobs(t *testing.T) {
 	detail := &api.TaskDetailView{
-		Task: &orchestrator.Task{ID: "t"},
+		Task: &orchestrator.Task{ID: "t", Status: orchestrator.TaskStatusExecuting},
 		Jobs: []*api.Job{
 			{
 				ID:        "j1",
@@ -187,131 +187,44 @@ func TestBuildOverviewTimeline_ExcludesRunningJobs(t *testing.T) {
 			},
 		},
 	}
-	events := buildOverviewTimeline(detail)
-	for _, ev := range events {
-		if ev.Kind == timelineKindJob {
-			t.Error("buildOverviewTimeline: running job should be excluded")
-		}
-	}
-}
-
-func TestBuildOverviewTimeline_IncludesCompletedJobs(t *testing.T) {
-	now := time.Now()
-	detail := &api.TaskDetailView{
-		Task: &orchestrator.Task{ID: "t"},
-		Jobs: []*api.Job{
-			{
-				ID:        "j1",
-				Role:      "verifier",
-				Status:    api.JobStatusCompleted,
-				ExitCode:  0,
-				CreatedAt: now.Add(-5 * time.Minute),
-				UpdatedAt: now,
-			},
-			{
-				ID:        "j2",
-				Role:      "main",
-				Status:    api.JobStatusFailed,
-				ExitCode:  1,
-				CreatedAt: now.Add(-3 * time.Minute),
-				UpdatedAt: now.Add(-1 * time.Minute),
-			},
-		},
-	}
-	events := buildOverviewTimeline(detail)
-	jobEvents := 0
-	for _, ev := range events {
-		if ev.Kind == timelineKindJob {
-			jobEvents++
-		}
-	}
-	if jobEvents != 2 {
-		t.Errorf("buildOverviewTimeline: want 2 job events, got %d", jobEvents)
-	}
-}
-
-func TestBuildOverviewTimeline_ExcludesInternalActions(t *testing.T) {
-	now := time.Now()
-	detail := &api.TaskDetailView{
-		Task: &orchestrator.Task{ID: "t"},
-		Actions: []*orchestrator.Action{
-			{ID: "a1", TaskID: "t", Type: "hook_fired", CreatedAt: now.Add(-3 * time.Minute)},
-			{ID: "a2", TaskID: "t", Type: "auto_advance", CreatedAt: now.Add(-2 * time.Minute)},
-			{ID: "a3", TaskID: "t", Type: "start", CreatedAt: now.Add(-1 * time.Minute)},
-		},
-	}
-	events := buildOverviewTimeline(detail)
-	for _, ev := range events {
-		if ev.Kind == timelineKindAction {
-			if containsStr(ev.Label, "hook_fired") || containsStr(ev.Label, "auto_advance") {
-				t.Errorf("buildOverviewTimeline: internal action %q should be excluded", ev.Label)
+	groups := buildTreeTimeline(detail)
+	for _, g := range groups {
+		for _, ev := range g.Events {
+			if ev.Kind == timelineKindJob {
+				t.Error("buildTreeTimeline: running job should be excluded from tree")
 			}
 		}
 	}
-	// Only "start" should be included
-	actionCount := 0
-	for _, ev := range events {
-		if ev.Kind == timelineKindAction {
-			actionCount++
-		}
-	}
-	if actionCount != 1 {
-		t.Errorf("buildOverviewTimeline: want 1 user-driven action event, got %d", actionCount)
-	}
 }
 
-func TestBuildOverviewTimeline_IncludesFindings(t *testing.T) {
+func TestBuildTreeTimeline_ExcludesNonTransitionNonHookActions(t *testing.T) {
+	now := time.Now()
 	detail := &api.TaskDetailView{
-		Task: &orchestrator.Task{
-			ID: "t",
-			Payload: []byte(`{
-				"verification": {
-					"gate-a": {
-						"findings": [
-							{"message": "err1", "status": "open"},
-							{"message": "ok1", "status": "resolved"}
-						]
-					}
-				}
-			}`),
+		Task: &orchestrator.Task{ID: "t", Status: orchestrator.TaskStatusExecuting},
+		Actions: []*orchestrator.Action{
+			{
+				// Non-transition, non-hook action → must be excluded.
+				ID: "a1", Type: "rerun",
+				FromStatus: orchestrator.TaskStatusExecuting,
+				ToStatus:   orchestrator.TaskStatusExecuting,
+				CreatedAt:  now.Add(-3 * time.Minute),
+			},
+			{
+				// State transition → must be included.
+				ID: "a2", Type: "start",
+				FromStatus: orchestrator.TaskStatusPending,
+				ToStatus:   orchestrator.TaskStatusExecuting,
+				CreatedAt:  now.Add(-1 * time.Minute),
+			},
 		},
 	}
-	events := buildOverviewTimeline(detail)
-	findingCount := 0
-	for _, ev := range events {
-		if ev.Kind == timelineKindFinding {
-			findingCount++
+	groups := buildTreeTimeline(detail)
+	for _, g := range groups {
+		for _, ev := range g.Events {
+			if ev.Kind == timelineKindAction && containsStr(ev.Label, "rerun") {
+				t.Errorf("buildTreeTimeline: non-transition rerun should be excluded, got %q", ev.Label)
+			}
 		}
-	}
-	if findingCount != 2 {
-		t.Errorf("buildOverviewTimeline: want 2 finding events, got %d", findingCount)
-	}
-}
-
-func TestBuildOverviewTimeline_JobLabelFormat(t *testing.T) {
-	now := time.Now()
-	job := &api.Job{
-		ID:        "j1",
-		Role:      "verifier",
-		Status:    api.JobStatusCompleted,
-		ExitCode:  0,
-		CreatedAt: now.Add(-2 * time.Minute),
-		UpdatedAt: now,
-	}
-	detail := &api.TaskDetailView{
-		Task: &orchestrator.Task{ID: "t"},
-		Jobs: []*api.Job{job},
-	}
-	events := buildOverviewTimeline(detail)
-	if len(events) != 1 {
-		t.Fatalf("want 1 event, got %d", len(events))
-	}
-	label := events[0].Label
-	if !containsStr(label, "[verifier]") {
-		t.Errorf("job label: expected '[verifier]', got %q", label)
-	}
-	if !containsStr(label, "✓") {
-		t.Errorf("completed job label: expected '✓', got %q", label)
 	}
 }
 

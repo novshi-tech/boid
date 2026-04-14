@@ -67,9 +67,9 @@ func renderSectionHeader(title string, width int) string {
 //
 // Layout (top to bottom):
 //  1. ─── Active ─── section: currently running jobs.
-//  2. ─── Timeline ─── section: completed/failed jobs + user-driven actions + findings
-//     (filtered via buildOverviewTimeline; running jobs excluded).
-//  3. ─── Findings (open) ─── section: only when open findings exist.
+//  2. ─── Findings (open) ─── section: only when open findings exist.
+//  3. ─── Timeline ─── section: state-grouped tree of state transitions,
+//     hook/gate firings, completed/failed jobs, and findings.
 func (s *TaskDetailScreen) renderOverview(width, height int) string {
 	var sb strings.Builder
 	used := 0
@@ -134,7 +134,7 @@ func (s *TaskDetailScreen) renderOverview(width, height int) string {
 	}
 
 	// ─── Timeline ─────────────────────────────────────────────
-	events := buildOverviewTimeline(s.detail)
+	groups := buildTreeTimeline(s.detail)
 	sb.WriteString(renderSectionHeader("Timeline", width))
 	sb.WriteByte('\n')
 	used++
@@ -143,7 +143,7 @@ func (s *TaskDetailScreen) renderOverview(width, height int) string {
 	// timelineCursor is the unified overview cursor: [0, nActive-1] = Active, [nActive, ...] = Timeline.
 	// Pass a negative value when cursor is in Active section so no Timeline row is highlighted.
 	timelineCursor := s.timelineCursor - nActive
-	sb.WriteString(renderTimeline(events, width, timelineHeight, timelineCursor))
+	sb.WriteString(renderTreeTimeline(groups, width, timelineHeight, timelineCursor))
 
 	return sb.String()
 }

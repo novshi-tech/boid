@@ -100,7 +100,7 @@ func (s *TaskDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if s.detail != nil {
 				// timelineCursor is the unified overview cursor: Active jobs then Timeline events.
 				runningJobs := s.runningJobs()
-				events := buildOverviewTimeline(s.detail)
+				events := selectableEventsInGroups(buildTreeTimeline(s.detail))
 				total := len(runningJobs) + len(events)
 				if s.timelineCursor >= total && total > 0 {
 					s.timelineCursor = total - 1
@@ -251,7 +251,7 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		switch s.activeTab {
 		case tabOverview:
 			runningJobs := s.runningJobs()
-			events := buildOverviewTimeline(s.detail)
+			events := selectableEventsInGroups(buildTreeTimeline(s.detail))
 			total := len(runningJobs) + len(events)
 			if s.timelineCursor < total-1 {
 				s.timelineCursor++
@@ -351,7 +351,7 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 				}
 			}
 			// Timeline section selected.
-			events := buildOverviewTimeline(s.detail)
+			events := selectableEventsInGroups(buildTreeTimeline(s.detail))
 			timelineIdx := s.timelineCursor - nActive
 			if timelineIdx >= 0 && timelineIdx < len(events) {
 				ev := events[timelineIdx]
