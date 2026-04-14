@@ -259,9 +259,11 @@ func TestBuildTreeTimeline_StateEntryTime(t *testing.T) {
 	}
 }
 
-// TestBuildTreeTimeline_FindingsGoToCurrentStatus verifies findings are placed
-// in the current task status group.
-func TestBuildTreeTimeline_FindingsGoToCurrentStatus(t *testing.T) {
+// TestBuildTreeTimeline_ExcludesFindings verifies that verification findings
+// are NOT surfaced in the timeline. Findings are shown in the dedicated
+// "Findings (open)" section and via the Payload tab; mixing raw finding
+// message text into the timeline would expose payload content inconsistently.
+func TestBuildTreeTimeline_ExcludesFindings(t *testing.T) {
 	now := time.Now()
 	detail := &api.TaskDetailView{
 		Task: &orchestrator.Task{
@@ -270,52 +272,36 @@ func TestBuildTreeTimeline_FindingsGoToCurrentStatus(t *testing.T) {
 			Payload: json.RawMessage(`{
 				"verification": {
 					"mergeable-check": {
-						"findings": [{"message": "conflict", "status": "open"}]
+						"findings": [
+							{"message": "conflict detail", "status": "open"},
+							{"message": "other", "status": "resolved"}
+						]
 					}
 				}
 			}`),
 		},
 		Actions: []*orchestrator.Action{
 			{
-				ID:         "a1",
-				Type:       "start",
+				ID: "a1", Type: "start",
 				FromStatus: orchestrator.TaskStatusPending,
 				ToStatus:   orchestrator.TaskStatusExecuting,
 				CreatedAt:  now.Add(-2 * time.Minute),
 			},
 			{
-				ID:         "a2",
-				Type:       "done",
+				ID: "a2", Type: "done",
 				FromStatus: orchestrator.TaskStatusExecuting,
 				ToStatus:   orchestrator.TaskStatusVerifying,
 				CreatedAt:  now.Add(-1 * time.Minute),
 			},
 		},
 	}
-
 	groups := buildTreeTimeline(detail)
-
-	// Finding should be in "verifying" group (current task status).
-	var verGroup *statusGroup
-	for i := range groups {
-		if groups[i].Status == "verifying" {
-			verGroup = &groups[i]
-			break
+	for _, g := range groups {
+		for _, ev := range g.Events {
+			if containsStr(ev.Label, "conflict detail") || containsStr(ev.Label, "mergeable-check") {
+				t.Errorf("finding content should not appear in timeline, got %q", ev.Label)
+			}
 		}
-	}
-	if verGroup == nil {
-		t.Fatal("verifying group not found")
-	}
-
-	found := false
-	for _, ev := range verGroup.Events {
-		if ev.Kind == timelineKindFinding {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("finding event not found in verifying group")
 	}
 }
 
@@ -327,11 +313,15 @@ func TestRenderTreeTimeline_Empty(t *testing.T) {
 	if !containsStr(out, "no timeline events") {
 		t.Errorf("empty: expected 'no timeline events', got %q", out)
 	}
+}
 
-	// Also test with groups that have no events.
-	out = renderTreeTimeline([]statusGroup{{Status: "pending", Events: nil}}, 80, 20, 0)
-	if !containsStr(out, "no timeline events") {
-		t.Errorf("no-events: expected 'no timeline events', got %q", out)
+// TestRenderTreeTimeline_EmptyGroupStillShowsHeader verifies that a group with
+// no events (e.g. the task just entered a new state) still renders its header
+// so the user can see where the task currently is.
+func TestRenderTreeTimeline_EmptyGroupStillShowsHeader(t *testing.T) {
+	out := renderTreeTimeline([]statusGroup{{Status: "pending", Events: nil}}, 80, 20, 0)
+	if !containsStr(out, "pending") {
+		t.Errorf("expected 'pending' header in output, got %q", out)
 	}
 }
 

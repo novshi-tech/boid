@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -13,69 +12,17 @@ import (
 )
 
 const (
-	timelineKindAction  = "action"
-	timelineKindFinding = "finding"
-	timelineKindJob     = "job"
+	timelineKindAction = "action"
+	timelineKindJob    = "job"
 )
 
 // timelineEvent is a single row in the tree timeline view.
 type timelineEvent struct {
-	Time     time.Time
-	Kind     string
-	Label    string
-	Job      *api.Job // non-nil for job events
-	HasTime  bool     // false = no reliable timestamp (findings)
-	Resolved bool     // for finding events: true = resolved
-}
-
-// allFinding holds one verification finding regardless of status.
-type allFinding struct {
-	gate     string
-	message  string
-	resolved bool
-}
-
-// parseAllFindings extracts all verification findings (open and resolved) from the task payload.
-func parseAllFindings(payload json.RawMessage) []allFinding {
-	if len(payload) == 0 {
-		return nil
-	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &m); err != nil {
-		return nil
-	}
-	raw, ok := m["verification"]
-	if !ok || string(raw) == "null" {
-		return nil
-	}
-	var sub map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &sub); err != nil {
-		return nil
-	}
-
-	type findingEntry struct {
-		Message string `json:"message"`
-		Status  string `json:"status"`
-	}
-	type verEntry struct {
-		Findings []findingEntry `json:"findings"`
-	}
-
-	var result []allFinding
-	for gate, v := range sub {
-		var entry verEntry
-		if err := json.Unmarshal(v, &entry); err != nil {
-			continue
-		}
-		for _, f := range entry.Findings {
-			result = append(result, allFinding{
-				gate:     gate,
-				message:  f.Message,
-				resolved: f.Status == "resolved",
-			})
-		}
-	}
-	return result
+	Time    time.Time
+	Kind    string
+	Label   string
+	Job     *api.Job // non-nil for job events
+	HasTime bool
 }
 
 // statusGroup groups timeline events under a single task status node in the tree view.
@@ -252,20 +199,19 @@ func buildTreeTimeline(detail *api.TaskDetailView) []statusGroup {
 		}
 	}
 
-	// Findings sit in the current task status group (no reliable timestamp).
+	// Ensure the current task status is visible as a group even if no events
+	// sit under it yet (e.g. the task just entered the state).
 	if detail.Task != nil {
-		taskStatus := string(detail.Task.Status)
-		for _, f := range parseAllFindings(detail.Task.Payload) {
-			status := "open"
-			if f.resolved {
-				status = "resolved"
+		cur := string(detail.Task.Status)
+		if cur != "" {
+			if _, ok := groupIdx[cur]; !ok {
+				groupIdx[cur] = len(groups)
+				groups = append(groups, statusGroup{
+					Status:       cur,
+					EnteredAt:    stateEntered[cur],
+					HasEnteredAt: stateHasEntry[cur],
+				})
 			}
-			addEvent(taskStatus, timelineEvent{
-				Kind:     timelineKindFinding,
-				Label:    fmt.Sprintf("[%s] %s (%s)", f.gate, f.message, status),
-				HasTime:  false,
-				Resolved: f.resolved,
-			})
 		}
 	}
 
@@ -305,12 +251,12 @@ func statusHeaderStyle(status string) lipgloss.Style {
 func renderTreeTimeline(groups []statusGroup, width, height, cursor int) string {
 	_ = width
 
+	if len(groups) == 0 {
+		return styleDim.Render("  (no timeline events)") + "\n"
+	}
 	totalEvents := 0
 	for _, g := range groups {
 		totalEvents += len(g.Events)
-	}
-	if totalEvents == 0 {
-		return styleDim.Render("  (no timeline events)") + "\n"
 	}
 
 	type visualRow struct {
@@ -418,12 +364,6 @@ func renderTreeTimeline(groups []statusGroup, width, height, cursor int) string 
 			}
 		case timelineKindAction:
 			icon = styleVerifying.Render("◆")
-		case timelineKindFinding:
-			if ev.Resolved {
-				icon = styleTaskDim.Render("✓")
-			} else {
-				icon = styleWarn.Render("!")
-			}
 		default:
 			icon = styleDim.Render("→")
 		}
