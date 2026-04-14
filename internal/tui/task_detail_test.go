@@ -216,8 +216,8 @@ func TestTaskDetailView_Renders(t *testing.T) {
 	if !containsStr(view, "Test Task") {
 		t.Error("View should contain task title")
 	}
-	if !containsStr(view, "[O]verview") {
-		t.Error("View should contain tab bar with '[O]verview'")
+	if !containsStr(view, "Overview") {
+		t.Error("View should contain tab bar with 'Overview'")
 	}
 	if !containsStr(view, "Active") {
 		t.Error("View should contain 'Active' section header")
@@ -670,19 +670,34 @@ func TestTabSwitch(t *testing.T) {
 		t.Errorf("initial tab: want %q, got %q", tabOverview, s.activeTab)
 	}
 
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	s.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if s.activeTab != tabTimeline {
-		t.Errorf("after t: want %q, got %q", tabTimeline, s.activeTab)
+		t.Errorf("after tab: want %q, got %q", tabTimeline, s.activeTab)
 	}
 
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	s.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if s.activeTab != tabDeps {
+		t.Errorf("after tab: want %q, got %q", tabDeps, s.activeTab)
+	}
+
+	s.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if s.activeTab != tabPayload {
-		t.Errorf("after p: want %q, got %q", tabPayload, s.activeTab)
+		t.Errorf("after tab: want %q, got %q", tabPayload, s.activeTab)
 	}
 
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if s.activeTab != tabDeps {
+		t.Errorf("after shift+tab: want %q, got %q", tabDeps, s.activeTab)
+	}
+
+	s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if s.activeTab != tabTimeline {
+		t.Errorf("after shift+tab: want %q, got %q", tabTimeline, s.activeTab)
+	}
+
+	s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 	if s.activeTab != tabOverview {
-		t.Errorf("after o: want %q, got %q", tabOverview, s.activeTab)
+		t.Errorf("after shift+tab: want %q, got %q", tabOverview, s.activeTab)
 	}
 }
 
@@ -690,7 +705,7 @@ func TestTabSwitch_ViewShowsTimeline(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	s.detail = makeDetailWithJobs(1)
 
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	s.Update(tea.KeyMsg{Type: tea.KeyTab})
 	view := s.View(80, 20)
 	// Timeline tab renders actual events; makeDetailWithJobs(1) has 1 running job
 	if !containsStr(view, "[main]") {
