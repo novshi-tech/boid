@@ -137,8 +137,7 @@ type TaskListScreen struct {
 	statusMsg           string
 	isError             bool
 	mini                miniSelector
-	titleWidth          int  // current TITLE column width; default 24
-	blinkOn             bool // toggles every 600ms for executing/reworking/verifying dot blink
+	titleWidth          int // current TITLE column width; default 24
 }
 
 func NewTaskListScreen(shared *SharedState) *TaskListScreen {
@@ -157,7 +156,6 @@ func (s *TaskListScreen) Init() tea.Cmd {
 		fetchProjectsCmd(s.shared.Client),
 		fetchWorkspacesCmd(s.shared.Client),
 		tickTaskList(s.displayTasks),
-		taskBlinkCmd(),
 	)
 }
 
@@ -170,9 +168,8 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		)
 
 	case taskBlinkTickMsg:
-		s.blinkOn = !s.blinkOn
 		s.syncTableRows()
-		return s, taskBlinkCmd()
+		return s, nil
 
 	case tasksMsg:
 		s.loading = false
@@ -237,10 +234,7 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return s, fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs())
 
 	case screenResumedMsg:
-		return s, tea.Batch(
-			fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs()),
-			taskBlinkCmd(),
-		)
+		return s, fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs())
 
 	case taskCreatedNotifyMsg:
 		s.statusMsg = "task created"
@@ -916,7 +910,7 @@ func (s *TaskListScreen) syncTableRows() {
 		var dotStyle lipgloss.Style
 		if isDimRow && task.Status != orchestrator.TaskStatusAborted {
 			dotStyle = styleTaskDim
-		} else if isBlinkTarget(task.Status) && !s.blinkOn {
+		} else if isBlinkTarget(task.Status) && !s.shared.BlinkOn {
 			dotStyle = styleTaskDim
 		} else {
 			dotStyle = taskCellStyle(task)

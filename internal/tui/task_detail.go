@@ -73,7 +73,6 @@ type TaskDetailScreen struct {
 	deletePending    bool
 	duplicatePending bool
 	rerunPending     bool
-	blinkOn          bool // toggles every 600ms for running-job dot and status badge blink
 
 	titleEditing bool
 	titleInput   TextFieldModel
@@ -93,7 +92,6 @@ func (s *TaskDetailScreen) Init() tea.Cmd {
 	return tea.Batch(
 		fetchTaskDetailCmd(s.shared.Client, s.taskID),
 		taskDetailTickCmd(),
-		taskBlinkCmd(),
 	)
 }
 
@@ -110,8 +108,7 @@ func (s *TaskDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		)
 
 	case taskBlinkTickMsg:
-		s.blinkOn = !s.blinkOn
-		return s, taskBlinkCmd()
+		return s, nil
 
 	case taskDetailMsg:
 		s.loading = false
@@ -525,7 +522,7 @@ func (s *TaskDetailScreen) View(width, height int) string {
 	if s.detail != nil && s.detail.Task != nil {
 		task := s.detail.Task
 		_, statusText := taskStatusDisplay(task.Status)
-		if isBlinkTarget(task.Status) && !s.blinkOn {
+		if isBlinkTarget(task.Status) && !s.shared.BlinkOn {
 			statusText = styleTaskDim.Render(string(task.Status))
 		}
 		maxTitleWidth := max(width-lipgloss.Width(statusText)-1, 10)

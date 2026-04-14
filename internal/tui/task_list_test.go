@@ -2041,12 +2041,12 @@ func TestBlink_ExecutingDotDimsWhenBlinkOff(t *testing.T) {
 	s.cursor = 1 // 行 0 を非選択にする
 
 	// blinkOn=false（デフォルト）: ドットは dim 色
-	s.blinkOn = false
+	s.shared.BlinkOn = false
 	s.syncTableRows()
 	statusBlinkOff := s.tableRows[0][1]
 
 	// blinkOn=true: ドットは executing 色
-	s.blinkOn = true
+	s.shared.BlinkOn = true
 	s.syncTableRows()
 	statusBlinkOn := s.tableRows[0][1]
 
