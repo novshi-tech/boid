@@ -137,8 +137,10 @@ func (s *DescriptionScreen) handleViewKey(msg tea.KeyMsg) tea.Cmd {
 		s.editor.SetValue(s.description)
 		s.focusIndex = descEditFocusEditor
 		return s.editor.Focus()
-	case "esc", "q", "backspace":
+	case "esc", "backspace":
 		return func() tea.Msg { return popScreenMsg{} }
+	case "q":
+		return tea.Quit
 	}
 	return nil
 }
@@ -293,5 +295,5 @@ func (s *DescriptionScreen) ShortHelp() string {
 	if s.mode == descriptionModeEdit {
 		return "ctrl+enter: save  tab: next  shift+tab: prev  esc: cancel"
 	}
-	return "j/k: scroll  pgup/pgdn: page  e: edit  esc/q: back"
+	return "j/k: scroll  pgup/pgdn: page  e: edit  esc: back  q: quit"
 }

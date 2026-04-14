@@ -210,8 +210,8 @@ func TestTaskDetailEnterPayload_IsNoOp(t *testing.T) {
 	}
 }
 
-// TestTaskDetailQKey_ReturnsPopScreen verifies q returns popScreenMsg (same as esc).
-func TestTaskDetailQKey_ReturnsPopScreen(t *testing.T) {
+// TestTaskDetailQKey_ReturnsQuit verifies q quits the application.
+func TestTaskDetailQKey_ReturnsQuit(t *testing.T) {
 	s := newTestTaskDetailScreen()
 
 	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
@@ -219,14 +219,14 @@ func TestTaskDetailQKey_ReturnsPopScreen(t *testing.T) {
 		t.Fatal("q: expected non-nil cmd")
 	}
 	msg := cmd()
-	if _, ok := msg.(popScreenMsg); !ok {
-		t.Errorf("q: expected popScreenMsg, got %T", msg)
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Errorf("q: expected tea.QuitMsg, got %T", msg)
 	}
 }
 
-// TestTaskDetailQKey_PendingState_ReturnsPopScreen verifies q returns popScreen
-// even when a confirmation prompt is active (same as esc behavior).
-func TestTaskDetailQKey_PendingState_ReturnsPopScreen(t *testing.T) {
+// TestTaskDetailQKey_PendingState_ReturnsQuit verifies q quits the application
+// even when a confirmation prompt is active.
+func TestTaskDetailQKey_PendingState_ReturnsQuit(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	s.deletePending = true
 	s.statusMsg = "Press d again to delete"
@@ -236,8 +236,8 @@ func TestTaskDetailQKey_PendingState_ReturnsPopScreen(t *testing.T) {
 		t.Fatal("q with deletePending: expected non-nil cmd")
 	}
 	msg := cmd()
-	if _, ok := msg.(popScreenMsg); !ok {
-		t.Errorf("q with deletePending: expected popScreenMsg, got %T", msg)
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Errorf("q with deletePending: expected tea.QuitMsg, got %T", msg)
 	}
 }
 

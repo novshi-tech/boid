@@ -156,7 +156,7 @@ func TestDescriptionScreen_ViewMode_EscPopsScreen(t *testing.T) {
 	}
 }
 
-func TestDescriptionScreen_ViewMode_QPopsScreen(t *testing.T) {
+func TestDescriptionScreen_ViewMode_QQuitsApp(t *testing.T) {
 	s := newTestDescriptionScreen()
 
 	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
@@ -164,8 +164,8 @@ func TestDescriptionScreen_ViewMode_QPopsScreen(t *testing.T) {
 		t.Fatal("q: expected non-nil cmd")
 	}
 	msg := cmd()
-	if _, ok := msg.(popScreenMsg); !ok {
-		t.Errorf("q: expected popScreenMsg, got %T", msg)
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Errorf("q: expected tea.QuitMsg, got %T", msg)
 	}
 }
 
@@ -408,8 +408,11 @@ func TestDescriptionScreen_ShortHelp_ViewMode(t *testing.T) {
 	if !containsStr(help, "e: edit") {
 		t.Error("ShortHelp (view): expected 'e: edit'")
 	}
-	if !containsStr(help, "esc/q") {
-		t.Error("ShortHelp (view): expected 'esc/q'")
+	if !containsStr(help, "esc: back") {
+		t.Error("ShortHelp (view): expected 'esc: back'")
+	}
+	if !containsStr(help, "q: quit") {
+		t.Error("ShortHelp (view): expected 'q: quit'")
 	}
 }
 
