@@ -216,7 +216,10 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return s, fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs())
 
 	case screenResumedMsg:
-		return s, fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs())
+		return s, tea.Batch(
+			fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs()),
+			taskBlinkCmd(),
+		)
 
 	case taskCreatedNotifyMsg:
 		s.statusMsg = "task created"
