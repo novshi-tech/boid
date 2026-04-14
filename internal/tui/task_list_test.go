@@ -1213,7 +1213,7 @@ func TestRecalcColumns_NormalWidth(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.recalcColumns(100)
 
-	// TITLE should get the remainder: 100 - (11+12+10+6) - 6 = 55
+	// TITLE should get the remainder: 100 - (12+12+10+6) - 6 = 54
 	if s.titleWidth <= 20 {
 		t.Errorf("width=100: expected titleWidth > 20, got %d", s.titleWidth)
 	}
