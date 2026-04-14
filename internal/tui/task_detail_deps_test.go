@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -10,12 +11,22 @@ import (
 )
 
 // makeDetailWithDeps builds a TaskDetailView with the given depends_on / dependents.
+// DependsOnTree and DependentsTree are populated from the provided slices (1-level deep).
 func makeDetailWithDeps(dependsOn []*orchestrator.Task, dependents []*orchestrator.Task, unresolvedIDs []string) *api.TaskDetailView {
 	dependsOnIDs := make([]string, 0, len(dependsOn)+len(unresolvedIDs))
 	for _, t := range dependsOn {
 		dependsOnIDs = append(dependsOnIDs, t.ID)
 	}
 	dependsOnIDs = append(dependsOnIDs, unresolvedIDs...)
+
+	var dependsOnTree []*api.TaskNode
+	for _, t := range dependsOn {
+		dependsOnTree = append(dependsOnTree, &api.TaskNode{Task: t})
+	}
+	var dependentsTree []*api.TaskNode
+	for _, t := range dependents {
+		dependentsTree = append(dependentsTree, &api.TaskNode{Task: t})
+	}
 
 	return &api.TaskDetailView{
 		Task: &orchestrator.Task{
@@ -28,6 +39,8 @@ func makeDetailWithDeps(dependsOn []*orchestrator.Task, dependents []*orchestrat
 		},
 		DependsOnResolved: dependsOn,
 		Dependents:        dependents,
+		DependsOnTree:     dependsOnTree,
+		DependentsTree:    dependentsTree,
 	}
 }
 
@@ -66,15 +79,36 @@ func TestRenderDeps_NoDependencies(t *testing.T) {
 	}
 }
 
+func TestRenderDeps_SelfRowAppearsInMiddle(t *testing.T) {
+	taskA := makeTask("aaaabbbb-0000-0000-0000-000000000001", "upstream task", orchestrator.TaskStatusDone)
+	taskC := makeTask("ccccdddd-0000-0000-0000-000000000002", "downstream task", orchestrator.TaskStatusPending)
+	detail := makeDetailWithDeps([]*orchestrator.Task{taskA}, []*orchestrator.Task{taskC}, nil)
+
+	out := renderDeps(detail, 80, 20, 0)
+	if !containsStr(out, "this task") {
+		t.Error("expected '(this task)' label in output")
+	}
+	// Upstream task should appear above self (earlier lines).
+	upPos := strings.Index(out, "upstream task")
+	selfPos := strings.Index(out, "this task")
+	downPos := strings.Index(out, "downstream task")
+	if upPos < 0 || selfPos < 0 || downPos < 0 {
+		t.Fatalf("missing content: upPos=%d selfPos=%d downPos=%d", upPos, selfPos, downPos)
+	}
+	if upPos >= selfPos {
+		t.Error("upstream task should appear before self row")
+	}
+	if selfPos >= downPos {
+		t.Error("self row should appear before downstream task")
+	}
+}
+
 func TestRenderDeps_WithDependsOn(t *testing.T) {
 	taskA := makeTask("aaaabbbb-0000-0000-0000-000000000001", "refactor auth module", orchestrator.TaskStatusDone)
 	taskB := makeTask("ccccdddd-0000-0000-0000-000000000002", "add tests", orchestrator.TaskStatusPending)
 	detail := makeDetailWithDeps([]*orchestrator.Task{taskA, taskB}, nil, nil)
 
 	out := renderDeps(detail, 80, 20, 0)
-	if !containsStr(out, "Depends on") {
-		t.Error("expected 'Depends on' section header")
-	}
 	if !containsStr(out, "refactor auth module") {
 		t.Error("expected taskA title in output")
 	}
@@ -87,6 +121,9 @@ func TestRenderDeps_WithDependsOn(t *testing.T) {
 	if !containsStr(out, "pending") {
 		t.Error("expected 'pending' status for taskB")
 	}
+	if !containsStr(out, "this task") {
+		t.Error("expected '(this task)' marker")
+	}
 }
 
 func TestRenderDeps_WithDependents(t *testing.T) {
@@ -94,41 +131,56 @@ func TestRenderDeps_WithDependents(t *testing.T) {
 	detail := makeDetailWithDeps(nil, []*orchestrator.Task{taskC}, nil)
 
 	out := renderDeps(detail, 80, 20, 0)
-	if !containsStr(out, "Dependents") {
-		t.Error("expected 'Dependents' section header")
-	}
 	if !containsStr(out, "run e2e") {
 		t.Error("expected taskC title in output")
 	}
+	if !containsStr(out, "this task") {
+		t.Error("expected '(this task)' marker")
+	}
 }
 
+// TestRenderDeps_Unresolved: unresolved IDs have no tree entry → treated as no-deps.
 func TestRenderDeps_Unresolved(t *testing.T) {
 	unresolvedID := "99990000-0000-0000-0000-000000000099"
 	detail := makeDetailWithDeps(nil, nil, []string{unresolvedID})
 
 	out := renderDeps(detail, 80, 20, 0)
-	if !containsStr(out, "unresolved") {
-		t.Errorf("unresolved: expected '(unresolved: ...)' in output, got %q", out)
-	}
-	// shortID returns first 8 chars
-	if !containsStr(out, "99990000") {
-		t.Errorf("unresolved: expected shortID '99990000' in output, got %q", out)
+	// Unresolved deps are not displayed in the tree view (tree fields are empty).
+	if !containsStr(out, "no dependencies") {
+		t.Errorf("expected 'no dependencies' when only unresolved deps exist, got %q", out)
 	}
 }
 
-func TestRenderDeps_CursorOnFirstDependsOn(t *testing.T) {
+// TestRenderDeps_EmptyDependsOnSection: only downstream dep → self row still shows.
+func TestRenderDeps_EmptyDependsOnSection(t *testing.T) {
+	taskC := makeTask("cccccccc-0000-0000-0000-000000000001", "dep task", orchestrator.TaskStatusPending)
+	detail := makeDetailWithDeps(nil, []*orchestrator.Task{taskC}, nil)
+
+	out := renderDeps(detail, 80, 20, 0)
+	// New tree view: no "Depends on" header; self row present.
+	if !containsStr(out, "this task") {
+		t.Error("expected '(this task)' marker")
+	}
+	if !containsStr(out, "dep task") {
+		t.Error("expected downstream task title in output")
+	}
+}
+
+// TestRenderDeps_SelectedRowHasBackground verifies that a selected row carries
+// the background-color SGR sequence (background 237).
+func TestRenderDeps_SelectedRowHasBackground(t *testing.T) {
 	taskA := makeTask("aaaabbbb-cccc-0000-0000-000000000001", "task alpha", orchestrator.TaskStatusDone)
 	taskB := makeTask("eeeeffff-cccc-0000-0000-000000000002", "task beta", orchestrator.TaskStatusPending)
 	detail := makeDetailWithDeps([]*orchestrator.Task{taskA, taskB}, nil, nil)
 
-	// cursor=0: first item selected
 	out := renderDeps(detail, 80, 20, 0)
-	// The ▸ cursor should appear before the first item's line
-	if !containsStr(out, "▸") {
-		t.Error("cursor=0: expected ▸ marker")
+	// The selected row (cursor=0 → taskA) should have background SGR 237.
+	if !containsStr(out, selectedBgSGR) {
+		t.Error("cursor=0: expected background-color SGR in output")
 	}
 }
 
+// TestRenderDeps_CursorOnDependent verifies selection and background on a downstream row.
 func TestRenderDeps_CursorOnDependent(t *testing.T) {
 	taskA := makeTask("aaaabbbb-0000-0000-0000-000000000001", "depends-on task", orchestrator.TaskStatusDone)
 	taskC := makeTask("cccccccc-0000-0000-0000-000000000003", "dependent task", orchestrator.TaskStatusExecuting)
@@ -136,24 +188,87 @@ func TestRenderDeps_CursorOnDependent(t *testing.T) {
 
 	// selectable = [taskA, taskC]; cursor=1 selects taskC
 	out := renderDeps(detail, 80, 20, 1)
-	if !containsStr(out, "▸") {
-		t.Error("cursor=1 on dependent: expected ▸ marker")
+	if !containsStr(out, selectedBgSGR) {
+		t.Error("cursor=1 on dependent: expected background-color SGR")
 	}
 	if !containsStr(out, "dependent task") {
 		t.Error("expected dependent task title in output")
 	}
 }
 
-func TestRenderDeps_EmptyDependsOnSection(t *testing.T) {
-	taskC := makeTask("cccccccc-0000-0000-0000-000000000001", "dep task", orchestrator.TaskStatusPending)
-	detail := makeDetailWithDeps(nil, []*orchestrator.Task{taskC}, nil)
+// --- Multi-level tree display tests ---
+
+func TestRenderDeps_DeepUpstream_DeepestAtTop(t *testing.T) {
+	// self depends on A; A depends on B; B depends on C.
+	taskC := makeTask("c-task", "Oldest Ancestor", orchestrator.TaskStatusDone)
+	taskB := makeTask("b-task", "Middle Ancestor", orchestrator.TaskStatusDone)
+	taskA := makeTask("a-task", "Direct Dep", orchestrator.TaskStatusDone)
+
+	taskB.DependsOn = []string{"c-task"}
+	taskA.DependsOn = []string{"b-task"}
+
+	detail := &api.TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:        "main-task-id",
+			Title:     "Main Task",
+			Status:    orchestrator.TaskStatusPending,
+			Behavior:  "dev",
+			DependsOn: []string{"a-task"},
+			CreatedAt: time.Now(),
+		},
+		DependsOnTree: []*api.TaskNode{
+			{Task: taskA, Children: []*api.TaskNode{
+				{Task: taskB, Children: []*api.TaskNode{
+					{Task: taskC},
+				}},
+			}},
+		},
+	}
 
 	out := renderDeps(detail, 80, 20, 0)
-	if !containsStr(out, "Depends on") {
-		t.Error("expected 'Depends on' section even when empty")
+
+	posC := strings.Index(out, "Oldest Ancestor")
+	posB := strings.Index(out, "Middle Ancestor")
+	posA := strings.Index(out, "Direct Dep")
+	posSelf := strings.Index(out, "this task")
+	if posC < 0 || posB < 0 || posA < 0 || posSelf < 0 {
+		t.Fatalf("missing content: C=%d B=%d A=%d self=%d", posC, posB, posA, posSelf)
 	}
-	if !containsStr(out, "(none)") {
-		t.Error("expected '(none)' for empty depends_on")
+	// Deepest ancestor first: C < B < A < self
+	if !(posC < posB && posB < posA && posA < posSelf) {
+		t.Errorf("order wrong: Oldest=%d Middle=%d Direct=%d Self=%d", posC, posB, posA, posSelf)
+	}
+}
+
+func TestRenderDeps_DownstreamConnectors(t *testing.T) {
+	taskX := makeTask("x-task", "Direct Downstream", orchestrator.TaskStatusPending)
+	taskY := makeTask("y-task", "Deep Downstream", orchestrator.TaskStatusPending)
+
+	detail := &api.TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:        "main-task-id",
+			Title:     "Main Task",
+			Status:    orchestrator.TaskStatusExecuting,
+			Behavior:  "dev",
+			CreatedAt: time.Now(),
+		},
+		DependentsTree: []*api.TaskNode{
+			{Task: taskX, Children: []*api.TaskNode{
+				{Task: taskY},
+			}},
+		},
+	}
+
+	out := renderDeps(detail, 80, 20, 0)
+	// Downstream section should use tree connectors.
+	if !containsStr(out, "└─") {
+		t.Error("expected '└─' connector for downstream tree")
+	}
+	if !containsStr(out, "Direct Downstream") {
+		t.Error("expected direct downstream task in output")
+	}
+	if !containsStr(out, "Deep Downstream") {
+		t.Error("expected deep downstream task in output")
 	}
 }
 
@@ -342,6 +457,59 @@ func TestDepsEnter_SelectsDependent(t *testing.T) {
 	}
 }
 
+// TestDepsEnter_MultiLevelUpstream verifies Enter on a deeply-nested upstream task.
+func TestDepsEnter_MultiLevelUpstream(t *testing.T) {
+	taskB := makeTask("bbbb-1111-0000-0000-000000000001", "grandparent", orchestrator.TaskStatusDone)
+	taskB.ProjectID = "proj-b"
+	taskA := makeTask("aaaa-2222-0000-0000-000000000002", "parent", orchestrator.TaskStatusDone)
+	taskA.ProjectID = "proj-a"
+
+	detail := &api.TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:        "main-task-id",
+			Title:     "Main Task",
+			Status:    orchestrator.TaskStatusPending,
+			Behavior:  "dev",
+			DependsOn: []string{taskA.ID},
+			CreatedAt: time.Now(),
+		},
+		DependsOnTree: []*api.TaskNode{
+			{Task: taskA, Children: []*api.TaskNode{
+				{Task: taskB},
+			}},
+		},
+	}
+
+	// depSelectableItems: post-order DFS = [taskB, taskA]
+	items := depSelectableItems(detail)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 selectable items, got %d: %v", len(items), items)
+	}
+	if items[0].ID != taskB.ID {
+		t.Errorf("items[0] should be deepest ancestor (taskB), got %q", items[0].ID)
+	}
+	if items[1].ID != taskA.ID {
+		t.Errorf("items[1] should be direct dep (taskA), got %q", items[1].ID)
+	}
+
+	s := newDepsScreen(detail)
+	s.depsCursor = 0 // select taskB (deepest ancestor)
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter on grandparent: expected non-nil cmd")
+	}
+	msg := cmd()
+	push, ok := msg.(pushScreenMsg)
+	if !ok {
+		t.Fatalf("expected pushScreenMsg, got %T", msg)
+	}
+	screen := push.screen.(*TaskDetailScreen)
+	if screen.taskID != taskB.ID {
+		t.Errorf("want taskID %q, got %q", taskB.ID, screen.taskID)
+	}
+}
+
 // --- View integration ---
 
 func TestDepsTab_ViewRenders(t *testing.T) {
@@ -353,10 +521,11 @@ func TestDepsTab_ViewRenders(t *testing.T) {
 	s.activeTab = tabDeps
 
 	view := s.View(80, 20)
-	if !containsStr(view, "Depends on") {
-		t.Error("deps View: expected 'Depends on' section")
-	}
 	if !containsStr(view, "auth refactor") {
 		t.Error("deps View: expected task title")
 	}
+	if !containsStr(view, "this task") {
+		t.Error("deps View: expected '(this task)' marker")
+	}
 }
+
