@@ -32,7 +32,7 @@ const (
 )
 
 // tableRow holds the pre-rendered cell strings for one table row.
-// Indices: 0=STATUS, 1=TITLE, 2=PROJECT, 3=BEHAVIOR, 4=AGE.
+// Indices: 0=TITLE, 1=STATUS, 2=PROJECT, 3=BEHAVIOR, 4=AGE.
 type tableRow [5]string
 
 // activeStatuses defines which task statuses are considered "active" for poll interval decisions.
@@ -963,7 +963,7 @@ func (s *TaskListScreen) syncTableRows() {
 			ageCell = formatTaskElapsed(task.CreatedAt)
 		}
 
-		rows[i] = tableRow{statusCell, titleCell, projectCell, behaviorCell, ageCell}
+		rows[i] = tableRow{titleCell, statusCell, projectCell, behaviorCell, ageCell}
 	}
 
 	s.tableRows = rows
@@ -1106,8 +1106,8 @@ func (s *TaskListScreen) moveCursor(delta int) {
 // renderTableHeader renders the header row with fixed column widths.
 func (s *TaskListScreen) renderTableHeader() string {
 	cells := []string{
-		fitCell(styleTableHeader.Render("STATUS"), statusWidth),
 		fitCell(styleTableHeader.Render("TITLE"), s.titleWidth),
+		fitCell(styleTableHeader.Render("STATUS"), statusWidth),
 		fitCell(styleTableHeader.Render("PROJECT"), colProject),
 		fitCell(styleTableHeader.Render("BEHAVIOR"), colBehavior),
 		fitCell(styleTableHeader.Render("AGE"), colAge),
@@ -1120,8 +1120,8 @@ func (s *TaskListScreen) renderTableHeader() string {
 func (s *TaskListScreen) renderDataRow(i, lineWidth int) string {
 	r := s.tableRows[i]
 	cells := []string{
-		fitCell(r[0], statusWidth),
-		fitCell(r[1], s.titleWidth),
+		fitCell(r[0], s.titleWidth),
+		fitCell(r[1], statusWidth),
 		fitCell(r[2], colProject),
 		fitCell(r[3], colBehavior),
 		fitCell(r[4], colAge),
