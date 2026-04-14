@@ -23,132 +23,32 @@ func newTestDescriptionScreen() *DescriptionScreen {
 
 // --- initial state ---
 
-func TestDescriptionScreen_InitialMode_IsView(t *testing.T) {
+// TestDescriptionScreen_InitiallyFocused verifies that NewDescriptionScreen
+// creates the screen with the editor already focused (no extra keypress needed).
+func TestDescriptionScreen_InitiallyFocused(t *testing.T) {
 	s := newTestDescriptionScreen()
-	if s.mode != descriptionModeView {
-		t.Errorf("initial mode: want descriptionModeView, got %v", s.mode)
+	if !s.editor.Focused() {
+		t.Error("NewDescriptionScreen: editor should be focused on creation")
 	}
 }
 
-func TestDescriptionScreen_InitialScroll_IsZero(t *testing.T) {
+func TestDescriptionScreen_InitialFocusIndex_IsEditor(t *testing.T) {
 	s := newTestDescriptionScreen()
-	if s.scroll != 0 {
-		t.Errorf("initial scroll: want 0, got %d", s.scroll)
+	if s.focusIndex != descEditFocusEditor {
+		t.Errorf("initial focusIndex: want descEditFocusEditor, got %v", s.focusIndex)
 	}
 }
 
-// --- view mode scrolling ---
+// --- esc pops screen directly ---
 
-func TestDescriptionScreen_ViewMode_JScrollsDown(t *testing.T) {
-	s := newTestDescriptionScreen()
-
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if s.scroll != 1 {
-		t.Errorf("after j: want scroll 1, got %d", s.scroll)
-	}
-}
-
-func TestDescriptionScreen_ViewMode_KScrollsUp(t *testing.T) {
-	s := newTestDescriptionScreen()
-	s.scroll = 2
-
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-	if s.scroll != 1 {
-		t.Errorf("after k: want scroll 1, got %d", s.scroll)
-	}
-}
-
-func TestDescriptionScreen_ViewMode_ScrollCannotGoBelowZero(t *testing.T) {
-	s := newTestDescriptionScreen()
-
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-	if s.scroll != 0 {
-		t.Errorf("k at 0: want scroll 0, got %d", s.scroll)
-	}
-}
-
-func TestDescriptionScreen_ViewMode_ScrollCannotExceedMaxLines(t *testing.T) {
-	s := newTestDescriptionScreen()
-	// description has 5 lines (line1..line5), maxScroll = 4
-	s.scroll = 4
-
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if s.scroll != 4 {
-		t.Errorf("j at max: want scroll 4, got %d", s.scroll)
-	}
-}
-
-func TestDescriptionScreen_ViewMode_DownArrowScrolls(t *testing.T) {
-	s := newTestDescriptionScreen()
-
-	s.Update(tea.KeyMsg{Type: tea.KeyDown})
-	if s.scroll != 1 {
-		t.Errorf("after down: want scroll 1, got %d", s.scroll)
-	}
-}
-
-func TestDescriptionScreen_ViewMode_UpArrowScrolls(t *testing.T) {
-	s := newTestDescriptionScreen()
-	s.scroll = 3
-
-	s.Update(tea.KeyMsg{Type: tea.KeyUp})
-	if s.scroll != 2 {
-		t.Errorf("after up: want scroll 2, got %d", s.scroll)
-	}
-}
-
-func TestDescriptionScreen_ViewMode_PageDown(t *testing.T) {
-	s := newTestDescriptionScreen()
-	s.pageHeight = 2 // set page size
-
-	s.Update(tea.KeyMsg{Type: tea.KeyPgDown})
-	if s.scroll != 2 {
-		t.Errorf("after pgdown: want scroll 2, got %d", s.scroll)
-	}
-}
-
-func TestDescriptionScreen_ViewMode_PageDownClampedToMax(t *testing.T) {
-	s := newTestDescriptionScreen()
-	s.pageHeight = 10 // page bigger than content
-	s.scroll = 0
-
-	s.Update(tea.KeyMsg{Type: tea.KeyPgDown})
-	// maxScroll = 4 (5 lines)
-	if s.scroll != 4 {
-		t.Errorf("after pgdown (clamp): want scroll 4, got %d", s.scroll)
-	}
-}
-
-func TestDescriptionScreen_ViewMode_PageUp(t *testing.T) {
-	s := newTestDescriptionScreen()
-	s.pageHeight = 2
-	s.scroll = 4
-
-	s.Update(tea.KeyMsg{Type: tea.KeyPgUp})
-	if s.scroll != 2 {
-		t.Errorf("after pgup: want scroll 2, got %d", s.scroll)
-	}
-}
-
-func TestDescriptionScreen_ViewMode_PageUpClampedToZero(t *testing.T) {
-	s := newTestDescriptionScreen()
-	s.pageHeight = 10
-	s.scroll = 2
-
-	s.Update(tea.KeyMsg{Type: tea.KeyPgUp})
-	if s.scroll != 0 {
-		t.Errorf("after pgup (clamp): want scroll 0, got %d", s.scroll)
-	}
-}
-
-// --- view mode navigation ---
-
-func TestDescriptionScreen_ViewMode_EscPopsScreen(t *testing.T) {
+// TestDescriptionScreen_EscInEditMode_PopsScreen verifies that pressing esc
+// pops the screen directly back to the tab view.
+func TestDescriptionScreen_EscInEditMode_PopsScreen(t *testing.T) {
 	s := newTestDescriptionScreen()
 
 	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEscape})
 	if cmd == nil {
-		t.Fatal("esc: expected non-nil cmd")
+		t.Fatal("esc: expected non-nil cmd (popScreenMsg)")
 	}
 	msg := cmd()
 	if _, ok := msg.(popScreenMsg); !ok {
@@ -156,100 +56,36 @@ func TestDescriptionScreen_ViewMode_EscPopsScreen(t *testing.T) {
 	}
 }
 
-func TestDescriptionScreen_ViewMode_QQuitsApp(t *testing.T) {
+// --- cancel button pops screen ---
+
+// TestDescriptionScreen_CancelButtonPopsScreen verifies that the Cancel button
+// pops the screen instead of toggling a (now-removed) view mode.
+func TestDescriptionScreen_CancelButtonPopsScreen(t *testing.T) {
 	s := newTestDescriptionScreen()
 
-	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	_, cmd := s.Update(ButtonPressedMsg{Label: "Cancel"})
 	if cmd == nil {
-		t.Fatal("q: expected non-nil cmd")
-	}
-	msg := cmd()
-	if _, ok := msg.(tea.QuitMsg); !ok {
-		t.Errorf("q: expected tea.QuitMsg, got %T", msg)
-	}
-}
-
-func TestDescriptionScreen_ViewMode_BackspacePopsScreen(t *testing.T) {
-	s := newTestDescriptionScreen()
-
-	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyBackspace})
-	if cmd == nil {
-		t.Fatal("backspace: expected non-nil cmd")
+		t.Fatal("Cancel button: expected non-nil cmd (popScreenMsg)")
 	}
 	msg := cmd()
 	if _, ok := msg.(popScreenMsg); !ok {
-		t.Errorf("backspace: expected popScreenMsg, got %T", msg)
+		t.Errorf("Cancel button: expected popScreenMsg, got %T", msg)
 	}
 }
 
-// --- edit mode toggle ---
-
-func TestDescriptionScreen_EKeyEntersEditMode(t *testing.T) {
-	s := newTestDescriptionScreen()
-
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	if s.mode != descriptionModeEdit {
-		t.Errorf("after e: want descriptionModeEdit, got %v", s.mode)
-	}
-}
-
-func TestDescriptionScreen_EKeyFocusesEditor(t *testing.T) {
-	s := newTestDescriptionScreen()
-
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	if s.focusIndex != descEditFocusEditor {
-		t.Errorf("after e: want focusIndex=editor, got %v", s.focusIndex)
-	}
-}
-
-func TestDescriptionScreen_EKeySetsEditorValue(t *testing.T) {
-	s := newTestDescriptionScreen()
-	s.description = "hello\nworld"
-
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	if s.editor.Value() != "hello\nworld" {
-		t.Errorf("after e: editor value = %q, want %q", s.editor.Value(), "hello\nworld")
-	}
-}
-
-// --- edit mode: esc cancels ---
-
-func TestDescriptionScreen_EditMode_EscReturnsToViewMode(t *testing.T) {
-	s := newTestDescriptionScreen()
-	s.mode = descriptionModeEdit
-
-	s.Update(tea.KeyMsg{Type: tea.KeyEscape})
-	if s.mode != descriptionModeView {
-		t.Errorf("after esc in edit: want descriptionModeView, got %v", s.mode)
-	}
-}
-
-func TestDescriptionScreen_EditMode_EscClearsErrMsg(t *testing.T) {
-	s := newTestDescriptionScreen()
-	s.mode = descriptionModeEdit
-	s.errMsg = "some error"
-
-	s.Update(tea.KeyMsg{Type: tea.KeyEscape})
-	if s.errMsg != "" {
-		t.Errorf("after esc in edit: want empty errMsg, got %q", s.errMsg)
-	}
-}
-
-// --- edit mode: save ---
+// --- save ---
 
 func TestDescriptionScreen_EditMode_CtrlEnterSubmits(t *testing.T) {
 	s := newTestDescriptionScreen()
-	s.mode = descriptionModeEdit
 
 	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyCtrlJ}) // ctrl+enter maps to ctrl+j in some terminals
 	_ = cmd
-	// Submission is triggered; we just verify submitting flag would be set
-	// (actual call requires client, so we test via taskUpdatedMsg path)
+	// Submission is triggered; we just verify the path is reached without panicking.
+	// Actual call requires a client, so we test save completion via taskUpdatedMsg.
 }
 
 func TestDescriptionScreen_SaveSuccess_PopsScreen(t *testing.T) {
 	s := newTestDescriptionScreen()
-	s.mode = descriptionModeEdit
 	s.submitting = true
 
 	_, cmd := s.Update(taskUpdatedMsg{task: &orchestrator.Task{ID: "desc-task-id"}})
@@ -292,32 +128,10 @@ func TestDescriptionScreen_SaveFailure_ClearsSubmitting(t *testing.T) {
 	}
 }
 
-func TestDescriptionScreen_SaveFailure_StaysInEditMode(t *testing.T) {
-	s := newTestDescriptionScreen()
-	s.mode = descriptionModeEdit
-	s.submitting = true
-
-	s.Update(taskUpdatedMsg{err: errors.New("network error")})
-	if s.mode != descriptionModeEdit {
-		t.Errorf("save failure: want descriptionModeEdit, got %v", s.mode)
-	}
-}
-
-// --- edit mode: button Cancel ---
-
-func TestDescriptionScreen_ButtonCancel_ReturnsToViewMode(t *testing.T) {
-	s := newTestDescriptionScreen()
-	s.mode = descriptionModeEdit
-
-	s.Update(ButtonPressedMsg{Label: "Cancel"})
-	if s.mode != descriptionModeView {
-		t.Errorf("Cancel button: want descriptionModeView, got %v", s.mode)
-	}
-}
+// --- button Save ---
 
 func TestDescriptionScreen_ButtonSave_TriggersSubmit(t *testing.T) {
 	s := newTestDescriptionScreen()
-	s.mode = descriptionModeEdit
 	s.focusIndex = descEditFocusSave
 
 	_, cmd := s.Update(ButtonPressedMsg{Label: "Save"})
@@ -328,54 +142,43 @@ func TestDescriptionScreen_ButtonSave_TriggersSubmit(t *testing.T) {
 
 // --- view rendering ---
 
-func TestDescriptionScreen_View_ViewMode_ContainsDescription(t *testing.T) {
+func TestDescriptionScreen_View_ContainsDescription(t *testing.T) {
 	s := newTestDescriptionScreen()
 
 	view := s.View(80, 30)
 	if !containsStr(view, "line1") {
-		t.Error("View (view mode): expected description content 'line1'")
+		t.Error("View: expected description content 'line1'")
 	}
 }
 
-func TestDescriptionScreen_View_ViewMode_ContainsTitle(t *testing.T) {
+func TestDescriptionScreen_View_ContainsTitle(t *testing.T) {
 	s := newTestDescriptionScreen()
 
 	view := s.View(80, 30)
 	if !containsStr(view, "My Task") {
-		t.Error("View (view mode): expected task title 'My Task'")
+		t.Error("View: expected task title 'My Task'")
 	}
 }
 
-func TestDescriptionScreen_View_ViewMode_ShowsMoreHint(t *testing.T) {
+func TestDescriptionScreen_View_ContainsButtons(t *testing.T) {
 	s := newTestDescriptionScreen()
-	// description has 5 lines; render with height=4 (contentHeight=2)
-	view := s.View(80, 4)
-	if !containsStr(view, "more lines") {
-		t.Error("View (view mode, small height): expected '... N more lines' hint")
-	}
-}
-
-func TestDescriptionScreen_View_EditMode_ContainsButtons(t *testing.T) {
-	s := newTestDescriptionScreen()
-	s.mode = descriptionModeEdit
 
 	view := s.View(80, 30)
 	if !containsStr(view, "Save") {
-		t.Error("View (edit mode): expected 'Save' button")
+		t.Error("View: expected 'Save' button")
 	}
 	if !containsStr(view, "Cancel") {
-		t.Error("View (edit mode): expected 'Cancel' button")
+		t.Error("View: expected 'Cancel' button")
 	}
 }
 
-func TestDescriptionScreen_View_EditMode_ShowsErrMsg(t *testing.T) {
+func TestDescriptionScreen_View_ShowsErrMsg(t *testing.T) {
 	s := newTestDescriptionScreen()
-	s.mode = descriptionModeEdit
 	s.errMsg = "save failed: timeout"
 
 	view := s.View(80, 30)
 	if !containsStr(view, "save failed") {
-		t.Error("View (edit mode): expected error message")
+		t.Error("View: expected error message")
 	}
 }
 
@@ -391,49 +194,30 @@ func TestDescriptionScreen_View_EmptyDescription(t *testing.T) {
 	s := NewDescriptionScreen(nil, task)
 
 	view := s.View(80, 20)
-	if !containsStr(view, "no description") {
-		t.Error("View (empty desc): expected '(no description)' placeholder")
+	// In edit mode the title is always shown.
+	if !containsStr(view, "Empty Task") {
+		t.Error("View (empty desc): expected task title 'Empty Task'")
 	}
 }
 
 // --- ShortHelp ---
 
-func TestDescriptionScreen_ShortHelp_ViewMode(t *testing.T) {
+func TestDescriptionScreen_ShortHelp_ContainsEditHelp(t *testing.T) {
 	s := newTestDescriptionScreen()
-
-	help := s.ShortHelp()
-	if !containsStr(help, "j/k") {
-		t.Error("ShortHelp (view): expected 'j/k'")
-	}
-	if !containsStr(help, "e: edit") {
-		t.Error("ShortHelp (view): expected 'e: edit'")
-	}
-	if !containsStr(help, "esc: back") {
-		t.Error("ShortHelp (view): expected 'esc: back'")
-	}
-	if !containsStr(help, "q: quit") {
-		t.Error("ShortHelp (view): expected 'q: quit'")
-	}
-}
-
-func TestDescriptionScreen_ShortHelp_EditMode(t *testing.T) {
-	s := newTestDescriptionScreen()
-	s.mode = descriptionModeEdit
 
 	help := s.ShortHelp()
 	if !containsStr(help, "ctrl+enter") {
-		t.Error("ShortHelp (edit): expected 'ctrl+enter'")
+		t.Error("ShortHelp: expected 'ctrl+enter'")
 	}
 	if !containsStr(help, "esc: cancel") {
-		t.Error("ShortHelp (edit): expected 'esc: cancel'")
+		t.Error("ShortHelp: expected 'esc: cancel'")
 	}
 }
 
 // --- focus cycling ---
 
-func TestDescriptionScreen_EditMode_TabCyclesFocus(t *testing.T) {
+func TestDescriptionScreen_TabCyclesFocus(t *testing.T) {
 	s := newTestDescriptionScreen()
-	s.mode = descriptionModeEdit
 	s.focusIndex = descEditFocusEditor
 
 	s.Update(tea.KeyMsg{Type: tea.KeyTab})
@@ -452,9 +236,8 @@ func TestDescriptionScreen_EditMode_TabCyclesFocus(t *testing.T) {
 	}
 }
 
-func TestDescriptionScreen_EditMode_ShiftTabCyclesBackward(t *testing.T) {
+func TestDescriptionScreen_ShiftTabCyclesBackward(t *testing.T) {
 	s := newTestDescriptionScreen()
-	s.mode = descriptionModeEdit
 	s.focusIndex = descEditFocusEditor
 
 	s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})

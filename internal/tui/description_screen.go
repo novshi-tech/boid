@@ -2,7 +2,6 @@ package tui
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,20 +21,11 @@ const (
 	descEditFocusCount
 )
 
-// --- modes ---
-
-type descriptionMode int
-
-const (
-	descriptionModeView descriptionMode = iota
-	descriptionModeEdit
-)
-
 // --- DescriptionScreen ---
 
-// DescriptionScreen shows the full task description and allows inline editing.
-// In view mode: j/k scrolls by line, pgup/pgdn scrolls by page, e enters edit mode, esc/q/backspace pops.
-// In edit mode: textarea is shown; ctrl+enter or Tab→Save saves; esc cancels back to view mode.
+// DescriptionScreen is an edit-only screen for the task description.
+// It opens directly in edit mode with the textarea focused.
+// ctrl+enter or Tab→Save saves; esc or Cancel pops back to the tab view.
 type DescriptionScreen struct {
 	client      *client.Client
 	taskID      string
@@ -44,11 +34,7 @@ type DescriptionScreen struct {
 
 	description string // current description text
 
-	mode       descriptionMode
-	scroll     int // view mode scroll position
-	pageHeight int // updated each View() call, used for page scroll
-
-	// edit mode components
+	// edit components
 	editor    TextAreaModel
 	saveBtn   ButtonModel
 	cancelBtn ButtonModel
@@ -58,12 +44,16 @@ type DescriptionScreen struct {
 	submitting bool
 }
 
-// NewDescriptionScreen creates a DescriptionScreen pre-filled with the task's description.
+// NewDescriptionScreen creates a DescriptionScreen pre-filled with the task's
+// description and immediately focused for editing.
 func NewDescriptionScreen(c *client.Client, task *orchestrator.Task) *DescriptionScreen {
 	ta := NewTextArea()
 	ta.SetLabel("Desc")
 	ta.SetHeight(15)
 	ta.SetValue(task.Description)
+	// Focus immediately so editor.Focused() returns true without waiting for Init.
+	// The Cmd returned here (cursor blink) is discarded; Init() re-sends it.
+	_ = ta.Focus()
 
 	return &DescriptionScreen{
 		client:      c,
@@ -74,10 +64,14 @@ func NewDescriptionScreen(c *client.Client, task *orchestrator.Task) *Descriptio
 		editor:      ta,
 		saveBtn:     NewButton("Save"),
 		cancelBtn:   NewButton("Cancel"),
+		focusIndex:  descEditFocusEditor,
 	}
 }
 
-func (s *DescriptionScreen) Init() tea.Cmd { return nil }
+// Init sends the focus command so the textarea cursor blinks from the start.
+func (s *DescriptionScreen) Init() tea.Cmd {
+	return s.editor.Focus()
+}
 
 func (s *DescriptionScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -95,10 +89,7 @@ func (s *DescriptionScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		case "Save":
 			return s, s.submit()
 		case "Cancel":
-			s.mode = descriptionModeView
-			s.errMsg = ""
-			s.editor.Blur()
-			return s, nil
+			return s, func() tea.Msg { return popScreenMsg{} }
 		}
 
 	case tea.KeyMsg:
@@ -108,50 +99,9 @@ func (s *DescriptionScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 }
 
 func (s *DescriptionScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
-	if s.mode == descriptionModeView {
-		return s.handleViewKey(msg)
-	}
-	return s.handleEditKey(msg)
-}
-
-func (s *DescriptionScreen) handleViewKey(msg tea.KeyMsg) tea.Cmd {
-	lines := strings.Split(s.description, "\n")
-	maxScroll := max(len(lines)-1, 0)
-	pageSize := max(s.pageHeight, 1)
-
-	switch msg.String() {
-	case "j", "down":
-		if s.scroll < maxScroll {
-			s.scroll++
-		}
-	case "k", "up":
-		if s.scroll > 0 {
-			s.scroll--
-		}
-	case "pgdown", "ctrl+f":
-		s.scroll = min(s.scroll+pageSize, maxScroll)
-	case "pgup", "ctrl+b":
-		s.scroll = max(s.scroll-pageSize, 0)
-	case "e":
-		s.mode = descriptionModeEdit
-		s.editor.SetValue(s.description)
-		s.focusIndex = descEditFocusEditor
-		return s.editor.Focus()
-	case "esc", "backspace":
-		return func() tea.Msg { return popScreenMsg{} }
-	case "q":
-		return tea.Quit
-	}
-	return nil
-}
-
-func (s *DescriptionScreen) handleEditKey(msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
 	case "esc":
-		s.mode = descriptionModeView
-		s.errMsg = ""
-		s.editor.Blur()
-		return nil
+		return func() tea.Msg { return popScreenMsg{} }
 	case "ctrl+enter":
 		return s.submit()
 	case "tab":
@@ -225,49 +175,6 @@ func (s *DescriptionScreen) submit() tea.Cmd {
 }
 
 func (s *DescriptionScreen) View(width, height int) string {
-	if s.mode == descriptionModeEdit {
-		return s.viewEdit(width, height)
-	}
-	return s.viewDescription(width, height)
-}
-
-func (s *DescriptionScreen) viewDescription(width, height int) string {
-	var sb strings.Builder
-
-	// Header: 2 lines (title + separator)
-	sb.WriteString(styleTitle.Render("Description: " + truncate(s.taskTitle, 50)))
-	sb.WriteByte('\n')
-	sb.WriteString(strings.Repeat("─", width))
-	sb.WriteByte('\n')
-
-	contentHeight := max(height-2, 4)
-	s.pageHeight = contentHeight
-
-	if s.description == "" {
-		sb.WriteString(styleDim.Render("  (no description)"))
-		sb.WriteByte('\n')
-		return sb.String()
-	}
-
-	lines := strings.Split(s.description, "\n")
-	start := s.scroll
-	if start >= len(lines) {
-		start = 0
-	}
-	end := min(start+contentHeight, len(lines))
-	for _, line := range lines[start:end] {
-		sb.WriteString(line)
-		sb.WriteByte('\n')
-	}
-	if end < len(lines) {
-		sb.WriteString(styleDim.Render(fmt.Sprintf("  ... %d more lines", len(lines)-end)))
-		sb.WriteByte('\n')
-	}
-
-	return sb.String()
-}
-
-func (s *DescriptionScreen) viewEdit(width, height int) string {
 	var sb strings.Builder
 
 	sb.WriteString(styleTitle.Render("Edit Description: " + truncate(s.taskTitle, 50)))
@@ -292,8 +199,5 @@ func (s *DescriptionScreen) viewEdit(width, height int) string {
 }
 
 func (s *DescriptionScreen) ShortHelp() string {
-	if s.mode == descriptionModeEdit {
-		return "ctrl+enter: save  tab: next  shift+tab: prev  esc: cancel"
-	}
-	return "j/k: scroll  pgup/pgdn: page  e: edit  esc: back  q: quit"
+	return "ctrl+enter: save  tab: next  shift+tab: prev  esc: cancel"
 }

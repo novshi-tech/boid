@@ -173,6 +173,41 @@ func TestDescriptionTab_ViewRenders(t *testing.T) {
 	}
 }
 
+// --- word-wrap tests ---
+
+func TestRenderDescription_LongLine_Wraps(t *testing.T) {
+	// A single line longer than width=20 should be wrapped into multiple lines.
+	long := strings.Repeat("word ", 10) // "word word word ... " = 50 chars
+	detail := makeDetailWithDescription(long)
+	out := renderDescription(detail, 0, 20, 20)
+	// At least one newline should appear before position 20 (wrapped)
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	for _, l := range lines {
+		// Strip ANSI sequences for length check (use plain rune count approx)
+		plain := stripANSI(l)
+		if len([]rune(plain)) > 20 {
+			t.Errorf("renderDescription: line too long (>20 runes): %q", l)
+		}
+	}
+}
+
+func TestRenderDescription_HeightNotExceeded(t *testing.T) {
+	// 30 lines of long content should not produce more than height output lines.
+	long := strings.Repeat("this is a long line that exceeds the width limit, ", 1)
+	var lines []string
+	for i := 0; i < 30; i++ {
+		lines = append(lines, long)
+	}
+	detail := makeDetailWithDescription(strings.Join(lines, "\n"))
+	height := 10
+	out := renderDescription(detail, 0, 40, height)
+	// Count newlines (each rendered line ends with \n)
+	n := strings.Count(out, "\n")
+	if n > height+1 { // +1 allows trailing newline after last line
+		t.Errorf("renderDescription: output has %d newlines, want <= %d (height+1)", n, height+1)
+	}
+}
+
 // --- buildTreeTimeline filtering tests ---
 
 func TestBuildTreeTimeline_ExcludesRunningJobs(t *testing.T) {
