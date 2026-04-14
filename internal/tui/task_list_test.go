@@ -1993,7 +1993,8 @@ func TestSyncTableRows_DoneRowIsDim(t *testing.T) {
 	}
 }
 
-// TestSyncTableRows_AbortedRowIsDim は aborted タスクの全セルが dim でレンダリングされることを検証する。
+// TestSyncTableRows_AbortedRowIsDim は aborted タスクの TITLE/BEHAVIOR セルが dim でレンダリングされ、
+// STATUS セルのドット（✗）は赤（styleAborted）でレンダリングされることを検証する。
 func TestSyncTableRows_AbortedRowIsDim(t *testing.T) {
 	s := newTestTaskListScreen()
 	s.recalcColumns(120)
@@ -2010,8 +2011,14 @@ func TestSyncTableRows_AbortedRowIsDim(t *testing.T) {
 		t.Fatal("no rows after syncTableRows")
 	}
 
+	// STATUS セルは ANSI あり（赤の ✗）
 	if !strings.Contains(rows[0][0], "\x1b") {
-		t.Errorf("aborted STATUS cell should contain ANSI (dim), got %q", rows[0][0])
+		t.Errorf("aborted STATUS cell should contain ANSI (red ✗), got %q", rows[0][0])
+	}
+	// STATUS セルは styleAborted（赤）でレンダリングされる
+	wantDot := styleAborted.Render("✗")
+	if !strings.Contains(rows[0][0], wantDot) {
+		t.Errorf("aborted STATUS cell dot should be red (styleAborted), got %q", rows[0][0])
 	}
 	if !strings.Contains(rows[0][1], "\x1b") {
 		t.Errorf("aborted TITLE cell should contain ANSI (dim), got %q", rows[0][1])
