@@ -1856,3 +1856,206 @@ func TestApplyStateFilter_OpenMode_AllStatuses(t *testing.T) {
 		t.Errorf("open mode: all open statuses should pass, got %d", len(got))
 	}
 }
+
+// TestApplyStateFilter_OpenMode_KeepsDoneChildrenOfOpenParent は、親が open の場合に
+// done 状態の子タスクが open filter 結果に残ることを検証する。
+func TestApplyStateFilter_OpenMode_KeepsDoneChildrenOfOpenParent(t *testing.T) {
+	parent := &orchestrator.Task{
+		ID:              "parent",
+		Status:          orchestrator.TaskStatusExecuting,
+		TotalChildCount: 2,
+		OpenChildCount:  1,
+	}
+	childDone := &orchestrator.Task{
+		ID:       "child-done",
+		ParentID: "parent",
+		Status:   orchestrator.TaskStatusDone,
+	}
+	childOpen := &orchestrator.Task{
+		ID:       "child-open",
+		ParentID: "parent",
+		Status:   orchestrator.TaskStatusExecuting,
+	}
+
+	tasks := []*orchestrator.Task{parent, childDone, childOpen}
+	result := applyStateFilter(tasks, false)
+
+	ids := make(map[string]bool)
+	for _, t := range result {
+		ids[t.ID] = true
+	}
+
+	if !ids["parent"] {
+		t.Error("parent (executing) should be in open filter result")
+	}
+	if !ids["child-done"] {
+		t.Error("done child of open parent should be in open filter result")
+	}
+	if !ids["child-open"] {
+		t.Error("open child should be in open filter result")
+	}
+	if len(result) != 3 {
+		t.Errorf("want 3 tasks in result, got %d", len(result))
+	}
+}
+
+// TestApplyStateFilter_OpenMode_DoesNotKeepDoneChildrenOfClosedParent は、親も子も done の場合に
+// open filter 結果に残らないことを検証する（対称性確認）。
+func TestApplyStateFilter_OpenMode_DoesNotKeepDoneChildrenOfClosedParent(t *testing.T) {
+	parent := &orchestrator.Task{
+		ID:              "parent",
+		Status:          orchestrator.TaskStatusDone,
+		TotalChildCount: 1,
+		OpenChildCount:  0,
+	}
+	childDone := &orchestrator.Task{
+		ID:       "child-done",
+		ParentID: "parent",
+		Status:   orchestrator.TaskStatusDone,
+	}
+
+	tasks := []*orchestrator.Task{parent, childDone}
+	result := applyStateFilter(tasks, false)
+
+	ids := make(map[string]bool)
+	for _, t := range result {
+		ids[t.ID] = true
+	}
+
+	if ids["parent"] {
+		t.Error("done parent with no open children should NOT be in open filter result")
+	}
+	if ids["child-done"] {
+		t.Error("done child of done parent should NOT be in open filter result")
+	}
+	if len(result) != 0 {
+		t.Errorf("want 0 tasks in result, got %d", len(result))
+	}
+}
+
+// TestSyncTableRows_BlockedPendingRowIsDim は blocked pending タスクの全セルが
+// dim スタイル（ANSI コード含む）でレンダリングされることを検証する。
+func TestSyncTableRows_BlockedPendingRowIsDim(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.recalcColumns(120)
+	s.tasks = []*orchestrator.Task{
+		{ID: "t1", Title: "Blocked Task", Status: orchestrator.TaskStatusPending, Blocked: true, Behavior: "dev", CreatedAt: time.Now()},
+		{ID: "t2", Title: "Other", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()},
+	}
+	s.syncTableRows()
+	s.cursor = 1 // 行 0 を非選択にする
+	s.syncTableRows()
+
+	rows := s.tableRows
+	if len(rows) == 0 {
+		t.Fatal("no rows after syncTableRows")
+	}
+
+	// STATUS セルのドット部分は dim ANSI コードを含む
+	if !strings.Contains(rows[0][0], "\x1b") {
+		t.Errorf("blocked pending STATUS cell should contain ANSI (dim), got %q", rows[0][0])
+	}
+	// TITLE セルも dim ANSI コードを含む
+	if !strings.Contains(rows[0][1], "\x1b") {
+		t.Errorf("blocked pending TITLE cell should contain ANSI (dim), got %q", rows[0][1])
+	}
+	// BEHAVIOR セルも dim ANSI コードを含む
+	if !strings.Contains(rows[0][3], "\x1b") {
+		t.Errorf("blocked pending BEHAVIOR cell should contain ANSI (dim), got %q", rows[0][3])
+	}
+}
+
+// TestSyncTableRows_DoneRowIsDim は done タスクの全セルが dim でレンダリングされることを検証する。
+func TestSyncTableRows_DoneRowIsDim(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.recalcColumns(120)
+	s.tasks = []*orchestrator.Task{
+		{ID: "t1", Title: "Done Task", Status: orchestrator.TaskStatusDone, Behavior: "dev", CreatedAt: time.Now()},
+		{ID: "t2", Title: "Other", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()},
+	}
+	s.syncTableRows()
+	s.cursor = 1 // 行 0 を非選択にする
+	s.syncTableRows()
+
+	rows := s.tableRows
+	if len(rows) == 0 {
+		t.Fatal("no rows after syncTableRows")
+	}
+
+	if !strings.Contains(rows[0][0], "\x1b") {
+		t.Errorf("done STATUS cell should contain ANSI (dim), got %q", rows[0][0])
+	}
+	if !strings.Contains(rows[0][1], "\x1b") {
+		t.Errorf("done TITLE cell should contain ANSI (dim), got %q", rows[0][1])
+	}
+	if !strings.Contains(rows[0][3], "\x1b") {
+		t.Errorf("done BEHAVIOR cell should contain ANSI (dim), got %q", rows[0][3])
+	}
+}
+
+// TestSyncTableRows_AbortedRowIsDim は aborted タスクの全セルが dim でレンダリングされることを検証する。
+func TestSyncTableRows_AbortedRowIsDim(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.recalcColumns(120)
+	s.tasks = []*orchestrator.Task{
+		{ID: "t1", Title: "Aborted Task", Status: orchestrator.TaskStatusAborted, Behavior: "dev", CreatedAt: time.Now()},
+		{ID: "t2", Title: "Other", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()},
+	}
+	s.syncTableRows()
+	s.cursor = 1 // 行 0 を非選択にする
+	s.syncTableRows()
+
+	rows := s.tableRows
+	if len(rows) == 0 {
+		t.Fatal("no rows after syncTableRows")
+	}
+
+	if !strings.Contains(rows[0][0], "\x1b") {
+		t.Errorf("aborted STATUS cell should contain ANSI (dim), got %q", rows[0][0])
+	}
+	if !strings.Contains(rows[0][1], "\x1b") {
+		t.Errorf("aborted TITLE cell should contain ANSI (dim), got %q", rows[0][1])
+	}
+	if !strings.Contains(rows[0][3], "\x1b") {
+		t.Errorf("aborted BEHAVIOR cell should contain ANSI (dim), got %q", rows[0][3])
+	}
+}
+
+// TestBlink_ExecutingDotDimsWhenBlinkOff は blinkOn=false のとき executing タスクのドットが
+// dim 色でレンダリングされ、blinkOn=true のときは executing 色になることを検証する。
+func TestBlink_ExecutingDotDimsWhenBlinkOff(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.recalcColumns(120)
+	s.tasks = []*orchestrator.Task{
+		{ID: "t1", Title: "Running", Status: orchestrator.TaskStatusExecuting, CreatedAt: time.Now()},
+		{ID: "t2", Title: "Other", Status: orchestrator.TaskStatusPending, CreatedAt: time.Now()},
+	}
+	s.syncTableRows()
+	s.cursor = 1 // 行 0 を非選択にする
+
+	// blinkOn=false（デフォルト）: ドットは dim 色
+	s.blinkOn = false
+	s.syncTableRows()
+	statusBlinkOff := s.tableRows[0][0]
+
+	// blinkOn=true: ドットは executing 色
+	s.blinkOn = true
+	s.syncTableRows()
+	statusBlinkOn := s.tableRows[0][0]
+
+	if statusBlinkOff == statusBlinkOn {
+		t.Error("blinkOn/Off should produce different STATUS cell rendering")
+	}
+
+	// blinkOff は dim ドット色を持つべき
+	dimDot := styleTaskDim.Render("●")
+	if !strings.HasPrefix(statusBlinkOff, dimDot) {
+		t.Errorf("blinkOff: dot should be dim, got %q, want prefix %q", statusBlinkOff, dimDot)
+	}
+
+	// blinkOn は executing ドット色を持つべき
+	execDot := styleExecuting.Render("●")
+	if !strings.HasPrefix(statusBlinkOn, execDot) {
+		t.Errorf("blinkOn: dot should be executing color, got %q, want prefix %q", statusBlinkOn, execDot)
+	}
+}
