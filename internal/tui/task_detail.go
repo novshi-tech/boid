@@ -420,8 +420,11 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		return openJobCmd(job.ID, s.shared.Panes[job.ID])
 
-	case "esc", "backspace", "q":
+	case "esc", "backspace":
 		return func() tea.Msg { return popScreenMsg{} }
+
+	case "q":
+		return tea.Quit
 
 	case "d":
 		if s.deletePending {
@@ -618,7 +621,7 @@ func (s *TaskDetailScreen) ShortHelp() string {
 		}
 	}
 
-	fixed := "tab/shift+tab: switch tab  r: refresh  esc/q: back"
+	fixed := "tab/shift+tab: switch tab  r: refresh  esc: back  q: quit"
 
 	var tabSpecific string
 	switch s.activeTab {
