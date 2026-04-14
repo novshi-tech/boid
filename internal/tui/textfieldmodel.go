@@ -59,7 +59,7 @@ func (m TextFieldModel) Update(msg tea.Msg) (TextFieldModel, tea.Cmd) {
 // View renders the component as a single line.
 // Format: "  %-10s [cursor] [textinput.View()]\n"
 func (m TextFieldModel) View() string {
-	labelStr := fmt.Sprintf("%-10s", m.label+":")
+	labelStr := fmt.Sprintf("%-12s", m.label+":")
 	cursor := " "
 	if m.input.Focused() {
 		cursor = styleCursor.Render("▸")

@@ -1,6 +1,10 @@
 package tui
 
-import tea "github.com/charmbracelet/bubbletea"
+import (
+	"fmt"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 // CheckboxToggledMsg is dispatched when a CheckboxModel is toggled.
 type CheckboxToggledMsg struct {
@@ -56,16 +60,16 @@ func (c CheckboxModel) Update(msg tea.Msg) (CheckboxModel, tea.Cmd) {
 	return c, nil
 }
 
-// View renders the checkbox. Format: "  ▸ [x] label" (focused) or "    [ ] label" (unfocused).
+// View renders the checkbox. Format: "  label:       ▸ [x]" (focused) or "  label:         [ ]" (unfocused).
 func (c CheckboxModel) View() string {
-	mark := " "
-	if c.checked {
-		mark = "x"
-	}
-	text := "[" + mark + "] " + c.label
+	labelStr := fmt.Sprintf("%-12s", c.label+":")
 	cursor := " "
 	if c.focused {
 		cursor = styleCursor.Render("▸")
 	}
-	return "  " + cursor + " " + text + "\n"
+	mark := " "
+	if c.checked {
+		mark = "x"
+	}
+	return "  " + labelStr + " " + cursor + " [" + mark + "]\n"
 }

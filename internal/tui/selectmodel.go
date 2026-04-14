@@ -138,7 +138,7 @@ func (m SelectModel) Update(msg tea.Msg) (SelectModel, tea.Cmd) {
 func (m SelectModel) View() string {
 	var sb strings.Builder
 
-	labelStr := fmt.Sprintf("%-10s", m.label+":")
+	labelStr := fmt.Sprintf("%-12s", m.label+":")
 	cursor := " "
 	if m.focused {
 		cursor = styleCursor.Render("▸")
@@ -165,9 +165,9 @@ func (m SelectModel) View() string {
 	if m.expanded {
 		for i, opt := range m.options {
 			if i == m.cursor {
-				sb.WriteString("             " + styleCursor.Render("▸ "+opt.Label) + "\n")
+				sb.WriteString("               " + styleCursor.Render("▸ "+opt.Label) + "\n")
 			} else {
-				sb.WriteString("               " + styleDim.Render(opt.Label) + "\n")
+				sb.WriteString("                 " + styleDim.Render(opt.Label) + "\n")
 			}
 		}
 	}

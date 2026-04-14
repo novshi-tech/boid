@@ -112,8 +112,11 @@ func TestCheckboxOtherKeyNoToggle(t *testing.T) {
 func TestCheckboxViewUnchecked(t *testing.T) {
 	c := NewCheckbox("interactive")
 	view := c.View()
-	if !containsStr(view, "[ ] interactive") {
-		t.Errorf("unchecked view: want '[ ] interactive', got %q", view)
+	if !containsStr(view, "interactive:") {
+		t.Errorf("unchecked view: want 'interactive:', got %q", view)
+	}
+	if !containsStr(view, "[ ]") {
+		t.Errorf("unchecked view: want '[ ]', got %q", view)
 	}
 }
 
@@ -121,7 +124,10 @@ func TestCheckboxViewChecked(t *testing.T) {
 	c := NewCheckbox("interactive")
 	c.SetValue(true)
 	view := c.View()
-	if !containsStr(view, "[x] interactive") {
-		t.Errorf("checked view: want '[x] interactive', got %q", view)
+	if !containsStr(view, "interactive:") {
+		t.Errorf("checked view: want 'interactive:', got %q", view)
+	}
+	if !containsStr(view, "[x]") {
+		t.Errorf("checked view: want '[x]', got %q", view)
 	}
 }
