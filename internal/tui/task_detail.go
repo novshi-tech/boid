@@ -489,8 +489,9 @@ func (s *TaskDetailScreen) View(width, height int) string {
 	// --- sub-header: title + status (1 line) ---
 	if s.detail != nil && s.detail.Task != nil {
 		task := s.detail.Task
-		titleStr := styleTitle.Render(truncate(task.Title, 50))
 		_, statusText := taskStatusDisplay(task.Status)
+		maxTitleWidth := max(width-lipglossWidth(statusText)-1, 10)
+		titleStr := styleTitle.Render(truncate(task.Title, maxTitleWidth))
 		gap := max(width-lipglossWidth(titleStr)-lipglossWidth(statusText), 1)
 		sb.WriteString(titleStr)
 		sb.WriteString(strings.Repeat(" ", gap))
