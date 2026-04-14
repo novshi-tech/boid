@@ -246,6 +246,17 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 			return nil, err
 		}
 	}
+
+	// Blocked フィールドを算出する（pending タスクのみ対象）。
+	// N+1 を避けるため、まず全タスクを ID マップに格納してから判定する。
+	taskByID := make(map[string]*Task, len(tasks))
+	for _, t := range tasks {
+		taskByID[t.ID] = t
+	}
+	for _, t := range tasks {
+		t.Blocked = ComputeTaskBlocked(t, taskByID)
+	}
+
 	return tasks, nil
 }
 

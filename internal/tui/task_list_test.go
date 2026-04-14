@@ -1083,19 +1083,19 @@ func makeDummyJobs(n int) []*api.Job {
 	return jobs
 }
 
-// --- syncTableRows ANSI stripping tests ---
+// --- syncTableRows のスタイル検証テスト ---
 
-func TestSyncTableRows_StatusCellNoANSI(t *testing.T) {
+// TestSyncTableRows_StatusCellContainsANSI は executing/reworking/verifying/aborted の
+// STATUS セルが ANSI コードを含むことを検証する。
+func TestSyncTableRows_StatusCellContainsANSI(t *testing.T) {
 	s := newTestTaskListScreen()
-	statuses := []orchestrator.TaskStatus{
+	coloredStatuses := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusExecuting,
 		orchestrator.TaskStatusReworking,
 		orchestrator.TaskStatusVerifying,
-		orchestrator.TaskStatusPending,
-		orchestrator.TaskStatusDone,
 		orchestrator.TaskStatusAborted,
 	}
-	for _, status := range statuses {
+	for _, status := range coloredStatuses {
 		s.tasks = []*orchestrator.Task{
 			{ID: "t1", Title: "Test", Status: status, Behavior: "dev", CreatedAt: time.Now()},
 		}
@@ -1105,9 +1105,88 @@ func TestSyncTableRows_StatusCellNoANSI(t *testing.T) {
 			t.Fatalf("status %q: no rows after syncTableRows", status)
 		}
 		statusCell := rows[0][0]
-		if strings.Contains(statusCell, "\x1b") {
-			t.Errorf("status %q: STATUS cell contains ANSI code: %q", status, statusCell)
+		if !strings.Contains(statusCell, "\x1b") {
+			t.Errorf("status %q: STATUS cell should contain ANSI code, got %q", status, statusCell)
 		}
+	}
+}
+
+// TestSyncTableRows_StatusCellContent はすべてのステータスで STATUS セルのテキスト内容を検証する。
+func TestSyncTableRows_StatusCellContent(t *testing.T) {
+	s := newTestTaskListScreen()
+	tests := []struct {
+		status  orchestrator.TaskStatus
+		wantDot string
+		wantTxt string
+	}{
+		{orchestrator.TaskStatusExecuting, "●", "executing"},
+		{orchestrator.TaskStatusReworking, "●", "reworking"},
+		{orchestrator.TaskStatusVerifying, "●", "verifying"},
+		{orchestrator.TaskStatusPending, "○", "pending"},
+		{orchestrator.TaskStatusDone, "✓", "done"},
+		{orchestrator.TaskStatusAborted, "✗", "aborted"},
+	}
+	for _, tc := range tests {
+		s.tasks = []*orchestrator.Task{
+			{ID: "t1", Title: "Test", Status: tc.status, Behavior: "dev", CreatedAt: time.Now()},
+		}
+		s.syncTableRows()
+		rows := s.table.Rows()
+		if len(rows) == 0 {
+			t.Fatalf("status %q: no rows", tc.status)
+		}
+		raw := stripANSI(rows[0][0])
+		if !containsStr(raw, tc.wantDot) {
+			t.Errorf("status %q: dot want %q in %q", tc.status, tc.wantDot, raw)
+		}
+		if !containsStr(raw, tc.wantTxt) {
+			t.Errorf("status %q: text want %q in %q", tc.status, tc.wantTxt, raw)
+		}
+	}
+}
+
+// TestSyncTableRows_BlockedPending_DimStyle は blocked=true な pending タスクの STATUS セルが
+// dim スタイル (ANSI コード含む) で描画されることを検証する。
+func TestSyncTableRows_BlockedPending_DimStyle(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.tasks = []*orchestrator.Task{
+		{ID: "t1", Title: "Blocked", Status: orchestrator.TaskStatusPending, Blocked: true, Behavior: "dev", CreatedAt: time.Now()},
+	}
+	s.syncTableRows()
+	rows := s.table.Rows()
+	if len(rows) == 0 {
+		t.Fatal("no rows after syncTableRows")
+	}
+	statusCell := rows[0][0]
+	// blocked pending は dim スタイルで ANSI コードを含むこと
+	if !strings.Contains(statusCell, "\x1b") {
+		t.Errorf("blocked pending STATUS cell should contain ANSI code (dim), got %q", statusCell)
+	}
+	// テキスト内容は "pending" を含むこと
+	if !containsStr(stripANSI(statusCell), "pending") {
+		t.Errorf("blocked pending STATUS cell should contain 'pending', got %q", stripANSI(statusCell))
+	}
+}
+
+// TestSyncTableRows_ExecutingTitle_HasColor は executing タスクの TITLE セルが
+// ANSI カラーコードを含むことを検証する。
+func TestSyncTableRows_ExecutingTitle_HasColor(t *testing.T) {
+	s := newTestTaskListScreen()
+	s.recalcColumns(120)
+	s.tasks = []*orchestrator.Task{
+		{ID: "t1", Title: "Running Task", Status: orchestrator.TaskStatusExecuting, Behavior: "dev", CreatedAt: time.Now()},
+	}
+	s.syncTableRows()
+	rows := s.table.Rows()
+	if len(rows) == 0 {
+		t.Fatal("no rows")
+	}
+	titleCell := rows[0][1]
+	if !strings.Contains(titleCell, "\x1b") {
+		t.Errorf("executing TITLE cell should contain ANSI code, got %q", titleCell)
+	}
+	if !containsStr(stripANSI(titleCell), "Running Task") {
+		t.Errorf("executing TITLE cell should contain task title, got %q", stripANSI(titleCell))
 	}
 }
 
@@ -1555,16 +1634,18 @@ func TestSyncTableRows_Indent_Depth1(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("want 2 rows, got %d", len(rows))
 	}
-	parentTitle := rows[0][1]
+	// ANSI コードを除いてインデントを確認する
+	parentTitle := stripANSI(rows[0][1])
 	if strings.HasPrefix(parentTitle, "  ") {
 		t.Errorf("parent row should not have 2-space indent, got %q", parentTitle)
 	}
 	childTitle := rows[1][1]
-	if !strings.HasPrefix(childTitle, "  ") {
-		t.Errorf("child row should start with 2-space indent, got %q", childTitle)
+	rawChildTitle := stripANSI(childTitle)
+	if !strings.HasPrefix(rawChildTitle, "  ") {
+		t.Errorf("child row should start with 2-space indent, got %q", rawChildTitle)
 	}
-	if !containsStr(childTitle, "Child") {
-		t.Errorf("child title should contain 'Child', got %q", childTitle)
+	if !containsStr(rawChildTitle, "Child") {
+		t.Errorf("child title should contain 'Child', got %q", rawChildTitle)
 	}
 }
 
@@ -1581,7 +1662,8 @@ func TestSyncTableRows_Indent_Depth2(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("want 3 rows, got %d", len(rows))
 	}
-	gcTitle := rows[2][1]
+	// ANSI コードを除いてインデントを確認する
+	gcTitle := stripANSI(rows[2][1])
 	if !strings.HasPrefix(gcTitle, "    ") {
 		t.Errorf("grandchild should have 4-space indent, got %q", gcTitle)
 	}
