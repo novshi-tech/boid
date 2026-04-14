@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -22,7 +23,6 @@ type timelineEvent struct {
 	Time     time.Time
 	Kind     string
 	Label    string
-	Sub      string   // optional secondary info (e.g. worktree path)
 	Job      *api.Job // non-nil for job events
 	HasTime  bool     // false = no reliable timestamp (findings)
 	Resolved bool     // for finding events: true = resolved
@@ -80,53 +80,20 @@ func parseAllFindings(payload json.RawMessage) []allFinding {
 
 // statusGroup groups timeline events under a single task status node in the tree view.
 type statusGroup struct {
-	Status string
-	Events []timelineEvent
+	Status      string
+	EnteredAt   time.Time
+	HasEnteredAt bool
+	Events      []timelineEvent
 }
 
-// isHookOrGateFired reports whether an action type represents a hook or gate firing.
-func isHookOrGateFired(t string) bool {
-	return t == "hook_fired" || t == "exit_gate_fired" || t == "entry_gate_fired"
-}
-
-// isStateTransition reports whether an action represents a meaningful state transition.
+// isStateTransition reports whether an action moves the task to a different status.
 func isStateTransition(a *orchestrator.Action) bool {
 	return a.FromStatus != "" && a.ToStatus != "" && a.FromStatus != a.ToStatus
 }
 
-// extractSourceState reads the source_state field from an action payload.
-// Used for hook_fired, exit_gate_fired, and entry_gate_fired action types.
-func extractSourceState(payload json.RawMessage) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	var m struct {
-		SourceState string `json:"source_state"`
-	}
-	if err := json.Unmarshal(payload, &m); err != nil {
-		return ""
-	}
-	return m.SourceState
-}
-
-// buildActionTreeLabel returns the display label for an action in the tree timeline.
-// - hook/gate-fired: "<type>: <hook_id> ok|fail"
-// - state transition: "<type> → <to_status>"
+// buildActionTreeLabel returns the display label for a state-transition action.
+// Format: "<type> → <to_status>".
 func buildActionTreeLabel(a *orchestrator.Action) string {
-	if isHookOrGateFired(a.Type) {
-		var p struct {
-			HookID  string `json:"hook_id"`
-			Success bool   `json:"success"`
-		}
-		if len(a.Payload) > 0 && json.Unmarshal(a.Payload, &p) == nil && p.HookID != "" {
-			result := "ok"
-			if !p.Success {
-				result = "fail"
-			}
-			return a.Type + ": " + p.HookID + " " + result
-		}
-		return a.Type
-	}
 	if isStateTransition(a) {
 		return a.Type + " → " + string(a.ToStatus)
 	}
@@ -134,20 +101,24 @@ func buildActionTreeLabel(a *orchestrator.Action) string {
 }
 
 // buildJobTimelineLabel returns the display label for a completed or failed job.
-// Format: "[role] ✓ 2m" / "[role] ✗ 2m".
+// Format: "[role] <handler_id> ✓|✗ <duration>". handler_id is omitted when empty.
 func buildJobTimelineLabel(j *api.Job) string {
 	role := j.Role
 	if role == "" {
 		role = "job"
 	}
+	handler := ""
+	if j.HandlerID != "" {
+		handler = j.HandlerID + " "
+	}
 	dur := jobDuration(j)
 	switch j.Status {
 	case api.JobStatusCompleted:
-		return fmt.Sprintf("[%s] ✓ %s", role, dur)
+		return fmt.Sprintf("[%s] %s✓ %s", role, handler, dur)
 	case api.JobStatusFailed:
-		return fmt.Sprintf("[%s] ✗ %s", role, dur)
+		return fmt.Sprintf("[%s] %s✗ %s", role, handler, dur)
 	default:
-		return fmt.Sprintf("[%s] %s", role, string(j.Status))
+		return fmt.Sprintf("[%s] %s%s", role, handler, string(j.Status))
 	}
 }
 
@@ -168,10 +139,14 @@ func jobDuration(j *api.Job) string {
 	return fmt.Sprintf("%dm%ds", m, s)
 }
 
-// buildTreeTimeline groups filtered timeline events by the task status in which
-// they occurred. Only state-transition actions, hook/gate-fired actions,
-// completed/failed jobs, and findings are included — ephemeral running jobs and
-// non-transition bookkeeping actions are omitted to keep the view signal-heavy.
+// buildTreeTimeline groups filtered events by the task status in which they
+// occurred. Only state-transition actions, completed/failed jobs, and findings
+// are included. hook_fired / exit_gate_fired / entry_gate_fired actions are
+// dropped because the associated job carries the same information (and more).
+//
+// Each group's EnteredAt is the time the task entered that status:
+//   - initial state: task.CreatedAt
+//   - subsequent states: the CreatedAt of the transition action that moved into it
 func buildTreeTimeline(detail *api.TaskDetailView) []statusGroup {
 	if detail == nil {
 		return nil
@@ -186,7 +161,7 @@ func buildTreeTimeline(detail *api.TaskDetailView) []statusGroup {
 
 	var items []rawItem
 	for _, a := range detail.Actions {
-		if !isStateTransition(a) && !isHookOrGateFired(a.Type) {
+		if !isStateTransition(a) {
 			continue
 		}
 		items = append(items, rawItem{t: a.CreatedAt, hasTime: !a.CreatedAt.IsZero(), action: a})
@@ -208,46 +183,62 @@ func buildTreeTimeline(detail *api.TaskDetailView) []statusGroup {
 		return items[i].t.Before(items[j].t)
 	})
 
+	// Compute per-status entry times.
+	stateEntered := map[string]time.Time{}
+	stateHasEntry := map[string]bool{}
+	initialStatus := ""
+	for _, it := range items {
+		if it.action == nil {
+			continue
+		}
+		a := it.action
+		if initialStatus == "" {
+			initialStatus = string(a.FromStatus)
+		}
+		stateEntered[string(a.ToStatus)] = a.CreatedAt
+		stateHasEntry[string(a.ToStatus)] = !a.CreatedAt.IsZero()
+	}
+	if initialStatus == "" && detail.Task != nil {
+		initialStatus = string(detail.Task.Status)
+	}
+	if initialStatus != "" && detail.Task != nil && !detail.Task.CreatedAt.IsZero() {
+		stateEntered[initialStatus] = detail.Task.CreatedAt
+		stateHasEntry[initialStatus] = true
+	}
+
 	var groups []statusGroup
 	groupIdx := map[string]int{}
 
 	addEvent := func(status string, ev timelineEvent) {
 		if _, ok := groupIdx[status]; !ok {
 			groupIdx[status] = len(groups)
-			groups = append(groups, statusGroup{Status: status})
+			groups = append(groups, statusGroup{
+				Status:       status,
+				EnteredAt:    stateEntered[status],
+				HasEnteredAt: stateHasEntry[status],
+			})
 		}
 		idx := groupIdx[status]
 		groups[idx].Events = append(groups[idx].Events, ev)
 	}
 
-	currentStatus := ""
+	currentStatus := initialStatus
 
 	for _, it := range items {
 		if it.action != nil {
 			a := it.action
-
 			groupStatus := string(a.FromStatus)
 			if groupStatus == "" {
 				groupStatus = currentStatus
 			}
-			// hook/gate fired: honour source_state from payload when present.
-			if isHookOrGateFired(a.Type) {
-				if ss := extractSourceState(a.Payload); ss != "" {
-					groupStatus = ss
-				}
-			}
-
 			addEvent(groupStatus, timelineEvent{
 				Time:    a.CreatedAt,
 				Kind:    timelineKindAction,
 				Label:   buildActionTreeLabel(a),
 				HasTime: !a.CreatedAt.IsZero(),
 			})
-
 			if string(a.ToStatus) != "" {
 				currentStatus = string(a.ToStatus)
-			} else if groupStatus != "" {
-				currentStatus = groupStatus
 			}
 		} else {
 			j := it.job
@@ -261,7 +252,7 @@ func buildTreeTimeline(detail *api.TaskDetailView) []statusGroup {
 		}
 	}
 
-	// Findings are placed in the current task status group (no reliable timestamp).
+	// Findings sit in the current task status group (no reliable timestamp).
 	if detail.Task != nil {
 		taskStatus := string(detail.Task.Status)
 		for _, f := range parseAllFindings(detail.Task.Payload) {
@@ -282,7 +273,7 @@ func buildTreeTimeline(detail *api.TaskDetailView) []statusGroup {
 }
 
 // selectableEventsInGroups returns the flat event list from all groups in order.
-// Used for cursor-count clamping and enter-key drilldown in the tree timeline.
+// Used for cursor-count clamping and enter-key drilldown.
 func selectableEventsInGroups(groups []statusGroup) []timelineEvent {
 	var events []timelineEvent
 	for _, g := range groups {
@@ -291,8 +282,26 @@ func selectableEventsInGroups(groups []statusGroup) []timelineEvent {
 	return events
 }
 
-// renderTreeTimeline renders status groups as a tree with box-drawing characters.
-// cursor is an index into the flat sequence of selectable events (state headers are not selectable).
+// statusHeaderStyle returns the style to apply to a state group header.
+func statusHeaderStyle(status string) lipgloss.Style {
+	switch orchestrator.TaskStatus(status) {
+	case orchestrator.TaskStatusPending:
+		return stylePending.Bold(true)
+	case orchestrator.TaskStatusExecuting:
+		return styleExecuting.Bold(true)
+	case orchestrator.TaskStatusVerifying:
+		return styleVerifying.Bold(true)
+	case orchestrator.TaskStatusReworking:
+		return styleWarn.Bold(true)
+	case orchestrator.TaskStatusAborted:
+		return styleAborted.Bold(true)
+	}
+	return styleHeader
+}
+
+// renderTreeTimeline renders status groups as a tree. State headers at column 0
+// show the state name and the time it was entered; events hang below with
+// ├─ / └─ tree connectors. The cursor highlights event rows only.
 func renderTreeTimeline(groups []statusGroup, width, height, cursor int) string {
 	_ = width
 
@@ -305,17 +314,21 @@ func renderTreeTimeline(groups []statusGroup, width, height, cursor int) string 
 	}
 
 	type visualRow struct {
-		isHeader bool
-		header   string
-		ev       timelineEvent
-		prefix   string // "├─ " or "└─ "
-		evIdx    int    // index among selectable events; -1 for headers
+		isHeader   bool
+		headerText string
+		ev         timelineEvent
+		prefix     string // "├─ " or "└─ "
+		evIdx      int    // index among selectable events; -1 for headers
 	}
 
 	rows := make([]visualRow, 0, totalEvents+len(groups))
 	evIdx := 0
 	for _, grp := range groups {
-		rows = append(rows, visualRow{isHeader: true, header: grp.Status, evIdx: -1})
+		headerText := statusHeaderStyle(grp.Status).Render(grp.Status)
+		if grp.HasEnteredAt {
+			headerText += "  " + styleDim.Render(grp.EnteredAt.Local().Format("15:04:05"))
+		}
+		rows = append(rows, visualRow{isHeader: true, headerText: headerText, evIdx: -1})
 		for i, ev := range grp.Events {
 			prefix := "├─ "
 			if i == len(grp.Events)-1 {
@@ -353,7 +366,7 @@ func renderTreeTimeline(groups []statusGroup, width, height, cursor int) string 
 		row := rows[i]
 
 		if row.isHeader {
-			sb.WriteString(styleDim.Render("  " + row.header))
+			sb.WriteString(row.headerText)
 			sb.WriteByte('\n')
 			continue
 		}
@@ -402,16 +415,12 @@ func renderTreeTimeline(groups []statusGroup, width, height, cursor int) string 
 			icon = styleDim.Render("→")
 		}
 
-		labelPart := row.prefix + ev.Label
-		if ev.Sub != "" {
-			labelPart += "  " + styleDim.Render(ev.Sub)
-		}
-
-		line := fmt.Sprintf("%s%s  %s  %s",
+		line := fmt.Sprintf("%s%s  %s  %s%s",
 			cursorStr,
 			styleDim.Render(timeStr),
 			icon,
-			labelPart,
+			row.prefix,
+			ev.Label,
 		)
 		sb.WriteString(line)
 		sb.WriteByte('\n')

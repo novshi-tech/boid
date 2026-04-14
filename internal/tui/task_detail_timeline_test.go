@@ -153,116 +153,109 @@ func TestBuildTreeTimeline_ActionLabel_Transition(t *testing.T) {
 	}
 }
 
-// TestBuildTreeTimeline_NonTransitionActionLabel verifies that non-transition actions
-// do NOT have "→ <to_status>" in their label.
-func TestBuildTreeTimeline_NonTransitionActionLabel(t *testing.T) {
+// TestBuildTreeTimeline_DropsHookAndGateFiredActions verifies that hook_fired /
+// exit_gate_fired / entry_gate_fired action events are excluded — the
+// corresponding job event already conveys hook id, success, and duration.
+func TestBuildTreeTimeline_DropsHookAndGateFiredActions(t *testing.T) {
 	now := time.Now()
 	detail := &api.TaskDetailView{
-		Task: &orchestrator.Task{ID: "t", Status: orchestrator.TaskStatusExecuting},
+		Task: &orchestrator.Task{ID: "t", Status: orchestrator.TaskStatusExecuting, CreatedAt: now.Add(-5 * time.Minute)},
 		Actions: []*orchestrator.Action{
 			{
-				ID:         "a1",
-				Type:       "start",
+				ID: "a1", Type: "start",
 				FromStatus: orchestrator.TaskStatusPending,
 				ToStatus:   orchestrator.TaskStatusExecuting,
-				CreatedAt:  now.Add(-time.Minute),
+				CreatedAt:  now.Add(-4 * time.Minute),
 			},
 			{
-				// Self-loop: no state transition.
-				ID:         "a2",
-				Type:       "hook_fired",
+				ID: "a2", Type: "hook_fired",
 				FromStatus: orchestrator.TaskStatusExecuting,
 				ToStatus:   orchestrator.TaskStatusExecuting,
-				Payload: json.RawMessage(`{
-					"kit_id":"go-dev","hook_id":"go-dev/pr-verify",
-					"source_state":"executing","success":true
-				}`),
-				CreatedAt: now,
-			},
-		},
-	}
-
-	groups := buildTreeTimeline(detail)
-	// Find "executing" group.
-	var execGroup *statusGroup
-	for i := range groups {
-		if groups[i].Status == "executing" {
-			execGroup = &groups[i]
-			break
-		}
-	}
-	if execGroup == nil {
-		t.Fatal("executing group not found")
-	}
-	// Find hook_fired event.
-	for _, ev := range execGroup.Events {
-		if containsStr(ev.Label, "hook_fired") {
-			if containsStr(ev.Label, "→") {
-				t.Errorf("non-transition action should not contain '→': got %q", ev.Label)
-			}
-			return
-		}
-	}
-	t.Error("hook_fired event not found in executing group")
-}
-
-// TestBuildTreeTimeline_HookFiredSourceState verifies that hook_fired uses source_state
-// from the payload to determine its status group.
-func TestBuildTreeTimeline_HookFiredSourceState(t *testing.T) {
-	now := time.Now()
-	detail := &api.TaskDetailView{
-		Task: &orchestrator.Task{ID: "t", Status: orchestrator.TaskStatusExecuting},
-		Actions: []*orchestrator.Action{
-			{
-				ID:         "a1",
-				Type:       "start",
-				FromStatus: orchestrator.TaskStatusPending,
-				ToStatus:   orchestrator.TaskStatusExecuting,
+				Payload:    json.RawMessage(`{"hook_id":"x/y","success":true}`),
 				CreatedAt:  now.Add(-3 * time.Minute),
 			},
 			{
-				ID:         "a2",
-				Type:       "hook_fired",
+				ID: "a3", Type: "exit_gate_fired",
 				FromStatus: orchestrator.TaskStatusExecuting,
 				ToStatus:   orchestrator.TaskStatusExecuting,
-				Payload: json.RawMessage(`{
-					"kit_id":"go-dev","hook_id":"go-dev/pr-verify",
-					"source_state":"executing","success":true
-				}`),
-				CreatedAt: now.Add(-1 * time.Minute),
+				Payload:    json.RawMessage(`{"hook_id":"x/z","success":true}`),
+				CreatedAt:  now.Add(-2 * time.Minute),
 			},
 		},
 	}
-
 	groups := buildTreeTimeline(detail)
-
-	// hook_fired should be in the "executing" group, not "pending".
-	var execGroup *statusGroup
-	for i := range groups {
-		if groups[i].Status == "executing" {
-			execGroup = &groups[i]
-			break
-		}
-	}
-	if execGroup == nil {
-		t.Fatal("executing group not found")
-	}
-
-	found := false
-	for _, ev := range execGroup.Events {
-		if containsStr(ev.Label, "hook_fired") {
-			found = true
-			// Label should include hook_id and "ok".
-			if !containsStr(ev.Label, "go-dev/pr-verify") {
-				t.Errorf("hook_fired label: want 'go-dev/pr-verify', got %q", ev.Label)
-			}
-			if !containsStr(ev.Label, "ok") {
-				t.Errorf("hook_fired label: want 'ok', got %q", ev.Label)
+	for _, g := range groups {
+		for _, ev := range g.Events {
+			if containsStr(ev.Label, "hook_fired") ||
+				containsStr(ev.Label, "exit_gate_fired") ||
+				containsStr(ev.Label, "entry_gate_fired") {
+				t.Errorf("hook/gate fired action should be dropped, got label %q", ev.Label)
 			}
 		}
 	}
-	if !found {
-		t.Error("hook_fired event not found in executing group")
+}
+
+// TestBuildJobTimelineLabel_IncludesHandlerID verifies hook/gate handler IDs
+// appear in the label so users don't need the removed hook_fired action rows.
+func TestBuildJobTimelineLabel_IncludesHandlerID(t *testing.T) {
+	now := time.Now()
+	j := &api.Job{
+		Role:      "hook",
+		HandlerID: "claude-code/run-agent",
+		Status:    api.JobStatusCompleted,
+		CreatedAt: now.Add(-2 * time.Minute),
+		UpdatedAt: now,
+	}
+	label := buildJobTimelineLabel(j)
+	if !containsStr(label, "claude-code/run-agent") {
+		t.Errorf("job label: want handler id, got %q", label)
+	}
+	if !containsStr(label, "[hook]") {
+		t.Errorf("job label: want role prefix, got %q", label)
+	}
+}
+
+// TestBuildTreeTimeline_StateEntryTime verifies that each group records the
+// task.CreatedAt for the initial state and transition timestamps for others.
+func TestBuildTreeTimeline_StateEntryTime(t *testing.T) {
+	created := time.Unix(1_700_000_000, 0)
+	now := created.Add(10 * time.Minute)
+	detail := &api.TaskDetailView{
+		Task: &orchestrator.Task{
+			ID: "t", Status: orchestrator.TaskStatusVerifying,
+			CreatedAt: created,
+			Payload: json.RawMessage(`{"verification":{"g":{"findings":[{"message":"x","status":"open"}]}}}`),
+		},
+		Actions: []*orchestrator.Action{
+			{
+				ID: "a1", Type: "start",
+				FromStatus: orchestrator.TaskStatusPending,
+				ToStatus:   orchestrator.TaskStatusExecuting,
+				CreatedAt:  now.Add(-5 * time.Minute),
+			},
+			{
+				ID: "a2", Type: "done",
+				FromStatus: orchestrator.TaskStatusExecuting,
+				ToStatus:   orchestrator.TaskStatusVerifying,
+				CreatedAt:  now.Add(-1 * time.Minute),
+			},
+		},
+	}
+	groups := buildTreeTimeline(detail)
+	got := map[string]time.Time{}
+	for _, g := range groups {
+		if g.HasEnteredAt {
+			got[g.Status] = g.EnteredAt
+		}
+	}
+	if !got["pending"].Equal(created) {
+		t.Errorf("pending entry time: want %v, got %v", created, got["pending"])
+	}
+	if !got["executing"].Equal(now.Add(-5 * time.Minute)) {
+		t.Errorf("executing entry time: want %v, got %v", now.Add(-5*time.Minute), got["executing"])
+	}
+	if !got["verifying"].Equal(now.Add(-1 * time.Minute)) {
+		t.Errorf("verifying entry time: want %v, got %v", now.Add(-1*time.Minute), got["verifying"])
 	}
 }
 
