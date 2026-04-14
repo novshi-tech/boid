@@ -16,6 +16,21 @@ const (
 	timelineKindJob     = "job"
 )
 
+// userDrivenActionTypes is the allowlist of action types that are considered
+// user-driven. These are shown in the Overview timeline; internal engine
+// actions (hook_fired, exit_gate_fired, auto_advance, etc.) are excluded.
+var userDrivenActionTypes = map[string]bool{
+	"start":            true,
+	"abort":            true,
+	"rerun":            true,
+	"done":             true,
+	"collect_feedback": true,
+	"pause":            true,
+	"resume":           true,
+	"reject":           true,
+	"accept":           true,
+}
+
 // timelineEvent is a single row in the unified timeline view.
 type timelineEvent struct {
 	Time     time.Time
@@ -157,6 +172,112 @@ func buildJobTimelineLabel(j *api.Job) string {
 	default:
 		return fmt.Sprintf("[%s] %s", role, string(j.Status))
 	}
+}
+
+// buildOverviewTimeline constructs a filtered timeline for the Overview tab.
+// Included:
+//   - User-driven actions only (filtered by userDrivenActionTypes allowlist)
+//   - Completed or failed jobs only (running jobs are shown in the Active section)
+//   - All verification findings (resolved and open)
+//
+// Excluded: internal engine actions (hook_fired, auto_advance, etc.) and running jobs.
+// Worktree paths are not included in Sub; use JobDetailScreen for those details.
+func buildOverviewTimeline(detail *api.TaskDetailView) []timelineEvent {
+	if detail == nil {
+		return nil
+	}
+	var events []timelineEvent
+
+	// User-driven actions only.
+	for _, a := range detail.Actions {
+		if !userDrivenActionTypes[a.Type] {
+			continue
+		}
+		events = append(events, timelineEvent{
+			Time:    a.CreatedAt,
+			Kind:    timelineKindAction,
+			Label:   a.Type + " applied",
+			HasTime: !a.CreatedAt.IsZero(),
+		})
+	}
+
+	// Completed/failed jobs only (running jobs appear in Active section).
+	for _, j := range detail.Jobs {
+		if j.Status == api.JobStatusRunning {
+			continue
+		}
+		events = append(events, timelineEvent{
+			Time:    j.CreatedAt,
+			Kind:    timelineKindJob,
+			Label:   buildOverviewJobLabel(j),
+			Job:     j,
+			HasTime: !j.CreatedAt.IsZero(),
+		})
+	}
+
+	// Findings (all — open and resolved).
+	if detail.Task != nil {
+		for _, f := range parseAllFindings(detail.Task.Payload) {
+			status := "open"
+			if f.resolved {
+				status = "resolved"
+			}
+			events = append(events, timelineEvent{
+				Kind:     timelineKindFinding,
+				Label:    fmt.Sprintf("[%s] %s (%s)", f.gate, f.message, status),
+				HasTime:  false,
+				Resolved: f.resolved,
+			})
+		}
+	}
+
+	// Sort: timed events ascending, no-time events at bottom.
+	sort.SliceStable(events, func(i, j int) bool {
+		if events[i].HasTime != events[j].HasTime {
+			return events[i].HasTime
+		}
+		if !events[i].HasTime {
+			return false
+		}
+		return events[i].Time.Before(events[j].Time)
+	})
+
+	return events
+}
+
+// buildOverviewJobLabel returns a compact summary for a completed/failed job
+// in the Overview timeline: "role  ✓ duration" or "role  ✗ duration".
+func buildOverviewJobLabel(j *api.Job) string {
+	role := j.Role
+	if role == "" {
+		role = "job"
+	}
+	dur := overviewJobDuration(j)
+	switch j.Status {
+	case api.JobStatusCompleted:
+		return fmt.Sprintf("[%s]  ✓ %s", role, dur)
+	case api.JobStatusFailed:
+		return fmt.Sprintf("[%s]  ✗ %s", role, dur)
+	default:
+		return fmt.Sprintf("[%s] %s", role, string(j.Status))
+	}
+}
+
+// overviewJobDuration returns a human-readable duration for a completed job.
+func overviewJobDuration(j *api.Job) string {
+	if j.UpdatedAt.IsZero() || !j.UpdatedAt.After(j.CreatedAt) {
+		return "?"
+	}
+	d := j.UpdatedAt.Sub(j.CreatedAt).Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	m := int(d.Minutes())
+	s := int(d.Seconds()) % 60
+	if s == 0 {
+		return fmt.Sprintf("%dm", m)
+	}
+	return fmt.Sprintf("%dm%ds", m, s)
 }
 
 // renderTimeline renders the timeline events as a string.

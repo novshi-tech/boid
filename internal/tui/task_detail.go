@@ -46,6 +46,7 @@ type TaskDetailScreen struct {
 	timelineCursor int
 	depsCursor     int
 	descScroll     int
+	descPageHeight int
 	payloadCursor  int
 	payloadScroll  int
 	statusMsg      string
@@ -97,7 +98,7 @@ func (s *TaskDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				s.cursor = len(s.detail.Jobs) - 1
 			}
 			if s.detail != nil {
-				events := buildTimeline(s.detail)
+				events := buildOverviewTimeline(s.detail)
 				if s.timelineCursor >= len(events) && len(events) > 0 {
 					s.timelineCursor = len(events) - 1
 				}
@@ -236,11 +237,6 @@ func (s *TaskDetailScreen) handleTitleEditKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
-	jobCount := 0
-	if s.detail != nil {
-		jobCount = len(s.detail.Jobs)
-	}
-
 	switch msg.String() {
 	case "tab":
 		s.activeTab = cycleTab(s.activeTab, 1)
@@ -249,25 +245,25 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		s.activeTab = cycleTab(s.activeTab, -1)
 
 	case "j", "down":
-		if s.activeTab == tabOverview {
-			// scroll description in Overview
+		switch s.activeTab {
+		case tabOverview:
+			events := buildOverviewTimeline(s.detail)
+			if s.timelineCursor < len(events)-1 {
+				s.timelineCursor++
+			}
+		case tabDescription:
 			if s.detail != nil && s.detail.Task != nil {
 				lines := strings.Split(s.detail.Task.Description, "\n")
 				if s.descScroll < len(lines)-1 {
 					s.descScroll++
 				}
 			}
-		} else if s.activeTab == tabTimeline {
-			events := buildTimeline(s.detail)
-			if s.timelineCursor < len(events)-1 {
-				s.timelineCursor++
-			}
-		} else if s.activeTab == tabDeps {
+		case tabDeps:
 			items := depSelectableItems(s.detail)
 			if s.depsCursor < len(items)-1 {
 				s.depsCursor++
 			}
-		} else if s.activeTab == tabPayload {
+		case tabPayload:
 			if s.detail != nil && s.detail.Task != nil {
 				sections := extractPayloadSections(s.detail.Task.Payload)
 				if s.payloadCursor < len(sections)-1 {
@@ -275,34 +271,42 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 					s.payloadScroll = 0
 				}
 			}
-		} else {
-			if s.cursor < jobCount-1 {
-				s.cursor++
-			}
 		}
 
 	case "k", "up":
-		if s.activeTab == tabOverview {
-			if s.descScroll > 0 {
-				s.descScroll--
-			}
-		} else if s.activeTab == tabTimeline {
+		switch s.activeTab {
+		case tabOverview:
 			if s.timelineCursor > 0 {
 				s.timelineCursor--
 			}
-		} else if s.activeTab == tabDeps {
+		case tabDescription:
+			if s.descScroll > 0 {
+				s.descScroll--
+			}
+		case tabDeps:
 			if s.depsCursor > 0 {
 				s.depsCursor--
 			}
-		} else if s.activeTab == tabPayload {
+		case tabPayload:
 			if s.payloadCursor > 0 {
 				s.payloadCursor--
 				s.payloadScroll = 0
 			}
-		} else {
-			if s.cursor > 0 {
-				s.cursor--
+		}
+
+	case "pgdown", "ctrl+f":
+		if s.activeTab == tabDescription {
+			if s.detail != nil && s.detail.Task != nil {
+				lines := strings.Split(s.detail.Task.Description, "\n")
+				pageSize := max(s.descPageHeight, 1)
+				s.descScroll = min(s.descScroll+pageSize, max(len(lines)-1, 0))
 			}
+		}
+
+	case "pgup", "ctrl+b":
+		if s.activeTab == tabDescription {
+			pageSize := max(s.descPageHeight, 1)
+			s.descScroll = max(s.descScroll-pageSize, 0)
 		}
 
 	case "r":
@@ -326,9 +330,13 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			}
 			break
 		}
-		// Timeline tab: enter on a job event pushes JobDetailScreen.
-		if s.activeTab == tabTimeline {
-			events := buildTimeline(s.detail)
+		// Payload tab: no-op.
+		if s.activeTab == tabPayload {
+			break
+		}
+		// Overview tab: drill into timeline event → JobDetailScreen.
+		if s.activeTab == tabOverview {
+			events := buildOverviewTimeline(s.detail)
 			if s.timelineCursor >= 0 && s.timelineCursor < len(events) {
 				ev := events[s.timelineCursor]
 				if ev.Job != nil {
@@ -340,48 +348,16 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			}
 			break
 		}
-		var targetJob *api.Job
-		if s.activeTab == tabOverview {
-			// open first running job
-			for _, j := range s.detail.Jobs {
-				if j.Status == api.JobStatusRunning {
-					targetJob = j
-					break
-				}
-			}
-		} else if len(s.detail.Jobs) > 0 {
-			targetJob = s.detail.Jobs[s.cursor]
-		}
-		if targetJob == nil {
-			if s.activeTab == tabOverview && s.detail.Task != nil {
-				task := s.detail.Task
-				return func() tea.Msg {
-					return pushScreenMsg{screen: NewDescriptionScreen(s.shared.Client, task)}
-				}
-			}
-			break
-		}
-		if !s.shared.TmuxEnabled {
-			s.statusMsg = "to open a job, launch `boid tui` inside tmux"
-			s.isError = false
-			return clearStatusAfter(4 * time.Second)
-		}
-		return openJobCmd(targetJob.ID, s.shared.Panes[targetJob.ID])
-
-	case "v":
-		if s.detail == nil || s.detail.Task == nil {
-			break
-		}
-		if s.activeTab == tabOverview {
-			task := s.detail.Task
-			return func() tea.Msg {
-				return pushScreenMsg{screen: NewDescriptionScreen(s.shared.Client, task)}
-			}
-		}
 
 	case "e":
 		if s.detail == nil || s.detail.Task == nil {
 			break
+		}
+		if s.activeTab == tabDescription {
+			task := s.detail.Task
+			return func() tea.Msg {
+				return pushScreenMsg{screen: NewDescriptionScreen(s.shared.Client, task)}
+			}
 		}
 		if s.activeTab == tabPayload {
 			sections := extractPayloadSections(s.detail.Task.Payload)
@@ -394,7 +370,7 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 				return pushScreenMsg{screen: NewPayloadSectionEditScreen(s.shared.Client, task, sectionKey)}
 			}
 		}
-		// Start inline title editing
+		// Default: start inline title editing.
 		s.titleEditing = true
 		s.titleInput = NewTextField()
 		s.titleInput.SetLabel("edit title")
@@ -529,9 +505,9 @@ func (s *TaskDetailScreen) View(width, height int) string {
 	switch s.activeTab {
 	case tabOverview:
 		sb.WriteString(s.renderOverview(width, contentHeight))
-	case tabTimeline:
-		events := buildTimeline(s.detail)
-		sb.WriteString(renderTimeline(events, width, contentHeight, s.timelineCursor))
+	case tabDescription:
+		s.descPageHeight = contentHeight
+		sb.WriteString(renderDescription(s.detail, s.descScroll, width, contentHeight))
 	case tabDeps:
 		sb.WriteString(renderDeps(s.detail, width, contentHeight, s.depsCursor))
 	case tabPayload:
@@ -585,8 +561,22 @@ func (s *TaskDetailScreen) ShortHelp() string {
 			parts = append(parts, "R: rerun")
 		}
 	}
-	fixed := "tab/shift+tab: switch tab  e: edit title  v: view desc  j/k: scroll/cursor  enter: open/nav  r: refresh  esc/q: back"
-	return strings.Join(parts, "  ") + "  " + fixed
+
+	fixed := "tab/shift+tab: switch tab  r: refresh  esc/q: back"
+
+	var tabSpecific string
+	switch s.activeTab {
+	case tabOverview:
+		tabSpecific = "e: edit title  enter: drill into event  j/k: scroll cursor"
+	case tabDescription:
+		tabSpecific = "e: edit description  j/k: scroll  pgup/pgdn: page"
+	case tabDeps:
+		tabSpecific = "enter: jump to task  j/k: move cursor"
+	case tabPayload:
+		tabSpecific = "e: edit section  j/k: select section"
+	}
+
+	return strings.Join(parts, "  ") + "  " + fixed + "  " + tabSpecific
 }
 
 // assignKeys assigns a single-character key to each action name.

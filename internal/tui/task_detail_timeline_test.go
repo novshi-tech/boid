@@ -338,3 +338,89 @@ func TestRenderTimeline_ScrollWindow(t *testing.T) {
 		t.Error("cursor=9: event-0 should not be visible when scrolled down")
 	}
 }
+
+// --- userDrivenActionTypes tests ---
+
+func TestUserDrivenActionTypes_KnownKeys(t *testing.T) {
+	// These must all be classified as user-driven.
+	known := []string{"start", "abort", "rerun", "done"}
+	for _, k := range known {
+		if !userDrivenActionTypes[k] {
+			t.Errorf("userDrivenActionTypes[%q]: want true", k)
+		}
+	}
+}
+
+func TestUserDrivenActionTypes_InternalNotPresent(t *testing.T) {
+	// These internal actions must NOT be user-driven.
+	internal := []string{"hook_fired", "exit_gate_fired", "entry_gate_fired", "auto_advance"}
+	for _, k := range internal {
+		if userDrivenActionTypes[k] {
+			t.Errorf("userDrivenActionTypes[%q]: want false (internal action)", k)
+		}
+	}
+}
+
+// --- overviewJobDuration tests ---
+
+func TestOverviewJobDuration_Normal(t *testing.T) {
+	now := time.Now()
+	j := &api.Job{
+		Status:    api.JobStatusCompleted,
+		CreatedAt: now.Add(-2 * time.Minute),
+		UpdatedAt: now,
+	}
+	dur := overviewJobDuration(j)
+	if dur == "?" {
+		t.Error("overviewJobDuration: expected non-? duration for normal job")
+	}
+}
+
+func TestOverviewJobDuration_ZeroUpdatedAt(t *testing.T) {
+	now := time.Now()
+	j := &api.Job{
+		Status:    api.JobStatusCompleted,
+		CreatedAt: now.Add(-2 * time.Minute),
+		// UpdatedAt zero
+	}
+	dur := overviewJobDuration(j)
+	if dur != "?" {
+		t.Errorf("overviewJobDuration with zero UpdatedAt: want '?', got %q", dur)
+	}
+}
+
+func TestBuildOverviewJobLabel_Completed(t *testing.T) {
+	now := time.Now()
+	j := &api.Job{
+		Role:      "gate",
+		Status:    api.JobStatusCompleted,
+		ExitCode:  0,
+		CreatedAt: now.Add(-30 * time.Second),
+		UpdatedAt: now,
+	}
+	label := buildOverviewJobLabel(j)
+	if !containsStr(label, "[gate]") {
+		t.Errorf("completed label: expected '[gate]', got %q", label)
+	}
+	if !containsStr(label, "✓") {
+		t.Errorf("completed label: expected '✓', got %q", label)
+	}
+}
+
+func TestBuildOverviewJobLabel_Failed(t *testing.T) {
+	now := time.Now()
+	j := &api.Job{
+		Role:      "hook",
+		Status:    api.JobStatusFailed,
+		ExitCode:  1,
+		CreatedAt: now.Add(-106 * time.Second),
+		UpdatedAt: now,
+	}
+	label := buildOverviewJobLabel(j)
+	if !containsStr(label, "[hook]") {
+		t.Errorf("failed label: expected '[hook]', got %q", label)
+	}
+	if !containsStr(label, "✗") {
+		t.Errorf("failed label: expected '✗', got %q", label)
+	}
+}
