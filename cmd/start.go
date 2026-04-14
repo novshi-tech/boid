@@ -33,6 +33,7 @@ var (
 	startHTTPAddr    string
 	startKitsDir     string
 	startKeyFilePath string
+	startWebEnabled  bool
 )
 
 func init() {
@@ -42,6 +43,7 @@ func init() {
 	startCmd.Flags().StringVar(&startHTTPAddr, "http-addr", "", "HTTP listen address")
 	startCmd.Flags().StringVar(&startKitsDir, "kits-dir", "", "Base directory for installed kits")
 	startCmd.Flags().StringVar(&startKeyFilePath, "key-file-path", "", "Path to the secret encryption key file")
+	startCmd.Flags().BoolVar(&startWebEnabled, "web", false, "Enable Web UI (experimental)")
 	rootCmd.AddCommand(startCmd)
 }
 
@@ -105,6 +107,7 @@ type startConfigOptions struct {
 	HTTPAddr    string
 	KitsDir     string
 	KeyFilePath string
+	WebEnabled  bool
 }
 
 func buildStartConfig(opts startConfigOptions) server.Config {
@@ -115,6 +118,7 @@ func buildStartConfig(opts startConfigOptions) server.Config {
 		KitsDir:        opts.KitsDir,
 		KeyFilePath:    opts.KeyFilePath,
 		AllowedDomains: defaultAllowedDomains(),
+		WebEnabled:     opts.WebEnabled,
 	}
 
 	if cfg.DBPath == "" {
@@ -143,6 +147,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		HTTPAddr:    startHTTPAddr,
 		KitsDir:     startKitsDir,
 		KeyFilePath: startKeyFilePath,
+		WebEnabled:  startWebEnabled,
 	})
 
 	if daemon.IsChild() {
