@@ -43,6 +43,7 @@ type Server struct {
 	unixLn      net.Listener
 	tcpLn       net.Listener
 	httpServer  *http.Server
+	gcLoop      *orchestrator.GCLoop // nil if GC is disabled
 	mu          sync.Mutex
 }
 
@@ -133,6 +134,11 @@ func (s *Server) Router() chi.Router {
 }
 
 func (s *Server) Start(ctx context.Context) error {
+	// Start GC loop goroutine if configured.
+	if s.gcLoop != nil {
+		go s.gcLoop.Run(ctx)
+	}
+
 	// Start broker
 	if s.broker != nil {
 		if err := s.broker.Start(ctx); err != nil {
