@@ -64,22 +64,34 @@ func renderSectionHeader(title string, width int) string {
 // renderOverview renders the Overview tab content.
 //
 // Layout (top to bottom):
-//  1. ─── Findings (open) ─── section: only when open findings exist.
-//  2. ─── Timeline ─── section: state-grouped tree of state transitions,
+//  1. ─── Timeline ─── section: state-grouped tree of state transitions,
 //     hook/gate firings, completed/failed jobs, and running jobs.
+//  2. ─── Findings (open) ─── section: only when open findings exist.
 func (s *TaskDetailScreen) renderOverview(width, height int) string {
 	var sb strings.Builder
-	used := 0
 
-	// ─── Findings (open) ──────────────────────────────────────
+	// ─── Findings (open) ─── (calculated first to reserve space at bottom)
 	var findings []openFinding
 	if s.detail != nil && s.detail.Task != nil {
 		findings = parseOpenFindings(s.detail.Task.Payload)
 	}
+	findingsLines := 0
+	if len(findings) > 0 {
+		findingsLines = 1 + len(findings) // header + each finding
+	}
+
+	// ─── Timeline ─────────────────────────────────────────────
+	groups := buildTreeTimeline(s.detail)
+	sb.WriteString(renderSectionHeader("Timeline", width))
+	sb.WriteByte('\n')
+
+	timelineHeight := max(height-1-findingsLines, 2)
+	sb.WriteString(renderTreeTimeline(groups, width, timelineHeight, s.timelineCursor, s.blinkOn))
+
+	// ─── Findings (open) ──────────────────────────────────────
 	if len(findings) > 0 {
 		sb.WriteString(renderSectionHeader("Findings (open)", width))
 		sb.WriteByte('\n')
-		used++
 		for _, f := range findings {
 			line := fmt.Sprintf("  %s [%s] %s",
 				styleWarn.Render("!"),
@@ -88,18 +100,8 @@ func (s *TaskDetailScreen) renderOverview(width, height int) string {
 			)
 			sb.WriteString(line)
 			sb.WriteByte('\n')
-			used++
 		}
 	}
-
-	// ─── Timeline ─────────────────────────────────────────────
-	groups := buildTreeTimeline(s.detail)
-	sb.WriteString(renderSectionHeader("Timeline", width))
-	sb.WriteByte('\n')
-	used++
-
-	timelineHeight := max(height-used, 2)
-	sb.WriteString(renderTreeTimeline(groups, width, timelineHeight, s.timelineCursor, s.blinkOn))
 
 	return sb.String()
 }
