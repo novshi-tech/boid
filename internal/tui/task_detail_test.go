@@ -162,10 +162,10 @@ func TestTaskDetailDescriptionScrollArrowKeys_DescriptionTab(t *testing.T) {
 }
 
 // TestTaskDetailEnterOpenJob_Overview_RunningJob_PushesJobDetail verifies that Enter
-// in Overview with a running job selected (cursor in Active section) pushes JobDetailScreen.
+// in Overview with a running job selected (cursor on running Timeline event) pushes JobDetailScreen.
 func TestTaskDetailEnterOpenJob_Overview_RunningJob_PushesJobDetail(t *testing.T) {
 	s := newTestTaskDetailScreen()
-	s.detail = makeDetailWithJobs(1) // 1 running job → cursor 0 = Active section
+	s.detail = makeDetailWithJobs(1) // 1 running job → cursor 0 = first Timeline event
 	s.shared.TmuxEnabled = false
 	s.activeTab = tabOverview
 	s.timelineCursor = 0
@@ -284,8 +284,9 @@ func TestTaskDetailView_Renders(t *testing.T) {
 	if !containsStr(view, "Description") {
 		t.Error("View should contain 'Description' tab in tab bar")
 	}
-	if !containsStr(view, "Active") {
-		t.Error("View should contain 'Active' section header")
+	// Active section is removed; Timeline is always shown instead.
+	if !containsStr(view, "Timeline") {
+		t.Error("View should contain 'Timeline' section header")
 	}
 }
 
@@ -880,11 +881,16 @@ func TestRenderOverview_WithRunningJob(t *testing.T) {
 	s.detail = makeDetailWithJobs(2) // 2 running jobs
 
 	view := s.renderOverview(80, 20)
-	if !containsStr(view, "running job") {
-		t.Error("renderOverview: expected 'running job' for active job")
+	// Active section is gone; running jobs appear in Timeline instead.
+	if containsStr(view, "─── Active") {
+		t.Error("renderOverview: Active section header should be removed")
 	}
+	if containsStr(view, "no active job") {
+		t.Error("renderOverview: 'no active job' text should not appear")
+	}
+	// Running jobs should be visible in Timeline with their role label.
 	if !containsStr(view, "[main]") {
-		t.Error("renderOverview: expected '[main]' role label")
+		t.Error("renderOverview: expected '[main]' role label in Timeline")
 	}
 }
 
@@ -901,8 +907,16 @@ func TestRenderOverview_NoJobs(t *testing.T) {
 	}
 
 	view := s.renderOverview(80, 20)
-	if !containsStr(view, "no active job") {
-		t.Error("renderOverview: expected 'no active job' when no running jobs")
+	// Active section is removed; "no active job" text should not appear.
+	if containsStr(view, "no active job") {
+		t.Error("renderOverview: 'no active job' should not appear (Active section removed)")
+	}
+	if containsStr(view, "─── Active") {
+		t.Error("renderOverview: Active section header should not appear")
+	}
+	// Timeline section should still be present.
+	if !containsStr(view, "Timeline") {
+		t.Error("renderOverview: expected 'Timeline' section header")
 	}
 }
 
@@ -983,14 +997,23 @@ func TestRenderOverview_NoDescriptionSection(t *testing.T) {
 	}
 }
 
-// TestRenderOverview_HasTimelineSection verifies that the Timeline section is shown in Overview.
+// TestRenderOverview_HasTimelineSection verifies that the Timeline section is shown in Overview
+// and that running jobs appear inside it (no separate Active section).
 func TestRenderOverview_HasTimelineSection(t *testing.T) {
 	s := newTestTaskDetailScreen()
-	s.detail = makeDetailWithCompletedJob()
+	s.detail = makeDetailWithRunningJob(false)
 
 	view := s.renderOverview(80, 20)
 	if !containsStr(view, "Timeline") {
 		t.Error("renderOverview: expected 'Timeline' section header")
+	}
+	// Running job should appear in Timeline with its role label.
+	if !containsStr(view, "[main]") {
+		t.Error("renderOverview: expected running job '[main]' to appear in Timeline")
+	}
+	// Active section must not exist.
+	if containsStr(view, "─── Active") {
+		t.Error("renderOverview: Active section header should not appear")
 	}
 }
 
@@ -1380,12 +1403,13 @@ func makeDetailWithRunningJob(interactive bool) *api.TaskDetailView {
 	}
 }
 
-// TestActiveActiveCursor_JMovesToTimeline verifies that j from the last Active job
-// moves the cursor into the Timeline section when timeline events exist.
+// TestActiveActiveCursor_JMovesToTimeline verifies that j from the first Timeline event
+// moves the cursor to the next event when multiple events exist.
 func TestActiveActiveCursor_JMovesToTimeline(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	now := time.Now()
-	// 1 running job (Active) + 1 completed job (Timeline)
+	// 1 running job + 1 completed job — both in Timeline.
+	// Sorted by CreatedAt: completed (-3m) first, running (-2m) second. Total=2.
 	s.detail = &api.TaskDetailView{
 		Task: &orchestrator.Task{
 			ID: "t", Status: orchestrator.TaskStatusExecuting, CreatedAt: now,
@@ -1396,21 +1420,22 @@ func TestActiveActiveCursor_JMovesToTimeline(t *testing.T) {
 		},
 	}
 	s.activeTab = tabOverview
-	s.timelineCursor = 0 // at Active job
+	s.timelineCursor = 0 // at first Timeline event
 
-	// j from Active last → move to Timeline[0] (cursor = nActive + 0 = 1)
+	// j from first event → move to second (cursor 1)
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	if s.timelineCursor != 1 {
-		t.Errorf("j from Active last: want timelineCursor 1 (Timeline[0]), got %d", s.timelineCursor)
+		t.Errorf("j from first event: want timelineCursor 1, got %d", s.timelineCursor)
 	}
 }
 
-// TestActiveActiveCursor_KFromTimelineMovesToActive verifies that k from Timeline[0]
-// moves the cursor back into the Active section.
+// TestActiveActiveCursor_KFromTimelineMovesToActive verifies that k from the second
+// Timeline event moves the cursor to the first event.
 func TestActiveActiveCursor_KFromTimelineMovesToActive(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	now := time.Now()
-	// 1 running job (Active) + 1 completed job (Timeline)
+	// 1 running job + 1 completed job — both in Timeline.
+	// Sorted by CreatedAt: completed (-3m) first, running (-2m) second. Total=2.
 	s.detail = &api.TaskDetailView{
 		Task: &orchestrator.Task{
 			ID: "t", Status: orchestrator.TaskStatusExecuting, CreatedAt: now,
@@ -1421,12 +1446,12 @@ func TestActiveActiveCursor_KFromTimelineMovesToActive(t *testing.T) {
 		},
 	}
 	s.activeTab = tabOverview
-	s.timelineCursor = 1 // at Timeline[0] (nActive=1, so cursor=1)
+	s.timelineCursor = 1 // at second Timeline event
 
-	// k from Timeline[0] → Active last job (cursor = 0)
+	// k from second event → first event (cursor 0)
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
 	if s.timelineCursor != 0 {
-		t.Errorf("k from Timeline[0]: want timelineCursor 0 (Active[0]), got %d", s.timelineCursor)
+		t.Errorf("k from second event: want timelineCursor 0, got %d", s.timelineCursor)
 	}
 }
 
@@ -1592,17 +1617,17 @@ func TestAssignKeys_OReserved(t *testing.T) {
 	}
 }
 
-// TestShortHelp_Overview_ActiveSelected_ShowsOKey verifies that ShortHelp shows
-// the 'o' shortcut when cursor is in the Active section.
-func TestShortHelp_Overview_ActiveSelected_ShowsOKey(t *testing.T) {
+// TestShortHelp_Overview_RunningJobSelected_ShowsOKey verifies that ShortHelp shows
+// the 'o' shortcut when cursor is on a running job in the Timeline.
+func TestShortHelp_Overview_RunningJobSelected_ShowsOKey(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	s.detail = makeDetailWithRunningJob(true)
 	s.activeTab = tabOverview
-	s.timelineCursor = 0 // Active section (nActive=1, cursor=0)
+	s.timelineCursor = 0 // first Timeline event (running job)
 
 	help := s.ShortHelp()
 	if !containsStr(help, "o: open in tmux") {
-		t.Errorf("ShortHelp with Active selected: expected 'o: open in tmux', got %q", help)
+		t.Errorf("ShortHelp with running job selected: expected 'o: open in tmux', got %q", help)
 	}
 }
 
@@ -1620,26 +1645,26 @@ func TestShortHelp_Overview_TimelineSelected_NoOKey(t *testing.T) {
 	}
 }
 
-// TestRenderOverview_ActiveCursorShown verifies that the cursor indicator appears
-// on the selected Active job line.
-func TestRenderOverview_ActiveCursorShown(t *testing.T) {
+// TestRenderOverview_CursorShownInTimeline verifies that the cursor indicator appears
+// on the selected Timeline event row (running job).
+func TestRenderOverview_CursorShownInTimeline(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	s.detail = makeDetailWithRunningJob(false)
 	s.activeTab = tabOverview
-	s.timelineCursor = 0 // Active job selected
+	s.timelineCursor = 0 // first Timeline event (running job)
 
 	view := s.renderOverview(80, 20)
 	if !containsStr(view, "▸") {
-		t.Error("renderOverview with Active selected: expected cursor indicator '▸'")
+		t.Error("renderOverview with running job selected: expected cursor indicator '▸' in Timeline")
 	}
 }
 
-// TestRenderOverview_ActiveCursorNotShownInTimeline verifies no cursor appears
-// in Timeline rows when cursor is in Active section.
-func TestRenderOverview_ActiveCursorNotShownInTimeline(t *testing.T) {
+// TestRenderOverview_CursorAppearsInTimeline verifies that the cursor appears
+// inside the Timeline section when pointing to a Timeline event.
+func TestRenderOverview_CursorAppearsInTimeline(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	now := time.Now()
-	// 1 running job (Active) + 1 completed job (Timeline)
+	// 1 running job + 1 completed job — both now in Timeline.
 	s.detail = &api.TaskDetailView{
 		Task: &orchestrator.Task{ID: "t", Status: orchestrator.TaskStatusExecuting, CreatedAt: now},
 		Jobs: []*api.Job{
@@ -1648,20 +1673,24 @@ func TestRenderOverview_ActiveCursorNotShownInTimeline(t *testing.T) {
 		},
 	}
 	s.activeTab = tabOverview
-	s.timelineCursor = 0 // Active section
+	s.timelineCursor = 0 // first Timeline event
 
 	view := s.renderOverview(80, 30)
 	lines := strings.Split(view, "\n")
 
-	// The cursor indicator must only appear in the Active section (before Timeline header).
+	// Cursor must appear somewhere in the Timeline section.
 	inTimeline := false
+	cursorFound := false
 	for _, line := range lines {
 		if containsStr(line, "─── Timeline") {
 			inTimeline = true
 		}
 		if inTimeline && containsStr(line, "▸") {
-			t.Errorf("cursor '▸' should not appear in Timeline when cursor is in Active: line=%q", line)
+			cursorFound = true
 		}
+	}
+	if !cursorFound {
+		t.Error("renderOverview: cursor '▸' should appear in Timeline")
 	}
 }
 
@@ -1687,6 +1716,58 @@ func TestTaskDetailView_TitleUsesFullScreenWidth(t *testing.T) {
 	// After the fix, all 80 X's must be present.
 	if !containsStr(view, strings.Repeat("X", 60)) {
 		t.Error("title of 80 chars should not be truncated to 50 when screen width is 120")
+	}
+}
+
+// --- blink tests ---
+
+// TestTaskDetail_BlinkOn_StatusBadgeFullColor verifies that when blinkOn=true the
+// status badge renders in the task's status color (not dim).
+func TestTaskDetail_BlinkOn_StatusBadgeFullColor(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusExecuting)
+	s.blinkOn = true
+
+	view := s.View(120, 40)
+
+	execText := styleExecuting.Render("executing")
+	dimText := styleTaskDim.Render("executing")
+	if !containsStr(view, execText) {
+		t.Errorf("blinkOn=true: status badge should be executing color, view=%q", view)
+	}
+	if containsStr(view, dimText) {
+		t.Errorf("blinkOn=true: status badge should not be dim, view=%q", view)
+	}
+}
+
+// TestTaskDetail_BlinkOff_StatusBadgeDim verifies that when blinkOn=false the
+// status badge dims for blink-target statuses (executing/reworking/verifying).
+func TestTaskDetail_BlinkOff_StatusBadgeDim(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusExecuting)
+	s.blinkOn = false
+
+	view := s.View(120, 40)
+
+	dimText := styleTaskDim.Render("executing")
+	if !containsStr(view, dimText) {
+		t.Errorf("blinkOn=false: status badge should be dim for executing, view=%q", view)
+	}
+}
+
+// TestTaskDetail_BlinkOff_DoneStatusNotDim verifies that non-blink-target statuses
+// (done/aborted) are unaffected by blinkOn.
+func TestTaskDetail_BlinkOff_DoneStatusNotDim(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusDone)
+	s.blinkOn = false
+
+	view := s.View(120, 40)
+
+	// taskStatusDisplay returns styleTaskDim.Render("done") for done status.
+	// blinkOn=false should not change it further (done is not a blink target).
+	if !containsStr(view, "done") {
+		t.Error("blinkOn=false: 'done' status should still appear in view")
 	}
 }
 

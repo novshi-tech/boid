@@ -309,7 +309,7 @@ func TestBuildTreeTimeline_ExcludesFindings(t *testing.T) {
 
 // TestRenderTreeTimeline_Empty verifies the empty state message when no groups.
 func TestRenderTreeTimeline_Empty(t *testing.T) {
-	out := renderTreeTimeline(nil, 80, 20, 0)
+	out := renderTreeTimeline(nil, 80, 20, 0, false)
 	if !containsStr(out, "no timeline events") {
 		t.Errorf("empty: expected 'no timeline events', got %q", out)
 	}
@@ -319,7 +319,7 @@ func TestRenderTreeTimeline_Empty(t *testing.T) {
 // no events (e.g. the task just entered a new state) still renders its header
 // so the user can see where the task currently is.
 func TestRenderTreeTimeline_EmptyGroupStillShowsHeader(t *testing.T) {
-	out := renderTreeTimeline([]statusGroup{{Status: "pending", Events: nil}}, 80, 20, 0)
+	out := renderTreeTimeline([]statusGroup{{Status: "pending", Events: nil}}, 80, 20, 0, false)
 	if !containsStr(out, "pending") {
 		t.Errorf("expected 'pending' header in output, got %q", out)
 	}
@@ -345,7 +345,7 @@ func TestRenderTreeTimeline_BoxChars(t *testing.T) {
 		},
 	}
 
-	out := renderTreeTimeline(groups, 80, 30, 0)
+	out := renderTreeTimeline(groups, 80, 30, 0, false)
 
 	// Single-event group uses └─; multi-event group uses both ├─ and └─.
 	if !containsStr(out, "└─") {
@@ -382,7 +382,7 @@ func TestRenderTreeTimeline_CursorOnEvent(t *testing.T) {
 	}
 
 	// cursor=0 → cursor indicator must be on the line containing "event-in-pending".
-	out0 := renderTreeTimeline(groups, 80, 20, 0)
+	out0 := renderTreeTimeline(groups, 80, 20, 0, false)
 	for _, line := range strings.Split(out0, "\n") {
 		if strings.Contains(line, "▸") {
 			if !strings.Contains(line, "event-in-pending") {
@@ -392,7 +392,7 @@ func TestRenderTreeTimeline_CursorOnEvent(t *testing.T) {
 	}
 
 	// cursor=1 → cursor indicator must be on the line containing "event-in-executing".
-	out1 := renderTreeTimeline(groups, 80, 20, 1)
+	out1 := renderTreeTimeline(groups, 80, 20, 1, false)
 	for _, line := range strings.Split(out1, "\n") {
 		if strings.Contains(line, "▸") {
 			if !strings.Contains(line, "event-in-executing") {
@@ -422,7 +422,7 @@ func TestRenderTreeTimeline_HeaderNoCursor(t *testing.T) {
 		},
 	}
 
-	out := renderTreeTimeline(groups, 80, 20, 0)
+	out := renderTreeTimeline(groups, 80, 20, 0, false)
 
 	for _, line := range strings.Split(out, "\n") {
 		// A header line contains the status name but not a box-drawing char.
@@ -465,5 +465,72 @@ func TestSelectableEventsInGroups(t *testing.T) {
 	}
 	if events[2].Label != "done" {
 		t.Errorf("events[2]: want 'done', got %q", events[2].Label)
+	}
+}
+
+// TestBuildTreeTimeline_RunningJobAtTail verifies that a running job (created later)
+// appears after an earlier completed job in the timeline.
+func TestBuildTreeTimeline_RunningJobAtTail(t *testing.T) {
+	now := time.Now()
+	detail := &api.TaskDetailView{
+		Task: &orchestrator.Task{ID: "t", Status: orchestrator.TaskStatusExecuting, CreatedAt: now.Add(-10 * time.Minute)},
+		Jobs: []*api.Job{
+			{ID: "j1", Role: "main", Status: api.JobStatusRunning, CreatedAt: now.Add(-2 * time.Minute)},
+			{ID: "j2", Role: "hook", Status: api.JobStatusCompleted,
+				CreatedAt: now.Add(-5 * time.Minute), UpdatedAt: now.Add(-3 * time.Minute)},
+		},
+	}
+	groups := buildTreeTimeline(detail)
+	events := selectableEventsInGroups(groups)
+	if len(events) < 2 {
+		t.Fatalf("want >= 2 events, got %d", len(events))
+	}
+	// Completed job (CreatedAt -5m) should appear before running job (CreatedAt -2m).
+	last := events[len(events)-1]
+	if last.Job == nil || last.Job.Status != api.JobStatusRunning {
+		t.Errorf("last timeline event should be the running job, got job=%v", last.Job)
+	}
+}
+
+// TestBuildJobTimelineLabel_Running verifies the running job label format.
+func TestBuildJobTimelineLabel_Running(t *testing.T) {
+	j := &api.Job{
+		Role:      "main",
+		Status:    api.JobStatusRunning,
+		CreatedAt: time.Now().Add(-2 * time.Minute),
+	}
+	label := buildJobTimelineLabel(j)
+	if !containsStr(label, "[main]") {
+		t.Errorf("running label: expected '[main]', got %q", label)
+	}
+	if !containsStr(label, "ago") {
+		t.Errorf("running label: expected 'ago', got %q", label)
+	}
+}
+
+// TestRenderTreeTimeline_RunningJobDimOnBlinkOff verifies that a running job's dot
+// renders as dim when blinkOn=false and as running-color when blinkOn=true.
+func TestRenderTreeTimeline_RunningJobDimOnBlinkOff(t *testing.T) {
+	groups := []statusGroup{
+		{
+			Status: "executing",
+			Events: []timelineEvent{
+				{Kind: timelineKindJob, Label: "[main] 2m ago", HasTime: false,
+					Job: &api.Job{Status: api.JobStatusRunning}},
+			},
+		},
+	}
+
+	outOff := renderTreeTimeline(groups, 80, 20, 0, false)
+	outOn := renderTreeTimeline(groups, 80, 20, 0, true)
+
+	dimDot := styleTaskDim.Render("●")
+	runDot := styleRunning.Render("●")
+
+	if !strings.Contains(outOff, dimDot) {
+		t.Errorf("blinkOff: running dot should be dim, outOff=%q", outOff)
+	}
+	if !strings.Contains(outOn, runDot) {
+		t.Errorf("blinkOn: running dot should be running-color, outOn=%q", outOn)
 	}
 }
