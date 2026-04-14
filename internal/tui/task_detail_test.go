@@ -43,6 +43,31 @@ func newTestTaskDetailScreen() *TaskDetailScreen {
 	return NewTaskDetailScreen(shared, "test-task-id", "test-project")
 }
 
+// makeDetailWithCompletedJob returns a detail with one completed job,
+// which appears in the Overview timeline (running jobs are excluded).
+func makeDetailWithCompletedJob() *api.TaskDetailView {
+	now := time.Now()
+	return &api.TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:        "test-task-id",
+			Title:     "Test Task",
+			Status:    orchestrator.TaskStatusDone,
+			Behavior:  "dev",
+			CreatedAt: now.Add(-10 * time.Minute),
+		},
+		Jobs: []*api.Job{
+			{
+				ID:        "job-00000001",
+				Role:      "main",
+				Status:    api.JobStatusCompleted,
+				ExitCode:  0,
+				CreatedAt: now.Add(-5 * time.Minute),
+				UpdatedAt: now.Add(-1 * time.Minute),
+			},
+		},
+	}
+}
+
 func makeDetailWithJobs(n int) *api.TaskDetailView {
 	jobs := make([]*api.Job, n)
 	for i := range jobs {
@@ -66,19 +91,21 @@ func makeDetailWithJobs(n int) *api.TaskDetailView {
 	}
 }
 
-func TestTaskDetailDescriptionScroll_Overview(t *testing.T) {
+// TestTaskDetailDescriptionScroll_DescriptionTab verifies j/k moves descScroll in Description tab.
+func TestTaskDetailDescriptionScroll_DescriptionTab(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	// makeDetailWithJobs has description "Test description\nLine 2" (2 lines)
 	s.detail = makeDetailWithJobs(3)
+	s.activeTab = tabDescription
 
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	if s.descScroll != 1 {
-		t.Errorf("after j in overview: want descScroll 1, got %d", s.descScroll)
+		t.Errorf("after j in description tab: want descScroll 1, got %d", s.descScroll)
 	}
 
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
 	if s.descScroll != 0 {
-		t.Errorf("after k in overview: want descScroll 0, got %d", s.descScroll)
+		t.Errorf("after k in description tab: want descScroll 0, got %d", s.descScroll)
 	}
 
 	// can't go below 0
@@ -95,57 +122,85 @@ func TestTaskDetailDescriptionScroll_Overview(t *testing.T) {
 	}
 }
 
-func TestTaskDetailDescriptionScrollArrowKeys_Overview(t *testing.T) {
+// TestTaskDetailOverviewJK_MovesTimelineCursor verifies j/k moves timelineCursor in Overview.
+func TestTaskDetailOverviewJK_MovesTimelineCursor(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	// makeDetailWithCompletedJob has 1 completed job → 1 overview timeline event
+	s.detail = makeDetailWithCompletedJob()
+	s.activeTab = tabOverview
+	s.timelineCursor = 0
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	// cursor is already at max (1 event → max index 0), should stay at 0
+	if s.timelineCursor != 0 {
+		t.Errorf("after j at max in overview: want timelineCursor 0, got %d", s.timelineCursor)
+	}
+
+	// k should not go below 0
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if s.timelineCursor != 0 {
+		t.Errorf("after k at min in overview: want timelineCursor 0, got %d", s.timelineCursor)
+	}
+}
+
+// TestTaskDetailDescriptionScrollArrowKeys_DescriptionTab verifies down/up arrow moves descScroll.
+func TestTaskDetailDescriptionScrollArrowKeys_DescriptionTab(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	// description "Test description\nLine 2" (2 lines)
 	s.detail = makeDetailWithJobs(2)
+	s.activeTab = tabDescription
 
 	s.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if s.descScroll != 1 {
-		t.Errorf("after down in overview: want descScroll 1, got %d", s.descScroll)
+		t.Errorf("after down in description tab: want descScroll 1, got %d", s.descScroll)
 	}
 
 	s.Update(tea.KeyMsg{Type: tea.KeyUp})
 	if s.descScroll != 0 {
-		t.Errorf("after up in overview: want descScroll 0, got %d", s.descScroll)
+		t.Errorf("after up in description tab: want descScroll 0, got %d", s.descScroll)
 	}
 }
 
-func TestTaskDetailEnterOpenJob_NoTmux(t *testing.T) {
+// TestTaskDetailEnterOpenJob_Overview_NoTimelineEvents verifies that Enter in Overview
+// with no completed jobs (only running) is a no-op (no statusMsg).
+func TestTaskDetailEnterOpenJob_Overview_NoTimelineEvents(t *testing.T) {
 	s := newTestTaskDetailScreen()
-	s.detail = makeDetailWithJobs(1)
+	s.detail = makeDetailWithJobs(1) // running job only → excluded from overview timeline
 	s.shared.TmuxEnabled = false
+	s.activeTab = tabOverview
 
 	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd == nil {
-		t.Error("enter without tmux: expected non-nil cmd (clearStatusAfter)")
+	if s.statusMsg != "" {
+		t.Errorf("enter in overview with only running jobs: expected empty statusMsg, got %q", s.statusMsg)
 	}
-	if s.statusMsg == "" {
-		t.Error("enter without tmux: expected statusMsg to be set")
+	if cmd != nil {
+		msg := cmd()
+		if _, ok := msg.(pushScreenMsg); ok {
+			t.Error("enter in overview with no timeline events: should not push any screen")
+		}
 	}
 }
 
-func TestTaskDetailEnterOpenJob_WithTmux(t *testing.T) {
-	s := newTestTaskDetailScreen()
-	s.detail = makeDetailWithJobs(1)
-	s.shared.TmuxEnabled = true
-
-	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd == nil {
-		t.Error("enter with tmux: expected non-nil cmd (openJobCmd)")
-	}
-}
-
-func TestTaskDetailEnterOpenJob_CorrectJobID(t *testing.T) {
+// TestTaskDetailEnterPayload_IsNoOp verifies that Enter in Payload tab does nothing.
+func TestTaskDetailEnterPayload_IsNoOp(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	s.detail = makeDetailWithJobs(3)
-	s.shared.TmuxEnabled = false
-	s.cursor = 2 // select third job
+	s.shared.TmuxEnabled = true
+	s.activeTab = tabPayload
 
-	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	// Status message is set, indicating the right code path was taken
-	if s.statusMsg == "" {
-		t.Error("expected statusMsg after enter without tmux")
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Payload Enter should be no-op: no cmd, no status message.
+	if s.statusMsg != "" {
+		t.Errorf("enter in payload tab: expected empty statusMsg, got %q", s.statusMsg)
+	}
+	if cmd != nil {
+		msg := cmd()
+		if _, ok := msg.(pushScreenMsg); ok {
+			t.Error("enter in payload tab: should not push any screen")
+		}
+		if _, ok := msg.(openResultMsg); ok {
+			t.Error("enter in payload tab: should not open a job pane")
+		}
 	}
 }
 
@@ -220,14 +275,22 @@ func TestTaskDetailView_Renders(t *testing.T) {
 	if !containsStr(view, "Overview") {
 		t.Error("View should contain tab bar with 'Overview'")
 	}
+	if !containsStr(view, "Description") {
+		t.Error("View should contain 'Description' tab in tab bar")
+	}
 	if !containsStr(view, "Active") {
 		t.Error("View should contain 'Active' section header")
 	}
-	if !containsStr(view, "Description") {
-		t.Error("View should contain 'Description' section header")
-	}
+}
+
+func TestTaskDetailView_DescriptionTab_Renders(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithJobs(2)
+	s.activeTab = tabDescription
+
+	view := s.View(120, 40)
 	if !containsStr(view, "Test description") {
-		t.Error("View should contain description text")
+		t.Error("Description tab: View should contain description text")
 	}
 }
 
@@ -672,8 +735,8 @@ func TestTabSwitch(t *testing.T) {
 	}
 
 	s.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if s.activeTab != tabTimeline {
-		t.Errorf("after tab: want %q, got %q", tabTimeline, s.activeTab)
+	if s.activeTab != tabDescription {
+		t.Errorf("after tab: want %q, got %q", tabDescription, s.activeTab)
 	}
 
 	s.Update(tea.KeyMsg{Type: tea.KeyTab})
@@ -692,8 +755,8 @@ func TestTabSwitch(t *testing.T) {
 	}
 
 	s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-	if s.activeTab != tabTimeline {
-		t.Errorf("after shift+tab: want %q, got %q", tabTimeline, s.activeTab)
+	if s.activeTab != tabDescription {
+		t.Errorf("after shift+tab: want %q, got %q", tabDescription, s.activeTab)
 	}
 
 	s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
@@ -702,18 +765,18 @@ func TestTabSwitch(t *testing.T) {
 	}
 }
 
-func TestTabSwitch_ViewShowsTimeline(t *testing.T) {
+func TestTabSwitch_ViewShowsDescription(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	s.detail = makeDetailWithJobs(1)
 
 	s.Update(tea.KeyMsg{Type: tea.KeyTab})
-	view := s.View(80, 20)
-	// Timeline tab renders actual events; makeDetailWithJobs(1) has 1 running job
-	if !containsStr(view, "[main]") {
-		t.Error("timeline tab: expected job event '[main]' in timeline")
+	if s.activeTab != tabDescription {
+		t.Errorf("after tab: want %q, got %q", tabDescription, s.activeTab)
 	}
-	if !containsStr(view, "running") {
-		t.Error("timeline tab: expected 'running' label in timeline")
+	view := s.View(80, 20)
+	// Description tab renders task description; makeDetailWithJobs sets Description field.
+	if !containsStr(view, "no description") && !containsStr(view, "Test description") {
+		t.Error("description tab: expected description content or '(no description)'")
 	}
 }
 
@@ -853,7 +916,8 @@ func TestRenderOverview_WithOpenFindings(t *testing.T) {
 	}
 }
 
-func TestRenderOverview_WithDeps(t *testing.T) {
+// TestRenderOverview_NoDepsSection verifies the Deps summary section is removed from Overview.
+func TestRenderOverview_NoDepsSection(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	depTask := &orchestrator.Task{
 		ID:     "dep-1",
@@ -872,18 +936,13 @@ func TestRenderOverview_WithDeps(t *testing.T) {
 	}
 
 	view := s.renderOverview(80, 20)
-	if !containsStr(view, "Deps summary") {
-		t.Error("renderOverview: expected 'Deps summary' section")
-	}
-	if !containsStr(view, "task-a") {
-		t.Error("renderOverview: expected dep task title")
-	}
-	if !containsStr(view, "done") {
-		t.Error("renderOverview: expected dep task status")
+	if containsStr(view, "Deps summary") {
+		t.Error("renderOverview: 'Deps summary' section should be removed from Overview")
 	}
 }
 
-func TestRenderOverview_DescriptionScroll(t *testing.T) {
+// TestRenderOverview_NoDescriptionSection verifies the Description section is removed from Overview.
+func TestRenderOverview_NoDescriptionSection(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	s.detail = &api.TaskDetailView{
 		Task: &orchestrator.Task{
@@ -896,96 +955,113 @@ func TestRenderOverview_DescriptionScroll(t *testing.T) {
 		},
 	}
 
-	// With scroll = 0, line1 should appear
 	view := s.renderOverview(80, 20)
-	if !containsStr(view, "line1") {
-		t.Error("scroll=0: expected 'line1'")
+	// Description section header should not appear (it's now its own tab).
+	if containsStr(view, "─── Description") {
+		t.Error("renderOverview: '─── Description' section header should not appear in Overview")
 	}
+}
 
-	// With scroll = 2, line3 should appear and line1 should not
-	s.descScroll = 2
-	view = s.renderOverview(80, 20)
-	if !containsStr(view, "line3") {
-		t.Error("scroll=2: expected 'line3'")
-	}
-	if containsStr(view, "line1") {
-		t.Error("scroll=2: 'line1' should not be visible")
+// TestRenderOverview_HasTimelineSection verifies that the Timeline section is shown in Overview.
+func TestRenderOverview_HasTimelineSection(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithCompletedJob()
+
+	view := s.renderOverview(80, 20)
+	if !containsStr(view, "Timeline") {
+		t.Error("renderOverview: expected 'Timeline' section header")
 	}
 }
 
 // --- DescriptionScreen transition tests ---
 
-func TestTaskDetail_VKey_Overview_PushesDescriptionScreen(t *testing.T) {
+// TestTaskDetail_EKey_Description_PushesDescriptionScreen verifies that pressing e
+// in the Description tab pushes DescriptionScreen (for editing).
+func TestTaskDetail_EKey_Description_PushesDescriptionScreen(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithJobs(1)
+	s.activeTab = tabDescription
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if cmd == nil {
+		t.Fatal("e key in description tab: expected non-nil cmd (pushScreenMsg)")
+	}
+	msg := cmd()
+	push, ok := msg.(pushScreenMsg)
+	if !ok {
+		t.Fatalf("e key in description tab: expected pushScreenMsg, got %T", msg)
+	}
+	if _, ok := push.screen.(*DescriptionScreen); !ok {
+		t.Errorf("e key in description tab: expected *DescriptionScreen, got %T", push.screen)
+	}
+}
+
+// TestTaskDetail_VKey_NoOp verifies that the v key is no longer handled (removed).
+func TestTaskDetail_VKey_NoOp(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	s.detail = makeDetailWithJobs(0)
 	s.activeTab = tabOverview
 
 	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	if cmd == nil {
-		t.Fatal("v key in overview: expected non-nil cmd (pushScreenMsg)")
-	}
-	msg := cmd()
-	push, ok := msg.(pushScreenMsg)
-	if !ok {
-		t.Fatalf("v key in overview: expected pushScreenMsg, got %T", msg)
-	}
-	if _, ok := push.screen.(*DescriptionScreen); !ok {
-		t.Errorf("v key in overview: expected *DescriptionScreen, got %T", push.screen)
-	}
-}
-
-func TestTaskDetail_VKey_OtherTab_DoesNotPush(t *testing.T) {
-	s := newTestTaskDetailScreen()
-	s.detail = makeDetailWithJobs(0)
-	s.activeTab = tabTimeline
-
-	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	// v key is not bound to anything any more; no cmd expected.
 	if cmd != nil {
-		t.Error("v key outside overview: expected nil cmd")
+		msg := cmd()
+		if _, ok := msg.(pushScreenMsg); ok {
+			t.Error("v key: should no longer push DescriptionScreen")
+		}
 	}
 }
 
-func TestTaskDetail_Enter_Overview_NoRunningJob_PushesDescriptionScreen(t *testing.T) {
+// TestTaskDetail_Enter_Overview_NoEvents_IsNoOp verifies that Enter in Overview
+// when there are no timeline events is a no-op.
+func TestTaskDetail_Enter_Overview_NoEvents_IsNoOp(t *testing.T) {
 	s := newTestTaskDetailScreen()
-	// makeDetailWithJobs(0) has no jobs → no running job
-	s.detail = makeDetailWithJobs(0)
+	// makeDetailWithJobs(1) has 1 running job which is excluded from overview timeline.
+	s.detail = makeDetailWithJobs(1)
 	s.activeTab = tabOverview
 
 	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// No completed jobs in timeline → no-op.
+	if cmd != nil {
+		msg := cmd()
+		if _, ok := msg.(pushScreenMsg); ok {
+			t.Error("enter in overview with only running jobs: should not push any screen")
+		}
+	}
+	if s.statusMsg != "" {
+		t.Errorf("enter in overview with no timeline events: expected empty statusMsg, got %q", s.statusMsg)
+	}
+}
+
+// TestTaskDetail_Enter_Overview_CompletedJob_PushesJobDetail verifies that Enter
+// in Overview when a completed job is at the cursor pushes JobDetailScreen.
+func TestTaskDetail_Enter_Overview_CompletedJob_PushesJobDetail(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithCompletedJob()
+	s.activeTab = tabOverview
+	s.timelineCursor = 0
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("enter in overview with no running job: expected non-nil cmd (pushScreenMsg)")
+		t.Fatal("enter in overview with completed job: expected non-nil cmd")
 	}
 	msg := cmd()
 	push, ok := msg.(pushScreenMsg)
 	if !ok {
-		t.Fatalf("enter in overview with no running job: expected pushScreenMsg, got %T", msg)
+		t.Fatalf("enter in overview with completed job: expected pushScreenMsg, got %T", msg)
 	}
-	if _, ok := push.screen.(*DescriptionScreen); !ok {
-		t.Errorf("enter in overview with no running job: expected *DescriptionScreen, got %T", push.screen)
+	if _, ok := push.screen.(*JobDetailScreen); !ok {
+		t.Errorf("enter in overview with completed job: expected *JobDetailScreen, got %T", push.screen)
 	}
 }
 
-func TestTaskDetail_Enter_Overview_WithRunningJob_OpensJob(t *testing.T) {
-	s := newTestTaskDetailScreen()
-	s.detail = makeDetailWithJobs(1) // has running job
-	s.activeTab = tabOverview
-	s.shared.TmuxEnabled = false // no tmux → status message instead of pane open
-
-	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	// When tmux is disabled, enter on running job sets statusMsg, not pushScreenMsg
-	if s.statusMsg == "" {
-		t.Error("enter with running job: expected statusMsg (not DescriptionScreen push)")
-	}
-	_ = cmd
-}
-
-func TestShortHelp_IncludesViewDesc(t *testing.T) {
+func TestShortHelp_NoViewDesc(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	s.detail = makeDetailWithStatus(orchestrator.TaskStatusExecuting)
 
 	help := s.ShortHelp()
-	if !containsStr(help, "v: view desc") {
-		t.Errorf("ShortHelp: expected 'v: view desc', got %q", help)
+	if containsStr(help, "v: view desc") {
+		t.Errorf("ShortHelp: 'v: view desc' should be removed, got %q", help)
 	}
 }
 
@@ -1152,10 +1228,22 @@ func TestTitleEdit_View_ShowsTextField(t *testing.T) {
 func TestShortHelp_IncludesEditTitle(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	s.detail = makeDetailWithStatus(orchestrator.TaskStatusExecuting)
+	s.activeTab = tabOverview // e: edit title is shown in Overview tab
 
 	help := s.ShortHelp()
 	if !containsStr(help, "e: edit title") {
-		t.Errorf("ShortHelp: expected 'e: edit title', got %q", help)
+		t.Errorf("ShortHelp (overview): expected 'e: edit title', got %q", help)
+	}
+}
+
+func TestShortHelp_DescriptionTab_IncludesEditDescription(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusExecuting)
+	s.activeTab = tabDescription
+
+	help := s.ShortHelp()
+	if !containsStr(help, "e: edit description") {
+		t.Errorf("ShortHelp (description): expected 'e: edit description', got %q", help)
 	}
 }
 
@@ -1166,18 +1254,18 @@ func TestTabCycle_ForwardFromOverview(t *testing.T) {
 	s.activeTab = tabOverview
 
 	s.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if s.activeTab != tabTimeline {
-		t.Errorf("tab from overview: want %q, got %q", tabTimeline, s.activeTab)
+	if s.activeTab != tabDescription {
+		t.Errorf("tab from overview: want %q, got %q", tabDescription, s.activeTab)
 	}
 }
 
-func TestTabCycle_ForwardFromTimeline(t *testing.T) {
+func TestTabCycle_ForwardFromDescription(t *testing.T) {
 	s := newTestTaskDetailScreen()
-	s.activeTab = tabTimeline
+	s.activeTab = tabDescription
 
 	s.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if s.activeTab != tabDeps {
-		t.Errorf("tab from timeline: want %q, got %q", tabDeps, s.activeTab)
+		t.Errorf("tab from description: want %q, got %q", tabDeps, s.activeTab)
 	}
 }
 
@@ -1212,13 +1300,13 @@ func TestTabCycle_BackwardFromOverview_Wraps(t *testing.T) {
 }
 
 func TestTabCycle_DepsTabReachable(t *testing.T) {
-	// Verify Deps tab is reachable via Tab from Timeline.
+	// Verify Deps tab is reachable via Tab from Description.
 	s := newTestTaskDetailScreen()
-	s.activeTab = tabTimeline
+	s.activeTab = tabDescription
 
 	s.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if s.activeTab != tabDeps {
-		t.Errorf("deps tab not reachable via tab from timeline: got %q", s.activeTab)
+		t.Errorf("deps tab not reachable via tab from description: got %q", s.activeTab)
 	}
 }
 

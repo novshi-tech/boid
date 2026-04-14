@@ -64,6 +64,12 @@ func renderSectionHeader(title string, width int) string {
 }
 
 // renderOverview renders the Overview tab content.
+//
+// Layout (top to bottom):
+//  1. ─── Active ─── section: currently running jobs.
+//  2. ─── Timeline ─── section: completed/failed jobs + user-driven actions + findings
+//     (filtered via buildOverviewTimeline; running jobs excluded).
+//  3. ─── Findings (open) ─── section: only when open findings exist.
 func (s *TaskDetailScreen) renderOverview(width, height int) string {
 	var sb strings.Builder
 	used := 0
@@ -88,15 +94,10 @@ func (s *TaskDetailScreen) renderOverview(width, height int) string {
 		used++
 	} else {
 		for _, j := range runningJobs {
-			worktree := ""
-			if j.WorkspacePath != "" {
-				worktree = "  worktree=" + j.WorkspacePath
-			}
-			line := fmt.Sprintf("  %s running job: [%s] %s%s",
+			line := fmt.Sprintf("  %s running job: [%s] %s",
 				styleRunning.Render("●"),
 				j.Role,
 				styleDim.Render(formatElapsed(j.CreatedAt)+" ago"),
-				styleDim.Render(worktree),
 			)
 			sb.WriteString(line)
 			sb.WriteByte('\n')
@@ -125,61 +126,14 @@ func (s *TaskDetailScreen) renderOverview(width, height int) string {
 		}
 	}
 
-	// ─── Deps summary ─────────────────────────────────────────
-	if s.detail != nil {
-		hasDeps := len(s.detail.DependsOnResolved) > 0 || len(s.detail.Dependents) > 0
-		if hasDeps {
-			sb.WriteString(renderSectionHeader("Deps summary", width))
-			sb.WriteByte('\n')
-			used++
-			if len(s.detail.DependsOnResolved) > 0 {
-				var parts []string
-				for _, dep := range s.detail.DependsOnResolved {
-					parts = append(parts, dep.Title+" ("+string(dep.Status)+")")
-				}
-				sb.WriteString("  depends_on: " + strings.Join(parts, ", "))
-				sb.WriteByte('\n')
-				used++
-			}
-			if len(s.detail.Dependents) > 0 {
-				sb.WriteString(fmt.Sprintf("  dependents: %d waiting", len(s.detail.Dependents)))
-				sb.WriteByte('\n')
-				used++
-			}
-		}
-	}
-
-	// ─── Description ──────────────────────────────────────────
-	sb.WriteString(renderSectionHeader("Description", width))
+	// ─── Timeline ─────────────────────────────────────────────
+	events := buildOverviewTimeline(s.detail)
+	sb.WriteString(renderSectionHeader("Timeline", width))
 	sb.WriteByte('\n')
 	used++
 
-	var descLines []string
-	if s.detail != nil && s.detail.Task != nil && s.detail.Task.Description != "" {
-		descLines = strings.Split(s.detail.Task.Description, "\n")
-	}
-
-	if len(descLines) == 0 {
-		sb.WriteString(styleDim.Render("  (no description)"))
-		sb.WriteByte('\n')
-	} else {
-		// Reserve 1 line for "... more" hint if needed
-		descHeight := max(height-used-1, 1)
-
-		start := s.descScroll
-		if start >= len(descLines) {
-			start = 0
-		}
-		end := min(start+descHeight, len(descLines))
-		for _, line := range descLines[start:end] {
-			sb.WriteString(line)
-			sb.WriteByte('\n')
-		}
-		if end < len(descLines) {
-			sb.WriteString(styleDim.Render(fmt.Sprintf("  ... %d more lines", len(descLines)-end)))
-			sb.WriteByte('\n')
-		}
-	}
+	timelineHeight := max(height-used, 2)
+	sb.WriteString(renderTimeline(events, width, timelineHeight, s.timelineCursor))
 
 	return sb.String()
 }
