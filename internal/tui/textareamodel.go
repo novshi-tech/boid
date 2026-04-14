@@ -66,7 +66,7 @@ func (m TextAreaModel) Update(msg tea.Msg) (TextAreaModel, tea.Cmd) {
 // View renders the label line followed by the textarea.
 // Format: "  %-10s [cursor]\n[textarea.View()]\n"
 func (m TextAreaModel) View() string {
-	labelStr := fmt.Sprintf("%-10s", m.label+":")
+	labelStr := fmt.Sprintf("%-12s", m.label+":")
 	cursor := " "
 	if m.area.Focused() {
 		cursor = styleCursor.Render("▸")
