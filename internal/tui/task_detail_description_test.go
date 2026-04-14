@@ -175,7 +175,9 @@ func TestDescriptionTab_ViewRenders(t *testing.T) {
 
 // --- buildTreeTimeline filtering tests ---
 
-func TestBuildTreeTimeline_ExcludesRunningJobs(t *testing.T) {
+// TestBuildTreeTimeline_IncludesRunningJobs verifies that running jobs are now
+// included in the timeline (Active section has been removed).
+func TestBuildTreeTimeline_IncludesRunningJobs(t *testing.T) {
 	detail := &api.TaskDetailView{
 		Task: &orchestrator.Task{ID: "t", Status: orchestrator.TaskStatusExecuting},
 		Jobs: []*api.Job{
@@ -188,12 +190,16 @@ func TestBuildTreeTimeline_ExcludesRunningJobs(t *testing.T) {
 		},
 	}
 	groups := buildTreeTimeline(detail)
+	found := false
 	for _, g := range groups {
 		for _, ev := range g.Events {
 			if ev.Kind == timelineKindJob {
-				t.Error("buildTreeTimeline: running job should be excluded from tree")
+				found = true
 			}
 		}
+	}
+	if !found {
+		t.Error("buildTreeTimeline: running job should now be included in the timeline")
 	}
 }
 

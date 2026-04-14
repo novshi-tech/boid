@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-
-	"github.com/novshi-tech/boid/internal/api"
 )
 
 // openFinding represents a single unresolved verification finding.
@@ -66,51 +64,12 @@ func renderSectionHeader(title string, width int) string {
 // renderOverview renders the Overview tab content.
 //
 // Layout (top to bottom):
-//  1. ─── Active ─── section: currently running jobs.
-//  2. ─── Findings (open) ─── section: only when open findings exist.
-//  3. ─── Timeline ─── section: state-grouped tree of state transitions,
-//     hook/gate firings, completed/failed jobs, and findings.
+//  1. ─── Findings (open) ─── section: only when open findings exist.
+//  2. ─── Timeline ─── section: state-grouped tree of state transitions,
+//     hook/gate firings, completed/failed jobs, and running jobs.
 func (s *TaskDetailScreen) renderOverview(width, height int) string {
 	var sb strings.Builder
 	used := 0
-
-	// ─── Active ───────────────────────────────────────────────
-	sb.WriteString(renderSectionHeader("Active", width))
-	sb.WriteByte('\n')
-	used++
-
-	var runningJobs []*api.Job
-	if s.detail != nil {
-		for _, j := range s.detail.Jobs {
-			if j.Status == api.JobStatusRunning {
-				runningJobs = append(runningJobs, j)
-			}
-		}
-	}
-
-	nActive := len(runningJobs)
-	if nActive == 0 {
-		sb.WriteString(styleDim.Render("  no active job"))
-		sb.WriteByte('\n')
-		used++
-	} else {
-		for i, j := range runningJobs {
-			selected := s.timelineCursor == i
-			cursorStr := "  "
-			if selected {
-				cursorStr = styleCursor.Render("▸ ")
-			}
-			line := fmt.Sprintf("%s%s running job: [%s] %s",
-				cursorStr,
-				styleRunning.Render("●"),
-				j.Role,
-				styleDim.Render(formatElapsed(j.CreatedAt)+" ago"),
-			)
-			sb.WriteString(line)
-			sb.WriteByte('\n')
-			used++
-		}
-	}
 
 	// ─── Findings (open) ──────────────────────────────────────
 	var findings []openFinding
@@ -140,10 +99,7 @@ func (s *TaskDetailScreen) renderOverview(width, height int) string {
 	used++
 
 	timelineHeight := max(height-used, 2)
-	// timelineCursor is the unified overview cursor: [0, nActive-1] = Active, [nActive, ...] = Timeline.
-	// Pass a negative value when cursor is in Active section so no Timeline row is highlighted.
-	timelineCursor := s.timelineCursor - nActive
-	sb.WriteString(renderTreeTimeline(groups, width, timelineHeight, timelineCursor))
+	sb.WriteString(renderTreeTimeline(groups, width, timelineHeight, s.timelineCursor, s.blinkOn))
 
 	return sb.String()
 }

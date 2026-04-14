@@ -47,8 +47,9 @@ func buildActionTreeLabel(a *orchestrator.Action) string {
 	return a.Type
 }
 
-// buildJobTimelineLabel returns the display label for a completed or failed job.
-// Format: "[role] <handler_id> ✓|✗ <duration>". handler_id is omitted when empty.
+// buildJobTimelineLabel returns the display label for a job.
+// Format for completed/failed: "[role] <handler_id> ✓|✗ <duration>". handler_id is omitted when empty.
+// Format for running: "[role] <elapsed> ago".
 func buildJobTimelineLabel(j *api.Job) string {
 	role := j.Role
 	if role == "" {
@@ -58,12 +59,13 @@ func buildJobTimelineLabel(j *api.Job) string {
 	if j.HandlerID != "" {
 		handler = j.HandlerID + " "
 	}
-	dur := jobDuration(j)
 	switch j.Status {
 	case api.JobStatusCompleted:
-		return fmt.Sprintf("[%s] %s✓ %s", role, handler, dur)
+		return fmt.Sprintf("[%s] %s✓ %s", role, handler, jobDuration(j))
 	case api.JobStatusFailed:
-		return fmt.Sprintf("[%s] %s✗ %s", role, handler, dur)
+		return fmt.Sprintf("[%s] %s✗ %s", role, handler, jobDuration(j))
+	case api.JobStatusRunning:
+		return fmt.Sprintf("[%s] %s ago", role, formatElapsed(j.CreatedAt))
 	default:
 		return fmt.Sprintf("[%s] %s%s", role, handler, string(j.Status))
 	}
@@ -114,9 +116,6 @@ func buildTreeTimeline(detail *api.TaskDetailView) []statusGroup {
 		items = append(items, rawItem{t: a.CreatedAt, hasTime: !a.CreatedAt.IsZero(), action: a})
 	}
 	for _, j := range detail.Jobs {
-		if j.Status == api.JobStatusRunning {
-			continue
-		}
 		items = append(items, rawItem{t: j.CreatedAt, hasTime: !j.CreatedAt.IsZero(), job: j})
 	}
 
@@ -248,7 +247,8 @@ func statusHeaderStyle(status string) lipgloss.Style {
 // renderTreeTimeline renders status groups as a tree. State headers at column 0
 // show the state name and the time it was entered; events hang below with
 // ├─ / └─ tree connectors. The cursor highlights event rows only.
-func renderTreeTimeline(groups []statusGroup, width, height, cursor int) string {
+// blinkOn controls whether running-job dots render at full color (true) or dim (false).
+func renderTreeTimeline(groups []statusGroup, width, height, cursor int, blinkOn bool) string {
 	_ = width
 
 	if len(groups) == 0 {
@@ -351,7 +351,11 @@ func renderTreeTimeline(groups []statusGroup, width, height, cursor int) string 
 			if ev.Job != nil {
 				switch ev.Job.Status {
 				case api.JobStatusRunning:
-					icon = styleRunning.Render("●")
+					if blinkOn {
+						icon = styleRunning.Render("●")
+					} else {
+						icon = styleTaskDim.Render("●")
+					}
 				case api.JobStatusCompleted:
 					icon = styleCompleted.Render("●")
 				case api.JobStatusFailed:

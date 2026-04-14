@@ -57,6 +57,7 @@ type TaskDetailScreen struct {
 	deletePending    bool
 	duplicatePending bool
 	rerunPending     bool
+	blinkOn          bool // toggles every 600ms for running-job dot and status badge blink
 
 	titleEditing bool
 	titleInput   TextFieldModel
@@ -76,6 +77,7 @@ func (s *TaskDetailScreen) Init() tea.Cmd {
 	return tea.Batch(
 		fetchTaskDetailCmd(s.shared.Client, s.taskID),
 		taskDetailTickCmd(),
+		taskBlinkCmd(),
 	)
 }
 
@@ -86,6 +88,10 @@ func (s *TaskDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			fetchTaskDetailCmd(s.shared.Client, s.taskID),
 			taskDetailTickCmd(),
 		)
+
+	case taskBlinkTickMsg:
+		s.blinkOn = !s.blinkOn
+		return s, taskBlinkCmd()
 
 	case taskDetailMsg:
 		s.loading = false
@@ -98,10 +104,8 @@ func (s *TaskDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				s.cursor = len(s.detail.Jobs) - 1
 			}
 			if s.detail != nil {
-				// timelineCursor is the unified overview cursor: Active jobs then Timeline events.
-				runningJobs := s.runningJobs()
 				events := selectableEventsInGroups(buildTreeTimeline(s.detail))
-				total := len(runningJobs) + len(events)
+				total := len(events)
 				if s.timelineCursor >= total && total > 0 {
 					s.timelineCursor = total - 1
 				}
@@ -250,9 +254,8 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "j", "down":
 		switch s.activeTab {
 		case tabOverview:
-			runningJobs := s.runningJobs()
 			events := selectableEventsInGroups(buildTreeTimeline(s.detail))
-			total := len(runningJobs) + len(events)
+			total := len(events)
 			if s.timelineCursor < total-1 {
 				s.timelineCursor++
 			}
@@ -339,22 +342,11 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if s.activeTab == tabPayload {
 			break
 		}
-		// Overview tab: Active section → JobDetailScreen; Timeline → drill into job event.
+		// Overview tab: drill into the selected Timeline event (running or completed/failed job).
 		if s.activeTab == tabOverview {
-			runningJobs := s.runningJobs()
-			nActive := len(runningJobs)
-			if s.timelineCursor < nActive {
-				// Active section selected: open JobDetailScreen for the running job.
-				job := runningJobs[s.timelineCursor]
-				return func() tea.Msg {
-					return pushScreenMsg{screen: NewJobDetailScreen(s.shared, job)}
-				}
-			}
-			// Timeline section selected.
 			events := selectableEventsInGroups(buildTreeTimeline(s.detail))
-			timelineIdx := s.timelineCursor - nActive
-			if timelineIdx >= 0 && timelineIdx < len(events) {
-				ev := events[timelineIdx]
+			if s.timelineCursor >= 0 && s.timelineCursor < len(events) {
+				ev := events[s.timelineCursor]
 				if ev.Job != nil {
 					job := ev.Job
 					return func() tea.Msg {
@@ -396,17 +388,20 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return s.titleInput.Focus()
 
 	case "o":
-		// Open the selected Active job in a tmux pane.
-		// Only effective when Overview tab is active and cursor is in the Active section.
+		// Open the selected running job in a tmux pane.
+		// Only effective when Overview tab is active and cursor is on a running Timeline event.
 		if s.activeTab != tabOverview {
 			break
 		}
-		runningJobs := s.runningJobs()
-		nActive := len(runningJobs)
-		if s.timelineCursor >= nActive {
-			break // cursor is in Timeline section, not Active
+		events := selectableEventsInGroups(buildTreeTimeline(s.detail))
+		if s.timelineCursor < 0 || s.timelineCursor >= len(events) {
+			break
 		}
-		job := runningJobs[s.timelineCursor]
+		ev := events[s.timelineCursor]
+		if ev.Job == nil || ev.Job.Status != api.JobStatusRunning {
+			break
+		}
+		job := ev.Job
 		if !job.Interactive {
 			s.statusMsg = "this job is not interactive"
 			s.isError = true
@@ -510,6 +505,9 @@ func (s *TaskDetailScreen) View(width, height int) string {
 	if s.detail != nil && s.detail.Task != nil {
 		task := s.detail.Task
 		_, statusText := taskStatusDisplay(task.Status)
+		if isBlinkTarget(task.Status) && !s.blinkOn {
+			statusText = styleTaskDim.Render(string(task.Status))
+		}
 		maxTitleWidth := max(width-lipgloss.Width(statusText)-1, 10)
 		titleStr := styleTitle.Render(truncate(task.Title, maxTitleWidth))
 		gap := max(width-lipgloss.Width(titleStr)-lipgloss.Width(statusText), 1)
@@ -584,20 +582,6 @@ func (s *TaskDetailScreen) availableActions() []string {
 	return s.detail.AvailableActions
 }
 
-// runningJobs returns the list of running jobs from the current detail in order.
-func (s *TaskDetailScreen) runningJobs() []*api.Job {
-	if s.detail == nil {
-		return nil
-	}
-	var result []*api.Job
-	for _, j := range s.detail.Jobs {
-		if j.Status == api.JobStatusRunning {
-			result = append(result, j)
-		}
-	}
-	return result
-}
-
 func (s *TaskDetailScreen) ShortHelp() string {
 	km := assignKeys(s.availableActions())
 	// Reverse map: action → key (for ordered output)
@@ -624,12 +608,15 @@ func (s *TaskDetailScreen) ShortHelp() string {
 	var tabSpecific string
 	switch s.activeTab {
 	case tabOverview:
-		runningJobs := s.runningJobs()
-		if s.timelineCursor < len(runningJobs) {
-			tabSpecific = "e: edit title  enter: open job detail  o: open in tmux (Active)  j/k: scroll cursor"
-		} else {
-			tabSpecific = "e: edit title  enter: drill into event  j/k: scroll cursor"
+		events := selectableEventsInGroups(buildTreeTimeline(s.detail))
+		if s.timelineCursor >= 0 && s.timelineCursor < len(events) {
+			ev := events[s.timelineCursor]
+			if ev.Job != nil && ev.Job.Status == api.JobStatusRunning {
+				tabSpecific = "e: edit title  enter: open job detail  o: open in tmux  j/k: scroll cursor"
+				break
+			}
 		}
+		tabSpecific = "e: edit title  enter: drill into event  j/k: scroll cursor"
 	case tabDescription:
 		tabSpecific = "e: edit description  j/k: scroll  pgup/pgdn: page"
 	case tabDeps:

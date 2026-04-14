@@ -49,7 +49,6 @@ var closedStatuses = map[orchestrator.TaskStatus]bool{
 // --- messages ---
 
 type taskTickMsg struct{}
-type taskBlinkTickMsg struct{}
 type tasksMsg struct {
 	tasks []*orchestrator.Task
 	err   error
@@ -979,13 +978,6 @@ func taskStatusRaw(status orchestrator.TaskStatus) (dot, text string) {
 	}
 }
 
-// isBlinkTarget reports whether status is one whose dot should blink.
-func isBlinkTarget(status orchestrator.TaskStatus) bool {
-	return status == orchestrator.TaskStatusExecuting ||
-		status == orchestrator.TaskStatusReworking ||
-		status == orchestrator.TaskStatusVerifying
-}
-
 // taskCellStyle はタスクのステータスと blocked 状態に基づいて lipgloss スタイルを返す。
 // STATUS セルのドット着色専用。Bold は親判定（styleTreeParent）側で行う。
 func taskCellStyle(task *orchestrator.Task) lipgloss.Style {
@@ -1161,12 +1153,6 @@ func (s *TaskListScreen) renderTable(bodyHeight, lineWidth int) string {
 func taskTickCmd() tea.Cmd {
 	return tea.Tick(taskPollInterval, func(time.Time) tea.Msg {
 		return taskTickMsg{}
-	})
-}
-
-func taskBlinkCmd() tea.Cmd {
-	return tea.Tick(600*time.Millisecond, func(time.Time) tea.Msg {
-		return taskBlinkTickMsg{}
 	})
 }
 
