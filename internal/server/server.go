@@ -28,6 +28,7 @@ type Config struct {
 	KeyFilePath    string   // path to secret encryption key file
 	AllowedDomains []string // proxy allowed domains
 	JobRuntime     dispatcher.JobRuntime
+	WebEnabled     bool // enable Web UI (default: false)
 }
 
 type Server struct {

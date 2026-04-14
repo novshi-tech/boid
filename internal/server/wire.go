@@ -288,13 +288,19 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r.Mount("/api/jobs", jobHandler.Routes())
 	mountJobRuntimeRoutes(r, runtime)
 
-	webHandler := &api.WebHandler{Service: runtime.webSvc}
-	r.Mount("/", webHandler.Routes())
+	if srv.cfg.WebEnabled {
+		webHandler := &api.WebHandler{Service: runtime.webSvc}
+		r.Mount("/", webHandler.Routes())
 
-	staticFS, err := fs.Sub(web.StaticFS, "static")
-	if err != nil {
-		return fmt.Errorf("sub static fs: %w", err)
+		staticFS, err := fs.Sub(web.StaticFS, "static")
+		if err != nil {
+			return fmt.Errorf("sub static fs: %w", err)
+		}
+		r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
+	} else {
+		r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "Web UI is disabled. Use --web flag to enable.", http.StatusNotFound)
+		}))
 	}
-	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
 	return nil
 }
