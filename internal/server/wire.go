@@ -284,7 +284,12 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		r.Mount("/", actionHandler.Routes())
 	})
 
-	jobHandler := &api.JobHandler{Jobs: runtime.jobStore, Global: runtime.globalJobStore, Service: runtime.workflow}
+	jobHandler := &api.JobHandler{
+		Jobs:      runtime.jobStore,
+		Global:    runtime.globalJobStore,
+		Service:   runtime.workflow,
+		LogReader: transcriptLogReader{rootDir: runtimesDirFor(srv.cfg)},
+	}
 	r.Mount("/api/jobs", jobHandler.Routes())
 	mountJobRuntimeRoutes(r, runtime)
 

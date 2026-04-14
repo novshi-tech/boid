@@ -43,12 +43,19 @@ var jobWatchCmd = &cobra.Command{
 	RunE:  runJobWatch,
 }
 
+var jobLogCmd = &cobra.Command{
+	Use:   "log <job-id>",
+	Short: "Show transcript log for a job",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runJobLog,
+}
+
 func init() {
 	jobListCmd.Flags().String("task", "", "Task ID (required)")
 	jobDoneCmd.Flags().Int("exit-code", 0, "Exit code of the job")
 	jobDoneCmd.Flags().String("output-file", "", "File containing stdout capture to send as output")
 	jobWatchCmd.Flags().Duration("interval", time.Second, "Polling interval")
-	jobCmd.AddCommand(jobListCmd, jobShowCmd, jobWatchCmd, jobDoneCmd)
+	jobCmd.AddCommand(jobListCmd, jobShowCmd, jobWatchCmd, jobDoneCmd, jobLogCmd)
 	rootCmd.AddCommand(jobCmd)
 }
 
@@ -112,6 +119,23 @@ func runJobWatch(cmd *cobra.Command, args []string) error {
 		}
 		time.Sleep(interval)
 	}
+}
+
+func runJobLog(cmd *cobra.Command, args []string) error {
+	c := client.NewUnixClient(client.DefaultSocketPath())
+	statusCode, body, err := c.GetRaw("/api/jobs/" + args[0] + "/log")
+	if err != nil {
+		return fmt.Errorf("get job log: %w", err)
+	}
+	if statusCode == 404 {
+		fmt.Fprintln(os.Stdout, "log not available (runtime cleaned up)")
+		return nil
+	}
+	if statusCode >= 400 {
+		return fmt.Errorf("server error: HTTP %d: %s", statusCode, string(body))
+	}
+	os.Stdout.Write(body)
+	return nil
 }
 
 func runJobDone(cmd *cobra.Command, args []string) error {

@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"path/filepath"
+	"sort"
 
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -19,6 +21,13 @@ var workspaceListCmd = &cobra.Command{
 	RunE:  runWorkspaceList,
 }
 
+var workspaceShowCmd = &cobra.Command{
+	Use:   "show <workspace-id>",
+	Short: "Show projects and recent tasks in a workspace",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runWorkspaceShow,
+}
+
 var workspaceAssignCmd = &cobra.Command{
 	Use:   "assign <project-id> <workspace-id>",
 	Short: "Assign a project to a workspace",
@@ -34,7 +43,7 @@ var workspaceClearCmd = &cobra.Command{
 }
 
 func init() {
-	workspaceCmd.AddCommand(workspaceListCmd, workspaceAssignCmd, workspaceClearCmd)
+	workspaceCmd.AddCommand(workspaceListCmd, workspaceShowCmd, workspaceAssignCmd, workspaceClearCmd)
 	rootCmd.AddCommand(workspaceCmd)
 }
 
@@ -66,6 +75,52 @@ func runWorkspaceAssign(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("workspace assigned: %s -> %s\n", project.ID, project.WorkspaceID)
+	return nil
+}
+
+func runWorkspaceShow(cmd *cobra.Command, args []string) error {
+	workspaceID := args[0]
+	c := client.NewUnixClient(client.DefaultSocketPath())
+
+	var projects []*orchestrator.Project
+	if err := c.Do("GET", "/api/projects?workspace_id="+workspaceID, nil, &projects); err != nil {
+		return fmt.Errorf("list projects: %w", err)
+	}
+
+	if len(projects) == 0 {
+		fmt.Printf("workspace %s: no projects\n", workspaceID)
+		return nil
+	}
+
+	fmt.Printf("Workspace: %s\n", workspaceID)
+	fmt.Printf("Projects:  %d\n\n", len(projects))
+
+	for _, project := range projects {
+		name := filepath.Base(project.WorkDir)
+		fmt.Printf("Project: %s  (%s)\n", name, project.ID)
+
+		var tasks []*orchestrator.Task
+		if err := c.Do("GET", "/api/tasks?project_id="+project.ID, nil, &tasks); err != nil {
+			fmt.Printf("  (failed to list tasks: %v)\n\n", err)
+			continue
+		}
+
+		sort.Slice(tasks, func(i, j int) bool {
+			return tasks[i].UpdatedAt.After(tasks[j].UpdatedAt)
+		})
+		if len(tasks) > 5 {
+			tasks = tasks[:5]
+		}
+
+		if len(tasks) == 0 {
+			fmt.Println("  (no tasks)")
+		} else {
+			for _, task := range tasks {
+				fmt.Printf("  %-10s %-36s %s\n", task.Status, task.ID, task.Title)
+			}
+		}
+		fmt.Println()
+	}
 	return nil
 }
 
