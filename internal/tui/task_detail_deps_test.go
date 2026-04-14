@@ -510,6 +510,112 @@ func TestDepsEnter_MultiLevelUpstream(t *testing.T) {
 	}
 }
 
+// --- Upstream connector tests (TDD: written before implementation) ---
+
+// TestRenderDeps_UpstreamHasConnectors checks that a multi-level upstream tree
+// uses ├─/└─ connectors, not bare spaces.
+func TestRenderDeps_UpstreamHasConnectors(t *testing.T) {
+	taskA := makeTask("a-task", "Direct Dep", orchestrator.TaskStatusDone)
+	taskB := makeTask("b-task", "Grandparent", orchestrator.TaskStatusDone)
+
+	detail := &api.TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:        "main-task-id",
+			Title:     "Main Task",
+			Status:    orchestrator.TaskStatusPending,
+			Behavior:  "dev",
+			DependsOn: []string{"a-task"},
+			CreatedAt: time.Now(),
+		},
+		DependsOnTree: []*api.TaskNode{
+			{Task: taskA, Children: []*api.TaskNode{
+				{Task: taskB},
+			}},
+		},
+	}
+
+	out := renderDeps(detail, 80, 20, 0)
+
+	// Both tasks should be visible.
+	if !containsStr(out, "Direct Dep") {
+		t.Error("expected Direct Dep in output")
+	}
+	if !containsStr(out, "Grandparent") {
+		t.Error("expected Grandparent in output")
+	}
+
+	// Upstream should contain connectors, not just spaces.
+	if !containsStr(out, "└─") {
+		t.Error("expected '└─' connector in upstream section")
+	}
+}
+
+// TestRenderDeps_UpstreamMultipleDepsHasConnectors checks that when self depends
+// on multiple tasks, both ├─ and └─ connectors appear.
+func TestRenderDeps_UpstreamMultipleDepsHasConnectors(t *testing.T) {
+	taskA := makeTask("a-task", "Dep Alpha", orchestrator.TaskStatusDone)
+	taskB := makeTask("b-task", "Dep Beta", orchestrator.TaskStatusDone)
+
+	detail := &api.TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:        "main-task-id",
+			Title:     "Main Task",
+			Status:    orchestrator.TaskStatusPending,
+			Behavior:  "dev",
+			DependsOn: []string{"a-task", "b-task"},
+			CreatedAt: time.Now(),
+		},
+		DependsOnTree: []*api.TaskNode{
+			{Task: taskA},
+			{Task: taskB},
+		},
+	}
+
+	out := renderDeps(detail, 80, 20, 0)
+
+	// With two sibling deps, we expect both ├─ and └─.
+	if !containsStr(out, "├─") {
+		t.Error("expected '├─' connector for non-last sibling upstream dep")
+	}
+	if !containsStr(out, "└─") {
+		t.Error("expected '└─' connector for last sibling upstream dep")
+	}
+	if !containsStr(out, "Dep Alpha") {
+		t.Error("expected Dep Alpha in output")
+	}
+	if !containsStr(out, "Dep Beta") {
+		t.Error("expected Dep Beta in output")
+	}
+}
+
+// TestRenderDeps_NoArrowPrefix verifies that no '▸' cursor arrow appears in
+// the deps view (selection should use background highlight only).
+func TestRenderDeps_NoArrowPrefix(t *testing.T) {
+	taskA := makeTask("aaaa-1111-0000-0000-000000000001", "task alpha", orchestrator.TaskStatusDone)
+	detail := makeDetailWithDeps([]*orchestrator.Task{taskA}, nil, nil)
+
+	// Check with cursor on the only selectable item.
+	out := renderDeps(detail, 80, 20, 0)
+	if containsStr(out, "▸") {
+		t.Error("expected no '▸' arrow prefix in deps view; use background highlight instead")
+	}
+}
+
+// TestDepsSelectable_SelfNotSelectable verifies that the self task is never
+// included in the selectable cursor targets.
+func TestDepsSelectable_SelfNotSelectable(t *testing.T) {
+	taskA := makeTask("aaaa", "A", orchestrator.TaskStatusDone)
+	taskC := makeTask("cccc", "C", orchestrator.TaskStatusPending)
+	detail := makeDetailWithDeps([]*orchestrator.Task{taskA}, []*orchestrator.Task{taskC}, nil)
+
+	items := depSelectableItems(detail)
+	for _, item := range items {
+		if item.ID == detail.Task.ID {
+			t.Errorf("self task (ID=%q) must not appear in selectable items", detail.Task.ID)
+		}
+	}
+}
+
 // --- View integration ---
 
 func TestDepsTab_ViewRenders(t *testing.T) {
