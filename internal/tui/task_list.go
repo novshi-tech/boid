@@ -888,8 +888,9 @@ func (s *TaskListScreen) syncTableRows() {
 			(task.Status == orchestrator.TaskStatusPending && task.Blocked)
 
 		// STATUS セル: ドットのみ着色、親タスクのテキストは Bold+Underline（dim 行は除く）。
+		// aborted は dim 行でもドットを赤のまま維持する。
 		var dotStyle lipgloss.Style
-		if isDimRow {
+		if isDimRow && task.Status != orchestrator.TaskStatusAborted {
 			dotStyle = styleTaskDim
 		} else if isBlinkTarget(task.Status) && !s.blinkOn {
 			dotStyle = styleTaskDim
