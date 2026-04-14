@@ -102,7 +102,8 @@ func (s *JobDetailScreen) View(width, height int) string {
 		metaLines = append(metaLines, fmt.Sprintf("  Workspace:   %s", job.WorkspacePath))
 	}
 	metaLines = append(metaLines,
-		fmt.Sprintf("  Interactive: %v  TTY: %v", job.Interactive, job.TTY),
+		fmt.Sprintf("  Interactive: %v", job.Interactive),
+		fmt.Sprintf("  TTY:         %v", job.TTY),
 	)
 
 	for _, l := range metaLines {
