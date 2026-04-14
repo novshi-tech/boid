@@ -354,6 +354,26 @@ func (c *Client) ApplyAction(taskID string, req api.ApplyActionRequest) (*api.Ac
 	return &result, nil
 }
 
+// GetRaw performs a GET request and returns the raw response body and status code.
+func (c *Client) GetRaw(path string) (statusCode int, body []byte, err error) {
+	req, err := http.NewRequest("GET", "http://boid"+path, nil)
+	if err != nil {
+		return 0, nil, fmt.Errorf("create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, fmt.Errorf("read body: %w", err)
+	}
+	return resp.StatusCode, data, nil
+}
+
 func (c *Client) ResizeJob(jobID string, rows, cols int) error {
 	return c.Do("POST", "/api/jobs/"+jobID+"/resize", map[string]int{
 		"rows": rows,

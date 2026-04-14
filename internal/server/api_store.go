@@ -288,6 +288,15 @@ func (s *globalJobStore) ListJobsWithContext(filter api.JobListFilter) ([]api.Jo
 	return result, nil
 }
 
+// transcriptLogReader implements api.JobLogReader by reading transcript files from disk.
+type transcriptLogReader struct {
+	rootDir string
+}
+
+func (r transcriptLogReader) ReadJobLog(runtimeID string) ([]byte, error) {
+	return dispatcher.ReadTranscript(r.rootDir, runtimeID)
+}
+
 type jobLifecycleAdapter struct {
 	runner *dispatcher.Runner
 }

@@ -2,15 +2,18 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+	"os"
 
 	"github.com/go-chi/chi/v5"
 )
 
 type JobHandler struct {
-	Jobs    JobStore
-	Global  GlobalJobStore // optional: enables cross-task listing when task_id is absent
-	Service WorkflowService
+	Jobs      JobStore
+	Global    GlobalJobStore // optional: enables cross-task listing when task_id is absent
+	Service   WorkflowService
+	LogReader JobLogReader // optional: enables GET /{id}/log when set
 }
 
 func (h *JobHandler) Routes() chi.Router {
@@ -18,6 +21,9 @@ func (h *JobHandler) Routes() chi.Router {
 	r.Get("/", h.List)
 	r.Get("/{id}", h.Get)
 	r.Post("/{id}/done", h.Done)
+	if h.LogReader != nil {
+		r.Get("/{id}/log", h.Log)
+	}
 	return r
 }
 
@@ -77,6 +83,35 @@ func (h *JobHandler) Get(w http.ResponseWriter, r *http.Request) {
 type JobDoneRequest struct {
 	ExitCode int    `json:"exit_code"`
 	Output   string `json:"output,omitempty"`
+}
+
+func (h *JobHandler) Log(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	j, err := h.Jobs.GetJob(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if j.RuntimeID == "" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("log not available (runtime cleaned up)\n")) //nolint:errcheck
+		return
+	}
+	data, err := h.LogReader.ReadJobLog(j.RuntimeID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte("log not available (runtime cleaned up)\n")) //nolint:errcheck
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write(data) //nolint:errcheck
 }
 
 func (h *JobHandler) Done(w http.ResponseWriter, r *http.Request) {

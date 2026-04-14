@@ -134,3 +134,8 @@ type GCStore interface {
 type GCService interface {
 	Run(olderThan time.Duration, dryRun bool) (*orchestrator.GCResult, error)
 }
+
+// JobLogReader reads the transcript log for a given runtime.
+type JobLogReader interface {
+	ReadJobLog(runtimeID string) ([]byte, error)
+}
