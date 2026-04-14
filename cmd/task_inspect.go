@@ -78,13 +78,13 @@ func runTaskFindings(cmd *cobra.Command, args []string) error {
 		verRaw = payload["verification"]
 	}
 
-	type row struct {
-		agent       string
-		sourceState string
-		status      string
-		message     string
+	type findingOutputRow struct {
+		Agent       string `json:"agent"        yaml:"agent"`
+		SourceState string `json:"source_state" yaml:"source_state"`
+		Status      string `json:"status"       yaml:"status"`
+		Message     string `json:"message"      yaml:"message"`
 	}
-	var rows []row
+	outRows := make([]findingOutputRow, 0)
 
 	if len(verRaw) > 0 && string(verRaw) != "null" {
 		var agents map[string]verificationAgent
@@ -106,29 +106,30 @@ func runTaskFindings(cmd *cobra.Command, args []string) error {
 					if !showAll && statusFilter == "" && f.Status == "resolved" {
 						continue
 					}
-					rows = append(rows, row{
-						agent:       name,
-						sourceState: entry.SourceState,
-						status:      f.Status,
-						message:     f.Message,
+					outRows = append(outRows, findingOutputRow{
+						Agent:       name,
+						SourceState: entry.SourceState,
+						Status:      f.Status,
+						Message:     f.Message,
 					})
 				}
 			}
 		}
 	}
 
-	out := cmd.OutOrStdout()
-	if len(rows) == 0 {
-		fmt.Fprintln(out, "no findings")
+	return renderOutput(cmd, outRows, func() error {
+		out := cmd.OutOrStdout()
+		if len(outRows) == 0 {
+			fmt.Fprintln(out, "no findings")
+			return nil
+		}
+		fmt.Fprintf(out, "%-24s %-12s %-10s %s\n", "AGENT", "SOURCE_STATE", "STATUS", "MESSAGE")
+		fmt.Fprintf(out, "%s\n", strings.Repeat("-", 80))
+		for _, r := range outRows {
+			fmt.Fprintf(out, "%-24s %-12s %-10s %s\n", r.Agent, r.SourceState, r.Status, r.Message)
+		}
 		return nil
-	}
-
-	fmt.Fprintf(out, "%-24s %-12s %-10s %s\n", "AGENT", "SOURCE_STATE", "STATUS", "MESSAGE")
-	fmt.Fprintf(out, "%s\n", strings.Repeat("-", 80))
-	for _, r := range rows {
-		fmt.Fprintf(out, "%-24s %-12s %-10s %s\n", r.agent, r.sourceState, r.status, r.message)
-	}
-	return nil
+	})
 }
 
 // --- artifacts ---
@@ -154,14 +155,14 @@ func runTaskArtifacts(cmd *cobra.Command, args []string) error {
 		artifactRaw = payload["artifact"]
 	}
 
-	out := cmd.OutOrStdout()
-
 	if len(artifactRaw) == 0 || string(artifactRaw) == "null" || string(artifactRaw) == "{}" {
-		fmt.Fprintln(out, "no artifact")
-		return nil
+		return renderOutput(cmd, nil, func() error {
+			fmt.Fprintln(cmd.OutOrStdout(), "no artifact")
+			return nil
+		})
 	}
 
-	// --field: extract a specific value
+	// --field: extract a specific value (always plain regardless of --output)
 	if field != "" {
 		val, err := artifactFieldGet(artifactRaw, field)
 		if err != nil {
@@ -186,26 +187,33 @@ func runTaskArtifacts(cmd *cobra.Command, args []string) error {
 		if outputFile != "" {
 			return os.WriteFile(outputFile, []byte(text), 0o644)
 		}
-		fmt.Fprint(out, text)
+		fmt.Fprint(cmd.OutOrStdout(), text)
 		return nil
 	}
 
-	// default: render as YAML
+	// parse artifact for output
 	var v any
 	if err := json.Unmarshal(artifactRaw, &v); err != nil {
 		return fmt.Errorf("parse artifact: %w", err)
 	}
-	yamlBytes, err := yaml.Marshal(v)
-	if err != nil {
-		return fmt.Errorf("marshal artifact to YAML: %w", err)
-	}
-	text := string(yamlBytes)
 
+	// --output-file: always write as YAML (independent of --output format)
 	if outputFile != "" {
+		yamlBytes, err := yaml.Marshal(v)
+		if err != nil {
+			return fmt.Errorf("marshal artifact to YAML: %w", err)
+		}
 		return os.WriteFile(outputFile, yamlBytes, 0o644)
 	}
-	fmt.Fprint(out, text)
-	return nil
+
+	return renderOutput(cmd, v, func() error {
+		yamlBytes, err := yaml.Marshal(v)
+		if err != nil {
+			return fmt.Errorf("marshal artifact to YAML: %w", err)
+		}
+		fmt.Fprint(cmd.OutOrStdout(), string(yamlBytes))
+		return nil
+	})
 }
 
 // artifactFieldGet extracts a value from an artifact JSON by dot-separated path.
@@ -251,16 +259,37 @@ func runTaskTree(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	type treeNodeOutput struct {
+		ID       string            `json:"id"                yaml:"id"`
+		Status   string            `json:"status"            yaml:"status"`
+		Title    string            `json:"title"             yaml:"title"`
+		Children []*treeNodeOutput `json:"children,omitempty" yaml:"children,omitempty"`
+	}
+
+	var buildNode func(t *orchestrator.Task) *treeNodeOutput
+	buildNode = func(t *orchestrator.Task) *treeNodeOutput {
+		node := &treeNodeOutput{
+			ID:     t.ID,
+			Status: string(t.Status),
+			Title:  t.Title,
+		}
+		for _, child := range children[t.ID] {
+			node.Children = append(node.Children, buildNode(child))
+		}
+		return node
+	}
+
 	out := cmd.OutOrStdout()
 
 	if len(args) == 1 {
-		// subtree rooted at specified ID
 		root, ok := byID[args[0]]
 		if !ok {
 			return fmt.Errorf("task %q not found", args[0])
 		}
-		printTree(out, root, children, "", true)
-		return nil
+		return renderOutput(cmd, buildNode(root), func() error {
+			printTree(out, root, children, "", true)
+			return nil
+		})
 	}
 
 	// all tasks: show roots (no parent_id AND no depends_on)
@@ -272,16 +301,22 @@ func runTaskTree(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if len(roots) == 0 {
-		fmt.Fprintln(out, "no tasks")
-		return nil
+	rootNodes := make([]*treeNodeOutput, 0, len(roots))
+	for _, root := range roots {
+		rootNodes = append(rootNodes, buildNode(root))
 	}
 
-	for i, root := range roots {
-		isLast := i == len(roots)-1
-		printTree(out, root, children, "", isLast)
-	}
-	return nil
+	return renderOutput(cmd, rootNodes, func() error {
+		if len(roots) == 0 {
+			fmt.Fprintln(out, "no tasks")
+			return nil
+		}
+		for i, root := range roots {
+			isLast := i == len(roots)-1
+			printTree(out, root, children, "", isLast)
+		}
+		return nil
+	})
 }
 
 func printTree(out io.Writer, task *orchestrator.Task, children map[string][]*orchestrator.Task, prefix string, isLast bool) {

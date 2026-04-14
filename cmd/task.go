@@ -160,8 +160,10 @@ func runTaskUpdate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("update task: %w", err)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "task updated: %s (%s)\n", task.ID, task.Status)
-	return nil
+	return renderOutput(cmd, task, func() error {
+		fmt.Fprintf(cmd.OutOrStdout(), "task updated: %s (%s)\n", task.ID, task.Status)
+		return nil
+	})
 }
 
 func runTaskList(cmd *cobra.Command, args []string) error {
@@ -200,15 +202,16 @@ func runTaskList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if len(tasks) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "no tasks")
+	return renderOutput(cmd, tasks, func() error {
+		if len(tasks) == 0 {
+			fmt.Fprintln(cmd.OutOrStdout(), "no tasks")
+			return nil
+		}
+		for _, t := range tasks {
+			fmt.Fprintf(cmd.OutOrStdout(), "%-36s %-12s %s\n", t.ID, t.Status, t.Title)
+		}
 		return nil
-	}
-
-	for _, t := range tasks {
-		fmt.Fprintf(cmd.OutOrStdout(), "%-36s %-12s %s\n", t.ID, t.Status, t.Title)
-	}
-	return nil
+	})
 }
 
 // taskCreateSpec is the YAML schema for task create input.
@@ -307,8 +310,10 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("create task: %w", err)
 	}
 
-	fmt.Printf("task created: %s (%s)\n", task.ID, task.Status)
-	return nil
+	return renderOutput(cmd, &task, func() error {
+		fmt.Fprintf(cmd.OutOrStdout(), "task created: %s (%s)\n", task.ID, task.Status)
+		return nil
+	})
 }
 
 func runTaskShow(cmd *cobra.Command, args []string) error {
@@ -319,7 +324,9 @@ func runTaskShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("get task detail: %w", err)
 	}
 
-	return renderTaskDetail(&detail)
+	return renderOutput(cmd, &detail, func() error {
+		return renderTaskDetail(&detail)
+	})
 }
 
 func runTaskWatch(cmd *cobra.Command, args []string) error {
@@ -345,7 +352,9 @@ func runTaskWatch(cmd *cobra.Command, args []string) error {
 		snapshot := string(data)
 		if snapshot != lastFingerprint {
 			printWatchHeader("task", detail.Task.ID)
-			if err := renderTaskDetail(&detail); err != nil {
+			if err := renderOutput(cmd, &detail, func() error {
+				return renderTaskDetail(&detail)
+			}); err != nil {
 				return err
 			}
 			fmt.Println()
@@ -370,8 +379,10 @@ func runTaskDelete(cmd *cobra.Command, args []string) error {
 	if err := c.Do("DELETE", path, nil, nil); err != nil {
 		return fmt.Errorf("delete task: %w", err)
 	}
-	fmt.Printf("task deleted: %s\n", args[0])
-	return nil
+	return renderOutput(cmd, map[string]any{"id": args[0], "deleted": true}, func() error {
+		fmt.Fprintf(cmd.OutOrStdout(), "task deleted: %s\n", args[0])
+		return nil
+	})
 }
 
 func runTaskGet(cmd *cobra.Command, args []string) error {
@@ -446,8 +457,10 @@ func runTaskReopen(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("reopen task: %w", err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "task reopened: %s (%s)\n", result.Task.ID, result.Task.Status)
-	return nil
+	return renderOutput(cmd, result, func() error {
+		fmt.Fprintf(cmd.OutOrStdout(), "task reopened: %s (%s)\n", result.Task.ID, result.Task.Status)
+		return nil
+	})
 }
 
 func runTaskDuplicate(cmd *cobra.Command, args []string) error {
@@ -463,8 +476,10 @@ func runTaskDuplicate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("duplicate task: %w", err)
 	}
 
-	fmt.Fprintln(cmd.OutOrStdout(), task.ID)
-	return nil
+	return renderOutput(cmd, &task, func() error {
+		fmt.Fprintln(cmd.OutOrStdout(), task.ID)
+		return nil
+	})
 }
 
 func runTaskRerun(cmd *cobra.Command, args []string) error {
@@ -480,8 +495,10 @@ func runTaskRerun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("rerun task: %w", err)
 	}
 
-	fmt.Fprintln(cmd.OutOrStdout(), task.ID)
-	return nil
+	return renderOutput(cmd, &task, func() error {
+		fmt.Fprintln(cmd.OutOrStdout(), task.ID)
+		return nil
+	})
 }
 
 func parseImportLines(r io.Reader) ([]api.CreateTaskRequest, error) {

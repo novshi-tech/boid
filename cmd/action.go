@@ -68,12 +68,14 @@ func runActionSend(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("%s", errMsg)
 	}
 
-	fmt.Printf("action applied: %s\n", actionType)
-	if task, ok := result["task"].(map[string]any); ok {
-		fmt.Printf("task status: %s\n", task["status"])
-	}
-	if hooks, ok := result["matched_hooks"]; ok {
-		fmt.Printf("matched hooks: %v\n", hooks)
-	}
-	return nil
+	return renderOutput(cmd, result, func() error {
+		fmt.Fprintf(cmd.OutOrStdout(), "action applied: %s\n", actionType)
+		if task, ok := result["task"].(map[string]any); ok {
+			fmt.Fprintf(cmd.OutOrStdout(), "task status: %s\n", task["status"])
+		}
+		if hooks, ok := result["matched_hooks"]; ok {
+			fmt.Fprintf(cmd.OutOrStdout(), "matched hooks: %v\n", hooks)
+		}
+		return nil
+	})
 }

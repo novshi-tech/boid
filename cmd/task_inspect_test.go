@@ -576,3 +576,109 @@ func TestRunTaskList_NoDependsOn(t *testing.T) {
 		t.Errorf("output missing Standalone Task: %q", got)
 	}
 }
+
+// --- --output json smoke tests ---
+
+// setOutputFormat sets the global --output flag for the duration of the test,
+// restoring "plain" on cleanup.
+func setOutputFormat(t *testing.T, format string) {
+	t.Helper()
+	if err := rootCmd.PersistentFlags().Set("output", format); err != nil {
+		t.Fatalf("set output format: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := rootCmd.PersistentFlags().Set("output", "plain"); err != nil {
+			t.Logf("cleanup: reset output format: %v", err)
+		}
+	})
+}
+
+func TestRunTaskFindings_JSONOutput(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	createInspectProject(t, ts)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	setOutputFormat(t, "json")
+
+	payload := map[string]any{
+		"verification": map[string]any{
+			"gate-1": map[string]any{
+				"source_state": "verifying",
+				"findings": []any{
+					map[string]any{"message": "conflict detected", "status": "open"},
+				},
+			},
+		},
+	}
+	task := createTaskWithPayload(t, ts, "JSON Findings Task", payload)
+
+	cmd := taskFindingsCmd
+	cmd.ResetFlags()
+	cmd.Flags().Bool("all", false, "")
+	cmd.Flags().String("status", "", "")
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	if err := runTaskFindings(cmd, []string{task.ID}); err != nil {
+		t.Fatalf("runTaskFindings() error = %v", err)
+	}
+
+	got := strings.TrimSpace(out.String())
+	var result []map[string]any
+	if err := json.Unmarshal([]byte(got), &result); err != nil {
+		t.Fatalf("invalid JSON output: %v\n%s", err, got)
+	}
+	if len(result) != 1 {
+		t.Errorf("expected 1 finding, got %d: %s", len(result), got)
+	}
+	if result[0]["agent"] != "gate-1" {
+		t.Errorf("expected agent 'gate-1', got %v", result[0]["agent"])
+	}
+	if result[0]["message"] != "conflict detected" {
+		t.Errorf("expected message 'conflict detected', got %v", result[0]["message"])
+	}
+}
+
+func TestRunTaskList_JSONOutput(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	createInspectProject(t, ts)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	setOutputFormat(t, "json")
+
+	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
+		"project_id": "inspect-proj",
+		"title":      "JSON List Task",
+		"behavior":   "dev",
+	}, nil); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	cmd := taskListCmd
+	cmd.ResetFlags()
+	cmd.Flags().String("status", "", "")
+	cmd.Flags().String("workspace", "", "")
+	cmd.Flags().String("behavior", "", "")
+	cmd.Flags().Bool("has-depends-on", false, "")
+	cmd.Flags().Bool("no-depends-on", false, "")
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	if err := runTaskList(cmd, []string{}); err != nil {
+		t.Fatalf("runTaskList() error = %v", err)
+	}
+
+	got := strings.TrimSpace(out.String())
+	var result []map[string]any
+	if err := json.Unmarshal([]byte(got), &result); err != nil {
+		t.Fatalf("invalid JSON output: %v\n%s", err, got)
+	}
+	if len(result) == 0 {
+		t.Error("expected at least one task in JSON output")
+	}
+	// verify JSON has expected fields
+	if _, ok := result[0]["id"]; !ok {
+		t.Errorf("JSON task missing 'id' field: %v", result[0])
+	}
+	if _, ok := result[0]["title"]; !ok {
+		t.Errorf("JSON task missing 'title' field: %v", result[0])
+	}
+}
