@@ -17,10 +17,10 @@ type tabDef struct {
 }
 
 var detailTabs = []tabDef{
-	{tabOverview, "[O]verview"},
-	{tabTimeline, "[T]imeline"},
+	{tabOverview, "Overview"},
+	{tabTimeline, "Timeline"},
 	{tabDeps, "Deps"},
-	{tabPayload, "[P]ayload"},
+	{tabPayload, "Payload"},
 }
 
 // cycleTab returns the tab id that is delta steps away from current in detailTabs.
