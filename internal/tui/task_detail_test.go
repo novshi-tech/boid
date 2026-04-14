@@ -1770,3 +1770,47 @@ func TestTaskDetail_BlinkOff_DoneStatusNotDim(t *testing.T) {
 		t.Error("blinkOn=false: 'done' status should still appear in view")
 	}
 }
+
+// --- tickIntervalForDetail tests ---
+
+func TestTickIntervalForDetail_Executing(t *testing.T) {
+	got := tickIntervalForDetail(orchestrator.TaskStatusExecuting)
+	if got != activeTaskDetailPollInterval {
+		t.Errorf("executing: expected %v, got %v", activeTaskDetailPollInterval, got)
+	}
+}
+
+func TestTickIntervalForDetail_Reworking(t *testing.T) {
+	got := tickIntervalForDetail(orchestrator.TaskStatusReworking)
+	if got != activeTaskDetailPollInterval {
+		t.Errorf("reworking: expected %v, got %v", activeTaskDetailPollInterval, got)
+	}
+}
+
+func TestTickIntervalForDetail_Verifying(t *testing.T) {
+	got := tickIntervalForDetail(orchestrator.TaskStatusVerifying)
+	if got != activeTaskDetailPollInterval {
+		t.Errorf("verifying: expected %v, got %v", activeTaskDetailPollInterval, got)
+	}
+}
+
+func TestTickIntervalForDetail_Done(t *testing.T) {
+	got := tickIntervalForDetail(orchestrator.TaskStatusDone)
+	if got != idleTaskDetailPollInterval {
+		t.Errorf("done: expected %v, got %v", idleTaskDetailPollInterval, got)
+	}
+}
+
+func TestTickIntervalForDetail_Aborted(t *testing.T) {
+	got := tickIntervalForDetail(orchestrator.TaskStatusAborted)
+	if got != idleTaskDetailPollInterval {
+		t.Errorf("aborted: expected %v, got %v", idleTaskDetailPollInterval, got)
+	}
+}
+
+func TestTickIntervalForDetail_Pending(t *testing.T) {
+	got := tickIntervalForDetail(orchestrator.TaskStatusPending)
+	if got != idleTaskDetailPollInterval {
+		t.Errorf("pending: expected %v, got %v", idleTaskDetailPollInterval, got)
+	}
+}

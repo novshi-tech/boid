@@ -9,9 +9,24 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-const taskDetailPollInterval = 3 * time.Second
+const (
+	activeTaskDetailPollInterval = 1 * time.Second
+	idleTaskDetailPollInterval   = 3 * time.Second
+)
+
+// tickIntervalForDetail returns activeTaskDetailPollInterval when the task status is active
+// (executing/reworking/verifying), otherwise idleTaskDetailPollInterval.
+func tickIntervalForDetail(status orchestrator.TaskStatus) time.Duration {
+	switch status {
+	case orchestrator.TaskStatusExecuting, orchestrator.TaskStatusReworking, orchestrator.TaskStatusVerifying:
+		return activeTaskDetailPollInterval
+	default:
+		return idleTaskDetailPollInterval
+	}
+}
 
 // --- messages ---
 
@@ -47,6 +62,7 @@ type TaskDetailScreen struct {
 	depsCursor     int
 	descScroll     int
 	descPageHeight int
+	descWidth      int
 	payloadCursor  int
 	payloadScroll  int
 	statusMsg      string
@@ -84,9 +100,13 @@ func (s *TaskDetailScreen) Init() tea.Cmd {
 func (s *TaskDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch msg := msg.(type) {
 	case taskDetailTickMsg:
+		interval := idleTaskDetailPollInterval
+		if s.detail != nil && s.detail.Task != nil {
+			interval = tickIntervalForDetail(s.detail.Task.Status)
+		}
 		return s, tea.Batch(
 			fetchTaskDetailCmd(s.shared.Client, s.taskID),
-			taskDetailTickCmd(),
+			tea.Tick(interval, func(time.Time) tea.Msg { return taskDetailTickMsg{} }),
 		)
 
 	case taskBlinkTickMsg:
@@ -261,7 +281,7 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			}
 		case tabDescription:
 			if s.detail != nil && s.detail.Task != nil {
-				lines := strings.Split(s.detail.Task.Description, "\n")
+				lines := wrapLines(s.detail.Task.Description, s.descWidth)
 				if s.descScroll < len(lines)-1 {
 					s.descScroll++
 				}
@@ -305,7 +325,7 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "pgdown", "ctrl+f":
 		if s.activeTab == tabDescription {
 			if s.detail != nil && s.detail.Task != nil {
-				lines := strings.Split(s.detail.Task.Description, "\n")
+				lines := wrapLines(s.detail.Task.Description, s.descWidth)
 				pageSize := max(s.descPageHeight, 1)
 				s.descScroll = min(s.descScroll+pageSize, max(len(lines)-1, 0))
 			}
@@ -428,7 +448,7 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		s.deletePending = true
 		s.statusMsg = "Press d again to delete"
 		s.isError = false
-		return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+		return tea.Tick(s.confirmInterval(), func(time.Time) tea.Msg {
 			return deleteConfirmDeadlineMsg{}
 		})
 
@@ -440,7 +460,7 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		s.duplicatePending = true
 		s.statusMsg = "Press D again to duplicate"
 		s.isError = false
-		return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+		return tea.Tick(s.confirmInterval(), func(time.Time) tea.Msg {
 			return duplicateConfirmDeadlineMsg{}
 		})
 
@@ -459,7 +479,7 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		s.rerunPending = true
 		s.statusMsg = "Press R again to rerun"
 		s.isError = false
-		return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+		return tea.Tick(s.confirmInterval(), func(time.Time) tea.Msg {
 			return rerunConfirmDeadlineMsg{}
 		})
 
@@ -483,7 +503,7 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			s.abortPending = true
 			s.statusMsg = "Press " + string(ch) + " again to abort"
 			s.isError = false
-			return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+			return tea.Tick(s.confirmInterval(), func(time.Time) tea.Msg {
 				return abortConfirmDeadlineMsg{}
 			})
 		}
@@ -548,6 +568,7 @@ func (s *TaskDetailScreen) View(width, height int) string {
 		sb.WriteString(s.renderOverview(width, contentHeight))
 	case tabDescription:
 		s.descPageHeight = contentHeight
+		s.descWidth = width
 		sb.WriteString(renderDescription(s.detail, s.descScroll, width, contentHeight))
 	case tabDeps:
 		sb.WriteString(renderDeps(s.detail, width, contentHeight, s.depsCursor))
@@ -573,6 +594,15 @@ func (s *TaskDetailScreen) View(width, height int) string {
 	}
 
 	return sb.String()
+}
+
+// confirmInterval returns the tick interval for confirm-deadline timers,
+// mirroring the polling interval: 1s when the displayed task is active, 3s otherwise.
+func (s *TaskDetailScreen) confirmInterval() time.Duration {
+	if s.detail != nil && s.detail.Task != nil {
+		return tickIntervalForDetail(s.detail.Task.Status)
+	}
+	return idleTaskDetailPollInterval
 }
 
 func (s *TaskDetailScreen) availableActions() []string {
@@ -698,7 +728,7 @@ func renderDetailJobLine(job *api.Job, selected bool, width int) string {
 // --- commands ---
 
 func taskDetailTickCmd() tea.Cmd {
-	return tea.Tick(taskDetailPollInterval, func(time.Time) tea.Msg {
+	return tea.Tick(idleTaskDetailPollInterval, func(time.Time) tea.Msg {
 		return taskDetailTickMsg{}
 	})
 }

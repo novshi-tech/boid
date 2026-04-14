@@ -2066,3 +2066,66 @@ func TestBlink_ExecutingDotDimsWhenBlinkOff(t *testing.T) {
 		t.Errorf("blinkOn: dot should be executing color, got %q, want prefix %q", statusBlinkOn, execDot)
 	}
 }
+
+// --- tickIntervalForTasks tests ---
+
+func TestTickIntervalForTasks_ActiveExecuting(t *testing.T) {
+	tasks := []*orchestrator.Task{
+		{Status: orchestrator.TaskStatusExecuting},
+	}
+	got := tickIntervalForTasks(tasks)
+	if got != activeTaskPollInterval {
+		t.Errorf("executing: expected %v, got %v", activeTaskPollInterval, got)
+	}
+}
+
+func TestTickIntervalForTasks_ActiveReworking(t *testing.T) {
+	tasks := []*orchestrator.Task{
+		{Status: orchestrator.TaskStatusReworking},
+	}
+	got := tickIntervalForTasks(tasks)
+	if got != activeTaskPollInterval {
+		t.Errorf("reworking: expected %v, got %v", activeTaskPollInterval, got)
+	}
+}
+
+func TestTickIntervalForTasks_ActiveVerifying(t *testing.T) {
+	tasks := []*orchestrator.Task{
+		{Status: orchestrator.TaskStatusVerifying},
+	}
+	got := tickIntervalForTasks(tasks)
+	if got != activeTaskPollInterval {
+		t.Errorf("verifying: expected %v, got %v", activeTaskPollInterval, got)
+	}
+}
+
+func TestTickIntervalForTasks_AllClosedOrPending(t *testing.T) {
+	tasks := []*orchestrator.Task{
+		{Status: orchestrator.TaskStatusDone},
+		{Status: orchestrator.TaskStatusAborted},
+		{Status: orchestrator.TaskStatusPending},
+	}
+	got := tickIntervalForTasks(tasks)
+	if got != idleTaskPollInterval {
+		t.Errorf("all closed/pending: expected %v, got %v", idleTaskPollInterval, got)
+	}
+}
+
+func TestTickIntervalForTasks_Empty(t *testing.T) {
+	got := tickIntervalForTasks(nil)
+	if got != idleTaskPollInterval {
+		t.Errorf("empty: expected %v, got %v", idleTaskPollInterval, got)
+	}
+}
+
+func TestTickIntervalForTasks_MixedActiveAndClosed(t *testing.T) {
+	tasks := []*orchestrator.Task{
+		{Status: orchestrator.TaskStatusDone},
+		{Status: orchestrator.TaskStatusExecuting},
+		{Status: orchestrator.TaskStatusPending},
+	}
+	got := tickIntervalForTasks(tasks)
+	if got != activeTaskPollInterval {
+		t.Errorf("mixed with active: expected %v, got %v", activeTaskPollInterval, got)
+	}
+}
