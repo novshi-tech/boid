@@ -2,10 +2,10 @@ package tui
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -34,14 +34,14 @@ func shortID(id string) string {
 	return id
 }
 
-// truncate limits a string to maxLen runes, appending "…" if truncated.
-func truncate(s string, maxLen int) string {
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		// pad with spaces
-		return s + strings.Repeat(" ", maxLen-len(runes))
+// truncate limits s to at most maxWidth display cells, appending "…" if truncated.
+// No padding is added; use fitCell for fixed-width column output.
+// Correctly handles ANSI escape sequences and wide characters.
+func truncate(s string, maxWidth int) string {
+	if xansi.StringWidth(s) <= maxWidth {
+		return s
 	}
-	return string(runes[:maxLen-1]) + "…"
+	return xansi.GraphemeWidth.Truncate(s, maxWidth, "…")
 }
 
 // openResultMsg is sent when a job pane open attempt completes.

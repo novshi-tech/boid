@@ -2,6 +2,8 @@ package tui
 
 import (
 	"strings"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 const (
@@ -52,7 +54,7 @@ func renderTabBar(activeTab string, width int) string {
 	inner := strings.Join(parts, "  ")
 	prefix := "─── "
 	prefixWidth := len([]rune(prefix))
-	innerWidth := lipglossWidth(inner)
+	innerWidth := lipgloss.Width(inner)
 	fillLen := max(width-prefixWidth-innerWidth-1, 0)
 	return styleDim.Render(prefix) + inner + styleDim.Render(" "+strings.Repeat("─", fillLen))
 }

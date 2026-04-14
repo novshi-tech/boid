@@ -29,7 +29,7 @@ var (
 	// Table component styles
 	styleTableHeader   = styleDim
 	styleTableCell     = lipgloss.NewStyle()
-	styleTableSelected = lipgloss.NewStyle().Reverse(true)
+	styleTableSelected = lipgloss.NewStyle().Background(lipgloss.Color("237"))
 
 	// ツリー表示: 親タスクの見出し用
 	styleTreeParent = lipgloss.NewStyle().Bold(true).Underline(true)
