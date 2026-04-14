@@ -123,7 +123,15 @@ func (m *App) View() string {
 		bodyHeight = 1
 	}
 	if top := m.top(); top != nil {
-		sb.WriteString(top.View(m.width, bodyHeight))
+		body := top.View(m.width, bodyHeight)
+		sb.WriteString(body)
+		// Pad with newlines so footer is always anchored to the bottom.
+		// lipgloss.Height counts visual rows (= strings.Count(\n)+1), so the
+		// number of \n already in body is Height-1.  We need exactly bodyHeight
+		// \n in the body section; any deficit is filled here.
+		if pad := bodyHeight - lipgloss.Height(body) + 1; pad > 0 {
+			sb.WriteString(strings.Repeat("\n", pad))
+		}
 	}
 
 	// --- footer ---
