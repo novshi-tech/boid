@@ -1726,7 +1726,7 @@ func TestTaskDetailView_TitleUsesFullScreenWidth(t *testing.T) {
 func TestTaskDetail_BlinkOn_StatusBadgeFullColor(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	s.detail = makeDetailWithStatus(orchestrator.TaskStatusExecuting)
-	s.blinkOn = true
+	s.shared.BlinkOn = true
 
 	view := s.View(120, 40)
 
@@ -1745,7 +1745,7 @@ func TestTaskDetail_BlinkOn_StatusBadgeFullColor(t *testing.T) {
 func TestTaskDetail_BlinkOff_StatusBadgeDim(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	s.detail = makeDetailWithStatus(orchestrator.TaskStatusExecuting)
-	s.blinkOn = false
+	s.shared.BlinkOn = false
 
 	view := s.View(120, 40)
 
@@ -1760,7 +1760,7 @@ func TestTaskDetail_BlinkOff_StatusBadgeDim(t *testing.T) {
 func TestTaskDetail_BlinkOff_DoneStatusNotDim(t *testing.T) {
 	s := newTestTaskDetailScreen()
 	s.detail = makeDetailWithStatus(orchestrator.TaskStatusDone)
-	s.blinkOn = false
+	s.shared.BlinkOn = false
 
 	view := s.View(120, 40)
 

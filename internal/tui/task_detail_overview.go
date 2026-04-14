@@ -86,7 +86,7 @@ func (s *TaskDetailScreen) renderOverview(width, height int) string {
 	sb.WriteByte('\n')
 
 	timelineHeight := max(height-1-findingsLines, 2)
-	sb.WriteString(renderTreeTimeline(groups, width, timelineHeight, s.timelineCursor, s.blinkOn))
+	sb.WriteString(renderTreeTimeline(groups, width, timelineHeight, s.timelineCursor, s.shared.BlinkOn))
 
 	// ─── Findings (open) ──────────────────────────────────────
 	if len(findings) > 0 {

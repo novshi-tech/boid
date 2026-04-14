@@ -40,9 +40,9 @@ func (m *App) top() Screen {
 
 func (m *App) Init() tea.Cmd {
 	if top := m.top(); top != nil {
-		return top.Init()
+		return tea.Batch(top.Init(), taskBlinkCmd())
 	}
-	return nil
+	return taskBlinkCmd()
 }
 
 func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -75,6 +75,15 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		return m, nil
+
+	case taskBlinkTickMsg:
+		m.shared.BlinkOn = !m.shared.BlinkOn
+		if top := m.top(); top != nil {
+			updated, cmd := top.Update(msg)
+			m.stack[len(m.stack)-1] = updated
+			return m, tea.Batch(taskBlinkCmd(), cmd)
+		}
+		return m, taskBlinkCmd()
 
 	case tea.KeyMsg:
 		switch msg.String() {

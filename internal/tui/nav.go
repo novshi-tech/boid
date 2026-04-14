@@ -18,6 +18,7 @@ type SharedState struct {
 	Client      *client.Client
 	TmuxEnabled bool
 	Panes       map[string]string // jobID -> paneID
+	BlinkOn     bool              // 全スクリーン共有のブリンク状態。App が単一タイマーで管理する。
 }
 
 // pushScreenMsg tells the App to push a new screen onto the stack.
