@@ -415,11 +415,11 @@ func renderTreeTimeline(groups []statusGroup, width, height, cursor int) string 
 			icon = styleDim.Render("→")
 		}
 
-		line := fmt.Sprintf("%s%s  %s  %s%s",
+		line := fmt.Sprintf("%s%s%s  %s  %s",
 			cursorStr,
+			row.prefix,
 			styleDim.Render(timeStr),
 			icon,
-			row.prefix,
 			ev.Label,
 		)
 		sb.WriteString(line)
