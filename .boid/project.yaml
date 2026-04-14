@@ -98,6 +98,7 @@ task_behaviors:
                   ref: "task-a"
                   behavior: "実行モデル名（例: dev）"
                   description: "このタスクを実行するエージェントへの指示。何を・どのように実装するかを詳細に記述する。"
+                  auto_start: true
                 - title: "次のタスク"
                   ref: "task-b"
                   behavior: "dev"
@@ -106,13 +107,19 @@ task_behaviors:
                   depends_on_payload: "artifact.auto-merge.pr.merged"
                   auto_start: true
 
+            ## auto_start
+
+            auto_plan では原則としてすべてのタスクに `auto_start: true` を設定すること。
+            - 依存のないタスクは作成直後に自動開始される。
+            - 依存のあるタスクは依存条件が満たされた時点で自動開始される。
+            ユーザー確認を挟むべき特別な理由がある場合のみ auto_start を省略（= false）する。
+
             ## 依存タスク
 
             タスク間に順序依存がある場合、後続タスクに以下を設定すること：
             - ref: タスクに任意の名前を付ける。同一バッチ内で depends_on から参照される。
             - depends_on: 依存先タスクの ref 名を指定する。
             - depends_on_payload: "artifact.auto-merge.pr.merged" — 依存先タスクの PR が auto-merge で正常にマージされるまで待機する。
-            - auto_start: true — 依存条件が満たされたら自動的に開始する。基本的にtrueを設定する.
 
             順序依存がないタスクには depends_on を設定しないこと（並列実行される）。
 
