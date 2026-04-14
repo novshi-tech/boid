@@ -6,7 +6,6 @@ builtin_commands:
 task_behaviors:
   dev:
     name: one-shot-feedback-dev
-    transition: one-shot-feedback
     worktree: true
     traits: [instructions]
     default_payload:
@@ -29,7 +28,6 @@ task_behaviors:
             E2E テストはサンドボックス内では実行できない（nft/unshare 等の特権が必要）。E2E の検証は CI に任せること。
   plan:
     name: Plan
-    transition: one-shot
     readonly: true
     traits: [instructions, tasks]
     default_payload:
@@ -81,7 +79,6 @@ task_behaviors:
                   project_id: "boid-kits"
   auto_plan:
     name: Auto Plan
-    transition: one-shot
     readonly: true
     traits: [instructions, tasks]
     default_payload:
@@ -115,7 +112,7 @@ task_behaviors:
             - ref: タスクに任意の名前を付ける。同一バッチ内で depends_on から参照される。
             - depends_on: 依存先タスクの ref 名を指定する。
             - depends_on_payload: "artifact.auto-merge.pr.merged" — 依存先タスクの PR が auto-merge で正常にマージされるまで待機する。
-            - auto_start: true — 依存条件が満たされたら自動的に開始する。
+            - auto_start: true — 依存条件が満たされたら自動的に開始する。基本的にtrueを設定する.
 
             順序依存がないタスクには depends_on を設定しないこと（並列実行される）。
 
