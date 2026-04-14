@@ -253,11 +253,13 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "j", "down":
 		if len(s.displayTasks) > 0 {
 			s.table.MoveDown(1)
+			s.syncTableRows()
 		}
 
 	case "k", "up":
 		if len(s.displayTasks) > 0 {
 			s.table.MoveUp(1)
+			s.syncTableRows()
 		}
 
 	case "tab":
@@ -685,9 +687,10 @@ func stripANSI(s string) string {
 }
 
 // buildTreeOrder takes a flat list of tasks and returns them in DFS tree order
-// (parent before children) along with a depth map keyed by task ID.
-// The original input order is preserved for roots and siblings.
-func buildTreeOrder(tasks []*orchestrator.Task) ([]*orchestrator.Task, map[string]int) {
+// (parent before children) along with a prefix map keyed by task ID.
+// The prefix encodes the tree connector ("├─", "└─", "│ ", "  ") for display.
+// Roots have prefix "". The original input order is preserved for roots and siblings.
+func buildTreeOrder(tasks []*orchestrator.Task) ([]*orchestrator.Task, map[string]string) {
 	idSet := make(map[string]bool, len(tasks))
 	for _, t := range tasks {
 		idSet[t.ID] = true
@@ -704,21 +707,58 @@ func buildTreeOrder(tasks []*orchestrator.Task) ([]*orchestrator.Task, map[strin
 	}
 
 	result := make([]*orchestrator.Task, 0, len(tasks))
-	depths := make(map[string]int, len(tasks))
+	prefixes := make(map[string]string, len(tasks))
 
-	var dfs func(t *orchestrator.Task, depth int)
-	dfs = func(t *orchestrator.Task, depth int) {
+	// isLastChild[id] は、そのタスクが同一親の子の中で末尾かどうか。
+	isLastChild := make(map[string]bool, len(tasks))
+	for _, sibs := range children {
+		if len(sibs) > 0 {
+			isLastChild[sibs[len(sibs)-1].ID] = true
+		}
+	}
+
+	// ancestorIsLast は depth≥1 の祖先について「末子かどうか」を順に格納したスタック。
+	// depth=0 のルートは prefix に影響しないので含めない。
+	var dfs func(t *orchestrator.Task, depth int, ancestorIsLast []bool)
+	dfs = func(t *orchestrator.Task, depth int, ancestorIsLast []bool) {
 		result = append(result, t)
-		depths[t.ID] = depth
+
+		if depth == 0 {
+			prefixes[t.ID] = ""
+		} else {
+			var sb strings.Builder
+			for _, last := range ancestorIsLast {
+				if last {
+					sb.WriteString("  ")
+				} else {
+					sb.WriteString("│ ")
+				}
+			}
+			if isLastChild[t.ID] {
+				sb.WriteString("└─")
+			} else {
+				sb.WriteString("├─")
+			}
+			prefixes[t.ID] = sb.String()
+		}
+
+		// depth≥1 のノードのみ自身の末子フラグを子のスタックに追加する。
+		var childStack []bool
+		if depth > 0 {
+			childStack = make([]bool, len(ancestorIsLast)+1)
+			copy(childStack, ancestorIsLast)
+			childStack[len(ancestorIsLast)] = isLastChild[t.ID]
+		}
+
 		for _, child := range children[t.ID] {
-			dfs(child, depth+1)
+			dfs(child, depth+1, childStack)
 		}
 	}
 	for _, root := range roots {
-		dfs(root, 0)
+		dfs(root, 0, nil)
 	}
 
-	return result, depths
+	return result, prefixes
 }
 
 // progressBadge returns a compact progress string for a parent task
@@ -755,6 +795,7 @@ func applyStateFilter(tasks []*orchestrator.Task, stateClosed bool) []*orchestra
 
 // syncTableRows applies the searchQuery filter to s.tasks, builds the tree order,
 // stores the result in s.displayTasks, then converts to table rows and updates the table.
+// カーソル行は無着色モード（ANSI なし）で構築し、table.Selected.Reverse が正しく効くようにする。
 func (s *TaskListScreen) syncTableRows() {
 	// Filter by searchQuery (title, case-insensitive).
 	var base []*orchestrator.Task
@@ -772,56 +813,96 @@ func (s *TaskListScreen) syncTableRows() {
 	}
 
 	// Build tree order (DFS: parent before children).
-	ordered, depths := buildTreeOrder(base)
+	ordered, prefixes := buildTreeOrder(base)
 	s.displayTasks = ordered
 
+	cursorIdx := s.table.Cursor()
 	rows := make([]table.Row, len(s.displayTasks))
 	for i, task := range s.displayTasks {
-		// STATUS セル: 素の文字列でビルドしてから色を適用する
 		rawDot, rawStatusText := taskStatusRaw(task.Status)
-		rawStatusCell := truncate(rawDot+" "+rawStatusText, statusWidth)
 
 		title := task.Title
 		if title == "" {
 			title = "(no title)"
 		}
 
-		// TITLE セル: インデント + タイトル + 進捗バッジを素の文字列で構築し、
-		// truncate 後に色を適用する
-		depth := depths[task.ID]
-		indent := strings.Repeat("  ", depth)
-		rawTitle := indent + title
+		prefix := prefixes[task.ID]
 		progress := progressBadge(task)
+		isParent := task.TotalChildCount > 0
 
-		var rawTitleCell string
+		// TITLE セルの content 部分を truncate する（prefix 幅を除いた範囲で）
+		prefixWidth := len([]rune(prefix))
+		availableWidth := s.titleWidth - prefixWidth
+		if availableWidth < 1 {
+			availableWidth = 1
+		}
+		var truncatedContent string
 		if progress != "" {
 			progressPart := " " + progress
-			maxTitle := s.titleWidth - len([]rune(progressPart))
+			maxTitle := availableWidth - len([]rune(progressPart))
 			if maxTitle < 1 {
 				maxTitle = 1
 			}
-			titlePart := strings.TrimRight(truncate(rawTitle, maxTitle), " ")
-			rawTitleCell = truncate(titlePart+progressPart, s.titleWidth)
+			titlePart := strings.TrimRight(truncate(title, maxTitle), " ")
+			truncatedContent = truncate(titlePart+progressPart, availableWidth)
 		} else {
-			rawTitleCell = truncate(rawTitle, s.titleWidth)
+			truncatedContent = truncate(title, availableWidth)
 		}
 
-		// ステータスと blocked 状態に応じたスタイルを適用する
-		st := taskCellStyle(task)
-		statusCell := st.Render(rawStatusCell)
-		titleCell := st.Render(rawTitleCell)
+		projectName := s.findProjectName(task.ProjectID)
+		projectCell := truncate(projectName, 12)
 
-		projectCell := ""
-		if name := s.findProjectName(task.ProjectID); name != "" {
-			projectCell = truncate(name, 12)
-		}
+		if i == cursorIdx {
+			// 無着色モード: ANSI を一切含めない。table.Selected.Reverse(true) がクリーンに効く。
+			rows[i] = table.Row{
+				truncate(rawDot+" "+rawStatusText, statusWidth),
+				prefix + truncatedContent,
+				projectCell,
+				task.Behavior,
+				formatTaskElapsed(task.CreatedAt),
+			}
+		} else {
+			// 通常モード: ドットのみ着色、親タスクは見出しスタイルを適用する。
+			dot := taskCellStyle(task).Render(rawDot)
+			var statusText string
+			if isParent {
+				statusText = styleTreeParent.Render(rawStatusText)
+			} else {
+				statusText = rawStatusText
+			}
+			statusCell := dot + " " + statusText
 
-		rows[i] = table.Row{
-			statusCell,
-			titleCell,
-			projectCell,
-			task.Behavior,
-			formatTaskElapsed(task.CreatedAt),
+			// TITLE セル: prefix を styleDim で着色し、content は親なら Bold+Underline。
+			var content string
+			if isParent {
+				content = styleTreeParent.Render(truncatedContent)
+			} else {
+				content = truncatedContent
+			}
+			var titleCell string
+			if prefix != "" {
+				titleCell = styleDim.Render(prefix) + content
+			} else {
+				titleCell = content
+			}
+
+			if isParent {
+				rows[i] = table.Row{
+					statusCell,
+					titleCell,
+					styleTreeParent.Render(projectCell),
+					styleTreeParent.Render(task.Behavior),
+					styleTreeParent.Render(formatTaskElapsed(task.CreatedAt)),
+				}
+			} else {
+				rows[i] = table.Row{
+					statusCell,
+					titleCell,
+					projectCell,
+					task.Behavior,
+					formatTaskElapsed(task.CreatedAt),
+				}
+			}
 		}
 	}
 	s.table.SetRows(rows)
@@ -855,11 +936,11 @@ func taskStatusRaw(status orchestrator.TaskStatus) (dot, text string) {
 }
 
 // taskCellStyle はタスクのステータスと blocked 状態に基づいて lipgloss スタイルを返す。
-// STATUS セルと TITLE セルの両方に適用する。
+// STATUS セルのドット着色専用。Bold は親判定（styleTreeParent）側で行う。
 func taskCellStyle(task *orchestrator.Task) lipgloss.Style {
 	switch task.Status {
 	case orchestrator.TaskStatusExecuting, orchestrator.TaskStatusReworking:
-		return styleExecuting.Bold(true)
+		return styleExecuting
 	case orchestrator.TaskStatusVerifying:
 		return styleVerifying
 	case orchestrator.TaskStatusDone:
