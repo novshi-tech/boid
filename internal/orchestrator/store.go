@@ -16,8 +16,12 @@ import (
 )
 
 type TaskFilter struct {
-	Status    string
-	ProjectID string
+	Status       string
+	ProjectID    string
+	Behavior     string
+	WorkspaceID  string
+	HasDependsOn bool
+	NoDependsOn  bool
 }
 
 // taskSelectCols は tasks テーブルの基本カラム一覧（テーブル別名 t を使用）。
@@ -204,6 +208,7 @@ func GetTask(dbtx db.DBTX, id string) (*Task, error) {
 func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	var conditions []string
 	var args []any
+	var joins []string
 
 	// "open" は特殊フィルタ: 自身が open 状態 OR 閉じているが open な子を持つ（グループヘッダー救済）
 	if filter.Status == "open" {
@@ -217,8 +222,25 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 		conditions = append(conditions, "t.project_id = ?")
 		args = append(args, filter.ProjectID)
 	}
+	if filter.Behavior != "" {
+		conditions = append(conditions, "t.behavior = ?")
+		args = append(args, filter.Behavior)
+	}
+	if filter.WorkspaceID != "" {
+		joins = append(joins, "INNER JOIN project_workspaces pw ON pw.project_id = t.project_id AND pw.workspace_id = ?")
+		args = append([]any{filter.WorkspaceID}, args...)
+	}
+	if filter.HasDependsOn {
+		conditions = append(conditions, "EXISTS (SELECT 1 FROM task_dependencies td WHERE td.task_id = t.id)")
+	}
+	if filter.NoDependsOn {
+		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM task_dependencies td WHERE td.task_id = t.id)")
+	}
 
 	query := `SELECT ` + taskSelectCols + `, ` + taskChildCountCols + ` FROM tasks t`
+	for _, j := range joins {
+		query += " " + j
+	}
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
