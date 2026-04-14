@@ -17,6 +17,11 @@ import (
 
 const taskPollInterval = 3 * time.Second
 
+// statusWidth is the fixed column width for the STATUS column.
+// Ambiguous-width characters (●, ✓, ✗, ○) render as 2 cells in most
+// terminals, so "● executing" = 2+1+9 = 12 cells.
+const statusWidth = 12
+
 // openStatuses defines which task statuses are considered "open".
 var openStatuses = map[orchestrator.TaskStatus]bool{
 	orchestrator.TaskStatusExecuting: true,
@@ -630,13 +635,12 @@ func (s *TaskListScreen) findProjectName(projectID string) string {
 }
 
 // recalcColumns recalculates column widths based on terminal width and updates
-// the table. Fixed widths: STATUS(11), PROJECT(12), BEHAVIOR(10), AGE(6).
+// the table. Fixed widths: STATUS(12), PROJECT(12), BEHAVIOR(10), AGE(6).
 // The remainder (minus separator overhead) is assigned to TITLE with a minimum
 // of 20. The calculated TITLE width is stored in s.titleWidth for use by
 // syncTableRows.
 func (s *TaskListScreen) recalcColumns(width int) {
 	const (
-		statusWidth   = 11
 		projectWidth  = 12
 		behaviorWidth = 10
 		ageWidth      = 6
@@ -775,7 +779,7 @@ func (s *TaskListScreen) syncTableRows() {
 	for i, task := range s.displayTasks {
 		// STATUS セル: 素の文字列でビルドしてから色を適用する
 		rawDot, rawStatusText := taskStatusRaw(task.Status)
-		rawStatusCell := rawDot + " " + rawStatusText
+		rawStatusCell := truncate(rawDot+" "+rawStatusText, statusWidth)
 
 		title := task.Title
 		if title == "" {
