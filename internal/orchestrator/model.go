@@ -43,6 +43,8 @@ type Task struct {
 	DoneChildCount    int `json:"done_child_count,omitempty"`
 	AbortedChildCount int `json:"aborted_child_count,omitempty"`
 	OpenChildCount    int `json:"open_child_count,omitempty"`
+	// Blocked は pending 状態でかつ依存条件が未充足のとき true（DBには保存しない）
+	Blocked bool `json:"blocked,omitempty"`
 }
 
 type Action struct {

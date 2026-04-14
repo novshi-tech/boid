@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -772,21 +773,23 @@ func (s *TaskListScreen) syncTableRows() {
 
 	rows := make([]table.Row, len(s.displayTasks))
 	for i, task := range s.displayTasks {
-		dot, statusText := taskStatusDisplay(task.Status)
-		statusCell := stripANSI(dot) + " " + stripANSI(statusText)
+		// STATUS セル: 素の文字列でビルドしてから色を適用する
+		rawDot, rawStatusText := taskStatusRaw(task.Status)
+		rawStatusCell := rawDot + " " + rawStatusText
 
 		title := task.Title
 		if title == "" {
 			title = "(no title)"
 		}
 
-		// Build title cell: indented by depth and with optional progress badge.
+		// TITLE セル: インデント + タイトル + 進捗バッジを素の文字列で構築し、
+		// truncate 後に色を適用する
 		depth := depths[task.ID]
 		indent := strings.Repeat("  ", depth)
 		rawTitle := indent + title
 		progress := progressBadge(task)
 
-		var titleCell string
+		var rawTitleCell string
 		if progress != "" {
 			progressPart := " " + progress
 			maxTitle := s.titleWidth - len([]rune(progressPart))
@@ -794,10 +797,15 @@ func (s *TaskListScreen) syncTableRows() {
 				maxTitle = 1
 			}
 			titlePart := strings.TrimRight(truncate(rawTitle, maxTitle), " ")
-			titleCell = truncate(titlePart+progressPart, s.titleWidth)
+			rawTitleCell = truncate(titlePart+progressPart, s.titleWidth)
 		} else {
-			titleCell = truncate(rawTitle, s.titleWidth)
+			rawTitleCell = truncate(rawTitle, s.titleWidth)
 		}
+
+		// ステータスと blocked 状態に応じたスタイルを適用する
+		st := taskCellStyle(task)
+		statusCell := st.Render(rawStatusCell)
+		titleCell := st.Render(rawTitleCell)
 
 		projectCell := ""
 		if name := s.findProjectName(task.ProjectID); name != "" {
@@ -821,6 +829,50 @@ func (s *TaskListScreen) syncTableRows() {
 
 // --- rendering ---
 
+// taskStatusRaw は ANSI コードを含まない素の dot アイコンとステータステキストを返す。
+// truncate 後に色を適用する用途で使用する。
+func taskStatusRaw(status orchestrator.TaskStatus) (dot, text string) {
+	switch status {
+	case orchestrator.TaskStatusExecuting:
+		return "●", "executing"
+	case orchestrator.TaskStatusReworking:
+		return "●", "reworking"
+	case orchestrator.TaskStatusVerifying:
+		return "●", "verifying"
+	case orchestrator.TaskStatusPending:
+		return "○", "pending"
+	case orchestrator.TaskStatusDone:
+		return "✓", "done"
+	case orchestrator.TaskStatusAborted:
+		return "✗", "aborted"
+	default:
+		return "?", string(status)
+	}
+}
+
+// taskCellStyle はタスクのステータスと blocked 状態に基づいて lipgloss スタイルを返す。
+// STATUS セルと TITLE セルの両方に適用する。
+func taskCellStyle(task *orchestrator.Task) lipgloss.Style {
+	switch task.Status {
+	case orchestrator.TaskStatusExecuting, orchestrator.TaskStatusReworking:
+		return styleExecuting.Bold(true)
+	case orchestrator.TaskStatusVerifying:
+		return styleVerifying
+	case orchestrator.TaskStatusDone:
+		return styleTaskDim
+	case orchestrator.TaskStatusAborted:
+		return styleAborted
+	case orchestrator.TaskStatusPending:
+		if task.Blocked {
+			return styleDim
+		}
+		return lipgloss.NewStyle()
+	default:
+		return lipgloss.NewStyle()
+	}
+}
+
+// taskStatusDisplay は後方互換のため ANSI 色付きの dot とテキストを返す。
 func taskStatusDisplay(status orchestrator.TaskStatus) (dot, text string) {
 	switch status {
 	case orchestrator.TaskStatusExecuting:
