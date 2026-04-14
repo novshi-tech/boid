@@ -42,11 +42,27 @@ boid が管理するディスクデータは2種類ある:
 
 | ディレクトリ | 管理主体 | GC 対象 |
 |---|---|---|
-| `~/.local/share/boid/runtimes/<runtime_id>/` | boid | `boid gc` で自動削除 |
+| `~/.local/share/boid/runtimes/<runtime_id>/` | boid | daemon が自動削除（24h 毎）|
 | `~/.claude/projects/-home-...-worktrees-boid-<taskid>/` | Claude Code | **boid 管轄外**・手動管理が必要 |
 
 `~/.claude/projects/` 配下の `*.jsonl` は Claude Code 本体が書き込むセッションログであり、boid が手を出すのは越権行為となる。
 手動で削除する場合は `rm -rf ~/.claude/projects/-home-*-worktrees-boid-*` を実行すること（他のプロジェクトのログを巻き込まないよう注意）。
+
+### 自動 GC
+
+boid daemon 起動時に GC goroutine が立ち上がり、**24 時間ごと**・**30 日より古いデータ**を自動削除する。
+手動実行は引き続き `boid gc` で可能。
+
+設定は `~/.config/boid/config.yaml`（XDG 準拠）で変更できる:
+
+```yaml
+gc:
+  enabled: true       # false にすると自動 GC を無効化
+  interval: 24h       # GC の実行間隔（デフォルト: 24h）
+  older_than: 720h    # この期間より古いデータを削除（デフォルト: 720h = 30日）
+```
+
+ファイルが存在しない場合はデフォルト値で動作する（エラーにならない）。
 
 ## コーディング規約
 

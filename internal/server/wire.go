@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/web"
@@ -278,6 +279,21 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	)
 	gcHandler := &api.GCHandler{Service: &api.GCAppService{Store: gcStore}}
 	r.Mount("/api/gc", gcHandler.Routes())
+
+	// Wire up the periodic GC loop.
+	gcCfg, err := config.Load()
+	if err != nil {
+		slog.Warn("failed to load boid config, using defaults", "error", err)
+		gcCfg = config.DefaultConfig()
+	}
+	if gcCfg.GC.Enabled {
+		srv.gcLoop = &orchestrator.GCLoop{
+			Store:        gcStore,
+			Interval:     gcCfg.GC.Interval,
+			OlderThan:    gcCfg.GC.OlderThan,
+			InitialDelay: 10 * time.Second,
+		}
+	}
 
 	actionHandler := &api.ActionHandler{Service: runtime.workflow}
 	r.Route("/api/tasks/{taskID}/actions", func(r chi.Router) {
