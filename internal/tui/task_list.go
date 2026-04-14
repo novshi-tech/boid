@@ -15,7 +15,10 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-const taskPollInterval = 3 * time.Second
+const (
+	activeTaskPollInterval = 1 * time.Second
+	idleTaskPollInterval   = 3 * time.Second
+)
 
 // statusWidth is the fixed column width for the STATUS column.
 // "● executing" = 1+1+9 = 11 visible runes; ansi.StringWidth reports ● as 1 cell
@@ -31,6 +34,25 @@ const (
 // tableRow holds the pre-rendered cell strings for one table row.
 // Indices: 0=STATUS, 1=TITLE, 2=PROJECT, 3=BEHAVIOR, 4=AGE.
 type tableRow [5]string
+
+// activeStatuses defines which task statuses are considered "active" for poll interval decisions.
+// Active tasks are being processed by the system, so faster polling improves responsiveness.
+var activeStatuses = map[orchestrator.TaskStatus]bool{
+	orchestrator.TaskStatusExecuting: true,
+	orchestrator.TaskStatusReworking: true,
+	orchestrator.TaskStatusVerifying: true,
+}
+
+// tickIntervalForTasks returns activeTaskPollInterval if any task in the slice is active,
+// otherwise idleTaskPollInterval.
+func tickIntervalForTasks(tasks []*orchestrator.Task) time.Duration {
+	for _, t := range tasks {
+		if activeStatuses[t.Status] {
+			return activeTaskPollInterval
+		}
+	}
+	return idleTaskPollInterval
+}
 
 // openStatuses defines which task statuses are considered "open".
 var openStatuses = map[orchestrator.TaskStatus]bool{
@@ -135,7 +157,7 @@ func (s *TaskListScreen) Init() tea.Cmd {
 		fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, nil),
 		fetchProjectsCmd(s.shared.Client),
 		fetchWorkspacesCmd(s.shared.Client),
-		taskTickCmd(),
+		tickTaskList(s.displayTasks),
 		taskBlinkCmd(),
 	)
 }
@@ -145,7 +167,7 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	case taskTickMsg:
 		return s, tea.Batch(
 			fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs()),
-			taskTickCmd(),
+			tickTaskList(s.displayTasks),
 		)
 
 	case taskBlinkTickMsg:
@@ -1158,8 +1180,8 @@ func (s *TaskListScreen) renderTable(bodyHeight, lineWidth int) string {
 
 // --- commands ---
 
-func taskTickCmd() tea.Cmd {
-	return tea.Tick(taskPollInterval, func(time.Time) tea.Msg {
+func tickTaskList(tasks []*orchestrator.Task) tea.Cmd {
+	return tea.Tick(tickIntervalForTasks(tasks), func(time.Time) tea.Msg {
 		return taskTickMsg{}
 	})
 }
