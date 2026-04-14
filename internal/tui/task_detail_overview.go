@@ -88,13 +88,20 @@ func (s *TaskDetailScreen) renderOverview(width, height int) string {
 		}
 	}
 
-	if len(runningJobs) == 0 {
+	nActive := len(runningJobs)
+	if nActive == 0 {
 		sb.WriteString(styleDim.Render("  no active job"))
 		sb.WriteByte('\n')
 		used++
 	} else {
-		for _, j := range runningJobs {
-			line := fmt.Sprintf("  %s running job: [%s] %s",
+		for i, j := range runningJobs {
+			selected := s.timelineCursor == i
+			cursorStr := "  "
+			if selected {
+				cursorStr = styleCursor.Render("▸ ")
+			}
+			line := fmt.Sprintf("%s%s running job: [%s] %s",
+				cursorStr,
 				styleRunning.Render("●"),
 				j.Role,
 				styleDim.Render(formatElapsed(j.CreatedAt)+" ago"),
@@ -133,7 +140,10 @@ func (s *TaskDetailScreen) renderOverview(width, height int) string {
 	used++
 
 	timelineHeight := max(height-used, 2)
-	sb.WriteString(renderTimeline(events, width, timelineHeight, s.timelineCursor))
+	// timelineCursor is the unified overview cursor: [0, nActive-1] = Active, [nActive, ...] = Timeline.
+	// Pass a negative value when cursor is in Active section so no Timeline row is highlighted.
+	timelineCursor := s.timelineCursor - nActive
+	sb.WriteString(renderTimeline(events, width, timelineHeight, timelineCursor))
 
 	return sb.String()
 }

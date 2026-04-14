@@ -98,9 +98,12 @@ func (s *TaskDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				s.cursor = len(s.detail.Jobs) - 1
 			}
 			if s.detail != nil {
+				// timelineCursor is the unified overview cursor: Active jobs then Timeline events.
+				runningJobs := s.runningJobs()
 				events := buildOverviewTimeline(s.detail)
-				if s.timelineCursor >= len(events) && len(events) > 0 {
-					s.timelineCursor = len(events) - 1
+				total := len(runningJobs) + len(events)
+				if s.timelineCursor >= total && total > 0 {
+					s.timelineCursor = total - 1
 				}
 			}
 		}
@@ -247,8 +250,10 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "j", "down":
 		switch s.activeTab {
 		case tabOverview:
+			runningJobs := s.runningJobs()
 			events := buildOverviewTimeline(s.detail)
-			if s.timelineCursor < len(events)-1 {
+			total := len(runningJobs) + len(events)
+			if s.timelineCursor < total-1 {
 				s.timelineCursor++
 			}
 		case tabDescription:
@@ -334,11 +339,22 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if s.activeTab == tabPayload {
 			break
 		}
-		// Overview tab: drill into timeline event → JobDetailScreen.
+		// Overview tab: Active section → JobDetailScreen; Timeline → drill into job event.
 		if s.activeTab == tabOverview {
+			runningJobs := s.runningJobs()
+			nActive := len(runningJobs)
+			if s.timelineCursor < nActive {
+				// Active section selected: open JobDetailScreen for the running job.
+				job := runningJobs[s.timelineCursor]
+				return func() tea.Msg {
+					return pushScreenMsg{screen: NewJobDetailScreen(s.shared, job)}
+				}
+			}
+			// Timeline section selected.
 			events := buildOverviewTimeline(s.detail)
-			if s.timelineCursor >= 0 && s.timelineCursor < len(events) {
-				ev := events[s.timelineCursor]
+			timelineIdx := s.timelineCursor - nActive
+			if timelineIdx >= 0 && timelineIdx < len(events) {
+				ev := events[timelineIdx]
 				if ev.Job != nil {
 					job := ev.Job
 					return func() tea.Msg {
@@ -378,6 +394,30 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		s.statusMsg = ""
 		s.isError = false
 		return s.titleInput.Focus()
+
+	case "o":
+		// Open the selected Active job in a tmux pane.
+		// Only effective when Overview tab is active and cursor is in the Active section.
+		if s.activeTab != tabOverview {
+			break
+		}
+		runningJobs := s.runningJobs()
+		nActive := len(runningJobs)
+		if s.timelineCursor >= nActive {
+			break // cursor is in Timeline section, not Active
+		}
+		job := runningJobs[s.timelineCursor]
+		if !job.Interactive {
+			s.statusMsg = "this job is not interactive"
+			s.isError = true
+			return clearStatusAfter(3 * time.Second)
+		}
+		if !s.shared.TmuxEnabled {
+			s.statusMsg = "to open a job, launch `boid tui` inside tmux"
+			s.isError = false
+			return clearStatusAfter(4 * time.Second)
+		}
+		return openJobCmd(job.ID, s.shared.Panes[job.ID])
 
 	case "esc", "backspace", "q":
 		return func() tea.Msg { return popScreenMsg{} }
@@ -541,6 +581,20 @@ func (s *TaskDetailScreen) availableActions() []string {
 	return s.detail.AvailableActions
 }
 
+// runningJobs returns the list of running jobs from the current detail in order.
+func (s *TaskDetailScreen) runningJobs() []*api.Job {
+	if s.detail == nil {
+		return nil
+	}
+	var result []*api.Job
+	for _, j := range s.detail.Jobs {
+		if j.Status == api.JobStatusRunning {
+			result = append(result, j)
+		}
+	}
+	return result
+}
+
 func (s *TaskDetailScreen) ShortHelp() string {
 	km := assignKeys(s.availableActions())
 	// Reverse map: action → key (for ordered output)
@@ -567,7 +621,12 @@ func (s *TaskDetailScreen) ShortHelp() string {
 	var tabSpecific string
 	switch s.activeTab {
 	case tabOverview:
-		tabSpecific = "e: edit title  enter: drill into event  j/k: scroll cursor"
+		runningJobs := s.runningJobs()
+		if s.timelineCursor < len(runningJobs) {
+			tabSpecific = "e: edit title  enter: open job detail  o: open in tmux (Active)  j/k: scroll cursor"
+		} else {
+			tabSpecific = "e: edit title  enter: drill into event  j/k: scroll cursor"
+		}
 	case tabDescription:
 		tabSpecific = "e: edit description  j/k: scroll  pgup/pgdn: page"
 	case tabDeps:
@@ -594,7 +653,7 @@ func assignKeys(actions []string) map[rune]string {
 			continue
 		}
 		for _, ch := range a {
-			if ch == 'd' { // reserved for delete
+			if ch == 'd' || ch == 'o' { // reserved: 'd' for delete, 'o' for tmux open
 				continue
 			}
 			if _, used := m[ch]; !used {
