@@ -49,6 +49,7 @@ var closedStatuses = map[orchestrator.TaskStatus]bool{
 // --- messages ---
 
 type taskTickMsg struct{}
+type taskBlinkTickMsg struct{}
 type tasksMsg struct {
 	tasks []*orchestrator.Task
 	err   error
@@ -115,7 +116,8 @@ type TaskListScreen struct {
 	statusMsg           string
 	isError             bool
 	mini                miniSelector
-	titleWidth          int // current TITLE column width; default 24
+	titleWidth          int  // current TITLE column width; default 24
+	blinkOn             bool // toggles every 600ms for executing/reworking/verifying dot blink
 }
 
 func NewTaskListScreen(shared *SharedState) *TaskListScreen {
@@ -134,6 +136,7 @@ func (s *TaskListScreen) Init() tea.Cmd {
 		fetchProjectsCmd(s.shared.Client),
 		fetchWorkspacesCmd(s.shared.Client),
 		taskTickCmd(),
+		taskBlinkCmd(),
 	)
 }
 
@@ -144,6 +147,11 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs()),
 			taskTickCmd(),
 		)
+
+	case taskBlinkTickMsg:
+		s.blinkOn = !s.blinkOn
+		s.syncTableRows()
+		return s, taskBlinkCmd()
 
 	case tasksMsg:
 		s.loading = false
@@ -767,22 +775,52 @@ func progressBadge(task *orchestrator.Task) string {
 }
 
 // applyStateFilter filters tasks by open/closed state, taking child counts into account.
-// Open mode: keeps tasks that are open OR have open children.
+// Open mode: keeps tasks that are open OR have open children (pass 1), then also keeps
+// closed children whose parent is in the pass-1 result (pass 2).
 // Closed mode: keeps tasks that are closed AND have no open children.
 func applyStateFilter(tasks []*orchestrator.Task, stateClosed bool) []*orchestrator.Task {
-	var filtered []*orchestrator.Task
-	for _, t := range tasks {
-		if stateClosed {
+	if stateClosed {
+		var filtered []*orchestrator.Task
+		for _, t := range tasks {
 			if closedStatuses[t.Status] && t.OpenChildCount == 0 {
 				filtered = append(filtered, t)
 			}
-		} else {
-			if openStatuses[t.Status] || t.OpenChildCount > 0 {
-				filtered = append(filtered, t)
-			}
+		}
+		return filtered
+	}
+
+	// Open mode — pass 1: current logic.
+	firstPassIDs := make(map[string]bool)
+	var firstPass []*orchestrator.Task
+	for _, t := range tasks {
+		if openStatuses[t.Status] || t.OpenChildCount > 0 {
+			firstPass = append(firstPass, t)
+			firstPassIDs[t.ID] = true
 		}
 	}
-	return filtered
+
+	// Collect IDs of open parents: tasks in pass 1 that have children.
+	openParentIDs := make(map[string]bool)
+	for _, t := range firstPass {
+		if t.TotalChildCount > 0 {
+			openParentIDs[t.ID] = true
+		}
+	}
+
+	if len(openParentIDs) == 0 {
+		return firstPass
+	}
+
+	// Pass 2: preserve original input order, adding closed children of open parents.
+	result := make([]*orchestrator.Task, 0, len(firstPass))
+	for _, t := range tasks {
+		if firstPassIDs[t.ID] {
+			result = append(result, t)
+		} else if openParentIDs[t.ParentID] && closedStatuses[t.Status] {
+			result = append(result, t)
+		}
+	}
+	return result
 }
 
 // syncTableRows applies the searchQuery filter to s.tasks, builds the tree order,
@@ -844,19 +882,34 @@ func (s *TaskListScreen) syncTableRows() {
 
 		projectName := s.findProjectName(task.ProjectID)
 
-		// STATUS セル: ドットのみ着色、親タスクのテキストは Bold+Underline。
-		dot := taskCellStyle(task).Render(rawDot)
+		// 行全体を dim にするか（blocked pending / done / aborted）
+		isDimRow := task.Status == orchestrator.TaskStatusDone ||
+			task.Status == orchestrator.TaskStatusAborted ||
+			(task.Status == orchestrator.TaskStatusPending && task.Blocked)
+
+		// STATUS セル: ドットのみ着色、親タスクのテキストは Bold+Underline（dim 行は除く）。
+		var dotStyle lipgloss.Style
+		if isDimRow {
+			dotStyle = styleTaskDim
+		} else if isBlinkTarget(task.Status) && !s.blinkOn {
+			dotStyle = styleTaskDim
+		} else {
+			dotStyle = taskCellStyle(task)
+		}
+		dot := dotStyle.Render(rawDot)
 		var statusText string
-		if isParent {
+		if !isDimRow && isParent {
 			statusText = styleTreeParent.Render(rawStatusText)
 		} else {
 			statusText = rawStatusText
 		}
 		statusCell := dot + " " + statusText
 
-		// TITLE セル: prefix を styleDim で着色し、content は親なら Bold+Underline。
+		// TITLE セル: prefix を styleDim で着色し、content は親なら Bold+Underline（dim 行は除く）。
 		var content string
-		if isParent {
+		if isDimRow {
+			content = styleDim.Render(truncatedContent)
+		} else if isParent {
 			content = styleTreeParent.Render(truncatedContent)
 		} else {
 			content = truncatedContent
@@ -868,9 +921,13 @@ func (s *TaskListScreen) syncTableRows() {
 			titleCell = content
 		}
 
-		// PROJECT / BEHAVIOR / AGE セル: 親タスクは Bold+Underline。
+		// PROJECT / BEHAVIOR / AGE セル: 親タスクは Bold+Underline（dim 行は除く）。
 		var projectCell, behaviorCell, ageCell string
-		if isParent {
+		if isDimRow {
+			projectCell = styleDim.Render(projectName)
+			behaviorCell = styleDim.Render(task.Behavior)
+			ageCell = styleDim.Render(formatTaskElapsed(task.CreatedAt))
+		} else if isParent {
 			projectCell = styleTreeParent.Render(projectName)
 			behaviorCell = styleTreeParent.Render(task.Behavior)
 			ageCell = styleTreeParent.Render(formatTaskElapsed(task.CreatedAt))
@@ -916,6 +973,13 @@ func taskStatusRaw(status orchestrator.TaskStatus) (dot, text string) {
 	default:
 		return "?", string(status)
 	}
+}
+
+// isBlinkTarget reports whether status is one whose dot should blink.
+func isBlinkTarget(status orchestrator.TaskStatus) bool {
+	return status == orchestrator.TaskStatusExecuting ||
+		status == orchestrator.TaskStatusReworking ||
+		status == orchestrator.TaskStatusVerifying
 }
 
 // taskCellStyle はタスクのステータスと blocked 状態に基づいて lipgloss スタイルを返す。
@@ -1093,6 +1157,12 @@ func (s *TaskListScreen) renderTable(bodyHeight, lineWidth int) string {
 func taskTickCmd() tea.Cmd {
 	return tea.Tick(taskPollInterval, func(time.Time) tea.Msg {
 		return taskTickMsg{}
+	})
+}
+
+func taskBlinkCmd() tea.Cmd {
+	return tea.Tick(600*time.Millisecond, func(time.Time) tea.Msg {
+		return taskBlinkTickMsg{}
 	})
 }
 
