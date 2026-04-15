@@ -231,10 +231,16 @@ func (s *TaskListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s, clearStatusAfter(4 * time.Second)
 		}
 		s.statusMsg = ""
-		return s, fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs())
+		return s, tea.Batch(
+			fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs()),
+			tickTaskList(s.displayTasks),
+		)
 
 	case screenResumedMsg:
-		return s, fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs())
+		return s, tea.Batch(
+			fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs()),
+			tickTaskList(s.displayTasks),
+		)
 
 	case taskCreatedNotifyMsg:
 		s.statusMsg = "task created"
@@ -287,7 +293,10 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		s.cursor = 0
 		s.viewStart = 0
 		s.loading = true
-		return fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs())
+		return tea.Batch(
+			fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs()),
+			tickTaskList(s.displayTasks),
+		)
 
 	case "w":
 		s.popup = s.buildWorkspacePopup()
@@ -305,7 +314,10 @@ func (s *TaskListScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	case "r":
 		s.loading = true
-		return fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs())
+		return tea.Batch(
+			fetchTasksCmd(s.shared.Client, s.stateClosed, s.selectedProjectID, s.behaviorFilter, s.wsProjectIDs()),
+			tickTaskList(s.displayTasks),
+		)
 
 	case "enter":
 		if len(s.displayTasks) == 0 {
