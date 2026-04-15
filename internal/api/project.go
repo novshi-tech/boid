@@ -5,10 +5,40 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 type ProjectHandler struct {
 	Service ProjectService
+}
+
+type projectCandidate struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	WorkDir string `json:"work_dir"`
+}
+
+// resolveRef resolves a project ref to exactly one project.
+// On multiple matches it writes HTTP 409 and returns nil.
+// On no match it writes HTTP 404 and returns nil.
+func (h *ProjectHandler) resolveRef(w http.ResponseWriter, ref string) *orchestrator.Project {
+	projects, err := h.Service.ResolveProjectRef(ref)
+	if err != nil {
+		writeServiceError(w, err)
+		return nil
+	}
+	if len(projects) == 1 {
+		return projects[0]
+	}
+	candidates := make([]projectCandidate, 0, len(projects))
+	for _, p := range projects {
+		candidates = append(candidates, projectCandidate{ID: p.ID, Name: p.Meta.Name, WorkDir: p.WorkDir})
+	}
+	writeJSON(w, http.StatusConflict, map[string]interface{}{
+		"error":      "multiple projects match",
+		"candidates": candidates,
+	})
+	return nil
 }
 
 func (h *ProjectHandler) Routes() chi.Router {
@@ -59,17 +89,20 @@ func (h *ProjectHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ProjectHandler) Get(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	project, err := h.Service.GetProject(id)
-	if err != nil {
-		writeServiceError(w, err)
+	ref := chi.URLParam(r, "id")
+	project := h.resolveRef(w, ref)
+	if project == nil {
 		return
 	}
 	writeJSON(w, http.StatusOK, project)
 }
 
 func (h *ProjectHandler) SetWorkspace(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+	ref := chi.URLParam(r, "id")
+	project := h.resolveRef(w, ref)
+	if project == nil {
+		return
+	}
 
 	var req SetProjectWorkspaceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -77,17 +110,21 @@ func (h *ProjectHandler) SetWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	project, err := h.Service.SetProjectWorkspace(id, req.WorkspaceID)
+	updated, err := h.Service.SetProjectWorkspace(project.ID, req.WorkspaceID)
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, project)
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (h *ProjectHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if err := h.Service.DeleteProject(id); err != nil {
+	ref := chi.URLParam(r, "id")
+	project := h.resolveRef(w, ref)
+	if project == nil {
+		return
+	}
+	if err := h.Service.DeleteProject(project.ID); err != nil {
 		writeServiceError(w, err)
 		return
 	}

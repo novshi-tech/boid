@@ -1885,6 +1885,145 @@ func TestBuildDependentsTree_Cycle(t *testing.T) {
 	checkNoSelf(nodes)
 }
 
+// --- stubs for ProjectAppService tests ---
+
+type stubProjectRepository struct {
+	projects []*orchestrator.Project
+	listErr  error
+}
+
+func (s *stubProjectRepository) CreateProject(project *orchestrator.Project) error { return nil }
+func (s *stubProjectRepository) GetProject(id string) (*orchestrator.Project, error) {
+	for _, p := range s.projects {
+		if p.ID == id {
+			return p, nil
+		}
+	}
+	return nil, fmt.Errorf("project not found: %s", id)
+}
+func (s *stubProjectRepository) ListProjects() ([]*orchestrator.Project, error) {
+	return s.projects, s.listErr
+}
+func (s *stubProjectRepository) SetProjectWorkspace(projectID, workspaceID string) error {
+	return nil
+}
+func (s *stubProjectRepository) ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error) {
+	return nil, nil
+}
+func (s *stubProjectRepository) DeleteProject(id string) error { return nil }
+
+type stubProjectMetaStore struct {
+	metas map[string]*orchestrator.ProjectMeta
+}
+
+func (s *stubProjectMetaStore) Load(workDir string) (*orchestrator.ProjectMeta, error) {
+	return nil, nil
+}
+func (s *stubProjectMetaStore) Get(id string) (*orchestrator.ProjectMeta, bool) {
+	if s.metas == nil {
+		return nil, false
+	}
+	m, ok := s.metas[id]
+	return m, ok
+}
+func (s *stubProjectMetaStore) Remove(id string)                                    {}
+func (s *stubProjectMetaStore) LoadAll(_ []*orchestrator.Project) []error           { return nil }
+
+// TestProjectAppService_ResolveProjectRef tests all resolution priority cases.
+func TestProjectAppService_ResolveProjectRef(t *testing.T) {
+	// projA: id matches "uuid-001"; projD has name "uuid-001" — used to test id > name priority.
+	projA := &orchestrator.Project{ID: "uuid-001", WorkDir: "/work/a"}
+	projB := &orchestrator.Project{ID: "uuid-002", WorkDir: "/work/b"}
+	projC := &orchestrator.Project{ID: "uuid-003", WorkDir: "/work/c"}
+	projD := &orchestrator.Project{ID: "uuid-001-alias", WorkDir: "/work/d"}
+
+	metas := map[string]*orchestrator.ProjectMeta{
+		"uuid-001":       {ID: "uuid-001", Name: "Alpha Project"},
+		"uuid-002":       {ID: "uuid-002", Name: "Beta Project"},
+		"uuid-003":       {ID: "uuid-003", Name: "Gamma Project"},
+		"uuid-001-alias": {ID: "uuid-001-alias", Name: "uuid-001"},
+	}
+
+	newSvc := func() *ProjectAppService {
+		return &ProjectAppService{
+			Projects: &stubProjectRepository{
+				projects: []*orchestrator.Project{projA, projB, projC, projD},
+			},
+			Meta: &stubProjectMetaStore{metas: metas},
+		}
+	}
+
+	t.Run("id exact match returns single project", func(t *testing.T) {
+		got, err := newSvc().ResolveProjectRef("uuid-002")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 1 || got[0].ID != "uuid-002" {
+			t.Fatalf("expected [uuid-002], got %v", got)
+		}
+	})
+
+	t.Run("name exact match returns single project", func(t *testing.T) {
+		got, err := newSvc().ResolveProjectRef("Beta Project")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 1 || got[0].ID != "uuid-002" {
+			t.Fatalf("expected [uuid-002], got %v", got)
+		}
+	})
+
+	t.Run("name partial match case-insensitive returns single project", func(t *testing.T) {
+		// "GAMMA" matches "Gamma Project" only.
+		got, err := newSvc().ResolveProjectRef("GAMMA")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 1 || got[0].ID != "uuid-003" {
+			t.Fatalf("expected [uuid-003], got %v", got)
+		}
+	})
+
+	t.Run("name partial match returns multiple candidates", func(t *testing.T) {
+		// "project" matches "Alpha Project", "Beta Project", "Gamma Project" (3 of the 4).
+		got, err := newSvc().ResolveProjectRef("project")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("expected 3 candidates, got %d: %v", len(got), got)
+		}
+	})
+
+	t.Run("no match returns 404 error", func(t *testing.T) {
+		got, err := newSvc().ResolveProjectRef("nonexistent")
+		if got != nil {
+			t.Errorf("expected nil result, got %v", got)
+		}
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		serr, ok := err.(*StatusError)
+		if !ok {
+			t.Fatalf("expected *StatusError, got %T: %v", err, err)
+		}
+		if serr.Code != http.StatusNotFound {
+			t.Errorf("expected status 404, got %d", serr.Code)
+		}
+	})
+
+	t.Run("id exact match takes priority over name exact and partial match", func(t *testing.T) {
+		// "uuid-001" is projA's id AND projD's name — id match must win, returning only projA.
+		got, err := newSvc().ResolveProjectRef("uuid-001")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 1 || got[0].ID != "uuid-001" {
+			t.Fatalf("expected exactly [uuid-001], got %v", got)
+		}
+	})
+}
+
 // TestGetTaskDetail_TreeFields verifies GetTaskDetail returns populated tree fields.
 func TestGetTaskDetail_TreeFields(t *testing.T) {
 	self := makeTreeTask("self", "Self", []string{"dep-a"})
