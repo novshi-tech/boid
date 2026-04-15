@@ -14,8 +14,8 @@ import (
 )
 
 var execCmd = &cobra.Command{
-	Use:           "exec <project-id> -- <command...>",
-	Short:         "Execute a command in a project sandbox",
+	Use:           "exec <project-ref> -- <command...>",
+	Short:         "Execute a command in a project sandbox (project by id or name, partial match supported)",
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	Args:          cobra.MinimumNArgs(1),
@@ -116,7 +116,12 @@ func buildExecRequest(projectID string) (dispatcher.ExecRequest, error) {
 }
 
 func runExec(cmd *cobra.Command, args []string) error {
-	projectID := args[0]
+	c := client.NewUnixClient(client.DefaultSocketPath())
+	p, err := resolveProjectRef(c, os.Stdin, os.Stdout, args[0])
+	if err != nil {
+		return fmt.Errorf("resolve project: %w", err)
+	}
+	projectID := p.ID
 
 	// Parse command after "--" from os.Args
 	var command string
@@ -127,7 +132,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if command == "" {
-		return fmt.Errorf("usage: boid exec <project-id> -- <command...>")
+		return fmt.Errorf("usage: boid exec <project-ref> -- <command...>")
 	}
 
 	req, err := buildExecRequest(projectID)
