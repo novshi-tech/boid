@@ -219,3 +219,33 @@ func TestProjectAPI_GetNotFound(t *testing.T) {
 		t.Error("expected error for non-existent project, got nil")
 	}
 }
+
+func TestProjectAPI_GetByName(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	createProject(t, ts, "unique-id", "my-unique-name")
+
+	// Resolve by name (no project has id="my-unique-name").
+	var got orchestrator.Project
+	if err := ts.Client.Do("GET", "/api/projects/my-unique-name", nil, &got); err != nil {
+		t.Fatalf("get by name: %v", err)
+	}
+	if got.ID != "unique-id" {
+		t.Errorf("got ID = %q, want %q", got.ID, "unique-id")
+	}
+}
+
+func TestProjectAPI_GetAmbiguous(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	createProject(t, ts, "proj-one", "shared-prefix-alpha")
+	createProject(t, ts, "proj-two", "shared-prefix-beta")
+
+	// "shared-prefix" is a substring of both project names → 409 Conflict.
+	var got orchestrator.Project
+	err := ts.Client.Do("GET", "/api/projects/shared-prefix", nil, &got)
+	if err == nil {
+		t.Fatal("expected error for ambiguous ref, got nil")
+	}
+	if err.Error() != "multiple projects match" {
+		t.Errorf("error = %q, want %q", err.Error(), "multiple projects match")
+	}
+}

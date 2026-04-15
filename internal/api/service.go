@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strings"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -182,6 +183,57 @@ func (s *ProjectAppService) DeleteProject(id string) error {
 	}
 	s.Meta.Remove(id)
 	return nil
+}
+
+// ResolveProjectRef resolves ref to matching projects with the following priority:
+//  1. id exact match (returns immediately on first hit)
+//  2. name exact match (all projects with that name)
+//  3. name substring match, case-insensitive
+//
+// Returns a single-element slice on unambiguous match, a multi-element slice on
+// ambiguous match, or StatusError{404} when nothing matches.
+func (s *ProjectAppService) ResolveProjectRef(ref string) ([]*orchestrator.Project, error) {
+	projects, err := s.Projects.ListProjects()
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+
+	// Hydrate all projects so Meta.Name is available for name matching.
+	for _, p := range projects {
+		s.hydrateProject(p)
+	}
+
+	// 1. id exact match — highest priority, return immediately.
+	for _, p := range projects {
+		if p.ID == ref {
+			return []*orchestrator.Project{p}, nil
+		}
+	}
+
+	// 2. name exact match.
+	var nameExact []*orchestrator.Project
+	for _, p := range projects {
+		if p.Meta.Name == ref {
+			nameExact = append(nameExact, p)
+		}
+	}
+	if len(nameExact) > 0 {
+		return nameExact, nil
+	}
+
+	// 3. name substring match (case-insensitive).
+	refLower := strings.ToLower(ref)
+	var namePartial []*orchestrator.Project
+	for _, p := range projects {
+		if strings.Contains(strings.ToLower(p.Meta.Name), refLower) {
+			namePartial = append(namePartial, p)
+		}
+	}
+	if len(namePartial) > 0 {
+		return namePartial, nil
+	}
+
+	return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("no project matches ref %q", ref)}
 }
 
 func (s *ProjectAppService) ReloadProjects() (*ProjectReloadResult, error) {

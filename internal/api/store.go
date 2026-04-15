@@ -39,6 +39,10 @@ type ProjectService interface {
 	SetProjectWorkspace(id, workspaceID string) (*orchestrator.Project, error)
 	DeleteProject(id string) error
 	ReloadProjects() (*ProjectReloadResult, error)
+	// ResolveProjectRef resolves a ref string to one or more matching projects.
+	// Priority: id exact match > name exact match > name substring match (case-insensitive).
+	// Returns 1 project on unambiguous match, multiple on ambiguous match, StatusError{404} on no match.
+	ResolveProjectRef(ref string) ([]*orchestrator.Project, error)
 }
 
 type TaskService interface {
