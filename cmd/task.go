@@ -107,7 +107,7 @@ func init() {
 	taskGetCmd.Flags().String("field", "", "Field name to retrieve (required)")
 	taskDeleteCmd.Flags().Bool("force", false, "Delete even if task is active")
 	taskImportCmd.Flags().StringP("file", "f", "", "JSONL file to import (default: stdin)")
-	taskImportCmd.Flags().String("project", "", "Override project_id for all tasks")
+	taskImportCmd.Flags().String("project", "", "Override project_id for all tasks (id or name, partial match supported)")
 	taskImportCmd.Flags().String("datasource", "", "Override datasource_id for all tasks")
 	taskUpdateCmd.Flags().String("title", "", "New title")
 	taskUpdateCmd.Flags().String("description", "", "New description")
@@ -413,7 +413,7 @@ func runTaskGet(cmd *cobra.Command, args []string) error {
 
 func runTaskImport(cmd *cobra.Command, args []string) error {
 	filePath, _ := cmd.Flags().GetString("file")
-	projectID, _ := cmd.Flags().GetString("project")
+	projectRef, _ := cmd.Flags().GetString("project")
 	datasourceID, _ := cmd.Flags().GetString("datasource")
 
 	var r io.Reader
@@ -433,9 +433,19 @@ func runTaskImport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	c := client.NewUnixClient(client.DefaultSocketPath())
+
+	projectID := projectRef
+	if projectRef != "" {
+		p, err := resolveProjectRef(c, os.Stdin, cmd.OutOrStdout(), projectRef)
+		if err != nil {
+			return fmt.Errorf("resolve project: %w", err)
+		}
+		projectID = p.ID
+	}
+
 	reqs = applyImportFlags(reqs, projectID, datasourceID)
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
 	var result api.ImportResult
 	if err := c.Do("POST", "/api/tasks/import", reqs, &result); err != nil {
 		return err

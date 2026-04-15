@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 
@@ -29,15 +30,15 @@ var workspaceShowCmd = &cobra.Command{
 }
 
 var workspaceAssignCmd = &cobra.Command{
-	Use:   "assign <project-id> <workspace-id>",
-	Short: "Assign a project to a workspace",
+	Use:   "assign <project-ref> <workspace-id>",
+	Short: "Assign a project to a workspace (project by id or name, partial match supported)",
 	Args:  cobra.ExactArgs(2),
 	RunE:  runWorkspaceAssign,
 }
 
 var workspaceClearCmd = &cobra.Command{
-	Use:   "clear <project-id>",
-	Short: "Clear a project's workspace assignment",
+	Use:   "clear <project-ref>",
+	Short: "Clear a project's workspace assignment (id or name, partial match supported)",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runWorkspaceClear,
 }
@@ -70,8 +71,13 @@ func runWorkspaceList(cmd *cobra.Command, args []string) error {
 func runWorkspaceAssign(cmd *cobra.Command, args []string) error {
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
+	p, err := resolveProjectRef(c, os.Stdin, cmd.OutOrStdout(), args[0])
+	if err != nil {
+		return fmt.Errorf("resolve project: %w", err)
+	}
+
 	var project orchestrator.Project
-	if err := c.Do("PUT", "/api/projects/"+args[0]+"/workspace", map[string]string{"workspace_id": args[1]}, &project); err != nil {
+	if err := c.Do("PUT", "/api/projects/"+p.ID+"/workspace", map[string]string{"workspace_id": args[1]}, &project); err != nil {
 		return fmt.Errorf("assign workspace: %w", err)
 	}
 
@@ -151,8 +157,13 @@ func runWorkspaceShow(cmd *cobra.Command, args []string) error {
 func runWorkspaceClear(cmd *cobra.Command, args []string) error {
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
+	p, err := resolveProjectRef(c, os.Stdin, cmd.OutOrStdout(), args[0])
+	if err != nil {
+		return fmt.Errorf("resolve project: %w", err)
+	}
+
 	var project orchestrator.Project
-	if err := c.Do("PUT", "/api/projects/"+args[0]+"/workspace", map[string]string{"workspace_id": ""}, &project); err != nil {
+	if err := c.Do("PUT", "/api/projects/"+p.ID+"/workspace", map[string]string{"workspace_id": ""}, &project); err != nil {
 		return fmt.Errorf("clear workspace: %w", err)
 	}
 

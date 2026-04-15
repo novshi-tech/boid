@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -31,8 +32,8 @@ var projectListCmd = &cobra.Command{
 }
 
 var projectRemoveCmd = &cobra.Command{
-	Use:   "remove <id>",
-	Short: "Remove a project",
+	Use:   "remove <project-ref>",
+	Short: "Remove a project (id or name, partial match supported)",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runProjectRemove,
 }
@@ -44,15 +45,15 @@ var projectReloadCmd = &cobra.Command{
 }
 
 var projectShowCmd = &cobra.Command{
-	Use:   "show <id>",
-	Short: "Show project details",
+	Use:   "show <project-ref>",
+	Short: "Show project details (id or name, partial match supported)",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runProjectShow,
 }
 
 var projectBehaviorsCmd = &cobra.Command{
-	Use:   "behaviors <id>",
-	Short: "List task behaviors defined in the project",
+	Use:   "behaviors <project-ref>",
+	Short: "List task behaviors defined in the project (id or name, partial match supported)",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runProjectBehaviors,
 }
@@ -112,13 +113,18 @@ func runProjectList(cmd *cobra.Command, args []string) error {
 func runProjectRemove(cmd *cobra.Command, args []string) error {
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
+	p, err := resolveProjectRef(c, os.Stdin, cmd.OutOrStdout(), args[0])
+	if err != nil {
+		return fmt.Errorf("resolve project: %w", err)
+	}
+
 	var result map[string]string
-	if err := c.Do("DELETE", "/api/projects/"+args[0], nil, &result); err != nil {
+	if err := c.Do("DELETE", "/api/projects/"+p.ID, nil, &result); err != nil {
 		return fmt.Errorf("remove project: %w", err)
 	}
 
-	return renderOutput(cmd, map[string]any{"id": args[0], "removed": true}, func() error {
-		fmt.Fprintf(cmd.OutOrStdout(), "project removed: %s\n", args[0])
+	return renderOutput(cmd, map[string]any{"id": p.ID, "removed": true}, func() error {
+		fmt.Fprintf(cmd.OutOrStdout(), "project removed: %s\n", p.ID)
 		return nil
 	})
 }
@@ -146,13 +152,13 @@ func runProjectReload(cmd *cobra.Command, args []string) error {
 func runProjectShow(cmd *cobra.Command, args []string) error {
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
-	var p projectspec.Project
-	if err := c.Do("GET", "/api/projects/"+args[0], nil, &p); err != nil {
+	p, err := resolveProjectRef(c, os.Stdin, cmd.OutOrStdout(), args[0])
+	if err != nil {
 		return fmt.Errorf("get project: %w", err)
 	}
 
-	return renderOutput(cmd, &p, func() error {
-		renderProjectDetail(&p)
+	return renderOutput(cmd, p, func() error {
+		renderProjectDetail(p)
 		return nil
 	})
 }
@@ -160,13 +166,13 @@ func runProjectShow(cmd *cobra.Command, args []string) error {
 func runProjectBehaviors(cmd *cobra.Command, args []string) error {
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
-	var p projectspec.Project
-	if err := c.Do("GET", "/api/projects/"+args[0], nil, &p); err != nil {
+	p, err := resolveProjectRef(c, os.Stdin, cmd.OutOrStdout(), args[0])
+	if err != nil {
 		return fmt.Errorf("get project: %w", err)
 	}
 
 	return renderOutput(cmd, p.Meta.TaskBehaviors, func() error {
-		renderProjectBehaviors(&p)
+		renderProjectBehaviors(p)
 		return nil
 	})
 }
