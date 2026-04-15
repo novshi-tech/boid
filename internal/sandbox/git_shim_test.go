@@ -36,6 +36,11 @@ func TestClassifyGitInvocation(t *testing.T) {
 			wantRemote: "origin",
 		},
 		{
+			name:     "local worktree list",
+			args:     []string{"worktree", "list"},
+			wantMode: gitInvocationLocal,
+		},
+		{
 			name:    "deny pull",
 			args:    []string{"pull", "origin", "main"},
 			wantErr: true,

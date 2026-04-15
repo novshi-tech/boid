@@ -45,6 +45,7 @@ var localGitSubcommands = map[string]struct{}{
 	"status":    {},
 	"switch":    {},
 	"tag":       {},
+	"worktree":  {},
 }
 
 var allowedGitGlobalOptions = map[string]struct{}{
