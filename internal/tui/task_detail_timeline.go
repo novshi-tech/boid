@@ -88,14 +88,19 @@ func jobDuration(j *api.Job) string {
 	return fmt.Sprintf("%dm%ds", m, s)
 }
 
-// buildTreeTimeline groups filtered events by the task status in which they
-// occurred. Only state-transition actions, completed/failed jobs, and findings
-// are included. hook_fired / exit_gate_fired / entry_gate_fired actions are
-// dropped because the associated job carries the same information (and more).
+// buildTreeTimeline groups filtered events by the task status visit in which
+// they occurred. Only state-transition actions and jobs are included.
+// hook_fired / exit_gate_fired / entry_gate_fired actions are dropped because
+// the associated job carries the same information (and more).
 //
-// Each group's EnteredAt is the time the task entered that status:
-//   - initial state: task.CreatedAt
-//   - subsequent states: the CreatedAt of the transition action that moved into it
+// Each visit to a status creates a new group, so repeated visits (e.g.
+// executing → aborted → pending → executing) produce distinct groups in
+// chronological order rather than collapsing all events for the same status
+// into one group.
+//
+// Each group's EnteredAt is the time the task entered that visit:
+//   - initial group: task.CreatedAt
+//   - subsequent groups: the CreatedAt of the transition action that moved into it
 func buildTreeTimeline(detail *api.TaskDetailView) []statusGroup {
 	if detail == nil {
 		return nil
@@ -129,72 +134,93 @@ func buildTreeTimeline(detail *api.TaskDetailView) []statusGroup {
 		return items[i].t.Before(items[j].t)
 	})
 
-	// Compute per-status entry times.
-	stateEntered := map[string]time.Time{}
-	stateHasEntry := map[string]bool{}
+	// Determine the initial status from the first transition action's FromStatus,
+	// falling back to the task's current status.
 	initialStatus := ""
 	for _, it := range items {
-		if it.action == nil {
-			continue
+		if it.action != nil {
+			initialStatus = string(it.action.FromStatus)
+			break
 		}
-		a := it.action
-		if initialStatus == "" {
-			initialStatus = string(a.FromStatus)
-		}
-		stateEntered[string(a.ToStatus)] = a.CreatedAt
-		stateHasEntry[string(a.ToStatus)] = !a.CreatedAt.IsZero()
 	}
 	if initialStatus == "" && detail.Task != nil {
 		initialStatus = string(detail.Task.Status)
 	}
-	if initialStatus != "" && detail.Task != nil && !detail.Task.CreatedAt.IsZero() {
-		stateEntered[initialStatus] = detail.Task.CreatedAt
-		stateHasEntry[initialStatus] = true
-	}
 
 	var groups []statusGroup
-	groupIdx := map[string]int{}
+	currentGroupIdx := -1
 
-	addEvent := func(status string, ev timelineEvent) {
-		if _, ok := groupIdx[status]; !ok {
-			groupIdx[status] = len(groups)
-			groups = append(groups, statusGroup{
-				Status:       status,
-				EnteredAt:    stateEntered[status],
-				HasEnteredAt: stateHasEntry[status],
-			})
+	// Create the initial status group (EnteredAt = task.CreatedAt).
+	if initialStatus != "" {
+		enteredAt := time.Time{}
+		hasEnteredAt := false
+		if detail.Task != nil && !detail.Task.CreatedAt.IsZero() {
+			enteredAt = detail.Task.CreatedAt
+			hasEnteredAt = true
 		}
-		idx := groupIdx[status]
-		groups[idx].Events = append(groups[idx].Events, ev)
+		groups = append(groups, statusGroup{
+			Status:       initialStatus,
+			EnteredAt:    enteredAt,
+			HasEnteredAt: hasEnteredAt,
+		})
+		currentGroupIdx = 0
 	}
-
-	currentStatus := initialStatus
 
 	for _, it := range items {
 		if it.action != nil {
 			a := it.action
-			groupStatus := string(a.FromStatus)
-			if groupStatus == "" {
-				groupStatus = currentStatus
+			fromStatus := string(a.FromStatus)
+
+			// If the current group's status doesn't match a.FromStatus, create a new
+			// group for fromStatus (handles missing intermediate transitions).
+			if currentGroupIdx < 0 || groups[currentGroupIdx].Status != fromStatus {
+				groups = append(groups, statusGroup{Status: fromStatus})
+				currentGroupIdx = len(groups) - 1
 			}
-			addEvent(groupStatus, timelineEvent{
+
+			// Append the action event to the current group.
+			groups[currentGroupIdx].Events = append(groups[currentGroupIdx].Events, timelineEvent{
 				Time:    a.CreatedAt,
 				Kind:    timelineKindAction,
 				Label:   buildActionTreeLabel(a),
 				HasTime: !a.CreatedAt.IsZero(),
 			})
-			if string(a.ToStatus) != "" {
-				currentStatus = string(a.ToStatus)
+
+			// Each transition creates a new group for the destination status.
+			if toStatus := string(a.ToStatus); toStatus != "" {
+				groups = append(groups, statusGroup{
+					Status:       toStatus,
+					EnteredAt:    a.CreatedAt,
+					HasEnteredAt: !a.CreatedAt.IsZero(),
+				})
+				currentGroupIdx = len(groups) - 1
 			}
 		} else {
 			j := it.job
-			addEvent(currentStatus, timelineEvent{
-				Time:    j.CreatedAt,
-				Kind:    timelineKindJob,
-				Label:   buildJobTimelineLabel(j),
-				Job:     j,
-				HasTime: !j.CreatedAt.IsZero(),
-			})
+			// If no group exists yet, create the initial one (safety guard).
+			if currentGroupIdx < 0 && initialStatus != "" {
+				enteredAt := time.Time{}
+				hasEnteredAt := false
+				if detail.Task != nil && !detail.Task.CreatedAt.IsZero() {
+					enteredAt = detail.Task.CreatedAt
+					hasEnteredAt = true
+				}
+				groups = append(groups, statusGroup{
+					Status:       initialStatus,
+					EnteredAt:    enteredAt,
+					HasEnteredAt: hasEnteredAt,
+				})
+				currentGroupIdx = 0
+			}
+			if currentGroupIdx >= 0 {
+				groups[currentGroupIdx].Events = append(groups[currentGroupIdx].Events, timelineEvent{
+					Time:    j.CreatedAt,
+					Kind:    timelineKindJob,
+					Label:   buildJobTimelineLabel(j),
+					Job:     j,
+					HasTime: !j.CreatedAt.IsZero(),
+				})
+			}
 		}
 	}
 
@@ -202,15 +228,21 @@ func buildTreeTimeline(detail *api.TaskDetailView) []statusGroup {
 	// sit under it yet (e.g. the task just entered the state).
 	if detail.Task != nil {
 		cur := string(detail.Task.Status)
-		if cur != "" {
-			if _, ok := groupIdx[cur]; !ok {
-				groupIdx[cur] = len(groups)
-				groups = append(groups, statusGroup{
-					Status:       cur,
-					EnteredAt:    stateEntered[cur],
-					HasEnteredAt: stateHasEntry[cur],
-				})
+		if cur != "" && (currentGroupIdx < 0 || groups[currentGroupIdx].Status != cur) {
+			// Find EnteredAt from the last transition into this status.
+			var enteredAt time.Time
+			var hasEnteredAt bool
+			for _, it := range items {
+				if it.action != nil && string(it.action.ToStatus) == cur {
+					enteredAt = it.action.CreatedAt
+					hasEnteredAt = !it.action.CreatedAt.IsZero()
+				}
 			}
+			groups = append(groups, statusGroup{
+				Status:       cur,
+				EnteredAt:    enteredAt,
+				HasEnteredAt: hasEnteredAt,
+			})
 		}
 	}
 

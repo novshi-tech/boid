@@ -492,6 +492,68 @@ func TestBuildTreeTimeline_RunningJobAtTail(t *testing.T) {
 	}
 }
 
+// TestBuildTreeTimeline_MultiVisit_ChronologicalGroups verifies that when a task
+// visits the same status multiple times, each visit creates a separate group in
+// chronological order.
+func TestBuildTreeTimeline_MultiVisit_ChronologicalGroups(t *testing.T) {
+	now := time.Now()
+	t1 := now.Add(-30 * time.Minute)
+	t2 := now.Add(-20 * time.Minute)
+	t3 := now.Add(-10 * time.Minute)
+
+	detail := &api.TaskDetailView{
+		Task: &orchestrator.Task{ID: "t", Status: orchestrator.TaskStatusExecuting},
+		Actions: []*orchestrator.Action{
+			// 1st cycle
+			{ID: "a1", Type: "start",
+				FromStatus: orchestrator.TaskStatusPending, ToStatus: orchestrator.TaskStatusExecuting,
+				CreatedAt: t1},
+			{ID: "a2", Type: "abort",
+				FromStatus: orchestrator.TaskStatusExecuting, ToStatus: orchestrator.TaskStatusAborted,
+				CreatedAt: t2},
+			// 2nd cycle (aborted→pending transition omitted — tests graceful handling)
+			{ID: "a3", Type: "start",
+				FromStatus: orchestrator.TaskStatusPending, ToStatus: orchestrator.TaskStatusExecuting,
+				CreatedAt: t3},
+		},
+		Jobs: []*api.Job{
+			{ID: "j1", Role: "main", Status: api.JobStatusFailed,
+				CreatedAt: t1.Add(30 * time.Second), UpdatedAt: t2},
+		},
+	}
+	groups := buildTreeTimeline(detail)
+
+	// Expect at least 5 groups: pending₁, executing₁, aborted₁, pending₂, executing₂
+	if len(groups) < 5 {
+		t.Fatalf("multi-visit: want >= 5 groups, got %d", len(groups))
+	}
+
+	// First group: pending₁
+	if groups[0].Status != "pending" {
+		t.Errorf("groups[0].Status: want %q, got %q", "pending", groups[0].Status)
+	}
+
+	// Second group: executing₁ must contain the job and the abort action.
+	if groups[1].Status != "executing" {
+		t.Errorf("groups[1].Status: want %q, got %q", "executing", groups[1].Status)
+	}
+	if len(groups[1].Events) < 2 {
+		t.Errorf("executing₁ group: want >= 2 events (job + abort action), got %d", len(groups[1].Events))
+	}
+
+	// A second "pending" group must appear after the first executing group.
+	foundPending2 := false
+	for _, g := range groups[2:] {
+		if g.Status == "pending" {
+			foundPending2 = true
+			break
+		}
+	}
+	if !foundPending2 {
+		t.Error("want a second 'pending' group after the first cycle, not found")
+	}
+}
+
 // TestBuildJobTimelineLabel_Running verifies the running job label format.
 func TestBuildJobTimelineLabel_Running(t *testing.T) {
 	j := &api.Job{
