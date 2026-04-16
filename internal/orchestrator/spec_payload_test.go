@@ -21,12 +21,6 @@ task_behaviors:
     traits:
       - instructions
       - artifact
-hooks:
-  - id: run-agent
-    on: executing
-    traits:
-      consumes:
-        - instructions
 host_commands:
   git:
     path: /usr/bin/git
@@ -39,28 +33,8 @@ env:
 	if err := yaml.Unmarshal([]byte(data), &meta); err != nil {
 		t.Fatalf("unmarshal yaml: %v", err)
 	}
-	if len(meta.Hooks) != 1 || meta.Hooks[0].Traits.Consumes[0] != projectspec.TraitInstructions {
-		t.Fatalf("unexpected traits.consumes: %v", meta.Hooks[0].Traits.Consumes)
-	}
-}
-
-func TestProjectMeta_YAMLWithGates(t *testing.T) {
-	data := `
-id: proj-1
-name: My Project
-gates:
-  - id: push-pr
-    on: executing
-    traits:
-      consumes:
-        - artifact
-`
-	var meta projectspec.ProjectMeta
-	if err := yaml.Unmarshal([]byte(data), &meta); err != nil {
-		t.Fatalf("unmarshal yaml: %v", err)
-	}
-	if len(meta.Gates) != 1 || meta.Gates[0].ID != "push-pr" {
-		t.Fatalf("unexpected gates: %+v", meta.Gates)
+	if meta.ID != "proj-1" || meta.Env["FOO"] != "bar" {
+		t.Fatalf("unexpected meta: %+v", meta)
 	}
 }
 
@@ -71,7 +45,6 @@ func TestProjectMeta_JSONRoundTrip(t *testing.T) {
 		TaskBehaviors: map[string]projectspec.TaskBehavior{
 			"dev": {Name: "development", Traits: []string{"instructions"}},
 		},
-		Hooks:        []projectspec.Hook{{ID: "hook-1", On: projectspec.OnValues{"executing"}, Traits: projectspec.HandlerTraits{Consumes: []projectspec.TraitType{projectspec.TraitInstructions}}}},
 		HostCommands: projectspec.HostCommands{"git": {Path: "/usr/bin/git"}},
 		Env:          map[string]string{"KEY": "val"},
 	}
@@ -84,8 +57,8 @@ func TestProjectMeta_JSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if decoded.Hooks[0].ID != "hook-1" {
-		t.Fatalf("unexpected decoded hook: %+v", decoded.Hooks[0])
+	if decoded.TaskBehaviors["dev"].Name != "development" {
+		t.Fatalf("unexpected decoded: %+v", decoded.TaskBehaviors["dev"])
 	}
 }
 

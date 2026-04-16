@@ -4,5 +4,3 @@ task_behaviors:
   beta:
     name: Beta
     transition: one-shot
-hooks: []
-gates: []

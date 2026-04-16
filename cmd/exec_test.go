@@ -97,16 +97,21 @@ func writeExecTestProject(t *testing.T, id, name string) string {
 
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
-	hooksDir := filepath.Join(boidDir, "hooks")
-	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
-		t.Fatalf("mkdir hooks: %v", err)
+	kitDir := filepath.Join(boidDir, "kits", "agent")
+	kitHooksDir := filepath.Join(kitDir, "hooks")
+	if err := os.MkdirAll(kitHooksDir, 0o755); err != nil {
+		t.Fatalf("mkdir kit hooks: %v", err)
 	}
 
-	projectYAML := "id: " + id + "\nname: " + name + "\ntask_behaviors:\n  impl:\n    name: implementation\nhooks:\n  - id: run-agent\n    on: executing\n"
+	projectYAML := "id: " + id + "\nname: " + name + "\ntask_behaviors:\n  impl:\n    name: implementation\n    kits:\n      - agent\n"
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
 		t.Fatalf("write project yaml: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(hooksDir, "run-agent.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+	kitYAML := "hooks:\n  - id: run-agent\n    on: executing\n"
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
+		t.Fatalf("write kit yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(kitHooksDir, "run-agent.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write hook: %v", err)
 	}
 
@@ -116,11 +121,24 @@ func writeExecTestProject(t *testing.T, id, name string) string {
 func writeExecTestProjectWithBoidBuiltin(t *testing.T, id, name string) string {
 	t.Helper()
 
-	dir := writeExecTestProject(t, id, name)
-	projectYAML := "id: " + id + "\nname: " + name + "\nbuiltin_commands:\n  - boid\n"
+	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
+	kitDir := filepath.Join(boidDir, "kits", "agent")
+	kitHooksDir := filepath.Join(kitDir, "hooks")
+	if err := os.MkdirAll(kitHooksDir, 0o755); err != nil {
+		t.Fatalf("mkdir kit hooks: %v", err)
+	}
+
+	projectYAML := "id: " + id + "\nname: " + name + "\ntask_behaviors:\n  impl:\n    name: implementation\n    kits:\n      - agent\n"
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
 		t.Fatalf("write project yaml: %v", err)
+	}
+	kitYAML := "builtin_commands:\n  - boid\nhooks:\n  - id: run-agent\n    on: executing\n"
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
+		t.Fatalf("write kit yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(kitHooksDir, "run-agent.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write hook: %v", err)
 	}
 	return dir
 }

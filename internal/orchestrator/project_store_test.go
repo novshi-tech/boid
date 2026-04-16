@@ -62,16 +62,14 @@ func TestProjectStore_Load(t *testing.T) {
 	yaml := `
 id: loaded-proj
 name: Loaded Project
-hooks:
-  - id: test-hook
-    on: executing
+task_behaviors:
+  dev:
+    name: dev
 `
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(hooksDir, "test-hook.sh"), []byte("#!/bin/sh"), 0o755); err != nil {
-		t.Fatalf("write hook: %v", err)
-	}
+	_ = hooksDir
 
 	s := orchestrator.NewProjectStore(nil)
 	meta, err := s.Load(dir)
@@ -97,7 +95,7 @@ func TestProjectStore_Load_WithProjectLocalOverlay(t *testing.T) {
 	if err := os.MkdirAll(boidDir, 0o755); err != nil {
 		t.Fatalf("mkdir boid dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: loaded-proj\nname: Loaded Project\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: loaded-proj\nname: Loaded Project\ntask_behaviors:\n  dev:\n    name: dev\n"), 0o644); err != nil {
 		t.Fatalf("write project yaml: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte("env:\n  LOCAL: yes\n"), 0o644); err != nil {
@@ -109,8 +107,8 @@ func TestProjectStore_Load_WithProjectLocalOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load with local overlay: %v", err)
 	}
-	if meta.Env["LOCAL"] != "yes" {
-		t.Fatalf("expected LOCAL=yes, got %+v", meta.Env)
+	if meta.TaskBehaviors["dev"].Env["LOCAL"] != "yes" {
+		t.Fatalf("expected behavior dev env LOCAL=yes, got %+v", meta.TaskBehaviors["dev"].Env)
 	}
 }
 

@@ -76,10 +76,13 @@ func (s stubTaskLookup) GetTask(id string) (*Task, error) {
 func TestDispatchPlannerAddsBoidAsBuiltinForHookAndGate(t *testing.T) {
 	meta := &ProjectMeta{
 		ID: "proj-1",
-		HostCommands: HostCommands{
-			"git": {Path: "/usr/bin/git"},
+		TaskBehaviors: map[string]TaskBehavior{
+			"dev": {
+				Name:            "dev",
+				BuiltinCommands: []string{"git"},
+				HostCommands:    HostCommands{"git": {Path: "/usr/bin/git"}},
+			},
 		},
-		BuiltinCommands: []string{"git"},
 	}
 	proj := &Project{ID: "proj-1", WorkDir: "/workspace/proj-1"}
 	task := &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting}
@@ -158,8 +161,13 @@ func TestPlanHook_CollectsKitAndProjectHookFiles(t *testing.T) {
 
 	meta := &ProjectMeta{
 		ID: "proj-1",
-		KitHooksDirs: []KitHooksInfo{
-			{HooksDir: kitHooksDir, Consumer: "claude-code"},
+		TaskBehaviors: map[string]TaskBehavior{
+			"dev": {
+				Name: "dev",
+				KitHooksDirs: []KitHooksInfo{
+					{HooksDir: kitHooksDir, Consumer: "claude-code"},
+				},
+			},
 		},
 	}
 	proj := &Project{ID: "proj-1", WorkDir: projectDir}
@@ -216,8 +224,13 @@ func TestDispatchPlannerPlanGateStagesKitGates(t *testing.T) {
 	}
 
 	meta := &ProjectMeta{
-		ID:           "proj-1",
-		KitGatesDirs: []KitGatesInfo{{GatesDir: kitGatesDir, GateIDs: []string{"gate-1"}}},
+		ID: "proj-1",
+		TaskBehaviors: map[string]TaskBehavior{
+			"dev": {
+				Name:         "dev",
+				KitGatesDirs: []KitGatesInfo{{GatesDir: kitGatesDir, GateIDs: []string{"gate-1"}}},
+			},
+		},
 	}
 	proj := &Project{ID: "proj-1", WorkDir: projectDir}
 	task := &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting}
@@ -813,8 +826,13 @@ func TestPlanHook_PayloadJSON_OptionalVerificationIncludedDuringRework(t *testin
 
 func TestPlanHook_EnvironmentYAML(t *testing.T) {
 	meta := &ProjectMeta{
-		ID:              "proj-1",
-		BuiltinCommands: []string{"git", "python3"},
+		ID: "proj-1",
+		TaskBehaviors: map[string]TaskBehavior{
+			"dev": {
+				Name:            "dev",
+				BuiltinCommands: []string{"git", "python3"},
+			},
+		},
 	}
 	proj := &Project{ID: "proj-1", WorkDir: t.TempDir(), WorkspaceID: "ws-1"}
 	peer := &Project{ID: "proj-2", WorkDir: "/workspace/peer", WorkspaceID: "ws-1"}

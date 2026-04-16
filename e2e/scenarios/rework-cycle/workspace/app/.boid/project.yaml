@@ -1,10 +1,8 @@
 id: rework-cycle
 name: Rework Cycle
-kits:
-  - github.com/novshi-tech/boid-kits/rework-cycle
 task_behaviors:
   feedback:
     name: Feedback
     transition: feedback-loop
-hooks: []
-gates: []
+    kits:
+      - github.com/novshi-tech/boid-kits/rework-cycle

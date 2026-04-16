@@ -68,13 +68,15 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	if len(projects) > 0 {
 		fmt.Println("\n=== Hook dependencies ===")
 		for _, p := range projects {
-			for _, h := range p.Meta.Hooks {
-				for _, req := range h.Requires {
-					if _, err := exec.LookPath(req); err != nil {
-						fmt.Printf("  MISSING: %s (project: %s, hook: %s)\n", req, p.ID, h.ID)
-						allOK = false
-					} else {
-						fmt.Printf("  OK: %s (project: %s, hook: %s)\n", req, p.ID, h.ID)
+			for _, b := range p.Meta.TaskBehaviors {
+				for _, h := range b.Hooks {
+					for _, req := range h.Requires {
+						if _, err := exec.LookPath(req); err != nil {
+							fmt.Printf("  MISSING: %s (project: %s, hook: %s)\n", req, p.ID, h.ID)
+							allOK = false
+						} else {
+							fmt.Printf("  OK: %s (project: %s, hook: %s)\n", req, p.ID, h.ID)
+						}
 					}
 				}
 			}

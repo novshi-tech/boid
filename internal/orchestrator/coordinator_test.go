@@ -104,6 +104,16 @@ func (m *mockExecutorWaiter) WaitForJob(ctx context.Context, jobID string) (orch
 	return c, nil
 }
 
+// metaWithBehavior builds a ProjectMeta that exposes hooks/gates via a single
+// "dev" behavior. Tests pair this with tasks whose Behavior is "dev".
+func metaWithBehavior(hooks []projectspec.Hook, gates []projectspec.Gate) *projectspec.ProjectMeta {
+	return &projectspec.ProjectMeta{
+		TaskBehaviors: map[string]projectspec.TaskBehavior{
+			"dev": {Name: "dev", Hooks: hooks, Gates: gates},
+		},
+	}
+}
+
 func simpleStateMachine() *orchestrator.StateMachine {
 	return &orchestrator.StateMachine{
 		Name: "test",
@@ -142,14 +152,13 @@ func TestCoordinator_DispatchAndAdvance_HooksSequential(t *testing.T) {
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Hooks: []projectspec.Hook{
-			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
-			{ID: "hook-b", On: orchestrator.OnValues{"executing"}},
-		},
-	}
+	meta := metaWithBehavior([]projectspec.Hook{
+		{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
+		{ID: "hook-b", On: orchestrator.OnValues{"executing"}},
+	}, nil)
 	sm := simpleStateMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -189,13 +198,12 @@ func TestCoordinator_DispatchAndAdvance_NoAdvanceWhenConditionNotMet(t *testing.
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Hooks: []projectspec.Hook{
-			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
-		},
-	}
+	meta := metaWithBehavior([]projectspec.Hook{
+		{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
+	}, nil)
 	sm := simpleStateMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -226,16 +234,13 @@ func TestCoordinator_DispatchAndAdvance_GatesExecuteAfterHooks(t *testing.T) {
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Hooks: []projectspec.Hook{
-			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
-		},
-		Gates: []projectspec.Gate{
-			{ID: "gate-push", On: orchestrator.OnValues{"executing"}},
-		},
-	}
+	meta := metaWithBehavior(
+		[]projectspec.Hook{{ID: "hook-a", On: orchestrator.OnValues{"executing"}}},
+		[]projectspec.Gate{{ID: "gate-push", On: orchestrator.OnValues{"executing"}}},
+	)
 	sm := simpleStateMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -276,14 +281,13 @@ func TestCoordinator_DispatchAndAdvance_ExclusiveTraitCollision(t *testing.T) {
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Hooks: []projectspec.Hook{
-			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
-			{ID: "hook-b", On: orchestrator.OnValues{"executing"}},
-		},
-	}
+	meta := metaWithBehavior([]projectspec.Hook{
+		{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
+		{ID: "hook-b", On: orchestrator.OnValues{"executing"}},
+	}, nil)
 	sm := simpleStateMachine()
 
 	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -310,14 +314,13 @@ func TestCoordinator_DispatchAndAdvance_SharedTraitNoCollision(t *testing.T) {
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Hooks: []projectspec.Hook{
-			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
-			{ID: "hook-b", On: orchestrator.OnValues{"executing"}},
-		},
-	}
+	meta := metaWithBehavior([]projectspec.Hook{
+		{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
+		{ID: "hook-b", On: orchestrator.OnValues{"executing"}},
+	}, nil)
 	sm := simpleStateMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -364,6 +367,7 @@ func TestCoordinator_DispatchAndAdvance_EmptyHooksAndGates(t *testing.T) {
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
 	meta := &projectspec.ProjectMeta{}
@@ -414,13 +418,12 @@ func TestCoordinator_DispatchAndAdvance_LockerAcquiredForNonReadonlyNonWorktree(
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Hooks: []projectspec.Hook{
-			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
-		},
-	}
+	meta := metaWithBehavior([]projectspec.Hook{
+		{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
+	}, nil)
 	sm := simpleStateMachine()
 
 	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -454,13 +457,12 @@ func TestCoordinator_DispatchAndAdvance_LockerSkippedForReadonly(t *testing.T) {
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusVerifying,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Hooks: []projectspec.Hook{
-			{ID: "hook-a", On: orchestrator.OnValues{"verifying"}},
-		},
-	}
+	meta := metaWithBehavior([]projectspec.Hook{
+		{ID: "hook-a", On: orchestrator.OnValues{"verifying"}},
+	}, nil)
 	sm := simpleStateMachine()
 
 	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -494,11 +496,9 @@ func TestCoordinator_DispatchAndAdvance_LockerSkippedForWorktree(t *testing.T) {
 		Worktree:  true,
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Hooks: []projectspec.Hook{
-			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
-		},
-	}
+	meta := metaWithBehavior([]projectspec.Hook{
+		{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
+	}, nil)
 	sm := simpleStateMachine()
 
 	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -532,11 +532,12 @@ func TestCoordinator_DispatchAndAdvance_GateExitZeroEmptyOutput_NoArtifactInject
 		Payload:   json.RawMessage(`{}`),
 	}
 	meta := &projectspec.ProjectMeta{
-		Gates: []projectspec.Gate{
-			{
-				ID:       "regular-gate",
-				On:       orchestrator.OnValues{"executing"},
-				Behavior: projectspec.BehaviorValues{"custom-behavior"},
+		TaskBehaviors: map[string]projectspec.TaskBehavior{
+			"custom-behavior": {
+				Name: "custom-behavior",
+				Gates: []projectspec.Gate{
+					{ID: "regular-gate", On: orchestrator.OnValues{"executing"}},
+				},
 			},
 		},
 	}
@@ -576,13 +577,12 @@ func TestCoordinator_DispatchAndAdvance_ExecutionComplete_InjectedOnExitZero(t *
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Hooks: []projectspec.Hook{
-			{ID: "main-hook", On: orchestrator.OnValues{"executing"}},
-		},
-	}
+	meta := metaWithBehavior([]projectspec.Hook{
+		{ID: "main-hook", On: orchestrator.OnValues{"executing"}},
+	}, nil)
 	sm := orchestrator.DefaultMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -615,13 +615,12 @@ func TestCoordinator_DispatchAndAdvance_ExecutionComplete_NotInjectedOnJobFailur
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Hooks: []projectspec.Hook{
-			{ID: "main-hook", On: orchestrator.OnValues{"executing"}},
-		},
-	}
+	meta := metaWithBehavior([]projectspec.Hook{
+		{ID: "main-hook", On: orchestrator.OnValues{"executing"}},
+	}, nil)
 	sm := orchestrator.DefaultMachine()
 
 	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -643,13 +642,12 @@ func TestCoordinator_DispatchEntryGates_NoMatch(t *testing.T) {
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Gates: []projectspec.Gate{
-			{ID: "exit-gate", On: projectspec.OnValues{"executing"}, Phase: projectspec.GatePhaseExit},
-		},
-	}
+	meta := metaWithBehavior(nil, []projectspec.Gate{
+		{ID: "exit-gate", On: projectspec.OnValues{"executing"}, Phase: projectspec.GatePhaseExit},
+	})
 
 	result, err := coord.DispatchEntryGates(context.Background(), task, meta)
 	if err != nil {
@@ -678,20 +676,19 @@ func TestCoordinator_DispatchEntryGates_SingleGate(t *testing.T) {
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Gates: []projectspec.Gate{
-			{
-				ID:    "fetch-jira",
-				On:    projectspec.OnValues{"executing"},
-				Phase: projectspec.GatePhaseEntry,
-				Traits: projectspec.HandlerTraits{
-					Produces: []projectspec.TraitType{projectspec.TraitArtifact},
-				},
+	meta := metaWithBehavior(nil, []projectspec.Gate{
+		{
+			ID:    "fetch-jira",
+			On:    projectspec.OnValues{"executing"},
+			Phase: projectspec.GatePhaseEntry,
+			Traits: projectspec.HandlerTraits{
+				Produces: []projectspec.TraitType{projectspec.TraitArtifact},
 			},
 		},
-	}
+	})
 
 	result, err := coord.DispatchEntryGates(context.Background(), task, meta)
 	if err != nil {
@@ -725,20 +722,19 @@ func TestCoordinator_DispatchEntryGates_EmptyOutput(t *testing.T) {
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusDone,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{"artifact":"existing"}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Gates: []projectspec.Gate{
-			{
-				ID:    "noop-gate",
-				On:    projectspec.OnValues{"done"},
-				Phase: projectspec.GatePhaseEntry,
-				Traits: projectspec.HandlerTraits{
-					Produces: []projectspec.TraitType{projectspec.TraitArtifact},
-				},
+	meta := metaWithBehavior(nil, []projectspec.Gate{
+		{
+			ID:    "noop-gate",
+			On:    projectspec.OnValues{"done"},
+			Phase: projectspec.GatePhaseEntry,
+			Traits: projectspec.HandlerTraits{
+				Produces: []projectspec.TraitType{projectspec.TraitArtifact},
 			},
 		},
-	}
+	})
 
 	result, err := coord.DispatchEntryGates(context.Background(), task, meta)
 	if err != nil {
@@ -766,16 +762,15 @@ func TestCoordinator_DispatchEntryGates_ExclusiveCollision(t *testing.T) {
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Gates: []projectspec.Gate{
-			{ID: "gate-a", On: projectspec.OnValues{"executing"}, Phase: projectspec.GatePhaseEntry,
-				Traits: projectspec.HandlerTraits{Produces: []projectspec.TraitType{projectspec.TraitArtifact}}},
-			{ID: "gate-b", On: projectspec.OnValues{"executing"}, Phase: projectspec.GatePhaseEntry,
-				Traits: projectspec.HandlerTraits{Produces: []projectspec.TraitType{projectspec.TraitArtifact}}},
-		},
-	}
+	meta := metaWithBehavior(nil, []projectspec.Gate{
+		{ID: "gate-a", On: projectspec.OnValues{"executing"}, Phase: projectspec.GatePhaseEntry,
+			Traits: projectspec.HandlerTraits{Produces: []projectspec.TraitType{projectspec.TraitArtifact}}},
+		{ID: "gate-b", On: projectspec.OnValues{"executing"}, Phase: projectspec.GatePhaseEntry,
+			Traits: projectspec.HandlerTraits{Produces: []projectspec.TraitType{projectspec.TraitArtifact}}},
+	})
 
 	_, err := coord.DispatchEntryGates(context.Background(), task, meta)
 	if err == nil {
@@ -798,14 +793,13 @@ func TestCoordinator_DispatchAndAdvance_IgnoresEntryGates(t *testing.T) {
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Gates: []projectspec.Gate{
-			{ID: "entry-gate", On: projectspec.OnValues{"executing"}, Phase: projectspec.GatePhaseEntry,
-				Traits: projectspec.HandlerTraits{Produces: []projectspec.TraitType{projectspec.TraitArtifact}}},
-		},
-	}
+	meta := metaWithBehavior(nil, []projectspec.Gate{
+		{ID: "entry-gate", On: projectspec.OnValues{"executing"}, Phase: projectspec.GatePhaseEntry,
+			Traits: projectspec.HandlerTraits{Produces: []projectspec.TraitType{projectspec.TraitArtifact}}},
+	})
 	sm := simpleStateMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -837,13 +831,12 @@ func TestCoordinator_DispatchAndAdvance_NilLockerOK(t *testing.T) {
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Hooks: []projectspec.Hook{
-			{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
-		},
-	}
+	meta := metaWithBehavior([]projectspec.Hook{
+		{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
+	}, nil)
 	sm := simpleStateMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -870,13 +863,12 @@ func TestCoordinator_DispatchAndAdvance_FiredEvents_HookKitID(t *testing.T) {
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Hooks: []projectspec.Hook{
-			{ID: "go-dev/pr-verify", On: orchestrator.OnValues{"executing"}, Kit: "go-dev"},
-		},
-	}
+	meta := metaWithBehavior([]projectspec.Hook{
+		{ID: "go-dev/pr-verify", On: orchestrator.OnValues{"executing"}, Kit: "go-dev"},
+	}, nil)
 	sm := simpleStateMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -921,13 +913,12 @@ func TestCoordinator_DispatchAndAdvance_FiredEvents_ExitGateKitID(t *testing.T) 
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Gates: []projectspec.Gate{
-			{ID: "go-dev/auto-merge", On: orchestrator.OnValues{"executing"}, Phase: projectspec.GatePhaseExit, Kit: "go-dev"},
-		},
-	}
+	meta := metaWithBehavior(nil, []projectspec.Gate{
+		{ID: "go-dev/auto-merge", On: orchestrator.OnValues{"executing"}, Phase: projectspec.GatePhaseExit, Kit: "go-dev"},
+	})
 	sm := simpleStateMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -966,13 +957,12 @@ func TestCoordinator_DispatchEntryGates_FiredEvents_EntryGateKitID(t *testing.T)
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
-	meta := &projectspec.ProjectMeta{
-		Gates: []projectspec.Gate{
-			{ID: "go-dev/fetch-jira", On: orchestrator.OnValues{"executing"}, Phase: projectspec.GatePhaseEntry, Kit: "go-dev"},
-		},
-	}
+	meta := metaWithBehavior(nil, []projectspec.Gate{
+		{ID: "go-dev/fetch-jira", On: orchestrator.OnValues{"executing"}, Phase: projectspec.GatePhaseEntry, Kit: "go-dev"},
+	})
 
 	entryResult, err := coord.DispatchEntryGates(context.Background(), task, meta)
 	if err != nil {

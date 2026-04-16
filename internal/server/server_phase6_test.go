@@ -182,9 +182,10 @@ func writeSmokeProject(t *testing.T) string {
 
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
-	hooksDir := filepath.Join(boidDir, "hooks")
-	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
-		t.Fatalf("mkdir hooks: %v", err)
+	kitDir := filepath.Join(boidDir, "kits", "smoke")
+	kitHooksDir := filepath.Join(kitDir, "hooks")
+	if err := os.MkdirAll(kitHooksDir, 0o755); err != nil {
+		t.Fatalf("mkdir kit hooks: %v", err)
 	}
 
 	projectYAML := `id: smoke-proj
@@ -192,14 +193,21 @@ name: Smoke Project
 task_behaviors:
   impl:
     name: implementation
-hooks:
-  - id: build-artifact
-    on: executing
+    kits:
+      - smoke
 `
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
 		t.Fatalf("write project yaml: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(hooksDir, "build-artifact.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+
+	kitYAML := `hooks:
+  - id: build-artifact
+    on: executing
+`
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
+		t.Fatalf("write kit yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(kitHooksDir, "build-artifact.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write hook: %v", err)
 	}
 

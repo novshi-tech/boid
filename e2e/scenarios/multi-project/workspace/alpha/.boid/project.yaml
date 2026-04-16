@@ -4,5 +4,3 @@ task_behaviors:
   alpha:
     name: Alpha
     transition: one-shot
-hooks: []
-gates: []

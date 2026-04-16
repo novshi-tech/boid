@@ -861,8 +861,10 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	var matchedHooks []string
 	if s.Coordinator != nil {
 		if coord, ok := s.Coordinator.(*orchestrator.Coordinator); ok && coord.Evaluator != nil {
-			for _, hook := range coord.Evaluator.Evaluate(newTask, meta.Hooks) {
-				matchedHooks = append(matchedHooks, hook.ID)
+			if behavior, found := meta.TaskBehaviors[newTask.Behavior]; found {
+				for _, hook := range coord.Evaluator.Evaluate(newTask, behavior.Hooks) {
+					matchedHooks = append(matchedHooks, hook.ID)
+				}
 			}
 		}
 	}

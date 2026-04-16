@@ -28,8 +28,6 @@ task_behaviors:
   smoke-v2:
     name: Smoke V2
     transition: one-shot
-hooks: []
-gates: []
 YAML
 
 e2e_log "reloading projects"

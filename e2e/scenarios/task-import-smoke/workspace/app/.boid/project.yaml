@@ -4,5 +4,3 @@ task_behaviors:
   smoke:
     name: Smoke
     transition: one-shot
-hooks: []
-gates: []

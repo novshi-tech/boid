@@ -118,8 +118,10 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 		return nil, err
 	}
 
+	behavior, _ := lookupBehavior(meta, task)
+
 	projectHooksDir := filepath.Join(proj.WorkDir, ".boid", "hooks")
-	hookFiles := collectHookFiles(projectHooksDir, meta.KitHooksDirs)
+	hookFiles := collectHookFiles(projectHooksDir, behavior.KitHooksDirs)
 
 	workspaceDirs, err := p.collectWorkspaceDirs(proj.WorkspaceID, event.ProjectID)
 	if err != nil {
@@ -151,7 +153,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 
 	readonly := IsReadonly(task)
 	taskYAML := buildTaskYAML(task)
-	environmentYAML := buildEnvironmentYAML(readonly, worktreeDir != "", p.proxyPort() > 0, workspaceDirs, meta.BuiltinCommands)
+	environmentYAML := buildEnvironmentYAML(readonly, worktreeDir != "", p.proxyPort() > 0, workspaceDirs, behavior.BuiltinCommands)
 
 	homeDir, _ := os.UserHomeDir()
 	return &DispatchRequest{
@@ -166,10 +168,10 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 		HookScript:         hookFilename,
 		BoidBinary:         p.BoidBinary,
 		ServerSocket:       p.ServerSocket,
-		Env:                meta.Env,
-		BuiltinPolicies:    DefaultBuiltinPolicies(RoleHook, mergeBuiltinCommands(meta.BuiltinCommands, []string{"boid"})),
+		Env:                behavior.Env,
+		BuiltinPolicies:    DefaultBuiltinPolicies(RoleHook, mergeBuiltinCommands(behavior.BuiltinCommands, []string{"boid"})),
 		HostCommands:       nil,
-		AdditionalBindings: meta.AdditionalBindings,
+		AdditionalBindings: behavior.AdditionalBindings,
 		SecretNamespace:    meta.SecretNamespace,
 		WorkspaceDirs:      workspaceDirs,
 		ProxyPort:          p.proxyPort(),
@@ -207,11 +209,13 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 		return nil, err
 	}
 
+	behavior, _ := lookupBehavior(meta, task)
+
 	projectGatesDir := filepath.Join(proj.WorkDir, ".boid", "gates")
 	gatesDir := filepath.Dir(event.Gate.ScriptPath)
 	var stagingDir string
-	if len(meta.KitGatesDirs) > 0 {
-		staged, _, err := StageGates(projectGatesDir, meta.KitGatesDirs, event.TaskID)
+	if len(behavior.KitGatesDirs) > 0 {
+		staged, _, err := StageGates(projectGatesDir, behavior.KitGatesDirs, event.TaskID)
 		if err != nil {
 			return nil, fmt.Errorf("stage gates: %w", err)
 		}
@@ -232,7 +236,7 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 		return nil, fmt.Errorf("marshal task: %w", err)
 	}
 
-	hostCommands := meta.HostCommands.ToCommandDefs()
+	hostCommands := behavior.HostCommands.ToCommandDefs()
 
 	return &DispatchRequest{
 		TaskID:          event.TaskID,
@@ -245,8 +249,8 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 		HookScript:      gateFilename,
 		BoidBinary:      p.BoidBinary,
 		ServerSocket:    p.ServerSocket,
-		Env:             meta.Env,
-		BuiltinPolicies: DefaultBuiltinPolicies(RoleGate, mergeBuiltinCommands(meta.BuiltinCommands, []string{"boid"})),
+		Env:             behavior.Env,
+		BuiltinPolicies: DefaultBuiltinPolicies(RoleGate, mergeBuiltinCommands(behavior.BuiltinCommands, []string{"boid"})),
 		HostCommands:    hostCommands,
 		SecretNamespace: meta.SecretNamespace,
 		WorkspaceDirs:   workspaceDirs,

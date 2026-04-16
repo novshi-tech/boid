@@ -30,13 +30,15 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	if _, ok := raw["workspace_id"]; ok {
 		return nil, fmt.Errorf("project.yaml: workspace_id is no longer supported; assign workspace via boid workspace assign <project-id> <workspace-id>")
 	}
+	for _, field := range []string{"hooks", "gates", "kits", "builtin_commands"} {
+		if _, ok := raw[field]; ok {
+			return nil, fmt.Errorf("project.yaml: top-level %q is no longer supported; move it into task_behaviors.<name>.kits (for kits) or define inside a local kit under .boid/kits/", field)
+		}
+	}
 
 	var meta ProjectMeta
 	if err := yaml.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("parse project.yaml: %w", err)
-	}
-	if err := validateBuiltinCommands("project.yaml", meta.BuiltinCommands, meta.HostCommands); err != nil {
-		return nil, err
 	}
 	if err := resolveProjectHostCommandPaths(dir, meta.HostCommands); err != nil {
 		return nil, err
@@ -47,32 +49,6 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	}
 	if meta.Name == "" {
 		return nil, fmt.Errorf("project.yaml: name is required")
-	}
-
-	hooksDir := filepath.Join(dir, ".boid", "hooks")
-	for i := range meta.Hooks {
-		h := &meta.Hooks[i]
-		if len(h.On) == 0 || !h.On.AllValid(ValidHookOnValues) {
-			return nil, fmt.Errorf("hook %q: invalid on value %v", h.ID, []string(h.On))
-		}
-		scriptPath, err := ResolveHookScript(hooksDir, h.ID)
-		if err != nil {
-			return nil, fmt.Errorf("hook %q: %w", h.ID, err)
-		}
-		h.ScriptPath = scriptPath
-	}
-
-	gatesDir := filepath.Join(dir, ".boid", "gates")
-	for i := range meta.Gates {
-		g := &meta.Gates[i]
-		if len(g.On) == 0 || !g.On.AllValid(ValidGateOnValues) {
-			return nil, fmt.Errorf("gate %q: invalid on value %v", g.ID, []string(g.On))
-		}
-		scriptPath, err := ResolveGateScript(gatesDir, g.ID)
-		if err != nil {
-			return nil, fmt.Errorf("gate %q: %w", g.ID, err)
-		}
-		g.ScriptPath = scriptPath
 	}
 
 	return &meta, nil
@@ -140,6 +116,10 @@ func ResolveKitConsumer(ref KitRef) string {
 	return parts[len(parts)-1]
 }
 
+// ReadProjectMetaWithKits reads project.yaml and project.local.yaml, resolves
+// kits referenced by each task behavior, and merges kit data into each behavior.
+// Returns a ProjectMeta whose TaskBehaviors have their resolved Hooks/Gates/etc.
+// populated and ready for dispatch.
 func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, error) {
 	meta, err := ReadProjectMeta(dir)
 	if err != nil {
@@ -151,57 +131,94 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		return nil, err
 	}
 
-	kitsToLoad := meta.Kits
-	if local != nil {
-		kitsToLoad, err = EffectiveKitRefs(meta.Kits, local.Kits)
-		if err != nil {
+	meta = cloneProjectMeta(meta)
+
+	// Collect unique kits across all behaviors, preserving first-seen order.
+	var orderedRefs []KitRef
+	kitMetaByRef := make(map[string]*KitMeta)
+	consumerByRef := make(map[string]string)
+	for _, behavior := range meta.TaskBehaviors {
+		for _, kitRef := range behavior.Kits {
+			if _, loaded := kitMetaByRef[kitRef.Ref]; loaded {
+				continue
+			}
+			kitDir, err := resolveKitRef(kitRef.Ref, dir, resolver)
+			if err != nil {
+				return nil, fmt.Errorf("kit %q: %w", kitRef.Ref, err)
+			}
+			kitMeta, err := ReadKitMeta(kitDir)
+			if err != nil {
+				return nil, fmt.Errorf("kit %q: %w", kitRef.Ref, err)
+			}
+			slog.Info("resolved kit", "ref", kitRef.Ref, "hooks", len(kitMeta.Hooks))
+			kitMetaByRef[kitRef.Ref] = kitMeta
+			consumerByRef[kitRef.Ref] = ResolveKitConsumer(kitRef)
+			orderedRefs = append(orderedRefs, kitRef)
+		}
+	}
+
+	// Kit-provided task_behaviors act as defaults; project behaviors take precedence.
+	if meta.TaskBehaviors == nil {
+		meta.TaskBehaviors = make(map[string]TaskBehavior)
+	}
+	for _, kitRef := range orderedRefs {
+		kitMeta := kitMetaByRef[kitRef.Ref]
+		for k, v := range kitMeta.TaskBehaviors {
+			if _, exists := meta.TaskBehaviors[k]; !exists {
+				meta.TaskBehaviors[k] = v
+			}
+		}
+	}
+
+	// For each behavior, resolve its kits and merge data into the behavior.
+	for name, behavior := range meta.TaskBehaviors {
+		var kits []*KitMeta
+		var consumers []string
+		seen := make(map[string]bool)
+		for _, kitRef := range behavior.Kits {
+			if seen[kitRef.Ref] {
+				continue
+			}
+			seen[kitRef.Ref] = true
+			km, ok := kitMetaByRef[kitRef.Ref]
+			if !ok {
+				continue
+			}
+			consumer := ResolveKitConsumer(kitRef)
+			// Within this behavior, consumer names must be unique because hook
+			// IDs are prefixed with the consumer name.
+			for i, c := range consumers {
+				if c == consumer {
+					return nil, fmt.Errorf("behavior %q: kit consumer %q is ambiguous: both %q and %q resolve to the same name; use 'as:' to disambiguate", name, consumer, behavior.Kits[i].Ref, kitRef.Ref)
+				}
+			}
+			kits = append(kits, km)
+			consumers = append(consumers, consumer)
+		}
+		if err := MergeKitMetaIntoBehavior(&behavior, kits, consumers); err != nil {
+			return nil, fmt.Errorf("behavior %q: %w", name, err)
+		}
+		// Apply project.yaml-level overlay (env / host_commands / bindings).
+		behavior.Env = mergeStringMaps(behavior.Env, meta.Env)
+		behavior.HostCommands = mergeHostCommands(behavior.HostCommands, meta.HostCommands)
+		behavior.AdditionalBindings = mergeBindMounts(behavior.AdditionalBindings, meta.AdditionalBindings)
+		// Apply project.local.yaml overlay on top.
+		if local != nil {
+			behavior.Env = mergeStringMaps(behavior.Env, local.Env)
+			behavior.HostCommands = mergeHostCommands(behavior.HostCommands, local.HostCommands)
+			behavior.AdditionalBindings = mergeBindMounts(behavior.AdditionalBindings, local.AdditionalBindings)
+		}
+		if err := validateBuiltinCommands(fmt.Sprintf("behavior %q", name), behavior.BuiltinCommands, behavior.HostCommands); err != nil {
 			return nil, err
 		}
-		meta = cloneProjectMeta(meta)
-		meta.Kits = kitsToLoad
+		meta.TaskBehaviors[name] = behavior
 	}
 
-	// Resolve consumer names and validate uniqueness.
-	consumerNames := make([]string, 0, len(kitsToLoad))
-	seenConsumers := make(map[string]string) // consumer name → kit ref
-	for _, kitRef := range kitsToLoad {
-		consumer := ResolveKitConsumer(kitRef)
-		if prev, ok := seenConsumers[consumer]; ok {
-			return nil, fmt.Errorf("kit consumer %q is ambiguous: both %q and %q resolve to the same name; use 'as:' to disambiguate", consumer, prev, kitRef.Ref)
-		}
-		seenConsumers[consumer] = kitRef.Ref
-		consumerNames = append(consumerNames, consumer)
+	if local != nil && local.SecretNamespace != "" {
+		meta.SecretNamespace = local.SecretNamespace
 	}
 
-	var kits []*KitMeta
-	for _, kitRef := range kitsToLoad {
-		kitDir, err := resolveKitRef(kitRef.Ref, dir, resolver)
-		if err != nil {
-			return nil, fmt.Errorf("kit %q: %w", kitRef.Ref, err)
-		}
-		kitMeta, err := ReadKitMeta(kitDir)
-		if err != nil {
-			return nil, fmt.Errorf("kit %q: %w", kitRef.Ref, err)
-		}
-		slog.Info("resolved kit", "ref", kitRef.Ref, "hooks", len(kitMeta.Hooks))
-		kits = append(kits, kitMeta)
-	}
-
-	merged, err := MergeKitMeta(meta, kits, consumerNames)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateBuiltinCommands("merged project meta", merged.BuiltinCommands, merged.HostCommands); err != nil {
-		return nil, err
-	}
-	if local == nil {
-		return merged, nil
-	}
-	applied := ApplyProjectLocalMeta(merged, local)
-	if err := validateBuiltinCommands("effective project meta", applied.BuiltinCommands, applied.HostCommands); err != nil {
-		return nil, err
-	}
-	return applied, nil
+	return meta, nil
 }
 
 func ReadKitMeta(dir string) (*KitMeta, error) {
@@ -305,42 +322,37 @@ func ReadProjectLocalMeta(dir string) (*ProjectLocalMeta, error) {
 	return &meta, nil
 }
 
-func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) (*ProjectMeta, error) {
+// MergeKitMetaIntoBehavior merges kit-provided hooks, gates, env, bindings,
+// builtin_commands, and host_commands into the given TaskBehavior. Kit hook and
+// gate IDs are prefixed with the consumer name. The behavior is modified in place.
+func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitConsumers []string) error {
 	if len(kits) == 0 {
-		return base, nil
+		return nil
 	}
 
-	result := *base
-
+	// Env: kits are lower priority than any existing behavior.Env.
 	mergedEnv := make(map[string]string)
-	for _, meta := range kits {
-		for k, v := range meta.Env {
+	for _, kit := range kits {
+		for k, v := range kit.Env {
 			mergedEnv[k] = v
 		}
 	}
-	for k, v := range base.Env {
+	for k, v := range behavior.Env {
 		mergedEnv[k] = v
 	}
-	result.Env = mergedEnv
-
-	mergedBehaviors := make(map[string]TaskBehavior)
-	for _, meta := range kits {
-		for k, v := range meta.TaskBehaviors {
-			mergedBehaviors[k] = v
-		}
+	if len(mergedEnv) > 0 {
+		behavior.Env = mergedEnv
 	}
-	for k, v := range base.TaskBehaviors {
-		mergedBehaviors[k] = v
-	}
-	result.TaskBehaviors = mergedBehaviors
 
+	// Hooks: prefix IDs with consumer, tag with Kit name, inherit Consumer.
 	var allHooks []Hook
-	for i, meta := range kits {
+	allHooks = append(allHooks, behavior.Hooks...)
+	for i, kit := range kits {
 		consumer := ""
 		if i < len(kitConsumers) {
 			consumer = kitConsumers[i]
 		}
-		for _, h := range meta.Hooks {
+		for _, h := range kit.Hooks {
 			h.Kit = consumer
 			if consumer != "" {
 				h.ID = consumer + "/" + h.ID
@@ -351,16 +363,17 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) (*P
 			allHooks = append(allHooks, h)
 		}
 	}
-	allHooks = append(allHooks, base.Hooks...)
-	result.Hooks = allHooks
+	behavior.Hooks = allHooks
 
+	// Gates: prefix IDs with consumer.
 	var allGates []Gate
-	for i, meta := range kits {
+	allGates = append(allGates, behavior.Gates...)
+	for i, kit := range kits {
 		consumer := ""
 		if i < len(kitConsumers) {
 			consumer = kitConsumers[i]
 		}
-		for _, g := range meta.Gates {
+		for _, g := range kit.Gates {
 			g.Kit = consumer
 			if consumer != "" {
 				g.ID = consumer + "/" + g.ID
@@ -368,129 +381,70 @@ func MergeKitMeta(base *ProjectMeta, kits []*KitMeta, kitConsumers []string) (*P
 			allGates = append(allGates, g)
 		}
 	}
-	allGates = append(allGates, base.Gates...)
-	result.Gates = allGates
+	behavior.Gates = allGates
 
+	// HostCommands: reject duplicates across kits.
 	mergedCmds := make(HostCommands)
+	for k, v := range behavior.HostCommands {
+		mergedCmds[k] = v
+	}
 	kitCmdSource := make(map[string]string)
-	for i, meta := range kits {
+	for i, kit := range kits {
 		consumer := ""
 		if i < len(kitConsumers) {
 			consumer = kitConsumers[i]
 		}
-		for k, v := range meta.HostCommands {
+		for k, v := range kit.HostCommands {
 			if existingConsumer, ok := kitCmdSource[k]; ok {
-				return nil, fmt.Errorf("host_commands: command %q is defined in both kit %q and kit %q; remove the duplicate from one kit or override it in project.local.yaml", k, existingConsumer, consumer)
+				return fmt.Errorf("host_commands: command %q is defined in both kit %q and kit %q; remove the duplicate from one kit or override it in project.local.yaml", k, existingConsumer, consumer)
 			}
 			kitCmdSource[k] = consumer
-			mergedCmds[k] = v
+			if _, preset := mergedCmds[k]; !preset {
+				mergedCmds[k] = v
+			}
 		}
 	}
-	for k, v := range base.HostCommands {
-		mergedCmds[k] = v
-	}
 	if len(mergedCmds) > 0 {
-		result.HostCommands = mergedCmds
+		behavior.HostCommands = mergedCmds
 	}
-	result.BuiltinCommands = mergeBuiltinCommands(result.BuiltinCommands, kitBuiltinCommandLists(kits)...)
 
-	result.AdditionalBindings = unionBindMounts(kits, base.AdditionalBindings)
+	behavior.BuiltinCommands = mergeBuiltinCommands(behavior.BuiltinCommands, kitBuiltinCommandLists(kits)...)
+	behavior.AdditionalBindings = unionBindMounts(kits, behavior.AdditionalBindings)
 
-	for i, meta := range kits {
-		if meta.HooksDir == "" || len(meta.Hooks) == 0 {
+	for i, kit := range kits {
+		if kit.HooksDir == "" || len(kit.Hooks) == 0 {
 			continue
 		}
 		c := ""
 		if i < len(kitConsumers) {
 			c = kitConsumers[i]
 		}
-		ids := make([]string, len(meta.Hooks))
-		for j, h := range meta.Hooks {
+		ids := make([]string, len(kit.Hooks))
+		for j, h := range kit.Hooks {
 			ids[j] = h.ID
 		}
-		result.KitHooksDirs = append(result.KitHooksDirs, KitHooksInfo{
-			HooksDir: meta.HooksDir,
+		behavior.KitHooksDirs = append(behavior.KitHooksDirs, KitHooksInfo{
+			HooksDir: kit.HooksDir,
 			HookIDs:  ids,
 			Consumer: c,
 		})
 	}
 
-	for _, meta := range kits {
-		if meta.GatesDir == "" || len(meta.Gates) == 0 {
+	for _, kit := range kits {
+		if kit.GatesDir == "" || len(kit.Gates) == 0 {
 			continue
 		}
-		ids := make([]string, len(meta.Gates))
-		for i, g := range meta.Gates {
+		ids := make([]string, len(kit.Gates))
+		for i, g := range kit.Gates {
 			ids[i] = g.ID
 		}
-		result.KitGatesDirs = append(result.KitGatesDirs, KitGatesInfo{
-			GatesDir: meta.GatesDir,
+		behavior.KitGatesDirs = append(behavior.KitGatesDirs, KitGatesInfo{
+			GatesDir: kit.GatesDir,
 			GateIDs:  ids,
 		})
 	}
 
-	return &result, nil
-}
-
-func EffectiveKitRefs(base []KitRef, local ProjectLocalKits) ([]KitRef, error) {
-	addSeen := make(map[string]struct{}, len(local.Add))
-	for _, ref := range local.Add {
-		if _, ok := addSeen[ref]; ok {
-			return nil, fmt.Errorf("%s: kits.add contains duplicate ref %q", projectLocalFilename, ref)
-		}
-		addSeen[ref] = struct{}{}
-	}
-
-	removeSeen := make(map[string]struct{}, len(local.Remove))
-	for _, ref := range local.Remove {
-		if _, ok := removeSeen[ref]; ok {
-			return nil, fmt.Errorf("%s: kits.remove contains duplicate ref %q", projectLocalFilename, ref)
-		}
-		if _, ok := addSeen[ref]; ok {
-			return nil, fmt.Errorf("%s: kit %q cannot be present in both kits.add and kits.remove", projectLocalFilename, ref)
-		}
-		removeSeen[ref] = struct{}{}
-	}
-
-	result := make([]KitRef, 0, len(base)+len(local.Add))
-	seen := make(map[string]struct{}, len(base)+len(local.Add))
-	for _, kitRef := range base {
-		if _, removed := removeSeen[kitRef.Ref]; removed {
-			continue
-		}
-		if _, ok := seen[kitRef.Ref]; ok {
-			continue
-		}
-		seen[kitRef.Ref] = struct{}{}
-		result = append(result, kitRef)
-	}
-	for _, ref := range local.Add {
-		if _, removed := removeSeen[ref]; removed {
-			continue
-		}
-		if _, ok := seen[ref]; ok {
-			continue
-		}
-		seen[ref] = struct{}{}
-		result = append(result, KitRef{Ref: ref})
-	}
-	return result, nil
-}
-
-func ApplyProjectLocalMeta(base *ProjectMeta, local *ProjectLocalMeta) *ProjectMeta {
-	if local == nil {
-		return base
-	}
-
-	result := cloneProjectMeta(base)
-	result.Env = mergeStringMaps(result.Env, local.Env)
-	result.BuiltinCommands = mergeBuiltinCommands(result.BuiltinCommands, local.BuiltinCommands)
-	result.HostCommands = mergeHostCommands(result.HostCommands, local.HostCommands)
-	result.AdditionalBindings = mergeBindMounts(result.AdditionalBindings, local.AdditionalBindings)
-	if local.SecretNamespace != "" {
-		result.SecretNamespace = local.SecretNamespace
-	}
-	return result
+	return nil
 }
 
 func unionBindMounts(kits []*KitMeta, base []BindMount) []BindMount {
@@ -570,8 +524,6 @@ func interpolateHostCommands(cmds HostCommands) {
 func validateProjectLocalFields(raw map[string]any) error {
 	allowed := map[string]bool{
 		"version":             true,
-		"kits":                true,
-		"builtin_commands":    true,
 		"env":                 true,
 		"host_commands":       true,
 		"additional_bindings": true,
@@ -603,10 +555,6 @@ func validateProjectLocalMeta(meta *ProjectLocalMeta) error {
 			return fmt.Errorf("%s: host_commands.%s.path %q must be an absolute path", projectLocalFilename, name, spec.Path)
 		}
 	}
-	if err := validateBuiltinCommands(projectLocalFilename, meta.BuiltinCommands, meta.HostCommands); err != nil {
-		return err
-	}
-
 	return nil
 }
 
@@ -616,17 +564,34 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 	}
 
 	result := *meta
-	result.Kits = append([]KitRef(nil), meta.Kits...)
-	result.Hooks = append([]Hook(nil), meta.Hooks...)
-	result.Gates = append([]Gate(nil), meta.Gates...)
-	result.BuiltinCommands = append([]string(nil), meta.BuiltinCommands...)
-	result.KitHooksDirs = append([]KitHooksInfo(nil), meta.KitHooksDirs...)
-	result.KitGatesDirs = append([]KitGatesInfo(nil), meta.KitGatesDirs...)
 	result.Env = mergeStringMaps(nil, meta.Env)
 	result.HostCommands = cloneHostCommands(meta.HostCommands)
 	result.AdditionalBindings = cloneBindMounts(meta.AdditionalBindings)
-	result.TaskBehaviors = mergeTaskBehaviorMaps(nil, meta.TaskBehaviors)
+	result.TaskBehaviors = cloneTaskBehaviorMap(meta.TaskBehaviors)
 	return &result
+}
+
+// cloneTaskBehaviorMap deep-copies the task behavior map including each
+// behavior's kit refs. Resolved fields are reset to nil; the caller is expected
+// to recompute them via MergeKitMetaIntoBehavior.
+func cloneTaskBehaviorMap(src map[string]TaskBehavior) map[string]TaskBehavior {
+	if len(src) == 0 {
+		return nil
+	}
+	result := make(map[string]TaskBehavior, len(src))
+	for k, v := range src {
+		v.Kits = append([]KitRef(nil), v.Kits...)
+		v.Hooks = nil
+		v.Gates = nil
+		v.Env = nil
+		v.BuiltinCommands = nil
+		v.HostCommands = nil
+		v.AdditionalBindings = nil
+		v.KitHooksDirs = nil
+		v.KitGatesDirs = nil
+		result[k] = v
+	}
+	return result
 }
 
 func cloneHostCommands(cmds HostCommands) HostCommands {
@@ -734,19 +699,4 @@ func validateBuiltinCommands(scope string, builtins []string, hostCommands HostC
 var validBuiltinCommands = map[string]struct{}{
 	"git":  {},
 	"boid": {},
-}
-
-func mergeTaskBehaviorMaps(base, overlay map[string]TaskBehavior) map[string]TaskBehavior {
-	if len(base) == 0 && len(overlay) == 0 {
-		return nil
-	}
-
-	result := make(map[string]TaskBehavior, len(base)+len(overlay))
-	for k, v := range base {
-		result[k] = v
-	}
-	for k, v := range overlay {
-		result[k] = v
-	}
-	return result
 }

@@ -14,9 +14,10 @@ func setupTestProject(t *testing.T, id, name string, includeDeprecatedWorkspace 
 
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
-	hooksDir := filepath.Join(boidDir, "hooks")
-	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
-		t.Fatalf("mkdir hooks: %v", err)
+	kitDir := filepath.Join(boidDir, "kits", "agent")
+	kitHooksDir := filepath.Join(kitDir, "hooks")
+	if err := os.MkdirAll(kitHooksDir, 0o755); err != nil {
+		t.Fatalf("mkdir kit hooks: %v", err)
 	}
 
 	yaml := "id: " + id + "\nname: " + name + "\n"
@@ -26,16 +27,24 @@ func setupTestProject(t *testing.T, id, name string, includeDeprecatedWorkspace 
 	yaml += `task_behaviors:
   planning:
     name: Planning
+    kits:
+      - agent
   implementation:
     name: Implementation
-hooks:
-  - id: run-agent
-    on: executing
+    kits:
+      - agent
 `
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatalf("write project.yaml: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(hooksDir, "run-agent.sh"), []byte("#!/bin/bash\necho hello\n"), 0o755); err != nil {
+	kitYAML := `hooks:
+  - id: run-agent
+    on: executing
+`
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
+		t.Fatalf("write kit.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(kitHooksDir, "run-agent.sh"), []byte("#!/bin/bash\necho hello\n"), 0o755); err != nil {
 		t.Fatalf("write hook script: %v", err)
 	}
 
