@@ -622,6 +622,98 @@ func TestRecreate_FetchesBaseBranch(t *testing.T) {
 	}
 }
 
+// TestRecreate_LocalBranchFallback verifies that Recreate succeeds using the local branch
+// when the remote fetch fails (e.g. branch was never pushed, or remote is unreachable).
+// The worktree dir is removed (Remove with deleteBranch=false) to simulate a cleaned
+// record while keeping the local branch alive.
+func TestRecreate_LocalBranchFallback(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t) // no remote: any fetch will fail
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-rlf1', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-rlf10001-0001', 'proj-rlf1', 'local fallback', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	// Create worktree (local branch is created).
+	w, err := mgr.Create(repo, "proj-rlf1", "task-rlf10001-0001", "boid/", "HEAD")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Remove worktree dir without deleting local branch; marks cleaned_at in DB.
+	if err := mgr.Remove(repo, "task-rlf10001-0001", false); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Stat(w.Path); !os.IsNotExist(err) {
+		t.Fatal("worktree dir should be removed after Remove")
+	}
+
+	// Recreate should succeed via local branch fallback (fetch fails: no remote).
+	recreated, err := mgr.Recreate(repo, "task-rlf10001-0001")
+	if err != nil {
+		t.Fatalf("Recreate should succeed via local branch fallback: %v", err)
+	}
+
+	// Worktree directory should exist.
+	if _, err := os.Stat(recreated.Path); err != nil {
+		t.Errorf("recreated worktree dir should exist: %v", err)
+	}
+
+	// .git should be a file (worktree metadata), not a directory.
+	gitFile := filepath.Join(recreated.Path, ".git")
+	info, err := os.Stat(gitFile)
+	if err != nil {
+		t.Fatalf(".git file should exist after recreate: %v", err)
+	}
+	if info.IsDir() {
+		t.Error(".git should be a file in worktree, not a directory")
+	}
+
+	// DB: cleaned_at should be NULL.
+	got, err := mgr.Get("task-rlf10001-0001")
+	if err != nil {
+		t.Fatalf("Get after Recreate: %v", err)
+	}
+	if got == nil || got.CleanedAt != nil {
+		t.Error("cleaned_at should be NULL after Recreate")
+	}
+}
+
+// TestRecreate_BothMissingExplicitError verifies that when both local branch and remote
+// branch are unavailable, Recreate returns an explicit error describing the situation.
+func TestRecreate_BothMissingExplicitError(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t) // no remote: any fetch will fail
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-rbm1', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-rbm10001-0001', 'proj-rbm1', 'both missing', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	// Create worktree (local branch created).
+	_, err := mgr.Create(repo, "proj-rbm1", "task-rbm10001-0001", "boid/", "HEAD")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Remove with branch deletion: local branch is gone, remote branch never existed.
+	if err := mgr.Remove(repo, "task-rbm10001-0001", true); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	// Recreate should fail with a message indicating both local and remote are unavailable.
+	_, err = mgr.Recreate(repo, "task-rbm10001-0001")
+	if err == nil {
+		t.Fatal("Recreate should return an error when both local and remote are unavailable")
+	}
+	if !strings.Contains(err.Error(), "not found and remote") {
+		t.Errorf("error should mention both local and remote unavailability, got: %v", err)
+	}
+}
+
 func TestManager_DefaultBranchPrefix(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	repo := initGitRepo(t)
