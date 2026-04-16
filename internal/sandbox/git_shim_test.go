@@ -41,6 +41,16 @@ func TestClassifyGitInvocation(t *testing.T) {
 			wantMode: gitInvocationLocal,
 		},
 		{
+			name:     "local merge-tree",
+			args:     []string{"merge-tree", "--write-tree", "HEAD", "MERGE_HEAD"},
+			wantMode: gitInvocationLocal,
+		},
+		{
+			name:     "local update-ref",
+			args:     []string{"update-ref", "refs/heads/main", "abc123"},
+			wantMode: gitInvocationLocal,
+		},
+		{
 			name:    "deny pull",
 			args:    []string{"pull", "origin", "main"},
 			wantErr: true,
