@@ -30,20 +30,6 @@ var projectLocalShowCmd = &cobra.Command{
 	RunE:  runProjectLocalShow,
 }
 
-var projectLocalAddKitCmd = &cobra.Command{
-	Use:   "add-kit <ref> [dir]",
-	Short: "Add a kit ref to kits.add",
-	Args:  cobra.RangeArgs(1, 2),
-	RunE:  runProjectLocalAddKit,
-}
-
-var projectLocalRemoveKitCmd = &cobra.Command{
-	Use:   "remove-kit <ref> [dir]",
-	Short: "Add a kit ref to kits.remove",
-	Args:  cobra.RangeArgs(1, 2),
-	RunE:  runProjectLocalRemoveKit,
-}
-
 var projectLocalSetEnvCmd = &cobra.Command{
 	Use:   "set-env <key> <value> [dir]",
 	Short: "Set an env override in project.local.yaml",
@@ -85,8 +71,6 @@ func init() {
 	projectLocalCmd.AddCommand(
 		projectLocalInitCmd,
 		projectLocalShowCmd,
-		projectLocalAddKitCmd,
-		projectLocalRemoveKitCmd,
 		projectLocalSetEnvCmd,
 		projectLocalUnsetEnvCmd,
 		projectLocalAddBindingCmd,
@@ -136,52 +120,6 @@ func runProjectLocalShow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Print(string(data))
-	return nil
-}
-
-func runProjectLocalAddKit(cmd *cobra.Command, args []string) error {
-	projectDir, err := resolveProjectRoot(optionalDirArg(args[1:]))
-	if err != nil {
-		return err
-	}
-	meta, err := loadProjectLocalEditable(projectDir)
-	if err != nil {
-		return err
-	}
-
-	ref := args[0]
-	meta.Kits.Remove = removeString(meta.Kits.Remove, ref)
-	if !containsString(meta.Kits.Add, ref) {
-		meta.Kits.Add = append(meta.Kits.Add, ref)
-	}
-
-	if err := projectspec.WriteProjectLocalMeta(projectDir, meta); err != nil {
-		return err
-	}
-	fmt.Printf("added kit: %s\n", ref)
-	return nil
-}
-
-func runProjectLocalRemoveKit(cmd *cobra.Command, args []string) error {
-	projectDir, err := resolveProjectRoot(optionalDirArg(args[1:]))
-	if err != nil {
-		return err
-	}
-	meta, err := loadProjectLocalEditable(projectDir)
-	if err != nil {
-		return err
-	}
-
-	ref := args[0]
-	meta.Kits.Add = removeString(meta.Kits.Add, ref)
-	if !containsString(meta.Kits.Remove, ref) {
-		meta.Kits.Remove = append(meta.Kits.Remove, ref)
-	}
-
-	if err := projectspec.WriteProjectLocalMeta(projectDir, meta); err != nil {
-		return err
-	}
-	fmt.Printf("removed kit: %s\n", ref)
 	return nil
 }
 
@@ -331,32 +269,6 @@ func optionalDirArg(args []string) string {
 		return ""
 	}
 	return args[0]
-}
-
-func removeString(items []string, target string) []string {
-	if len(items) == 0 {
-		return nil
-	}
-
-	result := items[:0]
-	for _, item := range items {
-		if item != target {
-			result = append(result, item)
-		}
-	}
-	if len(result) == 0 {
-		return nil
-	}
-	return result
-}
-
-func containsString(items []string, target string) bool {
-	for _, item := range items {
-		if item == target {
-			return true
-		}
-	}
-	return false
 }
 
 func upsertBinding(bindings []projectspec.BindMount, binding projectspec.BindMount) []projectspec.BindMount {

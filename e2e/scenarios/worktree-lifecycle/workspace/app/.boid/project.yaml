@@ -1,11 +1,9 @@
 id: worktree-lifecycle
 name: Worktree Lifecycle
-kits:
-  - github.com/novshi-tech/boid-kits/worktree-smoke
 task_behaviors:
   worktree:
     name: Worktree
     transition: one-shot
     worktree: true
-hooks: []
-gates: []
+    kits:
+      - github.com/novshi-tech/boid-kits/worktree-smoke

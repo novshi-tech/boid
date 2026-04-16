@@ -10,6 +10,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// lookupBehavior returns the TaskBehavior that matches task.Behavior. Returns
+// false if the project has no matching behavior; callers should treat that as
+// "no hooks, no gates" rather than an error.
+func lookupBehavior(meta *ProjectMeta, task *Task) (TaskBehavior, bool) {
+	if meta == nil || task == nil {
+		return TaskBehavior{}, false
+	}
+	b, ok := meta.TaskBehaviors[task.Behavior]
+	return b, ok
+}
+
 // Coordinator orchestrates the hook → gate → advance flow.
 type Coordinator struct {
 	Evaluator    *Evaluator
@@ -39,7 +50,14 @@ func (d *Coordinator) DispatchAndAdvance(
 	exclusiveWriters := map[string]string{} // trait key → first writer ID
 
 	// 1. Evaluate and dispatch hooks
-	matchedHooks := d.Evaluator.Evaluate(task, meta.Hooks)
+	behavior, hasBehavior := lookupBehavior(meta, task)
+	var behaviorHooks []Hook
+	var behaviorGates []Gate
+	if hasBehavior {
+		behaviorHooks = behavior.Hooks
+		behaviorGates = behavior.Gates
+	}
+	matchedHooks := d.Evaluator.Evaluate(task, behaviorHooks)
 	if len(matchedHooks) > 0 {
 		hookResults, err := d.dispatchHooksLocked(ctx, task, matchedHooks, readonly)
 		if err != nil {
@@ -67,7 +85,7 @@ func (d *Coordinator) DispatchAndAdvance(
 	// Use hook-updated payload so that traits produced by hooks are visible to gates.
 	gateTask := *task
 	gateTask.Payload = payload
-	matchedGates := d.Evaluator.EvaluateGates(&gateTask, meta.Gates, GatePhaseExit)
+	matchedGates := d.Evaluator.EvaluateGates(&gateTask, behaviorGates, GatePhaseExit)
 	if len(matchedGates) > 0 {
 		gateResults, err := d.dispatchGates(ctx, &gateTask, matchedGates)
 		if err != nil {
@@ -132,7 +150,11 @@ func (d *Coordinator) DispatchEntryGates(
 		payload = clearTraitFromPayload(payload, "execution_complete")
 	}
 
-	matchedGates := d.Evaluator.EvaluateGates(task, meta.Gates, GatePhaseEntry)
+	var behaviorGates []Gate
+	if behavior, ok := lookupBehavior(meta, task); ok {
+		behaviorGates = behavior.Gates
+	}
+	matchedGates := d.Evaluator.EvaluateGates(task, behaviorGates, GatePhaseEntry)
 	if len(matchedGates) == 0 {
 		return &EntryGateResult{FinalPayload: payload}, nil
 	}

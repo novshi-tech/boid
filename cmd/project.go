@@ -79,10 +79,12 @@ func runProjectAdd(cmd *cobra.Command, args []string) error {
 	return renderOutput(cmd, &p, func() error {
 		fmt.Fprintf(cmd.OutOrStdout(), "project registered: %s (%s)\n", p.ID, p.Meta.Name)
 		// Check hook requires
-		for _, h := range p.Meta.Hooks {
-			for _, req := range h.Requires {
-				if _, err := exec.LookPath(req); err != nil {
-					fmt.Fprintf(cmd.OutOrStdout(), "  warning: hook %q requires %q but it's not found in PATH\n", h.ID, req)
+		for _, b := range p.Meta.TaskBehaviors {
+			for _, h := range b.Hooks {
+				for _, req := range h.Requires {
+					if _, err := exec.LookPath(req); err != nil {
+						fmt.Fprintf(cmd.OutOrStdout(), "  warning: hook %q requires %q but it's not found in PATH\n", h.ID, req)
+					}
 				}
 			}
 		}
@@ -187,35 +189,6 @@ func renderProjectDetail(p *projectspec.Project) {
 
 	m := p.Meta
 
-	if len(m.Kits) > 0 {
-		fmt.Println("Kits:")
-		for _, k := range m.Kits {
-			if k.Alias != "" {
-				fmt.Printf("  %s (as %s)\n", k.Ref, k.Alias)
-			} else {
-				fmt.Printf("  %s\n", k.Ref)
-			}
-		}
-	}
-
-	if len(m.Hooks) > 0 {
-		fmt.Println("Hooks:")
-		for _, h := range m.Hooks {
-			requires := ""
-			if len(h.Requires) > 0 {
-				requires = "  requires=[" + strings.Join(h.Requires, ",") + "]"
-			}
-			fmt.Printf("  %-30s  on=%s%s\n", h.ID, strings.Join(h.On, ","), requires)
-		}
-	}
-
-	if len(m.Gates) > 0 {
-		fmt.Println("Gates:")
-		for _, g := range m.Gates {
-			fmt.Printf("  %-30s  on=%s\n", g.ID, strings.Join(g.On, ","))
-		}
-	}
-
 	if len(m.TaskBehaviors) > 0 {
 		fmt.Println("TaskBehaviors:")
 		keys := make([]string, 0, len(m.TaskBehaviors))
@@ -224,12 +197,29 @@ func renderProjectDetail(p *projectspec.Project) {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			fmt.Printf("  %-20s  %s\n", k, m.TaskBehaviors[k].Name)
+			b := m.TaskBehaviors[k]
+			fmt.Printf("  %-20s  %s\n", k, b.Name)
+			for _, kit := range b.Kits {
+				if kit.Alias != "" {
+					fmt.Printf("    kit: %s (as %s)\n", kit.Ref, kit.Alias)
+				} else {
+					fmt.Printf("    kit: %s\n", kit.Ref)
+				}
+			}
+			for _, h := range b.Hooks {
+				requires := ""
+				if len(h.Requires) > 0 {
+					requires = "  requires=[" + strings.Join(h.Requires, ",") + "]"
+				}
+				fmt.Printf("    hook: %-24s  on=%s%s\n", h.ID, strings.Join(h.On, ","), requires)
+			}
+			for _, g := range b.Gates {
+				fmt.Printf("    gate: %-24s  on=%s\n", g.ID, strings.Join(g.On, ","))
+			}
+			if len(b.BuiltinCommands) > 0 {
+				fmt.Printf("    builtin_commands: %s\n", strings.Join(b.BuiltinCommands, ", "))
+			}
 		}
-	}
-
-	if len(m.BuiltinCommands) > 0 {
-		fmt.Printf("BuiltinCommands: %s\n", strings.Join(m.BuiltinCommands, ", "))
 	}
 
 	if len(m.HostCommands) > 0 {

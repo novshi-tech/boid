@@ -213,50 +213,14 @@ func (o OnValues) AllValid(valid map[string]bool) bool {
 	return true
 }
 
-// BehaviorValues holds one or more behavior names for hook/gate matching.
-// In YAML it accepts both a scalar string ("dev") and a sequence
-// (["plan", "auto_plan"]). An empty BehaviorValues matches any task behavior.
-type BehaviorValues []string
-
-func (b *BehaviorValues) UnmarshalYAML(node *yaml.Node) error {
-	switch node.Kind {
-	case yaml.ScalarNode:
-		*b = BehaviorValues{node.Value}
-	case yaml.SequenceNode:
-		var vals []string
-		if err := node.Decode(&vals); err != nil {
-			return err
-		}
-		*b = vals
-	default:
-		return fmt.Errorf("behavior: expected string or sequence, got %v", node.Tag)
-	}
-	return nil
-}
-
-// Matches reports whether the given task behavior is matched by this filter.
-// An empty BehaviorValues matches any behavior.
-func (b BehaviorValues) Matches(taskBehavior string) bool {
-	if len(b) == 0 {
-		return true
-	}
-	for _, v := range b {
-		if v == taskBehavior {
-			return true
-		}
-	}
-	return false
-}
-
 type Hook struct {
-	ID         string         `yaml:"id" json:"id"`
-	On         OnValues       `yaml:"on" json:"on"`
-	Behavior   BehaviorValues `yaml:"behavior,omitempty" json:"behavior,omitempty"`
-	Traits     HandlerTraits  `yaml:"traits" json:"traits"`
-	Requires   []string       `yaml:"requires" json:"requires"`
-	Consumer   string         `yaml:"consumer,omitempty" json:"consumer,omitempty"`
-	Kit        string         `yaml:"-" json:"kit,omitempty"`
-	ScriptPath string         `yaml:"-" json:"-"`
+	ID         string        `yaml:"id" json:"id"`
+	On         OnValues      `yaml:"on" json:"on"`
+	Traits     HandlerTraits `yaml:"traits" json:"traits"`
+	Requires   []string      `yaml:"requires" json:"requires"`
+	Consumer   string        `yaml:"consumer,omitempty" json:"consumer,omitempty"`
+	Kit        string        `yaml:"-" json:"kit,omitempty"`
+	ScriptPath string        `yaml:"-" json:"-"`
 }
 
 // GatePhase determines when a gate fires relative to a state transition.
@@ -268,13 +232,12 @@ const (
 )
 
 type Gate struct {
-	ID         string         `yaml:"id" json:"id"`
-	On         OnValues       `yaml:"on" json:"on"`
-	Phase      GatePhase      `yaml:"phase,omitempty" json:"phase,omitempty"`
-	Behavior   BehaviorValues `yaml:"behavior,omitempty" json:"behavior,omitempty"`
-	Traits     HandlerTraits  `yaml:"traits" json:"traits"`
-	Kit        string         `yaml:"-" json:"kit,omitempty"`
-	ScriptPath string         `yaml:"-" json:"-"`
+	ID         string        `yaml:"id" json:"id"`
+	On         OnValues      `yaml:"on" json:"on"`
+	Phase      GatePhase     `yaml:"phase,omitempty" json:"phase,omitempty"`
+	Traits     HandlerTraits `yaml:"traits" json:"traits"`
+	Kit        string        `yaml:"-" json:"kit,omitempty"`
+	ScriptPath string        `yaml:"-" json:"-"`
 }
 
 // UnmarshalYAML defaults Phase to GatePhaseExit when omitted.
@@ -344,6 +307,18 @@ type TaskBehavior struct {
 	BranchPrefix   string     `yaml:"branch_prefix" json:"branch_prefix,omitempty"`
 	BaseBranch     string     `yaml:"base_branch" json:"base_branch,omitempty"`
 	DefaultPayload RawPayload `yaml:"default_payload" json:"default_payload,omitempty"`
+	Kits           []KitRef   `yaml:"kits,omitempty" json:"kits,omitempty"`
+
+	// Resolved fields populated by ReadProjectMetaWithKits after merging kit data
+	// and project-level overlays. These are not serialized to YAML.
+	Hooks              []Hook            `yaml:"-" json:"-"`
+	Gates              []Gate            `yaml:"-" json:"-"`
+	Env                map[string]string `yaml:"-" json:"-"`
+	BuiltinCommands    []string          `yaml:"-" json:"-"`
+	HostCommands       HostCommands      `yaml:"-" json:"-"`
+	AdditionalBindings []BindMount       `yaml:"-" json:"-"`
+	KitHooksDirs       []KitHooksInfo    `yaml:"-" json:"-"`
+	KitGatesDirs       []KitGatesInfo    `yaml:"-" json:"-"`
 }
 
 // BehaviorSpec is an inline behavior specification that can be used instead of
@@ -376,32 +351,19 @@ func (k *KitRef) UnmarshalYAML(value *yaml.Node) error {
 type ProjectMeta struct {
 	ID                 string                  `yaml:"id" json:"id"`
 	Name               string                  `yaml:"name" json:"name"`
-	Kits               []KitRef                `yaml:"kits" json:"kits,omitempty"`
 	TaskBehaviors      map[string]TaskBehavior `yaml:"task_behaviors" json:"task_behaviors"`
-	Hooks              []Hook                  `yaml:"hooks" json:"hooks"`
-	Gates              []Gate                  `yaml:"gates" json:"gates"`
-	BuiltinCommands    []string                `yaml:"builtin_commands" json:"builtin_commands,omitempty"`
 	HostCommands       HostCommands            `yaml:"host_commands" json:"host_commands"`
 	AdditionalBindings []BindMount             `yaml:"additional_bindings" json:"additional_bindings"`
 	Env                map[string]string       `yaml:"env" json:"env"`
 	SecretNamespace    string                  `yaml:"secret_namespace,omitempty" json:"secret_namespace,omitempty"`
-	KitHooksDirs       []KitHooksInfo          `yaml:"-" json:"-"`
-	KitGatesDirs       []KitGatesInfo          `yaml:"-" json:"-"`
 }
 
 type ProjectLocalMeta struct {
-	Version            int                   `yaml:"version"`
-	Kits               ProjectLocalKits      `yaml:"kits,omitempty"`
-	BuiltinCommands    []string          `yaml:"builtin_commands,omitempty"`
+	Version            int               `yaml:"version"`
 	HostCommands       HostCommands      `yaml:"host_commands,omitempty"`
 	AdditionalBindings []BindMount       `yaml:"additional_bindings,omitempty"`
 	Env                map[string]string `yaml:"env,omitempty"`
 	SecretNamespace    string            `yaml:"secret_namespace,omitempty"`
-}
-
-type ProjectLocalKits struct {
-	Add    []string `yaml:"add,omitempty"`
-	Remove []string `yaml:"remove,omitempty"`
 }
 
 type Project struct {

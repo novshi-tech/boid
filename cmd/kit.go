@@ -49,22 +49,17 @@ func kitInstallFromProject() error {
 		return err
 	}
 
-	kitRefs := meta.Kits
-
-	local, err := kit.ReadProjectLocalMeta(projectDir)
-	if err != nil {
-		return err
-	}
-	if local != nil {
-		kitRefs, err = kit.EffectiveKitRefs(meta.Kits, local.Kits)
-		if err != nil {
-			return err
+	// Collect unique kit refs across all behaviors.
+	seen := make(map[string]struct{})
+	var kitRefStrs []string
+	for _, behavior := range meta.TaskBehaviors {
+		for _, r := range behavior.Kits {
+			if _, ok := seen[r.Ref]; ok {
+				continue
+			}
+			seen[r.Ref] = struct{}{}
+			kitRefStrs = append(kitRefStrs, r.Ref)
 		}
-	}
-
-	kitRefStrs := make([]string, len(kitRefs))
-	for i, r := range kitRefs {
-		kitRefStrs[i] = r.Ref
 	}
 	repos := kit.RepoRefsFromKitRefs(kitRefStrs)
 	if len(repos) == 0 {

@@ -76,8 +76,21 @@ func buildExecRequest(projectID string) (dispatcher.ExecRequest, error) {
 	var proxyInfo struct{ Port int }
 	c.Do("GET", "/api/proxy", nil, &proxyInfo)
 
-	// Register host commands with broker
-	builtinPolicies := orchestrator.DefaultBuiltinPolicies(orchestrator.RoleGate, p.Meta.BuiltinCommands)
+	// Register host commands with broker. "boid" is always available as a
+	// builtin so that `boid exec` can dispatch sub-tasks from inside the
+	// sandbox without explicit configuration.
+	builtinCommands := append([]string(nil), p.Meta.BuiltinCommands...)
+	hasBoid := false
+	for _, c := range builtinCommands {
+		if c == "boid" {
+			hasBoid = true
+			break
+		}
+	}
+	if !hasBoid {
+		builtinCommands = append(builtinCommands, "boid")
+	}
+	builtinPolicies := orchestrator.DefaultBuiltinPolicies(orchestrator.RoleGate, builtinCommands)
 	var brokerSocket, brokerToken string
 	if len(p.Meta.HostCommands) > 0 || len(builtinPolicies) > 0 {
 		var brokerResp struct {

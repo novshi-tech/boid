@@ -43,16 +43,12 @@ func TestProjectLocalCommands(t *testing.T) {
 	}
 
 	execRootCmd(t, "project", "local", "init", projectDir)
-	execRootCmd(t, "project", "local", "add-kit", "local/dev/repro-kit", projectDir)
 	execRootCmd(t, "project", "local", "set-env", "FOO", "bar", projectDir)
 	execRootCmd(t, "project", "local", "add-binding", projectDir, projectDir, "--mode", "rw")
 
 	meta, err := projectspec.ReadProjectLocalMeta(projectDir)
 	if err != nil {
 		t.Fatalf("ReadProjectLocalMeta: %v", err)
-	}
-	if len(meta.Kits.Add) != 1 || meta.Kits.Add[0] != "local/dev/repro-kit" {
-		t.Fatalf("unexpected kits.add: %+v", meta.Kits.Add)
 	}
 	if meta.Env["FOO"] != "bar" {
 		t.Fatalf("unexpected env: %+v", meta.Env)
@@ -67,7 +63,7 @@ func TestProjectLocalCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read project.local.yaml: %v", err)
 	}
-	if !strings.Contains(string(data), "local/dev/repro-kit") || !strings.Contains(string(data), "FOO: bar") {
+	if !strings.Contains(string(data), "FOO: bar") {
 		t.Fatalf("unexpected file content: %s", data)
 	}
 }

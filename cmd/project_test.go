@@ -44,20 +44,22 @@ func TestRenderProjectDetail_MetaSections(t *testing.T) {
 		ID: "proj-meta",
 		Meta: projectspec.ProjectMeta{
 			Name: "Meta Test",
-			Kits: []projectspec.KitRef{
-				{Ref: "github.com/novshi-tech/boid-kits/dev"},
-			},
-			Hooks: []projectspec.Hook{
-				{ID: "on-start", On: projectspec.OnValues{"executing"}, Requires: []string{"gh"}},
-			},
-			Gates: []projectspec.Gate{
-				{ID: "auto-merge", On: projectspec.OnValues{"done"}},
-			},
 			TaskBehaviors: map[string]projectspec.TaskBehavior{
-				"dev": {Name: "Development"},
+				"dev": {
+					Name: "Development",
+					Kits: []projectspec.KitRef{
+						{Ref: "github.com/novshi-tech/boid-kits/dev"},
+					},
+					Hooks: []projectspec.Hook{
+						{ID: "on-start", On: projectspec.OnValues{"executing"}, Requires: []string{"gh"}},
+					},
+					Gates: []projectspec.Gate{
+						{ID: "auto-merge", On: projectspec.OnValues{"done"}},
+					},
+					BuiltinCommands: []string{"git"},
+				},
 			},
-			BuiltinCommands: []string{"git", "net"},
-			HostCommands:    projectspec.HostCommands{"gh": {}},
+			HostCommands: projectspec.HostCommands{"gh": {}},
 			AdditionalBindings: []projectspec.BindMount{
 				{Source: "/data", Mode: "ro"},
 			},
@@ -74,21 +76,15 @@ func TestRenderProjectDetail_MetaSections(t *testing.T) {
 	})
 
 	checks := []string{
-		"Kits:",
-		"github.com/novshi-tech/boid-kits/dev",
-		"Hooks:",
-		"on-start",
-		"executing",
-		"gh",
-		"Gates:",
-		"auto-merge",
-		"done",
 		"TaskBehaviors:",
 		"dev",
 		"Development",
-		"BuiltinCommands:",
-		"git",
-		"net",
+		"kit: github.com/novshi-tech/boid-kits/dev",
+		"hook: on-start",
+		"executing",
+		"gate: auto-merge",
+		"done",
+		"builtin_commands: git",
 		"HostCommands:",
 		"gh",
 		"AdditionalBindings:",

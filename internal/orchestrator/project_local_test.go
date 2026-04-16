@@ -14,9 +14,6 @@ func TestWriteProjectLocalMeta(t *testing.T) {
 
 	meta := &projectspec.ProjectLocalMeta{
 		Env: map[string]string{"FOO": "bar"},
-		Kits: projectspec.ProjectLocalKits{
-			Add: []string{"local/dev/repro-kit"},
-		},
 	}
 	if err := projectspec.WriteProjectLocalMeta(dir, meta); err != nil {
 		t.Fatalf("WriteProjectLocalMeta: %v", err)
@@ -35,7 +32,7 @@ func TestWriteProjectLocalMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadProjectLocalMeta: %v", err)
 	}
-	if loaded.Env["FOO"] != "bar" || len(loaded.Kits.Add) != 1 {
+	if loaded.Env["FOO"] != "bar" {
 		t.Fatalf("unexpected loaded meta: %+v", loaded)
 	}
 }
