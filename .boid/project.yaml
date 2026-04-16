@@ -1,13 +1,19 @@
 id: boid
 name: boid
-builtin_commands:
-  - boid
 
 task_behaviors:
   dev:
     name: one-shot-feedback-dev
     worktree: true
     traits: [instructions]
+    kits:
+      - github.com/novshi-tech/boid-kits/go-dev
+      - github.com/novshi-tech/boid-kits/git
+      - github.com/novshi-tech/boid-kits/github-cli
+      - github.com/novshi-tech/boid-kits/github-pr-verification
+      - github.com/novshi-tech/boid-kits/github-auto-merge
+      - github.com/novshi-tech/boid-kits/claude-code
+      - github.com/novshi-tech/boid-kits/codex
     default_payload:
       instructions:
         main:
@@ -30,6 +36,9 @@ task_behaviors:
     name: Plan
     readonly: true
     traits: [instructions, tasks]
+    kits:
+      - github.com/novshi-tech/boid-kits/boid-tasks
+      - github.com/novshi-tech/boid-kits/claude-code
     default_payload:
       instructions:
         main:
@@ -81,6 +90,9 @@ task_behaviors:
     name: Auto Plan
     readonly: true
     traits: [instructions, tasks]
+    kits:
+      - github.com/novshi-tech/boid-kits/boid-tasks
+      - github.com/novshi-tech/boid-kits/claude-code
     default_payload:
       instructions:
         main:
@@ -135,13 +147,3 @@ task_behaviors:
                   behavior: "dev"
                   description: "..."
                   project_id: "boid-kits"
-
-kits:
-  - github.com/novshi-tech/boid-kits/go-dev
-  - github.com/novshi-tech/boid-kits/git
-  - github.com/novshi-tech/boid-kits/github-cli
-  - github.com/novshi-tech/boid-kits/claude-code
-  - github.com/novshi-tech/boid-kits/codex
-  - github.com/novshi-tech/boid-kits/github-pr-verification
-  - github.com/novshi-tech/boid-kits/boid-tasks
-  - github.com/novshi-tech/boid-kits/github-auto-merge
