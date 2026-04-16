@@ -10,7 +10,7 @@ import (
 )
 
 func TestMergeDefaultPayload_NilDefault(t *testing.T) {
-	request := json.RawMessage(`{"instructions":{"executor":{"type":"execution","consumer":"claude-code","message":"hello"}}}`)
+	request := json.RawMessage(`{"artifact":{"url":"example"}}`)
 	result, err := orchestrator.MergeDefaultPayload(nil, request)
 	if err != nil {
 		t.Fatalf("MergeDefaultPayload() error = %v", err)
@@ -21,7 +21,7 @@ func TestMergeDefaultPayload_NilDefault(t *testing.T) {
 }
 
 func TestMergeDefaultPayload_NilRequest(t *testing.T) {
-	defaultPayload := json.RawMessage(`{"instructions":{"executor":{"type":"execution","consumer":"claude-code","message":"default"}}}`)
+	defaultPayload := json.RawMessage(`{"artifact":{"url":"default"}}`)
 	result, err := orchestrator.MergeDefaultPayload(defaultPayload, nil)
 	if err != nil {
 		t.Fatalf("MergeDefaultPayload() error = %v", err)
@@ -32,8 +32,8 @@ func TestMergeDefaultPayload_NilRequest(t *testing.T) {
 }
 
 func TestMergeDefaultPayload_Override(t *testing.T) {
-	defaultPayload := json.RawMessage(`{"instructions":{"executor":{"type":"execution","consumer":"claude-code","message":"default"}}}`)
-	requestPayload := json.RawMessage(`{"instructions":{"executor":{"type":"execution","consumer":"claude-code","message":"override"}}}`)
+	defaultPayload := json.RawMessage(`{"artifact":{"url":"default"}}`)
+	requestPayload := json.RawMessage(`{"artifact":{"url":"override"}}`)
 
 	result, err := orchestrator.MergeDefaultPayload(defaultPayload, requestPayload)
 	if err != nil {
@@ -44,82 +44,114 @@ func TestMergeDefaultPayload_Override(t *testing.T) {
 	if err := json.Unmarshal(result, &merged); err != nil {
 		t.Fatalf("unmarshal result: %v", err)
 	}
-	var instructions map[string]json.RawMessage
-	if err := json.Unmarshal(merged["instructions"], &instructions); err != nil {
-		t.Fatalf("unmarshal instructions: %v", err)
+	var artifact map[string]string
+	if err := json.Unmarshal(merged["artifact"], &artifact); err != nil {
+		t.Fatalf("unmarshal artifact: %v", err)
 	}
-	var executor map[string]string
-	if err := json.Unmarshal(instructions["executor"], &executor); err != nil {
-		t.Fatalf("unmarshal executor: %v", err)
-	}
-	if executor["message"] != "override" {
-		t.Fatalf("expected executor message %q, got %q", "override", executor["message"])
+	if artifact["url"] != "override" {
+		t.Fatalf("expected artifact url %q, got %q", "override", artifact["url"])
 	}
 }
 
-func TestMergeDefaultPayload_RoleAddition(t *testing.T) {
-	defaultPayload := json.RawMessage(`{"instructions":{"executor":{"type":"execution","consumer":"claude-code","message":"default"}}}`)
-	requestPayload := json.RawMessage(`{"instructions":{"reviewer":{"type":"verification","consumer":"claude-code","message":"review"}}}`)
-
-	result, err := orchestrator.MergeDefaultPayload(defaultPayload, requestPayload)
-	if err != nil {
-		t.Fatalf("MergeDefaultPayload() error = %v", err)
+func TestMergeDefaultPayload_RejectsInstructionsInDefault(t *testing.T) {
+	defaultPayload := json.RawMessage(`{"instructions":{"executor":{"type":"execution","consumer":"c","message":"m"}}}`)
+	_, err := orchestrator.MergeDefaultPayload(defaultPayload, nil)
+	if err == nil {
+		t.Fatal("expected error when default payload contains instructions, got nil")
 	}
-
-	var merged map[string]json.RawMessage
-	if err := json.Unmarshal(result, &merged); err != nil {
-		t.Fatalf("unmarshal result: %v", err)
-	}
-	var instructions map[string]json.RawMessage
-	if err := json.Unmarshal(merged["instructions"], &instructions); err != nil {
-		t.Fatalf("unmarshal instructions: %v", err)
-	}
-	if instructions["executor"] == nil {
-		t.Fatal("expected executor role to exist")
-	}
-	if instructions["reviewer"] == nil {
-		t.Fatal("expected reviewer role to exist")
+	if !strings.Contains(err.Error(), "instructions") {
+		t.Fatalf("expected error to mention instructions, got %v", err)
 	}
 }
 
-func TestMergeDefaultPayload_RoleDeletion(t *testing.T) {
-	defaultPayload := json.RawMessage(`{"instructions":{"executor":{"type":"execution","consumer":"claude-code","message":"default"}}}`)
-	requestPayload := json.RawMessage(`{"instructions":{"executor":null}}`)
-
-	result, err := orchestrator.MergeDefaultPayload(defaultPayload, requestPayload)
-	if err != nil {
-		t.Fatalf("MergeDefaultPayload() error = %v", err)
-	}
-
-	var merged map[string]json.RawMessage
-	if err := json.Unmarshal(result, &merged); err != nil {
-		t.Fatalf("unmarshal result: %v", err)
-	}
-	var instructions map[string]json.RawMessage
-	if err := json.Unmarshal(merged["instructions"], &instructions); err != nil {
-		t.Fatalf("unmarshal instructions: %v", err)
-	}
-	if _, exists := instructions["executor"]; exists {
-		t.Fatal("expected executor role to be deleted")
+func TestMergeDefaultPayload_RejectsInstructionsInRequest(t *testing.T) {
+	requestPayload := json.RawMessage(`{"instructions":{"executor":{"type":"execution","consumer":"c","message":"m"}}}`)
+	_, err := orchestrator.MergeDefaultPayload(nil, requestPayload)
+	if err == nil {
+		t.Fatal("expected error when request payload contains instructions, got nil")
 	}
 }
 
-func TestMergeDefaultPayload_TopLevelNull(t *testing.T) {
-	defaultPayload := json.RawMessage(`{"instructions":{"executor":{"type":"execution","consumer":"claude-code","message":"default"}}}`)
-	requestPayload := json.RawMessage(`{"instructions":null}`)
-
-	result, err := orchestrator.MergeDefaultPayload(defaultPayload, requestPayload)
+func TestMergeDefaultInstructions_NilDefault(t *testing.T) {
+	request := json.RawMessage(`{"executor":{"type":"execution","consumer":"claude-code","message":"hello"}}`)
+	result, err := orchestrator.MergeDefaultInstructions(nil, request)
 	if err != nil {
-		t.Fatalf("MergeDefaultPayload() error = %v", err)
+		t.Fatalf("MergeDefaultInstructions() error = %v", err)
 	}
+	if result["executor"].Message != "hello" {
+		t.Fatalf("expected executor.message %q, got %q", "hello", result["executor"].Message)
+	}
+}
 
-	var merged map[string]json.RawMessage
-	if err := json.Unmarshal(result, &merged); err != nil {
-		t.Fatalf("unmarshal result: %v", err)
+func TestMergeDefaultInstructions_NilRequest(t *testing.T) {
+	def := map[string]orchestrator.Instruction{
+		"executor": {Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "default"},
 	}
-	if _, exists := merged["instructions"]; exists {
-		t.Fatal("expected instructions key to be deleted")
+	result, err := orchestrator.MergeDefaultInstructions(def, nil)
+	if err != nil {
+		t.Fatalf("MergeDefaultInstructions() error = %v", err)
 	}
+	if result["executor"].Message != "default" {
+		t.Fatalf("expected default preserved, got %q", result["executor"].Message)
+	}
+}
+
+func TestMergeDefaultInstructions_RoleOverride(t *testing.T) {
+	def := map[string]orchestrator.Instruction{
+		"executor": {Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "default"},
+	}
+	request := json.RawMessage(`{"executor":{"type":"execution","consumer":"claude-code","message":"override"}}`)
+	result, err := orchestrator.MergeDefaultInstructions(def, request)
+	if err != nil {
+		t.Fatalf("MergeDefaultInstructions() error = %v", err)
+	}
+	if result["executor"].Message != "override" {
+		t.Fatalf("expected override, got %q", result["executor"].Message)
+	}
+}
+
+func TestMergeDefaultInstructions_RoleAddition(t *testing.T) {
+	def := map[string]orchestrator.Instruction{
+		"executor": {Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "default"},
+	}
+	request := json.RawMessage(`{"reviewer":{"type":"verification","consumer":"claude-code","message":"review"}}`)
+	result, err := orchestrator.MergeDefaultInstructions(def, request)
+	if err != nil {
+		t.Fatalf("MergeDefaultInstructions() error = %v", err)
+	}
+	if _, ok := result["executor"]; !ok {
+		t.Fatal("expected executor to remain")
+	}
+	if _, ok := result["reviewer"]; !ok {
+		t.Fatal("expected reviewer to be added")
+	}
+}
+
+func TestMergeDefaultInstructions_RoleDeletion(t *testing.T) {
+	def := map[string]orchestrator.Instruction{
+		"executor": {Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "default"},
+	}
+	request := json.RawMessage(`{"executor":null}`)
+	result, err := orchestrator.MergeDefaultInstructions(def, request)
+	if err != nil {
+		t.Fatalf("MergeDefaultInstructions() error = %v", err)
+	}
+	if _, exists := result["executor"]; exists {
+		t.Fatal("expected executor to be deleted")
+	}
+}
+
+// parseInstructionsJSON extracts the instructions map from a legacy
+// {"instructions":{...}} payload shape used by existing fixtures.
+func parseInstructionsJSON(t *testing.T, payload json.RawMessage) map[string]orchestrator.Instruction {
+	t.Helper()
+	var wrapper struct {
+		Instructions map[string]orchestrator.Instruction `json:"instructions"`
+	}
+	if err := json.Unmarshal(payload, &wrapper); err != nil {
+		t.Fatalf("parseInstructionsJSON: %v", err)
+	}
+	return wrapper.Instructions
 }
 
 func TestFilterInstructions_MessageFallback_DefaultMessage(t *testing.T) {
@@ -129,7 +161,7 @@ func TestFilterInstructions_MessageFallback_DefaultMessage(t *testing.T) {
 			"executor":{"type":"execution","consumer":"agent-a"}
 		}
 	}`)
-	results := orchestrator.FilterInstructions(payload, orchestrator.InstructionTypeExecution, "agent-a")
+	results := orchestrator.FilterInstructions(parseInstructionsJSON(t, payload), orchestrator.InstructionTypeExecution, "agent-a")
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -146,7 +178,7 @@ func TestFilterInstructions_MessageFallback_ReworkInheritsExecution(t *testing.T
 			"reworker":{"type":"rework","consumer":"agent-a"}
 		}
 	}`)
-	results := orchestrator.FilterInstructions(payload, orchestrator.InstructionTypeRework, "agent-a")
+	results := orchestrator.FilterInstructions(parseInstructionsJSON(t, payload), orchestrator.InstructionTypeRework, "agent-a")
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -162,7 +194,7 @@ func TestFilterInstructions_MessageFallback_ReworkDefaultWhenNoExecution(t *test
 			"reworker":{"type":"rework","consumer":"agent-a"}
 		}
 	}`)
-	results := orchestrator.FilterInstructions(payload, orchestrator.InstructionTypeRework, "agent-a")
+	results := orchestrator.FilterInstructions(parseInstructionsJSON(t, payload), orchestrator.InstructionTypeRework, "agent-a")
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -179,7 +211,7 @@ func TestFilterInstructions_ExplicitMessageNotOverridden(t *testing.T) {
 			"reworker":{"type":"rework","consumer":"agent-a","message":"custom rework message"}
 		}
 	}`)
-	results := orchestrator.FilterInstructions(payload, orchestrator.InstructionTypeRework, "agent-a")
+	results := orchestrator.FilterInstructions(parseInstructionsJSON(t, payload), orchestrator.InstructionTypeRework, "agent-a")
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -195,7 +227,7 @@ func TestFilterInstructions_Interactive_PropagatedToRoutedInstruction(t *testing
 			"reviewer":{"type":"execution","consumer":"agent-a","message":"check it"}
 		}
 	}`)
-	results := orchestrator.FilterInstructions(payload, orchestrator.InstructionTypeExecution, "agent-a")
+	results := orchestrator.FilterInstructions(parseInstructionsJSON(t, payload), orchestrator.InstructionTypeExecution, "agent-a")
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
@@ -215,7 +247,7 @@ func TestFilterInstructions_Model_PropagatedToRoutedInstruction(t *testing.T) {
 			"reviewer":{"type":"execution","consumer":"agent-a","message":"check it"}
 		}
 	}`)
-	results := orchestrator.FilterInstructions(payload, orchestrator.InstructionTypeExecution, "agent-a")
+	results := orchestrator.FilterInstructions(parseInstructionsJSON(t, payload), orchestrator.InstructionTypeExecution, "agent-a")
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
@@ -228,15 +260,14 @@ func TestFilterInstructions_Model_PropagatedToRoutedInstruction(t *testing.T) {
 	}
 }
 
-func TestRawPayload_YAMLUnmarshal(t *testing.T) {
+func TestDefaultInstructions_YAMLUnmarshal(t *testing.T) {
 	data := `
 name: impl
-default_payload:
-  instructions:
-    executor:
-      type: execution
-      consumer: claude-code
-      message: "TDD で実装してください。"
+default_instructions:
+  executor:
+    type: execution
+    consumer: claude-code
+    message: "TDD で実装してください。"
 `
 	var behavior orchestrator.TaskBehavior
 	if err := yaml.Unmarshal([]byte(data), &behavior); err != nil {
@@ -247,41 +278,42 @@ default_payload:
 		t.Fatalf("expected name %q, got %q", "impl", behavior.Name)
 	}
 
-	raw := behavior.DefaultPayload.RawMessage()
-	if len(raw) == 0 {
-		t.Fatal("expected default_payload to be non-empty")
-	}
-
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("unmarshal default_payload: %v", err)
-	}
-	instructions, ok := payload["instructions"]
+	executor, ok := behavior.DefaultInstructions["executor"]
 	if !ok {
-		t.Fatal("expected instructions key in default_payload")
+		t.Fatal("expected executor role in default_instructions")
 	}
+	if executor.Type != orchestrator.InstructionTypeExecution {
+		t.Fatalf("expected executor type %q, got %q", orchestrator.InstructionTypeExecution, executor.Type)
+	}
+	if executor.Consumer != "claude-code" {
+		t.Fatalf("expected executor consumer %q, got %q", "claude-code", executor.Consumer)
+	}
+	if executor.Message != "TDD で実装してください。" {
+		t.Fatalf("expected executor message %q, got %q", "TDD で実装してください。", executor.Message)
+	}
+}
 
-	var instructionsMap map[string]json.RawMessage
-	if err := json.Unmarshal(instructions, &instructionsMap); err != nil {
-		t.Fatalf("unmarshal instructions: %v", err)
+func TestDefaultPayload_YAMLUnmarshal_RejectsInstructions(t *testing.T) {
+	// default_payload に instructions キーを書いてパースは成功するが、loader 経由で reject される。
+	data := `
+name: impl
+default_payload:
+  instructions:
+    executor:
+      type: execution
+      consumer: claude-code
+`
+	var behavior orchestrator.TaskBehavior
+	if err := yaml.Unmarshal([]byte(data), &behavior); err != nil {
+		t.Fatalf("yaml.Unmarshal: %v", err)
 	}
-	executor, ok := instructionsMap["executor"]
-	if !ok {
-		t.Fatal("expected executor role in instructions")
+	// Raw decode は成功する (validation は loader で行う)
+	if len(behavior.DefaultPayload) == 0 {
+		t.Fatal("expected default_payload to parse")
 	}
-
-	var executorMap map[string]string
-	if err := json.Unmarshal(executor, &executorMap); err != nil {
-		t.Fatalf("unmarshal executor: %v", err)
-	}
-	if executorMap["type"] != "execution" {
-		t.Fatalf("expected executor type %q, got %q", "execution", executorMap["type"])
-	}
-	if executorMap["consumer"] != "claude-code" {
-		t.Fatalf("expected executor consumer %q, got %q", "claude-code", executorMap["consumer"])
-	}
-	if executorMap["message"] != "TDD で実装してください。" {
-		t.Fatalf("expected executor message %q, got %q", "TDD で実装してください。", executorMap["message"])
+	// validation 関数が reject することを確認
+	if err := orchestrator.ValidateDefaultPayloadNoInstructions(behavior.DefaultPayload); err == nil {
+		t.Fatal("expected ValidateDefaultPayloadNoInstructions to reject instructions key")
 	}
 }
 
@@ -361,7 +393,7 @@ func TestFilterInstructions_Name_PropagatedToRoutedInstruction(t *testing.T) {
 			"reviewer_perf":{"type":"verification","consumer":"agent-a","name":"performance","message":"check performance"}
 		}
 	}`)
-	results := orchestrator.FilterInstructions(payload, orchestrator.InstructionTypeVerification, "agent-a")
+	results := orchestrator.FilterInstructions(parseInstructionsJSON(t, payload), orchestrator.InstructionTypeVerification, "agent-a")
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
@@ -383,7 +415,7 @@ func TestFilterInstructions_Name_EmptyWhenNotSet(t *testing.T) {
 			"main":{"type":"execution","consumer":"agent-a","message":"do it"}
 		}
 	}`)
-	results := orchestrator.FilterInstructions(payload, orchestrator.InstructionTypeExecution, "agent-a")
+	results := orchestrator.FilterInstructions(parseInstructionsJSON(t, payload), orchestrator.InstructionTypeExecution, "agent-a")
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}

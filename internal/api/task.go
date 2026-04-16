@@ -30,9 +30,10 @@ func (h *TaskHandler) Routes() chi.Router {
 }
 
 type UpdateTaskRequest struct {
-	Title       string          `json:"title"`
-	Description string          `json:"description"`
-	Payload     json.RawMessage `json:"payload,omitempty"`
+	Title        string          `json:"title"`
+	Description  string          `json:"description"`
+	Payload      json.RawMessage `json:"payload,omitempty"`
+	Instructions json.RawMessage `json:"instructions,omitempty"`
 }
 
 type CreateTaskRequest struct {
@@ -45,6 +46,7 @@ type CreateTaskRequest struct {
 	RemoteID     string                     `json:"remote_id,omitempty"`
 	DataSourceID string                     `json:"datasource_id,omitempty"`
 	Payload      json.RawMessage            `json:"payload,omitempty"`
+	Instructions json.RawMessage            `json:"instructions,omitempty"`
 	AutoStart    bool                       `json:"auto_start,omitempty"`
 	Traits       []string                   `json:"traits,omitempty"`
 	Readonly     *bool                      `json:"readonly,omitempty"`
@@ -122,8 +124,8 @@ func (h *TaskHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Title == "" && req.Description == "" && len(req.Payload) == 0 {
-		writeError(w, http.StatusBadRequest, "at least one of title, description, or payload is required")
+	if req.Title == "" && req.Description == "" && len(req.Payload) == 0 && len(req.Instructions) == 0 {
+		writeError(w, http.StatusBadRequest, "at least one of title, description, payload, or instructions is required")
 		return
 	}
 	task, err := h.Service.UpdateTask(id, req)
@@ -203,7 +205,8 @@ func (h *TaskHandler) Duplicate(w http.ResponseWriter, r *http.Request) {
 }
 
 type RerunTaskRequest struct {
-	AutoStart bool `json:"auto_start"`
+	AutoStart            bool            `json:"auto_start,omitempty"`
+	InstructionsOverride json.RawMessage `json:"instructions_override,omitempty"`
 }
 
 func (h *TaskHandler) Rerun(w http.ResponseWriter, r *http.Request) {
@@ -213,7 +216,7 @@ func (h *TaskHandler) Rerun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	task, err := h.Service.RerunTask(id, req.AutoStart)
+	task, err := h.Service.RerunTask(id, req)
 	if err != nil {
 		writeServiceError(w, err)
 		return

@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 )
 
@@ -11,8 +12,16 @@ import (
 //   - Use default_payload as base
 //   - Override with request payload's top-level keys
 //   - A null override top-level key means deletion
-//   - "instructions" key uses role-level merge via mergeInstructions
+//
+// "instructions" is no longer allowed in payload; use MergeDefaultInstructions instead.
 func MergeDefaultPayload(defaultPayload, requestPayload json.RawMessage) (json.RawMessage, error) {
+	if err := RejectPayloadInstructions(defaultPayload); err != nil {
+		return nil, fmt.Errorf("default_payload: %w", err)
+	}
+	if err := RejectPayloadInstructions(requestPayload); err != nil {
+		return nil, fmt.Errorf("request payload: %w", err)
+	}
+
 	if len(defaultPayload) == 0 || string(defaultPayload) == "null" {
 		if len(requestPayload) == 0 {
 			return json.RawMessage("{}"), nil
@@ -38,46 +47,60 @@ func MergeDefaultPayload(defaultPayload, requestPayload json.RawMessage) (json.R
 			delete(base, key)
 			continue
 		}
-		if key == "instructions" {
-			merged, err := mergeInstructions(base["instructions"], val)
-			if err != nil {
-				return nil, err
-			}
-			base[key] = merged
-			continue
-		}
 		base[key] = val
 	}
 
 	return json.Marshal(base)
 }
 
-// mergeInstructions merges two instructions maps at the role level.
-// Override roles replace base roles; override null role means deletion.
-func mergeInstructions(base, override json.RawMessage) (json.RawMessage, error) {
-	var baseMap map[string]json.RawMessage
-	if len(base) > 0 && string(base) != "null" {
-		if err := json.Unmarshal(base, &baseMap); err != nil {
-			return nil, err
-		}
-	} else {
-		baseMap = make(map[string]json.RawMessage)
+// RejectPayloadInstructions returns an error if payload contains an "instructions" top-level key.
+// instructions moved out of payload into Task.Instructions; accepting it here would silently drop it.
+func RejectPayloadInstructions(payload json.RawMessage) error {
+	if len(payload) == 0 || string(payload) == "{}" || string(payload) == "null" {
+		return nil
 	}
-
-	var overMap map[string]json.RawMessage
-	if err := json.Unmarshal(override, &overMap); err != nil {
-		return nil, err
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return nil
 	}
+	if _, ok := m["instructions"]; ok {
+		return fmt.Errorf(`"instructions" must be provided at top level, not inside payload`)
+	}
+	return nil
+}
 
-	for role, overInst := range overMap {
-		if string(overInst) == "null" {
-			delete(baseMap, role)
+// MergeDefaultInstructions merges behavior default instructions with request instructions.
+// Strategy:
+//   - Use defaultInstructions as base
+//   - Override with request's roles (role-level replacement)
+//   - A null role value in requestInstructions means deletion
+//
+// requestInstructions is accepted as json.RawMessage so that null role values can be
+// distinguished from absent roles.
+func MergeDefaultInstructions(defaultInstructions map[string]Instruction, requestInstructions json.RawMessage) (map[string]Instruction, error) {
+	base := make(map[string]Instruction, len(defaultInstructions))
+	for role, inst := range defaultInstructions {
+		base[role] = inst
+	}
+	if len(requestInstructions) == 0 || string(requestInstructions) == "null" || string(requestInstructions) == "{}" {
+		return base, nil
+	}
+	var override map[string]json.RawMessage
+	if err := json.Unmarshal(requestInstructions, &override); err != nil {
+		return nil, fmt.Errorf("unmarshal instructions: %w", err)
+	}
+	for role, raw := range override {
+		if string(raw) == "null" {
+			delete(base, role)
 			continue
 		}
-		baseMap[role] = overInst
+		var inst Instruction
+		if err := json.Unmarshal(raw, &inst); err != nil {
+			return nil, fmt.Errorf("unmarshal instruction %q: %w", role, err)
+		}
+		base[role] = inst
 	}
-
-	return json.Marshal(baseMap)
+	return base, nil
 }
 
 // defaultMessages maps InstructionType to a fallback message used when
@@ -116,20 +139,8 @@ func resolveMessage(inst Instruction, instType InstructionType, all map[string]I
 // FilterInstructions extracts instructions matching the given type and consumer,
 // sorted by role name for deterministic ordering.
 // When a role's message is empty, a fallback chain is applied (see resolveMessage).
-func FilterInstructions(payload json.RawMessage, instType InstructionType, consumer string) []RoutedInstruction {
-	if instType == "" || consumer == "" {
-		return nil
-	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &m); err != nil {
-		return nil
-	}
-	raw, ok := m["instructions"]
-	if !ok || string(raw) == "null" {
-		return nil
-	}
-	var instructions map[string]Instruction
-	if err := json.Unmarshal(raw, &instructions); err != nil {
+func FilterInstructions(instructions map[string]Instruction, instType InstructionType, consumer string) []RoutedInstruction {
+	if instType == "" || consumer == "" || len(instructions) == 0 {
 		return nil
 	}
 

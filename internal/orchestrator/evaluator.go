@@ -1,7 +1,5 @@
 package orchestrator
 
-import "encoding/json"
-
 type Evaluator struct{}
 
 // InstructionTypeForStatus maps a task status to the corresponding InstructionType.
@@ -19,21 +17,9 @@ func InstructionTypeForStatus(status TaskStatus) InstructionType {
 }
 
 // extractInstructionConsumers returns the set of consumer names that have an
-// instruction of the given type in the payload.
-func extractInstructionConsumers(payload json.RawMessage, instType InstructionType) map[string]bool {
-	if instType == "" {
-		return nil
-	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &m); err != nil {
-		return nil
-	}
-	raw, ok := m["instructions"]
-	if !ok || string(raw) == "null" {
-		return nil
-	}
-	var instructions map[string]Instruction
-	if err := json.Unmarshal(raw, &instructions); err != nil {
+// instruction of the given type in the task.
+func extractInstructionConsumers(instructions map[string]Instruction, instType InstructionType) map[string]bool {
+	if instType == "" || len(instructions) == 0 {
 		return nil
 	}
 	consumers := make(map[string]bool)
@@ -48,7 +34,12 @@ func extractInstructionConsumers(payload json.RawMessage, instType InstructionTy
 	return consumers
 }
 
-// consumesInstructions reports whether the handler traits include the instructions trait.
+// consumesInstructions reports whether the handler traits include the
+// instructions trait. A hook declaring `consumes: [instructions]` opts into
+// instructions routing.
+//
+// NOTE: Phase B 一時措置。Phase D で `consumes: [instructions]` 宣言を廃止し、
+// routing 対象の別マーカーへ置き換える予定。
 func consumesInstructions(traits HandlerTraits) bool {
 	for _, t := range traits.Consumes {
 		if t.Base() == TraitInstructions {
@@ -59,6 +50,9 @@ func consumesInstructions(traits HandlerTraits) bool {
 }
 
 // Evaluate returns hooks that should fire for the given task.
+// Hooks declaring `consumes: [instructions]` participate in instructions
+// routing: they fire only when task.Instructions contains an instruction of
+// the current status's type addressed to that hook's Consumer.
 func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 	activeTraits, _ := ActiveTraitTypes(task.Payload)
 	traitSet := make(map[TraitType]bool, len(activeTraits))
@@ -67,7 +61,7 @@ func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 	}
 
 	instType := InstructionTypeForStatus(task.Status)
-	consumers := extractInstructionConsumers(task.Payload, instType)
+	consumers := extractInstructionConsumers(task.Instructions, instType)
 
 	var matched []Hook
 	for _, h := range hooks {
@@ -122,9 +116,16 @@ func (e *Evaluator) EvaluateGates(task *Task, gates []Gate, phase GatePhase) []G
 	return matched
 }
 
+// hasAllTraits checks whether all required traits are present in the set.
+// TraitInstructions is ignored here because instructions moved out of payload
+// into Task.Instructions (hook YAML still listing it as consumes is a legacy
+// declaration that will be cleaned up in Phase D).
 func hasAllTraits(set map[TraitType]bool, required []TraitType) bool {
 	for _, t := range required {
 		if t.IsOptional() {
+			continue
+		}
+		if t.Base() == TraitInstructions {
 			continue
 		}
 		if !set[t] {

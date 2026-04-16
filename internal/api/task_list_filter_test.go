@@ -39,7 +39,7 @@ func (s *filterTaskService) ImportTasks(reqs []CreateTaskRequest) (*ImportResult
 func (s *filterTaskService) DuplicateTask(id string, autoStart bool) (*orchestrator.Task, error) {
 	return nil, nil
 }
-func (s *filterTaskService) RerunTask(id string, autoStart bool) (*orchestrator.Task, error) {
+func (s *filterTaskService) RerunTask(id string, req RerunTaskRequest) (*orchestrator.Task, error) {
 	return nil, nil
 }
 

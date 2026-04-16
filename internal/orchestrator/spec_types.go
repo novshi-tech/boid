@@ -300,14 +300,15 @@ func (p RawPayload) RawMessage() json.RawMessage {
 }
 
 type TaskBehavior struct {
-	Name           string     `yaml:"name" json:"name"`
-	Traits         []string   `yaml:"traits" json:"traits"`
-	Readonly       bool       `yaml:"readonly" json:"readonly,omitempty"`
-	Worktree       bool       `yaml:"worktree" json:"worktree,omitempty"`
-	BranchPrefix   string     `yaml:"branch_prefix" json:"branch_prefix,omitempty"`
-	BaseBranch     string     `yaml:"base_branch" json:"base_branch,omitempty"`
-	DefaultPayload RawPayload `yaml:"default_payload" json:"default_payload,omitempty"`
-	Kits           []KitRef   `yaml:"kits,omitempty" json:"kits,omitempty"`
+	Name                string                 `yaml:"name" json:"name"`
+	Traits              []string               `yaml:"traits" json:"traits"`
+	Readonly            bool                   `yaml:"readonly" json:"readonly,omitempty"`
+	Worktree            bool                   `yaml:"worktree" json:"worktree,omitempty"`
+	BranchPrefix        string                 `yaml:"branch_prefix" json:"branch_prefix,omitempty"`
+	BaseBranch          string                 `yaml:"base_branch" json:"base_branch,omitempty"`
+	DefaultInstructions map[string]Instruction `yaml:"default_instructions,omitempty" json:"default_instructions,omitempty"`
+	DefaultPayload      RawPayload             `yaml:"default_payload" json:"default_payload,omitempty"`
+	Kits                []KitRef               `yaml:"kits,omitempty" json:"kits,omitempty"`
 
 	// Resolved fields populated by ReadProjectMetaWithKits after merging kit data
 	// and project-level overlays. These are not serialized to YAML.
@@ -325,13 +326,14 @@ type TaskBehavior struct {
 // referencing a named behavior from project.yaml task_behaviors. This allows
 // kits to self-describe the behavior they need without depending on project config.
 type BehaviorSpec struct {
-	Name           string     `yaml:"name" json:"name"`
-	Traits         []string   `yaml:"traits,omitempty" json:"traits,omitempty"`
-	Readonly       bool       `yaml:"readonly,omitempty" json:"readonly,omitempty"`
-	Worktree       bool       `yaml:"worktree,omitempty" json:"worktree,omitempty"`
-	BranchPrefix   string     `yaml:"branch_prefix,omitempty" json:"branch_prefix,omitempty"`
-	BaseBranch     string     `yaml:"base_branch,omitempty" json:"base_branch,omitempty"`
-	DefaultPayload RawPayload `yaml:"default_payload,omitempty" json:"default_payload,omitempty"`
+	Name                string                 `yaml:"name" json:"name"`
+	Traits              []string               `yaml:"traits,omitempty" json:"traits,omitempty"`
+	Readonly            bool                   `yaml:"readonly,omitempty" json:"readonly,omitempty"`
+	Worktree            bool                   `yaml:"worktree,omitempty" json:"worktree,omitempty"`
+	BranchPrefix        string                 `yaml:"branch_prefix,omitempty" json:"branch_prefix,omitempty"`
+	BaseBranch          string                 `yaml:"base_branch,omitempty" json:"base_branch,omitempty"`
+	DefaultInstructions map[string]Instruction `yaml:"default_instructions,omitempty" json:"default_instructions,omitempty"`
+	DefaultPayload      RawPayload             `yaml:"default_payload,omitempty" json:"default_payload,omitempty"`
 }
 
 type KitRef struct {

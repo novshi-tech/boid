@@ -224,6 +224,7 @@ type taskCreateSpec struct {
 	BehaviorSpec     *orchestrator.BehaviorSpec `yaml:"behavior_spec,omitempty"`
 	AutoStart        bool                       `yaml:"auto_start,omitempty"`
 	Payload          map[string]any             `yaml:"payload,omitempty"`
+	Instructions     map[string]any             `yaml:"instructions,omitempty"`
 	DependsOn        []string                   `yaml:"depends_on,omitempty"`
 	DependsOnPayload string                     `yaml:"depends_on_payload,omitempty"`
 	Ref              string                     `yaml:"ref,omitempty"`
@@ -290,6 +291,13 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("encode payload: %w", err)
 		}
 		req["payload"] = json.RawMessage(payloadJSON)
+	}
+	if spec.Instructions != nil {
+		instructionsJSON, err := json.Marshal(spec.Instructions)
+		if err != nil {
+			return fmt.Errorf("encode instructions: %w", err)
+		}
+		req["instructions"] = json.RawMessage(instructionsJSON)
 	}
 	if len(spec.DependsOn) > 0 {
 		req["depends_on"] = spec.DependsOn
