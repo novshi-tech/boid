@@ -29,6 +29,7 @@ type ScaffoldTemplateData struct {
 	ProjectID   string
 	ProjectName string
 	Consumer    string
+	FeatureKits []string
 }
 
 // Wizard runs the interactive project initialization flow.
@@ -42,7 +43,6 @@ type Wizard struct {
 type projectFileOut struct {
 	ID            string         `yaml:"id"`
 	Name          string         `yaml:"name"`
-	Kits          []string       `yaml:"kits,omitempty"`
 	TaskBehaviors map[string]any `yaml:"task_behaviors,omitempty"`
 }
 
@@ -144,15 +144,12 @@ func (w *Wizard) Run(projectDir string) error {
 	// [4.5] Select consumer from feature kits that provide one
 	consumer := w.selectConsumer(scanner, selectedFeatureKits)
 
-	// Build combined kit list and metadata list for validation
-	var selectedKitRefs []string
+	// Build metadata list for validation
 	var selectedKitMetas []orchestrator.KitMeta
 	for _, ki := range selectedFeatureKits {
-		selectedKitRefs = append(selectedKitRefs, ki.Ref)
 		selectedKitMetas = append(selectedKitMetas, *ki.Meta)
 	}
 	if selectedBehaviorKit != nil {
-		selectedKitRefs = append(selectedKitRefs, selectedBehaviorKit.Ref)
 		selectedKitMetas = append(selectedKitMetas, *selectedBehaviorKit.Meta)
 	}
 
@@ -179,6 +176,11 @@ func (w *Wizard) Run(projectDir string) error {
 	// [6] Generate project ID and expand scaffold template
 	projectID := uuid.New().String()
 
+	featureKitRefs := make([]string, 0, len(selectedFeatureKits))
+	for _, ki := range selectedFeatureKits {
+		featureKitRefs = append(featureKitRefs, ki.Ref)
+	}
+
 	var taskBehaviors map[string]any
 	if selectedBehaviorKit != nil &&
 		selectedBehaviorKit.Meta.Scaffold != nil &&
@@ -187,6 +189,7 @@ func (w *Wizard) Run(projectDir string) error {
 			ProjectID:   projectID,
 			ProjectName: name,
 			Consumer:    consumer,
+			FeatureKits: featureKitRefs,
 		}
 		expanded, expandErr := ExpandScaffoldTemplate(
 			selectedBehaviorKit.Dir,
@@ -204,14 +207,10 @@ func (w *Wizard) Run(projectDir string) error {
 	if err := os.MkdirAll(boidDir, 0o755); err != nil {
 		return fmt.Errorf("create .boid: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Join(boidDir, "hooks"), 0o755); err != nil {
-		return fmt.Errorf("create .boid/hooks: %w", err)
-	}
 
 	proj := projectFileOut{
 		ID:            projectID,
 		Name:          name,
-		Kits:          selectedKitRefs,
 		TaskBehaviors: taskBehaviors,
 	}
 
