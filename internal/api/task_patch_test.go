@@ -52,7 +52,7 @@ func (s *patchTaskService) ImportTasks(reqs []CreateTaskRequest) (*ImportResult,
 func (s *patchTaskService) DuplicateTask(id string, autoStart bool) (*orchestrator.Task, error) {
 	return nil, nil
 }
-func (s *patchTaskService) RerunTask(id string, autoStart bool) (*orchestrator.Task, error) {
+func (s *patchTaskService) RerunTask(id string, req RerunTaskRequest) (*orchestrator.Task, error) {
 	return nil, nil
 }
 

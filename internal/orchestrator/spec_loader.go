@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -51,7 +52,30 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 		return nil, fmt.Errorf("project.yaml: name is required")
 	}
 
+	for name, behavior := range meta.TaskBehaviors {
+		if err := ValidateDefaultPayloadNoInstructions(behavior.DefaultPayload); err != nil {
+			return nil, fmt.Errorf("project.yaml: task_behaviors.%s.default_payload: %w", name, err)
+		}
+	}
+
 	return &meta, nil
+}
+
+// ValidateDefaultPayloadNoInstructions rejects "instructions" as a top-level key
+// in default_payload. instructions live on Task.Instructions via default_instructions.
+func ValidateDefaultPayloadNoInstructions(p RawPayload) error {
+	raw := json.RawMessage(p)
+	if len(raw) == 0 || string(raw) == "{}" || string(raw) == "null" {
+		return nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil
+	}
+	if _, ok := m["instructions"]; ok {
+		return fmt.Errorf(`"instructions" is no longer allowed here; use "default_instructions" instead`)
+	}
+	return nil
 }
 
 // resolveProjectHostCommandPaths resolves relative paths in host_commands
@@ -234,6 +258,11 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 	}
 	if err := validateBuiltinCommands("kit.yaml", meta.BuiltinCommands, meta.HostCommands); err != nil {
 		return nil, err
+	}
+	for name, behavior := range meta.TaskBehaviors {
+		if err := ValidateDefaultPayloadNoInstructions(behavior.DefaultPayload); err != nil {
+			return nil, fmt.Errorf("kit.yaml: task_behaviors.%s.default_payload: %w", name, err)
+		}
 	}
 
 	interpolateBindMounts(meta.AdditionalBindings)

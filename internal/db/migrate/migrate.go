@@ -126,6 +126,13 @@ func Apply(conn *sql.DB) error {
 				return columnExists(tx, "actions", "from_status")
 			},
 		},
+		{
+			version: "0018_add_tasks_instructions",
+			path:    "migrations/0018_add_tasks_instructions.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnExists(tx, "tasks", "instructions")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

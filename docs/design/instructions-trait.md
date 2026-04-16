@@ -816,3 +816,189 @@ exec claude/codex with prompt
   - hook は stdin の payload と `BOID_INSTRUCTIONS` の両方を見て prompt を組み立てる
 - gate に対する instructions routing は当面対象外
 - `TaskBehavior.Traits` の役割整理は別設計で扱う
+
+---
+
+## 改訂: instructions の top-level 昇格 (2026-04-17)
+
+### 背景
+
+当初の設計では `instructions` を payload の top-level キーとして扱っていたが、実運用で以下の歪みが顕在化した。
+
+- `instructions` は「設計時にユーザが与える "誰に何を依頼するか" の契約」であり、`artifact` / `verification` / `tasks` のような「実行時の動的成果物」とは性質が異なる
+- この性質差は実装上も「`instructions` は `traits.produces` に入れてはならない」(`spec_payload.go:52`) という特殊ルールとして現れている
+- `RerunTask` (`internal/api/service.go:588-604`) は `instructions` キーだけを payload から抽出して保持する特殊処理を入れている。これは「責務が違うものを同じ袋に入れたことの帳尻合わせ」でしかない
+- `TraitInstructions` は「consume 可 / produce 不可」という歪な trait になっており、payload の active trait 一覧に混ざると意味が揺れる
+
+加えて「タスクの実行がうまくいかなかったときに `instructions` を書き換えて model を opus に格上げしたり message を調整して rerun したい」という運用要求があり、これを payload_patch 経由の動的書き換えとして許すと所有権が曖昧になる。
+
+解決策は **`instructions` を Task 構造体のトップレベルフィールドに昇格する**こと。プレリリース中に破壊的変更として実施する。
+
+### 新しいデータモデル
+
+```go
+// internal/orchestrator/model.go
+type Task struct {
+    // 既存フィールド...
+    Payload      json.RawMessage           `json:"payload"`
+    Instructions map[string]Instruction    `json:"instructions,omitempty"` // 新規: role -> Instruction
+    // 既存フィールド...
+}
+```
+
+`Payload` には `instructions` キーが入らなくなる。Payload は完全に「実行時の動的成果物 (artifact / verification / tasks / execution_complete)」専用になる。
+
+### データモデル変更の波及
+
+#### DB schema
+
+```sql
+-- 0018_add_tasks_instructions.sql
+ALTER TABLE tasks ADD COLUMN instructions TEXT NOT NULL DEFAULT '{}';
+-- 既存 tasks.payload の "instructions" キーは Phase A のコードパスで自然に消えるため
+-- マイグレーションでの data move は行わない (プレリリース中のため既存データ保護不要)
+```
+
+#### TaskBehavior / BehaviorSpec
+
+`DefaultPayload` から `instructions` を分離する。
+
+```go
+type TaskBehavior struct {
+    // ...
+    DefaultInstructions RawInstructions `yaml:"default_instructions" json:"default_instructions,omitempty"`
+    DefaultPayload      RawPayload      `yaml:"default_payload" json:"default_payload,omitempty"` // instructions キーは禁止
+}
+```
+
+YAML 上の表現:
+
+```yaml
+task_behaviors:
+  impl:
+    traits: [artifact, verification]
+    default_instructions:
+      executor:
+        type: execution
+        consumer: claude-code
+        message: "TDD で実装してください。"
+      reviewer:
+        type: verification
+        consumer: codex
+        message: "レビューしてください。"
+    default_payload:
+      # instructions キーはここに書けない (loader validation でエラー)
+```
+
+loader は `default_payload` に `instructions` キーが含まれていれば load error にする。
+
+### API 契約変更
+
+#### CreateTaskRequest
+
+```go
+type CreateTaskRequest struct {
+    // ...
+    Payload      json.RawMessage        `json:"payload,omitempty"`
+    Instructions map[string]Instruction `json:"instructions,omitempty"` // 新規
+}
+```
+
+merge 順:
+1. `behavior.DefaultInstructions` を base に
+2. `req.Instructions` で role 単位上書き (`null` role は削除)
+3. 結果を `task.Instructions` にセット
+
+`req.Payload` の中に `instructions` キーがあった場合は 400 (`"instructions" must be provided at top level, not inside payload`)。
+
+#### UpdateTaskRequest (`PATCH /tasks/{id}`)
+
+```go
+type UpdateTaskRequest struct {
+    Title        string                 `json:"title,omitempty"`
+    Description  string                 `json:"description,omitempty"`
+    Payload      json.RawMessage        `json:"payload,omitempty"`
+    Instructions map[string]Instruction `json:"instructions,omitempty"` // 新規: role 単位 partial 置換
+}
+```
+
+ガード:
+- `Instructions` が指定された場合、task.Status が `done` / `aborted` / `pending` のいずれでもなければ 409 (`cannot edit instructions while task is running`)
+- partial update の粒度は **role 単位置換** (`mergeInstructions` と同じ意味論)
+- `req.Instructions[role] = null` は該当 role の削除
+
+#### RerunTaskRequest (`POST /tasks/{id}/rerun`)
+
+```go
+type RerunTaskRequest struct {
+    AutoStart            bool                   `json:"auto_start"`
+    InstructionsOverride map[string]Instruction `json:"instructions_override,omitempty"` // 新規
+}
+```
+
+処理:
+1. status を `pending` に戻す
+2. `task.Payload = "{}"` でクリア (instructions の特殊処理撤去)
+3. `InstructionsOverride` が非 nil なら `task.Instructions` に role 単位で merge
+4. `AutoStart` で start を噛ませる
+
+これで「model を opus に格上げして rerun」が 1 リクエストで完結する。
+
+#### Audit
+
+`UpdateTask` と `RerunTask` で `Instructions` を変更した場合、Action ログに以下を記録する。
+
+```json
+{
+  "type": "update_instructions",
+  "payload": {
+    "before": {...},
+    "after": {...}
+  }
+}
+```
+
+rerun 結果の差異を後追いするためのトレースとして使う。
+
+### Evaluator / Planner への波及 (Phase B)
+
+- `extractInstructionConsumers` は `task.Payload` ではなく `task.Instructions` を参照 (signature 変更)
+- `FilterInstructions` は `task.Payload` ではなく `task.Instructions` を参照 (signature 変更)
+- `PlanHook` は `task.Instructions` から `InstructionsJSON` を生成
+- `ActiveTraitTypes` は変更不要 (payload に instructions が出現しなくなるため、自然に除外される)
+- `hasAllTraits` は `TraitInstructions` を skip する (hook が `consumes: [instructions]` を宣言していても、payload の active trait として要求しない)
+- **instructions routing 対象の判定は現時点では `consumes: [instructions]` 宣言で継続する** (既存互換)。kit 由来の非 routing hook (artifact 専用など) まで routing 対象にしないためのマーカーとして必要。`Hook.Consumer != ""` だけで判定すると、kit consumer を継承するすべての kit hook が routing 対象になってしまうため不可
+- **Phase D で `consumes: [instructions]` を廃止する際は、routing 対象の別マーカー** (例: `kind: agent` や `routes_instructions: true`、または「kit.yaml の instructions-routing hook だけ明示的に Consumer を宣言する」仕様) **を新設する**。Phase D 設計時に決定
+- `TraitInstructions` 定数は Phase B では routing マーカーとして現役、Phase D で廃止
+- `ValidatePayloadPatch` の `TraitInstructions` 拒否チェックは残す (payload に出現しなくなるので到達しないが、万一の 防衛線として)
+
+### kit への影響
+
+- kit script に渡る `BOID_INSTRUCTIONS` env は不変 (routing 経路は変わらない)
+- kit script に stdin で渡る payload から `instructions` キーが消える。既存の kit script は `instructions` キーを読み取る実装になっていないため、影響なし
+- `default_payload.instructions` を書いている kit fixture は `default_instructions` に書き直す (Phase E で対応)
+
+### Phase 計画
+
+| Phase | 内容 | PR 粒度 |
+|---|---|---|
+| A-1 | 設計 doc 改訂 (本セクション) | 1 PR |
+| A-2 | Task / TaskBehavior / BehaviorSpec 構造体変更 + DB migration 0018 | 同 PR |
+| A-3 | CreateTask / RerunTask / UpdateTask の instructions 経路 + audit | 同 PR |
+| A-4 | Phase A の既存テスト更新 + go vet / go test 通過 | 同 PR |
+| B | Evaluator / Planner の instructions 参照を task に切り替え | 1 PR |
+| C | CLI / TUI の instructions 編集 UI (payload editor と分離) | 1 PR |
+| D | e2e kit fixture 修正 + docs 追補 | 1 PR |
+
+Phase A は 1 つの PR に収める (struct / DB / API は同時に変えないとビルドが通らないため)。
+
+### 破壊的変更リスト
+
+- `task.Payload` 上に `instructions` キーは存在しない
+- `TaskBehavior.DefaultPayload` / `BehaviorSpec.DefaultPayload` に `instructions` キーを書くと loader error
+- `PATCH /tasks/{id}` に `instructions` フィールドが追加される。既存クライアントは無関係
+- `POST /tasks/{id}/rerun` に `instructions_override` フィールドが追加される。既存クライアントは無関係
+- `PATCH /tasks/{id}` の `instructions` 指定は停止中 (done/aborted/pending) のみ許可
+- `Task` JSON に `instructions` フィールドが追加される (API / CLI / DTO 全チェーン)
+- `TraitInstructions` は payload の active trait ではなくなる
+- kit YAML の `consumes: [instructions]` は Phase B では routing マーカーとして機能し続ける (互換性維持)。Phase D で routing 対象の別マーカーに置き換えた後に削除する

@@ -10,17 +10,16 @@ task_behaviors:
         as: agent-a
       - ref: github.com/novshi-tech/boid-kits/instructions-agent-b
         as: agent-b
-    default_payload:
-      instructions:
-        executor:
-          type: execution
-          consumer: agent-a
-          message: "implement the task"
-        reviewer:
-          type: verification
-          consumer: agent-b
-          message: "review correctness"
-        security:
-          type: verification
-          consumer: agent-b
-          message: "check security aspects"
+    default_instructions:
+      executor:
+        type: execution
+        consumer: agent-a
+        message: "implement the task"
+      reviewer:
+        type: verification
+        consumer: agent-b
+        message: "review correctness"
+      security:
+        type: verification
+        consumer: agent-b
+        message: "check security aspects"

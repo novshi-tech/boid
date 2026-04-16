@@ -12,13 +12,15 @@ func TestEvaluate_MatchingHookFires(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
 	task := &orchestrator.Task{
-		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"instructions":{"executor":{"type":"execution","consumer":"claude-code","message":"do stuff"}}}`),
+		Status: orchestrator.TaskStatusExecuting,
+		Instructions: map[string]orchestrator.Instruction{
+			"executor": {Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "do stuff"},
+		},
 	}
 	hooks := []projectspec.Hook{
 		{
 			ID:       "run-agent",
-			On: projectspec.OnValues{"executing"},
+			On:       projectspec.OnValues{"executing"},
 			Consumer: "claude-code",
 			Traits: projectspec.HandlerTraits{
 				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
@@ -61,16 +63,17 @@ func TestEvaluate_NonMatchingStatus(t *testing.T) {
 func TestEvaluate_MissingTrait(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
+	// artifact trait を require する hook は、payload に artifact が無いと fire しない
 	task := &orchestrator.Task{
 		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"artifact":"http://example.com"}`),
+		Payload: json.RawMessage(`{}`),
 	}
 	hooks := []projectspec.Hook{
 		{
 			ID: "run-agent",
 			On: projectspec.OnValues{"executing"},
 			Traits: projectspec.HandlerTraits{
-				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
+				Consumes: []projectspec.TraitType{projectspec.TraitArtifact},
 			},
 		},
 	}
@@ -122,13 +125,15 @@ func TestEvaluate_InstructionsRouting_ConsumerMatch(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
 	task := &orchestrator.Task{
-		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"instructions":{"executor":{"type":"execution","consumer":"claude-code","message":"do something"}}}`),
+		Status: orchestrator.TaskStatusExecuting,
+		Instructions: map[string]orchestrator.Instruction{
+			"executor": {Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "do something"},
+		},
 	}
 	hooks := []projectspec.Hook{
 		{
 			ID:       "run-claude",
-			On: projectspec.OnValues{"executing"},
+			On:       projectspec.OnValues{"executing"},
 			Consumer: "claude-code",
 			Traits: projectspec.HandlerTraits{
 				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
@@ -149,13 +154,15 @@ func TestEvaluate_InstructionsRouting_ConsumerMismatch(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
 	task := &orchestrator.Task{
-		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"instructions":{"executor":{"type":"execution","consumer":"claude-code","message":"do something"}}}`),
+		Status: orchestrator.TaskStatusExecuting,
+		Instructions: map[string]orchestrator.Instruction{
+			"executor": {Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "do something"},
+		},
 	}
 	hooks := []projectspec.Hook{
 		{
 			ID:       "run-codex",
-			On: projectspec.OnValues{"executing"},
+			On:       projectspec.OnValues{"executing"},
 			Consumer: "codex",
 			Traits: projectspec.HandlerTraits{
 				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
@@ -198,16 +205,18 @@ func TestEvaluate_NonInstructionsHook_NotFiltered(t *testing.T) {
 func TestEvaluate_InstructionsRouting_WrongStatus(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
-	// payload has execution-type instructions, but status is verifying
-	// -> instType=verification, but no verification-type consumer in payload
+	// task has execution-type instructions, but status is verifying
+	// -> instType=verification, but no verification-type consumer in task.Instructions
 	task := &orchestrator.Task{
-		Status:  orchestrator.TaskStatusVerifying,
-		Payload: json.RawMessage(`{"instructions":{"executor":{"type":"execution","consumer":"claude-code","message":"do something"}}}`),
+		Status: orchestrator.TaskStatusVerifying,
+		Instructions: map[string]orchestrator.Instruction{
+			"executor": {Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "do something"},
+		},
 	}
 	hooks := []projectspec.Hook{
 		{
 			ID:       "run-claude",
-			On: projectspec.OnValues{"verifying"},
+			On:       projectspec.OnValues{"verifying"},
 			Consumer: "claude-code",
 			Traits: projectspec.HandlerTraits{
 				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
@@ -303,7 +312,10 @@ func TestEvaluate_OptionalTrait_FiresWhenAbsent(t *testing.T) {
 	// executing: verification not in payload yet — hook should still fire
 	task := &orchestrator.Task{
 		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"instructions":{"exec":{"type":"execution","consumer":"claude-code","message":"impl"}}}`),
+		Payload: json.RawMessage(`{}`),
+		Instructions: map[string]orchestrator.Instruction{
+			"exec": {Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "impl"},
+		},
 	}
 	hooks := []projectspec.Hook{
 		{
@@ -311,7 +323,7 @@ func TestEvaluate_OptionalTrait_FiresWhenAbsent(t *testing.T) {
 			On:       projectspec.OnValues{"executing", "reworking"},
 			Consumer: "claude-code",
 			Traits: projectspec.HandlerTraits{
-				Consumes: []projectspec.TraitType{projectspec.TraitInstructions, "verification?"},
+				Consumes: []projectspec.TraitType{"verification?"},
 			},
 		},
 	}
@@ -329,9 +341,11 @@ func TestEvaluate_OptionalTrait_FiresWhenPresent(t *testing.T) {
 	task := &orchestrator.Task{
 		Status: orchestrator.TaskStatusReworking,
 		Payload: json.RawMessage(`{
-			"instructions":{"rework":{"type":"rework","consumer":"claude-code","message":"fix"}},
 			"verification":{"pr-verify":{"findings":[{"message":"CI failed","status":"open"}]}}
 		}`),
+		Instructions: map[string]orchestrator.Instruction{
+			"rework": {Type: orchestrator.InstructionTypeRework, Consumer: "claude-code", Message: "fix"},
+		},
 	}
 	hooks := []projectspec.Hook{
 		{
@@ -339,7 +353,7 @@ func TestEvaluate_OptionalTrait_FiresWhenPresent(t *testing.T) {
 			On:       projectspec.OnValues{"executing", "reworking"},
 			Consumer: "claude-code",
 			Traits: projectspec.HandlerTraits{
-				Consumes: []projectspec.TraitType{projectspec.TraitInstructions, "verification?"},
+				Consumes: []projectspec.TraitType{"verification?"},
 			},
 		},
 	}

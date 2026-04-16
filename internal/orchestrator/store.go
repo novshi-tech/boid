@@ -27,7 +27,7 @@ type TaskFilter struct {
 // taskSelectCols は tasks テーブルの基本カラム一覧（テーブル別名 t を使用）。
 const taskSelectCols = `t.id, t.project_id, t.remote_id, t.datasource_id, t.title, t.description,` +
 	` t.status, t.behavior, t.traits, t.readonly, t.worktree,` +
-	` t.branch_prefix, t.base_branch, t.payload, t.auto_start, t.depends_on_payload,` +
+	` t.branch_prefix, t.base_branch, t.payload, t.instructions, t.auto_start, t.depends_on_payload,` +
 	` t.ref, t.parent_id, t.created_at, t.updated_at`
 
 // taskChildCountCols は子タスク数を集計するサブクエリカラム群（テーブル別名 t を前提）。
@@ -62,6 +62,10 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 	if err != nil {
 		return fmt.Errorf("marshal traits: %w", err)
 	}
+	instructionsJSON, err := marshalInstructions(t.Instructions)
+	if err != nil {
+		return fmt.Errorf("marshal instructions: %w", err)
+	}
 
 	if len(t.DependsOn) > 0 {
 		if err := detectCyclicDependency(dbtx, t.ID, t.DependsOn); err != nil {
@@ -70,9 +74,9 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 	}
 
 	_, err = dbtx.Exec(
-		`INSERT INTO tasks (id, project_id, remote_id, datasource_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, auto_start, depends_on_payload, ref, parent_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.ProjectID, t.RemoteID, t.DataSourceID, t.Title, t.Description, t.Status, t.Behavior, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), t.AutoStart, t.DependsOnPayload, t.Ref, t.ParentID, t.CreatedAt, t.UpdatedAt,
+		`INSERT INTO tasks (id, project_id, remote_id, datasource_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, instructions, auto_start, depends_on_payload, ref, parent_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.ProjectID, t.RemoteID, t.DataSourceID, t.Title, t.Description, t.Status, t.Behavior, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.AutoStart, t.DependsOnPayload, t.Ref, t.ParentID, t.CreatedAt, t.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
@@ -288,9 +292,13 @@ func UpdateTask(dbtx db.DBTX, t *Task) error {
 	if err != nil {
 		return fmt.Errorf("marshal traits: %w", err)
 	}
+	instructionsJSON, err := marshalInstructions(t.Instructions)
+	if err != nil {
+		return fmt.Errorf("marshal instructions: %w", err)
+	}
 	_, err = dbtx.Exec(
-		`UPDATE tasks SET title = ?, description = ?, status = ?, traits = ?, readonly = ?, worktree = ?, branch_prefix = ?, base_branch = ?, payload = ?, updated_at = ? WHERE id = ?`,
-		t.Title, t.Description, t.Status, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), t.UpdatedAt, t.ID,
+		`UPDATE tasks SET title = ?, description = ?, status = ?, traits = ?, readonly = ?, worktree = ?, branch_prefix = ?, base_branch = ?, payload = ?, instructions = ?, updated_at = ? WHERE id = ?`,
+		t.Title, t.Description, t.Status, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.UpdatedAt, t.ID,
 	)
 	return err
 }
@@ -529,11 +537,12 @@ type taskScanner interface {
 func scanTask(s taskScanner) (*Task, error) {
 	var t Task
 	var payload string
+	var instructionsJSON string
 	var traitsJSON string
 	if err := s.Scan(
 		&t.ID, &t.ProjectID, &t.RemoteID, &t.DataSourceID, &t.Title, &t.Description,
 		&t.Status, &t.Behavior, &traitsJSON, &t.Readonly, &t.Worktree,
-		&t.BranchPrefix, &t.BaseBranch, &payload, &t.AutoStart, &t.DependsOnPayload,
+		&t.BranchPrefix, &t.BaseBranch, &payload, &instructionsJSON, &t.AutoStart, &t.DependsOnPayload,
 		&t.Ref, &t.ParentID, &t.CreatedAt, &t.UpdatedAt,
 		&t.TotalChildCount, &t.DoneChildCount, &t.AbortedChildCount, &t.OpenChildCount,
 	); err != nil {
@@ -548,6 +557,11 @@ func scanTask(s taskScanner) (*Task, error) {
 		return nil, fmt.Errorf("unmarshal traits: %w", err)
 	}
 	t.Traits = traits
+	instructions, err := unmarshalInstructions(instructionsJSON)
+	if err != nil {
+		return nil, fmt.Errorf("unmarshal instructions: %w", err)
+	}
+	t.Instructions = instructions
 	return &t, nil
 }
 
@@ -571,6 +585,31 @@ func unmarshalTraits(s string) ([]string, error) {
 		return nil, err
 	}
 	return traits, nil
+}
+
+func marshalInstructions(instructions map[string]Instruction) (string, error) {
+	if len(instructions) == 0 {
+		return "{}", nil
+	}
+	b, err := json.Marshal(instructions)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func unmarshalInstructions(s string) (map[string]Instruction, error) {
+	if s == "" || s == "{}" {
+		return nil, nil
+	}
+	var instructions map[string]Instruction
+	if err := json.Unmarshal([]byte(s), &instructions); err != nil {
+		return nil, err
+	}
+	if len(instructions) == 0 {
+		return nil, nil
+	}
+	return instructions, nil
 }
 
 // generateUniqueRef generates a unique ref for the given parent scope.

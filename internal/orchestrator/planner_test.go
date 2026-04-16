@@ -266,12 +266,6 @@ func TestDispatchPlannerPlanGateStagesKitGates(t *testing.T) {
 }
 
 func TestPlanHook_InstructionsJSON_MatchingConsumer(t *testing.T) {
-	payload := json.RawMessage(`{
-		"instructions": {
-			"reviewer": {"type":"verification","consumer":"claude-code","message":"check formatting"},
-			"executor": {"type":"execution","consumer":"claude-code","message":"run tests"}
-		}
-	}`)
 	meta := &ProjectMeta{
 		ID: "proj-1",
 	}
@@ -281,7 +275,10 @@ func TestPlanHook_InstructionsJSON_MatchingConsumer(t *testing.T) {
 		ProjectID: "proj-1",
 		Behavior:  "dev",
 		Status:    TaskStatusVerifying,
-		Payload:   payload,
+		Instructions: map[string]Instruction{
+			"reviewer": {Type: InstructionTypeVerification, Consumer: "claude-code", Message: "check formatting"},
+			"executor": {Type: InstructionTypeExecution, Consumer: "claude-code", Message: "run tests"},
+		},
 	}
 
 	planner := &DispatchPlanner{
@@ -366,11 +363,6 @@ func TestPlanHook_InstructionsJSON_NoInstructions(t *testing.T) {
 }
 
 func TestPlanHook_InstructionsJSON_ConsumerMismatch(t *testing.T) {
-	payload := json.RawMessage(`{
-		"instructions": {
-			"executor": {"type":"execution","consumer":"other-agent","message":"run tests"}
-		}
-	}`)
 	meta := &ProjectMeta{
 		ID: "proj-1",
 	}
@@ -380,7 +372,9 @@ func TestPlanHook_InstructionsJSON_ConsumerMismatch(t *testing.T) {
 		ProjectID: "proj-1",
 		Behavior:  "dev",
 		Status:    TaskStatusExecuting,
-		Payload:   payload,
+		Instructions: map[string]Instruction{
+			"executor": {Type: InstructionTypeExecution, Consumer: "other-agent", Message: "run tests"},
+		},
 	}
 
 	planner := &DispatchPlanner{
@@ -409,13 +403,6 @@ func TestPlanHook_InstructionsJSON_ConsumerMismatch(t *testing.T) {
 }
 
 func TestPlanHook_InstructionsJSON_MultipleRolesSorted(t *testing.T) {
-	payload := json.RawMessage(`{
-		"instructions": {
-			"zebra": {"type":"execution","consumer":"claude-code","message":"last"},
-			"alpha": {"type":"execution","consumer":"claude-code","message":"first"},
-			"middle": {"type":"execution","consumer":"claude-code","message":"middle"}
-		}
-	}`)
 	meta := &ProjectMeta{
 		ID: "proj-1",
 	}
@@ -425,7 +412,11 @@ func TestPlanHook_InstructionsJSON_MultipleRolesSorted(t *testing.T) {
 		ProjectID: "proj-1",
 		Behavior:  "dev",
 		Status:    TaskStatusExecuting,
-		Payload:   payload,
+		Instructions: map[string]Instruction{
+			"zebra":  {Type: InstructionTypeExecution, Consumer: "claude-code", Message: "last"},
+			"alpha":  {Type: InstructionTypeExecution, Consumer: "claude-code", Message: "first"},
+			"middle": {Type: InstructionTypeExecution, Consumer: "claude-code", Message: "middle"},
+		},
 	}
 
 	planner := &DispatchPlanner{
@@ -610,11 +601,6 @@ func TestPlanHook_PayloadJSON_EmptyConsumes(t *testing.T) {
 }
 
 func TestPlanHook_Interactive_PropagatedToDispatchRequest(t *testing.T) {
-	payload := json.RawMessage(`{
-		"instructions":{
-			"executor":{"type":"execution","consumer":"claude-code","message":"run it","interactive":true}
-		}
-	}`)
 	meta := &ProjectMeta{ID: "proj-1"}
 	proj := &Project{ID: "proj-1", WorkDir: t.TempDir()}
 	task := &Task{
@@ -622,7 +608,9 @@ func TestPlanHook_Interactive_PropagatedToDispatchRequest(t *testing.T) {
 		ProjectID: "proj-1",
 		Behavior:  "dev",
 		Status:    TaskStatusExecuting,
-		Payload:   payload,
+		Instructions: map[string]Instruction{
+			"executor": {Type: InstructionTypeExecution, Consumer: "claude-code", Message: "run it", Interactive: true},
+		},
 	}
 
 	planner := &DispatchPlanner{
@@ -650,11 +638,6 @@ func TestPlanHook_Interactive_PropagatedToDispatchRequest(t *testing.T) {
 }
 
 func TestPlanHook_Interactive_FalseWhenNotSet(t *testing.T) {
-	payload := json.RawMessage(`{
-		"instructions":{
-			"executor":{"type":"execution","consumer":"claude-code","message":"run it"}
-		}
-	}`)
 	meta := &ProjectMeta{ID: "proj-1"}
 	proj := &Project{ID: "proj-1", WorkDir: t.TempDir()}
 	task := &Task{
@@ -662,7 +645,9 @@ func TestPlanHook_Interactive_FalseWhenNotSet(t *testing.T) {
 		ProjectID: "proj-1",
 		Behavior:  "dev",
 		Status:    TaskStatusExecuting,
-		Payload:   payload,
+		Instructions: map[string]Instruction{
+			"executor": {Type: InstructionTypeExecution, Consumer: "claude-code", Message: "run it"},
+		},
 	}
 
 	planner := &DispatchPlanner{
@@ -690,11 +675,6 @@ func TestPlanHook_Interactive_FalseWhenNotSet(t *testing.T) {
 }
 
 func TestPlanHook_Model_PropagatedFromInstruction(t *testing.T) {
-	payload := json.RawMessage(`{
-		"instructions":{
-			"executor":{"type":"execution","consumer":"claude-code","message":"run it","model":"claude-opus-4-6"}
-		}
-	}`)
 	meta := &ProjectMeta{ID: "proj-1"}
 	proj := &Project{ID: "proj-1", WorkDir: t.TempDir()}
 	task := &Task{
@@ -702,7 +682,9 @@ func TestPlanHook_Model_PropagatedFromInstruction(t *testing.T) {
 		ProjectID: "proj-1",
 		Behavior:  "dev",
 		Status:    TaskStatusExecuting,
-		Payload:   payload,
+		Instructions: map[string]Instruction{
+			"executor": {Type: InstructionTypeExecution, Consumer: "claude-code", Message: "run it", Model: "claude-opus-4-6"},
+		},
 	}
 
 	planner := &DispatchPlanner{
@@ -730,11 +712,6 @@ func TestPlanHook_Model_PropagatedFromInstruction(t *testing.T) {
 }
 
 func TestPlanHook_Model_EmptyWhenNotSet(t *testing.T) {
-	payload := json.RawMessage(`{
-		"instructions":{
-			"executor":{"type":"execution","consumer":"claude-code","message":"run it"}
-		}
-	}`)
 	meta := &ProjectMeta{ID: "proj-1"}
 	proj := &Project{ID: "proj-1", WorkDir: t.TempDir()}
 	task := &Task{
@@ -742,7 +719,9 @@ func TestPlanHook_Model_EmptyWhenNotSet(t *testing.T) {
 		ProjectID: "proj-1",
 		Behavior:  "dev",
 		Status:    TaskStatusExecuting,
-		Payload:   payload,
+		Instructions: map[string]Instruction{
+			"executor": {Type: InstructionTypeExecution, Consumer: "claude-code", Message: "run it"},
+		},
 	}
 
 	planner := &DispatchPlanner{

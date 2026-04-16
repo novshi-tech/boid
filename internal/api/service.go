@@ -285,6 +285,7 @@ type behaviorResolution struct {
 	branchPrefix string
 	baseBranch   string
 	payload      json.RawMessage
+	instructions map[string]orchestrator.Instruction
 }
 
 // resolveBehavior validates and resolves behavior fields from a CreateTaskRequest.
@@ -304,6 +305,9 @@ func resolveBehavior(meta *orchestrator.ProjectMeta, req CreateTaskRequest) (*be
 		if spec.Name == "" {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: "behavior_spec.name is required"}
 		}
+		if err := orchestrator.ValidateDefaultPayloadNoInstructions(spec.DefaultPayload); err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: "behavior_spec.default_payload: " + err.Error()}
+		}
 		res.behaviorName = spec.Name
 		res.traits = spec.Traits
 		res.readonly = spec.Readonly
@@ -317,6 +321,11 @@ func resolveBehavior(meta *orchestrator.ProjectMeta, req CreateTaskRequest) (*be
 			}
 			res.payload = merged
 		}
+		mergedInstructions, err := orchestrator.MergeDefaultInstructions(spec.DefaultInstructions, req.Instructions)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: "instructions merge: " + err.Error()}
+		}
+		res.instructions = mergedInstructions
 		return res, nil
 	}
 
@@ -339,6 +348,17 @@ func resolveBehavior(meta *orchestrator.ProjectMeta, req CreateTaskRequest) (*be
 			}
 			res.payload = merged
 		}
+		mergedInstructions, err := orchestrator.MergeDefaultInstructions(behavior.DefaultInstructions, req.Instructions)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: "instructions merge: " + err.Error()}
+		}
+		res.instructions = mergedInstructions
+	} else if len(req.Instructions) > 0 {
+		mergedInstructions, err := orchestrator.MergeDefaultInstructions(nil, req.Instructions)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: "instructions merge: " + err.Error()}
+		}
+		res.instructions = mergedInstructions
 	}
 	return res, nil
 }
@@ -405,6 +425,7 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		RemoteID:         req.RemoteID,
 		DataSourceID:     req.DataSourceID,
 		Payload:          payload,
+		Instructions:     res.instructions,
 		AutoStart:        req.AutoStart,
 		DependsOn:        resolvedDeps,
 		DependsOnPayload: req.DependsOnPayload,
@@ -492,6 +513,9 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	}
 	payloadUpdated := false
 	if len(req.Payload) > 0 {
+		if err := rejectPayloadInstructions(req.Payload); err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+		}
 		// 案 B: artifact.<handler-role> が別 top-level キーになるため、
 		// top-level shallow merge で handler 間の書き込みが衝突しない。
 		// null は削除。instructions の特別扱いは不要。
@@ -522,13 +546,50 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		task.Payload = merged
 		payloadUpdated = true
 	}
+	var instructionsBefore map[string]orchestrator.Instruction
+	if len(req.Instructions) > 0 {
+		if !isInstructionsEditable(task.Status) {
+			return nil, &StatusError{
+				Code:    http.StatusConflict,
+				Message: fmt.Sprintf("cannot edit instructions while task is running (status: %s)", task.Status),
+			}
+		}
+		instructionsBefore = cloneInstructions(task.Instructions)
+		merged, err := orchestrator.MergeDefaultInstructions(task.Instructions, req.Instructions)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: "instructions merge: " + err.Error()}
+		}
+		task.Instructions = merged
+	}
 	if err := s.Tasks.UpdateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	if instructionsBefore != nil {
+		s.auditInstructionsChange(task.ID, instructionsBefore, task.Instructions)
 	}
 	if payloadUpdated && s.Workflow != nil {
 		go s.Workflow.TriggerDependents(context.Background(), id)
 	}
 	return task, nil
+}
+
+// isInstructionsEditable reports whether a task's instructions can be edited
+// in its current status. Editing is only allowed while the task is stopped
+// (pending/done/aborted) to avoid racing with in-flight handlers.
+func isInstructionsEditable(status orchestrator.TaskStatus) bool {
+	switch status {
+	case orchestrator.TaskStatusPending,
+		orchestrator.TaskStatusDone,
+		orchestrator.TaskStatusAborted:
+		return true
+	}
+	return false
+}
+
+// rejectPayloadInstructions is the local shim around orchestrator's validation
+// so that API layer can report 400 on payload containing "instructions" key.
+func rejectPayloadInstructions(payload json.RawMessage) error {
+	return orchestrator.RejectPayloadInstructions(payload)
 }
 
 func (s *TaskAppService) DeleteTask(id string, force bool) error {
@@ -573,7 +634,7 @@ func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orches
 	return s.CreateTask(req)
 }
 
-func (s *TaskAppService) RerunTask(id string, autoStart bool) (*orchestrator.Task, error) {
+func (s *TaskAppService) RerunTask(id string, req RerunTaskRequest) (*orchestrator.Task, error) {
 	task, err := s.Tasks.GetTask(id)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
@@ -585,31 +646,27 @@ func (s *TaskAppService) RerunTask(id string, autoStart bool) (*orchestrator.Tas
 		}
 	}
 
-	// instructions キーのみ保持し、それ以外はクリア
-	var newPayload json.RawMessage
-	if len(task.Payload) > 0 && string(task.Payload) != "null" {
-		var payloadMap map[string]json.RawMessage
-		if err := json.Unmarshal(task.Payload, &payloadMap); err == nil {
-			if instructions, ok := payloadMap["instructions"]; ok {
-				m := map[string]json.RawMessage{"instructions": instructions}
-				b, err := json.Marshal(m)
-				if err == nil {
-					newPayload = b
-				}
-			}
+	var instructionsBefore map[string]orchestrator.Instruction
+	if len(req.InstructionsOverride) > 0 && string(req.InstructionsOverride) != "null" {
+		instructionsBefore = cloneInstructions(task.Instructions)
+		merged, err := orchestrator.MergeDefaultInstructions(task.Instructions, req.InstructionsOverride)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: "instructions merge: " + err.Error()}
 		}
-	}
-	if len(newPayload) == 0 {
-		newPayload = json.RawMessage("{}")
+		task.Instructions = merged
 	}
 
 	task.Status = orchestrator.TaskStatusPending
-	task.Payload = newPayload
+	task.Payload = json.RawMessage("{}")
 	if err := s.Tasks.UpdateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 
-	if autoStart && s.Workflow != nil {
+	if instructionsBefore != nil {
+		s.auditInstructionsChange(task.ID, instructionsBefore, task.Instructions)
+	}
+
+	if req.AutoStart && s.Workflow != nil {
 		result, err := s.Workflow.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
 		if err != nil {
 			slog.Error("rerun auto_start: failed to apply start action", "task_id", task.ID, "error", err)
@@ -619,6 +676,41 @@ func (s *TaskAppService) RerunTask(id string, autoStart bool) (*orchestrator.Tas
 	}
 
 	return task, nil
+}
+
+func cloneInstructions(src map[string]orchestrator.Instruction) map[string]orchestrator.Instruction {
+	if src == nil {
+		return nil
+	}
+	out := make(map[string]orchestrator.Instruction, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
+// auditInstructionsChange records an instructions change as an Action so that
+// the reason behind rerun-over-rerun outcome differences can be traced.
+func (s *TaskAppService) auditInstructionsChange(taskID string, before, after map[string]orchestrator.Instruction) {
+	if s.Actions == nil {
+		return
+	}
+	payload, err := json.Marshal(map[string]any{
+		"before": before,
+		"after":  after,
+	})
+	if err != nil {
+		slog.Error("audit instructions change: marshal", "task_id", taskID, "error", err)
+		return
+	}
+	action := &orchestrator.Action{
+		TaskID:  taskID,
+		Type:    "update_instructions",
+		Payload: payload,
+	}
+	if err := s.Actions.CreateAction(action); err != nil {
+		slog.Error("audit instructions change: create action", "task_id", taskID, "error", err)
+	}
 }
 
 func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {

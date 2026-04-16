@@ -13,12 +13,11 @@ task_create_output="$("$E2E_BIN_DIR/boid" task create <<'YAML'
 project_id: instructions-routing
 title: Instructions Routing Test
 behavior: impl
-payload:
-  instructions:
-    reviewer:
-      type: verification
-      consumer: agent-b
-      message: "review correctness (overridden)"
+instructions:
+  reviewer:
+    type: verification
+    consumer: agent-b
+    message: "review correctness (overridden)"
 YAML
 )"
 printf '%s\n' "$task_create_output"

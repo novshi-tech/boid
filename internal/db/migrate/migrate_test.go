@@ -58,6 +58,13 @@ func TestApplyFreshDatabase(t *testing.T) {
 	if !hasColumn {
 		t.Fatal("expected jobs.tty to exist")
 	}
+	hasColumn, err = columnExists(d.Conn, "tasks", "instructions")
+	if err != nil {
+		t.Fatalf("check tasks.instructions: %v", err)
+	}
+	if !hasColumn {
+		t.Fatal("expected tasks.instructions to exist")
+	}
 }
 
 func TestApplyLegacyDatabaseAddsHandlerID(t *testing.T) {
@@ -187,8 +194,8 @@ func TestApplyIsIdempotent(t *testing.T) {
 	if err := d.Conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 16 {
-		t.Fatalf("schema_migrations count = %d, want 16", count)
+	if count != 17 {
+		t.Fatalf("schema_migrations count = %d, want 17", count)
 	}
 }
 

@@ -505,30 +505,8 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		}
 	})
 
-	t.Run("payload with instructions is applied", func(t *testing.T) {
-		task := &orchestrator.Task{
-			ID:    "task-2",
-			Title: "title",
-		}
-		store := &stubTaskStore{task: task}
-		svc := &TaskAppService{Tasks: store}
-
-		newPayload := json.RawMessage(`{"instructions":{"main":{"consumer":"claude-code","message":"do stuff","type":"execution"}}}`)
-		got, err := svc.UpdateTask("task-2", UpdateTaskRequest{Title: "title", Payload: newPayload})
-		if err != nil {
-			t.Fatalf("UpdateTask() error = %v", err)
-		}
-		var m map[string]json.RawMessage
-		if err := json.Unmarshal(got.Payload, &m); err != nil {
-			t.Fatalf("unmarshal payload: %v", err)
-		}
-		if _, ok := m["instructions"]; !ok {
-			t.Fatal("instructions key missing from payload")
-		}
-	})
-
-	t.Run("instructions top-level key is replaced by shallow merge", func(t *testing.T) {
-		existingPayload := json.RawMessage(`{"instructions":{"main":{"consumer":"claude-code","message":"do stuff","type":"execution"}}}`)
+	t.Run("payload update replaces key via shallow merge", func(t *testing.T) {
+		existingPayload := json.RawMessage(`{"artifact":{"url":"old"}}`)
 		task := &orchestrator.Task{
 			ID:      "task-3",
 			Title:   "title",
@@ -537,8 +515,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
 
-		// top-level shallow merge: instructions キー全体が置換される
-		newPayload := json.RawMessage(`{"instructions":{"rework":{"consumer":"claude-code","message":"fix stuff","type":"rework"}}}`)
+		newPayload := json.RawMessage(`{"artifact":{"url":"new"}}`)
 		got, err := svc.UpdateTask("task-3", UpdateTaskRequest{Title: "title", Payload: newPayload})
 		if err != nil {
 			t.Fatalf("UpdateTask() error = %v", err)
@@ -547,20 +524,16 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		if err := json.Unmarshal(got.Payload, &m); err != nil {
 			t.Fatalf("unmarshal payload: %v", err)
 		}
-		var instructions map[string]json.RawMessage
-		if err := json.Unmarshal(m["instructions"], &instructions); err != nil {
-			t.Fatalf("unmarshal instructions: %v", err)
+		var artifact map[string]string
+		if err := json.Unmarshal(m["artifact"], &artifact); err != nil {
+			t.Fatalf("unmarshal artifact: %v", err)
 		}
-		// shallow merge では instructions top-level キーが置換されるため main は消える
-		if _, ok := instructions["main"]; ok {
-			t.Error("main role should be gone after shallow merge replaces instructions key")
-		}
-		if _, ok := instructions["rework"]; !ok {
-			t.Error("rework role missing after instructions update")
+		if artifact["url"] != "new" {
+			t.Errorf("artifact url = %q, want %q", artifact["url"], "new")
 		}
 	})
 
-	t.Run("payload update preserves existing artifact and verification", func(t *testing.T) {
+	t.Run("payload update preserves other existing keys", func(t *testing.T) {
 		existingPayload := json.RawMessage(`{"artifact":{"url":"https://example.com"},"verification":{"agent-1":{"findings":"none"}}}`)
 		task := &orchestrator.Task{
 			ID:      "task-4",
@@ -570,8 +543,8 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
 
-		// instructions だけ更新
-		newPayload := json.RawMessage(`{"instructions":{"main":{"consumer":"claude-code","message":"do stuff","type":"execution"}}}`)
+		// artifact だけ更新、verification は残す
+		newPayload := json.RawMessage(`{"artifact":{"url":"https://new.example.com"}}`)
 		got, err := svc.UpdateTask("task-4", UpdateTaskRequest{Title: "title", Payload: newPayload})
 		if err != nil {
 			t.Fatalf("UpdateTask() error = %v", err)
@@ -581,13 +554,61 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 			t.Fatalf("unmarshal payload: %v", err)
 		}
 		if _, ok := m["artifact"]; !ok {
-			t.Error("artifact missing after payload update with instructions only")
+			t.Error("artifact missing after payload update")
 		}
 		if _, ok := m["verification"]; !ok {
-			t.Error("verification missing after payload update with instructions only")
+			t.Error("verification missing after payload update (should be preserved)")
 		}
-		if _, ok := m["instructions"]; !ok {
-			t.Error("instructions missing after payload update")
+	})
+
+	t.Run("payload containing instructions is rejected", func(t *testing.T) {
+		task := &orchestrator.Task{ID: "task-5", Title: "title"}
+		store := &stubTaskStore{task: task}
+		svc := &TaskAppService{Tasks: store}
+
+		badPayload := json.RawMessage(`{"instructions":{"main":{"type":"execution","consumer":"c"}}}`)
+		_, err := svc.UpdateTask("task-5", UpdateTaskRequest{Payload: badPayload})
+		if err == nil {
+			t.Fatal("expected UpdateTask to reject payload containing instructions")
+		}
+	})
+
+	t.Run("instructions update applied at top level", func(t *testing.T) {
+		task := &orchestrator.Task{
+			ID:     "task-6",
+			Title:  "title",
+			Status: orchestrator.TaskStatusPending,
+		}
+		store := &stubTaskStore{task: task}
+		svc := &TaskAppService{Tasks: store, Actions: &stubActionStore{}}
+
+		body := json.RawMessage(`{"main":{"type":"execution","consumer":"claude-code","message":"do stuff"}}`)
+		got, err := svc.UpdateTask("task-6", UpdateTaskRequest{Instructions: body})
+		if err != nil {
+			t.Fatalf("UpdateTask() error = %v", err)
+		}
+		if _, ok := got.Instructions["main"]; !ok {
+			t.Fatal("expected instructions.main to be set")
+		}
+	})
+
+	t.Run("instructions update is rejected while task is running", func(t *testing.T) {
+		task := &orchestrator.Task{
+			ID:     "task-7",
+			Title:  "title",
+			Status: orchestrator.TaskStatusExecuting,
+		}
+		store := &stubTaskStore{task: task}
+		svc := &TaskAppService{Tasks: store}
+
+		body := json.RawMessage(`{"main":{"type":"execution","consumer":"claude-code","message":"do stuff"}}`)
+		_, err := svc.UpdateTask("task-7", UpdateTaskRequest{Instructions: body})
+		if err == nil {
+			t.Fatal("expected UpdateTask to reject instructions change while running")
+		}
+		se, ok := err.(*StatusError)
+		if !ok || se.Code != http.StatusConflict {
+			t.Fatalf("expected StatusConflict, got %v", err)
 		}
 	})
 }
@@ -872,8 +893,7 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_Success(t *testing.T) {
 	}
 }
 
-func TestTaskAppServiceCreateTask_BehaviorSpec_DefaultPayloadMerged(t *testing.T) {
-	defaultPayload := `{"instructions":{"main":{"consumer":"claude-code","message":"do it"}}}`
+func TestTaskAppServiceCreateTask_BehaviorSpec_DefaultInstructionsMerged(t *testing.T) {
 	svc := &TaskAppService{
 		Tasks: &stubTaskStore{},
 		Meta:  stubMetaStore{meta: nil},
@@ -883,15 +903,36 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_DefaultPayloadMerged(t *testing.T
 		ProjectID: "proj-1",
 		Title:     "spec task",
 		BehaviorSpec: &orchestrator.BehaviorSpec{
-			Name:           "kit/my-behavior",
-			DefaultPayload: orchestrator.RawPayload(defaultPayload),
+			Name: "kit/my-behavior",
+			DefaultInstructions: map[string]orchestrator.Instruction{
+				"main": {Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "do it"},
+			},
 		},
 	})
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
-	if len(task.Payload) == 0 {
-		t.Error("Payload is empty, want default_payload merged")
+	if _, ok := task.Instructions["main"]; !ok {
+		t.Error("expected task.Instructions.main to be set from default_instructions")
+	}
+}
+
+func TestTaskAppServiceCreateTask_BehaviorSpec_DefaultPayloadRejectsInstructions(t *testing.T) {
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: nil},
+	}
+	defaultPayload := `{"instructions":{"main":{"type":"execution","consumer":"c"}}}`
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "bad",
+		BehaviorSpec: &orchestrator.BehaviorSpec{
+			Name:           "kit/my-behavior",
+			DefaultPayload: orchestrator.RawPayload(defaultPayload),
+		},
+	})
+	if err == nil {
+		t.Fatal("expected CreateTask to reject BehaviorSpec.default_payload with instructions")
 	}
 }
 
@@ -1223,7 +1264,7 @@ func TestDuplicateTask_CopiesFields(t *testing.T) {
 	}
 }
 
-func TestDuplicateTask_PayloadFromDefaultPayload(t *testing.T) {
+func TestDuplicateTask_InstructionsFromDefaultInstructions(t *testing.T) {
 	source := &orchestrator.Task{
 		ID:        "src-2",
 		ProjectID: "proj-1",
@@ -1235,7 +1276,9 @@ func TestDuplicateTask_PayloadFromDefaultPayload(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
 			"dev": {
-				DefaultPayload: orchestrator.RawPayload(`{"instructions":{"main":{"type":"execution","consumer":"claude-code","message":"do stuff"}}}`),
+				DefaultInstructions: map[string]orchestrator.Instruction{
+					"main": {Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "do stuff"},
+				},
 			},
 		},
 	}
@@ -1249,15 +1292,17 @@ func TestDuplicateTask_PayloadFromDefaultPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DuplicateTask() error = %v", err)
 	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(task.Payload, &m); err != nil {
-		t.Fatalf("unmarshal payload: %v", err)
+	if _, ok := task.Instructions["main"]; !ok {
+		t.Error("instructions.main missing: should come from default_instructions")
 	}
-	if _, ok := m["instructions"]; !ok {
-		t.Error("instructions key missing: payload should come from default_payload")
-	}
-	if _, ok := m["old"]; ok {
-		t.Error("old key present: source task payload should not be copied")
+	if len(task.Payload) > 0 && string(task.Payload) != "{}" && string(task.Payload) != "null" {
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(task.Payload, &m); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		if _, ok := m["old"]; ok {
+			t.Error("old key present: source task payload should not be copied")
+		}
 	}
 }
 
@@ -1354,7 +1399,7 @@ func TestRerunTask_DoneToPending(t *testing.T) {
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store}
 
-	result, err := svc.RerunTask("task-done", false)
+	result, err := svc.RerunTask("task-done", RerunTaskRequest{})
 	if err != nil {
 		t.Fatalf("RerunTask() error = %v", err)
 	}
@@ -1375,7 +1420,7 @@ func TestRerunTask_AbortedToPendingUnit(t *testing.T) {
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store}
 
-	result, err := svc.RerunTask("task-aborted", false)
+	result, err := svc.RerunTask("task-aborted", RerunTaskRequest{})
 	if err != nil {
 		t.Fatalf("RerunTask() error = %v", err)
 	}
@@ -1401,7 +1446,7 @@ func TestRerunTask_WrongStatusUnit(t *testing.T) {
 			store := &stubTaskStore{task: task}
 			svc := &TaskAppService{Tasks: store}
 
-			_, err := svc.RerunTask("task-1", false)
+			_, err := svc.RerunTask("task-1", RerunTaskRequest{})
 			if err == nil {
 				t.Fatalf("RerunTask() error = nil for status %q, want error", status)
 			}
@@ -1417,7 +1462,7 @@ func TestRerunTask_NotFoundUnit(t *testing.T) {
 	store := &stubTaskStore{err: fmt.Errorf("task not found")}
 	svc := &TaskAppService{Tasks: store}
 
-	_, err := svc.RerunTask("nonexistent", false)
+	_, err := svc.RerunTask("nonexistent", RerunTaskRequest{})
 	if err == nil {
 		t.Fatal("RerunTask() error = nil, want error")
 	}
@@ -1437,7 +1482,7 @@ func TestRerunTask_ClearsPayloadUnit(t *testing.T) {
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store}
 
-	result, err := svc.RerunTask("task-1", false)
+	result, err := svc.RerunTask("task-1", RerunTaskRequest{})
 	if err != nil {
 		t.Fatalf("RerunTask() error = %v", err)
 	}
@@ -1455,27 +1500,50 @@ func TestRerunTask_ClearsPayloadUnit(t *testing.T) {
 
 func TestRerunTask_PreservesInstructionsUnit(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:       "task-1",
-		Status:   orchestrator.TaskStatusAborted,
-		Behavior: "dev",
-		Payload:  json.RawMessage(`{"instructions":{"main":{"type":"execution"}},"artifact":{"url":"old"}}`),
+		ID:           "task-1",
+		Status:       orchestrator.TaskStatusAborted,
+		Behavior:     "dev",
+		Payload:      json.RawMessage(`{"artifact":{"url":"old"}}`),
+		Instructions: map[string]orchestrator.Instruction{"main": {Type: orchestrator.InstructionTypeExecution, Consumer: "c"}},
 	}
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store}
 
-	result, err := svc.RerunTask("task-1", false)
+	result, err := svc.RerunTask("task-1", RerunTaskRequest{})
 	if err != nil {
 		t.Fatalf("RerunTask() error = %v", err)
+	}
+	if _, ok := result.Instructions["main"]; !ok {
+		t.Error("instructions.main should be preserved after rerun")
 	}
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(result.Payload, &m); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
-	if _, ok := m["instructions"]; !ok {
-		t.Error("instructions should be preserved after rerun")
-	}
 	if _, ok := m["artifact"]; ok {
 		t.Error("artifact should be cleared after rerun")
+	}
+}
+
+func TestRerunTask_InstructionsOverrideApplied(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:       "task-1",
+		Status:   orchestrator.TaskStatusAborted,
+		Behavior: "dev",
+		Instructions: map[string]orchestrator.Instruction{
+			"main": {Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Model: "sonnet-4-6"},
+		},
+	}
+	store := &stubTaskStore{task: task}
+	svc := &TaskAppService{Tasks: store, Actions: &stubActionStore{}}
+
+	override := json.RawMessage(`{"main":{"type":"execution","consumer":"claude-code","model":"opus-4-7"}}`)
+	result, err := svc.RerunTask("task-1", RerunTaskRequest{InstructionsOverride: override})
+	if err != nil {
+		t.Fatalf("RerunTask() error = %v", err)
+	}
+	if result.Instructions["main"].Model != "opus-4-7" {
+		t.Errorf("expected model opus-4-7, got %q", result.Instructions["main"].Model)
 	}
 }
 
@@ -1492,7 +1560,7 @@ func TestRerunTask_AutoStartUnit(t *testing.T) {
 		Workflow: workflow,
 	}
 
-	_, err := svc.RerunTask("task-1", true)
+	_, err := svc.RerunTask("task-1", RerunTaskRequest{AutoStart: true})
 	if err != nil {
 		t.Fatalf("RerunTask() error = %v", err)
 	}
@@ -1518,7 +1586,7 @@ func TestRerunTask_PreservesTaskMetadata(t *testing.T) {
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store}
 
-	result, err := svc.RerunTask("task-meta", false)
+	result, err := svc.RerunTask("task-meta", RerunTaskRequest{})
 	if err != nil {
 		t.Fatalf("RerunTask() error = %v", err)
 	}

@@ -114,17 +114,17 @@ func TestRerunTask_PreservesInstructions(t *testing.T) {
 
 	var task orchestrator.Task
 	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
-		"project_id": "rerun-proj-ins",
-		"title":      "Preserve Instructions",
-		"behavior":   "planning",
+		"project_id":   "rerun-proj-ins",
+		"title":        "Preserve Instructions",
+		"behavior":     "planning",
+		"instructions": json.RawMessage(`{"main":{"consumer":"claude-code","message":"do stuff","type":"execution"}}`),
 	}, &task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 
-	// instructions を含む payload に更新してから abort
+	// dirty な artifact を入れてから abort → rerun で artifact はクリアされるが instructions は保持される
 	if err := ts.Client.Do("PATCH", "/api/tasks/"+task.ID, map[string]any{
-		"title":   "Preserve Instructions",
-		"payload": json.RawMessage(`{"instructions":{"main":{"consumer":"claude-code","message":"do stuff","type":"execution"}},"artifact":{"url":"old"}}`),
+		"payload": json.RawMessage(`{"artifact":{"url":"old"}}`),
 	}, nil); err != nil {
 		t.Fatalf("patch task: %v", err)
 	}
@@ -136,12 +136,12 @@ func TestRerunTask_PreservesInstructions(t *testing.T) {
 		t.Fatalf("rerun task: %v", err)
 	}
 
+	if _, ok := result.Instructions["main"]; !ok {
+		t.Errorf("instructions.main should be preserved after rerun, got %v", result.Instructions)
+	}
 	var payloadMap map[string]json.RawMessage
 	if err := json.Unmarshal(result.Payload, &payloadMap); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
-	}
-	if _, ok := payloadMap["instructions"]; !ok {
-		t.Error("instructions should be preserved after rerun")
 	}
 	if _, ok := payloadMap["artifact"]; ok {
 		t.Error("artifact should be cleared after rerun")

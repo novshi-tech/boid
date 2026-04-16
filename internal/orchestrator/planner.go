@@ -139,7 +139,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 	var model string
 	var invokedRole, invokedName, invokedType string
 	instType := InstructionTypeForStatus(task.Status)
-	myInstructions := FilterInstructions(task.Payload, instType, event.Hook.Consumer)
+	myInstructions := FilterInstructions(task.Instructions, instType, event.Hook.Consumer)
 	if len(myInstructions) > 0 {
 		if instJSON, err := json.Marshal(myInstructions); err == nil {
 			instructionsJSON = string(instJSON)
