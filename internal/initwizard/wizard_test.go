@@ -57,6 +57,52 @@ func TestExpandScaffoldTemplate_Basic(t *testing.T) {
 	}
 }
 
+func TestExpandScaffoldTemplate_WithFeatureKits(t *testing.T) {
+	kitDir := t.TempDir()
+	tplContent := `dev:
+  kits:
+{{- range .FeatureKits}}
+  - {{.}}
+{{- end}}
+`
+	if err := os.WriteFile(filepath.Join(kitDir, "behaviors.tmpl"), []byte(tplContent), 0o644); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
+
+	data := initwizard.ScaffoldTemplateData{
+		ProjectID:   "abc-123",
+		ProjectName: "My Project",
+		FeatureKits: []string{"github.com/test/repo/go-kit", "github.com/test/repo/node-kit"},
+	}
+
+	result, err := initwizard.ExpandScaffoldTemplate(kitDir, "behaviors.tmpl", data)
+	if err != nil {
+		t.Fatalf("ExpandScaffoldTemplate: %v", err)
+	}
+
+	devVal, ok := result["dev"]
+	if !ok {
+		t.Fatal("expected 'dev' key in result")
+	}
+	devMap, ok := devVal.(map[string]any)
+	if !ok {
+		t.Fatalf("expected dev to be map, got %T", devVal)
+	}
+	kits, ok := devMap["kits"].([]any)
+	if !ok {
+		t.Fatalf("expected dev.kits to be a list, got %T", devMap["kits"])
+	}
+	if len(kits) != 2 {
+		t.Fatalf("expected 2 kits, got %d: %v", len(kits), kits)
+	}
+	if kits[0] != "github.com/test/repo/go-kit" {
+		t.Errorf("kits[0] = %v, want %q", kits[0], "github.com/test/repo/go-kit")
+	}
+	if kits[1] != "github.com/test/repo/node-kit" {
+		t.Errorf("kits[1] = %v, want %q", kits[1], "github.com/test/repo/node-kit")
+	}
+}
+
 func TestExpandScaffoldTemplate_InvalidTemplate(t *testing.T) {
 	kitDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(kitDir, "bad.tmpl"), []byte(`{{ .Foo {{`), 0o644); err != nil {
@@ -195,9 +241,8 @@ func TestWizardRun_Basic(t *testing.T) {
 	}
 
 	var proj struct {
-		ID   string   `yaml:"id"`
-		Name string   `yaml:"name"`
-		Kits []string `yaml:"kits"`
+		ID   string `yaml:"id"`
+		Name string `yaml:"name"`
 	}
 	if err := yaml.Unmarshal(data, &proj); err != nil {
 		t.Fatalf("parse project.yaml: %v", err)
@@ -210,21 +255,18 @@ func TestWizardRun_Basic(t *testing.T) {
 		t.Error("ID must not be empty")
 	}
 
-	// go-kit should be auto-selected (go.mod exists)
-	found := false
-	for _, k := range proj.Kits {
-		if strings.Contains(k, "go-kit") {
-			found = true
-			break
-		}
+	// Top-level kits field must not be present (kits are per-behavior via template)
+	var projFull map[string]any
+	if err := yaml.Unmarshal(data, &projFull); err != nil {
+		t.Fatalf("parse project.yaml as map: %v", err)
 	}
-	if !found {
-		t.Errorf("expected go-kit in kits, got %v", proj.Kits)
+	if _, ok := projFull["kits"]; ok {
+		t.Error("expected no top-level 'kits' field in project.yaml")
 	}
 
-	// .boid/hooks directory must be created
-	if _, err := os.Stat(filepath.Join(projectDir, ".boid", "hooks")); err != nil {
-		t.Errorf(".boid/hooks not created: %v", err)
+	// .boid/hooks directory must NOT be created (hooks come from kit directories)
+	if _, err := os.Stat(filepath.Join(projectDir, ".boid", "hooks")); err == nil {
+		t.Error(".boid/hooks should not be created by the wizard")
 	}
 }
 
@@ -312,8 +354,27 @@ func TestWizardRun_WithScaffold(t *testing.T) {
 	if len(proj.TaskBehaviors) == 0 {
 		t.Error("expected task_behaviors to be non-empty when scaffold kit is selected")
 	}
-	if _, ok := proj.TaskBehaviors["dev"]; !ok {
-		t.Errorf("expected 'dev' behavior in task_behaviors, got keys: %v", mapKeys(proj.TaskBehaviors))
+	devVal, ok := proj.TaskBehaviors["dev"]
+	if !ok {
+		t.Fatalf("expected 'dev' behavior in task_behaviors, got keys: %v", mapKeys(proj.TaskBehaviors))
+	}
+	devMap, ok := devVal.(map[string]any)
+	if !ok {
+		t.Fatalf("expected dev to be map, got %T", devVal)
+	}
+	kits, ok := devMap["kits"].([]any)
+	if !ok {
+		t.Fatalf("expected dev.kits to be a list, got %T", devMap["kits"])
+	}
+	found := false
+	for _, k := range kits {
+		if s, ok := k.(string); ok && strings.Contains(s, "go-kit") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected go-kit in task_behaviors.dev.kits, got %v", kits)
 	}
 }
 
@@ -406,20 +467,17 @@ func TestWizardRun_OptionalKit(t *testing.T) {
 	}
 
 	// 2. project.yaml must NOT include the optional kit (default OFF).
+	// Top-level kits field is not written; kits live inside task_behaviors via template.
 	data, err := os.ReadFile(filepath.Join(projectDir, ".boid", "project.yaml"))
 	if err != nil {
 		t.Fatalf("read project.yaml: %v", err)
 	}
-	var proj struct {
-		Kits []string `yaml:"kits"`
-	}
-	if err := yaml.Unmarshal(data, &proj); err != nil {
+	var projFull map[string]any
+	if err := yaml.Unmarshal(data, &projFull); err != nil {
 		t.Fatalf("parse project.yaml: %v", err)
 	}
-	for _, k := range proj.Kits {
-		if strings.Contains(k, "opt-kit") {
-			t.Errorf("optional kit should not be selected by default, but found in kits: %v", proj.Kits)
-		}
+	if _, ok := projFull["kits"]; ok {
+		t.Error("expected no top-level 'kits' field in project.yaml")
 	}
 }
 
@@ -447,7 +505,7 @@ func createFakeKit(t *testing.T, kitsDir, ref, name, detectMarker string, hasSca
 	}
 	if hasScaffold {
 		sb.WriteString("scaffold:\n  task_behaviors:\n    description: Test scaffold\n    template: behaviors.tmpl\n")
-		tpl := "dev:\n  name: Development\n"
+		tpl := "dev:\n  name: Development\n  kits:\n{{- range .FeatureKits}}\n  - {{.}}\n{{- end}}\n"
 		if err := os.WriteFile(filepath.Join(kitDir, "behaviors.tmpl"), []byte(tpl), 0o644); err != nil {
 			t.Fatalf("write scaffold template: %v", err)
 		}
