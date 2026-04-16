@@ -162,9 +162,11 @@ func (m *WorktreeManager) Recreate(projectDir string, taskID string) (*Worktree,
 	}
 
 	// Fetch the remote branch so origin/<branch> is up-to-date.
+	// Failure is non-fatal: fall through to the local branch check below (mirrors Create's behaviour).
 	fetchCmd := exec.Command(m.gitBin(), "-C", projectDir, "fetch", "origin", w.Branch)
 	if out, err := fetchCmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("git fetch origin %s: %w\n%s", w.Branch, err, strings.TrimSpace(string(out)))
+		slog.Warn("git fetch failed, falling back to local branch",
+			"branch", w.Branch, "error", err, "output", strings.TrimSpace(string(out)))
 	}
 
 	// Also fetch the base branch so origin/<baseBranch> is up-to-date.
@@ -192,7 +194,12 @@ func (m *WorktreeManager) Recreate(projectDir string, taskID string) (*Worktree,
 		wtCmd = exec.Command(m.gitBin(), "worktree", "add", w.Path, w.Branch)
 		wtCmd.Dir = projectDir
 	} else {
-		// Local branch was deleted; recreate it from remote.
+		// Local branch was deleted; verify that origin/<branch> is available before trying to recreate.
+		remoteCheck := exec.Command(m.gitBin(), "-C", projectDir, "rev-parse", "--verify", "origin/"+w.Branch)
+		if remoteCheck.Run() != nil {
+			return nil, fmt.Errorf("local branch %q not found and remote origin/%s unavailable", w.Branch, w.Branch)
+		}
+		// Recreate local branch from remote.
 		wtCmd = exec.Command(m.gitBin(), "worktree", "add", "-B", w.Branch, w.Path, "origin/"+w.Branch)
 		wtCmd.Dir = projectDir
 	}
