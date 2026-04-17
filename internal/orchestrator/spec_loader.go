@@ -78,6 +78,24 @@ func ValidateDefaultPayloadNoInstructions(p RawPayload) error {
 	return nil
 }
 
+// validateHookKind enforces the Hook.Kind / Hook.Consumer invariants at load time:
+//   - Kind must be "" or "agent"
+//   - Consumer can only be specified on kind: agent hooks; on non-agent hooks
+//     it has no effect and likely indicates that `kind: agent` was forgotten
+//
+// Agent hooks without a Consumer are allowed here (the kit-consumer inheritance
+// in MergeKitMetaIntoBehavior may still fill it in); the final "agent requires
+// consumer" check happens after kit merge.
+func validateHookKind(h *Hook) error {
+	if !h.Kind.IsValid() {
+		return fmt.Errorf("hook %q: invalid kind %q (allowed: \"\" or \"agent\")", h.ID, h.Kind)
+	}
+	if h.Kind != HandlerKindAgent && h.Consumer != "" {
+		return fmt.Errorf("hook %q: 'consumer' requires 'kind: agent' (non-agent hooks must not declare consumer)", h.ID)
+	}
+	return nil
+}
+
 // resolveProjectHostCommandPaths resolves relative paths in host_commands
 // against the project root directory. It rejects paths that escape the project
 // directory via traversal (e.g. "../../etc/passwd") or symlinks.
@@ -275,6 +293,9 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 		if len(h.On) == 0 || !h.On.AllValid(ValidHookOnValues) {
 			return nil, fmt.Errorf("hook %q: invalid on value %v", h.ID, []string(h.On))
 		}
+		if err := validateHookKind(h); err != nil {
+			return nil, fmt.Errorf("kit.yaml: %w", err)
+		}
 		scriptPath, err := ResolveHookScript(hooksDir, h.ID)
 		if err != nil {
 			return nil, fmt.Errorf("hook %q: %w", h.ID, err)
@@ -373,7 +394,9 @@ func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitConsum
 		behavior.Env = mergedEnv
 	}
 
-	// Hooks: prefix IDs with consumer, tag with Kit name, inherit Consumer.
+	// Hooks: prefix IDs with consumer, tag with Kit name (provenance).
+	// Consumer (routing identity) is inherited from kit consumer only for
+	// agent-kind hooks; non-agent hooks don't use Consumer for routing.
 	var allHooks []Hook
 	allHooks = append(allHooks, behavior.Hooks...)
 	for i, kit := range kits {
@@ -386,7 +409,7 @@ func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitConsum
 			if consumer != "" {
 				h.ID = consumer + "/" + h.ID
 			}
-			if h.Consumer == "" {
+			if h.Kind == HandlerKindAgent && h.Consumer == "" {
 				h.Consumer = consumer
 			}
 			allHooks = append(allHooks, h)
@@ -471,6 +494,15 @@ func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitConsum
 			GatesDir: kit.GatesDir,
 			GateIDs:  ids,
 		})
+	}
+
+	// Post-merge validation: kind: agent hooks must have a Consumer. kit
+	// inheritance may have filled it in; if still empty, the kit had no consumer
+	// name to inherit, which is a configuration error.
+	for _, h := range behavior.Hooks {
+		if h.Kind == HandlerKindAgent && h.Consumer == "" {
+			return fmt.Errorf("hook %q: kind: agent requires Consumer (kit has no consumer name to inherit)", h.ID)
+		}
 	}
 
 	return nil

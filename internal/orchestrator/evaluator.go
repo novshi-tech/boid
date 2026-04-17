@@ -34,25 +34,10 @@ func extractInstructionConsumers(instructions map[string]Instruction, instType I
 	return consumers
 }
 
-// consumesInstructions reports whether the handler traits include the
-// instructions trait. A hook declaring `consumes: [instructions]` opts into
-// instructions routing.
-//
-// NOTE: Phase B 一時措置。Phase D で `consumes: [instructions]` 宣言を廃止し、
-// routing 対象の別マーカーへ置き換える予定。
-func consumesInstructions(traits HandlerTraits) bool {
-	for _, t := range traits.Consumes {
-		if t.Base() == TraitInstructions {
-			return true
-		}
-	}
-	return false
-}
-
 // Evaluate returns hooks that should fire for the given task.
-// Hooks declaring `consumes: [instructions]` participate in instructions
-// routing: they fire only when task.Instructions contains an instruction of
-// the current status's type addressed to that hook's Consumer.
+// Hooks with Kind == HandlerKindAgent participate in instructions routing:
+// they fire only when task.Instructions contains an instruction of the
+// current status's type addressed to that hook's Consumer.
 func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 	activeTraits, _ := ActiveTraitTypes(task.Payload)
 	traitSet := make(map[TraitType]bool, len(activeTraits))
@@ -71,7 +56,7 @@ func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 		if !hasAllTraits(traitSet, h.Traits.Consumes) {
 			continue
 		}
-		if consumesInstructions(h.Traits) {
+		if h.Kind == HandlerKindAgent {
 			if instType == "" {
 				continue
 			}
@@ -117,15 +102,10 @@ func (e *Evaluator) EvaluateGates(task *Task, gates []Gate, phase GatePhase) []G
 }
 
 // hasAllTraits checks whether all required traits are present in the set.
-// TraitInstructions is ignored here because instructions moved out of payload
-// into Task.Instructions (hook YAML still listing it as consumes is a legacy
-// declaration that will be cleaned up in Phase D).
+// Instructions routing is handled via HandlerKindAgent, not via traits.
 func hasAllTraits(set map[TraitType]bool, required []TraitType) bool {
 	for _, t := range required {
 		if t.IsOptional() {
-			continue
-		}
-		if t.Base() == TraitInstructions {
 			continue
 		}
 		if !set[t] {

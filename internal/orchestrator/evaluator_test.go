@@ -21,10 +21,8 @@ func TestEvaluate_MatchingHookFires(t *testing.T) {
 		{
 			ID:       "run-agent",
 			On:       projectspec.OnValues{"executing"},
+			Kind:     projectspec.HandlerKindAgent,
 			Consumer: "claude-code",
-			Traits: projectspec.HandlerTraits{
-				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
-			},
 		},
 	}
 
@@ -42,15 +40,13 @@ func TestEvaluate_NonMatchingStatus(t *testing.T) {
 
 	task := &orchestrator.Task{
 		Status:  orchestrator.TaskStatusPending,
-		Payload: json.RawMessage(`{"instructions":"do stuff"}`),
+		Payload: json.RawMessage(`{}`),
 	}
 	hooks := []projectspec.Hook{
 		{
-			ID: "run-agent",
-			On: projectspec.OnValues{"executing"},
-			Traits: projectspec.HandlerTraits{
-				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
-			},
+			ID:   "run-agent",
+			On:   projectspec.OnValues{"executing"},
+			Kind: projectspec.HandlerKindAgent,
 		},
 	}
 
@@ -134,10 +130,8 @@ func TestEvaluate_InstructionsRouting_ConsumerMatch(t *testing.T) {
 		{
 			ID:       "run-claude",
 			On:       projectspec.OnValues{"executing"},
+			Kind:     projectspec.HandlerKindAgent,
 			Consumer: "claude-code",
-			Traits: projectspec.HandlerTraits{
-				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
-			},
 		},
 	}
 
@@ -163,10 +157,8 @@ func TestEvaluate_InstructionsRouting_ConsumerMismatch(t *testing.T) {
 		{
 			ID:       "run-codex",
 			On:       projectspec.OnValues{"executing"},
+			Kind:     projectspec.HandlerKindAgent,
 			Consumer: "codex",
-			Traits: projectspec.HandlerTraits{
-				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
-			},
 		},
 	}
 
@@ -217,10 +209,8 @@ func TestEvaluate_InstructionsRouting_WrongStatus(t *testing.T) {
 		{
 			ID:       "run-claude",
 			On:       projectspec.OnValues{"verifying"},
+			Kind:     projectspec.HandlerKindAgent,
 			Consumer: "claude-code",
-			Traits: projectspec.HandlerTraits{
-				Consumes: []projectspec.TraitType{projectspec.TraitInstructions},
-			},
 		},
 	}
 

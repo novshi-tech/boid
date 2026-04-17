@@ -191,8 +191,8 @@ func TestTraitMergeMode(t *testing.T) {
 	if projectspec.TraitMergeMode(projectspec.TraitVerification) != projectspec.MergeModeShared {
 		t.Fatal("verification should be shared")
 	}
-	if projectspec.TraitMergeMode(projectspec.TraitInstructions) != projectspec.MergeModeExclusive {
-		t.Fatal("instructions should be exclusive")
+	if projectspec.TraitMergeMode(projectspec.TraitArtifact) != projectspec.MergeModeExclusive {
+		t.Fatal("artifact should be exclusive")
 	}
 }
 
@@ -208,16 +208,6 @@ func TestValidatePayloadPatchAndMergePayloadPatch(t *testing.T) {
 	}
 	if string(result) != `{"artifact":"http://example.com"}` {
 		t.Fatalf("unexpected merged payload: %s", result)
-	}
-}
-
-func TestValidatePayloadPatch_InstructionsRejected(t *testing.T) {
-	patch := json.RawMessage(`{"instructions":"do something"}`)
-	// Even if instructions is listed in allowed produces, handlers must not write it.
-	allowed := []projectspec.TraitType{projectspec.TraitInstructions}
-	err := projectspec.ValidatePayloadPatch(patch, allowed)
-	if err == nil {
-		t.Fatal("expected error when instructions trait is in patch")
 	}
 }
 
@@ -280,41 +270,41 @@ func TestFilterPayloadByTraits(t *testing.T) {
 
 func TestFilterPayloadByTraits_OptionalTraitIncludedWhenPresent(t *testing.T) {
 	payload := json.RawMessage(`{
-		"instructions":{"r":{"type":"rework","consumer":"cc","message":"fix"}},
+		"artifact":{"summary":"impl"},
 		"verification":{"pr":{"findings":[{"message":"fail","status":"open"}]}},
-		"artifact":{"summary":"impl"}
+		"tasks":[{"id":"x"}]
 	}`)
 	result := projectspec.FilterPayloadByTraits(payload, []projectspec.TraitType{
-		projectspec.TraitInstructions, "verification?",
+		projectspec.TraitArtifact, "verification?",
 	})
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(result, &m); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if _, ok := m["instructions"]; !ok {
-		t.Error("expected instructions")
+	if _, ok := m["artifact"]; !ok {
+		t.Error("expected artifact")
 	}
 	if _, ok := m["verification"]; !ok {
 		t.Error("expected verification (optional but present)")
 	}
-	if _, ok := m["artifact"]; ok {
-		t.Error("artifact should be filtered out")
+	if _, ok := m["tasks"]; ok {
+		t.Error("tasks should be filtered out")
 	}
 }
 
 func TestFilterPayloadByTraits_OptionalTraitOmittedWhenAbsent(t *testing.T) {
 	payload := json.RawMessage(`{
-		"instructions":{"r":{"type":"execution","consumer":"cc","message":"impl"}}
+		"artifact":{"summary":"impl"}
 	}`)
 	result := projectspec.FilterPayloadByTraits(payload, []projectspec.TraitType{
-		projectspec.TraitInstructions, "verification?",
+		projectspec.TraitArtifact, "verification?",
 	})
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(result, &m); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if _, ok := m["instructions"]; !ok {
-		t.Error("expected instructions")
+	if _, ok := m["artifact"]; !ok {
+		t.Error("expected artifact")
 	}
 	if _, ok := m["verification"]; ok {
 		t.Error("verification should not appear when absent from payload")
