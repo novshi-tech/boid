@@ -43,7 +43,7 @@ func TestProjectMeta_JSONRoundTrip(t *testing.T) {
 		ID:   "proj-1",
 		Name: "Test Project",
 		TaskBehaviors: map[string]projectspec.TaskBehavior{
-			"dev": {Name: "development", Traits: []string{"instructions"}},
+			"dev": {Name: "development", Traits: []string{"artifact"}},
 		},
 		HostCommands: projectspec.HostCommands{"git": {Path: "/usr/bin/git"}},
 		Env:          map[string]string{"KEY": "val"},

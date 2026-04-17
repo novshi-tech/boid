@@ -4,7 +4,7 @@ task_behaviors:
   impl:
     name: Implementation
     transition: feedback-loop
-    traits: [instructions, artifact, verification]
+    traits: [artifact, verification]
     kits:
       - ref: github.com/novshi-tech/boid-kits/instructions-agent-a
         as: agent-a

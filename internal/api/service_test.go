@@ -875,7 +875,7 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_Success(t *testing.T) {
 		Title:     "spec task",
 		BehaviorSpec: &orchestrator.BehaviorSpec{
 			Name:     "kit/my-behavior",
-			Traits:   []string{"instructions"},
+			Traits:   []string{"artifact"},
 			Worktree: true,
 		},
 	})
@@ -885,8 +885,8 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_Success(t *testing.T) {
 	if task.Behavior != "kit/my-behavior" {
 		t.Errorf("Behavior = %q, want %q", task.Behavior, "kit/my-behavior")
 	}
-	if !reflect.DeepEqual(task.Traits, []string{"instructions"}) {
-		t.Errorf("Traits = %v, want [instructions]", task.Traits)
+	if !reflect.DeepEqual(task.Traits, []string{"artifact"}) {
+		t.Errorf("Traits = %v, want [artifact]", task.Traits)
 	}
 	if !task.Worktree {
 		t.Errorf("Worktree = false, want true")
@@ -1031,7 +1031,7 @@ func TestTaskAppServiceImportTasks_BehaviorSpec_Success(t *testing.T) {
 			DataSourceID: "github",
 			BehaviorSpec: &orchestrator.BehaviorSpec{
 				Name:     "kit/conflict-fix",
-				Traits:   []string{"instructions"},
+				Traits:   []string{"artifact"},
 				Worktree: true,
 			},
 		},
