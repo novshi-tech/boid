@@ -175,6 +175,141 @@ func TestComputeTaskBlocked_MultipleDeps_AllDone_NotBlocked(t *testing.T) {
 	}
 }
 
+// --- ResolvePayloadValue: artifact.children.* virtual 評価 ---
+
+func TestResolvePayloadValue_ChildrenAllDone_ZeroChildren_Falsy(t *testing.T) {
+	dep := &orchestrator.Task{ID: "dep", TotalChildCount: 0, DoneChildCount: 0}
+	v, err := orchestrator.ResolvePayloadValue(dep, "artifact.children.all_done")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	b, ok := v.(bool)
+	if !ok || b {
+		t.Fatalf("want false (no children), got %v", v)
+	}
+}
+
+func TestResolvePayloadValue_ChildrenAllDone_AllDone_Truthy(t *testing.T) {
+	dep := &orchestrator.Task{ID: "dep", TotalChildCount: 3, DoneChildCount: 3}
+	v, err := orchestrator.ResolvePayloadValue(dep, "artifact.children.all_done")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	b, ok := v.(bool)
+	if !ok || !b {
+		t.Fatalf("want true (all done), got %v", v)
+	}
+}
+
+func TestResolvePayloadValue_ChildrenAllDone_PartialDone_Falsy(t *testing.T) {
+	dep := &orchestrator.Task{ID: "dep", TotalChildCount: 3, DoneChildCount: 2}
+	v, err := orchestrator.ResolvePayloadValue(dep, "artifact.children.all_done")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	b, ok := v.(bool)
+	if !ok || b {
+		t.Fatalf("want false (partial done), got %v", v)
+	}
+}
+
+func TestResolvePayloadValue_ChildrenAllDone_AllAborted_Falsy(t *testing.T) {
+	dep := &orchestrator.Task{ID: "dep", TotalChildCount: 3, AbortedChildCount: 3, DoneChildCount: 0}
+	v, err := orchestrator.ResolvePayloadValue(dep, "artifact.children.all_done")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	b, ok := v.(bool)
+	if !ok || b {
+		t.Fatalf("want false (all aborted, not done), got %v", v)
+	}
+}
+
+func TestResolvePayloadValue_ChildrenAllResolved_DoneAndAborted_Truthy(t *testing.T) {
+	dep := &orchestrator.Task{ID: "dep", TotalChildCount: 3, DoneChildCount: 2, AbortedChildCount: 1}
+	v, err := orchestrator.ResolvePayloadValue(dep, "artifact.children.all_resolved")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	b, ok := v.(bool)
+	if !ok || !b {
+		t.Fatalf("want true (done+aborted==total), got %v", v)
+	}
+}
+
+func TestResolvePayloadValue_ChildrenAllResolved_AllAborted_Truthy(t *testing.T) {
+	dep := &orchestrator.Task{ID: "dep", TotalChildCount: 3, AbortedChildCount: 3, DoneChildCount: 0}
+	v, err := orchestrator.ResolvePayloadValue(dep, "artifact.children.all_resolved")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	b, ok := v.(bool)
+	if !ok || !b {
+		t.Fatalf("want true (all aborted counts as resolved), got %v", v)
+	}
+}
+
+func TestResolvePayloadValue_ChildrenAllResolved_PartialOpen_Falsy(t *testing.T) {
+	dep := &orchestrator.Task{ID: "dep", TotalChildCount: 3, DoneChildCount: 1, AbortedChildCount: 1}
+	v, err := orchestrator.ResolvePayloadValue(dep, "artifact.children.all_resolved")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	b, ok := v.(bool)
+	if !ok || b {
+		t.Fatalf("want false (one child still open), got %v", v)
+	}
+}
+
+func TestResolvePayloadValue_NonVirtualKey_UsesPayload(t *testing.T) {
+	payload := json.RawMessage(`{"artifact": {"pr": {"merged": true}}}`)
+	dep := &orchestrator.Task{ID: "dep", Payload: payload}
+	v, err := orchestrator.ResolvePayloadValue(dep, "artifact.pr.merged")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	b, ok := v.(bool)
+	if !ok || !b {
+		t.Fatalf("want true from payload, got %v", v)
+	}
+}
+
+func TestComputeTaskBlocked_ChildrenAllDone_VirtualKey_AllDone_NotBlocked(t *testing.T) {
+	parent := &orchestrator.Task{
+		ID:              "parent",
+		Status:          orchestrator.TaskStatusDone,
+		TotalChildCount: 2,
+		DoneChildCount:  2,
+	}
+	task := &orchestrator.Task{
+		ID:               "next",
+		Status:           orchestrator.TaskStatusPending,
+		DependsOn:        []string{"parent"},
+		DependsOnPayload: "artifact.children.all_done",
+	}
+	if orchestrator.ComputeTaskBlocked(task, makeTaskMap(parent, task)) {
+		t.Error("should not be blocked: all children done")
+	}
+}
+
+func TestComputeTaskBlocked_ChildrenAllDone_VirtualKey_PartialDone_Blocked(t *testing.T) {
+	parent := &orchestrator.Task{
+		ID:              "parent",
+		Status:          orchestrator.TaskStatusDone,
+		TotalChildCount: 2,
+		DoneChildCount:  1,
+	}
+	task := &orchestrator.Task{
+		ID:               "next",
+		Status:           orchestrator.TaskStatusPending,
+		DependsOn:        []string{"parent"},
+		DependsOnPayload: "artifact.children.all_done",
+	}
+	if !orchestrator.ComputeTaskBlocked(task, makeTaskMap(parent, task)) {
+		t.Error("should be blocked: not all children done")
+	}
+}
+
 func TestListTasks_Blocked_ComputedCorrectly(t *testing.T) {
 	d := createTestProject(t)
 

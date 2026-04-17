@@ -23,7 +23,7 @@ func checkDependencies(task *orchestrator.Task, getTask func(string) (*orchestra
 			return fmt.Errorf("dependency %s is not done (status: %s)", depID, dep.Status)
 		}
 		if task.DependsOnPayload != "" {
-			v, err := payloadGet(dep.Payload, task.DependsOnPayload)
+			v, err := orchestrator.ResolvePayloadValue(dep, task.DependsOnPayload)
 			if err != nil || !isTruthy(v) {
 				return fmt.Errorf("dependency %s: payload[%q] is not truthy", depID, task.DependsOnPayload)
 			}
