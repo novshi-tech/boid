@@ -47,8 +47,14 @@ type SandboxSpec struct {
 }
 
 // PreparedSandbox is the concrete launch artifact returned by a provider.
+// RootDir, ScriptPaths, and StagingDir are populated so the runner can remove
+// them after the sandbox runtime has exited. They are optional: zero values
+// mean "nothing to clean up here" (e.g. legacy paths or provider opted out).
 type PreparedSandbox struct {
-	OuterPath string
+	OuterPath   string
+	RootDir     string
+	ScriptPaths []string
+	StagingDir  string
 }
 
 // SandboxPreparer prepares concrete launch artifacts from the dispatcher-owned sandbox spec.

@@ -1420,3 +1420,78 @@ func TestWriteSandboxScripts_HookRole_NonInteractive_PayloadJsonNotWritten(t *te
 		t.Error("inner script must not write payload.json in non-interactive mode")
 	}
 }
+
+func TestWriteSandboxScripts_RootDirUsesLiteralPathWhenSet(t *testing.T) {
+	rootDir := t.TempDir()
+	cfg := sandbox.WrapperConfig{
+		JobID:        "test-rootdir",
+		ProjectID:    "proj-1",
+		ProjectDir:   "/home/user/projects/proj-1",
+		BoidBinary:   "/usr/local/bin/boid",
+		ServerSocket: "/run/boid/server.sock",
+		RootDir:      rootDir,
+	}
+
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-rootdir"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	setupContent, err := os.ReadFile(setupPath)
+	if err != nil {
+		t.Fatalf("read setup script: %v", err)
+	}
+	setup := string(setupContent)
+
+	// rootDir from t.TempDir() is shell-safe so shellQuote returns it unquoted.
+	wantAssign := fmt.Sprintf("ROOT=%s\n", rootDir)
+	if !strings.Contains(setup, wantAssign) {
+		t.Errorf("setup script missing literal ROOT assignment %q; got:\n%s", wantAssign, setup)
+	}
+	if strings.Contains(setup, "mktemp -d /tmp/boid-root-") {
+		t.Errorf("setup script must NOT use mktemp when RootDir is set; got:\n%s", setup)
+	}
+}
+
+func TestWriteSandboxScripts_RootDirFallsBackToMktempWhenEmpty(t *testing.T) {
+	cfg := sandbox.WrapperConfig{
+		JobID:        "test-rootdir-empty",
+		ProjectID:    "proj-1",
+		ProjectDir:   "/home/user/projects/proj-1",
+		BoidBinary:   "/usr/local/bin/boid",
+		ServerSocket: "/run/boid/server.sock",
+	}
+
+	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	if err != nil {
+		t.Fatalf("WriteSandboxScripts: %v", err)
+	}
+
+	prefix := "/tmp/boid-test-rootdir-empty"
+	innerPath := prefix + "-inner.sh"
+	setupPath := prefix + "-setup.sh"
+	t.Cleanup(func() {
+		os.Remove(outerPath)
+		os.Remove(setupPath)
+		os.Remove(innerPath)
+	})
+
+	setupContent, err := os.ReadFile(setupPath)
+	if err != nil {
+		t.Fatalf("read setup script: %v", err)
+	}
+	setup := string(setupContent)
+
+	if !strings.Contains(setup, "ROOT=$(mktemp -d /tmp/boid-root-XXXXXX)") {
+		t.Errorf("setup script must fall back to mktemp when RootDir is empty; got:\n%s", setup)
+	}
+}

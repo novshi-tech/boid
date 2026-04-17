@@ -8,10 +8,18 @@ import (
 
 // RenderSetupScript generates the setup shell script from a SandboxPlan.
 // innerPath, setupPath, outerPath are the generated script paths (for cleanup).
-func RenderSetupScript(plan *SandboxPlan, innerPath, setupPath, outerPath string) string {
+// rootDir, if non-empty, is used as the sandbox ROOT (pre-created by caller) so
+// Go-side cleanup can delete it after the sandbox exits; if empty, the script
+// falls back to creating ROOT with mktemp (legacy behavior, leaks on success).
+func RenderSetupScript(plan *SandboxPlan, rootDir, innerPath, setupPath, outerPath string) string {
 	var b strings.Builder
 
-	b.WriteString("#!/bin/bash\nset -e\n\nROOT=$(mktemp -d /tmp/boid-root-XXXXXX)\n\n")
+	b.WriteString("#!/bin/bash\nset -e\n\n")
+	if rootDir != "" {
+		fmt.Fprintf(&b, "ROOT=%s\n\n", shellQuote(rootDir))
+	} else {
+		b.WriteString("ROOT=$(mktemp -d /tmp/boid-root-XXXXXX)\n\n")
+	}
 
 	renderCleanup(&b, plan.CleanupPaths, innerPath, setupPath, outerPath)
 

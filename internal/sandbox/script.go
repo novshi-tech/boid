@@ -32,6 +32,7 @@ type WrapperConfig struct {
 	WorkspaceDirs      map[string]string // project-id -> host-dir (read-only mounts)
 	ProxyPort          int               // host-side proxy port (0 = no proxy)
 	StagingDir         string            // if set, staging dir to clean up after job
+	RootDir            string            // if set, sandbox ROOT path (caller-managed); else setup script mktemps one
 	TTY                bool              // if true, preserve TTY through pasta (for interactive commands)
 	Interactive        bool              // if true, hook runs without payload pipe/stdout redirect (PTY I/O)
 	WorktreeDir        string            // if set, worktree mode: sandbox works here; .git/.boid come from ProjectDir
@@ -76,7 +77,7 @@ func WriteSandboxScripts(cfg WrapperConfig) (string, error) {
 
 	inner := generateInnerScript(cfg)
 	plan := BuildSandboxPlan(cfg)
-	setup := RenderSetupScript(plan, innerPath, setupPath, outerPath)
+	setup := RenderSetupScript(plan, cfg.RootDir, innerPath, setupPath, outerPath)
 	outer := generateOuterScript(cfg, setupPath)
 
 	for _, f := range []struct{ path, content string }{

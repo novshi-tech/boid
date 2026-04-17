@@ -1,7 +1,10 @@
 package dispatcher
 
 import (
+	"fmt"
+	"os"
 	"sort"
+	"strings"
 
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
@@ -14,6 +17,11 @@ func NewSandboxPreparer() SandboxPreparer {
 }
 
 func (sandboxPreparerImpl) PrepareSandbox(spec SandboxSpec) (*PreparedSandbox, error) {
+	rootDir, err := os.MkdirTemp("", "boid-root-")
+	if err != nil {
+		return nil, fmt.Errorf("create sandbox root: %w", err)
+	}
+
 	outerPath, err := sandbox.WriteSandboxScripts(sandbox.WrapperConfig{
 		JobID:              spec.JobID,
 		TaskID:             spec.TaskID,
@@ -35,6 +43,7 @@ func (sandboxPreparerImpl) PrepareSandbox(spec SandboxSpec) (*PreparedSandbox, e
 		WorkspaceDirs:      spec.WorkspaceDirs,
 		ProxyPort:          spec.ProxyPort,
 		StagingDir:         spec.StagingDir,
+		RootDir:            rootDir,
 		TTY:                spec.TTY,
 		Interactive:        spec.Interactive,
 		WorktreeDir:        spec.WorktreeDir,
@@ -51,9 +60,24 @@ func (sandboxPreparerImpl) PrepareSandbox(spec SandboxSpec) (*PreparedSandbox, e
 		InvokedType:        spec.InvokedType,
 	})
 	if err != nil {
+		_ = os.RemoveAll(rootDir)
 		return nil, err
 	}
-	return &PreparedSandbox{OuterPath: outerPath}, nil
+
+	// Script paths mirror the convention in sandbox.WriteSandboxScripts.
+	prefix := strings.TrimSuffix(outerPath, "-outer.sh")
+	scriptPaths := []string{
+		outerPath,
+		prefix + "-setup.sh",
+		prefix + "-inner.sh",
+	}
+
+	return &PreparedSandbox{
+		OuterPath:   outerPath,
+		RootDir:     rootDir,
+		ScriptPaths: scriptPaths,
+		StagingDir:  spec.StagingDir,
+	}, nil
 }
 
 // sortedPolicyKeys extracts the builtin command names from a policy map and

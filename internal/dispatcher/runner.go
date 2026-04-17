@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sort"
 	"sync"
 )
@@ -228,6 +229,7 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec SandboxSpec) 
 		TTY:         spec.TTY,
 	})
 	if err != nil {
+		cleanupSandboxArtifacts(prepared)
 		return "", fmt.Errorf("start runtime: %w", err)
 	}
 
@@ -236,13 +238,61 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec SandboxSpec) 
 	job.TTY = handle.TTY
 	if err := UpdateJob(r.DB, job); err != nil {
 		_ = r.Runtime.Stop(context.Background(), handle.ID)
+		cleanupSandboxArtifacts(prepared)
 		return "", fmt.Errorf("persist job runtime metadata: %w", err)
 	}
 
 	r.trackTaskRuntime(job.TaskID, handle.ID)
 	go r.watchRuntime(job.ID, handle.ID)
+	go r.cleanupSandboxAfterWait(handle.ID, prepared)
 	slog.Info("job started", "job_id", job.ID, "runtime_id", handle.ID)
 	return job.ID, nil
+}
+
+// cleanupSandboxAfterWait blocks until the runtime exits, then removes sandbox
+// temp artifacts (ROOT dir, generated scripts, gate staging dir). Safe to call
+// alongside watchRuntime: both wait on the same runtime.done channel.
+//
+// IMPORTANT: we must wait for runtime exit before removing ROOT. Until the
+// sandbox process is dead, bind mounts under ROOT may still be live, and
+// os.RemoveAll could traverse into host filesystems.
+func (r *Runner) cleanupSandboxAfterWait(runtimeID string, prepared *PreparedSandbox) {
+	if r.Runtime == nil || runtimeID == "" || prepared == nil {
+		return
+	}
+	if _, err := r.Runtime.Wait(context.Background(), runtimeID); err != nil {
+		if errors.Is(err, ErrRuntimeUnsupported) {
+			cleanupSandboxArtifacts(prepared)
+			return
+		}
+		slog.Warn("skip sandbox cleanup: runtime wait failed", "runtime_id", runtimeID, "error", err)
+		return
+	}
+	cleanupSandboxArtifacts(prepared)
+}
+
+func cleanupSandboxArtifacts(prepared *PreparedSandbox) {
+	if prepared == nil {
+		return
+	}
+	if prepared.RootDir != "" {
+		if err := os.RemoveAll(prepared.RootDir); err != nil {
+			slog.Warn("remove sandbox root", "path", prepared.RootDir, "error", err)
+		}
+	}
+	for _, p := range prepared.ScriptPaths {
+		if p == "" {
+			continue
+		}
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			slog.Warn("remove sandbox script", "path", p, "error", err)
+		}
+	}
+	if prepared.StagingDir != "" {
+		if err := os.RemoveAll(prepared.StagingDir); err != nil {
+			slog.Warn("remove sandbox staging dir", "path", prepared.StagingDir, "error", err)
+		}
+	}
 }
 
 // CleanupTaskWindow stops all tracked runtimes associated with a task.
