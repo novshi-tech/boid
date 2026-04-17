@@ -423,3 +423,41 @@ func TestFilterInstructions_Name_EmptyWhenNotSet(t *testing.T) {
 		t.Errorf("expected empty Name, got %q", results[0].Name)
 	}
 }
+
+// --- RejectReservedPayloadKeys ---
+
+func TestRejectReservedPayloadKeys_ArtifactChildren_ReturnsError(t *testing.T) {
+	payload := json.RawMessage(`{"artifact":{"children":{"all_done":true}}}`)
+	if err := orchestrator.RejectReservedPayloadKeys(payload); err == nil {
+		t.Error("want error for artifact.children.* write, got nil")
+	}
+}
+
+func TestRejectReservedPayloadKeys_ArtifactOther_OK(t *testing.T) {
+	payload := json.RawMessage(`{"artifact":{"auto-merge":{"merged":true}}}`)
+	if err := orchestrator.RejectReservedPayloadKeys(payload); err != nil {
+		t.Errorf("want nil for non-reserved artifact key, got %v", err)
+	}
+}
+
+func TestRejectReservedPayloadKeys_Empty_OK(t *testing.T) {
+	if err := orchestrator.RejectReservedPayloadKeys(json.RawMessage(`{}`)); err != nil {
+		t.Errorf("want nil for empty payload, got %v", err)
+	}
+}
+
+func TestRejectReservedPayloadKeys_NoArtifact_OK(t *testing.T) {
+	payload := json.RawMessage(`{"other":{"key":"value"}}`)
+	if err := orchestrator.RejectReservedPayloadKeys(payload); err != nil {
+		t.Errorf("want nil for non-artifact key, got %v", err)
+	}
+}
+
+func TestMergePayloadPatch_ArtifactChildren_ReturnsError(t *testing.T) {
+	base := json.RawMessage(`{}`)
+	patch := json.RawMessage(`{"artifact":{"children":{"all_done":true}}}`)
+	_, err := orchestrator.MergePayloadPatch(base, patch, "test-handler", nil)
+	if err == nil {
+		t.Error("want error for artifact.children.* in patch, got nil")
+	}
+}

@@ -535,6 +535,9 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		if err := rejectPayloadInstructions(req.Payload); err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 		}
+		if err := orchestrator.RejectReservedPayloadKeys(req.Payload); err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+		}
 		// 案 B: artifact.<handler-role> が別 top-level キーになるため、
 		// top-level shallow merge で handler 間の書き込みが衝突しない。
 		// null は削除。instructions の特別扱いは不要。
@@ -1133,6 +1136,9 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 				if current.Status == orchestrator.TaskStatusDone {
 					s.triggerDependentTasks(ctx, current.ID)
 				}
+				if current.ParentID != "" {
+					s.triggerDependentTasks(ctx, current.ParentID)
+				}
 			}
 			return
 		}
@@ -1185,6 +1191,9 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			}
 			if current.Status == orchestrator.TaskStatusDone {
 				s.triggerDependentTasks(ctx, current.ID)
+			}
+			if current.ParentID != "" {
+				s.triggerDependentTasks(ctx, current.ParentID)
 			}
 			return
 		}

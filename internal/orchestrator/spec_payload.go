@@ -57,12 +57,39 @@ func ValidatePayloadPatch(patch json.RawMessage, allowedTraits []TraitType) erro
 	return nil
 }
 
+// RejectReservedPayloadKeys returns an error if the payload contains writes to
+// the artifact.children.* namespace (which is managed by virtual evaluation only).
+func RejectReservedPayloadKeys(payload json.RawMessage) error {
+	if len(payload) == 0 || string(payload) == "{}" || string(payload) == "null" {
+		return nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return nil
+	}
+	artifactRaw, ok := m["artifact"]
+	if !ok {
+		return nil
+	}
+	var artifact map[string]json.RawMessage
+	if err := json.Unmarshal(artifactRaw, &artifact); err != nil {
+		return nil
+	}
+	if _, ok := artifact["children"]; ok {
+		return fmt.Errorf("artifact.children.* is reserved")
+	}
+	return nil
+}
+
 func MergePayloadPatch(base, patch json.RawMessage, handlerID string, allowedTraits []TraitType) (json.RawMessage, error) {
 	if len(patch) == 0 || string(patch) == "{}" || string(patch) == "null" {
 		if len(base) == 0 {
 			return json.RawMessage("{}"), nil
 		}
 		return base, nil
+	}
+	if err := RejectReservedPayloadKeys(patch); err != nil {
+		return nil, err
 	}
 
 	var allowed map[TraitType]bool

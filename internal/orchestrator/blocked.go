@@ -5,6 +5,20 @@ import (
 	"strings"
 )
 
+// ResolvePayloadValue resolves a depends_on_payload key against a dependency task.
+// Reserved virtual keys (artifact.children.*) are computed from the task's child
+// count fields. All other keys are looked up in the task's payload JSON.
+func ResolvePayloadValue(dep *Task, key string) (any, error) {
+	switch key {
+	case "artifact.children.all_done":
+		return dep.TotalChildCount > 0 && dep.DoneChildCount == dep.TotalChildCount, nil
+	case "artifact.children.all_resolved":
+		return dep.TotalChildCount > 0 && dep.DoneChildCount+dep.AbortedChildCount == dep.TotalChildCount, nil
+	default:
+		return nestedPayloadGet(dep.Payload, key)
+	}
+}
+
 // ComputeTaskBlocked は task が pending 状態かつ依存条件が未充足のとき true を返す。
 // taskByID は全ての関連タスクを ID でひけるマップ。
 // 依存先 ID がマップに存在しない場合（削除済み等）はブロックとみなさない。
@@ -23,7 +37,7 @@ func ComputeTaskBlocked(task *Task, taskByID map[string]*Task) bool {
 		}
 		// 依存先が done でも DependsOnPayload 条件が未充足ならブロック
 		if task.DependsOnPayload != "" {
-			v, _ := nestedPayloadGet(dep.Payload, task.DependsOnPayload)
+			v, _ := ResolvePayloadValue(dep, task.DependsOnPayload)
 			if !isTruthyVal(v) {
 				return true
 			}

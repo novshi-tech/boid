@@ -182,6 +182,100 @@ func TestAutoTrigger_PayloadUpdate_WithPayloadCondition_TriggersDependents(t *te
 	waitForStatus(t, ts, taskB.ID, orchestrator.TaskStatusExecuting, 2*time.Second)
 }
 
+// TestAutoTrigger_ChildrenAllDone_Phase2AutoStarts:
+// Phase1 (plan) が done に遷移後、子タスクが全て done になると
+// `depends_on_payload: "artifact.children.all_done"` の Phase2 が自動 start する。
+func TestAutoTrigger_ChildrenAllDone_Phase2AutoStarts(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	setupTriggerProject(t, ts, "proj-children-done")
+
+	// Phase1 タスクを作成して done にする（plan タスクの代替として impl で代用）
+	phase1 := createImplTask(t, ts, "proj-children-done", "Phase1", "phase1", "", nil, "")
+	applyImplAction(t, ts, phase1.ID, "start")
+	applyImplAction(t, ts, phase1.ID, "done")
+
+	// Phase1 の子タスクを 2 つ作成
+	child1 := createImplTask(t, ts, "proj-children-done", "Child 1", "c1", phase1.ID, nil, "")
+	child2 := createImplTask(t, ts, "proj-children-done", "Child 2", "c2", phase1.ID, nil, "")
+
+	// Phase2: phase1 が done かつ artifact.children.all_done が true になると start
+	phase2 := createImplTask(t, ts, "proj-children-done", "Phase2", "phase2", "", []string{phase1.ID}, "artifact.children.all_done")
+
+	// Phase2 はまだ pending のはず
+	if phase2.Status != orchestrator.TaskStatusPending {
+		t.Fatalf("phase2 initial status = %q, want pending", phase2.Status)
+	}
+
+	// child1 が done → 子全員未完了なので phase2 は pending のまま
+	applyImplAction(t, ts, child1.ID, "start")
+	applyImplAction(t, ts, child1.ID, "done")
+	time.Sleep(100 * time.Millisecond)
+	var p2 orchestrator.Task
+	if err := ts.Client.Do("GET", "/api/tasks/"+phase2.ID, nil, &p2); err != nil {
+		t.Fatalf("get phase2: %v", err)
+	}
+	if p2.Status != orchestrator.TaskStatusPending {
+		t.Fatalf("phase2 status = %q, want pending (child2 not done yet)", p2.Status)
+	}
+
+	// child2 も done → phase2 が自動 start されるはず
+	applyImplAction(t, ts, child2.ID, "start")
+	applyImplAction(t, ts, child2.ID, "done")
+	waitForStatus(t, ts, phase2.ID, orchestrator.TaskStatusExecuting, 2*time.Second)
+}
+
+// TestAutoTrigger_ChildrenAllDone_AbortedChild_StaysPending:
+// 子が一部 aborted → all_done は立たず phase2 は pending のまま。
+func TestAutoTrigger_ChildrenAllDone_AbortedChild_StaysPending(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	setupTriggerProject(t, ts, "proj-children-aborted")
+
+	phase1 := createImplTask(t, ts, "proj-children-aborted", "Phase1", "phase1", "", nil, "")
+	applyImplAction(t, ts, phase1.ID, "start")
+	applyImplAction(t, ts, phase1.ID, "done")
+
+	child1 := createImplTask(t, ts, "proj-children-aborted", "Child 1", "c1", phase1.ID, nil, "")
+	child2 := createImplTask(t, ts, "proj-children-aborted", "Child 2", "c2", phase1.ID, nil, "")
+
+	phase2 := createImplTask(t, ts, "proj-children-aborted", "Phase2 all_done", "phase2", "", []string{phase1.ID}, "artifact.children.all_done")
+
+	// child1 done, child2 aborted
+	applyImplAction(t, ts, child1.ID, "start")
+	applyImplAction(t, ts, child1.ID, "done")
+	applyImplAction(t, ts, child2.ID, "abort")
+
+	time.Sleep(200 * time.Millisecond)
+	var p2 orchestrator.Task
+	if err := ts.Client.Do("GET", "/api/tasks/"+phase2.ID, nil, &p2); err != nil {
+		t.Fatalf("get phase2: %v", err)
+	}
+	if p2.Status != orchestrator.TaskStatusPending {
+		t.Fatalf("phase2 status = %q, want pending (aborted child → all_done false)", p2.Status)
+	}
+}
+
+// TestAutoTrigger_ChildrenAllResolved_AbortedChild_AutoStarts:
+// 子が done + aborted で全員解決 → all_resolved が立ち phase2 が自動 start。
+func TestAutoTrigger_ChildrenAllResolved_AbortedChild_AutoStarts(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	setupTriggerProject(t, ts, "proj-children-resolved")
+
+	phase1 := createImplTask(t, ts, "proj-children-resolved", "Phase1", "phase1", "", nil, "")
+	applyImplAction(t, ts, phase1.ID, "start")
+	applyImplAction(t, ts, phase1.ID, "done")
+
+	child1 := createImplTask(t, ts, "proj-children-resolved", "Child 1", "c1", phase1.ID, nil, "")
+	child2 := createImplTask(t, ts, "proj-children-resolved", "Child 2", "c2", phase1.ID, nil, "")
+
+	phase2 := createImplTask(t, ts, "proj-children-resolved", "Phase2 all_resolved", "phase2r", "", []string{phase1.ID}, "artifact.children.all_resolved")
+
+	applyImplAction(t, ts, child1.ID, "start")
+	applyImplAction(t, ts, child1.ID, "done")
+	applyImplAction(t, ts, child2.ID, "abort")
+
+	waitForStatus(t, ts, phase2.ID, orchestrator.TaskStatusExecuting, 2*time.Second)
+}
+
 // TestAutoTrigger_CircularDep_CreateError:
 // 循環依存のタスク作成はエラー（API レベル）
 func TestAutoTrigger_CircularDep_CreateError(t *testing.T) {
