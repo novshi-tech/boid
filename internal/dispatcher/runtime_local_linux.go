@@ -200,6 +200,11 @@ func (r *LocalRuntime) Resize(_ context.Context, runtimeID string, size Terminal
 	if err != nil {
 		return err
 	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if !session.running {
+		return nil
+	}
 	return setPTYSize(session.master, size)
 }
 

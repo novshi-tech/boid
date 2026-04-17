@@ -144,3 +144,27 @@ func TestLocalRuntimeResizeOnRunningSession(t *testing.T) {
 		t.Fatalf("Wait: %v", err)
 	}
 }
+
+func TestLocalRuntimeResizeAfterExit(t *testing.T) {
+	rt := &dispatcher.LocalRuntime{RootDir: t.TempDir()}
+
+	handle, err := rt.Start(context.Background(), dispatcher.RuntimeStartSpec{
+		Command:     "true",
+		Interactive: true,
+		TTY:         true,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if _, err := rt.Wait(context.Background(), handle.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	// Resize after the session has exited must not race and must not error.
+	for i := 0; i < 100; i++ {
+		if err := rt.Resize(context.Background(), handle.ID, dispatcher.TerminalSize{Cols: 80, Rows: 24}); err != nil {
+			t.Fatalf("Resize after exit: %v", err)
+		}
+	}
+}
