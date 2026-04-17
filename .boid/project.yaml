@@ -58,7 +58,7 @@ task_behaviors:
                 behavior: "dev"
                 description: "..."
                 depends_on: ["task-a"]
-                depends_on_payload: "artifact.auto-merge.pr.merged"
+                depends_on_payload: "artifact.auto-merge.merged"
                 auto_start: true
 
           ## 依存タスク
@@ -66,7 +66,7 @@ task_behaviors:
           タスク間に順序依存がある場合、後続タスクに以下を設定すること：
           - ref: タスクに任意の名前を付ける。同一バッチ内で depends_on から参照される。
           - depends_on: 依存先タスクの ref 名を指定する。
-          - depends_on_payload: "artifact.auto-merge.pr.merged" — 依存先タスクの PR が auto-merge で正常にマージされるまで待機する。
+          - depends_on_payload: "artifact.auto-merge.merged" — 依存先タスクの PR が auto-merge で正常にマージされるまで待機する。
           - auto_start: true — 依存条件が満たされたら自動的に開始する。
 
           順序依存がないタスクには depends_on を設定しないこと（並列実行される）。
@@ -112,7 +112,7 @@ task_behaviors:
                 behavior: "dev"
                 description: "..."
                 depends_on: ["task-a"]
-                depends_on_payload: "artifact.auto-merge.pr.merged"
+                depends_on_payload: "artifact.auto-merge.merged"
                 auto_start: true
 
           ## auto_start
@@ -127,7 +127,7 @@ task_behaviors:
           タスク間に順序依存がある場合、後続タスクに以下を設定すること：
           - ref: タスクに任意の名前を付ける。同一バッチ内で depends_on から参照される。
           - depends_on: 依存先タスクの ref 名を指定する。
-          - depends_on_payload: "artifact.auto-merge.pr.merged" — 依存先タスクの PR が auto-merge で正常にマージされるまで待機する。
+          - depends_on_payload: "artifact.auto-merge.merged" — 依存先タスクの PR が auto-merge で正常にマージされるまで待機する。
 
           順序依存がないタスクには depends_on を設定しないこと（並列実行される）。
 

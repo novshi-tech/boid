@@ -184,7 +184,7 @@ func TestRunBoidShim_TaskCreatePropagatesDependencyFields(t *testing.T) {
 		"ref: task-c\n" +
 		"parent_id: parent-xyz\n" +
 		"depends_on:\n  - task-a\n  - task-b\n" +
-		"depends_on_payload: artifact.auto-merge.pr.merged\n" +
+		"depends_on_payload: artifact.auto-merge.merged\n" +
 		"auto_start: true\n"
 	if err := os.WriteFile(specPath, []byte(specYAML), 0o644); err != nil {
 		t.Fatalf("write task spec: %v", err)
@@ -214,8 +214,8 @@ func TestRunBoidShim_TaskCreatePropagatesDependencyFields(t *testing.T) {
 	if got, want := req.Boid.DependsOn, []string{"task-a", "task-b"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("depends_on = %v, want %v", got, want)
 	}
-	if req.Boid.DependsOnPayload != "artifact.auto-merge.pr.merged" {
-		t.Errorf("depends_on_payload = %q, want artifact.auto-merge.pr.merged", req.Boid.DependsOnPayload)
+	if req.Boid.DependsOnPayload != "artifact.auto-merge.merged" {
+		t.Errorf("depends_on_payload = %q, want artifact.auto-merge.merged", req.Boid.DependsOnPayload)
 	}
 	if !req.Boid.AutoStart {
 		t.Errorf("auto_start = false, want true")

@@ -541,8 +541,8 @@ func TestCheckDependencies_CrossProject_DependsOnPayload_Falsy_Error(t *testing.
 // --- payloadGet ネストパス参照ユニットテスト ---
 
 func TestPayloadGet_NestedPath_Truthy(t *testing.T) {
-	payload := json.RawMessage(`{"artifact": {"auto-merge": {"pr": {"merged": true}}}}`)
-	v, err := payloadGet(payload, "artifact.auto-merge.pr.merged")
+	payload := json.RawMessage(`{"artifact": {"auto-merge": {"merged": true}}}`)
+	v, err := payloadGet(payload, "artifact.auto-merge.merged")
 	if err != nil {
 		t.Fatalf("payloadGet() error = %v, want nil", err)
 	}
@@ -552,8 +552,8 @@ func TestPayloadGet_NestedPath_Truthy(t *testing.T) {
 }
 
 func TestPayloadGet_NestedPath_Falsy(t *testing.T) {
-	payload := json.RawMessage(`{"artifact": {"auto-merge": {"pr": {"merged": false}}}}`)
-	v, err := payloadGet(payload, "artifact.auto-merge.pr.merged")
+	payload := json.RawMessage(`{"artifact": {"auto-merge": {"merged": false}}}`)
+	v, err := payloadGet(payload, "artifact.auto-merge.merged")
 	if err != nil {
 		t.Fatalf("payloadGet() error = %v, want nil", err)
 	}
@@ -563,8 +563,8 @@ func TestPayloadGet_NestedPath_Falsy(t *testing.T) {
 }
 
 func TestPayloadGet_NestedPath_IntermediateMissing(t *testing.T) {
-	payload := json.RawMessage(`{"artifact": {"auto-merge": {}}}`)
-	v, err := payloadGet(payload, "artifact.auto-merge.pr.merged")
+	payload := json.RawMessage(`{"artifact": {}}`)
+	v, err := payloadGet(payload, "artifact.auto-merge.merged")
 	if err != nil {
 		t.Fatalf("payloadGet() error = %v, want nil", err)
 	}
@@ -575,7 +575,7 @@ func TestPayloadGet_NestedPath_IntermediateMissing(t *testing.T) {
 
 func TestPayloadGet_NestedPath_IntermediateNotMap(t *testing.T) {
 	payload := json.RawMessage(`{"artifact": "not-a-map"}`)
-	v, err := payloadGet(payload, "artifact.auto-merge.pr.merged")
+	v, err := payloadGet(payload, "artifact.auto-merge.merged")
 	if err != nil {
 		t.Fatalf("payloadGet() error = %v, want nil", err)
 	}

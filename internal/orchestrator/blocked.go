@@ -33,7 +33,7 @@ func ComputeTaskBlocked(task *Task, taskByID map[string]*Task) bool {
 }
 
 // nestedPayloadGet は JSON ペイロードからドット区切りキーで値を取り出す。
-// 例: "artifact.auto-merge.pr.merged"
+// 例: "artifact.auto-merge.merged"
 func nestedPayloadGet(payload json.RawMessage, key string) (any, error) {
 	if len(payload) == 0 {
 		return nil, nil
