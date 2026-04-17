@@ -9,73 +9,68 @@ import (
 	"github.com/novshi-tech/boid/internal/skills"
 )
 
-func TestDeploy_CreatesFiles(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "boid-sandbox")
+func TestDeployAll_CreatesBothSkills(t *testing.T) {
+	baseDir := t.TempDir()
 
-	if err := skills.Deploy(target); err != nil {
-		t.Fatalf("Deploy: %v", err)
+	if err := skills.DeployAll(baseDir); err != nil {
+		t.Fatalf("DeployAll: %v", err)
 	}
 
-	// SKILL.md must exist
-	skillContent, err := os.ReadFile(filepath.Join(target, "SKILL.md"))
-	if err != nil {
-		t.Fatalf("read SKILL.md: %v", err)
-	}
-	if !strings.Contains(string(skillContent), "boid-sandbox") {
-		t.Error("SKILL.md missing skill name")
+	for _, skillName := range []string{"boid-sandbox", "boid-plan"} {
+		content, err := os.ReadFile(filepath.Join(baseDir, skillName, "SKILL.md"))
+		if err != nil {
+			t.Fatalf("read %s/SKILL.md: %v", skillName, err)
+		}
+		if !strings.Contains(string(content), skillName) {
+			t.Errorf("%s/SKILL.md missing skill name", skillName)
+		}
 	}
 
-	// references must exist
 	for _, ref := range []string{"state-machine.md", "data-model.md", "output-format.md"} {
-		path := filepath.Join(target, "references", ref)
+		path := filepath.Join(baseDir, "boid-sandbox", "references", ref)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
-			t.Errorf("reference file missing: %s", ref)
+			t.Errorf("boid-sandbox reference file missing: %s", ref)
 		}
 	}
 }
 
-func TestDeploy_Idempotent(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "boid-sandbox")
+func TestDeployAll_Idempotent(t *testing.T) {
+	baseDir := t.TempDir()
 
-	if err := skills.Deploy(target); err != nil {
-		t.Fatalf("Deploy (1st): %v", err)
+	if err := skills.DeployAll(baseDir); err != nil {
+		t.Fatalf("DeployAll (1st): %v", err)
 	}
+	content1, _ := os.ReadFile(filepath.Join(baseDir, "boid-sandbox", "SKILL.md"))
 
-	content1, _ := os.ReadFile(filepath.Join(target, "SKILL.md"))
-
-	if err := skills.Deploy(target); err != nil {
-		t.Fatalf("Deploy (2nd): %v", err)
+	if err := skills.DeployAll(baseDir); err != nil {
+		t.Fatalf("DeployAll (2nd): %v", err)
 	}
+	content2, _ := os.ReadFile(filepath.Join(baseDir, "boid-sandbox", "SKILL.md"))
 
-	content2, _ := os.ReadFile(filepath.Join(target, "SKILL.md"))
 	if string(content1) != string(content2) {
 		t.Error("idempotent deploy changed SKILL.md content")
 	}
 }
 
-func TestDeploy_UpdatesChangedFiles(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "boid-sandbox")
+func TestDeployAll_UpdatesChangedFiles(t *testing.T) {
+	baseDir := t.TempDir()
 
-	if err := skills.Deploy(target); err != nil {
-		t.Fatalf("Deploy (1st): %v", err)
+	if err := skills.DeployAll(baseDir); err != nil {
+		t.Fatalf("DeployAll (1st): %v", err)
 	}
 
-	// Write stale content
-	stale := filepath.Join(target, "SKILL.md")
+	stale := filepath.Join(baseDir, "boid-sandbox", "SKILL.md")
 	if err := os.WriteFile(stale, []byte("old content"), 0o644); err != nil {
 		t.Fatalf("write stale: %v", err)
 	}
 
-	if err := skills.Deploy(target); err != nil {
-		t.Fatalf("Deploy (2nd): %v", err)
+	if err := skills.DeployAll(baseDir); err != nil {
+		t.Fatalf("DeployAll (2nd): %v", err)
 	}
 
 	content, _ := os.ReadFile(stale)
 	if string(content) == "old content" {
-		t.Error("Deploy did not update stale SKILL.md")
+		t.Error("DeployAll did not update stale SKILL.md")
 	}
 	if !strings.Contains(string(content), "boid-sandbox") {
 		t.Error("updated SKILL.md missing expected content")
