@@ -60,8 +60,8 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	if cfg.DBPath != "" && cfg.DBPath != ":memory:" {
-		skillsDir := filepath.Join(filepath.Dir(cfg.DBPath), "skills", "boid-sandbox")
-		if err := skills.Deploy(skillsDir); err != nil {
+		skillsDir := filepath.Join(filepath.Dir(cfg.DBPath), "skills")
+		if err := skills.DeployAll(skillsDir); err != nil {
 			d.Close()
 			return nil, fmt.Errorf("deploy skills: %w", err)
 		}
