@@ -20,6 +20,7 @@ func newTaskUpdateCmd(t *testing.T) *cobra.Command {
 	cmd.Flags().String("title", "", "title")
 	cmd.Flags().String("description", "", "description")
 	cmd.Flags().String("payload-file", "", "payload file")
+	cmd.Flags().String("instructions-file", "", "instructions file")
 	return cmd
 }
 
@@ -105,6 +106,103 @@ func TestRunTaskUpdate_UpdatesPayloadFromFile(t *testing.T) {
 	got := out.String()
 	if !strings.Contains(got, task.ID) {
 		t.Errorf("output %q should contain task ID %q", got, task.ID)
+	}
+}
+
+func TestRunTaskUpdate_UpdatesInstructionsFromFile(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+
+	dir := writeImportTestProject(t, "update-instr-proj", "Update Instructions Project")
+	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	var task orchestrator.Task
+	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
+		"project_id": "update-instr-proj",
+		"title":      "instruction task",
+		"behavior":   "dev",
+	}, &task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	instructionsYAML := `main:
+  type: execution
+  consumer: claude-code
+  message: "do the thing"
+  model: opus-4-7
+`
+	tmpFile := filepath.Join(t.TempDir(), "instructions.yaml")
+	if err := os.WriteFile(tmpFile, []byte(instructionsYAML), 0o644); err != nil {
+		t.Fatalf("write instructions file: %v", err)
+	}
+
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+
+	var out bytes.Buffer
+	cmd := newTaskUpdateCmd(t)
+	cmd.SetOut(&out)
+	if err := cmd.Flags().Set("instructions-file", tmpFile); err != nil {
+		t.Fatalf("set --instructions-file: %v", err)
+	}
+
+	if err := runTaskUpdate(cmd, []string{task.ID}); err != nil {
+		t.Fatalf("runTaskUpdate() error = %v", err)
+	}
+
+	var updated orchestrator.Task
+	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID, nil, &updated); err != nil {
+		t.Fatalf("get updated task: %v", err)
+	}
+	got, ok := updated.Instructions["main"]
+	if !ok {
+		t.Fatalf("instructions.main not set; got: %#v", updated.Instructions)
+	}
+	if got.Model != "opus-4-7" {
+		t.Errorf("instructions.main.model = %q, want opus-4-7", got.Model)
+	}
+	if got.Message != "do the thing" {
+		t.Errorf("instructions.main.message = %q, want %q", got.Message, "do the thing")
+	}
+}
+
+func TestRunTaskUpdate_InstructionsFromStdin(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+
+	dir := writeImportTestProject(t, "update-instr-stdin-proj", "Update Instructions Stdin Project")
+	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	var task orchestrator.Task
+	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
+		"project_id": "update-instr-stdin-proj",
+		"title":      "stdin instruction task",
+		"behavior":   "dev",
+	}, &task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+
+	cmd := newTaskUpdateCmd(t)
+	cmd.SetIn(strings.NewReader(`{"reviewer":{"type":"verification","consumer":"codex","message":"review"}}`))
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := cmd.Flags().Set("instructions-file", "-"); err != nil {
+		t.Fatalf("set --instructions-file: %v", err)
+	}
+
+	if err := runTaskUpdate(cmd, []string{task.ID}); err != nil {
+		t.Fatalf("runTaskUpdate() error = %v", err)
+	}
+
+	var updated orchestrator.Task
+	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID, nil, &updated); err != nil {
+		t.Fatalf("get updated task: %v", err)
+	}
+	if _, ok := updated.Instructions["reviewer"]; !ok {
+		t.Fatalf("instructions.reviewer not set; got: %#v", updated.Instructions)
 	}
 }
 

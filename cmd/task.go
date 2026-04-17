@@ -112,8 +112,10 @@ func init() {
 	taskUpdateCmd.Flags().String("title", "", "New title")
 	taskUpdateCmd.Flags().String("description", "", "New description")
 	taskUpdateCmd.Flags().String("payload-file", "", "Payload file (YAML/JSON), - for stdin")
+	taskUpdateCmd.Flags().String("instructions-file", "", "Instructions file (YAML/JSON) for role-wise merge; - for stdin")
 	taskDuplicateCmd.Flags().Bool("auto-start", false, "Automatically start the duplicated task")
 	taskRerunCmd.Flags().Bool("auto-start", false, "Automatically start the rerun task")
+	taskRerunCmd.Flags().String("instructions-file", "", "Instructions override file (YAML/JSON) for role-wise merge; - for stdin")
 	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd, taskDeleteCmd, taskUpdateCmd, taskImportCmd, taskDuplicateCmd, taskReopenCmd, taskRerunCmd)
 	rootCmd.AddCommand(taskCmd)
 }
@@ -122,9 +124,10 @@ func runTaskUpdate(cmd *cobra.Command, args []string) error {
 	title, _ := cmd.Flags().GetString("title")
 	description, _ := cmd.Flags().GetString("description")
 	payloadFile, _ := cmd.Flags().GetString("payload-file")
+	instructionsFile, _ := cmd.Flags().GetString("instructions-file")
 
-	if title == "" && description == "" && payloadFile == "" {
-		return fmt.Errorf("at least one of --title, --description, or --payload-file is required")
+	if title == "" && description == "" && payloadFile == "" && instructionsFile == "" {
+		return fmt.Errorf("at least one of --title, --description, --payload-file, or --instructions-file is required")
 	}
 
 	req := api.UpdateTaskRequest{
@@ -133,25 +136,19 @@ func runTaskUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	if payloadFile != "" {
-		var data []byte
-		var err error
-		if payloadFile == "-" {
-			data, err = io.ReadAll(cmd.InOrStdin())
-		} else {
-			data, err = os.ReadFile(payloadFile)
-		}
+		data, err := readYAMLAsJSON(cmd, payloadFile)
 		if err != nil {
-			return fmt.Errorf("read payload file: %w", err)
+			return fmt.Errorf("payload: %w", err)
 		}
-		var v any
-		if err := yaml.Unmarshal(data, &v); err != nil {
-			return fmt.Errorf("parse payload: %w", err)
-		}
-		payloadJSON, err := json.Marshal(v)
+		req.Payload = data
+	}
+
+	if instructionsFile != "" {
+		data, err := readYAMLAsJSON(cmd, instructionsFile)
 		if err != nil {
-			return fmt.Errorf("encode payload: %w", err)
+			return fmt.Errorf("instructions: %w", err)
 		}
-		req.Payload = json.RawMessage(payloadJSON)
+		req.Instructions = data
 	}
 
 	c := client.NewUnixClient(client.DefaultSocketPath())
@@ -164,6 +161,31 @@ func runTaskUpdate(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "task updated: %s (%s)\n", task.ID, task.Status)
 		return nil
 	})
+}
+
+// readYAMLAsJSON reads a YAML/JSON file (or stdin if path is "-") and
+// returns its content as canonical JSON bytes. Intended for CLI flags
+// that accept user-authored YAML but need to be sent to the API as JSON.
+func readYAMLAsJSON(cmd *cobra.Command, path string) (json.RawMessage, error) {
+	var data []byte
+	var err error
+	if path == "-" {
+		data, err = io.ReadAll(cmd.InOrStdin())
+	} else {
+		data, err = os.ReadFile(path)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	var v any
+	if err := yaml.Unmarshal(data, &v); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("encode %s: %w", path, err)
+	}
+	return json.RawMessage(encoded), nil
 }
 
 func runTaskList(cmd *cobra.Command, args []string) error {
@@ -502,10 +524,16 @@ func runTaskDuplicate(cmd *cobra.Command, args []string) error {
 
 func runTaskRerun(cmd *cobra.Command, args []string) error {
 	autoStart, _ := cmd.Flags().GetBool("auto-start")
+	instructionsFile, _ := cmd.Flags().GetString("instructions-file")
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
-	req := map[string]any{
-		"auto_start": autoStart,
+	req := api.RerunTaskRequest{AutoStart: autoStart}
+	if instructionsFile != "" {
+		data, err := readYAMLAsJSON(cmd, instructionsFile)
+		if err != nil {
+			return fmt.Errorf("instructions: %w", err)
+		}
+		req.InstructionsOverride = data
 	}
 
 	var task orchestrator.Task
