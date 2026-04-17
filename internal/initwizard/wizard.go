@@ -29,7 +29,6 @@ type ScaffoldTemplateData struct {
 	ProjectID   string
 	ProjectName string
 	Consumer    string
-	FeatureKits []string
 }
 
 // Wizard runs the interactive project initialization flow.
@@ -43,6 +42,7 @@ type Wizard struct {
 type projectFileOut struct {
 	ID            string         `yaml:"id"`
 	Name          string         `yaml:"name"`
+	Kits          []string       `yaml:"kits,omitempty"`
 	TaskBehaviors map[string]any `yaml:"task_behaviors,omitempty"`
 	Commands      map[string]any `yaml:"commands,omitempty"`
 }
@@ -125,29 +125,31 @@ func (w *Wizard) Run(projectDir string) error {
 		return fmt.Errorf("list kits: %w", err)
 	}
 
-	// Partition kits: scaffold.task_behaviors providers vs feature kits
-	var featureKits []KitInfo
+	// Partition kits: project-scope kits vs scaffold.task_behaviors providers.
+	// Kits with non-agent hooks or gates can only be referenced per-behavior in
+	// project.yaml and are not shown in the wizard.
+	var projectScopeKits []KitInfo
 	var behaviorKits []KitInfo
 	for _, ki := range allKits {
 		if ki.Meta.Scaffold != nil && ki.Meta.Scaffold.TaskBehaviors != nil {
 			behaviorKits = append(behaviorKits, ki)
-		} else {
-			featureKits = append(featureKits, ki)
+		} else if orchestrator.IsProjectScopable(ki.Meta) == nil {
+			projectScopeKits = append(projectScopeKits, ki)
 		}
 	}
 
-	// [3] Select feature kits
-	selectedFeatureKits := w.selectFeatureKits(scanner, projectDir, featureKits)
+	// [3] Select project-scope kits
+	selectedProjectKits := w.selectProjectScopeKits(scanner, projectDir, projectScopeKits)
 
 	// [4] Select behavior kit
 	selectedBehaviorKit := w.selectBehaviorKit(scanner, behaviorKits)
 
-	// [4.5] Select consumer from feature kits that provide one
-	consumer := w.selectConsumer(scanner, selectedFeatureKits)
+	// [4.5] Select consumer from selected project-scope kits that provide one
+	consumer := w.selectConsumer(scanner, selectedProjectKits)
 
 	// Build metadata list for validation
 	var selectedKitMetas []orchestrator.KitMeta
-	for _, ki := range selectedFeatureKits {
+	for _, ki := range selectedProjectKits {
 		selectedKitMetas = append(selectedKitMetas, *ki.Meta)
 	}
 	if selectedBehaviorKit != nil {
@@ -177,16 +179,10 @@ func (w *Wizard) Run(projectDir string) error {
 	// [6] Generate project ID and expand scaffold template
 	projectID := uuid.New().String()
 
-	featureKitRefs := make([]string, 0, len(selectedFeatureKits))
-	for _, ki := range selectedFeatureKits {
-		featureKitRefs = append(featureKitRefs, ki.Ref)
-	}
-
 	tplData := ScaffoldTemplateData{
 		ProjectID:   projectID,
 		ProjectName: name,
 		Consumer:    consumer,
-		FeatureKits: featureKitRefs,
 	}
 
 	var taskBehaviors map[string]any
@@ -225,9 +221,15 @@ func (w *Wizard) Run(projectDir string) error {
 		return fmt.Errorf("create .boid: %w", err)
 	}
 
+	kitRefs := make([]string, 0, len(selectedProjectKits))
+	for _, ki := range selectedProjectKits {
+		kitRefs = append(kitRefs, ki.Ref)
+	}
+
 	proj := projectFileOut{
 		ID:            projectID,
 		Name:          name,
+		Kits:          kitRefs,
 		TaskBehaviors: taskBehaviors,
 		Commands:      commands,
 	}
@@ -257,7 +259,7 @@ func (w *Wizard) promptProjectName(scanner *bufio.Scanner, projectDir string) st
 	return defaultName
 }
 
-func (w *Wizard) selectFeatureKits(scanner *bufio.Scanner, projectDir string, kits []KitInfo) []KitInfo {
+func (w *Wizard) selectProjectScopeKits(scanner *bufio.Scanner, projectDir string, kits []KitInfo) []KitInfo {
 	if len(kits) == 0 {
 		return nil
 	}

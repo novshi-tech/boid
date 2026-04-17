@@ -401,6 +401,7 @@ type CommandSpec struct {
 type ProjectMeta struct {
 	ID                 string                    `yaml:"id" json:"id"`
 	Name               string                    `yaml:"name" json:"name"`
+	Kits               []KitRef                  `yaml:"kits,omitempty" json:"kits,omitempty"`
 	TaskBehaviors      map[string]TaskBehavior   `yaml:"task_behaviors" json:"task_behaviors"`
 	Commands           map[string]CommandSpec    `yaml:"commands,omitempty" json:"commands,omitempty"`
 	HostCommands       HostCommands              `yaml:"host_commands" json:"host_commands"`
