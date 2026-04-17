@@ -1286,6 +1286,145 @@ func TestMergeKitMetaIntoBehavior_HostCommandConflict(t *testing.T) {
 	})
 }
 
+func TestMergeKitRuntime(t *testing.T) {
+	t.Run("empty kits returns zero value", func(t *testing.T) {
+		rt, err := projectspec.MergeKitRuntime(nil, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if rt.Env != nil || rt.HostCommands != nil || rt.BuiltinCommands != nil || rt.AdditionalBindings != nil {
+			t.Errorf("expected zero KitRuntime, got %+v", rt)
+		}
+	})
+
+	t.Run("single kit fields populated", func(t *testing.T) {
+		kit := &projectspec.KitMeta{
+			Env:                map[string]string{"A": "1"},
+			HostCommands:       projectspec.HostCommands{"go": {Path: "/usr/bin/go"}},
+			BuiltinCommands:    []string{"git"},
+			AdditionalBindings: []projectspec.BindMount{{Source: "/usr/local/go", Mode: "ro"}},
+		}
+		rt, err := projectspec.MergeKitRuntime([]*projectspec.KitMeta{kit}, []string{"go-kit"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if rt.Env["A"] != "1" {
+			t.Errorf("Env[A] = %q, want 1", rt.Env["A"])
+		}
+		if rt.HostCommands["go"].Path != "/usr/bin/go" {
+			t.Errorf("HostCommands[go] = %+v", rt.HostCommands["go"])
+		}
+		if len(rt.BuiltinCommands) != 1 || rt.BuiltinCommands[0] != "git" {
+			t.Errorf("BuiltinCommands = %v, want [git]", rt.BuiltinCommands)
+		}
+		if len(rt.AdditionalBindings) != 1 || rt.AdditionalBindings[0].Source != "/usr/local/go" {
+			t.Errorf("AdditionalBindings = %+v", rt.AdditionalBindings)
+		}
+	})
+
+	t.Run("multiple kits env last-wins", func(t *testing.T) {
+		kit1 := &projectspec.KitMeta{Env: map[string]string{"A": "from-kit1", "SHARED": "kit1"}}
+		kit2 := &projectspec.KitMeta{Env: map[string]string{"B": "from-kit2", "SHARED": "kit2"}}
+		rt, err := projectspec.MergeKitRuntime([]*projectspec.KitMeta{kit1, kit2}, []string{"k1", "k2"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if rt.Env["A"] != "from-kit1" || rt.Env["B"] != "from-kit2" || rt.Env["SHARED"] != "kit2" {
+			t.Errorf("unexpected env: %+v", rt.Env)
+		}
+	})
+
+	t.Run("multiple kits host commands merged", func(t *testing.T) {
+		kit1 := &projectspec.KitMeta{HostCommands: projectspec.HostCommands{"go": {Path: "/usr/bin/go"}}}
+		kit2 := &projectspec.KitMeta{HostCommands: projectspec.HostCommands{"gh": {Path: "/usr/bin/gh"}}}
+		rt, err := projectspec.MergeKitRuntime([]*projectspec.KitMeta{kit1, kit2}, []string{"k1", "k2"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(rt.HostCommands) != 2 {
+			t.Errorf("expected 2 host commands, got %d: %+v", len(rt.HostCommands), rt.HostCommands)
+		}
+		if rt.HostCommands["go"].Path != "/usr/bin/go" || rt.HostCommands["gh"].Path != "/usr/bin/gh" {
+			t.Errorf("unexpected host commands: %+v", rt.HostCommands)
+		}
+	})
+
+	t.Run("duplicate host command across kits returns error", func(t *testing.T) {
+		kit1 := &projectspec.KitMeta{HostCommands: projectspec.HostCommands{"gh": {Path: "/usr/bin/gh"}}}
+		kit2 := &projectspec.KitMeta{HostCommands: projectspec.HostCommands{"gh": {Path: "/usr/local/bin/gh"}}}
+		_, err := projectspec.MergeKitRuntime([]*projectspec.KitMeta{kit1, kit2}, []string{"kit-a", "kit-b"})
+		if err == nil {
+			t.Fatal("expected error for duplicate host command, got nil")
+		}
+		if !strings.Contains(err.Error(), "gh") || !strings.Contains(err.Error(), "kit-a") || !strings.Contains(err.Error(), "kit-b") {
+			t.Errorf("error should mention command and both kit names: %v", err)
+		}
+	})
+
+	t.Run("builtin commands deduped across kits", func(t *testing.T) {
+		kit1 := &projectspec.KitMeta{BuiltinCommands: []string{"git"}}
+		kit2 := &projectspec.KitMeta{BuiltinCommands: []string{"git", "boid"}}
+		rt, err := projectspec.MergeKitRuntime([]*projectspec.KitMeta{kit1, kit2}, []string{"k1", "k2"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(rt.BuiltinCommands) != 2 {
+			t.Errorf("expected 2 builtin commands (deduped), got %d: %v", len(rt.BuiltinCommands), rt.BuiltinCommands)
+		}
+	})
+
+	t.Run("additional bindings mode promotion across kits", func(t *testing.T) {
+		kit1 := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "ro"}}}
+		kit2 := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "rw"}}}
+		rt, err := projectspec.MergeKitRuntime([]*projectspec.KitMeta{kit1, kit2}, []string{"k1", "k2"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(rt.AdditionalBindings) != 1 || rt.AdditionalBindings[0].Mode != "rw" {
+			t.Errorf("expected single rw binding, got %+v", rt.AdditionalBindings)
+		}
+	})
+
+	t.Run("result matches MergeKitMetaIntoBehavior for kit-derived fields on empty behavior", func(t *testing.T) {
+		kit1 := &projectspec.KitMeta{
+			Env:                map[string]string{"A": "a"},
+			HostCommands:       projectspec.HostCommands{"go": {Path: "/usr/bin/go"}},
+			BuiltinCommands:    []string{"git"},
+			AdditionalBindings: []projectspec.BindMount{{Source: "/data1", Mode: "ro"}},
+		}
+		kit2 := &projectspec.KitMeta{
+			Env:                map[string]string{"B": "b"},
+			HostCommands:       projectspec.HostCommands{"gh": {Path: "/usr/bin/gh"}},
+			BuiltinCommands:    []string{"boid"},
+			AdditionalBindings: []projectspec.BindMount{{Source: "/data2", Mode: "rw"}},
+		}
+		consumers := []string{"kit1", "kit2"}
+
+		rt, err := projectspec.MergeKitRuntime([]*projectspec.KitMeta{kit1, kit2}, consumers)
+		if err != nil {
+			t.Fatalf("MergeKitRuntime error: %v", err)
+		}
+
+		b := projectspec.TaskBehavior{Name: "dev"}
+		if err := projectspec.MergeKitMetaIntoBehavior(&b, []*projectspec.KitMeta{kit1, kit2}, consumers); err != nil {
+			t.Fatalf("MergeKitMetaIntoBehavior error: %v", err)
+		}
+
+		if rt.Env["A"] != b.Env["A"] || rt.Env["B"] != b.Env["B"] {
+			t.Errorf("env mismatch: MergeKitRuntime=%v, MergeKitMetaIntoBehavior=%v", rt.Env, b.Env)
+		}
+		if len(rt.HostCommands) != len(b.HostCommands) {
+			t.Errorf("host_commands count mismatch: %d vs %d", len(rt.HostCommands), len(b.HostCommands))
+		}
+		if len(rt.BuiltinCommands) != len(b.BuiltinCommands) {
+			t.Errorf("builtin_commands mismatch: %v vs %v", rt.BuiltinCommands, b.BuiltinCommands)
+		}
+		if len(rt.AdditionalBindings) != len(b.AdditionalBindings) {
+			t.Errorf("bindings count mismatch: %d vs %d", len(rt.AdditionalBindings), len(b.AdditionalBindings))
+		}
+	})
+}
+
 func TestUnionBindMounts_ModePromotion(t *testing.T) {
 	t.Run("ro+rw promotes to rw", func(t *testing.T) {
 		kitA := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "ro"}}}

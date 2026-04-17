@@ -15,6 +15,68 @@ type KitResolver interface {
 	Resolve(ref string) (string, error)
 }
 
+// KitRuntime holds the merged runtime fields derived from a set of kits.
+// It covers env, host_commands, builtin_commands, and additional_bindings.
+// Hooks, gates, and directory metadata are excluded — those are TaskBehavior-specific
+// and handled by MergeKitMetaIntoBehavior.
+type KitRuntime struct {
+	AdditionalBindings []BindMount
+	HostCommands       HostCommands
+	Env                map[string]string
+	BuiltinCommands    []string
+}
+
+// MergeKitRuntime merges env, host_commands, builtin_commands, and
+// additional_bindings from the given kits into a KitRuntime value.
+// kitConsumers provides display names for error messages (one per kit).
+func MergeKitRuntime(kits []*KitMeta, kitConsumers []string) (KitRuntime, error) {
+	var rt KitRuntime
+	if len(kits) == 0 {
+		return rt, nil
+	}
+
+	// Env: later kit overrides earlier kit.
+	mergedEnv := make(map[string]string)
+	for _, kit := range kits {
+		for k, v := range kit.Env {
+			mergedEnv[k] = v
+		}
+	}
+	if len(mergedEnv) > 0 {
+		rt.Env = mergedEnv
+	}
+
+	// HostCommands: duplicate commands across kits are rejected.
+	mergedCmds := make(HostCommands)
+	kitCmdSource := make(map[string]string)
+	for i, kit := range kits {
+		consumer := ""
+		if i < len(kitConsumers) {
+			consumer = kitConsumers[i]
+		}
+		for k, v := range kit.HostCommands {
+			if existingConsumer, ok := kitCmdSource[k]; ok {
+				return rt, fmt.Errorf("host_commands: command %q is defined in both kit %q and kit %q; remove the duplicate from one kit or override it in project.local.yaml", k, existingConsumer, consumer)
+			}
+			kitCmdSource[k] = consumer
+			mergedCmds[k] = v
+		}
+	}
+	if len(mergedCmds) > 0 {
+		rt.HostCommands = mergedCmds
+	}
+
+	// BuiltinCommands: union with dedup.
+	rt.BuiltinCommands = mergeBuiltinCommands(nil, kitBuiltinCommandLists(kits)...)
+
+	// AdditionalBindings: union with mode promotion.
+	for _, kit := range kits {
+		rt.AdditionalBindings = unionBindMountSlices(rt.AdditionalBindings, kit.AdditionalBindings)
+	}
+
+	return rt, nil
+}
+
 const projectLocalFilename = "project.local.yaml"
 
 func ReadProjectMeta(dir string) (*ProjectMeta, error) {
@@ -380,12 +442,15 @@ func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitConsum
 		return nil
 	}
 
+	rt, err := MergeKitRuntime(kits, kitConsumers)
+	if err != nil {
+		return err
+	}
+
 	// Env: kits are lower priority than any existing behavior.Env.
 	mergedEnv := make(map[string]string)
-	for _, kit := range kits {
-		for k, v := range kit.Env {
-			mergedEnv[k] = v
-		}
+	for k, v := range rt.Env {
+		mergedEnv[k] = v
 	}
 	for k, v := range behavior.Env {
 		mergedEnv[k] = v
@@ -435,33 +500,20 @@ func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitConsum
 	}
 	behavior.Gates = allGates
 
-	// HostCommands: reject duplicates across kits.
-	mergedCmds := make(HostCommands)
-	for k, v := range behavior.HostCommands {
-		mergedCmds[k] = v
-	}
-	kitCmdSource := make(map[string]string)
-	for i, kit := range kits {
-		consumer := ""
-		if i < len(kitConsumers) {
-			consumer = kitConsumers[i]
+	// HostCommands: behavior wins over kits.
+	if len(rt.HostCommands) > 0 || len(behavior.HostCommands) > 0 {
+		mergedCmds := make(HostCommands)
+		for k, v := range rt.HostCommands {
+			mergedCmds[k] = v
 		}
-		for k, v := range kit.HostCommands {
-			if existingConsumer, ok := kitCmdSource[k]; ok {
-				return fmt.Errorf("host_commands: command %q is defined in both kit %q and kit %q; remove the duplicate from one kit or override it in project.local.yaml", k, existingConsumer, consumer)
-			}
-			kitCmdSource[k] = consumer
-			if _, preset := mergedCmds[k]; !preset {
-				mergedCmds[k] = v
-			}
+		for k, v := range behavior.HostCommands {
+			mergedCmds[k] = v
 		}
-	}
-	if len(mergedCmds) > 0 {
 		behavior.HostCommands = mergedCmds
 	}
 
-	behavior.BuiltinCommands = mergeBuiltinCommands(behavior.BuiltinCommands, kitBuiltinCommandLists(kits)...)
-	behavior.AdditionalBindings = unionBindMounts(kits, behavior.AdditionalBindings)
+	behavior.BuiltinCommands = mergeBuiltinCommands(behavior.BuiltinCommands, rt.BuiltinCommands)
+	behavior.AdditionalBindings = unionBindMountSlices(rt.AdditionalBindings, behavior.AdditionalBindings)
 
 	for i, kit := range kits {
 		if kit.HooksDir == "" || len(kit.Hooks) == 0 {
@@ -508,22 +560,20 @@ func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitConsum
 	return nil
 }
 
-func unionBindMounts(kits []*KitMeta, base []BindMount) []BindMount {
+func unionBindMountSlices(base, extra []BindMount) []BindMount {
 	indexBySource := make(map[string]int)
 	var result []BindMount
-	for _, meta := range kits {
-		for _, binding := range meta.AdditionalBindings {
-			if idx, ok := indexBySource[binding.Source]; ok {
-				if binding.Mode == "rw" {
-					result[idx].Mode = "rw"
-				}
-			} else {
-				indexBySource[binding.Source] = len(result)
-				result = append(result, binding)
+	for _, binding := range base {
+		if idx, ok := indexBySource[binding.Source]; ok {
+			if binding.Mode == "rw" {
+				result[idx].Mode = "rw"
 			}
+		} else {
+			indexBySource[binding.Source] = len(result)
+			result = append(result, binding)
 		}
 	}
-	for _, binding := range base {
+	for _, binding := range extra {
 		if idx, ok := indexBySource[binding.Source]; ok {
 			if binding.Mode == "rw" {
 				result[idx].Mode = "rw"
