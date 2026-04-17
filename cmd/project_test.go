@@ -138,7 +138,7 @@ func TestRenderProjectBehaviors_Fields(t *testing.T) {
 			TaskBehaviors: map[string]projectspec.TaskBehavior{
 				"dev": {
 					Name:   "Development",
-					Traits: []string{"instructions", "worktree"},
+					Traits: []string{"artifact", "worktree"},
 				},
 			},
 		},
@@ -151,7 +151,7 @@ func TestRenderProjectBehaviors_Fields(t *testing.T) {
 	checks := []string{
 		"dev",
 		"Development",
-		"instructions",
+		"artifact",
 	}
 	for _, want := range checks {
 		if !strings.Contains(got, want) {
