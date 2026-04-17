@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/db/migrate"
 	"github.com/novshi-tech/boid/internal/dispatcher"
@@ -44,6 +45,7 @@ type Server struct {
 	tcpLn       net.Listener
 	httpServer  *http.Server
 	gcLoop      *orchestrator.GCLoop // nil if GC is disabled
+	workflow    *api.TaskWorkflowService
 	mu          sync.Mutex
 }
 
@@ -114,6 +116,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	srv.httpServer.Handler = srv.router
+	srv.workflow = runtime.workflow
 
 	return srv, nil
 }
@@ -188,6 +191,11 @@ func (s *Server) Stop() error {
 		if err := s.httpServer.Close(); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	// Cancel dispatch-loop context and wait for all goroutines to finish
+	// before closing the database; otherwise in-flight loops hit "db closed".
+	if s.workflow != nil {
+		s.workflow.Shutdown()
 	}
 	if s.db != nil {
 		if err := s.db.Close(); err != nil {

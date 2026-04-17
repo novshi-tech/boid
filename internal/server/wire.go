@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io/fs"
@@ -165,6 +166,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Lifecycle:   jobLifecycleAdapter{runner: runner},
 		Worktrees:   wtMgr,
 	}
+	workflow.InitDispatch(context.Background())
 	projectSvc := &api.ProjectAppService{
 		Projects: projectRepo,
 		Meta:     store,
