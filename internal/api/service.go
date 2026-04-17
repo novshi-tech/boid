@@ -236,6 +236,24 @@ func (s *ProjectAppService) ResolveProjectRef(ref string) ([]*orchestrator.Proje
 	return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("no project matches ref %q", ref)}
 }
 
+func (s *ProjectAppService) GetCommand(id, name string) (*CommandResponse, error) {
+	meta, ok := s.Meta.Get(id)
+	if !ok {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("project %q meta not loaded", id)}
+	}
+	cmd, ok := meta.Commands[name]
+	if !ok {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("command %q not found", name)}
+	}
+	return &CommandResponse{
+		Command:            cmd.ResolvedCommand,
+		Env:                cmd.Env,
+		BuiltinCommands:    cmd.BuiltinCommands,
+		HostCommands:       map[string]orchestrator.HostCommandSpec(cmd.HostCommands),
+		AdditionalBindings: cmd.AdditionalBindings,
+	}, nil
+}
+
 func (s *ProjectAppService) ReloadProjects() (*ProjectReloadResult, error) {
 	projects, err := s.Projects.ListProjects()
 	if err != nil {

@@ -47,6 +47,7 @@ func (h *ProjectHandler) Routes() chi.Router {
 	r.Get("/", h.List)
 	r.Post("/reload", h.Reload)
 	r.Put("/{id}/workspace", h.SetWorkspace)
+	r.Get("/{id}/commands/{name}", h.GetCommand)
 	r.Get("/{id}", h.Get)
 	r.Delete("/{id}", h.Delete)
 	return r
@@ -129,6 +130,21 @@ func (h *ProjectHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (h *ProjectHandler) GetCommand(w http.ResponseWriter, r *http.Request) {
+	ref := chi.URLParam(r, "id")
+	project := h.resolveRef(w, ref)
+	if project == nil {
+		return
+	}
+	name := chi.URLParam(r, "name")
+	cmd, err := h.Service.GetCommand(project.ID, name)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, cmd)
 }
 
 func (h *ProjectHandler) Reload(w http.ResponseWriter, r *http.Request) {

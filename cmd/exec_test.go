@@ -3,10 +3,83 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/testutil"
 )
+
+// writeExecTestProject creates a minimal project with a test command.
+func writeExecTestProject(t *testing.T, id, name string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	kitDir := filepath.Join(boidDir, "kits", "agent")
+	kitHooksDir := filepath.Join(kitDir, "hooks")
+	if err := os.MkdirAll(kitHooksDir, 0o755); err != nil {
+		t.Fatalf("mkdir kit hooks: %v", err)
+	}
+
+	projectYAML := "id: " + id + "\nname: " + name + "\n" +
+		"commands:\n  test-cmd:\n    command: [bash]\n    kits:\n      - agent\n" +
+		"task_behaviors:\n  impl:\n    name: implementation\n    kits:\n      - agent\n"
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
+		t.Fatalf("write project yaml: %v", err)
+	}
+	kitYAML := "hooks:\n  - id: run-agent\n    on: executing\n"
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
+		t.Fatalf("write kit yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(kitHooksDir, "run-agent.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write hook: %v", err)
+	}
+
+	return dir
+}
+
+// writeExecTestProjectWithBoidBuiltin creates a project with a kit that has boid builtin.
+func writeExecTestProjectWithBoidBuiltin(t *testing.T, id, name string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	kitDir := filepath.Join(boidDir, "kits", "agent")
+	kitHooksDir := filepath.Join(kitDir, "hooks")
+	if err := os.MkdirAll(kitHooksDir, 0o755); err != nil {
+		t.Fatalf("mkdir kit hooks: %v", err)
+	}
+
+	projectYAML := "id: " + id + "\nname: " + name + "\n" +
+		"commands:\n  test-cmd:\n    command: [bash]\n    kits:\n      - agent\n" +
+		"task_behaviors:\n  impl:\n    name: implementation\n    kits:\n      - agent\n"
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
+		t.Fatalf("write project yaml: %v", err)
+	}
+	kitYAML := "builtin_commands:\n  - boid\nhooks:\n  - id: run-agent\n    on: executing\n"
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
+		t.Fatalf("write kit yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(kitHooksDir, "run-agent.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write hook: %v", err)
+	}
+	return dir
+}
+
+func setTestSocket(t *testing.T, socketPath string) {
+	t.Helper()
+	old := os.Getenv("BOID_SOCKET")
+	if err := os.Setenv("BOID_SOCKET", socketPath); err != nil {
+		t.Fatalf("set BOID_SOCKET: %v", err)
+	}
+	t.Cleanup(func() {
+		if old == "" {
+			_ = os.Unsetenv("BOID_SOCKET")
+		} else {
+			_ = os.Setenv("BOID_SOCKET", old)
+		}
+	})
+}
 
 func TestBuildExecRequest_UsesProjectWorkspaceMembership(t *testing.T) {
 	ts := testutil.NewTestServer(t)
@@ -33,19 +106,9 @@ func TestBuildExecRequest_UsesProjectWorkspaceMembership(t *testing.T) {
 		}
 	}
 
-	oldSocket := os.Getenv("BOID_SOCKET")
-	if err := os.Setenv("BOID_SOCKET", ts.Server.SocketPath()); err != nil {
-		t.Fatalf("set BOID_SOCKET: %v", err)
-	}
-	defer func() {
-		if oldSocket == "" {
-			_ = os.Unsetenv("BOID_SOCKET")
-			return
-		}
-		_ = os.Setenv("BOID_SOCKET", oldSocket)
-	}()
+	setTestSocket(t, ts.Server.SocketPath())
 
-	req, err := buildExecRequest("proj-1")
+	req, err := buildExecRequest("proj-1", "test-cmd")
 	if err != nil {
 		t.Fatalf("buildExecRequest: %v", err)
 	}
@@ -71,19 +134,9 @@ func TestBuildExecRequest_RegistersBrokerForBoidBuiltin(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	oldSocket := os.Getenv("BOID_SOCKET")
-	if err := os.Setenv("BOID_SOCKET", ts.Server.SocketPath()); err != nil {
-		t.Fatalf("set BOID_SOCKET: %v", err)
-	}
-	defer func() {
-		if oldSocket == "" {
-			_ = os.Unsetenv("BOID_SOCKET")
-			return
-		}
-		_ = os.Setenv("BOID_SOCKET", oldSocket)
-	}()
+	setTestSocket(t, ts.Server.SocketPath())
 
-	req, err := buildExecRequest("proj-1")
+	req, err := buildExecRequest("proj-1", "test-cmd")
 	if err != nil {
 		t.Fatalf("buildExecRequest: %v", err)
 	}
@@ -92,53 +145,104 @@ func TestBuildExecRequest_RegistersBrokerForBoidBuiltin(t *testing.T) {
 	}
 }
 
-func writeExecTestProject(t *testing.T, id, name string) string {
-	t.Helper()
+func TestBuildExecRequest_CommandShellQuoted(t *testing.T) {
+	ts := testutil.NewTestServer(t)
 
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
 	kitDir := filepath.Join(boidDir, "kits", "agent")
-	kitHooksDir := filepath.Join(kitDir, "hooks")
-	if err := os.MkdirAll(kitHooksDir, 0o755); err != nil {
-		t.Fatalf("mkdir kit hooks: %v", err)
+	if err := os.MkdirAll(kitDir, 0o755); err != nil {
+		t.Fatalf("mkdir kit: %v", err)
 	}
 
-	projectYAML := "id: " + id + "\nname: " + name + "\ntask_behaviors:\n  impl:\n    name: implementation\n    kits:\n      - agent\n"
+	// Command with argument that requires quoting
+	projectYAML := "id: proj-q\nname: proj-q\n" +
+		"commands:\n  run:\n    command: [claude, --append-system-prompt, 'hello world']\n    kits:\n      - agent\n"
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
 		t.Fatalf("write project yaml: %v", err)
 	}
-	kitYAML := "hooks:\n  - id: run-agent\n    on: executing\n"
-	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(""), 0o644); err != nil {
 		t.Fatalf("write kit yaml: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(kitHooksDir, "run-agent.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatalf("write hook: %v", err)
+
+	var project struct{ ID string `json:"id"` }
+	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+		t.Fatalf("create project: %v", err)
 	}
 
-	return dir
+	setTestSocket(t, ts.Server.SocketPath())
+
+	req, err := buildExecRequest("proj-q", "run")
+	if err != nil {
+		t.Fatalf("buildExecRequest: %v", err)
+	}
+
+	// Command should be shell-quoted: "claude --append-system-prompt 'hello world'"
+	if !strings.Contains(req.Command, "claude") {
+		t.Errorf("command %q should contain 'claude'", req.Command)
+	}
+	// 'hello world' should be quoted (contains a space)
+	if strings.Contains(req.Command, "hello world") && !strings.Contains(req.Command, "'hello world'") {
+		t.Errorf("command %q: 'hello world' should be shell-quoted", req.Command)
+	}
 }
 
-func writeExecTestProjectWithBoidBuiltin(t *testing.T, id, name string) string {
-	t.Helper()
+func TestBuildExecRequest_EnvironmentYAMLContainsBuiltins(t *testing.T) {
+	ts := testutil.NewTestServer(t)
 
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
-	kitDir := filepath.Join(boidDir, "kits", "agent")
-	kitHooksDir := filepath.Join(kitDir, "hooks")
-	if err := os.MkdirAll(kitHooksDir, 0o755); err != nil {
-		t.Fatalf("mkdir kit hooks: %v", err)
+	kitDir := filepath.Join(boidDir, "kits", "mykit")
+	if err := os.MkdirAll(kitDir, 0o755); err != nil {
+		t.Fatalf("mkdir kit: %v", err)
 	}
 
-	projectYAML := "id: " + id + "\nname: " + name + "\ntask_behaviors:\n  impl:\n    name: implementation\n    kits:\n      - agent\n"
+	projectYAML := "id: proj-env\nname: proj-env\n" +
+		"commands:\n  run:\n    command: [bash]\n    kits:\n      - mykit\n"
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
 		t.Fatalf("write project yaml: %v", err)
 	}
-	kitYAML := "builtin_commands:\n  - boid\nhooks:\n  - id: run-agent\n    on: executing\n"
+	kitYAML := "builtin_commands:\n  - git\n"
 	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
 		t.Fatalf("write kit yaml: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(kitHooksDir, "run-agent.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatalf("write hook: %v", err)
+
+	var project struct{ ID string `json:"id"` }
+	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+		t.Fatalf("create project: %v", err)
 	}
-	return dir
+
+	setTestSocket(t, ts.Server.SocketPath())
+
+	req, err := buildExecRequest("proj-env", "run")
+	if err != nil {
+		t.Fatalf("buildExecRequest: %v", err)
+	}
+
+	if req.EnvironmentYAML == "" {
+		t.Fatal("EnvironmentYAML should not be empty")
+	}
+	if !strings.Contains(req.EnvironmentYAML, "git") {
+		t.Errorf("EnvironmentYAML should contain 'git', got:\n%s", req.EnvironmentYAML)
+	}
+}
+
+func TestBuildExecRequest_CommandNotFound(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+
+	dir := writeExecTestProject(t, "proj-nc", "Project NC")
+	var project struct{ ID string `json:"id"` }
+	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	setTestSocket(t, ts.Server.SocketPath())
+
+	_, err := buildExecRequest("proj-nc", "nonexistent-cmd")
+	if err == nil {
+		t.Fatal("expected error for nonexistent command, got nil")
+	}
+	if !strings.Contains(err.Error(), "nonexistent-cmd") {
+		t.Errorf("error %q should mention command name", err.Error())
+	}
 }

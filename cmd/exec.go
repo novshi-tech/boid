@@ -10,42 +10,52 @@ import (
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/spf13/cobra"
 )
 
 var execCmd = &cobra.Command{
-	Use:           "exec <project-ref> -- <command...>",
-	Short:         "Execute a command in a project sandbox (project by id or name, partial match supported)",
+	Use:           "exec -p <ref> <command-name>",
+	Short:         "Execute a named command in a project sandbox",
 	SilenceUsage:  true,
 	SilenceErrors: true,
-	Args:          cobra.MinimumNArgs(1),
+	Args:          cobra.ExactArgs(1),
 	RunE:          runExec,
 }
 
+var execProjectRef string
+
 func init() {
 	rootCmd.AddCommand(execCmd)
+	execCmd.Flags().StringVarP(&execProjectRef, "project", "p", "", "project ref (id or name, partial match supported)")
 }
 
-type execProjectMeta struct {
-	BuiltinCommands    []string                             `json:"builtin_commands"`
-	HostCommands       map[string]dispatcher.ExecCommandDef `json:"host_commands"`
-	AdditionalBindings []dispatcher.ExecBindMount           `json:"additional_bindings"`
-	Env                map[string]string                    `json:"env"`
+type execProjectData struct {
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+	WorkDir     string `json:"work_dir"`
 }
 
-type execProject struct {
-	ID          string          `json:"id"`
-	WorkspaceID string          `json:"workspace_id"`
-	WorkDir     string          `json:"work_dir"`
-	Meta        execProjectMeta `json:"meta"`
+type execCommandResponse struct {
+	Command            []string                             `json:"command"`
+	Env                map[string]string                    `json:"env,omitempty"`
+	BuiltinCommands    []string                             `json:"builtin_commands,omitempty"`
+	HostCommands       map[string]dispatcher.ExecCommandDef `json:"host_commands,omitempty"`
+	AdditionalBindings []dispatcher.ExecBindMount           `json:"additional_bindings,omitempty"`
 }
 
-// buildExecRequest creates a dispatcher exec request from the server state for a project.
-func buildExecRequest(projectID string) (dispatcher.ExecRequest, error) {
+// buildExecRequest creates a dispatcher exec request from the resolved command for a project.
+func buildExecRequest(projectID, commandName string) (dispatcher.ExecRequest, error) {
 	c := client.NewUnixClient(client.DefaultSocketPath())
-	var p execProject
+
+	var p execProjectData
 	if err := c.Do("GET", "/api/projects/"+projectID, nil, &p); err != nil {
 		return dispatcher.ExecRequest{}, fmt.Errorf("get project: %w", err)
+	}
+
+	var cmd execCommandResponse
+	if err := c.Do("GET", "/api/projects/"+projectID+"/commands/"+commandName, nil, &cmd); err != nil {
+		return dispatcher.ExecRequest{}, fmt.Errorf("get command %q: %w", commandName, err)
 	}
 
 	boidBinary, err := os.Executable()
@@ -58,7 +68,7 @@ func buildExecRequest(projectID string) (dispatcher.ExecRequest, error) {
 	// Collect workspace peer projects (read-only mounts)
 	var workspaceDirs map[string]string
 	if p.WorkspaceID != "" {
-		var peers []execProject
+		var peers []execProjectData
 		if err := c.Do("GET", "/api/projects?workspace_id="+p.WorkspaceID, nil, &peers); err == nil {
 			workspaceDirs = make(map[string]string)
 			for _, peer := range peers {
@@ -74,15 +84,13 @@ func buildExecRequest(projectID string) (dispatcher.ExecRequest, error) {
 
 	// Get proxy port from server
 	var proxyInfo struct{ Port int }
-	c.Do("GET", "/api/proxy", nil, &proxyInfo)
+	c.Do("GET", "/api/proxy", nil, &proxyInfo) //nolint:errcheck
 
-	// Register host commands with broker. "boid" is always available as a
-	// builtin so that `boid exec` can dispatch sub-tasks from inside the
-	// sandbox without explicit configuration.
-	builtinCommands := append([]string(nil), p.Meta.BuiltinCommands...)
+	// Build builtin commands list (always include boid)
+	builtinCommands := append([]string(nil), cmd.BuiltinCommands...)
 	hasBoid := false
-	for _, c := range builtinCommands {
-		if c == "boid" {
+	for _, bc := range builtinCommands {
+		if bc == "boid" {
 			hasBoid = true
 			break
 		}
@@ -91,14 +99,15 @@ func buildExecRequest(projectID string) (dispatcher.ExecRequest, error) {
 		builtinCommands = append(builtinCommands, "boid")
 	}
 	builtinPolicies := orchestrator.DefaultBuiltinPolicies(orchestrator.RoleGate, builtinCommands)
+
 	var brokerSocket, brokerToken string
-	if len(p.Meta.HostCommands) > 0 || len(builtinPolicies) > 0 {
+	if len(cmd.HostCommands) > 0 || len(builtinPolicies) > 0 {
 		var brokerResp struct {
 			Token  string `json:"token"`
 			Socket string `json:"socket"`
 		}
 		regReq := map[string]any{
-			"commands":         p.Meta.HostCommands,
+			"commands":         cmd.HostCommands,
 			"builtin_policies": builtinPolicies,
 			"project_id":       p.ID,
 		}
@@ -108,51 +117,54 @@ func buildExecRequest(projectID string) (dispatcher.ExecRequest, error) {
 		}
 	}
 
+	// Shell-quote each element and join into a single command string
+	parts := make([]string, 0, len(cmd.Command))
+	for _, arg := range cmd.Command {
+		parts = append(parts, sandbox.ShellQuote(arg))
+	}
+	command := strings.Join(parts, " ")
+
+	environmentYAML := orchestrator.BuildEnvironmentYAML(false, false, true, workspaceDirs, cmd.BuiltinCommands)
+
 	req := dispatcher.ExecRequest{
 		JobID:              fmt.Sprintf("exec-%s", projectID),
 		ProjectID:          p.ID,
 		ProjectDir:         p.WorkDir,
 		HomeDir:            homeDir,
+		Command:            command,
 		BoidBinary:         boidBinary,
 		ServerSocket:       client.DefaultSocketPath(),
 		BrokerSocket:       brokerSocket,
 		BrokerToken:        brokerToken,
-		Env:                p.Meta.Env,
+		Env:                cmd.Env,
 		BuiltinPolicies:    builtinPolicies,
-		HostCommands:       p.Meta.HostCommands,
-		AdditionalBindings: p.Meta.AdditionalBindings,
+		HostCommands:       cmd.HostCommands,
+		AdditionalBindings: cmd.AdditionalBindings,
 		WorkspaceDirs:      workspaceDirs,
 		ProxyPort:          proxyInfo.Port,
+		EnvironmentYAML:    environmentYAML,
 	}
 
 	return req, nil
 }
 
-func runExec(cmd *cobra.Command, args []string) error {
+func runExec(cobraCmd *cobra.Command, args []string) error {
+	if execProjectRef == "" {
+		return fmt.Errorf("-p/--project is required")
+	}
+
 	c := client.NewUnixClient(client.DefaultSocketPath())
-	p, err := resolveProjectRef(c, os.Stdin, os.Stdout, args[0])
+	p, err := resolveProjectRef(c, os.Stdin, os.Stdout, execProjectRef)
 	if err != nil {
 		return fmt.Errorf("resolve project: %w", err)
 	}
-	projectID := p.ID
 
-	// Parse command after "--" from os.Args
-	var command string
-	for i, arg := range os.Args {
-		if arg == "--" && i+1 < len(os.Args) {
-			command = strings.Join(os.Args[i+1:], " ")
-			break
-		}
-	}
-	if command == "" {
-		return fmt.Errorf("usage: boid exec <project-ref> -- <command...>")
-	}
-
-	req, err := buildExecRequest(projectID)
+	commandName := args[0]
+	req, err := buildExecRequest(p.ID, commandName)
 	if err != nil {
 		return err
 	}
-	req.Command = command
+
 	if fileInfo, _ := os.Stdin.Stat(); fileInfo.Mode()&os.ModeCharDevice != 0 {
 		req.TTY = true
 	}
@@ -162,7 +174,6 @@ func runExec(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("write sandbox scripts: %w", err)
 	}
 
-	// Run sandbox in foreground with stdin/stdout/stderr passthrough
 	bashArgs := []string{"bash", outerPath}
 	if os.Getenv("BOID_DEBUG") != "" {
 		bashArgs = []string{"bash", "-x", outerPath}
