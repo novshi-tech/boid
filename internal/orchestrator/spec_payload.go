@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 )
 
 func TraitMergeMode(trait TraitType) MergeMode {
@@ -64,9 +65,11 @@ func MergePayloadPatch(base, patch json.RawMessage, handlerID string, allowedTra
 		return base, nil
 	}
 
+	var allowed map[TraitType]bool
 	if allowedTraits != nil {
-		if err := ValidatePayloadPatch(patch, allowedTraits); err != nil {
-			return nil, err
+		allowed = make(map[TraitType]bool, len(allowedTraits))
+		for _, trait := range allowedTraits {
+			allowed[trait] = true
 		}
 	}
 
@@ -84,6 +87,10 @@ func MergePayloadPatch(base, patch json.RawMessage, handlerID string, allowedTra
 
 	for key, value := range patchMap {
 		trait := TraitType(key)
+		if allowed != nil && !allowed[trait] {
+			slog.Warn("dropping payload_patch trait not in produces", "trait", key, "handler_id", handlerID)
+			continue
+		}
 		switch TraitMergeMode(trait) {
 		case MergeModeShared:
 			var shared map[string]json.RawMessage

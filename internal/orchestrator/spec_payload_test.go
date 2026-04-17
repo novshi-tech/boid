@@ -215,9 +215,37 @@ func TestMergePayloadPatch_ProducesOutsideAllowed(t *testing.T) {
 	patch := json.RawMessage(`{"artifact":"http://example.com"}`)
 	// artifact is not in allowed produces
 	allowed := []projectspec.TraitType{projectspec.TraitVerification}
-	_, err := projectspec.MergePayloadPatch(json.RawMessage(`{}`), patch, "hook-1", allowed)
-	if err == nil {
-		t.Fatal("expected error when patch trait is not in produces")
+	result, err := projectspec.MergePayloadPatch(json.RawMessage(`{}`), patch, "hook-1", allowed)
+	if err != nil {
+		t.Fatalf("MergePayloadPatch: %v", err)
+	}
+	if string(result) != `{}` {
+		t.Fatalf("disallowed trait should be dropped, got: %s", result)
+	}
+}
+
+// TestMergePayloadPatch_DropsUnknownTraitsAndMergesAllowed reproduces the silent
+// data-loss bug where a single unknown top-level key (e.g. "status": "done")
+// caused the whole payload_patch to be rejected, discarding valid traits like
+// "artifact" that the agent produced successfully.
+func TestMergePayloadPatch_DropsUnknownTraitsAndMergesAllowed(t *testing.T) {
+	patch := json.RawMessage(`{"status":"done","artifact":{"commit":"abc1234"}}`)
+	allowed := []projectspec.TraitType{projectspec.TraitArtifact, projectspec.TraitTasks}
+	result, err := projectspec.MergePayloadPatch(json.RawMessage(`{}`), patch, "hook-1", allowed)
+	if err != nil {
+		t.Fatalf("MergePayloadPatch: %v", err)
+	}
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(result, &merged); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if _, ok := merged["status"]; ok {
+		t.Error("unknown trait \"status\" should have been dropped")
+	}
+	if got, ok := merged["artifact"]; !ok {
+		t.Error("allowed trait \"artifact\" should have been merged")
+	} else if string(got) != `{"commit":"abc1234"}` {
+		t.Errorf("artifact value mismatch: %s", got)
 	}
 }
 
