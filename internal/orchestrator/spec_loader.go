@@ -237,27 +237,40 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 
 	meta = cloneProjectMeta(meta)
 
-	// Collect unique kits across all behaviors, preserving first-seen order.
+	// Collect unique kits across all behaviors and commands, preserving first-seen order.
 	var orderedRefs []KitRef
 	kitMetaByRef := make(map[string]*KitMeta)
 	consumerByRef := make(map[string]string)
+	loadKitRef := func(kitRef KitRef) error {
+		if _, loaded := kitMetaByRef[kitRef.Ref]; loaded {
+			return nil
+		}
+		kitDir, err := resolveKitRef(kitRef.Ref, dir, resolver)
+		if err != nil {
+			return fmt.Errorf("kit %q: %w", kitRef.Ref, err)
+		}
+		kitMeta, err := ReadKitMeta(kitDir)
+		if err != nil {
+			return fmt.Errorf("kit %q: %w", kitRef.Ref, err)
+		}
+		slog.Info("resolved kit", "ref", kitRef.Ref, "hooks", len(kitMeta.Hooks))
+		kitMetaByRef[kitRef.Ref] = kitMeta
+		consumerByRef[kitRef.Ref] = ResolveKitConsumer(kitRef)
+		orderedRefs = append(orderedRefs, kitRef)
+		return nil
+	}
 	for _, behavior := range meta.TaskBehaviors {
 		for _, kitRef := range behavior.Kits {
-			if _, loaded := kitMetaByRef[kitRef.Ref]; loaded {
-				continue
+			if err := loadKitRef(kitRef); err != nil {
+				return nil, err
 			}
-			kitDir, err := resolveKitRef(kitRef.Ref, dir, resolver)
-			if err != nil {
-				return nil, fmt.Errorf("kit %q: %w", kitRef.Ref, err)
+		}
+	}
+	for _, cmd := range meta.Commands {
+		for _, kitRef := range cmd.Kits {
+			if err := loadKitRef(kitRef); err != nil {
+				return nil, err
 			}
-			kitMeta, err := ReadKitMeta(kitDir)
-			if err != nil {
-				return nil, fmt.Errorf("kit %q: %w", kitRef.Ref, err)
-			}
-			slog.Info("resolved kit", "ref", kitRef.Ref, "hooks", len(kitMeta.Hooks))
-			kitMetaByRef[kitRef.Ref] = kitMeta
-			consumerByRef[kitRef.Ref] = ResolveKitConsumer(kitRef)
-			orderedRefs = append(orderedRefs, kitRef)
 		}
 	}
 
@@ -316,6 +329,59 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 			return nil, err
 		}
 		meta.TaskBehaviors[name] = behavior
+	}
+
+	// Resolve Commands: merge kits and expand env vars in each command spec.
+	for name, cmd := range meta.Commands {
+		var kits []*KitMeta
+		var consumers []string
+		seen := make(map[string]bool)
+		for _, kitRef := range cmd.Kits {
+			if seen[kitRef.Ref] {
+				continue
+			}
+			seen[kitRef.Ref] = true
+			km, ok := kitMetaByRef[kitRef.Ref]
+			if !ok {
+				// Kit was not collected in the first pass (e.g. only referenced by a command).
+				if err := loadKitRef(kitRef); err != nil {
+					return nil, fmt.Errorf("command %q: %w", name, err)
+				}
+				km = kitMetaByRef[kitRef.Ref]
+			}
+			consumer := ResolveKitConsumer(kitRef)
+			kits = append(kits, km)
+			consumers = append(consumers, consumer)
+		}
+
+		rt, err := MergeKitRuntime(kits, consumers)
+		if err != nil {
+			return nil, fmt.Errorf("command %q: %w", name, err)
+		}
+
+		// Apply overlays in the same order as TaskBehavior: kit → project.yaml → project.local.yaml.
+		cmd.Env = mergeStringMaps(rt.Env, meta.Env)
+		cmd.HostCommands = mergeHostCommands(rt.HostCommands, meta.HostCommands)
+		cmd.AdditionalBindings = mergeBindMounts(rt.AdditionalBindings, meta.AdditionalBindings)
+		cmd.BuiltinCommands = rt.BuiltinCommands
+		if local != nil {
+			cmd.Env = mergeStringMaps(cmd.Env, local.Env)
+			cmd.HostCommands = mergeHostCommands(cmd.HostCommands, local.HostCommands)
+			cmd.AdditionalBindings = mergeBindMounts(cmd.AdditionalBindings, local.AdditionalBindings)
+		}
+
+		// Expand env vars in each command argument.
+		resolved := make([]string, len(cmd.Command))
+		for i, arg := range cmd.Command {
+			resolved[i] = interpolateEnv(arg)
+		}
+		cmd.ResolvedCommand = resolved
+
+		if err := validateBuiltinCommands(fmt.Sprintf("command %q", name), cmd.BuiltinCommands, cmd.HostCommands); err != nil {
+			return nil, err
+		}
+
+		meta.Commands[name] = cmd
 	}
 
 	if local != nil && local.SecretNamespace != "" {
@@ -679,7 +745,28 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 	result.HostCommands = cloneHostCommands(meta.HostCommands)
 	result.AdditionalBindings = cloneBindMounts(meta.AdditionalBindings)
 	result.TaskBehaviors = cloneTaskBehaviorMap(meta.TaskBehaviors)
+	result.Commands = cloneCommandSpecMap(meta.Commands)
 	return &result
+}
+
+// cloneCommandSpecMap deep-copies the commands map. Resolved fields are reset
+// to their zero values; the caller must recompute them via ReadProjectMetaWithKits.
+func cloneCommandSpecMap(src map[string]CommandSpec) map[string]CommandSpec {
+	if len(src) == 0 {
+		return nil
+	}
+	result := make(map[string]CommandSpec, len(src))
+	for k, v := range src {
+		v.Command = append([]string(nil), v.Command...)
+		v.Kits = append([]KitRef(nil), v.Kits...)
+		v.ResolvedCommand = nil
+		v.Env = nil
+		v.BuiltinCommands = nil
+		v.HostCommands = nil
+		v.AdditionalBindings = nil
+		result[k] = v
+	}
+	return result
 }
 
 // cloneTaskBehaviorMap deep-copies the task behavior map including each
