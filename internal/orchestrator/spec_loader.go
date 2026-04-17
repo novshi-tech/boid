@@ -93,7 +93,7 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	if _, ok := raw["workspace_id"]; ok {
 		return nil, fmt.Errorf("project.yaml: workspace_id is no longer supported; assign workspace via boid workspace assign <project-id> <workspace-id>")
 	}
-	for _, field := range []string{"hooks", "gates", "kits", "builtin_commands"} {
+	for _, field := range []string{"hooks", "gates", "builtin_commands"} {
 		if _, ok := raw[field]; ok {
 			return nil, fmt.Errorf("project.yaml: top-level %q is no longer supported; move it into task_behaviors.<name>.kits (for kits) or define inside a local kit under .boid/kits/", field)
 		}
@@ -220,6 +220,22 @@ func ResolveKitConsumer(ref KitRef) string {
 	return parts[len(parts)-1]
 }
 
+// IsProjectScopable reports whether a kit may be placed in the top-level
+// project.yaml kits field. A kit is project-scopable when it has no gates
+// and all its hooks have kind == "agent" (opt-in via instructions, so they
+// cannot fire unexpectedly across behaviors).
+func IsProjectScopable(km *KitMeta) error {
+	if len(km.Gates) > 0 {
+		return fmt.Errorf("gates を持つ kit は top-level kits に指定できません (behavior スコープでのみ使用可能)")
+	}
+	for _, h := range km.Hooks {
+		if h.Kind != HandlerKindAgent {
+			return fmt.Errorf("hook %s の kind が agent 以外のため top-level kits に指定できません", h.ID)
+		}
+	}
+	return nil
+}
+
 // ReadProjectMetaWithKits reads project.yaml and project.local.yaml, resolves
 // kits referenced by each task behavior, and merges kit data into each behavior.
 // Returns a ProjectMeta whose TaskBehaviors have their resolved Hooks/Gates/etc.
@@ -274,6 +290,17 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		}
 	}
 
+	// Load and validate top-level project-scope kits.
+	for _, kitRef := range meta.Kits {
+		if err := loadKitRef(kitRef); err != nil {
+			return nil, err
+		}
+		km := kitMetaByRef[kitRef.Ref]
+		if err := IsProjectScopable(km); err != nil {
+			return nil, fmt.Errorf("kit %s: %w", kitRef.Ref, err)
+		}
+	}
+
 	// Kit-provided task_behaviors act as defaults; project behaviors take precedence.
 	if meta.TaskBehaviors == nil {
 		meta.TaskBehaviors = make(map[string]TaskBehavior)
@@ -291,7 +318,23 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 	for name, behavior := range meta.TaskBehaviors {
 		var kits []*KitMeta
 		var consumers []string
+		var refs []string
 		seen := make(map[string]bool)
+
+		// Project-level kits come first and are merged into every behavior.
+		for _, kitRef := range meta.Kits {
+			if seen[kitRef.Ref] {
+				continue
+			}
+			seen[kitRef.Ref] = true
+			km := kitMetaByRef[kitRef.Ref]
+			consumer := ResolveKitConsumer(kitRef)
+			kits = append(kits, km)
+			consumers = append(consumers, consumer)
+			refs = append(refs, kitRef.Ref)
+		}
+
+		// Behavior-level kits follow.
 		for _, kitRef := range behavior.Kits {
 			if seen[kitRef.Ref] {
 				continue
@@ -306,11 +349,12 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 			// IDs are prefixed with the consumer name.
 			for i, c := range consumers {
 				if c == consumer {
-					return nil, fmt.Errorf("behavior %q: kit consumer %q is ambiguous: both %q and %q resolve to the same name; use 'as:' to disambiguate", name, consumer, behavior.Kits[i].Ref, kitRef.Ref)
+					return nil, fmt.Errorf("behavior %q: kit consumer %q is ambiguous: both %q and %q resolve to the same name; use 'as:' to disambiguate", name, consumer, refs[i], kitRef.Ref)
 				}
 			}
 			kits = append(kits, km)
 			consumers = append(consumers, consumer)
+			refs = append(refs, kitRef.Ref)
 		}
 		if err := MergeKitMetaIntoBehavior(&behavior, kits, consumers); err != nil {
 			return nil, fmt.Errorf("behavior %q: %w", name, err)
@@ -741,6 +785,7 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 	}
 
 	result := *meta
+	result.Kits = append([]KitRef(nil), meta.Kits...)
 	result.Env = mergeStringMaps(nil, meta.Env)
 	result.HostCommands = cloneHostCommands(meta.HostCommands)
 	result.AdditionalBindings = cloneBindMounts(meta.AdditionalBindings)

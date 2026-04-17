@@ -70,8 +70,8 @@ env:
 	}
 }
 
-func TestReadProjectMeta_RejectsTopLevelHooksGatesKits(t *testing.T) {
-	for _, field := range []string{"hooks", "gates", "kits", "builtin_commands"} {
+func TestReadProjectMeta_RejectsTopLevelHooksGates(t *testing.T) {
+	for _, field := range []string{"hooks", "gates", "builtin_commands"} {
 		t.Run(field, func(t *testing.T) {
 			dir := t.TempDir()
 			boidDir := filepath.Join(dir, ".boid")
@@ -84,6 +84,22 @@ func TestReadProjectMeta_RejectsTopLevelHooksGatesKits(t *testing.T) {
 				t.Fatalf("expected rejection of top-level %q, got %v", field, err)
 			}
 		})
+	}
+}
+
+func TestReadProjectMeta_TopLevelKitsAccepted(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	_ = os.MkdirAll(boidDir, 0o755)
+	content := "id: test-proj\nname: Test\nkits:\n  - local/my-kit\n"
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(content), 0o644)
+
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("expected top-level kits to be accepted, got error: %v", err)
+	}
+	if len(meta.Kits) != 1 || meta.Kits[0].Ref != "local/my-kit" {
+		t.Fatalf("unexpected kits: %+v", meta.Kits)
 	}
 }
 
@@ -1627,4 +1643,170 @@ commands:
 	if got := meta.Commands["run"].Env["KEY"]; got != "from-project" {
 		t.Errorf("expected project env to override kit env: got %q, want %q", got, "from-project")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Top-level kits tests
+// ---------------------------------------------------------------------------
+
+func TestReadProjectMetaWithKits_TopLevelKits_MergesIntoAllBehaviors(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	kitDir := filepath.Join(boidDir, "kits", "go-dev")
+	_ = os.MkdirAll(kitDir, 0o755)
+
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`id: test-proj
+name: Test
+kits:
+  - go-dev
+task_behaviors:
+  dev:
+    name: dev
+  ci:
+    name: ci
+`), 0o644)
+	_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(`env:
+  GOPATH: /home/user/go
+additional_bindings:
+  - source: /usr/local/go
+`), 0o644)
+
+	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadProjectMetaWithKits: %v", err)
+	}
+	for _, name := range []string{"dev", "ci"} {
+		b := meta.TaskBehaviors[name]
+		if b.Env["GOPATH"] != "/home/user/go" {
+			t.Errorf("behavior %q: expected GOPATH from top-level kit, got %q", name, b.Env["GOPATH"])
+		}
+		if len(b.AdditionalBindings) == 0 || b.AdditionalBindings[0].Source != "/usr/local/go" {
+			t.Errorf("behavior %q: expected additional_bindings from top-level kit, got %v", name, b.AdditionalBindings)
+		}
+	}
+}
+
+func TestReadProjectMetaWithKits_TopLevelKits_AgentOnlyHooksAllowed(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	kitDir := filepath.Join(boidDir, "kits", "agent-kit")
+	kitHooksDir := filepath.Join(kitDir, "hooks")
+	_ = os.MkdirAll(kitHooksDir, 0o755)
+
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`id: test-proj
+name: Test
+kits:
+  - agent-kit
+task_behaviors:
+  dev:
+    name: dev
+`), 0o644)
+	_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(`hooks:
+  - id: run-agent
+    on: executing
+    kind: agent
+    consumer: my-agent
+`), 0o644)
+	_ = os.WriteFile(filepath.Join(kitHooksDir, "run-agent.sh"), []byte("#!/bin/sh\necho ok"), 0o755)
+
+	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("expected agent-only hook kit to be accepted at project scope, got: %v", err)
+	}
+	b := meta.TaskBehaviors["dev"]
+	if len(b.Hooks) != 1 || !strings.Contains(b.Hooks[0].ID, "run-agent") {
+		t.Errorf("unexpected hooks: %v", b.Hooks)
+	}
+}
+
+func TestReadProjectMetaWithKits_TopLevelKits_ScopeValidation_GatesRejected(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	kitDir := filepath.Join(boidDir, "kits", "gate-kit")
+	kitGatesDir := filepath.Join(kitDir, "gates")
+	_ = os.MkdirAll(kitGatesDir, 0o755)
+
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`id: test-proj
+name: Test
+kits:
+  - gate-kit
+task_behaviors:
+  dev:
+    name: dev
+`), 0o644)
+	_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(`gates:
+  - id: my-gate
+    on: verifying
+`), 0o644)
+	_ = os.WriteFile(filepath.Join(kitGatesDir, "my-gate.sh"), []byte("#!/bin/sh\necho ok"), 0o755)
+
+	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err == nil || !strings.Contains(err.Error(), "gates を持つ kit は top-level kits に指定できません") {
+		t.Fatalf("expected gates rejection error, got: %v", err)
+	}
+}
+
+func TestReadProjectMetaWithKits_TopLevelKits_ScopeValidation_NonAgentHookRejected(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	kitDir := filepath.Join(boidDir, "kits", "hook-kit")
+	kitHooksDir := filepath.Join(kitDir, "hooks")
+	_ = os.MkdirAll(kitHooksDir, 0o755)
+
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`id: test-proj
+name: Test
+kits:
+  - hook-kit
+task_behaviors:
+  dev:
+    name: dev
+`), 0o644)
+	_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(`hooks:
+  - id: run-build
+    on: executing
+`), 0o644)
+	_ = os.WriteFile(filepath.Join(kitHooksDir, "run-build.sh"), []byte("#!/bin/sh\necho build"), 0o755)
+
+	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err == nil || !strings.Contains(err.Error(), "hook run-build の kind が agent 以外のため top-level kits に指定できません") {
+		t.Fatalf("expected non-agent hook rejection error, got: %v", err)
+	}
+}
+
+func TestIsProjectScopable(t *testing.T) {
+	t.Run("no gates no hooks", func(t *testing.T) {
+		km := &projectspec.KitMeta{}
+		if err := projectspec.IsProjectScopable(km); err != nil {
+			t.Errorf("expected nil, got %v", err)
+		}
+	})
+
+	t.Run("agent-only hooks", func(t *testing.T) {
+		km := &projectspec.KitMeta{
+			Hooks: []projectspec.Hook{
+				{ID: "h1", Kind: projectspec.HandlerKindAgent},
+			},
+		}
+		if err := projectspec.IsProjectScopable(km); err != nil {
+			t.Errorf("expected nil for agent-only hooks, got %v", err)
+		}
+	})
+
+	t.Run("has gates", func(t *testing.T) {
+		km := &projectspec.KitMeta{
+			Gates: []projectspec.Gate{{ID: "g1"}},
+		}
+		if err := projectspec.IsProjectScopable(km); err == nil || !strings.Contains(err.Error(), "gates を持つ kit") {
+			t.Errorf("expected gates rejection, got %v", err)
+		}
+	})
+
+	t.Run("non-agent hook", func(t *testing.T) {
+		km := &projectspec.KitMeta{
+			Hooks: []projectspec.Hook{{ID: "h1"}},
+		}
+		if err := projectspec.IsProjectScopable(km); err == nil || !strings.Contains(err.Error(), "hook h1 の kind が agent 以外") {
+			t.Errorf("expected non-agent hook rejection, got %v", err)
+		}
+	})
 }
