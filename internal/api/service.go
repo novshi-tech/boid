@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -909,6 +910,26 @@ type TaskWorkflowService struct {
 	Coordinator DispatchCoordinator
 	Lifecycle   JobLifecycle
 	Worktrees   WorktreeCleaner
+
+	dispatchCtx    context.Context
+	dispatchCancel context.CancelFunc
+	dispatchWG     sync.WaitGroup
+}
+
+// InitDispatch initialises the lifecycle context used by dispatch-loop
+// goroutines. Must be called before the first action is applied. The returned
+// cancel is stored internally; call Shutdown to invoke it.
+func (s *TaskWorkflowService) InitDispatch(ctx context.Context) {
+	s.dispatchCtx, s.dispatchCancel = context.WithCancel(ctx)
+}
+
+// Shutdown cancels the dispatch context and blocks until all in-flight dispatch
+// loops have returned. Call this before closing the database.
+func (s *TaskWorkflowService) Shutdown() {
+	if s.dispatchCancel != nil {
+		s.dispatchCancel()
+	}
+	s.dispatchWG.Wait()
 }
 
 func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, req ApplyActionRequest) (*ActionApplication, error) {
@@ -961,11 +982,15 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	s.cleanupWorktree(newTask.ID, task.ProjectID, newTask.Status)
 
 	if s.Coordinator != nil {
-		dispatchCtx := context.Background()
-		if ctx != nil {
-			dispatchCtx = context.WithoutCancel(ctx)
+		dispatchCtx := s.dispatchCtx
+		if dispatchCtx == nil {
+			dispatchCtx = context.Background()
 		}
-		go s.runDispatchLoop(dispatchCtx, newTask, meta, sm)
+		s.dispatchWG.Add(1)
+		go func() {
+			defer s.dispatchWG.Done()
+			s.runDispatchLoop(dispatchCtx, newTask, meta, sm)
+		}()
 	}
 
 	var matchedHooks []string
