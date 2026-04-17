@@ -480,6 +480,7 @@ type KitRequires struct {
 // KitScaffold declares scaffold templates bundled with this kit.
 type KitScaffold struct {
 	TaskBehaviors *ScaffoldTemplate `yaml:"task_behaviors,omitempty"`
+	Commands      *ScaffoldTemplate `yaml:"commands,omitempty"`
 }
 
 // ScaffoldTemplate points to a template file relative to the kit directory.
