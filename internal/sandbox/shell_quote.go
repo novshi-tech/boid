@@ -33,3 +33,8 @@ func isShellSafe(value string) bool {
 func dirGuard(path string) string {
 	return fmt.Sprintf("-d %s", shellQuote(path))
 }
+
+// ShellQuote is the exported version of shellQuote for use outside the package.
+func ShellQuote(value string) string {
+	return shellQuote(value)
+}

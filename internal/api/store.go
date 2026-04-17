@@ -31,6 +31,15 @@ type WorktreeCleaner interface {
 	CleanupForTask(taskID, projectDir, newStatus string) error
 }
 
+// CommandResponse is the API response for GET /api/projects/:id/commands/:name.
+type CommandResponse struct {
+	Command            []string                                `json:"command"`
+	Env                map[string]string                       `json:"env,omitempty"`
+	BuiltinCommands    []string                                `json:"builtin_commands,omitempty"`
+	HostCommands       map[string]orchestrator.HostCommandSpec `json:"host_commands,omitempty"`
+	AdditionalBindings []orchestrator.BindMount                `json:"additional_bindings,omitempty"`
+}
+
 type ProjectService interface {
 	CreateProject(workDir string) (*orchestrator.Project, error)
 	ListProjects(workspaceID string) ([]*orchestrator.Project, error)
@@ -43,6 +52,7 @@ type ProjectService interface {
 	// Priority: id exact match > name exact match > name substring match (case-insensitive).
 	// Returns 1 project on unambiguous match, multiple on ambiguous match, StatusError{404} on no match.
 	ResolveProjectRef(ref string) ([]*orchestrator.Project, error)
+	GetCommand(id, name string) (*CommandResponse, error)
 }
 
 type TaskService interface {

@@ -389,6 +389,12 @@ func buildEnvironmentYAML(readonly, worktree, networkRestricted bool, workspaceD
 	return string(out)
 }
 
+// BuildEnvironmentYAML is the exported version of buildEnvironmentYAML for use
+// outside the package (e.g. exec command mode).
+func BuildEnvironmentYAML(readonly, worktree, networkRestricted bool, workspaceDirs map[string]string, builtinCommands []string) string {
+	return buildEnvironmentYAML(readonly, worktree, networkRestricted, workspaceDirs, builtinCommands)
+}
+
 // builtinTools returns the list of tools available in the sandbox.
 // Always includes "git"; adds other builtin commands that are not internal.
 func builtinTools(builtinCommands []string) []string {

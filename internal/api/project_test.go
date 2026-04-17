@@ -229,6 +229,70 @@ func TestProjectAPI_GetNotFound(t *testing.T) {
 	}
 }
 
+func setupTestProjectWithCommand(t *testing.T, id, name string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	kitDir := filepath.Join(boidDir, "kits", "mykit")
+	if err := os.MkdirAll(kitDir, 0o755); err != nil {
+		t.Fatalf("mkdir kit: %v", err)
+	}
+
+	projectYAML := "id: " + id + "\nname: " + name + "\n" +
+		"commands:\n" +
+		"  run:\n" +
+		"    command: [bash, -c, echo hello]\n" +
+		"    kits:\n" +
+		"      - mykit\n" +
+		"task_behaviors:\n" +
+		"  impl:\n" +
+		"    name: implementation\n"
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
+		t.Fatalf("write project yaml: %v", err)
+	}
+	kitYAML := "host_commands:\n  curl: {}\n"
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
+		t.Fatalf("write kit yaml: %v", err)
+	}
+	return dir
+}
+
+func TestProjectAPI_GetCommand(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+
+	dir := setupTestProjectWithCommand(t, "cmd-proj", "Command Project")
+	var project orchestrator.Project
+	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	var resp struct {
+		Command      []string       `json:"command"`
+		HostCommands map[string]any `json:"host_commands"`
+	}
+	if err := ts.Client.Do("GET", "/api/projects/cmd-proj/commands/run", nil, &resp); err != nil {
+		t.Fatalf("get command: %v", err)
+	}
+
+	if len(resp.Command) < 2 || resp.Command[0] != "bash" {
+		t.Errorf("command = %v, want [bash ...]", resp.Command)
+	}
+	if _, ok := resp.HostCommands["curl"]; !ok {
+		t.Errorf("host_commands %v should contain 'curl'", resp.HostCommands)
+	}
+}
+
+func TestProjectAPI_GetCommandNotFound(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	created := createProject(t, ts, "no-cmds", "No Commands")
+
+	var resp map[string]any
+	if err := ts.Client.Do("GET", "/api/projects/"+created.ID+"/commands/nonexistent", nil, &resp); err == nil {
+		t.Error("expected error for nonexistent command, got nil")
+	}
+}
+
 func TestProjectAPI_GetByName(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	createProject(t, ts, "unique-id", "my-unique-name")

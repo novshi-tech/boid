@@ -1,6 +1,23 @@
 id: boid
 name: boid
 
+commands:
+  claude:
+    command:
+      - claude
+      - --append-system-prompt
+      - "boid worktree で作業中。コミット前に go vet ./... と go test ./... を通すこと。"
+    kits:
+      - github.com/novshi-tech/boid-kits/claude-code
+      - github.com/novshi-tech/boid-kits/go-dev
+      - github.com/novshi-tech/boid-kits/git
+      - github.com/novshi-tech/boid-kits/github-cli
+  shell:
+    command:
+      - bash
+    kits:
+      - github.com/novshi-tech/boid-kits/git
+
 task_behaviors:
   dev:
     name: one-shot-feedback-dev

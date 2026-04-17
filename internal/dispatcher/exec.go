@@ -36,6 +36,7 @@ type ExecRequest struct {
 	WorkspaceDirs      map[string]string
 	ProxyPort          int
 	TTY                bool
+	EnvironmentYAML    string
 }
 
 func WriteExecScripts(req ExecRequest, preparer SandboxPreparer) (string, error) {
@@ -90,6 +91,7 @@ func buildExecSandboxSpec(req ExecRequest) (SandboxSpec, error) {
 		WorkspaceDirs:      req.WorkspaceDirs,
 		ProxyPort:          req.ProxyPort,
 		TTY:                req.TTY,
+		EnvironmentYAML:    req.EnvironmentYAML,
 	}, nil
 }
 
