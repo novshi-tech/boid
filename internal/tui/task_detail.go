@@ -58,13 +58,15 @@ type TaskDetailScreen struct {
 	detail         *api.TaskDetailView
 	activeTab      string
 	cursor         int
-	timelineCursor int
-	depsCursor     int
-	descScroll     int
-	descPageHeight int
-	descWidth      int
-	payloadCursor  int
-	payloadScroll  int
+	timelineCursor     int
+	depsCursor         int
+	descScroll         int
+	descPageHeight     int
+	descWidth          int
+	payloadCursor      int
+	payloadScroll      int
+	instructionsCursor int
+	instructionsScroll int
 	statusMsg      string
 	isError        bool
 	loading        bool
@@ -296,6 +298,14 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 					s.payloadScroll = 0
 				}
 			}
+		case tabInstructions:
+			if s.detail != nil && s.detail.Task != nil {
+				roles := extractInstructionRoles(s.detail.Task.Instructions)
+				if s.instructionsCursor < len(roles)-1 {
+					s.instructionsCursor++
+					s.instructionsScroll = 0
+				}
+			}
 		}
 
 	case "k", "up":
@@ -316,6 +326,11 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if s.payloadCursor > 0 {
 				s.payloadCursor--
 				s.payloadScroll = 0
+			}
+		case tabInstructions:
+			if s.instructionsCursor > 0 {
+				s.instructionsCursor--
+				s.instructionsScroll = 0
 			}
 		}
 
@@ -393,6 +408,17 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			task := s.detail.Task
 			return func() tea.Msg {
 				return pushScreenMsg{screen: NewPayloadSectionEditScreen(s.shared.Client, task, sectionKey)}
+			}
+		}
+		if s.activeTab == tabInstructions {
+			roles := extractInstructionRoles(s.detail.Task.Instructions)
+			if len(roles) == 0 || s.instructionsCursor >= len(roles) {
+				break
+			}
+			role := roles[s.instructionsCursor].role
+			task := s.detail.Task
+			return func() tea.Msg {
+				return pushScreenMsg{screen: NewInstructionsRoleEditScreen(s.shared.Client, task, role)}
 			}
 		}
 		// Default: start inline title editing.
@@ -571,6 +597,8 @@ func (s *TaskDetailScreen) View(width, height int) string {
 		sb.WriteString(renderDeps(s.detail, width, contentHeight, s.depsCursor))
 	case tabPayload:
 		sb.WriteString(renderPayload(s.detail, s.payloadCursor, s.payloadScroll, width, contentHeight))
+	case tabInstructions:
+		sb.WriteString(renderInstructions(s.detail, s.instructionsCursor, s.instructionsScroll, width, contentHeight))
 	}
 
 	// --- inline status message / title edit ---
@@ -650,6 +678,8 @@ func (s *TaskDetailScreen) ShortHelp() string {
 		tabSpecific = "enter: jump to task  j/k: move cursor"
 	case tabPayload:
 		tabSpecific = "e: edit section  j/k: select section"
+	case tabInstructions:
+		tabSpecific = "e: edit role  j/k: select role"
 	}
 
 	return strings.Join(parts, "  ") + "  " + fixed + "  " + tabSpecific

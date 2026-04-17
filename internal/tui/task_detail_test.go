@@ -767,8 +767,18 @@ func TestTabSwitch(t *testing.T) {
 	}
 
 	s.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if s.activeTab != tabInstructions {
+		t.Errorf("after tab: want %q, got %q", tabInstructions, s.activeTab)
+	}
+
+	s.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if s.activeTab != tabPayload {
 		t.Errorf("after tab: want %q, got %q", tabPayload, s.activeTab)
+	}
+
+	s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if s.activeTab != tabInstructions {
+		t.Errorf("after shift+tab: want %q, got %q", tabInstructions, s.activeTab)
 	}
 
 	s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
@@ -1318,8 +1328,18 @@ func TestTabCycle_ForwardFromDeps(t *testing.T) {
 	s.activeTab = tabDeps
 
 	s.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if s.activeTab != tabInstructions {
+		t.Errorf("tab from deps: want %q, got %q", tabInstructions, s.activeTab)
+	}
+}
+
+func TestTabCycle_ForwardFromInstructions(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.activeTab = tabInstructions
+
+	s.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if s.activeTab != tabPayload {
-		t.Errorf("tab from deps: want %q, got %q", tabPayload, s.activeTab)
+		t.Errorf("tab from instructions: want %q, got %q", tabPayload, s.activeTab)
 	}
 }
 
@@ -1355,13 +1375,18 @@ func TestTabCycle_DepsTabReachable(t *testing.T) {
 }
 
 func TestTabCycle_DepsTabReachable_Backward(t *testing.T) {
-	// Verify Deps tab is reachable via Shift+Tab from Payload.
+	// Verify Instructions tab sits between Deps and Payload; Payload→shift+tab
+	// now lands on Instructions, and Deps is reachable one more step back.
 	s := newTestTaskDetailScreen()
 	s.activeTab = tabPayload
 
 	s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if s.activeTab != tabInstructions {
+		t.Errorf("instructions tab not reachable via shift+tab from payload: got %q", s.activeTab)
+	}
+	s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 	if s.activeTab != tabDeps {
-		t.Errorf("deps tab not reachable via shift+tab from payload: got %q", s.activeTab)
+		t.Errorf("deps tab not reachable via two shift+tab from payload: got %q", s.activeTab)
 	}
 }
 
