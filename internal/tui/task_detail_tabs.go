@@ -10,6 +10,7 @@ const (
 	tabOverview     = "overview"
 	tabDescription  = "description"
 	tabDeps         = "deps"
+	tabInstructions = "instructions"
 	tabPayload      = "payload"
 )
 
@@ -22,6 +23,7 @@ var detailTabs = []tabDef{
 	{tabOverview, "Overview"},
 	{tabDescription, "Description"},
 	{tabDeps, "Deps"},
+	{tabInstructions, "Instructions"},
 	{tabPayload, "Payload"},
 }
 
