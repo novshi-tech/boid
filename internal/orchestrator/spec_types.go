@@ -137,11 +137,24 @@ type RoutedInstruction struct {
 type TraitType string
 
 const (
-	TraitInstructions TraitType = "instructions"
 	TraitArtifact     TraitType = "artifact"
 	TraitVerification TraitType = "verification"
 	TraitTasks        TraitType = "tasks"
 )
+
+// HandlerKind distinguishes the role a hook plays.
+// An empty kind means a generic hook (no instructions routing).
+// Only agent-kind hooks participate in instructions routing.
+type HandlerKind string
+
+const (
+	HandlerKindAgent HandlerKind = "agent"
+)
+
+// IsValid reports whether the kind value is recognized.
+func (k HandlerKind) IsValid() bool {
+	return k == "" || k == HandlerKindAgent
+}
 
 // IsOptional reports whether the trait is declared with a trailing "?".
 func (t TraitType) IsOptional() bool {
@@ -216,6 +229,7 @@ func (o OnValues) AllValid(valid map[string]bool) bool {
 type Hook struct {
 	ID         string        `yaml:"id" json:"id"`
 	On         OnValues      `yaml:"on" json:"on"`
+	Kind       HandlerKind   `yaml:"kind,omitempty" json:"kind,omitempty"`
 	Traits     HandlerTraits `yaml:"traits" json:"traits"`
 	Requires   []string      `yaml:"requires" json:"requires"`
 	Consumer   string        `yaml:"consumer,omitempty" json:"consumer,omitempty"`
@@ -241,7 +255,16 @@ type Gate struct {
 }
 
 // UnmarshalYAML defaults Phase to GatePhaseExit when omitted.
+// Rejects `kind:` because gates cannot participate in instructions routing
+// (project directory is not mounted, so no agent can do meaningful work).
 func (g *Gate) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if node.Content[i].Value == "kind" {
+				return fmt.Errorf("gate %q: 'kind' is not supported on gates", gateIDFromNode(node))
+			}
+		}
+	}
 	type gateAlias Gate
 	var alias gateAlias
 	if err := node.Decode(&alias); err != nil {
@@ -252,6 +275,17 @@ func (g *Gate) UnmarshalYAML(node *yaml.Node) error {
 		g.Phase = GatePhaseExit
 	}
 	return nil
+}
+
+// gateIDFromNode extracts the id value from a gate YAML mapping, if present.
+// Used only for error messages.
+func gateIDFromNode(node *yaml.Node) string {
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == "id" {
+			return node.Content[i+1].Value
+		}
+	}
+	return "<unknown>"
 }
 
 type HookFireEvent struct {

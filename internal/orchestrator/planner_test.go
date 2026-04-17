@@ -750,9 +750,6 @@ func TestPlanHook_Model_EmptyWhenNotSet(t *testing.T) {
 
 func TestPlanHook_PayloadJSON_OptionalVerificationIncludedDuringRework(t *testing.T) {
 	payload := json.RawMessage(`{
-		"instructions": {
-			"rework": {"type":"rework","consumer":"claude-code","message":"fix findings"}
-		},
 		"artifact": {"summary":"initial impl"},
 		"verification": {"pr-verify": {"findings": [{"message":"CI failed","status":"open"}]}}
 	}`)
@@ -764,6 +761,9 @@ func TestPlanHook_PayloadJSON_OptionalVerificationIncludedDuringRework(t *testin
 		Behavior:  "dev",
 		Status:    TaskStatusReworking,
 		Payload:   payload,
+		Instructions: map[string]Instruction{
+			"rework": {Type: InstructionTypeRework, Consumer: "claude-code", Message: "fix findings"},
+		},
 	}
 
 	planner := &DispatchPlanner{
@@ -772,7 +772,7 @@ func TestPlanHook_PayloadJSON_OptionalVerificationIncludedDuringRework(t *testin
 		Tasks:    stubTaskLookup{task: task},
 	}
 
-	// Hook that declares consumes: [instructions, verification?]
+	// Agent hook that declares consumes: [verification?]
 	req, err := planner.PlanHook(&HookFireEvent{
 		EventID:   "event-1",
 		TaskID:    task.ID,
@@ -780,8 +780,9 @@ func TestPlanHook_PayloadJSON_OptionalVerificationIncludedDuringRework(t *testin
 		Hook: Hook{
 			ID:         "hook-1",
 			ScriptPath: filepath.Join(proj.WorkDir, ".boid", "hooks", "hook-1.sh"),
+			Kind:       HandlerKindAgent,
 			Consumer:   "claude-code",
-			Traits:     HandlerTraits{Consumes: []TraitType{TraitInstructions, "verification?"}},
+			Traits:     HandlerTraits{Consumes: []TraitType{"verification?"}},
 		},
 	})
 	if err != nil {
@@ -794,9 +795,6 @@ func TestPlanHook_PayloadJSON_OptionalVerificationIncludedDuringRework(t *testin
 	}
 	if _, ok := m["verification"]; !ok {
 		t.Error("expected verification in PayloadJSON (optional trait present)")
-	}
-	if _, ok := m["instructions"]; !ok {
-		t.Error("expected instructions in PayloadJSON")
 	}
 	if _, ok := m["artifact"]; ok {
 		t.Error("artifact should be filtered out since not in consumes")

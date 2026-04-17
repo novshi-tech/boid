@@ -3,6 +3,7 @@ env:
 hooks:
   - id: run-agent-b
     on: verifying
+    kind: agent
     traits:
-      consumes: [instructions, artifact]
+      consumes: [artifact]
       produces: [verification]

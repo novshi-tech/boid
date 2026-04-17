@@ -49,9 +49,6 @@ func ValidatePayloadPatch(patch json.RawMessage, allowedTraits []TraitType) erro
 	}
 
 	for key := range patchMap {
-		if TraitType(key) == TraitInstructions {
-			return fmt.Errorf("trait %q must not be written by a handler", key)
-		}
 		if !allowed[TraitType(key)] {
 			return fmt.Errorf("trait %q not in produces", key)
 		}

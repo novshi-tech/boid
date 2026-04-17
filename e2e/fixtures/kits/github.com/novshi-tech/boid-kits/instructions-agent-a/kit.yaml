@@ -3,6 +3,6 @@ env:
 hooks:
   - id: run-agent-a
     on: executing
+    kind: agent
     traits:
-      consumes: [instructions]
       produces: [artifact]

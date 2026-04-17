@@ -970,7 +970,7 @@ rerun 結果の差異を後追いするためのトレースとして使う。
 - **instructions routing 対象の判定は現時点では `consumes: [instructions]` 宣言で継続する** (既存互換)。kit 由来の非 routing hook (artifact 専用など) まで routing 対象にしないためのマーカーとして必要。`Hook.Consumer != ""` だけで判定すると、kit consumer を継承するすべての kit hook が routing 対象になってしまうため不可
 - **Phase D で `consumes: [instructions]` を廃止する際は、routing 対象の別マーカー** (例: `kind: agent` や `routes_instructions: true`、または「kit.yaml の instructions-routing hook だけ明示的に Consumer を宣言する」仕様) **を新設する**。Phase D 設計時に決定
 - `TraitInstructions` 定数は Phase B では routing マーカーとして現役、Phase D で廃止
-- `ValidatePayloadPatch` の `TraitInstructions` 拒否チェックは残す (payload に出現しなくなるので到達しないが、万一の 防衛線として)
+- `ValidatePayloadPatch` の `TraitInstructions` 拒否チェックは残す (payload に出現しなくなるので到達しないが、万一の 防衛線として) — Phase D で削除
 
 ### kit への影響
 
@@ -1001,4 +1001,79 @@ Phase A は 1 つの PR に収める (struct / DB / API は同時に変えない
 - `PATCH /tasks/{id}` の `instructions` 指定は停止中 (done/aborted/pending) のみ許可
 - `Task` JSON に `instructions` フィールドが追加される (API / CLI / DTO 全チェーン)
 - `TraitInstructions` は payload の active trait ではなくなる
-- kit YAML の `consumes: [instructions]` は Phase B では routing マーカーとして機能し続ける (互換性維持)。Phase D で routing 対象の別マーカーに置き換えた後に削除する
+- kit YAML の `consumes: [instructions]` は Phase B では routing マーカーとして機能し続ける (互換性維持)。Phase D で `kind: agent` に置き換えた後に削除する
+
+---
+
+## 改訂: kind: agent マーカーの導入 (Phase D, 2026-04-17)
+
+### 背景
+
+Phase B 時点では、kit YAML 側の `consumes: [instructions]` を「instructions routing 対象」のマーカーとして流用していた。これは 2 つの歪みを抱えていた:
+
+1. `consumes` は本来「この hook が payload から何を読むか」の宣言で、「routing 対象」というメタ的性質とは別の概念
+2. `TraitInstructions` は payload の active trait としては使われないのに列挙に残っていた
+
+### 決定
+
+hook に `kind: HandlerKind` フィールドを導入し、`kind: agent` の hook のみが instructions routing に参加する。
+
+```yaml
+# kit.yaml
+hooks:
+  - id: run-agent
+    on: executing
+    kind: agent     # ← instructions routing 対象であることを明示
+    traits:
+      produces: [artifact]
+```
+
+### 仕様
+
+**Hook 側:**
+- 新規 `type HandlerKind string` と `HandlerKindAgent HandlerKind = "agent"` 定数
+- `Hook.Kind` フィールド (YAML: `kind`)
+- 値は `""` または `"agent"` のみ。それ以外は loader error
+
+**Gate 側:**
+- `Gate` 構造体には `Kind` を追加しない
+- YAML で gate に `kind:` が書かれていたら UnmarshalYAML が error
+- 理由: gate は project directory がマウントされていないので、エージェントが意味のある仕事をできない
+
+**MergeKitMetaIntoBehavior の consumer 継承:**
+- `Kit` フィールド (provenance): 全 kit hook に継承
+- `Consumer` フィールド (routing identity): **`kind: agent` hook のみ** kit consumer を継承。非 agent hook は Consumer が空のまま
+
+**Evaluator:**
+- `consumesInstructions` ヘルパを削除、`h.Kind == HandlerKindAgent` で直接判定
+- `hasAllTraits` から `TraitInstructions` skip を削除 (定数ごと削除されるため)
+- routing ロジック自体は変わらない (instType 一致、Consumer 一致)
+
+**Loader validation:**
+- `Hook.Kind.IsValid()` 必須 (値チェック)
+- `Hook.Kind != HandlerKindAgent` で `Hook.Consumer != ""` は loader error (非 agent で consumer 明示は誤り)
+- `Hook.Kind == HandlerKindAgent` で (明示 or 継承後に) Consumer が空なら loader error (kit consumer を継承できなかった)
+
+### 削除されたもの
+
+- `TraitInstructions` 定数
+- `consumesInstructions()` 関数
+- `hasAllTraits` の `TraitInstructions` skip 分岐
+- `ValidatePayloadPatch` の `TraitInstructions` 拒否チェック
+- kit fixture の `consumes: [instructions]` 宣言 (`e2e/fixtures/kits/.../instructions-agent-{a,b}/kit.yaml`)
+
+### 破壊的変更
+
+- kit YAML で `consumes: [instructions]` は parser エラーにはならないが、routing マーカーとしては **機能しない**。`kind: agent` への移行が必須
+- `instructions` は `TraitType` 列挙から削除され、`consumes` / `produces` に書いても通常 trait として扱われる (active trait として払い出されないので実質 no-op)
+- `kind` の値が未知だと loader error
+- gate に `kind:` を書くと loader error
+- 非 agent hook に `consumer:` を書くと loader error
+- kit 内の非 agent hook は kit consumer を継承しなくなる (`Kit` のみ継承)
+
+### 将来の拡張余地
+
+`HandlerKind` を string 型にしているので、将来 `runner` / `watcher` 等を追加できる。追加時は:
+1. `HandlerKindRunner HandlerKind = "runner"` 等の定数追加
+2. `HandlerKind.IsValid()` の case 追加
+3. Evaluator での取り扱いロジック追加
