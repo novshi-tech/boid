@@ -1466,3 +1466,165 @@ func TestUnionBindMounts_ModePromotion(t *testing.T) {
 		}
 	})
 }
+
+func TestCommands_YAMLParse(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	_ = os.MkdirAll(boidDir, 0o755)
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`
+id: test-proj
+name: Test Project
+commands:
+  claude:
+    command:
+      - claude
+      - --dangerously-skip-permissions
+    kits: []
+  shell:
+    command: [bash]
+`), 0o644)
+
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadProjectMeta: %v", err)
+	}
+	if len(meta.Commands) != 2 {
+		t.Fatalf("expected 2 commands, got %d", len(meta.Commands))
+	}
+	claude, ok := meta.Commands["claude"]
+	if !ok {
+		t.Fatal("expected 'claude' command")
+	}
+	if len(claude.Command) != 2 || claude.Command[0] != "claude" || claude.Command[1] != "--dangerously-skip-permissions" {
+		t.Fatalf("unexpected claude command: %+v", claude.Command)
+	}
+	shell, ok := meta.Commands["shell"]
+	if !ok {
+		t.Fatal("expected 'shell' command")
+	}
+	if len(shell.Command) != 1 || shell.Command[0] != "bash" {
+		t.Fatalf("unexpected shell command: %+v", shell.Command)
+	}
+}
+
+func TestCommands_EnvVarExpansion(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	_ = os.MkdirAll(boidDir, 0o755)
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`
+id: test-proj
+name: Test Project
+commands:
+  run:
+    command:
+      - claude
+      - --append-system-prompt
+      - ${TEST_BOID_HOME}/skills/sandbox.md
+`), 0o644)
+	t.Setenv("TEST_BOID_HOME", "/home/testuser")
+
+	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadProjectMetaWithKits: %v", err)
+	}
+	cmd, ok := meta.Commands["run"]
+	if !ok {
+		t.Fatal("expected 'run' command")
+	}
+	want := "/home/testuser/skills/sandbox.md"
+	if len(cmd.ResolvedCommand) != 3 || cmd.ResolvedCommand[2] != want {
+		t.Fatalf("expected ResolvedCommand[2] = %q, got %+v", want, cmd.ResolvedCommand)
+	}
+	// Original Command slice must remain unexpanded.
+	if cmd.Command[2] != "${TEST_BOID_HOME}/skills/sandbox.md" {
+		t.Fatalf("expected Command[2] to remain unexpanded, got %q", cmd.Command[2])
+	}
+}
+
+func TestCommands_KitAggregation(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	kitADir := filepath.Join(boidDir, "kits", "kit-a")
+	kitBDir := filepath.Join(boidDir, "kits", "kit-b")
+	_ = os.MkdirAll(kitADir, 0o755)
+	_ = os.MkdirAll(kitBDir, 0o755)
+	_ = os.WriteFile(filepath.Join(kitADir, "kit.yaml"), []byte(`
+env:
+  FOO: from-kit-a
+additional_bindings:
+  - source: /mnt/data
+    mode: ro
+builtin_commands:
+  - git
+`), 0o644)
+	_ = os.WriteFile(filepath.Join(kitBDir, "kit.yaml"), []byte(`
+host_commands:
+  curl:
+    path: /usr/bin/curl
+additional_bindings:
+  - source: /mnt/cache
+    mode: rw
+`), 0o644)
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`
+id: test-proj
+name: Test Project
+commands:
+  run:
+    command: [bash]
+    kits:
+      - kit-a
+      - kit-b
+`), 0o644)
+
+	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadProjectMetaWithKits: %v", err)
+	}
+	cmd := meta.Commands["run"]
+
+	if cmd.Env["FOO"] != "from-kit-a" {
+		t.Errorf("expected FOO=from-kit-a, got %q", cmd.Env["FOO"])
+	}
+	if _, ok := cmd.HostCommands["curl"]; !ok {
+		t.Error("expected host_commands to contain 'curl' from kit-b")
+	}
+	if len(cmd.AdditionalBindings) != 2 {
+		t.Errorf("expected 2 additional_bindings, got %d: %+v", len(cmd.AdditionalBindings), cmd.AdditionalBindings)
+	}
+	found := false
+	for _, b := range cmd.BuiltinCommands {
+		if b == "git" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected builtin_commands to contain 'git', got %+v", cmd.BuiltinCommands)
+	}
+}
+
+func TestCommands_ProjectEnvOverridesKitEnv(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	kitDir := filepath.Join(boidDir, "kits", "base-kit")
+	_ = os.MkdirAll(kitDir, 0o755)
+	_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte("env:\n  KEY: from-kit\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`
+id: test-proj
+name: Test Project
+env:
+  KEY: from-project
+commands:
+  run:
+    command: [bash]
+    kits:
+      - base-kit
+`), 0o644)
+
+	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadProjectMetaWithKits: %v", err)
+	}
+	if got := meta.Commands["run"].Env["KEY"]; got != "from-project" {
+		t.Errorf("expected project env to override kit env: got %q, want %q", got, "from-project")
+	}
+}

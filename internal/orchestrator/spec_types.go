@@ -384,14 +384,29 @@ func (k *KitRef) UnmarshalYAML(value *yaml.Node) error {
 	return value.Decode((*kitRefAlias)(k))
 }
 
+// CommandSpec defines a named sandbox command available via `boid exec`.
+// The Command slice is expanded with os.ExpandEnv at load time and stored in ResolvedCommand.
+type CommandSpec struct {
+	Command []string `yaml:"command" json:"command"`
+	Kits    []KitRef `yaml:"kits,omitempty" json:"kits,omitempty"`
+
+	// Resolved fields populated by ReadProjectMetaWithKits.
+	ResolvedCommand    []string          `yaml:"-" json:"-"`
+	Env                map[string]string `yaml:"-" json:"-"`
+	BuiltinCommands    []string          `yaml:"-" json:"-"`
+	HostCommands       HostCommands      `yaml:"-" json:"-"`
+	AdditionalBindings []BindMount       `yaml:"-" json:"-"`
+}
+
 type ProjectMeta struct {
-	ID                 string                  `yaml:"id" json:"id"`
-	Name               string                  `yaml:"name" json:"name"`
-	TaskBehaviors      map[string]TaskBehavior `yaml:"task_behaviors" json:"task_behaviors"`
-	HostCommands       HostCommands            `yaml:"host_commands" json:"host_commands"`
-	AdditionalBindings []BindMount             `yaml:"additional_bindings" json:"additional_bindings"`
-	Env                map[string]string       `yaml:"env" json:"env"`
-	SecretNamespace    string                  `yaml:"secret_namespace,omitempty" json:"secret_namespace,omitempty"`
+	ID                 string                    `yaml:"id" json:"id"`
+	Name               string                    `yaml:"name" json:"name"`
+	TaskBehaviors      map[string]TaskBehavior   `yaml:"task_behaviors" json:"task_behaviors"`
+	Commands           map[string]CommandSpec    `yaml:"commands,omitempty" json:"commands,omitempty"`
+	HostCommands       HostCommands              `yaml:"host_commands" json:"host_commands"`
+	AdditionalBindings []BindMount               `yaml:"additional_bindings" json:"additional_bindings"`
+	Env                map[string]string         `yaml:"env" json:"env"`
+	SecretNamespace    string                    `yaml:"secret_namespace,omitempty" json:"secret_namespace,omitempty"`
 }
 
 type ProjectLocalMeta struct {
