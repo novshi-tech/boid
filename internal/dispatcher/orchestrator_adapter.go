@@ -60,6 +60,8 @@ func toDispatchPlan(request *orchestrator.DispatchRequest) *DispatchPlan {
 		HomeDir:            request.HomeDir,
 		HookFiles:          toDispatchHookFiles(request.HookFiles),
 		GatesDir:           request.GatesDir,
+		ProjectGatesDir:    request.ProjectGatesDir,
+		KitGatesDirs:       toDispatchKitGatesDirs(request.KitGatesDirs),
 		HookScript:         request.HookScript,
 		BoidBinary:         request.BoidBinary,
 		ServerSocket:       request.ServerSocket,
@@ -84,6 +86,17 @@ func toDispatchPlan(request *orchestrator.DispatchRequest) *DispatchPlan {
 		InvokedName:        request.InvokedName,
 		InvokedType:        request.InvokedType,
 	}
+}
+
+func toDispatchKitGatesDirs(infos []orchestrator.KitGatesInfo) []KitGatesSource {
+	if len(infos) == 0 {
+		return nil
+	}
+	out := make([]KitGatesSource, len(infos))
+	for i, info := range infos {
+		out[i] = KitGatesSource{GatesDir: info.GatesDir}
+	}
+	return out
 }
 
 func toDispatchHookFiles(files []orchestrator.HookFile) []HookFile {

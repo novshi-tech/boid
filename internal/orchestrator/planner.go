@@ -213,15 +213,9 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 
 	projectGatesDir := filepath.Join(proj.WorkDir, ".boid", "gates")
 	gatesDir := filepath.Dir(event.Gate.ScriptPath)
-	var stagingDir string
-	if len(behavior.KitGatesDirs) > 0 {
-		staged, _, err := StageGates(projectGatesDir, behavior.KitGatesDirs, event.TaskID)
-		if err != nil {
-			return nil, fmt.Errorf("stage gates: %w", err)
-		}
-		gatesDir = staged
-		stagingDir = staged
-	}
+	// Staging は dispatcher 側で jobID ベースに実行する。
+	// taskID をキーにすると同一 task の連続 gate が staging dir を共有し、
+	// 先行 gate の cleanup goroutine が後続 gate の script を消すレースが起きる。
 
 	// Use hook-updated payload if provided. This value is the result of merging all
 	// hook patches into the original payload inside DispatchAndAdvance, and may not
@@ -246,6 +240,8 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 		Role:            RoleGate,
 		ProjectDir:      proj.WorkDir,
 		GatesDir:        gatesDir,
+		ProjectGatesDir: projectGatesDir,
+		KitGatesDirs:    behavior.KitGatesDirs,
 		HookScript:      gateFilename,
 		BoidBinary:      p.BoidBinary,
 		ServerSocket:    p.ServerSocket,
@@ -255,7 +251,6 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 		SecretNamespace: meta.SecretNamespace,
 		WorkspaceDirs:   workspaceDirs,
 		ProxyPort:       p.proxyPort(),
-		StagingDir:      stagingDir,
 		TaskJSON:        string(taskJSON),
 	}, nil
 }

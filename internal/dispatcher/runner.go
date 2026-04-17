@@ -9,6 +9,10 @@ import (
 	"os"
 	"sort"
 	"sync"
+
+	"github.com/google/uuid"
+
+	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 type Runner struct {
@@ -42,7 +46,32 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		Interactive: false,
 		TTY:         false,
 	}
+
+	// Pre-allocate jobID so gate staging can be keyed on it. Sharing a
+	// taskID-keyed staging dir lets a prior gate's async cleanup delete
+	// a concurrent/sibling gate's freshly-staged scripts.
+	gatesDir := plan.GatesDir
+	stagingDir := plan.StagingDir
+	var gateCleanup func()
+	if plan.Role == "gate" && len(plan.KitGatesDirs) > 0 {
+		j.ID = uuid.New().String()
+		staged, cleanup, err := orchestrator.StageGates(
+			plan.ProjectGatesDir,
+			toOrchestratorKitGates(plan.KitGatesDirs),
+			j.ID,
+		)
+		if err != nil {
+			return "", fmt.Errorf("stage gates: %w", err)
+		}
+		gatesDir = staged
+		stagingDir = staged
+		gateCleanup = cleanup
+	}
+
 	if err := CreateJob(r.DB, j); err != nil {
+		if gateCleanup != nil {
+			gateCleanup()
+		}
 		return "", fmt.Errorf("create job: %w", err)
 	}
 
@@ -53,7 +82,7 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		ProjectDir:         plan.ProjectDir,
 		HomeDir:            plan.HomeDir,
 		HookFiles:          plan.HookFiles,
-		GatesDir:           plan.GatesDir,
+		GatesDir:           gatesDir,
 		HookScript:         plan.HookScript,
 		BoidBinary:         plan.BoidBinary,
 		ServerSocket:       plan.ServerSocket,
@@ -63,7 +92,7 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		AdditionalBindings: plan.AdditionalBindings,
 		WorkspaceDirs:      plan.WorkspaceDirs,
 		ProxyPort:          plan.ProxyPort,
-		StagingDir:         plan.StagingDir,
+		StagingDir:         stagingDir,
 		WorktreeDir:        plan.WorktreeDir,
 		Role:               plan.Role,
 		PayloadJSON:        plan.PayloadJSON,
@@ -110,6 +139,17 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 	}
 
 	return r.launchSandbox(ctx, j, spec)
+}
+
+func toOrchestratorKitGates(sources []KitGatesSource) []orchestrator.KitGatesInfo {
+	if len(sources) == 0 {
+		return nil
+	}
+	out := make([]orchestrator.KitGatesInfo, len(sources))
+	for i, s := range sources {
+		out[i] = orchestrator.KitGatesInfo{GatesDir: s.GatesDir}
+	}
+	return out
 }
 
 func hostCommandNames(cmds map[string]CommandDef) []string {

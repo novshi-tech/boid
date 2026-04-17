@@ -14,6 +14,8 @@ type DispatchRequest struct {
 	HomeDir            string
 	HookFiles          []HookFile
 	GatesDir           string
+	ProjectGatesDir    string         // for dispatcher-side gate staging (gate role)
+	KitGatesDirs       []KitGatesInfo // for dispatcher-side gate staging (gate role)
 	HookScript         string
 	BoidBinary         string
 	ServerSocket       string

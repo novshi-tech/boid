@@ -216,19 +216,20 @@ func TestPlanHook_CollectsKitAndProjectHookFiles(t *testing.T) {
 	}
 }
 
-func TestDispatchPlannerPlanGateStagesKitGates(t *testing.T) {
+func TestDispatchPlannerPlanGatePassesKitGatesThrough(t *testing.T) {
 	projectDir := t.TempDir()
 	kitGatesDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(kitGatesDir, "gate-1.sh"), []byte("#!/bin/bash\n"), 0o755); err != nil {
 		t.Fatalf("write kit gate: %v", err)
 	}
 
+	kitGatesDirs := []KitGatesInfo{{GatesDir: kitGatesDir, GateIDs: []string{"gate-1"}}}
 	meta := &ProjectMeta{
 		ID: "proj-1",
 		TaskBehaviors: map[string]TaskBehavior{
 			"dev": {
 				Name:         "dev",
-				KitGatesDirs: []KitGatesInfo{{GatesDir: kitGatesDir, GateIDs: []string{"gate-1"}}},
+				KitGatesDirs: kitGatesDirs,
 			},
 		},
 	}
@@ -251,17 +252,15 @@ func TestDispatchPlannerPlanGateStagesKitGates(t *testing.T) {
 		t.Fatalf("PlanGate: %v", err)
 	}
 
-	if req.GatesDir == "" || req.StagingDir == "" {
-		t.Fatalf("expected staged gates dir, got GatesDir=%q StagingDir=%q", req.GatesDir, req.StagingDir)
+	// Staging を planner 側では行わない: StagingDir は空のまま。
+	if req.StagingDir != "" {
+		t.Fatalf("expected empty StagingDir (dispatcher-owned), got %q", req.StagingDir)
 	}
-	if req.GatesDir != req.StagingDir {
-		t.Fatalf("expected GatesDir and StagingDir to match, got %q vs %q", req.GatesDir, req.StagingDir)
+	if req.ProjectGatesDir != filepath.Join(projectDir, ".boid", "gates") {
+		t.Fatalf("ProjectGatesDir = %q", req.ProjectGatesDir)
 	}
-	if req.GatesDir == filepath.Join(projectDir, ".boid", "gates") {
-		t.Fatalf("expected kit gates to be staged, got project gates dir %q", req.GatesDir)
-	}
-	if _, err := os.Stat(filepath.Join(req.GatesDir, "gate-1.sh")); err != nil {
-		t.Fatalf("expected staged gate script: %v", err)
+	if len(req.KitGatesDirs) != 1 || req.KitGatesDirs[0].GatesDir != kitGatesDir {
+		t.Fatalf("KitGatesDirs = %#v", req.KitGatesDirs)
 	}
 }
 

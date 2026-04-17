@@ -9,6 +9,12 @@ type BindMount struct {
 	Mode   string
 }
 
+// KitGatesSource is per-kit gate scripts directory carried through the dispatch
+// plan. Dispatcher uses it to stage gate scripts under a per-job unique path.
+type KitGatesSource struct {
+	GatesDir string
+}
+
 // CommandDef is a dispatcher-side transport shape for sandbox command policy input.
 // sandbox remains the canonical owner of how these policy fields are interpreted.
 type CommandDef struct {
@@ -32,6 +38,8 @@ type DispatchPlan struct {
 	HomeDir            string
 	HookFiles          []HookFile
 	GatesDir           string
+	ProjectGatesDir    string           // source dir for project-side gate scripts (dispatcher-side staging)
+	KitGatesDirs       []KitGatesSource // per-kit gate script source dirs (dispatcher-side staging)
 	HookScript         string
 	BoidBinary         string
 	ServerSocket       string
