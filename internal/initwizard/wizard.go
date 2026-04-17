@@ -44,6 +44,7 @@ type projectFileOut struct {
 	ID            string         `yaml:"id"`
 	Name          string         `yaml:"name"`
 	TaskBehaviors map[string]any `yaml:"task_behaviors,omitempty"`
+	Commands      map[string]any `yaml:"commands,omitempty"`
 }
 
 // ListAllKits returns all kits found in the registry by walking repo directories.
@@ -181,16 +182,17 @@ func (w *Wizard) Run(projectDir string) error {
 		featureKitRefs = append(featureKitRefs, ki.Ref)
 	}
 
+	tplData := ScaffoldTemplateData{
+		ProjectID:   projectID,
+		ProjectName: name,
+		Consumer:    consumer,
+		FeatureKits: featureKitRefs,
+	}
+
 	var taskBehaviors map[string]any
 	if selectedBehaviorKit != nil &&
 		selectedBehaviorKit.Meta.Scaffold != nil &&
 		selectedBehaviorKit.Meta.Scaffold.TaskBehaviors != nil {
-		tplData := ScaffoldTemplateData{
-			ProjectID:   projectID,
-			ProjectName: name,
-			Consumer:    consumer,
-			FeatureKits: featureKitRefs,
-		}
 		expanded, expandErr := ExpandScaffoldTemplate(
 			selectedBehaviorKit.Dir,
 			selectedBehaviorKit.Meta.Scaffold.TaskBehaviors.Template,
@@ -200,6 +202,21 @@ func (w *Wizard) Run(projectDir string) error {
 			return fmt.Errorf("expand scaffold template: %w", expandErr)
 		}
 		taskBehaviors = expanded
+	}
+
+	var commands map[string]any
+	if selectedBehaviorKit != nil &&
+		selectedBehaviorKit.Meta.Scaffold != nil &&
+		selectedBehaviorKit.Meta.Scaffold.Commands != nil {
+		expanded, expandErr := ExpandScaffoldTemplate(
+			selectedBehaviorKit.Dir,
+			selectedBehaviorKit.Meta.Scaffold.Commands.Template,
+			tplData,
+		)
+		if expandErr != nil {
+			return fmt.Errorf("expand commands scaffold template: %w", expandErr)
+		}
+		commands = expanded
 	}
 
 	// [7] Write project.yaml and create directories
@@ -212,6 +229,7 @@ func (w *Wizard) Run(projectDir string) error {
 		ID:            projectID,
 		Name:          name,
 		TaskBehaviors: taskBehaviors,
+		Commands:      commands,
 	}
 
 	data, err := yaml.Marshal(proj)
