@@ -276,7 +276,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		},
 		"",
 		runtimesDirFor(srv.cfg),
-	)
+	).WithSandboxTmpDir(os.TempDir())
 	gcHandler := &api.GCHandler{Service: &api.GCAppService{Store: gcStore}}
 	r.Mount("/api/gc", gcHandler.Routes())
 

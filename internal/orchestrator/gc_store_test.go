@@ -435,6 +435,66 @@ func makeRuntimeDir(t *testing.T, runtimesDir, runtimeID string) string {
 	return dir
 }
 
+func TestGC_SandboxTmpCleanup(t *testing.T) {
+	d := testutil.NewTestDB(t)
+
+	tmpDir := t.TempDir()
+	oldTime := time.Now().Add(-48 * time.Hour)
+
+	oldScript := filepath.Join(tmpDir, "boid-oldjob-inner.sh")
+	if err := os.WriteFile(oldScript, []byte("x"), 0o755); err != nil {
+		t.Fatalf("write old script: %v", err)
+	}
+	if err := os.Chtimes(oldScript, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	freshScript := filepath.Join(tmpDir, "boid-fresh-inner.sh")
+	if err := os.WriteFile(freshScript, []byte("x"), 0o755); err != nil {
+		t.Fatalf("write fresh script: %v", err)
+	}
+
+	gcStore := orchestrator.NewTaskGCStore(d.Conn).WithSandboxTmpDir(tmpDir)
+	result, err := gcStore.GC(24*time.Hour, false)
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if result.SandboxTmp != 1 {
+		t.Errorf("SandboxTmp = %d, want 1", result.SandboxTmp)
+	}
+	if _, err := os.Stat(oldScript); !os.IsNotExist(err) {
+		t.Errorf("old script should be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(freshScript); err != nil {
+		t.Errorf("fresh script should remain: %v", err)
+	}
+}
+
+func TestGC_SandboxTmpCleanup_DryRunSkipsRemoval(t *testing.T) {
+	d := testutil.NewTestDB(t)
+
+	tmpDir := t.TempDir()
+	oldTime := time.Now().Add(-48 * time.Hour)
+	oldScript := filepath.Join(tmpDir, "boid-oldjob-outer.sh")
+	if err := os.WriteFile(oldScript, []byte("x"), 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.Chtimes(oldScript, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	gcStore := orchestrator.NewTaskGCStore(d.Conn).WithSandboxTmpDir(tmpDir)
+	result, err := gcStore.GC(24*time.Hour, true)
+	if err != nil {
+		t.Fatalf("gc dry-run: %v", err)
+	}
+	if result.SandboxTmp != 0 {
+		t.Errorf("dry-run: SandboxTmp = %d, want 0", result.SandboxTmp)
+	}
+	if _, err := os.Stat(oldScript); err != nil {
+		t.Errorf("dry-run: old script should remain: %v", err)
+	}
+}
+
 func TestGC_RuntimesDirCleanup(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	runtimesDir := t.TempDir()

@@ -349,11 +349,12 @@ func ListActionsByTask(dbtx db.DBTX, taskID string) ([]*Action, error) {
 
 // GCResult holds the count of records affected by GC.
 type GCResult struct {
-	Tasks     int64
-	Jobs      int64
-	Actions   int64
-	Worktrees int64
-	Runtimes  int64
+	Tasks      int64
+	Jobs       int64
+	Actions    int64
+	Worktrees  int64
+	Runtimes   int64
+	SandboxTmp int64 // leaked /tmp/boid-* sandbox artifacts removed
 }
 
 // GCTasks deletes terminal tasks older than olderThan and their related data

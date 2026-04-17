@@ -33,22 +33,23 @@ func runGC(cmd *cobra.Command, args []string) error {
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
 	var result struct {
-		Tasks     int64 `json:"tasks"`
-		Jobs      int64 `json:"jobs"`
-		Actions   int64 `json:"actions"`
-		Worktrees int64 `json:"worktrees"`
-		Runtimes  int64 `json:"runtimes"`
+		Tasks      int64 `json:"tasks"`
+		Jobs       int64 `json:"jobs"`
+		Actions    int64 `json:"actions"`
+		Worktrees  int64 `json:"worktrees"`
+		Runtimes   int64 `json:"runtimes"`
+		SandboxTmp int64 `json:"sandbox_tmp"`
 	}
 	if err := c.Do("POST", "/api/gc", body, &result); err != nil {
 		return err
 	}
 
 	if dryRun {
-		fmt.Printf("dry run: would delete %d tasks, %d jobs, %d actions, %d worktrees, %d runtimes\n",
-			result.Tasks, result.Jobs, result.Actions, result.Worktrees, result.Runtimes)
+		fmt.Printf("dry run: would delete %d tasks, %d jobs, %d actions, %d worktrees, %d runtimes, %d sandbox tmp entries\n",
+			result.Tasks, result.Jobs, result.Actions, result.Worktrees, result.Runtimes, result.SandboxTmp)
 	} else {
-		fmt.Printf("deleted: %d tasks, %d jobs, %d actions, %d worktrees, %d runtimes\n",
-			result.Tasks, result.Jobs, result.Actions, result.Worktrees, result.Runtimes)
+		fmt.Printf("deleted: %d tasks, %d jobs, %d actions, %d worktrees, %d runtimes, %d sandbox tmp entries\n",
+			result.Tasks, result.Jobs, result.Actions, result.Worktrees, result.Runtimes, result.SandboxTmp)
 	}
 	return nil
 }

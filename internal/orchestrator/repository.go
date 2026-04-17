@@ -105,6 +105,7 @@ type TaskGCStore struct {
 	resolveProjectDir func(projectID string) (string, error)
 	gitBin            string
 	runtimesDir       string
+	sandboxTmpDir     string
 }
 
 func NewTaskGCStore(conn *sql.DB) *TaskGCStore {
@@ -125,6 +126,14 @@ func NewTaskGCStoreWithWorktree(conn *sql.DB, resolveProjectDir func(projectID s
 	}
 }
 
+// WithSandboxTmpDir enables safety-net cleanup of leaked /tmp/boid-* sandbox
+// artifacts during GC. Pass the directory to scan (typically "/tmp"); empty
+// string disables this cleanup.
+func (s *TaskGCStore) WithSandboxTmpDir(dir string) *TaskGCStore {
+	s.sandboxTmpDir = dir
+	return s
+}
+
 func (s *TaskGCStore) gcGitBin() string {
 	if s.gitBin != "" {
 		return s.gitBin
@@ -140,6 +149,10 @@ func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool) (*GCResult, error
 	if s.resolveProjectDir != nil && !dryRun {
 		s.cleanWorktrees(olderThan)
 	}
+	sandboxTmpDeleted := 0
+	if s.sandboxTmpDir != "" && !dryRun {
+		sandboxTmpDeleted = cleanSandboxTmp(s.sandboxTmpDir, olderThan)
+	}
 
 	var result *GCResult
 	err := db.InTxDB(s.conn, func(dbtx db.DBTX) error {
@@ -152,6 +165,7 @@ func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool) (*GCResult, error
 	}
 	if !dryRun {
 		result.Runtimes = int64(runtimesDeleted)
+		result.SandboxTmp = int64(sandboxTmpDeleted)
 	}
 	return result, nil
 }
