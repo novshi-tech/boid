@@ -239,19 +239,20 @@ func setupTestProjectWithCommand(t *testing.T, id, name string) string {
 		t.Fatalf("mkdir kit: %v", err)
 	}
 
+	// mykit は project top-level kits に置き、commands は kit 経由で提供する
 	projectYAML := "id: " + id + "\nname: " + name + "\n" +
-		"commands:\n" +
-		"  run:\n" +
-		"    command: [bash, -c, echo hello]\n" +
-		"    kits:\n" +
-		"      - mykit\n" +
+		"kits:\n" +
+		"  - mykit\n" +
 		"task_behaviors:\n" +
 		"  impl:\n" +
 		"    name: implementation\n"
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
 		t.Fatalf("write project yaml: %v", err)
 	}
-	kitYAML := "host_commands:\n  curl: {}\n"
+	kitYAML := "host_commands:\n  curl: {}\n" +
+		"commands:\n" +
+		"  run:\n" +
+		"    command: [bash, -c, echo hello]\n"
 	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
 		t.Fatalf("write kit yaml: %v", err)
 	}
@@ -280,6 +281,36 @@ func TestProjectAPI_GetCommand(t *testing.T) {
 	}
 	if _, ok := resp.HostCommands["curl"]; !ok {
 		t.Errorf("host_commands %v should contain 'curl'", resp.HostCommands)
+	}
+}
+
+func TestProjectAPI_ListCommands(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+
+	dir := setupTestProjectWithCommand(t, "list-cmd-proj", "List Command Project")
+	var project orchestrator.Project
+	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	var resp struct {
+		Commands []struct {
+			Name    string   `json:"name"`
+			Command []string `json:"command"`
+		} `json:"commands"`
+	}
+	if err := ts.Client.Do("GET", "/api/projects/list-cmd-proj/commands", nil, &resp); err != nil {
+		t.Fatalf("list commands: %v", err)
+	}
+
+	if len(resp.Commands) != 1 {
+		t.Fatalf("expected 1 command, got %d: %+v", len(resp.Commands), resp.Commands)
+	}
+	if resp.Commands[0].Name != "run" {
+		t.Errorf("command name = %q, want %q", resp.Commands[0].Name, "run")
+	}
+	if len(resp.Commands[0].Command) == 0 || resp.Commands[0].Command[0] != "bash" {
+		t.Errorf("command = %v, want [bash ...]", resp.Commands[0].Command)
 	}
 }
 

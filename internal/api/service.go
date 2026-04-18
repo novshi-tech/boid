@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -253,6 +254,19 @@ func (s *ProjectAppService) GetCommand(id, name string) (*CommandResponse, error
 		HostCommands:       map[string]orchestrator.HostCommandSpec(cmd.HostCommands),
 		AdditionalBindings: cmd.AdditionalBindings,
 	}, nil
+}
+
+func (s *ProjectAppService) ListCommands(id string) ([]CommandSummary, error) {
+	meta, ok := s.Meta.Get(id)
+	if !ok {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("project %q meta not loaded", id)}
+	}
+	summaries := make([]CommandSummary, 0, len(meta.Commands))
+	for name, cmd := range meta.Commands {
+		summaries = append(summaries, CommandSummary{Name: name, Command: cmd.ResolvedCommand})
+	}
+	sort.Slice(summaries, func(i, j int) bool { return summaries[i].Name < summaries[j].Name })
+	return summaries, nil
 }
 
 func (s *ProjectAppService) ReloadProjects() (*ProjectReloadResult, error) {

@@ -44,7 +44,6 @@ type projectFileOut struct {
 	Name          string         `yaml:"name"`
 	Kits          []string       `yaml:"kits,omitempty"`
 	TaskBehaviors map[string]any `yaml:"task_behaviors,omitempty"`
-	Commands      map[string]any `yaml:"commands,omitempty"`
 }
 
 // ListAllKits returns all kits found in the registry by walking repo directories.
@@ -200,21 +199,6 @@ func (w *Wizard) Run(projectDir string) error {
 		taskBehaviors = expanded
 	}
 
-	var commands map[string]any
-	if selectedBehaviorKit != nil &&
-		selectedBehaviorKit.Meta.Scaffold != nil &&
-		selectedBehaviorKit.Meta.Scaffold.Commands != nil {
-		expanded, expandErr := ExpandScaffoldTemplate(
-			selectedBehaviorKit.Dir,
-			selectedBehaviorKit.Meta.Scaffold.Commands.Template,
-			tplData,
-		)
-		if expandErr != nil {
-			return fmt.Errorf("expand commands scaffold template: %w", expandErr)
-		}
-		commands = expanded
-	}
-
 	// [7] Write project.yaml and create directories
 	boidDir := filepath.Join(projectDir, ".boid")
 	if err := os.MkdirAll(boidDir, 0o755); err != nil {
@@ -231,7 +215,6 @@ func (w *Wizard) Run(projectDir string) error {
 		Name:          name,
 		Kits:          kitRefs,
 		TaskBehaviors: taskBehaviors,
-		Commands:      commands,
 	}
 
 	data, err := yaml.Marshal(proj)

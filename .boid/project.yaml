@@ -1,35 +1,31 @@
 id: boid
 name: boid
 
+kits:
+  - github.com/novshi-tech/boid-kits/claude-code
+  - github.com/novshi-tech/boid-kits/go-dev
+  - github.com/novshi-tech/boid-kits/git
+  - github.com/novshi-tech/boid-kits/github-cli
+
 commands:
   claude:
     command:
       - claude
+      - --permission-mode
+      - bypassPermissions
       - --append-system-prompt
-      - "boid worktree で作業中。コミット前に go vet ./... と go test ./... を通すこと。"
-    kits:
-      - github.com/novshi-tech/boid-kits/claude-code
-      - github.com/novshi-tech/boid-kits/go-dev
-      - github.com/novshi-tech/boid-kits/git
-      - github.com/novshi-tech/boid-kits/github-cli
+      - "このセッションは boid sandbox 内で実行されています。環境制約については ~/.boid/context/environment.yaml を参照"
   shell:
     command:
       - bash
-    kits:
-      - github.com/novshi-tech/boid-kits/git
 
 task_behaviors:
   dev:
     name: one-shot-feedback-dev
     worktree: true
     kits:
-      - github.com/novshi-tech/boid-kits/go-dev
-      - github.com/novshi-tech/boid-kits/git
-      - github.com/novshi-tech/boid-kits/github-cli
       - github.com/novshi-tech/boid-kits/github-pr-verification
       - github.com/novshi-tech/boid-kits/github-auto-merge
-      - github.com/novshi-tech/boid-kits/claude-code
-      - github.com/novshi-tech/boid-kits/codex
     default_instructions:
       main:
         type: execution
@@ -53,7 +49,6 @@ task_behaviors:
     traits: [tasks]
     kits:
       - github.com/novshi-tech/boid-kits/boid-tasks
-      - github.com/novshi-tech/boid-kits/claude-code
     default_instructions:
       main:
         type: execution
@@ -106,7 +101,6 @@ task_behaviors:
     traits: [tasks]
     kits:
       - github.com/novshi-tech/boid-kits/boid-tasks
-      - github.com/novshi-tech/boid-kits/claude-code
     default_instructions:
       main:
         type: execution

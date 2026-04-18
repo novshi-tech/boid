@@ -1495,7 +1495,6 @@ commands:
     command:
       - claude
       - --dangerously-skip-permissions
-    kits: []
   shell:
     command: [bash]
 `), 0o644)
@@ -1581,15 +1580,16 @@ additional_bindings:
   - source: /mnt/cache
     mode: rw
 `), 0o644)
+	// kit-a と kit-b は project top-level kits に置く。commands はそこから runtime を継承する。
 	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`
 id: test-proj
 name: Test Project
+kits:
+  - kit-a
+  - kit-b
 commands:
   run:
     command: [bash]
-    kits:
-      - kit-a
-      - kit-b
 `), 0o644)
 
 	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
@@ -1624,16 +1624,17 @@ func TestCommands_ProjectEnvOverridesKitEnv(t *testing.T) {
 	kitDir := filepath.Join(boidDir, "kits", "base-kit")
 	_ = os.MkdirAll(kitDir, 0o755)
 	_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte("env:\n  KEY: from-kit\n"), 0o644)
+	// base-kit は project top-level kits に置く。project.yaml の env が上書きされることを確認。
 	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`
 id: test-proj
 name: Test Project
+kits:
+  - base-kit
 env:
   KEY: from-project
 commands:
   run:
     command: [bash]
-    kits:
-      - base-kit
 `), 0o644)
 
 	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
@@ -1807,6 +1808,121 @@ func TestIsProjectScopable(t *testing.T) {
 		}
 		if err := projectspec.IsProjectScopable(km); err == nil || !strings.Contains(err.Error(), "hook h1 の kind が agent 以外") {
 			t.Errorf("expected non-agent hook rejection, got %v", err)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// KitMeta.Commands テスト (タスク A/B)
+// ---------------------------------------------------------------------------
+
+func TestKitMeta_Commands_ParsedFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	writeKitYAML(t, dir, `
+commands:
+  claude:
+    command:
+      - claude
+      - --permission-mode
+      - bypassPermissions
+  shell:
+    command: [bash]
+`)
+	meta, err := projectspec.ReadKitMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadKitMeta: %v", err)
+	}
+	if len(meta.Commands) != 2 {
+		t.Fatalf("expected 2 commands, got %d", len(meta.Commands))
+	}
+	claude, ok := meta.Commands["claude"]
+	if !ok {
+		t.Fatal("expected 'claude' command")
+	}
+	if len(claude.Command) != 3 || claude.Command[0] != "claude" {
+		t.Fatalf("unexpected claude command: %+v", claude.Command)
+	}
+}
+
+func TestReadProjectMetaWithKits_KitCommandsMerge(t *testing.T) {
+	t.Run("kit commands merged into project commands", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		kitDir := filepath.Join(boidDir, "kits", "agent-kit")
+		_ = os.MkdirAll(kitDir, 0o755)
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`
+id: test-proj
+name: Test Project
+kits:
+  - agent-kit
+`), 0o644)
+		writeKitYAML(t, kitDir, `
+commands:
+  claude:
+    command: [claude, --permission-mode, bypassPermissions]
+`)
+		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+		if err != nil {
+			t.Fatalf("ReadProjectMetaWithKits: %v", err)
+		}
+		cmd, ok := meta.Commands["claude"]
+		if !ok {
+			t.Fatal("expected 'claude' command from kit")
+		}
+		if len(cmd.ResolvedCommand) == 0 || cmd.ResolvedCommand[0] != "claude" {
+			t.Errorf("unexpected ResolvedCommand: %+v", cmd.ResolvedCommand)
+		}
+	})
+
+	t.Run("kit-kit conflict on same command name is an error", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		kitADir := filepath.Join(boidDir, "kits", "kit-a")
+		kitBDir := filepath.Join(boidDir, "kits", "kit-b")
+		_ = os.MkdirAll(kitADir, 0o755)
+		_ = os.MkdirAll(kitBDir, 0o755)
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`
+id: test-proj
+name: Test Project
+kits:
+  - kit-a
+  - kit-b
+`), 0o644)
+		writeKitYAML(t, kitADir, "commands:\n  run:\n    command: [bash]\n")
+		writeKitYAML(t, kitBDir, "commands:\n  run:\n    command: [sh]\n")
+
+		_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+		if err == nil {
+			t.Fatal("expected conflict error, got nil")
+		}
+		if !strings.Contains(err.Error(), `"run"`) || !strings.Contains(err.Error(), "kit-a") || !strings.Contains(err.Error(), "kit-b") {
+			t.Errorf("error should mention command and both kits: %v", err)
+		}
+	})
+
+	t.Run("project.yaml commands override kit-provided commands", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		kitDir := filepath.Join(boidDir, "kits", "agent-kit")
+		_ = os.MkdirAll(kitDir, 0o755)
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`
+id: test-proj
+name: Test Project
+kits:
+  - agent-kit
+commands:
+  claude:
+    command: [claude, --custom-flag]
+`), 0o644)
+		writeKitYAML(t, kitDir, "commands:\n  claude:\n    command: [claude, --kit-flag]\n")
+
+		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+		if err != nil {
+			t.Fatalf("ReadProjectMetaWithKits: %v", err)
+		}
+		cmd := meta.Commands["claude"]
+		if len(cmd.ResolvedCommand) < 2 || cmd.ResolvedCommand[1] != "--custom-flag" {
+			t.Errorf("expected project.yaml command to win: %+v", cmd.ResolvedCommand)
 		}
 	})
 }
