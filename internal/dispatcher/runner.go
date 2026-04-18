@@ -31,23 +31,19 @@ type Runner struct {
 	taskRuntimes  map[string]map[string]struct{} // task ID -> runtime IDs
 }
 
-func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, error) {
-	if plan == nil {
-		return "", fmt.Errorf("dispatch plan is required")
-	}
-	if plan.TaskID == "" || plan.ProjectID == "" || plan.HandlerID == "" || plan.Role == "" {
-		return "", fmt.Errorf("dispatch plan is incomplete")
-	}
-	request := plan.Request
+func (r *Runner) Dispatch(ctx context.Context, request *orchestrator.DispatchRequest) (string, error) {
 	if request == nil {
-		request = planToRequest(plan)
+		return "", fmt.Errorf("dispatch request is required")
+	}
+	if request.TaskID == "" || request.ProjectID == "" || request.HandlerID == "" || request.Role == "" {
+		return "", fmt.Errorf("dispatch request is incomplete")
 	}
 
 	j := &Job{
-		TaskID:      plan.TaskID,
-		ProjectID:   plan.ProjectID,
-		HandlerID:   plan.HandlerID,
-		Role:        plan.Role,
+		TaskID:      request.TaskID,
+		ProjectID:   request.ProjectID,
+		HandlerID:   request.HandlerID,
+		Role:        string(request.Role),
 		Interactive: false,
 		TTY:         false,
 	}
@@ -56,14 +52,14 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 	// KitGatesDirs is only populated by orchestrator for gate dispatch, so its
 	// non-empty value is the primitive signal for staging — no Role check needed.
 	// We pre-allocate the JobID so the staging directory name is stable.
-	stagedGatesDir := plan.GatesDir
-	stagingDir := plan.StagingDir
+	stagedGatesDir := request.GatesDir
+	stagingDir := request.StagingDir
 	var gateCleanup func()
-	if len(plan.KitGatesDirs) > 0 {
+	if len(request.KitGatesDirs) > 0 {
 		j.ID = uuid.New().String()
 		staged, cleanup, err := orchestrator.StageGates(
-			plan.ProjectGatesDir,
-			plan.KitGatesDirs,
+			request.ProjectGatesDir,
+			request.KitGatesDirs,
 			j.ID,
 		)
 		if err != nil {
@@ -86,20 +82,20 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 	// into the sandbox env + mounts.
 	var brokerSocket, brokerToken string
 	if r.Broker != nil {
-		allowedProjectIDs := allowedProjectIDs(plan.ProjectID, plan.WorkspaceDirs)
+		allowedProjectIDs := allowedProjectIDs(request.ProjectID, request.WorkspaceDirs)
 		tokenCtx := sandbox.TokenContext{
 			JobID:             j.ID,
-			TaskID:            plan.TaskID,
-			ProjectID:         plan.ProjectID,
-			WorkspaceID:       plan.WorkspaceID,
+			TaskID:            request.TaskID,
+			ProjectID:         request.ProjectID,
+			WorkspaceID:       request.WorkspaceID,
 			AllowedProjectIDs: allowedProjectIDs,
-			Role:              plan.Role,
-			ProjectDir:        plan.ProjectDir,
-			WorktreeDir:       plan.WorktreeDir,
+			Role:              string(request.Role),
+			ProjectDir:        request.ProjectDir,
+			WorktreeDir:       request.WorktreeDir,
 		}
 		var resolve SecretResolver
 		if r.SecretStore != nil {
-			ns := plan.SecretNamespace
+			ns := request.SecretNamespace
 			if ns == "" {
 				ns = "default"
 			}
@@ -107,7 +103,7 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 				return r.SecretStore.Get(ns, key)
 			}
 		}
-		brokerToken = r.Broker.RegisterCommands(plan.HostCommands, plan.BuiltinPolicies, tokenCtx, resolve)
+		brokerToken = r.Broker.RegisterCommands(request.HostCommands, request.BuiltinPolicies, tokenCtx, resolve)
 		brokerSocket = r.Broker.SocketPath()
 		r.trackToken(j.ID, brokerToken)
 	}
@@ -123,49 +119,6 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 	})
 
 	return r.launchSandbox(ctx, j, sbSpec)
-}
-
-// planToRequest reconstructs an orchestrator.DispatchRequest from a
-// DispatchPlan that was not produced through the orchestrator_adapter (e.g.
-// in tests that build DispatchPlan literals directly). The adapter normally
-// sets plan.Request directly so no reconstruction is needed.
-func planToRequest(plan *DispatchPlan) *orchestrator.DispatchRequest {
-	return &orchestrator.DispatchRequest{
-		TaskID:             plan.TaskID,
-		ProjectID:          plan.ProjectID,
-		WorkspaceID:        plan.WorkspaceID,
-		HandlerID:          plan.HandlerID,
-		Role:               orchestrator.Role(plan.Role),
-		ProjectDir:         plan.ProjectDir,
-		HomeDir:            plan.HomeDir,
-		HookFiles:          plan.HookFiles,
-		GatesDir:           plan.GatesDir,
-		ProjectGatesDir:    plan.ProjectGatesDir,
-		KitGatesDirs:       plan.KitGatesDirs,
-		HookScript:         plan.HookScript,
-		BoidBinary:         plan.BoidBinary,
-		ServerSocket:       plan.ServerSocket,
-		Env:                plan.Env,
-		BuiltinPolicies:    plan.BuiltinPolicies,
-		HostCommands:       plan.HostCommands,
-		AdditionalBindings: plan.AdditionalBindings,
-		WorkspaceDirs:      plan.WorkspaceDirs,
-		ProxyPort:          plan.ProxyPort,
-		StagingDir:         plan.StagingDir,
-		WorktreeDir:        plan.WorktreeDir,
-		PayloadJSON:        plan.PayloadJSON,
-		TaskJSON:           plan.TaskJSON,
-		Readonly:           plan.Readonly,
-		Interactive:        plan.Interactive,
-		InstructionsJSON:   plan.InstructionsJSON,
-		SecretNamespace:    plan.SecretNamespace,
-		TaskYAML:           plan.TaskYAML,
-		EnvironmentYAML:    plan.EnvironmentYAML,
-		Model:              plan.Model,
-		InvokedRole:        plan.InvokedRole,
-		InvokedName:        plan.InvokedName,
-		InvokedType:        plan.InvokedType,
-	}
 }
 
 func allowedProjectIDs(selfID string, workspaceDirs map[string]string) []string {

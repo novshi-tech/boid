@@ -49,22 +49,22 @@ func TestRunnerDispatch_StartsJobRuntimeAndPersistsMetadata(t *testing.T) {
 		},
 	}
 
-	planA := &dispatcher.DispatchPlan{
+	planA := &orchestrator.DispatchRequest{
 		TaskID:      taskID,
 		ProjectID:   "proj-1",
 		HandlerID:   "hook-a",
-		Role:        "hook",
+		Role:        orchestrator.RoleHook,
 		ProjectDir:  projectDir,
 		HomeDir:     projectDir,
 		HookScript:  "hook-a.sh",
 		BoidBinary:  "/bin/true",
 		PayloadJSON: `{}`,
 	}
-	planB := &dispatcher.DispatchPlan{
+	planB := &orchestrator.DispatchRequest{
 		TaskID:      taskID,
 		ProjectID:   "proj-1",
 		HandlerID:   "hook-b",
-		Role:        "hook",
+		Role:        orchestrator.RoleHook,
 		ProjectDir:  projectDir,
 		HomeDir:     projectDir,
 		HookScript:  "hook-b.sh",
@@ -155,11 +155,11 @@ func TestRunnerCleanupTaskWindow_StopsAllTrackedRuntimes(t *testing.T) {
 	}
 
 	for _, handlerID := range []string{"hook-a", "hook-b"} {
-		_, err := runner.Dispatch(context.Background(), &dispatcher.DispatchPlan{
+		_, err := runner.Dispatch(context.Background(), &orchestrator.DispatchRequest{
 			TaskID:      taskID,
 			ProjectID:   "proj-1",
 			HandlerID:   handlerID,
-			Role:        "hook",
+			Role:        orchestrator.RoleHook,
 			ProjectDir:  projectDir,
 			HomeDir:     projectDir,
 			HookScript:  handlerID + ".sh",

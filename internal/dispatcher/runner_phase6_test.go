@@ -40,11 +40,11 @@ func TestRunnerDispatch_WaitCompleteAndCleanupTrackedWindows(t *testing.T) {
 		},
 	}
 
-	jobID, err := runner.Dispatch(context.Background(), &dispatcher.DispatchPlan{
+	jobID, err := runner.Dispatch(context.Background(), &orchestrator.DispatchRequest{
 		TaskID:      taskID,
 		ProjectID:   "proj-1",
 		HandlerID:   "hook-a",
-		Role:        "hook",
+		Role:        orchestrator.RoleHook,
 		ProjectDir:  projectDir,
 		HomeDir:     projectDir,
 		HookScript:  "hook-a.sh",

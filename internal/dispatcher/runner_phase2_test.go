@@ -80,12 +80,12 @@ func TestRunnerDispatch_UsesDispatcherOwnedBrokerInterface(t *testing.T) {
 		},
 	}
 
-	jobID, err := runner.Dispatch(context.Background(), &dispatcher.DispatchPlan{
+	jobID, err := runner.Dispatch(context.Background(), &orchestrator.DispatchRequest{
 		TaskID:      "task-phase2-12345678",
 		ProjectID:   "proj-1",
 		WorkspaceID: "ws-1",
 		HandlerID:   "hook-a",
-		Role:        "hook",
+		Role:        orchestrator.RoleHook,
 		ProjectDir:  projectDir,
 		HomeDir:     projectDir,
 		HookScript:  "hook-a.sh",

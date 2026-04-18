@@ -39,7 +39,7 @@ func TestRunnerDispatch_Interactive_SetsTTY(t *testing.T) {
 		Sandbox: preparer,
 	}
 
-	_, err := runner.Dispatch(context.Background(), &dispatcher.DispatchPlan{
+	_, err := runner.Dispatch(context.Background(), &orchestrator.DispatchRequest{
 		TaskID:      taskID,
 		ProjectID:   "proj-1",
 		HandlerID:   "hook-interactive",
@@ -93,7 +93,7 @@ func TestRunnerDispatch_Interactive_False_NoTTYForNonHookRole(t *testing.T) {
 		Sandbox: preparer,
 	}
 
-	_, err := runner.Dispatch(context.Background(), &dispatcher.DispatchPlan{
+	_, err := runner.Dispatch(context.Background(), &orchestrator.DispatchRequest{
 		TaskID:      taskID,
 		ProjectID:   "proj-2",
 		HandlerID:   "hook-noninteractive",

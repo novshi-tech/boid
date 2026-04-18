@@ -101,28 +101,7 @@ func TestRunnerDispatch_ForwardsFieldsToSandboxSpec(t *testing.T) {
 		Readonly:      true,
 	}
 
-	jobID, err := runner.Dispatch(context.Background(), &dispatcher.DispatchPlan{
-		Request:            request,
-		TaskID:             request.TaskID,
-		ProjectID:          request.ProjectID,
-		HandlerID:          request.HandlerID,
-		Role:               string(request.Role),
-		ProjectDir:         request.ProjectDir,
-		HomeDir:            request.HomeDir,
-		HookFiles:          []orchestrator.HookFile{{Source: request.HookFiles[0].Source, TargetName: request.HookFiles[0].TargetName}},
-		HookScript:         request.HookScript,
-		BoidBinary:         request.BoidBinary,
-		ServerSocket:       request.ServerSocket,
-		Env:                request.Env,
-		HostCommands:       map[string]orchestrator.CommandDef{"git": {Name: "git"}, "boid": {Name: "boid"}},
-		AdditionalBindings: []orchestrator.BindMount{{Source: "/opt/tools", Mode: "ro"}},
-		WorkspaceDirs:      request.WorkspaceDirs,
-		ProxyPort:          request.ProxyPort,
-		StagingDir:         request.StagingDir,
-		WorktreeDir:        request.WorktreeDir,
-		PayloadJSON:        request.PayloadJSON,
-		Readonly:           request.Readonly,
-	})
+	jobID, err := runner.Dispatch(context.Background(), request)
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
