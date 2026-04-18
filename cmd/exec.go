@@ -34,79 +34,80 @@ type execProjectData struct {
 	WorkDir     string `json:"work_dir"`
 }
 
+// execCommandResponse mirrors the /api/projects/<id>/commands/<name> JSON
+// payload. Field types stay wire-compatible with the daemon's responder.
 type execCommandResponse struct {
-	Command            []string                             `json:"command"`
-	Env                map[string]string                    `json:"env,omitempty"`
-	BuiltinCommands    []string                             `json:"builtin_commands,omitempty"`
-	HostCommands       map[string]dispatcher.ExecCommandDef `json:"host_commands,omitempty"`
-	AdditionalBindings []dispatcher.ExecBindMount           `json:"additional_bindings,omitempty"`
+	Command            []string                               `json:"command"`
+	Env                map[string]string                      `json:"env,omitempty"`
+	BuiltinCommands    []string                               `json:"builtin_commands,omitempty"`
+	HostCommands       map[string]orchestrator.HostCommandSpec `json:"host_commands,omitempty"`
+	AdditionalBindings []orchestrator.BindMount               `json:"additional_bindings,omitempty"`
 }
 
-// buildExecRequest creates a dispatcher exec request from the resolved command for a project.
-func buildExecRequest(projectID, commandName string) (dispatcher.ExecRequest, error) {
+type execPreparedJob struct {
+	spec    *orchestrator.JobSpec
+	rt      dispatcher.SandboxRuntimeInfo
+	tty     bool
+}
+
+func buildExecJob(projectID, commandName string) (*execPreparedJob, error) {
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
 	var p execProjectData
 	if err := c.Do("GET", "/api/projects/"+projectID, nil, &p); err != nil {
-		return dispatcher.ExecRequest{}, fmt.Errorf("get project: %w", err)
+		return nil, fmt.Errorf("get project: %w", err)
 	}
 
 	var cmd execCommandResponse
 	if err := c.Do("GET", "/api/projects/"+projectID+"/commands/"+commandName, nil, &cmd); err != nil {
-		return dispatcher.ExecRequest{}, fmt.Errorf("get command %q: %w", commandName, err)
+		return nil, fmt.Errorf("get command %q: %w", commandName, err)
 	}
 
 	boidBinary, err := os.Executable()
 	if err != nil {
-		return dispatcher.ExecRequest{}, fmt.Errorf("resolve boid binary: %w", err)
+		return nil, fmt.Errorf("resolve boid binary: %w", err)
 	}
 
-	homeDir, _ := os.UserHomeDir()
-
-	// Collect workspace peer projects (read-only mounts)
-	var workspaceDirs map[string]string
+	var workspacePeers map[string]string
 	if p.WorkspaceID != "" {
 		var peers []execProjectData
 		if err := c.Do("GET", "/api/projects?workspace_id="+p.WorkspaceID, nil, &peers); err == nil {
-			workspaceDirs = make(map[string]string)
+			workspacePeers = make(map[string]string)
 			for _, peer := range peers {
 				if peer.ID != projectID {
-					workspaceDirs[peer.ID] = peer.WorkDir
+					workspacePeers[peer.ID] = peer.WorkDir
 				}
 			}
-			if len(workspaceDirs) == 0 {
-				workspaceDirs = nil
+			if len(workspacePeers) == 0 {
+				workspacePeers = nil
 			}
 		}
 	}
 
-	// Get proxy port from server
 	var proxyInfo struct{ Port int }
-	c.Do("GET", "/api/proxy", nil, &proxyInfo) //nolint:errcheck
+	_ = c.Do("GET", "/api/proxy", nil, &proxyInfo)
 
-	// Build builtin commands list (always include boid)
 	builtinCommands := append([]string(nil), cmd.BuiltinCommands...)
-	hasBoid := false
-	for _, bc := range builtinCommands {
-		if bc == "boid" {
-			hasBoid = true
-			break
-		}
-	}
-	if !hasBoid {
+	if !containsString(builtinCommands, "boid") {
 		builtinCommands = append(builtinCommands, "boid")
 	}
-	builtinPolicies := orchestrator.DefaultBuiltinPolicies(orchestrator.RoleGate, builtinCommands, orchestrator.PolicyContext{ProjectDir: p.WorkDir})
+	builtinPolicies := orchestrator.DefaultBuiltinPolicies(
+		orchestrator.RoleGate,
+		builtinCommands,
+		orchestrator.PolicyContext{ProjectDir: p.WorkDir},
+	)
+
+	hostCommands := orchestrator.HostCommands(cmd.HostCommands).ToCommandDefs()
 
 	var brokerSocket, brokerToken string
-	if len(cmd.HostCommands) > 0 || len(builtinPolicies) > 0 {
+	if len(hostCommands) > 0 || len(builtinPolicies) > 0 {
 		var brokerResp struct {
 			Token  string `json:"token"`
 			Socket string `json:"socket"`
 		}
 		regReq := map[string]any{
 			"commands":         cmd.HostCommands,
-			"builtin_policies": builtinPolicies,
+			"builtin_policies": dispatcher.PoliciesToSandbox(builtinPolicies),
 			"project_id":       p.ID,
 		}
 		if err := c.Do("POST", "/api/broker/register", regReq, &brokerResp); err == nil {
@@ -115,28 +116,42 @@ func buildExecRequest(projectID, commandName string) (dispatcher.ExecRequest, er
 		}
 	}
 
-	environmentYAML := orchestrator.BuildEnvironmentYAML(false, false, true, workspaceDirs, cmd.BuiltinCommands)
-
-	req := dispatcher.ExecRequest{
-		JobID:              fmt.Sprintf("exec-%s", projectID),
-		ProjectID:          p.ID,
-		ProjectDir:         p.WorkDir,
-		HomeDir:            homeDir,
-		Argv:               cmd.Command,
-		BoidBinary:         boidBinary,
-		ServerSocket:       client.DefaultSocketPath(),
-		BrokerSocket:       brokerSocket,
-		BrokerToken:        brokerToken,
-		Env:                cmd.Env,
-		BuiltinPolicies:    builtinPolicies,
-		HostCommands:       cmd.HostCommands,
-		AdditionalBindings: cmd.AdditionalBindings,
-		WorkspaceDirs:      workspaceDirs,
-		ProxyPort:          proxyInfo.Port,
-		EnvironmentYAML:    environmentYAML,
+	spec := &orchestrator.JobSpec{
+		ProjectID: p.ID,
+		HandlerID: "", // exec is not a handler
+		Kind:      orchestrator.JobKindExec,
+		Argv:      cmd.Command,
+		Visibility: orchestrator.Visibility{
+			ProjectDir:         p.WorkDir,
+			UseWorktree:        false,
+			WorkspacePeers:     workspacePeers,
+			AdditionalBindings: cmd.AdditionalBindings,
+			Writable:           true,
+		},
+		BuiltinPolicies: builtinPolicies,
+		HostCommands:    hostCommands,
+		Env:             cmd.Env,
 	}
 
-	return req, nil
+	rt := dispatcher.SandboxRuntimeInfo{
+		JobID:        fmt.Sprintf("exec-%s", projectID),
+		BoidBinary:   boidBinary,
+		ServerSocket: client.DefaultSocketPath(),
+		ProxyPort:    proxyInfo.Port,
+		BrokerSocket: brokerSocket,
+		BrokerToken:  brokerToken,
+		Foreground:   true,
+	}
+	return &execPreparedJob{spec: spec, rt: rt}, nil
+}
+
+func containsString(xs []string, target string) bool {
+	for _, x := range xs {
+		if x == target {
+			return true
+		}
+	}
+	return false
 }
 
 func listExecCommands(projectID string) error {
@@ -200,23 +215,30 @@ func runExec(cobraCmd *cobra.Command, args []string) error {
 	}
 
 	commandName := args[0]
-	req, err := buildExecRequest(p.ID, commandName)
+	prepared, err := buildExecJob(p.ID, commandName)
 	if err != nil {
 		return err
 	}
 
 	if fileInfo, _ := os.Stdin.Stat(); fileInfo.Mode()&os.ModeCharDevice != 0 {
-		req.TTY = true
+		prepared.tty = true
 	}
 
-	outerPath, err := dispatcher.WriteExecScripts(req, dispatcher.NewSandboxPreparer())
+	sbSpec := dispatcher.BuildSandboxSpec(prepared.spec, prepared.rt)
+	// exec is interactive / terminal-driven; override TTY only when caller has a real TTY.
+	sbSpec.TTY = prepared.tty
+
+	outerPath, err := dispatcher.NewSandboxPreparer().PrepareSandbox(sbSpec)
 	if err != nil {
-		return fmt.Errorf("write sandbox scripts: %w", err)
+		return fmt.Errorf("prepare sandbox: %w", err)
+	}
+	if outerPath == nil || outerPath.OuterPath == "" {
+		return fmt.Errorf("prepare sandbox: missing outer script path")
 	}
 
-	bashArgs := []string{"bash", outerPath}
+	bashArgs := []string{"bash", outerPath.OuterPath}
 	if os.Getenv("BOID_DEBUG") != "" {
-		bashArgs = []string{"bash", "-x", outerPath}
+		bashArgs = []string{"bash", "-x", outerPath.OuterPath}
 	}
 
 	bashPath, err := exec.LookPath("bash")

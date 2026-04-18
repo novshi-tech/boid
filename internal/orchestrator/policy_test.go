@@ -1,9 +1,8 @@
 package orchestrator
 
 import (
+	"slices"
 	"testing"
-
-	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 func TestDefaultBuiltinPolicies_HookGitBoid(t *testing.T) {
@@ -33,11 +32,8 @@ func TestDefaultBuiltinPolicies_GateGitBoid(t *testing.T) {
 }
 
 func TestDefaultBuiltinPolicies_EmptyRoleEqualsGate(t *testing.T) {
-	// テスト互換のため gate と同じ policy を返す。
-	// production 経路では Role は必ず設定される。
 	gateGit := DefaultBuiltinPolicies(RoleGate, []string{"git"}, PolicyContext{})
 	defaultGit := DefaultBuiltinPolicies("", []string{"git"}, PolicyContext{})
-
 	gateBoid := DefaultBuiltinPolicies(RoleGate, []string{"boid"}, PolicyContext{})
 	defaultBoid := DefaultBuiltinPolicies("", []string{"boid"}, PolicyContext{})
 
@@ -69,70 +65,55 @@ func TestDefaultBuiltinPolicies_GateGitOnly(t *testing.T) {
 	}
 }
 
-// hook×git policy は AllowedOps が空であること。
-// hook からの broker 経由 git 操作は禁止。agent はホスト側リモートに直接アクセスさせない。
+// hook×git policy は AllowedOps が空 (broker 経由 git は hook から禁止)。
 func TestDefaultBuiltinPolicies_HookGitIsEmpty(t *testing.T) {
 	policies := DefaultBuiltinPolicies(RoleHook, []string{"git"}, PolicyContext{})
-	gitPolicy := policies["git"]
-	if len(gitPolicy.AllowedOps) != 0 {
-		t.Errorf("hook×git AllowedOps should be empty, got %v", gitPolicy.AllowedOps)
+	if len(policies["git"].AllowedOps) != 0 {
+		t.Errorf("hook×git AllowedOps should be empty, got %v", policies["git"].AllowedOps)
 	}
 }
 
-// gate×git policy は {fetch, push} を含むこと。
-// gate は fetch/push 両方を使う (pr-verify での push, worktree 作成時の fetch 等)。
+// gate×git policy は fetch/push を含む。
 func TestDefaultBuiltinPolicies_GateGitHasFetchPush(t *testing.T) {
-	policies := DefaultBuiltinPolicies(RoleGate, []string{"git"}, PolicyContext{})
-	gitPolicy := policies["git"]
-	if !gitPolicy.Allows(string(sandbox.GitOpFetch)) {
+	gitPolicy := DefaultBuiltinPolicies(RoleGate, []string{"git"}, PolicyContext{})["git"]
+	if !gitPolicy.Allows(OpGitFetch) {
 		t.Error("gate×git should allow fetch")
 	}
-	if !gitPolicy.Allows(string(sandbox.GitOpPush)) {
+	if !gitPolicy.Allows(OpGitPush) {
 		t.Error("gate×git should allow push")
 	}
 }
 
-// hook×boid policy は {job_done, task_get} であること。
-// agent は task を作成/更新しない。読み取り専用操作 (task_get) と完了通知 (job_done) のみ許可。
+// hook×boid policy は {job_done, task_get}。
 func TestDefaultBuiltinPolicies_HookBoidOps(t *testing.T) {
-	policies := DefaultBuiltinPolicies(RoleHook, []string{"boid"}, PolicyContext{})
-	boidPolicy := policies["boid"]
-
-	wantOps := map[string]struct{}{
-		string(sandbox.BoidOpJobDone):  {},
-		string(sandbox.BoidOpTaskGet):  {},
-	}
+	boidPolicy := DefaultBuiltinPolicies(RoleHook, []string{"boid"}, PolicyContext{})["boid"]
+	wantOps := []string{OpBoidJobDone, OpBoidTaskGet}
 	if !opsEqual(boidPolicy.AllowedOps, wantOps) {
-		t.Errorf("hook×boid AllowedOps = %v, want {job_done, task_get}", boidPolicy.AllowedOps)
+		t.Errorf("hook×boid AllowedOps = %v, want %v", boidPolicy.AllowedOps, wantOps)
 	}
 }
 
-// gate×boid policy は {job_done, task_create, task_update, task_import, task.reopen} であること。
-// gate は verification 結果を task に反映する必要があるため task_create/task_update を許可。
-// task.reopen は github-auto-merge kit がマージコンフリクト検出時に done タスクを reworking に戻すために必要。
+// gate×boid policy は {job_done, task_create, task_update, task_import, task.reopen}。
 func TestDefaultBuiltinPolicies_GateBoidOps(t *testing.T) {
-	policies := DefaultBuiltinPolicies(RoleGate, []string{"boid"}, PolicyContext{})
-	boidPolicy := policies["boid"]
-
-	wantOps := map[string]struct{}{
-		string(sandbox.BoidOpJobDone):    {},
-		string(sandbox.BoidOpTaskCreate): {},
-		string(sandbox.BoidOpTaskUpdate): {},
-		string(sandbox.BoidOpTaskImport): {},
-		string(sandbox.BoidOpTaskReopen): {},
+	boidPolicy := DefaultBuiltinPolicies(RoleGate, []string{"boid"}, PolicyContext{})["boid"]
+	wantOps := []string{
+		OpBoidJobDone,
+		OpBoidTaskCreate,
+		OpBoidTaskUpdate,
+		OpBoidTaskImport,
+		OpBoidTaskReopen,
 	}
 	if !opsEqual(boidPolicy.AllowedOps, wantOps) {
-		t.Errorf("gate×boid AllowedOps = %v, want {job_done, task_create, task_update, task_import, task.reopen}", boidPolicy.AllowedOps)
+		t.Errorf("gate×boid AllowedOps = %v, want %v", boidPolicy.AllowedOps, wantOps)
 	}
 }
 
-// opsEqual は2つの map[string]struct{} が同じ内容か比較する。
-func opsEqual(a, b map[string]struct{}) bool {
+func opsEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for k := range a {
-		if _, ok := b[k]; !ok {
+	for _, op := range a {
+		if !slices.Contains(b, op) {
 			return false
 		}
 	}

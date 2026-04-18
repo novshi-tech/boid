@@ -39,7 +39,6 @@ func writeExecTestProject(t *testing.T, id, name string) string {
 	return dir
 }
 
-// writeExecTestProjectWithBoidBuiltin creates a project with a kit that has boid builtin.
 func writeExecTestProjectWithBoidBuiltin(t *testing.T, id, name string) string {
 	t.Helper()
 
@@ -57,13 +56,14 @@ func writeExecTestProjectWithBoidBuiltin(t *testing.T, id, name string) string {
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
 		t.Fatalf("write project yaml: %v", err)
 	}
-	kitYAML := "builtin_commands:\n  - boid\nhooks:\n  - id: run-agent\n    on: executing\n"
+	kitYAML := "builtin_commands:\n  - boid\n"
 	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
 		t.Fatalf("write kit yaml: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(kitHooksDir, "run-agent.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write hook: %v", err)
 	}
+
 	return dir
 }
 
@@ -82,18 +82,18 @@ func setTestSocket(t *testing.T, socketPath string) {
 	})
 }
 
-func TestBuildExecRequest_UsesProjectWorkspaceMembership(t *testing.T) {
+func TestBuildExecJob_WorkspaceVisibility(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir1 := writeExecTestProject(t, "proj-1", "Project 1")
 	dir2 := writeExecTestProject(t, "proj-2", "Project 2")
 
-	for id, dir := range map[string]string{"proj-1": dir1, "proj-2": dir2} {
+	for _, dir := range []string{dir1, dir2} {
 		var project struct {
 			ID string `json:"id"`
 		}
 		if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
-			t.Fatalf("create project %s: %v", id, err)
+			t.Fatalf("create project: %v", err)
 		}
 	}
 
@@ -109,22 +109,23 @@ func TestBuildExecRequest_UsesProjectWorkspaceMembership(t *testing.T) {
 
 	setTestSocket(t, ts.Server.SocketPath())
 
-	req, err := buildExecRequest("proj-1", "test-cmd")
+	prepared, err := buildExecJob("proj-1", "test-cmd")
 	if err != nil {
-		t.Fatalf("buildExecRequest: %v", err)
+		t.Fatalf("buildExecJob: %v", err)
 	}
-	if req.ProjectID != "proj-1" {
-		t.Fatalf("project id = %q, want %q", req.ProjectID, "proj-1")
+	if prepared.spec.ProjectID != "proj-1" {
+		t.Fatalf("project id = %q, want %q", prepared.spec.ProjectID, "proj-1")
 	}
-	if req.WorkspaceDirs["proj-2"] != dir2 {
-		t.Fatalf("workspace dirs = %#v, want proj-2 => %q", req.WorkspaceDirs, dir2)
+	peers := prepared.spec.Visibility.WorkspacePeers
+	if peers["proj-2"] != dir2 {
+		t.Fatalf("workspace peers = %#v, want proj-2 => %q", peers, dir2)
 	}
-	if _, ok := req.WorkspaceDirs["proj-1"]; ok {
-		t.Fatalf("workspace dirs should not include self: %#v", req.WorkspaceDirs)
+	if _, ok := peers["proj-1"]; ok {
+		t.Fatalf("workspace peers should not include self: %#v", peers)
 	}
 }
 
-func TestBuildExecRequest_RegistersBrokerForBoidBuiltin(t *testing.T) {
+func TestBuildExecJob_RegistersBrokerForBoidBuiltin(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeExecTestProjectWithBoidBuiltin(t, "proj-1", "Project 1")
@@ -137,16 +138,17 @@ func TestBuildExecRequest_RegistersBrokerForBoidBuiltin(t *testing.T) {
 
 	setTestSocket(t, ts.Server.SocketPath())
 
-	req, err := buildExecRequest("proj-1", "test-cmd")
+	prepared, err := buildExecJob("proj-1", "test-cmd")
 	if err != nil {
-		t.Fatalf("buildExecRequest: %v", err)
+		t.Fatalf("buildExecJob: %v", err)
 	}
-	if req.BrokerSocket == "" || req.BrokerToken == "" {
-		t.Fatalf("expected broker registration for boid builtin, got socket=%q token=%q", req.BrokerSocket, req.BrokerToken)
+	if prepared.rt.BrokerSocket == "" || prepared.rt.BrokerToken == "" {
+		t.Fatalf("expected broker registration for boid builtin, got socket=%q token=%q",
+			prepared.rt.BrokerSocket, prepared.rt.BrokerToken)
 	}
 }
 
-func TestBuildExecRequest_ArgvPreserved(t *testing.T) {
+func TestBuildExecJob_ArgvPreserved(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := t.TempDir()
@@ -156,7 +158,6 @@ func TestBuildExecRequest_ArgvPreserved(t *testing.T) {
 		t.Fatalf("mkdir kit: %v", err)
 	}
 
-	// Command with an argument that contains a space — must survive as its own argv element.
 	projectYAML := "id: proj-q\nname: proj-q\n" +
 		"commands:\n  run:\n    command: [claude, --append-system-prompt, 'hello world']\n    kits:\n      - agent\n"
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
@@ -166,76 +167,40 @@ func TestBuildExecRequest_ArgvPreserved(t *testing.T) {
 		t.Fatalf("write kit yaml: %v", err)
 	}
 
-	var project struct{ ID string `json:"id"` }
+	var project struct {
+		ID string `json:"id"`
+	}
 	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
 	setTestSocket(t, ts.Server.SocketPath())
 
-	req, err := buildExecRequest("proj-q", "run")
+	prepared, err := buildExecJob("proj-q", "run")
 	if err != nil {
-		t.Fatalf("buildExecRequest: %v", err)
+		t.Fatalf("buildExecJob: %v", err)
 	}
 
 	want := []string{"claude", "--append-system-prompt", "hello world"}
-	if !reflect.DeepEqual(req.Argv, want) {
-		t.Errorf("argv = %#v, want %#v", req.Argv, want)
+	if !reflect.DeepEqual(prepared.spec.Argv, want) {
+		t.Errorf("argv = %#v, want %#v", prepared.spec.Argv, want)
 	}
 }
 
-func TestBuildExecRequest_EnvironmentYAMLContainsBuiltins(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-
-	dir := t.TempDir()
-	boidDir := filepath.Join(dir, ".boid")
-	kitDir := filepath.Join(boidDir, "kits", "mykit")
-	if err := os.MkdirAll(kitDir, 0o755); err != nil {
-		t.Fatalf("mkdir kit: %v", err)
-	}
-
-	projectYAML := "id: proj-env\nname: proj-env\n" +
-		"commands:\n  run:\n    command: [bash]\n    kits:\n      - mykit\n"
-	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
-		t.Fatalf("write project yaml: %v", err)
-	}
-	kitYAML := "builtin_commands:\n  - git\n"
-	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
-		t.Fatalf("write kit yaml: %v", err)
-	}
-
-	var project struct{ ID string `json:"id"` }
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-
-	setTestSocket(t, ts.Server.SocketPath())
-
-	req, err := buildExecRequest("proj-env", "run")
-	if err != nil {
-		t.Fatalf("buildExecRequest: %v", err)
-	}
-
-	if req.EnvironmentYAML == "" {
-		t.Fatal("EnvironmentYAML should not be empty")
-	}
-	if !strings.Contains(req.EnvironmentYAML, "git") {
-		t.Errorf("EnvironmentYAML should contain 'git', got:\n%s", req.EnvironmentYAML)
-	}
-}
-
-func TestBuildExecRequest_CommandNotFound(t *testing.T) {
+func TestBuildExecJob_CommandNotFound(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeExecTestProject(t, "proj-nc", "Project NC")
-	var project struct{ ID string `json:"id"` }
+	var project struct {
+		ID string `json:"id"`
+	}
 	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
 	setTestSocket(t, ts.Server.SocketPath())
 
-	_, err := buildExecRequest("proj-nc", "nonexistent-cmd")
+	_, err := buildExecJob("proj-nc", "nonexistent-cmd")
 	if err == nil {
 		t.Fatal("expected error for nonexistent command, got nil")
 	}

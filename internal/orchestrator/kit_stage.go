@@ -7,6 +7,36 @@ import (
 	"path/filepath"
 )
 
+// StageHooks creates a temporary directory containing all hook scripts
+// reachable for a dispatch (kit hooks + project hooks). Kit scripts are
+// prefixed with the kit consumer when set; project scripts retain their
+// original filenames and take precedence on conflict.
+func StageHooks(projectHooksDir string, kitHooksDirs []KitHooksInfo, jobID string) (string, func(), error) {
+	stagingDir := filepath.Join(os.TempDir(), fmt.Sprintf("boid-hooks-%s", jobID))
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+		return "", nil, fmt.Errorf("create hooks staging dir: %w", err)
+	}
+
+	cleanup := func() {
+		_ = os.RemoveAll(stagingDir)
+	}
+
+	for _, info := range kitHooksDirs {
+		if err := copyHookScripts(info.HooksDir, stagingDir, info.Consumer); err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("copy kit hooks from %s: %w", info.HooksDir, err)
+		}
+	}
+
+	// Project hooks: no prefix, no collision with kit-prefixed entries.
+	if err := copyHookScripts(projectHooksDir, stagingDir, ""); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("copy project hooks: %w", err)
+	}
+
+	return stagingDir, cleanup, nil
+}
+
 // StageGates creates a temporary directory containing all gate scripts
 // from the project and all kits. Project scripts override kit scripts
 // with the same filename.
@@ -68,6 +98,41 @@ func copyScripts(srcDir, dstDir string) error {
 			continue
 		}
 		if err := copyFile(filepath.Join(srcDir, e.Name()), filepath.Join(dstDir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// copyHookScripts copies .sh / .py entries from srcDir to dstDir, optionally
+// prefixing the destination filename with "<prefix>--". Existing destination
+// files are NOT overwritten (lets project hooks override kit entries when
+// project copying runs after kit copying).
+func copyHookScripts(srcDir, dstDir, prefix string) error {
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := filepath.Ext(e.Name())
+		if ext != ".sh" && ext != ".py" {
+			continue
+		}
+		target := e.Name()
+		if prefix != "" {
+			target = prefix + "--" + e.Name()
+		}
+		dst := filepath.Join(dstDir, target)
+		if _, err := os.Stat(dst); err == nil {
+			continue
+		}
+		if err := copyFile(filepath.Join(srcDir, e.Name()), dst); err != nil {
 			return err
 		}
 	}

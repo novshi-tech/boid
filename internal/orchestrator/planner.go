@@ -3,74 +3,8 @@ package orchestrator
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
-	"sort"
-
-	"gopkg.in/yaml.v3"
 )
-
-// collectHookFiles builds the list of hook files to bind-mount into the sandbox.
-// Kit hooks are prefixed with "{consumer}--". Project hooks are added independently
-// and cannot override kit hooks.
-func collectHookFiles(projectHooksDir string, kitHooksDirs []KitHooksInfo) []HookFile {
-	files := make(map[string]HookFile)
-
-	for _, info := range kitHooksDirs {
-		entries, err := os.ReadDir(info.HooksDir)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			ext := filepath.Ext(e.Name())
-			if ext != ".sh" && ext != ".py" {
-				continue
-			}
-			targetName := e.Name()
-			if info.Consumer != "" {
-				targetName = info.Consumer + "--" + e.Name()
-			}
-			files[targetName] = HookFile{
-				Source:     filepath.Join(info.HooksDir, e.Name()),
-				TargetName: targetName,
-			}
-		}
-	}
-
-	entries, err := os.ReadDir(projectHooksDir)
-	if err == nil {
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			ext := filepath.Ext(e.Name())
-			if ext != ".sh" && ext != ".py" {
-				continue
-			}
-			if _, exists := files[e.Name()]; !exists {
-				files[e.Name()] = HookFile{
-					Source:     filepath.Join(projectHooksDir, e.Name()),
-					TargetName: e.Name(),
-				}
-			}
-		}
-	}
-
-	if len(files) == 0 {
-		return nil
-	}
-	out := make([]HookFile, 0, len(files))
-	for _, hf := range files {
-		out = append(out, hf)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].TargetName < out[j].TargetName
-	})
-	return out
-}
 
 type MetaCache interface {
 	Get(id string) (*ProjectMeta, bool)
@@ -85,28 +19,25 @@ type TaskLookup interface {
 	GetTask(id string) (*Task, error)
 }
 
-type WorktreePreparer interface {
-	Prepare(task *Task, proj *Project) (string, error)
-}
-
+// DispatchPlanner turns state-machine-driven hook / gate fire events into a
+// sandbox-agnostic JobSpec. All sandbox construction concerns (mounts, env,
+// proxy wiring, exit scripts, worktree recreation) live in dispatcher.
 type DispatchPlanner struct {
-	Meta         MetaCache
-	Projects     ProjectCatalog
-	Tasks        TaskLookup
-	Worktrees    WorktreePreparer
-	BoidBinary   string
-	ServerSocket string
-	ProxyPort    *int
+	Meta     MetaCache
+	Projects ProjectCatalog
+	Tasks    TaskLookup
 }
 
-func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, error) {
+// PlanHook renders a hook fire event into a JobSpec. The returned cleanup
+// callback must be invoked by the caller (dispatcher) once the sandbox
+// process has exited — it removes the temporary hook staging directory.
+func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc, error) {
 	if event == nil {
-		return nil, fmt.Errorf("hook event is required")
+		return nil, nil, fmt.Errorf("hook event is required")
 	}
-
 	hookBase := filepath.Base(event.Hook.ScriptPath)
 	if hookBase == "" || hookBase == "." {
-		return nil, fmt.Errorf("hook %q: no script path resolved", event.Hook.ID)
+		return nil, nil, fmt.Errorf("hook %q: no script path resolved", event.Hook.ID)
 	}
 	hookFilename := hookBase
 	if event.Hook.Kit != "" {
@@ -115,144 +46,124 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 
 	meta, proj, task, err := p.loadContext(event.ProjectID, event.TaskID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	behavior, _ := lookupBehavior(meta, task)
 
+	workspacePeers, err := p.collectWorkspaceDirs(proj.WorkspaceID, event.ProjectID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Stage kit + project hook files under a single temp directory so the
+	// entry script can source sibling helpers via a consistent path.
 	projectHooksDir := filepath.Join(proj.WorkDir, ".boid", "hooks")
-	hookFiles := collectHookFiles(projectHooksDir, behavior.KitHooksDirs)
-
-	workspaceDirs, err := p.collectWorkspaceDirs(proj.WorkspaceID, event.ProjectID)
+	stagingDir, cleanup, err := StageHooks(projectHooksDir, behavior.KitHooksDirs, event.EventID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	worktreeDir, err := p.prepareWorktree(task, proj)
-	if err != nil {
-		return nil, err
+	entryPath := filepath.Join(stagingDir, hookFilename)
+
+	// Business payload filter: limit task.payload to the traits this hook declares.
+	payload := FilterPayloadByTraits(task.Payload, event.Hook.Traits.Consumes)
+
+	// 1 hook = 1 routed instruction. If multiple candidates match (same phase
+	// and consumer), take the first after filtering.
+	instruction := selectInstruction(task, event.Hook.Consumer)
+
+	spec := &JobSpec{
+		TaskID:       event.TaskID,
+		ProjectID:    event.ProjectID,
+		HandlerID:    event.Hook.ID,
+		Kind:         JobKindHook,
+		Argv:         []string{entryPath},
+		Instruction:  instruction,
+		Task:         snapshotTask(task),
+		PrimaryInput: payload,
+		Visibility: Visibility{
+			ProjectDir:         proj.WorkDir,
+			UseWorktree:        task.Worktree,
+			WorkspacePeers:     workspacePeers,
+			AdditionalBindings: behavior.AdditionalBindings,
+			Writable:           !IsReadonly(task),
+		},
+		BuiltinPolicies: DefaultBuiltinPolicies(
+			RoleHook,
+			mergeBuiltinCommands(behavior.BuiltinCommands, []string{"boid"}),
+			PolicyContext{ProjectDir: proj.WorkDir},
+		),
+		HostCommands:    nil, // hooks never get broker-mediated host commands
+		SecretNamespace: meta.SecretNamespace,
+		Env:             behavior.Env,
 	}
-
-	payloadJSON := string(FilterPayloadByTraits(task.Payload, event.Hook.Traits.Consumes))
-
-	var instructionsJSON string
-	var interactive bool
-	var model string
-	var invokedRole, invokedName, invokedType string
-	instType := InstructionTypeForStatus(task.Status)
-	myInstructions := FilterInstructions(task.Instructions, instType, event.Hook.Consumer)
-	if len(myInstructions) > 0 {
-		if instJSON, err := json.Marshal(myInstructions); err == nil {
-			instructionsJSON = string(instJSON)
-		}
-		interactive = myInstructions[0].Interactive
-		model = myInstructions[0].Model
-		invokedRole = myInstructions[0].Role
-		invokedName = myInstructions[0].Name
-		invokedType = string(myInstructions[0].Type)
-	}
-
-	readonly := IsReadonly(task)
-	taskYAML := buildTaskYAML(task)
-	environmentYAML := buildEnvironmentYAML(readonly, worktreeDir != "", p.proxyPort() > 0, workspaceDirs, behavior.BuiltinCommands)
-
-	homeDir, _ := os.UserHomeDir()
-	return &DispatchRequest{
-		TaskID:             event.TaskID,
-		ProjectID:          event.ProjectID,
-		WorkspaceID:        proj.WorkspaceID,
-		HandlerID:          event.Hook.ID,
-		Role:               RoleHook,
-		ProjectDir:         proj.WorkDir,
-		HomeDir:            homeDir,
-		HookFiles:          hookFiles,
-		HookScript:         hookFilename,
-		BoidBinary:         p.BoidBinary,
-		ServerSocket:       p.ServerSocket,
-		Env:                behavior.Env,
-		BuiltinPolicies:    DefaultBuiltinPolicies(RoleHook, mergeBuiltinCommands(behavior.BuiltinCommands, []string{"boid"}), PolicyContext{ProjectDir: proj.WorkDir}),
-		HostCommands:       nil,
-		AdditionalBindings: behavior.AdditionalBindings,
-		SecretNamespace:    meta.SecretNamespace,
-		WorkspaceDirs:      workspaceDirs,
-		ProxyPort:          p.proxyPort(),
-		WorktreeDir:        worktreeDir,
-		PayloadJSON:        payloadJSON,
-		Readonly:           readonly,
-		Interactive:        interactive,
-		InstructionsJSON:   instructionsJSON,
-		TaskYAML:           taskYAML,
-		EnvironmentYAML:    environmentYAML,
-		Model:              model,
-		InvokedRole:        invokedRole,
-		InvokedName:        invokedName,
-		InvokedType:        invokedType,
-	}, nil
+	return spec, cleanup, nil
 }
 
-func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, error) {
+// PlanGate renders a gate fire event into a JobSpec. The returned cleanup
+// callback releases the gate staging directory.
+func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, CleanupFunc, error) {
 	if event == nil {
-		return nil, fmt.Errorf("gate event is required")
+		return nil, nil, fmt.Errorf("gate event is required")
 	}
-
 	gateFilename := filepath.Base(event.Gate.ScriptPath)
 	if gateFilename == "" || gateFilename == "." {
-		return nil, fmt.Errorf("gate %q: no script path resolved", event.Gate.ID)
+		return nil, nil, fmt.Errorf("gate %q: no script path resolved", event.Gate.ID)
 	}
 
 	meta, proj, task, err := p.loadContext(event.ProjectID, event.TaskID)
 	if err != nil {
-		return nil, err
-	}
-
-	workspaceDirs, err := p.collectWorkspaceDirs(proj.WorkspaceID, event.ProjectID)
-	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	behavior, _ := lookupBehavior(meta, task)
 
-	projectGatesDir := filepath.Join(proj.WorkDir, ".boid", "gates")
-	gatesDir := filepath.Dir(event.Gate.ScriptPath)
-	// Staging は dispatcher 側で jobID ベースに実行する。
-	// taskID をキーにすると同一 task の連続 gate が staging dir を共有し、
-	// 先行 gate の cleanup goroutine が後続 gate の script を消すレースが起きる。
-
-	// Use hook-updated payload if provided. This value is the result of merging all
-	// hook patches into the original payload inside DispatchAndAdvance, and may not
-	// have been persisted to DB yet. It is always a superset of the DB payload at
-	// this point in the dispatch cycle, so a direct replace (not merge) is correct.
+	// hook-updated payload overrides the DB value for this gate's task snapshot.
 	if event.TaskPayloadJSON != "" {
 		task.Payload = json.RawMessage(event.TaskPayloadJSON)
 	}
 
+	// gate scripts read the full task snapshot (including payload) from stdin.
 	taskJSON, err := json.Marshal(task)
 	if err != nil {
-		return nil, fmt.Errorf("marshal task: %w", err)
+		return nil, nil, fmt.Errorf("marshal task: %w", err)
 	}
 
-	hostCommands := behavior.HostCommands.ToCommandDefs()
+	projectGatesDir := filepath.Join(proj.WorkDir, ".boid", "gates")
+	stagingDir, cleanup, err := StageGates(projectGatesDir, behavior.KitGatesDirs, event.EventID)
+	if err != nil {
+		return nil, nil, err
+	}
+	entryPath := filepath.Join(stagingDir, gateFilename)
 
-	return &DispatchRequest{
-		TaskID:          event.TaskID,
-		ProjectID:       event.ProjectID,
-		WorkspaceID:     proj.WorkspaceID,
-		HandlerID:       event.Gate.ID,
-		Role:            RoleGate,
-		ProjectDir:      proj.WorkDir,
-		GatesDir:        gatesDir,
-		ProjectGatesDir: projectGatesDir,
-		KitGatesDirs:    behavior.KitGatesDirs,
-		HookScript:      gateFilename,
-		BoidBinary:      p.BoidBinary,
-		ServerSocket:    p.ServerSocket,
-		Env:             behavior.Env,
-		BuiltinPolicies: DefaultBuiltinPolicies(RoleGate, mergeBuiltinCommands(behavior.BuiltinCommands, []string{"boid"}), PolicyContext{ProjectDir: proj.WorkDir}),
-		HostCommands:    hostCommands,
+	spec := &JobSpec{
+		TaskID:       event.TaskID,
+		ProjectID:    event.ProjectID,
+		HandlerID:    event.Gate.ID,
+		Kind:         JobKindGate,
+		Argv:         []string{entryPath},
+		Instruction:  nil,
+		Task:         nil, // gate gets task data via stdin rather than context file
+		PrimaryInput: taskJSON,
+		Visibility: Visibility{
+			// Project filesystem is intentionally not visible to gates.
+			ProjectDir:     "",
+			UseWorktree:    false,
+			WorkspacePeers: nil,
+			// Gates never pass through kit CLIs; they only see their own tmpfs.
+			AdditionalBindings: nil,
+			Writable:           false,
+		},
+		BuiltinPolicies: DefaultBuiltinPolicies(
+			RoleGate,
+			mergeBuiltinCommands(behavior.BuiltinCommands, []string{"boid"}),
+			PolicyContext{ProjectDir: proj.WorkDir},
+		),
+		HostCommands:    behavior.HostCommands.ToCommandDefs(),
 		SecretNamespace: meta.SecretNamespace,
-		WorkspaceDirs:   workspaceDirs,
-		ProxyPort:       p.proxyPort(),
-		TaskJSON:        string(taskJSON),
-	}, nil
+		Env:             behavior.Env,
+	}
+	return spec, cleanup, nil
 }
 
 func (p *DispatchPlanner) loadContext(projectID, taskID string) (*ProjectMeta, *Project, *Task, error) {
@@ -300,105 +211,26 @@ func (p *DispatchPlanner) collectWorkspaceDirs(workspaceID, selfID string) (map[
 	return dirs, nil
 }
 
-func (p *DispatchPlanner) prepareWorktree(task *Task, proj *Project) (string, error) {
-	if p.Worktrees == nil || !task.Worktree {
-		return "", nil
-	}
-	worktreeDir, err := p.Worktrees.Prepare(task, proj)
-	if err != nil {
-		return "", fmt.Errorf("resolve worktree: %w", err)
-	}
-	return worktreeDir, nil
-}
-
-func (p *DispatchPlanner) proxyPort() int {
-	if p.ProxyPort == nil {
-		return 0
-	}
-	return *p.ProxyPort
-}
-
-func cloneStringSlice(values []string) []string {
-	if len(values) == 0 {
+func selectInstruction(task *Task, consumer string) *RoutedInstruction {
+	instType := InstructionTypeForStatus(task.Status)
+	routed := FilterInstructions(task.Instructions, instType, consumer)
+	if len(routed) == 0 {
 		return nil
 	}
-	out := make([]string, len(values))
-	copy(out, values)
-	return out
+	// 1 ジョブ = 1 routed instruction。複数候補があれば先頭を採用する。
+	selected := routed[0]
+	return &selected
 }
 
-// buildTaskYAML serializes task metadata for context/task.yaml.
-func buildTaskYAML(task *Task) string {
-	m := map[string]string{
-		"id":       task.ID,
-		"title":    task.Title,
-		"status":   string(task.Status),
-		"behavior": task.Behavior,
+func snapshotTask(task *Task) *TaskSnapshot {
+	if task == nil {
+		return nil
 	}
-	if task.Description != "" {
-		m["description"] = task.Description
+	return &TaskSnapshot{
+		ID:          task.ID,
+		Title:       task.Title,
+		Status:      string(task.Status),
+		Behavior:    task.Behavior,
+		Description: task.Description,
 	}
-	out, _ := yaml.Marshal(m)
-	return string(out)
-}
-
-type workspaceProject struct {
-	Path string `yaml:"path"`
-	Name string `yaml:"name"`
-}
-
-type environmentData struct {
-	Readonly          bool               `yaml:"readonly"`
-	Worktree          bool               `yaml:"worktree"`
-	Network           map[string]bool    `yaml:"network"`
-	Tools             []string           `yaml:"tools,omitempty"`
-	WorkspaceProjects []workspaceProject `yaml:"workspace_projects,omitempty"`
-}
-
-// buildEnvironmentYAML serializes sandbox constraints for context/environment.yaml.
-func buildEnvironmentYAML(readonly, worktree, networkRestricted bool, workspaceDirs map[string]string, builtinCommands []string) string {
-	env := environmentData{
-		Readonly: readonly,
-		Worktree: worktree,
-		Network:  map[string]bool{"restricted": networkRestricted},
-		Tools:    builtinTools(builtinCommands),
-	}
-
-	if len(workspaceDirs) > 0 {
-		// Sort for deterministic output
-		ids := make([]string, 0, len(workspaceDirs))
-		for id := range workspaceDirs {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		for _, id := range ids {
-			dir := workspaceDirs[id]
-			env.WorkspaceProjects = append(env.WorkspaceProjects, workspaceProject{
-				Path: dir,
-				Name: filepath.Base(dir),
-			})
-		}
-	}
-
-	out, _ := yaml.Marshal(env)
-	return string(out)
-}
-
-// BuildEnvironmentYAML is the exported version of buildEnvironmentYAML for use
-// outside the package (e.g. exec command mode).
-func BuildEnvironmentYAML(readonly, worktree, networkRestricted bool, workspaceDirs map[string]string, builtinCommands []string) string {
-	return buildEnvironmentYAML(readonly, worktree, networkRestricted, workspaceDirs, builtinCommands)
-}
-
-// builtinTools returns the list of tools available in the sandbox.
-// Always includes "git"; adds other builtin commands that are not internal.
-func builtinTools(builtinCommands []string) []string {
-	tools := []string{"git"}
-	for _, cmd := range builtinCommands {
-		if cmd == "boid" || cmd == "git" {
-			continue
-		}
-		tools = append(tools, cmd)
-	}
-	return tools
 }

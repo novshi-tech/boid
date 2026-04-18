@@ -16,86 +16,99 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
-type Runner struct {
-	DB            *sql.DB
-	Runtime       JobRuntime
-	Broker        CommandBroker // host command broker
-	Sandbox       SandboxPreparer
-	SecretStore   *SecretStore // secret store for resolving secret: env values
-	tokenMu       sync.Mutex
-	jobTokens     map[string]string // job ID -> broker token
-	waiterMu      sync.Mutex
-	jobWaiters    map[string]chan JobCompletionResult // job ID -> completion channel
-	completedJobs map[string]JobCompletionResult     // job ID -> result (guarded by waiterMu)
-	runtimeMu     sync.Mutex
-	taskRuntimes  map[string]map[string]struct{} // task ID -> runtime IDs
+// TaskLookup mirrors the subset of orchestrator.TaskLookup the dispatcher
+// needs for worktree resolution. Kept as an interface so tests can stub it.
+type TaskLookup interface {
+	GetTask(id string) (*orchestrator.Task, error)
 }
 
-func (r *Runner) Dispatch(ctx context.Context, request *orchestrator.DispatchRequest) (string, error) {
-	if request == nil {
-		return "", fmt.Errorf("dispatch request is required")
+// ProjectLookup lets dispatcher resolve ProjectID → WorkspaceID so that
+// workspace-peer authorization does not leak into JobSpec.
+type ProjectLookup interface {
+	GetProject(id string) (*orchestrator.Project, error)
+}
+
+type Runner struct {
+	DB           *sql.DB
+	Runtime      JobRuntime
+	Broker       CommandBroker
+	Sandbox      SandboxPreparer
+	SecretStore  *SecretStore
+	Worktrees    *WorktreeManager
+	TaskLookup   TaskLookup
+	Projects     ProjectLookup
+	BoidBinary   string
+	ServerSocket string
+	ProxyPort    *int
+
+	tokenMu       sync.Mutex
+	jobTokens     map[string]string
+	waiterMu      sync.Mutex
+	jobWaiters    map[string]chan JobCompletionResult
+	completedJobs map[string]JobCompletionResult
+	runtimeMu     sync.Mutex
+	taskRuntimes  map[string]map[string]struct{}
+}
+
+// Dispatch launches a sandbox for the given JobSpec. The optional cleanup
+// callback (typically provided by orchestrator's PlanHook/PlanGate for
+// staging dir teardown) runs after the sandbox process has exited.
+func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, cleanup orchestrator.CleanupFunc) (string, error) {
+	if spec == nil {
+		return "", fmt.Errorf("job spec is required")
 	}
-	if request.TaskID == "" || request.ProjectID == "" || request.HandlerID == "" || request.Role == "" {
-		return "", fmt.Errorf("dispatch request is incomplete")
+	if spec.ProjectID == "" {
+		return "", fmt.Errorf("job spec is missing project id")
+	}
+	if len(spec.Argv) == 0 {
+		return "", fmt.Errorf("job spec is missing argv")
 	}
 
 	j := &Job{
-		TaskID:      request.TaskID,
-		ProjectID:   request.ProjectID,
-		HandlerID:   request.HandlerID,
-		Role:        string(request.Role),
-		Interactive: false,
-		TTY:         false,
+		TaskID:    spec.TaskID,
+		ProjectID: spec.ProjectID,
+		HandlerID: spec.HandlerID,
+		// Role は DB ラベル / TUI 表示のみに使われる。sandbox 構築側は
+		// 一切これを読まない。
+		Role: string(spec.Kind),
 	}
+	j.ID = uuid.New().String()
 
-	// Stage gate scripts when kit gates need to be merged with project gates.
-	// KitGatesDirs is only populated by orchestrator for gate dispatch, so its
-	// non-empty value is the primitive signal for staging — no Role check needed.
-	// We pre-allocate the JobID so the staging directory name is stable.
-	stagedGatesDir := request.GatesDir
-	stagingDir := request.StagingDir
-	var gateCleanup func()
-	if len(request.KitGatesDirs) > 0 {
-		j.ID = uuid.New().String()
-		staged, cleanup, err := orchestrator.StageGates(
-			request.ProjectGatesDir,
-			request.KitGatesDirs,
-			j.ID,
-		)
-		if err != nil {
-			return "", fmt.Errorf("stage gates: %w", err)
+	// Resolve the worktree path before sandbox construction, so the mount
+	// layout sees the correct project root.
+	worktreePath, err := r.resolveWorktree(spec)
+	if err != nil {
+		if cleanup != nil {
+			cleanup()
 		}
-		stagedGatesDir = staged
-		stagingDir = staged
-		gateCleanup = cleanup
+		return "", err
 	}
 
 	if err := CreateJob(r.DB, j); err != nil {
-		if gateCleanup != nil {
-			gateCleanup()
+		if cleanup != nil {
+			cleanup()
 		}
 		return "", fmt.Errorf("create job: %w", err)
 	}
 
-	// Broker registration (if policies exist). The resulting token/socket are
-	// handed to orchestrator.BuildSandboxSpec via opts so it can wire them
-	// into the sandbox env + mounts.
+	workspaceID, _ := r.resolveWorkspaceID(spec.ProjectID)
+
 	var brokerSocket, brokerToken string
-	if r.Broker != nil {
-		allowedProjectIDs := allowedProjectIDs(request.ProjectID, request.WorkspaceDirs)
+	if r.Broker != nil && (len(spec.BuiltinPolicies) > 0 || len(spec.HostCommands) > 0) {
+		workspacePeers := spec.Visibility.WorkspacePeers
 		tokenCtx := sandbox.TokenContext{
 			JobID:             j.ID,
-			TaskID:            request.TaskID,
-			ProjectID:         request.ProjectID,
-			WorkspaceID:       request.WorkspaceID,
-			AllowedProjectIDs: allowedProjectIDs,
-			Role:              string(request.Role),
-			ProjectDir:        request.ProjectDir,
-			WorktreeDir:       request.WorktreeDir,
+			TaskID:            spec.TaskID,
+			ProjectID:         spec.ProjectID,
+			WorkspaceID:       workspaceID,
+			AllowedProjectIDs: allowedProjectIDs(spec.ProjectID, workspacePeers),
+			Role:              j.Role,
+			ProjectDir:        spec.Visibility.ProjectDir,
+			WorktreeDir:       worktreePath,
 		}
 		var resolve SecretResolver
 		if r.SecretStore != nil {
-			ns := request.SecretNamespace
+			ns := spec.SecretNamespace
 			if ns == "" {
 				ns = "default"
 			}
@@ -103,39 +116,67 @@ func (r *Runner) Dispatch(ctx context.Context, request *orchestrator.DispatchReq
 				return r.SecretStore.Get(ns, key)
 			}
 		}
-		brokerToken = r.Broker.RegisterCommands(request.HostCommands, request.BuiltinPolicies, tokenCtx, resolve)
+		brokerToken = r.Broker.RegisterCommands(
+			spec.HostCommands,
+			PoliciesToSandbox(spec.BuiltinPolicies),
+			tokenCtx,
+			resolve,
+		)
 		brokerSocket = r.Broker.SocketPath()
 		r.trackToken(j.ID, brokerToken)
 	}
 
-	// Role-aware translation is delegated to orchestrator. Dispatcher only
-	// provides the runtime-injected fields (JobID, broker, staging).
-	sbSpec := orchestrator.BuildSandboxSpec(*request, orchestrator.SandboxBuildOptions{
-		JobID:          j.ID,
-		BrokerSocket:   brokerSocket,
-		BrokerToken:    brokerToken,
-		StagedGatesDir: stagedGatesDir,
-		StagingDir:     stagingDir,
-	})
+	rtInfo := SandboxRuntimeInfo{
+		JobID:        j.ID,
+		BoidBinary:   r.BoidBinary,
+		ServerSocket: r.ServerSocket,
+		ProxyPort:    r.proxyPort(),
+		BrokerSocket: brokerSocket,
+		BrokerToken:  brokerToken,
+		WorktreeDir:  worktreePath,
+	}
+	// Server socket is only exposed to jobs that have no broker policies
+	// attached — i.e. boid exec invocations that need to talk to the daemon
+	// directly. For hook/gate jobs the daemon conversation goes through the
+	// broker socket above.
+	if brokerToken != "" {
+		rtInfo.ServerSocket = ""
+	}
 
-	return r.launchSandbox(ctx, j, sbSpec)
+	sbSpec := BuildSandboxSpec(spec, rtInfo)
+	return r.launchSandbox(ctx, j, sbSpec, cleanup)
 }
 
-func allowedProjectIDs(selfID string, workspaceDirs map[string]string) []string {
+func (r *Runner) resolveWorkspaceID(projectID string) (string, error) {
+	if r.Projects == nil || projectID == "" {
+		return "", nil
+	}
+	proj, err := r.Projects.GetProject(projectID)
+	if err != nil || proj == nil {
+		return "", err
+	}
+	return proj.WorkspaceID, nil
+}
+
+func (r *Runner) proxyPort() int {
+	if r.ProxyPort == nil {
+		return 0
+	}
+	return *r.ProxyPort
+}
+
+func allowedProjectIDs(selfID string, workspacePeers map[string]string) []string {
 	seen := make(map[string]struct{})
 	var ids []string
-
 	if selfID != "" {
 		seen[selfID] = struct{}{}
 		ids = append(ids, selfID)
 	}
-
-	if len(workspaceDirs) == 0 {
+	if len(workspacePeers) == 0 {
 		return ids
 	}
-
 	var peers []string
-	for id := range workspaceDirs {
+	for id := range workspacePeers {
 		if id == "" {
 			continue
 		}
@@ -158,19 +199,15 @@ func (r *Runner) trackToken(jobID, token string) {
 }
 
 // WaitForJob registers a channel that will receive the job completion result.
-// If the job has already completed, the result is sent immediately.
 func (r *Runner) WaitForJob(jobID string) <-chan JobCompletionResult {
 	r.waiterMu.Lock()
 	defer r.waiterMu.Unlock()
 
 	ch := make(chan JobCompletionResult, 1)
-
-	// If already completed, deliver immediately without blocking.
 	if result, ok := r.completedJobs[jobID]; ok {
 		ch <- result
 		return ch
 	}
-
 	if r.jobWaiters == nil {
 		r.jobWaiters = make(map[string]chan JobCompletionResult)
 	}
@@ -190,29 +227,40 @@ func (r *Runner) CompleteJob(jobID string, result JobCompletionResult) {
 		delete(r.jobWaiters, jobID)
 	}
 	r.waiterMu.Unlock()
-
 	if ok {
 		ch <- result
 	}
 }
 
-// launchSandbox writes sandbox scripts and launches via the configured runtime. Returns job ID.
-func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec) (string, error) {
+// launchSandbox writes sandbox scripts and launches via the configured runtime.
+func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec, cleanup orchestrator.CleanupFunc) (string, error) {
 	if job == nil {
 		return "", fmt.Errorf("job is required")
 	}
 	if r.Sandbox == nil {
+		if cleanup != nil {
+			cleanup()
+		}
 		return "", fmt.Errorf("sandbox preparer is required")
 	}
 	if r.Runtime == nil {
+		if cleanup != nil {
+			cleanup()
+		}
 		return "", fmt.Errorf("job runtime is required")
 	}
 
 	prepared, err := r.Sandbox.PrepareSandbox(spec)
 	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
 		return "", fmt.Errorf("prepare sandbox: %w", err)
 	}
 	if prepared == nil || prepared.OuterPath == "" {
+		if cleanup != nil {
+			cleanup()
+		}
 		return "", fmt.Errorf("prepare sandbox: missing outer script path")
 	}
 
@@ -228,6 +276,9 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec)
 	})
 	if err != nil {
 		cleanupSandboxArtifacts(prepared)
+		if cleanup != nil {
+			cleanup()
+		}
 		return "", fmt.Errorf("start runtime: %w", err)
 	}
 
@@ -237,24 +288,25 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec)
 	if err := UpdateJob(r.DB, job); err != nil {
 		_ = r.Runtime.Stop(context.Background(), handle.ID)
 		cleanupSandboxArtifacts(prepared)
+		if cleanup != nil {
+			cleanup()
+		}
 		return "", fmt.Errorf("persist job runtime metadata: %w", err)
 	}
 
 	r.trackTaskRuntime(job.TaskID, handle.ID)
 	go r.watchRuntime(job.ID, handle.ID)
-	go r.cleanupSandboxAfterWait(handle.ID, prepared)
+	go r.cleanupSandboxAfterWait(handle.ID, prepared, cleanup)
 	slog.Info("job started", "job_id", job.ID, "runtime_id", handle.ID)
 	return job.ID, nil
 }
 
-// cleanupSandboxAfterWait blocks until the runtime exits, then removes sandbox
-// temp artifacts (ROOT dir, generated scripts, gate staging dir). Safe to call
-// alongside watchRuntime: both wait on the same runtime.done channel.
-//
-// IMPORTANT: we must wait for runtime exit before removing ROOT. Until the
-// sandbox process is dead, bind mounts under ROOT may still be live, and
-// os.RemoveAll could traverse into host filesystems.
-func (r *Runner) cleanupSandboxAfterWait(runtimeID string, prepared *PreparedSandbox) {
+func (r *Runner) cleanupSandboxAfterWait(runtimeID string, prepared *PreparedSandbox, extra orchestrator.CleanupFunc) {
+	defer func() {
+		if extra != nil {
+			extra()
+		}
+	}()
 	if r.Runtime == nil || runtimeID == "" || prepared == nil {
 		return
 	}
@@ -335,14 +387,9 @@ func (r *Runner) UnregisterJob(jobID string) {
 	}
 }
 
-func shortID(id string) string {
-	return id[:min(8, len(id))]
-}
-
 func (r *Runner) isJobCompleted(jobID string) bool {
 	r.waiterMu.Lock()
 	defer r.waiterMu.Unlock()
-
 	_, ok := r.completedJobs[jobID]
 	return ok
 }
@@ -351,10 +398,8 @@ func (r *Runner) trackTaskRuntime(taskID, runtimeID string) {
 	if taskID == "" || runtimeID == "" {
 		return
 	}
-
 	r.runtimeMu.Lock()
 	defer r.runtimeMu.Unlock()
-
 	if r.taskRuntimes == nil {
 		r.taskRuntimes = make(map[string]map[string]struct{})
 	}
@@ -386,7 +431,6 @@ func (r *Runner) watchRuntime(jobID, runtimeID string) {
 	if r.Runtime == nil || runtimeID == "" {
 		return
 	}
-
 	result, err := r.Runtime.Wait(context.Background(), runtimeID)
 	if err != nil {
 		if errors.Is(err, ErrRuntimeUnsupported) {
@@ -398,7 +442,6 @@ func (r *Runner) watchRuntime(jobID, runtimeID string) {
 	if r.isJobCompleted(jobID) {
 		return
 	}
-
 	job, err := GetJob(r.DB, jobID)
 	if err != nil {
 		slog.Warn("runtime exited for unknown job", "job_id", jobID, "runtime_id", runtimeID, "error", err)
