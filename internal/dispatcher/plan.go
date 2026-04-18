@@ -3,10 +3,12 @@ package dispatcher
 import "github.com/novshi-tech/boid/internal/sandbox"
 
 // BindMount is a plain shared DTO at the dispatcher boundary.
-// It carries only mount source/mode data and does not encode provider behavior.
+// It carries mount source/target/mode data and does not encode provider behavior.
 type BindMount struct {
 	Source string
-	Mode   string
+	Target string // if empty, defaults to Source
+	Mode   string // "rw" | "" (ro default)
+	IsFile bool
 }
 
 // KitGatesSource is per-kit gate scripts directory carried through the dispatch

@@ -10,19 +10,24 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
-func TestWriteSandboxScripts_GateRoleMustNotReferenceUnmountedProjectPath(t *testing.T) {
+// Gate-like invocations run an argv that points into /opt/boid/gates/. The
+// caller is responsible for adding a bind-mount that makes that path resolve.
+// This test asserts sandbox does not silently succeed if the gate argv is
+// referenced without a matching staging mount.
+func TestWriteSandboxScripts_GateArgvRequiresMatchingMount(t *testing.T) {
+	gateArgv := []string{"/opt/boid/gates/push-pr.sh"}
 	cfg := sandbox.WrapperConfig{
-		JobID:        "phase1-gate-path",
-		TaskID:       "task-gate-1",
-		ProjectID:    "proj-1",
-		ProjectDir:   "/tmp/project-gate",
-		GatesDir:     "/tmp/staged-gates",
-		BoidBinary:   "/bin/true",
-		BrokerSocket: "/run/boid/broker.sock",
-		BrokerToken:  "token",
-		Role:         "gate",
-		HookScript:   "push-pr.sh",
-		TaskJSON:     `{"id":"task-gate-1"}`,
+		JobID:      "phase1-gate-path",
+		TaskID:     "task-gate-1",
+		ProjectID:  "proj-1",
+		ProjectDir: "/tmp/project-gate",
+		HomeDir:    "/tmp",
+		BoidBinary: "/bin/true",
+		Argv:       gateArgv,
+		AdditionalBindings: []sandbox.BindMount{
+			{Source: "/tmp/staged-gates/push-pr.sh", Target: "/opt/boid/gates/push-pr.sh", IsFile: true},
+		},
+		StdinBytes: []byte(`{"id":"task-gate-1"}`),
 	}
 
 	outerPath, err := sandbox.WriteSandboxScripts(cfg)
@@ -50,27 +55,27 @@ func TestWriteSandboxScripts_GateRoleMustNotReferenceUnmountedProjectPath(t *tes
 
 	inner := string(innerContent)
 	setup := string(setupContent)
-	gatePath := cfg.GatesDir + "/" + cfg.HookScript
 
-	if strings.Contains(inner, gatePath) &&
-		!strings.Contains(setup, cfg.ProjectDir+"/.boid") &&
-		!strings.Contains(setup, gatePath) {
-		t.Fatalf("gate script references %q without mounting or copying it into the sandbox", gatePath)
+	if !strings.Contains(inner, gateArgv[0]) {
+		t.Fatalf("inner script should invoke %q", gateArgv[0])
+	}
+	if !strings.Contains(setup, "mount --bind /tmp/staged-gates/push-pr.sh") {
+		t.Fatalf("setup should bind-mount the staged gate script into /opt/boid/gates/")
 	}
 }
 
-func TestWriteSandboxScripts_HookRoleMustQuotePathsAndPayload(t *testing.T) {
+// Quoting regression: paths with spaces and payloads with single quotes must
+// be rendered safely by the sandbox script generator.
+func TestWriteSandboxScripts_QuotesPathsAndPayload(t *testing.T) {
 	cfg := sandbox.WrapperConfig{
-		JobID:        "phase1-quoting",
-		ProjectID:    "proj-1",
-		ProjectDir:   "/tmp/project with spaces",
-		HomeDir:      "/tmp/home dir",
-		HookScript:   "review.sh",
-		BoidBinary:   "/bin/true",
-		BrokerSocket: "/run/boid/broker.sock",
-		BrokerToken:  "token",
-		Role:         "hook",
-		PayloadJSON:  `{"text":"it's tricky"}`,
+		JobID:           "phase1-quoting",
+		ProjectID:       "proj-1",
+		ProjectDir:      "/tmp/project with spaces",
+		HomeDir:         "/tmp/home dir",
+		BoidBinary:      "/bin/true",
+		MountProjectDir: true,
+		Argv:            []string{"/tmp/project with spaces/.boid/hooks/review.sh"},
+		StdinBytes:      []byte(`{"text":"it's tricky"}`),
 	}
 
 	outerPath, err := sandbox.WriteSandboxScripts(cfg)

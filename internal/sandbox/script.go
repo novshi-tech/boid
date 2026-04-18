@@ -4,49 +4,56 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 // WrapperConfig holds the parameters for sandbox script generation.
+// This layer knows only primitives: no Role, no Job, no Broker, no Gate.
 type WrapperConfig struct {
-	JobID              string
-	TaskID             string
-	ProjectID          string
-	ProjectDir         string            // host-side project directory
-	HomeDir            string            // host-side user home directory (fallback to ProjectDir)
-	HookFiles          []HookFile        // individual hook files to bind-mount
-	GatesDir           string            // host-side gates directory
-	HookScript         string            // script filename, e.g. "run-build.sh"
-	Argv               []string          // program + args to execute (non-interactive, non-hook mode)
-	BoidBinary         string            // host-side path to boid binary
-	ServerSocket       string            // host-side server socket path
-	BrokerSocket       string            // host-side broker socket path
-	BrokerToken        string            // broker authentication token
-	Env                map[string]string // project environment variables
-	BuiltinCommands    []string          // builtin command shims handled by boid itself
-	HostCommands       []string          // command names to shim via symlinks
-	AdditionalBindings []BindMount       // extra host paths to bind-mount
-	WorkspaceDirs      map[string]string // project-id -> host-dir (read-only mounts)
-	ProxyPort          int               // host-side proxy port (0 = no proxy)
-	StagingDir         string            // if set, staging dir to clean up after job
-	RootDir            string            // if set, sandbox ROOT path (caller-managed); else setup script mktemps one
-	TTY                bool              // if true, preserve TTY through pasta (for interactive commands)
-	Interactive        bool              // if true, hook runs without payload pipe/stdout redirect (PTY I/O)
-	WorktreeDir        string            // if set, worktree mode: sandbox works here; .git/.boid come from ProjectDir
-	Role               string            // "hook", "gate", or "" (legacy/command mode)
-	PayloadJSON        string            // task payload JSON for hook stdin
-	TaskJSON           string            // full task data JSON for gate stdin
-	Readonly           bool              // if true, mount working dir as read-only
-	InstructionsJSON   string            // JSON array of RoutedInstruction for BOID_INSTRUCTIONS env var
-	TaskYAML           string            // serialized task metadata for context/task.yaml
-	EnvironmentYAML    string            // serialized sandbox environment for context/environment.yaml
-	Model              string            // AI model identifier exported as BOID_MODEL
-	InvokedRole        string            // instruction map key name (BOID_INVOKED_ROLE)
-	InvokedName        string            // instruction.Name value (BOID_INVOKED_NAME; empty if unset)
-	InvokedType        string            // instruction.Type value (BOID_INVOKED_TYPE)
+	JobID      string
+	TaskID     string
+	ProjectID  string
+	ProjectDir string     // host-side project directory
+	HomeDir    string     // where HOME tmpfs is mounted (and exported as HOME); "" falls back to ProjectDir
+	HookFiles  []HookFile // individual hook files to bind-mount under WorkDir/.boid/hooks/
+	Argv       []string   // program + args to execute inside the sandbox
+	BoidBinary string     // host-side path to boid binary (bind-mounted at /opt/boid/bin/boid)
+	Env        map[string]string
+	BuiltinCommands    []string
+	HostCommands       []string
+	AdditionalBindings []BindMount       // extra host paths to bind-mount (supports Target/IsFile/Mode)
+	WorkspaceDirs      map[string]string // project-id -> host-dir (read-only mounts, only when MountProjectDir=true)
+	ProxyPort          int
+	StagingDir         string
+	RootDir            string
+	TTY                bool
+	WorktreeDir        string
+
+	// MountProjectDir: bind-mount ProjectDir (or WorktreeDir) at WorkDir.
+	// When false, an empty tmpfs is mounted at WorkDir so `cd` works.
+	MountProjectDir bool
+	// ProjectReadOnly: when MountProjectDir is true, mount read-only.
+	ProjectReadOnly bool
+
+	// StdinBytes: content piped into the entry process's stdin. nil/empty = inherit.
+	StdinBytes []byte
+	// StdoutCaptureFile: sandbox-internal path to redirect stdout to. "" = inherit.
+	StdoutCaptureFile string
+	// ExitScript: shell snippet wrapped in `trap '<script>' EXIT`. "" = no trap
+	// (for `exec`-style entry that replaces the shell).
+	ExitScript string
+
+	// Context files written to $HOME/.boid/context/ before entry runs. M4 collapses these into generic files.
+	InstructionsJSON string // BOID_INSTRUCTIONS env
+	TaskYAML         string // context/task.yaml
+	EnvironmentYAML  string // context/environment.yaml
+	PayloadJSON      string // context/payload.yaml (and context/payload.json for convenience)
+	Model            string // BOID_MODEL env
+	InvokedRole      string // BOID_INVOKED_ROLE env
+	InvokedName      string // BOID_INVOKED_NAME env
+	InvokedType      string // BOID_INVOKED_TYPE env
 }
 
 // workDir returns the effective working directory inside the sandbox.
@@ -133,140 +140,69 @@ func additionalPATH(bindings []BindMount) string {
 	return strings.Join(parts, ":")
 }
 
+// generateInnerScript builds the script that runs inside the sandbox.
+// Behavior is driven entirely by WrapperConfig primitives — no Role,
+// no Job, no Broker concept appears here. Role-specific patterns (hook,
+// gate, exec) are expressed by the caller as primitive combinations.
 func generateInnerScript(cfg WrapperConfig) string {
-	switch cfg.Role {
-	case "hook":
-		return generateHookInnerScript(cfg)
-	case "gate":
-		return generateGateInnerScript(cfg)
-	default:
-		return generateLegacyInnerScript(cfg)
-	}
-}
-
-// generateHookInnerScript creates the inner script for hook execution.
-// Only BOID_BROKER_TOKEN is exported. Payload is piped via stdin.
-// Stdout is captured to /tmp/boid-output for payload_patch.
-func generateHookInnerScript(cfg WrapperConfig) string {
 	var b strings.Builder
 
 	b.WriteString("#!/bin/bash\nset -e\n\n")
 
+	// HOME is always a tmpfs at cfg.HomeDir; export it so `cd $HOME` and
+	// similar work. Caller chooses the HomeDir (e.g. /tmp for gate-like jobs).
 	fmt.Fprintf(&b, "export HOME=%s\n", shellQuote(cfg.homeDir()))
 
 	if cfg.TaskID != "" {
 		fmt.Fprintf(&b, "export BOID_TASK_ID=%s\n", shellQuote(cfg.TaskID))
 	}
-	if cfg.BrokerToken != "" {
-		fmt.Fprintf(&b, "export BOID_BROKER_TOKEN=%s\n", shellQuote(cfg.BrokerToken))
-	}
-	if cfg.BrokerSocket != "" {
-		b.WriteString("export BOID_BROKER_SOCKET=/run/boid/broker.sock\n")
-	}
+	// M4 cleanup target: move the following to cfg.Env entries and remove
+	// these dedicated fields from WrapperConfig.
 	if cfg.InstructionsJSON != "" {
 		fmt.Fprintf(&b, "export BOID_INSTRUCTIONS=%s\n", shellQuote(cfg.InstructionsJSON))
 	}
 	if cfg.Model != "" {
 		fmt.Fprintf(&b, "export BOID_MODEL=%s\n", shellQuote(cfg.Model))
 	}
-	fmt.Fprintf(&b, "export BOID_INVOKED_ROLE=%s\n", shellQuote(cfg.InvokedRole))
-	fmt.Fprintf(&b, "export BOID_INVOKED_NAME=%s\n", shellQuote(cfg.InvokedName))
-	fmt.Fprintf(&b, "export BOID_INVOKED_TYPE=%s\n", shellQuote(cfg.InvokedType))
+	if cfg.InvokedRole != "" || cfg.InvokedName != "" || cfg.InvokedType != "" {
+		fmt.Fprintf(&b, "export BOID_INVOKED_ROLE=%s\n", shellQuote(cfg.InvokedRole))
+		fmt.Fprintf(&b, "export BOID_INVOKED_NAME=%s\n", shellQuote(cfg.InvokedName))
+		fmt.Fprintf(&b, "export BOID_INVOKED_TYPE=%s\n", shellQuote(cfg.InvokedType))
+	}
 	writeBuiltinShimEnv(&b, cfg)
 
 	writePathAndProxy(&b, cfg)
 
-	// Context files
+	// Context files written at $HOME/.boid/context/. No-op if no content set.
 	writeContextFiles(&b, cfg)
 
 	wd := cfg.workDir()
-	hookPath := filepath.Join(wd, ".boid", "hooks", cfg.HookScript)
 	fmt.Fprintf(&b, "\ncd %s\n\n", shellQuote(wd))
 
-	outputDir := cfg.homeDir() + "/.boid/output"
-
-	if cfg.Interactive {
-		// Interactive mode: stdin/stdout stay connected to the PTY so the hook (e.g. Claude Code)
-		// can run as a full TUI. Payload is available in context/payload.yaml.
-		// Set BOID_INTERACTIVE so the hook script can detect interactive mode reliably
-		// without relying on TTY detection (which can fail inside pasta/unshare sandboxes).
-		b.WriteString("export BOID_INTERACTIVE=1\n")
-		// Use a separate trap that does NOT reference /tmp/boid-output (which won't exist).
-		// Do NOT use "exec" here so that bash's EXIT trap fires when the hook exits.
-		writeInteractiveOutputTrap(&b, cfg.JobID, outputDir)
-		fmt.Fprintf(&b, "%s\n", shellQuote(hookPath))
-	} else {
-		// Non-interactive (batch) mode: payload is piped via stdin, stdout is left on the PTY
-		// so real-time output is visible via boid attach. Result delivery relies on
-		// payload_patch.yaml written by the hook (preferred) or empty output otherwise.
-		writeInteractiveOutputTrap(&b, cfg.JobID, outputDir)
-		fmt.Fprintf(&b, "printf '%%s' %s | %s\n", shellQuote(cfg.PayloadJSON), shellQuote(hookPath))
+	// EXIT trap: opaque shell snippet provided by caller. Empty means no trap
+	// (appropriate for `exec`-style entries that replace the shell).
+	if cfg.ExitScript != "" {
+		fmt.Fprintf(&b, "trap %s EXIT\n", shellQuote(cfg.ExitScript))
 	}
 
-	return b.String()
-}
-
-// generateGateInnerScript creates the inner script for gate execution.
-// No filesystem access. Task data is piped via stdin.
-func generateGateInnerScript(cfg WrapperConfig) string {
-	var b strings.Builder
-
-	b.WriteString("#!/bin/bash\nset -e\n\n")
-
-	fmt.Fprintf(&b, "export HOME=/tmp\n")
-
-	if cfg.BrokerToken != "" {
-		fmt.Fprintf(&b, "export BOID_BROKER_TOKEN=%s\n", shellQuote(cfg.BrokerToken))
-	}
-	if cfg.BrokerSocket != "" {
-		b.WriteString("export BOID_BROKER_SOCKET=/run/boid/broker.sock\n")
-	}
-	writeBuiltinShimEnv(&b, cfg)
-
-	writePathAndProxy(&b, cfg)
-
-	fmt.Fprintf(&b, "\ncd %s\n\n", shellQuote(cfg.workDir()))
-
-	writeOutputTrap(&b, cfg.JobID, "/tmp/.boid/output")
-	fmt.Fprintf(&b, "printf '%%s' %s | %s > /tmp/boid-output\n", shellQuote(cfg.TaskJSON), shellQuote(filepath.Join("/opt/boid/gates", cfg.HookScript)))
-
-	return b.String()
-}
-
-// generateLegacyInnerScript creates the inner script for legacy/command mode.
-// This preserves backward compatibility with existing behavior.
-func generateLegacyInnerScript(cfg WrapperConfig) string {
-	var b strings.Builder
-
-	b.WriteString("#!/bin/bash\nset -e\n\n")
-
-	homeDir := cfg.homeDir()
-	fmt.Fprintf(&b, "export HOME=%s\n", shellQuote(homeDir))
-
-	if cfg.TaskID != "" {
-		fmt.Fprintf(&b, "export BOID_TASK_ID=%s\n", cfg.TaskID)
-	}
-	fmt.Fprintf(&b, "export BOID_JOB_ID=%s\n", cfg.JobID)
-
-	b.WriteString("export BOID_SOCKET=/run/boid/server.sock\n")
-	if cfg.BrokerSocket != "" {
-		b.WriteString("export BOID_BROKER_SOCKET=/run/boid/broker.sock\n")
-	}
-	if cfg.BrokerToken != "" {
-		fmt.Fprintf(&b, "export BOID_BROKER_TOKEN=%s\n", shellQuote(cfg.BrokerToken))
-	}
-	writeBuiltinShimEnv(&b, cfg)
-
-	writePathAndProxy(&b, cfg)
-
-	wd := cfg.workDir()
-	fmt.Fprintf(&b, "\ncd %s\n\n", shellQuote(wd))
-
-	if len(cfg.Argv) > 0 {
-		fmt.Fprintf(&b, "exec %s\n", shellQuoteArgv(cfg.Argv))
-	} else {
-		fmt.Fprintf(&b, "trap 'boid job done %s --exit-code $?' EXIT\n", cfg.JobID)
-		fmt.Fprintf(&b, "%s\n", shellQuote(filepath.Join(wd, ".boid", "hooks", cfg.HookScript)))
+	// Entry composition:
+	//   StdinBytes  StdoutCaptureFile  ExitScript  →  rendered form
+	//   yes         yes                 -          →  printf '%s' <bytes> | <argv> > <file>
+	//   yes         no                  -          →  printf '%s' <bytes> | <argv>
+	//   no          -                   ""         →  exec <argv>            (replace shell)
+	//   no          -                   non-""     →  <argv>                 (trap fires on exit)
+	quoted := shellQuoteArgv(cfg.Argv)
+	switch {
+	case len(cfg.StdinBytes) > 0 && cfg.StdoutCaptureFile != "":
+		fmt.Fprintf(&b, "printf '%%s' %s | %s > %s\n",
+			shellQuote(string(cfg.StdinBytes)), quoted, shellQuote(cfg.StdoutCaptureFile))
+	case len(cfg.StdinBytes) > 0:
+		fmt.Fprintf(&b, "printf '%%s' %s | %s\n",
+			shellQuote(string(cfg.StdinBytes)), quoted)
+	case cfg.ExitScript == "":
+		fmt.Fprintf(&b, "exec %s\n", quoted)
+	default:
+		fmt.Fprintf(&b, "%s\n", quoted)
 	}
 
 	return b.String()
@@ -310,38 +246,13 @@ func writePathAndProxy(b *strings.Builder, cfg WrapperConfig) {
 	}
 }
 
-// writeInteractiveOutputTrap writes the EXIT trap for interactive hooks.
-// Unlike writeOutputTrap, it does not fall back to /tmp/boid-output (which doesn't exist
-// in interactive mode since stdout is not redirected).
-func writeInteractiveOutputTrap(b *strings.Builder, jobID, outputDir string) {
-	patchFile := outputDir + "/payload_patch.yaml"
-	fmt.Fprintf(b, "mkdir -p %s\n", shellQuote(outputDir))
-	fmt.Fprintf(b, "trap '\n")
-	fmt.Fprintf(b, "  _exit=$?\n")
-	fmt.Fprintf(b, "  if [ -f %s ]; then\n", shellQuote(patchFile))
-	fmt.Fprintf(b, "    boid job done %s --exit-code $_exit --output-file %s\n", jobID, shellQuote(patchFile))
-	fmt.Fprintf(b, "  else\n")
-	fmt.Fprintf(b, "    boid job done %s --exit-code $_exit\n", jobID)
-	fmt.Fprintf(b, "  fi\n")
-	fmt.Fprintf(b, "' EXIT\n")
-}
-
-// writeOutputTrap writes the EXIT trap that prefers file-based output over stdout capture.
-func writeOutputTrap(b *strings.Builder, jobID, outputDir string) {
-	patchFile := outputDir + "/payload_patch.yaml"
-	fmt.Fprintf(b, "mkdir -p %s\n", shellQuote(outputDir))
-	fmt.Fprintf(b, "trap '\n")
-	fmt.Fprintf(b, "  _exit=$?\n")
-	fmt.Fprintf(b, "  if [ -f %s ]; then\n", shellQuote(patchFile))
-	fmt.Fprintf(b, "    boid job done %s --exit-code $_exit --output-file %s\n", jobID, shellQuote(patchFile))
-	fmt.Fprintf(b, "  else\n")
-	fmt.Fprintf(b, "    boid job done %s --exit-code $_exit --output-file /tmp/boid-output\n", jobID)
-	fmt.Fprintf(b, "  fi\n")
-	fmt.Fprintf(b, "' EXIT\n")
-}
-
 // writeContextFiles generates ~/.boid/context/ files inside the sandbox.
+// No-op when none of the context fields are populated.
+// M4 target: replace these dedicated fields with generic Files[] primitives.
 func writeContextFiles(b *strings.Builder, cfg WrapperConfig) {
+	if cfg.TaskYAML == "" && cfg.InstructionsJSON == "" && cfg.PayloadJSON == "" && cfg.EnvironmentYAML == "" {
+		return
+	}
 	contextDir := cfg.homeDir() + "/.boid/context"
 	fmt.Fprintf(b, "\nmkdir -p %s\n", shellQuote(contextDir))
 
@@ -353,9 +264,7 @@ func writeContextFiles(b *strings.Builder, cfg WrapperConfig) {
 	}
 	if cfg.PayloadJSON != "" {
 		fmt.Fprintf(b, "printf '%%s' %s > %s/payload.yaml\n", shellQuote(jsonToYAML(cfg.PayloadJSON)), shellQuote(contextDir))
-		if cfg.Interactive {
-			fmt.Fprintf(b, "printf '%%s' %s > %s/payload.json\n", shellQuote(cfg.PayloadJSON), shellQuote(contextDir))
-		}
+		fmt.Fprintf(b, "printf '%%s' %s > %s/payload.json\n", shellQuote(cfg.PayloadJSON), shellQuote(contextDir))
 	}
 	if cfg.EnvironmentYAML != "" {
 		fmt.Fprintf(b, "printf '%%s' %s > %s/environment.yaml\n", shellQuote(cfg.EnvironmentYAML), shellQuote(contextDir))

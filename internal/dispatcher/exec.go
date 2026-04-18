@@ -115,6 +115,7 @@ func execBindMounts(bindings []ExecBindMount) []BindMount {
 		out = append(out, BindMount{
 			Source: binding.Source,
 			Mode:   binding.Mode,
+			// Target/IsFile not supported via ExecBindMount (used only by boid exec)
 		})
 	}
 	return out

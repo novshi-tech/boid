@@ -137,7 +137,9 @@ func toBindMounts(bindings []orchestrator.BindMount) []BindMount {
 	for _, binding := range bindings {
 		out = append(out, BindMount{
 			Source: binding.Source,
+			Target: binding.Target,
 			Mode:   binding.Mode,
+			IsFile: binding.IsFile,
 		})
 	}
 	return out

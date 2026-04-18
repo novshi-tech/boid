@@ -90,52 +90,45 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 		}
 	}
 
-	// Working directory: worktree or project dir
-	// Gates have no filesystem access, so skip project/workspace mounts.
 	workDir := cfg.workDir()
+	homeDir := cfg.homeDir()
 
-	if cfg.Role != "gate" {
-		// Project/worktree directory (rw, or ro if Readonly)
+	// Project directory bind-mount (before HOME tmpfs).
+	// When MountProjectDir=false, WorkDir is left for the tmpfs below to create.
+	if cfg.MountProjectDir {
 		plan.Mounts = append(plan.Mounts, MountEntry{
 			Source:   workDir,
 			Target:   workDir,
 			Type:     MountBind,
-			ReadOnly: cfg.Readonly,
+			ReadOnly: cfg.ProjectReadOnly,
 		})
 	}
 
-	// HOME as tmpfs
-	homeDir := cfg.homeDir()
-	if cfg.Role == "gate" {
-		homeDir = "/tmp" // gates use /tmp as home
-	}
+	// HOME tmpfs — always at cfg.HomeDir, independent of other settings.
 	plan.Mounts = append(plan.Mounts, MountEntry{
 		Target: homeDir,
 		Type:   MountTmpfs,
 	})
-	if cfg.Role == "gate" {
-		// Mount empty tmpfs at workDir AFTER the homeDir (/tmp) mount.
-		// workDir is a path under /tmp (e.g. /tmp/boid-e2e-.../workspace/app),
-		// so it must be mounted after /tmp to avoid being hidden by the homeDir remount.
-		// The broker runs host commands with the Cwd received from the shim,
-		// so this allows gh and similar tools to resolve the repo from the
-		// host-side .git/config without exposing any project files inside the sandbox.
+
+	if !cfg.MountProjectDir {
+		// Without a project bind, WorkDir may not exist inside the sandbox
+		// (e.g. it's shadowed by the HOME tmpfs). Mount an empty tmpfs so
+		// `cd WorkDir` succeeds and host-side tools can resolve the path.
 		plan.Mounts = append(plan.Mounts, MountEntry{
 			Target: workDir,
 			Type:   MountTmpfs,
 		})
-	}
-
-	if cfg.Role != "gate" {
-		// Re-mount working directory on top of HOME tmpfs
+	} else {
+		// Re-mount working directory on top of HOME tmpfs so its contents
+		// stay visible when WorkDir is a descendant of HomeDir.
 		plan.Mounts = append(plan.Mounts, MountEntry{
 			Source:   workDir,
 			Target:   workDir,
 			Type:     MountBind,
-			ReadOnly: cfg.Readonly,
+			ReadOnly: cfg.ProjectReadOnly,
 		})
 
-		// Workspace projects (ro) — after HOME tmpfs so paths under HOME remain accessible
+		// Workspace peers are read-only mirrors of other projects.
 		for _, dir := range cfg.WorkspaceDirs {
 			plan.Mounts = append(plan.Mounts, MountEntry{
 				Source:   dir,
@@ -144,10 +137,8 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 				ReadOnly: true,
 			})
 		}
-	}
 
-	if cfg.Role != "gate" {
-		// .boid directory (ro) with optional hooks overlay
+		// .boid directory (ro) with optional hooks overlay.
 		// In worktree mode, .boid comes from the original project dir
 		// but is mounted at the worktree path.
 		boidSource := cfg.ProjectDir + "/.boid"
@@ -159,20 +150,18 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 			ReadOnly: true,
 			Guard:    dirGuard(boidSource),
 		}
-		if len(cfg.Argv) == 0 && len(cfg.HookFiles) > 0 {
+		if len(cfg.HookFiles) > 0 {
 			boidMount.NeedsDirs = []string{"hooks"}
 		}
 		plan.Mounts = append(plan.Mounts, boidMount)
 
-		if len(cfg.Argv) == 0 && len(cfg.HookFiles) > 0 {
+		if len(cfg.HookFiles) > 0 {
 			hooksTarget := workDir + "/.boid/hooks"
-			// Mount tmpfs at .boid/hooks to allow individual file bind-mounts
 			plan.Mounts = append(plan.Mounts, MountEntry{
 				Target: hooksTarget,
 				Type:   MountTmpfs,
 				Guard:  dirGuard(boidSource),
 			})
-			// Bind-mount each hook file individually (read-only)
 			for _, hf := range cfg.HookFiles {
 				plan.Mounts = append(plan.Mounts, MountEntry{
 					Source:   hf.Source,
@@ -185,7 +174,7 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 			}
 		}
 
-		// Worktree mode: re-mount .git inside sandbox for git worktree reference
+		// Worktree mode: re-mount .git inside sandbox for git worktree reference.
 		if cfg.WorktreeDir != "" {
 			gitDir := cfg.ProjectDir + "/.git"
 			plan.Mounts = append(plan.Mounts, MountEntry{
@@ -195,21 +184,26 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 				Guard:  dirGuard(gitDir),
 			})
 		}
+	}
 
-		// Additional bindings
-		for _, bm := range cfg.AdditionalBindings {
-			plan.Mounts = append(plan.Mounts, MountEntry{
-				Source:     bm.Source,
-				Target:     bm.Source,
-				Type:       MountBind,
-				ReadOnly:   bm.Mode != "rw",
-				DetectType: true,
-			})
+	// Additional bindings — applied regardless of MountProjectDir so callers can
+	// expose sockets (broker, server) and gate scripts under /opt/boid/... etc.
+	for _, bm := range cfg.AdditionalBindings {
+		target := bm.Target
+		if target == "" {
+			target = bm.Source
 		}
+		plan.Mounts = append(plan.Mounts, MountEntry{
+			Source:     bm.Source,
+			Target:     target,
+			Type:       MountBind,
+			ReadOnly:   bm.Mode != "rw",
+			IsFile:     bm.IsFile,
+			DetectType: !bm.IsFile,
+		})
 	}
 
 	// Boid binary — bind-mounted read-only at /opt/boid/bin/boid.
-	// Source's executable bit is preserved across bind-mount.
 	plan.Mounts = append(plan.Mounts, MountEntry{
 		Source:   cfg.BoidBinary,
 		Target:   "/opt/boid/bin/boid",
@@ -217,19 +211,6 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 		IsFile:   true,
 		ReadOnly: true,
 	})
-	if cfg.Role == "gate" && cfg.HookScript != "" {
-		gatesDir := cfg.GatesDir
-		if gatesDir == "" {
-			gatesDir = cfg.ProjectDir + "/.boid/gates"
-		}
-		plan.Mounts = append(plan.Mounts, MountEntry{
-			Source:   gatesDir + "/" + cfg.HookScript,
-			Target:   "/opt/boid/gates/" + cfg.HookScript,
-			Type:     MountBind,
-			IsFile:   true,
-			ReadOnly: true,
-		})
-	}
 
 	// Command shims
 	for _, cmd := range shimCommands(cfg.BuiltinCommands, cfg.HostCommands) {
@@ -239,28 +220,8 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 		})
 	}
 
-	// Server socket — only in legacy/command mode (hooks and gates use broker only)
-	if cfg.Role == "" && cfg.ServerSocket != "" {
-		plan.Mounts = append(plan.Mounts, MountEntry{
-			Source: cfg.ServerSocket,
-			Target: "/run/boid/server.sock",
-			Type:   MountBind,
-			IsFile: true,
-		})
-	}
-
-	// Broker socket
-	if cfg.BrokerSocket != "" {
-		plan.Mounts = append(plan.Mounts, MountEntry{
-			Source: cfg.BrokerSocket,
-			Target: "/run/boid/broker.sock",
-			Type:   MountBind,
-			IsFile: true,
-		})
-	}
-
-	// Cleanup paths
-	if cfg.StagingDir != "" && len(cfg.Argv) == 0 {
+	// Cleanup paths — retained so orchestrator-staged gate dirs get removed.
+	if cfg.StagingDir != "" {
 		plan.CleanupPaths = append(plan.CleanupPaths, cfg.StagingDir)
 	}
 
@@ -270,22 +231,21 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 func shimCommands(builtins, hostCommands []string) []string {
 	seen := make(map[string]struct{}, len(builtins)+len(hostCommands))
 	var out []string
-	for _, name := range builtins {
+	add := func(name string) {
 		if name == "boid" {
-			continue
+			return // boid binary is bind-mounted directly, not shimmed
 		}
 		if _, ok := seen[name]; ok {
-			continue
+			return
 		}
 		seen[name] = struct{}{}
 		out = append(out, name)
 	}
+	for _, name := range builtins {
+		add(name)
+	}
 	for _, name := range hostCommands {
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		out = append(out, name)
+		add(name)
 	}
 	return out
 }
