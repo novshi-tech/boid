@@ -20,8 +20,8 @@ type ExecCommandDef struct {
 }
 
 // ExecRequest carries the fields cmd/exec.go gathers from the API before
-// invoking the sandbox. Dispatcher uses orchestrator.BuildExecSandboxSpec
-// to translate it into a primitive sandbox.Spec.
+// invoking the sandbox. Dispatcher uses BuildExecSandboxSpec to translate
+// it into a primitive sandbox.Spec.
 type ExecRequest struct {
 	JobID              string
 	ProjectID          string
@@ -64,7 +64,7 @@ func WriteExecScripts(req ExecRequest, preparer SandboxPreparer) (string, error)
 		return "", fmt.Errorf("sandbox preparer is required")
 	}
 
-	spec := orchestrator.BuildExecSandboxSpec(orchestrator.ExecSandboxBuildInput{
+	spec := BuildExecSandboxSpec(ExecSandboxBuildInput{
 		JobID:              req.JobID,
 		ProjectID:          req.ProjectID,
 		ProjectDir:         req.ProjectDir,

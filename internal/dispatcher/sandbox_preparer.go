@@ -12,7 +12,7 @@ type sandboxPreparerImpl struct{}
 
 // NewSandboxPreparer returns the sandbox provider adapter.
 // It is a thin wrapper over sandbox.Prepare: all role-aware translation
-// lives in orchestrator.BuildSandboxSpec.
+// lives in dispatcher.BuildSandboxSpec (this package).
 func NewSandboxPreparer() SandboxPreparer {
 	return sandboxPreparerImpl{}
 }

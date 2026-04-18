@@ -108,9 +108,10 @@ func (r *Runner) Dispatch(ctx context.Context, request *orchestrator.JobSpec) (s
 		r.trackToken(j.ID, brokerToken)
 	}
 
-	// Role-aware translation is delegated to orchestrator. Dispatcher only
-	// provides the runtime-injected fields (JobID, broker, staging).
-	sbSpec := orchestrator.BuildSandboxSpec(*request, orchestrator.SandboxBuildOptions{
+	// Role-aware translation lives in dispatcher.BuildSandboxSpec.
+	// orchestrator only knows JobSpec (sandbox-agnostic); dispatcher bridges
+	// it to the primitive-only sandbox.Spec.
+	sbSpec := BuildSandboxSpec(*request, SandboxBuildOptions{
 		JobID:          j.ID,
 		BrokerSocket:   brokerSocket,
 		BrokerToken:    brokerToken,
