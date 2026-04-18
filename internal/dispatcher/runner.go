@@ -69,9 +69,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		ProjectID: spec.ProjectID,
 		HandlerID: spec.HandlerID,
 		// Role は DB ラベル / TUI 表示のみに使われる。sandbox 構築側は
-		// 一切これを読まない。業務カテゴリは JobSpec の primitive から
-		// 派生できるのでフィールドは持たない。
-		Role: deriveJobRole(spec),
+		// 一切これを読まない。
+		Role: string(spec.Kind),
 	}
 	j.ID = uuid.New().String()
 
@@ -146,21 +145,6 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 
 	sbSpec := BuildSandboxSpec(spec, rtInfo)
 	return r.launchSandbox(ctx, j, sbSpec, cleanup)
-}
-
-// deriveJobRole categorises a job purely from JobSpec primitives so that the
-// DB-label value does not require a dedicated Kind field. The rules:
-//   - TaskID == ""   → exec (user-initiated, no task context)
-//   - Instruction != nil → hook (agent execution)
-//   - otherwise      → gate (task-bound script, no agent)
-func deriveJobRole(spec *orchestrator.JobSpec) string {
-	if spec.TaskID == "" {
-		return "exec"
-	}
-	if spec.Instruction != nil {
-		return "hook"
-	}
-	return "gate"
 }
 
 func (r *Runner) resolveWorkspaceID(projectID string) (string, error) {

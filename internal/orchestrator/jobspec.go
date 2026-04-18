@@ -2,6 +2,20 @@ package orchestrator
 
 import "encoding/json"
 
+// JobKind is a DB / observability label for a job. It is NOT a sandbox
+// construction signal — dispatcher's mount/env logic must derive everything
+// from Visibility / HostCommands / Instruction, never from Kind. Kind exists
+// purely so the Job row / TUI can tell apart "agent hook", "verification
+// gate", and "user-initiated exec" without re-deriving the category from
+// loosely-related primitives like HandlerID.
+type JobKind string
+
+const (
+	JobKindHook JobKind = "hook"
+	JobKindGate JobKind = "gate"
+	JobKindExec JobKind = "exec"
+)
+
 // JobSpec is the orchestrator-owned, sandbox-agnostic execution request.
 // It is written purely in business vocabulary: "what to run with what
 // visibility and permissions". All sandbox construction details (mounts,
@@ -14,6 +28,10 @@ type JobSpec struct {
 	TaskID    string
 	ProjectID string
 	HandlerID string
+
+	// Kind is a DB-label / TUI-display category. Dispatcher's sandbox
+	// construction MUST NOT branch on this value.
+	Kind JobKind
 
 	// Argv is the command to execute. Argv[0] is either a host absolute path
 	// (hook / gate scripts) or a bare command name resolved via broker shim
