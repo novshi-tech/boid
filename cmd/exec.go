@@ -13,11 +13,11 @@ import (
 )
 
 var execCmd = &cobra.Command{
-	Use:           "exec -p <ref> <command-name>",
+	Use:           "exec -p <ref> [command-name]",
 	Short:         "Execute a named command in a project sandbox",
 	SilenceUsage:  true,
 	SilenceErrors: true,
-	Args:          cobra.ExactArgs(1),
+	Args:          cobra.MaximumNArgs(1),
 	RunE:          runExec,
 }
 
@@ -139,6 +139,51 @@ func buildExecRequest(projectID, commandName string) (dispatcher.ExecRequest, er
 	return req, nil
 }
 
+func listExecCommands(projectID string) error {
+	c := client.NewUnixClient(client.DefaultSocketPath())
+
+	var projectInfo execProjectData
+	if err := c.Do("GET", "/api/projects/"+projectID, nil, &projectInfo); err != nil {
+		return fmt.Errorf("get project: %w", err)
+	}
+
+	var resp struct {
+		Commands []struct {
+			Name    string   `json:"name"`
+			Command []string `json:"command"`
+		} `json:"commands"`
+	}
+	if err := c.Do("GET", "/api/projects/"+projectID+"/commands", nil, &resp); err != nil {
+		return fmt.Errorf("list commands: %w", err)
+	}
+
+	if len(resp.Commands) == 0 {
+		fmt.Printf("No commands defined for project %s.\n", projectID)
+		fmt.Printf("Run 'boid exec -p <ref> <command>' to execute.\n")
+		return nil
+	}
+
+	maxLen := 0
+	for _, cmd := range resp.Commands {
+		if len(cmd.Name) > maxLen {
+			maxLen = len(cmd.Name)
+		}
+	}
+	fmt.Printf("Available commands for project %s:\n", projectID)
+	for _, cmd := range resp.Commands {
+		cmdStr := ""
+		if len(cmd.Command) > 0 {
+			cmdStr = cmd.Command[0]
+			if len(cmd.Command) > 1 {
+				cmdStr += " " + cmd.Command[1]
+			}
+		}
+		fmt.Printf("  %-*s  %s\n", maxLen, cmd.Name, cmdStr)
+	}
+	fmt.Printf("\nRun 'boid exec -p <ref> <command>' to execute.\n")
+	return nil
+}
+
 func runExec(cobraCmd *cobra.Command, args []string) error {
 	if execProjectRef == "" {
 		return fmt.Errorf("-p/--project is required")
@@ -148,6 +193,10 @@ func runExec(cobraCmd *cobra.Command, args []string) error {
 	p, err := resolveProjectRef(c, os.Stdin, os.Stdout, execProjectRef)
 	if err != nil {
 		return fmt.Errorf("resolve project: %w", err)
+	}
+
+	if len(args) == 0 {
+		return listExecCommands(p.ID)
 	}
 
 	commandName := args[0]

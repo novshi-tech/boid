@@ -282,13 +282,6 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 			}
 		}
 	}
-	for _, cmd := range meta.Commands {
-		for _, kitRef := range cmd.Kits {
-			if err := loadKitRef(kitRef); err != nil {
-				return nil, err
-			}
-		}
-	}
 
 	// Load and validate top-level project-scope kits.
 	for _, kitRef := range meta.Kits {
@@ -310,6 +303,26 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		for k, v := range kitMeta.TaskBehaviors {
 			if _, exists := meta.TaskBehaviors[k]; !exists {
 				meta.TaskBehaviors[k] = v
+			}
+		}
+	}
+
+	// Kit-provided commands (from top-level project kits): project.yaml commands take precedence.
+	// Conflict between two kits providing the same command name is an error.
+	if meta.Commands == nil {
+		meta.Commands = make(map[string]CommandSpec)
+	}
+	kitCmdSource := make(map[string]string) // commandName -> kit consumer (for conflict detection)
+	for _, kitRef := range meta.Kits {
+		kitMeta := kitMetaByRef[kitRef.Ref]
+		consumer := ResolveKitConsumer(kitRef)
+		for cmdName, cmdSpec := range kitMeta.Commands {
+			if existingConsumer, ok := kitCmdSource[cmdName]; ok {
+				return nil, fmt.Errorf("command %q: conflict between kits %q and %q", cmdName, existingConsumer, consumer)
+			}
+			kitCmdSource[cmdName] = consumer
+			if _, exists := meta.Commands[cmdName]; !exists {
+				meta.Commands[cmdName] = cmdSpec
 			}
 		}
 	}
@@ -375,33 +388,25 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		meta.TaskBehaviors[name] = behavior
 	}
 
-	// Resolve Commands: merge kits and expand env vars in each command spec.
-	for name, cmd := range meta.Commands {
-		var kits []*KitMeta
-		var consumers []string
-		seen := make(map[string]bool)
-		for _, kitRef := range cmd.Kits {
-			if seen[kitRef.Ref] {
-				continue
-			}
-			seen[kitRef.Ref] = true
-			km, ok := kitMetaByRef[kitRef.Ref]
-			if !ok {
-				// Kit was not collected in the first pass (e.g. only referenced by a command).
-				if err := loadKitRef(kitRef); err != nil {
-					return nil, fmt.Errorf("command %q: %w", name, err)
-				}
-				km = kitMetaByRef[kitRef.Ref]
-			}
-			consumer := ResolveKitConsumer(kitRef)
-			kits = append(kits, km)
-			consumers = append(consumers, consumer)
+	// Compute project-level kit runtime once; apply to all commands.
+	var projectKits []*KitMeta
+	var projectKitConsumers []string
+	for _, kitRef := range meta.Kits {
+		km, ok := kitMetaByRef[kitRef.Ref]
+		if !ok {
+			continue
 		}
+		projectKits = append(projectKits, km)
+		projectKitConsumers = append(projectKitConsumers, ResolveKitConsumer(kitRef))
+	}
+	projectKitRuntime, err := MergeKitRuntime(projectKits, projectKitConsumers)
+	if err != nil {
+		return nil, fmt.Errorf("project kits runtime: %w", err)
+	}
 
-		rt, err := MergeKitRuntime(kits, consumers)
-		if err != nil {
-			return nil, fmt.Errorf("command %q: %w", name, err)
-		}
+	// Resolve Commands: apply project-level kit runtime and expand env vars in each command spec.
+	for name, cmd := range meta.Commands {
+		rt := projectKitRuntime
 
 		// Apply overlays in the same order as TaskBehavior: kit → project.yaml → project.local.yaml.
 		cmd.Env = mergeStringMaps(rt.Env, meta.Env)
@@ -803,7 +808,6 @@ func cloneCommandSpecMap(src map[string]CommandSpec) map[string]CommandSpec {
 	result := make(map[string]CommandSpec, len(src))
 	for k, v := range src {
 		v.Command = append([]string(nil), v.Command...)
-		v.Kits = append([]KitRef(nil), v.Kits...)
 		v.ResolvedCommand = nil
 		v.Env = nil
 		v.BuiltinCommands = nil

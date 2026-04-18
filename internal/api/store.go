@@ -40,6 +40,12 @@ type CommandResponse struct {
 	AdditionalBindings []orchestrator.BindMount                `json:"additional_bindings,omitempty"`
 }
 
+// CommandSummary is a single entry in the GET /api/projects/:id/commands response.
+type CommandSummary struct {
+	Name    string   `json:"name"`
+	Command []string `json:"command"`
+}
+
 type ProjectService interface {
 	CreateProject(workDir string) (*orchestrator.Project, error)
 	ListProjects(workspaceID string) ([]*orchestrator.Project, error)
@@ -53,6 +59,7 @@ type ProjectService interface {
 	// Returns 1 project on unambiguous match, multiple on ambiguous match, StatusError{404} on no match.
 	ResolveProjectRef(ref string) ([]*orchestrator.Project, error)
 	GetCommand(id, name string) (*CommandResponse, error)
+	ListCommands(id string) ([]CommandSummary, error)
 }
 
 type TaskService interface {

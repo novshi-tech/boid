@@ -390,7 +390,6 @@ func (k *KitRef) UnmarshalYAML(value *yaml.Node) error {
 // The Command slice is expanded with os.ExpandEnv at load time and stored in ResolvedCommand.
 type CommandSpec struct {
 	Command []string `yaml:"command" json:"command"`
-	Kits    []KitRef `yaml:"kits,omitempty" json:"kits,omitempty"`
 
 	// Resolved fields populated by ReadProjectMetaWithKits.
 	ResolvedCommand    []string          `yaml:"-" json:"-"`
@@ -437,6 +436,7 @@ type WorkspaceSummary struct {
 // KitMeta holds the parsed content of a kit.yaml file.
 type KitMeta struct {
 	TaskBehaviors      map[string]TaskBehavior `yaml:"task_behaviors"`
+	Commands           map[string]CommandSpec  `yaml:"commands,omitempty"`
 	Hooks              []Hook                  `yaml:"hooks"`
 	Gates              []Gate                  `yaml:"gates"`
 	BuiltinCommands    []string                `yaml:"builtin_commands"`
@@ -483,7 +483,6 @@ type KitRequires struct {
 // KitScaffold declares scaffold templates bundled with this kit.
 type KitScaffold struct {
 	TaskBehaviors *ScaffoldTemplate `yaml:"task_behaviors,omitempty"`
-	Commands      *ScaffoldTemplate `yaml:"commands,omitempty"`
 }
 
 // ScaffoldTemplate points to a template file relative to the kit directory.
