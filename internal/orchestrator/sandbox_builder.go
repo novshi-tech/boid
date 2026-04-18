@@ -118,7 +118,7 @@ func BuildSandboxSpec(req DispatchRequest, opts SandboxBuildOptions) sandbox.Spe
 
 	switch req.Role {
 	case RoleHook:
-		mounts = append(mounts, ProjectMounts(req.ProjectDir, workDir, homeDir, req.WorktreeDir, req.Readonly, req.WorkspaceDirs)...)
+		mounts = append(mounts, projectMountsWithHooks(req.ProjectDir, workDir, homeDir, req.WorktreeDir, req.Readonly, req.WorkspaceDirs, len(req.HookFiles) > 0)...)
 		mounts = append(mounts, HookFileMounts(workDir, req.ProjectDir, req.HookFiles)...)
 		mounts = append(mounts, AdditionalBindingMounts(req.AdditionalBindings)...)
 		argv = resolveHookArgv(req, workDir)
@@ -287,6 +287,13 @@ func BuildExecSandboxSpec(in ExecSandboxBuildInput) sandbox.Spec {
 // sees the project: project bind → HOME tmpfs → project re-mount → peers (ro)
 // → .boid (ro) → (.git remount in worktree mode).
 func ProjectMounts(projectDir, workDir, homeDir, worktreeDir string, readOnly bool, workspacePeers map[string]string) []sandbox.Mount {
+	return projectMountsWithHooks(projectDir, workDir, homeDir, worktreeDir, readOnly, workspacePeers, false)
+}
+
+// projectMountsWithHooks is the full form used when callers may want the
+// .boid bind-mount to pre-create a "hooks" subdir (so a later tmpfs can cover
+// it and individual hook files can be bind-mounted on top).
+func projectMountsWithHooks(projectDir, workDir, homeDir, worktreeDir string, readOnly bool, workspacePeers map[string]string, needsHooksDir bool) []sandbox.Mount {
 	var out []sandbox.Mount
 
 	out = append(out, sandbox.Mount{
@@ -319,13 +326,19 @@ func ProjectMounts(projectDir, workDir, homeDir, worktreeDir string, readOnly bo
 	}
 
 	boidSource := projectDir + "/.boid"
-	out = append(out, sandbox.Mount{
+	boidMount := sandbox.Mount{
 		Source:   boidSource,
 		Target:   workDir + "/.boid",
 		Type:     sandbox.MountBind,
 		ReadOnly: true,
 		Guard:    dirGuardExpr(boidSource),
-	})
+	}
+	if needsHooksDir {
+		// Pre-create hooks/ inside the bind so the subsequent tmpfs target
+		// exists. The mkdir runs before the read-only remount.
+		boidMount.NeedsDirs = []string{"hooks"}
+	}
+	out = append(out, boidMount)
 
 	if worktreeDir != "" {
 		gitDir := projectDir + "/.git"
