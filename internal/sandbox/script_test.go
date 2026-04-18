@@ -144,7 +144,7 @@ func TestWriteSandboxScripts_TTY(t *testing.T) {
 			"MY_VAR": "hello",
 		},
 		HostCommands: []string{"git"},
-		Command:      "/bin/bash",
+		Argv:         []string{"/bin/bash"},
 		TTY:          true,
 	}
 
@@ -430,7 +430,7 @@ func TestWriteSandboxScripts_Command(t *testing.T) {
 		HomeDir:      "/home/user",
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
-		Command:      "go test ./...",
+		Argv:         []string{"go", "test", "./..."},
 		Env: map[string]string{
 			"GOPATH": "/home/user/go",
 		},

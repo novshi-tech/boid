@@ -31,7 +31,7 @@ func (sandboxPreparerImpl) PrepareSandbox(spec SandboxSpec) (*PreparedSandbox, e
 		HookFiles:          toSandboxHookFiles(spec.HookFiles),
 		GatesDir:           spec.GatesDir,
 		HookScript:         spec.HookScript,
-		Command:            spec.Command,
+		Argv:               spec.Argv,
 		BoidBinary:         spec.BoidBinary,
 		ServerSocket:       spec.ServerSocket,
 		BrokerSocket:       spec.BrokerSocket,

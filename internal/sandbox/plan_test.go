@@ -233,7 +233,7 @@ func TestBuildSandboxPlan_BoidDir_HookMode(t *testing.T) {
 func TestBuildSandboxPlan_BoidDir_CommandMode(t *testing.T) {
 	cfg := WrapperConfig{
 		ProjectDir:   "/home/user/proj",
-		Command:      "/bin/bash",
+		Argv:         []string{"/bin/bash"},
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
 	}
@@ -482,7 +482,7 @@ func TestBuildSandboxPlan_CleanupPaths(t *testing.T) {
 func TestBuildSandboxPlan_CleanupPaths_CommandMode(t *testing.T) {
 	cfg := WrapperConfig{
 		ProjectDir:   "/home/user/proj",
-		Command:      "/bin/bash",
+		Argv:         []string{"/bin/bash"},
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/run/boid/server.sock",
 		StagingDir:   "/tmp/staging-123",

@@ -24,7 +24,7 @@ type ExecRequest struct {
 	ProjectID          string
 	ProjectDir         string
 	HomeDir            string
-	Command            string
+	Argv               []string
 	BoidBinary         string
 	ServerSocket       string
 	BrokerSocket       string
@@ -67,8 +67,8 @@ func buildExecSandboxSpec(req ExecRequest) (SandboxSpec, error) {
 	if req.ProjectDir == "" {
 		return SandboxSpec{}, fmt.Errorf("project dir is required")
 	}
-	if req.Command == "" {
-		return SandboxSpec{}, fmt.Errorf("command is required")
+	if len(req.Argv) == 0 {
+		return SandboxSpec{}, fmt.Errorf("argv is required")
 	}
 	if req.BoidBinary == "" {
 		return SandboxSpec{}, fmt.Errorf("boid binary is required")
@@ -79,7 +79,7 @@ func buildExecSandboxSpec(req ExecRequest) (SandboxSpec, error) {
 		ProjectID:          req.ProjectID,
 		ProjectDir:         req.ProjectDir,
 		HomeDir:            req.HomeDir,
-		Command:            req.Command,
+		Argv:               req.Argv,
 		BoidBinary:         req.BoidBinary,
 		ServerSocket:       req.ServerSocket,
 		BrokerSocket:       req.BrokerSocket,

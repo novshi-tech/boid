@@ -18,7 +18,7 @@ type SandboxSpec struct {
 	HookFiles          []HookFile
 	GatesDir           string
 	HookScript         string
-	Command            string
+	Argv               []string
 	BoidBinary         string
 	ServerSocket       string
 	BrokerSocket       string

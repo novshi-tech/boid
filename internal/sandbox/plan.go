@@ -167,12 +167,12 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 			ReadOnly: true,
 			Guard:    dirGuard(boidSource),
 		}
-		if cfg.Command == "" && len(cfg.HookFiles) > 0 {
+		if len(cfg.Argv) == 0 && len(cfg.HookFiles) > 0 {
 			boidMount.NeedsDirs = []string{"hooks"}
 		}
 		plan.Mounts = append(plan.Mounts, boidMount)
 
-		if cfg.Command == "" && len(cfg.HookFiles) > 0 {
+		if len(cfg.Argv) == 0 && len(cfg.HookFiles) > 0 {
 			hooksTarget := workDir + "/.boid/hooks"
 			// Mount tmpfs at .boid/hooks to allow individual file bind-mounts
 			plan.Mounts = append(plan.Mounts, MountEntry{
@@ -263,7 +263,7 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 	}
 
 	// Cleanup paths
-	if cfg.StagingDir != "" && cfg.Command == "" {
+	if cfg.StagingDir != "" && len(cfg.Argv) == 0 {
 		plan.CleanupPaths = append(plan.CleanupPaths, cfg.StagingDir)
 	}
 

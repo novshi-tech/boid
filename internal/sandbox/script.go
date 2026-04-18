@@ -20,7 +20,7 @@ type WrapperConfig struct {
 	HookFiles          []HookFile        // individual hook files to bind-mount
 	GatesDir           string            // host-side gates directory
 	HookScript         string            // script filename, e.g. "run-build.sh"
-	Command            string            // command to execute (non-interactive, non-hook mode)
+	Argv               []string          // program + args to execute (non-interactive, non-hook mode)
 	BoidBinary         string            // host-side path to boid binary
 	ServerSocket       string            // host-side server socket path
 	BrokerSocket       string            // host-side broker socket path
@@ -262,14 +262,25 @@ func generateLegacyInnerScript(cfg WrapperConfig) string {
 	wd := cfg.workDir()
 	fmt.Fprintf(&b, "\ncd %s\n\n", shellQuote(wd))
 
-	if cfg.Command != "" {
-		fmt.Fprintf(&b, "exec %s\n", cfg.Command)
+	if len(cfg.Argv) > 0 {
+		fmt.Fprintf(&b, "exec %s\n", shellQuoteArgv(cfg.Argv))
 	} else {
 		fmt.Fprintf(&b, "trap 'boid job done %s --exit-code $?' EXIT\n", cfg.JobID)
 		fmt.Fprintf(&b, "%s\n", shellQuote(filepath.Join(wd, ".boid", "hooks", cfg.HookScript)))
 	}
 
 	return b.String()
+}
+
+// shellQuoteArgv renders []string as a space-separated sequence of
+// individually shell-quoted tokens. This is the single render point
+// where argv converts to shell syntax.
+func shellQuoteArgv(argv []string) string {
+	parts := make([]string, len(argv))
+	for i, a := range argv {
+		parts[i] = shellQuote(a)
+	}
+	return strings.Join(parts, " ")
 }
 
 // writePathAndProxy writes PATH and proxy environment variables.

@@ -182,7 +182,7 @@ func TestWriteExecScripts_UsesSandboxPreparer(t *testing.T) {
 		ProjectID:    "proj-1",
 		ProjectDir:   "/workspace/proj-1",
 		HomeDir:      "/home/tester",
-		Command:      "git status",
+		Argv:         []string{"git", "status"},
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/tmp/boid.sock",
 		BrokerSocket: "/tmp/broker.sock",
@@ -222,8 +222,8 @@ func TestWriteExecScripts_UsesSandboxPreparer(t *testing.T) {
 	if got.ProjectDir != "/workspace/proj-1" {
 		t.Fatalf("sandbox spec project dir = %q", got.ProjectDir)
 	}
-	if got.Command != "git status" {
-		t.Fatalf("sandbox spec command = %q", got.Command)
+	if !reflect.DeepEqual(got.Argv, []string{"git", "status"}) {
+		t.Fatalf("sandbox spec argv = %v", got.Argv)
 	}
 	if got.BoidBinary != "/usr/local/bin/boid" {
 		t.Fatalf("sandbox spec boid binary = %q", got.BoidBinary)

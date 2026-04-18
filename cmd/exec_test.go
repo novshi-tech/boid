@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -145,7 +146,7 @@ func TestBuildExecRequest_RegistersBrokerForBoidBuiltin(t *testing.T) {
 	}
 }
 
-func TestBuildExecRequest_CommandShellQuoted(t *testing.T) {
+func TestBuildExecRequest_ArgvPreserved(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := t.TempDir()
@@ -155,7 +156,7 @@ func TestBuildExecRequest_CommandShellQuoted(t *testing.T) {
 		t.Fatalf("mkdir kit: %v", err)
 	}
 
-	// Command with argument that requires quoting
+	// Command with an argument that contains a space — must survive as its own argv element.
 	projectYAML := "id: proj-q\nname: proj-q\n" +
 		"commands:\n  run:\n    command: [claude, --append-system-prompt, 'hello world']\n    kits:\n      - agent\n"
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
@@ -177,13 +178,9 @@ func TestBuildExecRequest_CommandShellQuoted(t *testing.T) {
 		t.Fatalf("buildExecRequest: %v", err)
 	}
 
-	// Command should be shell-quoted: "claude --append-system-prompt 'hello world'"
-	if !strings.Contains(req.Command, "claude") {
-		t.Errorf("command %q should contain 'claude'", req.Command)
-	}
-	// 'hello world' should be quoted (contains a space)
-	if strings.Contains(req.Command, "hello world") && !strings.Contains(req.Command, "'hello world'") {
-		t.Errorf("command %q: 'hello world' should be shell-quoted", req.Command)
+	want := []string{"claude", "--append-system-prompt", "hello world"}
+	if !reflect.DeepEqual(req.Argv, want) {
+		t.Errorf("argv = %#v, want %#v", req.Argv, want)
 	}
 }
 
