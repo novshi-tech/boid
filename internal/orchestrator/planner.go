@@ -99,7 +99,7 @@ type DispatchPlanner struct {
 	ProxyPort    *int
 }
 
-func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, error) {
+func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, error) {
 	if event == nil {
 		return nil, fmt.Errorf("hook event is required")
 	}
@@ -156,7 +156,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 	environmentYAML := buildEnvironmentYAML(readonly, worktreeDir != "", p.proxyPort() > 0, workspaceDirs, behavior.BuiltinCommands)
 
 	homeDir, _ := os.UserHomeDir()
-	return &DispatchRequest{
+	return &JobSpec{
 		TaskID:             event.TaskID,
 		ProjectID:          event.ProjectID,
 		WorkspaceID:        proj.WorkspaceID,
@@ -189,7 +189,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*DispatchRequest, erro
 	}, nil
 }
 
-func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, error) {
+func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, error) {
 	if event == nil {
 		return nil, fmt.Errorf("gate event is required")
 	}
@@ -232,7 +232,7 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*DispatchRequest, erro
 
 	hostCommands := behavior.HostCommands.ToCommandDefs()
 
-	return &DispatchRequest{
+	return &JobSpec{
 		TaskID:          event.TaskID,
 		ProjectID:       event.ProjectID,
 		WorkspaceID:     proj.WorkspaceID,

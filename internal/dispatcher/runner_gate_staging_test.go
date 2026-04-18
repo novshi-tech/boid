@@ -48,7 +48,7 @@ func TestRunnerDispatch_StagesGatesPerJob(t *testing.T) {
 		Sandbox: preparer,
 	}
 
-	request := &orchestrator.DispatchRequest{
+	request := &orchestrator.JobSpec{
 		TaskID:          "task-gate-staging",
 		ProjectID:       "proj-1",
 		HandlerID:       "github-auto-merge/mergeable-check",

@@ -31,7 +31,7 @@ type SandboxBuildOptions struct {
 }
 
 // ExecSandboxBuildInput carries the inputs needed to build a sandbox.Spec for
-// a user-initiated `boid exec` invocation. Distinct from DispatchRequest
+// a user-initiated `boid exec` invocation. Distinct from JobSpec
 // because exec has no Task/Role/HookScript and provides Argv directly.
 type ExecSandboxBuildInput struct {
 	JobID              string
@@ -54,11 +54,11 @@ type ExecSandboxBuildInput struct {
 	RootDir            string
 }
 
-// BuildSandboxSpec translates a DispatchRequest (orchestrator vocabulary:
+// BuildSandboxSpec translates a JobSpec (orchestrator vocabulary:
 // Role, Task, Instruction, Hook, Gate) into a primitive-only sandbox.Spec.
 // This is the role-aware seam — dispatcher consumes only sandbox.Spec and
 // has no knowledge of Role or any higher-level concept.
-func BuildSandboxSpec(req DispatchRequest, opts SandboxBuildOptions) sandbox.Spec {
+func BuildSandboxSpec(req JobSpec, opts SandboxBuildOptions) sandbox.Spec {
 	workDir := effectiveWorkDir(req)
 	homeDir := effectiveHomeDir(req)
 
@@ -529,28 +529,28 @@ func shellQuoteDir(s string) string {
 	return s
 }
 
-func effectiveWorkDir(req DispatchRequest) string {
+func effectiveWorkDir(req JobSpec) string {
 	if req.WorktreeDir != "" {
 		return req.WorktreeDir
 	}
 	return req.ProjectDir
 }
 
-func effectiveHomeDir(req DispatchRequest) string {
+func effectiveHomeDir(req JobSpec) string {
 	if req.HomeDir != "" {
 		return req.HomeDir
 	}
 	return req.ProjectDir
 }
 
-func resolveHookArgv(req DispatchRequest, workDir string) []string {
+func resolveHookArgv(req JobSpec, workDir string) []string {
 	if req.HookScript == "" {
 		return nil
 	}
 	return []string{workDir + "/.boid/hooks/" + req.HookScript}
 }
 
-func resolveGateArgv(req DispatchRequest) []string {
+func resolveGateArgv(req JobSpec) []string {
 	if req.HookScript == "" {
 		return nil
 	}

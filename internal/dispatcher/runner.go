@@ -31,7 +31,7 @@ type Runner struct {
 	taskRuntimes  map[string]map[string]struct{} // task ID -> runtime IDs
 }
 
-func (r *Runner) Dispatch(ctx context.Context, request *orchestrator.DispatchRequest) (string, error) {
+func (r *Runner) Dispatch(ctx context.Context, request *orchestrator.JobSpec) (string, error) {
 	if request == nil {
 		return "", fmt.Errorf("dispatch request is required")
 	}
