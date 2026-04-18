@@ -61,25 +61,11 @@ func TestRunnerDispatch_StagesGatesPerJob(t *testing.T) {
 		ServerSocket:    "/tmp/boid.sock",
 	}
 
-	plan := dispatcher.DispatchPlan{
-		Request:         request,
-		TaskID:          request.TaskID,
-		ProjectID:       request.ProjectID,
-		HandlerID:       request.HandlerID,
-		Role:            string(request.Role),
-		ProjectDir:      request.ProjectDir,
-		ProjectGatesDir: request.ProjectGatesDir,
-		KitGatesDirs:    []dispatcher.KitGatesSource{{GatesDir: kitGatesDir}},
-		HookScript:      request.HookScript,
-		BoidBinary:      request.BoidBinary,
-		ServerSocket:    request.ServerSocket,
-	}
-
-	job1, err := runner.Dispatch(context.Background(), &plan)
+	job1, err := runner.Dispatch(context.Background(), request)
 	if err != nil {
 		t.Fatalf("first Dispatch: %v", err)
 	}
-	job2, err := runner.Dispatch(context.Background(), &plan)
+	job2, err := runner.Dispatch(context.Background(), request)
 	if err != nil {
 		t.Fatalf("second Dispatch: %v", err)
 	}

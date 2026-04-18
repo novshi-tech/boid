@@ -122,6 +122,8 @@ func BuildSandboxSpec(req DispatchRequest, opts SandboxBuildOptions) sandbox.Spe
 		mounts = append(mounts, HookFileMounts(workDir, req.ProjectDir, req.HookFiles)...)
 		mounts = append(mounts, AdditionalBindingMounts(req.AdditionalBindings)...)
 		argv = resolveHookArgv(req, workDir)
+		// Interactive controls payload delivery: stdin (default) vs. context file.
+		// PTY allocation is a separate concern handled by the TTY computation below.
 		if !req.Interactive {
 			stdinBytes = []byte(req.PayloadJSON)
 		} else {
@@ -196,6 +198,12 @@ func BuildSandboxSpec(req DispatchRequest, opts SandboxBuildOptions) sandbox.Spe
 		StdinBytes:        stdinBytes,
 		StdoutCaptureFile: stdoutCapture,
 		ExitScript:        exitScript,
+		// TTY (PTY allocation) is required when:
+		//   - Interactive=true (user-facing intent for an interactive job), or
+		//   - the role launches an agent that expects a PTY (Hook runs Claude;
+		//     Gate runs a script reading TaskJSON via /dev/stdin under PTY).
+		// The first axis is user-driven, the latter is role-derived; keeping
+		// them OR'd here documents that PTY is the union, not a single concern.
 		TTY:               req.Interactive || req.Role == RoleHook || req.Role == RoleGate,
 		RootDir:           opts.RootDir,
 		CleanupPaths:      cleanup,

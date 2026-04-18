@@ -20,12 +20,12 @@ type fakeBroker struct {
 }
 
 type fakeBrokerRegistration struct {
-	commands map[string]dispatcher.CommandDef
+	commands map[string]orchestrator.CommandDef
 	policies map[string]sandbox.BuiltinPolicy
-	ctx      dispatcher.BrokerContext
+	ctx      sandbox.TokenContext
 }
 
-func (b *fakeBroker) RegisterCommands(commands map[string]dispatcher.CommandDef, policies map[string]sandbox.BuiltinPolicy, ctx dispatcher.BrokerContext, resolve dispatcher.SecretResolver) string {
+func (b *fakeBroker) RegisterCommands(commands map[string]orchestrator.CommandDef, policies map[string]sandbox.BuiltinPolicy, ctx sandbox.TokenContext, resolve dispatcher.SecretResolver) string {
 	token := "token-1"
 	if len(b.tokens) > 0 {
 		token = b.tokens[0]
@@ -80,18 +80,18 @@ func TestRunnerDispatch_UsesDispatcherOwnedBrokerInterface(t *testing.T) {
 		},
 	}
 
-	jobID, err := runner.Dispatch(context.Background(), &dispatcher.DispatchPlan{
+	jobID, err := runner.Dispatch(context.Background(), &orchestrator.DispatchRequest{
 		TaskID:      "task-phase2-12345678",
 		ProjectID:   "proj-1",
 		WorkspaceID: "ws-1",
 		HandlerID:   "hook-a",
-		Role:        "hook",
+		Role:        orchestrator.RoleHook,
 		ProjectDir:  projectDir,
 		HomeDir:     projectDir,
 		HookScript:  "hook-a.sh",
 		BoidBinary:  "/bin/true",
 		PayloadJSON: `{}`,
-		HostCommands: map[string]dispatcher.CommandDef{
+		HostCommands: map[string]orchestrator.CommandDef{
 			"git": {Name: "git"},
 		},
 		WorkspaceDirs: map[string]string{

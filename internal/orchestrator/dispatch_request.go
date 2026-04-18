@@ -30,6 +30,13 @@ type DispatchRequest struct {
 	PayloadJSON        string
 	TaskJSON           string
 	Readonly           bool
+	// Interactive controls payload delivery and PTY allocation for hook dispatch.
+	// When true: PayloadJSON is materialized as a context file under
+	// $HOME/.boid/context/payload.json (instead of being fed to stdin), the
+	// BOID_INTERACTIVE=1 env var is exported, and the sandbox is launched with
+	// a PTY. When false: PayloadJSON is fed to stdin and a PTY is still
+	// allocated for hook/gate roles because the agent process expects one.
+	// (sandbox_builder.go computes the final TTY value from this + Role.)
 	Interactive        bool
 	InstructionsJSON   string
 	SecretNamespace    string

@@ -119,7 +119,7 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 		return nil, err
 	}
 
-	ctx := dispatcher.BrokerContext{
+	ctx := sandbox.TokenContext{
 		Role:              "gate",
 		ProjectID:         project.ID,
 		WorkspaceID:       project.WorkspaceID,
@@ -127,18 +127,6 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 		ProjectDir:        project.WorkDir,
 	}
 	defs := orchestrator.HostCommands(commands).ToCommandDefs()
-	dispatcherCommands := make(map[string]dispatcher.CommandDef, len(defs))
-	for name, def := range defs {
-		dispatcherCommands[name] = dispatcher.CommandDef{
-			Name:               def.Name,
-			Path:               def.Path,
-			AllowedPatterns:    def.AllowedPatterns,
-			DeniedPatterns:     def.DeniedPatterns,
-			AllowedSubcommands: def.AllowedSubcommands,
-			AllowStdin:         def.AllowStdin,
-			Env:                def.Env,
-		}
-	}
 
 	var resolve dispatcher.SecretResolver
 	if r.secretStore != nil {
@@ -146,7 +134,7 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 			return r.secretStore.Get("default", key)
 		}
 	}
-	token := r.broker.RegisterCommands(dispatcherCommands, builtinPolicies, ctx, resolve)
+	token := r.broker.RegisterCommands(defs, builtinPolicies, ctx, resolve)
 	return &api.BrokerRegisterResponse{
 		Token:  token,
 		Socket: r.broker.SocketPath(),
