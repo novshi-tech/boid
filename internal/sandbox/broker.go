@@ -193,7 +193,7 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 	if !entry.allowsBuiltinOp("boid", string(boidReq.Op)) {
 		return &ExecResponse{
 			ExitCode: 1,
-			Stderr:   fmt.Sprintf("boid op %q not allowed for role %s", boidReq.Op, entry.Context.Role),
+			Stderr:   fmt.Sprintf("boid op %q not allowed by policy", boidReq.Op),
 		}
 	}
 
@@ -275,11 +275,8 @@ func validateBoidBuiltinCwd(cwd string, entry *tokenEntry) error {
 		return fmt.Errorf("cwd must be a directory")
 	}
 
-	if entry != nil && entry.Context.Role == "gate" {
-		if cwd == "/tmp" {
-			return nil
-		}
-		if entry.Context.ProjectDir != "" && isWithinRoot(cwd, entry.Context.ProjectDir) {
+	if entry != nil {
+		if policy, ok := entry.BuiltinPolicies["boid"]; ok && policy.AllowsCwd(cwd) {
 			return nil
 		}
 	}

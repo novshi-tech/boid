@@ -13,11 +13,11 @@ import (
 
 
 func gateGitPolicies() map[string]sandbox.BuiltinPolicy {
-	return projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"git"})
+	return projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"git"}, projectspec.PolicyContext{})
 }
 
 func hookGitPolicies() map[string]sandbox.BuiltinPolicy {
-	return projectspec.DefaultBuiltinPolicies(projectspec.RoleHook, []string{"git"})
+	return projectspec.DefaultBuiltinPolicies(projectspec.RoleHook, []string{"git"}, projectspec.PolicyContext{})
 }
 
 func TestBroker_GitBuiltinPushUsesTrustedSnapshot(t *testing.T) {
@@ -196,8 +196,8 @@ func TestBroker_GitBuiltinRejectsHookRolePush(t *testing.T) {
 	if resp.ExitCode != 1 {
 		t.Fatalf("exit code = %d, want 1", resp.ExitCode)
 	}
-	if !strings.Contains(resp.Stderr, "not allowed for role hook") {
-		t.Fatalf("stderr = %q, want 'not allowed for role hook'", resp.Stderr)
+	if !strings.Contains(resp.Stderr, "not allowed by policy") {
+		t.Fatalf("stderr = %q, want 'not allowed by policy'", resp.Stderr)
 	}
 }
 
@@ -230,8 +230,8 @@ func TestBroker_GitBuiltinRejectsHookRoleFetch(t *testing.T) {
 	if resp.ExitCode != 1 {
 		t.Fatalf("exit code = %d, want 1", resp.ExitCode)
 	}
-	if !strings.Contains(resp.Stderr, "not allowed for role hook") {
-		t.Fatalf("stderr = %q, want 'not allowed for role hook'", resp.Stderr)
+	if !strings.Contains(resp.Stderr, "not allowed by policy") {
+		t.Fatalf("stderr = %q, want 'not allowed by policy'", resp.Stderr)
 	}
 }
 
