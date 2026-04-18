@@ -22,10 +22,10 @@ type fakeBroker struct {
 type fakeBrokerRegistration struct {
 	commands map[string]orchestrator.CommandDef
 	policies map[string]sandbox.BuiltinPolicy
-	ctx      dispatcher.BrokerContext
+	ctx      sandbox.TokenContext
 }
 
-func (b *fakeBroker) RegisterCommands(commands map[string]orchestrator.CommandDef, policies map[string]sandbox.BuiltinPolicy, ctx dispatcher.BrokerContext, resolve dispatcher.SecretResolver) string {
+func (b *fakeBroker) RegisterCommands(commands map[string]orchestrator.CommandDef, policies map[string]sandbox.BuiltinPolicy, ctx sandbox.TokenContext, resolve dispatcher.SecretResolver) string {
 	token := "token-1"
 	if len(b.tokens) > 0 {
 		token = b.tokens[0]

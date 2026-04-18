@@ -13,10 +13,10 @@ import (
 
 type capturingBroker struct {
 	token string
-	ctx   dispatcher.BrokerContext
+	ctx   sandbox.TokenContext
 }
 
-func (b *capturingBroker) RegisterCommands(commands map[string]orchestrator.CommandDef, builtinPolicies map[string]sandbox.BuiltinPolicy, ctx dispatcher.BrokerContext, resolve dispatcher.SecretResolver) string {
+func (b *capturingBroker) RegisterCommands(commands map[string]orchestrator.CommandDef, builtinPolicies map[string]sandbox.BuiltinPolicy, ctx sandbox.TokenContext, resolve dispatcher.SecretResolver) string {
 	b.ctx = ctx
 	if b.token == "" {
 		b.token = "token-1"

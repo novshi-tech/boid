@@ -85,7 +85,7 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 	var brokerSocket, brokerToken string
 	if r.Broker != nil {
 		allowedProjectIDs := allowedProjectIDs(plan.ProjectID, plan.WorkspaceDirs)
-		tokenCtx := BrokerContext{
+		tokenCtx := sandbox.TokenContext{
 			JobID:             j.ID,
 			TaskID:            plan.TaskID,
 			ProjectID:         plan.ProjectID,
