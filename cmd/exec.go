@@ -119,7 +119,6 @@ func buildExecJob(projectID, commandName string) (*execPreparedJob, error) {
 	spec := &orchestrator.JobSpec{
 		ProjectID: p.ID,
 		HandlerID: "", // exec is not a handler
-		Kind:      orchestrator.JobKindExec,
 		Argv:      cmd.Command,
 		Visibility: orchestrator.Visibility{
 			ProjectDir:         p.WorkDir,
