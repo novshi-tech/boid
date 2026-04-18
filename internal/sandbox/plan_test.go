@@ -373,12 +373,22 @@ func TestBuildSandboxPlan_BoidBinary(t *testing.T) {
 	}
 	plan := BuildSandboxPlan(cfg)
 
-	if len(plan.Copies) != 1 {
-		t.Fatalf("copies: got %d, want 1", len(plan.Copies))
+	// boid binary is bind-mounted read-only at /opt/boid/bin/boid
+	var boidMount *MountEntry
+	for i := range plan.Mounts {
+		if plan.Mounts[i].Target == "/opt/boid/bin/boid" {
+			boidMount = &plan.Mounts[i]
+			break
+		}
 	}
-	c := plan.Copies[0]
-	if c.Source != "/usr/local/bin/boid" || c.Target != "/opt/boid/bin/boid" || !c.Executable {
-		t.Errorf("boid copy: got %+v", c)
+	if boidMount == nil {
+		t.Fatal("boid binary mount not found")
+	}
+	if boidMount.Source != "/usr/local/bin/boid" {
+		t.Errorf("boid mount source: got %q, want /usr/local/bin/boid", boidMount.Source)
+	}
+	if !boidMount.IsFile || !boidMount.ReadOnly || boidMount.Type != MountBind {
+		t.Errorf("boid mount: got %+v, want bind+file+readonly", *boidMount)
 	}
 
 	if len(plan.Symlinks) != 2 {

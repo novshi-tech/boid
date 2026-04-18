@@ -28,13 +28,6 @@ type FileEntry struct {
 	Content string
 }
 
-// CopyEntry describes a file to copy from host into the sandbox.
-type CopyEntry struct {
-	Source     string // host path
-	Target     string // absolute path inside sandbox
-	Executable bool
-}
-
 // SymlinkEntry describes a symlink to create inside the sandbox.
 type SymlinkEntry struct {
 	LinkTarget string // what the symlink points to (e.g. "boid")
@@ -52,7 +45,6 @@ type HookFile struct {
 type SandboxPlan struct {
 	Mounts       []MountEntry
 	Files        []FileEntry
-	Copies       []CopyEntry
 	Symlinks     []SymlinkEntry
 	NFTRules     []string
 	CleanupPaths []string // extra paths to remove on exit (staging dirs, etc.)
@@ -216,21 +208,26 @@ func BuildSandboxPlan(cfg WrapperConfig) *SandboxPlan {
 		}
 	}
 
-	// Boid binary
-	plan.Copies = append(plan.Copies, CopyEntry{
-		Source:     cfg.BoidBinary,
-		Target:     "/opt/boid/bin/boid",
-		Executable: true,
+	// Boid binary — bind-mounted read-only at /opt/boid/bin/boid.
+	// Source's executable bit is preserved across bind-mount.
+	plan.Mounts = append(plan.Mounts, MountEntry{
+		Source:   cfg.BoidBinary,
+		Target:   "/opt/boid/bin/boid",
+		Type:     MountBind,
+		IsFile:   true,
+		ReadOnly: true,
 	})
 	if cfg.Role == "gate" && cfg.HookScript != "" {
 		gatesDir := cfg.GatesDir
 		if gatesDir == "" {
 			gatesDir = cfg.ProjectDir + "/.boid/gates"
 		}
-		plan.Copies = append(plan.Copies, CopyEntry{
-			Source:     gatesDir + "/" + cfg.HookScript,
-			Target:     "/opt/boid/gates/" + cfg.HookScript,
-			Executable: true,
+		plan.Mounts = append(plan.Mounts, MountEntry{
+			Source:   gatesDir + "/" + cfg.HookScript,
+			Target:   "/opt/boid/gates/" + cfg.HookScript,
+			Type:     MountBind,
+			IsFile:   true,
+			ReadOnly: true,
 		})
 	}
 

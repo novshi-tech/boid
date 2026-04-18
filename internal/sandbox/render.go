@@ -39,10 +39,6 @@ func RenderSetupScript(plan *SandboxPlan, rootDir, innerPath, setupPath, outerPa
 		b.WriteByte('\n')
 	}
 
-	for _, c := range plan.Copies {
-		renderCopy(&b, c)
-	}
-
 	for _, s := range plan.Symlinks {
 		renderSymlink(&b, s)
 	}
@@ -134,15 +130,6 @@ func renderFile(b *strings.Builder, f FileEntry) {
 	dir := filepath.Dir(f.Path)
 	fmt.Fprintf(b, "mkdir -p \"$ROOT%s\"\n", dir)
 	fmt.Fprintf(b, "printf '%%s' %s > \"$ROOT%s\"\n", shellQuote(f.Content), f.Path)
-}
-
-func renderCopy(b *strings.Builder, c CopyEntry) {
-	dir := filepath.Dir(c.Target)
-	fmt.Fprintf(b, "mkdir -p \"$ROOT%s\"\n", dir)
-	fmt.Fprintf(b, "cp %s \"$ROOT%s\"\n", shellQuote(c.Source), c.Target)
-	if c.Executable {
-		fmt.Fprintf(b, "chmod +x \"$ROOT%s\"\n", c.Target)
-	}
 }
 
 func renderSymlink(b *strings.Builder, s SymlinkEntry) {
