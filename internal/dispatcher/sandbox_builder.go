@@ -130,6 +130,7 @@ func BuildSandboxSpec(req orchestrator.JobSpec, opts SandboxBuildOptions) sandbo
 		} else {
 			env["BOID_INTERACTIVE"] = "1"
 		}
+		files = append(files, outputDirSentinel(homeDir+"/.boid/output"))
 		exitScript = BuildExitScript(opts.JobID, "$HOME/.boid/output/payload_patch.yaml", "")
 	case orchestrator.RoleGate:
 		env["HOME"] = "/tmp"
@@ -156,6 +157,12 @@ func BuildSandboxSpec(req orchestrator.JobSpec, opts SandboxBuildOptions) sandbo
 		argv = resolveGateArgv(req)
 		stdinBytes = []byte(req.TaskJSON)
 		stdoutCapture = "/tmp/boid-output"
+		// Gate HOME は /tmp (tmpfs) のため、inner script 冒頭で
+		// .boid/output/ を FileWrite の親ディレクトリ自動 mkdir に頼って
+		// 確実に作る。こうしないと gate script が payload_patch.yaml に
+		// cat する時点で ENOENT になり exit 1 する (BuildExitScript の
+		// mkdir は trap body 内にしかない)。
+		files = append(files, outputDirSentinel("/tmp/.boid/output"))
 		exitScript = BuildExitScript(opts.JobID, "$HOME/.boid/output/payload_patch.yaml", "/tmp/boid-output")
 	default:
 		// Unknown Role: treat like a tracked command with project access.
@@ -512,6 +519,17 @@ func contextFiles(homeDir, taskYAML, envYAML, instructionsJSON, payloadJSON stri
 		out = append(out, sandbox.FileWrite{Path: contextDir + "/payload.json", Content: payloadJSON})
 	}
 	return out
+}
+
+// outputDirSentinel は $HOME/.boid/output/ 配下に空の .placeholder ファイルを
+// 書く sandbox.FileWrite を返す。sandbox の generateInnerScript は FileWrite
+// の親ディレクトリを自動で mkdir -p するので、これにより inner script 冒頭
+// (trap 定義より前) で output/ ディレクトリが確実に存在する状態になる。
+// hook/gate スクリプトが payload_patch.yaml を cat する際に ENOENT で落ちる
+// のを防ぐ。BuildExitScript の mkdir は trap body 内なので、本体の書き込み
+// フェーズでは役に立たない点がポイント。
+func outputDirSentinel(dir string) sandbox.FileWrite {
+	return sandbox.FileWrite{Path: dir + "/.placeholder"}
 }
 
 func quoteForTrap(s string) string { return "\"" + s + "\"" }
