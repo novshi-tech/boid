@@ -9,48 +9,15 @@ import (
 	"strings"
 	"testing"
 
+	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
-
-// Local role constants and policy builders so that the sandbox package tests
-// stay independent of orchestrator. The production policies are defined in
-// orchestrator.DefaultBuiltinPolicies and translated to sandbox.BuiltinPolicy
-// in dispatcher; we duplicate the shape here because sandbox can't depend on
-// either layer.
-const (
-	testRoleHook = "hook"
-	testRoleGate = "gate"
-)
-
-func testHookBoidPolicies() map[string]sandbox.BuiltinPolicy {
-	return map[string]sandbox.BuiltinPolicy{
-		"boid": {AllowedOps: map[string]struct{}{
-			string(sandbox.BoidOpJobDone): {},
-			string(sandbox.BoidOpTaskGet): {},
-		}},
-	}
-}
-
-func testGateBoidPolicies() map[string]sandbox.BuiltinPolicy {
-	return map[string]sandbox.BuiltinPolicy{
-		"boid": {
-			AllowedOps: map[string]struct{}{
-				string(sandbox.BoidOpJobDone):    {},
-				string(sandbox.BoidOpTaskCreate): {},
-				string(sandbox.BoidOpTaskUpdate): {},
-				string(sandbox.BoidOpTaskImport): {},
-				string(sandbox.BoidOpTaskReopen): {},
-			},
-			AllowedCwdRoots: []string{"/tmp"},
-		},
-	}
-}
 
 var testCtx = sandbox.TokenContext{
 	JobID:      "job-1",
 	TaskID:     "task-1",
 	ProjectID:  "proj-1",
-	Role:       testRoleHook,
+	Role:       string(projectspec.RoleHook),
 	ProjectDir: "/workspace/proj-1",
 }
 
@@ -232,7 +199,7 @@ func TestBroker_GitFallsBackToHostCommandWhenBuiltinNotAllowed(t *testing.T) {
 			AllowedSubcommands: []string{"push"},
 		},
 	}, nil, sandbox.TokenContext{
-		JobID: "job-1", TaskID: "task-1", ProjectID: "proj-1", Role: testRoleGate,
+		JobID: "job-1", TaskID: "task-1", ProjectID: "proj-1", Role: string(projectspec.RoleGate),
 	})
 
 	resp := broker.Handle(&sandbox.ExecRequest{
@@ -266,7 +233,7 @@ func TestBroker_SecretResolution(t *testing.T) {
 			Env:             map[string]string{"GH_TOKEN": "secret:github/pat", "PLAIN": "value"},
 		},
 	}, nil, sandbox.TokenContext{
-		JobID: "job-1", TaskID: "task-1", ProjectID: "proj-1", Role: testRoleGate,
+		JobID: "job-1", TaskID: "task-1", ProjectID: "proj-1", Role: string(projectspec.RoleGate),
 	}, resolver)
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "env",
@@ -300,7 +267,7 @@ func TestBroker_SecretResolutionEmptyKey(t *testing.T) {
 			Env:             map[string]string{"GH_TOKEN": "secret:", "PLAIN": "value"},
 		},
 	}, nil, sandbox.TokenContext{
-		JobID: "job-1", TaskID: "task-1", ProjectID: "proj-1", Role: testRoleGate,
+		JobID: "job-1", TaskID: "task-1", ProjectID: "proj-1", Role: string(projectspec.RoleGate),
 	}, resolver)
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "env",
@@ -338,7 +305,7 @@ func TestBroker_GetContext(t *testing.T) {
 		ProjectID:         "proj-7",
 		WorkspaceID:       "ws-7",
 		AllowedProjectIDs: []string{"proj-7", "proj-8"},
-		Role:              testRoleGate,
+		Role:              string(projectspec.RoleGate),
 		ProjectDir:        "/workspace/proj-7",
 		WorktreeDir:       "/workspace/proj-7-wt",
 	}
@@ -360,8 +327,8 @@ func TestBroker_GetContext(t *testing.T) {
 	if got.ProjectID != "proj-7" {
 		t.Errorf("ProjectID = %q, want %q", got.ProjectID, "proj-7")
 	}
-	if got.Role != testRoleGate {
-		t.Errorf("Role = %q, want %q", got.Role, testRoleGate)
+	if got.Role != string(projectspec.RoleGate) {
+		t.Errorf("Role = %q, want %q", got.Role, string(projectspec.RoleGate))
 	}
 	if got.WorkspaceID != "ws-7" {
 		t.Errorf("WorkspaceID = %q, want %q", got.WorkspaceID, "ws-7")
@@ -384,10 +351,10 @@ func TestBroker_BoidBuiltinPolicy_HookRole(t *testing.T) {
 		JobID:      "j1",
 		TaskID:     "t1",
 		ProjectID:  "p1",
-		Role:       testRoleHook,
+		Role:       string(projectspec.RoleHook),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, testHookBoidPolicies(), hookCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleHook, []string{"boid"}, projectspec.PolicyContext{}), hookCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -433,10 +400,10 @@ func TestBroker_BoidBuiltinPolicy_GateRole(t *testing.T) {
 		JobID:      "j1",
 		TaskID:     "t1",
 		ProjectID:  "p1",
-		Role:       testRoleGate,
+		Role:       string(projectspec.RoleGate),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), gateCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"boid"}, projectspec.PolicyContext{}), gateCtx)
 
 	// Cwd = /tmp (legacy) must still be accepted
 	resp := broker.Handle(&sandbox.ExecRequest{
@@ -488,10 +455,10 @@ func TestBroker_BoidBuiltinPolicy_RespectsAllowedProjectIDs(t *testing.T) {
 		ProjectID:         "p1",
 		WorkspaceID:       "ws-1",
 		AllowedProjectIDs: []string{"p1", "p2"},
-		Role:              testRoleGate,
+		Role:              string(projectspec.RoleGate),
 		ProjectDir:        projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), ctx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"boid"}, projectspec.PolicyContext{}), ctx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -540,10 +507,10 @@ func TestBroker_BoidBuiltinPolicy_GateRoleTaskUpdate(t *testing.T) {
 		JobID:      "j-gate",
 		TaskID:     "t-gate",
 		ProjectID:  "p1",
-		Role:       testRoleGate,
+		Role:       string(projectspec.RoleGate),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), gateCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"boid"}, projectspec.PolicyContext{}), gateCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -579,10 +546,10 @@ func TestBroker_BoidBuiltinPolicy_HookRoleRejectsTaskUpdate(t *testing.T) {
 		JobID:      "j-hook",
 		TaskID:     "t-hook",
 		ProjectID:  "p1",
-		Role:       testRoleHook,
+		Role:       string(projectspec.RoleHook),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, testHookBoidPolicies(), hookCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleHook, []string{"boid"}, projectspec.PolicyContext{}), hookCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -611,10 +578,10 @@ func TestBroker_BoidBuiltinTaskUpdateRequiresTaskID(t *testing.T) {
 		JobID:      "j-gate",
 		TaskID:     "t-gate",
 		ProjectID:  "p1",
-		Role:       testRoleGate,
+		Role:       string(projectspec.RoleGate),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), gateCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"boid"}, projectspec.PolicyContext{}), gateCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -641,10 +608,10 @@ func TestBroker_BoidBuiltinRejectsWrongJobAndCwd(t *testing.T) {
 		JobID:      "job-keep",
 		TaskID:     "task-keep",
 		ProjectID:  "proj-keep",
-		Role:       testRoleHook,
+		Role:       string(projectspec.RoleHook),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, testHookBoidPolicies(), ctx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleHook, []string{"boid"}, projectspec.PolicyContext{}), ctx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -678,11 +645,11 @@ func TestBroker_BoidBuiltinRejectsWrongJobAndCwd(t *testing.T) {
 func TestBroker_BoidBuiltinRequiresTypedRequest(t *testing.T) {
 	broker := &sandbox.Broker{}
 	cwd := t.TempDir()
-	token := broker.Register(map[string]sandbox.CommandDef{}, testHookBoidPolicies(), sandbox.TokenContext{
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleHook, []string{"boid"}, projectspec.PolicyContext{}), sandbox.TokenContext{
 		JobID:      "job-1",
 		TaskID:     "task-1",
 		ProjectID:  "proj-1",
-		Role:       testRoleHook,
+		Role:       string(projectspec.RoleHook),
 		ProjectDir: cwd,
 	})
 
@@ -705,10 +672,10 @@ func TestBroker_BoidBuiltinPolicy_HookRoleRejectsReopen(t *testing.T) {
 		JobID:      "j-hook",
 		TaskID:     "t-hook",
 		ProjectID:  "p1",
-		Role:       testRoleHook,
+		Role:       string(projectspec.RoleHook),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, testHookBoidPolicies(), hookCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleHook, []string{"boid"}, projectspec.PolicyContext{}), hookCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -736,10 +703,10 @@ func TestBroker_BoidBuiltinPolicy_GateRoleAllowsReopen(t *testing.T) {
 		JobID:      "j-gate",
 		TaskID:     "t-gate",
 		ProjectID:  "p1",
-		Role:       testRoleGate,
+		Role:       string(projectspec.RoleGate),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), gateCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"boid"}, projectspec.PolicyContext{}), gateCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -774,10 +741,10 @@ func TestBroker_BoidTaskImport_GateAllowed(t *testing.T) {
 		JobID:      "j1",
 		TaskID:     "t1",
 		ProjectID:  "p1",
-		Role:       testRoleGate,
+		Role:       string(projectspec.RoleGate),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), gateCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"boid"}, projectspec.PolicyContext{}), gateCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -809,10 +776,10 @@ func TestBroker_BoidTaskImport_HookRejected(t *testing.T) {
 		JobID:      "j1",
 		TaskID:     "t1",
 		ProjectID:  "p1",
-		Role:       testRoleHook,
+		Role:       string(projectspec.RoleHook),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, testHookBoidPolicies(), hookCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleHook, []string{"boid"}, projectspec.PolicyContext{}), hookCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -842,10 +809,10 @@ func TestBroker_BoidTaskImport_DisallowedProject(t *testing.T) {
 		TaskID:            "t1",
 		ProjectID:         "p1",
 		AllowedProjectIDs: []string{"p1"},
-		Role:              testRoleGate,
+		Role:              string(projectspec.RoleGate),
 		ProjectDir:        projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), gateCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"boid"}, projectspec.PolicyContext{}), gateCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
@@ -875,10 +842,10 @@ func TestBroker_BoidTaskImport_ProjectOverrideValidated(t *testing.T) {
 		TaskID:            "t1",
 		ProjectID:         "p1",
 		AllowedProjectIDs: []string{"p1"},
-		Role:              testRoleGate,
+		Role:              string(projectspec.RoleGate),
 		ProjectDir:        projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), gateCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"boid"}, projectspec.PolicyContext{}), gateCtx)
 
 	// ImportProjectOverride = "p2" は AllowedProjectIDs に含まれないので拒否
 	resp := broker.Handle(&sandbox.ExecRequest{
@@ -909,10 +876,10 @@ func TestBroker_BoidTaskImport_DefaultProjectFromContext(t *testing.T) {
 		JobID:      "j1",
 		TaskID:     "t1",
 		ProjectID:  "p1",
-		Role:       testRoleGate,
+		Role:       string(projectspec.RoleGate),
 		ProjectDir: projectDir,
 	}
-	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), gateCtx)
+	token := broker.Register(map[string]sandbox.CommandDef{}, projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"boid"}, projectspec.PolicyContext{}), gateCtx)
 
 	// project_id 未指定 → ctx.ProjectID = "p1" がデフォルト注入される
 	resp := broker.Handle(&sandbox.ExecRequest{

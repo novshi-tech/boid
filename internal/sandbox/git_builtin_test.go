@@ -7,25 +7,17 @@ import (
 	"strings"
 	"testing"
 
+	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
-// Local policy builders: mirror orchestrator's production policies without
-// importing orchestrator (layer independence). See broker_test.go for the
-// rationale.
+
 func gateGitPolicies() map[string]sandbox.BuiltinPolicy {
-	return map[string]sandbox.BuiltinPolicy{
-		"git": {AllowedOps: map[string]struct{}{
-			string(sandbox.GitOpFetch): {},
-			string(sandbox.GitOpPush):  {},
-		}},
-	}
+	return projectspec.DefaultBuiltinPolicies(projectspec.RoleGate, []string{"git"}, projectspec.PolicyContext{})
 }
 
 func hookGitPolicies() map[string]sandbox.BuiltinPolicy {
-	return map[string]sandbox.BuiltinPolicy{
-		"git": {},
-	}
+	return projectspec.DefaultBuiltinPolicies(projectspec.RoleHook, []string{"git"}, projectspec.PolicyContext{})
 }
 
 func TestBroker_GitBuiltinPushUsesTrustedSnapshot(t *testing.T) {

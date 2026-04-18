@@ -49,7 +49,7 @@ func TestRunnerDispatch_StartsJobRuntimeAndPersistsMetadata(t *testing.T) {
 		},
 	}
 
-	planA := &orchestrator.JobSpec{
+	planA := &orchestrator.DispatchRequest{
 		TaskID:      taskID,
 		ProjectID:   "proj-1",
 		HandlerID:   "hook-a",
@@ -60,7 +60,7 @@ func TestRunnerDispatch_StartsJobRuntimeAndPersistsMetadata(t *testing.T) {
 		BoidBinary:  "/bin/true",
 		PayloadJSON: `{}`,
 	}
-	planB := &orchestrator.JobSpec{
+	planB := &orchestrator.DispatchRequest{
 		TaskID:      taskID,
 		ProjectID:   "proj-1",
 		HandlerID:   "hook-b",
@@ -155,7 +155,7 @@ func TestRunnerCleanupTaskWindow_StopsAllTrackedRuntimes(t *testing.T) {
 	}
 
 	for _, handlerID := range []string{"hook-a", "hook-b"} {
-		_, err := runner.Dispatch(context.Background(), &orchestrator.JobSpec{
+		_, err := runner.Dispatch(context.Background(), &orchestrator.DispatchRequest{
 			TaskID:      taskID,
 			ProjectID:   "proj-1",
 			HandlerID:   handlerID,

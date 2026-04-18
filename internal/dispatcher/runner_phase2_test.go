@@ -80,7 +80,7 @@ func TestRunnerDispatch_UsesDispatcherOwnedBrokerInterface(t *testing.T) {
 		},
 	}
 
-	jobID, err := runner.Dispatch(context.Background(), &orchestrator.JobSpec{
+	jobID, err := runner.Dispatch(context.Background(), &orchestrator.DispatchRequest{
 		TaskID:      "task-phase2-12345678",
 		ProjectID:   "proj-1",
 		WorkspaceID: "ws-1",
