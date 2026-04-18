@@ -9,6 +9,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/testutil"
 )
 
@@ -47,17 +48,31 @@ func TestRunnerDispatch_StagesGatesPerJob(t *testing.T) {
 		Sandbox: preparer,
 	}
 
-	plan := dispatcher.DispatchPlan{
+	request := &orchestrator.DispatchRequest{
 		TaskID:          "task-gate-staging",
 		ProjectID:       "proj-1",
 		HandlerID:       "github-auto-merge/mergeable-check",
-		Role:            "gate",
+		Role:            orchestrator.RoleGate,
 		ProjectDir:      projectDir,
 		ProjectGatesDir: filepath.Join(projectDir, ".boid", "gates"),
-		KitGatesDirs:    []dispatcher.KitGatesSource{{GatesDir: kitGatesDir}},
+		KitGatesDirs:    []orchestrator.KitGatesInfo{{GatesDir: kitGatesDir}},
 		HookScript:      "mergeable-check.sh",
 		BoidBinary:      "/bin/true",
 		ServerSocket:    "/tmp/boid.sock",
+	}
+
+	plan := dispatcher.DispatchPlan{
+		Request:         request,
+		TaskID:          request.TaskID,
+		ProjectID:       request.ProjectID,
+		HandlerID:       request.HandlerID,
+		Role:            string(request.Role),
+		ProjectDir:      request.ProjectDir,
+		ProjectGatesDir: request.ProjectGatesDir,
+		KitGatesDirs:    []dispatcher.KitGatesSource{{GatesDir: kitGatesDir}},
+		HookScript:      request.HookScript,
+		BoidBinary:      request.BoidBinary,
+		ServerSocket:    request.ServerSocket,
 	}
 
 	job1, err := runner.Dispatch(context.Background(), &plan)
@@ -76,24 +91,31 @@ func TestRunnerDispatch_StagesGatesPerJob(t *testing.T) {
 		t.Fatalf("PrepareSandbox calls = %d, want 2", len(preparer.calls))
 	}
 
+	stagingOf := func(spec sandbox.Spec) string {
+		if len(spec.CleanupPaths) == 0 {
+			return ""
+		}
+		return spec.CleanupPaths[0]
+	}
 	spec1, spec2 := preparer.calls[0], preparer.calls[1]
+	staging1, staging2 := stagingOf(spec1), stagingOf(spec2)
 
-	for i, spec := range []dispatcher.SandboxSpec{spec1, spec2} {
-		if spec.StagingDir == "" {
-			t.Fatalf("spec[%d].StagingDir empty", i)
+	for i, p := range []struct {
+		spec  sandbox.Spec
+		stage string
+	}{{spec1, staging1}, {spec2, staging2}} {
+		if p.stage == "" {
+			t.Fatalf("spec[%d] staging dir missing from CleanupPaths", i)
 		}
-		if spec.GatesDir != spec.StagingDir {
-			t.Fatalf("spec[%d] GatesDir=%q StagingDir=%q should match", i, spec.GatesDir, spec.StagingDir)
+		if !strings.Contains(filepath.Base(p.stage), p.spec.ID) {
+			t.Fatalf("spec[%d] staging %q does not include jobID %q", i, p.stage, p.spec.ID)
 		}
-		if !strings.Contains(filepath.Base(spec.StagingDir), spec.JobID) {
-			t.Fatalf("spec[%d].StagingDir=%q does not include JobID %q", i, spec.StagingDir, spec.JobID)
-		}
-		if _, err := os.Stat(filepath.Join(spec.StagingDir, "mergeable-check.sh")); err != nil {
+		if _, err := os.Stat(filepath.Join(p.stage, "mergeable-check.sh")); err != nil {
 			t.Fatalf("spec[%d] staged script missing: %v", i, err)
 		}
 	}
 
-	if spec1.StagingDir == spec2.StagingDir {
-		t.Fatalf("sibling gates share staging dir %q — race hazard", spec1.StagingDir)
+	if staging1 == staging2 {
+		t.Fatalf("sibling gates share staging dir %q — race hazard", staging1)
 	}
 }

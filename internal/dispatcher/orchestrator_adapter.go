@@ -51,6 +51,7 @@ func toDispatchPlan(request *orchestrator.DispatchRequest) *DispatchPlan {
 		return nil
 	}
 	return &DispatchPlan{
+		Request:            request,
 		TaskID:             request.TaskID,
 		ProjectID:          request.ProjectID,
 		WorkspaceID:        request.WorkspaceID,

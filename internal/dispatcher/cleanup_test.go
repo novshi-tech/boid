@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 func TestCleanupSandboxArtifacts_RemovesRootScriptsAndStaging(t *testing.T) {
@@ -63,15 +65,16 @@ func TestCleanupSandboxArtifacts_MissingScriptIsIgnored(t *testing.T) {
 }
 
 func TestSandboxPreparer_PopulatesCleanupFields(t *testing.T) {
-	spec := SandboxSpec{
-		JobID:        "prep-test-job",
-		ProjectID:    "proj",
-		ProjectDir:   "/host/project",
-		HomeDir:      "/host/home",
-		BoidBinary:   "/usr/local/bin/boid",
-		ServerSocket: "/run/boid.sock",
-		Role:         "gate",
-		StagingDir:   "/tmp/boid-gates-preparertest",
+	stagingDir := "/tmp/boid-gates-preparertest"
+	spec := sandbox.Spec{
+		ID:      "prep-test-job",
+		WorkDir: "/host/project",
+		Env:     map[string]string{"HOME": "/host/home"},
+		Argv:    []string{"/bin/true"},
+		Mounts: []sandbox.Mount{
+			{Source: "/usr/local/bin/boid", Target: "/opt/boid/bin/boid", Type: sandbox.MountBind, IsFile: true, ReadOnly: true},
+		},
+		CleanupPaths: []string{stagingDir},
 	}
 
 	prep, err := NewSandboxPreparer().PrepareSandbox(spec)
@@ -92,8 +95,8 @@ func TestSandboxPreparer_PopulatesCleanupFields(t *testing.T) {
 	if len(prep.ScriptPaths) != 3 {
 		t.Errorf("expected 3 ScriptPaths, got %d: %v", len(prep.ScriptPaths), prep.ScriptPaths)
 	}
-	if prep.StagingDir != spec.StagingDir {
-		t.Errorf("StagingDir = %q, want %q", prep.StagingDir, spec.StagingDir)
+	if prep.StagingDir != stagingDir {
+		t.Errorf("StagingDir = %q, want %q", prep.StagingDir, stagingDir)
 	}
 	for _, p := range prep.ScriptPaths {
 		if _, err := os.Stat(p); err != nil {

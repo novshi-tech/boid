@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 type Runner struct {
@@ -37,6 +38,10 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 	if plan.TaskID == "" || plan.ProjectID == "" || plan.HandlerID == "" || plan.Role == "" {
 		return "", fmt.Errorf("dispatch plan is incomplete")
 	}
+	request := plan.Request
+	if request == nil {
+		request = planToRequest(plan)
+	}
 
 	j := &Job{
 		TaskID:      plan.TaskID,
@@ -47,10 +52,9 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		TTY:         false,
 	}
 
-	// Pre-allocate jobID so gate staging can be keyed on it. Sharing a
-	// taskID-keyed staging dir lets a prior gate's async cleanup delete
-	// a concurrent/sibling gate's freshly-staged scripts.
-	gatesDir := plan.GatesDir
+	// Stage gate scripts if we have multiple source dirs (project + kits).
+	// We pre-allocate the JobID so the staging directory name is stable.
+	stagedGatesDir := plan.GatesDir
 	stagingDir := plan.StagingDir
 	var gateCleanup func()
 	if plan.Role == "gate" && len(plan.KitGatesDirs) > 0 {
@@ -63,7 +67,7 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		if err != nil {
 			return "", fmt.Errorf("stage gates: %w", err)
 		}
-		gatesDir = staged
+		stagedGatesDir = staged
 		stagingDir = staged
 		gateCleanup = cleanup
 	}
@@ -75,42 +79,10 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		return "", fmt.Errorf("create job: %w", err)
 	}
 
-	spec := SandboxSpec{
-		JobID:              j.ID,
-		TaskID:             plan.TaskID,
-		ProjectID:          plan.ProjectID,
-		ProjectDir:         plan.ProjectDir,
-		HomeDir:            plan.HomeDir,
-		HookFiles:          plan.HookFiles,
-		GatesDir:           gatesDir,
-		HookScript:         plan.HookScript,
-		BoidBinary:         plan.BoidBinary,
-		ServerSocket:       plan.ServerSocket,
-		Env:                plan.Env,
-		BuiltinPolicies:    plan.BuiltinPolicies,
-		HostCommands:       hostCommandNames(plan.HostCommands),
-		AdditionalBindings: plan.AdditionalBindings,
-		WorkspaceDirs:      plan.WorkspaceDirs,
-		ProxyPort:          plan.ProxyPort,
-		StagingDir:         stagingDir,
-		WorktreeDir:        plan.WorktreeDir,
-		Role:               plan.Role,
-		PayloadJSON:        plan.PayloadJSON,
-		TaskJSON:           plan.TaskJSON,
-		Readonly:           plan.Readonly,
-		InstructionsJSON:   plan.InstructionsJSON,
-		TaskYAML:           plan.TaskYAML,
-		EnvironmentYAML:    plan.EnvironmentYAML,
-		Model:              plan.Model,
-		InvokedRole:        plan.InvokedRole,
-		InvokedName:        plan.InvokedName,
-		InvokedType:        plan.InvokedType,
-	}
-	if spec.Role == "hook" || spec.Role == "gate" || plan.Interactive {
-		spec.TTY = true
-	}
-	spec.Interactive = plan.Interactive
-
+	// Broker registration (if policies exist). The resulting token/socket are
+	// handed to orchestrator.BuildSandboxSpec via opts so it can wire them
+	// into the sandbox env + mounts.
+	var brokerSocket, brokerToken string
 	if r.Broker != nil {
 		allowedProjectIDs := allowedProjectIDs(plan.ProjectID, plan.WorkspaceDirs)
 		tokenCtx := BrokerContext{
@@ -133,12 +105,22 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 				return r.SecretStore.Get(ns, key)
 			}
 		}
-		spec.BrokerToken = r.Broker.RegisterCommands(plan.HostCommands, plan.BuiltinPolicies, tokenCtx, resolve)
-		spec.BrokerSocket = r.Broker.SocketPath()
-		r.trackToken(j.ID, spec.BrokerToken)
+		brokerToken = r.Broker.RegisterCommands(plan.HostCommands, plan.BuiltinPolicies, tokenCtx, resolve)
+		brokerSocket = r.Broker.SocketPath()
+		r.trackToken(j.ID, brokerToken)
 	}
 
-	return r.launchSandbox(ctx, j, spec)
+	// Role-aware translation is delegated to orchestrator. Dispatcher only
+	// provides the runtime-injected fields (JobID, broker, staging).
+	sbSpec := orchestrator.BuildSandboxSpec(*request, orchestrator.SandboxBuildOptions{
+		JobID:          j.ID,
+		BrokerSocket:   brokerSocket,
+		BrokerToken:    brokerToken,
+		StagedGatesDir: stagedGatesDir,
+		StagingDir:     stagingDir,
+	})
+
+	return r.launchSandbox(ctx, j, sbSpec)
 }
 
 func toOrchestratorKitGates(sources []KitGatesSource) []orchestrator.KitGatesInfo {
@@ -152,15 +134,93 @@ func toOrchestratorKitGates(sources []KitGatesSource) []orchestrator.KitGatesInf
 	return out
 }
 
-func hostCommandNames(cmds map[string]CommandDef) []string {
+// planToRequest reconstructs an orchestrator.DispatchRequest from a
+// DispatchPlan that was not produced through the orchestrator_adapter (e.g.
+// in tests that build DispatchPlan literals directly). The adapter normally
+// sets plan.Request directly so no reconstruction is needed.
+func planToRequest(plan *DispatchPlan) *orchestrator.DispatchRequest {
+	return &orchestrator.DispatchRequest{
+		TaskID:             plan.TaskID,
+		ProjectID:          plan.ProjectID,
+		WorkspaceID:        plan.WorkspaceID,
+		HandlerID:          plan.HandlerID,
+		Role:               orchestrator.Role(plan.Role),
+		ProjectDir:         plan.ProjectDir,
+		HomeDir:            plan.HomeDir,
+		HookFiles:          planHookFilesToOrchestrator(plan.HookFiles),
+		GatesDir:           plan.GatesDir,
+		ProjectGatesDir:    plan.ProjectGatesDir,
+		KitGatesDirs:       toOrchestratorKitGates(plan.KitGatesDirs),
+		HookScript:         plan.HookScript,
+		BoidBinary:         plan.BoidBinary,
+		ServerSocket:       plan.ServerSocket,
+		Env:                plan.Env,
+		BuiltinPolicies:    plan.BuiltinPolicies,
+		HostCommands:       planCommandDefsToOrchestrator(plan.HostCommands),
+		AdditionalBindings: planBindMountsToOrchestrator(plan.AdditionalBindings),
+		WorkspaceDirs:      plan.WorkspaceDirs,
+		ProxyPort:          plan.ProxyPort,
+		StagingDir:         plan.StagingDir,
+		WorktreeDir:        plan.WorktreeDir,
+		PayloadJSON:        plan.PayloadJSON,
+		TaskJSON:           plan.TaskJSON,
+		Readonly:           plan.Readonly,
+		Interactive:        plan.Interactive,
+		InstructionsJSON:   plan.InstructionsJSON,
+		SecretNamespace:    plan.SecretNamespace,
+		TaskYAML:           plan.TaskYAML,
+		EnvironmentYAML:    plan.EnvironmentYAML,
+		Model:              plan.Model,
+		InvokedRole:        plan.InvokedRole,
+		InvokedName:        plan.InvokedName,
+		InvokedType:        plan.InvokedType,
+	}
+}
+
+func planHookFilesToOrchestrator(files []HookFile) []orchestrator.HookFile {
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]orchestrator.HookFile, len(files))
+	for i, f := range files {
+		out[i] = orchestrator.HookFile{Source: f.Source, TargetName: f.TargetName}
+	}
+	return out
+}
+
+func planCommandDefsToOrchestrator(cmds map[string]CommandDef) map[string]orchestrator.CommandDef {
 	if len(cmds) == 0 {
 		return nil
 	}
-	names := make([]string, 0, len(cmds))
-	for name := range cmds {
-		names = append(names, name)
+	out := make(map[string]orchestrator.CommandDef, len(cmds))
+	for name, def := range cmds {
+		out[name] = orchestrator.CommandDef{
+			Name:               def.Name,
+			Path:               def.Path,
+			AllowedPatterns:    def.AllowedPatterns,
+			DeniedPatterns:     def.DeniedPatterns,
+			AllowedSubcommands: def.AllowedSubcommands,
+			AllowStdin:         def.AllowStdin,
+			Env:                def.Env,
+		}
 	}
-	return names
+	return out
+}
+
+func planBindMountsToOrchestrator(bindings []BindMount) []orchestrator.BindMount {
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make([]orchestrator.BindMount, 0, len(bindings))
+	for _, bm := range bindings {
+		out = append(out, orchestrator.BindMount{
+			Source: bm.Source,
+			Target: bm.Target,
+			Mode:   bm.Mode,
+			IsFile: bm.IsFile,
+		})
+	}
+	return out
 }
 
 func allowedProjectIDs(selfID string, workspaceDirs map[string]string) []string {
@@ -239,7 +299,7 @@ func (r *Runner) CompleteJob(jobID string, result JobCompletionResult) {
 }
 
 // launchSandbox writes sandbox scripts and launches via the configured runtime. Returns job ID.
-func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec SandboxSpec) (string, error) {
+func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec) (string, error) {
 	if job == nil {
 		return "", fmt.Errorf("job is required")
 	}
