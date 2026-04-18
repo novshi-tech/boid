@@ -36,6 +36,12 @@ type SandboxRuntimeInfo struct {
 
 	// RootDir, when non-empty, overrides the default per-sandbox ROOT.
 	RootDir string
+
+	// Foreground indicates whether the job runs in the foreground (user-facing
+	// stdout/stderr, no trap-based completion callback). boid exec sets this
+	// to true; hook/gate jobs leave it false so stdout is captured and a
+	// `boid job done` trap posts completion back to the daemon.
+	Foreground bool
 }
 
 // BuildSandboxSpec turns a business-level JobSpec and dispatcher-side runtime
@@ -164,7 +170,10 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox
 	if len(spec.PrimaryInput) > 0 && !interactive {
 		stdinBytes = append(stdinBytes, spec.PrimaryInput...)
 	}
-	stdoutCapture := "/tmp/boid-output"
+	var stdoutCapture string
+	if !rt.Foreground {
+		stdoutCapture = "/tmp/boid-output"
+	}
 
 	// boid binary bind + shim symlinks.
 	if rt.BoidBinary != "" {
@@ -189,6 +198,11 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox
 	// a PTY so tools like claude get a proper terminal.
 	tty := interactive || spec.Instruction != nil || len(stdinBytes) > 0
 
+	var exitScript string
+	if !rt.Foreground {
+		exitScript = buildExitScript(rt.JobID, homeDir+"/.boid/output/payload_patch.yaml", stdoutCapture)
+	}
+
 	out := sandbox.Spec{
 		ID:                rt.JobID,
 		Mounts:            mounts,
@@ -200,7 +214,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox
 		Env:               env,
 		StdinBytes:        stdinBytes,
 		StdoutCaptureFile: stdoutCapture,
-		ExitScript:        buildExitScript(rt.JobID, homeDir+"/.boid/output/payload_patch.yaml", stdoutCapture),
+		ExitScript:        exitScript,
 		TTY:               tty,
 		RootDir:           rt.RootDir,
 		CleanupPaths:      cleanup,

@@ -139,6 +139,7 @@ func buildExecJob(projectID, commandName string) (*execPreparedJob, error) {
 		ProxyPort:    proxyInfo.Port,
 		BrokerSocket: brokerSocket,
 		BrokerToken:  brokerToken,
+		Foreground:   true,
 	}
 	return &execPreparedJob{spec: spec, rt: rt}, nil
 }
