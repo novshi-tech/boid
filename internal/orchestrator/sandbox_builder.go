@@ -580,7 +580,7 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-func sortedPolicyKeys(policies map[string]sandbox.BuiltinPolicy) []string {
+func sortedPolicyKeys(policies map[string]BuiltinPolicy) []string {
 	return sortedKeys(policies)
 }
 

@@ -103,7 +103,7 @@ func (r *Runner) Dispatch(ctx context.Context, request *orchestrator.DispatchReq
 				return r.SecretStore.Get(ns, key)
 			}
 		}
-		brokerToken = r.Broker.RegisterCommands(request.HostCommands, request.BuiltinPolicies, tokenCtx, resolve)
+		brokerToken = r.Broker.RegisterCommands(request.HostCommands, PoliciesToSandbox(request.BuiltinPolicies), tokenCtx, resolve)
 		brokerSocket = r.Broker.SocketPath()
 		r.trackToken(j.ID, brokerToken)
 	}

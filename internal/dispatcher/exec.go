@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 type ExecBindMount struct {
@@ -34,7 +33,7 @@ type ExecRequest struct {
 	BrokerSocket       string
 	BrokerToken        string
 	Env                map[string]string
-	BuiltinPolicies    map[string]sandbox.BuiltinPolicy
+	BuiltinPolicies    map[string]orchestrator.BuiltinPolicy
 	HostCommands       map[string]ExecCommandDef
 	AdditionalBindings []ExecBindMount
 	WorkspaceDirs      map[string]string
@@ -95,7 +94,7 @@ func WriteExecScripts(req ExecRequest, preparer SandboxPreparer) (string, error)
 	return prepared.OuterPath, nil
 }
 
-func builtinCommandNames(policies map[string]sandbox.BuiltinPolicy) []string {
+func builtinCommandNames(policies map[string]orchestrator.BuiltinPolicy) []string {
 	if len(policies) == 0 {
 		return nil
 	}

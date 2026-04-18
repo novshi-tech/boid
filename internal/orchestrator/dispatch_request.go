@@ -1,7 +1,5 @@
 package orchestrator
 
-import "github.com/novshi-tech/boid/internal/sandbox"
-
 // DispatchRequest is the orchestrator-owned execution request model.
 // Concrete dispatcher plans are derived from this at the boundary adapter.
 type DispatchRequest struct {
@@ -20,7 +18,7 @@ type DispatchRequest struct {
 	BoidBinary         string
 	ServerSocket       string
 	Env                map[string]string
-	BuiltinPolicies    map[string]sandbox.BuiltinPolicy
+	BuiltinPolicies    map[string]BuiltinPolicy
 	HostCommands       map[string]CommandDef
 	AdditionalBindings []BindMount
 	WorkspaceDirs      map[string]string
