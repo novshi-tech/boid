@@ -137,23 +137,27 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		return nil, err
 	}
 
-	runner := dispatcher.Wire(dispatcher.WireConfig{
-		DB:          srv.db,
-		Runtime:     jobRuntime,
-		Broker:      broker,
-		Sandbox:     dispatcher.NewSandboxPreparer(),
-		SecretStore: secretStore,
-	})
-
 	boidBin, _ := os.Executable()
-	planner := orchestrator.WireDispatchPlanner(orchestrator.PlannerWireConfig{
-		Meta:         store,
-		Projects:     orchestrator.DBProjectCatalog{DB: srv.db},
-		Tasks:        orchestrator.DBTaskLookup{DB: srv.db},
-		Worktrees:    worktreePreparer{manager: wtMgr},
+	projectCatalog := orchestrator.DBProjectCatalog{DB: srv.db}
+	taskLookup := orchestrator.DBTaskLookup{DB: srv.db}
+	runner := dispatcher.Wire(dispatcher.WireConfig{
+		DB:           srv.db,
+		Runtime:      jobRuntime,
+		Broker:       broker,
+		Sandbox:      dispatcher.NewSandboxPreparer(),
+		SecretStore:  secretStore,
+		Worktrees:    wtMgr,
+		TaskLookup:   taskLookup,
+		Projects:     projectCatalog,
 		BoidBinary:   boidBin,
 		ServerSocket: cfg.SocketPath,
 		ProxyPort:    &srv.proxyPort,
+	})
+
+	planner := orchestrator.WireDispatchPlanner(orchestrator.PlannerWireConfig{
+		Meta:     store,
+		Projects: projectCatalog,
+		Tasks:    taskLookup,
 	})
 	adapter := dispatcher.NewOrchestratorAdapter(runner, planner)
 	workflow := &api.TaskWorkflowService{

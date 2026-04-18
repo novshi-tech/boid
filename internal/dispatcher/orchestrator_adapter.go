@@ -7,7 +7,7 @@ import (
 )
 
 type dispatchBackend interface {
-	Dispatch(ctx context.Context, request *orchestrator.DispatchRequest) (string, error)
+	Dispatch(ctx context.Context, spec *orchestrator.JobSpec, cleanup orchestrator.CleanupFunc) (string, error)
 	WaitForJobCtx(ctx context.Context, jobID string) (JobCompletionResult, error)
 }
 
@@ -22,19 +22,19 @@ func NewOrchestratorAdapter(dispatcher dispatchBackend, planner *orchestrator.Di
 }
 
 func (a *OrchestratorAdapter) ExecuteHook(ctx context.Context, event *orchestrator.HookFireEvent) (string, error) {
-	request, err := a.planner.PlanHook(event)
+	spec, cleanup, err := a.planner.PlanHook(event)
 	if err != nil {
 		return "", err
 	}
-	return a.dispatcher.Dispatch(ctx, request)
+	return a.dispatcher.Dispatch(ctx, spec, cleanup)
 }
 
 func (a *OrchestratorAdapter) ExecuteGate(ctx context.Context, event *orchestrator.GateFireEvent) (string, error) {
-	request, err := a.planner.PlanGate(event)
+	spec, cleanup, err := a.planner.PlanGate(event)
 	if err != nil {
 		return "", err
 	}
-	return a.dispatcher.Dispatch(ctx, request)
+	return a.dispatcher.Dispatch(ctx, spec, cleanup)
 }
 
 func (a *OrchestratorAdapter) WaitForJob(ctx context.Context, jobID string) (orchestrator.JobCompletion, error) {
