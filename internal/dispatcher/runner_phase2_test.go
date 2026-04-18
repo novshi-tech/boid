@@ -20,12 +20,12 @@ type fakeBroker struct {
 }
 
 type fakeBrokerRegistration struct {
-	commands map[string]dispatcher.CommandDef
+	commands map[string]orchestrator.CommandDef
 	policies map[string]sandbox.BuiltinPolicy
 	ctx      dispatcher.BrokerContext
 }
 
-func (b *fakeBroker) RegisterCommands(commands map[string]dispatcher.CommandDef, policies map[string]sandbox.BuiltinPolicy, ctx dispatcher.BrokerContext, resolve dispatcher.SecretResolver) string {
+func (b *fakeBroker) RegisterCommands(commands map[string]orchestrator.CommandDef, policies map[string]sandbox.BuiltinPolicy, ctx dispatcher.BrokerContext, resolve dispatcher.SecretResolver) string {
 	token := "token-1"
 	if len(b.tokens) > 0 {
 		token = b.tokens[0]
@@ -91,7 +91,7 @@ func TestRunnerDispatch_UsesDispatcherOwnedBrokerInterface(t *testing.T) {
 		HookScript:  "hook-a.sh",
 		BoidBinary:  "/bin/true",
 		PayloadJSON: `{}`,
-		HostCommands: map[string]dispatcher.CommandDef{
+		HostCommands: map[string]orchestrator.CommandDef{
 			"git": {Name: "git"},
 		},
 		WorkspaceDirs: map[string]string{

@@ -16,7 +16,7 @@ type capturingBroker struct {
 	ctx   dispatcher.BrokerContext
 }
 
-func (b *capturingBroker) RegisterCommands(commands map[string]dispatcher.CommandDef, builtinPolicies map[string]sandbox.BuiltinPolicy, ctx dispatcher.BrokerContext, resolve dispatcher.SecretResolver) string {
+func (b *capturingBroker) RegisterCommands(commands map[string]orchestrator.CommandDef, builtinPolicies map[string]sandbox.BuiltinPolicy, ctx dispatcher.BrokerContext, resolve dispatcher.SecretResolver) string {
 	b.ctx = ctx
 	if b.token == "" {
 		b.token = "token-1"

@@ -2,6 +2,7 @@ package server
 
 import (
 	"github.com/novshi-tech/boid/internal/dispatcher"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
@@ -16,7 +17,7 @@ type sandboxBrokerAdapter struct {
 	broker *sandbox.Broker
 }
 
-func (a *sandboxBrokerAdapter) RegisterCommands(commands map[string]dispatcher.CommandDef, builtinPolicies map[string]sandbox.BuiltinPolicy, ctx dispatcher.BrokerContext, resolve dispatcher.SecretResolver) string {
+func (a *sandboxBrokerAdapter) RegisterCommands(commands map[string]orchestrator.CommandDef, builtinPolicies map[string]sandbox.BuiltinPolicy, ctx dispatcher.BrokerContext, resolve dispatcher.SecretResolver) string {
 	tokenCtx := sandbox.TokenContext{
 		JobID:             ctx.JobID,
 		TaskID:            ctx.TaskID,
@@ -44,7 +45,7 @@ func (a *sandboxBrokerAdapter) SocketPath() string {
 	return a.broker.SocketPath
 }
 
-func toSandboxCommandDefs(commands map[string]dispatcher.CommandDef) map[string]sandbox.CommandDef {
+func toSandboxCommandDefs(commands map[string]orchestrator.CommandDef) map[string]sandbox.CommandDef {
 	if len(commands) == 0 {
 		return nil
 	}

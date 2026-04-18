@@ -61,7 +61,7 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		j.ID = uuid.New().String()
 		staged, cleanup, err := orchestrator.StageGates(
 			plan.ProjectGatesDir,
-			toOrchestratorKitGates(plan.KitGatesDirs),
+			plan.KitGatesDirs,
 			j.ID,
 		)
 		if err != nil {
@@ -123,17 +123,6 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 	return r.launchSandbox(ctx, j, sbSpec)
 }
 
-func toOrchestratorKitGates(sources []KitGatesSource) []orchestrator.KitGatesInfo {
-	if len(sources) == 0 {
-		return nil
-	}
-	out := make([]orchestrator.KitGatesInfo, len(sources))
-	for i, s := range sources {
-		out[i] = orchestrator.KitGatesInfo{GatesDir: s.GatesDir}
-	}
-	return out
-}
-
 // planToRequest reconstructs an orchestrator.DispatchRequest from a
 // DispatchPlan that was not produced through the orchestrator_adapter (e.g.
 // in tests that build DispatchPlan literals directly). The adapter normally
@@ -147,17 +136,17 @@ func planToRequest(plan *DispatchPlan) *orchestrator.DispatchRequest {
 		Role:               orchestrator.Role(plan.Role),
 		ProjectDir:         plan.ProjectDir,
 		HomeDir:            plan.HomeDir,
-		HookFiles:          planHookFilesToOrchestrator(plan.HookFiles),
+		HookFiles:          plan.HookFiles,
 		GatesDir:           plan.GatesDir,
 		ProjectGatesDir:    plan.ProjectGatesDir,
-		KitGatesDirs:       toOrchestratorKitGates(plan.KitGatesDirs),
+		KitGatesDirs:       plan.KitGatesDirs,
 		HookScript:         plan.HookScript,
 		BoidBinary:         plan.BoidBinary,
 		ServerSocket:       plan.ServerSocket,
 		Env:                plan.Env,
 		BuiltinPolicies:    plan.BuiltinPolicies,
-		HostCommands:       planCommandDefsToOrchestrator(plan.HostCommands),
-		AdditionalBindings: planBindMountsToOrchestrator(plan.AdditionalBindings),
+		HostCommands:       plan.HostCommands,
+		AdditionalBindings: plan.AdditionalBindings,
 		WorkspaceDirs:      plan.WorkspaceDirs,
 		ProxyPort:          plan.ProxyPort,
 		StagingDir:         plan.StagingDir,
@@ -175,52 +164,6 @@ func planToRequest(plan *DispatchPlan) *orchestrator.DispatchRequest {
 		InvokedName:        plan.InvokedName,
 		InvokedType:        plan.InvokedType,
 	}
-}
-
-func planHookFilesToOrchestrator(files []HookFile) []orchestrator.HookFile {
-	if len(files) == 0 {
-		return nil
-	}
-	out := make([]orchestrator.HookFile, len(files))
-	for i, f := range files {
-		out[i] = orchestrator.HookFile{Source: f.Source, TargetName: f.TargetName}
-	}
-	return out
-}
-
-func planCommandDefsToOrchestrator(cmds map[string]CommandDef) map[string]orchestrator.CommandDef {
-	if len(cmds) == 0 {
-		return nil
-	}
-	out := make(map[string]orchestrator.CommandDef, len(cmds))
-	for name, def := range cmds {
-		out[name] = orchestrator.CommandDef{
-			Name:               def.Name,
-			Path:               def.Path,
-			AllowedPatterns:    def.AllowedPatterns,
-			DeniedPatterns:     def.DeniedPatterns,
-			AllowedSubcommands: def.AllowedSubcommands,
-			AllowStdin:         def.AllowStdin,
-			Env:                def.Env,
-		}
-	}
-	return out
-}
-
-func planBindMountsToOrchestrator(bindings []BindMount) []orchestrator.BindMount {
-	if len(bindings) == 0 {
-		return nil
-	}
-	out := make([]orchestrator.BindMount, 0, len(bindings))
-	for _, bm := range bindings {
-		out = append(out, orchestrator.BindMount{
-			Source: bm.Source,
-			Target: bm.Target,
-			Mode:   bm.Mode,
-			IsFile: bm.IsFile,
-		})
-	}
-	return out
 }
 
 func allowedProjectIDs(selfID string, workspaceDirs map[string]string) []string {

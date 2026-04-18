@@ -1,6 +1,9 @@
 package dispatcher
 
-import "github.com/novshi-tech/boid/internal/sandbox"
+import (
+	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
+)
 
 // SecretResolver resolves a secret key into its plaintext value.
 type SecretResolver func(key string) (string, error)
@@ -19,7 +22,7 @@ type BrokerContext struct {
 
 // CommandBroker is the dispatcher-owned behavior contract for host command brokering.
 type CommandBroker interface {
-	RegisterCommands(commands map[string]CommandDef, builtinPolicies map[string]sandbox.BuiltinPolicy, ctx BrokerContext, resolve SecretResolver) string
+	RegisterCommands(commands map[string]orchestrator.CommandDef, builtinPolicies map[string]sandbox.BuiltinPolicy, ctx BrokerContext, resolve SecretResolver) string
 	UnregisterCommandToken(token string)
 	SocketPath() string
 }

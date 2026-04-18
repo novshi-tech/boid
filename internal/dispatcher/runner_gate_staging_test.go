@@ -69,7 +69,7 @@ func TestRunnerDispatch_StagesGatesPerJob(t *testing.T) {
 		Role:            string(request.Role),
 		ProjectDir:      request.ProjectDir,
 		ProjectGatesDir: request.ProjectGatesDir,
-		KitGatesDirs:    []dispatcher.KitGatesSource{{GatesDir: kitGatesDir}},
+		KitGatesDirs:    []orchestrator.KitGatesInfo{{GatesDir: kitGatesDir}},
 		HookScript:      request.HookScript,
 		BoidBinary:      request.BoidBinary,
 		ServerSocket:    request.ServerSocket,

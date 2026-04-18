@@ -59,17 +59,17 @@ func toDispatchPlan(request *orchestrator.DispatchRequest) *DispatchPlan {
 		Role:               string(request.Role),
 		ProjectDir:         request.ProjectDir,
 		HomeDir:            request.HomeDir,
-		HookFiles:          toDispatchHookFiles(request.HookFiles),
+		HookFiles:          request.HookFiles,
 		GatesDir:           request.GatesDir,
 		ProjectGatesDir:    request.ProjectGatesDir,
-		KitGatesDirs:       toDispatchKitGatesDirs(request.KitGatesDirs),
+		KitGatesDirs:       request.KitGatesDirs,
 		HookScript:         request.HookScript,
 		BoidBinary:         request.BoidBinary,
 		ServerSocket:       request.ServerSocket,
 		Env:                request.Env,
 		BuiltinPolicies:    request.BuiltinPolicies,
-		HostCommands:       toCommandDefs(request.HostCommands),
-		AdditionalBindings: toBindMounts(request.AdditionalBindings),
+		HostCommands:       request.HostCommands,
+		AdditionalBindings: request.AdditionalBindings,
 		WorkspaceDirs:      request.WorkspaceDirs,
 		ProxyPort:          request.ProxyPort,
 		StagingDir:         request.StagingDir,
@@ -87,61 +87,4 @@ func toDispatchPlan(request *orchestrator.DispatchRequest) *DispatchPlan {
 		InvokedName:        request.InvokedName,
 		InvokedType:        request.InvokedType,
 	}
-}
-
-func toDispatchKitGatesDirs(infos []orchestrator.KitGatesInfo) []KitGatesSource {
-	if len(infos) == 0 {
-		return nil
-	}
-	out := make([]KitGatesSource, len(infos))
-	for i, info := range infos {
-		out[i] = KitGatesSource{GatesDir: info.GatesDir}
-	}
-	return out
-}
-
-func toDispatchHookFiles(files []orchestrator.HookFile) []HookFile {
-	if len(files) == 0 {
-		return nil
-	}
-	out := make([]HookFile, len(files))
-	for i, f := range files {
-		out[i] = HookFile{Source: f.Source, TargetName: f.TargetName}
-	}
-	return out
-}
-
-func toCommandDefs(cmds map[string]orchestrator.CommandDef) map[string]CommandDef {
-	if len(cmds) == 0 {
-		return nil
-	}
-	out := make(map[string]CommandDef, len(cmds))
-	for name, def := range cmds {
-		out[name] = CommandDef{
-			Name:               def.Name,
-			Path:               def.Path,
-			AllowedPatterns:    def.AllowedPatterns,
-			DeniedPatterns:     def.DeniedPatterns,
-			AllowedSubcommands: def.AllowedSubcommands,
-			AllowStdin:         def.AllowStdin,
-			Env:                def.Env,
-		}
-	}
-	return out
-}
-
-func toBindMounts(bindings []orchestrator.BindMount) []BindMount {
-	if len(bindings) == 0 {
-		return nil
-	}
-	out := make([]BindMount, 0, len(bindings))
-	for _, binding := range bindings {
-		out = append(out, BindMount{
-			Source: binding.Source,
-			Target: binding.Target,
-			Mode:   binding.Mode,
-			IsFile: binding.IsFile,
-		})
-	}
-	return out
 }

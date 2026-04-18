@@ -2,14 +2,6 @@ package dispatcher
 
 import "github.com/novshi-tech/boid/internal/sandbox"
 
-// HookFile describes a single hook file to bind-mount into the sandbox.
-// Retained as a DispatchPlan carrier; orchestrator.HookFile is the canonical
-// type and this one mirrors it 1:1.
-type HookFile struct {
-	Source     string
-	TargetName string
-}
-
 // PreparedSandbox is the concrete launch artifact returned by a provider.
 // RootDir, ScriptPaths, and StagingDir are populated so the runner can remove
 // them after the sandbox runtime has exited. They are optional: zero values
