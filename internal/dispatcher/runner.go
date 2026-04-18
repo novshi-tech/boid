@@ -52,12 +52,14 @@ func (r *Runner) Dispatch(ctx context.Context, plan *DispatchPlan) (string, erro
 		TTY:         false,
 	}
 
-	// Stage gate scripts if we have multiple source dirs (project + kits).
+	// Stage gate scripts when kit gates need to be merged with project gates.
+	// KitGatesDirs is only populated by orchestrator for gate dispatch, so its
+	// non-empty value is the primitive signal for staging — no Role check needed.
 	// We pre-allocate the JobID so the staging directory name is stable.
 	stagedGatesDir := plan.GatesDir
 	stagingDir := plan.StagingDir
 	var gateCleanup func()
-	if plan.Role == "gate" && len(plan.KitGatesDirs) > 0 {
+	if len(plan.KitGatesDirs) > 0 {
 		j.ID = uuid.New().String()
 		staged, cleanup, err := orchestrator.StageGates(
 			plan.ProjectGatesDir,
