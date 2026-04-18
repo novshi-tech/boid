@@ -131,11 +131,11 @@ func handleGitBuiltinRequest(req *ExecRequest, entry *tokenEntry) *ExecResponse 
 	}
 
 	// op 制限は登録時にスタンプされた BuiltinPolicy で判定する。
-	// role 判定は planner.go の DefaultBuiltinPolicies で行われ、broker はそれを参照するのみ。
+	// role 判定は orchestrator.DefaultBuiltinPolicies で行われ、broker はそれを参照するのみ。
 	if !entry.allowsBuiltinOp("git", string(gitReq.Op)) {
 		return &ExecResponse{
 			ExitCode: 1,
-			Stderr:   fmt.Sprintf("git op %q not allowed for role %s", gitReq.Op, entry.Context.Role),
+			Stderr:   fmt.Sprintf("git op %q not allowed by policy", gitReq.Op),
 		}
 	}
 

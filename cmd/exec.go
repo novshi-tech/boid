@@ -96,7 +96,7 @@ func buildExecRequest(projectID, commandName string) (dispatcher.ExecRequest, er
 	if !hasBoid {
 		builtinCommands = append(builtinCommands, "boid")
 	}
-	builtinPolicies := orchestrator.DefaultBuiltinPolicies(orchestrator.RoleGate, builtinCommands)
+	builtinPolicies := orchestrator.DefaultBuiltinPolicies(orchestrator.RoleGate, builtinCommands, orchestrator.PolicyContext{ProjectDir: p.WorkDir})
 
 	var brokerSocket, brokerToken string
 	if len(cmd.HostCommands) > 0 || len(builtinPolicies) > 0 {

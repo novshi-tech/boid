@@ -1,6 +1,9 @@
 package sandbox
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 type ExecRequest struct {
 	Command string       `json:"command"`
@@ -108,12 +111,33 @@ const (
 // by the broker, keeping all role-based authorization logic outside the broker itself.
 type BuiltinPolicy struct {
 	AllowedOps map[string]struct{}
+	// AllowedCwdRoots lists additional cwd roots permitted for this builtin
+	// beyond the per-token entry root (project/worktree dir). Used so that
+	// e.g. gate jobs can target /tmp or the host project dir without the
+	// broker needing to know the role itself.
+	AllowedCwdRoots []string
 }
 
 // Allows reports whether op is in the allowed set.
 func (p BuiltinPolicy) Allows(op string) bool {
 	_, ok := p.AllowedOps[op]
 	return ok
+}
+
+// AllowsCwd reports whether cwd is within any of the policy's additional cwd roots.
+func (p BuiltinPolicy) AllowsCwd(cwd string) bool {
+	for _, root := range p.AllowedCwdRoots {
+		if root == "" {
+			continue
+		}
+		if cwd == root {
+			return true
+		}
+		if strings.HasPrefix(cwd, root+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 type GitRequest struct {

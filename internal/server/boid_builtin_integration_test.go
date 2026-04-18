@@ -48,7 +48,7 @@ func TestBoidBuiltinIntegration_RegisterAndCreateAcrossWorkspace(t *testing.T) {
 		Socket string `json:"socket"`
 	}
 	if err := ts.Client.Do("POST", "/api/broker/register", map[string]any{
-		"builtin_policies": orchestrator.DefaultBuiltinPolicies(orchestrator.RoleGate, []string{"boid"}),
+		"builtin_policies": orchestrator.DefaultBuiltinPolicies(orchestrator.RoleGate, []string{"boid"}, orchestrator.PolicyContext{}),
 		"project_id":       "proj-1",
 	}, &brokerResp); err != nil {
 		t.Fatalf("register broker commands: %v", err)

@@ -7,7 +7,7 @@ import (
 )
 
 func TestDefaultBuiltinPolicies_HookGitBoid(t *testing.T) {
-	policies := DefaultBuiltinPolicies(RoleHook, []string{"git", "boid"})
+	policies := DefaultBuiltinPolicies(RoleHook, []string{"git", "boid"}, PolicyContext{})
 	if len(policies) != 2 {
 		t.Fatalf("expected 2 policies, got %d", len(policies))
 	}
@@ -20,7 +20,7 @@ func TestDefaultBuiltinPolicies_HookGitBoid(t *testing.T) {
 }
 
 func TestDefaultBuiltinPolicies_GateGitBoid(t *testing.T) {
-	policies := DefaultBuiltinPolicies(RoleGate, []string{"git", "boid"})
+	policies := DefaultBuiltinPolicies(RoleGate, []string{"git", "boid"}, PolicyContext{})
 	if len(policies) != 2 {
 		t.Fatalf("expected 2 policies, got %d", len(policies))
 	}
@@ -35,11 +35,11 @@ func TestDefaultBuiltinPolicies_GateGitBoid(t *testing.T) {
 func TestDefaultBuiltinPolicies_EmptyRoleEqualsGate(t *testing.T) {
 	// テスト互換のため gate と同じ policy を返す。
 	// production 経路では Role は必ず設定される。
-	gateGit := DefaultBuiltinPolicies(RoleGate, []string{"git"})
-	defaultGit := DefaultBuiltinPolicies("", []string{"git"})
+	gateGit := DefaultBuiltinPolicies(RoleGate, []string{"git"}, PolicyContext{})
+	defaultGit := DefaultBuiltinPolicies("", []string{"git"}, PolicyContext{})
 
-	gateBoid := DefaultBuiltinPolicies(RoleGate, []string{"boid"})
-	defaultBoid := DefaultBuiltinPolicies("", []string{"boid"})
+	gateBoid := DefaultBuiltinPolicies(RoleGate, []string{"boid"}, PolicyContext{})
+	defaultBoid := DefaultBuiltinPolicies("", []string{"boid"}, PolicyContext{})
 
 	if !opsEqual(gateGit["git"].AllowedOps, defaultGit["git"].AllowedOps) {
 		t.Error("default git policy should equal gate git policy")
@@ -50,7 +50,7 @@ func TestDefaultBuiltinPolicies_EmptyRoleEqualsGate(t *testing.T) {
 }
 
 func TestDefaultBuiltinPolicies_HookBoidOnly(t *testing.T) {
-	policies := DefaultBuiltinPolicies(RoleHook, []string{"boid"})
+	policies := DefaultBuiltinPolicies(RoleHook, []string{"boid"}, PolicyContext{})
 	if len(policies) != 1 {
 		t.Fatalf("expected 1 policy, got %d", len(policies))
 	}
@@ -60,7 +60,7 @@ func TestDefaultBuiltinPolicies_HookBoidOnly(t *testing.T) {
 }
 
 func TestDefaultBuiltinPolicies_GateGitOnly(t *testing.T) {
-	policies := DefaultBuiltinPolicies(RoleGate, []string{"git"})
+	policies := DefaultBuiltinPolicies(RoleGate, []string{"git"}, PolicyContext{})
 	if len(policies) != 1 {
 		t.Fatalf("expected 1 policy, got %d", len(policies))
 	}
@@ -72,7 +72,7 @@ func TestDefaultBuiltinPolicies_GateGitOnly(t *testing.T) {
 // hook×git policy は AllowedOps が空であること。
 // hook からの broker 経由 git 操作は禁止。agent はホスト側リモートに直接アクセスさせない。
 func TestDefaultBuiltinPolicies_HookGitIsEmpty(t *testing.T) {
-	policies := DefaultBuiltinPolicies(RoleHook, []string{"git"})
+	policies := DefaultBuiltinPolicies(RoleHook, []string{"git"}, PolicyContext{})
 	gitPolicy := policies["git"]
 	if len(gitPolicy.AllowedOps) != 0 {
 		t.Errorf("hook×git AllowedOps should be empty, got %v", gitPolicy.AllowedOps)
@@ -82,7 +82,7 @@ func TestDefaultBuiltinPolicies_HookGitIsEmpty(t *testing.T) {
 // gate×git policy は {fetch, push} を含むこと。
 // gate は fetch/push 両方を使う (pr-verify での push, worktree 作成時の fetch 等)。
 func TestDefaultBuiltinPolicies_GateGitHasFetchPush(t *testing.T) {
-	policies := DefaultBuiltinPolicies(RoleGate, []string{"git"})
+	policies := DefaultBuiltinPolicies(RoleGate, []string{"git"}, PolicyContext{})
 	gitPolicy := policies["git"]
 	if !gitPolicy.Allows(string(sandbox.GitOpFetch)) {
 		t.Error("gate×git should allow fetch")
@@ -95,7 +95,7 @@ func TestDefaultBuiltinPolicies_GateGitHasFetchPush(t *testing.T) {
 // hook×boid policy は {job_done, task_get} であること。
 // agent は task を作成/更新しない。読み取り専用操作 (task_get) と完了通知 (job_done) のみ許可。
 func TestDefaultBuiltinPolicies_HookBoidOps(t *testing.T) {
-	policies := DefaultBuiltinPolicies(RoleHook, []string{"boid"})
+	policies := DefaultBuiltinPolicies(RoleHook, []string{"boid"}, PolicyContext{})
 	boidPolicy := policies["boid"]
 
 	wantOps := map[string]struct{}{
@@ -111,7 +111,7 @@ func TestDefaultBuiltinPolicies_HookBoidOps(t *testing.T) {
 // gate は verification 結果を task に反映する必要があるため task_create/task_update を許可。
 // task.reopen は github-auto-merge kit がマージコンフリクト検出時に done タスクを reworking に戻すために必要。
 func TestDefaultBuiltinPolicies_GateBoidOps(t *testing.T) {
-	policies := DefaultBuiltinPolicies(RoleGate, []string{"boid"})
+	policies := DefaultBuiltinPolicies(RoleGate, []string{"boid"}, PolicyContext{})
 	boidPolicy := policies["boid"]
 
 	wantOps := map[string]struct{}{
