@@ -70,7 +70,7 @@ func TestRunnerDispatch_ForwardsFieldsToSandboxSpec(t *testing.T) {
 		Sandbox: preparer,
 	}
 
-	request := &orchestrator.DispatchRequest{
+	request := &orchestrator.JobSpec{
 		TaskID:     "task-phase3-12345678",
 		ProjectID:  "proj-1",
 		HandlerID:  "hook-a",

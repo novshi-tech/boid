@@ -106,7 +106,7 @@ func buildExecRequest(projectID, commandName string) (dispatcher.ExecRequest, er
 		}
 		regReq := map[string]any{
 			"commands":         cmd.HostCommands,
-			"builtin_policies": builtinPolicies,
+			"builtin_policies": dispatcher.PoliciesToSandbox(builtinPolicies),
 			"project_id":       p.ID,
 		}
 		if err := c.Do("POST", "/api/broker/register", regReq, &brokerResp); err == nil {

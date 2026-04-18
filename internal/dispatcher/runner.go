@@ -31,7 +31,7 @@ type Runner struct {
 	taskRuntimes  map[string]map[string]struct{} // task ID -> runtime IDs
 }
 
-func (r *Runner) Dispatch(ctx context.Context, request *orchestrator.DispatchRequest) (string, error) {
+func (r *Runner) Dispatch(ctx context.Context, request *orchestrator.JobSpec) (string, error) {
 	if request == nil {
 		return "", fmt.Errorf("dispatch request is required")
 	}
@@ -103,14 +103,15 @@ func (r *Runner) Dispatch(ctx context.Context, request *orchestrator.DispatchReq
 				return r.SecretStore.Get(ns, key)
 			}
 		}
-		brokerToken = r.Broker.RegisterCommands(request.HostCommands, request.BuiltinPolicies, tokenCtx, resolve)
+		brokerToken = r.Broker.RegisterCommands(request.HostCommands, PoliciesToSandbox(request.BuiltinPolicies), tokenCtx, resolve)
 		brokerSocket = r.Broker.SocketPath()
 		r.trackToken(j.ID, brokerToken)
 	}
 
-	// Role-aware translation is delegated to orchestrator. Dispatcher only
-	// provides the runtime-injected fields (JobID, broker, staging).
-	sbSpec := orchestrator.BuildSandboxSpec(*request, orchestrator.SandboxBuildOptions{
+	// Role-aware translation lives in dispatcher.BuildSandboxSpec.
+	// orchestrator only knows JobSpec (sandbox-agnostic); dispatcher bridges
+	// it to the primitive-only sandbox.Spec.
+	sbSpec := BuildSandboxSpec(*request, SandboxBuildOptions{
 		JobID:          j.ID,
 		BrokerSocket:   brokerSocket,
 		BrokerToken:    brokerToken,

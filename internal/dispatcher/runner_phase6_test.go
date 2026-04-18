@@ -40,7 +40,7 @@ func TestRunnerDispatch_WaitCompleteAndCleanupTrackedWindows(t *testing.T) {
 		},
 	}
 
-	jobID, err := runner.Dispatch(context.Background(), &orchestrator.DispatchRequest{
+	jobID, err := runner.Dispatch(context.Background(), &orchestrator.JobSpec{
 		TaskID:      taskID,
 		ProjectID:   "proj-1",
 		HandlerID:   "hook-a",

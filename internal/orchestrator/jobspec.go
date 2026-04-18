@@ -1,10 +1,9 @@
 package orchestrator
 
-import "github.com/novshi-tech/boid/internal/sandbox"
-
-// DispatchRequest is the orchestrator-owned execution request model.
-// Concrete dispatcher plans are derived from this at the boundary adapter.
-type DispatchRequest struct {
+// JobSpec is the orchestrator-owned, sandbox-agnostic execution request.
+// dispatcher translates this into a concrete sandbox.Spec; layers below
+// dispatcher must not see this type directly.
+type JobSpec struct {
 	TaskID             string
 	ProjectID          string
 	WorkspaceID        string
@@ -20,7 +19,7 @@ type DispatchRequest struct {
 	BoidBinary         string
 	ServerSocket       string
 	Env                map[string]string
-	BuiltinPolicies    map[string]sandbox.BuiltinPolicy
+	BuiltinPolicies    map[string]BuiltinPolicy
 	HostCommands       map[string]CommandDef
 	AdditionalBindings []BindMount
 	WorkspaceDirs      map[string]string
@@ -36,14 +35,14 @@ type DispatchRequest struct {
 	// BOID_INTERACTIVE=1 env var is exported, and the sandbox is launched with
 	// a PTY. When false: PayloadJSON is fed to stdin and a PTY is still
 	// allocated for hook/gate roles because the agent process expects one.
-	// (sandbox_builder.go computes the final TTY value from this + Role.)
-	Interactive        bool
-	InstructionsJSON   string
-	SecretNamespace    string
-	TaskYAML           string // serialized task metadata for context/task.yaml
-	EnvironmentYAML    string // serialized sandbox environment for context/environment.yaml
-	Model              string // AI model to use (from instruction's model field)
-	InvokedRole        string // instruction map key name (e.g. "main", "executor", "reviewer_security")
-	InvokedName        string // instruction.Name value (e.g. "security", "performance"; empty if unset)
-	InvokedType        string // instruction.Type value (e.g. "execution", "rework", "verification")
+	// (dispatcher computes the final TTY value from this + Role.)
+	Interactive      bool
+	InstructionsJSON string
+	SecretNamespace  string
+	TaskYAML         string // serialized task metadata for context/task.yaml
+	EnvironmentYAML  string // serialized sandbox environment for context/environment.yaml
+	Model            string // AI model to use (from instruction's model field)
+	InvokedRole      string // instruction map key name (e.g. "main", "executor", "reviewer_security")
+	InvokedName      string // instruction.Name value (e.g. "security", "performance"; empty if unset)
+	InvokedType      string // instruction.Type value (e.g. "execution", "rework", "verification")
 }

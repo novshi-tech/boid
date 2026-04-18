@@ -1,4 +1,4 @@
-package orchestrator
+package dispatcher
 
 import (
 	"encoding/json"
@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"gopkg.in/yaml.v3"
 )
@@ -31,7 +32,7 @@ type SandboxBuildOptions struct {
 }
 
 // ExecSandboxBuildInput carries the inputs needed to build a sandbox.Spec for
-// a user-initiated `boid exec` invocation. Distinct from DispatchRequest
+// a user-initiated `boid exec` invocation. Distinct from orchestrator.JobSpec
 // because exec has no Task/Role/HookScript and provides Argv directly.
 type ExecSandboxBuildInput struct {
 	JobID              string
@@ -46,7 +47,7 @@ type ExecSandboxBuildInput struct {
 	Env                map[string]string
 	BuiltinCommands    []string
 	HostCommands       []string
-	AdditionalBindings []BindMount
+	AdditionalBindings []orchestrator.BindMount
 	WorkspaceDirs      map[string]string
 	ProxyPort          int
 	TTY                bool
@@ -54,11 +55,11 @@ type ExecSandboxBuildInput struct {
 	RootDir            string
 }
 
-// BuildSandboxSpec translates a DispatchRequest (orchestrator vocabulary:
+// BuildSandboxSpec translates a orchestrator.JobSpec (orchestrator vocabulary:
 // Role, Task, Instruction, Hook, Gate) into a primitive-only sandbox.Spec.
 // This is the role-aware seam — dispatcher consumes only sandbox.Spec and
 // has no knowledge of Role or any higher-level concept.
-func BuildSandboxSpec(req DispatchRequest, opts SandboxBuildOptions) sandbox.Spec {
+func BuildSandboxSpec(req orchestrator.JobSpec, opts SandboxBuildOptions) sandbox.Spec {
 	workDir := effectiveWorkDir(req)
 	homeDir := effectiveHomeDir(req)
 
@@ -117,7 +118,7 @@ func BuildSandboxSpec(req DispatchRequest, opts SandboxBuildOptions) sandbox.Spe
 	var exitScript string
 
 	switch req.Role {
-	case RoleHook:
+	case orchestrator.RoleHook:
 		mounts = append(mounts, projectMountsWithHooks(req.ProjectDir, workDir, homeDir, req.WorktreeDir, req.Readonly, req.WorkspaceDirs, len(req.HookFiles) > 0)...)
 		mounts = append(mounts, HookFileMounts(workDir, req.ProjectDir, req.HookFiles)...)
 		mounts = append(mounts, AdditionalBindingMounts(req.AdditionalBindings)...)
@@ -129,8 +130,9 @@ func BuildSandboxSpec(req DispatchRequest, opts SandboxBuildOptions) sandbox.Spe
 		} else {
 			env["BOID_INTERACTIVE"] = "1"
 		}
+		files = append(files, outputDirSentinel(homeDir+"/.boid/output"))
 		exitScript = BuildExitScript(opts.JobID, "$HOME/.boid/output/payload_patch.yaml", "")
-	case RoleGate:
+	case orchestrator.RoleGate:
 		env["HOME"] = "/tmp"
 		mounts = append(mounts, sandbox.Mount{Target: "/tmp", Type: sandbox.MountTmpfs})
 		if workDir != "" {
@@ -155,6 +157,12 @@ func BuildSandboxSpec(req DispatchRequest, opts SandboxBuildOptions) sandbox.Spe
 		argv = resolveGateArgv(req)
 		stdinBytes = []byte(req.TaskJSON)
 		stdoutCapture = "/tmp/boid-output"
+		// Gate HOME は /tmp (tmpfs) のため、inner script 冒頭で
+		// .boid/output/ を FileWrite の親ディレクトリ自動 mkdir に頼って
+		// 確実に作る。こうしないと gate script が payload_patch.yaml に
+		// cat する時点で ENOENT になり exit 1 する (BuildExitScript の
+		// mkdir は trap body 内にしかない)。
+		files = append(files, outputDirSentinel("/tmp/.boid/output"))
 		exitScript = BuildExitScript(opts.JobID, "$HOME/.boid/output/payload_patch.yaml", "/tmp/boid-output")
 	default:
 		// Unknown Role: treat like a tracked command with project access.
@@ -204,7 +212,7 @@ func BuildSandboxSpec(req DispatchRequest, opts SandboxBuildOptions) sandbox.Spe
 		//     Gate runs a script reading TaskJSON via /dev/stdin under PTY).
 		// The first axis is user-driven, the latter is role-derived; keeping
 		// them OR'd here documents that PTY is the union, not a single concern.
-		TTY:               req.Interactive || req.Role == RoleHook || req.Role == RoleGate,
+		TTY:               req.Interactive || req.Role == orchestrator.RoleHook || req.Role == orchestrator.RoleGate,
 		RootDir:           opts.RootDir,
 		CleanupPaths:      cleanup,
 	}
@@ -364,7 +372,7 @@ func projectMountsWithHooks(projectDir, workDir, homeDir, worktreeDir string, re
 // HookFileMounts returns the tmpfs-over-.boid/hooks pattern: a tmpfs layer
 // that allows individual hook files to be bind-mounted read-only on top of
 // the otherwise read-only .boid directory.
-func HookFileMounts(workDir, projectDir string, files []HookFile) []sandbox.Mount {
+func HookFileMounts(workDir, projectDir string, files []orchestrator.HookFile) []sandbox.Mount {
 	if len(files) == 0 {
 		return nil
 	}
@@ -387,9 +395,9 @@ func HookFileMounts(workDir, projectDir string, files []HookFile) []sandbox.Moun
 	return out
 }
 
-// AdditionalBindingMounts converts a BindMount slice into Mount entries.
+// AdditionalBindingMounts converts a orchestrator.BindMount slice into Mount entries.
 // Target defaults to Source when empty; IsFile skips runtime type detection.
-func AdditionalBindingMounts(bindings []BindMount) []sandbox.Mount {
+func AdditionalBindingMounts(bindings []orchestrator.BindMount) []sandbox.Mount {
 	if len(bindings) == 0 {
 		return nil
 	}
@@ -437,7 +445,7 @@ func ShimSymlinks(builtins, hostCommands []string) []sandbox.Symlink {
 }
 
 // BuildPATH prepends additional-binding bin directories to the canonical PATH.
-func BuildPATH(bindings []BindMount) string {
+func BuildPATH(bindings []orchestrator.BindMount) string {
 	var prefix []string
 	for _, bm := range bindings {
 		if strings.HasSuffix(bm.Source, "/bin") {
@@ -513,6 +521,17 @@ func contextFiles(homeDir, taskYAML, envYAML, instructionsJSON, payloadJSON stri
 	return out
 }
 
+// outputDirSentinel は $HOME/.boid/output/ 配下に空の .placeholder ファイルを
+// 書く sandbox.FileWrite を返す。sandbox の generateInnerScript は FileWrite
+// の親ディレクトリを自動で mkdir -p するので、これにより inner script 冒頭
+// (trap 定義より前) で output/ ディレクトリが確実に存在する状態になる。
+// hook/gate スクリプトが payload_patch.yaml を cat する際に ENOENT で落ちる
+// のを防ぐ。BuildExitScript の mkdir は trap body 内なので、本体の書き込み
+// フェーズでは役に立たない点がポイント。
+func outputDirSentinel(dir string) sandbox.FileWrite {
+	return sandbox.FileWrite{Path: dir + "/.placeholder"}
+}
+
 func quoteForTrap(s string) string { return "\"" + s + "\"" }
 
 func dirGuardExpr(dir string) string {
@@ -529,28 +548,28 @@ func shellQuoteDir(s string) string {
 	return s
 }
 
-func effectiveWorkDir(req DispatchRequest) string {
+func effectiveWorkDir(req orchestrator.JobSpec) string {
 	if req.WorktreeDir != "" {
 		return req.WorktreeDir
 	}
 	return req.ProjectDir
 }
 
-func effectiveHomeDir(req DispatchRequest) string {
+func effectiveHomeDir(req orchestrator.JobSpec) string {
 	if req.HomeDir != "" {
 		return req.HomeDir
 	}
 	return req.ProjectDir
 }
 
-func resolveHookArgv(req DispatchRequest, workDir string) []string {
+func resolveHookArgv(req orchestrator.JobSpec, workDir string) []string {
 	if req.HookScript == "" {
 		return nil
 	}
 	return []string{workDir + "/.boid/hooks/" + req.HookScript}
 }
 
-func resolveGateArgv(req DispatchRequest) []string {
+func resolveGateArgv(req orchestrator.JobSpec) []string {
 	if req.HookScript == "" {
 		return nil
 	}
@@ -580,11 +599,11 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-func sortedPolicyKeys(policies map[string]sandbox.BuiltinPolicy) []string {
+func sortedPolicyKeys(policies map[string]orchestrator.BuiltinPolicy) []string {
 	return sortedKeys(policies)
 }
 
-func hostCommandNames(cmds map[string]CommandDef) []string {
+func hostCommandNames(cmds map[string]orchestrator.CommandDef) []string {
 	if len(cmds) == 0 {
 		return nil
 	}
