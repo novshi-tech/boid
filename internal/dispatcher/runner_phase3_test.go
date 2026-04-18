@@ -4,21 +4,23 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"sort"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/testutil"
 )
 
+// fakeSandboxPreparer intercepts the sandbox.Spec that Runner.Dispatch
+// produces so tests can assert on its contents without actually running bash.
 type fakeSandboxPreparer struct {
 	outerPaths []string
-	calls      []dispatcher.SandboxSpec
+	calls      []sandbox.Spec
 	err        error
 }
 
-func (p *fakeSandboxPreparer) PrepareSandbox(spec dispatcher.SandboxSpec) (*dispatcher.PreparedSandbox, error) {
+func (p *fakeSandboxPreparer) PrepareSandbox(spec sandbox.Spec) (*dispatcher.PreparedSandbox, error) {
 	p.calls = append(p.calls, spec)
 	if p.err != nil {
 		return nil, p.err
@@ -33,7 +35,7 @@ func (p *fakeSandboxPreparer) PrepareSandbox(spec dispatcher.SandboxSpec) (*disp
 	return &dispatcher.PreparedSandbox{OuterPath: outerPath}, nil
 }
 
-func TestRunnerDispatch_UsesDispatcherOwnedSandboxPreparer(t *testing.T) {
+func TestRunnerDispatch_ForwardsFieldsToSandboxSpec(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	projectDir := t.TempDir()
 	worktreeDir := t.TempDir()
@@ -68,35 +70,58 @@ func TestRunnerDispatch_UsesDispatcherOwnedSandboxPreparer(t *testing.T) {
 		Sandbox: preparer,
 	}
 
-	jobID, err := runner.Dispatch(context.Background(), &dispatcher.DispatchPlan{
-		TaskID:       "task-phase3-12345678",
-		ProjectID:    "proj-1",
-		HandlerID:    "hook-a",
-		Role:         "hook",
-		ProjectDir:   projectDir,
-		HomeDir:      "/home/tester",
-		HookFiles:    []dispatcher.HookFile{{Source: projectDir + "/.boid/hooks/hook-a.sh", TargetName: "hook-a.sh"}},
+	request := &orchestrator.DispatchRequest{
+		TaskID:     "task-phase3-12345678",
+		ProjectID:  "proj-1",
+		HandlerID:  "hook-a",
+		Role:       orchestrator.RoleHook,
+		ProjectDir: projectDir,
+		HomeDir:    "/home/tester",
+		HookFiles: []orchestrator.HookFile{
+			{Source: projectDir + "/.boid/hooks/hook-a.sh", TargetName: "hook-a.sh"},
+		},
 		HookScript:   "hook-a.sh",
 		BoidBinary:   "/bin/true",
 		ServerSocket: "/tmp/boid.sock",
 		Env: map[string]string{
 			"FOO": "bar",
 		},
-		HostCommands: map[string]dispatcher.CommandDef{
+		HostCommands: map[string]orchestrator.CommandDef{
 			"git":  {Name: "git"},
 			"boid": {Name: "boid"},
 		},
-		AdditionalBindings: []dispatcher.BindMount{
+		AdditionalBindings: []orchestrator.BindMount{
 			{Source: "/opt/tools", Mode: "ro"},
 		},
-		WorkspaceDirs: map[string]string{
-			"peer": "/workspace/peer",
-		},
-		ProxyPort:   9090,
-		StagingDir:  "/tmp/staging",
-		WorktreeDir: worktreeDir,
-		PayloadJSON: `{"ok":true}`,
-		Readonly:    true,
+		WorkspaceDirs: map[string]string{"peer": "/workspace/peer"},
+		ProxyPort:     9090,
+		StagingDir:    "/tmp/staging",
+		WorktreeDir:   worktreeDir,
+		PayloadJSON:   `{"ok":true}`,
+		Readonly:      true,
+	}
+
+	jobID, err := runner.Dispatch(context.Background(), &dispatcher.DispatchPlan{
+		Request:            request,
+		TaskID:             request.TaskID,
+		ProjectID:          request.ProjectID,
+		HandlerID:          request.HandlerID,
+		Role:               string(request.Role),
+		ProjectDir:         request.ProjectDir,
+		HomeDir:            request.HomeDir,
+		HookFiles:          []dispatcher.HookFile{{Source: request.HookFiles[0].Source, TargetName: request.HookFiles[0].TargetName}},
+		HookScript:         request.HookScript,
+		BoidBinary:         request.BoidBinary,
+		ServerSocket:       request.ServerSocket,
+		Env:                request.Env,
+		HostCommands:       map[string]dispatcher.CommandDef{"git": {Name: "git"}, "boid": {Name: "boid"}},
+		AdditionalBindings: []dispatcher.BindMount{{Source: "/opt/tools", Mode: "ro"}},
+		WorkspaceDirs:      request.WorkspaceDirs,
+		ProxyPort:          request.ProxyPort,
+		StagingDir:         request.StagingDir,
+		WorktreeDir:        request.WorktreeDir,
+		PayloadJSON:        request.PayloadJSON,
+		Readonly:           request.Readonly,
 	})
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
@@ -107,72 +132,42 @@ func TestRunnerDispatch_UsesDispatcherOwnedSandboxPreparer(t *testing.T) {
 	}
 
 	got := preparer.calls[0]
-	if got.JobID != jobID {
-		t.Fatalf("sandbox spec job id = %q, want %q", got.JobID, jobID)
+	if got.ID != jobID {
+		t.Fatalf("sandbox spec ID = %q, want %q", got.ID, jobID)
 	}
-	if got.TaskID != "task-phase3-12345678" {
-		t.Fatalf("sandbox spec task id = %q", got.TaskID)
+	if got.WorkDir != worktreeDir {
+		t.Fatalf("sandbox spec workDir = %q, want %q", got.WorkDir, worktreeDir)
 	}
-	if got.ProjectID != "proj-1" {
-		t.Fatalf("sandbox spec project id = %q", got.ProjectID)
+	// Hook role → stdin is the payload JSON, argv points at the hook script inside the worktree.
+	if string(got.StdinBytes) != `{"ok":true}` {
+		t.Fatalf("sandbox spec stdin = %q", string(got.StdinBytes))
 	}
-	if got.ProjectDir != projectDir {
-		t.Fatalf("sandbox spec project dir = %q, want %q", got.ProjectDir, projectDir)
+	wantArgv := []string{worktreeDir + "/.boid/hooks/hook-a.sh"}
+	if !reflect.DeepEqual(got.Argv, wantArgv) {
+		t.Fatalf("sandbox spec argv = %v, want %v", got.Argv, wantArgv)
 	}
-	if got.HomeDir != "/home/tester" {
-		t.Fatalf("sandbox spec home dir = %q", got.HomeDir)
+	// Broker socket shows up as an explicit Mount; token+socket env exported.
+	if got.Env["BOID_BROKER_TOKEN"] != "token-phase3" {
+		t.Fatalf("broker token env = %q", got.Env["BOID_BROKER_TOKEN"])
 	}
-	if len(got.HookFiles) != 1 || got.HookFiles[0].Source != projectDir+"/.boid/hooks/hook-a.sh" || got.HookFiles[0].TargetName != "hook-a.sh" {
-		t.Fatalf("sandbox spec hook files = %#v", got.HookFiles)
+	if got.Env["BOID_BROKER_SOCKET"] != "/run/boid/broker.sock" {
+		t.Fatalf("broker socket env = %q", got.Env["BOID_BROKER_SOCKET"])
 	}
-	if got.HookScript != "hook-a.sh" {
-		t.Fatalf("sandbox spec hook script = %q", got.HookScript)
+	foundBrokerMount := false
+	for _, m := range got.Mounts {
+		if m.Target == "/run/boid/broker.sock" && m.Source == "/tmp/fake-broker.sock" && m.IsFile {
+			foundBrokerMount = true
+		}
 	}
-	if got.BoidBinary != "/bin/true" {
-		t.Fatalf("sandbox spec boid binary = %q", got.BoidBinary)
+	if !foundBrokerMount {
+		t.Errorf("broker socket mount missing from spec.Mounts: %+v", got.Mounts)
 	}
-	if got.ServerSocket != "/tmp/boid.sock" {
-		t.Fatalf("sandbox spec server socket = %q", got.ServerSocket)
-	}
-	if got.BrokerSocket != "/tmp/fake-broker.sock" {
-		t.Fatalf("sandbox spec broker socket = %q", got.BrokerSocket)
-	}
-	if got.BrokerToken != "token-phase3" {
-		t.Fatalf("sandbox spec broker token = %q", got.BrokerToken)
-	}
-	if got.Role != "hook" {
-		t.Fatalf("sandbox spec role = %q", got.Role)
-	}
-	if got.StagingDir != "/tmp/staging" {
-		t.Fatalf("sandbox spec staging dir = %q", got.StagingDir)
-	}
-	if got.WorktreeDir != worktreeDir {
-		t.Fatalf("sandbox spec worktree dir = %q", got.WorktreeDir)
-	}
-	if got.PayloadJSON != `{"ok":true}` {
-		t.Fatalf("sandbox spec payload = %q", got.PayloadJSON)
-	}
-	if !got.Readonly {
-		t.Fatalf("sandbox spec readonly = false, want true")
-	}
-	if !reflect.DeepEqual(got.Env, map[string]string{"FOO": "bar"}) {
-		t.Fatalf("sandbox spec env = %#v", got.Env)
-	}
-	if !reflect.DeepEqual(got.AdditionalBindings, []dispatcher.BindMount{{Source: "/opt/tools", Mode: "ro"}}) {
-		t.Fatalf("sandbox spec additional bindings = %#v", got.AdditionalBindings)
-	}
-	if !reflect.DeepEqual(got.WorkspaceDirs, map[string]string{"peer": "/workspace/peer"}) {
-		t.Fatalf("sandbox spec workspace dirs = %#v", got.WorkspaceDirs)
-	}
-
-	hostCommands := append([]string(nil), got.HostCommands...)
-	sort.Strings(hostCommands)
-	if !reflect.DeepEqual(hostCommands, []string{"boid", "git"}) {
-		t.Fatalf("sandbox spec host commands = %v, want [boid git]", hostCommands)
+	if !got.TTY {
+		t.Errorf("hook role should set TTY=true, got false")
 	}
 }
 
-func TestWriteExecScripts_UsesSandboxPreparer(t *testing.T) {
+func TestWriteExecScripts_BuildsSandboxSpec(t *testing.T) {
 	preparer := &fakeSandboxPreparer{
 		outerPaths: []string{"/tmp/boid-exec.sh"},
 	}
@@ -182,7 +177,7 @@ func TestWriteExecScripts_UsesSandboxPreparer(t *testing.T) {
 		ProjectID:    "proj-1",
 		ProjectDir:   "/workspace/proj-1",
 		HomeDir:      "/home/tester",
-		Command:      "git status",
+		Argv:         []string{"git", "status"},
 		BoidBinary:   "/usr/local/bin/boid",
 		ServerSocket: "/tmp/boid.sock",
 		BrokerSocket: "/tmp/broker.sock",
@@ -213,44 +208,28 @@ func TestWriteExecScripts_UsesSandboxPreparer(t *testing.T) {
 	}
 
 	got := preparer.calls[0]
-	if got.JobID != "exec-proj-1" {
-		t.Fatalf("sandbox spec job id = %q", got.JobID)
+	if got.ID != "exec-proj-1" {
+		t.Fatalf("sandbox spec ID = %q", got.ID)
 	}
-	if got.ProjectID != "proj-1" {
-		t.Fatalf("sandbox spec project id = %q", got.ProjectID)
+	if got.WorkDir != "/workspace/proj-1" {
+		t.Fatalf("sandbox spec workDir = %q", got.WorkDir)
 	}
-	if got.ProjectDir != "/workspace/proj-1" {
-		t.Fatalf("sandbox spec project dir = %q", got.ProjectDir)
+	if !reflect.DeepEqual(got.Argv, []string{"git", "status"}) {
+		t.Fatalf("sandbox spec argv = %v", got.Argv)
 	}
-	if got.Command != "git status" {
-		t.Fatalf("sandbox spec command = %q", got.Command)
+	if got.Env["FOO"] != "bar" {
+		t.Errorf("env[FOO] = %q, want bar", got.Env["FOO"])
 	}
-	if got.BoidBinary != "/usr/local/bin/boid" {
-		t.Fatalf("sandbox spec boid binary = %q", got.BoidBinary)
+	if got.Env["BOID_BROKER_TOKEN"] != "token-exec" {
+		t.Errorf("env[BOID_BROKER_TOKEN] = %q", got.Env["BOID_BROKER_TOKEN"])
 	}
-	if got.ServerSocket != "/tmp/boid.sock" {
-		t.Fatalf("sandbox spec server socket = %q", got.ServerSocket)
-	}
-	if got.BrokerSocket != "/tmp/broker.sock" {
-		t.Fatalf("sandbox spec broker socket = %q", got.BrokerSocket)
-	}
-	if got.BrokerToken != "token-exec" {
-		t.Fatalf("sandbox spec broker token = %q", got.BrokerToken)
+	if got.Env["BOID_JOB_ID"] != "exec-proj-1" {
+		t.Errorf("env[BOID_JOB_ID] = %q", got.Env["BOID_JOB_ID"])
 	}
 	if got.ProxyPort != 3128 {
-		t.Fatalf("sandbox spec proxy port = %d", got.ProxyPort)
+		t.Errorf("proxy port = %d", got.ProxyPort)
 	}
 	if !got.TTY {
-		t.Fatalf("sandbox spec tty = false, want true")
-	}
-	if !reflect.DeepEqual(got.AdditionalBindings, []dispatcher.BindMount{{Source: "/opt/tools", Mode: "rw"}}) {
-		t.Fatalf("sandbox spec additional bindings = %#v", got.AdditionalBindings)
-	}
-	if !reflect.DeepEqual(got.WorkspaceDirs, map[string]string{"peer": "/workspace/peer"}) {
-		t.Fatalf("sandbox spec workspace dirs = %#v", got.WorkspaceDirs)
-	}
-
-	if !reflect.DeepEqual(got.HostCommands, []string{"git"}) {
-		t.Fatalf("sandbox spec host commands = %v, want [git]", got.HostCommands)
+		t.Errorf("TTY should be true")
 	}
 }

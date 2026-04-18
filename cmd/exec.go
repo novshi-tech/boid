@@ -4,13 +4,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 	"syscall"
 
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/spf13/cobra"
 )
 
@@ -117,13 +115,6 @@ func buildExecRequest(projectID, commandName string) (dispatcher.ExecRequest, er
 		}
 	}
 
-	// Shell-quote each element and join into a single command string
-	parts := make([]string, 0, len(cmd.Command))
-	for _, arg := range cmd.Command {
-		parts = append(parts, sandbox.ShellQuote(arg))
-	}
-	command := strings.Join(parts, " ")
-
 	environmentYAML := orchestrator.BuildEnvironmentYAML(false, false, true, workspaceDirs, cmd.BuiltinCommands)
 
 	req := dispatcher.ExecRequest{
@@ -131,7 +122,7 @@ func buildExecRequest(projectID, commandName string) (dispatcher.ExecRequest, er
 		ProjectID:          p.ID,
 		ProjectDir:         p.WorkDir,
 		HomeDir:            homeDir,
-		Command:            command,
+		Argv:               cmd.Command,
 		BoidBinary:         boidBinary,
 		ServerSocket:       client.DefaultSocketPath(),
 		BrokerSocket:       brokerSocket,

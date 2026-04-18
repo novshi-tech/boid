@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"fmt"
 
+	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
@@ -19,12 +20,15 @@ type ExecCommandDef struct {
 	Env   map[string]string `json:"env,omitempty"`
 }
 
+// ExecRequest carries the fields cmd/exec.go gathers from the API before
+// invoking the sandbox. Dispatcher uses orchestrator.BuildExecSandboxSpec
+// to translate it into a primitive sandbox.Spec.
 type ExecRequest struct {
 	JobID              string
 	ProjectID          string
 	ProjectDir         string
 	HomeDir            string
-	Command            string
+	Argv               []string
 	BoidBinary         string
 	ServerSocket       string
 	BrokerSocket       string
@@ -39,14 +43,48 @@ type ExecRequest struct {
 	EnvironmentYAML    string
 }
 
+// WriteExecScripts materializes the sandbox scripts for a boid exec invocation
+// and returns the outer script path. Caller (cmd/exec.go) runs it directly.
 func WriteExecScripts(req ExecRequest, preparer SandboxPreparer) (string, error) {
-	spec, err := buildExecSandboxSpec(req)
-	if err != nil {
-		return "", err
+	if req.JobID == "" {
+		return "", fmt.Errorf("job id is required")
+	}
+	if req.ProjectID == "" {
+		return "", fmt.Errorf("project id is required")
+	}
+	if req.ProjectDir == "" {
+		return "", fmt.Errorf("project dir is required")
+	}
+	if len(req.Argv) == 0 {
+		return "", fmt.Errorf("argv is required")
+	}
+	if req.BoidBinary == "" {
+		return "", fmt.Errorf("boid binary is required")
 	}
 	if preparer == nil {
 		return "", fmt.Errorf("sandbox preparer is required")
 	}
+
+	spec := orchestrator.BuildExecSandboxSpec(orchestrator.ExecSandboxBuildInput{
+		JobID:              req.JobID,
+		ProjectID:          req.ProjectID,
+		ProjectDir:         req.ProjectDir,
+		HomeDir:            req.HomeDir,
+		Argv:               req.Argv,
+		BoidBinary:         req.BoidBinary,
+		ServerSocket:       req.ServerSocket,
+		BrokerSocket:       req.BrokerSocket,
+		BrokerToken:        req.BrokerToken,
+		Env:                req.Env,
+		BuiltinCommands:    builtinCommandNames(req.BuiltinPolicies),
+		HostCommands:       execHostCommandNames(req.HostCommands),
+		AdditionalBindings: execToBindMounts(req.AdditionalBindings),
+		WorkspaceDirs:      req.WorkspaceDirs,
+		ProxyPort:          req.ProxyPort,
+		TTY:                req.TTY,
+		EnvironmentYAML:    req.EnvironmentYAML,
+	})
+
 	prepared, err := preparer.PrepareSandbox(spec)
 	if err != nil {
 		return "", err
@@ -57,42 +95,15 @@ func WriteExecScripts(req ExecRequest, preparer SandboxPreparer) (string, error)
 	return prepared.OuterPath, nil
 }
 
-func buildExecSandboxSpec(req ExecRequest) (SandboxSpec, error) {
-	if req.JobID == "" {
-		return SandboxSpec{}, fmt.Errorf("job id is required")
+func builtinCommandNames(policies map[string]sandbox.BuiltinPolicy) []string {
+	if len(policies) == 0 {
+		return nil
 	}
-	if req.ProjectID == "" {
-		return SandboxSpec{}, fmt.Errorf("project id is required")
+	names := make([]string, 0, len(policies))
+	for name := range policies {
+		names = append(names, name)
 	}
-	if req.ProjectDir == "" {
-		return SandboxSpec{}, fmt.Errorf("project dir is required")
-	}
-	if req.Command == "" {
-		return SandboxSpec{}, fmt.Errorf("command is required")
-	}
-	if req.BoidBinary == "" {
-		return SandboxSpec{}, fmt.Errorf("boid binary is required")
-	}
-
-	return SandboxSpec{
-		JobID:              req.JobID,
-		ProjectID:          req.ProjectID,
-		ProjectDir:         req.ProjectDir,
-		HomeDir:            req.HomeDir,
-		Command:            req.Command,
-		BoidBinary:         req.BoidBinary,
-		ServerSocket:       req.ServerSocket,
-		BrokerSocket:       req.BrokerSocket,
-		BrokerToken:        req.BrokerToken,
-		Env:                req.Env,
-		BuiltinPolicies:    req.BuiltinPolicies,
-		HostCommands:       execHostCommandNames(req.HostCommands),
-		AdditionalBindings: execBindMounts(req.AdditionalBindings),
-		WorkspaceDirs:      req.WorkspaceDirs,
-		ProxyPort:          req.ProxyPort,
-		TTY:                req.TTY,
-		EnvironmentYAML:    req.EnvironmentYAML,
-	}, nil
+	return names
 }
 
 func execHostCommandNames(cmds map[string]ExecCommandDef) []string {
@@ -106,17 +117,16 @@ func execHostCommandNames(cmds map[string]ExecCommandDef) []string {
 	return names
 }
 
-func execBindMounts(bindings []ExecBindMount) []BindMount {
+func execToBindMounts(bindings []ExecBindMount) []orchestrator.BindMount {
 	if len(bindings) == 0 {
 		return nil
 	}
-	out := make([]BindMount, 0, len(bindings))
+	out := make([]orchestrator.BindMount, 0, len(bindings))
 	for _, binding := range bindings {
-		out = append(out, BindMount{
+		out = append(out, orchestrator.BindMount{
 			Source: binding.Source,
 			Mode:   binding.Mode,
 		})
 	}
 	return out
 }
-

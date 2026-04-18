@@ -6,12 +6,12 @@ import (
 	"strings"
 )
 
-// RenderSetupScript generates the setup shell script from a SandboxPlan.
+// renderSetupScript generates the setup shell script from a sandboxPlan.
 // innerPath, setupPath, outerPath are the generated script paths (for cleanup).
 // rootDir, if non-empty, is used as the sandbox ROOT (pre-created by caller) so
 // Go-side cleanup can delete it after the sandbox exits; if empty, the script
 // falls back to creating ROOT with mktemp (legacy behavior, leaks on success).
-func RenderSetupScript(plan *SandboxPlan, rootDir, innerPath, setupPath, outerPath string) string {
+func renderSetupScript(plan *sandboxPlan, rootDir, innerPath, setupPath, outerPath string) string {
 	var b strings.Builder
 
 	b.WriteString("#!/bin/bash\nset -e\n\n")
@@ -37,10 +37,6 @@ func RenderSetupScript(plan *SandboxPlan, rootDir, innerPath, setupPath, outerPa
 			b.WriteByte('\n')
 		}
 		b.WriteByte('\n')
-	}
-
-	for _, c := range plan.Copies {
-		renderCopy(&b, c)
 	}
 
 	for _, s := range plan.Symlinks {
@@ -80,7 +76,7 @@ func renderCleanup(b *strings.Builder, cleanupPaths []string, innerPath, setupPa
 	b.WriteString("}\ntrap cleanup EXIT\n")
 }
 
-func renderMount(b *strings.Builder, m MountEntry) {
+func renderMount(b *strings.Builder, m Mount) {
 	indent := ""
 
 	if m.Guard != "" {
@@ -130,21 +126,12 @@ func renderMount(b *strings.Builder, m MountEntry) {
 	}
 }
 
-func renderFile(b *strings.Builder, f FileEntry) {
+func renderFile(b *strings.Builder, f FileWrite) {
 	dir := filepath.Dir(f.Path)
 	fmt.Fprintf(b, "mkdir -p \"$ROOT%s\"\n", dir)
 	fmt.Fprintf(b, "printf '%%s' %s > \"$ROOT%s\"\n", shellQuote(f.Content), f.Path)
 }
 
-func renderCopy(b *strings.Builder, c CopyEntry) {
-	dir := filepath.Dir(c.Target)
-	fmt.Fprintf(b, "mkdir -p \"$ROOT%s\"\n", dir)
-	fmt.Fprintf(b, "cp %s \"$ROOT%s\"\n", shellQuote(c.Source), c.Target)
-	if c.Executable {
-		fmt.Fprintf(b, "chmod +x \"$ROOT%s\"\n", c.Target)
-	}
-}
-
-func renderSymlink(b *strings.Builder, s SymlinkEntry) {
+func renderSymlink(b *strings.Builder, s Symlink) {
 	fmt.Fprintf(b, "ln -sf %s \"$ROOT%s\"\n", shellQuote(s.LinkTarget), s.LinkPath)
 }

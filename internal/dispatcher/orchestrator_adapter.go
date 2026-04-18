@@ -51,6 +51,7 @@ func toDispatchPlan(request *orchestrator.DispatchRequest) *DispatchPlan {
 		return nil
 	}
 	return &DispatchPlan{
+		Request:            request,
 		TaskID:             request.TaskID,
 		ProjectID:          request.ProjectID,
 		WorkspaceID:        request.WorkspaceID,
@@ -137,7 +138,9 @@ func toBindMounts(bindings []orchestrator.BindMount) []BindMount {
 	for _, binding := range bindings {
 		out = append(out, BindMount{
 			Source: binding.Source,
+			Target: binding.Target,
 			Mode:   binding.Mode,
+			IsFile: binding.IsFile,
 		})
 	}
 	return out

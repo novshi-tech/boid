@@ -1,12 +1,21 @@
 package dispatcher
 
-import "github.com/novshi-tech/boid/internal/sandbox"
+import (
+	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
+)
+
+// Type alias keeps the DispatchPlan struct definition self-contained and
+// avoids an extra indirection when callers access plan.Request.
+type orchestratorDispatchRequestAlias = orchestrator.DispatchRequest
 
 // BindMount is a plain shared DTO at the dispatcher boundary.
-// It carries only mount source/mode data and does not encode provider behavior.
+// It carries mount source/target/mode data and does not encode provider behavior.
 type BindMount struct {
 	Source string
-	Mode   string
+	Target string // if empty, defaults to Source
+	Mode   string // "rw" | "" (ro default)
+	IsFile bool
 }
 
 // KitGatesSource is per-kit gate scripts directory carried through the dispatch
@@ -28,7 +37,16 @@ type CommandDef struct {
 }
 
 // DispatchPlan is the fully resolved execution plan consumed by the runner.
+// M5: the plan carries the original orchestrator.DispatchRequest so Runner
+// can forward it to orchestrator.BuildSandboxSpec without round-trip
+// translation through intermediate dispatcher types.
 type DispatchPlan struct {
+	// Request is the original orchestrator-built request. Runner passes it
+	// directly to orchestrator.BuildSandboxSpec for sandbox.Spec rendering.
+	Request *orchestratorDispatchRequestAlias
+
+	// The fields below mirror Request but use dispatcher-local types where
+	// they are consumed by dispatcher-specific code (broker, runtime, etc.).
 	TaskID             string
 	ProjectID          string
 	WorkspaceID        string
@@ -60,7 +78,7 @@ type DispatchPlan struct {
 	TaskYAML           string
 	EnvironmentYAML    string
 	Model              string
-	InvokedRole        string // instruction map key name
-	InvokedName        string // instruction.Name value (empty if unset)
-	InvokedType        string // instruction.Type value
+	InvokedRole        string
+	InvokedName        string
+	InvokedType        string
 }
