@@ -599,7 +599,7 @@ func TestPlanHook_PayloadJSON_EmptyConsumes(t *testing.T) {
 	}
 }
 
-func TestPlanHook_Interactive_PropagatedToJobSpec(t *testing.T) {
+func TestPlanHook_Interactive_PropagatedToDispatchRequest(t *testing.T) {
 	meta := &ProjectMeta{ID: "proj-1"}
 	proj := &Project{ID: "proj-1", WorkDir: t.TempDir()}
 	task := &Task{

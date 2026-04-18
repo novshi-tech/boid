@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 type ExecBindMount struct {
@@ -20,8 +21,8 @@ type ExecCommandDef struct {
 }
 
 // ExecRequest carries the fields cmd/exec.go gathers from the API before
-// invoking the sandbox. Dispatcher uses BuildExecSandboxSpec to translate
-// it into a primitive sandbox.Spec.
+// invoking the sandbox. Dispatcher uses orchestrator.BuildExecSandboxSpec
+// to translate it into a primitive sandbox.Spec.
 type ExecRequest struct {
 	JobID              string
 	ProjectID          string
@@ -33,7 +34,7 @@ type ExecRequest struct {
 	BrokerSocket       string
 	BrokerToken        string
 	Env                map[string]string
-	BuiltinPolicies    map[string]orchestrator.BuiltinPolicy
+	BuiltinPolicies    map[string]sandbox.BuiltinPolicy
 	HostCommands       map[string]ExecCommandDef
 	AdditionalBindings []ExecBindMount
 	WorkspaceDirs      map[string]string
@@ -64,7 +65,7 @@ func WriteExecScripts(req ExecRequest, preparer SandboxPreparer) (string, error)
 		return "", fmt.Errorf("sandbox preparer is required")
 	}
 
-	spec := BuildExecSandboxSpec(ExecSandboxBuildInput{
+	spec := orchestrator.BuildExecSandboxSpec(orchestrator.ExecSandboxBuildInput{
 		JobID:              req.JobID,
 		ProjectID:          req.ProjectID,
 		ProjectDir:         req.ProjectDir,
@@ -94,7 +95,7 @@ func WriteExecScripts(req ExecRequest, preparer SandboxPreparer) (string, error)
 	return prepared.OuterPath, nil
 }
 
-func builtinCommandNames(policies map[string]orchestrator.BuiltinPolicy) []string {
+func builtinCommandNames(policies map[string]sandbox.BuiltinPolicy) []string {
 	if len(policies) == 0 {
 		return nil
 	}

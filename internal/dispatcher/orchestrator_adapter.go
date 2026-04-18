@@ -7,7 +7,7 @@ import (
 )
 
 type dispatchBackend interface {
-	Dispatch(ctx context.Context, request *orchestrator.JobSpec) (string, error)
+	Dispatch(ctx context.Context, request *orchestrator.DispatchRequest) (string, error)
 	WaitForJobCtx(ctx context.Context, jobID string) (JobCompletionResult, error)
 }
 

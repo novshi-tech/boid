@@ -1,8 +1,9 @@
 package orchestrator
 
 import (
-	"slices"
 	"testing"
+
+	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 func TestDefaultBuiltinPolicies_HookGitBoid(t *testing.T) {
@@ -83,10 +84,10 @@ func TestDefaultBuiltinPolicies_HookGitIsEmpty(t *testing.T) {
 func TestDefaultBuiltinPolicies_GateGitHasFetchPush(t *testing.T) {
 	policies := DefaultBuiltinPolicies(RoleGate, []string{"git"}, PolicyContext{})
 	gitPolicy := policies["git"]
-	if !gitPolicy.Allows(OpGitFetch) {
+	if !gitPolicy.Allows(string(sandbox.GitOpFetch)) {
 		t.Error("gate×git should allow fetch")
 	}
-	if !gitPolicy.Allows(OpGitPush) {
+	if !gitPolicy.Allows(string(sandbox.GitOpPush)) {
 		t.Error("gate×git should allow push")
 	}
 }
@@ -97,9 +98,12 @@ func TestDefaultBuiltinPolicies_HookBoidOps(t *testing.T) {
 	policies := DefaultBuiltinPolicies(RoleHook, []string{"boid"}, PolicyContext{})
 	boidPolicy := policies["boid"]
 
-	wantOps := []string{OpBoidJobDone, OpBoidTaskGet}
+	wantOps := map[string]struct{}{
+		string(sandbox.BoidOpJobDone):  {},
+		string(sandbox.BoidOpTaskGet):  {},
+	}
 	if !opsEqual(boidPolicy.AllowedOps, wantOps) {
-		t.Errorf("hook×boid AllowedOps = %v, want %v", boidPolicy.AllowedOps, wantOps)
+		t.Errorf("hook×boid AllowedOps = %v, want {job_done, task_get}", boidPolicy.AllowedOps)
 	}
 }
 
@@ -110,25 +114,25 @@ func TestDefaultBuiltinPolicies_GateBoidOps(t *testing.T) {
 	policies := DefaultBuiltinPolicies(RoleGate, []string{"boid"}, PolicyContext{})
 	boidPolicy := policies["boid"]
 
-	wantOps := []string{
-		OpBoidJobDone,
-		OpBoidTaskCreate,
-		OpBoidTaskUpdate,
-		OpBoidTaskImport,
-		OpBoidTaskReopen,
+	wantOps := map[string]struct{}{
+		string(sandbox.BoidOpJobDone):    {},
+		string(sandbox.BoidOpTaskCreate): {},
+		string(sandbox.BoidOpTaskUpdate): {},
+		string(sandbox.BoidOpTaskImport): {},
+		string(sandbox.BoidOpTaskReopen): {},
 	}
 	if !opsEqual(boidPolicy.AllowedOps, wantOps) {
-		t.Errorf("gate×boid AllowedOps = %v, want %v", boidPolicy.AllowedOps, wantOps)
+		t.Errorf("gate×boid AllowedOps = %v, want {job_done, task_create, task_update, task_import, task.reopen}", boidPolicy.AllowedOps)
 	}
 }
 
-// opsEqual は 2 つの op スライスを順序非依存で比較する。
-func opsEqual(a, b []string) bool {
+// opsEqual は2つの map[string]struct{} が同じ内容か比較する。
+func opsEqual(a, b map[string]struct{}) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for _, op := range a {
-		if !slices.Contains(b, op) {
+	for k := range a {
+		if _, ok := b[k]; !ok {
 			return false
 		}
 	}

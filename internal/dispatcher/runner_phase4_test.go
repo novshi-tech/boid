@@ -48,7 +48,7 @@ func TestRunnerDispatch_RuntimeExitWithoutJobDoneFailsJob(t *testing.T) {
 		},
 	}
 
-	jobID, err := runner.Dispatch(context.Background(), &orchestrator.JobSpec{
+	jobID, err := runner.Dispatch(context.Background(), &orchestrator.DispatchRequest{
 		TaskID:      taskID,
 		ProjectID:   "proj-1",
 		HandlerID:   "hook-a",
