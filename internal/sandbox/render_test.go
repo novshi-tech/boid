@@ -6,17 +6,22 @@ import (
 	"testing"
 )
 
-func TestBoidBinaryRendersAsBindMount(t *testing.T) {
-	cfg := WrapperConfig{
-		JobID:      "m2-check-001",
-		ProjectID:  "p",
-		ProjectDir: "/tmp/p",
-		BoidBinary: "/usr/local/bin/boid",
-		Argv:       []string{"/bin/true"},
+// Bind-mount rendering for host files (e.g. boid binary, sockets, gate scripts).
+// Caller constructs the Mount entry with IsFile+ReadOnly; setup script must
+// touch the target path before binding and remount read-only afterward.
+func TestPrepare_FileBindMountRendering(t *testing.T) {
+	spec := Spec{
+		ID:      "m4-bind-file",
+		WorkDir: "/tmp/p",
+		Env:     map[string]string{"HOME": "/tmp/p"},
+		Argv:    []string{"/bin/true"},
+		Mounts: []Mount{
+			{Source: "/usr/local/bin/boid", Target: "/opt/boid/bin/boid", Type: MountBind, IsFile: true, ReadOnly: true},
+		},
 	}
-	outerPath, err := WriteSandboxScripts(cfg)
+	outerPath, err := Prepare(spec)
 	if err != nil {
-		t.Fatalf("WriteSandboxScripts: %v", err)
+		t.Fatalf("Prepare: %v", err)
 	}
 	setupPath := strings.TrimSuffix(outerPath, "-outer.sh") + "-setup.sh"
 	innerPath := strings.TrimSuffix(outerPath, "-outer.sh") + "-inner.sh"
@@ -29,19 +34,18 @@ func TestBoidBinaryRendersAsBindMount(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(content)
-	// binary must be bind-mounted as a single file (touch + mount --bind + ro remount)
-	mustContain := []string{
+
+	must := []string{
 		`touch "$ROOT/opt/boid/bin/boid"`,
 		`mount --bind /usr/local/bin/boid "$ROOT/opt/boid/bin/boid"`,
 		`mount -o remount,bind,ro "$ROOT/opt/boid/bin/boid"`,
 	}
-	for _, s := range mustContain {
+	for _, s := range must {
 		if !strings.Contains(got, s) {
 			t.Errorf("missing %q in setup:\n%s", s, got)
 		}
 	}
-	// must NOT contain a cp of the boid binary
 	if strings.Contains(got, "cp /usr/local/bin/boid") {
-		t.Errorf("unexpected cp of boid binary: setup uses copy, not bind-mount:\n%s", got)
+		t.Errorf("unexpected cp: file bind-mounts should not copy content\n%s", got)
 	}
 }

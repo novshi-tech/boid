@@ -12,30 +12,28 @@ import (
 
 // Gate-like invocations run an argv that points into /opt/boid/gates/. The
 // caller is responsible for adding a bind-mount that makes that path resolve.
-// This test asserts sandbox does not silently succeed if the gate argv is
-// referenced without a matching staging mount.
-func TestWriteSandboxScripts_GateArgvRequiresMatchingMount(t *testing.T) {
+// This test asserts the primitives round-trip through Prepare correctly.
+func TestPrepare_GateArgvRequiresMatchingMount(t *testing.T) {
 	gateArgv := []string{"/opt/boid/gates/push-pr.sh"}
-	cfg := sandbox.WrapperConfig{
-		JobID:      "phase1-gate-path",
-		TaskID:     "task-gate-1",
-		ProjectID:  "proj-1",
-		ProjectDir: "/tmp/project-gate",
-		HomeDir:    "/tmp",
-		BoidBinary: "/bin/true",
-		Argv:       gateArgv,
-		AdditionalBindings: []sandbox.BindMount{
-			{Source: "/tmp/staged-gates/push-pr.sh", Target: "/opt/boid/gates/push-pr.sh", IsFile: true},
+	spec := sandbox.Spec{
+		ID:      "phase1-gate-path",
+		WorkDir: "/tmp/project-gate",
+		Env:     map[string]string{"HOME": "/tmp"},
+		Argv:    gateArgv,
+		Mounts: []sandbox.Mount{
+			{Target: "/tmp", Type: sandbox.MountTmpfs},
+			{Target: "/tmp/project-gate", Type: sandbox.MountTmpfs},
+			{Source: "/tmp/staged-gates/push-pr.sh", Target: "/opt/boid/gates/push-pr.sh", Type: sandbox.MountBind, IsFile: true},
 		},
 		StdinBytes: []byte(`{"id":"task-gate-1"}`),
 	}
 
-	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	outerPath, err := sandbox.Prepare(spec)
 	if err != nil {
-		t.Fatalf("WriteSandboxScripts: %v", err)
+		t.Fatalf("Prepare: %v", err)
 	}
 
-	prefix := "/tmp/boid-phase1-gate-path"
+	prefix := strings.TrimSuffix(outerPath, "-outer.sh")
 	innerPath := prefix + "-inner.sh"
 	setupPath := prefix + "-setup.sh"
 	t.Cleanup(func() {
@@ -66,24 +64,26 @@ func TestWriteSandboxScripts_GateArgvRequiresMatchingMount(t *testing.T) {
 
 // Quoting regression: paths with spaces and payloads with single quotes must
 // be rendered safely by the sandbox script generator.
-func TestWriteSandboxScripts_QuotesPathsAndPayload(t *testing.T) {
-	cfg := sandbox.WrapperConfig{
-		JobID:           "phase1-quoting",
-		ProjectID:       "proj-1",
-		ProjectDir:      "/tmp/project with spaces",
-		HomeDir:         "/tmp/home dir",
-		BoidBinary:      "/bin/true",
-		MountProjectDir: true,
-		Argv:            []string{"/tmp/project with spaces/.boid/hooks/review.sh"},
-		StdinBytes:      []byte(`{"text":"it's tricky"}`),
+func TestPrepare_QuotesPathsAndPayload(t *testing.T) {
+	projectDir := "/tmp/project with spaces"
+	homeDir := "/tmp/home dir"
+	spec := sandbox.Spec{
+		ID:      "phase1-quoting",
+		WorkDir: projectDir,
+		Env:     map[string]string{"HOME": homeDir},
+		Argv:    []string{projectDir + "/.boid/hooks/review.sh"},
+		Mounts: []sandbox.Mount{
+			{Source: projectDir, Target: projectDir, Type: sandbox.MountBind},
+		},
+		StdinBytes: []byte(`{"text":"it's tricky"}`),
 	}
 
-	outerPath, err := sandbox.WriteSandboxScripts(cfg)
+	outerPath, err := sandbox.Prepare(spec)
 	if err != nil {
-		t.Fatalf("WriteSandboxScripts: %v", err)
+		t.Fatalf("Prepare: %v", err)
 	}
 
-	prefix := "/tmp/boid-phase1-quoting"
+	prefix := strings.TrimSuffix(outerPath, "-outer.sh")
 	innerPath := prefix + "-inner.sh"
 	setupPath := prefix + "-setup.sh"
 	t.Cleanup(func() {
@@ -104,13 +104,13 @@ func TestWriteSandboxScripts_QuotesPathsAndPayload(t *testing.T) {
 	inner := string(innerContent)
 	setup := string(setupContent)
 
-	if strings.Contains(inner, "\nexport HOME="+cfg.HomeDir+"\n") {
+	if strings.Contains(inner, "\nexport HOME="+homeDir+"\n") {
 		t.Errorf("HOME path with spaces is interpolated without shell quoting")
 	}
-	if strings.Contains(inner, "\ncd "+cfg.ProjectDir+"\n") {
+	if strings.Contains(inner, "\ncd "+projectDir+"\n") {
 		t.Errorf("working directory with spaces is interpolated without shell quoting")
 	}
-	if strings.Contains(setup, fmt.Sprintf("mount --bind %s ", cfg.ProjectDir)) {
+	if strings.Contains(setup, fmt.Sprintf("mount --bind %s ", projectDir)) {
 		t.Errorf("setup script interpolates bind mount source without shell quoting")
 	}
 

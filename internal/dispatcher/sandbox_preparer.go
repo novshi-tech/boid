@@ -1,12 +1,14 @@
 package dispatcher
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
 
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"gopkg.in/yaml.v3"
 )
 
 type sandboxPreparerImpl struct{}
@@ -22,9 +24,9 @@ func (sandboxPreparerImpl) PrepareSandbox(spec SandboxSpec) (*PreparedSandbox, e
 		return nil, fmt.Errorf("create sandbox root: %w", err)
 	}
 
-	wc := translateSpecToWrapperConfig(spec, rootDir)
+	sbSpec := buildSandboxSpec(spec, rootDir)
 
-	outerPath, err := sandbox.WriteSandboxScripts(wc)
+	outerPath, err := sandbox.Prepare(sbSpec)
 	if err != nil {
 		_ = os.RemoveAll(rootDir)
 		return nil, err
@@ -45,136 +47,429 @@ func (sandboxPreparerImpl) PrepareSandbox(spec SandboxSpec) (*PreparedSandbox, e
 	}, nil
 }
 
-// translateSpecToWrapperConfig maps the dispatcher-layer spec (which still
-// carries Role / Broker / ServerSocket concepts) down to primitive-only
-// WrapperConfig. This Role → primitive translation is the role-aware seam
-// that M5 will relocate into orchestrator.
-func translateSpecToWrapperConfig(spec SandboxSpec, rootDir string) sandbox.WrapperConfig {
-	wc := sandbox.WrapperConfig{
-		JobID:              spec.JobID,
-		TaskID:             spec.TaskID,
-		ProjectID:          spec.ProjectID,
-		ProjectDir:         spec.ProjectDir,
-		HomeDir:            spec.HomeDir,
-		HookFiles:          toSandboxHookFiles(spec.HookFiles),
-		Argv:               spec.Argv,
-		BoidBinary:         spec.BoidBinary,
-		Env:                cloneEnv(spec.Env),
-		BuiltinCommands:    sortedPolicyKeys(spec.BuiltinPolicies),
-		HostCommands:       spec.HostCommands,
-		AdditionalBindings: toSandboxBindMounts(spec.AdditionalBindings),
-		WorkspaceDirs:      spec.WorkspaceDirs,
-		ProxyPort:          spec.ProxyPort,
-		StagingDir:         spec.StagingDir,
-		RootDir:            rootDir,
-		TTY:                spec.TTY,
-		WorktreeDir:        spec.WorktreeDir,
-		InstructionsJSON:   spec.InstructionsJSON,
-		TaskYAML:           spec.TaskYAML,
-		EnvironmentYAML:    spec.EnvironmentYAML,
-		Model:              spec.Model,
-		InvokedRole:        spec.InvokedRole,
-		InvokedName:        spec.InvokedName,
-		InvokedType:        spec.InvokedType,
+// buildSandboxSpec translates the dispatcher-layer SandboxSpec (still carrying
+// Role / Broker / ServerSocket / HookScript concepts) into a primitive-only
+// sandbox.Spec. All mount construction, env building, exit-script rendering,
+// and role-based dispatch is centralized here. M5 will move this into
+// orchestrator so dispatcher stops knowing Role altogether.
+func buildSandboxSpec(spec SandboxSpec, rootDir string) sandbox.Spec {
+	env := cloneStringMap(spec.Env)
+	workDir := effectiveWorkDir(spec)
+	homeDir := effectiveHomeDir(spec)
+
+	// Env composition — everything that used to be a dedicated WrapperConfig
+	// field now rides here as a regular env entry.
+	setIfNonEmpty := func(k, v string) {
+		if v == "" {
+			return
+		}
+		if env == nil {
+			env = map[string]string{}
+		}
+		env[k] = v
+	}
+	setIfNonEmpty("BOID_TASK_ID", spec.TaskID)
+	setIfNonEmpty("BOID_INSTRUCTIONS", spec.InstructionsJSON)
+	setIfNonEmpty("BOID_MODEL", spec.Model)
+	if spec.InvokedRole != "" || spec.InvokedName != "" || spec.InvokedType != "" {
+		if env == nil {
+			env = map[string]string{}
+		}
+		env["BOID_INVOKED_ROLE"] = spec.InvokedRole
+		env["BOID_INVOKED_NAME"] = spec.InvokedName
+		env["BOID_INVOKED_TYPE"] = spec.InvokedType
+	}
+	for _, name := range sortedPolicyKeys(spec.BuiltinPolicies) {
+		if name == "boid" {
+			if env == nil {
+				env = map[string]string{}
+			}
+			env["BOID_BUILTIN_SHIM"] = "1"
+			break
+		}
 	}
 
-	// Broker socket + token are exposed as a mount + env entry; sandbox
-	// layer has no dedicated Broker concept.
+	// HOME is always the primary shell expectation, TERM keeps TUI apps happy.
+	if env == nil {
+		env = map[string]string{}
+	}
+	env["HOME"] = homeDir
+	env["TERM"] = "xterm-256color"
+	env["PATH"] = buildPATH(spec.AdditionalBindings)
+
+	if spec.ProxyPort > 0 {
+		proxyURL := fmt.Sprintf("http://10.0.2.2:%d", spec.ProxyPort)
+		env["http_proxy"] = proxyURL
+		env["https_proxy"] = proxyURL
+		env["HTTP_PROXY"] = proxyURL
+		env["HTTPS_PROXY"] = proxyURL
+		env["no_proxy"] = "10.0.2.2,10.0.2.3,localhost,127.0.0.1"
+		env["NO_PROXY"] = "10.0.2.2,10.0.2.3,localhost,127.0.0.1"
+	}
+
+	// --- Mounts ---
+	var mounts []sandbox.Mount
+
+	// Broker socket + token
 	if spec.BrokerSocket != "" {
-		wc.AdditionalBindings = append(wc.AdditionalBindings, sandbox.BindMount{
+		mounts = append(mounts, sandbox.Mount{
 			Source: spec.BrokerSocket,
 			Target: "/run/boid/broker.sock",
+			Type:   sandbox.MountBind,
 			IsFile: true,
 		})
-		if wc.Env == nil {
-			wc.Env = map[string]string{}
-		}
-		wc.Env["BOID_BROKER_SOCKET"] = "/run/boid/broker.sock"
+		env["BOID_BROKER_SOCKET"] = "/run/boid/broker.sock"
 	}
 	if spec.BrokerToken != "" {
-		if wc.Env == nil {
-			wc.Env = map[string]string{}
-		}
-		wc.Env["BOID_BROKER_TOKEN"] = spec.BrokerToken
+		env["BOID_BROKER_TOKEN"] = spec.BrokerToken
 	}
+
+	// --- Files (context files) ---
+	var files []sandbox.FileWrite
+	contextDir := homeDir + "/.boid/context"
+	if spec.TaskYAML != "" {
+		files = append(files, sandbox.FileWrite{
+			Path: contextDir + "/task.yaml", Content: spec.TaskYAML,
+		})
+	}
+	if spec.EnvironmentYAML != "" {
+		files = append(files, sandbox.FileWrite{
+			Path: contextDir + "/environment.yaml", Content: spec.EnvironmentYAML,
+		})
+	}
+	if spec.InstructionsJSON != "" {
+		files = append(files, sandbox.FileWrite{
+			Path: contextDir + "/instructions.yaml", Content: jsonToYAML(spec.InstructionsJSON),
+		})
+	}
+	if spec.PayloadJSON != "" {
+		files = append(files, sandbox.FileWrite{
+			Path: contextDir + "/payload.yaml", Content: jsonToYAML(spec.PayloadJSON),
+		})
+		files = append(files, sandbox.FileWrite{
+			Path: contextDir + "/payload.json", Content: spec.PayloadJSON,
+		})
+	}
+
+	// --- Role-specific layout ---
+	var argv []string
+	var stdinBytes []byte
+	var stdoutCapture string
+	var exitScript string
 
 	switch spec.Role {
 	case "hook":
-		wc.MountProjectDir = true
-		wc.ProjectReadOnly = spec.Readonly
-		wc.PayloadJSON = spec.PayloadJSON
+		mounts = append(mounts, projectMounts(spec.ProjectDir, workDir, homeDir, spec.WorktreeDir, spec.Readonly, spec.WorkspaceDirs)...)
+		mounts = append(mounts, hookFileMounts(workDir, spec.ProjectDir, spec.HookFiles)...)
+		mounts = append(mounts, additionalBindingMounts(spec.AdditionalBindings)...)
+		argv = resolveHookArgv(spec, workDir)
 		if !spec.Interactive {
-			wc.StdinBytes = []byte(spec.PayloadJSON)
-		} else if wc.Env == nil {
-			wc.Env = map[string]string{"BOID_INTERACTIVE": "1"}
+			stdinBytes = []byte(spec.PayloadJSON)
 		} else {
-			wc.Env["BOID_INTERACTIVE"] = "1"
+			env["BOID_INTERACTIVE"] = "1"
 		}
-		wc.Argv = resolveHookArgv(spec)
-		wc.ExitScript = buildPayloadExitScript(spec.JobID, "$HOME/.boid/output/payload_patch.yaml", "")
+		exitScript = buildExitScript(spec.JobID, "$HOME/.boid/output/payload_patch.yaml", "")
 	case "gate":
-		wc.MountProjectDir = false
-		wc.HomeDir = "/tmp"
-		wc.StdinBytes = []byte(spec.TaskJSON)
-		wc.StdoutCaptureFile = "/tmp/boid-output"
-		wc.Argv = resolveGateArgv(spec)
-		// Stage the gate script into sandbox via additional binding.
+		env["HOME"] = "/tmp"
+		mounts = append(mounts, sandbox.Mount{Target: "/tmp", Type: sandbox.MountTmpfs})
+		if workDir != "" {
+			mounts = append(mounts, sandbox.Mount{Target: workDir, Type: sandbox.MountTmpfs})
+		}
+		// Stage gate script at /opt/boid/gates/<name>
 		if spec.HookScript != "" {
 			gatesDir := spec.GatesDir
 			if gatesDir == "" {
 				gatesDir = spec.ProjectDir + "/.boid/gates"
 			}
-			wc.AdditionalBindings = append(wc.AdditionalBindings, sandbox.BindMount{
+			mounts = append(mounts, sandbox.Mount{
 				Source: gatesDir + "/" + spec.HookScript,
 				Target: "/opt/boid/gates/" + spec.HookScript,
+				Type:   sandbox.MountBind,
 				IsFile: true,
 			})
 		}
-		wc.ExitScript = buildPayloadExitScript(spec.JobID, "$HOME/.boid/output/payload_patch.yaml", "/tmp/boid-output")
+		mounts = append(mounts, additionalBindingMounts(spec.AdditionalBindings)...)
+		argv = resolveGateArgv(spec)
+		stdinBytes = []byte(spec.TaskJSON)
+		stdoutCapture = "/tmp/boid-output"
+		// Gate HOME is /tmp; ensure context/output dir ref resolves there.
+		exitScript = buildExitScript(spec.JobID, "$HOME/.boid/output/payload_patch.yaml", "/tmp/boid-output")
 	default:
-		// Exec / command mode: server socket bind + env, no trap, shell replaced via `exec`.
-		wc.MountProjectDir = true
-		wc.ProjectReadOnly = false
+		// Exec / command mode: full project access, server socket direct, no exit trap.
+		mounts = append(mounts, projectMounts(spec.ProjectDir, workDir, homeDir, spec.WorktreeDir, false, spec.WorkspaceDirs)...)
+		mounts = append(mounts, additionalBindingMounts(spec.AdditionalBindings)...)
 		if spec.ServerSocket != "" {
-			wc.AdditionalBindings = append(wc.AdditionalBindings, sandbox.BindMount{
+			mounts = append(mounts, sandbox.Mount{
 				Source: spec.ServerSocket,
 				Target: "/run/boid/server.sock",
+				Type:   sandbox.MountBind,
 				IsFile: true,
 			})
-			if wc.Env == nil {
-				wc.Env = map[string]string{}
-			}
-			wc.Env["BOID_JOB_ID"] = spec.JobID
-			wc.Env["BOID_SOCKET"] = "/run/boid/server.sock"
+			env["BOID_JOB_ID"] = spec.JobID
+			env["BOID_SOCKET"] = "/run/boid/server.sock"
 		}
-		// ExitScript stays empty so the entry is rendered with `exec`.
+		argv = spec.Argv
 	}
-	return wc
+
+	// --- Boid binary + command shims ---
+	mounts = append(mounts, sandbox.Mount{
+		Source:   spec.BoidBinary,
+		Target:   "/opt/boid/bin/boid",
+		Type:     sandbox.MountBind,
+		IsFile:   true,
+		ReadOnly: true,
+	})
+	symlinks := shimSymlinks(sortedPolicyKeys(spec.BuiltinPolicies), spec.HostCommands)
+
+	// --- Cleanup paths ---
+	var cleanup []string
+	if spec.StagingDir != "" {
+		cleanup = append(cleanup, spec.StagingDir)
+	}
+
+	return sandbox.Spec{
+		ID:                spec.JobID,
+		Mounts:            mounts,
+		Files:             files,
+		Symlinks:          symlinks,
+		ProxyPort:         spec.ProxyPort,
+		Argv:              argv,
+		WorkDir:           workDir,
+		Env:               env,
+		StdinBytes:        stdinBytes,
+		StdoutCaptureFile: stdoutCapture,
+		ExitScript:        exitScript,
+		TTY:               spec.TTY,
+		RootDir:           rootDir,
+		CleanupPaths:      cleanup,
+	}
 }
 
-func cloneEnv(env map[string]string) map[string]string {
-	if len(env) == 0 {
+// projectMounts returns the standard filesystem layout for a job that sees
+// the project: project bind → HOME tmpfs → project re-mount → peers (ro) →
+// .boid (ro) → (.git remount in worktree mode).
+func projectMounts(projectDir, workDir, homeDir, worktreeDir string, readOnly bool, workspacePeers map[string]string) []sandbox.Mount {
+	var out []sandbox.Mount
+
+	// Project bind-mount before HOME tmpfs so the path exists inside the sandbox.
+	out = append(out, sandbox.Mount{
+		Source:   workDir,
+		Target:   workDir,
+		Type:     sandbox.MountBind,
+		ReadOnly: readOnly,
+	})
+
+	// HOME tmpfs (caller decides homeDir).
+	out = append(out, sandbox.Mount{
+		Target: homeDir,
+		Type:   sandbox.MountTmpfs,
+	})
+
+	// Re-mount project after HOME tmpfs so it stays visible when workDir is
+	// a descendant of homeDir (which the HOME tmpfs would otherwise shadow).
+	out = append(out, sandbox.Mount{
+		Source:   workDir,
+		Target:   workDir,
+		Type:     sandbox.MountBind,
+		ReadOnly: readOnly,
+	})
+
+	// Workspace peers (read-only mirrors of other projects).
+	peerKeys := sortedKeys(workspacePeers)
+	for _, k := range peerKeys {
+		out = append(out, sandbox.Mount{
+			Source:   workspacePeers[k],
+			Target:   workspacePeers[k],
+			Type:     sandbox.MountBind,
+			ReadOnly: true,
+		})
+	}
+
+	// .boid (ro). In worktree mode the source stays at the original project dir.
+	boidSource := projectDir + "/.boid"
+	out = append(out, sandbox.Mount{
+		Source:   boidSource,
+		Target:   workDir + "/.boid",
+		Type:     sandbox.MountBind,
+		ReadOnly: true,
+		Guard:    dirGuardExpr(boidSource),
+	})
+
+	// Worktree mode: the sandbox also needs .git at the original path so the
+	// worktree's gitlink resolves.
+	if worktreeDir != "" {
+		gitDir := projectDir + "/.git"
+		out = append(out, sandbox.Mount{
+			Source: gitDir,
+			Target: gitDir,
+			Type:   sandbox.MountBind,
+			Guard:  dirGuardExpr(gitDir),
+		})
+	}
+
+	return out
+}
+
+// hookFileMounts returns the tmpfs-over-.boid/hooks pattern: a tmpfs layer so
+// individual hook files can be bind-mounted on top of the read-only .boid dir.
+// Called only when HookFiles is non-empty.
+func hookFileMounts(workDir, projectDir string, files []HookFile) []sandbox.Mount {
+	if len(files) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(env))
-	for k, v := range env {
-		out[k] = v
+	boidSource := projectDir + "/.boid"
+	hooksTarget := workDir + "/.boid/hooks"
+
+	out := []sandbox.Mount{
+		{Target: hooksTarget, Type: sandbox.MountTmpfs, Guard: dirGuardExpr(boidSource)},
+	}
+	for _, hf := range files {
+		out = append(out, sandbox.Mount{
+			Source:   hf.Source,
+			Target:   hooksTarget + "/" + hf.TargetName,
+			Type:     sandbox.MountBind,
+			ReadOnly: true,
+			IsFile:   true,
+			Guard:    dirGuardExpr(boidSource),
+		})
 	}
 	return out
 }
 
-func resolveHookArgv(spec SandboxSpec) []string {
+// additionalBindingMounts converts dispatcher AdditionalBindings into Mount
+// entries. Supports Target override and IsFile flag.
+func additionalBindingMounts(bindings []BindMount) []sandbox.Mount {
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make([]sandbox.Mount, 0, len(bindings))
+	for _, bm := range bindings {
+		target := bm.Target
+		if target == "" {
+			target = bm.Source
+		}
+		out = append(out, sandbox.Mount{
+			Source:     bm.Source,
+			Target:     target,
+			Type:       sandbox.MountBind,
+			ReadOnly:   bm.Mode != "rw",
+			IsFile:     bm.IsFile,
+			DetectType: !bm.IsFile,
+		})
+	}
+	return out
+}
+
+// shimSymlinks creates /opt/boid/bin/<cmd> → boid symlinks for both builtin
+// and host command names. The boid binary itself is skipped since it is
+// bind-mounted directly at /opt/boid/bin/boid.
+func shimSymlinks(builtins, hostCommands []string) []sandbox.Symlink {
+	seen := map[string]struct{}{}
+	add := func(name string) []sandbox.Symlink {
+		if name == "boid" {
+			return nil
+		}
+		if _, ok := seen[name]; ok {
+			return nil
+		}
+		seen[name] = struct{}{}
+		return []sandbox.Symlink{{LinkTarget: "boid", LinkPath: "/opt/boid/bin/" + name}}
+	}
+	var out []sandbox.Symlink
+	for _, n := range builtins {
+		out = append(out, add(n)...)
+	}
+	for _, n := range hostCommands {
+		out = append(out, add(n)...)
+	}
+	return out
+}
+
+// buildPATH prepends additional-binding bin directories to the canonical PATH.
+func buildPATH(bindings []BindMount) string {
+	var prefix []string
+	for _, bm := range bindings {
+		if strings.HasSuffix(bm.Source, "/bin") {
+			prefix = append(prefix, bm.Source)
+		} else {
+			prefix = append(prefix, bm.Source+"/bin")
+		}
+	}
+	base := "/opt/boid/bin:/usr/local/bin:/usr/bin:/bin"
+	if len(prefix) > 0 {
+		return strings.Join(prefix, ":") + ":" + base
+	}
+	return base
+}
+
+// buildExitScript renders a shell snippet that calls `boid job done <jobID>`
+// with --exit-code and, if the payload file exists, --output-file pointing at
+// it. Optional stdoutFallback is used when the payload is absent.
+func buildExitScript(jobID, payloadFile, stdoutFallback string) string {
+	var b strings.Builder
+	b.WriteString("_exit=$?\n")
+	fmt.Fprintf(&b, "mkdir -p \"$(dirname %s)\"\n", quoteForTrap(payloadFile))
+	fmt.Fprintf(&b, "if [ -f %s ]; then\n", quoteForTrap(payloadFile))
+	fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit --output-file %s\n", jobID, quoteForTrap(payloadFile))
+	if stdoutFallback != "" {
+		b.WriteString("else\n")
+		fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit --output-file %s\n", jobID, quoteForTrap(stdoutFallback))
+	} else {
+		b.WriteString("else\n")
+		fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit\n", jobID)
+	}
+	b.WriteString("fi")
+	return b.String()
+}
+
+// quoteForTrap wraps a path in double quotes so shell expansions ($HOME etc.)
+// fire at trap execution time. The enclosing trap string is single-quoted.
+func quoteForTrap(s string) string {
+	return "\"" + s + "\""
+}
+
+// dirGuardExpr builds `-d <quoted-path>` for Mount.Guard, suitable for
+// `if [ <expr> ]; then` wrapping.
+func dirGuardExpr(dir string) string {
+	return "-d " + shellQuoteDir(dir)
+}
+
+// shellQuoteDir is a small subset of shell quoting suitable for paths; we
+// defer to sandbox.shellQuote at render time, but we need the quoted form
+// inline in Guard expressions. Since dispatcher cannot import unexported
+// sandbox helpers, we re-implement the safe-chars logic here.
+func shellQuoteDir(s string) string {
+	const safe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-"
+	for _, r := range s {
+		if !strings.ContainsRune(safe, r) {
+			return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+		}
+	}
+	return s
+}
+
+func effectiveWorkDir(spec SandboxSpec) string {
+	if spec.WorktreeDir != "" {
+		return spec.WorktreeDir
+	}
+	return spec.ProjectDir
+}
+
+func effectiveHomeDir(spec SandboxSpec) string {
+	if spec.HomeDir != "" {
+		return spec.HomeDir
+	}
+	return spec.ProjectDir
+}
+
+func resolveHookArgv(spec SandboxSpec, workDir string) []string {
 	if len(spec.Argv) > 0 {
 		return spec.Argv
 	}
 	if spec.HookScript == "" {
 		return nil
 	}
-	wd := spec.WorktreeDir
-	if wd == "" {
-		wd = spec.ProjectDir
-	}
-	return []string{wd + "/.boid/hooks/" + spec.HookScript}
+	return []string{workDir + "/.boid/hooks/" + spec.HookScript}
 }
 
 func resolveGateArgv(spec SandboxSpec) []string {
@@ -187,72 +482,46 @@ func resolveGateArgv(spec SandboxSpec) []string {
 	return []string{"/opt/boid/gates/" + spec.HookScript}
 }
 
-// buildPayloadExitScript renders a shell snippet that calls
-// `boid job done <jobID>` with `--exit-code` and, when the expected payload
-// file exists, `--output-file <payload>`. When payloadFile is absent but
-// stdoutFallback is set, it is used as the output file. Otherwise only the
-// exit code is passed.
-func buildPayloadExitScript(jobID, payloadFile, stdoutFallback string) string {
-	var b strings.Builder
-	b.WriteString("_exit=$?\n")
-	fmt.Fprintf(&b, "mkdir -p \"$(dirname %s)\"\n", shellQuoteForTrap(payloadFile))
-	fmt.Fprintf(&b, "if [ -f %s ]; then\n", shellQuoteForTrap(payloadFile))
-	fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit --output-file %s\n", jobID, shellQuoteForTrap(payloadFile))
-	if stdoutFallback != "" {
-		b.WriteString("else\n")
-		fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit --output-file %s\n", jobID, shellQuoteForTrap(stdoutFallback))
-	} else {
-		b.WriteString("else\n")
-		fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit\n", jobID)
+func cloneStringMap(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
 	}
-	b.WriteString("fi")
-	return b.String()
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
-// shellQuoteForTrap renders a path safely for inclusion inside a string that
-// will itself be passed through sandbox.shellQuote (single-quoted). We use
-// double quotes with escaped expansions to keep $HOME live at trap time.
-func shellQuoteForTrap(s string) string {
-	return "\"" + s + "\""
+func sortedKeys[V any](m map[string]V) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // sortedPolicyKeys extracts the builtin command names from a policy map and
 // returns them as a sorted slice for deterministic shim creation.
 func sortedPolicyKeys(policies map[string]sandbox.BuiltinPolicy) []string {
-	if len(policies) == 0 {
-		return nil
-	}
-	names := make([]string, 0, len(policies))
-	for name := range policies {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return sortedKeys(policies)
 }
 
-func toSandboxHookFiles(files []HookFile) []sandbox.HookFile {
-	if len(files) == 0 {
-		return nil
+// jsonToYAML converts a JSON string to YAML. Falls back to the original on
+// parse error. Replaces the sandbox.jsonToYAML helper that used to live inside
+// the sandbox layer.
+func jsonToYAML(s string) string {
+	var v any
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return s
 	}
-	out := make([]sandbox.HookFile, len(files))
-	for i, f := range files {
-		out[i] = sandbox.HookFile{Source: f.Source, TargetName: f.TargetName}
+	out, err := yaml.Marshal(v)
+	if err != nil {
+		return s
 	}
-	return out
-}
-
-func toSandboxBindMounts(bindings []BindMount) []sandbox.BindMount {
-	if len(bindings) == 0 {
-		return nil
-	}
-	out := make([]sandbox.BindMount, 0, len(bindings))
-	for _, binding := range bindings {
-		out = append(out, sandbox.BindMount{
-			Source: binding.Source,
-			Target: binding.Target,
-			Mode:   binding.Mode,
-			IsFile: binding.IsFile,
-		})
-	}
-	return out
+	return string(out)
 }
