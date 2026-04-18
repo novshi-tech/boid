@@ -68,9 +68,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		TaskID:    spec.TaskID,
 		ProjectID: spec.ProjectID,
 		HandlerID: spec.HandlerID,
-		// Role on Job is kept for DB compatibility but no longer informs the
-		// sandbox build. "handler" is a neutral label.
-		Role: jobRoleLabel(spec),
+		// Role is a DB-label only; sandbox construction never reads it.
+		Role: string(spec.Kind),
 	}
 	j.ID = uuid.New().String()
 
@@ -145,20 +144,6 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 
 	sbSpec := BuildSandboxSpec(spec, rtInfo)
 	return r.launchSandbox(ctx, j, sbSpec, cleanup)
-}
-
-// jobRoleLabel derives a stable, role-free DB label for a job. The legacy
-// "hook"/"gate"/"exec" labels are retained for TUI display and existing
-// aggregations; the sandbox build itself ignores this value.
-func jobRoleLabel(spec *orchestrator.JobSpec) string {
-	switch {
-	case spec.HandlerID == "":
-		return "exec"
-	case len(spec.HostCommands) > 0:
-		return "gate"
-	default:
-		return "hook"
-	}
 }
 
 func (r *Runner) resolveWorkspaceID(projectID string) (string, error) {

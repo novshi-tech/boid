@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>boid サンドボックス機構の詳解</title>
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --muted: #555;
+    --bg: #fafaf7;
+    --accent: #2b5797;
+    --accent2: #b7472a;
+    --code-bg: #f0efe9;
+    --border: #d8d4c7;
+    --table-head: #ebe7d9;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", system-ui, sans-serif;
+    color: var(--fg);
+    background: #2a2a28;
+    overflow: hidden;
+    height: 100%;
+  }
+  #deck {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+  }
+  .slide {
+    position: absolute;
+    inset: 0;
+    display: none;
+    padding: 4vh 6vw;
+    background: var(--bg);
+    overflow: auto;
+    flex-direction: column;
+  }
+  .slide.active { display: flex; }
+  .slide h1 {
+    font-size: 2.6em;
+    margin: 0 0 0.3em 0;
+    color: var(--accent);
+    border-bottom: 3px solid var(--accent);
+    padding-bottom: 0.2em;
+  }
+  .slide h2 {
+    font-size: 1.9em;
+    margin: 0 0 0.5em 0;
+    color: var(--accent);
+    border-bottom: 2px solid var(--border);
+    padding-bottom: 0.2em;
+  }
+  .slide h3 {
+    font-size: 1.25em;
+    margin: 0.8em 0 0.3em 0;
+    color: var(--accent2);
+  }
+  .slide h4 {
+    font-size: 1.05em;
+    margin: 0.6em 0 0.2em 0;
+    color: var(--muted);
+  }
+  .slide p, .slide li, .slide td, .slide th {
+    font-size: 1.05em;
+    line-height: 1.55;
+  }
+  .slide ul, .slide ol {
+    margin: 0.3em 0 0.3em 1.2em;
+    padding: 0;
+  }
+  .slide li { margin: 0.2em 0; }
+  .slide li ul { margin-top: 0.15em; }
+  strong { color: var(--accent2); font-weight: 700; }
+  code {
+    background: var(--code-bg);
+    padding: 0.05em 0.35em;
+    border-radius: 3px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.92em;
+  }
+  blockquote {
+    border-left: 4px solid var(--accent);
+    margin: 0.6em 0;
+    padding: 0.4em 1em;
+    background: #f3f0e4;
+    font-style: italic;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 0.4em 0;
+    font-size: 0.95em;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 0.4em 0.6em;
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    background: var(--table-head);
+    font-weight: 700;
+  }
+  .title-slide {
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    background: linear-gradient(135deg, #2b5797 0%, #1e3a5f 100%);
+    color: #fff;
+  }
+  .title-slide h1 {
+    font-size: 3.2em;
+    color: #fff;
+    border: none;
+    margin-bottom: 0.3em;
+  }
+  .title-slide .sub {
+    font-size: 1.4em;
+    color: #cddaee;
+    margin-bottom: 1.5em;
+  }
+  .title-slide .meta {
+    color: #a9b8d0;
+    font-size: 1em;
+    line-height: 1.8;
+  }
+  .page-num {
+    position: absolute;
+    bottom: 1.5vh;
+    right: 2vw;
+    color: var(--muted);
+    font-size: 0.85em;
+  }
+  .nav {
+    position: fixed;
+    bottom: 1.5vh;
+    left: 2vw;
+    color: var(--muted);
+    font-size: 0.8em;
+    z-index: 100;
+  }
+  .figure {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin: 0.4em 0;
+  }
+  .figure svg {
+    max-width: 100%;
+    height: auto;
+  }
+  .caption {
+    text-align: center;
+    font-size: 0.92em;
+    color: var(--muted);
+    margin-top: 0.3em;
+  }
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5em;
+  }
+  .note {
+    font-size: 0.9em;
+    color: var(--muted);
+    margin: 0.3em 0 0.6em 0;
+  }
+  .emph-box {
+    border: 2px solid var(--accent);
+    background: #eef2f8;
+    padding: 0.6em 1em;
+    border-radius: 6px;
+    margin: 0.5em 0;
+  }
+</style>
+</head>
+<body>
+<div id="deck">
+
+<!-- 1: Title -->
+<section class="slide title-slide active">
+  <h1>boid サンドボックス機構の詳解</h1>
+  <div class="sub">〜 AI エージェントに最小権限を配るための<br>Linux namespace + Broker 設計 〜</div>
+  <div class="meta">
+    技術者向けプレゼンテーション<br>
+    対象: Linux / サーバサイド開発に親しむエンジニア
+  </div>
+</section>
+
+<!-- 2: Agenda -->
+<section class="slide">
+  <h1>アジェンダ</h1>
+  <ol>
+    <li>背景 — AI エージェントとサンドボックスの必要性</li>
+    <li>boid とは — 全体像を 3 分で</li>
+    <li>脅威モデル — 何から守るのか</li>
+    <li>構成の全体像 — スコープ 3 段 × 系統 3 種</li>
+    <li>プロセス・ネットワーク隔離</li>
+    <li>Broker — 外界とつなぐもう 1 本の経路</li>
+    <li>ファイルシステムの最小公開戦略</li>
+    <li>ジョブ状態と Broker 権限</li>
+    <li>ジョブ状態と書込権限</li>
+    <li>設計トレードオフと既知の制約</li>
+    <li>用語集 / まとめ</li>
+  </ol>
+</section>
+
+<!-- 3: Background -->
+<section class="slide">
+  <h1>1. 背景</h1>
+  <h3>AI エージェントに任意スクリプト実行を任せる時代</h3>
+  <ul>
+    <li>Claude Code のような AI コーディングエージェントは、自然言語指示に応じて <strong>コマンドを実行し、ファイルを書き換え、git を操作する</strong></li>
+    <li>便利だが、与えられた権限がそのままホスト OS の権限になる</li>
+    <li>誤爆・プロンプトインジェクション・不完全な指示 → <strong>ホスト側に副作用が漏れる</strong></li>
+  </ul>
+  <h3>求められるもの</h3>
+  <blockquote>「エージェントが自由に動ける作業場」と「ホストの保全」の両立</blockquote>
+  <p>→ 軽量で起動が速く、権限を細かく絞れる <strong>サンドボックス</strong> が必要</p>
+</section>
+
+<!-- 4: boid -->
+<section class="slide">
+  <h1>2. boid とは</h1>
+  <div class="emph-box"><strong>「汎用パーソナル AI オーケストレータ」</strong></div>
+  <ul>
+    <li>Linux 上でタスクを管理し、状態遷移に合わせて AI エージェントやスクリプトを発火させる常駐型の仕組み</li>
+    <li>「タスクがどの状態にあるか」「何が起きたら何が動くか」を宣言的に定義</li>
+    <li>AI エージェントへの作業依頼は <strong>必ずサンドボックス越し</strong></li>
+  </ul>
+  <h3>本発表のスコープ</h3>
+  <p>boid の機能のうち、<strong>「エージェントを安全に走らせる仕組み（サンドボックス層）」</strong> に絞って解説します。</p>
+</section>
+
+<!-- 5: Actors -->
+<section class="slide">
+  <h1>boid の登場人物（概念レベル）</h1>
+  <table>
+    <tr><th>概念</th><th>役割</th></tr>
+    <tr><td><strong>Task</strong></td><td>作業単位。状態（pending / executing / verifying / done …）を持つ</td></tr>
+    <tr><td><strong>Hook</strong></td><td>状態遷移に紐づき、実際の作業を行うスクリプト</td></tr>
+    <tr><td><strong>Gate</strong></td><td>状態の入場/退場時に走る検証ロジック。合否を判定</td></tr>
+    <tr><td><strong>Payload</strong></td><td>Task に添付された実行データ。Hook/Gate に渡される入力</td></tr>
+    <tr><td><strong>Role</strong></td><td>実行コンテキストの種別（hook / gate / command）</td></tr>
+    <tr><td><strong>Sandbox</strong></td><td>Hook/Gate/Command を隔離して実行する環境</td></tr>
+    <tr><td><strong>Broker</strong></td><td>サンドボックス内から外界への唯一の通信窓口</td></tr>
+  </table>
+  <p class="note">このうち後半 3 つが本発表の主題です。</p>
+</section>
+
+<!-- 6: Threat Model -->
+<section class="slide">
+  <h1>3. 脅威モデル</h1>
+  <h3>「サンドボックス内のプロセスはホストから信頼できない」</h3>
+  <p>想定する具体的な脅威:</p>
+  <ul>
+    <li>誤った <code>rm -rf ~</code> でホームディレクトリが消える</li>
+    <li><code>.git/config</code> 改ざんによる認証情報の窃取</li>
+    <li>許可されていないリモートへの <code>git push</code></li>
+    <li><code>ssh</code> / <code>curl</code> によるクレデンシャル流出</li>
+    <li>fork bomb や無限ループによるリソース枯渇</li>
+    <li>他プロジェクトのファイルを書き換える越境</li>
+  </ul>
+  <div class="emph-box">
+    <strong>前提</strong>: エージェントは善意でも、LLM の誤出力は普通に起きる。<br>
+    <strong>方針</strong>: <strong>拒否をデフォルト</strong> に、必要な権限だけを明示的に付与する。
+  </div>
+</section>
+
+<!-- 7: Overall composition -->
+<section class="slide">
+  <h1>4. 構成の全体像 — スコープ 3 段 × 系統 3 種</h1>
+  <p>サンドボックスの構成は単一ではない。<strong>いつ決まるか</strong> で 3 層に分かれる。</p>
+  <table>
+    <tr>
+      <th></th>
+      <th><strong>System</strong><br>(常駐で 1 つ)</th>
+      <th><strong>Project</strong><br>(プロジェクト設定で定義)</th>
+      <th><strong>Job</strong><br>(Role × State で絞る)</th>
+    </tr>
+    <tr>
+      <th>Network</th>
+      <td>proxy allowlist<br>nftables / 仮想 NIC 構成</td>
+      <td>—</td>
+      <td>Role 非依存</td>
+    </tr>
+    <tr>
+      <th>Filesystem</th>
+      <td>—</td>
+      <td>公開ディレクトリ集合</td>
+      <td>hook×executing: 全公開 rw<br>hook×verifying: 全公開 ro<br>gate: 全非公開</td>
+    </tr>
+    <tr>
+      <th>Broker</th>
+      <td>—</td>
+      <td>host command 群<br>builtin-command 群<br>(代表例: git)</td>
+      <td>hook: host command 不可<br>gate: host command 可<br>builtin は両 Role 可<br>(hook は git fetch/push 禁止)</td>
+    </tr>
+  </table>
+</section>
+
+<!-- 8: How to read 3-axis -->
+<section class="slide">
+  <h1>3 軸モデルの読み方</h1>
+  <ul>
+    <li>横軸 = <strong>いつ決まるか</strong>
+      <ul>
+        <li><strong>System</strong>: boid 常駐プロセスと共に 1 つだけ存在</li>
+        <li><strong>Project</strong>: プロジェクトの設定で宣言・収集される「素材」</li>
+        <li><strong>Job</strong>: ジョブ起動時に Role と State を見てトークンに固定される</li>
+      </ul>
+    </li>
+    <li>縦軸 = <strong>何を統制するか</strong> — ネットワーク境界 / ファイル可視性 / プロセス実行経路</li>
+    <li>Job 層は <strong>0/1 スイッチ</strong>: Role ごとに「全公開 or 全非公開」「全許可 or 全不許可」<br>
+      Project で収集した集合を「どれを使うか」細粒度に選別する機能は<strong>ない</strong></li>
+    <li>全体は <strong>Linux の unshare / mount / nftables / pasta</strong> の上に乗る</li>
+  </ul>
+  <p class="note">→ §5 は <strong>System 層</strong>、§6〜§7 は <strong>Project 層</strong>、§8〜§9 で <strong>Job 層（Role + State）の絞り</strong> を扱う</p>
+</section>
+
+<!-- 9: Process/Network Isolation -->
+<section class="slide">
+  <h1>5. プロセス・ネットワーク隔離</h1>
+  <p class="note">※ 本章で扱うのは §4 表の <strong>System 層における Network 構成</strong>（proxy allowlist / nftables / 仮想 NIC はすべて常駐で 1 つ）。</p>
+  <h3>使っている Linux の仕組み（用語解説）</h3>
+  <ul>
+    <li><strong>Namespace（名前空間）</strong>: カーネルが提供する「リソースのビュー分離」機能。mount / pid / net / user など種類別に存在</li>
+    <li><strong><code>unshare</code></strong>: 現在のプロセスから新しい namespace を切り出す syscall / コマンド</li>
+    <li><strong><code>chroot</code> 相当のルート変更</strong>: プロセスが「見る」 <code>/</code> の位置を差し替え、外側のファイルを不可視にする</li>
+    <li><strong>UID mapping</strong>: ホストの一般ユーザ UID を、namespace 内では「root（UID 0）」に見せかける仕組み</li>
+    <li><strong><code>pasta</code></strong>: ユーザ空間で動く軽量な仮想ネットワークツール。KVM / Podman などでも使われる</li>
+    <li><strong><code>nftables</code></strong>: Linux のパケットフィルタ。iptables の後継</li>
+  </ul>
+</section>
+
+<!-- 10: Isolation Layers -->
+<section class="slide">
+  <h1>隔離の全体像</h1>
+  <p>サンドボックスの起動時、概念的には次の順で「殻」を重ねていきます。</p>
+  <ol>
+    <li><strong>ネットワークの殻</strong> — pasta が仮想 NIC を生やし、サンドボックス内は独立したプライベートネットに閉じ込められる</li>
+    <li><strong>マウントの殻</strong> — mount namespace を新しく作り、以降のマウント操作がホストに影響しないようにする</li>
+    <li><strong>ファイルシステムの殻</strong> — tmpfs で新しいルートを作り、必要最低限のディレクトリだけを bind mount で「並べる」</li>
+    <li><strong>ユーザの殻</strong> — UID mapping で「中では root、外では一般ユーザ」という状態を作る</li>
+    <li><strong>最後にスクリプト実行</strong> — この殻の中で Hook / Gate が走る</li>
+  </ol>
+</section>
+
+<!-- 11: Network concept -->
+<section class="slide">
+  <h1>ネットワーク隔離の考え方</h1>
+  <ul>
+    <li>サンドボックス内は <strong>独立したプライベートネットワーク</strong>（ホストから見ると仮想 NIC の先）</li>
+    <li>nftables は <strong>デフォルト拒否 + ループバック / ゲートウェイ / DNS のみ許可</strong></li>
+    <li>任意のリモートへ直接 TCP を張ることはできない</li>
+  </ul>
+  <h3>では完全にオフラインか？ → No</h3>
+  <ul>
+    <li>ホスト側で <strong>組み込み HTTP(S) プロキシ</strong> が起動し、サンドボックスの <code>HTTP_PROXY</code> / <code>HTTPS_PROXY</code> に注入される</li>
+    <li>プロキシは <strong>許可ドメインのリスト（allowlist）</strong> を持ち、一致するホスト名にのみ通信を中継する
+      <ul>
+        <li>CONNECT 先ホスト名 / HTTP <code>Host</code> ヘッダを検査</li>
+        <li>許可外のドメインは接続段階で拒否</li>
+      </ul>
+    </li>
+    <li>例えば <code>api.github.com</code> は許可、<code>random.example.com</code> は拒否、という粒度で制御する</li>
+  </ul>
+  <p>→ <strong>外に出る経路はプロキシに一本化</strong>、そこに allowlist が立っている構図</p>
+</section>
+
+<!-- 12: Network diagram SVG -->
+<section class="slide">
+  <h1>ネットワーク構成図</h1>
+  <div class="figure">
+    <svg viewBox="0 0 1100 600" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+          <path d="M0,0 L0,6 L9,3 z" fill="#333"/>
+        </marker>
+        <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+          <path d="M0,0 L0,6 L9,3 z" fill="#b7472a"/>
+        </marker>
+      </defs>
+
+      <!-- Sandbox box -->
+      <rect x="40" y="20" width="1020" height="280" rx="8" fill="#f3f0e4" stroke="#2b5797" stroke-width="2" stroke-dasharray="6,4"/>
+      <text x="60" y="45" font-size="18" font-weight="bold" fill="#2b5797">Sandbox (netns)</text>
+
+      <!-- Agent/shim -->
+      <rect x="80" y="70" width="200" height="60" rx="6" fill="#fff" stroke="#333"/>
+      <text x="180" y="95" text-anchor="middle" font-size="15" font-weight="bold">エージェント / shim</text>
+      <text x="180" y="115" text-anchor="middle" font-size="13" fill="#555">プロセス</text>
+
+      <!-- pasta NIC -->
+      <rect x="80" y="180" width="200" height="50" rx="6" fill="#e8ecf5" stroke="#2b5797"/>
+      <text x="180" y="210" text-anchor="middle" font-size="14" font-weight="bold">pasta 仮想 NIC</text>
+
+      <!-- nftables -->
+      <rect x="320" y="150" width="700" height="110" rx="6" fill="#ffe8de" stroke="#b7472a" stroke-width="2"/>
+      <text x="670" y="180" text-anchor="middle" font-size="15" font-weight="bold" fill="#b7472a">nftables — default DROP</text>
+      <text x="670" y="205" text-anchor="middle" font-size="13">allow: loopback / gw(10.0.2.2) / DNS</text>
+      <text x="670" y="230" text-anchor="middle" font-size="12" fill="#555">許可外の IP/ポートはここで落ちる</text>
+
+      <!-- Arrows from agent -->
+      <line x1="140" y1="130" x2="140" y2="175" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <text x="110" y="155" font-size="12" fill="#555">① HTTPS</text>
+      <line x1="220" y1="130" x2="500" y2="150" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <text x="310" y="140" font-size="12" fill="#555">② Broker IPC (UNIX socket)</text>
+
+      <!-- Outside boundary -->
+      <rect x="40" y="330" width="1020" height="250" rx="8" fill="#fbfaf3" stroke="#555" stroke-width="1.5"/>
+      <text x="60" y="355" font-size="18" font-weight="bold" fill="#555">Host OS</text>
+
+      <!-- HTTP Proxy -->
+      <rect x="120" y="380" width="280" height="140" rx="6" fill="#fff" stroke="#2b5797" stroke-width="2"/>
+      <text x="260" y="405" text-anchor="middle" font-size="15" font-weight="bold" fill="#2b5797">HTTP(S) Proxy</text>
+      <text x="260" y="430" text-anchor="middle" font-size="13" fill="#555">allowlist:</text>
+      <text x="260" y="450" text-anchor="middle" font-size="12" font-family="monospace">api.github.com</text>
+      <text x="260" y="468" text-anchor="middle" font-size="12" font-family="monospace">registry.npmjs.org</text>
+      <text x="260" y="486" text-anchor="middle" font-size="12" font-family="monospace">…</text>
+      <text x="260" y="508" text-anchor="middle" font-size="11" fill="#b7472a">許可ドメインのみ中継</text>
+
+      <!-- Broker -->
+      <rect x="620" y="380" width="360" height="160" rx="6" fill="#fff" stroke="#b7472a" stroke-width="2"/>
+      <text x="800" y="405" text-anchor="middle" font-size="15" font-weight="bold" fill="#b7472a">Broker</text>
+      <text x="640" y="430" font-size="13">├─ token check</text>
+      <text x="640" y="452" font-size="13">├─ builtin-command (git push 等)</text>
+      <text x="640" y="474" font-size="13">└─ host command (gh 等)</text>
+      <text x="800" y="510" text-anchor="middle" font-size="11" fill="#b7472a">許可コマンドのみ実行</text>
+
+      <!-- Internet -->
+      <rect x="380" y="560" width="340" height="30" rx="4" fill="#333"/>
+      <text x="550" y="580" text-anchor="middle" font-size="13" fill="#fff" font-weight="bold">Internet</text>
+
+      <!-- arrows across boundary -->
+      <line x1="260" y1="260" x2="260" y2="378" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <text x="270" y="320" font-size="12" fill="#555">① TCP to gw</text>
+
+      <line x1="800" y1="260" x2="800" y2="378" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <text x="810" y="320" font-size="12" fill="#555">② socket</text>
+
+      <!-- Proxy to internet -->
+      <line x1="260" y1="520" x2="450" y2="560" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <!-- Broker to internet/host -->
+      <line x1="800" y1="540" x2="650" y2="560" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+    </svg>
+  </div>
+  <p class="caption">外に出る経路は <strong>2 本だけ</strong>: ① プロキシ（HTTP(S) + allowlist）、② Broker（プロセス実行 + ポリシー）。nftables は最後の砦。</p>
+</section>
+
+<!-- 13: Broker intro -->
+<section class="slide">
+  <h1>6. Broker — 外界とつなぐもう 1 本の経路</h1>
+  <p class="note">※ 本章で扱うのは §4 表の <strong>Project 層における Broker の素材定義</strong>（host command 群 / builtin-command 群）。Job 層での Role 絞りは §8 で扱う。</p>
+  <h3>なぜ必要か</h3>
+  <ul>
+    <li>HTTP プロキシの allowlist は <strong>System 層のグローバル設定</strong> — 全ジョブ共通で、むやみに広げられない</li>
+    <li>しかし実際には、ジョブごとに必要な外部通信先は異なる
+      <ul>
+        <li>あるジョブでは <code>git push</code> で特定リポジトリにだけ通信したい</li>
+        <li>別のジョブでは <code>gh pr create</code> で GitHub API を叩きたい</li>
+        <li>ホスト側 boid への「タスク完了」報告、など</li>
+      </ul>
+    </li>
+    <li>これらを全部 System の allowlist に積むと、<strong>関係ないジョブにも広い権限が漏れる</strong></li>
+  </ul>
+  <p>→ <strong>Broker</strong> は、System allowlist を最小に保ったまま、<strong>ジョブ単位で必要な外部通信だけをピンポイントに許す</strong> ための仕組み<br>
+  → §5 のプロキシとは別経路で、<strong>「このジョブだけに許された窓口」</strong> を提供する</p>
+</section>
+
+<!-- 14: Broker concept SVG -->
+<section class="slide">
+  <h1>Broker の考え方</h1>
+  <div class="figure">
+    <svg viewBox="0 0 1100 500" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrow2" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+          <path d="M0,0 L0,6 L9,3 z" fill="#333"/>
+        </marker>
+      </defs>
+
+      <!-- Sandbox -->
+      <rect x="40" y="40" width="420" height="420" rx="8" fill="#f3f0e4" stroke="#2b5797" stroke-width="2" stroke-dasharray="6,4"/>
+      <text x="60" y="70" font-size="18" font-weight="bold" fill="#2b5797">Sandbox 内</text>
+
+      <!-- shim -->
+      <rect x="100" y="110" width="300" height="90" rx="6" fill="#fff" stroke="#333"/>
+      <text x="250" y="140" text-anchor="middle" font-size="16" font-weight="bold">shim コマンド</text>
+      <text x="250" y="165" text-anchor="middle" font-size="13" fill="#555">git / gh / boid …</text>
+      <text x="250" y="185" text-anchor="middle" font-size="12" fill="#b7472a">トークンを env から付与</text>
+
+      <!-- JSON arrow -->
+      <line x1="250" y1="200" x2="250" y2="280" stroke="#333" stroke-width="1.5" marker-end="url(#arrow2)"/>
+      <text x="260" y="245" font-size="12" fill="#555">リクエスト (JSON)</text>
+
+      <!-- Socket -->
+      <rect x="100" y="290" width="300" height="50" rx="6" fill="#e8ecf5" stroke="#2b5797"/>
+      <text x="250" y="320" text-anchor="middle" font-size="14" font-weight="bold">専用ソケット (UNIX)</text>
+
+      <!-- return arrow -->
+      <line x1="200" y1="400" x2="200" y2="345" stroke="#333" stroke-width="1.5" marker-end="url(#arrow2)"/>
+      <text x="210" y="380" font-size="12" fill="#555">stdout / exit code</text>
+
+      <!-- Host -->
+      <rect x="500" y="40" width="560" height="420" rx="8" fill="#fbfaf3" stroke="#555" stroke-width="1.5"/>
+      <text x="520" y="70" font-size="18" font-weight="bold" fill="#555">Host 側</text>
+
+      <!-- Broker -->
+      <rect x="540" y="100" width="480" height="320" rx="6" fill="#fff" stroke="#b7472a" stroke-width="2"/>
+      <text x="780" y="130" text-anchor="middle" font-size="18" font-weight="bold" fill="#b7472a">Broker</text>
+
+      <!-- Token check -->
+      <rect x="580" y="160" width="400" height="50" rx="4" fill="#ffe8de" stroke="#b7472a"/>
+      <text x="780" y="192" text-anchor="middle" font-size="14" font-weight="bold">① トークン確認 + ホワイトリスト照合</text>
+
+      <!-- Dispatch -->
+      <rect x="580" y="230" width="400" height="50" rx="4" fill="#e8ecf5" stroke="#2b5797"/>
+      <text x="780" y="262" text-anchor="middle" font-size="14" font-weight="bold">② ディスパッチ</text>
+
+      <!-- builtin / host -->
+      <rect x="560" y="300" width="200" height="90" rx="4" fill="#fff" stroke="#2b5797"/>
+      <text x="660" y="325" text-anchor="middle" font-size="13" font-weight="bold" fill="#2b5797">builtin-command</text>
+      <text x="660" y="345" text-anchor="middle" font-size="11" fill="#555">Broker 内で処理</text>
+      <text x="660" y="365" text-anchor="middle" font-size="11" fill="#555">例: git push</text>
+
+      <rect x="800" y="300" width="200" height="90" rx="4" fill="#fff" stroke="#2b5797"/>
+      <text x="900" y="325" text-anchor="middle" font-size="13" font-weight="bold" fill="#2b5797">host command</text>
+      <text x="900" y="345" text-anchor="middle" font-size="11" fill="#555">ホスト側で別プロセス起動</text>
+      <text x="900" y="365" text-anchor="middle" font-size="11" fill="#555">例: gh pr create</text>
+
+      <!-- arrows -->
+      <line x1="780" y1="210" x2="780" y2="228" stroke="#333" stroke-width="1.5" marker-end="url(#arrow2)"/>
+      <line x1="700" y1="280" x2="660" y2="298" stroke="#333" stroke-width="1.5" marker-end="url(#arrow2)"/>
+      <line x1="860" y1="280" x2="900" y2="298" stroke="#333" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+      <!-- socket to broker arrow -->
+      <line x1="400" y1="315" x2="538" y2="185" stroke="#333" stroke-width="1.5" marker-end="url(#arrow2)"/>
+    </svg>
+  </div>
+  <p class="caption">通信路は <strong>サンドボックス内から外への 1 本のソケット</strong> のみ。この上に 2 系統のディスパッチが乗る。</p>
+</section>
+
+<!-- 15: Broker whitelist -->
+<section class="slide">
+  <h1>Broker の中心設計 — トークンに紐づいたホワイトリスト</h1>
+  <p>Broker の安全性は、ほぼこの 1 点に集約される。</p>
+  <ul>
+    <li>ジョブを起動する時点で、Broker に <strong>「このジョブで呼んで良いコマンドの集合」</strong> を登録する</li>
+    <li>登録の結果返ってくる <strong>短寿命トークン</strong> がサンドボックスの env に注入される</li>
+    <li>サンドボックス内からのリクエストは必ずこのトークンを添える</li>
+    <li>Broker はトークンを引いて <strong>対応するホワイトリスト</strong> を参照し、載っていないコマンドは即拒否</li>
+  </ul>
+  <h3>性質</h3>
+  <ul>
+    <li><strong>ホワイトリストはトークン（＝ジョブ）ごと</strong> — 他ジョブのトークンでは何ひとつ動かせない</li>
+    <li><strong>登録後は動的に広がらない</strong> — 実行中にコマンドが追加されることはない</li>
+    <li><strong>ジョブ終了と同時にトークン失効</strong> — 漏洩の影響範囲を時間的にも封じる</li>
+    <li>併せて <strong>登録時スナップショット</strong>（git remote URL など）も固定され、後から差し替えられない</li>
+  </ul>
+  <p class="note">→ 「何が許されるか」は <strong>ジョブ開始の一点</strong> で確定し、以降は読むだけ</p>
+</section>
+
+<!-- 16: Two systems on broker -->
+<section class="slide">
+  <h1>Broker の上に乗る 2 系統</h1>
+  <p>ホワイトリストに載った各コマンドは、実体として次のどちらかで処理される。</p>
+  <h3>① builtin-command — Broker 自身が処理する組み込み操作</h3>
+  <ul>
+    <li>例: <code>git push</code> / <code>git fetch</code>、boid へのタスク状態報告</li>
+    <li><strong>ホスト側プロセスを起動せず</strong>、Broker の Go コード内で直接処理</li>
+    <li>登録時スナップショット（remote URL など）と突き合わせて強く制約できる</li>
+    <li>「boid が特別扱いしたい操作」はここに入る</li>
+    <li><strong>代表例は git</strong> — 機能が多く副作用も幅広いため、細かく制御できるよう builtin に取り込んでいる</li>
+  </ul>
+  <h3>② host command — ホスト側プロセスを起動する汎用経路</h3>
+  <ul>
+    <li>例: <code>gh pr create</code> ほか外部 CLI</li>
+    <li>Broker がホワイトリスト照合 → <strong>ホスト側で別プロセスとして起動</strong></li>
+    <li>新しい外部ツールを通したいときは、登録エントリを足せば済む</li>
+  </ul>
+  <p class="note">※ 「ホワイトリストに <strong>何を載せるか / どう細かく絞り込むか</strong>」は <strong>§8 ジョブ状態と Broker 権限</strong> で扱う</p>
+</section>
+
+<!-- 17: shim -->
+<section class="slide">
+  <h1>shim とは何か</h1>
+  <div class="emph-box">
+    <strong>shim（シム）</strong>: 薄いラッパープログラム。本来のコマンドと同じ名前で置かれ、呼び出しを横取りして別の処理に流す。
+  </div>
+  <p>サンドボックス内では:</p>
+  <ul>
+    <li><code>git</code> を叩くと、実は boid の shim が動く</li>
+    <li>shim はコマンド引数を検査し、
+      <ul>
+        <li>安全なもの（<code>git status</code>, <code>git diff</code> など）は <strong>そのままローカル実行</strong></li>
+        <li>副作用のあるもの（<code>git push</code>, <code>git fetch</code> など）は <strong>Broker に問い合わせる</strong></li>
+      </ul>
+    </li>
+  </ul>
+  <p>→ エージェントからは普通の <code>git</code> コマンドに見えるが、裏で関所を通っている</p>
+</section>
+
+<!-- 18: Filesystem -->
+<section class="slide">
+  <h1>7. ファイルシステムの最小公開戦略</h1>
+  <p class="note">※ 本章で扱うのは §4 表の <strong>Project 層における公開ディレクトリ集合の定義</strong>。Job 層での Role × State 絞りは §8 / §9 で扱う。</p>
+  <h3>使っている仕組み（用語解説）</h3>
+  <ul>
+    <li><strong>bind mount</strong>: あるディレクトリを別の場所から「見える」ようにする仕組み。コピーではなく、同じ実体を別パスで参照</li>
+    <li><strong>read-only remount</strong>: 一度マウントしたものを「書き込み不可」に切り替える</li>
+    <li><strong>tmpfs</strong>: メモリ上のファイルシステム。プロセス終了で消える</li>
+    <li><strong>overlay</strong>: 下層 RO + 上層 RW を重ねる仕組み（今回は直接は使わない）</li>
+  </ul>
+</section>
+
+<!-- 19: Visible FS -->
+<section class="slide">
+  <h1>サンドボックス内から見えるファイルシステム</h1>
+  <p>典型的な構成:</p>
+  <table>
+    <tr><th>場所</th><th>公開範囲</th><th>書込可否</th><th>ねらい</th></tr>
+    <tr><td><code>/bin</code>, <code>/usr</code>, <code>/etc</code> 等</td><td>ホストから bind</td><td><strong>読取のみ</strong></td><td>システムツール利用</td></tr>
+    <tr><td><code>/dev</code>, <code>/proc</code></td><td>ホストから bind</td><td>通常通り</td><td>最低限のカーネル情報</td></tr>
+    <tr><td><code>/tmp</code></td><td>tmpfs（新規）</td><td>書込可</td><td>ホストに影響しない一時領域</td></tr>
+    <tr><td>作業対象ディレクトリ</td><td>bind</td><td>役割依存</td><td>Hook はここを書き換える</td></tr>
+    <tr><td>他プロジェクト</td><td>bind</td><td><strong>読取のみ</strong></td><td>参照可、改変不可</td></tr>
+    <tr><td>それ以外</td><td><strong>公開しない</strong></td><td>—</td><td>見えないものは壊せない</td></tr>
+  </table>
+</section>
+
+<!-- 20: Role and Policy -->
+<section class="slide">
+  <h1>8. ジョブ状態と Broker 権限</h1>
+  <p>§9 が <strong>ファイルシステム側</strong>、§8 が <strong>プロセス側（host command / builtin-command）</strong> の話。<br>
+  いずれも軸は <strong>Role × State</strong>。</p>
+  <table>
+    <tr><th>Role × State</th><th>host command</th><th>builtin-command</th></tr>
+    <tr><td><strong>hook × executing</strong></td><td>原則不可</td><td>可（ただし <code>git push</code> / <code>git fetch</code> は禁止）</td></tr>
+    <tr><td><strong>hook × verifying</strong></td><td>原則不可</td><td>可（読み取り系のみ。書き込みは §9 の FS ro で自然に封じられる）</td></tr>
+    <tr><td><strong>gate × *</strong></td><td>許可されたものは可</td><td>可</td></tr>
+  </table>
+  <ul>
+    <li><strong>hook</strong> はプロセス系を絞る — <strong>内側でコードをいじる役</strong></li>
+    <li><strong>gate</strong> は host command が開く — <strong>判定結果を外に伝える役</strong></li>
+    <li><strong>command</strong> は従来型の汎用実行（ポリシー次第）</li>
+  </ul>
+  <p>→ §9 と並べて読むと:</p>
+  <ul>
+    <li>hook = <strong>FS rw / 外への発信は絞る</strong>（内作業）</li>
+    <li>gate = <strong>FS 不可視 / 外への発信が開く</strong>（外発信）</li>
+  </ul>
+</section>
+
+<!-- 21: Policy -->
+<section class="slide">
+  <h1>ポリシー — 「何ができるか」の宣言</h1>
+  <p>§6 で Broker が引く <strong>ホワイトリストの中身</strong> は、ここで Role 単位に宣言される。</p>
+  <p>Role ごとに <strong>許可コマンドとその使い方</strong> をあらかじめ登録:</p>
+  <ul>
+    <li>どのコマンドを呼べるか（例: <code>gh</code>, <code>git</code>, <code>boid</code>）</li>
+    <li>許可されるサブコマンドの一覧（例: <code>gh</code> なら <code>pr</code> のみ）</li>
+    <li>許可/拒否されるオプション引数のパターン（glob）</li>
+    <li>許可される通信先（git の remote URL スナップショット等）</li>
+  </ul>
+  <h3>2 段階の絞り込み</h3>
+  <ol>
+    <li>Role で「大きなカテゴリ」を決める</li>
+    <li>ポリシーで「その Role 内で何が許されるか」を決める</li>
+  </ol>
+  <p>→ 過剰な権限を段階的に削ぎ落とす</p>
+</section>
+
+<!-- 22: git policy -->
+<section class="slide">
+  <h1>git のポリシー — builtin だからこそ細粒度に守れる</h1>
+  <p>git は多くのサブコマンドを持ち、副作用の幅も広い。<br>
+  そのため Broker の builtin-command として取り込み、以下のような <strong>細かい制御</strong> を効かせている:</p>
+  <ul>
+    <li><strong>Role による切り分け</strong> — hook からは <code>push</code> / <code>fetch</code> を全面禁止</li>
+    <li><strong>危険な refspec</strong> は shim 段階で弾く（ブランチ削除系など）</li>
+    <li><strong>remote の向け先はジョブ登録時に固定</strong> — 実行中の差し替えを許さない</li>
+  </ul>
+  <p>詳細な個別ルールは実装に委譲し、ここでは <strong>「細粒度に守れる土台が用意されている」</strong> 点だけ押さえる。</p>
+</section>
+
+<!-- 23: Job state and write -->
+<section class="slide">
+  <h1>9. ジョブ状態と書込権限</h1>
+  <p>§8 の Role に加えて、<strong>hook を発火させるタスク状態</strong> によって FS の書込可否が切り替わる。</p>
+  <table>
+    <tr><th>Role × State</th><th>作業ディレクトリ</th><th>ねらい</th></tr>
+    <tr><td><strong>hook × executing</strong></td><td><strong>書込可（rw）</strong></td><td>エージェントが実装や修正を行う「作業フェーズ」</td></tr>
+    <tr><td><strong>hook × verifying</strong></td><td><strong>読取専用（ro）</strong></td><td>テスト・Lint 等で検証する「検証フェーズ」</td></tr>
+    <tr><td><strong>gate × *</strong></td><td>そもそも不可視</td><td>判定専門なので書込も読取も対象外</td></tr>
+  </table>
+  <h3>なぜ分けるのか</h3>
+  <ul>
+    <li>verifying で書込を許すと、<strong>検証ロジックが対象を変更してしまう事故</strong> が起こりうる</li>
+    <li>「見て判断するだけ」と「直す」を物理的に切り分けることで、<strong>副作用の発生点を限定</strong></li>
+    <li>失敗した検証は <code>reworking</code> に戻され、再び executing で書ける状態になる（設計上の巻き戻し）</li>
+  </ul>
+  <p class="note">→ <strong>Role = 何にアクセスできるか</strong> / <strong>State = どう扱えるか</strong>、2 つの軸で最小権限を構成</p>
+</section>
+
+<!-- 25: Wrap-up -->
+<section class="slide">
+  <h1>まとめ — boid サンドボックスが目指したもの</h1>
+  <h3>軽量サンドボックス × ワークフロー連動の権限設計</h3>
+  <ul>
+    <li><strong>ローカルのファイルとツールをそのまま活かす軽量サンドボックス</strong>
+      <ul>
+        <li>Linux namespace / mount / nftables / pasta を薄く重ねるだけ、秒で起動</li>
+        <li>コンテナイメージ不要、ホストの開発ツールチェインをそのまま利用可能</li>
+      </ul>
+    </li>
+    <li><strong>プロジェクト × ワークフローの状態に合わせて制約を最適化</strong>
+      <ul>
+        <li>System / Project / Job の 3 層で「いつ決めるか」を分離</li>
+        <li>Role × State で hook/gate、executing/verifying ごとに FS 可視性・コマンド許可を切り替える</li>
+      </ul>
+    </li>
+  </ul>
+  <h3>Claude Code on the web / Codex web 版との違い</h3>
+  <p>クラウド側サンドボックスは <strong>ローカル資産から切り離される</strong> が、boid は手元の環境を前提に <strong>限定的かつ明示的に</strong> ツールへの窓口を開く:</p>
+  <ul>
+    <li><strong>統合テスト / E2E テスト</strong> をエージェント作業の一環として実行できる</li>
+    <li><strong>タスク管理システム（Jira、GitHub Issues 等）</strong> と緊密に連携</li>
+    <li><strong>GitHub (gh / git) との PR ワークフロー</strong> を Broker 経由で安全に自動化</li>
+    <li>ホストの機密を守りつつ、<strong>「開発者の手元で動く AI エージェント」の基盤</strong>として機能する</li>
+  </ul>
+</section>
+
+<!-- 26: Q&A -->
+<section class="slide">
+  <h1>Q&amp;A / ディスカッション</h1>
+  <p>ご質問・ご指摘をお願いします。</p>
+</section>
+
+</div>
+
+<div class="nav">← → : ページ移動 &nbsp;/&nbsp; Home : 先頭 &nbsp;/&nbsp; End : 末尾</div>
+
+<script>
+(function() {
+  const slides = document.querySelectorAll('.slide');
+  let current = 0;
+  const total = slides.length;
+
+  function show(n) {
+    if (n < 0) n = 0;
+    if (n >= total) n = total - 1;
+    slides[current].classList.remove('active');
+    slides[n].classList.add('active');
+    current = n;
+    updatePageNum();
+    history.replaceState(null, '', '#' + (n + 1));
+  }
+
+  function updatePageNum() {
+    document.querySelectorAll('.page-num').forEach(el => el.remove());
+    const s = slides[current];
+    if (s.classList.contains('title-slide')) return;
+    const p = document.createElement('div');
+    p.className = 'page-num';
+    p.textContent = (current + 1) + ' / ' + total;
+    s.appendChild(p);
+  }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { show(current + 1); e.preventDefault(); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { show(current - 1); e.preventDefault(); }
+    else if (e.key === 'Home') { show(0); e.preventDefault(); }
+    else if (e.key === 'End') { show(total - 1); e.preventDefault(); }
+  });
+
+  document.addEventListener('click', e => {
+    if (e.target.closest('a')) return;
+    const w = window.innerWidth;
+    if (e.clientX > w * 0.6) show(current + 1);
+    else if (e.clientX < w * 0.4) show(current - 1);
+  });
+
+  const hash = parseInt(location.hash.replace('#', ''), 10);
+  if (hash >= 1 && hash <= total) show(hash - 1);
+  else updatePageNum();
+})();
+</script>
+</body>
+</html>
