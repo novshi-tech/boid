@@ -69,6 +69,11 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox
 		if inst.Interactive {
 			env["BOID_INTERACTIVE"] = "1"
 		}
+		// Legacy env var consumed by hook scripts that predate the
+		// $HOME/.boid/context/instructions.yaml context-file delivery.
+		if encoded, err := json.Marshal([]orchestrator.RoutedInstruction{*inst}); err == nil {
+			env["BOID_INSTRUCTIONS"] = string(encoded)
+		}
 	}
 	if _, hasBoid := spec.BuiltinPolicies["boid"]; hasBoid {
 		env["BOID_BUILTIN_SHIM"] = "1"
