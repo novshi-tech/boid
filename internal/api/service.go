@@ -250,7 +250,6 @@ func (s *ProjectAppService) GetCommand(id, name string) (*CommandResponse, error
 	return &CommandResponse{
 		Command:            cmd.ResolvedCommand,
 		Env:                cmd.Env,
-		BuiltinCommands:    cmd.BuiltinCommands,
 		HostCommands:       map[string]orchestrator.HostCommandSpec(cmd.HostCommands),
 		AdditionalBindings: cmd.AdditionalBindings,
 	}, nil

@@ -71,7 +71,7 @@ env:
 }
 
 func TestReadProjectMeta_RejectsTopLevelHooksGates(t *testing.T) {
-	for _, field := range []string{"hooks", "gates", "builtin_commands"} {
+	for _, field := range []string{"hooks", "gates"} {
 		t.Run(field, func(t *testing.T) {
 			dir := t.TempDir()
 			boidDir := filepath.Join(dir, ".boid")
@@ -321,12 +321,12 @@ func TestReadProjectMetaWithKits_LocalKits(t *testing.T) {
 	t.Run("multiple local kits", func(t *testing.T) {
 		dir := t.TempDir()
 		boidDir := filepath.Join(dir, ".boid")
-		for _, name := range []string{"go-dev", "git"} {
+		for _, name := range []string{"go-dev", "gh"} {
 			_ = os.MkdirAll(filepath.Join(boidDir, "kits", name), 0o755)
 		}
-		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    name: dev\n    kits:\n      - go-dev\n      - git\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    name: dev\n    kits:\n      - go-dev\n      - gh\n"), 0o644)
 		_ = os.WriteFile(filepath.Join(boidDir, "kits", "go-dev", "kit.yaml"), []byte("env:\n  GOPATH: /home/user/go\nadditional_bindings:\n  - source: /usr/local/go\n"), 0o644)
-		_ = os.WriteFile(filepath.Join(boidDir, "kits", "git", "kit.yaml"), []byte("host_commands:\n  git:\n    path: /usr/bin/git\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(boidDir, "kits", "gh", "kit.yaml"), []byte("host_commands:\n  gh:\n    path: /usr/bin/gh\n"), 0o644)
 
 		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
 		if err != nil {
@@ -336,8 +336,8 @@ func TestReadProjectMetaWithKits_LocalKits(t *testing.T) {
 		if b.Env["GOPATH"] != "/home/user/go" || len(b.AdditionalBindings) == 0 {
 			t.Fatalf("expected merged env and bindings, got %+v", b)
 		}
-		if _, ok := b.HostCommands["git"]; !ok {
-			t.Fatal("expected host_commands to contain 'git' from git kit")
+		if _, ok := b.HostCommands["gh"]; !ok {
+			t.Fatal("expected host_commands to contain 'gh' from gh kit")
 		}
 	})
 }
@@ -361,8 +361,8 @@ task_behaviors:
 env:
   FROM_PROJECT: base
 host_commands:
-  git:
-    path: /usr/bin/git
+  gh:
+    path: /usr/bin/gh
 additional_bindings:
   - source: /opt/base
     mode: ro
@@ -415,7 +415,7 @@ additional_bindings:
 	if b.HostCommands["uv"].Path != "/custom/bin/uv" {
 		t.Fatalf("unexpected host command override: %+v", b.HostCommands["uv"])
 	}
-	if b.HostCommands["git"].Path != "/usr/bin/git" {
+	if b.HostCommands["gh"].Path != "/usr/bin/gh" {
 		t.Fatalf("project host command should be preserved: %+v", b.HostCommands)
 	}
 	// /opt/local-kit from kit (ro) is promoted to rw by project.local overlay.
@@ -484,16 +484,6 @@ task_behaviors:
 		}
 	})
 
-	t.Run("builtin command conflicts with host command", func(t *testing.T) {
-		dir := t.TempDir()
-		writeKitYAML(t, dir, "builtin_commands:\n  - git\nhost_commands:\n  git:\n    path: /usr/bin/git\n")
-
-		_, err := projectspec.ReadKitMeta(dir)
-		if err == nil || !strings.Contains(err.Error(), "both builtin_commands and host_commands") {
-			t.Fatalf("expected builtin/host conflict, got %v", err)
-		}
-	})
-
 	t.Run("missing file", func(t *testing.T) {
 		_, err := projectspec.ReadKitMeta(t.TempDir())
 		if err == nil {
@@ -556,39 +546,21 @@ task_behaviors:
 	})
 }
 
-func TestReadProjectMetaWithKits_BuiltinCommands(t *testing.T) {
-	t.Run("kit builtin commands flow through to behavior", func(t *testing.T) {
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		gitKitDir := filepath.Join(boidDir, "kits", "git")
-		_ = os.MkdirAll(gitKitDir, 0o755)
-		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    name: dev\n    kits:\n      - git\n"), 0o644)
-		writeKitYAML(t, gitKitDir, "builtin_commands:\n  - git\n")
+func TestReadProjectMetaWithKits_RejectsBuiltinInHostCommands(t *testing.T) {
+	for _, name := range []string{"git", "boid"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			boidDir := filepath.Join(dir, ".boid")
+			_ = os.MkdirAll(boidDir, 0o755)
+			projectYAML := "id: test-proj\nname: Test Project\nhost_commands:\n  " + name + ":\n    path: /usr/bin/" + name + "\ntask_behaviors:\n  dev:\n    name: dev\n"
+			_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644)
 
-		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-		if err != nil {
-			t.Fatalf("ReadProjectMetaWithKits: %v", err)
-		}
-		b := meta.TaskBehaviors["dev"]
-		if len(b.BuiltinCommands) != 1 || b.BuiltinCommands[0] != "git" {
-			t.Fatalf("unexpected builtin_commands on behavior: %+v", b.BuiltinCommands)
-		}
-	})
-
-	t.Run("rejects effective builtin and host command conflict", func(t *testing.T) {
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		gitKitDir := filepath.Join(boidDir, "kits", "git")
-		_ = os.MkdirAll(gitKitDir, 0o755)
-		projectYAML := "id: test-proj\nname: Test Project\nhost_commands:\n  git:\n    path: /usr/bin/git\ntask_behaviors:\n  dev:\n    name: dev\n    kits:\n      - git\n"
-		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644)
-		writeKitYAML(t, gitKitDir, "builtin_commands:\n  - git\n")
-
-		_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-		if err == nil || !strings.Contains(err.Error(), "both builtin_commands and host_commands") {
-			t.Fatalf("expected builtin/host conflict, got %v", err)
-		}
-	})
+			_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+			if err == nil || !strings.Contains(err.Error(), "builtin command") {
+				t.Fatalf("expected builtin/host conflict for %q, got %v", name, err)
+			}
+		})
+	}
 }
 
 func TestMergeKitMetaIntoBehavior(t *testing.T) {
@@ -1308,7 +1280,7 @@ func TestMergeKitRuntime(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if rt.Env != nil || rt.HostCommands != nil || rt.BuiltinCommands != nil || rt.AdditionalBindings != nil {
+		if rt.Env != nil || rt.HostCommands != nil || rt.AdditionalBindings != nil {
 			t.Errorf("expected zero KitRuntime, got %+v", rt)
 		}
 	})
@@ -1317,7 +1289,6 @@ func TestMergeKitRuntime(t *testing.T) {
 		kit := &projectspec.KitMeta{
 			Env:                map[string]string{"A": "1"},
 			HostCommands:       projectspec.HostCommands{"go": {Path: "/usr/bin/go"}},
-			BuiltinCommands:    []string{"git"},
 			AdditionalBindings: []projectspec.BindMount{{Source: "/usr/local/go", Mode: "ro"}},
 		}
 		rt, err := projectspec.MergeKitRuntime([]*projectspec.KitMeta{kit}, []string{"go-kit"})
@@ -1329,9 +1300,6 @@ func TestMergeKitRuntime(t *testing.T) {
 		}
 		if rt.HostCommands["go"].Path != "/usr/bin/go" {
 			t.Errorf("HostCommands[go] = %+v", rt.HostCommands["go"])
-		}
-		if len(rt.BuiltinCommands) != 1 || rt.BuiltinCommands[0] != "git" {
-			t.Errorf("BuiltinCommands = %v, want [git]", rt.BuiltinCommands)
 		}
 		if len(rt.AdditionalBindings) != 1 || rt.AdditionalBindings[0].Source != "/usr/local/go" {
 			t.Errorf("AdditionalBindings = %+v", rt.AdditionalBindings)
@@ -1377,18 +1345,6 @@ func TestMergeKitRuntime(t *testing.T) {
 		}
 	})
 
-	t.Run("builtin commands deduped across kits", func(t *testing.T) {
-		kit1 := &projectspec.KitMeta{BuiltinCommands: []string{"git"}}
-		kit2 := &projectspec.KitMeta{BuiltinCommands: []string{"git", "boid"}}
-		rt, err := projectspec.MergeKitRuntime([]*projectspec.KitMeta{kit1, kit2}, []string{"k1", "k2"})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(rt.BuiltinCommands) != 2 {
-			t.Errorf("expected 2 builtin commands (deduped), got %d: %v", len(rt.BuiltinCommands), rt.BuiltinCommands)
-		}
-	})
-
 	t.Run("additional bindings mode promotion across kits", func(t *testing.T) {
 		kit1 := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "ro"}}}
 		kit2 := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "rw"}}}
@@ -1405,13 +1361,11 @@ func TestMergeKitRuntime(t *testing.T) {
 		kit1 := &projectspec.KitMeta{
 			Env:                map[string]string{"A": "a"},
 			HostCommands:       projectspec.HostCommands{"go": {Path: "/usr/bin/go"}},
-			BuiltinCommands:    []string{"git"},
 			AdditionalBindings: []projectspec.BindMount{{Source: "/data1", Mode: "ro"}},
 		}
 		kit2 := &projectspec.KitMeta{
 			Env:                map[string]string{"B": "b"},
 			HostCommands:       projectspec.HostCommands{"gh": {Path: "/usr/bin/gh"}},
-			BuiltinCommands:    []string{"boid"},
 			AdditionalBindings: []projectspec.BindMount{{Source: "/data2", Mode: "rw"}},
 		}
 		consumers := []string{"kit1", "kit2"}
@@ -1431,9 +1385,6 @@ func TestMergeKitRuntime(t *testing.T) {
 		}
 		if len(rt.HostCommands) != len(b.HostCommands) {
 			t.Errorf("host_commands count mismatch: %d vs %d", len(rt.HostCommands), len(b.HostCommands))
-		}
-		if len(rt.BuiltinCommands) != len(b.BuiltinCommands) {
-			t.Errorf("builtin_commands mismatch: %v vs %v", rt.BuiltinCommands, b.BuiltinCommands)
 		}
 		if len(rt.AdditionalBindings) != len(b.AdditionalBindings) {
 			t.Errorf("bindings count mismatch: %d vs %d", len(rt.AdditionalBindings), len(b.AdditionalBindings))
@@ -1569,8 +1520,6 @@ env:
 additional_bindings:
   - source: /mnt/data
     mode: ro
-builtin_commands:
-  - git
 `), 0o644)
 	_ = os.WriteFile(filepath.Join(kitBDir, "kit.yaml"), []byte(`
 host_commands:
@@ -1606,15 +1555,6 @@ commands:
 	}
 	if len(cmd.AdditionalBindings) != 2 {
 		t.Errorf("expected 2 additional_bindings, got %d: %+v", len(cmd.AdditionalBindings), cmd.AdditionalBindings)
-	}
-	found := false
-	for _, b := range cmd.BuiltinCommands {
-		if b == "git" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected builtin_commands to contain 'git', got %+v", cmd.BuiltinCommands)
 	}
 }
 

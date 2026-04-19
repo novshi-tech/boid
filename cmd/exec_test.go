@@ -39,7 +39,7 @@ func writeExecTestProject(t *testing.T, id, name string) string {
 	return dir
 }
 
-func writeExecTestProjectWithBoidBuiltin(t *testing.T, id, name string) string {
+func writeExecTestProjectWithKit(t *testing.T, id, name string) string {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -56,8 +56,7 @@ func writeExecTestProjectWithBoidBuiltin(t *testing.T, id, name string) string {
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
 		t.Fatalf("write project yaml: %v", err)
 	}
-	kitYAML := "builtin_commands:\n  - boid\n"
-	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(""), 0o644); err != nil {
 		t.Fatalf("write kit yaml: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(kitHooksDir, "run-agent.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
@@ -128,7 +127,7 @@ func TestBuildExecJob_WorkspaceVisibility(t *testing.T) {
 func TestBuildExecJob_RegistersBrokerForBoidBuiltin(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
-	dir := writeExecTestProjectWithBoidBuiltin(t, "proj-1", "Project 1")
+	dir := writeExecTestProjectWithKit(t, "proj-1", "Project 1")
 	var project struct {
 		ID string `json:"id"`
 	}

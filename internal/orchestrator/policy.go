@@ -51,8 +51,8 @@ func (p BuiltinPolicy) AllowsCwd(cwd string) bool {
 }
 
 // DefaultBuiltinPolicies creates per-command BuiltinPolicy values for the
-// given role and command names. Call mergeBuiltinCommands before this to
-// ensure "boid" is included.
+// given role and command names. "boid" and "git" are always available as
+// builtins; pass them explicitly via names.
 func DefaultBuiltinPolicies(role Role, names []string, pctx PolicyContext) map[string]BuiltinPolicy {
 	if len(names) == 0 {
 		return nil

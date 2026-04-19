@@ -56,7 +56,6 @@ func TestRenderProjectDetail_MetaSections(t *testing.T) {
 					Gates: []projectspec.Gate{
 						{ID: "auto-merge", On: projectspec.OnValues{"done"}},
 					},
-					BuiltinCommands: []string{"git"},
 				},
 			},
 			HostCommands: projectspec.HostCommands{"gh": {}},
@@ -84,7 +83,6 @@ func TestRenderProjectDetail_MetaSections(t *testing.T) {
 		"executing",
 		"gate: auto-merge",
 		"done",
-		"builtin_commands: git",
 		"HostCommands:",
 		"gh",
 		"AdditionalBindings:",

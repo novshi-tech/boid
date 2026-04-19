@@ -16,19 +16,18 @@ type KitResolver interface {
 }
 
 // KitRuntime holds the merged runtime fields derived from a set of kits.
-// It covers env, host_commands, builtin_commands, and additional_bindings.
-// Hooks, gates, and directory metadata are excluded — those are TaskBehavior-specific
-// and handled by MergeKitMetaIntoBehavior.
+// It covers env, host_commands, and additional_bindings. Hooks, gates, and
+// directory metadata are excluded — those are TaskBehavior-specific and handled
+// by MergeKitMetaIntoBehavior.
 type KitRuntime struct {
 	AdditionalBindings []BindMount
 	HostCommands       HostCommands
 	Env                map[string]string
-	BuiltinCommands    []string
 }
 
-// MergeKitRuntime merges env, host_commands, builtin_commands, and
-// additional_bindings from the given kits into a KitRuntime value.
-// kitConsumers provides display names for error messages (one per kit).
+// MergeKitRuntime merges env, host_commands, and additional_bindings from the
+// given kits into a KitRuntime value. kitConsumers provides display names for
+// error messages (one per kit).
 func MergeKitRuntime(kits []*KitMeta, kitConsumers []string) (KitRuntime, error) {
 	var rt KitRuntime
 	if len(kits) == 0 {
@@ -66,9 +65,6 @@ func MergeKitRuntime(kits []*KitMeta, kitConsumers []string) (KitRuntime, error)
 		rt.HostCommands = mergedCmds
 	}
 
-	// BuiltinCommands: union with dedup.
-	rt.BuiltinCommands = mergeBuiltinCommands(nil, kitBuiltinCommandLists(kits)...)
-
 	// AdditionalBindings: union with mode promotion.
 	for _, kit := range kits {
 		rt.AdditionalBindings = unionBindMountSlices(rt.AdditionalBindings, kit.AdditionalBindings)
@@ -93,7 +89,7 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	if _, ok := raw["workspace_id"]; ok {
 		return nil, fmt.Errorf("project.yaml: workspace_id is no longer supported; assign workspace via boid workspace assign <project-id> <workspace-id>")
 	}
-	for _, field := range []string{"hooks", "gates", "builtin_commands"} {
+	for _, field := range []string{"hooks", "gates"} {
 		if _, ok := raw[field]; ok {
 			return nil, fmt.Errorf("project.yaml: top-level %q is no longer supported; move it into task_behaviors.<name>.kits (for kits) or define inside a local kit under .boid/kits/", field)
 		}
@@ -382,7 +378,7 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 			behavior.HostCommands = mergeHostCommands(behavior.HostCommands, local.HostCommands)
 			behavior.AdditionalBindings = mergeBindMounts(behavior.AdditionalBindings, local.AdditionalBindings)
 		}
-		if err := validateBuiltinCommands(fmt.Sprintf("behavior %q", name), behavior.BuiltinCommands, behavior.HostCommands); err != nil {
+		if err := validateBuiltinHostConflict(fmt.Sprintf("behavior %q", name), behavior.HostCommands); err != nil {
 			return nil, err
 		}
 		meta.TaskBehaviors[name] = behavior
@@ -412,7 +408,6 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		cmd.Env = mergeStringMaps(rt.Env, meta.Env)
 		cmd.HostCommands = mergeHostCommands(rt.HostCommands, meta.HostCommands)
 		cmd.AdditionalBindings = mergeBindMounts(rt.AdditionalBindings, meta.AdditionalBindings)
-		cmd.BuiltinCommands = rt.BuiltinCommands
 		if local != nil {
 			cmd.Env = mergeStringMaps(cmd.Env, local.Env)
 			cmd.HostCommands = mergeHostCommands(cmd.HostCommands, local.HostCommands)
@@ -426,7 +421,7 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		}
 		cmd.ResolvedCommand = resolved
 
-		if err := validateBuiltinCommands(fmt.Sprintf("command %q", name), cmd.BuiltinCommands, cmd.HostCommands); err != nil {
+		if err := validateBuiltinHostConflict(fmt.Sprintf("command %q", name), cmd.HostCommands); err != nil {
 			return nil, err
 		}
 
@@ -450,9 +445,6 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 	var meta KitMeta
 	if err := yaml.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("parse kit.yaml: %w", err)
-	}
-	if err := validateBuiltinCommands("kit.yaml", meta.BuiltinCommands, meta.HostCommands); err != nil {
-		return nil, err
 	}
 	for name, behavior := range meta.TaskBehaviors {
 		if err := ValidateDefaultPayloadNoInstructions(behavior.DefaultPayload); err != nil {
@@ -549,9 +541,9 @@ func ReadProjectLocalMeta(dir string) (*ProjectLocalMeta, error) {
 	return &meta, nil
 }
 
-// MergeKitMetaIntoBehavior merges kit-provided hooks, gates, env, bindings,
-// builtin_commands, and host_commands into the given TaskBehavior. Kit hook and
-// gate IDs are prefixed with the consumer name. The behavior is modified in place.
+// MergeKitMetaIntoBehavior merges kit-provided hooks, gates, env, bindings, and
+// host_commands into the given TaskBehavior. Kit hook and gate IDs are prefixed
+// with the consumer name. The behavior is modified in place.
 func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitConsumers []string) error {
 	if len(kits) == 0 {
 		return nil
@@ -627,7 +619,6 @@ func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitConsum
 		behavior.HostCommands = mergedCmds
 	}
 
-	behavior.BuiltinCommands = mergeBuiltinCommands(behavior.BuiltinCommands, rt.BuiltinCommands)
 	behavior.AdditionalBindings = unionBindMountSlices(rt.AdditionalBindings, behavior.AdditionalBindings)
 
 	for i, kit := range kits {
@@ -810,7 +801,6 @@ func cloneCommandSpecMap(src map[string]CommandSpec) map[string]CommandSpec {
 		v.Command = append([]string(nil), v.Command...)
 		v.ResolvedCommand = nil
 		v.Env = nil
-		v.BuiltinCommands = nil
 		v.HostCommands = nil
 		v.AdditionalBindings = nil
 		result[k] = v
@@ -831,7 +821,6 @@ func cloneTaskBehaviorMap(src map[string]TaskBehavior) map[string]TaskBehavior {
 		v.Hooks = nil
 		v.Gates = nil
 		v.Env = nil
-		v.BuiltinCommands = nil
 		v.HostCommands = nil
 		v.AdditionalBindings = nil
 		v.KitHooksDirs = nil
@@ -884,66 +873,14 @@ func mergeHostCommands(base, overlay HostCommands) HostCommands {
 	return result
 }
 
-func mergeBuiltinCommands(base []string, overlays ...[]string) []string {
-	seen := make(map[string]struct{})
-	var result []string
-	for _, name := range base {
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		result = append(result, name)
-	}
-	for _, overlay := range overlays {
-		for _, name := range overlay {
-			if _, ok := seen[name]; ok {
-				continue
-			}
-			seen[name] = struct{}{}
-			result = append(result, name)
-		}
-	}
-	if len(result) == 0 {
-		return nil
-	}
-	return result
-}
-
-func kitBuiltinCommandLists(kits []*KitMeta) [][]string {
-	if len(kits) == 0 {
-		return nil
-	}
-	out := make([][]string, 0, len(kits))
-	for _, meta := range kits {
-		if len(meta.BuiltinCommands) == 0 {
-			continue
-		}
-		out = append(out, meta.BuiltinCommands)
-	}
-	return out
-}
-
-func validateBuiltinCommands(scope string, builtins []string, hostCommands HostCommands) error {
-	if len(builtins) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(builtins))
-	for _, name := range builtins {
-		if _, ok := validBuiltinCommands[name]; !ok {
-			return fmt.Errorf("%s: unsupported builtin command %q", scope, name)
-		}
-		if _, ok := seen[name]; ok {
-			return fmt.Errorf("%s: duplicate builtin command %q", scope, name)
-		}
-		seen[name] = struct{}{}
+// validateBuiltinHostConflict rejects host_commands entries for names that are
+// always available as builtins (git, boid). Those names are broker-mediated by
+// the sandbox runtime and cannot be redirected to a host binary.
+func validateBuiltinHostConflict(scope string, hostCommands HostCommands) error {
+	for _, name := range []string{"git", "boid"} {
 		if _, conflict := hostCommands[name]; conflict {
-			return fmt.Errorf("%s: %q cannot be declared in both builtin_commands and host_commands", scope, name)
+			return fmt.Errorf("%s: %q is a builtin command and cannot be declared in host_commands", scope, name)
 		}
 	}
 	return nil
-}
-
-var validBuiltinCommands = map[string]struct{}{
-	"git":  {},
-	"boid": {},
 }

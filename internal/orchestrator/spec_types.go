@@ -351,7 +351,6 @@ type TaskBehavior struct {
 	Hooks              []Hook            `yaml:"-" json:"-"`
 	Gates              []Gate            `yaml:"-" json:"-"`
 	Env                map[string]string `yaml:"-" json:"-"`
-	BuiltinCommands    []string          `yaml:"-" json:"-"`
 	HostCommands       HostCommands      `yaml:"-" json:"-"`
 	AdditionalBindings []BindMount       `yaml:"-" json:"-"`
 	KitHooksDirs       []KitHooksInfo    `yaml:"-" json:"-"`
@@ -394,7 +393,6 @@ type CommandSpec struct {
 	// Resolved fields populated by ReadProjectMetaWithKits.
 	ResolvedCommand    []string          `yaml:"-" json:"-"`
 	Env                map[string]string `yaml:"-" json:"-"`
-	BuiltinCommands    []string          `yaml:"-" json:"-"`
 	HostCommands       HostCommands      `yaml:"-" json:"-"`
 	AdditionalBindings []BindMount       `yaml:"-" json:"-"`
 }
@@ -439,7 +437,6 @@ type KitMeta struct {
 	Commands           map[string]CommandSpec  `yaml:"commands,omitempty"`
 	Hooks              []Hook                  `yaml:"hooks"`
 	Gates              []Gate                  `yaml:"gates"`
-	BuiltinCommands    []string                `yaml:"builtin_commands"`
 	HostCommands       HostCommands            `yaml:"host_commands"`
 	AdditionalBindings []BindMount             `yaml:"additional_bindings"`
 	Env                map[string]string       `yaml:"env"`
