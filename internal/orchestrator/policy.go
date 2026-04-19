@@ -6,11 +6,13 @@ import (
 )
 
 // PolicyContext carries non-role data needed to compute role-derived policies.
-// Currently only ProjectDir is used (gate boid policy lets gate jobs target
-// the host project dir as cwd because gate sandboxes do not mount it under
-// the entry root).
+// ProjectDir lets gate boid policy accept the host project dir as cwd (gate
+// sandboxes do not mount it under the entry root). HomeDir accepts the
+// sandbox HOME, which is the default WorkDir for gate jobs (their
+// Visibility.ProjectDir is empty, so resolveWorkDir falls back to HOME).
 type PolicyContext struct {
 	ProjectDir string
+	HomeDir    string
 }
 
 // BuiltinPolicy is the orchestrator-owned, sandbox-agnostic policy type.
@@ -83,6 +85,9 @@ func boidPolicy(role Role, pctx PolicyContext) BuiltinPolicy {
 		cwds := []string{"/tmp"}
 		if pctx.ProjectDir != "" {
 			cwds = append(cwds, pctx.ProjectDir)
+		}
+		if pctx.HomeDir != "" {
+			cwds = append(cwds, pctx.HomeDir)
 		}
 		return BuiltinPolicy{
 			AllowedOps: sortedOps(
