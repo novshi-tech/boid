@@ -84,6 +84,22 @@ func TestDefaultBuiltinPolicies_GateGitHasFetchPush(t *testing.T) {
 	}
 }
 
+// gate×git policy は cwd に /tmp, ProjectDir, HomeDir を許可する。
+// gate sandbox は worktree を mount しないため cwd は必ずホスト worktree と
+// 別名前空間になる。broker 側の cwd check を通すため policy で明示許可する。
+func TestDefaultBuiltinPolicies_GateGitCwdRoots(t *testing.T) {
+	pctx := PolicyContext{ProjectDir: "/work/project", HomeDir: "/home/user"}
+	gitPolicy := DefaultBuiltinPolicies(RoleGate, []string{"git"}, pctx)["git"]
+	for _, cwd := range []string{"/tmp", "/work/project", "/home/user", "/home/user/nested"} {
+		if !gitPolicy.AllowsCwd(cwd) {
+			t.Errorf("gate×git should allow cwd %q, AllowedCwdRoots=%v", cwd, gitPolicy.AllowedCwdRoots)
+		}
+	}
+	if gitPolicy.AllowsCwd("/etc") {
+		t.Errorf("gate×git should reject cwd /etc")
+	}
+}
+
 // hook×boid policy は {job_done, task_get}。
 func TestDefaultBuiltinPolicies_HookBoidOps(t *testing.T) {
 	boidPolicy := DefaultBuiltinPolicies(RoleHook, []string{"boid"}, PolicyContext{})["boid"]

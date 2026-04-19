@@ -71,7 +71,7 @@ func policyFor(role Role, name string, pctx PolicyContext) BuiltinPolicy {
 	case "boid":
 		return boidPolicy(role, pctx)
 	case "git":
-		return gitPolicy(role)
+		return gitPolicy(role, pctx)
 	default:
 		return BuiltinPolicy{}
 	}
@@ -102,13 +102,28 @@ func boidPolicy(role Role, pctx PolicyContext) BuiltinPolicy {
 	}
 }
 
-func gitPolicy(role Role) BuiltinPolicy {
+func gitPolicy(role Role, pctx PolicyContext) BuiltinPolicy {
 	switch role {
 	case RoleHook:
 		// hook からの broker 経由 git 操作 (fetch/push) は禁止。
 		return BuiltinPolicy{}
 	default:
-		return BuiltinPolicy{AllowedOps: sortedOps(OpGitFetch, OpGitPush)}
+		// gate sandbox は worktree を mount しないので、sandbox 内の cwd は
+		// 必ずホスト側 worktree root と別名前空間になる。broker は
+		// binding.WorktreeRoot で git を実行するため cwd 検証は冗長だが、
+		// 他の builtin と同じポリシー構造を保つために AllowedCwdRoots を
+		// HomeDir/ProjectDir/tmp で埋める (boid policy と同じ扱い)。
+		cwds := []string{"/tmp"}
+		if pctx.ProjectDir != "" {
+			cwds = append(cwds, pctx.ProjectDir)
+		}
+		if pctx.HomeDir != "" {
+			cwds = append(cwds, pctx.HomeDir)
+		}
+		return BuiltinPolicy{
+			AllowedOps:      sortedOps(OpGitFetch, OpGitPush),
+			AllowedCwdRoots: cwds,
+		}
 	}
 }
 
