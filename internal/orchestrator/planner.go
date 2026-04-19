@@ -91,7 +91,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		BuiltinPolicies: DefaultBuiltinPolicies(
 			RoleHook,
 			[]string{"boid", "git"},
-			PolicyContext{ProjectDir: proj.WorkDir},
+			PolicyContext{ProjectDir: proj.WorkDir, HomeDir: sandboxHomeDir()},
 		),
 		HostCommands:    nil, // hooks never get broker-mediated host commands
 		SecretNamespace: meta.SecretNamespace,
@@ -157,7 +157,7 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, CleanupFunc,
 		BuiltinPolicies: DefaultBuiltinPolicies(
 			RoleGate,
 			[]string{"boid", "git"},
-			PolicyContext{ProjectDir: proj.WorkDir},
+			PolicyContext{ProjectDir: proj.WorkDir, HomeDir: sandboxHomeDir()},
 		),
 		HostCommands:    behavior.HostCommands.ToCommandDefs(),
 		SecretNamespace: meta.SecretNamespace,

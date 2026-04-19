@@ -108,6 +108,22 @@ func TestDefaultBuiltinPolicies_GateBoidOps(t *testing.T) {
 	}
 }
 
+// gate×boid policy は cwd に /tmp, ProjectDir, HomeDir を許可する。
+// gate sandbox のデフォルト cwd は HOME (resolveWorkDir フォールバック) なので、
+// HomeDir を policy で認めないと exit trap の `boid job done` が弾かれる。
+func TestDefaultBuiltinPolicies_GateBoidCwdRoots(t *testing.T) {
+	pctx := PolicyContext{ProjectDir: "/work/project", HomeDir: "/home/user"}
+	boidPolicy := DefaultBuiltinPolicies(RoleGate, []string{"boid"}, pctx)["boid"]
+	for _, cwd := range []string{"/tmp", "/tmp/sub", "/work/project", "/work/project/sub", "/home/user", "/home/user/.boid/output"} {
+		if !boidPolicy.AllowsCwd(cwd) {
+			t.Errorf("gate×boid should allow cwd %q, AllowedCwdRoots=%v", cwd, boidPolicy.AllowedCwdRoots)
+		}
+	}
+	if boidPolicy.AllowsCwd("/etc") {
+		t.Errorf("gate×boid should reject cwd /etc")
+	}
+}
+
 func opsEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
