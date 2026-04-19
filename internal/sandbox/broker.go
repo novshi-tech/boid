@@ -164,7 +164,7 @@ func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
 			return handleGitBuiltinRequest(req, entry)
 		}
 		if def, ok := entry.Commands["git"]; ok {
-			return b.execCommand(req, def)
+			return b.execCommand(req, def, entry)
 		}
 		return &ExecResponse{ExitCode: 1, Stderr: "command not allowed: git"}
 	}
@@ -174,7 +174,7 @@ func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
 		return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("command not allowed: %s", req.Command)}
 	}
 
-	return b.execCommand(req, def)
+	return b.execCommand(req, def, entry)
 }
 
 func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecResponse {
@@ -304,7 +304,7 @@ func isWithinRoot(path, root string) bool {
 	return strings.HasPrefix(path, root+string(os.PathSeparator))
 }
 
-func (b *Broker) execCommand(req *ExecRequest, def CommandDef) *ExecResponse {
+func (b *Broker) execCommand(req *ExecRequest, def CommandDef, entry *tokenEntry) *ExecResponse {
 	if err := validateStdin(def, req.Stdin); err != nil {
 		return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
 	}
@@ -314,8 +314,9 @@ func (b *Broker) execCommand(req *ExecRequest, def CommandDef) *ExecResponse {
 	}
 
 	cmd := exec.Command(def.Path, req.Args...)
-	if req.Cwd != "" {
-		cmd.Dir = req.Cwd
+	cwd := resolveHostCommandCwd(req.Cwd, entry)
+	if cwd != "" {
+		cmd.Dir = cwd
 	}
 	if len(req.Stdin) > 0 {
 		cmd.Stdin = bytes.NewReader(req.Stdin)
@@ -343,6 +344,29 @@ func (b *Broker) execCommand(req *ExecRequest, def CommandDef) *ExecResponse {
 	}
 
 	return &ExecResponse{ExitCode: exitCode, Stdout: stdout.String(), Stderr: stderr.String()}
+}
+
+// resolveHostCommandCwd decides the working directory for a host command.
+// Host commands run on the host, not inside the sandbox. The sandbox-side cwd
+// (req.Cwd) aligns with host-side paths for hook jobs (worktree is mounted at
+// the same path inside and outside the sandbox) but not for gate jobs, where
+// the sandbox cwd falls through to a tmpfs HOME — on the host that path is
+// the user's real HOME and carries no repo metadata.
+//
+// The token's host-side context (WorktreeDir / ProjectDir) is always
+// independent of sandbox visibility (Visibility.ProjectDir), so we can lean
+// on it directly: prefer the task worktree, then the project work dir, then
+// fall back to what the sandbox reported.
+func resolveHostCommandCwd(requestedCwd string, entry *tokenEntry) string {
+	if entry != nil {
+		if entry.Context.WorktreeDir != "" {
+			return entry.Context.WorktreeDir
+		}
+		if entry.Context.ProjectDir != "" {
+			return entry.Context.ProjectDir
+		}
+	}
+	return requestedCwd
 }
 
 func (e *tokenEntry) hasBuiltinPolicy(name string) bool {

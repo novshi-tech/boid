@@ -99,7 +99,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		return "", fmt.Errorf("create job: %w", err)
 	}
 
-	workspaceID, _ := r.resolveWorkspaceID(spec.ProjectID)
+	workspaceID, projectWorkDir, _ := r.resolveProjectRuntime(spec.ProjectID)
 
 	var brokerSocket, brokerToken string
 	if r.Broker != nil && (len(spec.BuiltinPolicies) > 0 || len(spec.HostCommands) > 0) {
@@ -111,8 +111,12 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			WorkspaceID:       workspaceID,
 			AllowedProjectIDs: allowedProjectIDs(spec.ProjectID, workspacePeers),
 			Role:              j.Role,
-			ProjectDir:        spec.Visibility.ProjectDir,
-			WorktreeDir:       brokerWorktreePath,
+			// Pass the real project work dir, not Visibility.ProjectDir
+			// (which is empty for gate jobs). The broker uses this host-side
+			// for git binding and host-command cwd; sandbox visibility is
+			// orthogonal.
+			ProjectDir:  projectWorkDir,
+			WorktreeDir: brokerWorktreePath,
 		}
 		var resolve SecretResolver
 		if r.SecretStore != nil {
@@ -155,15 +159,15 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	return r.launchSandbox(ctx, j, sbSpec, cleanup)
 }
 
-func (r *Runner) resolveWorkspaceID(projectID string) (string, error) {
+func (r *Runner) resolveProjectRuntime(projectID string) (string, string, error) {
 	if r.Projects == nil || projectID == "" {
-		return "", nil
+		return "", "", nil
 	}
 	proj, err := r.Projects.GetProject(projectID)
 	if err != nil || proj == nil {
-		return "", err
+		return "", "", err
 	}
-	return proj.WorkspaceID, nil
+	return proj.WorkspaceID, proj.WorkDir, nil
 }
 
 func (r *Runner) proxyPort() int {

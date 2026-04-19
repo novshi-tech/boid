@@ -77,8 +77,14 @@ type TokenContext struct {
 	WorkspaceID       string
 	AllowedProjectIDs []string
 	Role              string
-	ProjectDir        string
-	WorktreeDir       string
+	// ProjectDir is the project's host-side work directory. Independent of
+	// spec.Visibility.ProjectDir (which drives sandbox mount layout and is
+	// intentionally empty for gate jobs): host-side operations the broker
+	// performs on behalf of the sandbox (git binding, host-command cwd) have
+	// their own notion of "which project are we operating on" that doesn't
+	// care whether the sandbox itself can see the tree.
+	ProjectDir  string
+	WorktreeDir string
 }
 
 func (c TokenContext) AllowsProject(projectID string) bool {
