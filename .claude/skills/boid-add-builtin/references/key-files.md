@@ -8,8 +8,9 @@
 | `internal/orchestrator/builtin_policy.go` | `DefaultBuiltinPolicies` / `policyFor` — policy テーブル |
 | `internal/sandbox/broker.go` | `Handle()` / `Register()` / `allowsBuiltinOp` ヘルパ |
 | `internal/sandbox/git_builtin.go` | policy チェックを冒頭に持つ handler の実装例 |
-| `internal/orchestrator/spec_loader.go` | `validBuiltinCommands` マップ |
-| `internal/orchestrator/planner.go` | `PlanHook` / `PlanGate` での `mergeBuiltinCommands` 呼び出し |
+| `internal/orchestrator/spec_loader.go` | `validateBuiltinHostConflict` — builtin 名を `host_commands` で再宣言させない |
+| `internal/orchestrator/planner.go` | `PlanHook` / `PlanGate` での builtin 名リスト |
+| `cmd/exec.go` | `buildExecJob` での builtin 名リスト |
 
 ## builtin 実装に関わるキー型・関数
 

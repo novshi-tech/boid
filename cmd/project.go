@@ -216,9 +216,6 @@ func renderProjectDetail(p *projectspec.Project) {
 			for _, g := range b.Gates {
 				fmt.Printf("    gate: %-24s  on=%s\n", g.ID, strings.Join(g.On, ","))
 			}
-			if len(b.BuiltinCommands) > 0 {
-				fmt.Printf("    builtin_commands: %s\n", strings.Join(b.BuiltinCommands, ", "))
-			}
 		}
 	}
 

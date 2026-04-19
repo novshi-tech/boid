@@ -73,9 +73,9 @@ func TestDispatchPlannerCollectWorkspaceDirs_UsesProjectWorkspaceMembership(t *t
 	}
 }
 
-// Hook / gate dispatches both include boid as a builtin policy, and hooks
-// never receive host commands.
-func TestDispatchPlannerAddsBoidAsBuiltinForHookAndGate(t *testing.T) {
+// Hook / gate dispatches both include boid and git as builtin policies, and
+// hooks never receive host commands.
+func TestDispatchPlannerInjectsDefaultBuiltinsForHookAndGate(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
 		t.Fatal(err)
@@ -84,9 +84,7 @@ func TestDispatchPlannerAddsBoidAsBuiltinForHookAndGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{
-		Name:            "dev",
-		BuiltinCommands: []string{"git"},
-		HostCommands:    HostCommands{"git": {Path: "/usr/bin/git"}},
+		Name: "dev",
 	}, &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
 
 	hookReq, hookCleanup, err := planner.PlanHook(&HookFireEvent{

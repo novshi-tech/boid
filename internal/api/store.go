@@ -35,7 +35,6 @@ type WorktreeCleaner interface {
 type CommandResponse struct {
 	Command            []string                                `json:"command"`
 	Env                map[string]string                       `json:"env,omitempty"`
-	BuiltinCommands    []string                                `json:"builtin_commands,omitempty"`
 	HostCommands       map[string]orchestrator.HostCommandSpec `json:"host_commands,omitempty"`
 	AdditionalBindings []orchestrator.BindMount                `json:"additional_bindings,omitempty"`
 }

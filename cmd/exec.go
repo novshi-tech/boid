@@ -37,11 +37,10 @@ type execProjectData struct {
 // execCommandResponse mirrors the /api/projects/<id>/commands/<name> JSON
 // payload. Field types stay wire-compatible with the daemon's responder.
 type execCommandResponse struct {
-	Command            []string                               `json:"command"`
-	Env                map[string]string                      `json:"env,omitempty"`
-	BuiltinCommands    []string                               `json:"builtin_commands,omitempty"`
+	Command            []string                                `json:"command"`
+	Env                map[string]string                       `json:"env,omitempty"`
 	HostCommands       map[string]orchestrator.HostCommandSpec `json:"host_commands,omitempty"`
-	AdditionalBindings []orchestrator.BindMount               `json:"additional_bindings,omitempty"`
+	AdditionalBindings []orchestrator.BindMount                `json:"additional_bindings,omitempty"`
 }
 
 type execPreparedJob struct {
@@ -87,13 +86,9 @@ func buildExecJob(projectID, commandName string) (*execPreparedJob, error) {
 	var proxyInfo struct{ Port int }
 	_ = c.Do("GET", "/api/proxy", nil, &proxyInfo)
 
-	builtinCommands := append([]string(nil), cmd.BuiltinCommands...)
-	if !containsString(builtinCommands, "boid") {
-		builtinCommands = append(builtinCommands, "boid")
-	}
 	builtinPolicies := orchestrator.DefaultBuiltinPolicies(
 		orchestrator.RoleGate,
-		builtinCommands,
+		[]string{"boid", "git"},
 		orchestrator.PolicyContext{ProjectDir: p.WorkDir},
 	)
 
@@ -143,15 +138,6 @@ func buildExecJob(projectID, commandName string) (*execPreparedJob, error) {
 		Foreground:   true,
 	}
 	return &execPreparedJob{spec: spec, rt: rt}, nil
-}
-
-func containsString(xs []string, target string) bool {
-	for _, x := range xs {
-		if x == target {
-			return true
-		}
-	}
-	return false
 }
 
 func listExecCommands(projectID string) error {

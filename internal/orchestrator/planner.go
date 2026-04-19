@@ -90,7 +90,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		},
 		BuiltinPolicies: DefaultBuiltinPolicies(
 			RoleHook,
-			mergeBuiltinCommands(behavior.BuiltinCommands, []string{"boid"}),
+			[]string{"boid", "git"},
 			PolicyContext{ProjectDir: proj.WorkDir},
 		),
 		HostCommands:    nil, // hooks never get broker-mediated host commands
@@ -156,7 +156,7 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, CleanupFunc,
 		},
 		BuiltinPolicies: DefaultBuiltinPolicies(
 			RoleGate,
-			mergeBuiltinCommands(behavior.BuiltinCommands, []string{"boid"}),
+			[]string{"boid", "git"},
 			PolicyContext{ProjectDir: proj.WorkDir},
 		),
 		HostCommands:    behavior.HostCommands.ToCommandDefs(),
