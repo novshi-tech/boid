@@ -43,6 +43,23 @@ func (m *WorktreeManager) resolveBaseBranch(projectDir, baseBranch string) (stri
 	return baseBranch, false
 }
 
+// resolveRecreateBasePoint picks the start-point for a fresh branch when
+// Recreate cannot find either the local or remote task branch. Prefers
+// origin/<base> (already fetched by the caller), falls back to the local base.
+func (m *WorktreeManager) resolveRecreateBasePoint(projectDir, recordedBase string) (string, error) {
+	base := strings.TrimPrefix(recordedBase, "origin/")
+	if base == "" {
+		base = "main"
+	}
+	for _, candidate := range []string{"origin/" + base, base} {
+		cmd := exec.Command(m.gitBin(), "-C", projectDir, "rev-parse", "--verify", candidate)
+		if cmd.Run() == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("base branch %q not found (checked origin/%s and %s)", base, base, base)
+}
+
 func (m *WorktreeManager) Create(projectDir, projectID, taskID, branchPrefix, baseBranch string) (*Worktree, error) {
 	if branchPrefix == "" {
 		branchPrefix = "boid/"
@@ -193,14 +210,21 @@ func (m *WorktreeManager) Recreate(projectDir string, taskID string) (*Worktree,
 		// Local branch exists; check it out directly.
 		wtCmd = exec.Command(m.gitBin(), "worktree", "add", w.Path, w.Branch)
 		wtCmd.Dir = projectDir
-	} else {
-		// Local branch was deleted; verify that origin/<branch> is available before trying to recreate.
-		remoteCheck := exec.Command(m.gitBin(), "-C", projectDir, "rev-parse", "--verify", "origin/"+w.Branch)
-		if remoteCheck.Run() != nil {
-			return nil, fmt.Errorf("local branch %q not found and remote origin/%s unavailable", w.Branch, w.Branch)
-		}
-		// Recreate local branch from remote.
+	} else if remoteCheck := exec.Command(m.gitBin(), "-C", projectDir, "rev-parse", "--verify", "origin/"+w.Branch); remoteCheck.Run() == nil {
+		// Local branch was deleted but remote branch still exists; recreate local branch from remote.
+		// This covers rework cycles where the branch was pushed but later pruned locally.
 		wtCmd = exec.Command(m.gitBin(), "worktree", "add", "-B", w.Branch, w.Path, "origin/"+w.Branch)
+		wtCmd.Dir = projectDir
+	} else {
+		// Neither local nor remote branch exists. This happens on rerun after abort
+		// (CleanupForTask drops the local branch, and if the branch was never pushed
+		// the remote has nothing either). rerun semantically means "reset and retry",
+		// so we re-branch from the recorded base branch instead of failing.
+		startPoint, err := m.resolveRecreateBasePoint(projectDir, w.BaseBranch)
+		if err != nil {
+			return nil, fmt.Errorf("local branch %q not found and cannot resolve base branch: %w", w.Branch, err)
+		}
+		wtCmd = exec.Command(m.gitBin(), "worktree", "add", "-b", w.Branch, w.Path, startPoint)
 		wtCmd.Dir = projectDir
 	}
 	if out, err := wtCmd.CombinedOutput(); err != nil {

@@ -482,9 +482,11 @@ func TestRecreate_Success(t *testing.T) {
 	}
 }
 
-// TestRecreate_RemoteBranchMissing verifies that Recreate returns an error when
-// the remote branch does not exist (branch was never pushed).
-func TestRecreate_RemoteBranchMissing(t *testing.T) {
+// TestRecreate_LocalAndRemoteBranchMissing verifies that Recreate succeeds even
+// when the branch was never pushed and the local branch was deleted (rerun after
+// abort). The branch is recreated from the recorded base branch — rerun has
+// reset-and-retry semantics, so losing the previous commit is expected.
+func TestRecreate_LocalAndRemoteBranchMissing(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	local, _ := initGitRepoWithRemote(t)
 	wtRoot := t.TempDir()
@@ -494,21 +496,37 @@ func TestRecreate_RemoteBranchMissing(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	// Create worktree but do NOT push to remote.
-	_, err := mgr.Create(local, "proj-re2", "task-re001234-0002", "boid/", "main")
+	w, err := mgr.Create(local, "proj-re2", "task-re001234-0002", "boid/", "main")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Simulate done: removes worktree and local branch; remote branch never existed.
-	if err := mgr.CleanupForTask("task-re001234-0002", local, "done"); err != nil {
+	// Simulate abort → rerun: removes worktree and local branch; remote branch never existed.
+	if err := mgr.CleanupForTask("task-re001234-0002", local, "aborted"); err != nil {
 		t.Fatalf("CleanupForTask: %v", err)
 	}
 
-	// Recreate should fail because fetch from remote will fail.
-	_, err = mgr.Recreate(local, "task-re001234-0002")
-	if err == nil {
-		t.Error("Recreate should return an error when remote branch does not exist")
+	recreated, err := mgr.Recreate(local, "task-re001234-0002")
+	if err != nil {
+		t.Fatalf("Recreate: %v", err)
+	}
+	if recreated == nil || recreated.Branch != w.Branch {
+		t.Fatalf("recreated branch = %+v, want branch %q", recreated, w.Branch)
+	}
+
+	// Local branch should be restored, pointing at the base branch tip.
+	headCmd := exec.Command(gitBin, "-C", local, "rev-parse", w.Branch)
+	head, err := headCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse %s: %v\n%s", w.Branch, err, head)
+	}
+	baseCmd := exec.Command(gitBin, "-C", local, "rev-parse", "origin/main")
+	base, err := baseCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse origin/main: %v\n%s", err, base)
+	}
+	if strings.TrimSpace(string(head)) != strings.TrimSpace(string(base)) {
+		t.Errorf("recreated branch head %s, want base %s", strings.TrimSpace(string(head)), strings.TrimSpace(string(base)))
 	}
 }
 
@@ -681,9 +699,11 @@ func TestRecreate_LocalBranchFallback(t *testing.T) {
 	}
 }
 
-// TestRecreate_BothMissingExplicitError verifies that when both local branch and remote
-// branch are unavailable, Recreate returns an explicit error describing the situation.
-func TestRecreate_BothMissingExplicitError(t *testing.T) {
+// TestRecreate_BaseBranchUnresolvable verifies that when the task branch is gone
+// AND the recorded base branch is also unresolvable, Recreate surfaces an explicit
+// error. This is a pathological case — "main" normally exists — but it guards
+// the fallback path introduced for rerun-after-abort.
+func TestRecreate_BaseBranchUnresolvable(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	repo := initGitRepo(t) // no remote: any fetch will fail
 	wtRoot := t.TempDir()
@@ -693,24 +713,25 @@ func TestRecreate_BothMissingExplicitError(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	// Create worktree (local branch created).
 	_, err := mgr.Create(repo, "proj-rbm1", "task-rbm10001-0001", "boid/", "HEAD")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-
-	// Remove with branch deletion: local branch is gone, remote branch never existed.
 	if err := mgr.Remove(repo, "task-rbm10001-0001", true); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 
-	// Recreate should fail with a message indicating both local and remote are unavailable.
+	// Force an unresolvable base branch so the rerun fallback has nothing to branch from.
+	if _, err := db.Conn.Exec(`UPDATE worktrees SET base_branch = 'nonexistent-base' WHERE task_id = 'task-rbm10001-0001'`); err != nil {
+		t.Fatalf("update base_branch: %v", err)
+	}
+
 	_, err = mgr.Recreate(repo, "task-rbm10001-0001")
 	if err == nil {
-		t.Fatal("Recreate should return an error when both local and remote are unavailable")
+		t.Fatal("Recreate should return an error when base branch cannot be resolved")
 	}
-	if !strings.Contains(err.Error(), "not found and remote") {
-		t.Errorf("error should mention both local and remote unavailability, got: %v", err)
+	if !strings.Contains(err.Error(), "base branch") {
+		t.Errorf("error should mention base branch resolution failure, got: %v", err)
 	}
 }
 
