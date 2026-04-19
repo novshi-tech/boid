@@ -83,6 +83,14 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 		return "", err
 	}
+	// Gate jobs run with UseWorktree=false (project filesystem stays hidden
+	// from the sandbox), but the broker still needs the worktree root to
+	// resolve the `git` builtin. Attach the existing worktree path — without
+	// creating one — so broker-side git operations know where to run.
+	brokerWorktreePath := worktreePath
+	if brokerWorktreePath == "" {
+		brokerWorktreePath = r.existingWorktreePath(spec)
+	}
 
 	if err := CreateJob(r.DB, j); err != nil {
 		if cleanup != nil {
@@ -104,7 +112,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			AllowedProjectIDs: allowedProjectIDs(spec.ProjectID, workspacePeers),
 			Role:              j.Role,
 			ProjectDir:        spec.Visibility.ProjectDir,
-			WorktreeDir:       worktreePath,
+			WorktreeDir:       brokerWorktreePath,
 		}
 		var resolve SecretResolver
 		if r.SecretStore != nil {

@@ -17,6 +17,29 @@ func (r *Runner) resolveWorktree(spec *orchestrator.JobSpec) (string, error) {
 	if spec == nil || !spec.Visibility.UseWorktree || r.Worktrees == nil {
 		return "", nil
 	}
+	return r.allocateWorktree(spec)
+}
+
+// existingWorktreePath returns the worktree path for a task without creating
+// or recreating anything. Used by gate jobs: gate sandboxes do not mount the
+// worktree (project filesystem is intentionally hidden), but the broker still
+// needs the worktree root to resolve the `git` builtin binding — broker-side
+// git commands run on the host and must know where to operate.
+func (r *Runner) existingWorktreePath(spec *orchestrator.JobSpec) string {
+	if spec == nil || r.Worktrees == nil || spec.TaskID == "" {
+		return ""
+	}
+	w, err := r.Worktrees.Get(spec.TaskID)
+	if err != nil || w == nil || w.CleanedAt != nil {
+		return ""
+	}
+	return w.Path
+}
+
+func (r *Runner) allocateWorktree(spec *orchestrator.JobSpec) (string, error) {
+	if spec == nil || r.Worktrees == nil {
+		return "", nil
+	}
 	if spec.TaskID == "" || spec.ProjectID == "" {
 		return "", nil
 	}
