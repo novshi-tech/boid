@@ -114,7 +114,7 @@ func handleGitBuiltinRequest(req *ExecRequest, entry *tokenEntry) *ExecResponse 
 	if entry.Git == nil {
 		return &ExecResponse{ExitCode: 1, Stderr: "git builtin unavailable for this token"}
 	}
-	if err := validateGitBuiltinCwd(req.Cwd, entry.Git.WorktreeRoot); err != nil {
+	if err := validateGitBuiltinCwd(req.Cwd, entry); err != nil {
 		return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
 	}
 
@@ -154,7 +154,7 @@ func handleGitBuiltinRequest(req *ExecRequest, entry *tokenEntry) *ExecResponse 
 	return execGitBuiltin(gitReq, entry.Git)
 }
 
-func validateGitBuiltinCwd(cwd, root string) error {
+func validateGitBuiltinCwd(cwd string, entry *tokenEntry) error {
 	if cwd == "" {
 		return fmt.Errorf("cwd required")
 	}
@@ -171,8 +171,16 @@ func validateGitBuiltinCwd(cwd, root string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("cwd must be a directory")
 	}
-	if cwd == root || strings.HasPrefix(cwd, root+"/") {
-		return nil
+	if entry != nil {
+		if policy, ok := entry.BuiltinPolicies["git"]; ok && policy.AllowsCwd(cwd) {
+			return nil
+		}
+		if entry.Git != nil {
+			root := entry.Git.WorktreeRoot
+			if cwd == root || strings.HasPrefix(cwd, root+"/") {
+				return nil
+			}
+		}
 	}
 	return fmt.Errorf("git builtin is restricted to the current worktree")
 }
