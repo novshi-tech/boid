@@ -293,7 +293,7 @@ func TestReadProjectMetaWithKits_LocalKits(t *testing.T) {
 		kitsDir := filepath.Join(boidDir, "kits", "go-dev")
 		_ = os.MkdirAll(kitsDir, 0o755)
 		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    name: dev\n    kits:\n      - go-dev\n"), 0o644)
-		_ = os.WriteFile(filepath.Join(kitsDir, "kit.yaml"), []byte("additional_bindings:\n  - source: ${TEST_BOID_HOME}/.local/share/go\nenv:\n  GOPATH: ${TEST_BOID_HOME}/go\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(kitsDir, "kit.yaml"), []byte("additional_bindings:\n  - source: ${TEST_BOID_HOME}/.local/share/go\n    target: ${TEST_BOID_HOME}/.claude/skills/go\nenv:\n  GOPATH: ${TEST_BOID_HOME}/go\n"), 0o644)
 		t.Setenv("TEST_BOID_HOME", "/home/testuser")
 
 		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
@@ -303,6 +303,9 @@ func TestReadProjectMetaWithKits_LocalKits(t *testing.T) {
 		b := meta.TaskBehaviors["dev"]
 		if b.Env["GOPATH"] != "/home/testuser/go" || b.AdditionalBindings[0].Source != "/home/testuser/.local/share/go" {
 			t.Fatalf("unexpected interpolated behavior: %+v", b)
+		}
+		if b.AdditionalBindings[0].Target != "/home/testuser/.claude/skills/go" {
+			t.Fatalf("Target not interpolated: %+v", b.AdditionalBindings[0])
 		}
 	})
 
@@ -472,7 +475,7 @@ task_behaviors:
 
 	t.Run("env interpolation", func(t *testing.T) {
 		dir := t.TempDir()
-		writeKitYAML(t, dir, "additional_bindings:\n  - source: ${TEST_BOID_HOME}/.local/share/go\nenv:\n  GOPATH: ${TEST_BOID_HOME}/go\n")
+		writeKitYAML(t, dir, "additional_bindings:\n  - source: ${TEST_BOID_HOME}/.local/share/go\n    target: ${TEST_BOID_HOME}/.claude/skills/go\nenv:\n  GOPATH: ${TEST_BOID_HOME}/go\n")
 		t.Setenv("TEST_BOID_HOME", "/home/testuser")
 
 		meta, err := projectspec.ReadKitMeta(dir)
@@ -481,6 +484,9 @@ task_behaviors:
 		}
 		if meta.AdditionalBindings[0].Source != "/home/testuser/.local/share/go" || meta.Env["GOPATH"] != "/home/testuser/go" {
 			t.Fatalf("unexpected interpolation: %+v", meta)
+		}
+		if meta.AdditionalBindings[0].Target != "/home/testuser/.claude/skills/go" {
+			t.Fatalf("Target not interpolated: %+v", meta.AdditionalBindings[0])
 		}
 	})
 

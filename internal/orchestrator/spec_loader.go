@@ -721,6 +721,7 @@ func interpolateEnv(s string) string {
 func interpolateBindMounts(mounts []BindMount) {
 	for i := range mounts {
 		mounts[i].Source = interpolateEnv(mounts[i].Source)
+		mounts[i].Target = interpolateEnv(mounts[i].Target)
 	}
 }
 

@@ -4,7 +4,6 @@ name: boid
 kits:
   - github.com/novshi-tech/boid-kits/claude-code
   - github.com/novshi-tech/boid-kits/go-dev
-  - github.com/novshi-tech/boid-kits/git
   - github.com/novshi-tech/boid-kits/github-cli
 
 commands:
