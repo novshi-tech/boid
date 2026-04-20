@@ -176,7 +176,11 @@ func runDaemonParent(cfg server.Config) error {
 		return fmt.Errorf("daemon did not start (pid: %d); check logs at %s: %w", pid, logPath, err)
 	}
 
-	fmt.Printf("boid server started (pid: %d, socket: %s, http: %s)\n", pid, cfg.SocketPath, cfg.HTTPAddr)
+	if cfg.WebEnabled {
+		fmt.Printf("boid server started (pid: %d, socket: %s, http: %s)\n", pid, cfg.SocketPath, cfg.HTTPAddr)
+	} else {
+		fmt.Printf("boid server started (pid: %d, socket: %s)\n", pid, cfg.SocketPath)
+	}
 	return nil
 }
 
@@ -205,7 +209,11 @@ func runDaemonChild(cfg server.Config) error {
 		return fmt.Errorf("start server: %w", err)
 	}
 
-	slog.Info("boid server started", "socket", cfg.SocketPath, "http", cfg.HTTPAddr)
+	if cfg.WebEnabled {
+		slog.Info("boid server started", "socket", cfg.SocketPath, "http", cfg.HTTPAddr)
+	} else {
+		slog.Info("boid server started", "socket", cfg.SocketPath)
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

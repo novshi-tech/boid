@@ -44,6 +44,11 @@ func TestWebUI_DisabledByDefault(t *testing.T) {
 	}
 	defer srv.Stop()
 
+	// Web UI が無効のとき TCP listener は開かれないこと
+	if addr := srv.TCPAddr(); addr != "" {
+		t.Errorf("TCP listener should not be open when WebEnabled=false; got %q", addr)
+	}
+
 	client := newTestClient(sockPath)
 
 	// Web UI エンドポイントは 404 を返すこと
