@@ -22,10 +22,12 @@ type TaskLookup interface {
 	GetTask(id string) (*orchestrator.Task, error)
 }
 
-// ProjectLookup lets dispatcher resolve ProjectID → WorkspaceID so that
-// workspace-peer authorization does not leak into JobSpec.
+// ProjectLookup lets dispatcher resolve ProjectID → WorkspaceID and enumerate
+// workspace peers, so workspace-peer authorization and peer-visibility
+// concerns stay inside dispatcher instead of leaking into JobSpec.
 type ProjectLookup interface {
 	GetProject(id string) (*orchestrator.Project, error)
+	ListProjects() ([]*orchestrator.Project, error)
 }
 
 type Runner struct {
@@ -100,10 +102,10 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	}
 
 	workspaceID, projectWorkDir, _ := r.resolveProjectRuntime(spec.ProjectID)
+	workspacePeers := r.resolveWorkspacePeers(workspaceID, spec.ProjectID)
 
 	var brokerSocket, brokerToken string
 	if r.Broker != nil && (len(spec.BuiltinPolicies) > 0 || len(spec.HostCommands) > 0) {
-		workspacePeers := spec.Visibility.WorkspacePeers
 		tokenCtx := sandbox.TokenContext{
 			JobID:             j.ID,
 			TaskID:            spec.TaskID,
@@ -139,13 +141,14 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	}
 
 	rtInfo := SandboxRuntimeInfo{
-		JobID:        j.ID,
-		BoidBinary:   r.BoidBinary,
-		ServerSocket: r.ServerSocket,
-		ProxyPort:    r.proxyPort(),
-		BrokerSocket: brokerSocket,
-		BrokerToken:  brokerToken,
-		WorktreeDir:  worktreePath,
+		JobID:          j.ID,
+		BoidBinary:     r.BoidBinary,
+		ServerSocket:   r.ServerSocket,
+		ProxyPort:      r.proxyPort(),
+		BrokerSocket:   brokerSocket,
+		BrokerToken:    brokerToken,
+		WorktreeDir:    worktreePath,
+		WorkspacePeers: workspacePeers,
 	}
 	// Server socket is only exposed to jobs that have no broker policies
 	// attached — i.e. boid exec invocations that need to talk to the daemon
@@ -168,6 +171,35 @@ func (r *Runner) resolveProjectRuntime(projectID string) (string, string, error)
 		return "", "", err
 	}
 	return proj.WorkspaceID, proj.WorkDir, nil
+}
+
+// resolveWorkspacePeers enumerates projects sharing workspaceID other than
+// selfID, returning a peer-id → host-path map suitable for both broker
+// authorization (AllowedProjectIDs) and sandbox FS mounting. Returns nil when
+// workspaceID is empty, Projects is unset, or the lookup fails — callers treat
+// nil as "no peers" and a solo-project allowlist.
+func (r *Runner) resolveWorkspacePeers(workspaceID, selfID string) map[string]string {
+	if r.Projects == nil || workspaceID == "" {
+		return nil
+	}
+	projects, err := r.Projects.ListProjects()
+	if err != nil {
+		return nil
+	}
+	peers := make(map[string]string)
+	for _, p := range projects {
+		if p == nil || p.ID == "" || p.ID == selfID {
+			continue
+		}
+		if p.WorkspaceID != workspaceID {
+			continue
+		}
+		peers[p.ID] = p.WorkDir
+	}
+	if len(peers) == 0 {
+		return nil
+	}
+	return peers
 }
 
 func (r *Runner) proxyPort() int {

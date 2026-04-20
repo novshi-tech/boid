@@ -85,10 +85,6 @@ type Visibility struct {
 	// worktree obtained from its WorktreeManager.
 	UseWorktree bool
 
-	// WorkspacePeers maps peer project IDs to host paths. All peers are
-	// mounted read-only.
-	WorkspacePeers map[string]string
-
 	// AdditionalBindings lists extra host bind-mounts (e.g. kit-provided CLIs
 	// like the claude binary) that must be visible inside the sandbox.
 	AdditionalBindings []BindMount

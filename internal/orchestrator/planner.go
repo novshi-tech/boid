@@ -12,7 +12,6 @@ type MetaCache interface {
 
 type ProjectCatalog interface {
 	GetProject(id string) (*Project, error)
-	ListProjects() ([]*Project, error)
 }
 
 type TaskLookup interface {
@@ -51,11 +50,6 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 
 	behavior, _ := lookupBehavior(meta, task)
 
-	workspacePeers, err := p.collectWorkspaceDirs(proj.WorkspaceID, event.ProjectID)
-	if err != nil {
-		return nil, nil, err
-	}
-
 	// Stage kit + project hook files under a single temp directory so the
 	// entry script can source sibling helpers via a consistent path.
 	projectHooksDir := filepath.Join(proj.WorkDir, ".boid", "hooks")
@@ -84,7 +78,6 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		Visibility: Visibility{
 			ProjectDir:         proj.WorkDir,
 			UseWorktree:        task.Worktree,
-			WorkspacePeers:     workspacePeers,
 			AdditionalBindings: behavior.AdditionalBindings,
 			Writable:           !IsReadonly(task),
 		},
@@ -147,9 +140,8 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, CleanupFunc,
 		PrimaryInput: taskJSON,
 		Visibility: Visibility{
 			// Project filesystem is intentionally not visible to gates.
-			ProjectDir:     "",
-			UseWorktree:    false,
-			WorkspacePeers: nil,
+			ProjectDir:  "",
+			UseWorktree: false,
 			// Gates never pass through kit CLIs; they only see their own tmpfs.
 			AdditionalBindings: nil,
 			Writable:           false,
@@ -184,31 +176,6 @@ func (p *DispatchPlanner) loadContext(projectID, taskID string) (*ProjectMeta, *
 		return nil, nil, nil, fmt.Errorf("get task: %w", err)
 	}
 	return meta, proj, task, nil
-}
-
-func (p *DispatchPlanner) collectWorkspaceDirs(workspaceID, selfID string) (map[string]string, error) {
-	if workspaceID == "" {
-		return nil, nil
-	}
-	projects, err := p.Projects.ListProjects()
-	if err != nil {
-		return nil, fmt.Errorf("list projects for workspace: %w", err)
-	}
-
-	dirs := make(map[string]string)
-	for _, candidate := range projects {
-		if candidate.ID == selfID {
-			continue
-		}
-		if candidate.WorkspaceID != workspaceID {
-			continue
-		}
-		dirs[candidate.ID] = candidate.WorkDir
-	}
-	if len(dirs) == 0 {
-		return nil, nil
-	}
-	return dirs, nil
 }
 
 func selectInstruction(task *Task, consumer string) *RoutedInstruction {

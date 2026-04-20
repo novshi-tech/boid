@@ -119,7 +119,6 @@ func buildExecJob(projectID, commandName string) (*execPreparedJob, error) {
 		Visibility: orchestrator.Visibility{
 			ProjectDir:         p.WorkDir,
 			UseWorktree:        false,
-			WorkspacePeers:     workspacePeers,
 			AdditionalBindings: cmd.AdditionalBindings,
 			Writable:           true,
 		},
@@ -129,13 +128,14 @@ func buildExecJob(projectID, commandName string) (*execPreparedJob, error) {
 	}
 
 	rt := dispatcher.SandboxRuntimeInfo{
-		JobID:        fmt.Sprintf("exec-%s", projectID),
-		BoidBinary:   boidBinary,
-		ServerSocket: client.DefaultSocketPath(),
-		ProxyPort:    proxyInfo.Port,
-		BrokerSocket: brokerSocket,
-		BrokerToken:  brokerToken,
-		Foreground:   true,
+		JobID:          fmt.Sprintf("exec-%s", projectID),
+		BoidBinary:     boidBinary,
+		ServerSocket:   client.DefaultSocketPath(),
+		ProxyPort:      proxyInfo.Port,
+		BrokerSocket:   brokerSocket,
+		BrokerToken:    brokerToken,
+		Foreground:     true,
+		WorkspacePeers: workspacePeers,
 	}
 	return &execPreparedJob{spec: spec, rt: rt}, nil
 }
