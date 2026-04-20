@@ -1001,6 +1001,233 @@ func TestBroker_BoidTaskImport_ProjectOverrideValidated(t *testing.T) {
 	}
 }
 
+func TestBroker_BoidTaskCreate_ResolvesProjectRef(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{
+		BoidExecutor: exec,
+		ProjectResolver: func(ref string) (string, error) {
+			if ref == "mera-ui" {
+				return "p2", nil
+			}
+			return ref, nil
+		},
+	}
+	projectDir := t.TempDir()
+	ctx := sandbox.TokenContext{
+		JobID:             "j1",
+		TaskID:            "t1",
+		ProjectID:         "p1",
+		WorkspaceID:       "ws-1",
+		AllowedProjectIDs: []string{"p1", "p2"},
+		Role:              testRoleGate,
+		ProjectDir:        projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:        sandbox.BoidOpTaskCreate,
+			Title:     "peer task",
+			Behavior:  "dev",
+			ProjectID: "mera-ui", // 名前指定
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("name-based create should be accepted after resolution, exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor calls = %d, want 1", len(exec.calls))
+	}
+	if exec.calls[0].ProjectID != "p2" {
+		t.Fatalf("executor received project_id = %q, want resolved UUID %q", exec.calls[0].ProjectID, "p2")
+	}
+}
+
+func TestBroker_BoidTaskCreate_ResolverErrorSurfaced(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{
+		BoidExecutor: exec,
+		ProjectResolver: func(ref string) (string, error) {
+			return "", fmt.Errorf("no project matches ref %q", ref)
+		},
+	}
+	projectDir := t.TempDir()
+	ctx := sandbox.TokenContext{
+		JobID:             "j1",
+		TaskID:            "t1",
+		ProjectID:         "p1",
+		AllowedProjectIDs: []string{"p1"},
+		Role:              testRoleGate,
+		ProjectDir:        projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:        sandbox.BoidOpTaskCreate,
+			Title:     "x",
+			Behavior:  "dev",
+			ProjectID: "bogus-name",
+		},
+	})
+	if resp.ExitCode != 1 {
+		t.Fatalf("resolver error should fail task create, got exit=%d", resp.ExitCode)
+	}
+	if !strings.Contains(resp.Stderr, "bogus-name") {
+		t.Fatalf("resolver error should surface ref name, got stderr=%q", resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called on resolver error, calls=%d", len(exec.calls))
+	}
+}
+
+func TestBroker_BoidTaskCreate_PassthroughWhenResolverNil(t *testing.T) {
+	// ProjectResolver が nil のときは UUID をそのまま使う (既存挙動互換)
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	ctx := sandbox.TokenContext{
+		JobID:             "j1",
+		TaskID:            "t1",
+		ProjectID:         "p1",
+		AllowedProjectIDs: []string{"p1", "p2"},
+		Role:              testRoleGate,
+		ProjectDir:        projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:        sandbox.BoidOpTaskCreate,
+			Title:     "x",
+			Behavior:  "dev",
+			ProjectID: "p2",
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("UUID passthrough should succeed, exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 || exec.calls[0].ProjectID != "p2" {
+		t.Fatalf("executor call = %+v, want ProjectID=p2", exec.calls)
+	}
+}
+
+func TestBroker_BoidTaskImport_ResolvesProjectRefs(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{
+		BoidExecutor: exec,
+		ProjectResolver: func(ref string) (string, error) {
+			switch ref {
+			case "mera-ui":
+				return "p2", nil
+			case "rook-server":
+				return "p1", nil
+			}
+			return ref, nil
+		},
+	}
+	projectDir := t.TempDir()
+	gateCtx := sandbox.TokenContext{
+		JobID:             "j1",
+		TaskID:            "t1",
+		ProjectID:         "p1",
+		AllowedProjectIDs: []string{"p1", "p2"},
+		Role:              testRoleGate,
+		ProjectDir:        projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), gateCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op: sandbox.BoidOpTaskImport,
+			ImportTasks: []json.RawMessage{
+				json.RawMessage(`{"project_id":"mera-ui","title":"fe"}`),
+				json.RawMessage(`{"project_id":"rook-server","title":"be"}`),
+			},
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("import with name refs should succeed, exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor calls = %d, want 1", len(exec.calls))
+	}
+	if len(exec.calls[0].ImportTasks) != 2 {
+		t.Fatalf("import tasks = %d, want 2", len(exec.calls[0].ImportTasks))
+	}
+	// project_id が解決後 UUID に書き換わって executor に届くことを確認
+	var first, second struct {
+		ProjectID string `json:"project_id"`
+		Title     string `json:"title"`
+	}
+	if err := json.Unmarshal(exec.calls[0].ImportTasks[0], &first); err != nil {
+		t.Fatalf("unmarshal 0: %v", err)
+	}
+	if err := json.Unmarshal(exec.calls[0].ImportTasks[1], &second); err != nil {
+		t.Fatalf("unmarshal 1: %v", err)
+	}
+	if first.ProjectID != "p2" || first.Title != "fe" {
+		t.Fatalf("task[0] = %+v, want project_id=p2 title=fe", first)
+	}
+	if second.ProjectID != "p1" || second.Title != "be" {
+		t.Fatalf("task[1] = %+v, want project_id=p1 title=be", second)
+	}
+}
+
+func TestBroker_BoidTaskImport_ResolvesImportProjectOverride(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{
+		BoidExecutor: exec,
+		ProjectResolver: func(ref string) (string, error) {
+			if ref == "mera-ui" {
+				return "p2", nil
+			}
+			return ref, nil
+		},
+	}
+	projectDir := t.TempDir()
+	gateCtx := sandbox.TokenContext{
+		JobID:             "j1",
+		TaskID:            "t1",
+		ProjectID:         "p1",
+		AllowedProjectIDs: []string{"p1", "p2"},
+		Role:              testRoleGate,
+		ProjectDir:        projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), gateCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op: sandbox.BoidOpTaskImport,
+			ImportTasks: []json.RawMessage{
+				json.RawMessage(`{"title":"t"}`),
+			},
+			ImportProjectOverride: "mera-ui",
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("override name ref should succeed, exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 || exec.calls[0].ImportProjectOverride != "p2" {
+		t.Fatalf("executor ImportProjectOverride = %q, want %q", exec.calls[0].ImportProjectOverride, "p2")
+	}
+}
+
 func TestBroker_BoidTaskImport_DefaultProjectFromContext(t *testing.T) {
 	exec := &fakeBoidExecutor{}
 	broker := &sandbox.Broker{BoidExecutor: exec}

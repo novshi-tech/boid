@@ -24,12 +24,23 @@ type tokenEntry struct {
 }
 
 type Broker struct {
-	SocketPath   string
-	BoidBinary   string
-	BoidExecutor BoidExecutor
-	listener     net.Listener
-	mu           sync.RWMutex
-	registry     map[string]*tokenEntry
+	SocketPath      string
+	BoidBinary      string
+	BoidExecutor    BoidExecutor
+	ProjectResolver ProjectResolver
+	listener        net.Listener
+	mu              sync.RWMutex
+	registry        map[string]*tokenEntry
+}
+
+// resolveProjectRef applies the broker's ProjectResolver when configured.
+// Empty refs and nil resolver both short-circuit to the input so callers
+// don't need to special-case either.
+func (b *Broker) resolveProjectRef(ref string) (string, error) {
+	if b.ProjectResolver == nil || ref == "" {
+		return ref, nil
+	}
+	return b.ProjectResolver(ref)
 }
 
 func (b *Broker) Register(commands map[string]CommandDef, builtinPolicies map[string]BuiltinPolicy, ctx TokenContext) string {
@@ -209,6 +220,11 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 		if boidReq.ProjectID == "" {
 			boidReq.ProjectID = entry.Context.ProjectID
 		}
+		resolved, err := b.resolveProjectRef(boidReq.ProjectID)
+		if err != nil {
+			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task create: resolve project %q: %s", boidReq.ProjectID, err)}
+		}
+		boidReq.ProjectID = resolved
 		if !entry.Context.AllowsProject(boidReq.ProjectID) {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
 		}
@@ -230,7 +246,23 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 		if len(boidReq.ImportTasks) == 0 {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task import requires at least one task"}
 		}
-		// バッチ全体の project_id 事前検証
+		// Override を先に resolve してから per-task 検証に入ると、下流で
+		// 再解決するか否かを per-task 分岐に持ち込まなくて済む。
+		if boidReq.ImportProjectOverride != "" {
+			overridden, err := b.resolveProjectRef(boidReq.ImportProjectOverride)
+			if err != nil {
+				return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task import: resolve project %q: %s", boidReq.ImportProjectOverride, err)}
+			}
+			boidReq.ImportProjectOverride = overridden
+		}
+		// ImportTasks は req.Boid と配列を共有しているため、mutate 前に
+		// slice header を複製して caller 側の BoidRequest に影響しないよう隔離する。
+		if boidReq.ImportProjectOverride == "" && b.ProjectResolver != nil {
+			tasks := make([]json.RawMessage, len(boidReq.ImportTasks))
+			copy(tasks, boidReq.ImportTasks)
+			boidReq.ImportTasks = tasks
+		}
+		// バッチ全体の project_id 事前検証 (名前解決も同時に行う)
 		for i, raw := range boidReq.ImportTasks {
 			var peek struct {
 				ProjectID string `json:"project_id"`
@@ -241,6 +273,19 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 			projectID := peek.ProjectID
 			if boidReq.ImportProjectOverride != "" {
 				projectID = boidReq.ImportProjectOverride
+			} else if peek.ProjectID != "" {
+				resolved, err := b.resolveProjectRef(peek.ProjectID)
+				if err != nil {
+					return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task import: line %d: resolve project %q: %s", i+1, peek.ProjectID, err)}
+				}
+				if resolved != peek.ProjectID {
+					updated, err := rewriteImportTaskProjectID(raw, resolved)
+					if err != nil {
+						return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task import: line %d: rewrite project_id: %s", i+1, err)}
+					}
+					boidReq.ImportTasks[i] = updated
+				}
+				projectID = resolved
 			}
 			if projectID == "" {
 				projectID = entry.Context.ProjectID
@@ -255,6 +300,26 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 		return &ExecResponse{ExitCode: 1, Stderr: "boid builtin unavailable"}
 	}
 	return b.BoidExecutor.ExecuteBoidBuiltin(entry.Context, &boidReq)
+}
+
+// rewriteImportTaskProjectID replaces the "project_id" field of a task import
+// raw JSON with newID, preserving all other fields. Decode → mutate → encode
+// via map[string]json.RawMessage keeps unknown fields intact without requiring
+// a schema update here.
+func rewriteImportTaskProjectID(raw json.RawMessage, newID string) (json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(newID)
+	if err != nil {
+		return nil, err
+	}
+	if fields == nil {
+		fields = make(map[string]json.RawMessage, 1)
+	}
+	fields["project_id"] = encoded
+	return json.Marshal(fields)
 }
 
 func validateBoidBuiltinCwd(cwd string, entry *tokenEntry) error {
