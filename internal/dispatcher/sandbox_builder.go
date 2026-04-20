@@ -29,6 +29,11 @@ type SandboxRuntimeInfo struct {
 	// having been resolved through its WorktreeManager. Empty otherwise.
 	WorktreeDir string
 
+	// WorkspacePeers maps peer project IDs (same workspace, excluding self) to
+	// host paths. Dispatcher resolves this from its ProjectLookup so peer
+	// visibility/authorization does not leak into orchestrator.JobSpec.
+	WorkspacePeers map[string]string
+
 	// StagingDir, when non-empty, is added to CleanupPaths so the sandbox
 	// setup script removes it on teardown in addition to the caller-supplied
 	// CleanupFunc.
@@ -114,7 +119,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox
 			effectiveProject,
 			homeDir,
 			spec.Visibility.Writable,
-			spec.Visibility.WorkspacePeers,
+			rt.WorkspacePeers,
 			spec.Visibility.UseWorktree,
 		)...)
 	} else {
@@ -159,6 +164,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox
 		spec.Instruction,
 		spec.PrimaryInput,
 		spec.Visibility,
+		rt.WorkspacePeers,
 		spec.BuiltinPolicies,
 		rt.ProxyPort > 0,
 	)...)
@@ -441,6 +447,7 @@ func contextFiles(
 	inst *orchestrator.RoutedInstruction,
 	primaryInput json.RawMessage,
 	visibility orchestrator.Visibility,
+	workspacePeers map[string]string,
 	policies map[string]orchestrator.BuiltinPolicy,
 	proxyEnabled bool,
 ) []sandbox.FileWrite {
@@ -461,7 +468,7 @@ func contextFiles(
 	}
 	out = append(out, sandbox.FileWrite{
 		Path:    contextDir + "/environment.yaml",
-		Content: buildEnvironmentYAML(visibility, policies, proxyEnabled),
+		Content: buildEnvironmentYAML(visibility, workspacePeers, policies, proxyEnabled),
 	})
 	if inst != nil && inst.Interactive && len(primaryInput) > 0 {
 		out = append(out, sandbox.FileWrite{
@@ -511,24 +518,30 @@ type environmentDoc struct {
 // buildEnvironmentYAML derives the environment.yaml content purely from the
 // primitives orchestrator already exposed: Visibility + BuiltinPolicies +
 // proxy state. orchestrator does not need to know the exact YAML layout.
-func buildEnvironmentYAML(visibility orchestrator.Visibility, policies map[string]orchestrator.BuiltinPolicy, proxyEnabled bool) string {
+func buildEnvironmentYAML(visibility orchestrator.Visibility, workspacePeers map[string]string, policies map[string]orchestrator.BuiltinPolicy, proxyEnabled bool) string {
 	env := environmentDoc{
 		Readonly: visibility.ProjectDir != "" && !visibility.Writable,
 		Worktree: visibility.UseWorktree,
 		Network:  map[string]bool{"restricted": proxyEnabled},
 		Tools:    builtinTools(policies),
 	}
-	peerIDs := make([]string, 0, len(visibility.WorkspacePeers))
-	for id := range visibility.WorkspacePeers {
-		peerIDs = append(peerIDs, id)
-	}
-	sort.Strings(peerIDs)
-	for _, id := range peerIDs {
-		dir := visibility.WorkspacePeers[id]
-		env.WorkspaceProjects = append(env.WorkspaceProjects, workspaceProjectEntry{
-			Path: dir,
-			Name: filepath.Base(dir),
-		})
+	// environment.yaml advertises peers only when the job actually sees its
+	// own project filesystem. Gate jobs (ProjectDir=="") get neither peer
+	// mounts nor peer listings, even though broker-side auth still covers
+	// them via AllowedProjectIDs.
+	if visibility.ProjectDir != "" {
+		peerIDs := make([]string, 0, len(workspacePeers))
+		for id := range workspacePeers {
+			peerIDs = append(peerIDs, id)
+		}
+		sort.Strings(peerIDs)
+		for _, id := range peerIDs {
+			dir := workspacePeers[id]
+			env.WorkspaceProjects = append(env.WorkspaceProjects, workspaceProjectEntry{
+				Path: dir,
+				Name: filepath.Base(dir),
+			})
+		}
 	}
 	out, _ := yaml.Marshal(env)
 	return string(out)

@@ -115,7 +115,7 @@ func TestBuildExecJob_WorkspaceVisibility(t *testing.T) {
 	if prepared.spec.ProjectID != "proj-1" {
 		t.Fatalf("project id = %q, want %q", prepared.spec.ProjectID, "proj-1")
 	}
-	peers := prepared.spec.Visibility.WorkspacePeers
+	peers := prepared.rt.WorkspacePeers
 	if peers["proj-2"] != dir2 {
 		t.Fatalf("workspace peers = %#v, want proj-2 => %q", peers, dir2)
 	}
