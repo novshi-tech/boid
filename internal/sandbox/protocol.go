@@ -105,6 +105,14 @@ func (c TokenContext) AllowsProject(projectID string) bool {
 	return false
 }
 
+// ProjectResolver maps a project reference (UUID, exact name, or partial name)
+// to a concrete project UUID. The broker calls it just before the UUID-based
+// AllowsProject authorization check so that sandbox-side callers (e.g. plan
+// agents) can use project names while the broker continues to enforce
+// workspace isolation in UUID space. When nil, the broker passes refs through
+// verbatim (tests and UUID-only callers).
+type ProjectResolver func(ref string) (uuid string, err error)
+
 type GitOp string
 
 const (

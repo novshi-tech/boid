@@ -17,6 +17,7 @@ import (
 	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/web"
 )
 
@@ -185,6 +186,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	}
 	if srv.broker != nil {
 		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc)
+		srv.broker.ProjectResolver = projectResolverFor(projectSvc)
 	}
 	globalJobSvc := &globalJobStore{
 		jobs:     jobRepo,
@@ -213,6 +215,23 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		webSvc:         webSvc,
 		workflow:       workflow,
 	}, nil
+}
+
+// projectResolverFor adapts ProjectAppService.ResolveProjectRef into the
+// sandbox.ProjectResolver contract: a single UUID or a hard error. Unlike the
+// HTTP-facing caller (cmd/project_ref.go), sandbox callers have no TTY, so
+// ambiguous matches fail instead of prompting.
+func projectResolverFor(svc *api.ProjectAppService) sandbox.ProjectResolver {
+	return func(ref string) (string, error) {
+		projects, err := svc.ResolveProjectRef(ref)
+		if err != nil {
+			return "", err
+		}
+		if len(projects) > 1 {
+			return "", fmt.Errorf("ambiguous project ref %q (%d matches)", ref, len(projects))
+		}
+		return projects[0].ID, nil
+	}
 }
 
 func mountRoutes(srv *Server, runtime *appRuntime) error {
