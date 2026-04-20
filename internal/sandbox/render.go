@@ -62,11 +62,13 @@ func renderCleanup(b *strings.Builder, cleanupPaths []string, innerPath, setupPa
     esac
     # Unmount all bind mounts under $ROOT
     umount -R "$ROOT" 2>/dev/null || true
-    # Safety: only rm if no mounts remain (prevent deleting host files via stale bind mounts)
-    if ! findmnt --submounts --noheadings --output TARGET "$ROOT" | grep -q .; then
-        rm -rf "$ROOT"
-    else
+    # Safety: only rm if no mounts remain under $ROOT (prevent deleting host files
+    # via stale bind mounts). findmnt --submounts requires $ROOT itself to be a
+    # mount point, which it isn't, so enumerate every mount target instead.
+    if findmnt --noheadings --output TARGET 2>/dev/null | awk -v r="$ROOT" '$0 == r || index($0, r "/") == 1 { found=1 } END { exit !found }'; then
         echo "WARNING: mounts still active under $ROOT, skipping rm" >&2
+    else
+        rm -rf "$ROOT"
     fi
     rm -f %s %s %s
 `, shellQuote(outerPath), shellQuote(setupPath), shellQuote(innerPath))
@@ -86,9 +88,13 @@ func renderMount(b *strings.Builder, m Mount) {
 
 	// Create target
 	if m.DetectType {
+		// `-e` (exists) rather than `-f` (regular file) so sockets, FIFOs and
+		// device nodes land in the file-like branch. The prior `-f` form
+		// silently skipped mountpoint creation for sockets (e.g. cetusguard's
+		// docker.sock), causing the subsequent `mount --bind` to fail.
 		fmt.Fprintf(b, "%sif [ -d %s ]; then\n", indent, shellQuote(m.Source))
 		fmt.Fprintf(b, "%s    mkdir -p \"$ROOT%s\"\n", indent, m.Target)
-		fmt.Fprintf(b, "%selif [ -f %s ]; then\n", indent, shellQuote(m.Source))
+		fmt.Fprintf(b, "%selif [ -e %s ]; then\n", indent, shellQuote(m.Source))
 		fmt.Fprintf(b, "%s    mkdir -p \"$(dirname \"$ROOT%s\")\"\n", indent, m.Target)
 		fmt.Fprintf(b, "%s    touch \"$ROOT%s\"\n", indent, m.Target)
 		fmt.Fprintf(b, "%sfi\n", indent)
