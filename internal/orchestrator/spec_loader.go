@@ -99,6 +99,9 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	if err := yaml.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("parse project.yaml: %w", err)
 	}
+	interpolateBindMounts(meta.AdditionalBindings)
+	interpolateHostCommands(meta.HostCommands)
+	interpolateEnvMap(meta.Env)
 	if err := resolveProjectHostCommandPaths(dir, meta.HostCommands); err != nil {
 		return nil, err
 	}

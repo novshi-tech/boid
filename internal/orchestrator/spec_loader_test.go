@@ -148,6 +148,32 @@ func TestReadProjectMeta_Errors(t *testing.T) {
 	})
 }
 
+func TestReadProjectMeta_EnvInterpolation(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	_ = os.MkdirAll(boidDir, 0o755)
+	yaml := "id: test-proj\nname: Test Project\nhost_commands:\n  my-tool:\n    path: ${TEST_BOID_HOME}/bin/my-tool\nadditional_bindings:\n  - source: ${TEST_BOID_HOME}/.local/share/go\n    target: ${TEST_BOID_HOME}/.cache/go\nenv:\n  MY_VAR: ${TEST_BOID_HOME}/my-dir\n"
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
+	t.Setenv("TEST_BOID_HOME", "/home/testuser")
+
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadProjectMeta: %v", err)
+	}
+	if got := meta.HostCommands["my-tool"].Path; got != "/home/testuser/bin/my-tool" {
+		t.Fatalf("host_commands.path not interpolated: %q", got)
+	}
+	if got := meta.AdditionalBindings[0].Source; got != "/home/testuser/.local/share/go" {
+		t.Fatalf("additional_bindings.source not interpolated: %q", got)
+	}
+	if got := meta.AdditionalBindings[0].Target; got != "/home/testuser/.cache/go" {
+		t.Fatalf("additional_bindings.target not interpolated: %q", got)
+	}
+	if got := meta.Env["MY_VAR"]; got != "/home/testuser/my-dir" {
+		t.Fatalf("env value not interpolated: %q", got)
+	}
+}
+
 func TestReadProjectLocalMeta(t *testing.T) {
 	t.Run("missing file", func(t *testing.T) {
 		meta, err := projectspec.ReadProjectLocalMeta(t.TempDir())
