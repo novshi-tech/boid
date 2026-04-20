@@ -1,8 +1,12 @@
 ---
 name: boid-e2e
-description: boid プロジェクトで新機能開発時に E2E テストをセットで作成するためのガイド。
-  シナリオ作成手順・テンプレート・テスト設計ガイドラインを提供する。
-  新機能実装タスクで「e2eテストも作りたい」「シナリオを追加したい」場合に使用する。
+description: >
+  boid プロジェクトで E2E シナリオを新規作成・追加するためのガイド・テンプレート・設計原則を提供する。
+  シナリオのディレクトリ構成、project.yaml/scenario.sh のテンプレート、アサーションパターン、
+  fake コマンドの使い方を網羅する。
+  Use when a team member wants to add a new E2E scenario (e.g. 「e2e シナリオを追加したい」
+  「新機能の回帰テストを足したい」「e2e/scenarios/ にシナリオを新規作成する」)
+  or when implementing a new boid feature that requires end-to-end test coverage.
 ---
 
 # boid E2E テスト作成スキル
@@ -37,13 +41,3 @@ description: boid プロジェクトで新機能開発時に E2E テストをセ
 - [ ] fixture kit（`e2e/fixtures/kits/`）が必要な場合追加されているか
 - [ ] ユニットテストが壊れていないか（`go test ./...` で確認）
 - [ ] 既存シナリオを壊していないか（CI に任せる、または `./e2e/run.sh` で全シナリオ実行）
-
-## インストール
-
-このスキルを Claude Code で使えるようにするには:
-
-```bash
-cp -r docs/skills/boid-e2e ~/.claude/skills/
-```
-
-インストール後、`/boid-e2e` コマンドで呼び出せるようになる。
