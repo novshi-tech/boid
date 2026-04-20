@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$E2E_WORKSPACE_DIR/app"
-RELEASE_HOOK="$PROJECT_DIR/.boid/release-rework-hook"
+RELEASE_HOOK="$PROJECT_DIR/release-rework-hook"
 
 rm -f "$RELEASE_HOOK"
 
