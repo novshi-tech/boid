@@ -339,8 +339,10 @@ func additionalBindingMounts(bindings []orchestrator.BindMount) []sandbox.Mount 
 // stageArgv0 returns the in-sandbox path argv[0] should resolve to. If argv[0]
 // is already under the visible project root (effectiveProject), the host path
 // is reused as-is. If it is an absolute host path outside that root (e.g. a
-// staged hook/gate script in /tmp), a dedicated bind is returned so the
-// sandbox exposes it at a stable path. Bare command names are left untouched.
+// hook/gate script staged in /tmp), the parent directory is bind-mounted at
+// /opt/boid/entry so argv[0] can reference sibling helper scripts via stable
+// in-sandbox paths. Bare command names are left untouched and resolved via
+// the sandbox PATH / broker shim.
 func stageArgv0(original, effectiveProject string) (string, *sandbox.Mount, bool) {
 	if original == "" || !filepath.IsAbs(original) {
 		return "", nil, false
@@ -348,12 +350,12 @@ func stageArgv0(original, effectiveProject string) (string, *sandbox.Mount, bool
 	if effectiveProject != "" && strings.HasPrefix(original, effectiveProject+string(filepath.Separator)) {
 		return original, nil, false
 	}
+	parent := filepath.Dir(original)
 	target := "/opt/boid/entry/" + filepath.Base(original)
 	return target, &sandbox.Mount{
-		Source:   original,
-		Target:   target,
+		Source:   parent,
+		Target:   "/opt/boid/entry",
 		Type:     sandbox.MountBind,
-		IsFile:   true,
 		ReadOnly: true,
 	}, true
 }
