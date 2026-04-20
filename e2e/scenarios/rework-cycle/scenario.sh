@@ -30,7 +30,6 @@ abort_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 10s --interval 
 printf '%s\n' "$abort_json"
 e2e_assert_contains "$abort_json" '"status":"aborted"'
 touch "$RELEASE_HOOK"
-rm -f "$RELEASE_HOOK"
 
 e2e_log "creating rework task"
 task_create_output="$("$E2E_BIN_DIR/boid" task create <<'YAML'
@@ -58,7 +57,6 @@ e2e_log "waiting for verification gate"
 "$E2E_BIN_DIR/boid-e2e" wait-job-count "$task_id" 2
 "$E2E_BIN_DIR/boid-e2e" assert-job-role-count "$task_id" hook 1
 "$E2E_BIN_DIR/boid-e2e" assert-job-role-count "$task_id" gate 1
-rm -f "$RELEASE_HOOK"
 
 e2e_log "waiting for rework cycle"
 "$E2E_BIN_DIR/boid-e2e" wait-job-count "$task_id" 3
