@@ -1216,7 +1216,9 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 }
 
 // TriggerDependents は taskID に依存する pending タスクを評価し、
-// 依存条件が満たされた場合に自動 start する。
+// auto_start=true かつ依存条件が満たされた場合に自動 start する。
+// auto_start=false のタスクは依存解決しても pending のまま残り、
+// ユーザが手動で start するまで待機する。
 func (s *TaskWorkflowService) TriggerDependents(ctx context.Context, taskID string) {
 	s.triggerDependentTasks(ctx, taskID)
 }
@@ -1231,6 +1233,9 @@ func (s *TaskWorkflowService) triggerDependentTasks(ctx context.Context, taskID 
 		return
 	}
 	for _, dep := range dependents {
+		if !dep.AutoStart {
+			continue
+		}
 		if err := checkDependencies(dep, s.Tasks.GetTask); err != nil {
 			continue
 		}

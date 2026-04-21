@@ -51,12 +51,24 @@ func waitForStatus(t *testing.T, ts *testutil.TestServer, taskID string, want or
 	}
 }
 
+// createImplTask creates a task with auto_start=false (default).
+// Use createImplTaskAutoStart when the test expects the task to auto-start
+// on dependency resolution.
 func createImplTask(t *testing.T, ts *testutil.TestServer, projectID, title, ref, parentID string, dependsOn []string, dependsOnPayload string) orchestrator.Task {
+	return createImplTaskWithAutoStart(t, ts, projectID, title, ref, parentID, dependsOn, dependsOnPayload, false)
+}
+
+func createImplTaskAutoStart(t *testing.T, ts *testutil.TestServer, projectID, title, ref, parentID string, dependsOn []string, dependsOnPayload string) orchestrator.Task {
+	return createImplTaskWithAutoStart(t, ts, projectID, title, ref, parentID, dependsOn, dependsOnPayload, true)
+}
+
+func createImplTaskWithAutoStart(t *testing.T, ts *testutil.TestServer, projectID, title, ref, parentID string, dependsOn []string, dependsOnPayload string, autoStart bool) orchestrator.Task {
 	t.Helper()
 	req := map[string]any{
 		"project_id": projectID,
 		"title":      title,
 		"behavior":   "impl",
+		"auto_start": autoStart,
 	}
 	if ref != "" {
 		req["ref"] = ref
@@ -92,7 +104,7 @@ func TestAutoTrigger_TaskDone_SingleDependent_AutoStarts(t *testing.T) {
 	setupTriggerProject(t, ts, "proj-trigger-1")
 
 	taskA := createImplTask(t, ts, "proj-trigger-1", "Task A", "a", "p1", nil, "")
-	taskB := createImplTask(t, ts, "proj-trigger-1", "Task B (depends on A)", "b", "p1", []string{"a"}, "")
+	taskB := createImplTaskAutoStart(t, ts, "proj-trigger-1", "Task B (depends on A)", "b", "p1", []string{"a"}, "")
 
 	// B は pending のはず
 	if taskB.Status != orchestrator.TaskStatusPending {
@@ -115,7 +127,7 @@ func TestAutoTrigger_TaskDone_PartialDeps_StaysPending(t *testing.T) {
 
 	taskA := createImplTask(t, ts, "proj-trigger-2", "Task A", "a", "p2", nil, "")
 	taskC := createImplTask(t, ts, "proj-trigger-2", "Task C", "c", "p2", nil, "")
-	taskB := createImplTask(t, ts, "proj-trigger-2", "Task B (depends on A and C)", "b", "p2",
+	taskB := createImplTaskAutoStart(t, ts, "proj-trigger-2", "Task B (depends on A and C)", "b", "p2",
 		[]string{"a", "c"}, "")
 
 	// A を done にする
@@ -151,7 +163,7 @@ func TestAutoTrigger_PayloadUpdate_WithPayloadCondition_TriggersDependents(t *te
 	applyImplAction(t, ts, taskA.ID, "done")
 
 	// Task B: A が done かつ A.payload["pr_merged"] が truthy のときだけ start できる
-	taskB := createImplTask(t, ts, "proj-trigger-3", "Task B (payload dep)", "b", "p3", []string{"a"}, "pr_merged")
+	taskB := createImplTaskAutoStart(t, ts, "proj-trigger-3", "Task B (payload dep)", "b", "p3", []string{"a"}, "pr_merged")
 
 	// A の payload に pr_merged=false をセット → B は pending 維持
 	patchFalse := map[string]any{
@@ -199,7 +211,7 @@ func TestAutoTrigger_ChildrenAllDone_Phase2AutoStarts(t *testing.T) {
 	child2 := createImplTask(t, ts, "proj-children-done", "Child 2", "c2", phase1.ID, nil, "")
 
 	// Phase2: phase1 が done かつ artifact.children.all_done が true になると start
-	phase2 := createImplTask(t, ts, "proj-children-done", "Phase2", "phase2", "", []string{phase1.ID}, "artifact.children.all_done")
+	phase2 := createImplTaskAutoStart(t, ts, "proj-children-done", "Phase2", "phase2", "", []string{phase1.ID}, "artifact.children.all_done")
 
 	// Phase2 はまだ pending のはず
 	if phase2.Status != orchestrator.TaskStatusPending {
@@ -237,7 +249,7 @@ func TestAutoTrigger_ChildrenAllDone_AbortedChild_StaysPending(t *testing.T) {
 	child1 := createImplTask(t, ts, "proj-children-aborted", "Child 1", "c1", phase1.ID, nil, "")
 	child2 := createImplTask(t, ts, "proj-children-aborted", "Child 2", "c2", phase1.ID, nil, "")
 
-	phase2 := createImplTask(t, ts, "proj-children-aborted", "Phase2 all_done", "phase2", "", []string{phase1.ID}, "artifact.children.all_done")
+	phase2 := createImplTaskAutoStart(t, ts, "proj-children-aborted", "Phase2 all_done", "phase2", "", []string{phase1.ID}, "artifact.children.all_done")
 
 	// child1 done, child2 aborted
 	applyImplAction(t, ts, child1.ID, "start")
@@ -267,13 +279,44 @@ func TestAutoTrigger_ChildrenAllResolved_AbortedChild_AutoStarts(t *testing.T) {
 	child1 := createImplTask(t, ts, "proj-children-resolved", "Child 1", "c1", phase1.ID, nil, "")
 	child2 := createImplTask(t, ts, "proj-children-resolved", "Child 2", "c2", phase1.ID, nil, "")
 
-	phase2 := createImplTask(t, ts, "proj-children-resolved", "Phase2 all_resolved", "phase2r", "", []string{phase1.ID}, "artifact.children.all_resolved")
+	phase2 := createImplTaskAutoStart(t, ts, "proj-children-resolved", "Phase2 all_resolved", "phase2r", "", []string{phase1.ID}, "artifact.children.all_resolved")
 
 	applyImplAction(t, ts, child1.ID, "start")
 	applyImplAction(t, ts, child1.ID, "done")
 	applyImplAction(t, ts, child2.ID, "abort")
 
 	waitForStatus(t, ts, phase2.ID, orchestrator.TaskStatusExecuting, 2*time.Second)
+}
+
+// TestAutoTrigger_AutoStartFalse_Dependent_StaysPending:
+// 依存条件が満たされても、auto_start=false の依存タスクは start しない。
+// ユーザがステップごとに確認しながら進めたいケースの検証。
+func TestAutoTrigger_AutoStartFalse_Dependent_StaysPending(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	setupTriggerProject(t, ts, "proj-trigger-no-auto")
+
+	taskA := createImplTask(t, ts, "proj-trigger-no-auto", "Task A", "a", "pna", nil, "")
+	// Task B は auto_start=false (createImplTask のデフォルト) → A が done になっても
+	// 自動 start されず pending のまま残る。
+	taskB := createImplTask(t, ts, "proj-trigger-no-auto", "Task B (manual)", "b", "pna",
+		[]string{"a"}, "")
+
+	applyImplAction(t, ts, taskA.ID, "start")
+	applyImplAction(t, ts, taskA.ID, "done")
+
+	// 少し待って B がまだ pending であることを確認
+	time.Sleep(200 * time.Millisecond)
+	var b orchestrator.Task
+	if err := ts.Client.Do("GET", "/api/tasks/"+taskB.ID, nil, &b); err != nil {
+		t.Fatalf("get taskB: %v", err)
+	}
+	if b.Status != orchestrator.TaskStatusPending {
+		t.Fatalf("taskB status = %q, want pending (auto_start=false)", b.Status)
+	}
+
+	// 手動で start すれば通る
+	applyImplAction(t, ts, taskB.ID, "start")
+	waitForStatus(t, ts, taskB.ID, orchestrator.TaskStatusExecuting, 2*time.Second)
 }
 
 // TestAutoTrigger_CircularDep_CreateError:
