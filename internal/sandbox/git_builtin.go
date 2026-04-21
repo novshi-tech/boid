@@ -134,7 +134,7 @@ func handleGitBuiltinRequest(req *ExecRequest, entry *tokenEntry) *ExecResponse 
 		// local subcommand (add/commit/diff/status 等) はワークツリーで直接実行。
 		// op 単位の policy チェックは行わない（localGitSubcommands 通過で一律許可）。
 		if invocation.mode == gitInvocationLocal {
-			return execLocalGit(req.Args, entry.Git)
+			return execLocalGit(req.Cwd, req.Args)
 		}
 		gitReq = invocation.request
 	}
@@ -194,9 +194,9 @@ func validateGitBuiltinCwd(cwd string, entry *tokenEntry) error {
 	return fmt.Errorf("git builtin is restricted to the current worktree")
 }
 
-func execLocalGit(args []string, binding *GitBinding) *ExecResponse {
+func execLocalGit(cwd string, args []string) *ExecResponse {
 	cmd := exec.Command(realGitBinary(), args...)
-	cmd.Dir = binding.WorktreeRoot
+	cmd.Dir = cwd
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

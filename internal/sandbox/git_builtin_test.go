@@ -304,6 +304,39 @@ func TestBroker_GitLocalExec_StatusReturnsOutput(t *testing.T) {
 	}
 }
 
+// broker が local subcommand を実行する際、req.Cwd がそのまま使われることを確認する。
+// cwd がサブディレクトリの場合、WorktreeRoot ではなく実際の cwd で実行される必要がある。
+// (git add . のような相対パス操作に影響するため)
+func TestBroker_GitLocalExec_RespectsCwd(t *testing.T) {
+	repo := initGitRepo(t)
+	subdir := filepath.Join(repo, "subdir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir subdir: %v", err)
+	}
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, hookGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	// git rev-parse --show-prefix はカレントディレクトリを基準にリポジトリルートからの
+	// 相対パスを出力する。WorktreeRoot からだと "" だが subdir からだと "subdir/" になる。
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     subdir,
+		Token:   token,
+		Args:    []string{"rev-parse", "--show-prefix"},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("git rev-parse exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
+	}
+	got := strings.TrimSpace(resp.Stdout)
+	if got != "subdir/" {
+		t.Errorf("show-prefix = %q, want %q (cwd not respected)", got, "subdir/")
+	}
+}
+
 // local exec でも classify が通るため、禁止 global option は broker 側で拒否される。
 func TestBroker_GitLocalExec_DeniedGlobalOption(t *testing.T) {
 	repo := initGitRepo(t)
