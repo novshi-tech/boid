@@ -26,21 +26,28 @@ func (m *WorktreeManager) gitBin() string {
 
 // resolveBaseBranch resolves a local branch name to its remote tracking counterpart.
 // If baseBranch is empty, "main" is used as default.
-// If origin/<baseBranch> exists, returns ("origin/<baseBranch>", true).
-// Otherwise returns (baseBranch, false).
-func (m *WorktreeManager) resolveBaseBranch(projectDir, baseBranch string) (string, bool) {
+// If origin/<baseBranch> exists, returns ("origin/<baseBranch>", true, nil).
+// If only a local branch exists, returns (baseBranch, false, nil).
+// If neither origin/<baseBranch> nor the local branch exists, returns an error.
+func (m *WorktreeManager) resolveBaseBranch(projectDir, baseBranch string) (string, bool, error) {
 	if baseBranch == "" {
 		baseBranch = "main"
 	}
 	if strings.HasPrefix(baseBranch, "origin/") {
-		return baseBranch, true
+		return baseBranch, true, nil
 	}
 	cmd := exec.Command(m.gitBin(), "rev-parse", "--verify", "origin/"+baseBranch)
 	cmd.Dir = projectDir
 	if err := cmd.Run(); err == nil {
-		return "origin/" + baseBranch, true
+		return "origin/" + baseBranch, true, nil
 	}
-	return baseBranch, false
+	// origin/<base> not found; check if a local branch exists.
+	localCheck := exec.Command(m.gitBin(), "rev-parse", "--verify", baseBranch)
+	localCheck.Dir = projectDir
+	if localCheck.Run() == nil {
+		return baseBranch, false, nil
+	}
+	return "", false, fmt.Errorf("base branch %q not found locally or on origin", baseBranch)
 }
 
 // resolveRecreateBasePoint picks the start-point for a fresh branch when
@@ -77,24 +84,46 @@ func (m *WorktreeManager) Create(projectDir, projectID, taskID, branchPrefix, ba
 		return nil, fmt.Errorf("mkdir worktree parent: %w", err)
 	}
 
-	resolvedBase, shouldFetch := m.resolveBaseBranch(projectDir, baseBranch)
+	resolvedBase, shouldFetch, err := m.resolveBaseBranch(projectDir, baseBranch)
+	if err != nil {
+		return nil, err
+	}
 
 	if shouldFetch {
 		branchToFetch := strings.TrimPrefix(resolvedBase, "origin/")
 		fetchCmd := exec.Command(m.gitBin(), "fetch", "origin", branchToFetch)
 		fetchCmd.Dir = projectDir
-		if out, err := fetchCmd.CombinedOutput(); err != nil {
+		if out, fetchErr := fetchCmd.CombinedOutput(); fetchErr != nil {
+			// fetch failed; fall back to local branch only if it actually exists.
+			localCheck := exec.Command(m.gitBin(), "-C", projectDir, "rev-parse", "--verify", branchToFetch)
+			if localCheck.Run() != nil {
+				return nil, fmt.Errorf("git fetch origin %s failed and local branch not found: %w\n%s",
+					branchToFetch, fetchErr, strings.TrimSpace(string(out)))
+			}
 			slog.Warn("git fetch failed, falling back to local branch",
-				"branch", branchToFetch, "error", err, "output", strings.TrimSpace(string(out)))
+				"branch", branchToFetch, "error", fetchErr, "output", strings.TrimSpace(string(out)))
 			resolvedBase = branchToFetch
 		}
 	}
 
-	cmd := exec.Command(m.gitBin(), "worktree", "add", "-b", branch, wtPath, resolvedBase)
+	cmd := exec.Command(m.gitBin(), "worktree", "add", "--no-track", "-b", branch, wtPath, resolvedBase)
 	cmd.Dir = projectDir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("git worktree add: %w\n%s", err, out)
+	}
+
+	// Verify that HEAD points to the expected branch (DWIM guard).
+	headCmd := exec.Command(m.gitBin(), "-C", wtPath, "symbolic-ref", "HEAD")
+	headOut, headErr := headCmd.CombinedOutput()
+	if headErr != nil {
+		exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", wtPath).Run()
+		return nil, fmt.Errorf("worktree HEAD check failed: %w", headErr)
+	}
+	expectedRef := "refs/heads/" + branch
+	if actualRef := strings.TrimSpace(string(headOut)); actualRef != expectedRef {
+		exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", wtPath).Run()
+		return nil, fmt.Errorf("worktree HEAD mismatch: expected %s, got %s", expectedRef, actualRef)
 	}
 
 	w := &Worktree{

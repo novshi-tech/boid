@@ -761,3 +761,60 @@ func TestManager_DefaultBranchPrefix(t *testing.T) {
 	// Cleanup
 	mgr.Remove(repo, "task-dflt1234-5678", true)
 }
+
+// TestCreate_NonexistentBaseBranch verifies that Create returns an early error when
+// base_branch does not exist either locally or on origin, preventing silent DWIM failures.
+func TestCreate_NonexistentBaseBranch(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	local, _ := initGitRepoWithRemote(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-neb1', ?)`, local)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-neb10001-0001', 'proj-neb1', 'nonexistent base', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	_, err := mgr.Create(local, "proj-neb1", "task-neb10001-0001", "boid/", "nonexistent-branch")
+	if err == nil {
+		t.Fatal("Create should return an error for a nonexistent base_branch")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should mention branch not found, got: %v", err)
+	}
+}
+
+// TestCreate_StaleFetchFailure verifies that Create returns an error when origin/<base>
+// exists as a stale local remote-tracking ref but the branch has been deleted on remote
+// and no local branch by that name exists. This is the silent-DWIM failure scenario.
+func TestCreate_StaleFetchFailure(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	local, remote := initGitRepoWithRemote(t)
+	wtRoot := t.TempDir()
+
+	// Create the branch on remote and fetch it into local (creates stale origin/stale-branch ref).
+	exec.Command(gitBin, "-C", remote, "checkout", "-b", "stale-branch").Run()
+	f := filepath.Join(remote, "stale.txt")
+	os.WriteFile(f, []byte("stale"), 0o644)
+	exec.Command(gitBin, "-C", remote, "add", ".").Run()
+	exec.Command(gitBin, "-C", remote, "commit", "-m", "stale commit").Run()
+	if out, err := exec.Command(gitBin, "-C", local, "fetch", "origin", "stale-branch").CombinedOutput(); err != nil {
+		t.Fatalf("fetch stale-branch: %v\n%s", err, out)
+	}
+	// Delete the branch from remote (stale ref remains locally).
+	exec.Command(gitBin, "-C", remote, "checkout", "main").Run()
+	exec.Command(gitBin, "-C", remote, "branch", "-D", "stale-branch").Run()
+	// Invalidate remote URL so any fetch will fail.
+	exec.Command(gitBin, "-C", local, "remote", "set-url", "origin", "/nonexistent/invalid/path").Run()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-sff1', ?)`, local)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-sff10001-0001', 'proj-sff1', 'stale fetch failure', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	// origin/stale-branch exists locally (stale), but local branch "stale-branch" does not exist.
+	// Fetch will fail. Create must return an error rather than silently using the stale ref.
+	_, err := mgr.Create(local, "proj-sff1", "task-sff10001-0001", "boid/", "stale-branch")
+	if err == nil {
+		t.Fatal("Create should return an error when fetch fails and no local branch exists")
+	}
+}
