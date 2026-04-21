@@ -29,6 +29,12 @@ type GitRemote struct {
 	PushURL  string
 }
 
+const realGitPath = "/usr/bin/git"
+
+func realGitBinary() string {
+	return filepath.Clean(realGitPath)
+}
+
 var gitRepoLocks sync.Map
 
 func captureGitBinding(projectDir, worktreeDir string) (*GitBinding, error) {
@@ -118,14 +124,17 @@ func handleGitBuiltinRequest(req *ExecRequest, entry *tokenEntry) *ExecResponse 
 		return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
 	}
 
+	// req.Git が設定済みの場合は pre-parsed path（後方互換・直接呼び出し）。
 	gitReq := req.Git
 	if gitReq == nil {
 		invocation, err := classifyGitInvocation(req.Args)
 		if err != nil {
 			return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
-		if invocation.mode != gitInvocationBrokered || invocation.request == nil {
-			return &ExecResponse{ExitCode: 1, Stderr: "git request is not brokered"}
+		// local subcommand (add/commit/diff/status 等) はワークツリーで直接実行。
+		// op 単位の policy チェックは行わない（localGitSubcommands 通過で一律許可）。
+		if invocation.mode == gitInvocationLocal {
+			return execLocalGit(req.Args, entry.Git)
 		}
 		gitReq = invocation.request
 	}
@@ -183,6 +192,30 @@ func validateGitBuiltinCwd(cwd string, entry *tokenEntry) error {
 		}
 	}
 	return fmt.Errorf("git builtin is restricted to the current worktree")
+}
+
+func execLocalGit(args []string, binding *GitBinding) *ExecResponse {
+	cmd := exec.Command(realGitBinary(), args...)
+	cmd.Dir = binding.WorktreeRoot
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+	}
+	return &ExecResponse{
+		ExitCode: exitCode,
+		Stdout:   stdout.String(),
+		Stderr:   stderr.String(),
+	}
 }
 
 func execGitBuiltin(req *GitRequest, binding *GitBinding) *ExecResponse {

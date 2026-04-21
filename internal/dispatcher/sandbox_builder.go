@@ -195,6 +195,26 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox
 			IsFile:   true,
 			ReadOnly: true,
 		})
+		// 実 git バイナリをサンドボックス FS から排除するため、boid shim で上書き。
+		// base rbind (/usr) より後に適用されるのでこの mount が優先される。
+		mounts = append(mounts, sandbox.Mount{
+			Source:   rt.BoidBinary,
+			Target:   "/usr/bin/git",
+			Type:     sandbox.MountBind,
+			IsFile:   true,
+			ReadOnly: true,
+		})
+		// /bin/git: non-usrmerge 環境では /bin が独立ディレクトリになるため個別に上書き。
+		// usrmerge (シンボリックリンク) でも /bin mount は独立した mount point なので必要。
+		// Guard: /bin/git が存在しないホストではスキップ。
+		mounts = append(mounts, sandbox.Mount{
+			Source:   rt.BoidBinary,
+			Target:   "/bin/git",
+			Type:     sandbox.MountBind,
+			IsFile:   true,
+			ReadOnly: true,
+			Guard:    "-f /bin/git",
+		})
 	}
 	symlinks := shimSymlinks(sortedKeys(spec.BuiltinPolicies), sortedKeys(spec.HostCommands))
 

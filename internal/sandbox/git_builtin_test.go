@@ -280,6 +280,100 @@ func TestBroker_GitBuiltinAllowsGateRolePush(t *testing.T) {
 	}
 }
 
+// --- broker 経由 local exec テスト ---
+
+// broker が local subcommand (status 等) を args のみで受け取り、
+// ワークツリーで実行して出力を返すことを確認する。
+func TestBroker_GitLocalExec_StatusReturnsOutput(t *testing.T) {
+	repo := initGitRepo(t)
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, hookGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     repo,
+		Token:   token,
+		Args:    []string{"status", "--short"},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("git status exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
+	}
+}
+
+// local exec でも classify が通るため、禁止 global option は broker 側で拒否される。
+func TestBroker_GitLocalExec_DeniedGlobalOption(t *testing.T) {
+	repo := initGitRepo(t)
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, hookGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     repo,
+		Token:   token,
+		Args:    []string{"-C", "/tmp/other", "status"},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatal("expected error for -C global option")
+	}
+	if !strings.Contains(resp.Stderr, "not allowed") {
+		t.Fatalf("stderr = %q, want 'not allowed'", resp.Stderr)
+	}
+}
+
+// allowlist に載っていない subcommand は broker 側で拒否される。
+func TestBroker_GitLocalExec_DeniedSubcommand(t *testing.T) {
+	repo := initGitRepo(t)
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, hookGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     repo,
+		Token:   token,
+		Args:    []string{"pull", "origin", "main"},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatal("expected error for 'git pull'")
+	}
+}
+
+// local exec でも cwd 制限は有効。
+func TestBroker_GitLocalExec_RestrictsCwd(t *testing.T) {
+	repo := initGitRepo(t)
+	other := initGitRepo(t)
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, hookGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     other,
+		Token:   token,
+		Args:    []string{"status", "--short"},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatal("expected error when cwd is outside worktree")
+	}
+	if !strings.Contains(resp.Stderr, "restricted to the current worktree") {
+		t.Fatalf("stderr = %q, want 'restricted to the current worktree'", resp.Stderr)
+	}
+}
+
 const realGitForTest = "/usr/bin/git"
 
 func skipWithoutRealGit(t *testing.T) {
