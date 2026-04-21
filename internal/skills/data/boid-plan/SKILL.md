@@ -42,7 +42,7 @@ payload_patch:
 | behavior | ✓ | タスクの実行モデル名（`task_behaviors` に定義されたキー: `dev`, `plan`, `auto_plan` など） |
 | description | ✓ | エージェントへの指示。何を・どのように実装するかを詳細に記述する |
 | ref | | 依存関係で参照するための名前（同一バッチ内） |
-| auto_start | | bool（デフォルト: false）。true にするとタスク作成直後に自動開始 |
+| auto_start | | bool（デフォルト: false）。true のとき、(a) タスク作成直後に依存条件が満たされていれば自動開始、(b) 依存先タスクの更新で条件が満たされたときに自動開始。false のタスクは手動 start するまで pending のまま残る |
 | depends_on | | 依存先 ref の配列 |
 | depends_on_payload | | ペイロード条件（文字列） |
 | project_id | | タスクを作成するプロジェクト名。省略時は親タスクのプロジェクト |

@@ -40,6 +40,7 @@ func TestTriggerDependentTasks_CrossProject_AutoStartsDependentInOtherProject(t 
 		ProjectID: "project-b",
 		Status:    orchestrator.TaskStatusPending,
 		Behavior:  "dev",
+		AutoStart: true,
 		Payload:   []byte(`{}`),
 		DependsOn: []string{taskDone.ID},
 	}
@@ -98,12 +99,14 @@ func TestTriggerDependentTasks_CrossProject_DepNotSatisfied_StaysPending(t *test
 		Status:    orchestrator.TaskStatusPending,
 		Behavior:  "dev",
 	}
-	// taskB は project_b に属し、taskDoneA と taskPendingC の両方に依存する
+	// taskB は project_b に属し、taskDoneA と taskPendingC の両方に依存する。
+	// AutoStart=true にして「依存未充足」が唯一の skip 理由であることを明示する。
 	taskB := &orchestrator.Task{
 		ID:        "task-b",
 		ProjectID: "project-b",
 		Status:    orchestrator.TaskStatusPending,
 		Behavior:  "dev",
+		AutoStart: true,
 		Payload:   []byte(`{}`),
 		DependsOn: []string{taskDoneA.ID, taskPendingC.ID},
 	}
