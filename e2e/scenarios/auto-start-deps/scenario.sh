@@ -41,6 +41,7 @@ child2_output="$("$E2E_BIN_DIR/boid" task create <<YAML
 project_id: auto-start-deps
 title: Child Task 2 (blocked)
 behavior: smoke
+auto_start: true
 depends_on:
   - $dep2_id
 YAML
