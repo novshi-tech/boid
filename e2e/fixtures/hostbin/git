@@ -12,7 +12,9 @@ log_file="${E2E_STATE_DIR:?}/fake-git.log"
 # Parse past optional -C <dir>
 args=("$@")
 idx=0
+cdir=""
 if [[ "${args[$idx]:-}" == "-C" ]]; then
+  cdir="${args[$((idx + 1))]:-}"
   idx=$((idx + 2))
 fi
 
@@ -22,14 +24,22 @@ if [[ "$subcmd" == "worktree" ]]; then
   action="${args[$((idx + 1))]:-}"
   case "$action" in
     add)
-      # git worktree add [-b <branch>] <path> [<commit>]
+      # git worktree add [--no-track] [-b <branch>] <path> [<commit>]
       i=$((idx + 2))
-      if [[ "${args[$i]:-}" == "-b" ]]; then
-        i=$((i + 2))  # skip -b and branch name
+      while [[ "${args[$i]:-}" == --* ]]; do
+        i=$((i + 1))  # skip flags like --no-track, --detach, etc.
+      done
+      branch_name=""
+      if [[ "${args[$i]:-}" == "-b" || "${args[$i]:-}" == "-B" ]]; then
+        branch_name="${args[$((i + 1))]:-}"
+        i=$((i + 2))  # skip -b/-B and branch name
       fi
       wt_path="${args[$i]:-}"
       if [[ -n "$wt_path" ]]; then
         mkdir -p "$wt_path"
+        if [[ -n "$branch_name" ]]; then
+          printf 'ref: refs/heads/%s\n' "$branch_name" > "${wt_path}/HEAD"
+        fi
       fi
       ;;
     remove)
@@ -44,6 +54,16 @@ if [[ "$subcmd" == "worktree" ]]; then
       fi
       ;;
   esac
+elif [[ "$subcmd" == "symbolic-ref" ]]; then
+  ref_name="${args[$((idx + 1))]:-}"
+  if [[ "$ref_name" == "HEAD" ]]; then
+    head_dir="${cdir:-$PWD}"
+    head_file="${head_dir}/HEAD"
+    if [[ -f "$head_file" ]]; then
+      head_content=$(cat "$head_file")
+      printf '%s\n' "${head_content#ref: }"
+    fi
+  fi
 fi
 
 exit 0
