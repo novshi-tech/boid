@@ -581,6 +581,20 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		task.Payload = merged
 		payloadUpdated = true
 	}
+	if req.BaseBranch != nil || req.BranchPrefix != nil {
+		if !isInstructionsEditable(task.Status) {
+			return nil, &StatusError{
+				Code:    http.StatusConflict,
+				Message: fmt.Sprintf("cannot edit base_branch/branch_prefix while task is running (status: %s)", task.Status),
+			}
+		}
+		if req.BaseBranch != nil {
+			task.BaseBranch = *req.BaseBranch
+		}
+		if req.BranchPrefix != nil {
+			task.BranchPrefix = *req.BranchPrefix
+		}
+	}
 	var instructionsBefore map[string]orchestrator.Instruction
 	if len(req.Instructions) > 0 {
 		if !isInstructionsEditable(task.Status) {

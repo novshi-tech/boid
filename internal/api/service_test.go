@@ -611,6 +611,109 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 			t.Fatalf("expected StatusConflict, got %v", err)
 		}
 	})
+
+	t.Run("base_branch updated when pending", func(t *testing.T) {
+		task := &orchestrator.Task{
+			ID:         "task-8",
+			Title:      "title",
+			Status:     orchestrator.TaskStatusPending,
+			BaseBranch: "main",
+		}
+		store := &stubTaskStore{task: task}
+		svc := &TaskAppService{Tasks: store}
+
+		v := "master"
+		got, err := svc.UpdateTask("task-8", UpdateTaskRequest{BaseBranch: &v})
+		if err != nil {
+			t.Fatalf("UpdateTask() error = %v", err)
+		}
+		if got.BaseBranch != "master" {
+			t.Errorf("BaseBranch = %q, want %q", got.BaseBranch, "master")
+		}
+		if store.updateCalls != 1 {
+			t.Errorf("UpdateTask store calls = %d, want 1", store.updateCalls)
+		}
+	})
+
+	t.Run("branch_prefix updated when pending", func(t *testing.T) {
+		task := &orchestrator.Task{
+			ID:           "task-9",
+			Title:        "title",
+			Status:       orchestrator.TaskStatusPending,
+			BranchPrefix: "old-prefix/",
+		}
+		store := &stubTaskStore{task: task}
+		svc := &TaskAppService{Tasks: store}
+
+		v := "feature/"
+		got, err := svc.UpdateTask("task-9", UpdateTaskRequest{BranchPrefix: &v})
+		if err != nil {
+			t.Fatalf("UpdateTask() error = %v", err)
+		}
+		if got.BranchPrefix != "feature/" {
+			t.Errorf("BranchPrefix = %q, want %q", got.BranchPrefix, "feature/")
+		}
+	})
+
+	t.Run("base_branch empty string clears value", func(t *testing.T) {
+		task := &orchestrator.Task{
+			ID:         "task-10",
+			Title:      "title",
+			Status:     orchestrator.TaskStatusPending,
+			BaseBranch: "main",
+		}
+		store := &stubTaskStore{task: task}
+		svc := &TaskAppService{Tasks: store}
+
+		empty := ""
+		got, err := svc.UpdateTask("task-10", UpdateTaskRequest{BaseBranch: &empty})
+		if err != nil {
+			t.Fatalf("UpdateTask() error = %v", err)
+		}
+		if got.BaseBranch != "" {
+			t.Errorf("BaseBranch = %q, want empty", got.BaseBranch)
+		}
+	})
+
+	t.Run("base_branch update rejected while executing", func(t *testing.T) {
+		task := &orchestrator.Task{
+			ID:     "task-11",
+			Title:  "title",
+			Status: orchestrator.TaskStatusExecuting,
+		}
+		store := &stubTaskStore{task: task}
+		svc := &TaskAppService{Tasks: store}
+
+		v := "master"
+		_, err := svc.UpdateTask("task-11", UpdateTaskRequest{BaseBranch: &v})
+		if err == nil {
+			t.Fatal("expected UpdateTask to reject base_branch change while running")
+		}
+		se, ok := err.(*StatusError)
+		if !ok || se.Code != http.StatusConflict {
+			t.Fatalf("expected StatusConflict, got %v", err)
+		}
+	})
+
+	t.Run("branch_prefix update rejected while verifying", func(t *testing.T) {
+		task := &orchestrator.Task{
+			ID:     "task-12",
+			Title:  "title",
+			Status: orchestrator.TaskStatusVerifying,
+		}
+		store := &stubTaskStore{task: task}
+		svc := &TaskAppService{Tasks: store}
+
+		v := "feature/"
+		_, err := svc.UpdateTask("task-12", UpdateTaskRequest{BranchPrefix: &v})
+		if err == nil {
+			t.Fatal("expected UpdateTask to reject branch_prefix change while verifying")
+		}
+		se, ok := err.(*StatusError)
+		if !ok || se.Code != http.StatusConflict {
+			t.Fatalf("expected StatusConflict, got %v", err)
+		}
+	})
 }
 
 func TestTaskAppServiceImportTasks_AllCreated(t *testing.T) {
