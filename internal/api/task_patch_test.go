@@ -42,6 +42,12 @@ func (s *patchTaskService) UpdateTask(id string, req UpdateTaskRequest) (*orches
 	if req.Description != "" {
 		t.Description = req.Description
 	}
+	if req.BaseBranch != nil {
+		t.BaseBranch = *req.BaseBranch
+	}
+	if req.BranchPrefix != nil {
+		t.BranchPrefix = *req.BranchPrefix
+	}
 	return &t, nil
 }
 func (s *patchTaskService) DeleteTask(id string, force bool) error       { return nil }
@@ -112,5 +118,45 @@ func TestTaskHandlerPatch_AllEmpty_ReturnsBadRequest(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "required") {
 		t.Errorf("body %q should mention 'required'", w.Body.String())
+	}
+}
+
+func TestTaskHandlerPatch_BaseBranchOnly(t *testing.T) {
+	task := &orchestrator.Task{ID: "t4", Title: "original"}
+	svc := &patchTaskService{task: task}
+	h := &TaskHandler{Service: svc}
+
+	w := patchRequest(t, http.HandlerFunc(h.Patch), "t4", map[string]any{
+		"base_branch": "master",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var got orchestrator.Task
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.BaseBranch != "master" {
+		t.Errorf("BaseBranch = %q, want %q", got.BaseBranch, "master")
+	}
+}
+
+func TestTaskHandlerPatch_BranchPrefixOnly(t *testing.T) {
+	task := &orchestrator.Task{ID: "t5", Title: "original"}
+	svc := &patchTaskService{task: task}
+	h := &TaskHandler{Service: svc}
+
+	w := patchRequest(t, http.HandlerFunc(h.Patch), "t5", map[string]any{
+		"branch_prefix": "feature/",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var got orchestrator.Task
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.BranchPrefix != "feature/" {
+		t.Errorf("BranchPrefix = %q, want %q", got.BranchPrefix, "feature/")
 	}
 }

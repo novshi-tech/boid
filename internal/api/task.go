@@ -34,6 +34,8 @@ type UpdateTaskRequest struct {
 	Description  string          `json:"description"`
 	Payload      json.RawMessage `json:"payload,omitempty"`
 	Instructions json.RawMessage `json:"instructions,omitempty"`
+	BaseBranch   *string         `json:"base_branch,omitempty"`
+	BranchPrefix *string         `json:"branch_prefix,omitempty"`
 }
 
 type CreateTaskRequest struct {
@@ -124,8 +126,8 @@ func (h *TaskHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Title == "" && req.Description == "" && len(req.Payload) == 0 && len(req.Instructions) == 0 {
-		writeError(w, http.StatusBadRequest, "at least one of title, description, payload, or instructions is required")
+	if req.Title == "" && req.Description == "" && len(req.Payload) == 0 && len(req.Instructions) == 0 && req.BaseBranch == nil && req.BranchPrefix == nil {
+		writeError(w, http.StatusBadRequest, "at least one of title, description, payload, instructions, base_branch, or branch_prefix is required")
 		return
 	}
 	task, err := h.Service.UpdateTask(id, req)
