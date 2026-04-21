@@ -2,7 +2,6 @@ package tui
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 )
 
@@ -61,47 +60,16 @@ func renderSectionHeader(title string, width int) string {
 	return styleDim.Render(s + strings.Repeat("─", fillLen))
 }
 
-// renderOverview renders the Overview tab content.
-//
-// Layout (top to bottom):
-//  1. ─── Timeline ─── section: state-grouped tree of state transitions,
-//     hook/gate firings, completed/failed jobs, and running jobs.
-//  2. ─── Findings (open) ─── section: only when open findings exist.
+// renderOverview renders the Overview tab content (Timeline only).
 func (s *TaskDetailScreen) renderOverview(width, height int) string {
 	var sb strings.Builder
 
-	// ─── Findings (open) ─── (calculated first to reserve space at bottom)
-	var findings []openFinding
-	if s.detail != nil && s.detail.Task != nil {
-		findings = parseOpenFindings(s.detail.Task.Payload)
-	}
-	findingsLines := 0
-	if len(findings) > 0 {
-		findingsLines = 1 + len(findings) // header + each finding
-	}
-
-	// ─── Timeline ─────────────────────────────────────────────
 	groups := buildTreeTimeline(s.detail)
 	sb.WriteString(renderSectionHeader("Timeline", width))
 	sb.WriteByte('\n')
 
-	timelineHeight := max(height-1-findingsLines, 2)
+	timelineHeight := max(height-1, 2)
 	sb.WriteString(renderTreeTimeline(groups, width, timelineHeight, s.timelineCursor, s.shared.BlinkOn))
-
-	// ─── Findings (open) ──────────────────────────────────────
-	if len(findings) > 0 {
-		sb.WriteString(renderSectionHeader("Findings (open)", width))
-		sb.WriteByte('\n')
-		for _, f := range findings {
-			line := fmt.Sprintf("  %s [%s] %s",
-				styleWarn.Render("!"),
-				f.gate,
-				f.message,
-			)
-			sb.WriteString(line)
-			sb.WriteByte('\n')
-		}
-	}
 
 	return sb.String()
 }

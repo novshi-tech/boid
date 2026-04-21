@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -83,6 +84,43 @@ func TestShortHelp_TabSpecific(t *testing.T) {
 		if tc.notWant != "" && containsStr(help, tc.notWant) {
 			t.Errorf("ShortHelp(%q): should not contain %q, got %q", tc.tab, tc.notWant, help)
 		}
+	}
+}
+
+// TestRenderTabBar_NoFindings_NoBadge verifies Payload label has no badge when count=0.
+func TestRenderTabBar_NoFindings_NoBadge(t *testing.T) {
+	out := renderTabBar(tabOverview, 0, 120)
+	if containsStr(out, "(!") {
+		t.Errorf("renderTabBar with 0 findings: expected no badge, got %q", out)
+	}
+	if !containsStr(out, "Payload") {
+		t.Errorf("renderTabBar: expected 'Payload' label, got %q", out)
+	}
+}
+
+// TestRenderTabBar_WithFindings_ShowsBadge verifies Payload label shows badge when count>0.
+func TestRenderTabBar_WithFindings_ShowsBadge(t *testing.T) {
+	out := renderTabBar(tabOverview, 2, 120)
+	if !containsStr(out, "(!2)") {
+		t.Errorf("renderTabBar with 2 findings: expected '(!2)' badge, got %q", out)
+	}
+}
+
+// TestRenderTabBar_BadgeOnlyOnPayload verifies other tabs never show badge.
+func TestRenderTabBar_BadgeOnlyOnPayload(t *testing.T) {
+	out := renderTabBar(tabOverview, 3, 120)
+	// Count occurrences of "(!" to ensure only payload gets the badge.
+	count := strings.Count(out, "(!3)")
+	if count != 1 {
+		t.Errorf("renderTabBar: expected exactly 1 badge, got %d in %q", count, out)
+	}
+}
+
+// TestRenderTabBar_PayloadActiveWithBadge verifies badge appears when Payload is active tab.
+func TestRenderTabBar_PayloadActiveWithBadge(t *testing.T) {
+	out := renderTabBar(tabPayload, 1, 120)
+	if !containsStr(out, "(!1)") {
+		t.Errorf("renderTabBar (payload active, 1 finding): expected '(!1)' badge, got %q", out)
 	}
 }
 

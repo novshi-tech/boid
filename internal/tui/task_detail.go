@@ -541,7 +541,11 @@ func (s *TaskDetailScreen) View(width, height int) string {
 	var sb strings.Builder
 
 	// --- tab bar (1 line) ---
-	sb.WriteString(renderTabBar(s.activeTab, width))
+	openFindingsCount := 0
+	if s.detail != nil && s.detail.Task != nil {
+		openFindingsCount = len(parseOpenFindings(s.detail.Task.Payload))
+	}
+	sb.WriteString(renderTabBar(s.activeTab, openFindingsCount, width))
 	sb.WriteByte('\n')
 
 	// --- sub-header: title + status (1 line) ---
