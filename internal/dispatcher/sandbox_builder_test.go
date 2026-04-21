@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
@@ -42,6 +43,57 @@ func TestStageArgv0_ExternalAbsolutePath_BindsParentDirectory(t *testing.T) {
 	}
 	if !reflect.DeepEqual(*mount, want) {
 		t.Errorf("mount = %+v, want %+v", *mount, want)
+	}
+}
+
+// /usr/bin/git と /bin/git が boid バイナリ bind で上書きされることを検証する。
+// これにより絶対パスで実体 git を呼び出す迂回が防止される。
+func TestBuildSandboxSpec_GitShimBindMounts(t *testing.T) {
+	const boidBin = "/usr/local/bin/boid"
+	spec := &orchestrator.JobSpec{}
+	rt := SandboxRuntimeInfo{BoidBinary: boidBin}
+	result := BuildSandboxSpec(spec, rt)
+
+	var usrBinGit, binGit *sandbox.Mount
+	for i := range result.Mounts {
+		m := &result.Mounts[i]
+		switch m.Target {
+		case "/usr/bin/git":
+			usrBinGit = m
+		case "/bin/git":
+			binGit = m
+		}
+	}
+
+	if usrBinGit == nil {
+		t.Fatal("/usr/bin/git mount not found in Spec.Mounts")
+	}
+	if usrBinGit.Source != boidBin {
+		t.Errorf("/usr/bin/git source = %q, want %q", usrBinGit.Source, boidBin)
+	}
+	if !usrBinGit.ReadOnly {
+		t.Error("/usr/bin/git mount should be ReadOnly")
+	}
+	if !usrBinGit.IsFile {
+		t.Error("/usr/bin/git mount should have IsFile=true")
+	}
+
+	if binGit == nil {
+		t.Fatal("/bin/git mount not found in Spec.Mounts")
+	}
+	if binGit.Source != boidBin {
+		t.Errorf("/bin/git source = %q, want %q", binGit.Source, boidBin)
+	}
+	if binGit.Guard == "" {
+		t.Error("/bin/git mount must have a Guard (conditional on host /bin/git existence)")
+	}
+
+	// BoidBinary 未設定時はオーバーライド mount が存在しないことを確認。
+	noGit := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+	for _, m := range noGit.Mounts {
+		if m.Target == "/usr/bin/git" || m.Target == "/bin/git" {
+			t.Errorf("unexpected git override mount when BoidBinary is empty: target=%q", m.Target)
+		}
 	}
 }
 

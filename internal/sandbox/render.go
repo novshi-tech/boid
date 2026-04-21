@@ -96,12 +96,16 @@ func renderMount(b *strings.Builder, m Mount) {
 		fmt.Fprintf(b, "%s    mkdir -p \"$ROOT%s\"\n", indent, m.Target)
 		fmt.Fprintf(b, "%selif [ -e %s ]; then\n", indent, shellQuote(m.Source))
 		fmt.Fprintf(b, "%s    mkdir -p \"$(dirname \"$ROOT%s\")\"\n", indent, m.Target)
-		fmt.Fprintf(b, "%s    touch \"$ROOT%s\"\n", indent, m.Target)
+		fmt.Fprintf(b, "%s    [ -e \"$ROOT%s\" ] || touch \"$ROOT%s\"\n", indent, m.Target, m.Target)
 		fmt.Fprintf(b, "%sfi\n", indent)
 	} else if m.IsFile {
+		// `touch` unconditionally fails with EACCES when the target already
+		// exists via a base rbind and is owned by root (e.g. /usr/bin/git
+		// surfaced through the /usr rbind). Skip the touch when the path is
+		// already present — `mount --bind` only needs the target to exist.
 		dir := filepath.Dir(m.Target)
 		fmt.Fprintf(b, "%smkdir -p \"$ROOT%s\"\n", indent, dir)
-		fmt.Fprintf(b, "%stouch \"$ROOT%s\"\n", indent, m.Target)
+		fmt.Fprintf(b, "%s[ -e \"$ROOT%s\" ] || touch \"$ROOT%s\"\n", indent, m.Target, m.Target)
 	} else {
 		fmt.Fprintf(b, "%smkdir -p \"$ROOT%s\"\n", indent, m.Target)
 	}

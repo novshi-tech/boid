@@ -5,12 +5,8 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 )
-
-const realGitPath = "/usr/bin/git"
 
 type gitInvocationMode int
 
@@ -63,21 +59,12 @@ var allowedGitGlobalOptions = map[string]struct{}{
 }
 
 func RunGitShim(args []string) (int, error) {
-	invocation, err := classifyGitInvocation(args)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1, nil
-	}
-	if invocation.mode == gitInvocationLocal {
-		return runRealGit(args)
-	}
-
 	brokerSocket := os.Getenv("BOID_BROKER_SOCKET")
 	if brokerSocket == "" {
 		return 1, fmt.Errorf("boid shim: BOID_BROKER_SOCKET not set")
 	}
 
-	resp, err := shimExecGit(brokerSocket, args, invocation.request)
+	resp, err := shimExecGit(brokerSocket, args, nil)
 	if err != nil {
 		return 1, fmt.Errorf("boid shim: %w", err)
 	}
@@ -88,21 +75,6 @@ func RunGitShim(args []string) (int, error) {
 		_, _ = os.Stderr.WriteString(resp.Stderr)
 	}
 	return resp.ExitCode, nil
-}
-
-func runRealGit(args []string) (int, error) {
-	cmd := exec.Command(realGitPath, args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	if err == nil {
-		return 0, nil
-	}
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		return exitErr.ExitCode(), nil
-	}
-	return 1, err
 }
 
 func shimExecGit(brokerSocket string, args []string, gitReq *GitRequest) (*ExecResponse, error) {
@@ -288,6 +260,3 @@ func parseGitSyncFlags(req *GitRequest, op GitOp, args []string) ([]string, erro
 	return positional, nil
 }
 
-func realGitBinary() string {
-	return filepath.Clean(realGitPath)
-}

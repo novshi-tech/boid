@@ -280,6 +280,198 @@ func TestBroker_GitBuiltinAllowsGateRolePush(t *testing.T) {
 	}
 }
 
+// --- broker 経由 local exec テスト ---
+
+// broker が local subcommand (status 等) を args のみで受け取り、
+// ワークツリーで実行して出力を返すことを確認する。
+func TestBroker_GitLocalExec_StatusReturnsOutput(t *testing.T) {
+	repo := initGitRepo(t)
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, hookGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     repo,
+		Token:   token,
+		Args:    []string{"status", "--short"},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("git status exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
+	}
+}
+
+// broker が local subcommand を実行する際、req.Cwd がそのまま使われることを確認する。
+// cwd がサブディレクトリの場合、WorktreeRoot ではなく実際の cwd で実行される必要がある。
+// (git add . のような相対パス操作に影響するため)
+func TestBroker_GitLocalExec_RespectsCwd(t *testing.T) {
+	repo := initGitRepo(t)
+	subdir := filepath.Join(repo, "subdir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir subdir: %v", err)
+	}
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, hookGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	// git rev-parse --show-prefix はカレントディレクトリを基準にリポジトリルートからの
+	// 相対パスを出力する。WorktreeRoot からだと "" だが subdir からだと "subdir/" になる。
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     subdir,
+		Token:   token,
+		Args:    []string{"rev-parse", "--show-prefix"},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("git rev-parse exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
+	}
+	got := strings.TrimSpace(resp.Stdout)
+	if got != "subdir/" {
+		t.Errorf("show-prefix = %q, want %q (cwd not respected)", got, "subdir/")
+	}
+}
+
+// broker 側で禁止 global option が全件 reject されることを確認する。
+// タスク仕様で再確認要求されている全オプションをカバーする。
+func TestBroker_GitLocalExec_DeniedGlobalOptions(t *testing.T) {
+	repo := initGitRepo(t)
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, hookGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"dash-C", []string{"-C", "/tmp/other", "status"}},
+		{"dash-c", []string{"-c", "core.hooksPath=/tmp", "status"}},
+		{"git-dir", []string{"--git-dir=/tmp/other", "status"}},
+		{"work-tree", []string{"--work-tree=/tmp/other", "status"}},
+		{"namespace", []string{"--namespace=evil", "status"}},
+		{"config-env", []string{"--config-env=X=Y", "status"}},
+		{"double-dash-global", []string{"--", "status"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := broker.Handle(&sandbox.ExecRequest{
+				Command: "git",
+				Cwd:     repo,
+				Token:   token,
+				Args:    tc.args,
+			})
+			if resp.ExitCode == 0 {
+				t.Fatalf("expected error for args %v", tc.args)
+			}
+			if !strings.Contains(resp.Stderr, "not allowed") {
+				t.Fatalf("stderr = %q, want 'not allowed'", resp.Stderr)
+			}
+		})
+	}
+}
+
+// broker 側で force/delete refspec が raw args 経由でも reject されることを確認する。
+// 旧 shim では sandbox 側で検証していたが、broker 一本化後は broker 側で検証する必要がある。
+func TestBroker_GitPush_RejectsForceAndDeleteRefspecs(t *testing.T) {
+	repo := initGitRepo(t)
+	remote := initBareRemote(t)
+	runGit(t, repo, "remote", "add", "origin", remote)
+	runGit(t, repo, "push", "-u", "origin", "main")
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, gateGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	cases := []struct {
+		name    string
+		args    []string
+		wantMsg string
+	}{
+		{
+			"force-refspec",
+			[]string{"push", "origin", "+main:main"},
+			"force refspecs",
+		},
+		{
+			"delete-refspec",
+			[]string{"push", "origin", ":refs/heads/main"},
+			"delete refspecs",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := broker.Handle(&sandbox.ExecRequest{
+				Command: "git",
+				Cwd:     repo,
+				Token:   token,
+				Args:    tc.args,
+			})
+			if resp.ExitCode == 0 {
+				t.Fatalf("expected error for args %v", tc.args)
+			}
+			if !strings.Contains(resp.Stderr, tc.wantMsg) {
+				t.Fatalf("stderr = %q, want %q", resp.Stderr, tc.wantMsg)
+			}
+		})
+	}
+}
+
+// allowlist に載っていない subcommand は broker 側で拒否される。
+func TestBroker_GitLocalExec_DeniedSubcommand(t *testing.T) {
+	repo := initGitRepo(t)
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, hookGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     repo,
+		Token:   token,
+		Args:    []string{"pull", "origin", "main"},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatal("expected error for 'git pull'")
+	}
+}
+
+// local exec でも cwd 制限は有効。
+func TestBroker_GitLocalExec_RestrictsCwd(t *testing.T) {
+	repo := initGitRepo(t)
+	other := initGitRepo(t)
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, hookGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     other,
+		Token:   token,
+		Args:    []string{"status", "--short"},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatal("expected error when cwd is outside worktree")
+	}
+	if !strings.Contains(resp.Stderr, "restricted to the current worktree") {
+		t.Fatalf("stderr = %q, want 'restricted to the current worktree'", resp.Stderr)
+	}
+}
+
 const realGitForTest = "/usr/bin/git"
 
 func skipWithoutRealGit(t *testing.T) {

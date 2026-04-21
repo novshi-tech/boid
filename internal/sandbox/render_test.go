@@ -45,7 +45,7 @@ func TestPrepare_FileBindMountRendering(t *testing.T) {
 	got := string(content)
 
 	must := []string{
-		`touch "$ROOT/opt/boid/bin/boid"`,
+		`[ -e "$ROOT/opt/boid/bin/boid" ] || touch "$ROOT/opt/boid/bin/boid"`,
 		`mount --bind /usr/local/bin/boid "$ROOT/opt/boid/bin/boid"`,
 		`mount -o remount,bind,ro "$ROOT/opt/boid/bin/boid"`,
 	}
@@ -243,6 +243,65 @@ echo "$found"
 		got := strings.TrimSpace(string(out))
 		if got != tc.want {
 			t.Errorf("line %q: got %q, want %q", tc.line, got, tc.want)
+		}
+	}
+}
+
+// サンドボックス内で /usr/bin/git と /bin/git が boid バイナリの bind mount で
+// 上書きされることをレンダリングレベルで検証する。
+// /usr/bin/git は無条件バインド、/bin/git は Guard 付き条件バインド。
+func TestRenderMount_GitShimBinds(t *testing.T) {
+	const boidBin = "/usr/local/bin/boid"
+
+	mounts := []Mount{
+		{
+			Source:   boidBin,
+			Target:   "/usr/bin/git",
+			Type:     MountBind,
+			IsFile:   true,
+			ReadOnly: true,
+		},
+		{
+			Source:   boidBin,
+			Target:   "/bin/git",
+			Type:     MountBind,
+			IsFile:   true,
+			ReadOnly: true,
+			Guard:    "-f /bin/git",
+		},
+	}
+
+	var b strings.Builder
+	for _, m := range mounts {
+		renderMount(&b, m)
+	}
+	got := b.String()
+
+	// /usr/bin/git は無条件バインド（Guard なし）。
+	// touch は target が既存なら skip（base rbind の /usr/bin/git は root 所有で
+	// uid=1000 から utime 更新できず EACCES になるため）。
+	mustContain := []string{
+		`[ -e "$ROOT/usr/bin/git" ] || touch "$ROOT/usr/bin/git"`,
+		`mount --bind /usr/local/bin/boid "$ROOT/usr/bin/git"`,
+		`mount -o remount,bind,ro "$ROOT/usr/bin/git"`,
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(got, s) {
+			t.Errorf("missing %q in rendered output:\n%s", s, got)
+		}
+	}
+
+	// /bin/git は Guard (-f /bin/git) で条件付きバインド
+	mustContainGuard := []string{
+		"if [ -f /bin/git ]; then",
+		`[ -e "$ROOT/bin/git" ] || touch "$ROOT/bin/git"`,
+		`mount --bind /usr/local/bin/boid "$ROOT/bin/git"`,
+		`mount -o remount,bind,ro "$ROOT/bin/git"`,
+		"fi",
+	}
+	for _, s := range mustContainGuard {
+		if !strings.Contains(got, s) {
+			t.Errorf("missing %q in rendered guard output:\n%s", s, got)
 		}
 	}
 }
