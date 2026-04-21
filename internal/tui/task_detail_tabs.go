@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -44,13 +45,25 @@ func cycleTab(current string, delta int) string {
 
 // renderTabBar returns a separator line with tab labels.
 // The active tab is highlighted; others are dimmed.
-func renderTabBar(activeTab string, width int) string {
+// When openFindingsCount > 0, the Payload tab label shows a "(!N)" badge.
+func renderTabBar(activeTab string, openFindingsCount int, width int) string {
 	var parts []string
 	for _, t := range detailTabs {
+		label := t.label
+		if t.id == tabPayload && openFindingsCount > 0 {
+			badge := styleWarn.Render(fmt.Sprintf("(!%d)", openFindingsCount))
+			if t.id == activeTab {
+				label = styleFilterActive.Render(label) + badge
+			} else {
+				label = styleFilterInactive.Render(label) + badge
+			}
+			parts = append(parts, label)
+			continue
+		}
 		if t.id == activeTab {
-			parts = append(parts, styleFilterActive.Render(t.label))
+			parts = append(parts, styleFilterActive.Render(label))
 		} else {
-			parts = append(parts, styleFilterInactive.Render(t.label))
+			parts = append(parts, styleFilterInactive.Render(label))
 		}
 	}
 	inner := strings.Join(parts, "  ")

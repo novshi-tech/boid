@@ -930,7 +930,8 @@ func TestRenderOverview_NoJobs(t *testing.T) {
 	}
 }
 
-func TestRenderOverview_WithOpenFindings(t *testing.T) {
+func TestRenderOverview_WithOpenFindings_NotShownInOverview(t *testing.T) {
+	// Findings are moved to Payload tab; Overview should no longer render them.
 	s := newTestTaskDetailScreen()
 	s.detail = &api.TaskDetailView{
 		Task: &orchestrator.Task{
@@ -950,14 +951,18 @@ func TestRenderOverview_WithOpenFindings(t *testing.T) {
 	}
 
 	view := s.renderOverview(80, 20)
-	if !containsStr(view, "Findings") {
-		t.Error("renderOverview: expected 'Findings' section when open findings exist")
+	if containsStr(view, "Findings (open)") {
+		t.Error("renderOverview: Findings (open) section should not appear in Overview")
 	}
-	if !containsStr(view, "mergeable-check") {
-		t.Error("renderOverview: expected gate name in findings")
+	if containsStr(view, "mergeable-check") {
+		t.Error("renderOverview: finding gate name should not appear in Overview")
 	}
-	if !containsStr(view, "2 conflicts") {
-		t.Error("renderOverview: expected finding message")
+	if containsStr(view, "2 conflicts") {
+		t.Error("renderOverview: finding message should not appear in Overview")
+	}
+	// Timeline section must still be present.
+	if !containsStr(view, "Timeline") {
+		t.Error("renderOverview: Timeline section must still appear")
 	}
 }
 
