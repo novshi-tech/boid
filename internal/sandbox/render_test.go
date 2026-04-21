@@ -246,3 +246,60 @@ echo "$found"
 		}
 	}
 }
+
+// サンドボックス内で /usr/bin/git と /bin/git が boid バイナリの bind mount で
+// 上書きされることをレンダリングレベルで検証する。
+// /usr/bin/git は無条件バインド、/bin/git は Guard 付き条件バインド。
+func TestRenderMount_GitShimBinds(t *testing.T) {
+	const boidBin = "/usr/local/bin/boid"
+
+	mounts := []Mount{
+		{
+			Source:   boidBin,
+			Target:   "/usr/bin/git",
+			Type:     MountBind,
+			IsFile:   true,
+			ReadOnly: true,
+		},
+		{
+			Source:   boidBin,
+			Target:   "/bin/git",
+			Type:     MountBind,
+			IsFile:   true,
+			ReadOnly: true,
+			Guard:    "-f /bin/git",
+		},
+	}
+
+	var b strings.Builder
+	for _, m := range mounts {
+		renderMount(&b, m)
+	}
+	got := b.String()
+
+	// /usr/bin/git は無条件バインド（Guard なし）
+	mustContain := []string{
+		`touch "$ROOT/usr/bin/git"`,
+		`mount --bind /usr/local/bin/boid "$ROOT/usr/bin/git"`,
+		`mount -o remount,bind,ro "$ROOT/usr/bin/git"`,
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(got, s) {
+			t.Errorf("missing %q in rendered output:\n%s", s, got)
+		}
+	}
+
+	// /bin/git は Guard (-f /bin/git) で条件付きバインド
+	mustContainGuard := []string{
+		"if [ -f /bin/git ]; then",
+		`touch "$ROOT/bin/git"`,
+		`mount --bind /usr/local/bin/boid "$ROOT/bin/git"`,
+		`mount -o remount,bind,ro "$ROOT/bin/git"`,
+		"fi",
+	}
+	for _, s := range mustContainGuard {
+		if !strings.Contains(got, s) {
+			t.Errorf("missing %q in rendered guard output:\n%s", s, got)
+		}
+	}
+}
