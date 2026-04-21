@@ -45,7 +45,7 @@ func TestPrepare_FileBindMountRendering(t *testing.T) {
 	got := string(content)
 
 	must := []string{
-		`touch "$ROOT/opt/boid/bin/boid"`,
+		`[ -e "$ROOT/opt/boid/bin/boid" ] || touch "$ROOT/opt/boid/bin/boid"`,
 		`mount --bind /usr/local/bin/boid "$ROOT/opt/boid/bin/boid"`,
 		`mount -o remount,bind,ro "$ROOT/opt/boid/bin/boid"`,
 	}
@@ -277,9 +277,11 @@ func TestRenderMount_GitShimBinds(t *testing.T) {
 	}
 	got := b.String()
 
-	// /usr/bin/git は無条件バインド（Guard なし）
+	// /usr/bin/git は無条件バインド（Guard なし）。
+	// touch は target が既存なら skip（base rbind の /usr/bin/git は root 所有で
+	// uid=1000 から utime 更新できず EACCES になるため）。
 	mustContain := []string{
-		`touch "$ROOT/usr/bin/git"`,
+		`[ -e "$ROOT/usr/bin/git" ] || touch "$ROOT/usr/bin/git"`,
 		`mount --bind /usr/local/bin/boid "$ROOT/usr/bin/git"`,
 		`mount -o remount,bind,ro "$ROOT/usr/bin/git"`,
 	}
@@ -292,7 +294,7 @@ func TestRenderMount_GitShimBinds(t *testing.T) {
 	// /bin/git は Guard (-f /bin/git) で条件付きバインド
 	mustContainGuard := []string{
 		"if [ -f /bin/git ]; then",
-		`touch "$ROOT/bin/git"`,
+		`[ -e "$ROOT/bin/git" ] || touch "$ROOT/bin/git"`,
 		`mount --bind /usr/local/bin/boid "$ROOT/bin/git"`,
 		`mount -o remount,bind,ro "$ROOT/bin/git"`,
 		"fi",
