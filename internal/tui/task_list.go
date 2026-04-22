@@ -804,15 +804,15 @@ func progressBadge(task *orchestrator.Task) string {
 	return s
 }
 
-// applyStateFilter filters tasks by open/closed state, taking child counts into account.
+// applyStateFilter filters tasks by open/closed state.
 // Open mode: keeps tasks that are open OR have open children (pass 1), then also keeps
 // closed children whose parent is in the pass-1 result (pass 2).
-// Closed mode: keeps tasks that are closed AND have no open children.
+// Closed mode: keeps all tasks with a closed status (Done or Aborted), regardless of children.
 func applyStateFilter(tasks []*orchestrator.Task, stateClosed bool) []*orchestrator.Task {
 	if stateClosed {
 		var filtered []*orchestrator.Task
 		for _, t := range tasks {
-			if closedStatuses[t.Status] && t.OpenChildCount == 0 {
+			if closedStatuses[t.Status] {
 				filtered = append(filtered, t)
 			}
 		}
@@ -856,6 +856,7 @@ func applyStateFilter(tasks []*orchestrator.Task, stateClosed bool) []*orchestra
 // syncTableRows applies the searchQuery filter to s.tasks, builds the tree order,
 // stores the result in s.displayTasks, then converts to table rows and updates the table.
 // カーソル行は無着色モード（ANSI なし）で構築し、table.Selected.Reverse が正しく効くようにする。
+// closed タブではツリー化をスキップし、UpdatedAt 降順のフラット表示にする。
 func (s *TaskListScreen) syncTableRows() {
 	// Filter by searchQuery (title, case-insensitive).
 	var base []*orchestrator.Task
@@ -872,8 +873,21 @@ func (s *TaskListScreen) syncTableRows() {
 		base = filtered
 	}
 
-	// Build tree order (DFS: parent before children).
-	ordered, prefixes := buildTreeOrder(base)
+	var ordered []*orchestrator.Task
+	var prefixes map[string]string
+	if s.stateClosed {
+		// closed タブ: フラット表示、UpdatedAt 降順ソート。
+		cp := make([]*orchestrator.Task, len(base))
+		copy(cp, base)
+		sort.SliceStable(cp, func(i, j int) bool {
+			return cp[i].UpdatedAt.After(cp[j].UpdatedAt)
+		})
+		ordered = cp
+		prefixes = make(map[string]string)
+	} else {
+		// open タブ: DFS ツリー順。
+		ordered, prefixes = buildTreeOrder(base)
+	}
 	s.displayTasks = ordered
 
 	rows := make([]tableRow, len(s.displayTasks))
@@ -886,8 +900,11 @@ func (s *TaskListScreen) syncTableRows() {
 		}
 
 		prefix := prefixes[task.ID]
-		progress := progressBadge(task)
-		isParent := task.TotalChildCount > 0
+		var progress string
+		if !s.stateClosed {
+			progress = progressBadge(task)
+		}
+		isParent := !s.stateClosed && task.TotalChildCount > 0
 
 		// TITLE セルの content 部分を truncate する（prefix 幅を除いた範囲で）。
 		// lipgloss.Width で表示幅ベースに計算する。
