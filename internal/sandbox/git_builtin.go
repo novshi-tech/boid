@@ -298,7 +298,6 @@ func resolveGitRemote(req *GitRequest, binding *GitBinding) (string, GitRemote, 
 func buildGitBuiltinArgs(req *GitRequest, binding *GitBinding, remoteName string, remote GitRemote) ([]string, error) {
 	base := []string{
 		"-c", "core.hooksPath=/dev/null",
-		"-c", "core.sshCommand=false",
 		"-c", "core.attributesfile=/dev/null",
 		"-c", "core.editor=false",
 	}
