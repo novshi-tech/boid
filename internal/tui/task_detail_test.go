@@ -502,7 +502,7 @@ func TestAssignKeys_Conflict(t *testing.T) {
 func TestAssignKeys_DoneExcluded(t *testing.T) {
 	// "done" はキー割当から除外される。single key で state を done に飛ばすのは
 	// 実行中の hook を誤って停止させるリスクが大きいため UI 経由ではなく
-	// 自動遷移 (execution_complete 等) か専用モーダルで行う設計。
+	// 自動遷移 (lifecycle.executed 等) か専用モーダルで行う設計。
 	m := assignKeys([]string{"done"})
 	if len(m) != 0 {
 		t.Errorf("assignKeys([\"done\"]) = %v, want empty (done must not be reachable via single keypress)", m)

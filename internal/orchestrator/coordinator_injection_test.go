@@ -52,14 +52,14 @@ func TestCoordinator_DispatchAndAdvance_GateExitZeroEmptyOutput_NoArtifactInject
 		t.Error("expected no artifact injection for gate with empty output")
 	}
 
-	// gate のみ実行の場合（hook なし）は execution_complete は注入されない
+	// gate のみ実行の場合（hook なし）は lifecycle.executed が立たず遷移しない
 	if result.NewStatus != "" {
 		t.Errorf("expected no advance for gate-only execution with empty output, got %q", result.NewStatus)
 	}
 }
 
-func TestCoordinator_DispatchAndAdvance_ExecutionComplete_InjectedOnExitZero(t *testing.T) {
-	// hook が exit 0 で完了（成果物なし）→ execution_complete=true が注入され done に遷移
+func TestCoordinator_DispatchAndAdvance_LifecycleExecuted_OnExitZero(t *testing.T) {
+	// hook が exit 0 で完了（成果物なし）→ lifecycle.executed=true が transient に set され done に遷移
 	mock := newMockExecutorWaiter()
 	mock.setHookCompletion("main-hook", `{"payload_patch":{}}`, 0)
 
@@ -88,16 +88,18 @@ func TestCoordinator_DispatchAndAdvance_ExecutionComplete_InjectedOnExitZero(t *
 		t.Fatalf("dispatch: %v", err)
 	}
 
-	if !orchestrator.TraitBool(result.FinalPayload, "execution_complete") {
-		t.Error("expected execution_complete=true in final payload after exit 0")
+	// lifecycle は FinalPayload に永続化されない
+	if orchestrator.TraitBool(result.FinalPayload, "lifecycle.executed") {
+		t.Error("expected lifecycle.executed to NOT be in persisted FinalPayload")
 	}
+	// lifecycle.executed が state machine に渡った結果 done に遷移する
 	if result.NewStatus != orchestrator.TaskStatusDone {
-		t.Errorf("expected new status done (via empty result), got %q", result.NewStatus)
+		t.Errorf("expected new status done (via lifecycle.executed), got %q", result.NewStatus)
 	}
 }
 
-func TestCoordinator_DispatchAndAdvance_ExecutionComplete_NotInjectedOnJobFailure(t *testing.T) {
-	// hook が exit 1 で失敗 → error が返され execution_complete は注入されない
+func TestCoordinator_DispatchAndAdvance_LifecycleExecuted_NotSetOnJobFailure(t *testing.T) {
+	// hook が exit 1 で失敗 → error が返され lifecycle.executed は立たない
 	mock := newMockExecutorWaiter()
 	mock.setHookCompletion("main-hook", ``, 1) // exit code 1
 
