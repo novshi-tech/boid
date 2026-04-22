@@ -1132,41 +1132,43 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 
 		s.persistFiredEvents(current.ID, current.Status, result.FiredEvents)
 
-		// Persist hook + exit gate payload
-		if len(result.FinalPayload) > 0 {
-			var persisted *orchestrator.Task
-			if err := s.Tx.WithinTx(func(tx TxStore) error {
-				latest, err := tx.GetTask(current.ID)
-				if err != nil {
-					return err
-				}
+		// Persist hook + exit gate payload. Always refresh the task row so we
+		// can detect concurrent terminal transitions (abort/done) before
+		// applying the computed auto-advance.
+		var persisted *orchestrator.Task
+		if err := s.Tx.WithinTx(func(tx TxStore) error {
+			latest, err := tx.GetTask(current.ID)
+			if err != nil {
+				return err
+			}
+			if len(result.FinalPayload) > 0 {
 				latest.Payload = result.FinalPayload
 				if err := tx.UpdateTask(latest); err != nil {
 					return err
 				}
-				persisted = latest
-				return nil
-			}); err != nil {
-				slog.Error("persist payload failed", "task_id", current.ID, "error", err)
-				return
 			}
-			current = persisted
+			persisted = latest
+			return nil
+		}); err != nil {
+			slog.Error("persist payload failed", "task_id", current.ID, "error", err)
+			return
+		}
+		current = persisted
+
+		// Drop any would-be auto-advance if the task was terminated
+		// concurrently (e.g. user abort while a hook was in flight). Finalize
+		// here so the caller that set the terminal status does not have to
+		// race with us on cleanup.
+		if current.Status == orchestrator.TaskStatusDone || current.Status == orchestrator.TaskStatusAborted {
+			slog.Info("dispatch loop: task reached terminal concurrently, skipping advance",
+				"task_id", current.ID, "status", current.Status, "would_advance_to", result.NewStatus)
+			s.finalizeTerminal(ctx, current)
+			return
 		}
 
 		if result.NewStatus == "" {
 			// No transition this cycle. Finalize if terminal.
-			if current.Status == orchestrator.TaskStatusDone || current.Status == orchestrator.TaskStatusAborted {
-				s.cleanupWorktree(current.ID, current.ProjectID, current.Status)
-				if s.Lifecycle != nil {
-					s.Lifecycle.CleanupTaskWindow(current.ID)
-				}
-				if current.Status == orchestrator.TaskStatusDone {
-					s.triggerDependentTasks(ctx, current.ID)
-				}
-				if current.ParentID != "" {
-					s.triggerDependentTasks(ctx, current.ParentID)
-				}
-			}
+			s.finalizeTerminal(ctx, current)
 			return
 		}
 
@@ -1211,18 +1213,8 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			}
 		}
 
-		s.cleanupWorktree(current.ID, current.ProjectID, current.Status)
-
 		if current.Status == orchestrator.TaskStatusDone || current.Status == orchestrator.TaskStatusAborted {
-			if s.Lifecycle != nil {
-				s.Lifecycle.CleanupTaskWindow(current.ID)
-			}
-			if current.Status == orchestrator.TaskStatusDone {
-				s.triggerDependentTasks(ctx, current.ID)
-			}
-			if current.ParentID != "" {
-				s.triggerDependentTasks(ctx, current.ParentID)
-			}
+			s.finalizeTerminal(ctx, current)
 			return
 		}
 	}
@@ -1400,6 +1392,26 @@ func (s *TaskWorkflowService) ListGatesForStatus(taskID, status string) ([]orche
 		gates = []orchestrator.Gate{}
 	}
 	return gates, nil
+}
+
+// finalizeTerminal runs the per-task cleanup required once a task has reached
+// a terminal status. No-op for non-terminal tasks. Safe to call multiple
+// times: cleanupWorktree skips already-removed worktrees and
+// CleanupTaskWindow atomically drains runtimes.
+func (s *TaskWorkflowService) finalizeTerminal(ctx context.Context, task *orchestrator.Task) {
+	if task.Status != orchestrator.TaskStatusDone && task.Status != orchestrator.TaskStatusAborted {
+		return
+	}
+	s.cleanupWorktree(task.ID, task.ProjectID, task.Status)
+	if s.Lifecycle != nil {
+		s.Lifecycle.CleanupTaskWindow(task.ID)
+	}
+	if task.Status == orchestrator.TaskStatusDone {
+		s.triggerDependentTasks(ctx, task.ID)
+	}
+	if task.ParentID != "" {
+		s.triggerDependentTasks(ctx, task.ParentID)
+	}
 }
 
 func (s *TaskWorkflowService) cleanupWorktree(taskID, projectID string, status orchestrator.TaskStatus) {

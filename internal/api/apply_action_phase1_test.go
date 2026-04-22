@@ -208,3 +208,58 @@ func TestTaskWorkflowServiceRunDispatchLoop_MustNotOverwriteTerminalStatusWhenPe
 		t.Fatalf("cleanup task id = %q, want %q", lifecycle.cleanupTaskID, task.ID)
 	}
 }
+
+// If the DB shows the task as aborted by the time we come back from a hook
+// dispatch that computed a NewStatus advance, the loop must drop the advance
+// rather than overwriting the terminal status.
+func TestTaskWorkflowServiceRunDispatchLoop_MustNotOverwriteTerminalStatusWhenAdvanceIsAvailable(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "task-1",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "impl",
+		Payload:   []byte(`{"prompt":"start"}`),
+	}
+	aborted := &orchestrator.Task{
+		ID:        task.ID,
+		ProjectID: task.ProjectID,
+		Status:    orchestrator.TaskStatusAborted,
+		Behavior:  task.Behavior,
+		Payload:   task.Payload,
+	}
+
+	txStore := &recordingTxStore{task: aborted}
+	lifecycle := &stubLifecycle{}
+	svc := &TaskWorkflowService{
+		Tx: recordingTransactor{store: txStore},
+		Coordinator: fixedDispatchResult{
+			result: &orchestrator.DispatchResult{
+				FinalPayload: []byte(`{"prompt":"start","artifact":{"summary":"ok"}}`),
+				NewStatus:    orchestrator.TaskStatusVerifying,
+			},
+		},
+		Lifecycle: lifecycle,
+	}
+
+	svc.runDispatchLoop(
+		context.Background(),
+		task,
+		&orchestrator.ProjectMeta{},
+		orchestrator.DefaultMachine(),
+	)
+
+	if txStore.updatedTask == nil {
+		t.Fatal("expected payload persistence update")
+	}
+	if txStore.updatedTask.Status != orchestrator.TaskStatusAborted {
+		t.Fatalf("updated task status = %q, want %q", txStore.updatedTask.Status, orchestrator.TaskStatusAborted)
+	}
+	if lifecycle.cleanupTaskID != task.ID {
+		t.Fatalf("cleanup task id = %q, want %q", lifecycle.cleanupTaskID, task.ID)
+	}
+	for _, a := range txStore.actions {
+		if a.Type == "auto_advance" {
+			t.Fatalf("unexpected auto_advance action written after abort: %+v", a)
+		}
+	}
+}
