@@ -130,8 +130,9 @@ func (d *Coordinator) DispatchAndAdvance(
 
 	advanceTask := *task
 	advanceTask.Payload = payloadForSM
-	if newTask, ok := sm.Advance(&advanceTask); ok {
-		result.NewStatus = newTask.Status
+	if outcome := sm.AdvanceFull(&advanceTask); outcome != nil {
+		result.NewStatus = outcome.Task.Status
+		result.ActionPayload = outcome.ActionPayload
 	}
 
 	return result, nil
