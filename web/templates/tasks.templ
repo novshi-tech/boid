@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/web/templates/components"
 	"time"
 )
 
@@ -82,7 +83,7 @@ var taskFilterOptions = []filterOption{
 }
 
 templ TaskList(tasks []*orchestrator.Task, currentFilter string) {
-	@Layout("Tasks") {
+	@Layout("Tasks", []components.BreadcrumbItem{{Title: "Tasks"}}) {
 		<div class="filter-scroll">
 			<div class="filters">
 				for _, f := range taskFilterOptions {
@@ -117,7 +118,7 @@ templ TaskList(tasks []*orchestrator.Task, currentFilter string) {
 }
 
 templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, availableActions []string, errorMsg string) {
-	@Layout(task.Title) {
+	@Layout(task.Title, []components.BreadcrumbItem{{Title: "Tasks", URL: "/"}, {Title: task.Title}}) {
 		<div class="section">
 			<h1>{ task.Title }</h1>
 			<div class="card-meta" style="margin-top:8px">
