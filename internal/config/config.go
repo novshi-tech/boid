@@ -11,7 +11,8 @@ import (
 
 // Config holds the global boid configuration.
 type Config struct {
-	GC GCConfig `yaml:"gc"`
+	GC           GCConfig           `yaml:"gc"`
+	StateMachine StateMachineConfig `yaml:"state_machine"`
 }
 
 // GCConfig holds garbage collection settings.
@@ -21,6 +22,11 @@ type GCConfig struct {
 	OlderThan time.Duration `yaml:"-"`
 }
 
+// StateMachineConfig holds state machine settings.
+type StateMachineConfig struct {
+	ReworkLimit int `yaml:"-"`
+}
+
 // DefaultConfig returns the default boid configuration.
 func DefaultConfig() *Config {
 	return &Config{
@@ -28,6 +34,9 @@ func DefaultConfig() *Config {
 			Enabled:   true,
 			Interval:  24 * time.Hour,
 			OlderThan: 720 * time.Hour,
+		},
+		StateMachine: StateMachineConfig{
+			ReworkLimit: 5,
 		},
 	}
 }
@@ -72,6 +81,9 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 			Interval  string `yaml:"interval"`
 			OlderThan string `yaml:"older_than"`
 		} `yaml:"gc"`
+		StateMachine struct {
+			ReworkLimit *int `yaml:"rework_limit"`
+		} `yaml:"state_machine"`
 	}
 	if err := value.Decode(&raw); err != nil {
 		return err
@@ -95,6 +107,11 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 			return fmt.Errorf("gc.older_than: %w", err)
 		}
 		c.GC.OlderThan = d
+	}
+
+	c.StateMachine = defaults.StateMachine
+	if raw.StateMachine.ReworkLimit != nil {
+		c.StateMachine.ReworkLimit = *raw.StateMachine.ReworkLimit
 	}
 
 	return nil

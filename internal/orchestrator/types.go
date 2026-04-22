@@ -47,10 +47,11 @@ type FiredEvent struct {
 
 // DispatchResult is the accumulated result of a full dispatch cycle.
 type DispatchResult struct {
-	Results      []HandlerResult
-	FiredEvents  []FiredEvent
-	FinalPayload json.RawMessage
-	NewStatus    TaskStatus // set if orchestrator advanced the state
+	Results       []HandlerResult
+	FiredEvents   []FiredEvent
+	FinalPayload  json.RawMessage
+	NewStatus     TaskStatus      // set if orchestrator advanced the state
+	ActionPayload json.RawMessage // optional payload to attach to the auto_advance action
 }
 
 // EntryGateResult holds the output of entry-phase gate dispatch.
