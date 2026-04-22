@@ -71,6 +71,10 @@ type JobSpec struct {
 	// (e.g. behavior-level overrides). dispatcher merges these with its own
 	// HOME/PATH/proxy/broker settings.
 	Env map[string]string
+
+	// ExecutionState records the task.Status at the time this job was dispatched.
+	// Stored in the job DB row so TUI can reconstruct replay context.
+	ExecutionState string
 }
 
 // Visibility captures which host paths the sandbox sees and whether they are

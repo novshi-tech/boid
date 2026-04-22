@@ -72,7 +72,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		HandlerID: spec.HandlerID,
 		// Role は DB ラベル / TUI 表示のみに使われる。sandbox 構築側は
 		// 一切これを読まない。
-		Role: string(spec.Kind),
+		Role:           string(spec.Kind),
+		ExecutionState: spec.ExecutionState,
 	}
 	j.ID = uuid.New().String()
 

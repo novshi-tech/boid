@@ -89,6 +89,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		HostCommands:    nil, // hooks never get broker-mediated host commands
 		SecretNamespace: meta.SecretNamespace,
 		Env:             behavior.Env,
+		ExecutionState:  string(task.Status),
 	}
 	return spec, cleanup, nil
 }
@@ -154,6 +155,7 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, CleanupFunc,
 		HostCommands:    behavior.HostCommands.ToCommandDefs(),
 		SecretNamespace: meta.SecretNamespace,
 		Env:             behavior.Env,
+		ExecutionState:  string(task.Status),
 	}
 	return spec, cleanup, nil
 }

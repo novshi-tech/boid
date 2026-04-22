@@ -32,6 +32,10 @@ func (c *hookFiredCoordinator) DispatchEntryGates(ctx context.Context, task *orc
 	return &orchestrator.EntryGateResult{FinalPayload: task.Payload}, nil
 }
 
+func (c *hookFiredCoordinator) ReplayGate(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, gateID string) (*orchestrator.ReplayResult, error) {
+	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
+}
+
 // TestRunDispatchLoop_HookFiredActionsRecorded verifies that hook_fired and
 // exit_gate_fired actions are persisted when FiredEvents are returned from dispatch.
 func TestRunDispatchLoop_HookFiredActionsRecorded(t *testing.T) {
