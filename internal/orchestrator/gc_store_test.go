@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,9 @@ func initGitRepoForGC(t *testing.T) string {
 		cmd := exec.Command(gcTestGitBin, args...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
+			if strings.Contains(string(out), "cwd does not exist") {
+				t.Skip("git not available outside worktree in this environment")
+			}
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
