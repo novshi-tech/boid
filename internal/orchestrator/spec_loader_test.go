@@ -1898,3 +1898,40 @@ commands:
 		}
 	})
 }
+
+func TestBindMount_Optional_PropagatedFromKitYAML(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	kitsDir := filepath.Join(boidDir, "kits", "opt-kit")
+	_ = os.MkdirAll(kitsDir, 0o755)
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`
+id: test-proj
+name: Test
+task_behaviors:
+  dev:
+    name: dev
+    kits:
+      - opt-kit
+`), 0o644)
+	_ = os.WriteFile(filepath.Join(kitsDir, "kit.yaml"), []byte(`
+additional_bindings:
+  - source: /opt/maybe-missing
+    optional: true
+  - source: /opt/always-present
+`), 0o644)
+
+	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadProjectMetaWithKits: %v", err)
+	}
+	b := meta.TaskBehaviors["dev"]
+	if len(b.AdditionalBindings) != 2 {
+		t.Fatalf("expected 2 bindings, got %d: %+v", len(b.AdditionalBindings), b.AdditionalBindings)
+	}
+	if !b.AdditionalBindings[0].Optional {
+		t.Errorf("expected AdditionalBindings[0].Optional=true, got false")
+	}
+	if b.AdditionalBindings[1].Optional {
+		t.Errorf("expected AdditionalBindings[1].Optional=false, got true")
+	}
+}

@@ -181,3 +181,43 @@ func TestStageArgv0_SiblingHelpersAreReachable(t *testing.T) {
 		t.Errorf("target = %q, want /opt/boid/entry/claude-code--run-agent.py", target)
 	}
 }
+
+func TestAdditionalBindingMounts_Optional(t *testing.T) {
+	bindings := []orchestrator.BindMount{
+		{Source: "/opt/maybe-missing", Optional: true},
+		{Source: "/opt/always-present"},
+	}
+	mounts := additionalBindingMounts(bindings)
+	if len(mounts) != 2 {
+		t.Fatalf("expected 2 mounts, got %d", len(mounts))
+	}
+
+	// optional=true → Guard が設定される
+	if mounts[0].Guard == "" {
+		t.Error("optional binding must have a Guard expression")
+	}
+	if !reflect.DeepEqual(mounts[0].Guard, dirGuardExpr("/opt/maybe-missing")) {
+		t.Errorf("Guard = %q, want %q", mounts[0].Guard, dirGuardExpr("/opt/maybe-missing"))
+	}
+
+	// optional=false (デフォルト) → Guard は空
+	if mounts[1].Guard != "" {
+		t.Errorf("non-optional binding must have empty Guard, got %q", mounts[1].Guard)
+	}
+}
+
+func TestAdditionalBindingMounts_OptionalWithRWMode(t *testing.T) {
+	bindings := []orchestrator.BindMount{
+		{Source: "/opt/rw-optional", Mode: "rw", Optional: true},
+	}
+	mounts := additionalBindingMounts(bindings)
+	if len(mounts) != 1 {
+		t.Fatalf("expected 1 mount, got %d", len(mounts))
+	}
+	if mounts[0].ReadOnly {
+		t.Error("rw optional binding must not be ReadOnly")
+	}
+	if mounts[0].Guard == "" {
+		t.Error("rw optional binding must have a Guard expression")
+	}
+}

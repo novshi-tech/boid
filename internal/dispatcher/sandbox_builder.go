@@ -373,14 +373,18 @@ func additionalBindingMounts(bindings []orchestrator.BindMount) []sandbox.Mount 
 		if target == "" {
 			target = bm.Source
 		}
-		out = append(out, sandbox.Mount{
+		m := sandbox.Mount{
 			Source:     bm.Source,
 			Target:     target,
 			Type:       sandbox.MountBind,
 			ReadOnly:   bm.Mode != "rw",
 			IsFile:     bm.IsFile,
 			DetectType: !bm.IsFile,
-		})
+		}
+		if bm.Optional {
+			m.Guard = dirGuardExpr(bm.Source)
+		}
+		out = append(out, m)
 	}
 	return out
 }
