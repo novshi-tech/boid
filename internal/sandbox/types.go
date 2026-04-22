@@ -5,10 +5,11 @@ package sandbox
 // and is converted into Mount entries at the edge. The sandbox layer itself
 // works in terms of Mount only.
 type BindMount struct {
-	Source string
-	Target string // if empty, defaults to Source
-	Mode   string // "rw" | "" (ro default)
-	IsFile bool   // if true, treat target as a file (touch before bind, skip type detection)
+	Source   string
+	Target   string // if empty, defaults to Source
+	Mode     string // "rw" | "" (ro default)
+	IsFile   bool   // if true, treat target as a file (touch before bind, skip type detection)
+	Optional bool   // if true, skip mount when Source does not exist on the host
 }
 
 // Mount describes a single filesystem mount applied inside the sandbox.

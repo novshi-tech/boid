@@ -12,10 +12,11 @@ import (
 // BindMount is a plain shared DTO across orchestration and sandbox planning.
 // It carries mount source/target/mode data and does not encode provider behavior.
 type BindMount struct {
-	Source string `yaml:"source" json:"source"`
-	Target string `yaml:"target,omitempty" json:"target,omitempty"` // if empty, defaults to Source
-	Mode   string `yaml:"mode" json:"mode"`                         // "rw" | "" (ro default)
-	IsFile bool   `yaml:"is_file,omitempty" json:"is_file,omitempty"`
+	Source   string `yaml:"source" json:"source"`
+	Target   string `yaml:"target,omitempty" json:"target,omitempty"` // if empty, defaults to Source
+	Mode     string `yaml:"mode" json:"mode"`                         // "rw" | "" (ro default)
+	IsFile   bool   `yaml:"is_file,omitempty" json:"is_file,omitempty"`
+	Optional bool   `yaml:"optional,omitempty" json:"optional,omitempty"` // if true, skip mount when Source does not exist on the host
 }
 
 // HookFile describes a single hook file to bind-mount into the sandbox.
