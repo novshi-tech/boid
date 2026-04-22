@@ -1824,13 +1824,13 @@ func TestApplyStateFilter_ClosedMode_KeepsClosedTask(t *testing.T) {
 	}
 }
 
-func TestApplyStateFilter_ClosedMode_ExcludesClosedWithOpenChild(t *testing.T) {
+func TestApplyStateFilter_ClosedMode_IncludesClosedWithOpenChild(t *testing.T) {
 	tasks := []*orchestrator.Task{
 		{ID: "t", Status: orchestrator.TaskStatusDone, OpenChildCount: 1},
 	}
 	got := applyStateFilter(tasks, true)
-	if len(got) != 0 {
-		t.Errorf("closed mode: done task with open children should be excluded, got %d tasks", len(got))
+	if len(got) != 1 {
+		t.Errorf("closed mode: done task with open children should be included (OpenChildCount ignored), got %d tasks", len(got))
 	}
 }
 
@@ -2127,5 +2127,140 @@ func TestTickIntervalForTasks_MixedActiveAndClosed(t *testing.T) {
 	got := tickIntervalForTasks(tasks)
 	if got != activeTaskPollInterval {
 		t.Errorf("mixed with active: expected %v, got %v", activeTaskPollInterval, got)
+	}
+}
+
+// --- closed tab flat display tests ---
+
+// TestClosedTab_FilterIncludesAllClosedStatuses は closed タブが OpenChildCount を無視して
+// closedStatuses に含まれるタスクを全件返すことを検証する。
+func TestClosedTab_FilterIncludesAllClosedStatuses(t *testing.T) {
+	tasks := []*orchestrator.Task{
+		{ID: "done-no-child", Status: orchestrator.TaskStatusDone, OpenChildCount: 0},
+		{ID: "done-with-child", Status: orchestrator.TaskStatusDone, OpenChildCount: 3},
+		{ID: "aborted", Status: orchestrator.TaskStatusAborted, OpenChildCount: 0},
+		{ID: "executing", Status: orchestrator.TaskStatusExecuting, OpenChildCount: 0},
+		{ID: "pending", Status: orchestrator.TaskStatusPending, OpenChildCount: 0},
+	}
+	got := applyStateFilter(tasks, true)
+	if len(got) != 3 {
+		t.Fatalf("closed mode: want 3 tasks (done×2 + aborted), got %d", len(got))
+	}
+	ids := make(map[string]bool)
+	for _, t := range got {
+		ids[t.ID] = true
+	}
+	if !ids["done-no-child"] {
+		t.Error("done-no-child should be in closed filter result")
+	}
+	if !ids["done-with-child"] {
+		t.Error("done-with-child should be in closed filter result (OpenChildCount ignored)")
+	}
+	if !ids["aborted"] {
+		t.Error("aborted should be in closed filter result")
+	}
+	if ids["executing"] {
+		t.Error("executing should NOT be in closed filter result")
+	}
+	if ids["pending"] {
+		t.Error("pending should NOT be in closed filter result")
+	}
+}
+
+// TestClosedTab_UpdatedAtDescOrder は closed タブのタスクが UpdatedAt 降順で並ぶことを検証する。
+func TestClosedTab_UpdatedAtDescOrder(t *testing.T) {
+	now := time.Now()
+	s := newTestTaskListScreen()
+	s.recalcColumns(120)
+	s.stateClosed = true
+	s.tasks = []*orchestrator.Task{
+		{ID: "oldest", Title: "Oldest", Status: orchestrator.TaskStatusDone, UpdatedAt: now.Add(-3 * time.Hour), CreatedAt: now.Add(-3 * time.Hour)},
+		{ID: "newest", Title: "Newest", Status: orchestrator.TaskStatusDone, UpdatedAt: now.Add(-1 * time.Hour), CreatedAt: now.Add(-1 * time.Hour)},
+		{ID: "middle", Title: "Middle", Status: orchestrator.TaskStatusAborted, UpdatedAt: now.Add(-2 * time.Hour), CreatedAt: now.Add(-2 * time.Hour)},
+	}
+	s.syncTableRows()
+
+	if len(s.displayTasks) != 3 {
+		t.Fatalf("want 3 displayTasks, got %d", len(s.displayTasks))
+	}
+	if s.displayTasks[0].ID != "newest" {
+		t.Errorf("first task should be newest, got %q", s.displayTasks[0].ID)
+	}
+	if s.displayTasks[1].ID != "middle" {
+		t.Errorf("second task should be middle, got %q", s.displayTasks[1].ID)
+	}
+	if s.displayTasks[2].ID != "oldest" {
+		t.Errorf("third task should be oldest, got %q", s.displayTasks[2].ID)
+	}
+}
+
+// TestClosedTab_NoPrefixNoProgressBadge は closed タブでは prefix が空で
+// progress badge が付かないことを検証する。
+func TestClosedTab_NoPrefixNoProgressBadge(t *testing.T) {
+	now := time.Now()
+	s := newTestTaskListScreen()
+	s.recalcColumns(120)
+	s.stateClosed = true
+	s.tasks = []*orchestrator.Task{
+		{
+			ID: "parent", Title: "Parent Task", Status: orchestrator.TaskStatusDone,
+			TotalChildCount: 3, DoneChildCount: 2, AbortedChildCount: 1,
+			UpdatedAt: now, CreatedAt: now,
+		},
+		{
+			ID: "child", Title: "Child Task", Status: orchestrator.TaskStatusAborted,
+			ParentID: "parent",
+			UpdatedAt: now.Add(-1 * time.Minute), CreatedAt: now.Add(-1 * time.Minute),
+		},
+	}
+	s.syncTableRows()
+
+	for i, row := range s.tableRows {
+		titleCell := row[0]
+		// prefix 文字（├─ / └─）が含まれていないこと
+		if strings.Contains(titleCell, "├") || strings.Contains(titleCell, "└") {
+			t.Errorf("row %d: closed tab should have no tree prefix, got title cell %q", i, titleCell)
+		}
+		// progress badge（"2/3" など）が含まれていないこと
+		if strings.Contains(titleCell, "2/3") || strings.Contains(titleCell, "[!") {
+			t.Errorf("row %d: closed tab should have no progress badge, got title cell %q", i, titleCell)
+		}
+	}
+}
+
+// TestOpenTab_TreeDisplayUnchanged は open タブでは従来通りツリー表示が維持されることを検証する。
+func TestOpenTab_TreeDisplayUnchanged(t *testing.T) {
+	now := time.Now()
+	s := newTestTaskListScreen()
+	s.recalcColumns(120)
+	// stateClosed = false (デフォルト)
+	s.tasks = []*orchestrator.Task{
+		{
+			ID: "parent", Title: "Parent Task", Status: orchestrator.TaskStatusExecuting,
+			TotalChildCount: 1, OpenChildCount: 1,
+			UpdatedAt: now, CreatedAt: now,
+		},
+		{
+			ID: "child", Title: "Child Task", Status: orchestrator.TaskStatusPending,
+			ParentID: "parent",
+			UpdatedAt: now.Add(-1 * time.Minute), CreatedAt: now.Add(-1 * time.Minute),
+		},
+	}
+	s.syncTableRows()
+
+	if len(s.displayTasks) != 2 {
+		t.Fatalf("open tab: want 2 displayTasks, got %d", len(s.displayTasks))
+	}
+	// 親が先に来る
+	if s.displayTasks[0].ID != "parent" {
+		t.Errorf("open tab: first task should be parent, got %q", s.displayTasks[0].ID)
+	}
+	if s.displayTasks[1].ID != "child" {
+		t.Errorf("open tab: second task should be child, got %q", s.displayTasks[1].ID)
+	}
+	// 子行に tree prefix が付く
+	childTitleCell := s.tableRows[1][0]
+	if !strings.Contains(childTitleCell, "└") && !strings.Contains(childTitleCell, "├") {
+		t.Errorf("open tab: child row should have tree prefix, got title cell %q", childTitleCell)
 	}
 }
