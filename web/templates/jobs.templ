@@ -2,6 +2,7 @@ package templates
 
 import (
 	"fmt"
+	"github.com/novshi-tech/boid/web/templates/components"
 	"time"
 )
 
@@ -26,7 +27,7 @@ var jobFilterOptions = []filterOption{
 }
 
 templ JobList(jobs []*JobContextView, currentFilter string) {
-	@Layout("Jobs") {
+	@Layout("Jobs", []components.BreadcrumbItem{{Title: "Jobs"}}) {
 		<div class="filter-scroll">
 			<div class="filters">
 				for _, f := range jobFilterOptions {
@@ -67,7 +68,7 @@ templ JobList(jobs []*JobContextView, currentFilter string) {
 }
 
 templ JobDetail(job *JobContextView) {
-	@Layout("Job " + shortID(job.ID)) {
+	@Layout("Job "+shortID(job.ID), []components.BreadcrumbItem{{Title: "Jobs", URL: "/jobs"}, {Title: "Job " + shortID(job.ID)}}) {
 		<div class="section">
 			<h1>Job <span class="job-id">{ shortID(job.ID) }</span></h1>
 			<div class="card-meta" style="margin-top:8px">
