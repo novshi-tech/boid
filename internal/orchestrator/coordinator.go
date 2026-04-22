@@ -23,12 +23,13 @@ func lookupBehavior(meta *ProjectMeta, task *Task) (TaskBehavior, bool) {
 
 // Coordinator orchestrates the hook → gate → advance flow.
 type Coordinator struct {
-	Evaluator    *Evaluator
-	HookExecutor HookExecutor
-	GateExecutor GateExecutor
-	Waiter       JobWaiter
-	MaxDepth     int
-	Locker       WorktreeLocker // optional; nil skips locking
+	Evaluator      *Evaluator
+	HookExecutor   HookExecutor
+	GateExecutor   GateExecutor
+	Waiter         JobWaiter
+	MaxDepth       int
+	Locker         WorktreeLocker // optional; nil skips locking
+	LifecycleStore LifecycleStore // optional; nil skips rework_count/abort derivation
 }
 
 // DispatchAndAdvance runs the full dispatch cycle:
@@ -109,23 +110,26 @@ func (d *Coordinator) DispatchAndAdvance(
 		}
 	}
 
-	// 3. executing 状態で hook が実際に実行された場合のみ execution_complete を注入する。
-	// hook が1件も実行されなかった場合（hooks 未設定の behavior 等）は注入しない。
-	// これにより成果物なし（artifact も tasks も書かれなかった）ケースの
-	// executing → done 自動遷移が機能する。
-	if task.Status == TaskStatusExecuting && hasHookResult(allResults) {
-		payload = injectExecutionComplete(payload)
+	// 3. Derive lifecycle traits and inject into a transient payload copy for
+	// state-machine evaluation. lifecycle is NOT included in FinalPayload so it
+	// is never persisted to the DB.
+	hookRan := task.Status == TaskStatusExecuting && hasHookResult(allResults)
+	lc, err := DeriveLifecycle(ctx, task.ID, d.LifecycleStore, hookRan)
+	if err != nil {
+		slog.Warn("lifecycle derivation failed", "task_id", task.ID, "error", err)
+		lc = Lifecycle{Executed: hookRan}
 	}
+	payloadForSM := injectLifecycle(payload, lc)
 
 	// 4. Evaluate auto-advance
 	result := &DispatchResult{
 		Results:      allResults,
 		FiredEvents:  firedEvents,
-		FinalPayload: payload,
+		FinalPayload: payload, // lifecycle excluded — not persisted
 	}
 
 	advanceTask := *task
-	advanceTask.Payload = payload
+	advanceTask.Payload = payloadForSM
 	if newTask, ok := sm.Advance(&advanceTask); ok {
 		result.NewStatus = newTask.Status
 	}
@@ -136,19 +140,12 @@ func (d *Coordinator) DispatchAndAdvance(
 // DispatchEntryGates runs entry-phase gates for the given task's current status.
 // Unlike DispatchAndAdvance, this does NOT evaluate hooks/exit-gates or call sm.Advance.
 // The returned result reflects only entry gate payload patches.
-//
-// executing 状態への入場時は execution_complete trait をクリアする。
-// これにより将来的に executing を再入場するケースでも stale な値が残らない。
 func (d *Coordinator) DispatchEntryGates(
 	ctx context.Context,
 	task *Task,
 	meta *ProjectMeta,
 ) (*EntryGateResult, error) {
-	// executing 入場時に execution_complete をリセットする
 	payload := task.Payload
-	if task.Status == TaskStatusExecuting {
-		payload = clearTraitFromPayload(payload, "execution_complete")
-	}
 
 	var behaviorGates []Gate
 	if behavior, ok := lookupBehavior(meta, task); ok {
@@ -492,45 +489,6 @@ func hasHookResult(results []HandlerResult) bool {
 		}
 	}
 	return false
-}
-
-// injectExecutionComplete sets execution_complete=true in the payload.
-// This is called by the coordinator after all hooks/gates complete successfully
-// in executing state, signalling that the agent job finished without error.
-func injectExecutionComplete(payload json.RawMessage) json.RawMessage {
-	var m map[string]json.RawMessage
-	if len(payload) == 0 || string(payload) == "null" {
-		m = make(map[string]json.RawMessage)
-	} else if err := json.Unmarshal(payload, &m); err != nil {
-		return payload
-	}
-	m["execution_complete"] = json.RawMessage("true")
-	result, err := json.Marshal(m)
-	if err != nil {
-		return payload
-	}
-	return result
-}
-
-// clearTraitFromPayload removes the given trait key from the payload.
-// Used to reset execution_complete when re-entering executing state.
-func clearTraitFromPayload(payload json.RawMessage, trait string) json.RawMessage {
-	if len(payload) == 0 || string(payload) == "{}" || string(payload) == "null" {
-		return payload
-	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &m); err != nil {
-		return payload
-	}
-	if _, ok := m[trait]; !ok {
-		return payload
-	}
-	delete(m, trait)
-	result, err := json.Marshal(m)
-	if err != nil {
-		return payload
-	}
-	return result
 }
 
 // allowedTraits returns the produces traits for this handler from the hook list.

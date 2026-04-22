@@ -93,7 +93,7 @@ func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
 //
 //	(artifact || tasks) && AnyFindingUnresolvedForState("executing")  → reworking
 //	(artifact || tasks) && !AnyFindingUnresolvedForState("executing") → verifying
-//	!(artifact || tasks) && execution_complete                        → done
+//	!(artifact || tasks) && lifecycle.executed                        → done
 //
 // tasks trait と artifact trait は「executing での成果物が揃った」という
 // 対称のシグナルとして扱う。plan タスク（tasks を書く）も dev タスク
@@ -139,9 +139,9 @@ func DefaultMachine() *StateMachine {
 			{FromStatus: "executing", ToStatus: "verifying", Condition: func(p json.RawMessage) bool {
 				return executionComplete(p) && !AnyFindingUnresolvedForState("executing")(p)
 			}},
-			// 成果物なしで execution_complete が立っている場合は done（rework 対象なし）
+			// 成果物なしで lifecycle.executed が立っている場合は done（rework 対象なし）
 			{FromStatus: "executing", ToStatus: "done", Condition: func(p json.RawMessage) bool {
-				return TraitBool(p, "execution_complete") && !executionComplete(p)
+				return TraitBool(p, "lifecycle.executed") && !executionComplete(p)
 			}},
 
 			// Auto transitions from verifying

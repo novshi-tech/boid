@@ -578,59 +578,59 @@ func TestStateMachine_Apply_IgnoresConditionRules(t *testing.T) {
 	}
 }
 
-// ---- DefaultMachine: auto transitions from executing (execution_complete) ----
+// ---- DefaultMachine: auto transitions from executing (lifecycle.executed) ----
 
-func TestDefaultMachine_Executing_EmptyPayload_ExecutionComplete_Done(t *testing.T) {
-	// execution_complete=true かつ artifact も tasks も無い → done
+func TestDefaultMachine_Executing_EmptyPayload_LifecycleExecuted_Done(t *testing.T) {
+	// lifecycle.executed=true かつ artifact も tasks も無い → done
 	sm := orchestrator.DefaultMachine()
 	task := &orchestrator.Task{
 		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"execution_complete":true}`),
+		Payload: json.RawMessage(`{"lifecycle":{"executed":true,"rework_count":0}}`),
 	}
 	next, ok := sm.Advance(task)
 	if !ok {
-		t.Fatal("expected advance to done when execution_complete=true and no artifact/tasks")
+		t.Fatal("expected advance to done when lifecycle.executed=true and no artifact/tasks")
 	}
 	if next.Status != orchestrator.TaskStatusDone {
 		t.Fatalf("expected done, got %s", next.Status)
 	}
 }
 
-func TestDefaultMachine_Executing_ExecutionCompleteWithArtifact_Verifying(t *testing.T) {
-	// execution_complete=true かつ artifact あり → verifying (既存ルート維持)
+func TestDefaultMachine_Executing_LifecycleExecutedWithArtifact_Verifying(t *testing.T) {
+	// lifecycle.executed=true かつ artifact あり → verifying (既存ルート維持)
 	sm := orchestrator.DefaultMachine()
 	task := &orchestrator.Task{
 		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"execution_complete":true,"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"}}`),
+		Payload: json.RawMessage(`{"lifecycle":{"executed":true,"rework_count":0},"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"}}`),
 	}
 	next, ok := sm.Advance(task)
 	if !ok {
-		t.Fatal("expected advance to verifying when execution_complete=true and artifact present")
+		t.Fatal("expected advance to verifying when lifecycle.executed=true and artifact present")
 	}
 	if next.Status != orchestrator.TaskStatusVerifying {
 		t.Fatalf("expected verifying, got %s", next.Status)
 	}
 }
 
-func TestDefaultMachine_Executing_NoExecutionComplete_NoTransition(t *testing.T) {
-	// execution_complete 未設定、成果物も無し → executing のまま（早期遷移しない）
+func TestDefaultMachine_Executing_NoLifecycleExecuted_NoTransition(t *testing.T) {
+	// lifecycle.executed 未設定、成果物も無し → executing のまま（早期遷移しない）
 	sm := orchestrator.DefaultMachine()
 	task := &orchestrator.Task{
 		Status:  orchestrator.TaskStatusExecuting,
 		Payload: json.RawMessage(`{}`),
 	}
 	if _, ok := sm.Advance(task); ok {
-		t.Fatal("expected no advance when execution_complete not set and no artifact/tasks")
+		t.Fatal("expected no advance when lifecycle.executed not set and no artifact/tasks")
 	}
 }
 
-func TestDefaultMachine_Executing_ExecutionCompleteWithFindings_Done(t *testing.T) {
+func TestDefaultMachine_Executing_LifecycleExecutedWithFindings_Done(t *testing.T) {
 	// 空成果物時は findings があっても done（成果物が無いので rework する対象が無い）
 	sm := orchestrator.DefaultMachine()
 	task := &orchestrator.Task{
 		Status: orchestrator.TaskStatusExecuting,
 		Payload: json.RawMessage(`{
-			"execution_complete":true,
+			"lifecycle":{"executed":true,"rework_count":0},
 			"verification":{
 				"some-gate":{"source_state":"executing","findings":[{"message":"something","status":"open"}]}
 			}
@@ -638,7 +638,7 @@ func TestDefaultMachine_Executing_ExecutionCompleteWithFindings_Done(t *testing.
 	}
 	next, ok := sm.Advance(task)
 	if !ok {
-		t.Fatal("expected advance to done when execution_complete=true, no artifact, even with findings")
+		t.Fatal("expected advance to done when lifecycle.executed=true, no artifact, even with findings")
 	}
 	if next.Status != orchestrator.TaskStatusDone {
 		t.Fatalf("expected done, got %s", next.Status)
