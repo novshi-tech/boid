@@ -447,6 +447,179 @@ func TestBroker_GitLocalExec_DeniedSubcommand(t *testing.T) {
 	}
 }
 
+// broker が git config の dangerous write を拒否することを確認する。
+func TestBroker_GitConfig_RejectsDangerousWrite(t *testing.T) {
+	repo := initGitRepo(t)
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, hookGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	cases := []struct {
+		name    string
+		args    []string
+		wantMsg string
+	}{
+		{
+			"remote url",
+			[]string{"config", "remote.origin.url", "https://evil.example.com"},
+			"not allowed",
+		},
+		{
+			"core.hooksPath",
+			[]string{"config", "core.hooksPath", "/tmp/evil"},
+			"not allowed",
+		},
+		{
+			"core.sshCommand",
+			[]string{"config", "core.sshCommand", "evil"},
+			"not allowed",
+		},
+		{
+			"filter.lfs.clean",
+			[]string{"config", "filter.lfs.clean", "cat"},
+			"not allowed",
+		},
+		{
+			"credential.helper",
+			[]string{"config", "credential.helper", "store"},
+			"not allowed",
+		},
+		{
+			"include.path",
+			[]string{"config", "include.path", "/evil"},
+			"not allowed",
+		},
+		{
+			"--global scope",
+			[]string{"config", "--global", "user.name", "evil"},
+			"not allowed",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := broker.Handle(&sandbox.ExecRequest{
+				Command: "git",
+				Cwd:     repo,
+				Token:   token,
+				Args:    tc.args,
+			})
+			if resp.ExitCode == 0 {
+				t.Fatalf("expected error for args %v", tc.args)
+			}
+			if !strings.Contains(resp.Stderr, tc.wantMsg) {
+				t.Fatalf("stderr = %q, want %q", resp.Stderr, tc.wantMsg)
+			}
+		})
+	}
+}
+
+// broker が git config --get は許可することを確認する。
+func TestBroker_GitConfig_AllowsGet(t *testing.T) {
+	repo := initGitRepo(t)
+	remote := initBareRemote(t)
+	runGit(t, repo, "remote", "add", "origin", remote)
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, hookGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     repo,
+		Token:   token,
+		Args:    []string{"config", "--get", "remote.origin.url"},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("git config --get exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stdout, remote) {
+		t.Fatalf("stdout = %q, want %q", resp.Stdout, remote)
+	}
+}
+
+// broker が user.name 等の非禁止 write を許可することを確認する。
+func TestBroker_GitConfig_AllowsUserWrite(t *testing.T) {
+	repo := initGitRepo(t)
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, hookGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     repo,
+		Token:   token,
+		Args:    []string{"config", "user.name", "Boid Test"},
+	})
+	// 0 であること（実際に書き込めること）
+	if resp.ExitCode != 0 {
+		t.Fatalf("git config user.name exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
+	}
+}
+
+// git submodule add は broker 側で拒否される。
+func TestBroker_GitSubmodule_IsRejected(t *testing.T) {
+	repo := initGitRepo(t)
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, hookGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     repo,
+		Token:   token,
+		Args:    []string{"submodule", "add", "https://github.com/evil/repo"},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatal("expected error for 'git submodule add'")
+	}
+	if !strings.Contains(resp.Stderr, "not allowed") {
+		t.Fatalf("stderr = %q, want 'not allowed'", resp.Stderr)
+	}
+}
+
+// broker が git exec 時に hardening config を付与していることを確認する。
+func TestBroker_GitBuiltin_HardeningArgs(t *testing.T) {
+	repo := initGitRepo(t)
+	remote := initBareRemote(t)
+	runGit(t, repo, "remote", "add", "origin", remote)
+	runGit(t, repo, "push", "-u", "origin", "main")
+
+	writeFile(t, filepath.Join(repo, "hardening.txt"), "hardening\n")
+	runGit(t, repo, "add", "hardening.txt")
+	runGit(t, repo, "commit", "-m", "hardening")
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, gateGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	// push が通常通り成功すること（hardening config で壊れていないことの確認）
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     repo,
+		Token:   token,
+		Git: &sandbox.GitRequest{
+			Op:     sandbox.GitOpPush,
+			Remote: "origin",
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("git push with hardening args failed: exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
+	}
+}
+
 // local exec でも cwd 制限は有効。
 func TestBroker_GitLocalExec_RestrictsCwd(t *testing.T) {
 	repo := initGitRepo(t)
