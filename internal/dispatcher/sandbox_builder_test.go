@@ -97,6 +97,72 @@ func TestBuildSandboxSpec_GitShimBindMounts(t *testing.T) {
 	}
 }
 
+// writable worktree では .git が ro 再 bind されることを確認する。
+// これにより sandbox 内プロセスが .git/config 等を直接書き換えられない。
+func TestProjectVisibilityMounts_GitROBind_Writable(t *testing.T) {
+	const effectiveDir = "/home/user/project"
+	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", true, nil, false)
+
+	var gitMount *sandbox.Mount
+	for i := range mounts {
+		if mounts[i].Target == effectiveDir+"/.git" {
+			gitMount = &mounts[i]
+			break
+		}
+	}
+	if gitMount == nil {
+		t.Fatal(".git ro re-bind mount not found in writable project mounts")
+	}
+	if !gitMount.ReadOnly {
+		t.Error(".git re-bind mount must be ReadOnly")
+	}
+	if gitMount.Source != effectiveDir+"/.git" {
+		t.Errorf("source = %q, want %q", gitMount.Source, effectiveDir+"/.git")
+	}
+	if !gitMount.DetectType {
+		t.Error(".git re-bind mount must have DetectType=true (handles file and directory)")
+	}
+	if gitMount.Guard == "" {
+		t.Error(".git re-bind mount must have a Guard")
+	}
+	if gitMount.Type != sandbox.MountBind {
+		t.Errorf("type = %v, want MountBind", gitMount.Type)
+	}
+}
+
+// read-only project では .git の ro re-bind は追加しない（既に親が read-only）。
+func TestProjectVisibilityMounts_GitROBind_ReadOnly(t *testing.T) {
+	const effectiveDir = "/home/user/project"
+	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", false, nil, false)
+
+	for _, m := range mounts {
+		if m.Target == effectiveDir+"/.git" && m.ReadOnly && m.DetectType {
+			t.Error(".git ro re-bind should not be added for read-only project")
+		}
+	}
+}
+
+// worktree モードでは origProjectDir/.git も ro で bind される。
+func TestProjectVisibilityMounts_WorktreeMode_OrigGitReadOnly(t *testing.T) {
+	const origProject = "/home/user/project"
+	const worktreeDir = "/home/user/worktrees/task1"
+	mounts := projectVisibilityMounts(origProject, worktreeDir, "/home/user", true, nil, true)
+
+	var origGitMount *sandbox.Mount
+	for i := range mounts {
+		if mounts[i].Target == origProject+"/.git" {
+			origGitMount = &mounts[i]
+			break
+		}
+	}
+	if origGitMount == nil {
+		t.Fatal("origProjectDir/.git mount not found in worktree mounts")
+	}
+	if !origGitMount.ReadOnly {
+		t.Error("origProjectDir/.git mount must be ReadOnly in worktree mode")
+	}
+}
+
 // Mounting the parent directory (rather than the single entry file) is what
 // lets hook runners like claude-code/run-agent.py find their sibling helper
 // scripts (e.g. format-stream.py) inside the sandbox.

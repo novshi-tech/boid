@@ -129,6 +129,11 @@ func classifyGitInvocation(args []string) (*gitInvocation, error) {
 			return nil, err
 		}
 		return &gitInvocation{mode: gitInvocationBrokered, request: req}, nil
+	case "config":
+		if err := validateGitConfigArgs(rest); err != nil {
+			return nil, err
+		}
+		return &gitInvocation{mode: gitInvocationLocal}, nil
 	default:
 		return nil, fmt.Errorf("git subcommand %q is not allowed", subcmd)
 	}
@@ -208,6 +213,103 @@ func parseGitPushRequest(args []string) (*GitRequest, error) {
 		}
 	}
 	return req, nil
+}
+
+// validateGitConfigArgs validates arguments for "git config ...".
+// Scope flags (--global, --system, --file, --worktree) are always rejected.
+// Read-mode flags (--get, --list, etc.) are always allowed.
+// Write-mode calls are allowed only when the key does not match a forbidden prefix.
+func validateGitConfigArgs(args []string) error {
+	for _, arg := range args {
+		switch arg {
+		case "--global", "--system", "--worktree":
+			return fmt.Errorf("git config %q is not allowed", arg)
+		}
+		if strings.HasPrefix(arg, "--file") || arg == "-f" {
+			return fmt.Errorf("git config %q is not allowed", arg)
+		}
+		if strings.HasPrefix(arg, "--blob") {
+			return fmt.Errorf("git config %q is not allowed", arg)
+		}
+	}
+
+	// Read-mode flags: permit immediately (scope flags already rejected above).
+	for _, arg := range args {
+		switch arg {
+		case "--get", "--get-all", "--get-regexp", "--get-urlmatch",
+			"--list", "-l", "--name-only", "--null", "-z":
+			return nil
+		}
+	}
+
+	// Write or unset: find the key and validate it.
+	for i, arg := range args {
+		switch arg {
+		case "--unset", "--unset-all":
+			if i+1 < len(args) {
+				return checkForbiddenConfigKey(args[i+1])
+			}
+			return nil
+		case "--add", "--replace-all":
+			if i+1 < len(args) {
+				return checkForbiddenConfigKey(args[i+1])
+			}
+			return nil
+		case "--remove-section":
+			if i+1 < len(args) {
+				return checkForbiddenConfigSection(args[i+1])
+			}
+			return nil
+		case "--rename-section":
+			if i+1 < len(args) {
+				return checkForbiddenConfigSection(args[i+1])
+			}
+			return nil
+		}
+		if !strings.HasPrefix(arg, "-") {
+			return checkForbiddenConfigKey(arg)
+		}
+	}
+	return nil
+}
+
+// checkForbiddenConfigKey rejects writes to sensitive git config keys.
+func checkForbiddenConfigKey(key string) error {
+	k := strings.ToLower(key)
+	if strings.HasPrefix(k, "remote.") {
+		for _, suffix := range []string{".url", ".pushurl", ".fetch", ".push"} {
+			if strings.HasSuffix(k, suffix) {
+				return fmt.Errorf("git config key %q is not allowed", key)
+			}
+		}
+		return nil
+	}
+	switch k {
+	case "core.hookspath", "core.sshcommand", "core.editor", "core.attributesfile":
+		return fmt.Errorf("git config key %q is not allowed", key)
+	}
+	for _, prefix := range []string{"filter.", "url.", "credential.", "include.", "includeif."} {
+		if strings.HasPrefix(k, prefix) {
+			return fmt.Errorf("git config key %q is not allowed", key)
+		}
+	}
+	return nil
+}
+
+// checkForbiddenConfigSection rejects --remove-section / --rename-section for
+// sections that contain forbidden keys.
+func checkForbiddenConfigSection(section string) error {
+	s := strings.ToLower(section)
+	for _, prefix := range []string{"filter.", "url.", "credential.", "include.", "includeif."} {
+		if strings.HasPrefix(s, prefix) || s == strings.TrimSuffix(prefix, ".") {
+			return fmt.Errorf("git config section %q is not allowed", section)
+		}
+	}
+	// remote.* section contains url/pushurl/fetch/push keys → block.
+	if strings.HasPrefix(s, "remote.") || s == "remote" {
+		return fmt.Errorf("git config section %q is not allowed", section)
+	}
+	return nil
 }
 
 func parseGitSyncFlags(req *GitRequest, op GitOp, args []string) ([]string, error) {

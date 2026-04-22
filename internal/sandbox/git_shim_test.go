@@ -70,6 +70,67 @@ func TestClassifyGitInvocation(t *testing.T) {
 			args:    []string{"fetch", "origin", "--prune"},
 			wantErr: true,
 		},
+		// git config cases
+		{
+			name:     "config --get remote url allowed",
+			args:     []string{"config", "--get", "remote.origin.url"},
+			wantMode: gitInvocationLocal,
+		},
+		{
+			name:     "config --list allowed",
+			args:     []string{"config", "--list"},
+			wantMode: gitInvocationLocal,
+		},
+		{
+			name:     "config user.name write allowed",
+			args:     []string{"config", "user.name", "Foo"},
+			wantMode: gitInvocationLocal,
+		},
+		{
+			name:    "config remote.origin.url write denied",
+			args:    []string{"config", "remote.origin.url", "https://evil"},
+			wantErr: true,
+		},
+		{
+			name:    "config core.hooksPath write denied",
+			args:    []string{"config", "core.hooksPath", "/tmp"},
+			wantErr: true,
+		},
+		{
+			name:    "config core.sshCommand write denied",
+			args:    []string{"config", "core.sshCommand", "evil"},
+			wantErr: true,
+		},
+		{
+			name:    "config filter.lfs.clean write denied",
+			args:    []string{"config", "filter.lfs.clean", "cat"},
+			wantErr: true,
+		},
+		{
+			name:    "config --global denied",
+			args:    []string{"config", "--global", "user.name", "Foo"},
+			wantErr: true,
+		},
+		{
+			name:    "config --system denied",
+			args:    []string{"config", "--system", "user.name", "Foo"},
+			wantErr: true,
+		},
+		{
+			name:    "config credential.helper write denied",
+			args:    []string{"config", "credential.helper", "store"},
+			wantErr: true,
+		},
+		{
+			name:    "config include.path write denied",
+			args:    []string{"config", "include.path", "/evil"},
+			wantErr: true,
+		},
+		{
+			name:    "deny submodule",
+			args:    []string{"submodule", "add", "https://evil"},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

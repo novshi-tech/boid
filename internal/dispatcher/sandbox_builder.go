@@ -326,14 +326,37 @@ func projectVisibilityMounts(
 		})
 	}
 
-	// 6) worktree-mode .git re-expose.
+	// 6) .git ro re-bind: prevents .git/config, .git/hooks/*, etc. from being
+	// modified directly inside the sandbox. The broker runs in a separate mount
+	// namespace and is unaffected, so broker-mediated git operations continue to
+	// work. DetectType handles both the directory case (main worktrees) and the
+	// file case (linked worktrees where .git is a gitdir pointer).
+	// Only needed when the effective dir is writable; read-only mounts already
+	// protect .git.
+	if writable {
+		gitEntry := effectiveDir + "/.git"
+		out = append(out, sandbox.Mount{
+			Source:     gitEntry,
+			Target:     gitEntry,
+			Type:       sandbox.MountBind,
+			ReadOnly:   true,
+			DetectType: true,
+			Guard:      existsGuardExpr(gitEntry),
+		})
+	}
+
+	// 7) worktree-mode: re-expose origProjectDir/.git read-only so the linked
+	// worktree's gitdir pointer can be resolved (e.g. git status, log) while
+	// preventing direct writes to the main .git/config. Always read-only since
+	// the broker handles all writes outside the sandbox mount namespace.
 	if worktree {
 		gitDir := origProjectDir + "/.git"
 		out = append(out, sandbox.Mount{
-			Source: gitDir,
-			Target: gitDir,
-			Type:   sandbox.MountBind,
-			Guard:  dirGuardExpr(gitDir),
+			Source:   gitDir,
+			Target:   gitDir,
+			Type:     sandbox.MountBind,
+			ReadOnly: true,
+			Guard:    dirGuardExpr(gitDir),
 		})
 	}
 
@@ -626,6 +649,10 @@ func sortedKeys[V any](m map[string]V) []string {
 
 func dirGuardExpr(dir string) string {
 	return "-d " + shellQuoteDir(dir)
+}
+
+func existsGuardExpr(path string) string {
+	return "-e " + shellQuoteDir(path)
 }
 
 func shellQuoteDir(s string) string {

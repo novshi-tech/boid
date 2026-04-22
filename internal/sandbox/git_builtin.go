@@ -239,7 +239,7 @@ func execGitBuiltin(req *GitRequest, binding *GitBinding) *ExecResponse {
 
 	cmd := exec.Command(realGitBinary(), args...)
 	cmd.Dir = binding.WorktreeRoot
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ATTR_NOSYSTEM=1")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -296,7 +296,12 @@ func resolveGitRemote(req *GitRequest, binding *GitBinding) (string, GitRemote, 
 }
 
 func buildGitBuiltinArgs(req *GitRequest, binding *GitBinding, remoteName string, remote GitRemote) ([]string, error) {
-	base := []string{"-c", "core.hooksPath=/dev/null"}
+	base := []string{
+		"-c", "core.hooksPath=/dev/null",
+		"-c", "core.sshCommand=false",
+		"-c", "core.attributesfile=/dev/null",
+		"-c", "core.editor=false",
+	}
 	switch req.Op {
 	case GitOpFetch:
 		args := append(base, "fetch")
