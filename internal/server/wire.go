@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/api/auth"
 	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -32,6 +33,7 @@ type appRuntime struct {
 	taskSvc        *api.TaskAppService
 	webSvc         *api.WebAppService
 	workflow       *api.TaskWorkflowService
+	authStore      *auth.Store
 }
 
 func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) (*orchestrator.ProjectStore, error) {
@@ -214,6 +216,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		taskSvc:        taskSvc,
 		webSvc:         webSvc,
 		workflow:       workflow,
+		authStore:      auth.NewStore(srv.db),
 	}, nil
 }
 

@@ -13,6 +13,7 @@ import (
 type Config struct {
 	GC           GCConfig           `yaml:"gc"`
 	StateMachine StateMachineConfig `yaml:"state_machine"`
+	Web          WebConfig          `yaml:"web"`
 }
 
 // GCConfig holds garbage collection settings.
@@ -25,6 +26,11 @@ type GCConfig struct {
 // StateMachineConfig holds state machine settings.
 type StateMachineConfig struct {
 	ReworkLimit int `yaml:"-"`
+}
+
+// WebConfig holds web UI settings.
+type WebConfig struct {
+	PublicURL string `yaml:"public_url"`
 }
 
 // DefaultConfig returns the default boid configuration.
@@ -84,6 +90,9 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		StateMachine struct {
 			ReworkLimit *int `yaml:"rework_limit"`
 		} `yaml:"state_machine"`
+		Web struct {
+			PublicURL string `yaml:"public_url"`
+		} `yaml:"web"`
 	}
 	if err := value.Decode(&raw); err != nil {
 		return err
@@ -113,6 +122,8 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	if raw.StateMachine.ReworkLimit != nil {
 		c.StateMachine.ReworkLimit = *raw.StateMachine.ReworkLimit
 	}
+
+	c.Web.PublicURL = raw.Web.PublicURL
 
 	return nil
 }
