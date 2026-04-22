@@ -186,16 +186,23 @@ func TestApplyIsIdempotent(t *testing.T) {
 	if err := Apply(d.Conn); err != nil {
 		t.Fatalf("first apply: %v", err)
 	}
+	var firstCount int
+	if err := d.Conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&firstCount); err != nil {
+		t.Fatalf("count after first apply: %v", err)
+	}
+	if firstCount == 0 {
+		t.Fatal("expected at least one migration to be applied on first run")
+	}
+
 	if err := Apply(d.Conn); err != nil {
 		t.Fatalf("second apply: %v", err)
 	}
-
-	var count int
-	if err := d.Conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
-		t.Fatalf("count schema_migrations: %v", err)
+	var secondCount int
+	if err := d.Conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&secondCount); err != nil {
+		t.Fatalf("count after second apply: %v", err)
 	}
-	if count != 17 {
-		t.Fatalf("schema_migrations count = %d, want 17", count)
+	if secondCount != firstCount {
+		t.Fatalf("schema_migrations count differs after idempotent apply: first=%d, second=%d", firstCount, secondCount)
 	}
 }
 
