@@ -487,8 +487,11 @@ func applyProxyEnv(env map[string]string, port int) {
 //   - task.yaml          (from JobSpec.Task)
 //   - instructions.yaml  (from JobSpec.Instruction)
 //   - environment.yaml   (derived from Visibility + permissions)
-//   - payload.json/yaml  (only for interactive agents — PrimaryInput fed as file
-//     instead of stdin)
+//   - payload.json/yaml  (whenever PrimaryInput is present — agents read these
+//     files to see verification findings / artifact / tasks regardless of
+//     interactive mode. non-interactive hooks also receive PrimaryInput via
+//     stdin so wrapper scripts (e.g. run-agent.py) can use it for session
+//     resolution, but the agent process itself reads context files.)
 func contextFiles(
 	homeDir string,
 	task *orchestrator.TaskSnapshot,
@@ -518,7 +521,7 @@ func contextFiles(
 		Path:    contextDir + "/environment.yaml",
 		Content: buildEnvironmentYAML(visibility, workspacePeers, policies, proxyEnabled),
 	})
-	if inst != nil && inst.Interactive && len(primaryInput) > 0 {
+	if len(primaryInput) > 0 {
 		out = append(out, sandbox.FileWrite{
 			Path:    contextDir + "/payload.json",
 			Content: string(primaryInput),
