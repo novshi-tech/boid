@@ -578,59 +578,59 @@ func TestStateMachine_Apply_IgnoresConditionRules(t *testing.T) {
 	}
 }
 
-// ---- DefaultMachine: auto transitions from executing (execution_complete) ----
+// ---- DefaultMachine: auto transitions from executing (lifecycle.executed) ----
 
-func TestDefaultMachine_Executing_EmptyPayload_ExecutionComplete_Done(t *testing.T) {
-	// execution_complete=true かつ artifact も tasks も無い → done
+func TestDefaultMachine_Executing_EmptyPayload_LifecycleExecuted_Done(t *testing.T) {
+	// lifecycle.executed=true かつ artifact も tasks も無い → done
 	sm := orchestrator.DefaultMachine()
 	task := &orchestrator.Task{
 		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"execution_complete":true}`),
+		Payload: json.RawMessage(`{"lifecycle":{"executed":true,"rework_count":0}}`),
 	}
 	next, ok := sm.Advance(task)
 	if !ok {
-		t.Fatal("expected advance to done when execution_complete=true and no artifact/tasks")
+		t.Fatal("expected advance to done when lifecycle.executed=true and no artifact/tasks")
 	}
 	if next.Status != orchestrator.TaskStatusDone {
 		t.Fatalf("expected done, got %s", next.Status)
 	}
 }
 
-func TestDefaultMachine_Executing_ExecutionCompleteWithArtifact_Verifying(t *testing.T) {
-	// execution_complete=true かつ artifact あり → verifying (既存ルート維持)
+func TestDefaultMachine_Executing_LifecycleExecutedWithArtifact_Verifying(t *testing.T) {
+	// lifecycle.executed=true かつ artifact あり → verifying (既存ルート維持)
 	sm := orchestrator.DefaultMachine()
 	task := &orchestrator.Task{
 		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"execution_complete":true,"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"}}`),
+		Payload: json.RawMessage(`{"lifecycle":{"executed":true,"rework_count":0},"artifact":{"pr_url":"https://github.com/owner/repo/pull/1"}}`),
 	}
 	next, ok := sm.Advance(task)
 	if !ok {
-		t.Fatal("expected advance to verifying when execution_complete=true and artifact present")
+		t.Fatal("expected advance to verifying when lifecycle.executed=true and artifact present")
 	}
 	if next.Status != orchestrator.TaskStatusVerifying {
 		t.Fatalf("expected verifying, got %s", next.Status)
 	}
 }
 
-func TestDefaultMachine_Executing_NoExecutionComplete_NoTransition(t *testing.T) {
-	// execution_complete 未設定、成果物も無し → executing のまま（早期遷移しない）
+func TestDefaultMachine_Executing_NoLifecycleExecuted_NoTransition(t *testing.T) {
+	// lifecycle.executed 未設定、成果物も無し → executing のまま（早期遷移しない）
 	sm := orchestrator.DefaultMachine()
 	task := &orchestrator.Task{
 		Status:  orchestrator.TaskStatusExecuting,
 		Payload: json.RawMessage(`{}`),
 	}
 	if _, ok := sm.Advance(task); ok {
-		t.Fatal("expected no advance when execution_complete not set and no artifact/tasks")
+		t.Fatal("expected no advance when lifecycle.executed not set and no artifact/tasks")
 	}
 }
 
-func TestDefaultMachine_Executing_ExecutionCompleteWithFindings_Done(t *testing.T) {
+func TestDefaultMachine_Executing_LifecycleExecutedWithFindings_Done(t *testing.T) {
 	// 空成果物時は findings があっても done（成果物が無いので rework する対象が無い）
 	sm := orchestrator.DefaultMachine()
 	task := &orchestrator.Task{
 		Status: orchestrator.TaskStatusExecuting,
 		Payload: json.RawMessage(`{
-			"execution_complete":true,
+			"lifecycle":{"executed":true,"rework_count":0},
 			"verification":{
 				"some-gate":{"source_state":"executing","findings":[{"message":"something","status":"open"}]}
 			}
@@ -638,7 +638,7 @@ func TestDefaultMachine_Executing_ExecutionCompleteWithFindings_Done(t *testing.
 	}
 	next, ok := sm.Advance(task)
 	if !ok {
-		t.Fatal("expected advance to done when execution_complete=true, no artifact, even with findings")
+		t.Fatal("expected advance to done when lifecycle.executed=true, no artifact, even with findings")
 	}
 	if next.Status != orchestrator.TaskStatusDone {
 		t.Fatalf("expected done, got %s", next.Status)
@@ -663,5 +663,265 @@ func TestJobCompletedNotAnAction(t *testing.T) {
 		if err == nil {
 			t.Errorf("job_completed from %q should not transition (got no error)", status)
 		}
+	}
+}
+
+// ---- NewMachine: rework limit abort ----
+
+func TestNewMachine_ReworkLimit_AbortOnExceed(t *testing.T) {
+	// rework_count=6 > limit=5 → aborted
+	sm := orchestrator.NewMachine(5)
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusReworking,
+		Payload: json.RawMessage(`{"lifecycle":{"executed":false,"rework_count":6},"artifact":{"pr_url":"https://..."}}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to aborted when rework_count exceeds limit")
+	}
+	if next.Status != orchestrator.TaskStatusAborted {
+		t.Fatalf("expected aborted, got %s", next.Status)
+	}
+}
+
+func TestNewMachine_ReworkLimit_NoAbortAtLimit(t *testing.T) {
+	// rework_count=5 == limit=5 → does NOT abort (> not >=)
+	sm := orchestrator.NewMachine(5)
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusReworking,
+		Payload: json.RawMessage(`{
+			"lifecycle":{"executed":false,"rework_count":5},
+			"artifact":{"pr_url":"https://..."},
+			"verification":{
+				"pr-verify":{"source_state":"reworking","findings":[{"message":"CI failing","status":"open"}]}
+			}
+		}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance (self-loop) when rework_count equals limit")
+	}
+	if next.Status != orchestrator.TaskStatusReworking {
+		t.Fatalf("expected reworking (self-loop), got %s", next.Status)
+	}
+}
+
+func TestNewMachine_ReworkLimit_ActionPayload(t *testing.T) {
+	// abort due to rework_limit_exceeded should carry code in action payload
+	sm := orchestrator.NewMachine(2)
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusReworking,
+		Payload: json.RawMessage(`{"lifecycle":{"executed":false,"rework_count":3}}`),
+	}
+	outcome := sm.AdvanceFull(task)
+	if outcome == nil {
+		t.Fatal("expected AdvanceFull to return outcome")
+	}
+	if outcome.Task.Status != orchestrator.TaskStatusAborted {
+		t.Fatalf("expected aborted, got %s", outcome.Task.Status)
+	}
+	var m map[string]string
+	if err := json.Unmarshal(outcome.ActionPayload, &m); err != nil {
+		t.Fatalf("failed to parse action payload: %v", err)
+	}
+	if m["code"] != "rework_limit_exceeded" {
+		t.Errorf("expected code=rework_limit_exceeded, got %q", m["code"])
+	}
+}
+
+func TestNewMachine_ReworkLimit_ZeroReworkCount_NoAbort(t *testing.T) {
+	// rework_count=0 → never exceeds limit
+	sm := orchestrator.NewMachine(5)
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusReworking,
+		Payload: json.RawMessage(`{"lifecycle":{"executed":false,"rework_count":0},"artifact":{"pr_url":"https://..."}}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to verifying (no findings)")
+	}
+	if next.Status == orchestrator.TaskStatusAborted {
+		t.Fatal("expected not aborted when rework_count=0")
+	}
+}
+
+// ---- NewMachine: fatal finding abort ----
+
+func TestNewMachine_FatalFinding_AbortFromReworking(t *testing.T) {
+	sm := orchestrator.NewMachine(5)
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusReworking,
+		Payload: json.RawMessage(`{
+			"lifecycle":{"executed":false,"rework_count":1},
+			"verification":{
+				"pr-verify":{"source_state":"reworking","findings":[{"message":"agent exited with no commit","status":"open","severity":"fatal"}]}
+			}
+		}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to aborted on fatal finding")
+	}
+	if next.Status != orchestrator.TaskStatusAborted {
+		t.Fatalf("expected aborted, got %s", next.Status)
+	}
+}
+
+func TestNewMachine_FatalFinding_AbortFromVerifying(t *testing.T) {
+	sm := orchestrator.NewMachine(5)
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusVerifying,
+		Payload: json.RawMessage(`{
+			"verification":{
+				"gate-a":{"source_state":"verifying","findings":[{"message":"critical failure","status":"open","severity":"fatal"}]}
+			}
+		}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to aborted on fatal finding from verifying")
+	}
+	if next.Status != orchestrator.TaskStatusAborted {
+		t.Fatalf("expected aborted, got %s", next.Status)
+	}
+}
+
+func TestNewMachine_FatalFinding_AbortFromExecuting(t *testing.T) {
+	sm := orchestrator.NewMachine(5)
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(`{
+			"artifact":{"pr_url":"https://..."},
+			"verification":{
+				"pre-check":{"source_state":"executing","findings":[{"message":"unrecoverable error","status":"open","severity":"fatal"}]}
+			}
+		}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to aborted on fatal finding from executing")
+	}
+	if next.Status != orchestrator.TaskStatusAborted {
+		t.Fatalf("expected aborted, got %s", next.Status)
+	}
+}
+
+func TestNewMachine_FatalFinding_ActionPayload(t *testing.T) {
+	// fatal finding abort should carry code=fatal_finding and message in action payload
+	sm := orchestrator.NewMachine(5)
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusVerifying,
+		Payload: json.RawMessage(`{
+			"verification":{
+				"gate-a":{"source_state":"verifying","findings":[{"message":"the fatal message","status":"open","severity":"fatal"}]}
+			}
+		}`),
+	}
+	outcome := sm.AdvanceFull(task)
+	if outcome == nil {
+		t.Fatal("expected AdvanceFull to return outcome")
+	}
+	if outcome.Task.Status != orchestrator.TaskStatusAborted {
+		t.Fatalf("expected aborted, got %s", outcome.Task.Status)
+	}
+	var m map[string]string
+	if err := json.Unmarshal(outcome.ActionPayload, &m); err != nil {
+		t.Fatalf("failed to parse action payload: %v", err)
+	}
+	if m["code"] != "fatal_finding" {
+		t.Errorf("expected code=fatal_finding, got %q", m["code"])
+	}
+	if m["message"] != "the fatal message" {
+		t.Errorf("expected message=%q, got %q", "the fatal message", m["message"])
+	}
+}
+
+func TestNewMachine_FatalFinding_ResolvedDoesNotAbort(t *testing.T) {
+	// fatal finding that is resolved should NOT trigger abort
+	sm := orchestrator.NewMachine(5)
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusVerifying,
+		Payload: json.RawMessage(`{
+			"artifact":{"pr_url":"https://..."},
+			"verification":{
+				"gate-a":{"source_state":"verifying","findings":[{"message":"was fatal but fixed","status":"resolved","severity":"fatal"}]}
+			}
+		}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to done (no open fatal findings)")
+	}
+	if next.Status == orchestrator.TaskStatusAborted {
+		t.Fatal("expected not aborted when fatal finding is resolved")
+	}
+}
+
+func TestNewMachine_FatalFinding_TakesPriorityOverReworkLimit(t *testing.T) {
+	// fatal finding abort fires before rework_limit abort (rule order check)
+	sm := orchestrator.NewMachine(5)
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusReworking,
+		Payload: json.RawMessage(`{
+			"lifecycle":{"executed":false,"rework_count":6},
+			"verification":{
+				"gate-a":{"source_state":"reworking","findings":[{"message":"fatal","status":"open","severity":"fatal"}]}
+			}
+		}`),
+	}
+	outcome := sm.AdvanceFull(task)
+	if outcome == nil {
+		t.Fatal("expected outcome")
+	}
+	if outcome.Task.Status != orchestrator.TaskStatusAborted {
+		t.Fatalf("expected aborted, got %s", outcome.Task.Status)
+	}
+	var m map[string]string
+	if err := json.Unmarshal(outcome.ActionPayload, &m); err != nil {
+		t.Fatalf("failed to parse action payload: %v", err)
+	}
+	// fatal_finding rule fires first
+	if m["code"] != "fatal_finding" {
+		t.Errorf("expected fatal_finding to take priority, got code=%q", m["code"])
+	}
+}
+
+// ---- DefaultMachine: default rework_limit ----
+
+func TestDefaultMachine_DefaultReworkLimit_NotAbortedAtFive(t *testing.T) {
+	// デフォルト rework_limit=5: rework_count=5 は abort しない
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusReworking,
+		Payload: json.RawMessage(`{
+			"lifecycle":{"executed":false,"rework_count":5},
+			"artifact":{"pr_url":"https://..."},
+			"verification":{
+				"pr-verify":{"source_state":"reworking","findings":[{"message":"still failing","status":"open"}]}
+			}
+		}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance (self-loop or similar)")
+	}
+	if next.Status == orchestrator.TaskStatusAborted {
+		t.Fatal("expected not aborted at rework_count=5 (limit=5, needs >5)")
+	}
+}
+
+func TestDefaultMachine_DefaultReworkLimit_AbortedAtSix(t *testing.T) {
+	// デフォルト rework_limit=5: rework_count=6 は abort する
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status:  orchestrator.TaskStatusReworking,
+		Payload: json.RawMessage(`{"lifecycle":{"executed":false,"rework_count":6}}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance to aborted")
+	}
+	if next.Status != orchestrator.TaskStatusAborted {
+		t.Fatalf("expected aborted at rework_count=6, got %s", next.Status)
 	}
 }

@@ -245,3 +245,112 @@ func TestAdditionalBindingMounts_OptionalWithRWMode(t *testing.T) {
 		t.Error("rw optional binding must have a Guard expression")
 	}
 }
+
+// contextFiles must materialize payload.yaml / payload.json for every hook
+// that carries PrimaryInput, regardless of the Instruction.Interactive flag.
+// Regression: once the condition was `inst.Interactive && len(PrimaryInput)>0`
+// which silently stripped payload from non-interactive agents such as the
+// rework hook — leaving agents blind to verification findings. See task
+// 2219755f post-mortem.
+func TestContextFiles_PayloadWrittenForNonInteractiveHook(t *testing.T) {
+	inst := &orchestrator.RoutedInstruction{
+		Role:        "rework",
+		Type:        "rework",
+		Consumer:    "claude-code",
+		Message:     "verification findings に記載された問題を修正せよ。",
+		Interactive: false,
+	}
+	primary := []byte(`{"verification":{"findings":[{"status":"open","message":"failure"}]}}`)
+
+	files := contextFiles(
+		"/home/agent",
+		nil,
+		inst,
+		primary,
+		orchestrator.Visibility{},
+		nil,
+		nil,
+		false,
+	)
+
+	var gotJSON, gotYAML bool
+	for _, f := range files {
+		switch f.Path {
+		case "/home/agent/.boid/context/payload.json":
+			gotJSON = true
+			if f.Content != string(primary) {
+				t.Errorf("payload.json content = %q, want %q", f.Content, string(primary))
+			}
+		case "/home/agent/.boid/context/payload.yaml":
+			gotYAML = true
+			if f.Content == "" {
+				t.Error("payload.yaml content is empty")
+			}
+		}
+	}
+	if !gotJSON {
+		t.Error("payload.json must be written for non-interactive hooks when PrimaryInput is present")
+	}
+	if !gotYAML {
+		t.Error("payload.yaml must be written for non-interactive hooks when PrimaryInput is present")
+	}
+}
+
+func TestContextFiles_PayloadWrittenForInteractiveHook(t *testing.T) {
+	inst := &orchestrator.RoutedInstruction{
+		Role:        "main",
+		Type:        "execution",
+		Consumer:    "claude-code",
+		Interactive: true,
+	}
+	primary := []byte(`{"artifact":null}`)
+
+	files := contextFiles(
+		"/home/agent",
+		nil,
+		inst,
+		primary,
+		orchestrator.Visibility{},
+		nil,
+		nil,
+		false,
+	)
+
+	var gotJSON bool
+	for _, f := range files {
+		if f.Path == "/home/agent/.boid/context/payload.json" {
+			gotJSON = true
+			break
+		}
+	}
+	if !gotJSON {
+		t.Error("payload.json must be written for interactive hooks when PrimaryInput is present")
+	}
+}
+
+func TestContextFiles_NoPayloadFilesWhenPrimaryInputEmpty(t *testing.T) {
+	inst := &orchestrator.RoutedInstruction{
+		Role:        "main",
+		Type:        "execution",
+		Consumer:    "claude-code",
+		Interactive: true,
+	}
+
+	files := contextFiles(
+		"/home/agent",
+		nil,
+		inst,
+		nil,
+		orchestrator.Visibility{},
+		nil,
+		nil,
+		false,
+	)
+
+	for _, f := range files {
+		if f.Path == "/home/agent/.boid/context/payload.json" ||
+			f.Path == "/home/agent/.boid/context/payload.yaml" {
+			t.Errorf("unexpected payload file written with empty PrimaryInput: %s", f.Path)
+		}
+	}
+}

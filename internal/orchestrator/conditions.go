@@ -1,15 +1,27 @@
 package orchestrator
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
-// TraitBool returns true if the given trait key exists and its value is the JSON literal true.
+// TraitBool returns true if the given trait key exists and its value is the
+// JSON literal true. The key may be a dot-separated path (e.g.
+// "lifecycle.executed") for nested object access.
 func TraitBool(payload json.RawMessage, trait string) bool {
+	head, tail, nested := strings.Cut(trait, ".")
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(payload, &m); err != nil {
 		return false
 	}
-	v, ok := m[trait]
-	return ok && string(v) == "true"
+	v, ok := m[head]
+	if !ok {
+		return false
+	}
+	if !nested {
+		return string(v) == "true"
+	}
+	return TraitBool(v, tail)
 }
 
 // TraitNonNull returns true if the given trait key exists and is not null in the payload.
@@ -96,13 +108,61 @@ func TasksReady(payload json.RawMessage) bool {
 
 // Finding represents a single verification finding with a lifecycle status.
 type Finding struct {
-	Message string `json:"message"`
-	Status  string `json:"status"` // "open" or "resolved"
+	Message  string `json:"message"`
+	Status   string `json:"status"`             // "open" or "resolved"
+	Severity string `json:"severity,omitempty"` // "normal" (default) or "fatal"
 }
 
 type verificationEntry struct {
 	SourceState string    `json:"source_state"`
 	Findings    []Finding `json:"findings"`
+}
+
+// LifecycleReworkCount returns the rework_count value from the lifecycle trait in the payload.
+// Returns 0 if the lifecycle trait is absent or malformed.
+func LifecycleReworkCount(payload json.RawMessage) int {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return 0
+	}
+	raw, ok := m["lifecycle"]
+	if !ok {
+		return 0
+	}
+	var lc struct {
+		ReworkCount int `json:"rework_count"`
+	}
+	if err := json.Unmarshal(raw, &lc); err != nil {
+		return 0
+	}
+	return lc.ReworkCount
+}
+
+// AnyFatalFindingOpen returns a condition that is true when any verification
+// finding has severity=fatal and status=open, across all source_states.
+func AnyFatalFindingOpen() TransitionCondition {
+	return func(payload json.RawMessage) bool {
+		for _, entry := range verificationSubkeys(payload) {
+			for _, f := range entry.Findings {
+				if f.Status == "open" && f.Severity == "fatal" {
+					return true
+				}
+			}
+		}
+		return false
+	}
+}
+
+// firstFatalFindingMessage returns the message of the first fatal+open finding.
+func firstFatalFindingMessage(payload json.RawMessage) string {
+	for _, entry := range verificationSubkeys(payload) {
+		for _, f := range entry.Findings {
+			if f.Status == "open" && f.Severity == "fatal" {
+				return f.Message
+			}
+		}
+	}
+	return ""
 }
 
 func verificationSubkeys(payload json.RawMessage) map[string]verificationEntry {

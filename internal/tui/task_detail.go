@@ -695,7 +695,7 @@ func (s *TaskDetailScreen) ShortHelp() string {
 //
 // "done" は意図的に除外する。executing から done への遷移は single keypress で
 // 走らせると、実行中の hook を誤って停止させて worktree/branch ごと破棄してしまう。
-// done は execution_complete による自動遷移、あるいは将来導入する専用モーダル経由で
+// done は lifecycle.executed による自動遷移、あるいは将来導入する専用モーダル経由で
 // 行う設計にする。
 func assignKeys(actions []string) map[rune]string {
 	m := map[rune]string{}

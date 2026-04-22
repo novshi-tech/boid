@@ -378,7 +378,15 @@ func (b *Broker) execCommand(req *ExecRequest, def CommandDef, entry *tokenEntry
 		return &ExecResponse{ExitCode: 1, Stderr: "arguments not allowed"}
 	}
 
-	cmd := exec.Command(def.Path, req.Args...)
+	binary := def.Path
+	if binary == "" {
+		resolved, err := exec.LookPath(def.Name)
+		if err != nil {
+			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("host_commands.%s: unable to locate %q in PATH: %v", def.Name, def.Name, err)}
+		}
+		binary = resolved
+	}
+	cmd := exec.Command(binary, req.Args...)
 	cwd := resolveHostCommandCwd(req.Cwd, entry)
 	if cwd != "" {
 		cmd.Dir = cwd

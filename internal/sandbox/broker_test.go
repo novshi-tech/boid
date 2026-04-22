@@ -300,6 +300,56 @@ func TestBroker_Unregister(t *testing.T) {
 	}
 }
 
+// TestBroker_EmptyPathFallsBackToName covers the zero-config DSL forms
+// (`host_commands: [gh, aws]` and `host_commands: { gh: }`) where Path is
+// left blank. The broker must resolve the binary via $PATH using Name so
+// that these declarations actually run.
+func TestBroker_EmptyPathFallsBackToName(t *testing.T) {
+	broker := &sandbox.Broker{}
+	token := broker.Register(map[string]sandbox.CommandDef{
+		"echo": {
+			Name:            "echo",
+			AllowedPatterns: []string{"*"},
+		},
+	}, nil, testCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "echo",
+		Args:    []string{"ok"},
+		Token:   token,
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if resp.Stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", resp.Stdout, "ok\n")
+	}
+}
+
+// TestBroker_EmptyPathUnresolvableNameReportsClearError covers the case
+// where Path is blank and Name is not on $PATH. The broker must surface a
+// clear error instead of an opaque fork/exec failure.
+func TestBroker_EmptyPathUnresolvableNameReportsClearError(t *testing.T) {
+	broker := &sandbox.Broker{}
+	token := broker.Register(map[string]sandbox.CommandDef{
+		"boid-nonexistent-binary-xyzzy": {
+			Name:            "boid-nonexistent-binary-xyzzy",
+			AllowedPatterns: []string{"*"},
+		},
+	}, nil, testCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid-nonexistent-binary-xyzzy",
+		Token:   token,
+	})
+	if resp.ExitCode != 1 {
+		t.Errorf("exit code = %d, want 1", resp.ExitCode)
+	}
+	if !strings.Contains(resp.Stderr, "boid-nonexistent-binary-xyzzy") {
+		t.Errorf("expected stderr to mention the command name, got: %q", resp.Stderr)
+	}
+}
+
 func TestBroker_PerCommandEnv(t *testing.T) {
 	broker := &sandbox.Broker{}
 	token := broker.Register(map[string]sandbox.CommandDef{

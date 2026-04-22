@@ -1176,6 +1176,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			Type:       "auto_advance",
 			FromStatus: prevStatus,
 			ToStatus:   result.NewStatus,
+			Payload:    result.ActionPayload,
 		}
 		current.Status = result.NewStatus
 		if err := s.Tx.WithinTx(func(tx TxStore) error {

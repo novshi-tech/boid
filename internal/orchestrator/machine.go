@@ -3,17 +3,27 @@ package orchestrator
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
+
+	"github.com/novshi-tech/boid/internal/config"
 )
 
 // TransitionCondition evaluates whether a condition-based transition should fire.
 type TransitionCondition func(payload json.RawMessage) bool
 
 type Rule struct {
-	Action     string // manual transition trigger (mutually exclusive with Condition)
-	FromStatus string // "*" matches any
-	ToStatus   string
-	Condition  TransitionCondition // auto transition trigger (mutually exclusive with Action)
-	Manual     bool                // true if the action is user-initiated (shown in available_actions)
+	Action          string // manual transition trigger (mutually exclusive with Condition)
+	FromStatus      string // "*" matches any
+	ToStatus        string
+	Condition       TransitionCondition                     // auto transition trigger (mutually exclusive with Action)
+	Manual          bool                                    // true if the action is user-initiated (shown in available_actions)
+	ActionPayloadFn func(json.RawMessage) json.RawMessage  // optional; generates action.Payload when the rule fires
+}
+
+// AdvanceOutcome carries the result of a successful condition-based transition.
+type AdvanceOutcome struct {
+	Task          *Task
+	ActionPayload json.RawMessage // nil unless the fired rule has ActionPayloadFn
 }
 
 type StateMachine struct {
@@ -37,9 +47,9 @@ func (sm *StateMachine) Apply(task *Task, action *Action) (*Task, error) {
 	return nil, fmt.Errorf("no transition for action %q from status %q", action.Type, task.Status)
 }
 
-// Advance evaluates condition-based rules for the task's current status and payload.
-// Returns the transitioned task and true if a condition was met, or (nil, false) otherwise.
-func (sm *StateMachine) Advance(task *Task) (*Task, bool) {
+// AdvanceFull evaluates condition-based rules for the task's current status and payload.
+// Returns an AdvanceOutcome (including optional action payload) if a condition was met, or nil otherwise.
+func (sm *StateMachine) AdvanceFull(task *Task) *AdvanceOutcome {
 	for _, r := range sm.Rules {
 		if r.Condition == nil {
 			continue // skip action-based rules
@@ -50,8 +60,22 @@ func (sm *StateMachine) Advance(task *Task) (*Task, bool) {
 		if r.Condition(task.Payload) {
 			newTask := *task
 			newTask.Status = TaskStatus(r.ToStatus)
-			return &newTask, true
+			o := &AdvanceOutcome{Task: &newTask}
+			if r.ActionPayloadFn != nil {
+				o.ActionPayload = r.ActionPayloadFn(task.Payload)
+			}
+			return o
 		}
+	}
+	return nil
+}
+
+// Advance evaluates condition-based rules for the task's current status and payload.
+// Returns the transitioned task and true if a condition was met, or (nil, false) otherwise.
+// Use AdvanceFull when the action payload is also needed.
+func (sm *StateMachine) Advance(task *Task) (*Task, bool) {
+	if o := sm.AdvanceFull(task); o != nil {
+		return o.Task, true
 	}
 	return nil, false
 }
@@ -80,20 +104,37 @@ func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
 }
 
 // DefaultMachine returns the single unified state machine used by all tasks.
+// It reads rework_limit from the global config (~/.config/boid/config.yaml).
+// Use NewMachine directly in tests to control the rework limit.
+func DefaultMachine() *StateMachine {
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Warn("failed to load config for state machine; using default rework_limit=5", "error", err)
+		return NewMachine(5)
+	}
+	return NewMachine(cfg.StateMachine.ReworkLimit)
+}
+
+// NewMachine returns the unified state machine with the given rework limit.
 //
 // Manual transitions:
 //
 //	start       : pending → executing
-//	done        : executing / verifying → done
+//	done        : executing / verifying / reworking → done
 //	reopen      : done → reworking
 //	job_failed  : * → aborted
 //	abort       : * → aborted
+//
+// Auto abort transitions (highest priority):
+//
+//	* → aborted          if any finding has severity=fatal and status=open
+//	reworking → aborted  if lifecycle.rework_count > reworkLimit
 //
 // Auto transitions from executing:
 //
 //	(artifact || tasks) && AnyFindingUnresolvedForState("executing")  → reworking
 //	(artifact || tasks) && !AnyFindingUnresolvedForState("executing") → verifying
-//	!(artifact || tasks) && execution_complete                        → done
+//	!(artifact || tasks) && lifecycle.executed                        → done
 //
 // tasks trait と artifact trait は「executing での成果物が揃った」という
 // 対称のシグナルとして扱う。plan タスク（tasks を書く）も dev タスク
@@ -116,7 +157,7 @@ func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
 // 同じ gate が再実行されて subkey が上書きされる設計なので、reworking 退場を
 // ブロックするべきではない。全 source を見る NoUnresolvedFindings() を使うと、
 // verifying で書かれた open finding が永久に解消されずデッドロックする。
-func DefaultMachine() *StateMachine {
+func NewMachine(reworkLimit int) *StateMachine {
 	executionComplete := func(p json.RawMessage) bool {
 		return TraitNonNull(p, "artifact") || TasksReady(p)
 	}
@@ -132,6 +173,19 @@ func DefaultMachine() *StateMachine {
 			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},
 			{Action: "abort", FromStatus: "*", ToStatus: "aborted", Manual: true},
 
+			// Abort conditions (highest priority among auto transitions)
+			{FromStatus: "*", ToStatus: "aborted", Condition: AnyFatalFindingOpen(), ActionPayloadFn: func(p json.RawMessage) json.RawMessage {
+				msg := firstFatalFindingMessage(p)
+				b, _ := json.Marshal(map[string]string{"code": "fatal_finding", "message": msg})
+				return b
+			}},
+			{FromStatus: "reworking", ToStatus: "aborted", Condition: func(p json.RawMessage) bool {
+				return LifecycleReworkCount(p) > reworkLimit
+			}, ActionPayloadFn: func(_ json.RawMessage) json.RawMessage {
+				b, _ := json.Marshal(map[string]string{"code": "rework_limit_exceeded"})
+				return b
+			}},
+
 			// Auto transitions from executing
 			{FromStatus: "executing", ToStatus: "reworking", Condition: func(p json.RawMessage) bool {
 				return executionComplete(p) && AnyFindingUnresolvedForState("executing")(p)
@@ -139,9 +193,9 @@ func DefaultMachine() *StateMachine {
 			{FromStatus: "executing", ToStatus: "verifying", Condition: func(p json.RawMessage) bool {
 				return executionComplete(p) && !AnyFindingUnresolvedForState("executing")(p)
 			}},
-			// 成果物なしで execution_complete が立っている場合は done（rework 対象なし）
+			// 成果物なしで lifecycle.executed が立っている場合は done（rework 対象なし）
 			{FromStatus: "executing", ToStatus: "done", Condition: func(p json.RawMessage) bool {
-				return TraitBool(p, "execution_complete") && !executionComplete(p)
+				return TraitBool(p, "lifecycle.executed") && !executionComplete(p)
 			}},
 
 			// Auto transitions from verifying
