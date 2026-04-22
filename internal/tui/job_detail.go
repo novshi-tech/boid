@@ -7,15 +7,24 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/client"
 )
+
+type gateReplayResultMsg struct {
+	result *api.ReplayGateResult
+	err    error
+}
+
+type replayConfirmDeadlineMsg struct{}
 
 // JobDetailScreen shows full details and scrollable output for a single job.
 type JobDetailScreen struct {
-	shared       *SharedState
-	job          *api.Job
-	outputScroll int
-	statusMsg    string
-	isError      bool
+	shared        *SharedState
+	job           *api.Job
+	outputScroll  int
+	statusMsg     string
+	isError       bool
+	replayPending bool
 }
 
 // NewJobDetailScreen creates a new JobDetailScreen for the given job.
@@ -46,6 +55,20 @@ func (s *JobDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		if msg.paneID != "" {
 			s.shared.Panes[msg.jobID] = msg.paneID
 		}
+	case gateReplayResultMsg:
+		s.replayPending = false
+		if msg.err != nil {
+			s.statusMsg = "replay failed: " + msg.err.Error()
+			s.isError = true
+			return s, clearStatusAfter(4 * time.Second)
+		}
+		return s, func() tea.Msg { return popScreenMsg{} }
+	case replayConfirmDeadlineMsg:
+		if s.replayPending {
+			s.replayPending = false
+			s.statusMsg = ""
+			s.isError = false
+		}
 	}
 	return s, nil
 }
@@ -68,12 +91,41 @@ func (s *JobDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			return clearStatusAfter(4 * time.Second)
 		}
 		return openJobCmd(s.job.ID, s.shared.Panes[s.job.ID])
+	case "R":
+		job := s.job
+		if job.Role != "gate" && job.Role != "entry_gate" && job.Role != "exit_gate" {
+			s.statusMsg = "replay is only for gate jobs"
+			s.isError = false
+			return clearStatusAfter(3 * time.Second)
+		}
+		if job.ExecutionState == "" {
+			s.statusMsg = "replay unavailable: legacy job has no execution_state"
+			s.isError = false
+			return clearStatusAfter(3 * time.Second)
+		}
+		if s.replayPending {
+			s.replayPending = false
+			return replayGateCmd(s.shared.Client, job.TaskID, job.HandlerID, job.ExecutionState)
+		}
+		s.replayPending = true
+		s.statusMsg = "Press R again to replay"
+		s.isError = false
+		return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+			return replayConfirmDeadlineMsg{}
+		})
 	case "esc", "backspace":
 		return func() tea.Msg { return popScreenMsg{} }
 	case "q":
 		return tea.Quit
 	}
 	return nil
+}
+
+func replayGateCmd(c *client.Client, taskID, gateID, status string) tea.Cmd {
+	return func() tea.Msg {
+		res, err := c.ReplayGate(taskID, gateID, status)
+		return gateReplayResultMsg{result: res, err: err}
+	}
 }
 
 func (s *JobDetailScreen) View(width, height int) string {
@@ -163,5 +215,5 @@ func (s *JobDetailScreen) View(width, height int) string {
 }
 
 func (s *JobDetailScreen) ShortHelp() string {
-	return "j/k: scroll output  o/enter: open in pane  esc: back  q: quit"
+	return "j/k: scroll output  o/enter: open in pane  R: replay (gate only)  esc: back  q: quit"
 }

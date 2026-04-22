@@ -345,6 +345,18 @@ func (c *Client) RerunTask(id string, autoStart bool) (*orchestrator.Task, error
 	return &task, nil
 }
 
+// ReplayGate replays a gate via POST /api/tasks/{taskID}/gates/{gateID}/replay.
+func (c *Client) ReplayGate(taskID, gateID, overrideStatus string) (*api.ReplayGateResult, error) {
+	type body struct {
+		Status string `json:"status,omitempty"`
+	}
+	var result api.ReplayGateResult
+	if err := c.Do("POST", "/api/tasks/"+taskID+"/gates/"+gateID+"/replay", body{Status: overrideStatus}, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // ApplyAction sends an action to POST /api/tasks/{taskID}/actions.
 func (c *Client) ApplyAction(taskID string, req api.ApplyActionRequest) (*api.ActionApplication, error) {
 	var result api.ActionApplication
