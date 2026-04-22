@@ -182,6 +182,30 @@ func TestStageArgv0_SiblingHelpersAreReachable(t *testing.T) {
 	}
 }
 
+// BuiltinPolicies に git が含まれていても /opt/boid/bin/git symlink は生成されない。
+// /usr/bin/git と /bin/git は boid バイナリの bind mount で上書き済みなので不要。
+func TestShimSymlinks_GitExcluded(t *testing.T) {
+	builtins := []string{"boid", "git"}
+	hostCmds := []string{"gh", "git"}
+	symlinks := shimSymlinks(builtins, hostCmds)
+
+	for _, sl := range symlinks {
+		if sl.LinkPath == "/opt/boid/bin/git" {
+			t.Errorf("git symlink must not be generated, got %+v", sl)
+		}
+	}
+	// gh は生成される。
+	var hasGh bool
+	for _, sl := range symlinks {
+		if sl.LinkPath == "/opt/boid/bin/gh" {
+			hasGh = true
+		}
+	}
+	if !hasGh {
+		t.Error("gh symlink must be generated")
+	}
+}
+
 func TestAdditionalBindingMounts_Optional(t *testing.T) {
 	bindings := []orchestrator.BindMount{
 		{Source: "/opt/maybe-missing", Optional: true},

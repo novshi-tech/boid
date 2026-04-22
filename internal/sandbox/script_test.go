@@ -232,9 +232,10 @@ func TestPrepare_CustomEnv(t *testing.T) {
 
 func TestPrepare_Symlinks(t *testing.T) {
 	spec := minimalSpec("test-symlinks")
+	// git symlink は shimSymlinks で除外される（/usr/bin/git と /bin/git は bind mount 済み）。
+	// ここでは git を渡さずに gh だけを渡し、git symlink が生成されないことを確認する。
 	spec.Symlinks = []sandbox.Symlink{
 		{LinkPath: "/opt/boid/bin/gh", LinkTarget: "boid"},
-		{LinkPath: "/opt/boid/bin/git", LinkTarget: "boid"},
 	}
 
 	outerPath, err := sandbox.Prepare(spec)
@@ -243,11 +244,13 @@ func TestPrepare_Symlinks(t *testing.T) {
 	}
 	_, setup, _ := readScripts(t, outerPath)
 
+	// gh などの他 host command 用 symlink は従来通り生成される。
 	if !strings.Contains(setup, `ln -sf boid "$ROOT/opt/boid/bin/gh"`) {
 		t.Errorf("setup: gh symlink missing\n%s", setup)
 	}
-	if !strings.Contains(setup, `ln -sf boid "$ROOT/opt/boid/bin/git"`) {
-		t.Errorf("setup: git symlink missing\n%s", setup)
+	// git symlink は生成されない（regression 防止）。
+	if strings.Contains(setup, `ln -sf boid "$ROOT/opt/boid/bin/git"`) {
+		t.Errorf("setup: git symlink must not be generated\n%s", setup)
 	}
 }
 

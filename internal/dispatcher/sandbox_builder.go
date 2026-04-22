@@ -418,7 +418,8 @@ func stageArgv0(original, effectiveProject string) (string, *sandbox.Mount, bool
 func shimSymlinks(builtins, hostCommands []string) []sandbox.Symlink {
 	seen := map[string]struct{}{}
 	add := func(name string) []sandbox.Symlink {
-		if name == "boid" {
+		if name == "boid" || name == "git" {
+			// /usr/bin/git と /bin/git は boid バイナリの bind mount 済みなので shim symlink は不要。
 			return nil
 		}
 		if _, ok := seen[name]; ok {
