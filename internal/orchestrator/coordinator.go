@@ -492,6 +492,162 @@ func hasHookResult(results []HandlerResult) bool {
 	return false
 }
 
+// injectExecutionComplete sets execution_complete=true in the payload.
+// This is called by the coordinator after all hooks/gates complete successfully
+// in executing state, signalling that the agent job finished without error.
+func injectExecutionComplete(payload json.RawMessage) json.RawMessage {
+	var m map[string]json.RawMessage
+	if len(payload) == 0 || string(payload) == "null" {
+		m = make(map[string]json.RawMessage)
+	} else if err := json.Unmarshal(payload, &m); err != nil {
+		return payload
+	}
+	m["execution_complete"] = json.RawMessage("true")
+	result, err := json.Marshal(m)
+	if err != nil {
+		return payload
+	}
+	return result
+}
+
+// clearTraitFromPayload removes the given trait key from the payload.
+// Used to reset execution_complete when re-entering executing state.
+func clearTraitFromPayload(payload json.RawMessage, trait string) json.RawMessage {
+	if len(payload) == 0 || string(payload) == "{}" || string(payload) == "null" {
+		return payload
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return payload
+	}
+	if _, ok := m[trait]; !ok {
+		return payload
+	}
+	delete(m, trait)
+	result, err := json.Marshal(m)
+	if err != nil {
+		return payload
+	}
+	return result
+}
+
+// ReplayResult is the result of a single-gate replay operation.
+type ReplayResult struct {
+	Result       HandlerResult
+	FinalPayload json.RawMessage
+	NewStatus    TaskStatus
+	FiredEvents  []FiredEvent
+}
+
+// ReplayGate executes a single named gate in isolation against the task's
+// current state. It is used by "boid task gate replay" to re-run a specific
+// gate without triggering hooks or entry-gate chains.
+//
+// If the gate is an exit gate, sm.Advance is evaluated after the run and the
+// new status is reported in ReplayResult.NewStatus (but NOT persisted — that
+// is the caller's responsibility). Entry gates never trigger an advance.
+//
+// Returns an error if the gate ID is not found in the behavior or if the gate
+// is not matched for the current status (400-class caller error).
+func (d *Coordinator) ReplayGate(
+	ctx context.Context,
+	task *Task,
+	meta *ProjectMeta,
+	sm *StateMachine,
+	gateID string,
+) (*ReplayResult, error) {
+	behavior, ok := lookupBehavior(meta, task)
+	if !ok {
+		return nil, fmt.Errorf("behavior %q not found in project meta", task.Behavior)
+	}
+
+	// Find the gate by ID.
+	var found *Gate
+	for i := range behavior.Gates {
+		if behavior.Gates[i].ID == gateID {
+			g := behavior.Gates[i]
+			found = &g
+			break
+		}
+	}
+	if found == nil {
+		return nil, fmt.Errorf("gate %q not found in behavior %q", gateID, task.Behavior)
+	}
+
+	// Determine phase (default exit when unset).
+	phase := found.Phase
+	if phase == "" {
+		phase = GatePhaseExit
+	}
+
+	// Check the gate matches current status.
+	matched := d.Evaluator.EvaluateGates(task, []Gate{*found}, phase)
+	if len(matched) == 0 {
+		return nil, fmt.Errorf("gate %q does not match current status %q", gateID, task.Status)
+	}
+
+	gateResults, err := d.dispatchGates(ctx, task, matched)
+	if err != nil {
+		return nil, fmt.Errorf("gate replay: %w", err)
+	}
+
+	payload := task.Payload
+	var result HandlerResult
+	var firedEvents []FiredEvent
+
+	for _, gr := range gateResults {
+		result = gr
+		kind := "gate_replay"
+		firedEvents = append(firedEvents, buildFiredEvent(gr, kind, string(task.Status), nil, matched))
+		if len(gr.PayloadPatch) > 0 && string(gr.PayloadPatch) != "{}" {
+			gr.PayloadPatch = injectSourceState(gr.PayloadPatch, string(task.Status))
+			merged, err := MergePayloadPatch(payload, gr.PayloadPatch, gr.ID, gr.allowedTraitsFromGates(matched))
+			if err != nil {
+				slog.Warn("gate replay payload merge failed", "gate_id", gr.ID, "error", err)
+			} else {
+				payload = merged
+			}
+		}
+	}
+
+	replay := &ReplayResult{
+		Result:       result,
+		FinalPayload: payload,
+		FiredEvents:  firedEvents,
+	}
+
+	// Only evaluate advance for exit gates.
+	if phase == GatePhaseExit {
+		advanceTask := *task
+		advanceTask.Payload = payload
+		if newTask, ok := sm.Advance(&advanceTask); ok {
+			replay.NewStatus = newTask.Status
+		}
+	}
+
+	return replay, nil
+}
+
+// ListGatesForStatus returns gates from the behavior that would match the
+// given status for either phase. Used by "boid task gate list".
+func ListGatesForStatus(meta *ProjectMeta, task *Task, status TaskStatus) []Gate {
+	behavior, ok := lookupBehavior(meta, task)
+	if !ok {
+		return nil
+	}
+	eval := &Evaluator{}
+	probe := *task
+	probe.Status = status
+
+	var result []Gate
+	for _, phase := range []GatePhase{GatePhaseEntry, GatePhaseExit} {
+		matched := eval.EvaluateGates(&probe, behavior.Gates, phase)
+		result = append(result, matched...)
+	}
+	return result
+}
+
+
 // allowedTraits returns the produces traits for this handler from the hook list.
 func (hr *HandlerResult) allowedTraits(hooks []Hook) []TraitType {
 	for _, h := range hooks {

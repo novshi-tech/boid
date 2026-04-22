@@ -34,6 +34,10 @@ func (c *entryGateCoordinator) DispatchEntryGates(ctx context.Context, task *orc
 	return &orchestrator.EntryGateResult{FinalPayload: task.Payload}, nil
 }
 
+func (c *entryGateCoordinator) ReplayGate(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, gateID string) (*orchestrator.ReplayResult, error) {
+	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
+}
+
 func TestRunDispatchLoop_EntryGateFiresAfterAdvance(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",

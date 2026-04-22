@@ -15,6 +15,25 @@ type MetaStore interface {
 type DispatchCoordinator interface {
 	DispatchAndAdvance(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine) (*orchestrator.DispatchResult, error)
 	DispatchEntryGates(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta) (*orchestrator.EntryGateResult, error)
+	ReplayGate(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, gateID string) (*orchestrator.ReplayResult, error)
+}
+
+// GateService provides gate replay and gate listing operations.
+type GateService interface {
+	ReplayGate(ctx context.Context, taskID string, req ReplayGateRequest) (*ReplayGateResult, error)
+	ListGatesForStatus(taskID, status string) ([]orchestrator.Gate, error)
+}
+
+// ReplayGateRequest is the input for gate replay.
+type ReplayGateRequest struct {
+	GateID string
+	Status string // optional: override task.Status before replay
+}
+
+// ReplayGateResult is the output of a gate replay.
+type ReplayGateResult struct {
+	Task        *orchestrator.Task   `json:"task"`
+	FiredEvents []orchestrator.FiredEvent `json:"fired_events,omitempty"`
 }
 
 type JobLifecycle interface {

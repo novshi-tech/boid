@@ -55,6 +55,10 @@ func CreateJob(dbtx db.DBTX, j *Job) error {
 		columns = append(columns, "tty")
 		args = append(args, boolToInt(j.TTY))
 	}
+	if cols.hasExecutionState {
+		columns = append(columns, "execution_state")
+		args = append(args, j.ExecutionState)
+	}
 
 	columns = append(columns, "created_at", "updated_at")
 	args = append(args, j.CreatedAt, j.UpdatedAt)
@@ -190,6 +194,10 @@ func UpdateJob(dbtx db.DBTX, j *Job) error {
 		assignments = append(assignments, "tty = ?")
 		args = append(args, boolToInt(j.TTY))
 	}
+	if cols.hasExecutionState {
+		assignments = append(assignments, "execution_state = ?")
+		args = append(args, j.ExecutionState)
+	}
 
 	assignments = append(assignments, "updated_at = ?")
 	args = append(args, j.UpdatedAt, j.ID)
@@ -205,7 +213,8 @@ func scanJob(s jobScanner) (*Job, error) {
 	var j Job
 	var exitCode sql.NullInt64
 	var interactive, tty sql.NullInt64
-	if err := s.Scan(&j.ID, &j.TaskID, &j.ProjectID, &j.HandlerID, &j.Role, &j.RuntimeID, &interactive, &tty, &j.Status, &exitCode, &j.Output, &j.CreatedAt, &j.UpdatedAt); err != nil {
+	var executionState sql.NullString
+	if err := s.Scan(&j.ID, &j.TaskID, &j.ProjectID, &j.HandlerID, &j.Role, &j.RuntimeID, &interactive, &tty, &j.Status, &exitCode, &j.Output, &executionState, &j.CreatedAt, &j.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("job not found")
 		}
@@ -216,6 +225,9 @@ func scanJob(s jobScanner) (*Job, error) {
 	}
 	j.Interactive = interactive.Valid && interactive.Int64 != 0
 	j.TTY = tty.Valid && tty.Int64 != 0
+	if executionState.Valid {
+		j.ExecutionState = executionState.String
+	}
 	return &j, nil
 }
 
@@ -241,22 +253,28 @@ func jobSelectSQL(dbtx db.DBTX, suffix string) (string, error) {
 	if cols.hasTTY {
 		ttyExpr = "tty"
 	}
+	executionStateExpr := `'' AS execution_state`
+	if cols.hasExecutionState {
+		executionStateExpr = "execution_state"
+	}
 
 	return fmt.Sprintf(
-		`SELECT id, task_id, project_id, %s AS handler_id, role, %s, %s, %s, status, exit_code, output, created_at, updated_at FROM jobs %s`,
+		`SELECT id, task_id, project_id, %s AS handler_id, role, %s, %s, %s, status, exit_code, output, %s, created_at, updated_at FROM jobs %s`,
 		handlerExpr,
 		runtimeExpr,
 		interactiveExpr,
 		ttyExpr,
+		executionStateExpr,
 		suffix,
 	), nil
 }
 
 type jobColumns struct {
-	hasHookID      bool
-	hasRuntimeID   bool
-	hasInteractive bool
-	hasTTY         bool
+	hasHookID          bool
+	hasRuntimeID       bool
+	hasInteractive     bool
+	hasTTY             bool
+	hasExecutionState  bool
 }
 
 func inspectJobColumns(dbtx db.DBTX) (jobColumns, error) {
@@ -276,11 +294,16 @@ func inspectJobColumns(dbtx db.DBTX) (jobColumns, error) {
 	if err != nil {
 		return jobColumns{}, fmt.Errorf("detect jobs.tty: %w", err)
 	}
+	hasExecutionState, err := jobColumnExists(dbtx, "execution_state")
+	if err != nil {
+		return jobColumns{}, fmt.Errorf("detect jobs.execution_state: %w", err)
+	}
 	return jobColumns{
-		hasHookID:      hasHookID,
-		hasRuntimeID:   hasRuntimeID,
-		hasInteractive: hasInteractive,
-		hasTTY:         hasTTY,
+		hasHookID:         hasHookID,
+		hasRuntimeID:      hasRuntimeID,
+		hasInteractive:    hasInteractive,
+		hasTTY:            hasTTY,
+		hasExecutionState: hasExecutionState,
 	}, nil
 }
 

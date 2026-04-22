@@ -1,0 +1,1 @@
+ALTER TABLE jobs ADD COLUMN execution_state TEXT NOT NULL DEFAULT '';

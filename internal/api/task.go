@@ -12,7 +12,8 @@ import (
 )
 
 type TaskHandler struct {
-	Service TaskService
+	Service  TaskService
+	Gates    GateService // optional: enables gate replay/list when set
 }
 
 func (h *TaskHandler) Routes() chi.Router {
@@ -26,6 +27,10 @@ func (h *TaskHandler) Routes() chi.Router {
 	r.Delete("/{id}", h.Delete)
 	r.Post("/{id}/duplicate", h.Duplicate)
 	r.Post("/{id}/rerun", h.Rerun)
+	if h.Gates != nil {
+		r.Get("/{id}/gates", h.ListGates)
+		r.Post("/{id}/gates/{gate_id}/replay", h.ReplayGate)
+	}
 	return r
 }
 
@@ -224,4 +229,42 @@ func (h *TaskHandler) Rerun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, task)
+}
+
+// replayGateBody is the optional request body for gate replay.
+type replayGateBody struct {
+	Status string `json:"status,omitempty"`
+}
+
+func (h *TaskHandler) ReplayGate(w http.ResponseWriter, r *http.Request) {
+	taskID := chi.URLParam(r, "id")
+	gateID := chi.URLParam(r, "gate_id")
+
+	var body replayGateBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err.Error() != "EOF" {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	result, err := h.Gates.ReplayGate(r.Context(), taskID, ReplayGateRequest{
+		GateID: gateID,
+		Status: body.Status,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *TaskHandler) ListGates(w http.ResponseWriter, r *http.Request) {
+	taskID := chi.URLParam(r, "id")
+	status := r.URL.Query().Get("status")
+
+	gates, err := h.Gates.ListGatesForStatus(taskID, status)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, gates)
 }

@@ -26,6 +26,9 @@ func initGitRepo(t *testing.T) string {
 		cmd := exec.Command(gitBin, args...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
+			if strings.Contains(string(out), "cwd does not exist") {
+				t.Skip("git not available outside worktree in this environment")
+			}
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
