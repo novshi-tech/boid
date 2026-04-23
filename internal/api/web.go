@@ -28,8 +28,6 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
 	r.Post("/tasks/{id}/action", h.PostAction)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
-	r.Get("/projects", h.ProjectList)
-	r.Get("/jobs", h.JobList)
 	r.Get("/jobs/{id}", h.JobDetail)
 	return r
 }
@@ -151,42 +149,6 @@ func (h *WebHandler) PostDuplicate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/tasks/"+newID, http.StatusSeeOther)
-}
-
-func (h *WebHandler) ProjectList(w http.ResponseWriter, r *http.Request) {
-	projects, err := h.Service.ListProjects()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	templates.ProjectList(projects).Render(r.Context(), w)
-}
-
-func (h *WebHandler) JobList(w http.ResponseWriter, r *http.Request) {
-	filter := r.URL.Query().Get("status")
-	jobs, err := h.Service.ListJobs(filter)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	views := make([]*templates.JobContextView, 0, len(jobs))
-	for _, j := range jobs {
-		views = append(views, &templates.JobContextView{
-			ID:        j.ID,
-			TaskID:    j.TaskID,
-			TaskTitle: j.TaskTitle,
-			HandlerID: j.HandlerID,
-			Role:      j.Role,
-			Status:    string(j.Status),
-			ExitCode:  j.ExitCode,
-			CreatedAt: j.CreatedAt,
-			UpdatedAt: j.UpdatedAt,
-			Output:    j.Output,
-		})
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	templates.JobList(views, filter).Render(r.Context(), w)
 }
 
 func (h *WebHandler) JobDetail(w http.ResponseWriter, r *http.Request) {
