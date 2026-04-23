@@ -263,6 +263,13 @@ func projectResolverFor(svc *api.ProjectAppService) sandbox.ProjectResolver {
 func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r := srv.router
 
+	// CSRF middleware must be registered before any routes (chi requirement).
+	// The middleware exempts /api/* and /auth paths, so existing API routes
+	// are unaffected. Only mount when Web UI is enabled.
+	if srv.cfg.WebEnabled {
+		r.Use(auth.CSRFMiddleware)
+	}
+
 	r.Get("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok"}`))
@@ -361,14 +368,28 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	mountJobRuntimeRoutes(r, runtime)
 
 	if srv.cfg.WebEnabled {
-		webHandler := &api.WebHandler{Service: runtime.webSvc}
-		r.Mount("/", webHandler.Routes())
-
 		staticFS, err := fs.Sub(web.StaticFS, "static")
 		if err != nil {
 			return fmt.Errorf("sub static fs: %w", err)
 		}
+
+		// Static files are served unauthenticated.
 		r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
+
+		// Management API — accessible via UNIX socket (CLI only), no session auth.
+		webMgmt := &api.WebManagementHandler{
+			Pairing:   auth.NewPairingManager(runtime.authStore),
+			Store:     runtime.authStore,
+			PublicURL: gcCfg.Web.PublicURL,
+		}
+		r.Mount("/api/web", webMgmt.Routes())
+
+		// Web UI routes protected by session auth.
+		r.Group(func(r chi.Router) {
+			r.Use(auth.NewWebAuthMiddleware(runtime.sessionSigner, runtime.authStore))
+			webHandler := &api.WebHandler{Service: runtime.webSvc}
+			r.Mount("/", webHandler.Routes())
+		})
 	} else {
 		r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Web UI is disabled. Use --web flag to enable.", http.StatusNotFound)
