@@ -44,7 +44,7 @@ func Layout(title string, breadcrumbs []components.BreadcrumbItem) templ.Compone
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, " - boid</title><link rel=\"stylesheet\" href=\"/static/style.css\"><script src=\"/static/vendor/htmx-2.0.4.min.js\"></script><script>\n\t\t\t\tdocument.addEventListener(\"DOMContentLoaded\",function(){\n\t\t\t\t\tvar t=document.cookie.split(\"; \").find(r=>r.startsWith(\"csrf_token=\"))?.split(\"=\")[1];\n\t\t\t\t\tif(t) htmx.config.defaultHeaders[\"X-CSRF-Token\"]=t;\n\t\t\t\t});\n\t\t\t</script></head><body><header class=\"site-header\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, " - boid</title><link rel=\"stylesheet\" href=\"/static/style.css\"><script src=\"/static/vendor/htmx-2.0.4.min.js\"></script><script>\n\t\t\t\tdocument.addEventListener(\"DOMContentLoaded\",function(){\n\t\t\t\t\tvar t=document.cookie.split(\"; \").find(r=>r.startsWith(\"csrf_token=\"))?.split(\"=\")[1];\n\t\t\t\t\tif(t) htmx.config.defaultHeaders[\"X-CSRF-Token\"]=t;\n\t\t\t\t});\n\t\t\t\t// Close any open <details> dropdowns after an HTMX swap, so\n\t\t\t\t// menus (kebab / tab-more) don't linger over freshly loaded\n\t\t\t\t// content.\n\t\t\t\tdocument.body.addEventListener(\"htmx:afterSwap\",function(){\n\t\t\t\t\tdocument.querySelectorAll(\"details[open]\").forEach(function(d){d.open=false;});\n\t\t\t\t});\n\t\t\t</script></head><body><header class=\"site-header\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

@@ -689,7 +689,7 @@ pre {
 
 .detail-title {
   margin: 0;
-  font-size: 1.125rem;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--fg);
   line-height: 1.35;
@@ -785,31 +785,70 @@ pre {
   background: var(--card);
 }
 
-/* --- Sticky bottom action bar --- */
+/* --- Fixed bottom action bar ---
+   Stays glued to the viewport bottom regardless of page scroll.
+   Layout: primary action on the LEFT, kebab "..." on the RIGHT.
+   The inner wrapper centres the content within the same 960px column
+   used by .site-main on desktop. */
 .action-bar {
-  position: sticky;
+  position: fixed;
   bottom: 0;
   left: 0;
   right: 0;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  z-index: 40;
+}
+
+.action-bar-inner {
+  max-width: 960px;
+  margin: 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
   padding: var(--space-2) var(--space-3);
-  background: var(--bg);
-  border-top: 1px solid var(--border);
-  margin: var(--space-4) calc(-1 * var(--space-3)) 0;
-  z-index: 40;
 }
 
 .action-bar-primary-form {
   display: contents;
 }
 
+/* Empty placeholder when no primary state action exists (terminal states
+   without rerun, etc.) so the kebab stays right-aligned via space-between. */
+.action-bar-spacer {
+  display: inline-block;
+}
+
+/* Soften the primary button inside the action bar so it doesn't dominate
+   the page. Filled hover affordance retains the call-to-action feel. */
 .action-bar .btn {
   width: auto;
   min-width: 100px;
   padding: 8px var(--space-3);
+  font-weight: 500;
+}
+
+.action-bar .btn-primary {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.action-bar .btn-primary:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.action-bar .btn-danger {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.action-bar .btn-danger:hover {
+  background: var(--danger);
+  color: #fff;
 }
 
 /* Kebab "..." menu inside the action bar */
@@ -845,7 +884,9 @@ pre {
 .action-menu-list {
   position: absolute;
   bottom: calc(100% + 4px);
-  left: 0;
+  /* Align to the right edge of the kebab summary so it stays inside the
+     viewport when the bar wraps the right margin. */
+  right: 0;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-2);

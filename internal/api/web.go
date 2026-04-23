@@ -231,7 +231,9 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	errorMsg := r.URL.Query().Get("error")
 	if r.Header.Get("HX-Request") == "true" {
-		templates.TaskDetailTabPanel(detail.Task, detail.Actions, jobs, tab).Render(r.Context(), w)
+		// Tab clicks swap the entire #tabs section so the active class on
+		// the visible tabs and the "more" summary label stay in sync.
+		templates.TaskDetailTabsSection(detail.Task, detail.Actions, jobs, tab).Render(r.Context(), w)
 		return
 	}
 	projectName := h.lookupProjectName(detail.Task.ProjectID)

@@ -215,39 +215,43 @@ func actionPrimaryClass(action string) string {
 // the destructive abort fallback when applicable.
 templ TaskActionBar(task *orchestrator.Task, availableActions []string) {
 	<div class="action-bar">
-		<details class="action-menu">
-			<summary class="action-menu-summary" aria-label="その他のアクション">⋯</summary>
-			<div class="action-menu-list" role="menu">
-				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/duplicate") }>
-					<button type="submit" class="action-menu-item">duplicate</button>
+		<div class="action-bar-inner">
+			{{ action, label := detailPrimaryAction(task, availableActions) }}
+			if action == "rerun" {
+				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('本当に再実行しますか？')" class="action-bar-primary-form">
+					<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
 				</form>
-				if task.Status != orchestrator.TaskStatusDone && task.Status != orchestrator.TaskStatusAborted && task.Status != orchestrator.TaskStatusPending {
-					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')">
-						<input type="hidden" name="type" value="abort"/>
-						<button type="submit" class="action-menu-item action-menu-item-danger">abort</button>
+			} else if action == "abort" {
+				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')" class="action-bar-primary-form">
+					<input type="hidden" name="type" value="abort"/>
+					<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
+				</form>
+			} else if action != "" {
+				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } class="action-bar-primary-form">
+					<input type="hidden" name="type" value={ action }/>
+					<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
+				</form>
+			} else {
+				<span class="action-bar-spacer"></span>
+			}
+			<details class="action-menu">
+				<summary class="action-menu-summary" aria-label="その他のアクション">⋯</summary>
+				<div class="action-menu-list" role="menu">
+					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/duplicate") }>
+						<button type="submit" class="action-menu-item">duplicate</button>
 					</form>
-				}
-				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/delete") } onsubmit="return confirm('本当に削除しますか？この操作は取り消せません。')">
-					<button type="submit" class="action-menu-item action-menu-item-danger">delete</button>
-				</form>
-			</div>
-		</details>
-		{{ action, label := detailPrimaryAction(task, availableActions) }}
-		if action == "rerun" {
-			<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('本当に再実行しますか？')" class="action-bar-primary-form">
-				<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
-			</form>
-		} else if action == "abort" {
-			<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')" class="action-bar-primary-form">
-				<input type="hidden" name="type" value="abort"/>
-				<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
-			</form>
-		} else if action != "" {
-			<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } class="action-bar-primary-form">
-				<input type="hidden" name="type" value={ action }/>
-				<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
-			</form>
-		}
+					if task.Status != orchestrator.TaskStatusDone && task.Status != orchestrator.TaskStatusAborted && task.Status != orchestrator.TaskStatusPending {
+						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')">
+							<input type="hidden" name="type" value="abort"/>
+							<button type="submit" class="action-menu-item action-menu-item-danger">abort</button>
+						</form>
+					}
+					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/delete") } onsubmit="return confirm('本当に削除しますか？この操作は取り消せません。')">
+						<button type="submit" class="action-menu-item action-menu-item-danger">delete</button>
+					</form>
+				</div>
+			</details>
+		</div>
 	</div>
 }
 
@@ -483,7 +487,7 @@ templ detailTabLink(taskID, tab, label, activeTab string) {
 		class={ tabClass(tab, activeTab) }
 		href={ templ.SafeURL("/tasks/" + taskID + "?tab=" + tab) }
 		hx-get={ "/tasks/" + taskID + "?tab=" + tab }
-		hx-target="#tab-panel"
+		hx-target="#tabs"
 		hx-swap="outerHTML"
 		hx-push-url="true"
 	>{ label }</a>
@@ -494,41 +498,50 @@ templ detailMoreItem(taskID, tab, label, activeTab string) {
 		class={ "tab-more-item", templ.KV("active", tab == activeTab) }
 		href={ templ.SafeURL("/tasks/" + taskID + "?tab=" + tab) }
 		hx-get={ "/tasks/" + taskID + "?tab=" + tab }
-		hx-target="#tab-panel"
+		hx-target="#tabs"
 		hx-swap="outerHTML"
 		hx-push-url="true"
 	>{ label }</a>
 }
 
+// TaskDetailTabsSection wraps tab-list + tab-panel under a single #tabs node.
+// HTMX tab-link clicks swap this entire section so that:
+//   - the active class on the visible tabs updates
+//   - the "more" details element is freshly rendered (closed by default,
+//     summary label reflects the new active tab when it's a hidden one)
+templ TaskDetailTabsSection(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, activeTab string) {
+	<div id="tabs" class="tabs">
+		<div class="tab-list" role="tablist">
+			@detailTabLink(task.ID, "timeline", "Timeline", activeTab)
+			@detailTabLink(task.ID, "description", "Desc", activeTab)
+			@detailTabLink(task.ID, "payload", "Payload", activeTab)
+			<details class="tab-more">
+				<summary class={ detailMoreSummaryClass(activeTab) } aria-label="その他のタブ">
+					if detailTabHidden(activeTab) {
+						if activeTab == "instructions" {
+							Inst
+						} else if activeTab == "dependencies" {
+							Deps
+						}
+						<span aria-hidden="true">▾</span>
+					} else {
+						⋯
+					}
+				</summary>
+				<div class="tab-more-menu" role="menu">
+					@detailMoreItem(task.ID, "instructions", "Instructions", activeTab)
+					@detailMoreItem(task.ID, "dependencies", "Dependencies", activeTab)
+				</div>
+			</details>
+		</div>
+		@TaskDetailTabPanel(task, actions, jobs, activeTab)
+	</div>
+}
+
 templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, projectName string) {
 	@Layout(task.Title, []components.BreadcrumbItem{{Title: "Tasks", URL: "/"}, {Title: task.Title}}) {
 		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName)
-		<div class="tabs">
-			<div class="tab-list" role="tablist">
-				@detailTabLink(task.ID, "timeline", "Timeline", activeTab)
-				@detailTabLink(task.ID, "description", "Desc", activeTab)
-				@detailTabLink(task.ID, "payload", "Payload", activeTab)
-				<details class="tab-more">
-					<summary class={ detailMoreSummaryClass(activeTab) } aria-label="その他のタブ">
-						if detailTabHidden(activeTab) {
-							if activeTab == "instructions" {
-								Inst
-							} else if activeTab == "dependencies" {
-								Deps
-							}
-							<span aria-hidden="true">▾</span>
-						} else {
-							⋯
-						}
-					</summary>
-					<div class="tab-more-menu" role="menu">
-						@detailMoreItem(task.ID, "instructions", "Instructions", activeTab)
-						@detailMoreItem(task.ID, "dependencies", "Dependencies", activeTab)
-					</div>
-				</details>
-			</div>
-			@TaskDetailTabPanel(task, actions, jobs, activeTab)
-		</div>
+		@TaskDetailTabsSection(task, actions, jobs, activeTab)
 		@TaskActionBar(task, availableActions)
 	}
 }

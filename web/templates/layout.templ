@@ -16,6 +16,12 @@ templ Layout(title string, breadcrumbs []components.BreadcrumbItem) {
 					var t=document.cookie.split("; ").find(r=>r.startsWith("csrf_token="))?.split("=")[1];
 					if(t) htmx.config.defaultHeaders["X-CSRF-Token"]=t;
 				});
+				// Close any open <details> dropdowns after an HTMX swap, so
+				// menus (kebab / tab-more) don't linger over freshly loaded
+				// content.
+				document.body.addEventListener("htmx:afterSwap",function(){
+					document.querySelectorAll("details[open]").forEach(function(d){d.open=false;});
+				});
 			</script>
 		</head>
 		<body>
