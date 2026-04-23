@@ -42,17 +42,17 @@ templ JobList(jobs []*JobContextView, currentFilter string) {
 		if len(jobs) == 0 {
 			<p class="empty">ジョブがありません</p>
 		} else {
-			<div class="tasks-grid">
+			<div class="task-list">
 				for _, job := range jobs {
-					<a href={ templ.SafeURL("/jobs/" + job.ID) } class="task-card">
-						<div class="task-card-title">
+					<a href={ templ.SafeURL("/jobs/" + job.ID) } class="task-row">
+						<div class="task-row-title">
 							if job.TaskTitle != "" {
 								{ job.TaskTitle }
 							} else {
 								{ job.TaskID }
 							}
 						</div>
-						<div class="task-card-meta">
+						<div class="task-row-meta">
 							<span class={ taskStatusClass(job.Status) }>{ job.Status }</span>
 							<span class="job-id">{ shortID(job.ID) }</span>
 							if job.Role != "" {
@@ -69,7 +69,7 @@ templ JobList(jobs []*JobContextView, currentFilter string) {
 
 templ JobDetail(job *JobContextView) {
 	@Layout("Job "+shortID(job.ID), []components.BreadcrumbItem{{Title: "Jobs", URL: "/jobs"}, {Title: "Job " + shortID(job.ID)}}) {
-		<div class="section">
+		<div class="card">
 			<h1>Job <span class="job-id">{ shortID(job.ID) }</span></h1>
 			<div class="card-meta" style="margin-top:8px">
 				<span class={ taskStatusClass(job.Status) }>{ job.Status }</span>
@@ -112,7 +112,7 @@ templ JobDetail(job *JobContextView) {
 			</div>
 		</div>
 		if job.Output != "" {
-			<div class="section">
+			<div class="card">
 				<h2 class="section-title">出力</h2>
 				<pre style="max-height:60vh;overflow-y:auto">{ job.Output }</pre>
 			</div>
