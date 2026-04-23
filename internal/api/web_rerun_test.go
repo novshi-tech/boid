@@ -182,7 +182,7 @@ func TestWebHandler_PostGateReplay_Error(t *testing.T) {
 	}
 }
 
-func TestWebHandler_TaskDetail_ContainsRerunAndGateReplayButtons(t *testing.T) {
+func TestWebHandler_TaskDetail_ContainsRerunButton(t *testing.T) {
 	svc := &stubWebServiceWithGates{
 		stubWebService: stubWebService{taskDetail: makeTaskDetailView()},
 	}
@@ -202,7 +202,8 @@ func TestWebHandler_TaskDetail_ContainsRerunAndGateReplayButtons(t *testing.T) {
 	if !strings.Contains(body, "rerun") {
 		t.Errorf("task detail should contain rerun button, got: %s", body)
 	}
-	if !strings.Contains(body, "gate replay") {
-		t.Errorf("task detail should contain gate replay link, got: %s", body)
+	// gate replay is no longer on task detail; it's now accessible from JobDetail
+	if strings.Contains(body, "/tasks/task-1/gates") {
+		t.Errorf("task detail should not contain a link to /tasks/{id}/gates (moved to JobDetail)")
 	}
 }

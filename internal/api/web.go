@@ -223,8 +223,16 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 			Output:    job.Output,
 		})
 	}
+	tab := r.URL.Query().Get("tab")
+	if tab == "" {
+		tab = "timeline"
+	}
 	errorMsg := r.URL.Query().Get("error")
-	templates.TaskDetail(detail.Task, detail.Actions, jobs, detail.AvailableActions, errorMsg).Render(r.Context(), w)
+	if r.Header.Get("HX-Request") == "true" {
+		templates.TaskDetailTabPanel(detail.Task, detail.Actions, jobs, tab).Render(r.Context(), w)
+		return
+	}
+	templates.TaskDetail(detail.Task, detail.Actions, jobs, detail.AvailableActions, errorMsg, tab).Render(r.Context(), w)
 }
 
 // TaskDetailFragment returns a partial HTML fragment for the task detail page.
@@ -588,6 +596,10 @@ func (h *WebHandler) PostGateReplay(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
 }
 
+func isGateRole(role string) bool {
+	return role == "gate" || role == "exit_gate" || role == "entry_gate"
+}
+
 func (h *WebHandler) JobDetail(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	job, err := h.Service.GetJob(id)
@@ -595,12 +607,17 @@ func (h *WebHandler) JobDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Job not found", http.StatusNotFound)
 		return
 	}
+	gateID := ""
+	if isGateRole(job.Role) {
+		gateID = job.HandlerID
+	}
 	view := &templates.JobContextView{
 		ID:        job.ID,
 		TaskID:    job.TaskID,
 		TaskTitle: job.TaskTitle,
 		HandlerID: job.HandlerID,
 		Role:      job.Role,
+		GateID:    gateID,
 		Status:    string(job.Status),
 		ExitCode:  job.ExitCode,
 		CreatedAt: job.CreatedAt,

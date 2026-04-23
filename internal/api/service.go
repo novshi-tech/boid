@@ -1386,6 +1386,7 @@ func (s *TaskWorkflowService) persistFiredEvents(taskID string, status orchestra
 			payload, _ := json.Marshal(map[string]any{
 				"kit_id":       fe.KitID,
 				"hook_id":      fe.HandlerID,
+				"job_id":       fe.JobID,
 				"source_state": fe.SourceState,
 				"success":      fe.Success,
 				"error":        fe.Error,
