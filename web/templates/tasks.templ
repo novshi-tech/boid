@@ -3,7 +3,6 @@ package templates
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/web/templates/components"
@@ -274,16 +273,21 @@ func actionPrimaryClass(action string) string {
 }
 
 // editTabURLPath maps an activeTab name to the URL segment used by the
-// corresponding edit route. All editable tabs use "/edit/<segment>" except
-// dependencies which uses "/edit/deps".
+// corresponding edit route. Returns "" for tabs that are read-only.
 func editTabURLPath(activeTab string) string {
-	switch activeTab {
-	case "dependencies":
-		return "deps"
-	case "description":
+	if activeTab == "description" {
 		return activeTab
 	}
 	return ""
+}
+
+// DepsTreeRow is one row in the flattened dependency tree display:
+// upstream (post-order DFS) → self → downstream (pre-order DFS).
+// Prefix carries the tree connectors ("├─ ", "│  ", …) for the row.
+type DepsTreeRow struct {
+	Task   *orchestrator.Task
+	IsSelf bool
+	Prefix string
 }
 
 // TaskActionBar renders the sticky action bar at the bottom of the detail
@@ -383,6 +387,36 @@ templ TaskDetailTimelineSection(actions []*orchestrator.Action, jobs []*JobView)
 	</div>
 }
 
+// TaskDetailDependenciesSection renders the dependency tree:
+// upstream ancestors (post-order) → self → downstream dependents
+// (pre-order). Each non-self row links to /tasks/{id}; the self row
+// stays as plain text.
+templ TaskDetailDependenciesSection(task *orchestrator.Task, rows []DepsTreeRow) {
+	<div class="tab-content">
+		if len(rows) == 0 {
+			<p class="tab-empty">(依存関係なし)</p>
+		} else {
+			<div class="deps-tree">
+				for _, row := range rows {
+					if row.IsSelf {
+						<div class="deps-row deps-row-self">
+							<span class="deps-prefix">{ row.Prefix }</span>
+							<span class={ taskStatusClass(string(task.Status)) }>{ string(task.Status) }</span>
+							<span class="deps-title">{ task.Title }</span>
+						</div>
+					} else {
+						<a class="deps-row" href={ templ.SafeURL("/tasks/" + row.Task.ID) }>
+							<span class="deps-prefix">{ row.Prefix }</span>
+							<span class={ taskStatusClass(string(row.Task.Status)) }>{ string(row.Task.Status) }</span>
+							<span class="deps-title">{ row.Task.Title }</span>
+						</a>
+					}
+				}
+			</div>
+		}
+	</div>
+}
+
 // TaskDetailJobsSection renders the jobs card.
 // Wrapped in <div id="task-jobs"> so EventSource JS can replace it via outerHTML.
 templ TaskDetailJobsSection(jobs []*JobView) {
@@ -422,7 +456,7 @@ templ TaskDetailJobsSection(jobs []*JobView) {
 
 // TaskDetailTabPanel renders the tab panel content for the given activeTab.
 // id="tab-panel" is the HTMX swap target for tab switching.
-templ TaskDetailTabPanel(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, activeTab string) {
+templ TaskDetailTabPanel(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsRows []DepsTreeRow, activeTab string) {
 	<div id="tab-panel" data-task-id={ task.ID }>
 		if activeTab == "timeline" {
 			@TaskDetailTimelineSection(actions, jobs)
@@ -496,30 +530,7 @@ templ TaskDetailTabPanel(task *orchestrator.Task, actions []*orchestrator.Action
 				}
 			</div>
 		} else if activeTab == "dependencies" {
-			<div class="tab-content">
-				if len(task.DependsOn) > 0 || task.DependsOnPayload != "" || task.ParentID != "" {
-					if task.ParentID != "" {
-						<div class="detail-field">
-							<strong>parent_id</strong>
-							{ task.ParentID }
-						</div>
-					}
-					if task.DependsOnPayload != "" {
-						<div class="detail-field">
-							<strong>depends_on_payload</strong>
-							{ task.DependsOnPayload }
-						</div>
-					}
-					if len(task.DependsOn) > 0 {
-						<div class="detail-field">
-							<strong>depends_on</strong>
-							{ strings.Join(task.DependsOn, ", ") }
-						</div>
-					}
-				} else {
-					<p class="tab-empty">(未設定)</p>
-				}
-			</div>
+			@TaskDetailDependenciesSection(task, depsRows)
 		}
 	</div>
 }
@@ -574,7 +585,7 @@ templ detailMoreItem(taskID, tab, label, activeTab string) {
 //     summary label reflects the new active tab when it's a hidden one)
 //   - the action bar primary button becomes tab-contextual (edit vs. state
 //     action) without a separate swap
-templ TaskDetailTabsSection(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, availableActions []string, activeTab string) {
+templ TaskDetailTabsSection(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsRows []DepsTreeRow, availableActions []string, activeTab string) {
 	<div id="tabs" class="tabs">
 		<div class="tab-list" role="tablist">
 			@detailTabLink(task.ID, "timeline", "Timeline", activeTab)
@@ -599,14 +610,14 @@ templ TaskDetailTabsSection(task *orchestrator.Task, actions []*orchestrator.Act
 				</div>
 			</details>
 		</div>
-		@TaskDetailTabPanel(task, actions, jobs, activeTab)
+		@TaskDetailTabPanel(task, actions, jobs, depsRows, activeTab)
 		@TaskActionBar(task, availableActions, activeTab)
 	</div>
 }
 
-templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, projectName string) {
+templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsRows []DepsTreeRow, availableActions []string, errorMsg string, activeTab string, projectName string) {
 	@Layout(task.Title, []components.BreadcrumbItem{{Title: "Tasks", URL: "/"}, {Title: task.Title}}) {
 		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName)
-		@TaskDetailTabsSection(task, actions, jobs, availableActions, activeTab)
+		@TaskDetailTabsSection(task, actions, jobs, depsRows, availableActions, activeTab)
 	}
 }

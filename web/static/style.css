@@ -1046,6 +1046,46 @@ body:has(.action-bar) {
   padding-bottom: 60px;
 }
 
+/* --- Dependency tree (Dependencies tab) ---
+   Upstream ancestors (post-order) → self → downstream dependents
+   (pre-order), with "├─ / └─" connectors. Rows are links to /tasks/{id};
+   the self row is plain and visually highlighted. */
+.deps-tree {
+  display: flex;
+  flex-direction: column;
+}
+
+.deps-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  color: var(--fg);
+  text-decoration: none;
+  border-radius: var(--radius-1);
+  font-size: 0.875rem;
+}
+
+.deps-row:hover {
+  background: var(--card);
+  text-decoration: none;
+}
+
+.deps-row-self {
+  background: var(--card);
+  font-weight: 600;
+}
+
+.deps-prefix {
+  color: var(--muted);
+  font-family: monospace;
+  white-space: pre;
+}
+
+.deps-title {
+  color: var(--fg);
+}
+
 /* --- Tabs --- */
 .tabs {
   margin-top: var(--space-3);

@@ -33,8 +33,6 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
 	r.Get("/tasks/{id}/edit/description", h.EditDescription)
 	r.Post("/tasks/{id}/edit/description", h.PostEditDescription)
-	r.Get("/tasks/{id}/edit/deps", h.EditDeps)
-	r.Post("/tasks/{id}/edit/deps", h.PostEditDeps)
 	r.Post("/tasks/{id}/action", h.PostAction)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	r.Post("/tasks/{id}/rerun", h.PostRerun)
@@ -227,11 +225,13 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("HX-Request") == "true" {
 		// Tab clicks swap the entire #tabs section so the active class on
 		// the visible tabs and the "more" summary label stay in sync.
-		templates.TaskDetailTabsSection(detail.Task, detail.Actions, jobs, detail.AvailableActions, tab).Render(r.Context(), w)
+		depsRows := buildDepsTreeRows(detail.Task, detail.DependsOnTree, detail.DependentsTree)
+		templates.TaskDetailTabsSection(detail.Task, detail.Actions, jobs, depsRows, detail.AvailableActions, tab).Render(r.Context(), w)
 		return
 	}
 	projectName := h.lookupProjectName(detail.Task.ProjectID)
-	templates.TaskDetail(detail.Task, detail.Actions, jobs, detail.AvailableActions, errorMsg, tab, projectName).Render(r.Context(), w)
+	depsRows := buildDepsTreeRows(detail.Task, detail.DependsOnTree, detail.DependentsTree)
+	templates.TaskDetail(detail.Task, detail.Actions, jobs, depsRows, detail.AvailableActions, errorMsg, tab, projectName).Render(r.Context(), w)
 }
 
 // lookupProjectName resolves a project ID to its display name (Meta.Name),
@@ -336,54 +336,6 @@ func (h *WebHandler) PostEditDescription(w http.ResponseWriter, r *http.Request)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusBadRequest)
 		templates.EditDescription(detail.Task, err.Error()).Render(r.Context(), w)
-		return
-	}
-	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
-}
-
-func (h *WebHandler) EditDeps(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	detail, err := h.Service.GetTaskDetail(id)
-	if err != nil {
-		http.Error(w, "Task not found", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	templates.EditDeps(detail.Task, detail.DependsOnResolved, "").Render(r.Context(), w)
-}
-
-func (h *WebHandler) PostEditDeps(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-
-	detail, err := h.Service.GetTaskDetail(id)
-	if err != nil {
-		http.Error(w, "Task not found", http.StatusNotFound)
-		return
-	}
-
-	var dependsOn []string
-	if raw := strings.TrimSpace(r.FormValue("depends_on")); raw != "" {
-		dependsOn = strings.Fields(raw)
-	} else {
-		dependsOn = []string{}
-	}
-	dependsOnPayload := r.FormValue("depends_on_payload")
-	parentID := r.FormValue("parent_id")
-
-	req := UpdateTaskRequest{
-		DependsOn:        dependsOn,
-		DependsOnPayload: &dependsOnPayload,
-		ParentID:         &parentID,
-	}
-
-	if err := h.Service.UpdateTask(id, req); err != nil {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusBadRequest)
-		templates.EditDeps(detail.Task, detail.DependsOnResolved, err.Error()).Render(r.Context(), w)
 		return
 	}
 	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
