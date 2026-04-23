@@ -114,6 +114,7 @@ type WebService interface {
 	DuplicateTask(id string) (string, error)
 	ListJobs(status string) ([]JobWithContext, error)
 	GetJob(id string) (*JobWithContext, error)
+	CreateTask(req CreateTaskRequest) (*orchestrator.Task, error)
 }
 
 type WorkflowService interface {

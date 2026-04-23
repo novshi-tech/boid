@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -24,12 +25,84 @@ type WebHandler struct {
 func (h *WebHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.TaskList)
+	r.Get("/tasks/new", h.TaskNew)
+	r.Post("/tasks", h.PostTaskCreate)
 	r.Get("/tasks/{id}", h.TaskDetail)
 	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
 	r.Post("/tasks/{id}/action", h.PostAction)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	r.Get("/jobs/{id}", h.JobDetail)
 	return r
+}
+
+func (h *WebHandler) TaskNew(w http.ResponseWriter, r *http.Request) {
+	projects, _ := h.Service.ListProjects()
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templates.TaskNew(projects, "").Render(r.Context(), w)
+}
+
+func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		projects, _ := h.Service.ListProjects()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		templates.TaskNew(projects, "リクエストの解析に失敗しました").Render(r.Context(), w)
+		return
+	}
+
+	title := strings.TrimSpace(r.FormValue("title"))
+	if title == "" {
+		projects, _ := h.Service.ListProjects()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		templates.TaskNew(projects, "タイトルは必須です").Render(r.Context(), w)
+		return
+	}
+
+	req := CreateTaskRequest{
+		ProjectID:        r.FormValue("project_id"),
+		Title:            title,
+		Behavior:         r.FormValue("behavior"),
+		Description:      r.FormValue("description"),
+		ParentID:         r.FormValue("parent_id"),
+		DependsOnPayload: r.FormValue("depends_on_payload"),
+		AutoStart:        r.FormValue("auto_start") == "on",
+	}
+
+	if raw := strings.TrimSpace(r.FormValue("depends_on")); raw != "" {
+		req.DependsOn = strings.Fields(raw)
+	}
+
+	if raw := strings.TrimSpace(r.FormValue("traits")); raw != "" {
+		req.Traits = strings.Fields(raw)
+	}
+
+	if v := r.FormValue("base_branch"); v != "" {
+		req.BaseBranch = &v
+	}
+	if v := r.FormValue("branch_prefix"); v != "" {
+		req.BranchPrefix = &v
+	}
+
+	if r.FormValue("worktree") == "on" {
+		t := true
+		req.Worktree = &t
+	}
+	if r.FormValue("readonly") == "on" {
+		t := true
+		req.Readonly = &t
+	}
+
+	task, err := h.Service.CreateTask(req)
+	if err != nil {
+		projects, _ := h.Service.ListProjects()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		templates.TaskNew(projects, err.Error()).Render(r.Context(), w)
+		return
+	}
+
+	http.Redirect(w, r, "/tasks/"+task.ID, http.StatusSeeOther)
 }
 
 func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {

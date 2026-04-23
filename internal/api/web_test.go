@@ -25,6 +25,8 @@ type stubWebService struct {
 	applyActionCalls   []applyActionCall
 	duplicateTaskNewID string
 	duplicateTaskErr   error
+	createTaskResult   *orchestrator.Task
+	createTaskErr      error
 }
 
 type applyActionCall struct {
@@ -71,6 +73,10 @@ func (s *stubWebService) ListJobs(status string) ([]JobWithContext, error) {
 
 func (s *stubWebService) GetJob(id string) (*JobWithContext, error) {
 	return nil, fmt.Errorf("job not found: %s", id)
+}
+
+func (s *stubWebService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
+	return s.createTaskResult, s.createTaskErr
 }
 
 // stubWorkflowService implements WorkflowService for WebAppService tests.
@@ -519,5 +525,90 @@ func TestTaskDetailFragment_TaskNotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", w.Code)
+	}
+}
+
+func newTestWebHandlerWithTaskCreate(svc WebService) *chi.Mux {
+	h := &WebHandler{Service: svc}
+	r := chi.NewRouter()
+	r.Get("/tasks/new", h.TaskNew)
+	r.Post("/tasks", h.PostTaskCreate)
+	r.Get("/tasks/{id}", h.TaskDetail)
+	return r
+}
+
+func TestWebHandler_TaskNew_Renders(t *testing.T) {
+	svc := &stubWebService{
+		projects: []*orchestrator.Project{
+			{ID: "proj-1"},
+		},
+	}
+	r := newTestWebHandlerWithTaskCreate(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/new", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "<html") {
+		t.Error("should return full HTML page")
+	}
+	if !strings.Contains(body, `name="title"`) {
+		t.Error("form should contain title field")
+	}
+	if !strings.Contains(body, `name="project_id"`) {
+		t.Error("form should contain project_id field")
+	}
+	if !strings.Contains(body, `name="behavior"`) {
+		t.Error("form should contain behavior field")
+	}
+	if !strings.Contains(body, `name="description"`) {
+		t.Error("form should contain description field")
+	}
+	if !strings.Contains(body, `name="auto_start"`) {
+		t.Error("form should contain auto_start field")
+	}
+}
+
+func TestWebHandler_PostTaskCreate_Success(t *testing.T) {
+	newTask := &orchestrator.Task{ID: "new-task-id", Title: "My Task"}
+	svc := &stubWebService{createTaskResult: newTask}
+	r := newTestWebHandlerWithTaskCreate(svc)
+
+	body := url.Values{"title": {"My Task"}, "project_id": {"proj-1"}, "behavior": {"dev"}}.Encode()
+	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	loc := w.Header().Get("Location")
+	if loc != "/tasks/new-task-id" {
+		t.Errorf("Location = %q, want /tasks/new-task-id", loc)
+	}
+}
+
+func TestWebHandler_PostTaskCreate_ValidationError(t *testing.T) {
+	svc := &stubWebService{}
+	r := newTestWebHandlerWithTaskCreate(svc)
+
+	// title 空
+	body := url.Values{"title": {""}, "project_id": {"proj-1"}}.Encode()
+	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	respBody := w.Body.String()
+	if !strings.Contains(respBody, "タイトルは必須") {
+		t.Errorf("response should contain error message, got: %s", respBody)
 	}
 }
