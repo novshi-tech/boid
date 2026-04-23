@@ -1259,13 +1259,14 @@ body:has(.action-bar) {
   font-family: monospace;
 }
 
+/* fired rows are clickable (link to job detail). Signal affordance up-front
+   rather than only on hover: low-key accent color + hover underline. */
 .timeline-type-fired a {
-  color: inherit;
+  color: var(--accent);
   text-decoration: none;
 }
 
 .timeline-type-fired a:hover {
-  color: var(--accent);
   text-decoration: underline;
 }
 

@@ -277,12 +277,12 @@ func JobDetail(job *JobContextView) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "\" onsubmit=\"return confirm('本当にゲートを再発火しますか？')\"><button type=\"submit\" class=\"btn btn-primary\">ゲートを再発火</button></form></div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "\" onsubmit=\"return confirm('本当にゲートを再発火しますか？')\"><button type=\"submit\" class=\"btn btn-primary\">Replay gate</button></form></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, " <section class=\"job-output\"><h2 class=\"section-title\">出力</h2><pre id=\"job-log\" class=\"job-log\" data-job-id=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, " <section class=\"job-output\"><h2 class=\"section-title\">Output</h2><pre id=\"job-log\" class=\"job-log\" data-job-id=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

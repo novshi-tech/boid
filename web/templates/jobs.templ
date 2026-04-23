@@ -77,12 +77,12 @@ templ JobDetail(job *JobContextView) {
 		if job.GateID != "" {
 			<div class="action-buttons">
 				<form method="post" action={ templ.SafeURL("/tasks/" + job.TaskID + "/gates/" + job.GateID + "/replay") } onsubmit="return confirm('本当にゲートを再発火しますか？')">
-					<button type="submit" class="btn btn-primary">ゲートを再発火</button>
+					<button type="submit" class="btn btn-primary">Replay gate</button>
 				</form>
 			</div>
 		}
 		<section class="job-output">
-			<h2 class="section-title">出力</h2>
+			<h2 class="section-title">Output</h2>
 			<pre id="job-log" class="job-log" data-job-id={ job.ID }>{ job.Output }</pre>
 			if job.Status == "running" || job.Status == "pending" {
 				<script>
