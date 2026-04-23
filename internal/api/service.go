@@ -840,6 +840,7 @@ type WebAppService struct {
 	Meta       MetaStore
 	Workflow   WorkflowService
 	TaskSvc    TaskService
+	Gates      GateService
 }
 
 func (s *WebAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
@@ -984,6 +985,28 @@ func (s *WebAppService) GetJob(id string) (*JobWithContext, error) {
 		result.TaskTitle = task.Title
 	}
 	return result, nil
+}
+
+func (s *WebAppService) RerunTask(id string, req RerunTaskRequest) error {
+	if s.TaskSvc == nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "task service not configured"}
+	}
+	_, err := s.TaskSvc.RerunTask(id, req)
+	return err
+}
+
+func (s *WebAppService) ListGatesForStatus(taskID, status string) ([]orchestrator.Gate, error) {
+	if s.Gates == nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "gate service not configured"}
+	}
+	return s.Gates.ListGatesForStatus(taskID, status)
+}
+
+func (s *WebAppService) ReplayGate(ctx context.Context, taskID string, req ReplayGateRequest) (*ReplayGateResult, error) {
+	if s.Gates == nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "gate service not configured"}
+	}
+	return s.Gates.ReplayGate(ctx, taskID, req)
 }
 
 type TaskWorkflowService struct {

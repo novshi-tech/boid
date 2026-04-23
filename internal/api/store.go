@@ -116,6 +116,9 @@ type WebService interface {
 	GetJob(id string) (*JobWithContext, error)
 	CreateTask(req CreateTaskRequest) (*orchestrator.Task, error)
 	UpdateTask(id string, req UpdateTaskRequest) error
+	RerunTask(id string, req RerunTaskRequest) error
+	ListGatesForStatus(taskID, status string) ([]orchestrator.Gate, error)
+	ReplayGate(ctx context.Context, taskID string, req ReplayGateRequest) (*ReplayGateResult, error)
 }
 
 type WorkflowService interface {

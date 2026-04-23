@@ -137,6 +137,10 @@ templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string
 				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/duplicate") }>
 					<button type="submit" class="btn btn-secondary">duplicate</button>
 				</form>
+				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('本当に再実行しますか？')">
+					<button type="submit" class="btn btn-secondary">rerun</button>
+				</form>
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "/gates") } class="btn btn-secondary">gate replay</a>
 			</div>
 		</div>
 		if len(availableActions) > 0 {

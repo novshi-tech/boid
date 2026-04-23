@@ -86,6 +86,18 @@ func (s *stubWebService) UpdateTask(id string, req UpdateTaskRequest) error {
 	return s.updateTaskErr
 }
 
+func (s *stubWebService) RerunTask(id string, req RerunTaskRequest) error {
+	return nil
+}
+
+func (s *stubWebService) ListGatesForStatus(taskID, status string) ([]orchestrator.Gate, error) {
+	return nil, nil
+}
+
+func (s *stubWebService) ReplayGate(ctx context.Context, taskID string, req ReplayGateRequest) (*ReplayGateResult, error) {
+	return &ReplayGateResult{}, nil
+}
+
 // stubWorkflowService implements WorkflowService for WebAppService tests.
 type stubWorkflowService struct {
 	applyActionErr error
