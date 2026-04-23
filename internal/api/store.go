@@ -115,6 +115,7 @@ type WebService interface {
 	ListJobs(status string) ([]JobWithContext, error)
 	GetJob(id string) (*JobWithContext, error)
 	CreateTask(req CreateTaskRequest) (*orchestrator.Task, error)
+	UpdateTask(id string, req UpdateTaskRequest) error
 }
 
 type WorkflowService interface {

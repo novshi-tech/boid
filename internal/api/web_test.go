@@ -27,6 +27,8 @@ type stubWebService struct {
 	duplicateTaskErr   error
 	createTaskResult   *orchestrator.Task
 	createTaskErr      error
+	updateTaskErr      error
+	updateTaskCalls    []UpdateTaskRequest
 }
 
 type applyActionCall struct {
@@ -77,6 +79,11 @@ func (s *stubWebService) GetJob(id string) (*JobWithContext, error) {
 
 func (s *stubWebService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
 	return s.createTaskResult, s.createTaskErr
+}
+
+func (s *stubWebService) UpdateTask(id string, req UpdateTaskRequest) error {
+	s.updateTaskCalls = append(s.updateTaskCalls, req)
+	return s.updateTaskErr
 }
 
 // stubWorkflowService implements WorkflowService for WebAppService tests.
@@ -610,5 +617,93 @@ func TestWebHandler_PostTaskCreate_ValidationError(t *testing.T) {
 	respBody := w.Body.String()
 	if !strings.Contains(respBody, "タイトルは必須") {
 		t.Errorf("response should contain error message, got: %s", respBody)
+	}
+}
+
+func newTestWebHandlerWithEditDescription(svc WebService) *chi.Mux {
+	h := &WebHandler{Service: svc}
+	r := chi.NewRouter()
+	r.Get("/tasks/{id}", h.TaskDetail)
+	r.Get("/tasks/{id}/edit/description", h.EditDescription)
+	r.Post("/tasks/{id}/edit/description", h.PostEditDescription)
+	return r
+}
+
+func TestWebHandler_EditDescription_Renders(t *testing.T) {
+	svc := &stubWebService{
+		taskDetail: &TaskDetailView{
+			Task: &orchestrator.Task{
+				ID:          "task-1",
+				Title:       "My Task",
+				Description: "current description text",
+				Status:      "pending",
+			},
+		},
+	}
+	r := newTestWebHandlerWithEditDescription(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1/edit/description", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "<html") {
+		t.Error("should return full HTML page")
+	}
+	if !strings.Contains(body, `name="description"`) {
+		t.Error("form should contain description textarea")
+	}
+	if !strings.Contains(body, "current description text") {
+		t.Error("textarea should contain current description value")
+	}
+}
+
+func TestWebHandler_PostEditDescription_Success(t *testing.T) {
+	svc := &stubWebService{}
+	r := newTestWebHandlerWithEditDescription(svc)
+
+	body := url.Values{"description": {"updated description"}}.Encode()
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/edit/description", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	loc := w.Header().Get("Location")
+	if loc != "/tasks/task-1" {
+		t.Errorf("Location = %q, want /tasks/task-1", loc)
+	}
+	if len(svc.updateTaskCalls) != 1 {
+		t.Fatalf("UpdateTask calls = %d, want 1", len(svc.updateTaskCalls))
+	}
+	if svc.updateTaskCalls[0].Description != "updated description" {
+		t.Errorf("UpdateTask description = %q, want %q", svc.updateTaskCalls[0].Description, "updated description")
+	}
+}
+
+func TestWebHandler_PostEditDescription_Empty(t *testing.T) {
+	// 空文字 POST は UpdateTask を呼び出すが、サービス内で空文字は無視されるため成功扱い
+	svc := &stubWebService{}
+	r := newTestWebHandlerWithEditDescription(svc)
+
+	body := url.Values{"description": {""}}.Encode()
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/edit/description", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d (empty description should redirect)", w.Code, http.StatusSeeOther)
+	}
+	if len(svc.updateTaskCalls) != 1 {
+		t.Fatalf("UpdateTask calls = %d, want 1", len(svc.updateTaskCalls))
+	}
+	if svc.updateTaskCalls[0].Description != "" {
+		t.Errorf("UpdateTask description = %q, want empty string", svc.updateTaskCalls[0].Description)
 	}
 }

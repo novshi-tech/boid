@@ -831,6 +831,14 @@ func (s *WebAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, e
 	return s.TaskSvc.CreateTask(req)
 }
 
+func (s *WebAppService) UpdateTask(id string, req UpdateTaskRequest) error {
+	if s.TaskSvc == nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "task service not configured"}
+	}
+	_, err := s.TaskSvc.UpdateTask(id, req)
+	return err
+}
+
 func (s *WebAppService) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
 	return s.Tasks.ListTasks(filter)
 }

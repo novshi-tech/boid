@@ -920,30 +920,79 @@ func TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 73, " ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 73, " <div class=\"card\"><div style=\"display:flex;align-items:center;gap:8px\"><h2 class=\"section-title\" style=\"margin:0\">Description</h2><a href=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var45 templ.SafeURL
+			templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + task.ID + "/edit/description"))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 243, Col: 70}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var45))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 74, "\" title=\"編集\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = components.IconEdit("icon-sm").Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 75, "</a></div>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			if task.Description != "" {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 76, "<pre style=\"margin-top:8px;white-space:pre-wrap;word-break:break-word\">")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var46 string
+				templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinStringErrs(task.Description)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 248, Col: 93}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var46))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 77, "</pre>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			} else {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 78, "<p style=\"margin-top:8px;color:#888\">(未設定)</p>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 79, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			if len(task.Payload) > 0 && string(task.Payload) != "null" {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 74, "<div class=\"card\"><details><summary>Payload</summary><pre>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 80, "<div class=\"card\"><details><summary>Payload</summary><pre>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var45 string
-				templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.JoinStringErrs(string(task.Payload))
+				var templ_7745c5c3_Var47 string
+				templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.JoinStringErrs(string(task.Payload))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 244, Col: 32}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 257, Col: 32}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var45))
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var47))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 75, "</pre></details></div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 81, "</pre></details></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 76, " ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 82, " ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -951,7 +1000,7 @@ func TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 77, " ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 83, " ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -959,20 +1008,20 @@ func TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 78, " <div id=\"task-live-root\" data-task-id=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 84, " <div id=\"task-live-root\" data-task-id=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var46 string
-			templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinStringErrs(task.ID)
+			var templ_7745c5c3_Var48 string
+			templ_7745c5c3_Var48, templ_7745c5c3_Err = templ.JoinStringErrs(task.ID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 250, Col: 49}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 263, Col: 49}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var46))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var48))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 79, "\" style=\"display:none\"></div><script>\n\t\t\t(function() {\n\t\t\t\tvar root = document.getElementById('task-live-root');\n\t\t\t\tvar taskID = root ? root.dataset.taskId : '';\n\t\t\t\tif (!taskID) return;\n\n\t\t\t\tvar es = new EventSource('/api/tasks/' + taskID + '/events');\n\n\t\t\t\tfunction refresh(kinds) {\n\t\t\t\t\tkinds.forEach(function(kind) {\n\t\t\t\t\t\tfetch('/tasks/' + taskID + '/fragment?kind=' + kind)\n\t\t\t\t\t\t\t.then(function(r) { return r.ok ? r.text() : null; })\n\t\t\t\t\t\t\t.then(function(html) {\n\t\t\t\t\t\t\t\tif (!html) return;\n\t\t\t\t\t\t\t\tvar el = document.getElementById('task-' + kind);\n\t\t\t\t\t\t\t\tif (el) el.outerHTML = html;\n\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t.catch(function() {});\n\t\t\t\t\t});\n\t\t\t\t}\n\n\t\t\t\tes.addEventListener('action', function() { refresh(['status', 'timeline']); });\n\t\t\t\tes.addEventListener('job', function() { refresh(['jobs', 'status']); });\n\t\t\t\tes.addEventListener('fired_event', function() { refresh(['timeline']); });\n\n\t\t\t\tfunction closeES() { es.close(); }\n\t\t\t\twindow.addEventListener('pagehide', closeES);\n\t\t\t\tdocument.addEventListener('visibilitychange', function() {\n\t\t\t\t\tif (document.visibilityState === 'hidden') { closeES(); }\n\t\t\t\t});\n\t\t\t})();\n\t\t</script>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 85, "\" style=\"display:none\"></div><script>\n\t\t\t(function() {\n\t\t\t\tvar root = document.getElementById('task-live-root');\n\t\t\t\tvar taskID = root ? root.dataset.taskId : '';\n\t\t\t\tif (!taskID) return;\n\n\t\t\t\tvar es = new EventSource('/api/tasks/' + taskID + '/events');\n\n\t\t\t\tfunction refresh(kinds) {\n\t\t\t\t\tkinds.forEach(function(kind) {\n\t\t\t\t\t\tfetch('/tasks/' + taskID + '/fragment?kind=' + kind)\n\t\t\t\t\t\t\t.then(function(r) { return r.ok ? r.text() : null; })\n\t\t\t\t\t\t\t.then(function(html) {\n\t\t\t\t\t\t\t\tif (!html) return;\n\t\t\t\t\t\t\t\tvar el = document.getElementById('task-' + kind);\n\t\t\t\t\t\t\t\tif (el) el.outerHTML = html;\n\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t.catch(function() {});\n\t\t\t\t\t});\n\t\t\t\t}\n\n\t\t\t\tes.addEventListener('action', function() { refresh(['status', 'timeline']); });\n\t\t\t\tes.addEventListener('job', function() { refresh(['jobs', 'status']); });\n\t\t\t\tes.addEventListener('fired_event', function() { refresh(['timeline']); });\n\n\t\t\t\tfunction closeES() { es.close(); }\n\t\t\t\twindow.addEventListener('pagehide', closeES);\n\t\t\t\tdocument.addEventListener('visibilitychange', function() {\n\t\t\t\t\tif (document.visibilityState === 'hidden') { closeES(); }\n\t\t\t\t});\n\t\t\t})();\n\t\t</script>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

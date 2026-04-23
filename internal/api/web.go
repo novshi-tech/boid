@@ -29,6 +29,8 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Post("/tasks", h.PostTaskCreate)
 	r.Get("/tasks/{id}", h.TaskDetail)
 	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
+	r.Get("/tasks/{id}/edit/description", h.EditDescription)
+	r.Post("/tasks/{id}/edit/description", h.PostEditDescription)
 	r.Post("/tasks/{id}/action", h.PostAction)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	r.Get("/jobs/{id}", h.JobDetail)
@@ -209,6 +211,39 @@ func (h *WebHandler) PostAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.Service.ApplyAction(id, actionType); err != nil {
 		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
+}
+
+func (h *WebHandler) EditDescription(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	detail, err := h.Service.GetTaskDetail(id)
+	if err != nil {
+		http.Error(w, "Task not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templates.EditDescription(detail.Task, "").Render(r.Context(), w)
+}
+
+func (h *WebHandler) PostEditDescription(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	description := r.FormValue("description")
+	req := UpdateTaskRequest{Description: description}
+	if err := h.Service.UpdateTask(id, req); err != nil {
+		detail, detailErr := h.Service.GetTaskDetail(id)
+		if detailErr != nil {
+			http.Error(w, "Task not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		templates.EditDescription(detail.Task, err.Error()).Render(r.Context(), w)
 		return
 	}
 	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
