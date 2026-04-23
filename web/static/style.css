@@ -398,6 +398,17 @@ pre {
   color: var(--danger);
 }
 
+/* --- Job output (frameless log block) --- */
+.job-output {
+  margin-top: var(--space-3);
+}
+
+.job-log {
+  max-height: 60vh;
+  overflow-y: auto;
+  margin: 0;
+}
+
 /* --- Filters --- */
 .filter-scroll {
   overflow-x: auto;
@@ -629,6 +640,35 @@ pre {
   color: var(--muted);
 }
 
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-5) var(--space-3);
+  margin: var(--space-4) auto 0;
+  max-width: 360px;
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-2);
+}
+
+.empty-state-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.empty-state-hint {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.empty-state-cta {
+  margin-top: var(--space-2);
+}
+
 /* --- Detail fields --- */
 .detail-field {
   margin-bottom: var(--space-2);
@@ -661,16 +701,70 @@ pre {
   color: var(--fg);
 }
 
-/* --- Action Buttons --- */
+/* --- Action Buttons (inline form submit / cancel) ---
+   Used at the end of edit forms (payload / deps / description / new task).
+   Mirrors the detail page action bar: outlined primary, auto-width buttons. */
 .action-buttons {
   display: flex;
   flex-direction: row;
   flex-wrap: wrap;
   gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 
 .action-buttons form {
   display: contents;
+}
+
+.action-buttons .btn {
+  width: auto;
+  min-width: 100px;
+  padding: 8px var(--space-3);
+  font-weight: 500;
+}
+
+.action-buttons .btn-primary {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.action-buttons .btn-primary:hover {
+  background: var(--accent);
+  color: #fff;
+  opacity: 1;
+}
+
+.action-buttons .btn-danger {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.action-buttons .btn-danger:hover {
+  background: var(--danger);
+  color: #fff;
+  opacity: 1;
+}
+
+/* --- Page heading (frameless, no status stripe) ---
+   Used on form pages (/tasks/new, edit pages) to match the detail page
+   chrome: a simple bottom-bordered title strip without a card frame. */
+.page-heading {
+  border-bottom: 1px solid var(--border);
+  padding: var(--space-2) 0;
+  margin-bottom: var(--space-3);
+}
+
+.page-heading h1 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+  color: var(--fg);
+}
+
+.task-form-body {
+  max-width: 640px;
 }
 
 /* --- Task Detail header (frameless) ---

@@ -20,61 +20,70 @@ type JobContextView struct {
 	Output    string
 }
 
+// jobStatusStripe maps a job status to the task-row-status-* class so the
+// detail header reuses the task list's left-edge colour palette.
+//
+//	pending   → slate (same as task pending)
+//	running   → green (same as task executing)
+//	completed → gray  (same as task done)
+//	failed    → red   (same as task aborted)
+func jobStatusStripe(status string) string {
+	switch status {
+	case "running":
+		return "task-row-status-executing"
+	case "completed":
+		return "task-row-status-done"
+	case "failed":
+		return "task-row-status-aborted"
+	default:
+		return "task-row-status-pending"
+	}
+}
+
 templ JobDetail(job *JobContextView) {
 	@Layout("Job "+shortID(job.ID), []components.BreadcrumbItem{{Title: "Jobs"}, {Title: "Job " + shortID(job.ID)}}) {
-		<div class="card">
-			<h1>Job <span class="job-id">{ shortID(job.ID) }</span></h1>
-			<div class="card-meta" style="margin-top:8px">
+		<div class={ "detail-card", jobStatusStripe(job.Status) }>
+			<h1 class="detail-title">
+				Job&nbsp;<span class="job-id">{ shortID(job.ID) }</span>
+			</h1>
+			<div class="detail-meta">
 				<span class={ taskStatusClass(job.Status) }>{ job.Status }</span>
 				if job.Role != "" {
+					<span class="detail-meta-sep">·</span>
 					<span>{ job.Role }</span>
 				}
-				if job.ExitCode != 0 {
-					<span class="exit-code">exit: { fmt.Sprintf("%d", job.ExitCode) }</span>
-				}
-			</div>
-			<div style="margin-top:12px">
-				<div class="detail-field">
-					<strong>Job ID</strong>
-					<span class="job-id">{ job.ID }</span>
-				</div>
-				<div class="detail-field">
-					<strong>タスク</strong>
-					<a href={ templ.SafeURL("/tasks/" + job.TaskID) }>
-						if job.TaskTitle != "" {
-							{ job.TaskTitle }
-						} else {
-							{ job.TaskID }
-						}
-					</a>
-				</div>
 				if job.HandlerID != "" {
-					<div class="detail-field">
-						<strong>Handler</strong>
-						{ job.HandlerID }
-					</div>
+					<span class="detail-meta-sep">·</span>
+					<span>{ job.HandlerID }</span>
 				}
-				<div class="detail-field">
-					<strong>作成日時</strong>
-					{ job.CreatedAt.Format("2006-01-02 15:04:05") }
-				</div>
-				<div class="detail-field">
-					<strong>更新日時</strong>
-					{ job.UpdatedAt.Format("2006-01-02 15:04:05") }
-				</div>
+				if job.ExitCode != 0 {
+					<span class="detail-meta-sep">·</span>
+					<span class="exit-code">exit { fmt.Sprintf("%d", job.ExitCode) }</span>
+				}
+				<span class="detail-meta-sep">·</span>
+				<span class="detail-time">{ job.UpdatedAt.Format("2006-01-02 15:04") }</span>
+			</div>
+			<div class="detail-meta">
+				<span>↑</span>
+				<a href={ templ.SafeURL("/tasks/" + job.TaskID) }>
+					if job.TaskTitle != "" {
+						{ job.TaskTitle }
+					} else {
+						{ job.TaskID }
+					}
+				</a>
 			</div>
 		</div>
 		if job.GateID != "" {
-			<div class="card">
-				<h2 class="section-title">Gate Replay</h2>
+			<div class="action-buttons">
 				<form method="post" action={ templ.SafeURL("/tasks/" + job.TaskID + "/gates/" + job.GateID + "/replay") } onsubmit="return confirm('本当にゲートを再発火しますか？')">
-					<button type="submit" class="btn btn-primary btn-sm">replay</button>
+					<button type="submit" class="btn btn-primary">ゲートを再発火</button>
 				</form>
 			</div>
 		}
-		<div class="card">
+		<section class="job-output">
 			<h2 class="section-title">出力</h2>
-			<pre id="job-log" data-job-id={ job.ID } style="max-height:60vh;overflow-y:auto">{ job.Output }</pre>
+			<pre id="job-log" class="job-log" data-job-id={ job.ID }>{ job.Output }</pre>
 			if job.Status == "running" || job.Status == "pending" {
 				<script>
 					(function() {
@@ -90,6 +99,6 @@ templ JobDetail(job *JobContextView) {
 					})();
 				</script>
 			}
-		</div>
+		</section>
 	}
 }

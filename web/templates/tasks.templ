@@ -10,9 +10,16 @@ import (
 	"time"
 )
 
+// taskFilterActive reports whether the user has narrowed the list with any
+// filter beyond the default status view. Used to switch the empty-state copy
+// between "no tasks at all" and "filters match nothing".
+func taskFilterActive(f orchestrator.TaskFilter) bool {
+	return f.Title != "" || f.ProjectID != "" || f.Behavior != "" || f.WorkspaceID != ""
+}
+
 // TaskListFragment renders only the task list container (for HTMX partial responses).
 // currentURL is embedded as the polling target so filter params are preserved across polls.
-templ TaskListFragment(items []components.TreeItem, currentURL string) {
+templ TaskListFragment(items []components.TreeItem, filter orchestrator.TaskFilter, currentURL string) {
 	<div
 		id="task-list"
 		hx-get={ currentURL }
@@ -21,7 +28,19 @@ templ TaskListFragment(items []components.TreeItem, currentURL string) {
 		hx-swap="outerHTML"
 	>
 		if len(items) == 0 {
-			<p class="empty">タスクがありません</p>
+			if taskFilterActive(filter) {
+				<div class="empty-state">
+					<div class="empty-state-title">条件に一致するタスクはありません</div>
+					<p class="empty-state-hint">検索語やフィルタを変えてみてください。</p>
+					<a href="/" class="btn btn-secondary empty-state-cta">フィルタを解除</a>
+				</div>
+			} else {
+				<div class="empty-state">
+					<div class="empty-state-title">まだタスクがありません</div>
+					<p class="empty-state-hint">最初のタスクを作って作業を始めましょう。</p>
+					<a href="/tasks/new" class="btn btn-primary empty-state-cta">+ 新規タスク</a>
+				</div>
+			}
 		} else {
 			@components.TaskTree(items)
 		}
@@ -110,7 +129,7 @@ type filterOption struct {
 templ TaskListContent(items []components.TreeItem, filter orchestrator.TaskFilter, projects []*orchestrator.Project, behaviors []string, workspaces []*orchestrator.WorkspaceSummary, currentURL string) {
 	<div id="main-content">
 		@components.TaskFilters(filter, projects, behaviors, workspaces)
-		@TaskListFragment(items, currentURL)
+		@TaskListFragment(items, filter, currentURL)
 	</div>
 }
 

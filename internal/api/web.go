@@ -166,7 +166,7 @@ func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Header.Get("HX-Request") == "true" {
-		templates.TaskListFragment(items, r.URL.RequestURI()).Render(r.Context(), w)
+		templates.TaskListFragment(items, filter, r.URL.RequestURI()).Render(r.Context(), w)
 		return
 	}
 

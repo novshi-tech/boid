@@ -7,11 +7,13 @@ import (
 
 templ TaskNew(projects []*orchestrator.Project, errorMsg string) {
 	@Layout("新規タスク", []components.BreadcrumbItem{{Title: "Tasks", URL: "/"}, {Title: "New"}}) {
-		<div class="card">
+		<div class="page-heading">
 			<h1>新規タスク作成</h1>
-			if errorMsg != "" {
-				<div class="action-error">{ errorMsg }</div>
-			}
+		</div>
+		if errorMsg != "" {
+			<div class="action-error">{ errorMsg }</div>
+		}
+		<div class="task-form-body">
 			<form id="task-new-form" method="post" action="/tasks">
 				<div class="form-group">
 					<label for="title" class="form-label">Title *</label>

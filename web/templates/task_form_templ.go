@@ -46,7 +46,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string) templ.Component 
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"card\"><h1>新規タスク作成</h1>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"page-heading\"><h1>新規タスク作成</h1></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -58,7 +58,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string) templ.Component 
 				var templ_7745c5c3_Var3 string
 				templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(errorMsg)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 13, Col: 40}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 14, Col: 39}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 				if templ_7745c5c3_Err != nil {
@@ -69,7 +69,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string) templ.Component 
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<form id=\"task-new-form\" method=\"post\" action=\"/tasks\"><div class=\"form-group\"><label for=\"title\" class=\"form-label\">Title *</label> <input type=\"text\" id=\"title\" name=\"title\" class=\"form-input\" required autocomplete=\"off\"></div><div class=\"form-group\"><label for=\"project_id\" class=\"form-label\">Project</label> <select id=\"project_id\" name=\"project_id\" class=\"filter-select\"><option value=\"\">-- 選択 --</option> ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, " <div class=\"task-form-body\"><form id=\"task-new-form\" method=\"post\" action=\"/tasks\"><div class=\"form-group\"><label for=\"title\" class=\"form-label\">Title *</label> <input type=\"text\" id=\"title\" name=\"title\" class=\"form-input\" required autocomplete=\"off\"></div><div class=\"form-group\"><label for=\"project_id\" class=\"form-label\">Project</label> <select id=\"project_id\" name=\"project_id\" class=\"filter-select\"><option value=\"\">-- 選択 --</option> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -81,7 +81,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string) templ.Component 
 				var templ_7745c5c3_Var4 string
 				templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(p.ID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 25, Col: 27}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 27, Col: 27}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 				if templ_7745c5c3_Err != nil {
@@ -95,7 +95,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string) templ.Component 
 					var templ_7745c5c3_Var5 string
 					templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(p.Meta.Name)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 27, Col: 22}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 29, Col: 22}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 					if templ_7745c5c3_Err != nil {
@@ -108,7 +108,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string) templ.Component 
 					var templ_7745c5c3_Var6 string
 					templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(p.ID)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 27, Col: 32}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 29, Col: 32}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 					if templ_7745c5c3_Err != nil {
@@ -122,7 +122,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string) templ.Component 
 					var templ_7745c5c3_Var7 string
 					templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(p.ID)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 29, Col: 15}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 31, Col: 15}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 					if templ_7745c5c3_Err != nil {
