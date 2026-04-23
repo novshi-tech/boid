@@ -19,56 +19,8 @@ type JobContextView struct {
 	Output    string
 }
 
-var jobFilterOptions = []filterOption{
-	{"", "All"},
-	{"running", "Running"},
-	{"completed", "Completed"},
-	{"failed", "Failed"},
-}
-
-templ JobList(jobs []*JobContextView, currentFilter string) {
-	@Layout("Jobs", []components.BreadcrumbItem{{Title: "Jobs"}}) {
-		<div class="filter-scroll">
-			<div class="filters">
-				for _, f := range jobFilterOptions {
-					if f.Value == currentFilter {
-						<a href={ templ.SafeURL("/jobs?status=" + f.Value) } class="active">{ f.Label }</a>
-					} else {
-						<a href={ templ.SafeURL("/jobs?status=" + f.Value) }>{ f.Label }</a>
-					}
-				}
-			</div>
-		</div>
-		if len(jobs) == 0 {
-			<p class="empty">ジョブがありません</p>
-		} else {
-			<div class="task-list">
-				for _, job := range jobs {
-					<a href={ templ.SafeURL("/jobs/" + job.ID) } class="task-row">
-						<div class="task-row-title">
-							if job.TaskTitle != "" {
-								{ job.TaskTitle }
-							} else {
-								{ job.TaskID }
-							}
-						</div>
-						<div class="task-row-meta">
-							<span class={ taskStatusClass(job.Status) }>{ job.Status }</span>
-							<span class="job-id">{ shortID(job.ID) }</span>
-							if job.Role != "" {
-								<span>{ job.Role }</span>
-							}
-							<span>{ job.UpdatedAt.Format("2006-01-02 15:04") }</span>
-						</div>
-					</a>
-				}
-			</div>
-		}
-	}
-}
-
 templ JobDetail(job *JobContextView) {
-	@Layout("Job "+shortID(job.ID), []components.BreadcrumbItem{{Title: "Jobs", URL: "/jobs"}, {Title: "Job " + shortID(job.ID)}}) {
+	@Layout("Job "+shortID(job.ID), []components.BreadcrumbItem{{Title: "Jobs"}, {Title: "Job " + shortID(job.ID)}}) {
 		<div class="card">
 			<h1>Job <span class="job-id">{ shortID(job.ID) }</span></h1>
 			<div class="card-meta" style="margin-top:8px">

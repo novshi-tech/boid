@@ -329,6 +329,36 @@ func TestWebHandlerPostDuplicate_Success(t *testing.T) {
 	}
 }
 
+func TestWebHandler_RemovedRoutes_Return404(t *testing.T) {
+	svc := &stubWebService{}
+	h := &WebHandler{Service: svc}
+	r := h.Routes()
+
+	for _, path := range []string{"/jobs", "/projects"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("GET %s: status = %d, want 404", path, w.Code)
+		}
+	}
+}
+
+func TestWebHandler_JobDetail_RouteStillRegistered(t *testing.T) {
+	svc := &stubWebService{}
+	h := &WebHandler{Service: svc}
+	r := h.Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs/some-id", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// ルートは登録されている (handler の 404 であり chi の 404 page not found ではない)
+	if strings.Contains(w.Body.String(), "404 page not found") {
+		t.Error("/jobs/{id} route should be registered; got chi 404 instead of handler response")
+	}
+}
+
 func TestWebHandlerPostDuplicate_Error(t *testing.T) {
 	svc := &stubWebService{duplicateTaskErr: fmt.Errorf("task not found")}
 	r := newTestWebHandler(svc)
