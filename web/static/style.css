@@ -471,6 +471,12 @@ pre {
   font-family: system-ui, sans-serif;
 }
 
+.btn-sm {
+  padding: var(--space-1) var(--space-2);
+  font-size: 0.875rem;
+  min-height: auto;
+}
+
 .btn:hover {
   border-color: var(--accent);
 }
@@ -683,6 +689,37 @@ details[open] > summary {
   text-decoration: none;
 }
 
+/* --- Filter Toggle (open/closed) --- */
+.filter-toggle {
+  display: inline-flex;
+  border-radius: var(--radius-2);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.filter-toggle button {
+  border: none;
+  border-radius: 0;
+  min-height: auto;
+  padding: var(--space-1) var(--space-3);
+  font-size: 0.875rem;
+  background: var(--card);
+  color: var(--fg);
+  cursor: pointer;
+  font-family: system-ui, sans-serif;
+  font-weight: 500;
+}
+
+.filter-toggle button + button {
+  border-left: 1px solid var(--border);
+}
+
+.filter-toggle button.active {
+  background: var(--accent);
+  color: #fff;
+}
+
 /* ========================================
    Desktop (min-width: 768px)
    ======================================== */
@@ -693,10 +730,20 @@ details[open] > summary {
     padding: var(--space-4);
   }
 
+  .btn {
+    width: auto;
+    min-width: 80px;
+    padding: 8px var(--space-3);
+  }
+
   .filters a,
   .filters button {
     min-height: auto;
     padding: var(--space-1) var(--space-3);
+  }
+
+  .filter-controls {
+    flex-wrap: nowrap;
   }
 
   .filter-select,

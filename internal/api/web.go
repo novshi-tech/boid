@@ -15,6 +15,7 @@ import (
 	"github.com/novshi-tech/boid/internal/api/auth"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/web/templates"
+	"github.com/novshi-tech/boid/web/templates/components"
 )
 
 
@@ -128,23 +129,76 @@ func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: q.Get("workspace"),
 		Title:       q.Get("q"),
 	}
+	// Web UI defaults to "open" when no status is specified.
+	if filter.Status == "" {
+		filter.Status = "open"
+	}
+
+	projects, _ := h.Service.ListProjects()
+	projects = filterProjectsByWorkspace(projects, filter.WorkspaceID)
+	// Clear project filter when the selected project is not in the workspace.
+	if !projectInList(projects, filter.ProjectID) {
+		filter.ProjectID = ""
+	}
+
 	tasks, err := h.Service.ListTasks(filter)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	items := BuildTreeItems(tasks)
+
+	var items []components.TreeItem
+	if filter.Status == "closed" {
+		items = BuildFlatItems(tasks)
+	} else {
+		items = BuildTreeItems(tasks)
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	if r.Header.Get("HX-Target") == "main-content" {
+		behaviors, _ := h.Service.ListBehaviors()
+		workspaces, _ := h.Service.ListWorkspaces()
+		templates.TaskListContent(items, filter, projects, behaviors, workspaces, r.URL.RequestURI()).Render(r.Context(), w)
+		return
+	}
 
 	if r.Header.Get("HX-Request") == "true" {
 		templates.TaskListFragment(items, r.URL.RequestURI()).Render(r.Context(), w)
 		return
 	}
 
-	projects, _ := h.Service.ListProjects()
 	behaviors, _ := h.Service.ListBehaviors()
 	workspaces, _ := h.Service.ListWorkspaces()
 	templates.TaskList(items, filter, projects, behaviors, workspaces, r.URL.RequestURI()).Render(r.Context(), w)
+}
+
+// filterProjectsByWorkspace filters projects to only those in the given workspace.
+// If workspaceID is empty, all projects are returned.
+func filterProjectsByWorkspace(projects []*orchestrator.Project, workspaceID string) []*orchestrator.Project {
+	if workspaceID == "" {
+		return projects
+	}
+	filtered := make([]*orchestrator.Project, 0, len(projects))
+	for _, p := range projects {
+		if p.WorkspaceID == workspaceID {
+			filtered = append(filtered, p)
+		}
+	}
+	return filtered
+}
+
+// projectInList returns true if projectID is empty or found in the project list.
+func projectInList(projects []*orchestrator.Project, projectID string) bool {
+	if projectID == "" {
+		return true
+	}
+	for _, p := range projects {
+		if p.ID == projectID {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {

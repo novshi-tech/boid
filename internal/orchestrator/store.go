@@ -219,6 +219,8 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	if filter.Status == "open" {
 		conditions = append(conditions, `(t.status NOT IN ('done', 'aborted') OR `+
 			`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status NOT IN ('done', 'aborted')) > 0)`)
+	} else if filter.Status == "closed" {
+		conditions = append(conditions, "t.status IN ('done', 'aborted')")
 	} else if filter.Status != "" {
 		conditions = append(conditions, "t.status = ?")
 		args = append(args, filter.Status)
@@ -253,7 +255,11 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
-	query += " ORDER BY t.created_at DESC"
+	if filter.Status == "closed" {
+		query += " ORDER BY t.updated_at DESC"
+	} else {
+		query += " ORDER BY t.created_at DESC"
+	}
 
 	rows, err := dbtx.Query(query, args...)
 	if err != nil {

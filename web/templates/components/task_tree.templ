@@ -90,17 +90,17 @@ templ taskTreeRow(item TreeItem) {
 		data-parent-id={ item.ParentID }
 		style={ fmt.Sprintf("margin-left: %dpx", item.Depth*16) }
 	>
-		<div class="task-row">
+		<a href={ templ.SafeURL("/tasks/" + item.Task.ID) } class="task-row">
 			<div class="tree-row-head">
 				if item.HasChildren {
-					<button type="button" class="tree-fold-btn" data-task-id={ item.Task.ID } aria-expanded="true">
+					<button type="button" class="tree-fold-btn" data-task-id={ item.Task.ID } aria-expanded="true" onclick="event.preventDefault();event.stopPropagation()">
 						@IconChevronDown("tree-icon tree-fold-icon-down")
 						@IconChevronRight("tree-icon tree-fold-icon-right")
 					</button>
 				} else {
 					<span class="tree-fold-placeholder"></span>
 				}
-				<a href={ templ.SafeURL("/tasks/" + item.Task.ID) } class="task-row-link">{ item.Task.Title }</a>
+				<span class="task-row-link">{ item.Task.Title }</span>
 			</div>
 			<div class="task-row-meta">
 				<span class={ treeStatusClass(string(item.Task.Status)) }>{ string(item.Task.Status) }</span>
@@ -110,6 +110,6 @@ templ taskTreeRow(item TreeItem) {
 				}
 				<span>{ item.Task.UpdatedAt.Format("2006-01-02 15:04") }</span>
 			</div>
-		</div>
+		</a>
 	</div>
 }

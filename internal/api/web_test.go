@@ -188,7 +188,12 @@ func newTestWebHandlerWithTaskList(svc WebService) *chi.Mux {
 }
 
 func TestWebHandlerTaskList_FiltersMappedToTaskFilter(t *testing.T) {
-	svc := &stubWebService{}
+	// proj-1 must be in ws-1 so it is not cleared by the workspace-project linkage logic.
+	svc := &stubWebService{
+		projects: []*orchestrator.Project{
+			{ID: "proj-1", WorkspaceID: "ws-1"},
+		},
+	}
 	r := newTestWebHandlerWithTaskList(svc)
 
 	req := httptest.NewRequest(http.MethodGet, "/?status=executing&project=proj-1&behavior=dev&workspace=ws-1&q=myquery", nil)
