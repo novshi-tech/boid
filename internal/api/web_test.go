@@ -146,6 +146,7 @@ func newTestWebHandler(svc WebService) *chi.Mux {
 	h := &WebHandler{Service: svc}
 	r := chi.NewRouter()
 	r.Get("/tasks/{id}", h.TaskDetail)
+	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
 	r.Post("/tasks/{id}/action", h.PostAction)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	return r
@@ -385,5 +386,108 @@ func TestWebAppServiceDuplicateTask_NotFound(t *testing.T) {
 	se, ok := err.(*StatusError)
 	if !ok || se.Code != http.StatusNotFound {
 		t.Fatalf("expected StatusNotFound, got %v", err)
+	}
+}
+
+func makeTaskDetailView() *TaskDetailView {
+	return &TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:       "task-1",
+			Title:    "Test Task",
+			Status:   "executing",
+			Behavior: "dev",
+		},
+		Actions:          []*orchestrator.Action{{Type: "start", FromStatus: "pending", ToStatus: "executing"}},
+		Jobs:             []*Job{{ID: "job-1", Role: "main", Status: JobStatusRunning}},
+		AvailableActions: []string{"abort"},
+	}
+}
+
+func TestTaskDetailFragment_Timeline(t *testing.T) {
+	svc := &stubWebService{taskDetail: makeTaskDetailView()}
+	r := newTestWebHandler(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1/fragment?kind=timeline", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `id="task-timeline"`) {
+		t.Errorf("timeline fragment should contain task-timeline element, got: %s", body)
+	}
+	if strings.Contains(body, "<html") {
+		t.Error("fragment should not contain full HTML page")
+	}
+}
+
+func TestTaskDetailFragment_Status(t *testing.T) {
+	svc := &stubWebService{taskDetail: makeTaskDetailView()}
+	r := newTestWebHandler(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1/fragment?kind=status", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `id="task-status"`) {
+		t.Errorf("status fragment should contain task-status element, got: %s", body)
+	}
+	if strings.Contains(body, "<html") {
+		t.Error("fragment should not contain full HTML page")
+	}
+	if !strings.Contains(body, "executing") {
+		t.Errorf("status fragment should contain current status badge, got: %s", body)
+	}
+}
+
+func TestTaskDetailFragment_Jobs(t *testing.T) {
+	svc := &stubWebService{taskDetail: makeTaskDetailView()}
+	r := newTestWebHandler(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1/fragment?kind=jobs", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `id="task-jobs"`) {
+		t.Errorf("jobs fragment should contain task-jobs element, got: %s", body)
+	}
+	if strings.Contains(body, "<html") {
+		t.Error("fragment should not contain full HTML page")
+	}
+}
+
+func TestTaskDetailFragment_UnknownKind(t *testing.T) {
+	svc := &stubWebService{taskDetail: makeTaskDetailView()}
+	r := newTestWebHandler(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1/fragment?kind=unknown", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestTaskDetailFragment_TaskNotFound(t *testing.T) {
+	svc := &stubWebService{} // taskDetail is nil → GetTaskDetail returns error
+	r := newTestWebHandler(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/missing/fragment?kind=timeline", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
 	}
 }
