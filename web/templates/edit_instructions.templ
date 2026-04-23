@@ -1,0 +1,154 @@
+package templates
+
+import (
+	"sort"
+
+	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/web/templates/components"
+)
+
+type instructionRoleDisplay struct {
+	Role      string
+	TypeStr   string
+	Consumer  string
+	IsDefault bool
+}
+
+func instructionRoleDisplays(task *orchestrator.Task, defaults map[string]orchestrator.Instruction) []instructionRoleDisplay {
+	seen := map[string]bool{}
+	var roles []string
+	for r := range task.Instructions {
+		if !seen[r] {
+			seen[r] = true
+			roles = append(roles, r)
+		}
+	}
+	for r := range defaults {
+		if !seen[r] {
+			seen[r] = true
+			roles = append(roles, r)
+		}
+	}
+	sort.Strings(roles)
+
+	out := make([]instructionRoleDisplay, 0, len(roles))
+	for _, role := range roles {
+		d := instructionRoleDisplay{Role: role}
+		if inst, ok := task.Instructions[role]; ok {
+			d.TypeStr = string(inst.Type)
+			d.Consumer = inst.Consumer
+		} else if def, ok := defaults[role]; ok {
+			d.TypeStr = string(def.Type)
+			d.Consumer = def.Consumer
+			d.IsDefault = true
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+func instructionTypeOptions() []string {
+	return []string{"execution", "rework", "verification"}
+}
+
+templ InstructionRoleList(task *orchestrator.Task, defaults map[string]orchestrator.Instruction) {
+	@Layout("instructions編集", []components.BreadcrumbItem{
+		{Title: "Tasks", URL: "/"},
+		{Title: task.Title, URL: "/tasks/" + task.ID},
+		{Title: "instructions編集"},
+	}) {
+		<div class="card">
+			<h1>Instructions 編集</h1>
+			for _, rd := range instructionRoleDisplays(task, defaults) {
+				<div class="detail-field">
+					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/instructions/" + rd.Role) }>{ rd.Role }</a>
+					if rd.TypeStr != "" {
+						<span class="badge">{ rd.TypeStr }</span>
+						<span>{ rd.Consumer }</span>
+					}
+					if rd.IsDefault {
+						<span style="color:#888">(デフォルト)</span>
+					}
+				</div>
+			}
+			if len(instructionRoleDisplays(task, defaults)) == 0 {
+				<p style="color:#888">(instructionsなし)</p>
+			}
+		</div>
+		<div class="card">
+			<h2 class="section-title">新規 role 追加</h2>
+			<div class="form-group">
+				<input id="new-role-name" type="text" class="form-input" placeholder="role名"/>
+			</div>
+			<div class="action-buttons">
+				<button
+					type="button"
+					class="btn btn-primary"
+					data-task-id={ task.ID }
+					onclick="var n=document.getElementById('new-role-name').value.trim();if(n)window.location.href='/tasks/'+this.dataset.taskId+'/edit/instructions/'+encodeURIComponent(n);"
+				>追加</button>
+				<a href={ templ.SafeURL("/tasks/" + task.ID) } class="btn btn-secondary">キャンセル</a>
+			</div>
+		</div>
+	}
+}
+
+templ InstructionRoleEdit(task *orchestrator.Task, role string, inst orchestrator.Instruction, errorMsg string) {
+	@Layout("instruction編集", []components.BreadcrumbItem{
+		{Title: "Tasks", URL: "/"},
+		{Title: task.Title, URL: "/tasks/" + task.ID},
+		{Title: "instructions編集", URL: "/tasks/" + task.ID + "/edit/instructions"},
+		{Title: role},
+	}) {
+		<div class="card">
+			<h1>Instruction 編集: { role }</h1>
+			if errorMsg != "" {
+				<div class="action-error">{ errorMsg }</div>
+			}
+			<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/edit/instructions/" + role) }>
+				<div class="form-group">
+					<label for="type" class="form-label">type</label>
+					<select id="type" name="type" class="form-input">
+						for _, t := range instructionTypeOptions() {
+							if string(inst.Type) == t {
+								<option value={ t } selected>{ t }</option>
+							} else {
+								<option value={ t }>{ t }</option>
+							}
+						}
+					</select>
+				</div>
+				<div class="form-group">
+					<label for="consumer" class="form-label">consumer</label>
+					<input id="consumer" type="text" name="consumer" value={ inst.Consumer } class="form-input"/>
+				</div>
+				<div class="form-group">
+					<label for="name" class="form-label">name</label>
+					<input id="name" type="text" name="name" value={ inst.Name } class="form-input"/>
+				</div>
+				<div class="form-group">
+					<label for="message" class="form-label">message</label>
+					<textarea id="message" name="message" class="form-input" rows="10" style="font-family:monospace;white-space:pre">{ inst.Message }</textarea>
+				</div>
+				<div class="form-group">
+					<label class="form-label">
+						if inst.Interactive {
+							<input id="interactive" type="checkbox" name="interactive" checked/>
+						} else {
+							<input id="interactive" type="checkbox" name="interactive"/>
+						}
+						interactive
+					</label>
+				</div>
+				<div class="form-group">
+					<label for="model" class="form-label">model</label>
+					<input id="model" type="text" name="model" value={ inst.Model } class="form-input"/>
+				</div>
+				<div class="action-buttons">
+					<button type="submit" class="btn btn-primary">保存</button>
+					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/instructions") } class="btn btn-secondary">キャンセル</a>
+				</div>
+			</form>
+		</div>
+	}
+}
