@@ -17,6 +17,7 @@ import (
 
 type WebHandler struct {
 	Service WebService
+	Hub     *TaskEventHub
 }
 
 func (h *WebHandler) Routes() chi.Router {
