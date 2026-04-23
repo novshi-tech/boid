@@ -1,0 +1,86 @@
+package templates
+
+import (
+	"encoding/json"
+	"sort"
+
+	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/web/templates/components"
+)
+
+func payloadTopLevelKeys(task *orchestrator.Task) []string {
+	if len(task.Payload) == 0 || string(task.Payload) == "null" {
+		return nil
+	}
+	raw := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(task.Payload, &raw); err != nil {
+		return nil
+	}
+	keys := make([]string, 0, len(raw))
+	for k := range raw {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+templ PayloadSectionList(task *orchestrator.Task) {
+	@Layout("payload編集", []components.BreadcrumbItem{
+		{Title: "Tasks", URL: "/"},
+		{Title: task.Title, URL: "/tasks/" + task.ID},
+		{Title: "payload編集"},
+	}) {
+		<div class="card">
+			<h1>Payload 編集</h1>
+			for _, key := range payloadTopLevelKeys(task) {
+				<div class="detail-field">
+					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/payload/" + key) }>{ key }</a>
+				</div>
+			}
+			if len(payloadTopLevelKeys(task)) == 0 {
+				<p style="color:#888">(セクションなし)</p>
+			}
+		</div>
+		<div class="card">
+			<h2 class="section-title">新規セクション追加</h2>
+			<div class="form-group">
+				<input id="new-section-name" type="text" class="form-input" placeholder="セクション名"/>
+			</div>
+			<div class="action-buttons">
+				<button
+					type="button"
+					class="btn btn-primary"
+					data-task-id={ task.ID }
+					onclick="var n=document.getElementById('new-section-name').value.trim();if(n)window.location.href='/tasks/'+this.dataset.taskId+'/edit/payload/'+encodeURIComponent(n);"
+				>追加</button>
+				<a href={ templ.SafeURL("/tasks/" + task.ID) } class="btn btn-secondary">キャンセル</a>
+			</div>
+		</div>
+	}
+}
+
+templ PayloadSectionEdit(task *orchestrator.Task, section string, yamlText string, errorMsg string) {
+	@Layout("payload section編集", []components.BreadcrumbItem{
+		{Title: "Tasks", URL: "/"},
+		{Title: task.Title, URL: "/tasks/" + task.ID},
+		{Title: "payload編集", URL: "/tasks/" + task.ID + "/edit/payload"},
+		{Title: section},
+	}) {
+		<div class="card">
+			<h1>Payload 編集: { section }</h1>
+			if errorMsg != "" {
+				<div class="action-error">{ errorMsg }</div>
+			}
+			<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/edit/payload/" + section) }>
+				<div class="form-group">
+					<label for="yaml_text" class="form-label">{ section } (YAML)</label>
+					<textarea id="yaml_text" name="yaml_text" class="form-input" rows="20" style="font-family:monospace;white-space:pre">{ yamlText }</textarea>
+				</div>
+				<div class="action-buttons">
+					<button type="submit" class="btn btn-primary">保存</button>
+					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/payload") } class="btn btn-secondary">キャンセル</a>
+				</div>
+			</form>
+		</div>
+	}
+}

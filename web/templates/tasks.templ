@@ -250,14 +250,22 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 				<p style="margin-top:8px;color:#888">(未設定)</p>
 			}
 		</div>
-		if len(task.Payload) > 0 && string(task.Payload) != "null" {
-			<div class="card">
-				<details>
-					<summary>Payload</summary>
+		<div class="card">
+			<div style="display:flex;align-items:center;gap:8px">
+				<h2 class="section-title" style="margin:0">Payload</h2>
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/payload") } title="編集">
+					@components.IconEdit("icon-sm")
+				</a>
+			</div>
+			if len(task.Payload) > 0 && string(task.Payload) != "null" {
+				<details style="margin-top:8px">
+					<summary>詳細</summary>
 					<pre>{ string(task.Payload) }</pre>
 				</details>
-			</div>
-		}
+			} else {
+				<p style="margin-top:8px;color:#888">(未設定)</p>
+			}
+		</div>
 		@TaskDetailTimelineSection(actions)
 		@TaskDetailJobsSection(jobs)
 		<div id="task-live-root" data-task-id={ task.ID } style="display:none"></div>
