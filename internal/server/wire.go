@@ -33,6 +33,7 @@ type appRuntime struct {
 	taskSvc        *api.TaskAppService
 	webSvc         *api.WebAppService
 	workflow       *api.TaskWorkflowService
+	hub            *api.TaskEventHub
 	authStore      *auth.Store
 	sessionSigner  *auth.SessionSigner
 }
@@ -175,6 +176,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Tasks:    taskLookup,
 	})
 	adapter := dispatcher.NewOrchestratorAdapter(runner, planner)
+	hub := api.NewTaskEventHub()
 	workflow := &api.TaskWorkflowService{
 		Tasks:       taskRepo,
 		Jobs:        jobStore,
@@ -184,6 +186,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Coordinator: &orchestrator.Coordinator{Evaluator: &orchestrator.Evaluator{}, HookExecutor: adapter, GateExecutor: adapter, Waiter: adapter, MaxDepth: 5, Locker: orchestrator.NewInMemoryWorktreeLockManager(), LifecycleStore: taskRepo},
 		Lifecycle:   jobLifecycleAdapter{runner: runner},
 		Worktrees:   wtMgr,
+		Hub:         hub,
 	}
 	workflow.InitDispatch(context.Background())
 	projectSvc := &api.ProjectAppService{
@@ -238,6 +241,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		taskSvc:        taskSvc,
 		webSvc:         webSvc,
 		workflow:       workflow,
+		hub:            hub,
 		authStore:      authStore,
 		sessionSigner:  sessionSigner,
 	}, nil
