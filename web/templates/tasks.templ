@@ -299,7 +299,7 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 		<div class="action-bar-inner">
 			{{ editSeg := editTabURLPath(activeTab) }}
 			if editSeg != "" {
-				<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/" + editSeg) } class="btn btn-primary action-bar-primary-form">編集</a>
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/" + editSeg) } class="btn btn-secondary action-bar-primary-form">編集</a>
 			} else {
 				{{ action, label := detailPrimaryAction(task, availableActions) }}
 				if action == "rerun" {
