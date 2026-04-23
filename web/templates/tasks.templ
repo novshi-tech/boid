@@ -98,8 +98,10 @@ templ TaskList(items []components.TreeItem, filter orchestrator.TaskFilter, proj
 	}
 }
 
-templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, availableActions []string, errorMsg string) {
-	@Layout(task.Title, []components.BreadcrumbItem{{Title: "Tasks", URL: "/"}, {Title: task.Title}}) {
+// TaskDetailStatusSection renders the status card + duplicate button + available actions.
+// Wrapped in <div id="task-status"> so EventSource JS can replace it via outerHTML.
+templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string, errorMsg string) {
+	<div id="task-status">
 		<div class="card">
 			<h1>{ task.Title }</h1>
 			<div class="card-meta" style="margin-top:8px">
@@ -152,14 +154,13 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 				</div>
 			</div>
 		}
-		if len(task.Payload) > 0 && string(task.Payload) != "null" {
-			<div class="card">
-				<details>
-					<summary>Payload</summary>
-					<pre>{ string(task.Payload) }</pre>
-				</details>
-			</div>
-		}
+	</div>
+}
+
+// TaskDetailTimelineSection renders the action history card.
+// Wrapped in <div id="task-timeline"> so EventSource JS can replace it via outerHTML.
+templ TaskDetailTimelineSection(actions []*orchestrator.Action) {
+	<div id="task-timeline">
 		if len(actions) > 0 {
 			<div class="card">
 				<h2 class="section-title">アクション履歴</h2>
@@ -194,6 +195,13 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 				</div>
 			</div>
 		}
+	</div>
+}
+
+// TaskDetailJobsSection renders the jobs card.
+// Wrapped in <div id="task-jobs"> so EventSource JS can replace it via outerHTML.
+templ TaskDetailJobsSection(jobs []*JobView) {
+	<div id="task-jobs">
 		if len(jobs) > 0 {
 			<div class="card">
 				<h2 class="section-title">ジョブ</h2>
@@ -220,5 +228,54 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 				</div>
 			</div>
 		}
+	</div>
+}
+
+templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, availableActions []string, errorMsg string) {
+	@Layout(task.Title, []components.BreadcrumbItem{{Title: "Tasks", URL: "/"}, {Title: task.Title}}) {
+		@TaskDetailStatusSection(task, availableActions, errorMsg)
+		if len(task.Payload) > 0 && string(task.Payload) != "null" {
+			<div class="card">
+				<details>
+					<summary>Payload</summary>
+					<pre>{ string(task.Payload) }</pre>
+				</details>
+			</div>
+		}
+		@TaskDetailTimelineSection(actions)
+		@TaskDetailJobsSection(jobs)
+		<div id="task-live-root" data-task-id={ task.ID } style="display:none"></div>
+		<script>
+			(function() {
+				var root = document.getElementById('task-live-root');
+				var taskID = root ? root.dataset.taskId : '';
+				if (!taskID) return;
+
+				var es = new EventSource('/api/tasks/' + taskID + '/events');
+
+				function refresh(kinds) {
+					kinds.forEach(function(kind) {
+						fetch('/tasks/' + taskID + '/fragment?kind=' + kind)
+							.then(function(r) { return r.ok ? r.text() : null; })
+							.then(function(html) {
+								if (!html) return;
+								var el = document.getElementById('task-' + kind);
+								if (el) el.outerHTML = html;
+							})
+							.catch(function() {});
+					});
+				}
+
+				es.addEventListener('action', function() { refresh(['status', 'timeline']); });
+				es.addEventListener('job', function() { refresh(['jobs', 'status']); });
+				es.addEventListener('fired_event', function() { refresh(['timeline']); });
+
+				function closeES() { es.close(); }
+				window.addEventListener('pagehide', closeES);
+				document.addEventListener('visibilitychange', function() {
+					if (document.visibilityState === 'hidden') { closeES(); }
+				});
+			})();
+		</script>
 	}
 }

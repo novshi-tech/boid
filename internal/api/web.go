@@ -25,6 +25,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.TaskList)
 	r.Get("/tasks/{id}", h.TaskDetail)
+	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
 	r.Post("/tasks/{id}/action", h.PostAction)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	r.Get("/projects", h.ProjectList)
@@ -85,6 +86,47 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	errorMsg := r.URL.Query().Get("error")
 	templates.TaskDetail(detail.Task, detail.Actions, jobs, detail.AvailableActions, errorMsg).Render(r.Context(), w)
+}
+
+// TaskDetailFragment returns a partial HTML fragment for the task detail page.
+// The `kind` query parameter selects which section to render:
+//   - "timeline": action history section
+//   - "status":   status card + available actions
+//   - "jobs":     jobs section
+func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	detail, err := h.Service.GetTaskDetail(id)
+	if err != nil {
+		http.Error(w, "Task not found", http.StatusNotFound)
+		return
+	}
+
+	jobs := make([]*templates.JobView, 0, len(detail.Jobs))
+	for _, job := range detail.Jobs {
+		jobs = append(jobs, &templates.JobView{
+			ID:        job.ID,
+			HandlerID: job.HandlerID,
+			Role:      job.Role,
+			Status:    string(job.Status),
+			ExitCode:  job.ExitCode,
+			CreatedAt: job.CreatedAt,
+			UpdatedAt: job.UpdatedAt,
+			Output:    job.Output,
+		})
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	kind := r.URL.Query().Get("kind")
+	switch kind {
+	case "timeline":
+		templates.TaskDetailTimelineSection(detail.Actions).Render(r.Context(), w)
+	case "status":
+		templates.TaskDetailStatusSection(detail.Task, detail.AvailableActions, "").Render(r.Context(), w)
+	case "jobs":
+		templates.TaskDetailJobsSection(jobs).Render(r.Context(), w)
+	default:
+		http.Error(w, "unknown fragment kind", http.StatusBadRequest)
+	}
 }
 
 func (h *WebHandler) PostAction(w http.ResponseWriter, r *http.Request) {
