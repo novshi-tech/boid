@@ -823,8 +823,29 @@ type WebAppService struct {
 	Workflow   WorkflowService
 }
 
-func (s *WebAppService) ListTasks(status string) ([]*orchestrator.Task, error) {
-	return s.Tasks.ListTasks(orchestrator.TaskFilter{Status: status})
+func (s *WebAppService) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
+	return s.Tasks.ListTasks(filter)
+}
+
+func (s *WebAppService) ListBehaviors() ([]string, error) {
+	tasks, err := s.Tasks.ListTasks(orchestrator.TaskFilter{})
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool)
+	var behaviors []string
+	for _, t := range tasks {
+		if t.Behavior != "" && !seen[t.Behavior] {
+			seen[t.Behavior] = true
+			behaviors = append(behaviors, t.Behavior)
+		}
+	}
+	sort.Strings(behaviors)
+	return behaviors, nil
+}
+
+func (s *WebAppService) ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error) {
+	return s.Projects.ListWorkspaces()
 }
 
 func (s *WebAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
