@@ -50,3 +50,18 @@ func BuildTreeItems(tasks []*orchestrator.Task) []components.TreeItem {
 
 	return result
 }
+
+// BuildFlatItems returns tasks as a flat list (Depth=0, HasChildren=false, ParentID="").
+// Used for the "closed" status view where tree structure is irrelevant.
+func BuildFlatItems(tasks []*orchestrator.Task) []components.TreeItem {
+	result := make([]components.TreeItem, 0, len(tasks))
+	for _, t := range tasks {
+		result = append(result, components.TreeItem{
+			Task:        t,
+			Depth:       0,
+			HasChildren: false,
+			ParentID:    "",
+		})
+	}
+	return result
+}

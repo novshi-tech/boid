@@ -4,87 +4,71 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-var taskStatusFilterOptions = []struct {
-	Value string
-	Label string
-}{
-	{"", "All"},
-	{"pending", "Pending"},
-	{"executing", "Executing"},
-	{"verifying", "Verifying"},
-	{"reworking", "Reworking"},
-	{"done", "Done"},
-	{"aborted", "Aborted"},
-}
-
 // TaskFilters renders the multi-filter form for the task list.
 templ TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Project, behaviors []string, workspaces []*orchestrator.WorkspaceSummary) {
 	<form
 		id="filter-form"
 		hx-get="/"
-		hx-target="#task-list"
-		hx-swap="outerHTML"
+		hx-target="#main-content"
+		hx-swap="innerHTML"
+		hx-select="#main-content"
 		hx-push-url="true"
 		hx-trigger="change, input delay:500ms from:[name=q]"
 	>
-		<div class="filter-scroll">
-			<div class="filters">
-				for _, opt := range taskStatusFilterOptions {
-					if opt.Value == filter.Status {
-						<button type="submit" name="status" value={ opt.Value } class="active">{ opt.Label }</button>
-					} else {
-						<button type="submit" name="status" value={ opt.Value }>{ opt.Label }</button>
+		<div class="filter-controls">
+			<div class="filter-toggle">
+				if filter.Status == "closed" {
+					<button type="submit" name="status" value="open">open</button>
+					<button type="submit" name="status" value="closed" class="active">closed</button>
+				} else {
+					<button type="submit" name="status" value="open" class="active">open</button>
+					<button type="submit" name="status" value="closed">closed</button>
+				}
+			</div>
+			<input
+				type="search"
+				name="q"
+				value={ filter.Title }
+				placeholder="タイトル検索..."
+				class="filter-search"
+				autocomplete="off"
+			/>
+			if len(workspaces) > 0 {
+				<select name="workspace" class="filter-select">
+					<option value="">Workspace: All</option>
+					for _, ws := range workspaces {
+						if ws.ID == filter.WorkspaceID {
+							<option value={ ws.ID } selected>{ ws.ID }</option>
+						} else {
+							<option value={ ws.ID }>{ ws.ID }</option>
+						}
 					}
-				}
-			</div>
+				</select>
+			}
+			if len(projects) > 0 {
+				<select name="project" class="filter-select">
+					<option value="">Project: All</option>
+					for _, p := range projects {
+						if p.ID == filter.ProjectID {
+							<option value={ p.ID } selected>{ p.ID }</option>
+						} else {
+							<option value={ p.ID }>{ p.ID }</option>
+						}
+					}
+				</select>
+			}
+			if len(behaviors) > 0 {
+				<select name="behavior" class="filter-select">
+					<option value="">Behavior: All</option>
+					for _, b := range behaviors {
+						if b == filter.Behavior {
+							<option value={ b } selected>{ b }</option>
+						} else {
+							<option value={ b }>{ b }</option>
+						}
+					}
+				</select>
+			}
 		</div>
-		if len(projects) > 0 || len(behaviors) > 0 || len(workspaces) > 0 {
-			<div class="filter-controls">
-				if len(projects) > 0 {
-					<select name="project" class="filter-select">
-						<option value="">Project: All</option>
-						for _, p := range projects {
-							if p.ID == filter.ProjectID {
-								<option value={ p.ID } selected>{ p.ID }</option>
-							} else {
-								<option value={ p.ID }>{ p.ID }</option>
-							}
-						}
-					</select>
-				}
-				if len(behaviors) > 0 {
-					<select name="behavior" class="filter-select">
-						<option value="">Behavior: All</option>
-						for _, b := range behaviors {
-							if b == filter.Behavior {
-								<option value={ b } selected>{ b }</option>
-							} else {
-								<option value={ b }>{ b }</option>
-							}
-						}
-					</select>
-				}
-				if len(workspaces) > 0 {
-					<select name="workspace" class="filter-select">
-						<option value="">Workspace: All</option>
-						for _, ws := range workspaces {
-							if ws.ID == filter.WorkspaceID {
-								<option value={ ws.ID } selected>{ ws.ID }</option>
-							} else {
-								<option value={ ws.ID }>{ ws.ID }</option>
-							}
-						}
-					</select>
-				}
-				<input
-					type="search"
-					name="q"
-					value={ filter.Title }
-					placeholder="タイトル検索..."
-					class="filter-search"
-					autocomplete="off"
-				/>
-			</div>
-		}
 	</form>
 }
