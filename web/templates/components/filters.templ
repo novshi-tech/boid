@@ -16,11 +16,15 @@ func projectLabel(p *orchestrator.Project) string {
 // TaskFilters renders the task list toolbar:
 //   - status (open/closed) as the primary view tabs
 //   - search as a standalone input (its own hx-target avoids losing focus on each keystroke)
-//   - workspace > project > behavior as one logical filter group
+//   - workspace > project as one logical filter group
+//
+// Behavior is intentionally not exposed here — it was low-traffic in
+// practice and shown on each task row instead. Its URL param still
+// works so existing bookmarks keep narrowing the list.
 //
 // Create lives in the sticky bottom action bar (TaskListActionBar),
 // keeping the toolbar focused on filtering.
-templ TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Project, behaviors []string, workspaces []*orchestrator.WorkspaceSummary) {
+templ TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Project, workspaces []*orchestrator.WorkspaceSummary) {
 	<form
 		id="filter-form"
 		class="task-toolbar"
@@ -56,7 +60,7 @@ templ TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Proje
 			hx-include="closest form"
 			hx-push-url="true"
 		/>
-		if len(workspaces) > 0 || len(projects) > 0 || len(behaviors) > 0 {
+		if len(workspaces) > 0 || len(projects) > 0 {
 			<div class="filter-group">
 				if len(workspaces) > 0 {
 					<select name="workspace" class="filter-select" aria-label="Workspace">
@@ -82,19 +86,10 @@ templ TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Proje
 						}
 					</select>
 				}
-				if len(behaviors) > 0 {
-					<select name="behavior" class="filter-select" aria-label="Behavior">
-						<option value="">Behavior</option>
-						for _, b := range behaviors {
-							if b == filter.Behavior {
-								<option value={ b } selected>{ b }</option>
-							} else {
-								<option value={ b }>{ b }</option>
-							}
-						}
-					</select>
-				}
 			</div>
+		}
+		if filter.Behavior != "" {
+			<input type="hidden" name="behavior" value={ filter.Behavior }/>
 		}
 	</form>
 }

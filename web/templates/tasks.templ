@@ -225,16 +225,16 @@ type filterOption struct {
 }
 
 // TaskListContent renders the inner content (filter form + task list) for HTMX partial swaps.
-templ TaskListContent(items []components.TreeItem, filter orchestrator.TaskFilter, projects []*orchestrator.Project, behaviors []string, workspaces []*orchestrator.WorkspaceSummary, currentURL string) {
+templ TaskListContent(items []components.TreeItem, filter orchestrator.TaskFilter, projects []*orchestrator.Project, workspaces []*orchestrator.WorkspaceSummary, currentURL string) {
 	<div id="main-content">
-		@components.TaskFilters(filter, projects, behaviors, workspaces)
+		@components.TaskFilters(filter, projects, workspaces)
 		@TaskListFragment(items, filter, currentURL)
 	</div>
 }
 
-templ TaskList(items []components.TreeItem, filter orchestrator.TaskFilter, projects []*orchestrator.Project, behaviors []string, workspaces []*orchestrator.WorkspaceSummary, currentURL string) {
+templ TaskList(items []components.TreeItem, filter orchestrator.TaskFilter, projects []*orchestrator.Project, workspaces []*orchestrator.WorkspaceSummary, currentURL string) {
 	@Layout("Tasks", "") {
-		@TaskListContent(items, filter, projects, behaviors, workspaces, currentURL)
+		@TaskListContent(items, filter, projects, workspaces, currentURL)
 		@TaskListActionBar()
 	}
 }

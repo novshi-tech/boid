@@ -150,9 +150,8 @@ func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	if r.Header.Get("HX-Target") == "main-content" {
-		behaviors, _ := h.Service.ListBehaviors()
 		workspaces, _ := h.Service.ListWorkspaces()
-		templates.TaskListContent(items, filter, projects, behaviors, workspaces, r.URL.RequestURI()).Render(r.Context(), w)
+		templates.TaskListContent(items, filter, projects, workspaces, r.URL.RequestURI()).Render(r.Context(), w)
 		return
 	}
 
@@ -161,9 +160,8 @@ func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	behaviors, _ := h.Service.ListBehaviors()
 	workspaces, _ := h.Service.ListWorkspaces()
-	templates.TaskList(items, filter, projects, behaviors, workspaces, r.URL.RequestURI()).Render(r.Context(), w)
+	templates.TaskList(items, filter, projects, workspaces, r.URL.RequestURI()).Render(r.Context(), w)
 }
 
 // filterProjectsByWorkspace filters projects to only those in the given workspace.

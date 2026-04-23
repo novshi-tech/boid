@@ -411,10 +411,25 @@ pre {
   font-weight: 600;
 }
 
-.task-row-project {
+.task-row-project,
+.task-row-behavior {
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+}
+
+/* Behavior is the 3rd meta slot (status · project · behavior). A dot
+   separator is inserted only when project precedes it so a behavior-
+   only row (no project) doesn't start with a stray "· ". */
+.task-row-behavior {
+  flex-shrink: 0;
+}
+
+.task-row-project + .task-row-behavior::before {
+  content: '·';
+  margin-right: var(--space-2);
+  color: var(--muted);
+  opacity: 0.5;
 }
 
 /* --- Job List --- */

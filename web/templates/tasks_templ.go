@@ -269,7 +269,7 @@ type filterOption struct {
 }
 
 // TaskListContent renders the inner content (filter form + task list) for HTMX partial swaps.
-func TaskListContent(items []components.TreeItem, filter orchestrator.TaskFilter, projects []*orchestrator.Project, behaviors []string, workspaces []*orchestrator.WorkspaceSummary, currentURL string) templ.Component {
+func TaskListContent(items []components.TreeItem, filter orchestrator.TaskFilter, projects []*orchestrator.Project, workspaces []*orchestrator.WorkspaceSummary, currentURL string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -294,7 +294,7 @@ func TaskListContent(items []components.TreeItem, filter orchestrator.TaskFilter
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = components.TaskFilters(filter, projects, behaviors, workspaces).Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = components.TaskFilters(filter, projects, workspaces).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -310,7 +310,7 @@ func TaskListContent(items []components.TreeItem, filter orchestrator.TaskFilter
 	})
 }
 
-func TaskList(items []components.TreeItem, filter orchestrator.TaskFilter, projects []*orchestrator.Project, behaviors []string, workspaces []*orchestrator.WorkspaceSummary, currentURL string) templ.Component {
+func TaskList(items []components.TreeItem, filter orchestrator.TaskFilter, projects []*orchestrator.Project, workspaces []*orchestrator.WorkspaceSummary, currentURL string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -343,7 +343,7 @@ func TaskList(items []components.TreeItem, filter orchestrator.TaskFilter, proje
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = TaskListContent(items, filter, projects, behaviors, workspaces, currentURL).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = TaskListContent(items, filter, projects, workspaces, currentURL).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
