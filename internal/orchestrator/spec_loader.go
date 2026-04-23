@@ -306,7 +306,8 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		}
 	}
 
-	// Kit-provided commands (from top-level project kits): project.yaml commands take precedence.
+	// Kit-provided commands (from top-level project kits): field-level overlay.
+	// project.Command wins when non-empty; kit.Command is inherited when project leaves it empty.
 	// Conflict between two kits providing the same command name is an error.
 	if meta.Commands == nil {
 		meta.Commands = make(map[string]CommandSpec)
@@ -315,13 +316,16 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 	for _, kitRef := range meta.Kits {
 		kitMeta := kitMetaByRef[kitRef.Ref]
 		consumer := ResolveKitConsumer(kitRef)
-		for cmdName, cmdSpec := range kitMeta.Commands {
+		for cmdName, kitCmdSpec := range kitMeta.Commands {
 			if existingConsumer, ok := kitCmdSource[cmdName]; ok {
 				return nil, fmt.Errorf("command %q: conflict between kits %q and %q", cmdName, existingConsumer, consumer)
 			}
 			kitCmdSource[cmdName] = consumer
-			if _, exists := meta.Commands[cmdName]; !exists {
-				meta.Commands[cmdName] = cmdSpec
+			if projCmdSpec, exists := meta.Commands[cmdName]; !exists {
+				meta.Commands[cmdName] = kitCmdSpec
+			} else if len(projCmdSpec.Command) == 0 {
+				projCmdSpec.Command = kitCmdSpec.Command
+				meta.Commands[cmdName] = projCmdSpec
 			}
 		}
 	}
