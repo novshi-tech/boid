@@ -1255,7 +1255,7 @@ body:has(.action-bar) {
 }
 
 .timeline-type-fired {
-  font-weight: 600;
+  font-weight: normal;
   font-size: 0.875rem;
   color: var(--fg);
   font-family: monospace;
