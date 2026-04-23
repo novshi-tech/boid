@@ -1,10 +1,12 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/novshi-tech/boid/internal/api/auth"
 	"github.com/novshi-tech/boid/web/templates"
 )
 
@@ -142,4 +144,98 @@ func (h *WebHandler) JobDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	templates.JobDetail(view).Render(r.Context(), w)
+}
+
+// WebManagementHandler serves the CLI management API at /api/web/*.
+// All routes are accessible only via UNIX socket (CLI control plane).
+type WebManagementHandler struct {
+	Pairing   *auth.PairingManager
+	Store     *auth.Store
+	PublicURL string
+}
+
+func (h *WebManagementHandler) Routes() chi.Router {
+	r := chi.NewRouter()
+	r.Post("/pair", h.PostPair)
+	r.Get("/devices", h.GetDevices)
+	r.Delete("/devices/{id}", h.DeleteDevice)
+	r.Delete("/devices", h.DeleteAllDevices)
+	return r
+}
+
+type pairResponse struct {
+	Code      string `json:"code"`
+	URL       string `json:"url,omitempty"`
+	ExpiresIn int    `json:"expires_in"`
+}
+
+func (h *WebManagementHandler) PostPair(w http.ResponseWriter, r *http.Request) {
+	label := r.URL.Query().Get("label")
+	code, err := h.Pairing.Issue(r.Context(), label)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	resp := pairResponse{
+		Code:      code,
+		ExpiresIn: 300,
+	}
+	if h.PublicURL != "" {
+		resp.URL = h.PublicURL + "/auth?token=" + url.QueryEscape(code)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+type deviceResponse struct {
+	ID         string  `json:"id"`
+	Label      string  `json:"label,omitempty"`
+	CreatedAt  string  `json:"created_at"`
+	LastSeenAt string  `json:"last_seen_at"`
+	RevokedAt  *string `json:"revoked_at,omitempty"`
+}
+
+func (h *WebManagementHandler) GetDevices(w http.ResponseWriter, r *http.Request) {
+	devices, err := h.Store.ListDevices(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	resp := make([]deviceResponse, 0, len(devices))
+	for _, d := range devices {
+		dr := deviceResponse{
+			ID:         d.ID,
+			Label:      d.Label,
+			CreatedAt:  d.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			LastSeenAt: d.LastSeenAt.UTC().Format("2006-01-02T15:04:05Z"),
+		}
+		if d.RevokedAt != nil {
+			s := d.RevokedAt.UTC().Format("2006-01-02T15:04:05Z")
+			dr.RevokedAt = &s
+		}
+		resp = append(resp, dr)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (h *WebManagementHandler) DeleteDevice(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := h.Store.RevokeDevice(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *WebManagementHandler) DeleteAllDevices(w http.ResponseWriter, r *http.Request) {
+	if err := h.Store.RevokeAllDevices(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
