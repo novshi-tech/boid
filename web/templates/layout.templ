@@ -27,6 +27,18 @@ templ Layout(title string, breadcrumbs []components.BreadcrumbItem) {
 				document.addEventListener("htmx:afterSwap",function(){
 					document.querySelectorAll("details[open]").forEach(function(d){d.open=false;});
 				});
+				// Close any open <details> dropdowns when the user clicks
+				// (or taps) outside them. Matches the expected behaviour
+				// of kebab / tab-more menus.
+				document.addEventListener("click",function(e){
+					document.querySelectorAll("details[open]").forEach(function(d){
+						if(!d.contains(e.target)) d.open=false;
+					});
+				});
+				document.addEventListener("keydown",function(e){
+					if(e.key!=="Escape") return;
+					document.querySelectorAll("details[open]").forEach(function(d){d.open=false;});
+				});
 			</script>
 		</head>
 		<body>
