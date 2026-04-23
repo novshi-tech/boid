@@ -384,6 +384,19 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		}
 		r.Mount("/api/web", webMgmt.Routes())
 
+		// Login/auth routes (exempted by WebAuthMiddleware and CSRFMiddleware).
+		loginHandler := &api.LoginHandler{
+			Pairing: auth.NewPairingManager(runtime.authStore),
+			Store:   runtime.authStore,
+			Limiter: auth.NewRateLimiter(nil),
+		}
+		if runtime.sessionSigner != nil {
+			loginHandler.Signer = runtime.sessionSigner
+		}
+		r.Get("/login", loginHandler.GetLogin)
+		r.Post("/login", loginHandler.PostLogin)
+		r.Get("/auth", loginHandler.GetAuth)
+
 		// Web UI routes protected by session auth.
 		r.Group(func(r chi.Router) {
 			r.Use(auth.NewWebAuthMiddleware(runtime.sessionSigner, runtime.authStore))

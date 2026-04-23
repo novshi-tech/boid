@@ -1,11 +1,16 @@
 package api
 
 import (
+	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/novshi-tech/boid/internal/api/auth"
 	"github.com/novshi-tech/boid/web/templates"
 )
@@ -238,4 +243,96 @@ func (h *WebManagementHandler) DeleteAllDevices(w http.ResponseWriter, r *http.R
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// loginPairing redeems a one-time pairing code.
+type loginPairing interface {
+	Redeem(ctx context.Context, code string) (string, error)
+}
+
+// loginSigner issues a session cookie.
+type loginSigner interface {
+	Issue(w http.ResponseWriter, deviceID string) error
+}
+
+// loginDeviceStore persists a new device after successful pairing.
+type loginDeviceStore interface {
+	InsertDevice(ctx context.Context, id, label string, cookieHash []byte) error
+}
+
+// loginRateLimiter guards against brute-force attempts.
+type loginRateLimiter interface {
+	Allow(ip string) bool
+}
+
+// LoginHandler handles /login and /auth.
+type LoginHandler struct {
+	Pairing loginPairing
+	Signer  loginSigner
+	Store   loginDeviceStore
+	Limiter loginRateLimiter
+}
+
+func (h *LoginHandler) GetLogin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templates.Login(r.URL.Query().Get("error")).Render(r.Context(), w)
+}
+
+func (h *LoginHandler) PostLogin(w http.ResponseWriter, r *http.Request) {
+	if !h.Limiter.Allow(remoteIP(r)) {
+		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+		return
+	}
+	code := r.FormValue("code")
+	label, err := h.Pairing.Redeem(r.Context(), code)
+	if err != nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		templates.Login("無効なペアリングコードです").Render(r.Context(), w)
+		return
+	}
+	if err := h.issueSession(w, r, label); err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+func (h *LoginHandler) GetAuth(w http.ResponseWriter, r *http.Request) {
+	if !h.Limiter.Allow(remoteIP(r)) {
+		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+		return
+	}
+	token := r.URL.Query().Get("token")
+	label, err := h.Pairing.Redeem(r.Context(), token)
+	if err != nil {
+		http.Redirect(w, r, "/login?error=invalid_code", http.StatusFound)
+		return
+	}
+	if err := h.issueSession(w, r, label); err != nil {
+		http.Redirect(w, r, "/login?error=invalid_code", http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// issueSession creates a new device row and sets the session cookie.
+func (h *LoginHandler) issueSession(w http.ResponseWriter, r *http.Request, label string) error {
+	if h.Signer == nil {
+		return fmt.Errorf("session signer not configured")
+	}
+	deviceID := uuid.New().String()
+	sum := sha256.Sum256([]byte(deviceID))
+	if err := h.Store.InsertDevice(r.Context(), deviceID, label, sum[:]); err != nil {
+		return err
+	}
+	return h.Signer.Issue(w, deviceID)
+}
+
+// remoteIP extracts the host part from r.RemoteAddr.
+func remoteIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
