@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 type stubWebService struct {
 	tasks              []*orchestrator.Task
 	taskDetail         *TaskDetailView
+	jobDetail          *JobWithContext
 	projects           []*orchestrator.Project
 	behaviors          []string
 	workspaces         []*orchestrator.WorkspaceSummary
@@ -74,7 +76,10 @@ func (s *stubWebService) ListJobs(status string) ([]JobWithContext, error) {
 }
 
 func (s *stubWebService) GetJob(id string) (*JobWithContext, error) {
-	return nil, fmt.Errorf("job not found: %s", id)
+	if s.jobDetail == nil {
+		return nil, fmt.Errorf("job not found: %s", id)
+	}
+	return s.jobDetail, nil
 }
 
 func (s *stubWebService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
@@ -722,5 +727,117 @@ func TestWebHandler_PostEditDescription_Empty(t *testing.T) {
 	}
 	if svc.updateTaskCalls[0].Description != "" {
 		t.Errorf("UpdateTask description = %q, want empty string", svc.updateTaskCalls[0].Description)
+	}
+}
+
+func TestTaskDetail_Tab_HXRequest_Timeline(t *testing.T) {
+	svc := &stubWebService{taskDetail: makeTaskDetailView()}
+	r := newTestWebHandler(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1?tab=timeline", nil)
+	req.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `id="tab-panel"`) {
+		t.Errorf("tab panel fragment should contain id=tab-panel, got: %s", body)
+	}
+	if strings.Contains(body, "<html") {
+		t.Error("fragment should not contain full HTML page")
+	}
+	if !strings.Contains(body, `id="task-timeline"`) {
+		t.Errorf("timeline tab should contain task-timeline element, got: %s", body)
+	}
+}
+
+func TestTaskDetail_Tab_HXRequest_Jobs(t *testing.T) {
+	svc := &stubWebService{taskDetail: makeTaskDetailView()}
+	r := newTestWebHandler(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1?tab=jobs", nil)
+	req.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `id="tab-panel"`) {
+		t.Errorf("tab panel fragment should contain id=tab-panel, got: %s", body)
+	}
+	if strings.Contains(body, "<html") {
+		t.Error("fragment should not contain full HTML page")
+	}
+	if !strings.Contains(body, `id="task-jobs"`) {
+		t.Errorf("jobs tab should contain task-jobs element, got: %s", body)
+	}
+}
+
+func TestTaskDetail_TitleNotH1(t *testing.T) {
+	svc := &stubWebService{taskDetail: makeTaskDetailView()}
+	r := newTestWebHandler(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "<h1>Test Task</h1>") {
+		t.Error("task title should not be rendered as <h1>")
+	}
+}
+
+func TestTaskDetail_NoGatesLink(t *testing.T) {
+	svc := &stubWebService{taskDetail: makeTaskDetailView()}
+	r := newTestWebHandler(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "/tasks/task-1/gates") {
+		t.Error("task detail should not contain a link to /tasks/{id}/gates")
+	}
+}
+
+func TestTaskDetailFragment_FiredActionJobLink(t *testing.T) {
+	payload, _ := json.Marshal(map[string]any{
+		"kit_id": "go-dev", "hook_id": "go-dev/pr-verify",
+		"source_state": "executing", "success": true, "job_id": "job-123",
+	})
+	detail := &TaskDetailView{
+		Task: &orchestrator.Task{
+			ID: "task-1", Title: "Test Task", Status: "executing",
+		},
+		Actions: []*orchestrator.Action{
+			{Type: "hook_fired", Payload: payload},
+		},
+		Jobs: []*Job{},
+	}
+	svc := &stubWebService{taskDetail: detail}
+	r := newTestWebHandler(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1/fragment?kind=timeline", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `href="/jobs/job-123"`) {
+		t.Errorf("fired action should link to /jobs/job-123, got: %s", body)
 	}
 }

@@ -88,6 +88,19 @@ func firedActionLabel(payload []byte) string {
 	return label
 }
 
+// firedActionJobID extracts the job_id from a fired action payload.
+func firedActionJobID(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return ""
+	}
+	id, _ := m["job_id"].(string)
+	return id
+}
+
 type filterOption struct {
 	Value string
 	Label string
@@ -110,28 +123,27 @@ templ TaskList(items []components.TreeItem, filter orchestrator.TaskFilter, proj
 	}
 }
 
-// TaskDetailStatusSection renders the status card + duplicate button + available actions.
+// TaskDetailStatusSection renders the status card + action buttons.
 // Wrapped in <div id="task-status"> so EventSource JS can replace it via outerHTML.
 templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string, errorMsg string) {
 	<div id="task-status">
 		<div class="card">
-			<h1>{ task.Title }</h1>
+			<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+				<h2 style="margin:0;font-size:1.1rem;flex:1">{ task.Title }</h2>
+				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/duplicate") }>
+					<button type="submit" class="btn btn-secondary btn-sm">duplicate</button>
+				</form>
+				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('本当に再実行しますか？')">
+					<button type="submit" class="btn btn-secondary btn-sm">rerun</button>
+				</form>
+			</div>
 			<div class="card-meta" style="margin-top:8px">
 				<span class={ taskStatusClass(string(task.Status)) }>{ string(task.Status) }</span>
 				<span>{ task.Behavior }</span>
 				if task.ProjectID != "" {
 					<span>{ task.ProjectID }</span>
 				}
-			</div>
-			<div style="margin-top:12px">
-				<div class="detail-field">
-					<strong>作成日時</strong>
-					{ task.CreatedAt.Format("2006-01-02 15:04:05") }
-				</div>
-				<div class="detail-field">
-					<strong>更新日時</strong>
-					{ task.UpdatedAt.Format("2006-01-02 15:04:05") }
-				</div>
+				<span class="detail-time">{ task.UpdatedAt.Format("2006-01-02 15:04") }</span>
 			</div>
 		</div>
 		if errorMsg != "" {
@@ -139,31 +151,19 @@ templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string
 				{ errorMsg }
 			</div>
 		}
-		<div class="card">
-			<div class="action-buttons">
-				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/duplicate") }>
-					<button type="submit" class="btn btn-secondary">duplicate</button>
-				</form>
-				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('本当に再実行しますか？')">
-					<button type="submit" class="btn btn-secondary">rerun</button>
-				</form>
-				<a href={ templ.SafeURL("/tasks/" + task.ID + "/gates") } class="btn btn-secondary">gate replay</a>
-			</div>
-		</div>
 		if len(availableActions) > 0 {
 			<div class="card">
-				<h2 class="section-title">アクション</h2>
 				<div class="action-buttons">
 					for _, act := range availableActions {
 						if act == "abort" {
 							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')">
 								<input type="hidden" name="type" value="abort"/>
-								<button type="submit" class="btn btn-danger">{ act }</button>
+								<button type="submit" class="btn btn-danger btn-sm">{ act }</button>
 							</form>
 						} else {
 							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") }>
 								<input type="hidden" name="type" value={ act }/>
-								<button type="submit" class="btn btn-primary">{ act }</button>
+								<button type="submit" class="btn btn-primary btn-sm">{ act }</button>
 							</form>
 						}
 					}
@@ -185,7 +185,11 @@ templ TaskDetailTimelineSection(actions []*orchestrator.Action) {
 						if isFiredAction(action.Type) {
 							<div class="timeline-item timeline-item-fired">
 								<div class="timeline-type timeline-type-fired">
-									[{ action.Type }] { firedActionLabel(action.Payload) }
+									if firedActionJobID(action.Payload) != "" {
+										<a href={ templ.SafeURL("/jobs/" + firedActionJobID(action.Payload)) }>[{ action.Type }] { firedActionLabel(action.Payload) }</a>
+									} else {
+										[{ action.Type }] { firedActionLabel(action.Payload) }
+									}
 								</div>
 								<div class="timeline-time">{ action.CreatedAt.Format("2006-01-02 15:04:05") }</div>
 							</div>
@@ -225,7 +229,7 @@ templ TaskDetailJobsSection(jobs []*JobView) {
 					for _, job := range jobs {
 						<div class="job-row">
 							<div class="job-row-header">
-								<span class="job-id">{ shortID(job.ID) }</span>
+								<a href={ templ.SafeURL("/jobs/" + job.ID) } class="job-id">{ shortID(job.ID) }</a>
 								<span class={ taskStatusClass(job.Status) }>{ job.Status }</span>
 								<span>{ job.Role }</span>
 								if job.ExitCode != 0 {
@@ -243,129 +247,203 @@ templ TaskDetailJobsSection(jobs []*JobView) {
 					}
 				</div>
 			</div>
+		} else {
+			<div class="card">
+				<p style="color:#888;margin:0">ジョブがありません</p>
+			</div>
 		}
 	</div>
 }
 
-templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, availableActions []string, errorMsg string) {
+// TaskDetailTabPanel renders the tab panel content for the given activeTab.
+// id="tab-panel" is the HTMX swap target for tab switching.
+templ TaskDetailTabPanel(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, activeTab string) {
+	<div id="tab-panel" data-task-id={ task.ID }>
+		if activeTab == "timeline" {
+			@TaskDetailTimelineSection(actions)
+			<script>
+				(function() {
+					var panel = document.getElementById('tab-panel');
+					var taskID = panel ? panel.dataset.taskId : '';
+					if (!taskID) return;
+
+					var es = new EventSource('/api/tasks/' + taskID + '/events');
+
+					function refresh(kinds) {
+						kinds.forEach(function(kind) {
+							fetch('/tasks/' + taskID + '/fragment?kind=' + kind)
+								.then(function(r) { return r.ok ? r.text() : null; })
+								.then(function(html) {
+									if (!html) return;
+									var el = document.getElementById('task-' + kind);
+									if (el) el.outerHTML = html;
+								})
+								.catch(function() {});
+						});
+					}
+
+					es.addEventListener('action', function() { refresh(['status', 'timeline']); });
+					es.addEventListener('job', function() { refresh(['status', 'timeline']); });
+					es.addEventListener('fired_event', function() { refresh(['timeline']); });
+
+					document.body.addEventListener('htmx:beforeSwap', function onSwap(e) {
+						if (e.detail.target && e.detail.target.id === 'tab-panel') {
+							es.close();
+							document.body.removeEventListener('htmx:beforeSwap', onSwap);
+						}
+					});
+
+					function closeES() { es.close(); }
+					window.addEventListener('pagehide', closeES);
+					document.addEventListener('visibilitychange', function() {
+						if (document.visibilityState === 'hidden') { closeES(); }
+					});
+				})();
+			</script>
+		} else if activeTab == "jobs" {
+			@TaskDetailJobsSection(jobs)
+		} else if activeTab == "description" {
+			<div class="card">
+				<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+					<h2 class="section-title" style="margin:0">Description</h2>
+					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/description") } class="btn btn-secondary btn-sm" aria-label="編集">編集</a>
+				</div>
+				if task.Description != "" {
+					<pre style="margin-top:8px;white-space:pre-wrap;word-break:break-word">{ task.Description }</pre>
+				} else {
+					<p style="margin-top:8px;color:#888">(未設定)</p>
+				}
+			</div>
+		} else if activeTab == "payload" {
+			<div class="card">
+				<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+					<h2 class="section-title" style="margin:0">Payload</h2>
+					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/payload") } class="btn btn-secondary btn-sm" aria-label="編集">編集</a>
+				</div>
+				if len(task.Payload) > 0 && string(task.Payload) != "null" {
+					<pre style="margin-top:8px;white-space:pre-wrap;word-break:break-word">{ string(task.Payload) }</pre>
+				} else {
+					<p style="margin-top:8px;color:#888">(未設定)</p>
+				}
+			</div>
+		} else if activeTab == "instructions" {
+			<div class="card">
+				<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+					<h2 class="section-title" style="margin:0">Instructions</h2>
+					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/instructions") } class="btn btn-secondary btn-sm" aria-label="編集">編集</a>
+				</div>
+				if len(task.Instructions) > 0 {
+					<div style="margin-top:8px">
+						for role, inst := range task.Instructions {
+							<div class="detail-field">
+								<strong>{ role }</strong>
+								<span class="badge">{ string(inst.Type) }</span>
+								<span>{ inst.Consumer }</span>
+							</div>
+						}
+					</div>
+				} else {
+					<p style="margin-top:8px;color:#888">(未設定)</p>
+				}
+			</div>
+		} else if activeTab == "dependencies" {
+			<div class="card">
+				<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+					<h2 class="section-title" style="margin:0">Dependencies</h2>
+					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/deps") } class="btn btn-secondary btn-sm" aria-label="編集">編集</a>
+				</div>
+				if len(task.DependsOn) > 0 || task.DependsOnPayload != "" || task.ParentID != "" {
+					<div style="margin-top:8px">
+						if task.ParentID != "" {
+							<div class="detail-field">
+								<strong>parent_id</strong>
+								{ task.ParentID }
+							</div>
+						}
+						if task.DependsOnPayload != "" {
+							<div class="detail-field">
+								<strong>depends_on_payload</strong>
+								{ task.DependsOnPayload }
+							</div>
+						}
+						if len(task.DependsOn) > 0 {
+							<div class="detail-field">
+								<strong>depends_on</strong>
+								{ strings.Join(task.DependsOn, ", ") }
+							</div>
+						}
+					</div>
+				} else {
+					<p style="margin-top:8px;color:#888">(未設定)</p>
+				}
+			</div>
+		}
+	</div>
+}
+
+// tabClass returns the CSS class for a tab, adding "active" when it matches the current tab.
+func tabClass(tab, activeTab string) string {
+	if tab == activeTab {
+		return "tab active"
+	}
+	return "tab"
+}
+
+templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, availableActions []string, errorMsg string, activeTab string) {
 	@Layout(task.Title, []components.BreadcrumbItem{{Title: "Tasks", URL: "/"}, {Title: task.Title}}) {
 		@TaskDetailStatusSection(task, availableActions, errorMsg)
-		<div class="card">
-			<div style="display:flex;align-items:center;gap:8px">
-				<h2 class="section-title" style="margin:0">Description</h2>
-				<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/description") } title="編集">
-					@components.IconEdit("icon-sm")
-				</a>
+		<div class="tabs">
+			<div class="tab-list" role="tablist">
+				<a
+					class={ tabClass("timeline", activeTab) }
+					href={ templ.SafeURL("/tasks/" + task.ID + "?tab=timeline") }
+					hx-get={ "/tasks/" + task.ID + "?tab=timeline" }
+					hx-target="#tab-panel"
+					hx-swap="outerHTML"
+					hx-push-url="true"
+				>Timeline</a>
+				<a
+					class={ tabClass("description", activeTab) }
+					href={ templ.SafeURL("/tasks/" + task.ID + "?tab=description") }
+					hx-get={ "/tasks/" + task.ID + "?tab=description" }
+					hx-target="#tab-panel"
+					hx-swap="outerHTML"
+					hx-push-url="true"
+				>Description</a>
+				<a
+					class={ tabClass("payload", activeTab) }
+					href={ templ.SafeURL("/tasks/" + task.ID + "?tab=payload") }
+					hx-get={ "/tasks/" + task.ID + "?tab=payload" }
+					hx-target="#tab-panel"
+					hx-swap="outerHTML"
+					hx-push-url="true"
+				>Payload</a>
+				<a
+					class={ tabClass("instructions", activeTab) }
+					href={ templ.SafeURL("/tasks/" + task.ID + "?tab=instructions") }
+					hx-get={ "/tasks/" + task.ID + "?tab=instructions" }
+					hx-target="#tab-panel"
+					hx-swap="outerHTML"
+					hx-push-url="true"
+				>Instructions</a>
+				<a
+					class={ tabClass("dependencies", activeTab) }
+					href={ templ.SafeURL("/tasks/" + task.ID + "?tab=dependencies") }
+					hx-get={ "/tasks/" + task.ID + "?tab=dependencies" }
+					hx-target="#tab-panel"
+					hx-swap="outerHTML"
+					hx-push-url="true"
+				>Dependencies</a>
+				<a
+					class={ tabClass("jobs", activeTab) }
+					href={ templ.SafeURL("/tasks/" + task.ID + "?tab=jobs") }
+					hx-get={ "/tasks/" + task.ID + "?tab=jobs" }
+					hx-target="#tab-panel"
+					hx-swap="outerHTML"
+					hx-push-url="true"
+				>Jobs</a>
 			</div>
-			if task.Description != "" {
-				<pre style="margin-top:8px;white-space:pre-wrap;word-break:break-word">{ task.Description }</pre>
-			} else {
-				<p style="margin-top:8px;color:#888">(未設定)</p>
-			}
+			@TaskDetailTabPanel(task, actions, jobs, activeTab)
 		</div>
-		<div class="card">
-			<div style="display:flex;align-items:center;gap:8px">
-				<h2 class="section-title" style="margin:0">Payload</h2>
-				<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/payload") } title="編集">
-					@components.IconEdit("icon-sm")
-				</a>
-			</div>
-			if len(task.Payload) > 0 && string(task.Payload) != "null" {
-				<details style="margin-top:8px">
-					<summary>詳細</summary>
-					<pre>{ string(task.Payload) }</pre>
-				</details>
-			} else {
-				<p style="margin-top:8px;color:#888">(未設定)</p>
-			}
-		</div>
-		<div class="card">
-			<div style="display:flex;align-items:center;gap:8px">
-				<h2 class="section-title" style="margin:0">Instructions</h2>
-				<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/instructions") } title="編集">
-					@components.IconEdit("icon-sm")
-				</a>
-			</div>
-			if len(task.Instructions) > 0 {
-				<div style="margin-top:8px">
-					for role, inst := range task.Instructions {
-						<div class="detail-field">
-							<strong>{ role }</strong>
-							<span class="badge">{ string(inst.Type) }</span>
-							<span>{ inst.Consumer }</span>
-						</div>
-					}
-				</div>
-			} else {
-				<p style="margin-top:8px;color:#888">(未設定)</p>
-			}
-		</div>
-		<div class="card">
-			<div style="display:flex;align-items:center;gap:8px">
-				<h2 class="section-title" style="margin:0">Dependencies</h2>
-				<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/deps") } title="編集">
-					@components.IconEdit("icon-sm")
-				</a>
-			</div>
-			if len(task.DependsOn) > 0 || task.DependsOnPayload != "" || task.ParentID != "" {
-				<div style="margin-top:8px">
-					if task.ParentID != "" {
-						<div class="detail-field">
-							<strong>parent_id</strong>
-							{ task.ParentID }
-						</div>
-					}
-					if task.DependsOnPayload != "" {
-						<div class="detail-field">
-							<strong>depends_on_payload</strong>
-							{ task.DependsOnPayload }
-						</div>
-					}
-					if len(task.DependsOn) > 0 {
-						<div class="detail-field">
-							<strong>depends_on</strong>
-							{ strings.Join(task.DependsOn, ", ") }
-						</div>
-					}
-				</div>
-			} else {
-				<p style="margin-top:8px;color:#888">(未設定)</p>
-			}
-		</div>
-		@TaskDetailTimelineSection(actions)
-		@TaskDetailJobsSection(jobs)
-		<div id="task-live-root" data-task-id={ task.ID } style="display:none"></div>
-		<script>
-			(function() {
-				var root = document.getElementById('task-live-root');
-				var taskID = root ? root.dataset.taskId : '';
-				if (!taskID) return;
-
-				var es = new EventSource('/api/tasks/' + taskID + '/events');
-
-				function refresh(kinds) {
-					kinds.forEach(function(kind) {
-						fetch('/tasks/' + taskID + '/fragment?kind=' + kind)
-							.then(function(r) { return r.ok ? r.text() : null; })
-							.then(function(html) {
-								if (!html) return;
-								var el = document.getElementById('task-' + kind);
-								if (el) el.outerHTML = html;
-							})
-							.catch(function() {});
-					});
-				}
-
-				es.addEventListener('action', function() { refresh(['status', 'timeline']); });
-				es.addEventListener('job', function() { refresh(['jobs', 'status']); });
-				es.addEventListener('fired_event', function() { refresh(['timeline']); });
-
-				function closeES() { es.close(); }
-				window.addEventListener('pagehide', closeES);
-				document.addEventListener('visibilitychange', function() {
-					if (document.visibilityState === 'hidden') { closeES(); }
-				});
-			})();
-		</script>
 	}
 }

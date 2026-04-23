@@ -79,3 +79,24 @@ func TestJobDetail_ExistingOutputRendered(t *testing.T) {
 		t.Error("existing output should be rendered in pre")
 	}
 }
+
+func TestJobDetail_GateReplayForm(t *testing.T) {
+	job := newJobView("completed")
+	job.TaskID = "task-id-1"
+	job.Role = "gate"
+	job.GateID = "go-dev/pr-verify"
+	html := renderJobDetail(t, job)
+	want := "/tasks/task-id-1/gates/go-dev/pr-verify/replay"
+	if !strings.Contains(html, want) {
+		t.Errorf("gate job detail should contain replay form action %q, got: %s", want, html)
+	}
+}
+
+func TestJobDetail_NoGateReplayForm_NonGateJob(t *testing.T) {
+	job := newJobView("completed")
+	job.Role = "main"
+	html := renderJobDetail(t, job)
+	if strings.Contains(html, "/replay") {
+		t.Error("non-gate job detail should not contain replay form")
+	}
+}

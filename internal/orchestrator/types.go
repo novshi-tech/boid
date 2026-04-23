@@ -31,6 +31,7 @@ type JobWaiter interface {
 type HandlerResult struct {
 	ID           string // hook or gate ID
 	Role         Role
+	JobID        string // ID of the job that executed this handler
 	ExitCode     int
 	PayloadPatch json.RawMessage
 }
@@ -39,6 +40,7 @@ type HandlerResult struct {
 type FiredEvent struct {
 	KitID       string // kit that owns this handler; empty for project-local
 	HandlerID   string // hook or gate ID
+	JobID       string // ID of the job that executed this handler
 	Kind        string // "hook", "exit_gate", or "entry_gate"
 	SourceState string // task status at the time of dispatch
 	Success     bool

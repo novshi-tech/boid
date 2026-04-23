@@ -433,12 +433,55 @@ pre {
 /* --- Action Buttons --- */
 .action-buttons {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  flex-wrap: wrap;
   gap: var(--space-2);
 }
 
 .action-buttons form {
   display: contents;
+}
+
+/* --- Tabs --- */
+.tabs {
+  margin-top: var(--space-3);
+}
+
+.tab-list {
+  display: flex;
+  gap: 2px;
+  border-bottom: 2px solid var(--border);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 14px;
+  text-decoration: none;
+  color: var(--fg);
+  border-radius: 6px 6px 0 0;
+  font-size: 0.875rem;
+  white-space: nowrap;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+}
+
+.tab:hover {
+  color: var(--accent);
+}
+
+.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.detail-time {
+  font-size: 0.8rem;
+  color: var(--fg-muted, #888);
 }
 
 .action-error {

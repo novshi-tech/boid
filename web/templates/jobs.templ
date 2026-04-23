@@ -12,6 +12,7 @@ type JobContextView struct {
 	TaskTitle string
 	HandlerID string
 	Role      string
+	GateID    string // set when job is a gate job; used for gate replay form
 	Status    string
 	ExitCode  int
 	CreatedAt time.Time
@@ -63,6 +64,14 @@ templ JobDetail(job *JobContextView) {
 				</div>
 			</div>
 		</div>
+		if job.GateID != "" {
+			<div class="card">
+				<h2 class="section-title">Gate Replay</h2>
+				<form method="post" action={ templ.SafeURL("/tasks/" + job.TaskID + "/gates/" + job.GateID + "/replay") } onsubmit="return confirm('本当にゲートを再発火しますか？')">
+					<button type="submit" class="btn btn-primary btn-sm">replay</button>
+				</form>
+			</div>
+		}
 		<div class="card">
 			<h2 class="section-title">出力</h2>
 			<pre id="job-log" data-job-id={ job.ID } style="max-height:60vh;overflow-y:auto">{ job.Output }</pre>

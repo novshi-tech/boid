@@ -380,6 +380,7 @@ func buildFiredEvent(hr HandlerResult, kind string, sourceState string, hooks []
 	fe := FiredEvent{
 		KitID:       kitID,
 		HandlerID:   hr.ID,
+		JobID:       hr.JobID,
 		Kind:        kind,
 		SourceState: sourceState,
 		Success:     hr.ExitCode == 0,
@@ -417,6 +418,7 @@ func parseHandlerResult(id string, role Role, c JobCompletion) HandlerResult {
 	hr := HandlerResult{
 		ID:       id,
 		Role:     role,
+		JobID:    c.JobID,
 		ExitCode: c.ExitCode,
 	}
 
