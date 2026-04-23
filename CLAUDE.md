@@ -64,6 +64,17 @@ gc:
 
 ファイルが存在しない場合はデフォルト値で動作する（エラーにならない）。
 
+## Web UI
+
+- `--web` フラグ付きで daemon 起動すると Web UI が有効化される
+- 初回は `boid web pair` でペアリングコード (5 分有効、単回) を発行、コード / URL / QR で登録
+- デバイス管理: `boid web devices` / `boid web revoke <id>` / `boid web revoke-all`
+- loopback (127.0.0.1/::1) からはペアリング不要、外部公開 (Cloudflare Tunnel 等) からは必須
+- public URL は `~/.config/boid/config.yaml` の `web.public_url` に設定 (マジックリンク用)
+- 署名鍵は `~/.local/share/boid/web_secret` に自動生成 (0600)
+
+Cloudflare Tunnel 公開手順は docs/plans/web-ui-rebuild.md を参照。
+
 ## コーディング規約
 
 - Go モジュールパスは `github.com/novshi-tech/boid` を使う

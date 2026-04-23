@@ -50,15 +50,15 @@ func TestJobDetail_PendingHasScript(t *testing.T) {
 
 func TestJobDetail_CompletedNoScript(t *testing.T) {
 	html := renderJobDetail(t, newJobView("completed"))
-	if strings.Contains(html, "<script>") {
-		t.Error("completed job must not contain <script>")
+	if strings.Contains(html, "EventSource") {
+		t.Error("completed job must not contain EventSource")
 	}
 }
 
 func TestJobDetail_FailedNoScript(t *testing.T) {
 	html := renderJobDetail(t, newJobView("failed"))
-	if strings.Contains(html, "<script>") {
-		t.Error("failed job must not contain <script>")
+	if strings.Contains(html, "EventSource") {
+		t.Error("failed job must not contain EventSource")
 	}
 }
 

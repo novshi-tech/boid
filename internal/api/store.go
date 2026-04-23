@@ -105,13 +105,20 @@ type ImportResult struct {
 }
 
 type WebService interface {
-	ListTasks(status string) ([]*orchestrator.Task, error)
+	ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error)
 	GetTaskDetail(id string) (*TaskDetailView, error)
 	ListProjects() ([]*orchestrator.Project, error)
+	ListBehaviors() ([]string, error)
+	ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error)
 	ApplyAction(taskID string, actionType string) error
 	DuplicateTask(id string) (string, error)
 	ListJobs(status string) ([]JobWithContext, error)
 	GetJob(id string) (*JobWithContext, error)
+	CreateTask(req CreateTaskRequest) (*orchestrator.Task, error)
+	UpdateTask(id string, req UpdateTaskRequest) error
+	RerunTask(id string, req RerunTaskRequest) error
+	ListGatesForStatus(taskID, status string) ([]orchestrator.Gate, error)
+	ReplayGate(ctx context.Context, taskID string, req ReplayGateRequest) (*ReplayGateResult, error)
 }
 
 type WorkflowService interface {

@@ -8,7 +8,9 @@ package templates
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
-func Layout(title string) templ.Component {
+import "github.com/novshi-tech/boid/web/templates/components"
+
+func Layout(title string, breadcrumbs []components.BreadcrumbItem) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -36,13 +38,21 @@ func Layout(title string) templ.Component {
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layout.templ`, Line: 9, Col: 17}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layout.templ`, Line: 11, Col: 17}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, " - boid</title><link rel=\"stylesheet\" href=\"/static/style.css\"></head><body><header class=\"header\"><div class=\"header-inner\"><a href=\"/\" class=\"header-title\">boid</a></div><button class=\"nav-toggle\" aria-label=\"Menu\" aria-expanded=\"false\" onclick=\"this.setAttribute('aria-expanded',this.getAttribute('aria-expanded')==='false');document.getElementById('nav').classList.toggle('open')\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"><line x1=\"3\" y1=\"6\" x2=\"21\" y2=\"6\"></line> <line x1=\"3\" y1=\"12\" x2=\"21\" y2=\"12\"></line> <line x1=\"3\" y1=\"18\" x2=\"21\" y2=\"18\"></line></svg></button></header><nav id=\"nav\" class=\"nav\"><ul class=\"nav-list\"><li><a href=\"/\">Tasks</a></li><li><a href=\"/jobs\">Jobs</a></li><li><a href=\"/projects\">Projects</a></li></ul></nav><main class=\"main\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, " - boid</title><link rel=\"stylesheet\" href=\"/static/style.css\"><script src=\"/static/vendor/htmx-2.0.4.min.js\"></script><script>\n\t\t\t\tdocument.addEventListener(\"DOMContentLoaded\",function(){\n\t\t\t\t\tvar t=document.cookie.split(\"; \").find(r=>r.startsWith(\"csrf_token=\"))?.split(\"=\")[1];\n\t\t\t\t\tif(t) htmx.config.defaultHeaders[\"X-CSRF-Token\"]=t;\n\t\t\t\t});\n\t\t\t</script></head><body><header class=\"site-header\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = components.Breadcrumb(breadcrumbs).Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</header><main class=\"site-main\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -50,7 +60,7 @@ func Layout(title string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</main></body></html>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "</main></body></html>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

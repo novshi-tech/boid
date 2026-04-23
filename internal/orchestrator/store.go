@@ -20,6 +20,7 @@ type TaskFilter struct {
 	ProjectID    string
 	Behavior     string
 	WorkspaceID  string
+	Title        string
 	HasDependsOn bool
 	NoDependsOn  bool
 }
@@ -233,6 +234,10 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	if filter.WorkspaceID != "" {
 		joins = append(joins, "INNER JOIN project_workspaces pw ON pw.project_id = t.project_id AND pw.workspace_id = ?")
 		args = append([]any{filter.WorkspaceID}, args...)
+	}
+	if filter.Title != "" {
+		conditions = append(conditions, "LOWER(t.title) LIKE ?")
+		args = append(args, "%"+strings.ToLower(filter.Title)+"%")
 	}
 	if filter.HasDependsOn {
 		conditions = append(conditions, "EXISTS (SELECT 1 FROM task_dependencies td WHERE td.task_id = t.id)")

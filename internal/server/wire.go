@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/api/auth"
 	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -32,6 +33,9 @@ type appRuntime struct {
 	taskSvc        *api.TaskAppService
 	webSvc         *api.WebAppService
 	workflow       *api.TaskWorkflowService
+	hub            *api.TaskEventHub
+	authStore      *auth.Store
+	sessionSigner  *auth.SessionSigner
 }
 
 func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) (*orchestrator.ProjectStore, error) {
@@ -59,6 +63,17 @@ func runtimesDirFor(cfg Config) string {
 		return filepath.Join(filepath.Dir(cfg.DBPath), "runtimes")
 	}
 	return filepath.Join(filepath.Dir(cfg.SocketPath), "runtimes")
+}
+
+// webSecretPathFor returns the path for the web session signing key.
+func webSecretPathFor(cfg Config) string {
+	if cfg.DBPath != "" && cfg.DBPath != ":memory:" {
+		return filepath.Join(filepath.Dir(cfg.DBPath), "web_secret")
+	}
+	if cfg.SocketPath != "" {
+		return filepath.Join(filepath.Dir(cfg.SocketPath), "web_secret")
+	}
+	return ""
 }
 
 func newJobRuntime(cfg Config) (dispatcher.JobRuntime, error) {
@@ -161,6 +176,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Tasks:    taskLookup,
 	})
 	adapter := dispatcher.NewOrchestratorAdapter(runner, planner)
+	hub := api.NewTaskEventHub()
 	workflow := &api.TaskWorkflowService{
 		Tasks:       taskRepo,
 		Jobs:        jobStore,
@@ -170,6 +186,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Coordinator: &orchestrator.Coordinator{Evaluator: &orchestrator.Evaluator{}, HookExecutor: adapter, GateExecutor: adapter, Waiter: adapter, MaxDepth: 5, Locker: orchestrator.NewInMemoryWorktreeLockManager(), LifecycleStore: taskRepo},
 		Lifecycle:   jobLifecycleAdapter{runner: runner},
 		Worktrees:   wtMgr,
+		Hub:         hub,
 	}
 	workflow.InitDispatch(context.Background())
 	projectSvc := &api.ProjectAppService{
@@ -201,6 +218,18 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Projects:   projectRepo,
 		Meta:       store,
 		Workflow:   workflow,
+		TaskSvc:    taskSvc,
+		Gates:      workflow,
+	}
+
+	authStore := auth.NewStore(srv.db)
+	var sessionSigner *auth.SessionSigner
+	if webSecretPath := webSecretPathFor(cfg); webSecretPath != "" {
+		webSecret, err := dispatcher.LoadOrCreateKey(webSecretPath)
+		if err != nil {
+			return nil, fmt.Errorf("load web secret: %w", err)
+		}
+		sessionSigner = auth.NewSessionSigner(webSecret, authStore)
 	}
 
 	return &appRuntime{
@@ -214,6 +243,9 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		taskSvc:        taskSvc,
 		webSvc:         webSvc,
 		workflow:       workflow,
+		hub:            hub,
+		authStore:      authStore,
+		sessionSigner:  sessionSigner,
 	}, nil
 }
 
@@ -236,6 +268,13 @@ func projectResolverFor(svc *api.ProjectAppService) sandbox.ProjectResolver {
 
 func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r := srv.router
+
+	// CSRF middleware must be registered before any routes (chi requirement).
+	// The middleware exempts /api/* and /auth paths, so existing API routes
+	// are unaffected. Only mount when Web UI is enabled.
+	if srv.cfg.WebEnabled {
+		r.Use(auth.CSRFMiddleware)
+	}
 
 	r.Get("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -335,14 +374,42 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	mountJobRuntimeRoutes(r, runtime)
 
 	if srv.cfg.WebEnabled {
-		webHandler := &api.WebHandler{Service: runtime.webSvc}
-		r.Mount("/", webHandler.Routes())
-
 		staticFS, err := fs.Sub(web.StaticFS, "static")
 		if err != nil {
 			return fmt.Errorf("sub static fs: %w", err)
 		}
+
+		// Static files are served unauthenticated.
 		r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
+
+		// Management API — accessible via UNIX socket (CLI only), no session auth.
+		webMgmt := &api.WebManagementHandler{
+			Pairing:   auth.NewPairingManager(runtime.authStore),
+			Store:     runtime.authStore,
+			PublicURL: gcCfg.Web.PublicURL,
+		}
+		r.Mount("/api/web", webMgmt.Routes())
+
+		// Login/auth routes (exempted by WebAuthMiddleware and CSRFMiddleware).
+		loginHandler := &api.LoginHandler{
+			Pairing: auth.NewPairingManager(runtime.authStore),
+			Store:   runtime.authStore,
+			Limiter: auth.NewRateLimiter(nil),
+		}
+		if runtime.sessionSigner != nil {
+			loginHandler.Signer = runtime.sessionSigner
+		}
+		r.Get("/login", loginHandler.GetLogin)
+		r.Post("/login", loginHandler.PostLogin)
+		r.Get("/auth", loginHandler.GetAuth)
+
+		// Web UI routes protected by session auth.
+		r.Group(func(r chi.Router) {
+			r.Use(auth.NewWebAuthMiddleware(runtime.sessionSigner, runtime.authStore))
+			webHandler := &api.WebHandler{Service: runtime.webSvc, Hub: runtime.hub}
+			r.Get("/api/tasks/{id}/events", webHandler.TaskEvents)
+			r.Mount("/", webHandler.Routes())
+		})
 	} else {
 		r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Web UI is disabled. Use --web flag to enable.", http.StatusNotFound)

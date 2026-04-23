@@ -581,6 +581,24 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		task.Payload = merged
 		payloadUpdated = true
 	}
+	if req.DependsOn != nil {
+		for _, depID := range req.DependsOn {
+			dep, err := s.Tasks.GetTask(depID)
+			if err != nil || dep == nil {
+				return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("depends_on: task %q not found", depID)}
+			}
+		}
+		if hasCycleInUpdate(id, req.DependsOn, s.Tasks.GetTask) {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: "depends_on: circular dependency detected"}
+		}
+		task.DependsOn = req.DependsOn
+	}
+	if req.DependsOnPayload != nil {
+		task.DependsOnPayload = *req.DependsOnPayload
+	}
+	if req.ParentID != nil {
+		task.ParentID = *req.ParentID
+	}
 	if req.BaseBranch != nil || req.BranchPrefix != nil {
 		if !isInstructionsEditable(task.Status) {
 			return nil, &StatusError{
@@ -821,10 +839,48 @@ type WebAppService struct {
 	Projects   ProjectRepository
 	Meta       MetaStore
 	Workflow   WorkflowService
+	TaskSvc    TaskService
+	Gates      GateService
 }
 
-func (s *WebAppService) ListTasks(status string) ([]*orchestrator.Task, error) {
-	return s.Tasks.ListTasks(orchestrator.TaskFilter{Status: status})
+func (s *WebAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
+	if s.TaskSvc == nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "task service not configured"}
+	}
+	return s.TaskSvc.CreateTask(req)
+}
+
+func (s *WebAppService) UpdateTask(id string, req UpdateTaskRequest) error {
+	if s.TaskSvc == nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "task service not configured"}
+	}
+	_, err := s.TaskSvc.UpdateTask(id, req)
+	return err
+}
+
+func (s *WebAppService) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
+	return s.Tasks.ListTasks(filter)
+}
+
+func (s *WebAppService) ListBehaviors() ([]string, error) {
+	tasks, err := s.Tasks.ListTasks(orchestrator.TaskFilter{})
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool)
+	var behaviors []string
+	for _, t := range tasks {
+		if t.Behavior != "" && !seen[t.Behavior] {
+			seen[t.Behavior] = true
+			behaviors = append(behaviors, t.Behavior)
+		}
+	}
+	sort.Strings(behaviors)
+	return behaviors, nil
+}
+
+func (s *WebAppService) ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error) {
+	return s.Projects.ListWorkspaces()
 }
 
 func (s *WebAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
@@ -931,6 +987,28 @@ func (s *WebAppService) GetJob(id string) (*JobWithContext, error) {
 	return result, nil
 }
 
+func (s *WebAppService) RerunTask(id string, req RerunTaskRequest) error {
+	if s.TaskSvc == nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "task service not configured"}
+	}
+	_, err := s.TaskSvc.RerunTask(id, req)
+	return err
+}
+
+func (s *WebAppService) ListGatesForStatus(taskID, status string) ([]orchestrator.Gate, error) {
+	if s.Gates == nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "gate service not configured"}
+	}
+	return s.Gates.ListGatesForStatus(taskID, status)
+}
+
+func (s *WebAppService) ReplayGate(ctx context.Context, taskID string, req ReplayGateRequest) (*ReplayGateResult, error) {
+	if s.Gates == nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "gate service not configured"}
+	}
+	return s.Gates.ReplayGate(ctx, taskID, req)
+}
+
 type TaskWorkflowService struct {
 	Tasks       TaskStore
 	Jobs        JobStore
@@ -940,6 +1018,7 @@ type TaskWorkflowService struct {
 	Coordinator DispatchCoordinator
 	Lifecycle   JobLifecycle
 	Worktrees   WorktreeCleaner
+	Hub         *TaskEventHub
 
 	dispatchCtx    context.Context
 	dispatchCancel context.CancelFunc
@@ -1007,6 +1086,16 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		return tx.CreateAction(action)
 	}); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+
+	if s.Hub != nil {
+		s.Hub.Broadcast(newTask.ID, TaskEvent{
+			Kind: "action",
+			Payload: map[string]any{
+				"action_id":  action.ID,
+				"new_status": string(action.ToStatus),
+			},
+		})
 	}
 
 	s.cleanupWorktree(newTask.ID, task.ProjectID, newTask.Status)
@@ -1111,6 +1200,16 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 		return tx.CreateAction(action)
 	}); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+
+	if s.Hub != nil {
+		s.Hub.Broadcast(job.TaskID, TaskEvent{
+			Kind: "job",
+			Payload: map[string]any{
+				"job_id":    job.ID,
+				"new_state": string(newTask.Status),
+			},
+		})
 	}
 
 	slog.Info("job done: job_failed applied", "job_id", job.ID, "new_status", newTask.Status)
@@ -1305,6 +1404,21 @@ func (s *TaskWorkflowService) persistFiredEvents(taskID string, status orchestra
 		return nil
 	}); err != nil {
 		slog.Warn("persist fired events failed", "task_id", taskID, "error", err)
+		return
+	}
+
+	if s.Hub != nil {
+		for _, fe := range events {
+			s.Hub.Broadcast(taskID, TaskEvent{
+				Kind: "fired_event",
+				Payload: map[string]any{
+					"event_name": fe.Kind + "_fired",
+					"role":       fe.HandlerID,
+					"kit_id":     fe.KitID,
+					"success":    fe.Success,
+				},
+			})
+		}
 	}
 }
 

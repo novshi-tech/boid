@@ -3,9 +3,30 @@ package templates
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
+
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/web/templates/components"
 	"time"
 )
+
+// TaskListFragment renders only the task list container (for HTMX partial responses).
+// currentURL is embedded as the polling target so filter params are preserved across polls.
+templ TaskListFragment(items []components.TreeItem, currentURL string) {
+	<div
+		id="task-list"
+		hx-get={ currentURL }
+		hx-trigger="every 5s"
+		hx-target="#task-list"
+		hx-swap="outerHTML"
+	>
+		if len(items) == 0 {
+			<p class="empty">タスクがありません</p>
+		} else {
+			@components.TaskTree(items)
+		}
+	</div>
+}
 
 type JobView struct {
 	ID        string
@@ -19,7 +40,7 @@ type JobView struct {
 }
 
 func taskStatusClass(s string) string {
-	return "status status-" + s
+	return "badge badge-" + s
 }
 
 func shortID(id string) string {
@@ -72,53 +93,21 @@ type filterOption struct {
 	Label string
 }
 
-var taskFilterOptions = []filterOption{
-	{"", "All"},
-	{"pending", "Pending"},
-	{"executing", "Executing"},
-	{"verifying", "Verifying"},
-	{"done", "Done"},
-	{"aborted", "Aborted"},
-}
-
-templ TaskList(tasks []*orchestrator.Task, currentFilter string) {
-	@Layout("Tasks") {
-		<div class="filter-scroll">
-			<div class="filters">
-				for _, f := range taskFilterOptions {
-					if f.Value == currentFilter {
-						<a href={ templ.SafeURL("/?status=" + f.Value) } class="active">{ f.Label }</a>
-					} else {
-						<a href={ templ.SafeURL("/?status=" + f.Value) }>{ f.Label }</a>
-					}
-				}
-			</div>
+templ TaskList(items []components.TreeItem, filter orchestrator.TaskFilter, projects []*orchestrator.Project, behaviors []string, workspaces []*orchestrator.WorkspaceSummary, currentURL string) {
+	@Layout("Tasks", []components.BreadcrumbItem{{Title: "Tasks"}}) {
+		<div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+			<a href="/tasks/new" class="btn btn-primary">新規作成</a>
 		</div>
-		if len(tasks) == 0 {
-			<p class="empty">タスクがありません</p>
-		} else {
-			<div class="tasks-grid">
-				for _, task := range tasks {
-					<a href={ templ.SafeURL("/tasks/" + task.ID) } class="task-card">
-						<div class="task-card-title">{ task.Title }</div>
-						<div class="task-card-meta">
-							<span class={ taskStatusClass(string(task.Status)) }>{ string(task.Status) }</span>
-							<span>{ task.Behavior }</span>
-							if task.ProjectID != "" {
-								<span>{ task.ProjectID }</span>
-							}
-							<span>{ task.UpdatedAt.Format("2006-01-02 15:04") }</span>
-						</div>
-					</a>
-				}
-			</div>
-		}
+		@components.TaskFilters(filter, projects, behaviors, workspaces)
+		@TaskListFragment(items, currentURL)
 	}
 }
 
-templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, availableActions []string, errorMsg string) {
-	@Layout(task.Title) {
-		<div class="section">
+// TaskDetailStatusSection renders the status card + duplicate button + available actions.
+// Wrapped in <div id="task-status"> so EventSource JS can replace it via outerHTML.
+templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string, errorMsg string) {
+	<div id="task-status">
+		<div class="card">
 			<h1>{ task.Title }</h1>
 			<div class="card-meta" style="margin-top:8px">
 				<span class={ taskStatusClass(string(task.Status)) }>{ string(task.Status) }</span>
@@ -139,19 +128,23 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 			</div>
 		</div>
 		if errorMsg != "" {
-			<div class="section action-error">
+			<div class="card action-error">
 				{ errorMsg }
 			</div>
 		}
-		<div class="section">
+		<div class="card">
 			<div class="action-buttons">
 				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/duplicate") }>
 					<button type="submit" class="btn btn-secondary">duplicate</button>
 				</form>
+				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('本当に再実行しますか？')">
+					<button type="submit" class="btn btn-secondary">rerun</button>
+				</form>
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "/gates") } class="btn btn-secondary">gate replay</a>
 			</div>
 		</div>
 		if len(availableActions) > 0 {
-			<div class="section">
+			<div class="card">
 				<h2 class="section-title">アクション</h2>
 				<div class="action-buttons">
 					for _, act := range availableActions {
@@ -170,16 +163,15 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 				</div>
 			</div>
 		}
-		if len(task.Payload) > 0 && string(task.Payload) != "null" {
-			<div class="section">
-				<details>
-					<summary>Payload</summary>
-					<pre>{ string(task.Payload) }</pre>
-				</details>
-			</div>
-		}
+	</div>
+}
+
+// TaskDetailTimelineSection renders the action history card.
+// Wrapped in <div id="task-timeline"> so EventSource JS can replace it via outerHTML.
+templ TaskDetailTimelineSection(actions []*orchestrator.Action) {
+	<div id="task-timeline">
 		if len(actions) > 0 {
-			<div class="section">
+			<div class="card">
 				<h2 class="section-title">アクション履歴</h2>
 				<div class="timeline">
 					for _, action := range actions {
@@ -212,29 +204,161 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 				</div>
 			</div>
 		}
+	</div>
+}
+
+// TaskDetailJobsSection renders the jobs card.
+// Wrapped in <div id="task-jobs"> so EventSource JS can replace it via outerHTML.
+templ TaskDetailJobsSection(jobs []*JobView) {
+	<div id="task-jobs">
 		if len(jobs) > 0 {
-			<div class="section">
+			<div class="card">
 				<h2 class="section-title">ジョブ</h2>
-				for _, job := range jobs {
-					<div class="job-card">
-						<div class="job-card-header">
-							<span class="job-id">{ shortID(job.ID) }</span>
-							<span class={ taskStatusClass(job.Status) }>{ job.Status }</span>
-							<span>{ job.Role }</span>
-							if job.ExitCode != 0 {
-								<span class="exit-code">exit: { fmt.Sprintf("%d", job.ExitCode) }</span>
+				<div class="job-list">
+					for _, job := range jobs {
+						<div class="job-row">
+							<div class="job-row-header">
+								<span class="job-id">{ shortID(job.ID) }</span>
+								<span class={ taskStatusClass(job.Status) }>{ job.Status }</span>
+								<span>{ job.Role }</span>
+								if job.ExitCode != 0 {
+									<span class="exit-code">exit: { fmt.Sprintf("%d", job.ExitCode) }</span>
+								}
+							</div>
+							<div class="timeline-time">{ job.CreatedAt.Format("2006-01-02 15:04:05") } – { job.UpdatedAt.Format("15:04:05") }</div>
+							if job.Output != "" {
+								<details>
+									<summary>output</summary>
+									<pre>{ job.Output }</pre>
+								</details>
 							}
 						</div>
-						<div class="timeline-time">{ job.CreatedAt.Format("2006-01-02 15:04:05") } – { job.UpdatedAt.Format("15:04:05") }</div>
-						if job.Output != "" {
-							<details>
-								<summary>output</summary>
-								<pre>{ job.Output }</pre>
-							</details>
-						}
-					</div>
-				}
+					}
+				</div>
 			</div>
 		}
+	</div>
+}
+
+templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, availableActions []string, errorMsg string) {
+	@Layout(task.Title, []components.BreadcrumbItem{{Title: "Tasks", URL: "/"}, {Title: task.Title}}) {
+		@TaskDetailStatusSection(task, availableActions, errorMsg)
+		<div class="card">
+			<div style="display:flex;align-items:center;gap:8px">
+				<h2 class="section-title" style="margin:0">Description</h2>
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/description") } title="編集">
+					@components.IconEdit("icon-sm")
+				</a>
+			</div>
+			if task.Description != "" {
+				<pre style="margin-top:8px;white-space:pre-wrap;word-break:break-word">{ task.Description }</pre>
+			} else {
+				<p style="margin-top:8px;color:#888">(未設定)</p>
+			}
+		</div>
+		<div class="card">
+			<div style="display:flex;align-items:center;gap:8px">
+				<h2 class="section-title" style="margin:0">Payload</h2>
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/payload") } title="編集">
+					@components.IconEdit("icon-sm")
+				</a>
+			</div>
+			if len(task.Payload) > 0 && string(task.Payload) != "null" {
+				<details style="margin-top:8px">
+					<summary>詳細</summary>
+					<pre>{ string(task.Payload) }</pre>
+				</details>
+			} else {
+				<p style="margin-top:8px;color:#888">(未設定)</p>
+			}
+		</div>
+		<div class="card">
+			<div style="display:flex;align-items:center;gap:8px">
+				<h2 class="section-title" style="margin:0">Instructions</h2>
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/instructions") } title="編集">
+					@components.IconEdit("icon-sm")
+				</a>
+			</div>
+			if len(task.Instructions) > 0 {
+				<div style="margin-top:8px">
+					for role, inst := range task.Instructions {
+						<div class="detail-field">
+							<strong>{ role }</strong>
+							<span class="badge">{ string(inst.Type) }</span>
+							<span>{ inst.Consumer }</span>
+						</div>
+					}
+				</div>
+			} else {
+				<p style="margin-top:8px;color:#888">(未設定)</p>
+			}
+		</div>
+		<div class="card">
+			<div style="display:flex;align-items:center;gap:8px">
+				<h2 class="section-title" style="margin:0">Dependencies</h2>
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/deps") } title="編集">
+					@components.IconEdit("icon-sm")
+				</a>
+			</div>
+			if len(task.DependsOn) > 0 || task.DependsOnPayload != "" || task.ParentID != "" {
+				<div style="margin-top:8px">
+					if task.ParentID != "" {
+						<div class="detail-field">
+							<strong>parent_id</strong>
+							{ task.ParentID }
+						</div>
+					}
+					if task.DependsOnPayload != "" {
+						<div class="detail-field">
+							<strong>depends_on_payload</strong>
+							{ task.DependsOnPayload }
+						</div>
+					}
+					if len(task.DependsOn) > 0 {
+						<div class="detail-field">
+							<strong>depends_on</strong>
+							{ strings.Join(task.DependsOn, ", ") }
+						</div>
+					}
+				</div>
+			} else {
+				<p style="margin-top:8px;color:#888">(未設定)</p>
+			}
+		</div>
+		@TaskDetailTimelineSection(actions)
+		@TaskDetailJobsSection(jobs)
+		<div id="task-live-root" data-task-id={ task.ID } style="display:none"></div>
+		<script>
+			(function() {
+				var root = document.getElementById('task-live-root');
+				var taskID = root ? root.dataset.taskId : '';
+				if (!taskID) return;
+
+				var es = new EventSource('/api/tasks/' + taskID + '/events');
+
+				function refresh(kinds) {
+					kinds.forEach(function(kind) {
+						fetch('/tasks/' + taskID + '/fragment?kind=' + kind)
+							.then(function(r) { return r.ok ? r.text() : null; })
+							.then(function(html) {
+								if (!html) return;
+								var el = document.getElementById('task-' + kind);
+								if (el) el.outerHTML = html;
+							})
+							.catch(function() {});
+					});
+				}
+
+				es.addEventListener('action', function() { refresh(['status', 'timeline']); });
+				es.addEventListener('job', function() { refresh(['jobs', 'status']); });
+				es.addEventListener('fired_event', function() { refresh(['timeline']); });
+
+				function closeES() { es.close(); }
+				window.addEventListener('pagehide', closeES);
+				document.addEventListener('visibilitychange', function() {
+					if (document.visibilityState === 'hidden') { closeES(); }
+				});
+			})();
+		</script>
 	}
 }
