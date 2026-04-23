@@ -332,16 +332,17 @@ templ TaskDetailTimelineSection(actions []*orchestrator.Action, jobs []*JobView)
 				for _, action := range actions {
 					if isFiredAction(action.Type) {
 						{{ jobID := resolveFiredActionJobID(action, jobs) }}
-						<div class="timeline-item timeline-item-fired">
-							<div class="timeline-type timeline-type-fired">
-								if jobID != "" {
-									<a href={ templ.SafeURL("/jobs/" + jobID) }>[{ action.Type }] { firedActionLabel(action.Payload) }</a>
-								} else {
-									[{ action.Type }] { firedActionLabel(action.Payload) }
-								}
+						if jobID != "" {
+							<a class="timeline-item timeline-item-fired timeline-item-link" href={ templ.SafeURL("/jobs/" + jobID) }>
+								<div class="timeline-type timeline-type-fired">[{ action.Type }] { firedActionLabel(action.Payload) }</div>
+								<div class="timeline-time">{ action.CreatedAt.Format("2006-01-02 15:04:05") }</div>
+							</a>
+						} else {
+							<div class="timeline-item timeline-item-fired">
+								<div class="timeline-type timeline-type-fired">[{ action.Type }] { firedActionLabel(action.Payload) }</div>
+								<div class="timeline-time">{ action.CreatedAt.Format("2006-01-02 15:04:05") }</div>
 							</div>
-							<div class="timeline-time">{ action.CreatedAt.Format("2006-01-02 15:04:05") }</div>
-						</div>
+						}
 					} else {
 						<div class="timeline-item">
 							if action.FromStatus != "" && action.ToStatus != "" && action.FromStatus != action.ToStatus {
