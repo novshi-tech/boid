@@ -289,7 +289,7 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 	kind := r.URL.Query().Get("kind")
 	switch kind {
 	case "timeline":
-		templates.TaskDetailTimelineSection(detail.Actions).Render(r.Context(), w)
+		templates.TaskDetailTimelineSection(detail.Actions, jobs).Render(r.Context(), w)
 	case "status":
 		projectName := h.lookupProjectName(detail.Task.ProjectID)
 		templates.TaskDetailStatusSection(detail.Task, detail.AvailableActions, "", projectName).Render(r.Context(), w)

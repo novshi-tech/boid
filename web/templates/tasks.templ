@@ -120,6 +120,51 @@ func firedActionJobID(payload []byte) string {
 	return id
 }
 
+// firedActionHookID extracts the "kit/hook" identifier from a fired action
+// payload. Combined with timestamp, lets us match legacy fired actions
+// (written before job_id was added to the payload) to their job.
+func firedActionHookID(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return ""
+	}
+	id, _ := m["hook_id"].(string)
+	return id
+}
+
+// resolveFiredActionJobID returns the job ID that a fired action refers to.
+// Prefers the embedded job_id (new records); falls back to scanning the
+// task's jobs list for the latest job matching the action's hook_id whose
+// CreatedAt is not after the action's CreatedAt (legacy backfill).
+func resolveFiredActionJobID(action *orchestrator.Action, jobs []*JobView) string {
+	if jid := firedActionJobID(action.Payload); jid != "" {
+		return jid
+	}
+	hookID := firedActionHookID(action.Payload)
+	if hookID == "" {
+		return ""
+	}
+	var best *JobView
+	for _, j := range jobs {
+		if j.HandlerID != hookID {
+			continue
+		}
+		if j.CreatedAt.After(action.CreatedAt) {
+			continue
+		}
+		if best == nil || j.CreatedAt.After(best.CreatedAt) {
+			best = j
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	return best.ID
+}
+
 type filterOption struct {
 	Value string
 	Label string
@@ -274,9 +319,11 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string) {
 	</div>
 }
 
-// TaskDetailTimelineSection renders the action history card.
+// TaskDetailTimelineSection renders the action history.
 // Wrapped in <div id="task-timeline"> so EventSource JS can replace it via outerHTML.
-templ TaskDetailTimelineSection(actions []*orchestrator.Action) {
+// jobs is consulted to resolve fired actions to their job (links to /jobs/{id});
+// legacy fired actions without job_id in payload are matched by hook_id + timestamp.
+templ TaskDetailTimelineSection(actions []*orchestrator.Action, jobs []*JobView) {
 	<div id="task-timeline" class="tab-content">
 		if len(actions) == 0 {
 			<p class="tab-empty">(履歴なし)</p>
@@ -284,10 +331,11 @@ templ TaskDetailTimelineSection(actions []*orchestrator.Action) {
 			<div class="timeline">
 				for _, action := range actions {
 					if isFiredAction(action.Type) {
+						{{ jobID := resolveFiredActionJobID(action, jobs) }}
 						<div class="timeline-item timeline-item-fired">
 							<div class="timeline-type timeline-type-fired">
-								if firedActionJobID(action.Payload) != "" {
-									<a href={ templ.SafeURL("/jobs/" + firedActionJobID(action.Payload)) }>[{ action.Type }] { firedActionLabel(action.Payload) }</a>
+								if jobID != "" {
+									<a href={ templ.SafeURL("/jobs/" + jobID) }>[{ action.Type }] { firedActionLabel(action.Payload) }</a>
 								} else {
 									[{ action.Type }] { firedActionLabel(action.Payload) }
 								}
@@ -304,12 +352,6 @@ templ TaskDetailTimelineSection(actions []*orchestrator.Action) {
 								<div class="timeline-type">{ action.Type }</div>
 							}
 							<div class="timeline-time">{ action.CreatedAt.Format("2006-01-02 15:04:05") }</div>
-							if len(action.Payload) > 0 && string(action.Payload) != "null" {
-								<details>
-									<summary>payload</summary>
-									<pre>{ string(action.Payload) }</pre>
-								</details>
-							}
 						</div>
 					}
 				}
@@ -360,7 +402,7 @@ templ TaskDetailJobsSection(jobs []*JobView) {
 templ TaskDetailTabPanel(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, activeTab string) {
 	<div id="tab-panel" data-task-id={ task.ID }>
 		if activeTab == "timeline" {
-			@TaskDetailTimelineSection(actions)
+			@TaskDetailTimelineSection(actions, jobs)
 			<script>
 				(function() {
 					var panel = document.getElementById('tab-panel');
