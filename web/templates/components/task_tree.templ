@@ -1,0 +1,115 @@
+package components
+
+import (
+	"fmt"
+	"github.com/novshi-tech/boid/internal/orchestrator"
+)
+
+// TreeItem is a task positioned in the display tree.
+type TreeItem struct {
+	Task        *orchestrator.Task
+	Depth       int
+	HasChildren bool
+	ParentID    string // visual parent ID; empty for roots
+}
+
+func treeStatusClass(s string) string {
+	return "badge badge-" + s
+}
+
+// TaskTree renders a flat list of TreeItems as a collapsible task tree.
+// Folded state is persisted in localStorage.
+templ TaskTree(items []TreeItem) {
+	<div class="task-list" id="task-tree">
+		for _, item := range items {
+			@taskTreeRow(item)
+		}
+	</div>
+	<script>
+		(function() {
+			var PREFIX = 'boid:tree:folded:';
+			function isFolded(id) {
+				return localStorage.getItem(PREFIX + id) === '1';
+			}
+			function isAncestorFolded(taskId) {
+				var el = document.querySelector('#task-tree [data-task-id="' + taskId + '"]');
+				while (el) {
+					var pid = el.dataset.parentId;
+					if (!pid) return false;
+					if (isFolded(pid)) return true;
+					el = document.querySelector('#task-tree [data-task-id="' + pid + '"]');
+				}
+				return false;
+			}
+			function applyVisibility() {
+				document.querySelectorAll('#task-tree [data-task-id]').forEach(function(el) {
+					if (!el.dataset.parentId) return;
+					el.style.display = isAncestorFolded(el.dataset.taskId) ? 'none' : '';
+				});
+			}
+			function applyIcons() {
+				document.querySelectorAll('#task-tree .tree-fold-btn').forEach(function(btn) {
+					var folded = isFolded(btn.dataset.taskId);
+					btn.setAttribute('aria-expanded', folded ? 'false' : 'true');
+					var down = btn.querySelector('.tree-fold-icon-down');
+					var right = btn.querySelector('.tree-fold-icon-right');
+					if (down) down.style.display = folded ? 'none' : '';
+					if (right) right.style.display = folded ? '' : 'none';
+				});
+			}
+			function init() {
+				applyVisibility();
+				applyIcons();
+				document.querySelectorAll('#task-tree .tree-fold-btn').forEach(function(btn) {
+					btn.addEventListener('click', function(e) {
+						e.stopPropagation();
+						var id = btn.dataset.taskId;
+						if (isFolded(id)) {
+							localStorage.removeItem(PREFIX + id);
+						} else {
+							localStorage.setItem(PREFIX + id, '1');
+						}
+						applyVisibility();
+						applyIcons();
+					});
+				});
+			}
+			if (document.readyState === 'loading') {
+				document.addEventListener('DOMContentLoaded', init);
+			} else {
+				init();
+			}
+		})();
+	</script>
+}
+
+templ taskTreeRow(item TreeItem) {
+	<div
+		class="task-tree-row"
+		data-task-id={ item.Task.ID }
+		data-parent-id={ item.ParentID }
+		style={ fmt.Sprintf("margin-left: %dpx", item.Depth*16) }
+	>
+		<div class="task-row">
+			<div class="tree-row-head">
+				if item.HasChildren {
+					<button type="button" class="tree-fold-btn" data-task-id={ item.Task.ID } aria-expanded="true">
+						@IconChevronDown("tree-icon tree-fold-icon-down")
+						@IconChevronRight("tree-icon tree-fold-icon-right")
+					</button>
+				} else {
+					<span class="tree-fold-placeholder"></span>
+				}
+				<a href={ templ.SafeURL("/tasks/" + item.Task.ID) } class="task-row-link">{ item.Task.Title }</a>
+			</div>
+			<div class="task-row-meta">
+				<span class={ treeStatusClass(string(item.Task.Status)) }>{ string(item.Task.Status) }</span>
+				<span>{ item.Task.Behavior }</span>
+				if item.Task.ProjectID != "" {
+					<span>{ item.Task.ProjectID }</span>
+				}
+				<span>{ item.Task.UpdatedAt.Format("2006-01-02 15:04") }</span>
+			</div>
+		</div>
+	</div>
+}

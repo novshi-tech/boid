@@ -39,8 +39,9 @@ func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	items := BuildTreeItems(tasks)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	templates.TaskList(tasks, filter).Render(r.Context(), w)
+	templates.TaskList(items, filter).Render(r.Context(), w)
 }
 
 func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
