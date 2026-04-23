@@ -1872,7 +1872,7 @@ kits:
 		}
 	})
 
-	t.Run("project.yaml commands override kit-provided commands", func(t *testing.T) {
+	t.Run("project.yaml command field overrides kit-provided command field at field level", func(t *testing.T) {
 		dir := t.TempDir()
 		boidDir := filepath.Join(dir, ".boid")
 		kitDir := filepath.Join(boidDir, "kits", "agent-kit")
@@ -1894,7 +1894,62 @@ commands:
 		}
 		cmd := meta.Commands["claude"]
 		if len(cmd.ResolvedCommand) < 2 || cmd.ResolvedCommand[1] != "--custom-flag" {
-			t.Errorf("expected project.yaml command to win: %+v", cmd.ResolvedCommand)
+			t.Errorf("expected project.yaml command field to win: %+v", cmd.ResolvedCommand)
+		}
+	})
+
+	t.Run("project.yaml entry without command inherits from kit", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		kitDir := filepath.Join(boidDir, "kits", "agent-kit")
+		_ = os.MkdirAll(kitDir, 0o755)
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`
+id: test-proj
+name: Test Project
+kits:
+  - agent-kit
+commands:
+  claude:
+`), 0o644)
+		writeKitYAML(t, kitDir, "commands:\n  claude:\n    command: [claude, --kit-flag]\n")
+
+		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+		if err != nil {
+			t.Fatalf("ReadProjectMetaWithKits: %v", err)
+		}
+		cmd := meta.Commands["claude"]
+		if len(cmd.ResolvedCommand) < 2 || cmd.ResolvedCommand[0] != "claude" || cmd.ResolvedCommand[1] != "--kit-flag" {
+			t.Errorf("expected kit command to be inherited: %+v", cmd.ResolvedCommand)
+		}
+	})
+
+	t.Run("disjoint project and kit commands coexist", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		kitDir := filepath.Join(boidDir, "kits", "agent-kit")
+		_ = os.MkdirAll(kitDir, 0o755)
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`
+id: test-proj
+name: Test Project
+kits:
+  - agent-kit
+commands:
+  bash:
+    command: [bash]
+`), 0o644)
+		writeKitYAML(t, kitDir, "commands:\n  claude:\n    command: [claude]\n")
+
+		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+		if err != nil {
+			t.Fatalf("ReadProjectMetaWithKits: %v", err)
+		}
+		bash := meta.Commands["bash"]
+		if len(bash.ResolvedCommand) == 0 || bash.ResolvedCommand[0] != "bash" {
+			t.Errorf("expected bash command from project: %+v", bash.ResolvedCommand)
+		}
+		claude := meta.Commands["claude"]
+		if len(claude.ResolvedCommand) == 0 || claude.ResolvedCommand[0] != "claude" {
+			t.Errorf("expected claude command from kit: %+v", claude.ResolvedCommand)
 		}
 	})
 }
