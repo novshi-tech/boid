@@ -10,10 +10,11 @@ import (
 )
 
 type JobHandler struct {
-	Jobs      JobStore
-	Global    GlobalJobStore // optional: enables cross-task listing when task_id is absent
-	Service   WorkflowService
-	LogReader JobLogReader // optional: enables GET /{id}/log when set
+	Jobs       JobStore
+	Global     GlobalJobStore // optional: enables cross-task listing when task_id is absent
+	Service    WorkflowService
+	LogReader  JobLogReader  // optional: enables static GET /{id}/log
+	SSEHandler http.Handler  // optional: enables SSE streaming for GET /{id}/log?follow=true
 }
 
 func (h *JobHandler) Routes() chi.Router {
@@ -21,10 +22,22 @@ func (h *JobHandler) Routes() chi.Router {
 	r.Get("/", h.List)
 	r.Get("/{id}", h.Get)
 	r.Post("/{id}/done", h.Done)
-	if h.LogReader != nil {
-		r.Get("/{id}/log", h.Log)
+	if h.LogReader != nil || h.SSEHandler != nil {
+		r.Get("/{id}/log", h.handleLog)
 	}
 	return r
+}
+
+func (h *JobHandler) handleLog(w http.ResponseWriter, r *http.Request) {
+	if h.SSEHandler != nil && r.URL.Query().Get("follow") == "true" {
+		h.SSEHandler.ServeHTTP(w, r)
+		return
+	}
+	if h.LogReader != nil {
+		h.Log(w, r)
+		return
+	}
+	http.NotFound(w, r)
 }
 
 func (h *JobHandler) List(w http.ResponseWriter, r *http.Request) {

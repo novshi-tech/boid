@@ -28,6 +28,7 @@ type appRuntime struct {
 	jobStore       api.JobStore
 	globalJobStore api.GlobalJobStore
 	jobRuntime     dispatcher.JobRuntime
+	runner         *dispatcher.Runner
 	meta           api.MetaStore
 	projectSvc     *api.ProjectAppService
 	taskSvc        *api.TaskAppService
@@ -238,6 +239,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		jobStore:       jobStore,
 		globalJobStore: globalJobSvc,
 		jobRuntime:     jobRuntime,
+		runner:         runner,
 		meta:           store,
 		projectSvc:     projectSvc,
 		taskSvc:        taskSvc,
@@ -369,6 +371,9 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		Global:    runtime.globalJobStore,
 		Service:   runtime.workflow,
 		LogReader: transcriptLogReader{rootDir: runtimesDirFor(srv.cfg)},
+		SSEHandler: &api.JobLogSSEHandler{
+			Subscriber: runtime.runner,
+		},
 	}
 	r.Mount("/api/jobs", jobHandler.Routes())
 	mountJobRuntimeRoutes(r, runtime)
