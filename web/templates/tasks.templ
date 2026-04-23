@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/web/templates/components"
 	"time"
 )
 
@@ -19,7 +20,7 @@ type JobView struct {
 }
 
 func taskStatusClass(s string) string {
-	return "status status-" + s
+	return "badge badge-" + s
 }
 
 func shortID(id string) string {
@@ -82,7 +83,7 @@ var taskFilterOptions = []filterOption{
 }
 
 templ TaskList(tasks []*orchestrator.Task, currentFilter string) {
-	@Layout("Tasks") {
+	@Layout("Tasks", []components.BreadcrumbItem{{Title: "Tasks"}}) {
 		<div class="filter-scroll">
 			<div class="filters">
 				for _, f := range taskFilterOptions {
@@ -97,11 +98,11 @@ templ TaskList(tasks []*orchestrator.Task, currentFilter string) {
 		if len(tasks) == 0 {
 			<p class="empty">タスクがありません</p>
 		} else {
-			<div class="tasks-grid">
+			<div class="task-list">
 				for _, task := range tasks {
-					<a href={ templ.SafeURL("/tasks/" + task.ID) } class="task-card">
-						<div class="task-card-title">{ task.Title }</div>
-						<div class="task-card-meta">
+					<a href={ templ.SafeURL("/tasks/" + task.ID) } class="task-row">
+						<div class="task-row-title">{ task.Title }</div>
+						<div class="task-row-meta">
 							<span class={ taskStatusClass(string(task.Status)) }>{ string(task.Status) }</span>
 							<span>{ task.Behavior }</span>
 							if task.ProjectID != "" {
@@ -117,8 +118,8 @@ templ TaskList(tasks []*orchestrator.Task, currentFilter string) {
 }
 
 templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, availableActions []string, errorMsg string) {
-	@Layout(task.Title) {
-		<div class="section">
+	@Layout(task.Title, []components.BreadcrumbItem{{Title: "Tasks", URL: "/"}, {Title: task.Title}}) {
+		<div class="card">
 			<h1>{ task.Title }</h1>
 			<div class="card-meta" style="margin-top:8px">
 				<span class={ taskStatusClass(string(task.Status)) }>{ string(task.Status) }</span>
@@ -139,11 +140,11 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 			</div>
 		</div>
 		if errorMsg != "" {
-			<div class="section action-error">
+			<div class="card action-error">
 				{ errorMsg }
 			</div>
 		}
-		<div class="section">
+		<div class="card">
 			<div class="action-buttons">
 				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/duplicate") }>
 					<button type="submit" class="btn btn-secondary">duplicate</button>
@@ -151,7 +152,7 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 			</div>
 		</div>
 		if len(availableActions) > 0 {
-			<div class="section">
+			<div class="card">
 				<h2 class="section-title">アクション</h2>
 				<div class="action-buttons">
 					for _, act := range availableActions {
@@ -171,7 +172,7 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 			</div>
 		}
 		if len(task.Payload) > 0 && string(task.Payload) != "null" {
-			<div class="section">
+			<div class="card">
 				<details>
 					<summary>Payload</summary>
 					<pre>{ string(task.Payload) }</pre>
@@ -179,7 +180,7 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 			</div>
 		}
 		if len(actions) > 0 {
-			<div class="section">
+			<div class="card">
 				<h2 class="section-title">アクション履歴</h2>
 				<div class="timeline">
 					for _, action := range actions {
@@ -213,27 +214,29 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 			</div>
 		}
 		if len(jobs) > 0 {
-			<div class="section">
+			<div class="card">
 				<h2 class="section-title">ジョブ</h2>
-				for _, job := range jobs {
-					<div class="job-card">
-						<div class="job-card-header">
-							<span class="job-id">{ shortID(job.ID) }</span>
-							<span class={ taskStatusClass(job.Status) }>{ job.Status }</span>
-							<span>{ job.Role }</span>
-							if job.ExitCode != 0 {
-								<span class="exit-code">exit: { fmt.Sprintf("%d", job.ExitCode) }</span>
+				<div class="job-list">
+					for _, job := range jobs {
+						<div class="job-row">
+							<div class="job-row-header">
+								<span class="job-id">{ shortID(job.ID) }</span>
+								<span class={ taskStatusClass(job.Status) }>{ job.Status }</span>
+								<span>{ job.Role }</span>
+								if job.ExitCode != 0 {
+									<span class="exit-code">exit: { fmt.Sprintf("%d", job.ExitCode) }</span>
+								}
+							</div>
+							<div class="timeline-time">{ job.CreatedAt.Format("2006-01-02 15:04:05") } – { job.UpdatedAt.Format("15:04:05") }</div>
+							if job.Output != "" {
+								<details>
+									<summary>output</summary>
+									<pre>{ job.Output }</pre>
+								</details>
 							}
 						</div>
-						<div class="timeline-time">{ job.CreatedAt.Format("2006-01-02 15:04:05") } – { job.UpdatedAt.Format("15:04:05") }</div>
-						if job.Output != "" {
-							<details>
-								<summary>output</summary>
-								<pre>{ job.Output }</pre>
-							</details>
-						}
-					</div>
-				}
+					}
+				</div>
 			</div>
 		}
 	}

@@ -86,14 +86,19 @@ func runWebPair(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(cmd.OutOrStdout(), "Expires in: %d minutes\n", mins)
 		}
 
-		return qrterm.Print(resp.URL, cmd.OutOrStdout())
+		qr, err := qrterm.Encode(resp.URL, false)
+		if err != nil {
+			return fmt.Errorf("qr: %w", err)
+		}
+		fmt.Fprint(cmd.OutOrStdout(), qr)
+		return nil
 	})
 }
 
 func runWebDevices(cmd *cobra.Command, args []string) error {
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
-	var devices []webauth.Device
+	var devices []webauth.DeviceInfo
 	if err := c.Do("GET", "/api/web/devices", nil, &devices); err != nil {
 		return fmt.Errorf("list devices: %w", err)
 	}

@@ -1,9 +1,12 @@
 package templates
 
-import "github.com/novshi-tech/boid/internal/orchestrator"
+import (
+	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/web/templates/components"
+)
 
 templ ProjectList(projects []*orchestrator.Project) {
-	@Layout("Projects") {
+	@Layout("Projects", []components.BreadcrumbItem{{Title: "Projects"}}) {
 		<p class="empty">Coming soon</p>
 	}
 }

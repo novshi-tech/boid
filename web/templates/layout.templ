@@ -1,6 +1,8 @@
 package templates
 
-templ Layout(title string) {
+import "github.com/novshi-tech/boid/web/templates/components"
+
+templ Layout(title string, breadcrumbs []components.BreadcrumbItem) {
 	<!DOCTYPE html>
 	<html lang="ja">
 		<head>
@@ -8,28 +10,19 @@ templ Layout(title string) {
 			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 			<title>{ title } - boid</title>
 			<link rel="stylesheet" href="/static/style.css"/>
+			<script src="/static/vendor/htmx-2.0.4.min.js"></script>
+			<script>
+				document.addEventListener("DOMContentLoaded",function(){
+					var t=document.cookie.split("; ").find(r=>r.startsWith("csrf_token="))?.split("=")[1];
+					if(t) htmx.config.defaultHeaders["X-CSRF-Token"]=t;
+				});
+			</script>
 		</head>
 		<body>
-			<header class="header">
-				<div class="header-inner">
-					<a href="/" class="header-title">boid</a>
-				</div>
-				<button class="nav-toggle" aria-label="Menu" aria-expanded="false" onclick="this.setAttribute('aria-expanded',this.getAttribute('aria-expanded')==='false');document.getElementById('nav').classList.toggle('open')">
-					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-						<line x1="3" y1="6" x2="21" y2="6"></line>
-						<line x1="3" y1="12" x2="21" y2="12"></line>
-						<line x1="3" y1="18" x2="21" y2="18"></line>
-					</svg>
-				</button>
+			<header class="site-header">
+				@components.Breadcrumb(breadcrumbs)
 			</header>
-			<nav id="nav" class="nav">
-				<ul class="nav-list">
-					<li><a href="/">Tasks</a></li>
-					<li><a href="/jobs">Jobs</a></li>
-					<li><a href="/projects">Projects</a></li>
-				</ul>
-			</nav>
-			<main class="main">
+			<main class="site-main">
 				{ children... }
 			</main>
 		</body>

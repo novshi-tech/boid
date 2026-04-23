@@ -14,8 +14,8 @@ type PairResponse struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// Device represents a paired web device.
-type Device struct {
+// DeviceInfo is the API response representation of a paired web device.
+type DeviceInfo struct {
 	ID         string    `json:"id"`
 	Label      string    `json:"label,omitempty"`
 	LastSeenAt time.Time `json:"last_seen_at"`

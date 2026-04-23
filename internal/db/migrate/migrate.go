@@ -140,6 +140,17 @@ func Apply(conn *sql.DB) error {
 				return columnExists(tx, "jobs", "execution_state")
 			},
 		},
+		{
+			version: "0020_web_auth",
+			path:    "migrations/0020_web_auth.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				ok, err := tableExists(tx, "web_devices")
+				if err != nil || !ok {
+					return ok, err
+				}
+				return tableExists(tx, "web_pairing_codes")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {
