@@ -8,6 +8,24 @@ import (
 	"time"
 )
 
+// TaskListFragment renders only the task list container (for HTMX partial responses).
+// currentURL is embedded as the polling target so filter params are preserved across polls.
+templ TaskListFragment(items []components.TreeItem, currentURL string) {
+	<div
+		id="task-list"
+		hx-get={ currentURL }
+		hx-trigger="every 5s"
+		hx-target="#task-list"
+		hx-swap="outerHTML"
+	>
+		if len(items) == 0 {
+			<p class="empty">タスクがありません</p>
+		} else {
+			@components.TaskTree(items)
+		}
+	</div>
+}
+
 type JobView struct {
 	ID        string
 	HandlerID string
@@ -73,33 +91,10 @@ type filterOption struct {
 	Label string
 }
 
-var taskFilterOptions = []filterOption{
-	{"", "All"},
-	{"pending", "Pending"},
-	{"executing", "Executing"},
-	{"verifying", "Verifying"},
-	{"done", "Done"},
-	{"aborted", "Aborted"},
-}
-
-templ TaskList(items []components.TreeItem, currentFilter string) {
+templ TaskList(items []components.TreeItem, filter orchestrator.TaskFilter, projects []*orchestrator.Project, behaviors []string, workspaces []*orchestrator.WorkspaceSummary, currentURL string) {
 	@Layout("Tasks", []components.BreadcrumbItem{{Title: "Tasks"}}) {
-		<div class="filter-scroll">
-			<div class="filters">
-				for _, f := range taskFilterOptions {
-					if f.Value == currentFilter {
-						<a href={ templ.SafeURL("/?status=" + f.Value) } class="active">{ f.Label }</a>
-					} else {
-						<a href={ templ.SafeURL("/?status=" + f.Value) }>{ f.Label }</a>
-					}
-				}
-			</div>
-		</div>
-		if len(items) == 0 {
-			<p class="empty">タスクがありません</p>
-		} else {
-			@components.TaskTree(items)
-		}
+		@components.TaskFilters(filter, projects, behaviors, workspaces)
+		@TaskListFragment(items, currentURL)
 	}
 }
 

@@ -18,6 +18,9 @@ type stubWebService struct {
 	tasks              []*orchestrator.Task
 	taskDetail         *TaskDetailView
 	projects           []*orchestrator.Project
+	behaviors          []string
+	workspaces         []*orchestrator.WorkspaceSummary
+	capturedFilter     orchestrator.TaskFilter
 	applyActionErr     error
 	applyActionCalls   []applyActionCall
 	duplicateTaskNewID string
@@ -29,7 +32,8 @@ type applyActionCall struct {
 	actionType string
 }
 
-func (s *stubWebService) ListTasks(status string) ([]*orchestrator.Task, error) {
+func (s *stubWebService) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
+	s.capturedFilter = filter
 	return s.tasks, nil
 }
 
@@ -42,6 +46,14 @@ func (s *stubWebService) GetTaskDetail(id string) (*TaskDetailView, error) {
 
 func (s *stubWebService) ListProjects() ([]*orchestrator.Project, error) {
 	return s.projects, nil
+}
+
+func (s *stubWebService) ListBehaviors() ([]string, error) {
+	return s.behaviors, nil
+}
+
+func (s *stubWebService) ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error) {
+	return s.workspaces, nil
 }
 
 func (s *stubWebService) ApplyAction(taskID string, actionType string) error {
@@ -137,6 +149,93 @@ func newTestWebHandler(svc WebService) *chi.Mux {
 	r.Post("/tasks/{id}/action", h.PostAction)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	return r
+}
+
+func newTestWebHandlerWithTaskList(svc WebService) *chi.Mux {
+	h := &WebHandler{Service: svc}
+	r := chi.NewRouter()
+	r.Get("/", h.TaskList)
+	r.Get("/tasks/{id}", h.TaskDetail)
+	r.Post("/tasks/{id}/action", h.PostAction)
+	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
+	return r
+}
+
+func TestWebHandlerTaskList_FiltersMappedToTaskFilter(t *testing.T) {
+	svc := &stubWebService{}
+	r := newTestWebHandlerWithTaskList(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/?status=executing&project=proj-1&behavior=dev&workspace=ws-1&q=myquery", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	got := svc.capturedFilter
+	if got.Status != "executing" {
+		t.Errorf("Status = %q, want executing", got.Status)
+	}
+	if got.ProjectID != "proj-1" {
+		t.Errorf("ProjectID = %q, want proj-1", got.ProjectID)
+	}
+	if got.Behavior != "dev" {
+		t.Errorf("Behavior = %q, want dev", got.Behavior)
+	}
+	if got.WorkspaceID != "ws-1" {
+		t.Errorf("WorkspaceID = %q, want ws-1", got.WorkspaceID)
+	}
+	if got.Title != "myquery" {
+		t.Errorf("Title = %q, want myquery", got.Title)
+	}
+}
+
+func TestWebHandlerTaskList_HXRequestReturnsFragment(t *testing.T) {
+	svc := &stubWebService{
+		tasks: []*orchestrator.Task{
+			{ID: "t-1", Title: "hello", Status: "executing"},
+		},
+	}
+	r := newTestWebHandlerWithTaskList(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/?status=executing", nil)
+	req.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `id="task-list"`) {
+		t.Errorf("fragment should contain task-list div, got: %s", body)
+	}
+	if strings.Contains(body, "<html") {
+		t.Errorf("fragment should not contain full HTML page")
+	}
+}
+
+func TestWebHandlerTaskList_FullPageWithoutHXRequest(t *testing.T) {
+	svc := &stubWebService{}
+	r := newTestWebHandlerWithTaskList(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "<html") {
+		t.Errorf("full page should contain html element")
+	}
+	if !strings.Contains(body, `id="task-list"`) {
+		t.Errorf("full page should contain task-list div")
+	}
+	if !strings.Contains(body, `id="filter-form"`) {
+		t.Errorf("full page should contain filter-form")
+	}
 }
 
 func TestWebHandlerPostAction_Success(t *testing.T) {

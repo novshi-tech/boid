@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/novshi-tech/boid/internal/api/auth"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/web/templates"
 )
 
@@ -33,7 +34,14 @@ func (h *WebHandler) Routes() chi.Router {
 }
 
 func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
-	filter := r.URL.Query().Get("status")
+	q := r.URL.Query()
+	filter := orchestrator.TaskFilter{
+		Status:      q.Get("status"),
+		ProjectID:   q.Get("project"),
+		Behavior:    q.Get("behavior"),
+		WorkspaceID: q.Get("workspace"),
+		Title:       q.Get("q"),
+	}
 	tasks, err := h.Service.ListTasks(filter)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -41,7 +49,16 @@ func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 	}
 	items := BuildTreeItems(tasks)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	templates.TaskList(items, filter).Render(r.Context(), w)
+
+	if r.Header.Get("HX-Request") == "true" {
+		templates.TaskListFragment(items, r.URL.RequestURI()).Render(r.Context(), w)
+		return
+	}
+
+	projects, _ := h.Service.ListProjects()
+	behaviors, _ := h.Service.ListBehaviors()
+	workspaces, _ := h.Service.ListWorkspaces()
+	templates.TaskList(items, filter, projects, behaviors, workspaces, r.URL.RequestURI()).Render(r.Context(), w)
 }
 
 func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {

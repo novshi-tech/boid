@@ -105,9 +105,11 @@ type ImportResult struct {
 }
 
 type WebService interface {
-	ListTasks(status string) ([]*orchestrator.Task, error)
+	ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error)
 	GetTaskDetail(id string) (*TaskDetailView, error)
 	ListProjects() ([]*orchestrator.Project, error)
+	ListBehaviors() ([]string, error)
+	ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error)
 	ApplyAction(taskID string, actionType string) error
 	DuplicateTask(id string) (string, error)
 	ListJobs(status string) ([]JobWithContext, error)
