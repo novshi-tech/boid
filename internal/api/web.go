@@ -38,6 +38,8 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/tasks/{id}/edit/instructions", h.EditInstructionsList)
 	r.Get("/tasks/{id}/edit/instructions/{role}", h.EditInstructionsRole)
 	r.Post("/tasks/{id}/edit/instructions/{role}", h.PostEditInstructionsRole)
+	r.Get("/tasks/{id}/edit/deps", h.EditDeps)
+	r.Post("/tasks/{id}/edit/deps", h.PostEditDeps)
 	r.Post("/tasks/{id}/action", h.PostAction)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	r.Get("/jobs/{id}", h.JobDetail)
@@ -436,6 +438,54 @@ func webGetDefaultInstructions(svc WebService, task *orchestrator.Task) map[stri
 		}
 	}
 	return nil
+}
+
+func (h *WebHandler) EditDeps(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	detail, err := h.Service.GetTaskDetail(id)
+	if err != nil {
+		http.Error(w, "Task not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templates.EditDeps(detail.Task, detail.DependsOnResolved, "").Render(r.Context(), w)
+}
+
+func (h *WebHandler) PostEditDeps(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	detail, err := h.Service.GetTaskDetail(id)
+	if err != nil {
+		http.Error(w, "Task not found", http.StatusNotFound)
+		return
+	}
+
+	var dependsOn []string
+	if raw := strings.TrimSpace(r.FormValue("depends_on")); raw != "" {
+		dependsOn = strings.Fields(raw)
+	} else {
+		dependsOn = []string{}
+	}
+	dependsOnPayload := r.FormValue("depends_on_payload")
+	parentID := r.FormValue("parent_id")
+
+	req := UpdateTaskRequest{
+		DependsOn:        dependsOn,
+		DependsOnPayload: &dependsOnPayload,
+		ParentID:         &parentID,
+	}
+
+	if err := h.Service.UpdateTask(id, req); err != nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		templates.EditDeps(detail.Task, detail.DependsOnResolved, err.Error()).Render(r.Context(), w)
+		return
+	}
+	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
 }
 
 func (h *WebHandler) PostDuplicate(w http.ResponseWriter, r *http.Request) {
