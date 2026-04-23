@@ -39,19 +39,31 @@ func jobStatusStripe(status string) string {
 	}
 }
 
+// jobPageTitle builds the page-header title from the job's identity
+// (role + handler), e.g. "[hook] claude-code/run-agent". The job's own
+// UUID is demoted to the detail-meta row — UUIDs are unreadable at a
+// glance, while "what hook/gate ran" is the question most readers are
+// actually trying to answer on this page.
+func jobPageTitle(job *JobContextView) string {
+	switch {
+	case job.Role != "" && job.HandlerID != "":
+		return "[" + job.Role + "] " + job.HandlerID
+	case job.HandlerID != "":
+		return job.HandlerID
+	case job.Role != "":
+		return "[" + job.Role + "]"
+	default:
+		return "Job " + shortID(job.ID)
+	}
+}
+
 templ JobDetail(job *JobContextView) {
-	@Layout("Job "+shortID(job.ID), "/tasks/"+job.TaskID) {
+	@Layout(jobPageTitle(job), "/tasks/"+job.TaskID) {
 		<div class={ "detail-card", jobStatusStripe(job.Status) }>
 			<div class="detail-meta">
 				<span class={ taskStatusClass(job.Status) }>{ job.Status }</span>
-				if job.Role != "" {
-					<span class="detail-meta-sep">·</span>
-					<span>{ job.Role }</span>
-				}
-				if job.HandlerID != "" {
-					<span class="detail-meta-sep">·</span>
-					<span>{ job.HandlerID }</span>
-				}
+				<span class="detail-meta-sep">·</span>
+				<span class="job-id">{ job.ID }</span>
 				if job.ExitCode != 0 {
 					<span class="detail-meta-sep">·</span>
 					<span class="exit-code">exit { fmt.Sprintf("%d", job.ExitCode) }</span>
