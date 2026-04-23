@@ -813,10 +813,76 @@ pre {
   opacity: 0.5;
 }
 
-/* --- Tab "more" dropdown (overflow tabs) --- */
+/* --- Tab dropdown (split-button) ---
+   Sits next to Timeline in the main tab list. The label is a plain
+   link (clicking navigates to the current-or-default sub-tab) and the
+   adjacent ▾ toggle opens a menu of all sub-tabs. This keeps the
+   default destination (Description) one click away while still giving
+   access to the less-used siblings (Payload / Instructions /
+   Dependencies). */
+.tab-dropdown {
+  display: flex;
+  align-items: stretch;
+  margin-bottom: -2px;
+  border-bottom: 2px solid transparent;
+}
+
+/* Draw the active underline on the wrapper so label + toggle share one
+   continuous border (rather than two adjacent 2px borders that can drift
+   sub-pixel during rendering). The children's own .tab border-bottoms
+   are neutralized below. */
+.tab-dropdown:has(.tab-dropdown-label.active) {
+  border-bottom-color: var(--accent);
+}
+
+/* Chrome grows <details> by ~4px when [open] (room for the disclosure
+   content slot) even when the content is position: absolute. That
+   growth propagates through align-items: stretch to the adjacent label
+   and jitters the tab list. Cap the toggle wrapper to summary-height
+   so the flex line stays stable; the absolutely-positioned menu is
+   allowed to paint outside via overflow: visible. */
+.tab-dropdown-toggle-wrap {
+  position: relative;
+  max-height: 39px;
+  overflow: visible;
+}
+
+/* Label and toggle are visually one tab — the .tab-dropdown wrapper
+   draws the underline for both. Remove each child's own bottom border
+   and margin-bottom pull so they don't render a second line or grow
+   via align-items: stretch. */
+.tab.tab-dropdown-label {
+  margin-bottom: 0;
+  border-bottom: none;
+}
+
+.tab-dropdown-toggle {
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  padding: var(--space-2) 6px;
+  color: var(--muted);
+}
+
+.tab-dropdown-toggle::before,
+.tab-dropdown-toggle::-webkit-details-marker {
+  display: none;
+  content: none;
+}
+
+.tab-dropdown-toggle:hover {
+  color: var(--accent);
+}
+
+/* When a sub-tab is active, color the chevron accent too — the shared
+   wrapper border already gives a continuous underline across both. */
+.tab-dropdown:has(.tab-dropdown-label.active) .tab-dropdown-toggle {
+  color: var(--accent);
+}
+
+/* Keep the legacy .tab-more class alive for internal re-use if needed. */
 .tab-more {
   position: relative;
-  margin-left: auto;
   margin-bottom: -2px;
 }
 
@@ -912,12 +978,6 @@ pre {
   padding: var(--space-2) var(--space-3);
 }
 
-/* Edit mode: primary (保存) on the right, cancel next to it. No kebab,
-   no left-side spacer. */
-.action-bar-inner-edit {
-  justify-content: flex-end;
-}
-
 .action-bar-primary-form {
   display: contents;
 }
@@ -959,9 +1019,14 @@ pre {
   color: #fff;
 }
 
-/* Kebab "..." menu inside the action bar */
+/* Kebab "..." menu inside the action bar.
+   Cap max-height to the summary's own size so Chrome's ~4px <details>[open]
+   intrinsic growth doesn't jitter the action-bar row. The menu list
+   itself is position: absolute so clipping is fine. */
 .action-menu {
   position: relative;
+  max-height: 36px;
+  overflow: visible;
 }
 
 .action-menu-summary {
@@ -1053,43 +1118,29 @@ body:has(.action-bar) {
 }
 
 /* --- Dependency tree (Dependencies tab) ---
-   Upstream ancestors (post-order) → self → downstream dependents
-   (pre-order), with "├─ / └─" connectors. Rows are links to /tasks/{id};
-   the self row is plain and visually highlighted. */
-.deps-tree {
-  display: flex;
-  flex-direction: column;
-}
-
-.deps-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
-  color: var(--fg);
-  text-decoration: none;
-  border-radius: var(--radius-1);
-  font-size: 0.875rem;
-}
-
-.deps-row:hover {
-  background: var(--card);
-  text-decoration: none;
-}
-
-.deps-row-self {
-  background: var(--card);
+   Two stacked sub-trees — "依存先" (upstream) and "依存元" (downstream)
+   — each rendered with the Open-tab task-list look (.task-row). Pre-
+   order DFS keeps parents above their indented children so the default
+   tree guide lines draw correctly; no self row is rendered because the
+   detail page header already identifies the current task. */
+.deps-section-title {
+  margin: var(--space-3) 0 var(--space-1);
+  font-size: 0.8125rem;
   font-weight: 600;
-}
-
-.deps-prefix {
-  color: var(--muted);
-  font-family: monospace;
-  white-space: pre;
-}
-
-.deps-title {
   color: var(--fg);
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.deps-section-title:first-child {
+  margin-top: 0;
+}
+
+.deps-section-hint {
+  font-weight: 400;
+  font-size: 0.75rem;
+  color: var(--muted);
 }
 
 /* --- Tabs --- */
@@ -1109,6 +1160,52 @@ body:has(.action-bar) {
   display: flex;
   justify-content: flex-end;
   margin-bottom: var(--space-2);
+}
+
+/* --- Instructions tab ---
+   One block per role (main / rework / verification / …). The header
+   carries the role name, its type badge, and compact key/value meta
+   (consumer / model / name / interactive); the body shows the full
+   message text in a pre so markdown/structure is preserved. */
+.instr-block {
+  margin-bottom: var(--space-4);
+}
+
+.instr-block:last-child {
+  margin-bottom: 0;
+}
+
+.instr-role {
+  margin: 0 0 2px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  text-transform: lowercase;
+}
+
+.instr-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px var(--space-3);
+  margin-bottom: var(--space-2);
+  font-size: 0.75rem;
+}
+
+.instr-kv {
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+.instr-k {
+  color: var(--muted);
+  margin-right: 4px;
+}
+
+.instr-k::after {
+  content: ":";
+}
+
+.instr-message {
+  font-size: 0.8125rem;
 }
 
 .tab-body-pre {
@@ -1157,6 +1254,7 @@ body:has(.action-bar) {
 
 .tab:hover {
   color: var(--accent);
+  text-decoration: none;
 }
 
 .tab.active {
@@ -1328,13 +1426,16 @@ body:has(.action-bar) {
 
 /* Row-level link: the entire fired timeline item is a clickable area
    (link + timestamp). An <a> in place of <div> so keyboard focus and
-   middle-click-open-in-tab work naturally. */
+   middle-click-open-in-tab work naturally.
+   The right padding reserves space for the "›" chevron (absolutely
+   positioned) so long hook IDs / error messages don't overlap it. */
 .timeline-item-link {
   display: block;
   color: inherit;
   text-decoration: none;
   border-radius: var(--radius-1);
   transition: background 0.1s ease;
+  padding-right: var(--space-4);
 }
 
 .timeline-item-link:hover {

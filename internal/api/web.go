@@ -228,13 +228,13 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("HX-Request") == "true" {
 		// Tab clicks swap the entire #tabs section so the active class on
 		// the visible tabs and the "more" summary label stay in sync.
-		depsRows := buildDepsTreeRows(detail.Task, detail.DependsOnTree, detail.DependentsTree)
-		templates.TaskDetailTabsSection(detail.Task, detail.Actions, jobs, depsRows, detail.AvailableActions, tab, editMode).Render(r.Context(), w)
+		depsUp, depsDown := buildDepsTreeRows(detail.DependsOnTree, detail.DependentsTree)
+		templates.TaskDetailTabsSection(detail.Task, detail.Actions, jobs, depsUp, depsDown, detail.AvailableActions, tab, editMode).Render(r.Context(), w)
 		return
 	}
 	projectName := h.lookupProjectName(detail.Task.ProjectID)
-	depsRows := buildDepsTreeRows(detail.Task, detail.DependsOnTree, detail.DependentsTree)
-	templates.TaskDetail(detail.Task, detail.Actions, jobs, depsRows, detail.AvailableActions, errorMsg, tab, editMode, projectName).Render(r.Context(), w)
+	depsUp, depsDown := buildDepsTreeRows(detail.DependsOnTree, detail.DependentsTree)
+	templates.TaskDetail(detail.Task, detail.Actions, jobs, depsUp, depsDown, detail.AvailableActions, errorMsg, tab, editMode, projectName).Render(r.Context(), w)
 }
 
 // lookupProjectName resolves a project ID to its display name (Meta.Name),

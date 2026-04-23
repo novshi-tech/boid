@@ -3,11 +3,66 @@ package templates
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/web/templates/components"
+	"gopkg.in/yaml.v3"
 	"time"
 )
+
+// sortInstructionRoles returns the roles of an Instructions map in a
+// stable order: canonical roles (main → rework → verification) come
+// first in lifecycle order so the reader sees how the task is supposed
+// to run before seeing the variants; unknown roles are appended
+// alphabetically.
+func sortInstructionRoles(inst map[string]orchestrator.Instruction) []string {
+	if len(inst) == 0 {
+		return nil
+	}
+	priority := map[string]int{"main": 0, "rework": 1, "verification": 2}
+	roles := make([]string, 0, len(inst))
+	for role := range inst {
+		roles = append(roles, role)
+	}
+	sort.Slice(roles, func(i, j int) bool {
+		pi, oki := priority[roles[i]]
+		pj, okj := priority[roles[j]]
+		switch {
+		case oki && okj:
+			return pi < pj
+		case oki:
+			return true
+		case okj:
+			return false
+		default:
+			return roles[i] < roles[j]
+		}
+	})
+	return roles
+}
+
+// payloadAsYAML renders a JSON-encoded payload as YAML for the Payload
+// tab. JSON is hard to scan in the browser (braces, quoted keys); YAML
+// keeps the same data shape but makes structure visible. Falls back to
+// the original JSON bytes when parsing or marshalling fails.
+func payloadAsYAML(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	if s := string(raw); s == "null" {
+		return ""
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return string(raw)
+	}
+	out, err := yaml.Marshal(v)
+	if err != nil {
+		return string(raw)
+	}
+	return string(out)
+}
 
 // taskFilterActive reports whether the user has narrowed the list with any
 // filter beyond the default status view. Used to switch the empty-state copy
@@ -272,65 +327,61 @@ func actionPrimaryClass(action string) string {
 	}
 }
 
-// editTabURLPath maps an activeTab name to the URL segment used by the
-// corresponding edit route. Returns "" for tabs that are read-only.
-func editTabURLPath(activeTab string) string {
-	if activeTab == "description" {
-		return activeTab
-	}
-	return ""
-}
-
-// DepsTreeRow is one row in the flattened dependency tree display:
-// upstream (post-order DFS) → self → downstream (pre-order DFS).
-// Prefix carries the tree connectors ("├─ ", "│  ", …) for the row.
+// DepsTreeRow is one row in a flattened dependency tree (either the
+// upstream "depends on" tree or the downstream "dependents" tree).
+// Rows are emitted in pre-order DFS with direct deps/dependents at
+// depth 0 and deeper chain members at depth 1, 2, … — i.e., the same
+// "parent above, child indented below" layout as the Open-tab task list.
 type DepsTreeRow struct {
-	Task   *orchestrator.Task
-	IsSelf bool
-	Prefix string
+	Task  *orchestrator.Task
+	Depth int
 }
 
-// TaskActionBar renders the sticky action bar at the bottom of the detail
-// page. The primary button is tab-contextual:
-//   - editable tabs (description / payload / instructions / dependencies)
-//     → "編集" linking to the edit page for that tab
-//   - otherwise (timeline, default) → state-aware primary (Start/Abort/Rerun)
-//
-// A kebab "⋯" menu always holds secondary task-level actions (duplicate /
-// delete, plus abort when applicable).
+// TaskActionBar renders the sticky bottom action bar with tab-specific
+// content:
+//   - Timeline (read): state-aware primary (Start/Abort/Rerun) +
+//     "⋯" kebab (duplicate / abort / delete). Task-level actions live
+//     here because Timeline is the lifecycle view.
+//   - Description (read): 編集 to enter inline edit mode.
+//   - Description (edit): 保存 / キャンセル for the edit form.
+//   - Other tabs (Payload / Instructions / Deps): no bottom bar.
+// Keeping tab-contextual primary actions at the same bottom position
+// (editorial consistency) while scoping Start/Abort/Rerun to Timeline.
 templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab string, editMode bool) {
-	if editMode && activeTab == "description" {
-		<div class="action-bar">
-			<div class="action-bar-inner action-bar-inner-edit">
-				<a href={ templ.SafeURL("/tasks/" + task.ID + "?tab=description") } class="btn btn-secondary">キャンセル</a>
-				<button type="submit" form="desc-edit-form" class="btn btn-primary">保存</button>
-			</div>
-		</div>
-	} else {
+	if activeTab == "description" && editMode {
 		<div class="action-bar">
 			<div class="action-bar-inner">
-				{{ editSeg := editTabURLPath(activeTab) }}
-				if editSeg != "" {
-					<a href={ templ.SafeURL("/tasks/" + task.ID + "?tab=" + activeTab + "&mode=edit") } class="btn btn-secondary action-bar-primary-form">編集</a>
+				<button type="submit" form="desc-edit-form" class="btn btn-primary action-bar-primary-form">保存</button>
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "?tab=description") } class="btn btn-secondary">キャンセル</a>
+			</div>
+		</div>
+	} else if activeTab == "description" {
+		<div class="action-bar">
+			<div class="action-bar-inner">
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "?tab=description&mode=edit") } class="btn btn-secondary action-bar-primary-form">編集</a>
+				<span class="action-bar-spacer"></span>
+			</div>
+		</div>
+	} else if activeTab == "timeline" && !editMode {
+		<div class="action-bar">
+			<div class="action-bar-inner">
+				{{ action, label := detailPrimaryAction(task, availableActions) }}
+				if action == "rerun" {
+					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('本当に再実行しますか？')" class="action-bar-primary-form">
+						<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
+					</form>
+				} else if action == "abort" {
+					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')" class="action-bar-primary-form">
+						<input type="hidden" name="type" value="abort"/>
+						<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
+					</form>
+				} else if action != "" {
+					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } class="action-bar-primary-form">
+						<input type="hidden" name="type" value={ action }/>
+						<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
+					</form>
 				} else {
-					{{ action, label := detailPrimaryAction(task, availableActions) }}
-					if action == "rerun" {
-						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('本当に再実行しますか？')" class="action-bar-primary-form">
-							<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
-						</form>
-					} else if action == "abort" {
-						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')" class="action-bar-primary-form">
-							<input type="hidden" name="type" value="abort"/>
-							<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
-						</form>
-					} else if action != "" {
-						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } class="action-bar-primary-form">
-							<input type="hidden" name="type" value={ action }/>
-							<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
-						</form>
-					} else {
-						<span class="action-bar-spacer"></span>
-					}
+					<span class="action-bar-spacer"></span>
 				}
 				<details class="action-menu">
 					<summary class="action-menu-summary" aria-label="その他のアクション">⋯</summary>
@@ -396,32 +447,47 @@ templ TaskDetailTimelineSection(actions []*orchestrator.Action, jobs []*JobView)
 	</div>
 }
 
-// TaskDetailDependenciesSection renders the dependency tree:
-// upstream ancestors (post-order) → self → downstream dependents
-// (pre-order). Each non-self row links to /tasks/{id}; the self row
-// stays as plain text.
-templ TaskDetailDependenciesSection(task *orchestrator.Task, rows []DepsTreeRow) {
+// TaskDetailDependenciesSection renders the dependency graph as two
+// separate trees — "依存先" (upstream) and "依存元" (downstream) — each
+// styled like the Open-tab task list (status stripe, depth indent,
+// two-line body). The current task is not re-rendered here; the detail
+// page header already identifies it.
+templ TaskDetailDependenciesSection(upstream, downstream []DepsTreeRow) {
 	<div class="tab-content">
-		if len(rows) == 0 {
+		if len(upstream) == 0 && len(downstream) == 0 {
 			<p class="tab-empty">(依存関係なし)</p>
 		} else {
-			<div class="deps-tree">
-				for _, row := range rows {
-					if row.IsSelf {
-						<div class="deps-row deps-row-self">
-							<span class="deps-prefix">{ row.Prefix }</span>
-							<span class={ taskStatusClass(string(task.Status)) }>{ string(task.Status) }</span>
-							<span class="deps-title">{ task.Title }</span>
-						</div>
-					} else {
-						<a class="deps-row" href={ templ.SafeURL("/tasks/" + row.Task.ID) }>
-							<span class="deps-prefix">{ row.Prefix }</span>
-							<span class={ taskStatusClass(string(row.Task.Status)) }>{ string(row.Task.Status) }</span>
-							<span class="deps-title">{ row.Task.Title }</span>
-						</a>
-					}
-				}
-			</div>
+			if len(upstream) > 0 {
+				<h3 class="deps-section-title">依存先 <span class="deps-section-hint">このタスクが依存している</span></h3>
+				@depsTree(upstream)
+			}
+			if len(downstream) > 0 {
+				<h3 class="deps-section-title">依存元 <span class="deps-section-hint">このタスクに依存している</span></h3>
+				@depsTree(downstream)
+			}
+		}
+	</div>
+}
+
+// depsTree renders a single dependency sub-tree as a flat list of
+// .task-row items. Pre-order DFS means parents come before their
+// children, so the depth-based indent reads like the Open-tab tree.
+templ depsTree(rows []DepsTreeRow) {
+	<div class="task-list deps-tree" role="list">
+		for _, row := range rows {
+			<a
+				href={ templ.SafeURL("/tasks/" + row.Task.ID) }
+				class={ "task-row", "task-row-status-" + string(row.Task.Status), templ.KV("task-row-blocked", row.Task.Blocked) }
+				role="listitem"
+				style={ fmt.Sprintf("--depth: %d", row.Depth) }
+			>
+				<div class="task-row-body">
+					<div class="task-row-title" title={ row.Task.Title }>{ row.Task.Title }</div>
+					<div class="task-row-meta">
+						<span class={ taskStatusClass(string(row.Task.Status)) }>{ string(row.Task.Status) }</span>
+					</div>
+				</div>
+			</a>
 		}
 	</div>
 }
@@ -467,7 +533,7 @@ templ TaskDetailJobsSection(jobs []*JobView) {
 // id="tab-panel" is the HTMX swap target for tab switching.
 // editMode=true flips an editable tab (currently: description) into an
 // inline edit form instead of the read-only view.
-templ TaskDetailTabPanel(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsRows []DepsTreeRow, activeTab string, editMode bool) {
+templ TaskDetailTabPanel(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsUp, depsDown []DepsTreeRow, activeTab string, editMode bool) {
 	<div id="tab-panel" data-task-id={ task.ID }>
 		if activeTab == "timeline" {
 			@TaskDetailTimelineSection(actions, jobs)
@@ -533,8 +599,9 @@ templ TaskDetailTabPanel(task *orchestrator.Task, actions []*orchestrator.Action
 			}
 		} else if activeTab == "payload" {
 			<div class="tab-content">
-				if len(task.Payload) > 0 && string(task.Payload) != "null" {
-					<pre class="tab-body-pre">{ string(task.Payload) }</pre>
+				{{ yamlStr := payloadAsYAML(task.Payload) }}
+				if yamlStr != "" {
+					<pre class="tab-body-pre">{ yamlStr }</pre>
 				} else {
 					<p class="tab-empty">(未設定)</p>
 				}
@@ -542,19 +609,36 @@ templ TaskDetailTabPanel(task *orchestrator.Task, actions []*orchestrator.Action
 		} else if activeTab == "instructions" {
 			<div class="tab-content">
 				if len(task.Instructions) > 0 {
-					for role, inst := range task.Instructions {
-						<div class="detail-field">
-							<strong>{ role }</strong>
-							<span class="badge">{ string(inst.Type) }</span>
-							<span>{ inst.Consumer }</span>
-						</div>
+					for _, role := range sortInstructionRoles(task.Instructions) {
+						{{ inst := task.Instructions[role] }}
+						<section class="instr-block">
+							<h3 class="instr-role">{ role }</h3>
+							<div class="instr-meta">
+								<span class="instr-kv"><span class="instr-k">type</span>{ string(inst.Type) }</span>
+								<span class="instr-kv"><span class="instr-k">consumer</span>{ inst.Consumer }</span>
+								if inst.Model != "" {
+									<span class="instr-kv"><span class="instr-k">model</span>{ inst.Model }</span>
+								}
+								if inst.Name != "" {
+									<span class="instr-kv"><span class="instr-k">name</span>{ inst.Name }</span>
+								}
+								if inst.Interactive {
+									<span class="instr-kv"><span class="instr-k">interactive</span>true</span>
+								}
+							</div>
+							if inst.Message != "" {
+								<pre class="tab-body-pre instr-message">{ inst.Message }</pre>
+							} else {
+								<p class="tab-empty">(message 未設定)</p>
+							}
+						</section>
 					}
 				} else {
 					<p class="tab-empty">(未設定)</p>
 				}
 			</div>
 		} else if activeTab == "dependencies" {
-			@TaskDetailDependenciesSection(task, depsRows)
+			@TaskDetailDependenciesSection(depsUp, depsDown)
 		}
 	</div>
 }
@@ -567,17 +651,38 @@ func tabClass(tab, activeTab string) string {
 	return "tab"
 }
 
-// detailTabHidden returns true when the active tab is one of the overflow
-// items (instructions / dependencies). Used to mark the more-menu as active.
-func detailTabHidden(activeTab string) bool {
-	return activeTab == "instructions" || activeTab == "dependencies"
+// detailTabIsDropdown reports whether the active tab lives inside the
+// "details" dropdown (description / payload / instructions /
+// dependencies). Timeline gets top-level real estate because it's the
+// overwhelmingly most-used tab; everything else shares one dropdown
+// whose label reflects the current selection (defaulting to
+// "Description" — the landing spot when none is chosen).
+func detailTabIsDropdown(activeTab string) bool {
+	return activeTab != "timeline"
 }
 
-func detailMoreSummaryClass(activeTab string) string {
-	if detailTabHidden(activeTab) {
-		return "tab tab-more-summary active"
+// detailDropdownActiveSub returns the (tab, label) pair that the
+// dropdown's label link points at. When a sub-tab is active we keep the
+// user there; otherwise we default to description so clicking the
+// label always leads somewhere useful.
+func detailDropdownActiveSub(activeTab string) (tab, label string) {
+	switch activeTab {
+	case "payload":
+		return "payload", "Payload"
+	case "instructions":
+		return "instructions", "Instructions"
+	case "dependencies":
+		return "dependencies", "Dependencies"
+	default:
+		return "description", "Description"
 	}
-	return "tab tab-more-summary"
+}
+
+func detailDropdownLabelClass(activeTab string) string {
+	if detailTabIsDropdown(activeTab) {
+		return "tab tab-dropdown-label active"
+	}
+	return "tab tab-dropdown-label"
 }
 
 templ detailTabLink(taskID, tab, label, activeTab string) {
@@ -609,39 +714,41 @@ templ detailMoreItem(taskID, tab, label, activeTab string) {
 //     summary label reflects the new active tab when it's a hidden one)
 //   - the action bar primary button becomes tab-contextual (edit vs. state
 //     action) without a separate swap
-templ TaskDetailTabsSection(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsRows []DepsTreeRow, availableActions []string, activeTab string, editMode bool) {
+templ TaskDetailTabsSection(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsUp, depsDown []DepsTreeRow, availableActions []string, activeTab string, editMode bool) {
 	<div id="tabs" class="tabs">
 		<div class="tab-list" role="tablist">
 			@detailTabLink(task.ID, "timeline", "Timeline", activeTab)
-			@detailTabLink(task.ID, "description", "Desc", activeTab)
-			@detailTabLink(task.ID, "payload", "Payload", activeTab)
-			<details class="tab-more">
-				<summary class={ detailMoreSummaryClass(activeTab) } aria-label="その他のタブ">
-					if detailTabHidden(activeTab) {
-						if activeTab == "instructions" {
-							Inst
-						} else if activeTab == "dependencies" {
-							Deps
-						}
+			{{ subTab, subLabel := detailDropdownActiveSub(activeTab) }}
+			<div class="tab-dropdown">
+				<a
+					class={ detailDropdownLabelClass(activeTab) }
+					href={ templ.SafeURL("/tasks/" + task.ID + "?tab=" + subTab) }
+					hx-get={ "/tasks/" + task.ID + "?tab=" + subTab }
+					hx-target="#tabs"
+					hx-swap="outerHTML"
+					hx-push-url="true"
+				>{ subLabel }</a>
+				<details class="tab-dropdown-toggle-wrap">
+					<summary class="tab-dropdown-toggle" aria-label="詳細タブ一覧">
 						<span aria-hidden="true">▾</span>
-					} else {
-						⋯
-					}
-				</summary>
-				<div class="tab-more-menu" role="menu">
-					@detailMoreItem(task.ID, "instructions", "Instructions", activeTab)
-					@detailMoreItem(task.ID, "dependencies", "Dependencies", activeTab)
-				</div>
-			</details>
+					</summary>
+					<div class="tab-more-menu" role="menu">
+						@detailMoreItem(task.ID, "description", "Description", activeTab)
+						@detailMoreItem(task.ID, "payload", "Payload", activeTab)
+						@detailMoreItem(task.ID, "instructions", "Instructions", activeTab)
+						@detailMoreItem(task.ID, "dependencies", "Dependencies", activeTab)
+					</div>
+				</details>
+			</div>
 		</div>
-		@TaskDetailTabPanel(task, actions, jobs, depsRows, activeTab, editMode)
+		@TaskDetailTabPanel(task, actions, jobs, depsUp, depsDown, activeTab, editMode)
 		@TaskActionBar(task, availableActions, activeTab, editMode)
 	</div>
 }
 
-templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsRows []DepsTreeRow, availableActions []string, errorMsg string, activeTab string, editMode bool, projectName string) {
+templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsUp, depsDown []DepsTreeRow, availableActions []string, errorMsg string, activeTab string, editMode bool, projectName string) {
 	@Layout(task.Title, []components.BreadcrumbItem{{Title: "Tasks", URL: "/"}, {Title: task.Title}}) {
 		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName)
-		@TaskDetailTabsSection(task, actions, jobs, depsRows, availableActions, activeTab, editMode)
+		@TaskDetailTabsSection(task, actions, jobs, depsUp, depsDown, availableActions, activeTab, editMode)
 	}
 }

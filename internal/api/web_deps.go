@@ -1,60 +1,28 @@
 package api
 
 import (
-	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/web/templates"
 )
 
-// buildDepsTreeRows flattens the upstream/downstream dependency trees into a
-// single ordered list matching the TUI layout: deepest ancestors first (post-
-// order DFS) → self → downstream dependents (pre-order DFS). Connectors
-// ("├─ " / "└─ ") mirror the TUI's style so the tree is legible in plain HTML.
-func buildDepsTreeRows(self *orchestrator.Task, up, down []*TaskNode) []templates.DepsTreeRow {
-	var rows []templates.DepsTreeRow
-	rows = append(rows, flattenUpstreamDeps(up, "")...)
-	if self != nil {
-		rows = append(rows, templates.DepsTreeRow{Task: self, IsSelf: true})
-	}
-	rows = append(rows, flattenDownstreamDeps(down, "")...)
-	return rows
+// buildDepsTreeRows flattens the upstream and downstream dependency
+// trees into two pre-order DFS lists — direct deps/dependents at
+// depth 0, deeper chain members at depth 1, 2, … — so the template
+// can render each as a "parent above, child indented below" tree that
+// matches the Open-tab task list.
+func buildDepsTreeRows(up, down []*TaskNode) (upstream, downstream []templates.DepsTreeRow) {
+	upstream = flattenDepsTree(up, 0)
+	downstream = flattenDepsTree(down, 0)
+	return upstream, downstream
 }
 
-// flattenUpstreamDeps walks the upstream tree post-order so deeper ancestors
-// appear first. Connector ("├─ ", "└─ ") is picked from sibling position and
-// mirrors the downstream logic for visual consistency.
-func flattenUpstreamDeps(nodes []*TaskNode, linePrefix string) []templates.DepsTreeRow {
+// flattenDepsTree walks a dependency tree pre-order so the node is
+// emitted before its children — that gives "closer-to-self first,
+// deeper members indented below".
+func flattenDepsTree(nodes []*TaskNode, depth int) []templates.DepsTreeRow {
 	var rows []templates.DepsTreeRow
-	for i, node := range nodes {
-		isLast := i == len(nodes)-1
-		var nodeConnector, childCont string
-		if isLast {
-			nodeConnector = "└─ "
-			childCont = "   "
-		} else {
-			nodeConnector = "├─ "
-			childCont = "│  "
-		}
-		rows = append(rows, flattenUpstreamDeps(node.Children, linePrefix+childCont)...)
-		rows = append(rows, templates.DepsTreeRow{Task: node.Task, Prefix: linePrefix + nodeConnector})
-	}
-	return rows
-}
-
-// flattenDownstreamDeps walks the downstream tree pre-order (natural read order).
-func flattenDownstreamDeps(nodes []*TaskNode, linePrefix string) []templates.DepsTreeRow {
-	var rows []templates.DepsTreeRow
-	for i, node := range nodes {
-		isLast := i == len(nodes)-1
-		var nodeConnector, childCont string
-		if isLast {
-			nodeConnector = "└─ "
-			childCont = "   "
-		} else {
-			nodeConnector = "├─ "
-			childCont = "│  "
-		}
-		rows = append(rows, templates.DepsTreeRow{Task: node.Task, Prefix: linePrefix + nodeConnector})
-		rows = append(rows, flattenDownstreamDeps(node.Children, linePrefix+childCont)...)
+	for _, node := range nodes {
+		rows = append(rows, templates.DepsTreeRow{Task: node.Task, Depth: depth})
+		rows = append(rows, flattenDepsTree(node.Children, depth+1)...)
 	}
 	return rows
 }
