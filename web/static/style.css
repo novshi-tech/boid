@@ -1043,6 +1043,31 @@ body:has(.action-bar) {
   margin-top: var(--space-3);
 }
 
+/* --- Tab content (frameless, tab label is the heading) ---
+   The tab bar itself names the section, so inline <h2> titles are
+   redundant. The toolbar holds contextual actions (edit link) and is
+   right-aligned so content starts flush-left. */
+.tab-content {
+  padding-top: var(--space-3);
+}
+
+.tab-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-2);
+}
+
+.tab-body-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tab-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
 .tab-list {
   display: flex;
   gap: 2px;

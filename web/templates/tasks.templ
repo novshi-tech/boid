@@ -277,43 +277,42 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string) {
 // TaskDetailTimelineSection renders the action history card.
 // Wrapped in <div id="task-timeline"> so EventSource JS can replace it via outerHTML.
 templ TaskDetailTimelineSection(actions []*orchestrator.Action) {
-	<div id="task-timeline">
-		if len(actions) > 0 {
-			<div class="card">
-				<h2 class="section-title">アクション履歴</h2>
-				<div class="timeline">
-					for _, action := range actions {
-						if isFiredAction(action.Type) {
-							<div class="timeline-item timeline-item-fired">
-								<div class="timeline-type timeline-type-fired">
-									if firedActionJobID(action.Payload) != "" {
-										<a href={ templ.SafeURL("/jobs/" + firedActionJobID(action.Payload)) }>[{ action.Type }] { firedActionLabel(action.Payload) }</a>
-									} else {
-										[{ action.Type }] { firedActionLabel(action.Payload) }
-									}
-								</div>
-								<div class="timeline-time">{ action.CreatedAt.Format("2006-01-02 15:04:05") }</div>
-							</div>
-						} else {
-							<div class="timeline-item">
-								if action.FromStatus != "" && action.ToStatus != "" && action.FromStatus != action.ToStatus {
-									<div class="timeline-type">{ action.Type }: { string(action.FromStatus) } → { string(action.ToStatus) }</div>
-								} else if action.FromStatus != "" && action.ToStatus != "" {
-									<div class="timeline-type">{ action.Type }: { string(action.FromStatus) }</div>
+	<div id="task-timeline" class="tab-content">
+		if len(actions) == 0 {
+			<p class="tab-empty">(履歴なし)</p>
+		} else {
+			<div class="timeline">
+				for _, action := range actions {
+					if isFiredAction(action.Type) {
+						<div class="timeline-item timeline-item-fired">
+							<div class="timeline-type timeline-type-fired">
+								if firedActionJobID(action.Payload) != "" {
+									<a href={ templ.SafeURL("/jobs/" + firedActionJobID(action.Payload)) }>[{ action.Type }] { firedActionLabel(action.Payload) }</a>
 								} else {
-									<div class="timeline-type">{ action.Type }</div>
-								}
-								<div class="timeline-time">{ action.CreatedAt.Format("2006-01-02 15:04:05") }</div>
-								if len(action.Payload) > 0 && string(action.Payload) != "null" {
-									<details>
-										<summary>payload</summary>
-										<pre>{ string(action.Payload) }</pre>
-									</details>
+									[{ action.Type }] { firedActionLabel(action.Payload) }
 								}
 							</div>
-						}
+							<div class="timeline-time">{ action.CreatedAt.Format("2006-01-02 15:04:05") }</div>
+						</div>
+					} else {
+						<div class="timeline-item">
+							if action.FromStatus != "" && action.ToStatus != "" && action.FromStatus != action.ToStatus {
+								<div class="timeline-type">{ action.Type }: { string(action.FromStatus) } → { string(action.ToStatus) }</div>
+							} else if action.FromStatus != "" && action.ToStatus != "" {
+								<div class="timeline-type">{ action.Type }: { string(action.FromStatus) }</div>
+							} else {
+								<div class="timeline-type">{ action.Type }</div>
+							}
+							<div class="timeline-time">{ action.CreatedAt.Format("2006-01-02 15:04:05") }</div>
+							if len(action.Payload) > 0 && string(action.Payload) != "null" {
+								<details>
+									<summary>payload</summary>
+									<pre>{ string(action.Payload) }</pre>
+								</details>
+							}
+						</div>
 					}
-				</div>
+				}
 			</div>
 		}
 	</div>
@@ -402,78 +401,70 @@ templ TaskDetailTabPanel(task *orchestrator.Task, actions []*orchestrator.Action
 				})();
 			</script>
 		} else if activeTab == "description" {
-			<div class="card">
-				<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-					<h2 class="section-title" style="margin:0">Description</h2>
+			<div class="tab-content">
+				<div class="tab-toolbar">
 					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/description") } class="btn btn-secondary btn-sm" aria-label="編集">編集</a>
 				</div>
 				if task.Description != "" {
-					<pre style="margin-top:8px;white-space:pre-wrap;word-break:break-word">{ task.Description }</pre>
+					<pre class="tab-body-pre">{ task.Description }</pre>
 				} else {
-					<p style="margin-top:8px;color:#888">(未設定)</p>
+					<p class="tab-empty">(未設定)</p>
 				}
 			</div>
 		} else if activeTab == "payload" {
-			<div class="card">
-				<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-					<h2 class="section-title" style="margin:0">Payload</h2>
+			<div class="tab-content">
+				<div class="tab-toolbar">
 					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/payload") } class="btn btn-secondary btn-sm" aria-label="編集">編集</a>
 				</div>
 				if len(task.Payload) > 0 && string(task.Payload) != "null" {
-					<pre style="margin-top:8px;white-space:pre-wrap;word-break:break-word">{ string(task.Payload) }</pre>
+					<pre class="tab-body-pre">{ string(task.Payload) }</pre>
 				} else {
-					<p style="margin-top:8px;color:#888">(未設定)</p>
+					<p class="tab-empty">(未設定)</p>
 				}
 			</div>
 		} else if activeTab == "instructions" {
-			<div class="card">
-				<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-					<h2 class="section-title" style="margin:0">Instructions</h2>
+			<div class="tab-content">
+				<div class="tab-toolbar">
 					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/instructions") } class="btn btn-secondary btn-sm" aria-label="編集">編集</a>
 				</div>
 				if len(task.Instructions) > 0 {
-					<div style="margin-top:8px">
-						for role, inst := range task.Instructions {
-							<div class="detail-field">
-								<strong>{ role }</strong>
-								<span class="badge">{ string(inst.Type) }</span>
-								<span>{ inst.Consumer }</span>
-							</div>
-						}
-					</div>
+					for role, inst := range task.Instructions {
+						<div class="detail-field">
+							<strong>{ role }</strong>
+							<span class="badge">{ string(inst.Type) }</span>
+							<span>{ inst.Consumer }</span>
+						</div>
+					}
 				} else {
-					<p style="margin-top:8px;color:#888">(未設定)</p>
+					<p class="tab-empty">(未設定)</p>
 				}
 			</div>
 		} else if activeTab == "dependencies" {
-			<div class="card">
-				<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-					<h2 class="section-title" style="margin:0">Dependencies</h2>
+			<div class="tab-content">
+				<div class="tab-toolbar">
 					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/deps") } class="btn btn-secondary btn-sm" aria-label="編集">編集</a>
 				</div>
 				if len(task.DependsOn) > 0 || task.DependsOnPayload != "" || task.ParentID != "" {
-					<div style="margin-top:8px">
-						if task.ParentID != "" {
-							<div class="detail-field">
-								<strong>parent_id</strong>
-								{ task.ParentID }
-							</div>
-						}
-						if task.DependsOnPayload != "" {
-							<div class="detail-field">
-								<strong>depends_on_payload</strong>
-								{ task.DependsOnPayload }
-							</div>
-						}
-						if len(task.DependsOn) > 0 {
-							<div class="detail-field">
-								<strong>depends_on</strong>
-								{ strings.Join(task.DependsOn, ", ") }
-							</div>
-						}
-					</div>
+					if task.ParentID != "" {
+						<div class="detail-field">
+							<strong>parent_id</strong>
+							{ task.ParentID }
+						</div>
+					}
+					if task.DependsOnPayload != "" {
+						<div class="detail-field">
+							<strong>depends_on_payload</strong>
+							{ task.DependsOnPayload }
+						</div>
+					}
+					if len(task.DependsOn) > 0 {
+						<div class="detail-field">
+							<strong>depends_on</strong>
+							{ strings.Join(task.DependsOn, ", ") }
+						</div>
+					}
 				} else {
-					<p style="margin-top:8px;color:#888">(未設定)</p>
+					<p class="tab-empty">(未設定)</p>
 				}
 			</div>
 		}
