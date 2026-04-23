@@ -1,0 +1,31 @@
+package templates
+
+import (
+	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/web/templates/components"
+)
+
+templ EditDescription(task *orchestrator.Task, errorMsg string) {
+	@Layout("description編集", []components.BreadcrumbItem{
+		{Title: "Tasks", URL: "/"},
+		{Title: task.Title, URL: "/tasks/" + task.ID},
+		{Title: "description編集"},
+	}) {
+		<div class="card">
+			<h1>description編集</h1>
+			if errorMsg != "" {
+				<div class="action-error">{ errorMsg }</div>
+			}
+			<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/edit/description") }>
+				<div class="form-group">
+					<label for="description" class="form-label">Description</label>
+					<textarea id="description" name="description" class="form-input" rows="10">{ task.Description }</textarea>
+				</div>
+				<div class="action-buttons">
+					<button type="submit" class="btn btn-primary">保存</button>
+					<a href={ templ.SafeURL("/tasks/" + task.ID) } class="btn btn-secondary">キャンセル</a>
+				</div>
+			</form>
+		</div>
+	}
+}

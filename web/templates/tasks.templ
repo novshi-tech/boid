@@ -237,6 +237,19 @@ templ TaskDetailJobsSection(jobs []*JobView) {
 templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, availableActions []string, errorMsg string) {
 	@Layout(task.Title, []components.BreadcrumbItem{{Title: "Tasks", URL: "/"}, {Title: task.Title}}) {
 		@TaskDetailStatusSection(task, availableActions, errorMsg)
+		<div class="card">
+			<div style="display:flex;align-items:center;gap:8px">
+				<h2 class="section-title" style="margin:0">Description</h2>
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/description") } title="編集">
+					@components.IconEdit("icon-sm")
+				</a>
+			</div>
+			if task.Description != "" {
+				<pre style="margin-top:8px;white-space:pre-wrap;word-break:break-word">{ task.Description }</pre>
+			} else {
+				<p style="margin-top:8px;color:#888">(未設定)</p>
+			}
+		</div>
 		if len(task.Payload) > 0 && string(task.Payload) != "null" {
 			<div class="card">
 				<details>
