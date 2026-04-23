@@ -42,6 +42,9 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Post("/tasks/{id}/edit/deps", h.PostEditDeps)
 	r.Post("/tasks/{id}/action", h.PostAction)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
+	r.Post("/tasks/{id}/rerun", h.PostRerun)
+	r.Get("/tasks/{id}/gates", h.GateReplayList)
+	r.Post("/tasks/{id}/gates/{gate_id}/replay", h.PostGateReplay)
 	r.Get("/jobs/{id}", h.JobDetail)
 	return r
 }
@@ -496,6 +499,39 @@ func (h *WebHandler) PostDuplicate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/tasks/"+newID, http.StatusSeeOther)
+}
+
+func (h *WebHandler) PostRerun(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := h.Service.RerunTask(id, RerunTaskRequest{}); err != nil {
+		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
+}
+
+func (h *WebHandler) GateReplayList(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	status := r.URL.Query().Get("status")
+	gates, err := h.Service.ListGatesForStatus(id, status)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	errorMsg := r.URL.Query().Get("error")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templates.GateReplayList(id, status, gates, errorMsg).Render(r.Context(), w)
+}
+
+func (h *WebHandler) PostGateReplay(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	gateID := chi.URLParam(r, "gate_id")
+	_, err := h.Service.ReplayGate(r.Context(), id, ReplayGateRequest{GateID: gateID})
+	if err != nil {
+		http.Redirect(w, r, "/tasks/"+id+"/gates?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
 }
 
 func (h *WebHandler) JobDetail(w http.ResponseWriter, r *http.Request) {
