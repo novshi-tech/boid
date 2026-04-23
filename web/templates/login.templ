@@ -1,0 +1,61 @@
+package templates
+
+import "github.com/novshi-tech/boid/web/templates/components"
+
+templ Login(errorMsg string) {
+	@Layout("ログイン", []components.BreadcrumbItem{{Title: "ログイン"}}) {
+		<div class="login-container">
+			<h1 class="login-title">デバイス認証</h1>
+			if errorMsg != "" {
+				<p class="login-error" role="alert">{ errorMsg }</p>
+			}
+			<form id="login-form" class="login-form" novalidate>
+				<div class="form-group">
+					<label for="code" class="form-label">ペアリングコード</label>
+					<input
+						type="text"
+						id="code"
+						name="code"
+						class="form-input"
+						placeholder="WX7K-4QJP"
+						autocomplete="off"
+						autocorrect="off"
+						autocapitalize="characters"
+						spellcheck="false"
+						required
+					/>
+				</div>
+				<button type="submit" class="btn btn-primary">認証する</button>
+			</form>
+		</div>
+		<script>
+			(function () {
+				var form = document.getElementById("login-form");
+				form.addEventListener("submit", function (e) {
+					e.preventDefault();
+					var m = document.cookie.match(/(?:^|;)\s*csrf_token=([^;]+)/);
+					var csrf = m ? decodeURIComponent(m[1]) : "";
+					fetch("/login", {
+						method: "POST",
+						headers: {
+							"Content-Type": "application/x-www-form-urlencoded",
+							"X-CSRF-Token": csrf,
+						},
+						body: "code=" + encodeURIComponent(document.getElementById("code").value),
+						redirect: "manual",
+					}).then(function (r) {
+						if (r.type === "opaqueredirect") {
+							window.location.href = "/";
+						} else {
+							r.text().then(function (html) {
+								document.open();
+								document.write(html);
+								document.close();
+							});
+						}
+					});
+				});
+			})();
+		</script>
+	}
+}
