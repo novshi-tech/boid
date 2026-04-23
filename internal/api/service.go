@@ -940,6 +940,7 @@ type TaskWorkflowService struct {
 	Coordinator DispatchCoordinator
 	Lifecycle   JobLifecycle
 	Worktrees   WorktreeCleaner
+	Hub         *TaskEventHub
 
 	dispatchCtx    context.Context
 	dispatchCancel context.CancelFunc
@@ -1007,6 +1008,16 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		return tx.CreateAction(action)
 	}); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+
+	if s.Hub != nil {
+		s.Hub.Broadcast(newTask.ID, TaskEvent{
+			Kind: "action",
+			Payload: map[string]any{
+				"action_id":  action.ID,
+				"new_status": string(action.ToStatus),
+			},
+		})
 	}
 
 	s.cleanupWorktree(newTask.ID, task.ProjectID, newTask.Status)
@@ -1111,6 +1122,16 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 		return tx.CreateAction(action)
 	}); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+
+	if s.Hub != nil {
+		s.Hub.Broadcast(job.TaskID, TaskEvent{
+			Kind: "job",
+			Payload: map[string]any{
+				"job_id":    job.ID,
+				"new_state": string(newTask.Status),
+			},
+		})
 	}
 
 	slog.Info("job done: job_failed applied", "job_id", job.ID, "new_status", newTask.Status)
@@ -1305,6 +1326,21 @@ func (s *TaskWorkflowService) persistFiredEvents(taskID string, status orchestra
 		return nil
 	}); err != nil {
 		slog.Warn("persist fired events failed", "task_id", taskID, "error", err)
+		return
+	}
+
+	if s.Hub != nil {
+		for _, fe := range events {
+			s.Hub.Broadcast(taskID, TaskEvent{
+				Kind: "fired_event",
+				Payload: map[string]any{
+					"event_name": fe.Kind + "_fired",
+					"role":       fe.HandlerID,
+					"kit_id":     fe.KitID,
+					"success":    fe.Success,
+				},
+			})
+		}
 	}
 }
 
