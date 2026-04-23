@@ -10,7 +10,6 @@ import templruntime "github.com/a-h/templ/runtime"
 
 import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/web/templates/components"
 )
 
 func TaskNew(projects []*orchestrator.Project, errorMsg string) templ.Component {
@@ -46,48 +45,44 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string) templ.Component 
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"page-heading\"><h1>新規タスク作成</h1></div>")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
 			if errorMsg != "" {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "<div class=\"action-error\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"action-error\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var3 string
 				templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(errorMsg)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 14, Col: 39}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 10, Col: 39}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, " <div class=\"task-form-body\"><form id=\"task-new-form\" method=\"post\" action=\"/tasks\"><div class=\"form-group\"><label for=\"title\" class=\"form-label\">Title *</label> <input type=\"text\" id=\"title\" name=\"title\" class=\"form-input\" required autocomplete=\"off\"></div><div class=\"form-group\"><label for=\"project_id\" class=\"form-label\">Project</label> <select id=\"project_id\" name=\"project_id\" class=\"filter-select\"><option value=\"\">-- 選択 --</option> ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, " <div class=\"task-form-body\"><form id=\"task-new-form\" method=\"post\" action=\"/tasks\"><div class=\"form-group\"><label for=\"title\" class=\"form-label\">Title *</label> <input type=\"text\" id=\"title\" name=\"title\" class=\"form-input\" required autocomplete=\"off\"></div><div class=\"form-group\"><label for=\"project_id\" class=\"form-label\">Project</label> <select id=\"project_id\" name=\"project_id\" class=\"filter-select\"><option value=\"\">-- 選択 --</option> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			for _, p := range projects {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<option value=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<option value=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var4 string
 				templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(p.ID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 27, Col: 27}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 23, Col: 27}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -95,26 +90,26 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string) templ.Component 
 					var templ_7745c5c3_Var5 string
 					templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(p.Meta.Name)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 29, Col: 22}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 25, Col: 22}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, " (")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, " (")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 					var templ_7745c5c3_Var6 string
 					templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(p.ID)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 29, Col: 32}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 25, Col: 32}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, ")")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, ")")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -122,25 +117,25 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string) templ.Component 
 					var templ_7745c5c3_Var7 string
 					templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(p.ID)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 31, Col: 15}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 27, Col: 15}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "</option>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "</option>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "</select></div><div class=\"form-group\"><label for=\"behavior\" class=\"form-label\">Behavior</label> <input type=\"text\" id=\"behavior\" name=\"behavior\" class=\"form-input\" autocomplete=\"off\"></div><div class=\"form-group\"><label for=\"description\" class=\"form-label\">Description</label> <textarea id=\"description\" name=\"description\" class=\"form-input\" rows=\"4\"></textarea></div><div class=\"form-group\"><label for=\"parent_id\" class=\"form-label\">Parent ID</label> <input type=\"text\" id=\"parent_id\" name=\"parent_id\" class=\"form-input\" autocomplete=\"off\"></div><div class=\"form-group\"><label for=\"depends_on\" class=\"form-label\">Depends On (スペース区切り)</label> <input type=\"text\" id=\"depends_on\" name=\"depends_on\" class=\"form-input\" autocomplete=\"off\"></div><div class=\"form-group\"><label for=\"depends_on_payload\" class=\"form-label\">Depends On Payload</label> <input type=\"text\" id=\"depends_on_payload\" name=\"depends_on_payload\" class=\"form-input\" autocomplete=\"off\"></div><div class=\"form-group\"><label for=\"traits\" class=\"form-label\">Traits (スペース区切り)</label> <input type=\"text\" id=\"traits\" name=\"traits\" class=\"form-input\" autocomplete=\"off\"></div><div class=\"form-group\"><label for=\"base_branch\" class=\"form-label\">Base Branch</label> <input type=\"text\" id=\"base_branch\" name=\"base_branch\" class=\"form-input\" autocomplete=\"off\"></div><div class=\"form-group\"><label for=\"branch_prefix\" class=\"form-label\">Branch Prefix</label> <input type=\"text\" id=\"branch_prefix\" name=\"branch_prefix\" class=\"form-input\" autocomplete=\"off\"></div><div class=\"form-group\"><label class=\"form-label\"><input type=\"checkbox\" name=\"auto_start\"> Auto Start</label></div><div class=\"form-group\"><label class=\"form-label\"><input type=\"checkbox\" name=\"worktree\"> Worktree</label></div><div class=\"form-group\"><label class=\"form-label\"><input type=\"checkbox\" name=\"readonly\"> Readonly</label></div><div class=\"action-buttons\"><button type=\"submit\" class=\"btn btn-primary\">作成</button> <a href=\"/\" class=\"btn btn-secondary\">キャンセル</a></div></form></div><script>\n\t\t\t(function () {\n\t\t\t\tvar form = document.getElementById(\"task-new-form\");\n\t\t\t\tform.addEventListener(\"submit\", function (e) {\n\t\t\t\t\te.preventDefault();\n\t\t\t\t\tvar m = document.cookie.match(/(?:^|;)\\s*csrf_token=([^;]+)/);\n\t\t\t\t\tvar csrf = m ? decodeURIComponent(m[1]) : \"\";\n\t\t\t\t\tvar data = new URLSearchParams(new FormData(form));\n\t\t\t\t\tfetch(form.action, {\n\t\t\t\t\t\tmethod: \"POST\",\n\t\t\t\t\t\theaders: {\n\t\t\t\t\t\t\t\"Content-Type\": \"application/x-www-form-urlencoded\",\n\t\t\t\t\t\t\t\"X-CSRF-Token\": csrf,\n\t\t\t\t\t\t},\n\t\t\t\t\t\tbody: data.toString(),\n\t\t\t\t\t}).then(function (r) {\n\t\t\t\t\t\tif (r.ok) {\n\t\t\t\t\t\t\twindow.location.href = r.url;\n\t\t\t\t\t\t} else {\n\t\t\t\t\t\t\treturn r.text().then(function (html) {\n\t\t\t\t\t\t\t\tdocument.open();\n\t\t\t\t\t\t\t\tdocument.write(html);\n\t\t\t\t\t\t\t\tdocument.close();\n\t\t\t\t\t\t\t});\n\t\t\t\t\t\t}\n\t\t\t\t\t});\n\t\t\t\t});\n\t\t\t})();\n\t\t</script>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "</select></div><div class=\"form-group\"><label for=\"behavior\" class=\"form-label\">Behavior</label> <input type=\"text\" id=\"behavior\" name=\"behavior\" class=\"form-input\" autocomplete=\"off\"></div><div class=\"form-group\"><label for=\"description\" class=\"form-label\">Description</label> <textarea id=\"description\" name=\"description\" class=\"form-input\" rows=\"4\"></textarea></div><div class=\"form-group\"><label for=\"parent_id\" class=\"form-label\">Parent ID</label> <input type=\"text\" id=\"parent_id\" name=\"parent_id\" class=\"form-input\" autocomplete=\"off\"></div><div class=\"form-group\"><label for=\"depends_on\" class=\"form-label\">Depends On (スペース区切り)</label> <input type=\"text\" id=\"depends_on\" name=\"depends_on\" class=\"form-input\" autocomplete=\"off\"></div><div class=\"form-group\"><label for=\"depends_on_payload\" class=\"form-label\">Depends On Payload</label> <input type=\"text\" id=\"depends_on_payload\" name=\"depends_on_payload\" class=\"form-input\" autocomplete=\"off\"></div><div class=\"form-group\"><label for=\"traits\" class=\"form-label\">Traits (スペース区切り)</label> <input type=\"text\" id=\"traits\" name=\"traits\" class=\"form-input\" autocomplete=\"off\"></div><div class=\"form-group\"><label for=\"base_branch\" class=\"form-label\">Base Branch</label> <input type=\"text\" id=\"base_branch\" name=\"base_branch\" class=\"form-input\" autocomplete=\"off\"></div><div class=\"form-group\"><label for=\"branch_prefix\" class=\"form-label\">Branch Prefix</label> <input type=\"text\" id=\"branch_prefix\" name=\"branch_prefix\" class=\"form-input\" autocomplete=\"off\"></div><div class=\"form-group\"><label class=\"form-label\"><input type=\"checkbox\" name=\"auto_start\"> Auto Start</label></div><div class=\"form-group\"><label class=\"form-label\"><input type=\"checkbox\" name=\"worktree\"> Worktree</label></div><div class=\"form-group\"><label class=\"form-label\"><input type=\"checkbox\" name=\"readonly\"> Readonly</label></div><div class=\"action-buttons\"><button type=\"submit\" class=\"btn btn-primary\">作成</button> <a href=\"/\" class=\"btn btn-secondary\">キャンセル</a></div></form></div><script>\n\t\t\t(function () {\n\t\t\t\tvar form = document.getElementById(\"task-new-form\");\n\t\t\t\tform.addEventListener(\"submit\", function (e) {\n\t\t\t\t\te.preventDefault();\n\t\t\t\t\tvar m = document.cookie.match(/(?:^|;)\\s*csrf_token=([^;]+)/);\n\t\t\t\t\tvar csrf = m ? decodeURIComponent(m[1]) : \"\";\n\t\t\t\t\tvar data = new URLSearchParams(new FormData(form));\n\t\t\t\t\tfetch(form.action, {\n\t\t\t\t\t\tmethod: \"POST\",\n\t\t\t\t\t\theaders: {\n\t\t\t\t\t\t\t\"Content-Type\": \"application/x-www-form-urlencoded\",\n\t\t\t\t\t\t\t\"X-CSRF-Token\": csrf,\n\t\t\t\t\t\t},\n\t\t\t\t\t\tbody: data.toString(),\n\t\t\t\t\t}).then(function (r) {\n\t\t\t\t\t\tif (r.ok) {\n\t\t\t\t\t\t\twindow.location.href = r.url;\n\t\t\t\t\t\t} else {\n\t\t\t\t\t\t\treturn r.text().then(function (html) {\n\t\t\t\t\t\t\t\tdocument.open();\n\t\t\t\t\t\t\t\tdocument.write(html);\n\t\t\t\t\t\t\t\tdocument.close();\n\t\t\t\t\t\t\t});\n\t\t\t\t\t\t}\n\t\t\t\t\t});\n\t\t\t\t});\n\t\t\t})();\n\t\t</script>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = Layout("新規タスク", []components.BreadcrumbItem{{Title: "Tasks", URL: "/"}, {Title: "New"}}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var2), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = Layout("新規タスク", "/").Render(templ.WithChildren(ctx, templ_7745c5c3_Var2), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

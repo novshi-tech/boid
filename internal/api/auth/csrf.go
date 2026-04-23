@@ -10,12 +10,15 @@ import (
 const (
 	csrfCookieName = "csrf_token"
 	csrfHeaderName = "X-CSRF-Token"
+	csrfFormField  = "_csrf"
 )
 
 // CSRFMiddleware implements double-submit cookie CSRF protection.
 //
 // GET/HEAD/OPTIONS/TRACE: issues csrf_token cookie if absent, then passes.
-// POST/PUT/PATCH/DELETE: compares X-CSRF-Token header with cookie; 403 on mismatch.
+// POST/PUT/PATCH/DELETE: compares the cookie with the X-CSRF-Token header
+// (for HTMX / fetch callers) or the _csrf form field (for plain HTML
+// forms); 403 on mismatch.
 //
 // Exempt paths:
 //   - /auth and /auth/* (protected by one-time pairing token)
@@ -46,7 +49,16 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 				http.Error(w, "CSRF token missing", http.StatusForbidden)
 				return
 			}
-			if r.Header.Get(csrfHeaderName) != cookie.Value {
+			submitted := r.Header.Get(csrfHeaderName)
+			if submitted == "" {
+				// Plain HTML form submit (no JS): accept _csrf field.
+				// ParseForm is idempotent, and it buffers the body so the
+				// downstream handler can still read form values.
+				if err := r.ParseForm(); err == nil {
+					submitted = r.FormValue(csrfFormField)
+				}
+			}
+			if submitted == "" || submitted != cookie.Value {
 				http.Error(w, "CSRF token mismatch", http.StatusForbidden)
 				return
 			}

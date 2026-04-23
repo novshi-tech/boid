@@ -2,14 +2,10 @@ package templates
 
 import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/web/templates/components"
 )
 
 templ TaskNew(projects []*orchestrator.Project, errorMsg string) {
-	@Layout("新規タスク", []components.BreadcrumbItem{{Title: "Tasks", URL: "/"}, {Title: "New"}}) {
-		<div class="page-heading">
-			<h1>新規タスク作成</h1>
-		</div>
+	@Layout("新規タスク", "/") {
 		if errorMsg != "" {
 			<div class="action-error">{ errorMsg }</div>
 		}

@@ -68,7 +68,11 @@ pre {
   line-height: 1.4;
 }
 
-/* --- Site Layout --- */
+/* --- Site Layout ---
+   Single-row header: ← back button + page title. One level of history
+   is all boid's hierarchy needs (Tasks → Task → Job); losing the full
+   breadcrumb in return for more title real estate and a mobile-app feel
+   is the explicit trade. */
 .site-header {
   position: sticky;
   top: 0;
@@ -79,60 +83,47 @@ pre {
   min-height: var(--tap-target);
   display: flex;
   align-items: center;
+  gap: var(--space-2);
 }
 
 .site-main {
   padding: var(--space-3);
 }
 
-/* --- Breadcrumb --- */
-.breadcrumb {
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-  width: 100%;
-}
-
-.breadcrumb::-webkit-scrollbar {
-  display: none;
-}
-
-.breadcrumb-list {
-  list-style: none;
-  display: flex;
+/* Icon-only back button — the current page title gets the remaining
+   width. Tap area is padded out to the standard target size. */
+.site-back {
+  display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  white-space: nowrap;
-  padding: var(--space-2) 0;
-}
-
-.breadcrumb-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: 0.875rem;
-}
-
-.breadcrumb-link {
+  justify-content: center;
   color: var(--bg);
   opacity: 0.75;
+  flex-shrink: 0;
+  width: var(--tap-target);
+  height: var(--tap-target);
+  margin-left: calc(-1 * var(--space-2));
 }
 
-.breadcrumb-link:hover {
+.site-back:hover {
   opacity: 1;
   text-decoration: none;
 }
 
-.breadcrumb-current {
-  color: var(--bg);
-  font-weight: 600;
+.site-back-icon {
+  width: 20px;
+  height: 20px;
 }
 
-.breadcrumb-sep {
-  width: 14px;
-  height: 14px;
-  opacity: 0.5;
+.site-title {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
   color: var(--bg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
 }
 
 /* --- Badge (status indicators) --- */

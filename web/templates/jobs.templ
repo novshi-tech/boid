@@ -2,7 +2,6 @@ package templates
 
 import (
 	"fmt"
-	"github.com/novshi-tech/boid/web/templates/components"
 	"time"
 )
 
@@ -41,11 +40,8 @@ func jobStatusStripe(status string) string {
 }
 
 templ JobDetail(job *JobContextView) {
-	@Layout("Job "+shortID(job.ID), []components.BreadcrumbItem{{Title: "Jobs"}, {Title: "Job " + shortID(job.ID)}}) {
+	@Layout("Job "+shortID(job.ID), "/tasks/"+job.TaskID) {
 		<div class={ "detail-card", jobStatusStripe(job.Status) }>
-			<h1 class="detail-title">
-				Job&nbsp;<span class="job-id">{ shortID(job.ID) }</span>
-			</h1>
 			<div class="detail-meta">
 				<span class={ taskStatusClass(job.Status) }>{ job.Status }</span>
 				if job.Role != "" {
@@ -62,16 +58,6 @@ templ JobDetail(job *JobContextView) {
 				}
 				<span class="detail-meta-sep">·</span>
 				<span class="detail-time">{ job.UpdatedAt.Format("2006-01-02 15:04") }</span>
-			</div>
-			<div class="detail-meta">
-				<span>↑</span>
-				<a href={ templ.SafeURL("/tasks/" + job.TaskID) }>
-					if job.TaskTitle != "" {
-						{ job.TaskTitle }
-					} else {
-						{ job.TaskID }
-					}
-				</a>
 			</div>
 		</div>
 		<section class="job-output">

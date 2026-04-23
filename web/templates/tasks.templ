@@ -233,7 +233,7 @@ templ TaskListContent(items []components.TreeItem, filter orchestrator.TaskFilte
 }
 
 templ TaskList(items []components.TreeItem, filter orchestrator.TaskFilter, projects []*orchestrator.Project, behaviors []string, workspaces []*orchestrator.WorkspaceSummary, currentURL string) {
-	@Layout("Tasks", []components.BreadcrumbItem{{Title: "Tasks"}}) {
+	@Layout("Tasks", "") {
 		@TaskListContent(items, filter, projects, behaviors, workspaces, currentURL)
 	}
 }
@@ -259,13 +259,15 @@ func detailRowClasses(task *orchestrator.Task) []string {
 	return classes
 }
 
-// TaskDetailStatusSection renders the frameless header: title and meta.
-// Actions are intentionally NOT rendered here — they live in the sticky
-// action bar at the bottom of the page (see TaskActionBar).
+// TaskDetailStatusSection renders the frameless meta strip under the
+// site header. The title has moved to the header (one-level back-nav
+// Plan B); what's left here is the status stripe + compact meta
+// (status / behavior / project / updated). Actions are intentionally
+// NOT rendered here — they live in the sticky action bar at the bottom
+// of the page (see TaskActionBar).
 templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string) {
 	<div id="task-status">
 		<div class={ detailRowClasses(task) }>
-			<h1 class="detail-title">{ task.Title }</h1>
 			<div class="detail-meta">
 				<span class={ taskStatusClass(string(task.Status)) }>{ string(task.Status) }</span>
 				<span class="detail-meta-sep">·</span>
@@ -747,7 +749,7 @@ templ TaskDetailTabsSection(task *orchestrator.Task, actions []*orchestrator.Act
 }
 
 templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsUp, depsDown []DepsTreeRow, availableActions []string, errorMsg string, activeTab string, editMode bool, projectName string) {
-	@Layout(task.Title, []components.BreadcrumbItem{{Title: "Tasks", URL: "/"}, {Title: task.Title}}) {
+	@Layout(task.Title, "/") {
 		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName)
 		@TaskDetailTabsSection(task, actions, jobs, depsUp, depsDown, availableActions, activeTab, editMode)
 	}

@@ -2,7 +2,14 @@ package templates
 
 import "github.com/novshi-tech/boid/web/templates/components"
 
-templ Layout(title string, breadcrumbs []components.BreadcrumbItem) {
+// Layout wraps the whole page chrome. The header is a single back-button
+// + title row: one level of history is exposed (enough for the Tasks →
+// Task → Job chain boid actually has), and the title lives in the header
+// instead of being duplicated by a content-area <h1>. When backURL is
+// empty the back button is hidden (top-level pages: Tasks list, login).
+// The back button is icon-only so the current page title gets the full
+// remaining header width.
+templ Layout(title string, backURL string) {
 	<!DOCTYPE html>
 	<html lang="ja">
 		<head>
@@ -21,6 +28,27 @@ templ Layout(title string, breadcrumbs []components.BreadcrumbItem) {
 					var m=document.cookie.match(/(?:^|;)\s*csrf_token=([^;]+)/);
 					if(m) e.detail.headers["X-CSRF-Token"]=decodeURIComponent(m[1]);
 				});
+				// Plain <form method="post"> (no HTMX / fetch) needs a CSRF
+				// value in the body since we can't inject a header. On
+				// submit, stamp a hidden _csrf input sourced from the
+				// cookie so the server's double-submit check passes.
+				document.addEventListener("submit",function(e){
+					var f=e.target;
+					if(!f||f.tagName!=="FORM") return;
+					if((f.method||"").toLowerCase()!=="post") return;
+					if(f.hasAttribute("hx-post")) return;
+					var m=document.cookie.match(/(?:^|;)\s*csrf_token=([^;]+)/);
+					if(!m) return;
+					var token=decodeURIComponent(m[1]);
+					var input=f.querySelector('input[name="_csrf"]');
+					if(!input){
+						input=document.createElement("input");
+						input.type="hidden";
+						input.name="_csrf";
+						f.appendChild(input);
+					}
+					input.value=token;
+				},true);
 				// Close any open <details> dropdowns after an HTMX swap, so
 				// menus (kebab / tab-more) don't linger over freshly loaded
 				// content.
@@ -57,7 +85,12 @@ templ Layout(title string, breadcrumbs []components.BreadcrumbItem) {
 		</head>
 		<body>
 			<header class="site-header">
-				@components.Breadcrumb(breadcrumbs)
+				if backURL != "" {
+					<a class="site-back" href={ templ.SafeURL(backURL) } aria-label="戻る">
+						@components.IconBack("site-back-icon")
+					</a>
+				}
+				<h1 class="site-title">{ title }</h1>
 			</header>
 			<main class="site-main">
 				{ children... }

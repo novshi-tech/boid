@@ -10,7 +10,14 @@ import templruntime "github.com/a-h/templ/runtime"
 
 import "github.com/novshi-tech/boid/web/templates/components"
 
-func Layout(title string, breadcrumbs []components.BreadcrumbItem) templ.Component {
+// Layout wraps the whole page chrome. The header is a single back-button
+// + title row: one level of history is exposed (enough for the Tasks →
+// Task → Job chain boid actually has), and the title lives in the header
+// instead of being duplicated by a content-area <h1>. When backURL is
+// empty the back button is hidden (top-level pages: Tasks list, login).
+// The back button is icon-only so the current page title gets the full
+// remaining header width.
+func Layout(title string, backURL string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -38,21 +45,57 @@ func Layout(title string, breadcrumbs []components.BreadcrumbItem) templ.Compone
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layout.templ`, Line: 11, Col: 17}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layout.templ`, Line: 18, Col: 17}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, " - boid</title><link rel=\"icon\" href=\"/static/favicon.svg\" type=\"image/svg+xml\"><link rel=\"stylesheet\" href=\"/static/style.css\"><script src=\"/static/vendor/htmx-2.0.4.min.js\"></script><script>\n\t\t\t\t// This script runs in <head> before <body> exists, so attach\n\t\t\t\t// to `document` (htmx events bubble up). htmx 2.x dropped\n\t\t\t\t// htmx.config.defaultHeaders — use htmx:configRequest to\n\t\t\t\t// inject the CSRF header on every request.\n\t\t\t\tdocument.addEventListener(\"htmx:configRequest\",function(e){\n\t\t\t\t\tvar m=document.cookie.match(/(?:^|;)\\s*csrf_token=([^;]+)/);\n\t\t\t\t\tif(m) e.detail.headers[\"X-CSRF-Token\"]=decodeURIComponent(m[1]);\n\t\t\t\t});\n\t\t\t\t// Close any open <details> dropdowns after an HTMX swap, so\n\t\t\t\t// menus (kebab / tab-more) don't linger over freshly loaded\n\t\t\t\t// content.\n\t\t\t\tdocument.addEventListener(\"htmx:afterSwap\",function(){\n\t\t\t\t\tdocument.querySelectorAll(\"details[open]\").forEach(function(d){d.open=false;});\n\t\t\t\t});\n\t\t\t\t// Close any open <details> dropdowns when the user clicks\n\t\t\t\t// (or taps) outside them. Matches the expected behaviour\n\t\t\t\t// of kebab / tab-more menus.\n\t\t\t\tdocument.addEventListener(\"click\",function(e){\n\t\t\t\t\tdocument.querySelectorAll(\"details[open]\").forEach(function(d){\n\t\t\t\t\t\tif(!d.contains(e.target)) d.open=false;\n\t\t\t\t\t});\n\t\t\t\t});\n\t\t\t\tdocument.addEventListener(\"keydown\",function(e){\n\t\t\t\t\tif(e.key!==\"Escape\") return;\n\t\t\t\t\tdocument.querySelectorAll(\"details[open]\").forEach(function(d){d.open=false;});\n\t\t\t\t});\n\t\t\t\t// Hide the bottom action bar when the page is scrolled away\n\t\t\t\t// from the top. Feels more app-like: bar is only in the way\n\t\t\t\t// once the user is reading into a long tab.\n\t\t\t\tfunction syncActionBar(){\n\t\t\t\t\tvar bar=document.querySelector(\".action-bar\");\n\t\t\t\t\tif(!bar) return;\n\t\t\t\t\tif(window.scrollY>0) bar.classList.add(\"action-bar-hidden\");\n\t\t\t\t\telse bar.classList.remove(\"action-bar-hidden\");\n\t\t\t\t}\n\t\t\t\tdocument.addEventListener(\"scroll\",syncActionBar,{passive:true});\n\t\t\t\t// After HTMX swaps (tab change replaces the action-bar node)\n\t\t\t\t// the newly-rendered bar should immediately reflect current\n\t\t\t\t// scroll position.\n\t\t\t\tdocument.addEventListener(\"htmx:afterSwap\",syncActionBar);\n\t\t\t</script></head><body><header class=\"site-header\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, " - boid</title><link rel=\"icon\" href=\"/static/favicon.svg\" type=\"image/svg+xml\"><link rel=\"stylesheet\" href=\"/static/style.css\"><script src=\"/static/vendor/htmx-2.0.4.min.js\"></script><script>\n\t\t\t\t// This script runs in <head> before <body> exists, so attach\n\t\t\t\t// to `document` (htmx events bubble up). htmx 2.x dropped\n\t\t\t\t// htmx.config.defaultHeaders — use htmx:configRequest to\n\t\t\t\t// inject the CSRF header on every request.\n\t\t\t\tdocument.addEventListener(\"htmx:configRequest\",function(e){\n\t\t\t\t\tvar m=document.cookie.match(/(?:^|;)\\s*csrf_token=([^;]+)/);\n\t\t\t\t\tif(m) e.detail.headers[\"X-CSRF-Token\"]=decodeURIComponent(m[1]);\n\t\t\t\t});\n\t\t\t\t// Plain <form method=\"post\"> (no HTMX / fetch) needs a CSRF\n\t\t\t\t// value in the body since we can't inject a header. On\n\t\t\t\t// submit, stamp a hidden _csrf input sourced from the\n\t\t\t\t// cookie so the server's double-submit check passes.\n\t\t\t\tdocument.addEventListener(\"submit\",function(e){\n\t\t\t\t\tvar f=e.target;\n\t\t\t\t\tif(!f||f.tagName!==\"FORM\") return;\n\t\t\t\t\tif((f.method||\"\").toLowerCase()!==\"post\") return;\n\t\t\t\t\tif(f.hasAttribute(\"hx-post\")) return;\n\t\t\t\t\tvar m=document.cookie.match(/(?:^|;)\\s*csrf_token=([^;]+)/);\n\t\t\t\t\tif(!m) return;\n\t\t\t\t\tvar token=decodeURIComponent(m[1]);\n\t\t\t\t\tvar input=f.querySelector('input[name=\"_csrf\"]');\n\t\t\t\t\tif(!input){\n\t\t\t\t\t\tinput=document.createElement(\"input\");\n\t\t\t\t\t\tinput.type=\"hidden\";\n\t\t\t\t\t\tinput.name=\"_csrf\";\n\t\t\t\t\t\tf.appendChild(input);\n\t\t\t\t\t}\n\t\t\t\t\tinput.value=token;\n\t\t\t\t},true);\n\t\t\t\t// Close any open <details> dropdowns after an HTMX swap, so\n\t\t\t\t// menus (kebab / tab-more) don't linger over freshly loaded\n\t\t\t\t// content.\n\t\t\t\tdocument.addEventListener(\"htmx:afterSwap\",function(){\n\t\t\t\t\tdocument.querySelectorAll(\"details[open]\").forEach(function(d){d.open=false;});\n\t\t\t\t});\n\t\t\t\t// Close any open <details> dropdowns when the user clicks\n\t\t\t\t// (or taps) outside them. Matches the expected behaviour\n\t\t\t\t// of kebab / tab-more menus.\n\t\t\t\tdocument.addEventListener(\"click\",function(e){\n\t\t\t\t\tdocument.querySelectorAll(\"details[open]\").forEach(function(d){\n\t\t\t\t\t\tif(!d.contains(e.target)) d.open=false;\n\t\t\t\t\t});\n\t\t\t\t});\n\t\t\t\tdocument.addEventListener(\"keydown\",function(e){\n\t\t\t\t\tif(e.key!==\"Escape\") return;\n\t\t\t\t\tdocument.querySelectorAll(\"details[open]\").forEach(function(d){d.open=false;});\n\t\t\t\t});\n\t\t\t\t// Hide the bottom action bar when the page is scrolled away\n\t\t\t\t// from the top. Feels more app-like: bar is only in the way\n\t\t\t\t// once the user is reading into a long tab.\n\t\t\t\tfunction syncActionBar(){\n\t\t\t\t\tvar bar=document.querySelector(\".action-bar\");\n\t\t\t\t\tif(!bar) return;\n\t\t\t\t\tif(window.scrollY>0) bar.classList.add(\"action-bar-hidden\");\n\t\t\t\t\telse bar.classList.remove(\"action-bar-hidden\");\n\t\t\t\t}\n\t\t\t\tdocument.addEventListener(\"scroll\",syncActionBar,{passive:true});\n\t\t\t\t// After HTMX swaps (tab change replaces the action-bar node)\n\t\t\t\t// the newly-rendered bar should immediately reflect current\n\t\t\t\t// scroll position.\n\t\t\t\tdocument.addEventListener(\"htmx:afterSwap\",syncActionBar);\n\t\t\t</script></head><body><header class=\"site-header\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = components.Breadcrumb(breadcrumbs).Render(ctx, templ_7745c5c3_Buffer)
+		if backURL != "" {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<a class=\"site-back\" href=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var3 templ.SafeURL
+			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(backURL))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layout.templ`, Line: 89, Col: 55}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "\" aria-label=\"戻る\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = components.IconBack("site-back-icon").Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "</a>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "<h1 class=\"site-title\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</header><main class=\"site-main\">")
+		var templ_7745c5c3_Var4 string
+		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(title)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layout.templ`, Line: 93, Col: 34}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "</h1></header><main class=\"site-main\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -60,7 +103,7 @@ func Layout(title string, breadcrumbs []components.BreadcrumbItem) templ.Compone
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "</main></body></html>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "</main></body></html>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

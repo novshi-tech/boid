@@ -1,9 +1,7 @@
 package templates
 
-import "github.com/novshi-tech/boid/web/templates/components"
-
 templ Login(errorMsg string) {
-	@Layout("ログイン", []components.BreadcrumbItem{{Title: "ログイン"}}) {
+	@Layout("ログイン", "") {
 		<div class="login-container">
 			<h1 class="login-title">デバイス認証</h1>
 			if errorMsg != "" {

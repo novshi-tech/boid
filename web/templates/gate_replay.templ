@@ -2,22 +2,16 @@ package templates
 
 import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/web/templates/components"
 )
 
 templ GateReplayList(taskID, status string, gates []orchestrator.Gate, errorMsg string) {
-	@Layout("Gate Replay", []components.BreadcrumbItem{
-		{Title: "Tasks", URL: "/"},
-		{Title: taskID, URL: "/tasks/" + taskID},
-		{Title: "Gates"},
-	}) {
+	@Layout("Gate Replay", "/tasks/"+taskID) {
 		if errorMsg != "" {
 			<div class="card action-error">
 				{ errorMsg }
 			</div>
 		}
 		<div class="card">
-			<h2 class="section-title">Gate Replay</h2>
 			if len(gates) == 0 {
 				<p style="color:#888">このタスクには再発火可能なゲートがありません。</p>
 			} else {
@@ -40,9 +34,6 @@ templ GateReplayList(taskID, status string, gates []orchestrator.Gate, errorMsg 
 					}
 				</div>
 			}
-		</div>
-		<div style="margin-top:8px">
-			<a href={ templ.SafeURL("/tasks/" + taskID) } class="btn btn-secondary">← タスクに戻る</a>
 		</div>
 	}
 }
