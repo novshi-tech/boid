@@ -3,6 +3,8 @@ package templates
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
+
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/web/templates/components"
 	"time"
@@ -280,6 +282,38 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 							<strong>{ role }</strong>
 							<span class="badge">{ string(inst.Type) }</span>
 							<span>{ inst.Consumer }</span>
+						</div>
+					}
+				</div>
+			} else {
+				<p style="margin-top:8px;color:#888">(未設定)</p>
+			}
+		</div>
+		<div class="card">
+			<div style="display:flex;align-items:center;gap:8px">
+				<h2 class="section-title" style="margin:0">Dependencies</h2>
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/deps") } title="編集">
+					@components.IconEdit("icon-sm")
+				</a>
+			</div>
+			if len(task.DependsOn) > 0 || task.DependsOnPayload != "" || task.ParentID != "" {
+				<div style="margin-top:8px">
+					if task.ParentID != "" {
+						<div class="detail-field">
+							<strong>parent_id</strong>
+							{ task.ParentID }
+						</div>
+					}
+					if task.DependsOnPayload != "" {
+						<div class="detail-field">
+							<strong>depends_on_payload</strong>
+							{ task.DependsOnPayload }
+						</div>
+					}
+					if len(task.DependsOn) > 0 {
+						<div class="detail-field">
+							<strong>depends_on</strong>
+							{ strings.Join(task.DependsOn, ", ") }
 						</div>
 					}
 				</div>

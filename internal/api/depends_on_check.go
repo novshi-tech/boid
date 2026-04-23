@@ -54,6 +54,39 @@ func payloadGet(payload json.RawMessage, key string) (any, error) {
 	return cur, nil
 }
 
+// hasCycleInUpdate reports whether setting newDeps as the DependsOn list for
+// taskID would create a cycle. It does a DFS from each candidate dependency and
+// returns true if taskID is reachable.
+func hasCycleInUpdate(taskID string, newDeps []string, getTask func(string) (*orchestrator.Task, error)) bool {
+	visited := make(map[string]bool)
+	var dfs func(id string) bool
+	dfs = func(id string) bool {
+		if id == taskID {
+			return true
+		}
+		if visited[id] {
+			return false
+		}
+		visited[id] = true
+		t, err := getTask(id)
+		if err != nil || t == nil {
+			return false
+		}
+		for _, dep := range t.DependsOn {
+			if dfs(dep) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, dep := range newDeps {
+		if dfs(dep) {
+			return true
+		}
+	}
+	return false
+}
+
 // isTruthy は JSON 値が truthy かどうかを返す。
 // null, false, 0, "", [], {} は falsy。
 func isTruthy(v any) bool {
