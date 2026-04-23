@@ -39,6 +39,20 @@ templ Layout(title string, breadcrumbs []components.BreadcrumbItem) {
 					if(e.key!=="Escape") return;
 					document.querySelectorAll("details[open]").forEach(function(d){d.open=false;});
 				});
+				// Hide the bottom action bar when the page is scrolled away
+				// from the top. Feels more app-like: bar is only in the way
+				// once the user is reading into a long tab.
+				function syncActionBar(){
+					var bar=document.querySelector(".action-bar");
+					if(!bar) return;
+					if(window.scrollY>0) bar.classList.add("action-bar-hidden");
+					else bar.classList.remove("action-bar-hidden");
+				}
+				document.addEventListener("scroll",syncActionBar,{passive:true});
+				// After HTMX swaps (tab change replaces the action-bar node)
+				// the newly-rendered bar should immediately reflect current
+				// scroll position.
+				document.addEventListener("htmx:afterSwap",syncActionBar);
 			</script>
 		</head>
 		<body>

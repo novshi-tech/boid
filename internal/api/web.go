@@ -233,7 +233,7 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("HX-Request") == "true" {
 		// Tab clicks swap the entire #tabs section so the active class on
 		// the visible tabs and the "more" summary label stay in sync.
-		templates.TaskDetailTabsSection(detail.Task, detail.Actions, jobs, tab).Render(r.Context(), w)
+		templates.TaskDetailTabsSection(detail.Task, detail.Actions, jobs, detail.AvailableActions, tab).Render(r.Context(), w)
 		return
 	}
 	projectName := h.lookupProjectName(detail.Task.ProjectID)

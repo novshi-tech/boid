@@ -892,6 +892,14 @@ pre {
   background: var(--bg);
   border-top: 1px solid var(--border);
   z-index: 40;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+/* Slide off-screen when scrolled away from top (see layout.templ JS). */
+.action-bar-hidden {
+  transform: translateY(100%);
+  opacity: 0;
+  pointer-events: none;
 }
 
 .action-bar-inner {
