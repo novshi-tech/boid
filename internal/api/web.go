@@ -33,9 +33,6 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
 	r.Get("/tasks/{id}/edit/description", h.EditDescription)
 	r.Post("/tasks/{id}/edit/description", h.PostEditDescription)
-	r.Get("/tasks/{id}/edit/instructions", h.EditInstructionsList)
-	r.Get("/tasks/{id}/edit/instructions/{role}", h.EditInstructionsRole)
-	r.Post("/tasks/{id}/edit/instructions/{role}", h.PostEditInstructionsRole)
 	r.Get("/tasks/{id}/edit/deps", h.EditDeps)
 	r.Post("/tasks/{id}/edit/deps", h.PostEditDeps)
 	r.Post("/tasks/{id}/action", h.PostAction)
@@ -342,109 +339,6 @@ func (h *WebHandler) PostEditDescription(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
-}
-
-func (h *WebHandler) EditInstructionsList(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	detail, err := h.Service.GetTaskDetail(id)
-	if err != nil {
-		http.Error(w, "Task not found", http.StatusNotFound)
-		return
-	}
-	defaults := webGetDefaultInstructions(h.Service, detail.Task)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	templates.InstructionRoleList(detail.Task, defaults).Render(r.Context(), w)
-}
-
-func (h *WebHandler) EditInstructionsRole(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	role := chi.URLParam(r, "role")
-	detail, err := h.Service.GetTaskDetail(id)
-	if err != nil {
-		http.Error(w, "Task not found", http.StatusNotFound)
-		return
-	}
-	inst := orchestrator.Instruction{}
-	if detail.Task.Instructions != nil {
-		if existing, ok := detail.Task.Instructions[role]; ok {
-			inst = existing
-		}
-	}
-	if inst.Type == "" {
-		defaults := webGetDefaultInstructions(h.Service, detail.Task)
-		if def, ok := defaults[role]; ok {
-			inst = def
-		}
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	templates.InstructionRoleEdit(detail.Task, role, inst, "").Render(r.Context(), w)
-}
-
-func (h *WebHandler) PostEditInstructionsRole(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	role := chi.URLParam(r, "role")
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	detail, err := h.Service.GetTaskDetail(id)
-	if err != nil {
-		http.Error(w, "Task not found", http.StatusNotFound)
-		return
-	}
-	consumer := strings.TrimSpace(r.FormValue("consumer"))
-	inst := orchestrator.Instruction{
-		Type:        orchestrator.InstructionType(r.FormValue("type")),
-		Consumer:    consumer,
-		Name:        r.FormValue("name"),
-		Message:     r.FormValue("message"),
-		Interactive: r.FormValue("interactive") == "on",
-		Model:       r.FormValue("model"),
-	}
-	if consumer == "" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusBadRequest)
-		templates.InstructionRoleEdit(detail.Task, role, inst, "consumer は必須です").Render(r.Context(), w)
-		return
-	}
-	instJSON, err := json.Marshal(inst)
-	if err != nil {
-		http.Error(w, "encode error", http.StatusInternalServerError)
-		return
-	}
-	patch := map[string]json.RawMessage{role: instJSON}
-	patchJSON, err := json.Marshal(patch)
-	if err != nil {
-		http.Error(w, "encode error", http.StatusInternalServerError)
-		return
-	}
-	if err := h.Service.UpdateTask(id, UpdateTaskRequest{Instructions: patchJSON}); err != nil {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusInternalServerError)
-		templates.InstructionRoleEdit(detail.Task, role, inst, "更新に失敗しました: "+err.Error()).Render(r.Context(), w)
-		return
-	}
-	http.Redirect(w, r, "/tasks/"+id+"/edit/instructions", http.StatusSeeOther)
-}
-
-// webGetDefaultInstructions returns the project behavior's DefaultInstructions for the task.
-func webGetDefaultInstructions(svc WebService, task *orchestrator.Task) map[string]orchestrator.Instruction {
-	if task.ProjectID == "" {
-		return nil
-	}
-	projects, err := svc.ListProjects()
-	if err != nil {
-		return nil
-	}
-	for _, p := range projects {
-		if p.ID == task.ProjectID {
-			if tb, ok := p.Meta.TaskBehaviors[task.Behavior]; ok {
-				return tb.DefaultInstructions
-			}
-			break
-		}
-	}
-	return nil
 }
 
 func (h *WebHandler) EditDeps(w http.ResponseWriter, r *http.Request) {
