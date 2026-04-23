@@ -110,11 +110,24 @@ templ JobDetail(job *JobContextView) {
 				</div>
 			</div>
 		</div>
-		if job.Output != "" {
-			<div class="section">
-				<h2 class="section-title">出力</h2>
-				<pre style="max-height:60vh;overflow-y:auto">{ job.Output }</pre>
-			</div>
-		}
+		<div class="section">
+			<h2 class="section-title">出力</h2>
+			<pre id="job-log" data-job-id={ job.ID } style="max-height:60vh;overflow-y:auto">{ job.Output }</pre>
+			if job.Status == "running" || job.Status == "pending" {
+				<script>
+					(function() {
+						var pre = document.getElementById('job-log');
+						var es = new EventSource('/api/jobs/' + pre.dataset.jobId + '/log?follow=true');
+						es.onmessage = function(e) {
+							var span = document.createElement('span');
+							span.textContent = e.data + '\n';
+							pre.appendChild(span);
+							pre.scrollTop = pre.scrollHeight;
+						};
+						es.onerror = function() { es.close(); };
+					})();
+				</script>
+			}
+		</div>
 	}
 }
