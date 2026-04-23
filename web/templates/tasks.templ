@@ -298,51 +298,60 @@ type DepsTreeRow struct {
 //
 // A kebab "⋯" menu always holds secondary task-level actions (duplicate /
 // delete, plus abort when applicable).
-templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab string) {
-	<div class="action-bar">
-		<div class="action-bar-inner">
-			{{ editSeg := editTabURLPath(activeTab) }}
-			if editSeg != "" {
-				<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/" + editSeg) } class="btn btn-secondary action-bar-primary-form">編集</a>
-			} else {
-				{{ action, label := detailPrimaryAction(task, availableActions) }}
-				if action == "rerun" {
-					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('本当に再実行しますか？')" class="action-bar-primary-form">
-						<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
-					</form>
-				} else if action == "abort" {
-					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')" class="action-bar-primary-form">
-						<input type="hidden" name="type" value="abort"/>
-						<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
-					</form>
-				} else if action != "" {
-					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } class="action-bar-primary-form">
-						<input type="hidden" name="type" value={ action }/>
-						<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
-					</form>
-				} else {
-					<span class="action-bar-spacer"></span>
-				}
-			}
-			<details class="action-menu">
-				<summary class="action-menu-summary" aria-label="その他のアクション">⋯</summary>
-				<div class="action-menu-list" role="menu">
-					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/duplicate") }>
-						<button type="submit" class="action-menu-item">duplicate</button>
-					</form>
-					if task.Status != orchestrator.TaskStatusDone && task.Status != orchestrator.TaskStatusAborted && task.Status != orchestrator.TaskStatusPending {
-						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')">
-							<input type="hidden" name="type" value="abort"/>
-							<button type="submit" class="action-menu-item action-menu-item-danger">abort</button>
-						</form>
-					}
-					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/delete") } onsubmit="return confirm('本当に削除しますか？この操作は取り消せません。')">
-						<button type="submit" class="action-menu-item action-menu-item-danger">delete</button>
-					</form>
-				</div>
-			</details>
+templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab string, editMode bool) {
+	if editMode && activeTab == "description" {
+		<div class="action-bar">
+			<div class="action-bar-inner action-bar-inner-edit">
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "?tab=description") } class="btn btn-secondary">キャンセル</a>
+				<button type="submit" form="desc-edit-form" class="btn btn-primary">保存</button>
+			</div>
 		</div>
-	</div>
+	} else {
+		<div class="action-bar">
+			<div class="action-bar-inner">
+				{{ editSeg := editTabURLPath(activeTab) }}
+				if editSeg != "" {
+					<a href={ templ.SafeURL("/tasks/" + task.ID + "?tab=" + activeTab + "&mode=edit") } class="btn btn-secondary action-bar-primary-form">編集</a>
+				} else {
+					{{ action, label := detailPrimaryAction(task, availableActions) }}
+					if action == "rerun" {
+						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('本当に再実行しますか？')" class="action-bar-primary-form">
+							<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
+						</form>
+					} else if action == "abort" {
+						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')" class="action-bar-primary-form">
+							<input type="hidden" name="type" value="abort"/>
+							<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
+						</form>
+					} else if action != "" {
+						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } class="action-bar-primary-form">
+							<input type="hidden" name="type" value={ action }/>
+							<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
+						</form>
+					} else {
+						<span class="action-bar-spacer"></span>
+					}
+				}
+				<details class="action-menu">
+					<summary class="action-menu-summary" aria-label="その他のアクション">⋯</summary>
+					<div class="action-menu-list" role="menu">
+						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/duplicate") }>
+							<button type="submit" class="action-menu-item">duplicate</button>
+						</form>
+						if task.Status != orchestrator.TaskStatusDone && task.Status != orchestrator.TaskStatusAborted && task.Status != orchestrator.TaskStatusPending {
+							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')">
+								<input type="hidden" name="type" value="abort"/>
+								<button type="submit" class="action-menu-item action-menu-item-danger">abort</button>
+							</form>
+						}
+						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/delete") } onsubmit="return confirm('本当に削除しますか？この操作は取り消せません。')">
+							<button type="submit" class="action-menu-item action-menu-item-danger">delete</button>
+						</form>
+					</div>
+				</details>
+			</div>
+		</div>
+	}
 }
 
 // TaskDetailTimelineSection renders the action history.
@@ -456,7 +465,9 @@ templ TaskDetailJobsSection(jobs []*JobView) {
 
 // TaskDetailTabPanel renders the tab panel content for the given activeTab.
 // id="tab-panel" is the HTMX swap target for tab switching.
-templ TaskDetailTabPanel(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsRows []DepsTreeRow, activeTab string) {
+// editMode=true flips an editable tab (currently: description) into an
+// inline edit form instead of the read-only view.
+templ TaskDetailTabPanel(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsRows []DepsTreeRow, activeTab string, editMode bool) {
 	<div id="tab-panel" data-task-id={ task.ID }>
 		if activeTab == "timeline" {
 			@TaskDetailTimelineSection(actions, jobs)
@@ -500,13 +511,26 @@ templ TaskDetailTabPanel(task *orchestrator.Task, actions []*orchestrator.Action
 				})();
 			</script>
 		} else if activeTab == "description" {
-			<div class="tab-content">
-				if task.Description != "" {
-					<pre class="tab-body-pre">{ task.Description }</pre>
-				} else {
-					<p class="tab-empty">(未設定)</p>
-				}
-			</div>
+			if editMode {
+				<div class="tab-content">
+					<form
+						id="desc-edit-form"
+						hx-post={ "/tasks/" + task.ID + "/edit/description" }
+						hx-target="body"
+						hx-swap="outerHTML"
+					>
+						<textarea name="description" class="form-input tab-edit-textarea" rows="12" autofocus>{ task.Description }</textarea>
+					</form>
+				</div>
+			} else {
+				<div class="tab-content">
+					if task.Description != "" {
+						<pre class="tab-body-pre">{ task.Description }</pre>
+					} else {
+						<p class="tab-empty">(未設定)</p>
+					}
+				</div>
+			}
 		} else if activeTab == "payload" {
 			<div class="tab-content">
 				if len(task.Payload) > 0 && string(task.Payload) != "null" {
@@ -585,7 +609,7 @@ templ detailMoreItem(taskID, tab, label, activeTab string) {
 //     summary label reflects the new active tab when it's a hidden one)
 //   - the action bar primary button becomes tab-contextual (edit vs. state
 //     action) without a separate swap
-templ TaskDetailTabsSection(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsRows []DepsTreeRow, availableActions []string, activeTab string) {
+templ TaskDetailTabsSection(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsRows []DepsTreeRow, availableActions []string, activeTab string, editMode bool) {
 	<div id="tabs" class="tabs">
 		<div class="tab-list" role="tablist">
 			@detailTabLink(task.ID, "timeline", "Timeline", activeTab)
@@ -610,14 +634,14 @@ templ TaskDetailTabsSection(task *orchestrator.Task, actions []*orchestrator.Act
 				</div>
 			</details>
 		</div>
-		@TaskDetailTabPanel(task, actions, jobs, depsRows, activeTab)
-		@TaskActionBar(task, availableActions, activeTab)
+		@TaskDetailTabPanel(task, actions, jobs, depsRows, activeTab, editMode)
+		@TaskActionBar(task, availableActions, activeTab, editMode)
 	</div>
 }
 
-templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsRows []DepsTreeRow, availableActions []string, errorMsg string, activeTab string, projectName string) {
+templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsRows []DepsTreeRow, availableActions []string, errorMsg string, activeTab string, editMode bool, projectName string) {
 	@Layout(task.Title, []components.BreadcrumbItem{{Title: "Tasks", URL: "/"}, {Title: task.Title}}) {
 		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName)
-		@TaskDetailTabsSection(task, actions, jobs, depsRows, availableActions, activeTab)
+		@TaskDetailTabsSection(task, actions, jobs, depsRows, availableActions, activeTab, editMode)
 	}
 }

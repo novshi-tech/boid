@@ -650,41 +650,8 @@ func newTestWebHandlerWithEditDescription(svc WebService) *chi.Mux {
 	h := &WebHandler{Service: svc}
 	r := chi.NewRouter()
 	r.Get("/tasks/{id}", h.TaskDetail)
-	r.Get("/tasks/{id}/edit/description", h.EditDescription)
 	r.Post("/tasks/{id}/edit/description", h.PostEditDescription)
 	return r
-}
-
-func TestWebHandler_EditDescription_Renders(t *testing.T) {
-	svc := &stubWebService{
-		taskDetail: &TaskDetailView{
-			Task: &orchestrator.Task{
-				ID:          "task-1",
-				Title:       "My Task",
-				Description: "current description text",
-				Status:      "pending",
-			},
-		},
-	}
-	r := newTestWebHandlerWithEditDescription(svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1/edit/description", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, "<html") {
-		t.Error("should return full HTML page")
-	}
-	if !strings.Contains(body, `name="description"`) {
-		t.Error("form should contain description textarea")
-	}
-	if !strings.Contains(body, "current description text") {
-		t.Error("textarea should contain current description value")
-	}
 }
 
 func TestWebHandler_PostEditDescription_Success(t *testing.T) {
@@ -701,8 +668,8 @@ func TestWebHandler_PostEditDescription_Success(t *testing.T) {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
 	}
 	loc := w.Header().Get("Location")
-	if loc != "/tasks/task-1" {
-		t.Errorf("Location = %q, want /tasks/task-1", loc)
+	if loc != "/tasks/task-1?tab=description" {
+		t.Errorf("Location = %q, want /tasks/task-1?tab=description", loc)
 	}
 	if len(svc.updateTaskCalls) != 1 {
 		t.Fatalf("UpdateTask calls = %d, want 1", len(svc.updateTaskCalls))

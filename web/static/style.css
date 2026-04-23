@@ -912,6 +912,12 @@ pre {
   padding: var(--space-2) var(--space-3);
 }
 
+/* Edit mode: primary (保存) on the right, cancel next to it. No kebab,
+   no left-side spacer. */
+.action-bar-inner-edit {
+  justify-content: flex-end;
+}
+
 .action-bar-primary-form {
   display: contents;
 }
@@ -1109,6 +1115,17 @@ body:has(.action-bar) {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* Inline edit textarea inside a tab (currently description only). Sized
+   to stretch to the tab panel's width and feel like continuation of the
+   view-mode <pre>. */
+.tab-edit-textarea {
+  width: 100%;
+  min-height: 16rem;
+  font-family: monospace;
+  font-size: 0.875rem;
+  line-height: 1.5;
 }
 
 .tab-empty {

@@ -31,7 +31,6 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Post("/tasks", h.PostTaskCreate)
 	r.Get("/tasks/{id}", h.TaskDetail)
 	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
-	r.Get("/tasks/{id}/edit/description", h.EditDescription)
 	r.Post("/tasks/{id}/edit/description", h.PostEditDescription)
 	r.Post("/tasks/{id}/action", h.PostAction)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
@@ -221,17 +220,21 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	if tab == "" {
 		tab = "timeline"
 	}
+	// ?mode=edit switches an editable tab (currently: description) into
+	// inline edit mode: the tab body becomes a form and the action bar
+	// primary flips to save/cancel. Ignored on read-only tabs.
+	editMode := r.URL.Query().Get("mode") == "edit" && tab == "description"
 	errorMsg := r.URL.Query().Get("error")
 	if r.Header.Get("HX-Request") == "true" {
 		// Tab clicks swap the entire #tabs section so the active class on
 		// the visible tabs and the "more" summary label stay in sync.
 		depsRows := buildDepsTreeRows(detail.Task, detail.DependsOnTree, detail.DependentsTree)
-		templates.TaskDetailTabsSection(detail.Task, detail.Actions, jobs, depsRows, detail.AvailableActions, tab).Render(r.Context(), w)
+		templates.TaskDetailTabsSection(detail.Task, detail.Actions, jobs, depsRows, detail.AvailableActions, tab, editMode).Render(r.Context(), w)
 		return
 	}
 	projectName := h.lookupProjectName(detail.Task.ProjectID)
 	depsRows := buildDepsTreeRows(detail.Task, detail.DependsOnTree, detail.DependentsTree)
-	templates.TaskDetail(detail.Task, detail.Actions, jobs, depsRows, detail.AvailableActions, errorMsg, tab, projectName).Render(r.Context(), w)
+	templates.TaskDetail(detail.Task, detail.Actions, jobs, depsRows, detail.AvailableActions, errorMsg, tab, editMode, projectName).Render(r.Context(), w)
 }
 
 // lookupProjectName resolves a project ID to its display name (Meta.Name),
@@ -308,17 +311,6 @@ func (h *WebHandler) PostAction(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
 }
 
-func (h *WebHandler) EditDescription(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	detail, err := h.Service.GetTaskDetail(id)
-	if err != nil {
-		http.Error(w, "Task not found", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	templates.EditDescription(detail.Task, "").Render(r.Context(), w)
-}
-
 func (h *WebHandler) PostEditDescription(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := r.ParseForm(); err != nil {
@@ -327,18 +319,19 @@ func (h *WebHandler) PostEditDescription(w http.ResponseWriter, r *http.Request)
 	}
 	description := r.FormValue("description")
 	req := UpdateTaskRequest{Description: description}
+	target := "/tasks/" + id + "?tab=description"
 	if err := h.Service.UpdateTask(id, req); err != nil {
-		detail, detailErr := h.Service.GetTaskDetail(id)
-		if detailErr != nil {
-			http.Error(w, "Task not found", http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusBadRequest)
-		templates.EditDescription(detail.Task, err.Error()).Render(r.Context(), w)
+		target = "/tasks/" + id + "?tab=description&mode=edit&error=" + url.QueryEscape(err.Error())
+	}
+	// HTMX requests receive HX-Redirect so the client performs a full
+	// navigation (re-renders the tab out of edit mode). Non-HTMX falls
+	// back to a regular 303 redirect for older clients / direct POSTs.
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", target)
+		w.WriteHeader(http.StatusOK)
 		return
 	}
-	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
 func (h *WebHandler) PostDuplicate(w http.ResponseWriter, r *http.Request) {
