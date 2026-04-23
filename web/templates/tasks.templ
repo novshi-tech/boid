@@ -280,7 +280,7 @@ func editTabURLPath(activeTab string) string {
 	switch activeTab {
 	case "dependencies":
 		return "deps"
-	case "description", "payload", "instructions":
+	case "description", "instructions":
 		return activeTab
 	}
 	return ""
