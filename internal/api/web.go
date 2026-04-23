@@ -17,6 +17,7 @@ import (
 	"github.com/novshi-tech/boid/web/templates"
 )
 
+
 type WebHandler struct {
 	Service WebService
 	Hub     *TaskEventHub
@@ -31,6 +32,9 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
 	r.Get("/tasks/{id}/edit/description", h.EditDescription)
 	r.Post("/tasks/{id}/edit/description", h.PostEditDescription)
+	r.Get("/tasks/{id}/edit/payload", h.EditPayloadList)
+	r.Get("/tasks/{id}/edit/payload/{section}", h.EditPayloadSection)
+	r.Post("/tasks/{id}/edit/payload/{section}", h.PostEditPayloadSection)
 	r.Post("/tasks/{id}/action", h.PostAction)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	r.Get("/jobs/{id}", h.JobDetail)
@@ -247,6 +251,85 @@ func (h *WebHandler) PostEditDescription(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
+}
+
+func (h *WebHandler) EditPayloadList(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	detail, err := h.Service.GetTaskDetail(id)
+	if err != nil {
+		http.Error(w, "Task not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templates.PayloadSectionList(detail.Task).Render(r.Context(), w)
+}
+
+func (h *WebHandler) EditPayloadSection(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	section := chi.URLParam(r, "section")
+	detail, err := h.Service.GetTaskDetail(id)
+	if err != nil {
+		http.Error(w, "Task not found", http.StatusNotFound)
+		return
+	}
+
+	var yamlText string
+	if len(detail.Task.Payload) > 0 && string(detail.Task.Payload) != "null" {
+		raw := make(map[string]json.RawMessage)
+		if err := json.Unmarshal(detail.Task.Payload, &raw); err == nil {
+			if sectionData, ok := raw[section]; ok {
+				if y, err := jsonToYAML(sectionData); err == nil {
+					yamlText = strings.TrimRight(y, "\n")
+				}
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templates.PayloadSectionEdit(detail.Task, section, yamlText, "").Render(r.Context(), w)
+}
+
+func (h *WebHandler) PostEditPayloadSection(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	section := chi.URLParam(r, "section")
+
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	detail, err := h.Service.GetTaskDetail(id)
+	if err != nil {
+		http.Error(w, "Task not found", http.StatusNotFound)
+		return
+	}
+
+	yamlText := r.FormValue("yaml_text")
+	sectionJSON, err := yamlToJSON(yamlText)
+	if err != nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		templates.PayloadSectionEdit(detail.Task, section, yamlText, "YAML parse error: "+err.Error()).Render(r.Context(), w)
+		return
+	}
+
+	mergedPayload, err := mergeSectionIntoPayload(detail.Task.Payload, section, sectionJSON)
+	if err != nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		templates.PayloadSectionEdit(detail.Task, section, yamlText, "payload error: "+err.Error()).Render(r.Context(), w)
+		return
+	}
+
+	req := UpdateTaskRequest{Payload: mergedPayload}
+	if err := h.Service.UpdateTask(id, req); err != nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		templates.PayloadSectionEdit(detail.Task, section, yamlText, "update failed: "+err.Error()).Render(r.Context(), w)
+		return
+	}
+
+	http.Redirect(w, r, "/tasks/"+id+"/edit/payload", http.StatusSeeOther)
 }
 
 func (h *WebHandler) PostDuplicate(w http.ResponseWriter, r *http.Request) {
