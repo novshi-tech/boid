@@ -266,6 +266,27 @@ templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs [
 				<p style="margin-top:8px;color:#888">(未設定)</p>
 			}
 		</div>
+		<div class="card">
+			<div style="display:flex;align-items:center;gap:8px">
+				<h2 class="section-title" style="margin:0">Instructions</h2>
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit/instructions") } title="編集">
+					@components.IconEdit("icon-sm")
+				</a>
+			</div>
+			if len(task.Instructions) > 0 {
+				<div style="margin-top:8px">
+					for role, inst := range task.Instructions {
+						<div class="detail-field">
+							<strong>{ role }</strong>
+							<span class="badge">{ string(inst.Type) }</span>
+							<span>{ inst.Consumer }</span>
+						</div>
+					}
+				</div>
+			} else {
+				<p style="margin-top:8px;color:#888">(未設定)</p>
+			}
+		</div>
 		@TaskDetailTimelineSection(actions)
 		@TaskDetailJobsSection(jobs)
 		<div id="task-live-root" data-task-id={ task.ID } style="display:none"></div>
