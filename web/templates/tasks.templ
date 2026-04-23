@@ -93,6 +93,9 @@ type filterOption struct {
 
 templ TaskList(items []components.TreeItem, filter orchestrator.TaskFilter, projects []*orchestrator.Project, behaviors []string, workspaces []*orchestrator.WorkspaceSummary, currentURL string) {
 	@Layout("Tasks", []components.BreadcrumbItem{{Title: "Tasks"}}) {
+		<div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+			<a href="/tasks/new" class="btn btn-primary">新規作成</a>
+		</div>
 		@components.TaskFilters(filter, projects, behaviors, workspaces)
 		@TaskListFragment(items, currentURL)
 	}

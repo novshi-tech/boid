@@ -821,6 +821,14 @@ type WebAppService struct {
 	Projects   ProjectRepository
 	Meta       MetaStore
 	Workflow   WorkflowService
+	TaskSvc    TaskService
+}
+
+func (s *WebAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
+	if s.TaskSvc == nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "task service not configured"}
+	}
+	return s.TaskSvc.CreateTask(req)
 }
 
 func (s *WebAppService) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {

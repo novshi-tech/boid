@@ -1,0 +1,121 @@
+package templates
+
+import (
+	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/web/templates/components"
+)
+
+templ TaskNew(projects []*orchestrator.Project, errorMsg string) {
+	@Layout("新規タスク", []components.BreadcrumbItem{{Title: "Tasks", URL: "/"}, {Title: "New"}}) {
+		<div class="card">
+			<h1>新規タスク作成</h1>
+			if errorMsg != "" {
+				<div class="action-error">{ errorMsg }</div>
+			}
+			<form id="task-new-form" method="post" action="/tasks">
+				<div class="form-group">
+					<label for="title" class="form-label">Title *</label>
+					<input type="text" id="title" name="title" class="form-input" required autocomplete="off"/>
+				</div>
+				<div class="form-group">
+					<label for="project_id" class="form-label">Project</label>
+					<select id="project_id" name="project_id" class="filter-select">
+						<option value="">-- 選択 --</option>
+						for _, p := range projects {
+							<option value={ p.ID }>
+								if p.Meta.Name != "" {
+									{ p.Meta.Name } ({ p.ID })
+								} else {
+									{ p.ID }
+								}
+							</option>
+						}
+					</select>
+				</div>
+				<div class="form-group">
+					<label for="behavior" class="form-label">Behavior</label>
+					<input type="text" id="behavior" name="behavior" class="form-input" autocomplete="off"/>
+				</div>
+				<div class="form-group">
+					<label for="description" class="form-label">Description</label>
+					<textarea id="description" name="description" class="form-input" rows="4"></textarea>
+				</div>
+				<div class="form-group">
+					<label for="parent_id" class="form-label">Parent ID</label>
+					<input type="text" id="parent_id" name="parent_id" class="form-input" autocomplete="off"/>
+				</div>
+				<div class="form-group">
+					<label for="depends_on" class="form-label">Depends On (スペース区切り)</label>
+					<input type="text" id="depends_on" name="depends_on" class="form-input" autocomplete="off"/>
+				</div>
+				<div class="form-group">
+					<label for="depends_on_payload" class="form-label">Depends On Payload</label>
+					<input type="text" id="depends_on_payload" name="depends_on_payload" class="form-input" autocomplete="off"/>
+				</div>
+				<div class="form-group">
+					<label for="traits" class="form-label">Traits (スペース区切り)</label>
+					<input type="text" id="traits" name="traits" class="form-input" autocomplete="off"/>
+				</div>
+				<div class="form-group">
+					<label for="base_branch" class="form-label">Base Branch</label>
+					<input type="text" id="base_branch" name="base_branch" class="form-input" autocomplete="off"/>
+				</div>
+				<div class="form-group">
+					<label for="branch_prefix" class="form-label">Branch Prefix</label>
+					<input type="text" id="branch_prefix" name="branch_prefix" class="form-input" autocomplete="off"/>
+				</div>
+				<div class="form-group">
+					<label class="form-label">
+						<input type="checkbox" name="auto_start"/>
+						Auto Start
+					</label>
+				</div>
+				<div class="form-group">
+					<label class="form-label">
+						<input type="checkbox" name="worktree"/>
+						Worktree
+					</label>
+				</div>
+				<div class="form-group">
+					<label class="form-label">
+						<input type="checkbox" name="readonly"/>
+						Readonly
+					</label>
+				</div>
+				<div class="action-buttons">
+					<button type="submit" class="btn btn-primary">作成</button>
+					<a href="/" class="btn btn-secondary">キャンセル</a>
+				</div>
+			</form>
+		</div>
+		<script>
+			(function () {
+				var form = document.getElementById("task-new-form");
+				form.addEventListener("submit", function (e) {
+					e.preventDefault();
+					var m = document.cookie.match(/(?:^|;)\s*csrf_token=([^;]+)/);
+					var csrf = m ? decodeURIComponent(m[1]) : "";
+					var data = new URLSearchParams(new FormData(form));
+					fetch(form.action, {
+						method: "POST",
+						headers: {
+							"Content-Type": "application/x-www-form-urlencoded",
+							"X-CSRF-Token": csrf,
+						},
+						body: data.toString(),
+					}).then(function (r) {
+						if (r.ok) {
+							window.location.href = r.url;
+						} else {
+							return r.text().then(function (html) {
+								document.open();
+								document.write(html);
+								document.close();
+							});
+						}
+					});
+				});
+			})();
+		</script>
+	}
+}
