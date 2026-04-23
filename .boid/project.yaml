@@ -6,6 +6,10 @@ kits:
   - github.com/novshi-tech/boid-kits/go-dev
   - github.com/novshi-tech/boid-kits/github-cli
 
+host_commands:
+  playwright-cli:
+    allow: ['*']
+
 commands:
   claude:
     command:
