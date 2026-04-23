@@ -183,8 +183,13 @@ func TestWebHandler_PostGateReplay_Error(t *testing.T) {
 }
 
 func TestWebHandler_TaskDetail_ContainsRerunButton(t *testing.T) {
+	// Rerun is the primary action only in terminal states (done/aborted);
+	// executing tasks show Abort instead. Override the default stub status
+	// so the action bar renders the rerun form.
+	detail := makeTaskDetailView()
+	detail.Task.Status = orchestrator.TaskStatusDone
 	svc := &stubWebServiceWithGates{
-		stubWebService: stubWebService{taskDetail: makeTaskDetailView()},
+		stubWebService: stubWebService{taskDetail: detail},
 	}
 	r := newTestWebHandlerWithRerun(svc)
 

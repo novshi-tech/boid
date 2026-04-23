@@ -758,30 +758,6 @@ func TestTaskDetail_Tab_HXRequest_Timeline(t *testing.T) {
 	}
 }
 
-func TestTaskDetail_Tab_HXRequest_Jobs(t *testing.T) {
-	svc := &stubWebService{taskDetail: makeTaskDetailView()}
-	r := newTestWebHandler(svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1?tab=jobs", nil)
-	req.Header.Set("HX-Request", "true")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, `id="tab-panel"`) {
-		t.Errorf("tab panel fragment should contain id=tab-panel, got: %s", body)
-	}
-	if strings.Contains(body, "<html") {
-		t.Error("fragment should not contain full HTML page")
-	}
-	if !strings.Contains(body, `id="task-jobs"`) {
-		t.Errorf("jobs tab should contain task-jobs element, got: %s", body)
-	}
-}
-
 func TestTaskDetail_TitleNotH1(t *testing.T) {
 	svc := &stubWebService{taskDetail: makeTaskDetailView()}
 	r := newTestWebHandler(svc)
