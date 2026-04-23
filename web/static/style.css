@@ -550,6 +550,66 @@ details[open] > summary {
   margin-bottom: var(--space-1);
 }
 
+/* --- Task Tree --- */
+.task-tree-row {
+  display: block;
+}
+
+.tree-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-bottom: var(--space-1);
+}
+
+.tree-fold-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+  border-radius: var(--radius-1);
+  padding: 0;
+}
+
+.tree-fold-btn:hover {
+  color: var(--accent);
+}
+
+.tree-fold-placeholder {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+}
+
+.tree-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.tree-fold-icon-right {
+  display: none;
+}
+
+.task-row-link {
+  flex: 1;
+  font-weight: 600;
+  font-size: 0.9375rem;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.task-row-link:hover {
+  color: var(--accent);
+  text-decoration: none;
+}
+
 /* ========================================
    Desktop (min-width: 768px)
    ======================================== */

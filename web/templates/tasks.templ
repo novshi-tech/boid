@@ -82,7 +82,7 @@ var taskFilterOptions = []filterOption{
 	{"aborted", "Aborted"},
 }
 
-templ TaskList(tasks []*orchestrator.Task, currentFilter string) {
+templ TaskList(items []components.TreeItem, currentFilter string) {
 	@Layout("Tasks", []components.BreadcrumbItem{{Title: "Tasks"}}) {
 		<div class="filter-scroll">
 			<div class="filters">
@@ -95,24 +95,10 @@ templ TaskList(tasks []*orchestrator.Task, currentFilter string) {
 				}
 			</div>
 		</div>
-		if len(tasks) == 0 {
+		if len(items) == 0 {
 			<p class="empty">タスクがありません</p>
 		} else {
-			<div class="task-list">
-				for _, task := range tasks {
-					<a href={ templ.SafeURL("/tasks/" + task.ID) } class="task-row">
-						<div class="task-row-title">{ task.Title }</div>
-						<div class="task-row-meta">
-							<span class={ taskStatusClass(string(task.Status)) }>{ string(task.Status) }</span>
-							<span>{ task.Behavior }</span>
-							if task.ProjectID != "" {
-								<span>{ task.ProjectID }</span>
-							}
-							<span>{ task.UpdatedAt.Format("2006-01-02 15:04") }</span>
-						</div>
-					</a>
-				}
-			</div>
+			@components.TaskTree(items)
 		}
 	}
 }
