@@ -145,30 +145,33 @@ pre {
   font-weight: 500;
 }
 
-.badge-pending             { background: #fff3cd; color: #856404; }
-.badge-executing           { background: #cce5ff; color: #004085; }
-.badge-verifying           { background: #d4edda; color: #155724; }
-.badge-reworking           { background: #fdebd0; color: #784212; }
-.badge-in_review           { background: #e2d5f1; color: #4a235a; }
-.badge-collecting_feedback { background: #ffeaa7; color: #6c5b00; }
-.badge-done                { background: #d4edda; color: #155724; }
-.badge-aborted             { background: #f8d7da; color: #721c24; }
-.badge-running             { background: #cce5ff; color: #004085; }
-.badge-completed           { background: #d4edda; color: #155724; }
-.badge-failed              { background: #f8d7da; color: #721c24; }
+/* Status palette
+   - pending:  slate (calm, waiting; not alarming)
+   - executing/reworking/running: green (active work)
+   - verifying: blue (checking — distinct from active)
+   - in_review/collecting_feedback: purple (human attention needed)
+   - done/completed: neutral gray (finished, inactive)
+   - aborted/failed: red (bad outcome) */
+.badge-pending             { background: #f1f5f9; color: #475569; }
+.badge-executing           { background: #dcfce7; color: #15803d; }
+.badge-verifying           { background: #dbeafe; color: #1d4ed8; }
+.badge-reworking           { background: #dcfce7; color: #15803d; }
+.badge-done                { background: #e5e7eb; color: #6b7280; }
+.badge-aborted             { background: #fee2e2; color: #b91c1c; }
+.badge-running             { background: #dcfce7; color: #15803d; }
+.badge-completed           { background: #e5e7eb; color: #6b7280; }
+.badge-failed              { background: #fee2e2; color: #b91c1c; }
 
 @media (prefers-color-scheme: dark) {
-  .badge-pending             { background: #3d3000; color: #ffd466; }
-  .badge-executing           { background: #003366; color: #66b2ff; }
-  .badge-verifying           { background: #00331a; color: #66cc88; }
-  .badge-reworking           { background: #3d1500; color: #ffaa55; }
-  .badge-in_review           { background: #2a0040; color: #cc99ff; }
-  .badge-collecting_feedback { background: #3d2e00; color: #ffcc44; }
-  .badge-done                { background: #00331a; color: #66cc88; }
-  .badge-aborted             { background: #3d0000; color: #ff8080; }
-  .badge-running             { background: #003366; color: #66b2ff; }
-  .badge-completed           { background: #00331a; color: #66cc88; }
-  .badge-failed              { background: #3d0000; color: #ff8080; }
+  .badge-pending             { background: #1e293b; color: #94a3b8; }
+  .badge-executing           { background: #052e16; color: #4ade80; }
+  .badge-verifying           { background: #172554; color: #60a5fa; }
+  .badge-reworking           { background: #052e16; color: #4ade80; }
+  .badge-done                { background: #1f2937; color: #9ca3af; }
+  .badge-aborted             { background: #450a0a; color: #f87171; }
+  .badge-running             { background: #052e16; color: #4ade80; }
+  .badge-completed           { background: #1f2937; color: #9ca3af; }
+  .badge-failed              { background: #450a0a; color: #f87171; }
 }
 
 /* --- Card --- */
@@ -195,43 +198,170 @@ pre {
 .icon-20 { width: 20px; height: 20px; }
 .icon-24 { width: 24px; height: 24px; }
 
-/* --- Task List --- */
+/* --- Task List ---
+   Flat list with horizontal dividers (no card backgrounds).
+   Hierarchy is shown via:
+     - depth-based padding-left
+     - vertical guide lines for each ancestor depth (CSS gradient)
+     - left status-color stripe
+   The fold chevron sits at the depth-anchored gutter; leaf rows have no
+   chevron and start their title at the same gutter position (left-aligned).
+*/
 .task-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  border-top: 1px solid var(--border);
 }
 
+/* Per-depth gutter math:
+   --gutter:    horizontal step per depth level (12px on mobile)
+   --chev:      space reserved for the fold chevron (20px)
+   --pad-left:  base text indent = depth * gutter + chev
+*/
 .task-row {
-  display: block;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-2);
-  padding: var(--space-3);
+  --gutter: 12px;
+  --chev: 20px;
+  --pad-left: calc(var(--space-3) + var(--depth) * var(--gutter) + var(--chev));
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  position: relative;
+  padding: 10px var(--space-3) 10px var(--pad-left);
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid transparent;
   color: inherit;
   text-decoration: none;
   min-height: var(--tap-target);
 }
 
+/* Tree guide lines: vertical lines at each ancestor's chevron x.
+   ::before draws the line for the immediate parent (depth - 1).
+   ::after draws the line for the grandparent (depth - 2) when depth >= 2.
+   Deeper nesting keeps the immediate-parent line; ancestors above grandparent
+   are not visualised (rare in practice). */
+.task-row::before,
+.task-row::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--muted);
+  opacity: 0.35;
+  pointer-events: none;
+  display: none;
+}
+
+.task-row:not([style*="--depth: 0"])::before {
+  display: block;
+  left: calc(var(--space-3) + (var(--depth) - 1) * var(--gutter) + 9px);
+}
+
+.task-row[style*="--depth: 2"]::after,
+.task-row[style*="--depth: 3"]::after,
+.task-row[style*="--depth: 4"]::after,
+.task-row[style*="--depth: 5"]::after {
+  display: block;
+  left: calc(var(--space-3) + (var(--depth) - 2) * var(--gutter) + 9px);
+}
+
 .task-row:hover {
-  border-color: var(--accent);
+  background-color: var(--card);
   text-decoration: none;
 }
 
+/* Status stripe (left edge) */
+/* Stripe colors mirror the badge palette (saturated weight). */
+/* Pending: ready (slate) by default, blocked (lighter, dim) overridden below. */
+.task-row-status-pending             { border-left-color: #94a3b8; }
+.task-row-status-executing           { border-left-color: #22c55e; }
+.task-row-status-verifying           { border-left-color: #3b82f6; }
+.task-row-status-reworking           { border-left-color: #22c55e; }
+.task-row-status-done                { border-left-color: #9ca3af; }
+.task-row-status-aborted             { border-left-color: var(--danger); }
+
+/* Blocked pending: dim the whole row to communicate "can't act on this yet".
+   Mirrors the TUI behavior where a blocked pending row is rendered dim. */
+.task-row-blocked {
+  opacity: 0.5;
+}
+
+.task-row-blocked:hover {
+  opacity: 0.85;
+}
+
+.task-row-blocked.task-row-status-pending {
+  border-left-color: #cbd5e1;
+}
+
+/* Fold chevron — absolutely positioned at the depth-anchored gutter
+   so leaf rows (without a chevron) keep their title flush at the same x. */
+.tree-fold-btn {
+  position: absolute;
+  left: calc(var(--space-3) + var(--depth) * var(--gutter) - 2px);
+  top: 10px;
+  width: var(--chev);
+  height: 20px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tree-fold-btn:hover {
+  color: var(--accent);
+}
+
+/* Two-line row body: title (line 1, ellipsis on overflow) +
+   meta (line 2: status + project). Title gets the full row width. */
+.task-row-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .task-row-title {
-  font-weight: 600;
-  font-size: 0.9375rem;
+  font-weight: 500;
+  font-size: 0.8125rem;
   color: var(--fg);
-  margin-bottom: var(--space-1);
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .task-row-meta {
   display: flex;
-  flex-wrap: wrap;
   gap: var(--space-2);
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
   color: var(--muted);
   align-items: center;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* In the task list, status is conveyed by the left stripe + colored text.
+   Strip the badge chrome (background, padding, radius) so it reads as a
+   coloured label rather than a heavy chip. */
+.task-row-meta .badge {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.task-row-project {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 /* --- Job List --- */
@@ -339,55 +469,156 @@ pre {
   border-color: var(--accent);
 }
 
-/* filter controls row (dropdowns + search) */
-.filter-controls {
+/* --- Task Toolbar --- */
+/* Hierarchy:
+   1. status tabs  (primary)  — view switch
+   2. filter group (secondary) — search + dropdowns, visually clustered
+   3. + new        (tertiary)  — secondary action, trailing edge
+*/
+.task-toolbar {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-2);
   margin-bottom: var(--space-3);
-  align-items: center;
 }
 
-.filter-select {
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-1);
-  font-size: 0.875rem;
-  background: var(--bg);
-  color: var(--fg);
-  font-family: system-ui, sans-serif;
-  min-height: var(--tap-target);
+.status-tabs {
+  display: inline-flex;
+  border-bottom: 2px solid var(--border);
+  flex-shrink: 0;
+}
+
+.status-tab {
+  padding: 6px 14px;
+  border: none;
+  background: none;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--muted);
   cursor: pointer;
+  font-family: system-ui, sans-serif;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  min-height: auto;
 }
 
-.filter-select:focus {
-  outline: none;
-  border-color: var(--accent);
+.status-tab:hover {
+  color: var(--fg);
 }
 
+.status-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* Standalone search input (kept separate from W/P/B group). */
 .filter-search {
   flex: 1;
   min-width: 160px;
-  padding: var(--space-1) var(--space-2);
+  padding: 6px var(--space-2);
   border: 1px solid var(--border);
-  border-radius: var(--radius-1);
-  font-size: 0.875rem;
+  border-radius: var(--radius-2);
   background: var(--bg);
   color: var(--fg);
+  font-size: 0.875rem;
   font-family: system-ui, sans-serif;
-  min-height: var(--tap-target);
+  min-height: 32px;
+}
+
+.filter-search::placeholder {
+  color: var(--muted);
 }
 
 .filter-search:focus {
-  outline: none;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.2);
+}
+
+/* W/P/B filter cluster — visually one unit. */
+.filter-group {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2);
+  overflow: hidden;
+  flex-shrink: 0;
+  max-width: 100%;
+}
+
+.filter-select {
+  border: none;
+  background: transparent;
+  padding: 6px 24px 6px var(--space-2);
+  font-size: 0.875rem;
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  min-height: 32px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+                    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  max-width: 200px;
+  text-overflow: ellipsis;
+}
+
+.filter-group > .filter-select + .filter-select {
+  border-left: 1px solid var(--border);
+}
+
+.filter-select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.btn-new {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2);
+  background: var(--card);
+  color: var(--fg);
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-decoration: none;
+  flex-shrink: 0;
+  min-height: 32px;
+}
+
+.btn-new:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  text-decoration: none;
 }
 
 @media (prefers-color-scheme: dark) {
-  .filter-select,
-  .filter-search {
+  .filter-group {
     background: var(--card);
+  }
+}
+
+@media (max-width: 600px) {
+  .filter-search {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+  .filter-group {
+    flex-basis: 100%;
+  }
+  .filter-select {
+    flex: 1;
+    min-width: 0;
+  }
+  .btn-new {
+    margin-left: auto;
   }
 }
 
@@ -442,6 +673,236 @@ pre {
   display: contents;
 }
 
+/* --- Task Detail header (frameless) ---
+   Reuses the list-row visual language: status stripe on the left edge,
+   bottom divider only — no surrounding card frame. */
+.detail-card {
+  background: transparent;
+  border-bottom: 1px solid var(--border);
+  border-left-width: 3px;
+  border-left-style: solid;
+  /* border-left-color is supplied by .task-row-status-* (earlier in this file);
+     using `border` shorthand here would re-set color. */
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.detail-title {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--fg);
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 0.8125rem;
+  color: var(--muted);
+  align-items: center;
+}
+
+.detail-meta .badge {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.detail-meta-sep {
+  color: var(--muted);
+  opacity: 0.5;
+}
+
+/* --- Tab "more" dropdown (overflow tabs) --- */
+.tab-more {
+  position: relative;
+  margin-left: auto;
+  margin-bottom: -2px;
+}
+
+/* Override the default details > summary::before "▶" marker for our menus.
+   The kebab/dropdown summaries provide their own visual affordance. */
+.tab-more-summary,
+.action-menu-summary {
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.tab-more-summary::before,
+.action-menu-summary::before {
+  content: none;
+}
+
+.tab-more-summary::-webkit-details-marker,
+.action-menu-summary::-webkit-details-marker {
+  display: none;
+}
+
+.tab-more-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  min-width: 160px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+}
+
+.tab-more-item {
+  display: block;
+  padding: 8px var(--space-3);
+  color: var(--fg);
+  text-decoration: none;
+  font-size: 0.875rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab-more-item:last-child {
+  border-bottom: none;
+}
+
+.tab-more-item:hover {
+  background: var(--card);
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.tab-more-item.active {
+  color: var(--accent);
+  font-weight: 600;
+  background: var(--card);
+}
+
+/* --- Sticky bottom action bar --- */
+.action-bar {
+  position: sticky;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  margin: var(--space-4) calc(-1 * var(--space-3)) 0;
+  z-index: 40;
+}
+
+.action-bar-primary-form {
+  display: contents;
+}
+
+.action-bar .btn {
+  width: auto;
+  min-width: 100px;
+  padding: 8px var(--space-3);
+}
+
+/* Kebab "..." menu inside the action bar */
+.action-menu {
+  position: relative;
+}
+
+.action-menu-summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-2);
+  font-size: 1.25rem;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  background: var(--card);
+}
+
+.action-menu-summary::-webkit-details-marker {
+  display: none;
+}
+
+.action-menu-summary:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.action-menu-list {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2);
+  box-shadow: 0 -4px 12px rgba(0,0,0,0.08);
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  z-index: 50;
+}
+
+.action-menu-list form {
+  display: contents;
+}
+
+.action-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px var(--space-3);
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--fg);
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+
+.action-menu-item:last-child {
+  border-bottom: none;
+}
+
+.action-menu-item:hover {
+  background: var(--card);
+  color: var(--accent);
+}
+
+.action-menu-item-danger {
+  color: var(--danger);
+}
+
+.action-menu-item-danger:hover {
+  color: var(--danger);
+  background: #fef2f2;
+}
+
+@media (prefers-color-scheme: dark) {
+  .action-menu-item-danger:hover {
+    background: #2d0a0a;
+  }
+}
+
+/* Body padding: ensure scrollable content can scroll past the sticky bar */
+body:has(.action-bar) {
+  padding-bottom: 60px;
+}
+
 /* --- Tabs --- */
 .tabs {
   margin-top: var(--space-3);
@@ -451,8 +912,8 @@ pre {
   display: flex;
   gap: 2px;
   border-bottom: 2px solid var(--border);
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
+  /* No overflow:auto here — would clip the .tab-more dropdown.
+     With 3 visible tabs + a "more" menu, scrolling isn't needed. */
 }
 
 .tab {
@@ -672,44 +1133,7 @@ details[open] > summary {
   margin-bottom: var(--space-1);
 }
 
-/* --- Task Tree --- */
-.task-tree-row {
-  display: block;
-}
-
-.tree-row-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin-bottom: var(--space-1);
-}
-
-.tree-fold-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 20px;
-  height: 20px;
-  border: none;
-  background: none;
-  cursor: pointer;
-  color: var(--muted);
-  border-radius: var(--radius-1);
-  padding: 0;
-}
-
-.tree-fold-btn:hover {
-  color: var(--accent);
-}
-
-.tree-fold-placeholder {
-  display: inline-block;
-  flex-shrink: 0;
-  width: 20px;
-  height: 20px;
-}
-
+/* --- Task Tree icons --- */
 .tree-icon {
   width: 16px;
   height: 16px;
@@ -717,50 +1141,6 @@ details[open] > summary {
 
 .tree-fold-icon-right {
   display: none;
-}
-
-.task-row-link {
-  flex: 1;
-  font-weight: 600;
-  font-size: 0.9375rem;
-  color: var(--fg);
-  text-decoration: none;
-}
-
-.task-row-link:hover {
-  color: var(--accent);
-  text-decoration: none;
-}
-
-/* --- Filter Toggle (open/closed) --- */
-.filter-toggle {
-  display: inline-flex;
-  border-radius: var(--radius-2);
-  overflow: hidden;
-  border: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.filter-toggle button {
-  border: none;
-  border-radius: 0;
-  min-height: auto;
-  padding: var(--space-1) var(--space-3);
-  font-size: 0.875rem;
-  background: var(--card);
-  color: var(--fg);
-  cursor: pointer;
-  font-family: system-ui, sans-serif;
-  font-weight: 500;
-}
-
-.filter-toggle button + button {
-  border-left: 1px solid var(--border);
-}
-
-.filter-toggle button.active {
-  background: var(--accent);
-  color: #fff;
 }
 
 /* ========================================
@@ -785,20 +1165,23 @@ details[open] > summary {
     padding: var(--space-1) var(--space-3);
   }
 
-  .filter-controls {
-    flex-wrap: nowrap;
-  }
-
-  .filter-select,
-  .filter-search {
-    min-height: auto;
-  }
-
   details > summary {
     min-height: auto;
   }
 
   .card {
     margin-bottom: var(--space-3);
+  }
+
+  /* Desktop: roomier indentation, smaller minimum tap target. */
+  .task-row {
+    --gutter: 16px;
+    min-height: auto;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  .tree-fold-btn {
+    top: 8px;
   }
 }

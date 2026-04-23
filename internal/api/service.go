@@ -956,6 +956,15 @@ func (s *WebAppService) DuplicateTask(id string) (string, error) {
 	return newTask.ID, nil
 }
 
+// DeleteTask delegates to the shared TaskService so the web UI uses the
+// same delete semantics as the JSON API and TUI.
+func (s *WebAppService) DeleteTask(id string, force bool) error {
+	if s.TaskSvc == nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "task service not configured"}
+	}
+	return s.TaskSvc.DeleteTask(id, force)
+}
+
 func (s *WebAppService) ApplyAction(taskID string, actionType string) error {
 	if s.Workflow == nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}

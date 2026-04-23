@@ -9,7 +9,9 @@ import (
 // with depth and visual-parent info. Siblings appear in input order.
 // Tasks whose ParentID is absent from the list are treated as roots.
 // Cycles in ParentID references are detected via a visited set and skipped.
-func BuildTreeItems(tasks []*orchestrator.Task) []components.TreeItem {
+//
+// projectNames maps project ID to display name; pass nil to skip name resolution.
+func BuildTreeItems(tasks []*orchestrator.Task, projectNames map[string]string) []components.TreeItem {
 	idSet := make(map[string]bool, len(tasks))
 	for _, t := range tasks {
 		idSet[t.ID] = true
@@ -39,6 +41,7 @@ func BuildTreeItems(tasks []*orchestrator.Task) []components.TreeItem {
 			Depth:       depth,
 			HasChildren: len(children[t.ID]) > 0,
 			ParentID:    parentID,
+			ProjectName: projectNames[t.ProjectID],
 		})
 		for _, child := range children[t.ID] {
 			dfs(child, depth+1, t.ID)
@@ -53,7 +56,7 @@ func BuildTreeItems(tasks []*orchestrator.Task) []components.TreeItem {
 
 // BuildFlatItems returns tasks as a flat list (Depth=0, HasChildren=false, ParentID="").
 // Used for the "closed" status view where tree structure is irrelevant.
-func BuildFlatItems(tasks []*orchestrator.Task) []components.TreeItem {
+func BuildFlatItems(tasks []*orchestrator.Task, projectNames map[string]string) []components.TreeItem {
 	result := make([]components.TreeItem, 0, len(tasks))
 	for _, t := range tasks {
 		result = append(result, components.TreeItem{
@@ -61,7 +64,19 @@ func BuildFlatItems(tasks []*orchestrator.Task) []components.TreeItem {
 			Depth:       0,
 			HasChildren: false,
 			ParentID:    "",
+			ProjectName: projectNames[t.ProjectID],
 		})
 	}
 	return result
+}
+
+// projectNameMap builds an id→display-name lookup from a project list.
+func projectNameMap(projects []*orchestrator.Project) map[string]string {
+	m := make(map[string]string, len(projects))
+	for _, p := range projects {
+		if p.Meta.Name != "" {
+			m[p.ID] = p.Meta.Name
+		}
+	}
+	return m
 }

@@ -116,59 +116,137 @@ templ TaskListContent(items []components.TreeItem, filter orchestrator.TaskFilte
 
 templ TaskList(items []components.TreeItem, filter orchestrator.TaskFilter, projects []*orchestrator.Project, behaviors []string, workspaces []*orchestrator.WorkspaceSummary, currentURL string) {
 	@Layout("Tasks", []components.BreadcrumbItem{{Title: "Tasks"}}) {
-		<div style="display:flex;justify-content:flex-end;margin-bottom:8px">
-			<a href="/tasks/new" class="btn btn-primary btn-sm">新規作成</a>
-		</div>
 		@TaskListContent(items, filter, projects, behaviors, workspaces, currentURL)
 	}
 }
 
 // TaskDetailStatusSection renders the status card + action buttons.
 // Wrapped in <div id="task-status"> so EventSource JS can replace it via outerHTML.
-templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string, errorMsg string) {
+// detailProjectLabel returns the resolved project name when available,
+// falling back to the project ID.
+func detailProjectLabel(task *orchestrator.Task, projectName string) string {
+	if projectName != "" {
+		return projectName
+	}
+	return task.ProjectID
+}
+
+// detailRowClasses returns the class list for the unified status card,
+// reusing the list-row palette (status stripe + blocked dim).
+func detailRowClasses(task *orchestrator.Task) []string {
+	classes := []string{"detail-card", "task-row-status-" + string(task.Status)}
+	if task.Blocked {
+		classes = append(classes, "task-row-blocked")
+	}
+	return classes
+}
+
+// TaskDetailStatusSection renders the frameless header: title and meta.
+// Actions are intentionally NOT rendered here — they live in the sticky
+// action bar at the bottom of the page (see TaskActionBar).
+templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string) {
 	<div id="task-status">
-		<div class="card">
-			<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-				<h2 style="margin:0;font-size:1.1rem;flex:1">{ task.Title }</h2>
-				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/duplicate") }>
-					<button type="submit" class="btn btn-secondary btn-sm">duplicate</button>
-				</form>
-				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('本当に再実行しますか？')">
-					<button type="submit" class="btn btn-secondary btn-sm">rerun</button>
-				</form>
-			</div>
-			<div class="card-meta" style="margin-top:8px">
+		<div class={ detailRowClasses(task) }>
+			<h1 class="detail-title">{ task.Title }</h1>
+			<div class="detail-meta">
 				<span class={ taskStatusClass(string(task.Status)) }>{ string(task.Status) }</span>
+				<span class="detail-meta-sep">·</span>
 				<span>{ task.Behavior }</span>
 				if task.ProjectID != "" {
-					<span>{ task.ProjectID }</span>
+					<span class="detail-meta-sep">·</span>
+					<span>{ detailProjectLabel(task, projectName) }</span>
 				}
+				<span class="detail-meta-sep">·</span>
 				<span class="detail-time">{ task.UpdatedAt.Format("2006-01-02 15:04") }</span>
 			</div>
 		</div>
 		if errorMsg != "" {
-			<div class="card action-error">
-				{ errorMsg }
-			</div>
+			<div class="action-error">{ errorMsg }</div>
 		}
-		if len(availableActions) > 0 {
-			<div class="card">
-				<div class="action-buttons">
-					for _, act := range availableActions {
-						if act == "abort" {
-							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')">
-								<input type="hidden" name="type" value="abort"/>
-								<button type="submit" class="btn btn-danger btn-sm">{ act }</button>
-							</form>
-						} else {
-							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") }>
-								<input type="hidden" name="type" value={ act }/>
-								<button type="submit" class="btn btn-primary btn-sm">{ act }</button>
-							</form>
-						}
-					}
-				</div>
+	</div>
+}
+
+// detailPrimaryAction picks the single state-aware "primary" action for the
+// bottom bar. Mirrors TUI semantics:
+//   - pending                          → start  (forward, primary)
+//   - executing/verifying/reworking    → abort  (the only safe manual move;
+//                                                done is intentionally hidden)
+//   - done/aborted                     → rerun  (re-create + restart)
+// Returns ("", "") when no primary action applies.
+func detailPrimaryAction(task *orchestrator.Task, availableActions []string) (action, label string) {
+	switch task.Status {
+	case orchestrator.TaskStatusPending:
+		for _, a := range availableActions {
+			if a == "start" {
+				return "start", "Start"
+			}
+		}
+	case orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusVerifying,
+		orchestrator.TaskStatusReworking:
+		for _, a := range availableActions {
+			if a == "abort" {
+				return "abort", "Abort"
+			}
+		}
+	case orchestrator.TaskStatusDone, orchestrator.TaskStatusAborted:
+		return "rerun", "Rerun"
+	}
+	return "", ""
+}
+
+// actionPrimaryClass picks the visual variant for the primary bottom-bar
+// button: blue for forward (start), red for destructive (abort), neutral
+// for re-execute (rerun).
+func actionPrimaryClass(action string) string {
+	switch action {
+	case "start":
+		return "btn btn-primary"
+	case "abort":
+		return "btn btn-danger"
+	default:
+		return "btn btn-secondary"
+	}
+}
+
+// TaskActionBar renders the sticky action bar at the bottom of the detail
+// page. One state-aware primary button on the right; a kebab "⋯" menu on the
+// left holding always-available secondary actions (duplicate / delete) plus
+// the destructive abort fallback when applicable.
+templ TaskActionBar(task *orchestrator.Task, availableActions []string) {
+	<div class="action-bar">
+		<details class="action-menu">
+			<summary class="action-menu-summary" aria-label="その他のアクション">⋯</summary>
+			<div class="action-menu-list" role="menu">
+				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/duplicate") }>
+					<button type="submit" class="action-menu-item">duplicate</button>
+				</form>
+				if task.Status != orchestrator.TaskStatusDone && task.Status != orchestrator.TaskStatusAborted && task.Status != orchestrator.TaskStatusPending {
+					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')">
+						<input type="hidden" name="type" value="abort"/>
+						<button type="submit" class="action-menu-item action-menu-item-danger">abort</button>
+					</form>
+				}
+				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/delete") } onsubmit="return confirm('本当に削除しますか？この操作は取り消せません。')">
+					<button type="submit" class="action-menu-item action-menu-item-danger">delete</button>
+				</form>
 			</div>
+		</details>
+		{{ action, label := detailPrimaryAction(task, availableActions) }}
+		if action == "rerun" {
+			<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('本当に再実行しますか？')" class="action-bar-primary-form">
+				<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
+			</form>
+		} else if action == "abort" {
+			<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')" class="action-bar-primary-form">
+				<input type="hidden" name="type" value="abort"/>
+				<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
+			</form>
+		} else if action != "" {
+			<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } class="action-bar-primary-form">
+				<input type="hidden" name="type" value={ action }/>
+				<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
+			</form>
 		}
 	</div>
 }
@@ -300,8 +378,6 @@ templ TaskDetailTabPanel(task *orchestrator.Task, actions []*orchestrator.Action
 					});
 				})();
 			</script>
-		} else if activeTab == "jobs" {
-			@TaskDetailJobsSection(jobs)
 		} else if activeTab == "description" {
 			<div class="card">
 				<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
@@ -389,61 +465,70 @@ func tabClass(tab, activeTab string) string {
 	return "tab"
 }
 
-templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, availableActions []string, errorMsg string, activeTab string) {
+// detailTabHidden returns true when the active tab is one of the overflow
+// items (instructions / dependencies). Used to mark the more-menu as active.
+func detailTabHidden(activeTab string) bool {
+	return activeTab == "instructions" || activeTab == "dependencies"
+}
+
+func detailMoreSummaryClass(activeTab string) string {
+	if detailTabHidden(activeTab) {
+		return "tab tab-more-summary active"
+	}
+	return "tab tab-more-summary"
+}
+
+templ detailTabLink(taskID, tab, label, activeTab string) {
+	<a
+		class={ tabClass(tab, activeTab) }
+		href={ templ.SafeURL("/tasks/" + taskID + "?tab=" + tab) }
+		hx-get={ "/tasks/" + taskID + "?tab=" + tab }
+		hx-target="#tab-panel"
+		hx-swap="outerHTML"
+		hx-push-url="true"
+	>{ label }</a>
+}
+
+templ detailMoreItem(taskID, tab, label, activeTab string) {
+	<a
+		class={ "tab-more-item", templ.KV("active", tab == activeTab) }
+		href={ templ.SafeURL("/tasks/" + taskID + "?tab=" + tab) }
+		hx-get={ "/tasks/" + taskID + "?tab=" + tab }
+		hx-target="#tab-panel"
+		hx-swap="outerHTML"
+		hx-push-url="true"
+	>{ label }</a>
+}
+
+templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, projectName string) {
 	@Layout(task.Title, []components.BreadcrumbItem{{Title: "Tasks", URL: "/"}, {Title: task.Title}}) {
-		@TaskDetailStatusSection(task, availableActions, errorMsg)
+		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName)
 		<div class="tabs">
 			<div class="tab-list" role="tablist">
-				<a
-					class={ tabClass("timeline", activeTab) }
-					href={ templ.SafeURL("/tasks/" + task.ID + "?tab=timeline") }
-					hx-get={ "/tasks/" + task.ID + "?tab=timeline" }
-					hx-target="#tab-panel"
-					hx-swap="outerHTML"
-					hx-push-url="true"
-				>Timeline</a>
-				<a
-					class={ tabClass("description", activeTab) }
-					href={ templ.SafeURL("/tasks/" + task.ID + "?tab=description") }
-					hx-get={ "/tasks/" + task.ID + "?tab=description" }
-					hx-target="#tab-panel"
-					hx-swap="outerHTML"
-					hx-push-url="true"
-				>Description</a>
-				<a
-					class={ tabClass("payload", activeTab) }
-					href={ templ.SafeURL("/tasks/" + task.ID + "?tab=payload") }
-					hx-get={ "/tasks/" + task.ID + "?tab=payload" }
-					hx-target="#tab-panel"
-					hx-swap="outerHTML"
-					hx-push-url="true"
-				>Payload</a>
-				<a
-					class={ tabClass("instructions", activeTab) }
-					href={ templ.SafeURL("/tasks/" + task.ID + "?tab=instructions") }
-					hx-get={ "/tasks/" + task.ID + "?tab=instructions" }
-					hx-target="#tab-panel"
-					hx-swap="outerHTML"
-					hx-push-url="true"
-				>Instructions</a>
-				<a
-					class={ tabClass("dependencies", activeTab) }
-					href={ templ.SafeURL("/tasks/" + task.ID + "?tab=dependencies") }
-					hx-get={ "/tasks/" + task.ID + "?tab=dependencies" }
-					hx-target="#tab-panel"
-					hx-swap="outerHTML"
-					hx-push-url="true"
-				>Dependencies</a>
-				<a
-					class={ tabClass("jobs", activeTab) }
-					href={ templ.SafeURL("/tasks/" + task.ID + "?tab=jobs") }
-					hx-get={ "/tasks/" + task.ID + "?tab=jobs" }
-					hx-target="#tab-panel"
-					hx-swap="outerHTML"
-					hx-push-url="true"
-				>Jobs</a>
+				@detailTabLink(task.ID, "timeline", "Timeline", activeTab)
+				@detailTabLink(task.ID, "description", "Desc", activeTab)
+				@detailTabLink(task.ID, "payload", "Payload", activeTab)
+				<details class="tab-more">
+					<summary class={ detailMoreSummaryClass(activeTab) } aria-label="その他のタブ">
+						if detailTabHidden(activeTab) {
+							if activeTab == "instructions" {
+								Inst
+							} else if activeTab == "dependencies" {
+								Deps
+							}
+							<span aria-hidden="true">▾</span>
+						} else {
+							⋯
+						}
+					</summary>
+					<div class="tab-more-menu" role="menu">
+						@detailMoreItem(task.ID, "instructions", "Instructions", activeTab)
+						@detailMoreItem(task.ID, "dependencies", "Dependencies", activeTab)
+					</div>
+				</details>
 			</div>
 			@TaskDetailTabPanel(task, actions, jobs, activeTab)
 		</div>
+		@TaskActionBar(task, availableActions)
 	}
 }

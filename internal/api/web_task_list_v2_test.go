@@ -160,8 +160,8 @@ func TestWebTaskList_TaskRowIsAnchorTag(t *testing.T) {
 	if !strings.Contains(body, "/tasks/t-abc") {
 		t.Errorf("body should contain link to /tasks/t-abc, got: %s", body)
 	}
-	// task-row class should be on the <a> tag (not just inside it)
-	if !strings.Contains(body, `class="task-row"`) {
+	// task-row class should be on the <a> tag (alongside status-specific classes)
+	if !strings.Contains(body, `class="task-row `) {
 		t.Errorf("body should contain task-row class on anchor, got: %s", body)
 	}
 }
@@ -198,7 +198,7 @@ func TestBuildFlatItems(t *testing.T) {
 	parent := &orchestrator.Task{ID: "p", Title: "Parent", ParentID: "", CreatedAt: now, UpdatedAt: now}
 	child := &orchestrator.Task{ID: "c", Title: "Child", ParentID: "p", CreatedAt: now, UpdatedAt: now}
 
-	items := BuildFlatItems([]*orchestrator.Task{parent, child})
+	items := BuildFlatItems([]*orchestrator.Task{parent, child}, nil)
 
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(items))

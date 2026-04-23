@@ -11,6 +11,14 @@ type TreeItem struct {
 	Depth       int
 	HasChildren bool
 	ParentID    string // visual parent ID; empty for roots
+	ProjectName string // resolved display name; falls back to ProjectID
+}
+
+func (i TreeItem) ProjectLabel() string {
+	if i.ProjectName != "" {
+		return i.ProjectName
+	}
+	return i.Task.ProjectID
 }
 
 func treeStatusClass(s string) string {
@@ -20,7 +28,7 @@ func treeStatusClass(s string) string {
 // TaskTree renders a flat list of TreeItems as a collapsible task tree.
 // Folded state is persisted in localStorage.
 templ TaskTree(items []TreeItem) {
-	<div class="task-list" id="task-tree">
+	<div class="task-list" id="task-tree" role="list">
 		for _, item := range items {
 			@taskTreeRow(item)
 		}
@@ -62,6 +70,7 @@ templ TaskTree(items []TreeItem) {
 				applyIcons();
 				document.querySelectorAll('#task-tree .tree-fold-btn').forEach(function(btn) {
 					btn.addEventListener('click', function(e) {
+						e.preventDefault();
 						e.stopPropagation();
 						var id = btn.dataset.taskId;
 						if (isFolded(id)) {
@@ -83,33 +92,40 @@ templ TaskTree(items []TreeItem) {
 	</script>
 }
 
+// taskTreeRow renders one task as a flat list item, with depth-based
+// indentation. Tree guide lines are drawn via CSS using the --depth var.
+//
+// Blocked pending tasks (waiting on unsatisfied deps) get an extra
+// `task-row-blocked` class so CSS can dim the row.
 templ taskTreeRow(item TreeItem) {
-	<div
-		class="task-tree-row"
+	<a
+		href={ templ.SafeURL("/tasks/" + item.Task.ID) }
+		class={ "task-row", "task-row-status-" + string(item.Task.Status), templ.KV("task-row-blocked", item.Task.Blocked) }
 		data-task-id={ item.Task.ID }
 		data-parent-id={ item.ParentID }
-		style={ fmt.Sprintf("margin-left: %dpx", item.Depth*16) }
+		role="listitem"
+		style={ fmt.Sprintf("--depth: %d", item.Depth) }
 	>
-		<a href={ templ.SafeURL("/tasks/" + item.Task.ID) } class="task-row">
-			<div class="tree-row-head">
-				if item.HasChildren {
-					<button type="button" class="tree-fold-btn" data-task-id={ item.Task.ID } aria-expanded="true" onclick="event.preventDefault();event.stopPropagation()">
-						@IconChevronDown("tree-icon tree-fold-icon-down")
-						@IconChevronRight("tree-icon tree-fold-icon-right")
-					</button>
-				} else {
-					<span class="tree-fold-placeholder"></span>
-				}
-				<span class="task-row-link">{ item.Task.Title }</span>
-			</div>
+		if item.HasChildren {
+			<button
+				type="button"
+				class="tree-fold-btn"
+				data-task-id={ item.Task.ID }
+				aria-label="折りたたみ切替"
+				aria-expanded="true"
+			>
+				@IconChevronDown("tree-icon tree-fold-icon-down")
+				@IconChevronRight("tree-icon tree-fold-icon-right")
+			</button>
+		}
+		<div class="task-row-body">
+			<div class="task-row-title" title={ item.Task.Title }>{ item.Task.Title }</div>
 			<div class="task-row-meta">
 				<span class={ treeStatusClass(string(item.Task.Status)) }>{ string(item.Task.Status) }</span>
-				<span>{ item.Task.Behavior }</span>
 				if item.Task.ProjectID != "" {
-					<span>{ item.Task.ProjectID }</span>
+					<span class="task-row-project">{ item.ProjectLabel() }</span>
 				}
-				<span>{ item.Task.UpdatedAt.Format("2006-01-02 15:04") }</span>
 			</div>
-		</a>
-	</div>
+		</div>
+	</a>
 }

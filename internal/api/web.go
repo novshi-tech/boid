@@ -44,6 +44,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Post("/tasks/{id}/action", h.PostAction)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	r.Post("/tasks/{id}/rerun", h.PostRerun)
+	r.Post("/tasks/{id}/delete", h.PostDelete)
 	r.Get("/tasks/{id}/gates", h.GateReplayList)
 	r.Post("/tasks/{id}/gates/{gate_id}/replay", h.PostGateReplay)
 	r.Get("/jobs/{id}", h.JobDetail)
@@ -147,11 +148,12 @@ func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	projectNames := projectNameMap(projects)
 	var items []components.TreeItem
 	if filter.Status == "closed" {
-		items = BuildFlatItems(tasks)
+		items = BuildFlatItems(tasks, projectNames)
 	} else {
-		items = BuildTreeItems(tasks)
+		items = BuildTreeItems(tasks, projectNames)
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -232,7 +234,26 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 		templates.TaskDetailTabPanel(detail.Task, detail.Actions, jobs, tab).Render(r.Context(), w)
 		return
 	}
-	templates.TaskDetail(detail.Task, detail.Actions, jobs, detail.AvailableActions, errorMsg, tab).Render(r.Context(), w)
+	projectName := h.lookupProjectName(detail.Task.ProjectID)
+	templates.TaskDetail(detail.Task, detail.Actions, jobs, detail.AvailableActions, errorMsg, tab, projectName).Render(r.Context(), w)
+}
+
+// lookupProjectName resolves a project ID to its display name (Meta.Name),
+// returning "" when the project or name is missing.
+func (h *WebHandler) lookupProjectName(projectID string) string {
+	if projectID == "" {
+		return ""
+	}
+	projects, err := h.Service.ListProjects()
+	if err != nil {
+		return ""
+	}
+	for _, p := range projects {
+		if p.ID == projectID {
+			return p.Meta.Name
+		}
+	}
+	return ""
 }
 
 // TaskDetailFragment returns a partial HTML fragment for the task detail page.
@@ -268,7 +289,8 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 	case "timeline":
 		templates.TaskDetailTimelineSection(detail.Actions).Render(r.Context(), w)
 	case "status":
-		templates.TaskDetailStatusSection(detail.Task, detail.AvailableActions, "").Render(r.Context(), w)
+		projectName := h.lookupProjectName(detail.Task.ProjectID)
+		templates.TaskDetailStatusSection(detail.Task, detail.AvailableActions, "", projectName).Render(r.Context(), w)
 	case "jobs":
 		templates.TaskDetailJobsSection(jobs).Render(r.Context(), w)
 	default:
@@ -570,6 +592,18 @@ func (h *WebHandler) PostRerun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
+}
+
+// PostDelete deletes the task and redirects to the task list.
+// Errors are surfaced via ?error= on the same task page so the user sees the
+// reason (e.g. dependents exist).
+func (h *WebHandler) PostDelete(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := h.Service.DeleteTask(id, false); err != nil {
+		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func (h *WebHandler) GateReplayList(w http.ResponseWriter, r *http.Request) {

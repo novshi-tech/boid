@@ -112,6 +112,7 @@ type WebService interface {
 	ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error)
 	ApplyAction(taskID string, actionType string) error
 	DuplicateTask(id string) (string, error)
+	DeleteTask(id string, force bool) error
 	ListJobs(status string) ([]JobWithContext, error)
 	GetJob(id string) (*JobWithContext, error)
 	CreateTask(req CreateTaskRequest) (*orchestrator.Task, error)

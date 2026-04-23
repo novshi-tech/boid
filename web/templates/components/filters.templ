@@ -4,71 +4,96 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// TaskFilters renders the multi-filter form for the task list.
+// projectLabel returns the display name for a project, falling back to ID
+// when the meta name is missing.
+func projectLabel(p *orchestrator.Project) string {
+	if p.Meta.Name != "" {
+		return p.Meta.Name
+	}
+	return p.ID
+}
+
+// TaskFilters renders the task list toolbar:
+//   - status (open/closed) as the primary view tabs
+//   - search as a standalone input (its own hx-target avoids losing focus on each keystroke)
+//   - workspace > project > behavior as one logical filter group
+//   - "新規作成" as a secondary action on the trailing edge
 templ TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Project, behaviors []string, workspaces []*orchestrator.WorkspaceSummary) {
 	<form
 		id="filter-form"
+		class="task-toolbar"
 		hx-get="/"
 		hx-target="#main-content"
 		hx-swap="innerHTML"
 		hx-select="#main-content"
 		hx-push-url="true"
-		hx-trigger="change, input delay:500ms from:[name=q]"
+		hx-trigger="change"
 	>
-		<div class="filter-controls">
-			<div class="filter-toggle">
-				if filter.Status == "closed" {
-					<button type="submit" name="status" value="open">open</button>
-					<button type="submit" name="status" value="closed" class="active">closed</button>
-				} else {
-					<button type="submit" name="status" value="open" class="active">open</button>
-					<button type="submit" name="status" value="closed">closed</button>
-				}
-			</div>
-			<input
-				type="search"
-				name="q"
-				value={ filter.Title }
-				placeholder="タイトル検索..."
-				class="filter-search"
-				autocomplete="off"
-			/>
-			if len(workspaces) > 0 {
-				<select name="workspace" class="filter-select">
-					<option value="">Workspace: All</option>
-					for _, ws := range workspaces {
-						if ws.ID == filter.WorkspaceID {
-							<option value={ ws.ID } selected>{ ws.ID }</option>
-						} else {
-							<option value={ ws.ID }>{ ws.ID }</option>
-						}
-					}
-				</select>
-			}
-			if len(projects) > 0 {
-				<select name="project" class="filter-select">
-					<option value="">Project: All</option>
-					for _, p := range projects {
-						if p.ID == filter.ProjectID {
-							<option value={ p.ID } selected>{ p.ID }</option>
-						} else {
-							<option value={ p.ID }>{ p.ID }</option>
-						}
-					}
-				</select>
-			}
-			if len(behaviors) > 0 {
-				<select name="behavior" class="filter-select">
-					<option value="">Behavior: All</option>
-					for _, b := range behaviors {
-						if b == filter.Behavior {
-							<option value={ b } selected>{ b }</option>
-						} else {
-							<option value={ b }>{ b }</option>
-						}
-					}
-				</select>
+		<div class="status-tabs" role="tablist" aria-label="ステータス">
+			if filter.Status == "closed" {
+				<button type="submit" name="status" value="open" class="status-tab" role="tab" aria-selected="false">Open</button>
+				<button type="submit" name="status" value="closed" class="status-tab active" role="tab" aria-selected="true">Closed</button>
+			} else {
+				<button type="submit" name="status" value="open" class="status-tab active" role="tab" aria-selected="true">Open</button>
+				<button type="submit" name="status" value="closed" class="status-tab" role="tab" aria-selected="false">Closed</button>
 			}
 		</div>
+		<input
+			type="search"
+			name="q"
+			value={ filter.Title }
+			placeholder="検索..."
+			class="filter-search"
+			autocomplete="off"
+			aria-label="タイトル検索"
+			hx-get="/"
+			hx-trigger="input delay:300ms, search"
+			hx-target="#task-list"
+			hx-swap="outerHTML"
+			hx-select="#task-list"
+			hx-include="closest form"
+			hx-push-url="true"
+		/>
+		if len(workspaces) > 0 || len(projects) > 0 || len(behaviors) > 0 {
+			<div class="filter-group">
+				if len(workspaces) > 0 {
+					<select name="workspace" class="filter-select" aria-label="Workspace">
+						<option value="">Workspace</option>
+						for _, ws := range workspaces {
+							if ws.ID == filter.WorkspaceID {
+								<option value={ ws.ID } selected>{ ws.ID }</option>
+							} else {
+								<option value={ ws.ID }>{ ws.ID }</option>
+							}
+						}
+					</select>
+				}
+				if len(projects) > 0 {
+					<select name="project" class="filter-select" aria-label="Project">
+						<option value="">Project</option>
+						for _, p := range projects {
+							if p.ID == filter.ProjectID {
+								<option value={ p.ID } selected>{ projectLabel(p) }</option>
+							} else {
+								<option value={ p.ID }>{ projectLabel(p) }</option>
+							}
+						}
+					</select>
+				}
+				if len(behaviors) > 0 {
+					<select name="behavior" class="filter-select" aria-label="Behavior">
+						<option value="">Behavior</option>
+						for _, b := range behaviors {
+							if b == filter.Behavior {
+								<option value={ b } selected>{ b }</option>
+							} else {
+								<option value={ b }>{ b }</option>
+							}
+						}
+					</select>
+				}
+			</div>
+		}
+		<a href="/tasks/new" class="btn-new" aria-label="新規タスク作成">+ 新規</a>
 	</form>
 }

@@ -71,6 +71,10 @@ func (s *stubWebService) DuplicateTask(id string) (string, error) {
 	return s.duplicateTaskNewID, s.duplicateTaskErr
 }
 
+func (s *stubWebService) DeleteTask(id string, force bool) error {
+	return nil
+}
+
 func (s *stubWebService) ListJobs(status string) ([]JobWithContext, error) {
 	return nil, nil
 }
