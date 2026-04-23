@@ -580,27 +580,6 @@ pre {
   outline-offset: -2px;
 }
 
-.btn-new {
-  display: inline-flex;
-  align-items: center;
-  padding: 6px var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-2);
-  background: var(--card);
-  color: var(--fg);
-  font-size: 0.875rem;
-  font-weight: 500;
-  text-decoration: none;
-  flex-shrink: 0;
-  min-height: 32px;
-}
-
-.btn-new:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-  text-decoration: none;
-}
-
 @media (prefers-color-scheme: dark) {
   .filter-group {
     background: var(--card);
@@ -618,9 +597,6 @@ pre {
   .filter-select {
     flex: 1;
     min-width: 0;
-  }
-  .btn-new {
-    margin-left: auto;
   }
 }
 
@@ -690,52 +666,6 @@ pre {
   font-weight: 600;
   margin-bottom: var(--space-3);
   color: var(--fg);
-}
-
-/* --- Action Buttons (inline form submit / cancel) ---
-   Used at the end of edit forms (payload / deps / description / new task).
-   Mirrors the detail page action bar: outlined primary, auto-width buttons. */
-.action-buttons {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-3);
-}
-
-.action-buttons form {
-  display: contents;
-}
-
-.action-buttons .btn {
-  width: auto;
-  min-width: 100px;
-  padding: 8px var(--space-3);
-  font-weight: 500;
-}
-
-.action-buttons .btn-primary {
-  background: transparent;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-}
-
-.action-buttons .btn-primary:hover {
-  background: var(--accent);
-  color: #fff;
-  opacity: 1;
-}
-
-.action-buttons .btn-danger {
-  background: transparent;
-  color: var(--danger);
-  border: 1px solid var(--danger);
-}
-
-.action-buttons .btn-danger:hover {
-  background: var(--danger);
-  color: #fff;
-  opacity: 1;
 }
 
 /* --- Page heading (frameless, no status stripe) ---
@@ -1361,6 +1291,22 @@ body:has(.action-bar) {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.2);
+}
+
+/* Inline label + checkbox row (Auto Start etc.).
+   Keeps the checkbox and its label on the same baseline without the
+   column gap that .form-label would otherwise impose. */
+.form-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.875rem;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.form-check input[type="checkbox"] {
+  margin: 0;
 }
 
 /* --- Timeline --- */

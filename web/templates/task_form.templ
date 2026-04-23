@@ -1,11 +1,69 @@
 package templates
 
 import (
+	"encoding/json"
+	"sort"
+
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
+// taskNewProjectLabel returns the display name shown in the Project
+// dropdown. Meta.Name is the human label (e.g. "boid", "freee-cli"); the
+// raw project ID is only surfaced when a project lacks a name.
+func taskNewProjectLabel(p *orchestrator.Project) string {
+	if p.Meta.Name != "" {
+		return p.Meta.Name
+	}
+	return p.ID
+}
+
+// taskNewBehaviors returns the union of behavior names defined across
+// all projects, sorted alphabetically. Used as the default Behavior
+// option list when no project is selected.
+func taskNewBehaviors(projects []*orchestrator.Project) []string {
+	seen := map[string]bool{}
+	for _, p := range projects {
+		for name := range p.Meta.TaskBehaviors {
+			seen[name] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// taskNewBehaviorsByProjectJSON builds a {projectID: [behavior…]} map
+// as a JSON string. Embedded in a <script> so the inline project→behavior
+// filter can rebuild the behavior options without an extra round trip.
+func taskNewBehaviorsByProjectJSON(projects []*orchestrator.Project) string {
+	m := make(map[string][]string, len(projects))
+	for _, p := range projects {
+		names := make([]string, 0, len(p.Meta.TaskBehaviors))
+		for name := range p.Meta.TaskBehaviors {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		m[p.ID] = names
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
+// TaskNew renders the minimal task-creation form. Only the fields a human
+// realistically touches when creating a task from the Web UI are shown
+// (title / project / behavior / description / auto-start). Advanced
+// settings like worktree / readonly / depends_on / traits / branch
+// overrides are provided by project.yaml defaults or kit policy; they're
+// not worth cluttering the happy-path form. The back arrow in the header
+// acts as cancel, so no separate cancel button is needed.
 templ TaskNew(projects []*orchestrator.Project, errorMsg string) {
-	@Layout("新規タスク", "/") {
+	@Layout("New Task", "/") {
 		if errorMsg != "" {
 			<div class="action-error">{ errorMsg }</div>
 		}
@@ -13,106 +71,84 @@ templ TaskNew(projects []*orchestrator.Project, errorMsg string) {
 			<form id="task-new-form" method="post" action="/tasks">
 				<div class="form-group">
 					<label for="title" class="form-label">Title *</label>
-					<input type="text" id="title" name="title" class="form-input" required autocomplete="off"/>
+					<input type="text" id="title" name="title" class="form-input" required autocomplete="off" autofocus/>
 				</div>
 				<div class="form-group">
 					<label for="project_id" class="form-label">Project</label>
-					<select id="project_id" name="project_id" class="filter-select">
+					<select id="project_id" name="project_id" class="form-input">
 						<option value="">-- 選択 --</option>
 						for _, p := range projects {
-							<option value={ p.ID }>
-								if p.Meta.Name != "" {
-									{ p.Meta.Name } ({ p.ID })
-								} else {
-									{ p.ID }
-								}
-							</option>
+							<option value={ p.ID }>{ taskNewProjectLabel(p) }</option>
 						}
 					</select>
 				</div>
 				<div class="form-group">
 					<label for="behavior" class="form-label">Behavior</label>
-					<input type="text" id="behavior" name="behavior" class="form-input" autocomplete="off"/>
+					<select
+						id="behavior"
+						name="behavior"
+						class="form-input"
+						data-behaviors-by-project={ taskNewBehaviorsByProjectJSON(projects) }
+					>
+						<option value="">-- 選択 --</option>
+						for _, b := range taskNewBehaviors(projects) {
+							<option value={ b }>{ b }</option>
+						}
+					</select>
 				</div>
 				<div class="form-group">
 					<label for="description" class="form-label">Description</label>
-					<textarea id="description" name="description" class="form-input" rows="4"></textarea>
+					<textarea id="description" name="description" class="form-input" rows="6"></textarea>
 				</div>
 				<div class="form-group">
-					<label for="parent_id" class="form-label">Parent ID</label>
-					<input type="text" id="parent_id" name="parent_id" class="form-input" autocomplete="off"/>
-				</div>
-				<div class="form-group">
-					<label for="depends_on" class="form-label">Depends On (スペース区切り)</label>
-					<input type="text" id="depends_on" name="depends_on" class="form-input" autocomplete="off"/>
-				</div>
-				<div class="form-group">
-					<label for="depends_on_payload" class="form-label">Depends On Payload</label>
-					<input type="text" id="depends_on_payload" name="depends_on_payload" class="form-input" autocomplete="off"/>
-				</div>
-				<div class="form-group">
-					<label for="traits" class="form-label">Traits (スペース区切り)</label>
-					<input type="text" id="traits" name="traits" class="form-input" autocomplete="off"/>
-				</div>
-				<div class="form-group">
-					<label for="base_branch" class="form-label">Base Branch</label>
-					<input type="text" id="base_branch" name="base_branch" class="form-input" autocomplete="off"/>
-				</div>
-				<div class="form-group">
-					<label for="branch_prefix" class="form-label">Branch Prefix</label>
-					<input type="text" id="branch_prefix" name="branch_prefix" class="form-input" autocomplete="off"/>
-				</div>
-				<div class="form-group">
-					<label class="form-label">
+					<label class="form-check">
 						<input type="checkbox" name="auto_start"/>
-						Auto Start
+						<span>Auto Start</span>
 					</label>
-				</div>
-				<div class="form-group">
-					<label class="form-label">
-						<input type="checkbox" name="worktree"/>
-						Worktree
-					</label>
-				</div>
-				<div class="form-group">
-					<label class="form-label">
-						<input type="checkbox" name="readonly"/>
-						Readonly
-					</label>
-				</div>
-				<div class="action-buttons">
-					<button type="submit" class="btn btn-primary">作成</button>
-					<a href="/" class="btn btn-secondary">キャンセル</a>
 				</div>
 			</form>
 		</div>
+		<div class="action-bar">
+			<div class="action-bar-inner">
+				<button type="submit" form="task-new-form" class="btn btn-primary action-bar-primary-form">Create</button>
+				<span class="action-bar-spacer"></span>
+			</div>
+		</div>
 		<script>
 			(function () {
-				var form = document.getElementById("task-new-form");
-				form.addEventListener("submit", function (e) {
-					e.preventDefault();
-					var m = document.cookie.match(/(?:^|;)\s*csrf_token=([^;]+)/);
-					var csrf = m ? decodeURIComponent(m[1]) : "";
-					var data = new URLSearchParams(new FormData(form));
-					fetch(form.action, {
-						method: "POST",
-						headers: {
-							"Content-Type": "application/x-www-form-urlencoded",
-							"X-CSRF-Token": csrf,
-						},
-						body: data.toString(),
-					}).then(function (r) {
-						if (r.ok) {
-							window.location.href = r.url;
-						} else {
-							return r.text().then(function (html) {
-								document.open();
-								document.write(html);
-								document.close();
-							});
-						}
-					});
+				var projSel = document.getElementById("project_id");
+				var behSel = document.getElementById("behavior");
+				var data = {};
+				try {
+					data = JSON.parse(behSel.dataset.behaviorsByProject || "{}");
+				} catch (e) { data = {}; }
+				// Snapshot the initial (union) behavior options as fallback
+				// when no project is selected.
+				var allOptions = Array.prototype.slice.call(behSel.options).map(function (o) {
+					return { value: o.value, label: o.textContent };
 				});
+				function rebuild() {
+					var pid = projSel.value;
+					var current = behSel.value;
+					var list;
+					if (pid && data[pid]) {
+						list = [{ value: "", label: "-- 選択 --" }].concat(
+							data[pid].map(function (b) { return { value: b, label: b }; })
+						);
+					} else {
+						list = allOptions;
+					}
+					behSel.innerHTML = "";
+					list.forEach(function (o) {
+						var opt = document.createElement("option");
+						opt.value = o.value;
+						opt.textContent = o.label;
+						if (o.value === current) opt.selected = true;
+						behSel.appendChild(opt);
+					});
+				}
+				projSel.addEventListener("change", rebuild);
+				rebuild();
 			})();
 		</script>
 	}

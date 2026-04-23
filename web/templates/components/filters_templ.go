@@ -25,7 +25,9 @@ func projectLabel(p *orchestrator.Project) string {
 //   - status (open/closed) as the primary view tabs
 //   - search as a standalone input (its own hx-target avoids losing focus on each keystroke)
 //   - workspace > project > behavior as one logical filter group
-//   - "新規作成" as a secondary action on the trailing edge
+//
+// Create lives in the sticky bottom action bar (TaskListActionBar),
+// keeping the toolbar focused on filtering.
 func TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Project, behaviors []string, workspaces []*orchestrator.WorkspaceSummary) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -69,7 +71,7 @@ func TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Projec
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(filter.Title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 44, Col: 23}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 46, Col: 23}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
@@ -98,7 +100,7 @@ func TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Projec
 						var templ_7745c5c3_Var3 string
 						templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(ws.ID)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 64, Col: 29}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 66, Col: 29}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 						if templ_7745c5c3_Err != nil {
@@ -111,7 +113,7 @@ func TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Projec
 						var templ_7745c5c3_Var4 string
 						templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(ws.ID)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 64, Col: 48}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 66, Col: 48}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 						if templ_7745c5c3_Err != nil {
@@ -129,7 +131,7 @@ func TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Projec
 						var templ_7745c5c3_Var5 string
 						templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(ws.ID)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 66, Col: 29}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 68, Col: 29}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 						if templ_7745c5c3_Err != nil {
@@ -142,7 +144,7 @@ func TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Projec
 						var templ_7745c5c3_Var6 string
 						templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(ws.ID)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 66, Col: 39}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 68, Col: 39}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 						if templ_7745c5c3_Err != nil {
@@ -173,7 +175,7 @@ func TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Projec
 						var templ_7745c5c3_Var7 string
 						templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(p.ID)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 76, Col: 28}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 78, Col: 28}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 						if templ_7745c5c3_Err != nil {
@@ -186,7 +188,7 @@ func TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Projec
 						var templ_7745c5c3_Var8 string
 						templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(projectLabel(p))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 76, Col: 57}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 78, Col: 57}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 						if templ_7745c5c3_Err != nil {
@@ -204,7 +206,7 @@ func TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Projec
 						var templ_7745c5c3_Var9 string
 						templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(p.ID)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 78, Col: 28}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 80, Col: 28}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 						if templ_7745c5c3_Err != nil {
@@ -217,7 +219,7 @@ func TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Projec
 						var templ_7745c5c3_Var10 string
 						templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(projectLabel(p))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 78, Col: 48}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 80, Col: 48}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 						if templ_7745c5c3_Err != nil {
@@ -248,7 +250,7 @@ func TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Projec
 						var templ_7745c5c3_Var11 string
 						templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(b)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 88, Col: 25}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 90, Col: 25}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 						if templ_7745c5c3_Err != nil {
@@ -261,7 +263,7 @@ func TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Projec
 						var templ_7745c5c3_Var12 string
 						templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(b)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 88, Col: 40}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 90, Col: 40}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 						if templ_7745c5c3_Err != nil {
@@ -279,7 +281,7 @@ func TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Projec
 						var templ_7745c5c3_Var13 string
 						templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(b)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 90, Col: 25}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 92, Col: 25}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 						if templ_7745c5c3_Err != nil {
@@ -292,7 +294,7 @@ func TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Projec
 						var templ_7745c5c3_Var14 string
 						templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(b)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 90, Col: 31}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/filters.templ`, Line: 92, Col: 31}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 						if templ_7745c5c3_Err != nil {
@@ -314,7 +316,7 @@ func TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Projec
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 32, "<a href=\"/tasks/new\" class=\"btn-new\" aria-label=\"新規タスク作成\">+ 新規</a></form>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 32, "</form>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

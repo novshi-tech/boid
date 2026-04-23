@@ -92,7 +92,7 @@ templ TaskListFragment(items []components.TreeItem, filter orchestrator.TaskFilt
 				<div class="empty-state">
 					<div class="empty-state-title">まだタスクがありません</div>
 					<p class="empty-state-hint">最初のタスクを作って作業を始めましょう。</p>
-					<a href="/tasks/new" class="btn btn-primary empty-state-cta">+ 新規タスク</a>
+					<a href="/tasks/new" class="btn btn-primary empty-state-cta">+ Create</a>
 				</div>
 			}
 		} else {
@@ -235,7 +235,21 @@ templ TaskListContent(items []components.TreeItem, filter orchestrator.TaskFilte
 templ TaskList(items []components.TreeItem, filter orchestrator.TaskFilter, projects []*orchestrator.Project, behaviors []string, workspaces []*orchestrator.WorkspaceSummary, currentURL string) {
 	@Layout("Tasks", "") {
 		@TaskListContent(items, filter, projects, behaviors, workspaces, currentURL)
+		@TaskListActionBar()
 	}
+}
+
+// TaskListActionBar renders the sticky bottom bar for the task list page.
+// The only action is "Create" — positioned on the left to mirror the
+// detail page's primary-action layout so the mental model of "bottom-left
+// = primary forward action" stays consistent across pages.
+templ TaskListActionBar() {
+	<div class="action-bar">
+		<div class="action-bar-inner">
+			<a href="/tasks/new" class="btn btn-primary action-bar-primary-form">Create</a>
+			<span class="action-bar-spacer"></span>
+		</div>
+	</div>
 }
 
 // TaskDetailStatusSection renders the status card + action buttons.

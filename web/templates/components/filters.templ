@@ -17,7 +17,9 @@ func projectLabel(p *orchestrator.Project) string {
 //   - status (open/closed) as the primary view tabs
 //   - search as a standalone input (its own hx-target avoids losing focus on each keystroke)
 //   - workspace > project > behavior as one logical filter group
-//   - "新規作成" as a secondary action on the trailing edge
+//
+// Create lives in the sticky bottom action bar (TaskListActionBar),
+// keeping the toolbar focused on filtering.
 templ TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Project, behaviors []string, workspaces []*orchestrator.WorkspaceSummary) {
 	<form
 		id="filter-form"
@@ -94,6 +96,5 @@ templ TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Proje
 				}
 			</div>
 		}
-		<a href="/tasks/new" class="btn-new" aria-label="新規タスク作成">+ 新規</a>
 	</form>
 }
