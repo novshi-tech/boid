@@ -34,6 +34,7 @@ type appRuntime struct {
 	webSvc         *api.WebAppService
 	workflow       *api.TaskWorkflowService
 	authStore      *auth.Store
+	sessionSigner  *auth.SessionSigner
 }
 
 func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) (*orchestrator.ProjectStore, error) {
@@ -61,6 +62,17 @@ func runtimesDirFor(cfg Config) string {
 		return filepath.Join(filepath.Dir(cfg.DBPath), "runtimes")
 	}
 	return filepath.Join(filepath.Dir(cfg.SocketPath), "runtimes")
+}
+
+// webSecretPathFor returns the path for the web session signing key.
+func webSecretPathFor(cfg Config) string {
+	if cfg.DBPath != "" && cfg.DBPath != ":memory:" {
+		return filepath.Join(filepath.Dir(cfg.DBPath), "web_secret")
+	}
+	if cfg.SocketPath != "" {
+		return filepath.Join(filepath.Dir(cfg.SocketPath), "web_secret")
+	}
+	return ""
 }
 
 func newJobRuntime(cfg Config) (dispatcher.JobRuntime, error) {
@@ -205,6 +217,16 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Workflow:   workflow,
 	}
 
+	authStore := auth.NewStore(srv.db)
+	var sessionSigner *auth.SessionSigner
+	if webSecretPath := webSecretPathFor(cfg); webSecretPath != "" {
+		webSecret, err := dispatcher.LoadOrCreateKey(webSecretPath)
+		if err != nil {
+			return nil, fmt.Errorf("load web secret: %w", err)
+		}
+		sessionSigner = auth.NewSessionSigner(webSecret, authStore)
+	}
+
 	return &appRuntime{
 		projectRepo:    projectRepo,
 		taskRepo:       taskRepo,
@@ -216,7 +238,8 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		taskSvc:        taskSvc,
 		webSvc:         webSvc,
 		workflow:       workflow,
-		authStore:      auth.NewStore(srv.db),
+		authStore:      authStore,
+		sessionSigner:  sessionSigner,
 	}, nil
 }
 
