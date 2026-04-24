@@ -404,13 +404,16 @@ func (r *Runner) CleanupTaskWindow(taskID string) {
 }
 
 // WaitForJobCtx waits for job completion with context cancellation.
+//
+// A non-zero exit is NOT reported as an error — the caller inspects
+// result.ExitCode. Only true wait-machinery failures (ctx cancel) produce a
+// non-nil error. This lets the orchestrator record `hook_fired` actions for
+// failing hooks the same way as successful ones; prior behavior discarded
+// the partial FiredEvents when any hook exited non-zero.
 func (r *Runner) WaitForJobCtx(ctx context.Context, jobID string) (JobCompletionResult, error) {
 	ch := r.WaitForJob(jobID)
 	select {
 	case result := <-ch:
-		if result.ExitCode != 0 {
-			return result, fmt.Errorf("job %s failed with exit code %d", jobID, result.ExitCode)
-		}
 		return result, nil
 	case <-ctx.Done():
 		return JobCompletionResult{}, fmt.Errorf("wait for job %s: %w", jobID, ctx.Err())

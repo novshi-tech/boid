@@ -61,14 +61,19 @@ func (d *Coordinator) DispatchAndAdvance(
 	matchedHooks := d.Evaluator.Evaluate(task, behaviorHooks)
 	if len(matchedHooks) > 0 {
 		hookResults, err := d.dispatchHooksLocked(ctx, task, matchedHooks, readonly)
+		// Always record FiredEvents for hooks that ran — even on error the
+		// partial results let the caller persist hook_fired actions, which is
+		// what makes failed runs visible in the UI timeline.
+		for _, hr := range hookResults {
+			firedEvents = append(firedEvents, buildFiredEvent(hr, "hook", string(task.Status), matchedHooks, nil))
+		}
 		if err != nil {
-			return nil, fmt.Errorf("hook dispatch: %w", err)
+			return &DispatchResult{FiredEvents: firedEvents}, fmt.Errorf("hook dispatch: %w", err)
 		}
 		for _, hr := range hookResults {
 			allResults = append(allResults, hr)
-			firedEvents = append(firedEvents, buildFiredEvent(hr, "hook", string(task.Status), matchedHooks, nil))
 			if err := checkExclusiveCollision(hr.PayloadPatch, hr.ID, exclusiveWriters); err != nil {
-				return nil, err
+				return &DispatchResult{FiredEvents: firedEvents}, err
 			}
 			if len(hr.PayloadPatch) > 0 && string(hr.PayloadPatch) != "{}" {
 				hr.PayloadPatch = injectSourceState(hr.PayloadPatch, string(task.Status))
@@ -89,14 +94,16 @@ func (d *Coordinator) DispatchAndAdvance(
 	matchedGates := d.Evaluator.EvaluateGates(&gateTask, behaviorGates, GatePhaseExit)
 	if len(matchedGates) > 0 {
 		gateResults, err := d.dispatchGates(ctx, &gateTask, matchedGates)
+		for _, gr := range gateResults {
+			firedEvents = append(firedEvents, buildFiredEvent(gr, "exit_gate", string(task.Status), nil, matchedGates))
+		}
 		if err != nil {
-			return nil, fmt.Errorf("gate dispatch: %w", err)
+			return &DispatchResult{FiredEvents: firedEvents}, fmt.Errorf("gate dispatch: %w", err)
 		}
 		for _, gr := range gateResults {
 			allResults = append(allResults, gr)
-			firedEvents = append(firedEvents, buildFiredEvent(gr, "exit_gate", string(task.Status), nil, matchedGates))
 			if err := checkExclusiveCollision(gr.PayloadPatch, gr.ID, exclusiveWriters); err != nil {
-				return nil, err
+				return &DispatchResult{FiredEvents: firedEvents}, err
 			}
 			if len(gr.PayloadPatch) > 0 && string(gr.PayloadPatch) != "{}" {
 				gr.PayloadPatch = injectSourceState(gr.PayloadPatch, string(task.Status))
@@ -157,16 +164,18 @@ func (d *Coordinator) DispatchEntryGates(
 		return &EntryGateResult{FinalPayload: payload}, nil
 	}
 
-	gateResults, err := d.dispatchGates(ctx, task, matchedGates)
-	if err != nil {
-		return nil, fmt.Errorf("entry gate dispatch: %w", err)
-	}
-	exclusiveWriters := map[string]string{}
+	gateResults, dispatchErr := d.dispatchGates(ctx, task, matchedGates)
 	var firedEvents []FiredEvent
 	for _, gr := range gateResults {
 		firedEvents = append(firedEvents, buildFiredEvent(gr, "entry_gate", string(task.Status), nil, matchedGates))
+	}
+	if dispatchErr != nil {
+		return &EntryGateResult{FiredEvents: firedEvents}, fmt.Errorf("entry gate dispatch: %w", dispatchErr)
+	}
+	exclusiveWriters := map[string]string{}
+	for _, gr := range gateResults {
 		if err := checkExclusiveCollision(gr.PayloadPatch, gr.ID, exclusiveWriters); err != nil {
-			return nil, err
+			return &EntryGateResult{FiredEvents: firedEvents}, err
 		}
 		if len(gr.PayloadPatch) > 0 && string(gr.PayloadPatch) != "{}" {
 			gr.PayloadPatch = injectSourceState(gr.PayloadPatch, string(task.Status))
@@ -242,7 +251,17 @@ func (d *Coordinator) dispatchSequential(
 			return results, fmt.Errorf("wait hook %q: %w", h.ID, err)
 		}
 
-		results = append(results, parseHandlerResult(h.ID, RoleHook, completion))
+		hr := parseHandlerResult(h.ID, RoleHook, completion)
+		results = append(results, hr)
+
+		// Stop after a failed hook: subsequent hooks on a non-readonly task
+		// often depend on the prior hook's payload_patch, so running them on
+		// stale state is unlikely to help and may mask the real failure.
+		// The partial results are still returned so the caller can persist
+		// FiredEvents for every hook that actually ran (incl. the failing one).
+		if hr.ExitCode != 0 {
+			return results, fmt.Errorf("hook %q failed: exit code %d", h.ID, hr.ExitCode)
+		}
 	}
 	return results, nil
 }

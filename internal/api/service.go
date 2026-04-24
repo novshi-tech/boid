@@ -1233,6 +1233,12 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 	for cycle := 0; cycle < maxCycles; cycle++ {
 		result, err := s.Coordinator.DispatchAndAdvance(ctx, current, meta, sm)
 		if err != nil {
+			// Persist any partial FiredEvents first so the failing hook/gate
+			// remains visible in the timeline; recordDispatchError then logs
+			// the dispatcher-level error for context.
+			if result != nil {
+				s.persistFiredEvents(current.ID, current.Status, result.FiredEvents)
+			}
 			slog.Error("dispatch loop error", "task_id", current.ID, "cycle", cycle, "error", err)
 			s.recordDispatchError(current.ID, current.Status, err)
 			return
@@ -1305,6 +1311,9 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 		if prevStatus != current.Status {
 			entryResult, err := s.Coordinator.DispatchEntryGates(ctx, current, meta)
 			if err != nil {
+				if entryResult != nil {
+					s.persistFiredEvents(current.ID, current.Status, entryResult.FiredEvents)
+				}
 				slog.Error("entry gate dispatch failed", "task_id", current.ID, "error", err)
 				s.recordDispatchError(current.ID, current.Status, err)
 				return
