@@ -67,6 +67,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/tasks/{id}/gates", h.GateReplayList)
 	r.Post("/tasks/{id}/gates/{gate_id}/replay", h.PostGateReplay)
 	r.Get("/jobs/{id}", h.JobDetail)
+	r.Get("/jobs/{id}/terminal", h.JobTerminal)
 	return r
 }
 
@@ -447,6 +448,62 @@ func (h *WebHandler) JobDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	templates.JobDetail(view).Render(r.Context(), w)
+}
+
+func (h *WebHandler) JobTerminal(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	job, err := h.Service.GetJob(id)
+	if err != nil {
+		http.Error(w, "Job not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if !job.Interactive {
+		templates.TerminalNotReady(id, "このジョブはインタラクティブではありません。").Render(r.Context(), w)
+		return
+	}
+	if job.Status != JobStatusRunning {
+		templates.TerminalNotReady(id, "現在 attach できる状態ではありません（ジョブが実行中ではありません）。").Render(r.Context(), w)
+		return
+	}
+	gateID := ""
+	if isGateRole(job.Role) {
+		gateID = job.HandlerID
+	}
+	view := &templates.JobContextView{
+		ID:          job.ID,
+		TaskID:      job.TaskID,
+		TaskTitle:   job.TaskTitle,
+		HandlerID:   job.HandlerID,
+		Role:        job.Role,
+		GateID:      gateID,
+		Status:      string(job.Status),
+		ExitCode:    job.ExitCode,
+		Interactive: job.Interactive,
+		CreatedAt:   job.CreatedAt,
+		UpdatedAt:   job.UpdatedAt,
+		Output:      job.Output,
+	}
+	wsPath := "/api/jobs/" + id + "/attach/ws"
+	templates.TerminalPage(buildJobTitle(view), "/jobs/"+id, id, wsPath).Render(r.Context(), w)
+}
+
+// buildJobTitle returns a display title for the job terminal page.
+// Mirrors the jobPageTitle logic in web/templates/jobs.templ.
+func buildJobTitle(job *templates.JobContextView) string {
+	switch {
+	case job.Role != "" && job.HandlerID != "":
+		return "[" + job.Role + "] " + job.HandlerID
+	case job.HandlerID != "":
+		return job.HandlerID
+	case job.Role != "":
+		return "[" + job.Role + "]"
+	default:
+		if len(job.ID) > 8 {
+			return "Job " + job.ID[:8]
+		}
+		return "Job " + job.ID
+	}
 }
 
 // WebManagementHandler serves the CLI management API at /api/web/*.
