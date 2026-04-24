@@ -8,6 +8,29 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
+// BOID_HOST_IP はサンドボックス NS からホスト localhost に向かう pasta gateway
+// (10.0.2.2) を指す。proxy の有無に関わらず常に注入して、サンドボックス内プロセ
+// スが http_proxy のパース等に頼らず直接 IP を引けるようにする。
+func TestBuildSandboxSpec_BoidHostIPAlwaysInjected(t *testing.T) {
+	cases := []struct {
+		name      string
+		proxyPort int
+	}{
+		{"proxy disabled", 0},
+		{"proxy enabled", 8888},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := &orchestrator.JobSpec{}
+			rt := SandboxRuntimeInfo{ProxyPort: tc.proxyPort}
+			result := BuildSandboxSpec(spec, rt)
+			if got := result.Env["BOID_HOST_IP"]; got != "10.0.2.2" {
+				t.Errorf("BOID_HOST_IP = %q, want 10.0.2.2", got)
+			}
+		})
+	}
+}
+
 func TestStageArgv0_BareCommandLeftUntouched(t *testing.T) {
 	target, mount, ok := stageArgv0("claude", "")
 	if ok {

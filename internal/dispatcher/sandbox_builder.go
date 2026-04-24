@@ -86,6 +86,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox
 	env["HOME"] = homeDir
 	env["TERM"] = "xterm-256color"
 	env["PATH"] = buildPATH(spec.Visibility.AdditionalBindings)
+	env["BOID_HOST_IP"] = hostGatewayIP
 	if rt.ProxyPort > 0 {
 		applyProxyEnv(env, rt.ProxyPort)
 	}
@@ -473,14 +474,19 @@ func buildExitScript(jobID, payloadFile, stdoutFallback string) string {
 	return b.String()
 }
 
+// hostGatewayIP は pasta が NS に提示するゲートウェイ IP。NS 内から届くパケット
+// はホストの 127.0.0.1 にマッピングされるため、これがホスト localhost への入口
+// として機能する。sandbox 側 (pasta/nftables) と値を揃える。
+const hostGatewayIP = "10.0.2.2"
+
 func applyProxyEnv(env map[string]string, port int) {
-	proxyURL := fmt.Sprintf("http://10.0.2.2:%d", port)
+	proxyURL := fmt.Sprintf("http://%s:%d", hostGatewayIP, port)
 	env["http_proxy"] = proxyURL
 	env["https_proxy"] = proxyURL
 	env["HTTP_PROXY"] = proxyURL
 	env["HTTPS_PROXY"] = proxyURL
-	env["no_proxy"] = "10.0.2.2,10.0.2.3,localhost,127.0.0.1"
-	env["NO_PROXY"] = "10.0.2.2,10.0.2.3,localhost,127.0.0.1"
+	env["no_proxy"] = hostGatewayIP + ",10.0.2.3,localhost,127.0.0.1"
+	env["NO_PROXY"] = hostGatewayIP + ",10.0.2.3,localhost,127.0.0.1"
 }
 
 // contextFiles materializes business data under $HOME/.boid/context/:
