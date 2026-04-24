@@ -49,8 +49,9 @@ type DialOptions struct {
 
 // Conn is a WebSocket connection.
 type Conn struct {
-	conn net.Conn
-	mu   sync.Mutex
+	conn   net.Conn
+	reader io.Reader // may be bufio.Reader wrapping conn; used for reads
+	mu     sync.Mutex
 	// server is true when this side should NOT mask frames (server→client).
 	server bool
 }
@@ -98,7 +99,7 @@ func Accept(w http.ResponseWriter, r *http.Request, opts *AcceptOptions) (*Conn,
 		return nil, fmt.Errorf("websocket: flush handshake: %w", err)
 	}
 
-	return &Conn{conn: nc, server: true}, nil
+	return &Conn{conn: nc, reader: buf.Reader, server: true}, nil
 }
 
 func originAllowed(origin string, patterns []string) bool {
@@ -193,7 +194,8 @@ func Dial(ctx context.Context, rawURL string, opts *DialOptions) (*Conn, *http.R
 		return nil, nil, fmt.Errorf("websocket: write request: %w", err)
 	}
 
-	resp, err := http.ReadResponse(bufio.NewReader(nc), req)
+	br := bufio.NewReader(nc)
+	resp, err := http.ReadResponse(br, req)
 	if err != nil {
 		nc.Close()
 		return nil, nil, fmt.Errorf("websocket: read response: %w", err)
@@ -211,7 +213,9 @@ func Dial(ctx context.Context, rawURL string, opts *DialOptions) (*Conn, *http.R
 		return nil, resp, fmt.Errorf("websocket: bad Sec-WebSocket-Accept: %q", got)
 	}
 
-	return &Conn{conn: nc, server: false}, resp, nil
+	// Use br for reads: it may have buffered WebSocket frame bytes that arrived
+	// together with the 101 response before we could read them from nc directly.
+	return &Conn{conn: nc, reader: br, server: false}, resp, nil
 }
 
 func ensurePort(host, defaultPort string) string {
@@ -253,9 +257,10 @@ func (c *Conn) Read(ctx context.Context) (MessageType, []byte, error) {
 }
 
 func (c *Conn) readFrame() (MessageType, []byte, error) {
+	r := c.reader
 	// Read first two bytes.
 	header := make([]byte, 2)
-	if _, err := io.ReadFull(c.conn, header); err != nil {
+	if _, err := io.ReadFull(r, header); err != nil {
 		return 0, nil, fmt.Errorf("ws read header: %w", err)
 	}
 	// fin := (header[0] & 0x80) != 0  // not used in stub (assumes single-frame messages)
@@ -266,25 +271,25 @@ func (c *Conn) readFrame() (MessageType, []byte, error) {
 	switch payLen {
 	case 126:
 		var n uint16
-		if err := binary.Read(c.conn, binary.BigEndian, &n); err != nil {
+		if err := binary.Read(r, binary.BigEndian, &n); err != nil {
 			return 0, nil, err
 		}
 		payLen = int64(n)
 	case 127:
-		if err := binary.Read(c.conn, binary.BigEndian, &payLen); err != nil {
+		if err := binary.Read(r, binary.BigEndian, &payLen); err != nil {
 			return 0, nil, err
 		}
 	}
 
 	var maskKey [4]byte
 	if masked {
-		if _, err := io.ReadFull(c.conn, maskKey[:]); err != nil {
+		if _, err := io.ReadFull(r, maskKey[:]); err != nil {
 			return 0, nil, err
 		}
 	}
 
 	payload := make([]byte, payLen)
-	if _, err := io.ReadFull(c.conn, payload); err != nil {
+	if _, err := io.ReadFull(r, payload); err != nil {
 		return 0, nil, err
 	}
 	if masked {
