@@ -3,7 +3,6 @@ package auth
 import (
 	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -28,18 +27,14 @@ func NewSessionSigner(secret []byte, store *Store) *SessionSigner {
 	return &SessionSigner{secret: secret, store: store}
 }
 
-func (s *SessionSigner) mac(deviceID string, epochHour int64) string {
+func (s *SessionSigner) mac(deviceID string) string {
 	h := hmac.New(sha256.New, s.secret)
 	h.Write([]byte(deviceID))
-	var buf [8]byte
-	binary.LittleEndian.PutUint64(buf[:], uint64(epochHour))
-	h.Write(buf[:])
 	return hex.EncodeToString(h.Sum(nil))
 }
 
 func (s *SessionSigner) Issue(w http.ResponseWriter, deviceID string) error {
-	epochHour := time.Now().Unix() / 3600
-	sig := s.mac(deviceID, epochHour)
+	sig := s.mac(deviceID)
 	http.SetCookie(w, &http.Cookie{
 		Name:     cookieName,
 		Value:    deviceID + "." + sig,
@@ -64,15 +59,7 @@ func (s *SessionSigner) Verify(r *http.Request) (string, error) {
 	}
 	deviceID, sig := cookie.Value[:idx], cookie.Value[idx+1:]
 
-	epochHour := time.Now().Unix() / 3600
-	valid := false
-	for _, offset := range []int64{-1, 0, 1} {
-		if hmac.Equal([]byte(s.mac(deviceID, epochHour+offset)), []byte(sig)) {
-			valid = true
-			break
-		}
-	}
-	if !valid {
+	if !hmac.Equal([]byte(s.mac(deviceID)), []byte(sig)) {
 		return "", ErrInvalidSession
 	}
 
