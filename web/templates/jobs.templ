@@ -3,6 +3,8 @@ package templates
 import (
 	"fmt"
 	"time"
+
+	"github.com/novshi-tech/boid/web/templates/components"
 )
 
 type JobContextView struct {
@@ -75,16 +77,13 @@ templ JobDetail(job *JobContextView) {
 		</div>
 		<section class="job-output">
 			<h2 class="section-title">Output</h2>
-			if job.Interactive {
-				// Interactive jobs (claude-code 等の TUI) は PTY に alternate
-				// screen / cursor move / ANSI redraw を書き込むため、素の <pre>
-				// に append すると再描画が積み上がって読めない表示になる。
-				// live-follow は無効にして、最終 Output スナップショットだけ出す
-				// (完了後の transcript は残っているが TUI エスケープを含む)。
+			if job.Interactive && job.Status == "running" {
+				@components.Terminal(job.ID, "/api/jobs/"+job.ID+"/attach/ws")
+			} else if job.Interactive {
+				// 完了後の transcript は ANSI エスケープを含むため TUI 再現は不能。
 				<p class="job-log-note">
 					このジョブはインタラクティブです。リアルタイム出力は表示できません
-					&mdash; 実行中の画面を見るには tmux 経由でアタッチしてください
-					(<code>boid tui</code> 内で当該 task を開き、<code>o</code> キー)。
+					&mdash; 完了後の transcript は ANSI エスケープシーケンスを含むため TUI 再現は不能です。
 				</p>
 				if job.Output != "" {
 					<pre id="job-log" class="job-log">{ job.Output }</pre>
@@ -108,13 +107,18 @@ templ JobDetail(job *JobContextView) {
 				}
 			}
 		</section>
-		if job.GateID != "" {
+		if job.GateID != "" || (job.Interactive && job.Status == "running") {
 			<div class="action-bar">
 				<div class="action-bar-inner">
-					<form method="post" action={ templ.SafeURL("/tasks/" + job.TaskID + "/gates/" + job.GateID + "/replay") } onsubmit="return confirm('本当にゲートを再発火しますか？')" class="action-bar-primary-form">
-						<button type="submit" class="btn btn-primary">Replay gate</button>
-					</form>
+					if job.GateID != "" {
+						<form method="post" action={ templ.SafeURL("/tasks/" + job.TaskID + "/gates/" + job.GateID + "/replay") } onsubmit="return confirm('本当にゲートを再発火しますか？')" class="action-bar-primary-form">
+							<button type="submit" class="btn btn-primary">Replay gate</button>
+						</form>
+					}
 					<span class="action-bar-spacer"></span>
+					if job.Interactive && job.Status == "running" {
+						<a href={ templ.SafeURL("/jobs/" + job.ID + "/terminal") } target="_blank" rel="noopener" class="btn btn-secondary">全画面で開く</a>
+					}
 				</div>
 			</div>
 		}
