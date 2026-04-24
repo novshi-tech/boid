@@ -501,11 +501,10 @@ func (h *WebManagementHandler) PostPair(w http.ResponseWriter, r *http.Request) 
 }
 
 type deviceResponse struct {
-	ID         string  `json:"id"`
-	Label      string  `json:"label,omitempty"`
-	CreatedAt  string  `json:"created_at"`
-	LastSeenAt string  `json:"last_seen_at"`
-	RevokedAt  *string `json:"revoked_at,omitempty"`
+	ID         string `json:"id"`
+	Label      string `json:"label,omitempty"`
+	CreatedAt  string `json:"created_at"`
+	LastSeenAt string `json:"last_seen_at"`
 }
 
 func (h *WebManagementHandler) GetDevices(w http.ResponseWriter, r *http.Request) {
@@ -517,17 +516,15 @@ func (h *WebManagementHandler) GetDevices(w http.ResponseWriter, r *http.Request
 
 	resp := make([]deviceResponse, 0, len(devices))
 	for _, d := range devices {
-		dr := deviceResponse{
+		if d.RevokedAt != nil {
+			continue
+		}
+		resp = append(resp, deviceResponse{
 			ID:         d.ID,
 			Label:      d.Label,
 			CreatedAt:  d.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 			LastSeenAt: d.LastSeenAt.UTC().Format("2006-01-02T15:04:05Z"),
-		}
-		if d.RevokedAt != nil {
-			s := d.RevokedAt.UTC().Format("2006-01-02T15:04:05Z")
-			dr.RevokedAt = &s
-		}
-		resp = append(resp, dr)
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
