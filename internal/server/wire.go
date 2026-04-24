@@ -344,7 +344,8 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		"",
 		runtimesDirFor(srv.cfg),
 	).WithSandboxTmpDir(os.TempDir())
-	gcHandler := &api.GCHandler{Service: &api.GCAppService{Store: gcStore}}
+	gcAppService := &api.GCAppService{Store: gcStore, DeviceStore: runtime.authStore}
+	gcHandler := &api.GCHandler{Service: gcAppService}
 	r.Mount("/api/gc", gcHandler.Routes())
 
 	// Wire up the periodic GC loop.
@@ -355,7 +356,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	}
 	if gcCfg.GC.Enabled {
 		srv.gcLoop = &orchestrator.GCLoop{
-			Store:        gcStore,
+			Store:        gcAppService,
 			Interval:     gcCfg.GC.Interval,
 			OlderThan:    gcCfg.GC.OlderThan,
 			InitialDelay: 10 * time.Second,

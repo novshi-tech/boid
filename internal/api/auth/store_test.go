@@ -227,6 +227,51 @@ func TestRevokeAllDevices(t *testing.T) {
 	}
 }
 
+func TestDeleteRevokedDevices(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"keep", "revoke1", "revoke2"} {
+		if err := s.InsertDevice(ctx, id, "", []byte("h")); err != nil {
+			t.Fatalf("InsertDevice %s: %v", id, err)
+		}
+	}
+	for _, id := range []string{"revoke1", "revoke2"} {
+		if err := s.RevokeDevice(ctx, id); err != nil {
+			t.Fatalf("RevokeDevice %s: %v", id, err)
+		}
+	}
+
+	// dry run: count without deleting
+	n, err := s.DeleteRevokedDevices(ctx, true)
+	if err != nil {
+		t.Fatalf("DeleteRevokedDevices dry_run: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("dry_run count = %d, want 2", n)
+	}
+	devices, _ := s.ListDevices(ctx)
+	if len(devices) != 3 {
+		t.Errorf("ListDevices after dry_run: got %d, want 3", len(devices))
+	}
+
+	// actual delete
+	n, err = s.DeleteRevokedDevices(ctx, false)
+	if err != nil {
+		t.Fatalf("DeleteRevokedDevices: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("deleted count = %d, want 2", n)
+	}
+	devices, _ = s.ListDevices(ctx)
+	if len(devices) != 1 {
+		t.Errorf("ListDevices after delete: got %d, want 1", len(devices))
+	}
+	if devices[0].ID != "keep" {
+		t.Errorf("remaining device ID = %q, want %q", devices[0].ID, "keep")
+	}
+}
+
 func TestHasAnyDevice(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

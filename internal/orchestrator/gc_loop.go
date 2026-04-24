@@ -57,5 +57,6 @@ func (l *GCLoop) runOnce() {
 		"worktrees", result.Worktrees,
 		"runtimes", result.Runtimes,
 		"sandbox_tmp", result.SandboxTmp,
+		"devices", result.Devices,
 	)
 }

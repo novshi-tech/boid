@@ -366,6 +366,7 @@ type GCResult struct {
 	Worktrees  int64
 	Runtimes   int64
 	SandboxTmp int64 // leaked /tmp/boid-* sandbox artifacts removed
+	Devices    int64 // revoked web devices deleted
 }
 
 // GCTasks deletes terminal tasks older than olderThan and their related data
