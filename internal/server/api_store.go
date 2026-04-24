@@ -303,3 +303,23 @@ func (a jobLifecycleAdapter) UnregisterJob(jobID string) {
 func (a jobLifecycleAdapter) CleanupTaskWindow(taskID string) {
 	a.runner.CleanupTaskWindow(taskID)
 }
+
+// hubJobEventSink lets the dispatcher runner push job-created events into
+// the web SSE hub. Kept tiny — it only exists to decouple dispatcher from
+// internal/api imports while letting the timeline refresh live.
+type hubJobEventSink struct {
+	hub *api.TaskEventHub
+}
+
+func (s hubJobEventSink) JobCreated(taskID, jobID string) {
+	if s.hub == nil || taskID == "" {
+		return
+	}
+	s.hub.Broadcast(taskID, api.TaskEvent{
+		Kind: "job",
+		Payload: map[string]any{
+			"job_id":     jobID,
+			"new_status": "running",
+		},
+	})
+}

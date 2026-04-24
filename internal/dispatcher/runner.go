@@ -30,6 +30,14 @@ type ProjectLookup interface {
 	ListProjects() ([]*orchestrator.Project, error)
 }
 
+// JobEventSink lets the runner report job lifecycle events to a subscriber
+// (typically the web SSE hub) without taking a hard dependency on it.
+// All methods are best-effort: implementations should not block or fail
+// the caller — they exist to push UI refresh hints.
+type JobEventSink interface {
+	JobCreated(taskID, jobID string)
+}
+
 type Runner struct {
 	DB           *sql.DB
 	Runtime      JobRuntime
@@ -42,6 +50,7 @@ type Runner struct {
 	BoidBinary   string
 	ServerSocket string
 	ProxyPort    *int
+	JobEvents    JobEventSink // optional; nil disables job lifecycle broadcasts
 
 	tokenMu       sync.Mutex
 	jobTokens     map[string]string
@@ -100,6 +109,13 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			cleanup()
 		}
 		return "", fmt.Errorf("create job: %w", err)
+	}
+
+	// Notify the web SSE hub (via the optional JobEvents sink) so task detail
+	// timelines refresh as soon as a running job row exists, not only after
+	// it completes. Without this the UI sits idle during the whole hook run.
+	if r.JobEvents != nil && j.TaskID != "" {
+		r.JobEvents.JobCreated(j.TaskID, j.ID)
 	}
 
 	workspaceID, projectWorkDir, _ := r.resolveProjectRuntime(spec.ProjectID)

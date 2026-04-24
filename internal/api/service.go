@@ -1174,7 +1174,22 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 	// evaluating conditions and advancing the task state once all handlers
 	// have completed. Transitioning in CompleteJob would race with the gate
 	// execution and clean up the worktree before gates can run.
+	//
+	// Broadcast the running→completed transition so the web timeline can
+	// recolor the marker (green) immediately — without waiting for the
+	// downstream hook_fired action to land later. The failure path below
+	// gets its own broadcast alongside the job_failed action (task-status
+	// transition is a separate visual signal).
 	if req.ExitCode == 0 {
+		if s.Hub != nil {
+			s.Hub.Broadcast(job.TaskID, TaskEvent{
+				Kind: "job",
+				Payload: map[string]any{
+					"job_id":     job.ID,
+					"new_status": string(job.Status),
+				},
+			})
+		}
 		return job, nil
 	}
 

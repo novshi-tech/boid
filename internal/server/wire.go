@@ -178,6 +178,10 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	})
 	adapter := dispatcher.NewOrchestratorAdapter(runner, planner)
 	hub := api.NewTaskEventHub()
+	// Wire the runner's job-event sink to the web SSE hub so job creations
+	// surface in task timelines without polling. Completion broadcasts live
+	// in TaskWorkflowService.CompleteJob (where exit-code semantics are known).
+	runner.JobEvents = hubJobEventSink{hub: hub}
 	workflow := &api.TaskWorkflowService{
 		Tasks:       taskRepo,
 		Jobs:        jobStore,
