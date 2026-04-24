@@ -477,6 +477,26 @@ pre {
   margin: 0;
 }
 
+/* Notice shown in place of / above the raw log when we intentionally
+   don't live-follow (e.g. interactive jobs whose PTY carries TUI
+   redraws — rendering them in a <pre> produces garbage). */
+.job-log-note {
+  margin: 0 0 var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-1);
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.job-log-note code {
+  font-size: 0.8125rem;
+  padding: 0 4px;
+  background: var(--bg);
+  border-radius: 3px;
+}
+
 /* --- Filters --- */
 .filter-scroll {
   overflow-x: auto;
@@ -1477,13 +1497,18 @@ body:has(.action-bar) {
 /* Job markers color-code success / failure / running so the outcome
    reads at a glance without parsing the label (TUI parity: ● colored
    by job status). */
+/* Running and completed both use a green family — orange would signal a
+   warning the reader would read as "might be failing". TUI style: running
+   = bright green (lipgloss color 10), completed = dim gray. Mirror that
+   here: running is the vivid executing-badge green; completed is the
+   muted accent so done work fades into the background. */
+.timeline-row-job-running   .timeline-marker-job::before { background: #15803d; }
 .timeline-row-job-completed .timeline-marker-job::before { background: var(--accent); }
 .timeline-row-job-failed    .timeline-marker-job::before { background: #b91c1c; }
-.timeline-row-job-running   .timeline-marker-job::before { background: #d97706; }
 
 @media (prefers-color-scheme: dark) {
+  .timeline-row-job-running .timeline-marker-job::before { background: #4ade80; }
   .timeline-row-job-failed  .timeline-marker-job::before { background: #f87171; }
-  .timeline-row-job-running .timeline-marker-job::before { background: #fbbf24; }
 }
 
 .timeline-label {

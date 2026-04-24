@@ -432,17 +432,18 @@ func (h *WebHandler) JobDetail(w http.ResponseWriter, r *http.Request) {
 		gateID = job.HandlerID
 	}
 	view := &templates.JobContextView{
-		ID:        job.ID,
-		TaskID:    job.TaskID,
-		TaskTitle: job.TaskTitle,
-		HandlerID: job.HandlerID,
-		Role:      job.Role,
-		GateID:    gateID,
-		Status:    string(job.Status),
-		ExitCode:  job.ExitCode,
-		CreatedAt: job.CreatedAt,
-		UpdatedAt: job.UpdatedAt,
-		Output:    job.Output,
+		ID:          job.ID,
+		TaskID:      job.TaskID,
+		TaskTitle:   job.TaskTitle,
+		HandlerID:   job.HandlerID,
+		Role:        job.Role,
+		GateID:      gateID,
+		Status:      string(job.Status),
+		ExitCode:    job.ExitCode,
+		Interactive: job.Interactive,
+		CreatedAt:   job.CreatedAt,
+		UpdatedAt:   job.UpdatedAt,
+		Output:      job.Output,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	templates.JobDetail(view).Render(r.Context(), w)

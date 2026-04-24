@@ -6,17 +6,18 @@ import (
 )
 
 type JobContextView struct {
-	ID        string
-	TaskID    string
-	TaskTitle string
-	HandlerID string
-	Role      string
-	GateID    string // set when job is a gate job; used for gate replay form
-	Status    string
-	ExitCode  int
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Output    string
+	ID          string
+	TaskID      string
+	TaskTitle   string
+	HandlerID   string
+	Role        string
+	GateID      string // set when job is a gate job; used for gate replay form
+	Status      string
+	ExitCode    int
+	Interactive bool // true = PTY output contains ANSI redraw sequences; don't live-follow
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	Output      string
 }
 
 // jobStatusStripe maps a job status to the task-row-status-* class so the
@@ -74,21 +75,37 @@ templ JobDetail(job *JobContextView) {
 		</div>
 		<section class="job-output">
 			<h2 class="section-title">Output</h2>
-			<pre id="job-log" class="job-log" data-job-id={ job.ID }>{ job.Output }</pre>
-			if job.Status == "running" || job.Status == "pending" {
-				<script>
-					(function() {
-						var pre = document.getElementById('job-log');
-						var es = new EventSource('/api/jobs/' + pre.dataset.jobId + '/log?follow=true');
-						es.onmessage = function(e) {
-							var span = document.createElement('span');
-							span.textContent = e.data + '\n';
-							pre.appendChild(span);
-							pre.scrollTop = pre.scrollHeight;
-						};
-						es.onerror = function() { es.close(); };
-					})();
-				</script>
+			if job.Interactive {
+				// Interactive jobs (claude-code 等の TUI) は PTY に alternate
+				// screen / cursor move / ANSI redraw を書き込むため、素の <pre>
+				// に append すると再描画が積み上がって読めない表示になる。
+				// live-follow は無効にして、最終 Output スナップショットだけ出す
+				// (完了後の transcript は残っているが TUI エスケープを含む)。
+				<p class="job-log-note">
+					このジョブはインタラクティブです。リアルタイム出力は表示できません
+					&mdash; 実行中の画面を見るには tmux 経由でアタッチしてください
+					(<code>boid tui</code> 内で当該 task を開き、<code>o</code> キー)。
+				</p>
+				if job.Output != "" {
+					<pre id="job-log" class="job-log">{ job.Output }</pre>
+				}
+			} else {
+				<pre id="job-log" class="job-log" data-job-id={ job.ID }>{ job.Output }</pre>
+				if job.Status == "running" || job.Status == "pending" {
+					<script>
+						(function() {
+							var pre = document.getElementById('job-log');
+							var es = new EventSource('/api/jobs/' + pre.dataset.jobId + '/log?follow=true');
+							es.onmessage = function(e) {
+								var span = document.createElement('span');
+								span.textContent = e.data + '\n';
+								pre.appendChild(span);
+								pre.scrollTop = pre.scrollHeight;
+							};
+							es.onerror = function() { es.close(); };
+						})();
+					</script>
+				}
 			}
 		</section>
 		if job.GateID != "" {
