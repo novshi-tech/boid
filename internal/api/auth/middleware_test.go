@@ -81,6 +81,35 @@ func TestWebAuthMiddleware_LoopbackNoDevices_Passes(t *testing.T) {
 	}
 }
 
+func TestWebAuthMiddleware_LoopbackProxied_NoDevices_Redirects(t *testing.T) {
+	signer, store := setupMiddlewareTest(t)
+
+	mw := NewWebAuthMiddleware(signer, store)
+	handler := mw(http.HandlerFunc(okHandler))
+
+	// Simulate a request that arrived via cloudflared / reverse proxy:
+	// RemoteAddr looks loopback (proxy is on the same host) but proxy
+	// headers indicate upstream forwarding. Bootstrap exemption must NOT
+	// apply — the client is remote.
+	for _, hdr := range []string{"X-Forwarded-For", "CF-Connecting-IP", "Forwarded"} {
+		t.Run(hdr, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.RemoteAddr = "127.0.0.1:1234"
+			req.Header.Set(hdr, "203.0.113.5")
+
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			if w.Code != http.StatusFound {
+				t.Fatalf("loopback+%s: status = %d, want %d", hdr, w.Code, http.StatusFound)
+			}
+			if loc := w.Header().Get("Location"); loc != "/login" {
+				t.Errorf("Location = %q, want /login", loc)
+			}
+		})
+	}
+}
+
 func TestWebAuthMiddleware_ExternalIPNoDevices_Redirects(t *testing.T) {
 	signer, store := setupMiddlewareTest(t)
 
