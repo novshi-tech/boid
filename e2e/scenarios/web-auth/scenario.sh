@@ -5,17 +5,15 @@ e2e_require_cmd curl
 
 WEB_ADDR="127.0.0.1:15171"
 
-# The default server is started without --web in run.sh.
-# Restart with --web so the auth endpoints and TCP listener are active.
-e2e_log "stopping default server (no --web)"
+# Web UI is always enabled. Restart with a fixed addr so curl can reach it.
+e2e_log "stopping default server"
 "$E2E_BIN_DIR/boid" stop
 
 # Give the daemon 50 ms grace + margin to fully shut down before restarting.
 sleep 1
 
-e2e_log "starting boid with --web at $WEB_ADDR"
+e2e_log "starting boid at $WEB_ADDR"
 e2e_run "$E2E_BIN_DIR/boid" start \
-  --web \
   --http-addr "$WEB_ADDR" \
   --db-path "$XDG_DATA_HOME/boid/boid.db" \
   --socket-path "$BOID_SOCKET" \
