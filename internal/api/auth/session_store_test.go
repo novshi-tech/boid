@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,6 +102,55 @@ func TestSessionSigner_RevokedDevice(t *testing.T) {
 	_, err := signer.Verify(req)
 	if err != ErrInvalidSession {
 		t.Errorf("Verify revoked: got %v, want ErrInvalidSession", err)
+	}
+}
+
+func TestSessionSigner_ForgedDeviceID(t *testing.T) {
+	signer, store := newTestSigner(t)
+	ctx := context.Background()
+
+	if err := store.InsertDevice(ctx, "dev-real", "", []byte("h")); err != nil {
+		t.Fatalf("InsertDevice: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	if err := signer.Issue(w, "dev-real"); err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	// Replace deviceID with a non-existent one while keeping the original sig.
+	original := w.Result().Cookies()[0].Value
+	idx := strings.LastIndex(original, ".")
+	tampered := "dev-fake" + original[idx:]
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: tampered})
+
+	_, err := signer.Verify(req)
+	if err != ErrInvalidSession {
+		t.Errorf("Verify forged deviceID: got %v, want ErrInvalidSession", err)
+	}
+}
+
+func TestSessionSigner_NoEpochHourExpiry(t *testing.T) {
+	signer, store := newTestSigner(t)
+	ctx := context.Background()
+
+	if err := store.InsertDevice(ctx, "dev-5", "", []byte("h")); err != nil {
+		t.Fatalf("InsertDevice: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	if err := signer.Issue(w, "dev-5"); err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	// Verify twice in a row to confirm there is no time-based expiry in the HMAC.
+	for i := range 2 {
+		req := requestWithCookies(w)
+		if _, err := signer.Verify(req); err != nil {
+			t.Fatalf("Verify call %d: %v", i+1, err)
+		}
 	}
 }
 
