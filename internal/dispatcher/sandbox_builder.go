@@ -134,6 +134,17 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox
 	// Additional bindings (kit CLIs, exec-provided pass-throughs).
 	mounts = append(mounts, additionalBindingMounts(spec.Visibility.AdditionalBindings)...)
 
+	// Kit root bind-mounts: each kit's root directory is bound at its original
+	// host path so hook/gate scripts can source sibling helpers via relative paths.
+	for _, kitRoot := range spec.Visibility.KitRoots {
+		mounts = append(mounts, sandbox.Mount{
+			Source:   kitRoot,
+			Target:   kitRoot,
+			Type:     sandbox.MountBind,
+			ReadOnly: true,
+		})
+	}
+
 	// Server socket (exec jobs that need to talk to boid daemon).
 	if rt.ServerSocket != "" {
 		mounts = append(mounts, sandbox.Mount{
@@ -146,17 +157,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox
 		env["BOID_SOCKET"] = "/run/boid/server.sock"
 	}
 
-	// Entry script: if Argv[0] lives outside the visible project area, bind
-	// it read-only at a stable in-sandbox path so the sandbox can execute it.
 	argv := append([]string(nil), spec.Argv...)
-	if len(argv) > 0 {
-		if inSandbox, extraMount, ok := stageArgv0(argv[0], effectiveProject); ok {
-			argv[0] = inSandbox
-			if extraMount != nil {
-				mounts = append(mounts, *extraMount)
-			}
-		}
-	}
 
 	// Context files: task.yaml / instructions.yaml / environment.yaml / payload.json.
 	files = append(files, contextFiles(
@@ -388,30 +389,6 @@ func additionalBindingMounts(bindings []orchestrator.BindMount) []sandbox.Mount 
 		out = append(out, m)
 	}
 	return out
-}
-
-// stageArgv0 returns the in-sandbox path argv[0] should resolve to. If argv[0]
-// is already under the visible project root (effectiveProject), the host path
-// is reused as-is. If it is an absolute host path outside that root (e.g. a
-// hook/gate script staged in /tmp), the parent directory is bind-mounted at
-// /opt/boid/entry so argv[0] can reference sibling helper scripts via stable
-// in-sandbox paths. Bare command names are left untouched and resolved via
-// the sandbox PATH / broker shim.
-func stageArgv0(original, effectiveProject string) (string, *sandbox.Mount, bool) {
-	if original == "" || !filepath.IsAbs(original) {
-		return "", nil, false
-	}
-	if effectiveProject != "" && strings.HasPrefix(original, effectiveProject+string(filepath.Separator)) {
-		return original, nil, false
-	}
-	parent := filepath.Dir(original)
-	target := "/opt/boid/entry/" + filepath.Base(original)
-	return target, &sandbox.Mount{
-		Source:   parent,
-		Target:   "/opt/boid/entry",
-		Type:     sandbox.MountBind,
-		ReadOnly: true,
-	}, true
 }
 
 // shimSymlinks creates /opt/boid/bin/<cmd> → boid symlinks for every command

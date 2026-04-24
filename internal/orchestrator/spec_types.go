@@ -306,16 +306,6 @@ type GateFireEvent struct {
 	TaskPayloadJSON string // hook-updated payload to override DB value; empty = use DB
 }
 
-type KitHooksInfo struct {
-	HooksDir string
-	HookIDs  []string
-	Consumer string
-}
-
-type KitGatesInfo struct {
-	GatesDir string
-	GateIDs  []string
-}
 
 type RawPayload json.RawMessage
 
@@ -354,8 +344,9 @@ type TaskBehavior struct {
 	Env                map[string]string `yaml:"-" json:"-"`
 	HostCommands       HostCommands      `yaml:"-" json:"-"`
 	AdditionalBindings []BindMount       `yaml:"-" json:"-"`
-	KitHooksDirs       []KitHooksInfo    `yaml:"-" json:"-"`
-	KitGatesDirs       []KitGatesInfo    `yaml:"-" json:"-"`
+	// KitRoots holds the deduplicated list of kit root directories to bind-mount
+	// in the sandbox at their original host paths. Populated by MergeKitMetaIntoBehavior.
+	KitRoots []string `yaml:"-" json:"-"`
 }
 
 // BehaviorSpec is an inline behavior specification that can be used instead of
@@ -443,6 +434,7 @@ type KitMeta struct {
 	Env                map[string]string       `yaml:"env"`
 	HooksDir           string                  `yaml:"-"`
 	GatesDir           string                  `yaml:"-"`
+	KitRoot            string                  `yaml:"-"` // directory containing kit.yaml
 
 	// Init-time metadata — not merged into runtime spec by MergeKitMeta.
 	Meta             *KitMetaInfo `yaml:"meta,omitempty"`

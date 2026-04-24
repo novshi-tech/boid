@@ -3,7 +3,6 @@ package orchestrator
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 )
 
 type MetaCache interface {
@@ -27,20 +26,13 @@ type DispatchPlanner struct {
 	Tasks    TaskLookup
 }
 
-// PlanHook renders a hook fire event into a JobSpec. The returned cleanup
-// callback must be invoked by the caller (dispatcher) once the sandbox
-// process has exited — it removes the temporary hook staging directory.
+// PlanHook renders a hook fire event into a JobSpec.
 func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc, error) {
 	if event == nil {
 		return nil, nil, fmt.Errorf("hook event is required")
 	}
-	hookBase := filepath.Base(event.Hook.ScriptPath)
-	if hookBase == "" || hookBase == "." {
+	if event.Hook.ScriptPath == "" {
 		return nil, nil, fmt.Errorf("hook %q: no script path resolved", event.Hook.ID)
-	}
-	hookFilename := hookBase
-	if event.Hook.Kit != "" {
-		hookFilename = event.Hook.Kit + "--" + hookBase
 	}
 
 	meta, proj, task, err := p.loadContext(event.ProjectID, event.TaskID)
@@ -49,15 +41,6 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 	}
 
 	behavior, _ := lookupBehavior(meta, task)
-
-	// Stage kit + project hook files under a single temp directory so the
-	// entry script can source sibling helpers via a consistent path.
-	projectHooksDir := filepath.Join(proj.WorkDir, ".boid", "hooks")
-	stagingDir, cleanup, err := StageHooks(projectHooksDir, behavior.KitHooksDirs, event.EventID)
-	if err != nil {
-		return nil, nil, err
-	}
-	entryPath := filepath.Join(stagingDir, hookFilename)
 
 	// Business payload filter: limit task.payload to the traits this hook declares.
 	payload := FilterPayloadByTraits(task.Payload, event.Hook.Traits.Consumes)
@@ -71,7 +54,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		ProjectID:    event.ProjectID,
 		HandlerID:    event.Hook.ID,
 		Kind:         JobKindHook,
-		Argv:         []string{entryPath},
+		Argv:         []string{event.Hook.ScriptPath},
 		Instruction:  instruction,
 		Task:         snapshotTask(task),
 		PrimaryInput: payload,
@@ -80,6 +63,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 			UseWorktree:        task.Worktree,
 			AdditionalBindings: behavior.AdditionalBindings,
 			Writable:           !IsReadonly(task),
+			KitRoots:           behavior.KitRoots,
 		},
 		BuiltinPolicies: DefaultBuiltinPolicies(
 			RoleHook,
@@ -91,17 +75,15 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		Env:             behavior.Env,
 		ExecutionState:  string(task.Status),
 	}
-	return spec, cleanup, nil
+	return spec, nil, nil
 }
 
-// PlanGate renders a gate fire event into a JobSpec. The returned cleanup
-// callback releases the gate staging directory.
+// PlanGate renders a gate fire event into a JobSpec.
 func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, CleanupFunc, error) {
 	if event == nil {
 		return nil, nil, fmt.Errorf("gate event is required")
 	}
-	gateFilename := filepath.Base(event.Gate.ScriptPath)
-	if gateFilename == "" || gateFilename == "." {
+	if event.Gate.ScriptPath == "" {
 		return nil, nil, fmt.Errorf("gate %q: no script path resolved", event.Gate.ID)
 	}
 
@@ -123,29 +105,22 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, CleanupFunc,
 		return nil, nil, fmt.Errorf("marshal task: %w", err)
 	}
 
-	projectGatesDir := filepath.Join(proj.WorkDir, ".boid", "gates")
-	stagingDir, cleanup, err := StageGates(projectGatesDir, behavior.KitGatesDirs, event.EventID)
-	if err != nil {
-		return nil, nil, err
-	}
-	entryPath := filepath.Join(stagingDir, gateFilename)
-
 	spec := &JobSpec{
 		TaskID:       event.TaskID,
 		ProjectID:    event.ProjectID,
 		HandlerID:    event.Gate.ID,
 		Kind:         JobKindGate,
-		Argv:         []string{entryPath},
+		Argv:         []string{event.Gate.ScriptPath},
 		Instruction:  nil,
 		Task:         nil, // gate gets task data via stdin rather than context file
 		PrimaryInput: taskJSON,
 		Visibility: Visibility{
 			// Project filesystem is intentionally not visible to gates.
-			ProjectDir:  "",
-			UseWorktree: false,
-			// Gates never pass through kit CLIs; they only see their own tmpfs.
+			ProjectDir:         "",
+			UseWorktree:        false,
 			AdditionalBindings: nil,
 			Writable:           false,
+			KitRoots:           behavior.KitRoots,
 		},
 		BuiltinPolicies: DefaultBuiltinPolicies(
 			RoleGate,
@@ -157,7 +132,7 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, CleanupFunc,
 		Env:             behavior.Env,
 		ExecutionState:  string(task.Status),
 	}
-	return spec, cleanup, nil
+	return spec, nil, nil
 }
 
 func (p *DispatchPlanner) loadContext(projectID, taskID string) (*ProjectMeta, *Project, *Task, error) {

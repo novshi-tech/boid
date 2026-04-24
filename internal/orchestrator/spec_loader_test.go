@@ -308,7 +308,7 @@ func TestReadProjectMetaWithKits_LocalKits(t *testing.T) {
 			t.Fatalf("ReadProjectMetaWithKits: %v", err)
 		}
 		b := meta.TaskBehaviors["dev"]
-		if len(b.Hooks) != 1 || b.Hooks[0].ID != "build/run-build" || len(b.KitHooksDirs) != 1 {
+		if len(b.Hooks) != 1 || b.Hooks[0].ID != "build/run-build" || len(b.KitRoots) != 1 {
 			t.Fatalf("unexpected merged hooks: %+v", b)
 		}
 	})
@@ -616,6 +616,7 @@ func TestMergeKitMetaIntoBehavior(t *testing.T) {
 			AdditionalBindings: []projectspec.BindMount{{Source: "/usr/local/go"}},
 			Hooks:              []projectspec.Hook{{ID: "kit-hook", On: projectspec.OnValues{"verifying"}, ScriptPath: "/kit/hooks/kit-hook.sh"}},
 			HooksDir:           "/kit/hooks",
+			KitRoot:            "/kit",
 			Env:                map[string]string{"GOPATH": "/home/go", "PROJECT_VAR": "kit-overridden"},
 		}
 
@@ -632,8 +633,8 @@ func TestMergeKitMetaIntoBehavior(t *testing.T) {
 		if result.HostCommands["git"].Path != "/usr/bin/git" {
 			t.Fatalf("base host command should win over kit: %+v", result.HostCommands["git"])
 		}
-		if len(result.KitHooksDirs) != 1 || result.KitHooksDirs[0].HooksDir != "/kit/hooks" {
-			t.Fatalf("unexpected KitHooksDirs: %+v", result.KitHooksDirs)
+		if len(result.KitRoots) != 1 || result.KitRoots[0] != "/kit" {
+			t.Fatalf("unexpected KitRoots: %+v", result.KitRoots)
 		}
 	})
 
