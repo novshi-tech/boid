@@ -31,41 +31,52 @@ func TestBuildSandboxSpec_BoidHostIPAlwaysInjected(t *testing.T) {
 	}
 }
 
-func TestStageArgv0_BareCommandLeftUntouched(t *testing.T) {
-	target, mount, ok := stageArgv0("claude", "")
-	if ok {
-		t.Errorf("bare command should not be staged, got target=%q mount=%v", target, mount)
+// KitRoots in Visibility are bound at their original host paths inside the sandbox.
+func TestBuildSandboxSpec_KitRootsAreBound(t *testing.T) {
+	const kitRoot = "/home/user/.local/share/boid/kits/git-auto-merge"
+	spec := &orchestrator.JobSpec{
+		Visibility: orchestrator.Visibility{
+			KitRoots: []string{kitRoot},
+		},
+	}
+	result := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+
+	var found *sandbox.Mount
+	for i := range result.Mounts {
+		if result.Mounts[i].Target == kitRoot {
+			found = &result.Mounts[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("kit root mount not found: target=%q not in mounts", kitRoot)
+	}
+	if found.Source != kitRoot {
+		t.Errorf("mount Source = %q, want %q", found.Source, kitRoot)
+	}
+	if !found.ReadOnly {
+		t.Error("kit root mount must be ReadOnly")
+	}
+	if found.Type != sandbox.MountBind {
+		t.Errorf("mount Type = %v, want MountBind", found.Type)
 	}
 }
 
-func TestStageArgv0_UnderProjectRootLeftUntouched(t *testing.T) {
-	target, mount, ok := stageArgv0("/host/proj/bin/run.sh", "/host/proj")
-	if ok {
-		t.Errorf("project-local argv[0] should not be staged, target=%q mount=%v", target, mount)
+// Kit root parent directory must NOT appear as a mount target (security boundary).
+func TestBuildSandboxSpec_KitRootParentNotBound(t *testing.T) {
+	const kitRoot = "/home/user/.local/share/boid/kits/git-auto-merge"
+	const kitParent = "/home/user/.local/share/boid/kits"
+	spec := &orchestrator.JobSpec{
+		Visibility: orchestrator.Visibility{
+			KitRoots: []string{kitRoot},
+		},
 	}
-}
+	result := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
 
-func TestStageArgv0_ExternalAbsolutePath_BindsParentDirectory(t *testing.T) {
-	const entry = "/tmp/boid-hooks-abc/claude-code--run-agent.py"
-
-	target, mount, ok := stageArgv0(entry, "/host/proj")
-	if !ok {
-		t.Fatal("expected ok=true for external absolute argv[0]")
-	}
-	if target != "/opt/boid/entry/claude-code--run-agent.py" {
-		t.Errorf("target = %q, want /opt/boid/entry/claude-code--run-agent.py", target)
-	}
-	if mount == nil {
-		t.Fatal("expected a mount for external argv[0]")
-	}
-	want := sandbox.Mount{
-		Source:   "/tmp/boid-hooks-abc",
-		Target:   "/opt/boid/entry",
-		Type:     sandbox.MountBind,
-		ReadOnly: true,
-	}
-	if !reflect.DeepEqual(*mount, want) {
-		t.Errorf("mount = %+v, want %+v", *mount, want)
+	for _, m := range result.Mounts {
+		if m.Target == kitParent {
+			t.Errorf("kit root parent directory must not be mounted: found mount with target=%q", kitParent)
+		}
 	}
 }
 
@@ -186,24 +197,6 @@ func TestProjectVisibilityMounts_WorktreeMode_OrigGitReadOnly(t *testing.T) {
 	}
 }
 
-// Mounting the parent directory (rather than the single entry file) is what
-// lets hook runners like claude-code/run-agent.py find their sibling helper
-// scripts (e.g. format-stream.py) inside the sandbox.
-func TestStageArgv0_SiblingHelpersAreReachable(t *testing.T) {
-	target, mount, ok := stageArgv0("/tmp/boid-hooks-abc/claude-code--run-agent.py", "")
-	if !ok || mount == nil {
-		t.Fatal("expected external argv[0] to be staged with a mount")
-	}
-	if mount.IsFile {
-		t.Error("parent-directory bind must not set IsFile=true")
-	}
-	if mount.Source != "/tmp/boid-hooks-abc" || mount.Target != "/opt/boid/entry" {
-		t.Errorf("mount = %+v, want parent dir bound at /opt/boid/entry", *mount)
-	}
-	if target != "/opt/boid/entry/claude-code--run-agent.py" {
-		t.Errorf("target = %q, want /opt/boid/entry/claude-code--run-agent.py", target)
-	}
-}
 
 // BuiltinPolicies に git が含まれていても /opt/boid/bin/git symlink は生成されない。
 // /usr/bin/git と /bin/git は boid バイナリの bind mount で上書き済みなので不要。

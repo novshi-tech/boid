@@ -104,101 +104,81 @@ func TestDispatchPlannerInjectsDefaultBuiltinsForHookAndGate(t *testing.T) {
 	}
 }
 
-// PlanHook stages kit + project hook files into a single temp dir and the
-// returned cleanup callback removes it.
-func TestPlanHook_StagesHookFilesAndReturnsCleanup(t *testing.T) {
+// PlanHook uses Hook.ScriptPath directly as Argv[0] and surfaces KitRoots
+// from the behavior in Visibility.KitRoots. No staging directory is created.
+func TestPlanHook_UsesScriptPathDirectlyAndSetsKitRoots(t *testing.T) {
 	projectDir := t.TempDir()
-	projHooksDir := filepath.Join(projectDir, ".boid", "hooks")
-	if err := os.MkdirAll(projHooksDir, 0o755); err != nil {
+	kitRoot := t.TempDir()
+	kitHooksDir := filepath.Join(kitRoot, "hooks")
+	if err := os.MkdirAll(kitHooksDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(projHooksDir, "local.sh"), []byte("#!/bin/bash\n"), 0o755); err != nil {
-		t.Fatalf("write project hook: %v", err)
-	}
-	kitHooksDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(kitHooksDir, "run-agent.sh"), []byte("#!/bin/bash\n"), 0o755); err != nil {
+	scriptPath := filepath.Join(kitHooksDir, "run-agent.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/bash\n"), 0o755); err != nil {
 		t.Fatalf("write kit hook: %v", err)
 	}
 
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{
-		Name: "dev",
-		KitHooksDirs: []KitHooksInfo{
-			{HooksDir: kitHooksDir, Consumer: "claude-code"},
-		},
+		Name:     "dev",
+		KitRoots: []string{kitRoot},
 	}, &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
 
-	req, hookCleanup, err := planner.PlanHook(&HookFireEvent{
+	req, cleanup, err := planner.PlanHook(&HookFireEvent{
 		EventID:   "event-1",
 		TaskID:    "task-1",
 		ProjectID: "proj-1",
-		Hook:      Hook{ID: "hook-1", ScriptPath: filepath.Join(projHooksDir, "local.sh")},
+		Hook:      Hook{ID: "run-agent", ScriptPath: scriptPath},
 	})
 	if err != nil {
 		t.Fatalf("PlanHook: %v", err)
 	}
-	if hookCleanup == nil {
-		t.Fatal("PlanHook returned nil cleanup")
+	if cleanup != nil {
+		t.Error("PlanHook should return nil cleanup (no staging dir)")
 	}
-
-	if len(req.Argv) == 0 {
-		t.Fatal("JobSpec.Argv should have at least the entry script")
+	if len(req.Argv) == 0 || req.Argv[0] != scriptPath {
+		t.Errorf("Argv[0] = %q, want %q", req.Argv[0], scriptPath)
 	}
-	stagingDir := filepath.Dir(req.Argv[0])
-	if _, err := os.Stat(filepath.Join(stagingDir, "local.sh")); err != nil {
-		t.Errorf("project hook missing from staging dir: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(stagingDir, "claude-code--run-agent.sh")); err != nil {
-		t.Errorf("kit hook missing from staging dir: %v", err)
-	}
-
-	hookCleanup()
-	if _, err := os.Stat(stagingDir); !os.IsNotExist(err) {
-		t.Errorf("staging dir still present after cleanup: err=%v", err)
+	if len(req.Visibility.KitRoots) != 1 || req.Visibility.KitRoots[0] != kitRoot {
+		t.Errorf("KitRoots = %v, want [%s]", req.Visibility.KitRoots, kitRoot)
 	}
 }
 
-// PlanGate stages kit gate scripts into a temp dir and returns a cleanup
-// callback; JobSpec itself carries no KitGatesDirs / ProjectGatesDir fields.
-func TestPlanGate_StagesGateScriptsAndReturnsCleanup(t *testing.T) {
+// PlanGate uses Gate.ScriptPath directly as Argv[0] and includes kit roots
+// in Visibility.KitRoots. No staging directory is created.
+func TestPlanGate_UsesScriptPathDirectlyAndSetsKitRoots(t *testing.T) {
 	projectDir := t.TempDir()
-	projGatesDir := filepath.Join(projectDir, ".boid", "gates")
-	if err := os.MkdirAll(projGatesDir, 0o755); err != nil {
+	kitRoot := t.TempDir()
+	kitGatesDir := filepath.Join(kitRoot, "gates")
+	if err := os.MkdirAll(kitGatesDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	kitGatesDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(kitGatesDir, "gate-1.sh"), []byte("#!/bin/bash\n"), 0o755); err != nil {
+	scriptPath := filepath.Join(kitGatesDir, "gate-1.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/bash\n"), 0o755); err != nil {
 		t.Fatalf("write kit gate: %v", err)
 	}
 
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{
-		Name:         "dev",
-		KitGatesDirs: []KitGatesInfo{{GatesDir: kitGatesDir, GateIDs: []string{"gate-1"}}},
+		Name:     "dev",
+		KitRoots: []string{kitRoot},
 	}, &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
 
-	req, gateCleanup, err := planner.PlanGate(&GateFireEvent{
+	req, cleanup, err := planner.PlanGate(&GateFireEvent{
 		EventID:   "event-1",
 		TaskID:    "task-1",
 		ProjectID: "proj-1",
-		Gate:      Gate{ID: "gate-1", ScriptPath: filepath.Join(kitGatesDir, "gate-1.sh")},
+		Gate:      Gate{ID: "gate-1", ScriptPath: scriptPath},
 	})
 	if err != nil {
 		t.Fatalf("PlanGate: %v", err)
 	}
-	if gateCleanup == nil {
-		t.Fatal("PlanGate returned nil cleanup")
+	if cleanup != nil {
+		t.Error("PlanGate should return nil cleanup (no staging dir)")
 	}
-
-	if len(req.Argv) == 0 || filepath.Base(req.Argv[0]) != "gate-1.sh" {
-		t.Fatalf("gate Argv[0] = %v, want staged gate-1.sh", req.Argv)
+	if len(req.Argv) == 0 || req.Argv[0] != scriptPath {
+		t.Errorf("Argv[0] = %q, want %q", req.Argv[0], scriptPath)
 	}
-	stagingDir := filepath.Dir(req.Argv[0])
-	if _, err := os.Stat(filepath.Join(stagingDir, "gate-1.sh")); err != nil {
-		t.Errorf("kit gate missing from staging dir: %v", err)
-	}
-
-	gateCleanup()
-	if _, err := os.Stat(stagingDir); !os.IsNotExist(err) {
-		t.Errorf("staging dir still present after cleanup: err=%v", err)
+	if len(req.Visibility.KitRoots) != 1 || req.Visibility.KitRoots[0] != kitRoot {
+		t.Errorf("KitRoots = %v, want [%s]", req.Visibility.KitRoots, kitRoot)
 	}
 }
 

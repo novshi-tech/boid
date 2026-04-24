@@ -498,6 +498,8 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 		meta.GatesDir = gatesDir
 	}
 
+	meta.KitRoot = dir
+
 	// Reject legacy scripts: section in kit.yaml.
 	var rawMap map[string]any
 	if err := yaml.Unmarshal(data, &rawMap); err == nil {
@@ -628,37 +630,17 @@ func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitConsum
 
 	behavior.AdditionalBindings = unionBindMountSlices(rt.AdditionalBindings, behavior.AdditionalBindings)
 
-	for i, kit := range kits {
-		if kit.HooksDir == "" || len(kit.Hooks) == 0 {
-			continue
-		}
-		c := ""
-		if i < len(kitConsumers) {
-			c = kitConsumers[i]
-		}
-		ids := make([]string, len(kit.Hooks))
-		for j, h := range kit.Hooks {
-			ids[j] = h.ID
-		}
-		behavior.KitHooksDirs = append(behavior.KitHooksDirs, KitHooksInfo{
-			HooksDir: kit.HooksDir,
-			HookIDs:  ids,
-			Consumer: c,
-		})
-	}
-
+	// Collect deduplicated kit roots for sandbox bind-mounts.
+	seen := make(map[string]bool)
 	for _, kit := range kits {
-		if kit.GatesDir == "" || len(kit.Gates) == 0 {
+		if kit.KitRoot == "" {
 			continue
 		}
-		ids := make([]string, len(kit.Gates))
-		for i, g := range kit.Gates {
-			ids[i] = g.ID
+		if seen[kit.KitRoot] {
+			continue
 		}
-		behavior.KitGatesDirs = append(behavior.KitGatesDirs, KitGatesInfo{
-			GatesDir: kit.GatesDir,
-			GateIDs:  ids,
-		})
+		seen[kit.KitRoot] = true
+		behavior.KitRoots = append(behavior.KitRoots, kit.KitRoot)
 	}
 
 	// Post-merge validation: kind: agent hooks must have a Consumer. kit
@@ -831,8 +813,7 @@ func cloneTaskBehaviorMap(src map[string]TaskBehavior) map[string]TaskBehavior {
 		v.Env = nil
 		v.HostCommands = nil
 		v.AdditionalBindings = nil
-		v.KitHooksDirs = nil
-		v.KitGatesDirs = nil
+		v.KitRoots = nil
 		result[k] = v
 	}
 	return result

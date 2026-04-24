@@ -10,11 +10,11 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
-// Gate-like invocations run an argv that points into /opt/boid/gates/. The
-// caller is responsible for adding a bind-mount that makes that path resolve.
-// This test asserts the primitives round-trip through Prepare correctly.
-func TestPrepare_GateArgvRequiresMatchingMount(t *testing.T) {
-	gateArgv := []string{"/opt/boid/gates/push-pr.sh"}
+// Gate-like invocations use the script's original host path. The caller binds
+// the kit root directory at the same path so relative source() works.
+func TestPrepare_GateArgvUsesOriginalPath(t *testing.T) {
+	const kitRoot = "/home/user/.local/share/boid/kits/git-auto-merge"
+	gateArgv := []string{kitRoot + "/gates/push-pr.sh"}
 	spec := sandbox.Spec{
 		ID:      "phase1-gate-path",
 		WorkDir: "/tmp/project-gate",
@@ -23,7 +23,7 @@ func TestPrepare_GateArgvRequiresMatchingMount(t *testing.T) {
 		Mounts: []sandbox.Mount{
 			{Target: "/tmp", Type: sandbox.MountTmpfs},
 			{Target: "/tmp/project-gate", Type: sandbox.MountTmpfs},
-			{Source: "/tmp/staged-gates/push-pr.sh", Target: "/opt/boid/gates/push-pr.sh", Type: sandbox.MountBind, IsFile: true},
+			{Source: kitRoot, Target: kitRoot, Type: sandbox.MountBind, ReadOnly: true},
 		},
 		StdinBytes: []byte(`{"id":"task-gate-1"}`),
 	}
@@ -57,8 +57,8 @@ func TestPrepare_GateArgvRequiresMatchingMount(t *testing.T) {
 	if !strings.Contains(inner, gateArgv[0]) {
 		t.Fatalf("inner script should invoke %q", gateArgv[0])
 	}
-	if !strings.Contains(setup, "mount --bind /tmp/staged-gates/push-pr.sh") {
-		t.Fatalf("setup should bind-mount the staged gate script into /opt/boid/gates/")
+	if !strings.Contains(setup, "mount --bind "+kitRoot) {
+		t.Fatalf("setup should bind-mount the kit root %q, got:\n%s", kitRoot, setup)
 	}
 }
 

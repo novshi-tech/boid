@@ -172,7 +172,7 @@ func TestPrepare_StdinBytes(t *testing.T) {
 
 func TestPrepare_StdinAndStdoutCapture(t *testing.T) {
 	spec := minimalSpec("test-stdin-stdout")
-	spec.Argv = []string{"/opt/boid/gates/x.sh"}
+	spec.Argv = []string{"/home/user/.local/share/boid/kits/my-kit/gates/x.sh"}
 	spec.StdinBytes = []byte(`{"task":"t"}`)
 	spec.StdoutCaptureFile = "/tmp/boid-output"
 
@@ -182,7 +182,7 @@ func TestPrepare_StdinAndStdoutCapture(t *testing.T) {
 	}
 	_, _, inner := readScripts(t, outerPath)
 
-	if !strings.Contains(inner, "printf '%s' '{\"task\":\"t\"}' | /opt/boid/gates/x.sh > /tmp/boid-output") {
+	if !strings.Contains(inner, "printf '%s' '{\"task\":\"t\"}' | /home/user/.local/share/boid/kits/my-kit/gates/x.sh > /tmp/boid-output") {
 		t.Errorf("inner: expected stdin + stdout capture\n%s", inner)
 	}
 }
