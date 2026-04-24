@@ -17,3 +17,10 @@
 
 # boid project config (for self-testing)
 *.local.*
+
+# Claude Code runtime state / personal skills
+/.claude/scheduled_tasks.lock
+/.claude/skills/playwright-cli/
+
+# Playwright CLI session data
+/.playwright-cli/
