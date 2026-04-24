@@ -451,8 +451,13 @@ func (h *WebHandler) JobDetail(w http.ResponseWriter, r *http.Request) {
 
 // WebManagementHandler serves the CLI management API at /api/web/*.
 // All routes are accessible only via UNIX socket (CLI control plane).
+// Pairer issues pairing codes.
+type Pairer interface {
+	Issue(ctx context.Context, label string) (string, error)
+}
+
 type WebManagementHandler struct {
-	Pairing   *auth.PairingManager
+	Pairing   Pairer
 	Store     *auth.Store
 	PublicURL string
 }
@@ -473,8 +478,11 @@ type pairResponse struct {
 }
 
 func (h *WebManagementHandler) PostPair(w http.ResponseWriter, r *http.Request) {
-	label := r.URL.Query().Get("label")
-	code, err := h.Pairing.Issue(r.Context(), label)
+	var req auth.PairRequest
+	if r.Body != nil {
+		json.NewDecoder(r.Body).Decode(&req) //nolint: errcheck — label is optional
+	}
+	code, err := h.Pairing.Issue(r.Context(), req.Label)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
