@@ -86,7 +86,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	}
 	env["HOME"] = homeDir
 	env["TERM"] = "xterm-256color"
-	env["PATH"] = buildPATH(spec.Visibility.AdditionalBindings)
+	env["PATH"] = buildPATH(spec.Visibility.AdditionalBindings, rt.BoidBinary)
 	env["BOID_HOST_IP"] = hostGatewayIP
 	if rt.ProxyPort > 0 {
 		applyProxyEnv(env, rt.ProxyPort)
@@ -444,9 +444,22 @@ func hostCommandMounts(boidBinary string, builtins, hostCommands []string, lookP
 	return out, nil
 }
 
-// buildPATH prepends additional-binding bin directories to the canonical PATH.
-func buildPATH(bindings []orchestrator.BindMount) string {
+// buildPATH prepends additional-binding bin directories and the boid binary
+// directory to the canonical PATH. The boid binary directory is included so
+// scripts inside the sandbox can call `boid` by name. When boidBinary already
+// lives in a standard directory it is already covered by the base and is not
+// duplicated.
+func buildPATH(bindings []orchestrator.BindMount, boidBinary string) string {
 	var prefix []string
+	if boidBinary != "" {
+		boidDir := filepath.Dir(boidBinary)
+		switch boidDir {
+		case "/usr/local/bin", "/usr/bin", "/bin":
+			// already covered by the base PATH — skip
+		default:
+			prefix = append(prefix, boidDir)
+		}
+	}
 	for _, bm := range bindings {
 		if strings.HasSuffix(bm.Source, "/bin") {
 			prefix = append(prefix, bm.Source)

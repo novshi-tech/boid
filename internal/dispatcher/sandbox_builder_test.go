@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -304,6 +305,52 @@ func TestHostCommandMounts_Dedup(t *testing.T) {
 	}
 	if len(mounts) != 1 {
 		t.Errorf("expected 1 mount (dedup), got %d", len(mounts))
+	}
+}
+
+// boid バイナリが標準外パスにある場合 (~/go/bin, /tmp/.../bin 等)、
+// そのディレクトリが PATH の先頭に追加されることを確認する。
+// サンドボックス内スクリプトが `boid job done` / `boid task create` を
+// フルパスなしで呼び出せることが目的。
+func TestBuildPATH_BoidDirAddedWhenNonStandard(t *testing.T) {
+	cases := []struct {
+		name       string
+		boidBinary string
+		wantPrefix string
+	}{
+		{
+			name:       "go/bin location",
+			boidBinary: "/home/user/go/bin/boid",
+			wantPrefix: "/home/user/go/bin:",
+		},
+		{
+			name:       "tmp e2e location",
+			boidBinary: "/tmp/boid-e2e-test-ABCDEF/bin/boid",
+			wantPrefix: "/tmp/boid-e2e-test-ABCDEF/bin:",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := buildPATH(nil, tc.boidBinary)
+			if !strings.HasPrefix(path, tc.wantPrefix) {
+				t.Errorf("buildPATH = %q, want prefix %q", path, tc.wantPrefix)
+			}
+		})
+	}
+}
+
+// boid が標準パス (/usr/local/bin 等) にある場合は重複しない。
+func TestBuildPATH_BoidDirNotDuplicatedForStandardPaths(t *testing.T) {
+	for _, boidBinary := range []string{
+		"/usr/local/bin/boid",
+		"/usr/bin/boid",
+		"/bin/boid",
+	} {
+		path := buildPATH(nil, boidBinary)
+		want := "/usr/local/bin:/usr/bin:/bin"
+		if path != want {
+			t.Errorf("buildPATH(%q) = %q, want %q", boidBinary, path, want)
+		}
 	}
 }
 
