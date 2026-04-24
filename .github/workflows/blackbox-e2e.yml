@@ -26,6 +26,12 @@ jobs:
       - name: Run unit tests
         run: go test ./...
 
+      - name: Run e2e-tagged in-process tests
+        # //go:build e2e が付いたテストは /usr/bin/git などホスト側バイナリを
+        # 直接 exec するため通常の go test ./... からは分離している。CI では
+        # 本物の git が利用可能なので、ここで明示的に走らせる。
+        run: go test -tags=e2e ./internal/sandbox/...
+
   e2e:
     name: Black-box E2E
     runs-on: ubuntu-24.04

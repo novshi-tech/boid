@@ -1,3 +1,10 @@
+//go:build e2e
+
+// このファイルは /usr/bin/git を直接 exec し、実リポジトリ相手に push/fetch
+// する end-to-end 試験。ホスト環境 (本物の git / サンドボックス外 / 書き込み
+// 可能な TempDir) を前提とするため、通常の go test ./... からは //go:build
+// e2e タグで除外する。CI では go test -tags=e2e ./internal/sandbox/... で
+// 走らせる。純粋ロジック単体試験は git_builtin_logic_test.go を参照。
 package sandbox_test
 
 import (
