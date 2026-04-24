@@ -272,11 +272,8 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r := srv.router
 
 	// CSRF middleware must be registered before any routes (chi requirement).
-	// The middleware exempts /api/* and /auth paths, so existing API routes
-	// are unaffected. Only mount when Web UI is enabled.
-	if srv.cfg.WebEnabled {
-		r.Use(auth.CSRFMiddleware)
-	}
+	// The middleware exempts /api/* and /auth paths, so existing API routes are unaffected.
+	r.Use(auth.CSRFMiddleware)
 
 	r.Get("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -378,47 +375,41 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r.Mount("/api/jobs", jobHandler.Routes())
 	mountJobRuntimeRoutes(r, runtime)
 
-	if srv.cfg.WebEnabled {
-		staticFS, err := fs.Sub(web.StaticFS, "static")
-		if err != nil {
-			return fmt.Errorf("sub static fs: %w", err)
-		}
-
-		// Static files are served unauthenticated.
-		r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
-
-		// Management API — accessible via UNIX socket (CLI only), no session auth.
-		webMgmt := &api.WebManagementHandler{
-			Pairing:   auth.NewPairingManager(runtime.authStore),
-			Store:     runtime.authStore,
-			PublicURL: gcCfg.Web.PublicURL,
-		}
-		r.Mount("/api/web", webMgmt.Routes())
-
-		// Login/auth routes (exempted by WebAuthMiddleware and CSRFMiddleware).
-		loginHandler := &api.LoginHandler{
-			Pairing: auth.NewPairingManager(runtime.authStore),
-			Store:   runtime.authStore,
-			Limiter: auth.NewRateLimiter(nil),
-		}
-		if runtime.sessionSigner != nil {
-			loginHandler.Signer = runtime.sessionSigner
-		}
-		r.Get("/login", loginHandler.GetLogin)
-		r.Post("/login", loginHandler.PostLogin)
-		r.Get("/auth", loginHandler.GetAuth)
-
-		// Web UI routes protected by session auth.
-		r.Group(func(r chi.Router) {
-			r.Use(auth.NewWebAuthMiddleware(runtime.sessionSigner, runtime.authStore))
-			webHandler := &api.WebHandler{Service: runtime.webSvc, Hub: runtime.hub}
-			r.Get("/api/tasks/{id}/events", webHandler.TaskEvents)
-			r.Mount("/", webHandler.Routes())
-		})
-	} else {
-		r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			http.Error(w, "Web UI is disabled. Use --web flag to enable.", http.StatusNotFound)
-		}))
+	staticFS, err := fs.Sub(web.StaticFS, "static")
+	if err != nil {
+		return fmt.Errorf("sub static fs: %w", err)
 	}
+
+	// Static files are served unauthenticated.
+	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
+
+	// Management API — accessible via UNIX socket (CLI only), no session auth.
+	webMgmt := &api.WebManagementHandler{
+		Pairing:   auth.NewPairingManager(runtime.authStore),
+		Store:     runtime.authStore,
+		PublicURL: gcCfg.Web.PublicURL,
+	}
+	r.Mount("/api/web", webMgmt.Routes())
+
+	// Login/auth routes (exempted by WebAuthMiddleware and CSRFMiddleware).
+	loginHandler := &api.LoginHandler{
+		Pairing: auth.NewPairingManager(runtime.authStore),
+		Store:   runtime.authStore,
+		Limiter: auth.NewRateLimiter(nil),
+	}
+	if runtime.sessionSigner != nil {
+		loginHandler.Signer = runtime.sessionSigner
+	}
+	r.Get("/login", loginHandler.GetLogin)
+	r.Post("/login", loginHandler.PostLogin)
+	r.Get("/auth", loginHandler.GetAuth)
+
+	// Web UI routes protected by session auth.
+	r.Group(func(r chi.Router) {
+		r.Use(auth.NewWebAuthMiddleware(runtime.sessionSigner, runtime.authStore))
+		webHandler := &api.WebHandler{Service: runtime.webSvc, Hub: runtime.hub}
+		r.Get("/api/tasks/{id}/events", webHandler.TaskEvents)
+		r.Mount("/", webHandler.Routes())
+	})
 	return nil
 }

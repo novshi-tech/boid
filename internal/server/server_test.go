@@ -21,7 +21,6 @@ func TestServer_StartAndStop(t *testing.T) {
 		SocketPath:     sockPath,
 		HTTPAddr:       "127.0.0.1:0",
 		AllowedDomains: []string{"example.com"},
-		WebEnabled:     true,
 	}
 
 	srv, err := server.New(cfg)

@@ -33,7 +33,6 @@ var (
 	startHTTPAddr    string
 	startKitsDir     string
 	startKeyFilePath string
-	startWebEnabled  bool
 )
 
 func init() {
@@ -43,7 +42,6 @@ func init() {
 	startCmd.Flags().StringVar(&startHTTPAddr, "http-addr", "", "HTTP listen address")
 	startCmd.Flags().StringVar(&startKitsDir, "kits-dir", "", "Base directory for installed kits")
 	startCmd.Flags().StringVar(&startKeyFilePath, "key-file-path", "", "Path to the secret encryption key file")
-	startCmd.Flags().BoolVar(&startWebEnabled, "web", false, "Enable Web UI (experimental)")
 	rootCmd.AddCommand(startCmd)
 }
 
@@ -107,7 +105,6 @@ type startConfigOptions struct {
 	HTTPAddr    string
 	KitsDir     string
 	KeyFilePath string
-	WebEnabled  bool
 }
 
 func buildStartConfig(opts startConfigOptions) server.Config {
@@ -118,7 +115,6 @@ func buildStartConfig(opts startConfigOptions) server.Config {
 		KitsDir:        opts.KitsDir,
 		KeyFilePath:    opts.KeyFilePath,
 		AllowedDomains: defaultAllowedDomains(),
-		WebEnabled:     opts.WebEnabled,
 	}
 
 	if cfg.DBPath == "" {
@@ -147,7 +143,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 		HTTPAddr:    startHTTPAddr,
 		KitsDir:     startKitsDir,
 		KeyFilePath: startKeyFilePath,
-		WebEnabled:  startWebEnabled,
 	})
 
 	if daemon.IsChild() {
@@ -176,11 +171,7 @@ func runDaemonParent(cfg server.Config) error {
 		return fmt.Errorf("daemon did not start (pid: %d); check logs at %s: %w", pid, logPath, err)
 	}
 
-	if cfg.WebEnabled {
-		fmt.Printf("boid server started (pid: %d, socket: %s, http: %s)\n", pid, cfg.SocketPath, cfg.HTTPAddr)
-	} else {
-		fmt.Printf("boid server started (pid: %d, socket: %s)\n", pid, cfg.SocketPath)
-	}
+	fmt.Printf("boid server started (pid: %d, socket: %s, http: %s)\n", pid, cfg.SocketPath, cfg.HTTPAddr)
 	return nil
 }
 
@@ -209,11 +200,7 @@ func runDaemonChild(cfg server.Config) error {
 		return fmt.Errorf("start server: %w", err)
 	}
 
-	if cfg.WebEnabled {
-		slog.Info("boid server started", "socket", cfg.SocketPath, "http", cfg.HTTPAddr)
-	} else {
-		slog.Info("boid server started", "socket", cfg.SocketPath)
-	}
+	slog.Info("boid server started", "socket", cfg.SocketPath, "http", cfg.HTTPAddr)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

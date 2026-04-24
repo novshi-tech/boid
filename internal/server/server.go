@@ -29,7 +29,6 @@ type Config struct {
 	KeyFilePath    string   // path to secret encryption key file
 	AllowedDomains []string // proxy allowed domains
 	JobRuntime     dispatcher.JobRuntime
-	WebEnabled     bool // enable Web UI (default: false)
 }
 
 type Server struct {
@@ -170,19 +169,13 @@ func (s *Server) Start(ctx context.Context) error {
 	s.unixLn = unixLn
 	go s.httpServer.Serve(unixLn)
 
-	// TCP listener is only for the Web UI. When WebEnabled is false the
-	// daemon talks exclusively over the UNIX socket, so we avoid binding a
-	// port at all — otherwise users who never opted in would still expose
-	// :8080 on every boid start.
-	if s.cfg.WebEnabled {
-		tcpLn, err := net.Listen("tcp", s.cfg.HTTPAddr)
-		if err != nil {
-			unixLn.Close()
-			return fmt.Errorf("listen tcp: %w", err)
-		}
-		s.tcpLn = tcpLn
-		go s.httpServer.Serve(tcpLn)
+	tcpLn, err := net.Listen("tcp", s.cfg.HTTPAddr)
+	if err != nil {
+		unixLn.Close()
+		return fmt.Errorf("listen tcp: %w", err)
 	}
+	s.tcpLn = tcpLn
+	go s.httpServer.Serve(tcpLn)
 
 	return nil
 }
