@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -53,9 +54,9 @@ type SandboxRuntimeInfo struct {
 // facts into a primitive sandbox.Spec. It contains no role-aware switch: the
 // mount set and environment are derived purely from JobSpec.Visibility,
 // HostCommands, Instruction and Argv.
-func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox.Spec {
+func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbox.Spec, error) {
 	if spec == nil {
-		return sandbox.Spec{}
+		return sandbox.Spec{}, nil
 	}
 
 	homeDir := hostHomeDir()
@@ -85,7 +86,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox
 	}
 	env["HOME"] = homeDir
 	env["TERM"] = "xterm-256color"
-	env["PATH"] = buildPATH(spec.Visibility.AdditionalBindings)
+	env["PATH"] = buildPATH(spec.Visibility.AdditionalBindings, rt.BoidBinary)
 	env["BOID_HOST_IP"] = hostGatewayIP
 	if rt.ProxyPort > 0 {
 		applyProxyEnv(env, rt.ProxyPort)
@@ -188,11 +189,12 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox
 		stdoutCapture = "/tmp/boid-output"
 	}
 
-	// boid binary bind + shim symlinks.
+	// boid binary bind + host command mounts.
 	if rt.BoidBinary != "" {
+		// boid バイナリをホスト実パスのまま bind mount する。
 		mounts = append(mounts, sandbox.Mount{
 			Source:   rt.BoidBinary,
-			Target:   "/opt/boid/bin/boid",
+			Target:   rt.BoidBinary,
 			Type:     sandbox.MountBind,
 			IsFile:   true,
 			ReadOnly: true,
@@ -217,8 +219,19 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox
 			ReadOnly: true,
 			Guard:    "-f /bin/git",
 		})
+		// 各 host command のホスト実パスに boid バイナリを bind mount し shim 化する。
+		// コマンドがホストに存在しない場合はジョブ起動時エラー (fail-fast)。
+		hostCmdMounts, err := hostCommandMounts(
+			rt.BoidBinary,
+			sortedKeys(spec.BuiltinPolicies),
+			sortedKeys(spec.HostCommands),
+			exec.LookPath,
+		)
+		if err != nil {
+			return sandbox.Spec{}, err
+		}
+		mounts = append(mounts, hostCmdMounts...)
 	}
-	symlinks := shimSymlinks(sortedKeys(spec.BuiltinPolicies), sortedKeys(spec.HostCommands))
 
 	var cleanup []string
 	if rt.StagingDir != "" {
@@ -240,7 +253,6 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox
 		ID:                rt.JobID,
 		Mounts:            mounts,
 		Files:             files,
-		Symlinks:          symlinks,
 		ProxyPort:         rt.ProxyPort,
 		Argv:              argv,
 		WorkDir:           workDir,
@@ -252,7 +264,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox
 		RootDir:           rt.RootDir,
 		CleanupPaths:      cleanup,
 	}
-	return out
+	return out, nil
 }
 
 // resolveWorkDir returns the initial cd target inside the sandbox. Prefer the
@@ -391,34 +403,63 @@ func additionalBindingMounts(bindings []orchestrator.BindMount) []sandbox.Mount 
 	return out
 }
 
-// shimSymlinks creates /opt/boid/bin/<cmd> → boid symlinks for every command
-// name used by the job (builtin or broker-provided).
-func shimSymlinks(builtins, hostCommands []string) []sandbox.Symlink {
+// hostCommandMounts resolves each host command to its actual path on the host
+// via lookPath and returns bind mounts that overlay the boid shim binary on top.
+// boid and git are excluded (handled by dedicated mounts elsewhere).
+// Returns an error if any command is not found on the host (fail-fast).
+func hostCommandMounts(boidBinary string, builtins, hostCommands []string, lookPath func(string) (string, error)) ([]sandbox.Mount, error) {
 	seen := map[string]struct{}{}
-	add := func(name string) []sandbox.Symlink {
+	var out []sandbox.Mount
+	add := func(name string) error {
 		if name == "boid" || name == "git" {
-			// /usr/bin/git と /bin/git は boid バイナリの bind mount 済みなので shim symlink は不要。
 			return nil
 		}
 		if _, ok := seen[name]; ok {
 			return nil
 		}
 		seen[name] = struct{}{}
-		return []sandbox.Symlink{{LinkTarget: "boid", LinkPath: "/opt/boid/bin/" + name}}
+		path, err := lookPath(name)
+		if err != nil {
+			return fmt.Errorf("host command %q not found on host: %w", name, err)
+		}
+		out = append(out, sandbox.Mount{
+			Source:   boidBinary,
+			Target:   path,
+			Type:     sandbox.MountBind,
+			IsFile:   true,
+			ReadOnly: true,
+		})
+		return nil
 	}
-	var out []sandbox.Symlink
 	for _, n := range builtins {
-		out = append(out, add(n)...)
+		if err := add(n); err != nil {
+			return nil, err
+		}
 	}
 	for _, n := range hostCommands {
-		out = append(out, add(n)...)
+		if err := add(n); err != nil {
+			return nil, err
+		}
 	}
-	return out
+	return out, nil
 }
 
-// buildPATH prepends additional-binding bin directories to the canonical PATH.
-func buildPATH(bindings []orchestrator.BindMount) string {
+// buildPATH prepends additional-binding bin directories and the boid binary
+// directory to the canonical PATH. The boid binary directory is included so
+// scripts inside the sandbox can call `boid` by name. When boidBinary already
+// lives in a standard directory it is already covered by the base and is not
+// duplicated.
+func buildPATH(bindings []orchestrator.BindMount, boidBinary string) string {
 	var prefix []string
+	if boidBinary != "" {
+		boidDir := filepath.Dir(boidBinary)
+		switch boidDir {
+		case "/usr/local/bin", "/usr/bin", "/bin":
+			// already covered by the base PATH — skip
+		default:
+			prefix = append(prefix, boidDir)
+		}
+	}
 	for _, bm := range bindings {
 		if strings.HasSuffix(bm.Source, "/bin") {
 			prefix = append(prefix, bm.Source)
@@ -426,7 +467,7 @@ func buildPATH(bindings []orchestrator.BindMount) string {
 			prefix = append(prefix, bm.Source+"/bin")
 		}
 	}
-	base := "/opt/boid/bin:/usr/local/bin:/usr/bin:/bin"
+	base := "/usr/local/bin:/usr/bin:/bin"
 	if len(prefix) > 0 {
 		return strings.Join(prefix, ":") + ":" + base
 	}
