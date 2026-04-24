@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -128,4 +129,54 @@ func (s *captureGCStore) GC(olderThan time.Duration, dryRun bool) (*orchestrator
 	s.lastOlderThan = olderThan
 	s.lastDryRun = dryRun
 	return &orchestrator.GCResult{}, nil
+}
+
+type stubDeviceGCStore struct {
+	n   int64
+	err error
+}
+
+func (s *stubDeviceGCStore) DeleteRevokedDevices(_ context.Context, _ bool) (int64, error) {
+	return s.n, s.err
+}
+
+func TestGCAppService_DeviceCleanup(t *testing.T) {
+	taskResult := &orchestrator.GCResult{Tasks: 1}
+	svc := &GCAppService{
+		Store:       &stubGCStore{result: taskResult},
+		DeviceStore: &stubDeviceGCStore{n: 3},
+	}
+
+	result, err := svc.Run(24*time.Hour, false)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Tasks != 1 {
+		t.Errorf("Tasks = %d, want 1", result.Tasks)
+	}
+	if result.Devices != 3 {
+		t.Errorf("Devices = %d, want 3", result.Devices)
+	}
+}
+
+func TestGCAppService_NoDeviceStore(t *testing.T) {
+	svc := &GCAppService{Store: &stubGCStore{result: &orchestrator.GCResult{Tasks: 2}}}
+	result, err := svc.Run(24*time.Hour, false)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Devices != 0 {
+		t.Errorf("Devices = %d, want 0", result.Devices)
+	}
+}
+
+func TestGCAppService_DeviceError_DoesNotFail(t *testing.T) {
+	svc := &GCAppService{
+		Store:       &stubGCStore{result: &orchestrator.GCResult{}},
+		DeviceStore: &stubDeviceGCStore{err: fmt.Errorf("db error")},
+	}
+	_, err := svc.Run(24*time.Hour, false)
+	if err != nil {
+		t.Errorf("Run should not fail on device GC error, got: %v", err)
+	}
 }

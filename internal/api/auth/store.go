@@ -172,6 +172,23 @@ func (s *Store) RevokeAllDevices(ctx context.Context) error {
 	return nil
 }
 
+func (s *Store) DeleteRevokedDevices(ctx context.Context, dryRun bool) (int64, error) {
+	if dryRun {
+		var n int64
+		err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_devices WHERE revoked_at IS NOT NULL`).Scan(&n)
+		if err != nil {
+			return 0, fmt.Errorf("count revoked devices: %w", err)
+		}
+		return n, nil
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM web_devices WHERE revoked_at IS NOT NULL`)
+	if err != nil {
+		return 0, fmt.Errorf("delete revoked devices: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 func (s *Store) HasAnyDevice(ctx context.Context) (bool, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx,

@@ -182,6 +182,10 @@ type GCService interface {
 	Run(olderThan time.Duration, dryRun bool) (*orchestrator.GCResult, error)
 }
 
+type DeviceGCStore interface {
+	DeleteRevokedDevices(ctx context.Context, dryRun bool) (int64, error)
+}
+
 // JobLogReader reads the transcript log for a given runtime.
 type JobLogReader interface {
 	ReadJobLog(runtimeID string) ([]byte, error)

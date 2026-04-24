@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -10,11 +12,29 @@ import (
 )
 
 type GCAppService struct {
-	Store GCStore
+	Store       GCStore
+	DeviceStore DeviceGCStore // optional; deletes revoked devices on GC
+}
+
+// GC implements orchestrator.GCStore so GCAppService can be passed to GCLoop.
+func (s *GCAppService) GC(olderThan time.Duration, dryRun bool) (*orchestrator.GCResult, error) {
+	result, err := s.Store.GC(olderThan, dryRun)
+	if err != nil {
+		return nil, err
+	}
+	if s.DeviceStore != nil {
+		n, err := s.DeviceStore.DeleteRevokedDevices(context.Background(), dryRun)
+		if err != nil {
+			slog.Warn("gc devices failed", "error", err)
+		} else {
+			result.Devices = n
+		}
+	}
+	return result, nil
 }
 
 func (s *GCAppService) Run(olderThan time.Duration, dryRun bool) (*orchestrator.GCResult, error) {
-	result, err := s.Store.GC(olderThan, dryRun)
+	result, err := s.GC(olderThan, dryRun)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
@@ -43,6 +63,7 @@ type gcResponse struct {
 	Worktrees  int64 `json:"worktrees"`
 	Runtimes   int64 `json:"runtimes"`
 	SandboxTmp int64 `json:"sandbox_tmp"`
+	Devices    int64 `json:"devices"`
 	DryRun     bool  `json:"dry_run,omitempty"`
 }
 
@@ -75,6 +96,7 @@ func (h *GCHandler) Run(w http.ResponseWriter, r *http.Request) {
 		Worktrees:  result.Worktrees,
 		Runtimes:   result.Runtimes,
 		SandboxTmp: result.SandboxTmp,
+		Devices:    result.Devices,
 		DryRun:     req.DryRun,
 	})
 }
