@@ -576,6 +576,36 @@ Heroicons から必要分のみ直書き:
 - [ ] 複数ブラウザタブから同時 attach で表示がミラーされる
 - [ ] Cloudflare Tunnel 経由でも WebSocket が張れる (tunnel 設定に依存、ドキュメントに明記)
 
+### Phase 4-c: ジョブ詳細への xterm 埋め込み + 全画面導線 (2026-04-24 実装)
+
+**実装内容**:
+- `web/templates/jobs.templ` JobDetail に interactive && running 分岐を追加
+  - interactive && running: `@components.Terminal(job.ID, "/api/jobs/{id}/attach/ws")` を描画
+  - interactive && 完了後: 従来どおり注釈 + static pre
+  - non-interactive: 変更なし (SSE tail)
+- action bar に「全画面で開く」ボタン追加 (interactive && running の場合)
+  - GateID が空でない場合は Replay gate (primary 左) と共存
+- `web/templates/jobs_test.go` に4テストを追加:
+  - `TestJobDetail_InteractiveRunning_EmbedsTerminal`
+  - `TestJobDetail_InteractiveCompleted_ShowsStaticPre`
+  - `TestJobDetail_NonInteractive_UnchangedSSE`
+  - `TestJobDetail_GateJobWithRunningTerminal`
+
+**手動確認 (2026-04-24)**:
+
+| 項目 | 結果 |
+|---|---|
+| interactive ジョブに xterm.js が埋め込まれ TUI と同等 | 未確認 (サンドボックス内は daemon 起動不可のため TODO) |
+| 複数タブから同時 attach で出力ミラー | 未確認 (TODO) |
+| Cloudflare Tunnel (nosen.dev) 経由で WS 疎通 | 未確認 (TODO) |
+| 「全画面で開く」で新タブが開き全画面 xterm が動作 | 未確認 (TODO) |
+| WS 切断 → 再接続 overlay が機能 | 未確認 (TODO) |
+
+**ユニットテスト・静的解析**: `go vet ./...` pass / `go test ./... -race` pass (2026-04-24)
+
+**運用メモ**: 手動確認はサンドボックス外 (ホスト上で `boid start --web`) で実施すること。
+Tunnel 経由の WS は CloudflareのWebSocket サポートに依存するため、確認後に上記テーブルを更新すること。
+
 ## 並列 dev タスクの全体コンフリクト指針
 
 以下のファイルは「同時刻に複数 dev タスクから書かれうる」ため、auto_plan 時に `depends_on` で直列化する:
