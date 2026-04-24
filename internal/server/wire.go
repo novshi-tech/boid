@@ -414,6 +414,11 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		r.Use(auth.NewWebAuthMiddleware(runtime.sessionSigner, runtime.authStore))
 		webHandler := &api.WebHandler{Service: runtime.webSvc, Hub: runtime.hub}
 		r.Get("/api/tasks/{id}/events", webHandler.TaskEvents)
+		r.Get("/api/jobs/{id}/attach/ws", (&api.WSAttachHandler{
+			Subscriber: runtime.runner,
+			Writer:     runtime.runner,
+			PublicURL:  gcCfg.Web.PublicURL,
+		}).ServeHTTP)
 		r.Mount("/", webHandler.Routes())
 	})
 	return nil
