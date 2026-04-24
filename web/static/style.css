@@ -1394,96 +1394,169 @@ body:has(.action-bar) {
   margin: 0;
 }
 
-/* --- Timeline --- */
+/* --- Timeline ---
+   A vertical rail runs down the left edge — drawn as the container's
+   border-left so it's a single solid line that can't be broken up by
+   pseudo-element gaps. Time sits immediately to the right of the rail
+   (timeline semantics: time = the primary axis, so it anchors each row);
+   then the per-row marker, then the label. Markers overlap the rail via
+   a small negative margin and a punch-through background so they read
+   as nodes on the line rather than dots floating next to it.
+*/
 .timeline {
+  border-left: 2px solid var(--border-strong);
+  padding: var(--space-2) 0;
+}
+
+/* Each row is a flex line; the container's border-left is the rail.
+   Columns: [time] [marker] [label].
+   Time is immediately right of the rail (the primary axis of a
+   timeline), followed by the marker and then the label. A small
+   left padding keeps content clear of the rail so the line reads
+   as uninterrupted. */
+.timeline-row {
   display: flex;
-  flex-direction: column;
-}
-
-.timeline-item {
-  position: relative;
-  padding: var(--space-2) 0 var(--space-2) var(--space-4);
-  border-left: 2px solid var(--border);
-  margin-left: var(--space-2);
-}
-
-.timeline-item::before {
-  content: '';
-  position: absolute;
-  left: -5px;
-  top: 14px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--muted);
-}
-
-/* State transitions (start / auto_advance / abort). Secondary:
-   user's interest is usually in the hook/gate job runs, not the status
-   flips. Rendered smaller and muted. */
-.timeline-type {
-  font-weight: normal;
-  font-size: 0.8125rem;
-  color: var(--muted);
-}
-
-.timeline-time {
-  font-size: 0.75rem;
-  color: var(--muted);
-  margin-top: 2px;
-}
-
-/* Fired rows (hook / exit_gate / entry_gate) carry the job runs; these
-   are the primary interest. Prominent dot, regular weight, default fg. */
-.timeline-item-fired::before {
-  background: var(--accent);
-}
-
-.timeline-type-fired {
-  font-weight: normal;
-  font-size: 0.875rem;
-  color: var(--fg);
-  font-family: var(--font-mono);
-}
-
-/* Row-level link: the entire fired timeline item is a clickable area
-   (link + timestamp). An <a> in place of <div> so keyboard focus and
-   middle-click-open-in-tab work naturally.
-   The right padding reserves space for the "›" chevron (absolutely
-   positioned) so long hook IDs / error messages don't overlap it. */
-.timeline-item-link {
-  display: block;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  min-height: 1.75rem;
   color: inherit;
   text-decoration: none;
   border-radius: var(--radius-1);
   transition: background 0.1s ease;
-  padding-right: var(--space-4);
 }
 
-.timeline-item-link:hover {
+/* Time — the axis of the timeline. Mono digits via tabular-nums keep
+   widths uniform even when hours jump from 9→10. Natural width — no
+   min-width padding, so time sits tight against the rail and the marker
+   is not pushed out into empty space. */
+.timeline-time {
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Marker — sits between time and label, not on the rail (doing so
+   either breaks the rail continuity or forces overlaps into the
+   time column). Dot size + inner ::before for per-kind coloring. */
+.timeline-marker {
+  flex: 0 0 auto;
+  position: relative;
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+
+.timeline-marker::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+/* Status header marker: hollow ring — reads as a section anchor,
+   distinct from solid event dots. */
+.timeline-marker-status::before {
+  background: transparent;
+  border: 2px solid var(--border-strong);
+}
+
+/* State-transition actions (start / abort / auto_advance): small diamond
+   marks the secondary nature of lifecycle flips — the reader usually
+   cares about job rows more than status bookkeeping. */
+.timeline-marker-action::before {
+  background: var(--muted);
+  border-radius: 2px;
+  inset: 1px;
+  transform: rotate(45deg);
+}
+
+/* Job markers color-code success / failure / running so the outcome
+   reads at a glance without parsing the label (TUI parity: ● colored
+   by job status). */
+.timeline-row-job-completed .timeline-marker-job::before { background: var(--accent); }
+.timeline-row-job-failed    .timeline-marker-job::before { background: #b91c1c; }
+.timeline-row-job-running   .timeline-marker-job::before { background: #d97706; }
+
+@media (prefers-color-scheme: dark) {
+  .timeline-row-job-failed  .timeline-marker-job::before { background: #f87171; }
+  .timeline-row-job-running .timeline-marker-job::before { background: #fbbf24; }
+}
+
+.timeline-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--fg);
+  font-size: 0.875rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.timeline-row-job .timeline-label {
+  font-family: var(--font-mono);
+}
+
+/* Actions are secondary information — dim them so job rows dominate. */
+.timeline-row-action .timeline-label {
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+/* Header rows are slightly taller and more spaced to anchor each status
+   group visually. The badge (within the label slot) provides the color. */
+.timeline-row-header {
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-1);
+  min-height: 2rem;
+}
+
+.timeline-row-header:first-child {
+  padding-top: var(--space-1);
+}
+
+.timeline-row-header .badge {
+  flex: 0 0 auto;
+}
+
+/* Spacer fills the remaining width on header rows so the badge stays
+   left-tight instead of stretching. */
+.timeline-spacer {
+  flex: 1 1 auto;
+}
+
+/* Job rows are clickable links — whole row becomes interactive so
+   keyboard focus and middle-click-open-in-tab work. Chevron on the
+   right signals the affordance; brightens on hover/focus. */
+.timeline-row-job {
+  cursor: pointer;
+}
+
+.timeline-row-job:hover,
+.timeline-row-job:focus-visible {
   background: var(--card);
   text-decoration: none;
 }
 
-.timeline-item-link:hover .timeline-type-fired {
+.timeline-row-job:hover .timeline-label,
+.timeline-row-job:focus-visible .timeline-label {
   color: var(--accent);
 }
 
-/* Chevron hint ("›") on the right edge signals "click to navigate".
-   Always visible but faint; brightens to accent on hover. */
-.timeline-item-link::after {
-  content: '›';
-  position: absolute;
-  right: var(--space-2);
-  top: 50%;
-  transform: translateY(-50%);
+.timeline-chevron {
+  flex: 0 0 auto;
   color: var(--muted);
   font-size: 1.125rem;
-  opacity: 0.7;
+  line-height: 1;
+  opacity: 0.5;
   transition: opacity 0.1s ease, color 0.1s ease;
 }
 
-.timeline-item-link:hover::after {
+.timeline-row-job:hover .timeline-chevron,
+.timeline-row-job:focus-visible .timeline-chevron {
   opacity: 1;
   color: var(--accent);
 }

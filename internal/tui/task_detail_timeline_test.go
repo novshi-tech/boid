@@ -8,6 +8,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/timeline"
 )
 
 // --- jobDuration / buildJobTimelineLabel tests ---
@@ -339,7 +340,7 @@ func TestRenderTreeTimeline_BoxChars(t *testing.T) {
 			Status: "executing",
 			Events: []timelineEvent{
 				{Time: now.Add(time.Minute), Kind: timelineKindJob, Label: "[main] exit=0 done",
-					HasTime: true, Job: &api.Job{Status: api.JobStatusCompleted}},
+					HasTime: true, Job: &timeline.JobInfo{Status: timeline.JobStatusCompleted}},
 				{Time: now.Add(2 * time.Minute), Kind: timelineKindAction, Label: "done → verifying", HasTime: true},
 			},
 		},
@@ -487,7 +488,7 @@ func TestBuildTreeTimeline_RunningJobAtTail(t *testing.T) {
 	}
 	// Completed job (CreatedAt -5m) should appear before running job (CreatedAt -2m).
 	last := events[len(events)-1]
-	if last.Job == nil || last.Job.Status != api.JobStatusRunning {
+	if last.Job == nil || last.Job.Status != timeline.JobStatusRunning {
 		t.Errorf("last timeline event should be the running job, got job=%v", last.Job)
 	}
 }
@@ -578,7 +579,7 @@ func TestRenderTreeTimeline_RunningJobDimOnBlinkOff(t *testing.T) {
 			Status: "executing",
 			Events: []timelineEvent{
 				{Kind: timelineKindJob, Label: "[main] 2m ago", HasTime: false,
-					Job: &api.Job{Status: api.JobStatusRunning}},
+					Job: &timeline.JobInfo{Status: timeline.JobStatusRunning}},
 			},
 		},
 	}

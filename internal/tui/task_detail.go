@@ -10,7 +10,25 @@ import (
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/timeline"
 )
+
+// findAPIJob resolves a timeline event's JobInfo.ID back to the full api.Job
+// record kept on the detail view. The timeline package stores only the
+// minimum job fields needed for rendering; TUI navigation actions
+// (open-in-tmux, drill into JobDetailScreen) need the full record — Interactive,
+// Output, etc. — which only api.Job carries.
+func (s *TaskDetailScreen) findAPIJob(id string) *api.Job {
+	if s.detail == nil || id == "" {
+		return nil
+	}
+	for _, j := range s.detail.Jobs {
+		if j != nil && j.ID == id {
+			return j
+		}
+	}
+	return nil
+}
 
 const (
 	activeTaskDetailPollInterval = 1 * time.Second
@@ -380,9 +398,10 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if s.timelineCursor >= 0 && s.timelineCursor < len(events) {
 				ev := events[s.timelineCursor]
 				if ev.Job != nil {
-					job := ev.Job
-					return func() tea.Msg {
-						return pushScreenMsg{screen: NewJobDetailScreen(s.shared, job)}
+					if job := s.findAPIJob(ev.Job.ID); job != nil {
+						return func() tea.Msg {
+							return pushScreenMsg{screen: NewJobDetailScreen(s.shared, job)}
+						}
 					}
 				}
 			}
@@ -441,10 +460,13 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 			break
 		}
 		ev := events[s.timelineCursor]
-		if ev.Job == nil || ev.Job.Status != api.JobStatusRunning {
+		if ev.Job == nil || ev.Job.Status != timeline.JobStatusRunning {
 			break
 		}
-		job := ev.Job
+		job := s.findAPIJob(ev.Job.ID)
+		if job == nil {
+			break
+		}
 		if !job.Interactive {
 			s.statusMsg = "this job is not interactive"
 			s.isError = true
@@ -670,7 +692,7 @@ func (s *TaskDetailScreen) ShortHelp() string {
 		events := selectableEventsInGroups(buildTreeTimeline(s.detail))
 		if s.timelineCursor >= 0 && s.timelineCursor < len(events) {
 			ev := events[s.timelineCursor]
-			if ev.Job != nil && ev.Job.Status == api.JobStatusRunning {
+			if ev.Job != nil && ev.Job.Status == timeline.JobStatusRunning {
 				tabSpecific = "e: edit title  enter: open job detail  o: open in tmux  j/k: scroll cursor"
 				break
 			}

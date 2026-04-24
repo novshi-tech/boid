@@ -14,9 +14,37 @@ import (
 	"github.com/google/uuid"
 	"github.com/novshi-tech/boid/internal/api/auth"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/timeline"
 	"github.com/novshi-tech/boid/web/templates"
 	"github.com/novshi-tech/boid/web/templates/components"
 )
+
+// detailTimelineGroups builds the status-grouped timeline for the Web UI
+// task detail page. The shared timeline package groups actions and jobs
+// into status-visit sections; we convert api.Job → timeline.JobInfo here
+// so the timeline package stays api-free (which keeps it importable from
+// web/templates without cycling through internal/api).
+func detailTimelineGroups(detail *TaskDetailView) []timeline.StatusGroup {
+	if detail == nil || detail.Task == nil {
+		return nil
+	}
+	infos := make([]*timeline.JobInfo, 0, len(detail.Jobs))
+	for _, j := range detail.Jobs {
+		if j == nil {
+			continue
+		}
+		infos = append(infos, &timeline.JobInfo{
+			ID:        j.ID,
+			Role:      j.Role,
+			HandlerID: j.HandlerID,
+			Status:    string(j.Status),
+			ExitCode:  j.ExitCode,
+			CreatedAt: j.CreatedAt,
+			UpdatedAt: j.UpdatedAt,
+		})
+	}
+	return timeline.Build(detail.Task, detail.Actions, infos)
+}
 
 
 type WebHandler struct {
@@ -223,16 +251,17 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	// primary flips to save/cancel. Ignored on read-only tabs.
 	editMode := r.URL.Query().Get("mode") == "edit" && tab == "description"
 	errorMsg := r.URL.Query().Get("error")
+	timelineGroups := detailTimelineGroups(detail)
 	if r.Header.Get("HX-Request") == "true" {
 		// Tab clicks swap the entire #tabs section so the active class on
 		// the visible tabs and the "more" summary label stay in sync.
 		depsUp, depsDown := buildDepsTreeRows(detail.DependsOnTree, detail.DependentsTree)
-		templates.TaskDetailTabsSection(detail.Task, detail.Actions, jobs, depsUp, depsDown, detail.AvailableActions, tab, editMode).Render(r.Context(), w)
+		templates.TaskDetailTabsSection(detail.Task, timelineGroups, jobs, depsUp, depsDown, detail.AvailableActions, tab, editMode).Render(r.Context(), w)
 		return
 	}
 	projectName := h.lookupProjectName(detail.Task.ProjectID)
 	depsUp, depsDown := buildDepsTreeRows(detail.DependsOnTree, detail.DependentsTree)
-	templates.TaskDetail(detail.Task, detail.Actions, jobs, depsUp, depsDown, detail.AvailableActions, errorMsg, tab, editMode, projectName).Render(r.Context(), w)
+	templates.TaskDetail(detail.Task, timelineGroups, jobs, depsUp, depsDown, detail.AvailableActions, errorMsg, tab, editMode, projectName).Render(r.Context(), w)
 }
 
 // lookupProjectName resolves a project ID to its display name (Meta.Name),
@@ -284,7 +313,7 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 	kind := r.URL.Query().Get("kind")
 	switch kind {
 	case "timeline":
-		templates.TaskDetailTimelineSection(detail.Actions, jobs).Render(r.Context(), w)
+		templates.TaskDetailTimelineSection(detailTimelineGroups(detail)).Render(r.Context(), w)
 	case "status":
 		projectName := h.lookupProjectName(detail.Task.ProjectID)
 		templates.TaskDetailStatusSection(detail.Task, detail.AvailableActions, "", projectName).Render(r.Context(), w)

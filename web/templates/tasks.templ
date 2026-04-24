@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/timeline"
 	"github.com/novshi-tech/boid/web/templates/components"
 	"gopkg.in/yaml.v3"
 	"time"
@@ -121,102 +122,6 @@ func shortID(id string) string {
 		return id
 	}
 	return id[:8]
-}
-
-// isFiredAction reports whether the action type is a hook/gate fired event.
-func isFiredAction(actionType string) bool {
-	return actionType == "hook_fired" || actionType == "exit_gate_fired" || actionType == "entry_gate_fired"
-}
-
-// firedActionLabel formats the payload of a hook_fired/exit_gate_fired/entry_gate_fired action
-// into a short readable label like "go-dev/pr-verify @executing ok".
-func firedActionLabel(payload []byte) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	var m map[string]any
-	if err := json.Unmarshal(payload, &m); err != nil {
-		return ""
-	}
-	kitID, _ := m["kit_id"].(string)
-	hookID, _ := m["hook_id"].(string)
-	sourceState, _ := m["source_state"].(string)
-	success, _ := m["success"].(bool)
-	errMsg, _ := m["error"].(string)
-
-	label := hookID
-	if kitID != "" {
-		label = kitID + "/" + hookID
-	}
-	if sourceState != "" {
-		label += " @" + sourceState
-	}
-	if success {
-		label += " ok"
-	} else if errMsg != "" {
-		label += " fail: " + errMsg
-	} else {
-		label += " fail"
-	}
-	return label
-}
-
-// firedActionJobID extracts the job_id from a fired action payload.
-func firedActionJobID(payload []byte) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	var m map[string]any
-	if err := json.Unmarshal(payload, &m); err != nil {
-		return ""
-	}
-	id, _ := m["job_id"].(string)
-	return id
-}
-
-// firedActionHookID extracts the "kit/hook" identifier from a fired action
-// payload. Combined with timestamp, lets us match legacy fired actions
-// (written before job_id was added to the payload) to their job.
-func firedActionHookID(payload []byte) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	var m map[string]any
-	if err := json.Unmarshal(payload, &m); err != nil {
-		return ""
-	}
-	id, _ := m["hook_id"].(string)
-	return id
-}
-
-// resolveFiredActionJobID returns the job ID that a fired action refers to.
-// Prefers the embedded job_id (new records); falls back to scanning the
-// task's jobs list for the latest job matching the action's hook_id whose
-// CreatedAt is not after the action's CreatedAt (legacy backfill).
-func resolveFiredActionJobID(action *orchestrator.Action, jobs []*JobView) string {
-	if jid := firedActionJobID(action.Payload); jid != "" {
-		return jid
-	}
-	hookID := firedActionHookID(action.Payload)
-	if hookID == "" {
-		return ""
-	}
-	var best *JobView
-	for _, j := range jobs {
-		if j.HandlerID != hookID {
-			continue
-		}
-		if j.CreatedAt.After(action.CreatedAt) {
-			continue
-		}
-		if best == nil || j.CreatedAt.After(best.CreatedAt) {
-			best = j
-		}
-	}
-	if best == nil {
-		return ""
-	}
-	return best.ID
 }
 
 type filterOption struct {
@@ -421,41 +326,72 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 	}
 }
 
-// TaskDetailTimelineSection renders the action history.
-// Wrapped in <div id="task-timeline"> so EventSource JS can replace it via outerHTML.
-// jobs is consulted to resolve fired actions to their job (links to /jobs/{id});
-// legacy fired actions without job_id in payload are matched by hook_id + timestamp.
-templ TaskDetailTimelineSection(actions []*orchestrator.Action, jobs []*JobView) {
+// timelineEventTime returns the HH:MM:SS event timestamp, or dashes when
+// the event predates the tracked timestamp range. Consistent format with
+// status-group headers so the right column aligns visually like the TUI.
+func timelineEventTime(ev timeline.Event) string {
+	if !ev.HasTime {
+		return "--:--:--"
+	}
+	return ev.Time.Format("15:04:05")
+}
+
+// timelineGroupTime formats the time the task entered a status. Same HH:MM:SS
+// format as events so header and body share one visual time column.
+func timelineGroupTime(g timeline.StatusGroup) string {
+	if !g.HasEnteredAt {
+		return "--:--:--"
+	}
+	return g.EnteredAt.Format("15:04:05")
+}
+
+// timelineJobStatusClass returns the job-status suffix used for marker
+// coloring (completed / failed / running / default) so CSS can match both
+// kind and status in a single selector.
+func timelineJobStatusClass(ev timeline.Event) string {
+	if ev.Job != nil && ev.Job.Status != "" {
+		return ev.Job.Status
+	}
+	return "default"
+}
+
+// TaskDetailTimelineSection renders the action-and-job history grouped by
+// status visit. The grouping, sort, and label text are built by
+// internal/timeline so the TUI and Web UI render the same structure.
+//
+// Layout: one continuous left rail across the whole timeline; each row
+// (status header + events) sits on the rail with its own marker (○ for
+// status header, ● for jobs with status color, ◆ for state-transition
+// actions). Times right-align in a shared column, and the status header
+// uses the same HH:MM:SS format as events so the eye finds them without
+// re-parsing per row.
+templ TaskDetailTimelineSection(groups []timeline.StatusGroup) {
 	<div id="task-timeline" class="tab-content">
-		if len(actions) == 0 {
+		if len(groups) == 0 {
 			<p class="tab-empty">(履歴なし)</p>
 		} else {
 			<div class="timeline">
-				for _, action := range actions {
-					if isFiredAction(action.Type) {
-						{{ jobID := resolveFiredActionJobID(action, jobs) }}
-						if jobID != "" {
-							<a class="timeline-item timeline-item-fired timeline-item-link" href={ templ.SafeURL("/jobs/" + jobID) }>
-								<div class="timeline-type timeline-type-fired">[{ action.Type }] { firedActionLabel(action.Payload) }</div>
-								<div class="timeline-time">{ action.CreatedAt.Format("2006-01-02 15:04:05") }</div>
+				for _, group := range groups {
+					<div class={ "timeline-row", "timeline-row-header", "timeline-header-" + group.Status }>
+						<time class="timeline-time">{ timelineGroupTime(group) }</time>
+						<span class="timeline-marker timeline-marker-status" aria-hidden="true"></span>
+						<span class={ taskStatusClass(group.Status) }>{ group.Status }</span>
+					</div>
+					for _, ev := range group.Events {
+						if ev.Kind == timeline.KindJob && ev.Job != nil {
+							<a class={ "timeline-row", "timeline-row-event", "timeline-row-job", "timeline-row-job-" + timelineJobStatusClass(ev) } href={ templ.SafeURL("/jobs/" + ev.Job.ID) }>
+								<time class="timeline-time">{ timelineEventTime(ev) }</time>
+								<span class="timeline-marker timeline-marker-job" aria-hidden="true"></span>
+								<span class="timeline-label">{ ev.Label }</span>
+								<span class="timeline-chevron" aria-hidden="true">›</span>
 							</a>
 						} else {
-							<div class="timeline-item timeline-item-fired">
-								<div class="timeline-type timeline-type-fired">[{ action.Type }] { firedActionLabel(action.Payload) }</div>
-								<div class="timeline-time">{ action.CreatedAt.Format("2006-01-02 15:04:05") }</div>
+							<div class="timeline-row timeline-row-event timeline-row-action">
+								<time class="timeline-time">{ timelineEventTime(ev) }</time>
+								<span class="timeline-marker timeline-marker-action" aria-hidden="true"></span>
+								<span class="timeline-label">{ ev.Label }</span>
 							</div>
 						}
-					} else {
-						<div class="timeline-item">
-							if action.FromStatus != "" && action.ToStatus != "" && action.FromStatus != action.ToStatus {
-								<div class="timeline-type">{ action.Type }: { string(action.FromStatus) } → { string(action.ToStatus) }</div>
-							} else if action.FromStatus != "" && action.ToStatus != "" {
-								<div class="timeline-type">{ action.Type }: { string(action.FromStatus) }</div>
-							} else {
-								<div class="timeline-type">{ action.Type }</div>
-							}
-							<div class="timeline-time">{ action.CreatedAt.Format("2006-01-02 15:04:05") }</div>
-						</div>
 					}
 				}
 			</div>
@@ -549,10 +485,10 @@ templ TaskDetailJobsSection(jobs []*JobView) {
 // id="tab-panel" is the HTMX swap target for tab switching.
 // editMode=true flips an editable tab (currently: description) into an
 // inline edit form instead of the read-only view.
-templ TaskDetailTabPanel(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsUp, depsDown []DepsTreeRow, activeTab string, editMode bool) {
+templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, depsUp, depsDown []DepsTreeRow, activeTab string, editMode bool) {
 	<div id="tab-panel" data-task-id={ task.ID }>
 		if activeTab == "timeline" {
-			@TaskDetailTimelineSection(actions, jobs)
+			@TaskDetailTimelineSection(timelineGroups)
 			<script>
 				(function() {
 					var panel = document.getElementById('tab-panel');
@@ -730,7 +666,7 @@ templ detailMoreItem(taskID, tab, label, activeTab string) {
 //     summary label reflects the new active tab when it's a hidden one)
 //   - the action bar primary button becomes tab-contextual (edit vs. state
 //     action) without a separate swap
-templ TaskDetailTabsSection(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsUp, depsDown []DepsTreeRow, availableActions []string, activeTab string, editMode bool) {
+templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, depsUp, depsDown []DepsTreeRow, availableActions []string, activeTab string, editMode bool) {
 	<div id="tabs" class="tabs">
 		<div class="tab-list" role="tablist">
 			@detailTabLink(task.ID, "timeline", "Timeline", activeTab)
@@ -757,14 +693,14 @@ templ TaskDetailTabsSection(task *orchestrator.Task, actions []*orchestrator.Act
 				</details>
 			</div>
 		</div>
-		@TaskDetailTabPanel(task, actions, jobs, depsUp, depsDown, activeTab, editMode)
+		@TaskDetailTabPanel(task, timelineGroups, jobs, depsUp, depsDown, activeTab, editMode)
 		@TaskActionBar(task, availableActions, activeTab, editMode)
 	</div>
 }
 
-templ TaskDetail(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobView, depsUp, depsDown []DepsTreeRow, availableActions []string, errorMsg string, activeTab string, editMode bool, projectName string) {
+templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, depsUp, depsDown []DepsTreeRow, availableActions []string, errorMsg string, activeTab string, editMode bool, projectName string) {
 	@Layout(task.Title, "/") {
 		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName)
-		@TaskDetailTabsSection(task, actions, jobs, depsUp, depsDown, availableActions, activeTab, editMode)
+		@TaskDetailTabsSection(task, timelineGroups, jobs, depsUp, depsDown, availableActions, activeTab, editMode)
 	}
 }

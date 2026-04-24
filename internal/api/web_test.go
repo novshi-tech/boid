@@ -2,13 +2,13 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -759,19 +759,24 @@ func TestTaskDetail_NoGatesLink(t *testing.T) {
 	}
 }
 
-func TestTaskDetailFragment_FiredActionJobLink(t *testing.T) {
-	payload, _ := json.Marshal(map[string]any{
-		"kit_id": "go-dev", "hook_id": "go-dev/pr-verify",
-		"source_state": "executing", "success": true, "job_id": "job-123",
-	})
+// TestTaskDetailFragment_JobLink verifies job rows render as anchor links
+// to the job detail page. Jobs (not the paired hook_fired action) are the
+// source of truth for the Web UI timeline — same as the TUI — so a fired
+// action without its job would produce no row and no link.
+func TestTaskDetailFragment_JobLink(t *testing.T) {
+	now := time.Now()
 	detail := &TaskDetailView{
 		Task: &orchestrator.Task{
 			ID: "task-1", Title: "Test Task", Status: "executing",
+			CreatedAt: now.Add(-1 * time.Minute),
 		},
-		Actions: []*orchestrator.Action{
-			{Type: "hook_fired", Payload: payload},
+		Jobs: []*Job{
+			{
+				ID: "job-123", Role: "hook", HandlerID: "go-dev/pr-verify",
+				Status: JobStatusCompleted,
+				CreatedAt: now.Add(-30 * time.Second), UpdatedAt: now.Add(-10 * time.Second),
+			},
 		},
-		Jobs: []*Job{},
 	}
 	svc := &stubWebService{taskDetail: detail}
 	r := newTestWebHandler(svc)
@@ -785,6 +790,9 @@ func TestTaskDetailFragment_FiredActionJobLink(t *testing.T) {
 	}
 	body := w.Body.String()
 	if !strings.Contains(body, `href="/jobs/job-123"`) {
-		t.Errorf("fired action should link to /jobs/job-123, got: %s", body)
+		t.Errorf("job should link to /jobs/job-123, got: %s", body)
+	}
+	if !strings.Contains(body, `go-dev/pr-verify`) {
+		t.Errorf("job label should contain handler id, got: %s", body)
 	}
 }
