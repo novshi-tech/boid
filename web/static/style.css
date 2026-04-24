@@ -1672,3 +1672,186 @@ details[open] > summary {
     top: 8px;
   }
 }
+
+/* ========================================
+   Boid Terminal (Phase 4-b)
+   ======================================== */
+
+/* Container: flex column filling parent, never overflows */
+.boid-terminal {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  position: relative;
+  background: #0d0d0d;
+  overflow: hidden;
+}
+
+/* Status bar: compact row above xterm viewport */
+.boid-terminal-status-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px var(--space-2);
+  background: #111;
+  border-bottom: 1px solid #222;
+  flex-shrink: 0;
+}
+
+/* Connection indicator dot */
+.boid-terminal-status {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #555;
+  flex-shrink: 0;
+}
+
+.boid-terminal-status-connecting { background: #888; }
+.boid-terminal-status-connected  { background: #2a8a3f; }
+.boid-terminal-status-disconnected { background: #cc3333; }
+
+/* xterm viewport: grows to fill remaining space */
+.boid-terminal-xterm-wrap {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.boid-terminal-xterm {
+  width: 100%;
+  height: 100%;
+}
+
+/* Override xterm default background to match our dark bg */
+.xterm-viewport { background: #0d0d0d !important; }
+
+/* ---- Special keybar ---- */
+.boid-terminal-keybar {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: #181818;
+  border-top: 1px solid #2a2a2a;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.boid-terminal-keybar-btn {
+  flex-shrink: 0;
+  min-width: var(--tap-target);
+  min-height: var(--tap-target);
+  padding: 0 var(--space-2);
+  background: #2a2a2a;
+  color: #e6e6e6;
+  border: 1px solid #3a3a3a;
+  border-radius: var(--radius-1);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.8rem;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.boid-terminal-keybar-btn:active {
+  background: #444;
+}
+
+/* Sticky Ctrl: lit state */
+.boid-terminal-keybar-ctrl-on {
+  background: #0066cc;
+  border-color: #0055aa;
+  color: #fff;
+}
+
+/* ---- IME overlay ---- */
+.boid-terminal-ime-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 100;
+}
+
+.boid-terminal-ime-modal {
+  background: var(--bg);
+  color: var(--fg);
+  width: 100%;
+  max-width: 480px;
+  border-radius: var(--radius-2) var(--radius-2) 0 0;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.boid-terminal-ime-textarea {
+  width: 100%;
+  min-height: 80px;
+  resize: vertical;
+  font-family: 'IBM Plex Sans', sans-serif;
+  font-size: 1rem;
+  padding: var(--space-2);
+  background: var(--card);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-1);
+  box-sizing: border-box;
+}
+
+.boid-terminal-ime-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+/* ---- Disconnect overlay ---- */
+.boid-terminal-disconnect-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 90;
+}
+
+.boid-terminal-disconnect-content {
+  text-align: center;
+  color: #e6e6e6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.boid-terminal-disconnect-msg {
+  font-size: 0.95rem;
+  color: #aaa;
+  margin: 0;
+}
+
+/* ========================================
+   Desktop overrides for terminal
+   ======================================== */
+@media (min-width: 768px) {
+  .boid-terminal-keybar-btn {
+    min-width: 44px;
+    min-height: 36px;
+    font-size: 0.75rem;
+  }
+
+  .boid-terminal-ime-overlay {
+    align-items: center;
+  }
+
+  .boid-terminal-ime-modal {
+    width: 480px;
+    border-radius: var(--radius-2);
+  }
+}

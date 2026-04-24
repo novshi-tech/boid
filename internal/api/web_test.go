@@ -796,3 +796,125 @@ func TestTaskDetailFragment_JobLink(t *testing.T) {
 		t.Errorf("job label should contain handler id, got: %s", body)
 	}
 }
+
+// --- Terminal page tests ---
+
+func newTestWebHandlerWithTerminal(svc WebService) *chi.Mux {
+	h := &WebHandler{Service: svc}
+	r := chi.NewRouter()
+	r.Get("/jobs/{id}/terminal", h.JobTerminal)
+	return r
+}
+
+func TestTerminalPage_RendersForInteractiveRunningJob(t *testing.T) {
+	svc := &stubWebService{
+		jobDetail: &JobWithContext{
+			Job: Job{
+				ID:          "job-term-1",
+				TaskID:      "task-1",
+				HandlerID:   "claude-code",
+				Role:        "main",
+				Interactive: true,
+				Status:      JobStatusRunning,
+			},
+			TaskTitle: "My Task",
+		},
+	}
+	r := newTestWebHandlerWithTerminal(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs/job-term-1/terminal", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "xterm.js") && !strings.Contains(body, "xterm-5.x") {
+		t.Errorf("body should reference xterm.js vendor, got snippet: %s", body[:min(200, len(body))])
+	}
+	if !strings.Contains(body, `data-job-id="job-term-1"`) {
+		t.Errorf("body should contain data-job-id attribute, got snippet: %s", body[:min(300, len(body))])
+	}
+	if !strings.Contains(body, "boid-terminal") {
+		t.Errorf("body should contain boid-terminal class")
+	}
+}
+
+func TestTerminalPage_ShowsEmptyStateWhenNotRunning(t *testing.T) {
+	svc := &stubWebService{
+		jobDetail: &JobWithContext{
+			Job: Job{
+				ID:          "job-done-1",
+				TaskID:      "task-1",
+				Interactive: true,
+				Status:      JobStatusCompleted,
+			},
+		},
+	}
+	r := newTestWebHandlerWithTerminal(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs/job-done-1/terminal", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "boid-terminal-xterm") {
+		t.Error("error page should not render xterm widget")
+	}
+	if !strings.Contains(body, "attach") && !strings.Contains(body, "接続") {
+		t.Errorf("error page should mention attach/connection state: %s", body[:min(300, len(body))])
+	}
+}
+
+func TestTerminalPage_ShowsEmptyStateWhenNotInteractive(t *testing.T) {
+	svc := &stubWebService{
+		jobDetail: &JobWithContext{
+			Job: Job{
+				ID:          "job-nopty-1",
+				TaskID:      "task-1",
+				Interactive: false,
+				Status:      JobStatusRunning,
+			},
+		},
+	}
+	r := newTestWebHandlerWithTerminal(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs/job-nopty-1/terminal", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "boid-terminal-xterm") {
+		t.Error("non-interactive error page should not render xterm widget")
+	}
+}
+
+func TestTerminalPage_RequiresAuth(t *testing.T) {
+	// Verify the route is registered in the main WebHandler router.
+	svc := &stubWebService{}
+	h := &WebHandler{Service: svc}
+	r := h.Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs/some-id/terminal", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Route is registered; handler returns 404 (job not found) not chi's 404.
+	if strings.Contains(w.Body.String(), "404 page not found") {
+		t.Error("/jobs/{id}/terminal route should be registered in WebHandler.Routes()")
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
