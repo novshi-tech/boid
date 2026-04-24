@@ -51,25 +51,38 @@ func Layout(title string, backURL string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, " - boid</title><link rel=\"icon\" href=\"/static/favicon.svg\" type=\"image/svg+xml\"><link rel=\"preconnect\" href=\"https://fonts.googleapis.com\"><link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin><link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap\"><link rel=\"stylesheet\" href=\"/static/style.css\"><script src=\"/static/vendor/htmx-2.0.4.min.js\"></script><script>\n\t\t\t\t// This script runs in <head> before <body> exists, so attach\n\t\t\t\t// to `document` (htmx events bubble up). htmx 2.x dropped\n\t\t\t\t// htmx.config.defaultHeaders — use htmx:configRequest to\n\t\t\t\t// inject the CSRF header on every request.\n\t\t\t\tdocument.addEventListener(\"htmx:configRequest\",function(e){\n\t\t\t\t\tvar m=document.cookie.match(/(?:^|;)\\s*csrf_token=([^;]+)/);\n\t\t\t\t\tif(m) e.detail.headers[\"X-CSRF-Token\"]=decodeURIComponent(m[1]);\n\t\t\t\t});\n\t\t\t\t// Plain <form method=\"post\"> (no HTMX / fetch) needs a CSRF\n\t\t\t\t// value in the body since we can't inject a header. On\n\t\t\t\t// submit, stamp a hidden _csrf input sourced from the\n\t\t\t\t// cookie so the server's double-submit check passes.\n\t\t\t\tdocument.addEventListener(\"submit\",function(e){\n\t\t\t\t\tvar f=e.target;\n\t\t\t\t\tif(!f||f.tagName!==\"FORM\") return;\n\t\t\t\t\tif((f.method||\"\").toLowerCase()!==\"post\") return;\n\t\t\t\t\tif(f.hasAttribute(\"hx-post\")) return;\n\t\t\t\t\tvar m=document.cookie.match(/(?:^|;)\\s*csrf_token=([^;]+)/);\n\t\t\t\t\tif(!m) return;\n\t\t\t\t\tvar token=decodeURIComponent(m[1]);\n\t\t\t\t\tvar input=f.querySelector('input[name=\"_csrf\"]');\n\t\t\t\t\tif(!input){\n\t\t\t\t\t\tinput=document.createElement(\"input\");\n\t\t\t\t\t\tinput.type=\"hidden\";\n\t\t\t\t\t\tinput.name=\"_csrf\";\n\t\t\t\t\t\tf.appendChild(input);\n\t\t\t\t\t}\n\t\t\t\t\tinput.value=token;\n\t\t\t\t},true);\n\t\t\t\t// Close any open <details> dropdowns after an HTMX swap, so\n\t\t\t\t// menus (kebab / tab-more) don't linger over freshly loaded\n\t\t\t\t// content.\n\t\t\t\tdocument.addEventListener(\"htmx:afterSwap\",function(){\n\t\t\t\t\tdocument.querySelectorAll(\"details[open]\").forEach(function(d){d.open=false;});\n\t\t\t\t});\n\t\t\t\t// Close any open <details> dropdowns when the user clicks\n\t\t\t\t// (or taps) outside them. Matches the expected behaviour\n\t\t\t\t// of kebab / tab-more menus.\n\t\t\t\tdocument.addEventListener(\"click\",function(e){\n\t\t\t\t\tdocument.querySelectorAll(\"details[open]\").forEach(function(d){\n\t\t\t\t\t\tif(!d.contains(e.target)) d.open=false;\n\t\t\t\t\t});\n\t\t\t\t});\n\t\t\t\tdocument.addEventListener(\"keydown\",function(e){\n\t\t\t\t\tif(e.key!==\"Escape\") return;\n\t\t\t\t\tdocument.querySelectorAll(\"details[open]\").forEach(function(d){d.open=false;});\n\t\t\t\t});\n\t\t\t\t// Hide the bottom action bar when the page is scrolled away\n\t\t\t\t// from the top. Feels more app-like: bar is only in the way\n\t\t\t\t// once the user is reading into a long tab.\n\t\t\t\tfunction syncActionBar(){\n\t\t\t\t\tvar bar=document.querySelector(\".action-bar\");\n\t\t\t\t\tif(!bar) return;\n\t\t\t\t\tif(window.scrollY>0) bar.classList.add(\"action-bar-hidden\");\n\t\t\t\t\telse bar.classList.remove(\"action-bar-hidden\");\n\t\t\t\t}\n\t\t\t\tdocument.addEventListener(\"scroll\",syncActionBar,{passive:true});\n\t\t\t\t// After HTMX swaps (tab change replaces the action-bar node)\n\t\t\t\t// the newly-rendered bar should immediately reflect current\n\t\t\t\t// scroll position.\n\t\t\t\tdocument.addEventListener(\"htmx:afterSwap\",syncActionBar);\n\t\t\t</script></head><body><header class=\"site-header\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, " - boid</title><link rel=\"icon\" href=\"/static/favicon.svg\" type=\"image/svg+xml\"><link rel=\"preconnect\" href=\"https://fonts.googleapis.com\"><link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin><link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap\"><link rel=\"stylesheet\" href=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var3 templ.SafeURL
+		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinURLErrs(StaticCSSURL())
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layout.templ`, Line: 23, Col: 47}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "\"><script src=\"/static/vendor/htmx-2.0.4.min.js\"></script><script>\n\t\t\t\t// This script runs in <head> before <body> exists, so attach\n\t\t\t\t// to `document` (htmx events bubble up). htmx 2.x dropped\n\t\t\t\t// htmx.config.defaultHeaders — use htmx:configRequest to\n\t\t\t\t// inject the CSRF header on every request.\n\t\t\t\tdocument.addEventListener(\"htmx:configRequest\",function(e){\n\t\t\t\t\tvar m=document.cookie.match(/(?:^|;)\\s*csrf_token=([^;]+)/);\n\t\t\t\t\tif(m) e.detail.headers[\"X-CSRF-Token\"]=decodeURIComponent(m[1]);\n\t\t\t\t});\n\t\t\t\t// Plain <form method=\"post\"> (no HTMX / fetch) needs a CSRF\n\t\t\t\t// value in the body since we can't inject a header. On\n\t\t\t\t// submit, stamp a hidden _csrf input sourced from the\n\t\t\t\t// cookie so the server's double-submit check passes.\n\t\t\t\tdocument.addEventListener(\"submit\",function(e){\n\t\t\t\t\tvar f=e.target;\n\t\t\t\t\tif(!f||f.tagName!==\"FORM\") return;\n\t\t\t\t\tif((f.method||\"\").toLowerCase()!==\"post\") return;\n\t\t\t\t\tif(f.hasAttribute(\"hx-post\")) return;\n\t\t\t\t\tvar m=document.cookie.match(/(?:^|;)\\s*csrf_token=([^;]+)/);\n\t\t\t\t\tif(!m) return;\n\t\t\t\t\tvar token=decodeURIComponent(m[1]);\n\t\t\t\t\tvar input=f.querySelector('input[name=\"_csrf\"]');\n\t\t\t\t\tif(!input){\n\t\t\t\t\t\tinput=document.createElement(\"input\");\n\t\t\t\t\t\tinput.type=\"hidden\";\n\t\t\t\t\t\tinput.name=\"_csrf\";\n\t\t\t\t\t\tf.appendChild(input);\n\t\t\t\t\t}\n\t\t\t\t\tinput.value=token;\n\t\t\t\t},true);\n\t\t\t\t// Close any open <details> dropdowns after an HTMX swap, so\n\t\t\t\t// menus (kebab / tab-more) don't linger over freshly loaded\n\t\t\t\t// content.\n\t\t\t\tdocument.addEventListener(\"htmx:afterSwap\",function(){\n\t\t\t\t\tdocument.querySelectorAll(\"details[open]\").forEach(function(d){d.open=false;});\n\t\t\t\t});\n\t\t\t\t// Close any open <details> dropdowns when the user clicks\n\t\t\t\t// (or taps) outside them. Matches the expected behaviour\n\t\t\t\t// of kebab / tab-more menus.\n\t\t\t\tdocument.addEventListener(\"click\",function(e){\n\t\t\t\t\tdocument.querySelectorAll(\"details[open]\").forEach(function(d){\n\t\t\t\t\t\tif(!d.contains(e.target)) d.open=false;\n\t\t\t\t\t});\n\t\t\t\t});\n\t\t\t\tdocument.addEventListener(\"keydown\",function(e){\n\t\t\t\t\tif(e.key!==\"Escape\") return;\n\t\t\t\t\tdocument.querySelectorAll(\"details[open]\").forEach(function(d){d.open=false;});\n\t\t\t\t});\n\t\t\t\t// Hide the bottom action bar when the page is scrolled away\n\t\t\t\t// from the top. Feels more app-like: bar is only in the way\n\t\t\t\t// once the user is reading into a long tab.\n\t\t\t\tfunction syncActionBar(){\n\t\t\t\t\tvar bar=document.querySelector(\".action-bar\");\n\t\t\t\t\tif(!bar) return;\n\t\t\t\t\tif(window.scrollY>0) bar.classList.add(\"action-bar-hidden\");\n\t\t\t\t\telse bar.classList.remove(\"action-bar-hidden\");\n\t\t\t\t}\n\t\t\t\tdocument.addEventListener(\"scroll\",syncActionBar,{passive:true});\n\t\t\t\t// After HTMX swaps (tab change replaces the action-bar node)\n\t\t\t\t// the newly-rendered bar should immediately reflect current\n\t\t\t\t// scroll position.\n\t\t\t\tdocument.addEventListener(\"htmx:afterSwap\",syncActionBar);\n\t\t\t</script></head><body><header class=\"site-header\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if backURL != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<a class=\"site-back\" href=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<a class=\"site-back\" href=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var3 templ.SafeURL
-			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(backURL))
+			var templ_7745c5c3_Var4 templ.SafeURL
+			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(backURL))
 			if templ_7745c5c3_Err != nil {
 				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layout.templ`, Line: 92, Col: 55}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "\" aria-label=\"戻る\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "\" aria-label=\"戻る\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -77,25 +90,25 @@ func Layout(title string, backURL string) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "</a>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "</a>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "<h1 class=\"site-title\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<h1 class=\"site-title\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var4 string
-		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(title)
+		var templ_7745c5c3_Var5 string
+		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(title)
 		if templ_7745c5c3_Err != nil {
 			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layout.templ`, Line: 96, Col: 34}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "</h1></header><main class=\"site-main\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "</h1></header><main class=\"site-main\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -103,7 +116,7 @@ func Layout(title string, backURL string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "</main></body></html>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "</main></body></html>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
