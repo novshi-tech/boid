@@ -35,6 +35,7 @@ type localRuntimeSession struct {
 	transcriptFile *os.File
 
 	mu          sync.Mutex
+	writerMu    sync.Mutex // protects concurrent writes to master
 	transcript  bytes.Buffer
 	subscribers map[int]chan []byte
 	nextSubID   int
@@ -155,10 +156,22 @@ func (r *LocalRuntime) Attach(ctx context.Context, runtimeID string, req Runtime
 	errCh := make(chan error, 1)
 	if req.Input != nil {
 		go func() {
-			_, copyErr := io.Copy(session.master, req.Input)
-			if copyErr != nil && !errors.Is(copyErr, io.EOF) && !errors.Is(copyErr, os.ErrClosed) {
-				errCh <- copyErr
-				return
+			buf := make([]byte, 4096)
+			for {
+				n, readErr := req.Input.Read(buf)
+				if n > 0 {
+					if writeErr := session.writeMaster(buf[:n]); writeErr != nil && !errors.Is(writeErr, os.ErrClosed) {
+						errCh <- writeErr
+						return
+					}
+				}
+				if readErr != nil {
+					if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, os.ErrClosed) {
+						errCh <- readErr
+						return
+					}
+					break
+				}
 			}
 			errCh <- nil
 		}()
@@ -256,6 +269,25 @@ func (r *LocalRuntime) Stop(ctx context.Context, runtimeID string) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// WriteInputRuntime writes data to the PTY master of the given runtime.
+// Returns nil if the session is not running or has already exited.
+func (r *LocalRuntime) WriteInputRuntime(runtimeID string, data []byte) error {
+	session, err := r.session(runtimeID)
+	if err != nil {
+		return nil
+	}
+	session.mu.Lock()
+	running := session.running
+	session.mu.Unlock()
+	if !running {
+		return nil
+	}
+	if err := session.writeMaster(data); err != nil && !errors.Is(err, os.ErrClosed) {
+		return err
+	}
+	return nil
 }
 
 func (r *LocalRuntime) SupportsAttach(runtimeID string) bool {
@@ -358,6 +390,13 @@ func (s *localRuntimeSession) closeSubscribersLocked() {
 		close(ch)
 		delete(s.subscribers, id)
 	}
+}
+
+func (s *localRuntimeSession) writeMaster(data []byte) error {
+	s.writerMu.Lock()
+	defer s.writerMu.Unlock()
+	_, err := s.master.Write(data)
+	return err
 }
 
 func (s *localRuntimeSession) isRunning() bool {

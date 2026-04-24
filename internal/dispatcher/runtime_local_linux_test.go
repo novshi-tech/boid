@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -167,4 +168,38 @@ func TestLocalRuntimeResizeAfterExit(t *testing.T) {
 			t.Fatalf("Resize after exit: %v", err)
 		}
 	}
+}
+
+func TestLocalRuntimeWriteInputParallelNoRace(t *testing.T) {
+	rt := &dispatcher.LocalRuntime{RootDir: t.TempDir()}
+
+	// Start a process that reads stdin and echoes it (cat), keeping the PTY alive.
+	handle, err := rt.Start(context.Background(), dispatcher.RuntimeStartSpec{
+		Command:     "sleep 2",
+		Interactive: true,
+		TTY:         true,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	const goroutines = 10
+	const writes = 50
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < writes; j++ {
+				_ = rt.WriteInputRuntime(handle.ID, []byte("x"))
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Stop the process and wait for it to exit cleanly.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rt.Stop(ctx, handle.ID)
+	rt.Wait(context.Background(), handle.ID)
 }

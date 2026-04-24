@@ -2,9 +2,20 @@
 
 package dispatcher
 
+import (
+	"context"
+	"fmt"
+)
+
 // RuntimeSubscriber subscribes to live output of a running job identified by jobID.
 type RuntimeSubscriber interface {
 	Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, cancel func(), ok bool)
+}
+
+// RuntimeInputWriter provides write access to a running job's PTY input.
+type RuntimeInputWriter interface {
+	WriteInput(jobID string, data []byte) error
+	ResizeRuntime(jobID string, size TerminalSize) error
 }
 
 // Subscribe implements RuntimeSubscriber for Runner. It resolves jobID to a
@@ -37,4 +48,30 @@ func (r *LocalRuntime) SubscribeRuntime(runtimeID string) ([]byte, <-chan []byte
 		return snap, nil, func() {}, false
 	}
 	return snap, sessionCh, func() { session.unsubscribe(subID) }, true
+}
+
+// WriteInput implements RuntimeInputWriter for Runner. It resolves jobID to
+// a runtimeID via the jobs table, then delegates to LocalRuntime.WriteInputRuntime.
+func (r *Runner) WriteInput(jobID string, data []byte) error {
+	var runtimeID string
+	if err := r.DB.QueryRow(`SELECT runtime_id FROM jobs WHERE id = ?`, jobID).Scan(&runtimeID); err != nil || runtimeID == "" {
+		return fmt.Errorf("runtime not found for job %s", jobID)
+	}
+	writer, ok := r.Runtime.(interface {
+		WriteInputRuntime(string, []byte) error
+	})
+	if !ok {
+		return ErrRuntimeUnsupported
+	}
+	return writer.WriteInputRuntime(runtimeID, data)
+}
+
+// ResizeRuntime implements RuntimeInputWriter for Runner. It resolves jobID to
+// a runtimeID via the jobs table, then delegates to JobRuntime.Resize.
+func (r *Runner) ResizeRuntime(jobID string, size TerminalSize) error {
+	var runtimeID string
+	if err := r.DB.QueryRow(`SELECT runtime_id FROM jobs WHERE id = ?`, jobID).Scan(&runtimeID); err != nil || runtimeID == "" {
+		return fmt.Errorf("runtime not found for job %s", jobID)
+	}
+	return r.Runtime.Resize(context.Background(), runtimeID, size)
 }
