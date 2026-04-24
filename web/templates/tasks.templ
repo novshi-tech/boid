@@ -355,6 +355,35 @@ func timelineJobStatusClass(ev timeline.Event) string {
 	return "default"
 }
 
+// timelineJobIdentity returns the "[role] handler" prefix used as the
+// running-job label (no elapsed duration — that lives in a separate span
+// so JS can tick it once per second). Falls back to just the role when
+// handler_id is empty, and to "job" when role is also empty.
+func timelineJobIdentity(ev timeline.Event) string {
+	if ev.Job == nil {
+		return ""
+	}
+	role := ev.Job.Role
+	if role == "" {
+		role = "job"
+	}
+	if ev.Job.HandlerID != "" {
+		return fmt.Sprintf("[%s] %s", role, ev.Job.HandlerID)
+	}
+	return fmt.Sprintf("[%s]", role)
+}
+
+// timelineJobSinceUnix returns the job's CreatedAt as a unix-seconds string
+// for the data-since attribute on the dynamic-elapsed span. The client
+// ticker reads it each second and rewrites the span's text; using unix
+// seconds sidesteps timezone parsing in the browser.
+func timelineJobSinceUnix(ev timeline.Event) string {
+	if ev.Job == nil || ev.Job.CreatedAt.IsZero() {
+		return ""
+	}
+	return fmt.Sprintf("%d", ev.Job.CreatedAt.Unix())
+}
+
 // TaskDetailTimelineSection renders the action-and-job history grouped by
 // status visit. The grouping, sort, and label text are built by
 // internal/timeline so the TUI and Web UI render the same structure.
@@ -382,7 +411,15 @@ templ TaskDetailTimelineSection(groups []timeline.StatusGroup) {
 							<a class={ "timeline-row", "timeline-row-event", "timeline-row-job", "timeline-row-job-" + timelineJobStatusClass(ev) } href={ templ.SafeURL("/jobs/" + ev.Job.ID) }>
 								<time class="timeline-time">{ timelineEventTime(ev) }</time>
 								<span class="timeline-marker timeline-marker-job" aria-hidden="true"></span>
-								<span class="timeline-label">{ ev.Label }</span>
+								if ev.Job.Status == timeline.JobStatusRunning {
+									<span class="timeline-label">
+										{ timelineJobIdentity(ev) + " " }
+										<span class="timeline-elapsed" data-since={ timelineJobSinceUnix(ev) }>{ timeline.FormatElapsed(ev.Job.CreatedAt) }</span>
+										{ " ago" }
+									</span>
+								} else {
+									<span class="timeline-label">{ ev.Label }</span>
+								}
 								<span class="timeline-chevron" aria-hidden="true">›</span>
 							</a>
 						} else {
@@ -513,6 +550,35 @@ templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Stat
 					es.addEventListener('action', function() { refresh(['status', 'timeline']); });
 					es.addEventListener('job', function() { refresh(['status', 'timeline']); });
 					es.addEventListener('fired_event', function() { refresh(['timeline']); });
+
+					// Live-tick the "MM:SS ago" text on running-job rows so
+					// the user sees the elapsed counter advance in real time
+					// instead of waiting for the next fragment refresh. The
+					// tick iterates over whatever .timeline-elapsed[data-since]
+					// nodes exist in the current DOM, so new rows added by a
+					// refresh pick up the counter on the next tick without
+					// re-wiring. Guarded by a window flag so repeated tab
+					// swaps don't stack extra intervals.
+					if (!window.__boidTimelineTicker) {
+						window.__boidTimelineTicker = true;
+						function tickElapsed() {
+							var now = Math.floor(Date.now() / 1000);
+							document.querySelectorAll('.timeline-elapsed[data-since]').forEach(function(el) {
+								var since = parseInt(el.dataset.since, 10);
+								if (!since) return;
+								var d = Math.max(0, now - since);
+								var h = Math.floor(d / 3600);
+								var m = Math.floor((d % 3600) / 60);
+								var s = d % 60;
+								var pad = function(n) { return (n < 10 ? '0' : '') + n; };
+								el.textContent = h > 0
+									? (pad(h) + ':' + pad(m) + ':' + pad(s))
+									: (pad(m) + ':' + pad(s));
+							});
+						}
+						tickElapsed();
+						setInterval(tickElapsed, 1000);
+					}
 
 					document.body.addEventListener('htmx:beforeSwap', function onSwap(e) {
 						if (e.detail.target && e.detail.target.id === 'tab-panel') {

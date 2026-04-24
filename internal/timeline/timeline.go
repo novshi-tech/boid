@@ -100,7 +100,7 @@ func BuildJobLabel(j *JobInfo) string {
 	case JobStatusFailed:
 		return fmt.Sprintf("[%s] %s✗ %s", role, handler, JobDuration(j))
 	case JobStatusRunning:
-		return fmt.Sprintf("[%s] %s ago", role, formatElapsed(j.CreatedAt))
+		return fmt.Sprintf("[%s] %s ago", role, FormatElapsed(j.CreatedAt))
 	default:
 		return fmt.Sprintf("[%s] %s%s", role, handler, j.Status)
 	}
@@ -124,9 +124,11 @@ func JobDuration(j *JobInfo) string {
 	return fmt.Sprintf("%dm%ds", m, s)
 }
 
-// formatElapsed returns a short MM:SS (or HH:MM:SS) elapsed string since t.
+// FormatElapsed returns a short MM:SS (or HH:MM:SS) elapsed string since t.
 // Matches the TUI helper so that TUI display is unchanged after shared-timeline migration.
-func formatElapsed(t time.Time) string {
+// Exported so the Web UI can compute the initial server-side value for a
+// running job's live-ticking elapsed counter.
+func FormatElapsed(t time.Time) string {
 	d := max(time.Since(t), 0)
 	h := int(d.Hours())
 	m := int(d.Minutes()) % 60
