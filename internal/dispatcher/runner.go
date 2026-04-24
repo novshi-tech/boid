@@ -175,7 +175,13 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		rtInfo.ServerSocket = ""
 	}
 
-	sbSpec := BuildSandboxSpec(spec, rtInfo)
+	sbSpec, err := BuildSandboxSpec(spec, rtInfo)
+	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		return "", err
+	}
 	return r.launchSandbox(ctx, j, sbSpec, cleanup)
 }
 

@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -23,7 +24,10 @@ func TestBuildSandboxSpec_BoidHostIPAlwaysInjected(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := &orchestrator.JobSpec{}
 			rt := SandboxRuntimeInfo{ProxyPort: tc.proxyPort}
-			result := BuildSandboxSpec(spec, rt)
+			result, err := BuildSandboxSpec(spec, rt)
+			if err != nil {
+				t.Fatalf("BuildSandboxSpec: %v", err)
+			}
 			if got := result.Env["BOID_HOST_IP"]; got != "10.0.2.2" {
 				t.Errorf("BOID_HOST_IP = %q, want 10.0.2.2", got)
 			}
@@ -39,7 +43,10 @@ func TestBuildSandboxSpec_KitRootsAreBound(t *testing.T) {
 			KitRoots: []string{kitRoot},
 		},
 	}
-	result := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
 
 	var found *sandbox.Mount
 	for i := range result.Mounts {
@@ -71,7 +78,10 @@ func TestBuildSandboxSpec_KitRootParentNotBound(t *testing.T) {
 			KitRoots: []string{kitRoot},
 		},
 	}
-	result := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
 
 	for _, m := range result.Mounts {
 		if m.Target == kitParent {
@@ -82,21 +92,40 @@ func TestBuildSandboxSpec_KitRootParentNotBound(t *testing.T) {
 
 // /usr/bin/git と /bin/git が boid バイナリ bind で上書きされることを検証する。
 // これにより絶対パスで実体 git を呼び出す迂回が防止される。
+// boid バイナリ自身はホスト実パスのまま bind mount される（/opt/boid/bin/boid は廃止）。
 func TestBuildSandboxSpec_GitShimBindMounts(t *testing.T) {
 	const boidBin = "/usr/local/bin/boid"
 	spec := &orchestrator.JobSpec{}
 	rt := SandboxRuntimeInfo{BoidBinary: boidBin}
-	result := BuildSandboxSpec(spec, rt)
+	result, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
 
-	var usrBinGit, binGit *sandbox.Mount
+	var boidMount, usrBinGit, binGit *sandbox.Mount
 	for i := range result.Mounts {
 		m := &result.Mounts[i]
 		switch m.Target {
+		case boidBin:
+			boidMount = m
 		case "/usr/bin/git":
 			usrBinGit = m
 		case "/bin/git":
 			binGit = m
+		case "/opt/boid/bin/boid":
+			t.Errorf("/opt/boid/bin/boid must not exist as mount target in new design")
 		}
+	}
+
+	// boid バイナリはホスト実パスのまま bind mount される。
+	if boidMount == nil {
+		t.Fatalf("boid binary mount not found at target %q", boidBin)
+	}
+	if boidMount.Source != boidBin {
+		t.Errorf("boid binary source = %q, want %q", boidMount.Source, boidBin)
+	}
+	if !boidMount.ReadOnly {
+		t.Error("boid binary mount should be ReadOnly")
 	}
 
 	if usrBinGit == nil {
@@ -123,7 +152,10 @@ func TestBuildSandboxSpec_GitShimBindMounts(t *testing.T) {
 	}
 
 	// BoidBinary 未設定時はオーバーライド mount が存在しないことを確認。
-	noGit := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+	noGit, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec (no BoidBinary): %v", err)
+	}
 	for _, m := range noGit.Mounts {
 		if m.Target == "/usr/bin/git" || m.Target == "/bin/git" {
 			t.Errorf("unexpected git override mount when BoidBinary is empty: target=%q", m.Target)
@@ -197,28 +229,81 @@ func TestProjectVisibilityMounts_WorktreeMode_OrigGitReadOnly(t *testing.T) {
 	}
 }
 
-
-// BuiltinPolicies に git が含まれていても /opt/boid/bin/git symlink は生成されない。
-// /usr/bin/git と /bin/git は boid バイナリの bind mount で上書き済みなので不要。
-func TestShimSymlinks_GitExcluded(t *testing.T) {
-	builtins := []string{"boid", "git"}
-	hostCmds := []string{"gh", "git"}
-	symlinks := shimSymlinks(builtins, hostCmds)
-
-	for _, sl := range symlinks {
-		if sl.LinkPath == "/opt/boid/bin/git" {
-			t.Errorf("git symlink must not be generated, got %+v", sl)
+// boid と git は hostCommandMounts に含まれない（専用の bind mount が別途生成される）。
+// その他の host commands はホスト実パスに bind mount される。
+func TestHostCommandMounts_BoidAndGitExcluded(t *testing.T) {
+	fakeLookPath := func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}
+	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{"boid", "git"}, []string{"gh", "git"}, fakeLookPath)
+	if err != nil {
+		t.Fatalf("hostCommandMounts: %v", err)
+	}
+	for _, m := range mounts {
+		if m.Target == "/usr/bin/boid" || m.Target == "/usr/bin/git" {
+			t.Errorf("boid/git must not get host command mount, got target=%q", m.Target)
 		}
 	}
-	// gh は生成される。
 	var hasGh bool
-	for _, sl := range symlinks {
-		if sl.LinkPath == "/opt/boid/bin/gh" {
+	for _, m := range mounts {
+		if m.Target == "/usr/bin/gh" {
 			hasGh = true
 		}
 	}
 	if !hasGh {
-		t.Error("gh symlink must be generated")
+		t.Error("gh must get a host command mount")
+	}
+}
+
+// ホストに存在しないコマンドは fail-fast でエラーになる。
+func TestHostCommandMounts_NotFound(t *testing.T) {
+	fakeLookPath := func(name string) (string, error) {
+		return "", fmt.Errorf("not found")
+	}
+	_, err := hostCommandMounts("/usr/local/bin/boid", []string{}, []string{"missing-cmd"}, fakeLookPath)
+	if err == nil {
+		t.Error("expected error for missing host command, got nil")
+	}
+}
+
+// mount target はホスト実パス（/opt/boid/bin/<cmd> ではない）。
+func TestHostCommandMounts_BindsAtHostPath(t *testing.T) {
+	fakeLookPath := func(name string) (string, error) {
+		return "/usr/local/bin/" + name, nil
+	}
+	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{}, []string{"gh"}, fakeLookPath)
+	if err != nil {
+		t.Fatalf("hostCommandMounts: %v", err)
+	}
+	if len(mounts) != 1 {
+		t.Fatalf("expected 1 mount, got %d", len(mounts))
+	}
+	m := mounts[0]
+	if m.Target != "/usr/local/bin/gh" {
+		t.Errorf("mount target = %q, want /usr/local/bin/gh", m.Target)
+	}
+	if m.Source != "/usr/local/bin/boid" {
+		t.Errorf("mount source = %q, want /usr/local/bin/boid", m.Source)
+	}
+	if !m.ReadOnly {
+		t.Error("host command mount must be ReadOnly")
+	}
+	if !m.IsFile {
+		t.Error("host command mount must have IsFile=true")
+	}
+}
+
+// 同じコマンドが builtins と hostCommands の両方にある場合は重複しない。
+func TestHostCommandMounts_Dedup(t *testing.T) {
+	fakeLookPath := func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}
+	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{"gh"}, []string{"gh"}, fakeLookPath)
+	if err != nil {
+		t.Fatalf("hostCommandMounts: %v", err)
+	}
+	if len(mounts) != 1 {
+		t.Errorf("expected 1 mount (dedup), got %d", len(mounts))
 	}
 }
 

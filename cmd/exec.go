@@ -210,7 +210,10 @@ func runExec(cobraCmd *cobra.Command, args []string) error {
 		prepared.tty = true
 	}
 
-	sbSpec := dispatcher.BuildSandboxSpec(prepared.spec, prepared.rt)
+	sbSpec, err := dispatcher.BuildSandboxSpec(prepared.spec, prepared.rt)
+	if err != nil {
+		return fmt.Errorf("build sandbox spec: %w", err)
+	}
 	// exec is interactive / terminal-driven; override TTY only when caller has a real TTY.
 	sbSpec.TTY = prepared.tty
 
