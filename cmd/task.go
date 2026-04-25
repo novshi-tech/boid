@@ -109,13 +109,9 @@ func init() {
 	taskImportCmd.Flags().StringP("file", "f", "", "JSONL file to import (default: stdin)")
 	taskImportCmd.Flags().String("project", "", "Override project_id for all tasks (id or name, partial match supported)")
 	taskImportCmd.Flags().String("datasource", "", "Override datasource_id for all tasks")
-	taskUpdateCmd.Flags().String("title", "", "New title")
-	taskUpdateCmd.Flags().String("description", "", "New description")
-	taskUpdateCmd.Flags().String("payload-file", "", "Payload file (YAML/JSON), - for stdin")
+	taskUpdateCmd.Flags().StringP("patch-file", "f", "", "Patch file (YAML/JSON) with task fields to update; - for stdin")
+	taskUpdateCmd.Flags().String("payload-file", "", "Payload file (YAML/JSON) merged into task.payload; - for stdin")
 	taskUpdateCmd.Flags().String("instructions-file", "", "Instructions file (YAML/JSON) for role-wise merge; - for stdin")
-	taskUpdateCmd.Flags().String("base-branch", "", "New base branch (empty string clears the value)")
-	taskUpdateCmd.Flags().String("branch-prefix", "", "New branch prefix (empty string clears the value)")
-	taskUpdateCmd.Flags().StringP("patch-file", "f", "", "Patch file (YAML/JSON) with task fields to update; - for stdin. Explicit flags override fields supplied here.")
 	taskDuplicateCmd.Flags().Bool("auto-start", false, "Automatically start the duplicated task")
 	taskRerunCmd.Flags().Bool("auto-start", false, "Automatically start the rerun task")
 	taskRerunCmd.Flags().String("instructions-file", "", "Instructions override file (YAML/JSON) for role-wise merge; - for stdin")
@@ -124,16 +120,12 @@ func init() {
 }
 
 func runTaskUpdate(cmd *cobra.Command, args []string) error {
-	title, _ := cmd.Flags().GetString("title")
-	description, _ := cmd.Flags().GetString("description")
+	patchFile, _ := cmd.Flags().GetString("patch-file")
 	payloadFile, _ := cmd.Flags().GetString("payload-file")
 	instructionsFile, _ := cmd.Flags().GetString("instructions-file")
-	patchFile, _ := cmd.Flags().GetString("patch-file")
-	baseBranchChanged := cmd.Flags().Changed("base-branch")
-	branchPrefixChanged := cmd.Flags().Changed("branch-prefix")
 
-	if title == "" && description == "" && payloadFile == "" && instructionsFile == "" && patchFile == "" && !baseBranchChanged && !branchPrefixChanged {
-		return fmt.Errorf("at least one of --title, --description, --payload-file, --instructions-file, --patch-file, --base-branch, or --branch-prefix is required")
+	if patchFile == "" && payloadFile == "" && instructionsFile == "" {
+		return fmt.Errorf("at least one of --patch-file, --payload-file, or --instructions-file is required")
 	}
 
 	var req api.UpdateTaskRequest
@@ -145,21 +137,6 @@ func runTaskUpdate(cmd *cobra.Command, args []string) error {
 		if err := json.Unmarshal(data, &req); err != nil {
 			return fmt.Errorf("patch: decode into UpdateTaskRequest: %w", err)
 		}
-	}
-
-	if title != "" {
-		req.Title = title
-	}
-	if description != "" {
-		req.Description = description
-	}
-	if baseBranchChanged {
-		v, _ := cmd.Flags().GetString("base-branch")
-		req.BaseBranch = &v
-	}
-	if branchPrefixChanged {
-		v, _ := cmd.Flags().GetString("branch-prefix")
-		req.BranchPrefix = &v
 	}
 
 	if payloadFile != "" {

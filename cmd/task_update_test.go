@@ -17,17 +17,23 @@ func newTaskUpdateCmd(t *testing.T) *cobra.Command {
 	t.Helper()
 	cmd := taskUpdateCmd
 	cmd.ResetFlags()
-	cmd.Flags().String("title", "", "title")
-	cmd.Flags().String("description", "", "description")
+	cmd.Flags().StringP("patch-file", "f", "", "patch file")
 	cmd.Flags().String("payload-file", "", "payload file")
 	cmd.Flags().String("instructions-file", "", "instructions file")
-	cmd.Flags().String("base-branch", "", "base branch")
-	cmd.Flags().String("branch-prefix", "", "branch prefix")
-	cmd.Flags().StringP("patch-file", "f", "", "patch file")
 	return cmd
 }
 
-func TestRunTaskUpdate_UpdatesTitle(t *testing.T) {
+// writePatch writes a YAML/JSON patch to a temp file and returns the path.
+func writePatch(t *testing.T, content string) string {
+	t.Helper()
+	tmpFile := filepath.Join(t.TempDir(), "patch.yaml")
+	if err := os.WriteFile(tmpFile, []byte(content), 0o644); err != nil {
+		t.Fatalf("write patch file: %v", err)
+	}
+	return tmpFile
+}
+
+func TestRunTaskUpdate_UpdatesTitleViaPatch(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "update-title-proj", "Update Title Project")
@@ -46,11 +52,13 @@ func TestRunTaskUpdate_UpdatesTitle(t *testing.T) {
 
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
 
+	patchPath := writePatch(t, `title: new title`)
+
 	var out bytes.Buffer
 	cmd := newTaskUpdateCmd(t)
 	cmd.SetOut(&out)
-	if err := cmd.Flags().Set("title", "new title"); err != nil {
-		t.Fatalf("set --title: %v", err)
+	if err := cmd.Flags().Set("patch-file", patchPath); err != nil {
+		t.Fatalf("set --patch-file: %v", err)
 	}
 
 	if err := runTaskUpdate(cmd, []string{task.ID}); err != nil {
@@ -239,161 +247,16 @@ func TestRunTaskUpdate_NotFound(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
 
+	patchPath := writePatch(t, `title: new title`)
+
 	cmd := newTaskUpdateCmd(t)
-	if err := cmd.Flags().Set("title", "new title"); err != nil {
-		t.Fatalf("set --title: %v", err)
+	if err := cmd.Flags().Set("patch-file", patchPath); err != nil {
+		t.Fatalf("set --patch-file: %v", err)
 	}
 
 	err := runTaskUpdate(cmd, []string{"nonexistent-id"})
 	if err == nil {
 		t.Fatal("runTaskUpdate() expected error for nonexistent task, got nil")
-	}
-}
-
-func TestRunTaskUpdate_UpdatesBaseBranch(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-
-	dir := writeImportTestProject(t, "update-basebranch-proj", "Update Base Branch Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-
-	var task orchestrator.Task
-	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
-		"project_id": "update-basebranch-proj",
-		"title":      "base branch task",
-		"behavior":   "dev",
-	}, &task); err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-
-	cmd := newTaskUpdateCmd(t)
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	if err := cmd.Flags().Set("base-branch", "master"); err != nil {
-		t.Fatalf("set --base-branch: %v", err)
-	}
-
-	if err := runTaskUpdate(cmd, []string{task.ID}); err != nil {
-		t.Fatalf("runTaskUpdate() error = %v", err)
-	}
-
-	var updated orchestrator.Task
-	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID, nil, &updated); err != nil {
-		t.Fatalf("get updated task: %v", err)
-	}
-	if updated.BaseBranch != "master" {
-		t.Errorf("BaseBranch = %q, want %q", updated.BaseBranch, "master")
-	}
-}
-
-func TestRunTaskUpdate_UpdatesBranchPrefix(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-
-	dir := writeImportTestProject(t, "update-branchprefix-proj", "Update Branch Prefix Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-
-	var task orchestrator.Task
-	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
-		"project_id": "update-branchprefix-proj",
-		"title":      "branch prefix task",
-		"behavior":   "dev",
-	}, &task); err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-
-	cmd := newTaskUpdateCmd(t)
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	if err := cmd.Flags().Set("branch-prefix", "feature/"); err != nil {
-		t.Fatalf("set --branch-prefix: %v", err)
-	}
-
-	if err := runTaskUpdate(cmd, []string{task.ID}); err != nil {
-		t.Fatalf("runTaskUpdate() error = %v", err)
-	}
-
-	var updated orchestrator.Task
-	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID, nil, &updated); err != nil {
-		t.Fatalf("get updated task: %v", err)
-	}
-	if updated.BranchPrefix != "feature/" {
-		t.Errorf("BranchPrefix = %q, want %q", updated.BranchPrefix, "feature/")
-	}
-}
-
-func TestRunTaskUpdate_BaseBranchEmptyStringClears(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-
-	dir := writeImportTestProject(t, "update-basebranch-clear-proj", "Update Base Branch Clear Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-
-	var task orchestrator.Task
-	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
-		"project_id": "update-basebranch-clear-proj",
-		"title":      "clear base branch task",
-		"behavior":   "dev",
-		"base_branch": "main",
-	}, &task); err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-
-	cmd := newTaskUpdateCmd(t)
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	if err := cmd.Flags().Set("base-branch", ""); err != nil {
-		t.Fatalf("set --base-branch: %v", err)
-	}
-
-	if err := runTaskUpdate(cmd, []string{task.ID}); err != nil {
-		t.Fatalf("runTaskUpdate() error = %v", err)
-	}
-
-	var updated orchestrator.Task
-	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID, nil, &updated); err != nil {
-		t.Fatalf("get updated task: %v", err)
-	}
-	if updated.BaseBranch != "" {
-		t.Errorf("BaseBranch = %q, want empty (cleared)", updated.BaseBranch)
-	}
-}
-
-func TestRunTaskUpdate_OnlyBaseBranchNoOtherFlagsSucceeds(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-
-	dir := writeImportTestProject(t, "update-basebranch-only-proj", "Update Base Branch Only Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-
-	var task orchestrator.Task
-	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
-		"project_id": "update-basebranch-only-proj",
-		"title":      "only base branch task",
-		"behavior":   "dev",
-	}, &task); err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-
-	cmd := newTaskUpdateCmd(t)
-	if err := cmd.Flags().Set("base-branch", "develop"); err != nil {
-		t.Fatalf("set --base-branch: %v", err)
-	}
-
-	if err := runTaskUpdate(cmd, []string{task.ID}); err != nil {
-		t.Fatalf("runTaskUpdate() error = %v, want nil (--base-branch alone should succeed)", err)
 	}
 }
 
@@ -419,20 +282,16 @@ func TestRunTaskUpdate_PatchFileUpdatesWorktreeAndBaseBranch(t *testing.T) {
 		t.Fatalf("setup precondition: Worktree = false, want true")
 	}
 
-	patchYAML := `worktree: false
+	patchPath := writePatch(t, `worktree: false
 base_branch: develop
-`
-	tmpFile := filepath.Join(t.TempDir(), "patch.yaml")
-	if err := os.WriteFile(tmpFile, []byte(patchYAML), 0o644); err != nil {
-		t.Fatalf("write patch file: %v", err)
-	}
+`)
 
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
 
 	cmd := newTaskUpdateCmd(t)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
-	if err := cmd.Flags().Set("patch-file", tmpFile); err != nil {
+	if err := cmd.Flags().Set("patch-file", patchPath); err != nil {
 		t.Fatalf("set --patch-file: %v", err)
 	}
 
@@ -449,53 +308,6 @@ base_branch: develop
 	}
 	if updated.BaseBranch != "develop" {
 		t.Errorf("BaseBranch = %q, want %q", updated.BaseBranch, "develop")
-	}
-}
-
-func TestRunTaskUpdate_ExplicitFlagsOverridePatchFile(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-
-	dir := writeImportTestProject(t, "update-patch-override-proj", "Update Patch Override Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-
-	var task orchestrator.Task
-	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
-		"project_id": "update-patch-override-proj",
-		"title":      "override target",
-		"behavior":   "dev",
-	}, &task); err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-
-	patchYAML := `base_branch: from-patch
-`
-	tmpFile := filepath.Join(t.TempDir(), "patch.yaml")
-	if err := os.WriteFile(tmpFile, []byte(patchYAML), 0o644); err != nil {
-		t.Fatalf("write patch file: %v", err)
-	}
-
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-
-	cmd := newTaskUpdateCmd(t)
-	if err := cmd.Flags().Set("patch-file", tmpFile); err != nil {
-		t.Fatalf("set --patch-file: %v", err)
-	}
-	if err := cmd.Flags().Set("base-branch", "from-flag"); err != nil {
-		t.Fatalf("set --base-branch: %v", err)
-	}
-
-	if err := runTaskUpdate(cmd, []string{task.ID}); err != nil {
-		t.Fatalf("runTaskUpdate() error = %v", err)
-	}
-
-	var updated orchestrator.Task
-	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID, nil, &updated); err != nil {
-		t.Fatalf("get updated task: %v", err)
-	}
-	if updated.BaseBranch != "from-flag" {
-		t.Errorf("BaseBranch = %q, want %q (explicit flag should win)", updated.BaseBranch, "from-flag")
 	}
 }
 
@@ -535,5 +347,56 @@ func TestRunTaskUpdate_PatchFileFromStdin(t *testing.T) {
 	}
 	if updated.Worktree {
 		t.Errorf("Worktree = true, want false")
+	}
+}
+
+func TestRunTaskUpdate_PatchClearsDependsOnPayload(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+
+	dir := writeImportTestProject(t, "update-dop-proj", "Update DependsOnPayload Project")
+	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	// 依存先と本体タスクを作成
+	var dep orchestrator.Task
+	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
+		"project_id": "update-dop-proj",
+		"title":      "dependency",
+		"behavior":   "dev",
+	}, &dep); err != nil {
+		t.Fatalf("create dep: %v", err)
+	}
+
+	var task orchestrator.Task
+	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
+		"project_id":         "update-dop-proj",
+		"title":              "main task",
+		"behavior":           "dev",
+		"depends_on":         []string{dep.ID},
+		"depends_on_payload": "artifact.auto-merge.merged",
+	}, &task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+
+	patchPath := writePatch(t, `depends_on_payload: ""`)
+
+	cmd := newTaskUpdateCmd(t)
+	if err := cmd.Flags().Set("patch-file", patchPath); err != nil {
+		t.Fatalf("set --patch-file: %v", err)
+	}
+
+	if err := runTaskUpdate(cmd, []string{task.ID}); err != nil {
+		t.Fatalf("runTaskUpdate() error = %v", err)
+	}
+
+	var updated orchestrator.Task
+	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID, nil, &updated); err != nil {
+		t.Fatalf("get updated task: %v", err)
+	}
+	if updated.DependsOnPayload != "" {
+		t.Errorf("DependsOnPayload = %q, want empty", updated.DependsOnPayload)
 	}
 }
