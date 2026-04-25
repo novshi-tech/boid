@@ -115,6 +115,7 @@ func init() {
 	taskUpdateCmd.Flags().String("instructions-file", "", "Instructions file (YAML/JSON) for role-wise merge; - for stdin")
 	taskUpdateCmd.Flags().String("base-branch", "", "New base branch (empty string clears the value)")
 	taskUpdateCmd.Flags().String("branch-prefix", "", "New branch prefix (empty string clears the value)")
+	taskUpdateCmd.Flags().StringP("patch-file", "f", "", "Patch file (YAML/JSON) with task fields to update; - for stdin. Explicit flags override fields supplied here.")
 	taskDuplicateCmd.Flags().Bool("auto-start", false, "Automatically start the duplicated task")
 	taskRerunCmd.Flags().Bool("auto-start", false, "Automatically start the rerun task")
 	taskRerunCmd.Flags().String("instructions-file", "", "Instructions override file (YAML/JSON) for role-wise merge; - for stdin")
@@ -127,18 +128,31 @@ func runTaskUpdate(cmd *cobra.Command, args []string) error {
 	description, _ := cmd.Flags().GetString("description")
 	payloadFile, _ := cmd.Flags().GetString("payload-file")
 	instructionsFile, _ := cmd.Flags().GetString("instructions-file")
+	patchFile, _ := cmd.Flags().GetString("patch-file")
 	baseBranchChanged := cmd.Flags().Changed("base-branch")
 	branchPrefixChanged := cmd.Flags().Changed("branch-prefix")
 
-	if title == "" && description == "" && payloadFile == "" && instructionsFile == "" && !baseBranchChanged && !branchPrefixChanged {
-		return fmt.Errorf("at least one of --title, --description, --payload-file, --instructions-file, --base-branch, or --branch-prefix is required")
+	if title == "" && description == "" && payloadFile == "" && instructionsFile == "" && patchFile == "" && !baseBranchChanged && !branchPrefixChanged {
+		return fmt.Errorf("at least one of --title, --description, --payload-file, --instructions-file, --patch-file, --base-branch, or --branch-prefix is required")
 	}
 
-	req := api.UpdateTaskRequest{
-		Title:       title,
-		Description: description,
+	var req api.UpdateTaskRequest
+	if patchFile != "" {
+		data, err := readYAMLAsJSON(cmd, patchFile)
+		if err != nil {
+			return fmt.Errorf("patch: %w", err)
+		}
+		if err := json.Unmarshal(data, &req); err != nil {
+			return fmt.Errorf("patch: decode into UpdateTaskRequest: %w", err)
+		}
 	}
 
+	if title != "" {
+		req.Title = title
+	}
+	if description != "" {
+		req.Description = description
+	}
 	if baseBranchChanged {
 		v, _ := cmd.Flags().GetString("base-branch")
 		req.BaseBranch = &v

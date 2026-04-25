@@ -599,11 +599,11 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	if req.ParentID != nil {
 		task.ParentID = *req.ParentID
 	}
-	if req.BaseBranch != nil || req.BranchPrefix != nil {
+	if req.BaseBranch != nil || req.BranchPrefix != nil || req.Worktree != nil {
 		if !isInstructionsEditable(task.Status) {
 			return nil, &StatusError{
 				Code:    http.StatusConflict,
-				Message: fmt.Sprintf("cannot edit base_branch/branch_prefix while task is running (status: %s)", task.Status),
+				Message: fmt.Sprintf("cannot edit base_branch/branch_prefix/worktree while task is running (status: %s)", task.Status),
 			}
 		}
 		if req.BaseBranch != nil {
@@ -611,6 +611,9 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		}
 		if req.BranchPrefix != nil {
 			task.BranchPrefix = *req.BranchPrefix
+		}
+		if req.Worktree != nil {
+			task.Worktree = *req.Worktree
 		}
 	}
 	var instructionsBefore map[string]orchestrator.Instruction

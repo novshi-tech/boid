@@ -41,6 +41,7 @@ type UpdateTaskRequest struct {
 	Instructions     json.RawMessage `json:"instructions,omitempty"`
 	BaseBranch       *string         `json:"base_branch,omitempty"`
 	BranchPrefix     *string         `json:"branch_prefix,omitempty"`
+	Worktree         *bool           `json:"worktree,omitempty"`
 	DependsOn        []string        `json:"depends_on,omitempty"`
 	DependsOnPayload *string         `json:"depends_on_payload,omitempty"`
 	ParentID         *string         `json:"parent_id,omitempty"`
@@ -134,8 +135,8 @@ func (h *TaskHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Title == "" && req.Description == "" && len(req.Payload) == 0 && len(req.Instructions) == 0 && req.BaseBranch == nil && req.BranchPrefix == nil && req.DependsOn == nil && req.DependsOnPayload == nil && req.ParentID == nil {
-		writeError(w, http.StatusBadRequest, "at least one of title, description, payload, instructions, base_branch, branch_prefix, depends_on, depends_on_payload, or parent_id is required")
+	if req.Title == "" && req.Description == "" && len(req.Payload) == 0 && len(req.Instructions) == 0 && req.BaseBranch == nil && req.BranchPrefix == nil && req.Worktree == nil && req.DependsOn == nil && req.DependsOnPayload == nil && req.ParentID == nil {
+		writeError(w, http.StatusBadRequest, "at least one of title, description, payload, instructions, base_branch, branch_prefix, worktree, depends_on, depends_on_payload, or parent_id is required")
 		return
 	}
 	task, err := h.Service.UpdateTask(id, req)
