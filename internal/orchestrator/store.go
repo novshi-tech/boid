@@ -307,11 +307,30 @@ func UpdateTask(dbtx db.DBTX, t *Task) error {
 	if err != nil {
 		return fmt.Errorf("marshal instructions: %w", err)
 	}
+	if len(t.DependsOn) > 0 {
+		if err := detectCyclicDependency(dbtx, t.ID, t.DependsOn); err != nil {
+			return err
+		}
+	}
 	_, err = dbtx.Exec(
-		`UPDATE tasks SET title = ?, description = ?, status = ?, traits = ?, readonly = ?, worktree = ?, branch_prefix = ?, base_branch = ?, payload = ?, instructions = ?, updated_at = ? WHERE id = ?`,
-		t.Title, t.Description, t.Status, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.UpdatedAt, t.ID,
+		`UPDATE tasks SET title = ?, description = ?, status = ?, traits = ?, readonly = ?, worktree = ?, branch_prefix = ?, base_branch = ?, payload = ?, instructions = ?, depends_on_payload = ?, parent_id = ?, updated_at = ? WHERE id = ?`,
+		t.Title, t.Description, t.Status, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.DependsOnPayload, t.ParentID, t.UpdatedAt, t.ID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if _, err := dbtx.Exec(`DELETE FROM task_dependencies WHERE task_id = ?`, t.ID); err != nil {
+		return fmt.Errorf("delete task dependencies: %w", err)
+	}
+	for _, depID := range t.DependsOn {
+		if _, err := dbtx.Exec(
+			`INSERT INTO task_dependencies (task_id, depends_on) VALUES (?, ?)`,
+			t.ID, depID,
+		); err != nil {
+			return fmt.Errorf("insert task dependency %s: %w", depID, err)
+		}
+	}
+	return nil
 }
 
 func CreateAction(dbtx db.DBTX, a *Action) error {

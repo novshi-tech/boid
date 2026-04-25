@@ -821,6 +821,149 @@ func TestUpdateTask_BehaviorFields(t *testing.T) {
 	}
 }
 
+func TestUpdateTask_DependsOnPayload(t *testing.T) {
+	d := createTestProject(t)
+
+	task := &orchestrator.Task{
+		ProjectID:        "proj-1",
+		Title:            "Task",
+		Behavior:         "dev",
+		DependsOnPayload: "artifact.auto-merge.merged",
+	}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	task.DependsOnPayload = ""
+	if err := orchestrator.UpdateTask(d.Conn, task); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	got, err := orchestrator.GetTask(d.Conn, task.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.DependsOnPayload != "" {
+		t.Fatalf("DependsOnPayload = %q, want empty", got.DependsOnPayload)
+	}
+}
+
+func TestUpdateTask_ParentID(t *testing.T) {
+	d := createTestProject(t)
+
+	parent1 := &orchestrator.Task{ProjectID: "proj-1", Title: "P1", Behavior: "dev"}
+	parent2 := &orchestrator.Task{ProjectID: "proj-1", Title: "P2", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, parent1); err != nil {
+		t.Fatalf("create parent1: %v", err)
+	}
+	if err := orchestrator.CreateTask(d.Conn, parent2); err != nil {
+		t.Fatalf("create parent2: %v", err)
+	}
+
+	child := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Title:     "Child",
+		Behavior:  "dev",
+		ParentID:  parent1.ID,
+	}
+	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	child.ParentID = parent2.ID
+	if err := orchestrator.UpdateTask(d.Conn, child); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	got, err := orchestrator.GetTask(d.Conn, child.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ParentID != parent2.ID {
+		t.Fatalf("ParentID = %q, want %q", got.ParentID, parent2.ID)
+	}
+}
+
+func TestUpdateTask_DependsOn(t *testing.T) {
+	d := createTestProject(t)
+
+	dep1 := &orchestrator.Task{ProjectID: "proj-1", Title: "Dep1", Behavior: "dev"}
+	dep2 := &orchestrator.Task{ProjectID: "proj-1", Title: "Dep2", Behavior: "dev"}
+	dep3 := &orchestrator.Task{ProjectID: "proj-1", Title: "Dep3", Behavior: "dev"}
+	for _, dt := range []*orchestrator.Task{dep1, dep2, dep3} {
+		if err := orchestrator.CreateTask(d.Conn, dt); err != nil {
+			t.Fatalf("create dep: %v", err)
+		}
+	}
+
+	task := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Title:     "Task",
+		Behavior:  "dev",
+		DependsOn: []string{dep1.ID, dep2.ID},
+	}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// dep1 を外し、dep3 を追加
+	task.DependsOn = []string{dep2.ID, dep3.ID}
+	if err := orchestrator.UpdateTask(d.Conn, task); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	got, err := orchestrator.GetTask(d.Conn, task.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(got.DependsOn) != 2 {
+		t.Fatalf("DependsOn len = %d, want 2", len(got.DependsOn))
+	}
+	depSet := map[string]bool{}
+	for _, id := range got.DependsOn {
+		depSet[id] = true
+	}
+	if !depSet[dep2.ID] || !depSet[dep3.ID] {
+		t.Fatalf("DependsOn = %v, want [dep2, dep3]", got.DependsOn)
+	}
+	if depSet[dep1.ID] {
+		t.Fatalf("DependsOn = %v, dep1 should be removed", got.DependsOn)
+	}
+}
+
+func TestUpdateTask_DependsOn_Cleared(t *testing.T) {
+	d := createTestProject(t)
+
+	dep := &orchestrator.Task{ProjectID: "proj-1", Title: "Dep", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, dep); err != nil {
+		t.Fatalf("create dep: %v", err)
+	}
+
+	task := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Title:     "Task",
+		Behavior:  "dev",
+		DependsOn: []string{dep.ID},
+	}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// 空スライスに更新 → 全削除
+	task.DependsOn = []string{}
+	if err := orchestrator.UpdateTask(d.Conn, task); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	got, err := orchestrator.GetTask(d.Conn, task.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(got.DependsOn) != 0 {
+		t.Fatalf("DependsOn = %v, want empty", got.DependsOn)
+	}
+}
+
 func TestFindTaskByRemote_MatchesBothFields(t *testing.T) {
 	d := createTestProject(t)
 
