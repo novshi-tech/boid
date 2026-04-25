@@ -105,7 +105,12 @@ func boidPolicy(role Role, pctx PolicyContext) BuiltinPolicy {
 func gitPolicy(role Role, pctx PolicyContext) BuiltinPolicy {
 	switch role {
 	case RoleHook:
-		// hook からの broker 経由 git 操作 (fetch/push) は禁止。
+		// hook からは送信系 (push/fetch) のみ禁止する。
+		// commit/merge/rebase/worktree 等の direct subcommand は broker 側の
+		// allowlist (sandbox.directGitSubcommands) で role に依らず許可される
+		// ため、ここでは AllowedOps を空に保つだけでよい。
+		// remote 設定書き換え系 (remote, config の危険キー) や pull/clone も
+		// sandbox 側で全 role 拒否されるため、ここで列挙する必要は無い。
 		return BuiltinPolicy{}
 	default:
 		// gate sandbox は worktree を mount しないので、sandbox 内の cwd は

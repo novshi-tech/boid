@@ -11,7 +11,13 @@ import (
 type gitInvocationMode int
 
 const (
-	gitInvocationLocal gitInvocationMode = iota
+	// gitInvocationDirect はネットワーク・remote 設定に触れない自己完結系
+	// サブコマンド (commit/merge/rebase/log/diff/worktree 等)。broker 側で
+	// host の git をそのまま fork するだけで、送信先制御は不要。
+	gitInvocationDirect gitInvocationMode = iota
+	// gitInvocationBrokered は remote 同期 (push/fetch) を表す。broker が
+	// 構造化リクエスト (GitRequest) として受け取り、許可された remote URL と
+	// refspec のみを再構築して実行する。
 	gitInvocationBrokered
 )
 
@@ -20,7 +26,12 @@ type gitInvocation struct {
 	request *GitRequest
 }
 
-var localGitSubcommands = map[string]struct{}{
+// directGitSubcommands は「ネットワークに出ず、remote 設定も書き換えない」
+// サブコマンドの allowlist。送信先が無いため role 別の op policy を介さず、
+// broker 側で host の git をそのまま実行する。送信を伴う操作 (push/fetch) と
+// remote 設定書き換えを起こす操作 (remote/pull/clone/submodule/危険な config キー)
+// はここに含めず、それぞれ別経路で拒否または structured request 化する。
+var directGitSubcommands = map[string]struct{}{
 	"add":        {},
 	"branch":     {},
 	"checkout":   {},
@@ -110,10 +121,10 @@ func classifyGitInvocation(args []string) (*gitInvocation, error) {
 		return nil, err
 	}
 	if subcmd == "" {
-		return &gitInvocation{mode: gitInvocationLocal}, nil
+		return &gitInvocation{mode: gitInvocationDirect}, nil
 	}
-	if _, ok := localGitSubcommands[subcmd]; ok {
-		return &gitInvocation{mode: gitInvocationLocal}, nil
+	if _, ok := directGitSubcommands[subcmd]; ok {
+		return &gitInvocation{mode: gitInvocationDirect}, nil
 	}
 
 	switch subcmd {
@@ -133,8 +144,10 @@ func classifyGitInvocation(args []string) (*gitInvocation, error) {
 		if err := validateGitConfigArgs(rest); err != nil {
 			return nil, err
 		}
-		return &gitInvocation{mode: gitInvocationLocal}, nil
+		return &gitInvocation{mode: gitInvocationDirect}, nil
 	default:
+		// pull/clone/remote/submodule など送信先制御が必要なサブコマンドは
+		// 意図的にここで全 role 拒否する (boid builtin git では未対応)。
 		return nil, fmt.Errorf("git subcommand %q is not allowed", subcmd)
 	}
 }

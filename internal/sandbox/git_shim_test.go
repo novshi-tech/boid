@@ -12,14 +12,14 @@ func TestClassifyGitInvocation(t *testing.T) {
 		wantErr    bool
 	}{
 		{
-			name:     "local status",
+			name:     "direct status",
 			args:     []string{"status", "--short"},
-			wantMode: gitInvocationLocal,
+			wantMode: gitInvocationDirect,
 		},
 		{
-			name:     "local no args",
+			name:     "direct no args",
 			args:     nil,
-			wantMode: gitInvocationLocal,
+			wantMode: gitInvocationDirect,
 		},
 		{
 			name:       "brokered fetch",
@@ -36,19 +36,19 @@ func TestClassifyGitInvocation(t *testing.T) {
 			wantRemote: "origin",
 		},
 		{
-			name:     "local worktree list",
+			name:     "direct worktree list",
 			args:     []string{"worktree", "list"},
-			wantMode: gitInvocationLocal,
+			wantMode: gitInvocationDirect,
 		},
 		{
-			name:     "local merge-tree",
+			name:     "direct merge-tree",
 			args:     []string{"merge-tree", "--write-tree", "HEAD", "MERGE_HEAD"},
-			wantMode: gitInvocationLocal,
+			wantMode: gitInvocationDirect,
 		},
 		{
-			name:     "local update-ref",
+			name:     "direct update-ref",
 			args:     []string{"update-ref", "refs/heads/main", "abc123"},
-			wantMode: gitInvocationLocal,
+			wantMode: gitInvocationDirect,
 		},
 		{
 			name:    "deny pull",
@@ -74,17 +74,17 @@ func TestClassifyGitInvocation(t *testing.T) {
 		{
 			name:     "config --get remote url allowed",
 			args:     []string{"config", "--get", "remote.origin.url"},
-			wantMode: gitInvocationLocal,
+			wantMode: gitInvocationDirect,
 		},
 		{
 			name:     "config --list allowed",
 			args:     []string{"config", "--list"},
-			wantMode: gitInvocationLocal,
+			wantMode: gitInvocationDirect,
 		},
 		{
 			name:     "config user.name write allowed",
 			args:     []string{"config", "user.name", "Foo"},
-			wantMode: gitInvocationLocal,
+			wantMode: gitInvocationDirect,
 		},
 		{
 			name:    "config remote.origin.url write denied",

@@ -287,11 +287,11 @@ func TestBroker_GitBuiltinAllowsGateRolePush(t *testing.T) {
 	}
 }
 
-// --- broker 経由 local exec テスト ---
+// --- broker 経由 direct exec テスト ---
 
-// broker が local subcommand (status 等) を args のみで受け取り、
+// broker が direct subcommand (status 等) を args のみで受け取り、
 // ワークツリーで実行して出力を返すことを確認する。
-func TestBroker_GitLocalExec_StatusReturnsOutput(t *testing.T) {
+func TestBroker_GitDirectExec_StatusReturnsOutput(t *testing.T) {
 	repo := initGitRepo(t)
 
 	broker := &sandbox.Broker{}
@@ -311,10 +311,10 @@ func TestBroker_GitLocalExec_StatusReturnsOutput(t *testing.T) {
 	}
 }
 
-// broker が local subcommand を実行する際、req.Cwd がそのまま使われることを確認する。
+// broker が direct subcommand を実行する際、req.Cwd がそのまま使われることを確認する。
 // cwd がサブディレクトリの場合、WorktreeRoot ではなく実際の cwd で実行される必要がある。
 // (git add . のような相対パス操作に影響するため)
-func TestBroker_GitLocalExec_RespectsCwd(t *testing.T) {
+func TestBroker_GitDirectExec_RespectsCwd(t *testing.T) {
 	repo := initGitRepo(t)
 	subdir := filepath.Join(repo, "subdir")
 	if err := os.MkdirAll(subdir, 0o755); err != nil {
@@ -346,7 +346,7 @@ func TestBroker_GitLocalExec_RespectsCwd(t *testing.T) {
 
 // broker 側で禁止 global option が全件 reject されることを確認する。
 // タスク仕様で再確認要求されている全オプションをカバーする。
-func TestBroker_GitLocalExec_DeniedGlobalOptions(t *testing.T) {
+func TestBroker_GitDirectExec_DeniedGlobalOptions(t *testing.T) {
 	repo := initGitRepo(t)
 
 	broker := &sandbox.Broker{}
@@ -434,7 +434,7 @@ func TestBroker_GitPush_RejectsForceAndDeleteRefspecs(t *testing.T) {
 }
 
 // allowlist に載っていない subcommand は broker 側で拒否される。
-func TestBroker_GitLocalExec_DeniedSubcommand(t *testing.T) {
+func TestBroker_GitDirectExec_DeniedSubcommand(t *testing.T) {
 	repo := initGitRepo(t)
 
 	broker := &sandbox.Broker{}
@@ -627,8 +627,8 @@ func TestBroker_GitBuiltin_HardeningArgs(t *testing.T) {
 	}
 }
 
-// local exec でも cwd 制限は有効。
-func TestBroker_GitLocalExec_RestrictsCwd(t *testing.T) {
+// direct exec でも cwd 制限は有効。
+func TestBroker_GitDirectExec_RestrictsCwd(t *testing.T) {
 	repo := initGitRepo(t)
 	other := initGitRepo(t)
 
