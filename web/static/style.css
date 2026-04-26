@@ -1768,48 +1768,6 @@ details[open] > summary {
   color: #fff;
 }
 
-/* ---- IME overlay ---- */
-.boid-terminal-ime-overlay {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  z-index: 100;
-}
-
-.boid-terminal-ime-modal {
-  background: var(--bg);
-  color: var(--fg);
-  width: 100%;
-  max-width: 480px;
-  border-radius: var(--radius-2) var(--radius-2) 0 0;
-  padding: var(--space-3);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.boid-terminal-ime-textarea {
-  width: 100%;
-  min-height: 80px;
-  resize: vertical;
-  font-family: 'IBM Plex Sans', sans-serif;
-  font-size: 1rem;
-  padding: var(--space-2);
-  background: var(--card);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-1);
-  box-sizing: border-box;
-}
-
-.boid-terminal-ime-actions {
-  display: flex;
-  gap: var(--space-2);
-}
-
 /* ---- Disconnect overlay ---- */
 .boid-terminal-disconnect-overlay {
   position: absolute;
@@ -1820,6 +1778,7 @@ details[open] > summary {
   justify-content: center;
   z-index: 90;
 }
+.boid-terminal-disconnect-overlay[hidden] { display: none; }
 
 .boid-terminal-disconnect-content {
   text-align: center;
@@ -1844,14 +1803,5 @@ details[open] > summary {
     min-width: 44px;
     min-height: 36px;
     font-size: 0.75rem;
-  }
-
-  .boid-terminal-ime-overlay {
-    align-items: center;
-  }
-
-  .boid-terminal-ime-modal {
-    width: 480px;
-    border-radius: var(--radius-2);
   }
 }

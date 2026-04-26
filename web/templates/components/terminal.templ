@@ -26,20 +26,6 @@ templ Terminal(jobId string, wsPath string) {
 			<button type="button" class="boid-terminal-keybar-btn" data-key="left">←</button>
 			<button type="button" class="boid-terminal-keybar-btn" data-key="right">→</button>
 			<button type="button" class="boid-terminal-keybar-btn boid-terminal-keybar-ctrl" data-key="ctrl">Ctrl</button>
-			<button type="button" class="boid-terminal-keybar-btn boid-terminal-keybar-ime-btn" data-key="ime">日本語</button>
-		</div>
-		<div class="boid-terminal-ime-overlay" hidden>
-			<div class="boid-terminal-ime-modal">
-				<textarea
-					class="boid-terminal-ime-textarea"
-					rows="4"
-					placeholder="ここに日本語を入力して「送信」を押してください"
-				></textarea>
-				<div class="boid-terminal-ime-actions">
-					<button type="button" class="btn btn-primary boid-terminal-ime-send">送信</button>
-					<button type="button" class="btn boid-terminal-ime-close">閉じる</button>
-				</div>
-			</div>
 		</div>
 		<div class="boid-terminal-disconnect-overlay" hidden>
 			<div class="boid-terminal-disconnect-content">
@@ -48,10 +34,5 @@ templ Terminal(jobId string, wsPath string) {
 			</div>
 		</div>
 	</div>
-	<script type="module">
-		import { initBoidTerminal } from '/static/boid-terminal.js';
-		document.querySelectorAll('.boid-terminal[data-job-id]').forEach(function(root) {
-			initBoidTerminal(root, { jobId: root.dataset.jobId, wsUrl: root.dataset.wsUrl });
-		});
-	</script>
+	<script type="module" src={ "/static/boid-terminal-init.js?v=" + BuildID }></script>
 }

@@ -43,10 +43,6 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   const statusDot   = rootEl.querySelector('.boid-terminal-status');
   const disconnectOverlay = rootEl.querySelector('.boid-terminal-disconnect-overlay');
   const reconnectBtn      = rootEl.querySelector('.boid-terminal-reconnect');
-  const imeOverlay   = rootEl.querySelector('.boid-terminal-ime-overlay');
-  const imeTextarea  = rootEl.querySelector('.boid-terminal-ime-textarea');
-  const imeSendBtn   = rootEl.querySelector('.boid-terminal-ime-send');
-  const imeCloseBtn  = rootEl.querySelector('.boid-terminal-ime-close');
   const ctrlBtn      = rootEl.querySelector('.boid-terminal-keybar-ctrl');
 
   const term = new window.Terminal({
@@ -57,14 +53,37 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
   term.open(xtermRoot);
+  resizeToViewport();
   fitAddon.fit();
+  window.addEventListener('resize', function () {
+    resizeToViewport();
+  });
 
   let ws = null;
   let ctrlActive = false;
 
   // --- status indicator ---
+  const STATUS_TITLES = {
+    connecting:   '接続中',
+    connected:    '接続済み',
+    disconnected: '切断',
+  };
   function setStatus(state) {
     statusDot.className = 'boid-terminal-status boid-terminal-status-' + state;
+    statusDot.title = STATUS_TITLES[state] || state;
+  }
+
+  // Fit the terminal to the remaining viewport space. The Terminal component's
+  // flex-based sizing only works when the parent is an explicit-height flex
+  // column (true for /jobs/:id/terminal, but not for the embedded widget on
+  // the job detail page). Measuring rootEl.top each time handles both cases:
+  // flex parents give us a stable top, block parents give us whatever layout
+  // pushed rootEl down to.
+  function resizeToViewport() {
+    const rect = rootEl.getBoundingClientRect();
+    const bottomGap = 8;
+    const height = Math.max(200, window.innerHeight - rect.top - bottomGap);
+    rootEl.style.height = height + 'px';
   }
 
   // --- WS send helpers ---
@@ -172,10 +191,6 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
         ctrlBtn.classList.toggle('boid-terminal-keybar-ctrl-on', ctrlActive);
         return;
       }
-      if (key === 'ime') {
-        openIME();
-        return;
-      }
       const code = KEY_CODES[key];
       if (!code) return;
       if (ctrlActive) {
@@ -187,39 +202,6 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
       }
       term.focus();
     });
-  });
-
-  // --- IME modal ---
-  function openIME() {
-    term.blur();
-    imeOverlay.hidden = false;
-    imeTextarea.focus();
-  }
-
-  function closeIME() {
-    imeOverlay.hidden = true;
-    term.focus();
-  }
-
-  imeSendBtn.addEventListener('click', function () {
-    const text = imeTextarea.value;
-    if (text) {
-      sendInput(text);
-      imeTextarea.value = '';
-    }
-  });
-
-  imeCloseBtn.addEventListener('click', closeIME);
-
-  imeOverlay.addEventListener('click', function (e) {
-    if (e.target === imeOverlay) closeIME();
-  });
-
-  imeTextarea.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      closeIME();
-    }
   });
 
   // Initial connection
