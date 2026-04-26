@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -242,7 +243,14 @@ type replayGateBody struct {
 
 func (h *TaskHandler) ReplayGate(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
-	gateID := chi.URLParam(r, "gate_id")
+	// gate IDs contain '/' (kit-name/gate-name); the CLI encodes them as %2F
+	// so chi treats them as a single path segment. chi.URLParam returns the
+	// raw value so we have to undo the encoding here.
+	gateID, err := url.PathUnescape(chi.URLParam(r, "gate_id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid gate id")
+		return
+	}
 
 	var body replayGateBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err.Error() != "EOF" {

@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
@@ -50,7 +51,7 @@ func runTaskGateReplay(cmd *cobra.Command, args []string) error {
 		body["status"] = status
 	}
 
-	path := fmt.Sprintf("/api/tasks/%s/gates/%s/replay", taskID, gateID)
+	path := fmt.Sprintf("/api/tasks/%s/gates/%s/replay", url.PathEscape(taskID), url.PathEscape(gateID))
 	var result api.ReplayGateResult
 	if err := c.Do("POST", path, body, &result); err != nil {
 		return fmt.Errorf("gate replay: %w", err)
@@ -73,9 +74,9 @@ func runTaskGateList(cmd *cobra.Command, args []string) error {
 
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
-	path := fmt.Sprintf("/api/tasks/%s/gates", taskID)
+	path := fmt.Sprintf("/api/tasks/%s/gates", url.PathEscape(taskID))
 	if status != "" {
-		path += "?status=" + status
+		path += "?status=" + url.QueryEscape(status)
 	}
 
 	var gates []orchestrator.Gate

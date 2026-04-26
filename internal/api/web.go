@@ -408,8 +408,12 @@ func (h *WebHandler) GateReplayList(w http.ResponseWriter, r *http.Request) {
 
 func (h *WebHandler) PostGateReplay(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	gateID := chi.URLParam(r, "gate_id")
-	_, err := h.Service.ReplayGate(r.Context(), id, ReplayGateRequest{GateID: gateID})
+	gateID, err := url.PathUnescape(chi.URLParam(r, "gate_id"))
+	if err != nil {
+		http.Error(w, "invalid gate id", http.StatusBadRequest)
+		return
+	}
+	_, err = h.Service.ReplayGate(r.Context(), id, ReplayGateRequest{GateID: gateID})
 	if err != nil {
 		http.Redirect(w, r, "/tasks/"+id+"/gates?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
