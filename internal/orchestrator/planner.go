@@ -131,6 +131,7 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, CleanupFunc,
 		SecretNamespace: meta.SecretNamespace,
 		Env:             mergeStringMaps(behavior.Env, taskBusinessEnv(task)),
 		ExecutionState:  string(task.Status),
+		Host:            event.Gate.Host,
 	}
 	return spec, nil, nil
 }

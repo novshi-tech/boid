@@ -118,6 +118,21 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		r.JobEvents.JobCreated(j.TaskID, j.ID)
 	}
 
+	// Host gates skip the entire sandbox/broker construction below: they run
+	// the trusted kit script directly on the host with cwd at the worktree.
+	// Ensure the worktree exists (recreate if it was cleaned by a prior abort)
+	// so replay scenarios still have a live tree to operate on.
+	if spec.Host {
+		hostWorktree, herr := r.ensureHostGateWorktree(spec, brokerWorktreePath)
+		if herr != nil {
+			if cleanup != nil {
+				cleanup()
+			}
+			return "", herr
+		}
+		return r.dispatchHostGate(ctx, j, spec, hostWorktree, cleanup)
+	}
+
 	workspaceID, projectWorkDir, _ := r.resolveProjectRuntime(spec.ProjectID)
 	workspacePeers := r.resolveWorkspacePeers(workspaceID, spec.ProjectID)
 

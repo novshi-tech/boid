@@ -75,6 +75,13 @@ type JobSpec struct {
 	// ExecutionState records the task.Status at the time this job was dispatched.
 	// Stored in the job DB row so TUI can reconstruct replay context.
 	ExecutionState string
+
+	// Host instructs the dispatcher to skip sandbox / broker construction and
+	// run Argv[0] directly on the host with cwd set to the resolved worktree
+	// (or project) root. Set only for trusted kit gate scripts that require
+	// filesystem access to the worktree. Visibility / BuiltinPolicies /
+	// HostCommands are ignored when this is true.
+	Host bool
 }
 
 // Visibility captures which host paths the sandbox sees and whether they are

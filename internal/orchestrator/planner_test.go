@@ -420,6 +420,25 @@ func TestDispatchPlanner_PropagatesBaseBranchEnv(t *testing.T) {
 		t.Errorf("gate KIT_VAR = %q, want kit-value", got)
 	}
 
+	// host:true on the Gate must propagate to JobSpec.Host so dispatcher
+	// can pick the unsandboxed execution path.
+	hostGateReq, _, err := planner.PlanGate(&GateFireEvent{
+		EventID:   "event-host",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Gate: Gate{
+			ID:         "gate-host",
+			Host:       true,
+			ScriptPath: filepath.Join(projectDir, ".boid/gates", "gate-host.sh"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanGate (host): %v", err)
+	}
+	if !hostGateReq.Host {
+		t.Errorf("PlanGate did not propagate Gate.Host=true to JobSpec.Host")
+	}
+
 	// Tasks without a base branch should not surface an empty BOID_BASE_BRANCH:
 	// kit detection (`-n "${BOID_BASE_BRANCH:-}"`) treats empty and unset alike,
 	// but leaving the var absent keeps env diagnostics clean.

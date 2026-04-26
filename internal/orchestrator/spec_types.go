@@ -249,9 +249,14 @@ const (
 )
 
 type Gate struct {
-	ID         string        `yaml:"id" json:"id"`
-	On         OnValues      `yaml:"on" json:"on"`
-	Phase      GatePhase     `yaml:"phase,omitempty" json:"phase,omitempty"`
+	ID    string    `yaml:"id" json:"id"`
+	On    OnValues  `yaml:"on" json:"on"`
+	Phase GatePhase `yaml:"phase,omitempty" json:"phase,omitempty"`
+	// Host reports whether the gate script must run on the host directly
+	// (no sandbox, no broker). Used by trusted kit gates that need full
+	// filesystem access to the worktree (e.g. git-auto-merge's lockfile +
+	// detached worktree handling). Default false → sandboxed dispatch.
+	Host       bool          `yaml:"host,omitempty" json:"host,omitempty"`
 	Traits     HandlerTraits `yaml:"traits" json:"traits"`
 	Kit        string        `yaml:"-" json:"kit,omitempty"`
 	ScriptPath string        `yaml:"-" json:"-"`
