@@ -72,7 +72,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		),
 		HostCommands:    nil, // hooks never get broker-mediated host commands
 		SecretNamespace: meta.SecretNamespace,
-		Env:             behavior.Env,
+		Env:             mergeStringMaps(behavior.Env, taskBusinessEnv(task)),
 		ExecutionState:  string(task.Status),
 	}
 	return spec, nil, nil
@@ -129,10 +129,30 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, CleanupFunc,
 		),
 		HostCommands:    behavior.HostCommands.ToCommandDefs(),
 		SecretNamespace: meta.SecretNamespace,
-		Env:             behavior.Env,
+		Env:             mergeStringMaps(behavior.Env, taskBusinessEnv(task)),
 		ExecutionState:  string(task.Status),
 	}
 	return spec, nil, nil
+}
+
+// taskBusinessEnv returns env vars derived from business-level task fields
+// that hook / gate scripts may need at runtime. Currently this surfaces the
+// task's base branch so kits like git-auto-merge can identify the merge target
+// without poking the worktree (gate sandboxes intentionally hide the project
+// filesystem, so a `git worktree list` fallback would be rejected by the
+// broker's cwd policy).
+func taskBusinessEnv(task *Task) map[string]string {
+	if task == nil {
+		return nil
+	}
+	out := map[string]string{}
+	if task.BaseBranch != "" {
+		out["BOID_BASE_BRANCH"] = task.BaseBranch
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (p *DispatchPlanner) loadContext(projectID, taskID string) (*ProjectMeta, *Project, *Task, error) {

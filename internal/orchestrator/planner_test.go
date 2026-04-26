@@ -357,6 +357,90 @@ func TestPlanGate_PrimaryInputIsFullTaskJSON(t *testing.T) {
 	}
 }
 
+// Hook / gate jobs must receive task.BaseBranch via BOID_BASE_BRANCH so kits
+// like git-auto-merge can identify the merge target without inspecting the
+// worktree (gate sandboxes hide the project filesystem).
+func TestDispatchPlanner_PropagatesBaseBranchEnv(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "gates"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	behavior := TaskBehavior{
+		Name: "dev",
+		Env:  map[string]string{"KIT_VAR": "kit-value"},
+	}
+	task := &Task{
+		ID:         "task-1",
+		ProjectID:  "proj-1",
+		Behavior:   "dev",
+		Status:     TaskStatusVerifying,
+		BaseBranch: "feature/BGO-170",
+	}
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, behavior, task)
+
+	hookReq, _, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook: Hook{
+			ID:         "hook-1",
+			ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if got := hookReq.Env["BOID_BASE_BRANCH"]; got != "feature/BGO-170" {
+		t.Errorf("hook BOID_BASE_BRANCH = %q, want feature/BGO-170", got)
+	}
+	if got := hookReq.Env["KIT_VAR"]; got != "kit-value" {
+		t.Errorf("hook KIT_VAR = %q, want kit-value (behavior env must be preserved)", got)
+	}
+
+	gateReq, _, err := planner.PlanGate(&GateFireEvent{
+		EventID:   "event-2",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Gate: Gate{
+			ID:         "gate-1",
+			ScriptPath: filepath.Join(projectDir, ".boid/gates", "gate-1.sh"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanGate: %v", err)
+	}
+	if got := gateReq.Env["BOID_BASE_BRANCH"]; got != "feature/BGO-170" {
+		t.Errorf("gate BOID_BASE_BRANCH = %q, want feature/BGO-170", got)
+	}
+	if got := gateReq.Env["KIT_VAR"]; got != "kit-value" {
+		t.Errorf("gate KIT_VAR = %q, want kit-value", got)
+	}
+
+	// Tasks without a base branch should not surface an empty BOID_BASE_BRANCH:
+	// kit detection (`-n "${BOID_BASE_BRANCH:-}"`) treats empty and unset alike,
+	// but leaving the var absent keeps env diagnostics clean.
+	task.BaseBranch = ""
+	emptyReq, _, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-3",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook: Hook{
+			ID:         "hook-2",
+			ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook (empty base): %v", err)
+	}
+	if _, ok := emptyReq.Env["BOID_BASE_BRANCH"]; ok {
+		t.Errorf("hook env should not include BOID_BASE_BRANCH when task.BaseBranch is empty, got %#v", emptyReq.Env)
+	}
+}
+
 // --- test helpers ---
 
 func newPlannerForTest(proj *Project, behavior TaskBehavior, task *Task) *DispatchPlanner {
