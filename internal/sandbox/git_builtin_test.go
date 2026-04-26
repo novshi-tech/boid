@@ -627,6 +627,91 @@ func TestBroker_GitBuiltin_HardeningArgs(t *testing.T) {
 	}
 }
 
+// gate role からの direct git は sandbox cwd ではなく binding.WorktreeRoot で
+// 実行される。gate sandbox は worktree FS を mount しないため sandbox 側 cwd
+// (HOME 等) はホスト上で git repo として成立せず、cwd をそのまま使うと
+// "fatal: not a git repository" になる。
+func TestBroker_GitDirectExec_GateRedirectsCwdToWorktree(t *testing.T) {
+	repo := initGitRepo(t)
+	// repo の親を許可 cwd 根に含めることで、sandbox 側の "別ディレクトリ" を
+	// validateGitBuiltinCwd で通しつつ、本物の git 実行は WorktreeRoot で
+	// 行われるかを検証する。
+	parent := filepath.Dir(repo)
+	sandboxCwd := filepath.Join(parent, "sandbox-home")
+	if err := os.MkdirAll(sandboxCwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	broker := &sandbox.Broker{}
+	policies := map[string]sandbox.BuiltinPolicy{
+		"git": {
+			AllowedOps: map[string]struct{}{
+				string(sandbox.GitOpFetch): {},
+				string(sandbox.GitOpPush):  {},
+			},
+			AllowedCwdRoots: []string{parent},
+		},
+	}
+	token := broker.Register(nil, policies, sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+		Role:       "gate",
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     sandboxCwd, // sandbox cwd は git repo ではない
+		Token:   token,
+		Args:    []string{"rev-parse", "--show-toplevel"},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("git rev-parse failed: exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
+	}
+	got := strings.TrimSpace(resp.Stdout)
+	wantRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotResolved, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotResolved != wantRepo {
+		t.Fatalf("git ran in %q, want %q (gate cwd should be redirected to WorktreeRoot)", got, wantRepo)
+	}
+}
+
+// hook role からの direct git は sandbox cwd を維持する (subdirectory 起動の
+// 挙動を保つ)。WorktreeRoot 配下の subdir からの呼び出しが --show-prefix で
+// 期待通り解決されることを確認する。
+func TestBroker_GitDirectExec_HookKeepsSandboxCwd(t *testing.T) {
+	repo := initGitRepo(t)
+	sub := filepath.Join(repo, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, hookGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+		Role:       "hook",
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     sub,
+		Token:   token,
+		Args:    []string{"rev-parse", "--show-prefix"},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("git rev-parse failed: exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
+	}
+	if got := strings.TrimSpace(resp.Stdout); got != "sub/" {
+		t.Fatalf("git --show-prefix = %q, want \"sub/\" (hook cwd should not be redirected)", got)
+	}
+}
+
 // direct exec でも cwd 制限は有効。
 func TestBroker_GitDirectExec_RestrictsCwd(t *testing.T) {
 	repo := initGitRepo(t)
