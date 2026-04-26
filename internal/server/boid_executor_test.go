@@ -306,6 +306,66 @@ func TestBoidBuiltinExecutor_PropagatesDependencyFields(t *testing.T) {
 	}
 }
 
+func TestBoidBuiltinExecutor_TaskCreate_BaseBranchOverride(t *testing.T) {
+	store := &capturingTaskStore{}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {BaseBranch: "main"},
+		},
+	}}
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{Tasks: store, Meta: meta},
+	}
+	ctx := sandbox.TokenContext{
+		ProjectID:         "proj-1",
+		AllowedProjectIDs: []string{"proj-1"},
+	}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:         sandbox.BoidOpTaskCreate,
+		Title:      "branch override",
+		Behavior:   "dev",
+		BaseBranch: "feature/x",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("created tasks = %d, want 1", len(store.created))
+	}
+	if got := store.created[0].BaseBranch; got != "feature/x" {
+		t.Errorf("base_branch = %q, want feature/x (per-task override)", got)
+	}
+}
+
+func TestBoidBuiltinExecutor_TaskCreate_BaseBranchInheritsFromBehavior(t *testing.T) {
+	store := &capturingTaskStore{}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {BaseBranch: "main"},
+		},
+	}}
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{Tasks: store, Meta: meta},
+	}
+	ctx := sandbox.TokenContext{
+		ProjectID:         "proj-1",
+		AllowedProjectIDs: []string{"proj-1"},
+	}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:       sandbox.BoidOpTaskCreate,
+		Title:    "no override",
+		Behavior: "dev",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if got := store.created[0].BaseBranch; got != "main" {
+		t.Errorf("base_branch = %q, want main (inherited from behavior)", got)
+	}
+}
+
 // --- task import executor tests ---
 
 func newImportExecutor(t *testing.T) (*boidBuiltinExecutor, *capturingTaskStore) {

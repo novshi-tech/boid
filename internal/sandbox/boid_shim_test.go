@@ -222,6 +222,63 @@ func TestRunBoidShim_TaskCreatePropagatesDependencyFields(t *testing.T) {
 	}
 }
 
+func TestRunBoidShim_TaskCreatePropagatesBaseBranch(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.Remove(sockPath)
+	})
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	specPath := filepath.Join(dir, "task.yaml")
+	specYAML := "project_id: proj-1\n" +
+		"title: branch override\n" +
+		"behavior: dev\n" +
+		"base_branch: feature/my-branch\n"
+	if err := os.WriteFile(specPath, []byte(specYAML), 0o644); err != nil {
+		t.Fatalf("write task spec: %v", err)
+	}
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-base")
+
+	resp, err := sandbox.RunBoidShim([]string{"task", "create", "-f", specPath})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.BaseBranch != "feature/my-branch" {
+		t.Errorf("base_branch = %q, want feature/my-branch", req.Boid.BaseBranch)
+	}
+}
+
 func TestRunBoidShim_RejectsUnknownSubcommand(t *testing.T) {
 	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
 

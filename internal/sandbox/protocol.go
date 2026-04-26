@@ -54,6 +54,7 @@ type BoidRequest struct {
 	Title            string        `json:"title,omitempty"`
 	Behavior         string        `json:"behavior,omitempty"`
 	BehaviorSpec     *BehaviorSpec `json:"behavior_spec,omitempty"`
+	BaseBranch       string        `json:"base_branch,omitempty"`
 	Description      string        `json:"description,omitempty"`
 	ExitCode         int           `json:"exit_code,omitempty"`
 	Output           string        `json:"output,omitempty"`

@@ -46,6 +46,7 @@ payload_patch:
 | depends_on | | 依存先 ref の配列 |
 | depends_on_payload | | ペイロード条件（文字列） |
 | project_id | | タスクを作成するプロジェクト名。省略時は親タスクのプロジェクト |
+| base_branch | | サブタスクの worktree が分岐する base branch（PR のマージ先）。省略時は behavior の `base_branch` 設定を継承 |
 
 ## 依存関係
 
@@ -90,6 +91,32 @@ payload_patch:
 | `artifact.children.all_done` | 子タスクが全て done（verifying → done）になるまで待機 |
 | `artifact.children.all_resolved` | 子タスクの全 findings が resolved になるまで待機 |
 | `artifact.auto-merge.merged` | 依存先タスクの PR が auto-merge でマージされるまで待機 |
+
+## base_branch
+
+サブタスクの worktree が分岐する base branch（PR のマージ先）。
+省略時は選択した `behavior` の `base_branch` 設定（`project.yaml` の
+`task_behaviors.<name>.base_branch`）を継承する。
+
+plan 実行時の現在のブランチを引き継いで dev サブタスクを派生させたい場合に
+明示指定する。例えば feature ブランチ上で plan を走らせ、そこから派生する
+dev タスクを同じ feature ブランチに乗せたい場合:
+
+```yaml
+payload_patch:
+  tasks:
+    - title: "feature ブランチ上での実装"
+      behavior: dev
+      base_branch: feature/awesome   # plan が動いている現在のブランチ
+      description: "..."
+      auto_start: true
+```
+
+base_branch を取得するには、plan エージェントが実行中の worktree で
+`git rev-parse --abbrev-ref HEAD` を呼び、その結果を各サブタスクに付与する
+（plan は readonly worktree で動くため `git` は読み取り専用で使用可）。
+
+通常の `main` ベースで十分な場合は省略してよい。
 
 ## project_id
 

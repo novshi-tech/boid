@@ -70,6 +70,9 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 			DependsOnPayload: req.DependsOnPayload,
 			AutoStart:        req.AutoStart,
 		}
+		if req.BaseBranch != "" {
+			createReq.BaseBranch = &req.BaseBranch
+		}
 		if req.BehaviorSpec != nil {
 			createReq.BehaviorSpec = &orchestrator.BehaviorSpec{
 				Name:           req.BehaviorSpec.Name,

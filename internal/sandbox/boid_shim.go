@@ -161,6 +161,7 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 		DependsOn        []string       `yaml:"depends_on"`
 		DependsOnPayload string         `yaml:"depends_on_payload"`
 		AutoStart        bool           `yaml:"auto_start"`
+		BaseBranch       string         `yaml:"base_branch"`
 	}
 	if err := yaml.Unmarshal(data, &spec); err != nil {
 		return nil, fmt.Errorf("boid shim: parse task spec: %w", err)
@@ -182,6 +183,7 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 		Title:            spec.Title,
 		Description:      spec.Description,
 		Behavior:         spec.Behavior,
+		BaseBranch:       spec.BaseBranch,
 		Ref:              spec.Ref,
 		ParentID:         spec.ParentID,
 		DependsOn:        spec.DependsOn,
