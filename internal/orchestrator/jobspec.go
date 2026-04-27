@@ -78,6 +78,10 @@ type JobSpec struct {
 	// Stored in the job DB row so TUI can reconstruct replay context.
 	ExecutionState string
 
+	// Interactive, when true, forces TTY allocation regardless of whether an
+	// Instruction is attached. Used by daemon-side command execution (Web UI)
+	// where the caller always expects a PTY-backed terminal.
+	Interactive bool
 }
 
 // Visibility captures which host paths the sandbox sees and whether they are

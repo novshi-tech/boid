@@ -87,45 +87,32 @@ func buildExecJob(projectID, commandName string) (*execPreparedJob, error) {
 	var proxyInfo struct{ Port int }
 	_ = c.Do("GET", "/api/proxy", nil, &proxyInfo)
 
-	builtinPolicies := orchestrator.DefaultBuiltinPolicies(
-		orchestrator.RoleHook,
-		[]string{"boid", "git"},
-		orchestrator.PolicyContext{ProjectDir: p.WorkDir},
-	)
-
-	hostCommands := orchestrator.HostCommands(cmd.HostCommands).ToCommandDefs()
+	spec := dispatcher.BuildCommandJobSpec(dispatcher.CommandJobInput{
+		ProjectID:          p.ID,
+		ProjectWorkDir:     p.WorkDir,
+		Argv:               cmd.Command,
+		Env:                cmd.Env,
+		HostCommands:       cmd.HostCommands,
+		AdditionalBindings: cmd.AdditionalBindings,
+		Readonly:           cmd.Readonly,
+		// Interactive=false: TTY is overridden in runExec based on real terminal state.
+	})
 
 	var brokerSocket, brokerToken string
-	if len(hostCommands) > 0 || len(builtinPolicies) > 0 {
+	if len(spec.HostCommands) > 0 || len(spec.BuiltinPolicies) > 0 {
 		var brokerResp struct {
 			Token  string `json:"token"`
 			Socket string `json:"socket"`
 		}
 		regReq := map[string]any{
 			"commands":         cmd.HostCommands,
-			"builtin_policies": dispatcher.PoliciesToSandbox(builtinPolicies),
+			"builtin_policies": dispatcher.PoliciesToSandbox(spec.BuiltinPolicies),
 			"project_id":       p.ID,
 		}
 		if err := c.Do("POST", "/api/broker/register", regReq, &brokerResp); err == nil {
 			brokerSocket = brokerResp.Socket
 			brokerToken = brokerResp.Token
 		}
-	}
-
-	spec := &orchestrator.JobSpec{
-		ProjectID: p.ID,
-		HandlerID: "", // exec is not a handler
-		Kind:      orchestrator.JobKindExec,
-		Argv:      cmd.Command,
-		Visibility: orchestrator.Visibility{
-			ProjectDir:         p.WorkDir,
-			UseWorktree:        false,
-			AdditionalBindings: cmd.AdditionalBindings,
-			Writable:           !cmd.Readonly,
-		},
-		BuiltinPolicies: builtinPolicies,
-		HostCommands:    hostCommands,
-		Env:             cmd.Env,
 	}
 
 	rt := dispatcher.SandboxRuntimeInfo{

@@ -191,3 +191,14 @@ type DeviceGCStore interface {
 type JobLogReader interface {
 	ReadJobLog(runtimeID string) ([]byte, error)
 }
+
+// ExecuteCommandResult is the response for POST /api/projects/{id}/commands/{name}/execute.
+type ExecuteCommandResult struct {
+	JobID     string `json:"job_id"`
+	AttachURL string `json:"attach_url"`
+}
+
+// CommandDispatcher launches a named command as an interactive daemon-side job.
+type CommandDispatcher interface {
+	ExecuteCommand(ctx context.Context, projectID, commandName string) (*ExecuteCommandResult, error)
+}
