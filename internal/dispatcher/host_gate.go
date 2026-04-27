@@ -187,7 +187,10 @@ func writeHostGateWrapper(jobID, worktreeRoot string, spec *orchestrator.JobSpec
 	fmt.Fprintf(&b, "JOB_ID=%s\n", hostGateShellQuote(jobID))
 	fmt.Fprintf(&b, "BOID_BIN=%s\n", hostGateShellQuote(boidBin))
 	// payload_patch.json takes priority over stdout capture, mirroring sandbox exit behavior.
+	// Remove any stale file from a previous host-gate run so a script that only
+	// writes to stdout does not inherit the previous gate's payload_patch.
 	b.WriteString("PAYLOAD_FILE=\"$HOME/.boid/output/payload_patch.json\"\n")
+	b.WriteString("rm -f \"$PAYLOAD_FILE\"\n")
 	b.WriteString("_boid_done() {\n")
 	b.WriteString("  local _c=$1\n")
 	b.WriteString("  if [ -f \"$PAYLOAD_FILE\" ]; then\n")
