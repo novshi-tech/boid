@@ -154,7 +154,7 @@ while [[ ! -f ".boid/release-my-hook" ]]; do sleep 0.05; done
 
 # payload_patch を $HOME/.boid/output/ に出力
 mkdir -p "$HOME/.boid/output"
-cat > "$HOME/.boid/output/payload_patch.yaml" <<'EOF'
+cat > "$HOME/.boid/output/payload_patch.json" <<'EOF'
 {"payload_patch":{"artifact":{"result":"done"}}}
 EOF
 ```

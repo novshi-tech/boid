@@ -149,7 +149,7 @@ func (r *Runner) dispatchHostGate(
 //   - cd's to the worktree,
 //   - feeds taskJSON to the gate script on stdin,
 //   - captures stdout to a temp file (stdout fallback),
-//   - on exit, calls `boid job done` preferring $HOME/.boid/output/payload_patch.yaml
+//   - on exit, calls `boid job done` preferring $HOME/.boid/output/payload_patch.json
 //     (written by gate scripts) over the stdout capture, matching sandbox exit behavior.
 func writeHostGateWrapper(jobID, worktreeRoot string, spec *orchestrator.JobSpec, boidBin string) (wrapperPath, outputPath string, err error) {
 	dir := os.TempDir()
@@ -186,8 +186,8 @@ func writeHostGateWrapper(jobID, worktreeRoot string, spec *orchestrator.JobSpec
 	fmt.Fprintf(&b, "OUTPUT_FILE=%s\n", hostGateShellQuote(outputPath))
 	fmt.Fprintf(&b, "JOB_ID=%s\n", hostGateShellQuote(jobID))
 	fmt.Fprintf(&b, "BOID_BIN=%s\n", hostGateShellQuote(boidBin))
-	// payload_patch.yaml takes priority over stdout capture, mirroring sandbox exit behavior.
-	b.WriteString("PAYLOAD_FILE=\"$HOME/.boid/output/payload_patch.yaml\"\n")
+	// payload_patch.json takes priority over stdout capture, mirroring sandbox exit behavior.
+	b.WriteString("PAYLOAD_FILE=\"$HOME/.boid/output/payload_patch.json\"\n")
 	b.WriteString("_boid_done() {\n")
 	b.WriteString("  local _c=$1\n")
 	b.WriteString("  if [ -f \"$PAYLOAD_FILE\" ]; then\n")

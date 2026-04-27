@@ -18,4 +18,4 @@ fi
 
 mkdir -p "$HOME/.boid/output"
 printf '{"payload_patch":{"artifact":{"source":"verify-readonly","fs_status":"%s"}}}\n' \
-    "$FS_STATUS" > "$HOME/.boid/output/payload_patch.yaml"
+    "$FS_STATUS" > "$HOME/.boid/output/payload_patch.json"
