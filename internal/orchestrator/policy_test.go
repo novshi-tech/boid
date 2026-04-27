@@ -65,11 +65,14 @@ func TestDefaultBuiltinPolicies_GateGitOnly(t *testing.T) {
 	}
 }
 
-// hook×git policy は AllowedOps が空 (broker 経由 git は hook から禁止)。
-func TestDefaultBuiltinPolicies_HookGitIsEmpty(t *testing.T) {
-	policies := DefaultBuiltinPolicies(RoleHook, []string{"git"}, PolicyContext{})
-	if len(policies["git"].AllowedOps) != 0 {
-		t.Errorf("hook×git AllowedOps should be empty, got %v", policies["git"].AllowedOps)
+// hook×git policy は gate×git と等価 (fetch/push を含む)。
+func TestDefaultBuiltinPolicies_HookGitHasFetchPush(t *testing.T) {
+	gitPolicy := DefaultBuiltinPolicies(RoleHook, []string{"git"}, PolicyContext{})["git"]
+	if !gitPolicy.Allows(OpGitFetch) {
+		t.Error("hook×git should allow fetch")
+	}
+	if !gitPolicy.Allows(OpGitPush) {
+		t.Error("hook×git should allow push")
 	}
 }
 
@@ -100,12 +103,12 @@ func TestDefaultBuiltinPolicies_GateGitCwdRoots(t *testing.T) {
 	}
 }
 
-// hook×boid policy は {job_done, task_get}。
+// hook×boid policy は gate×boid と等価 (全 op を含む)。
 func TestDefaultBuiltinPolicies_HookBoidOps(t *testing.T) {
-	boidPolicy := DefaultBuiltinPolicies(RoleHook, []string{"boid"}, PolicyContext{})["boid"]
-	wantOps := []string{OpBoidJobDone, OpBoidTaskGet}
-	if !opsEqual(boidPolicy.AllowedOps, wantOps) {
-		t.Errorf("hook×boid AllowedOps = %v, want %v", boidPolicy.AllowedOps, wantOps)
+	hookBoid := DefaultBuiltinPolicies(RoleHook, []string{"boid"}, PolicyContext{})["boid"]
+	gateBoid := DefaultBuiltinPolicies(RoleGate, []string{"boid"}, PolicyContext{})["boid"]
+	if !opsEqual(hookBoid.AllowedOps, gateBoid.AllowedOps) {
+		t.Errorf("hook×boid AllowedOps = %v, want gate-equivalent %v", hookBoid.AllowedOps, gateBoid.AllowedOps)
 	}
 }
 
@@ -137,6 +140,22 @@ func TestDefaultBuiltinPolicies_GateBoidCwdRoots(t *testing.T) {
 	}
 	if boidPolicy.AllowsCwd("/etc") {
 		t.Errorf("gate×boid should reject cwd /etc")
+	}
+}
+
+// RoleHook と RoleGate の builtin policy は完全に等価でなければならない。
+// 将来分岐させたくなった時の回帰防止テスト。
+func TestDefaultBuiltinPolicies_HookEqualsGate(t *testing.T) {
+	pctx := PolicyContext{ProjectDir: "/work/project", HomeDir: "/home/user"}
+	for _, name := range []string{"boid", "git"} {
+		hookP := DefaultBuiltinPolicies(RoleHook, []string{name}, pctx)[name]
+		gateP := DefaultBuiltinPolicies(RoleGate, []string{name}, pctx)[name]
+		if !opsEqual(hookP.AllowedOps, gateP.AllowedOps) {
+			t.Errorf("%s: hook AllowedOps = %v, gate = %v (should be equal)", name, hookP.AllowedOps, gateP.AllowedOps)
+		}
+		if !slices.Equal(hookP.AllowedCwdRoots, gateP.AllowedCwdRoots) {
+			t.Errorf("%s: hook AllowedCwdRoots = %v, gate = %v (should be equal)", name, hookP.AllowedCwdRoots, gateP.AllowedCwdRoots)
+		}
 	}
 }
 
