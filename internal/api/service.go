@@ -252,6 +252,7 @@ func (s *ProjectAppService) GetCommand(id, name string) (*CommandResponse, error
 		Env:                cmd.Env,
 		HostCommands:       map[string]orchestrator.HostCommandSpec(cmd.HostCommands),
 		AdditionalBindings: cmd.AdditionalBindings,
+		Readonly:           cmd.Readonly,
 	}, nil
 }
 
