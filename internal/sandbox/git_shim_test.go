@@ -131,6 +131,87 @@ func TestClassifyGitInvocation(t *testing.T) {
 			args:    []string{"submodule", "add", "https://evil"},
 			wantErr: true,
 		},
+		{
+			name:    "deny clone",
+			args:    []string{"clone", "https://evil"},
+			wantErr: true,
+		},
+		{
+			name:    "deny remote",
+			args:    []string{"remote", "add", "evil", "https://evil"},
+			wantErr: true,
+		},
+		// deny-list 化により以下のサブコマンドが新たに許可される
+		{
+			name:     "allow cherry-pick",
+			args:     []string{"cherry-pick", "abc123"},
+			wantMode: gitInvocationDirect,
+		},
+		{
+			name:     "allow apply",
+			args:     []string{"apply", "--index", "fix.patch"},
+			wantMode: gitInvocationDirect,
+		},
+		{
+			name:     "allow format-patch",
+			args:     []string{"format-patch", "HEAD~3"},
+			wantMode: gitInvocationDirect,
+		},
+		{
+			name:     "allow bisect",
+			args:     []string{"bisect", "start"},
+			wantMode: gitInvocationDirect,
+		},
+		{
+			name:     "allow shortlog",
+			args:     []string{"shortlog", "-sn"},
+			wantMode: gitInvocationDirect,
+		},
+		{
+			name:     "allow describe",
+			args:     []string{"describe", "--tags"},
+			wantMode: gitInvocationDirect,
+		},
+		{
+			name:     "allow reflog",
+			args:     []string{"reflog", "show"},
+			wantMode: gitInvocationDirect,
+		},
+		{
+			name:     "allow blame",
+			args:     []string{"blame", "-L", "1,10", "main.go"},
+			wantMode: gitInvocationDirect,
+		},
+		{
+			name:     "allow grep",
+			args:     []string{"grep", "TODO"},
+			wantMode: gitInvocationDirect,
+		},
+		{
+			name:     "allow notes",
+			args:     []string{"notes", "add", "-m", "note"},
+			wantMode: gitInvocationDirect,
+		},
+		{
+			name:     "allow am",
+			args:     []string{"am", "--signoff", "fix.mbox"},
+			wantMode: gitInvocationDirect,
+		},
+		{
+			name:     "allow archive",
+			args:     []string{"archive", "--format=tar", "HEAD"},
+			wantMode: gitInvocationDirect,
+		},
+		{
+			name:     "allow ls-tree",
+			args:     []string{"ls-tree", "-r", "HEAD"},
+			wantMode: gitInvocationDirect,
+		},
+		{
+			name:     "allow cat-file",
+			args:     []string{"cat-file", "-t", "HEAD"},
+			wantMode: gitInvocationDirect,
+		},
 	}
 
 	for _, tt := range tests {
