@@ -43,9 +43,9 @@ func (s stubTaskLookup) GetTask(id string) (*Task, error) {
 	return s.task, nil
 }
 
-// Hooks include boid and git as builtin policies; hooks never receive host
-// commands. Gates run directly on the host and have no builtin policies or
-// host commands (no broker is involved).
+// Hooks include boid and git as builtin policies; host commands are propagated
+// from behavior (nil when behavior has none). Gates run directly on the host
+// and have no builtin policies or host commands (no broker is involved).
 func TestDispatchPlannerInjectsDefaultBuiltinsForHookAndGate(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
@@ -443,6 +443,48 @@ func TestDispatchPlanner_PropagatesBaseBranchEnv(t *testing.T) {
 	}
 	if _, ok := emptyReq.Env["BOID_BASE_BRANCH"]; ok {
 		t.Errorf("hook env should not include BOID_BASE_BRANCH when task.BaseBranch is empty, got %#v", emptyReq.Env)
+	}
+}
+
+// PlanHook propagates behavior.HostCommands into JobSpec.HostCommands.
+func TestPlanHook_PropagatesHostCommands(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	behavior := TaskBehavior{
+		Name: "dev",
+		HostCommands: HostCommands{
+			"gh": {Allow: []string{"pr", "issue"}},
+			"jq": {},
+		},
+	}
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, behavior,
+		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
+
+	req, cleanup, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook: Hook{
+			ID:         "hook-1",
+			ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if len(req.HostCommands) != 2 {
+		t.Fatalf("HostCommands = %v, want 2 entries (gh, jq)", req.HostCommands)
+	}
+	if _, ok := req.HostCommands["gh"]; !ok {
+		t.Error("HostCommands missing gh")
+	}
+	if _, ok := req.HostCommands["jq"]; !ok {
+		t.Error("HostCommands missing jq")
 	}
 }
 

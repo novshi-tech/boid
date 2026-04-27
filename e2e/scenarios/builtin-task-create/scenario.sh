@@ -81,3 +81,30 @@ e2e_assert_contains "$task_d_json" "\"parent_id\":\"$parent_id\""
 e2e_assert_contains "$task_d_json" '"depends_on_payload":"artifact.dummy"'
 e2e_assert_contains "$task_d_json" '"auto_start":true'
 e2e_assert_contains "$task_d_json" "\"$task_a_id\""
+
+# ============================================================
+e2e_log "=== hook task create: hook で boid task_create が呼べることを確認 ==="
+
+hook_parent_output="$("$E2E_BIN_DIR/boid" task create <<'YAML'
+project_id: e2e-builtin-task-create
+title: Hook Parent Task
+behavior: hook-parent
+YAML
+)"
+printf '%s\n' "$hook_parent_output"
+hook_parent_id="$(printf '%s\n' "$hook_parent_output" | sed -n 's/^task created: \([0-9a-f-]*\) (.*/\1/p')"
+[[ -n "$hook_parent_id" ]] || e2e_fail "failed to parse hook parent task id"
+
+e2e_log "starting hook-parent task $hook_parent_id"
+e2e_run "$E2E_BIN_DIR/boid" action send --task "$hook_parent_id" --type start
+
+e2e_log "waiting for hook-parent to reach done"
+hook_parent_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 30s --interval 200ms "$hook_parent_id" done)"
+printf '%s\n' "$hook_parent_json"
+e2e_assert_contains "$hook_parent_json" '"status":"done"'
+
+e2e_log "verifying hook-spawned subtask exists"
+spawned_id="$("$E2E_BIN_DIR/boid" task list | awk '/Hook Spawned Task/{print $1; exit}')"
+[[ -n "$spawned_id" ]] || e2e_fail "Hook Spawned Task not found — hook did not call boid task create"
+spawned_json="$("$E2E_BIN_DIR/boid-e2e" get-task "$spawned_id")"
+e2e_assert_contains "$spawned_json" '"ref":"hook-spawned"'

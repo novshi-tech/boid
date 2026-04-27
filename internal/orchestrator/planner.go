@@ -70,7 +70,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 			[]string{"boid", "git"},
 			PolicyContext{ProjectDir: proj.WorkDir, HomeDir: sandboxHomeDir()},
 		),
-		HostCommands:    nil, // hooks never get broker-mediated host commands
+		HostCommands: behavior.HostCommands.ToCommandDefs(),
 		SecretNamespace: meta.SecretNamespace,
 		Env:             mergeStringMaps(behavior.Env, taskBusinessEnv(task)),
 		ExecutionState:  string(task.Status),

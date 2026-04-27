@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+log_file="${E2E_STATE_DIR:?}/fake-hook-cmd.log"
+{
+  printf 'cmd=fake-hook-cmd\n'
+  printf 'cwd=%s\n' "$PWD"
+  printf 'args=%s\n' "$*"
+  printf -- '---\n'
+} >>"$log_file"

@@ -77,58 +77,40 @@ func policyFor(role Role, name string, pctx PolicyContext) BuiltinPolicy {
 	}
 }
 
-func boidPolicy(role Role, pctx PolicyContext) BuiltinPolicy {
-	switch role {
-	case RoleHook:
-		return BuiltinPolicy{AllowedOps: sortedOps(OpBoidJobDone, OpBoidTaskGet)}
-	default: // RoleGate or empty → gate 相当
-		cwds := []string{"/tmp"}
-		if pctx.ProjectDir != "" {
-			cwds = append(cwds, pctx.ProjectDir)
-		}
-		if pctx.HomeDir != "" {
-			cwds = append(cwds, pctx.HomeDir)
-		}
-		return BuiltinPolicy{
-			AllowedOps: sortedOps(
-				OpBoidJobDone,
-				OpBoidTaskCreate,
-				OpBoidTaskUpdate,
-				OpBoidTaskImport,
-				OpBoidTaskReopen,
-			),
-			AllowedCwdRoots: cwds,
-		}
+func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
+	cwds := []string{"/tmp"}
+	if pctx.ProjectDir != "" {
+		cwds = append(cwds, pctx.ProjectDir)
+	}
+	if pctx.HomeDir != "" {
+		cwds = append(cwds, pctx.HomeDir)
+	}
+	return BuiltinPolicy{
+		AllowedOps: sortedOps(
+			OpBoidJobDone,
+			OpBoidTaskCreate,
+			OpBoidTaskUpdate,
+			OpBoidTaskImport,
+			OpBoidTaskReopen,
+		),
+		AllowedCwdRoots: cwds,
 	}
 }
 
-func gitPolicy(role Role, pctx PolicyContext) BuiltinPolicy {
-	switch role {
-	case RoleHook:
-		// hook からは送信系 (push/fetch) のみ禁止する。
-		// commit/merge/rebase/worktree 等の direct subcommand は broker 側の
-		// allowlist (sandbox.directGitSubcommands) で role に依らず許可される
-		// ため、ここでは AllowedOps を空に保つだけでよい。
-		// remote 設定書き換え系 (remote, config の危険キー) や pull/clone も
-		// sandbox 側で全 role 拒否されるため、ここで列挙する必要は無い。
-		return BuiltinPolicy{}
-	default:
-		// gate sandbox は worktree を mount しないので、sandbox 内の cwd は
-		// 必ずホスト側 worktree root と別名前空間になる。broker は
-		// binding.WorktreeRoot で git を実行するため cwd 検証は冗長だが、
-		// 他の builtin と同じポリシー構造を保つために AllowedCwdRoots を
-		// HomeDir/ProjectDir/tmp で埋める (boid policy と同じ扱い)。
-		cwds := []string{"/tmp"}
-		if pctx.ProjectDir != "" {
-			cwds = append(cwds, pctx.ProjectDir)
-		}
-		if pctx.HomeDir != "" {
-			cwds = append(cwds, pctx.HomeDir)
-		}
-		return BuiltinPolicy{
-			AllowedOps:      sortedOps(OpGitFetch, OpGitPush),
-			AllowedCwdRoots: cwds,
-		}
+func gitPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
+	// broker は binding.WorktreeRoot で git を実行するため cwd 検証は冗長だが、
+	// 他の builtin と同じポリシー構造を保つために AllowedCwdRoots を
+	// HomeDir/ProjectDir/tmp で埋める (boid policy と同じ扱い)。
+	cwds := []string{"/tmp"}
+	if pctx.ProjectDir != "" {
+		cwds = append(cwds, pctx.ProjectDir)
+	}
+	if pctx.HomeDir != "" {
+		cwds = append(cwds, pctx.HomeDir)
+	}
+	return BuiltinPolicy{
+		AllowedOps:      sortedOps(OpGitFetch, OpGitPush),
+		AllowedCwdRoots: cwds,
 	}
 }
 

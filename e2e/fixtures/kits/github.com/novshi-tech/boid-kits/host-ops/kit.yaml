@@ -1,3 +1,7 @@
+hooks:
+  - id: emit-artifact
+    on: executing
+
 gates:
   - id: host-ops
     on: executing
@@ -14,3 +18,5 @@ host_commands:
     path: ${E2E_BIN_DIR}/systemctl
     allow:
       - restart
+  fake-hook-cmd:
+    path: ${E2E_BIN_DIR}/fake-hook-cmd
