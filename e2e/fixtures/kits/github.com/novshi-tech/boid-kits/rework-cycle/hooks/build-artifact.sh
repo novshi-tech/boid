@@ -7,6 +7,6 @@ done
 rm -f "release-rework-hook"
 
 mkdir -p "$HOME/.boid/output"
-cat > "$HOME/.boid/output/payload_patch.yaml" <<'EOF'
+cat > "$HOME/.boid/output/payload_patch.json" <<'EOF'
 {"payload_patch":{"artifact":{"source":"build-artifact"}}}
 EOF

@@ -46,7 +46,7 @@ func TestWriteHostGateWrapper_ContractMatchesSandboxedGate(t *testing.T) {
 		"export KIT_VAR='kit-value'",
 		"OUTPUT_FILE='" + outputPath + "'",
 		`BOID_BIN='/usr/local/bin/boid'`,
-		`PAYLOAD_FILE="$HOME/.boid/output/payload_patch.yaml"`,
+		`PAYLOAD_FILE="$HOME/.boid/output/payload_patch.json"`,
 		`_boid_done()`,
 		`if [ -f "$PAYLOAD_FILE" ]`,
 		`trap '_exit=$?; _boid_done "$_exit"' EXIT`,

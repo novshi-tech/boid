@@ -173,7 +173,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	)...)
 
 	// Output dir sentinel — guarantees $HOME/.boid/output/ exists before the
-	// user script runs, so scripts writing payload_patch.yaml never hit ENOENT.
+	// user script runs, so scripts writing payload_patch.json never hit ENOENT.
 	files = append(files, sandbox.FileWrite{
 		Path: homeDir + "/.boid/output/.placeholder",
 	})
@@ -246,7 +246,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 
 	var exitScript string
 	if !rt.Foreground {
-		exitScript = buildExitScript(rt.JobID, homeDir+"/.boid/output/payload_patch.yaml", stdoutCapture)
+		exitScript = buildExitScript(rt.JobID, homeDir+"/.boid/output/payload_patch.json", stdoutCapture)
 	}
 
 	out := sandbox.Spec{

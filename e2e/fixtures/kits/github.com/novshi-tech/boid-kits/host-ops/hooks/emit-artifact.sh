@@ -5,6 +5,6 @@ set -euo pipefail
 fake-hook-cmd --hook-ran
 
 mkdir -p "$HOME/.boid/output"
-cat > "$HOME/.boid/output/payload_patch.yaml" <<'EOF'
+cat > "$HOME/.boid/output/payload_patch.json" <<'EOF'
 {"payload_patch":{"artifact":{"branch":"boid/e2e","commit":"deadbeef"}}}
 EOF

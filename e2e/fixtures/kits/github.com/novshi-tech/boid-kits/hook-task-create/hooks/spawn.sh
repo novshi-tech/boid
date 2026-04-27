@@ -10,6 +10,6 @@ ref: hook-spawned
 YAML
 
 mkdir -p "$HOME/.boid/output"
-cat > "$HOME/.boid/output/payload_patch.yaml" <<'EOF'
+cat > "$HOME/.boid/output/payload_patch.json" <<'EOF'
 {"payload_patch":{"artifact":{}}}
 EOF

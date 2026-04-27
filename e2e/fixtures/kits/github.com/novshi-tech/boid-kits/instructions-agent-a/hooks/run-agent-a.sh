@@ -6,6 +6,6 @@ set -euo pipefail
 printf '%s' "${BOID_INSTRUCTIONS:-}" > "agent-a-instructions.json"
 
 mkdir -p "$HOME/.boid/output"
-cat > "$HOME/.boid/output/payload_patch.yaml" <<'EOF'
+cat > "$HOME/.boid/output/payload_patch.json" <<'EOF'
 {"payload_patch":{"artifact":{"source":"agent-a"}}}
 EOF
