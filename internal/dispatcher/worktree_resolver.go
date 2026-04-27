@@ -21,10 +21,9 @@ func (r *Runner) resolveWorktree(spec *orchestrator.JobSpec) (string, error) {
 }
 
 // existingWorktreePath returns the worktree path for a task without creating
-// or recreating anything. Used by gate jobs: gate sandboxes do not mount the
-// worktree (project filesystem is intentionally hidden), but the broker still
-// needs the worktree root to resolve the `git` builtin binding — broker-side
-// git commands run on the host and must know where to operate.
+// or recreating anything. Gate jobs pass this as the starting hint to
+// ensureHostGateWorktree; hook jobs pass it to the broker TokenContext so
+// broker-side git commands know where to operate.
 func (r *Runner) existingWorktreePath(spec *orchestrator.JobSpec) string {
 	if spec == nil || r.Worktrees == nil || spec.TaskID == "" {
 		return ""

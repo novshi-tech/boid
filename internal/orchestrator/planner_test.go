@@ -43,8 +43,9 @@ func (s stubTaskLookup) GetTask(id string) (*Task, error) {
 	return s.task, nil
 }
 
-// Hook / gate dispatches both include boid and git as builtin policies, and
-// hooks never receive host commands.
+// Hooks include boid and git as builtin policies; hooks never receive host
+// commands. Gates run directly on the host and have no builtin policies or
+// host commands (no broker is involved).
 func TestDispatchPlannerInjectsDefaultBuiltinsForHookAndGate(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
@@ -96,11 +97,12 @@ func TestDispatchPlannerInjectsDefaultBuiltinsForHookAndGate(t *testing.T) {
 		defer gateCleanup()
 	}
 
-	if len(gateReq.BuiltinPolicies) != 2 {
-		t.Fatalf("gate builtin policies = %#v, want 2 (git, boid)", gateReq.BuiltinPolicies)
+	// Gates run directly on the host; no broker policies are needed.
+	if len(gateReq.BuiltinPolicies) != 0 {
+		t.Fatalf("gate builtin policies = %#v, want nil (gates use host-direct, no broker)", gateReq.BuiltinPolicies)
 	}
-	if _, ok := gateReq.HostCommands["boid"]; ok {
-		t.Fatalf("gate host commands should not contain boid: %#v", gateReq.HostCommands)
+	if len(gateReq.HostCommands) != 0 {
+		t.Fatalf("gate host commands = %#v, want nil (gates use host-direct, no broker)", gateReq.HostCommands)
 	}
 }
 
@@ -143,9 +145,10 @@ func TestPlanHook_UsesScriptPathDirectlyAndSetsKitRoots(t *testing.T) {
 	}
 }
 
-// PlanGate uses Gate.ScriptPath directly as Argv[0] and includes kit roots
-// in Visibility.KitRoots. No staging directory is created.
-func TestPlanGate_UsesScriptPathDirectlyAndSetsKitRoots(t *testing.T) {
+// PlanGate uses Gate.ScriptPath directly as Argv[0]. No staging directory is
+// created. Gates run on the host directly, so Visibility (including KitRoots)
+// is not populated.
+func TestPlanGate_UsesScriptPathDirectly(t *testing.T) {
 	projectDir := t.TempDir()
 	kitRoot := t.TempDir()
 	kitGatesDir := filepath.Join(kitRoot, "gates")
@@ -177,8 +180,10 @@ func TestPlanGate_UsesScriptPathDirectlyAndSetsKitRoots(t *testing.T) {
 	if len(req.Argv) == 0 || req.Argv[0] != scriptPath {
 		t.Errorf("Argv[0] = %q, want %q", req.Argv[0], scriptPath)
 	}
-	if len(req.Visibility.KitRoots) != 1 || req.Visibility.KitRoots[0] != kitRoot {
-		t.Errorf("KitRoots = %v, want [%s]", req.Visibility.KitRoots, kitRoot)
+	// Gates run on the host directly; Visibility (including KitRoots) is not
+	// populated — the host gate wrapper handles env/cwd directly.
+	if len(req.Visibility.KitRoots) != 0 {
+		t.Errorf("KitRoots = %v, want empty (gates use host-direct, no sandbox visibility)", req.Visibility.KitRoots)
 	}
 }
 
@@ -418,25 +423,6 @@ func TestDispatchPlanner_PropagatesBaseBranchEnv(t *testing.T) {
 	}
 	if got := gateReq.Env["KIT_VAR"]; got != "kit-value" {
 		t.Errorf("gate KIT_VAR = %q, want kit-value", got)
-	}
-
-	// host:true on the Gate must propagate to JobSpec.Host so dispatcher
-	// can pick the unsandboxed execution path.
-	hostGateReq, _, err := planner.PlanGate(&GateFireEvent{
-		EventID:   "event-host",
-		TaskID:    "task-1",
-		ProjectID: "proj-1",
-		Gate: Gate{
-			ID:         "gate-host",
-			Host:       true,
-			ScriptPath: filepath.Join(projectDir, ".boid/gates", "gate-host.sh"),
-		},
-	})
-	if err != nil {
-		t.Fatalf("PlanGate (host): %v", err)
-	}
-	if !hostGateReq.Host {
-		t.Errorf("PlanGate did not propagate Gate.Host=true to JobSpec.Host")
 	}
 
 	// Tasks without a base branch should not surface an empty BOID_BASE_BRANCH:

@@ -87,7 +87,7 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, CleanupFunc,
 		return nil, nil, fmt.Errorf("gate %q: no script path resolved", event.Gate.ID)
 	}
 
-	meta, proj, task, err := p.loadContext(event.ProjectID, event.TaskID)
+	meta, _, task, err := p.loadContext(event.ProjectID, event.TaskID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -106,32 +106,15 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, CleanupFunc,
 	}
 
 	spec := &JobSpec{
-		TaskID:       event.TaskID,
-		ProjectID:    event.ProjectID,
-		HandlerID:    event.Gate.ID,
-		Kind:         JobKindGate,
-		Argv:         []string{event.Gate.ScriptPath},
-		Instruction:  nil,
-		Task:         nil, // gate gets task data via stdin rather than context file
-		PrimaryInput: taskJSON,
-		Visibility: Visibility{
-			// Project filesystem is intentionally not visible to gates.
-			ProjectDir:         "",
-			UseWorktree:        false,
-			AdditionalBindings: nil,
-			Writable:           false,
-			KitRoots:           behavior.KitRoots,
-		},
-		BuiltinPolicies: DefaultBuiltinPolicies(
-			RoleGate,
-			[]string{"boid", "git"},
-			PolicyContext{ProjectDir: proj.WorkDir, HomeDir: sandboxHomeDir()},
-		),
-		HostCommands:    behavior.HostCommands.ToCommandDefs(),
+		TaskID:          event.TaskID,
+		ProjectID:       event.ProjectID,
+		HandlerID:       event.Gate.ID,
+		Kind:            JobKindGate,
+		Argv:            []string{event.Gate.ScriptPath},
+		PrimaryInput:    taskJSON,
 		SecretNamespace: meta.SecretNamespace,
 		Env:             mergeStringMaps(behavior.Env, taskBusinessEnv(task)),
 		ExecutionState:  string(task.Status),
-		Host:            event.Gate.Host,
 	}
 	return spec, nil, nil
 }
