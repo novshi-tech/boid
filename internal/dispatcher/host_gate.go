@@ -11,44 +11,55 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// ensureHostGateWorktree returns a usable worktree path for a host gate.
-// existingWorktreePath() returns "" when the record's cleaned_at is set
-// (typical after a task aborts and CleanupForTask drops the worktree). Replay
-// scenarios commonly hit that state, so we recreate from the recorded base
-// branch rather than failing — matching the semantic of allocateWorktree but
-// without requiring spec.Visibility.ProjectDir (which gates leave empty).
+// ensureHostGateWorktree returns a usable cwd for a host gate.
+//
+// Priority order:
+//  1. currentPath (already resolved by the caller's existingWorktreePath call)
+//  2. Active worktree record for the task
+//  3. Cleaned worktree record → recreate from project dir
+//  4. No worktree record (task has worktree=false or no git repo) → project dir
+//  5. Last resort → os.TempDir()
 func (r *Runner) ensureHostGateWorktree(spec *orchestrator.JobSpec, currentPath string) (string, error) {
 	if currentPath != "" {
 		return currentPath, nil
 	}
-	if r.Worktrees == nil {
-		return "", fmt.Errorf("host gate requires a worktree manager")
-	}
-	if spec.TaskID == "" {
-		return "", fmt.Errorf("host gate requires a task id")
+
+	// Try the worktree manager when available.
+	if r.Worktrees != nil && spec.TaskID != "" {
+		existing, err := r.Worktrees.Get(spec.TaskID)
+		if err != nil {
+			return "", fmt.Errorf("lookup worktree: %w", err)
+		}
+		if existing != nil {
+			if existing.CleanedAt == nil {
+				return existing.Path, nil
+			}
+			// Record exists but was cleaned (e.g., after abort). Recreate it.
+			_, projectWorkDir, perr := r.resolveProjectRuntime(spec.ProjectID)
+			if perr != nil {
+				return "", fmt.Errorf("resolve project runtime: %w", perr)
+			}
+			if projectWorkDir == "" {
+				return "", fmt.Errorf("project %q has no work dir; cannot recreate worktree", spec.ProjectID)
+			}
+			w, recErr := r.Worktrees.Recreate(projectWorkDir, spec.TaskID)
+			if recErr != nil {
+				return "", fmt.Errorf("recreate worktree for host gate: %w", recErr)
+			}
+			return w.Path, nil
+		}
 	}
 
-	existing, err := r.Worktrees.Get(spec.TaskID)
-	if err != nil {
-		return "", fmt.Errorf("lookup worktree: %w", err)
-	}
-	if existing == nil {
-		return "", fmt.Errorf("no worktree record for task %q (host gates need a prior worktree)", spec.TaskID)
-	}
-
-	_, projectWorkDir, perr := r.resolveProjectRuntime(spec.ProjectID)
-	if perr != nil {
-		return "", fmt.Errorf("resolve project runtime: %w", perr)
-	}
-	if projectWorkDir == "" {
-		return "", fmt.Errorf("project %q has no work dir; cannot recreate worktree", spec.ProjectID)
+	// No worktree record (task has worktree=false). Fall back to the project
+	// working directory so gate scripts have a valid cwd without a git tree.
+	if spec.ProjectID != "" {
+		_, projectWorkDir, perr := r.resolveProjectRuntime(spec.ProjectID)
+		if perr == nil && projectWorkDir != "" {
+			return projectWorkDir, nil
+		}
 	}
 
-	w, err := r.Worktrees.Recreate(projectWorkDir, spec.TaskID)
-	if err != nil {
-		return "", fmt.Errorf("recreate worktree for host gate: %w", err)
-	}
-	return w.Path, nil
+	return os.TempDir(), nil
 }
 
 // dispatchHostGate runs a gate directly on the host with cwd set to the
@@ -77,7 +88,7 @@ func (r *Runner) dispatchHostGate(
 		if cleanup != nil {
 			cleanup()
 		}
-		return "", fmt.Errorf("host gate requires a worktree (task must have worktree=true)")
+		return "", fmt.Errorf("host gate requires a working directory (cwd could not be resolved)")
 	}
 	if r.BoidBinary == "" {
 		if cleanup != nil {

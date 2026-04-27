@@ -68,6 +68,44 @@ func TestWriteHostGateWrapper_ContractMatchesSandboxedGate(t *testing.T) {
 	}
 }
 
+// ensureHostGateWorktree falls back to os.TempDir() when the runner has no
+// worktree manager and no project lookup configured (e.g. non-git projects).
+func TestEnsureHostGateWorktree_FallbackWhenNoWorktree(t *testing.T) {
+	r := &Runner{
+		Worktrees: nil,
+		Projects:  nil,
+	}
+	spec := &orchestrator.JobSpec{
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+	}
+	got, err := r.ensureHostGateWorktree(spec, "")
+	if err != nil {
+		t.Fatalf("ensureHostGateWorktree: %v", err)
+	}
+	if got == "" {
+		t.Fatal("expected non-empty fallback path")
+	}
+	// With no worktrees/projects, should fall back to os.TempDir().
+	if got != os.TempDir() {
+		t.Errorf("got %q, want %q (os.TempDir)", got, os.TempDir())
+	}
+}
+
+// ensureHostGateWorktree returns currentPath immediately when already resolved.
+func TestEnsureHostGateWorktree_ReturnsCurrentPathWhenSet(t *testing.T) {
+	r := &Runner{}
+	spec := &orchestrator.JobSpec{TaskID: "task-1"}
+	want := "/some/worktree/path"
+	got, err := r.ensureHostGateWorktree(spec, want)
+	if err != nil {
+		t.Fatalf("ensureHostGateWorktree: %v", err)
+	}
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 // When the gate has no PrimaryInput (rare but supported), stdin is closed via
 // /dev/null so the script doesn't block waiting for input.
 func TestWriteHostGateWrapper_EmptyStdinUsesDevNull(t *testing.T) {
