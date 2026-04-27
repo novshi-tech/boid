@@ -119,6 +119,59 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, CleanupFunc,
 	return spec, nil, nil
 }
 
+// ExecFireEvent carries the data needed to plan a boid-exec job.
+// Command must be the fully resolved CommandSpec (ResolvedCommand populated).
+type ExecFireEvent struct {
+	ProjectID string
+	Command   CommandSpec
+}
+
+// PlanExec renders an exec fire event into a JobSpec.
+// Visibility.Writable is driven by Command.Readonly, mirroring how PlanHook
+// derives it from IsReadonly(task) — task.readonly is the sole arbiter.
+func (p *DispatchPlanner) PlanExec(event *ExecFireEvent) (*JobSpec, CleanupFunc, error) {
+	if event == nil {
+		return nil, nil, fmt.Errorf("exec event is required")
+	}
+	if len(event.Command.ResolvedCommand) == 0 {
+		return nil, nil, fmt.Errorf("exec event: no command resolved")
+	}
+	if p.Meta == nil || p.Projects == nil {
+		return nil, nil, fmt.Errorf("dispatch planner is not fully configured")
+	}
+
+	proj, err := p.Projects.GetProject(event.ProjectID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get project: %w", err)
+	}
+
+	var secretNS string
+	if meta, ok := p.Meta.Get(event.ProjectID); ok {
+		secretNS = meta.SecretNamespace
+	}
+
+	spec := &JobSpec{
+		ProjectID: event.ProjectID,
+		Kind:      JobKindExec,
+		Argv:      event.Command.ResolvedCommand,
+		Visibility: Visibility{
+			ProjectDir:         proj.WorkDir,
+			UseWorktree:        false,
+			AdditionalBindings: event.Command.AdditionalBindings,
+			Writable:           !event.Command.Readonly,
+		},
+		BuiltinPolicies: DefaultBuiltinPolicies(
+			RoleHook,
+			[]string{"boid", "git"},
+			PolicyContext{ProjectDir: proj.WorkDir, HomeDir: sandboxHomeDir()},
+		),
+		HostCommands:    event.Command.HostCommands.ToCommandDefs(),
+		SecretNamespace: secretNS,
+		Env:             event.Command.Env,
+	}
+	return spec, nil, nil
+}
+
 // taskBusinessEnv returns env vars derived from business-level task fields
 // that hook / gate scripts may need at runtime. Currently this surfaces the
 // task's base branch so kits like git-auto-merge can identify the merge target

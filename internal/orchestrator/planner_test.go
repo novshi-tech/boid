@@ -488,6 +488,97 @@ func TestPlanHook_PropagatesHostCommands(t *testing.T) {
 	}
 }
 
+// task.readonly (and verifying status) drives Visibility.Writable for hook jobs.
+// This is the canonical single-source-of-truth for the hook sandbox write permission.
+func TestPlanHook_WritableControlledByTaskReadonly(t *testing.T) {
+	cases := []struct {
+		name     string
+		readonly bool
+		status   TaskStatus
+		want     bool
+	}{
+		{"hook + readonly=false", false, TaskStatusExecuting, true},
+		{"hook + readonly=true", true, TaskStatusExecuting, false},
+		{"hook + verifying (implicitly readonly)", false, TaskStatusVerifying, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			projectDir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			task := &Task{
+				ID:        "task-1",
+				ProjectID: "proj-1",
+				Behavior:  "dev",
+				Readonly:  tc.readonly,
+				Status:    tc.status,
+			}
+			planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{Name: "dev"}, task)
+			req, cleanup, err := planner.PlanHook(&HookFireEvent{
+				EventID:   "event-1",
+				TaskID:    "task-1",
+				ProjectID: "proj-1",
+				Hook: Hook{
+					ID:         "hook-1",
+					ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
+				},
+			})
+			if err != nil {
+				t.Fatalf("PlanHook: %v", err)
+			}
+			if cleanup != nil {
+				defer cleanup()
+			}
+			if req.Visibility.Writable != tc.want {
+				t.Errorf("Writable = %v, want %v (readonly=%v, status=%v)", req.Visibility.Writable, tc.want, tc.readonly, tc.status)
+			}
+		})
+	}
+}
+
+// CommandSpec.Readonly drives Visibility.Writable for exec jobs, mirroring the
+// hook behavior. task.readonly is the sole arbiter in both cases.
+func TestPlanExec_WritableControlledByCommandReadonly(t *testing.T) {
+	cases := []struct {
+		name     string
+		readonly bool
+		want     bool
+	}{
+		{"exec + readonly=false", false, true},
+		{"exec + readonly=true", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			projectDir := t.TempDir()
+			planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{Name: "dev"},
+				&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
+			req, cleanup, err := planner.PlanExec(&ExecFireEvent{
+				ProjectID: "proj-1",
+				Command: CommandSpec{
+					ResolvedCommand: []string{"bash"},
+					Readonly:        tc.readonly,
+				},
+			})
+			if err != nil {
+				t.Fatalf("PlanExec: %v", err)
+			}
+			if cleanup != nil {
+				defer cleanup()
+			}
+			if req.Visibility.Writable != tc.want {
+				t.Errorf("Writable = %v, want %v (readonly=%v)", req.Visibility.Writable, tc.want, tc.readonly)
+			}
+			if req.Visibility.ProjectDir != projectDir {
+				t.Errorf("ProjectDir = %q, want %q", req.Visibility.ProjectDir, projectDir)
+			}
+			if req.Kind != JobKindExec {
+				t.Errorf("Kind = %q, want exec", req.Kind)
+			}
+		})
+	}
+}
+
 // --- test helpers ---
 
 func newPlannerForTest(proj *Project, behavior TaskBehavior, task *Task) *DispatchPlanner {

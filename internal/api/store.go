@@ -56,6 +56,7 @@ type CommandResponse struct {
 	Env                map[string]string                       `json:"env,omitempty"`
 	HostCommands       map[string]orchestrator.HostCommandSpec `json:"host_commands,omitempty"`
 	AdditionalBindings []orchestrator.BindMount                `json:"additional_bindings,omitempty"`
+	Readonly           bool                                    `json:"readonly,omitempty"`
 }
 
 // CommandSummary is a single entry in the GET /api/projects/:id/commands response.

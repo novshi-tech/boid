@@ -41,6 +41,7 @@ type execCommandResponse struct {
 	Env                map[string]string                       `json:"env,omitempty"`
 	HostCommands       map[string]orchestrator.HostCommandSpec `json:"host_commands,omitempty"`
 	AdditionalBindings []orchestrator.BindMount                `json:"additional_bindings,omitempty"`
+	Readonly           bool                                    `json:"readonly,omitempty"`
 }
 
 type execPreparedJob struct {
@@ -87,7 +88,7 @@ func buildExecJob(projectID, commandName string) (*execPreparedJob, error) {
 	_ = c.Do("GET", "/api/proxy", nil, &proxyInfo)
 
 	builtinPolicies := orchestrator.DefaultBuiltinPolicies(
-		orchestrator.RoleGate,
+		orchestrator.RoleHook,
 		[]string{"boid", "git"},
 		orchestrator.PolicyContext{ProjectDir: p.WorkDir},
 	)
@@ -120,7 +121,7 @@ func buildExecJob(projectID, commandName string) (*execPreparedJob, error) {
 			ProjectDir:         p.WorkDir,
 			UseWorktree:        false,
 			AdditionalBindings: cmd.AdditionalBindings,
-			Writable:           true,
+			Writable:           !cmd.Readonly,
 		},
 		BuiltinPolicies: builtinPolicies,
 		HostCommands:    hostCommands,

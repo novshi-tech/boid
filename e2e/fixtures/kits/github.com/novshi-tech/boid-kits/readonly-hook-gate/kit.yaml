@@ -1,16 +1,8 @@
-env:
-  E2E_STATE_DIR: ${E2E_STATE_DIR}
 hooks:
-  - id: emit-artifact
-    on: executing
-  - id: emit-verification
+  - id: verify-readonly
     on: executing
 gates:
-  - id: validate-a
+  - id: validate
     on: verifying
     traits:
-      consumes: [verification]
-  - id: validate-b
-    on: verifying
-    traits:
-      consumes: [verification]
+      consumes: [artifact]

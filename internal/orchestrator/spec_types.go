@@ -380,7 +380,8 @@ func (k *KitRef) UnmarshalYAML(value *yaml.Node) error {
 // CommandSpec defines a named sandbox command available via `boid exec`.
 // The Command slice is expanded with os.ExpandEnv at load time and stored in ResolvedCommand.
 type CommandSpec struct {
-	Command []string `yaml:"command" json:"command"`
+	Command  []string `yaml:"command" json:"command"`
+	Readonly bool     `yaml:"readonly,omitempty" json:"readonly,omitempty"`
 
 	// Resolved fields populated by ReadProjectMetaWithKits.
 	ResolvedCommand    []string          `yaml:"-" json:"-"`
