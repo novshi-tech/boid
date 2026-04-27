@@ -46,7 +46,10 @@ func TestWriteHostGateWrapper_ContractMatchesSandboxedGate(t *testing.T) {
 		"export KIT_VAR='kit-value'",
 		"OUTPUT_FILE='" + outputPath + "'",
 		`BOID_BIN='/usr/local/bin/boid'`,
-		`trap '_exit=$?; "$BOID_BIN" job done "$JOB_ID"`,
+		`PAYLOAD_FILE="$HOME/.boid/output/payload_patch.yaml"`,
+		`_boid_done()`,
+		`if [ -f "$PAYLOAD_FILE" ]`,
+		`trap '_exit=$?; _boid_done "$_exit"' EXIT`,
 		"printf '%s' '" + string(taskJSON) + "' | '" + script + "' > \"$OUTPUT_FILE\"",
 	}
 	for _, want := range wantSubstrings {

@@ -137,8 +137,9 @@ func (r *Runner) dispatchHostGate(
 //   - sets the gate env vars (BOID_TASK_ID + behavior/task env merged in JobSpec.Env),
 //   - cd's to the worktree,
 //   - feeds taskJSON to the gate script on stdin,
-//   - captures stdout to a temp file (consumed by `boid job done --output-file`),
-//   - on exit, calls `boid job done` so watchRuntime sees a normal completion.
+//   - captures stdout to a temp file (stdout fallback),
+//   - on exit, calls `boid job done` preferring $HOME/.boid/output/payload_patch.yaml
+//     (written by gate scripts) over the stdout capture, matching sandbox exit behavior.
 func writeHostGateWrapper(jobID, worktreeRoot string, spec *orchestrator.JobSpec, boidBin string) (wrapperPath, outputPath string, err error) {
 	dir := os.TempDir()
 	wrapperPath = filepath.Join(dir, fmt.Sprintf("boid-host-gate-%s.sh", jobID))
@@ -171,8 +172,17 @@ func writeHostGateWrapper(jobID, worktreeRoot string, spec *orchestrator.JobSpec
 	fmt.Fprintf(&b, "OUTPUT_FILE=%s\n", hostGateShellQuote(outputPath))
 	fmt.Fprintf(&b, "JOB_ID=%s\n", hostGateShellQuote(jobID))
 	fmt.Fprintf(&b, "BOID_BIN=%s\n", hostGateShellQuote(boidBin))
-	// trap on EXIT to report completion regardless of script success/failure.
-	b.WriteString(`trap '_exit=$?; "$BOID_BIN" job done "$JOB_ID" --exit-code "$_exit" --output-file "$OUTPUT_FILE" 2>/dev/null || true' EXIT` + "\n")
+	// payload_patch.yaml takes priority over stdout capture, mirroring sandbox exit behavior.
+	b.WriteString("PAYLOAD_FILE=\"$HOME/.boid/output/payload_patch.yaml\"\n")
+	b.WriteString("_boid_done() {\n")
+	b.WriteString("  local _c=$1\n")
+	b.WriteString("  if [ -f \"$PAYLOAD_FILE\" ]; then\n")
+	b.WriteString("    \"$BOID_BIN\" job done \"$JOB_ID\" --exit-code \"$_c\" --output-file \"$PAYLOAD_FILE\" 2>/dev/null || true\n")
+	b.WriteString("  else\n")
+	b.WriteString("    \"$BOID_BIN\" job done \"$JOB_ID\" --exit-code \"$_c\" --output-file \"$OUTPUT_FILE\" 2>/dev/null || true\n")
+	b.WriteString("  fi\n")
+	b.WriteString("}\n")
+	b.WriteString("trap '_exit=$?; _boid_done \"$_exit\"' EXIT\n")
 
 	scriptArgv := hostGateShellQuoteArgv(spec.Argv)
 	if len(spec.PrimaryInput) > 0 {
