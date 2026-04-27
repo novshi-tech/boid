@@ -272,6 +272,42 @@ func projectResolverFor(svc *api.ProjectAppService) sandbox.ProjectResolver {
 	}
 }
 
+// commandDispatcherAdapter implements api.CommandDispatcher by bridging the
+// project service (command resolution) and the dispatcher runner (job launch).
+type commandDispatcherAdapter struct {
+	service *api.ProjectAppService
+	runner  *dispatcher.Runner
+}
+
+func (a *commandDispatcherAdapter) ExecuteCommand(ctx context.Context, projectID, commandName string) (*api.ExecuteCommandResult, error) {
+	project, err := a.service.GetProject(projectID)
+	if err != nil {
+		return nil, err
+	}
+	cmd, err := a.service.GetCommand(projectID, commandName)
+	if err != nil {
+		return nil, err
+	}
+	spec := dispatcher.BuildCommandJobSpec(dispatcher.CommandJobInput{
+		ProjectID:          projectID,
+		ProjectWorkDir:     project.WorkDir,
+		Argv:               cmd.Command,
+		Env:                cmd.Env,
+		HostCommands:       cmd.HostCommands,
+		AdditionalBindings: cmd.AdditionalBindings,
+		Readonly:           cmd.Readonly,
+		Interactive:        true, // Web UI always wants a PTY
+	})
+	jobID, err := a.runner.Dispatch(ctx, spec, nil)
+	if err != nil {
+		return nil, &api.StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return &api.ExecuteCommandResult{
+		JobID:     jobID,
+		AttachURL: fmt.Sprintf("/jobs/%s/terminal", jobID),
+	}, nil
+}
+
 func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r := srv.router
 
@@ -323,7 +359,10 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		r.Mount("/api/secrets", secretHandler.Routes())
 	}
 
-	projectHandler := &api.ProjectHandler{Service: runtime.projectSvc}
+	projectHandler := &api.ProjectHandler{
+		Service:    runtime.projectSvc,
+		Dispatcher: &commandDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner},
+	}
 	r.Mount("/api/projects", projectHandler.Routes())
 
 	workspaceHandler := &api.WorkspaceHandler{Service: runtime.projectSvc}

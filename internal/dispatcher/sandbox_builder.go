@@ -238,11 +238,10 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		cleanup = append(cleanup, rt.StagingDir)
 	}
 
-	// TTY requirement: either an interactive instruction or a job kicked off
-	// by an agent that expects a PTY. Concretely: whenever an instruction is
-	// attached or a PrimaryInput is piped via stdin to a script, we allocate
-	// a PTY so tools like claude get a proper terminal.
-	tty := interactive || spec.Instruction != nil || len(stdinBytes) > 0
+	// TTY requirement: either an interactive instruction, a job kicked off
+	// by an agent that expects a PTY, or an explicit Interactive flag set by
+	// daemon-side callers (e.g. Web UI command execution).
+	tty := interactive || spec.Instruction != nil || len(stdinBytes) > 0 || spec.Interactive
 
 	var exitScript string
 	if !rt.Foreground {
