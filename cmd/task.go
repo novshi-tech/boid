@@ -282,6 +282,9 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("parse YAML: %w", err)
 	}
 
+	if spec.ProjectID == "" {
+		spec.ProjectID = os.Getenv("BOID_PROJECT_ID")
+	}
 	if spec.ProjectID == "" || spec.Title == "" {
 		return fmt.Errorf("YAML must include project_id and title")
 	}

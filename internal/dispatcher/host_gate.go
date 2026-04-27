@@ -162,6 +162,9 @@ func writeHostGateWrapper(jobID, worktreeRoot string, spec *orchestrator.JobSpec
 	}
 	env["BOID_TASK_ID"] = spec.TaskID
 	env["BOID_JOB_ID"] = jobID
+	if spec.ProjectID != "" {
+		env["BOID_PROJECT_ID"] = spec.ProjectID
+	}
 	if _, ok := env["HOME"]; !ok {
 		if h := os.Getenv("HOME"); h != "" {
 			env["HOME"] = h
