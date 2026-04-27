@@ -370,9 +370,7 @@ func isWithinRoot(path, root string) bool {
 }
 
 func (b *Broker) execCommand(req *ExecRequest, def CommandDef, entry *tokenEntry) *ExecResponse {
-	if err := validateStdin(def, req.Stdin); err != nil {
-		return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
-	}
+	req.Stdin = sanitizeStdin(def, req.Stdin)
 
 	if !CheckPolicy(def, req.Args) {
 		return &ExecResponse{ExitCode: 1, Stderr: "arguments not allowed"}
@@ -461,11 +459,18 @@ func (e *tokenEntry) allowsBuiltinOp(name, op string) bool {
 	return policy.Allows(op)
 }
 
-func validateStdin(def CommandDef, stdin []byte) error {
-	if len(stdin) > 0 && !def.AllowStdin {
-		return fmt.Errorf("stdin not allowed")
+// sanitizeStdin drops stdin payload for host commands that have not opted in
+// via AllowStdin. The previous behavior was to reject the call, but inherited
+// stdin (e.g., a hook script invoked as `printf '%s' '{}' | hook.sh` whose
+// child commands inherit the same pipe FD) would cause unrelated host command
+// invocations to fail. Dropping silently keeps the contract that AllowStdin=false
+// commands never observe caller-provided stdin while tolerating the FD inheritance
+// pattern that is common in shell pipelines.
+func sanitizeStdin(def CommandDef, stdin []byte) []byte {
+	if !def.AllowStdin {
+		return nil
 	}
-	return nil
+	return stdin
 }
 
 func generateToken() string {

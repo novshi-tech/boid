@@ -20,3 +20,5 @@ host_commands:
       - restart
   fake-hook-cmd:
     path: ${E2E_BIN_DIR}/fake-hook-cmd
+    allow:
+      - "*"
