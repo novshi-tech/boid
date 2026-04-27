@@ -502,3 +502,39 @@ func TestContextFiles_NoPayloadFilesWhenPrimaryInputEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildExitScript_PrefersJSONOverYAML(t *testing.T) {
+	got := buildExitScript("job-1", []string{
+		"/home/agent/.boid/output/payload_patch.json",
+		"/home/agent/.boid/output/payload_patch.yaml",
+	}, "/tmp/boid-output")
+
+	// JSON branch must come first
+	jsonIdx := strings.Index(got, `payload_patch.json`)
+	yamlIdx := strings.Index(got, `payload_patch.yaml`)
+	if jsonIdx < 0 || yamlIdx < 0 {
+		t.Fatalf("script missing one of payload paths: %s", got)
+	}
+	if jsonIdx > yamlIdx {
+		t.Errorf("expected .json branch before .yaml in: %s", got)
+	}
+	// Both branches must dispatch boid job done
+	if strings.Count(got, "boid job done") < 3 {
+		t.Errorf("expected 3 dispatch lines (json/yaml/fallback), got: %s", got)
+	}
+	// stdout fallback
+	if !strings.Contains(got, "/tmp/boid-output") {
+		t.Errorf("missing stdout fallback in: %s", got)
+	}
+}
+
+func TestBuildExitScript_NoFallbackWhenStdoutEmpty(t *testing.T) {
+	got := buildExitScript("job-1", []string{"/home/agent/.boid/output/payload_patch.json"}, "")
+	if strings.Contains(got, "/tmp/boid-output") {
+		t.Errorf("unexpected stdout fallback in: %s", got)
+	}
+	// final else branch: boid job done without --output-file
+	if !strings.Contains(got, "boid job done job-1 --exit-code $_exit\n") {
+		t.Errorf("missing no-output fallback in: %s", got)
+	}
+}

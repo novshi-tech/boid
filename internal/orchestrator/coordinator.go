@@ -455,6 +455,11 @@ func parseHandlerResult(id string, role Role, c JobCompletion) HandlerResult {
 	if !ok {
 		return hr
 	}
+	// yaml.v3 は非 string キー (bool/int/null/float) を含む内側 map を
+	// map[interface{}]interface{} で返すため、そのままでは json.Marshal が落ちる。
+	// 過去事例: agent が `on: verifying` と書いた YAML が PyYAML の round-trip で
+	// `true: verifying` に化け、Layer 2 がないと payload_patch がまるごと silent drop した。
+	patchVal = normalizeYAMLKeys(patchVal)
 	patchJSON, err := json.Marshal(patchVal)
 	if err != nil {
 		slog.Warn("failed to marshal payload_patch", "id", id, "error", err)
@@ -462,6 +467,37 @@ func parseHandlerResult(id string, role Role, c JobCompletion) HandlerResult {
 	}
 	hr.PayloadPatch = patchJSON
 	return hr
+}
+
+// normalizeYAMLKeys は yaml.v3 が非 string キーで decode した
+// map[interface{}]interface{} を再帰的に map[string]interface{} に正規化する。
+// 非 string キーは fmt.Sprint で stringify する (true→"true"、42→"42"、nil→"<nil>")。
+// 既に map[string]interface{} の枝も再帰で下る。
+func normalizeYAMLKeys(v interface{}) interface{} {
+	switch x := v.(type) {
+	case map[interface{}]interface{}:
+		m := make(map[string]interface{}, len(x))
+		for k, val := range x {
+			ks, ok := k.(string)
+			if !ok {
+				ks = fmt.Sprint(k)
+			}
+			m[ks] = normalizeYAMLKeys(val)
+		}
+		return m
+	case map[string]interface{}:
+		for k, val := range x {
+			x[k] = normalizeYAMLKeys(val)
+		}
+		return x
+	case []interface{}:
+		for i, val := range x {
+			x[i] = normalizeYAMLKeys(val)
+		}
+		return x
+	default:
+		return v
+	}
 }
 
 // injectSourceState adds source_state to the verification value in a payload_patch.

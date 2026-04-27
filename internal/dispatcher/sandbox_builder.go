@@ -173,7 +173,8 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	)...)
 
 	// Output dir sentinel — guarantees $HOME/.boid/output/ exists before the
-	// user script runs, so scripts writing payload_patch.yaml never hit ENOENT.
+	// user script runs, so scripts writing payload_patch.json (or legacy .yaml)
+	// never hit ENOENT.
 	files = append(files, sandbox.FileWrite{
 		Path: homeDir + "/.boid/output/.placeholder",
 	})
@@ -246,7 +247,14 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 
 	var exitScript string
 	if !rt.Foreground {
-		exitScript = buildExitScript(rt.JobID, homeDir+"/.boid/output/payload_patch.yaml", stdoutCapture)
+		exitScript = buildExitScript(
+			rt.JobID,
+			[]string{
+				homeDir + "/.boid/output/payload_patch.json",
+				homeDir + "/.boid/output/payload_patch.yaml",
+			},
+			stdoutCapture,
+		)
 	}
 
 	out := sandbox.Spec{
@@ -475,20 +483,33 @@ func buildPATH(bindings []orchestrator.BindMount, boidBinary string) string {
 }
 
 // buildExitScript renders the EXIT trap that calls `boid job done`.
-func buildExitScript(jobID, payloadFile, stdoutFallback string) string {
+// payloadFiles はチェック順 (先頭が最優先)。最初に見つかったものを output-file に渡す。
+// 全部存在しない場合は stdoutFallback (空なら output-file 指定なし) にフォールバックする。
+func buildExitScript(jobID string, payloadFiles []string, stdoutFallback string) string {
 	var b strings.Builder
 	b.WriteString("_exit=$?\n")
-	fmt.Fprintf(&b, "mkdir -p \"$(dirname %q)\"\n", payloadFile)
-	fmt.Fprintf(&b, "if [ -f %q ]; then\n", payloadFile)
-	fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit --output-file %q\n", jobID, payloadFile)
-	if stdoutFallback != "" {
+	if len(payloadFiles) > 0 {
+		fmt.Fprintf(&b, "mkdir -p \"$(dirname %q)\"\n", payloadFiles[0])
+	}
+	for i, f := range payloadFiles {
+		if i == 0 {
+			fmt.Fprintf(&b, "if [ -f %q ]; then\n", f)
+		} else {
+			fmt.Fprintf(&b, "elif [ -f %q ]; then\n", f)
+		}
+		fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit --output-file %q\n", jobID, f)
+	}
+	if len(payloadFiles) > 0 {
 		b.WriteString("else\n")
+	}
+	if stdoutFallback != "" {
 		fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit --output-file %q\n", jobID, stdoutFallback)
 	} else {
-		b.WriteString("else\n")
 		fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit\n", jobID)
 	}
-	b.WriteString("fi")
+	if len(payloadFiles) > 0 {
+		b.WriteString("fi")
+	}
 	return b.String()
 }
 
