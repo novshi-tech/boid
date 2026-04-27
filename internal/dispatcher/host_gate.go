@@ -51,11 +51,9 @@ func (r *Runner) ensureHostGateWorktree(spec *orchestrator.JobSpec, currentPath 
 	return w.Path, nil
 }
 
-// dispatchHostGate runs a trusted kit gate directly on the host. The script
-// receives the same env/stdin contract as a sandboxed gate, but with cwd set
-// to the worktree root and no broker layered between it and the host. Used
-// by gates flagged `host: true` in kit.yaml — currently git-auto-merge, which
-// needs filesystem access to the worktree's .git for locking and merging.
+// dispatchHostGate runs a gate directly on the host with cwd set to the
+// worktree root and no broker or sandbox layered between it and the host.
+// All gate jobs use this path; there is no sandboxed gate execution path.
 func (r *Runner) dispatchHostGate(
 	ctx context.Context,
 	job *Job,

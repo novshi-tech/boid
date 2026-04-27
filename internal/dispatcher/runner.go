@@ -95,13 +95,12 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 		return "", err
 	}
-	// Gate jobs run with UseWorktree=false (project filesystem stays hidden
-	// from the sandbox), but the broker still needs the worktree root to
-	// resolve the `git` builtin. Attach the existing worktree path — without
-	// creating one — so broker-side git operations know where to run.
-	brokerWorktreePath := worktreePath
-	if brokerWorktreePath == "" {
-		brokerWorktreePath = r.existingWorktreePath(spec)
+	// resolvedWorktreePath holds the existing worktree path without allocating
+	// a new one. Gates use it as the starting hint for ensureHostGateWorktree;
+	// the hook sandbox path passes it to the broker TokenContext.WorktreeDir.
+	resolvedWorktreePath := worktreePath
+	if resolvedWorktreePath == "" {
+		resolvedWorktreePath = r.existingWorktreePath(spec)
 	}
 
 	if err := CreateJob(r.DB, j); err != nil {
@@ -118,12 +117,12 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		r.JobEvents.JobCreated(j.TaskID, j.ID)
 	}
 
-	// Host gates skip the entire sandbox/broker construction below: they run
-	// the trusted kit script directly on the host with cwd at the worktree.
-	// Ensure the worktree exists (recreate if it was cleaned by a prior abort)
-	// so replay scenarios still have a live tree to operate on.
-	if spec.Host {
-		hostWorktree, herr := r.ensureHostGateWorktree(spec, brokerWorktreePath)
+	// Gate jobs always run directly on the host with cwd at the worktree;
+	// sandbox/broker construction is skipped entirely. Ensure the worktree
+	// exists (recreate if it was cleaned by a prior abort) so replay scenarios
+	// still have a live tree to operate on.
+	if spec.Kind == orchestrator.JobKindGate {
+		hostWorktree, herr := r.ensureHostGateWorktree(spec, resolvedWorktreePath)
 		if herr != nil {
 			if cleanup != nil {
 				cleanup()
@@ -145,12 +144,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			WorkspaceID:       workspaceID,
 			AllowedProjectIDs: allowedProjectIDs(spec.ProjectID, workspacePeers),
 			Role:              j.Role,
-			// Pass the real project work dir, not Visibility.ProjectDir
-			// (which is empty for gate jobs). The broker uses this host-side
-			// for git binding and host-command cwd; sandbox visibility is
-			// orthogonal.
 			ProjectDir:  projectWorkDir,
-			WorktreeDir: brokerWorktreePath,
+			WorktreeDir: resolvedWorktreePath,
 		}
 		var resolve SecretResolver
 		if r.SecretStore != nil {
