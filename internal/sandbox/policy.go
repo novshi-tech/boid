@@ -25,7 +25,7 @@ func CheckPolicy(def CommandDef, args []string) bool {
 	subcmdPassed := false
 	if len(def.AllowedSubcommands) > 0 {
 		subcmd := extractSimpleSubcommand(args)
-		if subcmd == "" || !containsString(def.AllowedSubcommands, subcmd) {
+		if subcmd != "" && !containsString(def.AllowedSubcommands, subcmd) {
 			return false
 		}
 		subcmdPassed = true
