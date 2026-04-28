@@ -79,6 +79,7 @@ e2e_log "checking WebSocket output contains 'hello-from-web'"
 "$E2E_BIN_DIR/boid-e2e" ws-job-output \
   --addr "http://${WEB_ADDR}" \
   --job "$job_id" \
+  --cookie "boid_session=${cookie_val}" \
   --timeout 10s \
   --contains "hello-from-web"
 e2e_log "OK: 'hello-from-web' received via WebSocket"
