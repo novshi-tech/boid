@@ -317,7 +317,11 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 
 	r.Get("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
+		if addr := srv.TCPAddr(); addr != "" {
+			fmt.Fprintf(w, `{"status":"ok","http_addr":%q}`, addr)
+		} else {
+			w.Write([]byte(`{"status":"ok"}`))
+		}
 	})
 
 	r.Post("/api/shutdown", func(w http.ResponseWriter, req *http.Request) {

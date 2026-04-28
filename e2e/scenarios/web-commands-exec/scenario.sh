@@ -4,27 +4,35 @@ set -euo pipefail
 e2e_require_cmd curl
 
 PROJECT_DIR="$E2E_WORKSPACE_DIR/app"
-WEB_ADDR="127.0.0.1:15171"
 PROJECT_ID="e2e-web-exec"
 
 # Register project with the initial server (started by run.sh via UNIX socket)
 e2e_log "registering project from $PROJECT_DIR"
 e2e_run "$E2E_BIN_DIR/boid" project add "$PROJECT_DIR"
 
-# Restart with a fixed HTTP address so curl can reach the web UI
+# Restart with a dynamic HTTP address so curl can reach the web UI
 e2e_log "stopping initial server"
 "$E2E_BIN_DIR/boid" stop
 sleep 1
 
-e2e_log "starting boid at $WEB_ADDR"
+e2e_log "starting boid with dynamic web address"
 e2e_run "$E2E_BIN_DIR/boid" start \
-  --http-addr "$WEB_ADDR" \
+  --http-addr "127.0.0.1:0" \
   --db-path "$XDG_DATA_HOME/boid/boid.db" \
   --socket-path "$BOID_SOCKET" \
   --kits-dir "$XDG_DATA_HOME/boid/kits" \
   --key-file-path "$XDG_DATA_HOME/boid/boid-secret.key"
 
 "$E2E_BIN_DIR/boid-e2e" wait-health --timeout 15s --interval 100ms "$BOID_SOCKET"
+
+# Ensure this daemon is always stopped on exit (failure or success).
+trap '"$E2E_BIN_DIR/boid" stop >/dev/null 2>&1 || true' EXIT
+
+# Get the actual HTTP address from the health endpoint via UNIX socket.
+health_json=$(curl -s --unix-socket "$BOID_SOCKET" http://localhost/api/health)
+WEB_ADDR=$(printf '%s' "$health_json" | sed -E 's/.*"http_addr":"([^"]+)".*/\1/')
+[[ -n "$WEB_ADDR" && "$WEB_ADDR" != "$health_json" ]] || e2e_fail "failed to get web address from health endpoint: $health_json"
+e2e_log "web address: $WEB_ADDR"
 
 # Issue pairing code and authenticate
 e2e_log "issuing pairing code"
@@ -98,6 +106,3 @@ while true; do
   sleep 0.2
 done
 e2e_log "OK: job ${job_id} is completed"
-
-e2e_log "stopping web server"
-"$E2E_BIN_DIR/boid" stop || true

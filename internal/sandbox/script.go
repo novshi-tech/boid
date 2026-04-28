@@ -64,7 +64,7 @@ func Prepare(spec Spec) (string, error) {
 	inner := generateInnerScript(spec)
 	plan := buildPlan(spec)
 	setup := renderSetupScript(plan, spec.RootDir, innerPath, setupPath, outerPath)
-	outer := generateOuterScript(spec, setupPath)
+	outer := generateOuterScript(spec, outerPath, setupPath, innerPath)
 
 	for _, f := range []struct{ path, content string }{
 		{innerPath, inner},
@@ -79,28 +79,40 @@ func Prepare(spec Spec) (string, error) {
 	return outerPath, nil
 }
 
-func generateOuterScript(spec Spec, setupPath string) string {
+func generateOuterScript(spec Spec, outerPath, setupPath, innerPath string) string {
+	rootDir := shellQuote(spec.RootDir)
+	qOuter := shellQuote(outerPath)
+	qSetup := shellQuote(setupPath)
+	qInner := shellQuote(innerPath)
 	if spec.TTY {
 		return fmt.Sprintf(`#!/bin/bash
-set -e
+root_dir=%s
 exec 3>&2
-exec pasta --config-net \
+pasta --config-net \
     -a 10.0.2.0 -n 24 -g 10.0.2.2 \
     --dns-forward 10.0.2.3 \
     -t none -u none \
     2>/dev/null \
     -- bash -c 'exec 2>&3 3>&-; exec unshare --mount -- bash %s'
-`, setupPath)
+exit_code=$?
+rm -rf "$root_dir" 2>/dev/null || true
+rm -f %s %s %s 2>/dev/null || true
+exit $exit_code
+`, rootDir, setupPath, qOuter, qSetup, qInner)
 	}
 	return fmt.Sprintf(`#!/bin/bash
-set -e
-exec pasta --config-net \
+root_dir=%s
+pasta --config-net \
     -a 10.0.2.0 -n 24 -g 10.0.2.2 \
     --dns-forward 10.0.2.3 \
     -t none -u none \
     2>/dev/null \
     -- unshare --mount -- bash %s
-`, setupPath)
+exit_code=$?
+rm -rf "$root_dir" 2>/dev/null || true
+rm -f %s %s %s 2>/dev/null || true
+exit $exit_code
+`, rootDir, setupPath, qOuter, qSetup, qInner)
 }
 
 // generateInnerScript builds the script that runs inside the sandbox.
