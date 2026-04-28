@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -224,7 +225,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		hostCmdMounts, err := hostCommandMounts(
 			rt.BoidBinary,
 			sortedKeys(spec.BuiltinPolicies),
-			sortedKeys(spec.HostCommands),
+			spec.HostCommands,
 			exec.LookPath,
 		)
 		if err != nil {
@@ -403,41 +404,56 @@ func additionalBindingMounts(bindings []orchestrator.BindMount) []sandbox.Mount 
 }
 
 // hostCommandMounts resolves each host command to its actual path on the host
-// via lookPath and returns bind mounts that overlay the boid shim binary on top.
+// and returns bind mounts that overlay the boid shim binary on top.
 // boid and git are excluded (handled by dedicated mounts elsewhere).
-// Returns an error if any command is not found on the host (fail-fast).
-func hostCommandMounts(boidBinary string, builtins, hostCommands []string, lookPath func(string) (string, error)) ([]sandbox.Mount, error) {
+// Builtins are always resolved via lookPath. For host commands, def.Path is
+// used directly when non-empty (existence is verified via os.Stat); otherwise
+// lookPath is called. Returns an error for any missing command (fail-fast).
+func hostCommandMounts(boidBinary string, builtins []string, hostCommands map[string]orchestrator.CommandDef, lookPath func(string) (string, error)) ([]sandbox.Mount, error) {
 	seen := map[string]struct{}{}
 	var out []sandbox.Mount
-	add := func(name string) error {
-		if name == "boid" || name == "git" {
-			return nil
-		}
-		if _, ok := seen[name]; ok {
-			return nil
-		}
+	addMount := func(name, target string) {
 		seen[name] = struct{}{}
-		path, err := lookPath(name)
-		if err != nil {
-			return fmt.Errorf("host command %q not found on host: %w", name, err)
-		}
 		out = append(out, sandbox.Mount{
 			Source:   boidBinary,
-			Target:   path,
+			Target:   target,
 			Type:     sandbox.MountBind,
 			IsFile:   true,
 			ReadOnly: true,
 		})
-		return nil
 	}
 	for _, n := range builtins {
-		if err := add(n); err != nil {
-			return nil, err
+		if n == "boid" || n == "git" {
+			continue
 		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		path, err := lookPath(n)
+		if err != nil {
+			return nil, fmt.Errorf("host command %q not found on host: %w", n, err)
+		}
+		addMount(n, path)
 	}
-	for _, n := range hostCommands {
-		if err := add(n); err != nil {
-			return nil, err
+	for _, name := range sortedKeys(hostCommands) {
+		if name == "boid" || name == "git" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		def := hostCommands[name]
+		if def.Path != "" {
+			if _, err := os.Stat(def.Path); err != nil {
+				return nil, fmt.Errorf("host_commands.%s.path %q does not exist on host", name, def.Path)
+			}
+			addMount(name, def.Path)
+		} else {
+			path, err := lookPath(name)
+			if err != nil {
+				return nil, fmt.Errorf("host command %q not found on host: %w", name, err)
+			}
+			addMount(name, path)
 		}
 	}
 	return out, nil
