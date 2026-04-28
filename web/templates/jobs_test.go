@@ -87,9 +87,17 @@ func TestJobDetail_GateReplayForm(t *testing.T) {
 	job.Role = "gate"
 	job.GateID = "go-dev/pr-verify"
 	html := renderJobDetail(t, job)
-	want := "/tasks/task-id-1/gates/go-dev/pr-verify/replay"
+	// gate ID は kit-name/gate-name 形式で '/' を含むため、chi の単一セグメント
+	// match に合わせて %2F へエンコードされている必要がある (生のまま埋め込むと
+	// サーバ側で 404 になる)。
+	want := "/tasks/task-id-1/gates/go-dev%2Fpr-verify/replay"
 	if !strings.Contains(html, want) {
 		t.Errorf("gate job detail should contain replay form action %q, got: %s", want, html)
+	}
+	// 念のため、未エスケープ形式は出力に含まれないことも確認しておく。
+	unescaped := "/tasks/task-id-1/gates/go-dev/pr-verify/replay"
+	if strings.Contains(html, unescaped) {
+		t.Errorf("gate job detail should not contain unescaped path %q", unescaped)
 	}
 }
 
@@ -164,8 +172,9 @@ func TestJobDetail_GateJobWithRunningTerminal(t *testing.T) {
 	job.GateID = "go-dev/pr-verify"
 	html := renderJobDetail(t, job)
 
-	// Replay gate ボタンと「全画面で開く」ボタンが両方 action bar に出ること
-	want := "/tasks/task-id-1/gates/go-dev/pr-verify/replay"
+	// Replay gate ボタンと「全画面で開く」ボタンが両方 action bar に出ること。
+	// gate ID の '/' は %2F へエンコードされる (chi の単一セグメント match 対策)。
+	want := "/tasks/task-id-1/gates/go-dev%2Fpr-verify/replay"
 	if !strings.Contains(html, want) {
 		t.Errorf("gate+interactive running should contain replay form action %q", want)
 	}
