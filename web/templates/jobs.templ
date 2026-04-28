@@ -2,10 +2,18 @@ package templates
 
 import (
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/novshi-tech/boid/web/templates/components"
 )
+
+// gateReplayPath は gate ID が '/' を含む (kit-name/gate-name 形式) ため、
+// chi の単一セグメント match に合わせて %2F へエンコードする。
+// 素のまま連結すると 404 になる (CLI/TUI と同じ罠なので共通化)。
+func gateReplayPath(taskID, gateID string) string {
+	return fmt.Sprintf("/tasks/%s/gates/%s/replay", url.PathEscape(taskID), url.PathEscape(gateID))
+}
 
 type JobContextView struct {
 	ID          string
@@ -111,7 +119,7 @@ templ JobDetail(job *JobContextView) {
 			<div class="action-bar">
 				<div class="action-bar-inner">
 					if job.GateID != "" {
-						<form method="post" action={ templ.SafeURL("/tasks/" + job.TaskID + "/gates/" + job.GateID + "/replay") } onsubmit="return confirm('本当にゲートを再発火しますか？')" class="action-bar-primary-form">
+						<form method="post" action={ templ.SafeURL(gateReplayPath(job.TaskID, job.GateID)) } onsubmit="return confirm('本当にゲートを再発火しますか？')" class="action-bar-primary-form">
 							<button type="submit" class="btn btn-primary">Replay gate</button>
 						</form>
 					}
