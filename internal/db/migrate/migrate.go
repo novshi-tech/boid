@@ -151,6 +151,13 @@ func Apply(conn *sql.DB) error {
 				return tableExists(tx, "web_pairing_codes")
 			},
 		},
+		{
+			version: "0021_jobs_nullable_task_id",
+			path:    "migrations/0021_jobs_nullable_task_id.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnIsNullable(tx, "jobs", "task_id")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {
@@ -256,6 +263,37 @@ func recordMigration(tx *sql.Tx, version string) error {
 		return fmt.Errorf("record migration %s: %w", version, err)
 	}
 	return nil
+}
+
+func columnIsNullable(q interface {
+	Query(string, ...any) (*sql.Rows, error)
+}, table, column string) (bool, error) {
+	rows, err := q.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, fmt.Errorf("table info for %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			typeName  string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &typeName, &notNull, &dfltValue, &pk); err != nil {
+			return false, fmt.Errorf("scan table info for %s: %w", table, err)
+		}
+		if name == column {
+			return notNull == 0, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate table info for %s: %w", table, err)
+	}
+	return false, nil
 }
 
 func columnExists(q interface {

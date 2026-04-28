@@ -33,8 +33,12 @@ func CreateJob(dbtx db.DBTX, j *Job) error {
 		return fmt.Errorf("inspect jobs columns: %w", err)
 	}
 
+	var taskID any
+	if j.TaskID != "" {
+		taskID = j.TaskID
+	}
 	columns := []string{"id", "task_id", "project_id"}
-	args := []any{j.ID, j.TaskID, j.ProjectID}
+	args := []any{j.ID, taskID, j.ProjectID}
 
 	if cols.hasHookID {
 		columns = append(columns, "hook_id")
@@ -211,15 +215,17 @@ func UpdateJob(dbtx db.DBTX, j *Job) error {
 
 func scanJob(s jobScanner) (*Job, error) {
 	var j Job
+	var taskID sql.NullString
 	var exitCode sql.NullInt64
 	var interactive, tty sql.NullInt64
 	var executionState sql.NullString
-	if err := s.Scan(&j.ID, &j.TaskID, &j.ProjectID, &j.HandlerID, &j.Role, &j.RuntimeID, &interactive, &tty, &j.Status, &exitCode, &j.Output, &executionState, &j.CreatedAt, &j.UpdatedAt); err != nil {
+	if err := s.Scan(&j.ID, &taskID, &j.ProjectID, &j.HandlerID, &j.Role, &j.RuntimeID, &interactive, &tty, &j.Status, &exitCode, &j.Output, &executionState, &j.CreatedAt, &j.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("job not found")
 		}
 		return nil, fmt.Errorf("scan job: %w", err)
 	}
+	j.TaskID = taskID.String
 	if exitCode.Valid {
 		j.ExitCode = int(exitCode.Int64)
 	}
