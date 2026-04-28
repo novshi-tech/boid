@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -236,7 +237,11 @@ func TestHostCommandMounts_BoidAndGitExcluded(t *testing.T) {
 	fakeLookPath := func(name string) (string, error) {
 		return "/usr/bin/" + name, nil
 	}
-	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{"boid", "git"}, []string{"gh", "git"}, fakeLookPath)
+	hostCmds := map[string]orchestrator.CommandDef{
+		"gh":  {},
+		"git": {},
+	}
+	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{"boid", "git"}, hostCmds, fakeLookPath)
 	if err != nil {
 		t.Fatalf("hostCommandMounts: %v", err)
 	}
@@ -261,7 +266,8 @@ func TestHostCommandMounts_NotFound(t *testing.T) {
 	fakeLookPath := func(name string) (string, error) {
 		return "", fmt.Errorf("not found")
 	}
-	_, err := hostCommandMounts("/usr/local/bin/boid", []string{}, []string{"missing-cmd"}, fakeLookPath)
+	hostCmds := map[string]orchestrator.CommandDef{"missing-cmd": {}}
+	_, err := hostCommandMounts("/usr/local/bin/boid", []string{}, hostCmds, fakeLookPath)
 	if err == nil {
 		t.Error("expected error for missing host command, got nil")
 	}
@@ -272,7 +278,8 @@ func TestHostCommandMounts_BindsAtHostPath(t *testing.T) {
 	fakeLookPath := func(name string) (string, error) {
 		return "/usr/local/bin/" + name, nil
 	}
-	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{}, []string{"gh"}, fakeLookPath)
+	hostCmds := map[string]orchestrator.CommandDef{"gh": {}}
+	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{}, hostCmds, fakeLookPath)
 	if err != nil {
 		t.Fatalf("hostCommandMounts: %v", err)
 	}
@@ -299,12 +306,113 @@ func TestHostCommandMounts_Dedup(t *testing.T) {
 	fakeLookPath := func(name string) (string, error) {
 		return "/usr/bin/" + name, nil
 	}
-	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{"gh"}, []string{"gh"}, fakeLookPath)
+	hostCmds := map[string]orchestrator.CommandDef{"gh": {}}
+	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{"gh"}, hostCmds, fakeLookPath)
 	if err != nil {
 		t.Fatalf("hostCommandMounts: %v", err)
 	}
 	if len(mounts) != 1 {
 		t.Errorf("expected 1 mount (dedup), got %d", len(mounts))
+	}
+}
+
+// CommandDef.Path 指定あり → lookPath は呼ばれず def.Path が Target になる。
+func TestHostCommandMounts_PathSpecified_SkipsLookPath(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := dir + "/run-e2e.sh"
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lookPathCalled := false
+	fakeLookPath := func(name string) (string, error) {
+		lookPathCalled = true
+		return "/usr/bin/" + name, nil
+	}
+	hostCmds := map[string]orchestrator.CommandDef{
+		"run-e2e": {Path: scriptPath},
+	}
+	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{}, hostCmds, fakeLookPath)
+	if err != nil {
+		t.Fatalf("hostCommandMounts: %v", err)
+	}
+	if lookPathCalled {
+		t.Error("lookPath must not be called when CommandDef.Path is set")
+	}
+	if len(mounts) != 1 {
+		t.Fatalf("expected 1 mount, got %d", len(mounts))
+	}
+	if mounts[0].Target != scriptPath {
+		t.Errorf("mount target = %q, want %q", mounts[0].Target, scriptPath)
+	}
+}
+
+// CommandDef.Path 空 → lookPath 結果が Target になる（従来挙動の回帰防止）。
+func TestHostCommandMounts_PathEmpty_UsesLookPath(t *testing.T) {
+	fakeLookPath := func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}
+	hostCmds := map[string]orchestrator.CommandDef{"gh": {}}
+	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{}, hostCmds, fakeLookPath)
+	if err != nil {
+		t.Fatalf("hostCommandMounts: %v", err)
+	}
+	if len(mounts) != 1 {
+		t.Fatalf("expected 1 mount, got %d", len(mounts))
+	}
+	if mounts[0].Target != "/usr/bin/gh" {
+		t.Errorf("mount target = %q, want /usr/bin/gh", mounts[0].Target)
+	}
+}
+
+// CommandDef.Path 指定だが対象ファイルが存在しない → "does not exist on host" エラー。
+func TestHostCommandMounts_PathDoesNotExist_Error(t *testing.T) {
+	dir := t.TempDir()
+	missingPath := dir + "/nonexistent.sh"
+	fakeLookPath := func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}
+	hostCmds := map[string]orchestrator.CommandDef{
+		"run-e2e": {Path: missingPath},
+	}
+	_, err := hostCommandMounts("/usr/local/bin/boid", []string{}, hostCmds, fakeLookPath)
+	if err == nil {
+		t.Fatal("expected error for non-existent path, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not exist on host") {
+		t.Errorf("error = %q, want it to contain 'does not exist on host'", err.Error())
+	}
+}
+
+// builtin と host command の複合ケース: host command 側のみ Path 指定。
+// builtin は lookPath、host command は def.Path を使い、順序が安定する。
+func TestHostCommandMounts_MixedBuiltinAndPathCommand(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := dir + "/run-e2e.sh"
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeLookPath := func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}
+	hostCmds := map[string]orchestrator.CommandDef{
+		"run-e2e": {Path: scriptPath},
+	}
+	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{"jq"}, hostCmds, fakeLookPath)
+	if err != nil {
+		t.Fatalf("hostCommandMounts: %v", err)
+	}
+	if len(mounts) != 2 {
+		t.Fatalf("expected 2 mounts, got %d", len(mounts))
+	}
+	targets := map[string]bool{}
+	for _, m := range mounts {
+		targets[m.Target] = true
+	}
+	if !targets["/usr/bin/jq"] {
+		t.Error("builtin jq must be mounted at /usr/bin/jq")
+	}
+	if !targets[scriptPath] {
+		t.Errorf("host command run-e2e must be mounted at %q", scriptPath)
 	}
 }
 
