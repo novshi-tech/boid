@@ -181,19 +181,20 @@ func toAPIJob(job *dispatcher.Job) *api.Job {
 		return nil
 	}
 	return &api.Job{
-		ID:          job.ID,
-		TaskID:      job.TaskID,
-		ProjectID:   job.ProjectID,
-		HandlerID:   job.HandlerID,
-		Role:        job.Role,
-		RuntimeID:   job.RuntimeID,
-		Interactive: job.Interactive,
-		TTY:         job.TTY,
-		Status:      api.JobStatus(job.Status),
-		ExitCode:    job.ExitCode,
-		Output:      job.Output,
-		CreatedAt:   job.CreatedAt,
-		UpdatedAt:   job.UpdatedAt,
+		ID:             job.ID,
+		TaskID:         job.TaskID,
+		ProjectID:      job.ProjectID,
+		HandlerID:      job.HandlerID,
+		Role:           job.Role,
+		RuntimeID:      job.RuntimeID,
+		Interactive:    job.Interactive,
+		TTY:            job.TTY,
+		Status:         api.JobStatus(job.Status),
+		ExitCode:       job.ExitCode,
+		Output:         job.Output,
+		ExecutionState: job.ExecutionState,
+		CreatedAt:      job.CreatedAt,
+		UpdatedAt:      job.UpdatedAt,
 	}
 }
 
@@ -202,19 +203,20 @@ func toDispatcherJob(job *api.Job) *dispatcher.Job {
 		return nil
 	}
 	return &dispatcher.Job{
-		ID:          job.ID,
-		TaskID:      job.TaskID,
-		ProjectID:   job.ProjectID,
-		HandlerID:   job.HandlerID,
-		Role:        job.Role,
-		RuntimeID:   job.RuntimeID,
-		Interactive: job.Interactive,
-		TTY:         job.TTY,
-		Status:      dispatcher.JobStatus(job.Status),
-		ExitCode:    job.ExitCode,
-		Output:      job.Output,
-		CreatedAt:   job.CreatedAt,
-		UpdatedAt:   job.UpdatedAt,
+		ID:             job.ID,
+		TaskID:         job.TaskID,
+		ProjectID:      job.ProjectID,
+		HandlerID:      job.HandlerID,
+		Role:           job.Role,
+		RuntimeID:      job.RuntimeID,
+		Interactive:    job.Interactive,
+		TTY:            job.TTY,
+		Status:         dispatcher.JobStatus(job.Status),
+		ExitCode:       job.ExitCode,
+		Output:         job.Output,
+		ExecutionState: job.ExecutionState,
+		CreatedAt:      job.CreatedAt,
+		UpdatedAt:      job.UpdatedAt,
 	}
 }
 

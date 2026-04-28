@@ -5,7 +5,9 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 
+	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
@@ -108,5 +110,59 @@ func TestBrokerRegistry_RegisterBrokerCommands_UnassignedWorkspaceDefaultsToSelf
 	}
 	if got := broker.ctx.AllowedProjectIDs; !reflect.DeepEqual(got, []string{"proj-4"}) {
 		t.Fatalf("allowed project ids = %v, want [proj-4]", got)
+	}
+}
+
+// gate replay は dispatcher.Job.ExecutionState を頼りに replay 時の task.Status を
+// 再現する。toAPIJob / toDispatcherJob のいずれかでこの値が落ちると CompleteJob 経由の
+// UpdateJob が空文字で上書きしてしまい、replay が永続的に不可能になる。往復で値が
+// 保たれることを保証する回帰テスト。
+func TestToAPIJob_PreservesExecutionState(t *testing.T) {
+	now := time.Now().UTC()
+	src := &dispatcher.Job{
+		ID:             "job-1",
+		TaskID:         "task-1",
+		ProjectID:      "proj-1",
+		HandlerID:      "kit/handler",
+		Role:           "gate",
+		RuntimeID:      "rt-1",
+		Interactive:    true,
+		TTY:            true,
+		Status:         dispatcher.JobStatusCompleted,
+		ExitCode:       0,
+		Output:         "ok",
+		ExecutionState: "verifying",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	got := toAPIJob(src)
+	if got.ExecutionState != "verifying" {
+		t.Fatalf("toAPIJob dropped ExecutionState: got %q, want %q", got.ExecutionState, "verifying")
+	}
+}
+
+func TestToDispatcherJob_PreservesExecutionState(t *testing.T) {
+	now := time.Now().UTC()
+	src := &api.Job{
+		ID:             "job-1",
+		TaskID:         "task-1",
+		ProjectID:      "proj-1",
+		HandlerID:      "kit/handler",
+		Role:           "gate",
+		RuntimeID:      "rt-1",
+		Interactive:    true,
+		TTY:            true,
+		Status:         api.JobStatusCompleted,
+		ExitCode:       0,
+		Output:         "ok",
+		ExecutionState: "done",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	got := toDispatcherJob(src)
+	if got.ExecutionState != "done" {
+		t.Fatalf("toDispatcherJob dropped ExecutionState: got %q, want %q", got.ExecutionState, "done")
 	}
 }
