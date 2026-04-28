@@ -80,15 +80,11 @@ run_scenario() {
     set -euo pipefail
 
     ROOT="$(mktemp -d "${TMPDIR:-/tmp}/boid-e2e-${scenario}-XXXXXX")"
-    SERVER_PID=""
 
     cleanup() {
       local exit_code=$?
 
-      if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" >/dev/null 2>&1; then
-        kill -TERM "$SERVER_PID" >/dev/null 2>&1 || true
-        wait "$SERVER_PID" >/dev/null 2>&1 || true
-      fi
+      "$E2E_BIN_DIR/boid" stop >/dev/null 2>&1 || true
 
       if [[ $exit_code -ne 0 || $KEEP_TEMP -eq 1 ]]; then
         printf '[e2e] temp root preserved at %s\n' "$ROOT" >&2
@@ -141,8 +137,7 @@ run_scenario() {
       --kits-dir "$XDG_DATA_HOME/boid/kits" \
       --key-file-path "$XDG_DATA_HOME/boid/boid-secret.key" \
       >"$E2E_LOG_DIR/server.stdout.log" \
-      2>"$E2E_LOG_DIR/server.stderr.log" &
-    SERVER_PID=$!
+      2>"$E2E_LOG_DIR/server.stderr.log"
 
     e2e_run "$E2E_BIN_DIR/boid-e2e" wait-health --timeout 15s --interval 100ms "$BOID_SOCKET"
 
