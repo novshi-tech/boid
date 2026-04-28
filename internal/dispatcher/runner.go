@@ -124,6 +124,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	if spec.Kind == orchestrator.JobKindGate {
 		hostWorktree, herr := r.ensureHostGateWorktree(spec, resolvedWorktreePath)
 		if herr != nil {
+			r.failJob(j, herr)
 			if cleanup != nil {
 				cleanup()
 			}
@@ -187,6 +188,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 
 	sbSpec, err := BuildSandboxSpec(spec, rtInfo)
 	if err != nil {
+		r.failJob(j, err)
 		if cleanup != nil {
 			cleanup()
 		}
@@ -273,6 +275,17 @@ func (r *Runner) trackToken(jobID, token string) {
 		r.jobTokens = make(map[string]string)
 	}
 	r.jobTokens[jobID] = token
+}
+
+// failJob marks j as failed in the DB. Used for errors that occur after
+// CreateJob but before the sandbox is launched, so orphan running rows do not
+// accumulate in the jobs table.
+func (r *Runner) failJob(j *Job, cause error) {
+	j.Status = JobStatusFailed
+	j.Output = cause.Error()
+	if err := UpdateJob(r.DB, j); err != nil {
+		slog.Warn("persist pre-launch job failure", "job_id", j.ID, "error", err)
+	}
 }
 
 // WaitForJob registers a channel that will receive the job completion result.
