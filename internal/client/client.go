@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -346,12 +347,15 @@ func (c *Client) RerunTask(id string, autoStart bool) (*orchestrator.Task, error
 }
 
 // ReplayGate replays a gate via POST /api/tasks/{taskID}/gates/{gateID}/replay.
+// gateID は kit-name/gate-name 形式で '/' を含むため、chi の単一セグメント
+// マッチに合わせて PathEscape で %2F に変換する。
 func (c *Client) ReplayGate(taskID, gateID, overrideStatus string) (*api.ReplayGateResult, error) {
 	type body struct {
 		Status string `json:"status,omitempty"`
 	}
+	path := fmt.Sprintf("/api/tasks/%s/gates/%s/replay", url.PathEscape(taskID), url.PathEscape(gateID))
 	var result api.ReplayGateResult
-	if err := c.Do("POST", "/api/tasks/"+taskID+"/gates/"+gateID+"/replay", body{Status: overrideStatus}, &result); err != nil {
+	if err := c.Do("POST", path, body{Status: overrideStatus}, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
