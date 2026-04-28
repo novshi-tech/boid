@@ -35,7 +35,7 @@ func main() {
 			}
 			os.Exit(exitCode)
 		}
-		shimMain(command)
+		shimMain()
 		return
 	}
 
@@ -49,7 +49,7 @@ func shouldRunBoidBuiltinShim(command string) bool {
 	return command == "boid" && os.Getenv("BOID_BUILTIN_SHIM") != ""
 }
 
-func shimMain(command string) {
+func shimMain() {
 	brokerSocket := os.Getenv("BOID_BROKER_SOCKET")
 	if brokerSocket == "" {
 		fmt.Fprintf(os.Stderr, "boid shim: BOID_BROKER_SOCKET not set\n")
@@ -58,7 +58,7 @@ func shimMain(command string) {
 
 	stdin := readStdinNonBlocking()
 
-	resp, err := sandbox.ShimExec(brokerSocket, command, os.Args[1:], stdin)
+	resp, err := sandbox.ShimExec(brokerSocket, os.Args[0], os.Args[1:], stdin)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "boid shim: %v\n", err)
 		os.Exit(1)

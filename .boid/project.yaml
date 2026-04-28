@@ -9,7 +9,8 @@ kits:
 host_commands:
   playwright-cli:
     allow: ['*']
-
+  run-e2e:
+    path: e2e/run.sh
 commands:
   claude:
     command:

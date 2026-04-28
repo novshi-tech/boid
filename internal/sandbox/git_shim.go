@@ -78,7 +78,7 @@ func shimExecGit(brokerSocket string, args []string, gitReq *GitRequest) (*ExecR
 	cwd, _ := os.Getwd()
 	token := os.Getenv("BOID_BROKER_TOKEN")
 	req := ExecRequest{
-		Command: "git",
+		Command: shimBinaryPath(os.Args[0]),
 		Args:    append([]string(nil), args...),
 		Cwd:     cwd,
 		Token:   token,

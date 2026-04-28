@@ -167,14 +167,21 @@ func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
 		return &ExecResponse{ExitCode: 1, Stderr: "invalid token"}
 	}
 
-	if req.Command == "boid" {
+	// Boid builtin is identified by the typed payload, not by the binary path.
+	// The shim only attaches req.Boid when the caller went through the boid
+	// CLI shim entry point.
+	if req.Boid != nil {
 		return b.handleBoidBuiltin(req, entry)
 	}
-	if req.Command == "git" {
+
+	// Git builtin: shim mount target's basename is the only stable name we
+	// have on the broker side. The mount target equals the host's git binary
+	// (e.g. /usr/bin/git), so basename(req.Command) == "git" identifies it.
+	if filepath.Base(req.Command) == "git" {
 		if entry.hasBuiltinPolicy("git") {
 			return handleGitBuiltinRequest(req, entry)
 		}
-		if def, ok := entry.Commands["git"]; ok {
+		if def, ok := entry.Commands[req.Command]; ok {
 			return b.execCommand(req, def, entry)
 		}
 		return &ExecResponse{ExitCode: 1, Stderr: "command not allowed: git"}
@@ -182,16 +189,15 @@ func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
 
 	def, ok := entry.Commands[req.Command]
 	if !ok {
-		return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("command not allowed: %s", req.Command)}
+		return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("command not allowed: %s", filepath.Base(req.Command))}
 	}
 
 	return b.execCommand(req, def, entry)
 }
 
 func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecResponse {
-	if req.Boid == nil {
-		return &ExecResponse{ExitCode: 1, Stderr: "typed boid request required"}
-	}
+	// req.Boid is guaranteed non-nil — Handle dispatches here only when the
+	// shim attaches a typed boid payload.
 	if !entry.hasBuiltinPolicy("boid") {
 		return &ExecResponse{ExitCode: 1, Stderr: "command not allowed: boid"}
 	}

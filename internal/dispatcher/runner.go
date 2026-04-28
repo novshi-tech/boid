@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"sort"
 	"sync"
 
@@ -136,8 +137,26 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	workspaceID, projectWorkDir, _ := r.resolveProjectRuntime(spec.ProjectID)
 	workspacePeers := r.resolveWorkspacePeers(workspaceID, spec.ProjectID)
 
+	var resolvedHostCommands map[string]orchestrator.CommandDef
+	if len(spec.HostCommands) > 0 || len(spec.BuiltinPolicies) > 0 {
+		var err error
+		resolvedHostCommands, err = ResolveHostCommands(
+			sortedKeys(spec.BuiltinPolicies),
+			spec.HostCommands,
+			projectWorkDir,
+			exec.LookPath,
+		)
+		if err != nil {
+			r.failJob(j, err)
+			if cleanup != nil {
+				cleanup()
+			}
+			return "", err
+		}
+	}
+
 	var brokerSocket, brokerToken string
-	if r.Broker != nil && (len(spec.BuiltinPolicies) > 0 || len(spec.HostCommands) > 0) {
+	if r.Broker != nil && (len(spec.BuiltinPolicies) > 0 || len(resolvedHostCommands) > 0) {
 		tokenCtx := sandbox.TokenContext{
 			JobID:             j.ID,
 			TaskID:            spec.TaskID,
@@ -159,7 +178,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			}
 		}
 		brokerToken = r.Broker.RegisterCommands(
-			spec.HostCommands,
+			resolvedHostCommands,
 			PoliciesToSandbox(spec.BuiltinPolicies),
 			tokenCtx,
 			resolve,
@@ -169,14 +188,15 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	}
 
 	rtInfo := SandboxRuntimeInfo{
-		JobID:          j.ID,
-		BoidBinary:     r.BoidBinary,
-		ServerSocket:   r.ServerSocket,
-		ProxyPort:      r.proxyPort(),
-		BrokerSocket:   brokerSocket,
-		BrokerToken:    brokerToken,
-		WorktreeDir:    worktreePath,
-		WorkspacePeers: workspacePeers,
+		JobID:                j.ID,
+		BoidBinary:           r.BoidBinary,
+		ServerSocket:         r.ServerSocket,
+		ProxyPort:            r.proxyPort(),
+		BrokerSocket:         brokerSocket,
+		BrokerToken:          brokerToken,
+		WorktreeDir:          worktreePath,
+		WorkspacePeers:       workspacePeers,
+		ResolvedHostCommands: resolvedHostCommands,
 	}
 	// Server socket is only exposed to jobs that have no broker policies
 	// attached — i.e. boid exec invocations that need to talk to the daemon

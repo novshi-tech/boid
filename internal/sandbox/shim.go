@@ -12,12 +12,30 @@ func CommandFromArgv0(argv0 string) string {
 	return filepath.Base(argv0)
 }
 
-func ShimExec(brokerSocket, command string, args []string, stdin []byte) (*ExecResponse, error) {
+// shimBinaryPath returns the absolute path of the shim binary as it appears
+// inside the sandbox. For host commands this equals the bind-mount target
+// (e.g. /usr/bin/gh, /home/user/proj/e2e/run.sh), which is the canonical key
+// the broker uses to identify the requested host command. The fallback to
+// argv0 covers exotic environments where /proc/self/exe is unavailable.
+func shimBinaryPath(argv0 string) string {
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		return exe
+	}
+	if filepath.IsAbs(argv0) {
+		return argv0
+	}
+	if abs, err := filepath.Abs(argv0); err == nil {
+		return abs
+	}
+	return argv0
+}
+
+func ShimExec(brokerSocket, argv0 string, args []string, stdin []byte) (*ExecResponse, error) {
 	cwd, _ := os.Getwd()
 	token := os.Getenv("BOID_BROKER_TOKEN")
 
 	req := ExecRequest{
-		Command: command,
+		Command: shimBinaryPath(argv0),
 		Args:    args,
 		Cwd:     cwd,
 		Token:   token,

@@ -231,7 +231,7 @@ func TestProjectVisibilityMounts_WorktreeMode_OrigGitReadOnly(t *testing.T) {
 	}
 }
 
-// boid と git は hostCommandMounts に含まれない（専用の bind mount が別途生成される）。
+// boid と git は ResolveHostCommands に含まれない（専用の bind mount が別途生成される）。
 // その他の host commands はホスト実パスに bind mount される。
 func TestHostCommandMounts_BoidAndGitExcluded(t *testing.T) {
 	fakeLookPath := func(name string) (string, error) {
@@ -241,10 +241,11 @@ func TestHostCommandMounts_BoidAndGitExcluded(t *testing.T) {
 		"gh":  {},
 		"git": {},
 	}
-	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{"boid", "git"}, hostCmds, fakeLookPath)
+	resolved, err := ResolveHostCommands([]string{"boid", "git"}, hostCmds, "", fakeLookPath)
 	if err != nil {
-		t.Fatalf("hostCommandMounts: %v", err)
+		t.Fatalf("ResolveHostCommands: %v", err)
 	}
+	mounts := hostCommandMounts("/usr/local/bin/boid", resolved)
 	for _, m := range mounts {
 		if m.Target == "/usr/bin/boid" || m.Target == "/usr/bin/git" {
 			t.Errorf("boid/git must not get host command mount, got target=%q", m.Target)
@@ -267,7 +268,7 @@ func TestHostCommandMounts_NotFound(t *testing.T) {
 		return "", fmt.Errorf("not found")
 	}
 	hostCmds := map[string]orchestrator.CommandDef{"missing-cmd": {}}
-	_, err := hostCommandMounts("/usr/local/bin/boid", []string{}, hostCmds, fakeLookPath)
+	_, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath)
 	if err == nil {
 		t.Error("expected error for missing host command, got nil")
 	}
@@ -279,10 +280,11 @@ func TestHostCommandMounts_BindsAtHostPath(t *testing.T) {
 		return "/usr/local/bin/" + name, nil
 	}
 	hostCmds := map[string]orchestrator.CommandDef{"gh": {}}
-	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{}, hostCmds, fakeLookPath)
+	resolved, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath)
 	if err != nil {
-		t.Fatalf("hostCommandMounts: %v", err)
+		t.Fatalf("ResolveHostCommands: %v", err)
 	}
+	mounts := hostCommandMounts("/usr/local/bin/boid", resolved)
 	if len(mounts) != 1 {
 		t.Fatalf("expected 1 mount, got %d", len(mounts))
 	}
@@ -307,16 +309,18 @@ func TestHostCommandMounts_Dedup(t *testing.T) {
 		return "/usr/bin/" + name, nil
 	}
 	hostCmds := map[string]orchestrator.CommandDef{"gh": {}}
-	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{"gh"}, hostCmds, fakeLookPath)
+	resolved, err := ResolveHostCommands([]string{"gh"}, hostCmds, "", fakeLookPath)
 	if err != nil {
-		t.Fatalf("hostCommandMounts: %v", err)
+		t.Fatalf("ResolveHostCommands: %v", err)
 	}
+	mounts := hostCommandMounts("/usr/local/bin/boid", resolved)
 	if len(mounts) != 1 {
 		t.Errorf("expected 1 mount (dedup), got %d", len(mounts))
 	}
 }
 
 // CommandDef.Path 指定あり → lookPath は呼ばれず def.Path が Target になる。
+// run-e2e のような別名キーが Path 指定されたファイル位置に bind mount されるケース。
 func TestHostCommandMounts_PathSpecified_SkipsLookPath(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := dir + "/run-e2e.sh"
@@ -331,10 +335,11 @@ func TestHostCommandMounts_PathSpecified_SkipsLookPath(t *testing.T) {
 	hostCmds := map[string]orchestrator.CommandDef{
 		"run-e2e": {Path: scriptPath},
 	}
-	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{}, hostCmds, fakeLookPath)
+	resolved, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath)
 	if err != nil {
-		t.Fatalf("hostCommandMounts: %v", err)
+		t.Fatalf("ResolveHostCommands: %v", err)
 	}
+	mounts := hostCommandMounts("/usr/local/bin/boid", resolved)
 	if lookPathCalled {
 		t.Error("lookPath must not be called when CommandDef.Path is set")
 	}
@@ -344,6 +349,46 @@ func TestHostCommandMounts_PathSpecified_SkipsLookPath(t *testing.T) {
 	if mounts[0].Target != scriptPath {
 		t.Errorf("mount target = %q, want %q", mounts[0].Target, scriptPath)
 	}
+	// resolved map のキーも絶対パス、broker に渡る Path も同じ絶対パスである
+	// ことを確認 (shim の os.Executable() lookup と一致する不変条件)。
+	def, ok := resolved[scriptPath]
+	if !ok {
+		t.Fatalf("resolved map must be keyed by absolute path %q", scriptPath)
+	}
+	if def.Path != scriptPath {
+		t.Errorf("resolved def.Path = %q, want %q", def.Path, scriptPath)
+	}
+	if def.Name != "run-e2e" {
+		t.Errorf("resolved def.Name = %q, want run-e2e", def.Name)
+	}
+}
+
+// host_commands.<name>.path の相対パスは projectDir 基準で解決される。
+func TestHostCommandMounts_RelativePathResolvedFromProjectDir(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(projectDir+"/e2e", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := projectDir + "/e2e/run.sh"
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hostCmds := map[string]orchestrator.CommandDef{
+		"run-e2e": {Path: "e2e/run.sh"},
+	}
+	resolved, err := ResolveHostCommands(nil, hostCmds, projectDir, func(string) (string, error) {
+		return "", fmt.Errorf("lookPath should not be called")
+	})
+	if err != nil {
+		t.Fatalf("ResolveHostCommands: %v", err)
+	}
+	def, ok := resolved[scriptPath]
+	if !ok {
+		t.Fatalf("resolved must contain absolute key %q, got %v", scriptPath, resolved)
+	}
+	if def.Path != scriptPath {
+		t.Errorf("def.Path = %q, want %q", def.Path, scriptPath)
+	}
 }
 
 // CommandDef.Path 空 → lookPath 結果が Target になる（従来挙動の回帰防止）。
@@ -352,10 +397,11 @@ func TestHostCommandMounts_PathEmpty_UsesLookPath(t *testing.T) {
 		return "/usr/bin/" + name, nil
 	}
 	hostCmds := map[string]orchestrator.CommandDef{"gh": {}}
-	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{}, hostCmds, fakeLookPath)
+	resolved, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath)
 	if err != nil {
-		t.Fatalf("hostCommandMounts: %v", err)
+		t.Fatalf("ResolveHostCommands: %v", err)
 	}
+	mounts := hostCommandMounts("/usr/local/bin/boid", resolved)
 	if len(mounts) != 1 {
 		t.Fatalf("expected 1 mount, got %d", len(mounts))
 	}
@@ -374,7 +420,7 @@ func TestHostCommandMounts_PathDoesNotExist_Error(t *testing.T) {
 	hostCmds := map[string]orchestrator.CommandDef{
 		"run-e2e": {Path: missingPath},
 	}
-	_, err := hostCommandMounts("/usr/local/bin/boid", []string{}, hostCmds, fakeLookPath)
+	_, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath)
 	if err == nil {
 		t.Fatal("expected error for non-existent path, got nil")
 	}
@@ -397,10 +443,11 @@ func TestHostCommandMounts_MixedBuiltinAndPathCommand(t *testing.T) {
 	hostCmds := map[string]orchestrator.CommandDef{
 		"run-e2e": {Path: scriptPath},
 	}
-	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{"jq"}, hostCmds, fakeLookPath)
+	resolved, err := ResolveHostCommands([]string{"jq"}, hostCmds, "", fakeLookPath)
 	if err != nil {
-		t.Fatalf("hostCommandMounts: %v", err)
+		t.Fatalf("ResolveHostCommands: %v", err)
 	}
+	mounts := hostCommandMounts("/usr/local/bin/boid", resolved)
 	if len(mounts) != 2 {
 		t.Fatalf("expected 2 mounts, got %d", len(mounts))
 	}

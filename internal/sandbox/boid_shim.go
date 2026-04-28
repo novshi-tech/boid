@@ -25,7 +25,7 @@ func RunBoidShim(args []string) (*ExecResponse, error) {
 
 	cwd, _ := os.Getwd()
 	execReq := ExecRequest{
-		Command: "boid",
+		Command: shimBinaryPath(os.Args[0]),
 		Args:    append([]string(nil), args...),
 		Cwd:     cwd,
 		Token:   os.Getenv("BOID_BROKER_TOKEN"),

@@ -3,8 +3,6 @@ package dispatcher
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -49,6 +47,12 @@ type SandboxRuntimeInfo struct {
 	// to true; hook/gate jobs leave it false so stdout is captured and a
 	// `boid job done` trap posts completion back to the daemon.
 	Foreground bool
+
+	// ResolvedHostCommands is the absolute-path-keyed view of spec.HostCommands
+	// produced by ResolveHostCommands. The same map is registered with the
+	// broker so the shim's os.Executable() lookup hits a known key. Empty when
+	// the job declares no host commands.
+	ResolvedHostCommands map[string]orchestrator.CommandDef
 }
 
 // BuildSandboxSpec turns a business-level JobSpec and dispatcher-side runtime
@@ -220,18 +224,10 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 			ReadOnly: true,
 			Guard:    "-f /bin/git",
 		})
-		// 各 host command のホスト実パスに boid バイナリを bind mount し shim 化する。
-		// コマンドがホストに存在しない場合はジョブ起動時エラー (fail-fast)。
-		hostCmdMounts, err := hostCommandMounts(
-			rt.BoidBinary,
-			sortedKeys(spec.BuiltinPolicies),
-			spec.HostCommands,
-			exec.LookPath,
-		)
-		if err != nil {
-			return sandbox.Spec{}, err
-		}
-		mounts = append(mounts, hostCmdMounts...)
+		// 各 host command の解決済み絶対パスに boid バイナリを bind mount し
+		// shim 化する。解決は dispatcher 入り口 (runner / API / cmd exec) で
+		// 行い rt.ResolvedHostCommands に積む。ここでは target を作るだけ。
+		mounts = append(mounts, hostCommandMounts(rt.BoidBinary, rt.ResolvedHostCommands)...)
 	}
 
 	var cleanup []string
@@ -403,17 +399,16 @@ func additionalBindingMounts(bindings []orchestrator.BindMount) []sandbox.Mount 
 	return out
 }
 
-// hostCommandMounts resolves each host command to its actual path on the host
-// and returns bind mounts that overlay the boid shim binary on top.
-// boid and git are excluded (handled by dedicated mounts elsewhere).
-// Builtins are always resolved via lookPath. For host commands, def.Path is
-// used directly when non-empty (existence is verified via os.Stat); otherwise
-// lookPath is called. Returns an error for any missing command (fail-fast).
-func hostCommandMounts(boidBinary string, builtins []string, hostCommands map[string]orchestrator.CommandDef, lookPath func(string) (string, error)) ([]sandbox.Mount, error) {
-	seen := map[string]struct{}{}
-	var out []sandbox.Mount
-	addMount := func(name, target string) {
-		seen[name] = struct{}{}
+// hostCommandMounts overlays the boid shim binary at every resolved host
+// command path. The map is already keyed by absolute mount target — see
+// ResolveHostCommands — so this function only constructs sandbox.Mount entries
+// in stable order for deterministic test output.
+func hostCommandMounts(boidBinary string, resolved map[string]orchestrator.CommandDef) []sandbox.Mount {
+	if len(resolved) == 0 {
+		return nil
+	}
+	out := make([]sandbox.Mount, 0, len(resolved))
+	for _, target := range sortedKeys(resolved) {
 		out = append(out, sandbox.Mount{
 			Source:   boidBinary,
 			Target:   target,
@@ -422,41 +417,7 @@ func hostCommandMounts(boidBinary string, builtins []string, hostCommands map[st
 			ReadOnly: true,
 		})
 	}
-	for _, n := range builtins {
-		if n == "boid" || n == "git" {
-			continue
-		}
-		if _, ok := seen[n]; ok {
-			continue
-		}
-		path, err := lookPath(n)
-		if err != nil {
-			return nil, fmt.Errorf("host command %q not found on host: %w", n, err)
-		}
-		addMount(n, path)
-	}
-	for _, name := range sortedKeys(hostCommands) {
-		if name == "boid" || name == "git" {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		def := hostCommands[name]
-		if def.Path != "" {
-			if _, err := os.Stat(def.Path); err != nil {
-				return nil, fmt.Errorf("host_commands.%s.path %q does not exist on host", name, def.Path)
-			}
-			addMount(name, def.Path)
-		} else {
-			path, err := lookPath(name)
-			if err != nil {
-				return nil, fmt.Errorf("host command %q not found on host: %w", name, err)
-			}
-			addMount(name, path)
-		}
-	}
-	return out, nil
+	return out
 }
 
 // buildPATH prepends additional-binding bin directories and the boid binary
