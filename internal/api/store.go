@@ -61,8 +61,9 @@ type CommandResponse struct {
 
 // CommandSummary is a single entry in the GET /api/projects/:id/commands response.
 type CommandSummary struct {
-	Name    string   `json:"name"`
-	Command []string `json:"command"`
+	Name     string   `json:"name"`
+	Command  []string `json:"command"`
+	Readonly bool     `json:"readonly,omitempty"`
 }
 
 type ProjectService interface {
@@ -121,6 +122,8 @@ type WebService interface {
 	RerunTask(id string, req RerunTaskRequest) error
 	ListGatesForStatus(taskID, status string) ([]orchestrator.Gate, error)
 	ReplayGate(ctx context.Context, taskID string, req ReplayGateRequest) (*ReplayGateResult, error)
+	GetProjectByID(id string) (*orchestrator.Project, error)
+	ListProjectCommands(projectID string) ([]CommandSummary, error)
 }
 
 type WorkflowService interface {

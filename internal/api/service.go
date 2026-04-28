@@ -263,7 +263,7 @@ func (s *ProjectAppService) ListCommands(id string) ([]CommandSummary, error) {
 	}
 	summaries := make([]CommandSummary, 0, len(meta.Commands))
 	for name, cmd := range meta.Commands {
-		summaries = append(summaries, CommandSummary{Name: name, Command: cmd.ResolvedCommand})
+		summaries = append(summaries, CommandSummary{Name: name, Command: cmd.ResolvedCommand, Readonly: cmd.Readonly})
 	}
 	sort.Slice(summaries, func(i, j int) bool { return summaries[i].Name < summaries[j].Name })
 	return summaries, nil
@@ -1020,6 +1020,30 @@ func (s *WebAppService) ReplayGate(ctx context.Context, taskID string, req Repla
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "gate service not configured"}
 	}
 	return s.Gates.ReplayGate(ctx, taskID, req)
+}
+
+func (s *WebAppService) GetProjectByID(id string) (*orchestrator.Project, error) {
+	project, err := s.Projects.GetProject(id)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	if meta, ok := s.Meta.Get(id); ok {
+		project.Meta = *meta
+	}
+	return project, nil
+}
+
+func (s *WebAppService) ListProjectCommands(projectID string) ([]CommandSummary, error) {
+	meta, ok := s.Meta.Get(projectID)
+	if !ok {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("project %q meta not loaded", projectID)}
+	}
+	summaries := make([]CommandSummary, 0, len(meta.Commands))
+	for name, cmd := range meta.Commands {
+		summaries = append(summaries, CommandSummary{Name: name, Command: cmd.ResolvedCommand, Readonly: cmd.Readonly})
+	}
+	sort.Slice(summaries, func(i, j int) bool { return summaries[i].Name < summaries[j].Name })
+	return summaries, nil
 }
 
 type TaskWorkflowService struct {
