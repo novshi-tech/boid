@@ -451,7 +451,11 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	// Web UI routes protected by session auth.
 	r.Group(func(r chi.Router) {
 		r.Use(auth.NewWebAuthMiddleware(runtime.sessionSigner, runtime.authStore))
-		webHandler := &api.WebHandler{Service: runtime.webSvc, Hub: runtime.hub}
+		webHandler := &api.WebHandler{
+			Service:    runtime.webSvc,
+			Hub:        runtime.hub,
+			Dispatcher: &commandDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner},
+		}
 		r.Get("/api/tasks/{id}/events", webHandler.TaskEvents)
 		r.Get("/api/jobs/{id}/attach/ws", (&api.WSAttachHandler{
 			Subscriber: runtime.runner,

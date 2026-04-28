@@ -16,21 +16,25 @@ import (
 
 // stubWebService is a full implementation of WebService for testing.
 type stubWebService struct {
-	tasks              []*orchestrator.Task
-	taskDetail         *TaskDetailView
-	jobDetail          *JobWithContext
-	projects           []*orchestrator.Project
-	behaviors          []string
-	workspaces         []*orchestrator.WorkspaceSummary
-	capturedFilter     orchestrator.TaskFilter
-	applyActionErr     error
-	applyActionCalls   []applyActionCall
-	duplicateTaskNewID string
-	duplicateTaskErr   error
-	createTaskResult   *orchestrator.Task
-	createTaskErr      error
-	updateTaskErr      error
-	updateTaskCalls    []UpdateTaskRequest
+	tasks                []*orchestrator.Task
+	taskDetail           *TaskDetailView
+	jobDetail            *JobWithContext
+	projects             []*orchestrator.Project
+	behaviors            []string
+	workspaces           []*orchestrator.WorkspaceSummary
+	capturedFilter       orchestrator.TaskFilter
+	applyActionErr       error
+	applyActionCalls     []applyActionCall
+	duplicateTaskNewID   string
+	duplicateTaskErr     error
+	createTaskResult     *orchestrator.Task
+	createTaskErr        error
+	updateTaskErr        error
+	updateTaskCalls      []UpdateTaskRequest
+	projectByID          *orchestrator.Project
+	projectByIDErr       error
+	projectCommands      []CommandSummary
+	projectCommandsErr   error
 }
 
 type applyActionCall struct {
@@ -105,6 +109,14 @@ func (s *stubWebService) ListGatesForStatus(taskID, status string) ([]orchestrat
 
 func (s *stubWebService) ReplayGate(ctx context.Context, taskID string, req ReplayGateRequest) (*ReplayGateResult, error) {
 	return &ReplayGateResult{}, nil
+}
+
+func (s *stubWebService) GetProjectByID(id string) (*orchestrator.Project, error) {
+	return s.projectByID, s.projectByIDErr
+}
+
+func (s *stubWebService) ListProjectCommands(projectID string) ([]CommandSummary, error) {
+	return s.projectCommands, s.projectCommandsErr
 }
 
 // stubWorkflowService implements WorkflowService for WebAppService tests.

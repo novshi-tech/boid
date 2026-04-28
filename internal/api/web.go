@@ -48,8 +48,9 @@ func detailTimelineGroups(detail *TaskDetailView) []timeline.StatusGroup {
 
 
 type WebHandler struct {
-	Service WebService
-	Hub     *TaskEventHub
+	Service    WebService
+	Hub        *TaskEventHub
+	Dispatcher CommandDispatcher
 }
 
 func (h *WebHandler) Routes() chi.Router {
@@ -68,6 +69,8 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Post("/tasks/{id}/gates/{gate_id}/replay", h.PostGateReplay)
 	r.Get("/jobs/{id}", h.JobDetail)
 	r.Get("/jobs/{id}/terminal", h.JobTerminal)
+	r.Get("/projects/{id}/commands", h.ProjectCommandList)
+	r.Post("/projects/{id}/commands/{name}/execute", h.PostProjectExecuteCommand)
 	return r
 }
 
@@ -490,6 +493,62 @@ func (h *WebHandler) JobTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 	wsPath := "/api/jobs/" + id + "/attach/ws"
 	templates.TerminalPage(buildJobTitle(view), "/jobs/"+id, id, wsPath).Render(r.Context(), w)
+}
+
+func (h *WebHandler) ProjectCommandList(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	project, err := h.Service.GetProjectByID(id)
+	if err != nil {
+		http.Error(w, "Project not found", http.StatusNotFound)
+		return
+	}
+
+	commands, err := h.Service.ListProjectCommands(id)
+	var errorMsg string
+	if err != nil {
+		errorMsg = err.Error()
+	}
+
+	views := make([]templates.CommandView, len(commands))
+	for i, cmd := range commands {
+		views[i] = templates.CommandView{
+			Name:     cmd.Name,
+			Command:  cmd.Command,
+			Readonly: cmd.Readonly,
+		}
+	}
+
+	projectName := project.Meta.Name
+	if projectName == "" {
+		projectName = project.ID
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templates.ProjectCommandList(projectName, id, views, errorMsg).Render(r.Context(), w)
+}
+
+func (h *WebHandler) PostProjectExecuteCommand(w http.ResponseWriter, r *http.Request) {
+	if h.Dispatcher == nil {
+		http.Error(w, "command execution not available", http.StatusNotImplemented)
+		return
+	}
+	projectID := chi.URLParam(r, "id")
+	commandName := chi.URLParam(r, "name")
+
+	result, err := h.Dispatcher.ExecuteCommand(r.Context(), projectID, commandName)
+	if err != nil {
+		backURL := "/projects/" + projectID + "/commands?error=" + url.QueryEscape(err.Error())
+		http.Redirect(w, r, backURL, http.StatusSeeOther)
+		return
+	}
+
+	termURL := "/jobs/" + result.JobID + "/terminal"
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", termURL)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, termURL, http.StatusSeeOther)
 }
 
 // buildJobTitle returns a display title for the job terminal page.
