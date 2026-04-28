@@ -107,6 +107,23 @@ func TestCheckPolicy(t *testing.T) {
 			expected: false,
 		},
 		{
+			name: "allowed subcommands with flags-only args permitted",
+			def: sandbox.CommandDef{
+				AllowedSubcommands: []string{"status", "log"},
+			},
+			args:     []string{"--version"},
+			expected: true,
+		},
+		{
+			name: "allowed subcommands with flags-only args blocked by denied pattern",
+			def: sandbox.CommandDef{
+				AllowedSubcommands: []string{"status", "log"},
+				DeniedPatterns:     []string{"--version"},
+			},
+			args:     []string{"--version"},
+			expected: false,
+		},
+		{
 			name: "deny takes precedence over allow",
 			def: sandbox.CommandDef{
 				AllowedPatterns: []string{"*"},
@@ -196,6 +213,11 @@ func TestCheckPolicy_GitKitPolicy(t *testing.T) {
 		args     []string
 		expected bool
 	}{
+		{
+			name:     "allow flags-only args like --version",
+			args:     []string{"--version"},
+			expected: true,
+		},
 		{
 			name:     "allow push to configured remote",
 			args:     []string{"push", "origin", "main"},
