@@ -154,8 +154,27 @@ func (b *Broker) handleConn(conn net.Conn) {
 		return
 	}
 
+	if req.Streaming {
+		b.handleStreamingExec(conn, &req)
+		return
+	}
+
 	resp := b.Handle(&req)
 	json.NewEncoder(conn).Encode(resp)
+}
+
+// sendStreamResponse converts a completed ExecResponse to the streaming chunk
+// format. Used when a boid/git builtin is called with Streaming=true, or as
+// a fallback on platforms where PTY-based streaming is unavailable.
+func sendStreamResponse(conn net.Conn, resp *ExecResponse) {
+	enc := json.NewEncoder(conn)
+	if resp.Stdout != "" {
+		_ = enc.Encode(&StreamChunk{Type: StreamTypeStdout, Data: resp.Stdout})
+	}
+	if resp.Stderr != "" {
+		_ = enc.Encode(&StreamChunk{Type: StreamTypeStderr, Data: resp.Stderr})
+	}
+	_ = enc.Encode(&StreamChunk{Type: StreamTypeExit, ExitCode: resp.ExitCode})
 }
 
 func (b *Broker) Handle(req *ExecRequest) *ExecResponse {

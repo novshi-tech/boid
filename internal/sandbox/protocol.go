@@ -6,19 +6,37 @@ import (
 )
 
 type ExecRequest struct {
-	Command string       `json:"command"`
-	Args    []string     `json:"args"`
-	Cwd     string       `json:"cwd,omitempty"`
-	Stdin   []byte       `json:"stdin,omitempty"`
-	Token   string       `json:"token"`
-	Boid    *BoidRequest `json:"boid,omitempty"`
-	Git     *GitRequest  `json:"git,omitempty"`
+	Command   string       `json:"command"`
+	Args      []string     `json:"args"`
+	Cwd       string       `json:"cwd,omitempty"`
+	Stdin     []byte       `json:"stdin,omitempty"`
+	Token     string       `json:"token"`
+	Boid      *BoidRequest `json:"boid,omitempty"`
+	Git       *GitRequest  `json:"git,omitempty"`
+	Streaming bool         `json:"streaming,omitempty"`
 }
 
 type ExecResponse struct {
 	ExitCode int    `json:"exit_code"`
 	Stdout   string `json:"stdout"`
 	Stderr   string `json:"stderr"`
+}
+
+// StreamChunk is one unit in the streaming host-command protocol (Streaming=true).
+//
+// Broker → Shim: type "stdout"/"stderr" carry Data; type "exit" carries ExitCode.
+// Shim → Broker: type "kill" requests SIGTERM on the host process group.
+const (
+	StreamTypeStdout = "stdout"
+	StreamTypeStderr = "stderr"
+	StreamTypeExit   = "exit"
+	StreamTypeKill   = "kill"
+)
+
+type StreamChunk struct {
+	Type     string `json:"type"`
+	Data     string `json:"data,omitempty"`
+	ExitCode int    `json:"exit_code,omitempty"`
 }
 
 type BoidOp string
