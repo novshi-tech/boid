@@ -186,6 +186,67 @@ func TestBuildExecJob_ArgvPreserved(t *testing.T) {
 	}
 }
 
+// TestBuildExecJob_ResolvedHostCommandsWired verifies that host_commands
+// declared at the project level reach SandboxRuntimeInfo.ResolvedHostCommands
+// via the broker register API. Without this wiring the shim bind-mounts are
+// silently dropped and host commands run as their raw script inside the
+// sandbox (regression: e2e/run.sh executed unshimmed).
+func TestBuildExecJob_ResolvedHostCommandsWired(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	kitDir := filepath.Join(boidDir, "kits", "agent")
+	if err := os.MkdirAll(kitDir, 0o755); err != nil {
+		t.Fatalf("mkdir kit: %v", err)
+	}
+
+	scriptPath := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	projectYAML := "id: proj-hc\nname: proj-hc\n" +
+		"host_commands:\n  run-it:\n    path: run.sh\n" +
+		"commands:\n  test-cmd:\n    command: [bash]\n    kits:\n      - agent\n"
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
+		t.Fatalf("write project yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write kit yaml: %v", err)
+	}
+
+	var project struct {
+		ID string `json:"id"`
+	}
+	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	setTestSocket(t, ts.Server.SocketPath())
+
+	prepared, err := buildExecJob("proj-hc", "test-cmd")
+	if err != nil {
+		t.Fatalf("buildExecJob: %v", err)
+	}
+
+	resolved := prepared.rt.ResolvedHostCommands
+	if _, ok := resolved[scriptPath]; !ok {
+		t.Fatalf("ResolvedHostCommands missing %q; got keys %v", scriptPath, mapKeys(resolved))
+	}
+	if got := resolved[scriptPath].Path; got != scriptPath {
+		t.Errorf("ResolvedHostCommands[%q].Path = %q, want %q", scriptPath, got, scriptPath)
+	}
+}
+
+func mapKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 func TestBuildExecJob_CommandNotFound(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 

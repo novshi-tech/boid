@@ -99,10 +99,12 @@ func buildExecJob(projectID, commandName string) (*execPreparedJob, error) {
 	})
 
 	var brokerSocket, brokerToken string
+	var resolvedHostCommands map[string]orchestrator.CommandDef
 	if len(spec.HostCommands) > 0 || len(spec.BuiltinPolicies) > 0 {
 		var brokerResp struct {
-			Token  string `json:"token"`
-			Socket string `json:"socket"`
+			Token                string                                `json:"token"`
+			Socket               string                                `json:"socket"`
+			ResolvedHostCommands map[string]orchestrator.CommandDef    `json:"resolved_host_commands,omitempty"`
 		}
 		regReq := map[string]any{
 			"commands":         cmd.HostCommands,
@@ -112,18 +114,20 @@ func buildExecJob(projectID, commandName string) (*execPreparedJob, error) {
 		if err := c.Do("POST", "/api/broker/register", regReq, &brokerResp); err == nil {
 			brokerSocket = brokerResp.Socket
 			brokerToken = brokerResp.Token
+			resolvedHostCommands = brokerResp.ResolvedHostCommands
 		}
 	}
 
 	rt := dispatcher.SandboxRuntimeInfo{
-		JobID:          fmt.Sprintf("exec-%s", projectID),
-		BoidBinary:     boidBinary,
-		ServerSocket:   client.DefaultSocketPath(),
-		ProxyPort:      proxyInfo.Port,
-		BrokerSocket:   brokerSocket,
-		BrokerToken:    brokerToken,
-		Foreground:     true,
-		WorkspacePeers: workspacePeers,
+		JobID:                fmt.Sprintf("exec-%s", projectID),
+		BoidBinary:           boidBinary,
+		ServerSocket:         client.DefaultSocketPath(),
+		ProxyPort:            proxyInfo.Port,
+		BrokerSocket:         brokerSocket,
+		BrokerToken:          brokerToken,
+		Foreground:           true,
+		WorkspacePeers:       workspacePeers,
+		ResolvedHostCommands: resolvedHostCommands,
 	}
 	return &execPreparedJob{spec: spec, rt: rt}, nil
 }

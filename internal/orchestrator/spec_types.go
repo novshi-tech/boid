@@ -28,13 +28,13 @@ type HookFile struct {
 // CommandDef is the orchestrator-side transport shape for sandbox command policy input.
 // Dispatcher and sandbox mirror this shape; sandbox owns the enforcement semantics.
 type CommandDef struct {
-	Name               string
-	Path               string
-	AllowedPatterns    []string
-	DeniedPatterns     []string
-	AllowedSubcommands []string
-	AllowStdin         bool
-	Env                map[string]string
+	Name               string            `json:"name,omitempty"`
+	Path               string            `json:"path,omitempty"`
+	AllowedPatterns    []string          `json:"allowed_patterns,omitempty"`
+	DeniedPatterns     []string          `json:"denied_patterns,omitempty"`
+	AllowedSubcommands []string          `json:"allowed_subcommands,omitempty"`
+	AllowStdin         bool              `json:"allow_stdin,omitempty"`
+	Env                map[string]string `json:"env,omitempty"`
 }
 
 // HostCommandSpec is the simplified YAML DSL for declaring host commands.

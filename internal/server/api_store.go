@@ -146,8 +146,9 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 	}
 	token := r.broker.RegisterCommands(resolved, builtinPolicies, ctx, resolve)
 	return &api.BrokerRegisterResponse{
-		Token:  token,
-		Socket: r.broker.SocketPath(),
+		Token:                token,
+		Socket:               r.broker.SocketPath(),
+		ResolvedHostCommands: resolved,
 	}, nil
 }
 
