@@ -476,6 +476,46 @@ func TestContextFiles_PayloadWrittenForInteractiveHook(t *testing.T) {
 	}
 }
 
+func TestBuildExitScript_FallbackChecksFileExistence(t *testing.T) {
+	const jobID = "test-job-id"
+	const payload = "/home/agent/.boid/output/payload_patch.json"
+	const fallback = "/tmp/boid-output"
+
+	script := buildExitScript(jobID, payload, fallback)
+
+	// payload branch
+	if !strings.Contains(script, fmt.Sprintf("if [ -f %q ]", payload)) {
+		t.Errorf("expected if-check for payload file\n%s", script)
+	}
+	// fallback branch must use elif (not else) so that boid job done is only
+	// called with --output-file when the file actually exists at runtime.
+	// TTY jobs do not capture stdout to a file, so the fallback may be absent.
+	if !strings.Contains(script, fmt.Sprintf("elif [ -f %q ]", fallback)) {
+		t.Errorf("expected elif-check for fallback file\n%s", script)
+	}
+	// final else must call boid job done without --output-file
+	if !strings.Contains(script, fmt.Sprintf("  boid job done %s --exit-code $_exit\n", jobID)) {
+		t.Errorf("expected bare boid job done in else branch\n%s", script)
+	}
+}
+
+func TestBuildExitScript_NoFallback(t *testing.T) {
+	const jobID = "test-job-id"
+	const payload = "/home/agent/.boid/output/payload_patch.json"
+
+	script := buildExitScript(jobID, payload, "")
+
+	if !strings.Contains(script, fmt.Sprintf("if [ -f %q ]", payload)) {
+		t.Errorf("expected if-check for payload file\n%s", script)
+	}
+	if strings.Contains(script, "elif") {
+		t.Errorf("expected no elif when fallback is empty\n%s", script)
+	}
+	if !strings.Contains(script, fmt.Sprintf("  boid job done %s --exit-code $_exit\n", jobID)) {
+		t.Errorf("expected bare boid job done in else branch\n%s", script)
+	}
+}
+
 func TestContextFiles_NoPayloadFilesWhenPrimaryInputEmpty(t *testing.T) {
 	inst := &orchestrator.RoutedInstruction{
 		Role:        "main",

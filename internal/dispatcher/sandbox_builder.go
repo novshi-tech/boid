@@ -474,6 +474,8 @@ func buildPATH(bindings []orchestrator.BindMount, boidBinary string) string {
 }
 
 // buildExitScript renders the EXIT trap that calls `boid job done`.
+// stdoutFallback is only used when the file actually exists at runtime
+// (TTY jobs do not capture stdout to a file, so the fallback may be absent).
 func buildExitScript(jobID, payloadFile, stdoutFallback string) string {
 	var b strings.Builder
 	b.WriteString("_exit=$?\n")
@@ -481,8 +483,10 @@ func buildExitScript(jobID, payloadFile, stdoutFallback string) string {
 	fmt.Fprintf(&b, "if [ -f %q ]; then\n", payloadFile)
 	fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit --output-file %q\n", jobID, payloadFile)
 	if stdoutFallback != "" {
-		b.WriteString("else\n")
+		fmt.Fprintf(&b, "elif [ -f %q ]; then\n", stdoutFallback)
 		fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit --output-file %q\n", jobID, stdoutFallback)
+		b.WriteString("else\n")
+		fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit\n", jobID)
 	} else {
 		b.WriteString("else\n")
 		fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit\n", jobID)
