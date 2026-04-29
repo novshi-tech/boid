@@ -213,7 +213,7 @@ web:
 
 ### 認証されない状態でのアクセス
 
-- `--web` 起動後、`web_devices` が 1 行もなく、かつ remote が loopback なら「パスする & daemon ログに `boid web pair` 実行を促す警告」
+- daemon 起動後、`web_devices` が 1 行もなく、かつ remote が loopback なら「パスする & daemon ログに `boid web pair` 実行を促す警告」
 - その状態で外部 IP アクセスは即 `/login`
 - `/login` では pairing code 入力フォームのみ
 
@@ -603,7 +603,7 @@ Heroicons から必要分のみ直書き:
 
 **ユニットテスト・静的解析**: `go vet ./...` pass / `go test ./... -race` pass (2026-04-24)
 
-**運用メモ**: 手動確認はサンドボックス外 (ホスト上で `boid start --web`) で実施すること。
+**運用メモ**: 手動確認はサンドボックス外 (ホスト上で `boid start`) で実施すること。
 Tunnel 経由の WS は CloudflareのWebSocket サポートに依存するため、確認後に上記テーブルを更新すること。
 
 ## 並列 dev タスクの全体コンフリクト指針
@@ -647,7 +647,7 @@ Phase 1 完了時に CLAUDE.md へ以下のセクションを追加:
 ```markdown
 ## Web UI
 
-- `--web` フラグ付きで daemon 起動すると Web UI が有効化される
+- `boid start` のデフォルトで Web UI は有効 (`http://localhost:8080`、 listen は `--http-addr` で変更可)
 - 初回は `boid web pair` でペアリングコード (5 分有効、単回) を発行、コード / URL / QR で登録
 - デバイス管理: `boid web devices` / `boid web revoke <id>` / `boid web revoke-all`
 - loopback (127.0.0.1/::1) からはペアリング不要、外部公開 (Cloudflare Tunnel 等) からは必須
@@ -661,7 +661,7 @@ Cloudflare Tunnel 公開手順は docs/plans/web-ui-rebuild.md を参照。
 
 ### Cloudflare Tunnel 設定例
 
-boid daemon を `--web --web-listen 127.0.0.1:5171` で起動し、Cloudflare Tunnel で `https://boid.example.com → http://127.0.0.1:5171` に向ける。トンネル側での認証 (Cloudflare Access) は必須ではないが、二段目として入れると IdP + MFA が使えるようになる。
+boid daemon を `--http-addr 127.0.0.1:5171` で起動し、Cloudflare Tunnel で `https://boid.example.com → http://127.0.0.1:5171` に向ける。トンネル側での認証 (Cloudflare Access) は必須ではないが、二段目として入れると IdP + MFA が使えるようになる。
 
 ### 紛失時のリカバリ
 
@@ -669,10 +669,9 @@ boid daemon を `--web --web-listen 127.0.0.1:5171` で起動し、Cloudflare Tu
 2. `boid web revoke-all` で全デバイス失効
 3. `boid web pair` で新デバイスを再登録
 
-### Web UI を無効化したい時
+### Web UI の listen 制限
 
-- `config.yaml` の `web.enabled: false` (既存)
-- または `--web` フラグ外して再起動
+Web UI を完全に無効化するフラグは現状提供されていない。 外部からのアクセスを避けたい場合は `--http-addr 127.0.0.1:8080` などで loopback に bind を限定する。
 
 ## 変更履歴
 
