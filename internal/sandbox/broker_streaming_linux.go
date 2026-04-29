@@ -73,12 +73,10 @@ func (b *Broker) execCommandStreaming(conn net.Conn, req *ExecRequest, def Comma
 		cmd.Dir = cwd
 	}
 
-	// Build environment: inherit host env, then overlay def.Env.
-	// Always set TERM so child programs behave correctly on the PTY.
-	env := os.Environ()
-	for k, v := range def.Env {
-		env = append(env, k+"="+v)
-	}
+	// Build environment: inherit host env minus BOID_* internal markers,
+	// then overlay def.Env. Always set TERM so child programs behave
+	// correctly on the PTY.
+	env := hostCommandEnv(def.Env)
 	if !envContains(env, "TERM=") {
 		env = append(env, "TERM=xterm-256color")
 	}

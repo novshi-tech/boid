@@ -418,12 +418,7 @@ func (b *Broker) execCommand(req *ExecRequest, def CommandDef, entry *tokenEntry
 		cmd.Stdin = bytes.NewReader(req.Stdin)
 	}
 
-	if len(def.Env) > 0 {
-		cmd.Env = os.Environ()
-		for k, v := range def.Env {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
-	}
+	cmd.Env = hostCommandEnv(def.Env)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -440,6 +435,27 @@ func (b *Broker) execCommand(req *ExecRequest, def CommandDef, entry *tokenEntry
 	}
 
 	return &ExecResponse{ExitCode: exitCode, Stdout: stdout.String(), Stderr: stderr.String()}
+}
+
+// hostCommandEnv builds the environment passed to a host_command child
+// process. It inherits the broker's environment minus BOID_* internal markers
+// (notably BOID_DAEMON_CHILD, which would otherwise re-enter daemon-child
+// mode in any boid CLI invoked by the host_command, and BOID_BROKER_SOCKET /
+// BOID_BROKER_TOKEN, which would let the child speak to the broker as if it
+// were a sandbox process). defEnv overlays the inherited values when set.
+func hostCommandEnv(defEnv map[string]string) []string {
+	base := os.Environ()
+	out := make([]string, 0, len(base)+len(defEnv))
+	for _, kv := range base {
+		if strings.HasPrefix(kv, "BOID_") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	for k, v := range defEnv {
+		out = append(out, k+"="+v)
+	}
+	return out
 }
 
 // resolveHostCommandCwd decides the working directory for a host command.
