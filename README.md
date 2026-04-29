@@ -9,8 +9,8 @@
 - **Use the tools you already installed.** Hand the agent your local Claude Code, Codex, git, gh, editors, and language toolchains. Cloud-side agent sandboxes can't touch your real environment; this one does.
 - **Up and running in two commands.** `go install`, then `boid start`. No config file, no server provisioning, no signup.
 - **The task model is built in.** Request → execute → verify → rework → done, with the data captured at each step pre-defined. You don't have to re-explain context every time the agent loops back.
-- **Bound the write scope with a sandbox.** The agent reads your real directories directly, but its writes are confined to a git worktree or a similarly limited scope. A runaway agent cannot reach your home directory or other projects.
-- **Run several requests in parallel.** Each task gets its own git worktree, so concurrent jobs don't trip over each other.
+- **Bound the write scope with a sandbox.** The agent reads your real directories directly, but its writes are confined to a scope you choose (typically a git worktree). A runaway agent cannot reach your home directory or other projects.
+- **Run several requests in parallel.** You can give each task its own git worktree, so concurrent jobs run on separate branches in separate directories without colliding.
 - **Extensions are swappable packages.** Pick which AI agent (Claude Code, Codex), which CI integration, which PR / auto-merge flow — the building blocks live in separate packages such as [boid-kits](https://github.com/novshi-tech/boid-kits).
 - **Drive it from the terminal or a browser.** TUI and CLI for everyday use; expose the Web UI through Cloudflare Tunnel to drive it from your phone.
 

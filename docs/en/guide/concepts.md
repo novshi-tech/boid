@@ -1,6 +1,6 @@
 # Concepts
 
-This page is the vocabulary reference. Read it once before going deep into other docs; everything else assumes you know these terms.
+This page walks through the main concepts that make up `boid`. The rest of the docs assume you have read it.
 
 ## Task
 
