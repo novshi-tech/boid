@@ -56,12 +56,14 @@ type CommandResponse struct {
 	Env                map[string]string                       `json:"env,omitempty"`
 	HostCommands       map[string]orchestrator.HostCommandSpec `json:"host_commands,omitempty"`
 	AdditionalBindings []orchestrator.BindMount                `json:"additional_bindings,omitempty"`
+	Readonly           bool                                    `json:"readonly,omitempty"`
 }
 
 // CommandSummary is a single entry in the GET /api/projects/:id/commands response.
 type CommandSummary struct {
-	Name    string   `json:"name"`
-	Command []string `json:"command"`
+	Name     string   `json:"name"`
+	Command  []string `json:"command"`
+	Readonly bool     `json:"readonly,omitempty"`
 }
 
 type ProjectService interface {
@@ -120,6 +122,8 @@ type WebService interface {
 	RerunTask(id string, req RerunTaskRequest) error
 	ListGatesForStatus(taskID, status string) ([]orchestrator.Gate, error)
 	ReplayGate(ctx context.Context, taskID string, req ReplayGateRequest) (*ReplayGateResult, error)
+	GetProjectByID(id string) (*orchestrator.Project, error)
+	ListProjectCommands(projectID string) ([]CommandSummary, error)
 }
 
 type WorkflowService interface {
@@ -189,4 +193,15 @@ type DeviceGCStore interface {
 // JobLogReader reads the transcript log for a given runtime.
 type JobLogReader interface {
 	ReadJobLog(runtimeID string) ([]byte, error)
+}
+
+// ExecuteCommandResult is the response for POST /api/projects/{id}/commands/{name}/execute.
+type ExecuteCommandResult struct {
+	JobID     string `json:"job_id"`
+	AttachURL string `json:"attach_url"`
+}
+
+// CommandDispatcher launches a named command as an interactive daemon-side job.
+type CommandDispatcher interface {
+	ExecuteCommand(ctx context.Context, projectID, commandName string) (*ExecuteCommandResult, error)
 }

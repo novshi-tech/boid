@@ -75,6 +75,10 @@ gc:
 
 Cloudflare Tunnel 公開手順は docs/plans/web-ui-rebuild.md を参照。
 
+## セキュリティモデル
+
+Gate はホスト直実行、Hook と Exec はサンドボックス実行。サンドボックスの書き込み可否は `task.readonly`（Hook の場合は `task.Status == verifying` でも readonly）および `command.readonly`（Exec の場合）のみで決まる。role による差分はない。
+
 ## コーディング規約
 
 - Go モジュールパスは `github.com/novshi-tech/boid` を使う

@@ -29,8 +29,9 @@ type JobSpec struct {
 	ProjectID string
 	HandlerID string
 
-	// Kind is a DB-label / TUI-display category. Dispatcher's sandbox
-	// construction MUST NOT branch on this value.
+	// Kind is a DB-label / TUI-display category. Dispatcher uses Kind to
+	// route gate jobs to host-direct execution; sandbox construction details
+	// MUST NOT branch on this value.
 	Kind JobKind
 
 	// Argv is the command to execute. Argv[0] is either a host absolute path
@@ -60,8 +61,9 @@ type JobSpec struct {
 	// BuiltinPolicies authorises broker-mediated builtin operations (boid, git).
 	BuiltinPolicies map[string]BuiltinPolicy
 
-	// HostCommands authorises broker-mediated host command invocations. hook
-	// jobs leave this empty; gate and exec jobs populate it from behavior.
+	// HostCommands authorises broker-mediated host command invocations. Hook
+	// jobs leave this empty; exec jobs populate it from behavior. Gate jobs
+	// always run on the host directly and never use broker-mediated commands.
 	HostCommands map[string]CommandDef
 
 	// SecretNamespace scopes the broker's secret resolver.
@@ -76,12 +78,10 @@ type JobSpec struct {
 	// Stored in the job DB row so TUI can reconstruct replay context.
 	ExecutionState string
 
-	// Host instructs the dispatcher to skip sandbox / broker construction and
-	// run Argv[0] directly on the host with cwd set to the resolved worktree
-	// (or project) root. Set only for trusted kit gate scripts that require
-	// filesystem access to the worktree. Visibility / BuiltinPolicies /
-	// HostCommands are ignored when this is true.
-	Host bool
+	// Interactive, when true, forces TTY allocation regardless of whether an
+	// Instruction is attached. Used by daemon-side command execution (Web UI)
+	// where the caller always expects a PTY-backed terminal.
+	Interactive bool
 }
 
 // Visibility captures which host paths the sandbox sees and whether they are

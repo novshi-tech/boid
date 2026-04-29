@@ -56,8 +56,10 @@ func TestRunBoidShim_JobDoneSendsTypedRequest(t *testing.T) {
 	}
 
 	req := <-reqCh
-	if req.Command != "boid" {
-		t.Fatalf("command = %q, want boid", req.Command)
+	// shim sends os.Executable() (an absolute path); the broker dispatches by
+	// req.Boid != nil, so we only verify the request is well-formed.
+	if !filepath.IsAbs(req.Command) {
+		t.Fatalf("command = %q, want absolute path (os.Executable result)", req.Command)
 	}
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
@@ -741,5 +743,62 @@ func TestParseBoidTaskImport_EmptyBatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "at least one task") {
 		t.Errorf("error = %q, want 'at least one task'", err.Error())
+	}
+}
+
+// host 側 cmd/job.go runJobDone が --output-file の missing を silent skip
+// するのに対し、shim 側だけ ENOENT を fatal にしていると
+// agent が /exit で終了して payload_patch.* / /tmp/boid-output が無いケースで
+// "exited without boid job done" 相当の失敗になり、対称性を欠く。
+func TestRunBoidShim_JobDoneSilentSkipsMissingOutputFile(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.Remove(sockPath)
+	})
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	missingPath := filepath.Join(dir, "does-not-exist.txt")
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-123")
+
+	resp, err := sandbox.RunBoidShim([]string{"job", "done", "job-1", "--exit-code", "0", "--output-file", missingPath})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpJobDone {
+		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpJobDone)
+	}
+	if req.Boid.Output != "" {
+		t.Fatalf("output = %q, want empty (missing file should be silent)", req.Boid.Output)
 	}
 }

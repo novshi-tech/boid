@@ -59,6 +59,9 @@ func TestServer_StartAndStop(t *testing.T) {
 	if health["status"] != "ok" {
 		t.Errorf("health status = %q, want %q", health["status"], "ok")
 	}
+	if health["http_addr"] == "" {
+		t.Errorf("health http_addr should be non-empty")
+	}
 
 	// Proxy API check
 	proxyResp, err := httpClient.Get("http://boid/api/proxy")

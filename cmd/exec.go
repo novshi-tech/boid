@@ -41,6 +41,7 @@ type execCommandResponse struct {
 	Env                map[string]string                       `json:"env,omitempty"`
 	HostCommands       map[string]orchestrator.HostCommandSpec `json:"host_commands,omitempty"`
 	AdditionalBindings []orchestrator.BindMount                `json:"additional_bindings,omitempty"`
+	Readonly           bool                                    `json:"readonly,omitempty"`
 }
 
 type execPreparedJob struct {
@@ -86,56 +87,47 @@ func buildExecJob(projectID, commandName string) (*execPreparedJob, error) {
 	var proxyInfo struct{ Port int }
 	_ = c.Do("GET", "/api/proxy", nil, &proxyInfo)
 
-	builtinPolicies := orchestrator.DefaultBuiltinPolicies(
-		orchestrator.RoleGate,
-		[]string{"boid", "git"},
-		orchestrator.PolicyContext{ProjectDir: p.WorkDir},
-	)
-
-	hostCommands := orchestrator.HostCommands(cmd.HostCommands).ToCommandDefs()
+	spec := dispatcher.BuildCommandJobSpec(dispatcher.CommandJobInput{
+		ProjectID:          p.ID,
+		ProjectWorkDir:     p.WorkDir,
+		Argv:               cmd.Command,
+		Env:                cmd.Env,
+		HostCommands:       cmd.HostCommands,
+		AdditionalBindings: cmd.AdditionalBindings,
+		Readonly:           cmd.Readonly,
+		// Interactive=false: TTY is overridden in runExec based on real terminal state.
+	})
 
 	var brokerSocket, brokerToken string
-	if len(hostCommands) > 0 || len(builtinPolicies) > 0 {
+	var resolvedHostCommands map[string]orchestrator.CommandDef
+	if len(spec.HostCommands) > 0 || len(spec.BuiltinPolicies) > 0 {
 		var brokerResp struct {
-			Token  string `json:"token"`
-			Socket string `json:"socket"`
+			Token                string                                `json:"token"`
+			Socket               string                                `json:"socket"`
+			ResolvedHostCommands map[string]orchestrator.CommandDef    `json:"resolved_host_commands,omitempty"`
 		}
 		regReq := map[string]any{
 			"commands":         cmd.HostCommands,
-			"builtin_policies": dispatcher.PoliciesToSandbox(builtinPolicies),
+			"builtin_policies": dispatcher.PoliciesToSandbox(spec.BuiltinPolicies),
 			"project_id":       p.ID,
 		}
 		if err := c.Do("POST", "/api/broker/register", regReq, &brokerResp); err == nil {
 			brokerSocket = brokerResp.Socket
 			brokerToken = brokerResp.Token
+			resolvedHostCommands = brokerResp.ResolvedHostCommands
 		}
 	}
 
-	spec := &orchestrator.JobSpec{
-		ProjectID: p.ID,
-		HandlerID: "", // exec is not a handler
-		Kind:      orchestrator.JobKindExec,
-		Argv:      cmd.Command,
-		Visibility: orchestrator.Visibility{
-			ProjectDir:         p.WorkDir,
-			UseWorktree:        false,
-			AdditionalBindings: cmd.AdditionalBindings,
-			Writable:           true,
-		},
-		BuiltinPolicies: builtinPolicies,
-		HostCommands:    hostCommands,
-		Env:             cmd.Env,
-	}
-
 	rt := dispatcher.SandboxRuntimeInfo{
-		JobID:          fmt.Sprintf("exec-%s", projectID),
-		BoidBinary:     boidBinary,
-		ServerSocket:   client.DefaultSocketPath(),
-		ProxyPort:      proxyInfo.Port,
-		BrokerSocket:   brokerSocket,
-		BrokerToken:    brokerToken,
-		Foreground:     true,
-		WorkspacePeers: workspacePeers,
+		JobID:                fmt.Sprintf("exec-%s", projectID),
+		BoidBinary:           boidBinary,
+		ServerSocket:         client.DefaultSocketPath(),
+		ProxyPort:            proxyInfo.Port,
+		BrokerSocket:         brokerSocket,
+		BrokerToken:          brokerToken,
+		Foreground:           true,
+		WorkspacePeers:       workspacePeers,
+		ResolvedHostCommands: resolvedHostCommands,
 	}
 	return &execPreparedJob{spec: spec, rt: rt}, nil
 }

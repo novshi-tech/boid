@@ -9,7 +9,8 @@ kits:
 host_commands:
   playwright-cli:
     allow: ['*']
-
+  run-e2e:
+    path: e2e/run.sh
 commands:
   claude:
     command:
@@ -59,53 +60,7 @@ task_behaviors:
         model: opus
         interactive: true
         message: |
-          task.yaml の title と description に記述されたテーマについて、ユーザーと対話しながら実装計画を策定せよ。
-          タスクが大きい場合は適切な粒度に分解すること。確定後に ~/.boid/output/payload_patch.json に以下の形式 (JSON) で書き出すこと：
-
-          {
-            "payload_patch": {
-              "tasks": [
-                {
-                  "title": "タスクのタイトル",
-                  "ref": "task-a",
-                  "behavior": "実行モデル名（例: dev）",
-                  "description": "このタスクを実行するエージェントへの指示。何を・どのように実装するかを詳細に記述する。"
-                },
-                {
-                  "title": "次のタスク",
-                  "ref": "task-b",
-                  "behavior": "dev",
-                  "description": "...",
-                  "depends_on": ["task-a"],
-                  "depends_on_payload": "artifact.auto-merge.merged",
-                  "auto_start": true
-                }
-              ]
-            }
-          }
-
-          ## 依存タスク
-
-          タスク間に順序依存がある場合、後続タスクに以下を設定すること：
-          - ref: タスクに任意の名前を付ける。同一バッチ内で depends_on から参照される。
-          - depends_on: 依存先タスクの ref 名を指定する。
-          - depends_on_payload: "artifact.auto-merge.merged" — 依存先タスクの PR が auto-merge で正常にマージされるまで待機する。
-          - auto_start: true — 依存条件が満たされたら自動的に開始する。
-
-          順序依存がないタスクには depends_on を設定しないこと（並列実行される）。
-
-          ## boid-kits の更新
-
-          boid-kits（キットパッケージ群）の更新を伴うタスクは、`project_id: boid-kits` を明示的に設定すること。
-          設定しない場合、親タスクのプロジェクト（このリポジトリ = boid）にタスクが作成されてしまい、
-          boid-kits リポジトリへの変更として実行されない。
-
-          例:
-            tasks:
-              - title: "go-dev キットに lint gate を追加"
-                behavior: "dev"
-                description: "..."
-                project_id: "boid-kits"
+          /boid-plan の記述に従って実装計画を策定せよ。
   auto_plan:
     name: Auto Plan
     readonly: true
@@ -119,57 +74,4 @@ task_behaviors:
         model: sonnet
         interactive: false
         message: |
-          task.yaml の title と description に記述されたテーマについて、実装計画を策定せよ。
-          ~/.boid/output/payload_patch.json に以下の形式 (JSON) で書き出すこと：
-
-          {
-            "payload_patch": {
-              "tasks": [
-                {
-                  "title": "タスクのタイトル",
-                  "ref": "task-a",
-                  "behavior": "実行モデル名（例: dev）",
-                  "description": "このタスクを実行するエージェントへの指示。何を・どのように実装するかを詳細に記述する。",
-                  "auto_start": true
-                },
-                {
-                  "title": "次のタスク",
-                  "ref": "task-b",
-                  "behavior": "dev",
-                  "description": "...",
-                  "depends_on": ["task-a"],
-                  "depends_on_payload": "artifact.auto-merge.merged",
-                  "auto_start": true
-                }
-              ]
-            }
-          }
-
-          ## auto_start
-
-          auto_plan では原則としてすべてのタスクに `auto_start: true` を設定すること。
-          - 依存のないタスクは作成直後に自動開始される。
-          - 依存のあるタスクは依存条件が満たされた時点で自動開始される。
-          ユーザー確認を挟むべき特別な理由がある場合のみ auto_start を省略（= false）する。
-
-          ## 依存タスク
-
-          タスク間に順序依存がある場合、後続タスクに以下を設定すること：
-          - ref: タスクに任意の名前を付ける。同一バッチ内で depends_on から参照される。
-          - depends_on: 依存先タスクの ref 名を指定する。
-          - depends_on_payload: "artifact.auto-merge.merged" — 依存先タスクの PR が auto-merge で正常にマージされるまで待機する。
-
-          順序依存がないタスクには depends_on を設定しないこと（並列実行される）。
-
-          ## boid-kits の更新
-
-          boid-kits（キットパッケージ群）の更新を伴うタスクは、`project_id: boid-kits` を明示的に設定すること。
-          設定しない場合、親タスクのプロジェクト（このリポジトリ = boid）にタスクが作成されてしまい、
-          boid-kits リポジトリへの変更として実行されない。
-
-          例:
-            tasks:
-              - title: "go-dev キットに lint gate を追加"
-                behavior: "dev"
-                description: "..."
-                project_id: "boid-kits"
+          /boid-plan の記述に従って実装計画を策定せよ。

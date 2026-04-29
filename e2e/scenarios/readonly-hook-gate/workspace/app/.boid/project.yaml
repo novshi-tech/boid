@@ -3,7 +3,6 @@ name: Readonly Hook Gate
 task_behaviors:
   readonly:
     name: Readonly
-    transition: feedback-loop
     readonly: true
     kits:
       - github.com/novshi-tech/boid-kits/readonly-hook-gate

@@ -26,7 +26,7 @@ templ GateReplayList(taskID, status string, gates []orchestrator.Gate, errorMsg 
 								}
 							</div>
 							<div style="margin-top:8px">
-								<form method="post" action={ templ.SafeURL("/tasks/" + taskID + "/gates/" + gate.ID + "/replay") } onsubmit="return confirm('本当にゲートを再発火しますか？')">
+								<form method="post" action={ templ.SafeURL(gateReplayPath(taskID, gate.ID)) } onsubmit="return confirm('本当にゲートを再発火しますか？')">
 									<button type="submit" class="btn btn-primary">replay</button>
 								</form>
 							</div>

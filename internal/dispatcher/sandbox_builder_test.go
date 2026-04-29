@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -230,16 +231,21 @@ func TestProjectVisibilityMounts_WorktreeMode_OrigGitReadOnly(t *testing.T) {
 	}
 }
 
-// boid と git は hostCommandMounts に含まれない（専用の bind mount が別途生成される）。
+// boid と git は ResolveHostCommands に含まれない（専用の bind mount が別途生成される）。
 // その他の host commands はホスト実パスに bind mount される。
 func TestHostCommandMounts_BoidAndGitExcluded(t *testing.T) {
 	fakeLookPath := func(name string) (string, error) {
 		return "/usr/bin/" + name, nil
 	}
-	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{"boid", "git"}, []string{"gh", "git"}, fakeLookPath)
-	if err != nil {
-		t.Fatalf("hostCommandMounts: %v", err)
+	hostCmds := map[string]orchestrator.CommandDef{
+		"gh":  {},
+		"git": {},
 	}
+	resolved, err := ResolveHostCommands([]string{"boid", "git"}, hostCmds, "", fakeLookPath)
+	if err != nil {
+		t.Fatalf("ResolveHostCommands: %v", err)
+	}
+	mounts := hostCommandMounts("/usr/local/bin/boid", resolved)
 	for _, m := range mounts {
 		if m.Target == "/usr/bin/boid" || m.Target == "/usr/bin/git" {
 			t.Errorf("boid/git must not get host command mount, got target=%q", m.Target)
@@ -261,7 +267,8 @@ func TestHostCommandMounts_NotFound(t *testing.T) {
 	fakeLookPath := func(name string) (string, error) {
 		return "", fmt.Errorf("not found")
 	}
-	_, err := hostCommandMounts("/usr/local/bin/boid", []string{}, []string{"missing-cmd"}, fakeLookPath)
+	hostCmds := map[string]orchestrator.CommandDef{"missing-cmd": {}}
+	_, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath)
 	if err == nil {
 		t.Error("expected error for missing host command, got nil")
 	}
@@ -272,10 +279,12 @@ func TestHostCommandMounts_BindsAtHostPath(t *testing.T) {
 	fakeLookPath := func(name string) (string, error) {
 		return "/usr/local/bin/" + name, nil
 	}
-	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{}, []string{"gh"}, fakeLookPath)
+	hostCmds := map[string]orchestrator.CommandDef{"gh": {}}
+	resolved, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath)
 	if err != nil {
-		t.Fatalf("hostCommandMounts: %v", err)
+		t.Fatalf("ResolveHostCommands: %v", err)
 	}
+	mounts := hostCommandMounts("/usr/local/bin/boid", resolved)
 	if len(mounts) != 1 {
 		t.Fatalf("expected 1 mount, got %d", len(mounts))
 	}
@@ -299,12 +308,158 @@ func TestHostCommandMounts_Dedup(t *testing.T) {
 	fakeLookPath := func(name string) (string, error) {
 		return "/usr/bin/" + name, nil
 	}
-	mounts, err := hostCommandMounts("/usr/local/bin/boid", []string{"gh"}, []string{"gh"}, fakeLookPath)
+	hostCmds := map[string]orchestrator.CommandDef{"gh": {}}
+	resolved, err := ResolveHostCommands([]string{"gh"}, hostCmds, "", fakeLookPath)
 	if err != nil {
-		t.Fatalf("hostCommandMounts: %v", err)
+		t.Fatalf("ResolveHostCommands: %v", err)
 	}
+	mounts := hostCommandMounts("/usr/local/bin/boid", resolved)
 	if len(mounts) != 1 {
 		t.Errorf("expected 1 mount (dedup), got %d", len(mounts))
+	}
+}
+
+// CommandDef.Path 指定あり → lookPath は呼ばれず def.Path が Target になる。
+// run-e2e のような別名キーが Path 指定されたファイル位置に bind mount されるケース。
+func TestHostCommandMounts_PathSpecified_SkipsLookPath(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := dir + "/run-e2e.sh"
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lookPathCalled := false
+	fakeLookPath := func(name string) (string, error) {
+		lookPathCalled = true
+		return "/usr/bin/" + name, nil
+	}
+	hostCmds := map[string]orchestrator.CommandDef{
+		"run-e2e": {Path: scriptPath},
+	}
+	resolved, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath)
+	if err != nil {
+		t.Fatalf("ResolveHostCommands: %v", err)
+	}
+	mounts := hostCommandMounts("/usr/local/bin/boid", resolved)
+	if lookPathCalled {
+		t.Error("lookPath must not be called when CommandDef.Path is set")
+	}
+	if len(mounts) != 1 {
+		t.Fatalf("expected 1 mount, got %d", len(mounts))
+	}
+	if mounts[0].Target != scriptPath {
+		t.Errorf("mount target = %q, want %q", mounts[0].Target, scriptPath)
+	}
+	// resolved map のキーも絶対パス、broker に渡る Path も同じ絶対パスである
+	// ことを確認 (shim の os.Executable() lookup と一致する不変条件)。
+	def, ok := resolved[scriptPath]
+	if !ok {
+		t.Fatalf("resolved map must be keyed by absolute path %q", scriptPath)
+	}
+	if def.Path != scriptPath {
+		t.Errorf("resolved def.Path = %q, want %q", def.Path, scriptPath)
+	}
+	if def.Name != "run-e2e" {
+		t.Errorf("resolved def.Name = %q, want run-e2e", def.Name)
+	}
+}
+
+// host_commands.<name>.path の相対パスは projectDir 基準で解決される。
+func TestHostCommandMounts_RelativePathResolvedFromProjectDir(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(projectDir+"/e2e", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := projectDir + "/e2e/run.sh"
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hostCmds := map[string]orchestrator.CommandDef{
+		"run-e2e": {Path: "e2e/run.sh"},
+	}
+	resolved, err := ResolveHostCommands(nil, hostCmds, projectDir, func(string) (string, error) {
+		return "", fmt.Errorf("lookPath should not be called")
+	})
+	if err != nil {
+		t.Fatalf("ResolveHostCommands: %v", err)
+	}
+	def, ok := resolved[scriptPath]
+	if !ok {
+		t.Fatalf("resolved must contain absolute key %q, got %v", scriptPath, resolved)
+	}
+	if def.Path != scriptPath {
+		t.Errorf("def.Path = %q, want %q", def.Path, scriptPath)
+	}
+}
+
+// CommandDef.Path 空 → lookPath 結果が Target になる（従来挙動の回帰防止）。
+func TestHostCommandMounts_PathEmpty_UsesLookPath(t *testing.T) {
+	fakeLookPath := func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}
+	hostCmds := map[string]orchestrator.CommandDef{"gh": {}}
+	resolved, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath)
+	if err != nil {
+		t.Fatalf("ResolveHostCommands: %v", err)
+	}
+	mounts := hostCommandMounts("/usr/local/bin/boid", resolved)
+	if len(mounts) != 1 {
+		t.Fatalf("expected 1 mount, got %d", len(mounts))
+	}
+	if mounts[0].Target != "/usr/bin/gh" {
+		t.Errorf("mount target = %q, want /usr/bin/gh", mounts[0].Target)
+	}
+}
+
+// CommandDef.Path 指定だが対象ファイルが存在しない → "does not exist on host" エラー。
+func TestHostCommandMounts_PathDoesNotExist_Error(t *testing.T) {
+	dir := t.TempDir()
+	missingPath := dir + "/nonexistent.sh"
+	fakeLookPath := func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}
+	hostCmds := map[string]orchestrator.CommandDef{
+		"run-e2e": {Path: missingPath},
+	}
+	_, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath)
+	if err == nil {
+		t.Fatal("expected error for non-existent path, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not exist on host") {
+		t.Errorf("error = %q, want it to contain 'does not exist on host'", err.Error())
+	}
+}
+
+// builtin と host command の複合ケース: host command 側のみ Path 指定。
+// builtin は lookPath、host command は def.Path を使い、順序が安定する。
+func TestHostCommandMounts_MixedBuiltinAndPathCommand(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := dir + "/run-e2e.sh"
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeLookPath := func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}
+	hostCmds := map[string]orchestrator.CommandDef{
+		"run-e2e": {Path: scriptPath},
+	}
+	resolved, err := ResolveHostCommands([]string{"jq"}, hostCmds, "", fakeLookPath)
+	if err != nil {
+		t.Fatalf("ResolveHostCommands: %v", err)
+	}
+	mounts := hostCommandMounts("/usr/local/bin/boid", resolved)
+	if len(mounts) != 2 {
+		t.Fatalf("expected 2 mounts, got %d", len(mounts))
+	}
+	targets := map[string]bool{}
+	for _, m := range mounts {
+		targets[m.Target] = true
+	}
+	if !targets["/usr/bin/jq"] {
+		t.Error("builtin jq must be mounted at /usr/bin/jq")
+	}
+	if !targets[scriptPath] {
+		t.Errorf("host command run-e2e must be mounted at %q", scriptPath)
 	}
 }
 
@@ -476,6 +631,46 @@ func TestContextFiles_PayloadWrittenForInteractiveHook(t *testing.T) {
 	}
 }
 
+func TestBuildExitScript_FallbackChecksFileExistence(t *testing.T) {
+	const jobID = "test-job-id"
+	const payload = "/home/agent/.boid/output/payload_patch.json"
+	const fallback = "/tmp/boid-output"
+
+	script := buildExitScript(jobID, payload, fallback)
+
+	// payload branch
+	if !strings.Contains(script, fmt.Sprintf("if [ -f %q ]", payload)) {
+		t.Errorf("expected if-check for payload file\n%s", script)
+	}
+	// fallback branch must use elif (not else) so that boid job done is only
+	// called with --output-file when the file actually exists at runtime.
+	// TTY jobs do not capture stdout to a file, so the fallback may be absent.
+	if !strings.Contains(script, fmt.Sprintf("elif [ -f %q ]", fallback)) {
+		t.Errorf("expected elif-check for fallback file\n%s", script)
+	}
+	// final else must call boid job done without --output-file
+	if !strings.Contains(script, fmt.Sprintf("  boid job done %s --exit-code $_exit\n", jobID)) {
+		t.Errorf("expected bare boid job done in else branch\n%s", script)
+	}
+}
+
+func TestBuildExitScript_NoFallback(t *testing.T) {
+	const jobID = "test-job-id"
+	const payload = "/home/agent/.boid/output/payload_patch.json"
+
+	script := buildExitScript(jobID, payload, "")
+
+	if !strings.Contains(script, fmt.Sprintf("if [ -f %q ]", payload)) {
+		t.Errorf("expected if-check for payload file\n%s", script)
+	}
+	if strings.Contains(script, "elif") {
+		t.Errorf("expected no elif when fallback is empty\n%s", script)
+	}
+	if !strings.Contains(script, fmt.Sprintf("  boid job done %s --exit-code $_exit\n", jobID)) {
+		t.Errorf("expected bare boid job done in else branch\n%s", script)
+	}
+}
+
 func TestContextFiles_NoPayloadFilesWhenPrimaryInputEmpty(t *testing.T) {
 	inst := &orchestrator.RoutedInstruction{
 		Role:        "main",
@@ -503,38 +698,3 @@ func TestContextFiles_NoPayloadFilesWhenPrimaryInputEmpty(t *testing.T) {
 	}
 }
 
-func TestBuildExitScript_PrefersJSONOverYAML(t *testing.T) {
-	got := buildExitScript("job-1", []string{
-		"/home/agent/.boid/output/payload_patch.json",
-		"/home/agent/.boid/output/payload_patch.yaml",
-	}, "/tmp/boid-output")
-
-	// JSON branch must come first
-	jsonIdx := strings.Index(got, `payload_patch.json`)
-	yamlIdx := strings.Index(got, `payload_patch.yaml`)
-	if jsonIdx < 0 || yamlIdx < 0 {
-		t.Fatalf("script missing one of payload paths: %s", got)
-	}
-	if jsonIdx > yamlIdx {
-		t.Errorf("expected .json branch before .yaml in: %s", got)
-	}
-	// Both branches must dispatch boid job done
-	if strings.Count(got, "boid job done") < 3 {
-		t.Errorf("expected 3 dispatch lines (json/yaml/fallback), got: %s", got)
-	}
-	// stdout fallback
-	if !strings.Contains(got, "/tmp/boid-output") {
-		t.Errorf("missing stdout fallback in: %s", got)
-	}
-}
-
-func TestBuildExitScript_NoFallbackWhenStdoutEmpty(t *testing.T) {
-	got := buildExitScript("job-1", []string{"/home/agent/.boid/output/payload_patch.json"}, "")
-	if strings.Contains(got, "/tmp/boid-output") {
-		t.Errorf("unexpected stdout fallback in: %s", got)
-	}
-	// final else branch: boid job done without --output-file
-	if !strings.Contains(got, "boid job done job-1 --exit-code $_exit\n") {
-		t.Errorf("missing no-output fallback in: %s", got)
-	}
-}

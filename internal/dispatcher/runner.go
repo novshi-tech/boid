@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"sort"
 	"sync"
 
@@ -95,13 +96,12 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 		return "", err
 	}
-	// Gate jobs run with UseWorktree=false (project filesystem stays hidden
-	// from the sandbox), but the broker still needs the worktree root to
-	// resolve the `git` builtin. Attach the existing worktree path — without
-	// creating one — so broker-side git operations know where to run.
-	brokerWorktreePath := worktreePath
-	if brokerWorktreePath == "" {
-		brokerWorktreePath = r.existingWorktreePath(spec)
+	// resolvedWorktreePath holds the existing worktree path without allocating
+	// a new one. Gates use it as the starting hint for ensureHostGateWorktree;
+	// the hook sandbox path passes it to the broker TokenContext.WorktreeDir.
+	resolvedWorktreePath := worktreePath
+	if resolvedWorktreePath == "" {
+		resolvedWorktreePath = r.existingWorktreePath(spec)
 	}
 
 	if err := CreateJob(r.DB, j); err != nil {
@@ -118,13 +118,14 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		r.JobEvents.JobCreated(j.TaskID, j.ID)
 	}
 
-	// Host gates skip the entire sandbox/broker construction below: they run
-	// the trusted kit script directly on the host with cwd at the worktree.
-	// Ensure the worktree exists (recreate if it was cleaned by a prior abort)
-	// so replay scenarios still have a live tree to operate on.
-	if spec.Host {
-		hostWorktree, herr := r.ensureHostGateWorktree(spec, brokerWorktreePath)
+	// Gate jobs always run directly on the host with cwd at the worktree;
+	// sandbox/broker construction is skipped entirely. Ensure the worktree
+	// exists (recreate if it was cleaned by a prior abort) so replay scenarios
+	// still have a live tree to operate on.
+	if spec.Kind == orchestrator.JobKindGate {
+		hostWorktree, herr := r.ensureHostGateWorktree(spec, resolvedWorktreePath)
 		if herr != nil {
+			r.failJob(j, herr)
 			if cleanup != nil {
 				cleanup()
 			}
@@ -136,8 +137,26 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	workspaceID, projectWorkDir, _ := r.resolveProjectRuntime(spec.ProjectID)
 	workspacePeers := r.resolveWorkspacePeers(workspaceID, spec.ProjectID)
 
+	var resolvedHostCommands map[string]orchestrator.CommandDef
+	if len(spec.HostCommands) > 0 || len(spec.BuiltinPolicies) > 0 {
+		var err error
+		resolvedHostCommands, err = ResolveHostCommands(
+			sortedKeys(spec.BuiltinPolicies),
+			spec.HostCommands,
+			projectWorkDir,
+			exec.LookPath,
+		)
+		if err != nil {
+			r.failJob(j, err)
+			if cleanup != nil {
+				cleanup()
+			}
+			return "", err
+		}
+	}
+
 	var brokerSocket, brokerToken string
-	if r.Broker != nil && (len(spec.BuiltinPolicies) > 0 || len(spec.HostCommands) > 0) {
+	if r.Broker != nil && (len(spec.BuiltinPolicies) > 0 || len(resolvedHostCommands) > 0) {
 		tokenCtx := sandbox.TokenContext{
 			JobID:             j.ID,
 			TaskID:            spec.TaskID,
@@ -145,12 +164,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			WorkspaceID:       workspaceID,
 			AllowedProjectIDs: allowedProjectIDs(spec.ProjectID, workspacePeers),
 			Role:              j.Role,
-			// Pass the real project work dir, not Visibility.ProjectDir
-			// (which is empty for gate jobs). The broker uses this host-side
-			// for git binding and host-command cwd; sandbox visibility is
-			// orthogonal.
 			ProjectDir:  projectWorkDir,
-			WorktreeDir: brokerWorktreePath,
+			WorktreeDir: resolvedWorktreePath,
 		}
 		var resolve SecretResolver
 		if r.SecretStore != nil {
@@ -163,7 +178,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			}
 		}
 		brokerToken = r.Broker.RegisterCommands(
-			spec.HostCommands,
+			resolvedHostCommands,
 			PoliciesToSandbox(spec.BuiltinPolicies),
 			tokenCtx,
 			resolve,
@@ -173,14 +188,15 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	}
 
 	rtInfo := SandboxRuntimeInfo{
-		JobID:          j.ID,
-		BoidBinary:     r.BoidBinary,
-		ServerSocket:   r.ServerSocket,
-		ProxyPort:      r.proxyPort(),
-		BrokerSocket:   brokerSocket,
-		BrokerToken:    brokerToken,
-		WorktreeDir:    worktreePath,
-		WorkspacePeers: workspacePeers,
+		JobID:                j.ID,
+		BoidBinary:           r.BoidBinary,
+		ServerSocket:         r.ServerSocket,
+		ProxyPort:            r.proxyPort(),
+		BrokerSocket:         brokerSocket,
+		BrokerToken:          brokerToken,
+		WorktreeDir:          worktreePath,
+		WorkspacePeers:       workspacePeers,
+		ResolvedHostCommands: resolvedHostCommands,
 	}
 	// Server socket is only exposed to jobs that have no broker policies
 	// attached — i.e. boid exec invocations that need to talk to the daemon
@@ -192,6 +208,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 
 	sbSpec, err := BuildSandboxSpec(spec, rtInfo)
 	if err != nil {
+		r.failJob(j, err)
 		if cleanup != nil {
 			cleanup()
 		}
@@ -278,6 +295,17 @@ func (r *Runner) trackToken(jobID, token string) {
 		r.jobTokens = make(map[string]string)
 	}
 	r.jobTokens[jobID] = token
+}
+
+// failJob marks j as failed in the DB. Used for errors that occur after
+// CreateJob but before the sandbox is launched, so orphan running rows do not
+// accumulate in the jobs table.
+func (r *Runner) failJob(j *Job, cause error) {
+	j.Status = JobStatusFailed
+	j.Output = cause.Error()
+	if err := UpdateJob(r.DB, j); err != nil {
+		slog.Warn("persist pre-launch job failure", "job_id", j.ID, "error", err)
+	}
 }
 
 // WaitForJob registers a channel that will receive the job completion result.

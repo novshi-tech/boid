@@ -3,7 +3,6 @@ package dispatcher
 import (
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -48,6 +47,12 @@ type SandboxRuntimeInfo struct {
 	// to true; hook/gate jobs leave it false so stdout is captured and a
 	// `boid job done` trap posts completion back to the daemon.
 	Foreground bool
+
+	// ResolvedHostCommands is the absolute-path-keyed view of spec.HostCommands
+	// produced by ResolveHostCommands. The same map is registered with the
+	// broker so the shim's os.Executable() lookup hits a known key. Empty when
+	// the job declares no host commands.
+	ResolvedHostCommands map[string]orchestrator.CommandDef
 }
 
 // BuildSandboxSpec turns a business-level JobSpec and dispatcher-side runtime
@@ -173,8 +178,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	)...)
 
 	// Output dir sentinel — guarantees $HOME/.boid/output/ exists before the
-	// user script runs, so scripts writing payload_patch.json (or legacy .yaml)
-	// never hit ENOENT.
+	// user script runs, so scripts writing payload_patch.json never hit ENOENT.
 	files = append(files, sandbox.FileWrite{
 		Path: homeDir + "/.boid/output/.placeholder",
 	})
@@ -220,18 +224,10 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 			ReadOnly: true,
 			Guard:    "-f /bin/git",
 		})
-		// 各 host command のホスト実パスに boid バイナリを bind mount し shim 化する。
-		// コマンドがホストに存在しない場合はジョブ起動時エラー (fail-fast)。
-		hostCmdMounts, err := hostCommandMounts(
-			rt.BoidBinary,
-			sortedKeys(spec.BuiltinPolicies),
-			sortedKeys(spec.HostCommands),
-			exec.LookPath,
-		)
-		if err != nil {
-			return sandbox.Spec{}, err
-		}
-		mounts = append(mounts, hostCmdMounts...)
+		// 各 host command の解決済み絶対パスに boid バイナリを bind mount し
+		// shim 化する。解決は dispatcher 入り口 (runner / API / cmd exec) で
+		// 行い rt.ResolvedHostCommands に積む。ここでは target を作るだけ。
+		mounts = append(mounts, hostCommandMounts(rt.BoidBinary, rt.ResolvedHostCommands)...)
 	}
 
 	var cleanup []string
@@ -239,22 +235,14 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		cleanup = append(cleanup, rt.StagingDir)
 	}
 
-	// TTY requirement: either an interactive instruction or a job kicked off
-	// by an agent that expects a PTY. Concretely: whenever an instruction is
-	// attached or a PrimaryInput is piped via stdin to a script, we allocate
-	// a PTY so tools like claude get a proper terminal.
-	tty := interactive || spec.Instruction != nil || len(stdinBytes) > 0
+	// TTY requirement: either an interactive instruction, a job kicked off
+	// by an agent that expects a PTY, or an explicit Interactive flag set by
+	// daemon-side callers (e.g. Web UI command execution).
+	tty := interactive || spec.Instruction != nil || len(stdinBytes) > 0 || spec.Interactive
 
 	var exitScript string
 	if !rt.Foreground {
-		exitScript = buildExitScript(
-			rt.JobID,
-			[]string{
-				homeDir + "/.boid/output/payload_patch.json",
-				homeDir + "/.boid/output/payload_patch.yaml",
-			},
-			stdoutCapture,
-		)
+		exitScript = buildExitScript(rt.JobID, homeDir+"/.boid/output/payload_patch.json", stdoutCapture)
 	}
 
 	out := sandbox.Spec{
@@ -411,45 +399,25 @@ func additionalBindingMounts(bindings []orchestrator.BindMount) []sandbox.Mount 
 	return out
 }
 
-// hostCommandMounts resolves each host command to its actual path on the host
-// via lookPath and returns bind mounts that overlay the boid shim binary on top.
-// boid and git are excluded (handled by dedicated mounts elsewhere).
-// Returns an error if any command is not found on the host (fail-fast).
-func hostCommandMounts(boidBinary string, builtins, hostCommands []string, lookPath func(string) (string, error)) ([]sandbox.Mount, error) {
-	seen := map[string]struct{}{}
-	var out []sandbox.Mount
-	add := func(name string) error {
-		if name == "boid" || name == "git" {
-			return nil
-		}
-		if _, ok := seen[name]; ok {
-			return nil
-		}
-		seen[name] = struct{}{}
-		path, err := lookPath(name)
-		if err != nil {
-			return fmt.Errorf("host command %q not found on host: %w", name, err)
-		}
+// hostCommandMounts overlays the boid shim binary at every resolved host
+// command path. The map is already keyed by absolute mount target — see
+// ResolveHostCommands — so this function only constructs sandbox.Mount entries
+// in stable order for deterministic test output.
+func hostCommandMounts(boidBinary string, resolved map[string]orchestrator.CommandDef) []sandbox.Mount {
+	if len(resolved) == 0 {
+		return nil
+	}
+	out := make([]sandbox.Mount, 0, len(resolved))
+	for _, target := range sortedKeys(resolved) {
 		out = append(out, sandbox.Mount{
 			Source:   boidBinary,
-			Target:   path,
+			Target:   target,
 			Type:     sandbox.MountBind,
 			IsFile:   true,
 			ReadOnly: true,
 		})
-		return nil
 	}
-	for _, n := range builtins {
-		if err := add(n); err != nil {
-			return nil, err
-		}
-	}
-	for _, n := range hostCommands {
-		if err := add(n); err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
+	return out
 }
 
 // buildPATH prepends additional-binding bin directories and the boid binary
@@ -483,33 +451,24 @@ func buildPATH(bindings []orchestrator.BindMount, boidBinary string) string {
 }
 
 // buildExitScript renders the EXIT trap that calls `boid job done`.
-// payloadFiles はチェック順 (先頭が最優先)。最初に見つかったものを output-file に渡す。
-// 全部存在しない場合は stdoutFallback (空なら output-file 指定なし) にフォールバックする。
-func buildExitScript(jobID string, payloadFiles []string, stdoutFallback string) string {
+// stdoutFallback is only used when the file actually exists at runtime
+// (TTY jobs do not capture stdout to a file, so the fallback may be absent).
+func buildExitScript(jobID, payloadFile, stdoutFallback string) string {
 	var b strings.Builder
 	b.WriteString("_exit=$?\n")
-	if len(payloadFiles) > 0 {
-		fmt.Fprintf(&b, "mkdir -p \"$(dirname %q)\"\n", payloadFiles[0])
-	}
-	for i, f := range payloadFiles {
-		if i == 0 {
-			fmt.Fprintf(&b, "if [ -f %q ]; then\n", f)
-		} else {
-			fmt.Fprintf(&b, "elif [ -f %q ]; then\n", f)
-		}
-		fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit --output-file %q\n", jobID, f)
-	}
-	if len(payloadFiles) > 0 {
-		b.WriteString("else\n")
-	}
+	fmt.Fprintf(&b, "mkdir -p \"$(dirname %q)\"\n", payloadFile)
+	fmt.Fprintf(&b, "if [ -f %q ]; then\n", payloadFile)
+	fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit --output-file %q\n", jobID, payloadFile)
 	if stdoutFallback != "" {
+		fmt.Fprintf(&b, "elif [ -f %q ]; then\n", stdoutFallback)
 		fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit --output-file %q\n", jobID, stdoutFallback)
+		b.WriteString("else\n")
+		fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit\n", jobID)
 	} else {
+		b.WriteString("else\n")
 		fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit\n", jobID)
 	}
-	if len(payloadFiles) > 0 {
-		b.WriteString("fi")
-	}
+	b.WriteString("fi")
 	return b.String()
 }
 

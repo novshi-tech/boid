@@ -133,9 +133,9 @@ func GateReplayList(taskID, status string, gates []orchestrator.Gate, errorMsg s
 						return templ_7745c5c3_Err
 					}
 					var templ_7745c5c3_Var7 templ.SafeURL
-					templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + taskID + "/gates/" + gate.ID + "/replay"))
+					templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(gateReplayPath(taskID, gate.ID)))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/gate_replay.templ`, Line: 29, Col: 104}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/gate_replay.templ`, Line: 29, Col: 83}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 					if templ_7745c5c3_Err != nil {

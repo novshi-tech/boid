@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -78,7 +79,7 @@ func TestBroker_ExecCommand(t *testing.T) {
 	broker := &sandbox.Broker{SocketPath: sockPath}
 
 	token := broker.Register(map[string]sandbox.CommandDef{
-		"echo": {
+		"/bin/echo": {
 			Name:            "echo",
 			Path:            "/bin/echo",
 			AllowedPatterns: []string{"*"},
@@ -98,7 +99,7 @@ func TestBroker_ExecCommand(t *testing.T) {
 	defer conn.Close()
 
 	req := sandbox.ExecRequest{
-		Command: "echo",
+		Command: "/bin/echo",
 		Args:    []string{"hello", "world"},
 		Token:   token,
 	}
@@ -131,7 +132,7 @@ func runBrokerPwd(t *testing.T, tc sandbox.TokenContext, shimCwd string) string 
 	broker := &sandbox.Broker{SocketPath: sockPath}
 
 	token := broker.Register(map[string]sandbox.CommandDef{
-		"pwd": {Name: "pwd", Path: "/bin/pwd", AllowedPatterns: []string{"*"}},
+		"/bin/pwd": {Name: "pwd", Path: "/bin/pwd", AllowedPatterns: []string{"*"}},
 	}, nil, tc)
 	defer broker.Unregister(token)
 
@@ -146,7 +147,7 @@ func runBrokerPwd(t *testing.T, tc sandbox.TokenContext, shimCwd string) string 
 	}
 	defer conn.Close()
 
-	req := sandbox.ExecRequest{Command: "pwd", Cwd: shimCwd, Token: token}
+	req := sandbox.ExecRequest{Command: "/bin/pwd", Cwd: shimCwd, Token: token}
 	if err := json.NewEncoder(conn).Encode(&req); err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -221,11 +222,11 @@ func TestBroker_HostCommandRespectsRequestCwdWhenContextEmpty(t *testing.T) {
 func TestBroker_UnknownCommand(t *testing.T) {
 	broker := &sandbox.Broker{}
 	token := broker.Register(map[string]sandbox.CommandDef{
-		"echo": {Name: "echo", Path: "/bin/echo"},
+		"/bin/echo": {Name: "echo", Path: "/bin/echo"},
 	}, nil, testCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
-		Command: "rm",
+		Command: "/bin/rm",
 		Args:    []string{"-rf", "/"},
 		Token:   token,
 	})
@@ -240,11 +241,11 @@ func TestBroker_UnknownCommand(t *testing.T) {
 func TestBroker_InvalidToken(t *testing.T) {
 	broker := &sandbox.Broker{}
 	broker.Register(map[string]sandbox.CommandDef{
-		"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
+		"/bin/echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
 	}, nil, testCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
-		Command: "echo",
+		Command: "/bin/echo",
 		Args:    []string{"hello"},
 		Token:   "bad-token",
 	})
@@ -259,11 +260,11 @@ func TestBroker_InvalidToken(t *testing.T) {
 func TestBroker_EmptyToken(t *testing.T) {
 	broker := &sandbox.Broker{}
 	broker.Register(map[string]sandbox.CommandDef{
-		"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
+		"/bin/echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
 	}, nil, testCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
-		Command: "echo",
+		Command: "/bin/echo",
 		Args:    []string{"hello"},
 	})
 	if resp.ExitCode != 1 {
@@ -274,12 +275,12 @@ func TestBroker_EmptyToken(t *testing.T) {
 func TestBroker_Unregister(t *testing.T) {
 	broker := &sandbox.Broker{}
 	token := broker.Register(map[string]sandbox.CommandDef{
-		"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
+		"/bin/echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
 	}, nil, testCtx)
 
 	// Before unregister: should work
 	resp := broker.Handle(&sandbox.ExecRequest{
-		Command: "echo",
+		Command: "/bin/echo",
 		Args:    []string{"hello"},
 		Token:   token,
 	})
@@ -291,7 +292,7 @@ func TestBroker_Unregister(t *testing.T) {
 
 	// After unregister: should fail
 	resp = broker.Handle(&sandbox.ExecRequest{
-		Command: "echo",
+		Command: "/bin/echo",
 		Args:    []string{"hello"},
 		Token:   token,
 	})
@@ -300,21 +301,58 @@ func TestBroker_Unregister(t *testing.T) {
 	}
 }
 
-// TestBroker_EmptyPathFallsBackToName covers the zero-config DSL forms
-// (`host_commands: [gh, aws]` and `host_commands: { gh: }`) where Path is
-// left blank. The broker must resolve the binary via $PATH using Name so
-// that these declarations actually run.
+// TestBroker_HostCommandWithAliasedPath は host_commands.<name>.path で別名
+// (例: run-e2e: path: e2e/run.sh) を使うケースの回帰テスト。dispatcher の
+// ResolveHostCommands が絶対パスを Commands map のキーにし、shim も同じ絶対
+// パスを Command に詰めるので、key と request の絶対パスが一致して lookup
+// が成功する。argv0 の basename (run.sh) は使われない。
+func TestBroker_HostCommandWithAliasedPath(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "e2e", "run.sh")
+	if err := os.MkdirAll(filepath.Dir(scriptPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho aliased\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(map[string]sandbox.CommandDef{
+		scriptPath: {
+			Name:            "run-e2e",
+			Path:            scriptPath,
+			AllowedPatterns: []string{"*"},
+		},
+	}, nil, testCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: scriptPath,
+		Token:   token,
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stdout, "aliased") {
+		t.Errorf("stdout = %q, want contain 'aliased'", resp.Stdout)
+	}
+}
+
+// TestBroker_EmptyPathFallsBackToName covers the broker's defensive fallback
+// when CommandDef.Path is left blank. In production dispatcher.ResolveHostCommands
+// always fills Path with an absolute path, so this only exercises the broker's
+// internal robustness: Commands map is keyed by the shim mount target (absolute
+// path), but the actual binary is resolved via $PATH using Name.
 func TestBroker_EmptyPathFallsBackToName(t *testing.T) {
 	broker := &sandbox.Broker{}
 	token := broker.Register(map[string]sandbox.CommandDef{
-		"echo": {
+		"/bin/echo": {
 			Name:            "echo",
 			AllowedPatterns: []string{"*"},
 		},
 	}, nil, testCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
-		Command: "echo",
+		Command: "/bin/echo",
 		Args:    []string{"ok"},
 		Token:   token,
 	})
@@ -332,14 +370,14 @@ func TestBroker_EmptyPathFallsBackToName(t *testing.T) {
 func TestBroker_EmptyPathUnresolvableNameReportsClearError(t *testing.T) {
 	broker := &sandbox.Broker{}
 	token := broker.Register(map[string]sandbox.CommandDef{
-		"boid-nonexistent-binary-xyzzy": {
+		"/usr/local/bin/boid-nonexistent-binary-xyzzy": {
 			Name:            "boid-nonexistent-binary-xyzzy",
 			AllowedPatterns: []string{"*"},
 		},
 	}, nil, testCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
-		Command: "boid-nonexistent-binary-xyzzy",
+		Command: "/usr/local/bin/boid-nonexistent-binary-xyzzy",
 		Token:   token,
 	})
 	if resp.ExitCode != 1 {
@@ -353,7 +391,7 @@ func TestBroker_EmptyPathUnresolvableNameReportsClearError(t *testing.T) {
 func TestBroker_PerCommandEnv(t *testing.T) {
 	broker := &sandbox.Broker{}
 	token := broker.Register(map[string]sandbox.CommandDef{
-		"env": {
+		"/usr/bin/env": {
 			Name:            "env",
 			Path:            "/usr/bin/env",
 			AllowedPatterns: []string{"*"},
@@ -362,7 +400,7 @@ func TestBroker_PerCommandEnv(t *testing.T) {
 	}, nil, testCtx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
-		Command: "env",
+		Command: "/usr/bin/env",
 		Token:   token,
 	})
 	if resp.ExitCode != 0 {
@@ -375,8 +413,11 @@ func TestBroker_PerCommandEnv(t *testing.T) {
 
 func TestBroker_GitFallsBackToHostCommandWhenBuiltinNotAllowed(t *testing.T) {
 	broker := &sandbox.Broker{}
+	// Commands map is keyed by the absolute shim mount target (= host git
+	// binary path). When the entry has no git builtin policy attached, the
+	// broker falls through to host_commands lookup.
 	token := broker.Register(map[string]sandbox.CommandDef{
-		"git": {
+		"/usr/bin/git": {
 			Name:               "git",
 			Path:               "/bin/echo",
 			AllowedSubcommands: []string{"push"},
@@ -386,7 +427,7 @@ func TestBroker_GitFallsBackToHostCommandWhenBuiltinNotAllowed(t *testing.T) {
 	})
 
 	resp := broker.Handle(&sandbox.ExecRequest{
-		Command: "git",
+		Command: "/usr/bin/git",
 		Args:    []string{"push", "origin", "HEAD"},
 		Token:   token,
 		Git:     &sandbox.GitRequest{Op: sandbox.GitOpPush, Remote: "origin"},
@@ -409,7 +450,7 @@ func TestBroker_SecretResolution(t *testing.T) {
 	}
 
 	token := broker.RegisterWithSecrets(map[string]sandbox.CommandDef{
-		"env": {
+		"/usr/bin/env": {
 			Name:            "env",
 			Path:            "/usr/bin/env",
 			AllowedPatterns: []string{"*"},
@@ -419,7 +460,7 @@ func TestBroker_SecretResolution(t *testing.T) {
 		JobID: "job-1", TaskID: "task-1", ProjectID: "proj-1", Role: testRoleGate,
 	}, resolver)
 	resp := broker.Handle(&sandbox.ExecRequest{
-		Command: "env",
+		Command: "/usr/bin/env",
 		Token:   token,
 	})
 	if resp.ExitCode != 0 {
@@ -443,7 +484,7 @@ func TestBroker_SecretResolutionEmptyKey(t *testing.T) {
 	}
 
 	token := broker.RegisterWithSecrets(map[string]sandbox.CommandDef{
-		"env": {
+		"/usr/bin/env": {
 			Name:            "env",
 			Path:            "/usr/bin/env",
 			AllowedPatterns: []string{"*"},
@@ -453,7 +494,7 @@ func TestBroker_SecretResolutionEmptyKey(t *testing.T) {
 		JobID: "job-1", TaskID: "task-1", ProjectID: "proj-1", Role: testRoleGate,
 	}, resolver)
 	resp := broker.Handle(&sandbox.ExecRequest{
-		Command: "env",
+		Command: "/usr/bin/env",
 		Token:   token,
 	})
 	if resp.ExitCode != 0 {
@@ -825,7 +866,11 @@ func TestBroker_BoidBuiltinRejectsWrongJobAndCwd(t *testing.T) {
 	}
 }
 
-func TestBroker_BoidBuiltinRequiresTypedRequest(t *testing.T) {
+// req.Boid を伴わない boid binary 名義のリクエストは boid builtin 経路に
+// 入らず、絶対パスキーの host command lookup でも見つからないので
+// "command not allowed" として reject される（旧仕様の typed-request エラー
+// 経路を新設計の dispatch ルールに置き換えたもの）。
+func TestBroker_BoidBuiltinWithoutTypedPayloadIsRejected(t *testing.T) {
 	broker := &sandbox.Broker{}
 	cwd := t.TempDir()
 	token := broker.Register(map[string]sandbox.CommandDef{}, testHookBoidPolicies(), sandbox.TokenContext{
@@ -837,12 +882,12 @@ func TestBroker_BoidBuiltinRequiresTypedRequest(t *testing.T) {
 	})
 
 	resp := broker.Handle(&sandbox.ExecRequest{
-		Command: "boid",
+		Command: "/usr/local/bin/boid",
 		Cwd:     cwd,
 		Token:   token,
 	})
-	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "typed boid request required") {
-		t.Fatalf("expected typed request rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "not allowed") {
+		t.Fatalf("expected reject, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
 	}
 }
 

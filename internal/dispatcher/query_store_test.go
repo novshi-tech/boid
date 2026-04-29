@@ -105,6 +105,33 @@ func TestGetJob(t *testing.T) {
 	}
 }
 
+func TestCreateJob_NoTask(t *testing.T) {
+	d := createDispatcherTask(t)
+
+	job := &dispatcher.Job{
+		ProjectID: "proj-1",
+		HandlerID: "",
+		Role:      "exec",
+	}
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
+		t.Fatalf("create job without task: %v", err)
+	}
+	if job.ID == "" {
+		t.Fatal("expected auto-generated ID")
+	}
+
+	got, err := dispatcher.GetJob(d.Conn, job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if got.TaskID != "" {
+		t.Fatalf("expected empty task_id, got %q", got.TaskID)
+	}
+	if got.ProjectID != "proj-1" {
+		t.Fatalf("expected project_id proj-1, got %s", got.ProjectID)
+	}
+}
+
 func TestGetJob_NotFound(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	_, err := dispatcher.GetJob(d.Conn, "nonexistent")

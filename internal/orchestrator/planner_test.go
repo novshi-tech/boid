@@ -43,8 +43,9 @@ func (s stubTaskLookup) GetTask(id string) (*Task, error) {
 	return s.task, nil
 }
 
-// Hook / gate dispatches both include boid and git as builtin policies, and
-// hooks never receive host commands.
+// Hooks include boid and git as builtin policies; host commands are propagated
+// from behavior (nil when behavior has none). Gates run directly on the host
+// and have no builtin policies or host commands (no broker is involved).
 func TestDispatchPlannerInjectsDefaultBuiltinsForHookAndGate(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
@@ -96,11 +97,12 @@ func TestDispatchPlannerInjectsDefaultBuiltinsForHookAndGate(t *testing.T) {
 		defer gateCleanup()
 	}
 
-	if len(gateReq.BuiltinPolicies) != 2 {
-		t.Fatalf("gate builtin policies = %#v, want 2 (git, boid)", gateReq.BuiltinPolicies)
+	// Gates run directly on the host; no broker policies are needed.
+	if len(gateReq.BuiltinPolicies) != 0 {
+		t.Fatalf("gate builtin policies = %#v, want nil (gates use host-direct, no broker)", gateReq.BuiltinPolicies)
 	}
-	if _, ok := gateReq.HostCommands["boid"]; ok {
-		t.Fatalf("gate host commands should not contain boid: %#v", gateReq.HostCommands)
+	if len(gateReq.HostCommands) != 0 {
+		t.Fatalf("gate host commands = %#v, want nil (gates use host-direct, no broker)", gateReq.HostCommands)
 	}
 }
 
@@ -143,9 +145,10 @@ func TestPlanHook_UsesScriptPathDirectlyAndSetsKitRoots(t *testing.T) {
 	}
 }
 
-// PlanGate uses Gate.ScriptPath directly as Argv[0] and includes kit roots
-// in Visibility.KitRoots. No staging directory is created.
-func TestPlanGate_UsesScriptPathDirectlyAndSetsKitRoots(t *testing.T) {
+// PlanGate uses Gate.ScriptPath directly as Argv[0]. No staging directory is
+// created. Gates run on the host directly, so Visibility (including KitRoots)
+// is not populated.
+func TestPlanGate_UsesScriptPathDirectly(t *testing.T) {
 	projectDir := t.TempDir()
 	kitRoot := t.TempDir()
 	kitGatesDir := filepath.Join(kitRoot, "gates")
@@ -177,8 +180,10 @@ func TestPlanGate_UsesScriptPathDirectlyAndSetsKitRoots(t *testing.T) {
 	if len(req.Argv) == 0 || req.Argv[0] != scriptPath {
 		t.Errorf("Argv[0] = %q, want %q", req.Argv[0], scriptPath)
 	}
-	if len(req.Visibility.KitRoots) != 1 || req.Visibility.KitRoots[0] != kitRoot {
-		t.Errorf("KitRoots = %v, want [%s]", req.Visibility.KitRoots, kitRoot)
+	// Gates run on the host directly; Visibility (including KitRoots) is not
+	// populated — the host gate wrapper handles env/cwd directly.
+	if len(req.Visibility.KitRoots) != 0 {
+		t.Errorf("KitRoots = %v, want empty (gates use host-direct, no sandbox visibility)", req.Visibility.KitRoots)
 	}
 }
 
@@ -420,25 +425,6 @@ func TestDispatchPlanner_PropagatesBaseBranchEnv(t *testing.T) {
 		t.Errorf("gate KIT_VAR = %q, want kit-value", got)
 	}
 
-	// host:true on the Gate must propagate to JobSpec.Host so dispatcher
-	// can pick the unsandboxed execution path.
-	hostGateReq, _, err := planner.PlanGate(&GateFireEvent{
-		EventID:   "event-host",
-		TaskID:    "task-1",
-		ProjectID: "proj-1",
-		Gate: Gate{
-			ID:         "gate-host",
-			Host:       true,
-			ScriptPath: filepath.Join(projectDir, ".boid/gates", "gate-host.sh"),
-		},
-	})
-	if err != nil {
-		t.Fatalf("PlanGate (host): %v", err)
-	}
-	if !hostGateReq.Host {
-		t.Errorf("PlanGate did not propagate Gate.Host=true to JobSpec.Host")
-	}
-
 	// Tasks without a base branch should not surface an empty BOID_BASE_BRANCH:
 	// kit detection (`-n "${BOID_BASE_BRANCH:-}"`) treats empty and unset alike,
 	// but leaving the var absent keeps env diagnostics clean.
@@ -457,6 +443,139 @@ func TestDispatchPlanner_PropagatesBaseBranchEnv(t *testing.T) {
 	}
 	if _, ok := emptyReq.Env["BOID_BASE_BRANCH"]; ok {
 		t.Errorf("hook env should not include BOID_BASE_BRANCH when task.BaseBranch is empty, got %#v", emptyReq.Env)
+	}
+}
+
+// PlanHook propagates behavior.HostCommands into JobSpec.HostCommands.
+func TestPlanHook_PropagatesHostCommands(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	behavior := TaskBehavior{
+		Name: "dev",
+		HostCommands: HostCommands{
+			"gh": {Allow: []string{"pr", "issue"}},
+			"jq": {},
+		},
+	}
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, behavior,
+		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
+
+	req, cleanup, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook: Hook{
+			ID:         "hook-1",
+			ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if len(req.HostCommands) != 2 {
+		t.Fatalf("HostCommands = %v, want 2 entries (gh, jq)", req.HostCommands)
+	}
+	if _, ok := req.HostCommands["gh"]; !ok {
+		t.Error("HostCommands missing gh")
+	}
+	if _, ok := req.HostCommands["jq"]; !ok {
+		t.Error("HostCommands missing jq")
+	}
+}
+
+// task.readonly (and verifying status) drives Visibility.Writable for hook jobs.
+// This is the canonical single-source-of-truth for the hook sandbox write permission.
+func TestPlanHook_WritableControlledByTaskReadonly(t *testing.T) {
+	cases := []struct {
+		name     string
+		readonly bool
+		status   TaskStatus
+		want     bool
+	}{
+		{"hook + readonly=false", false, TaskStatusExecuting, true},
+		{"hook + readonly=true", true, TaskStatusExecuting, false},
+		{"hook + verifying (implicitly readonly)", false, TaskStatusVerifying, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			projectDir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			task := &Task{
+				ID:        "task-1",
+				ProjectID: "proj-1",
+				Behavior:  "dev",
+				Readonly:  tc.readonly,
+				Status:    tc.status,
+			}
+			planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{Name: "dev"}, task)
+			req, cleanup, err := planner.PlanHook(&HookFireEvent{
+				EventID:   "event-1",
+				TaskID:    "task-1",
+				ProjectID: "proj-1",
+				Hook: Hook{
+					ID:         "hook-1",
+					ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
+				},
+			})
+			if err != nil {
+				t.Fatalf("PlanHook: %v", err)
+			}
+			if cleanup != nil {
+				defer cleanup()
+			}
+			if req.Visibility.Writable != tc.want {
+				t.Errorf("Writable = %v, want %v (readonly=%v, status=%v)", req.Visibility.Writable, tc.want, tc.readonly, tc.status)
+			}
+		})
+	}
+}
+
+// CommandSpec.Readonly drives Visibility.Writable for exec jobs, mirroring the
+// hook behavior. task.readonly is the sole arbiter in both cases.
+func TestPlanExec_WritableControlledByCommandReadonly(t *testing.T) {
+	cases := []struct {
+		name     string
+		readonly bool
+		want     bool
+	}{
+		{"exec + readonly=false", false, true},
+		{"exec + readonly=true", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			projectDir := t.TempDir()
+			planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{Name: "dev"},
+				&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
+			req, cleanup, err := planner.PlanExec(&ExecFireEvent{
+				ProjectID: "proj-1",
+				Command: CommandSpec{
+					ResolvedCommand: []string{"bash"},
+					Readonly:        tc.readonly,
+				},
+			})
+			if err != nil {
+				t.Fatalf("PlanExec: %v", err)
+			}
+			if cleanup != nil {
+				defer cleanup()
+			}
+			if req.Visibility.Writable != tc.want {
+				t.Errorf("Writable = %v, want %v (readonly=%v)", req.Visibility.Writable, tc.want, tc.readonly)
+			}
+			if req.Visibility.ProjectDir != projectDir {
+				t.Errorf("ProjectDir = %q, want %q", req.Visibility.ProjectDir, projectDir)
+			}
+			if req.Kind != JobKindExec {
+				t.Errorf("Kind = %q, want exec", req.Kind)
+			}
+		})
 	}
 }
 

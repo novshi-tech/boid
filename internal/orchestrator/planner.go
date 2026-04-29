@@ -70,7 +70,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 			[]string{"boid", "git"},
 			PolicyContext{ProjectDir: proj.WorkDir, HomeDir: sandboxHomeDir()},
 		),
-		HostCommands:    nil, // hooks never get broker-mediated host commands
+		HostCommands: behavior.HostCommands.ToCommandDefs(),
 		SecretNamespace: meta.SecretNamespace,
 		Env:             mergeStringMaps(behavior.Env, taskBusinessEnv(task)),
 		ExecutionState:  string(task.Status),
@@ -87,7 +87,7 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, CleanupFunc,
 		return nil, nil, fmt.Errorf("gate %q: no script path resolved", event.Gate.ID)
 	}
 
-	meta, proj, task, err := p.loadContext(event.ProjectID, event.TaskID)
+	meta, _, task, err := p.loadContext(event.ProjectID, event.TaskID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -106,32 +106,68 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, CleanupFunc,
 	}
 
 	spec := &JobSpec{
-		TaskID:       event.TaskID,
-		ProjectID:    event.ProjectID,
-		HandlerID:    event.Gate.ID,
-		Kind:         JobKindGate,
-		Argv:         []string{event.Gate.ScriptPath},
-		Instruction:  nil,
-		Task:         nil, // gate gets task data via stdin rather than context file
-		PrimaryInput: taskJSON,
-		Visibility: Visibility{
-			// Project filesystem is intentionally not visible to gates.
-			ProjectDir:         "",
-			UseWorktree:        false,
-			AdditionalBindings: nil,
-			Writable:           false,
-			KitRoots:           behavior.KitRoots,
-		},
-		BuiltinPolicies: DefaultBuiltinPolicies(
-			RoleGate,
-			[]string{"boid", "git"},
-			PolicyContext{ProjectDir: proj.WorkDir, HomeDir: sandboxHomeDir()},
-		),
-		HostCommands:    behavior.HostCommands.ToCommandDefs(),
+		TaskID:          event.TaskID,
+		ProjectID:       event.ProjectID,
+		HandlerID:       event.Gate.ID,
+		Kind:            JobKindGate,
+		Argv:            []string{event.Gate.ScriptPath},
+		PrimaryInput:    taskJSON,
 		SecretNamespace: meta.SecretNamespace,
 		Env:             mergeStringMaps(behavior.Env, taskBusinessEnv(task)),
 		ExecutionState:  string(task.Status),
-		Host:            event.Gate.Host,
+	}
+	return spec, nil, nil
+}
+
+// ExecFireEvent carries the data needed to plan a boid-exec job.
+// Command must be the fully resolved CommandSpec (ResolvedCommand populated).
+type ExecFireEvent struct {
+	ProjectID string
+	Command   CommandSpec
+}
+
+// PlanExec renders an exec fire event into a JobSpec.
+// Visibility.Writable is driven by Command.Readonly, mirroring how PlanHook
+// derives it from IsReadonly(task) — task.readonly is the sole arbiter.
+func (p *DispatchPlanner) PlanExec(event *ExecFireEvent) (*JobSpec, CleanupFunc, error) {
+	if event == nil {
+		return nil, nil, fmt.Errorf("exec event is required")
+	}
+	if len(event.Command.ResolvedCommand) == 0 {
+		return nil, nil, fmt.Errorf("exec event: no command resolved")
+	}
+	if p.Meta == nil || p.Projects == nil {
+		return nil, nil, fmt.Errorf("dispatch planner is not fully configured")
+	}
+
+	proj, err := p.Projects.GetProject(event.ProjectID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get project: %w", err)
+	}
+
+	var secretNS string
+	if meta, ok := p.Meta.Get(event.ProjectID); ok {
+		secretNS = meta.SecretNamespace
+	}
+
+	spec := &JobSpec{
+		ProjectID: event.ProjectID,
+		Kind:      JobKindExec,
+		Argv:      event.Command.ResolvedCommand,
+		Visibility: Visibility{
+			ProjectDir:         proj.WorkDir,
+			UseWorktree:        false,
+			AdditionalBindings: event.Command.AdditionalBindings,
+			Writable:           !event.Command.Readonly,
+		},
+		BuiltinPolicies: DefaultBuiltinPolicies(
+			RoleHook,
+			[]string{"boid", "git"},
+			PolicyContext{ProjectDir: proj.WorkDir, HomeDir: sandboxHomeDir()},
+		),
+		HostCommands:    event.Command.HostCommands.ToCommandDefs(),
+		SecretNamespace: secretNS,
+		Env:             event.Command.Env,
 	}
 	return spec, nil, nil
 }

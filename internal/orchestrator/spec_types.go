@@ -28,13 +28,13 @@ type HookFile struct {
 // CommandDef is the orchestrator-side transport shape for sandbox command policy input.
 // Dispatcher and sandbox mirror this shape; sandbox owns the enforcement semantics.
 type CommandDef struct {
-	Name               string
-	Path               string
-	AllowedPatterns    []string
-	DeniedPatterns     []string
-	AllowedSubcommands []string
-	AllowStdin         bool
-	Env                map[string]string
+	Name               string            `json:"name,omitempty"`
+	Path               string            `json:"path,omitempty"`
+	AllowedPatterns    []string          `json:"allowed_patterns,omitempty"`
+	DeniedPatterns     []string          `json:"denied_patterns,omitempty"`
+	AllowedSubcommands []string          `json:"allowed_subcommands,omitempty"`
+	AllowStdin         bool              `json:"allow_stdin,omitempty"`
+	Env                map[string]string `json:"env,omitempty"`
 }
 
 // HostCommandSpec is the simplified YAML DSL for declaring host commands.
@@ -249,14 +249,9 @@ const (
 )
 
 type Gate struct {
-	ID    string    `yaml:"id" json:"id"`
-	On    OnValues  `yaml:"on" json:"on"`
-	Phase GatePhase `yaml:"phase,omitempty" json:"phase,omitempty"`
-	// Host reports whether the gate script must run on the host directly
-	// (no sandbox, no broker). Used by trusted kit gates that need full
-	// filesystem access to the worktree (e.g. git-auto-merge's lockfile +
-	// detached worktree handling). Default false → sandboxed dispatch.
-	Host       bool          `yaml:"host,omitempty" json:"host,omitempty"`
+	ID         string        `yaml:"id" json:"id"`
+	On         OnValues      `yaml:"on" json:"on"`
+	Phase      GatePhase     `yaml:"phase,omitempty" json:"phase,omitempty"`
 	Traits     HandlerTraits `yaml:"traits" json:"traits"`
 	Kit        string        `yaml:"-" json:"kit,omitempty"`
 	ScriptPath string        `yaml:"-" json:"-"`
@@ -385,7 +380,8 @@ func (k *KitRef) UnmarshalYAML(value *yaml.Node) error {
 // CommandSpec defines a named sandbox command available via `boid exec`.
 // The Command slice is expanded with os.ExpandEnv at load time and stored in ResolvedCommand.
 type CommandSpec struct {
-	Command []string `yaml:"command" json:"command"`
+	Command  []string `yaml:"command" json:"command"`
+	Readonly bool     `yaml:"readonly,omitempty" json:"readonly,omitempty"`
 
 	// Resolved fields populated by ReadProjectMetaWithKits.
 	ResolvedCommand    []string          `yaml:"-" json:"-"`

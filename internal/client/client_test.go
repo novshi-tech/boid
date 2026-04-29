@@ -172,6 +172,42 @@ func TestListWorkspaces(t *testing.T) {
 	}
 }
 
+// TUI から実 daemon に届く gate ID は kit-name/gate-name 形式で '/' を含む。
+// chi の `{gate_id}` は単一セグメントしかマッチしないので URL エスケープを
+// 怠ると 404 になる。client は CLI と同じく PathEscape する責務を負う。
+func TestReplayGate_EscapesGateIDPath(t *testing.T) {
+	wantTaskID := "task-7c9adc09"
+	wantGateID := "boid-tasks/create-subtasks"
+	wantPath := "/api/tasks/" + wantTaskID + "/gates/boid-tasks%2Fcreate-subtasks/replay"
+
+	respJSON, _ := json.Marshal(api.ReplayGateResult{})
+
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		// req.URL.Path は chi が見るのと同じ「未エスケープ」表現を返してしまう
+		// ため、生バイト列で検証するには RawPath を使う。
+		got := req.URL.RawPath
+		if got == "" {
+			got = req.URL.Path
+		}
+		if got != wantPath {
+			t.Errorf("path: want %q, got %q", wantPath, got)
+		}
+		if req.Method != http.MethodPost {
+			t.Errorf("method: want POST, got %s", req.Method)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(respJSON)),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	c := newTestClient(transport)
+	if _, err := c.ReplayGate(wantTaskID, wantGateID, ""); err != nil {
+		t.Fatalf("ReplayGate error: %v", err)
+	}
+}
+
 func TestListWorkspaces_ServerError(t *testing.T) {
 	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		errBody := `{"error":"internal error"}`

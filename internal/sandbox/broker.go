@@ -154,8 +154,27 @@ func (b *Broker) handleConn(conn net.Conn) {
 		return
 	}
 
+	if req.Streaming {
+		b.handleStreamingExec(conn, &req)
+		return
+	}
+
 	resp := b.Handle(&req)
 	json.NewEncoder(conn).Encode(resp)
+}
+
+// sendStreamResponse converts a completed ExecResponse to the streaming chunk
+// format. Used when a boid/git builtin is called with Streaming=true, or as
+// a fallback on platforms where PTY-based streaming is unavailable.
+func sendStreamResponse(conn net.Conn, resp *ExecResponse) {
+	enc := json.NewEncoder(conn)
+	if resp.Stdout != "" {
+		_ = enc.Encode(&StreamChunk{Type: StreamTypeStdout, Data: resp.Stdout})
+	}
+	if resp.Stderr != "" {
+		_ = enc.Encode(&StreamChunk{Type: StreamTypeStderr, Data: resp.Stderr})
+	}
+	_ = enc.Encode(&StreamChunk{Type: StreamTypeExit, ExitCode: resp.ExitCode})
 }
 
 func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
@@ -167,14 +186,21 @@ func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
 		return &ExecResponse{ExitCode: 1, Stderr: "invalid token"}
 	}
 
-	if req.Command == "boid" {
+	// Boid builtin is identified by the typed payload, not by the binary path.
+	// The shim only attaches req.Boid when the caller went through the boid
+	// CLI shim entry point.
+	if req.Boid != nil {
 		return b.handleBoidBuiltin(req, entry)
 	}
-	if req.Command == "git" {
+
+	// Git builtin: shim mount target's basename is the only stable name we
+	// have on the broker side. The mount target equals the host's git binary
+	// (e.g. /usr/bin/git), so basename(req.Command) == "git" identifies it.
+	if filepath.Base(req.Command) == "git" {
 		if entry.hasBuiltinPolicy("git") {
 			return handleGitBuiltinRequest(req, entry)
 		}
-		if def, ok := entry.Commands["git"]; ok {
+		if def, ok := entry.Commands[req.Command]; ok {
 			return b.execCommand(req, def, entry)
 		}
 		return &ExecResponse{ExitCode: 1, Stderr: "command not allowed: git"}
@@ -182,16 +208,15 @@ func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
 
 	def, ok := entry.Commands[req.Command]
 	if !ok {
-		return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("command not allowed: %s", req.Command)}
+		return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("command not allowed: %s", filepath.Base(req.Command))}
 	}
 
 	return b.execCommand(req, def, entry)
 }
 
 func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecResponse {
-	if req.Boid == nil {
-		return &ExecResponse{ExitCode: 1, Stderr: "typed boid request required"}
-	}
+	// req.Boid is guaranteed non-nil — Handle dispatches here only when the
+	// shim attaches a typed boid payload.
 	if !entry.hasBuiltinPolicy("boid") {
 		return &ExecResponse{ExitCode: 1, Stderr: "command not allowed: boid"}
 	}
@@ -370,9 +395,7 @@ func isWithinRoot(path, root string) bool {
 }
 
 func (b *Broker) execCommand(req *ExecRequest, def CommandDef, entry *tokenEntry) *ExecResponse {
-	if err := validateStdin(def, req.Stdin); err != nil {
-		return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
-	}
+	req.Stdin = sanitizeStdin(def, req.Stdin)
 
 	if !CheckPolicy(def, req.Args) {
 		return &ExecResponse{ExitCode: 1, Stderr: "arguments not allowed"}
@@ -461,11 +484,18 @@ func (e *tokenEntry) allowsBuiltinOp(name, op string) bool {
 	return policy.Allows(op)
 }
 
-func validateStdin(def CommandDef, stdin []byte) error {
-	if len(stdin) > 0 && !def.AllowStdin {
-		return fmt.Errorf("stdin not allowed")
+// sanitizeStdin drops stdin payload for host commands that have not opted in
+// via AllowStdin. The previous behavior was to reject the call, but inherited
+// stdin (e.g., a hook script invoked as `printf '%s' '{}' | hook.sh` whose
+// child commands inherit the same pipe FD) would cause unrelated host command
+// invocations to fail. Dropping silently keeps the contract that AllowStdin=false
+// commands never observe caller-provided stdin while tolerating the FD inheritance
+// pattern that is common in shell pipelines.
+func sanitizeStdin(def CommandDef, stdin []byte) []byte {
+	if !def.AllowStdin {
+		return nil
 	}
-	return nil
+	return stdin
 }
 
 func generateToken() string {

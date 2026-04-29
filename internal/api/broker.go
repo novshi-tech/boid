@@ -18,6 +18,11 @@ type BrokerRegisterRequest struct {
 type BrokerRegisterResponse struct {
 	Token  string `json:"token"`
 	Socket string `json:"socket"`
+	// ResolvedHostCommands echoes back the absolute-path-keyed map produced by
+	// dispatcher.ResolveHostCommands. The caller (boid exec) feeds this into
+	// SandboxRuntimeInfo so shim bind-mount targets line up with the broker's
+	// policy keys without re-resolving on the client side.
+	ResolvedHostCommands map[string]orchestrator.CommandDef `json:"resolved_host_commands,omitempty"`
 }
 
 type BrokerHandler struct {

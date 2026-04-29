@@ -40,7 +40,9 @@ func DeriveLifecycle(_ context.Context, taskID string, store LifecycleStore, hoo
 		return lc, err
 	}
 	for _, a := range actions {
-		if a.ToStatus == TaskStatusReworking {
+		// hook_fired / exit_gate_fired carry to_status=reworking while the
+		// task stays in reworking; only count true transitions in.
+		if a.ToStatus == TaskStatusReworking && a.FromStatus != TaskStatusReworking {
 			lc.ReworkCount++
 		}
 		if a.ToStatus == TaskStatusAborted && lc.Abort == nil {

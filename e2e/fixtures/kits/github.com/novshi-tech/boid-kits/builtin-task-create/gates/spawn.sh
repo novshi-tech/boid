@@ -44,8 +44,6 @@ EOF
 
 # Emit artifact so the parent (one-shot) auto-advances to done.
 mkdir -p "$HOME/.boid/output"
-cat > "$HOME/.boid/output/payload_patch.yaml" <<'EOF'
-payload_patch:
-  artifact:
-    summary: "spawned subtasks"
+cat > "$HOME/.boid/output/payload_patch.json" <<'EOF'
+{"payload_patch":{"artifact":{"summary":"spawned subtasks"}}}
 EOF

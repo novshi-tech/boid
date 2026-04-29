@@ -84,6 +84,59 @@ func TestPrepare_TTY(t *testing.T) {
 	}
 }
 
+func TestPrepare_OuterScriptCleansUp(t *testing.T) {
+	spec := minimalSpec("test-outer-cleanup")
+	spec.RootDir = "/tmp/boid-root-test-cleanup"
+
+	outerPath, err := sandbox.Prepare(spec)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	outer, _, _ := readScripts(t, outerPath)
+
+	// outer.sh must NOT exec-replace itself with pasta (exec would skip cleanup)
+	if strings.Contains(outer, "exec pasta") {
+		t.Errorf("outer should not use 'exec pasta' (prevents cleanup)\n%s", outer)
+	}
+	// outer.sh must clean up the root dir after pasta exits
+	if !strings.Contains(outer, `rm -rf "$root_dir"`) {
+		t.Errorf("outer should rm -rf $root_dir\n%s", outer)
+	}
+	// outer.sh must propagate pasta's exit code
+	if !strings.Contains(outer, "exit $exit_code") {
+		t.Errorf("outer should exit with pasta's exit code\n%s", outer)
+	}
+	// RootDir must be embedded in the script
+	if !strings.Contains(outer, "/tmp/boid-root-test-cleanup") {
+		t.Errorf("outer should embed the RootDir path\n%s", outer)
+	}
+}
+
+func TestPrepare_OuterScriptCleansUpTTY(t *testing.T) {
+	spec := minimalSpec("test-outer-cleanup-tty")
+	spec.RootDir = "/tmp/boid-root-test-cleanup-tty"
+	spec.TTY = true
+
+	outerPath, err := sandbox.Prepare(spec)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	outer, _, _ := readScripts(t, outerPath)
+
+	if strings.Contains(outer, "exec pasta") {
+		t.Errorf("outer TTY should not use 'exec pasta'\n%s", outer)
+	}
+	if !strings.Contains(outer, "exec 3>&2") {
+		t.Errorf("outer TTY should save stderr\n%s", outer)
+	}
+	if !strings.Contains(outer, `rm -rf "$root_dir"`) {
+		t.Errorf("outer TTY should rm -rf $root_dir\n%s", outer)
+	}
+	if !strings.Contains(outer, "exit $exit_code") {
+		t.Errorf("outer TTY should exit with pasta's exit code\n%s", outer)
+	}
+}
+
 func TestPrepare_ProxyPort(t *testing.T) {
 	spec := minimalSpec("test-proxy")
 	spec.ProxyPort = 8888

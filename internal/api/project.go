@@ -9,7 +9,8 @@ import (
 )
 
 type ProjectHandler struct {
-	Service ProjectService
+	Service    ProjectService
+	Dispatcher CommandDispatcher // optional; nil disables the execute endpoint
 }
 
 type projectCandidate struct {
@@ -49,6 +50,7 @@ func (h *ProjectHandler) Routes() chi.Router {
 	r.Put("/{id}/workspace", h.SetWorkspace)
 	r.Get("/{id}/commands", h.ListCommands)
 	r.Get("/{id}/commands/{name}", h.GetCommand)
+	r.Post("/{id}/commands/{name}/execute", h.ExecuteCommand)
 	r.Get("/{id}", h.Get)
 	r.Delete("/{id}", h.Delete)
 	return r
@@ -160,6 +162,25 @@ func (h *ProjectHandler) GetCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, cmd)
+}
+
+func (h *ProjectHandler) ExecuteCommand(w http.ResponseWriter, r *http.Request) {
+	if h.Dispatcher == nil {
+		writeError(w, http.StatusNotImplemented, "command execution not available")
+		return
+	}
+	ref := chi.URLParam(r, "id")
+	project := h.resolveRef(w, ref)
+	if project == nil {
+		return
+	}
+	name := chi.URLParam(r, "name")
+	result, err := h.Dispatcher.ExecuteCommand(r.Context(), project.ID, name)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
 }
 
 func (h *ProjectHandler) Reload(w http.ResponseWriter, r *http.Request) {

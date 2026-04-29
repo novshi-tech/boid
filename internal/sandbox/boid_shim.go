@@ -25,7 +25,7 @@ func RunBoidShim(args []string) (*ExecResponse, error) {
 
 	cwd, _ := os.Getwd()
 	execReq := ExecRequest{
-		Command: "boid",
+		Command: shimBinaryPath(os.Args[0]),
 		Args:    append([]string(nil), args...),
 		Cwd:     cwd,
 		Token:   os.Getenv("BOID_BROKER_TOKEN"),
@@ -96,11 +96,12 @@ func parseBoidJobDone(args []string) (*BoidRequest, error) {
 				return nil, err
 			}
 			i = next
+			// host 側 cmd/job.go runJobDone と挙動を揃える: missing file は
+			// silent skip し、output 空で boid job done を送る。
 			content, err := readFlagContent(value)
-			if err != nil {
-				return nil, err
+			if err == nil {
+				req.Output = string(content)
 			}
-			req.Output = string(content)
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid job done", arg)
 		}

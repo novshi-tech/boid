@@ -1805,3 +1805,74 @@ details[open] > summary {
     font-size: 0.75rem;
   }
 }
+
+/* --- Project Commands Page --- */
+.cmd-list {
+  border-top: 1px solid var(--border);
+}
+
+.cmd-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 10px var(--space-3);
+  border-bottom: 1px solid var(--border);
+  min-height: var(--tap-target);
+}
+
+.cmd-row-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.cmd-name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.cmd-preview {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmd-badge-readonly {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.filter-cmd-link {
+  white-space: nowrap;
+}
+
+@media (prefers-color-scheme: dark) {
+  .cmd-badge-readonly {
+    background: #1e293b;
+    color: #94a3b8;
+  }
+}
+
+.error-banner {
+  background: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid #fca5a5;
+  border-radius: var(--radius-2);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+  font-size: 0.875rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  .error-banner {
+    background: #450a0a;
+    color: #f87171;
+    border-color: #7f1d1d;
+  }
+}

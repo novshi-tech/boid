@@ -2,6 +2,7 @@ package server
 
 import (
 	"database/sql"
+	"os/exec"
 	"path/filepath"
 	"sort"
 
@@ -127,6 +128,15 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 		ProjectDir:        project.WorkDir,
 	}
 	defs := orchestrator.HostCommands(commands).ToCommandDefs()
+	resolved, err := dispatcher.ResolveHostCommands(
+		sortedBuiltinKeys(builtinPolicies),
+		defs,
+		project.WorkDir,
+		exec.LookPath,
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	var resolve dispatcher.SecretResolver
 	if r.secretStore != nil {
@@ -134,10 +144,11 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 			return r.secretStore.Get("default", key)
 		}
 	}
-	token := r.broker.RegisterCommands(defs, builtinPolicies, ctx, resolve)
+	token := r.broker.RegisterCommands(resolved, builtinPolicies, ctx, resolve)
 	return &api.BrokerRegisterResponse{
-		Token:  token,
-		Socket: r.broker.SocketPath(),
+		Token:                token,
+		Socket:               r.broker.SocketPath(),
+		ResolvedHostCommands: resolved,
 	}, nil
 }
 
@@ -181,19 +192,20 @@ func toAPIJob(job *dispatcher.Job) *api.Job {
 		return nil
 	}
 	return &api.Job{
-		ID:          job.ID,
-		TaskID:      job.TaskID,
-		ProjectID:   job.ProjectID,
-		HandlerID:   job.HandlerID,
-		Role:        job.Role,
-		RuntimeID:   job.RuntimeID,
-		Interactive: job.Interactive,
-		TTY:         job.TTY,
-		Status:      api.JobStatus(job.Status),
-		ExitCode:    job.ExitCode,
-		Output:      job.Output,
-		CreatedAt:   job.CreatedAt,
-		UpdatedAt:   job.UpdatedAt,
+		ID:             job.ID,
+		TaskID:         job.TaskID,
+		ProjectID:      job.ProjectID,
+		HandlerID:      job.HandlerID,
+		Role:           job.Role,
+		RuntimeID:      job.RuntimeID,
+		Interactive:    job.Interactive,
+		TTY:            job.TTY,
+		Status:         api.JobStatus(job.Status),
+		ExitCode:       job.ExitCode,
+		Output:         job.Output,
+		ExecutionState: job.ExecutionState,
+		CreatedAt:      job.CreatedAt,
+		UpdatedAt:      job.UpdatedAt,
 	}
 }
 
@@ -202,19 +214,20 @@ func toDispatcherJob(job *api.Job) *dispatcher.Job {
 		return nil
 	}
 	return &dispatcher.Job{
-		ID:          job.ID,
-		TaskID:      job.TaskID,
-		ProjectID:   job.ProjectID,
-		HandlerID:   job.HandlerID,
-		Role:        job.Role,
-		RuntimeID:   job.RuntimeID,
-		Interactive: job.Interactive,
-		TTY:         job.TTY,
-		Status:      dispatcher.JobStatus(job.Status),
-		ExitCode:    job.ExitCode,
-		Output:      job.Output,
-		CreatedAt:   job.CreatedAt,
-		UpdatedAt:   job.UpdatedAt,
+		ID:             job.ID,
+		TaskID:         job.TaskID,
+		ProjectID:      job.ProjectID,
+		HandlerID:      job.HandlerID,
+		Role:           job.Role,
+		RuntimeID:      job.RuntimeID,
+		Interactive:    job.Interactive,
+		TTY:            job.TTY,
+		Status:         dispatcher.JobStatus(job.Status),
+		ExitCode:       job.ExitCode,
+		Output:         job.Output,
+		ExecutionState: job.ExecutionState,
+		CreatedAt:      job.CreatedAt,
+		UpdatedAt:      job.UpdatedAt,
 	}
 }
 
@@ -309,6 +322,18 @@ func (a jobLifecycleAdapter) CleanupTaskWindow(taskID string) {
 // internal/api imports while letting the timeline refresh live.
 type hubJobEventSink struct {
 	hub *api.TaskEventHub
+}
+
+func sortedBuiltinKeys(m map[string]sandbox.BuiltinPolicy) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (s hubJobEventSink) JobCreated(taskID, jobID string) {

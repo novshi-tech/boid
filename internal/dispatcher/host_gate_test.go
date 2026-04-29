@@ -46,7 +46,11 @@ func TestWriteHostGateWrapper_ContractMatchesSandboxedGate(t *testing.T) {
 		"export KIT_VAR='kit-value'",
 		"OUTPUT_FILE='" + outputPath + "'",
 		`BOID_BIN='/usr/local/bin/boid'`,
-		`trap '_exit=$?; "$BOID_BIN" job done "$JOB_ID"`,
+		`PAYLOAD_FILE="$HOME/.boid/output/payload_patch.json"`,
+		`rm -f "$PAYLOAD_FILE"`,
+		`_boid_done()`,
+		`if [ -f "$PAYLOAD_FILE" ]`,
+		`trap '_exit=$?; _boid_done "$_exit"' EXIT`,
 		"printf '%s' '" + string(taskJSON) + "' | '" + script + "' > \"$OUTPUT_FILE\"",
 	}
 	for _, want := range wantSubstrings {
@@ -62,6 +66,44 @@ func TestWriteHostGateWrapper_ContractMatchesSandboxedGate(t *testing.T) {
 	}
 	if info.Mode().Perm()&0o100 == 0 {
 		t.Errorf("wrapper mode = %v, want owner-executable", info.Mode().Perm())
+	}
+}
+
+// ensureHostGateWorktree falls back to os.TempDir() when the runner has no
+// worktree manager and no project lookup configured (e.g. non-git projects).
+func TestEnsureHostGateWorktree_FallbackWhenNoWorktree(t *testing.T) {
+	r := &Runner{
+		Worktrees: nil,
+		Projects:  nil,
+	}
+	spec := &orchestrator.JobSpec{
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+	}
+	got, err := r.ensureHostGateWorktree(spec, "")
+	if err != nil {
+		t.Fatalf("ensureHostGateWorktree: %v", err)
+	}
+	if got == "" {
+		t.Fatal("expected non-empty fallback path")
+	}
+	// With no worktrees/projects, should fall back to os.TempDir().
+	if got != os.TempDir() {
+		t.Errorf("got %q, want %q (os.TempDir)", got, os.TempDir())
+	}
+}
+
+// ensureHostGateWorktree returns currentPath immediately when already resolved.
+func TestEnsureHostGateWorktree_ReturnsCurrentPathWhenSet(t *testing.T) {
+	r := &Runner{}
+	spec := &orchestrator.JobSpec{TaskID: "task-1"}
+	want := "/some/worktree/path"
+	got, err := r.ensureHostGateWorktree(spec, want)
+	if err != nil {
+		t.Fatalf("ensureHostGateWorktree: %v", err)
+	}
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 

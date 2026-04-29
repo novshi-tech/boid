@@ -11,51 +11,60 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// ensureHostGateWorktree returns a usable worktree path for a host gate.
-// existingWorktreePath() returns "" when the record's cleaned_at is set
-// (typical after a task aborts and CleanupForTask drops the worktree). Replay
-// scenarios commonly hit that state, so we recreate from the recorded base
-// branch rather than failing — matching the semantic of allocateWorktree but
-// without requiring spec.Visibility.ProjectDir (which gates leave empty).
+// ensureHostGateWorktree returns a usable cwd for a host gate.
+//
+// Priority order:
+//  1. currentPath (already resolved by the caller's existingWorktreePath call)
+//  2. Active worktree record for the task
+//  3. Cleaned worktree record → recreate from project dir
+//  4. No worktree record (task has worktree=false or no git repo) → project dir
+//  5. Last resort → os.TempDir()
 func (r *Runner) ensureHostGateWorktree(spec *orchestrator.JobSpec, currentPath string) (string, error) {
 	if currentPath != "" {
 		return currentPath, nil
 	}
-	if r.Worktrees == nil {
-		return "", fmt.Errorf("host gate requires a worktree manager")
-	}
-	if spec.TaskID == "" {
-		return "", fmt.Errorf("host gate requires a task id")
+
+	// Try the worktree manager when available.
+	if r.Worktrees != nil && spec.TaskID != "" {
+		existing, err := r.Worktrees.Get(spec.TaskID)
+		if err != nil {
+			return "", fmt.Errorf("lookup worktree: %w", err)
+		}
+		if existing != nil {
+			if existing.CleanedAt == nil {
+				return existing.Path, nil
+			}
+			// Record exists but was cleaned (e.g., after abort). Recreate it.
+			_, projectWorkDir, perr := r.resolveProjectRuntime(spec.ProjectID)
+			if perr != nil {
+				return "", fmt.Errorf("resolve project runtime: %w", perr)
+			}
+			if projectWorkDir == "" {
+				return "", fmt.Errorf("project %q has no work dir; cannot recreate worktree", spec.ProjectID)
+			}
+			w, recErr := r.Worktrees.Recreate(projectWorkDir, spec.TaskID)
+			if recErr != nil {
+				return "", fmt.Errorf("recreate worktree for host gate: %w", recErr)
+			}
+			return w.Path, nil
+		}
 	}
 
-	existing, err := r.Worktrees.Get(spec.TaskID)
-	if err != nil {
-		return "", fmt.Errorf("lookup worktree: %w", err)
-	}
-	if existing == nil {
-		return "", fmt.Errorf("no worktree record for task %q (host gates need a prior worktree)", spec.TaskID)
-	}
-
-	_, projectWorkDir, perr := r.resolveProjectRuntime(spec.ProjectID)
-	if perr != nil {
-		return "", fmt.Errorf("resolve project runtime: %w", perr)
-	}
-	if projectWorkDir == "" {
-		return "", fmt.Errorf("project %q has no work dir; cannot recreate worktree", spec.ProjectID)
+	// No worktree record (task has worktree=false). Fall back to the project
+	// working directory so gate scripts have a valid cwd without a git tree.
+	if spec.ProjectID != "" {
+		_, projectWorkDir, perr := r.resolveProjectRuntime(spec.ProjectID)
+		if perr == nil && projectWorkDir != "" {
+			return projectWorkDir, nil
+		}
 	}
 
-	w, err := r.Worktrees.Recreate(projectWorkDir, spec.TaskID)
-	if err != nil {
-		return "", fmt.Errorf("recreate worktree for host gate: %w", err)
-	}
-	return w.Path, nil
+	return os.TempDir(), nil
 }
 
-// dispatchHostGate runs a trusted kit gate directly on the host. The script
-// receives the same env/stdin contract as a sandboxed gate, but with cwd set
-// to the worktree root and no broker layered between it and the host. Used
-// by gates flagged `host: true` in kit.yaml — currently git-auto-merge, which
-// needs filesystem access to the worktree's .git for locking and merging.
+// dispatchHostGate runs a gate directly on the host with cwd set to the
+// worktree root and no broker or sandbox layered between it and the host.
+// All gate jobs use this path; there is no sandboxed gate execution path.
 func (r *Runner) dispatchHostGate(
 	ctx context.Context,
 	job *Job,
@@ -79,7 +88,7 @@ func (r *Runner) dispatchHostGate(
 		if cleanup != nil {
 			cleanup()
 		}
-		return "", fmt.Errorf("host gate requires a worktree (task must have worktree=true)")
+		return "", fmt.Errorf("host gate requires a working directory (cwd could not be resolved)")
 	}
 	if r.BoidBinary == "" {
 		if cleanup != nil {
@@ -139,8 +148,9 @@ func (r *Runner) dispatchHostGate(
 //   - sets the gate env vars (BOID_TASK_ID + behavior/task env merged in JobSpec.Env),
 //   - cd's to the worktree,
 //   - feeds taskJSON to the gate script on stdin,
-//   - captures stdout to a temp file (consumed by `boid job done --output-file`),
-//   - on exit, calls `boid job done` so watchRuntime sees a normal completion.
+//   - captures stdout to a temp file (stdout fallback),
+//   - on exit, calls `boid job done` preferring $HOME/.boid/output/payload_patch.json
+//     (written by gate scripts) over the stdout capture, matching sandbox exit behavior.
 func writeHostGateWrapper(jobID, worktreeRoot string, spec *orchestrator.JobSpec, boidBin string) (wrapperPath, outputPath string, err error) {
 	dir := os.TempDir()
 	wrapperPath = filepath.Join(dir, fmt.Sprintf("boid-host-gate-%s.sh", jobID))
@@ -152,6 +162,9 @@ func writeHostGateWrapper(jobID, worktreeRoot string, spec *orchestrator.JobSpec
 	}
 	env["BOID_TASK_ID"] = spec.TaskID
 	env["BOID_JOB_ID"] = jobID
+	if spec.ProjectID != "" {
+		env["BOID_PROJECT_ID"] = spec.ProjectID
+	}
 	if _, ok := env["HOME"]; !ok {
 		if h := os.Getenv("HOME"); h != "" {
 			env["HOME"] = h
@@ -173,8 +186,20 @@ func writeHostGateWrapper(jobID, worktreeRoot string, spec *orchestrator.JobSpec
 	fmt.Fprintf(&b, "OUTPUT_FILE=%s\n", hostGateShellQuote(outputPath))
 	fmt.Fprintf(&b, "JOB_ID=%s\n", hostGateShellQuote(jobID))
 	fmt.Fprintf(&b, "BOID_BIN=%s\n", hostGateShellQuote(boidBin))
-	// trap on EXIT to report completion regardless of script success/failure.
-	b.WriteString(`trap '_exit=$?; "$BOID_BIN" job done "$JOB_ID" --exit-code "$_exit" --output-file "$OUTPUT_FILE" 2>/dev/null || true' EXIT` + "\n")
+	// payload_patch.json takes priority over stdout capture, mirroring sandbox exit behavior.
+	// Remove any stale file from a previous host-gate run so a script that only
+	// writes to stdout does not inherit the previous gate's payload_patch.
+	b.WriteString("PAYLOAD_FILE=\"$HOME/.boid/output/payload_patch.json\"\n")
+	b.WriteString("rm -f \"$PAYLOAD_FILE\"\n")
+	b.WriteString("_boid_done() {\n")
+	b.WriteString("  local _c=$1\n")
+	b.WriteString("  if [ -f \"$PAYLOAD_FILE\" ]; then\n")
+	b.WriteString("    \"$BOID_BIN\" job done \"$JOB_ID\" --exit-code \"$_c\" --output-file \"$PAYLOAD_FILE\" 2>/dev/null || true\n")
+	b.WriteString("  else\n")
+	b.WriteString("    \"$BOID_BIN\" job done \"$JOB_ID\" --exit-code \"$_c\" --output-file \"$OUTPUT_FILE\" 2>/dev/null || true\n")
+	b.WriteString("  fi\n")
+	b.WriteString("}\n")
+	b.WriteString("trap '_exit=$?; _boid_done \"$_exit\"' EXIT\n")
 
 	scriptArgv := hostGateShellQuoteArgv(spec.Argv)
 	if len(spec.PrimaryInput) > 0 {
