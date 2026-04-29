@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# host_command dispatch で host daemon の env が伝搬してくる場合、
+# BOID_DAEMON_CHILD=1 が e2e の boid CLI まで届き、daemon 直行モードで
+# bash が永久 wait する。これを防ぐ応急策として明示的に unset する。
+# 恒久対応は broker_streaming_linux.go で内部 env をフィルタすること。
+unset BOID_DAEMON_CHILD
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
