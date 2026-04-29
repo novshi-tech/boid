@@ -10,6 +10,7 @@ import templruntime "github.com/a-h/templ/runtime"
 
 import (
 	"encoding/json"
+	"net/url"
 	"sort"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -70,7 +71,7 @@ func taskNewBehaviorsByProjectJSON(projects []*orchestrator.Project) string {
 // overrides are provided by project.yaml defaults or kit policy; they're
 // not worth cluttering the happy-path form. The back arrow in the header
 // acts as cancel, so no separate cancel button is needed.
-func TaskNew(projects []*orchestrator.Project, errorMsg string) templ.Component {
+func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -111,7 +112,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string) templ.Component 
 				var templ_7745c5c3_Var3 string
 				templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(errorMsg)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 68, Col: 39}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 69, Col: 39}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 				if templ_7745c5c3_Err != nil {
@@ -122,92 +123,148 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string) templ.Component 
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, " <div class=\"task-form-body\"><form id=\"task-new-form\" method=\"post\" action=\"/tasks\"><div class=\"form-group\"><label for=\"title\" class=\"form-label\">Title *</label> <input type=\"text\" id=\"title\" name=\"title\" class=\"form-input\" required autocomplete=\"off\" autofocus></div><div class=\"form-group\"><label for=\"project_id\" class=\"form-label\">Project</label> <select id=\"project_id\" name=\"project_id\" class=\"form-input\"><option value=\"\">-- 選択 --</option> ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, " <div class=\"task-form-body\"><form id=\"task-new-form\" method=\"post\" action=\"/tasks\"><div class=\"form-group\"><label for=\"title\" class=\"form-label\">Title *</label> <input type=\"text\" id=\"title\" name=\"title\" class=\"form-input\" required autocomplete=\"off\" autofocus value=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var4 string
+			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(form.Get("title"))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 75, Col: 130}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "\"></div><div class=\"form-group\"><label for=\"project_id\" class=\"form-label\">Project</label> <select id=\"project_id\" name=\"project_id\" class=\"form-input\"><option value=\"\">-- 選択 --</option> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			for _, p := range projects {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<option value=\"")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var4 string
-				templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(p.ID)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 81, Col: 27}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<option value=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var5 string
-				templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(taskNewProjectLabel(p))
+				templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(p.ID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 81, Col: 54}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 82, Col: 27}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "</option>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "\"")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				if form.Get("project_id") == p.ID {
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, " selected")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, ">")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var6 string
+				templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(taskNewProjectLabel(p))
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 82, Col: 99}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "</option>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "</select></div><div class=\"form-group\"><label for=\"behavior\" class=\"form-label\">Behavior</label> <select id=\"behavior\" name=\"behavior\" class=\"form-input\" data-behaviors-by-project=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "</select></div><div class=\"form-group\"><label for=\"behavior\" class=\"form-label\">Behavior</label> <select id=\"behavior\" name=\"behavior\" class=\"form-input\" data-behaviors-by-project=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var6 string
-			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(taskNewBehaviorsByProjectJSON(projects))
+			var templ_7745c5c3_Var7 string
+			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(taskNewBehaviorsByProjectJSON(projects))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 91, Col: 73}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 92, Col: 73}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "\"><option value=\"\">-- 選択 --</option> ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "\"><option value=\"\">-- 選択 --</option> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			for _, b := range taskNewBehaviors(projects) {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<option value=\"")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var7 string
-				templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(b)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 95, Col: 24}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "<option value=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var8 string
 				templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(b)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 95, Col: 30}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 96, Col: 24}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "</option>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "\"")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				if form.Get("behavior") == b {
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, " selected")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, ">")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var9 string
+				templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(b)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 96, Col: 70}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "</option>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "</select></div><div class=\"form-group\"><label for=\"description\" class=\"form-label\">Description</label> <textarea id=\"description\" name=\"description\" class=\"form-input\" rows=\"6\"></textarea></div><div class=\"form-group\"><label class=\"form-check\"><input type=\"checkbox\" name=\"auto_start\"> <span>Auto Start</span></label></div></form></div><div class=\"action-bar\"><div class=\"action-bar-inner\"><button type=\"submit\" form=\"task-new-form\" class=\"btn btn-primary action-bar-primary-form\">Create</button> <span class=\"action-bar-spacer\"></span></div></div><script>\n\t\t\t(function () {\n\t\t\t\tvar projSel = document.getElementById(\"project_id\");\n\t\t\t\tvar behSel = document.getElementById(\"behavior\");\n\t\t\t\tvar data = {};\n\t\t\t\ttry {\n\t\t\t\t\tdata = JSON.parse(behSel.dataset.behaviorsByProject || \"{}\");\n\t\t\t\t} catch (e) { data = {}; }\n\t\t\t\t// Snapshot the initial (union) behavior options as fallback\n\t\t\t\t// when no project is selected.\n\t\t\t\tvar allOptions = Array.prototype.slice.call(behSel.options).map(function (o) {\n\t\t\t\t\treturn { value: o.value, label: o.textContent };\n\t\t\t\t});\n\t\t\t\tfunction rebuild() {\n\t\t\t\t\tvar pid = projSel.value;\n\t\t\t\t\tvar current = behSel.value;\n\t\t\t\t\tvar list;\n\t\t\t\t\tif (pid && data[pid]) {\n\t\t\t\t\t\tlist = [{ value: \"\", label: \"-- 選択 --\" }].concat(\n\t\t\t\t\t\t\tdata[pid].map(function (b) { return { value: b, label: b }; })\n\t\t\t\t\t\t);\n\t\t\t\t\t} else {\n\t\t\t\t\t\tlist = allOptions;\n\t\t\t\t\t}\n\t\t\t\t\tbehSel.innerHTML = \"\";\n\t\t\t\t\tlist.forEach(function (o) {\n\t\t\t\t\t\tvar opt = document.createElement(\"option\");\n\t\t\t\t\t\topt.value = o.value;\n\t\t\t\t\t\topt.textContent = o.label;\n\t\t\t\t\t\tif (o.value === current) opt.selected = true;\n\t\t\t\t\t\tbehSel.appendChild(opt);\n\t\t\t\t\t});\n\t\t\t\t}\n\t\t\t\tprojSel.addEventListener(\"change\", rebuild);\n\t\t\t\trebuild();\n\t\t\t})();\n\t\t</script>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "</select></div><div class=\"form-group\"><label for=\"description\" class=\"form-label\">Description</label> <textarea id=\"description\" name=\"description\" class=\"form-input\" rows=\"6\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var10 string
+			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(form.Get("description"))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 102, Col: 104}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "</textarea></div><div class=\"form-group\"><label class=\"form-check\"><input type=\"checkbox\" name=\"auto_start\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			if form.Get("auto_start") == "on" {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, " checked")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "> <span>Auto Start</span></label></div></form></div><div class=\"action-bar\"><div class=\"action-bar-inner\"><button type=\"submit\" form=\"task-new-form\" class=\"btn btn-primary action-bar-primary-form\">Create</button> <span class=\"action-bar-spacer\"></span></div></div><script>\n\t\t\t(function () {\n\t\t\t\tvar projSel = document.getElementById(\"project_id\");\n\t\t\t\tvar behSel = document.getElementById(\"behavior\");\n\t\t\t\tvar data = {};\n\t\t\t\ttry {\n\t\t\t\t\tdata = JSON.parse(behSel.dataset.behaviorsByProject || \"{}\");\n\t\t\t\t} catch (e) { data = {}; }\n\t\t\t\t// Snapshot the initial (union) behavior options as fallback\n\t\t\t\t// when no project is selected.\n\t\t\t\tvar allOptions = Array.prototype.slice.call(behSel.options).map(function (o) {\n\t\t\t\t\treturn { value: o.value, label: o.textContent };\n\t\t\t\t});\n\t\t\t\tfunction rebuild() {\n\t\t\t\t\tvar pid = projSel.value;\n\t\t\t\t\tvar current = behSel.value;\n\t\t\t\t\tvar list;\n\t\t\t\t\tif (pid && data[pid]) {\n\t\t\t\t\t\tlist = [{ value: \"\", label: \"-- 選択 --\" }].concat(\n\t\t\t\t\t\t\tdata[pid].map(function (b) { return { value: b, label: b }; })\n\t\t\t\t\t\t);\n\t\t\t\t\t} else {\n\t\t\t\t\t\tlist = allOptions;\n\t\t\t\t\t}\n\t\t\t\t\tbehSel.innerHTML = \"\";\n\t\t\t\t\tlist.forEach(function (o) {\n\t\t\t\t\t\tvar opt = document.createElement(\"option\");\n\t\t\t\t\t\topt.value = o.value;\n\t\t\t\t\t\topt.textContent = o.label;\n\t\t\t\t\t\tif (o.value === current) opt.selected = true;\n\t\t\t\t\t\tbehSel.appendChild(opt);\n\t\t\t\t\t});\n\t\t\t\t}\n\t\t\t\tprojSel.addEventListener(\"change\", rebuild);\n\t\t\t\trebuild();\n\t\t\t})();\n\t\t</script>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
