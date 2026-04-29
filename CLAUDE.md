@@ -66,7 +66,7 @@ gc:
 
 ## Web UI
 
-- `--web` フラグ付きで daemon 起動すると Web UI が有効化される
+- `boid start` のデフォルトで Web UI は有効 (`http://localhost:8080`、 listen は `--http-addr` で変更可)
 - 初回は `boid web pair` でペアリングコード (5 分有効、単回) を発行、コード / URL / QR で登録
 - デバイス管理: `boid web devices` / `boid web revoke <id>` / `boid web revoke-all`
 - loopback (127.0.0.1/::1) からはペアリング不要、外部公開 (Cloudflare Tunnel 等) からは必須
