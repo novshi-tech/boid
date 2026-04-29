@@ -2,6 +2,7 @@ package templates
 
 import (
 	"encoding/json"
+	"net/url"
 	"sort"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -62,7 +63,7 @@ func taskNewBehaviorsByProjectJSON(projects []*orchestrator.Project) string {
 // overrides are provided by project.yaml defaults or kit policy; they're
 // not worth cluttering the happy-path form. The back arrow in the header
 // acts as cancel, so no separate cancel button is needed.
-templ TaskNew(projects []*orchestrator.Project, errorMsg string) {
+templ TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values) {
 	@Layout("New Task", "/") {
 		if errorMsg != "" {
 			<div class="action-error">{ errorMsg }</div>
@@ -71,14 +72,14 @@ templ TaskNew(projects []*orchestrator.Project, errorMsg string) {
 			<form id="task-new-form" method="post" action="/tasks">
 				<div class="form-group">
 					<label for="title" class="form-label">Title *</label>
-					<input type="text" id="title" name="title" class="form-input" required autocomplete="off" autofocus/>
+					<input type="text" id="title" name="title" class="form-input" required autocomplete="off" autofocus value={ form.Get("title") }/>
 				</div>
 				<div class="form-group">
 					<label for="project_id" class="form-label">Project</label>
 					<select id="project_id" name="project_id" class="form-input">
 						<option value="">-- 選択 --</option>
 						for _, p := range projects {
-							<option value={ p.ID }>{ taskNewProjectLabel(p) }</option>
+							<option value={ p.ID } selected?={ form.Get("project_id") == p.ID }>{ taskNewProjectLabel(p) }</option>
 						}
 					</select>
 				</div>
@@ -92,17 +93,17 @@ templ TaskNew(projects []*orchestrator.Project, errorMsg string) {
 					>
 						<option value="">-- 選択 --</option>
 						for _, b := range taskNewBehaviors(projects) {
-							<option value={ b }>{ b }</option>
+							<option value={ b } selected?={ form.Get("behavior") == b }>{ b }</option>
 						}
 					</select>
 				</div>
 				<div class="form-group">
 					<label for="description" class="form-label">Description</label>
-					<textarea id="description" name="description" class="form-input" rows="6"></textarea>
+					<textarea id="description" name="description" class="form-input" rows="6">{ form.Get("description") }</textarea>
 				</div>
 				<div class="form-group">
 					<label class="form-check">
-						<input type="checkbox" name="auto_start"/>
+						<input type="checkbox" name="auto_start" checked?={ form.Get("auto_start") == "on" }/>
 						<span>Auto Start</span>
 					</label>
 				</div>

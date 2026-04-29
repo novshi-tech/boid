@@ -77,7 +77,7 @@ func (h *WebHandler) Routes() chi.Router {
 func (h *WebHandler) TaskNew(w http.ResponseWriter, r *http.Request) {
 	projects, _ := h.Service.ListProjects()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	templates.TaskNew(projects, "").Render(r.Context(), w)
+	templates.TaskNew(projects, "", nil).Render(r.Context(), w)
 }
 
 func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
@@ -85,7 +85,7 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 		projects, _ := h.Service.ListProjects()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusBadRequest)
-		templates.TaskNew(projects, "リクエストの解析に失敗しました").Render(r.Context(), w)
+		templates.TaskNew(projects, "リクエストの解析に失敗しました", nil).Render(r.Context(), w)
 		return
 	}
 
@@ -94,7 +94,7 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 		projects, _ := h.Service.ListProjects()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusBadRequest)
-		templates.TaskNew(projects, "タイトルは必須です").Render(r.Context(), w)
+		templates.TaskNew(projects, "タイトルは必須です", r.PostForm).Render(r.Context(), w)
 		return
 	}
 
@@ -137,7 +137,7 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 		projects, _ := h.Service.ListProjects()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusBadRequest)
-		templates.TaskNew(projects, err.Error()).Render(r.Context(), w)
+		templates.TaskNew(projects, err.Error(), r.PostForm).Render(r.Context(), w)
 		return
 	}
 

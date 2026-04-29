@@ -639,11 +639,20 @@ func TestWebHandler_PostTaskCreate_Success(t *testing.T) {
 }
 
 func TestWebHandler_PostTaskCreate_ValidationError(t *testing.T) {
-	svc := &stubWebService{}
+	svc := &stubWebService{
+		projects: []*orchestrator.Project{
+			{ID: "proj-1"},
+		},
+	}
 	r := newTestWebHandlerWithTaskCreate(svc)
 
-	// title 空
-	body := url.Values{"title": {""}, "project_id": {"proj-1"}}.Encode()
+	// title 空、description/project_id/auto_start を含めて POST
+	body := url.Values{
+		"title":       {""},
+		"project_id":  {"proj-1"},
+		"description": {"残しておきたい説明文"},
+		"auto_start":  {"on"},
+	}.Encode()
 	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
@@ -655,6 +664,15 @@ func TestWebHandler_PostTaskCreate_ValidationError(t *testing.T) {
 	respBody := w.Body.String()
 	if !strings.Contains(respBody, "タイトルは必須") {
 		t.Errorf("response should contain error message, got: %s", respBody)
+	}
+	if !strings.Contains(respBody, "残しておきたい説明文") {
+		t.Errorf("response should preserve description value, got: %s", respBody)
+	}
+	if !strings.Contains(respBody, `value="proj-1" selected`) {
+		t.Errorf("response should mark project_id selected, got: %s", respBody)
+	}
+	if !strings.Contains(respBody, `name="auto_start" checked`) {
+		t.Errorf("response should preserve auto_start checked state, got: %s", respBody)
 	}
 }
 
