@@ -929,7 +929,7 @@ Phase 3 完了後、以下を e2e で確認:
 - 新規 scenario として auto-merge conflict 復旧パスを追加 (optional)
 - Jira-fetch-like な entry gate を dogfood kit で動かしてみる (optional)
 
-E2E はサンドボックス内では実行できない (CLAUDE.md 参照) ので CI に任せる。
+E2E の検証は CI に任せる (dev タスクで回す必要はない)。
 
 ## 9. 移行・後方互換と関連リポジトリの変更
 

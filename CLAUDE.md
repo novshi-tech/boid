@@ -11,8 +11,8 @@ go test -race ./...     # レースコンディション検出
 go vet ./...            # 静的解析
 ```
 
-E2E テスト（`e2e/scenarios/` 配下）はサンドボックス内では実行できない（nft/unshare 等の特権が必要）。
-E2E の検証は CI（GitHub Actions）に任せること。ホスト上で直接実行する場合は `./e2e/run.sh [scenario]`。
+E2E テスト（`e2e/scenarios/` 配下）は `./e2e/run.sh [scenario]` で実行する。
+サンドボックス内から呼んだ場合は `host_commands.run-e2e` の path match で host 側 broker に自動 dispatch されるため、 サンドボックス内 claude code からも普通に実行可能（実体は host で動く）。
 
 ## プロジェクト構成
 
@@ -107,8 +107,8 @@ conflict 発生時のフロー (`verifying → reworking → verifying → done`
 1. `mergeable-check` exit gate が verifying 退場時に PR の mergeable 状態を確認し、conflict があれば finding (open) を書き込む
 2. state machine が unresolved finding を検出し、自動的に reworking に遷移する
 3. 該当 task の worktree で Claude が `git merge origin/main` を実行してコンフリクトを解消する（rebase ではなく merge を使うこと）
-4. commit のみ。push は pr-verify gate が実行する
-5. pr-verify が通常 push し、再度 CI が回る
+4. agent が commit + `git push` + (既存 PR が無ければ) `gh pr create` + `gh pr checks --watch` で CI 完了確認
+5. agent が CI 結果を `payload_patch.verification.findings` に書き込んで exit (`boid task update --payload-file -`)
 6. findings が resolved になると state machine が reworking → verifying に自動遷移する
 7. `mergeable-check` が再実行され、conflict が解消されていれば verifying → done に進む
 8. `auto-merge` entry gate が done 入場時に `gh pr merge` を実行する
@@ -116,5 +116,4 @@ conflict 発生時のフロー (`verifying → reworking → verifying → done`
 重要な注意点:
 
 - `git rebase` は使わない。merge で fast-forward 互換な履歴を作ることで force push を不要にしている
-- hook role からは git push/fetch 両方禁止されている（broker が reject する）。手動で push/fetch しようとしない
 - エージェントは手動で `git fetch` しようとしないこと。必要な fetch は worktree 再構築時に `WorktreeManager.Recreate` が自動で実行する（base branch も fetch 済み）

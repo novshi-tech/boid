@@ -28,7 +28,6 @@ task_behaviors:
     name: one-shot-feedback-dev
     worktree: true
     kits:
-      - github.com/novshi-tech/boid-kits/github-pr-verification
       - github.com/novshi-tech/boid-kits/github-auto-merge
     default_instructions:
       main:
@@ -38,7 +37,23 @@ task_behaviors:
         message: |
           task.yaml の title と description に記述された内容を実装せよ。
           コミットする前にユニットテストの通過を確認すること。
-          E2E テストはサンドボックス内では実行できない（nft/unshare 等の特権が必要）。E2E の検証は CI に任せること。
+          E2E テストの検証は CI に任せること（dev タスクで回す必要はない）。
+
+          実装が完了したら以下を順次実行する:
+          1. `git add` + `git commit` (worktree のブランチ上で)
+          2. `git push -u origin HEAD` で current branch を origin に push
+          3. 既存 PR の有無を確認:
+             `PR_URL=$(gh pr list --head "$(git branch --show-current)" --json url --jq '.[0].url // ""')`
+             空なら `gh pr create --title "<task title>" --body "task: <task_id>\n\n<summary>"` で作成
+          4. `gh pr checks --watch --fail-fast` で CI 完了まで待機
+             (CI が無いリポは即抜ける) 失敗時は `gh run view --log-failed` でログ取得
+          5. 結果を verification finding に書き込む:
+             成功時:
+               echo '{"verification":{"findings":[{"status":"resolved","message":"CI passed: '"$PR_URL"'"}]}}' \
+                 | boid task update <task_id> --payload-file -
+             失敗時 (status を open に、 message に失敗 job のログ抜粋):
+               echo '{"verification":{"findings":[{"status":"open","message":"CI failed: <job names>\n<tail>"}]}}' \
+                 | boid task update <task_id> --payload-file -
       rework:
         type: rework
         consumer: claude-code
@@ -46,7 +61,16 @@ task_behaviors:
         message: |
           verification findings に記載された問題を修正せよ。
           コミットする前にユニットテストの通過を確認すること。
-          E2E テストはサンドボックス内では実行できない（nft/unshare 等の特権が必要）。E2E の検証は CI に任せること。
+          E2E テストの検証は CI に任せること（dev タスクで回す必要はない）。
+
+          rework 開始時に `git log <base>..HEAD --oneline` で「base からの差分 commit」 を確認し、
+          finding を解消するための新規 commit が作れない / 作らないまま終了するなら、
+          fatal finding を書き込んで早期 abort させること:
+            echo '{"verification":{"findings":[{"status":"open","severity":"fatal","message":"rework で新規 commit がない"}]}}' \
+              | boid task update <task_id> --payload-file -
+
+          修正完了後の push / PR / CI wait / finding 書き込み手順は main と同じ。
+          PR は既存があれば再作成不要 (gh pr list でチェック)。
   plan:
     name: Plan
     readonly: true

@@ -638,7 +638,7 @@ Tunnel 経由の WS は CloudflareのWebSocket サポートに依存するため
 - 既存 `e2e/scenarios/` 配下に `web-auth/` を追加 (Phase 1)
   - `boid daemon` 起動 → `boid web pair` → curl で `/auth` redeem → cookie 取得 → `/` 200 確認
 - ブラウザ E2E (Playwright 等) は導入しない
-- `e2e/run.sh` はサンドボックス内で実行できない (既存 CLAUDE.md 参照) → CI 任せ
+- `e2e/run.sh` の検証は CI 任せ (dev タスクで回す必要はない)
 
 ## CLAUDE.md 追記内容 (Phase 1 の成果)
 
