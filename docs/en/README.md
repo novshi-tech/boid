@@ -20,9 +20,9 @@ This index is the entry point. The doc set is being built out incrementally; pla
 Step-by-step walkthroughs.
 
 - [1. Install](getting-started/01-install.md)
-- 2. Your first task — *planned*
-- 3. Projects and extension packages (kits) — *planned*
-- 4. Feedback loop — *planned*
+- [2. Your first task](getting-started/02-first-task.md)
+- [3. Projects and extension packages (kits)](getting-started/03-projects-and-kits.md)
+- [4. Feedback loop](getting-started/04-feedback-loop.md)
 
 ### Guide
 
