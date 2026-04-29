@@ -1,41 +1,51 @@
 # boid
 
-汎用パーソナル AI オーケストレータ。
+**A personal AI orchestrator.** Track and automate end-to-end workflows — from generating an artifact to releasing it — as structured tasks that execute safely inside a sandbox, on your own machine.
 
-## インストール
+[日本語 README](README.ja.md)
+
+## Features
+
+- **Local & single-user.** A self-contained daemon backed by SQLite. No cloud account, no team plumbing, no shared state.
+- **Structured task lifecycle.** Every task moves through `executing → verifying → reworking → done`. Rework is driven by verification findings on the task payload, not by ad-hoc prompts.
+- **Sandbox-first execution.** Hooks and agent execs run inside a sandbox by default. Only commands declared as `host_commands` cross to the host, and the policy is per-kit.
+- **Worktree + PR workflow.** Run parallel dev tasks in isolated git worktrees. Auto-merge and CI verification ship as kits, so the core stays environment-agnostic.
+- **Pluggable kits.** Reuse Claude Code, Codex, GitHub PR/auto-merge, and other building blocks from [boid-kits](https://github.com/novshi-tech/boid-kits) — or write your own.
+- **TUI, CLI, and Web UI.** Drive boid from your terminal, or pair a phone over Cloudflare Tunnel for mobile control.
+
+## Install
 
 ```bash
 go install github.com/novshi-tech/boid@latest
 ```
 
-## 使い方
+Linux only.
+
+## Quickstart
 
 ```bash
-boid start          # サーバを起動（デーモン化）
-boid task list      # タスク一覧
-boid task show <id> # タスク詳細
-boid stop           # サーバを停止
+boid start              # start the daemon (auto-detached)
+boid task list          # list tasks
+boid task show <id>     # inspect a task
+boid stop               # stop the daemon
 ```
 
-## Web UI
+A guided walkthrough lives in [docs/en/getting-started/01-install.md](docs/en/getting-started/01-install.md).
 
-> **Experimental**
->
-> 現在の Web UI は TaskList / TaskDetail / JobList / JobDetail は動作するが、
-> タスク作成・編集・リアルタイム更新には対応していない。
-> 将来のリリースでモバイルファースト対応のフル機能 Web アプリに刷新予定。
+## Documentation
 
-`boid start` のデフォルトで Web UI は有効です。
+- **[Install and quickstart](docs/en/getting-started/01-install.md)**
+- **[Concepts](docs/en/guide/concepts.md)** — vocabulary
+- **[State machine](docs/en/guide/state-machine.md)**
+- **[Web UI](docs/en/guide/web-ui.md)** — including Cloudflare Tunnel setup
+- **[Troubleshooting](docs/en/guide/troubleshooting.md)**
 
-```bash
-boid start
-```
+The full doc index is at [docs/en/](docs/en/README.md). Japanese docs are at [docs/ja/](docs/ja/README.md).
 
-起動後は `http://localhost:8080` でアクセスできます。listen アドレスは `--http-addr` で変更可能 (例: `boid start --http-addr 127.0.0.1:5171`)。
+## Status
 
-## ビルド
+Currently being evaluated within the scope the author can directly support. A wider public release will follow.
 
-```bash
-go build ./...
-go test ./...
-```
+## License
+
+[MIT](LICENSE).

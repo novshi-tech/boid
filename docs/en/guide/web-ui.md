@@ -1,0 +1,138 @@
+# Web UI
+
+`boid` ships a Web UI alongside the CLI and TUI. It is enabled by default and listens on `:8080`. From the loopback interface no authentication is needed; from anywhere else (typically a phone over Cloudflare Tunnel) you pair a device first.
+
+## Open the UI locally
+
+After `boid start`, point a browser at `http://localhost:8080`. You should see the task list.
+
+The listen address is configurable:
+
+```bash
+boid start --http-addr 127.0.0.1:5171
+```
+
+To disable the Web UI entirely, set the address to an empty string (or use `--http-addr ""`); the daemon will skip the HTTP listener.
+
+## Access from another device
+
+`boid` is single-user. Pairing only protects against accidental access; treat the daemon as if it were on your own laptop.
+
+Three steps:
+
+1. Make the URL reachable. Either run on a LAN address or — recommended for phones — front it with [Cloudflare Tunnel](#cloudflare-tunnel).
+2. Set the public URL once: `boid web set-url https://boid.example.com`. This is used to render the magic link in the pairing payload.
+3. Run `boid web pair` and copy the code into the device's login page. The code is good for 5 minutes and one device.
+
+```bash
+boid web pair                    # issue a pairing code
+boid web devices                 # list paired devices
+boid web revoke <device-id>      # revoke one device
+boid web revoke-all              # revoke all
+```
+
+A device cookie lasts 90 days (rolling) or 30 days idle. CSRF is enforced via a double-submit cookie.
+
+### Pairing code format
+
+`WX7K-4QJP` (8 alphanumeric characters with a hyphen). Single use, 5-minute lifetime, rate-limited to 5 attempts per 5 minutes per IP.
+
+### Loopback exception
+
+Requests from `127.0.0.1` or `::1` skip pairing entirely. The check also rejects loopback if the request carries `X-Forwarded-For`, `CF-Connecting-IP`, or `Forwarded` headers, so a Tunnel that proxies to localhost will not bypass auth by accident.
+
+## Cloudflare Tunnel
+
+The recommended way to expose `boid` to your phone is `cloudflared` running as a user systemd service.
+
+### Prerequisites
+
+- A Cloudflare account and a domain managed in Cloudflare DNS (e.g. `nosen.dev`).
+- `cloudflared` installed (`apt install cloudflared` or via Cloudflare's package repository).
+
+### One-time setup
+
+1. Authenticate `cloudflared` with your Cloudflare account.
+
+   ```bash
+   cloudflared tunnel login
+   ```
+
+2. Create a tunnel.
+
+   ```bash
+   cloudflared tunnel create boid
+   ```
+
+   This generates a credentials JSON under `~/.cloudflared/<tunnel-id>.json`.
+
+3. Configure routing. Create `~/.cloudflared/config.yml`:
+
+   ```yaml
+   tunnel: <tunnel-id>
+   credentials-file: /home/<you>/.cloudflared/<tunnel-id>.json
+
+   ingress:
+     - hostname: boid.example.com
+       service: http://127.0.0.1:8080
+     - service: http_status:404
+   ```
+
+4. Map the hostname to the tunnel.
+
+   ```bash
+   cloudflared tunnel route dns boid boid.example.com
+   ```
+
+5. Run the tunnel as a user-level systemd unit (`~/.config/systemd/user/cloudflared-boid.service`):
+
+   ```ini
+   [Unit]
+   Description=cloudflared tunnel for boid
+   After=network-online.target
+
+   [Service]
+   ExecStart=/usr/bin/cloudflared tunnel run boid
+   Restart=on-failure
+
+   [Install]
+   WantedBy=default.target
+   ```
+
+   Enable and start it:
+
+   ```bash
+   systemctl --user enable --now cloudflared-boid.service
+   ```
+
+6. Tell `boid` the public URL so magic links work:
+
+   ```bash
+   boid web set-url https://boid.example.com
+   ```
+
+### From the phone
+
+Visit `https://boid.example.com`, enter the pairing code from `boid web pair`, and the device cookie is set. From then on the device can drive `boid` until you revoke it or 90 days pass.
+
+### Security notes
+
+- Pairing is not a substitute for proper firewalling — it just prevents random visitors from poking at the API. Do not skip the public URL guard or disable HTTPS.
+- Cloudflare Access can be layered on top of the tunnel for an additional auth check (email or service token), if you want belt-and-suspenders.
+- Revoke any device you no longer use. There is no inactivity timeout shorter than 30 days.
+
+## Pages
+
+The current Web UI covers:
+
+- **Task list** with filters (status, behavior, project)
+- **Task detail** with payload, jobs, and inline actions
+- **Project list / detail**
+- **Job list / detail** (read-only logs)
+- **Pairing / login** flow
+
+Interactive PTY (xterm.js) for live agent attach is on the roadmap and not yet shipped.
+
+---
+
+Next: [Troubleshooting](troubleshooting.md)
