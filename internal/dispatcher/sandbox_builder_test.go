@@ -697,3 +697,4 @@ func TestContextFiles_NoPayloadFilesWhenPrimaryInputEmpty(t *testing.T) {
 		}
 	}
 }
+

@@ -10,7 +10,7 @@
 
 ## 基本
 
-結果は `~/.boid/output/payload_patch.json` に書き出す。
+結果は `~/.boid/output/payload_patch.json` に **JSON** で書き出す。
 
 ```json
 {
@@ -23,6 +23,9 @@
 トップレベルに `payload_patch` キーを置き、その配下に trait 名をキーとして書く。
 
 出力が不要な場合（no-op）はファイルを作成しなくてよい。
+
+JSON 限定: YAML 1.1 implicit type 変換 (`on:`/`yes:` が boolean に化ける等) や非 string キー
+による parse 失敗を避けるため、payload_patch は JSON で書くこと。
 
 ## artifact
 
