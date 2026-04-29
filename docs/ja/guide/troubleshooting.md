@@ -18,12 +18,12 @@ rm "$XDG_RUNTIME_DIR/boid.sock"
 
 ## バグ修正をインストールしたのに変化がない
 
-`go install` し直したが daemon を再起動し忘れているケースです。 disk 上のバイナリは新しくても、 daemon は古いコードを mmap したまま動き続けます。
+`go install` し直したが daemon を再起動し忘れているケースです。ディスク上のバイナリが置き換わっても、起動時に読み込んだコードはメモリ上に残り続けるため、再起動するまで daemon は古い挙動のままです。
 
 診断:
 
 ```bash
-# disk 上のバイナリが置き換わっていれば /proc/<pid>/exe は (deleted) と表示される
+# /proc/<pid>/exe が (deleted) と表示されていれば、起動時のバイナリがディスク上にもう無い (置き換えられた) サイン
 ps -o pid,cmd -C boid
 ls -l /proc/<pid>/exe
 ```
@@ -35,19 +35,19 @@ boid stop
 boid start
 ```
 
-「直したのにまだ起こる」の最大の原因はこれです。迷ったら再起動してください。
+「直したのにまだ起こる」の原因として最も多いのがこれです。迷ったら再起動してください。
 
 ## タスクが `executing` のまま終わらない
 
 3 つの可能性があります。
 
-1. **hook に終了パスがない**。 prompt 待ち / interactive コマンド / 詰まったエージェントなどでブロックされていると、 dispatch ループが待ち続けます。 `boid job list --task <id>` に終わらない `running` ジョブが見えるはず。 `boid task abort <id>` でクリーンアップし、 hook スクリプトを確認してください
-2. **完了シグナルとなる trait が payload に書かれていない**。 `artifact` (plan タスクなら `tasks`) が無いと executing からの自動遷移ルールが発火しません。 `boid task show <id>` で payload を確認し、 hook が期待する trait の payload patch を吐いているかチェック
-3. **`verifying` 由来の open finding が残っている**。 `verifying` から戻ってきたタスクは、未解消の finding が `reworking` を留め置きます。 `boid task get <id> findings` (または `task show`) で確認
+1. **hook (実行スクリプト) が終了していない。** プロンプト待ち、終わらない対話コマンド、応答停止したエージェントなどでブロックされていると、 daemon 側はそのジョブの完了を待ち続けます。 `boid job list --task <id>` に `running` のままのジョブが見えるはずです。 `boid task abort <id>` で打ち切り、 hook スクリプトを確認してください
+2. **完了の合図となる trait が payload に書かれていない。** `artifact` (計画系タスクなら `tasks`) が現れないと、 `executing` からの自動遷移ルールが発火しません。 `boid task show <id>` で payload を確認し、 hook が期待する trait を含む payload patch を出しているかチェックしてください
+3. **`verifying` 由来の open finding が残っている。** 一度 `verifying` を経由したタスクは、未解消の finding がある限り `reworking` で足止めされます。 `boid task show <id>` の `verification.findings` で確認してください
 
 ## タスクが `reworking` のまま終わらない
 
-上と同じロジックを `reworking → verifying` 側で考えてください。 rework hook は `reworking` 由来の finding をすべて resolved にしないと verifying に戻れません。 hook が新しい finding を書き続けると、最終的に rework 上限自動 abort (`code=rework_limit_exceeded`) になります。本当にワークフロー上 5 回が足りないなら `~/.config/boid/config.yaml` の `state_machine.rework_limit` を上げますが、たいていは rework hook の問題です。
+考え方は上と同じで、こちらは `reworking → verifying` の側です。 `reworking` で動く修正系の hook は、 `reworking` で書かれた open finding をすべて `resolved` にしないと `verifying` に戻れません。 hook が新しい finding を書き続けると、最終的に修正回数の上限を超えて自動 abort (`code=rework_limit_exceeded`) で終わります。本当にワークフロー上 5 回では足りないなら `~/.config/boid/config.yaml` の `state_machine.rework_limit` を上げますが、たいていは修正系 hook 自身に問題があります。
 
 ## `boid task list` が遅い / ディスクが膨れる
 
@@ -75,12 +75,12 @@ gc:
   older_than: 720h    # 30 日
 ```
 
-## hook 内で "permission denied" や "unknown command"
+## hook 内で "permission denied" や "unknown command" が出る
 
-hook はサンドボックス内で動きます。 kit の `host_commands` で許可していないコマンドを叩こうとするとブロックされます。直し方は 2 通り:
+hook はサンドボックス内で動くため、 kit が `host_commands` に宣言していないコマンドを呼ぼうとすると拒否されます。直し方は 2 通りあります。
 
-- 不足コマンドを kit の `host_commands` に追加する (`git push` のような汎用ツール向け)
-- gate に責任を移す。 gate はサンドボックスなしで host で動く (`systemctl restart` のような環境依存操作向け)
+- 不足しているコマンドを kit の `host_commands` リストに追加する (`git push` のような汎用ツール向け)
+- その作業を gate (状態遷移時に host 側で動くスクリプト) に移す (`systemctl restart` のような環境依存操作向け)
 
 ## Web UI: デバイスが何度もログアウトされる
 

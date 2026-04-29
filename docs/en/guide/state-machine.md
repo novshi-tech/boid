@@ -59,13 +59,18 @@ Auto-fires from any state.
 
 ### From `executing`
 
-Drivers: presence of `artifact` or `tasks` in the payload (collectively "execution complete"), and findings sourced from `executing`.
+Two inputs decide the transition:
 
-- execution complete + open findings sourced from `executing` → `reworking`
-- execution complete + no open findings → `verifying`
-- not execution complete + `lifecycle.executed` is true → `done` (no work was needed)
+- whether `artifact` or `tasks` has been written to the payload — either one means "the deliverables expected from `executing` are in place"
+- whether any open findings written during `executing` are still around
 
-The pair (`artifact`, `tasks`) is symmetric. Plan tasks write `tasks`, dev tasks write `artifact`; both signal "executing finished, ready for review".
+Combining them gives:
+
+- deliverables present + open findings from `executing` → `reworking`
+- deliverables present + no open findings → `verifying`
+- no deliverables but `lifecycle.executed` is true → `done` (the work was carried out but produced nothing that needs verifying)
+
+`artifact` and `tasks` play symmetric roles: plan-style tasks write `tasks`, dev-style tasks write `artifact`. Different trait names, same meaning — "`executing` is finished, move on to verification".
 
 ### From `verifying`
 
@@ -88,7 +93,7 @@ Findings are objects in `verification.findings`. Each one carries:
 - `severity` — `info` (default), `warning`, `error`, `fatal` (any open `fatal` aborts immediately)
 - `message` — free-form text the rework hook can read
 
-A reviewer hook or gate writes a finding by emitting a payload patch. The auto-transition rules then fire on the next dispatch cycle.
+A review-style hook or gate writes findings via a payload patch. The daemon re-evaluates the auto-transition rules on the resulting payload change, so any qualifying transition fires immediately afterwards.
 
 ## Rework limit and abort
 
@@ -113,13 +118,13 @@ The state machine itself is identical; the difference is which kits and handlers
 ## Reading from the CLI
 
 ```bash
-boid task show <id>              # current status + payload
-boid task watch <id>             # live status updates
-boid job list --task <id>        # all jobs that have run on this task
-boid job show <id>               # one job's stdout, stderr, exit code, ...
+boid task show <id>              # current status and payload
+boid task watch <id>             # follow status changes in real time
+boid job list --task <id>        # list every job ever run for this task
+boid job show <id>               # one job's stdout, stderr, and exit code
 ```
 
-The state and the payload tell you everything; jobs tell you what the kits did.
+The status and the payload tell you what is happening to the task; the jobs tell you what the extension packages' scripts actually did.
 
 ---
 

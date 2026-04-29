@@ -18,13 +18,14 @@ rm "$XDG_RUNTIME_DIR/boid.sock"
 
 ## A bug fix I just installed has no effect
 
-You likely re-ran `go install` but forgot to restart the daemon. The running daemon has the **old** binary mapped into memory, even though `which boid` points at the new one.
+You likely re-ran `go install` but forgot to restart the daemon. Even though the binary on disk is now the new one, the daemon process is still running the code it loaded at startup, which stays resident in memory until the process exits.
 
 Diagnose:
 
 ```bash
-# If the running boid binary on disk has been replaced, /proc/<pid>/exe will
-# show "(deleted)".
+# If /proc/<pid>/exe shows "(deleted)", the binary that was loaded at startup
+# is no longer on disk — i.e. the new install replaced it but the old daemon
+# is still running.
 ps -o pid,cmd -C boid
 ls -l /proc/<pid>/exe
 ```
@@ -42,13 +43,13 @@ This is the single most common reason "I fixed it but it still happens" — when
 
 Three possibilities:
 
-1. **The hook has no exit path.** A hook that is blocking on a prompt, an interactive command, or a hung agent will keep the dispatch loop waiting. `boid job list --task <id>` will show a `running` job that never finishes. Run `boid task abort <id>` to clean up, then look at the hook script.
-2. **The payload never gets the trait that signals completion.** Without `artifact` (or `tasks` for plan tasks), the executing-state auto-transition rules cannot fire. Inspect the payload with `boid task show <id>` and check that the hook is emitting a payload patch with the expected trait.
-3. **A `verifying`-sourced finding is still open.** If the task bounced back from `verifying`, an unresolved finding can keep it in `reworking`. `boid task get <id> findings` (or `task show`) will list them.
+1. **The hook (the executing-state script) is not finishing.** A hook blocked on a prompt, on an interactive command that never returns, or on an unresponsive agent leaves the daemon waiting for the job to complete. `boid job list --task <id>` will show a job stuck in `running`. Run `boid task abort <id>` to release it, then inspect the hook script.
+2. **The completion-signaling trait was never written to the payload.** Without `artifact` (or `tasks` for plan-style tasks), the `executing` auto-transition rules never fire. Use `boid task show <id>` to inspect the payload and verify the hook is emitting a payload patch that includes the expected trait.
+3. **An open finding sourced from `verifying` is still around.** Once a task has visited `verifying`, an unresolved finding keeps it pinned in `reworking`. Look at `verification.findings` in `boid task show <id>`.
 
 ## A task is stuck in `reworking` forever
 
-Same logic as above but specifically for `reworking → verifying`: the rework hook needs to clear all `reworking`-sourced findings. If the hook keeps writing new ones, you will hit the rework-limit auto-abort eventually (`code=rework_limit_exceeded`). Raise the limit via `state_machine.rework_limit` in `~/.config/boid/config.yaml` if 5 is genuinely too low for your workflow, but more often a stuck rework loop is a real problem with the rework hook.
+Same logic as above but for the `reworking → verifying` direction. The rework-style hook running in `reworking` needs to flip every `reworking`-sourced finding to `resolved` to escape. If the hook keeps writing new findings, the task eventually hits the rework-count limit and aborts with `code=rework_limit_exceeded`. Raise `state_machine.rework_limit` in `~/.config/boid/config.yaml` if your workflow genuinely needs more than 5 cycles, but in most cases the real fix is in the rework-style hook itself.
 
 ## `boid task list` is slow / disk fills up
 
@@ -78,10 +79,10 @@ gc:
 
 ## "permission denied" or "unknown command" inside a hook
 
-Hooks run inside a sandbox. If the script tries to run a command that the kit's `host_commands` does not allow, the sandbox blocks it. Two paths to fix:
+Hooks run inside a sandbox, so any command the kit has not declared in `host_commands` is rejected. Two ways to fix it:
 
-- Add the missing command to the kit's `host_commands` list (preferable for general-purpose tools like `git push`).
-- Move the responsibility to a gate, which runs on the host without a sandbox (preferable for environment-specific operations like `systemctl restart`).
+- Add the missing command to the kit's `host_commands` list (preferred for general-purpose tools like `git push`).
+- Move the work to a gate (a script that runs on the host at a state transition) — preferred for environment-specific operations like `systemctl restart`.
 
 ## Web UI: the device keeps getting logged out
 

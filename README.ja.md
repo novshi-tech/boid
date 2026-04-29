@@ -1,25 +1,24 @@
 # boid
 
-**パーソナル AI オーケストレータ。** 成果物の生成からリリースまでのワークフロー全体を、構造化されたタスクとして追跡・自動化します。すべての処理はサンドボックス内で安全に実行され、ローカルで完結します。
+**パーソナル AI オーケストレータ (Linux 専用)。** 依頼から成果物のリリースまでを 1 つのタスクとして追跡し、 AI エージェントに任せます。エージェントはローカルマシンのファイルシステムを直接読み書きできるので、普段使っているコマンドや開発環境をそのまま扱えます。書き込みはサンドボックスで指定範囲に閉じ込められるため、自分のファイルが壊れる心配なく動かせます。
 
 [English README](README.md)
 
 ## 特徴
 
-- **ローカル / 単一ユーザ。** SQLite ベースの自己完結型 daemon。クラウドアカウント不要、チーム前提の機能なし、共有状態なし
-- **構造化されたタスクライフサイクル。** すべてのタスクは `executing → verifying → reworking → done` を通過します。修正ループは payload 上の検証結果で駆動され、場当たり的な再依頼ではありません
-- **サンドボックスファースト。** Hook とエージェント実行は既定でサンドボックス内。`host_commands` として宣言されたものだけが host に渡り、ポリシーは kit 単位で管理されます
-- **Worktree + PR ワークフロー。** git worktree で並列に開発タスクを動かします。auto-merge と CI 検証は kit として提供され、core は環境非依存のまま
-- **Pluggable kits。** Claude Code / Codex / GitHub PR・auto-merge などを [boid-kits](https://github.com/novshi-tech/boid-kits) から再利用、あるいは自作の kit を追加可能
-- **TUI / CLI / Web UI。** ターミナルから操作するほか、Cloudflare Tunnel 経由でスマホからもペアリングして使えます
+- **手元のツールをそのまま使える。** Claude Code, Codex, git, gh, エディタ、言語ツールチェーンなど、すでにインストール済みのコマンドをエージェントに渡せます。クラウド側のサンドボックスでは届かない、自分の実環境への作用が可能です
+- **インストール後すぐに使い始められる。** `go install` でバイナリを入れて `boid start` するだけ。設定ファイルの作成も、サーバ準備も、サインアップも要りません
+- **タスクのモデルが事前に定義されている。** 「依頼 → 実行 → 検証 → 修正 → 完了」の流れと、各段階で記録するデータ形式があらかじめ決まっています。修正ループのたびに人間が状況を再投入しなくても進みます
+- **ローカルファイルを書き換える範囲をサンドボックスで絞れる。** エージェントは普段のディレクトリを直接読みますが、書き込みは git worktree など指定したスコープに閉じ込められます。逆走したエージェントもホームディレクトリや他プロジェクトには触れられません
+- **複数の依頼を並行して進められる。** タスクごとに専用の git worktree を切るので、同時に動いても互いに干渉しません
+- **拡張は別パッケージとして差し替え可能。** AI エージェントの種類 (Claude Code / Codex)、 CI 連携、 PR 作成、自動マージなど、用途別の拡張パッケージ ([boid-kits](https://github.com/novshi-tech/boid-kits)) を組み合わせて構成します
+- **ターミナルとブラウザの両方から操作できる。** TUI / CLI に加え、 Web UI を Cloudflare Tunnel で公開すればスマホからも操作できます
 
 ## インストール
 
 ```bash
 go install github.com/novshi-tech/boid@latest
 ```
-
-Linux のみ対応。
 
 ## クイックスタート
 
@@ -35,7 +34,7 @@ boid stop               # daemon 停止
 ## ドキュメント
 
 - **[インストールとクイックスタート](docs/ja/getting-started/01-install.md)**
-- **[概念](docs/ja/guide/concepts.md)** — 語彙
+- **[概念](docs/ja/guide/concepts.md)** — 用語解説
 - **[状態機械](docs/ja/guide/state-machine.md)**
 - **[Web UI](docs/ja/guide/web-ui.md)** — Cloudflare Tunnel 構成を含む
 - **[トラブルシューティング](docs/ja/guide/troubleshooting.md)**

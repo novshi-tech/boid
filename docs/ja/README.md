@@ -1,6 +1,6 @@
 # boid ドキュメント
 
-`boid` はパーソナル AI オーケストレータです。成果物の生成・検証・リリースまでの一連のワークフローを、サンドボックス内で安全に実行できる構造化タスクとして扱います。
+`boid` はパーソナル AI オーケストレータです。依頼から成果物のリリースまでを、事前に定義されたタスクのモデルに沿って AI エージェントに任せ、エージェントの書き込みはサンドボックスで指定範囲に閉じ込めます。
 
 このページはエントリポイントです。ドキュメントは段階的に整備中で、未着手のページはリンクなしで予定として記載しています。
 
@@ -12,7 +12,6 @@
 - **モデル (概念) を理解したい。** → [概念](guide/concepts.md) と [状態機械](guide/state-machine.md)
 - **スマホから操作したい。** → [Web UI](guide/web-ui.md)
 - **詰まっている挙動を直したい。** → [トラブルシューティング](guide/troubleshooting.md)
-- **過去の設計メモを読みたい。** → [Archive](archive/)
 
 ## セクション
 
@@ -22,16 +21,16 @@
 
 - [1. インストール](getting-started/01-install.md)
 - 2. 最初のタスク — *予定*
-- 3. プロジェクトと kit — *予定*
+- 3. プロジェクトと拡張パッケージ (kit) — *予定*
 - 4. フィードバックループ — *予定*
 
 ### ガイド
 
 概念別の how-to。
 
-- [概念](guide/concepts.md) — task / job / hook / gate / kit / payload / trait
+- [概念](guide/concepts.md) — task / job / hook / gate / kit / payload / trait など内部用語の解説
 - [状態機械](guide/state-machine.md) — `executing → verifying → reworking → done`
-- [Web UI](guide/web-ui.md) — ペアリング、デバイス管理、Cloudflare Tunnel
+- [Web UI](guide/web-ui.md) — デバイスのペアリング・失効、 Cloudflare Tunnel での公開
 - [トラブルシューティング](guide/troubleshooting.md)
 
 ### リファレンス
@@ -52,7 +51,3 @@
 ### Contributing
 
 整備予定。要点は TDD・最小依存・コミットプレフィックス `feat:` / `fix:` / `refactor:` / `test:`。現在の運用規約は [`CLAUDE.md`](https://github.com/novshi-tech/boid/blob/main/CLAUDE.md) を参照。
-
-### Archive
-
-- [過去の設計メモと実装計画](archive/)

@@ -22,15 +22,17 @@ boid --help
 
 サブコマンド (`start`, `task`, `job`, `project`, `web`, `kit`, `secret`, `gc`, `stop`, ...) の一覧が表示されれば OK です。
 
-## daemon の起動
+## サーバ (daemon) の起動
+
+`boid` は CLI と並行してバックグラウンドで動くサーバプロセス (以降 daemon と呼びます) を持ち、タスクの永続化・実行・観測はこの daemon が担います。
 
 ```bash
 boid start
 ```
 
-`boid start` は detach した daemon を生成して即座に戻ります。出力には PID・UNIX socket パス・HTTP listen アドレス (既定 `:8080`) が表示されます。 `nohup` や `&`、 systemd の user unit は不要で、 `boid start` 自身が daemon 化します。
+`boid start` は子プロセスとして daemon を起動して即座に戻ります。出力には PID・UNIX ソケットのパス・HTTP のリッスンアドレス (既定 `:8080`) が表示されます。 `nohup` や `&`、 systemd の user unit は不要です — `boid start` 自体がプロセスを切り離します。
 
-なお、daemon を必要とするコマンド (例: `boid task list`) を最初に呼んだ時点で自動起動するため、 `boid start` を省略していきなりコマンドを叩くこともできます。
+daemon が止まっている状態でそれを必要とするコマンド (例: `boid task list`) を呼ぶと、自動的に起動するため、 `boid start` を毎回打たなくても構いません。
 
 ## 動作確認
 
@@ -40,9 +42,9 @@ boid task list
 
 新規インストール直後はリストが空であることが正常です。
 
-ブラウザで `http://localhost:8080` を開くと Web UI が表示されます。loopback アクセスはペアリング不要なので、そのままタスク一覧が見えるはずです。
+ブラウザで `http://localhost:8080` を開くと Web UI が表示されます。同一マシン (loopback アドレス 127.0.0.1 / ::1) からのアクセスはデバイス認証 (ペアリング) 不要で、そのままタスク一覧が見えるはずです。
 
-## daemon の停止
+## サーバの停止
 
 ```bash
 boid stop
@@ -56,14 +58,14 @@ boid stop
 
 | パス | 内容 |
 |---|---|
-| `~/.local/share/boid/boid.db` | SQLite データベース |
-| `~/.local/share/boid/kits/` | インストール済みの kit |
-| `~/.local/share/boid/runtimes/` | タスクごとの sandbox 実行用ディレクトリ (自動 GC) |
-| `~/.local/share/boid/secret.key` | secret store の暗号鍵 (mode 0600) |
-| `~/.local/share/boid/web_secret` | Web UI 署名鍵 (mode 0600) |
-| `~/.local/state/boid/boid.log` | daemon ログ (ローテーション) |
-| `~/.config/boid/config.yaml` | ユーザ設定 (任意) |
-| `$XDG_RUNTIME_DIR/boid.sock` | UNIX socket (fallback は `/tmp/boid-<uid>.sock`) |
+| `~/.local/share/boid/boid.db` | タスク・ジョブ・プロジェクト等を保存する SQLite データベース |
+| `~/.local/share/boid/kits/` | インストール済みの拡張パッケージ (kit) のソースツリー |
+| `~/.local/share/boid/runtimes/` | タスクごとに作業ディレクトリを切るための一時領域 (一定期間で自動削除) |
+| `~/.local/share/boid/secret.key` | API キー等の機密値を暗号化するための鍵 (パーミッション 0600) |
+| `~/.local/share/boid/web_secret` | Web UI のセッション cookie 署名鍵 (パーミッション 0600) |
+| `~/.local/state/boid/boid.log` | daemon の標準出力・エラーを書き出すログ (サイズ上限でローテーション) |
+| `~/.config/boid/config.yaml` | ユーザによる任意の設定上書き |
+| `$XDG_RUNTIME_DIR/boid.sock` | CLI と daemon を繋ぐ UNIX ソケット ( `XDG_RUNTIME_DIR` が無い環境では `/tmp/boid-<uid>.sock` ) |
 
 `~/.config/boid/config.yaml` は任意です。存在しない場合は既定値で動作します。
 
@@ -77,7 +79,7 @@ boid stop
 boid start
 ```
 
-再起動は必須です。実行中の daemon は古いバイナリを mmap しており、 `boid stop` を省略すると新しいコードがロードされません。
+再起動は必須です。実行中の daemon プロセスは古いバイナリのコードをメモリ上に保持し続けるため、 `boid stop` を省略するとディスク上のバイナリが新しくなっても挙動は変わりません。
 
 ## アンインストール
 
@@ -87,7 +89,7 @@ rm -rf ~/.local/share/boid ~/.local/state/boid ~/.config/boid
 rm "$(go env GOPATH)/bin/boid"
 ```
 
-最初の `rm` でタスク・シークレット・インストール済み kit を含むローカルデータがすべて消えます。再インストール時にデータを残したい場合は該当パスを除外してください。
+最初の `rm` でタスク・機密値・インストール済みの拡張パッケージを含むローカルデータがすべて消えます。再インストール時にデータを残したい場合は該当パスを除外してください。
 
 ---
 

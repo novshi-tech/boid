@@ -22,15 +22,17 @@ boid --help
 
 You should see a list of subcommands (`start`, `task`, `job`, `project`, `web`, `kit`, `secret`, `gc`, `stop`, ...).
 
-## Start the daemon
+## Start the server (daemon)
+
+`boid` runs a long-lived background server alongside the CLI — referred to as the daemon throughout these docs — that owns task persistence, execution, and observation.
 
 ```bash
 boid start
 ```
 
-`boid start` spawns a detached daemon and returns immediately. The output reports the PID, the UNIX socket path, and the HTTP listen address (default `:8080`). You do not need `nohup`, `&`, or systemd — `boid start` is self-daemonizing.
+`boid start` spawns the daemon as a child process and returns immediately. The output reports the PID, the UNIX socket path, and the HTTP listen address (default `:8080`). You do not need `nohup`, `&`, or systemd — `boid start` detaches the process itself.
 
-The daemon also starts automatically on the first command that needs it (for example `boid task list`), so you can skip `boid start` and just run a command.
+If the daemon is not running, the first command that needs it (for example `boid task list`) starts it automatically, so you do not have to type `boid start` every time.
 
 ## Verify it works
 
@@ -40,7 +42,7 @@ boid task list
 
 The list is empty on a fresh install — that is the expected output.
 
-Open the Web UI in a browser at `http://localhost:8080`. Loopback access does not require pairing, so it should load straight to the task list.
+Open the Web UI in a browser at `http://localhost:8080`. Requests from the same machine (loopback addresses 127.0.0.1 / ::1) skip device pairing, so the task list should load straight away.
 
 ## Stop the daemon
 
@@ -56,14 +58,14 @@ boid stop
 
 | Path | Contents |
 |---|---|
-| `~/.local/share/boid/boid.db` | SQLite database |
-| `~/.local/share/boid/kits/` | Installed kits |
-| `~/.local/share/boid/runtimes/` | Per-task sandbox runtime directories (auto-GC'd) |
-| `~/.local/share/boid/secret.key` | Secret-store encryption key (mode 0600) |
-| `~/.local/share/boid/web_secret` | Web UI signing key (mode 0600) |
-| `~/.local/state/boid/boid.log` | Daemon log (rotated) |
-| `~/.config/boid/config.yaml` | Optional user config |
-| `$XDG_RUNTIME_DIR/boid.sock` | UNIX socket (falls back to `/tmp/boid-<uid>.sock`) |
+| `~/.local/share/boid/boid.db` | SQLite database holding tasks, jobs, and projects |
+| `~/.local/share/boid/kits/` | Source trees of installed extension packages (kits) |
+| `~/.local/share/boid/runtimes/` | Per-task working directories used during execution (auto-deleted after a retention window) |
+| `~/.local/share/boid/secret.key` | Encryption key for stored secret values such as API tokens (mode 0600) |
+| `~/.local/share/boid/web_secret` | Signing key for the Web UI session cookies (mode 0600) |
+| `~/.local/state/boid/boid.log` | Captured stdout/stderr of the daemon (rotated by size) |
+| `~/.config/boid/config.yaml` | User-supplied configuration overrides |
+| `$XDG_RUNTIME_DIR/boid.sock` | UNIX socket bridging the CLI and the daemon (falls back to `/tmp/boid-<uid>.sock` when `XDG_RUNTIME_DIR` is unset) |
 
 `~/.config/boid/config.yaml` is optional. Defaults are used if it does not exist.
 
@@ -77,7 +79,7 @@ boid stop
 boid start
 ```
 
-The restart matters: the running daemon has the old binary mapped into memory. Skipping `boid stop` will leave the new binary on disk but the old code in the running process.
+The restart matters: the running daemon process keeps the previous binary's code resident in memory, so skipping `boid stop` leaves the new binary on disk while the old code keeps running.
 
 ## Uninstall
 
@@ -87,7 +89,7 @@ rm -rf ~/.local/share/boid ~/.local/state/boid ~/.config/boid
 rm "$(go env GOPATH)/bin/boid"
 ```
 
-The first `rm` removes all local data including tasks, secrets, and installed kits. Skip the data paths if you want to preserve them across a reinstall.
+The first `rm` removes all local data including tasks, secret values, and installed extension packages. Skip the data paths if you want to preserve them across a reinstall.
 
 ---
 
