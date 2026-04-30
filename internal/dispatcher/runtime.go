@@ -38,6 +38,10 @@ type RuntimeAttachRequest struct {
 
 type RuntimeExit struct {
 	ExitCode int
+	// TranscriptPath は子プロセスの stdout/stderr 全量を保存しているファイルへの
+	// パス。 silent な exit_code!=0 (transcript が 0 byte) ケースを diag log で
+	// 一発判別できるようにするために提供する。 サポートしない runtime は空文字。
+	TranscriptPath string
 }
 
 type JobRuntime interface {

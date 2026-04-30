@@ -33,6 +33,7 @@ type localRuntimeSession struct {
 	cmd            *exec.Cmd
 	master         *os.File
 	transcriptFile *os.File
+	transcriptPath string
 
 	mu          sync.Mutex
 	writerMu    sync.Mutex // protects concurrent writes to master
@@ -105,6 +106,7 @@ func (r *LocalRuntime) Start(_ context.Context, spec RuntimeStartSpec) (*Runtime
 		cmd:            cmd,
 		master:         master,
 		transcriptFile: transcriptFile,
+		transcriptPath: transcriptPath,
 		subscribers:    make(map[int]chan []byte),
 		running:        true,
 		done:           make(chan struct{}),
@@ -408,7 +410,9 @@ func (s *localRuntimeSession) isRunning() bool {
 func (s *localRuntimeSession) exitStatus() RuntimeExit {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.exit
+	exit := s.exit
+	exit.TranscriptPath = s.transcriptPath
+	return exit
 }
 
 func openPTY() (*os.File, *os.File, error) {
