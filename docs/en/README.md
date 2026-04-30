@@ -36,6 +36,7 @@ Concept-oriented how-to.
 ### Reference
 
 - [`project.yaml` reference](reference/project-yaml.md) — every field of the project definition file
+- [Handler script protocol](reference/handler-contract.md) — the hook / gate I/O contract (stdin, env vars, `payload_patch.json`, exit codes, ...)
 - CLI (`boid start`, `boid task`, `boid job`) — planned; for now, `boid <subcommand> --help` is the canonical source
 
 ### Kit authoring
