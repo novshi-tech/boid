@@ -50,3 +50,7 @@ Concept-oriented how-to.
 ### Contributing
 
 - [Contributing guide](contributing/README.md) — development setup, coding conventions, PRs, bug reports
+
+### Roadmap
+
+- [Roadmap](roadmap.md) — where we are, the public-release stages, focus areas, and what is intentionally out of scope
