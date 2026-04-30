@@ -98,7 +98,7 @@ The script protocol is in the next section. `traits.consumes` and `traits.produc
 
 ## Hook / gate script protocol
 
-Hooks and gates share the same I/O contract.
+Hooks and gates share the same I/O contract. This section is the summary; the full reference (every TaskJSON field, environment variables, the `payload_patch.json` file path, ...) lives in [Handler script protocol reference](../reference/handler-contract.md).
 
 ### Input (stdin)
 
@@ -111,9 +111,11 @@ The full task as JSON (TaskJSON). Frequently used fields:
 - `payload` — current payload
 - `instructions` — routed instructions (only for hooks declared with `kind: agent`)
 
-### Output (stdout)
+Environment variables such as `BOID_TASK_ID` / `BOID_JOB_ID` / `BOID_PROJECT_ID` are also set.
 
-To update the payload, write exactly one JSON document of this shape:
+### Output (payload patch)
+
+To update the payload, write JSON of this shape to `$HOME/.boid/output/payload_patch.json`:
 
 ```json
 {
@@ -122,6 +124,8 @@ To update the payload, write exactly one JSON document of this shape:
   }
 }
 ```
+
+Only when that file is absent does the runtime fall back to stdout, treating its content as the payload patch. New handlers should prefer the file path — agent-style hooks write incidental output to stdout, and the file path avoids mistaking that for a payload patch.
 
 The `payload_patch` body is a JSON merge instruction applied to the payload. Nested keys merge into their corresponding subtrees. If you have nothing to write, output nothing.
 
