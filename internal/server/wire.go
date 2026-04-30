@@ -204,6 +204,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Jobs:        jobStore,
 		Meta:        store,
 		Workflow:    workflow,
+		Projects:    projectRepo,
 		RuntimesDir: runtimesDirFor(cfg),
 	}
 	if srv.broker != nil {

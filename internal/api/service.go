@@ -296,6 +296,7 @@ type TaskAppService struct {
 	Jobs        JobStore
 	Meta        MetaStore
 	Workflow    WorkflowService
+	Projects    ProjectWorkDirLookup
 	RuntimesDir string
 }
 
@@ -430,6 +431,18 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 	}
 	if req.BaseBranch != nil {
 		baseBranch = *req.BaseBranch
+	}
+
+	if baseBranch != "" && s.Projects != nil {
+		proj, err := s.Projects.GetProject(req.ProjectID)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project lookup failed: %v", err)}
+		}
+		expanded, err := orchestrator.ExpandBaseBranch(baseBranch, proj.WorkDir)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+		}
+		baseBranch = expanded
 	}
 
 	var resolvedDeps []string
