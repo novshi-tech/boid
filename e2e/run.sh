@@ -108,7 +108,9 @@ run_scenario() {
     export E2E_WORKSPACE_DIR="$ROOT/workspace"
     export PATH="$E2E_BIN_DIR:$PATH"
 
-    mkdir -p "$HOME" "$XDG_DATA_HOME/boid/kits" "$XDG_RUNTIME_DIR" "$E2E_STATE_DIR" "$E2E_BIN_DIR" "$E2E_LOG_DIR" "$E2E_WORKSPACE_DIR"
+    export XDG_CONFIG_HOME="$ROOT/config"
+    mkdir -p "$HOME" "$XDG_DATA_HOME/boid/kits" "$XDG_RUNTIME_DIR" "$E2E_STATE_DIR" "$E2E_BIN_DIR" "$E2E_LOG_DIR" "$E2E_WORKSPACE_DIR" "$XDG_CONFIG_HOME/boid"
+    printf 'web:\n  http_addr: "127.0.0.1:0"\n' > "$XDG_CONFIG_HOME/boid/config.yaml"
 
     cp -f "$BUILD_ROOT/boid" "$E2E_BIN_DIR/boid"
     cp -f "$BUILD_ROOT/boid-e2e" "$E2E_BIN_DIR/boid-e2e"
@@ -133,7 +135,6 @@ run_scenario() {
     "$E2E_BIN_DIR/boid" start \
       --db-path "$XDG_DATA_HOME/boid/boid.db" \
       --socket-path "$BOID_SOCKET" \
-      --http-addr "127.0.0.1:0" \
       --kits-dir "$XDG_DATA_HOME/boid/kits" \
       --key-file-path "$XDG_DATA_HOME/boid/boid-secret.key" \
       >"$E2E_LOG_DIR/server.stdout.log" \
