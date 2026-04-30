@@ -88,13 +88,19 @@ func generateOuterScript(spec Spec, outerPath, setupPath, innerPath string) stri
 		return fmt.Sprintf(`#!/bin/bash
 root_dir=%s
 exec 3>&2
+pasta_stderr=$(mktemp -t boid-pasta-stderr-XXXXXX.log)
 pasta --config-net \
     -a 10.0.2.0 -n 24 -g 10.0.2.2 \
     --dns-forward 10.0.2.3 \
     -t none -u none \
-    2>/dev/null \
+    2>"$pasta_stderr" \
     -- bash -c 'exec 2>&3 3>&-; exec unshare --mount -- bash %s'
 exit_code=$?
+if [ "$exit_code" -ne 0 ] && [ -s "$pasta_stderr" ]; then
+    echo "[boid] pasta stderr (exit_code=$exit_code):" >&2
+    cat "$pasta_stderr" >&2
+fi
+rm -f "$pasta_stderr" 2>/dev/null || true
 if [ "$exit_code" -eq 0 ]; then
     rm -rf "$root_dir" 2>/dev/null || true
     rm -f %s %s %s 2>/dev/null || true
@@ -104,13 +110,19 @@ exit $exit_code
 	}
 	return fmt.Sprintf(`#!/bin/bash
 root_dir=%s
+pasta_stderr=$(mktemp -t boid-pasta-stderr-XXXXXX.log)
 pasta --config-net \
     -a 10.0.2.0 -n 24 -g 10.0.2.2 \
     --dns-forward 10.0.2.3 \
     -t none -u none \
-    2>/dev/null \
+    2>"$pasta_stderr" \
     -- unshare --mount -- bash %s
 exit_code=$?
+if [ "$exit_code" -ne 0 ] && [ -s "$pasta_stderr" ]; then
+    echo "[boid] pasta stderr (exit_code=$exit_code):" >&2
+    cat "$pasta_stderr" >&2
+fi
+rm -f "$pasta_stderr" 2>/dev/null || true
 if [ "$exit_code" -eq 0 ]; then
     rm -rf "$root_dir" 2>/dev/null || true
     rm -f %s %s %s 2>/dev/null || true

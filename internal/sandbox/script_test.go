@@ -2,6 +2,7 @@ package sandbox_test
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -115,6 +116,47 @@ func TestPrepare_OuterScriptCleansUp(t *testing.T) {
 	if !strings.Contains(outer, `if [ "$exit_code" -eq 0 ]; then`) {
 		t.Errorf("outer should guard rm with exit_code==0\n%s", outer)
 	}
+	// pasta の stderr を /dev/null に捨てると user namespace 不可等の致命的
+	// エラーが silent failure として観測不能になる (#322 / 2026-04-30 障害)。
+	// 一時ファイルにキャプチャして失敗時のみ outer.sh の stderr に書き出すこと。
+	if strings.Contains(outer, "2>/dev/null \\\n") {
+		t.Errorf("outer should not swallow pasta stderr with 2>/dev/null\n%s", outer)
+	}
+	if !strings.Contains(outer, "pasta_stderr=") {
+		t.Errorf("outer should capture pasta stderr to a tmpfile\n%s", outer)
+	}
+	if !strings.Contains(outer, `cat "$pasta_stderr" >&2`) {
+		t.Errorf("outer should re-emit captured stderr on failure\n%s", outer)
+	}
+}
+
+// 生成された outer.sh が bash の文法として有効であることを検証する。
+// pasta stderr capture や条件付き cleanup の追加で構文ミスを混入させないため
+// の保険。 syntax error は本番では「outer 起動と同時に exit 2」という診断不能
+// な silent failure になるので、 静的に bash -n で検査する。
+func TestPrepare_OuterScriptIsSyntacticallyValid(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tty  bool
+	}{{"non-tty", false}, {"tty", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := minimalSpec("test-syntax-" + tc.name)
+			spec.RootDir = "/tmp/boid-root-test-syntax"
+			spec.TTY = tc.tty
+
+			outerPath, err := sandbox.Prepare(spec)
+			if err != nil {
+				t.Fatalf("Prepare: %v", err)
+			}
+			outer, _, _ := readScripts(t, outerPath)
+
+			cmd := exec.Command("bash", "-n")
+			cmd.Stdin = strings.NewReader(outer)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Errorf("outer.sh has bash syntax error: %v\nstderr: %s\nscript:\n%s", err, out, outer)
+			}
+		})
+	}
 }
 
 func TestPrepare_OuterScriptCleansUpTTY(t *testing.T) {
@@ -142,6 +184,15 @@ func TestPrepare_OuterScriptCleansUpTTY(t *testing.T) {
 	}
 	if !strings.Contains(outer, `if [ "$exit_code" -eq 0 ]; then`) {
 		t.Errorf("outer TTY should guard rm with exit_code==0\n%s", outer)
+	}
+	if strings.Contains(outer, "2>/dev/null \\\n") {
+		t.Errorf("outer TTY should not swallow pasta stderr with 2>/dev/null\n%s", outer)
+	}
+	if !strings.Contains(outer, "pasta_stderr=") {
+		t.Errorf("outer TTY should capture pasta stderr to a tmpfile\n%s", outer)
+	}
+	if !strings.Contains(outer, `cat "$pasta_stderr" >&2`) {
+		t.Errorf("outer TTY should re-emit captured stderr on failure\n%s", outer)
 	}
 }
 
