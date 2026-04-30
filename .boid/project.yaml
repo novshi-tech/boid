@@ -54,6 +54,45 @@ task_behaviors:
              失敗時 (status を open に、 message に失敗 job のログ抜粋):
                echo '{"verification":{"findings":[{"status":"open","message":"CI failed: <job names>\n<tail>"}]}}' \
                  | boid task update <task_id> --payload-file -
+      review:
+        type: verification
+        consumer: claude-code
+        model: sonnet
+        message: |
+          worktree の current branch に対応する PR をレビューせよ。
+
+          手順:
+          1. PR を特定:
+             PR_URL=$(gh pr list --head "$(git branch --show-current)" --json url --jq '.[0].url // ""')
+             空なら finding を書き込まずに正常終了 (PR 未作成は main 側の責務)。
+          2. `boid task get <task_id>` で payload の `verification` を確認し、
+             前回 review が書き込んだ open finding があるか調べる (rework 後の再 verifying ではここに過去の指摘が残っている)。
+          3. `gh pr view "$PR_URL"` と `gh pr diff "$PR_URL"` で PR の説明と最新差分を確認。
+             rework 後の場合は `git log --oneline <base>..HEAD` で rework commit の内容も確認。
+          4. task.yaml の title / description と差分を突き合わせ、以下の観点でレビュー:
+             - 仕様 / 受け入れ条件と実装の乖離
+             - ユニットテスト不足 / 明らかなロジックバグ
+             - boid のコーディング規約 (CLAUDE.md) 違反
+             - セキュリティ・並行性の懸念
+          5. 前回の open finding がある場合、各指摘について最新差分で解消されているか個別に判定する:
+             - 解消済み → 該当 finding を `status: resolved` で書き戻す
+             - 未解消 → そのまま `status: open` を維持し、より具体的な修正方針を message に追記
+             新たな問題を見つけた場合は別 finding として追加する。
+          6. レビュー結果を verification finding に書き込む
+             (findings 配列は role 単位で「全置き換え」される。前回の指摘も今回判定し直した状態を含めて全件出力すること):
+             問題なし:
+               echo '{"verification":{"findings":[{"status":"resolved","message":"review passed"}]}}' \
+                 | boid task update <task_id> --payload-file -
+             要修正 (rework に戻したい):
+               echo '{"verification":{"findings":[{"status":"open","severity":"normal","message":"<指摘内容を箇条書きで>"}]}}' \
+                 | boid task update <task_id> --payload-file -
+             致命的 (人間判断が必要 / ループ回避):
+               severity を "fatal" にして abort させる。
+
+          注意:
+          - rework を促す finding は具体的な修正方針まで書く (rework 側の Claude が読む)。
+          - mergeable-check (github-auto-merge kit) と並走するので、 conflict 検出はそちらに任せる。
+          - main 側で CI 結果の finding が resolved になっている前提。 CI 失敗の追検証は不要。
       rework:
         type: rework
         consumer: claude-code
