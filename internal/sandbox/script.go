@@ -95,8 +95,10 @@ pasta --config-net \
     2>/dev/null \
     -- bash -c 'exec 2>&3 3>&-; exec unshare --mount -- bash %s'
 exit_code=$?
-rm -rf "$root_dir" 2>/dev/null || true
-rm -f %s %s %s 2>/dev/null || true
+if [ "$exit_code" -eq 0 ]; then
+    rm -rf "$root_dir" 2>/dev/null || true
+    rm -f %s %s %s 2>/dev/null || true
+fi
 exit $exit_code
 `, rootDir, setupPath, qOuter, qSetup, qInner)
 	}
@@ -109,8 +111,10 @@ pasta --config-net \
     2>/dev/null \
     -- unshare --mount -- bash %s
 exit_code=$?
-rm -rf "$root_dir" 2>/dev/null || true
-rm -f %s %s %s 2>/dev/null || true
+if [ "$exit_code" -eq 0 ]; then
+    rm -rf "$root_dir" 2>/dev/null || true
+    rm -f %s %s %s 2>/dev/null || true
+fi
 exit $exit_code
 `, rootDir, setupPath, qOuter, qSetup, qInner)
 }
