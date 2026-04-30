@@ -1,0 +1,38 @@
+# GitHub Pages (Jekyll) configuration for boid documentation.
+#
+# Pages source is configured to "Deploy from a branch" with branch=main / folder=/docs.
+# All content lives under docs/{en,ja}/ in plain Markdown; the plugins below adapt
+# that layout to the static site Jekyll generates.
+
+title: boid
+description: A personal AI orchestrator
+theme: minima
+
+plugins:
+  # Rewrites relative .md links to .html so docs we wrote with `[text](file.md)`
+  # links keep working after Jekyll converts each .md into .html.
+  - jekyll-relative-links
+  # Treats README.md in any directory as that directory's index.html, so URLs
+  # like /docs/en/ and /docs/en/getting-started/ resolve to their README pages.
+  - jekyll-readme-index
+
+relative_links:
+  enabled: true
+  collections: true
+
+readme_index:
+  enabled: true
+  remove_originals: false
+  with_frontmatter: false
+
+kramdown:
+  auto_ids: true
+  toc_levels: 1..3
+
+include:
+  - README.md
+
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor
