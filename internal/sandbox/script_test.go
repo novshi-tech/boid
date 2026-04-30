@@ -110,6 +110,11 @@ func TestPrepare_OuterScriptCleansUp(t *testing.T) {
 	if !strings.Contains(outer, "/tmp/boid-root-test-cleanup") {
 		t.Errorf("outer should embed the RootDir path\n%s", outer)
 	}
+	// outer.sh must skip cleanup on non-zero exit so that the diagnostic
+	// retain path (cleanupSandboxAfterWait) can preserve the scripts.
+	if !strings.Contains(outer, `if [ "$exit_code" -eq 0 ]; then`) {
+		t.Errorf("outer should guard rm with exit_code==0\n%s", outer)
+	}
 }
 
 func TestPrepare_OuterScriptCleansUpTTY(t *testing.T) {
@@ -134,6 +139,9 @@ func TestPrepare_OuterScriptCleansUpTTY(t *testing.T) {
 	}
 	if !strings.Contains(outer, "exit $exit_code") {
 		t.Errorf("outer TTY should exit with pasta's exit code\n%s", outer)
+	}
+	if !strings.Contains(outer, `if [ "$exit_code" -eq 0 ]; then`) {
+		t.Errorf("outer TTY should guard rm with exit_code==0\n%s", outer)
 	}
 }
 
