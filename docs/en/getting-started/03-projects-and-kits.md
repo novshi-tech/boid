@@ -30,7 +30,6 @@ The official kits live in the [`github.com/novshi-tech/boid-kits`](https://githu
 | `github.com/novshi-tech/boid-kits/codex` | Runs the OpenAI Codex CLI agent as a hook. |
 | `github.com/novshi-tech/boid-kits/go-dev` | Mounts `~/go` and friends into the sandbox. |
 | `github.com/novshi-tech/boid-kits/github-cli` | Makes `gh` callable from inside the sandbox. |
-| `github.com/novshi-tech/boid-kits/github-pr-verification` | Adds a verifying-state gate that checks PR CI status. |
 | `github.com/novshi-tech/boid-kits/github-auto-merge` | Adds an entry gate on `done` that runs `gh pr merge`. |
 
 ## Install a kit repository
@@ -136,7 +135,7 @@ What this tutorial covered:
 - The shape of `project.yaml`, including `kits` and `default_instructions`.
 - Skipping `pending` with `auto_start: true`.
 
-Next: a workflow that bounces between several states — feedback loops driven by PR review and CI.
+Next: a GitHub PR-driven dev workflow that combines a worktree with auto-merge.
 
 ## Cleanup
 
@@ -150,4 +149,4 @@ rm -rf ~/boid-demo
 
 ---
 
-Next: [4. Feedback loop](04-feedback-loop.md)
+Next: [4. The GitHub PR-driven dev workflow](04-dev-workflow.md)

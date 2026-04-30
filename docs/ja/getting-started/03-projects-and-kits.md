@@ -30,7 +30,6 @@
 | `github.com/novshi-tech/boid-kits/codex` | OpenAI Codex CLI エージェントを hook で起動 |
 | `github.com/novshi-tech/boid-kits/go-dev` | サンドボックスに `~/go` などをマウント |
 | `github.com/novshi-tech/boid-kits/github-cli` | サンドボックスから `gh` を使えるようにする |
-| `github.com/novshi-tech/boid-kits/github-pr-verification` | `verifying` 状態で PR の CI 通過を確認する gate |
 | `github.com/novshi-tech/boid-kits/github-auto-merge` | `done` 状態への entry gate で `gh pr merge` を実行 |
 
 ## kit リポジトリをインストールする
@@ -135,7 +134,7 @@ boid job show <job-id>
 - `project.yaml` の `kits` と `default_instructions`
 - `auto_start: true` で `pending` をスキップ
 
-次は **複数の状態間を行き来する** ワークフロー、 PR レビューと CI を含むフィードバックループに進みます。
+次は worktree と auto-merge を組み合わせた、 GitHub PR ベースの開発ワークフローに進みます。
 
 ## 後片付け
 
@@ -149,4 +148,4 @@ rm -rf ~/boid-demo
 
 ---
 
-次: [4. フィードバックループ](04-feedback-loop.md)
+次: [4. GitHub PR ベースの開発ワークフロー](04-dev-workflow.md)

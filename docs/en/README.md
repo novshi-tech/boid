@@ -22,7 +22,7 @@ Step-by-step walkthroughs.
 - [1. Install](getting-started/01-install.md)
 - [2. Your first task](getting-started/02-first-task.md)
 - [3. Projects and extension packages (kits)](getting-started/03-projects-and-kits.md)
-- [4. Feedback loop](getting-started/04-feedback-loop.md)
+- [4. The GitHub PR-driven dev workflow](getting-started/04-dev-workflow.md)
 
 ### Guide
 
