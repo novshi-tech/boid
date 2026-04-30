@@ -245,7 +245,10 @@ func (s *TaskDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 
 	case screenResumedMsg:
 		s.loading = true
-		return s, fetchTaskDetailCmd(s.shared.Client, s.taskID)
+		return s, tea.Batch(
+			fetchTaskDetailCmd(s.shared.Client, s.taskID),
+			taskDetailTickCmd(),
+		)
 
 	case tea.KeyMsg:
 		if s.titleEditing {

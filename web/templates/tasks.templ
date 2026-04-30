@@ -528,11 +528,14 @@ templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Stat
 			@TaskDetailTimelineSection(timelineGroups)
 			<script>
 				(function() {
+					if (window.__boidTimelineSubscriber) return;
+					window.__boidTimelineSubscriber = true;
+
 					var panel = document.getElementById('tab-panel');
 					var taskID = panel ? panel.dataset.taskId : '';
 					if (!taskID) return;
 
-					var es = new EventSource('/api/tasks/' + taskID + '/events');
+					var es = null;
 
 					function refresh(kinds) {
 						kinds.forEach(function(kind) {
@@ -547,9 +550,19 @@ templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Stat
 						});
 					}
 
-					es.addEventListener('action', function() { refresh(['status', 'timeline']); });
-					es.addEventListener('job', function() { refresh(['status', 'timeline']); });
-					es.addEventListener('fired_event', function() { refresh(['timeline']); });
+					function openES() {
+						if (es && es.readyState !== EventSource.CLOSED) return;
+						es = new EventSource('/api/tasks/' + taskID + '/events');
+						es.addEventListener('action', function() { refresh(['status', 'timeline']); });
+						es.addEventListener('job', function() { refresh(['status', 'timeline']); });
+						es.addEventListener('fired_event', function() { refresh(['timeline']); });
+					}
+
+					function closeES() {
+						if (es) { es.close(); }
+					}
+
+					openES();
 
 					// Live-tick the "MM:SS ago" text on running-job rows so
 					// the user sees the elapsed counter advance in real time
@@ -582,15 +595,23 @@ templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Stat
 
 					document.body.addEventListener('htmx:beforeSwap', function onSwap(e) {
 						if (e.detail.target && e.detail.target.id === 'tab-panel') {
-							es.close();
+							closeES();
 							document.body.removeEventListener('htmx:beforeSwap', onSwap);
 						}
 					});
 
-					function closeES() { es.close(); }
 					window.addEventListener('pagehide', closeES);
 					document.addEventListener('visibilitychange', function() {
-						if (document.visibilityState === 'hidden') { closeES(); }
+						if (document.visibilityState === 'hidden') {
+							closeES();
+						} else {
+							openES();
+							refresh(['status', 'timeline']);
+						}
+					});
+					window.addEventListener('pageshow', function(e) {
+						openES();
+						refresh(['status', 'timeline']);
 					});
 				})();
 			</script>

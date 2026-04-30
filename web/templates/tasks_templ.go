@@ -1668,7 +1668,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 117, " <script>\n\t\t\t\t(function() {\n\t\t\t\t\tvar panel = document.getElementById('tab-panel');\n\t\t\t\t\tvar taskID = panel ? panel.dataset.taskId : '';\n\t\t\t\t\tif (!taskID) return;\n\n\t\t\t\t\tvar es = new EventSource('/api/tasks/' + taskID + '/events');\n\n\t\t\t\t\tfunction refresh(kinds) {\n\t\t\t\t\t\tkinds.forEach(function(kind) {\n\t\t\t\t\t\t\tfetch('/tasks/' + taskID + '/fragment?kind=' + kind)\n\t\t\t\t\t\t\t\t.then(function(r) { return r.ok ? r.text() : null; })\n\t\t\t\t\t\t\t\t.then(function(html) {\n\t\t\t\t\t\t\t\t\tif (!html) return;\n\t\t\t\t\t\t\t\t\tvar el = document.getElementById('task-' + kind);\n\t\t\t\t\t\t\t\t\tif (el) el.outerHTML = html;\n\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t\t.catch(function() {});\n\t\t\t\t\t\t});\n\t\t\t\t\t}\n\n\t\t\t\t\tes.addEventListener('action', function() { refresh(['status', 'timeline']); });\n\t\t\t\t\tes.addEventListener('job', function() { refresh(['status', 'timeline']); });\n\t\t\t\t\tes.addEventListener('fired_event', function() { refresh(['timeline']); });\n\n\t\t\t\t\t// Live-tick the \"MM:SS ago\" text on running-job rows so\n\t\t\t\t\t// the user sees the elapsed counter advance in real time\n\t\t\t\t\t// instead of waiting for the next fragment refresh. The\n\t\t\t\t\t// tick iterates over whatever .timeline-elapsed[data-since]\n\t\t\t\t\t// nodes exist in the current DOM, so new rows added by a\n\t\t\t\t\t// refresh pick up the counter on the next tick without\n\t\t\t\t\t// re-wiring. Guarded by a window flag so repeated tab\n\t\t\t\t\t// swaps don't stack extra intervals.\n\t\t\t\t\tif (!window.__boidTimelineTicker) {\n\t\t\t\t\t\twindow.__boidTimelineTicker = true;\n\t\t\t\t\t\tfunction tickElapsed() {\n\t\t\t\t\t\t\tvar now = Math.floor(Date.now() / 1000);\n\t\t\t\t\t\t\tdocument.querySelectorAll('.timeline-elapsed[data-since]').forEach(function(el) {\n\t\t\t\t\t\t\t\tvar since = parseInt(el.dataset.since, 10);\n\t\t\t\t\t\t\t\tif (!since) return;\n\t\t\t\t\t\t\t\tvar d = Math.max(0, now - since);\n\t\t\t\t\t\t\t\tvar h = Math.floor(d / 3600);\n\t\t\t\t\t\t\t\tvar m = Math.floor((d % 3600) / 60);\n\t\t\t\t\t\t\t\tvar s = d % 60;\n\t\t\t\t\t\t\t\tvar pad = function(n) { return (n < 10 ? '0' : '') + n; };\n\t\t\t\t\t\t\t\tel.textContent = h > 0\n\t\t\t\t\t\t\t\t\t? (pad(h) + ':' + pad(m) + ':' + pad(s))\n\t\t\t\t\t\t\t\t\t: (pad(m) + ':' + pad(s));\n\t\t\t\t\t\t\t});\n\t\t\t\t\t\t}\n\t\t\t\t\t\ttickElapsed();\n\t\t\t\t\t\tsetInterval(tickElapsed, 1000);\n\t\t\t\t\t}\n\n\t\t\t\t\tdocument.body.addEventListener('htmx:beforeSwap', function onSwap(e) {\n\t\t\t\t\t\tif (e.detail.target && e.detail.target.id === 'tab-panel') {\n\t\t\t\t\t\t\tes.close();\n\t\t\t\t\t\t\tdocument.body.removeEventListener('htmx:beforeSwap', onSwap);\n\t\t\t\t\t\t}\n\t\t\t\t\t});\n\n\t\t\t\t\tfunction closeES() { es.close(); }\n\t\t\t\t\twindow.addEventListener('pagehide', closeES);\n\t\t\t\t\tdocument.addEventListener('visibilitychange', function() {\n\t\t\t\t\t\tif (document.visibilityState === 'hidden') { closeES(); }\n\t\t\t\t\t});\n\t\t\t\t})();\n\t\t\t</script>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 117, " <script>\n\t\t\t\t(function() {\n\t\t\t\t\tif (window.__boidTimelineSubscriber) return;\n\t\t\t\t\twindow.__boidTimelineSubscriber = true;\n\n\t\t\t\t\tvar panel = document.getElementById('tab-panel');\n\t\t\t\t\tvar taskID = panel ? panel.dataset.taskId : '';\n\t\t\t\t\tif (!taskID) return;\n\n\t\t\t\t\tvar es = null;\n\n\t\t\t\t\tfunction refresh(kinds) {\n\t\t\t\t\t\tkinds.forEach(function(kind) {\n\t\t\t\t\t\t\tfetch('/tasks/' + taskID + '/fragment?kind=' + kind)\n\t\t\t\t\t\t\t\t.then(function(r) { return r.ok ? r.text() : null; })\n\t\t\t\t\t\t\t\t.then(function(html) {\n\t\t\t\t\t\t\t\t\tif (!html) return;\n\t\t\t\t\t\t\t\t\tvar el = document.getElementById('task-' + kind);\n\t\t\t\t\t\t\t\t\tif (el) el.outerHTML = html;\n\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t\t.catch(function() {});\n\t\t\t\t\t\t});\n\t\t\t\t\t}\n\n\t\t\t\t\tfunction openES() {\n\t\t\t\t\t\tif (es && es.readyState !== EventSource.CLOSED) return;\n\t\t\t\t\t\tes = new EventSource('/api/tasks/' + taskID + '/events');\n\t\t\t\t\t\tes.addEventListener('action', function() { refresh(['status', 'timeline']); });\n\t\t\t\t\t\tes.addEventListener('job', function() { refresh(['status', 'timeline']); });\n\t\t\t\t\t\tes.addEventListener('fired_event', function() { refresh(['timeline']); });\n\t\t\t\t\t}\n\n\t\t\t\t\tfunction closeES() {\n\t\t\t\t\t\tif (es) { es.close(); }\n\t\t\t\t\t}\n\n\t\t\t\t\topenES();\n\n\t\t\t\t\t// Live-tick the \"MM:SS ago\" text on running-job rows so\n\t\t\t\t\t// the user sees the elapsed counter advance in real time\n\t\t\t\t\t// instead of waiting for the next fragment refresh. The\n\t\t\t\t\t// tick iterates over whatever .timeline-elapsed[data-since]\n\t\t\t\t\t// nodes exist in the current DOM, so new rows added by a\n\t\t\t\t\t// refresh pick up the counter on the next tick without\n\t\t\t\t\t// re-wiring. Guarded by a window flag so repeated tab\n\t\t\t\t\t// swaps don't stack extra intervals.\n\t\t\t\t\tif (!window.__boidTimelineTicker) {\n\t\t\t\t\t\twindow.__boidTimelineTicker = true;\n\t\t\t\t\t\tfunction tickElapsed() {\n\t\t\t\t\t\t\tvar now = Math.floor(Date.now() / 1000);\n\t\t\t\t\t\t\tdocument.querySelectorAll('.timeline-elapsed[data-since]').forEach(function(el) {\n\t\t\t\t\t\t\t\tvar since = parseInt(el.dataset.since, 10);\n\t\t\t\t\t\t\t\tif (!since) return;\n\t\t\t\t\t\t\t\tvar d = Math.max(0, now - since);\n\t\t\t\t\t\t\t\tvar h = Math.floor(d / 3600);\n\t\t\t\t\t\t\t\tvar m = Math.floor((d % 3600) / 60);\n\t\t\t\t\t\t\t\tvar s = d % 60;\n\t\t\t\t\t\t\t\tvar pad = function(n) { return (n < 10 ? '0' : '') + n; };\n\t\t\t\t\t\t\t\tel.textContent = h > 0\n\t\t\t\t\t\t\t\t\t? (pad(h) + ':' + pad(m) + ':' + pad(s))\n\t\t\t\t\t\t\t\t\t: (pad(m) + ':' + pad(s));\n\t\t\t\t\t\t\t});\n\t\t\t\t\t\t}\n\t\t\t\t\t\ttickElapsed();\n\t\t\t\t\t\tsetInterval(tickElapsed, 1000);\n\t\t\t\t\t}\n\n\t\t\t\t\tdocument.body.addEventListener('htmx:beforeSwap', function onSwap(e) {\n\t\t\t\t\t\tif (e.detail.target && e.detail.target.id === 'tab-panel') {\n\t\t\t\t\t\t\tcloseES();\n\t\t\t\t\t\t\tdocument.body.removeEventListener('htmx:beforeSwap', onSwap);\n\t\t\t\t\t\t}\n\t\t\t\t\t});\n\n\t\t\t\t\twindow.addEventListener('pagehide', closeES);\n\t\t\t\t\tdocument.addEventListener('visibilitychange', function() {\n\t\t\t\t\t\tif (document.visibilityState === 'hidden') {\n\t\t\t\t\t\t\tcloseES();\n\t\t\t\t\t\t} else {\n\t\t\t\t\t\t\topenES();\n\t\t\t\t\t\t\trefresh(['status', 'timeline']);\n\t\t\t\t\t\t}\n\t\t\t\t\t});\n\t\t\t\t\twindow.addEventListener('pageshow', function(e) {\n\t\t\t\t\t\topenES();\n\t\t\t\t\t\trefresh(['status', 'timeline']);\n\t\t\t\t\t});\n\t\t\t\t})();\n\t\t\t</script>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -1681,7 +1681,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 				var templ_7745c5c3_Var78 string
 				templ_7745c5c3_Var78, templ_7745c5c3_Err = templ.JoinStringErrs("/tasks/" + task.ID + "/edit/description")
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 602, Col: 57}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 623, Col: 57}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var78))
 				if templ_7745c5c3_Err != nil {
@@ -1694,7 +1694,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 				var templ_7745c5c3_Var79 string
 				templ_7745c5c3_Var79, templ_7745c5c3_Err = templ.JoinStringErrs(task.Description)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 606, Col: 110}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 627, Col: 110}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var79))
 				if templ_7745c5c3_Err != nil {
@@ -1717,7 +1717,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 					var templ_7745c5c3_Var80 string
 					templ_7745c5c3_Var80, templ_7745c5c3_Err = templ.JoinStringErrs(task.Description)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 612, Col: 50}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 633, Col: 50}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var80))
 					if templ_7745c5c3_Err != nil {
@@ -1752,7 +1752,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 				var templ_7745c5c3_Var81 string
 				templ_7745c5c3_Var81, templ_7745c5c3_Err = templ.JoinStringErrs(yamlStr)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 622, Col: 40}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 643, Col: 40}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var81))
 				if templ_7745c5c3_Err != nil {
@@ -1787,7 +1787,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 					var templ_7745c5c3_Var82 string
 					templ_7745c5c3_Var82, templ_7745c5c3_Err = templ.JoinStringErrs(role)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 633, Col: 36}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 654, Col: 36}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var82))
 					if templ_7745c5c3_Err != nil {
@@ -1800,7 +1800,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 					var templ_7745c5c3_Var83 string
 					templ_7745c5c3_Var83, templ_7745c5c3_Err = templ.JoinStringErrs(string(inst.Type))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 635, Col: 83}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 656, Col: 83}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var83))
 					if templ_7745c5c3_Err != nil {
@@ -1813,7 +1813,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 					var templ_7745c5c3_Var84 string
 					templ_7745c5c3_Var84, templ_7745c5c3_Err = templ.JoinStringErrs(inst.Consumer)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 636, Col: 83}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 657, Col: 83}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var84))
 					if templ_7745c5c3_Err != nil {
@@ -1831,7 +1831,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 						var templ_7745c5c3_Var85 string
 						templ_7745c5c3_Var85, templ_7745c5c3_Err = templ.JoinStringErrs(inst.Model)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 638, Col: 78}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 659, Col: 78}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var85))
 						if templ_7745c5c3_Err != nil {
@@ -1850,7 +1850,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 						var templ_7745c5c3_Var86 string
 						templ_7745c5c3_Var86, templ_7745c5c3_Err = templ.JoinStringErrs(inst.Name)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 641, Col: 76}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 662, Col: 76}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var86))
 						if templ_7745c5c3_Err != nil {
@@ -1879,7 +1879,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 						var templ_7745c5c3_Var87 string
 						templ_7745c5c3_Var87, templ_7745c5c3_Err = templ.JoinStringErrs(inst.Message)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 648, Col: 62}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 669, Col: 62}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var87))
 						if templ_7745c5c3_Err != nil {
@@ -2012,7 +2012,7 @@ func detailTabLink(taskID, tab, label, activeTab string) templ.Component {
 		var templ_7745c5c3_Var91 templ.SafeURL
 		templ_7745c5c3_Var91, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + taskID + "?tab=" + tab))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 709, Col: 58}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 730, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var91))
 		if templ_7745c5c3_Err != nil {
@@ -2025,7 +2025,7 @@ func detailTabLink(taskID, tab, label, activeTab string) templ.Component {
 		var templ_7745c5c3_Var92 string
 		templ_7745c5c3_Var92, templ_7745c5c3_Err = templ.JoinStringErrs("/tasks/" + taskID + "?tab=" + tab)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 710, Col: 45}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 731, Col: 45}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var92))
 		if templ_7745c5c3_Err != nil {
@@ -2038,7 +2038,7 @@ func detailTabLink(taskID, tab, label, activeTab string) templ.Component {
 		var templ_7745c5c3_Var93 string
 		templ_7745c5c3_Var93, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 714, Col: 9}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 735, Col: 9}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var93))
 		if templ_7745c5c3_Err != nil {
@@ -2098,7 +2098,7 @@ func detailMoreItem(taskID, tab, label, activeTab string) templ.Component {
 		var templ_7745c5c3_Var97 templ.SafeURL
 		templ_7745c5c3_Var97, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + taskID + "?tab=" + tab))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 720, Col: 58}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 741, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var97))
 		if templ_7745c5c3_Err != nil {
@@ -2111,7 +2111,7 @@ func detailMoreItem(taskID, tab, label, activeTab string) templ.Component {
 		var templ_7745c5c3_Var98 string
 		templ_7745c5c3_Var98, templ_7745c5c3_Err = templ.JoinStringErrs("/tasks/" + taskID + "?tab=" + tab)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 721, Col: 45}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 742, Col: 45}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var98))
 		if templ_7745c5c3_Err != nil {
@@ -2124,7 +2124,7 @@ func detailMoreItem(taskID, tab, label, activeTab string) templ.Component {
 		var templ_7745c5c3_Var99 string
 		templ_7745c5c3_Var99, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 725, Col: 9}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 746, Col: 9}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var99))
 		if templ_7745c5c3_Err != nil {
@@ -2204,7 +2204,7 @@ func TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.St
 		var templ_7745c5c3_Var103 templ.SafeURL
 		templ_7745c5c3_Var103, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + task.ID + "?tab=" + subTab))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 743, Col: 65}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 764, Col: 65}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var103))
 		if templ_7745c5c3_Err != nil {
@@ -2217,7 +2217,7 @@ func TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.St
 		var templ_7745c5c3_Var104 string
 		templ_7745c5c3_Var104, templ_7745c5c3_Err = templ.JoinStringErrs("/tasks/" + task.ID + "?tab=" + subTab)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 744, Col: 52}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 765, Col: 52}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var104))
 		if templ_7745c5c3_Err != nil {
@@ -2230,7 +2230,7 @@ func TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.St
 		var templ_7745c5c3_Var105 string
 		templ_7745c5c3_Var105, templ_7745c5c3_Err = templ.JoinStringErrs(subLabel)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 748, Col: 15}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 769, Col: 15}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var105))
 		if templ_7745c5c3_Err != nil {
