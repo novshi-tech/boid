@@ -48,6 +48,7 @@
 ### アーキテクチャ
 
 - [概要](architecture/overview.md) — プロセス構成、レイヤと依存方向、主要コンポーネント、 1 アクションのデータの流れ
+- [永続化レイヤ](architecture/persistence.md) — SQLite のテーブル一覧、 主要カラム、 JSON カラムの中身、 マイグレーションの扱い
 
 ### Contributing
 

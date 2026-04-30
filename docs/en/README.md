@@ -48,6 +48,7 @@ Concept-oriented how-to.
 ### Architecture
 
 - [Overview](architecture/overview.md) — process layout, layering, the major components, and one action traced end to end
+- [Persistence layer](architecture/persistence.md) — SQLite tables, key columns, JSON column contents, and migration conventions
 
 ### Contributing
 
