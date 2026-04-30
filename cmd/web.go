@@ -53,11 +53,19 @@ var webSetURLCmd = &cobra.Command{
 	RunE:        runWebSetURL,
 }
 
+var webSetAddrCmd = &cobra.Command{
+	Use:         "set-addr <addr>",
+	Short:       "Set the HTTP listen address in config.yaml",
+	Args:        cobra.ExactArgs(1),
+	Annotations: map[string]string{annotationSkipAutostart: "skip"},
+	RunE:        runWebSetAddr,
+}
+
 var webPairLabel string
 
 func init() {
 	webPairCmd.Flags().StringVar(&webPairLabel, "label", "", "Label for the device")
-	webCmd.AddCommand(webPairCmd, webDevicesCmd, webRevokeCmd, webRevokeAllCmd, webSetURLCmd)
+	webCmd.AddCommand(webPairCmd, webDevicesCmd, webRevokeCmd, webRevokeAllCmd, webSetURLCmd, webSetAddrCmd)
 	rootCmd.AddCommand(webCmd)
 }
 
@@ -185,5 +193,50 @@ func runWebSetURL(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "web.public_url = %s\n", url)
+	return nil
+}
+
+func runWebSetAddr(cmd *cobra.Command, args []string) error {
+	addr := args[0]
+
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return fmt.Errorf("get config dir: %w", err)
+	}
+	configPath := filepath.Join(configDir, "boid", "config.yaml")
+
+	var root map[string]any
+	data, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read config: %w", err)
+	}
+	if err == nil {
+		if unmarshalErr := yaml.Unmarshal(data, &root); unmarshalErr != nil {
+			return fmt.Errorf("parse config: %w", unmarshalErr)
+		}
+	}
+	if root == nil {
+		root = make(map[string]any)
+	}
+
+	web, _ := root["web"].(map[string]any)
+	if web == nil {
+		web = make(map[string]any)
+	}
+	web["http_addr"] = addr
+	root["web"] = web
+
+	out, err := yaml.Marshal(root)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+	if err := os.WriteFile(configPath, out, 0o600); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "web.http_addr = %s\n", addr)
 	return nil
 }

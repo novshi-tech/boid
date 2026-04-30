@@ -31,6 +31,7 @@ type StateMachineConfig struct {
 // WebConfig holds web UI settings.
 type WebConfig struct {
 	PublicURL string `yaml:"public_url"`
+	HTTPAddr  string `yaml:"http_addr"`
 }
 
 // DefaultConfig returns the default boid configuration.
@@ -92,6 +93,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		} `yaml:"state_machine"`
 		Web struct {
 			PublicURL string `yaml:"public_url"`
+			HTTPAddr  string `yaml:"http_addr"`
 		} `yaml:"web"`
 	}
 	if err := value.Decode(&raw); err != nil {
@@ -124,6 +126,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	}
 
 	c.Web.PublicURL = raw.Web.PublicURL
+	c.Web.HTTPAddr = raw.Web.HTTPAddr
 
 	return nil
 }

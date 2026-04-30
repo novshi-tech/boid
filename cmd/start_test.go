@@ -23,8 +23,12 @@ func TestBuildStartConfig_UsesDefaults(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "boid.sock")
 	t.Setenv("XDG_DATA_HOME", dataHome)
 	t.Setenv("BOID_SOCKET", socketPath)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	cfg := buildStartConfig(startConfigOptions{})
+	cfg, err := buildStartConfig(startConfigOptions{})
+	if err != nil {
+		t.Fatalf("buildStartConfig() error = %v", err)
+	}
 
 	wantDataDir := filepath.Join(dataHome, "boid")
 	if cfg.DBPath != filepath.Join(wantDataDir, "boid.db") {
@@ -48,22 +52,23 @@ func TestBuildStartConfig_UsesDefaults(t *testing.T) {
 }
 
 func TestBuildStartConfig_UsesOverrides(t *testing.T) {
-	cfg := buildStartConfig(startConfigOptions{
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cfg, err := buildStartConfig(startConfigOptions{
 		DBPath:      "/tmp/custom.db",
 		SocketPath:  "/tmp/custom.sock",
-		HTTPAddr:    "127.0.0.1:18080",
 		KitsDir:     "/tmp/kits",
 		KeyFilePath: "/tmp/boid.key",
 	})
+	if err != nil {
+		t.Fatalf("buildStartConfig() error = %v", err)
+	}
 
 	if cfg.DBPath != "/tmp/custom.db" {
 		t.Fatalf("DBPath = %q, want %q", cfg.DBPath, "/tmp/custom.db")
 	}
 	if cfg.SocketPath != "/tmp/custom.sock" {
 		t.Fatalf("SocketPath = %q, want %q", cfg.SocketPath, "/tmp/custom.sock")
-	}
-	if cfg.HTTPAddr != "127.0.0.1:18080" {
-		t.Fatalf("HTTPAddr = %q, want %q", cfg.HTTPAddr, "127.0.0.1:18080")
 	}
 	if cfg.KitsDir != "/tmp/kits" {
 		t.Fatalf("KitsDir = %q, want %q", cfg.KitsDir, "/tmp/kits")

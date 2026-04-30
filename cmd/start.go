@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/daemon"
 	"github.com/novshi-tech/boid/internal/server"
 	"github.com/spf13/cobra"
@@ -30,7 +31,6 @@ var startCmd = &cobra.Command{
 var (
 	startDBPath      string
 	startSocketPath  string
-	startHTTPAddr    string
 	startKitsDir     string
 	startKeyFilePath string
 )
@@ -39,7 +39,6 @@ func init() {
 	startCmd.Annotations = map[string]string{annotationSkipAutostart: "skip"}
 	startCmd.Flags().StringVar(&startDBPath, "db-path", "", "Path to the SQLite database")
 	startCmd.Flags().StringVar(&startSocketPath, "socket-path", "", "Path to the UNIX socket")
-	startCmd.Flags().StringVar(&startHTTPAddr, "http-addr", "", "HTTP listen address")
 	startCmd.Flags().StringVar(&startKitsDir, "kits-dir", "", "Base directory for installed kits")
 	startCmd.Flags().StringVar(&startKeyFilePath, "key-file-path", "", "Path to the secret encryption key file")
 	rootCmd.AddCommand(startCmd)
@@ -102,16 +101,14 @@ func defaultKeyFilePath() string {
 type startConfigOptions struct {
 	DBPath      string
 	SocketPath  string
-	HTTPAddr    string
 	KitsDir     string
 	KeyFilePath string
 }
 
-func buildStartConfig(opts startConfigOptions) server.Config {
+func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 	cfg := server.Config{
 		DBPath:         opts.DBPath,
 		SocketPath:     opts.SocketPath,
-		HTTPAddr:       opts.HTTPAddr,
 		KitsDir:        opts.KitsDir,
 		KeyFilePath:    opts.KeyFilePath,
 		AllowedDomains: defaultAllowedDomains(),
@@ -123,9 +120,6 @@ func buildStartConfig(opts startConfigOptions) server.Config {
 	if cfg.SocketPath == "" {
 		cfg.SocketPath = client.DefaultSocketPath()
 	}
-	if cfg.HTTPAddr == "" {
-		cfg.HTTPAddr = defaultStartHTTPAddr
-	}
 	if cfg.KitsDir == "" {
 		cfg.KitsDir = defaultKitsDir()
 	}
@@ -133,17 +127,28 @@ func buildStartConfig(opts startConfigOptions) server.Config {
 		cfg.KeyFilePath = defaultKeyFilePath()
 	}
 
-	return cfg
+	appCfg, err := config.Load()
+	if err != nil {
+		return server.Config{}, fmt.Errorf("load config: %w", err)
+	}
+	cfg.HTTPAddr = appCfg.Web.HTTPAddr
+	if cfg.HTTPAddr == "" {
+		cfg.HTTPAddr = defaultStartHTTPAddr
+	}
+
+	return cfg, nil
 }
 
 func runStart(cmd *cobra.Command, args []string) error {
-	cfg := buildStartConfig(startConfigOptions{
+	cfg, err := buildStartConfig(startConfigOptions{
 		DBPath:      startDBPath,
 		SocketPath:  startSocketPath,
-		HTTPAddr:    startHTTPAddr,
 		KitsDir:     startKitsDir,
 		KeyFilePath: startKeyFilePath,
 	})
+	if err != nil {
+		return err
+	}
 
 	if daemon.IsChild() {
 		return runDaemonChild(cfg)
