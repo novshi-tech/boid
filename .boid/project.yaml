@@ -49,11 +49,11 @@ task_behaviors:
              (CI が無いリポは即抜ける) 失敗時は `gh run view --log-failed` でログ取得
           5. 結果を verification finding に書き込む:
              成功時:
-               echo '{"verification":{"findings":[{"status":"resolved","message":"CI passed: '"$PR_URL"'"}]}}' \
-                 | boid task update <task_id> --payload-file -
+               echo '{"payload_patch":{"verification":{"findings":[{"status":"resolved","message":"CI passed: '"$PR_URL"'"}]}}}' \
+                 > ~/.boid/output/payload_patch.json
              失敗時 (status を open に、 message に失敗 job のログ抜粋):
-               echo '{"verification":{"findings":[{"status":"open","message":"CI failed: <job names>\n<tail>"}]}}' \
-                 | boid task update <task_id> --payload-file -
+               echo '{"payload_patch":{"verification":{"findings":[{"status":"open","message":"CI failed: <job names>\n<tail>"}]}}}' \
+                 > ~/.boid/output/payload_patch.json
       review:
         type: verification
         consumer: claude-code
@@ -81,11 +81,11 @@ task_behaviors:
           6. レビュー結果を verification finding に書き込む
              (findings 配列は role 単位で「全置き換え」される。前回の指摘も今回判定し直した状態を含めて全件出力すること):
              問題なし:
-               echo '{"verification":{"findings":[{"status":"resolved","message":"review passed"}]}}' \
-                 | boid task update <task_id> --payload-file -
+               echo '{"payload_patch":{"verification":{"findings":[{"status":"resolved","message":"review passed"}]}}}' \
+                 > ~/.boid/output/payload_patch.json
              要修正 (rework に戻したい):
-               echo '{"verification":{"findings":[{"status":"open","severity":"normal","message":"<指摘内容を箇条書きで>"}]}}' \
-                 | boid task update <task_id> --payload-file -
+               echo '{"payload_patch":{"verification":{"findings":[{"status":"open","severity":"normal","message":"<指摘内容を箇条書きで>"}]}}}' \
+                 > ~/.boid/output/payload_patch.json
              致命的 (人間判断が必要 / ループ回避):
                severity を "fatal" にして abort させる。
 
@@ -105,11 +105,24 @@ task_behaviors:
           rework 開始時に `git log <base>..HEAD --oneline` で「base からの差分 commit」 を確認し、
           finding を解消するための新規 commit が作れない / 作らないまま終了するなら、
           fatal finding を書き込んで早期 abort させること:
-            echo '{"verification":{"findings":[{"status":"open","severity":"fatal","message":"rework で新規 commit がない"}]}}' \
-              | boid task update <task_id> --payload-file -
+            echo '{"payload_patch":{"verification":{"findings":[{"status":"open","severity":"fatal","message":"rework で新規 commit がない"}]}}}' \
+              > ~/.boid/output/payload_patch.json
 
-          修正完了後の push / PR / CI wait / finding 書き込み手順は main と同じ。
-          PR は既存があれば再作成不要 (gh pr list でチェック)。
+          修正完了後:
+          1. `git add` + `git commit`
+          2. `git push -u origin HEAD` で current branch を origin に push
+          3. 既存 PR の有無を確認:
+             `PR_URL=$(gh pr list --head "$(git branch --show-current)" --json url --jq '.[0].url // ""')`
+             空なら `gh pr create --title "<task title>" --body "task: <task_id>\n\n<summary>"` で作成
+          4. `gh pr checks --watch --fail-fast` で CI 完了まで待機
+             (CI が無いリポは即抜ける) 失敗時は `gh run view --log-failed` でログ取得
+          5. 結果を verification finding に書き込む:
+             成功時:
+               echo '{"payload_patch":{"verification":{"findings":[{"status":"resolved","message":"CI passed: '"$PR_URL"'"}]}}}' \
+                 > ~/.boid/output/payload_patch.json
+             失敗時 (status を open に、 message に失敗 job のログ抜粋):
+               echo '{"payload_patch":{"verification":{"findings":[{"status":"open","message":"CI failed: <job names>\n<tail>"}]}}}' \
+                 > ~/.boid/output/payload_patch.json
   plan:
     name: Plan
     readonly: true
