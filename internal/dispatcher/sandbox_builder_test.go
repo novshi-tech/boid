@@ -549,6 +549,137 @@ func TestAdditionalBindingMounts_OptionalWithRWMode(t *testing.T) {
 	}
 }
 
+// Target を明示し、 展開後 Source と等値になった binding は self-mount を避ける
+// ため skip される。 主用途: ${PROJECT_WORKDIR}/x → ${WORKTREE}/x が worktree=false
+// task で同じパスに潰れるケース。
+func TestAdditionalBindingMounts_SkipExplicitSelfMount(t *testing.T) {
+	bindings := []orchestrator.BindMount{
+		// 明示 target == source → skip
+		{Source: "/proj/global.json", Target: "/proj/global.json", IsFile: true},
+		// target 省略 (= source 同値だが explicit ではない) → 従来通り bind
+		{Source: "/var/run/some.sock"},
+		// 明示 target != source → bind
+		{Source: "/proj/global.json", Target: "/wt/global.json", IsFile: true},
+	}
+	mounts := additionalBindingMounts(bindings)
+	if len(mounts) != 2 {
+		t.Fatalf("expected 2 mounts (self-mount skipped), got %d", len(mounts))
+	}
+	if mounts[0].Target != "/var/run/some.sock" {
+		t.Errorf("mounts[0].Target = %q, want /var/run/some.sock", mounts[0].Target)
+	}
+	if mounts[1].Source != "/proj/global.json" || mounts[1].Target != "/wt/global.json" {
+		t.Errorf("mounts[1] = %+v, want source=/proj/global.json target=/wt/global.json", mounts[1])
+	}
+}
+
+// expandWorktreeBindings は dispatch 時に ${WORKTREE} と ${PROJECT_WORKDIR} を
+// per-job 値で展開する。
+func TestExpandWorktreeBindings(t *testing.T) {
+	const worktree = "/runtime/worktrees/proj/task1"
+	const projectDir = "/host/proj"
+
+	cases := []struct {
+		name       string
+		input      orchestrator.BindMount
+		wantSource string
+		wantTarget string
+	}{
+		{
+			name:       "WORKTREE と PROJECT_WORKDIR を別 path に展開",
+			input:      orchestrator.BindMount{Source: "${PROJECT_WORKDIR}/global.json", Target: "${WORKTREE}/global.json", IsFile: true},
+			wantSource: "/host/proj/global.json",
+			wantTarget: "/runtime/worktrees/proj/task1/global.json",
+		},
+		{
+			name:       "token を含まない binding は据え置き",
+			input:      orchestrator.BindMount{Source: "/var/run/sock"},
+			wantSource: "/var/run/sock",
+			wantTarget: "",
+		},
+		{
+			name:       "未知の token は literal 維持 (debug 用)",
+			input:      orchestrator.BindMount{Source: "${UNKNOWN}/x"},
+			wantSource: "${UNKNOWN}/x",
+			wantTarget: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := expandWorktreeBindings([]orchestrator.BindMount{tc.input}, worktree, projectDir)
+			if len(got) != 1 {
+				t.Fatalf("len(got) = %d, want 1", len(got))
+			}
+			if got[0].Source != tc.wantSource {
+				t.Errorf("Source = %q, want %q", got[0].Source, tc.wantSource)
+			}
+			if got[0].Target != tc.wantTarget {
+				t.Errorf("Target = %q, want %q", got[0].Target, tc.wantTarget)
+			}
+		})
+	}
+}
+
+// worktree=true と worktree=false で同じ project.yaml 宣言が:
+// - worktree=true: worktree path に bind される
+// - worktree=false: skip される (self-mount 回避)
+// という End-to-End 挙動を BuildSandboxSpec 越しに検証する。
+func TestBuildSandboxSpec_WorktreeBindingExpansion(t *testing.T) {
+	const projectDir = "/host/proj"
+	const worktreeDir = "/runtime/worktrees/proj/task1"
+	binding := orchestrator.BindMount{
+		Source: "${PROJECT_WORKDIR}/global.json",
+		Target: "${WORKTREE}/global.json",
+		IsFile: true,
+	}
+
+	// worktree=true: src と tgt が別 path に展開され bind される
+	specWT := &orchestrator.JobSpec{
+		Visibility: orchestrator.Visibility{
+			ProjectDir:         projectDir,
+			UseWorktree:        true,
+			AdditionalBindings: []orchestrator.BindMount{binding},
+		},
+	}
+	rtWT := SandboxRuntimeInfo{WorktreeDir: worktreeDir}
+	resWT, err := BuildSandboxSpec(specWT, rtWT)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec(worktree=true): %v", err)
+	}
+	var found bool
+	for _, m := range resWT.Mounts {
+		if m.Source == "/host/proj/global.json" && m.Target == "/runtime/worktrees/proj/task1/global.json" {
+			found = true
+			if !m.IsFile {
+				t.Error("expected IsFile=true for global.json bind")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("worktree=true: expected bind from %s to %s, got mounts:\n%+v",
+			"/host/proj/global.json", "/runtime/worktrees/proj/task1/global.json", resWT.Mounts)
+	}
+
+	// worktree=false: src と tgt が同じ path に潰れ、 explicit-self-mount として skip される
+	specNoWT := &orchestrator.JobSpec{
+		Visibility: orchestrator.Visibility{
+			ProjectDir:         projectDir,
+			UseWorktree:        false,
+			AdditionalBindings: []orchestrator.BindMount{binding},
+		},
+	}
+	resNoWT, err := BuildSandboxSpec(specNoWT, SandboxRuntimeInfo{})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec(worktree=false): %v", err)
+	}
+	for _, m := range resNoWT.Mounts {
+		if m.Source == "/host/proj/global.json" && m.IsFile {
+			t.Errorf("worktree=false: self-mount should be skipped, got mount %+v", m)
+		}
+	}
+}
+
 // contextFiles must materialize payload.yaml / payload.json for every hook
 // that carries PrimaryInput, regardless of the Instruction.Interactive flag.
 // Regression: once the condition was `inst.Interactive && len(PrimaryInput)>0`

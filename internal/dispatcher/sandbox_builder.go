@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -66,6 +67,11 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 
 	homeDir := hostHomeDir()
 	workDir := resolveWorkDir(spec, rt)
+	expandedBindings := expandWorktreeBindings(
+		spec.Visibility.AdditionalBindings,
+		workDir,
+		spec.Visibility.ProjectDir,
+	)
 
 	env := cloneStringMap(spec.Env)
 	if env == nil {
@@ -91,7 +97,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	}
 	env["HOME"] = homeDir
 	env["TERM"] = "xterm-256color"
-	env["PATH"] = buildPATH(spec.Visibility.AdditionalBindings, rt.BoidBinary)
+	env["PATH"] = buildPATH(expandedBindings, rt.BoidBinary)
 	env["BOID_HOST_IP"] = hostGatewayIP
 	if rt.ProxyPort > 0 {
 		applyProxyEnv(env, rt.ProxyPort)
@@ -138,7 +144,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	}
 
 	// Additional bindings (kit CLIs, exec-provided pass-throughs).
-	mounts = append(mounts, additionalBindingMounts(spec.Visibility.AdditionalBindings)...)
+	mounts = append(mounts, additionalBindingMounts(expandedBindings)...)
 
 	// Kit root bind-mounts: each kit's root directory is bound at its original
 	// host path so hook/gate scripts can source sibling helpers via relative paths.
@@ -379,9 +385,17 @@ func additionalBindingMounts(bindings []orchestrator.BindMount) []sandbox.Mount 
 	}
 	out := make([]sandbox.Mount, 0, len(bindings))
 	for _, bm := range bindings {
+		explicitTarget := bm.Target != ""
 		target := bm.Target
-		if target == "" {
+		if !explicitTarget {
 			target = bm.Source
+		}
+		// Target が明示され、 展開後 source と等値になった binding は skip。
+		// worktree=false の task で ${PROJECT_WORKDIR}/x → ${WORKTREE}/x が同じ
+		// パスに潰れるケースで、 既に projectVisibilityMounts が見せている path
+		// に対する冗長な self-mount を避けるため。
+		if explicitTarget && filepath.Clean(bm.Source) == filepath.Clean(target) {
+			continue
 		}
 		m := sandbox.Mount{
 			Source:     bm.Source,
@@ -395,6 +409,38 @@ func additionalBindingMounts(bindings []orchestrator.BindMount) []sandbox.Mount 
 			m.Guard = dirGuardExpr(bm.Source)
 		}
 		out = append(out, m)
+	}
+	return out
+}
+
+// expandWorktreeBindings は ${WORKTREE} と ${PROJECT_WORKDIR} を per-job 値で
+// 展開する。 spec_loader 側の interpolateBindMounts はこの 2 トークンを literal
+// で残すので、 ここで初めて値が埋まる。 他の env 変数は meta load 時に展開済み。
+func expandWorktreeBindings(bindings []orchestrator.BindMount, worktree, projectWorkDir string) []orchestrator.BindMount {
+	if len(bindings) == 0 {
+		return bindings
+	}
+	expand := func(s string) string {
+		if s == "" || !strings.Contains(s, "${") {
+			return s
+		}
+		return os.Expand(s, func(name string) string {
+			switch name {
+			case "WORKTREE":
+				return worktree
+			case "PROJECT_WORKDIR":
+				return projectWorkDir
+			}
+			// それ以外は spec_loader で処理済み。 万一残っていたら literal を維持
+			// して binding ミスを debug できるようにする。
+			return "${" + name + "}"
+		})
+	}
+	out := make([]orchestrator.BindMount, len(bindings))
+	for i, bm := range bindings {
+		out[i] = bm
+		out[i].Source = expand(bm.Source)
+		out[i].Target = expand(bm.Target)
 	}
 	return out
 }
