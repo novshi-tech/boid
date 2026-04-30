@@ -39,6 +39,7 @@ Concept-oriented how-to.
 - [Handler script protocol](reference/handler-contract.md) — the hook / gate I/O contract (stdin, env vars, `payload_patch.json`, exit codes, ...)
 - [Payload trait reference](reference/traits.md) — the shape of `artifact` / `tasks` / `verification` / `lifecycle`, what the state machine reads, and the merge modes
 - [CLI reference](reference/cli.md) — index of every subcommand grouped by role (per-flag detail lives in `boid <subcommand> --help`)
+- [HTTP API reference](reference/http-api.md) — the `/api/*` endpoints the daemon exposes over the UNIX socket and HTTP listener, plus SSE and error format
 
 ### Kit authoring
 
