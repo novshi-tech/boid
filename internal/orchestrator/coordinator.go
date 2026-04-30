@@ -320,6 +320,17 @@ func (d *Coordinator) dispatchParallel(
 	if firstErr != nil {
 		return nil, firstErr
 	}
+	// Aggregate exit codes: a hook that exited non-zero must surface as an
+	// error so DispatchAndAdvance early-returns before lifecycle.executed=true
+	// is derived. Without this, a failed hook would be treated as a successful
+	// run and a readonly task could auto-advance to done. Mirrors the
+	// dispatchSequential contract — the partial results are returned so the
+	// caller can persist FiredEvents for every hook that ran (incl. failures).
+	for _, hr := range results {
+		if hr.ExitCode != 0 {
+			return results, fmt.Errorf("hook %q failed: exit code %d", hr.ID, hr.ExitCode)
+		}
+	}
 	return results, nil
 }
 
