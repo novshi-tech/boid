@@ -174,6 +174,30 @@ func TestReadProjectMeta_EnvInterpolation(t *testing.T) {
 	}
 }
 
+// ${WORKTREE} と ${PROJECT_WORKDIR} は dispatch 時に per-job で展開されるため、
+// meta load 時には literal で温存されることを保証する。
+func TestReadProjectMeta_DeferredWorktreeTokens(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	_ = os.MkdirAll(boidDir, 0o755)
+	yaml := "id: test-proj\nname: Test Project\nadditional_bindings:\n  - source: ${PROJECT_WORKDIR}/global.json\n    target: ${WORKTREE}/global.json\n    is_file: true\n"
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
+	// daemon env に PROJECT_WORKDIR / WORKTREE が混入しても影響されないことを確認
+	t.Setenv("PROJECT_WORKDIR", "/should-not-be-used")
+	t.Setenv("WORKTREE", "/should-not-be-used")
+
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadProjectMeta: %v", err)
+	}
+	if got := meta.AdditionalBindings[0].Source; got != "${PROJECT_WORKDIR}/global.json" {
+		t.Fatalf("Source must remain literal, got %q", got)
+	}
+	if got := meta.AdditionalBindings[0].Target; got != "${WORKTREE}/global.json" {
+		t.Fatalf("Target must remain literal, got %q", got)
+	}
+}
+
 func TestReadProjectLocalMeta(t *testing.T) {
 	t.Run("missing file", func(t *testing.T) {
 		meta, err := projectspec.ReadProjectLocalMeta(t.TempDir())

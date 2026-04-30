@@ -709,9 +709,21 @@ func interpolateEnv(s string) string {
 
 func interpolateBindMounts(mounts []BindMount) {
 	for i := range mounts {
-		mounts[i].Source = interpolateEnv(mounts[i].Source)
-		mounts[i].Target = interpolateEnv(mounts[i].Target)
+		mounts[i].Source = interpolateBindMountField(mounts[i].Source)
+		mounts[i].Target = interpolateBindMountField(mounts[i].Target)
 	}
+}
+
+// interpolateBindMountField は通常の env 展開を行いつつ、
+// ${WORKTREE} と ${PROJECT_WORKDIR} は dispatch 時にタスク毎に解決するため
+// literal のまま温存する。
+func interpolateBindMountField(s string) string {
+	return os.Expand(s, func(name string) string {
+		if name == "WORKTREE" || name == "PROJECT_WORKDIR" {
+			return "${" + name + "}"
+		}
+		return os.Getenv(name)
+	})
 }
 
 func interpolateEnvMap(m map[string]string) {

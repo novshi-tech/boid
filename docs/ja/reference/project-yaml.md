@@ -128,6 +128,11 @@ additional_bindings:
   - source: ${HOME}/.netrc
     is_file: true
     optional: true
+  # gitignored だが worktree でも参照させたいファイル (例: .NET の global.json)
+  - source: ${PROJECT_WORKDIR}/global.json
+    target: ${WORKTREE}/global.json
+    is_file: true
+    optional: true
 ```
 
 | キー | 型 | 既定 | 役割 |
@@ -137,6 +142,22 @@ additional_bindings:
 | `mode` | string | `""` (ro) | `rw` で読み書き可。空文字列なら読み取り専用 |
 | `is_file` | bool | `false` | source がファイルの場合 `true` |
 | `optional` | bool | `false` | host に source が無くてもエラーにせずスキップする |
+
+#### 動的トークン: `${WORKTREE}` / `${PROJECT_WORKDIR}`
+
+`source` / `target` では通常の環境変数 (`${HOME}` 等) に加え、 boid が dispatch 時に解決する 2 つの動的トークンが使えます:
+
+- `${PROJECT_WORKDIR}` — host 側のプロジェクトディレクトリ (例: `/home/you/src/your-project`)
+- `${WORKTREE}` — タスクが実行されるサンドボックスの cwd。 `worktree: true` の task では worktree path に、 `worktree: false` の task では `${PROJECT_WORKDIR}` と同じ値に解決される
+
+主な用途は、 `.gitignore` してあるが worktree からも参照させたいファイル (`.NET` の `global.json`、 `.env.local`、 `appsettings.Development.json` など) をホストの project workdir から worktree に bind することです。
+
+`target` を **明示** し、 展開後 `source` と等値になった binding は self-mount を避けるため自動的に skip されます。 上の例の binding は:
+
+- `worktree: true` の task では `/host/proj/global.json` → `/runtime/.../<task>/global.json` に bind され、
+- `worktree: false` の task では同一 path に潰れて skip される (project ディレクトリは既に projectVisibilityMounts でサンドボックスに見えているため不要)
+
+ので、 同じ宣言で worktree モードに依存せず動作します。
 
 ### Instruction
 
