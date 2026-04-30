@@ -20,9 +20,9 @@
 順を追って手を動かすチュートリアル。
 
 - [1. インストール](getting-started/01-install.md)
-- 2. 最初のタスク — *予定*
-- 3. プロジェクトと拡張パッケージ (kit) — *予定*
-- 4. フィードバックループ — *予定*
+- [2. 最初のタスク](getting-started/02-first-task.md)
+- [3. プロジェクトと拡張パッケージ (kit)](getting-started/03-projects-and-kits.md)
+- [4. GitHub PR ベースの開発ワークフロー](getting-started/04-dev-workflow.md)
 
 ### ガイド
 

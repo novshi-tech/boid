@@ -18,7 +18,7 @@
 `.boid/project.yaml` を持つディレクトリのこと。 `project.yaml` には次を書きます。
 
 - `id` (この `boid` 内でプロジェクトを一意に識別する文字列) と `name` (表示名)
-- 1 つ以上の **task_behaviors** — タスクの behavior ラベルごとに、進め方 (one-shot か feedback-loop か) と使う拡張パッケージ (kit) のリストを束ねたもの
+- 1 つ以上の **task_behaviors** — タスクの behavior ラベルごとに、サンドボックスを read-only にするか worktree を切るかなどの設定と、使う拡張パッケージ (kit) のリストを束ねたもの
 - (任意) 各 kit に渡す設定値
 
 プロジェクトは `boid project add <path>` で `boid` に登録します。プロジェクトは何個でも登録でき、各タスクはいずれか 1 つに属します。
@@ -27,10 +27,10 @@
 
 プロジェクトの `task_behaviors` マップに並ぶ、名前付きの「タスクの種類」を表すエントリ。タスク作成時に behavior 名 (例: `dev`、 `plan`) を選ぶと、 `boid` はその behavior に紐付いた拡張パッケージを読み込み、状態遷移に応じてその中のスクリプトを発火します。
 
-各 behavior は **進め方 (transition モード)** を持ちます。代表例:
+`boid` の状態機械は behavior に関わらず 1 種類だけです。よく耳にする 「one-shot」「feedback-loop」 は別々の状態機械を切り替えているのではなく、 behavior に紐付ける handler の組み合わせがどう作用するかを表す呼び方です。
 
-- **one-shot** — 1 回実行して検証し、問題なければ完了。短い単発の作業向け
-- **feedback-loop** — 実行→検証→指摘 (finding) があれば修正、を解消するまで繰り返す。 PR レビューや CI を伴う変更向け
+- **one-shot** 的な構成 — `verifying` で動く検証 handler が無い、または finding を書かない構成。タスクは `executing → verifying → done` を 1 回通って終わります。短い単発の作業向け
+- **feedback-loop** 的な構成 — `verifying` で動く検証 handler が finding を書きうる構成。 finding が書かれれば `reworking` に戻り、解消するまで修正サイクルを回します。 PR レビューや CI を伴う変更向け
 
 ## payload と trait
 

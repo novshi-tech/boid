@@ -18,7 +18,7 @@ Tasks are created with `boid task create` and observed with `boid task list`, `b
 A directory that contains a `.boid/project.yaml` file. The project file declares:
 
 - An `id` (the unique identifier `boid` uses for the project) and a `name` (display name).
-- One or more **task_behaviors** — for each behavior label, the way of progressing (one-shot or feedback-loop) and the list of extension packages (kits) to load.
+- One or more **task_behaviors** — for each behavior label, settings like whether the sandbox should be read-only or run inside a git worktree, and the list of extension packages (kits) to load.
 - Optional configuration values passed through to each kit.
 
 You register a project with `boid project add <path>`. Any number of projects can coexist; each task belongs to exactly one of them.
@@ -27,10 +27,10 @@ You register a project with `boid project add <path>`. Any number of projects ca
 
 A named entry in the project's `task_behaviors` map representing a kind of task. When you create a task and pick a behavior name (e.g. `dev`, `plan`), `boid` loads the extension packages bound to that behavior and fires their scripts as the task changes state.
 
-Each behavior has a **way of progressing** (its `transition` mode). The two common ones:
+`boid` runs a single state machine regardless of behavior. Phrases like "one-shot" and "feedback-loop" are not two different machines; they describe how the handlers wired to a behavior interact with that single machine.
 
-- **one-shot** — execute once, verify, then complete. For short, one-off jobs.
-- **feedback-loop** — execute, verify, fix any findings, repeat until everything is resolved. For changes that go through PR review or CI.
+- **One-shot-style** — no verifying-state handler, or one that never writes findings. The task passes through `executing → verifying → done` once. Suited to short, one-off jobs.
+- **Feedback-loop-style** — a verifying-state handler that may write findings. When it does, the task drops into `reworking` and a rework-style handler keeps cycling until every finding is resolved. Suited to changes that go through PR review or CI.
 
 ## Payload and traits
 

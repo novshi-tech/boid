@@ -108,12 +108,12 @@ This guards against runaway rework loops. The aborted task carries `code=rework_
 
 ## Mode of operation: one-shot vs feedback-loop
 
-The `transition` field on a behavior selects how aggressively rework is used:
+As stated earlier, `boid` runs a single state machine that does not change with the behavior. "One-shot" and "feedback-loop" are not two different machines — they are shorthand for how the handlers wired to a given behavior end up interacting with that single machine.
 
-- **one-shot** — runs `executing → verifying → done`. If the verifier writes findings, the task returns to `reworking` once and tries again. Suitable for "do this thing".
-- **feedback-loop** — same machine, but expected to cycle through `reworking ↔ verifying` multiple times. Suitable for code changes that go through PR review and CI.
+- **One-shot-style configuration** — no verifying-state handler, or one that never writes findings. The task passes through `executing → verifying → done` once.
+- **Feedback-loop-style configuration** — a verifying-state handler that can write findings. As soon as one is written, the task drops back into `reworking`, and a rework-state handler iterates until every finding has been resolved.
 
-The state machine itself is identical; the difference is which kits and handlers each behavior wires up.
+The difference comes entirely from **which handlers are wired into the behavior** — there is no `transition` configuration field to flip.
 
 ## Reading from the CLI
 

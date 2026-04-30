@@ -108,12 +108,12 @@ state_machine:
 
 ## 動作モード: one-shot と feedback-loop
 
-behavior の `transition` フィールドが rework の使われ方を切り替えます。
+ここまで説明してきたとおり、 `boid` の状態機械は 1 つだけで、 behavior によって切り替わるわけではありません。「one-shot」 「feedback-loop」 は別々の状態機械があるという意味ではなく、 behavior に紐付ける handler の組み合わせが結果としてどう作用するかを表す呼び方です。
 
-- **one-shot** — `executing → verifying → done`。 verifier が finding を書けば 1 度だけ `reworking` に戻って再試行。 「これ 1 つやる」型に向く
-- **feedback-loop** — 同じ状態機械だが、 `reworking ↔ verifying` を複数回まわす想定。 PR レビューと CI を通す変更に向く
+- **one-shot 的な構成** — `verifying` 状態で動く検証 handler を持たない、または持っていても finding を書かない構成。タスクは `executing → verifying → done` を 1 回通って終わります
+- **feedback-loop 的な構成** — `verifying` 状態の検証 handler が finding を書きうる構成。書かれた時点で `reworking` に戻り、 `reworking` 状態の修正 handler が finding をすべて解消するまでループします
 
-状態機械自体は同一です。違いはどの kit と handler を behavior に紐付けるか。
+挙動の差は behavior に **どの handler を紐付けるか** だけで決まり、 `transition` のような設定フィールドは存在しません。
 
 ## CLI からの観察
 
