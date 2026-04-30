@@ -420,12 +420,26 @@ func (r *Runner) cleanupSandboxAfterWait(runtimeID string, prepared *PreparedSan
 	if r.Runtime == nil || runtimeID == "" || prepared == nil {
 		return
 	}
-	if _, err := r.Runtime.Wait(context.Background(), runtimeID); err != nil {
+	result, err := r.Runtime.Wait(context.Background(), runtimeID)
+	if err != nil {
 		if errors.Is(err, ErrRuntimeUnsupported) {
 			cleanupSandboxArtifacts(prepared)
 			return
 		}
 		slog.Warn("skip sandbox cleanup: runtime wait failed", "runtime_id", runtimeID, "error", err)
+		return
+	}
+	if result.ExitCode != 0 {
+		// silent な exit_code != 0 ケースの事後解析を可能にするため artifacts を保全。
+		// transcript.log が 0 byte で daemon log にも有用情報が無い場合、 outer.sh /
+		// setup.sh / inner.sh の中身がほぼ唯一の手がかりになる。 GC や手動削除に任せる。
+		slog.Warn("retained sandbox artifacts for diagnosis (exit_code!=0)",
+			"runtime_id", runtimeID,
+			"exit_code", result.ExitCode,
+			"scripts", prepared.ScriptPaths,
+			"root_dir", prepared.RootDir,
+			"staging_dir", prepared.StagingDir,
+		)
 		return
 	}
 	cleanupSandboxArtifacts(prepared)
@@ -584,5 +598,30 @@ func (r *Runner) watchRuntime(jobID, runtimeID string) {
 	})
 	r.UnregisterJob(jobID)
 
-	slog.Warn("runtime exited before boid job done", "job_id", jobID, "runtime_id", runtimeID, "exit_code", result.ExitCode)
+	// transcript size を一緒に出すと、 0 byte なら「子プロセスが PTY に何も書け
+	// ずに死んだ silent failure」と即時に判別できる。 transcript path は
+	// retainSandboxArtifacts と合わせて事後解析の起点になる。
+	transcriptSize, transcriptErr := transcriptSizeBytes(result.TranscriptPath)
+	slog.Warn("runtime exited before boid job done",
+		"job_id", jobID,
+		"runtime_id", runtimeID,
+		"exit_code", result.ExitCode,
+		"transcript_path", result.TranscriptPath,
+		"transcript_size", transcriptSize,
+		"transcript_stat_error", transcriptErr,
+	)
+}
+
+// transcriptSizeBytes は transcript.log のサイズを返す。 path が空 / stat 失敗
+// の場合は (-1, error message) を返す。 watchRuntime の log で silent failure
+// を判別するために使う。
+func transcriptSizeBytes(path string) (int64, string) {
+	if path == "" {
+		return -1, "no transcript path"
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return -1, err.Error()
+	}
+	return info.Size(), ""
 }

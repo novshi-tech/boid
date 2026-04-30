@@ -37,6 +37,9 @@ func TestLocalRuntimeStartWaitAndReplayTranscript(t *testing.T) {
 	}
 
 	transcriptPath := filepath.Join(rootDir, handle.ID, "transcript.log")
+	if result.TranscriptPath != transcriptPath {
+		t.Errorf("RuntimeExit.TranscriptPath = %q, want %q", result.TranscriptPath, transcriptPath)
+	}
 	data, err := os.ReadFile(transcriptPath)
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
