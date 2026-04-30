@@ -157,6 +157,11 @@ type ProjectRepository interface {
 	DeleteProject(id string) error
 }
 
+// ProjectWorkDirLookup provides read access to a project's working directory.
+type ProjectWorkDirLookup interface {
+	GetProject(id string) (*orchestrator.Project, error)
+}
+
 type JobStore interface {
 	GetJob(id string) (*Job, error)
 	ListJobsByTask(taskID string) ([]*Job, error)

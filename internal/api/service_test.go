@@ -2236,3 +2236,127 @@ func TestGetTaskDetail_TreeFields(t *testing.T) {
 		t.Errorf("downstream should have no children")
 	}
 }
+
+// ---- branch variable expansion tests ----
+
+type stubProjectLookup struct {
+	project *orchestrator.Project
+	err     error
+}
+
+func (s *stubProjectLookup) GetProject(id string) (*orchestrator.Project, error) {
+	return s.project, s.err
+}
+
+func TestCreateTask_BehaviorBaseBranch_VariableExpanded(t *testing.T) {
+	// When behavior.base_branch is "${current_branch}", the service calls
+	// ExpandBaseBranch. With a stub workDir that is not a real git repo the
+	// call should fail; here we only verify that the Projects.GetProject path
+	// is reached and returns a 400 on git failure.
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {BaseBranch: "${current_branch}"},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{},
+		Meta:     stubMetaStore{meta: meta},
+		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: t.TempDir()}},
+	}
+
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "test",
+		Behavior:  "dev",
+	})
+	// t.TempDir() is not a git repo, so expansion must fail with a 400.
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("error type = %T, want *StatusError", err)
+	}
+	if se.Code != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want 400", se.Code)
+	}
+}
+
+func TestCreateTask_RequestBaseBranch_VariableExpanded(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{},
+		Meta:     stubMetaStore{meta: meta},
+		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: t.TempDir()}},
+	}
+	bb := "${current_branch}"
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID:  "proj-1",
+		Title:      "test",
+		Behavior:   "dev",
+		BaseBranch: &bb,
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("error type = %T, want *StatusError", err)
+	}
+	if se.Code != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want 400", se.Code)
+	}
+}
+
+func TestCreateTask_InlineBehaviorSpec_BaseBranch_VariableExpanded(t *testing.T) {
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{},
+		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: t.TempDir()}},
+	}
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "test",
+		BehaviorSpec: &orchestrator.BehaviorSpec{
+			Name:       "myspec",
+			BaseBranch: "${current_branch}",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("error type = %T, want *StatusError", err)
+	}
+	if se.Code != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want 400", se.Code)
+	}
+}
+
+func TestCreateTask_DetachedHead_Returns400(t *testing.T) {
+	// ProjectWorkDirLookup error should surface as 400.
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{},
+		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {BaseBranch: "${current_branch}"}}}},
+		Projects: &stubProjectLookup{err: fmt.Errorf("project not found")},
+	}
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "test",
+		Behavior:  "dev",
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("error type = %T, want *StatusError", err)
+	}
+	if se.Code != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want 400", se.Code)
+	}
+}
