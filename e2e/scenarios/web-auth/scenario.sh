@@ -12,7 +12,6 @@ sleep 1
 
 e2e_log "starting boid with dynamic web address"
 e2e_run "$E2E_BIN_DIR/boid" start \
-  --http-addr "127.0.0.1:0" \
   --db-path "$XDG_DATA_HOME/boid/boid.db" \
   --socket-path "$BOID_SOCKET" \
   --kits-dir "$XDG_DATA_HOME/boid/kits" \
