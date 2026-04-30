@@ -35,14 +35,13 @@ Concept-oriented how-to.
 
 ### Reference
 
-Stable interface specifications. Currently planned, not yet written.
-
-- CLI: `boid start`, `boid task`, `boid job`
-- `project.yaml` schema
+- [`project.yaml` reference](reference/project-yaml.md) — every field of the project definition file
+- CLI (`boid start`, `boid task`, `boid job`) — planned; for now, `boid <subcommand> --help` is the canonical source
 
 ### Kit authoring
 
-Planned. For now, the [boid-kits](https://github.com/novshi-tech/boid-kits) repository is the working reference.
+- [Overview](kit-authoring/overview.md) — on-disk layout, key `kit.yaml` fields, the hook/gate script protocol
+- Official kits: [boid-kits](https://github.com/novshi-tech/boid-kits)
 
 ### Architecture
 
@@ -50,4 +49,4 @@ Planned. For internals, the source under [`internal/`](https://github.com/novshi
 
 ### Contributing
 
-Planned. The short version: TDD, minimum dependencies, commit prefix `feat:` / `fix:` / `refactor:` / `test:`. See [`CLAUDE.md`](https://github.com/novshi-tech/boid/blob/main/CLAUDE.md) for the working conventions.
+- [Contributing guide](contributing/README.md) — development setup, coding conventions, PRs, bug reports

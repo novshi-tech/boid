@@ -35,14 +35,13 @@
 
 ### リファレンス
 
-安定インタフェースの仕様。整備予定。
-
-- CLI: `boid start`, `boid task`, `boid job`
-- `project.yaml` schema
+- [`project.yaml` リファレンス](reference/project-yaml.md) — プロジェクト定義ファイルの全フィールド
+- CLI (`boid start`, `boid task`, `boid job`) — 整備予定。 `boid <subcommand> --help` を当面の参考に
 
 ### Kit 作者向け
 
-整備予定。現時点では [boid-kits](https://github.com/novshi-tech/boid-kits) リポジトリが事実上のリファレンスです。
+- [概要](kit-authoring/overview.md) — kit のディスク上のレイアウト、 `kit.yaml` 主要フィールド、 hook / gate スクリプトのプロトコル
+- 公式 kit 群: [boid-kits](https://github.com/novshi-tech/boid-kits)
 
 ### アーキテクチャ
 
@@ -50,4 +49,4 @@
 
 ### Contributing
 
-整備予定。要点は TDD・最小依存・コミットプレフィックス `feat:` / `fix:` / `refactor:` / `test:`。現在の運用規約は [`CLAUDE.md`](https://github.com/novshi-tech/boid/blob/main/CLAUDE.md) を参照。
+- [貢献ガイド](contributing/README.md) — 開発環境、コーディング規約、 PR の出し方、バグ報告
