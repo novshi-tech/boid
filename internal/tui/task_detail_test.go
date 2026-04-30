@@ -1801,6 +1801,35 @@ func TestTaskDetail_BlinkOff_DoneStatusNotDim(t *testing.T) {
 	}
 }
 
+// TestScreenResumed_RestartsTick verifies that screenResumedMsg returns a Batch
+// containing a tick cmd, so polling resumes after returning from a pushed screen.
+//
+// Before the fix: returned fetchTaskDetailCmd alone (not a Batch).
+// After the fix:  returns tea.Batch(fetchTaskDetailCmd, taskDetailTickCmd) — BatchMsg length >= 2.
+func TestScreenResumed_RestartsTick(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusExecuting)
+
+	_, cmd := s.Update(screenResumedMsg{})
+	if cmd == nil {
+		t.Fatal("screenResumedMsg: expected non-nil cmd")
+	}
+
+	// cmd must be a Batch of at least 2 sub-cmds (fetch + tick).
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("screenResumedMsg: expected tea.BatchMsg (fetch+tick), got %T", msg)
+	}
+	if len(batch) < 2 {
+		t.Errorf("screenResumedMsg: expected at least 2 cmds in batch (fetch+tick), got %d", len(batch))
+	}
+
+	if !s.loading {
+		t.Error("screenResumedMsg: expected loading=true")
+	}
+}
+
 // --- tickIntervalForDetail tests ---
 
 func TestTickIntervalForDetail_Executing(t *testing.T) {
