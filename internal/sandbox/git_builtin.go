@@ -375,6 +375,34 @@ func buildGitBuiltinArgs(req *GitRequest, binding *GitBinding, remoteName string
 		}
 		args = append(args, refspecs...)
 		return args, nil
+	case GitOpPushDelete:
+		args := append(base, "push", "--delete")
+		if req.DryRun {
+			args = append(args, "--dry-run")
+		}
+		if req.Verbose {
+			args = append(args, "--verbose")
+		}
+		if req.Quiet {
+			args = append(args, "--quiet")
+		}
+		pushURL := remote.PushURL
+		if pushURL == "" {
+			pushURL = remote.FetchURL
+		}
+		if pushURL == "" {
+			return nil, fmt.Errorf("git remote %q has no push url", remoteName)
+		}
+		if len(req.Refspecs) == 0 {
+			return nil, fmt.Errorf("git push --delete requires at least one branch or refspec")
+		}
+		args = append(args, pushURL)
+		for _, refspec := range req.Refspecs {
+			// :refs/heads/branch 形式の場合はコロンを除去してブランチ名だけ渡す
+			branch := strings.TrimPrefix(refspec, ":")
+			args = append(args, branch)
+		}
+		return args, nil
 	default:
 		return nil, fmt.Errorf("unsupported git operation %q", req.Op)
 	}

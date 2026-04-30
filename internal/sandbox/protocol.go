@@ -135,8 +135,9 @@ type ProjectResolver func(ref string) (uuid string, err error)
 type GitOp string
 
 const (
-	GitOpFetch GitOp = "fetch"
-	GitOpPush  GitOp = "push"
+	GitOpFetch      GitOp = "fetch"
+	GitOpPush       GitOp = "push"
+	GitOpPushDelete GitOp = "push_delete"
 )
 
 // BuiltinPolicy defines which operations are permitted for a named builtin command.
@@ -185,4 +186,5 @@ type GitRequest struct {
 	Force          bool     `json:"force,omitempty"`
 	Porcelain      bool     `json:"porcelain,omitempty"`
 	ForceWithLease bool     `json:"force_with_lease,omitempty"`
+	Delete         bool     `json:"delete,omitempty"`
 }

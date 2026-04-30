@@ -1,15 +1,19 @@
 package sandbox
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestClassifyGitInvocation(t *testing.T) {
 	tests := []struct {
-		name       string
-		args       []string
-		wantMode   gitInvocationMode
-		wantOp     GitOp
-		wantRemote string
-		wantErr    bool
+		name         string
+		args         []string
+		wantMode     gitInvocationMode
+		wantOp       GitOp
+		wantRemote   string
+		wantRefspecs []string
+		wantErr      bool
 	}{
 		{
 			name:     "direct status",
@@ -212,6 +216,46 @@ func TestClassifyGitInvocation(t *testing.T) {
 			args:     []string{"cat-file", "-t", "HEAD"},
 			wantMode: gitInvocationDirect,
 		},
+		// push_delete cases
+		{
+			name:         "push --delete origin feature",
+			args:         []string{"push", "--delete", "origin", "feature"},
+			wantMode:     gitInvocationBrokered,
+			wantOp:       GitOpPushDelete,
+			wantRemote:   "origin",
+			wantRefspecs: []string{"feature"},
+		},
+		{
+			name:         "push -D origin feature",
+			args:         []string{"push", "-D", "origin", "feature"},
+			wantMode:     gitInvocationBrokered,
+			wantOp:       GitOpPushDelete,
+			wantRemote:   "origin",
+			wantRefspecs: []string{"feature"},
+		},
+		{
+			name:         "push origin :refs/heads/feature",
+			args:         []string{"push", "origin", ":refs/heads/feature"},
+			wantMode:     gitInvocationBrokered,
+			wantOp:       GitOpPushDelete,
+			wantRemote:   "origin",
+			wantRefspecs: []string{":refs/heads/feature"},
+		},
+		{
+			name:         "push origin :feature",
+			args:         []string{"push", "origin", ":feature"},
+			wantMode:     gitInvocationBrokered,
+			wantOp:       GitOpPushDelete,
+			wantRemote:   "origin",
+			wantRefspecs: []string{":feature"},
+		},
+		{
+			name:       "push --delete origin no refspec",
+			args:       []string{"push", "--delete", "origin"},
+			wantMode:   gitInvocationBrokered,
+			wantOp:     GitOpPushDelete,
+			wantRemote: "origin",
+		},
 	}
 
 	for _, tt := range tests {
@@ -240,6 +284,9 @@ func TestClassifyGitInvocation(t *testing.T) {
 			}
 			if invocation.request.Remote != tt.wantRemote {
 				t.Fatalf("remote = %q, want %q", invocation.request.Remote, tt.wantRemote)
+			}
+			if tt.wantRefspecs != nil && !reflect.DeepEqual(invocation.request.Refspecs, tt.wantRefspecs) {
+				t.Fatalf("refspecs = %v, want %v", invocation.request.Refspecs, tt.wantRefspecs)
 			}
 		})
 	}

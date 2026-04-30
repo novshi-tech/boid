@@ -200,9 +200,16 @@ func parseGitPushRequest(args []string) (*GitRequest, error) {
 		if strings.HasPrefix(refspec, "+") {
 			return nil, fmt.Errorf("git push force refspecs are not allowed")
 		}
+	}
+	// --delete フラグまたは : refspec が含まれる場合は push_delete operation に分類
+	hasDelete := req.Delete
+	for _, refspec := range req.Refspecs {
 		if strings.HasPrefix(refspec, ":") {
-			return nil, fmt.Errorf("git push delete refspecs are not allowed")
+			hasDelete = true
 		}
+	}
+	if hasDelete {
+		req.Op = GitOpPushDelete
 	}
 	return req, nil
 }
@@ -342,6 +349,8 @@ func parseGitSyncFlags(req *GitRequest, op GitOp, args []string) ([]string, erro
 				req.Porcelain = true
 			case "--force-with-lease":
 				req.ForceWithLease = true
+			case "--delete", "-D":
+				req.Delete = true
 			default:
 				if strings.HasPrefix(arg, "--force-with-lease=") {
 					req.ForceWithLease = true

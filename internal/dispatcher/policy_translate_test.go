@@ -22,6 +22,7 @@ func TestOpConstantsMirror(t *testing.T) {
 		{orchestrator.OpBoidTaskReopen, string(sandbox.BoidOpTaskReopen)},
 		{orchestrator.OpGitFetch, string(sandbox.GitOpFetch)},
 		{orchestrator.OpGitPush, string(sandbox.GitOpPush)},
+		{orchestrator.OpGitPushDelete, string(sandbox.GitOpPushDelete)},
 	}
 	for _, p := range pairs {
 		if p.orchestratorConst != p.sandboxConst {
