@@ -138,6 +138,53 @@ func TestCoordinator_DispatchAndAdvance_GatesExecuteAfterHooks(t *testing.T) {
 	}
 }
 
+// readonly task の parallel hook 経路で、 hook が exit code != 0 で死んだ場合
+// に DispatchAndAdvance がエラーを返し、 lifecycle.executed=true による誤った
+// auto-advance を許さないことを検証する。 修正前は dispatchParallel が ExitCode
+// を集約せず err=nil を返してしまい、 lifecycle.executed=true 由来で done に
+// 進んでしまっていた。
+func TestCoordinator_DispatchAndAdvance_ReadonlyHookFailure_DoesNotAdvance(t *testing.T) {
+	mock := newMockExecutorWaiter()
+	jobID := mock.setHookCompletion("hook-a", "", 1)
+	_ = jobID
+
+	eval := &orchestrator.Evaluator{}
+	coord := &orchestrator.Coordinator{
+		Evaluator:    eval,
+		HookExecutor: mock,
+		GateExecutor: mock,
+		Waiter:       mock,
+		MaxDepth:     5,
+	}
+
+	task := &orchestrator.Task{
+		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
+		Readonly:  true, // → IsReadonly=true → dispatchParallel 経路
+		Payload:   json.RawMessage(`{}`),
+	}
+	meta := metaWithBehavior([]projectspec.Hook{
+		{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
+	}, nil)
+	sm := lifecycleExecutedStateMachine()
+
+	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
+	if err == nil {
+		t.Fatalf("expected error from failed hook, got nil (NewStatus=%q)", result.NewStatus)
+	}
+	if result == nil {
+		t.Fatalf("expected non-nil result for FiredEvents persistence, got nil")
+	}
+	if result.NewStatus != "" {
+		t.Errorf("expected empty NewStatus when hook fails, got %q", result.NewStatus)
+	}
+	if len(result.FiredEvents) != 1 {
+		t.Errorf("expected 1 FiredEvent (failed hook), got %d", len(result.FiredEvents))
+	}
+}
+
 func TestCoordinator_DispatchAndAdvance_EmptyHooksAndGates(t *testing.T) {
 	mock := newMockExecutorWaiter()
 	eval := &orchestrator.Evaluator{}

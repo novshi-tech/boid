@@ -90,15 +90,16 @@ func (m *mockExecutorWaiter) ExecuteGate(ctx context.Context, event *projectspec
 	return jobID, nil
 }
 
+// WaitForJob mirrors the production WaitForJobCtx contract: a non-zero exit
+// is NOT reported as an error — callers are expected to inspect the returned
+// JobCompletion.ExitCode. Only true wait-machinery failures (e.g. unknown job)
+// produce a non-nil error here.
 func (m *mockExecutorWaiter) WaitForJob(ctx context.Context, jobID string) (orchestrator.JobCompletion, error) {
 	m.mu.Lock()
 	c, ok := m.completions[jobID]
 	m.mu.Unlock()
 	if !ok {
 		return orchestrator.JobCompletion{}, fmt.Errorf("unknown job: %s", jobID)
-	}
-	if c.ExitCode != 0 {
-		return c, fmt.Errorf("job failed with exit code %d", c.ExitCode)
 	}
 	return c, nil
 }
@@ -126,6 +127,38 @@ func simpleStateMachine() *orchestrator.StateMachine {
 					json.Unmarshal(p, &m)
 					_, ok := m["prompt"]
 					return ok && string(m["prompt"]) != "null"
+				},
+			},
+			{Action: "abort", FromStatus: "*", ToStatus: "aborted"},
+		},
+	}
+}
+
+// lifecycleExecutedStateMachine は lifecycle.executed=true を done 遷移条件に
+// 持つ state machine を返す (plan behavior の典型形)。 hook 失敗時に誤って
+// lifecycle.executed=true が立つバグの再現に使う。
+func lifecycleExecutedStateMachine() *orchestrator.StateMachine {
+	return &orchestrator.StateMachine{
+		Name: "lifecycle-executed",
+		Rules: []orchestrator.Rule{
+			{Action: "start", FromStatus: "pending", ToStatus: "executing"},
+			{
+				FromStatus: "executing",
+				ToStatus:   "done",
+				Condition: func(p json.RawMessage) bool {
+					var m map[string]json.RawMessage
+					if err := json.Unmarshal(p, &m); err != nil {
+						return false
+					}
+					lc, ok := m["lifecycle"]
+					if !ok {
+						return false
+					}
+					var lcMap map[string]json.RawMessage
+					if err := json.Unmarshal(lc, &lcMap); err != nil {
+						return false
+					}
+					return string(lcMap["executed"]) == "true"
 				},
 			},
 			{Action: "abort", FromStatus: "*", ToStatus: "aborted"},
