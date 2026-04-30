@@ -45,7 +45,7 @@
 
 ### アーキテクチャ
 
-整備予定。内部実装は [`internal/`](https://github.com/novshi-tech/boid/tree/main/internal) を参照。
+- [概要](architecture/overview.md) — プロセス構成、レイヤと依存方向、主要コンポーネント、 1 アクションのデータの流れ
 
 ### Contributing
 
