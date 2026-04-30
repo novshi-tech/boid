@@ -412,7 +412,7 @@ func TestBroker_GitPush_RejectsForceAndDeleteRefspecs(t *testing.T) {
 		{
 			"delete-refspec",
 			[]string{"push", "origin", ":refs/heads/main"},
-			"delete refspecs",
+			"push_delete",
 		},
 	}
 	for _, tc := range cases {
