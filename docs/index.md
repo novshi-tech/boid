@@ -1,8 +1,7 @@
 ---
-title: boid Documentation
+title: Home
+layout: page
 ---
-
-# boid
 
 A personal AI orchestrator (Linux only). Track and automate end-to-end workflows — from generating an artifact to releasing it — as predefined tasks that execute safely inside a sandbox, on your own machine.
 

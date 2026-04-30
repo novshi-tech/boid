@@ -8,6 +8,13 @@ title: boid
 description: A personal AI orchestrator
 theme: minima
 
+# Limit minima's header navigation to just the home page. Without this, minima
+# auto-lists every page in the site, producing a wall of 40+ links at the top
+# of each page. Other pages stay reachable through the language hub
+# (docs/index.md) and the per-language docs/{en,ja}/README.md indexes.
+header_pages:
+  - index.md
+
 plugins:
   # Rewrites relative .md links to .html so docs we wrote with `[text](file.md)`
   # links keep working after Jekyll converts each .md into .html.
