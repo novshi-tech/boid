@@ -45,7 +45,7 @@ Concept-oriented how-to.
 
 ### Architecture
 
-Planned. For internals, the source under [`internal/`](https://github.com/novshi-tech/boid/tree/main/internal) is the source of truth.
+- [Overview](architecture/overview.md) — process layout, layering, the major components, and one action traced end to end
 
 ### Contributing
 
