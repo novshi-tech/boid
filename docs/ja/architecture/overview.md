@@ -65,7 +65,7 @@ e2e/                  - black-box E2E (scenarios + fixture kit + fake host comma
 
 ```
         ┌─────────┐
-        │ sandbox │ ← 葉 (他に依存しない)
+        │ sandbox │ ← 他のレイヤには依存しない
         └─────────┘
              ▲
              │
@@ -85,7 +85,7 @@ e2e/                  - black-box E2E (scenarios + fixture kit + fake host comma
         └────────┘
 ```
 
-設計上の重要な制約:
+設計上守らなければならない重要な制約は次の 3 点です:
 
 - **orchestrator → dispatcher / sandbox の依存は禁止**。 orchestrator はドメインロジック (状態機械、 task / job / project の評価) だけを持ち、サンドボックスや実行環境の詳細を知らない
 - **dispatcher が橋渡し**。 orchestrator が出した「次に動かすべき hook / gate」 と、 sandbox が要求する 「マウント / コマンドポリシー / プロセス起動」 の primitive 表現を、 dispatcher が翻訳する
