@@ -38,7 +38,7 @@
 - [`project.yaml` リファレンス](reference/project-yaml.md) — プロジェクト定義ファイルの全フィールド
 - [Handler スクリプトプロトコル](reference/handler-contract.md) — hook / gate の入出力契約 (stdin、 環境変数、 `payload_patch.json`、 終了コード等)
 - [Payload trait リファレンス](reference/traits.md) — `artifact` / `tasks` / `verification` / `lifecycle` の構造、状態機械が見ている条件、マージモード
-- CLI (`boid start`, `boid task`, `boid job`) — 整備予定。 `boid <subcommand> --help` を当面の参考に
+- [CLI リファレンス](reference/cli.md) — 全サブコマンドの役割別一覧 (詳細フラグは `boid <subcommand> --help`)
 
 ### Kit 作者向け
 
