@@ -31,8 +31,8 @@ func TestCoordinator_DispatchAndAdvance_ExclusiveTraitCollision(t *testing.T) {
 		Payload:   json.RawMessage(`{}`),
 	}
 	meta := metaWithBehavior([]projectspec.Hook{
-		{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
-		{ID: "hook-b", On: orchestrator.OnValues{"executing"}},
+		{ID: "hook-a"},
+		{ID: "hook-b"},
 	}, nil)
 	sm := simpleStateMachine()
 
@@ -64,8 +64,8 @@ func TestCoordinator_DispatchAndAdvance_SharedTraitNoCollision(t *testing.T) {
 		Payload:   json.RawMessage(`{}`),
 	}
 	meta := metaWithBehavior([]projectspec.Hook{
-		{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
-		{ID: "hook-b", On: orchestrator.OnValues{"executing"}},
+		{ID: "hook-a"},
+		{ID: "hook-b"},
 	}, nil)
 	sm := simpleStateMachine()
 
@@ -85,17 +85,8 @@ func TestCoordinator_DispatchAndAdvance_SharedTraitNoCollision(t *testing.T) {
 		t.Error("expected hook-b sub-key in verification")
 	}
 
-	for _, key := range []string{"hook-a", "hook-b"} {
-		var entry struct {
-			SourceState string `json:"source_state"`
-		}
-		if err := json.Unmarshal(verification[key], &entry); err != nil {
-			t.Fatalf("unmarshal %s: %v", key, err)
-		}
-		if entry.SourceState != "executing" {
-			t.Errorf("%s: source_state = %q, want %q", key, entry.SourceState, "executing")
-		}
-	}
+	// source_state is no longer injected by the coordinator (verification.findings廃止)
+	_ = verification
 }
 
 // TestCoordinator_DispatchAndAdvance_DropsUnknownTraitAndMergesArtifact
@@ -129,7 +120,6 @@ func TestCoordinator_DispatchAndAdvance_DropsUnknownTraitAndMergesArtifact(t *te
 	meta := metaWithBehavior([]projectspec.Hook{
 		{
 			ID: "main-hook",
-			On: orchestrator.OnValues{"executing"},
 			Traits: projectspec.HandlerTraits{
 				Produces: []projectspec.TraitType{projectspec.TraitArtifact, projectspec.TraitTasks},
 			},
@@ -166,7 +156,6 @@ func TestCoordinator_DispatchAndAdvance_DropsUnknownTraitAndMergesArtifact(t *te
 func TestCoordinator_GateFiresOnlyWhenConsumedTraitPresent(t *testing.T) {
 	artifactConsumer := projectspec.Gate{
 		ID:    "post-artifact-gate",
-		On:    orchestrator.OnValues{"executing"},
 		Phase: projectspec.GatePhaseExit,
 		Traits: projectspec.HandlerTraits{
 			Consumes: []projectspec.TraitType{projectspec.TraitArtifact},
@@ -195,7 +184,6 @@ func TestCoordinator_GateFiresOnlyWhenConsumedTraitPresent(t *testing.T) {
 		meta := metaWithBehavior(
 			[]projectspec.Hook{{
 				ID: "producer",
-				On: orchestrator.OnValues{"executing"},
 				Traits: projectspec.HandlerTraits{
 					Produces: []projectspec.TraitType{projectspec.TraitArtifact},
 				},
@@ -236,7 +224,6 @@ func TestCoordinator_GateFiresOnlyWhenConsumedTraitPresent(t *testing.T) {
 		meta := metaWithBehavior(
 			[]projectspec.Hook{{
 				ID: "noop-producer",
-				On: orchestrator.OnValues{"executing"},
 				Traits: projectspec.HandlerTraits{
 					Produces: []projectspec.TraitType{projectspec.TraitArtifact},
 				},
@@ -285,18 +272,15 @@ func TestCoordinator_GateConsumesSharedVerificationFromMultipleHooks(t *testing.
 	}
 	meta := metaWithBehavior(
 		[]projectspec.Hook{
-			{ID: "hook-a", On: orchestrator.OnValues{"executing"},
-				Traits: projectspec.HandlerTraits{
-					Produces: []projectspec.TraitType{projectspec.TraitVerification},
-				}},
-			{ID: "hook-b", On: orchestrator.OnValues{"executing"},
-				Traits: projectspec.HandlerTraits{
-					Produces: []projectspec.TraitType{projectspec.TraitVerification},
-				}},
+			{ID: "hook-a", Traits: projectspec.HandlerTraits{
+				Produces: []projectspec.TraitType{projectspec.TraitVerification},
+			}},
+			{ID: "hook-b", Traits: projectspec.HandlerTraits{
+				Produces: []projectspec.TraitType{projectspec.TraitVerification},
+			}},
 		},
 		[]projectspec.Gate{{
 			ID:    "verification-consumer",
-			On:    orchestrator.OnValues{"executing"},
 			Phase: projectspec.GatePhaseExit,
 			Traits: projectspec.HandlerTraits{
 				Consumes: []projectspec.TraitType{projectspec.TraitVerification},

@@ -1,10 +1,9 @@
 hooks:
   - id: emit-artifact
-    on: executing
 
 gates:
   - id: host-ops
-    on: executing
+    phase: exit
     traits:
       consumes: [artifact]
 env:

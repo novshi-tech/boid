@@ -82,10 +82,6 @@ func statusHeaderStyle(status string) lipgloss.Style {
 		return stylePending.Bold(true)
 	case orchestrator.TaskStatusExecuting:
 		return styleExecuting.Bold(true)
-	case orchestrator.TaskStatusVerifying:
-		return styleVerifying.Bold(true)
-	case orchestrator.TaskStatusReworking:
-		return styleWarn.Bold(true)
 	case orchestrator.TaskStatusAborted:
 		return styleAborted.Bold(true)
 	}

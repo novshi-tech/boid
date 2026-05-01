@@ -51,11 +51,6 @@ func TestRunDispatchLoop_EntryGateFiresAfterAdvance(t *testing.T) {
 		advanceResults: []*orchestrator.DispatchResult{
 			{
 				FinalPayload: json.RawMessage(`{"artifact":"url"}`),
-				NewStatus:    orchestrator.TaskStatusVerifying,
-			},
-			// Second cycle: verifying → done
-			{
-				FinalPayload: json.RawMessage(`{"artifact":"url"}`),
 				NewStatus:    orchestrator.TaskStatusDone,
 			},
 		},
@@ -71,43 +66,9 @@ func TestRunDispatchLoop_EntryGateFiresAfterAdvance(t *testing.T) {
 
 	svc.runDispatchLoop(context.Background(), task, &orchestrator.ProjectMeta{}, orchestrator.DefaultMachine())
 
-	// Entry gates should have fired for each non-self-loop transition
+	// Entry gates should have fired for the executing → done transition
 	if coord.entryCalls == 0 {
 		t.Fatal("expected entry gates to fire after advance")
-	}
-}
-
-func TestRunDispatchLoop_EntryGateSkippedOnSelfLoop(t *testing.T) {
-	task := &orchestrator.Task{
-		ID:        "task-1",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusReworking,
-		Payload:   json.RawMessage(`{}`),
-	}
-
-	txStore := &recordingTxStore{task: task}
-	coord := &entryGateCoordinator{
-		advanceResults: []*orchestrator.DispatchResult{
-			{
-				FinalPayload: json.RawMessage(`{}`),
-				NewStatus:    orchestrator.TaskStatusReworking, // self-loop
-			},
-			{
-				FinalPayload: json.RawMessage(`{}`),
-				// no advance — loop ends
-			},
-		},
-	}
-
-	svc := &TaskWorkflowService{
-		Tx:          recordingTransactor{store: txStore},
-		Coordinator: coord,
-	}
-
-	svc.runDispatchLoop(context.Background(), task, &orchestrator.ProjectMeta{}, orchestrator.DefaultMachine())
-
-	if coord.entryCalls != 0 {
-		t.Fatalf("expected 0 entry gate calls on self-loop, got %d", coord.entryCalls)
 	}
 }
 
@@ -115,7 +76,7 @@ func TestRunDispatchLoop_EntryGateOnDone_TriggersOnce(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
 		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusVerifying,
+		Status:    orchestrator.TaskStatusExecuting,
 		Payload:   json.RawMessage(`{}`),
 	}
 

@@ -165,15 +165,15 @@ func TestRunTaskUpdate_UpdatesInstructionsFromFile(t *testing.T) {
 	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID, nil, &updated); err != nil {
 		t.Fatalf("get updated task: %v", err)
 	}
-	got, ok := updated.Instructions["main"]
-	if !ok {
-		t.Fatalf("instructions.main not set; got: %#v", updated.Instructions)
+	got := updated.Instructions.Active()
+	if got == nil {
+		t.Fatalf("instructions not set; got: %#v", updated.Instructions)
 	}
 	if got.Model != "opus-4-7" {
-		t.Errorf("instructions.main.model = %q, want opus-4-7", got.Model)
+		t.Errorf("instructions.model = %q, want opus-4-7", got.Model)
 	}
 	if got.Message != "do the thing" {
-		t.Errorf("instructions.main.message = %q, want %q", got.Message, "do the thing")
+		t.Errorf("instructions.message = %q, want %q", got.Message, "do the thing")
 	}
 }
 
@@ -212,8 +212,8 @@ func TestRunTaskUpdate_InstructionsFromStdin(t *testing.T) {
 	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID, nil, &updated); err != nil {
 		t.Fatalf("get updated task: %v", err)
 	}
-	if _, ok := updated.Instructions["reviewer"]; !ok {
-		t.Fatalf("instructions.reviewer not set; got: %#v", updated.Instructions)
+	if len(updated.Instructions) == 0 {
+		t.Fatalf("instructions not set; got: %#v", updated.Instructions)
 	}
 }
 

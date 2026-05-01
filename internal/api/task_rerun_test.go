@@ -136,8 +136,8 @@ func TestRerunTask_PreservesInstructions(t *testing.T) {
 		t.Fatalf("rerun task: %v", err)
 	}
 
-	if _, ok := result.Instructions["main"]; !ok {
-		t.Errorf("instructions.main should be preserved after rerun, got %v", result.Instructions)
+	if len(result.Instructions) == 0 {
+		t.Errorf("instructions should be preserved after rerun, got %v", result.Instructions)
 	}
 	var payloadMap map[string]json.RawMessage
 	if err := json.Unmarshal(result.Payload, &payloadMap); err != nil {

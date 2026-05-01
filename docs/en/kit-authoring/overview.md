@@ -39,7 +39,6 @@ provides_consumer: my-agent     # (optional) consumer name this kit listens for
 
 hooks:
   - id: my-hook
-    on: [executing]             # string or list
     kind: agent                 # (optional) "agent" opts in to instruction routing
     consumer: my-agent          # (optional) instructions addressed to this consumer
     traits:
@@ -48,10 +47,9 @@ hooks:
 
 gates:
   - id: my-gate
-    on: [verifying]
-    phase: exit                 # entry or exit (default: exit)
+    phase: exit                 # entry (just before pending → executing) or exit (just before executing → done)
     traits:
-      produces: [verification]
+      produces: [artifact]
 
 commands:                       # (optional) commands callable via boid exec inside the sandbox
   build:
@@ -94,7 +92,9 @@ Declares which consumer name's instructions this kit is responsible for. For exa
 
 ### `hooks` and `gates`
 
-The script protocol is in the next section. `traits.consumes` and `traits.produces` declare which payload traits the handler reads and writes. Suffixing a `consumes` entry with `?` makes it optional (no error if absent).
+The script protocol is in the next section. Hooks always run in `executing`; gates fire on `phase: entry` (just before `pending → executing`) or `phase: exit` (just before `executing → done`). The old `on:` field has been removed.
+
+`traits.consumes` and `traits.produces` declare which payload traits the handler reads and writes. Suffixing a `consumes` entry with `?` makes it optional (no error if absent).
 
 ## Hook / gate script protocol
 

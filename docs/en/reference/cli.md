@@ -76,7 +76,7 @@ Creating, observing, and updating tasks lives under `boid task`. See [Concepts /
 | `boid task update <id> [--patch-file FILE] [--payload-file FILE] [--instructions-file FILE]` | Update a task; use `-` for stdin. |
 | `boid task delete <id> [--force]` | Delete a task (`--force` if active). |
 | `boid task duplicate <source_id> [--auto-start]` | Duplicate an existing task. |
-| `boid task reopen <id>` | Take a `done` task back to `reworking` (e.g. when auto-merge hits a conflict). |
+| `boid task reopen <id> [--message MSG]` | Return a `done` task to `executing`, appending the `--message` text as a new entry on `Task.Instructions` (e.g. when auto-merge hits a conflict). |
 | `boid task rerun <id> [--auto-start] [--instructions-file FILE]` | Reset a `done` / `aborted` task to `pending` and re-run it under the same ID. |
 | `boid task import [-f FILE] [--project ID] [--datasource ID]` | Bulk import tasks from JSONL. |
 
@@ -109,8 +109,8 @@ Pass `behavior_spec` to specify the behavior inline instead of referencing a nam
 
 | Command | Role |
 |---|---|
-| `boid task findings <id>` | Pretty-print `verification.findings`. |
 | `boid task artifacts <id>` | Pretty-print `payload.artifact`. |
+| `boid task findings <id>` | (legacy) Pretty-print any `verification.findings` left over from the older schema. With the new state model, agents abort directly on fatal errors, so this is rarely useful. |
 | `boid task tree [<id>]` | Show the parent/child task tree. |
 
 ## Action
@@ -121,7 +121,7 @@ Issue a manual transition on a task.
 boid action send --task <task-id> --type <action-type> [--payload FILE]
 ```
 
-Common `<action-type>` values: `start`, `done`, `reopen`, `abort`. See [State machine / Manual transitions](../guide/state-machine.md#manual-transitions).
+Common `<action-type>` values: `start`, `done`, `reopen`, `abort`. See [State machine / Manual transitions](../guide/state-machine.md#manual-transitions). To reopen a task with a new instruction, prefer `boid task reopen <id> --message "..."`.
 
 ## Job
 

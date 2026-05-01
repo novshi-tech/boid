@@ -83,10 +83,12 @@ var taskDuplicateCmd = &cobra.Command{
 
 var taskReopenCmd = &cobra.Command{
 	Use:   "reopen <id>",
-	Short: "Return a done task to reworking",
-	Long:  "done 済みタスクを reworking に戻す。\n主な用途: github-auto-merge kit がマージコンフリクトを検出した PR を修正させる",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runTaskReopen,
+	Short: "Reopen a done task back into executing",
+	Long: "done 済みタスクを executing に戻す。 --message を渡すと、 任意のテキストを新しい\n" +
+		"instruction として履歴に追記する (consumer / model / interactive は前回 active を継承)。\n" +
+		"主な用途: PR review feedback を反映させる、 task.exit gate がコンフリクトで失敗した\nPR を修正させる、 等",
+	Args: cobra.ExactArgs(1),
+	RunE: runTaskReopen,
 }
 
 var taskRerunCmd = &cobra.Command{
@@ -112,6 +114,7 @@ func init() {
 	taskUpdateCmd.Flags().StringP("patch-file", "f", "", "Patch file (YAML/JSON) with task fields to update; - for stdin")
 	taskUpdateCmd.Flags().String("payload-file", "", "Payload file (YAML/JSON) merged into task.payload; - for stdin")
 	taskUpdateCmd.Flags().String("instructions-file", "", "Instructions file (YAML/JSON) for role-wise merge; - for stdin")
+	taskReopenCmd.Flags().StringP("message", "m", "", "Append a new instruction with the given message (consumer/model/interactive are inherited from the active entry)")
 	taskDuplicateCmd.Flags().Bool("auto-start", false, "Automatically start the duplicated task")
 	taskRerunCmd.Flags().Bool("auto-start", false, "Automatically start the rerun task")
 	taskRerunCmd.Flags().String("instructions-file", "", "Instructions override file (YAML/JSON) for role-wise merge; - for stdin")
@@ -504,7 +507,22 @@ func runTaskImport(cmd *cobra.Command, args []string) error {
 
 func runTaskReopen(cmd *cobra.Command, args []string) error {
 	c := client.NewUnixClient(client.DefaultSocketPath())
-	result, err := c.ApplyAction(args[0], api.ApplyActionRequest{Type: "reopen"})
+	message, _ := cmd.Flags().GetString("message")
+
+	req := api.ApplyActionRequest{Type: "reopen"}
+	if message != "" {
+		payload, err := json.Marshal(map[string]any{
+			"instruction": map[string]any{
+				"message": message,
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("marshal instruction: %w", err)
+		}
+		req.Payload = payload
+	}
+
+	result, err := c.ApplyAction(args[0], req)
 	if err != nil {
 		return fmt.Errorf("reopen task: %w", err)
 	}

@@ -6,8 +6,8 @@ This page walks through the main concepts that make up `boid`. The rest of the d
 
 The unit of work that `boid` tracks from request to completion. Every task carries the following fields:
 
-- A **status** — what stage the task is in right now. Tasks move through `pending → executing → verifying → reworking → done`, and end at `aborted` if they fail. The meaning of each state and the transition rules between them are covered in [State machine](state-machine.md).
-- A **payload** — a JSON document that accumulates information as the task progresses. The original request, generated artifacts, review findings, and so on are stored under predefined keys called *traits* (defined below).
+- A **status** — what stage the task is in right now. Tasks move through `pending → executing → done`, and end at `aborted` if they fail. The meaning of each state and the transition rules between them are covered in [State machine](state-machine.md).
+- A **payload** — a JSON document that accumulates information as the task progresses. The original request, generated artifacts, planned subtasks, and so on are stored under predefined keys called *traits* (defined below).
 - A **behavior** — a label such as `dev` or `plan` that says what kind of work this task is. The project's configuration maps each label to a set of extension packages (*kits*), so picking a behavior selects which scripts will fire.
 - The **project** the task belongs to.
 
@@ -27,10 +27,7 @@ You register a project with `boid project add <path>`. Any number of projects ca
 
 A named entry in the project's `task_behaviors` map representing a kind of task. When you create a task and pick a behavior name (e.g. `dev`, `plan`), `boid` loads the extension packages bound to that behavior and fires their scripts as the task changes state.
 
-`boid` runs a single state machine regardless of behavior. Phrases like "one-shot" and "feedback-loop" are not two different machines; they describe how the handlers wired to a behavior interact with that single machine.
-
-- **One-shot-style** — no verifying-state handler, or one that never writes findings. The task passes through `executing → verifying → done` once. Suited to short, one-off jobs.
-- **Feedback-loop-style** — a verifying-state handler that may write findings. When it does, the task drops into `reworking` and a rework-style handler keeps cycling until every finding is resolved. Suited to changes that go through PR review or CI.
+`boid` runs a single state machine regardless of behavior. Different task shapes come from which hooks and gates a behavior wires in, and from how failures are recovered: either by `reopen`ing the task with a new instruction, or by spawning a fresh task. The harness does not encode a verification loop — failure detection and the recovery plan live in the agent's instruction text.
 
 ## Payload and traits
 
@@ -38,11 +35,11 @@ The payload is a JSON document that grows as the task progresses. Only a fixed s
 
 | Trait | Written by | What writing it does |
 |---|---|---|
-| `instructions` | task creator / extension package | Holds work instructions for downstream scripts. |
-| `artifact` | execution scripts | Signals that the work in `executing` is done. Writing it advances the task to `verifying`. |
-| `tasks` | plan-style scripts | Plays the same role as `artifact` for planning-style tasks. |
-| `verification.findings` | review-style scripts | The list of issues the reviewer found. Open findings push the task into `reworking`; once they are resolved the task returns to `verifying`. |
-| `lifecycle` | `boid` itself | Auto-derived counters and flags such as the rework count and an "already executed" flag. |
+| `artifact` | execution scripts | Free-form record of what the task produced (commit, PR URL, changed files, ...). |
+| `tasks` | plan-style scripts | Subtask array emitted by planning behaviors. |
+| `lifecycle.abort` | `boid` itself | Auto-derived `code` / `message` for an aborted task. |
+
+Instructions are not a payload trait. They live in the top-level `Task.Instructions` array on the task itself; the last element is the active one, and `boid task reopen <id> --message "..."` appends a new entry.
 
 Scripts update the payload by emitting **payload patches** (JSON merge instructions). The daemon stores each patch in order, so the history of a task can be replayed for debugging.
 
@@ -50,8 +47,8 @@ Scripts update the payload by emitting **payload patches** (JSON merge instructi
 
 `boid` divides task-related scripts into two kinds — **hook** and **gate** — and uses **handler** as the umbrella term for both. The packaged unit that bundles a set of handlers for reuse is a **kit**.
 
-- **Hook** — a script that runs while the task is in a particular state (e.g. `executing`). Hooks do the substantive work: invoking an AI agent, editing code, running tests. They run inside the sandbox, and several hooks bound to the same state run in parallel.
-- **Gate** — a script that fires at a state transition (entry or exit). Gates do work on the host machine itself: opening a PR, calling `gh pr merge`, restarting a service. Gates do not go through the sandbox and act as a checkpoint at the boundary between two states.
+- **Hook** — a script that runs while the task is in `executing`. Hooks do the substantive work: invoking an AI agent, editing code, running tests. They run inside the sandbox; several hooks bound to the same behavior run in parallel. Hooks only ever run in `executing`.
+- **Gate** — a script that fires at a state transition. Use `phase: entry` (just before entering the next state) or `phase: exit` (just before leaving the current one). Gates do host-side work — opening a PR, calling `gh pr merge`, restarting a service — and act as a checkpoint at the boundary.
 - **Kit** — a directory holding a `kit.yaml` together with hook and gate scripts and any supporting assets. Once installed, a kit can be referenced from any project's `task_behaviors`. Official packages live in the [boid-kits](https://github.com/novshi-tech/boid-kits) repository.
 
 Handlers communicate with `boid` over a fixed protocol: the task payload arrives on stdin, and a payload patch is expected on stdout.
@@ -76,26 +73,15 @@ Some commands legitimately need to reach outside the sandbox (for example `git p
 
 ## Worktree
 
-For behaviors that change a git repository (typically `feedback-loop`), `boid` creates a fresh **git worktree** on a new branch. A worktree is a git feature that lets you check out multiple branches of the same repository into separate directories simultaneously, so the task's edits stay in their own directory and do not collide with other tasks. The hook runs inside that worktree, its commits are pushed, and (if needed) a PR is created. Once the PR is merged, the worktree is cleaned up.
-
-## Verification finding
-
-An object inside `verification.findings` representing one issue a review-style script wants fixed. Each finding has:
-
-- `state` — which state wrote it (`executing` / `verifying` / `reworking`).
-- `status` — `open` if still unresolved, `resolved` if addressed.
-- `severity` — `info` (default), `warning`, `error`, or `fatal`. A task with any open `fatal` finding aborts immediately.
-- `message` — free-form text the rework script reads.
-
-The auto-transitions `verifying → reworking` and the exit out of the rework loop are decided entirely from the state of these findings.
+For behaviors that change a git repository, `boid` creates a fresh **git worktree** on a new branch. A worktree is a git feature that lets you check out multiple branches of the same repository into separate directories simultaneously, so the task's edits stay in their own directory and do not collide with other tasks. The hook runs inside that worktree, its commits are pushed, and (if needed) a PR is created. Once the PR is merged, the worktree is cleaned up.
 
 ## Action
 
 A discrete event that triggers a manual state transition. Examples:
 
 - `start` — advance the task from `pending` to `executing`.
-- `done` — force the task into `done` from any of the working states.
-- `abort` — force the task into `aborted` from any of the working states.
+- `reopen` — return a `done` task to `executing`, appending a new instruction to `Task.Instructions` (`--message "..."`).
+- `abort` — force the task into `aborted` from any non-terminal state.
 
 Send actions with `boid action send --task <id> --type <action>`, or issue them from the TUI / Web UI.
 

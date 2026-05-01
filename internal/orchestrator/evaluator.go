@@ -3,28 +3,24 @@ package orchestrator
 type Evaluator struct{}
 
 // InstructionTypeForStatus maps a task status to the corresponding InstructionType.
+// Only executing tasks have an instruction type now that verifying/reworking are removed.
 func InstructionTypeForStatus(status TaskStatus) InstructionType {
-	switch status {
-	case TaskStatusExecuting:
+	if status == TaskStatusExecuting {
 		return InstructionTypeExecution
-	case TaskStatusReworking:
-		return InstructionTypeRework
-	case TaskStatusVerifying:
-		return InstructionTypeVerification
-	default:
-		return ""
 	}
+	return ""
 }
 
-// extractInstructionConsumers returns the set of consumer names that have an
-// instruction of the given type in the task.
-func extractInstructionConsumers(instructions map[string]Instruction, instType InstructionType) map[string]bool {
+// extractInstructionConsumers returns the set of consumer names that appear
+// in the task's instruction history matching the given type. Empty type or
+// empty list yields nil.
+func extractInstructionConsumers(instructions Instructions, instType InstructionType) map[string]bool {
 	if instType == "" || len(instructions) == 0 {
 		return nil
 	}
 	consumers := make(map[string]bool)
 	for _, inst := range instructions {
-		if inst.Type == instType {
+		if inst.Type == "" || inst.Type == instType {
 			consumers[inst.Consumer] = true
 		}
 	}
@@ -35,10 +31,13 @@ func extractInstructionConsumers(instructions map[string]Instruction, instType I
 }
 
 // Evaluate returns hooks that should fire for the given task.
-// Hooks with Kind == HandlerKindAgent participate in instructions routing:
-// they fire only when task.Instructions contains an instruction of the
-// current status's type addressed to that hook's Consumer.
+// Hooks fire only during executing state. Hooks with Kind == HandlerKindAgent
+// additionally require an instruction in task.Instructions addressed to that
+// hook's Consumer.
 func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
+	if task.Status != TaskStatusExecuting {
+		return nil
+	}
 	activeTraits, _ := ActiveTraitTypes(task.Payload)
 	traitSet := make(map[TraitType]bool, len(activeTraits))
 	for _, t := range activeTraits {
@@ -50,9 +49,6 @@ func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 
 	var matched []Hook
 	for _, h := range hooks {
-		if !h.On.Contains(string(task.Status)) {
-			continue
-		}
 		if !hasAllTraits(traitSet, h.Traits.Consumes) {
 			continue
 		}
@@ -73,7 +69,9 @@ func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 }
 
 // EvaluateGates returns gates that should fire for the given task and phase.
-// Unlike hooks, multiple gates may match the same state (kit composition).
+// Entry gates fire when transitioning into executing (status=pending),
+// exit gates fire when transitioning out of executing (status=executing).
+// Multiple gates may match (kit composition).
 func (e *Evaluator) EvaluateGates(task *Task, gates []Gate, phase GatePhase) []Gate {
 	activeTraits, _ := ActiveTraitTypes(task.Payload)
 	traitSet := make(map[TraitType]bool, len(activeTraits))
@@ -88,9 +86,6 @@ func (e *Evaluator) EvaluateGates(task *Task, gates []Gate, phase GatePhase) []G
 			gPhase = GatePhaseExit
 		}
 		if gPhase != phase {
-			continue
-		}
-		if !g.On.Contains(string(task.Status)) {
 			continue
 		}
 		if !hasAllTraits(traitSet, g.Traits.Consumes) {

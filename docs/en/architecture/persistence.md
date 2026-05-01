@@ -40,10 +40,10 @@ Key columns:
 | `project_id` | TEXT FK → projects.id | Owning project. |
 | `remote_id` / `datasource_id` | TEXT | Mapping to an external issue tracker (optional). |
 | `title` / `description` | TEXT | Display fields. |
-| `status` | TEXT | `pending` / `executing` / `verifying` / `reworking` / `done` / `aborted`. |
+| `status` | TEXT | `pending` / `executing` / `done` / `aborted` (legacy `verifying` / `reworking` rows were force-aborted by migration 0022). |
 | `behavior` | TEXT | The behavior name. |
 | `payload` | TEXT (JSON) | The current full payload. |
-| `instructions` | TEXT (JSON) | A `role → Instruction` map. |
+| `instructions` | TEXT (JSON) | An array of `Instruction`s; the last element is the active one and `reopen` appends to it. |
 | `auto_start` | BOOLEAN | Whether to start automatically on create. |
 | `traits` | TEXT (JSON array) | Trait names declared by the behavior. |
 | `readonly` / `worktree` | BOOLEAN | Sandbox mode flags. |
@@ -54,8 +54,8 @@ Key columns:
 
 **JSON columns**:
 
-- `payload` — A JSON document containing the traits (`artifact` / `tasks` / `verification` / ...). See [Payload trait reference](../reference/traits.md).
-- `instructions` — A `{role: Instruction}` map. See [Concepts](../guide/concepts.md).
+- `payload` — A JSON document containing the traits (`artifact` / `tasks`). See [Payload trait reference](../reference/traits.md).
+- `instructions` — An array of `Instruction` objects. The last element is the active one; `reopen` appends to it.
 - `traits` — A JSON array of trait names this task uses, derived from the behavior.
 
 A partial index on `(remote_id, datasource_id)` enforces uniqueness of the external ID. There is also a partial index on `parent_id` and a unique partial index on `(parent_id, ref)` to prevent collisions in the parent-child reference scheme.
@@ -159,7 +159,8 @@ migrations/
 ├── 0001_initial.sql
 ├── 0002_add_jobs_handler_id.sql
 ├── ...
-└── 0021_jobs_nullable_task_id.sql
+├── 0021_jobs_nullable_task_id.sql
+└── 0022_drop_verifying_reworking.sql
 ```
 
 Notes:

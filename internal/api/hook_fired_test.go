@@ -198,7 +198,7 @@ func TestRunDispatchLoop_PersistsFiredEventsOnFailedEntryGate(t *testing.T) {
 	coord := &hookFiredCoordinator{
 		dispatchResult: &orchestrator.DispatchResult{
 			FinalPayload: task.Payload,
-			NewStatus:    orchestrator.TaskStatusVerifying,
+			NewStatus:    orchestrator.TaskStatusDone,
 		},
 		entryResult: &orchestrator.EntryGateResult{
 			FiredEvents: []orchestrator.FiredEvent{
@@ -242,7 +242,7 @@ func TestRunDispatchLoop_EntryGateFiredActionsRecorded(t *testing.T) {
 		// First dispatch advances to verifying, second returns no advance
 		dispatchResult: &orchestrator.DispatchResult{
 			FinalPayload: task.Payload,
-			NewStatus:    orchestrator.TaskStatusVerifying,
+			NewStatus:    orchestrator.TaskStatusDone,
 		},
 		entryResult: &orchestrator.EntryGateResult{
 			FiredEvents: []orchestrator.FiredEvent{

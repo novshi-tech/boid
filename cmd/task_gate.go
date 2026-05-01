@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/url"
 
@@ -94,13 +93,8 @@ func runTaskGateList(cmd *cobra.Command, args []string) error {
 			if phase == "" {
 				phase = "exit"
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%-40s %-8s %s\n", g.ID, phase, formatOnValues(g.On))
+			fmt.Fprintf(cmd.OutOrStdout(), "%-40s %s\n", g.ID, phase)
 		}
 		return nil
 	})
-}
-
-func formatOnValues(on orchestrator.OnValues) string {
-	b, _ := json.Marshal(on)
-	return string(b)
 }

@@ -211,10 +211,10 @@ func renderProjectDetail(p *projectspec.Project) {
 				if len(h.Requires) > 0 {
 					requires = "  requires=[" + strings.Join(h.Requires, ",") + "]"
 				}
-				fmt.Printf("    hook: %-24s  on=%s%s\n", h.ID, strings.Join(h.On, ","), requires)
+				fmt.Printf("    hook: %s%s\n", h.ID, requires)
 			}
 			for _, g := range b.Gates {
-				fmt.Printf("    gate: %-24s  on=%s\n", g.ID, strings.Join(g.On, ","))
+				fmt.Printf("    gate: %-24s  phase=%s\n", g.ID, g.Phase)
 			}
 		}
 	}

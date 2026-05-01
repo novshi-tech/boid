@@ -1,6 +1,6 @@
 # 2. 最初のタスク
 
-このページでは AI エージェントを動かす前に、まずは `boid` のタスクライフサイクルだけを観察します。プロジェクトを 1 つ登録し、タスクを作って、状態が `pending → executing → verifying → done` と進む様子を CLI から手で確認します。所要時間は 5 分ほどです。
+このページでは AI エージェントを動かす前に、まずは `boid` のタスクライフサイクルだけを観察します。プロジェクトを 1 つ登録し、タスクを作って、状態が `pending → executing → done` と進む様子を CLI から手で確認します。所要時間は 5 分ほどです。
 
 [1. インストール](01-install.md) を完了している前提です。
 
@@ -80,11 +80,13 @@ boid action send --task <task-id> --type start
 
 ただし、この `hello` behavior には hook が紐付いていないため、 `executing` に入っても何も実行されません。 `boid task show <task-id>` で見ても `payload: {}` のままです。
 
-ここで、本来なら hook が書き込むはずの完了シグナル (`artifact` trait) を、手で書き込んでみます。 [概念](../guide/concepts.md#payload-と-trait) のとおり、 payload に `artifact` が現れると `boid` は「executing 完了」とみなして自動で `verifying` に進めます。
+ここでは本来 hook が成果物として書き込むはずの `artifact` trait を、手で書き込んでみます。 タスク自体は hook が無い (= `boid job done` の発火が無い) ため `executing` で止まったままになるので、 続けて `done` アクションで強制完了させます。
 
 ```bash
 echo '{"artifact":{"hello":"world"}}' \
   | boid task update <task-id> --payload-file -
+
+boid action send --task <task-id> --type done
 ```
 
 戻ってきた status を見てください。
@@ -93,10 +95,7 @@ echo '{"artifact":{"hello":"world"}}' \
 boid task show <task-id>
 ```
 
-`status: done` になっています。流れとしては:
-
-1. `artifact` が書き込まれた → `executing → verifying`
-2. `verifying` で動く検証 handler が無い → そのまま `done` に通過
+`status: done` になっています。実運用では hook が `artifact` を書いて正常終了 (`boid job done`) すると、 状態機械が `executing → done` を自動で遷移させます。
 
 ## 履歴を確認する
 
@@ -120,8 +119,8 @@ boid job list --task <task-id>
 
 - **プロジェクト** を `boid project add` で登録した
 - **behavior** を 1 つ宣言したが、 handler は紐付けなかった
-- **アクション** (`start`) で `pending → executing` を手動遷移させた
-- **payload patch** (`artifact`) を手で書き、 `executing → verifying → done` の自動遷移を観察した
+- **アクション** (`start` / `done`) で `pending → executing → done` を手動遷移させた
+- **payload patch** (`artifact`) を手で書き、 タスクの成果物として残した
 
 実運用ではこれらは AI エージェントを呼ぶ hook が自動で行います。次のチュートリアルでは kit を導入して、 `boid` に実作業をさせます。
 

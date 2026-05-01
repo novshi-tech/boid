@@ -1,119 +1,82 @@
 # State machine
 
-Every task in `boid` moves through the same state machine. There is one machine, not one per behavior — what differs between behaviors is which hooks and gates run in each state.
+Every task in `boid` moves through the same state machine. There is one machine, not one per behavior — what differs between behaviors is which hooks and gates run.
 
 This page documents the states, the transitions, and the rules that fire them. For the broader vocabulary, read [Concepts](concepts.md) first.
 
 ## States
 
 ```
-                 +--------+    abort / job_failed / fatal finding
-                 |aborted | <-----------------------------------+
-                 +--------+                                     |
-                                                                |
-   start                                                        |
-pending -----> executing -----> verifying -----> done           |
-                  ^   |             |  ^                        |
-                  |   |             |  |                        |
-                  |   v             v  |                        |
-                  +- reworking <----+  |                        |
-                       |               |                        |
-                       +---------------+                        |
-                                                                |
-                                       reopen                   |
-                                       <-----                   |
-                                       (done -> reworking)      |
+                 +--------+    abort / job_failed
+                 |aborted | <--------------------+
+                 +--------+                      |
+                                                 |
+   start                                         |
+pending -----> executing -----> done             |
+                  ^               |              |
+                  |  reopen       |              |
+                  +---------------+              |
 ```
 
 | State | Meaning |
 |---|---|
 | `pending` | Created, not yet started |
 | `executing` | Hooks are doing the main work |
-| `verifying` | Reviewer hooks/gates are checking the result |
-| `reworking` | Findings need to be fixed; the executing-side hook re-runs |
 | `done` | Terminal success |
-| `aborted` | Terminal failure (manual abort, fatal finding, exceeded rework limit, or job failure) |
+| `aborted` | Terminal failure (manual abort or job failure) |
 
 ## Manual transitions
 
 Sent as actions by the user or by handlers (`boid action send --task <id> --type <action>`):
 
-| Action | From | To |
-|---|---|---|
-| `start` | `pending` | `executing` |
-| `done` | `executing` / `verifying` / `reworking` | `done` |
-| `reopen` | `done` | `reworking` |
-| `abort` | any non-terminal state | `aborted` |
-| `job_failed` (system) | any non-terminal state | `aborted` |
+| Action | From | To | Notes |
+|---|---|---|---|
+| `start` | `pending` | `executing` | |
+| `done` | `executing` | `done` | Force completion (still runs the entry gate; usually let auto-transitions handle it). |
+| `reopen` | `done` | `executing` | Appends a new instruction and restarts (`--message` to supply it). |
+| `abort` | any non-terminal state | `aborted` | |
+| `job_failed` (system) | any non-terminal state | `aborted` | |
 
 ## Auto transitions
 
 Auto transitions fire on payload changes. After every payload update, the state machine evaluates all rules in priority order; the first match advances the task.
 
-### Abort (highest priority)
-
-Auto-fires from any state.
-
-- Any finding has `severity=fatal` and `status=open` → `aborted`
-- `lifecycle.rework_count` exceeds the configured limit while in `reworking` → `aborted` (configurable via `state_machine.rework_limit` in `~/.config/boid/config.yaml`, default 5)
-
 ### From `executing`
 
-Two inputs decide the transition:
+- `lifecycle.executed` is `true` (the most recent hook exited cleanly via `boid job done`) → `done`.
 
-- whether `artifact` or `tasks` has been written to the payload — either one means "the deliverables expected from `executing` are in place"
-- whether any open findings written during `executing` are still around
+`lifecycle.executed` is not a persisted trait; the state machine reads the hook completion event and re-evaluates. After a `done` transition the flag resets, so a `reopen` returns to `executing` and waits for the next hook completion.
 
-Combining them gives:
+### Entry gate before `done`
 
-- deliverables present + open findings from `executing` → `reworking`
-- deliverables present + no open findings → `verifying`
-- no deliverables but `lifecycle.executed` is true → `done` (the work was carried out but produced nothing that needs verifying)
+If an entry gate is registered for `done` (gates run on the host), it fires immediately before the transition. A non-zero exit blocks the transition and keeps the task in `executing`.
 
-`artifact` and `tasks` play symmetric roles: plan-style tasks write `tasks`, dev-style tasks write `artifact`. Different trait names, same meaning — "`executing` is finished, move on to verification".
+## Reopen with a new instruction
 
-### From `verifying`
+`boid task reopen <id> --message "..."` returns a `done` task to `executing` and appends a new `Instruction` to `Task.Instructions`. The last element of the array is the active instruction; `consumer`, `model`, and `interactive` are inherited from the previously active one.
 
-- Open findings sourced from `verifying` → `reworking`
-- No open findings → `done` (pass-through if no verification gate exists)
-
-### From `reworking`
-
-- All findings sourced from `reworking` resolved → `verifying` (re-enter verification)
-- Some findings sourced from `reworking` still open → stays in `reworking` (self-loop until resolved)
-
-The reworking exit checks only findings sourced from `reworking`. Findings sourced from `verifying` (such as `mergeable-check`) do not block reworking exit — they get re-evaluated when the task re-enters `verifying`.
-
-## How findings drive the loop
-
-Findings are objects in `verification.findings`. Each one carries:
-
-- `state` — which state generated it (`executing`, `verifying`, `reworking`)
-- `status` — `open` or `resolved`
-- `severity` — `info` (default), `warning`, `error`, `fatal` (any open `fatal` aborts immediately)
-- `message` — free-form text the rework hook can read
-
-A review-style hook or gate writes findings via a payload patch. The daemon re-evaluates the auto-transition rules on the resulting payload change, so any qualifying transition fires immediately afterwards.
-
-## Rework limit and abort
-
-`reworking → aborted` triggers if `lifecycle.rework_count` exceeds the configured limit. Default is 5; override in `~/.config/boid/config.yaml`:
-
-```yaml
-state_machine:
-  rework_limit: 10
+```bash
+# Send the task back through executing with a new ask
+boid task reopen abc-123 --message "Resolve the merge conflict against origin/main and push again"
 ```
 
-This guards against runaway rework loops. The aborted task carries `code=rework_limit_exceeded` in its abort reason, so you can tell rework-limit aborts apart from other failures.
+Each reopen appends to the array, so historical instructions are preserved and observable as `Task.Instructions[..]`.
 
-## Mode of operation: one-shot vs feedback-loop
+## Hooks and gates
 
-As stated earlier, `boid` runs a single state machine that does not change with the behavior. "One-shot" and "feedback-loop" are not two different machines — they are shorthand for how the handlers wired to a given behavior end up interacting with that single machine.
+- **hook**: the substantive work, runs in the sandbox. Hooks only fire while the task is `executing`. A clean exit (`boid job done`) sets `lifecycle.executed = true`, which drives the auto-transition.
+- **gate**: optional host-side scripts. Only `phase: entry` (just before `pending → executing`) and `phase: exit` (just before `executing → done`) are valid. Use them for actions that must touch the host: opening PRs, calling `gh pr merge`, restarting services, and so on.
 
-- **One-shot-style configuration** — no verifying-state handler, or one that never writes findings. The task passes through `executing → verifying → done` once.
-- **Feedback-loop-style configuration** — a verifying-state handler that can write findings. As soon as one is written, the task drops back into `reworking`, and a rework-state handler iterates until every finding has been resolved.
+The old `on:` field on hooks and gates has been removed. Hooks always run in `executing`; gates are controlled solely by `phase`.
 
-The difference comes entirely from **which handlers are wired into the behavior** — there is no `transition` configuration field to flip.
+## Modes of operation
+
+Because there is one state machine, behavior shapes come from:
+
+- which hooks and gates are wired into the behavior, and
+- whether failures are handled by `reopen` or by spawning a fresh task.
+
+The harness does not encode a verification loop. Failure detection and the recovery plan live in the agent's instruction text.
 
 ## Reading from the CLI
 

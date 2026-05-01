@@ -182,7 +182,7 @@ func TestTaskWorkflowServiceRunDispatchLoop_MustNotOverwriteTerminalStatusWhenPe
 	txStore := &recordingTxStore{task: completed}
 	lifecycle := &stubLifecycle{}
 	svc := &TaskWorkflowService{
-		Tx:        recordingTransactor{store: txStore},
+		Tx: recordingTransactor{store: txStore},
 		Coordinator: fixedDispatchResult{
 			result: &orchestrator.DispatchResult{
 				FinalPayload: []byte(`{"prompt":"start","artifact":{"summary":"ok"}}`),
@@ -235,7 +235,7 @@ func TestTaskWorkflowServiceRunDispatchLoop_MustNotOverwriteTerminalStatusWhenAd
 		Coordinator: fixedDispatchResult{
 			result: &orchestrator.DispatchResult{
 				FinalPayload: []byte(`{"prompt":"start","artifact":{"summary":"ok"}}`),
-				NewStatus:    orchestrator.TaskStatusVerifying,
+				NewStatus:    orchestrator.TaskStatusDone,
 			},
 		},
 		Lifecycle: lifecycle,

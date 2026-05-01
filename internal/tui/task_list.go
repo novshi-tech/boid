@@ -39,8 +39,6 @@ type tableRow [5]string
 // Active tasks are being processed by the system, so faster polling improves responsiveness.
 var activeStatuses = map[orchestrator.TaskStatus]bool{
 	orchestrator.TaskStatusExecuting: true,
-	orchestrator.TaskStatusReworking: true,
-	orchestrator.TaskStatusVerifying: true,
 }
 
 // tickIntervalForTasks returns activeTaskPollInterval if any task in the slice is active,
@@ -57,8 +55,6 @@ func tickIntervalForTasks(tasks []*orchestrator.Task) time.Duration {
 // openStatuses defines which task statuses are considered "open".
 var openStatuses = map[orchestrator.TaskStatus]bool{
 	orchestrator.TaskStatusExecuting: true,
-	orchestrator.TaskStatusReworking: true,
-	orchestrator.TaskStatusVerifying: true,
 	orchestrator.TaskStatusPending:   true,
 }
 
@@ -1008,10 +1004,6 @@ func taskStatusRaw(status orchestrator.TaskStatus) (dot, text string) {
 	switch status {
 	case orchestrator.TaskStatusExecuting:
 		return "●", "executing"
-	case orchestrator.TaskStatusReworking:
-		return "●", "reworking"
-	case orchestrator.TaskStatusVerifying:
-		return "●", "verifying"
 	case orchestrator.TaskStatusPending:
 		return "○", "pending"
 	case orchestrator.TaskStatusDone:
@@ -1027,10 +1019,8 @@ func taskStatusRaw(status orchestrator.TaskStatus) (dot, text string) {
 // STATUS セルのドット着色専用。Bold は親判定（styleTreeParent）側で行う。
 func taskCellStyle(task *orchestrator.Task) lipgloss.Style {
 	switch task.Status {
-	case orchestrator.TaskStatusExecuting, orchestrator.TaskStatusReworking:
+	case orchestrator.TaskStatusExecuting:
 		return styleExecuting
-	case orchestrator.TaskStatusVerifying:
-		return styleVerifying
 	case orchestrator.TaskStatusDone:
 		return styleTaskDim
 	case orchestrator.TaskStatusAborted:
@@ -1050,10 +1040,6 @@ func taskStatusDisplay(status orchestrator.TaskStatus) (dot, text string) {
 	switch status {
 	case orchestrator.TaskStatusExecuting:
 		return styleExecuting.Render("●"), styleExecuting.Render("executing")
-	case orchestrator.TaskStatusReworking:
-		return styleExecuting.Render("●"), styleExecuting.Render("reworking")
-	case orchestrator.TaskStatusVerifying:
-		return styleVerifying.Render("●"), styleVerifying.Render("verifying")
 	case orchestrator.TaskStatusPending:
 		return styleTaskDim.Render("○"), styleTaskDim.Render("pending")
 	case orchestrator.TaskStatusDone:

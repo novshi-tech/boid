@@ -26,7 +26,7 @@ func TestCoordinator_DispatchEntryGates_NoMatch(t *testing.T) {
 		Payload:   json.RawMessage(`{}`),
 	}
 	meta := metaWithBehavior(nil, []projectspec.Gate{
-		{ID: "exit-gate", On: projectspec.OnValues{"executing"}, Phase: projectspec.GatePhaseExit},
+		{ID: "exit-gate", Phase: projectspec.GatePhaseExit},
 	})
 
 	result, err := coord.DispatchEntryGates(context.Background(), task, meta)
@@ -62,7 +62,6 @@ func TestCoordinator_DispatchEntryGates_SingleGate(t *testing.T) {
 	meta := metaWithBehavior(nil, []projectspec.Gate{
 		{
 			ID:    "fetch-jira",
-			On:    projectspec.OnValues{"executing"},
 			Phase: projectspec.GatePhaseEntry,
 			Traits: projectspec.HandlerTraits{
 				Produces: []projectspec.TraitType{projectspec.TraitArtifact},
@@ -108,7 +107,6 @@ func TestCoordinator_DispatchEntryGates_EmptyOutput(t *testing.T) {
 	meta := metaWithBehavior(nil, []projectspec.Gate{
 		{
 			ID:    "noop-gate",
-			On:    projectspec.OnValues{"done"},
 			Phase: projectspec.GatePhaseEntry,
 			Traits: projectspec.HandlerTraits{
 				Produces: []projectspec.TraitType{projectspec.TraitArtifact},
@@ -146,9 +144,9 @@ func TestCoordinator_DispatchEntryGates_ExclusiveCollision(t *testing.T) {
 		Payload:   json.RawMessage(`{}`),
 	}
 	meta := metaWithBehavior(nil, []projectspec.Gate{
-		{ID: "gate-a", On: projectspec.OnValues{"executing"}, Phase: projectspec.GatePhaseEntry,
+		{ID: "gate-a", Phase: projectspec.GatePhaseEntry,
 			Traits: projectspec.HandlerTraits{Produces: []projectspec.TraitType{projectspec.TraitArtifact}}},
-		{ID: "gate-b", On: projectspec.OnValues{"executing"}, Phase: projectspec.GatePhaseEntry,
+		{ID: "gate-b", Phase: projectspec.GatePhaseEntry,
 			Traits: projectspec.HandlerTraits{Produces: []projectspec.TraitType{projectspec.TraitArtifact}}},
 	})
 
@@ -177,7 +175,7 @@ func TestCoordinator_DispatchAndAdvance_IgnoresEntryGates(t *testing.T) {
 		Payload:   json.RawMessage(`{}`),
 	}
 	meta := metaWithBehavior(nil, []projectspec.Gate{
-		{ID: "entry-gate", On: projectspec.OnValues{"executing"}, Phase: projectspec.GatePhaseEntry,
+		{ID: "entry-gate", Phase: projectspec.GatePhaseEntry,
 			Traits: projectspec.HandlerTraits{Produces: []projectspec.TraitType{projectspec.TraitArtifact}}},
 	})
 	sm := simpleStateMachine()

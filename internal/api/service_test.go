@@ -385,8 +385,6 @@ func TestTaskAppServiceDeleteTask(t *testing.T) {
 func TestTaskAppServiceDeleteTask_ActiveStatusBlockedWithoutForce(t *testing.T) {
 	activeStatuses := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusExecuting,
-		orchestrator.TaskStatusReworking,
-		orchestrator.TaskStatusVerifying,
 	}
 	for _, status := range activeStatuses {
 		task := &orchestrator.Task{
@@ -582,13 +580,13 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store, Actions: &stubActionStore{}}
 
-		body := json.RawMessage(`{"main":{"type":"execution","consumer":"claude-code","message":"do stuff"}}`)
+		body := json.RawMessage(`[{"type":"execution","consumer":"claude-code","message":"do stuff"}]`)
 		got, err := svc.UpdateTask("task-6", UpdateTaskRequest{Instructions: body})
 		if err != nil {
 			t.Fatalf("UpdateTask() error = %v", err)
 		}
-		if _, ok := got.Instructions["main"]; !ok {
-			t.Fatal("expected instructions.main to be set")
+		if len(got.Instructions) == 0 {
+			t.Fatal("expected instructions to be set")
 		}
 	})
 
@@ -695,11 +693,11 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		}
 	})
 
-	t.Run("branch_prefix update rejected while verifying", func(t *testing.T) {
+	t.Run("branch_prefix update rejected while executing", func(t *testing.T) {
 		task := &orchestrator.Task{
 			ID:     "task-12",
 			Title:  "title",
-			Status: orchestrator.TaskStatusVerifying,
+			Status: orchestrator.TaskStatusExecuting,
 		}
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
@@ -707,7 +705,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		v := "feature/"
 		_, err := svc.UpdateTask("task-12", UpdateTaskRequest{BranchPrefix: &v})
 		if err == nil {
-			t.Fatal("expected UpdateTask to reject branch_prefix change while verifying")
+			t.Fatal("expected UpdateTask to reject branch_prefix change while executing")
 		}
 		se, ok := err.(*StatusError)
 		if !ok || se.Code != http.StatusConflict {
@@ -1015,8 +1013,8 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_DefaultInstructionsMerged(t *test
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
-	if _, ok := task.Instructions["main"]; !ok {
-		t.Error("expected task.Instructions.main to be set from default_instructions")
+	if len(task.Instructions) == 0 {
+		t.Error("expected task.Instructions to be set from default_instructions")
 	}
 }
 
@@ -1100,8 +1098,8 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_NameRequired(t *testing.T) {
 	}
 
 	_, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID: "proj-1",
-		Title:     "bad request",
+		ProjectID:    "proj-1",
+		Title:        "bad request",
 		BehaviorSpec: &orchestrator.BehaviorSpec{},
 	})
 	if err == nil {
@@ -1249,7 +1247,7 @@ func (s *stubTx) ListActionsByTask(taskID string) ([]*orchestrator.Action, error
 func (s *stubTx) GetJob(id string) (*Job, error)                                  { return nil, fmt.Errorf("not found") }
 func (s *stubTx) ListJobsByTask(taskID string) ([]*Job, error)                    { return nil, nil }
 func (s *stubTx) UpdateJob(job *Job) error                                        { return nil }
-func (s *stubTx) WithinTx(fn func(TxStore) error) error                          { return fn(s) }
+func (s *stubTx) WithinTx(fn func(TxStore) error) error                           { return fn(s) }
 
 type stubJobStore struct {
 	job         *Job
@@ -1395,8 +1393,8 @@ func TestDuplicateTask_InstructionsFromDefaultInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DuplicateTask() error = %v", err)
 	}
-	if _, ok := task.Instructions["main"]; !ok {
-		t.Error("instructions.main missing: should come from default_instructions")
+	if len(task.Instructions) == 0 {
+		t.Error("instructions missing: should come from default_instructions")
 	}
 	if len(task.Payload) > 0 && string(task.Payload) != "{}" && string(task.Payload) != "null" {
 		var m map[string]json.RawMessage
@@ -1536,8 +1534,6 @@ func TestRerunTask_WrongStatusUnit(t *testing.T) {
 	wrongStatuses := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusPending,
 		orchestrator.TaskStatusExecuting,
-		orchestrator.TaskStatusReworking,
-		orchestrator.TaskStatusVerifying,
 	}
 	for _, status := range wrongStatuses {
 		t.Run(string(status), func(t *testing.T) {
@@ -1607,7 +1603,7 @@ func TestRerunTask_PreservesInstructionsUnit(t *testing.T) {
 		Status:       orchestrator.TaskStatusAborted,
 		Behavior:     "dev",
 		Payload:      json.RawMessage(`{"artifact":{"url":"old"}}`),
-		Instructions: map[string]orchestrator.Instruction{"main": {Type: orchestrator.InstructionTypeExecution, Consumer: "c"}},
+		Instructions: orchestrator.Instructions{{Type: orchestrator.InstructionTypeExecution, Consumer: "c"}},
 	}
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store}
@@ -1616,8 +1612,8 @@ func TestRerunTask_PreservesInstructionsUnit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RerunTask() error = %v", err)
 	}
-	if _, ok := result.Instructions["main"]; !ok {
-		t.Error("instructions.main should be preserved after rerun")
+	if len(result.Instructions) == 0 {
+		t.Error("instructions should be preserved after rerun")
 	}
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(result.Payload, &m); err != nil {
@@ -1633,20 +1629,21 @@ func TestRerunTask_InstructionsOverrideApplied(t *testing.T) {
 		ID:       "task-1",
 		Status:   orchestrator.TaskStatusAborted,
 		Behavior: "dev",
-		Instructions: map[string]orchestrator.Instruction{
-			"main": {Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Model: "sonnet-4-6"},
+		Instructions: orchestrator.Instructions{
+			{Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Model: "sonnet-4-6"},
 		},
 	}
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store, Actions: &stubActionStore{}}
 
-	override := json.RawMessage(`{"main":{"type":"execution","consumer":"claude-code","model":"opus-4-7"}}`)
+	override := json.RawMessage(`[{"type":"execution","consumer":"claude-code","model":"opus-4-7"}]`)
 	result, err := svc.RerunTask("task-1", RerunTaskRequest{InstructionsOverride: override})
 	if err != nil {
 		t.Fatalf("RerunTask() error = %v", err)
 	}
-	if result.Instructions["main"].Model != "opus-4-7" {
-		t.Errorf("expected model opus-4-7, got %q", result.Instructions["main"].Model)
+	active := result.Instructions.Active()
+	if active == nil || active.Model != "opus-4-7" {
+		t.Errorf("expected model opus-4-7, got %#v", active)
 	}
 }
 
@@ -1906,8 +1903,8 @@ func (s *treeTestStore) GetTask(id string) (*orchestrator.Task, error) {
 func (s *treeTestStore) ListTasks(_ orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
 	return nil, nil
 }
-func (s *treeTestStore) UpdateTask(_ *orchestrator.Task) error  { return nil }
-func (s *treeTestStore) DeleteTask(_ string) error              { return nil }
+func (s *treeTestStore) UpdateTask(_ *orchestrator.Task) error { return nil }
+func (s *treeTestStore) DeleteTask(_ string) error             { return nil }
 func (s *treeTestStore) FindTaskByRemote(_, _ string) (*orchestrator.Task, error) {
 	return nil, nil
 }
@@ -2097,8 +2094,8 @@ func (s *stubProjectMetaStore) Get(id string) (*orchestrator.ProjectMeta, bool) 
 	m, ok := s.metas[id]
 	return m, ok
 }
-func (s *stubProjectMetaStore) Remove(id string)                                    {}
-func (s *stubProjectMetaStore) LoadAll(_ []*orchestrator.Project) []error           { return nil }
+func (s *stubProjectMetaStore) Remove(id string)                          {}
+func (s *stubProjectMetaStore) LoadAll(_ []*orchestrator.Project) []error { return nil }
 
 // TestProjectAppService_ResolveProjectRef tests all resolution priority cases.
 func TestProjectAppService_ResolveProjectRef(t *testing.T) {

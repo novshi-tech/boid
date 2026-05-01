@@ -466,9 +466,6 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 	hooksDir := filepath.Join(dir, "hooks")
 	for i := range meta.Hooks {
 		h := &meta.Hooks[i]
-		if len(h.On) == 0 || !h.On.AllValid(ValidHookOnValues) {
-			return nil, fmt.Errorf("hook %q: invalid on value %v", h.ID, []string(h.On))
-		}
 		if err := validateHookKind(h); err != nil {
 			return nil, fmt.Errorf("kit.yaml: %w", err)
 		}
@@ -485,8 +482,8 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 	gatesDir := filepath.Join(dir, "gates")
 	for i := range meta.Gates {
 		g := &meta.Gates[i]
-		if len(g.On) == 0 || !g.On.AllValid(ValidGateOnValues) {
-			return nil, fmt.Errorf("gate %q: invalid on value %v", g.ID, []string(g.On))
+		if g.Phase != GatePhaseEntry && g.Phase != GatePhaseExit {
+			return nil, fmt.Errorf("gate %q: phase must be 'entry' or 'exit', got %q", g.ID, g.Phase)
 		}
 		scriptPath, err := ResolveGateScript(gatesDir, g.ID)
 		if err != nil {

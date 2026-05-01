@@ -12,74 +12,43 @@
 | status | 役割 | FS | 出力 trait |
 |--------|------|-----|-----------|
 | executing | 指示に従い実装する | RW | artifact |
-| verifying | 成果物を検証する | RO | verification |
-| reworking | findings を修正する | RW | artifact |
 
 pending, done, aborted ではエージェントは起動されない。
 
 ## Unified Flow
 
 すべてのタスクは単一の state machine で動作する。
-`transition:` 指定は廃止されており、遷移は payload の内容に基づいてシステムが自動判定する。
-
-### 動作パターン
-
-**単純タスク**（verify gate が全 findings を resolved にする場合）:
+状態は `pending → executing → done` の 3 つで、 失敗時のみ `aborted` で終端する。
 
 ```
-pending → executing → verifying → done
-```
-
-**CI 系**（pr-verify gate が executing / reworking に反応する場合）:
-
-```
-pending → executing → reworking → verifying → done
-```
-
-**verify 系**（verifying gate が unresolved findings を返す場合）:
-
-```
-pending → executing → verifying → reworking → verifying → done
-                                      ↑              │
-                                      └──────────────┘
-                                    (unresolved findings)
+pending → executing → done
+              ↑
+              │ reopen で done から戻れる
+              │
+done ─────────┘
 ```
 
 ## Per-Status Guide
 
 ### executing
 
-instructions.yaml の指示に従って作業する。
+instructions の指示に従って作業する。
 
-作業完了時、artifact trait を出力する。
+- 作業完了時、 `~/.boid/output/payload_patch.json` に `artifact` trait を出力する
+- 正常終了 (exit 0) すると hook trap が `boid job done` を発火し、 状態機械が `executing → done` に進める
+- 修正不可能なエラーに遭遇した場合は abort で打ち切る:
+  `boid task abort <task_id> --code <reason> --message "<summary>"`
 
-### verifying
-
-payload.yaml の `artifact` を検証する。
-instructions.yaml にレビュー観点が記載されている。
-
-指摘事項を findings として verification trait に出力する。
-問題がなければ `status: "resolved"`、問題があれば `status: "open"` とする。
-
-プロジェクトディレクトリは読み取り専用。コードの変更はできない。
-
-### reworking
-
-executing と同じ権限（RW）で、修正作業を行う。
-payload.yaml の `verification` に `status: "open"` の findings があるので確認し、対応する。
-
-修正完了時、artifact trait を更新出力する。
+reopen で executing に戻された場合、 `Task.Instructions` 配列の最後の要素が新しい active 指示となる。 過去の指示は配列の前方に残るので、 文脈として参照できる。
 
 ## Auto-Transition
 
-状態遷移はシステムが payload の内容に基づいて自動判定する。
+状態遷移はシステムが hook の終了イベントに基づいて自動判定する。
 エージェントが明示的に遷移を指示する必要はない。
 
 | 条件 | 遷移 |
 |------|------|
-| artifact が non-null かつ executing 由来の unresolved findings なし | executing → verifying |
-| artifact が non-null かつ executing 由来の unresolved findings あり | executing → reworking |
-| verifying 由来の unresolved findings あり | verifying → reworking |
-| verifying 由来の unresolved findings なし | verifying → done |
-| 全 findings が resolved | reworking → verifying |
-| unresolved findings あり | reworking → reworking（継続） |
+| hook が exit 0 で終了 (`boid job done` 発火) | executing → done |
+| `done` 入場直前に exit gate が exit 0 を返す | executing → done が確定 |
+| `done` 入場直前に exit gate が exit 非 0 | 遷移ブロック (executing のまま残る) |
+| 任意の状態で `boid task abort` | * → aborted |

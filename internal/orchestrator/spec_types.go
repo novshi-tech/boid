@@ -113,9 +113,7 @@ func (h HostCommands) ToCommandDefs() map[string]CommandDef {
 type InstructionType string
 
 const (
-	InstructionTypeExecution    InstructionType = "execution"
-	InstructionTypeRework       InstructionType = "rework"
-	InstructionTypeVerification InstructionType = "verification"
+	InstructionTypeExecution InstructionType = "execution"
 )
 
 type Instruction struct {
@@ -125,6 +123,59 @@ type Instruction struct {
 	Message     string          `json:"message,omitempty" yaml:"message,omitempty"`
 	Interactive bool            `json:"interactive,omitempty" yaml:"interactive,omitempty"`
 	Model       string          `json:"model,omitempty" yaml:"model,omitempty"`
+}
+
+// Instructions is the persisted instruction history for a task. The most
+// recent entry is the "active" instruction passed to the agent on dispatch;
+// earlier entries are kept as history (e.g. for reopen tracking).
+//
+// JSON shape on the wire is an array. For backward compatibility, the legacy
+// single-instruction map form ({"main": {...}}) is also accepted on
+// unmarshal and converted to a single-element array.
+type Instructions []Instruction
+
+// Active returns the currently-active instruction (the last entry), or nil if
+// the list is empty.
+func (is Instructions) Active() *Instruction {
+	if len(is) == 0 {
+		return nil
+	}
+	return &is[len(is)-1]
+}
+
+// UnmarshalJSON accepts both the new array form and the legacy
+// {"main": {...}, "verify": {...}} map form. For the map form, only the
+// "main" entry is preserved (verifying/reworking variants were removed).
+func (is *Instructions) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*is = nil
+		return nil
+	}
+	// Try array first.
+	if data[0] == '[' {
+		var arr []Instruction
+		if err := json.Unmarshal(data, &arr); err != nil {
+			return err
+		}
+		*is = arr
+		return nil
+	}
+	// Legacy map: {"main": {...}, ...}
+	var m map[string]Instruction
+	if err := json.Unmarshal(data, &m); err != nil {
+		return fmt.Errorf("instructions: expected array or legacy map: %w", err)
+	}
+	if main, ok := m["main"]; ok {
+		*is = Instructions{main}
+		return nil
+	}
+	// Fallback: take any single entry (deterministic by sorted keys is unnecessary here).
+	for _, v := range m {
+		*is = Instructions{v}
+		return nil
+	}
+	*is = nil
+	return nil
 }
 
 type RoutedInstruction struct {
@@ -188,56 +239,41 @@ const (
 	RoleGate Role = "gate"
 )
 
-// OnValues holds one or more task status values for hook/gate matching.
-// In YAML it accepts both a scalar string ("executing") and a sequence
-// (["executing", "reworking"]).
-type OnValues []string
-
-func (o *OnValues) UnmarshalYAML(node *yaml.Node) error {
-	switch node.Kind {
-	case yaml.ScalarNode:
-		*o = OnValues{node.Value}
-	case yaml.SequenceNode:
-		var vals []string
-		if err := node.Decode(&vals); err != nil {
-			return err
-		}
-		*o = vals
-	default:
-		return fmt.Errorf("on: expected string or sequence, got %v", node.Tag)
-	}
-	return nil
-}
-
-// Contains reports whether status is listed in this set.
-func (o OnValues) Contains(status string) bool {
-	for _, v := range o {
-		if v == status {
-			return true
-		}
-	}
-	return false
-}
-
-// AllValid reports whether every value in o is present in valid.
-func (o OnValues) AllValid(valid map[string]bool) bool {
-	for _, v := range o {
-		if !valid[v] {
-			return false
-		}
-	}
-	return true
-}
-
 type Hook struct {
 	ID         string        `yaml:"id" json:"id"`
-	On         OnValues      `yaml:"on" json:"on"`
 	Kind       HandlerKind   `yaml:"kind,omitempty" json:"kind,omitempty"`
 	Traits     HandlerTraits `yaml:"traits" json:"traits"`
 	Requires   []string      `yaml:"requires" json:"requires"`
 	Consumer   string        `yaml:"consumer,omitempty" json:"consumer,omitempty"`
 	Kit        string        `yaml:"-" json:"kit,omitempty"`
 	ScriptPath string        `yaml:"-" json:"-"`
+}
+
+// UnmarshalYAML rejects legacy `on:` entries to surface migration breakage clearly.
+func (h *Hook) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if node.Content[i].Value == "on" {
+				return fmt.Errorf("hook %q: 'on:' is no longer supported (hooks always run during executing state)", hookIDFromNode(node))
+			}
+		}
+	}
+	type hookAlias Hook
+	var alias hookAlias
+	if err := node.Decode(&alias); err != nil {
+		return err
+	}
+	*h = Hook(alias)
+	return nil
+}
+
+func hookIDFromNode(node *yaml.Node) string {
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == "id" {
+			return node.Content[i+1].Value
+		}
+	}
+	return "<unknown>"
 }
 
 // GatePhase determines when a gate fires relative to a state transition.
@@ -250,7 +286,6 @@ const (
 
 type Gate struct {
 	ID         string        `yaml:"id" json:"id"`
-	On         OnValues      `yaml:"on" json:"on"`
 	Phase      GatePhase     `yaml:"phase,omitempty" json:"phase,omitempty"`
 	Traits     HandlerTraits `yaml:"traits" json:"traits"`
 	Kit        string        `yaml:"-" json:"kit,omitempty"`
@@ -260,11 +295,15 @@ type Gate struct {
 // UnmarshalYAML defaults Phase to GatePhaseExit when omitted.
 // Rejects `kind:` because gates cannot participate in instructions routing
 // (project directory is not mounted, so no agent can do meaningful work).
+// Rejects `on:` since gates are scoped to task entry/exit, not per-state.
 func (g *Gate) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind == yaml.MappingNode {
 		for i := 0; i+1 < len(node.Content); i += 2 {
-			if node.Content[i].Value == "kind" {
+			switch node.Content[i].Value {
+			case "kind":
 				return fmt.Errorf("gate %q: 'kind' is not supported on gates", gateIDFromNode(node))
+			case "on":
+				return fmt.Errorf("gate %q: 'on:' is no longer supported (gates run on task entry/exit, set 'phase: entry|exit' instead)", gateIDFromNode(node))
 			}
 		}
 	}

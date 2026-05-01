@@ -51,10 +51,10 @@ func TestRenderProjectDetail_MetaSections(t *testing.T) {
 						{Ref: "github.com/novshi-tech/boid-kits/dev"},
 					},
 					Hooks: []projectspec.Hook{
-						{ID: "on-start", On: projectspec.OnValues{"executing"}, Requires: []string{"gh"}},
+						{ID: "on-start", Requires: []string{"gh"}},
 					},
 					Gates: []projectspec.Gate{
-						{ID: "auto-merge", On: projectspec.OnValues{"done"}},
+						{ID: "auto-merge"},
 					},
 				},
 			},
@@ -80,9 +80,7 @@ func TestRenderProjectDetail_MetaSections(t *testing.T) {
 		"Development",
 		"kit: github.com/novshi-tech/boid-kits/dev",
 		"hook: on-start",
-		"executing",
 		"gate: auto-merge",
-		"done",
 		"HostCommands:",
 		"gh",
 		"AdditionalBindings:",

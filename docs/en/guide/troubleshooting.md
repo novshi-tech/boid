@@ -41,15 +41,10 @@ This is the single most common reason "I fixed it but it still happens" — when
 
 ## A task is stuck in `executing` forever
 
-Three possibilities:
+Two possibilities:
 
-1. **The hook (the executing-state script) is not finishing.** A hook blocked on a prompt, on an interactive command that never returns, or on an unresponsive agent leaves the daemon waiting for the job to complete. `boid job list --task <id>` will show a job stuck in `running`. Run `boid task abort <id>` to release it, then inspect the hook script.
-2. **The completion-signaling trait was never written to the payload.** Without `artifact` (or `tasks` for plan-style tasks), the `executing` auto-transition rules never fire. Use `boid task show <id>` to inspect the payload and verify the hook is emitting a payload patch that includes the expected trait.
-3. **An open finding sourced from `verifying` is still around.** Once a task has visited `verifying`, an unresolved finding keeps it pinned in `reworking`. Look at `verification.findings` in `boid task show <id>`.
-
-## A task is stuck in `reworking` forever
-
-Same logic as above but for the `reworking → verifying` direction. The rework-style hook running in `reworking` needs to flip every `reworking`-sourced finding to `resolved` to escape. If the hook keeps writing new findings, the task eventually hits the rework-count limit and aborts with `code=rework_limit_exceeded`. Raise `state_machine.rework_limit` in `~/.config/boid/config.yaml` if your workflow genuinely needs more than 5 cycles, but in most cases the real fix is in the rework-style hook itself.
+1. **The hook is not finishing.** A hook blocked on a prompt, on an interactive command that never returns, or on an unresponsive agent leaves the daemon waiting for the job to complete. `boid job list --task <id>` will show a job stuck in `running`. Run `boid task abort <id>` to release it, then inspect the hook script.
+2. **The `done` exit gate is failing.** If a host-side gate such as `gh pr merge` exits non-zero (e.g. PR conflict), the state machine blocks the `executing → done` transition. Inspect the gate job's exit code with `boid job list --task <id>`, then run `boid task reopen <id> --message "..."` to ask the agent to fix the underlying problem.
 
 ## `boid task list` is slow / disk fills up
 

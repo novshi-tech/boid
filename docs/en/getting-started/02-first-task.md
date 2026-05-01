@@ -1,6 +1,6 @@
 # 2. Your first task
 
-Before you wire up an AI agent, this page walks you through the bare task lifecycle. You will register one project, create a task, and watch it move through `pending → executing → verifying → done` from the CLI. It takes about five minutes.
+Before you wire up an AI agent, this page walks you through the bare task lifecycle. You will register one project, create a task, and watch it move through `pending → executing → done` from the CLI. It takes about five minutes.
 
 This page assumes you have completed [1. Install](01-install.md).
 
@@ -80,11 +80,13 @@ boid action send --task <task-id> --type start
 
 Because `hello` has no hooks attached, nothing actually runs in `executing`. `boid task show <task-id>` will keep showing `payload: {}`.
 
-So let's do by hand what a hook would normally do — write the trait that signals "executing is finished". As described in [Concepts](../guide/concepts.md#payload-and-traits), once `artifact` is present in the payload, `boid` treats `executing` as complete and advances the task automatically.
+Write the `artifact` trait by hand — the trait a real hook would normally produce — and then send the `done` action to advance the task. Without a hook there is no `boid job done` event to drive the auto-transition, so we close the task manually.
 
 ```bash
 echo '{"artifact":{"hello":"world"}}' \
   | boid task update <task-id> --payload-file -
+
+boid action send --task <task-id> --type done
 ```
 
 Look at the resulting status:
@@ -93,10 +95,7 @@ Look at the resulting status:
 boid task show <task-id>
 ```
 
-`status: done`. The chain was:
-
-1. `artifact` got written → `executing → verifying`
-2. No verifying-state handler exists → falls straight through to `done`
+`status: done`. In a real workflow, a hook would write `artifact` and exit cleanly via `boid job done`, and the state machine would auto-transition `executing → done` for you.
 
 ## Inspect history
 
@@ -114,8 +113,8 @@ What this tutorial introduced:
 
 - Registering a **project** with `boid project add`.
 - Declaring a **behavior** (with no handlers).
-- Sending an **action** (`start`) for a manual `pending → executing` transition.
-- Writing a **payload patch** (`artifact`) and watching the automatic `executing → verifying → done` transitions.
+- Sending **actions** (`start` / `done`) to drive `pending → executing → done` manually.
+- Writing a **payload patch** (`artifact`) to leave a result on the task.
 
 In a real workflow these last two steps come from hooks invoking AI agents. The next tutorial introduces kits so `boid` can do the work for you.
 

@@ -14,7 +14,7 @@ id: "abc-12345678"
 title: "ユーザー認証機能の実装"
 description: "OAuth2 を使ったログイン機能を追加する"
 status: "executing"
-behavior: "impl"
+behavior: "dev"
 ```
 
 | フィールド | 説明 |
@@ -27,62 +27,45 @@ behavior: "impl"
 
 ## instructions.yaml
 
-あなた宛の指示の配列。複数の instruction が届くことがある。
+あなた宛の指示の配列。 配列の最後の要素が今の active 指示で、 reopen のたびに append される。 過去の指示も配列の前方に残るので、 「前回何が依頼されたか」 を辿れる。
 
 ```yaml
 - role: executor
   type: execution
   consumer: claude-code
   message: "TDD で実装してください。テストを先に書くこと。"
+- role: executor
+  type: execution
+  consumer: claude-code
+  message: "lint エラーを修正して再 push してください。"   # reopen で append された
 ```
 
 | フィールド | 説明 |
 |-----------|------|
-| role | 指示の論理名（同一 consumer に複数 role がありうる） |
-| type | `execution`（実装指示）または `verification`（検証指示） |
+| role | 指示の論理名 |
+| type | `execution` のみ |
 | consumer | 宛先エージェント名 |
 | message | 具体的な指示内容 |
 
-全ての message を読み、総合的に作業すること。
+最後の要素を主指示として読み、 必要であれば前方の要素を文脈として参照する。
 
 ## payload.yaml
 
 タスクのペイロード全体。トップレベルキーが trait 名。
 
 ```yaml
-instructions: { ... }
 artifact: { ... }
-verification: { ... }
+tasks: [ ... ]
 ```
 
 ### Traits
 
 | trait | 用途 | 読み書き |
 |-------|------|---------|
-| instructions | エージェントへの指示 | 読み取り専用 |
-| artifact | 実装成果物 | 書き込み可（executing / reworking） |
-| verification | 検証結果 | 書き込み可（verifying） |
-| tasks | サブタスク配列 | 書き込み可（triage 用途） |
+| artifact | 実装成果物 | 書き込み可（executing） |
+| tasks | サブタスク配列 | 書き込み可（plan / triage 用途） |
 
-### verification の構造
-
-複数レビュアーの結果が reviewer ID ごとに格納される:
-
-```yaml
-verification:
-  security-reviewer:
-    source_state: verifying
-    findings:
-      - message: "XSS チェック OK"
-        status: resolved
-      - message: "SQL インジェクションの可能性"
-        status: open
-```
-
-- `source_state`: この検証が行われた時の task status（システム自動注入）
-- `findings[].status`: `open`（未解決）または `resolved`（解決済み）
-
-rework 時は `status: "open"` の findings を確認し、対応すること。
+instructions は payload の trait ではなく、 `task.yaml` と並ぶ別ファイル (`instructions.yaml`) で配信される。
 
 ## environment.yaml
 

@@ -7,113 +7,76 @@
 ## 状態
 
 ```
-                 +--------+    abort / job_failed / fatal finding
-                 |aborted | <-----------------------------------+
-                 +--------+                                     |
-                                                                |
-   start                                                        |
-pending -----> executing -----> verifying -----> done           |
-                  ^   |             |  ^                        |
-                  |   |             |  |                        |
-                  |   v             v  |                        |
-                  +- reworking <----+  |                        |
-                       |               |                        |
-                       +---------------+                        |
-                                                                |
-                                       reopen                   |
-                                       <-----                   |
-                                       (done -> reworking)      |
+                 +--------+    abort / job_failed
+                 |aborted | <--------------------+
+                 +--------+                      |
+                                                 |
+   start                                         |
+pending -----> executing -----> done             |
+                  ^               |              |
+                  |  reopen       |              |
+                  +---------------+              |
 ```
 
 | 状態 | 意味 |
 |---|---|
 | `pending` | 作成済み、未開始 |
 | `executing` | hook が主作業中 |
-| `verifying` | reviewer hook / gate が結果を検証中 |
-| `reworking` | finding を直す必要がある状態。 executing 側の hook が再実行される |
 | `done` | 成功で終端 |
-| `aborted` | 失敗で終端 (手動 abort、 fatal finding、 rework 上限超過、 job 失敗) |
+| `aborted` | 失敗で終端 (手動 abort、 job 失敗) |
 
 ## 手動遷移
 
 ユーザまたは handler が action として送信します (`boid action send --task <id> --type <action>`)。
 
-| Action | From | To |
-|---|---|---|
-| `start` | `pending` | `executing` |
-| `done` | `executing` / `verifying` / `reworking` | `done` |
-| `reopen` | `done` | `reworking` |
-| `abort` | 終端でない任意の状態 | `aborted` |
-| `job_failed` (system) | 終端でない任意の状態 | `aborted` |
+| Action | From | To | 備考 |
+|---|---|---|---|
+| `start` | `pending` | `executing` | |
+| `done` | `executing` | `done` | 強制完了 (gate を含むので通常は自動遷移にまかせる) |
+| `reopen` | `done` | `executing` | 新しい instruction を append して再開 (`--message` で渡す) |
+| `abort` | 終端でない任意の状態 | `aborted` | |
+| `job_failed` (system) | 終端でない任意の状態 | `aborted` | |
 
 ## 自動遷移
 
 自動遷移は payload の変更で発火します。 payload が更新されるたびに、状態機械はすべてのルールを優先度順に評価し、最初にマッチしたものでタスクを進めます。
 
-### Abort (最優先)
-
-任意の状態から自動発火します。
-
-- いずれかの finding が `severity=fatal` かつ `status=open` → `aborted`
-- `reworking` 中に `lifecycle.rework_count` が設定上限を超える → `aborted` (上限は `~/.config/boid/config.yaml` の `state_machine.rework_limit` で変更可、既定 5)
-
 ### `executing` から
 
-判定に使う材料は次の 2 つです:
+- `lifecycle.executed` が `true` (= 直近の hook が `boid job done` で正常終了した) → `done`
 
-- payload に `artifact` または `tasks` のいずれかが書かれているか — どちらも「executing で出すべき成果が出揃った」ことを表します
-- 状態 `executing` で書かれた open finding が残っているか
+`lifecycle.executed` は履歴から自動算出される transient な値ではなく、 hook の終了をフックして state machine が評価するだけのフラグです。 一度 done に遷移するとリセットされ、 reopen で executing に戻った場合は再度 hook の完了を待ちます。
 
-これらの組み合わせで遷移が決まります。
+### `done` 入場直前の gate
 
-- 成果が出揃った + `executing` で書かれた open finding あり → `reworking`
-- 成果が出揃った + open finding なし → `verifying`
-- 成果は出ていないが `lifecycle.executed` が true → `done` (実行はしたが直すべき成果物がなかった)
+`done` 状態への entry gate (host で実行される) があれば、 executing → done の遷移直前に発火します。 gate が exit code != 0 で失敗した場合は遷移がブロックされます。
 
-`artifact` と `tasks` は役割が対称で、 plan 系のタスクが `tasks` を、 dev 系のタスクが `artifact` を書きます。書く trait が違うだけで、いずれも「executing が終わったので検証へ進める」という同じ意味を持ちます。
+## reopen で instruction を追加する
 
-### `verifying` から
+`boid task reopen <id> --message "..."` は done のタスクを再 executing に戻し、 新しい `Instruction` を `Task.Instructions` 配列に append します。 配列の最後の要素が active として扱われ、 consumer / model / interactive は前回 active の値を継承します。
 
-- `verifying` 由来の open finding あり → `reworking`
-- open finding なし → `done` (verification gate がなければそのまま素通り)
-
-### `reworking` から
-
-- `reworking` 由来の finding がすべて resolved → `verifying` (検証に再入場)
-- `reworking` 由来の open finding が残っている → `reworking` のまま (解消まで自己ループ)
-
-reworking の退場判定は `reworking` 由来の finding のみを見ます。 `verifying` 由来の open finding (例: `mergeable-check`) は reworking 退場をブロックせず、 verifying 再入場時に同じ gate が再実行されて評価し直されます。
-
-## finding がループを駆動する
-
-finding は `verification.findings` 内のオブジェクトで、以下を持ちます。
-
-- `state` — 発生した状態 (`executing` / `verifying` / `reworking`)
-- `status` — `open` または `resolved`
-- `severity` — `info` (既定) / `warning` / `error` / `fatal` (open の `fatal` があれば即 abort)
-- `message` — rework hook が読む自由形式テキスト
-
-レビュー系の hook / gate が payload patch で finding を書き込み、それを契機に daemon が状態遷移ルールを再評価して自動遷移が発火します。
-
-## rework 上限と abort
-
-`reworking → aborted` は `lifecycle.rework_count` が設定上限を超えると発火します。既定は 5。 `~/.config/boid/config.yaml` で上書き:
-
-```yaml
-state_machine:
-  rework_limit: 10
+```bash
+# done のタスクを再開して 「conflict を解消して再 push」 を依頼する
+boid task reopen abc-123 --message "merge origin/main で conflict を解消して再 push"
 ```
 
-暴走 rework ループに対する安全装置です。 abort 理由には `code=rework_limit_exceeded` が記録されるので、他の失敗と区別できます。
+reopen で append された instruction は履歴として残り、 過去の active instruction も `Task.Instructions[..]` から参照できます。
 
-## 動作モード: one-shot と feedback-loop
+## gate と hook
 
-ここまで説明してきたとおり、 `boid` の状態機械は 1 つだけで、 behavior によって切り替わるわけではありません。「one-shot」 「feedback-loop」 は別々の状態機械があるという意味ではなく、 behavior に紐付ける handler の組み合わせが結果としてどう作用するかを表す呼び方です。
+- **hook**: サンドボックス内で実行される behavior の実体。 `executing` 中にのみ発火する。 `boid job done` の終了が `lifecycle.executed = true` を立て、 自動遷移を駆動する
+- **gate**: host で実行される optional なフック。 `phase: entry` (pending → executing 直前) または `phase: exit` (executing → done 直前) のみ宣言可能。 PR 作成、 `gh pr merge`、 サービス再起動など、 ホスト側でしかできない作業に使う
 
-- **one-shot 的な構成** — `verifying` 状態で動く検証 handler を持たない、または持っていても finding を書かない構成。タスクは `executing → verifying → done` を 1 回通って終わります
-- **feedback-loop 的な構成** — `verifying` 状態の検証 handler が finding を書きうる構成。書かれた時点で `reworking` に戻り、 `reworking` 状態の修正 handler が finding をすべて解消するまでループします
+旧来の `on:` フィールドは廃止されました。 hook の発火状態は固定 (executing) で、 gate は `phase` だけで指定します。
 
-挙動の差は behavior に **どの handler を紐付けるか** だけで決まり、 `transition` のような設定フィールドは存在しません。
+## 動作モード
+
+`boid` の状態機械は behavior に関わらず 1 種類だけです。タスクの動作の違いは、
+
+- どの hook / gate を behavior に紐付けるか
+- 失敗時に reopen を挟むか / 別タスクとして再投入するか
+
+で表現されます。 ハーネス側に「検証ループ」を組み込むのではなく、 失敗の検知と修正方針は agent instruction に書く方針です。
 
 ## CLI からの観察
 

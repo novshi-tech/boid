@@ -202,7 +202,7 @@ task_behaviors:
 
 	kitYAML := `hooks:
   - id: build-artifact
-    on: executing
+    
 `
 	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
 		t.Fatalf("write kit yaml: %v", err)

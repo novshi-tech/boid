@@ -3,7 +3,6 @@ package templates
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/timeline"
@@ -12,35 +11,28 @@ import (
 	"time"
 )
 
-// sortInstructionRoles returns the roles of an Instructions map in a
-// stable order: canonical roles (main → rework → verification) come
-// first in lifecycle order so the reader sees how the task is supposed
-// to run before seeing the variants; unknown roles are appended
-// alphabetically.
-func sortInstructionRoles(inst map[string]orchestrator.Instruction) []string {
+// instructionDisplay carries a single instruction history entry annotated
+// with the display label shown in the task detail view. The active
+// (most-recent) entry is rendered as "active"; older entries get their
+// numeric position to preserve audit context.
+type instructionDisplay struct {
+	Label       string
+	Instruction orchestrator.Instruction
+}
+
+// orderedInstructions returns the task's instruction history in display
+// order. The active entry comes first so the reader sees the live
+// instruction before any superseded history.
+func orderedInstructions(inst orchestrator.Instructions) []instructionDisplay {
 	if len(inst) == 0 {
 		return nil
 	}
-	priority := map[string]int{"main": 0, "rework": 1, "verification": 2}
-	roles := make([]string, 0, len(inst))
-	for role := range inst {
-		roles = append(roles, role)
+	out := make([]instructionDisplay, 0, len(inst))
+	out = append(out, instructionDisplay{Label: "active", Instruction: inst[len(inst)-1]})
+	for i := len(inst) - 2; i >= 0; i-- {
+		out = append(out, instructionDisplay{Label: fmt.Sprintf("history #%d", i+1), Instruction: inst[i]})
 	}
-	sort.Slice(roles, func(i, j int) bool {
-		pi, oki := priority[roles[i]]
-		pj, okj := priority[roles[j]]
-		switch {
-		case oki && okj:
-			return pi < pj
-		case oki:
-			return true
-		case okj:
-			return false
-		default:
-			return roles[i] < roles[j]
-		}
-	})
-	return roles
+	return out
 }
 
 // payloadAsYAML renders a JSON-encoded payload as YAML for the Payload
@@ -207,10 +199,9 @@ templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string
 
 // detailPrimaryAction picks the single state-aware "primary" action for the
 // bottom bar. Mirrors TUI semantics:
-//   - pending                          → start  (forward, primary)
-//   - executing/verifying/reworking    → abort  (the only safe manual move;
-//                                                done is intentionally hidden)
-//   - done/aborted                     → rerun  (re-create + restart)
+//   - pending          → start  (forward, primary)
+//   - executing        → abort  (the only safe manual move; done is intentionally hidden)
+//   - done/aborted     → rerun  (re-create + restart)
 // Returns ("", "") when no primary action applies.
 func detailPrimaryAction(task *orchestrator.Task, availableActions []string) (action, label string) {
 	switch task.Status {
@@ -220,9 +211,7 @@ func detailPrimaryAction(task *orchestrator.Task, availableActions []string) (ac
 				return "start", "Start"
 			}
 		}
-	case orchestrator.TaskStatusExecuting,
-		orchestrator.TaskStatusVerifying,
-		orchestrator.TaskStatusReworking:
+	case orchestrator.TaskStatusExecuting:
 		for _, a := range availableActions {
 			if a == "abort" {
 				return "abort", "Abort"
@@ -648,10 +637,10 @@ templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Stat
 		} else if activeTab == "instructions" {
 			<div class="tab-content">
 				if len(task.Instructions) > 0 {
-					for _, role := range sortInstructionRoles(task.Instructions) {
-						{{ inst := task.Instructions[role] }}
+					for _, entry := range orderedInstructions(task.Instructions) {
+						{{ inst := entry.Instruction }}
 						<section class="instr-block">
-							<h3 class="instr-role">{ role }</h3>
+							<h3 class="instr-role">{ entry.Label }</h3>
 							<div class="instr-meta">
 								<span class="instr-kv"><span class="instr-k">type</span>{ string(inst.Type) }</span>
 								<span class="instr-kv"><span class="instr-k">consumer</span>{ inst.Consumer }</span>

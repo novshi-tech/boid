@@ -1,6 +1,8 @@
+hooks:
+  - id: noop
+
 gates:
   - id: spawn
-    on: [executing]
-    behavior: parent
+    phase: exit
     traits:
       produces: [artifact]

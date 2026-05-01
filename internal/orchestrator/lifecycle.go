@@ -9,9 +9,8 @@ import (
 // the current dispatch state. It is never persisted to the payload; it is
 // injected transiently before state-machine evaluation.
 type Lifecycle struct {
-	Executed    bool         `json:"executed"`
-	ReworkCount int          `json:"rework_count"`
-	Abort       *AbortReason `json:"abort,omitempty"`
+	Executed bool         `json:"executed"`
+	Abort    *AbortReason `json:"abort,omitempty"`
 }
 
 // AbortReason holds metadata derived from the aborted-state transition action.
@@ -40,11 +39,6 @@ func DeriveLifecycle(_ context.Context, taskID string, store LifecycleStore, hoo
 		return lc, err
 	}
 	for _, a := range actions {
-		// hook_fired / exit_gate_fired carry to_status=reworking while the
-		// task stays in reworking; only count true transitions in.
-		if a.ToStatus == TaskStatusReworking && a.FromStatus != TaskStatusReworking {
-			lc.ReworkCount++
-		}
 		if a.ToStatus == TaskStatusAborted && lc.Abort == nil {
 			lc.Abort = abortReasonFromPayload(a.Payload)
 		}

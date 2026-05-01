@@ -1,7 +1,7 @@
 package tui
 
 import (
-	"sort"
+	"fmt"
 	"strings"
 
 	"github.com/novshi-tech/boid/internal/api"
@@ -9,25 +9,23 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// instructionRoleItem represents one role entry under task.Instructions.
+// instructionRoleItem represents one entry in a task's instruction history.
+// "active" labels the most recent entry; older entries get a positional index.
 type instructionRoleItem struct {
 	role        string
 	instruction orchestrator.Instruction
 }
 
-// extractInstructionRoles returns task.Instructions entries sorted by role name.
-func extractInstructionRoles(m map[string]orchestrator.Instruction) []instructionRoleItem {
-	if len(m) == 0 {
+// extractInstructionRoles returns task.Instructions entries with the active
+// (most recent) entry first, then older history in reverse-chronological order.
+func extractInstructionRoles(list orchestrator.Instructions) []instructionRoleItem {
+	if len(list) == 0 {
 		return nil
 	}
-	roles := make([]string, 0, len(m))
-	for r := range m {
-		roles = append(roles, r)
-	}
-	sort.Strings(roles)
-	out := make([]instructionRoleItem, 0, len(roles))
-	for _, r := range roles {
-		out = append(out, instructionRoleItem{role: r, instruction: m[r]})
+	out := make([]instructionRoleItem, 0, len(list))
+	out = append(out, instructionRoleItem{role: "active", instruction: list[len(list)-1]})
+	for i := len(list) - 2; i >= 0; i-- {
+		out = append(out, instructionRoleItem{role: fmt.Sprintf("history #%d", i+1), instruction: list[i]})
 	}
 	return out
 }

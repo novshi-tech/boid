@@ -29,7 +29,7 @@ Step-by-step walkthroughs.
 Concept-oriented how-to.
 
 - [Concepts](guide/concepts.md) — explains the internal vocabulary: task, job, hook, gate, kit, payload, trait, and more
-- [State machine](guide/state-machine.md) — `executing → verifying → reworking → done`
+- [State machine](guide/state-machine.md) — `pending → executing → done` (plus `aborted`)
 - [Web UI](guide/web-ui.md) — pairing and revoking devices, exposing the UI through Cloudflare Tunnel
 - [Troubleshooting](guide/troubleshooting.md)
 
@@ -37,7 +37,7 @@ Concept-oriented how-to.
 
 - [`project.yaml` reference](reference/project-yaml.md) — every field of the project definition file
 - [Handler script protocol](reference/handler-contract.md) — the hook / gate I/O contract (stdin, env vars, `payload_patch.json`, exit codes, ...)
-- [Payload trait reference](reference/traits.md) — the shape of `artifact` / `tasks` / `verification` / `lifecycle`, what the state machine reads, and the merge modes
+- [Payload trait reference](reference/traits.md) — the shape of `artifact` / `tasks` / `lifecycle`, what the state machine reads, and the merge modes
 - [CLI reference](reference/cli.md) — index of every subcommand grouped by role (per-flag detail lives in `boid <subcommand> --help`)
 - [HTTP API reference](reference/http-api.md) — the `/api/*` endpoints the daemon exposes over the UNIX socket and HTTP listener, plus SSE and error format
 

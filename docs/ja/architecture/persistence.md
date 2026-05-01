@@ -40,10 +40,10 @@
 | `project_id` | TEXT FK → projects.id | 所属プロジェクト |
 | `remote_id` / `datasource_id` | TEXT | 外部 issue tracker との対応 (任意) |
 | `title` / `description` | TEXT | 表示用 |
-| `status` | TEXT | `pending` / `executing` / `verifying` / `reworking` / `done` / `aborted` |
+| `status` | TEXT | `pending` / `executing` / `done` / `aborted` (旧 `verifying` / `reworking` は migration 0022 で `aborted` に強制遷移済み) |
 | `behavior` | TEXT | このタスクの behavior 名 |
 | `payload` | TEXT (JSON) | 現在の payload 全体 |
-| `instructions` | TEXT (JSON) | role → Instruction のマップ |
+| `instructions` | TEXT (JSON) | Instruction の配列 (最後の要素が active、 reopen で append される) |
 | `auto_start` | BOOLEAN | 作成時に自動 start するか |
 | `traits` | TEXT (JSON 配列) | このタスクの behavior が宣言する trait |
 | `readonly` / `worktree` | BOOLEAN | サンドボックスのモード |
@@ -54,8 +54,8 @@
 
 **JSON カラムの役割**:
 
-- `payload` — `artifact` / `tasks` / `verification` などの trait を含む JSON ドキュメント。 trait の意味は [Payload trait リファレンス](../reference/traits.md)
-- `instructions` — `{role: Instruction}` のマップ。 [概念](../guide/concepts.md) の instructions
+- `payload` — `artifact` / `tasks` などの trait を含む JSON ドキュメント。 trait の意味は [Payload trait リファレンス](../reference/traits.md)
+- `instructions` — Instruction の配列。 配列の最後の要素が active、 reopen で append される
 - `traits` — このタスクが扱う trait 名の配列 (behavior 由来)
 
 `(remote_id, datasource_id)` には部分インデックスがあり、外部 ID のユニーク性を担保しています。 `(parent_id)` には部分インデックス、 `(parent_id, ref)` にはユニークインデックスがあり、親子参照と ref 衝突を防いでいます。
@@ -159,7 +159,8 @@ migrations/
 ├── 0001_initial.sql
 ├── 0002_add_jobs_handler_id.sql
 ├── ...
-└── 0021_jobs_nullable_task_id.sql
+├── 0021_jobs_nullable_task_id.sql
+└── 0022_drop_verifying_reworking.sql
 ```
 
 特徴:

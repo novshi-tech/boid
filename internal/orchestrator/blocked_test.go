@@ -78,8 +78,6 @@ func TestComputeTaskBlocked_NonPending_NeverBlocked(t *testing.T) {
 	dep := &orchestrator.Task{ID: "dep", Status: orchestrator.TaskStatusPending}
 	statuses := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusExecuting,
-		orchestrator.TaskStatusReworking,
-		orchestrator.TaskStatusVerifying,
 		orchestrator.TaskStatusDone,
 		orchestrator.TaskStatusAborted,
 	}

@@ -63,8 +63,6 @@ func TestStateToggle_TabResetsCursor(t *testing.T) {
 func TestOpenStatuses(t *testing.T) {
 	want := map[orchestrator.TaskStatus]bool{
 		orchestrator.TaskStatusExecuting: true,
-		orchestrator.TaskStatusReworking: true,
-		orchestrator.TaskStatusVerifying: true,
 		orchestrator.TaskStatusPending:   true,
 	}
 
@@ -105,8 +103,6 @@ func TestClosedStatuses(t *testing.T) {
 
 	notClosed := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusExecuting,
-		orchestrator.TaskStatusReworking,
-		orchestrator.TaskStatusVerifying,
 		orchestrator.TaskStatusPending,
 	}
 	for _, status := range notClosed {
@@ -678,8 +674,6 @@ func TestWorkspaceMsg_ErrorIgnored(t *testing.T) {
 func TestTaskStatusDisplayContainsANSI(t *testing.T) {
 	statuses := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusExecuting,
-		orchestrator.TaskStatusReworking,
-		orchestrator.TaskStatusVerifying,
 	}
 	for _, s := range statuses {
 		dot, text := taskStatusDisplay(s)
@@ -699,8 +693,6 @@ func TestTaskStatusDisplay(t *testing.T) {
 		wantStatus string
 	}{
 		{orchestrator.TaskStatusExecuting, "●", "executing"},
-		{orchestrator.TaskStatusReworking, "●", "reworking"},
-		{orchestrator.TaskStatusVerifying, "●", "verifying"},
 		{orchestrator.TaskStatusPending, "○", "pending"},
 		{orchestrator.TaskStatusDone, "✓", "done"},
 		{orchestrator.TaskStatusAborted, "✗", "aborted"},
@@ -1093,8 +1085,6 @@ func TestSyncTableRows_StatusCellContainsANSI(t *testing.T) {
 	dummy := &orchestrator.Task{ID: "dummy", Title: "Dummy", Status: orchestrator.TaskStatusPending, CreatedAt: time.Now()}
 	coloredStatuses := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusExecuting,
-		orchestrator.TaskStatusReworking,
-		orchestrator.TaskStatusVerifying,
 		orchestrator.TaskStatusAborted,
 	}
 	for _, status := range coloredStatuses {
@@ -1126,8 +1116,6 @@ func TestSyncTableRows_StatusCellContent(t *testing.T) {
 		wantTxt string
 	}{
 		{orchestrator.TaskStatusExecuting, "●", "executing"},
-		{orchestrator.TaskStatusReworking, "●", "reworking"},
-		{orchestrator.TaskStatusVerifying, "●", "verifying"},
 		{orchestrator.TaskStatusPending, "○", "pending"},
 		{orchestrator.TaskStatusDone, "✓", "done"},
 		{orchestrator.TaskStatusAborted, "✗", "aborted"},
@@ -1847,12 +1835,10 @@ func TestApplyStateFilter_ClosedMode_ExcludesOpenTask(t *testing.T) {
 func TestApplyStateFilter_OpenMode_AllStatuses(t *testing.T) {
 	openTasks := []*orchestrator.Task{
 		{Status: orchestrator.TaskStatusExecuting},
-		{Status: orchestrator.TaskStatusReworking},
-		{Status: orchestrator.TaskStatusVerifying},
 		{Status: orchestrator.TaskStatusPending},
 	}
 	got := applyStateFilter(openTasks, false)
-	if len(got) != 4 {
+	if len(got) != 2 {
 		t.Errorf("open mode: all open statuses should pass, got %d", len(got))
 	}
 }
@@ -2079,26 +2065,6 @@ func TestTickIntervalForTasks_ActiveExecuting(t *testing.T) {
 	}
 }
 
-func TestTickIntervalForTasks_ActiveReworking(t *testing.T) {
-	tasks := []*orchestrator.Task{
-		{Status: orchestrator.TaskStatusReworking},
-	}
-	got := tickIntervalForTasks(tasks)
-	if got != activeTaskPollInterval {
-		t.Errorf("reworking: expected %v, got %v", activeTaskPollInterval, got)
-	}
-}
-
-func TestTickIntervalForTasks_ActiveVerifying(t *testing.T) {
-	tasks := []*orchestrator.Task{
-		{Status: orchestrator.TaskStatusVerifying},
-	}
-	got := tickIntervalForTasks(tasks)
-	if got != activeTaskPollInterval {
-		t.Errorf("verifying: expected %v, got %v", activeTaskPollInterval, got)
-	}
-}
-
 func TestTickIntervalForTasks_AllClosedOrPending(t *testing.T) {
 	tasks := []*orchestrator.Task{
 		{Status: orchestrator.TaskStatusDone},
@@ -2209,7 +2175,7 @@ func TestClosedTab_NoPrefixNoProgressBadge(t *testing.T) {
 		},
 		{
 			ID: "child", Title: "Child Task", Status: orchestrator.TaskStatusAborted,
-			ParentID: "parent",
+			ParentID:  "parent",
 			UpdatedAt: now.Add(-1 * time.Minute), CreatedAt: now.Add(-1 * time.Minute),
 		},
 	}
@@ -2242,7 +2208,7 @@ func TestOpenTab_TreeDisplayUnchanged(t *testing.T) {
 		},
 		{
 			ID: "child", Title: "Child Task", Status: orchestrator.TaskStatusPending,
-			ParentID: "parent",
+			ParentID:  "parent",
 			UpdatedAt: now.Add(-1 * time.Minute), CreatedAt: now.Add(-1 * time.Minute),
 		},
 	}

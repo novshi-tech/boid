@@ -34,7 +34,7 @@ func TestCoordinator_DispatchAndAdvance_GateExitZeroEmptyOutput_NoArtifactInject
 			"custom-behavior": {
 				Name: "custom-behavior",
 				Gates: []projectspec.Gate{
-					{ID: "regular-gate", On: orchestrator.OnValues{"executing"}},
+					{ID: "regular-gate"},
 				},
 			},
 		},
@@ -79,7 +79,7 @@ func TestCoordinator_DispatchAndAdvance_LifecycleExecuted_OnExitZero(t *testing.
 		Payload:   json.RawMessage(`{}`),
 	}
 	meta := metaWithBehavior([]projectspec.Hook{
-		{ID: "main-hook", On: orchestrator.OnValues{"executing"}},
+		{ID: "main-hook"},
 	}, nil)
 	sm := orchestrator.DefaultMachine()
 
@@ -119,7 +119,7 @@ func TestCoordinator_DispatchAndAdvance_LifecycleExecuted_NotSetOnJobFailure(t *
 		Payload:   json.RawMessage(`{}`),
 	}
 	meta := metaWithBehavior([]projectspec.Hook{
-		{ID: "main-hook", On: orchestrator.OnValues{"executing"}},
+		{ID: "main-hook"},
 	}, nil)
 	sm := orchestrator.DefaultMachine()
 

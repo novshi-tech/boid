@@ -158,6 +158,20 @@ func Apply(conn *sql.DB) error {
 				return columnIsNullable(tx, "jobs", "task_id")
 			},
 		},
+		{
+			version: "0022_drop_verifying_reworking",
+			path:    "migrations/0022_drop_verifying_reworking.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				// idempotent: skip when no tasks remain in verifying/reworking.
+				var count int
+				if err := tx.QueryRow(
+					`SELECT COUNT(*) FROM tasks WHERE status IN ('verifying','reworking')`,
+				).Scan(&count); err != nil {
+					return false, err
+				}
+				return count == 0, nil
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

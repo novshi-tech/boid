@@ -40,7 +40,7 @@ func TestTaskWorkflowService_ReplayGate_Basic(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-gate-1",
 		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusVerifying,
+		Status:    orchestrator.TaskStatusExecuting,
 		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
@@ -80,48 +80,12 @@ func TestTaskWorkflowService_ReplayGate_Basic(t *testing.T) {
 	}
 }
 
-// TestTaskWorkflowService_ReplayGate_StatusOverride verifies that status is updated before replay.
-func TestTaskWorkflowService_ReplayGate_StatusOverride(t *testing.T) {
-	task := &orchestrator.Task{
-		ID:        "task-gate-2",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusAborted,
-		Behavior:  "dev",
-		Payload:   json.RawMessage(`{}`),
-	}
-
-	coord := &replayGateCoordinator{
-		replayResult: &orchestrator.ReplayResult{FinalPayload: task.Payload},
-	}
-	taskStore := &stubTaskStore{task: task}
-	txStore := &recordingTxStore{task: task}
-	svc := &TaskWorkflowService{
-		Tasks:       taskStore,
-		Jobs:        &stubJobStore{},
-		Meta:        stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
-		Coordinator: coord,
-		Tx:          recordingTransactor{store: txStore},
-	}
-
-	_, err := svc.ReplayGate(context.Background(), task.ID, ReplayGateRequest{
-		GateID: "check-gate",
-		Status: "reworking",
-	})
-	if err != nil {
-		t.Fatalf("ReplayGate() error = %v", err)
-	}
-	// UpdateTask must have been called to set the new status before replay.
-	if taskStore.updateCalls == 0 {
-		t.Error("expected UpdateTask to be called for status override")
-	}
-}
-
 // TestTaskWorkflowService_ReplayGate_RunningJobConflict verifies 409 when a job is running.
 func TestTaskWorkflowService_ReplayGate_RunningJobConflict(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-gate-3",
 		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusVerifying,
+		Status:    orchestrator.TaskStatusExecuting,
 		Behavior:  "dev",
 		Payload:   json.RawMessage(`{}`),
 	}
@@ -164,72 +128,5 @@ func TestTaskWorkflowService_ReplayGate_TaskNotFound(t *testing.T) {
 	se, ok := err.(*StatusError)
 	if !ok || se.Code != http.StatusNotFound {
 		t.Fatalf("expected StatusNotFound, got %v", err)
-	}
-}
-
-// TestTaskWorkflowService_ListGatesForStatus_Basic verifies gate listing.
-func TestTaskWorkflowService_ListGatesForStatus_Basic(t *testing.T) {
-	task := &orchestrator.Task{
-		ID:        "task-list-1",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusVerifying,
-		Behavior:  "dev",
-		Payload:   json.RawMessage(`{}`),
-	}
-	meta := &orchestrator.ProjectMeta{
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {
-				Gates: []orchestrator.Gate{
-					{ID: "verify-gate", On: orchestrator.OnValues{"verifying"}, Phase: orchestrator.GatePhaseExit},
-					{ID: "exec-gate", On: orchestrator.OnValues{"executing"}, Phase: orchestrator.GatePhaseExit},
-				},
-			},
-		},
-	}
-	svc := &TaskWorkflowService{
-		Tasks: &stubTaskStore{task: task},
-		Meta:  stubMetaStore{meta: meta},
-	}
-
-	gates, err := svc.ListGatesForStatus(task.ID, "")
-	if err != nil {
-		t.Fatalf("ListGatesForStatus() error = %v", err)
-	}
-	if len(gates) != 1 || gates[0].ID != "verify-gate" {
-		t.Errorf("expected [verify-gate], got %v", gates)
-	}
-}
-
-// TestTaskWorkflowService_ListGatesForStatus_Override verifies status override.
-func TestTaskWorkflowService_ListGatesForStatus_Override(t *testing.T) {
-	task := &orchestrator.Task{
-		ID:        "task-list-2",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusVerifying,
-		Behavior:  "dev",
-		Payload:   json.RawMessage(`{}`),
-	}
-	meta := &orchestrator.ProjectMeta{
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {
-				Gates: []orchestrator.Gate{
-					{ID: "verify-gate", On: orchestrator.OnValues{"verifying"}, Phase: orchestrator.GatePhaseExit},
-					{ID: "exec-gate", On: orchestrator.OnValues{"executing"}, Phase: orchestrator.GatePhaseExit},
-				},
-			},
-		},
-	}
-	svc := &TaskWorkflowService{
-		Tasks: &stubTaskStore{task: task},
-		Meta:  stubMetaStore{meta: meta},
-	}
-
-	// Override to executing.
-	gates, err := svc.ListGatesForStatus(task.ID, "executing")
-	if err != nil {
-		t.Fatalf("ListGatesForStatus() error = %v", err)
-	}
-	if len(gates) != 1 || gates[0].ID != "exec-gate" {
-		t.Errorf("expected [exec-gate], got %v", gates)
 	}
 }
