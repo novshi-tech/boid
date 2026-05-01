@@ -28,20 +28,13 @@ task_behaviors:
       model: sonnet
       message: |
           task.yaml の title と description に記述された内容を実装せよ。
-          コミットする前にユニットテストの通過を確認すること。
-          E2E テストの検証は CI に任せること（dev タスクで回す必要はない）。
 
-          実装が完了したら以下を順次実行する:
-          1. `git add` + `git commit` (worktree のブランチ上で)
-          2. `git push -u origin HEAD` で current branch を origin に push
-          3. 既存 PR の有無を確認:
-             `PR_URL=$(gh pr list --head "$(git branch --show-current)" --json url --jq '.[0].url // ""')`
-             空なら `gh pr create --title "<task title>" --body "task: <task_id>\n\n<summary>"` で作成
-          4. `gh pr checks --watch --fail-fast` で CI 完了まで待機
-             (CI が無いリポは即抜ける) 失敗時は `gh run view --log-failed` でログ取得
-             CI が失敗したら exit 非ゼロで終了する (boid 側で job_failed → aborted)
-          5. CI 成功で正常終了。 hook の exit trap が `boid job done` を発火し、
-             task.exit gate (auto-merge) が PR を merge する
+          実装完了後は /dev-pr-flow skill の手順 を実行する。
+          - PR title は task.yaml の title を使う
+          - PR body は先頭に `task: <task_id>` を置き、続けて要約を書く
+          - CI が失敗したら exit 非ゼロで終了する (boid 側で job_failed → aborted)
+          CI 成功で正常終了。 hook の exit trap が `boid job done` を発火し、
+          task.exit gate (auto-merge) が PR を merge する。
   plan:
     name: Plan
     readonly: true
