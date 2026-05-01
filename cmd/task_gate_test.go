@@ -58,7 +58,7 @@ func writeGateKitProject(t *testing.T, projectID, projectName string) (workDir, 
 	if err := os.MkdirAll(gatesScriptDir, 0o755); err != nil {
 		t.Fatalf("mkdir kit gates: %v", err)
 	}
-	kitYAML := "gates:\n  - id: check-gate\n    on: [verifying]\n    phase: exit\n  - id: setup-gate\n    on: [executing]\n    phase: entry\n"
+	kitYAML := "gates:\n  - id: check-gate\n    phase: exit\n  - id: setup-gate\n    phase: entry\n"
 	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
 		t.Fatalf("write kit.yaml: %v", err)
 	}
@@ -117,9 +117,6 @@ func TestRunTaskGateList_ReturnsMatchingGates(t *testing.T) {
 
 	var out bytes.Buffer
 	taskGateListCmd.SetOut(&out)
-	if err := taskGateListCmd.Flags().Set("status", "verifying"); err != nil {
-		t.Fatalf("set --status: %v", err)
-	}
 	if err := runTaskGateList(taskGateListCmd, []string{task.ID}); err != nil {
 		t.Fatalf("runTaskGateList() error = %v", err)
 	}
@@ -128,51 +125,14 @@ func TestRunTaskGateList_ReturnsMatchingGates(t *testing.T) {
 	if !strings.Contains(got, "check-gate") {
 		t.Errorf("output %q should contain check-gate", got)
 	}
-	// setup-gate is entry/executing; must not appear for verifying.
-	if strings.Contains(got, "setup-gate") {
-		t.Errorf("setup-gate must not appear for verifying status: %q", got)
-	}
-}
-
-// TestRunTaskGateList_StatusOverride verifies that --status queries a different
-// status than the task's current one.
-func TestRunTaskGateList_StatusOverride(t *testing.T) {
-	workDir, kitsDir := writeGateKitProject(t, "gate-status-proj", "Gate Status Project")
-	ts := newTestServerWithKitsDir(t, kitsDir)
-
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": workDir}, nil); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-	var task orchestrator.Task
-	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
-		"project_id": "gate-status-proj",
-		"title":      "status override task",
-		"behavior":   "dev",
-	}, &task); err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-
-	// Query executing gates: should return setup-gate (entry/executing) only.
-	resetTaskGateListCmd(t)
-	var out bytes.Buffer
-	taskGateListCmd.SetOut(&out)
-	if err := taskGateListCmd.Flags().Set("status", "executing"); err != nil {
-		t.Fatalf("set --status: %v", err)
-	}
-	if err := runTaskGateList(taskGateListCmd, []string{task.ID}); err != nil {
-		t.Fatalf("runTaskGateList() error = %v", err)
-	}
-
-	got := out.String()
 	if !strings.Contains(got, "setup-gate") {
-		t.Errorf("expected setup-gate in output %q", got)
-	}
-	if strings.Contains(got, "check-gate") {
-		t.Errorf("check-gate must not appear for executing status: %q", got)
+		t.Errorf("output %q should contain setup-gate", got)
 	}
 }
+
+// TestRunTaskGateList_StatusOverride was removed: gates no longer filter by
+// status (phase: entry|exit only). The remaining behavior is covered by
+// TestRunTaskGateList_ReturnsMatchingGates.
 
 // TestRunTaskGateList_NoMatchingGates verifies the "no matching gates" message
 // when no gates match the given status.
@@ -243,46 +203,5 @@ func TestRunTaskGateReplay_TaskNotFound(t *testing.T) {
 
 	if err := runTaskGateReplay(taskGateReplayCmd, []string{"nonexistent-task-id", "some-gate"}); err == nil {
 		t.Fatal("runTaskGateReplay() expected error for nonexistent task, got nil")
-	}
-}
-
-// TestRunTaskGateReplay_StatusFlagWired verifies that --status is forwarded to
-// the server. The server updates the task status before gate lookup, so even
-// when the gate is not found the status override is persisted.
-func TestRunTaskGateReplay_StatusFlagWired(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-
-	dir := writeImportTestProject(t, "gate-status-flag-proj", "Gate Status Flag Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-	var task orchestrator.Task
-	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
-		"project_id": "gate-status-flag-proj",
-		"title":      "status flag task",
-		"behavior":   "dev",
-	}, &task); err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-	// Abort so we can test recovery via --status.
-	if err := ts.Client.Do("POST", "/api/tasks/"+task.ID+"/actions", map[string]any{"type": "abort"}, nil); err != nil {
-		t.Fatalf("abort task: %v", err)
-	}
-
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-	resetTaskGateReplayCmd(t)
-	if err := taskGateReplayCmd.Flags().Set("status", "reworking"); err != nil {
-		t.Fatalf("set --status: %v", err)
-	}
-
-	// Gate doesn't exist → error, but status override is applied before the lookup.
-	_ = runTaskGateReplay(taskGateReplayCmd, []string{task.ID, "nonexistent-gate"})
-
-	var updated orchestrator.Task
-	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID, nil, &updated); err != nil {
-		t.Fatalf("get updated task: %v", err)
-	}
-	if updated.Status != orchestrator.TaskStatusReworking {
-		t.Errorf("task status = %q, want reworking; --status flag may not be wired", updated.Status)
 	}
 }

@@ -11,9 +11,8 @@ import (
 
 // Config holds the global boid configuration.
 type Config struct {
-	GC           GCConfig           `yaml:"gc"`
-	StateMachine StateMachineConfig `yaml:"state_machine"`
-	Web          WebConfig          `yaml:"web"`
+	GC  GCConfig  `yaml:"gc"`
+	Web WebConfig `yaml:"web"`
 }
 
 // GCConfig holds garbage collection settings.
@@ -21,11 +20,6 @@ type GCConfig struct {
 	Enabled   bool          `yaml:"-"`
 	Interval  time.Duration `yaml:"-"`
 	OlderThan time.Duration `yaml:"-"`
-}
-
-// StateMachineConfig holds state machine settings.
-type StateMachineConfig struct {
-	ReworkLimit int `yaml:"-"`
 }
 
 // WebConfig holds web UI settings.
@@ -41,9 +35,6 @@ func DefaultConfig() *Config {
 			Enabled:   true,
 			Interval:  24 * time.Hour,
 			OlderThan: 720 * time.Hour,
-		},
-		StateMachine: StateMachineConfig{
-			ReworkLimit: 5,
 		},
 	}
 }
@@ -79,6 +70,7 @@ func loadFromPath(path string) (*Config, error) {
 
 // UnmarshalYAML implements yaml.Unmarshaler for Config.
 // It starts from DefaultConfig values so that unspecified fields retain defaults.
+// Unknown legacy fields (state_machine.rework_limit) are silently ignored.
 func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	defaults := DefaultConfig()
 
@@ -88,9 +80,6 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 			Interval  string `yaml:"interval"`
 			OlderThan string `yaml:"older_than"`
 		} `yaml:"gc"`
-		StateMachine struct {
-			ReworkLimit *int `yaml:"rework_limit"`
-		} `yaml:"state_machine"`
 		Web struct {
 			PublicURL string `yaml:"public_url"`
 			HTTPAddr  string `yaml:"http_addr"`
@@ -118,11 +107,6 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 			return fmt.Errorf("gc.older_than: %w", err)
 		}
 		c.GC.OlderThan = d
-	}
-
-	c.StateMachine = defaults.StateMachine
-	if raw.StateMachine.ReworkLimit != nil {
-		c.StateMachine.ReworkLimit = *raw.StateMachine.ReworkLimit
 	}
 
 	c.Web.PublicURL = raw.Web.PublicURL

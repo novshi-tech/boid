@@ -17,11 +17,9 @@ func makeDetailWithStatus(status orchestrator.TaskStatus) *api.TaskDetailView {
 	switch status {
 	case orchestrator.TaskStatusPending:
 		available = []string{"start", "abort"}
-	case orchestrator.TaskStatusExecuting, orchestrator.TaskStatusReworking:
+	case orchestrator.TaskStatusExecuting:
 		available = []string{"done", "abort"}
-	case orchestrator.TaskStatusVerifying:
-		available = []string{"abort"}
-	// done, aborted: empty
+		// done, aborted: empty
 	}
 	return &api.TaskDetailView{
 		Task: &orchestrator.Task{
@@ -596,8 +594,6 @@ func TestShortHelp_DeleteAlwaysShown(t *testing.T) {
 		orchestrator.TaskStatusAborted,
 		orchestrator.TaskStatusExecuting,
 		orchestrator.TaskStatusPending,
-		orchestrator.TaskStatusVerifying,
-		orchestrator.TaskStatusReworking,
 	}
 	for _, st := range statuses {
 		s := newTestTaskDetailScreen()
@@ -937,7 +933,7 @@ func TestRenderOverview_WithOpenFindings_NotShownInOverview(t *testing.T) {
 		Task: &orchestrator.Task{
 			ID:       "test",
 			Title:    "Test",
-			Status:   orchestrator.TaskStatusVerifying,
+			Status:   orchestrator.TaskStatusExecuting,
 			Behavior: "dev",
 			Payload: []byte(`{
 				"verification": {
@@ -1836,20 +1832,6 @@ func TestTickIntervalForDetail_Executing(t *testing.T) {
 	got := tickIntervalForDetail(orchestrator.TaskStatusExecuting)
 	if got != activeTaskDetailPollInterval {
 		t.Errorf("executing: expected %v, got %v", activeTaskDetailPollInterval, got)
-	}
-}
-
-func TestTickIntervalForDetail_Reworking(t *testing.T) {
-	got := tickIntervalForDetail(orchestrator.TaskStatusReworking)
-	if got != activeTaskDetailPollInterval {
-		t.Errorf("reworking: expected %v, got %v", activeTaskDetailPollInterval, got)
-	}
-}
-
-func TestTickIntervalForDetail_Verifying(t *testing.T) {
-	got := tickIntervalForDetail(orchestrator.TaskStatusVerifying)
-	if got != activeTaskDetailPollInterval {
-		t.Errorf("verifying: expected %v, got %v", activeTaskDetailPollInterval, got)
 	}
 }
 

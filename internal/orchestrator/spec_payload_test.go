@@ -65,7 +65,7 @@ func TestProjectMeta_JSONRoundTrip(t *testing.T) {
 func TestGate_YAMLRoundTrip(t *testing.T) {
 	data := `
 id: push-pr
-on: executing
+phase: exit
 traits:
   consumes:
     - artifact
@@ -103,17 +103,17 @@ func TestGatePhase_YAMLUnmarshal(t *testing.T) {
 	}{
 		{
 			name:     "explicit entry",
-			yaml:     "id: g1\non: executing\nphase: entry\n",
+			yaml:     "id: g1\nphase: entry\n",
 			expected: projectspec.GatePhaseEntry,
 		},
 		{
 			name:     "explicit exit",
-			yaml:     "id: g1\non: executing\nphase: exit\n",
+			yaml:     "id: g1\nphase: exit\n",
 			expected: projectspec.GatePhaseExit,
 		},
 		{
 			name:     "omitted defaults to exit",
-			yaml:     "id: g1\non: executing\n",
+			yaml:     "id: g1\nphase: exit\n",
 			expected: projectspec.GatePhaseExit,
 		},
 	}
@@ -133,7 +133,6 @@ func TestGatePhase_YAMLUnmarshal(t *testing.T) {
 func TestGatePhase_JSONRoundTrip(t *testing.T) {
 	gate := projectspec.Gate{
 		ID:    "g1",
-		On:    projectspec.OnValues{"executing"},
 		Phase: projectspec.GatePhaseEntry,
 	}
 	data, err := json.Marshal(gate)

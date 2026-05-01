@@ -21,7 +21,5 @@ func taskBlinkCmd() tea.Cmd {
 
 // isBlinkTarget reports whether status is one whose dot should blink.
 func isBlinkTarget(status orchestrator.TaskStatus) bool {
-	return status == orchestrator.TaskStatusExecuting ||
-		status == orchestrator.TaskStatusReworking ||
-		status == orchestrator.TaskStatusVerifying
+	return status == orchestrator.TaskStatusExecuting
 }

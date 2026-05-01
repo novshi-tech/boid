@@ -319,7 +319,7 @@ type behaviorResolution struct {
 	branchPrefix string
 	baseBranch   string
 	payload      json.RawMessage
-	instructions map[string]orchestrator.Instruction
+	instructions orchestrator.Instructions
 }
 
 // resolveBehavior validates and resolves behavior fields from a CreateTaskRequest.
@@ -630,7 +630,7 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 			task.Worktree = *req.Worktree
 		}
 	}
-	var instructionsBefore map[string]orchestrator.Instruction
+	var instructionsBefore orchestrator.Instructions
 	if len(req.Instructions) > 0 {
 		if !isInstructionsEditable(task.Status) {
 			return nil, &StatusError{
@@ -639,11 +639,11 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 			}
 		}
 		instructionsBefore = cloneInstructions(task.Instructions)
-		merged, err := orchestrator.MergeDefaultInstructions(task.Instructions, req.Instructions)
-		if err != nil {
-			return nil, &StatusError{Code: http.StatusBadRequest, Message: "instructions merge: " + err.Error()}
+		var override orchestrator.Instructions
+		if err := json.Unmarshal(req.Instructions, &override); err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: "instructions parse: " + err.Error()}
 		}
-		task.Instructions = merged
+		task.Instructions = override
 	}
 	if err := s.Tasks.UpdateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
@@ -682,10 +682,7 @@ func (s *TaskAppService) DeleteTask(id string, force bool) error {
 		return &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
 	if !force {
-		switch task.Status {
-		case orchestrator.TaskStatusExecuting,
-			orchestrator.TaskStatusReworking,
-			orchestrator.TaskStatusVerifying:
+		if task.Status == orchestrator.TaskStatusExecuting {
 			return &StatusError{
 				Code:    http.StatusConflict,
 				Message: "task is active (status: " + string(task.Status) + "); use --force to delete",
@@ -730,14 +727,14 @@ func (s *TaskAppService) RerunTask(id string, req RerunTaskRequest) (*orchestrat
 		}
 	}
 
-	var instructionsBefore map[string]orchestrator.Instruction
+	var instructionsBefore orchestrator.Instructions
 	if len(req.InstructionsOverride) > 0 && string(req.InstructionsOverride) != "null" {
 		instructionsBefore = cloneInstructions(task.Instructions)
-		merged, err := orchestrator.MergeDefaultInstructions(task.Instructions, req.InstructionsOverride)
-		if err != nil {
-			return nil, &StatusError{Code: http.StatusBadRequest, Message: "instructions merge: " + err.Error()}
+		var override orchestrator.Instructions
+		if err := json.Unmarshal(req.InstructionsOverride, &override); err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: "instructions parse: " + err.Error()}
 		}
-		task.Instructions = merged
+		task.Instructions = override
 	}
 
 	task.Status = orchestrator.TaskStatusPending
@@ -762,20 +759,18 @@ func (s *TaskAppService) RerunTask(id string, req RerunTaskRequest) (*orchestrat
 	return task, nil
 }
 
-func cloneInstructions(src map[string]orchestrator.Instruction) map[string]orchestrator.Instruction {
+func cloneInstructions(src orchestrator.Instructions) orchestrator.Instructions {
 	if src == nil {
 		return nil
 	}
-	out := make(map[string]orchestrator.Instruction, len(src))
-	for k, v := range src {
-		out[k] = v
-	}
+	out := make(orchestrator.Instructions, len(src))
+	copy(out, src)
 	return out
 }
 
 // auditInstructionsChange records an instructions change as an Action so that
 // the reason behind rerun-over-rerun outcome differences can be traced.
-func (s *TaskAppService) auditInstructionsChange(taskID string, before, after map[string]orchestrator.Instruction) {
+func (s *TaskAppService) auditInstructionsChange(taskID string, before, after orchestrator.Instructions) {
 	if s.Actions == nil {
 		return
 	}
@@ -1123,11 +1118,42 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	action.FromStatus = fromStatus
 	action.ToStatus = newTask.Status
 
-	merged, err := orchestrator.MergePayload(task.Payload, action.Payload)
-	if err != nil {
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "payload merge: " + err.Error()}
+	// reopen carries an optional `{"instruction": {...}}` payload that appends a
+	// new entry to the task's instruction history. The instruction is recorded
+	// only on the action (audit trail) and not merged into task.payload.
+	var reopenPayloadConsumed bool
+	if req.Type == "reopen" && len(req.Payload) > 0 {
+		var p struct {
+			Instruction *orchestrator.Instruction `json:"instruction,omitempty"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err == nil && p.Instruction != nil {
+			inst := *p.Instruction
+			if inst.Type == "" {
+				inst.Type = orchestrator.InstructionTypeExecution
+			}
+			if active := task.Instructions.Active(); active != nil {
+				if inst.Consumer == "" {
+					inst.Consumer = active.Consumer
+				}
+				if inst.Model == "" {
+					inst.Model = active.Model
+				}
+				if !inst.Interactive {
+					inst.Interactive = active.Interactive
+				}
+			}
+			newTask.Instructions = orchestrator.AppendInstruction(task.Instructions, inst)
+			reopenPayloadConsumed = true
+		}
 	}
-	newTask.Payload = merged
+
+	if !reopenPayloadConsumed {
+		merged, err := orchestrator.MergePayload(task.Payload, action.Payload)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: "payload merge: " + err.Error()}
+		}
+		newTask.Payload = merged
+	}
 
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
 		if err := tx.UpdateTask(newTask); err != nil {

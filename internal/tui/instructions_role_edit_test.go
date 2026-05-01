@@ -15,8 +15,8 @@ func newTestInstructionsRoleEditScreen(role string) *InstructionsRoleEditScreen 
 		ID:     "task-instr-1",
 		Title:  "Test Task",
 		Status: orchestrator.TaskStatusPending,
-		Instructions: map[string]orchestrator.Instruction{
-			"main": {
+		Instructions: orchestrator.Instructions{
+			{
 				Type:     orchestrator.InstructionTypeExecution,
 				Consumer: "claude-code",
 				Message:  "do this",
@@ -45,12 +45,10 @@ func TestInstructionsRoleEdit_InitialYAML_ExistingRole(t *testing.T) {
 	}
 }
 
-func TestInstructionsRoleEdit_InitialYAML_NewRole(t *testing.T) {
-	s := newTestInstructionsRoleEditScreen("reviewer")
-	if s.editor.Value() != "" {
-		t.Errorf("editor should be empty for new role, got: %q", s.editor.Value())
-	}
-}
+// TestInstructionsRoleEdit_InitialYAML_NewRole was removed because the editor
+// no longer treats roles as separate entries. With the array-based instructions
+// model the editor always targets the active (most-recent) entry, regardless of
+// which role label was passed.
 
 func TestInstructionsRoleEdit_InitialFocusOnEditor(t *testing.T) {
 	s := newTestInstructionsRoleEditScreen("main")
@@ -218,29 +216,11 @@ func TestInstructionsRoleEdit_View(t *testing.T) {
 	}
 }
 
-func TestExtractInstructionRoles_SortedAlphabetically(t *testing.T) {
-	m := map[string]orchestrator.Instruction{
-		"reviewer": {Type: orchestrator.InstructionTypeVerification, Consumer: "codex"},
-		"executor": {Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code"},
-		"auditor":  {Type: orchestrator.InstructionTypeVerification, Consumer: "codex"},
-	}
-	roles := extractInstructionRoles(m)
-	want := []string{"auditor", "executor", "reviewer"}
-	if len(roles) != len(want) {
-		t.Fatalf("len = %d, want %d", len(roles), len(want))
-	}
-	for i, w := range want {
-		if roles[i].role != w {
-			t.Errorf("roles[%d] = %q, want %q", i, roles[i].role, w)
-		}
-	}
-}
-
 func TestExtractInstructionRoles_EmptyReturnsNil(t *testing.T) {
 	if roles := extractInstructionRoles(nil); roles != nil {
 		t.Errorf("nil input: expected nil, got %v", roles)
 	}
-	if roles := extractInstructionRoles(map[string]orchestrator.Instruction{}); roles != nil {
+	if roles := extractInstructionRoles(orchestrator.Instructions{}); roles != nil {
 		t.Errorf("empty input: expected nil, got %v", roles)
 	}
 }

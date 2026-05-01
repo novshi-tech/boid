@@ -16,11 +16,9 @@ func TestIsReadonly(t *testing.T) {
 		{"task readonly, executing", true, orchestrator.TaskStatusExecuting, true},
 		{"task readonly, pending", true, orchestrator.TaskStatusPending, true},
 		{"task not readonly, executing", false, orchestrator.TaskStatusExecuting, false},
-		{"task not readonly, verifying", false, orchestrator.TaskStatusVerifying, true},
 		{"task not readonly, pending", false, orchestrator.TaskStatusPending, false},
 		{"task not readonly, done", false, orchestrator.TaskStatusDone, false},
 		{"task not readonly, aborted", false, orchestrator.TaskStatusAborted, false},
-		{"task readonly, verifying", true, orchestrator.TaskStatusVerifying, true},
 	}
 
 	for _, tc := range cases {

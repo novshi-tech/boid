@@ -39,7 +39,7 @@ func setupTestProject(t *testing.T, id, name string, includeDeprecatedWorkspace 
 	}
 	kitYAML := `hooks:
   - id: run-agent
-    on: executing
+    
 `
 	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
 		t.Fatalf("write kit.yaml: %v", err)

@@ -36,14 +36,12 @@ const (
 )
 
 // tickIntervalForDetail returns activeTaskDetailPollInterval when the task status is active
-// (executing/reworking/verifying), otherwise idleTaskDetailPollInterval.
+// (executing), otherwise idleTaskDetailPollInterval.
 func tickIntervalForDetail(status orchestrator.TaskStatus) time.Duration {
-	switch status {
-	case orchestrator.TaskStatusExecuting, orchestrator.TaskStatusReworking, orchestrator.TaskStatusVerifying:
+	if status == orchestrator.TaskStatusExecuting {
 		return activeTaskDetailPollInterval
-	default:
-		return idleTaskDetailPollInterval
 	}
+	return idleTaskDetailPollInterval
 }
 
 // --- messages ---
@@ -73,9 +71,9 @@ type TaskDetailScreen struct {
 	taskID      string
 	projectName string
 
-	detail         *api.TaskDetailView
-	activeTab      string
-	cursor         int
+	detail             *api.TaskDetailView
+	activeTab          string
+	cursor             int
 	timelineCursor     int
 	depsCursor         int
 	descScroll         int
@@ -85,14 +83,14 @@ type TaskDetailScreen struct {
 	payloadScroll      int
 	instructionsCursor int
 	instructionsScroll int
-	statusMsg      string
-	isError        bool
-	loading        bool
-	fetchErr       error
-	abortPending     bool
-	deletePending    bool
-	duplicatePending bool
-	rerunPending     bool
+	statusMsg          string
+	isError            bool
+	loading            bool
+	fetchErr           error
+	abortPending       bool
+	deletePending      bool
+	duplicatePending   bool
+	rerunPending       bool
 
 	titleEditing bool
 	titleInput   TextFieldModel

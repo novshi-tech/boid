@@ -31,8 +31,8 @@ func TestCoordinator_DispatchAndAdvance_HooksSequential(t *testing.T) {
 		Payload:   json.RawMessage(`{}`),
 	}
 	meta := metaWithBehavior([]projectspec.Hook{
-		{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
-		{ID: "hook-b", On: orchestrator.OnValues{"executing"}},
+		{ID: "hook-a"},
+		{ID: "hook-b"},
 	}, nil)
 	sm := simpleStateMachine()
 
@@ -77,7 +77,7 @@ func TestCoordinator_DispatchAndAdvance_NoAdvanceWhenConditionNotMet(t *testing.
 		Payload:   json.RawMessage(`{}`),
 	}
 	meta := metaWithBehavior([]projectspec.Hook{
-		{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
+		{ID: "hook-a"},
 	}, nil)
 	sm := simpleStateMachine()
 
@@ -113,8 +113,8 @@ func TestCoordinator_DispatchAndAdvance_GatesExecuteAfterHooks(t *testing.T) {
 		Payload:   json.RawMessage(`{}`),
 	}
 	meta := metaWithBehavior(
-		[]projectspec.Hook{{ID: "hook-a", On: orchestrator.OnValues{"executing"}}},
-		[]projectspec.Gate{{ID: "gate-push", On: orchestrator.OnValues{"executing"}}},
+		[]projectspec.Hook{{ID: "hook-a"}},
+		[]projectspec.Gate{{ID: "gate-push"}},
 	)
 	sm := simpleStateMachine()
 
@@ -166,7 +166,7 @@ func TestCoordinator_DispatchAndAdvance_ReadonlyHookFailure_DoesNotAdvance(t *te
 		Payload:   json.RawMessage(`{}`),
 	}
 	meta := metaWithBehavior([]projectspec.Hook{
-		{ID: "hook-a", On: orchestrator.OnValues{"executing"}},
+		{ID: "hook-a"},
 	}, nil)
 	sm := lifecycleExecutedStateMachine()
 

@@ -28,7 +28,7 @@ func TestCoordinator_DispatchAndAdvance_FiredEvents_HookKitID(t *testing.T) {
 		Payload:   json.RawMessage(`{}`),
 	}
 	meta := metaWithBehavior([]projectspec.Hook{
-		{ID: "go-dev/pr-verify", On: orchestrator.OnValues{"executing"}, Kit: "go-dev"},
+		{ID: "go-dev/pr-verify", Kit: "go-dev"},
 	}, nil)
 	sm := simpleStateMachine()
 
@@ -78,7 +78,7 @@ func TestCoordinator_DispatchAndAdvance_FiredEvents_ExitGateKitID(t *testing.T) 
 		Payload:   json.RawMessage(`{}`),
 	}
 	meta := metaWithBehavior(nil, []projectspec.Gate{
-		{ID: "go-dev/auto-merge", On: orchestrator.OnValues{"executing"}, Phase: projectspec.GatePhaseExit, Kit: "go-dev"},
+		{ID: "go-dev/auto-merge", Phase: projectspec.GatePhaseExit, Kit: "go-dev"},
 	})
 	sm := simpleStateMachine()
 
@@ -122,7 +122,7 @@ func TestCoordinator_DispatchEntryGates_FiredEvents_EntryGateKitID(t *testing.T)
 		Payload:   json.RawMessage(`{}`),
 	}
 	meta := metaWithBehavior(nil, []projectspec.Gate{
-		{ID: "go-dev/fetch-jira", On: orchestrator.OnValues{"executing"}, Phase: projectspec.GatePhaseEntry, Kit: "go-dev"},
+		{ID: "go-dev/fetch-jira", Phase: projectspec.GatePhaseEntry, Kit: "go-dev"},
 	})
 
 	entryResult, err := coord.DispatchEntryGates(context.Background(), task, meta)

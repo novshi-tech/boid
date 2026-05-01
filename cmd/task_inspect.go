@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/novshi-tech/boid/internal/client"
@@ -15,13 +14,6 @@ import (
 )
 
 // --- command declarations ---
-
-var taskFindingsCmd = &cobra.Command{
-	Use:   "findings <id>",
-	Short: "Show verification findings for a task",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runTaskFindings,
-}
 
 var taskArtifactsCmd = &cobra.Command{
 	Use:   "artifacts <id>",
@@ -38,98 +30,9 @@ var taskTreeCmd = &cobra.Command{
 }
 
 func init() {
-	taskFindingsCmd.Flags().Bool("all", false, "Show all findings including resolved")
-	taskFindingsCmd.Flags().String("status", "", "Filter by status: open or resolved")
 	taskArtifactsCmd.Flags().String("field", "", "Extract a specific field from artifact (dot-separated path)")
 	taskArtifactsCmd.Flags().String("output-file", "", "Write output to file instead of stdout")
-	taskCmd.AddCommand(taskFindingsCmd, taskArtifactsCmd, taskTreeCmd)
-}
-
-// --- findings ---
-
-type findingEntry struct {
-	Message string `json:"message"`
-	Status  string `json:"status"`
-}
-
-type verificationAgent struct {
-	SourceState string         `json:"source_state"`
-	Findings    []findingEntry `json:"findings"`
-}
-
-func runTaskFindings(cmd *cobra.Command, args []string) error {
-	showAll, _ := cmd.Flags().GetBool("all")
-	statusFilter, _ := cmd.Flags().GetString("status")
-
-	c := client.NewUnixClient(client.DefaultSocketPath())
-	var task orchestrator.Task
-	if err := c.Do("GET", "/api/tasks/"+args[0], nil, &task); err != nil {
-		return fmt.Errorf("get task: %w", err)
-	}
-
-	// parse payload.verification
-	var payload map[string]json.RawMessage
-	if len(task.Payload) > 0 {
-		_ = json.Unmarshal(task.Payload, &payload)
-	}
-
-	var verRaw json.RawMessage
-	if payload != nil {
-		verRaw = payload["verification"]
-	}
-
-	type findingOutputRow struct {
-		Agent       string `json:"agent"        yaml:"agent"`
-		SourceState string `json:"source_state" yaml:"source_state"`
-		Status      string `json:"status"       yaml:"status"`
-		Message     string `json:"message"      yaml:"message"`
-	}
-	outRows := make([]findingOutputRow, 0)
-
-	if len(verRaw) > 0 && string(verRaw) != "null" {
-		var agents map[string]verificationAgent
-		if err := json.Unmarshal(verRaw, &agents); err == nil {
-			// sort agent names for stable output
-			agentNames := make([]string, 0, len(agents))
-			for name := range agents {
-				agentNames = append(agentNames, name)
-			}
-			sort.Strings(agentNames)
-
-			for _, name := range agentNames {
-				entry := agents[name]
-				for _, f := range entry.Findings {
-					// apply filter
-					if statusFilter != "" && f.Status != statusFilter {
-						continue
-					}
-					if !showAll && statusFilter == "" && f.Status == "resolved" {
-						continue
-					}
-					outRows = append(outRows, findingOutputRow{
-						Agent:       name,
-						SourceState: entry.SourceState,
-						Status:      f.Status,
-						Message:     f.Message,
-					})
-				}
-			}
-		}
-	}
-
-	return renderOutput(cmd, outRows, func() error {
-		out := cmd.OutOrStdout()
-		if len(outRows) == 0 {
-			fmt.Fprintln(out, "no findings")
-			return nil
-		}
-		fmt.Fprintf(out, "%-24s %-12s %-10s %s\n", "AGENT", "SOURCE_STATE", "STATUS", "MESSAGE")
-		fmt.Fprintf(out, "%s\n", strings.Repeat("-", 80))
-		for _, r := range outRows {
-			fmt.Fprintf(out, "%-24s %-12s %-10s %s\n", r.Agent, r.SourceState, r.Status, r.Message)
-		}
-		return nil
-	})
+	taskCmd.AddCommand(taskArtifactsCmd, taskTreeCmd)
 }
 
 // --- artifacts ---

@@ -76,7 +76,6 @@ func (d *Coordinator) DispatchAndAdvance(
 				return &DispatchResult{FiredEvents: firedEvents}, err
 			}
 			if len(hr.PayloadPatch) > 0 && string(hr.PayloadPatch) != "{}" {
-				hr.PayloadPatch = injectSourceState(hr.PayloadPatch, string(task.Status))
 				merged, err := MergePayloadPatch(payload, hr.PayloadPatch, hr.ID, hr.allowedTraits(matchedHooks))
 				if err != nil {
 					slog.Warn("payload merge failed", "hook_id", hr.ID, "error", err)
@@ -87,7 +86,7 @@ func (d *Coordinator) DispatchAndAdvance(
 		}
 	}
 
-	// 2. Evaluate and dispatch gates (always parallel)
+	// 2. Evaluate and dispatch task.exit gates (always parallel)
 	// Use hook-updated payload so that traits produced by hooks are visible to gates.
 	gateTask := *task
 	gateTask.Payload = payload
@@ -106,7 +105,6 @@ func (d *Coordinator) DispatchAndAdvance(
 				return &DispatchResult{FiredEvents: firedEvents}, err
 			}
 			if len(gr.PayloadPatch) > 0 && string(gr.PayloadPatch) != "{}" {
-				gr.PayloadPatch = injectSourceState(gr.PayloadPatch, string(task.Status))
 				merged, err := MergePayloadPatch(payload, gr.PayloadPatch, gr.ID, gr.allowedTraitsFromGates(matchedGates))
 				if err != nil {
 					slog.Warn("payload merge failed", "gate_id", gr.ID, "error", err)
@@ -178,7 +176,6 @@ func (d *Coordinator) DispatchEntryGates(
 			return &EntryGateResult{FiredEvents: firedEvents}, err
 		}
 		if len(gr.PayloadPatch) > 0 && string(gr.PayloadPatch) != "{}" {
-			gr.PayloadPatch = injectSourceState(gr.PayloadPatch, string(task.Status))
 			merged, err := MergePayloadPatch(payload, gr.PayloadPatch, gr.ID, gr.allowedTraitsFromGates(matchedGates))
 			if err != nil {
 				slog.Warn("entry gate payload merge failed", "gate_id", gr.ID, "error", err)
@@ -511,46 +508,9 @@ func normalizeYAMLKeys(v interface{}) interface{} {
 	}
 }
 
-// injectSourceState adds source_state to the verification value in a payload_patch.
-func injectSourceState(patch json.RawMessage, state string) json.RawMessage {
-	if len(patch) == 0 || string(patch) == "{}" || string(patch) == "null" {
-		return patch
-	}
-
-	var patchMap map[string]json.RawMessage
-	if err := json.Unmarshal(patch, &patchMap); err != nil {
-		return patch
-	}
-
-	vRaw, ok := patchMap["verification"]
-	if !ok || string(vRaw) == "null" {
-		return patch
-	}
-
-	var vMap map[string]json.RawMessage
-	if err := json.Unmarshal(vRaw, &vMap); err != nil {
-		return patch
-	}
-
-	stateJSON, _ := json.Marshal(state)
-	vMap["source_state"] = stateJSON
-
-	vBytes, err := json.Marshal(vMap)
-	if err != nil {
-		return patch
-	}
-	patchMap["verification"] = vBytes
-
-	result, err := json.Marshal(patchMap)
-	if err != nil {
-		return patch
-	}
-	return result
-}
-
 // hasHookResult reports whether any HandlerResult with RoleHook is present.
-// Used to gate execution_complete injection: only hooks (not gates) represent
-// the main execution agent job.
+// Used by the coordinator to detect that a hook actually ran in this dispatch
+// cycle (independent of gate-only dispatches).
 func hasHookResult(results []HandlerResult) bool {
 	for _, hr := range results {
 		if hr.Role == RoleHook {
@@ -558,45 +518,6 @@ func hasHookResult(results []HandlerResult) bool {
 		}
 	}
 	return false
-}
-
-// injectExecutionComplete sets execution_complete=true in the payload.
-// This is called by the coordinator after all hooks/gates complete successfully
-// in executing state, signalling that the agent job finished without error.
-func injectExecutionComplete(payload json.RawMessage) json.RawMessage {
-	var m map[string]json.RawMessage
-	if len(payload) == 0 || string(payload) == "null" {
-		m = make(map[string]json.RawMessage)
-	} else if err := json.Unmarshal(payload, &m); err != nil {
-		return payload
-	}
-	m["execution_complete"] = json.RawMessage("true")
-	result, err := json.Marshal(m)
-	if err != nil {
-		return payload
-	}
-	return result
-}
-
-// clearTraitFromPayload removes the given trait key from the payload.
-// Used to reset execution_complete when re-entering executing state.
-func clearTraitFromPayload(payload json.RawMessage, trait string) json.RawMessage {
-	if len(payload) == 0 || string(payload) == "{}" || string(payload) == "null" {
-		return payload
-	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &m); err != nil {
-		return payload
-	}
-	if _, ok := m[trait]; !ok {
-		return payload
-	}
-	delete(m, trait)
-	result, err := json.Marshal(m)
-	if err != nil {
-		return payload
-	}
-	return result
 }
 
 // ReplayResult is the result of a single-gate replay operation.
@@ -668,7 +589,6 @@ func (d *Coordinator) ReplayGate(
 		kind := "gate_replay"
 		firedEvents = append(firedEvents, buildFiredEvent(gr, kind, string(task.Status), nil, matched))
 		if len(gr.PayloadPatch) > 0 && string(gr.PayloadPatch) != "{}" {
-			gr.PayloadPatch = injectSourceState(gr.PayloadPatch, string(task.Status))
 			merged, err := MergePayloadPatch(payload, gr.PayloadPatch, gr.ID, gr.allowedTraitsFromGates(matched))
 			if err != nil {
 				slog.Warn("gate replay payload merge failed", "gate_id", gr.ID, "error", err)

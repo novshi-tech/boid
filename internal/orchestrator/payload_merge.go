@@ -3,7 +3,6 @@ package orchestrator
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
 )
 
 // MergeDefaultPayload merges behavior default payload with request payload.
@@ -69,104 +68,79 @@ func RejectPayloadInstructions(payload json.RawMessage) error {
 	return nil
 }
 
-// MergeDefaultInstructions merges behavior default instructions with request instructions.
+// MergeDefaultInstructions builds the initial instruction list for a new task.
 // Strategy:
-//   - Use defaultInstructions as base
-//   - Override with request's roles (role-level replacement)
-//   - A null role value in requestInstructions means deletion
+//   - Take the behavior default's "main" entry (if any) as the seed
+//   - If requestInstructions is provided, use it instead of the default
 //
-// requestInstructions is accepted as json.RawMessage so that null role values can be
-// distinguished from absent roles.
-func MergeDefaultInstructions(defaultInstructions map[string]Instruction, requestInstructions json.RawMessage) (map[string]Instruction, error) {
-	base := make(map[string]Instruction, len(defaultInstructions))
-	for role, inst := range defaultInstructions {
-		base[role] = inst
+// requestInstructions accepts the new array form `[{...}, ...]` and the legacy
+// single-instruction map form `{"main": {...}}` for backward compatibility.
+func MergeDefaultInstructions(defaultInstructions map[string]Instruction, requestInstructions json.RawMessage) (Instructions, error) {
+	var base Instructions
+	if main, ok := defaultInstructions["main"]; ok {
+		base = Instructions{main}
 	}
-	if len(requestInstructions) == 0 || string(requestInstructions) == "null" || string(requestInstructions) == "{}" {
+	if len(requestInstructions) == 0 || string(requestInstructions) == "null" || string(requestInstructions) == "{}" || string(requestInstructions) == "[]" {
 		return base, nil
 	}
-	var override map[string]json.RawMessage
+	var override Instructions
 	if err := json.Unmarshal(requestInstructions, &override); err != nil {
 		return nil, fmt.Errorf("unmarshal instructions: %w", err)
 	}
-	for role, raw := range override {
-		if string(raw) == "null" {
-			delete(base, role)
-			continue
-		}
-		var inst Instruction
-		if err := json.Unmarshal(raw, &inst); err != nil {
-			return nil, fmt.Errorf("unmarshal instruction %q: %w", role, err)
-		}
-		base[role] = inst
+	if len(override) == 0 {
+		return base, nil
 	}
-	return base, nil
+	return override, nil
+}
+
+// AppendInstruction returns a new instruction list with `inst` appended. The
+// caller is responsible for filling in fields not derived from the previous
+// active entry. Used by `boid task reopen` to record a new context message
+// while preserving history.
+func AppendInstruction(existing Instructions, inst Instruction) Instructions {
+	out := make(Instructions, len(existing)+1)
+	copy(out, existing)
+	out[len(existing)] = inst
+	return out
 }
 
 // defaultMessages maps InstructionType to a fallback message used when
 // a role's message field is omitted.
 var defaultMessages = map[InstructionType]string{
-	InstructionTypeExecution:    "タスクを実行してください",
-	InstructionTypeRework:       "verification findings の問題を修正してください",
-	InstructionTypeVerification: "成果物を検証してください",
+	InstructionTypeExecution: "タスクを実行してください",
 }
 
-// messageFallbackType maps an InstructionType to the type to consult when its
-// own message is empty and no default is sufficient. rework falls back to
-// execution so the original task description is reused as context.
-var messageFallbackType = map[InstructionType]InstructionType{
-	InstructionTypeRework: InstructionTypeExecution,
-}
-
-// resolveMessage returns the message for a role, applying a fallback chain:
-//  1. inst.Message if non-empty
-//  2. same-consumer instruction of the fallback type (e.g. rework → execution)
-//  3. default message for instType
-func resolveMessage(inst Instruction, instType InstructionType, all map[string]Instruction) string {
+// resolveMessage returns the message for an instruction, falling back to the
+// type's default when the message field is empty.
+func resolveMessage(inst Instruction, instType InstructionType) string {
 	if inst.Message != "" {
 		return inst.Message
-	}
-	if fallback, ok := messageFallbackType[instType]; ok {
-		for _, fi := range all {
-			if fi.Type == fallback && fi.Consumer == inst.Consumer && fi.Message != "" {
-				return fi.Message
-			}
-		}
 	}
 	return defaultMessages[instType]
 }
 
-// FilterInstructions extracts instructions matching the given type and consumer,
-// sorted by role name for deterministic ordering.
-// When a role's message is empty, a fallback chain is applied (see resolveMessage).
-func FilterInstructions(instructions map[string]Instruction, instType InstructionType, consumer string) []RoutedInstruction {
+// FilterInstructions returns the active routed instruction for the given
+// consumer. Only the most recent entry in the history is considered (older
+// entries are kept for audit but do not drive dispatch). Returns nil when
+// type/consumer is empty or the active entry does not match.
+func FilterInstructions(instructions Instructions, instType InstructionType, consumer string) []RoutedInstruction {
 	if instType == "" || consumer == "" || len(instructions) == 0 {
 		return nil
 	}
-
-	var roles []string
-	for role, inst := range instructions {
-		if inst.Type == instType && inst.Consumer == consumer {
-			roles = append(roles, role)
-		}
-	}
-	if len(roles) == 0 {
+	active := instructions[len(instructions)-1]
+	if active.Type != "" && active.Type != instType {
 		return nil
 	}
-	sort.Strings(roles)
-
-	result := make([]RoutedInstruction, 0, len(roles))
-	for _, role := range roles {
-		inst := instructions[role]
-		result = append(result, RoutedInstruction{
-			Role:        role,
-			Type:        inst.Type,
-			Consumer:    inst.Consumer,
-			Name:        inst.Name,
-			Message:     resolveMessage(inst, instType, instructions),
-			Interactive: inst.Interactive,
-			Model:       inst.Model,
-		})
+	if active.Consumer != consumer {
+		return nil
 	}
-	return result
+	return []RoutedInstruction{{
+		Role:        active.Name,
+		Type:        instType,
+		Consumer:    active.Consumer,
+		Name:        active.Name,
+		Message:     resolveMessage(active, instType),
+		Interactive: active.Interactive,
+		Model:       active.Model,
+	}}
 }

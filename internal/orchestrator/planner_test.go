@@ -199,9 +199,8 @@ func TestPlanHook_Instruction_MatchingConsumer(t *testing.T) {
 		ProjectID: "proj-1",
 		Behavior:  "dev",
 		Status:    TaskStatusExecuting,
-		Instructions: map[string]Instruction{
-			"main":   {Type: InstructionTypeExecution, Consumer: "claude-code", Message: "do X"},
-			"review": {Type: InstructionTypeVerification, Consumer: "reviewer", Message: "check"},
+		Instructions: Instructions{
+			{Type: InstructionTypeExecution, Consumer: "claude-code", Message: "do X"},
 		},
 	}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{Name: "dev"}, task)
@@ -329,7 +328,7 @@ func TestPlanGate_PrimaryInputIsFullTaskJSON(t *testing.T) {
 	task := &Task{
 		ID:        "task-1",
 		ProjectID: "proj-1",
-		Status:    TaskStatusVerifying,
+		Status:    TaskStatusExecuting,
 		Behavior:  "dev",
 		Payload:   json.RawMessage(`{"verification":{"findings":[]}}`),
 	}
@@ -382,7 +381,7 @@ func TestDispatchPlanner_PropagatesBaseBranchEnv(t *testing.T) {
 		ID:         "task-1",
 		ProjectID:  "proj-1",
 		Behavior:   "dev",
-		Status:     TaskStatusVerifying,
+		Status:     TaskStatusExecuting,
 		BaseBranch: "feature/BGO-170",
 	}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, behavior, task)
@@ -499,7 +498,6 @@ func TestPlanHook_WritableControlledByTaskReadonly(t *testing.T) {
 	}{
 		{"hook + readonly=false", false, TaskStatusExecuting, true},
 		{"hook + readonly=true", true, TaskStatusExecuting, false},
-		{"hook + verifying (implicitly readonly)", false, TaskStatusVerifying, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

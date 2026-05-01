@@ -3,9 +3,6 @@ package orchestrator
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
-
-	"github.com/novshi-tech/boid/internal/config"
 )
 
 // TransitionCondition evaluates whether a condition-based transition should fire.
@@ -15,9 +12,9 @@ type Rule struct {
 	Action          string // manual transition trigger (mutually exclusive with Condition)
 	FromStatus      string // "*" matches any
 	ToStatus        string
-	Condition       TransitionCondition                     // auto transition trigger (mutually exclusive with Action)
-	Manual          bool                                    // true if the action is user-initiated (shown in available_actions)
-	ActionPayloadFn func(json.RawMessage) json.RawMessage  // optional; generates action.Payload when the rule fires
+	Condition       TransitionCondition                    // auto transition trigger (mutually exclusive with Action)
+	Manual          bool                                   // true if the action is user-initiated (shown in available_actions)
+	ActionPayloadFn func(json.RawMessage) json.RawMessage // optional; generates action.Payload when the rule fires
 }
 
 // AdvanceOutcome carries the result of a successful condition-based transition.
@@ -84,7 +81,7 @@ func (sm *StateMachine) Advance(task *Task) (*Task, bool) {
 // task in the given status. Condition-based (automatic) rules and non-manual
 // rules are excluded. Terminal statuses (done, aborted) return an empty list.
 func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
-	if status == TaskStatusDone || status == TaskStatusAborted {
+	if status == TaskStatusAborted {
 		return nil
 	}
 	var actions []string
@@ -103,112 +100,51 @@ func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
 	return actions
 }
 
-// DefaultMachine returns the single unified state machine used by all tasks.
-// It reads rework_limit from the global config (~/.config/boid/config.yaml).
-// Use NewMachine directly in tests to control the rework limit.
+// DefaultMachine returns the unified state machine used by all tasks.
 func DefaultMachine() *StateMachine {
-	cfg, err := config.Load()
-	if err != nil {
-		slog.Warn("failed to load config for state machine; using default rework_limit=5", "error", err)
-		return NewMachine(5)
-	}
-	return NewMachine(cfg.StateMachine.ReworkLimit)
+	return NewMachine()
 }
 
-// NewMachine returns the unified state machine with the given rework limit.
+// NewMachine returns the unified state machine.
 //
 // Manual transitions:
 //
-//	start       : pending → executing
-//	done        : executing / verifying / reworking → done
-//	reopen      : done → reworking
-//	job_failed  : * → aborted
-//	abort       : * → aborted
+//	start  : pending → executing
+//	abort  : * → aborted
+//	reopen : done → executing
 //
-// Auto abort transitions (highest priority):
+// Event-driven transitions:
 //
-//	* → aborted          if any finding has severity=fatal and status=open
-//	reworking → aborted  if lifecycle.rework_count > reworkLimit
+//	job_failed : * → aborted
 //
-// Auto transitions from executing:
+// Auto transitions (condition-based, evaluated after dispatch):
 //
-//	(artifact || tasks) && AnyFindingUnresolvedForState("executing")  → reworking
-//	(artifact || tasks) && !AnyFindingUnresolvedForState("executing") → verifying
-//	!(artifact || tasks) && lifecycle.executed                        → done
+//	executing → done   when lifecycle.executed (= last hook completed)
 //
-// tasks trait と artifact trait は「executing での成果物が揃った」という
-// 対称のシグナルとして扱う。plan タスク（tasks を書く）も dev タスク
-// （artifact を書く）も同じ executing → verifying パスを辿り、verifying で
-// reviewer hook/gate を噛ませる余地を残す。verifying に reviewer が無ければ
-// pass-through で done に落ちる。
+// `lifecycle.executed` is a transient trait injected by the coordinator; it is
+// never persisted to the payload. The state machine treats it as an input
+// signal that the agent's run completed normally.
 //
-// Auto transitions from verifying:
-//
-//	AnyFindingUnresolvedForState("verifying")  → reworking
-//	!AnyFindingUnresolvedForState("verifying") → done (pass-through when no verify gate)
-//
-// Auto transitions from reworking:
-//
-//	!AnyFindingUnresolvedForState("reworking") → verifying (re-enter verification gate)
-//	AnyFindingUnresolvedForState("reworking")  → reworking (self-loop until rework fixes all findings)
-//
-// reworking 判定は source_state=reworking の finding のみを見る。
-// verifying-source の open finding (例: mergeable-check) は verifying 再入場時に
-// 同じ gate が再実行されて subkey が上書きされる設計なので、reworking 退場を
-// ブロックするべきではない。全 source を見る NoUnresolvedFindings() を使うと、
-// verifying で書かれた open finding が永久に解消されずデッドロックする。
-func NewMachine(reworkLimit int) *StateMachine {
-	executionComplete := func(p json.RawMessage) bool {
-		return TraitNonNull(p, "artifact") || TasksReady(p)
-	}
+// `task.exit` gates run before this auto transition fires (see coordinator).
+// Gate failures surface as job_failed via the dispatcher path, which routes
+// the task to aborted.
+func NewMachine() *StateMachine {
 	return &StateMachine{
 		Name: "default",
 		Rules: []Rule{
 			// Manual actions
 			{Action: "start", FromStatus: "pending", ToStatus: "executing", Manual: true},
 			{Action: "done", FromStatus: "executing", ToStatus: "done", Manual: true},
-			{Action: "done", FromStatus: "verifying", ToStatus: "done", Manual: true},
-			{Action: "done", FromStatus: "reworking", ToStatus: "done", Manual: true},
-			{Action: "reopen", FromStatus: "done", ToStatus: "reworking", Manual: true},
-			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},
+			{Action: "reopen", FromStatus: "done", ToStatus: "executing", Manual: true},
 			{Action: "abort", FromStatus: "*", ToStatus: "aborted", Manual: true},
 
-			// Abort conditions (highest priority among auto transitions)
-			{FromStatus: "*", ToStatus: "aborted", Condition: AnyFatalFindingOpen(), ActionPayloadFn: func(p json.RawMessage) json.RawMessage {
-				msg := firstFatalFindingMessage(p)
-				b, _ := json.Marshal(map[string]string{"code": "fatal_finding", "message": msg})
-				return b
-			}},
-			{FromStatus: "reworking", ToStatus: "aborted", Condition: func(p json.RawMessage) bool {
-				return LifecycleReworkCount(p) > reworkLimit
-			}, ActionPayloadFn: func(_ json.RawMessage) json.RawMessage {
-				b, _ := json.Marshal(map[string]string{"code": "rework_limit_exceeded"})
-				return b
-			}},
+			// Event-driven (non-manual)
+			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},
 
-			// Auto transitions from executing
-			{FromStatus: "executing", ToStatus: "reworking", Condition: func(p json.RawMessage) bool {
-				return executionComplete(p) && AnyFindingUnresolvedForState("executing")(p)
-			}},
-			{FromStatus: "executing", ToStatus: "verifying", Condition: func(p json.RawMessage) bool {
-				return executionComplete(p) && !AnyFindingUnresolvedForState("executing")(p)
-			}},
-			// 成果物なしで lifecycle.executed が立っている場合は done（rework 対象なし）
+			// Auto: hook 完了 → done
 			{FromStatus: "executing", ToStatus: "done", Condition: func(p json.RawMessage) bool {
-				return TraitBool(p, "lifecycle.executed") && !executionComplete(p)
+				return TraitBool(p, "lifecycle.executed")
 			}},
-
-			// Auto transitions from verifying
-			{FromStatus: "verifying", ToStatus: "reworking", Condition: AnyFindingUnresolvedForState("verifying")},
-			{FromStatus: "verifying", ToStatus: "done", Condition: func(p json.RawMessage) bool {
-				return !AnyFindingUnresolvedForState("verifying")(p)
-			}},
-
-			// Auto transitions from reworking
-			{FromStatus: "reworking", ToStatus: "verifying", Condition: func(p json.RawMessage) bool {
-				return !AnyFindingUnresolvedForState("reworking")(p)
-			}},
-			{FromStatus: "reworking", ToStatus: "reworking", Condition: AnyFindingUnresolvedForState("reworking")},
 		},
 	}
 }

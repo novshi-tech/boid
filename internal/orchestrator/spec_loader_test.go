@@ -324,7 +324,7 @@ func TestReadProjectMetaWithKits_LocalKits(t *testing.T) {
 		kitHooksDir := filepath.Join(kitDir, "hooks")
 		_ = os.MkdirAll(kitHooksDir, 0o755)
 		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    name: dev\n    kits:\n      - build\n"), 0o644)
-		_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte("hooks:\n  - id: run-build\n    on: executing\n    requires_traits:\n      - artifactompt\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte("hooks:\n  - id: run-build\n    requires_traits:\n      - artifactompt\n"), 0o644)
 		_ = os.WriteFile(filepath.Join(kitHooksDir, "run-build.sh"), []byte("#!/bin/bash\necho build"), 0o755)
 
 		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
@@ -496,7 +496,6 @@ func TestReadKitMeta(t *testing.T) {
 		writeKitYAML(t, dir, `
 hooks:
   - id: run-build
-    on: executing
     requires_traits: [prompt]
 host_commands:
   go:
@@ -558,7 +557,7 @@ task_behaviors:
 
 	t.Run("missing hook script", func(t *testing.T) {
 		dir := t.TempDir()
-		writeKitYAML(t, dir, "hooks:\n  - id: no-script\n    on: executing\n")
+		writeKitYAML(t, dir, "hooks:\n  - id: no-script\n")
 		_, err := projectspec.ReadKitMeta(dir)
 		if err == nil {
 			t.Fatal("expected error for missing hook script")
@@ -570,7 +569,7 @@ task_behaviors:
 		hooksDir := filepath.Join(dir, "hooks")
 		_ = os.MkdirAll(hooksDir, 0o755)
 		_ = os.WriteFile(filepath.Join(hooksDir, "bad.sh"), []byte("#!/bin/bash\n"), 0o755)
-		writeKitYAML(t, dir, "hooks:\n  - id: bad\n    on: executing\n    kind: runner\n")
+		writeKitYAML(t, dir, "hooks:\n  - id: bad\n    kind: runner\n")
 		_, err := projectspec.ReadKitMeta(dir)
 		if err == nil || !strings.Contains(err.Error(), "invalid kind") {
 			t.Fatalf("expected invalid kind error, got %v", err)
@@ -582,7 +581,7 @@ task_behaviors:
 		hooksDir := filepath.Join(dir, "hooks")
 		_ = os.MkdirAll(hooksDir, 0o755)
 		_ = os.WriteFile(filepath.Join(hooksDir, "util.sh"), []byte("#!/bin/bash\n"), 0o755)
-		writeKitYAML(t, dir, "hooks:\n  - id: util\n    on: executing\n    consumer: claude-code\n")
+		writeKitYAML(t, dir, "hooks:\n  - id: util\n    consumer: claude-code\n")
 		_, err := projectspec.ReadKitMeta(dir)
 		if err == nil || !strings.Contains(err.Error(), "consumer") {
 			t.Fatalf("expected consumer-without-kind error, got %v", err)
@@ -594,7 +593,7 @@ task_behaviors:
 		gatesDir := filepath.Join(dir, "gates")
 		_ = os.MkdirAll(gatesDir, 0o755)
 		_ = os.WriteFile(filepath.Join(gatesDir, "check.sh"), []byte("#!/bin/bash\n"), 0o755)
-		writeKitYAML(t, dir, "gates:\n  - id: check\n    on: executing\n    kind: agent\n")
+		writeKitYAML(t, dir, "gates:\n  - id: check\n    kind: agent\n")
 		_, err := projectspec.ReadKitMeta(dir)
 		if err == nil || !strings.Contains(err.Error(), "kind") {
 			t.Fatalf("expected gate-kind error, got %v", err)
@@ -632,13 +631,13 @@ func TestMergeKitMetaIntoBehavior(t *testing.T) {
 		base := projectspec.TaskBehavior{
 			Name:         "dev",
 			HostCommands: projectspec.HostCommands{"git": {Path: "/usr/bin/git"}},
-			Hooks:        []projectspec.Hook{{ID: "proj-hook", On: projectspec.OnValues{"executing"}}},
+			Hooks:        []projectspec.Hook{{ID: "proj-hook"}},
 			Env:          map[string]string{"PROJECT_VAR": "pval"},
 		}
 		kit := &projectspec.KitMeta{
 			HostCommands:       projectspec.HostCommands{"go": {Path: "/usr/bin/go"}, "git": {Path: "/usr/bin/git"}},
 			AdditionalBindings: []projectspec.BindMount{{Source: "/usr/local/go"}},
-			Hooks:              []projectspec.Hook{{ID: "kit-hook", On: projectspec.OnValues{"verifying"}, ScriptPath: "/kit/hooks/kit-hook.sh"}},
+			Hooks:              []projectspec.Hook{{ID: "kit-hook", ScriptPath: "/kit/hooks/kit-hook.sh"}},
 			HooksDir:           "/kit/hooks",
 			KitRoot:            "/kit",
 			Env:                map[string]string{"GOPATH": "/home/go", "PROJECT_VAR": "kit-overridden"},
@@ -674,8 +673,8 @@ func TestMergeKitMetaIntoBehavior(t *testing.T) {
 	})
 
 	t.Run("same raw hook id across kit and base both survive with qualified IDs", func(t *testing.T) {
-		base := projectspec.TaskBehavior{Name: "dev", Hooks: []projectspec.Hook{{ID: "build", On: projectspec.OnValues{"executing"}, ScriptPath: "/proj/hooks/build.sh"}}}
-		kit := &projectspec.KitMeta{Hooks: []projectspec.Hook{{ID: "build", On: projectspec.OnValues{"executing"}, ScriptPath: "/kit/hooks/build.sh"}}, HooksDir: "/kit/hooks"}
+		base := projectspec.TaskBehavior{Name: "dev", Hooks: []projectspec.Hook{{ID: "build", ScriptPath: "/proj/hooks/build.sh"}}}
+		kit := &projectspec.KitMeta{Hooks: []projectspec.Hook{{ID: "build", ScriptPath: "/kit/hooks/build.sh"}}, HooksDir: "/kit/hooks"}
 
 		result := mergeKitsIntoBehavior(t, base, []*projectspec.KitMeta{kit}, []string{"mykit"})
 		if len(result.Hooks) != 2 {
@@ -769,7 +768,7 @@ func TestMergeKitMetaIntoBehavior_KitConsumerFields(t *testing.T) {
 	t.Run("kit agent hook without explicit consumer inherits kit consumer name", func(t *testing.T) {
 		base := projectspec.TaskBehavior{Name: "dev"}
 		kit := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{{ID: "kit-hook", On: projectspec.OnValues{"executing"}, Kind: projectspec.HandlerKindAgent, ScriptPath: "/kit/hooks/kit-hook.sh"}},
+			Hooks: []projectspec.Hook{{ID: "kit-hook", Kind: projectspec.HandlerKindAgent, ScriptPath: "/kit/hooks/kit-hook.sh"}},
 		}
 
 		result := mergeKitsIntoBehavior(t, base, []*projectspec.KitMeta{kit}, []string{"claude-code"})
@@ -785,7 +784,7 @@ func TestMergeKitMetaIntoBehavior_KitConsumerFields(t *testing.T) {
 	t.Run("kit non-agent hook gets Kit provenance but no Consumer", func(t *testing.T) {
 		base := projectspec.TaskBehavior{Name: "dev"}
 		kit := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{{ID: "util-hook", On: projectspec.OnValues{"executing"}, ScriptPath: "/kit/hooks/util-hook.sh"}},
+			Hooks: []projectspec.Hook{{ID: "util-hook", ScriptPath: "/kit/hooks/util-hook.sh"}},
 		}
 
 		result := mergeKitsIntoBehavior(t, base, []*projectspec.KitMeta{kit}, []string{"claude-code"})
@@ -801,7 +800,7 @@ func TestMergeKitMetaIntoBehavior_KitConsumerFields(t *testing.T) {
 	t.Run("kit agent hook with explicit consumer retains its consumer", func(t *testing.T) {
 		base := projectspec.TaskBehavior{Name: "dev"}
 		kit := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{{ID: "kit-hook", On: projectspec.OnValues{"executing"}, Kind: projectspec.HandlerKindAgent, ScriptPath: "/kit/hooks/kit-hook.sh", Consumer: "explicit-consumer"}},
+			Hooks: []projectspec.Hook{{ID: "kit-hook", Kind: projectspec.HandlerKindAgent, ScriptPath: "/kit/hooks/kit-hook.sh", Consumer: "explicit-consumer"}},
 		}
 
 		result := mergeKitsIntoBehavior(t, base, []*projectspec.KitMeta{kit}, []string{"claude-code"})
@@ -814,8 +813,8 @@ func TestMergeKitMetaIntoBehavior_KitConsumerFields(t *testing.T) {
 	t.Run("kit hook/gate IDs are qualified with consumer prefix", func(t *testing.T) {
 		base := projectspec.TaskBehavior{Name: "dev"}
 		kit := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{{ID: "run-agent", On: projectspec.OnValues{"executing"}, ScriptPath: "/kit/hooks/run-agent.sh"}},
-			Gates: []projectspec.Gate{{ID: "check-quality", On: projectspec.OnValues{"verifying"}, ScriptPath: "/kit/gates/check-quality.sh"}},
+			Hooks: []projectspec.Hook{{ID: "run-agent", ScriptPath: "/kit/hooks/run-agent.sh"}},
+			Gates: []projectspec.Gate{{ID: "check-quality", ScriptPath: "/kit/gates/check-quality.sh"}},
 		}
 
 		result := mergeKitsIntoBehavior(t, base, []*projectspec.KitMeta{kit}, []string{"my-kit"})
@@ -830,10 +829,10 @@ func TestMergeKitMetaIntoBehavior_KitConsumerFields(t *testing.T) {
 	t.Run("different kits with same hook ID both survive", func(t *testing.T) {
 		base := projectspec.TaskBehavior{Name: "dev"}
 		kitA := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{{ID: "run-agent", On: projectspec.OnValues{"executing"}, ScriptPath: "/a/hooks/run-agent.sh"}},
+			Hooks: []projectspec.Hook{{ID: "run-agent", ScriptPath: "/a/hooks/run-agent.sh"}},
 		}
 		kitB := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{{ID: "run-agent", On: projectspec.OnValues{"executing"}, ScriptPath: "/b/hooks/run-agent.sh"}},
+			Hooks: []projectspec.Hook{{ID: "run-agent", ScriptPath: "/b/hooks/run-agent.sh"}},
 		}
 
 		result := mergeKitsIntoBehavior(t, base, []*projectspec.KitMeta{kitA, kitB}, []string{"claude-code", "codex"})
@@ -848,7 +847,7 @@ func TestMergeKitMetaIntoBehavior_KitConsumerFields(t *testing.T) {
 	t.Run("base hooks are not prefixed", func(t *testing.T) {
 		base := projectspec.TaskBehavior{
 			Name:  "dev",
-			Hooks: []projectspec.Hook{{ID: "my-hook", On: projectspec.OnValues{"executing"}, ScriptPath: "/proj/hooks/my-hook.sh"}},
+			Hooks: []projectspec.Hook{{ID: "my-hook", ScriptPath: "/proj/hooks/my-hook.sh"}},
 		}
 		result := mergeKitsIntoBehavior(t, base, nil, nil)
 		if len(result.Hooks) != 1 || result.Hooks[0].ID != "my-hook" {
@@ -1701,7 +1700,6 @@ task_behaviors:
 `), 0o644)
 	_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(`hooks:
   - id: run-agent
-    on: executing
     kind: agent
     consumer: my-agent
 `), 0o644)
@@ -1734,7 +1732,7 @@ task_behaviors:
 `), 0o644)
 	_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(`gates:
   - id: my-gate
-    on: verifying
+    phase: exit
 `), 0o644)
 	_ = os.WriteFile(filepath.Join(kitGatesDir, "my-gate.sh"), []byte("#!/bin/sh\necho ok"), 0o755)
 
@@ -1761,7 +1759,6 @@ task_behaviors:
 `), 0o644)
 	_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(`hooks:
   - id: run-build
-    on: executing
 `), 0o644)
 	_ = os.WriteFile(filepath.Join(kitHooksDir, "run-build.sh"), []byte("#!/bin/sh\necho build"), 0o755)
 

@@ -71,7 +71,7 @@ func TestBuildJobTimelineLabel_Failed(t *testing.T) {
 func TestBuildTreeTimeline_GroupsByStatus(t *testing.T) {
 	now := time.Now()
 	detail := &api.TaskDetailView{
-		Task: &orchestrator.Task{ID: "t", Status: orchestrator.TaskStatusVerifying},
+		Task: &orchestrator.Task{ID: "t", Status: orchestrator.TaskStatusDone},
 		Actions: []*orchestrator.Action{
 			{
 				ID:         "a1",
@@ -84,7 +84,7 @@ func TestBuildTreeTimeline_GroupsByStatus(t *testing.T) {
 				ID:         "a2",
 				Type:       "done",
 				FromStatus: orchestrator.TaskStatusExecuting,
-				ToStatus:   orchestrator.TaskStatusVerifying,
+				ToStatus:   orchestrator.TaskStatusDone,
 				CreatedAt:  now.Add(-1 * time.Minute),
 			},
 		},
@@ -223,9 +223,9 @@ func TestBuildTreeTimeline_StateEntryTime(t *testing.T) {
 	now := created.Add(10 * time.Minute)
 	detail := &api.TaskDetailView{
 		Task: &orchestrator.Task{
-			ID: "t", Status: orchestrator.TaskStatusVerifying,
+			ID: "t", Status: orchestrator.TaskStatusDone,
 			CreatedAt: created,
-			Payload: json.RawMessage(`{"verification":{"g":{"findings":[{"message":"x","status":"open"}]}}}`),
+			Payload:   json.RawMessage(`{"verification":{"g":{"findings":[{"message":"x","status":"open"}]}}}`),
 		},
 		Actions: []*orchestrator.Action{
 			{
@@ -237,7 +237,7 @@ func TestBuildTreeTimeline_StateEntryTime(t *testing.T) {
 			{
 				ID: "a2", Type: "done",
 				FromStatus: orchestrator.TaskStatusExecuting,
-				ToStatus:   orchestrator.TaskStatusVerifying,
+				ToStatus:   orchestrator.TaskStatusDone,
 				CreatedAt:  now.Add(-1 * time.Minute),
 			},
 		},
@@ -255,9 +255,6 @@ func TestBuildTreeTimeline_StateEntryTime(t *testing.T) {
 	if !got["executing"].Equal(now.Add(-5 * time.Minute)) {
 		t.Errorf("executing entry time: want %v, got %v", now.Add(-5*time.Minute), got["executing"])
 	}
-	if !got["verifying"].Equal(now.Add(-1 * time.Minute)) {
-		t.Errorf("verifying entry time: want %v, got %v", now.Add(-1*time.Minute), got["verifying"])
-	}
 }
 
 // TestBuildTreeTimeline_ExcludesFindings verifies that verification findings
@@ -269,7 +266,7 @@ func TestBuildTreeTimeline_ExcludesFindings(t *testing.T) {
 	detail := &api.TaskDetailView{
 		Task: &orchestrator.Task{
 			ID:     "t",
-			Status: orchestrator.TaskStatusVerifying,
+			Status: orchestrator.TaskStatusDone,
 			Payload: json.RawMessage(`{
 				"verification": {
 					"mergeable-check": {
@@ -291,7 +288,7 @@ func TestBuildTreeTimeline_ExcludesFindings(t *testing.T) {
 			{
 				ID: "a2", Type: "done",
 				FromStatus: orchestrator.TaskStatusExecuting,
-				ToStatus:   orchestrator.TaskStatusVerifying,
+				ToStatus:   orchestrator.TaskStatusDone,
 				CreatedAt:  now.Add(-1 * time.Minute),
 			},
 		},

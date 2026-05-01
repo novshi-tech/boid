@@ -28,7 +28,7 @@ func writeExecTestProject(t *testing.T, id, name string) string {
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
 		t.Fatalf("write project yaml: %v", err)
 	}
-	kitYAML := "hooks:\n  - id: run-agent\n    on: executing\n"
+	kitYAML := "hooks:\n  - id: run-agent\n    \n"
 	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
 		t.Fatalf("write kit yaml: %v", err)
 	}

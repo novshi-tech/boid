@@ -619,22 +619,25 @@ func unmarshalTraits(s string) ([]string, error) {
 	return traits, nil
 }
 
-func marshalInstructions(instructions map[string]Instruction) (string, error) {
+func marshalInstructions(instructions Instructions) (string, error) {
 	if len(instructions) == 0 {
-		return "{}", nil
+		return "[]", nil
 	}
-	b, err := json.Marshal(instructions)
+	b, err := json.Marshal([]Instruction(instructions))
 	if err != nil {
 		return "", err
 	}
 	return string(b), nil
 }
 
-func unmarshalInstructions(s string) (map[string]Instruction, error) {
-	if s == "" || s == "{}" {
+// unmarshalInstructions reads either the new array form or the legacy map form
+// (`{"main": {...}}`) for backward compatibility with rows persisted before
+// the state-machine simplification.
+func unmarshalInstructions(s string) (Instructions, error) {
+	if s == "" || s == "[]" || s == "{}" {
 		return nil, nil
 	}
-	var instructions map[string]Instruction
+	var instructions Instructions
 	if err := json.Unmarshal([]byte(s), &instructions); err != nil {
 		return nil, err
 	}

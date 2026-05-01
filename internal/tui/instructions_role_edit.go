@@ -42,16 +42,14 @@ type InstructionsRoleEditScreen struct {
 	submitting bool
 }
 
-// NewInstructionsRoleEditScreen seeds the editor with the existing role's
-// YAML representation. For a role that does not yet exist, the editor opens
-// empty and the user types the full Instruction.
+// NewInstructionsRoleEditScreen seeds the editor with the active
+// instruction's YAML representation. The role parameter is preserved as a
+// label only; the editor always targets the active (most-recent) entry.
 func NewInstructionsRoleEditScreen(c *client.Client, task *orchestrator.Task, role string) *InstructionsRoleEditScreen {
 	var initialYAML string
-	if task.Instructions != nil {
-		if inst, ok := task.Instructions[role]; ok {
-			if y, err := instructionToYAML(inst); err == nil {
-				initialYAML = strings.TrimRight(y, "\n")
-			}
+	if active := task.Instructions.Active(); active != nil {
+		if y, err := instructionToYAML(*active); err == nil {
+			initialYAML = strings.TrimRight(y, "\n")
 		}
 	}
 
