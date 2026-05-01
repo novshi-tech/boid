@@ -287,8 +287,7 @@ func TestPlanHook_PrimaryInput_FilteredByConsumes(t *testing.T) {
 		Behavior:  "dev",
 		Payload: json.RawMessage(`{
 			"artifact": {"file": "foo.go"},
-			"verification": {"findings": []},
-			"tasks": []
+			"verification": {"findings": []}
 		}`),
 	}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{Name: "dev"}, task)

@@ -906,7 +906,7 @@ func TestCreateTask_RequestOverridesTemplateFields(t *testing.T) {
 		ProjectID:    "proj-1",
 		Title:        "test task",
 		Behavior:     "dev",
-		Traits:       []string{"tasks"},
+		Traits:       []string{"artifact"},
 		Readonly:     boolPtr(true),
 		Worktree:     boolPtr(false),
 		BranchPrefix: strPtr("task/"),
@@ -915,8 +915,8 @@ func TestCreateTask_RequestOverridesTemplateFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
-	if !reflect.DeepEqual(task.Traits, []string{"tasks"}) {
-		t.Errorf("Traits = %v, want %v", task.Traits, []string{"tasks"})
+	if !reflect.DeepEqual(task.Traits, []string{"artifact"}) {
+		t.Errorf("Traits = %v, want %v", task.Traits, []string{"artifact"})
 	}
 	if task.Readonly != true {
 		t.Errorf("Readonly = %v, want true", task.Readonly)

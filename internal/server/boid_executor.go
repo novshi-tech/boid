@@ -152,6 +152,42 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 		return &sandbox.ExecResponse{
 			Stdout: fmt.Sprintf("task %s reopened\n", req.TaskID),
 		}
+	case sandbox.BoidOpTaskList:
+		if e.tasks == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task list unavailable"}
+		}
+		var tasks []*orchestrator.Task
+		if req.ProjectID != "" {
+			listed, err := e.tasks.ListTasks(orchestrator.TaskFilter{ProjectID: req.ProjectID, Status: req.Status})
+			if err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+			}
+			tasks = listed
+		} else if req.WorkspaceID != "" {
+			listed, err := e.tasks.ListTasks(orchestrator.TaskFilter{WorkspaceID: req.WorkspaceID, Status: req.Status})
+			if err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+			}
+			tasks = listed
+		} else {
+			// workspace 未割当: AllowedProjectIDs でフィルタ (= self project のみ)
+			projectIDs := ctx.AllowedProjectIDs
+			if len(projectIDs) == 0 {
+				projectIDs = []string{ctx.ProjectID}
+			}
+			for _, pid := range projectIDs {
+				listed, err := e.tasks.ListTasks(orchestrator.TaskFilter{ProjectID: pid, Status: req.Status})
+				if err != nil {
+					return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+				}
+				tasks = append(tasks, listed...)
+			}
+		}
+		var sb strings.Builder
+		for _, t := range tasks {
+			fmt.Fprintf(&sb, "%-36s %-12s %s\n", t.ID, t.Status, t.Title)
+		}
+		return &sandbox.ExecResponse{Stdout: sb.String()}
 	case sandbox.BoidOpTaskImport:
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task import unavailable"}

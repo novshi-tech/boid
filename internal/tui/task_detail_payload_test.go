@@ -31,21 +31,35 @@ func TestExtractPayloadSections_Empty(t *testing.T) {
 
 func TestExtractPayloadSections_KnownOrder(t *testing.T) {
 	payload := json.RawMessage(`{
-		"tasks": [],
 		"verification": {},
 		"instructions": {"main": {}},
 		"artifacts": {}
 	}`)
 	sections := extractPayloadSections(payload)
-	if len(sections) != 4 {
-		t.Fatalf("want 4 sections, got %d", len(sections))
+	if len(sections) != 3 {
+		t.Fatalf("want 3 sections, got %d", len(sections))
 	}
-	// Known sections appear in predefined order: instructions, artifacts, verification, tasks
-	wantOrder := []string{"instructions", "artifacts", "verification", "tasks"}
+	// Known sections appear in predefined order: instructions, artifacts, verification
+	wantOrder := []string{"instructions", "artifacts", "verification"}
 	for i, want := range wantOrder {
 		if sections[i].key != want {
 			t.Errorf("sections[%d].key = %q, want %q", i, sections[i].key, want)
 		}
+	}
+}
+
+func TestExtractPayloadSections_TasksKeyIsUnknown(t *testing.T) {
+	payload := json.RawMessage(`{"tasks":[],"artifacts":{}}`)
+	sections := extractPayloadSections(payload)
+	if len(sections) != 2 {
+		t.Fatalf("want 2 sections, got %d", len(sections))
+	}
+	// artifacts is known (first), tasks is unknown (appended alphabetically)
+	if sections[0].key != "artifacts" {
+		t.Errorf("sections[0].key = %q, want %q", sections[0].key, "artifacts")
+	}
+	if sections[1].key != "tasks" {
+		t.Errorf("sections[1].key = %q, want %q", sections[1].key, "tasks")
 	}
 }
 

@@ -121,7 +121,7 @@ func TestCoordinator_DispatchAndAdvance_DropsUnknownTraitAndMergesArtifact(t *te
 		{
 			ID: "main-hook",
 			Traits: projectspec.HandlerTraits{
-				Produces: []projectspec.TraitType{projectspec.TraitArtifact, projectspec.TraitTasks},
+				Produces: []projectspec.TraitType{projectspec.TraitArtifact},
 			},
 		},
 	}, nil)

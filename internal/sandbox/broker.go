@@ -267,6 +267,30 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 		if boidReq.TaskID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task reopen requires a task id"}
 		}
+	case BoidOpTaskList:
+		// project_id 指定があれば解決して AllowsProject 検査
+		if boidReq.ProjectID != "" {
+			resolved, err := b.resolveProjectRef(boidReq.ProjectID)
+			if err != nil {
+				return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task list: resolve project %q: %s", boidReq.ProjectID, err)}
+			}
+			boidReq.ProjectID = resolved
+			if !entry.Context.AllowsProject(boidReq.ProjectID) {
+				return &ExecResponse{ExitCode: 1, Stderr: "boid task list: project is outside the current workspace"}
+			}
+		}
+		// workspace_id 指定があれば context と一致確認 (escape hatch なし)
+		if boidReq.WorkspaceID != "" {
+			if boidReq.WorkspaceID != entry.Context.WorkspaceID {
+				return &ExecResponse{ExitCode: 1, Stderr: "boid task list: workspace_id is outside the current workspace"}
+			}
+		}
+		// 両方未指定: WorkspaceID が非空なら自動 inject、空なら executor が AllowedProjectIDs でフィルタ
+		if boidReq.ProjectID == "" && boidReq.WorkspaceID == "" {
+			if entry.Context.WorkspaceID != "" {
+				boidReq.WorkspaceID = entry.Context.WorkspaceID
+			}
+		}
 	case BoidOpTaskImport:
 		if len(boidReq.ImportTasks) == 0 {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task import requires at least one task"}

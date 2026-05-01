@@ -229,7 +229,7 @@ func TestMergePayloadPatch_ProducesOutsideAllowed(t *testing.T) {
 // "artifact" that the agent produced successfully.
 func TestMergePayloadPatch_DropsUnknownTraitsAndMergesAllowed(t *testing.T) {
 	patch := json.RawMessage(`{"status":"done","artifact":{"commit":"abc1234"}}`)
-	allowed := []projectspec.TraitType{projectspec.TraitArtifact, projectspec.TraitTasks}
+	allowed := []projectspec.TraitType{projectspec.TraitArtifact}
 	result, err := projectspec.MergePayloadPatch(json.RawMessage(`{}`), patch, "hook-1", allowed)
 	if err != nil {
 		t.Fatalf("MergePayloadPatch: %v", err)

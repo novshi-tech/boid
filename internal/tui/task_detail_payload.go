@@ -17,7 +17,7 @@ type payloadSection struct {
 }
 
 // knownSectionOrder defines the preferred display order for well-known payload keys.
-var knownSectionOrder = []string{"instructions", "artifacts", "verification", "tasks"}
+var knownSectionOrder = []string{"instructions", "artifacts", "verification"}
 
 // extractPayloadSections parses the task payload and returns sections in display order.
 // Known sections appear first in the predefined order; unknown keys are appended alphabetically.

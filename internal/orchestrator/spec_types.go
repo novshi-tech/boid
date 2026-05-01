@@ -193,7 +193,6 @@ type TraitType string
 const (
 	TraitArtifact     TraitType = "artifact"
 	TraitVerification TraitType = "verification"
-	TraitTasks        TraitType = "tasks"
 )
 
 // HandlerKind distinguishes the role a hook plays.
