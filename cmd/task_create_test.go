@@ -64,7 +64,7 @@ base_branch: feature/BGO-170
 }
 
 func TestRunTaskCreate_PassesBaseBranchFromJSONStdin(t *testing.T) {
-	// create-subtasks.py が json.dumps した spec を stdin に流す経路を再現する。
+	// agent / gate スクリプトが json.dumps した spec を `boid task create` に stdin で流す経路を再現する。
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "create-base-branch-json-proj", "Create Base Branch JSON Project")

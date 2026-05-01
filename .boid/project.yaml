@@ -52,7 +52,6 @@ task_behaviors:
   plan:
     name: Plan
     readonly: true
-    traits: [tasks]
     kits:
       - github.com/novshi-tech/boid-kits/boid-tasks
     default_instruction:
@@ -65,7 +64,6 @@ task_behaviors:
   auto_plan:
     name: Auto Plan
     readonly: true
-    traits: [tasks]
     kits:
       - github.com/novshi-tech/boid-kits/boid-tasks
     default_instruction:

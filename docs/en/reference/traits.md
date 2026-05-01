@@ -13,20 +13,19 @@ The keys you can place at the top level of a task payload (the *traits*), and ho
 
 ## Defined traits
 
-Two traits live in the payload. The state machine's auto-transitions are *not* driven by trait values directly; they fire on hook completion (`boid job done`) and on gate exit codes.
+Only the `artifact` trait lives in the payload. The state machine's auto-transitions are *not* driven by trait values directly; they fire on hook completion (`boid job done`) and on gate exit codes.
 
 | Trait | Producible by | Contents |
 |---|---|---|
 | `artifact` | hooks / gates | Free-form map for the task's output (commit, PR URL, files changed, ...). |
-| `tasks` | hooks / gates | Subtask array emitted by planning behaviors. |
 
 ### `artifact`
 
 Where the executing hook writes its results. The internal shape is up to the project / kit, except that `artifact.children.*` is reserved by `boid` (used as a view from a parent task into its children) and a handler that tries to write under it gets an error.
 
-### `tasks`
+### Subtask creation
 
-The plan-style counterpart to `artifact`. Used by behaviors such as `plan` that emit a list of tasks; see the [boid-plan SKILL](../../../internal/skills/data/boid-plan/SKILL.md) for the array shape.
+Planning behaviors (`plan` / `auto_plan`, etc.) no longer emit subtasks via a payload trait. Instead the handler calls the `boid task create` builtin directly. See the [boid-plan SKILL](../../../internal/skills/data/boid-plan/SKILL.md) for the typical shape.
 
 ## Computed values
 
@@ -59,7 +58,7 @@ For the shape of an `Instruction`, see [`project.yaml` reference / Instruction](
 
 | Trait | Mode | Meaning |
 |---|---|---|
-| `artifact`, `tasks`, anything else | **exclusive** | Last writer wins. The handler's value replaces the existing same-key value. |
+| `artifact`, anything else | **exclusive** | Last writer wins. The handler's value replaces the existing same-key value. |
 
 When multiple handlers run in parallel, give each one its own sub-key (e.g. `artifact.<my-handler-id>`) to avoid collisions.
 

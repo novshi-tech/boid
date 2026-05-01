@@ -4,20 +4,20 @@
 
 ### 正常系フロー（必須）
 
-- タスクが期待ステータス（`done`, `verifying` など）に到達すること
-- artifact や verification の内容が正しいこと
+- タスクが期待ステータス（`done` 等）に到達すること
+- artifact の内容が正しいこと
 - プロジェクト登録・タスク作成が成功すること
 
 ### 状態遷移（新機能追加時）
 
-- `executing` → `verifying` → `done` などの遷移が正しく行われること
-- verify gate 付き構成での rework サイクルが正しく動くこと
+- `pending` → `executing` → `done` の遷移が正しく行われること
+- entry/exit gate の発火タイミングと exit code が遷移をどう変えるか
 - 並列 hook と順次 hook の実行順序
 
 ### エラーケース（任意、複雑化する場合は省略可）
 
-- gate が fail した場合の rework 開始
-- abort アクションによるタスク中断
+- exit gate が fail して done への遷移をブロックする (executing に留まる)
+- abort アクションによるタスク中断 (`aborted` 終端状態)
 
 ## アサーションの書き方
 
@@ -50,7 +50,7 @@ e2e_assert_contains "$project_list" "my-scenario"
 task_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 20s --interval 100ms "$task_id" executing)"
 ```
 
-ステータス値: `pending`, `executing`, `verifying`, `reworking`, `done`, `aborted`
+ステータス値: `pending`, `executing`, `done`, `aborted`
 
 ### ジョブ数の待機
 
@@ -127,6 +127,12 @@ host_commands:
       - restart
 ```
 
+## builtin command (boid / git) のテスト
+
+新しい builtin op を追加した場合は、 hook / gate スクリプトから sandbox 経由で呼ぶ E2E を入れること。 `boid task list` のようにテキスト出力する builtin は scenario.sh から host CLI として呼んでも別物なので、 sandbox 内で発火させる経路を組む。
+
+参照: `e2e/scenarios/builtin-task-create/` — gate スクリプト内で `boid task create` を呼ぶパターンを採用している。
+
 ## サンドボックス前提条件の扱い
 
 `requires-sandbox` マーカーファイルを置くだけでよい（内容は空で可）。
@@ -149,8 +155,8 @@ touch e2e/scenarios/my-scenario/requires-sandbox
 | シナリオ | 特徴 | 参照ポイント |
 |---------|------|------------|
 | `project-smoke` | 最小構成、サンドボックス不要 | シンプルなプロジェクト登録 + アサーション |
-| `readonly-hook-gate` | 並列 hook + 並列 gate、verify gate 付き構成 | hook/gate 同期パターン |
-| `writable-chain` | 順次 hook + 並列 gate、follow-up task | 順次 hook の制御 |
-| `rework-cycle` | rework サイクル、abort | gate による rework トリガー |
-| `instructions-routing` | instructions merge、payload override | instructions の複数エージェント分散 |
-| `host-command-smoke` | hostcmd（gh, systemctl）、サンドボックス必須 | fake コマンドの使い方 |
+| `readonly-hook-gate` | 並列 hook + exit gate 構成 | hook/gate 同期パターン |
+| `phase-dependency` | 複数子タスクと `artifact.children.all_done` による phase 連結 | 親子 / 依存関係 / abort 動作 |
+| `builtin-task-create` | hook / gate からの `boid task create` builtin | サブタスク生成の現行パターン (旧 tasks trait の代替) |
+| `task-import-smoke` | JSONL からの一括 import (`boid task import`) | bulk task 投入 |
+| `host-command-smoke` | hostcmd (gh, systemctl)、サンドボックス必須 | fake コマンドの使い方 |

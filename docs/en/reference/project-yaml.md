@@ -43,7 +43,7 @@ The map key is the behavior's identifier (e.g. `dev`, `plan`) — what `boid tas
 | Key | Type | Default | Role |
 |---|---|---|---|
 | `name` | string | the map key | Display label (optional). |
-| `traits` | list of string | (empty) | Top-level payload trait names this behavior is allowed to use (e.g. `[tasks]`). |
+| `traits` | list of string | (empty) | Top-level payload trait names this behavior is allowed to use (e.g. `[artifact]`). |
 | `readonly` | bool | `false` | If `true`, the sandbox is mounted read-only. |
 | `worktree` | bool | `false` | If `true`, each task gets its own git worktree on a fresh branch. |
 | `branch_prefix` | string | `boid/` | Prefix used when generating the worktree branch name. |
@@ -231,7 +231,6 @@ task_behaviors:
   plan:
     name: Plan
     readonly: true
-    traits: [tasks]
     kits:
       - github.com/novshi-tech/boid-kits/boid-tasks
     default_instruction: { ... }

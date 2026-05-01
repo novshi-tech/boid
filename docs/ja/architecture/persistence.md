@@ -54,7 +54,7 @@
 
 **JSON カラムの役割**:
 
-- `payload` — `artifact` / `tasks` などの trait を含む JSON ドキュメント。 trait の意味は [Payload trait リファレンス](../reference/traits.md)
+- `payload` — `artifact` などの trait を含む JSON ドキュメント。 trait の意味は [Payload trait リファレンス](../reference/traits.md)
 - `instructions` — Instruction の配列。 配列の最後の要素が active、 reopen で append される
 - `traits` — このタスクが扱う trait 名の配列 (behavior 由来)
 
@@ -180,6 +180,6 @@ migrations/
 ## 関連ドキュメント
 
 - [アーキテクチャ概要](overview.md) — `internal/server` がどう DB を組み立てるか
-- [Payload trait リファレンス](../reference/traits.md) — `tasks.payload` の中身
-- [`project.yaml` リファレンス](../reference/project-yaml.md) — `tasks.behavior` / `tasks.traits` の出処
+- [Payload trait リファレンス](../reference/traits.md) — `tasks` テーブルの `payload` カラムに格納される trait の中身
+- [`project.yaml` リファレンス](../reference/project-yaml.md) — `tasks` テーブルの `behavior` / `traits` カラムの出処
 - [Concepts / Daemon](../guide/concepts.md#daemon) — daemon が DB を独占する理由
