@@ -372,9 +372,9 @@ type TaskBehavior struct {
 	Worktree            bool                   `yaml:"worktree" json:"worktree,omitempty"`
 	BranchPrefix        string                 `yaml:"branch_prefix" json:"branch_prefix,omitempty"`
 	BaseBranch          string                 `yaml:"base_branch" json:"base_branch,omitempty"`
-	DefaultInstructions map[string]Instruction `yaml:"default_instructions,omitempty" json:"default_instructions,omitempty"`
-	DefaultPayload      RawPayload             `yaml:"default_payload" json:"default_payload,omitempty"`
-	Kits                []KitRef               `yaml:"kits,omitempty" json:"kits,omitempty"`
+	DefaultInstruction *Instruction `yaml:"default_instruction,omitempty" json:"default_instruction,omitempty"`
+	DefaultPayload     RawPayload   `yaml:"default_payload" json:"default_payload,omitempty"`
+	Kits               []KitRef     `yaml:"kits,omitempty" json:"kits,omitempty"`
 
 	// Resolved fields populated by ReadProjectMetaWithKits after merging kit data
 	// and project-level overlays. These are not serialized to YAML.
@@ -398,8 +398,8 @@ type BehaviorSpec struct {
 	Worktree            bool                   `yaml:"worktree,omitempty" json:"worktree,omitempty"`
 	BranchPrefix        string                 `yaml:"branch_prefix,omitempty" json:"branch_prefix,omitempty"`
 	BaseBranch          string                 `yaml:"base_branch,omitempty" json:"base_branch,omitempty"`
-	DefaultInstructions map[string]Instruction `yaml:"default_instructions,omitempty" json:"default_instructions,omitempty"`
-	DefaultPayload      RawPayload             `yaml:"default_payload,omitempty" json:"default_payload,omitempty"`
+	DefaultInstruction *Instruction `yaml:"default_instruction,omitempty" json:"default_instruction,omitempty"`
+	DefaultPayload     RawPayload   `yaml:"default_payload,omitempty" json:"default_payload,omitempty"`
 }
 
 type KitRef struct {

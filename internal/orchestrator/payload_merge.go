@@ -70,15 +70,15 @@ func RejectPayloadInstructions(payload json.RawMessage) error {
 
 // MergeDefaultInstructions builds the initial instruction list for a new task.
 // Strategy:
-//   - Take the behavior default's "main" entry (if any) as the seed
+//   - Take the behavior's default_instruction (if any) as the seed
 //   - If requestInstructions is provided, use it instead of the default
 //
-// requestInstructions accepts the new array form `[{...}, ...]` and the legacy
-// single-instruction map form `{"main": {...}}` for backward compatibility.
-func MergeDefaultInstructions(defaultInstructions map[string]Instruction, requestInstructions json.RawMessage) (Instructions, error) {
+// requestInstructions accepts the array form `[{...}, ...]` and the legacy
+// single-map form `{"main": {...}}` (handled by Instructions.UnmarshalJSON).
+func MergeDefaultInstructions(defaultInstruction *Instruction, requestInstructions json.RawMessage) (Instructions, error) {
 	var base Instructions
-	if main, ok := defaultInstructions["main"]; ok {
-		base = Instructions{main}
+	if defaultInstruction != nil {
+		base = Instructions{*defaultInstruction}
 	}
 	if len(requestInstructions) == 0 || string(requestInstructions) == "null" || string(requestInstructions) == "{}" || string(requestInstructions) == "[]" {
 		return base, nil

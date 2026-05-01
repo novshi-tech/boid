@@ -63,22 +63,21 @@ task_behaviors:
   ask:
     name: Ask
     readonly: true
-    default_instructions:
-      main:
-        type: execution
-        consumer: claude-code
-        message: |
-          Answer the question in the task title / description, then write the
-          answer into the artifact trait:
-            echo '{"artifact":{"answer":"<your answer>"}}' \
-              | boid task update <task_id> --payload-file -
+    default_instruction:
+      type: execution
+      consumer: claude-code
+      message: |
+        Answer the question in the task title / description, then write the
+        answer into the artifact trait:
+          echo '{"artifact":{"answer":"<your answer>"}}' \
+            | boid task update <task_id> --payload-file -
 ```
 
 What is going on:
 
 - **Top-level `kits:`** lists the kits used across the whole project. Here, just `claude-code`.
 - **`task_behaviors.ask`** declares a behavior called `ask`. `readonly: true` makes the sandbox read-only, which is fine because this task only needs to write back to the payload, not edit files.
-- **`default_instructions.main`** holds the instruction template for the `executing` state. `consumer: claude-code` is how the claude-code kit's hook recognises "this instruction is meant for me".
+- **`default_instruction`** holds a single Instruction object passed to the agent on `executing`. `consumer: claude-code` is how the claude-code kit's hook recognises "this instruction is meant for me".
 
 Reload the project:
 
@@ -132,7 +131,7 @@ What this tutorial covered:
 
 - The contents of a kit (hooks / gates / commands / bindings / env).
 - Pulling a kit repository in with `boid kit install`.
-- The shape of `project.yaml`, including `kits` and `default_instructions`.
+- The shape of `project.yaml`, including `kits` and `default_instruction`.
 - Skipping `pending` with `auto_start: true`.
 
 Next: a GitHub PR-driven dev workflow that combines a worktree with auto-merge.

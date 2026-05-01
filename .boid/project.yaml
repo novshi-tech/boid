@@ -29,12 +29,11 @@ task_behaviors:
     worktree: true
     kits:
       - github.com/novshi-tech/boid-kits/github-auto-merge
-    default_instructions:
-      main:
-        type: execution
-        consumer: claude-code
-        model: sonnet
-        message: |
+    default_instruction:
+      type: execution
+      consumer: claude-code
+      model: sonnet
+      message: |
           task.yaml の title と description に記述された内容を実装せよ。
           コミットする前にユニットテストの通過を確認すること。
           E2E テストの検証は CI に任せること（dev タスクで回す必要はない）。
@@ -56,25 +55,23 @@ task_behaviors:
     traits: [tasks]
     kits:
       - github.com/novshi-tech/boid-kits/boid-tasks
-    default_instructions:
-      main:
-        type: execution
-        consumer: claude-code
-        model: opus
-        interactive: true
-        message: |
-          /boid-plan の記述に従って実装計画を策定せよ。
+    default_instruction:
+      type: execution
+      consumer: claude-code
+      model: opus
+      interactive: true
+      message: |
+        /boid-plan の記述に従って実装計画を策定せよ。
   auto_plan:
     name: Auto Plan
     readonly: true
     traits: [tasks]
     kits:
       - github.com/novshi-tech/boid-kits/boid-tasks
-    default_instructions:
-      main:
-        type: execution
-        consumer: claude-code
-        model: sonnet
-        interactive: false
-        message: |
-          /boid-plan の記述に従って実装計画を策定せよ。
+    default_instruction:
+      type: execution
+      consumer: claude-code
+      model: sonnet
+      interactive: false
+      message: |
+        /boid-plan の記述に従って実装計画を策定せよ。
