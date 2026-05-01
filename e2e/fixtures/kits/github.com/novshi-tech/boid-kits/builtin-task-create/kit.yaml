@@ -1,6 +1,6 @@
 gates:
   - id: spawn
-    on: [executing]
+    phase: exit
     behavior: parent
     traits:
       produces: [artifact]

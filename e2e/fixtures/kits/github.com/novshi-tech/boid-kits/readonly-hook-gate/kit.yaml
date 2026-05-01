@@ -1,8 +1,7 @@
 hooks:
   - id: verify-readonly
-    on: executing
 gates:
   - id: validate
-    on: verifying
+    phase: exit
     traits:
       consumes: [artifact]

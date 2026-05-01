@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-mkdir -p "$HOME/.boid/output"
-cat > "$HOME/.boid/output/payload_patch.json" <<'EOF'
-{"payload_patch":{"artifact":{"summary":"script completed"}}}
-EOF
