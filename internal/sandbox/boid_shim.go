@@ -173,12 +173,10 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 	if spec.Title == "" {
 		return nil, fmt.Errorf("boid shim: task spec must include title")
 	}
-	if spec.Behavior == "" && spec.BehaviorSpec == nil {
-		return nil, fmt.Errorf("boid shim: task spec must include either behavior or behavior_spec")
-	}
 	if spec.Behavior != "" && spec.BehaviorSpec != nil {
 		return nil, fmt.Errorf("boid shim: task spec must not include both behavior and behavior_spec")
 	}
+	// behavior 省略時はサーバ側で DefaultBehavior に routing される。
 
 	req := &BoidRequest{
 		Op:               BoidOpTaskCreate,

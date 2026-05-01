@@ -322,14 +322,21 @@ type behaviorResolution struct {
 	instructions orchestrator.Instructions
 }
 
+// DefaultBehavior is the reserved behavior name used when a CreateTaskRequest
+// omits both behavior and behavior_spec. Projects are expected to define a
+// behavior with this name in project.yaml's task_behaviors (typically with
+// readonly: true) so that bare-task creation routes to a planning/triage step.
+const DefaultBehavior = "plan"
+
 // resolveBehavior validates and resolves behavior fields from a CreateTaskRequest.
 // It handles both the named behavior path (meta lookup) and the inline behavior_spec path.
+// When both behavior and behavior_spec are empty, the request is routed to DefaultBehavior.
 func resolveBehavior(meta *orchestrator.ProjectMeta, req CreateTaskRequest) (*behaviorResolution, error) {
-	if req.Behavior == "" && req.BehaviorSpec == nil {
-		return nil, &StatusError{Code: http.StatusBadRequest, Message: "either behavior or behavior_spec is required"}
-	}
 	if req.Behavior != "" && req.BehaviorSpec != nil {
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: "behavior and behavior_spec are mutually exclusive"}
+	}
+	if req.Behavior == "" && req.BehaviorSpec == nil {
+		req.Behavior = DefaultBehavior
 	}
 
 	res := &behaviorResolution{payload: req.Payload}

@@ -360,6 +360,25 @@ func (p *RawPayload) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
+// UnmarshalJSON / MarshalJSON は json.RawMessage と同じ振る舞いを named type に
+// 改めて再実装する。 named type はメソッドを継承しないため、 これが無いと
+// encoding/json は underlying []byte 扱いで base64 文字列を要求してしまい、
+// JSON object/array 形式の default_payload を弾いてしまう。
+func (p *RawPayload) UnmarshalJSON(data []byte) error {
+	if p == nil {
+		return fmt.Errorf("orchestrator.RawPayload: UnmarshalJSON on nil pointer")
+	}
+	*p = append((*p)[0:0], data...)
+	return nil
+}
+
+func (p RawPayload) MarshalJSON() ([]byte, error) {
+	if len(p) == 0 {
+		return []byte("null"), nil
+	}
+	return []byte(p), nil
+}
+
 func (p RawPayload) RawMessage() json.RawMessage {
 	return json.RawMessage(p)
 }

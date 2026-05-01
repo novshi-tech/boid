@@ -441,18 +441,67 @@ behavior_spec:
 	}
 }
 
-func TestRunBoidShim_TaskCreate_NeitherBehaviorNorSpec(t *testing.T) {
-	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
-
+func TestRunBoidShim_TaskCreate_NeitherBehaviorNorSpec_ForwardsToBroker(t *testing.T) {
+	// shim は behavior 省略時に弾かない (サーバ側で DefaultBehavior に routing
+	// される)。 broker への forward 経路を fake broker で検証する。
 	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.Remove(sockPath)
+	})
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
 	specPath := filepath.Join(dir, "task.yaml")
-	specYAML := "project_id: proj-1\ntitle: bad task\n"
+	specYAML := "project_id: proj-1\ntitle: triage me\n"
 	if err := os.WriteFile(specPath, []byte(specYAML), 0o644); err != nil {
 		t.Fatalf("write task spec: %v", err)
 	}
 
-	if _, err := sandbox.RunBoidShim([]string{"task", "create", "-f", specPath}); err == nil {
-		t.Fatal("expected error when neither behavior nor behavior_spec is set")
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-noop")
+
+	resp, err := sandbox.RunBoidShim([]string{"task", "create", "-f", specPath})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpTaskCreate {
+		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskCreate)
+	}
+	if req.Boid.Behavior != "" {
+		t.Errorf("behavior = %q, want empty (server side defaults to plan)", req.Boid.Behavior)
+	}
+	if req.Boid.BehaviorSpec != nil {
+		t.Errorf("behavior_spec = %+v, want nil", req.Boid.BehaviorSpec)
+	}
+	if req.Boid.Title != "triage me" {
+		t.Errorf("title = %q, want triage me", req.Boid.Title)
 	}
 }
 
