@@ -8,8 +8,11 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/novshi-tech/boid/internal/api/auth"
 )
 
 // stubLoginPairing is a test double for loginPairing.
@@ -49,7 +52,8 @@ type stubLoginRateLimiter struct {
 	allow bool
 }
 
-func (s *stubLoginRateLimiter) Allow(_ string) bool { return s.allow }
+func (s *stubLoginRateLimiter) Allowed(_ string) bool { return s.allow }
+func (s *stubLoginRateLimiter) RecordFailure(_ string) {}
 
 // newTestLoginHandler builds a chi.Mux with the LoginHandler routes.
 func newTestLoginHandler(h *LoginHandler) *chi.Mux {
@@ -207,5 +211,133 @@ func TestLoginHandlerGetAuth_InvalidToken(t *testing.T) {
 	loc := w.Header().Get("Location")
 	if !strings.Contains(loc, "/login") {
 		t.Errorf("Location = %q, want redirect to /login", loc)
+	}
+}
+
+// newRealLoginHandler builds a handler backed by a real auth.RateLimiter with a fixed clock.
+func newRealLoginHandler(pairing loginPairing, now func() time.Time) *chi.Mux {
+	h := &LoginHandler{
+		Pairing: pairing,
+		Signer:  &stubLoginSigner{},
+		Store:   &stubLoginDeviceStore{},
+		Limiter: auth.NewRateLimiter(now),
+	}
+	return newTestLoginHandler(h)
+}
+
+func TestGetAuth_CFConnectingIP_RateLimit(t *testing.T) {
+	now := time.Now()
+	r := newRealLoginHandler(&stubLoginPairing{err: errors.New("bad token")}, func() time.Time { return now })
+
+	sendAuth := func(ip string) int {
+		req := httptest.NewRequest(http.MethodGet, "/auth?token=BAD", nil)
+		req.RemoteAddr = "127.0.0.1:12345"
+		req.Header.Set("CF-Connecting-IP", ip)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	// 5 failures for 1.2.3.4 → locked
+	for i := range 5 {
+		if got := sendAuth("1.2.3.4"); got == http.StatusTooManyRequests {
+			t.Fatalf("attempt %d: got 429 before lock threshold", i+1)
+		}
+	}
+	if got := sendAuth("1.2.3.4"); got != http.StatusTooManyRequests {
+		t.Errorf("6th attempt for 1.2.3.4: got %d, want 429", got)
+	}
+	// Different IP must still be allowed.
+	if got := sendAuth("5.6.7.8"); got == http.StatusTooManyRequests {
+		t.Errorf("first attempt for 5.6.7.8: got 429, want non-429")
+	}
+}
+
+func TestGetAuth_XForwardedFor_LeftmostIP(t *testing.T) {
+	now := time.Now()
+	r := newRealLoginHandler(&stubLoginPairing{err: errors.New("bad token")}, func() time.Time { return now })
+
+	sendAuth := func(xff string) int {
+		req := httptest.NewRequest(http.MethodGet, "/auth?token=BAD", nil)
+		req.RemoteAddr = "127.0.0.1:12345"
+		req.Header.Set("X-Forwarded-For", xff)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	// 5 failures using multi-value XFF; leftmost IP (1.2.3.4) should accumulate.
+	for i := range 5 {
+		if got := sendAuth("1.2.3.4, 7.7.7.7"); got == http.StatusTooManyRequests {
+			t.Fatalf("attempt %d: got 429 before lock threshold", i+1)
+		}
+	}
+	if got := sendAuth("1.2.3.4, 7.7.7.7"); got != http.StatusTooManyRequests {
+		t.Errorf("6th attempt: got %d, want 429", got)
+	}
+}
+
+func TestGetAuth_InvalidXForwardedFor_FallsBackToRemoteAddr(t *testing.T) {
+	now := time.Now()
+	r := newRealLoginHandler(&stubLoginPairing{err: errors.New("bad token")}, func() time.Time { return now })
+
+	// 5 failures with an invalid XFF → counts against RemoteAddr 10.0.0.1.
+	for i := range 5 {
+		req := httptest.NewRequest(http.MethodGet, "/auth?token=BAD", nil)
+		req.RemoteAddr = "10.0.0.1:12345"
+		req.Header.Set("X-Forwarded-For", "not-an-ip")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code == http.StatusTooManyRequests {
+			t.Fatalf("attempt %d: got 429 before lock threshold", i+1)
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/auth?token=BAD", nil)
+	req.RemoteAddr = "10.0.0.1:12345"
+	req.Header.Set("X-Forwarded-For", "not-an-ip")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("6th attempt (fallback IP): got %d, want 429", w.Code)
+	}
+}
+
+func TestGetAuth_SuccessDoesNotLock(t *testing.T) {
+	now := time.Now()
+	r := newRealLoginHandler(&stubLoginPairing{label: "phone"}, func() time.Time { return now })
+
+	// 10 successful redeems must not trigger rate limiting.
+	for i := range 10 {
+		req := httptest.NewRequest(http.MethodGet, "/auth?token=VALID", nil)
+		req.Header.Set("CF-Connecting-IP", "1.2.3.4")
+		req.RemoteAddr = "127.0.0.1:12345"
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code == http.StatusTooManyRequests {
+			t.Errorf("attempt %d: got 429 on successful redeem", i+1)
+		}
+	}
+}
+
+func TestGetAuth_InvalidToken_LocksAfterThreshold(t *testing.T) {
+	now := time.Now()
+	r := newRealLoginHandler(&stubLoginPairing{err: errors.New("bad")}, func() time.Time { return now })
+
+	sendAuth := func() int {
+		req := httptest.NewRequest(http.MethodGet, "/auth?token=BAD", nil)
+		req.Header.Set("CF-Connecting-IP", "9.9.9.9")
+		req.RemoteAddr = "127.0.0.1:12345"
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	for i := range 5 {
+		if got := sendAuth(); got == http.StatusTooManyRequests {
+			t.Fatalf("attempt %d: got 429 before lock threshold", i+1)
+		}
+	}
+	if got := sendAuth(); got != http.StatusTooManyRequests {
+		t.Errorf("6th attempt: got %d, want 429", got)
 	}
 }
