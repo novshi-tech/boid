@@ -9,9 +9,9 @@
 
 ## Status Overview
 
-| status | 役割 | FS | 出力 trait |
-|--------|------|-----|-----------|
-| executing | 指示に従い実装する | RW | artifact |
+| status | 役割 | FS |
+|--------|------|-----|
+| executing | 指示に従い実装する | RW |
 
 pending, done, aborted ではエージェントは起動されない。
 
@@ -34,8 +34,7 @@ done ─────────┘
 
 instructions の指示に従って作業する。
 
-- 作業完了時、 `~/.boid/output/payload_patch.json` に `artifact` trait を出力する
-- 正常終了 (exit 0) すると hook trap が `boid job done` を発火し、 状態機械が `executing → done` に進める
+- 指示に従って作業し正常終了 (exit 0) すれば、 hook trap が `boid job done` を発火して状態機械が進める
 - 修正不可能なエラーに遭遇した場合は abort で打ち切る:
   `boid task abort <task_id> --code <reason> --message "<summary>"`
 

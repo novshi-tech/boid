@@ -51,19 +51,7 @@ behavior: "dev"
 
 ## payload.yaml
 
-タスクのペイロード全体。トップレベルキーが trait 名。
-
-```yaml
-artifact: { ... }
-tasks: [ ... ]
-```
-
-### Traits
-
-| trait | 用途 | 読み書き |
-|-------|------|---------|
-| artifact | 実装成果物 | 書き込み可（executing） |
-| tasks | サブタスク配列 | 書き込み可（plan / triage 用途） |
+**読み取り専用**の入力ファイル。過去の hook が積み上げた artifact 等を文脈として読むのに使う。エージェントが書き込む経路ではない。
 
 instructions は payload の trait ではなく、 `task.yaml` と並ぶ別ファイル (`instructions.yaml`) で配信される。
 
