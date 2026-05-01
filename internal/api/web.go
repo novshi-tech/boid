@@ -685,7 +685,8 @@ type loginDeviceStore interface {
 
 // loginRateLimiter guards against brute-force attempts.
 type loginRateLimiter interface {
-	Allow(ip string) bool
+	Allowed(ip string) bool
+	RecordFailure(ip string)
 }
 
 // LoginHandler handles /login and /auth.
@@ -702,18 +703,21 @@ func (h *LoginHandler) GetLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *LoginHandler) PostLogin(w http.ResponseWriter, r *http.Request) {
-	if !h.Limiter.Allow(remoteIP(r)) {
+	ip := remoteIP(r)
+	if !h.Limiter.Allowed(ip) {
 		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 		return
 	}
 	code := r.FormValue("code")
 	label, err := h.Pairing.Redeem(r.Context(), code)
 	if err != nil {
+		h.Limiter.RecordFailure(ip)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		templates.Login("無効なペアリングコードです").Render(r.Context(), w)
 		return
 	}
 	if err := h.issueSession(w, r, label); err != nil {
+		h.Limiter.RecordFailure(ip)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -721,17 +725,20 @@ func (h *LoginHandler) PostLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *LoginHandler) GetAuth(w http.ResponseWriter, r *http.Request) {
-	if !h.Limiter.Allow(remoteIP(r)) {
+	ip := remoteIP(r)
+	if !h.Limiter.Allowed(ip) {
 		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 		return
 	}
 	token := r.URL.Query().Get("token")
 	label, err := h.Pairing.Redeem(r.Context(), token)
 	if err != nil {
+		h.Limiter.RecordFailure(ip)
 		http.Redirect(w, r, "/login?error=invalid_code", http.StatusFound)
 		return
 	}
 	if err := h.issueSession(w, r, label); err != nil {
+		h.Limiter.RecordFailure(ip)
 		http.Redirect(w, r, "/login?error=invalid_code", http.StatusFound)
 		return
 	}
@@ -751,8 +758,24 @@ func (h *LoginHandler) issueSession(w http.ResponseWriter, r *http.Request, labe
 	return h.Signer.Issue(w, deviceID)
 }
 
-// remoteIP extracts the host part from r.RemoteAddr.
+// remoteIP extracts the real client IP for per-client rate limiting.
+// It checks proxy headers in order so that cloudflared and other reverse proxies
+// get a fair per-client bucket. This is best-effort extraction, not spoof prevention.
 func remoteIP(r *http.Request) string {
+	// CF-Connecting-IP: set by Cloudflare edge, overwritten at ingress — most reliable.
+	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
+		if ip := net.ParseIP(cf); ip != nil {
+			return ip.String()
+		}
+	}
+	// X-Forwarded-For: leftmost entry is the originating client.
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		first, _, _ := strings.Cut(xff, ",")
+		if ip := net.ParseIP(strings.TrimSpace(first)); ip != nil {
+			return ip.String()
+		}
+	}
+	// Fallback to the TCP peer address.
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr

@@ -64,3 +64,41 @@ func (rl *RateLimiter) Allow(ip string) bool {
 	s.attempts = append(s.attempts, now)
 	return true
 }
+
+// Allowed reports whether ip is currently not rate-limited (read-only, no side effects).
+func (rl *RateLimiter) Allowed(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	s := rl.state[ip]
+	if s == nil {
+		return true
+	}
+	return !rl.now().Before(s.lockedUntil)
+}
+
+// RecordFailure records a failed attempt for ip and locks it if the threshold is exceeded.
+func (rl *RateLimiter) RecordFailure(ip string) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := rl.now()
+	s := rl.state[ip]
+	if s == nil {
+		s = &ipState{}
+		rl.state[ip] = s
+	}
+
+	cutoff := now.Add(-rateLimitWindow)
+	var recent []time.Time
+	for _, t := range s.attempts {
+		if t.After(cutoff) {
+			recent = append(recent, t)
+		}
+	}
+	s.attempts = append(recent, now)
+
+	if len(s.attempts) >= rateLimitMax {
+		s.lockedUntil = now.Add(rateLimitLockTime)
+	}
+}
