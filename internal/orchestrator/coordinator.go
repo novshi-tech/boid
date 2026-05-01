@@ -48,7 +48,12 @@ func (d *Coordinator) DispatchAndAdvance(
 	payload := task.Payload
 	var allResults []HandlerResult
 	var firedEvents []FiredEvent
-	exclusiveWriters := map[string]string{} // trait key → first writer ID
+
+	// hook と exit gate は順次処理される別フェーズで、 collision 検査は各フェーズ内に
+	// 閉じる。 フェーズ跨ぎで同じ exclusive trait に書き込むケースは、 patch 値の
+	// sub-key deep merge (MergePayloadPatch) によって両者の寄与を保持する。
+	hookExclusiveWriters := map[string]string{}
+	gateExclusiveWriters := map[string]string{}
 
 	// 1. Evaluate and dispatch hooks
 	behavior, hasBehavior := lookupBehavior(meta, task)
@@ -72,7 +77,7 @@ func (d *Coordinator) DispatchAndAdvance(
 		}
 		for _, hr := range hookResults {
 			allResults = append(allResults, hr)
-			if err := checkExclusiveCollision(hr.PayloadPatch, hr.ID, exclusiveWriters); err != nil {
+			if err := checkExclusiveCollision(hr.PayloadPatch, hr.ID, hookExclusiveWriters); err != nil {
 				return &DispatchResult{FiredEvents: firedEvents}, err
 			}
 			if len(hr.PayloadPatch) > 0 && string(hr.PayloadPatch) != "{}" {
@@ -101,7 +106,7 @@ func (d *Coordinator) DispatchAndAdvance(
 		}
 		for _, gr := range gateResults {
 			allResults = append(allResults, gr)
-			if err := checkExclusiveCollision(gr.PayloadPatch, gr.ID, exclusiveWriters); err != nil {
+			if err := checkExclusiveCollision(gr.PayloadPatch, gr.ID, gateExclusiveWriters); err != nil {
 				return &DispatchResult{FiredEvents: firedEvents}, err
 			}
 			if len(gr.PayloadPatch) > 0 && string(gr.PayloadPatch) != "{}" {

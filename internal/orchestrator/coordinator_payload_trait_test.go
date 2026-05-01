@@ -9,6 +9,75 @@ import (
 	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 )
 
+// TestCoordinator_HookAndExitGateBothProduceArtifact pins down the fix for the
+// dispatch_error trap where a hook (claude-code/run-agent) and an exit gate
+// (github-auto-merge/auto-merge) both wrote disjoint sub-keys under `artifact`
+// and triggered a spurious "exclusive trait collision". The two should run in
+// separate collision domains, and their sub-keys must deep-merge so neither
+// writer's contribution is lost.
+func TestCoordinator_HookAndExitGateBothProduceArtifact(t *testing.T) {
+	mock := newMockExecutorWaiter()
+	mock.setHookCompletion("run-agent",
+		`{"payload_patch":{"artifact":{"claude_code":{"sessions":[{"id":"sess-1"}]}}}}`, 0)
+	mock.setGateCompletion("auto-merge",
+		`{"payload_patch":{"artifact":{"auto-merge":{"merged":true}}}}`, 0)
+
+	coord := &orchestrator.Coordinator{
+		Evaluator:    &orchestrator.Evaluator{},
+		HookExecutor: mock,
+		GateExecutor: mock,
+		Waiter:       mock,
+		MaxDepth:     5,
+	}
+	task := &orchestrator.Task{
+		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
+		Payload:   json.RawMessage(`{}`),
+	}
+	meta := metaWithBehavior(
+		[]projectspec.Hook{{
+			ID: "run-agent",
+			Traits: projectspec.HandlerTraits{
+				Produces: []projectspec.TraitType{projectspec.TraitArtifact},
+			},
+		}},
+		[]projectspec.Gate{{
+			ID:    "auto-merge",
+			Phase: projectspec.GatePhaseExit,
+			Traits: projectspec.HandlerTraits{
+				Produces: []projectspec.TraitType{projectspec.TraitArtifact},
+			},
+		}},
+	)
+	sm := simpleStateMachine()
+
+	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
+	if err != nil {
+		t.Fatalf("hook+exit-gate writing disjoint artifact sub-keys must not collide: %v", err)
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(result.FinalPayload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	artifactRaw, ok := payload["artifact"]
+	if !ok {
+		t.Fatal("expected artifact in final payload")
+	}
+	var artifact map[string]json.RawMessage
+	if err := json.Unmarshal(artifactRaw, &artifact); err != nil {
+		t.Fatalf("unmarshal artifact: %v", err)
+	}
+	if _, ok := artifact["claude_code"]; !ok {
+		t.Errorf("hook contribution artifact.claude_code missing; got %v", artifact)
+	}
+	if _, ok := artifact["auto-merge"]; !ok {
+		t.Errorf("exit gate contribution artifact.auto-merge missing; got %v", artifact)
+	}
+}
+
 func TestCoordinator_DispatchAndAdvance_ExclusiveTraitCollision(t *testing.T) {
 	mock := newMockExecutorWaiter()
 	mock.setHookCompletion("hook-a", `{"payload_patch":{"prompt":"from-a"}}`, 0)
