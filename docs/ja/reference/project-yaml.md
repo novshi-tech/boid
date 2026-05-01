@@ -219,7 +219,7 @@ secret_namespace: ...
 
 ## 例: 実プロジェクトの構成
 
-`boid` 自身のリポジトリにある `.boid/project.yaml` (抜粋) を載せておきます。 `dev` / `plan` / `auto_plan` の 3 つの behavior を定義し、 `worktree: true` の `dev` で AI エージェントによる開発タスクを回しています。
+`boid` 自身のリポジトリにある `.boid/project.yaml` (抜粋) を載せておきます。 `dev` / `plan` の 2 つの behavior を定義し、 `worktree: true` の `dev` で AI エージェントによる開発タスクを回しています。
 
 ```yaml
 id: boid
@@ -237,8 +237,6 @@ host_commands:
     path: e2e/run.sh
 
 commands:
-  claude:
-    command: [claude, --permission-mode, bypassPermissions, ...]
   shell:
     command: [bash]
 

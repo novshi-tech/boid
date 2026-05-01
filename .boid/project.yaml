@@ -12,13 +12,6 @@ host_commands:
   run-e2e:
     path: e2e/run.sh
 commands:
-  claude:
-    command:
-      - claude
-      - --permission-mode
-      - bypassPermissions
-      - --append-system-prompt
-      - "このセッションは boid sandbox 内で実行されています。環境制約については ~/.boid/context/environment.yaml を参照"
   shell:
     command:
       - bash
@@ -59,17 +52,5 @@ task_behaviors:
       consumer: claude-code
       model: opus
       interactive: true
-      message: |
-        /boid-plan の記述に従って実装計画を策定せよ。
-  auto_plan:
-    name: Auto Plan
-    readonly: true
-    kits:
-      - github.com/novshi-tech/boid-kits/boid-tasks
-    default_instruction:
-      type: execution
-      consumer: claude-code
-      model: sonnet
-      interactive: false
       message: |
         /boid-plan の記述に従って実装計画を策定せよ。

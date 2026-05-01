@@ -25,7 +25,7 @@ Where the executing hook writes its results. The internal shape is up to the pro
 
 ### Subtask creation
 
-Planning behaviors (`plan` / `auto_plan`, etc.) no longer emit subtasks via a payload trait. Instead the handler calls the `boid task create` builtin directly. See the [boid-plan SKILL](../../../internal/skills/data/boid-plan/SKILL.md) for the typical shape.
+Planning behaviors (`plan`, etc.) no longer emit subtasks via a payload trait. Instead the handler calls the `boid task create` builtin directly. See the [boid-plan SKILL](../../../internal/skills/data/boid-plan/SKILL.md) for the typical shape.
 
 ## Computed values
 

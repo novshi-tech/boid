@@ -198,7 +198,7 @@ secret_namespace: ...
 
 ## Example: a real project
 
-An excerpt from `.boid/project.yaml` in the `boid` repository itself, showing three behaviors (`dev`, `plan`, `auto_plan`) with the `dev` behavior using `worktree: true` to run AI-driven development tasks.
+An excerpt from `.boid/project.yaml` in the `boid` repository itself, showing two behaviors (`dev`, `plan`) with the `dev` behavior using `worktree: true` to run AI-driven development tasks.
 
 ```yaml
 id: boid
@@ -216,8 +216,6 @@ host_commands:
     path: e2e/run.sh
 
 commands:
-  claude:
-    command: [claude, --permission-mode, bypassPermissions, ...]
   shell:
     command: [bash]
 
