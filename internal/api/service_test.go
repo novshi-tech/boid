@@ -1064,28 +1064,51 @@ func TestTaskAppServiceCreateTask_BehaviorAndSpecMutuallyExclusive(t *testing.T)
 	}
 }
 
-func TestTaskAppServiceCreateTask_NeitherBehaviorNorSpec(t *testing.T) {
+func TestTaskAppServiceCreateTask_NeitherBehaviorNorSpec_DefaultsToPlan(t *testing.T) {
+	store := &stubTaskStore{}
 	svc := &TaskAppService{
-		Tasks: &stubTaskStore{},
+		Tasks: store,
 		Meta:  stubMetaStore{meta: nil},
 	}
 
-	_, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(CreateTaskRequest{
 		ProjectID: "proj-1",
-		Title:     "bad request",
+		Title:     "no behavior",
 	})
-	if err == nil {
-		t.Fatal("CreateTask() error = nil, want error for missing behavior")
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v, want nil", err)
 	}
-	se, ok := err.(*StatusError)
-	if !ok {
-		t.Fatalf("error type = %T, want *StatusError", err)
+	if task.Behavior != DefaultBehavior {
+		t.Errorf("Behavior = %q, want %q", task.Behavior, DefaultBehavior)
 	}
-	if se.Code != http.StatusBadRequest {
-		t.Fatalf("error code = %d, want %d", se.Code, http.StatusBadRequest)
+}
+
+func TestTaskAppServiceCreateTask_DefaultPlan_InheritsTemplate(t *testing.T) {
+	// project が plan behavior を template として持っているとき、
+	// behavior を省略した create がその template (readonly 等) を継承することを確認する。
+	store := &stubTaskStore{}
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"plan": {Readonly: true},
+		},
 	}
-	if se.Message != "either behavior or behavior_spec is required" {
-		t.Errorf("message = %q, want %q", se.Message, "either behavior or behavior_spec is required")
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "default to plan",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v, want nil", err)
+	}
+	if task.Behavior != "plan" {
+		t.Errorf("Behavior = %q, want %q", task.Behavior, "plan")
+	}
+	if !task.Readonly {
+		t.Errorf("Readonly = false, want true (inherited from plan template)")
 	}
 }
 

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -243,24 +244,31 @@ func runTaskList(cmd *cobra.Command, args []string) error {
 	})
 }
 
-// taskCreateSpec is the YAML schema for task create input.
-type taskCreateSpec struct {
-	ID               string                     `yaml:"id,omitempty"`
-	ProjectID        string                     `yaml:"project_id"`
-	Title            string                     `yaml:"title"`
-	Description      string                     `yaml:"description,omitempty"`
-	Behavior         string                     `yaml:"behavior,omitempty"`
-	BehaviorSpec     *orchestrator.BehaviorSpec `yaml:"behavior_spec,omitempty"`
-	AutoStart        bool                       `yaml:"auto_start,omitempty"`
-	Payload          map[string]any             `yaml:"payload,omitempty"`
-	Instructions     map[string]any             `yaml:"instructions,omitempty"`
-	DependsOn        []string                   `yaml:"depends_on,omitempty"`
-	DependsOnPayload string                     `yaml:"depends_on_payload,omitempty"`
-	Ref              string                     `yaml:"ref,omitempty"`
-	ParentID         string                     `yaml:"parent_id,omitempty"`
-	BaseBranch       string                     `yaml:"base_branch,omitempty"`
+// parseTaskCreateSpec decodes a YAML/JSON task spec into api.CreateTaskRequest.
+// The intermediate YAML→JSON conversion is what lets api.CreateTaskRequest's
+// json tags drive the schema (yaml tags are intentionally absent there to keep
+// a single source of truth). Unknown fields are rejected to surface typos.
+func parseTaskCreateSpec(data []byte) (api.CreateTaskRequest, error) {
+	var raw any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return api.CreateTaskRequest{}, fmt.Errorf("parse YAML: %w", err)
+	}
+	jsonBytes, err := json.Marshal(raw)
+	if err != nil {
+		return api.CreateTaskRequest{}, fmt.Errorf("encode YAML as JSON: %w", err)
+	}
+	var req api.CreateTaskRequest
+	dec := json.NewDecoder(bytes.NewReader(jsonBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		return api.CreateTaskRequest{}, fmt.Errorf("decode task spec: %w", err)
+	}
+	return req, nil
 }
 
+// runTaskCreate reads a YAML or JSON task spec from --file (or stdin) and POSTs
+// it to the API. behavior may be omitted; the server defaults to
+// api.DefaultBehavior in that case.
 func runTaskCreate(cmd *cobra.Command, args []string) error {
 	filePath, _ := cmd.Flags().GetString("file")
 
@@ -281,71 +289,16 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("read input: %w", err)
 	}
 
-	var spec taskCreateSpec
-	if err := yaml.Unmarshal(data, &spec); err != nil {
-		return fmt.Errorf("parse YAML: %w", err)
+	req, err := parseTaskCreateSpec(data)
+	if err != nil {
+		return err
 	}
 
-	if spec.ProjectID == "" {
-		spec.ProjectID = os.Getenv("BOID_PROJECT_ID")
+	if req.ProjectID == "" {
+		req.ProjectID = os.Getenv("BOID_PROJECT_ID")
 	}
-	if spec.ProjectID == "" || spec.Title == "" {
+	if req.ProjectID == "" || req.Title == "" {
 		return fmt.Errorf("YAML must include project_id and title")
-	}
-	if spec.Behavior == "" && spec.BehaviorSpec == nil {
-		return fmt.Errorf("YAML must include either behavior or behavior_spec")
-	}
-	if spec.Behavior != "" && spec.BehaviorSpec != nil {
-		return fmt.Errorf("YAML must not include both behavior and behavior_spec")
-	}
-
-	req := map[string]any{
-		"project_id": spec.ProjectID,
-		"title":      spec.Title,
-	}
-	if spec.Behavior != "" {
-		req["behavior"] = spec.Behavior
-	}
-	if spec.BehaviorSpec != nil {
-		req["behavior_spec"] = spec.BehaviorSpec
-	}
-	if spec.ID != "" {
-		req["id"] = spec.ID
-	}
-	if spec.Description != "" {
-		req["description"] = spec.Description
-	}
-	if spec.AutoStart {
-		req["auto_start"] = spec.AutoStart
-	}
-	if spec.Payload != nil {
-		payloadJSON, err := json.Marshal(spec.Payload)
-		if err != nil {
-			return fmt.Errorf("encode payload: %w", err)
-		}
-		req["payload"] = json.RawMessage(payloadJSON)
-	}
-	if spec.Instructions != nil {
-		instructionsJSON, err := json.Marshal(spec.Instructions)
-		if err != nil {
-			return fmt.Errorf("encode instructions: %w", err)
-		}
-		req["instructions"] = json.RawMessage(instructionsJSON)
-	}
-	if len(spec.DependsOn) > 0 {
-		req["depends_on"] = spec.DependsOn
-	}
-	if spec.DependsOnPayload != "" {
-		req["depends_on_payload"] = spec.DependsOnPayload
-	}
-	if spec.Ref != "" {
-		req["ref"] = spec.Ref
-	}
-	if spec.ParentID != "" {
-		req["parent_id"] = spec.ParentID
-	}
-	if spec.BaseBranch != "" {
-		req["base_branch"] = spec.BaseBranch
 	}
 
 	c := client.NewUnixClient(client.DefaultSocketPath())
