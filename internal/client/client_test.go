@@ -177,8 +177,8 @@ func TestListWorkspaces(t *testing.T) {
 // 怠ると 404 になる。client は CLI と同じく PathEscape する責務を負う。
 func TestReplayGate_EscapesGateIDPath(t *testing.T) {
 	wantTaskID := "task-7c9adc09"
-	wantGateID := "boid-tasks/create-subtasks"
-	wantPath := "/api/tasks/" + wantTaskID + "/gates/boid-tasks%2Fcreate-subtasks/replay"
+	wantGateID := "github-auto-merge/auto-merge"
+	wantPath := "/api/tasks/" + wantTaskID + "/gates/github-auto-merge%2Fauto-merge/replay"
 
 	respJSON, _ := json.Marshal(api.ReplayGateResult{})
 

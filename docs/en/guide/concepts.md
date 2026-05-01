@@ -7,7 +7,7 @@ This page walks through the main concepts that make up `boid`. The rest of the d
 The unit of work that `boid` tracks from request to completion. Every task carries the following fields:
 
 - A **status** — what stage the task is in right now. Tasks move through `pending → executing → done`, and end at `aborted` if they fail. The meaning of each state and the transition rules between them are covered in [State machine](state-machine.md).
-- A **payload** — a JSON document that accumulates information as the task progresses. The original request, generated artifacts, planned subtasks, and so on are stored under predefined keys called *traits* (defined below).
+- A **payload** — a JSON document that accumulates information as the task progresses. Generated artifacts and similar outputs are stored under predefined keys called *traits* (defined below).
 - A **behavior** — a label such as `dev` or `plan` that says what kind of work this task is. The project's configuration maps each label to a set of extension packages (*kits*), so picking a behavior selects which scripts will fire.
 - The **project** the task belongs to.
 
@@ -36,8 +36,9 @@ The payload is a JSON document that grows as the task progresses. Only a fixed s
 | Trait | Written by | What writing it does |
 |---|---|---|
 | `artifact` | execution scripts | Free-form record of what the task produced (commit, PR URL, changed files, ...). |
-| `tasks` | plan-style scripts | Subtask array emitted by planning behaviors. |
 | `lifecycle.abort` | `boid` itself | Auto-derived `code` / `message` for an aborted task. |
+
+Subtask creation (the main job of plan-style behaviors) is no longer expressed through a payload trait. Hooks and gates call the `boid task create` builtin directly — see the [boid-plan SKILL](../../../internal/skills/data/boid-plan/SKILL.md) for the typical shape.
 
 Instructions are not a payload trait. They live in the top-level `Task.Instructions` array on the task itself; the last element is the active one, and `boid task reopen <id> --message "..."` appends a new entry.
 

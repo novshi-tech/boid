@@ -54,7 +54,7 @@ Key columns:
 
 **JSON columns**:
 
-- `payload` — A JSON document containing the traits (`artifact` / `tasks`). See [Payload trait reference](../reference/traits.md).
+- `payload` — A JSON document containing the traits (`artifact`, ...). See [Payload trait reference](../reference/traits.md).
 - `instructions` — An array of `Instruction` objects. The last element is the active one; `reopen` appends to it.
 - `traits` — A JSON array of trait names this task uses, derived from the behavior.
 
@@ -180,6 +180,6 @@ Conventions for adding a migration:
 ## Related documents
 
 - [Architecture overview](overview.md) — how `internal/server` wires the database in.
-- [Payload trait reference](../reference/traits.md) — what is inside `tasks.payload`.
-- [`project.yaml` reference](../reference/project-yaml.md) — where `tasks.behavior` / `tasks.traits` come from.
+- [Payload trait reference](../reference/traits.md) — what each trait stored in the `tasks` table's `payload` column means.
+- [`project.yaml` reference](../reference/project-yaml.md) — where the `tasks` table's `behavior` / `traits` columns come from.
 - [Concepts / Daemon](../guide/concepts.md#daemon) — why the daemon owns the database.

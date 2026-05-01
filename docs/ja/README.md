@@ -37,7 +37,7 @@
 
 - [`project.yaml` リファレンス](reference/project-yaml.md) — プロジェクト定義ファイルの全フィールド
 - [Handler スクリプトプロトコル](reference/handler-contract.md) — hook / gate の入出力契約 (stdin、 環境変数、 `payload_patch.json`、 終了コード等)
-- [Payload trait リファレンス](reference/traits.md) — `artifact` / `tasks` / `lifecycle` の構造、状態機械が見ている条件、マージモード
+- [Payload trait リファレンス](reference/traits.md) — `artifact` / `lifecycle` の構造、状態機械が見ている条件、マージモード
 - [CLI リファレンス](reference/cli.md) — 全サブコマンドの役割別一覧 (詳細フラグは `boid <subcommand> --help`)
 - [HTTP API リファレンス](reference/http-api.md) — daemon が公開する `/api/*` エンドポイント (UNIX socket / HTTP listener)、 SSE、 エラーフォーマット
 

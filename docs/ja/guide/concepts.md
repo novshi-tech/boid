@@ -36,8 +36,9 @@ payload は、タスクが進む過程で情報を蓄積していく JSON ドキ
 | Trait | 書く主体 | 起こること |
 |---|---|---|
 | `artifact` | 実行スクリプト | 実装系タスクが残す成果物 (commit / PR URL / 変更ファイル等) を格納する自由形 |
-| `tasks` | plan 系スクリプト | 計画系タスクが生成したサブタスク配列 |
 | `lifecycle.abort` | `boid` 本体 | abort の `code` / `message` 等、履歴から自動算出される値 |
+
+サブタスクの生成 (plan 系タスクの主要な仕事) は payload trait ではなく、 hook / gate から `boid task create` builtin を直接呼ぶ形で行います。 詳細は [boid-plan SKILL](../../../internal/skills/data/boid-plan/SKILL.md) を参照してください。
 
 instructions は payload の trait ではなく、 タスクの top-level フィールド (`Task.Instructions` 配列) に保持されます。 配列の最後の要素が active な指示で、 `boid task reopen <id> --message "..."` で append されます。
 

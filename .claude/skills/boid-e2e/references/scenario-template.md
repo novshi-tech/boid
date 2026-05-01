@@ -39,7 +39,7 @@ hooks: []
 gates: []
 ```
 
-### kit を使う構成（verify gate 付き）
+### kit を使う構成（exit gate 付き）
 
 参照: `e2e/scenarios/readonly-hook-gate/workspace/app/.boid/project.yaml`
 
@@ -61,16 +61,16 @@ gates: []
 env:
   E2E_STATE_DIR: ${E2E_STATE_DIR}   # 環境変数を注入する場合
 hooks:
-  - id: my-hook
-    on: executing                    # 起動するステータス
+  - id: my-hook                      # 必ず executing で起動 (on: は廃止済)
 gates:
   - id: my-gate
-    on: verifying
+    phase: exit                      # entry (pending → executing 直前) または exit (executing → done 直前)
     traits:
       consumes: [artifact]           # アクセスする trait を宣言
 ```
 
-**`on` に指定できるステータス**: `executing`, `verifying`, `reworking`
+**hooks**: 常に `executing` 状態で起動 (`on:` フィールドは廃止済)。
+**gates**: `phase: entry` で次状態の入場直前に、 `phase: exit` で現状態の退場直前に発火。 省略時は `exit`。
 
 ## scenario.sh テンプレート
 
