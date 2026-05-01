@@ -123,7 +123,7 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 }
 
 // ValidateDefaultPayloadNoInstructions rejects "instructions" as a top-level key
-// in default_payload. instructions live on Task.Instructions via default_instructions.
+// in default_payload. instructions live on Task.Instructions via default_instruction.
 func ValidateDefaultPayloadNoInstructions(p RawPayload) error {
 	raw := json.RawMessage(p)
 	if len(raw) == 0 || string(raw) == "{}" || string(raw) == "null" {
@@ -134,7 +134,7 @@ func ValidateDefaultPayloadNoInstructions(p RawPayload) error {
 		return nil
 	}
 	if _, ok := m["instructions"]; ok {
-		return fmt.Errorf(`"instructions" is no longer allowed here; use "default_instructions" instead`)
+		return fmt.Errorf(`"instructions" is no longer allowed here; use "default_instruction" instead`)
 	}
 	return nil
 }

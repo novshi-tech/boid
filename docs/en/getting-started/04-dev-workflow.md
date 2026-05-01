@@ -44,29 +44,28 @@ task_behaviors:
     worktree: true
     kits:
       - github.com/novshi-tech/boid-kits/github-auto-merge
-    default_instructions:
-      main:
-        type: execution
-        consumer: claude-code
-        message: |
-          Implement what the task title and description ask for.
-          Make sure unit tests pass before committing.
+    default_instruction:
+      type: execution
+      consumer: claude-code
+      message: |
+        Implement what the task title and description ask for.
+        Make sure unit tests pass before committing.
 
-          Once the implementation is done, run the following in order:
-          1. `git add` and `git commit` on the worktree's branch.
-          2. `git push -u origin HEAD` to push the current branch to origin.
-          3. Check whether a PR already exists:
-             PR_URL=$(gh pr list --head "$(git branch --show-current)" \
-                        --json url --jq '.[0].url // ""')
-             If empty, create one with `gh pr create --title "<task title>" --body "<summary>"`.
-          4. `gh pr checks --watch --fail-fast` until CI finishes
-             (returns immediately if there is no CI).
-          5. If CI passes, exit cleanly. The `boid job done` trap drives
-             the auto-transition `executing → done`.
-          6. If CI fails, run `gh run view --log-failed` to inspect the
-             failure. If you can fix it, edit the code and start again
-             from step 1. If it cannot be fixed, abort the task with
-             `boid task abort <task_id> --code ci_failed --message "<summary>"`.
+        Once the implementation is done, run the following in order:
+        1. `git add` and `git commit` on the worktree's branch.
+        2. `git push -u origin HEAD` to push the current branch to origin.
+        3. Check whether a PR already exists:
+           PR_URL=$(gh pr list --head "$(git branch --show-current)" \
+                      --json url --jq '.[0].url // ""')
+           If empty, create one with `gh pr create --title "<task title>" --body "<summary>"`.
+        4. `gh pr checks --watch --fail-fast` until CI finishes
+           (returns immediately if there is no CI).
+        5. If CI passes, exit cleanly. The `boid job done` trap drives
+           the auto-transition `executing → done`.
+        6. If CI fails, run `gh run view --log-failed` to inspect the
+           failure. If you can fix it, edit the code and start again
+           from step 1. If it cannot be fixed, abort the task with
+           `boid task abort <task_id> --code ci_failed --message "<summary>"`.
 ```
 
 What is going on:
@@ -75,7 +74,7 @@ What is going on:
 - **`task_behaviors.dev`** is the focus here.
   - `worktree: true` gives each task its own branch and directory.
   - Only `github-auto-merge` is listed under the behavior's kits. PR creation and CI checking come from the instructions.
-- **`default_instructions.main`** is what `executing` passes to claude-code. The whole sequence — commit, push, open the PR, wait for CI, decide what to do on failure — lives in this text.
+- **`default_instruction`** is the single Instruction object that `executing` passes to claude-code. The whole sequence — commit, push, open the PR, wait for CI, decide what to do on failure — lives in this text.
 - There is no separate verification or rework instruction. On failure the agent aborts, or an operator runs `boid task reopen <id> --message "..."` to send a new instruction.
 
 ```bash

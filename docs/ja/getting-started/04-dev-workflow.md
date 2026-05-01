@@ -44,29 +44,28 @@ task_behaviors:
     worktree: true
     kits:
       - github.com/novshi-tech/boid-kits/github-auto-merge
-    default_instructions:
-      main:
-        type: execution
-        consumer: claude-code
-        message: |
-          task の title と description に書かれた内容を実装してください。
-          コミット前にユニットテストの通過を確認すること。
+    default_instruction:
+      type: execution
+      consumer: claude-code
+      message: |
+        task の title と description に書かれた内容を実装してください。
+        コミット前にユニットテストの通過を確認すること。
 
-          実装が完了したら以下を順次実行する:
-          1. `git add` + `git commit` (worktree の現ブランチ上で)
-          2. `git push -u origin HEAD` で current branch を origin に push
-          3. 既存 PR の有無を確認:
-             PR_URL=$(gh pr list --head "$(git branch --show-current)" \
-                        --json url --jq '.[0].url // ""')
-             空なら `gh pr create --title "<task title>" --body "<summary>"`
-          4. `gh pr checks --watch --fail-fast` で CI 完了まで待機
-             (CI の無いリポでは即抜ける)
-          5. CI が成功したらそのまま正常終了 (`boid job done` の trap で
-             状態機械が executing → done に進める)。
-          6. CI が失敗したら `gh run view --log-failed` で原因を確認し、
-             修正可能ならコードを修正して 1 から再実行。 修正不可能と判断したら
-             `boid task abort <task_id> --code ci_failed --message "<要約>"`
-             で task を打ち切る。
+        実装が完了したら以下を順次実行する:
+        1. `git add` + `git commit` (worktree の現ブランチ上で)
+        2. `git push -u origin HEAD` で current branch を origin に push
+        3. 既存 PR の有無を確認:
+           PR_URL=$(gh pr list --head "$(git branch --show-current)" \
+                      --json url --jq '.[0].url // ""')
+           空なら `gh pr create --title "<task title>" --body "<summary>"`
+        4. `gh pr checks --watch --fail-fast` で CI 完了まで待機
+           (CI の無いリポでは即抜ける)
+        5. CI が成功したらそのまま正常終了 (`boid job done` の trap で
+           状態機械が executing → done に進める)。
+        6. CI が失敗したら `gh run view --log-failed` で原因を確認し、
+           修正可能ならコードを修正して 1 から再実行。 修正不可能と判断したら
+           `boid task abort <task_id> --code ci_failed --message "<要約>"`
+           で task を打ち切る。
 ```
 
 ポイント:
@@ -75,7 +74,7 @@ task_behaviors:
 - **`task_behaviors.dev`** が今回の主役
   - `worktree: true` でタスクごとに別ブランチ・別ディレクトリ
   - kit リストには `github-auto-merge` だけ。 PR 作成と CI 確認は instruction 側
-- **`default_instructions.main`** が `executing` で claude-code に渡される。 commit / push / PR 作成 / CI 待ち / 失敗時の判断 までを全部ここに書く
+- **`default_instruction`** (単一 Instruction object) が `executing` で claude-code に渡される。 commit / push / PR 作成 / CI 待ち / 失敗時の判断 までを全部ここに書く
 - 検証用の別 instruction (旧 `rework` / `review`) は不要。 失敗時は agent が abort するか、 オペレータが `boid task reopen <id> --message "..."` で新しい指示を渡して再開する
 
 ```bash

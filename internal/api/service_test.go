@@ -1004,10 +1004,8 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_DefaultInstructionsMerged(t *test
 		ProjectID: "proj-1",
 		Title:     "spec task",
 		BehaviorSpec: &orchestrator.BehaviorSpec{
-			Name: "kit/my-behavior",
-			DefaultInstructions: map[string]orchestrator.Instruction{
-				"main": {Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "do it"},
-			},
+			Name:               "kit/my-behavior",
+			DefaultInstruction: &orchestrator.Instruction{Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "do it"},
 		},
 	})
 	if err != nil {
@@ -1377,9 +1375,7 @@ func TestDuplicateTask_InstructionsFromDefaultInstructions(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
 			"dev": {
-				DefaultInstructions: map[string]orchestrator.Instruction{
-					"main": {Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "do stuff"},
-				},
+				DefaultInstruction: &orchestrator.Instruction{Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "do stuff"},
 			},
 		},
 	}

@@ -355,7 +355,7 @@ func resolveBehavior(meta *orchestrator.ProjectMeta, req CreateTaskRequest) (*be
 			}
 			res.payload = merged
 		}
-		mergedInstructions, err := orchestrator.MergeDefaultInstructions(spec.DefaultInstructions, req.Instructions)
+		mergedInstructions, err := orchestrator.MergeDefaultInstructions(spec.DefaultInstruction, req.Instructions)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: "instructions merge: " + err.Error()}
 		}
@@ -382,7 +382,7 @@ func resolveBehavior(meta *orchestrator.ProjectMeta, req CreateTaskRequest) (*be
 			}
 			res.payload = merged
 		}
-		mergedInstructions, err := orchestrator.MergeDefaultInstructions(behavior.DefaultInstructions, req.Instructions)
+		mergedInstructions, err := orchestrator.MergeDefaultInstructions(behavior.DefaultInstruction, req.Instructions)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: "instructions merge: " + err.Error()}
 		}

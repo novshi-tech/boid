@@ -48,15 +48,15 @@ The map key is the behavior's identifier (e.g. `dev`, `plan`) — what `boid tas
 | `worktree` | bool | `false` | If `true`, each task gets its own git worktree on a fresh branch. |
 | `branch_prefix` | string | `boid/` | Prefix used when generating the worktree branch name. |
 | `base_branch` | string | repository default | Branch used as the base for the worktree. |
-| `default_instructions` | map (role → Instruction) | (empty) | Templates appended to `Task.Instructions` when a task is created (by convention, only `main` is used). |
+| `default_instruction` | Instruction | (empty) | A single Instruction template appended to `Task.Instructions` when a task is created. |
 | `default_payload` | YAML/JSON | (empty) | Initial payload applied to tasks created with this behavior. |
 | `kits` | list of KitRef | (empty) | Additional kits loaded only for this behavior. |
 
 For how `worktree: true` behaves, see [Concepts / Worktree](../guide/concepts.md#worktree).
 
-### `default_instructions.<role>`
+### `default_instruction`
 
-`role` is a string used as the map key. At task creation, the matching Instruction is appended to `Task.Instructions`. By convention only `main` is used, and that becomes the active instruction the first time the task enters `executing`.
+A single Instruction object. At task creation it is appended to `Task.Instructions` and becomes the active instruction the first time the task enters `executing`.
 
 A `boid task reopen <id> --message "..."` call appends a new Instruction at the end of the array; the last element is what the agent sees, and `consumer` / `model` / `interactive` are inherited from the previously active one.
 
@@ -139,16 +139,15 @@ additional_bindings:
 
 ### Instruction
 
-The shape of each `default_instructions.<role>` value.
+The shape of the `default_instruction` value.
 
 ```yaml
-default_instructions:
-  main:
-    type: execution
-    consumer: claude-code
-    model: sonnet
-    message: |
-      ...
+default_instruction:
+  type: execution
+  consumer: claude-code
+  model: sonnet
+  message: |
+    ...
 ```
 
 | Key | Type | Role |
@@ -228,16 +227,14 @@ task_behaviors:
     worktree: true
     kits:
       - github.com/novshi-tech/boid-kits/github-auto-merge
-    default_instructions:
-      main: { ... }
+    default_instruction: { ... }
   plan:
     name: Plan
     readonly: true
     traits: [tasks]
     kits:
       - github.com/novshi-tech/boid-kits/boid-tasks
-    default_instructions:
-      main: { ... }
+    default_instruction: { ... }
 ```
 
 For a fuller example see [4. The GitHub PR-driven dev workflow](../getting-started/04-dev-workflow.md).

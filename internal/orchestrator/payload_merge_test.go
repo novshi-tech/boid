@@ -72,14 +72,13 @@ func TestMergeDefaultPayload_RejectsInstructionsInRequest(t *testing.T) {
 	}
 }
 
-func TestDefaultInstructions_YAMLUnmarshal(t *testing.T) {
+func TestDefaultInstruction_YAMLUnmarshal(t *testing.T) {
 	data := `
 name: impl
-default_instructions:
-  main:
-    type: execution
-    consumer: claude-code
-    message: "TDD で実装してください。"
+default_instruction:
+  type: execution
+  consumer: claude-code
+  message: "TDD で実装してください。"
 `
 	var behavior orchestrator.TaskBehavior
 	if err := yaml.Unmarshal([]byte(data), &behavior); err != nil {
@@ -90,18 +89,18 @@ default_instructions:
 		t.Fatalf("expected name %q, got %q", "impl", behavior.Name)
 	}
 
-	main, ok := behavior.DefaultInstructions["main"]
-	if !ok {
-		t.Fatal("expected main role in default_instructions")
+	if behavior.DefaultInstruction == nil {
+		t.Fatal("expected default_instruction to be set")
 	}
-	if main.Type != orchestrator.InstructionTypeExecution {
-		t.Fatalf("expected main type %q, got %q", orchestrator.InstructionTypeExecution, main.Type)
+	got := behavior.DefaultInstruction
+	if got.Type != orchestrator.InstructionTypeExecution {
+		t.Fatalf("expected type %q, got %q", orchestrator.InstructionTypeExecution, got.Type)
 	}
-	if main.Consumer != "claude-code" {
-		t.Fatalf("expected main consumer %q, got %q", "claude-code", main.Consumer)
+	if got.Consumer != "claude-code" {
+		t.Fatalf("expected consumer %q, got %q", "claude-code", got.Consumer)
 	}
-	if main.Message != "TDD で実装してください。" {
-		t.Fatalf("expected main message %q, got %q", "TDD で実装してください。", main.Message)
+	if got.Message != "TDD で実装してください。" {
+		t.Fatalf("expected message %q, got %q", "TDD で実装してください。", got.Message)
 	}
 }
 
