@@ -59,7 +59,7 @@ YAML
 | `project_id` | タスクを作成するプロジェクト。 省略時は親と同じ |
 | `behavior_spec` | inline behavior 定義 (kit が自分用の behavior を持ち込む時)。 通常は project.yaml に定義済みの behavior 名を使えば不要 |
 
-interactive / model / readonly 等の挙動は behavior template (project.yaml の `task_behaviors`) に従う。 「interactive な plan」 「自律 plan」 のように動作の異なる plan を使い分けたい場合は、 project.yaml にそれぞれ別 behavior として定義し、 plan 自身が描写から適切なものを選んで指定する。
+interactive / model / readonly 等の挙動は behavior template (project.yaml の `task_behaviors`) に従う。 plan 自身は `BOID_INTERACTIVE` 環境変数を見て対話的な相談 / 自律的な決定を切り替えるので、 「対話的な plan」 「自律 plan」 を別 behavior に切り出す必要は無い。 どうしても plan に異なる挙動 (model / readonly 等) を持たせたい場合のみ、 project.yaml に別 behavior として定義する。
 
 ## 依存関係
 
