@@ -180,6 +180,37 @@ description: figure out what to do
 	}
 }
 
+func TestParseTaskCreateSpec_BehaviorSpec_DefaultPayload(t *testing.T) {
+	// behavior_spec.default_payload (orchestrator.RawPayload) は YAML/JSON
+	// 経路で object/array を受け取れる必要がある。 RawPayload は named type で
+	// json.RawMessage の UnmarshalJSON を継承しないため、 専用実装が無いと
+	// encoding/json が base64 string を要求して弾いてしまう。
+	input := `
+project_id: proj-1
+title: Kit Task
+behavior_spec:
+  name: kit/conflict-fix
+  default_payload:
+    foo: bar
+    nested:
+      n: 1
+`
+	spec, err := parseTaskCreateSpec([]byte(input))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if spec.BehaviorSpec == nil {
+		t.Fatal("BehaviorSpec is nil")
+	}
+	if len(spec.BehaviorSpec.DefaultPayload) == 0 {
+		t.Fatal("DefaultPayload is empty, want JSON object bytes")
+	}
+	got := string(spec.BehaviorSpec.DefaultPayload.RawMessage())
+	if got == "" || got[0] != '{' {
+		t.Errorf("DefaultPayload = %q, want JSON object", got)
+	}
+}
+
 func TestParseTaskCreateSpec_RejectsUnknownField(t *testing.T) {
 	// typo した field 名は弾かれる。
 	input := `

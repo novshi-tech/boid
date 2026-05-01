@@ -57,9 +57,9 @@ YAML
 | `auto_start` | bool。 true で依存解消時に自動開始 |
 | `base_branch` | worktree の分岐元。 省略時は behavior の設定を継承 |
 | `project_id` | タスクを作成するプロジェクト。 省略時は親と同じ |
-| `instructions` | behavior の `default_instruction` を per-task で上書き (interactive / model / message 等) |
+| `behavior_spec` | inline behavior 定義 (kit が自分用の behavior を持ち込む時)。 通常は project.yaml に定義済みの behavior 名を使えば不要 |
 
-`api.CreateTaskRequest` の他のフィールド (traits, readonly, worktree, branch_prefix, behavior_spec) も指定可能。 通常は behavior template の defaults で十分。
+interactive / model / readonly 等の挙動は behavior template (project.yaml の `task_behaviors`) に従う。 「interactive な plan」 「自律 plan」 のように動作の異なる plan を使い分けたい場合は、 project.yaml にそれぞれ別 behavior として定義し、 plan 自身が描写から適切なものを選んで指定する。
 
 ## 依存関係
 
@@ -110,25 +110,6 @@ YAML
 ```
 
 `behavior` 省略により `plan` に default routing される (フェーズ2 自身もトリアージから始める)。
-
-## interactive / model の上書き
-
-behavior の `default_instruction` の値はタスクごとに `instructions` 配列で上書きできる。 例えば 「behavior は plan のままだが、 このタスクは自律 (非対話) で走らせたい」 場合:
-
-```bash
-boid task create <<YAML
-title: 自律的に走らせる
-parent_id: ${BOID_TASK_ID}
-description: ...
-instructions:
-  - type: execution
-    consumer: claude-code
-    interactive: false
-    model: sonnet
-    message: "/boid-plan の指示に従って自律的に計画・実行せよ"
-auto_start: true
-YAML
-```
 
 ## base_branch
 
