@@ -57,6 +57,8 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 			return parseBoidTaskImport(args[2:])
 		case "reopen":
 			return parseBoidTaskReopen(args[2:])
+		case "list":
+			return parseBoidTaskList(args[2:])
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid task subcommand %q", args[1])
 		}
@@ -329,6 +331,52 @@ func readFlagContent(source string) ([]byte, error) {
 		return io.ReadAll(os.Stdin)
 	}
 	return os.ReadFile(source)
+}
+
+func parseBoidTaskList(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpTaskList}
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--status" || strings.HasPrefix(arg, "--status="):
+			value, next, err := takeStringFlagValue(args, i, "--status")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.Status = value
+		case arg == "--project-id" || strings.HasPrefix(arg, "--project-id="):
+			value, next, err := takeStringFlagValue(args, i, "--project-id")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.ProjectID = value
+		case arg == "--workspace-id" || strings.HasPrefix(arg, "--workspace-id="):
+			value, next, err := takeStringFlagValue(args, i, "--workspace-id")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.WorkspaceID = value
+		case arg == "--limit" || strings.HasPrefix(arg, "--limit="):
+			value, next, err := takeStringFlagValue(args, i, "--limit")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return nil, fmt.Errorf("boid shim: invalid limit %q", value)
+			}
+			req.Limit = n
+		default:
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task list", arg)
+		}
+	}
+
+	return req, nil
 }
 
 func parseBoidTaskReopen(args []string) (*BoidRequest, error) {

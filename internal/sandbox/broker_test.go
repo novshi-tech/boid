@@ -23,8 +23,9 @@ const (
 func testHookBoidPolicies() map[string]sandbox.BuiltinPolicy {
 	return map[string]sandbox.BuiltinPolicy{
 		"boid": {AllowedOps: map[string]struct{}{
-			string(sandbox.BoidOpJobDone): {},
-			string(sandbox.BoidOpTaskGet): {},
+			string(sandbox.BoidOpJobDone):    {},
+			string(sandbox.BoidOpTaskGet):    {},
+			string(sandbox.BoidOpTaskList):   {},
 		}},
 	}
 }
@@ -38,6 +39,7 @@ func testGateBoidPolicies() map[string]sandbox.BuiltinPolicy {
 				string(sandbox.BoidOpTaskUpdate): {},
 				string(sandbox.BoidOpTaskImport): {},
 				string(sandbox.BoidOpTaskReopen): {},
+				string(sandbox.BoidOpTaskList):   {},
 			},
 			AllowedCwdRoots: []string{"/tmp"},
 		},
@@ -1353,5 +1355,214 @@ func TestBroker_BoidTaskImport_DefaultProjectFromContext(t *testing.T) {
 	}
 	if len(exec.calls) != 1 {
 		t.Fatalf("executor calls = %d, want 1", len(exec.calls))
+	}
+}
+
+// --- BoidOpTaskList tests ---
+
+func newBrokerForListTest(t *testing.T) (*sandbox.Broker, *fakeBoidExecutor) {
+	t.Helper()
+	sockPath := filepath.Join(t.TempDir(), "broker.sock")
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{
+		SocketPath:   sockPath,
+		BoidExecutor: exec,
+		ProjectResolver: func(ref string) (string, error) {
+			return ref, nil
+		},
+	}
+	boidCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := broker.Start(boidCtx); err != nil {
+		t.Fatalf("broker start: %v", err)
+	}
+	return broker, exec
+}
+
+func TestBroker_BoidTaskList_ProjectIDAllowed(t *testing.T) {
+	// project_id 指定 + 同 workspace (AllowedProjectIDs に含まれる) → OK
+	ctx := sandbox.TokenContext{
+		JobID:             "j1",
+		TaskID:            "t1",
+		ProjectID:         "proj-1",
+		WorkspaceID:       "ws-1",
+		AllowedProjectIDs: []string{"proj-1", "proj-2"},
+		Role:              testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:        sandbox.BoidOpTaskList,
+			ProjectID: "proj-2",
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("same-workspace project should be allowed, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 || exec.calls[0].ProjectID != "proj-2" {
+		t.Fatalf("executor should be called with ProjectID=proj-2, calls=%+v", exec.calls)
+	}
+}
+
+func TestBroker_BoidTaskList_ProjectIDDenied(t *testing.T) {
+	// project_id 指定 + 異 workspace → エラー
+	ctx := sandbox.TokenContext{
+		JobID:             "j1",
+		TaskID:            "t1",
+		ProjectID:         "proj-1",
+		WorkspaceID:       "ws-1",
+		AllowedProjectIDs: []string{"proj-1"},
+		Role:              testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:        sandbox.BoidOpTaskList,
+			ProjectID: "other-proj",
+		},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatal("cross-workspace project_id should be denied")
+	}
+	if !strings.Contains(resp.Stderr, "workspace") {
+		t.Errorf("error should mention workspace, got %q", resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatal("executor should not be called on denied request")
+	}
+}
+
+func TestBroker_BoidTaskList_WorkspaceIDMatch(t *testing.T) {
+	// workspace_id 指定 + 同 workspace → OK
+	ctx := sandbox.TokenContext{
+		JobID:       "j1",
+		TaskID:      "t1",
+		ProjectID:   "proj-1",
+		WorkspaceID: "ws-1",
+		Role:        testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:          sandbox.BoidOpTaskList,
+			WorkspaceID: "ws-1",
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("matching workspace_id should succeed, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 || exec.calls[0].WorkspaceID != "ws-1" {
+		t.Fatalf("executor should be called with WorkspaceID=ws-1, calls=%+v", exec.calls)
+	}
+}
+
+func TestBroker_BoidTaskList_WorkspaceIDMismatch(t *testing.T) {
+	// workspace_id 指定 + 異 workspace → エラー
+	ctx := sandbox.TokenContext{
+		JobID:       "j1",
+		TaskID:      "t1",
+		ProjectID:   "proj-1",
+		WorkspaceID: "ws-1",
+		Role:        testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:          sandbox.BoidOpTaskList,
+			WorkspaceID: "ws-other",
+		},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatal("mismatched workspace_id should be denied")
+	}
+	if !strings.Contains(resp.Stderr, "workspace") {
+		t.Errorf("error should mention workspace, got %q", resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatal("executor should not be called on denied request")
+	}
+}
+
+func TestBroker_BoidTaskList_AutoInjectWorkspaceID(t *testing.T) {
+	// 両方未指定 + entry.WorkspaceID 非空 → WorkspaceID を自動 inject
+	ctx := sandbox.TokenContext{
+		JobID:       "j1",
+		TaskID:      "t1",
+		ProjectID:   "proj-1",
+		WorkspaceID: "ws-auto",
+		Role:        testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op: sandbox.BoidOpTaskList,
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("auto inject should succeed, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 || exec.calls[0].WorkspaceID != "ws-auto" {
+		t.Fatalf("executor should be called with WorkspaceID=ws-auto injected, calls=%+v", exec.calls)
+	}
+}
+
+func TestBroker_BoidTaskList_AutoInjectAllowedProjectIDs(t *testing.T) {
+	// 両方未指定 + entry.WorkspaceID 空 → AllowedProjectIDs フィルタ (executor 側、broker は inject しない)
+	ctx := sandbox.TokenContext{
+		JobID:             "j1",
+		TaskID:            "t1",
+		ProjectID:         "proj-1",
+		WorkspaceID:       "",
+		AllowedProjectIDs: []string{"proj-1"},
+		Role:              testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op: sandbox.BoidOpTaskList,
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("empty workspace should succeed with AllowedProjectIDs filter, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor should be called once, calls=%d", len(exec.calls))
+	}
+	// WorkspaceID は inject されない (空のまま executor が AllowedProjectIDs を使う)
+	if exec.calls[0].WorkspaceID != "" {
+		t.Errorf("WorkspaceID should remain empty for AllowedProjectIDs path, got %q", exec.calls[0].WorkspaceID)
+	}
+	if exec.calls[0].ProjectID != "" {
+		t.Errorf("ProjectID should remain empty for AllowedProjectIDs path, got %q", exec.calls[0].ProjectID)
 	}
 }

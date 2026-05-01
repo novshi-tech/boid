@@ -12,6 +12,7 @@ const (
 	OpBoidTaskUpdate = "task_update"
 	OpBoidTaskImport = "task_import"
 	OpBoidTaskReopen = "task.reopen"
+	OpBoidTaskList   = "task_list"
 
 	OpGitFetch       = "fetch"
 	OpGitPush        = "push"
