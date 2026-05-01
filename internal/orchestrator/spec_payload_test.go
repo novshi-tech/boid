@@ -210,6 +210,70 @@ func TestValidatePayloadPatchAndMergePayloadPatch(t *testing.T) {
 	}
 }
 
+// TestMergePayloadPatch_ExclusiveDeepMergesObjectSubkeys verifies that an
+// exclusive trait whose value is an object (e.g. `artifact`) deep-merges
+// sub-keys when both base and patch are objects, instead of shallowly
+// overwriting the whole value. This protects cross-phase hand-offs:
+// a hook's `artifact.claude_code.sessions` must survive an exit gate's
+// `artifact.auto-merge.merged` write within the same dispatch cycle.
+// Scalar exclusive values (or where one side is non-object) keep the
+// existing overwrite semantics.
+func TestMergePayloadPatch_ExclusiveDeepMergesObjectSubkeys(t *testing.T) {
+	base := json.RawMessage(`{"artifact":{"claude_code":{"sessions":[{"id":"sess-1"}]}}}`)
+	patch := json.RawMessage(`{"artifact":{"auto-merge":{"merged":true}}}`)
+	allowed := []projectspec.TraitType{projectspec.TraitArtifact}
+	result, err := projectspec.MergePayloadPatch(base, patch, "auto-merge", allowed)
+	if err != nil {
+		t.Fatalf("MergePayloadPatch: %v", err)
+	}
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(result, &merged); err != nil {
+		t.Fatalf("unmarshal merged: %v", err)
+	}
+	var artifact map[string]json.RawMessage
+	if err := json.Unmarshal(merged["artifact"], &artifact); err != nil {
+		t.Fatalf("unmarshal artifact: %v", err)
+	}
+	if _, ok := artifact["claude_code"]; !ok {
+		t.Errorf("base sub-key claude_code must be preserved; got %v", artifact)
+	}
+	if _, ok := artifact["auto-merge"]; !ok {
+		t.Errorf("patch sub-key auto-merge must be merged in; got %v", artifact)
+	}
+}
+
+// TestMergePayloadPatch_ExclusiveOverwritesWhenNotBothObjects keeps the
+// historical "exclusive = overwrite" behavior whenever either side is not
+// an object (scalar or array). The deep-merge path is opt-in based purely
+// on shape — never inferred from trait identity.
+func TestMergePayloadPatch_ExclusiveOverwritesWhenNotBothObjects(t *testing.T) {
+	allowed := []projectspec.TraitType{projectspec.TraitArtifact}
+
+	// scalar base, object patch -> overwrite
+	r1, err := projectspec.MergePayloadPatch(
+		json.RawMessage(`{"artifact":"old"}`),
+		json.RawMessage(`{"artifact":{"k":"v"}}`),
+		"writer", allowed)
+	if err != nil {
+		t.Fatalf("scalar->object: %v", err)
+	}
+	if string(r1) != `{"artifact":{"k":"v"}}` {
+		t.Errorf("scalar base must be overwritten by object patch: got %s", r1)
+	}
+
+	// object base, scalar patch -> overwrite
+	r2, err := projectspec.MergePayloadPatch(
+		json.RawMessage(`{"artifact":{"k":"v"}}`),
+		json.RawMessage(`{"artifact":"new"}`),
+		"writer", allowed)
+	if err != nil {
+		t.Fatalf("object->scalar: %v", err)
+	}
+	if string(r2) != `{"artifact":"new"}` {
+		t.Errorf("scalar patch must overwrite object base: got %s", r2)
+	}
+}
+
 func TestMergePayloadPatch_ProducesOutsideAllowed(t *testing.T) {
 	patch := json.RawMessage(`{"artifact":"http://example.com"}`)
 	// artifact is not in allowed produces

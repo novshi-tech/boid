@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 )
 
 func TraitMergeMode(trait TraitType) MergeMode {
@@ -81,6 +82,27 @@ func RejectReservedPayloadKeys(payload json.RawMessage) error {
 	return nil
 }
 
+// mergeObjectsShallow は base / patch が両方 JSON object のときに、 patch の
+// top-level key を base に被せた結果を返す。 どちらか一方でも object でない
+// (scalar / array / null) ときは ok=false を返し、 呼び出し側に whole-value
+// overwrite を促す。 ネストは 1 段のみで、 同名 sub-key は patch 側が勝つ。
+func mergeObjectsShallow(base, patch json.RawMessage) (json.RawMessage, bool) {
+	var baseObj map[string]json.RawMessage
+	if err := json.Unmarshal(base, &baseObj); err != nil || baseObj == nil {
+		return nil, false
+	}
+	var patchObj map[string]json.RawMessage
+	if err := json.Unmarshal(patch, &patchObj); err != nil || patchObj == nil {
+		return nil, false
+	}
+	maps.Copy(baseObj, patchObj)
+	merged, err := json.Marshal(baseObj)
+	if err != nil {
+		return nil, false
+	}
+	return merged, true
+}
+
 func MergePayloadPatch(base, patch json.RawMessage, handlerID string, allowedTraits []TraitType) (json.RawMessage, error) {
 	if len(patch) == 0 || string(patch) == "{}" || string(patch) == "null" {
 		if len(base) == 0 {
@@ -135,6 +157,15 @@ func MergePayloadPatch(base, patch json.RawMessage, handlerID string, allowedTra
 			}
 			baseMap[key] = merged
 		default:
+			// MergeModeExclusive: base/patch が両方 object のときは sub-key 単位で
+			// merge する。 別フェーズや別 handler が同じ trait の異なる sub-key を
+			// 書く合法ケースを守るため。 一方が scalar/array なら whole-value 上書き。
+			if existing, ok := baseMap[key]; ok && len(existing) > 0 {
+				if merged, ok := mergeObjectsShallow(existing, value); ok {
+					baseMap[key] = merged
+					continue
+				}
+			}
 			baseMap[key] = value
 		}
 	}
