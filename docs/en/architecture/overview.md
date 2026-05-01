@@ -125,7 +125,7 @@ Entry: [`internal/api/service.go`](https://github.com/novshi-tech/boid/blob/main
 
 The domain layer.
 
-- **State machine** (`machine.go`) — rules for `pending → executing → verifying → reworking → done`, auto-transitions, abort conditions.
+- **State machine** (`machine.go`) — rules for `pending → executing → done`, auto-transitions, abort conditions.
 - **Coordinator** (`coordinator.go`) — runs one dispatch + advance step.
 - **Evaluator** (`evaluator.go`) — picks which hooks/gates fire.
 - **ProjectStore** (`project_store.go`) — in-memory cache of projects with kit metadata resolved.

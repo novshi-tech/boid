@@ -39,15 +39,10 @@ boid start
 
 ## タスクが `executing` のまま終わらない
 
-3 つの可能性があります。
+2 つの可能性があります。
 
 1. **hook (実行スクリプト) が終了していない。** プロンプト待ち、終わらない対話コマンド、応答停止したエージェントなどでブロックされていると、 daemon 側はそのジョブの完了を待ち続けます。 `boid job list --task <id>` に `running` のままのジョブが見えるはずです。 `boid task abort <id>` で打ち切り、 hook スクリプトを確認してください
-2. **完了の合図となる trait が payload に書かれていない。** `artifact` (計画系タスクなら `tasks`) が現れないと、 `executing` からの自動遷移ルールが発火しません。 `boid task show <id>` で payload を確認し、 hook が期待する trait を含む payload patch を出しているかチェックしてください
-3. **`verifying` 由来の open finding が残っている。** 一度 `verifying` を経由したタスクは、未解消の finding がある限り `reworking` で足止めされます。 `boid task show <id>` の `verification.findings` で確認してください
-
-## タスクが `reworking` のまま終わらない
-
-考え方は上と同じで、こちらは `reworking → verifying` の側です。 `reworking` で動く修正系の hook は、 `reworking` で書かれた open finding をすべて `resolved` にしないと `verifying` に戻れません。 hook が新しい finding を書き続けると、最終的に修正回数の上限を超えて自動 abort (`code=rework_limit_exceeded`) で終わります。本当にワークフロー上 5 回では足りないなら `~/.config/boid/config.yaml` の `state_machine.rework_limit` を上げますが、たいていは修正系 hook 自身に問題があります。
+2. **`done` の exit gate が失敗を返している。** `gh pr merge` の conflict など host 側 gate が exit code 非 0 を返すと、 状態機械は `executing → done` の遷移をブロックします。 `boid job list --task <id>` で gate ジョブの exit code を確認し、 conflict 等であれば `boid task reopen <id> --message "..."` で agent に再修正を依頼してください
 
 ## `boid task list` が遅い / ディスクが膨れる
 

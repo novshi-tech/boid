@@ -48,7 +48,7 @@ The map key is the behavior's identifier (e.g. `dev`, `plan`) — what `boid tas
 | `worktree` | bool | `false` | If `true`, each task gets its own git worktree on a fresh branch. |
 | `branch_prefix` | string | `boid/` | Prefix used when generating the worktree branch name. |
 | `base_branch` | string | repository default | Branch used as the base for the worktree. |
-| `default_instructions` | map (role → Instruction) | (empty) | Instruction templates passed to the agent for each role (`main`, `rework`, ...). |
+| `default_instructions` | map (role → Instruction) | (empty) | Templates appended to `Task.Instructions` when a task is created (by convention, only `main` is used). |
 | `default_payload` | YAML/JSON | (empty) | Initial payload applied to tasks created with this behavior. |
 | `kits` | list of KitRef | (empty) | Additional kits loaded only for this behavior. |
 
@@ -56,10 +56,9 @@ For how `worktree: true` behaves, see [Concepts / Worktree](../guide/concepts.md
 
 ### `default_instructions.<role>`
 
-`role` is a string (e.g. `main`, `rework`) that `boid` uses to pick which instruction to hand the agent at each state. The value is an **Instruction** (defined below). By convention:
+`role` is a string used as the map key. At task creation, the matching Instruction is appended to `Task.Instructions`. By convention only `main` is used, and that becomes the active instruction the first time the task enters `executing`.
 
-- `main` — the primary instruction passed to the agent in `executing`.
-- `rework` — the instruction passed to the agent in `reworking`.
+A `boid task reopen <id> --message "..."` call appends a new Instruction at the end of the array; the last element is what the agent sees, and `consumer` / `model` / `interactive` are inherited from the previously active one.
 
 ## Shared building blocks
 
@@ -150,16 +149,11 @@ default_instructions:
     model: sonnet
     message: |
       ...
-  rework:
-    type: rework
-    consumer: claude-code
-    message: |
-      ...
 ```
 
 | Key | Type | Role |
 |---|---|---|
-| `type` | enum | `execution`, `rework`, or `verification`. |
+| `type` | enum | `execution` (the old `rework` / `verification` values are gone). |
 | `consumer` | string | The kit identifier expected to receive this instruction (e.g. `claude-code`). |
 | `name` | string | Optional sub-identifier when several instructions go to the same consumer. |
 | `message` | string | The instruction text given to the agent. |
@@ -236,7 +230,6 @@ task_behaviors:
       - github.com/novshi-tech/boid-kits/github-auto-merge
     default_instructions:
       main: { ... }
-      rework: { ... }
   plan:
     name: Plan
     readonly: true

@@ -30,7 +30,7 @@
 | `github.com/novshi-tech/boid-kits/codex` | OpenAI Codex CLI エージェントを hook で起動 |
 | `github.com/novshi-tech/boid-kits/go-dev` | サンドボックスに `~/go` などをマウント |
 | `github.com/novshi-tech/boid-kits/github-cli` | サンドボックスから `gh` を使えるようにする |
-| `github.com/novshi-tech/boid-kits/github-auto-merge` | `done` 状態への entry gate で `gh pr merge` を実行 |
+| `github.com/novshi-tech/boid-kits/github-auto-merge` | executing → done の exit gate で `gh pr merge` を実行 |
 
 ## kit リポジトリをインストールする
 
@@ -108,7 +108,7 @@ YAML
 boid task watch <task-id>
 ```
 
-しばらくすると hook ジョブの中で claude が動き、 `boid task update` で artifact が書き込まれ、自動遷移で `verifying → done` まで進むはずです。
+しばらくすると hook ジョブの中で claude が動き、 `boid task update` で artifact が書き込まれ、 hook が正常終了すると自動遷移で `executing → done` に進むはずです。
 
 最終結果:
 

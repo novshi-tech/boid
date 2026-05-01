@@ -30,7 +30,7 @@ The official kits live in the [`github.com/novshi-tech/boid-kits`](https://githu
 | `github.com/novshi-tech/boid-kits/codex` | Runs the OpenAI Codex CLI agent as a hook. |
 | `github.com/novshi-tech/boid-kits/go-dev` | Mounts `~/go` and friends into the sandbox. |
 | `github.com/novshi-tech/boid-kits/github-cli` | Makes `gh` callable from inside the sandbox. |
-| `github.com/novshi-tech/boid-kits/github-auto-merge` | Adds an entry gate on `done` that runs `gh pr merge`. |
+| `github.com/novshi-tech/boid-kits/github-auto-merge` | Adds an exit gate on `executing → done` that runs `gh pr merge`. |
 
 ## Install a kit repository
 
@@ -109,7 +109,7 @@ In another terminal, follow the task:
 boid task watch <task-id>
 ```
 
-After a moment the hook job runs Claude, the agent calls `boid task update` to write `artifact`, and the auto-transitions move the task through `verifying` to `done`.
+After a moment the hook job runs Claude, the agent calls `boid task update` to write `artifact`, and once the hook exits cleanly the auto-transition moves the task `executing → done`.
 
 Final state:
 

@@ -104,8 +104,7 @@ plan / auto_plan タスクは実装計画を策定し、サブタスクを生成
 
 | 値 | 待機条件 |
 |----|---------|
-| `artifact.children.all_done` | 子タスクが全て done（verifying → done）になるまで待機 |
-| `artifact.children.all_resolved` | 子タスクの全 findings が resolved になるまで待機 |
+| `artifact.children.all_done` | 子タスクが全て done になるまで待機 |
 | `artifact.auto-merge.merged` | 依存先タスクの PR が auto-merge でマージされるまで待機 |
 
 ## base_branch
