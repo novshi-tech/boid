@@ -564,7 +564,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
 
-		badPayload := json.RawMessage(`{"instructions":{"main":{"type":"execution","consumer":"c"}}}`)
+		badPayload := json.RawMessage(`{"instructions":{"main":{"type":"execution","agent":"c"}}}`)
 		_, err := svc.UpdateTask("task-5", UpdateTaskRequest{Payload: badPayload})
 		if err == nil {
 			t.Fatal("expected UpdateTask to reject payload containing instructions")
@@ -580,7 +580,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store, Actions: &stubActionStore{}}
 
-		body := json.RawMessage(`[{"type":"execution","consumer":"claude-code","message":"do stuff"}]`)
+		body := json.RawMessage(`[{"type":"execution","agent":"claude-code","message":"do stuff"}]`)
 		got, err := svc.UpdateTask("task-6", UpdateTaskRequest{Instructions: body})
 		if err != nil {
 			t.Fatalf("UpdateTask() error = %v", err)
@@ -599,7 +599,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
 
-		body := json.RawMessage(`{"main":{"type":"execution","consumer":"claude-code","message":"do stuff"}}`)
+		body := json.RawMessage(`{"main":{"type":"execution","agent":"claude-code","message":"do stuff"}}`)
 		_, err := svc.UpdateTask("task-7", UpdateTaskRequest{Instructions: body})
 		if err == nil {
 			t.Fatal("expected UpdateTask to reject instructions change while running")
@@ -1005,7 +1005,7 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_DefaultInstructionsMerged(t *test
 		Title:     "spec task",
 		BehaviorSpec: &orchestrator.BehaviorSpec{
 			Name:               "kit/my-behavior",
-			DefaultInstruction: &orchestrator.Instruction{Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "do it"},
+			DefaultInstruction: &orchestrator.Instruction{Type: orchestrator.InstructionTypeExecution, Agent: "claude-code", Message: "do it"},
 		},
 	})
 	if err != nil {
@@ -1021,7 +1021,7 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_DefaultPayloadRejectsInstructions
 		Tasks: &stubTaskStore{},
 		Meta:  stubMetaStore{meta: nil},
 	}
-	defaultPayload := `{"instructions":{"main":{"type":"execution","consumer":"c"}}}`
+	defaultPayload := `{"instructions":{"main":{"type":"execution","agent":"c"}}}`
 	_, err := svc.CreateTask(CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "bad",
@@ -1398,7 +1398,7 @@ func TestDuplicateTask_InstructionsFromDefaultInstructions(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
 			"dev": {
-				DefaultInstruction: &orchestrator.Instruction{Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "do stuff"},
+				DefaultInstruction: &orchestrator.Instruction{Type: orchestrator.InstructionTypeExecution, Agent: "claude-code", Message: "do stuff"},
 			},
 		},
 	}
@@ -1622,7 +1622,7 @@ func TestRerunTask_PreservesInstructionsUnit(t *testing.T) {
 		Status:       orchestrator.TaskStatusAborted,
 		Behavior:     "dev",
 		Payload:      json.RawMessage(`{"artifact":{"url":"old"}}`),
-		Instructions: orchestrator.Instructions{{Type: orchestrator.InstructionTypeExecution, Consumer: "c"}},
+		Instructions: orchestrator.Instructions{{Type: orchestrator.InstructionTypeExecution, Agent: "c"}},
 	}
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store}
@@ -1649,13 +1649,13 @@ func TestRerunTask_InstructionsOverrideApplied(t *testing.T) {
 		Status:   orchestrator.TaskStatusAborted,
 		Behavior: "dev",
 		Instructions: orchestrator.Instructions{
-			{Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Model: "sonnet-4-6"},
+			{Type: orchestrator.InstructionTypeExecution, Agent: "claude-code", Model: "sonnet-4-6"},
 		},
 	}
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store, Actions: &stubActionStore{}}
 
-	override := json.RawMessage(`[{"type":"execution","consumer":"claude-code","model":"opus-4-7"}]`)
+	override := json.RawMessage(`[{"type":"execution","agent":"claude-code","model":"opus-4-7"}]`)
 	result, err := svc.RerunTask("task-1", RerunTaskRequest{InstructionsOverride: override})
 	if err != nil {
 		t.Fatalf("RerunTask() error = %v", err)

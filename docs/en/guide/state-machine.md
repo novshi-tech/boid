@@ -53,7 +53,7 @@ If an entry gate is registered for `done` (gates run on the host), it fires imme
 
 ## Reopen with a new instruction
 
-`boid task reopen <id> --message "..."` returns a `done` task to `executing` and appends a new `Instruction` to `Task.Instructions`. The last element of the array is the active instruction; `consumer`, `model`, and `interactive` are inherited from the previously active one.
+`boid task reopen <id> --message "..."` returns a `done` task to `executing` and appends a new `Instruction` to `Task.Instructions`. The last element of the array is the active instruction; `agent`, `model`, and `interactive` are inherited from the previously active one.
 
 ```bash
 # Send the task back through executing with a new ask

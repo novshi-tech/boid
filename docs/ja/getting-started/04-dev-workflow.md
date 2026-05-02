@@ -46,7 +46,7 @@ task_behaviors:
       - github.com/novshi-tech/boid-kits/github-auto-merge
     default_instruction:
       type: execution
-      consumer: claude-code
+      agent: claude-code
       message: |
         task の title と description に書かれた内容を実装してください。
         コミット前にユニットテストの通過を確認すること。

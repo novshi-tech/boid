@@ -26,9 +26,9 @@ type KitRuntime struct {
 }
 
 // MergeKitRuntime merges env, host_commands, and additional_bindings from the
-// given kits into a KitRuntime value. kitConsumers provides display names for
+// given kits into a KitRuntime value. kitAgents provides display names for
 // error messages (one per kit).
-func MergeKitRuntime(kits []*KitMeta, kitConsumers []string) (KitRuntime, error) {
+func MergeKitRuntime(kits []*KitMeta, kitAgents []string) (KitRuntime, error) {
 	var rt KitRuntime
 	if len(kits) == 0 {
 		return rt, nil
@@ -49,15 +49,15 @@ func MergeKitRuntime(kits []*KitMeta, kitConsumers []string) (KitRuntime, error)
 	mergedCmds := make(HostCommands)
 	kitCmdSource := make(map[string]string)
 	for i, kit := range kits {
-		consumer := ""
-		if i < len(kitConsumers) {
-			consumer = kitConsumers[i]
+		agent := ""
+		if i < len(kitAgents) {
+			agent = kitAgents[i]
 		}
 		for k, v := range kit.HostCommands {
-			if existingConsumer, ok := kitCmdSource[k]; ok {
-				return rt, fmt.Errorf("host_commands: command %q is defined in both kit %q and kit %q; remove the duplicate from one kit or override it in project.local.yaml", k, existingConsumer, consumer)
+			if existingAgent, ok := kitCmdSource[k]; ok {
+				return rt, fmt.Errorf("host_commands: command %q is defined in both kit %q and kit %q; remove the duplicate from one kit or override it in project.local.yaml", k, existingAgent, agent)
 			}
-			kitCmdSource[k] = consumer
+			kitCmdSource[k] = agent
 			mergedCmds[k] = v
 		}
 	}
@@ -139,20 +139,20 @@ func ValidateDefaultPayloadNoInstructions(p RawPayload) error {
 	return nil
 }
 
-// validateHookKind enforces the Hook.Kind / Hook.Consumer invariants at load time:
+// validateHookKind enforces the Hook.Kind / Hook.Agent invariants at load time:
 //   - Kind must be "" or "agent"
-//   - Consumer can only be specified on kind: agent hooks; on non-agent hooks
+//   - Agent can only be specified on kind: agent hooks; on non-agent hooks
 //     it has no effect and likely indicates that `kind: agent` was forgotten
 //
-// Agent hooks without a Consumer are allowed here (the kit-consumer inheritance
+// Agent hooks without an Agent are allowed here (the kit-agent inheritance
 // in MergeKitMetaIntoBehavior may still fill it in); the final "agent requires
-// consumer" check happens after kit merge.
+// agent" check happens after kit merge.
 func validateHookKind(h *Hook) error {
 	if !h.Kind.IsValid() {
 		return fmt.Errorf("hook %q: invalid kind %q (allowed: \"\" or \"agent\")", h.ID, h.Kind)
 	}
-	if h.Kind != HandlerKindAgent && h.Consumer != "" {
-		return fmt.Errorf("hook %q: 'consumer' requires 'kind: agent' (non-agent hooks must not declare consumer)", h.ID)
+	if h.Kind != HandlerKindAgent && h.Agent != "" {
+		return fmt.Errorf("hook %q: 'agent' field requires 'kind: agent' (non-agent hooks must not declare agent)", h.ID)
 	}
 	return nil
 }
@@ -208,10 +208,10 @@ func resolveKitRef(ref, projectDir string, resolver KitResolver) (string, error)
 	return resolver.Resolve(ref)
 }
 
-// ResolveKitConsumer derives the consumer name for a kit reference.
+// ResolveKitAgent derives the agent name for a kit reference.
 // If an alias is set via 'as:', that alias is returned.
 // Otherwise the last path segment of the ref is used.
-func ResolveKitConsumer(ref KitRef) string {
+func ResolveKitAgent(ref KitRef) string {
 	if ref.Alias != "" {
 		return ref.Alias
 	}
@@ -255,7 +255,7 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 	// Collect unique kits across all behaviors and commands, preserving first-seen order.
 	var orderedRefs []KitRef
 	kitMetaByRef := make(map[string]*KitMeta)
-	consumerByRef := make(map[string]string)
+	agentByRef := make(map[string]string)
 	loadKitRef := func(kitRef KitRef) error {
 		if _, loaded := kitMetaByRef[kitRef.Ref]; loaded {
 			return nil
@@ -270,7 +270,7 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		}
 		slog.Info("resolved kit", "ref", kitRef.Ref, "hooks", len(kitMeta.Hooks))
 		kitMetaByRef[kitRef.Ref] = kitMeta
-		consumerByRef[kitRef.Ref] = ResolveKitConsumer(kitRef)
+		agentByRef[kitRef.Ref] = ResolveKitAgent(kitRef)
 		orderedRefs = append(orderedRefs, kitRef)
 		return nil
 	}
@@ -312,15 +312,15 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 	if meta.Commands == nil {
 		meta.Commands = make(map[string]CommandSpec)
 	}
-	kitCmdSource := make(map[string]string) // commandName -> kit consumer (for conflict detection)
+	kitCmdSource := make(map[string]string) // commandName -> kit agent (for conflict detection)
 	for _, kitRef := range meta.Kits {
 		kitMeta := kitMetaByRef[kitRef.Ref]
-		consumer := ResolveKitConsumer(kitRef)
+		agent := ResolveKitAgent(kitRef)
 		for cmdName, kitCmdSpec := range kitMeta.Commands {
-			if existingConsumer, ok := kitCmdSource[cmdName]; ok {
-				return nil, fmt.Errorf("command %q: conflict between kits %q and %q", cmdName, existingConsumer, consumer)
+			if existingAgent, ok := kitCmdSource[cmdName]; ok {
+				return nil, fmt.Errorf("command %q: conflict between kits %q and %q", cmdName, existingAgent, agent)
 			}
-			kitCmdSource[cmdName] = consumer
+			kitCmdSource[cmdName] = agent
 			if projCmdSpec, exists := meta.Commands[cmdName]; !exists {
 				meta.Commands[cmdName] = kitCmdSpec
 			} else if len(projCmdSpec.Command) == 0 {
@@ -333,7 +333,7 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 	// For each behavior, resolve its kits and merge data into the behavior.
 	for name, behavior := range meta.TaskBehaviors {
 		var kits []*KitMeta
-		var consumers []string
+		var agents []string
 		var refs []string
 		seen := make(map[string]bool)
 
@@ -344,9 +344,9 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 			}
 			seen[kitRef.Ref] = true
 			km := kitMetaByRef[kitRef.Ref]
-			consumer := ResolveKitConsumer(kitRef)
+			agent := ResolveKitAgent(kitRef)
 			kits = append(kits, km)
-			consumers = append(consumers, consumer)
+			agents = append(agents, agent)
 			refs = append(refs, kitRef.Ref)
 		}
 
@@ -360,19 +360,19 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 			if !ok {
 				continue
 			}
-			consumer := ResolveKitConsumer(kitRef)
-			// Within this behavior, consumer names must be unique because hook
-			// IDs are prefixed with the consumer name.
-			for i, c := range consumers {
-				if c == consumer {
-					return nil, fmt.Errorf("behavior %q: kit consumer %q is ambiguous: both %q and %q resolve to the same name; use 'as:' to disambiguate", name, consumer, refs[i], kitRef.Ref)
+			agent := ResolveKitAgent(kitRef)
+			// Within this behavior, agent names must be unique because hook
+			// IDs are prefixed with the agent name.
+			for i, a := range agents {
+				if a == agent {
+					return nil, fmt.Errorf("behavior %q: kit agent %q is ambiguous: both %q and %q resolve to the same name; use 'as:' to disambiguate", name, agent, refs[i], kitRef.Ref)
 				}
 			}
 			kits = append(kits, km)
-			consumers = append(consumers, consumer)
+			agents = append(agents, agent)
 			refs = append(refs, kitRef.Ref)
 		}
-		if err := MergeKitMetaIntoBehavior(&behavior, kits, consumers); err != nil {
+		if err := MergeKitMetaIntoBehavior(&behavior, kits, agents); err != nil {
 			return nil, fmt.Errorf("behavior %q: %w", name, err)
 		}
 		// Apply project.yaml-level overlay (env / host_commands / bindings).
@@ -393,16 +393,16 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 
 	// Compute project-level kit runtime once; apply to all commands.
 	var projectKits []*KitMeta
-	var projectKitConsumers []string
+	var projectKitAgents []string
 	for _, kitRef := range meta.Kits {
 		km, ok := kitMetaByRef[kitRef.Ref]
 		if !ok {
 			continue
 		}
 		projectKits = append(projectKits, km)
-		projectKitConsumers = append(projectKitConsumers, ResolveKitConsumer(kitRef))
+		projectKitAgents = append(projectKitAgents, ResolveKitAgent(kitRef))
 	}
-	projectKitRuntime, err := MergeKitRuntime(projectKits, projectKitConsumers)
+	projectKitRuntime, err := MergeKitRuntime(projectKits, projectKitAgents)
 	if err != nil {
 		return nil, fmt.Errorf("project kits runtime: %w", err)
 	}
@@ -549,13 +549,13 @@ func ReadProjectLocalMeta(dir string) (*ProjectLocalMeta, error) {
 
 // MergeKitMetaIntoBehavior merges kit-provided hooks, gates, env, bindings, and
 // host_commands into the given TaskBehavior. Kit hook and gate IDs are prefixed
-// with the consumer name. The behavior is modified in place.
-func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitConsumers []string) error {
+// with the agent name. The behavior is modified in place.
+func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitAgents []string) error {
 	if len(kits) == 0 {
 		return nil
 	}
 
-	rt, err := MergeKitRuntime(kits, kitConsumers)
+	rt, err := MergeKitRuntime(kits, kitAgents)
 	if err != nil {
 		return err
 	}
@@ -572,41 +572,41 @@ func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitConsum
 		behavior.Env = mergedEnv
 	}
 
-	// Hooks: prefix IDs with consumer, tag with Kit name (provenance).
-	// Consumer (routing identity) is inherited from kit consumer only for
-	// agent-kind hooks; non-agent hooks don't use Consumer for routing.
+	// Hooks: prefix IDs with agent, tag with Kit name (provenance).
+	// Agent (routing identity) is inherited from kit agent only for
+	// agent-kind hooks; non-agent hooks don't use Agent for routing.
 	var allHooks []Hook
 	allHooks = append(allHooks, behavior.Hooks...)
 	for i, kit := range kits {
-		consumer := ""
-		if i < len(kitConsumers) {
-			consumer = kitConsumers[i]
+		agent := ""
+		if i < len(kitAgents) {
+			agent = kitAgents[i]
 		}
 		for _, h := range kit.Hooks {
-			h.Kit = consumer
-			if consumer != "" {
-				h.ID = consumer + "/" + h.ID
+			h.Kit = agent
+			if agent != "" {
+				h.ID = agent + "/" + h.ID
 			}
-			if h.Kind == HandlerKindAgent && h.Consumer == "" {
-				h.Consumer = consumer
+			if h.Kind == HandlerKindAgent && h.Agent == "" {
+				h.Agent = agent
 			}
 			allHooks = append(allHooks, h)
 		}
 	}
 	behavior.Hooks = allHooks
 
-	// Gates: prefix IDs with consumer.
+	// Gates: prefix IDs with agent.
 	var allGates []Gate
 	allGates = append(allGates, behavior.Gates...)
 	for i, kit := range kits {
-		consumer := ""
-		if i < len(kitConsumers) {
-			consumer = kitConsumers[i]
+		agent := ""
+		if i < len(kitAgents) {
+			agent = kitAgents[i]
 		}
 		for _, g := range kit.Gates {
-			g.Kit = consumer
-			if consumer != "" {
-				g.ID = consumer + "/" + g.ID
+			g.Kit = agent
+			if agent != "" {
+				g.ID = agent + "/" + g.ID
 			}
 			allGates = append(allGates, g)
 		}
@@ -640,12 +640,12 @@ func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitConsum
 		behavior.KitRoots = append(behavior.KitRoots, kit.KitRoot)
 	}
 
-	// Post-merge validation: kind: agent hooks must have a Consumer. kit
-	// inheritance may have filled it in; if still empty, the kit had no consumer
+	// Post-merge validation: kind: agent hooks must have an Agent. kit
+	// inheritance may have filled it in; if still empty, the kit had no agent
 	// name to inherit, which is a configuration error.
 	for _, h := range behavior.Hooks {
-		if h.Kind == HandlerKindAgent && h.Consumer == "" {
-			return fmt.Errorf("hook %q: kind: agent requires Consumer (kit has no consumer name to inherit)", h.ID)
+		if h.Kind == HandlerKindAgent && h.Agent == "" {
+			return fmt.Errorf("hook %q: kind: agent requires Agent (kit has no agent name to inherit)", h.ID)
 		}
 	}
 

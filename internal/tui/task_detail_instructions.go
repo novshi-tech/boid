@@ -63,7 +63,7 @@ func renderInstructions(detail *api.TaskDetailView, cursor, previewScroll, width
 		if i >= maxListLines {
 			break
 		}
-		summary := r.role + "  " + string(r.instruction.Type) + "  " + r.instruction.Consumer
+		summary := r.role + "  " + string(r.instruction.Type) + "  " + r.instruction.Agent
 		if r.instruction.Model != "" {
 			summary += "  " + r.instruction.Model
 		}

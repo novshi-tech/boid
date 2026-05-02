@@ -86,7 +86,7 @@ var taskReopenCmd = &cobra.Command{
 	Use:   "reopen <id>",
 	Short: "Reopen a done task back into executing",
 	Long: "done 済みタスクを executing に戻す。 --message を渡すと、 任意のテキストを新しい\n" +
-		"instruction として履歴に追記する (consumer / model / interactive は前回 active を継承)。\n" +
+		"instruction として履歴に追記する (agent / model / interactive は前回 active を継承)。\n" +
 		"主な用途: PR review feedback を反映させる、 task.exit gate がコンフリクトで失敗した\nPR を修正させる、 等",
 	Args: cobra.ExactArgs(1),
 	RunE: runTaskReopen,
@@ -115,7 +115,7 @@ func init() {
 	taskUpdateCmd.Flags().StringP("patch-file", "f", "", "Patch file (YAML/JSON) with task fields to update; - for stdin")
 	taskUpdateCmd.Flags().String("payload-file", "", "Payload file (YAML/JSON) merged into task.payload; - for stdin")
 	taskUpdateCmd.Flags().String("instructions-file", "", "Instructions file (YAML/JSON) for role-wise merge; - for stdin")
-	taskReopenCmd.Flags().StringP("message", "m", "", "Append a new instruction with the given message (consumer/model/interactive are inherited from the active entry)")
+	taskReopenCmd.Flags().StringP("message", "m", "", "Append a new instruction with the given message (agent/model/interactive are inherited from the active entry)")
 	taskDuplicateCmd.Flags().Bool("auto-start", false, "Automatically start the duplicated task")
 	taskRerunCmd.Flags().Bool("auto-start", false, "Automatically start the rerun task")
 	taskRerunCmd.Flags().String("instructions-file", "", "Instructions override file (YAML/JSON) for role-wise merge; - for stdin")

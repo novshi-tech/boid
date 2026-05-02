@@ -32,11 +32,11 @@ behavior: "dev"
 ```yaml
 - role: executor
   type: execution
-  consumer: claude-code
+  agent: claude-code
   message: "TDD で実装してください。テストを先に書くこと。"
 - role: executor
   type: execution
-  consumer: claude-code
+  agent: claude-code
   message: "lint エラーを修正して再 push してください。"   # reopen で append された
 ```
 
@@ -44,7 +44,7 @@ behavior: "dev"
 |-----------|------|
 | role | 指示の論理名 |
 | type | `execution` のみ |
-| consumer | 宛先エージェント名 |
+| agent | 宛先エージェント名 |
 | message | 具体的な指示内容 |
 
 最後の要素を主指示として読み、 必要であれば前方の要素を文脈として参照する。

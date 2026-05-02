@@ -35,12 +35,12 @@ requires:
   commands:                     # (optional) host commands needed on PATH
     - gh
 
-provides_consumer: my-agent     # (optional) consumer name this kit listens for
+provides_agent: my-agent        # (optional) agent name this kit listens for
 
 hooks:
   - id: my-hook
     kind: agent                 # (optional) "agent" opts in to instruction routing
-    consumer: my-agent          # (optional) instructions addressed to this consumer
+    agent: my-agent             # (optional) instructions addressed to this agent
     traits:
       consumes: [instructions]
       produces: [artifact]
@@ -86,9 +86,9 @@ Runs with a 5-second timeout, with the project root as the working directory.
 
 Host-side commands that need to be on `PATH` for this kit to function. Used during install and surfaced in UIs.
 
-### `provides_consumer`
+### `provides_agent`
 
-Declares which consumer name's instructions this kit is responsible for. For example, `claude-code` sets `provides_consumer: claude-code` and consumes any instruction whose `consumer:` is `claude-code`.
+Declares which agent name's instructions this kit is responsible for. For example, `claude-code` sets `provides_agent: claude-code` and handles any instruction whose `agent:` is `claude-code`.
 
 ### `hooks` and `gates`
 
@@ -144,7 +144,7 @@ Kits are distributed as their own git repositories. `boid kit install <git-host>
 
 Conventions for publishing:
 
-- The README should state what the kit does, which consumer's instructions it listens for, and which host commands it requires.
+- The README should state what the kit does, which agent's instructions it listens for, and which host commands it requires.
 - If you ship multiple kits in one repo, give each subdirectory its own README.
 - Set `meta.category` to match the kit's actual role.
 - Always declare `requires.commands` — it drives the user's initial setup checks.

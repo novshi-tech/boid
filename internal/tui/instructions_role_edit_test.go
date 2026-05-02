@@ -17,10 +17,10 @@ func newTestInstructionsRoleEditScreen(role string) *InstructionsRoleEditScreen 
 		Status: orchestrator.TaskStatusPending,
 		Instructions: orchestrator.Instructions{
 			{
-				Type:     orchestrator.InstructionTypeExecution,
-				Consumer: "claude-code",
-				Message:  "do this",
-				Model:    "sonnet-4-6",
+				Type:    orchestrator.InstructionTypeExecution,
+				Agent:   "claude-code",
+				Message: "do this",
+				Model:   "sonnet-4-6",
 			},
 		},
 		CreatedAt: time.Now(),
@@ -37,8 +37,8 @@ func TestInstructionsRoleEdit_InitialYAML_ExistingRole(t *testing.T) {
 	if !containsStr(val, "type: execution") {
 		t.Errorf("expected 'type: execution', got: %q", val)
 	}
-	if !containsStr(val, "consumer: claude-code") {
-		t.Errorf("expected 'consumer: claude-code', got: %q", val)
+	if !containsStr(val, "agent: claude-code") {
+		t.Errorf("expected 'agent: claude-code', got: %q", val)
 	}
 	if !containsStr(val, "model: sonnet-4-6") {
 		t.Errorf("expected 'model: sonnet-4-6', got: %q", val)
@@ -101,7 +101,7 @@ func TestInstructionsRoleEdit_CancelButton(t *testing.T) {
 // submit: valid YAML should set submitting=true and return a command.
 func TestInstructionsRoleEdit_SubmitValidYAML(t *testing.T) {
 	s := newTestInstructionsRoleEditScreen("main")
-	s.editor.SetValue("type: execution\nconsumer: claude-code\nmodel: opus-4-7\nmessage: retry\n")
+	s.editor.SetValue("type: execution\nagent: claude-code\nmodel: opus-4-7\nmessage: retry\n")
 
 	cmd := s.submit()
 	if s.errMsg != "" {

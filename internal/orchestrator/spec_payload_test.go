@@ -314,14 +314,14 @@ func TestMergePayloadPatch_DropsUnknownTraitsAndMergesAllowed(t *testing.T) {
 
 func TestFilterPayloadByTraits(t *testing.T) {
 	t.Run("empty consumes returns empty payload", func(t *testing.T) {
-		payload := json.RawMessage(`{"artifact":"url","instructions":{"r":{"type":"execution","consumer":"cc","message":"m"}}}`)
+		payload := json.RawMessage(`{"artifact":"url","instructions":{"r":{"type":"execution","agent":"cc","message":"m"}}}`)
 		result := projectspec.FilterPayloadByTraits(payload, nil)
 		if string(result) != `{}` {
 			t.Fatalf("expected {}, got %s", result)
 		}
 	})
 	t.Run("filters to requested traits only", func(t *testing.T) {
-		payload := json.RawMessage(`{"artifact":"url","instructions":{"r":{"type":"execution","consumer":"cc","message":"m"}},"tasks":[]}`)
+		payload := json.RawMessage(`{"artifact":"url","instructions":{"r":{"type":"execution","agent":"cc","message":"m"}},"tasks":[]}`)
 		result := projectspec.FilterPayloadByTraits(payload, []projectspec.TraitType{projectspec.TraitArtifact})
 		var m map[string]json.RawMessage
 		if err := json.Unmarshal(result, &m); err != nil {

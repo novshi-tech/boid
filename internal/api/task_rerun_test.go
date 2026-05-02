@@ -117,7 +117,7 @@ func TestRerunTask_PreservesInstructions(t *testing.T) {
 		"project_id":   "rerun-proj-ins",
 		"title":        "Preserve Instructions",
 		"behavior":     "planning",
-		"instructions": json.RawMessage(`{"main":{"consumer":"claude-code","message":"do stuff","type":"execution"}}`),
+		"instructions": json.RawMessage(`{"main":{"agent":"claude-code","message":"do stuff","type":"execution"}}`),
 	}, &task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}

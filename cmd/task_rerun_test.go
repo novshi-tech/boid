@@ -45,7 +45,7 @@ func TestRunTaskRerun_SendsInstructionsOverride(t *testing.T) {
 		"instructions": map[string]any{
 			"main": map[string]any{
 				"type":     "execution",
-				"consumer": "claude-code",
+				"agent": "claude-code",
 				"model":    "sonnet-4-6",
 				"message":  "initial",
 			},
@@ -58,7 +58,7 @@ func TestRunTaskRerun_SendsInstructionsOverride(t *testing.T) {
 
 	instructionsYAML := `main:
   type: execution
-  consumer: claude-code
+  agent: claude-code
   model: opus-4-7
   message: "retry with opus"
 `
@@ -115,7 +115,7 @@ func TestRunTaskRerun_NoInstructionsFlagPreservesExisting(t *testing.T) {
 		"instructions": map[string]any{
 			"main": map[string]any{
 				"type":     "execution",
-				"consumer": "claude-code",
+				"agent": "claude-code",
 				"message":  "keep me",
 			},
 		},

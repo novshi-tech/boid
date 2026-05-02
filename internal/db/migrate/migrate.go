@@ -172,6 +172,20 @@ func Apply(conn *sql.DB) error {
 				return count == 0, nil
 			},
 		},
+		{
+			version: "0023_rename_instruction_consumer_to_agent",
+			path:    "migrations/0023_rename_instruction_consumer_to_agent.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				// idempotent: skip when no tasks still use the old "consumer": key.
+				var count int
+				if err := tx.QueryRow(
+					`SELECT COUNT(*) FROM tasks WHERE instructions LIKE '%"consumer":%'`,
+				).Scan(&count); err != nil {
+					return false, err
+				}
+				return count == 0, nil
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {
