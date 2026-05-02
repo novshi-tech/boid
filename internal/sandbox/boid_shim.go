@@ -59,6 +59,8 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 			return parseBoidTaskReopen(args[2:])
 		case "list":
 			return parseBoidTaskList(args[2:])
+		case "notify":
+			return parseBoidTaskNotify(args[2:])
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid task subcommand %q", args[1])
 		}
@@ -382,6 +384,43 @@ func parseBoidTaskReopen(args []string) (*BoidRequest, error) {
 		return nil, fmt.Errorf("boid shim: task reopen requires a task id")
 	}
 	return &BoidRequest{Op: BoidOpTaskReopen, TaskID: args[0]}, nil
+}
+
+func parseBoidTaskNotify(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpTaskNotify}
+
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		req.TaskID = args[0]
+		args = args[1:]
+	}
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-m" || arg == "--message" || strings.HasPrefix(arg, "--message="):
+			flagName := "--message"
+			if arg == "-m" {
+				flagName = "-m"
+			}
+			value, next, err := takeStringFlagValue(args, i, flagName)
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.Message = value
+		default:
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task notify", arg)
+		}
+	}
+
+	if req.TaskID == "" {
+		return nil, fmt.Errorf("boid shim: task notify requires a task id")
+	}
+	if req.Message == "" {
+		return nil, fmt.Errorf("boid shim: task notify requires --message")
+	}
+
+	return req, nil
 }
 
 func parseBoidTaskImport(args []string) (*BoidRequest, error) {

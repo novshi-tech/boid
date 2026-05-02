@@ -99,6 +99,16 @@ var taskRerunCmd = &cobra.Command{
 	RunE:  runTaskRerun,
 }
 
+var taskNotifyCmd = &cobra.Command{
+	Use:   "notify <id>",
+	Short: "Send a user notification for the given task",
+	Long: "ユーザの判断が必要なときに、 config.yaml の `notify.command` を実行する。\n" +
+		"agent からのお知らせ専用 (agent が明示的に呼ぶときだけ発火する) で、\n" +
+		"通知後 agent はセッション内に質問を出力してユーザの返答を待つ想定。",
+	Args: cobra.ExactArgs(1),
+	RunE: runTaskNotify,
+}
+
 func init() {
 	taskListCmd.Flags().String("status", "", "Filter by status")
 	taskListCmd.Flags().String("workspace", "", "Filter by workspace ID")
@@ -119,7 +129,8 @@ func init() {
 	taskDuplicateCmd.Flags().Bool("auto-start", false, "Automatically start the duplicated task")
 	taskRerunCmd.Flags().Bool("auto-start", false, "Automatically start the rerun task")
 	taskRerunCmd.Flags().String("instructions-file", "", "Instructions override file (YAML/JSON) for role-wise merge; - for stdin")
-	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd, taskDeleteCmd, taskUpdateCmd, taskImportCmd, taskDuplicateCmd, taskReopenCmd, taskRerunCmd)
+	taskNotifyCmd.Flags().StringP("message", "m", "", "Notification message text (required)")
+	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd, taskDeleteCmd, taskUpdateCmd, taskImportCmd, taskDuplicateCmd, taskReopenCmd, taskRerunCmd, taskNotifyCmd)
 	rootCmd.AddCommand(taskCmd)
 }
 
@@ -527,6 +538,20 @@ func runTaskRerun(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(cmd.OutOrStdout(), task.ID)
 		return nil
 	})
+}
+
+func runTaskNotify(cmd *cobra.Command, args []string) error {
+	message, _ := cmd.Flags().GetString("message")
+	if message == "" {
+		return fmt.Errorf("--message is required")
+	}
+	c := client.NewUnixClient(client.DefaultSocketPath())
+	req := api.NotifyTaskRequest{Message: message}
+	if err := c.Do("POST", "/api/tasks/"+args[0]+"/notify", req, nil); err != nil {
+		return fmt.Errorf("notify task: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "notified: %s\n", args[0])
+	return nil
 }
 
 func parseImportLines(r io.Reader) ([]api.CreateTaskRequest, error) {

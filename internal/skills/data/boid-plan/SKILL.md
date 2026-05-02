@@ -129,27 +129,48 @@ done) &
 
 長時間 / 子数が多いケースで便利だが、 シンプルなケースでは前述の foreground ループで十分。
 
-## attention によるユーザ通知
+## ユーザ通知 (boid task notify)
 
-ユーザの判断が必要だが対話できない (自律モード等) 場合、 supervisor 自身の payload に `attention` フラグを立てる:
-
-```bash
-boid task update ${BOID_TASK_ID} --payload-file - <<JSON
-{"attention": {"needed": true, "message": "PR #284 のレビュー反映方針を判断してほしい"}}
-JSON
-```
-
-`~/.config/boid/config.yaml` に `notify.command` が設定されていれば、 attention.needed が立った時点で通知スクリプトが起動してユーザに届く (通知機能の実装は別 PR)。
-
-立てたあとはユーザの reopen + 追加 instruction を待つ。 reopen を観測したら attention.needed を解除して supervisor 業務に戻る:
+ユーザの判断が必要なとき、 `boid task notify` を呼ぶと `~/.config/boid/config.yaml` の `notify.command` が exec される。
 
 ```bash
-boid task update ${BOID_TASK_ID} --payload-file - <<JSON
-{"attention": {"needed": false}}
-JSON
+boid task notify ${BOID_TASK_ID} --message "PR #284 のレビュー反映方針を判断してほしい"
 ```
 
-attention は **「エージェントからのお知らせ」 専用** とする。 単なる状態変化 (子が aborted した / PR がマージされた) だけでは立てない。 「ユーザが見ない限り進めない」 ことだけ立てる。
+通知スクリプトには env で `BOID_TASK_ID` / `BOID_PROJECT_ID` / `BOID_MESSAGE` / `BOID_TASK_URL` (config に `web.public_url` が設定済なら clickable link) が渡される。
+
+### interactive 前提 + セッション内で待つ
+
+notify は **interactive モード (`BOID_INTERACTIVE=true`) のときだけ呼ぶ**。 自律モードで詰まったときは notify せず、 状況を artifact に書いて exit する (ユーザが task list で気付いて reopen + instruction で指示を出す)。
+
+interactive モードでは notify 直後に質問本文 (選択肢 / 必要な判断材料 / context) を session に出力してユーザの返答を待つ:
+
+```bash
+boid task notify ${BOID_TASK_ID} --message "..."
+echo "判断してほしいこと:"
+echo "  A. ...の方針で進める"
+echo "  B. ...の方針で進める"
+echo "  C. 別の案を提示"
+# ここで agent はユーザの入力を待つ
+```
+
+質問の中身は session transcript に残るので、 ユーザは Web UI のセッションビューアで読んで返答する (boid 側に質問履歴を保存する仕組みは無い)。
+
+### 通知のセマンティクス
+
+- 呼ぶたびに 1 回 notify される (idempotent ではない)
+- `attention.needed` のような persistent state は持たない、 呼出回数 = 通知回数
+- 「単なる状態変化」 (子が aborted した / PR がマージされた) では呼ばない。 **「ユーザが見ない限り進めない」 ことだけ** 通知する
+
+### config 例
+
+```yaml
+# ~/.config/boid/config.yaml
+notify:
+  command: ["~/bin/boid-notify.sh"]
+```
+
+script 側は env を読んで pushover / ntfy / Slack / libnotify など好きな手段で通知する (boid 本体は exec のみ、 通知の中身は完全にユーザ任せ)。
 
 ## hard cap (暴走防止)
 

@@ -49,6 +49,7 @@ const (
 	BoidOpTaskImport BoidOp = "task_import"
 	BoidOpTaskReopen BoidOp = "task.reopen"
 	BoidOpTaskList   BoidOp = "task_list"
+	BoidOpTaskNotify BoidOp = "task_notify"
 )
 
 // BehaviorSpec is the inline behavior specification carried in BoidRequest.
@@ -93,6 +94,9 @@ type BoidRequest struct {
 	WorkspaceID string `json:"workspace_id,omitempty"`
 	Status      string `json:"status,omitempty"`
 	Limit       int    `json:"limit,omitempty"`
+
+	// task notify fields
+	Message string `json:"message,omitempty"`
 }
 
 type TokenContext struct {

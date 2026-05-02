@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,9 +13,17 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
+// TaskNotifyService dispatches an agent-driven notification for a task.
+// Wired to *TaskAppService at runtime; left optional on TaskHandler so
+// existing tests do not need to satisfy this interface.
+type TaskNotifyService interface {
+	NotifyTask(ctx context.Context, taskID, message string) error
+}
+
 type TaskHandler struct {
 	Service  TaskService
-	Gates    GateService // optional: enables gate replay/list when set
+	Gates    GateService       // optional: enables gate replay/list when set
+	Notifier TaskNotifyService // optional: enables POST /{id}/notify when set
 }
 
 func (h *TaskHandler) Routes() chi.Router {
@@ -32,7 +41,28 @@ func (h *TaskHandler) Routes() chi.Router {
 		r.Get("/{id}/gates", h.ListGates)
 		r.Post("/{id}/gates/{gate_id}/replay", h.ReplayGate)
 	}
+	if h.Notifier != nil {
+		r.Post("/{id}/notify", h.Notify)
+	}
 	return r
+}
+
+type NotifyTaskRequest struct {
+	Message string `json:"message"`
+}
+
+func (h *TaskHandler) Notify(w http.ResponseWriter, r *http.Request) {
+	var req NotifyTaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	taskID := chi.URLParam(r, "id")
+	if err := h.Notifier.NotifyTask(r.Context(), taskID, req.Message); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type UpdateTaskRequest struct {
