@@ -215,28 +215,43 @@ echo "  C. 別の案を提示"
 - **判断分岐** (どの方針で進めるか) と **事前承認** (plan 全体を流す前) のために呼ぶ
 - 「ユーザが見ない限り進めない」 状態に達した時点で 1 回呼ぶ
 
-## 自律終了して良い条件
+## 終了処理 (必須)
 
-plan agent は「全子が done / aborted に達した」だけでは自動終了しない。 `boid job done $BOID_JOB_ID --exit-code 0` を明示的に呼んで session を閉じること。
+全子が `done` / `aborted` に達した時点で、 plan agent は **必ず以下のどちらか一方を実行する**。
+何もせずに session を hang させてはいけない (= ユーザは notify が来ない限り plan の完了に気付けない):
+
+- **A. 自律終了**: `boid job done "$BOID_JOB_ID" --exit-code 0` を実行する
+- **B. 終了確認 notify**: `boid task notify` で「session を閉じてよいか」をユーザに問い合わせ、
+  返答を待つ。 ユーザが OK と言ったら A を実行する
 
 ### 自律モード (`BOID_INTERACTIVE` が未設定 / 0)
 
-全子が `done` / `aborted` に達したら即座に自律終了する:
-
-```bash
-boid job done "$BOID_JOB_ID" --exit-code 0
-```
+常に A を実行する (notify は呼ばない)。 詰まった場合も artifact に状況を書いてから A で終了する。
 
 ### interactive モード (`BOID_INTERACTIVE=1`)
 
-以下を **全て** 満たす場合のみ自律終了する。一つでも欠ければ session を保ってユーザに `/exit` を任せる。
+以下を **全て** 満たすなら A、 一つでも欠けるなら B:
 
 1. 全子が `done` / `aborted` で、次の supervisor 作業がない
 2. 直前のユーザ発言が「ok」「了解」「ありがとう」等の終結応答であり、新たな依頼・質問でない
 3. 未応答の notify (ユーザがまだ返信していない) がない
 4. 自分の最後の発言が完了報告で、ユーザが追問する余地が小さい
 
-迷ったら自律終了しない。
+迷ったら B。 「session を保つだけ」 で放置するのは禁止 — 必ず A か B を選ぶ。
+
+#### B (終了確認 notify) の例
+
+```bash
+boid task notify ${BOID_TASK_ID} --message "全子タスク完了。 session を閉じてよいか確認したい"
+echo "全子タスク (子A: done, 子B: done) が完了しました。"
+echo "判断してほしいこと:"
+echo "  A. 完了として session を閉じる (boid job done)"
+echo "  B. 追加の作業を依頼する"
+# ユーザの返答を待つ
+```
+
+ユーザが A と返答したら `boid job done "$BOID_JOB_ID" --exit-code 0` を実行する。
+B と返答したら追加の supervisor 作業に入る。
 
 ### EXIT trap との関係
 
