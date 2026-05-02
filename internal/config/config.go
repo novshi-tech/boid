@@ -11,8 +11,14 @@ import (
 
 // Config holds the global boid configuration.
 type Config struct {
-	GC  GCConfig  `yaml:"gc"`
-	Web WebConfig `yaml:"web"`
+	GC     GCConfig     `yaml:"gc"`
+	Web    WebConfig    `yaml:"web"`
+	Notify NotifyConfig `yaml:"notify"`
+}
+
+// NotifyConfig holds settings for agent-driven notifications.
+type NotifyConfig struct {
+	Command []string `yaml:"command"`
 }
 
 // GCConfig holds garbage collection settings.
@@ -84,6 +90,9 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 			PublicURL string `yaml:"public_url"`
 			HTTPAddr  string `yaml:"http_addr"`
 		} `yaml:"web"`
+		Notify struct {
+			Command []string `yaml:"command"`
+		} `yaml:"notify"`
 	}
 	if err := value.Decode(&raw); err != nil {
 		return err
@@ -111,6 +120,8 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 
 	c.Web.PublicURL = raw.Web.PublicURL
 	c.Web.HTTPAddr = raw.Web.HTTPAddr
+
+	c.Notify.Command = raw.Notify.Command
 
 	return nil
 }

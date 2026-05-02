@@ -152,6 +152,26 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 		return &sandbox.ExecResponse{
 			Stdout: fmt.Sprintf("task %s reopened\n", req.TaskID),
 		}
+	case sandbox.BoidOpTaskNotify:
+		if e.tasks == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task notify unavailable"}
+		}
+		if req.TaskID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task notify requires a task id"}
+		}
+		existing, err := e.tasks.GetTask(req.TaskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		if !ctx.AllowsProject(existing.ProjectID) {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task notify is restricted to the current workspace"}
+		}
+		if err := e.tasks.NotifyTask(context.Background(), req.TaskID, req.Message); err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{
+			Stdout: fmt.Sprintf("notified: %s\n", req.TaskID),
+		}
 	case sandbox.BoidOpTaskList:
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task list unavailable"}

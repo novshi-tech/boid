@@ -89,10 +89,12 @@ func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 		AllowedOps: sortedOps(
 			OpBoidJobDone,
 			OpBoidTaskCreate,
+			OpBoidTaskGet,
 			OpBoidTaskUpdate,
 			OpBoidTaskImport,
 			OpBoidTaskReopen,
 			OpBoidTaskList,
+			OpBoidTaskNotify,
 		),
 		AllowedCwdRoots: cwds,
 	}

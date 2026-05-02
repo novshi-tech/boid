@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -298,6 +299,14 @@ type TaskAppService struct {
 	Workflow    WorkflowService
 	Projects    ProjectWorkDirLookup
 	RuntimesDir string
+	Notify      Notifier
+}
+
+// Notifier sends an agent-driven notification for a task. Implementations
+// typically exec a user-configured command. nil-safe at the call site:
+// TaskAppService.NotifyTask returns an error when Notify is unset.
+type Notifier interface {
+	Notify(ctx context.Context, ev notify.Event) error
 }
 
 // enrichJob fills WorkspacePath from RuntimesDir and the job's RuntimeID.
@@ -551,6 +560,37 @@ func (s *TaskAppService) GetTask(id string) (*orchestrator.Task, error) {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
 	return task, nil
+}
+
+// NotifyTask invokes the configured notify command for the given task.
+// Returns 501 when no notifier is wired (notifications disabled in config).
+func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message string) error {
+	if s.Notify == nil {
+		return &StatusError{Code: http.StatusNotImplemented, Message: "notify is not configured"}
+	}
+	if message == "" {
+		return &StatusError{Code: http.StatusBadRequest, Message: "message is required"}
+	}
+	task, err := s.Tasks.GetTask(taskID)
+	if err != nil {
+		return &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	ev := notify.Event{
+		TaskID:    taskID,
+		TaskTitle: task.Title,
+		ProjectID: task.ProjectID,
+		Message:   message,
+	}
+	// Project name is best-effort: omit silently if Projects lookup fails or is unwired.
+	if s.Projects != nil {
+		if proj, lookupErr := s.Projects.GetProject(task.ProjectID); lookupErr == nil && proj != nil {
+			ev.ProjectName = proj.Meta.Name
+		}
+	}
+	if err := s.Notify.Notify(ctx, ev); err != nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return nil
 }
 
 func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestrator.Task, error) {

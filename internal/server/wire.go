@@ -17,6 +17,7 @@ import (
 	"github.com/novshi-tech/boid/internal/api/auth"
 	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/dispatcher"
+	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/web"
@@ -199,6 +200,16 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Projects: projectRepo,
 		Meta:     store,
 	}
+	boidCfg, err := config.Load()
+	if err != nil {
+		slog.Warn("failed to load boid config, using defaults", "error", err)
+		boidCfg = config.DefaultConfig()
+	}
+	notifySvc := &notify.Service{
+		Command:   boidCfg.Notify.Command,
+		PublicURL: boidCfg.Web.PublicURL,
+	}
+
 	taskSvc := &api.TaskAppService{
 		Tasks:       taskRepo,
 		Actions:     taskRepo,
@@ -207,6 +218,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Workflow:    workflow,
 		Projects:    projectRepo,
 		RuntimesDir: runtimesDirFor(cfg),
+		Notify:      notifySvc,
 	}
 	if srv.broker != nil {
 		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc)
@@ -377,7 +389,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	workspaceHandler := &api.WorkspaceHandler{Service: runtime.projectSvc}
 	r.Mount("/api/workspaces", workspaceHandler.Routes())
 
-	taskHandler := &api.TaskHandler{Service: runtime.taskSvc, Gates: runtime.workflow}
+	taskHandler := &api.TaskHandler{Service: runtime.taskSvc, Gates: runtime.workflow, Notifier: runtime.taskSvc}
 	r.Mount("/api/tasks", taskHandler.Routes())
 
 	gcStore := orchestrator.NewTaskGCStoreWithWorktree(
