@@ -7,10 +7,12 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/novshi-tech/boid/internal/api/auth"
 )
 
 // TaskEvents streams Server-Sent Events for a specific task.
-// Subscribes to the TaskEventHub and forwards events until the client disconnects.
+// Subscribes to the TaskEventHub and forwards events until the client disconnects
+// or the device is revoked.
 func (h *WebHandler) TaskEvents(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if h.Hub == nil {
@@ -32,6 +34,15 @@ func (h *WebHandler) TaskEvents(w http.ResponseWriter, r *http.Request) {
 
 	ch := h.Hub.Subscribe(r.Context(), id)
 
+	var revokeCh <-chan struct{}
+	if h.Registry != nil {
+		if deviceID, ok := auth.DeviceIDFromContext(r.Context()); ok {
+			var release func()
+			revokeCh, release = h.Registry.Register(deviceID)
+			defer release()
+		}
+	}
+
 	ping := time.NewTicker(20 * time.Second)
 	defer ping.Stop()
 
@@ -51,6 +62,8 @@ func (h *WebHandler) TaskEvents(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, ":ping\n\n")
 			flusher.Flush()
 		case <-r.Context().Done():
+			return
+		case <-revokeCh:
 			return
 		}
 	}

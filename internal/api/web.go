@@ -51,6 +51,7 @@ type WebHandler struct {
 	Service    WebService
 	Hub        *TaskEventHub
 	Dispatcher CommandDispatcher
+	Registry   *auth.ConnectionRegistry
 }
 
 func (h *WebHandler) Routes() chi.Router {
@@ -580,6 +581,7 @@ type WebManagementHandler struct {
 	Pairing   Pairer
 	Store     *auth.Store
 	PublicURL string
+	Registry  *auth.ConnectionRegistry
 }
 
 func (h *WebManagementHandler) Routes() chi.Router {
@@ -657,6 +659,9 @@ func (h *WebManagementHandler) DeleteDevice(w http.ResponseWriter, r *http.Reque
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if h.Registry != nil {
+		h.Registry.RevokeDevice(id)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -664,6 +669,9 @@ func (h *WebManagementHandler) DeleteAllDevices(w http.ResponseWriter, r *http.R
 	if err := h.Store.RevokeAllDevices(r.Context()); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if h.Registry != nil {
+		h.Registry.RevokeAll()
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

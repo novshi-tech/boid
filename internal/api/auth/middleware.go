@@ -1,10 +1,28 @@
 package auth
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strings"
 )
+
+type contextKey string
+
+const deviceIDCtxKey contextKey = "deviceID"
+
+// WithDeviceID returns ctx with deviceID embedded. Used by NewWebAuthMiddleware
+// and in tests to inject a device identity without running the full middleware.
+func WithDeviceID(ctx context.Context, deviceID string) context.Context {
+	return context.WithValue(ctx, deviceIDCtxKey, deviceID)
+}
+
+// DeviceIDFromContext returns the authenticated device ID stored in ctx by
+// NewWebAuthMiddleware. Returns ("", false) for unauthenticated requests.
+func DeviceIDFromContext(ctx context.Context) (string, bool) {
+	id, ok := ctx.Value(deviceIDCtxKey).(string)
+	return id, ok && id != ""
+}
 
 // NewWebAuthMiddleware returns middleware that enforces session cookie auth for
 // web UI routes.
@@ -16,7 +34,7 @@ import (
 //	no cookie + loopback + no devices registered → warn + pass (bootstrap mode)
 //	no cookie + anything else                    → 302 /login
 //	invalid cookie                               → clear cookie + 302 /login
-//	valid cookie                                 → pass (Verify updates last_seen)
+//	valid cookie                                 → pass (Verify updates last_seen, deviceID stored in ctx)
 func NewWebAuthMiddleware(signer *SessionSigner, store *Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -46,13 +64,15 @@ func NewWebAuthMiddleware(signer *SessionSigner, store *Store) func(http.Handler
 				http.Redirect(w, r, "/login", http.StatusFound)
 				return
 			}
-			if _, err := signer.Verify(r); err != nil {
+			deviceID, err := signer.Verify(r)
+			if err != nil {
 				signer.Clear(w)
 				http.Redirect(w, r, "/login", http.StatusFound)
 				return
 			}
 
-			next.ServeHTTP(w, r)
+			ctx := WithDeviceID(r.Context(), deviceID)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

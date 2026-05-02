@@ -37,6 +37,7 @@ type appRuntime struct {
 	hub            *api.TaskEventHub
 	authStore      *auth.Store
 	sessionSigner  *auth.SessionSigner
+	connRegistry   *auth.ConnectionRegistry
 }
 
 func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) (*orchestrator.ProjectStore, error) {
@@ -238,6 +239,8 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		sessionSigner = auth.NewSessionSigner(webSecret, authStore)
 	}
 
+	connRegistry := auth.NewConnectionRegistry()
+
 	return &appRuntime{
 		projectRepo:    projectRepo,
 		taskRepo:       taskRepo,
@@ -253,6 +256,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		hub:            hub,
 		authStore:      authStore,
 		sessionSigner:  sessionSigner,
+		connRegistry:   connRegistry,
 	}, nil
 }
 
@@ -419,6 +423,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		LogReader: transcriptLogReader{rootDir: runtimesDirFor(srv.cfg)},
 		SSEHandler: &api.JobLogSSEHandler{
 			Subscriber: runtime.runner,
+			Registry:   runtime.connRegistry,
 		},
 	}
 	r.Mount("/api/jobs", jobHandler.Routes())
@@ -434,9 +439,10 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 
 	// Management API — accessible via UNIX socket (CLI only), no session auth.
 	webMgmt := &api.WebManagementHandler{
-		Pairing:   auth.NewPairingManager(runtime.authStore),
-		Store:     runtime.authStore,
+		Pairing:  auth.NewPairingManager(runtime.authStore),
+		Store:    runtime.authStore,
 		PublicURL: gcCfg.Web.PublicURL,
+		Registry: runtime.connRegistry,
 	}
 	r.Mount("/api/web", webMgmt.Routes())
 
@@ -460,12 +466,14 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 			Service:    runtime.webSvc,
 			Hub:        runtime.hub,
 			Dispatcher: &commandDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner},
+			Registry:   runtime.connRegistry,
 		}
 		r.Get("/api/tasks/{id}/events", webHandler.TaskEvents)
 		r.Get("/api/jobs/{id}/attach/ws", (&api.WSAttachHandler{
 			Subscriber: runtime.runner,
 			Writer:     runtime.runner,
 			PublicURL:  gcCfg.Web.PublicURL,
+			Registry:   runtime.connRegistry,
 		}).ServeHTTP)
 		r.Mount("/", webHandler.Routes())
 	})

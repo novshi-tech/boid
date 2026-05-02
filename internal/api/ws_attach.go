@@ -11,6 +11,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/go-chi/chi/v5"
+	"github.com/novshi-tech/boid/internal/api/auth"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 )
 
@@ -20,6 +21,7 @@ type WSAttachHandler struct {
 	Subscriber dispatcher.RuntimeSubscriber
 	Writer     dispatcher.RuntimeInputWriter
 	PublicURL  string
+	Registry   *auth.ConnectionRegistry
 }
 
 type wsClientMsg struct {
@@ -71,6 +73,15 @@ func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var revokeCh <-chan struct{}
+	if h.Registry != nil {
+		if deviceID, ok := auth.DeviceIDFromContext(r.Context()); ok {
+			var release func()
+			revokeCh, release = h.Registry.Register(deviceID)
+			defer release()
+		}
+	}
+
 	readErrCh := make(chan error, 1)
 	go func() {
 		for {
@@ -118,6 +129,9 @@ func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if err := h.sendOutput(ctx, conn, chunk); err != nil {
 				return
 			}
+		case <-revokeCh:
+			conn.Close(websocket.StatusNormalClosure, "revoked")
+			return
 		}
 	}
 }
