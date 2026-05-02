@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/novshi-tech/boid/internal/api/auth"
 )
 
 type fakeRuntimeSubscriber struct {
@@ -145,6 +146,53 @@ func TestJobLogSSEHandler_SnapshotFirst(t *testing.T) {
 	}
 	if first != "initial line" {
 		t.Errorf("first SSE event = %q, want %q", first, "initial line")
+	}
+}
+
+func TestJobLogSSEHandler_RevokeClosesSSE(t *testing.T) {
+	ch := make(chan []byte) // never sends
+	sub := &fakeRuntimeSubscriber{
+		ch:           ch,
+		cancelCalled: make(chan struct{}, 1),
+		ok:           true,
+	}
+	reg := auth.NewConnectionRegistry()
+
+	r := chi.NewRouter()
+	r.Get("/{id}/log", func(w http.ResponseWriter, req *http.Request) {
+		ctx := auth.WithDeviceID(req.Context(), "sse-revoke-device")
+		h := &JobLogSSEHandler{Subscriber: sub, Registry: reg}
+		h.ServeHTTP(w, req.WithContext(ctx))
+	})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/job-revoke/log?follow=true", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	// Give the handler time to register.
+	time.Sleep(50 * time.Millisecond)
+	reg.RevokeDevice("sse-revoke-device")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 1)
+		resp.Body.Read(buf) //nolint:errcheck
+	}()
+
+	select {
+	case <-done:
+		// handler exited after revoke
+	case <-time.After(3 * time.Second):
+		t.Fatal("JobLogSSE handler did not return after RevokeDevice")
 	}
 }
 

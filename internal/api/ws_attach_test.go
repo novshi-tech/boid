@@ -15,6 +15,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/go-chi/chi/v5"
+	"github.com/novshi-tech/boid/internal/api/auth"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 )
 
@@ -274,6 +275,37 @@ func TestWSAttachHandler_AlreadyFinished_ExitsImmediately(t *testing.T) {
 	msg = readWSMsg(t, conn)
 	if msg.Type != "exit" {
 		t.Fatalf("expected exit, got %q", msg.Type)
+	}
+}
+
+func TestWSAttachHandler_RevokeClosesWS(t *testing.T) {
+	ch := make(chan []byte)
+	sub := &stubSubscriber{ch: ch, ok: true}
+	reg := auth.NewConnectionRegistry()
+
+	// Inject deviceID into request context via a middleware wrapper.
+	r := chi.NewRouter()
+	r.Get("/api/jobs/{id}/attach/ws", func(w http.ResponseWriter, req *http.Request) {
+		ctx := auth.WithDeviceID(req.Context(), "ws-revoke-device")
+		h := &WSAttachHandler{Subscriber: sub, Registry: reg}
+		h.ServeHTTP(w, req.WithContext(ctx))
+	})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	conn := dialWS(t, srv, "job-revoke")
+	defer conn.CloseNow()
+
+	// Give the handler time to register with the registry.
+	time.Sleep(50 * time.Millisecond)
+	reg.RevokeDevice("ws-revoke-device")
+
+	// The connection should be closed by the server; Read should return an error.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, _, err := conn.Read(ctx)
+	if err == nil {
+		t.Fatal("expected connection to be closed after RevokeDevice, but Read succeeded")
 	}
 }
 

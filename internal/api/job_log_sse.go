@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/novshi-tech/boid/internal/api/auth"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 )
 
@@ -14,6 +15,7 @@ import (
 // GET /{id}/log?follow=true.
 type JobLogSSEHandler struct {
 	Subscriber dispatcher.RuntimeSubscriber
+	Registry   *auth.ConnectionRegistry
 }
 
 func (h *JobLogSSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -57,6 +59,15 @@ func (h *JobLogSSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var revokeCh <-chan struct{}
+	if h.Registry != nil {
+		if deviceID, ok := auth.DeviceIDFromContext(r.Context()); ok {
+			var release func()
+			revokeCh, release = h.Registry.Register(deviceID)
+			defer release()
+		}
+	}
+
 	for {
 		select {
 		case <-r.Context().Done():
@@ -66,6 +77,8 @@ func (h *JobLogSSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			sendLines(chunk)
+		case <-revokeCh:
+			return
 		}
 	}
 }

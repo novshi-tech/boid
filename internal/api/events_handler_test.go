@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/novshi-tech/boid/internal/api/auth"
 )
 
 func newTestEventsRouter(hub *TaskEventHub) http.Handler {
@@ -124,6 +125,53 @@ func TestTaskEvents_ContextCancelUnsubscribes(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Error("subscriber not removed from hub after context cancel")
+}
+
+// TestTaskEvents_RevokeClosesSSE verifies that revoking the device causes the
+// SSE handler to return even while the hub subscription is still active.
+func TestTaskEvents_RevokeClosesSSE(t *testing.T) {
+	hub := NewTaskEventHub()
+	reg := auth.NewConnectionRegistry()
+	h := &WebHandler{Hub: hub, Registry: reg}
+
+	// Middleware is bypassed; inject deviceID directly into the request context.
+	r := chi.NewRouter()
+	r.Get("/api/tasks/{id}/events", func(w http.ResponseWriter, r *http.Request) {
+		ctx := auth.WithDeviceID(r.Context(), "device-revoke-test")
+		h.TaskEvents(w, r.WithContext(ctx))
+	})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/tasks/task-revoke/events", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Confirm the connection is open by reading the first ping or event.
+	// Then revoke the device and verify the body closes.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 1)
+		resp.Body.Read(buf) //nolint:errcheck — just wait for any byte or EOF
+	}()
+
+	// Give the handler time to register with the registry.
+	time.Sleep(50 * time.Millisecond)
+	reg.RevokeDevice("device-revoke-test")
+
+	select {
+	case <-done:
+		// handler exited after revoke
+	case <-time.After(3 * time.Second):
+		t.Fatal("SSE handler did not return after RevokeDevice")
+	}
 }
 
 // TestTaskEvents_NoHub returns 503 when Hub is nil.
