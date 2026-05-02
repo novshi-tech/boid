@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -305,7 +306,7 @@ type TaskAppService struct {
 // typically exec a user-configured command. nil-safe at the call site:
 // TaskAppService.NotifyTask returns an error when Notify is unset.
 type Notifier interface {
-	Notify(ctx context.Context, taskID, projectID, message string) error
+	Notify(ctx context.Context, ev notify.Event) error
 }
 
 // enrichJob fills WorkspacePath from RuntimesDir and the job's RuntimeID.
@@ -574,7 +575,19 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message string)
 	if err != nil {
 		return &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
-	if err := s.Notify.Notify(ctx, taskID, task.ProjectID, message); err != nil {
+	ev := notify.Event{
+		TaskID:    taskID,
+		TaskTitle: task.Title,
+		ProjectID: task.ProjectID,
+		Message:   message,
+	}
+	// Project name is best-effort: omit silently if Projects lookup fails or is unwired.
+	if s.Projects != nil {
+		if proj, lookupErr := s.Projects.GetProject(task.ProjectID); lookupErr == nil && proj != nil {
+			ev.ProjectName = proj.Meta.Name
+		}
+	}
+	if err := s.Notify.Notify(ctx, ev); err != nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 	return nil
