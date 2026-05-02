@@ -20,8 +20,6 @@ require (
 	rsc.io/qr v0.2.0
 )
 
-replace github.com/coder/websocket => ./internal/vendor/websocket
-
 require (
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
