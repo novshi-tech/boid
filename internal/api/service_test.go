@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -186,6 +187,73 @@ func TestCompleteJob_JobFailed_RecordsFromToStatus(t *testing.T) {
 	}
 	if tx.createdAction.ToStatus != orchestrator.TaskStatusAborted {
 		t.Fatalf("action.ToStatus = %q, want %q", tx.createdAction.ToStatus, orchestrator.TaskStatusAborted)
+	}
+}
+
+// TestCompleteJobIdempotency verifies that a second call to CompleteJob for a
+// terminal job returns the existing job without re-firing lifecycle events.
+func TestCompleteJobIdempotency(t *testing.T) {
+	job := &Job{
+		ID:        "job-idem",
+		TaskID:    "task-idem",
+		ProjectID: "proj-idem",
+		Status:    JobStatusCompleted, // already terminal
+		ExitCode:  0,
+	}
+	lifecycle := &stubLifecycle{}
+	jobs := &stubJobStore{job: job}
+	svc := &TaskWorkflowService{
+		Jobs:      jobs,
+		Lifecycle: lifecycle,
+	}
+
+	got, err := svc.CompleteJob(t.Context(), job.ID, JobDoneRequest{ExitCode: 0, Output: "second call"})
+	if err != nil {
+		t.Fatalf("CompleteJob() error = %v", err)
+	}
+	if got.Status != JobStatusCompleted {
+		t.Fatalf("job status = %q, want %q", got.Status, JobStatusCompleted)
+	}
+	// DB must not be touched again.
+	if jobs.updateCalls != 0 {
+		t.Fatalf("UpdateJob calls = %d, want 0 (idempotent)", jobs.updateCalls)
+	}
+	// Lifecycle must not be re-fired.
+	if lifecycle.completedJobID != "" {
+		t.Fatalf("CompleteJob lifecycle called with %q, want empty (no re-fire)", lifecycle.completedJobID)
+	}
+}
+
+// TestCompleteJobStopsRuntime verifies that CompleteJob sends a StopJobRuntime
+// signal when the job has a RuntimeID set.
+func TestCompleteJobStopsRuntime(t *testing.T) {
+	job := &Job{
+		ID:        "job-rt",
+		TaskID:    "task-rt",
+		ProjectID: "proj-rt",
+		Status:    JobStatusRunning,
+		RuntimeID: "runtime-abc",
+	}
+	lifecycle := &stubLifecycle{}
+	jobs := &stubJobStore{job: job}
+	svc := &TaskWorkflowService{
+		Jobs:      jobs,
+		Meta:      stubMetaStore{meta: &orchestrator.ProjectMeta{}},
+		Lifecycle: lifecycle,
+	}
+
+	_, err := svc.CompleteJob(t.Context(), job.ID, JobDoneRequest{ExitCode: 0})
+	if err != nil {
+		t.Fatalf("CompleteJob() error = %v", err)
+	}
+	// Give the goroutine a moment to run.
+	deadline := 100 * time.Millisecond
+	start := time.Now()
+	for lifecycle.stoppedRuntimeID == "" && time.Since(start) < deadline {
+		time.Sleep(time.Millisecond)
+	}
+	if lifecycle.stoppedRuntimeID != job.RuntimeID {
+		t.Fatalf("StopJobRuntime called with %q, want %q", lifecycle.stoppedRuntimeID, job.RuntimeID)
 	}
 }
 
@@ -1323,6 +1391,7 @@ type stubLifecycle struct {
 	completedJobID    string
 	unregisteredJobID string
 	cleanupTaskID     string
+	stoppedRuntimeID  string
 	result            JobCompletion
 }
 
@@ -1337,6 +1406,10 @@ func (l *stubLifecycle) UnregisterJob(jobID string) {
 
 func (l *stubLifecycle) CleanupTaskWindow(taskID string) {
 	l.cleanupTaskID = taskID
+}
+
+func (l *stubLifecycle) StopJobRuntime(runtimeID string) {
+	l.stoppedRuntimeID = runtimeID
 }
 
 func TestDuplicateTask_CopiesFields(t *testing.T) {

@@ -40,6 +40,7 @@ type JobLifecycle interface {
 	CompleteJob(jobID string, result JobCompletion)
 	UnregisterJob(jobID string)
 	CleanupTaskWindow(taskID string)
+	StopJobRuntime(runtimeID string)
 }
 
 type BrokerRegistry interface {
