@@ -35,6 +35,10 @@ done ─────────┘
 instructions の指示に従って作業する。
 
 - 指示に従って作業し正常終了 (exit 0) すれば、 hook trap が `boid job done` を発火して状態機械が進める
+- plan agent が全子の完了を見届けた場合など、 早期に session を閉じたい場合は明示的に呼び出せる:
+  `boid job done "$BOID_JOB_ID" --exit-code 0`
+  これを呼ぶとデーモンがプロセスに SIGTERM を送り session が終了する。
+  その後 bash EXIT trap が再度 `boid job done` を発火するが、デーモン側で二重発火を吸収する。
 - 修正不可能なエラーに遭遇した場合は abort で打ち切る:
   `boid task abort <task_id> --code <reason> --message "<summary>"`
 

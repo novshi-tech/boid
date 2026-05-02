@@ -78,6 +78,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		env = map[string]string{}
 	}
 	setIfNonEmpty(env, "BOID_TASK_ID", spec.TaskID)
+	setIfNonEmpty(env, "BOID_JOB_ID", rt.JobID)
 	if inst := spec.Instruction; inst != nil {
 		setIfNonEmpty(env, "BOID_MODEL", inst.Model)
 		env["BOID_INVOKED_ROLE"] = inst.Role
@@ -165,7 +166,6 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 			Type:   sandbox.MountBind,
 			IsFile: true,
 		})
-		env["BOID_JOB_ID"] = rt.JobID
 		env["BOID_SOCKET"] = "/run/boid/server.sock"
 	}
 

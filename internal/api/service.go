@@ -1259,6 +1259,12 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
 
+	// Idempotency: a second CompleteJob call (e.g. EXIT trap after agent-driven
+	// SIGTERM) must not corrupt the already-terminal job or re-fire lifecycle events.
+	if job.Status == JobStatusCompleted || job.Status == JobStatusFailed {
+		return job, nil
+	}
+
 	if req.ExitCode == 0 {
 		job.Status = JobStatusCompleted
 	} else {
@@ -1282,6 +1288,16 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 	defer finalize()
+
+	// Stop the runtime so the agent process receives SIGTERM immediately after
+	// calling `boid job done` explicitly, rather than waiting for natural bash
+	// exit. The EXIT trap that fires afterward is absorbed by the idempotency
+	// guard above. A no-op when RuntimeID is unset or the process has already
+	// exited (LocalRuntime.Stop handles that gracefully).
+	if job.RuntimeID != "" && s.Lifecycle != nil {
+		runtimeID := job.RuntimeID
+		go s.Lifecycle.StopJobRuntime(runtimeID)
+	}
 
 	// Successful job completion: no state transition here.
 	// The runDispatchLoop (hooks → gates → auto-advance) is responsible for

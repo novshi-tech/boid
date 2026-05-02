@@ -469,6 +469,17 @@ func cleanupSandboxArtifacts(prepared *PreparedSandbox) {
 	}
 }
 
+// StopJobRuntime stops the runtime identified by runtimeID.
+// It is a best-effort operation: errors are logged at debug level only.
+func (r *Runner) StopJobRuntime(runtimeID string) {
+	if r.Runtime == nil || runtimeID == "" {
+		return
+	}
+	if err := r.Runtime.Stop(context.Background(), runtimeID); err != nil {
+		slog.Debug("stop job runtime", "runtime_id", runtimeID, "error", err)
+	}
+}
+
 // CleanupTaskWindow stops all tracked runtimes associated with a task.
 func (r *Runner) CleanupTaskWindow(taskID string) {
 	if r.Runtime == nil {

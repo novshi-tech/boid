@@ -215,6 +215,35 @@ echo "  C. 別の案を提示"
 - **判断分岐** (どの方針で進めるか) と **事前承認** (plan 全体を流す前) のために呼ぶ
 - 「ユーザが見ない限り進めない」 状態に達した時点で 1 回呼ぶ
 
+## 自律終了して良い条件
+
+plan agent は「全子が done / aborted に達した」だけでは自動終了しない。 `boid job done $BOID_JOB_ID --exit-code 0` を明示的に呼んで session を閉じること。
+
+### 自律モード (`BOID_INTERACTIVE` が未設定 / 0)
+
+全子が `done` / `aborted` に達したら即座に自律終了する:
+
+```bash
+boid job done "$BOID_JOB_ID" --exit-code 0
+```
+
+### interactive モード (`BOID_INTERACTIVE=1`)
+
+以下を **全て** 満たす場合のみ自律終了する。一つでも欠ければ session を保ってユーザに `/exit` を任せる。
+
+1. 全子が `done` / `aborted` で、次の supervisor 作業がない
+2. 直前のユーザ発言が「ok」「了解」「ありがとう」等の終結応答であり、新たな依頼・質問でない
+3. 未応答の notify (ユーザがまだ返信していない) がない
+4. 自分の最後の発言が完了報告で、ユーザが追問する余地が小さい
+
+迷ったら自律終了しない。
+
+### EXIT trap との関係
+
+`boid job done` を呼ぶとデーモンがプロセスに SIGTERM を送る。
+bash が SIGTERM で終了すると EXIT trap が再度 `boid job done` を発火するが、
+デーモン側で二重発火を吸収するので二重処理は起きない。
+
 ## hard cap (暴走防止)
 
 supervisor が無限に子を生成しないよう、 自分の判断で上限を設けて守ること:

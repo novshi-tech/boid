@@ -317,6 +317,10 @@ func (a jobLifecycleAdapter) CleanupTaskWindow(taskID string) {
 	a.runner.CleanupTaskWindow(taskID)
 }
 
+func (a jobLifecycleAdapter) StopJobRuntime(runtimeID string) {
+	a.runner.StopJobRuntime(runtimeID)
+}
+
 // hubJobEventSink lets the dispatcher runner push job-created events into
 // the web SSE hub. Kept tiny — it only exists to decouple dispatcher from
 // internal/api imports while letting the timeline refresh live.
