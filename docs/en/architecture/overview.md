@@ -176,7 +176,7 @@ What happens when a user runs `boid action send --task <id> --type start`:
 3. **State machine:** `orchestrator.StateMachine.ApplyAction` evaluates the `start` rule and returns `pending → executing`.
 4. **Persistence:** the new status and lifecycle are written to SQLite.
 5. **Dispatch loop:** `runDispatchLoop` kicks in and calls `Coordinator.DispatchAndAdvance`.
-6. **Hook selection:** `Evaluator` picks the hooks declared `on: [executing]` from the kit metadata.
+6. **Hook selection:** `Evaluator` picks the hooks bound to this behavior in the kit metadata. Hooks always fire while the task is in `executing`.
 7. **Execution:** dispatcher assembles the sandbox plan and calls `sandbox.Broker.RunJob` to launch the hook script.
 8. **Payload merge:** the hook's stdout is parsed as JSON and the `payload_patch` is merged into the payload.
 9. **Auto-transition:** the state machine re-evaluates; any matching auto-transition fires another round.

@@ -78,7 +78,10 @@ Creating, observing, and updating tasks lives under `boid task`. See [Concepts /
 | `boid task duplicate <source_id> [--auto-start]` | Duplicate an existing task. |
 | `boid task reopen <id> [--message MSG]` | Return a `done` task to `executing`, appending the `--message` text as a new entry on `Task.Instructions` (e.g. when auto-merge hits a conflict). |
 | `boid task rerun <id> [--auto-start] [--instructions-file FILE]` | Reset a `done` / `aborted` task to `pending` and re-run it under the same ID. |
+| `boid task notify <id> --message MSG` | Send a notification to the user from an agent. Invokes `notify.command` from `~/.config/boid/config.yaml`. Used in `boid-plan` supervisor mode to request user approval or escalate when a hard cap is reached. |
 | `boid task import [-f FILE] [--project ID] [--datasource ID]` | Bulk import tasks from JSONL. |
+
+The notify script receives: `BOID_TASK_ID`, `BOID_TASK_TITLE`, `BOID_PROJECT_ID`, `BOID_PROJECT_NAME`, `BOID_MESSAGE`, `BOID_TASK_URL` (set only when `web.public_url` is configured).
 
 ### `task create` input
 
@@ -110,7 +113,6 @@ Pass `behavior_spec` to specify the behavior inline instead of referencing a nam
 | Command | Role |
 |---|---|
 | `boid task artifacts <id>` | Pretty-print `payload.artifact`. |
-| `boid task findings <id>` | (legacy) Pretty-print any `verification.findings` left over from the older schema. With the new state model, agents abort directly on fatal errors, so this is rarely useful. |
 | `boid task tree [<id>]` | Show the parent/child task tree. |
 
 ## Action
