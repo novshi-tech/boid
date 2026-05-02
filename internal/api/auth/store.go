@@ -9,9 +9,10 @@ import (
 )
 
 var (
-	ErrCodeNotFound = errors.New("pairing code not found")
-	ErrCodeExpired  = errors.New("pairing code expired")
-	ErrCodeConsumed = errors.New("pairing code already consumed")
+	ErrCodeNotFound   = errors.New("pairing code not found")
+	ErrCodeExpired    = errors.New("pairing code expired")
+	ErrCodeConsumed   = errors.New("pairing code already consumed")
+	ErrDeviceNotFound = errors.New("device not found")
 )
 
 type Device struct {
@@ -151,12 +152,29 @@ func (s *Store) ListDevices(ctx context.Context) ([]*Device, error) {
 }
 
 func (s *Store) RevokeDevice(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx,
+	res, err := s.db.ExecContext(ctx,
 		`UPDATE web_devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`,
 		time.Now().UTC(), id,
 	)
 	if err != nil {
 		return fmt.Errorf("revoke device: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("revoke device rows affected: %w", err)
+	}
+	if n == 0 {
+		// Distinguish "device does not exist" from "device exists but already revoked"
+		// so that callers (CLI) can surface the missing-id error instead of silently succeeding.
+		var exists bool
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM web_devices WHERE id = ?)`, id,
+		).Scan(&exists); err != nil {
+			return fmt.Errorf("revoke device exists check: %w", err)
+		}
+		if !exists {
+			return ErrDeviceNotFound
+		}
 	}
 	return nil
 }

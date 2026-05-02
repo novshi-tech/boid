@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -135,11 +136,40 @@ func runWebDevices(cmd *cobra.Command, args []string) error {
 
 func runWebRevoke(cmd *cobra.Command, args []string) error {
 	c := client.NewUnixClient(client.DefaultSocketPath())
-	if err := c.Do("DELETE", "/api/web/devices/"+args[0], nil, nil); err != nil {
+	id, err := resolveDeviceID(c, args[0])
+	if err != nil {
+		return err
+	}
+	if err := c.Do("DELETE", "/api/web/devices/"+id, nil, nil); err != nil {
 		return fmt.Errorf("revoke device: %w", err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "revoked: %s\n", args[0])
+	fmt.Fprintf(cmd.OutOrStdout(), "revoked: %s\n", id)
 	return nil
+}
+
+// resolveDeviceID accepts either a full device UUID or a unique prefix
+// (matching what `boid web devices` displays) and resolves it to the full ID
+// by listing devices and finding a unique prefix match.
+func resolveDeviceID(c *client.Client, idOrPrefix string) (string, error) {
+	var devices []webauth.DeviceInfo
+	if err := c.Do("GET", "/api/web/devices", nil, &devices); err != nil {
+		return "", fmt.Errorf("list devices: %w", err)
+	}
+	var matches []string
+	for _, d := range devices {
+		if strings.HasPrefix(d.ID, idOrPrefix) {
+			matches = append(matches, d.ID)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("no device with id or prefix %q (run 'boid web devices' to list)", idOrPrefix)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("prefix %q is ambiguous (matches %d devices: %s)",
+			idOrPrefix, len(matches), strings.Join(matches, ", "))
+	}
 }
 
 func runWebRevokeAll(cmd *cobra.Command, args []string) error {

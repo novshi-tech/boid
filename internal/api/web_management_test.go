@@ -102,6 +102,41 @@ func TestWebManagementHandler_GetDevices_ExcludesRevoked(t *testing.T) {
 	}
 }
 
+func TestWebManagementHandler_DeleteDevice_NotFoundReturns404(t *testing.T) {
+	store := newTestAuthStore(t)
+	h := &WebManagementHandler{Store: store}
+
+	req := httptest.NewRequest(http.MethodDelete, "/devices/no-such", nil)
+	// chi URLParam needs a routed request — exercise via the full router.
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("DeleteDevice on missing id: status = %d, want 404", w.Code)
+	}
+}
+
+func TestWebManagementHandler_DeleteDevice_AlreadyRevokedReturns204(t *testing.T) {
+	store := newTestAuthStore(t)
+	ctx := context.Background()
+
+	if err := store.InsertDevice(ctx, "dev-y", "", []byte("h")); err != nil {
+		t.Fatalf("InsertDevice: %v", err)
+	}
+	if err := store.RevokeDevice(ctx, "dev-y"); err != nil {
+		t.Fatalf("RevokeDevice: %v", err)
+	}
+
+	h := &WebManagementHandler{Store: store}
+	req := httptest.NewRequest(http.MethodDelete, "/devices/dev-y", nil)
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("DeleteDevice on already-revoked id: status = %d, want 204", w.Code)
+	}
+}
+
 func TestWebManagementHandler_DeleteAllDevices_DevicesDisappear(t *testing.T) {
 	store := newTestAuthStore(t)
 	ctx := context.Background()

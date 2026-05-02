@@ -142,6 +142,31 @@ func TestGetDevice_RevokedReturnsNil(t *testing.T) {
 	}
 }
 
+func TestRevokeDevice_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.RevokeDevice(ctx, "no-such-id"); err != ErrDeviceNotFound {
+		t.Errorf("RevokeDevice on missing id: got %v, want ErrDeviceNotFound", err)
+	}
+}
+
+func TestRevokeDevice_AlreadyRevokedIsIdempotent(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.InsertDevice(ctx, "dev-x", "", []byte("h")); err != nil {
+		t.Fatalf("InsertDevice: %v", err)
+	}
+	if err := s.RevokeDevice(ctx, "dev-x"); err != nil {
+		t.Fatalf("first revoke: %v", err)
+	}
+	// Second revoke on the same id must succeed as a no-op (device exists, just already revoked).
+	if err := s.RevokeDevice(ctx, "dev-x"); err != nil {
+		t.Errorf("second revoke: got %v, want nil (idempotent)", err)
+	}
+}
+
 func TestUpdateDeviceLastSeen(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
