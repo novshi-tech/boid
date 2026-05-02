@@ -120,24 +120,24 @@ func resolveMessage(inst Instruction, instType InstructionType) string {
 }
 
 // FilterInstructions returns the active routed instruction for the given
-// consumer. Only the most recent entry in the history is considered (older
+// agent. Only the most recent entry in the history is considered (older
 // entries are kept for audit but do not drive dispatch). Returns nil when
-// type/consumer is empty or the active entry does not match.
-func FilterInstructions(instructions Instructions, instType InstructionType, consumer string) []RoutedInstruction {
-	if instType == "" || consumer == "" || len(instructions) == 0 {
+// type/agent is empty or the active entry does not match.
+func FilterInstructions(instructions Instructions, instType InstructionType, agent string) []RoutedInstruction {
+	if instType == "" || agent == "" || len(instructions) == 0 {
 		return nil
 	}
 	active := instructions[len(instructions)-1]
 	if active.Type != "" && active.Type != instType {
 		return nil
 	}
-	if active.Consumer != consumer {
+	if active.Agent != agent {
 		return nil
 	}
 	return []RoutedInstruction{{
 		Role:        active.Name,
 		Type:        instType,
-		Consumer:    active.Consumer,
+		Agent:       active.Agent,
 		Name:        active.Name,
 		Message:     resolveMessage(active, instType),
 		Interactive: active.Interactive,

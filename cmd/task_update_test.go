@@ -139,7 +139,7 @@ func TestRunTaskUpdate_UpdatesInstructionsFromFile(t *testing.T) {
 
 	instructionsYAML := `main:
   type: execution
-  consumer: claude-code
+  agent: claude-code
   message: "do the thing"
   model: opus-4-7
 `
@@ -197,7 +197,7 @@ func TestRunTaskUpdate_InstructionsFromStdin(t *testing.T) {
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
 
 	cmd := newTaskUpdateCmd(t)
-	cmd.SetIn(strings.NewReader(`{"reviewer":{"type":"verification","consumer":"codex","message":"review"}}`))
+	cmd.SetIn(strings.NewReader(`{"reviewer":{"type":"verification","agent":"codex","message":"review"}}`))
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	if err := cmd.Flags().Set("instructions-file", "-"); err != nil {

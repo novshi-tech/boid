@@ -206,6 +206,56 @@ func TestApplyIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestMigration0023_RenamesConsumerToAgent(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	// Apply all migrations up to but not including 0023.
+	// We do this by applying all migrations first to get the schema, then
+	// manually inserting a task with the old "consumer" key format.
+	if err := Apply(d.Conn); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+
+	if _, err = d.Conn.Exec(
+		`INSERT INTO projects (id, work_dir) VALUES ('p1', '/tmp/p1')`,
+	); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+
+	// Insert a task with old-format instructions containing "consumer":
+	oldInstructions := `[{"type":"execution","consumer":"claude-code","message":"do it"}]`
+	_, err = d.Conn.Exec(
+		`INSERT INTO tasks (id, project_id, title, status, behavior, payload, instructions)
+		 VALUES ('t1', 'p1', 'test', 'pending', 'dev', '{}', ?)`,
+		oldInstructions,
+	)
+	if err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+
+	// Re-run the migration (should apply it to the newly inserted row).
+	// Since the migration was already recorded, we need to run it directly.
+	if _, err := d.Conn.Exec(
+		`UPDATE tasks SET instructions = replace(instructions, '"consumer":', '"agent":') WHERE instructions LIKE '%"consumer":%'`,
+	); err != nil {
+		t.Fatalf("run migration SQL: %v", err)
+	}
+
+	// Verify the instructions now use "agent" key.
+	var got string
+	if err := d.Conn.QueryRow(`SELECT instructions FROM tasks WHERE id = 't1'`).Scan(&got); err != nil {
+		t.Fatalf("query instructions: %v", err)
+	}
+	expected := `[{"type":"execution","agent":"claude-code","message":"do it"}]`
+	if got != expected {
+		t.Errorf("instructions after migration = %q, want %q", got, expected)
+	}
+}
+
 func assertVersionRecorded(t *testing.T, conn *sql.DB, version string) {
 	t.Helper()
 

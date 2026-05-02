@@ -141,7 +141,7 @@ func TestBoidBuiltinExecutor_TaskUpdate_EnforcesWorkspaceScope(t *testing.T) {
 	store := &capturingTaskStore{
 		created: []*orchestrator.Task{
 			// target-1: 既存 payload に instructions と artifact.run-agent を持つ
-			{ID: "target-1", ProjectID: "proj-1", Payload: []byte(`{"instructions":{"main":{"consumer":"claude-code"}},"artifact.run-agent":{"commit":"abc","branch":"boid/target"}}`)},
+			{ID: "target-1", ProjectID: "proj-1", Payload: []byte(`{"instructions":{"main":{"agent":"claude-code"}},"artifact.run-agent":{"commit":"abc","branch":"boid/target"}}`)},
 			{ID: "peer-1", ProjectID: "proj-2", Payload: []byte(`{}`)},
 			{ID: "foreign-1", ProjectID: "proj-3", Payload: []byte(`{}`)},
 		},

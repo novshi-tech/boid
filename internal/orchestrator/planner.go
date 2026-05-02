@@ -46,8 +46,8 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 	payload := FilterPayloadByTraits(task.Payload, event.Hook.Traits.Consumes)
 
 	// 1 hook = 1 routed instruction. If multiple candidates match (same phase
-	// and consumer), take the first after filtering.
-	instruction := selectInstruction(task, event.Hook.Consumer)
+	// and agent), take the first after filtering.
+	instruction := selectInstruction(task, event.Hook.Agent)
 
 	spec := &JobSpec{
 		TaskID:       event.TaskID,
@@ -212,9 +212,9 @@ func (p *DispatchPlanner) loadContext(projectID, taskID string) (*ProjectMeta, *
 	return meta, proj, task, nil
 }
 
-func selectInstruction(task *Task, consumer string) *RoutedInstruction {
+func selectInstruction(task *Task, agent string) *RoutedInstruction {
 	instType := InstructionTypeForStatus(task.Status)
-	routed := FilterInstructions(task.Instructions, instType, consumer)
+	routed := FilterInstructions(task.Instructions, instType, agent)
 	if len(routed) == 0 {
 		return nil
 	}

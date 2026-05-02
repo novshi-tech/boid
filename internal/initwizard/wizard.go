@@ -28,7 +28,7 @@ type KitInfo struct {
 type ScaffoldTemplateData struct {
 	ProjectID   string
 	ProjectName string
-	Consumer    string
+	Agent       string
 }
 
 // Wizard runs the interactive project initialization flow.
@@ -143,8 +143,8 @@ func (w *Wizard) Run(projectDir string) error {
 	// [4] Select behavior kit
 	selectedBehaviorKit := w.selectBehaviorKit(scanner, behaviorKits)
 
-	// [4.5] Select consumer from selected project-scope kits that provide one
-	consumer := w.selectConsumer(scanner, selectedProjectKits)
+	// [4.5] Select agent from selected project-scope kits that provide one
+	agent := w.selectAgent(scanner, selectedProjectKits)
 
 	// Build metadata list for validation
 	var selectedKitMetas []orchestrator.KitMeta
@@ -181,7 +181,7 @@ func (w *Wizard) Run(projectDir string) error {
 	tplData := ScaffoldTemplateData{
 		ProjectID:   projectID,
 		ProjectName: name,
-		Consumer:    consumer,
+		Agent:       agent,
 	}
 
 	var taskBehaviors map[string]any
@@ -350,40 +350,40 @@ func (w *Wizard) selectBehaviorKit(scanner *bufio.Scanner, kits []KitInfo) *KitI
 	return &kits[n-1]
 }
 
-func (w *Wizard) selectConsumer(scanner *bufio.Scanner, kits []KitInfo) string {
-	var consumerKits []KitInfo
+func (w *Wizard) selectAgent(scanner *bufio.Scanner, kits []KitInfo) string {
+	var agentKits []KitInfo
 	for _, ki := range kits {
-		if ki.Meta.ProvidesConsumer != "" {
-			consumerKits = append(consumerKits, ki)
+		if ki.Meta.ProvidesAgent != "" {
+			agentKits = append(agentKits, ki)
 		}
 	}
 
-	switch len(consumerKits) {
+	switch len(agentKits) {
 	case 0:
 		return ""
 	case 1:
-		name := consumerKits[0].Meta.ProvidesConsumer
-		fmt.Fprintf(w.Out, "\nUsing consumer: %s\n", name)
+		name := agentKits[0].Meta.ProvidesAgent
+		fmt.Fprintf(w.Out, "\nUsing agent: %s\n", name)
 		return name
 	default:
-		fmt.Fprintln(w.Out, "\nSelect default AI agent (consumer):")
-		for i, ki := range consumerKits {
-			fmt.Fprintf(w.Out, "  %d. %s\n", i+1, ki.Meta.ProvidesConsumer)
+		fmt.Fprintln(w.Out, "\nSelect default AI agent:")
+		for i, ki := range agentKits {
+			fmt.Fprintf(w.Out, "  %d. %s\n", i+1, ki.Meta.ProvidesAgent)
 		}
 		fmt.Fprint(w.Out, "Choice [1]: ")
 
 		if !scanner.Scan() {
-			return consumerKits[0].Meta.ProvidesConsumer
+			return agentKits[0].Meta.ProvidesAgent
 		}
 		input := strings.TrimSpace(scanner.Text())
 		if input == "" {
-			return consumerKits[0].Meta.ProvidesConsumer
+			return agentKits[0].Meta.ProvidesAgent
 		}
 		n, err := strconv.Atoi(input)
-		if err != nil || n < 1 || n > len(consumerKits) {
-			return consumerKits[0].Meta.ProvidesConsumer
+		if err != nil || n < 1 || n > len(agentKits) {
+			return agentKits[0].Meta.ProvidesAgent
 		}
-		return consumerKits[n-1].Meta.ProvidesConsumer
+		return agentKits[n-1].Meta.ProvidesAgent
 	}
 }
 

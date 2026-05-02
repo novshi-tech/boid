@@ -24,7 +24,7 @@ task_behaviors:
       - github.com/novshi-tech/boid-kits/github-auto-merge
     default_instruction:
       type: execution
-      consumer: claude-code
+      agent: claude-code
       model: sonnet
       message: |
           task.yaml の title と description に記述された内容を実装せよ。
@@ -42,7 +42,7 @@ task_behaviors:
       - github.com/novshi-tech/boid-kits/boid-tasks
     default_instruction:
       type: execution
-      consumer: claude-code
+      agent: claude-code
       model: opus
       interactive: true
       message: |

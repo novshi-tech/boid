@@ -57,9 +57,9 @@ func TestExpandScaffoldTemplate_Basic(t *testing.T) {
 	}
 }
 
-func TestExpandScaffoldTemplate_WithConsumer(t *testing.T) {
+func TestExpandScaffoldTemplate_WithAgent(t *testing.T) {
 	kitDir := t.TempDir()
-	tplContent := "dev:\n  consumer: {{.Consumer}}\n"
+	tplContent := "dev:\n  agent: {{.Agent}}\n"
 	if err := os.WriteFile(filepath.Join(kitDir, "behaviors.tmpl"), []byte(tplContent), 0o644); err != nil {
 		t.Fatalf("write template: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestExpandScaffoldTemplate_WithConsumer(t *testing.T) {
 	data := initwizard.ScaffoldTemplateData{
 		ProjectID:   "abc-123",
 		ProjectName: "My Project",
-		Consumer:    "claude-code",
+		Agent:       "claude-code",
 	}
 
 	result, err := initwizard.ExpandScaffoldTemplate(kitDir, "behaviors.tmpl", data)
@@ -83,8 +83,8 @@ func TestExpandScaffoldTemplate_WithConsumer(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected dev to be map, got %T", devVal)
 	}
-	if devMap["consumer"] != "claude-code" {
-		t.Errorf("consumer = %v, want 'claude-code'", devMap["consumer"])
+	if devMap["agent"] != "claude-code" {
+		t.Errorf("agent = %v, want 'claude-code'", devMap["agent"])
 	}
 }
 
@@ -540,8 +540,8 @@ func mapKeys[K comparable, V any](m map[K]V) []K {
 	return keys
 }
 
-// createFakeKitWithConsumer creates a feature kit (no scaffold) with provides_consumer set.
-func createFakeKitWithConsumer(t *testing.T, kitsDir, ref, name, detectMarker, consumer string) {
+// createFakeKitWithAgent creates a feature kit (no scaffold) with provides_agent set.
+func createFakeKitWithAgent(t *testing.T, kitsDir, ref, name, detectMarker, agent string) {
 	t.Helper()
 	kitDir := filepath.Join(kitsDir, ref)
 	if err := os.MkdirAll(kitDir, 0o755); err != nil {
@@ -559,8 +559,8 @@ func createFakeKitWithConsumer(t *testing.T, kitsDir, ref, name, detectMarker, c
 		}
 		sb.WriteString("detect:\n  script: detect.sh\n")
 	}
-	if consumer != "" {
-		sb.WriteString("provides_consumer: " + consumer + "\n")
+	if agent != "" {
+		sb.WriteString("provides_agent: " + agent + "\n")
 	}
 
 	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(sb.String()), 0o644); err != nil {
@@ -568,15 +568,15 @@ func createFakeKitWithConsumer(t *testing.T, kitsDir, ref, name, detectMarker, c
 	}
 }
 
-// createFakeScaffoldKitConsumerTemplate creates a behavior kit whose scaffold template
-// uses {{.Consumer}}, so tests can verify Consumer injection.
-func createFakeScaffoldKitConsumerTemplate(t *testing.T, kitsDir, ref, name string) {
+// createFakeScaffoldKitAgentTemplate creates a behavior kit whose scaffold template
+// uses {{.Agent}}, so tests can verify Agent injection.
+func createFakeScaffoldKitAgentTemplate(t *testing.T, kitsDir, ref, name string) {
 	t.Helper()
 	kitDir := filepath.Join(kitsDir, ref)
 	if err := os.MkdirAll(kitDir, 0o755); err != nil {
 		t.Fatalf("mkdir kit: %v", err)
 	}
-	tpl := "dev:\n  consumer: {{.Consumer}}\n"
+	tpl := "dev:\n  agent: {{.Agent}}\n"
 	if err := os.WriteFile(filepath.Join(kitDir, "behaviors.tmpl"), []byte(tpl), 0o644); err != nil {
 		t.Fatalf("write behaviors.tmpl: %v", err)
 	}
@@ -588,18 +588,18 @@ func createFakeScaffoldKitConsumerTemplate(t *testing.T, kitsDir, ref, name stri
 }
 
 // ---------------------------------------------------------------------------
-// Consumer selection tests
+// Agent selection tests
 // ---------------------------------------------------------------------------
 
-// TestWizardRun_ConsumerAutoSelected verifies that when exactly one feature kit
-// provides a consumer, it is auto-selected without prompting and injected into
+// TestWizardRun_AgentAutoSelected verifies that when exactly one feature kit
+// provides an agent, it is auto-selected without prompting and injected into
 // the scaffold template.
-func TestWizardRun_ConsumerAutoSelected(t *testing.T) {
+func TestWizardRun_AgentAutoSelected(t *testing.T) {
 	kitsDir := t.TempDir()
-	// Feature kit: provides_consumer, auto-detected via claude-marker.txt
-	createFakeKitWithConsumer(t, kitsDir, "github.com/test/repo/claude-kit", "claude-code-kit", "claude-marker.txt", "claude-code")
-	// Behavior kit: scaffold template uses {{.Consumer}}
-	createFakeScaffoldKitConsumerTemplate(t, kitsDir, "github.com/test/repo/dev-kit", "dev-kit")
+	// Feature kit: provides_agent, auto-detected via claude-marker.txt
+	createFakeKitWithAgent(t, kitsDir, "github.com/test/repo/claude-kit", "claude-code-kit", "claude-marker.txt", "claude-code")
+	// Behavior kit: scaffold template uses {{.Agent}}
+	createFakeScaffoldKitAgentTemplate(t, kitsDir, "github.com/test/repo/dev-kit", "dev-kit")
 	initFakeGitRepo(t, kitsDir, "github.com/test/repo")
 
 	projectDir := t.TempDir()
@@ -608,8 +608,8 @@ func TestWizardRun_ConsumerAutoSelected(t *testing.T) {
 	}
 
 	// Input: project name (default), keep kit defaults (claude-kit auto-selected), accept behavior kit (Y)
-	// Consumer: auto-selected — no additional input line needed
-	input := "consumer-project\n\nY\n"
+	// Agent: auto-selected — no additional input line needed
+	input := "agent-project\n\nY\n"
 	var out bytes.Buffer
 
 	w := &initwizard.Wizard{In: strings.NewReader(input), Out: &out, KitsDir: kitsDir}
@@ -617,12 +617,12 @@ func TestWizardRun_ConsumerAutoSelected(t *testing.T) {
 		t.Fatalf("Run: %v\nOutput:\n%s", err, out.String())
 	}
 
-	// Output should mention the consumer name
+	// Output should mention the agent name
 	if !strings.Contains(out.String(), "claude-code") {
 		t.Errorf("expected 'claude-code' in output, got:\n%s", out.String())
 	}
 
-	// Verify Consumer was injected into the scaffold template
+	// Verify Agent was injected into the scaffold template
 	data, err := os.ReadFile(filepath.Join(projectDir, ".boid", "project.yaml"))
 	if err != nil {
 		t.Fatalf("read project.yaml: %v", err)
@@ -641,20 +641,20 @@ func TestWizardRun_ConsumerAutoSelected(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected dev to be map, got %T", devBehavior)
 	}
-	if devMap["consumer"] != "claude-code" {
-		t.Errorf("consumer = %v, want 'claude-code'", devMap["consumer"])
+	if devMap["agent"] != "claude-code" {
+		t.Errorf("agent = %v, want 'claude-code'", devMap["agent"])
 	}
 }
 
-// TestWizardRun_ConsumerMenu verifies that when two feature kits provide consumers,
+// TestWizardRun_AgentMenu verifies that when two feature kits provide agents,
 // a menu is shown and the user's choice is injected into the scaffold template.
-func TestWizardRun_ConsumerMenu(t *testing.T) {
+func TestWizardRun_AgentMenu(t *testing.T) {
 	kitsDir := t.TempDir()
-	// Two feature kits with consumers (lexicographic order: kit-a-consumer < kit-b-consumer)
-	createFakeKitWithConsumer(t, kitsDir, "github.com/test/repo/kit-a-consumer", "agent-a-kit", "marker-a.txt", "agent-a")
-	createFakeKitWithConsumer(t, kitsDir, "github.com/test/repo/kit-b-consumer", "agent-b-kit", "marker-b.txt", "agent-b")
+	// Two feature kits with agents (lexicographic order: kit-a-consumer < kit-b-consumer)
+	createFakeKitWithAgent(t, kitsDir, "github.com/test/repo/kit-a-consumer", "agent-a-kit", "marker-a.txt", "agent-a")
+	createFakeKitWithAgent(t, kitsDir, "github.com/test/repo/kit-b-consumer", "agent-b-kit", "marker-b.txt", "agent-b")
 	// Behavior kit
-	createFakeScaffoldKitConsumerTemplate(t, kitsDir, "github.com/test/repo/dev-kit", "dev-kit")
+	createFakeScaffoldKitAgentTemplate(t, kitsDir, "github.com/test/repo/dev-kit", "dev-kit")
 	initFakeGitRepo(t, kitsDir, "github.com/test/repo")
 
 	projectDir := t.TempDir()
@@ -665,7 +665,7 @@ func TestWizardRun_ConsumerMenu(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Input: default name, keep kit defaults (both auto-selected), accept behavior kit, select consumer #2 (agent-b)
+	// Input: default name, keep kit defaults (both auto-selected), accept behavior kit, select agent #2 (agent-b)
 	input := "\n\nY\n2\n"
 	var out bytes.Buffer
 
@@ -674,7 +674,7 @@ func TestWizardRun_ConsumerMenu(t *testing.T) {
 		t.Fatalf("Run: %v\nOutput:\n%s", err, out.String())
 	}
 
-	// Verify consumer #2 (agent-b) was injected
+	// Verify agent #2 (agent-b) was injected
 	data, err := os.ReadFile(filepath.Join(projectDir, ".boid", "project.yaml"))
 	if err != nil {
 		t.Fatalf("read project.yaml: %v", err)
@@ -690,19 +690,19 @@ func TestWizardRun_ConsumerMenu(t *testing.T) {
 		t.Fatalf("expected 'dev' in task_behaviors")
 	}
 	devMap := devBehavior.(map[string]any)
-	if devMap["consumer"] != "agent-b" {
-		t.Errorf("consumer = %v, want 'agent-b'", devMap["consumer"])
+	if devMap["agent"] != "agent-b" {
+		t.Errorf("agent = %v, want 'agent-b'", devMap["agent"])
 	}
 }
 
-// TestWizardRun_ConsumerNone verifies that when no feature kit provides a consumer,
-// the Consumer field is empty and {{.Consumer}} renders to an empty string without error.
-func TestWizardRun_ConsumerNone(t *testing.T) {
+// TestWizardRun_AgentNone verifies that when no feature kit provides an agent,
+// the Agent field is empty and {{.Agent}} renders to an empty string without error.
+func TestWizardRun_AgentNone(t *testing.T) {
 	kitsDir := t.TempDir()
-	// Feature kit without provides_consumer
+	// Feature kit without provides_agent
 	createFakeKit(t, kitsDir, "github.com/test/repo/go-kit", "go-kit", "go.mod", false)
-	// Behavior kit with {{.Consumer}} template
-	createFakeScaffoldKitConsumerTemplate(t, kitsDir, "github.com/test/repo/dev-kit", "dev-kit")
+	// Behavior kit with {{.Agent}} template
+	createFakeScaffoldKitAgentTemplate(t, kitsDir, "github.com/test/repo/dev-kit", "dev-kit")
 	initFakeGitRepo(t, kitsDir, "github.com/test/repo")
 
 	projectDir := t.TempDir()
@@ -711,7 +711,7 @@ func TestWizardRun_ConsumerNone(t *testing.T) {
 	}
 
 	// Input: default name, keep kit defaults, accept behavior kit
-	// No consumer prompt since no consumer kits selected
+	// No agent prompt since no agent kits selected
 	input := "\n\nY\n"
 	var out bytes.Buffer
 
@@ -720,7 +720,7 @@ func TestWizardRun_ConsumerNone(t *testing.T) {
 		t.Fatalf("Run: %v\nOutput:\n%s", err, out.String())
 	}
 
-	// Verify Consumer is empty (renders to empty string, not error)
+	// Verify Agent is empty (renders to empty string, not error)
 	data, err := os.ReadFile(filepath.Join(projectDir, ".boid", "project.yaml"))
 	if err != nil {
 		t.Fatalf("read project.yaml: %v", err)
@@ -736,8 +736,8 @@ func TestWizardRun_ConsumerNone(t *testing.T) {
 		t.Fatalf("expected 'dev' in task_behaviors")
 	}
 	devMap := devBehavior.(map[string]any)
-	// consumer key should be nil/empty (YAML renders "" as null or empty string)
-	if v := devMap["consumer"]; v != nil && v != "" {
-		t.Errorf("consumer = %v, want empty/nil", v)
+	// agent key should be nil/empty (YAML renders "" as null or empty string)
+	if v := devMap["agent"]; v != nil && v != "" {
+		t.Errorf("agent = %v, want empty/nil", v)
 	}
 }

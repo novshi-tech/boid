@@ -54,7 +54,7 @@ func TestMergeDefaultPayload_Override(t *testing.T) {
 }
 
 func TestMergeDefaultPayload_RejectsInstructionsInDefault(t *testing.T) {
-	defaultPayload := json.RawMessage(`{"instructions":{"executor":{"type":"execution","consumer":"c","message":"m"}}}`)
+	defaultPayload := json.RawMessage(`{"instructions":{"executor":{"type":"execution","agent":"c","message":"m"}}}`)
 	_, err := orchestrator.MergeDefaultPayload(defaultPayload, nil)
 	if err == nil {
 		t.Fatal("expected error when default payload contains instructions, got nil")
@@ -65,7 +65,7 @@ func TestMergeDefaultPayload_RejectsInstructionsInDefault(t *testing.T) {
 }
 
 func TestMergeDefaultPayload_RejectsInstructionsInRequest(t *testing.T) {
-	requestPayload := json.RawMessage(`{"instructions":{"executor":{"type":"execution","consumer":"c","message":"m"}}}`)
+	requestPayload := json.RawMessage(`{"instructions":{"executor":{"type":"execution","agent":"c","message":"m"}}}`)
 	_, err := orchestrator.MergeDefaultPayload(nil, requestPayload)
 	if err == nil {
 		t.Fatal("expected error when request payload contains instructions, got nil")
@@ -77,7 +77,7 @@ func TestDefaultInstruction_YAMLUnmarshal(t *testing.T) {
 name: impl
 default_instruction:
   type: execution
-  consumer: claude-code
+  agent: claude-code
   message: "TDD で実装してください。"
 `
 	var behavior orchestrator.TaskBehavior
@@ -96,8 +96,8 @@ default_instruction:
 	if got.Type != orchestrator.InstructionTypeExecution {
 		t.Fatalf("expected type %q, got %q", orchestrator.InstructionTypeExecution, got.Type)
 	}
-	if got.Consumer != "claude-code" {
-		t.Fatalf("expected consumer %q, got %q", "claude-code", got.Consumer)
+	if got.Agent != "claude-code" {
+		t.Fatalf("expected agent %q, got %q", "claude-code", got.Agent)
 	}
 	if got.Message != "TDD で実装してください。" {
 		t.Fatalf("expected message %q, got %q", "TDD で実装してください。", got.Message)
@@ -111,7 +111,7 @@ default_payload:
   instructions:
     executor:
       type: execution
-      consumer: claude-code
+      agent: claude-code
 `
 	var behavior orchestrator.TaskBehavior
 	if err := yaml.Unmarshal([]byte(data), &behavior); err != nil {
@@ -127,9 +127,9 @@ default_payload:
 
 func TestInstruction_Name_OmittedWhenEmpty(t *testing.T) {
 	inst := orchestrator.Instruction{
-		Type:     orchestrator.InstructionTypeExecution,
-		Consumer: "claude-code",
-		Message:  "タスクを実行してください",
+		Type:    orchestrator.InstructionTypeExecution,
+		Agent:   "claude-code",
+		Message: "タスクを実行してください",
 	}
 
 	b, err := json.Marshal(inst)

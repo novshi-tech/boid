@@ -65,7 +65,7 @@ task_behaviors:
     readonly: true
     default_instruction:
       type: execution
-      consumer: claude-code
+      agent: claude-code
       message: |
         Answer the question in the task title / description, then write the
         answer into the artifact trait:
@@ -77,7 +77,7 @@ What is going on:
 
 - **Top-level `kits:`** lists the kits used across the whole project. Here, just `claude-code`.
 - **`task_behaviors.ask`** declares a behavior called `ask`. `readonly: true` makes the sandbox read-only, which is fine because this task only needs to write back to the payload, not edit files.
-- **`default_instruction`** holds a single Instruction object passed to the agent on `executing`. `consumer: claude-code` is how the claude-code kit's hook recognises "this instruction is meant for me".
+- **`default_instruction`** holds a single Instruction object passed to the agent on `executing`. `agent: claude-code` is how the claude-code kit's hook recognises "this instruction is meant for me".
 
 Reload the project:
 

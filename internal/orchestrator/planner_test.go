@@ -187,9 +187,9 @@ func TestPlanGate_UsesScriptPathDirectly(t *testing.T) {
 	}
 }
 
-// FilterInstructions picks a matching consumer; planner surfaces exactly one
+// FilterInstructions picks a matching agent; planner surfaces exactly one
 // RoutedInstruction on JobSpec.
-func TestPlanHook_Instruction_MatchingConsumer(t *testing.T) {
+func TestPlanHook_Instruction_MatchingAgent(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
 		t.Fatal(err)
@@ -200,7 +200,7 @@ func TestPlanHook_Instruction_MatchingConsumer(t *testing.T) {
 		Behavior:  "dev",
 		Status:    TaskStatusExecuting,
 		Instructions: Instructions{
-			{Type: InstructionTypeExecution, Consumer: "claude-code", Message: "do X"},
+			{Type: InstructionTypeExecution, Agent: "claude-code", Message: "do X"},
 		},
 	}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{Name: "dev"}, task)
@@ -212,7 +212,7 @@ func TestPlanHook_Instruction_MatchingConsumer(t *testing.T) {
 		Hook: Hook{
 			ID:         "hook-1",
 			ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
-			Consumer:   "claude-code",
+			Agent:      "claude-code",
 		},
 	})
 	if err != nil {
@@ -225,8 +225,8 @@ func TestPlanHook_Instruction_MatchingConsumer(t *testing.T) {
 	if req.Instruction == nil {
 		t.Fatal("expected Instruction, got nil")
 	}
-	if req.Instruction.Consumer != "claude-code" {
-		t.Errorf("Instruction.Consumer = %q, want claude-code", req.Instruction.Consumer)
+	if req.Instruction.Agent != "claude-code" {
+		t.Errorf("Instruction.Agent = %q, want claude-code", req.Instruction.Agent)
 	}
 	if req.Instruction.Message != "do X" {
 		t.Errorf("Instruction.Message = %q", req.Instruction.Message)

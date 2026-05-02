@@ -643,7 +643,7 @@ templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Stat
 							<h3 class="instr-role">{ entry.Label }</h3>
 							<div class="instr-meta">
 								<span class="instr-kv"><span class="instr-k">type</span>{ string(inst.Type) }</span>
-								<span class="instr-kv"><span class="instr-k">consumer</span>{ inst.Consumer }</span>
+								<span class="instr-kv"><span class="instr-k">agent</span>{ inst.Agent }</span>
 								if inst.Model != "" {
 									<span class="instr-kv"><span class="instr-k">model</span>{ inst.Model }</span>
 								}

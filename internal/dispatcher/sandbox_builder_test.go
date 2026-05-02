@@ -690,7 +690,7 @@ func TestContextFiles_PayloadWrittenForNonInteractiveHook(t *testing.T) {
 	inst := &orchestrator.RoutedInstruction{
 		Role:        "rework",
 		Type:        "rework",
-		Consumer:    "claude-code",
+		Agent:       "claude-code",
 		Message:     "verification findings に記載された問題を修正せよ。",
 		Interactive: false,
 	}
@@ -734,7 +734,7 @@ func TestContextFiles_PayloadWrittenForInteractiveHook(t *testing.T) {
 	inst := &orchestrator.RoutedInstruction{
 		Role:        "main",
 		Type:        "execution",
-		Consumer:    "claude-code",
+		Agent:       "claude-code",
 		Interactive: true,
 	}
 	primary := []byte(`{"artifact":null}`)
@@ -806,7 +806,7 @@ func TestContextFiles_NoPayloadFilesWhenPrimaryInputEmpty(t *testing.T) {
 	inst := &orchestrator.RoutedInstruction{
 		Role:        "main",
 		Type:        "execution",
-		Consumer:    "claude-code",
+		Agent:       "claude-code",
 		Interactive: true,
 	}
 

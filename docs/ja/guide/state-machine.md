@@ -53,7 +53,7 @@ pending -----> executing -----> done             |
 
 ## reopen で instruction を追加する
 
-`boid task reopen <id> --message "..."` は done のタスクを再 executing に戻し、 新しい `Instruction` を `Task.Instructions` 配列に append します。 配列の最後の要素が active として扱われ、 consumer / model / interactive は前回 active の値を継承します。
+`boid task reopen <id> --message "..."` は done のタスクを再 executing に戻し、 新しい `Instruction` を `Task.Instructions` 配列に append します。 配列の最後の要素が active として扱われ、 agent / model / interactive は前回 active の値を継承します。
 
 ```bash
 # done のタスクを再開して 「conflict を解消して再 push」 を依頼する

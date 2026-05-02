@@ -46,7 +46,7 @@ task_behaviors:
       - github.com/novshi-tech/boid-kits/github-auto-merge
     default_instruction:
       type: execution
-      consumer: claude-code
+      agent: claude-code
       message: |
         Implement what the task title and description ask for.
         Make sure unit tests pass before committing.

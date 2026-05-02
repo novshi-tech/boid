@@ -118,7 +118,7 @@ const (
 
 type Instruction struct {
 	Type        InstructionType `json:"type" yaml:"type"`
-	Consumer    string          `json:"consumer" yaml:"consumer"`
+	Agent       string          `json:"agent" yaml:"agent"`
 	Name        string          `json:"name,omitempty" yaml:"name,omitempty"`
 	Message     string          `json:"message,omitempty" yaml:"message,omitempty"`
 	Interactive bool            `json:"interactive,omitempty" yaml:"interactive,omitempty"`
@@ -181,7 +181,7 @@ func (is *Instructions) UnmarshalJSON(data []byte) error {
 type RoutedInstruction struct {
 	Role        string          `json:"role"`
 	Type        InstructionType `json:"type"`
-	Consumer    string          `json:"consumer"`
+	Agent       string          `json:"agent"`
 	Name        string          `json:"name,omitempty"`
 	Message     string          `json:"message"`
 	Interactive bool            `json:"interactive,omitempty"`
@@ -243,7 +243,7 @@ type Hook struct {
 	Kind       HandlerKind   `yaml:"kind,omitempty" json:"kind,omitempty"`
 	Traits     HandlerTraits `yaml:"traits" json:"traits"`
 	Requires   []string      `yaml:"requires" json:"requires"`
-	Consumer   string        `yaml:"consumer,omitempty" json:"consumer,omitempty"`
+	Agent      string        `yaml:"agent,omitempty" json:"agent,omitempty"`
 	Kit        string        `yaml:"-" json:"kit,omitempty"`
 	ScriptPath string        `yaml:"-" json:"-"`
 }
@@ -499,7 +499,7 @@ type KitMeta struct {
 	Detect           *KitDetect   `yaml:"detect,omitempty"`
 	Requires         *KitRequires `yaml:"requires,omitempty"`
 	Scaffold         *KitScaffold `yaml:"scaffold,omitempty"`
-	ProvidesConsumer string       `yaml:"provides_consumer,omitempty"`
+	ProvidesAgent    string       `yaml:"provides_agent,omitempty"`
 }
 
 // KitMetaInfo holds human-readable metadata for a kit.

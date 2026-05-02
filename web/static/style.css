@@ -1191,7 +1191,7 @@ body:has(.action-bar) {
 /* --- Instructions tab ---
    One block per role (main / rework / verification / …). The header
    carries the role name, its type badge, and compact key/value meta
-   (consumer / model / name / interactive); the body shows the full
+   (agent / model / name / interactive); the body shows the full
    message text in a pre so markdown/structure is preserved. */
 .instr-block {
   margin-bottom: var(--space-4);

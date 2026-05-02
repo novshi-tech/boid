@@ -1139,8 +1139,8 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 				inst.Type = orchestrator.InstructionTypeExecution
 			}
 			if active := task.Instructions.Active(); active != nil {
-				if inst.Consumer == "" {
-					inst.Consumer = active.Consumer
+				if inst.Agent == "" {
+					inst.Agent = active.Agent
 				}
 				if inst.Model == "" {
 					inst.Model = active.Model

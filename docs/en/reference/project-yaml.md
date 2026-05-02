@@ -58,7 +58,7 @@ For how `worktree: true` behaves, see [Concepts / Worktree](../guide/concepts.md
 
 A single Instruction object. At task creation it is appended to `Task.Instructions` and becomes the active instruction the first time the task enters `executing`.
 
-A `boid task reopen <id> --message "..."` call appends a new Instruction at the end of the array; the last element is what the agent sees, and `consumer` / `model` / `interactive` are inherited from the previously active one.
+A `boid task reopen <id> --message "..."` call appends a new Instruction at the end of the array; the last element is what the agent sees, and `agent` / `model` / `interactive` are inherited from the previously active one.
 
 ## Shared building blocks
 
@@ -73,7 +73,7 @@ Each entry in a `kits` list is either:
     - ref: github.com/novshi-tech/boid-kits/claude-code
       as: agent
   ```
-  `as` assigns an alias, useful when two kits would otherwise collide on consumer name.
+  `as` assigns an alias, useful when two kits would otherwise collide on agent name.
 
 `<sub-path>` is optional — if the kit lives at the repository root, omit it.
 
@@ -144,7 +144,7 @@ The shape of the `default_instruction` value.
 ```yaml
 default_instruction:
   type: execution
-  consumer: claude-code
+  agent: claude-code
   model: sonnet
   message: |
     ...
@@ -153,8 +153,8 @@ default_instruction:
 | Key | Type | Role |
 |---|---|---|
 | `type` | enum | `execution` (the old `rework` / `verification` values are gone). |
-| `consumer` | string | The kit identifier expected to receive this instruction (e.g. `claude-code`). |
-| `name` | string | Optional sub-identifier when several instructions go to the same consumer. |
+| `agent` | string | The kit identifier expected to receive this instruction (e.g. `claude-code`). |
+| `name` | string | Optional sub-identifier when several instructions go to the same agent. |
 | `message` | string | The instruction text given to the agent. |
 | `interactive` | bool | `true` to start the agent in interactive mode (if the kit supports it). |
 | `model` | string | Model selector the kit will pass through (e.g. `opus`, `sonnet`). |

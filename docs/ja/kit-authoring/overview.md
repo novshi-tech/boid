@@ -35,12 +35,12 @@ requires:
   commands:                     # (任意) 必要な host コマンド
     - gh
 
-provides_consumer: my-agent     # (任意) この kit が受け取る instruction の consumer 名
+provides_agent: my-agent        # (任意) この kit が受け取る instruction の agent 名
 
 hooks:
   - id: my-hook
     kind: agent                 # (任意) "agent" を付けると instruction routing 対象
-    consumer: my-agent          # (任意) この hook 宛の instruction を受け取る
+    agent: my-agent             # (任意) この hook 宛の instruction を受け取る
     traits:
       consumes: [instructions]
       produces: [artifact]
@@ -86,9 +86,9 @@ UIs で kit を識別するためのラベル。 `category` は `language` / `vc
 
 kit が動くために PATH 上に必要な host コマンド。インストール時のチェックや UI でのガイドに使われます。
 
-### `provides_consumer`
+### `provides_agent`
 
-この kit が「どの consumer 名で書かれた instruction を引き取るか」を宣言します。例えば claude-code kit は `provides_consumer: claude-code` を設定し、 `default_instruction.consumer: claude-code` の instruction を受け取ります。
+この kit が「どの agent 名で書かれた instruction を引き取るか」を宣言します。例えば claude-code kit は `provides_agent: claude-code` を設定し、 `default_instruction.agent: claude-code` の instruction を受け取ります。
 
 ### `hooks` と `gates`
 
@@ -144,7 +144,7 @@ kit は別リポジトリで配布するのが標準です。 `boid kit install 
 
 公開のための慣例:
 
-- README に何の kit か / どの consumer の instruction を受け取るか / 必要な前提コマンド を簡潔に書く
+- README に何の kit か / どの agent の instruction を受け取るか / 必要な前提コマンド を簡潔に書く
 - リポジトリ直下に複数 kit を同居させる場合、各サブディレクトリの README を整える
 - `meta.category` は実態に合わせる
 - `requires.commands` は省略せず宣言する (ユーザの初期セットアップに直結する)

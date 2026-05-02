@@ -115,7 +115,7 @@ payload:
   foo: bar
 instructions:
   - type: execution
-    consumer: claude-code
+    agent: claude-code
     message: do the thing
 `
 	spec, err := parseTaskCreateSpec([]byte(input))

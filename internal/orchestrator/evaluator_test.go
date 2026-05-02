@@ -14,14 +14,14 @@ func TestEvaluate_MatchingHookFires(t *testing.T) {
 	task := &orchestrator.Task{
 		Status: orchestrator.TaskStatusExecuting,
 		Instructions: orchestrator.Instructions{
-			{Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "do stuff"},
+			{Type: orchestrator.InstructionTypeExecution, Agent: "claude-code", Message: "do stuff"},
 		},
 	}
 	hooks := []projectspec.Hook{
 		{
 			ID:       "run-agent",
 			Kind:     projectspec.HandlerKindAgent,
-			Consumer: "claude-code",
+			Agent: "claude-code",
 		},
 	}
 
@@ -96,20 +96,20 @@ func TestEvaluate_NoRequiredTraits(t *testing.T) {
 	}
 }
 
-func TestEvaluate_InstructionsRouting_ConsumerMatch(t *testing.T) {
+func TestEvaluate_InstructionsRouting_AgentMatch(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
 	task := &orchestrator.Task{
 		Status: orchestrator.TaskStatusExecuting,
 		Instructions: orchestrator.Instructions{
-			{Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "do something"},
+			{Type: orchestrator.InstructionTypeExecution, Agent: "claude-code", Message: "do something"},
 		},
 	}
 	hooks := []projectspec.Hook{
 		{
 			ID:       "run-claude",
 			Kind:     projectspec.HandlerKindAgent,
-			Consumer: "claude-code",
+			Agent: "claude-code",
 		},
 	}
 
@@ -122,26 +122,26 @@ func TestEvaluate_InstructionsRouting_ConsumerMatch(t *testing.T) {
 	}
 }
 
-func TestEvaluate_InstructionsRouting_ConsumerMismatch(t *testing.T) {
+func TestEvaluate_InstructionsRouting_AgentMismatch(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
 	task := &orchestrator.Task{
 		Status: orchestrator.TaskStatusExecuting,
 		Instructions: orchestrator.Instructions{
-			{Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "do something"},
+			{Type: orchestrator.InstructionTypeExecution, Agent: "claude-code", Message: "do something"},
 		},
 	}
 	hooks := []projectspec.Hook{
 		{
 			ID:       "run-codex",
 			Kind:     projectspec.HandlerKindAgent,
-			Consumer: "codex",
+			Agent: "codex",
 		},
 	}
 
 	matched := eval.Evaluate(task, hooks)
 	if len(matched) != 0 {
-		t.Fatalf("expected 0 matched hooks (consumer mismatch), got %d", len(matched))
+		t.Fatalf("expected 0 matched hooks (agent mismatch), got %d", len(matched))
 	}
 }
 
@@ -163,7 +163,7 @@ func TestEvaluate_NonInstructionsHook_NotFiltered(t *testing.T) {
 
 	matched := eval.Evaluate(task, hooks)
 	if len(matched) != 1 {
-		t.Fatalf("expected 1 matched hook (consumer filter not applied), got %d", len(matched))
+		t.Fatalf("expected 1 matched hook (agent filter not applied), got %d", len(matched))
 	}
 	if matched[0].ID != "handle-artifact" {
 		t.Fatalf("expected hook id handle-artifact, got %s", matched[0].ID)
@@ -226,13 +226,13 @@ func TestEvaluate_OptionalTrait_FiresWhenAbsent(t *testing.T) {
 		Status:  orchestrator.TaskStatusExecuting,
 		Payload: json.RawMessage(`{}`),
 		Instructions: orchestrator.Instructions{
-			{Type: orchestrator.InstructionTypeExecution, Consumer: "claude-code", Message: "impl"},
+			{Type: orchestrator.InstructionTypeExecution, Agent: "claude-code", Message: "impl"},
 		},
 	}
 	hooks := []projectspec.Hook{
 		{
 			ID:       "run-agent",
-			Consumer: "claude-code",
+			Agent: "claude-code",
 			Traits: projectspec.HandlerTraits{
 				Consumes: []projectspec.TraitType{"verification?"},
 			},

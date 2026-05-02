@@ -11,7 +11,7 @@ import (
 )
 
 const testPayloadForEdit = `{
-	"instructions": {"main": {"type": "execution", "consumer": "claude-code", "message": "do this", "model": "sonnet"}},
+	"instructions": {"main": {"type": "execution", "agent": "claude-code", "message": "do this", "model": "sonnet"}},
 	"artifacts": {"output": "result"}
 }`
 

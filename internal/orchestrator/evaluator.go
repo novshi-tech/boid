@@ -11,29 +11,29 @@ func InstructionTypeForStatus(status TaskStatus) InstructionType {
 	return ""
 }
 
-// extractInstructionConsumers returns the set of consumer names that appear
+// extractInstructionAgents returns the set of agent names that appear
 // in the task's instruction history matching the given type. Empty type or
 // empty list yields nil.
-func extractInstructionConsumers(instructions Instructions, instType InstructionType) map[string]bool {
+func extractInstructionAgents(instructions Instructions, instType InstructionType) map[string]bool {
 	if instType == "" || len(instructions) == 0 {
 		return nil
 	}
-	consumers := make(map[string]bool)
+	agents := make(map[string]bool)
 	for _, inst := range instructions {
 		if inst.Type == "" || inst.Type == instType {
-			consumers[inst.Consumer] = true
+			agents[inst.Agent] = true
 		}
 	}
-	if len(consumers) == 0 {
+	if len(agents) == 0 {
 		return nil
 	}
-	return consumers
+	return agents
 }
 
 // Evaluate returns hooks that should fire for the given task.
 // Hooks fire only during executing state. Hooks with Kind == HandlerKindAgent
 // additionally require an instruction in task.Instructions addressed to that
-// hook's Consumer.
+// hook's Agent.
 func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 	if task.Status != TaskStatusExecuting {
 		return nil
@@ -45,7 +45,7 @@ func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 	}
 
 	instType := InstructionTypeForStatus(task.Status)
-	consumers := extractInstructionConsumers(task.Instructions, instType)
+	agents := extractInstructionAgents(task.Instructions, instType)
 
 	var matched []Hook
 	for _, h := range hooks {
@@ -56,10 +56,10 @@ func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 			if instType == "" {
 				continue
 			}
-			if h.Consumer == "" {
+			if h.Agent == "" {
 				continue // loader validation 後は到達しない想定
 			}
-			if !consumers[h.Consumer] {
+			if !agents[h.Agent] {
 				continue
 			}
 		}

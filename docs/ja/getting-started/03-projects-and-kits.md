@@ -65,7 +65,7 @@ task_behaviors:
     readonly: true
     default_instruction:
       type: execution
-      consumer: claude-code
+      agent: claude-code
       message: |
         task の title と description に書かれた質問に答え、結果を artifact trait に書き込め:
           echo '{"artifact":{"answer":"<回答>"}}' \
@@ -76,7 +76,7 @@ task_behaviors:
 
 - **トップレベルの `kits:`** には、 project 全体で使う kit を並べます。ここでは `claude-code` 1 つだけ
 - **`task_behaviors.ask`** で behavior `ask` を宣言。 `readonly: true` でサンドボックスを書き込み禁止に (今回はファイルの編集ではなく回答だけ書ければよい)
-- **`default_instruction`** は `executing` 状態で claude-code エージェントに渡す指示の雛形 (単一 Instruction object)。 `consumer: claude-code` で、 claude-code kit の hook が「自分宛の指示だ」と認識します
+- **`default_instruction`** は `executing` 状態で claude-code エージェントに渡す指示の雛形 (単一 Instruction object)。 `agent: claude-code` で、 claude-code kit の hook が「自分宛の指示だ」と認識します
 
 書き換えたら project を reload します。
 
