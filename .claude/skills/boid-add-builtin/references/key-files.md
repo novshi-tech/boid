@@ -1,92 +1,92 @@
-# key-files: boid builtin 追加時の主要ファイル
+# key-files: Main Files When Adding a boid Builtin
 
-## 参照元ファイル
+## Reference files
 
-| ファイル | 役割 |
-|---------|------|
-| `internal/sandbox/protocol.go` | `BuiltinPolicy` 型、`ExecRequest`、Op 型・定数の定義 |
-| `internal/orchestrator/builtin_policy.go` | `DefaultBuiltinPolicies` / `policyFor` — policy テーブル |
-| `internal/sandbox/broker.go` | `Handle()` / `Register()` / `allowsBuiltinOp` ヘルパ |
-| `internal/sandbox/git_builtin.go` | policy チェックを冒頭に持つ handler の実装例 |
-| `internal/orchestrator/spec_loader.go` | `validateBuiltinHostConflict` — builtin 名を `host_commands` で再宣言させない |
-| `internal/orchestrator/planner.go` | `PlanHook` / `PlanGate` での builtin 名リスト |
-| `cmd/exec.go` | `buildExecJob` での builtin 名リスト |
+| File | Role |
+|------|------|
+| `internal/sandbox/protocol.go` | Defines `BuiltinPolicy`, `ExecRequest`, Op types and constants |
+| `internal/orchestrator/builtin_policy.go` | `DefaultBuiltinPolicies` / `policyFor` — the policy table |
+| `internal/sandbox/broker.go` | `Handle()` / `Register()` / `allowsBuiltinOp` helper |
+| `internal/sandbox/git_builtin.go` | Example handler with policy check at the top |
+| `internal/orchestrator/spec_loader.go` | `validateBuiltinHostConflict` — prevents re-declaring builtin names in `host_commands` |
+| `internal/orchestrator/planner.go` | Builtin name lists in `PlanHook` / `PlanGate` |
+| `cmd/exec.go` | Builtin name list in `buildExecJob` |
 
-## builtin 実装に関わるキー型・関数
+## Key types and functions for builtin implementation
 
 ### `internal/sandbox/protocol.go`
 
 ```go
-// builtin の op 許可セットを保持する型
+// Type that holds the allowed op set for a builtin
 type BuiltinPolicy struct {
     AllowedOps map[string]struct{}
 }
 func (p BuiltinPolicy) Allows(op string) bool
 
-// 全 builtin リクエストのエントリポイント
+// Entry point for all builtin requests
 type ExecRequest struct {
     Command string
     Token   string
     Cwd     string
     Boid    *BoidRequest  // boid builtin
     Git     *GitRequest   // git builtin
-    // 新 builtin はここにフィールドを追加
+    // Add new builtin fields here
 }
 ```
 
 ### `internal/sandbox/broker.go`
 
 ```go
-// token に紐づく policy があるか確認
+// Check whether the token has a policy for the given builtin
 func (e *tokenEntry) hasBuiltinPolicy(name string) bool
 
-// 特定の op が policy で許可されているか確認
+// Check whether the given op is permitted by the policy
 func (e *tokenEntry) allowsBuiltinOp(name, op string) bool
 
-// tokenEntry — 登録時にスタンプされた policy を保持
+// tokenEntry — holds the policy stamped at registration time
 type tokenEntry struct {
     Context         TokenContext
     Commands        map[string]CommandDef
     BuiltinPolicies map[string]BuiltinPolicy
-    Git             *GitBinding  // git 用のスナップショット
-    // 新 builtin の binding は必要な場合のみ追加
+    Git             *GitBinding  // snapshot for git
+    // Add a new builtin's binding only if needed
 }
 ```
 
 ### `internal/orchestrator/builtin_policy.go`
 
 ```go
-// role と builtin 名から policy を返すエントリポイント
+// Entry point that returns a policy given a role and builtin name
 func DefaultBuiltinPolicies(role Role, names []string) map[string]sandbox.BuiltinPolicy
 
-// 個別 builtin の policy 関数を追加するスイッチ
+// Switch to add per-builtin policy functions
 func policyFor(role Role, name string) sandbox.BuiltinPolicy
 ```
 
-## 既存 builtin の policy 決定根拠
+## Rationale behind existing builtin policies
 
 ### boid builtin
 
-| role | 許可 op |
-|------|---------|
+| role | allowed ops |
+|------|-------------|
 | hook | `job_done`, `task_get` |
 | gate (default) | `job_done`, `task_create`, `task_update`, `task_import` |
 
-hook は agent が task を作成・更新しないよう制限している（read-only + 完了通知のみ）。
+hook is restricted so agents cannot create or update tasks (read-only + completion notification only).
 
 ### git builtin
 
-| role | 許可 op |
-|------|---------|
-| hook | なし（空 policy） |
+| role | allowed ops |
+|------|-------------|
+| hook | none (empty policy) |
 | gate (default) | `fetch`, `push` |
 
-hook からの broker 経由 git 操作は禁止。agent はホスト側リモートに直接アクセスすべきでない。
+Direct git operations via the broker from hook are forbidden. Agents must not access host-side remotes directly.
 
-## テストファイルの場所
+## Test file locations
 
-| テスト | ファイル |
-|--------|---------|
+| Test | File |
+|------|------|
 | policy matrix | `internal/orchestrator/builtin_policy_test.go` |
 | git handler | `internal/sandbox/git_builtin_test.go` |
-| 新 builtin handler | `internal/sandbox/<name>_builtin_test.go` (新設) |
+| new builtin handler | `internal/sandbox/<name>_builtin_test.go` (create new) |
