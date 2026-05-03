@@ -1,42 +1,44 @@
 ---
 name: boid-add-builtin
 description: >
-  boid オーケストレータに新しい builtin command (例: oci, net) を追加する際の手順チェックリスト。
-  builtin command の追加、policy テーブルへの登録、broker dispatch の追加、テスト実装の一連の作業をガイドする。
+  A checklist for adding a new builtin command (e.g. oci, net) to the boid orchestrator.
+  Guides the end-to-end workflow: implementing the builtin command, registering it in the
+  policy table, adding broker dispatch, and writing tests.
   Use when a team member wants to add a new builtin command to the boid orchestrator.
 ---
 
-# boid builtin command 追加手順
+# boid builtin command — Adding a New Command
 
-新しい builtin を追加するときは、以下の **7 ステップ** を順番に行う。
-各ステップで参照すべき既存実装例を併記している。
+Follow these **7 steps** in order when adding a new builtin.
+Each step lists the relevant existing implementation to reference.
 
-コード詳細・ファイルパス早見表は [references/key-files.md](references/key-files.md) を参照。
+For a quick look at code details and file paths, see [references/key-files.md](references/key-files.md).
 
-`git` と `boid` は project.yaml / kit.yaml での宣言なしに常時有効。
-新しい builtin も planner 側で常時注入する方針（`builtin_commands` 設定は廃止済み）。
+`git` and `boid` are always available without any declaration in project.yaml / kit.yaml.
+New builtins follow the same convention — they are always injected by the planner
+(the `builtin_commands` config key has been removed).
 
 ---
 
-## ステップ 1 — protocol 追加
+## Step 1 — Add the protocol
 
-`internal/sandbox/protocol.go` に追加する:
+Add the following to `internal/sandbox/protocol.go`:
 
 ```go
-// 新しい Op 型と定数
+// New Op type and constants
 type OciOp string
 
 const (
     OciOpRun OciOp = "run"
 )
 
-// ExecRequest に新フィールドを追加
+// Add a new field to ExecRequest
 type ExecRequest struct {
-    // ... 既存フィールド ...
+    // ... existing fields ...
     Oci *OciRequest `json:"oci,omitempty"`
 }
 
-// Request 型を定義
+// Define the request type
 type OciRequest struct {
     Op    OciOp  `json:"op"`
     Image string `json:"image,omitempty"`
@@ -44,47 +46,48 @@ type OciRequest struct {
 }
 ```
 
-参照例: `BoidOp`, `GitOp` の定義パターン。
+Reference: the `BoidOp` and `GitOp` definition patterns.
 
 ---
 
-## ステップ 2 — handler 実装
+## Step 2 — Implement the handler
 
-`internal/sandbox/oci_builtin.go` を新設し、以下の制約を守る:
+Create `internal/sandbox/oci_builtin.go` and follow these constraints:
 
 ```go
 func handleOciBuiltinRequest(req *ExecRequest, entry *tokenEntry) *ExecResponse {
-    // 冒頭で必ず policy チェック（これを省くと op 制限が無効になる）
+    // Always check policy first (skipping this disables op restrictions)
     if !entry.hasBuiltinPolicy("oci") {
         return &ExecResponse{ExitCode: 1, Stderr: "command not allowed: oci"}
     }
-    // cwd 検証（git_builtin.go の validateGitBuiltinCwd を参考に）
+    // Validate cwd (see validateGitBuiltinCwd in git_builtin.go for reference)
     if err := validateOciBuiltinCwd(req.Cwd, entry); err != nil {
         return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
     }
-    // op 制限チェック（role に基づく分岐は書かない — policy テーブルに集約）
+    // Check op restriction (do NOT branch on role here — keep it in the policy table)
     if !entry.allowsBuiltinOp("oci", string(req.Oci.Op)) {
         return &ExecResponse{
             ExitCode: 1,
             Stderr:   fmt.Sprintf("oci op %q not allowed for role %s", req.Oci.Op, entry.Context.Role),
         }
     }
-    // observability: 実行時に role を slog に載せる（読み取りのみ、判定に使わない）
+    // Observability: log role at execution time (read-only; never use it for authorization)
     slog.Info("oci builtin run requested", "role", entry.Context.Role)
-    // ... 本体処理 ...
+    // ... main logic ...
 }
 ```
 
-**禁止**: `entry.Context.Role == "hook"` のような role 直接参照による分岐。
-role 判定は planner の `DefaultBuiltinPolicies` で完結しており、broker はそれを参照するのみ。
+**Prohibited**: branching directly on `entry.Context.Role == "hook"` or any other role string.
+Role-based authorization is fully handled by the planner's `DefaultBuiltinPolicies`; the broker
+only consults that result.
 
-参照例: `internal/sandbox/git_builtin.go` の `handleGitBuiltinRequest`。
+Reference: `handleGitBuiltinRequest` in `internal/sandbox/git_builtin.go`.
 
 ---
 
-## ステップ 3 — policy 定義 (最重要)
+## Step 3 — Define the policy (critical)
 
-`internal/orchestrator/builtin_policy.go` を編集する:
+Edit `internal/orchestrator/builtin_policy.go`:
 
 ```go
 func policyFor(role Role, name string) sandbox.BuiltinPolicy {
@@ -94,7 +97,7 @@ func policyFor(role Role, name string) sandbox.BuiltinPolicy {
     case "git":
         return gitPolicy(role)
     case "oci":
-        return ociPolicy(role) // 追加
+        return ociPolicy(role) // add this
     default:
         return sandbox.BuiltinPolicy{}
     }
@@ -103,13 +106,13 @@ func policyFor(role Role, name string) sandbox.BuiltinPolicy {
 func ociPolicy(role Role) sandbox.BuiltinPolicy {
     switch role {
     case RoleHook:
-        // hook からのコンテナ実行は禁止。
-        // agent がホスト側リソースを直接操作しないようにするため。
-        // 関連: git builtin の hook 制限と同じ設計思想。
+        // Container execution from hook is forbidden.
+        // Prevents the agent from directly manipulating host-side resources.
+        // Related: same design principle as the git builtin hook restriction.
         return sandbox.BuiltinPolicy{}
-    default: // RoleGate or empty → gate 相当
-        // gate は検証・ビルド目的でコンテナ実行が必要なため run を許可。
-        // default (空 role) は gate と同じにするのが慣例（テスト互換性のため）。
+    default: // RoleGate or empty → treat as gate
+        // Gate needs container execution for validation/build purposes, so run is allowed.
+        // default (empty role) mirrors gate policy by convention (test compatibility).
         return sandbox.BuiltinPolicy{AllowedOps: map[string]struct{}{
             string(sandbox.OciOpRun): {},
         }}
@@ -117,16 +120,16 @@ func ociPolicy(role Role) sandbox.BuiltinPolicy {
 }
 ```
 
-**必須事項**:
-- 各 case に **根拠コメント** を書く（なぜ許可 or 禁止なのか）
-- `default` case (空 role) は **gate と同じ policy** にする（テスト互換の慣例）
-- セキュリティ上の懸念や関連 issue があれば併記する
+**Required**:
+- Write a **rationale comment** in each case (why the op is allowed or forbidden)
+- The `default` case (empty role) must use the **same policy as gate** (test-compatibility convention)
+- Note any security concerns or related issues alongside the policy
 
 ---
 
-## ステップ 4 — planner 連携
+## Step 4 — Wire into the planner
 
-`PlanHook` / `PlanGate` の builtin リストに新 builtin を追加 (`internal/orchestrator/planner.go`):
+Add the new builtin to the builtin lists in `PlanHook` / `PlanGate` (`internal/orchestrator/planner.go`):
 
 ```go
 // PlanHook
@@ -141,14 +144,14 @@ BuiltinPolicies: DefaultBuiltinPolicies(RoleGate,
 ),
 ```
 
-`cmd/exec.go` の `buildExecJob` にも同じリストを反映する。
-新 builtin 名は `validateBuiltinHostConflict` に追加して `host_commands` での再宣言を禁止する。
+Also update `buildExecJob` in `cmd/exec.go` with the same list.
+Add the new builtin name to `validateBuiltinHostConflict` to prevent re-declaring it via `host_commands`.
 
 ---
 
-## ステップ 5 — broker dispatch 分岐
+## Step 5 — Add the broker dispatch branch
 
-`internal/sandbox/broker.go` の `Handle()` に分岐を追加:
+Add a branch inside `Handle()` in `internal/sandbox/broker.go`:
 
 ```go
 func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
@@ -166,7 +169,7 @@ func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
 }
 ```
 
-**binding キャプチャが必要な場合** (`Register()` 冒頭に追加):
+**If a binding capture is needed** (add at the top of `Register()`):
 
 ```go
 if entry.hasBuiltinPolicy("oci") {
@@ -176,17 +179,18 @@ if entry.hasBuiltinPolicy("oci") {
 }
 ```
 
-git の `captureGitBinding` はエージェントがリモート URL を書き換えても信頼済みスナップショットを使う設計。
-外部 URL / リソース参照の改ざんを防ぐ必要がある場合のみキャプチャを追加する。
+git's `captureGitBinding` uses a trusted snapshot taken at registration time so that an agent
+cannot tamper with the remote URL later. Add a capture only when the builtin references external
+URLs or resources that must be protected from tampering.
 
 ---
 
-## ステップ 6 — テスト
+## Step 6 — Tests
 
-### 7a. `builtin_policy_test.go` に matrix テストを追加
+### 6a. Add matrix tests to `builtin_policy_test.go`
 
 ```go
-// hook×oci は AllowedOps が空であること。
+// hook×oci AllowedOps must be empty.
 func TestDefaultBuiltinPolicies_HookOciIsEmpty(t *testing.T) {
     policies := DefaultBuiltinPolicies(RoleHook, []string{"oci"})
     if len(policies["oci"].AllowedOps) != 0 {
@@ -194,7 +198,7 @@ func TestDefaultBuiltinPolicies_HookOciIsEmpty(t *testing.T) {
     }
 }
 
-// gate×oci は {run} を含むこと。
+// gate×oci must include {run}.
 func TestDefaultBuiltinPolicies_GateOciHasRun(t *testing.T) {
     policies := DefaultBuiltinPolicies(RoleGate, []string{"oci"})
     if !policies["oci"].Allows(string(sandbox.OciOpRun)) {
@@ -202,7 +206,7 @@ func TestDefaultBuiltinPolicies_GateOciHasRun(t *testing.T) {
     }
 }
 
-// empty role は gate と同じ policy であること。
+// empty role must equal gate policy.
 func TestDefaultBuiltinPolicies_EmptyRoleEqualsGate_Oci(t *testing.T) {
     gate := DefaultBuiltinPolicies(RoleGate, []string{"oci"})
     empty := DefaultBuiltinPolicies("", []string{"oci"})
@@ -212,36 +216,36 @@ func TestDefaultBuiltinPolicies_EmptyRoleEqualsGate_Oci(t *testing.T) {
 }
 ```
 
-### 7b. `oci_builtin_test.go` を新設
+### 6b. Create `oci_builtin_test.go`
 
-最低限検証すべき項目:
+Minimum scenarios to cover:
 
-- 禁止 op が拒否される（空 policy または該当 op を含まない policy）
-- 許可 op が通る
-- cwd が未設定 / 範囲外の場合にエラーになる
+- A forbidden op is rejected (empty policy or policy that does not include the op)
+- An allowed op passes through
+- Missing or out-of-range cwd returns an error
 
-参照例: `internal/sandbox/git_builtin_test.go` のテストヘルパー (`initGitRepo`, `gateGitPolicies` 等)。
-
----
-
-## ステップ 7 — セキュリティチェックリスト
-
-新 builtin が外部通信やホストリソースアクセスを伴う場合に確認する:
-
-- [ ] **最小権限**: hook に過剰な権限を与えていないか。hook は read-only / 通知のみが原則
-- [ ] **ワークスペース分離**: `entry.Context.AllowedProjectIDs` など既存の workspace 分離を尊重しているか
-- [ ] **secret 漏洩**: エラーメッセージや slog に secret / 認証情報が含まれていないか
-- [ ] **信頼済みスナップショット**: 外部 URL やリソース参照をエージェントが書き換えられないか（git の `captureGitBinding` パターン参照）
-- [ ] **ホストアクセス最小化**: 使用するホストリソース（ファイル, ネットワーク, プロセス）を最小化しているか
-- [ ] **default role テスト**: 空 role の policy が gate と同一であることを `EmptyRoleEqualsGate` 相当のテストで確認
+Reference: test helpers in `internal/sandbox/git_builtin_test.go` (`initGitRepo`, `gateGitPolicies`, etc.).
 
 ---
 
-## 設計原則
+## Step 7 — Security checklist
 
-| 原則 | 理由 |
-|------|------|
-| broker は role を知らない | role 判定は `DefaultBuiltinPolicies` に集約。broker は policy テーブルのみ参照 |
-| policy は登録時にスタンプ | dispatch 時の role 判定を排除し、broker をシンプルに保つ |
-| `default` = gate | テスト互換。production では Role は必ず設定されるが、空の場合に最も権限の多い role (gate) と同じにする |
-| hook は fetch/push 禁止 | agent がホスト側リモートに直接アクセスすべきでない（git, oci とも同じ原則） |
+Check these items when the new builtin involves external communication or host resource access:
+
+- [ ] **Least privilege**: does hook receive more permissions than necessary? Hook should be read-only / notify-only by default
+- [ ] **Workspace isolation**: does the implementation respect existing workspace isolation (e.g. `entry.Context.AllowedProjectIDs`)?
+- [ ] **Secret leakage**: do error messages or slog calls expose secrets or credentials?
+- [ ] **Trusted snapshot**: can an agent tamper with external URLs or resource references? (see `captureGitBinding` pattern)
+- [ ] **Minimal host access**: are host resources (files, network, processes) used to the minimum required?
+- [ ] **Default role test**: is there an `EmptyRoleEqualsGate` equivalent test confirming the empty-role policy matches gate?
+
+---
+
+## Design principles
+
+| Principle | Rationale |
+|-----------|-----------|
+| broker has no knowledge of role | Role decisions are centralized in `DefaultBuiltinPolicies`; broker consults only the policy table |
+| policy is stamped at registration | Eliminates role evaluation at dispatch time; keeps broker simple |
+| `default` = gate | Test compatibility. In production Role is always set, but empty role matches gate (most permissive) by convention |
+| hook cannot fetch/push | Agents must not directly access host-side remotes (same principle for git and oci) |
