@@ -47,3 +47,5 @@ task_behaviors:
       interactive: true
       message: |
         Build an implementation plan as described in /boid-plan.
+        The PR created by child dev task will be merged automatically into main by github-auto-merge kit.
+        Pull latest changes to verify the changes made by child tasks.
