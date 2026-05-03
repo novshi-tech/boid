@@ -11,53 +11,53 @@
 
 ```yaml
 id: "abc-12345678"
-title: "ユーザー認証機能の実装"
-description: "OAuth2 を使ったログイン機能を追加する"
+title: "Implement user authentication"
+description: "Add a login feature using OAuth2"
 status: "executing"
 behavior: "dev"
 ```
 
-| フィールド | 説明 |
+| Field | Description |
 |-----------|------|
-| id | タスクの一意識別子 |
-| title | タスクタイトル |
-| description | タスクの詳細説明 |
-| status | 現在の状態（[state-machine.md](state-machine.md) 参照） |
-| behavior | タスクの実行モデル名 |
+| id | Unique task identifier |
+| title | Task title |
+| description | Detailed task description |
+| status | Current state (see [state-machine.md](state-machine.md)) |
+| behavior | Task execution model name |
 
 ## instructions.yaml
 
-あなた宛の指示の配列。 配列の最後の要素が今の active 指示で、 reopen のたびに append される。 過去の指示も配列の前方に残るので、 「前回何が依頼されたか」 を辿れる。
+Array of instructions addressed to you. The last element is the current active instruction; new instructions are appended each time the task is reopened. Past instructions remain at the front of the array so you can trace what was requested before.
 
 ```yaml
 - role: executor
   type: execution
   agent: claude-code
-  message: "TDD で実装してください。テストを先に書くこと。"
+  message: "Implement using TDD. Write tests first."
 - role: executor
   type: execution
   agent: claude-code
-  message: "lint エラーを修正して再 push してください。"   # reopen で append された
+  message: "Fix the lint errors and re-push."   # appended on reopen
 ```
 
-| フィールド | 説明 |
+| Field | Description |
 |-----------|------|
-| role | 指示の論理名 |
-| type | `execution` のみ |
-| agent | 宛先エージェント名 |
-| message | 具体的な指示内容 |
+| role | Logical name of the instruction |
+| type | `execution` only |
+| agent | Target agent name |
+| message | Specific instruction content |
 
-最後の要素を主指示として読み、 必要であれば前方の要素を文脈として参照する。
+Read the last element as the primary instruction, and refer to earlier elements as context when needed.
 
 ## payload.yaml
 
-**読み取り専用**の入力ファイル。過去の hook が積み上げた artifact 等を文脈として読むのに使う。エージェントが書き込む経路ではない。
+**Read-only** input file. Use it to read context such as artifacts accumulated by past hooks. This is not a path for agents to write to.
 
-instructions は payload の trait ではなく、 `task.yaml` と並ぶ別ファイル (`instructions.yaml`) で配信される。
+Instructions are not a trait of the payload; they are delivered as a separate file (`instructions.yaml`) alongside `task.yaml`.
 
 ## environment.yaml
 
-サンドボックスの動的な制約情報。
+Dynamic constraint information for the sandbox.
 
 ```yaml
 readonly: false
@@ -72,10 +72,10 @@ workspace_projects:
     name: shared-lib
 ```
 
-| フィールド | 説明 |
+| Field | Description |
 |-----------|------|
-| readonly | プロジェクトディレクトリの書き込み可否 |
-| worktree | git worktree モードか |
-| network.restricted | 外部ネットワークアクセスが制限されているか |
-| tools | 利用可能なコマンド |
-| workspace_projects | 同一ワークスペース内の他プロジェクト（読み取り専用） |
+| readonly | Whether the project directory is writable |
+| worktree | Whether running in git worktree mode |
+| network.restricted | Whether external network access is restricted |
+| tools | Available commands |
+| workspace_projects | Other projects in the same workspace (read-only) |
