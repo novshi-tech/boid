@@ -1,67 +1,67 @@
 ---
 name: dev-pr-flow
 description: >
-  実装変更を ship するための統一ワークフロー: ユニットテスト確認 → commit → push → PR 作成/再利用 → CI 完了まで watch する。
-  .boid/project.yaml の task_behaviors.dev.default_instruction.message と同等の手順を、boid task の外 (手動 dev / 通常の対話セッション) でも再現するためのスキル。
-  Use when shipping a change in the boid repo requires the full local verify → commit → push → PR → CI cycle (e.g. 「変更を PR にして CI 通るまで見て」 「dev タスクと同じ流れで ship して」 「commit + push + PR + watch まとめてやって」).
+  Unified workflow for shipping implementation changes: run unit tests → commit → push → create/reuse PR → watch until CI passes.
+  A skill that reproduces the same steps as .boid/project.yaml task_behaviors.dev.default_instruction.message so the same flow can be used outside a boid task (manual dev / regular interactive sessions).
+  Use when shipping a change in the boid repo requires the full local verify → commit → push → PR → CI cycle (e.g. "open a PR and watch it until CI goes green", "ship this with the same flow as a dev task", "handle commit + push + PR + watch all at once").
 ---
 
 # dev PR flow
 
-実装が固まった後の「ローカル検証 → commit → push → PR 作成/再利用 → CI watch」を一本化するための手順。
-boid task の `dev` behavior が agent に渡す instruction と同じ流れを、boid task 外でも辿れるようにする。
+A unified procedure for the post-implementation steps: local verify → commit → push → create/reuse PR → CI watch.
+Lets you follow the same flow that the boid task `dev` behavior passes to the agent, even outside a boid task.
 
-## 適用範囲
+## Scope
 
-- 実装が完了している (またはユーザがこの skill の起動で「完成」と宣言した) 状態
-- 現在のブランチが PR 対象 (worktree でも通常 branch でも可)
-- E2E は CI に任せる前提。ローカル `./e2e/run.sh` は走らせない (特殊事情があるならユーザに確認)
+- The implementation is complete (or the user has declared it done by invoking this skill)
+- The current branch is the target for a PR (worktree or regular branch both work)
+- E2E testing is left to CI; do not run `./e2e/run.sh` locally (confirm with the user if there is a specific reason to do so)
 
-## 手順
+## Steps
 
-### 1. ユニットテストを通す
+### 1. Run unit tests
 
-コミット前に必ず:
+Before committing, always run:
 
 ```bash
 go vet ./...
 go test ./...
 ```
 
-`go build` はテストを見ないので単独で代替にしない。失敗したら直してから次へ進む。
+`go build` does not run tests, so do not use it as a substitute. If anything fails, fix it before moving on.
 
-### 2. commit
+### 2. Commit
 
-意図したファイルだけ明示的に stage する。`git add -A` / `git add .` は使わない (secret や生成物の混入防止)。
+Explicitly stage only the intended files. Do not use `git add -A` or `git add .` (prevents secrets or generated artifacts from being mixed in).
 
 ```bash
 git add <files>
 git commit -m "<type>: <subject>"
 ```
 
-プレフィックスは `feat:` / `fix:` / `refactor:` / `test:` (CLAUDE.md コーディング規約)。
+Commit prefix must be one of `feat:` / `fix:` / `refactor:` / `test:` (CLAUDE.md coding conventions).
 
-### 3. push
+### 3. Push
 
 ```bash
 git push -u origin HEAD
 ```
 
-force-push / 履歴書き換えは禁止。中間 commit を消したいなら revert で対応する。
+Force-push and history rewriting are forbidden. If you need to undo an intermediate commit, use revert.
 
-### 4. PR 作成 or 既存 PR 再利用
+### 4. Create or reuse a PR
 
 ```bash
 PR_URL=$(gh pr list --head "$(git branch --show-current)" --json url --jq '.[0].url // ""')
 ```
 
-- `$PR_URL` が空 → `gh pr create --title "<title>" --body "<body>"` で新規作成
-- 空でない → 既存 PR を再利用 (再 push 済みなので CI は自動で再実行)
+- `$PR_URL` is empty → create a new PR with `gh pr create --title "<title>" --body "<body>"`
+- not empty → reuse the existing PR (CI re-runs automatically after the new push)
 
-title / body の決め方:
+How to set the title and body:
 
-- title はそのブランチの主題を 1 行で (70 字以内)
-- body は要点 bullet。boid task 経由なら `task: <task_id>` と summary を含める。手動 dev なら関連 Issue/PR や背景を書く
+- title: one line describing the branch's purpose (under 70 characters)
+- body: key bullet points. If via a boid task, include `task: <task_id>` and a summary. For manual dev, include related issues/PRs or background context.
 
 ### 5. CI watch
 
@@ -69,36 +69,36 @@ title / body の決め方:
 gh pr checks --watch --fail-fast
 ```
 
-- CI が無いリポでは即 exit 0 で抜ける (それで OK)
-- 失敗したら `gh run view --log-failed` で失敗 job のログを確認し、原因を直してから手順 2-5 を繰り返す
-- mergeable 状態が崩れた場合は別途「conflict 発生時」セクションを参照
+- If the repo has no CI, this exits with code 0 immediately (that is fine)
+- On failure, inspect the failed job logs with `gh run view --log-failed`, fix the root cause, then repeat steps 2–5
+- If the PR becomes unmergeable, see the "Conflict recovery" section below
 
-CI green でこの skill のスコープは終了。
+Once CI is green, this skill's scope is complete.
 
-## merge は含めない
+## Merge is not included
 
-boid task の dev behavior では `task.exit` gate (auto-merge) が CI green 後に PR を merge するが、このスキル単体では merge しない。merge はユーザの明示的な指示があってから `gh pr merge` を実行する。
+In the boid task dev behavior, the `task.exit` gate (auto-merge) merges the PR after CI goes green; this skill on its own does not merge. Only run `gh pr merge` when the user explicitly asks for it.
 
-## boid task として走る場合との差分
+## Differences from running as a boid task
 
-| 観点 | boid task (dev) | この skill 単体 |
-|------|----------------|----------------|
-| ブランチ | worktree を boid が用意 | 現在の任意ブランチ |
-| title/body 出所 | task.yaml | 会話 / ユーザ指示 |
-| CI 失敗時 | exit 非ゼロ → boid が aborted | exit 非ゼロ → 単に停止 |
-| 完了後 merge | `task.exit` gate が auto-merge | 実行しない |
+| Aspect | boid task (dev) | this skill alone |
+|--------|----------------|------------------|
+| Branch | boid provides the worktree | any current branch |
+| title/body source | task.yaml | conversation / user instruction |
+| On CI failure | exit non-zero → boid marks it aborted | exit non-zero → simply stops |
+| Post-completion merge | `task.exit` gate auto-merges | not executed |
 
-## conflict 発生時のリカバリ
+## Conflict recovery
 
-base に merge できなくなったら rebase ではなく merge で解消する (CLAUDE.md 規約):
+If the PR can no longer be merged into base, resolve it with a merge commit (not a rebase) as per CLAUDE.md conventions:
 
 ```bash
 git fetch origin
 git merge origin/main
-# conflict 解消
+# resolve conflicts
 git add <resolved>
 git commit
 git push origin HEAD
 ```
 
-その後手順 5 (CI watch) を再実行する。force-push 不要な履歴を保つために必ず merge を使う。
+Then re-run step 5 (CI watch). Always use merge to keep a history that does not require force-push.
