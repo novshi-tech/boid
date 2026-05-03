@@ -1,90 +1,88 @@
-# テスト設計ガイドライン
+# Test Design Guidelines
 
-## 何をテストすべきか
+## What to Test
 
-### 正常系フロー（必須）
+### Happy Path (required)
 
-- タスクが期待ステータス（`done` 等）に到達すること
-- artifact の内容が正しいこと
-- プロジェクト登録・タスク作成が成功すること
+- The task reaches the expected status (e.g., `done`)
+- The artifact content is correct
+- Project registration and task creation succeed
 
-### 状態遷移（新機能追加時）
+### State Transitions (when adding new features)
 
-- `pending` → `executing` → `done` の遷移が正しく行われること
-- entry/exit gate の発火タイミングと exit code が遷移をどう変えるか
-- 並列 hook と順次 hook の実行順序
+- The `pending` → `executing` → `done` transition occurs correctly
+- How entry/exit gate firing timing and exit codes affect transitions
+- Execution order of parallel and sequential hooks
 
-### エラーケース（任意、複雑化する場合は省略可）
+### Error Cases (optional, may be omitted if it adds complexity)
 
-- exit gate が fail して done への遷移をブロックする (executing に留まる)
-- abort アクションによるタスク中断 (`aborted` 終端状態)
+- The exit gate fails and blocks the transition to done (remains in executing)
+- Task interruption via abort action (`aborted` terminal state)
 
-## アサーションの書き方
+## Writing Assertions
 
-`e2e_assert_contains <haystack> <needle>` を使う。
+Use `e2e_assert_contains <haystack> <needle>`.
 
 ```bash
-# タスクの JSON レスポンスを変数に保存
+# Save the task JSON response to a variable
 task_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 20s --interval 100ms "$task_id" done)"
 
-# ステータスのアサーション
+# Assert status
 e2e_assert_contains "$task_json" '"status":"done"'
 
-# artifact の内容のアサーション
+# Assert artifact content
 e2e_assert_contains "$task_json" '"artifact"'
 e2e_assert_contains "$task_json" '"result":"done"'
 
-# プロジェクト一覧のアサーション
+# Assert project list
 project_list="$("$E2E_BIN_DIR/boid" project list)"
 e2e_assert_contains "$project_list" "my-scenario"
 ```
 
-**注意**: `e2e_assert_contains` は部分文字列マッチ。JSON キーが正しく含まれるかを確認する程度に使う。
+**Note**: `e2e_assert_contains` performs a substring match. Use it to check that JSON keys are correctly included.
 
-## 非同期処理の待機パターン
+## Async Wait Patterns
 
-### タスクステータスの待機
+### Waiting for Task Status
 
 ```bash
-# 最大 20 秒、100ms 間隔でポーリング
+# Poll at 100ms intervals for up to 20 seconds
 task_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 20s --interval 100ms "$task_id" executing)"
 ```
 
-ステータス値: `pending`, `executing`, `done`, `aborted`
+Status values: `pending`, `executing`, `done`, `aborted`
 
-### ジョブ数の待機
+### Waiting for Job Count
 
 ```bash
-# ジョブが 2 件以上になるまで待機（hook 2 つが起動した状態）
+# Wait until at least 2 jobs exist (2 hooks have started)
 "$E2E_BIN_DIR/boid-e2e" wait-job-count "$task_id" 2
 ```
 
-### ジョブのロール別件数検証
+### Verifying Job Count by Role
 
 ```bash
-# hook が 2 件、gate が 0 件であることを確認
+# Verify that there are 2 hooks and 0 gates
 "$E2E_BIN_DIR/boid-e2e" assert-job-role-count "$task_id" hook 2
 "$E2E_BIN_DIR/boid-e2e" assert-job-role-count "$task_id" gate 0
 ```
 
-### ファイルの出現待機
+### Waiting for a File to Appear
 
 ```bash
-# agent-a が実行後に書き出すファイルを待機（e2e/lib/common.sh の関数）
+# Wait for the file written by agent-a after execution (function from e2e/lib/common.sh)
 e2e_wait_for_file "$PROJECT_DIR/agent-a-instructions.json"
 ```
 
-## fake コマンドの作り方（hostbin パターン）
+## Creating fake Commands (hostbin Pattern)
 
-host_commands を使うシナリオでは、実際の外部コマンド（`gh`, `git`, `systemctl` 等）の代わりに
-fake スクリプトを使う。
+For scenarios that use host_commands, use fake scripts instead of the actual external commands (`gh`, `git`, `systemctl`, etc.).
 
-### 配置場所
+### Placement
 
-`e2e/fixtures/hostbin/` に置く。`run.sh` が自動的に `$E2E_BIN_DIR` にコピーし、
-`$PATH` の先頭に追加されるため fake が優先実行される。
+Place them in `e2e/fixtures/hostbin/`. `run.sh` automatically copies them to `$E2E_BIN_DIR` and prepends it to `$PATH`, so fake commands take priority.
 
-### fake スクリプトのテンプレート
+### fake Script Template
 
 ```bash
 #!/usr/bin/env bash
@@ -98,65 +96,65 @@ log_file="${E2E_STATE_DIR:?}/fake-gh.log"
   printf -- '---\n'
 } >>"$log_file"
 
-# 必要に応じて stdout に出力（コマンドの戻り値をシミュレート）
+# Print to stdout as needed (to simulate the command's return value)
 printf 'https://example.invalid/pr/123\n'
 
 exit 0
 ```
 
-### fake ログの検証
+### Verifying fake Logs
 
 ```bash
-# fake-gh.log に期待するコマンドが記録されているか確認
+# Check that the expected command is recorded in fake-gh.log
 [[ -f "$E2E_STATE_DIR/fake-gh.log" ]] || e2e_fail "missing fake gh log"
 grep -F 'args=pr create --title My PR' "$E2E_STATE_DIR/fake-gh.log" \
   >/dev/null || e2e_fail "gh pr create was not invoked"
 ```
 
-### kit.yaml での host_commands 宣言
+### Declaring host_commands in kit.yaml
 
 ```yaml
 host_commands:
   gh:
-    path: ${E2E_BIN_DIR}/gh   # fake コマンドのパス
+    path: ${E2E_BIN_DIR}/gh   # fake command path
     allow:
-      - pr                     # 許可するサブコマンド
+      - pr                     # allowed subcommands
   systemctl:
     path: ${E2E_BIN_DIR}/systemctl
     allow:
       - restart
 ```
 
-## builtin command (boid / git) のテスト
+## Testing builtin Commands (boid / git)
 
-新しい builtin op を追加した場合は、 hook / gate スクリプトから sandbox 経由で呼ぶ E2E を入れること。 `boid task list` のようにテキスト出力する builtin は scenario.sh から host CLI として呼んでも別物なので、 sandbox 内で発火させる経路を組む。
+When adding a new builtin op, include an E2E test that calls it from a hook/gate script via sandbox. Builtins that produce text output (like `boid task list`) behave differently when called as a host CLI from scenario.sh, so wire up a path that fires them from within sandbox.
 
-参照: `e2e/scenarios/builtin-task-create/` — gate スクリプト内で `boid task create` を呼ぶパターンを採用している。
+Reference: `e2e/scenarios/builtin-task-create/` — demonstrates the pattern of calling `boid task create` from within a gate script.
 
-## サンドボックス前提条件の扱い
+## Handling Sandbox Prerequisites
 
-`requires-sandbox` マーカーファイルを置くだけでよい（内容は空で可）。
+Just place a `requires-sandbox` marker file (can be empty).
 
 ```bash
 touch e2e/scenarios/my-scenario/requires-sandbox
 ```
 
-これにより `run.sh` が以下を確認する:
-- `pasta` コマンドが存在するか
-- `unshare` コマンドが存在するか  
-- `nft` コマンドが存在するか
-- `unshare --user --mount --map-root-user` が成功するか
+This causes `run.sh` to check for the following:
+- The `pasta` command is available
+- The `unshare` command is available
+- The `nft` command is available
+- `unshare --user --mount --map-root-user` succeeds
 
-**サンドボックスが必要なシナリオ**: hostcmd（ホストコマンドブローカー）を使うもの。
-`requires-sandbox` なしのシナリオは CI でも開発マシンでも実行できる。
+**Scenarios requiring sandbox**: those that use hostcmd (the host command broker).
+Scenarios without `requires-sandbox` can run on both CI and developer machines.
 
-## 既存シナリオの参照
+## Reference Scenarios
 
-| シナリオ | 特徴 | 参照ポイント |
-|---------|------|------------|
-| `project-smoke` | 最小構成、サンドボックス不要 | シンプルなプロジェクト登録 + アサーション |
-| `readonly-hook-gate` | 並列 hook + exit gate 構成 | hook/gate 同期パターン |
-| `phase-dependency` | 複数子タスクと `artifact.children.all_done` による phase 連結 | 親子 / 依存関係 / abort 動作 |
-| `builtin-task-create` | hook / gate からの `boid task create` builtin | サブタスク生成の現行パターン (旧 tasks trait の代替) |
-| `task-import-smoke` | JSONL からの一括 import (`boid task import`) | bulk task 投入 |
-| `host-command-smoke` | hostcmd (gh, systemctl)、サンドボックス必須 | fake コマンドの使い方 |
+| Scenario | Characteristics | Reference Points |
+|---------|-----------------|-----------------|
+| `project-smoke` | Minimal setup, no sandbox required | Simple project registration + assertions |
+| `readonly-hook-gate` | Parallel hooks + exit gate setup | hook/gate sync pattern |
+| `phase-dependency` | Multiple child tasks with phase chaining via `artifact.children.all_done` | Parent-child / dependencies / abort behavior |
+| `builtin-task-create` | `boid task create` builtin from hook/gate | Current pattern for subtask creation (replaces the old tasks trait) |
+| `task-import-smoke` | Bulk import from JSONL (`boid task import`) | Bulk task submission |
+| `host-command-smoke` | hostcmd (gh, systemctl), sandbox required | How to use fake commands |

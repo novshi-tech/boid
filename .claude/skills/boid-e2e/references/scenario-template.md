@@ -1,18 +1,18 @@
-# シナリオ作成テンプレート
+# Scenario Creation Template
 
-## ディレクトリ構成
+## Directory Structure
 
 ```
 e2e/scenarios/<scenario-name>/
-├── scenario.sh                    # シナリオスクリプト（必須）
-├── requires-sandbox               # サンドボックス必要な場合のみ（空ファイル）
+├── scenario.sh                    # scenario script (required)
+├── requires-sandbox               # only if sandbox is required (empty file)
 └── workspace/
     └── app/
         └── .boid/
-            └── project.yaml       # テスト用プロジェクト定義（必須）
+            └── project.yaml       # project definition for testing (required)
 ```
 
-fixture kit（カスタム hooks/gates）が必要な場合:
+If a fixture kit (custom hooks/gates) is needed:
 
 ```
 e2e/fixtures/kits/github.com/novshi-tech/boid-kits/<kit-name>/
@@ -23,11 +23,11 @@ e2e/fixtures/kits/github.com/novshi-tech/boid-kits/<kit-name>/
     └── <gate-id>.sh
 ```
 
-## project.yaml テンプレート
+## project.yaml Templates
 
-### 最小構成（hook/gate なし）
+### Minimal Setup (no hooks or gates)
 
-参照: `e2e/scenarios/project-smoke/workspace/app/.boid/project.yaml`
+Reference: `e2e/scenarios/project-smoke/workspace/app/.boid/project.yaml`
 
 ```yaml
 id: my-scenario
@@ -39,9 +39,9 @@ hooks: []
 gates: []
 ```
 
-### kit を使う構成（exit gate 付き）
+### Setup with Kit (with exit gate)
 
-参照: `e2e/scenarios/readonly-hook-gate/workspace/app/.boid/project.yaml`
+Reference: `e2e/scenarios/readonly-hook-gate/workspace/app/.boid/project.yaml`
 
 ```yaml
 id: my-scenario
@@ -55,28 +55,28 @@ hooks: []
 gates: []
 ```
 
-### kit.yaml テンプレート
+### kit.yaml Template
 
 ```yaml
 env:
-  E2E_STATE_DIR: ${E2E_STATE_DIR}   # 環境変数を注入する場合
+  E2E_STATE_DIR: ${E2E_STATE_DIR}   # inject environment variables as needed
 hooks:
-  - id: my-hook                      # 必ず executing で起動 (on: は廃止済)
+  - id: my-hook                      # always starts in executing state (the on: field is deprecated)
 gates:
   - id: my-gate
-    phase: exit                      # entry (pending → executing 直前) または exit (executing → done 直前)
+    phase: exit                      # entry (just before pending → executing) or exit (just before executing → done)
     traits:
-      consumes: [artifact]           # アクセスする trait を宣言
+      consumes: [artifact]           # declare traits to access
 ```
 
-**hooks**: 常に `executing` 状態で起動 (`on:` フィールドは廃止済)。
-**gates**: `phase: entry` で次状態の入場直前に、 `phase: exit` で現状態の退場直前に発火。 省略時は `exit`。
+**hooks**: Always start in the `executing` state (the `on:` field is deprecated).
+**gates**: Fire just before entering the next state with `phase: entry`, or just before leaving the current state with `phase: exit`. Defaults to `exit` if omitted.
 
-## scenario.sh テンプレート
+## scenario.sh Templates
 
-### 基本パターン（プロジェクト登録 → タスク作成 → 検証）
+### Basic Pattern (register project → create task → verify)
 
-参照: `e2e/scenarios/project-smoke/scenario.sh`
+Reference: `e2e/scenarios/project-smoke/scenario.sh`
 
 ```bash
 #!/usr/bin/env bash
@@ -84,11 +84,11 @@ set -euo pipefail
 
 PROJECT_DIR="$E2E_WORKSPACE_DIR/app"
 
-# 1. プロジェクト登録
+# 1. Register the project
 e2e_log "registering project from $PROJECT_DIR"
 e2e_run "$E2E_BIN_DIR/boid" project add "$PROJECT_DIR"
 
-# 2. タスク作成
+# 2. Create the task
 task_create_output="$("$E2E_BIN_DIR/boid" task create <<'YAML'
 project_id: my-scenario
 title: My Test Task
@@ -99,32 +99,32 @@ printf '%s\n' "$task_create_output"
 task_id="$(printf '%s\n' "$task_create_output" | sed -n 's/^task created: \([0-9a-f-]*\) (.*/\1/p')"
 [[ -n "$task_id" ]] || e2e_fail "failed to parse task id"
 
-# 3. タスク開始
+# 3. Start the task
 e2e_run "$E2E_BIN_DIR/boid" action send --task "$task_id" --type start
 
-# 4. 完了を待機して検証
+# 4. Wait for completion and verify
 task_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 15s --interval 100ms "$task_id" done)"
 printf '%s\n' "$task_json"
 e2e_assert_contains "$task_json" '"status":"done"'
 ```
 
-### hook/gate 同期パターン（ファイルで release 制御）
+### hook/gate Sync Pattern (file-based release control)
 
-参照: `e2e/scenarios/readonly-hook-gate/scenario.sh`
+Reference: `e2e/scenarios/readonly-hook-gate/scenario.sh`
 
 ```bash
-# hook スクリプト側: ファイルが現れるまでブロック
+# hook script: block until the file appears
 while [[ ! -f ".boid/release-my-hook" ]]; do sleep 0.05; done
 
-# シナリオ側: hook が起動したことを確認してから release
+# scenario: verify the hook has started before releasing
 "$E2E_BIN_DIR/boid-e2e" wait-job-count "$task_id" 1
 "$E2E_BIN_DIR/boid-e2e" assert-job-role-count "$task_id" hook 1
 touch "$PROJECT_DIR/.boid/release-my-hook"
 ```
 
-### payload override でタスク作成するパターン
+### Creating a Task with Payload Override
 
-参照: `e2e/scenarios/instructions-routing/scenario.sh`
+Reference: `e2e/scenarios/instructions-routing/scenario.sh`
 
 ```bash
 task_create_output="$("$E2E_BIN_DIR/boid" task create <<'YAML'
@@ -141,31 +141,31 @@ YAML
 )"
 ```
 
-## hook/gate スクリプトのテンプレート
+## hook/gate Script Templates
 
-### hook スクリプト（artifact を出力）
+### hook Script (outputting artifact)
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ブロッキング（任意）
+# Blocking (optional)
 while [[ ! -f ".boid/release-my-hook" ]]; do sleep 0.05; done
 
-# payload_patch を $HOME/.boid/output/ に出力
+# Write payload_patch to $HOME/.boid/output/
 mkdir -p "$HOME/.boid/output"
 cat > "$HOME/.boid/output/payload_patch.json" <<'EOF'
 {"payload_patch":{"artifact":{"result":"done"}}}
 EOF
 ```
 
-### gate スクリプト（verification を stdout に出力）
+### gate Script (outputting verification to stdout)
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
-# stdout に JSON を出力する（payload_patch ではなく直接 stdout）
+# Write JSON to stdout (directly to stdout, not payload_patch)
 cat <<'EOF'
 {"payload_patch":{"verification":{"findings":[{"message":"all checks passed","status":"resolved"}]}}}
 EOF
