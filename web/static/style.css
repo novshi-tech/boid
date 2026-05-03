@@ -1718,6 +1718,9 @@ details[open] > summary {
   flex: 1 1 0;
   min-height: 0;
   overflow: hidden;
+  /* モバイル: 縦スワイプをスクロールとして扱い、横は親に委ねる */
+  touch-action: pan-y;
+  overscroll-behavior: contain;
 }
 
 .boid-terminal-xterm {
@@ -1726,7 +1729,14 @@ details[open] > summary {
 }
 
 /* Override xterm default background to match our dark bg */
-.xterm-viewport { background: #0d0d0d !important; }
+.xterm-viewport {
+  background: #0d0d0d !important;
+  /* iOS 慣性スクロール (Step A フォールバック) */
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  /* GPU 合成レイヤに昇格してタッチ時の再描画コストを下げる */
+  will-change: transform;
+}
 
 /* ---- Special keybar ---- */
 .boid-terminal-keybar {
