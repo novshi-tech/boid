@@ -46,7 +46,6 @@ Omitting `behavior` in `boid task create` routes to **`plan` by default**. Use t
 boid task create <<YAML
 title: Task title
 behavior: <key from task_behaviors in project.yaml, or omit>
-parent_id: ${BOID_TASK_ID}
 description: |
   Implementation instructions for this subtask. Describe what to build and how in detail.
 auto_start: true
@@ -58,7 +57,6 @@ stdout returns `task created: <id> (<status>)`, which you can capture in a shell
 ```bash
 CHILD_A=$(boid task create <<YAML | awk '{print $3}'
 title: ...
-parent_id: ${BOID_TASK_ID}
 auto_start: true
 YAML
 )
@@ -67,7 +65,10 @@ YAML
 ### Required fields
 
 - `title`: required.
-- `parent_id: ${BOID_TASK_ID}`: required to maintain the parent-child relationship. Omitting this creates an independent task outside the supervisor's monitoring scope. `$BOID_TASK_ID` is provided as an environment variable (also available from `~/.boid/context/task.yaml`'s `id` field).
+- `parent_id`: optional. When omitted, automatically defaults to the current task ID
+  (the `BOID_TASK_ID` env var the sandbox provides). This keeps the new task under the
+  supervisor's monitoring scope. Specify it explicitly only when you need to attach the
+  new task to a different parent.
 
 ### Common fields
 
@@ -277,7 +278,6 @@ For tasks with ordering dependencies, set them on the downstream task:
 boid task create <<YAML
 title: Downstream task
 behavior: <name>
-parent_id: ${BOID_TASK_ID}
 ref: task-b
 description: ...
 depends_on:
@@ -319,7 +319,6 @@ When the plan is fixed upfront and the supervisor doesn't need to relay, you can
 boid task create <<YAML
 title: Phase 2 Plan
 ref: phase2
-parent_id: ${BOID_TASK_ID}
 depends_on: [phase1-a, phase1-b]
 depends_on_payload: artifact.children.all_done
 auto_start: true
@@ -336,7 +335,6 @@ CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 boid task create <<YAML
 title: Implementation on feature branch
 behavior: <name>
-parent_id: ${BOID_TASK_ID}
 base_branch: ${CURRENT_BRANCH}
 description: ...
 auto_start: true
