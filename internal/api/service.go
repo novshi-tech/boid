@@ -587,6 +587,18 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message string)
 			ev.ProjectName = proj.Meta.Name
 		}
 	}
+	// Find the most recent interactive running job (best-effort; errors silently skipped).
+	if s.Jobs != nil {
+		if jobs, jobsErr := s.Jobs.ListJobsByTask(taskID); jobsErr == nil {
+			for i := len(jobs) - 1; i >= 0; i-- {
+				j := jobs[i]
+				if j.Status == JobStatusRunning && j.Interactive {
+					ev.JobID = j.ID
+					break
+				}
+			}
+		}
+	}
 	if err := s.Notify.Notify(ctx, ev); err != nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
