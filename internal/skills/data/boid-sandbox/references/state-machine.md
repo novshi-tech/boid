@@ -9,21 +9,21 @@
 
 ## Status Overview
 
-| status | 役割 | FS |
+| status | Role | FS |
 |--------|------|-----|
-| executing | 指示に従い実装する | RW |
+| executing | Implement according to instructions | RW |
 
-pending, done, aborted ではエージェントは起動されない。
+Agents are not started in pending, done, or aborted states.
 
 ## Unified Flow
 
-すべてのタスクは単一の state machine で動作する。
-状態は `pending → executing → done` の 3 つで、 失敗時のみ `aborted` で終端する。
+All tasks run on a single state machine.
+States are three: `pending → executing → done`, with `aborted` as the failure terminal.
 
 ```
 pending → executing → done
               ↑
-              │ reopen で done から戻れる
+              │ can return from done via reopen
               │
 done ─────────┘
 ```
@@ -32,26 +32,26 @@ done ─────────┘
 
 ### executing
 
-instructions の指示に従って作業する。
+Work according to the instructions.
 
-- 指示に従って作業し正常終了 (exit 0) すれば、 hook trap が `boid job done` を発火して状態機械が進める
-- plan agent が全子の完了を見届けた場合など、 早期に session を閉じたい場合は明示的に呼び出せる:
+- Follow the instructions, and if you exit normally (exit 0), the hook trap fires `boid job done` and the state machine advances
+- When you want to close the session early (e.g., after a plan agent has confirmed all children completed), you can call it explicitly:
   `boid job done "$BOID_JOB_ID" --exit-code 0`
-  これを呼ぶとデーモンがプロセスに SIGTERM を送り session が終了する。
-  その後 bash EXIT trap が再度 `boid job done` を発火するが、デーモン側で二重発火を吸収する。
-- 修正不可能なエラーに遭遇した場合は abort で打ち切る:
+  This causes the daemon to send SIGTERM to the process and the session ends.
+  The bash EXIT trap then fires `boid job done` again, but the daemon absorbs the double-fire.
+- If you encounter an unrecoverable error, abort:
   `boid task abort <task_id> --code <reason> --message "<summary>"`
 
-reopen で executing に戻された場合、 `Task.Instructions` 配列の最後の要素が新しい active 指示となる。 過去の指示は配列の前方に残るので、 文脈として参照できる。
+When returned to executing via reopen, the last element of the `Task.Instructions` array becomes the new active instruction. Past instructions remain at the front of the array and can be referenced as context.
 
 ## Auto-Transition
 
-状態遷移はシステムが hook の終了イベントに基づいて自動判定する。
-エージェントが明示的に遷移を指示する必要はない。
+State transitions are determined automatically by the system based on hook exit events.
+Agents do not need to explicitly signal transitions.
 
-| 条件 | 遷移 |
+| Condition | Transition |
 |------|------|
-| hook が exit 0 で終了 (`boid job done` 発火) | executing → done |
-| `done` 入場直前に exit gate が exit 0 を返す | executing → done が確定 |
-| `done` 入場直前に exit gate が exit 非 0 | 遷移ブロック (executing のまま残る) |
-| 任意の状態で `boid task abort` | * → aborted |
+| hook exits with exit 0 (`boid job done` fires) | executing → done |
+| exit gate returns exit 0 just before entering `done` | executing → done confirmed |
+| exit gate returns non-zero just before entering `done` | transition blocked (stays in executing) |
+| `boid task abort` called from any state | * → aborted |

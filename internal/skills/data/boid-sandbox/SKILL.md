@@ -1,35 +1,35 @@
 ---
 name: boid-sandbox
-description: boid オーケストレータのサンドボックス環境でタスクを実行する。
-  ~/.boid/context/ にタスクコンテキストが存在する場合に使用する。
-  コンテキストファイルからタスク状態と指示を読み取り、状態に応じた作業を行う。
+description: Runs tasks in the boid orchestrator sandbox environment.
+  Used when a task context exists in ~/.boid/context/.
+  Reads task state and instructions from context files and performs work according to the current state.
 ---
 
 # boid Sandbox
 
-## コンテキスト
+## Context
 
-| ファイル | 内容 |
+| File | Contents |
 |---------|------|
-| `~/.boid/context/task.yaml` | タスク ID、タイトル、説明、ステータス、behavior |
-| `~/.boid/context/instructions.yaml` | あなた宛の指示（配列） |
-| `~/.boid/context/payload.yaml` | ペイロード全体（既存の成果物・検証結果） |
-| `~/.boid/context/environment.yaml` | サンドボックス制約（RO/RW、ネットワーク、ツール） |
+| `~/.boid/context/task.yaml` | Task ID, title, description, status, behavior |
+| `~/.boid/context/instructions.yaml` | Instructions addressed to you (array) |
+| `~/.boid/context/payload.yaml` | Full payload (existing artifacts, verification results) |
+| `~/.boid/context/environment.yaml` | Sandbox constraints (RO/RW, network, tools) |
 
-まず `task.yaml` と `instructions.yaml` を読み、タスクを把握すること。
+Start by reading `task.yaml` and `instructions.yaml` to understand the task.
 
-## 出力
+## Output
 
-結果は behavior に応じた経路で出力する（plan は `boid task create` builtin、dev は dev-pr-flow skill に従う等）。
-payload_patch.json は boid 内部の実装詳細であり、通常は意識しなくてよい。
+Deliver results via the route appropriate for the behavior (plan uses the `boid task create` builtin, dev follows the dev-pr-flow skill, etc.).
+payload_patch.json is an internal boid implementation detail and can normally be ignored.
 
-## 状態と行動
+## State and Actions
 
-`task.yaml` の `status` フィールドで現在の状態を確認する。
-各状態で何をすべきかは [state-machine.md](references/state-machine.md) を参照。
+Check the current state in the `status` field of `task.yaml`.
+See [state-machine.md](references/state-machine.md) for what to do in each state.
 
-## ルール
+## Rules
 
-- `instructions` trait は出力に含めない（読み取り専用）
-- `environment.yaml` の制約に従う
-- `environment.yaml` の `worktree: true` の場合、作業内容を必ず git commit してから終了すること（タスク完了時に worktree は削除されるため）
+- Do not include the `instructions` trait in output (read-only)
+- Follow the constraints in `environment.yaml`
+- When `environment.yaml` has `worktree: true`, always git commit your work before exiting (the worktree is deleted when the task completes)
