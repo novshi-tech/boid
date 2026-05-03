@@ -27,14 +27,14 @@ task_behaviors:
       agent: claude-code
       model: sonnet
       message: |
-          task.yaml の title と description に記述された内容を実装せよ。
+          Implement what is described in task.yaml's title and description.
 
-          実装完了後は /dev-pr-flow skill の手順 を実行する。
-          - PR title は task.yaml の title を使う
-          - PR body は先頭に `task: <task_id>` を置き、続けて要約を書く
-          - CI が失敗したら exit 非ゼロで終了する (boid 側で job_failed → aborted)
-          CI 成功で正常終了。 hook の exit trap が `boid job done` を発火し、
-          task.exit gate (auto-merge) が PR を merge する。
+          When the implementation is complete, run the /dev-pr-flow skill.
+          - Use task.yaml's title as the PR title.
+          - Start the PR body with `task: <task_id>`, followed by a summary.
+          - If CI fails, exit with a non-zero code (boid will then transition job_failed → aborted).
+          Exit normally on CI success. The hook exit trap fires `boid job done`,
+          and the task.exit gate (auto-merge) merges the PR.
   plan:
     name: Plan
     readonly: true
