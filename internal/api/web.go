@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -655,7 +656,12 @@ func (h *WebManagementHandler) GetDevices(w http.ResponseWriter, r *http.Request
 
 func (h *WebManagementHandler) DeleteDevice(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := h.Store.RevokeDevice(r.Context(), id); err != nil {
+	err := h.Store.RevokeDevice(r.Context(), id)
+	if errors.Is(err, auth.ErrDeviceNotFound) {
+		http.Error(w, "device not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
