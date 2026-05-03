@@ -1,43 +1,43 @@
 ---
 name: boid-e2e
 description: >
-  boid プロジェクトで E2E シナリオを新規作成・追加するためのガイド・テンプレート・設計原則を提供する。
-  シナリオのディレクトリ構成、project.yaml/scenario.sh のテンプレート、アサーションパターン、
-  fake コマンドの使い方を網羅する。
-  Use when a team member wants to add a new E2E scenario (e.g. 「e2e シナリオを追加したい」
-  「新機能の回帰テストを足したい」「e2e/scenarios/ にシナリオを新規作成する」)
+  Provides guides, templates, and design principles for creating and adding new E2E scenarios to the boid project.
+  Covers scenario directory structure, project.yaml/scenario.sh templates, assertion patterns,
+  and how to use fake commands.
+  Use when a team member wants to add a new E2E scenario (e.g. "add an e2e scenario",
+  "add a regression test for the new feature", "create a new scenario under e2e/scenarios/")
   or when implementing a new boid feature that requires end-to-end test coverage.
 ---
 
-# boid E2E テスト作成スキル
+# boid E2E Test Creation Skill
 
-新機能に E2E テストをセットで作成するための手順書。
-既存シナリオのサンプルとして `e2e/scenarios/project-smoke`（最もシンプル）を参照すること。
+Step-by-step guide for creating E2E tests alongside new features.
+Refer to `e2e/scenarios/project-smoke` (the simplest example) as a reference for existing scenarios.
 
-## クイックスタート
+## Quick Start
 
 ```
-1. e2e/scenarios/<scenario-name>/ ディレクトリを作成する
-2. workspace/app/.boid/project.yaml を配置する
-3. scenario.sh を作成する
-4. （サンドボックス必要な場合）requires-sandbox を配置する
-5. ./e2e/run.sh <scenario-name> で動作確認（ホスト上のみ実行可能）
+1. Create the e2e/scenarios/<scenario-name>/ directory
+2. Place workspace/app/.boid/project.yaml
+3. Create scenario.sh
+4. (If sandbox is required) Place requires-sandbox
+5. Verify with ./e2e/run.sh <scenario-name> (runs on host only)
 ```
 
-## 詳細リファレンス
+## Detailed Reference
 
-- [E2E インフラ概要](references/infrastructure.md) — run.sh の実行フロー・ヘルパー関数・環境変数
-- [シナリオ作成テンプレート](references/scenario-template.md) — ディレクトリ構成・project.yaml・scenario.sh のテンプレート
-- [テスト設計ガイドライン](references/design-guidelines.md) — 何をテストするか・アサーション・待機パターン・fake コマンド
+- [E2E Infrastructure Overview](references/infrastructure.md) — run.sh execution flow, helper functions, and environment variables
+- [Scenario Creation Template](references/scenario-template.md) — directory structure, project.yaml, and scenario.sh templates
+- [Test Design Guidelines](references/design-guidelines.md) — what to test, assertions, wait patterns, and fake commands
 
-## チェックリスト
+## Checklist
 
-新しいシナリオを作成したら以下を確認する:
+Verify the following after creating a new scenario:
 
-- [ ] `e2e/scenarios/<name>/scenario.sh` が作成されているか
-- [ ] `e2e/scenarios/<name>/workspace/app/.boid/project.yaml` が正しい構成か
-- [ ] 正常系のアサーション（`e2e_assert_contains`）が少なくとも 1 つあるか
-- [ ] サンドボックスが必要な場合 `requires-sandbox` ファイルがあるか
-- [ ] fixture kit（`e2e/fixtures/kits/`）が必要な場合追加されているか
-- [ ] ユニットテストが壊れていないか（`go test ./...` で確認）
-- [ ] 既存シナリオを壊していないか（CI に任せる、または `./e2e/run.sh` で全シナリオ実行）
+- [ ] `e2e/scenarios/<name>/scenario.sh` is created
+- [ ] `e2e/scenarios/<name>/workspace/app/.boid/project.yaml` has the correct structure
+- [ ] At least one happy-path assertion (`e2e_assert_contains`) is present
+- [ ] `requires-sandbox` file is present if sandbox is required
+- [ ] fixture kit (`e2e/fixtures/kits/`) is added if needed
+- [ ] Unit tests are not broken (verify with `go test ./...`)
+- [ ] Existing scenarios are not broken (rely on CI or run all scenarios with `./e2e/run.sh`)
