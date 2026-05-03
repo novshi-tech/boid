@@ -46,4 +46,4 @@ task_behaviors:
       model: opus
       interactive: true
       message: |
-        /boid-plan の記述に従って実装計画を策定せよ。
+        Build an implementation plan as described in /boid-plan.
