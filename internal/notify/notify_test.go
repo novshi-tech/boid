@@ -67,6 +67,39 @@ func TestNotify_NonZeroExit(t *testing.T) {
 	}
 }
 
+func TestNotify_WithJobID(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "out.txt")
+	script := filepath.Join(dir, "script.sh")
+	scriptContent := "#!/bin/bash\nprintf '%s' \"$BOID_TASK_URL\" > \"$1\"\n"
+	if err := os.WriteFile(script, []byte(scriptContent), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	s := &Service{
+		Command:   []string{script, out},
+		PublicURL: "https://example.com",
+	}
+	ev := Event{
+		TaskID:  "t1",
+		Message: "hello",
+		JobID:   "j1",
+	}
+	if err := s.Notify(context.Background(), ev); err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read out: %v", err)
+	}
+	got := string(data)
+	want := "https://example.com/jobs/j1/terminal"
+	if got != want {
+		t.Errorf("BOID_TASK_URL:\n got=%q\nwant=%q", got, want)
+	}
+}
+
 func TestNotify_NoPublicURL(t *testing.T) {
 	dir := t.TempDir()
 	out := filepath.Join(dir, "out.txt")

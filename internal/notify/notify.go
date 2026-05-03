@@ -28,6 +28,7 @@ type Event struct {
 	ProjectID   string
 	ProjectName string
 	Message     string
+	JobID       string
 }
 
 // Notify exec's the service's Command synchronously, passing event data
@@ -46,7 +47,7 @@ func (s *Service) Notify(ctx context.Context, ev Event) error {
 		"BOID_PROJECT_ID="+ev.ProjectID,
 		"BOID_PROJECT_NAME="+ev.ProjectName,
 		"BOID_MESSAGE="+ev.Message,
-		"BOID_TASK_URL="+s.taskURL(ev.TaskID),
+		"BOID_TASK_URL="+s.targetURL(ev),
 	)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("notify command: %w", err)
@@ -54,9 +55,13 @@ func (s *Service) Notify(ctx context.Context, ev Event) error {
 	return nil
 }
 
-func (s *Service) taskURL(taskID string) string {
+func (s *Service) targetURL(ev Event) string {
 	if s.PublicURL == "" {
 		return ""
 	}
-	return strings.TrimRight(s.PublicURL, "/") + "/tasks/" + taskID
+	base := strings.TrimRight(s.PublicURL, "/")
+	if ev.JobID != "" {
+		return base + "/jobs/" + ev.JobID + "/terminal"
+	}
+	return base + "/tasks/" + ev.TaskID
 }
