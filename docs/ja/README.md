@@ -11,6 +11,7 @@
 - **はじめて使う。** → [インストール](getting-started/01-install.md)
 - **モデル (概念) を理解したい。** → [概念](guide/concepts.md) と [状態機械](guide/state-machine.md)
 - **スマホから操作したい。** → [Web UI](guide/web-ui.md)
+- **通知でスマホに知らせたい。** → [通知](guide/notifications.md)
 - **詰まっている挙動を直したい。** → [トラブルシューティング](guide/troubleshooting.md)
 
 ## セクション
@@ -31,6 +32,7 @@
 - [概念](guide/concepts.md) — task / job / hook / gate / kit / payload / trait など内部用語の解説
 - [状態機械](guide/state-machine.md) — `pending → executing → done` (+ `aborted`)
 - [Web UI](guide/web-ui.md) — デバイスのペアリング・失効、 Cloudflare Tunnel での公開
+- [通知](guide/notifications.md) — `notify.command` の設定、 ntfy / Pushover スクリプト例
 - [トラブルシューティング](guide/troubleshooting.md)
 
 ### リファレンス
