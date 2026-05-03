@@ -11,6 +11,7 @@ This index is the entry point. The doc set is being built out incrementally; pla
 - **...try boid for the first time.** → [Install](getting-started/01-install.md)
 - **...understand the model.** → [Concepts](guide/concepts.md) and [State machine](guide/state-machine.md)
 - **...drive boid from a phone.** → [Web UI](guide/web-ui.md)
+- **...get a push notification when boid needs my input.** → [Notifications](guide/notifications.md)
 - **...debug something that is stuck.** → [Troubleshooting](guide/troubleshooting.md)
 
 ## Sections
@@ -31,6 +32,7 @@ Concept-oriented how-to.
 - [Concepts](guide/concepts.md) — explains the internal vocabulary: task, job, hook, gate, kit, payload, trait, and more
 - [State machine](guide/state-machine.md) — `pending → executing → done` (plus `aborted`)
 - [Web UI](guide/web-ui.md) — pairing and revoking devices, exposing the UI through Cloudflare Tunnel
+- [Notifications](guide/notifications.md) — configuring `notify.command`, ntfy and Pushover script examples
 - [Troubleshooting](guide/troubleshooting.md)
 
 ### Reference

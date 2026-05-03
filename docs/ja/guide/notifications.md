@@ -1,0 +1,109 @@
+# 通知
+
+`boid` は通知の発火ロジックを自身は持ちません。agent が `boid task notify <id> --message "..."` を呼んだときだけ、`~/.config/boid/config.yaml` の `notify.command` を exec する仕組みです。
+
+主な使い方は **plan agent による判断分岐 / 事前承認**です。agent が「ユーザの判断なしに進められない」状態になったとき、スマホへのプッシュ通知でユーザに知らせます。通知を受けたユーザは Web UI のセッションビューアで状況を確認し、返答します。
+
+## 設定
+
+`~/.config/boid/config.yaml` に `notify.command` を追加します。
+
+```yaml
+notify:
+  command:
+    - /home/you/bin/boid-notify.sh
+```
+
+`command` は `[]string` で、1 番目の要素が実行ファイル、残りは追加引数として渡されます。シェル経由ではなく `exec.CommandContext` で直接 spawn されるため、シェル展開 (`~` の展開等) は効きません。
+
+設定が空 (または config.yaml 自体が存在しない) の場合、`boid task notify` は HTTP 501 を返し、通知はスキップされます。タスクの実行には影響しません。
+
+## スクリプトに渡される環境変数
+
+通知スクリプトは以下の環境変数を受け取ります。
+
+| 変数 | 内容 |
+|---|---|
+| `BOID_TASK_ID` | タスク UUID |
+| `BOID_TASK_TITLE` | タスクのタイトル |
+| `BOID_PROJECT_ID` | プロジェクト UUID |
+| `BOID_PROJECT_NAME` | プロジェクト名 (ベストエフォート、未設定なら空) |
+| `BOID_MESSAGE` | agent が `--message` で渡したテキスト |
+| `BOID_TASK_URL` | タスク詳細 URL (`web.public_url` が設定済みなら `<public_url>/tasks/<id>`、未設定なら空文字) |
+
+ソースは `internal/notify/notify.go` の `Notify` 関数です。
+
+## agent 側からの呼び方
+
+agent は以下のようにコマンドを呼び出します。
+
+```bash
+boid task notify ${BOID_TASK_ID} --message "PR #42 のレビュー反映方針を判断してほしい"
+```
+
+notify は **interactive モード** (`BOID_INTERACTIVE=1`) のときだけ呼ばれます。自律モードでは agent は notify を呼ばず、状況を artifact に書いて終了します。
+
+notify 直後、agent はセッション内に質問本文 (選択肢・判断材料・context) を出力してユーザの返答を待ちます。ユーザは Web UI のセッションビューアで確認し、返答します。
+
+呼び出しポリシーの詳細は plan agent の SKILL.md の「いつ notify を呼ぶか」節を参照してください。
+
+## スクリプト例 1: ntfy.sh
+
+[ntfy](https://ntfy.sh) はセルフホスト / パブリック双方に対応したシンプルなプッシュ通知サービスです。
+
+```sh
+#!/usr/bin/env bash
+# boid-notify-ntfy.sh — ntfy.sh への通知
+# topic は推測しづらい長い文字列に変更すること
+set -euo pipefail
+TOPIC="boid-XXXXXXXX-replace-me"
+curl -fsS \
+  -H "Title: ${BOID_TASK_TITLE:-boid task}" \
+  -H "Click: ${BOID_TASK_URL:-https://ntfy.sh}" \
+  -d "${BOID_MESSAGE}" \
+  "https://ntfy.sh/${TOPIC}" >/dev/null
+```
+
+スクリプトを `/home/you/bin/boid-notify-ntfy.sh` に置いて実行権限を付与し、`config.yaml` で指定します。
+
+```yaml
+notify:
+  command:
+    - /home/you/bin/boid-notify-ntfy.sh
+```
+
+`Click` ヘッダに `BOID_TASK_URL` を渡すと、通知をタップしたときに Web UI のタスク詳細へ直接飛べます。`BOID_TASK_URL` を使うには [Web UI](web-ui.md) で `boid web set-url` を済ませておく必要があります。
+
+ntfy アプリはスマホ (iOS / Android) から `https://ntfy.sh/<topic>` を subscribe して受け取ります。パブリックサーバを使う場合は topic 名を長いランダム文字列にしてください。
+
+## スクリプト例 2: Pushover
+
+[Pushover](https://pushover.net) はリッチなプッシュ通知を送れる有料サービスです (1 ユーザ $5 の買い切り)。User Key と Application Token が必要です。
+
+```sh
+#!/usr/bin/env bash
+# boid-notify-pushover.sh — Pushover への通知
+set -euo pipefail
+: "${PUSHOVER_USER:?PUSHOVER_USER not set}"
+: "${PUSHOVER_TOKEN:?PUSHOVER_TOKEN not set}"
+
+curl -fsS https://api.pushover.net/1/messages.json \
+  --form-string "token=${PUSHOVER_TOKEN}" \
+  --form-string "user=${PUSHOVER_USER}" \
+  --form-string "title=${BOID_TASK_TITLE:-boid task}" \
+  --form-string "message=${BOID_MESSAGE}" \
+  --form-string "url=${BOID_TASK_URL}" \
+  --form-string "url_title=Open in boid" >/dev/null
+```
+
+`PUSHOVER_USER` / `PUSHOVER_TOKEN` は `notify.command` の引数として渡せないため、ラッパースクリプト内でハードコードするか、boid daemon の実行環境に環境変数として乗せる必要があります。systemd の `EnvironmentFile=` や `.profile` の export で設定するのが一般的です。
+
+## マジックリンクとの連動
+
+`boid web set-url https://boid.example.com` を設定しておくと、`BOID_TASK_URL` が `https://boid.example.com/tasks/<id>` 形式になります。通知からワンタップでタスク詳細に飛べるようになるため、スマホ運用するなら必ず設定してください。
+
+公開 URL の設定手順は [Web UI](web-ui.md#他デバイスから) を参照してください。
+
+---
+
+次: [トラブルシューティング](troubleshooting.md)
