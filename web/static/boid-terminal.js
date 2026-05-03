@@ -177,6 +177,86 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
     });
   }
 
+  // --- mobile touch scroll (Step B) ---
+  // xterm.js の .xterm-viewport はネイティブ scroll を使うが、タッチ慣性の
+  // 高頻度 pixel delta と相性が悪くスクロールが詰まる。
+  // Touch Events で delta を自前計算し term.scrollLines() に変換する。
+  (function attachTouchScroll() {
+    const viewport = xtermRoot.querySelector('.xterm-viewport');
+    if (!viewport) return;
+
+    let startY = 0;
+    let lastY = 0;
+    let lastT = 0;
+    let velocityY = 0;  // px/ms
+    let rafId = null;
+
+    function cellHeight() {
+      // getBoundingClientRect ベースで 1 行の高さを推定する
+      const rows = xtermRoot.querySelector('.xterm-rows');
+      if (rows && rows.children.length > 0) {
+        return rows.children[0].getBoundingClientRect().height || 17;
+      }
+      const totalRows = term.buffer.active.length || 1;
+      return viewport.scrollHeight / totalRows;
+    }
+
+    viewport.addEventListener('touchstart', function (e) {
+      if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+      startY = e.touches[0].clientY;
+      lastY  = startY;
+      lastT  = e.timeStamp;
+      velocityY = 0;
+    }, { passive: true });
+
+    viewport.addEventListener('touchmove', function (e) {
+      const y  = e.touches[0].clientY;
+      const dt = e.timeStamp - lastT || 1;
+      const dy = lastY - y;  // 正 = 上スワイプ = 過去へスクロール
+
+      velocityY = dy / dt;  // px/ms
+
+      const rows = Math.round(dy / cellHeight());
+      if (rows !== 0) {
+        term.scrollLines(rows);
+        // ネイティブスクロールと二重動作しないよう viewport のスクロール位置を同期
+        // （xterm が内部 buffer を動かすので viewport の scrollTop は xterm が管理）
+      }
+
+      lastY = y;
+      lastT = e.timeStamp;
+      e.preventDefault();
+    }, { passive: false });
+
+    viewport.addEventListener('touchend', function () {
+      // 慣性減衰スクロール: velocityY (px/ms) を行数に換算しながら減衰させる
+      const ch = cellHeight();
+      let vel = velocityY;  // px/ms
+      let remainder = 0;   // 端数行の持ち越し
+
+      const FRICTION = 0.92;  // フレームごとの速度減衰率
+      const MIN_VEL  = 0.05;  // この速度以下になったら停止 (px/ms)
+
+      function step() {
+        vel *= FRICTION;
+        if (Math.abs(vel) < MIN_VEL) { rafId = null; return; }
+
+        // 16ms/frame 相当の移動量
+        const dy = vel * 16;
+        remainder += dy / ch;
+        const rows = Math.trunc(remainder);
+        remainder -= rows;
+        if (rows !== 0) term.scrollLines(rows);
+
+        rafId = requestAnimationFrame(step);
+      }
+
+      if (Math.abs(vel) >= MIN_VEL) {
+        rafId = requestAnimationFrame(step);
+      }
+    }, { passive: true });
+  })();
+
   // --- reconnect button ---
   reconnectBtn.addEventListener('click', function () {
     connect();
