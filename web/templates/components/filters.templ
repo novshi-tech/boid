@@ -35,13 +35,14 @@ templ TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Proje
 		hx-push-url="true"
 		hx-trigger="change"
 	>
+		<input type="hidden" name="status" value={ filter.Status }/>
 		<div class="status-tabs" role="tablist" aria-label="ステータス">
 			if filter.Status == "closed" {
-				<button type="submit" name="status" value="open" class="status-tab" role="tab" aria-selected="false">Open</button>
-				<button type="submit" name="status" value="closed" class="status-tab active" role="tab" aria-selected="true">Closed</button>
+				<button type="button" hx-get="/" hx-vals={ `{"status":"open"}` } hx-include="closest form" hx-target="#main-content" hx-swap="innerHTML" hx-select="#main-content" hx-push-url="true" class="status-tab" role="tab" aria-selected="false">Open</button>
+				<button type="button" hx-get="/" hx-vals={ `{"status":"closed"}` } hx-include="closest form" hx-target="#main-content" hx-swap="innerHTML" hx-select="#main-content" hx-push-url="true" class="status-tab active" role="tab" aria-selected="true">Closed</button>
 			} else {
-				<button type="submit" name="status" value="open" class="status-tab active" role="tab" aria-selected="true">Open</button>
-				<button type="submit" name="status" value="closed" class="status-tab" role="tab" aria-selected="false">Closed</button>
+				<button type="button" hx-get="/" hx-vals={ `{"status":"open"}` } hx-include="closest form" hx-target="#main-content" hx-swap="innerHTML" hx-select="#main-content" hx-push-url="true" class="status-tab active" role="tab" aria-selected="true">Open</button>
+				<button type="button" hx-get="/" hx-vals={ `{"status":"closed"}` } hx-include="closest form" hx-target="#main-content" hx-swap="innerHTML" hx-select="#main-content" hx-push-url="true" class="status-tab" role="tab" aria-selected="false">Closed</button>
 			}
 		</div>
 		<input
