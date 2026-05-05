@@ -176,19 +176,64 @@ func TestWebTaskList_OpenClosedToggleInHTML(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	body := w.Body.String()
-	// Should contain open and closed buttons, not "All/Pending/Executing/..." buttons
-	if !strings.Contains(body, `value="open"`) {
-		t.Errorf("body should contain open button, got: %s", body)
+	// Hidden status input must be present (fix for status drop bug).
+	if !strings.Contains(body, `name="status"`) {
+		t.Errorf("body should contain hidden status input, got: %s", body)
 	}
-	if !strings.Contains(body, `value="closed"`) {
-		t.Errorf("body should contain closed button, got: %s", body)
+	// Open and Closed tab buttons must be present.
+	if !strings.Contains(body, ">Open<") {
+		t.Errorf("body should contain Open tab button, got: %s", body)
 	}
-	// Old 7-button style should be gone
+	if !strings.Contains(body, ">Closed<") {
+		t.Errorf("body should contain Closed tab button, got: %s", body)
+	}
+	// Old 7-button style should be gone.
 	if strings.Contains(body, `value="pending"`) {
 		t.Errorf("body should NOT contain pending button (old 7-button style), got: %s", body)
 	}
 	if strings.Contains(body, `value="executing"`) {
 		t.Errorf("body should NOT contain executing button (old 7-button style), got: %s", body)
+	}
+}
+
+// TestWebTaskList_ClosedStatusWithQuery verifies that ?status=closed&q=foo retains status=closed.
+func TestWebTaskList_ClosedStatusWithQuery(t *testing.T) {
+	svc := &stubWebService{}
+	r := newTestWebHandlerFull(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/?status=closed&q=foo", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if svc.capturedFilter.Status != "closed" {
+		t.Errorf("Status = %q, want \"closed\" (status must not be dropped when q is set)", svc.capturedFilter.Status)
+	}
+	if svc.capturedFilter.Title != "foo" {
+		t.Errorf("Title = %q, want \"foo\"", svc.capturedFilter.Title)
+	}
+}
+
+// TestWebTaskList_ClosedStatusWithWorkspace verifies that ?status=closed&workspace=ws retains status=closed.
+func TestWebTaskList_ClosedStatusWithWorkspace(t *testing.T) {
+	proj := &orchestrator.Project{ID: "p1", WorkspaceID: "ws-1"}
+	svc := &stubWebService{projects: []*orchestrator.Project{proj}}
+	r := newTestWebHandlerFull(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/?status=closed&workspace=ws-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if svc.capturedFilter.Status != "closed" {
+		t.Errorf("Status = %q, want \"closed\" (status must not be dropped when workspace is set)", svc.capturedFilter.Status)
+	}
+	if svc.capturedFilter.WorkspaceID != "ws-1" {
+		t.Errorf("WorkspaceID = %q, want \"ws-1\"", svc.capturedFilter.WorkspaceID)
 	}
 }
 
