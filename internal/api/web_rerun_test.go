@@ -16,17 +16,24 @@ import (
 // stubWebServiceWithGates extends stubWebService with gate replay support.
 type stubWebServiceWithGates struct {
 	stubWebService
-	rerunErr       error
-	rerunCalls     []string
-	gates          []orchestrator.Gate
-	gatesErr       error
-	replayGateErr  error
+	rerunErr        error
+	rerunCalls      []string
+	reopenErr       error
+	reopenCalls     []ReopenTaskRequest
+	gates           []orchestrator.Gate
+	gatesErr        error
+	replayGateErr   error
 	replayGateCalls []ReplayGateRequest
 }
 
 func (s *stubWebServiceWithGates) RerunTask(id string, req RerunTaskRequest) error {
 	s.rerunCalls = append(s.rerunCalls, id)
 	return s.rerunErr
+}
+
+func (s *stubWebServiceWithGates) ReopenTask(id string, req ReopenTaskRequest) error {
+	s.reopenCalls = append(s.reopenCalls, req)
+	return s.reopenErr
 }
 
 func (s *stubWebServiceWithGates) ListGatesForStatus(taskID, status string) ([]orchestrator.Gate, error) {

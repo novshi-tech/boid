@@ -121,6 +121,7 @@ type WebService interface {
 	CreateTask(req CreateTaskRequest) (*orchestrator.Task, error)
 	UpdateTask(id string, req UpdateTaskRequest) error
 	RerunTask(id string, req RerunTaskRequest) error
+	ReopenTask(id string, req ReopenTaskRequest) error
 	ListGatesForStatus(taskID, status string) ([]orchestrator.Gate, error)
 	ReplayGate(ctx context.Context, taskID string, req ReplayGateRequest) (*ReplayGateResult, error)
 	GetProjectByID(id string) (*orchestrator.Project, error)

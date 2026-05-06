@@ -2449,3 +2449,44 @@ func TestCreateTask_DetachedHead_Returns400(t *testing.T) {
 		t.Fatalf("status code = %d, want 400", se.Code)
 	}
 }
+
+func TestWebAppService_ReopenTask_EmptyMessage_NilPayload(t *testing.T) {
+	workflow := &stubWorkflowService{}
+	svc := &WebAppService{Workflow: workflow}
+
+	if err := svc.ReopenTask("task-1", ReopenTaskRequest{Message: ""}); err != nil {
+		t.Fatalf("ReopenTask() error = %v", err)
+	}
+	if workflow.appliedTaskID != "task-1" {
+		t.Errorf("appliedTaskID = %q, want task-1", workflow.appliedTaskID)
+	}
+	if workflow.appliedType != "reopen" {
+		t.Errorf("appliedType = %q, want reopen", workflow.appliedType)
+	}
+	if workflow.appliedPayload != nil {
+		t.Errorf("appliedPayload = %s, want nil", workflow.appliedPayload)
+	}
+}
+
+func TestWebAppService_ReopenTask_WithMessage_HasInstructionPayload(t *testing.T) {
+	workflow := &stubWorkflowService{}
+	svc := &WebAppService{Workflow: workflow}
+
+	if err := svc.ReopenTask("task-1", ReopenTaskRequest{Message: "fix review"}); err != nil {
+		t.Fatalf("ReopenTask() error = %v", err)
+	}
+	if workflow.appliedPayload == nil {
+		t.Fatal("appliedPayload should not be nil when message is non-empty")
+	}
+	var p struct {
+		Instruction struct {
+			Message string `json:"message"`
+		} `json:"instruction"`
+	}
+	if err := json.Unmarshal(workflow.appliedPayload, &p); err != nil {
+		t.Fatalf("payload unmarshal error = %v", err)
+	}
+	if p.Instruction.Message != "fix review" {
+		t.Errorf("instruction.message = %q, want 'fix review'", p.Instruction.Message)
+	}
+}
