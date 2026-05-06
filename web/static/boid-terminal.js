@@ -146,33 +146,35 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
     }
   });
 
-  // --- ResizeObserver: fit + resize frame ---
+  // --- ResizeObserver: fit + resize frame (debounced via rAF) ---
   let prevCols = 0, prevRows = 0;
-  const ro = new ResizeObserver(function () {
-    fitAddon.fit();
-    const dims = fitAddon.proposeDimensions();
-    if (!dims) return;
-    if (dims.cols !== prevCols || dims.rows !== prevRows) {
-      prevCols = dims.cols;
-      prevRows = dims.rows;
-      sendResize(dims.cols, dims.rows);
-    }
-  });
-  ro.observe(xtermRoot);
+  let fitRafId = null;
 
-  // visualViewport: adjust xterm container height when soft keyboard appears.
-  if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', function () {
-      const container = rootEl.querySelector('.boid-terminal-xterm-wrap');
-      if (container) {
-        container.style.height = window.visualViewport.height + 'px';
-      }
+  function scheduleFit() {
+    if (fitRafId) return;
+    fitRafId = requestAnimationFrame(function () {
+      fitRafId = null;
       fitAddon.fit();
       const dims = fitAddon.proposeDimensions();
-      if (dims && (dims.cols !== prevCols || dims.rows !== prevRows)) {
+      if (!dims) return;
+      if (dims.cols !== prevCols || dims.rows !== prevRows) {
         prevCols = dims.cols;
         prevRows = dims.rows;
         sendResize(dims.cols, dims.rows);
+      }
+    });
+  }
+
+  const ro = new ResizeObserver(scheduleFit);
+  ro.observe(xtermRoot);
+
+  // visualViewport: only refit when soft keyboard appears (large height reduction).
+  // URL bar show/hide causes small resize events that should not trigger PTY resize.
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', function () {
+      const diff = window.innerHeight - window.visualViewport.height;
+      if (diff > 150) {
+        scheduleFit();
       }
     });
   }
@@ -190,6 +192,7 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
     let lastT = 0;
     let velocityY = 0;  // px/ms
     let rafId = null;
+    let remainder = 0;  // 端数行の持ち越し (touchmove/touchend で共有)
 
     function cellHeight() {
       // getBoundingClientRect ベースで 1 行の高さを推定する
@@ -207,6 +210,7 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
       lastY  = startY;
       lastT  = e.timeStamp;
       velocityY = 0;
+      remainder = 0;
     }, { passive: true });
 
     viewport.addEventListener('touchmove', function (e) {
@@ -216,12 +220,11 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
 
       velocityY = dy / dt;  // px/ms
 
-      const rows = Math.round(dy / cellHeight());
-      if (rows !== 0) {
-        term.scrollLines(rows);
-        // ネイティブスクロールと二重動作しないよう viewport のスクロール位置を同期
-        // （xterm が内部 buffer を動かすので viewport の scrollTop は xterm が管理）
-      }
+      // remainder を持ち越して sub-cell delta を捨てない
+      remainder += dy / cellHeight();
+      const rows = Math.trunc(remainder);
+      remainder -= rows;
+      if (rows !== 0) term.scrollLines(rows);
 
       lastY = y;
       lastT = e.timeStamp;
@@ -230,12 +233,12 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
 
     viewport.addEventListener('touchend', function () {
       // 慣性減衰スクロール: velocityY (px/ms) を行数に換算しながら減衰させる
+      // remainder は touchmove からの端数を引き継ぐ
       const ch = cellHeight();
       let vel = velocityY;  // px/ms
-      let remainder = 0;   // 端数行の持ち越し
 
       const FRICTION = 0.92;  // フレームごとの速度減衰率
-      const MIN_VEL  = 0.05;  // この速度以下になったら停止 (px/ms)
+      const MIN_VEL  = 0.02;  // この速度以下になったら停止 (px/ms)
 
       function step() {
         vel *= FRICTION;
