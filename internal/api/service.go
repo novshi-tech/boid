@@ -1075,6 +1075,28 @@ func (s *WebAppService) RerunTask(id string, req RerunTaskRequest) error {
 	return err
 }
 
+type ReopenTaskRequest struct {
+	Message string `json:"message,omitempty"`
+}
+
+func (s *WebAppService) ReopenTask(id string, req ReopenTaskRequest) error {
+	if s.Workflow == nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
+	}
+	var payload json.RawMessage
+	if req.Message != "" {
+		b, err := json.Marshal(map[string]any{
+			"instruction": map[string]any{"message": req.Message},
+		})
+		if err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: "payload encode: " + err.Error()}
+		}
+		payload = b
+	}
+	_, err := s.Workflow.ApplyAction(context.Background(), id, ApplyActionRequest{Type: "reopen", Payload: payload})
+	return err
+}
+
 func (s *WebAppService) ListGatesForStatus(taskID, status string) ([]orchestrator.Gate, error) {
 	if s.Gates == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "gate service not configured"}

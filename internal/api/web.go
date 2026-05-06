@@ -66,6 +66,8 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Post("/tasks/{id}/action", h.PostAction)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	r.Post("/tasks/{id}/rerun", h.PostRerun)
+	r.Get("/tasks/{id}/reopen", h.ReopenForm)
+	r.Post("/tasks/{id}/reopen", h.PostReopen)
 	r.Post("/tasks/{id}/delete", h.PostDelete)
 	r.Get("/tasks/{id}/gates", h.GateReplayList)
 	r.Post("/tasks/{id}/gates/{gate_id}/replay", h.PostGateReplay)
@@ -380,6 +382,35 @@ func (h *WebHandler) PostDuplicate(w http.ResponseWriter, r *http.Request) {
 func (h *WebHandler) PostRerun(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.Service.RerunTask(id, RerunTaskRequest{}); err != nil {
+		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
+}
+
+func (h *WebHandler) ReopenForm(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	detail, err := h.Service.GetTaskDetail(id)
+	if err != nil {
+		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	if detail.Task.Status != orchestrator.TaskStatusDone {
+		http.Redirect(w, r, "/tasks/"+id+"?error=reopen+is+only+available+for+done+tasks", http.StatusSeeOther)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templates.TaskReopen(detail.Task).Render(r.Context(), w)
+}
+
+func (h *WebHandler) PostReopen(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	message := strings.TrimSpace(r.FormValue("message"))
+	if err := h.Service.ReopenTask(id, ReopenTaskRequest{Message: message}); err != nil {
 		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}

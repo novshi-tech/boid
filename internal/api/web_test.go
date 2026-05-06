@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -103,6 +104,10 @@ func (s *stubWebService) RerunTask(id string, req RerunTaskRequest) error {
 	return nil
 }
 
+func (s *stubWebService) ReopenTask(id string, req ReopenTaskRequest) error {
+	return nil
+}
+
 func (s *stubWebService) ListGatesForStatus(taskID, status string) ([]orchestrator.Gate, error) {
 	return nil, nil
 }
@@ -124,11 +129,13 @@ type stubWorkflowService struct {
 	applyActionErr error
 	appliedTaskID  string
 	appliedType    string
+	appliedPayload json.RawMessage
 }
 
 func (s *stubWorkflowService) ApplyAction(ctx context.Context, taskID string, req ApplyActionRequest) (*ActionApplication, error) {
 	s.appliedTaskID = taskID
 	s.appliedType = req.Type
+	s.appliedPayload = req.Payload
 	if s.applyActionErr != nil {
 		return nil, s.applyActionErr
 	}

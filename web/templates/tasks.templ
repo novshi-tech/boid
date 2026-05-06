@@ -201,7 +201,8 @@ templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string
 // bottom bar. Mirrors TUI semantics:
 //   - pending          → start  (forward, primary)
 //   - executing        → abort  (the only safe manual move; done is intentionally hidden)
-//   - done/aborted     → rerun  (re-create + restart)
+//   - done             → reopen+rerun (both primary; see TaskActionBar)
+//   - aborted          → rerun  (re-create + restart)
 // Returns ("", "") when no primary action applies.
 func detailPrimaryAction(task *orchestrator.Task, availableActions []string) (action, label string) {
 	switch task.Status {
@@ -217,7 +218,7 @@ func detailPrimaryAction(task *orchestrator.Task, availableActions []string) (ac
 				return "abort", "Abort"
 			}
 		}
-	case orchestrator.TaskStatusDone, orchestrator.TaskStatusAborted:
+	case orchestrator.TaskStatusAborted:
 		return "rerun", "Rerun"
 	}
 	return "", ""
@@ -275,23 +276,30 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 	} else if activeTab == "timeline" && !editMode {
 		<div class="action-bar">
 			<div class="action-bar-inner">
-				{{ action, label := detailPrimaryAction(task, availableActions) }}
-				if action == "rerun" {
-					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('本当に再実行しますか？')" class="action-bar-primary-form">
-						<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
-					</form>
-				} else if action == "abort" {
-					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')" class="action-bar-primary-form">
-						<input type="hidden" name="type" value="abort"/>
-						<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
-					</form>
-				} else if action != "" {
-					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } class="action-bar-primary-form">
-						<input type="hidden" name="type" value={ action }/>
-						<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
+				if task.Status == orchestrator.TaskStatusDone {
+					<a href={ templ.SafeURL("/tasks/" + task.ID + "/reopen") } class="btn btn-primary action-bar-primary-form">Reopen</a>
+					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('本当に再実行しますか？')">
+						<button type="submit" class="btn btn-secondary">Rerun</button>
 					</form>
 				} else {
-					<span class="action-bar-spacer"></span>
+					{{ action, label := detailPrimaryAction(task, availableActions) }}
+					if action == "rerun" {
+						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('本当に再実行しますか？')" class="action-bar-primary-form">
+							<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
+						</form>
+					} else if action == "abort" {
+						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')" class="action-bar-primary-form">
+							<input type="hidden" name="type" value="abort"/>
+							<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
+						</form>
+					} else if action != "" {
+						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } class="action-bar-primary-form">
+							<input type="hidden" name="type" value={ action }/>
+							<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
+						</form>
+					} else {
+						<span class="action-bar-spacer"></span>
+					}
 				}
 				<details class="action-menu">
 					<summary class="action-menu-summary" aria-label="その他のアクション">⋯</summary>
