@@ -81,6 +81,8 @@ For the schema, see [`project.yaml` reference](project-yaml.md). For the CLI, se
 | POST | `/api/tasks/{id}/rerun` | Reset a `done` / `aborted` task to `pending` and re-run. |
 | GET | `/api/tasks/{id}/gates` | List gates that fire at the task's current status. |
 | POST | `/api/tasks/{id}/gates/{gate_id}/replay` | Replay one gate. |
+| GET | `/api/tasks/{id}/hooks` | List hooks that fire at the task's current status. |
+| POST | `/api/tasks/{id}/hooks/{hook_id}/replay` | Replay one hook. |
 | GET | `/api/tasks/{id}/events` | **SSE** stream of task events. |
 
 `POST /api/tasks` request body:

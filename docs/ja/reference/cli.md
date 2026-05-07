@@ -108,6 +108,15 @@ depends_on_payload: <expr>
 | `boid task gate list <task-id>` | このタスクの現状で発火する gate 一覧 |
 | `boid task gate replay <task-id> <gate-id>` | 特定の gate を再実行 |
 
+### `task hook` (タスク単位の hook 操作)
+
+| コマンド | 役割 |
+|---|---|
+| `boid task hook list <task-id>` | このタスクの現状で発火する hook 一覧 |
+| `boid task hook replay <task-id> <hook-id>` | 特定の hook を再実行 |
+
+`boid stop` 等でエージェント hook が中断された場合は、`boid task hook list <task-id>` で再発火可能な hook を確認し、`boid task hook replay <task-id> <hook-id>` で復旧できます。
+
 ### タスク観察ヘルパ
 
 | コマンド | 役割 |

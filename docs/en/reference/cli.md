@@ -108,6 +108,15 @@ Pass `behavior_spec` to specify the behavior inline instead of referencing a nam
 | `boid task gate list <task-id>` | List gates that fire on the task's current status. |
 | `boid task gate replay <task-id> <gate-id>` | Replay a specific gate. |
 
+### `task hook` (per-task hook operations)
+
+| Command | Role |
+|---|---|
+| `boid task hook list <task-id>` | List hooks that fire on the task's current status. |
+| `boid task hook replay <task-id> <hook-id>` | Replay a specific hook. |
+
+If an agent hook was interrupted (e.g., by `boid stop`), use `boid task hook list <task-id>` to see which hooks can be re-fired, then `boid task hook replay <task-id> <hook-id>` to recover.
+
 ### Inspection helpers
 
 | Command | Role |

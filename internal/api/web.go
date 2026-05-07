@@ -71,6 +71,8 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Post("/tasks/{id}/delete", h.PostDelete)
 	r.Get("/tasks/{id}/gates", h.GateReplayList)
 	r.Post("/tasks/{id}/gates/{gate_id}/replay", h.PostGateReplay)
+	r.Get("/tasks/{id}/hooks", h.HookReplayList)
+	r.Post("/tasks/{id}/hooks/{hook_id}/replay", h.PostHookReplay)
 	r.Get("/jobs/{id}", h.JobDetail)
 	r.Get("/jobs/{id}/terminal", h.JobTerminal)
 	r.Get("/projects/{id}/commands", h.ProjectCommandList)
@@ -457,6 +459,34 @@ func (h *WebHandler) PostGateReplay(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
 }
 
+func (h *WebHandler) HookReplayList(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	status := r.URL.Query().Get("status")
+	hooks, err := h.Service.ListHooksForStatus(id, status)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	errorMsg := r.URL.Query().Get("error")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templates.HookReplayList(id, status, hooks, errorMsg).Render(r.Context(), w)
+}
+
+func (h *WebHandler) PostHookReplay(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	hookID, err := url.PathUnescape(chi.URLParam(r, "hook_id"))
+	if err != nil {
+		http.Error(w, "invalid hook id", http.StatusBadRequest)
+		return
+	}
+	_, err = h.Service.ReplayHook(r.Context(), id, ReplayHookRequest{HookID: hookID})
+	if err != nil {
+		http.Redirect(w, r, "/tasks/"+id+"/hooks?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
+}
+
 func isGateRole(role string) bool {
 	return role == "gate" || role == "exit_gate" || role == "entry_gate"
 }
@@ -472,6 +502,10 @@ func (h *WebHandler) JobDetail(w http.ResponseWriter, r *http.Request) {
 	if isGateRole(job.Role) {
 		gateID = job.HandlerID
 	}
+	hookID := ""
+	if job.Role == "hook" {
+		hookID = job.HandlerID
+	}
 	view := &templates.JobContextView{
 		ID:          job.ID,
 		TaskID:      job.TaskID,
@@ -479,6 +513,7 @@ func (h *WebHandler) JobDetail(w http.ResponseWriter, r *http.Request) {
 		HandlerID:   job.HandlerID,
 		Role:        job.Role,
 		GateID:      gateID,
+		HookID:      hookID,
 		Status:      string(job.Status),
 		ExitCode:    job.ExitCode,
 		Interactive: job.Interactive,
