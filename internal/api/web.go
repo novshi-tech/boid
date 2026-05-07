@@ -69,6 +69,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/tasks/{id}/reopen", h.ReopenForm)
 	r.Post("/tasks/{id}/reopen", h.PostReopen)
 	r.Post("/tasks/{id}/delete", h.PostDelete)
+	r.Post("/tasks/{id}/answer", h.PostAnswer)
 	r.Get("/tasks/{id}/gates", h.GateReplayList)
 	r.Post("/tasks/{id}/gates/{gate_id}/replay", h.PostGateReplay)
 	r.Get("/tasks/{id}/hooks", h.HookReplayList)
@@ -417,6 +418,26 @@ func (h *WebHandler) PostReopen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
+}
+
+func (h *WebHandler) PostAnswer(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	questionID := r.FormValue("question_id")
+	answer := strings.TrimSpace(r.FormValue("answer"))
+	target := "/tasks/" + id
+	if err := h.Service.AnswerTask(r.Context(), id, questionID, answer); err != nil {
+		target = "/tasks/" + id + "?error=" + url.QueryEscape(err.Error())
+	}
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", target)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
 // PostDelete deletes the task and redirects to the task list.

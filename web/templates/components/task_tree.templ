@@ -122,6 +122,9 @@ templ taskTreeRow(item TreeItem) {
 			<div class="task-row-title" title={ item.Task.Title }>{ item.Task.Title }</div>
 			<div class="task-row-meta">
 				<span class={ treeStatusClass(string(item.Task.Status)) }>{ string(item.Task.Status) }</span>
+				if item.Task.Status == orchestrator.TaskStatusAwaiting {
+					<span class="badge badge-call-to-action">要回答</span>
+				}
 				if item.Task.ProjectID != "" {
 					<span class="task-row-project">{ item.ProjectLabel() }</span>
 				}

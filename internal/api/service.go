@@ -989,6 +989,7 @@ type WebAppService struct {
 	TaskSvc    TaskService
 	Gates      GateService
 	Hooks      HookService
+	Answerer   TaskAnswerService // optional: enables POST /tasks/{id}/answer
 }
 
 func (s *WebAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
@@ -1224,6 +1225,13 @@ func (s *WebAppService) ListProjectCommands(projectID string) ([]CommandSummary,
 	}
 	sort.Slice(summaries, func(i, j int) bool { return summaries[i].Name < summaries[j].Name })
 	return summaries, nil
+}
+
+func (s *WebAppService) AnswerTask(ctx context.Context, taskID, questionID, answer string) error {
+	if s.Answerer == nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "answer service not configured"}
+	}
+	return s.Answerer.AnswerTask(ctx, taskID, questionID, answer)
 }
 
 type TaskWorkflowService struct {

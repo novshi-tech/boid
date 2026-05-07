@@ -108,6 +108,10 @@ func (s *stubWebService) ReopenTask(id string, req ReopenTaskRequest) error {
 	return nil
 }
 
+func (s *stubWebService) AnswerTask(ctx context.Context, taskID, questionID, answer string) error {
+	return nil
+}
+
 func (s *stubWebService) ListGatesForStatus(taskID, status string) ([]orchestrator.Gate, error) {
 	return nil, nil
 }
