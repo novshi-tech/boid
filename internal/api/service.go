@@ -565,15 +565,18 @@ func (s *TaskAppService) GetTask(id string) (*orchestrator.Task, error) {
 }
 
 // NotifyTask invokes the configured notify command for the given task.
-// Returns 501 when no notifier is wired (notifications disabled in config).
-// When ask is non-empty the task is transitioned to awaiting after sending
-// the notification; questionID identifies the Q&A turn (generated when empty).
+// Returns 501 when no notifier is wired and ask is empty (notifications disabled in config).
+// When ask is non-empty the task is transitioned to awaiting; the notification is
+// best-effort and skipped if no notifier is configured. questionID identifies the
+// Q&A turn (generated when empty).
 func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID string) error {
-	if s.Notify == nil {
-		return &StatusError{Code: http.StatusNotImplemented, Message: "notify is not configured"}
-	}
 	if message == "" {
 		return &StatusError{Code: http.StatusBadRequest, Message: "message is required"}
+	}
+	// Without ask, a working notifier is required (that's the only purpose of the call).
+	// With ask, notification is best-effort; the state transition is what matters.
+	if s.Notify == nil && ask == "" {
+		return &StatusError{Code: http.StatusNotImplemented, Message: "notify is not configured"}
 	}
 	task, err := s.Tasks.GetTask(taskID)
 	if err != nil {
@@ -603,8 +606,13 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 			}
 		}
 	}
-	if err := s.Notify.Notify(ctx, ev); err != nil {
-		return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	if s.Notify != nil {
+		if err := s.Notify.Notify(ctx, ev); err != nil {
+			if ask == "" {
+				return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+			}
+			slog.Warn("notify: notification failed in ask mode, continuing with state transition", "error", err)
+		}
 	}
 
 	if ask == "" {
