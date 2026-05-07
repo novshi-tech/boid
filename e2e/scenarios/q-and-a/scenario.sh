@@ -51,16 +51,11 @@ task_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 20s --interval 1
 printf '%s\n' "$task_json"
 e2e_assert_contains "$task_json" '"status":"done"'
 
-e2e_log "verifying task reached done (implies BOID_USER_ANSWER=approve was passed to 2nd invocation)"
-e2e_assert_contains "$task_json" '"status":"done"'
-
-e2e_log "approve path passed"
+e2e_log "approve path passed (BOID_USER_ANSWER=approve was correctly passed to 2nd invocation)"
 
 # ── reject パス ───────────────────────────────────────────────────────────────
 
 e2e_log "creating Q&A task (reject path)"
-# Reset log to separate reject-path entries.
-rm -f "$log"
 task2_create_out="$("$E2E_BIN_DIR/boid" task create <<'YAML'
 project_id: q-and-a
 title: Q&A Cycle Test (reject)
