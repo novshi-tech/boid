@@ -13,15 +13,20 @@
                                                  |
    start                                         |
 pending -----> executing -----> done             |
-                  ^               |              |
-                  |  reopen       |              |
-                  +---------------+              |
+                  ^    ^                         |
+                  |    | ask                     |
+                  |    +------+                  |
+                  |           v                  |
+                  |       awaiting               |
+                  |           |                  |
+                  +-- answer -+                  |
 ```
 
 | 状態 | 意味 |
 |---|---|
 | `pending` | 作成済み、未開始 |
 | `executing` | hook が主作業中 |
+| `awaiting` | エージェントがユーザの回答を待機中 (C2 Q&A モード) |
 | `done` | 成功で終端 |
 | `aborted` | 失敗で終端 (手動 abort、 job 失敗) |
 
@@ -34,6 +39,8 @@ pending -----> executing -----> done             |
 | `start` | `pending` | `executing` | |
 | `done` | `executing` | `done` | 強制完了 (gate を含むので通常は自動遷移にまかせる) |
 | `reopen` | `done` | `executing` | 新しい instruction を append して再開 (`--message` で渡す) |
+| `ask` | `executing` | `awaiting` | `boid task notify --ask` が発行。 Q&A 待機に入る ([C2 フロー](../architecture/c2-flow.md) 参照) |
+| `answer` | `awaiting` | `executing` | `boid task answer` または Web UI が発行。 hook が再起動される |
 | `abort` | 終端でない任意の状態 | `aborted` | |
 | `job_failed` (system) | 終端でない任意の状態 | `aborted` | |
 

@@ -78,10 +78,52 @@ Creating, observing, and updating tasks lives under `boid task`. See [Concepts /
 | `boid task duplicate <source_id> [--auto-start]` | Duplicate an existing task. |
 | `boid task reopen <id> [--message MSG]` | Return a `done` task to `executing`, appending the `--message` text as a new entry on `Task.Instructions` (e.g. when auto-merge hits a conflict). |
 | `boid task rerun <id> [--auto-start] [--instructions-file FILE]` | Reset a `done` / `aborted` task to `pending` and re-run it under the same ID. |
-| `boid task notify <id> --message MSG` | Send a notification to the user from an agent. Invokes `notify.command` from `~/.config/boid/config.yaml`. Used in `boid-plan` supervisor mode to request user approval or escalate when a hard cap is reached. |
+| `boid task notify <id> --message MSG [--ask QUESTION] [--question-id ID]` | Send a notification to the user from an agent. Invokes `notify.command` from `~/.config/boid/config.yaml`. With `--ask`, enters Q&A mode and transitions the task to `awaiting`. |
+| `boid task answer --task ID --question-id ID --answer TEXT` | Submit a user reply to an `awaiting` task. Transitions the task `awaiting → executing` and restarts the hook. |
 | `boid task import [-f FILE] [--project ID] [--datasource ID]` | Bulk import tasks from JSONL. |
 
 The notify script receives: `BOID_TASK_ID`, `BOID_TASK_TITLE`, `BOID_PROJECT_ID`, `BOID_PROJECT_NAME`, `BOID_MESSAGE`, `BOID_TASK_URL` (set only when `web.public_url` is configured).
+
+#### `boid task notify` flags
+
+| Flag | Required | Description |
+|---|---|---|
+| `--message, -m MSG` | ◎ | Notification text. Passed to the notify script as `BOID_MESSAGE`. |
+| `--ask QUESTION` | | Question text. When set, transitions the task to `awaiting` (Q&A mode). |
+| `--question-id ID` | | UUID identifying this Q&A turn. Auto-generated when omitted. |
+
+Without `--ask` this is a simple notification (no state change). With `--ask` the task transitions `executing → awaiting` and waits for a user reply.
+
+```bash
+# Plain notification
+boid task notify ${BOID_TASK_ID} --message "Please review PR #42"
+
+# Q&A mode (transitions to awaiting)
+boid task notify ${BOID_TASK_ID} \
+  --message "A merge decision is needed" \
+  --ask "Should I merge PR #42?"
+```
+
+#### `boid task answer` flags
+
+| Flag | Required | Description |
+|---|---|---|
+| `--task ID` | ◎ | ID of the task to answer |
+| `--question-id ID` | ◎ | UUID of the Q&A turn being answered |
+| `--answer TEXT` | ◎ | Answer text |
+
+**Exit codes**:
+- `0`: Answer saved; task transitioned `awaiting → executing`.
+- `1`: Task is not in `awaiting` state, or an argument is missing.
+
+```bash
+boid task answer \
+  --task 550e8400-e29b-41d4-a716-446655440000 \
+  --question-id q-abc-123 \
+  --answer "yes"
+```
+
+For the full Q&A flow, see [C2 flow](../architecture/c2-flow.md).
 
 ### `task create` input
 

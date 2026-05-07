@@ -84,6 +84,8 @@ For the schema, see [`project.yaml` reference](project-yaml.md). For the CLI, se
 | GET | `/api/tasks/{id}/hooks` | List hooks that fire at the task's current status. |
 | POST | `/api/tasks/{id}/hooks/{hook_id}/replay` | Replay one hook. |
 | GET | `/api/tasks/{id}/events` | **SSE** stream of task events. |
+| POST | `/api/tasks/{id}/notify` | Send an agent notification. When `ask` is present, transitions the task to `awaiting`. |
+| POST | `/api/tasks/{id}/answer` | Submit a user reply to an `awaiting` task and resume it. |
 
 `POST /api/tasks` request body:
 
@@ -102,6 +104,69 @@ For the schema, see [`project.yaml` reference](project-yaml.md). For the CLI, se
 
 Pass `behavior_spec` instead of `behavior` to specify the behavior inline (see [`project.yaml` / BehaviorSpec](project-yaml.md)).
 
+### Notify and answer (C2)
+
+Two endpoints that control the C2 Q&A flow — where an agent pauses to ask the user a question and resumes once answered. See [C2 flow](../architecture/c2-flow.md) for the full picture.
+
+#### `POST /api/tasks/{id}/notify`
+
+Send a notification from the agent to the user. When the `ask` field is present the endpoint enters Q&A mode and transitions the task `executing → awaiting`.
+
+Request body:
+
+```json
+{
+  "message": "Should I merge PR #42?",
+  "ask": "Proceed with the merge?",
+  "question_id": "q-550e8400"
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `message` | ◎ | Notification text. Passed to the notify script as `BOID_MESSAGE`. |
+| `ask` | | Question text. When present, transitions the task to `awaiting`. |
+| `question_id` | | UUID for this Q&A turn. Auto-generated when omitted. |
+
+Response: `204 No Content`
+
+Error codes:
+
+| Code | Meaning |
+|---|---|
+| 400 | `message` is empty |
+| 404 | Task not found |
+| 501 | `notify.command` is not configured |
+| 409 | `ask` was given but the task is not in `executing` state |
+
+#### `POST /api/tasks/{id}/answer`
+
+Submit the user's reply to an `awaiting` task. Stores the answer in `payload.awaiting.pending_answer` and transitions the task `awaiting → executing`, which restarts the hook.
+
+Request body:
+
+```json
+{
+  "question_id": "q-550e8400",
+  "answer": "yes"
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `question_id` | ◎ | UUID of the Q&A turn being answered |
+| `answer` | ◎ | Answer text |
+
+Response: `204 No Content`
+
+Error codes:
+
+| Code | Meaning |
+|---|---|
+| 400 | `question_id` or `answer` is empty |
+| 404 | Task not found |
+| 409 | Task is not in `awaiting` state |
+
 ### Action
 
 Issue a state transition for a task.
@@ -119,7 +184,7 @@ Body:
 }
 ```
 
-`type` is one of `start`, `done`, `reopen`, `abort`. `payload` is optional metadata.
+`type` is one of `start`, `done`, `reopen`, `ask`, `answer`, `abort`. `payload` is optional metadata. For the `ask` / `answer` operations the dedicated `/notify` / `/answer` endpoints above are simpler to use.
 
 Append `?follow=true` to wait until the state machine's auto-transitions settle before returning.
 
