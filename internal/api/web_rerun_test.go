@@ -48,6 +48,14 @@ func (s *stubWebServiceWithGates) ReplayGate(ctx context.Context, taskID string,
 	return &ReplayGateResult{Task: &orchestrator.Task{ID: taskID}}, nil
 }
 
+func (s *stubWebServiceWithGates) ListHooksForStatus(taskID, status string) ([]orchestrator.Hook, error) {
+	return nil, nil
+}
+
+func (s *stubWebServiceWithGates) ReplayHook(ctx context.Context, taskID string, req ReplayHookRequest) (*ReplayHookResult, error) {
+	return &ReplayHookResult{}, nil
+}
+
 func newTestWebHandlerWithRerun(svc WebService) *chi.Mux {
 	h := &WebHandler{Service: svc}
 	r := chi.NewRouter()

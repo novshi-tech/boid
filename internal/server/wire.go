@@ -239,6 +239,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Workflow:   workflow,
 		TaskSvc:    taskSvc,
 		Gates:      workflow,
+		Hooks:      workflow,
 	}
 
 	authStore := auth.NewStore(srv.db)
@@ -389,7 +390,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	workspaceHandler := &api.WorkspaceHandler{Service: runtime.projectSvc}
 	r.Mount("/api/workspaces", workspaceHandler.Routes())
 
-	taskHandler := &api.TaskHandler{Service: runtime.taskSvc, Gates: runtime.workflow, Notifier: runtime.taskSvc}
+	taskHandler := &api.TaskHandler{Service: runtime.taskSvc, Gates: runtime.workflow, Hooks: runtime.workflow, Notifier: runtime.taskSvc}
 	r.Mount("/api/tasks", taskHandler.Routes())
 
 	gcStore := orchestrator.NewTaskGCStoreWithWorktree(
