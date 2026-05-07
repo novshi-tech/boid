@@ -240,6 +240,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		TaskSvc:    taskSvc,
 		Gates:      workflow,
 		Hooks:      workflow,
+		Answerer:   taskSvc,
 	}
 
 	authStore := auth.NewStore(srv.db)

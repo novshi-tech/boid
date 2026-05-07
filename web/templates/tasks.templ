@@ -515,6 +515,41 @@ templ TaskDetailJobsSection(jobs []*JobView) {
 	</div>
 }
 
+// TaskDetailQASection renders the Q&A panel shown when a task is awaiting
+// user input. The question from the agent is displayed as preformatted text
+// (whitespace/newlines preserved); the answer textarea auto-expands and uses
+// a font-size of 16px+ to avoid iOS zoom-on-focus.
+templ TaskDetailQASection(task *orchestrator.Task) {
+	{{ ap := orchestrator.GetAwaitingPayload(task.Payload) }}
+	if ap.Question != "" {
+		<div class="qa-section">
+			<h3 class="qa-label">エージェントからの質問</h3>
+			<pre class="qa-question">{ ap.Question }</pre>
+			<form
+				id="qa-form"
+				hx-post={ "/tasks/" + task.ID + "/answer" }
+				hx-target="body"
+				hx-swap="outerHTML"
+			>
+				<input type="hidden" name="question_id" value={ ap.QuestionID }/>
+				<textarea
+					name="answer"
+					class="form-input qa-textarea"
+					rows="4"
+					placeholder="回答を入力してください…"
+				></textarea>
+			</form>
+			<div class="qa-actions">
+				<button type="submit" form="qa-form" class="btn btn-primary">回答を送信</button>
+				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当にタスクを中止しますか？')">
+					<input type="hidden" name="type" value="abort"/>
+					<button type="submit" class="btn btn-secondary">拒否してタスクを中止</button>
+				</form>
+			</div>
+		</div>
+	}
+}
+
 // TaskDetailTabPanel renders the tab panel content for the given activeTab.
 // id="tab-panel" is the HTMX swap target for tab switching.
 // editMode=true flips an editable tab (currently: description) into an
@@ -522,6 +557,9 @@ templ TaskDetailJobsSection(jobs []*JobView) {
 templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, depsUp, depsDown []DepsTreeRow, activeTab string, editMode bool) {
 	<div id="tab-panel" data-task-id={ task.ID }>
 		if activeTab == "timeline" {
+			if task.Status == orchestrator.TaskStatusAwaiting {
+				@TaskDetailQASection(task)
+			}
 			@TaskDetailTimelineSection(timelineGroups)
 			<script>
 				(function() {
