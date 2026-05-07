@@ -10,6 +10,7 @@ type TaskStatus string
 const (
 	TaskStatusPending   TaskStatus = "pending"
 	TaskStatusExecuting TaskStatus = "executing"
+	TaskStatusAwaiting  TaskStatus = "awaiting"
 	TaskStatusDone      TaskStatus = "done"
 	TaskStatusAborted   TaskStatus = "aborted"
 )

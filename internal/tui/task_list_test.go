@@ -64,6 +64,7 @@ func TestOpenStatuses(t *testing.T) {
 	want := map[orchestrator.TaskStatus]bool{
 		orchestrator.TaskStatusExecuting: true,
 		orchestrator.TaskStatusPending:   true,
+		orchestrator.TaskStatusAwaiting:  true,
 	}
 
 	if len(openStatuses) != len(want) {
@@ -104,6 +105,7 @@ func TestClosedStatuses(t *testing.T) {
 	notClosed := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusExecuting,
 		orchestrator.TaskStatusPending,
+		orchestrator.TaskStatusAwaiting,
 	}
 	for _, status := range notClosed {
 		if closedStatuses[status] {

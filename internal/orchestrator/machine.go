@@ -110,8 +110,11 @@ func DefaultMachine() *StateMachine {
 // Manual transitions:
 //
 //	start  : pending → executing
-//	abort  : * → aborted
+//	done   : executing → done
 //	reopen : done → executing
+//	ask    : executing → awaiting
+//	answer : awaiting → executing
+//	abort  : * → aborted
 //
 // Event-driven transitions:
 //
@@ -133,10 +136,12 @@ func NewMachine() *StateMachine {
 		Name: "default",
 		Rules: []Rule{
 			// Manual actions
-			{Action: "start", FromStatus: "pending", ToStatus: "executing", Manual: true},
-			{Action: "done", FromStatus: "executing", ToStatus: "done", Manual: true},
-			{Action: "reopen", FromStatus: "done", ToStatus: "executing", Manual: true},
-			{Action: "abort", FromStatus: "*", ToStatus: "aborted", Manual: true},
+			{Action: "start",  FromStatus: "pending",   ToStatus: "executing", Manual: true},
+			{Action: "done",   FromStatus: "executing", ToStatus: "done",      Manual: true},
+			{Action: "reopen", FromStatus: "done",      ToStatus: "executing", Manual: true},
+			{Action: "ask",    FromStatus: "executing", ToStatus: "awaiting",  Manual: true},
+			{Action: "answer", FromStatus: "awaiting",  ToStatus: "executing", Manual: true},
+			{Action: "abort",  FromStatus: "*",         ToStatus: "aborted",   Manual: true},
 
 			// Event-driven (non-manual)
 			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},

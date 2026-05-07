@@ -46,11 +46,45 @@ func TestDefaultMachine_InvalidTransition(t *testing.T) {
 	}
 }
 
+func TestDefaultMachine_ExecutingToAwaiting(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusExecuting}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "ask"})
+	if err != nil {
+		t.Fatalf("ask: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusAwaiting {
+		t.Fatalf("expected awaiting, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_AwaitingToExecuting(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusAwaiting}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "answer"})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusExecuting {
+		t.Fatalf("expected executing, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_InvalidTransition_PendingToAwaiting(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusPending}
+	_, err := sm.Apply(task, &orchestrator.Action{Type: "ask"})
+	if err == nil {
+		t.Fatal("expected error: ask from pending is invalid")
+	}
+}
+
 func TestDefaultMachine_Abort_FromAnyState(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
 	statuses := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusPending,
 		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusAwaiting,
 	}
 	for _, status := range statuses {
 		task := &orchestrator.Task{Status: status}
@@ -69,6 +103,7 @@ func TestDefaultMachine_JobFailed_FromAnyState(t *testing.T) {
 	statuses := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusPending,
 		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusAwaiting,
 	}
 	for _, status := range statuses {
 		task := &orchestrator.Task{Status: status}
@@ -129,13 +164,27 @@ func TestDefaultMachine_AvailableActions_Pending(t *testing.T) {
 func TestDefaultMachine_AvailableActions_Executing(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
 	actions := sm.AvailableActions(orchestrator.TaskStatusExecuting)
-	want := map[string]bool{"done": true, "abort": true}
+	want := map[string]bool{"done": true, "ask": true, "abort": true}
 	if len(actions) != len(want) {
 		t.Fatalf("AvailableActions(executing) = %v, want %v", actions, want)
 	}
 	for _, a := range actions {
 		if !want[a] {
 			t.Errorf("unexpected action %q in AvailableActions(executing)", a)
+		}
+	}
+}
+
+func TestDefaultMachine_AvailableActions_Awaiting(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	actions := sm.AvailableActions(orchestrator.TaskStatusAwaiting)
+	want := map[string]bool{"answer": true, "abort": true}
+	if len(actions) != len(want) {
+		t.Fatalf("AvailableActions(awaiting) = %v, want %v", actions, want)
+	}
+	for _, a := range actions {
+		if !want[a] {
+			t.Errorf("unexpected action %q in AvailableActions(awaiting)", a)
 		}
 	}
 }
@@ -166,6 +215,7 @@ func TestDefaultMachine_AvailableActions_ExcludesJobFailed(t *testing.T) {
 	for _, status := range []orchestrator.TaskStatus{
 		orchestrator.TaskStatusPending,
 		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusAwaiting,
 		orchestrator.TaskStatusDone,
 		orchestrator.TaskStatusAborted,
 	} {

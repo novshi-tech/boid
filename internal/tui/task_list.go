@@ -39,6 +39,7 @@ type tableRow [5]string
 // Active tasks are being processed by the system, so faster polling improves responsiveness.
 var activeStatuses = map[orchestrator.TaskStatus]bool{
 	orchestrator.TaskStatusExecuting: true,
+	orchestrator.TaskStatusAwaiting:  true,
 }
 
 // tickIntervalForTasks returns activeTaskPollInterval if any task in the slice is active,
@@ -56,6 +57,7 @@ func tickIntervalForTasks(tasks []*orchestrator.Task) time.Duration {
 var openStatuses = map[orchestrator.TaskStatus]bool{
 	orchestrator.TaskStatusExecuting: true,
 	orchestrator.TaskStatusPending:   true,
+	orchestrator.TaskStatusAwaiting:  true,
 }
 
 // closedStatuses defines which task statuses are considered "closed".
@@ -1021,6 +1023,8 @@ func taskCellStyle(task *orchestrator.Task) lipgloss.Style {
 	switch task.Status {
 	case orchestrator.TaskStatusExecuting:
 		return styleExecuting
+	case orchestrator.TaskStatusAwaiting:
+		return styleExecuting
 	case orchestrator.TaskStatusDone:
 		return styleTaskDim
 	case orchestrator.TaskStatusAborted:
@@ -1040,6 +1044,8 @@ func taskStatusDisplay(status orchestrator.TaskStatus) (dot, text string) {
 	switch status {
 	case orchestrator.TaskStatusExecuting:
 		return styleExecuting.Render("●"), styleExecuting.Render("executing")
+	case orchestrator.TaskStatusAwaiting:
+		return styleExecuting.Render("?"), styleExecuting.Render("awaiting")
 	case orchestrator.TaskStatusPending:
 		return styleTaskDim.Render("○"), styleTaskDim.Render("pending")
 	case orchestrator.TaskStatusDone:

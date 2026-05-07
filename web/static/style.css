@@ -196,12 +196,14 @@ pre {
 /* Status palette
    - pending:  slate (calm, waiting; not alarming)
    - executing/reworking/running: green (active work)
+   - awaiting: amber/yellow (human attention needed — process paused)
    - verifying: blue (checking — distinct from active)
    - in_review/collecting_feedback: purple (human attention needed)
    - done/completed: neutral gray (finished, inactive)
    - aborted/failed: red (bad outcome) */
 .badge-pending             { background: #f1f5f9; color: #475569; }
 .badge-executing           { background: #dcfce7; color: #15803d; }
+.badge-awaiting            { background: #fef9c3; color: #854d0e; }
 .badge-verifying           { background: #dbeafe; color: #1d4ed8; }
 .badge-reworking           { background: #dcfce7; color: #15803d; }
 .badge-done                { background: #e5e7eb; color: #6b7280; }
@@ -213,6 +215,7 @@ pre {
 @media (prefers-color-scheme: dark) {
   .badge-pending             { background: #1e293b; color: #94a3b8; }
   .badge-executing           { background: #052e16; color: #4ade80; }
+  .badge-awaiting            { background: #422006; color: #fbbf24; }
   .badge-verifying           { background: #172554; color: #60a5fa; }
   .badge-reworking           { background: #052e16; color: #4ade80; }
   .badge-done                { background: #1f2937; color: #9ca3af; }
