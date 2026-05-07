@@ -576,6 +576,66 @@ func TestPlanExec_WritableControlledByCommandReadonly(t *testing.T) {
 	}
 }
 
+// When a task has an awaiting trait with session_id / pending_answer /
+// question_id, PlanHook must surface them as BOID_AGENT_SESSION_ID,
+// BOID_USER_ANSWER, and BOID_QUESTION_ID so the kit can resume the session.
+// For a plain initial-start (no awaiting payload) the vars must be absent.
+func TestDispatchPlanner_PropagatesAwaitingEnv(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := filepath.Join(projectDir, ".boid/hooks", "hook-1.sh")
+
+	awaitingPayload := json.RawMessage(`{"awaiting":{"session_id":"sess-xyz","question":"ok?","question_id":"q-1","pending_answer":"yes"}}`)
+	task := &Task{
+		ID:        "task-1",
+		ProjectID: "proj-1",
+		Behavior:  "dev",
+		Status:    TaskStatusExecuting,
+		Payload:   awaitingPayload,
+	}
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{Name: "dev"}, task)
+
+	req, _, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook:      Hook{ID: "hook-1", ScriptPath: scriptPath},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+
+	if got := req.Env["BOID_AGENT_SESSION_ID"]; got != "sess-xyz" {
+		t.Errorf("BOID_AGENT_SESSION_ID = %q, want sess-xyz", got)
+	}
+	if got := req.Env["BOID_USER_ANSWER"]; got != "yes" {
+		t.Errorf("BOID_USER_ANSWER = %q, want yes", got)
+	}
+	if got := req.Env["BOID_QUESTION_ID"]; got != "q-1" {
+		t.Errorf("BOID_QUESTION_ID = %q, want q-1", got)
+	}
+
+	// Initial-start task (no awaiting payload): env vars must be absent.
+	task.Payload = nil
+	plainPlanner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{Name: "dev"}, task)
+	plainReq, _, err := plainPlanner.PlanHook(&HookFireEvent{
+		EventID:   "event-2",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook:      Hook{ID: "hook-1", ScriptPath: scriptPath},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook (plain): %v", err)
+	}
+	for _, key := range []string{"BOID_AGENT_SESSION_ID", "BOID_USER_ANSWER", "BOID_QUESTION_ID"} {
+		if _, ok := plainReq.Env[key]; ok {
+			t.Errorf("plain start should not set %s, got %q", key, plainReq.Env[key])
+		}
+	}
+}
+
 // --- test helpers ---
 
 func newPlannerForTest(proj *Project, behavior TaskBehavior, task *Task) *DispatchPlanner {

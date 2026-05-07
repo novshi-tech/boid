@@ -1516,6 +1516,11 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 
 		s.persistFiredEvents(current.ID, current.Status, result.FiredEvents)
 
+		// Clear pending_answer from the awaiting trait now that the hook has
+		// been spawned and consumed it. session_id is preserved so the task
+		// can be resumed again if the kit emits another ask.
+		result.FinalPayload = orchestrator.ClearPendingAnswer(result.FinalPayload)
+
 		// Persist hook + exit gate payload. Always refresh the task row so we
 		// can detect concurrent terminal transitions (abort/done) before
 		// applying the computed auto-advance.
