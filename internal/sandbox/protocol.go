@@ -50,6 +50,7 @@ const (
 	BoidOpTaskReopen BoidOp = "task.reopen"
 	BoidOpTaskList   BoidOp = "task_list"
 	BoidOpTaskNotify BoidOp = "task_notify"
+	BoidOpTaskAnswer BoidOp = "task_answer"
 )
 
 // BehaviorSpec is the inline behavior specification carried in BoidRequest.
@@ -96,7 +97,12 @@ type BoidRequest struct {
 	Limit       int    `json:"limit,omitempty"`
 
 	// task notify fields
-	Message string `json:"message,omitempty"`
+	Message    string `json:"message,omitempty"`
+	Ask        string `json:"ask,omitempty"`
+	QuestionID string `json:"question_id,omitempty"`
+
+	// task answer fields
+	Answer string `json:"answer,omitempty"`
 }
 
 type TokenContext struct {

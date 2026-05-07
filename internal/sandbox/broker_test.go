@@ -1566,3 +1566,129 @@ func TestBroker_BoidTaskList_AutoInjectAllowedProjectIDs(t *testing.T) {
 		t.Errorf("ProjectID should remain empty for AllowedProjectIDs path, got %q", exec.calls[0].ProjectID)
 	}
 }
+
+func testAnswerBoidPolicies() map[string]sandbox.BuiltinPolicy {
+	return map[string]sandbox.BuiltinPolicy{
+		"boid": {
+			AllowedOps: map[string]struct{}{
+				string(sandbox.BoidOpTaskAnswer): {},
+			},
+			AllowedCwdRoots: []string{"/tmp"},
+		},
+	}
+}
+
+func TestBroker_BoidTaskAnswer_Dispatched(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	ctx := sandbox.TokenContext{
+		JobID:     "j1",
+		TaskID:    "t1",
+		ProjectID: "p1",
+		Role:      testRoleHook,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, testAnswerBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:         sandbox.BoidOpTaskAnswer,
+			TaskID:     "task-abc",
+			QuestionID: "q-1",
+			Answer:     "yes",
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor calls = %d, want 1", len(exec.calls))
+	}
+	got := exec.calls[0]
+	if got.Op != sandbox.BoidOpTaskAnswer || got.TaskID != "task-abc" || got.QuestionID != "q-1" || got.Answer != "yes" {
+		t.Errorf("unexpected request: %+v", got)
+	}
+}
+
+func TestBroker_BoidTaskAnswer_RequiresTaskID(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	token := broker.Register(map[string]sandbox.CommandDef{}, testAnswerBoidPolicies(), sandbox.TokenContext{Role: testRoleHook})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpTaskAnswer, QuestionID: "q-1", Answer: "yes"},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "task id") {
+		t.Fatalf("expected task id error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called, calls=%d", len(exec.calls))
+	}
+}
+
+func TestBroker_BoidTaskAnswer_RequiresQuestionID(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	token := broker.Register(map[string]sandbox.CommandDef{}, testAnswerBoidPolicies(), sandbox.TokenContext{Role: testRoleHook})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpTaskAnswer, TaskID: "t1", Answer: "yes"},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "question id") {
+		t.Fatalf("expected question id error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called, calls=%d", len(exec.calls))
+	}
+}
+
+func TestBroker_BoidTaskAnswer_RequiresAnswer(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	token := broker.Register(map[string]sandbox.CommandDef{}, testAnswerBoidPolicies(), sandbox.TokenContext{Role: testRoleHook})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpTaskAnswer, TaskID: "t1", QuestionID: "q-1"},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "answer") {
+		t.Fatalf("expected answer error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called, calls=%d", len(exec.calls))
+	}
+}
+
+func TestBroker_BoidTaskAnswer_PolicyReject(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	// testHookBoidPolicies には BoidOpTaskAnswer が含まれない
+	token := broker.Register(map[string]sandbox.CommandDef{}, testHookBoidPolicies(), sandbox.TokenContext{
+		Role:       testRoleHook,
+		ProjectDir: projectDir,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpTaskAnswer, TaskID: "t1", QuestionID: "q-1", Answer: "yes"},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "not allowed") {
+		t.Fatalf("expected policy rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called, calls=%d", len(exec.calls))
+	}
+}

@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -564,7 +566,9 @@ func (s *TaskAppService) GetTask(id string) (*orchestrator.Task, error) {
 
 // NotifyTask invokes the configured notify command for the given task.
 // Returns 501 when no notifier is wired (notifications disabled in config).
-func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message string) error {
+// When ask is non-empty the task is transitioned to awaiting after sending
+// the notification; questionID identifies the Q&A turn (generated when empty).
+func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, questionID string) error {
 	if s.Notify == nil {
 		return &StatusError{Code: http.StatusNotImplemented, Message: "notify is not configured"}
 	}
@@ -601,6 +605,78 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message string)
 	}
 	if err := s.Notify.Notify(ctx, ev); err != nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+
+	if ask == "" {
+		return nil
+	}
+
+	// Q&A mode: transition the task to awaiting and save the question.
+	if s.Workflow == nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
+	}
+	if questionID == "" {
+		questionID = newQuestionID()
+	}
+	ap := orchestrator.AwaitingPayload{
+		Question:   ask,
+		QuestionID: questionID,
+	}
+	apJSON, err := json.Marshal(ap)
+	if err != nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "encode awaiting payload: " + err.Error()}
+	}
+	awaitingPayload, err := json.Marshal(map[string]json.RawMessage{string(orchestrator.TraitAwaiting): apJSON})
+	if err != nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "encode action payload: " + err.Error()}
+	}
+	if _, err := s.Workflow.ApplyAction(ctx, taskID, ApplyActionRequest{
+		Type:    "ask",
+		Payload: awaitingPayload,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+// AnswerTask saves the user's reply and transitions the task awaiting → executing.
+func (s *TaskAppService) AnswerTask(ctx context.Context, taskID, questionID, answer string) error {
+	if questionID == "" {
+		return &StatusError{Code: http.StatusBadRequest, Message: "question_id is required"}
+	}
+	if answer == "" {
+		return &StatusError{Code: http.StatusBadRequest, Message: "answer is required"}
+	}
+	task, err := s.Tasks.GetTask(taskID)
+	if err != nil {
+		return &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	if task.Status != orchestrator.TaskStatusAwaiting {
+		return &StatusError{
+			Code:    http.StatusConflict,
+			Message: fmt.Sprintf("task is not awaiting (status: %s)", task.Status),
+		}
+	}
+	if s.Workflow == nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
+	}
+
+	// Merge pending_answer into the existing awaiting trait.
+	existing := orchestrator.GetAwaitingPayload(task.Payload)
+	existing.PendingAnswer = answer
+	apJSON, err := json.Marshal(existing)
+	if err != nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "encode awaiting payload: " + err.Error()}
+	}
+	answerPayload, err := json.Marshal(map[string]json.RawMessage{string(orchestrator.TraitAwaiting): apJSON})
+	if err != nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "encode action payload: " + err.Error()}
+	}
+	if _, err := s.Workflow.ApplyAction(ctx, taskID, ApplyActionRequest{
+		Type:    "answer",
+		Payload: answerPayload,
+	}); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1840,4 +1916,11 @@ func (s *TaskWorkflowService) cleanupWorktree(taskID, projectID string, status o
 	if err := s.Worktrees.CleanupForTask(taskID, project.WorkDir, string(status)); err != nil {
 		slog.Warn("worktree cleanup failed", "task_id", taskID, "project_id", projectID, "error", err)
 	}
+}
+
+// newQuestionID generates a random hex identifier for a Q&A turn.
+func newQuestionID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
