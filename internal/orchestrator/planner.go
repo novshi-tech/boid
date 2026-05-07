@@ -173,11 +173,10 @@ func (p *DispatchPlanner) PlanExec(event *ExecFireEvent) (*JobSpec, CleanupFunc,
 }
 
 // taskBusinessEnv returns env vars derived from business-level task fields
-// that hook / gate scripts may need at runtime. Currently this surfaces the
-// task's base branch so kits like git-auto-merge can identify the merge target
-// without poking the worktree (gate sandboxes intentionally hide the project
-// filesystem, so a `git worktree list` fallback would be rejected by the
-// broker's cwd policy).
+// that hook / gate scripts may need at runtime. Surfaces the task's base
+// branch and, when the task has an awaiting trait (i.e. the hook is a resume
+// after awaiting → executing), the session_id, user answer, and question_id
+// for the kit to resume the claude session.
 func taskBusinessEnv(task *Task) map[string]string {
 	if task == nil {
 		return nil
@@ -185,6 +184,16 @@ func taskBusinessEnv(task *Task) map[string]string {
 	out := map[string]string{}
 	if task.BaseBranch != "" {
 		out["BOID_BASE_BRANCH"] = task.BaseBranch
+	}
+	ap := GetAwaitingPayload(task.Payload)
+	if ap.SessionID != "" {
+		out["BOID_AGENT_SESSION_ID"] = ap.SessionID
+	}
+	if ap.PendingAnswer != "" {
+		out["BOID_USER_ANSWER"] = ap.PendingAnswer
+	}
+	if ap.QuestionID != "" {
+		out["BOID_QUESTION_ID"] = ap.QuestionID
 	}
 	if len(out) == 0 {
 		return nil

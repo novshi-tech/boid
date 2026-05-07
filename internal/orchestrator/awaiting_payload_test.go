@@ -51,6 +51,39 @@ func TestAwaitingPayload_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestClearPendingAnswer_RemovesAnswerKeepsRest(t *testing.T) {
+	payload := json.RawMessage(`{"awaiting":{"session_id":"sess-1","question":"q","question_id":"qid-1","pending_answer":"yes"}}`)
+	got := orchestrator.ClearPendingAnswer(payload)
+
+	ap := orchestrator.GetAwaitingPayload(got)
+	if ap.PendingAnswer != "" {
+		t.Errorf("pending_answer = %q, want empty", ap.PendingAnswer)
+	}
+	if ap.SessionID != "sess-1" {
+		t.Errorf("session_id = %q, want sess-1", ap.SessionID)
+	}
+	if ap.QuestionID != "qid-1" {
+		t.Errorf("question_id = %q, want qid-1", ap.QuestionID)
+	}
+	if ap.Question != "q" {
+		t.Errorf("question = %q, want q", ap.Question)
+	}
+}
+
+func TestClearPendingAnswer_NoOpWhenAbsent(t *testing.T) {
+	cases := []json.RawMessage{
+		json.RawMessage(`{}`),
+		json.RawMessage(`{"artifact":{"url":"x"}}`),
+		json.RawMessage(`{"awaiting":{"session_id":"s","question_id":"q"}}`),
+	}
+	for _, payload := range cases {
+		got := orchestrator.ClearPendingAnswer(payload)
+		if string(got) != string(payload) {
+			t.Errorf("ClearPendingAnswer changed payload unexpectedly: %s → %s", payload, got)
+		}
+	}
+}
+
 func TestGetAwaitingPayload_AbsentTrait(t *testing.T) {
 	ap := orchestrator.GetAwaitingPayload(json.RawMessage(`{"artifact":{"url":"x"}}`))
 	if ap != (orchestrator.AwaitingPayload{}) {

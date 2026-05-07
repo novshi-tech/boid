@@ -271,3 +271,56 @@ func TestTaskWorkflowServiceRunDispatchLoop_MustNotOverwriteTerminalStatusWhenAd
 		}
 	}
 }
+
+// After a dispatch cycle, the awaiting.pending_answer must be stripped from
+// the persisted payload so the answer is not re-consumed on the next hook run.
+// awaiting.session_id must survive so the kit can resume the claude session.
+func TestTaskWorkflowServiceRunDispatchLoop_ClearsPendingAnswerAfterDispatch(t *testing.T) {
+	withAnswer := `{"awaiting":{"session_id":"sess-1","question_id":"q-1","pending_answer":"yes"}}`
+	task := &orchestrator.Task{
+		ID:        "task-1",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "impl",
+		Payload:   []byte(withAnswer),
+	}
+	// The DB still returns the task-with-answer so the tx refresh gets it.
+	taskInDB := &orchestrator.Task{
+		ID:        task.ID,
+		ProjectID: task.ProjectID,
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  task.Behavior,
+		Payload:   []byte(withAnswer),
+	}
+
+	txStore := &recordingTxStore{task: taskInDB}
+	lifecycle := &stubLifecycle{}
+	svc := &TaskWorkflowService{
+		Tx: recordingTransactor{store: txStore},
+		Coordinator: fixedDispatchResult{
+			result: &orchestrator.DispatchResult{
+				// Hook wrote back the full payload unchanged.
+				FinalPayload: []byte(withAnswer),
+			},
+		},
+		Lifecycle: lifecycle,
+	}
+
+	svc.runDispatchLoop(
+		context.Background(),
+		task,
+		&orchestrator.ProjectMeta{},
+		orchestrator.DefaultMachine(),
+	)
+
+	if txStore.updatedTask == nil {
+		t.Fatal("expected payload persistence update")
+	}
+	ap := orchestrator.GetAwaitingPayload(txStore.updatedTask.Payload)
+	if ap.PendingAnswer != "" {
+		t.Errorf("pending_answer = %q, want empty after dispatch", ap.PendingAnswer)
+	}
+	if ap.SessionID != "sess-1" {
+		t.Errorf("session_id = %q, want sess-1 (must be preserved)", ap.SessionID)
+	}
+}
