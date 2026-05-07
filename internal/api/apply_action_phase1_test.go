@@ -102,6 +102,10 @@ func (p *dispatchContextProbe) ReplayGate(ctx context.Context, task *orchestrato
 	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
 }
 
+func (p *dispatchContextProbe) ReplayHook(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, hookID string) (*orchestrator.ReplayResult, error) {
+	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
+}
+
 func TestTaskWorkflowServiceApplyAction_BackgroundDispatchMustOutliveRequestContext(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
@@ -160,6 +164,10 @@ func (d fixedDispatchResult) DispatchEntryGates(ctx context.Context, task *orche
 }
 
 func (d fixedDispatchResult) ReplayGate(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, gateID string) (*orchestrator.ReplayResult, error) {
+	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
+}
+
+func (d fixedDispatchResult) ReplayHook(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, hookID string) (*orchestrator.ReplayResult, error) {
 	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
 }
 

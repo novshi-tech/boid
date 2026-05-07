@@ -35,6 +35,10 @@ func (c *replayGateCoordinator) ReplayGate(ctx context.Context, task *orchestrat
 	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
 }
 
+func (c *replayGateCoordinator) ReplayHook(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, hookID string) (*orchestrator.ReplayResult, error) {
+	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
+}
+
 // TestTaskWorkflowService_ReplayGate_Basic verifies basic gate replay with status persisted.
 func TestTaskWorkflowService_ReplayGate_Basic(t *testing.T) {
 	task := &orchestrator.Task{

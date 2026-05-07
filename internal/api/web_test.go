@@ -116,6 +116,14 @@ func (s *stubWebService) ReplayGate(ctx context.Context, taskID string, req Repl
 	return &ReplayGateResult{}, nil
 }
 
+func (s *stubWebService) ListHooksForStatus(taskID, status string) ([]orchestrator.Hook, error) {
+	return nil, nil
+}
+
+func (s *stubWebService) ReplayHook(ctx context.Context, taskID string, req ReplayHookRequest) (*ReplayHookResult, error) {
+	return &ReplayHookResult{}, nil
+}
+
 func (s *stubWebService) GetProjectByID(id string) (*orchestrator.Project, error) {
 	return s.projectByID, s.projectByIDErr
 }

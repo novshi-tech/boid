@@ -23,6 +23,7 @@ type TaskNotifyService interface {
 type TaskHandler struct {
 	Service  TaskService
 	Gates    GateService       // optional: enables gate replay/list when set
+	Hooks    HookService       // optional: enables hook replay/list when set
 	Notifier TaskNotifyService // optional: enables POST /{id}/notify when set
 }
 
@@ -40,6 +41,10 @@ func (h *TaskHandler) Routes() chi.Router {
 	if h.Gates != nil {
 		r.Get("/{id}/gates", h.ListGates)
 		r.Post("/{id}/gates/{gate_id}/replay", h.ReplayGate)
+	}
+	if h.Hooks != nil {
+		r.Get("/{id}/hooks", h.ListHooks)
+		r.Post("/{id}/hooks/{hook_id}/replay", h.ReplayHook)
 	}
 	if h.Notifier != nil {
 		r.Post("/{id}/notify", h.Notify)
@@ -309,4 +314,47 @@ func (h *TaskHandler) ListGates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, gates)
+}
+
+// replayHookBody is the optional request body for hook replay.
+type replayHookBody struct {
+	Status string `json:"status,omitempty"`
+}
+
+func (h *TaskHandler) ReplayHook(w http.ResponseWriter, r *http.Request) {
+	taskID := chi.URLParam(r, "id")
+	// hook IDs may contain '/' (kit-name/hook-name); CLI encodes them as %2F.
+	hookID, err := url.PathUnescape(chi.URLParam(r, "hook_id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid hook id")
+		return
+	}
+
+	var body replayHookBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err.Error() != "EOF" {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	result, err := h.Hooks.ReplayHook(r.Context(), taskID, ReplayHookRequest{
+		HookID: hookID,
+		Status: body.Status,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *TaskHandler) ListHooks(w http.ResponseWriter, r *http.Request) {
+	taskID := chi.URLParam(r, "id")
+	status := r.URL.Query().Get("status")
+
+	hooks, err := h.Hooks.ListHooksForStatus(taskID, status)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, hooks)
 }

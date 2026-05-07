@@ -49,19 +49,13 @@ func (d *Coordinator) DispatchAndAdvance(
 	var allResults []HandlerResult
 	var firedEvents []FiredEvent
 
-	// hook と exit gate は順次処理される別フェーズで、 collision 検査は各フェーズ内に
-	// 閉じる。 フェーズ跨ぎで同じ exclusive trait に書き込むケースは、 patch 値の
-	// sub-key deep merge (MergePayloadPatch) によって両者の寄与を保持する。
 	hookExclusiveWriters := map[string]string{}
-	gateExclusiveWriters := map[string]string{}
 
 	// 1. Evaluate and dispatch hooks
 	behavior, hasBehavior := lookupBehavior(meta, task)
 	var behaviorHooks []Hook
-	var behaviorGates []Gate
 	if hasBehavior {
 		behaviorHooks = behavior.Hooks
-		behaviorGates = behavior.Gates
 	}
 	matchedHooks := d.Evaluator.Evaluate(task, behaviorHooks)
 	if len(matchedHooks) > 0 {
@@ -91,8 +85,53 @@ func (d *Coordinator) DispatchAndAdvance(
 		}
 	}
 
-	// 2. Evaluate and dispatch task.exit gates (always parallel)
-	// Use hook-updated payload so that traits produced by hooks are visible to gates.
+	// 2-4. Exit gates + lifecycle derivation + auto-advance (delegated to helper).
+	hookRan := task.Status == TaskStatusExecuting && hasHookResult(allResults)
+	finalPayload, newStatus, actionPayload, gateResults, gateFiredEvents, err := d.evaluateExitAndAdvance(ctx, task, meta, sm, payload, hookRan)
+	allResults = append(allResults, gateResults...)
+	firedEvents = append(firedEvents, gateFiredEvents...)
+	if err != nil {
+		return &DispatchResult{FiredEvents: firedEvents}, err
+	}
+
+	return &DispatchResult{
+		Results:       allResults,
+		FiredEvents:   firedEvents,
+		FinalPayload:  finalPayload,
+		NewStatus:     newStatus,
+		ActionPayload: actionPayload,
+	}, nil
+}
+
+// evaluateExitAndAdvance runs exit gates against payload, derives lifecycle
+// traits, and evaluates sm.Advance. It is shared by DispatchAndAdvance and
+// ReplayHook so that both paths apply identical post-hook logic.
+//
+// hookRan must be true when a hook actually executed in this dispatch cycle
+// (used for lifecycle.executed derivation). payload is the hook-merged payload
+// to feed into the gate executor and state machine.
+//
+// Returns: (finalPayload, newStatus, actionPayload, gateResults, gateFiredEvents, error).
+// newStatus is empty when no advance occurred. lifecycle is NOT included in
+// finalPayload — it is transient and must not be persisted.
+func (d *Coordinator) evaluateExitAndAdvance(
+	ctx context.Context,
+	task *Task,
+	meta *ProjectMeta,
+	sm *StateMachine,
+	payload json.RawMessage,
+	hookRan bool,
+) (json.RawMessage, TaskStatus, json.RawMessage, []HandlerResult, []FiredEvent, error) {
+	var behaviorGates []Gate
+	if behavior, ok := lookupBehavior(meta, task); ok {
+		behaviorGates = behavior.Gates
+	}
+	gateExclusiveWriters := map[string]string{}
+
+	// Phase 2: exit gates — use hook-updated payload so traits from hooks are
+	// visible to gate conditions.
+	var handlerResults []HandlerResult
+	var firedEvents []FiredEvent
 	gateTask := *task
 	gateTask.Payload = payload
 	matchedGates := d.Evaluator.EvaluateGates(&gateTask, behaviorGates, GatePhaseExit)
@@ -102,12 +141,12 @@ func (d *Coordinator) DispatchAndAdvance(
 			firedEvents = append(firedEvents, buildFiredEvent(gr, "exit_gate", string(task.Status), nil, matchedGates))
 		}
 		if err != nil {
-			return &DispatchResult{FiredEvents: firedEvents}, fmt.Errorf("gate dispatch: %w", err)
+			return payload, "", nil, handlerResults, firedEvents, fmt.Errorf("gate dispatch: %w", err)
 		}
 		for _, gr := range gateResults {
-			allResults = append(allResults, gr)
+			handlerResults = append(handlerResults, gr)
 			if err := checkExclusiveCollision(gr.PayloadPatch, gr.ID, gateExclusiveWriters); err != nil {
-				return &DispatchResult{FiredEvents: firedEvents}, err
+				return payload, "", nil, handlerResults, firedEvents, err
 			}
 			if len(gr.PayloadPatch) > 0 && string(gr.PayloadPatch) != "{}" {
 				merged, err := MergePayloadPatch(payload, gr.PayloadPatch, gr.ID, gr.allowedTraitsFromGates(matchedGates))
@@ -120,10 +159,7 @@ func (d *Coordinator) DispatchAndAdvance(
 		}
 	}
 
-	// 3. Derive lifecycle traits and inject into a transient payload copy for
-	// state-machine evaluation. lifecycle is NOT included in FinalPayload so it
-	// is never persisted to the DB.
-	hookRan := task.Status == TaskStatusExecuting && hasHookResult(allResults)
+	// Phase 3: derive lifecycle traits (transient — not persisted).
 	lc, err := DeriveLifecycle(ctx, task.ID, d.LifecycleStore, hookRan)
 	if err != nil {
 		slog.Warn("lifecycle derivation failed", "task_id", task.ID, "error", err)
@@ -131,21 +167,17 @@ func (d *Coordinator) DispatchAndAdvance(
 	}
 	payloadForSM := injectLifecycle(payload, lc)
 
-	// 4. Evaluate auto-advance
-	result := &DispatchResult{
-		Results:      allResults,
-		FiredEvents:  firedEvents,
-		FinalPayload: payload, // lifecycle excluded — not persisted
-	}
-
+	// Phase 4: evaluate auto-advance.
+	var newStatus TaskStatus
+	var actionPayload json.RawMessage
 	advanceTask := *task
 	advanceTask.Payload = payloadForSM
 	if outcome := sm.AdvanceFull(&advanceTask); outcome != nil {
-		result.NewStatus = outcome.Task.Status
-		result.ActionPayload = outcome.ActionPayload
+		newStatus = outcome.Task.Status
+		actionPayload = outcome.ActionPayload
 	}
 
-	return result, nil
+	return payload, newStatus, actionPayload, handlerResults, firedEvents, nil
 }
 
 // DispatchEntryGates runs entry-phase gates for the given task's current status.
@@ -619,6 +651,97 @@ func (d *Coordinator) ReplayGate(
 	}
 
 	return replay, nil
+}
+
+// ReplayHook executes a single named hook in isolation against the task's
+// current state. After the hook completes, exit gates are evaluated and
+// sm.Advance is applied — identical to the post-hook phase of DispatchAndAdvance.
+//
+// Returns an error if the hook ID is not found in the behavior or if the hook
+// does not match the current status (e.g. task not in executing state).
+func (d *Coordinator) ReplayHook(
+	ctx context.Context,
+	task *Task,
+	meta *ProjectMeta,
+	sm *StateMachine,
+	hookID string,
+) (*ReplayResult, error) {
+	behavior, ok := lookupBehavior(meta, task)
+	if !ok {
+		return nil, fmt.Errorf("behavior %q not found in project meta", task.Behavior)
+	}
+
+	// Find hook by ID.
+	var found *Hook
+	for i := range behavior.Hooks {
+		if behavior.Hooks[i].ID == hookID {
+			h := behavior.Hooks[i]
+			found = &h
+			break
+		}
+	}
+	if found == nil {
+		return nil, fmt.Errorf("hook %q not found in behavior %q", hookID, task.Behavior)
+	}
+
+	// Check hook matches current status.
+	matched := d.Evaluator.Evaluate(task, []Hook{*found})
+	if len(matched) == 0 {
+		return nil, fmt.Errorf("hook %q does not match current status %q", hookID, task.Status)
+	}
+
+	// Execute the hook (respects readonly flag, acquires worktree lock when needed).
+	readonly := IsReadonly(task)
+	hookResults, err := d.dispatchHooksLocked(ctx, task, matched, readonly)
+
+	payload := task.Payload
+	var result HandlerResult
+	var firedEvents []FiredEvent
+
+	for _, hr := range hookResults {
+		result = hr
+		firedEvents = append(firedEvents, buildFiredEvent(hr, "hook_replay", string(task.Status), matched, nil))
+		if len(hr.PayloadPatch) > 0 && string(hr.PayloadPatch) != "{}" {
+			merged, mergeErr := MergePayloadPatch(payload, hr.PayloadPatch, hr.ID, hr.allowedTraits(matched))
+			if mergeErr != nil {
+				slog.Warn("hook replay payload merge failed", "hook_id", hr.ID, "error", mergeErr)
+			} else {
+				payload = merged
+			}
+		}
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("hook replay: %w", err)
+	}
+
+	// Evaluate exit gates + lifecycle + advance (same as DispatchAndAdvance post-hook phase).
+	finalPayload, newStatus, _, _, gateFiredEvents, exitErr := d.evaluateExitAndAdvance(ctx, task, meta, sm, payload, true)
+	firedEvents = append(firedEvents, gateFiredEvents...)
+	if exitErr != nil {
+		return nil, fmt.Errorf("hook replay exit/advance: %w", exitErr)
+	}
+
+	return &ReplayResult{
+		Result:       result,
+		FinalPayload: finalPayload,
+		NewStatus:    newStatus,
+		FiredEvents:  firedEvents,
+	}, nil
+}
+
+// ListHooksForStatus returns hooks from the behavior that would match the given
+// status. Since hooks only fire during executing, only executing status yields
+// results. Used by "boid task hook list".
+func ListHooksForStatus(meta *ProjectMeta, task *Task, status TaskStatus) []Hook {
+	behavior, ok := lookupBehavior(meta, task)
+	if !ok {
+		return nil
+	}
+	eval := &Evaluator{}
+	probe := *task
+	probe.Status = status
+	return eval.Evaluate(&probe, behavior.Hooks)
 }
 
 // ListGatesForStatus returns gates from the behavior that would match the
