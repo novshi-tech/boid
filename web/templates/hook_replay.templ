@@ -1,0 +1,38 @@
+package templates
+
+import (
+	"github.com/novshi-tech/boid/internal/orchestrator"
+)
+
+templ HookReplayList(taskID, status string, hooks []orchestrator.Hook, errorMsg string) {
+	@Layout("Hook Replay", "/tasks/"+taskID) {
+		if errorMsg != "" {
+			<div class="card action-error">
+				{ errorMsg }
+			</div>
+		}
+		<div class="card">
+			if len(hooks) == 0 {
+				<p style="color:#888">このタスクには再発火可能なフックがありません。</p>
+			} else {
+				<div class="job-list">
+					for _, hook := range hooks {
+						<div class="job-row">
+							<div class="job-row-header">
+								<span class="job-id">{ hook.ID }</span>
+								if hook.Kit != "" {
+									<span>{ hook.Kit }</span>
+								}
+							</div>
+							<div style="margin-top:8px">
+								<form method="post" action={ templ.SafeURL(hookReplayPath(taskID, hook.ID)) } onsubmit="return confirm('本当にフックを再発火しますか？')">
+									<button type="submit" class="btn btn-primary">replay</button>
+								</form>
+							</div>
+						</div>
+					}
+				</div>
+			}
+		</div>
+	}
+}
