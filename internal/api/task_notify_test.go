@@ -13,14 +13,18 @@ import (
 )
 
 type fakeNotifier struct {
-	calledTaskID  string
-	calledMessage string
-	err           error
+	calledTaskID   string
+	calledMessage  string
+	calledAsk      string
+	calledQID      string
+	err            error
 }
 
-func (n *fakeNotifier) NotifyTask(ctx context.Context, taskID, message string) error {
+func (n *fakeNotifier) NotifyTask(ctx context.Context, taskID, message, ask, questionID string) error {
 	n.calledTaskID = taskID
 	n.calledMessage = message
+	n.calledAsk = ask
+	n.calledQID = questionID
 	return n.err
 }
 
@@ -50,6 +54,25 @@ func TestNotifyHandler_Success(t *testing.T) {
 	}
 	if notifier.calledTaskID != "task-1" || notifier.calledMessage != "hello" {
 		t.Errorf("notifier got task=%q message=%q", notifier.calledTaskID, notifier.calledMessage)
+	}
+	if notifier.calledAsk != "" || notifier.calledQID != "" {
+		t.Errorf("ask/questionID should be empty for normal notify, got ask=%q qid=%q", notifier.calledAsk, notifier.calledQID)
+	}
+}
+
+func TestNotifyHandler_AskMode(t *testing.T) {
+	notifier := &fakeNotifier{}
+	h := &TaskHandler{Notifier: notifier}
+
+	w := notifyRequest(t, h.Routes(), "task-1", NotifyTaskRequest{Message: "check in", Ask: "Approve?", QuestionID: "q-123"})
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d, want %d (body=%s)", w.Code, http.StatusNoContent, w.Body.String())
+	}
+	if notifier.calledAsk != "Approve?" {
+		t.Errorf("ask = %q, want %q", notifier.calledAsk, "Approve?")
+	}
+	if notifier.calledQID != "q-123" {
+		t.Errorf("question_id = %q, want %q", notifier.calledQID, "q-123")
 	}
 }
 

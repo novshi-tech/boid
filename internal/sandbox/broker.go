@@ -275,6 +275,17 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task notify requires a message"}
 		}
 		// project 検証は boid_executor 側で行う (TaskStore 経由で task の project_id を引く)
+	case BoidOpTaskAnswer:
+		if boidReq.TaskID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task answer requires a task id"}
+		}
+		if boidReq.QuestionID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task answer requires a question id"}
+		}
+		if boidReq.Answer == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task answer requires an answer"}
+		}
+		// project 検証は boid_executor 側で行う
 	case BoidOpTaskList:
 		// project_id 指定があれば解決して AllowsProject 検査
 		if boidReq.ProjectID != "" {

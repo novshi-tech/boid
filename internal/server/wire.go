@@ -390,7 +390,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	workspaceHandler := &api.WorkspaceHandler{Service: runtime.projectSvc}
 	r.Mount("/api/workspaces", workspaceHandler.Routes())
 
-	taskHandler := &api.TaskHandler{Service: runtime.taskSvc, Gates: runtime.workflow, Hooks: runtime.workflow, Notifier: runtime.taskSvc}
+	taskHandler := &api.TaskHandler{Service: runtime.taskSvc, Gates: runtime.workflow, Hooks: runtime.workflow, Notifier: runtime.taskSvc, Answerer: runtime.taskSvc}
 	r.Mount("/api/tasks", taskHandler.Routes())
 
 	gcStore := orchestrator.NewTaskGCStoreWithWorktree(

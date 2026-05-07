@@ -103,10 +103,18 @@ var taskNotifyCmd = &cobra.Command{
 	Use:   "notify <id>",
 	Short: "Send a user notification for the given task",
 	Long: "ユーザの判断が必要なときに、 config.yaml の `notify.command` を実行する。\n" +
-		"agent からのお知らせ専用 (agent が明示的に呼ぶときだけ発火する) で、\n" +
-		"通知後 agent はセッション内に質問を出力してユーザの返答を待つ想定。",
+		"--ask を指定すると Q&A モードになり、 通知後にタスクを awaiting に遷移させる。\n" +
+		"--question-id を省略した場合は boid 側で UUID を生成する。",
 	Args: cobra.ExactArgs(1),
 	RunE: runTaskNotify,
+}
+
+var taskAnswerCmd = &cobra.Command{
+	Use:   "answer",
+	Short: "Submit a user answer to a pending Q&A question",
+	Long: "awaiting 状態のタスクに回答を送る。 --task / --question-id / --answer はすべて必須。\n" +
+		"回答が保存されると タスクは awaiting → executing に遷移する。",
+	RunE: runTaskAnswer,
 }
 
 func init() {
@@ -130,7 +138,12 @@ func init() {
 	taskRerunCmd.Flags().Bool("auto-start", false, "Automatically start the rerun task")
 	taskRerunCmd.Flags().String("instructions-file", "", "Instructions override file (YAML/JSON) for role-wise merge; - for stdin")
 	taskNotifyCmd.Flags().StringP("message", "m", "", "Notification message text (required)")
-	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd, taskDeleteCmd, taskUpdateCmd, taskImportCmd, taskDuplicateCmd, taskReopenCmd, taskRerunCmd, taskNotifyCmd)
+	taskNotifyCmd.Flags().String("ask", "", "Question text; when set, transitions task to awaiting (Q&A mode)")
+	taskNotifyCmd.Flags().String("question-id", "", "Q&A turn ID (generated when omitted)")
+	taskAnswerCmd.Flags().String("task", "", "Task ID (required)")
+	taskAnswerCmd.Flags().String("question-id", "", "Question ID to answer (required)")
+	taskAnswerCmd.Flags().String("answer", "", "Answer text (required)")
+	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd, taskDeleteCmd, taskUpdateCmd, taskImportCmd, taskDuplicateCmd, taskReopenCmd, taskRerunCmd, taskNotifyCmd, taskAnswerCmd)
 	rootCmd.AddCommand(taskCmd)
 }
 
@@ -548,12 +561,36 @@ func runTaskNotify(cmd *cobra.Command, args []string) error {
 	if message == "" {
 		return fmt.Errorf("--message is required")
 	}
+	ask, _ := cmd.Flags().GetString("ask")
+	questionID, _ := cmd.Flags().GetString("question-id")
 	c := client.NewUnixClient(client.DefaultSocketPath())
-	req := api.NotifyTaskRequest{Message: message}
+	req := api.NotifyTaskRequest{Message: message, Ask: ask, QuestionID: questionID}
 	if err := c.Do("POST", "/api/tasks/"+args[0]+"/notify", req, nil); err != nil {
 		return fmt.Errorf("notify task: %w", err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "notified: %s\n", args[0])
+	return nil
+}
+
+func runTaskAnswer(cmd *cobra.Command, args []string) error {
+	taskID, _ := cmd.Flags().GetString("task")
+	if taskID == "" {
+		return fmt.Errorf("--task is required")
+	}
+	questionID, _ := cmd.Flags().GetString("question-id")
+	if questionID == "" {
+		return fmt.Errorf("--question-id is required")
+	}
+	answer, _ := cmd.Flags().GetString("answer")
+	if answer == "" {
+		return fmt.Errorf("--answer is required")
+	}
+	c := client.NewUnixClient(client.DefaultSocketPath())
+	req := api.AnswerTaskRequest{QuestionID: questionID, Answer: answer}
+	if err := c.Do("POST", "/api/tasks/"+taskID+"/answer", req, nil); err != nil {
+		return fmt.Errorf("answer task: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "answered: %s\n", taskID)
 	return nil
 }
 

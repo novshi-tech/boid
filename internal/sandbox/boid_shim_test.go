@@ -795,6 +795,147 @@ func TestParseBoidTaskImport_EmptyBatch(t *testing.T) {
 	}
 }
 
+func newFakeBrokerSingle(t *testing.T) (sockPath string, reqCh chan sandbox.ExecRequest) {
+	t.Helper()
+	dir := t.TempDir()
+	sockPath = filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close(); os.Remove(sockPath) })
+	reqCh = make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+	return sockPath, reqCh
+}
+
+func TestRunBoidShim_TaskNotify_AskMode(t *testing.T) {
+	sockPath, reqCh := newFakeBrokerSingle(t)
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-notify")
+
+	resp, err := sandbox.RunBoidShim([]string{
+		"task", "notify", "task-xyz",
+		"--message", "Plan ready",
+		"--ask", "Approve?",
+		"--question-id", "q-001",
+	})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%s)", resp.ExitCode, resp.Stderr)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpTaskNotify {
+		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskNotify)
+	}
+	if req.Boid.Message != "Plan ready" {
+		t.Errorf("message = %q, want Plan ready", req.Boid.Message)
+	}
+	if req.Boid.Ask != "Approve?" {
+		t.Errorf("ask = %q, want Approve?", req.Boid.Ask)
+	}
+	if req.Boid.QuestionID != "q-001" {
+		t.Errorf("question_id = %q, want q-001", req.Boid.QuestionID)
+	}
+}
+
+func TestRunBoidShim_TaskNotify_NormalMode_NoAsk(t *testing.T) {
+	sockPath, reqCh := newFakeBrokerSingle(t)
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-notify2")
+
+	resp, err := sandbox.RunBoidShim([]string{
+		"task", "notify", "task-xyz",
+		"--message", "Info only",
+	})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid.Ask != "" {
+		t.Errorf("ask = %q, want empty for normal notify", req.Boid.Ask)
+	}
+}
+
+func TestRunBoidShim_TaskAnswer_SendsTypedRequest(t *testing.T) {
+	sockPath, reqCh := newFakeBrokerSingle(t)
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-answer")
+
+	resp, err := sandbox.RunBoidShim([]string{
+		"task", "answer",
+		"--task", "task-abc",
+		"--question-id", "q-999",
+		"--answer", "yes",
+	})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%s)", resp.ExitCode, resp.Stderr)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpTaskAnswer {
+		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskAnswer)
+	}
+	if req.Boid.TaskID != "task-abc" {
+		t.Errorf("task_id = %q, want task-abc", req.Boid.TaskID)
+	}
+	if req.Boid.QuestionID != "q-999" {
+		t.Errorf("question_id = %q, want q-999", req.Boid.QuestionID)
+	}
+	if req.Boid.Answer != "yes" {
+		t.Errorf("answer = %q, want yes", req.Boid.Answer)
+	}
+}
+
+func TestRunBoidShim_TaskAnswer_MissingTaskID(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+	if _, err := sandbox.RunBoidShim([]string{"task", "answer", "--question-id", "q-1", "--answer", "yes"}); err == nil {
+		t.Fatal("expected error when --task is missing")
+	}
+}
+
+func TestRunBoidShim_TaskAnswer_MissingQuestionID(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+	if _, err := sandbox.RunBoidShim([]string{"task", "answer", "--task", "t-1", "--answer", "yes"}); err == nil {
+		t.Fatal("expected error when --question-id is missing")
+	}
+}
+
+func TestRunBoidShim_TaskAnswer_MissingAnswer(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+	if _, err := sandbox.RunBoidShim([]string{"task", "answer", "--task", "t-1", "--question-id", "q-1"}); err == nil {
+		t.Fatal("expected error when --answer is missing")
+	}
+}
+
 // host 側 cmd/job.go runJobDone が --output-file の missing を silent skip
 // するのに対し、shim 側だけ ENOENT を fatal にしていると
 // agent が /exit で終了して payload_patch.* / /tmp/boid-output が無いケースで

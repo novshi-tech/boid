@@ -16,15 +16,24 @@ import (
 // TaskNotifyService dispatches an agent-driven notification for a task.
 // Wired to *TaskAppService at runtime; left optional on TaskHandler so
 // existing tests do not need to satisfy this interface.
+// ask/questionID are optional Q&A fields: when ask is non-empty the task is
+// transitioned to awaiting after the notification is sent.
 type TaskNotifyService interface {
-	NotifyTask(ctx context.Context, taskID, message string) error
+	NotifyTask(ctx context.Context, taskID, message, ask, questionID string) error
+}
+
+// TaskAnswerService records a user reply to a pending Q&A question and
+// transitions the task back to executing.
+type TaskAnswerService interface {
+	AnswerTask(ctx context.Context, taskID, questionID, answer string) error
 }
 
 type TaskHandler struct {
 	Service  TaskService
-	Gates    GateService       // optional: enables gate replay/list when set
-	Hooks    HookService       // optional: enables hook replay/list when set
-	Notifier TaskNotifyService // optional: enables POST /{id}/notify when set
+	Gates    GateService        // optional: enables gate replay/list when set
+	Hooks    HookService        // optional: enables hook replay/list when set
+	Notifier TaskNotifyService  // optional: enables POST /{id}/notify when set
+	Answerer TaskAnswerService  // optional: enables POST /{id}/answer when set
 }
 
 func (h *TaskHandler) Routes() chi.Router {
@@ -49,11 +58,21 @@ func (h *TaskHandler) Routes() chi.Router {
 	if h.Notifier != nil {
 		r.Post("/{id}/notify", h.Notify)
 	}
+	if h.Answerer != nil {
+		r.Post("/{id}/answer", h.Answer)
+	}
 	return r
 }
 
 type NotifyTaskRequest struct {
-	Message string `json:"message"`
+	Message    string `json:"message"`
+	Ask        string `json:"ask,omitempty"`
+	QuestionID string `json:"question_id,omitempty"`
+}
+
+type AnswerTaskRequest struct {
+	QuestionID string `json:"question_id"`
+	Answer     string `json:"answer"`
 }
 
 func (h *TaskHandler) Notify(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +82,21 @@ func (h *TaskHandler) Notify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	taskID := chi.URLParam(r, "id")
-	if err := h.Notifier.NotifyTask(r.Context(), taskID, req.Message); err != nil {
+	if err := h.Notifier.NotifyTask(r.Context(), taskID, req.Message, req.Ask, req.QuestionID); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *TaskHandler) Answer(w http.ResponseWriter, r *http.Request) {
+	var req AnswerTaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	taskID := chi.URLParam(r, "id")
+	if err := h.Answerer.AnswerTask(r.Context(), taskID, req.QuestionID, req.Answer); err != nil {
 		writeServiceError(w, err)
 		return
 	}

@@ -166,11 +166,31 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 		if !ctx.AllowsProject(existing.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task notify is restricted to the current workspace"}
 		}
-		if err := e.tasks.NotifyTask(context.Background(), req.TaskID, req.Message); err != nil {
+		if err := e.tasks.NotifyTask(context.Background(), req.TaskID, req.Message, req.Ask, req.QuestionID); err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{
 			Stdout: fmt.Sprintf("notified: %s\n", req.TaskID),
+		}
+	case sandbox.BoidOpTaskAnswer:
+		if e.tasks == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task answer unavailable"}
+		}
+		if req.TaskID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task answer requires a task id"}
+		}
+		existing, err := e.tasks.GetTask(req.TaskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		if !ctx.AllowsProject(existing.ProjectID) {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task answer is restricted to the current workspace"}
+		}
+		if err := e.tasks.AnswerTask(context.Background(), req.TaskID, req.QuestionID, req.Answer); err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{
+			Stdout: fmt.Sprintf("answered: %s\n", req.TaskID),
 		}
 	case sandbox.BoidOpTaskList:
 		if e.tasks == nil {

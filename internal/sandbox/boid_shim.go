@@ -61,6 +61,8 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 			return parseBoidTaskList(args[2:])
 		case "notify":
 			return parseBoidTaskNotify(args[2:])
+		case "answer":
+			return parseBoidTaskAnswer(args[2:])
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid task subcommand %q", args[1])
 		}
@@ -408,6 +410,20 @@ func parseBoidTaskNotify(args []string) (*BoidRequest, error) {
 			}
 			i = next
 			req.Message = value
+		case arg == "--ask" || strings.HasPrefix(arg, "--ask="):
+			value, next, err := takeStringFlagValue(args, i, "--ask")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.Ask = value
+		case arg == "--question-id" || strings.HasPrefix(arg, "--question-id="):
+			value, next, err := takeStringFlagValue(args, i, "--question-id")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.QuestionID = value
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task notify", arg)
 		}
@@ -418,6 +434,51 @@ func parseBoidTaskNotify(args []string) (*BoidRequest, error) {
 	}
 	if req.Message == "" {
 		return nil, fmt.Errorf("boid shim: task notify requires --message")
+	}
+
+	return req, nil
+}
+
+func parseBoidTaskAnswer(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpTaskAnswer}
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--task" || strings.HasPrefix(arg, "--task="):
+			value, next, err := takeStringFlagValue(args, i, "--task")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.TaskID = value
+		case arg == "--question-id" || strings.HasPrefix(arg, "--question-id="):
+			value, next, err := takeStringFlagValue(args, i, "--question-id")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.QuestionID = value
+		case arg == "--answer" || strings.HasPrefix(arg, "--answer="):
+			value, next, err := takeStringFlagValue(args, i, "--answer")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.Answer = value
+		default:
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task answer", arg)
+		}
+	}
+
+	if req.TaskID == "" {
+		return nil, fmt.Errorf("boid shim: task answer requires --task")
+	}
+	if req.QuestionID == "" {
+		return nil, fmt.Errorf("boid shim: task answer requires --question-id")
+	}
+	if req.Answer == "" {
+		return nil, fmt.Errorf("boid shim: task answer requires --answer")
 	}
 
 	return req, nil
