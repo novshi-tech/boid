@@ -1541,6 +1541,10 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 		// Persist hook + exit gate payload. Always refresh the task row so we
 		// can detect concurrent terminal transitions (abort/done) before
 		// applying the computed auto-advance.
+		//
+		// Use MergePayload (not direct assignment) so that traits written by the
+		// hook mid-execution (e.g. the "awaiting" trait set by boid task notify
+		// --ask) are not overwritten when result.FinalPayload is empty or "{}".
 		var persisted *orchestrator.Task
 		if err := s.Tx.WithinTx(func(tx TxStore) error {
 			latest, err := tx.GetTask(current.ID)
@@ -1548,7 +1552,11 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 				return err
 			}
 			if len(result.FinalPayload) > 0 {
-				latest.Payload = result.FinalPayload
+				merged, mergeErr := orchestrator.MergePayload(latest.Payload, result.FinalPayload)
+				if mergeErr != nil {
+					return mergeErr
+				}
+				latest.Payload = merged
 				if err := tx.UpdateTask(latest); err != nil {
 					return err
 				}
