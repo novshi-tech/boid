@@ -2,5 +2,3 @@ hooks:
   - id: fake-agent
     traits:
       produces: [artifact]
-env:
-  E2E_STATE_DIR: ${E2E_STATE_DIR}

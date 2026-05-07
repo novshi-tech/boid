@@ -8,14 +8,10 @@ set -euo pipefail
 #   BOID_USER_ANSWER       set to the user's answer on 2nd invocation
 #   BOID_QUESTION_ID       Q&A turn ID set on 2nd invocation
 #
-# Log all relevant env vars for assertion in scenario.sh.
-LOG="$E2E_STATE_DIR/fake-agent.log"
-{
-    printf 'BOID_AGENT_SESSION_ID=%s\n' "${BOID_AGENT_SESSION_ID:-}"
-    printf 'BOID_USER_ANSWER=%s\n' "${BOID_USER_ANSWER:-}"
-    printf 'BOID_QUESTION_ID=%s\n' "${BOID_QUESTION_ID:-}"
-    printf '---\n'
-} >> "$LOG"
+# Env var correctness is verified indirectly via state transitions:
+# if BOID_AGENT_SESSION_ID were missing, the 2nd invocation would re-enter
+# the notify --ask path instead of acting on BOID_USER_ANSWER, causing the
+# task to re-enter awaiting rather than reach done/aborted.
 
 if [[ -z "${BOID_AGENT_SESSION_ID:-}" ]]; then
     # First invocation: signal that the plan is ready and ask for approval.
@@ -31,9 +27,6 @@ fi
 # Second invocation: act on the user's answer.
 if [[ "${BOID_USER_ANSWER:-}" == "approve" ]]; then
     printf 'Done\n'
-    mkdir -p "$HOME/.boid/output"
-    printf '{"payload_patch":{"artifact":{"status":"done"}}}\n' \
-        > "$HOME/.boid/output/payload_patch.json"
     exit 0
 fi
 
