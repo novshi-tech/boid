@@ -424,6 +424,13 @@ func parseBoidTaskNotify(args []string) (*BoidRequest, error) {
 			}
 			i = next
 			req.QuestionID = value
+		case arg == "--session-id" || strings.HasPrefix(arg, "--session-id="):
+			value, next, err := takeStringFlagValue(args, i, "--session-id")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.SessionID = value
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task notify", arg)
 		}

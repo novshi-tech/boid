@@ -565,15 +565,18 @@ func (s *TaskAppService) GetTask(id string) (*orchestrator.Task, error) {
 }
 
 // NotifyTask invokes the configured notify command for the given task.
-// Returns 501 when no notifier is wired (notifications disabled in config).
-// When ask is non-empty the task is transitioned to awaiting after sending
-// the notification; questionID identifies the Q&A turn (generated when empty).
-func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, questionID string) error {
-	if s.Notify == nil {
-		return &StatusError{Code: http.StatusNotImplemented, Message: "notify is not configured"}
-	}
+// Returns 501 when no notifier is wired and ask is empty (notifications disabled in config).
+// When ask is non-empty the task is transitioned to awaiting; the notification is
+// best-effort and skipped if no notifier is configured. questionID identifies the
+// Q&A turn (generated when empty).
+func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID string) error {
 	if message == "" {
 		return &StatusError{Code: http.StatusBadRequest, Message: "message is required"}
+	}
+	// Without ask, a working notifier is required (that's the only purpose of the call).
+	// With ask, notification is best-effort; the state transition is what matters.
+	if s.Notify == nil && ask == "" {
+		return &StatusError{Code: http.StatusNotImplemented, Message: "notify is not configured"}
 	}
 	task, err := s.Tasks.GetTask(taskID)
 	if err != nil {
@@ -603,8 +606,13 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 			}
 		}
 	}
-	if err := s.Notify.Notify(ctx, ev); err != nil {
-		return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	if s.Notify != nil {
+		if err := s.Notify.Notify(ctx, ev); err != nil {
+			if ask == "" {
+				return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+			}
+			slog.Warn("notify: notification failed in ask mode, continuing with state transition", "error", err)
+		}
 	}
 
 	if ask == "" {
@@ -619,6 +627,7 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		questionID = newQuestionID()
 	}
 	ap := orchestrator.AwaitingPayload{
+		SessionID:  sessionID,
 		Question:   ask,
 		QuestionID: questionID,
 	}
@@ -1532,6 +1541,10 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 		// Persist hook + exit gate payload. Always refresh the task row so we
 		// can detect concurrent terminal transitions (abort/done) before
 		// applying the computed auto-advance.
+		//
+		// Use MergePayload (not direct assignment) so that traits written by the
+		// hook mid-execution (e.g. the "awaiting" trait set by boid task notify
+		// --ask) are not overwritten when result.FinalPayload is empty or "{}".
 		var persisted *orchestrator.Task
 		if err := s.Tx.WithinTx(func(tx TxStore) error {
 			latest, err := tx.GetTask(current.ID)
@@ -1539,7 +1552,11 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 				return err
 			}
 			if len(result.FinalPayload) > 0 {
-				latest.Payload = result.FinalPayload
+				merged, mergeErr := orchestrator.MergePayload(latest.Payload, result.FinalPayload)
+				if mergeErr != nil {
+					return mergeErr
+				}
+				latest.Payload = merged
 				if err := tx.UpdateTask(latest); err != nil {
 					return err
 				}
@@ -1560,6 +1577,17 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			slog.Info("dispatch loop: task reached terminal concurrently, skipping advance",
 				"task_id", current.ID, "status", current.Status, "would_advance_to", result.NewStatus)
 			s.finalizeTerminal(ctx, current)
+			return
+		}
+
+		// If a hook called boid task notify --ask during this cycle, the task
+		// transitioned to awaiting. The lifecycle.executed signal computed from
+		// the hook exit is stale — do not auto-advance to done. The dispatch
+		// loop will re-fire (via AnswerTask → ApplyAction("answer")) once the
+		// user replies.
+		if current.Status == orchestrator.TaskStatusAwaiting {
+			slog.Info("dispatch loop: task is awaiting user answer, skipping auto-advance",
+				"task_id", current.ID, "would_advance_to", result.NewStatus)
 			return
 		}
 

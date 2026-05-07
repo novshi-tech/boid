@@ -140,6 +140,7 @@ func init() {
 	taskNotifyCmd.Flags().StringP("message", "m", "", "Notification message text (required)")
 	taskNotifyCmd.Flags().String("ask", "", "Question text; when set, transitions task to awaiting (Q&A mode)")
 	taskNotifyCmd.Flags().String("question-id", "", "Q&A turn ID (generated when omitted)")
+	taskNotifyCmd.Flags().String("session-id", "", "Agent session ID stored in awaiting trait and surfaced as BOID_AGENT_SESSION_ID on next hook invocation")
 	taskAnswerCmd.Flags().String("task", "", "Task ID (required)")
 	taskAnswerCmd.Flags().String("question-id", "", "Question ID to answer (required)")
 	taskAnswerCmd.Flags().String("answer", "", "Answer text (required)")
@@ -563,8 +564,9 @@ func runTaskNotify(cmd *cobra.Command, args []string) error {
 	}
 	ask, _ := cmd.Flags().GetString("ask")
 	questionID, _ := cmd.Flags().GetString("question-id")
+	sessionID, _ := cmd.Flags().GetString("session-id")
 	c := client.NewUnixClient(client.DefaultSocketPath())
-	req := api.NotifyTaskRequest{Message: message, Ask: ask, QuestionID: questionID}
+	req := api.NotifyTaskRequest{Message: message, Ask: ask, QuestionID: questionID, SessionID: sessionID}
 	if err := c.Do("POST", "/api/tasks/"+args[0]+"/notify", req, nil); err != nil {
 		return fmt.Errorf("notify task: %w", err)
 	}
