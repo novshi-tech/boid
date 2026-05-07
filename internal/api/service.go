@@ -568,7 +568,7 @@ func (s *TaskAppService) GetTask(id string) (*orchestrator.Task, error) {
 // Returns 501 when no notifier is wired (notifications disabled in config).
 // When ask is non-empty the task is transitioned to awaiting after sending
 // the notification; questionID identifies the Q&A turn (generated when empty).
-func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, questionID string) error {
+func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID string) error {
 	if s.Notify == nil {
 		return &StatusError{Code: http.StatusNotImplemented, Message: "notify is not configured"}
 	}
@@ -619,6 +619,7 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		questionID = newQuestionID()
 	}
 	ap := orchestrator.AwaitingPayload{
+		SessionID:  sessionID,
 		Question:   ask,
 		QuestionID: questionID,
 	}
@@ -1560,6 +1561,17 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			slog.Info("dispatch loop: task reached terminal concurrently, skipping advance",
 				"task_id", current.ID, "status", current.Status, "would_advance_to", result.NewStatus)
 			s.finalizeTerminal(ctx, current)
+			return
+		}
+
+		// If a hook called boid task notify --ask during this cycle, the task
+		// transitioned to awaiting. The lifecycle.executed signal computed from
+		// the hook exit is stale — do not auto-advance to done. The dispatch
+		// loop will re-fire (via AnswerTask → ApplyAction("answer")) once the
+		// user replies.
+		if current.Status == orchestrator.TaskStatusAwaiting {
+			slog.Info("dispatch loop: task is awaiting user answer, skipping auto-advance",
+				"task_id", current.ID, "would_advance_to", result.NewStatus)
 			return
 		}
 

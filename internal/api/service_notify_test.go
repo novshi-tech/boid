@@ -37,7 +37,7 @@ func TestNotifyTask_InteractiveRunningJobSetsJobID(t *testing.T) {
 		Notify: notifier,
 	}
 
-	if err := svc.NotifyTask(context.Background(), "t1", "hello", "", ""); err != nil {
+	if err := svc.NotifyTask(context.Background(), "t1", "hello", "", "", ""); err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
 	if notifier.event.JobID != "j2" {
@@ -64,7 +64,7 @@ func TestNotifyTask_NoInteractiveRunningJob_JobIDEmpty(t *testing.T) {
 		Notify: notifier,
 	}
 
-	if err := svc.NotifyTask(context.Background(), "t1", "hello", "", ""); err != nil {
+	if err := svc.NotifyTask(context.Background(), "t1", "hello", "", "", ""); err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
 	if notifier.event.JobID != "" {
@@ -88,7 +88,7 @@ func TestNotifyTask_AskMode_TransitionsToAwaiting(t *testing.T) {
 		Workflow: workflow,
 	}
 
-	if err := svc.NotifyTask(context.Background(), "t1", "Plan ready", "Approve?", "q-1"); err != nil {
+	if err := svc.NotifyTask(context.Background(), "t1", "Plan ready", "Approve?", "q-1", ""); err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
 	if notifier.event.Message != "Plan ready" {

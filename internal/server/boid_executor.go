@@ -166,7 +166,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 		if !ctx.AllowsProject(existing.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task notify is restricted to the current workspace"}
 		}
-		if err := e.tasks.NotifyTask(context.Background(), req.TaskID, req.Message, req.Ask, req.QuestionID); err != nil {
+		if err := e.tasks.NotifyTask(context.Background(), req.TaskID, req.Message, req.Ask, req.QuestionID, req.SessionID); err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{

@@ -16,10 +16,12 @@ import (
 // TaskNotifyService dispatches an agent-driven notification for a task.
 // Wired to *TaskAppService at runtime; left optional on TaskHandler so
 // existing tests do not need to satisfy this interface.
-// ask/questionID are optional Q&A fields: when ask is non-empty the task is
-// transitioned to awaiting after the notification is sent.
+// ask/questionID/sessionID are optional Q&A fields: when ask is non-empty the
+// task is transitioned to awaiting after the notification is sent. sessionID
+// is stored in the awaiting trait and surfaced as BOID_AGENT_SESSION_ID on
+// the next hook invocation.
 type TaskNotifyService interface {
-	NotifyTask(ctx context.Context, taskID, message, ask, questionID string) error
+	NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID string) error
 }
 
 // TaskAnswerService records a user reply to a pending Q&A question and
@@ -68,6 +70,7 @@ type NotifyTaskRequest struct {
 	Message    string `json:"message"`
 	Ask        string `json:"ask,omitempty"`
 	QuestionID string `json:"question_id,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
 }
 
 type AnswerTaskRequest struct {
@@ -82,7 +85,7 @@ func (h *TaskHandler) Notify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	taskID := chi.URLParam(r, "id")
-	if err := h.Notifier.NotifyTask(r.Context(), taskID, req.Message, req.Ask, req.QuestionID); err != nil {
+	if err := h.Notifier.NotifyTask(r.Context(), taskID, req.Message, req.Ask, req.QuestionID, req.SessionID); err != nil {
 		writeServiceError(w, err)
 		return
 	}
