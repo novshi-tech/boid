@@ -530,6 +530,7 @@ func (h *WebHandler) JobDetail(w http.ResponseWriter, r *http.Request) {
 	view := &templates.JobContextView{
 		ID:          job.ID,
 		TaskID:      job.TaskID,
+		ProjectID:   job.ProjectID,
 		TaskTitle:   job.TaskTitle,
 		HandlerID:   job.HandlerID,
 		Role:        job.Role,
@@ -569,6 +570,7 @@ func (h *WebHandler) JobTerminal(w http.ResponseWriter, r *http.Request) {
 	view := &templates.JobContextView{
 		ID:          job.ID,
 		TaskID:      job.TaskID,
+		ProjectID:   job.ProjectID,
 		TaskTitle:   job.TaskTitle,
 		HandlerID:   job.HandlerID,
 		Role:        job.Role,

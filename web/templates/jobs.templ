@@ -24,6 +24,7 @@ func hookReplayPath(taskID, hookID string) string {
 type JobContextView struct {
 	ID          string
 	TaskID      string
+	ProjectID   string
 	TaskTitle   string
 	HandlerID   string
 	Role        string
@@ -35,6 +36,16 @@ type JobContextView struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	Output      string
+}
+
+func jobBackURL(job *JobContextView) string {
+	if job.TaskID != "" {
+		return "/tasks/" + job.TaskID
+	}
+	if job.ProjectID != "" {
+		return "/projects/" + job.ProjectID + "/commands"
+	}
+	return "/"
 }
 
 // jobStatusStripe maps a job status to the task-row-status-* class so the
@@ -76,7 +87,7 @@ func jobPageTitle(job *JobContextView) string {
 }
 
 templ JobDetail(job *JobContextView) {
-	@Layout(jobPageTitle(job), "/tasks/"+job.TaskID) {
+	@Layout(jobPageTitle(job), jobBackURL(job)) {
 		<div class={ "detail-card", jobStatusStripe(job.Status) }>
 			<div class="detail-meta">
 				<span class={ taskStatusClass(job.Status) }>{ job.Status }</span>
