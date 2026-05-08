@@ -324,3 +324,67 @@ func TestTaskWorkflowServiceRunDispatchLoop_ClearsPendingAnswerAfterDispatch(t *
 		t.Errorf("session_id = %q, want sess-1 (must be preserved)", ap.SessionID)
 	}
 }
+
+// Regression: when a hook calls `boid task notify --ask` mid-flight, the new
+// awaiting trait is written to the DB by ApplyAction("ask") *during* the hook.
+// The coordinator's FinalPayload, however, derives from a snapshot of
+// task.Payload taken before the hook ran, so it carries the *previous* turn's
+// awaiting trait. The dispatch-loop merge must not let that stale awaiting
+// clobber the freshly-persisted DB row. Bug observed: 2nd Q&A turn displayed
+// the 1st turn's question text in the Web UI.
+func TestTaskWorkflowServiceRunDispatchLoop_MidHookAsk_PreservesNewAwaiting(t *testing.T) {
+	staleAwaiting := `{"awaiting":{"question":"OLD","question_id":"q-1","pending_answer":"approve"}}`
+	freshAwaiting := `{"awaiting":{"question":"NEW","question_id":"q-2"}}`
+
+	task := &orchestrator.Task{
+		ID:        "task-1",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "impl",
+		Payload:   []byte(staleAwaiting),
+	}
+	// DB row already reflects the mid-hook ApplyAction("ask"): question_id=q-2,
+	// fresh question text. Status is awaiting because the in-flight notify --ask
+	// transitioned it.
+	taskInDB := &orchestrator.Task{
+		ID:        task.ID,
+		ProjectID: task.ProjectID,
+		Status:    orchestrator.TaskStatusAwaiting,
+		Behavior:  task.Behavior,
+		Payload:   []byte(freshAwaiting),
+	}
+
+	txStore := &recordingTxStore{task: taskInDB}
+	lifecycle := &stubLifecycle{}
+	svc := &TaskWorkflowService{
+		Tx: recordingTransactor{store: txStore},
+		Coordinator: fixedDispatchResult{
+			result: &orchestrator.DispatchResult{
+				// Coordinator's snapshot still has q-1 / OLD content.
+				FinalPayload: []byte(staleAwaiting),
+			},
+		},
+		Lifecycle: lifecycle,
+	}
+
+	svc.runDispatchLoop(
+		context.Background(),
+		task,
+		&orchestrator.ProjectMeta{},
+		orchestrator.DefaultMachine(),
+	)
+
+	if txStore.updatedTask == nil {
+		t.Fatal("expected payload persistence update")
+	}
+	ap := orchestrator.GetAwaitingPayload(txStore.updatedTask.Payload)
+	if ap.QuestionID != "q-2" {
+		t.Errorf("question_id = %q, want q-2 (mid-hook ask must not be clobbered)", ap.QuestionID)
+	}
+	if ap.Question != "NEW" {
+		t.Errorf("question = %q, want NEW (mid-hook ask must not be clobbered)", ap.Question)
+	}
+	if ap.PendingAnswer != "" {
+		t.Errorf("pending_answer = %q, want empty (must be cleared)", ap.PendingAnswer)
+	}
+}

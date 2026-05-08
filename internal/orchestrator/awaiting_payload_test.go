@@ -97,3 +97,35 @@ func TestGetAwaitingPayload_EmptyPayload(t *testing.T) {
 		t.Errorf("expected empty AwaitingPayload, got %+v", ap)
 	}
 }
+
+func TestStripAwaitingTrait_RemovesTraitKeepsRest(t *testing.T) {
+	in := json.RawMessage(`{"awaiting":{"question":"x","question_id":"q1"},"artifact":{"url":"y"}}`)
+	out := orchestrator.StripAwaitingTrait(in)
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if _, ok := got["awaiting"]; ok {
+		t.Errorf("awaiting trait should be removed, got %s", out)
+	}
+	if _, ok := got["artifact"]; !ok {
+		t.Errorf("artifact trait should be preserved, got %s", out)
+	}
+}
+
+func TestStripAwaitingTrait_NoOpWhenAbsent(t *testing.T) {
+	in := json.RawMessage(`{"artifact":{"url":"y"}}`)
+	out := orchestrator.StripAwaitingTrait(in)
+	if string(out) != string(in) {
+		t.Errorf("expected payload unchanged, got %s", out)
+	}
+}
+
+func TestStripAwaitingTrait_EmptyPayload(t *testing.T) {
+	if got := orchestrator.StripAwaitingTrait(nil); got != nil {
+		t.Errorf("expected nil, got %s", got)
+	}
+	if got := orchestrator.StripAwaitingTrait(json.RawMessage(``)); len(got) != 0 {
+		t.Errorf("expected empty, got %s", got)
+	}
+}

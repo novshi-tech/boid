@@ -1533,33 +1533,41 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 
 		s.persistFiredEvents(current.ID, current.Status, result.FiredEvents)
 
-		// Clear pending_answer from the awaiting trait now that the hook has
-		// been spawned and consumed it. session_id is preserved so the task
-		// can be resumed again if the kit emits another ask.
-		result.FinalPayload = orchestrator.ClearPendingAnswer(result.FinalPayload)
+		// The awaiting trait is owned exclusively by ApplyAction("ask"/"answer")
+		// and is persisted to the DB inline as those actions run. The coordinator's
+		// FinalPayload, however, derives from a snapshot of task.Payload taken
+		// BEFORE the hook executed, so any awaiting value it carries is necessarily
+		// stale: if the hook itself called `boid task notify --ask` mid-flight, the
+		// fresh awaiting trait is already in the DB and the snapshot's awaiting
+		// would clobber it on top-level merge. Strip awaiting from FinalPayload
+		// before the merge and apply pending_answer clearing to the DB-fresh row
+		// instead.
+		result.FinalPayload = orchestrator.StripAwaitingTrait(result.FinalPayload)
 
 		// Persist hook + exit gate payload. Always refresh the task row so we
-		// can detect concurrent terminal transitions (abort/done) before
-		// applying the computed auto-advance.
-		//
-		// Use MergePayload (not direct assignment) so that traits written by the
-		// hook mid-execution (e.g. the "awaiting" trait set by boid task notify
-		// --ask) are not overwritten when result.FinalPayload is empty or "{}".
+		// can detect concurrent terminal transitions (abort/done) and pick up
+		// any awaiting trait written by an ApplyAction("ask") that fired during
+		// the hook.
 		var persisted *orchestrator.Task
 		if err := s.Tx.WithinTx(func(tx TxStore) error {
 			latest, err := tx.GetTask(current.ID)
 			if err != nil {
 				return err
 			}
+			// Clear pending_answer from the (DB-fresh) awaiting trait now that
+			// the hook has been spawned and consumed it. session_id, question,
+			// and question_id are preserved so the task can be resumed again
+			// if the kit emits another ask.
+			latest.Payload = orchestrator.ClearPendingAnswer(latest.Payload)
 			if len(result.FinalPayload) > 0 {
 				merged, mergeErr := orchestrator.MergePayload(latest.Payload, result.FinalPayload)
 				if mergeErr != nil {
 					return mergeErr
 				}
 				latest.Payload = merged
-				if err := tx.UpdateTask(latest); err != nil {
-					return err
-				}
+			}
+			if err := tx.UpdateTask(latest); err != nil {
+				return err
 			}
 			persisted = latest
 			return nil
