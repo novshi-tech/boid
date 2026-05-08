@@ -13,24 +13,48 @@ A plan task **triages** a request, creates child tasks with the appropriate beha
 
 ## Overall Flow
 
-### Autonomous mode (`BOID_INTERACTIVE` unset / 0)
-
 1. **Plan**: Read the task and decide on behavior and decomposition granularity.
-2. **Create**: Use `boid task create` to create one or more child tasks. Note the task IDs returned.
-3. **Monitor**: Periodically check child status and wait.
-4. **Re-plan (if needed)**: Based on child results, create additional or revised tasks.
-5. **Exit**: Once all children reach `done` / `aborted`, exit. If stuck, write the situation to the artifact and exit.
-
-### Interactive mode (`BOID_INTERACTIVE=1`)
-
-1. **Plan**: Read the task and decide on behavior and decomposition granularity.
-2. **(Conditional) user-approval notify**: Before creating child tasks, present the plan and obtain approval according to the criteria in the "When to call notify" section.
+2. **(Conditional) approval ask**: When the request leaves room for interpretation, present the plan and obtain approval via `boid task notify --ask` (see "When to ask"). Skip when the criteria allow.
 3. **Create**: Use `boid task create` to create one or more child tasks. Note the task IDs returned.
 4. **Monitor**: Periodically check child status and wait.
-5. **Re-plan (if needed)**: Based on child results, create additional or revised tasks. Consult the user via notify if needed.
-6. **Exit**: Once all children reach `done` / `aborted`, exit.
+5. **Re-plan (if needed)**: Based on child results, create additional or revised tasks. Consult the user via `boid task notify --ask` if stuck.
+6. **Exit**: Once all children reach `done` / `aborted`, exit autonomously or via an exit-confirmation ask (see "Exit Handling").
 
 Even with only one child task, remain as supervisor and see it through to completion. Simply watching the state has value for users ("the parent is watching on my behalf"), meaning they don't need to check individual child sessions directly.
+
+## Q&A Pattern (asking the user)
+
+To ask the user something, call `boid task notify --ask "<question>"`. This:
+
+- transitions the task to **awaiting** and stores the question in the task payload
+- fires the configured notify hook (Web UI alert / push) so the user is alerted
+- causes your session to end naturally (your turn finishes; nothing more to do)
+
+When the user replies (via Web UI or `boid task answer`), your session is **automatically resumed** by the kit and these env vars are set on the next invocation:
+
+| Env | Meaning |
+|---|---|
+| `BOID_USER_ANSWER`      | The user's reply text |
+| `BOID_QUESTION_ID`      | The turn ID (matches the one you supplied or that was auto-generated) |
+| `BOID_AGENT_SESSION_ID` | Your prior session id (the claude-code kit resumes the conversation transparently from payload-tracked sessions; this env var is informational) |
+
+So the canonical first-or-resume branching looks like:
+
+```bash
+if [ -n "$BOID_USER_ANSWER" ]; then
+  # Resumed after a Q&A. Branch on the answer.
+  case "$BOID_USER_ANSWER" in
+    A|*approve*|*proceed*) ... ;;       # accept and continue
+    B|*revise*) ... ;;                  # revise the plan and ask again
+    *) ... ;;                           # rejection / cancel → write artifact and exit
+  esac
+else
+  # First invocation. Decide whether to ask or proceed.
+  ...
+fi
+```
+
+After calling `notify --ask`, do not "wait in the session" - just stop generating. Multiple Q&A turns are fine; each `--ask` clears the previous `pending_answer` and stores a fresh question.
 
 ## Behavior Catalog
 
@@ -83,7 +107,7 @@ YAML
 | `project_id` | Project to create the task in. Defaults to same as parent |
 | `behavior_spec` | Inline behavior definition (for kits that bring their own behavior). Usually not needed if a behavior name defined in project.yaml is used |
 
-Settings like interactive / model / readonly are governed by the behavior template (`task_behaviors` in project.yaml). The plan itself switches between interactive consultation and autonomous decision-making by reading the `BOID_INTERACTIVE` environment variable, so there is no need to split "interactive plan" and "autonomous plan" into separate behaviors.
+Settings like model / readonly are governed by the behavior template (`task_behaviors` in project.yaml). User consultation always goes through `boid task notify --ask` regardless of how the agent is launched, so there is no need to split "interactive plan" and "autonomous plan" into separate behaviors.
 
 ## Monitoring as Supervisor
 
@@ -141,23 +165,21 @@ done) &
 
 Useful for long-running tasks or many children, but a simple foreground loop is sufficient for straightforward cases.
 
-## When to Call notify
+## When to ask (notify --ask)
 
-### Interactive mode
-
-- **Plan-approval notify (conditionally required)** - Before creating one or more child tasks, present the full plan (list of children / behavior / order / estimated risks) and obtain approval. You may omit the approval notify if *any of the following* applies:
+- **Plan-approval ask (conditionally required)** - Before creating one or more child tasks, present the full plan (list of children / behavior / order / estimated risks) via `boid task notify --ask` and obtain approval. You may skip the approval ask if *any of the following* applies:
   - The user's request is already specific enough that there is little room for interpretation (e.g., "fix this line in this file like this", "rename `xxx` to yyy" - cases where the child task title/description is just a transcription of the request)
   - There is only one child task and the behavior and granularity are obvious from the request
 
-  When in doubt, err on the side of notifying
+  When in doubt, err on the side of asking.
 
 - When half or more of the children are aborted, or when the plan strategy needs to change
 - When the hard cap is reached (20 children / 12 hours)
 - When an unexpected fact emerges from a child's artifact and the remaining plan needs to be revised
 
-### Autonomous mode
+If something genuinely cannot be answered without the user and you cannot wait (e.g., environment is broken so you cannot continue at all), write the situation to the task artifact and exit. The user will notice via the task list and reopen with new instructions. Prefer `--ask` when waiting is acceptable.
 
-Do not call notify. When stuck, write the situation to the artifact and exit (the user notices via task list and reopens with new instructions).
+`boid task notify` *without* `--ask` sends a one-way notification (no state transition, no waiting). Use it only for "FYI" milestone signals - decision branches must use `--ask`.
 
 ### Plan presentation template
 
@@ -183,77 +205,65 @@ Use the following format when presenting a plan alongside a plan-approval notify
 
 Always include all three blocks: "Child Tasks table", "Risks & Assumptions", and "Decision options (A/B/C)".
 
-## User Notification (boid task notify)
+## boid task notify reference
 
-When user judgment is needed, calling `boid task notify` executes the `notify.command` in `~/.config/boid/config.yaml`.
+`boid task notify` has two modes:
 
-```bash
-boid task notify ${BOID_TASK_ID} --message "Please decide how to incorporate the review feedback for PR #284"
-```
-
-The notification script receives `BOID_TASK_ID` / `BOID_PROJECT_ID` / `BOID_MESSAGE` / `BOID_TASK_URL` (a clickable link if `web.public_url` is set in config) as environment variables.
-
-### Interactive mode only - wait in the session
-
-Only call notify in **interactive mode (`BOID_INTERACTIVE=true`)**. When stuck in autonomous mode, do not notify; write the situation to the artifact and exit (the user notices via task list and reopens with new instructions).
-
-In interactive mode, immediately after calling notify, output the question body (options / decision material / context) to the session and wait for the user's response:
+**Ask mode (`--ask`)**: blocking question. Transitions task `executing → awaiting`, fires the configured notify hook (Web UI alert / push notification), and saves the question in the task payload. Your session ends after the call; you are re-invoked with `BOID_USER_ANSWER` set when the user replies. This is the primary mode for the plan agent.
 
 ```bash
-boid task notify ${BOID_TASK_ID} --message "..."
-echo "Decision needed:"
-echo "  A. Proceed with approach ..."
-echo "  B. Proceed with approach ..."
-echo "  C. Present an alternative"
-# The agent waits for user input here
+boid task notify "$BOID_TASK_ID" \
+  --message "Plan ready - approve to dispatch children" \
+  --ask "<plan presentation>" \
+  --question-id "plan-approve-1"   # optional; auto-generated when omitted
 ```
 
-The question content stays in the session transcript, so the user can read and respond via the Web UI session viewer (boid has no mechanism for storing question history).
+`--message` is the short text shown in the notification (push / SMS / email line). `--ask` is the full question body persisted with the task and shown on the Web UI Q&A panel - put options and decision material here.
+
+**FYI mode (no `--ask`)**: one-way notification. No state transition. Use only for milestone signals or final summaries; **never for decision branches**.
+
+```bash
+boid task notify "$BOID_TASK_ID" --message "All children dispatched, monitoring"
+```
+
+The notification script (configured under `notify.command` in `~/.config/boid/config.yaml`) receives `BOID_TASK_ID` / `BOID_PROJECT_ID` / `BOID_MESSAGE` / `BOID_TASK_URL` (clickable link when `web.public_url` is set) as environment variables.
 
 ### Notification semantics
 
-- Each call triggers one notification. Multiple calls within a task are fine (calls = notifications)
-- Do not call notify for progress reports (child status is visible in task list / Web UI)
-- Call it for **decision branches** (which approach to take) and **pre-approval** (before running the full plan)
-- Call it once when you reach a point where you cannot proceed without the user
+- Each call triggers one notification (calls = notifications)
+- Do not use FYI mode for progress reports (child status is visible in task list / Web UI)
+- Use ask mode for **decision branches** (which approach to take) and **pre-approval** (before running the full plan)
+- Call ask mode once when you reach a point where you cannot proceed without the user
 
 ## Exit Handling (required)
 
-When all children have reached `done` / `aborted`, the plan agent **must execute exactly one of the following**.
-Do not let the session hang without action (= users cannot notice the plan has completed unless they get a notify):
+When all children have reached `done` / `aborted`, the plan agent **must execute exactly one of the following**. Do not let the session hang without action (users cannot notice the plan has completed unless something fires):
 
 - **A. Autonomous exit**: Execute `boid job done "$BOID_JOB_ID" --exit-code 0`
-- **B. Exit-confirmation notify**: Ask the user via `boid task notify` whether to close the session,
-  wait for the response, then execute A when the user says OK
+- **B. Exit-confirmation ask**: Use `boid task notify --ask` to ask the user whether to close the session. On resume, execute A when the user confirms; otherwise proceed with the requested additional work.
 
-### Autonomous mode (`BOID_INTERACTIVE` unset / 0)
-
-Always execute A (do not notify). Even when stuck, write the situation to the artifact then exit with A.
-
-### Interactive mode (`BOID_INTERACTIVE=1`)
-
-Execute A if **all** of the following are met; otherwise B:
+Choose A when **all** of the following are met; otherwise B:
 
 1. All children are `done` / `aborted` with no remaining supervisor work
-2. The user's most recent message was a closing response such as "ok", "got it", "thanks", and not a new request or question
-3. There are no unanswered notifies (the user has not yet replied)
-4. Your last message was a completion report with little room for the user to ask follow-up questions
+2. The user's most recent reply (from a prior `notify --ask` in this task) was a closing response such as "ok", "got it", "thanks", and not a new request or question
+3. There are no unanswered asks (the user has not yet replied)
+4. Your last summary was a completion report with little room for the user to ask follow-up questions
 
 When in doubt, choose B. Leaving the session open without doing anything is forbidden - always choose A or B.
 
-#### Example of B (exit-confirmation notify)
+#### Example of B
 
 ```bash
-boid task notify ${BOID_TASK_ID} --message "All child tasks complete. Confirming whether to close the session"
-echo "All child tasks (child A: done, child B: done) have completed."
-echo "Decision needed:"
-echo "  A. Mark as complete and close the session (boid job done)"
-echo "  B. Request additional work"
-# Wait for user response
+boid task notify "$BOID_TASK_ID" \
+  --message "All child tasks complete - confirm close" \
+  --ask "All child tasks complete (child A: done, child B: done). Choose:
+A. Mark complete and close the session
+B. Request additional work" \
+  --question-id "exit-confirm"
+# Session ends here. On resume, BOID_USER_ANSWER will be set.
 ```
 
-When the user responds A, execute `boid job done "$BOID_JOB_ID" --exit-code 0`.
-When the user responds B, proceed with additional supervisor work.
+On resume, branch on `$BOID_USER_ANSWER`: when it indicates approval ("A" / "ok" / "approve"), run `boid job done "$BOID_JOB_ID" --exit-code 0`. Otherwise, proceed with the requested additional work.
 
 ### Relationship with EXIT trap
 

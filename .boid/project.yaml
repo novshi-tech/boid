@@ -44,7 +44,6 @@ task_behaviors:
       type: execution
       agent: claude-code
       model: opus
-      interactive: true
       message: |
         Build an implementation plan as described in /boid-plan.
         The PR created by child dev task will be merged automatically into main by github-auto-merge kit.
