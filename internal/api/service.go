@@ -588,6 +588,16 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		ProjectID: task.ProjectID,
 		Message:   message,
 	}
+	// In ask mode, generate the question_id up front (when not supplied)
+	// and set URLPath so the notification deep-links to the Q&A turn page.
+	// We replicate the same questionID into the awaiting transition below
+	// so the URL matches the persisted question_id.
+	if ask != "" {
+		if questionID == "" {
+			questionID = newQuestionID()
+		}
+		ev.URLPath = "/tasks/" + taskID + "/questions/" + questionID
+	}
 	// Project name is best-effort: omit silently if Projects lookup fails or is unwired.
 	if s.Projects != nil {
 		if proj, lookupErr := s.Projects.GetProject(task.ProjectID); lookupErr == nil && proj != nil {
@@ -595,7 +605,8 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		}
 	}
 	// Find the most recent interactive running job (best-effort; errors silently skipped).
-	if s.Jobs != nil {
+	// Only used when not in ask mode — ask mode deep-links to the Q&A page instead.
+	if ask == "" && s.Jobs != nil {
 		if jobs, jobsErr := s.Jobs.ListJobsByTask(taskID); jobsErr == nil {
 			for i := len(jobs) - 1; i >= 0; i-- {
 				j := jobs[i]

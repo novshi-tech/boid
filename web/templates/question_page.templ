@@ -1,0 +1,78 @@
+package templates
+
+import "github.com/novshi-tech/boid/internal/orchestrator"
+
+// QuestionTurn is the data needed to render a single Q&A turn:
+// the question text, the user's answer (empty when not yet answered),
+// and whether this turn is the active awaiting turn (form vs read-only).
+type QuestionTurn struct {
+	QuestionID string
+	Question   string
+	Answer     string
+	IsActive   bool
+	WasAborted bool
+}
+
+// QuestionPage renders the dedicated page for a single Q&A turn:
+//   - the agent's question (preformatted, whitespace preserved)
+//   - when active: the answer textarea + submit / abort buttons
+//   - when answered: the persisted answer text (read-only history)
+//   - when neither (task aborted before answer): a short "(回答前に中止)" line
+//
+// Notification deep-links from `boid task notify --ask` land here so the user
+// goes straight to the question without scrolling through the timeline.
+templ QuestionPage(task *orchestrator.Task, turn QuestionTurn) {
+	@Layout("質問: "+task.Title, "/tasks/"+task.ID) {
+		<div class="qa-page">
+			<header class="qa-page-header">
+				<h1 class="qa-page-title">エージェントからの質問</h1>
+				<p class="qa-page-task">
+					タスク: <a class="qa-page-task-link" href={ templ.SafeURL("/tasks/" + task.ID) }>{ task.Title }</a>
+				</p>
+			</header>
+			<section class="qa-page-section">
+				<h2 class="qa-page-section-title">質問</h2>
+				<pre class="qa-page-question">{ turn.Question }</pre>
+			</section>
+			if turn.IsActive {
+				<section class="qa-page-section qa-page-section-answer">
+					<h2 class="qa-page-section-title">回答</h2>
+					<form
+						id="qa-form"
+						method="post"
+						action={ templ.SafeURL("/tasks/" + task.ID + "/answer") }
+					>
+						<input type="hidden" name="question_id" value={ turn.QuestionID }/>
+						<textarea
+							name="answer"
+							class="form-input qa-textarea"
+							rows="6"
+							placeholder="回答を入力してください…"
+							autofocus
+						></textarea>
+					</form>
+					<div class="qa-actions">
+						<button type="submit" form="qa-form" class="btn btn-primary">回答を送信</button>
+						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当にタスクを中止しますか？')">
+							<input type="hidden" name="type" value="abort"/>
+							<button type="submit" class="btn btn-secondary">拒否してタスクを中止</button>
+						</form>
+					</div>
+				</section>
+			} else if turn.Answer != "" {
+				<section class="qa-page-section qa-page-section-answer">
+					<h2 class="qa-page-section-title">あなたの回答</h2>
+					<pre class="qa-page-answer">{ turn.Answer }</pre>
+				</section>
+			} else if turn.WasAborted {
+				<section class="qa-page-section qa-page-section-answer">
+					<p class="qa-page-cancelled">(回答前にタスクが中止されました)</p>
+				</section>
+			} else {
+				<section class="qa-page-section qa-page-section-answer">
+					<p class="qa-page-cancelled">(この質問は最新ではありません)</p>
+				</section>
+			}
+		</div>
+	}
+}

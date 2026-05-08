@@ -70,6 +70,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Post("/tasks/{id}/reopen", h.PostReopen)
 	r.Post("/tasks/{id}/delete", h.PostDelete)
 	r.Post("/tasks/{id}/answer", h.PostAnswer)
+	r.Get("/tasks/{id}/questions/{question_id}", h.QuestionPage)
 	r.Get("/tasks/{id}/gates", h.GateReplayList)
 	r.Post("/tasks/{id}/gates/{gate_id}/replay", h.PostGateReplay)
 	r.Get("/tasks/{id}/hooks", h.HookReplayList)
@@ -324,7 +325,7 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 	kind := r.URL.Query().Get("kind")
 	switch kind {
 	case "timeline":
-		templates.TaskDetailTimelineSection(detailTimelineGroups(detail)).Render(r.Context(), w)
+		templates.TaskDetailTimelineSection(detail.Task, detailTimelineGroups(detail)).Render(r.Context(), w)
 	case "status":
 		projectName := h.lookupProjectName(detail.Task.ProjectID)
 		templates.TaskDetailStatusSection(detail.Task, detail.AvailableActions, "", projectName).Render(r.Context(), w)
@@ -418,6 +419,58 @@ func (h *WebHandler) PostReopen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
+}
+
+// QuestionPage renders the dedicated Q&A turn page at
+// `/tasks/{id}/questions/{question_id}`. The notification deep-link from
+// `boid task notify --ask` lands here. The page shows the question and either
+// an answer form (when this is the active awaiting turn) or the recorded
+// answer (when an answer action exists for the same question_id).
+func (h *WebHandler) QuestionPage(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	questionID := chi.URLParam(r, "question_id")
+	detail, err := h.Service.GetTaskDetail(id)
+	if err != nil {
+		http.Error(w, "Task not found", http.StatusNotFound)
+		return
+	}
+
+	var (
+		question string
+		answer   string
+		found    bool
+	)
+	for _, a := range detail.Actions {
+		ap := orchestrator.GetAwaitingPayload(a.Payload)
+		if ap.QuestionID != questionID {
+			continue
+		}
+		switch a.Type {
+		case "ask":
+			question = ap.Question
+			found = true
+		case "answer":
+			if ap.PendingAnswer != "" {
+				answer = ap.PendingAnswer
+			}
+		}
+	}
+	if !found {
+		http.Error(w, "Question not found", http.StatusNotFound)
+		return
+	}
+
+	currentAwaiting := orchestrator.GetAwaitingPayload(detail.Task.Payload)
+	isActive := detail.Task.Status == orchestrator.TaskStatusAwaiting && currentAwaiting.QuestionID == questionID
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templates.QuestionPage(detail.Task, templates.QuestionTurn{
+		QuestionID: questionID,
+		Question:   question,
+		Answer:     answer,
+		IsActive:   isActive,
+		WasAborted: detail.Task.Status == orchestrator.TaskStatusAborted && answer == "",
+	}).Render(r.Context(), w)
 }
 
 func (h *WebHandler) PostAnswer(w http.ResponseWriter, r *http.Request) {

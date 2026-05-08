@@ -99,6 +99,60 @@ func TestNotifyTask_AskMode_TransitionsToAwaiting(t *testing.T) {
 	}
 }
 
+func TestNotifyTask_AskMode_SetsQuestionPageURLPath(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "t1",
+		ProjectID: "proj-1",
+		Title:     "my task",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
+	}
+	notifier := &capturingNotifier{}
+	workflow := &stubWorkflowService{}
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{task: task},
+		Notify:   notifier,
+		Workflow: workflow,
+	}
+
+	if err := svc.NotifyTask(context.Background(), "t1", "Plan ready", "Approve?", "q-1", ""); err != nil {
+		t.Fatalf("NotifyTask: %v", err)
+	}
+	want := "/tasks/t1/questions/q-1"
+	if notifier.event.URLPath != want {
+		t.Errorf("URLPath = %q, want %q", notifier.event.URLPath, want)
+	}
+	// JobID lookup should be skipped in ask mode (deep-link to Q&A page instead).
+	if notifier.event.JobID != "" {
+		t.Errorf("JobID = %q, want empty in ask mode", notifier.event.JobID)
+	}
+}
+
+func TestNotifyTask_AskMode_GeneratesQuestionIDForURL(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "t1",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
+	}
+	notifier := &capturingNotifier{}
+	workflow := &stubWorkflowService{}
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{task: task},
+		Notify:   notifier,
+		Workflow: workflow,
+	}
+
+	// Caller omits questionID; service must generate one and reflect it in the URL.
+	if err := svc.NotifyTask(context.Background(), "t1", "msg", "Approve?", "", ""); err != nil {
+		t.Fatalf("NotifyTask: %v", err)
+	}
+	prefix := "/tasks/t1/questions/"
+	if len(notifier.event.URLPath) <= len(prefix) || notifier.event.URLPath[:len(prefix)] != prefix {
+		t.Errorf("URLPath = %q, want prefix %q with auto-generated id", notifier.event.URLPath, prefix)
+	}
+}
+
 func TestAnswerTask_TransitionsToExecuting(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "t1",
