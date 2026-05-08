@@ -9,6 +9,7 @@
 package timeline
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -71,13 +72,35 @@ func IsStateTransition(a *orchestrator.Action) bool {
 	return a.FromStatus != "" && a.ToStatus != "" && a.FromStatus != a.ToStatus
 }
 
-// BuildActionLabel returns the display label for a state-transition action.
-// Format: "<type> → <to_status>".
+// IsProgressAction reports whether an action is a non-transitioning progress note.
+func IsProgressAction(a *orchestrator.Action) bool {
+	return a.Type == "progress"
+}
+
+// BuildActionLabel returns the display label for a timeline action.
+// State transitions: "<type> → <to_status>".
+// Progress actions: "進捗: <message>" (extracted from JSON payload).
 func BuildActionLabel(a *orchestrator.Action) string {
 	if IsStateTransition(a) {
 		return a.Type + " → " + string(a.ToStatus)
 	}
+	if IsProgressAction(a) {
+		return buildProgressLabel(a)
+	}
 	return a.Type
+}
+
+// buildProgressLabel extracts the message from a progress Action's JSON payload.
+func buildProgressLabel(a *orchestrator.Action) string {
+	if len(a.Payload) > 0 {
+		var p struct {
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal(a.Payload, &p); err == nil && p.Message != "" {
+			return "進捗: " + p.Message
+		}
+	}
+	return "進捗"
 }
 
 // BuildJobLabel returns the display label for a job.
@@ -162,7 +185,7 @@ func Build(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobI
 
 	var items []rawItem
 	for _, a := range actions {
-		if !IsStateTransition(a) {
+		if !IsStateTransition(a) && !IsProgressAction(a) {
 			continue
 		}
 		items = append(items, rawItem{t: a.CreatedAt, hasTime: !a.CreatedAt.IsZero(), action: a})
@@ -228,7 +251,8 @@ func Build(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobI
 				Action:  a,
 			})
 
-			if toStatus := string(a.ToStatus); toStatus != "" {
+			// Progress actions are non-transitioning: don't open a new status group.
+			if toStatus := string(a.ToStatus); toStatus != "" && toStatus != fromStatus {
 				groups = append(groups, StatusGroup{
 					Status:       toStatus,
 					EnteredAt:    a.CreatedAt,

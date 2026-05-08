@@ -137,10 +137,11 @@ func init() {
 	taskDuplicateCmd.Flags().Bool("auto-start", false, "Automatically start the duplicated task")
 	taskRerunCmd.Flags().Bool("auto-start", false, "Automatically start the rerun task")
 	taskRerunCmd.Flags().String("instructions-file", "", "Instructions override file (YAML/JSON) for role-wise merge; - for stdin")
-	taskNotifyCmd.Flags().StringP("message", "m", "", "Notification message text (required)")
+	taskNotifyCmd.Flags().StringP("message", "m", "", "Notification message text (required for FYI/ask modes)")
 	taskNotifyCmd.Flags().String("ask", "", "Question text; when set, transitions task to awaiting (Q&A mode)")
 	taskNotifyCmd.Flags().String("question-id", "", "Q&A turn ID (generated when omitted)")
 	taskNotifyCmd.Flags().String("session-id", "", "Agent session ID stored in awaiting trait and surfaced as BOID_AGENT_SESSION_ID on next hook invocation")
+	taskNotifyCmd.Flags().String("progress", "", "Progress message; records timeline Action only — no hook fires, no state change (mutually exclusive with --ask)")
 	taskAnswerCmd.Flags().String("task", "", "Task ID (required)")
 	taskAnswerCmd.Flags().String("question-id", "", "Question ID to answer (required)")
 	taskAnswerCmd.Flags().String("answer", "", "Answer text (required)")
@@ -559,14 +560,20 @@ func runTaskRerun(cmd *cobra.Command, args []string) error {
 
 func runTaskNotify(cmd *cobra.Command, args []string) error {
 	message, _ := cmd.Flags().GetString("message")
-	if message == "" {
-		return fmt.Errorf("--message is required")
-	}
 	ask, _ := cmd.Flags().GetString("ask")
+	progress, _ := cmd.Flags().GetString("progress")
 	questionID, _ := cmd.Flags().GetString("question-id")
 	sessionID, _ := cmd.Flags().GetString("session-id")
+
+	if ask != "" && progress != "" {
+		return fmt.Errorf("--ask and --progress are mutually exclusive")
+	}
+	if message == "" && progress == "" {
+		return fmt.Errorf("--message is required")
+	}
+
 	c := client.NewUnixClient(client.DefaultSocketPath())
-	req := api.NotifyTaskRequest{Message: message, Ask: ask, QuestionID: questionID, SessionID: sessionID}
+	req := api.NotifyTaskRequest{Message: message, Ask: ask, QuestionID: questionID, SessionID: sessionID, Progress: progress}
 	if err := c.Do("POST", "/api/tasks/"+args[0]+"/notify", req, nil); err != nil {
 		return fmt.Errorf("notify task: %w", err)
 	}

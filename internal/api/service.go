@@ -569,14 +569,44 @@ func (s *TaskAppService) GetTask(id string) (*orchestrator.Task, error) {
 // When ask is non-empty the task is transitioned to awaiting; the notification is
 // best-effort and skipped if no notifier is configured. questionID identifies the
 // Q&A turn (generated when empty).
-func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID string) error {
-	if message == "" {
+// When progress is non-empty (progress mode), no hook fires and no state transition
+// occurs — only a progress Action is written to the timeline.
+// ask and progress are mutually exclusive.
+func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID, progress string) error {
+	if ask != "" && progress != "" {
+		return &StatusError{Code: http.StatusBadRequest, Message: "--ask and --progress are mutually exclusive"}
+	}
+	if message == "" && progress == "" {
 		return &StatusError{Code: http.StatusBadRequest, Message: "message is required"}
 	}
 	// Without ask, a working notifier is required (that's the only purpose of the call).
 	// With ask, notification is best-effort; the state transition is what matters.
-	if s.Notify == nil && ask == "" {
+	// In progress mode neither check applies — no notifier needed.
+	if s.Notify == nil && ask == "" && progress == "" {
 		return &StatusError{Code: http.StatusNotImplemented, Message: "notify is not configured"}
+	}
+
+	// Progress mode: write a timeline Action directly, skip hook firing entirely.
+	if progress != "" {
+		task, err := s.Tasks.GetTask(taskID)
+		if err != nil {
+			return &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+		}
+		payload, err := json.Marshal(map[string]string{"message": progress})
+		if err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: "encode progress payload: " + err.Error()}
+		}
+		action := &orchestrator.Action{
+			TaskID:     taskID,
+			Type:       "progress",
+			FromStatus: task.Status,
+			ToStatus:   task.Status,
+			Payload:    payload,
+		}
+		if err := s.Actions.CreateAction(action); err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+		return nil
 	}
 	task, err := s.Tasks.GetTask(taskID)
 	if err != nil {

@@ -434,6 +434,13 @@ func parseBoidTaskNotify(args []string) (*BoidRequest, error) {
 			}
 			i = next
 			req.SessionID = value
+		case arg == "--progress" || strings.HasPrefix(arg, "--progress="):
+			value, next, err := takeStringFlagValue(args, i, "--progress")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.Progress = value
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task notify", arg)
 		}
@@ -442,7 +449,10 @@ func parseBoidTaskNotify(args []string) (*BoidRequest, error) {
 	if req.TaskID == "" {
 		return nil, fmt.Errorf("boid shim: task notify requires a task id")
 	}
-	if req.Message == "" {
+	if req.Ask != "" && req.Progress != "" {
+		return nil, fmt.Errorf("boid shim: --ask and --progress are mutually exclusive")
+	}
+	if req.Message == "" && req.Progress == "" {
 		return nil, fmt.Errorf("boid shim: task notify requires --message")
 	}
 

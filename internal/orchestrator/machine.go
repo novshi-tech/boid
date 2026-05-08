@@ -30,6 +30,8 @@ type StateMachine struct {
 
 // Apply finds an action-based rule matching the action type and current status.
 // Condition-based rules are ignored by Apply.
+// When a matching rule has an empty ToStatus the task status is left unchanged
+// (non-transitioning action, e.g. "progress").
 func (sm *StateMachine) Apply(task *Task, action *Action) (*Task, error) {
 	for _, r := range sm.Rules {
 		if r.Condition != nil {
@@ -37,7 +39,9 @@ func (sm *StateMachine) Apply(task *Task, action *Action) (*Task, error) {
 		}
 		if r.Action == action.Type && (r.FromStatus == "*" || r.FromStatus == string(task.Status)) {
 			newTask := *task
-			newTask.Status = TaskStatus(r.ToStatus)
+			if r.ToStatus != "" {
+				newTask.Status = TaskStatus(r.ToStatus)
+			}
 			return &newTask, nil
 		}
 	}
@@ -145,6 +149,10 @@ func NewMachine() *StateMachine {
 
 			// Event-driven (non-manual)
 			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},
+
+			// Non-transitioning: records a progress note without changing state or firing hooks.
+			// Created directly by NotifyTask (bypasses ApplyAction); registered here for completeness.
+			{Action: "progress", FromStatus: "*"},
 
 			// Auto: hook 完了 → done
 			{FromStatus: "executing", ToStatus: "done", Condition: func(p json.RawMessage) bool {

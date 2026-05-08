@@ -438,6 +438,12 @@ templ TaskDetailTimelineSection(task *orchestrator.Task, groups []timeline.Statu
 									<span class="timeline-label">{ ev.Label }</span>
 								</div>
 							}
+						} else if ev.Action != nil && ev.Action.Type == "progress" {
+							<div class="timeline-row timeline-row-event timeline-row-progress">
+								<time class="timeline-time">{ timelineEventTime(ev) }</time>
+								<span class="timeline-marker timeline-marker-progress" aria-hidden="true"></span>
+								<span class="timeline-label timeline-label-progress">{ ev.Label }</span>
+							</div>
 						} else {
 							<div class="timeline-row timeline-row-event timeline-row-action">
 								<time class="timeline-time">{ timelineEventTime(ev) }</time>
