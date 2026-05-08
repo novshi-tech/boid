@@ -185,3 +185,47 @@ func TestJobDetail_GateJobWithRunningTerminal(t *testing.T) {
 		t.Errorf("gate+interactive running should link to terminal page")
 	}
 }
+
+func TestJobDetail_NoTask_WithProject_BackURL(t *testing.T) {
+	job := &JobContextView{
+		ID:        "job-cmd-1",
+		TaskID:    "",
+		ProjectID: "proj-1",
+		Status:    "completed",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	html := renderJobDetail(t, job)
+	want := `href="/projects/proj-1/commands"`
+	if !strings.Contains(html, want) {
+		t.Errorf("project-command job back link should be %q, got: %s", want, html)
+	}
+	if strings.Contains(html, `href="/tasks/"`) {
+		t.Error("project-command job must not link to /tasks/ (would 404)")
+	}
+}
+
+func TestJobDetail_NoTask_NoProject_BackURL(t *testing.T) {
+	job := &JobContextView{
+		ID:        "job-orphan-1",
+		TaskID:    "",
+		ProjectID: "",
+		Status:    "completed",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	html := renderJobDetail(t, job)
+	want := `href="/"`
+	if !strings.Contains(html, want) {
+		t.Errorf("orphan job back link should be %q, got: %s", want, html)
+	}
+}
+
+func TestJobDetail_WithTask_BackURL(t *testing.T) {
+	job := newJobView("completed")
+	html := renderJobDetail(t, job)
+	want := `href="/tasks/task-id-1"`
+	if !strings.Contains(html, want) {
+		t.Errorf("task job back link should be %q, got: %s", want, html)
+	}
+}

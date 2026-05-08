@@ -967,3 +967,72 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+func newTestWebHandlerWithJobDetail(svc WebService) *chi.Mux {
+	h := &WebHandler{Service: svc}
+	r := chi.NewRouter()
+	r.Get("/jobs/{id}", h.JobDetail)
+	return r
+}
+
+func TestJobDetail_NoTask_BackToProjectCommands(t *testing.T) {
+	svc := &stubWebService{
+		jobDetail: &JobWithContext{
+			Job: Job{
+				ID:        "job-cmd-1",
+				TaskID:    "",
+				ProjectID: "proj-1",
+				HandlerID: "make deploy",
+				Role:      "command",
+				Status:    JobStatusCompleted,
+			},
+		},
+	}
+	r := newTestWebHandlerWithJobDetail(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs/job-cmd-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	want := `/projects/proj-1/commands`
+	if !strings.Contains(body, want) {
+		t.Errorf("back link should contain %q, got: %s", want, body[:min(500, len(body))])
+	}
+	if strings.Contains(body, `href="/tasks/"`) {
+		t.Error("job with empty TaskID must not link to /tasks/ (would 404)")
+	}
+}
+
+func TestJobDetail_WithTask_BackToTask(t *testing.T) {
+	svc := &stubWebService{
+		jobDetail: &JobWithContext{
+			Job: Job{
+				ID:        "job-task-1",
+				TaskID:    "task-abc",
+				ProjectID: "proj-1",
+				HandlerID: "claude-code",
+				Role:      "main",
+				Status:    JobStatusCompleted,
+			},
+			TaskTitle: "My Task",
+		},
+	}
+	r := newTestWebHandlerWithJobDetail(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs/job-task-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	want := `/tasks/task-abc`
+	if !strings.Contains(body, want) {
+		t.Errorf("back link should contain %q, got: %s", want, body[:min(500, len(body))])
+	}
+}
