@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/notify"
@@ -37,7 +38,7 @@ func TestNotifyTask_InteractiveRunningJobSetsJobID(t *testing.T) {
 		Notify: notifier,
 	}
 
-	if err := svc.NotifyTask(context.Background(), "t1", "hello", "", "", ""); err != nil {
+	if err := svc.NotifyTask(context.Background(), "t1", "hello", "", "", "", ""); err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
 	if notifier.event.JobID != "j2" {
@@ -64,7 +65,7 @@ func TestNotifyTask_NoInteractiveRunningJob_JobIDEmpty(t *testing.T) {
 		Notify: notifier,
 	}
 
-	if err := svc.NotifyTask(context.Background(), "t1", "hello", "", "", ""); err != nil {
+	if err := svc.NotifyTask(context.Background(), "t1", "hello", "", "", "", ""); err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
 	if notifier.event.JobID != "" {
@@ -88,7 +89,7 @@ func TestNotifyTask_AskMode_TransitionsToAwaiting(t *testing.T) {
 		Workflow: workflow,
 	}
 
-	if err := svc.NotifyTask(context.Background(), "t1", "Plan ready", "Approve?", "q-1", ""); err != nil {
+	if err := svc.NotifyTask(context.Background(), "t1", "Plan ready", "Approve?", "q-1", "", ""); err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
 	if notifier.event.Message != "Plan ready" {
@@ -115,7 +116,7 @@ func TestNotifyTask_AskMode_SetsQuestionPageURLPath(t *testing.T) {
 		Workflow: workflow,
 	}
 
-	if err := svc.NotifyTask(context.Background(), "t1", "Plan ready", "Approve?", "q-1", ""); err != nil {
+	if err := svc.NotifyTask(context.Background(), "t1", "Plan ready", "Approve?", "q-1", "", ""); err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
 	want := "/tasks/t1/questions/q-1"
@@ -144,12 +145,111 @@ func TestNotifyTask_AskMode_GeneratesQuestionIDForURL(t *testing.T) {
 	}
 
 	// Caller omits questionID; service must generate one and reflect it in the URL.
-	if err := svc.NotifyTask(context.Background(), "t1", "msg", "Approve?", "", ""); err != nil {
+	if err := svc.NotifyTask(context.Background(), "t1", "msg", "Approve?", "", "", ""); err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
 	prefix := "/tasks/t1/questions/"
 	if len(notifier.event.URLPath) <= len(prefix) || notifier.event.URLPath[:len(prefix)] != prefix {
 		t.Errorf("URLPath = %q, want prefix %q with auto-generated id", notifier.event.URLPath, prefix)
+	}
+}
+
+// capturingActionStore captures the most recently created action for assertions.
+type capturingActionStore struct {
+	createdAction *orchestrator.Action
+}
+
+func (s *capturingActionStore) CreateAction(action *orchestrator.Action) error {
+	s.createdAction = action
+	return nil
+}
+
+func (s *capturingActionStore) ListActionsByTask(taskID string) ([]*orchestrator.Action, error) {
+	return nil, nil
+}
+
+func TestNotifyTask_ProgressMode_CreatesActionNoHook(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "t1",
+		ProjectID: "proj-1",
+		Title:     "my task",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
+	}
+	notifier := &capturingNotifier{}
+	actions := &capturingActionStore{}
+	svc := &TaskAppService{
+		Tasks:   &stubTaskStore{task: task},
+		Actions: actions,
+		Notify:  notifier,
+	}
+
+	if err := svc.NotifyTask(context.Background(), "t1", "", "", "", "", "step 2 done"); err != nil {
+		t.Fatalf("NotifyTask: %v", err)
+	}
+
+	// Hook (external notifier) must NOT be called.
+	if (notifier.event != notify.Event{}) {
+		t.Errorf("external notifier should not be called in progress mode, got event %+v", notifier.event)
+	}
+
+	// Action must be created with correct fields.
+	if actions.createdAction == nil {
+		t.Fatal("expected a progress Action to be created")
+	}
+	a := actions.createdAction
+	if a.Type != "progress" {
+		t.Errorf("action.Type = %q, want progress", a.Type)
+	}
+	if a.FromStatus != orchestrator.TaskStatusExecuting {
+		t.Errorf("action.FromStatus = %q, want %q", a.FromStatus, orchestrator.TaskStatusExecuting)
+	}
+	if a.ToStatus != orchestrator.TaskStatusExecuting {
+		t.Errorf("action.ToStatus = %q, want %q", a.ToStatus, orchestrator.TaskStatusExecuting)
+	}
+	// Task status unchanged.
+	if task.Status != orchestrator.TaskStatusExecuting {
+		t.Errorf("task.Status changed to %q, should remain executing", task.Status)
+	}
+}
+
+func TestNotifyTask_ProgressMode_NoNotifierRequired(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:     "t1",
+		Status: orchestrator.TaskStatusExecuting,
+	}
+	actions := &capturingActionStore{}
+	svc := &TaskAppService{
+		Tasks:   &stubTaskStore{task: task},
+		Actions: actions,
+		// Notify is nil — progress should still work
+	}
+
+	err := svc.NotifyTask(context.Background(), "t1", "", "", "", "", "midway")
+	if err != nil {
+		t.Fatalf("NotifyTask: %v", err)
+	}
+	if actions.createdAction == nil {
+		t.Fatal("expected a progress Action to be created")
+	}
+}
+
+func TestNotifyTask_ProgressAndAskMutuallyExclusive(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:     "t1",
+		Status: orchestrator.TaskStatusExecuting,
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{task: task},
+	}
+
+	err := svc.NotifyTask(context.Background(), "t1", "msg", "question?", "", "", "progress text")
+	if err == nil {
+		t.Fatal("expected error when both ask and progress are set")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 StatusError, got %v", err)
 	}
 }
 

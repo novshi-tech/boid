@@ -20,8 +20,10 @@ import (
 // task is transitioned to awaiting after the notification is sent. sessionID
 // is stored in the awaiting trait and surfaced as BOID_AGENT_SESSION_ID on
 // the next hook invocation.
+// progress is mutually exclusive with ask: when set, no hook fires and no
+// state transition occurs — only a progress Action is written to the timeline.
 type TaskNotifyService interface {
-	NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID string) error
+	NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID, progress string) error
 }
 
 // TaskAnswerService records a user reply to a pending Q&A question and
@@ -71,6 +73,7 @@ type NotifyTaskRequest struct {
 	Ask        string `json:"ask,omitempty"`
 	QuestionID string `json:"question_id,omitempty"`
 	SessionID  string `json:"session_id,omitempty"`
+	Progress   string `json:"progress,omitempty"`
 }
 
 type AnswerTaskRequest struct {
@@ -85,7 +88,7 @@ func (h *TaskHandler) Notify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	taskID := chi.URLParam(r, "id")
-	if err := h.Notifier.NotifyTask(r.Context(), taskID, req.Message, req.Ask, req.QuestionID, req.SessionID); err != nil {
+	if err := h.Notifier.NotifyTask(r.Context(), taskID, req.Message, req.Ask, req.QuestionID, req.SessionID, req.Progress); err != nil {
 		writeServiceError(w, err)
 		return
 	}

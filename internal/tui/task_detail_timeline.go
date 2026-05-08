@@ -211,7 +211,11 @@ func renderTreeTimeline(groups []statusGroup, width, height, cursor int, blinkOn
 				icon = "●"
 			}
 		case timelineKindAction:
-			icon = styleVerifying.Render("◆")
+			if ev.Action != nil && ev.Action.Type == "progress" {
+				icon = styleDim.Render("◇")
+			} else {
+				icon = styleVerifying.Render("◆")
+			}
 		default:
 			icon = styleDim.Render("→")
 		}

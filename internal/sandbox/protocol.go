@@ -104,6 +104,7 @@ type BoidRequest struct {
 	Ask        string `json:"ask,omitempty"`
 	QuestionID string `json:"question_id,omitempty"`
 	SessionID  string `json:"session_id,omitempty"`
+	Progress   string `json:"progress,omitempty"`
 
 	// task answer fields
 	Answer string `json:"answer,omitempty"`

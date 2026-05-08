@@ -17,14 +17,16 @@ type fakeNotifier struct {
 	calledMessage  string
 	calledAsk      string
 	calledQID      string
+	calledProgress string
 	err            error
 }
 
-func (n *fakeNotifier) NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID string) error {
+func (n *fakeNotifier) NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID, progress string) error {
 	n.calledTaskID = taskID
 	n.calledMessage = message
 	n.calledAsk = ask
 	n.calledQID = questionID
+	n.calledProgress = progress
 	return n.err
 }
 
@@ -73,6 +75,22 @@ func TestNotifyHandler_AskMode(t *testing.T) {
 	}
 	if notifier.calledQID != "q-123" {
 		t.Errorf("question_id = %q, want %q", notifier.calledQID, "q-123")
+	}
+}
+
+func TestNotifyHandler_ProgressMode(t *testing.T) {
+	notifier := &fakeNotifier{}
+	h := &TaskHandler{Notifier: notifier}
+
+	w := notifyRequest(t, h.Routes(), "task-1", NotifyTaskRequest{Progress: "step 1 done"})
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d, want %d (body=%s)", w.Code, http.StatusNoContent, w.Body.String())
+	}
+	if notifier.calledProgress != "step 1 done" {
+		t.Errorf("progress = %q, want %q", notifier.calledProgress, "step 1 done")
+	}
+	if notifier.calledAsk != "" {
+		t.Errorf("ask should be empty in progress mode, got %q", notifier.calledAsk)
 	}
 }
 
