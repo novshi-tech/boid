@@ -450,34 +450,92 @@ func TestWebHandlerPostDuplicate_Error(t *testing.T) {
 	}
 }
 
-func TestWebAppServiceDuplicateTask_Success(t *testing.T) {
-	original := &orchestrator.Task{
-		ID:           "orig-id",
-		ProjectID:    "proj-1",
-		Title:        "My Task",
-		Description:  "desc",
-		Behavior: "dev",
-		Traits:   []string{"trait1"},
-		Readonly:     false,
-		Worktree:     true,
-		BranchPrefix: "feature/",
-		BaseBranch:   "main",
+// dupTaskSvcStub is a minimal TaskService implementation that records
+// DuplicateTask calls and returns a configured task / error.
+type dupTaskSvcStub struct {
+	dupCalls    []dupTaskSvcCall
+	returnTask  *orchestrator.Task
+	returnError error
+}
+
+type dupTaskSvcCall struct {
+	sourceID  string
+	autoStart bool
+}
+
+func (s *dupTaskSvcStub) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
+	return nil, nil
+}
+func (s *dupTaskSvcStub) GetTask(id string) (*orchestrator.Task, error) { return nil, nil }
+func (s *dupTaskSvcStub) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
+	return nil, nil
+}
+func (s *dupTaskSvcStub) UpdateTask(id string, req UpdateTaskRequest) (*orchestrator.Task, error) {
+	return nil, nil
+}
+func (s *dupTaskSvcStub) DeleteTask(id string, force bool) error { return nil }
+func (s *dupTaskSvcStub) GetTaskDetail(id string) (*TaskDetailView, error) {
+	return nil, nil
+}
+func (s *dupTaskSvcStub) ImportTasks(reqs []CreateTaskRequest) (*ImportResult, error) {
+	return nil, nil
+}
+func (s *dupTaskSvcStub) DuplicateTask(id string, autoStart bool) (*orchestrator.Task, error) {
+	s.dupCalls = append(s.dupCalls, dupTaskSvcCall{sourceID: id, autoStart: autoStart})
+	if s.returnError != nil {
+		return nil, s.returnError
 	}
-	store := &stubTaskStore{task: original}
-	svc := &WebAppService{Tasks: store}
+	return s.returnTask, nil
+}
+func (s *dupTaskSvcStub) RerunTask(id string, req RerunTaskRequest) (*orchestrator.Task, error) {
+	return nil, nil
+}
+
+// WebAppService.DuplicateTask must delegate to TaskSvc.DuplicateTask so that
+// a fresh duplicate is created via CreateTask + resolveBehavior with the
+// behavior's DefaultInstruction / DefaultPayload. Without delegation the old
+// implementation copied runtime state (claude_code.sessions, awaiting trait)
+// and dropped Instructions, which made the hook evaluator skip the agent
+// hook on Start.
+func TestWebAppServiceDuplicateTask_DelegatesToTaskSvc(t *testing.T) {
+	stub := &dupTaskSvcStub{returnTask: &orchestrator.Task{ID: "new-id"}}
+	svc := &WebAppService{TaskSvc: stub}
 
 	newID, err := svc.DuplicateTask("orig-id")
 	if err != nil {
 		t.Fatalf("DuplicateTask() error = %v", err)
 	}
-	if newID == "" {
-		t.Error("DuplicateTask() returned empty ID")
+	if newID != "new-id" {
+		t.Errorf("returned ID = %q, want %q", newID, "new-id")
+	}
+	if len(stub.dupCalls) != 1 {
+		t.Fatalf("DuplicateTask delegation calls = %d, want 1", len(stub.dupCalls))
+	}
+	c := stub.dupCalls[0]
+	if c.sourceID != "orig-id" {
+		t.Errorf("sourceID = %q, want orig-id", c.sourceID)
+	}
+	// Web UI does not auto-start the duplicate; the user clicks Start.
+	if c.autoStart {
+		t.Errorf("autoStart = true, want false (Web UI does not auto-start)")
+	}
+}
+
+func TestWebAppServiceDuplicateTask_NoTaskSvc(t *testing.T) {
+	svc := &WebAppService{}
+	_, err := svc.DuplicateTask("any-id")
+	if err == nil {
+		t.Fatal("DuplicateTask() error = nil, want error when TaskSvc is unset")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 error, got %v", err)
 	}
 }
 
 func TestWebAppServiceDuplicateTask_NotFound(t *testing.T) {
-	store := &stubTaskStore{err: fmt.Errorf("task not found")}
-	svc := &WebAppService{Tasks: store}
+	stub := &dupTaskSvcStub{returnError: &StatusError{Code: http.StatusNotFound, Message: "task not found"}}
+	svc := &WebAppService{TaskSvc: stub}
 
 	_, err := svc.DuplicateTask("missing-id")
 	if err == nil {
