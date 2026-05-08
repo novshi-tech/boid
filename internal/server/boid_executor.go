@@ -3,8 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -12,17 +15,21 @@ import (
 )
 
 type boidBuiltinExecutor struct {
-	workflow *api.TaskWorkflowService
-	tasks    *api.TaskAppService
+	workflow  *api.TaskWorkflowService
+	tasks     *api.TaskAppService
+	jobs      api.JobStore
+	logReader api.JobLogReader
 }
 
-func newBoidBuiltinExecutor(workflow *api.TaskWorkflowService, tasks *api.TaskAppService) sandbox.BoidExecutor {
+func newBoidBuiltinExecutor(workflow *api.TaskWorkflowService, tasks *api.TaskAppService, jobs api.JobStore, logReader api.JobLogReader) sandbox.BoidExecutor {
 	if workflow == nil && tasks == nil {
 		return nil
 	}
 	return &boidBuiltinExecutor{
-		workflow: workflow,
-		tasks:    tasks,
+		workflow:  workflow,
+		tasks:     tasks,
+		jobs:      jobs,
+		logReader: logReader,
 	}
 }
 
@@ -262,6 +269,132 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 			fmt.Fprintf(&stderrBuf, "error line %d (remote_id=%s): %s\n", importErr.Line, importErr.RemoteID, importErr.Error)
 		}
 		return &sandbox.ExecResponse{Stdout: stdout, Stderr: stderrBuf.String()}
+	case sandbox.BoidOpActionSend:
+		if req.TaskID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action send requires a task id"}
+		}
+		if e.tasks != nil {
+			existing, err := e.tasks.GetTask(req.TaskID)
+			if err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+			}
+			if !ctx.AllowsProject(existing.ProjectID) {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action send is restricted to the current workspace"}
+			}
+		}
+		if e.workflow == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action send unavailable"}
+		}
+		if _, err := e.workflow.ApplyAction(context.Background(), req.TaskID, api.ApplyActionRequest{
+			Type:    req.ActionType,
+			Payload: req.Payload,
+		}); err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{
+			Stdout: fmt.Sprintf("action applied: %s\n", req.ActionType),
+		}
+	case sandbox.BoidOpJobList:
+		if e.jobs == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job list unavailable"}
+		}
+		if req.TaskID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job list requires a task id"}
+		}
+		if e.tasks != nil {
+			existing, err := e.tasks.GetTask(req.TaskID)
+			if err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+			}
+			if !ctx.AllowsProject(existing.ProjectID) {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job list is restricted to the current workspace"}
+			}
+		}
+		jobs, err := e.jobs.ListJobsByTask(req.TaskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "%-36s %-24s %-8s %-10s %-4s %-19s\n", "ID", "HANDLER", "ROLE", "STATUS", "EXIT", "UPDATED")
+		for _, j := range jobs {
+			exit := "-"
+			if j.Status == api.JobStatusCompleted || j.Status == api.JobStatusFailed {
+				exit = fmt.Sprintf("%d", j.ExitCode)
+			}
+			updated := "-"
+			if !j.UpdatedAt.IsZero() {
+				updated = j.UpdatedAt.Format(time.DateTime)
+			}
+			handler := j.HandlerID
+			if len(handler) > 24 {
+				handler = handler[:21] + "..."
+			}
+			fmt.Fprintf(&sb, "%-36s %-24s %-8s %-10s %-4s %-19s\n",
+				j.ID, handler, j.Role, string(j.Status), exit, updated)
+		}
+		return &sandbox.ExecResponse{Stdout: sb.String()}
+	case sandbox.BoidOpJobShow:
+		if e.jobs == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job show unavailable"}
+		}
+		if req.JobID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job show requires a job id"}
+		}
+		j, err := e.jobs.GetJob(req.JobID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		if !ctx.AllowsProject(j.ProjectID) {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job show is restricted to the current workspace"}
+		}
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "ID:         %s\n", j.ID)
+		fmt.Fprintf(&sb, "Task:       %s\n", j.TaskID)
+		fmt.Fprintf(&sb, "Project:    %s\n", j.ProjectID)
+		fmt.Fprintf(&sb, "Handler:    %s\n", j.HandlerID)
+		fmt.Fprintf(&sb, "Role:       %s\n", j.Role)
+		runtimeVal := j.RuntimeID
+		if runtimeVal == "" {
+			runtimeVal = "-"
+		}
+		fmt.Fprintf(&sb, "Runtime:    %s\n", runtimeVal)
+		fmt.Fprintf(&sb, "Status:     %s\n", j.Status)
+		exitVal := "-"
+		if j.Status == api.JobStatusCompleted || j.Status == api.JobStatusFailed {
+			exitVal = fmt.Sprintf("%d", j.ExitCode)
+		}
+		fmt.Fprintf(&sb, "Exit Code:  %s\n", exitVal)
+		fmt.Fprintf(&sb, "Created At: %s\n", j.CreatedAt.Format(time.DateTime))
+		fmt.Fprintf(&sb, "Updated At: %s\n", j.UpdatedAt.Format(time.DateTime))
+		return &sandbox.ExecResponse{Stdout: sb.String()}
+	case sandbox.BoidOpJobLog:
+		if e.jobs == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job log unavailable"}
+		}
+		if req.JobID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job log requires a job id"}
+		}
+		j, err := e.jobs.GetJob(req.JobID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		if !ctx.AllowsProject(j.ProjectID) {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job log is restricted to the current workspace"}
+		}
+		if j.RuntimeID == "" {
+			return &sandbox.ExecResponse{Stdout: "log not available\n"}
+		}
+		if e.logReader == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job log unavailable"}
+		}
+		data, err := e.logReader.ReadJobLog(j.RuntimeID)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return &sandbox.ExecResponse{Stdout: "log not available\n"}
+			}
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{Stdout: string(data)}
 	default:
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("unsupported boid op %q", req.Op)}
 	}

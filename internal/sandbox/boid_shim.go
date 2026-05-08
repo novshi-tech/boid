@@ -40,11 +40,30 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 	}
 
 	switch args[0] {
+	case "action":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("boid shim: missing boid action subcommand")
+		}
+		if args[1] != "send" {
+			return nil, fmt.Errorf("boid shim: unsupported boid action subcommand %q", args[1])
+		}
+		return parseBoidActionSend(args[2:])
 	case "job":
-		if args[1] != "done" {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("boid shim: missing boid job subcommand")
+		}
+		switch args[1] {
+		case "done":
+			return parseBoidJobDone(args[2:])
+		case "list":
+			return parseBoidJobList(args[2:])
+		case "show":
+			return parseBoidJobShow(args[2:])
+		case "log":
+			return parseBoidJobLog(args[2:])
+		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid job subcommand %q", args[1])
 		}
-		return parseBoidJobDone(args[2:])
 	case "task":
 		switch args[1] {
 		case "create":
@@ -489,6 +508,91 @@ func parseBoidTaskAnswer(args []string) (*BoidRequest, error) {
 	}
 
 	return req, nil
+}
+
+func parseBoidActionSend(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpActionSend}
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--task" || strings.HasPrefix(arg, "--task="):
+			value, next, err := takeStringFlagValue(args, i, "--task")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.TaskID = value
+		case arg == "--type" || strings.HasPrefix(arg, "--type="):
+			value, next, err := takeStringFlagValue(args, i, "--type")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.ActionType = value
+		case arg == "--payload" || strings.HasPrefix(arg, "--payload="):
+			value, next, err := takeStringFlagValue(args, i, "--payload")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			data, err := readFlagContent(value)
+			if err != nil {
+				return nil, fmt.Errorf("boid shim: read payload: %w", err)
+			}
+			req.Payload = data
+		default:
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid action send", arg)
+		}
+	}
+
+	if req.TaskID == "" {
+		return nil, fmt.Errorf("boid shim: action send requires --task")
+	}
+	if req.ActionType == "" {
+		return nil, fmt.Errorf("boid shim: action send requires --type")
+	}
+
+	return req, nil
+}
+
+func parseBoidJobList(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpJobList}
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--task" || strings.HasPrefix(arg, "--task="):
+			value, next, err := takeStringFlagValue(args, i, "--task")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.TaskID = value
+		default:
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid job list", arg)
+		}
+	}
+
+	if req.TaskID == "" {
+		return nil, fmt.Errorf("boid shim: job list requires --task")
+	}
+
+	return req, nil
+}
+
+func parseBoidJobShow(args []string) (*BoidRequest, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("boid shim: job show requires a job id")
+	}
+	return &BoidRequest{Op: BoidOpJobShow, JobID: args[0]}, nil
+}
+
+func parseBoidJobLog(args []string) (*BoidRequest, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("boid shim: job log requires a job id")
+	}
+	return &BoidRequest{Op: BoidOpJobLog, JobID: args[0]}, nil
 }
 
 func parseBoidTaskImport(args []string) (*BoidRequest, error) {

@@ -595,3 +595,253 @@ func TestBoidBuiltinExecutor_TaskImport_Unavailable(t *testing.T) {
 		t.Errorf("stderr = %q, want 'task import unavailable'", resp.Stderr)
 	}
 }
+
+// --- stub types for job-related executor tests ---
+
+type stubJobStore struct {
+	jobs   map[string]*api.Job
+	byTask map[string][]*api.Job
+}
+
+func (s *stubJobStore) GetJob(id string) (*api.Job, error) {
+	if j, ok := s.jobs[id]; ok {
+		return j, nil
+	}
+	return nil, fmt.Errorf("job not found: %s", id)
+}
+
+func (s *stubJobStore) ListJobsByTask(taskID string) ([]*api.Job, error) {
+	return s.byTask[taskID], nil
+}
+
+func (s *stubJobStore) UpdateJob(_ *api.Job) error { return nil }
+
+type stubJobLogReader struct {
+	data map[string][]byte
+	err  error
+}
+
+func (r *stubJobLogReader) ReadJobLog(runtimeID string) ([]byte, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	if d, ok := r.data[runtimeID]; ok {
+		return d, nil
+	}
+	return nil, fmt.Errorf("log not found: %s", runtimeID)
+}
+
+func newJobExecutor(t *testing.T) (*boidBuiltinExecutor, *capturingTaskStore, *stubJobStore) {
+	t.Helper()
+	ts := &capturingTaskStore{
+		created: []*orchestrator.Task{
+			{ID: "task-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusPending},
+			{ID: "task-x", ProjectID: "proj-x", Status: orchestrator.TaskStatusPending},
+		},
+	}
+	js := &stubJobStore{
+		jobs: map[string]*api.Job{
+			"job-1": {ID: "job-1", TaskID: "task-1", ProjectID: "proj-1", HandlerID: "run-agent", Role: "gate", Status: api.JobStatusCompleted, ExitCode: 0},
+			"job-x": {ID: "job-x", TaskID: "task-x", ProjectID: "proj-x", HandlerID: "run-agent", Role: "gate", Status: api.JobStatusFailed, ExitCode: 1},
+		},
+		byTask: map[string][]*api.Job{
+			"task-1": {
+				{ID: "job-1", TaskID: "task-1", ProjectID: "proj-1", HandlerID: "run-agent", Role: "gate", Status: api.JobStatusCompleted},
+				{ID: "job-2", TaskID: "task-1", ProjectID: "proj-1", HandlerID: "auto-merge", Role: "gate", Status: api.JobStatusRunning},
+			},
+		},
+	}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{}}
+	exec := &boidBuiltinExecutor{
+		tasks:     &api.TaskAppService{Tasks: ts, Meta: meta},
+		jobs:      js,
+		logReader: &stubJobLogReader{data: map[string][]byte{"rt-1": []byte("log line\n")}},
+	}
+	return exec, ts, js
+}
+
+// --- action_send executor tests ---
+
+func TestBoidBuiltinExecutor_ActionSend_WorkspaceIsolation(t *testing.T) {
+	exec, _, _ := newJobExecutor(t)
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	// cross-workspace task は拒否
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:         sandbox.BoidOpActionSend,
+		TaskID:     "task-x",
+		ActionType: "reopen",
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "restricted to the current workspace") {
+		t.Fatalf("expected workspace rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+}
+
+func TestBoidBuiltinExecutor_ActionSend_TaskNotFound(t *testing.T) {
+	exec, _, _ := newJobExecutor(t)
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:         sandbox.BoidOpActionSend,
+		TaskID:     "no-such-task",
+		ActionType: "reopen",
+	})
+	if resp.ExitCode != 1 {
+		t.Fatalf("expected error for unknown task, got exit=%d", resp.ExitCode)
+	}
+}
+
+func TestBoidBuiltinExecutor_ActionSend_Unavailable(t *testing.T) {
+	exec := &boidBuiltinExecutor{workflow: nil}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:         sandbox.BoidOpActionSend,
+		TaskID:     "t1",
+		ActionType: "reopen",
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "unavailable") {
+		t.Fatalf("expected unavailable error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+}
+
+// --- job_list executor tests ---
+
+func TestBoidBuiltinExecutor_JobList_HappyPath(t *testing.T) {
+	exec, _, _ := newJobExecutor(t)
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:     sandbox.BoidOpJobList,
+		TaskID: "task-1",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stdout, "job-1") || !strings.Contains(resp.Stdout, "job-2") {
+		t.Errorf("stdout = %q, want job-1 and job-2", resp.Stdout)
+	}
+}
+
+func TestBoidBuiltinExecutor_JobList_WorkspaceIsolation(t *testing.T) {
+	exec, _, _ := newJobExecutor(t)
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:     sandbox.BoidOpJobList,
+		TaskID: "task-x",
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "restricted to the current workspace") {
+		t.Fatalf("expected workspace rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+}
+
+func TestBoidBuiltinExecutor_JobList_Unavailable(t *testing.T) {
+	exec := &boidBuiltinExecutor{jobs: nil}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:     sandbox.BoidOpJobList,
+		TaskID: "t1",
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "unavailable") {
+		t.Fatalf("expected unavailable error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+}
+
+// --- job_show executor tests ---
+
+func TestBoidBuiltinExecutor_JobShow_HappyPath(t *testing.T) {
+	exec, _, _ := newJobExecutor(t)
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:    sandbox.BoidOpJobShow,
+		JobID: "job-1",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stdout, "job-1") {
+		t.Errorf("stdout = %q, want job-1", resp.Stdout)
+	}
+	if !strings.Contains(resp.Stdout, "run-agent") {
+		t.Errorf("stdout = %q, want run-agent in handler", resp.Stdout)
+	}
+	if !strings.Contains(resp.Stdout, "Status:") {
+		t.Errorf("stdout = %q, want Status: field", resp.Stdout)
+	}
+}
+
+func TestBoidBuiltinExecutor_JobShow_CrossProjectReject(t *testing.T) {
+	exec, _, _ := newJobExecutor(t)
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:    sandbox.BoidOpJobShow,
+		JobID: "job-x",
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "restricted to the current workspace") {
+		t.Fatalf("expected workspace rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+}
+
+func TestBoidBuiltinExecutor_JobShow_NotFound(t *testing.T) {
+	exec, _, _ := newJobExecutor(t)
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:    sandbox.BoidOpJobShow,
+		JobID: "no-such-job",
+	})
+	if resp.ExitCode != 1 {
+		t.Fatalf("expected error for unknown job, got exit=%d", resp.ExitCode)
+	}
+}
+
+// --- job_log executor tests ---
+
+func TestBoidBuiltinExecutor_JobLog_HappyPath(t *testing.T) {
+	exec, _, js := newJobExecutor(t)
+	js.jobs["job-1"].RuntimeID = "rt-1"
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:    sandbox.BoidOpJobLog,
+		JobID: "job-1",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if resp.Stdout != "log line\n" {
+		t.Errorf("stdout = %q, want log line", resp.Stdout)
+	}
+}
+
+func TestBoidBuiltinExecutor_JobLog_NoRuntime(t *testing.T) {
+	exec, _, _ := newJobExecutor(t)
+	// job-1 の RuntimeID は空 (newJobExecutor でセットされていない)
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:    sandbox.BoidOpJobLog,
+		JobID: "job-1",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (not available is OK)", resp.ExitCode)
+	}
+	if !strings.Contains(resp.Stdout, "not available") {
+		t.Errorf("stdout = %q, want 'not available'", resp.Stdout)
+	}
+}
+
+func TestBoidBuiltinExecutor_JobLog_CrossProjectReject(t *testing.T) {
+	exec, _, _ := newJobExecutor(t)
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:    sandbox.BoidOpJobLog,
+		JobID: "job-x",
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "restricted to the current workspace") {
+		t.Fatalf("expected workspace rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+}

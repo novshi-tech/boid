@@ -88,6 +88,10 @@ func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 	return BuiltinPolicy{
 		AllowedOps: sortedOps(
 			OpBoidJobDone,
+			OpBoidJobList,
+			OpBoidJobShow,
+			OpBoidJobLog,
+			OpBoidActionSend,
 			OpBoidTaskCreate,
 			OpBoidTaskGet,
 			OpBoidTaskUpdate,

@@ -992,3 +992,294 @@ func TestRunBoidShim_JobDoneSilentSkipsMissingOutputFile(t *testing.T) {
 		t.Fatalf("output = %q, want empty (missing file should be silent)", req.Boid.Output)
 	}
 }
+
+// --- action send ---
+
+func TestRunBoidShim_ActionSend_ParseSuccess(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close(); os.Remove(sockPath) })
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	payloadPath := filepath.Join(dir, "payload.json")
+	if err := os.WriteFile(payloadPath, []byte(`{"key":"val"}`), 0o644); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "tok-action")
+
+	resp, err := sandbox.RunBoidShim([]string{"action", "send", "--task", "task-1", "--type", "reopen", "--payload", payloadPath})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpActionSend {
+		t.Fatalf("op = %q, want action_send", req.Boid.Op)
+	}
+	if req.Boid.TaskID != "task-1" {
+		t.Errorf("task_id = %q, want task-1", req.Boid.TaskID)
+	}
+	if req.Boid.ActionType != "reopen" {
+		t.Errorf("action_type = %q, want reopen", req.Boid.ActionType)
+	}
+	if string(req.Boid.Payload) != `{"key":"val"}` {
+		t.Errorf("payload = %s, want {\"key\":\"val\"}", string(req.Boid.Payload))
+	}
+}
+
+func TestRunBoidShim_ActionSend_RequiresTask(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+	_, err := sandbox.RunBoidShim([]string{"action", "send", "--type", "reopen"})
+	if err == nil || !strings.Contains(err.Error(), "--task") {
+		t.Fatalf("expected --task error, got: %v", err)
+	}
+}
+
+func TestRunBoidShim_ActionSend_RequiresType(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+	_, err := sandbox.RunBoidShim([]string{"action", "send", "--task", "task-1"})
+	if err == nil || !strings.Contains(err.Error(), "--type") {
+		t.Fatalf("expected --type error, got: %v", err)
+	}
+}
+
+func TestRunBoidShim_ActionSend_NoPayloadIsOptional(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close(); os.Remove(sockPath) })
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "tok-nopayload")
+
+	resp, err := sandbox.RunBoidShim([]string{"action", "send", "--task", "task-2", "--type", "close"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil || req.Boid.Op != sandbox.BoidOpActionSend {
+		t.Fatal("expected action_send request")
+	}
+	if len(req.Boid.Payload) != 0 {
+		t.Errorf("payload = %s, want empty", string(req.Boid.Payload))
+	}
+}
+
+// --- job list ---
+
+func TestRunBoidShim_JobList_ParseSuccess(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close(); os.Remove(sockPath) })
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "tok-jlist")
+
+	resp, err := sandbox.RunBoidShim([]string{"job", "list", "--task", "task-abc"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpJobList {
+		t.Fatalf("op = %q, want job_list", req.Boid.Op)
+	}
+	if req.Boid.TaskID != "task-abc" {
+		t.Errorf("task_id = %q, want task-abc", req.Boid.TaskID)
+	}
+}
+
+func TestRunBoidShim_JobList_RequiresTask(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+	_, err := sandbox.RunBoidShim([]string{"job", "list"})
+	if err == nil || !strings.Contains(err.Error(), "--task") {
+		t.Fatalf("expected --task error, got: %v", err)
+	}
+}
+
+// --- job show ---
+
+func TestRunBoidShim_JobShow_ParseSuccess(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close(); os.Remove(sockPath) })
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "tok-jshow")
+
+	resp, err := sandbox.RunBoidShim([]string{"job", "show", "job-xyz"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpJobShow {
+		t.Fatalf("op = %q, want job_show", req.Boid.Op)
+	}
+	if req.Boid.JobID != "job-xyz" {
+		t.Errorf("job_id = %q, want job-xyz", req.Boid.JobID)
+	}
+}
+
+func TestRunBoidShim_JobShow_RequiresJobID(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+	_, err := sandbox.RunBoidShim([]string{"job", "show"})
+	if err == nil || !strings.Contains(err.Error(), "job id") {
+		t.Fatalf("expected job id error, got: %v", err)
+	}
+}
+
+// --- job log ---
+
+func TestRunBoidShim_JobLog_ParseSuccess(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close(); os.Remove(sockPath) })
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "tok-jlog")
+
+	resp, err := sandbox.RunBoidShim([]string{"job", "log", "job-log-1"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpJobLog {
+		t.Fatalf("op = %q, want job_log", req.Boid.Op)
+	}
+	if req.Boid.JobID != "job-log-1" {
+		t.Errorf("job_id = %q, want job-log-1", req.Boid.JobID)
+	}
+}
+
+func TestRunBoidShim_JobLog_RequiresJobID(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+	_, err := sandbox.RunBoidShim([]string{"job", "log"})
+	if err == nil || !strings.Contains(err.Error(), "job id") {
+		t.Fatalf("expected job id error, got: %v", err)
+	}
+}

@@ -142,6 +142,21 @@ On each iteration:
 - For `aborted` children, check the cause (`boid task get <id> --field lifecycle.abort.message`), then retry / take a different approach, or escalate to the user
 - When stuck on a decision, consult the user via `boid task notify` (see below)
 
+More detailed diagnostics for an aborted child:
+
+```bash
+# List all jobs the child ran (ID, handler, status, exit code)
+boid job list --task <id>
+
+# Show detail for a specific job (role, exit code, timestamps)
+boid job show <job-id>
+
+# Read the runtime transcript when the runtime has not yet been GC'd
+boid job log <job-id>
+```
+
+Use `boid job list` first to identify which job failed, then `boid job show` for exit code and status, and `boid job log` for the full Claude Code transcript. If `boid job log` prints "log not available", the runtime was already cleaned up (GC runs every 24h); rely on `boid job show` output and `lifecycle.abort.message` in that case.
+
 Adjust the `sleep` interval to the implementation scale (30s for small implementations, 2-5min for large builds/tests).
 
 ### Using Claude Code Monitor

@@ -7,6 +7,10 @@ package orchestrator
 // only layer allowed to see both sides.
 const (
 	OpBoidJobDone    = "job_done"
+	OpBoidJobList    = "job_list"
+	OpBoidJobShow    = "job_show"
+	OpBoidJobLog     = "job_log"
+	OpBoidActionSend = "action_send"
 	OpBoidTaskCreate = "task_create"
 	OpBoidTaskGet    = "task_get"
 	OpBoidTaskUpdate = "task_update"
@@ -15,7 +19,7 @@ const (
 	OpBoidTaskList   = "task_list"
 	OpBoidTaskNotify = "task_notify"
 
-	OpGitFetch       = "fetch"
-	OpGitPush        = "push"
-	OpGitPushDelete  = "push_delete"
+	OpGitFetch      = "fetch"
+	OpGitPush       = "push"
+	OpGitPushDelete = "push_delete"
 )

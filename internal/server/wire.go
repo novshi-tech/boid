@@ -221,7 +221,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Notify:      notifySvc,
 	}
 	if srv.broker != nil {
-		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc)
+		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: runtimesDirFor(cfg)})
 		srv.broker.ProjectResolver = projectResolverFor(projectSvc)
 	}
 	globalJobSvc := &globalJobStore{
