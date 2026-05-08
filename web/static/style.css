@@ -1928,6 +1928,9 @@ details[open] > summary {
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0 0 var(--space-3) 0;
+  padding: 0;
+  background: transparent;
+  border: none;
   color: var(--fg);
 }
 
