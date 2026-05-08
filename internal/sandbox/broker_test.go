@@ -35,6 +35,10 @@ func testGateBoidPolicies() map[string]sandbox.BuiltinPolicy {
 		"boid": {
 			AllowedOps: map[string]struct{}{
 				string(sandbox.BoidOpJobDone):    {},
+				string(sandbox.BoidOpJobList):    {},
+				string(sandbox.BoidOpJobShow):    {},
+				string(sandbox.BoidOpJobLog):     {},
+				string(sandbox.BoidOpActionSend): {},
 				string(sandbox.BoidOpTaskCreate): {},
 				string(sandbox.BoidOpTaskUpdate): {},
 				string(sandbox.BoidOpTaskImport): {},
@@ -1690,5 +1694,224 @@ func TestBroker_BoidTaskAnswer_PolicyReject(t *testing.T) {
 	}
 	if len(exec.calls) != 0 {
 		t.Fatalf("executor should not be called, calls=%d", len(exec.calls))
+	}
+}
+
+// --- action_send broker tests ---
+
+func TestBroker_BoidActionSend_RequiresTaskID(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), sandbox.TokenContext{
+		Role:       testRoleGate,
+		ProjectDir: projectDir,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpActionSend, ActionType: "reopen"},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "task id") {
+		t.Fatalf("expected task id error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called")
+	}
+}
+
+func TestBroker_BoidActionSend_RequiresType(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), sandbox.TokenContext{
+		Role:       testRoleGate,
+		ProjectDir: projectDir,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpActionSend, TaskID: "t1"},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "type") {
+		t.Fatalf("expected type error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called")
+	}
+}
+
+func TestBroker_BoidActionSend_PolicyReject(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	// testHookBoidPolicies には BoidOpActionSend が含まれない
+	token := broker.Register(map[string]sandbox.CommandDef{}, testHookBoidPolicies(), sandbox.TokenContext{
+		Role:       testRoleHook,
+		ProjectDir: projectDir,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpActionSend, TaskID: "t1", ActionType: "reopen"},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "not allowed") {
+		t.Fatalf("expected policy rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called")
+	}
+}
+
+// --- job_list broker tests ---
+
+func TestBroker_BoidJobList_RequiresTaskID(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), sandbox.TokenContext{
+		Role:       testRoleGate,
+		ProjectDir: projectDir,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpJobList},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "task id") {
+		t.Fatalf("expected task id error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called")
+	}
+}
+
+func TestBroker_BoidJobList_PolicyReject(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	// testHookBoidPolicies には BoidOpJobList が含まれない
+	token := broker.Register(map[string]sandbox.CommandDef{}, testHookBoidPolicies(), sandbox.TokenContext{
+		Role:       testRoleHook,
+		ProjectDir: projectDir,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpJobList, TaskID: "t1"},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "not allowed") {
+		t.Fatalf("expected policy rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called")
+	}
+}
+
+// --- job_show broker tests ---
+
+func TestBroker_BoidJobShow_RequiresJobID(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), sandbox.TokenContext{
+		Role:       testRoleGate,
+		ProjectDir: projectDir,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpJobShow},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "job id") {
+		t.Fatalf("expected job id error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called")
+	}
+}
+
+func TestBroker_BoidJobShow_PolicyReject(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	// testHookBoidPolicies には BoidOpJobShow が含まれない
+	token := broker.Register(map[string]sandbox.CommandDef{}, testHookBoidPolicies(), sandbox.TokenContext{
+		Role:       testRoleHook,
+		ProjectDir: projectDir,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpJobShow, JobID: "job-1"},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "not allowed") {
+		t.Fatalf("expected policy rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called")
+	}
+}
+
+// --- job_log broker tests ---
+
+func TestBroker_BoidJobLog_RequiresJobID(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), sandbox.TokenContext{
+		Role:       testRoleGate,
+		ProjectDir: projectDir,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpJobLog},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "job id") {
+		t.Fatalf("expected job id error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called")
+	}
+}
+
+func TestBroker_BoidJobLog_PolicyReject(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	// testHookBoidPolicies には BoidOpJobLog が含まれない
+	token := broker.Register(map[string]sandbox.CommandDef{}, testHookBoidPolicies(), sandbox.TokenContext{
+		Role:       testRoleHook,
+		ProjectDir: projectDir,
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpJobLog, JobID: "job-1"},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "not allowed") {
+		t.Fatalf("expected policy rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called")
 	}
 }

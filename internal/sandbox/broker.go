@@ -310,6 +310,27 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 				boidReq.WorkspaceID = entry.Context.WorkspaceID
 			}
 		}
+	case BoidOpActionSend:
+		if boidReq.TaskID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid action send requires a task id"}
+		}
+		if boidReq.ActionType == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid action send requires a type"}
+		}
+		// project 検証は boid_executor 側で行う (task_notify と同じパターン)
+	case BoidOpJobList:
+		if boidReq.TaskID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid job list requires a task id"}
+		}
+		// project 検証は boid_executor 側で行う
+	case BoidOpJobShow:
+		if boidReq.JobID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid job show requires a job id"}
+		}
+	case BoidOpJobLog:
+		if boidReq.JobID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid job log requires a job id"}
+		}
 	case BoidOpTaskImport:
 		if len(boidReq.ImportTasks) == 0 {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task import requires at least one task"}

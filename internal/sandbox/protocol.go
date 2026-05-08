@@ -43,6 +43,10 @@ type BoidOp string
 
 const (
 	BoidOpJobDone    BoidOp = "job_done"
+	BoidOpJobList    BoidOp = "job_list"
+	BoidOpJobShow    BoidOp = "job_show"
+	BoidOpJobLog     BoidOp = "job_log"
+	BoidOpActionSend BoidOp = "action_send"
 	BoidOpTaskCreate BoidOp = "task_create"
 	BoidOpTaskGet    BoidOp = "task_get"
 	BoidOpTaskUpdate BoidOp = "task_update"
@@ -104,6 +108,9 @@ type BoidRequest struct {
 
 	// task answer fields
 	Answer string `json:"answer,omitempty"`
+
+	// action send fields
+	ActionType string `json:"action_type,omitempty"`
 }
 
 type TokenContext struct {

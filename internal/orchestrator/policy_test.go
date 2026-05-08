@@ -112,11 +112,15 @@ func TestDefaultBuiltinPolicies_HookBoidOps(t *testing.T) {
 	}
 }
 
-// gate×boid policy は {job_done, task_create, task_get, task_update, task_import, task.reopen, task_list, task_notify}。
+// gate×boid policy は全 op を含む。
 func TestDefaultBuiltinPolicies_GateBoidOps(t *testing.T) {
 	boidPolicy := DefaultBuiltinPolicies(RoleGate, []string{"boid"}, PolicyContext{})["boid"]
 	wantOps := []string{
 		OpBoidJobDone,
+		OpBoidJobList,
+		OpBoidJobShow,
+		OpBoidJobLog,
+		OpBoidActionSend,
 		OpBoidTaskCreate,
 		OpBoidTaskGet,
 		OpBoidTaskUpdate,
