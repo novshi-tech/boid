@@ -55,6 +55,9 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 		if req.ProjectID == "" {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create requires a project"}
 		}
+		if req.ParentID == "" {
+			req.ParentID = ctx.TaskID
+		}
 		if !ctx.AllowsProject(req.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
 		}
