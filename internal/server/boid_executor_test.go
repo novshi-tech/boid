@@ -366,6 +366,71 @@ func TestBoidBuiltinExecutor_TaskCreate_BaseBranchInheritsFromBehavior(t *testin
 	}
 }
 
+func TestBoidBuiltinExecutor_TaskCreate_DefaultsParentIDFromContext(t *testing.T) {
+	store := &capturingTaskStore{}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {},
+		},
+	}}
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{Tasks: store, Meta: meta},
+	}
+	ctx := sandbox.TokenContext{
+		ProjectID:         "proj-1",
+		TaskID:            "parent-task-id",
+		AllowedProjectIDs: []string{"proj-1"},
+	}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:       sandbox.BoidOpTaskCreate,
+		Title:    "child task",
+		Behavior: "dev",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("created tasks = %d, want 1", len(store.created))
+	}
+	if got := store.created[0].ParentID; got != "parent-task-id" {
+		t.Errorf("parent_id = %q, want parent-task-id (from ctx.TaskID)", got)
+	}
+}
+
+func TestBoidBuiltinExecutor_TaskCreate_ExplicitParentIDOverridesContext(t *testing.T) {
+	store := &capturingTaskStore{}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {},
+		},
+	}}
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{Tasks: store, Meta: meta},
+	}
+	ctx := sandbox.TokenContext{
+		ProjectID:         "proj-1",
+		TaskID:            "ctx-task-id",
+		AllowedProjectIDs: []string{"proj-1"},
+	}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:       sandbox.BoidOpTaskCreate,
+		Title:    "child task",
+		Behavior: "dev",
+		ParentID: "explicit-parent-id",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("created tasks = %d, want 1", len(store.created))
+	}
+	if got := store.created[0].ParentID; got != "explicit-parent-id" {
+		t.Errorf("parent_id = %q, want explicit-parent-id (explicit overrides ctx.TaskID)", got)
+	}
+}
+
 // --- task import executor tests ---
 
 func newImportExecutor(t *testing.T) (*boidBuiltinExecutor, *capturingTaskStore) {
