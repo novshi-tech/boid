@@ -1102,27 +1102,26 @@ func (s *WebAppService) ListProjects() ([]*orchestrator.Project, error) {
 	return projects, nil
 }
 
+// DuplicateTask delegates to the shared TaskService so the Web UI uses the
+// same duplication semantics as the JSON API: a fresh task is created via
+// CreateTask + resolveBehavior so that Instructions and Payload come from
+// the behavior's DefaultInstruction / DefaultPayload, not from the source
+// task's runtime state. Without this delegation the duplicate inherited
+// the source's runtime payload (claude_code.sessions, awaiting trait) and
+// missing Instructions caused the hook evaluator to skip the agent hook,
+// so no hook fired on Start.
+//
+// The Web UI button does not auto-start the duplicate; the user clicks
+// Start separately.
 func (s *WebAppService) DuplicateTask(id string) (string, error) {
-	task, err := s.Tasks.GetTask(id)
+	if s.TaskSvc == nil {
+		return "", &StatusError{Code: http.StatusInternalServerError, Message: "task service not configured"}
+	}
+	task, err := s.TaskSvc.DuplicateTask(id, false)
 	if err != nil {
-		return "", &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+		return "", err
 	}
-	newTask := &orchestrator.Task{
-		ProjectID:    task.ProjectID,
-		Title:        task.Title,
-		Description:  task.Description,
-		Behavior:     task.Behavior,
-		Traits:       task.Traits,
-		Readonly:     task.Readonly,
-		Worktree:     task.Worktree,
-		BranchPrefix: task.BranchPrefix,
-		BaseBranch:   task.BaseBranch,
-		Payload:      task.Payload,
-	}
-	if err := s.Tasks.CreateTask(newTask); err != nil {
-		return "", &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
-	}
-	return newTask.ID, nil
+	return task.ID, nil
 }
 
 // DeleteTask delegates to the shared TaskService so the web UI uses the
