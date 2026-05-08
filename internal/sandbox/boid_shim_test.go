@@ -136,17 +136,26 @@ func TestRunBoidShim_TaskCreateSendsTypedRequest(t *testing.T) {
 	if req.Boid.ProjectID != "proj-1" {
 		t.Fatalf("project id = %q, want proj-1", req.Boid.ProjectID)
 	}
-	if req.Boid.Title != "hello" {
-		t.Fatalf("title = %q, want hello", req.Boid.Title)
+	var createPatch struct {
+		Title       string          `json:"title"`
+		Behavior    string          `json:"behavior"`
+		Description string          `json:"description"`
+		Payload     json.RawMessage `json:"payload"`
 	}
-	if req.Boid.Behavior != "dev" {
-		t.Fatalf("behavior = %q, want dev", req.Boid.Behavior)
+	if err := json.Unmarshal(req.Boid.CreatePatch, &createPatch); err != nil {
+		t.Fatalf("parse CreatePatch: %v", err)
 	}
-	if req.Boid.Description != "desc" {
-		t.Fatalf("description = %q, want desc", req.Boid.Description)
+	if createPatch.Title != "hello" {
+		t.Fatalf("title = %q, want hello", createPatch.Title)
 	}
-	if string(req.Boid.Payload) != `{"name":"alice"}` {
-		t.Fatalf("payload = %s, want %s", string(req.Boid.Payload), `{"name":"alice"}`)
+	if createPatch.Behavior != "dev" {
+		t.Fatalf("behavior = %q, want dev", createPatch.Behavior)
+	}
+	if createPatch.Description != "desc" {
+		t.Fatalf("description = %q, want desc", createPatch.Description)
+	}
+	if string(createPatch.Payload) != `{"name":"alice"}` {
+		t.Fatalf("payload = %s, want %s", string(createPatch.Payload), `{"name":"alice"}`)
 	}
 }
 
@@ -207,19 +216,29 @@ func TestRunBoidShim_TaskCreatePropagatesDependencyFields(t *testing.T) {
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
-	if req.Boid.Ref != "task-c" {
-		t.Errorf("ref = %q, want task-c", req.Boid.Ref)
+	var createPatch struct {
+		Ref              string   `json:"ref"`
+		ParentID         string   `json:"parent_id"`
+		DependsOn        []string `json:"depends_on"`
+		DependsOnPayload string   `json:"depends_on_payload"`
+		AutoStart        bool     `json:"auto_start"`
 	}
-	if req.Boid.ParentID != "parent-xyz" {
-		t.Errorf("parent_id = %q, want parent-xyz", req.Boid.ParentID)
+	if err := json.Unmarshal(req.Boid.CreatePatch, &createPatch); err != nil {
+		t.Fatalf("parse CreatePatch: %v", err)
 	}
-	if got, want := req.Boid.DependsOn, []string{"task-a", "task-b"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+	if createPatch.Ref != "task-c" {
+		t.Errorf("ref = %q, want task-c", createPatch.Ref)
+	}
+	if createPatch.ParentID != "parent-xyz" {
+		t.Errorf("parent_id = %q, want parent-xyz", createPatch.ParentID)
+	}
+	if got, want := createPatch.DependsOn, []string{"task-a", "task-b"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("depends_on = %v, want %v", got, want)
 	}
-	if req.Boid.DependsOnPayload != "artifact.auto-merge.merged" {
-		t.Errorf("depends_on_payload = %q, want artifact.auto-merge.merged", req.Boid.DependsOnPayload)
+	if createPatch.DependsOnPayload != "artifact.auto-merge.merged" {
+		t.Errorf("depends_on_payload = %q, want artifact.auto-merge.merged", createPatch.DependsOnPayload)
 	}
-	if !req.Boid.AutoStart {
+	if !createPatch.AutoStart {
 		t.Errorf("auto_start = false, want true")
 	}
 }
@@ -276,8 +295,14 @@ func TestRunBoidShim_TaskCreatePropagatesBaseBranch(t *testing.T) {
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
-	if req.Boid.BaseBranch != "feature/my-branch" {
-		t.Errorf("base_branch = %q, want feature/my-branch", req.Boid.BaseBranch)
+	var createPatch struct {
+		BaseBranch string `json:"base_branch"`
+	}
+	if err := json.Unmarshal(req.Boid.CreatePatch, &createPatch); err != nil {
+		t.Fatalf("parse CreatePatch: %v", err)
+	}
+	if createPatch.BaseBranch != "feature/my-branch" {
+		t.Errorf("base_branch = %q, want feature/my-branch", createPatch.BaseBranch)
 	}
 }
 
@@ -347,7 +372,13 @@ func TestRunBoidShim_TaskUpdateSendsTypedRequest(t *testing.T) {
 	if req.Boid.TaskID != "task-target" {
 		t.Fatalf("task id = %q, want task-target", req.Boid.TaskID)
 	}
-	if got, want := string(req.Boid.Payload), `{"artifact":{"pr":{"merged":true,"number":42,"url":"https://example/42"}}}`; got != want {
+	var updatePatch struct {
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(req.Boid.UpdatePatch, &updatePatch); err != nil {
+		t.Fatalf("parse UpdatePatch: %v", err)
+	}
+	if got, want := string(updatePatch.Payload), `{"artifact":{"pr":{"merged":true,"number":42,"url":"https://example/42"}}}`; got != want {
 		t.Fatalf("payload = %s, want %s", got, want)
 	}
 }
@@ -427,16 +458,26 @@ behavior_spec:
 	if req.Boid.Op != sandbox.BoidOpTaskCreate {
 		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskCreate)
 	}
-	if req.Boid.Behavior != "" {
-		t.Errorf("behavior = %q, want empty", req.Boid.Behavior)
+	var createPatch struct {
+		Behavior     string `json:"behavior"`
+		BehaviorSpec *struct {
+			Name    string `json:"name"`
+			Worktree bool   `json:"worktree"`
+		} `json:"behavior_spec"`
 	}
-	if req.Boid.BehaviorSpec == nil {
+	if err := json.Unmarshal(req.Boid.CreatePatch, &createPatch); err != nil {
+		t.Fatalf("parse CreatePatch: %v", err)
+	}
+	if createPatch.Behavior != "" {
+		t.Errorf("behavior = %q, want empty", createPatch.Behavior)
+	}
+	if createPatch.BehaviorSpec == nil {
 		t.Fatal("behavior_spec is nil, want non-nil")
 	}
-	if req.Boid.BehaviorSpec.Name != "kit/conflict-fix" {
-		t.Errorf("behavior_spec.name = %q, want %q", req.Boid.BehaviorSpec.Name, "kit/conflict-fix")
+	if createPatch.BehaviorSpec.Name != "kit/conflict-fix" {
+		t.Errorf("behavior_spec.name = %q, want %q", createPatch.BehaviorSpec.Name, "kit/conflict-fix")
 	}
-	if !req.Boid.BehaviorSpec.Worktree {
+	if !createPatch.BehaviorSpec.Worktree {
 		t.Error("behavior_spec.worktree = false, want true")
 	}
 }
@@ -494,14 +535,22 @@ func TestRunBoidShim_TaskCreate_NeitherBehaviorNorSpec_ForwardsToBroker(t *testi
 	if req.Boid.Op != sandbox.BoidOpTaskCreate {
 		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskCreate)
 	}
-	if req.Boid.Behavior != "" {
-		t.Errorf("behavior = %q, want empty (server side defaults to plan)", req.Boid.Behavior)
+	var createPatch struct {
+		Behavior     string          `json:"behavior"`
+		BehaviorSpec json.RawMessage `json:"behavior_spec"`
+		Title        string          `json:"title"`
 	}
-	if req.Boid.BehaviorSpec != nil {
-		t.Errorf("behavior_spec = %+v, want nil", req.Boid.BehaviorSpec)
+	if err := json.Unmarshal(req.Boid.CreatePatch, &createPatch); err != nil {
+		t.Fatalf("parse CreatePatch: %v", err)
 	}
-	if req.Boid.Title != "triage me" {
-		t.Errorf("title = %q, want triage me", req.Boid.Title)
+	if createPatch.Behavior != "" {
+		t.Errorf("behavior = %q, want empty (server side defaults to plan)", createPatch.Behavior)
+	}
+	if len(createPatch.BehaviorSpec) > 0 {
+		t.Errorf("behavior_spec = %s, want nil", string(createPatch.BehaviorSpec))
+	}
+	if createPatch.Title != "triage me" {
+		t.Errorf("title = %q, want triage me", createPatch.Title)
 	}
 }
 

@@ -95,9 +95,8 @@ func TestBoidBuiltinExecutor_EnforcesWorkspaceScope(t *testing.T) {
 	}
 
 	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
-		Op:       sandbox.BoidOpTaskCreate,
-		Title:    "same workspace",
-		Behavior: "dev",
+		Op:          sandbox.BoidOpTaskCreate,
+		CreatePatch: json.RawMessage(`{"title":"same workspace","behavior":"dev"}`),
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("self project create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
@@ -107,10 +106,9 @@ func TestBoidBuiltinExecutor_EnforcesWorkspaceScope(t *testing.T) {
 	}
 
 	resp = exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
-		Op:        sandbox.BoidOpTaskCreate,
-		ProjectID: "proj-2",
-		Title:     "peer workspace",
-		Behavior:  "dev",
+		Op:          sandbox.BoidOpTaskCreate,
+		ProjectID:   "proj-2",
+		CreatePatch: json.RawMessage(`{"title":"peer workspace","behavior":"dev"}`),
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("peer project create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
@@ -120,10 +118,9 @@ func TestBoidBuiltinExecutor_EnforcesWorkspaceScope(t *testing.T) {
 	}
 
 	resp = exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
-		Op:        sandbox.BoidOpTaskCreate,
-		ProjectID: "proj-3",
-		Title:     "cross workspace",
-		Behavior:  "dev",
+		Op:          sandbox.BoidOpTaskCreate,
+		ProjectID:   "proj-3",
+		CreatePatch: json.RawMessage(`{"title":"cross workspace","behavior":"dev"}`),
 	})
 	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "restricted to the current workspace") {
 		t.Fatalf("cross-workspace create should be rejected, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
@@ -164,9 +161,9 @@ func TestBoidBuiltinExecutor_TaskUpdate_EnforcesWorkspaceScope(t *testing.T) {
 	// shallow merge のため artifact.run-agent (別 top-level キー) は保持され、
 	// artifact.auto-merge が追記される。
 	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
-		Op:      sandbox.BoidOpTaskUpdate,
-		TaskID:  "target-1",
-		Payload: []byte(`{"artifact.auto-merge":{"pr":{"merged":true,"number":42}}}`),
+		Op:          sandbox.BoidOpTaskUpdate,
+		TaskID:      "target-1",
+		UpdatePatch: json.RawMessage(`{"payload":{"artifact.auto-merge":{"pr":{"merged":true,"number":42}}}}`),
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("self project update exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
@@ -196,9 +193,9 @@ func TestBoidBuiltinExecutor_TaskUpdate_EnforcesWorkspaceScope(t *testing.T) {
 
 	// workspace 内の peer プロジェクトのタスクも更新できる
 	resp = exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
-		Op:      sandbox.BoidOpTaskUpdate,
-		TaskID:  "peer-1",
-		Payload: []byte(`{"hello":"world"}`),
+		Op:          sandbox.BoidOpTaskUpdate,
+		TaskID:      "peer-1",
+		UpdatePatch: json.RawMessage(`{"payload":{"hello":"world"}}`),
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("peer project update exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
@@ -209,9 +206,9 @@ func TestBoidBuiltinExecutor_TaskUpdate_EnforcesWorkspaceScope(t *testing.T) {
 
 	// workspace 外のタスクは更新できない
 	resp = exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
-		Op:      sandbox.BoidOpTaskUpdate,
-		TaskID:  "foreign-1",
-		Payload: []byte(`{"x":1}`),
+		Op:          sandbox.BoidOpTaskUpdate,
+		TaskID:      "foreign-1",
+		UpdatePatch: json.RawMessage(`{"payload":{"x":1}}`),
 	})
 	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "restricted to the current workspace") {
 		t.Fatalf("cross-workspace update should be rejected, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
@@ -222,9 +219,9 @@ func TestBoidBuiltinExecutor_TaskUpdate_EnforcesWorkspaceScope(t *testing.T) {
 
 	// 存在しない TaskID は NotFound
 	resp = exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
-		Op:      sandbox.BoidOpTaskUpdate,
-		TaskID:  "unknown",
-		Payload: []byte(`{"x":1}`),
+		Op:          sandbox.BoidOpTaskUpdate,
+		TaskID:      "unknown",
+		UpdatePatch: json.RawMessage(`{"payload":{"x":1}}`),
 	})
 	if resp.ExitCode != 1 {
 		t.Fatalf("unknown task update should fail, got exit=%d", resp.ExitCode)
@@ -241,8 +238,8 @@ func TestBoidBuiltinExecutor_TaskUpdate_RequiresTaskID(t *testing.T) {
 	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
 
 	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
-		Op:      sandbox.BoidOpTaskUpdate,
-		Payload: []byte(`{"x":1}`),
+		Op:          sandbox.BoidOpTaskUpdate,
+		UpdatePatch: json.RawMessage(`{"payload":{"x":1}}`),
 	})
 	if resp.ExitCode != 1 {
 		t.Fatalf("expected error, got exit=%d", resp.ExitCode)
@@ -274,15 +271,8 @@ func TestBoidBuiltinExecutor_PropagatesDependencyFields(t *testing.T) {
 	)
 
 	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
-		Op:               sandbox.BoidOpTaskCreate,
-		Title:            "child",
-		Behavior:         "dev",
-		Description:      "desc",
-		Ref:              "task-c",
-		ParentID:         "parent-1",
-		DependsOn:        []string{"task-a", "task-b"},
-		DependsOnPayload: "artifact.auto-merge.merged",
-		AutoStart:        false, // disable to avoid Workflow nil
+		Op:          sandbox.BoidOpTaskCreate,
+		CreatePatch: json.RawMessage(`{"title":"child","behavior":"dev","description":"desc","ref":"task-c","parent_id":"parent-1","depends_on":["task-a","task-b"],"depends_on_payload":"artifact.auto-merge.merged","auto_start":false}`),
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
@@ -322,10 +312,8 @@ func TestBoidBuiltinExecutor_TaskCreate_BaseBranchOverride(t *testing.T) {
 	}
 
 	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
-		Op:         sandbox.BoidOpTaskCreate,
-		Title:      "branch override",
-		Behavior:   "dev",
-		BaseBranch: "feature/x",
+		Op:          sandbox.BoidOpTaskCreate,
+		CreatePatch: json.RawMessage(`{"title":"branch override","behavior":"dev","base_branch":"feature/x"}`),
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
@@ -354,9 +342,8 @@ func TestBoidBuiltinExecutor_TaskCreate_BaseBranchInheritsFromBehavior(t *testin
 	}
 
 	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
-		Op:       sandbox.BoidOpTaskCreate,
-		Title:    "no override",
-		Behavior: "dev",
+		Op:          sandbox.BoidOpTaskCreate,
+		CreatePatch: json.RawMessage(`{"title":"no override","behavior":"dev"}`),
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
@@ -383,9 +370,8 @@ func TestBoidBuiltinExecutor_TaskCreate_DefaultsParentIDFromContext(t *testing.T
 	}
 
 	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
-		Op:       sandbox.BoidOpTaskCreate,
-		Title:    "child task",
-		Behavior: "dev",
+		Op:          sandbox.BoidOpTaskCreate,
+		CreatePatch: json.RawMessage(`{"title":"child task","behavior":"dev"}`),
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
@@ -415,10 +401,8 @@ func TestBoidBuiltinExecutor_TaskCreate_ExplicitParentIDOverridesContext(t *test
 	}
 
 	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
-		Op:       sandbox.BoidOpTaskCreate,
-		Title:    "child task",
-		Behavior: "dev",
-		ParentID: "explicit-parent-id",
+		Op:          sandbox.BoidOpTaskCreate,
+		CreatePatch: json.RawMessage(`{"title":"child task","behavior":"dev","parent_id":"explicit-parent-id"}`),
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)

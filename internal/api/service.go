@@ -800,6 +800,9 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		}
 		task.Instructions = override
 	}
+	if req.AutoStart != nil {
+		task.AutoStart = *req.AutoStart
+	}
 	if err := s.Tasks.UpdateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
@@ -808,6 +811,14 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	}
 	if payloadUpdated && s.Workflow != nil {
 		go s.Workflow.TriggerDependents(context.Background(), id)
+	}
+	if req.AutoStart != nil && *req.AutoStart && task.Status == orchestrator.TaskStatusPending && s.Workflow != nil {
+		result, err := s.Workflow.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
+		if err != nil {
+			slog.Error("auto_start: update: failed to apply start action", "task_id", task.ID, "error", err)
+		} else {
+			task = result.Task
+		}
 	}
 	return task, nil
 }

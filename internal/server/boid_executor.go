@@ -56,43 +56,26 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create unavailable"}
 		}
-		if req.ProjectID == "" {
-			req.ProjectID = ctx.ProjectID
+		var createReq api.CreateTaskRequest
+		if len(req.CreatePatch) > 0 {
+			if err := json.Unmarshal(req.CreatePatch, &createReq); err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create: invalid create_patch: " + err.Error()}
+			}
 		}
-		if req.ProjectID == "" {
+		if createReq.ProjectID == "" {
+			createReq.ProjectID = req.ProjectID
+		}
+		if createReq.ProjectID == "" {
+			createReq.ProjectID = ctx.ProjectID
+		}
+		if createReq.ProjectID == "" {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create requires a project"}
 		}
-		if req.ParentID == "" {
-			req.ParentID = ctx.TaskID
+		if createReq.ParentID == "" {
+			createReq.ParentID = ctx.TaskID
 		}
-		if !ctx.AllowsProject(req.ProjectID) {
+		if !ctx.AllowsProject(createReq.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
-		}
-		createReq := api.CreateTaskRequest{
-			ProjectID:        req.ProjectID,
-			Title:            req.Title,
-			Behavior:         req.Behavior,
-			Description:      req.Description,
-			Payload:          req.Payload,
-			Ref:              req.Ref,
-			ParentID:         req.ParentID,
-			DependsOn:        req.DependsOn,
-			DependsOnPayload: req.DependsOnPayload,
-			AutoStart:        req.AutoStart,
-		}
-		if req.BaseBranch != "" {
-			createReq.BaseBranch = &req.BaseBranch
-		}
-		if req.BehaviorSpec != nil {
-			createReq.BehaviorSpec = &orchestrator.BehaviorSpec{
-				Name:           req.BehaviorSpec.Name,
-				Traits:         req.BehaviorSpec.Traits,
-				Readonly:       req.BehaviorSpec.Readonly,
-				Worktree:       req.BehaviorSpec.Worktree,
-				BranchPrefix:   req.BehaviorSpec.BranchPrefix,
-				BaseBranch:     req.BehaviorSpec.BaseBranch,
-				DefaultPayload: orchestrator.RawPayload(req.BehaviorSpec.DefaultPayload),
-			}
 		}
 		task, err := e.tasks.CreateTask(createReq)
 		if err != nil {
@@ -135,12 +118,11 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 		if !ctx.AllowsProject(existing.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task update is restricted to the current workspace"}
 		}
-		updateReq := api.UpdateTaskRequest{
-			Title:       req.Title,
-			Description: req.Description,
-		}
-		if len(req.Payload) > 0 {
-			updateReq.Payload = req.Payload
+		var updateReq api.UpdateTaskRequest
+		if len(req.UpdatePatch) > 0 {
+			if err := json.Unmarshal(req.UpdatePatch, &updateReq); err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task update: invalid update_patch: " + err.Error()}
+			}
 		}
 		task, err := e.tasks.UpdateTask(req.TaskID, updateReq)
 		if err != nil {
