@@ -54,6 +54,31 @@ func ClearPendingAnswer(payload json.RawMessage) json.RawMessage {
 	return out
 }
 
+// StripAwaitingTrait removes the entire awaiting trait from a payload.
+// The awaiting trait is owned exclusively by ApplyAction("ask"/"answer") and
+// the lifecycle, so any value carried in a coordinator's FinalPayload (which
+// snapshots task.Payload before the hook runs) is necessarily stale and must
+// not be merged back over the freshly-persisted DB state on hook completion.
+// Returns the payload unchanged when the awaiting trait is absent.
+func StripAwaitingTrait(payload json.RawMessage) json.RawMessage {
+	if len(payload) == 0 {
+		return payload
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &top); err != nil {
+		return payload
+	}
+	if _, ok := top[string(TraitAwaiting)]; !ok {
+		return payload
+	}
+	delete(top, string(TraitAwaiting))
+	out, err := json.Marshal(top)
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
 // GetAwaitingPayload reads the awaiting trait from raw payload.
 // Returns an empty struct if the trait is absent or malformed.
 func GetAwaitingPayload(payload json.RawMessage) AwaitingPayload {
