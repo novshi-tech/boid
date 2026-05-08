@@ -1558,19 +1558,25 @@ body:has(.action-bar) {
 
 /* Job rows are clickable links — whole row becomes interactive so
    keyboard focus and middle-click-open-in-tab work. Chevron on the
-   right signals the affordance; brightens on hover/focus. */
-.timeline-row-job {
+   right signals the affordance; brightens on hover/focus.
+   timeline-row-ask uses the same affordance to open the Q&A turn page. */
+.timeline-row-job,
+.timeline-row-ask {
   cursor: pointer;
 }
 
 .timeline-row-job:hover,
-.timeline-row-job:focus-visible {
+.timeline-row-job:focus-visible,
+.timeline-row-ask:hover,
+.timeline-row-ask:focus-visible {
   background: var(--card);
   text-decoration: none;
 }
 
 .timeline-row-job:hover .timeline-label,
-.timeline-row-job:focus-visible .timeline-label {
+.timeline-row-job:focus-visible .timeline-label,
+.timeline-row-ask:hover .timeline-label,
+.timeline-row-ask:focus-visible .timeline-label {
   color: var(--accent);
 }
 
@@ -1584,7 +1590,9 @@ body:has(.action-bar) {
 }
 
 .timeline-row-job:hover .timeline-chevron,
-.timeline-row-job:focus-visible .timeline-chevron {
+.timeline-row-job:focus-visible .timeline-chevron,
+.timeline-row-ask:hover .timeline-chevron,
+.timeline-row-ask:focus-visible .timeline-chevron {
   opacity: 1;
   color: var(--accent);
 }
@@ -1890,51 +1898,157 @@ details[open] > summary {
   }
 }
 
-/* --- Q&A Section (awaiting state) ---
-   Mobile-first: full-width amber-bordered card with preformatted question
-   text and a tap-friendly textarea. Desktop widens the action row. */
-.qa-section {
+/* --- Awaiting banner (timeline tab) ---
+   Compact amber call-to-action shown at the top of the timeline tab while
+   the task is in awaiting state. Tapping opens the dedicated Q&A page. */
+.awaiting-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
   border: 2px solid #fbbf24;
   border-radius: var(--radius-2);
   padding: var(--space-3);
   margin-bottom: var(--space-3);
   background: #fffbeb;
+  color: var(--fg);
+  text-decoration: none;
+  min-height: var(--tap-target);
 }
 
+.awaiting-banner:hover { text-decoration: none; }
+
 @media (prefers-color-scheme: dark) {
-  .qa-section {
+  .awaiting-banner {
     border-color: #b45309;
     background: #1c1208;
   }
 }
 
-.qa-label {
+.awaiting-banner-icon {
+  flex: 0 0 auto;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  background: #fbbf24;
+  color: #78350f;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 1.125rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  .awaiting-banner-icon {
+    background: #b45309;
+    color: #fef3c7;
+  }
+}
+
+.awaiting-banner-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.awaiting-banner-title {
+  font-weight: 700;
+  font-size: 0.9375rem;
+  color: #92400e;
+}
+
+@media (prefers-color-scheme: dark) {
+  .awaiting-banner-title { color: #fbbf24; }
+}
+
+.awaiting-banner-hint {
+  font-size: 0.8125rem;
+  color: var(--fg-muted, #888);
+}
+
+.awaiting-banner-chevron {
+  flex: 0 0 auto;
+  font-size: 1.25rem;
+  color: #92400e;
+}
+
+@media (prefers-color-scheme: dark) {
+  .awaiting-banner-chevron { color: #fbbf24; }
+}
+
+/* --- Q&A page (dedicated /tasks/{id}/questions/{qid}) ---
+   Full-page rendering of one Q&A turn. Notification deep-links land here. */
+.qa-page {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.qa-page-header { margin: 0; }
+
+.qa-page-title {
+  font-size: 1.25rem;
+  margin: 0 0 var(--space-1) 0;
+  color: var(--fg);
+}
+
+.qa-page-task {
+  font-size: 0.875rem;
+  margin: 0;
+  color: var(--fg-muted, #888);
+}
+
+.qa-page-task-link {
+  color: var(--fg);
+  text-decoration: underline;
+  text-decoration-color: var(--border);
+  text-underline-offset: 3px;
+}
+
+.qa-page-section {
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.qa-page-section-title {
   font-size: 0.8125rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #92400e;
-  margin: 0 0 var(--space-2) 0;
+  color: var(--fg-muted, #888);
+  margin: 0;
 }
 
-@media (prefers-color-scheme: dark) {
-  .qa-label { color: #fbbf24; }
-}
-
-.qa-question {
+.qa-page-question,
+.qa-page-answer {
   font-family: var(--font-sans);
   font-size: 1rem;
   line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
-  margin: 0 0 var(--space-3) 0;
+  margin: 0;
   padding: 0;
   background: transparent;
   border: none;
   color: var(--fg);
 }
 
-/* Textarea: min 4 rows, auto-expand via resize, 16px+ to prevent iOS zoom */
+.qa-page-cancelled {
+  font-size: 0.875rem;
+  color: var(--fg-muted, #888);
+  font-style: italic;
+  margin: 0;
+}
+
+/* Textarea: min 6 rows on the dedicated page, 16px+ to prevent iOS zoom */
 .qa-textarea {
   min-height: calc(var(--tap-target) * 2.5);
   resize: vertical;

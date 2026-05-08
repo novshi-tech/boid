@@ -29,6 +29,11 @@ type Event struct {
 	ProjectName string
 	Message     string
 	JobID       string
+	// URLPath, when non-empty, overrides the default BOID_TASK_URL target
+	// resolution. The caller supplies a full path (e.g. "/tasks/abc/questions/q1")
+	// and Notify prefixes it with PublicURL. Used by ask-mode notifications
+	// so the user opens the Q&A page directly instead of the job terminal.
+	URLPath string
 }
 
 // Notify exec's the service's Command synchronously, passing event data
@@ -60,6 +65,12 @@ func (s *Service) targetURL(ev Event) string {
 		return ""
 	}
 	base := strings.TrimRight(s.PublicURL, "/")
+	if ev.URLPath != "" {
+		if !strings.HasPrefix(ev.URLPath, "/") {
+			return base + "/" + ev.URLPath
+		}
+		return base + ev.URLPath
+	}
 	if ev.JobID != "" {
 		return base + "/jobs/" + ev.JobID + "/terminal"
 	}

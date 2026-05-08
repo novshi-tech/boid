@@ -161,12 +161,12 @@ func TestWebHandler_PostAnswer_AnswerIsTrimmed(t *testing.T) {
 	}
 }
 
-// TestWebHandler_TaskDetail_AwaitingShowsQASection verifies that the task
-// detail page for an awaiting task includes the Q&A section markup.
-func TestWebHandler_TaskDetail_AwaitingShowsQASection(t *testing.T) {
+// TestWebHandler_TaskDetail_AwaitingShowsBanner verifies that the task
+// detail page for an awaiting task shows the awaiting banner pointing to
+// the dedicated Q&A page (the full question/answer form lives there now).
+func TestWebHandler_TaskDetail_AwaitingShowsBanner(t *testing.T) {
 	detail := makeTaskDetailView()
 	detail.Task.Status = orchestrator.TaskStatusAwaiting
-	// Embed a question in the payload as the awaiting trait.
 	detail.Task.Payload = []byte(`{"awaiting":{"question":"What should we do?","question_id":"qid-1"}}`)
 
 	svc := &stubAnswerService{
@@ -182,19 +182,111 @@ func TestWebHandler_TaskDetail_AwaitingShowsQASection(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, "qa-section") {
-		t.Errorf("awaiting task detail should contain qa-section, got HTML length %d", len(body))
+	if !strings.Contains(body, "awaiting-banner") {
+		t.Errorf("awaiting task detail should contain awaiting-banner, got HTML length %d", len(body))
 	}
-	if !strings.Contains(body, "What should we do?") {
-		t.Errorf("qa-section should show the question text")
+	if !strings.Contains(body, "/tasks/task-1/questions/qid-1") {
+		t.Errorf("banner should link to the Q&A page for the active question")
+	}
+	// The full question text and form should NOT appear inline on the task
+	// detail page anymore — they live on the dedicated /questions/{qid} page.
+	if strings.Contains(body, "What should we do?") {
+		t.Errorf("question text should not appear inline on task detail (moved to Q&A page)")
+	}
+	if strings.Contains(body, `name="answer"`) {
+		t.Errorf("answer textarea should not appear inline on task detail (moved to Q&A page)")
+	}
+}
+
+// TestWebHandler_QuestionPage_ActiveTurn verifies the dedicated Q&A page
+// renders the question text + answer form when the requested question_id
+// matches the task's currently-active awaiting turn.
+func TestWebHandler_QuestionPage_ActiveTurn(t *testing.T) {
+	detail := makeTaskDetailView()
+	detail.Task.Status = orchestrator.TaskStatusAwaiting
+	detail.Task.Payload = []byte(`{"awaiting":{"question":"Approve the plan?","question_id":"q-1"}}`)
+	detail.Actions = []*orchestrator.Action{
+		{Type: "ask", Payload: []byte(`{"awaiting":{"question":"Approve the plan?","question_id":"q-1"}}`)},
+	}
+
+	svc := &stubAnswerService{stubWebService: stubWebService{taskDetail: detail}}
+	h := &WebHandler{Service: svc}
+	r := chi.NewRouter()
+	r.Get("/tasks/{id}/questions/{question_id}", h.QuestionPage)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1/questions/q-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Approve the plan?") {
+		t.Errorf("page should contain question text")
 	}
 	if !strings.Contains(body, `name="answer"`) {
-		t.Errorf("qa-section should contain answer textarea")
+		t.Errorf("active turn page should contain answer textarea")
 	}
-	if !strings.Contains(body, "回答を送信") {
-		t.Errorf("qa-section should contain submit button")
+	if !strings.Contains(body, `name="question_id" value="q-1"`) {
+		t.Errorf("active turn page should embed the question_id in the form")
 	}
-	if !strings.Contains(body, "拒否してタスクを中止") {
-		t.Errorf("qa-section should contain abort button")
+}
+
+// TestWebHandler_QuestionPage_AnsweredTurn verifies that a turn that already
+// has an answer renders read-only with the persisted answer text, and no form.
+func TestWebHandler_QuestionPage_AnsweredTurn(t *testing.T) {
+	detail := makeTaskDetailView()
+	// Task moved on to executing again after the user answered q-old.
+	detail.Task.Status = orchestrator.TaskStatusExecuting
+	detail.Task.Payload = []byte(`{}`)
+	detail.Actions = []*orchestrator.Action{
+		{Type: "ask", Payload: []byte(`{"awaiting":{"question":"Old question?","question_id":"q-old"}}`)},
+		{Type: "answer", Payload: []byte(`{"awaiting":{"question_id":"q-old","pending_answer":"yes go"}}`)},
+	}
+
+	svc := &stubAnswerService{stubWebService: stubWebService{taskDetail: detail}}
+	h := &WebHandler{Service: svc}
+	r := chi.NewRouter()
+	r.Get("/tasks/{id}/questions/{question_id}", h.QuestionPage)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1/questions/q-old", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Old question?") {
+		t.Errorf("answered turn should still show the question text")
+	}
+	if !strings.Contains(body, "yes go") {
+		t.Errorf("answered turn should show the persisted answer")
+	}
+	if strings.Contains(body, `name="answer"`) {
+		t.Errorf("answered turn should not show the answer form")
+	}
+}
+
+// TestWebHandler_QuestionPage_NotFound verifies that an unknown question_id
+// returns 404.
+func TestWebHandler_QuestionPage_NotFound(t *testing.T) {
+	detail := makeTaskDetailView()
+	detail.Actions = []*orchestrator.Action{
+		{Type: "ask", Payload: []byte(`{"awaiting":{"question":"existing","question_id":"q-known"}}`)},
+	}
+
+	svc := &stubAnswerService{stubWebService: stubWebService{taskDetail: detail}}
+	h := &WebHandler{Service: svc}
+	r := chi.NewRouter()
+	r.Get("/tasks/{id}/questions/{question_id}", h.QuestionPage)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1/questions/q-unknown", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
 	}
 }
