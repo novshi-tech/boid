@@ -612,9 +612,7 @@ func TestBroker_BoidBuiltinPolicy_HookRole(t *testing.T) {
 		Cwd:     projectDir,
 		Token:   token,
 		Boid: &sandbox.BoidRequest{
-			Op:       sandbox.BoidOpTaskCreate,
-			Title:    "test",
-			Behavior: "dev",
+			Op: sandbox.BoidOpTaskCreate,
 		},
 	})
 	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "not allowed") {
@@ -659,9 +657,7 @@ func TestBroker_BoidBuiltinPolicy_GateRole(t *testing.T) {
 		Cwd:     projectDir,
 		Token:   token,
 		Boid: &sandbox.BoidRequest{
-			Op:       sandbox.BoidOpTaskCreate,
-			Title:    "test",
-			Behavior: "dev",
+			Op: sandbox.BoidOpTaskCreate,
 		},
 	})
 	if resp.ExitCode != 0 {
@@ -696,8 +692,6 @@ func TestBroker_BoidBuiltinPolicy_RespectsAllowedProjectIDs(t *testing.T) {
 		Token:   token,
 		Boid: &sandbox.BoidRequest{
 			Op:        sandbox.BoidOpTaskCreate,
-			Title:     "peer task",
-			Behavior:  "dev",
 			ProjectID: "p2",
 		},
 	})
@@ -714,8 +708,6 @@ func TestBroker_BoidBuiltinPolicy_RespectsAllowedProjectIDs(t *testing.T) {
 		Token:   token,
 		Boid: &sandbox.BoidRequest{
 			Op:        sandbox.BoidOpTaskCreate,
-			Title:     "cross task",
-			Behavior:  "dev",
 			ProjectID: "p3",
 		},
 	})
@@ -1131,8 +1123,6 @@ func TestBroker_BoidTaskCreate_ResolvesProjectRef(t *testing.T) {
 		Token:   token,
 		Boid: &sandbox.BoidRequest{
 			Op:        sandbox.BoidOpTaskCreate,
-			Title:     "peer task",
-			Behavior:  "dev",
 			ProjectID: "mera-ui", // 名前指定
 		},
 	})
@@ -1172,8 +1162,6 @@ func TestBroker_BoidTaskCreate_ResolverErrorSurfaced(t *testing.T) {
 		Token:   token,
 		Boid: &sandbox.BoidRequest{
 			Op:        sandbox.BoidOpTaskCreate,
-			Title:     "x",
-			Behavior:  "dev",
 			ProjectID: "bogus-name",
 		},
 	})
@@ -1209,8 +1197,6 @@ func TestBroker_BoidTaskCreate_PassthroughWhenResolverNil(t *testing.T) {
 		Token:   token,
 		Boid: &sandbox.BoidRequest{
 			Op:        sandbox.BoidOpTaskCreate,
-			Title:     "x",
-			Behavior:  "dev",
 			ProjectID: "p2",
 		},
 	})

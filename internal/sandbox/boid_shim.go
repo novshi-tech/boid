@@ -167,80 +167,41 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 		return nil, fmt.Errorf("boid shim: read task spec: %w", err)
 	}
 
-	var spec struct {
-		ProjectID    string         `yaml:"project_id"`
-		Title        string         `yaml:"title"`
-		Description  string         `yaml:"description"`
-		Behavior     string         `yaml:"behavior"`
-		BehaviorSpec *struct {
-			Name           string         `yaml:"name"`
-			Traits         []string       `yaml:"traits,omitempty"`
-			Readonly       bool           `yaml:"readonly,omitempty"`
-			Worktree       bool           `yaml:"worktree,omitempty"`
-			BranchPrefix   string         `yaml:"branch_prefix,omitempty"`
-			BaseBranch     string         `yaml:"base_branch,omitempty"`
-			DefaultPayload map[string]any `yaml:"default_payload,omitempty"`
-		} `yaml:"behavior_spec"`
-		Payload          map[string]any `yaml:"payload"`
-		Ref              string         `yaml:"ref"`
-		ParentID         string         `yaml:"parent_id"`
-		DependsOn        []string       `yaml:"depends_on"`
-		DependsOnPayload string         `yaml:"depends_on_payload"`
-		AutoStart        bool           `yaml:"auto_start"`
-		BaseBranch       string         `yaml:"base_branch"`
-	}
-	if err := yaml.Unmarshal(data, &spec); err != nil {
+	// Unmarshal the entire YAML spec into a generic map so that every field
+	// (including previously dropped ones such as instructions, traits, readonly,
+	// worktree, branch_prefix, id, datasource_id) is forwarded without
+	// explicit enumeration.
+	var v map[string]any
+	if err := yaml.Unmarshal(data, &v); err != nil {
 		return nil, fmt.Errorf("boid shim: parse task spec: %w", err)
 	}
+	if v == nil {
+		v = make(map[string]any)
+	}
 
-	if spec.Title == "" {
+	title, _ := v["title"].(string)
+	if title == "" {
 		return nil, fmt.Errorf("boid shim: task spec must include title")
 	}
-	if spec.Behavior != "" && spec.BehaviorSpec != nil {
+	behavior, _ := v["behavior"].(string)
+	if behavior != "" && v["behavior_spec"] != nil {
 		return nil, fmt.Errorf("boid shim: task spec must not include both behavior and behavior_spec")
 	}
-	// behavior 省略時はサーバ側で DefaultBehavior に routing される。
 
-	req := &BoidRequest{
-		Op:               BoidOpTaskCreate,
-		ProjectID:        spec.ProjectID,
-		Title:            spec.Title,
-		Description:      spec.Description,
-		Behavior:         spec.Behavior,
-		BaseBranch:       spec.BaseBranch,
-		Ref:              spec.Ref,
-		ParentID:         spec.ParentID,
-		DependsOn:        spec.DependsOn,
-		DependsOnPayload: spec.DependsOnPayload,
-		AutoStart:        spec.AutoStart,
-	}
-	if spec.BehaviorSpec != nil {
-		bs := &BehaviorSpec{
-			Name:         spec.BehaviorSpec.Name,
-			Traits:       spec.BehaviorSpec.Traits,
-			Readonly:     spec.BehaviorSpec.Readonly,
-			Worktree:     spec.BehaviorSpec.Worktree,
-			BranchPrefix: spec.BehaviorSpec.BranchPrefix,
-			BaseBranch:   spec.BehaviorSpec.BaseBranch,
-		}
-		if spec.BehaviorSpec.DefaultPayload != nil {
-			dpJSON, err := json.Marshal(spec.BehaviorSpec.DefaultPayload)
-			if err != nil {
-				return nil, fmt.Errorf("boid shim: encode behavior_spec.default_payload: %w", err)
-			}
-			bs.DefaultPayload = dpJSON
-		}
-		req.BehaviorSpec = bs
-	}
-	if spec.Payload != nil {
-		payloadJSON, err := json.Marshal(spec.Payload)
-		if err != nil {
-			return nil, fmt.Errorf("boid shim: encode payload: %w", err)
-		}
-		req.Payload = payloadJSON
+	// Extract project_id for broker authorization (also kept inside CreatePatch
+	// for the executor).
+	projectID, _ := v["project_id"].(string)
+
+	patchJSON, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("boid shim: encode create patch: %w", err)
 	}
 
-	return req, nil
+	return &BoidRequest{
+		Op:          BoidOpTaskCreate,
+		ProjectID:   projectID,
+		CreatePatch: patchJSON,
+	}, nil
 }
 
 func parseBoidTaskGet(args []string) (*BoidRequest, error) {
@@ -284,23 +245,45 @@ func parseBoidTaskUpdate(args []string) (*BoidRequest, error) {
 		args = args[1:]
 	}
 
+	// merged holds the fields that will become UpdatePatch (JSON of
+	// api.UpdateTaskRequest). Individual flags are backward-compat wrappers
+	// that write into this map.
+	merged := make(map[string]any)
+
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
+		case arg == "--patch-file" || strings.HasPrefix(arg, "--patch-file="):
+			value, next, err := takeStringFlagValue(args, i, "--patch-file")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			data, err := readFlagContent(value)
+			if err != nil {
+				return nil, fmt.Errorf("boid shim: read patch file: %w", err)
+			}
+			var base map[string]any
+			if err := yaml.Unmarshal(data, &base); err != nil {
+				return nil, fmt.Errorf("boid shim: parse patch file: %w", err)
+			}
+			for k, val := range base {
+				merged[k] = val
+			}
 		case arg == "--title" || strings.HasPrefix(arg, "--title="):
 			value, next, err := takeStringFlagValue(args, i, "--title")
 			if err != nil {
 				return nil, err
 			}
 			i = next
-			req.Title = value
+			merged["title"] = value
 		case arg == "--description" || strings.HasPrefix(arg, "--description="):
 			value, next, err := takeStringFlagValue(args, i, "--description")
 			if err != nil {
 				return nil, err
 			}
 			i = next
-			req.Description = value
+			merged["description"] = value
 		case arg == "--payload-file" || strings.HasPrefix(arg, "--payload-file="):
 			value, next, err := takeStringFlagValue(args, i, "--payload-file")
 			if err != nil {
@@ -311,16 +294,11 @@ func parseBoidTaskUpdate(args []string) (*BoidRequest, error) {
 			if err != nil {
 				return nil, err
 			}
-			// payload ファイルは YAML/JSON 両対応 (cmd/task.go update と同等)
 			var v any
 			if err := yaml.Unmarshal(data, &v); err != nil {
 				return nil, fmt.Errorf("boid shim: parse payload: %w", err)
 			}
-			payloadJSON, err := json.Marshal(v)
-			if err != nil {
-				return nil, fmt.Errorf("boid shim: encode payload: %w", err)
-			}
-			req.Payload = payloadJSON
+			merged["payload"] = v
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task update", arg)
 		}
@@ -329,9 +307,15 @@ func parseBoidTaskUpdate(args []string) (*BoidRequest, error) {
 	if req.TaskID == "" {
 		return nil, fmt.Errorf("boid shim: task update requires a task id")
 	}
-	if req.Title == "" && req.Description == "" && len(req.Payload) == 0 {
-		return nil, fmt.Errorf("boid shim: task update requires at least one of --title, --description, or --payload-file")
+	if len(merged) == 0 {
+		return nil, fmt.Errorf("boid shim: task update requires at least one of --title, --description, --payload-file, or --patch-file")
 	}
+
+	patchJSON, err := json.Marshal(merged)
+	if err != nil {
+		return nil, fmt.Errorf("boid shim: encode update patch: %w", err)
+	}
+	req.UpdatePatch = patchJSON
 
 	return req, nil
 }

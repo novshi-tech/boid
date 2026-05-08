@@ -5,6 +5,13 @@ import (
 	"strings"
 )
 
+// CreatePatch / UpdatePatch fields below replace the old individual fields
+// (Title, Description, Behavior, BehaviorSpec, BaseBranch, Ref, ParentID,
+// DependsOn, DependsOnPayload, AutoStart) that were previously hand-crafted
+// into BoidRequest. The patch is a JSON-serialised api.CreateTaskRequest or
+// api.UpdateTaskRequest and is passed through verbatim to the executor, which
+// unmarshals it and fills in context-derived defaults (ProjectID, ParentID).
+
 type ExecRequest struct {
 	Command   string       `json:"command"`
 	Args      []string     `json:"args"`
@@ -57,38 +64,30 @@ const (
 	BoidOpTaskAnswer BoidOp = "task_answer"
 )
 
-// BehaviorSpec is the inline behavior specification carried in BoidRequest.
-// It mirrors orchestrator.BehaviorSpec but is defined here to keep the
-// sandbox package free of orchestrator dependencies.
-type BehaviorSpec struct {
-	Name           string   `yaml:"name" json:"name"`
-	Traits         []string `yaml:"traits,omitempty" json:"traits,omitempty"`
-	Readonly       bool     `yaml:"readonly,omitempty" json:"readonly,omitempty"`
-	Worktree       bool     `yaml:"worktree,omitempty" json:"worktree,omitempty"`
-	BranchPrefix   string   `yaml:"branch_prefix,omitempty" json:"branch_prefix,omitempty"`
-	BaseBranch     string   `yaml:"base_branch,omitempty" json:"base_branch,omitempty"`
-	DefaultPayload []byte   `yaml:"-" json:"default_payload,omitempty"`
-}
-
 type BoidRequest struct {
-	Op               BoidOp        `json:"op"`
-	JobID            string        `json:"job_id,omitempty"`
-	TaskID           string        `json:"task_id,omitempty"`
-	TaskField        string        `json:"task_field,omitempty"`
-	ProjectID        string        `json:"project_id,omitempty"`
-	Title            string        `json:"title,omitempty"`
-	Behavior         string        `json:"behavior,omitempty"`
-	BehaviorSpec     *BehaviorSpec `json:"behavior_spec,omitempty"`
-	BaseBranch       string        `json:"base_branch,omitempty"`
-	Description      string        `json:"description,omitempty"`
-	ExitCode         int           `json:"exit_code,omitempty"`
-	Output           string        `json:"output,omitempty"`
-	Payload          []byte        `json:"payload,omitempty"`
-	Ref              string        `json:"ref,omitempty"`
-	ParentID         string        `json:"parent_id,omitempty"`
-	DependsOn        []string      `json:"depends_on,omitempty"`
-	DependsOnPayload string        `json:"depends_on_payload,omitempty"`
-	AutoStart        bool          `json:"auto_start,omitempty"`
+	Op        BoidOp `json:"op"`
+	JobID     string `json:"job_id,omitempty"`
+	TaskID    string `json:"task_id,omitempty"`
+	TaskField string `json:"task_field,omitempty"`
+	// ProjectID is extracted by the shim for broker authorization / project
+	// resolver; it is also present inside CreatePatch when the YAML includes
+	// project_id. The executor prefers createReq.ProjectID from CreatePatch
+	// and falls back to this field, then to ctx.ProjectID.
+	ProjectID string `json:"project_id,omitempty"`
+
+	ExitCode int    `json:"exit_code,omitempty"`
+	Output   string `json:"output,omitempty"`
+
+	// CreatePatch is a JSON-serialised api.CreateTaskRequest. The shim builds
+	// it from the full YAML map so that every field (including previously
+	// dropped ones such as instructions, traits, readonly, worktree,
+	// branch_prefix, id, datasource_id) is forwarded without enumeration.
+	CreatePatch json.RawMessage `json:"create_patch,omitempty"`
+
+	// UpdatePatch is a JSON-serialised api.UpdateTaskRequest. The shim
+	// assembles it from --patch-file and/or individual flags (--title,
+	// --description, --payload-file).
+	UpdatePatch json.RawMessage `json:"update_patch,omitempty"`
 
 	// task import fields
 	ImportTasks              []json.RawMessage `json:"import_tasks,omitempty"`
@@ -111,6 +110,7 @@ type BoidRequest struct {
 
 	// action send fields
 	ActionType string `json:"action_type,omitempty"`
+	Payload    []byte `json:"payload,omitempty"`
 }
 
 type TokenContext struct {
