@@ -1380,7 +1380,7 @@ func TaskDetailAwaitingBanner(task *orchestrator.Task) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 92, "\"><span class=\"awaiting-banner-icon\" aria-hidden=\"true\">?</span> <span class=\"awaiting-banner-body\"><span class=\"awaiting-banner-title\">エージェントからの質問</span> <span class=\"awaiting-banner-hint\">タップして回答ページを開く</span></span> <span class=\"awaiting-banner-chevron\" aria-hidden=\"true\">›</span></a>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 92, "\"><span class=\"awaiting-banner-icon\" aria-hidden=\"true\">?</span> <span class=\"awaiting-banner-body\"><span class=\"awaiting-banner-title\">Question from agent</span> <span class=\"awaiting-banner-hint\">Tap to open answer page</span></span> <span class=\"awaiting-banner-chevron\" aria-hidden=\"true\">›</span></a>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

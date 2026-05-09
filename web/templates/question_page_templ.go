@@ -25,7 +25,7 @@ type QuestionTurn struct {
 //   - the agent's question (preformatted, whitespace preserved)
 //   - when active: the answer textarea + submit / abort buttons
 //   - when answered: the persisted answer text (read-only history)
-//   - when neither (task aborted before answer): a short "(回答前に中止)" line
+//   - when neither (task aborted before answer): a short "(aborted before answer)" line
 //
 // Notification deep-links from `boid task notify --ask` land here so the user
 // goes straight to the question without scrolling through the timeline.
@@ -62,14 +62,14 @@ func QuestionPage(task *orchestrator.Task, turn QuestionTurn) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"qa-page\"><header class=\"qa-page-header\"><h1 class=\"qa-page-title\">エージェントからの質問</h1><p class=\"qa-page-task\">タスク: <a class=\"qa-page-task-link\" href=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"qa-page\"><header class=\"qa-page-header\"><h1 class=\"qa-page-title\">Question from agent</h1><p class=\"qa-page-task\">Task: <a class=\"qa-page-task-link\" href=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var3 templ.SafeURL
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + task.ID))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/question_page.templ`, Line: 30, Col: 86}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/question_page.templ`, Line: 30, Col: 81}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 			if templ_7745c5c3_Err != nil {
@@ -82,13 +82,13 @@ func QuestionPage(task *orchestrator.Task, turn QuestionTurn) templ.Component {
 			var templ_7745c5c3_Var4 string
 			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(task.Title)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/question_page.templ`, Line: 30, Col: 101}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/question_page.templ`, Line: 30, Col: 96}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</a></p></header><section class=\"qa-page-section\"><h2 class=\"qa-page-section-title\">質問</h2><pre class=\"qa-page-question\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</a></p></header><section class=\"qa-page-section\"><h2 class=\"qa-page-section-title\">Question</h2><pre class=\"qa-page-question\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -106,7 +106,7 @@ func QuestionPage(task *orchestrator.Task, turn QuestionTurn) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			if turn.IsActive {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<section class=\"qa-page-section qa-page-section-answer\"><h2 class=\"qa-page-section-title\">回答</h2><form id=\"qa-form\" method=\"post\" action=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<section class=\"qa-page-section qa-page-section-answer\"><h2 class=\"qa-page-section-title\">Answer</h2><form id=\"qa-form\" method=\"post\" action=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -132,7 +132,7 @@ func QuestionPage(task *orchestrator.Task, turn QuestionTurn) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "\"> <textarea name=\"answer\" class=\"form-input qa-textarea\" rows=\"6\" placeholder=\"回答を入力してください…\" autofocus></textarea></form><div class=\"qa-actions\"><button type=\"submit\" form=\"qa-form\" class=\"btn btn-primary\">回答を送信</button><form method=\"post\" action=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "\"> <textarea name=\"answer\" class=\"form-input qa-textarea\" rows=\"6\" placeholder=\"Enter your answer…\" autofocus></textarea></form><div class=\"qa-actions\"><button type=\"submit\" form=\"qa-form\" class=\"btn btn-primary\">Submit answer</button><form method=\"post\" action=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -145,12 +145,12 @@ func QuestionPage(task *orchestrator.Task, turn QuestionTurn) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "\" onsubmit=\"return confirm('本当にタスクを中止しますか？')\"><input type=\"hidden\" name=\"type\" value=\"abort\"> <button type=\"submit\" class=\"btn btn-secondary\">拒否してタスクを中止</button></form></div></section>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "\" onsubmit=\"return confirm('Really abort this task?')\"><input type=\"hidden\" name=\"type\" value=\"abort\"> <button type=\"submit\" class=\"btn btn-secondary\">Reject and abort task</button></form></div></section>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			} else if turn.Answer != "" {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<section class=\"qa-page-section qa-page-section-answer\"><h2 class=\"qa-page-section-title\">あなたの回答</h2><pre class=\"qa-page-answer\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<section class=\"qa-page-section qa-page-section-answer\"><h2 class=\"qa-page-section-title\">Your answer</h2><pre class=\"qa-page-answer\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -168,12 +168,12 @@ func QuestionPage(task *orchestrator.Task, turn QuestionTurn) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			} else if turn.WasAborted {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "<section class=\"qa-page-section qa-page-section-answer\"><p class=\"qa-page-cancelled\">(回答前にタスクが中止されました)</p></section>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "<section class=\"qa-page-section qa-page-section-answer\"><p class=\"qa-page-cancelled\">(Task was aborted before answering)</p></section>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "<section class=\"qa-page-section qa-page-section-answer\"><p class=\"qa-page-cancelled\">(この質問は最新ではありません)</p></section>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "<section class=\"qa-page-section qa-page-section-answer\"><p class=\"qa-page-cancelled\">(This question is no longer current)</p></section>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -184,7 +184,7 @@ func QuestionPage(task *orchestrator.Task, turn QuestionTurn) templ.Component {
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = Layout("質問: "+task.Title, "/tasks/"+task.ID).Render(templ.WithChildren(ctx, templ_7745c5c3_Var2), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = Layout("Question: "+task.Title, "/tasks/"+task.ID).Render(templ.WithChildren(ctx, templ_7745c5c3_Var2), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
