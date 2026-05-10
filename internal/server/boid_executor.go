@@ -62,10 +62,11 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create: invalid create_patch: " + err.Error()}
 			}
 		}
-		if createReq.ProjectID == "" {
+		// broker が req.ProjectID を UUID に解決済みの場合は必ず優先する。
+		// CreatePatch.project_id は元の名前のまま (未上書き) のため使用しない。
+		if req.ProjectID != "" {
 			createReq.ProjectID = req.ProjectID
-		}
-		if createReq.ProjectID == "" {
+		} else if createReq.ProjectID == "" {
 			createReq.ProjectID = ctx.ProjectID
 		}
 		if createReq.ProjectID == "" {

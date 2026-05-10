@@ -415,6 +415,43 @@ func TestBoidBuiltinExecutor_TaskCreate_ExplicitParentIDOverridesContext(t *test
 	}
 }
 
+// TestBoidBuiltinExecutor_TaskCreate_BrokerResolvedIDOverridesCreatePatch は
+// broker が project 名 ("boid-kits") を UUID ("dad1961a-...") に解決済みの場合に
+// CreatePatch.project_id (名前) をそのまま AllowsProject に渡すバグを再現する。
+// req.ProjectID (UUID) が AllowedProjectIDs に含まれていれば成功しなければならない。
+func TestBoidBuiltinExecutor_TaskCreate_BrokerResolvedIDOverridesCreatePatch(t *testing.T) {
+	store := &capturingTaskStore{}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}},
+	}}
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{Tasks: store, Meta: meta},
+	}
+	const peerUUID = "dad1961a-9ef9-495d-858f-e27e75d9afca"
+	ctx := sandbox.TokenContext{
+		ProjectID:         "boid-main-uuid",
+		WorkspaceID:       "ws-boid",
+		AllowedProjectIDs: []string{"boid-main-uuid", peerUUID},
+	}
+
+	// req.ProjectID = UUID (broker 解決済み)
+	// CreatePatch.project_id = 名前 ("boid-kits")  — broker は上書きしない
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:          sandbox.BoidOpTaskCreate,
+		ProjectID:   peerUUID,
+		CreatePatch: json.RawMessage(`{"project_id":"boid-kits","title":"peer task","behavior":"dev"}`),
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("peer create with broker-resolved UUID should succeed, exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("created tasks = %d, want 1", len(store.created))
+	}
+	if store.created[0].ProjectID != peerUUID {
+		t.Errorf("created task ProjectID = %q, want %q (broker-resolved UUID)", store.created[0].ProjectID, peerUUID)
+	}
+}
+
 // --- task import executor tests ---
 
 func newImportExecutor(t *testing.T) (*boidBuiltinExecutor, *capturingTaskStore) {
