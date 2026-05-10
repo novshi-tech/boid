@@ -327,6 +327,54 @@ func (a *commandDispatcherAdapter) ExecuteCommand(ctx context.Context, projectID
 	}, nil
 }
 
+// taskCommandDispatcherAdapter implements api.TaskCommandDispatcher by resolving
+// the task → behavior → command chain and dispatching as an exec job with
+// the task ID appended to argv.
+type taskCommandDispatcherAdapter struct {
+	taskSvc    *api.TaskAppService
+	projectSvc *api.ProjectAppService
+	runner     *dispatcher.Runner
+}
+
+func (a *taskCommandDispatcherAdapter) ListTaskBehaviorCommands(taskID string) ([]api.CommandSummary, error) {
+	return a.taskSvc.ListTaskBehaviorCommands(taskID)
+}
+
+func (a *taskCommandDispatcherAdapter) ExecuteTaskBehaviorCommand(ctx context.Context, taskID, commandName string) (*api.ExecuteCommandResult, error) {
+	task, err := a.taskSvc.GetTask(taskID)
+	if err != nil {
+		return nil, err
+	}
+	project, err := a.projectSvc.GetProject(task.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	cmd, err := a.taskSvc.GetTaskBehaviorCommand(taskID, commandName)
+	if err != nil {
+		return nil, err
+	}
+	argv := append(cmd.Command, task.ID)
+	spec := dispatcher.BuildCommandJobSpec(dispatcher.CommandJobInput{
+		ProjectID:          task.ProjectID,
+		ProjectWorkDir:     project.WorkDir,
+		Argv:               argv,
+		Env:                cmd.Env,
+		HostCommands:       cmd.HostCommands,
+		AdditionalBindings: cmd.AdditionalBindings,
+		Readonly:           cmd.Readonly,
+		Interactive:        true,
+	})
+	spec.TaskID = task.ID
+	jobID, err := a.runner.Dispatch(ctx, spec, nil)
+	if err != nil {
+		return nil, &api.StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return &api.ExecuteCommandResult{
+		JobID:     jobID,
+		AttachURL: fmt.Sprintf("/jobs/%s/terminal", jobID),
+	}, nil
+}
+
 func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r := srv.router
 
@@ -391,7 +439,8 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	workspaceHandler := &api.WorkspaceHandler{Service: runtime.projectSvc}
 	r.Mount("/api/workspaces", workspaceHandler.Routes())
 
-	taskHandler := &api.TaskHandler{Service: runtime.taskSvc, Gates: runtime.workflow, Hooks: runtime.workflow, Notifier: runtime.taskSvc, Answerer: runtime.taskSvc}
+	taskCmdAdapter := &taskCommandDispatcherAdapter{taskSvc: runtime.taskSvc, projectSvc: runtime.projectSvc, runner: runtime.runner}
+	taskHandler := &api.TaskHandler{Service: runtime.taskSvc, Gates: runtime.workflow, Hooks: runtime.workflow, Notifier: runtime.taskSvc, Answerer: runtime.taskSvc, Dispatcher: taskCmdAdapter}
 	r.Mount("/api/tasks", taskHandler.Routes())
 
 	gcStore := orchestrator.NewTaskGCStoreWithWorktree(
@@ -477,10 +526,11 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r.Group(func(r chi.Router) {
 		r.Use(auth.NewWebAuthMiddleware(runtime.sessionSigner, runtime.authStore))
 		webHandler := &api.WebHandler{
-			Service:    runtime.webSvc,
-			Hub:        runtime.hub,
-			Dispatcher: &commandDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner},
-			Registry:   runtime.connRegistry,
+			Service:        runtime.webSvc,
+			Hub:            runtime.hub,
+			Dispatcher:     &commandDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner},
+			TaskDispatcher: taskCmdAdapter,
+			Registry:       runtime.connRegistry,
 		}
 		r.Get("/api/tasks/{id}/events", webHandler.TaskEvents)
 		r.Get("/api/jobs/{id}/attach/ws", (&api.WSAttachHandler{

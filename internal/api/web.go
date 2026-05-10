@@ -49,10 +49,11 @@ func detailTimelineGroups(detail *TaskDetailView) []timeline.StatusGroup {
 
 
 type WebHandler struct {
-	Service    WebService
-	Hub        *TaskEventHub
-	Dispatcher CommandDispatcher
-	Registry   *auth.ConnectionRegistry
+	Service        WebService
+	Hub            *TaskEventHub
+	Dispatcher     CommandDispatcher
+	TaskDispatcher TaskCommandDispatcher
+	Registry       *auth.ConnectionRegistry
 }
 
 func (h *WebHandler) Routes() chi.Router {
@@ -79,6 +80,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/jobs/{id}/terminal", h.JobTerminal)
 	r.Get("/projects/{id}/commands", h.ProjectCommandList)
 	r.Post("/projects/{id}/commands/{name}/execute", h.PostProjectExecuteCommand)
+	r.Post("/tasks/{id}/commands/{name}/execute", h.PostTaskExecuteCommand)
 	return r
 }
 
@@ -273,7 +275,12 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	projectName := h.lookupProjectName(detail.Task.ProjectID)
 	depsUp, depsDown := buildDepsTreeRows(detail.DependsOnTree, detail.DependentsTree)
-	templates.TaskDetail(detail.Task, timelineGroups, jobs, depsUp, depsDown, detail.AvailableActions, errorMsg, tab, editMode, projectName).Render(r.Context(), w)
+	cmdSummaries, _ := h.Service.ListTaskBehaviorCommands(id)
+	cmdViews := make([]templates.CommandView, len(cmdSummaries))
+	for i, c := range cmdSummaries {
+		cmdViews[i] = templates.CommandView{Name: c.Name, Command: c.Command, Readonly: c.Readonly}
+	}
+	templates.TaskDetail(detail.Task, timelineGroups, jobs, depsUp, depsDown, detail.AvailableActions, errorMsg, tab, editMode, projectName, cmdViews).Render(r.Context(), w)
 }
 
 // lookupProjectName resolves a project ID to its display name (Meta.Name),
@@ -669,6 +676,30 @@ func (h *WebHandler) ProjectCommandList(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	templates.ProjectCommandList(projectName, id, views, errorMsg).Render(r.Context(), w)
+}
+
+func (h *WebHandler) PostTaskExecuteCommand(w http.ResponseWriter, r *http.Request) {
+	if h.TaskDispatcher == nil {
+		http.Error(w, "command execution not available", http.StatusNotImplemented)
+		return
+	}
+	taskID := chi.URLParam(r, "id")
+	commandName := chi.URLParam(r, "name")
+
+	result, err := h.TaskDispatcher.ExecuteTaskBehaviorCommand(r.Context(), taskID, commandName)
+	if err != nil {
+		backURL := "/tasks/" + taskID + "?error=" + url.QueryEscape(err.Error())
+		http.Redirect(w, r, backURL, http.StatusSeeOther)
+		return
+	}
+
+	termURL := "/jobs/" + result.JobID + "/terminal"
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", termURL)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, termURL, http.StatusSeeOther)
 }
 
 func (h *WebHandler) PostProjectExecuteCommand(w http.ResponseWriter, r *http.Request) {

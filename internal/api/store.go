@@ -148,6 +148,7 @@ type WebService interface {
 	ReplayHook(ctx context.Context, taskID string, req ReplayHookRequest) (*ReplayHookResult, error)
 	GetProjectByID(id string) (*orchestrator.Project, error)
 	ListProjectCommands(projectID string) ([]CommandSummary, error)
+	ListTaskBehaviorCommands(taskID string) ([]CommandSummary, error)
 }
 
 type WorkflowService interface {
@@ -233,4 +234,11 @@ type ExecuteCommandResult struct {
 // CommandDispatcher launches a named command as an interactive daemon-side job.
 type CommandDispatcher interface {
 	ExecuteCommand(ctx context.Context, projectID, commandName string) (*ExecuteCommandResult, error)
+}
+
+// TaskCommandDispatcher manages task behavior commands: listing and execution.
+// The task ID is appended to the command argv on execution so scripts can reference it as $1.
+type TaskCommandDispatcher interface {
+	ListTaskBehaviorCommands(taskID string) ([]CommandSummary, error)
+	ExecuteTaskBehaviorCommand(ctx context.Context, taskID, commandName string) (*ExecuteCommandResult, error)
 }

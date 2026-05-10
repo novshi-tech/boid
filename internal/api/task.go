@@ -33,11 +33,12 @@ type TaskAnswerService interface {
 }
 
 type TaskHandler struct {
-	Service  TaskService
-	Gates    GateService        // optional: enables gate replay/list when set
-	Hooks    HookService        // optional: enables hook replay/list when set
-	Notifier TaskNotifyService  // optional: enables POST /{id}/notify when set
-	Answerer TaskAnswerService  // optional: enables POST /{id}/answer when set
+	Service    TaskService
+	Gates      GateService             // optional: enables gate replay/list when set
+	Hooks      HookService             // optional: enables hook replay/list when set
+	Notifier   TaskNotifyService       // optional: enables POST /{id}/notify when set
+	Answerer   TaskAnswerService       // optional: enables POST /{id}/answer when set
+	Dispatcher TaskCommandDispatcher   // optional: nil causes execute to return 501
 }
 
 func (h *TaskHandler) Routes() chi.Router {
@@ -51,6 +52,8 @@ func (h *TaskHandler) Routes() chi.Router {
 	r.Delete("/{id}", h.Delete)
 	r.Post("/{id}/duplicate", h.Duplicate)
 	r.Post("/{id}/rerun", h.Rerun)
+	r.Get("/{id}/commands", h.ListTaskCommands)
+	r.Post("/{id}/commands/{name}/execute", h.ExecuteTaskCommand)
 	if h.Gates != nil {
 		r.Get("/{id}/gates", h.ListGates)
 		r.Post("/{id}/gates/{gate_id}/replay", h.ReplayGate)
@@ -397,4 +400,36 @@ func (h *TaskHandler) ListHooks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, hooks)
+}
+
+func (h *TaskHandler) ListTaskCommands(w http.ResponseWriter, r *http.Request) {
+	taskID := chi.URLParam(r, "id")
+	if h.Dispatcher == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"commands": []CommandSummary{}})
+		return
+	}
+	summaries, err := h.Dispatcher.ListTaskBehaviorCommands(taskID)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	if summaries == nil {
+		summaries = []CommandSummary{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"commands": summaries})
+}
+
+func (h *TaskHandler) ExecuteTaskCommand(w http.ResponseWriter, r *http.Request) {
+	if h.Dispatcher == nil {
+		writeError(w, http.StatusNotImplemented, "command execution not available")
+		return
+	}
+	taskID := chi.URLParam(r, "id")
+	commandName := chi.URLParam(r, "name")
+	result, err := h.Dispatcher.ExecuteTaskBehaviorCommand(r.Context(), taskID, commandName)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
 }
