@@ -82,6 +82,8 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 			return parseBoidTaskNotify(args[2:])
 		case "answer":
 			return parseBoidTaskAnswer(args[2:])
+		case "delete":
+			return parseBoidTaskDelete(args[2:])
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid task subcommand %q", args[1])
 		}
@@ -587,6 +589,29 @@ func parseBoidJobLog(args []string) (*BoidRequest, error) {
 		return nil, fmt.Errorf("boid shim: job log requires a job id")
 	}
 	return &BoidRequest{Op: BoidOpJobLog, JobID: args[0]}, nil
+}
+
+func parseBoidTaskDelete(args []string) (*BoidRequest, error) {
+	var taskID string
+	var force bool
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--force":
+			force = true
+		case !strings.HasPrefix(arg, "-") && taskID == "":
+			taskID = arg
+		default:
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task delete", arg)
+		}
+	}
+
+	if taskID == "" {
+		return nil, fmt.Errorf("boid shim: task delete requires a task id")
+	}
+
+	return &BoidRequest{Op: BoidOpTaskDelete, TaskID: taskID, Force: force}, nil
 }
 
 func parseBoidTaskImport(args []string) (*BoidRequest, error) {

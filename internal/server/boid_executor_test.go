@@ -14,6 +14,7 @@ import (
 type capturingTaskStore struct {
 	created           []*orchestrator.Task
 	updated           []*orchestrator.Task
+	deleted           []string
 	findByRemoteFunc  func(remoteID, datasourceID string) (*orchestrator.Task, error)
 }
 
@@ -59,7 +60,10 @@ func (s *capturingTaskStore) UpdateTask(task *orchestrator.Task) error {
 	}
 	return nil
 }
-func (s *capturingTaskStore) DeleteTask(id string) error { return nil }
+func (s *capturingTaskStore) DeleteTask(id string) error {
+	s.deleted = append(s.deleted, id)
+	return nil
+}
 func (s *capturingTaskStore) FindTaskByRemote(remoteID, datasourceID string) (*orchestrator.Task, error) {
 	if s.findByRemoteFunc != nil {
 		return s.findByRemoteFunc(remoteID, datasourceID)
@@ -864,5 +868,91 @@ func TestBoidBuiltinExecutor_JobLog_CrossProjectReject(t *testing.T) {
 	})
 	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "restricted to the current workspace") {
 		t.Fatalf("expected workspace rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+}
+
+// --- task_delete executor tests ---
+
+func newDeleteExecutor(t *testing.T) (*boidBuiltinExecutor, *capturingTaskStore) {
+	t.Helper()
+	store := &capturingTaskStore{
+		created: []*orchestrator.Task{
+			{ID: "task-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusPending},
+			{ID: "task-exec", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting},
+			{ID: "task-foreign", ProjectID: "proj-x", Status: orchestrator.TaskStatusPending},
+		},
+	}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{}}
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{Tasks: store, Meta: meta},
+	}
+	return exec, store
+}
+
+func TestBoidBuiltinExecutor_TaskDelete_HappyPath(t *testing.T) {
+	exec, store := newDeleteExecutor(t)
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:     sandbox.BoidOpTaskDelete,
+		TaskID: "task-1",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stdout, "task-1") {
+		t.Errorf("stdout = %q, want task-1", resp.Stdout)
+	}
+	if len(store.deleted) != 1 || store.deleted[0] != "task-1" {
+		t.Errorf("deleted = %v, want [task-1]", store.deleted)
+	}
+}
+
+func TestBoidBuiltinExecutor_TaskDelete_CrossProjectReject(t *testing.T) {
+	exec, store := newDeleteExecutor(t)
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:     sandbox.BoidOpTaskDelete,
+		TaskID: "task-foreign",
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "restricted to the current workspace") {
+		t.Fatalf("expected workspace rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(store.deleted) != 0 {
+		t.Errorf("cross-workspace delete should not reach store, deleted=%v", store.deleted)
+	}
+}
+
+func TestBoidBuiltinExecutor_TaskDelete_ActiveTaskForceRequired(t *testing.T) {
+	exec, store := newDeleteExecutor(t)
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:     sandbox.BoidOpTaskDelete,
+		TaskID: "task-exec",
+		Force:  false,
+	})
+	if resp.ExitCode != 1 {
+		t.Fatalf("expected error for active task without force, got exit=%d", resp.ExitCode)
+	}
+	if !strings.Contains(resp.Stderr, "active") && !strings.Contains(resp.Stderr, "force") {
+		t.Errorf("stderr = %q, want 'active' or 'force' hint", resp.Stderr)
+	}
+	if len(store.deleted) != 0 {
+		t.Errorf("active task without force should not reach store, deleted=%v", store.deleted)
+	}
+}
+
+func TestBoidBuiltinExecutor_TaskDelete_Unavailable(t *testing.T) {
+	exec := &boidBuiltinExecutor{tasks: nil}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:     sandbox.BoidOpTaskDelete,
+		TaskID: "task-1",
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "unavailable") {
+		t.Fatalf("expected unavailable error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
 	}
 }

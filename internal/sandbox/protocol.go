@@ -62,6 +62,7 @@ const (
 	BoidOpTaskList   BoidOp = "task_list"
 	BoidOpTaskNotify BoidOp = "task_notify"
 	BoidOpTaskAnswer BoidOp = "task_answer"
+	BoidOpTaskDelete BoidOp = "task_delete"
 )
 
 type BoidRequest struct {
@@ -108,6 +109,9 @@ type BoidRequest struct {
 
 	// task answer fields
 	Answer string `json:"answer,omitempty"`
+
+	// task delete fields
+	Force bool `json:"force,omitempty"`
 
 	// action send fields
 	ActionType string `json:"action_type,omitempty"`
