@@ -18,6 +18,7 @@ const (
 	OpBoidTaskReopen = "task.reopen"
 	OpBoidTaskList   = "task_list"
 	OpBoidTaskNotify = "task_notify"
+	OpBoidTaskAnswer = "task_answer"
 	OpBoidTaskDelete = "task_delete"
 
 	OpGitFetch      = "fetch"
