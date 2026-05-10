@@ -327,13 +327,18 @@ func (a *commandDispatcherAdapter) ExecuteCommand(ctx context.Context, projectID
 	}, nil
 }
 
+// jobDispatcher abstracts the Dispatch method of *dispatcher.Runner for testability.
+type jobDispatcher interface {
+	Dispatch(ctx context.Context, spec *orchestrator.JobSpec, cleanup orchestrator.CleanupFunc) (string, error)
+}
+
 // taskCommandDispatcherAdapter implements api.TaskCommandDispatcher by resolving
 // the task → behavior → command chain and dispatching as an exec job with
 // the task ID appended to argv.
 type taskCommandDispatcherAdapter struct {
 	taskSvc    *api.TaskAppService
 	projectSvc *api.ProjectAppService
-	runner     *dispatcher.Runner
+	runner     jobDispatcher
 }
 
 func (a *taskCommandDispatcherAdapter) ListTaskBehaviorCommands(taskID string) ([]api.CommandSummary, error) {
@@ -365,6 +370,16 @@ func (a *taskCommandDispatcherAdapter) ExecuteTaskBehaviorCommand(ctx context.Co
 		Interactive:        true,
 	})
 	spec.TaskID = task.ID
+	spec.Task = &orchestrator.TaskSnapshot{
+		ID:          task.ID,
+		Title:       task.Title,
+		Status:      string(task.Status),
+		Behavior:    task.Behavior,
+		Description: task.Description,
+	}
+	if len(task.Payload) > 0 {
+		spec.PrimaryInput = task.Payload
+	}
 	jobID, err := a.runner.Dispatch(ctx, spec, nil)
 	if err != nil {
 		return nil, &api.StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
