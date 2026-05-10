@@ -391,9 +391,10 @@ type TaskBehavior struct {
 	Worktree            bool                   `yaml:"worktree" json:"worktree,omitempty"`
 	BranchPrefix        string                 `yaml:"branch_prefix" json:"branch_prefix,omitempty"`
 	BaseBranch          string                 `yaml:"base_branch" json:"base_branch,omitempty"`
-	DefaultInstruction *Instruction `yaml:"default_instruction,omitempty" json:"default_instruction,omitempty"`
-	DefaultPayload     RawPayload   `yaml:"default_payload" json:"default_payload,omitempty"`
-	Kits               []KitRef     `yaml:"kits,omitempty" json:"kits,omitempty"`
+	DefaultInstruction *Instruction            `yaml:"default_instruction,omitempty" json:"default_instruction,omitempty"`
+	DefaultPayload     RawPayload              `yaml:"default_payload" json:"default_payload,omitempty"`
+	Kits               []KitRef                `yaml:"kits,omitempty" json:"kits,omitempty"`
+	Commands           map[string]CommandSpec  `yaml:"commands,omitempty" json:"commands,omitempty"`
 
 	// Resolved fields populated by ReadProjectMetaWithKits after merging kit data
 	// and project-level overlays. These are not serialized to YAML.

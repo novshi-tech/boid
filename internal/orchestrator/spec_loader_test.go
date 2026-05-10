@@ -2012,3 +2012,75 @@ additional_bindings:
 		t.Errorf("expected AdditionalBindings[1].Optional=false, got true")
 	}
 }
+
+func TestReadProjectMetaWithKits_BehaviorCommands(t *testing.T) {
+	t.Run("env interpolation in command args", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+		projectYAML := "id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    name: dev\n    commands:\n      build:\n        command: [\"${TEST_CMD_PREFIX}/bin/build\", \"--out\", \"${TEST_CMD_PREFIX}/out\"]\n"
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644)
+		t.Setenv("TEST_CMD_PREFIX", "/opt/tool")
+
+		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+		if err != nil {
+			t.Fatalf("ReadProjectMetaWithKits: %v", err)
+		}
+		b := meta.TaskBehaviors["dev"]
+		cmd, ok := b.Commands["build"]
+		if !ok {
+			t.Fatal("expected build command in behavior")
+		}
+		want := []string{"/opt/tool/bin/build", "--out", "/opt/tool/out"}
+		if len(cmd.ResolvedCommand) != 3 || cmd.ResolvedCommand[0] != want[0] || cmd.ResolvedCommand[1] != want[1] || cmd.ResolvedCommand[2] != want[2] {
+			t.Errorf("ResolvedCommand = %v, want %v", cmd.ResolvedCommand, want)
+		}
+	})
+
+	t.Run("host_commands inherited from behavior", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+		projectYAML := "id: test-proj\nname: Test Project\nhost_commands:\n  my-linter:\n    path: /usr/local/bin/my-linter\ntask_behaviors:\n  dev:\n    name: dev\n    commands:\n      lint:\n        command: [bash, -c, \"my-linter ./...\"]\n"
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644)
+
+		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+		if err != nil {
+			t.Fatalf("ReadProjectMetaWithKits: %v", err)
+		}
+		b := meta.TaskBehaviors["dev"]
+		cmd, ok := b.Commands["lint"]
+		if !ok {
+			t.Fatal("expected lint command in behavior")
+		}
+		if _, ok := cmd.HostCommands["my-linter"]; !ok {
+			t.Error("expected my-linter in cmd.HostCommands (inherited from project host_commands via behavior)")
+		}
+		if len(cmd.ResolvedCommand) != 3 || cmd.ResolvedCommand[0] != "bash" {
+			t.Errorf("ResolvedCommand = %v, want [bash -c 'my-linter ./...']", cmd.ResolvedCommand)
+		}
+	})
+
+	t.Run("kit env inherited by behavior commands", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		kitDir := filepath.Join(boidDir, "kits", "go-kit")
+		_ = os.MkdirAll(kitDir, 0o755)
+		projectYAML := "id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    name: dev\n    kits:\n      - go-kit\n    commands:\n      test:\n        command: [go, test, ./...]\n"
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644)
+		_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte("env:\n  GOPATH: /home/user/go\n"), 0o644)
+
+		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+		if err != nil {
+			t.Fatalf("ReadProjectMetaWithKits: %v", err)
+		}
+		b := meta.TaskBehaviors["dev"]
+		cmd, ok := b.Commands["test"]
+		if !ok {
+			t.Fatal("expected test command in behavior")
+		}
+		if cmd.Env["GOPATH"] != "/home/user/go" {
+			t.Errorf("cmd.Env[GOPATH] = %q, want /home/user/go", cmd.Env["GOPATH"])
+		}
+	})
+}

@@ -13,11 +13,11 @@ import (
 )
 
 var execCmd = &cobra.Command{
-	Use:           "exec -p <ref> [command-name]",
+	Use:           "exec -p <ref> <command-name> [args...]",
 	Short:         "Execute a named command in a project sandbox",
 	SilenceUsage:  true,
 	SilenceErrors: true,
-	Args:          cobra.MaximumNArgs(1),
+	Args:          cobra.ArbitraryArgs,
 	RunE:          runExec,
 }
 
@@ -26,6 +26,7 @@ var execProjectRef string
 func init() {
 	rootCmd.AddCommand(execCmd)
 	execCmd.Flags().StringVarP(&execProjectRef, "project", "p", "", "project ref (id or name, partial match supported)")
+	execCmd.Flags().SetInterspersed(false)
 }
 
 type execProjectData struct {
@@ -50,7 +51,7 @@ type execPreparedJob struct {
 	tty     bool
 }
 
-func buildExecJob(projectID, commandName string) (*execPreparedJob, error) {
+func buildExecJob(projectID, commandName string, userArgs []string) (*execPreparedJob, error) {
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
 	var p execProjectData
@@ -90,7 +91,7 @@ func buildExecJob(projectID, commandName string) (*execPreparedJob, error) {
 	spec := dispatcher.BuildCommandJobSpec(dispatcher.CommandJobInput{
 		ProjectID:          p.ID,
 		ProjectWorkDir:     p.WorkDir,
-		Argv:               cmd.Command,
+		Argv:               append(cmd.Command, userArgs...),
 		Env:                cmd.Env,
 		HostCommands:       cmd.HostCommands,
 		AdditionalBindings: cmd.AdditionalBindings,
@@ -173,7 +174,7 @@ func listExecCommands(projectID string) error {
 		}
 		fmt.Printf("  %-*s  %s\n", maxLen, cmd.Name, cmdStr)
 	}
-	fmt.Printf("\nRun 'boid exec -p <ref> <command>' to execute.\n")
+	fmt.Printf("\nRun 'boid exec -p <ref> <command> [args...]' to execute.\n")
 	return nil
 }
 
@@ -193,7 +194,8 @@ func runExec(cobraCmd *cobra.Command, args []string) error {
 	}
 
 	commandName := args[0]
-	prepared, err := buildExecJob(p.ID, commandName)
+	userArgs := args[1:]
+	prepared, err := buildExecJob(p.ID, commandName, userArgs)
 	if err != nil {
 		return err
 	}
