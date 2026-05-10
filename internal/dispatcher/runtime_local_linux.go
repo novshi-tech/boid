@@ -31,7 +31,8 @@ type LocalRuntime struct {
 type localRuntimeSession struct {
 	id             string
 	cmd            *exec.Cmd
-	master         *os.File
+	master         *os.File // PTY master (interactive) or pipe read-end (non-interactive)
+	interactive    bool
 	transcriptFile *os.File
 	transcriptPath string
 
@@ -67,44 +68,77 @@ func (r *LocalRuntime) Start(_ context.Context, spec RuntimeStartSpec) (*Runtime
 		return nil, fmt.Errorf("open transcript file: %w", err)
 	}
 
-	master, slave, err := openPTY()
-	if err != nil {
-		transcriptFile.Close()
-		return nil, fmt.Errorf("open pty: %w", err)
-	}
-	if err := setPTYSize(master, TerminalSize{Cols: 80, Rows: 24}); err != nil {
-		master.Close()
-		slave.Close()
-		transcriptFile.Close()
-		return nil, fmt.Errorf("set default pty size: %w", err)
-	}
+	var reader *os.File
+	var cmd *exec.Cmd
 
-	cmd := exec.Command("bash", "-lc", spec.Command)
-	cmd.Stdin = slave
-	cmd.Stdout = slave
-	cmd.Stderr = slave
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid:  true,
-		Setctty: true,
-		Ctty:    0,
-	}
+	if spec.Interactive {
+		master, slave, err := openPTY()
+		if err != nil {
+			transcriptFile.Close()
+			return nil, fmt.Errorf("open pty: %w", err)
+		}
+		if err := setPTYSize(master, TerminalSize{Cols: 80, Rows: 24}); err != nil {
+			master.Close()
+			slave.Close()
+			transcriptFile.Close()
+			return nil, fmt.Errorf("set default pty size: %w", err)
+		}
 
-	if err := cmd.Start(); err != nil {
-		master.Close()
-		slave.Close()
-		transcriptFile.Close()
-		return nil, fmt.Errorf("start process: %w", err)
-	}
-	if err := slave.Close(); err != nil {
-		master.Close()
-		transcriptFile.Close()
-		return nil, fmt.Errorf("close slave pty: %w", err)
+		cmd = exec.Command("bash", "-lc", spec.Command)
+		cmd.Stdin = slave
+		cmd.Stdout = slave
+		cmd.Stderr = slave
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Setsid:  true,
+			Setctty: true,
+			Ctty:    0,
+		}
+
+		if err := cmd.Start(); err != nil {
+			master.Close()
+			slave.Close()
+			transcriptFile.Close()
+			return nil, fmt.Errorf("start process: %w", err)
+		}
+		if err := slave.Close(); err != nil {
+			master.Close()
+			transcriptFile.Close()
+			return nil, fmt.Errorf("close slave pty: %w", err)
+		}
+		reader = master
+	} else {
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			transcriptFile.Close()
+			return nil, fmt.Errorf("open pipe: %w", err)
+		}
+
+		cmd = exec.Command("bash", "-lc", spec.Command)
+		cmd.Stdout = pw
+		cmd.Stderr = pw
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Setsid: true,
+		}
+
+		if err := cmd.Start(); err != nil {
+			pr.Close()
+			pw.Close()
+			transcriptFile.Close()
+			return nil, fmt.Errorf("start process: %w", err)
+		}
+		if err := pw.Close(); err != nil {
+			pr.Close()
+			transcriptFile.Close()
+			return nil, fmt.Errorf("close pipe write end: %w", err)
+		}
+		reader = pr
 	}
 
 	session := &localRuntimeSession{
 		id:             runtimeID,
 		cmd:            cmd,
-		master:         master,
+		master:         reader,
+		interactive:    spec.Interactive,
 		transcriptFile: transcriptFile,
 		transcriptPath: transcriptPath,
 		subscribers:    make(map[int]chan []byte),
@@ -217,7 +251,7 @@ func (r *LocalRuntime) Resize(_ context.Context, runtimeID string, size Terminal
 	}
 	session.mu.Lock()
 	defer session.mu.Unlock()
-	if !session.running {
+	if !session.running || !session.interactive {
 		return nil
 	}
 	return setPTYSize(session.master, size)
@@ -395,6 +429,9 @@ func (s *localRuntimeSession) closeSubscribersLocked() {
 }
 
 func (s *localRuntimeSession) writeMaster(data []byte) error {
+	if !s.interactive {
+		return nil
+	}
 	s.writerMu.Lock()
 	defer s.writerMu.Unlock()
 	_, err := s.master.Write(data)
