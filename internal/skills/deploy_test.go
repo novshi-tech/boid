@@ -16,7 +16,7 @@ func TestDeployAll_CreatesBothSkills(t *testing.T) {
 		t.Fatalf("DeployAll: %v", err)
 	}
 
-	for _, skillName := range []string{"boid-sandbox", "boid-plan"} {
+	for _, skillName := range []string{"boid-sandbox", "boid-plan", "boid-discuss"} {
 		content, err := os.ReadFile(filepath.Join(baseDir, skillName, "SKILL.md"))
 		if err != nil {
 			t.Fatalf("read %s/SKILL.md: %v", skillName, err)

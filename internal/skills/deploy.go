@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 )
 
-//go:embed data/boid-sandbox data/boid-plan
+//go:embed data/boid-sandbox data/boid-plan data/boid-discuss
 var skillsFS embed.FS
 
 // DeployAll extracts all embedded skill directories under baseDir.
