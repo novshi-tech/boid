@@ -99,6 +99,7 @@ func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 			OpBoidTaskReopen,
 			OpBoidTaskList,
 			OpBoidTaskNotify,
+			OpBoidTaskDelete,
 		),
 		AllowedCwdRoots: cwds,
 	}

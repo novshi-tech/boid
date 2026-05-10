@@ -1332,3 +1332,84 @@ func TestRunBoidShim_JobLog_RequiresJobID(t *testing.T) {
 		t.Fatalf("expected job id error, got: %v", err)
 	}
 }
+
+// --- task delete ---
+
+func TestRunBoidShim_TaskDelete_Normal(t *testing.T) {
+	sockPath, reqCh := newFakeBrokerSingle(t)
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "tok-del")
+
+	resp, err := sandbox.RunBoidShim([]string{"task", "delete", "task-abc"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpTaskDelete {
+		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskDelete)
+	}
+	if req.Boid.TaskID != "task-abc" {
+		t.Errorf("task_id = %q, want task-abc", req.Boid.TaskID)
+	}
+	if req.Boid.Force {
+		t.Errorf("force = true, want false")
+	}
+}
+
+func TestRunBoidShim_TaskDelete_Force(t *testing.T) {
+	sockPath, reqCh := newFakeBrokerSingle(t)
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "tok-del-force")
+
+	resp, err := sandbox.RunBoidShim([]string{"task", "delete", "task-xyz", "--force"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpTaskDelete {
+		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskDelete)
+	}
+	if req.Boid.TaskID != "task-xyz" {
+		t.Errorf("task_id = %q, want task-xyz", req.Boid.TaskID)
+	}
+	if !req.Boid.Force {
+		t.Errorf("force = false, want true")
+	}
+}
+
+func TestRunBoidShim_TaskDelete_ForceFlagBeforeID(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+	// --force より前に id が来ないケース (flag だけで id なし) はエラー
+	if _, err := sandbox.RunBoidShim([]string{"task", "delete", "--force"}); err == nil {
+		t.Fatal("expected error when task id is missing")
+	}
+}
+
+func TestRunBoidShim_TaskDelete_RequiresTaskID(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+	if _, err := sandbox.RunBoidShim([]string{"task", "delete"}); err == nil {
+		t.Fatal("expected error when task id is missing")
+	}
+}
+
+func TestRunBoidShim_TaskDelete_UnknownFlag(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+	_, err := sandbox.RunBoidShim([]string{"task", "delete", "task-1", "--unknown"})
+	if err == nil || !strings.Contains(err.Error(), "unsupported flag") {
+		t.Fatalf("expected unsupported flag error, got: %v", err)
+	}
+}
