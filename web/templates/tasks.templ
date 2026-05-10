@@ -669,7 +669,7 @@ templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Stat
 			} else {
 				<div class="tab-content">
 					if task.Description != "" {
-						<pre class="tab-body-pre">{ task.Description }</pre>
+						<div class="qa-md-body">@renderMarkdown(task.Description)</div>
 					} else {
 						<p class="tab-empty">(未設定)</p>
 					}
