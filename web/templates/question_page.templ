@@ -32,7 +32,9 @@ templ QuestionPage(task *orchestrator.Task, turn QuestionTurn) {
 			</header>
 			<section class="qa-page-section">
 				<h2 class="qa-page-section-title">Question</h2>
-				<pre class="qa-page-question">{ turn.Question }</pre>
+				<div class="qa-page-question qa-md-body">
+					@renderMarkdown(turn.Question)
+				</div>
 			</section>
 			if turn.IsActive {
 				<section class="qa-page-section qa-page-section-answer">
@@ -62,7 +64,9 @@ templ QuestionPage(task *orchestrator.Task, turn QuestionTurn) {
 			} else if turn.Answer != "" {
 				<section class="qa-page-section qa-page-section-answer">
 					<h2 class="qa-page-section-title">Your answer</h2>
-					<pre class="qa-page-answer">{ turn.Answer }</pre>
+					<div class="qa-page-answer qa-md-body">
+						@renderMarkdown(turn.Answer)
+					</div>
 				</section>
 			} else if turn.WasAborted {
 				<section class="qa-page-section qa-page-section-answer">
