@@ -128,6 +128,7 @@ func TestDefaultBuiltinPolicies_GateBoidOps(t *testing.T) {
 		OpBoidTaskReopen,
 		OpBoidTaskList,
 		OpBoidTaskNotify,
+		OpBoidTaskAnswer,
 		OpBoidTaskDelete,
 	}
 	if !opsEqual(boidPolicy.AllowedOps, wantOps) {
