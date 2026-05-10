@@ -114,12 +114,12 @@ func TaskListFragment(items []components.TreeItem, filter orchestrator.TaskFilte
 		}
 		if len(items) == 0 {
 			if taskFilterActive(filter) {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div class=\"empty-state\"><div class=\"empty-state-title\">条件に一致するタスクはありません</div><p class=\"empty-state-hint\">検索語やフィルタを変えてみてください。</p><a href=\"/\" class=\"btn btn-secondary empty-state-cta\">フィルタを解除</a></div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div class=\"empty-state\"><div class=\"empty-state-title\">No tasks match the current filters</div><p class=\"empty-state-hint\">Try adjusting your search terms or filters.</p><a href=\"/\" class=\"btn btn-secondary empty-state-cta\">Clear filters</a></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<div class=\"empty-state\"><div class=\"empty-state-title\">まだタスクがありません</div><p class=\"empty-state-hint\">最初のタスクを作って作業を始めましょう。</p><a href=\"/tasks/new\" class=\"btn btn-primary empty-state-cta\">+ Create</a></div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<div class=\"empty-state\"><div class=\"empty-state-title\">No tasks yet</div><p class=\"empty-state-hint\">Create your first task to get started.</p><a href=\"/tasks/new\" class=\"btn btn-primary empty-state-cta\">+ Create</a></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
