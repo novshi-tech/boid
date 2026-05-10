@@ -173,6 +173,148 @@ func TestLocalRuntimeResizeAfterExit(t *testing.T) {
 	}
 }
 
+func TestLocalRuntimeNonInteractiveTranscriptAndReplay(t *testing.T) {
+	rootDir := t.TempDir()
+	runtime := &dispatcher.LocalRuntime{RootDir: rootDir}
+
+	handle, err := runtime.Start(context.Background(), dispatcher.RuntimeStartSpec{
+		Command:     "printf 'hello pipe'",
+		Interactive: false,
+		TTY:         false,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if handle.Interactive {
+		t.Fatalf("handle.Interactive = true, want false")
+	}
+
+	result, err := runtime.Wait(context.Background(), handle.ID)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", result.ExitCode)
+	}
+
+	transcriptPath := filepath.Join(rootDir, handle.ID, "transcript.log")
+	if result.TranscriptPath != transcriptPath {
+		t.Errorf("TranscriptPath = %q, want %q", result.TranscriptPath, transcriptPath)
+	}
+	data, err := os.ReadFile(transcriptPath)
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	if !strings.Contains(string(data), "hello pipe") {
+		t.Fatalf("transcript = %q, want hello pipe", string(data))
+	}
+
+	var replay bytes.Buffer
+	if err := runtime.Attach(context.Background(), handle.ID, dispatcher.RuntimeAttachRequest{
+		Output: &replay,
+	}); err != nil {
+		t.Fatalf("Attach(replay): %v", err)
+	}
+	if !strings.Contains(replay.String(), "hello pipe") {
+		t.Fatalf("replay = %q, want hello pipe", replay.String())
+	}
+}
+
+func TestLocalRuntimeNonInteractiveLiveAttach(t *testing.T) {
+	runtime := &dispatcher.LocalRuntime{RootDir: t.TempDir()}
+
+	handle, err := runtime.Start(context.Background(), dispatcher.RuntimeStartSpec{
+		Command:     "printf 'live'; sleep 0.1; printf ' output'",
+		Interactive: false,
+		TTY:         false,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	var out bytes.Buffer
+	attachErrCh := make(chan error, 1)
+	go func() {
+		attachErrCh <- runtime.Attach(ctx, handle.ID, dispatcher.RuntimeAttachRequest{
+			Output: &out,
+		})
+	}()
+
+	if _, err := runtime.Wait(context.Background(), handle.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	select {
+	case err := <-attachErrCh:
+		if err != nil {
+			t.Fatalf("Attach: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for attach")
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "live") || !strings.Contains(got, "output") {
+		t.Fatalf("attach output = %q, want streamed transcript", got)
+	}
+}
+
+func TestLocalRuntimeNonInteractiveStopTerminates(t *testing.T) {
+	runtime := &dispatcher.LocalRuntime{RootDir: t.TempDir()}
+
+	handle, err := runtime.Start(context.Background(), dispatcher.RuntimeStartSpec{
+		Command:     "sleep 30",
+		Interactive: false,
+		TTY:         false,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := runtime.Stop(ctx, handle.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	result, err := runtime.Wait(context.Background(), handle.ID)
+	if err != nil {
+		t.Fatalf("Wait after stop: %v", err)
+	}
+	if result.ExitCode == 0 {
+		t.Fatalf("exit code = %d, want non-zero after stop", result.ExitCode)
+	}
+}
+
+func TestLocalRuntimeNonInteractiveResizeIsNoop(t *testing.T) {
+	runtime := &dispatcher.LocalRuntime{RootDir: t.TempDir()}
+
+	handle, err := runtime.Start(context.Background(), dispatcher.RuntimeStartSpec{
+		Command:     "sleep 0.1",
+		Interactive: false,
+		TTY:         false,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := runtime.Resize(context.Background(), handle.ID, dispatcher.TerminalSize{Cols: 120, Rows: 40}); err != nil {
+		t.Fatalf("Resize on non-interactive session: %v", err)
+	}
+
+	if _, err := runtime.Wait(context.Background(), handle.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	// Resize after exit must also be no-op.
+	if err := runtime.Resize(context.Background(), handle.ID, dispatcher.TerminalSize{Cols: 80, Rows: 24}); err != nil {
+		t.Fatalf("Resize after exit: %v", err)
+	}
+}
+
 func TestLocalRuntimeWriteInputParallelNoRace(t *testing.T) {
 	rt := &dispatcher.LocalRuntime{RootDir: t.TempDir()}
 
