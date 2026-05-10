@@ -136,6 +136,10 @@ func (s *stubWebService) ListProjectCommands(projectID string) ([]CommandSummary
 	return s.projectCommands, s.projectCommandsErr
 }
 
+func (s *stubWebService) ListTaskBehaviorCommands(taskID string) ([]CommandSummary, error) {
+	return nil, nil
+}
+
 // stubWorkflowService implements WorkflowService for WebAppService tests.
 type stubWorkflowService struct {
 	applyActionErr error
