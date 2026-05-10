@@ -137,7 +137,100 @@ func TestBoidBuiltinIntegration_RegisterAndCreateAcrossWorkspace(t *testing.T) {
 	}
 }
 
+// TestBoidBuiltinIntegration_NameBasedPeerProjectCreate は peer project の
+// ID が UUID 形式でユーザが名前で指定した場合のフルパスを検証する。
+// 再現シナリオ: boid task create project_id: boid-kits
+//   → シム: BoidRequest{ProjectID:"boid-kits", CreatePatch:{project_id:"boid-kits",...}}
+//   → broker: resolves "boid-kits" → UUID, passes req.ProjectID=UUID to executor
+//   → executor (修正後): req.ProjectID != "" なので CreatePatch の名前を上書きし UUID を使う
+func TestBoidBuiltinIntegration_NameBasedPeerProjectCreate(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+
+	const peerUUID = "dad1961a-9ef9-495d-858f-e27e75d9afca"
+	const peerName = "boid-kits"
+
+	mainDir := writeBoidProject(t, "boid-main", "boid")
+	peerDir := writeBoidProjectWithID(t, peerUUID, peerName)
+
+	for id, dir := range map[string]string{
+		"boid-main": mainDir,
+		peerUUID:    peerDir,
+	} {
+		var project orchestrator.Project
+		if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+			t.Fatalf("create project %s: %v", id, err)
+		}
+		if project.ID != id {
+			t.Fatalf("created project %s had id %q", id, project.ID)
+		}
+	}
+
+	for _, id := range []string{"boid-main", peerUUID} {
+		var updated orchestrator.Project
+		if err := ts.Client.Do("PUT", "/api/projects/"+id+"/workspace", map[string]string{"workspace_id": "ws-boid"}, &updated); err != nil {
+			t.Fatalf("assign workspace to %s: %v", id, err)
+		}
+	}
+
+	var brokerResp struct {
+		Token  string `json:"token"`
+		Socket string `json:"socket"`
+	}
+	if err := ts.Client.Do("POST", "/api/broker/register", map[string]any{
+		"builtin_policies": dispatcher.PoliciesToSandbox(orchestrator.DefaultBuiltinPolicies(orchestrator.RoleGate, []string{"boid"}, orchestrator.PolicyContext{})),
+		"project_id":       "boid-main",
+	}, &brokerResp); err != nil {
+		t.Fatalf("register broker: %v", err)
+	}
+
+	oldWD, _ := os.Getwd()
+	if err := os.Chdir(mainDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+
+	os.Setenv("BOID_BROKER_TOKEN", brokerResp.Token)
+	os.Setenv("BOID_BROKER_SOCKET", brokerResp.Socket)
+	t.Cleanup(func() {
+		os.Unsetenv("BOID_BROKER_TOKEN")
+		os.Unsetenv("BOID_BROKER_SOCKET")
+	})
+
+	tmpDir := t.TempDir()
+	specPath := filepath.Join(tmpDir, "task.yaml")
+	// project_id は名前 ("boid-kits") で指定 — UUID ではない
+	spec := "project_id: " + peerName + "\ntitle: kits peer task\nbehavior: dev\n"
+	if err := os.WriteFile(specPath, []byte(spec), 0o644); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+
+	resp, err := sandbox.RunBoidShim([]string{"task", "create", "-f", specPath})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("name-based peer create exit=%d stderr=%q (should succeed)", resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stdout, "task created:") {
+		t.Fatalf("stdout = %q, want task created", resp.Stdout)
+	}
+
+	var tasks []*orchestrator.Task
+	if err := ts.Client.Do("GET", "/api/tasks?project_id="+peerUUID, nil, &tasks); err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].ProjectID != peerUUID {
+		t.Fatalf("tasks for peer = %+v, want 1 task with project_id=%s", tasks, peerUUID)
+	}
+}
+
 func writeBoidProject(t *testing.T, id, name string) string {
+	t.Helper()
+	return writeBoidProjectWithID(t, id, name)
+}
+
+// writeBoidProjectWithID は id と name を別々に指定できる版 (UUID id / 人間可読 name のテスト用)。
+func writeBoidProjectWithID(t *testing.T, id, name string) string {
 	t.Helper()
 
 	dir := t.TempDir()

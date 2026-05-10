@@ -1137,6 +1137,66 @@ func TestBroker_BoidTaskCreate_ResolvesProjectRef(t *testing.T) {
 	}
 }
 
+// TestBroker_BoidTaskCreate_CreatePatchNameNotMutated はシム由来のリクエスト構造を再現する。
+// シムは BoidRequest.ProjectID と CreatePatch.project_id の両方に元の名前をセットするが、
+// broker は BoidRequest.ProjectID のみを UUID に解決し CreatePatch は書き換えない。
+// executor には ProjectID=UUID が届き、CreatePatch.project_id=名前 のまま渡される。
+func TestBroker_BoidTaskCreate_CreatePatchNameNotMutated(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{
+		BoidExecutor: exec,
+		ProjectResolver: func(ref string) (string, error) {
+			if ref == "boid-kits" {
+				return "dad1961a-9ef9-495d-858f-e27e75d9afca", nil
+			}
+			return ref, nil
+		},
+	}
+	projectDir := t.TempDir()
+	ctx := sandbox.TokenContext{
+		JobID:             "j1",
+		TaskID:            "t1",
+		ProjectID:         "boid-main-uuid",
+		WorkspaceID:       "ws-boid",
+		AllowedProjectIDs: []string{"boid-main-uuid", "dad1961a-9ef9-495d-858f-e27e75d9afca"},
+		Role:              testRoleGate,
+		ProjectDir:        projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), ctx)
+
+	// シムが生成するリクエスト: ProjectID とCreatePatch.project_id が同じ名前
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:          sandbox.BoidOpTaskCreate,
+			ProjectID:   "boid-kits",
+			CreatePatch: json.RawMessage(`{"project_id":"boid-kits","title":"peer task","behavior":"dev"}`),
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("name-based create with CreatePatch should succeed, exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor calls = %d, want 1", len(exec.calls))
+	}
+	// broker は ProjectID を UUID に解決して executor に渡す
+	if exec.calls[0].ProjectID != "dad1961a-9ef9-495d-858f-e27e75d9afca" {
+		t.Fatalf("executor ProjectID = %q, want resolved UUID", exec.calls[0].ProjectID)
+	}
+	// CreatePatch は broker によって書き換えられない (executor 側で req.ProjectID を優先すべき)
+	var patch struct {
+		ProjectID string `json:"project_id"`
+	}
+	if err := json.Unmarshal(exec.calls[0].CreatePatch, &patch); err != nil {
+		t.Fatalf("unmarshal CreatePatch: %v", err)
+	}
+	if patch.ProjectID != "boid-kits" {
+		t.Fatalf("CreatePatch.project_id = %q, want original name %q (broker does not rewrite CreatePatch)", patch.ProjectID, "boid-kits")
+	}
+}
+
 func TestBroker_BoidTaskCreate_ResolverErrorSurfaced(t *testing.T) {
 	exec := &fakeBoidExecutor{}
 	broker := &sandbox.Broker{
