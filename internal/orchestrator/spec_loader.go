@@ -388,6 +388,23 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		if err := validateBuiltinHostConflict(fmt.Sprintf("behavior %q", name), behavior.HostCommands); err != nil {
 			return nil, err
 		}
+
+		// Resolve behavior-level commands: inherit the behavior's merged runtime.
+		for cmdName, cmd := range behavior.Commands {
+			cmd.Env = behavior.Env
+			cmd.HostCommands = behavior.HostCommands
+			cmd.AdditionalBindings = behavior.AdditionalBindings
+			resolved := make([]string, len(cmd.Command))
+			for i, arg := range cmd.Command {
+				resolved[i] = interpolateEnv(arg)
+			}
+			cmd.ResolvedCommand = resolved
+			if err := validateBuiltinHostConflict(fmt.Sprintf("behavior %q command %q", name, cmdName), cmd.HostCommands); err != nil {
+				return nil, err
+			}
+			behavior.Commands[cmdName] = cmd
+		}
+
 		meta.TaskBehaviors[name] = behavior
 	}
 

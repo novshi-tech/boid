@@ -108,7 +108,7 @@ func TestBuildExecJob_WorkspaceVisibility(t *testing.T) {
 
 	setTestSocket(t, ts.Server.SocketPath())
 
-	prepared, err := buildExecJob("proj-1", "test-cmd")
+	prepared, err := buildExecJob("proj-1", "test-cmd", nil)
 	if err != nil {
 		t.Fatalf("buildExecJob: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestBuildExecJob_RegistersBrokerForBoidBuiltin(t *testing.T) {
 
 	setTestSocket(t, ts.Server.SocketPath())
 
-	prepared, err := buildExecJob("proj-1", "test-cmd")
+	prepared, err := buildExecJob("proj-1", "test-cmd", nil)
 	if err != nil {
 		t.Fatalf("buildExecJob: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestBuildExecJob_ArgvPreserved(t *testing.T) {
 
 	setTestSocket(t, ts.Server.SocketPath())
 
-	prepared, err := buildExecJob("proj-q", "run")
+	prepared, err := buildExecJob("proj-q", "run", nil)
 	if err != nil {
 		t.Fatalf("buildExecJob: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestBuildExecJob_ResolvedHostCommandsWired(t *testing.T) {
 
 	setTestSocket(t, ts.Server.SocketPath())
 
-	prepared, err := buildExecJob("proj-hc", "test-cmd")
+	prepared, err := buildExecJob("proj-hc", "test-cmd", nil)
 	if err != nil {
 		t.Fatalf("buildExecJob: %v", err)
 	}
@@ -236,6 +236,46 @@ func TestBuildExecJob_ResolvedHostCommandsWired(t *testing.T) {
 	}
 	if got := resolved[scriptPath].Path; got != scriptPath {
 		t.Errorf("ResolvedHostCommands[%q].Path = %q, want %q", scriptPath, got, scriptPath)
+	}
+}
+
+func TestBuildExecJob_UserArgsAppended(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	kitDir := filepath.Join(boidDir, "kits", "agent")
+	if err := os.MkdirAll(kitDir, 0o755); err != nil {
+		t.Fatalf("mkdir kit: %v", err)
+	}
+
+	projectYAML := "id: proj-ua\nname: proj-ua\n" +
+		"commands:\n  run:\n    command: [claude, --print]\n"
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
+		t.Fatalf("write project yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write kit yaml: %v", err)
+	}
+
+	var project struct {
+		ID string `json:"id"`
+	}
+	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	setTestSocket(t, ts.Server.SocketPath())
+
+	userArgs := []string{"--model", "claude-opus-4-7", "write a test"}
+	prepared, err := buildExecJob("proj-ua", "run", userArgs)
+	if err != nil {
+		t.Fatalf("buildExecJob: %v", err)
+	}
+
+	want := []string{"claude", "--print", "--model", "claude-opus-4-7", "write a test"}
+	if !reflect.DeepEqual(prepared.spec.Argv, want) {
+		t.Errorf("argv = %#v, want %#v", prepared.spec.Argv, want)
 	}
 }
 
@@ -260,7 +300,7 @@ func TestBuildExecJob_CommandNotFound(t *testing.T) {
 
 	setTestSocket(t, ts.Server.SocketPath())
 
-	_, err := buildExecJob("proj-nc", "nonexistent-cmd")
+	_, err := buildExecJob("proj-nc", "nonexistent-cmd", nil)
 	if err == nil {
 		t.Fatal("expected error for nonexistent command, got nil")
 	}
