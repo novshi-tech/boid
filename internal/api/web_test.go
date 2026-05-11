@@ -981,32 +981,6 @@ func TestTerminalPage_ShowsEmptyStateWhenNotRunning(t *testing.T) {
 	}
 }
 
-func TestTerminalPage_ShowsEmptyStateWhenNotInteractive(t *testing.T) {
-	svc := &stubWebService{
-		jobDetail: &JobWithContext{
-			Job: Job{
-				ID:          "job-nopty-1",
-				TaskID:      "task-1",
-				Interactive: false,
-				Status:      JobStatusRunning,
-			},
-		},
-	}
-	r := newTestWebHandlerWithTerminal(svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/jobs/job-nopty-1/terminal", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
-	}
-	body := w.Body.String()
-	if strings.Contains(body, "boid-terminal-xterm") {
-		t.Error("non-interactive error page should not render xterm widget")
-	}
-}
-
 func TestTerminalPage_RequiresAuth(t *testing.T) {
 	// Verify the route is registered in the main WebHandler router.
 	svc := &stubWebService{}

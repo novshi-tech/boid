@@ -41,7 +41,7 @@ func runAttach(cmd *cobra.Command, args []string) error {
 		return showLogPager(job.Output, os.Stdout, os.Stdin)
 	}
 
-	if job.RuntimeID == "" || !job.Interactive {
+	if job.RuntimeID == "" {
 		return errors.New("job is not attachable")
 	}
 

@@ -101,7 +101,7 @@ func renderJob(job *api.Job) {
 	fmt.Printf("Role:       %s\n", job.Role)
 	fmt.Printf("Runtime:    %s\n", valueOrDash(job.RuntimeID))
 	fmt.Printf("Workspace:  %s\n", valueOrDash(job.WorkspacePath))
-	fmt.Printf("Attachable: %s\n", yesNo(job.RuntimeID != "" && job.Interactive))
+	fmt.Printf("Attachable: %s\n", yesNo(job.RuntimeID != ""))
 	fmt.Printf("TTY:        %s\n", yesNo(job.TTY))
 	fmt.Printf("Status:     %s\n", job.Status)
 	fmt.Printf("Exit Code:  %s\n", formatExitCode(job.Status, job.ExitCode))
