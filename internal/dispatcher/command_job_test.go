@@ -103,18 +103,29 @@ func TestBuildCommandJobSpec_HostCommands(t *testing.T) {
 }
 
 func TestBuildCommandJobSpec_Interactive(t *testing.T) {
-	// CLI path: Interactive=false (TTY determined by real terminal later)
-	cliSpec := dispatcher.BuildCommandJobSpec(dispatcher.CommandJobInput{
+	// CLI path: no terminal attached — Interactive=false
+	cliNonTTY := dispatcher.BuildCommandJobSpec(dispatcher.CommandJobInput{
 		ProjectID:      "p",
 		ProjectWorkDir: "/work",
 		Argv:           []string{"bash"},
 		Interactive:    false,
 	})
-	if cliSpec.Interactive {
-		t.Error("CLI path: Interactive should be false")
+	if cliNonTTY.Interactive {
+		t.Error("CLI path (no terminal): Interactive should be false")
 	}
 
-	// Daemon path: Interactive=true (always PTY)
+	// CLI path: terminal attached — Interactive=true
+	cliTTY := dispatcher.BuildCommandJobSpec(dispatcher.CommandJobInput{
+		ProjectID:      "p",
+		ProjectWorkDir: "/work",
+		Argv:           []string{"bash"},
+		Interactive:    true,
+	})
+	if !cliTTY.Interactive {
+		t.Error("CLI path (terminal): Interactive should be true")
+	}
+
+	// Daemon path: Interactive=true (Web UI always wants PTY)
 	daemonSpec := dispatcher.BuildCommandJobSpec(dispatcher.CommandJobInput{
 		ProjectID:      "p",
 		ProjectWorkDir: "/work",
@@ -128,8 +139,8 @@ func TestBuildCommandJobSpec_Interactive(t *testing.T) {
 
 func TestBuildCommandJobSpec_CLIAndDaemonSameJobSpec(t *testing.T) {
 	// Verifies that CLI and daemon paths produce identical JobSpec except for
-	// the Interactive flag, which the CLI overrides via sbSpec.TTY after
-	// BuildSandboxSpec.
+	// the Interactive flag, which the CLI sets based on terminal detection at
+	// entry time.
 	input := dispatcher.CommandJobInput{
 		ProjectID:      "proj",
 		ProjectWorkDir: "/repo",
