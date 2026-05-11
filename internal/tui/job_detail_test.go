@@ -210,8 +210,8 @@ func TestJobDetailView_ExitCodeShown(t *testing.T) {
 	}
 }
 
-// TestJobDetailView_InteractiveTTYSeparateLines verifies Interactive and TTY are rendered on separate lines.
-func TestJobDetailView_InteractiveTTYSeparateLines(t *testing.T) {
+// TestJobDetailView_InteractiveDisplay verifies Interactive is rendered and TTY is not shown.
+func TestJobDetailView_InteractiveDisplay(t *testing.T) {
 	job := makeTestJob(api.JobStatusCompleted)
 	job.Interactive = true
 	job.TTY = true
@@ -220,30 +220,18 @@ func TestJobDetailView_InteractiveTTYSeparateLines(t *testing.T) {
 	view := s.View(120, 40)
 	lines := strings.Split(view, "\n")
 
-	var interactiveLine, ttyLine string
+	var interactiveLine string
 	for _, l := range lines {
 		if strings.Contains(l, "Interactive:") {
 			interactiveLine = l
 		}
 		if strings.Contains(l, "TTY:") {
-			ttyLine = l
+			t.Errorf("TTY field should not be displayed, found line: %q", l)
 		}
 	}
 
 	if interactiveLine == "" {
 		t.Fatal("expected a line containing 'Interactive:'")
-	}
-	if ttyLine == "" {
-		t.Fatal("expected a line containing 'TTY:'")
-	}
-	if interactiveLine == ttyLine {
-		t.Error("Interactive and TTY should be on separate lines, but found same line")
-	}
-	if strings.Contains(interactiveLine, "TTY:") {
-		t.Errorf("Interactive line should not contain 'TTY:': %q", interactiveLine)
-	}
-	if strings.Contains(ttyLine, "Interactive:") {
-		t.Errorf("TTY line should not contain 'Interactive:': %q", ttyLine)
 	}
 }
 

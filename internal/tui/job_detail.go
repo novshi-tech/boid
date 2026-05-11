@@ -157,7 +157,6 @@ func (s *JobDetailScreen) View(width, height int) string {
 	}
 	metaLines = append(metaLines,
 		fmt.Sprintf("  Interactive: %v", job.Interactive),
-		fmt.Sprintf("  TTY:         %v", job.TTY),
 	)
 
 	for _, l := range metaLines {

@@ -28,7 +28,7 @@ templ TerminalPage(title string, backURL string, jobId string, wsPath string) {
 	}
 }
 
-// TerminalNotReady renders an error page when a job is not interactive or not running.
+// TerminalNotReady renders an error page when a job is not running.
 templ TerminalNotReady(jobId string, reason string) {
 	@Layout("ターミナル接続不可", "/jobs/"+jobId) {
 		<div class="detail-card task-row-status-pending">

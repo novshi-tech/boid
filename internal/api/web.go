@@ -615,10 +615,6 @@ func (h *WebHandler) JobTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if !job.Interactive {
-		templates.TerminalNotReady(id, "このジョブはインタラクティブではありません。").Render(r.Context(), w)
-		return
-	}
 	if job.Status != JobStatusRunning {
 		templates.TerminalNotReady(id, "現在 attach できる状態ではありません（ジョブが実行中ではありません）。").Render(r.Context(), w)
 		return

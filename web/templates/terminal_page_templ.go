@@ -64,7 +64,7 @@ func TerminalPage(title string, backURL string, jobId string, wsPath string) tem
 	})
 }
 
-// TerminalNotReady renders an error page when a job is not interactive or not running.
+// TerminalNotReady renders an error page when a job is not running.
 func TerminalNotReady(jobId string, reason string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context

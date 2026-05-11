@@ -468,11 +468,6 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if job == nil {
 			break
 		}
-		if !job.Interactive {
-			s.statusMsg = "this job is not interactive"
-			s.isError = true
-			return clearStatusAfter(3 * time.Second)
-		}
 		if !s.shared.TmuxEnabled {
 			s.statusMsg = "to open a job, launch `boid tui` inside tmux"
 			s.isError = false

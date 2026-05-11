@@ -1547,30 +1547,6 @@ func TestOKey_ActiveInteractive_TmuxEnabled_OpensPane(t *testing.T) {
 	// We just verify the cmd exists since actual tmux operations can't run in tests.
 }
 
-// TestOKey_ActiveNonInteractive_SetsErrorFlash verifies that o on a non-interactive
-// running job sets an error flash message and returns a clearStatus cmd.
-func TestOKey_ActiveNonInteractive_SetsErrorFlash(t *testing.T) {
-	s := newTestTaskDetailScreen()
-	s.detail = makeDetailWithRunningJob(false) // Interactive=false
-	s.shared.TmuxEnabled = true
-	s.activeTab = tabOverview
-	s.timelineCursor = 0
-
-	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
-	if s.statusMsg == "" {
-		t.Error("o on non-interactive job: expected statusMsg to be set")
-	}
-	if !s.isError {
-		t.Error("o on non-interactive job: expected isError=true")
-	}
-	if !containsStr(s.statusMsg, "not interactive") {
-		t.Errorf("o on non-interactive job: expected 'not interactive' in statusMsg, got %q", s.statusMsg)
-	}
-	if cmd == nil {
-		t.Error("o on non-interactive job: expected non-nil clearStatus cmd")
-	}
-}
-
 // TestOKey_ActiveInteractive_TmuxDisabled_SetsInfoMsg verifies that o on an interactive
 // job without tmux enabled shows an info message (not an error).
 func TestOKey_ActiveInteractive_TmuxDisabled_SetsInfoMsg(t *testing.T) {

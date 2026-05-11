@@ -92,7 +92,7 @@ func resolveAttachableJob(w http.ResponseWriter, req *http.Request, runtime *app
 		writeJSONError(w, http.StatusNotFound, err.Error())
 		return nil, false
 	}
-	if job.RuntimeID == "" || !job.Interactive {
+	if job.RuntimeID == "" {
 		writeJSONError(w, http.StatusConflict, "job is not attachable")
 		return nil, false
 	}
