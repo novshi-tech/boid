@@ -172,17 +172,43 @@ func TestJobDetail_GateJobWithRunningTerminal(t *testing.T) {
 	job.GateID = "go-dev/pr-verify"
 	html := renderJobDetail(t, job)
 
-	// Replay gate ボタンと「全画面で開く」ボタンが両方 action bar に出ること。
 	// gate ID の '/' は %2F へエンコードされる (chi の単一セグメント match 対策)。
 	want := "/tasks/task-id-1/gates/go-dev%2Fpr-verify/replay"
 	if !strings.Contains(html, want) {
 		t.Errorf("gate+interactive running should contain replay form action %q", want)
 	}
-	if !strings.Contains(html, "全画面で開く") {
-		t.Error("gate+interactive running should contain 全画面で開く link")
+	// gate job は Interactive であっても Terminal を埋め込まず SSE 分岐に流れる。
+	if strings.Contains(html, "boid-terminal") {
+		t.Error("gate job should not embed boid-terminal (suppressed for hook/gate jobs)")
 	}
-	if !strings.Contains(html, `/jobs/test-job-id-1234/terminal`) {
-		t.Errorf("gate+interactive running should link to terminal page")
+	// gate job は Interactive であっても「全画面で開く」リンクを表示しない。
+	if strings.Contains(html, "全画面で開く") {
+		t.Error("gate job should not show 全画面で開く link (suppressed for hook/gate jobs)")
+	}
+}
+
+func TestJobDetail_HookJob_InteractiveStale_NoInteractiveMessage(t *testing.T) {
+	// DB に残る旧 hook job レコードが interactive=true を持つ場合でも
+	// Interactive 向けメッセージが表示されないことを検証する。
+	job := newJobView("completed")
+	job.Interactive = true
+	job.Role = "hook"
+	job.HookID = "claude-code/run-agent"
+	job.Output = "hook output"
+	html := renderJobDetail(t, job)
+
+	if strings.Contains(html, "job-log-note") {
+		t.Error("hook job with stale interactive=true should not show interactive note paragraph")
+	}
+	if strings.Contains(html, "インタラクティブです") {
+		t.Error("hook job with stale interactive=true should not show interactive message")
+	}
+	// SSE 分岐に流れるので静的 pre は出力されること。
+	if !strings.Contains(html, `id="job-log"`) {
+		t.Error("hook job should show static pre with id=job-log")
+	}
+	if !strings.Contains(html, "hook output") {
+		t.Error("hook job should render existing output")
 	}
 }
 

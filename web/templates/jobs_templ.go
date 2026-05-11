@@ -233,13 +233,13 @@ func JobDetail(job *JobContextView) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			if job.Interactive && job.Status == "running" {
+			if job.Interactive && job.Status == "running" && job.HookID == "" && job.GateID == "" {
 				templ_7745c5c3_Err = components.Terminal(job.ID, "/api/jobs/"+job.ID+"/attach/ws").Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-			} else if job.Interactive {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, " <p class=\"job-log-note\">このジョブはインタラクティブです。リアルタイム出力は表示できません &mdash; 完了後の transcript は ANSI エスケープシーケンスを含むため TUI 再現は不能です。</p>")
+			} else if job.Interactive && job.HookID == "" && job.GateID == "" {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, " <p class=\"job-log-note\">このジョブはインタラクティブです。リアルタイム出力は表示できません &mdash; 完了後の transcript は ANSI エスケープシーケンスを含むため表示できません。</p>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -304,7 +304,7 @@ func JobDetail(job *JobContextView) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			if job.GateID != "" || job.HookID != "" || (job.Interactive && job.Status == "running") {
+			if job.GateID != "" || job.HookID != "" || (job.Interactive && job.Status == "running" && job.HookID == "" && job.GateID == "") {
 				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "<div class=\"action-bar\"><div class=\"action-bar-inner\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
@@ -351,7 +351,7 @@ func JobDetail(job *JobContextView) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				if job.Interactive && job.Status == "running" {
+				if job.Interactive && job.Status == "running" && job.HookID == "" && job.GateID == "" {
 					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "<a href=\"")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
