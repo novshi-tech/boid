@@ -700,9 +700,6 @@ templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Stat
 								if inst.Name != "" {
 									<span class="instr-kv"><span class="instr-k">name</span>{ inst.Name }</span>
 								}
-								if inst.Interactive {
-									<span class="instr-kv"><span class="instr-k">interactive</span>true</span>
-								}
 							</div>
 							if inst.Message != "" {
 								<pre class="tab-body-pre instr-message">{ inst.Message }</pre>

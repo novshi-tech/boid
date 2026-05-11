@@ -117,12 +117,11 @@ const (
 )
 
 type Instruction struct {
-	Type        InstructionType `json:"type" yaml:"type"`
-	Agent       string          `json:"agent" yaml:"agent"`
-	Name        string          `json:"name,omitempty" yaml:"name,omitempty"`
-	Message     string          `json:"message,omitempty" yaml:"message,omitempty"`
-	Interactive bool            `json:"interactive,omitempty" yaml:"interactive,omitempty"`
-	Model       string          `json:"model,omitempty" yaml:"model,omitempty"`
+	Type    InstructionType `json:"type" yaml:"type"`
+	Agent   string          `json:"agent" yaml:"agent"`
+	Name    string          `json:"name,omitempty" yaml:"name,omitempty"`
+	Message string          `json:"message,omitempty" yaml:"message,omitempty"`
+	Model   string          `json:"model,omitempty" yaml:"model,omitempty"`
 }
 
 // Instructions is the persisted instruction history for a task. The most
@@ -179,13 +178,12 @@ func (is *Instructions) UnmarshalJSON(data []byte) error {
 }
 
 type RoutedInstruction struct {
-	Role        string          `json:"role"`
-	Type        InstructionType `json:"type"`
-	Agent       string          `json:"agent"`
-	Name        string          `json:"name,omitempty"`
-	Message     string          `json:"message"`
-	Interactive bool            `json:"interactive,omitempty"`
-	Model       string          `json:"model,omitempty"`
+	Role    string          `json:"role"`
+	Type    InstructionType `json:"type"`
+	Agent   string          `json:"agent"`
+	Name    string          `json:"name,omitempty"`
+	Message string          `json:"message"`
+	Model   string          `json:"model,omitempty"`
 }
 
 type TraitType string

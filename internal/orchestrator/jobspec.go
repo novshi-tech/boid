@@ -50,7 +50,7 @@ type JobSpec struct {
 	Task *TaskSnapshot
 
 	// PrimaryInput is the payload the script expects to read on stdin (or,
-	// when Instruction.Interactive is true, at $HOME/.boid/context/payload.json).
+	// for agent jobs, at $HOME/.boid/context/payload.json).
 	// nil means the job reads nothing from boid (e.g. boid-exec with a user TTY).
 	PrimaryInput json.RawMessage
 

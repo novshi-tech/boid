@@ -84,14 +84,14 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		env["BOID_INVOKED_ROLE"] = inst.Role
 		env["BOID_INVOKED_NAME"] = inst.Name
 		env["BOID_INVOKED_TYPE"] = string(inst.Type)
-		if inst.Interactive {
-			env["BOID_INTERACTIVE"] = "1"
-		}
 		// Legacy env var consumed by hook scripts that predate the
 		// $HOME/.boid/context/instructions.yaml context-file delivery.
 		if encoded, err := json.Marshal([]orchestrator.RoutedInstruction{*inst}); err == nil {
 			env["BOID_INSTRUCTIONS"] = string(encoded)
 		}
+	}
+	if spec.Interactive {
+		env["BOID_INTERACTIVE"] = "1"
 	}
 	if _, hasBoid := spec.BuiltinPolicies["boid"]; hasBoid {
 		env["BOID_BUILTIN_SHIM"] = "1"
@@ -190,9 +190,8 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	})
 
 	// stdin / stdout routing.
-	interactive := spec.Instruction != nil && spec.Instruction.Interactive
 	var stdinBytes []byte
-	if len(spec.PrimaryInput) > 0 && !interactive {
+	if len(spec.PrimaryInput) > 0 {
 		stdinBytes = append(stdinBytes, spec.PrimaryInput...)
 	}
 	var stdoutCapture string
@@ -241,10 +240,9 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		cleanup = append(cleanup, rt.StagingDir)
 	}
 
-	// TTY requirement: either an interactive instruction, a job kicked off
-	// by an agent that expects a PTY, or an explicit Interactive flag set by
-	// daemon-side callers (e.g. Web UI command execution).
-	tty := interactive || spec.Instruction != nil || len(stdinBytes) > 0 || spec.Interactive
+	// TTY requirement: an agent job (Instruction != nil), stdin-driven job,
+	// or explicit Interactive flag set by daemon-side callers (e.g. Web UI).
+	tty := spec.Instruction != nil || len(stdinBytes) > 0 || spec.Interactive
 
 	var exitScript string
 	if !rt.Foreground {

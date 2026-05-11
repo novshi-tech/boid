@@ -681,18 +681,13 @@ func TestBuildSandboxSpec_WorktreeBindingExpansion(t *testing.T) {
 }
 
 // contextFiles must materialize payload.yaml / payload.json for every hook
-// that carries PrimaryInput, regardless of the Instruction.Interactive flag.
-// Regression: once the condition was `inst.Interactive && len(PrimaryInput)>0`
-// which silently stripped payload from non-interactive agents such as the
-// rework hook — leaving agents blind to verification findings. See task
-// 2219755f post-mortem.
+// that carries PrimaryInput.
 func TestContextFiles_PayloadWrittenForNonInteractiveHook(t *testing.T) {
 	inst := &orchestrator.RoutedInstruction{
-		Role:        "rework",
-		Type:        "rework",
-		Agent:       "claude-code",
-		Message:     "verification findings に記載された問題を修正せよ。",
-		Interactive: false,
+		Role:    "rework",
+		Type:    "rework",
+		Agent:   "claude-code",
+		Message: "verification findings に記載された問題を修正せよ。",
 	}
 	primary := []byte(`{"verification":{"findings":[{"status":"open","message":"failure"}]}}`)
 
@@ -732,10 +727,9 @@ func TestContextFiles_PayloadWrittenForNonInteractiveHook(t *testing.T) {
 
 func TestContextFiles_PayloadWrittenForInteractiveHook(t *testing.T) {
 	inst := &orchestrator.RoutedInstruction{
-		Role:        "main",
-		Type:        "execution",
-		Agent:       "claude-code",
-		Interactive: true,
+		Role:  "main",
+		Type:  "execution",
+		Agent: "claude-code",
 	}
 	primary := []byte(`{"artifact":null}`)
 
@@ -804,10 +798,9 @@ func TestBuildExitScript_NoFallback(t *testing.T) {
 
 func TestContextFiles_NoPayloadFilesWhenPrimaryInputEmpty(t *testing.T) {
 	inst := &orchestrator.RoutedInstruction{
-		Role:        "main",
-		Type:        "execution",
-		Agent:       "claude-code",
-		Interactive: true,
+		Role:  "main",
+		Type:  "execution",
+		Agent: "claude-code",
 	}
 
 	files := contextFiles(
