@@ -38,8 +38,6 @@ task_behaviors:
   plan:
     name: Plan
     readonly: true
-    kits:
-      - github.com/novshi-tech/boid-kits/boid-tasks
     default_instruction:
       type: execution
       agent: claude-code
