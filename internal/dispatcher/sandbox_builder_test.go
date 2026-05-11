@@ -11,6 +11,41 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
+// TTY はspec.Interactive のみで決まる。Instruction の有無や PrimaryInput(stdin)
+// は Phase 2 以降では TTY に影響しない。
+func TestBuildSandboxSpec_TTYFollowsInteractiveOnly(t *testing.T) {
+	cases := []struct {
+		name        string
+		interactive bool
+		hasInst     bool
+		hasStdin    bool
+		wantTTY     bool
+	}{
+		{name: "Interactive=true → TTY=true", interactive: true, wantTTY: true},
+		{name: "Interactive=false + Instruction → TTY=false", interactive: false, hasInst: true, wantTTY: false},
+		{name: "Interactive=false + stdin → TTY=false", interactive: false, hasStdin: true, wantTTY: false},
+		{name: "Interactive=false, nothing else → TTY=false", interactive: false, wantTTY: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := &orchestrator.JobSpec{Interactive: tc.interactive}
+			if tc.hasInst {
+				spec.Instruction = &orchestrator.RoutedInstruction{}
+			}
+			if tc.hasStdin {
+				spec.PrimaryInput = []byte(`{"key":"value"}`)
+			}
+			result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+			if err != nil {
+				t.Fatalf("BuildSandboxSpec: %v", err)
+			}
+			if result.TTY != tc.wantTTY {
+				t.Errorf("TTY = %v, want %v", result.TTY, tc.wantTTY)
+			}
+		})
+	}
+}
+
 // BOID_HOST_IP はサンドボックス NS からホスト localhost に向かう pasta gateway
 // (10.0.2.2) を指す。proxy の有無に関わらず常に注入して、サンドボックス内プロセ
 // スが http_proxy のパース等に頼らず直接 IP を引けるようにする。

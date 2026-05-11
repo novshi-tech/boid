@@ -13,9 +13,9 @@ type CommandJobInput struct {
 	HostCommands       map[string]orchestrator.HostCommandSpec
 	AdditionalBindings []orchestrator.BindMount
 	Readonly           bool
-	// Interactive forces TTY allocation when dispatched via the daemon runtime.
-	// The CLI exec path leaves this false and overrides TTY after BuildSandboxSpec
-	// based on the real terminal state.
+	// Interactive forces TTY allocation. CLI exec detects the real terminal
+	// state and sets this before calling BuildCommandJobSpec; daemon API (Web
+	// UI) sets this to true unconditionally.
 	Interactive bool
 }
 

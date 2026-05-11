@@ -46,12 +46,11 @@ type execCommandResponse struct {
 }
 
 type execPreparedJob struct {
-	spec    *orchestrator.JobSpec
-	rt      dispatcher.SandboxRuntimeInfo
-	tty     bool
+	spec *orchestrator.JobSpec
+	rt   dispatcher.SandboxRuntimeInfo
 }
 
-func buildExecJob(projectID, commandName string, userArgs []string) (*execPreparedJob, error) {
+func buildExecJob(projectID, commandName string, userArgs []string, interactive bool) (*execPreparedJob, error) {
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
 	var p execProjectData
@@ -96,7 +95,7 @@ func buildExecJob(projectID, commandName string, userArgs []string) (*execPrepar
 		HostCommands:       cmd.HostCommands,
 		AdditionalBindings: cmd.AdditionalBindings,
 		Readonly:           cmd.Readonly,
-		// Interactive=false: TTY is overridden in runExec based on real terminal state.
+		Interactive:        interactive,
 	})
 
 	var brokerSocket, brokerToken string
@@ -195,21 +194,21 @@ func runExec(cobraCmd *cobra.Command, args []string) error {
 
 	commandName := args[0]
 	userArgs := args[1:]
-	prepared, err := buildExecJob(p.ID, commandName, userArgs)
-	if err != nil {
-		return err
+
+	interactive := false
+	if fileInfo, _ := os.Stdin.Stat(); fileInfo.Mode()&os.ModeCharDevice != 0 {
+		interactive = true
 	}
 
-	if fileInfo, _ := os.Stdin.Stat(); fileInfo.Mode()&os.ModeCharDevice != 0 {
-		prepared.tty = true
+	prepared, err := buildExecJob(p.ID, commandName, userArgs, interactive)
+	if err != nil {
+		return err
 	}
 
 	sbSpec, err := dispatcher.BuildSandboxSpec(prepared.spec, prepared.rt)
 	if err != nil {
 		return fmt.Errorf("build sandbox spec: %w", err)
 	}
-	// exec is interactive / terminal-driven; override TTY only when caller has a real TTY.
-	sbSpec.TTY = prepared.tty
 
 	outerPath, err := dispatcher.NewSandboxPreparer().PrepareSandbox(sbSpec)
 	if err != nil {

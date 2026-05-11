@@ -240,9 +240,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		cleanup = append(cleanup, rt.StagingDir)
 	}
 
-	// TTY requirement: an agent job (Instruction != nil), stdin-driven job,
-	// or explicit Interactive flag set by daemon-side callers (e.g. Web UI).
-	tty := spec.Instruction != nil || len(stdinBytes) > 0 || spec.Interactive
+	tty := spec.Interactive
 
 	var exitScript string
 	if !rt.Foreground {
