@@ -738,6 +738,72 @@ func TestRecreate_BaseBranchUnresolvable(t *testing.T) {
 	}
 }
 
+// TestManager_Create_EnsuresBoidDir verifies that Create makes a `.boid/` directory
+// in the new worktree even when the source repo doesn't track one. The sandbox
+// bind-mounts <project>/.boid → <worktree>/.boid; if the target dir is missing
+// and the worktree is mounted readonly (plan tasks), the bind fails with EROFS.
+func TestManager_Create_EnsuresBoidDir(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t) // initial commit has only README.md, no .boid/
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-1', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-bdir0001-0001', 'proj-1', 'ensure boid dir', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	w, err := mgr.Create(repo, "proj-1", "task-bdir0001-0001", "boid/", "HEAD")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	boidDir := filepath.Join(w.Path, ".boid")
+	info, err := os.Stat(boidDir)
+	if err != nil {
+		t.Fatalf(".boid dir should exist in worktree: %v", err)
+	}
+	if !info.IsDir() {
+		t.Errorf(".boid should be a directory")
+	}
+
+	mgr.Remove(repo, "task-bdir0001-0001", true)
+}
+
+// TestManager_Recreate_EnsuresBoidDir verifies that Recreate also makes `.boid/`
+// in the rebuilt worktree (same rationale as Create — recreate is used on rerun
+// and reopen, both of which feed back into the sandbox).
+func TestManager_Recreate_EnsuresBoidDir(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-1', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-rbdir001-0001', 'proj-1', 'recreate ensure boid', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	if _, err := mgr.Create(repo, "proj-1", "task-rbdir001-0001", "boid/", "HEAD"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := mgr.Remove(repo, "task-rbdir001-0001", false); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	recreated, err := mgr.Recreate(repo, "task-rbdir001-0001")
+	if err != nil {
+		t.Fatalf("Recreate: %v", err)
+	}
+
+	boidDir := filepath.Join(recreated.Path, ".boid")
+	info, err := os.Stat(boidDir)
+	if err != nil {
+		t.Fatalf(".boid dir should exist in recreated worktree: %v", err)
+	}
+	if !info.IsDir() {
+		t.Errorf(".boid should be a directory")
+	}
+}
+
 func TestManager_DefaultBranchPrefix(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	repo := initGitRepo(t)
