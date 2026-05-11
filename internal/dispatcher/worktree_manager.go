@@ -126,6 +126,14 @@ func (m *WorktreeManager) Create(projectDir, projectID, taskID, branchPrefix, ba
 		return nil, fmt.Errorf("worktree HEAD mismatch: expected %s, got %s", expectedRef, actualRef)
 	}
 
+	// Ensure <wtPath>/.boid exists so the sandbox bind-mount target is present
+	// even when the project's .boid is untracked (otherwise readonly worktree
+	// mounts fail with EROFS during the bind setup).
+	if err := os.MkdirAll(filepath.Join(wtPath, ".boid"), 0o755); err != nil {
+		exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", wtPath).Run()
+		return nil, fmt.Errorf("ensure .boid dir: %w", err)
+	}
+
 	w := &Worktree{
 		TaskID:     taskID,
 		ProjectID:  projectID,
@@ -258,6 +266,12 @@ func (m *WorktreeManager) Recreate(projectDir string, taskID string) (*Worktree,
 	}
 	if out, err := wtCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("git worktree add: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+
+	// Same rationale as Create: bind-mount target must exist on a readonly worktree.
+	if err := os.MkdirAll(filepath.Join(w.Path, ".boid"), 0o755); err != nil {
+		exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", w.Path).Run()
+		return nil, fmt.Errorf("ensure .boid dir: %w", err)
 	}
 
 	if err := ClearWorktreeCleaned(m.DB, taskID); err != nil {
