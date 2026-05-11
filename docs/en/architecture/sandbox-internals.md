@@ -163,6 +163,53 @@ The two safety guards:
 
 Both guards are there because this code path was broken at one point: a stale bind mount caused a sandbox cleanup to delete files outside `$ROOT`. The current implementation hardens the own-namespace, cross-namespace, and chroot-holder paths.
 
+## Allowed boid builtins from inside the sandbox
+
+Handlers running inside the sandbox (hook, gate, exec) can call two built-in commands: `boid` and `git`.
+Both are injected automatically — no declaration in `project.yaml` / `kit.yaml` is needed.
+
+### boid builtin
+
+All roles (hook and gate) share the same allowed op set — there is no role branching.
+
+| Op (sandbox protocol) | Corresponding CLI | Purpose |
+|---|---|---|
+| `job_done` | `boid job done <id>` | Notify the daemon that this job completed |
+| `job_list` | `boid job list --task <id>` | List jobs belonging to a task |
+| `job_show` | `boid job show <id>` | Show job detail |
+| `job_log` | `boid job log <id>` | Retrieve job execution log |
+| `action_send` | `boid action send` | Dispatch a manual action |
+| `task_create` | `boid task create` | Create a child task |
+| `task_get` | `boid task get <id> --field <name>` | Read a single task field |
+| `task_update` | `boid task update <id>` | Update task fields |
+| `task_import` | `boid task import` | Bulk-import tasks |
+| `task.reopen` | `boid task reopen <id>` | Transition a done task back to executing |
+| `task_list` | `boid task list` | List tasks in the workspace |
+| `task_notify` | `boid task notify <id>` | Send a notification or Q&A (`--ask`) |
+| `task_answer` | `boid task answer` | Transition awaiting → executing |
+| `task_delete` | `boid task delete <id>` | Delete a task |
+
+> **Note:** `task.reopen` uses a `.` separator for historical reasons; all other ops use `_`.
+
+### git builtin
+
+All roles share the same allowed op set.
+
+| Op | Corresponding CLI | Purpose |
+|---|---|---|
+| `fetch` | `git fetch ...` | Fetch from remote |
+| `push` | `git push ...` | Push to remote |
+| `push_delete` | `git push origin --delete <branch>` | Delete a remote branch |
+
+### Design notes
+
+- **No role branching** — `boid` and `git` policies use `_ Role`; every role gets the same op set.
+  Add a role `switch` inside `policyFor` only when a new builtin genuinely needs role-specific restrictions.
+- **Source of truth** — `internal/orchestrator/policy.go`, functions `boidPolicy` / `gitPolicy`.
+- **Sandbox-side enum** — `internal/sandbox/protocol.go`.
+- **Cross-workspace access** is denied by the broker (`internal/sandbox/broker.go` `handleBoidBuiltin`)
+  via `entry.Context.AllowsProject(...)` and similar guards — the op set above does not bypass these checks.
+
 ## Related documents
 
 - [Architecture overview](overview.md) — where the sandbox layer sits.
