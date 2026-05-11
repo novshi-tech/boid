@@ -1446,9 +1446,6 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 				if inst.Model == "" {
 					inst.Model = active.Model
 				}
-				if !inst.Interactive {
-					inst.Interactive = active.Interactive
-				}
 			}
 			newTask.Instructions = orchestrator.AppendInstruction(task.Instructions, inst)
 			reopenPayloadConsumed = true

@@ -135,12 +135,11 @@ func FilterInstructions(instructions Instructions, instType InstructionType, age
 		return nil
 	}
 	return []RoutedInstruction{{
-		Role:        active.Name,
-		Type:        instType,
-		Agent:       active.Agent,
-		Name:        active.Name,
-		Message:     resolveMessage(active, instType),
-		Interactive: active.Interactive,
-		Model:       active.Model,
+		Role:    active.Name,
+		Type:    instType,
+		Agent:   active.Agent,
+		Name:    active.Name,
+		Message: resolveMessage(active, instType),
+		Model:   active.Model,
 	}}
 }
