@@ -69,7 +69,7 @@ func HookReplayList(taskID, status string, hooks []orchestrator.Hook, errorMsg s
 				return templ_7745c5c3_Err
 			}
 			if len(hooks) == 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<p style=\"color:#888\">このタスクには再発火可能なフックがありません。</p>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<p style=\"color:#888\">No replayable hooks for this task.</p>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -128,7 +128,7 @@ func HookReplayList(taskID, status string, hooks []orchestrator.Hook, errorMsg s
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "\" onsubmit=\"return confirm('本当にフックを再発火しますか？')\"><button type=\"submit\" class=\"btn btn-primary\">replay</button></form></div></div>")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "\" onsubmit=\"return confirm('Replay this hook?')\"><button type=\"submit\" class=\"btn btn-primary\">replay</button></form></div></div>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}

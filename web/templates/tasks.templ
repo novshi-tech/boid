@@ -262,14 +262,14 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 	if activeTab == "description" && editMode {
 		<div class="action-bar">
 			<div class="action-bar-inner">
-				<button type="submit" form="desc-edit-form" class="btn btn-primary action-bar-primary-form">保存</button>
-				<a href={ templ.SafeURL("/tasks/" + task.ID + "?tab=description") } class="btn btn-secondary">キャンセル</a>
+				<button type="submit" form="desc-edit-form" class="btn btn-primary action-bar-primary-form">Save</button>
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "?tab=description") } class="btn btn-secondary">Cancel</a>
 			</div>
 		</div>
 	} else if activeTab == "description" {
 		<div class="action-bar">
 			<div class="action-bar-inner">
-				<a href={ templ.SafeURL("/tasks/" + task.ID + "?tab=description&mode=edit") } class="btn btn-secondary action-bar-primary-form">編集</a>
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "?tab=description&mode=edit") } class="btn btn-secondary action-bar-primary-form">Edit</a>
 				<span class="action-bar-spacer"></span>
 			</div>
 		</div>
@@ -278,17 +278,17 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 			<div class="action-bar-inner">
 				if task.Status == orchestrator.TaskStatusDone {
 					<a href={ templ.SafeURL("/tasks/" + task.ID + "/reopen") } class="btn btn-primary action-bar-primary-form">Reopen</a>
-					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('本当に再実行しますか？')">
+					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('Rerun this task?')">
 						<button type="submit" class="btn btn-secondary">Rerun</button>
 					</form>
 				} else {
 					{{ action, label := detailPrimaryAction(task, availableActions) }}
 					if action == "rerun" {
-						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('本当に再実行しますか？')" class="action-bar-primary-form">
+						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('Rerun this task?')" class="action-bar-primary-form">
 							<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
 						</form>
 					} else if action == "abort" {
-						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')" class="action-bar-primary-form">
+						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('Abort this task?')" class="action-bar-primary-form">
 							<input type="hidden" name="type" value="abort"/>
 							<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
 						</form>
@@ -302,18 +302,18 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 					}
 				}
 				<details class="action-menu">
-					<summary class="action-menu-summary" aria-label="その他のアクション">⋯</summary>
+					<summary class="action-menu-summary" aria-label="More actions">⋯</summary>
 					<div class="action-menu-list" role="menu">
 						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/duplicate") }>
 							<button type="submit" class="action-menu-item">duplicate</button>
 						</form>
 						if task.Status != orchestrator.TaskStatusDone && task.Status != orchestrator.TaskStatusAborted && task.Status != orchestrator.TaskStatusPending {
-							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('本当に中止しますか？')">
+							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('Abort this task?')">
 								<input type="hidden" name="type" value="abort"/>
 								<button type="submit" class="action-menu-item action-menu-item-danger">abort</button>
 							</form>
 						}
-						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/delete") } onsubmit="return confirm('本当に削除しますか？この操作は取り消せません。')">
+						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/delete") } onsubmit="return confirm('Delete this task? This cannot be undone.')">
 							<button type="submit" class="action-menu-item action-menu-item-danger">delete</button>
 						</form>
 					</div>
@@ -397,7 +397,7 @@ templ TaskDetailTimelineSection(task *orchestrator.Task, groups []timeline.Statu
 			@TaskDetailAwaitingBanner(task)
 		}
 		if len(groups) == 0 {
-			<p class="tab-empty">(履歴なし)</p>
+			<p class="tab-empty">(no history)</p>
 		} else {
 			<div class="timeline">
 				for _, group := range groups {
@@ -483,14 +483,14 @@ templ TaskDetailAwaitingBanner(task *orchestrator.Task) {
 templ TaskDetailDependenciesSection(upstream, downstream []DepsTreeRow) {
 	<div class="tab-content">
 		if len(upstream) == 0 && len(downstream) == 0 {
-			<p class="tab-empty">(依存関係なし)</p>
+			<p class="tab-empty">(no dependencies)</p>
 		} else {
 			if len(upstream) > 0 {
-				<h3 class="deps-section-title">依存先 <span class="deps-section-hint">このタスクが依存している</span></h3>
+				<h3 class="deps-section-title">Depends on <span class="deps-section-hint">tasks this task depends on</span></h3>
 				@depsTree(upstream)
 			}
 			if len(downstream) > 0 {
-				<h3 class="deps-section-title">依存元 <span class="deps-section-hint">このタスクに依存している</span></h3>
+				<h3 class="deps-section-title">Depended by <span class="deps-section-hint">tasks that depend on this task</span></h3>
 				@depsTree(downstream)
 			}
 		}
@@ -526,7 +526,7 @@ templ TaskDetailJobsSection(jobs []*JobView) {
 	<div id="task-jobs">
 		if len(jobs) > 0 {
 			<div class="card">
-				<h2 class="section-title">ジョブ</h2>
+				<h2 class="section-title">Jobs</h2>
 				<div class="job-list">
 					for _, job := range jobs {
 						<div class="job-row">
@@ -551,7 +551,7 @@ templ TaskDetailJobsSection(jobs []*JobView) {
 			</div>
 		} else {
 			<div class="card">
-				<p style="color:#888;margin:0">ジョブがありません</p>
+				<p style="color:#888;margin:0">No jobs</p>
 			</div>
 		}
 	</div>
@@ -671,7 +671,7 @@ templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Stat
 					if task.Description != "" {
 						<div class="qa-md-body">@renderMarkdown(task.Description)</div>
 					} else {
-						<p class="tab-empty">(未設定)</p>
+						<p class="tab-empty">(not set)</p>
 					}
 				</div>
 			}
@@ -681,7 +681,7 @@ templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Stat
 				if yamlStr != "" {
 					<pre class="tab-body-pre">{ yamlStr }</pre>
 				} else {
-					<p class="tab-empty">(未設定)</p>
+					<p class="tab-empty">(not set)</p>
 				}
 			</div>
 		} else if activeTab == "instructions" {
@@ -704,12 +704,12 @@ templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Stat
 							if inst.Message != "" {
 								<pre class="tab-body-pre instr-message">{ inst.Message }</pre>
 							} else {
-								<p class="tab-empty">(message 未設定)</p>
+								<p class="tab-empty">(no message)</p>
 							}
 						</section>
 					}
 				} else {
-					<p class="tab-empty">(未設定)</p>
+					<p class="tab-empty">(not set)</p>
 				}
 			</div>
 		} else if activeTab == "dependencies" {
@@ -804,7 +804,7 @@ templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.S
 					hx-push-url="true"
 				>{ subLabel }</a>
 				<details class="tab-dropdown-toggle-wrap">
-					<summary class="tab-dropdown-toggle" aria-label="詳細タブ一覧">
+					<summary class="tab-dropdown-toggle" aria-label="More tabs">
 						<span aria-hidden="true">▾</span>
 					</summary>
 					<div class="tab-more-menu" role="menu">
@@ -826,7 +826,7 @@ templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.S
 templ TaskDetailCommandsSection(taskID string, commands []CommandView) {
 	if len(commands) > 0 {
 		<div class="card">
-			<h2 class="section-title">コマンド</h2>
+			<h2 class="section-title">Commands</h2>
 			<div class="cmd-list">
 				for _, cmd := range commands {
 					<div class="cmd-row">
@@ -841,9 +841,9 @@ templ TaskDetailCommandsSection(taskID string, commands []CommandView) {
 							method="post"
 							action={ templ.SafeURL("/tasks/" + taskID + "/commands/" + cmd.Name + "/execute") }
 							data-name={ cmd.Name }
-							onsubmit="return confirm(this.dataset.name+' を実行しますか？')"
+							onsubmit="return confirm('Run ' + this.dataset.name + '?')"
 						>
-							<button type="submit" class="btn btn-secondary btn-sm">実行</button>
+							<button type="submit" class="btn btn-secondary btn-sm">Run</button>
 						</form>
 					</div>
 				}

@@ -13,7 +13,7 @@ templ HookReplayList(taskID, status string, hooks []orchestrator.Hook, errorMsg 
 		}
 		<div class="card">
 			if len(hooks) == 0 {
-				<p style="color:#888">このタスクには再発火可能なフックがありません。</p>
+				<p style="color:#888">No replayable hooks for this task.</p>
 			} else {
 				<div class="job-list">
 					for _, hook := range hooks {
@@ -25,7 +25,7 @@ templ HookReplayList(taskID, status string, hooks []orchestrator.Hook, errorMsg 
 								}
 							</div>
 							<div style="margin-top:8px">
-								<form method="post" action={ templ.SafeURL(hookReplayPath(taskID, hook.ID)) } onsubmit="return confirm('本当にフックを再発火しますか？')">
+								<form method="post" action={ templ.SafeURL(hookReplayPath(taskID, hook.ID)) } onsubmit="return confirm('Replay this hook?')">
 									<button type="submit" class="btn btn-primary">replay</button>
 								</form>
 							</div>

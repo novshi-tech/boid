@@ -182,8 +182,8 @@ func TestJobDetail_GateJobWithRunningTerminal(t *testing.T) {
 		t.Error("gate job should not embed boid-terminal (suppressed for hook/gate jobs)")
 	}
 	// gate job は Interactive であっても「全画面で開く」リンクを表示しない。
-	if strings.Contains(html, "全画面で開く") {
-		t.Error("gate job should not show 全画面で開く link (suppressed for hook/gate jobs)")
+	if strings.Contains(html, "Open Fullscreen") {
+		t.Error("gate job should not show Open Fullscreen link (suppressed for hook/gate jobs)")
 	}
 }
 
@@ -200,7 +200,7 @@ func TestJobDetail_HookJob_InteractiveStale_NoInteractiveMessage(t *testing.T) {
 	if strings.Contains(html, "job-log-note") {
 		t.Error("hook job with stale interactive=true should not show interactive note paragraph")
 	}
-	if strings.Contains(html, "インタラクティブです") {
+	if strings.Contains(html, "This job is interactive") {
 		t.Error("hook job with stale interactive=true should not show interactive message")
 	}
 	// SSE 分岐に流れるので静的 pre は出力されること。

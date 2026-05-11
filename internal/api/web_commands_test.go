@@ -91,7 +91,7 @@ func TestProjectCommandList_EmptyCommands(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, "commands は定義されていません") {
+	if !strings.Contains(body, "no commands defined") {
 		t.Errorf("should show empty state, got: %s", body[:min(300, len(body))])
 	}
 }

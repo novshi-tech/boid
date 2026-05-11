@@ -77,7 +77,7 @@ templ TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values
 				<div class="form-group">
 					<label for="project_id" class="form-label">Project</label>
 					<select id="project_id" name="project_id" class="form-input">
-						<option value="">-- 選択 --</option>
+						<option value="">-- Select --</option>
 						for _, p := range projects {
 							<option value={ p.ID } selected?={ form.Get("project_id") == p.ID }>{ taskNewProjectLabel(p) }</option>
 						}
@@ -91,7 +91,7 @@ templ TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values
 						class="form-input"
 						data-behaviors-by-project={ taskNewBehaviorsByProjectJSON(projects) }
 					>
-						<option value="">-- 選択 --</option>
+						<option value="">-- Select --</option>
 						for _, b := range taskNewBehaviors(projects) {
 							<option value={ b } selected?={ form.Get("behavior") == b }>{ b }</option>
 						}
@@ -133,7 +133,7 @@ templ TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values
 					var current = behSel.value;
 					var list;
 					if (pid && data[pid]) {
-						list = [{ value: "", label: "-- 選択 --" }].concat(
+						list = [{ value: "", label: "-- Select --" }].concat(
 							data[pid].map(function (b) { return { value: b, label: b }; })
 						);
 					} else {

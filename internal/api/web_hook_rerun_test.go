@@ -80,7 +80,7 @@ func TestWebHandler_HookReplayList_Renders(t *testing.T) {
 	if !strings.Contains(body, "replay") {
 		t.Errorf("response should contain replay button, got: %s", body)
 	}
-	if !strings.Contains(body, "本当にフックを再発火しますか") {
+	if !strings.Contains(body, "Replay this hook?") {
 		t.Errorf("response should contain confirm dialog text, got: %s", body)
 	}
 }
@@ -97,7 +97,7 @@ func TestWebHandler_HookReplayList_Empty(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, "再発火可能なフックがありません") {
+	if !strings.Contains(body, "No replayable hooks for this task.") {
 		t.Errorf("response should indicate no hooks, got: %s", body)
 	}
 }

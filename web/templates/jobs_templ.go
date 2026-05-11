@@ -239,7 +239,7 @@ func JobDetail(job *JobContextView) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			} else if job.Interactive && job.HookID == "" && job.GateID == "" {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, " <p class=\"job-log-note\">このジョブはインタラクティブです。リアルタイム出力は表示できません &mdash; 完了後の transcript は ANSI エスケープシーケンスを含むため表示できません。</p>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, " <p class=\"job-log-note\">This job is interactive. Live output is not available &mdash; the completed transcript contains ANSI escape sequences and cannot be rendered.</p>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -323,7 +323,7 @@ func JobDetail(job *JobContextView) templ.Component {
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, "\" onsubmit=\"return confirm('本当にゲートを再発火しますか？')\" class=\"action-bar-primary-form\"><button type=\"submit\" class=\"btn btn-primary\">Replay gate</button></form>")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, "\" onsubmit=\"return confirm('Replay this gate?')\" class=\"action-bar-primary-form\"><button type=\"submit\" class=\"btn btn-primary\">Replay gate</button></form>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -342,7 +342,7 @@ func JobDetail(job *JobContextView) templ.Component {
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 23, "\" onsubmit=\"return confirm('本当にフックを再発火しますか？')\" class=\"action-bar-primary-form\"><button type=\"submit\" class=\"btn btn-primary\">Replay hook</button></form>")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 23, "\" onsubmit=\"return confirm('Replay this hook?')\" class=\"action-bar-primary-form\"><button type=\"submit\" class=\"btn btn-primary\">Replay hook</button></form>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -365,7 +365,7 @@ func JobDetail(job *JobContextView) templ.Component {
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 26, "\" target=\"_blank\" rel=\"noopener\" class=\"btn btn-secondary\">全画面で開く</a>")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 26, "\" target=\"_blank\" rel=\"noopener\" class=\"btn btn-secondary\">Open Fullscreen</a>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}

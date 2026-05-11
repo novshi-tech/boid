@@ -1,15 +1,15 @@
 package templates
 
 templ Login(errorMsg string) {
-	@Layout("ログイン", "") {
+	@Layout("Login", "") {
 		<div class="login-container">
-			<h1 class="login-title">デバイス認証</h1>
+			<h1 class="login-title">Device Authentication</h1>
 			if errorMsg != "" {
 				<p class="login-error" role="alert">{ errorMsg }</p>
 			}
 			<form id="login-form" class="login-form" novalidate>
 				<div class="form-group">
-					<label for="code" class="form-label">ペアリングコード</label>
+					<label for="code" class="form-label">Pairing Code</label>
 					<input
 						type="text"
 						id="code"
@@ -23,7 +23,7 @@ templ Login(errorMsg string) {
 						required
 					/>
 				</div>
-				<button type="submit" class="btn btn-primary">認証する</button>
+				<button type="submit" class="btn btn-primary">Authenticate</button>
 			</form>
 		</div>
 		<script>

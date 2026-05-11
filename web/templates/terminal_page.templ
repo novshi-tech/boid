@@ -30,13 +30,13 @@ templ TerminalPage(title string, backURL string, jobId string, wsPath string) {
 
 // TerminalNotReady renders an error page when a job is not running.
 templ TerminalNotReady(jobId string, reason string) {
-	@Layout("ターミナル接続不可", "/jobs/"+jobId) {
+	@Layout("Terminal Not Available", "/jobs/"+jobId) {
 		<div class="detail-card task-row-status-pending">
 			<div class="detail-meta">
-				<span>接続できません</span>
+				<span>Not connected</span>
 			</div>
 		</div>
 		<p class="empty-state">{ reason }</p>
-		<p><a href={ templ.SafeURL("/jobs/" + jobId) }>← ジョブ詳細に戻る</a></p>
+		<p><a href={ templ.SafeURL("/jobs/" + jobId) }>← Back to job</a></p>
 	}
 }

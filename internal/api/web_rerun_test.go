@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
@@ -132,7 +131,7 @@ func TestWebHandler_GateReplayList_Renders(t *testing.T) {
 	if !strings.Contains(body, "replay") {
 		t.Errorf("response should contain replay button, got: %s", body)
 	}
-	if !strings.Contains(body, "本当にゲートを再発火しますか") {
+	if !strings.Contains(body, "Replay this gate?") {
 		t.Errorf("response should contain confirm dialog text, got: %s", body)
 	}
 }
@@ -149,7 +148,7 @@ func TestWebHandler_GateReplayList_Empty(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, "再発火可能なゲートがありません") {
+	if !strings.Contains(body, "No replayable gates for this task.") {
 		t.Errorf("response should indicate no gates, got: %s", body)
 	}
 }
@@ -216,7 +215,7 @@ func TestWebHandler_TaskDetail_ContainsRerunButton(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, url.QueryEscape("本当に再実行しますか")) && !strings.Contains(body, "本当に再実行しますか") {
+	if !strings.Contains(body, "Rerun this task?") {
 		t.Errorf("task detail should contain rerun confirm text, got: %s", body)
 	}
 	if !strings.Contains(body, "rerun") {

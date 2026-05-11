@@ -41,7 +41,7 @@ func Login(errorMsg string) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"login-container\"><h1 class=\"login-title\">デバイス認証</h1>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"login-container\"><h1 class=\"login-title\">Device Authentication</h1>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -64,13 +64,13 @@ func Login(errorMsg string) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<form id=\"login-form\" class=\"login-form\" novalidate><div class=\"form-group\"><label for=\"code\" class=\"form-label\">ペアリングコード</label> <input type=\"text\" id=\"code\" name=\"code\" class=\"form-input\" placeholder=\"WX7K-4QJP\" autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"characters\" spellcheck=\"false\" required></div><button type=\"submit\" class=\"btn btn-primary\">認証する</button></form></div><script>\n\t\t\t(function () {\n\t\t\t\tvar form = document.getElementById(\"login-form\");\n\t\t\t\tform.addEventListener(\"submit\", function (e) {\n\t\t\t\t\te.preventDefault();\n\t\t\t\t\tvar m = document.cookie.match(/(?:^|;)\\s*csrf_token=([^;]+)/);\n\t\t\t\t\tvar csrf = m ? decodeURIComponent(m[1]) : \"\";\n\t\t\t\t\tfetch(\"/login\", {\n\t\t\t\t\t\tmethod: \"POST\",\n\t\t\t\t\t\theaders: {\n\t\t\t\t\t\t\t\"Content-Type\": \"application/x-www-form-urlencoded\",\n\t\t\t\t\t\t\t\"X-CSRF-Token\": csrf,\n\t\t\t\t\t\t},\n\t\t\t\t\t\tbody: \"code=\" + encodeURIComponent(document.getElementById(\"code\").value),\n\t\t\t\t\t\tredirect: \"manual\",\n\t\t\t\t\t}).then(function (r) {\n\t\t\t\t\t\tif (r.type === \"opaqueredirect\") {\n\t\t\t\t\t\t\twindow.location.href = \"/\";\n\t\t\t\t\t\t} else {\n\t\t\t\t\t\t\tr.text().then(function (html) {\n\t\t\t\t\t\t\t\tdocument.open();\n\t\t\t\t\t\t\t\tdocument.write(html);\n\t\t\t\t\t\t\t\tdocument.close();\n\t\t\t\t\t\t\t});\n\t\t\t\t\t\t}\n\t\t\t\t\t});\n\t\t\t\t});\n\t\t\t})();\n\t\t</script>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<form id=\"login-form\" class=\"login-form\" novalidate><div class=\"form-group\"><label for=\"code\" class=\"form-label\">Pairing Code</label> <input type=\"text\" id=\"code\" name=\"code\" class=\"form-input\" placeholder=\"WX7K-4QJP\" autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"characters\" spellcheck=\"false\" required></div><button type=\"submit\" class=\"btn btn-primary\">Authenticate</button></form></div><script>\n\t\t\t(function () {\n\t\t\t\tvar form = document.getElementById(\"login-form\");\n\t\t\t\tform.addEventListener(\"submit\", function (e) {\n\t\t\t\t\te.preventDefault();\n\t\t\t\t\tvar m = document.cookie.match(/(?:^|;)\\s*csrf_token=([^;]+)/);\n\t\t\t\t\tvar csrf = m ? decodeURIComponent(m[1]) : \"\";\n\t\t\t\t\tfetch(\"/login\", {\n\t\t\t\t\t\tmethod: \"POST\",\n\t\t\t\t\t\theaders: {\n\t\t\t\t\t\t\t\"Content-Type\": \"application/x-www-form-urlencoded\",\n\t\t\t\t\t\t\t\"X-CSRF-Token\": csrf,\n\t\t\t\t\t\t},\n\t\t\t\t\t\tbody: \"code=\" + encodeURIComponent(document.getElementById(\"code\").value),\n\t\t\t\t\t\tredirect: \"manual\",\n\t\t\t\t\t}).then(function (r) {\n\t\t\t\t\t\tif (r.type === \"opaqueredirect\") {\n\t\t\t\t\t\t\twindow.location.href = \"/\";\n\t\t\t\t\t\t} else {\n\t\t\t\t\t\t\tr.text().then(function (html) {\n\t\t\t\t\t\t\t\tdocument.open();\n\t\t\t\t\t\t\t\tdocument.write(html);\n\t\t\t\t\t\t\t\tdocument.close();\n\t\t\t\t\t\t\t});\n\t\t\t\t\t\t}\n\t\t\t\t\t});\n\t\t\t\t});\n\t\t\t})();\n\t\t</script>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = Layout("ログイン", "").Render(templ.WithChildren(ctx, templ_7745c5c3_Var2), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = Layout("Login", "").Render(templ.WithChildren(ctx, templ_7745c5c3_Var2), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

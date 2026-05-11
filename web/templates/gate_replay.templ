@@ -13,7 +13,7 @@ templ GateReplayList(taskID, status string, gates []orchestrator.Gate, errorMsg 
 		}
 		<div class="card">
 			if len(gates) == 0 {
-				<p style="color:#888">このタスクには再発火可能なゲートがありません。</p>
+				<p style="color:#888">No replayable gates for this task.</p>
 			} else {
 				<div class="job-list">
 					for _, gate := range gates {
@@ -26,7 +26,7 @@ templ GateReplayList(taskID, status string, gates []orchestrator.Gate, errorMsg 
 								}
 							</div>
 							<div style="margin-top:8px">
-								<form method="post" action={ templ.SafeURL(gateReplayPath(taskID, gate.ID)) } onsubmit="return confirm('本当にゲートを再発火しますか？')">
+								<form method="post" action={ templ.SafeURL(gateReplayPath(taskID, gate.ID)) } onsubmit="return confirm('Replay this gate?')">
 									<button type="submit" class="btn btn-primary">replay</button>
 								</form>
 							</div>
