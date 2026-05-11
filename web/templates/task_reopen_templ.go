@@ -46,7 +46,7 @@ func TaskReopen(task *orchestrator.Task) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<p class=\"form-hint\">Reopen は done タスクを executing に戻し、任意のメッセージを新しい instruction として追記します。</p><div class=\"task-form-body\"><form id=\"task-reopen-form\" method=\"post\" action=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<p class=\"form-hint\">Reopen moves a done task back to executing and appends an optional message as a new instruction.</p><div class=\"task-form-body\"><form id=\"task-reopen-form\" method=\"post\" action=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -59,7 +59,7 @@ func TaskReopen(task *orchestrator.Task) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\"><div class=\"form-group\"><label for=\"message\" class=\"form-label\">Message (任意)</label> <textarea id=\"message\" name=\"message\" class=\"form-input\" rows=\"6\" placeholder=\"任意: agent への追加指示 (例: PR review feedback)...\"></textarea></div></form></div><div class=\"action-bar\"><div class=\"action-bar-inner\"><button type=\"submit\" form=\"task-reopen-form\" class=\"btn btn-primary action-bar-primary-form\">Reopen</button> <span class=\"action-bar-spacer\"></span></div></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\"><div class=\"form-group\"><label for=\"message\" class=\"form-label\">Message (optional)</label> <textarea id=\"message\" name=\"message\" class=\"form-input\" rows=\"6\" placeholder=\"Optional: additional instructions for the agent (e.g. PR review feedback)...\"></textarea></div></form></div><div class=\"action-bar\"><div class=\"action-bar-inner\"><button type=\"submit\" form=\"task-reopen-form\" class=\"btn btn-primary action-bar-primary-form\">Reopen</button> <span class=\"action-bar-spacer\"></span></div></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

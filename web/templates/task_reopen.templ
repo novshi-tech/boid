@@ -7,12 +7,12 @@ import "github.com/novshi-tech/boid/internal/orchestrator"
 // that is appended to the task's instruction history.
 templ TaskReopen(task *orchestrator.Task) {
 	@Layout("Reopen Task", "/tasks/"+task.ID) {
-		<p class="form-hint">Reopen は done タスクを executing に戻し、任意のメッセージを新しい instruction として追記します。</p>
+		<p class="form-hint">Reopen moves a done task back to executing and appends an optional message as a new instruction.</p>
 		<div class="task-form-body">
 			<form id="task-reopen-form" method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/reopen") }>
 				<div class="form-group">
-					<label for="message" class="form-label">Message (任意)</label>
-					<textarea id="message" name="message" class="form-input" rows="6" placeholder="任意: agent への追加指示 (例: PR review feedback)..."></textarea>
+					<label for="message" class="form-label">Message (optional)</label>
+					<textarea id="message" name="message" class="form-input" rows="6" placeholder="Optional: additional instructions for the agent (e.g. PR review feedback)..."></textarea>
 				</div>
 			</form>
 		</div>

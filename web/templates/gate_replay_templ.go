@@ -69,7 +69,7 @@ func GateReplayList(taskID, status string, gates []orchestrator.Gate, errorMsg s
 				return templ_7745c5c3_Err
 			}
 			if len(gates) == 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<p style=\"color:#888\">このタスクには再発火可能なゲートがありません。</p>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<p style=\"color:#888\">No replayable gates for this task.</p>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -141,7 +141,7 @@ func GateReplayList(taskID, status string, gates []orchestrator.Gate, errorMsg s
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "\" onsubmit=\"return confirm('本当にゲートを再発火しますか？')\"><button type=\"submit\" class=\"btn btn-primary\">replay</button></form></div></div>")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "\" onsubmit=\"return confirm('Replay this gate?')\"><button type=\"submit\" class=\"btn btn-primary\">replay</button></form></div></div>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}

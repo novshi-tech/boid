@@ -136,7 +136,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "\"></div><div class=\"form-group\"><label for=\"project_id\" class=\"form-label\">Project</label> <select id=\"project_id\" name=\"project_id\" class=\"form-input\"><option value=\"\">-- 選択 --</option> ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "\"></div><div class=\"form-group\"><label for=\"project_id\" class=\"form-label\">Project</label> <select id=\"project_id\" name=\"project_id\" class=\"form-input\"><option value=\"\">-- Select --</option> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -195,7 +195,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "\"><option value=\"\">-- 選択 --</option> ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "\"><option value=\"\">-- Select --</option> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -264,7 +264,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "> <span>Auto Start</span></label></div></form></div><div class=\"action-bar\"><div class=\"action-bar-inner\"><button type=\"submit\" form=\"task-new-form\" class=\"btn btn-primary action-bar-primary-form\">Create</button> <span class=\"action-bar-spacer\"></span></div></div><script>\n\t\t\t(function () {\n\t\t\t\tvar projSel = document.getElementById(\"project_id\");\n\t\t\t\tvar behSel = document.getElementById(\"behavior\");\n\t\t\t\tvar data = {};\n\t\t\t\ttry {\n\t\t\t\t\tdata = JSON.parse(behSel.dataset.behaviorsByProject || \"{}\");\n\t\t\t\t} catch (e) { data = {}; }\n\t\t\t\t// Snapshot the initial (union) behavior options as fallback\n\t\t\t\t// when no project is selected.\n\t\t\t\tvar allOptions = Array.prototype.slice.call(behSel.options).map(function (o) {\n\t\t\t\t\treturn { value: o.value, label: o.textContent };\n\t\t\t\t});\n\t\t\t\tfunction rebuild() {\n\t\t\t\t\tvar pid = projSel.value;\n\t\t\t\t\tvar current = behSel.value;\n\t\t\t\t\tvar list;\n\t\t\t\t\tif (pid && data[pid]) {\n\t\t\t\t\t\tlist = [{ value: \"\", label: \"-- 選択 --\" }].concat(\n\t\t\t\t\t\t\tdata[pid].map(function (b) { return { value: b, label: b }; })\n\t\t\t\t\t\t);\n\t\t\t\t\t} else {\n\t\t\t\t\t\tlist = allOptions;\n\t\t\t\t\t}\n\t\t\t\t\tbehSel.innerHTML = \"\";\n\t\t\t\t\tlist.forEach(function (o) {\n\t\t\t\t\t\tvar opt = document.createElement(\"option\");\n\t\t\t\t\t\topt.value = o.value;\n\t\t\t\t\t\topt.textContent = o.label;\n\t\t\t\t\t\tif (o.value === current) opt.selected = true;\n\t\t\t\t\t\tbehSel.appendChild(opt);\n\t\t\t\t\t});\n\t\t\t\t}\n\t\t\t\tprojSel.addEventListener(\"change\", rebuild);\n\t\t\t\trebuild();\n\t\t\t})();\n\t\t</script>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "> <span>Auto Start</span></label></div></form></div><div class=\"action-bar\"><div class=\"action-bar-inner\"><button type=\"submit\" form=\"task-new-form\" class=\"btn btn-primary action-bar-primary-form\">Create</button> <span class=\"action-bar-spacer\"></span></div></div><script>\n\t\t\t(function () {\n\t\t\t\tvar projSel = document.getElementById(\"project_id\");\n\t\t\t\tvar behSel = document.getElementById(\"behavior\");\n\t\t\t\tvar data = {};\n\t\t\t\ttry {\n\t\t\t\t\tdata = JSON.parse(behSel.dataset.behaviorsByProject || \"{}\");\n\t\t\t\t} catch (e) { data = {}; }\n\t\t\t\t// Snapshot the initial (union) behavior options as fallback\n\t\t\t\t// when no project is selected.\n\t\t\t\tvar allOptions = Array.prototype.slice.call(behSel.options).map(function (o) {\n\t\t\t\t\treturn { value: o.value, label: o.textContent };\n\t\t\t\t});\n\t\t\t\tfunction rebuild() {\n\t\t\t\t\tvar pid = projSel.value;\n\t\t\t\t\tvar current = behSel.value;\n\t\t\t\t\tvar list;\n\t\t\t\t\tif (pid && data[pid]) {\n\t\t\t\t\t\tlist = [{ value: \"\", label: \"-- Select --\" }].concat(\n\t\t\t\t\t\t\tdata[pid].map(function (b) { return { value: b, label: b }; })\n\t\t\t\t\t\t);\n\t\t\t\t\t} else {\n\t\t\t\t\t\tlist = allOptions;\n\t\t\t\t\t}\n\t\t\t\t\tbehSel.innerHTML = \"\";\n\t\t\t\t\tlist.forEach(function (o) {\n\t\t\t\t\t\tvar opt = document.createElement(\"option\");\n\t\t\t\t\t\topt.value = o.value;\n\t\t\t\t\t\topt.textContent = o.label;\n\t\t\t\t\t\tif (o.value === current) opt.selected = true;\n\t\t\t\t\t\tbehSel.appendChild(opt);\n\t\t\t\t\t});\n\t\t\t\t}\n\t\t\t\tprojSel.addEventListener(\"change\", rebuild);\n\t\t\t\trebuild();\n\t\t\t})();\n\t\t</script>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

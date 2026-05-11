@@ -20,13 +20,13 @@ func cmdPreview(cmd []string) string {
 
 // ProjectCommandList renders the project commands page.
 templ ProjectCommandList(projectName, projectID string, commands []CommandView, errorMsg string) {
-	@Layout(projectName+" · コマンド", "/") {
+	@Layout(projectName+" · Commands", "/") {
 		if errorMsg != "" {
 			<div class="error-banner">{ errorMsg }</div>
 		}
 		if len(commands) == 0 && errorMsg == "" {
 			<div class="empty-state">
-				<div class="empty-state-title">(commands は定義されていません)</div>
+				<div class="empty-state-title">(no commands defined)</div>
 			</div>
 		} else if len(commands) > 0 {
 			<div class="cmd-list">
@@ -43,9 +43,9 @@ templ ProjectCommandList(projectName, projectID string, commands []CommandView, 
 							method="post"
 							action={ templ.SafeURL("/projects/" + projectID + "/commands/" + cmd.Name + "/execute") }
 							data-preview={ cmdPreview(cmd.Command) }
-							onsubmit="return confirm(this.dataset.preview+' を実行しますか？')"
+							onsubmit="return confirm('Run: ' + this.dataset.preview + '?')"
 						>
-							<button type="submit" class="btn btn-secondary btn-sm">実行</button>
+							<button type="submit" class="btn btn-secondary btn-sm">Run</button>
 						</form>
 					</div>
 				}

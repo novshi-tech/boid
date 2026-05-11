@@ -89,7 +89,7 @@ templ Layout(title string, backURL string) {
 		<body>
 			<header class="site-header">
 				if backURL != "" {
-					<a class="site-back" href={ templ.SafeURL(backURL) } aria-label="戻る">
+					<a class="site-back" href={ templ.SafeURL(backURL) } aria-label="Back">
 						@components.IconBack("site-back-icon")
 					</a>
 				}

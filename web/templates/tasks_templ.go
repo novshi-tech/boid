@@ -565,7 +565,7 @@ func TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab
 		}
 		ctx = templ.ClearChildren(ctx)
 		if activeTab == "description" && editMode {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, "<div class=\"action-bar\"><div class=\"action-bar-inner\"><button type=\"submit\" form=\"desc-edit-form\" class=\"btn btn-primary action-bar-primary-form\">保存</button> <a href=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, "<div class=\"action-bar\"><div class=\"action-bar-inner\"><button type=\"submit\" form=\"desc-edit-form\" class=\"btn btn-primary action-bar-primary-form\">Save</button> <a href=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -578,7 +578,7 @@ func TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "\" class=\"btn btn-secondary\">キャンセル</a></div></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "\" class=\"btn btn-secondary\">Cancel</a></div></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -596,7 +596,7 @@ func TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 27, "\" class=\"btn btn-secondary action-bar-primary-form\">編集</a> <span class=\"action-bar-spacer\"></span></div></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 27, "\" class=\"btn btn-secondary action-bar-primary-form\">Edit</a> <span class=\"action-bar-spacer\"></span></div></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -632,7 +632,7 @@ func TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 31, "\" onsubmit=\"return confirm('本当に再実行しますか？')\"><button type=\"submit\" class=\"btn btn-secondary\">Rerun</button></form>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 31, "\" onsubmit=\"return confirm('Rerun this task?')\"><button type=\"submit\" class=\"btn btn-secondary\">Rerun</button></form>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -652,7 +652,7 @@ func TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 33, "\" onsubmit=\"return confirm('本当に再実行しますか？')\" class=\"action-bar-primary-form\">")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 33, "\" onsubmit=\"return confirm('Rerun this task?')\" class=\"action-bar-primary-form\">")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -705,7 +705,7 @@ func TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 38, "\" onsubmit=\"return confirm('本当に中止しますか？')\" class=\"action-bar-primary-form\"><input type=\"hidden\" name=\"type\" value=\"abort\"> ")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 38, "\" onsubmit=\"return confirm('Abort this task?')\" class=\"action-bar-primary-form\"><input type=\"hidden\" name=\"type\" value=\"abort\"> ")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -817,7 +817,7 @@ func TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab
 					}
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 49, "<details class=\"action-menu\"><summary class=\"action-menu-summary\" aria-label=\"その他のアクション\">⋯</summary><div class=\"action-menu-list\" role=\"menu\"><form method=\"post\" action=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 49, "<details class=\"action-menu\"><summary class=\"action-menu-summary\" aria-label=\"More actions\">⋯</summary><div class=\"action-menu-list\" role=\"menu\"><form method=\"post\" action=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -848,7 +848,7 @@ func TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 52, "\" onsubmit=\"return confirm('本当に中止しますか？')\"><input type=\"hidden\" name=\"type\" value=\"abort\"> <button type=\"submit\" class=\"action-menu-item action-menu-item-danger\">abort</button></form>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 52, "\" onsubmit=\"return confirm('Abort this task?')\"><input type=\"hidden\" name=\"type\" value=\"abort\"> <button type=\"submit\" class=\"action-menu-item action-menu-item-danger\">abort</button></form>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -866,7 +866,7 @@ func TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 54, "\" onsubmit=\"return confirm('本当に削除しますか？この操作は取り消せません。')\"><button type=\"submit\" class=\"action-menu-item action-menu-item-danger\">delete</button></form></div></details></div></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 54, "\" onsubmit=\"return confirm('Delete this task? This cannot be undone.')\"><button type=\"submit\" class=\"action-menu-item action-menu-item-danger\">delete</button></form></div></details></div></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -975,7 +975,7 @@ func TaskDetailTimelineSection(task *orchestrator.Task, groups []timeline.Status
 			}
 		}
 		if len(groups) == 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 56, "<p class=\"tab-empty\">(履歴なし)</p>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 56, "<p class=\"tab-empty\">(no history)</p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -1420,13 +1420,13 @@ func TaskDetailDependenciesSection(upstream, downstream []DepsTreeRow) templ.Com
 			return templ_7745c5c3_Err
 		}
 		if len(upstream) == 0 && len(downstream) == 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 94, "<p class=\"tab-empty\">(依存関係なし)</p>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 94, "<p class=\"tab-empty\">(no dependencies)</p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		} else {
 			if len(upstream) > 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 95, "<h3 class=\"deps-section-title\">依存先 <span class=\"deps-section-hint\">このタスクが依存している</span></h3>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 95, "<h3 class=\"deps-section-title\">Depends on <span class=\"deps-section-hint\">tasks this task depends on</span></h3>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -1440,7 +1440,7 @@ func TaskDetailDependenciesSection(upstream, downstream []DepsTreeRow) templ.Com
 				return templ_7745c5c3_Err
 			}
 			if len(downstream) > 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 97, "<h3 class=\"deps-section-title\">依存元 <span class=\"deps-section-hint\">このタスクに依存している</span></h3>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 97, "<h3 class=\"deps-section-title\">Depended by <span class=\"deps-section-hint\">tasks that depend on this task</span></h3>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -1633,7 +1633,7 @@ func TaskDetailJobsSection(jobs []*JobView) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		if len(jobs) > 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 111, "<div class=\"card\"><h2 class=\"section-title\">ジョブ</h2><div class=\"job-list\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 111, "<div class=\"card\"><h2 class=\"section-title\">Jobs</h2><div class=\"job-list\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -1794,7 +1794,7 @@ func TaskDetailJobsSection(jobs []*JobView) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 128, "<div class=\"card\"><p style=\"color:#888;margin:0\">ジョブがありません</p></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 128, "<div class=\"card\"><p style=\"color:#888;margin:0\">No jobs</p></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -1909,7 +1909,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 						return templ_7745c5c3_Err
 					}
 				} else {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 139, "<p class=\"tab-empty\">(未設定)</p>")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 139, "<p class=\"tab-empty\">(not set)</p>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -1944,7 +1944,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 144, "<p class=\"tab-empty\">(未設定)</p>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 144, "<p class=\"tab-empty\">(not set)</p>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -2065,7 +2065,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 							return templ_7745c5c3_Err
 						}
 					} else {
-						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 158, "<p class=\"tab-empty\">(message 未設定)</p>")
+						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 158, "<p class=\"tab-empty\">(no message)</p>")
 						if templ_7745c5c3_Err != nil {
 							return templ_7745c5c3_Err
 						}
@@ -2076,7 +2076,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 					}
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 160, "<p class=\"tab-empty\">(未設定)</p>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 160, "<p class=\"tab-empty\">(not set)</p>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -2411,7 +2411,7 @@ func TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.St
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 179, "</a> <details class=\"tab-dropdown-toggle-wrap\"><summary class=\"tab-dropdown-toggle\" aria-label=\"詳細タブ一覧\"><span aria-hidden=\"true\">▾</span></summary><div class=\"tab-more-menu\" role=\"menu\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 179, "</a> <details class=\"tab-dropdown-toggle-wrap\"><summary class=\"tab-dropdown-toggle\" aria-label=\"More tabs\"><span aria-hidden=\"true\">▾</span></summary><div class=\"tab-more-menu\" role=\"menu\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -2475,7 +2475,7 @@ func TaskDetailCommandsSection(taskID string, commands []CommandView) templ.Comp
 		}
 		ctx = templ.ClearChildren(ctx)
 		if len(commands) > 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 182, "<div class=\"card\"><h2 class=\"section-title\">コマンド</h2><div class=\"cmd-list\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 182, "<div class=\"card\"><h2 class=\"section-title\">Commands</h2><div class=\"cmd-list\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -2542,7 +2542,7 @@ func TaskDetailCommandsSection(taskID string, commands []CommandView) templ.Comp
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 189, "\" onsubmit=\"return confirm(this.dataset.name+' を実行しますか？')\"><button type=\"submit\" class=\"btn btn-secondary btn-sm\">実行</button></form></div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 189, "\" onsubmit=\"return confirm('Run ' + this.dataset.name + '?')\"><button type=\"submit\" class=\"btn btn-secondary btn-sm\">Run</button></form></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
