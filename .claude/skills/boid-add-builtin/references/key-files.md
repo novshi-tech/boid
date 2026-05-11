@@ -5,24 +5,18 @@
 | File | Role |
 |------|------|
 | `internal/sandbox/protocol.go` | Defines `BuiltinPolicy`, `ExecRequest`, Op types and constants |
-| `internal/orchestrator/builtin_policy.go` | `DefaultBuiltinPolicies` / `policyFor` — the policy table |
+| `internal/orchestrator/policy.go` | `DefaultBuiltinPolicies` / `policyFor` — the policy table |
 | `internal/sandbox/broker.go` | `Handle()` / `Register()` / `allowsBuiltinOp` helper |
 | `internal/sandbox/git_builtin.go` | Example handler with policy check at the top |
 | `internal/orchestrator/spec_loader.go` | `validateBuiltinHostConflict` — prevents re-declaring builtin names in `host_commands` |
 | `internal/orchestrator/planner.go` | Builtin name lists in `PlanHook` / `PlanGate` |
-| `cmd/exec.go` | Builtin name list in `buildExecJob` |
+| `internal/dispatcher/command_job.go` | Builtin name list in `BuildCommandJobSpec` |
 
 ## Key types and functions for builtin implementation
 
 ### `internal/sandbox/protocol.go`
 
 ```go
-// Type that holds the allowed op set for a builtin
-type BuiltinPolicy struct {
-    AllowedOps map[string]struct{}
-}
-func (p BuiltinPolicy) Allows(op string) bool
-
 // Entry point for all builtin requests
 type ExecRequest struct {
     Command string
@@ -32,6 +26,19 @@ type ExecRequest struct {
     Git     *GitRequest   // git builtin
     // Add new builtin fields here
 }
+```
+
+### `internal/orchestrator/policy.go`
+
+```go
+// Orchestrator-owned, sandbox-agnostic policy type.
+// AllowedOps is a sorted []string (not a map) for trivial comparison/serialisation.
+type BuiltinPolicy struct {
+    AllowedOps      []string
+    AllowedCwdRoots []string
+}
+func (p BuiltinPolicy) Allows(op string) bool
+func (p BuiltinPolicy) AllowsCwd(cwd string) bool
 ```
 
 ### `internal/sandbox/broker.go`
@@ -53,40 +60,55 @@ type tokenEntry struct {
 }
 ```
 
-### `internal/orchestrator/builtin_policy.go`
+### `internal/orchestrator/policy.go` (continued)
 
 ```go
-// Entry point that returns a policy given a role and builtin name
-func DefaultBuiltinPolicies(role Role, names []string) map[string]sandbox.BuiltinPolicy
+// Entry point that returns a policy map given a role, builtin names, and policy context
+func DefaultBuiltinPolicies(role Role, names []string, pctx PolicyContext) map[string]BuiltinPolicy
 
 // Switch to add per-builtin policy functions
-func policyFor(role Role, name string) sandbox.BuiltinPolicy
+func policyFor(role Role, name string, pctx PolicyContext) BuiltinPolicy
 ```
 
 ## Rationale behind existing builtin policies
 
 ### boid builtin
 
-| role | allowed ops |
-|------|-------------|
-| hook | `job_done`, `task_get` |
-| gate (default) | `job_done`, `task_create`, `task_update`, `task_import` |
+**Role branching: none** — all roles share the same policy (`_ Role`).
 
-hook is restricted so agents cannot create or update tasks (read-only + completion notification only).
+Allowed ops (14 total):
+
+| Op | Notes |
+|----|-------|
+| `job_done` | |
+| `job_list` | |
+| `job_show` | |
+| `job_log` | |
+| `action_send` | |
+| `task_create` | |
+| `task_get` | |
+| `task_update` | |
+| `task_import` | |
+| `task.reopen` | historically uses `.` separator (others use `_`) |
+| `task_list` | |
+| `task_notify` | |
+| `task_answer` | |
+| `task_delete` | |
 
 ### git builtin
 
-| role | allowed ops |
-|------|-------------|
-| hook | none (empty policy) |
-| gate (default) | `fetch`, `push` |
+**Role branching: none** — all roles share the same policy (`_ Role`).
 
-Direct git operations via the broker from hook are forbidden. Agents must not access host-side remotes directly.
+Allowed ops: `fetch`, `push`, `push_delete`.
+
+Git fetch/push from hook is permitted — dev workflow is intentionally delegated to the agent side
+(see `project_hostcmd_security_decision`). Role branching may be reintroduced in `policyFor`
+if future requirements demand it.
 
 ## Test file locations
 
 | Test | File |
 |------|------|
-| policy matrix | `internal/orchestrator/builtin_policy_test.go` |
+| policy matrix | `internal/orchestrator/policy_test.go` |
 | git handler | `internal/sandbox/git_builtin_test.go` |
 | new builtin handler | `internal/sandbox/<name>_builtin_test.go` (create new) |

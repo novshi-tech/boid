@@ -87,42 +87,44 @@ Reference: `handleGitBuiltinRequest` in `internal/sandbox/git_builtin.go`.
 
 ## Step 3 — Define the policy (critical)
 
-Edit `internal/orchestrator/builtin_policy.go`:
+Edit `internal/orchestrator/policy.go`:
 
 ```go
-func policyFor(role Role, name string) sandbox.BuiltinPolicy {
+func policyFor(role Role, name string, pctx PolicyContext) BuiltinPolicy {
     switch name {
     case "boid":
-        return boidPolicy(role)
+        return boidPolicy(role, pctx)
     case "git":
-        return gitPolicy(role)
+        return gitPolicy(role, pctx)
     case "oci":
-        return ociPolicy(role) // add this
+        return ociPolicy(role, pctx) // add this
     default:
-        return sandbox.BuiltinPolicy{}
+        return BuiltinPolicy{}
     }
 }
 
-func ociPolicy(role Role) sandbox.BuiltinPolicy {
-    switch role {
-    case RoleHook:
-        // Container execution from hook is forbidden.
-        // Prevents the agent from directly manipulating host-side resources.
-        // Related: same design principle as the git builtin hook restriction.
-        return sandbox.BuiltinPolicy{}
-    default: // RoleGate or empty → treat as gate
-        // Gate needs container execution for validation/build purposes, so run is allowed.
-        // default (empty role) mirrors gate policy by convention (test compatibility).
-        return sandbox.BuiltinPolicy{AllowedOps: map[string]struct{}{
-            string(sandbox.OciOpRun): {},
-        }}
+func ociPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
+    // All roles share the same policy (no role branching).
+    // If role-specific restrictions become necessary in the future,
+    // replace `_ Role` with `role Role` and add a switch here.
+    cwds := []string{"/tmp"}
+    if pctx.ProjectDir != "" {
+        cwds = append(cwds, pctx.ProjectDir)
+    }
+    if pctx.HomeDir != "" {
+        cwds = append(cwds, pctx.HomeDir)
+    }
+    return BuiltinPolicy{
+        AllowedOps:      sortedOps(string(OciOpRun)),
+        AllowedCwdRoots: cwds,
     }
 }
 ```
 
 **Required**:
-- Write a **rationale comment** in each case (why the op is allowed or forbidden)
-- The `default` case (empty role) must use the **same policy as gate** (test-compatibility convention)
+- Write a **rationale comment** explaining why ops are allowed (and under what constraints)
+- Default: all roles share the same policy (`_ Role`). Only add a role `switch` when role-specific
+  restrictions are genuinely needed — current `boid` and `git` builtins are role-agnostic as a reference
 - Note any security concerns or related issues alongside the policy
 
 ---
@@ -144,8 +146,8 @@ BuiltinPolicies: DefaultBuiltinPolicies(RoleGate,
 ),
 ```
 
-Also update `buildExecJob` in `cmd/exec.go` with the same list.
-Add the new builtin name to `validateBuiltinHostConflict` to prevent re-declaring it via `host_commands`.
+Also update `BuildCommandJobSpec` in `internal/dispatcher/command_job.go` with the same list.
+Add the new builtin name to `validateBuiltinHostConflict` in `internal/orchestrator/spec_loader.go` to prevent re-declaring it via `host_commands`.
 
 ---
 
@@ -161,7 +163,7 @@ func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
             return handleOciBuiltinRequest(req, entry)
         }
         if def, ok := entry.Commands["oci"]; ok {
-            return b.execCommand(req, def)
+            return b.execCommand(req, def, entry)
         }
         return &ExecResponse{ExitCode: 1, Stderr: "command not allowed: oci"}
     }
@@ -187,29 +189,30 @@ URLs or resources that must be protected from tampering.
 
 ## Step 6 — Tests
 
-### 6a. Add matrix tests to `builtin_policy_test.go`
+### 6a. Add matrix tests to `policy_test.go`
 
 ```go
-// hook×oci AllowedOps must be empty.
-func TestDefaultBuiltinPolicies_HookOciIsEmpty(t *testing.T) {
-    policies := DefaultBuiltinPolicies(RoleHook, []string{"oci"})
-    if len(policies["oci"].AllowedOps) != 0 {
-        t.Errorf("hook×oci AllowedOps should be empty, got %v", policies["oci"].AllowedOps)
+// hook×oci AllowedOps must be non-empty (all roles share the same policy).
+func TestDefaultBuiltinPolicies_HookOciHasRun(t *testing.T) {
+    policies := DefaultBuiltinPolicies(RoleHook, []string{"oci"}, PolicyContext{})
+    if !policies["oci"].Allows(string(OciOpRun)) {
+        t.Errorf("hook×oci should allow run, got %v", policies["oci"].AllowedOps)
     }
 }
 
 // gate×oci must include {run}.
 func TestDefaultBuiltinPolicies_GateOciHasRun(t *testing.T) {
-    policies := DefaultBuiltinPolicies(RoleGate, []string{"oci"})
-    if !policies["oci"].Allows(string(sandbox.OciOpRun)) {
+    policies := DefaultBuiltinPolicies(RoleGate, []string{"oci"}, PolicyContext{})
+    if !policies["oci"].Allows(string(OciOpRun)) {
         t.Error("gate×oci should allow run")
     }
 }
 
-// empty role must equal gate policy.
+// empty role must equal gate policy (test-compatibility convention).
 func TestDefaultBuiltinPolicies_EmptyRoleEqualsGate_Oci(t *testing.T) {
-    gate := DefaultBuiltinPolicies(RoleGate, []string{"oci"})
-    empty := DefaultBuiltinPolicies("", []string{"oci"})
+    pctx := PolicyContext{}
+    gate := DefaultBuiltinPolicies(RoleGate, []string{"oci"}, pctx)
+    empty := DefaultBuiltinPolicies("", []string{"oci"}, pctx)
     if !opsEqual(gate["oci"].AllowedOps, empty["oci"].AllowedOps) {
         t.Error("default oci policy should equal gate oci policy")
     }
@@ -248,4 +251,4 @@ Check these items when the new builtin involves external communication or host r
 | broker has no knowledge of role | Role decisions are centralized in `DefaultBuiltinPolicies`; broker consults only the policy table |
 | policy is stamped at registration | Eliminates role evaluation at dispatch time; keeps broker simple |
 | `default` = gate | Test compatibility. In production Role is always set, but empty role matches gate (most permissive) by convention |
-| hook cannot fetch/push | Agents must not directly access host-side remotes (same principle for git and oci) |
+| no role branching by default | Current `boid` and `git` builtins are role-agnostic; git fetch/push are permitted from all roles. Add a role `switch` only when a new builtin genuinely needs role-specific restrictions (see `project_hostcmd_security_decision`) |

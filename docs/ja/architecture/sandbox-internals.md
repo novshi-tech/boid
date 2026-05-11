@@ -161,6 +161,53 @@ trap cleanup EXIT
 
 過去にこの 2 段ガードが破られた事例があり (memory: "feedback: bind_rm_traverses_source")、現在の実装は own ns / cross ns / chroot holder の 3 経路すべてで安全側に倒すようになっています。
 
+## サンドボックス内から呼べる boid builtin 一覧
+
+サンドボックス内のハンドラ (hook / gate / exec) は `boid` と `git` の 2 つの builtin を呼ぶことができます。
+いずれも自動的に注入されるため、 `project.yaml` / `kit.yaml` での宣言は不要です。
+
+### boid builtin
+
+role (hook / gate) による分岐はなく、全 role で同じ op セットが許可されます。
+
+| Op (sandbox protocol) | 対応 CLI | 用途 |
+|---|---|---|
+| `job_done` | `boid job done <id>` | 自 job の終了を daemon に通知する |
+| `job_list` | `boid job list --task <id>` | task に紐づく job を列挙する |
+| `job_show` | `boid job show <id>` | job の詳細を表示する |
+| `job_log` | `boid job log <id>` | job 実行ログを取得する |
+| `action_send` | `boid action send` | 手動アクションを発行する |
+| `task_create` | `boid task create` | サブ task を作成する |
+| `task_get` | `boid task get <id> --field <name>` | task の単項目を取得する |
+| `task_update` | `boid task update <id>` | task のフィールドを更新する |
+| `task_import` | `boid task import` | task を一括 import する |
+| `task.reopen` | `boid task reopen <id>` | done の task を executing に戻す |
+| `task_list` | `boid task list` | workspace 内の task を列挙する |
+| `task_notify` | `boid task notify <id>` | 通知または Q&A (`--ask`) を送信する |
+| `task_answer` | `boid task answer` | awaiting → executing に遷移させる |
+| `task_delete` | `boid task delete <id>` | task を削除する |
+
+> **注記:** `task.reopen` だけが歴史的事情で `.` 区切りになっています。 他の op は `_` 区切りです。
+
+### git builtin
+
+全 role で同じ op セットが許可されます。
+
+| Op | 対応 CLI | 用途 |
+|---|---|---|
+| `fetch` | `git fetch ...` | リモートから取得する |
+| `push` | `git push ...` | リモートへ反映する |
+| `push_delete` | `git push origin --delete <branch>` | リモートブランチを削除する |
+
+### 設計上の注記
+
+- **role 分岐なし** — `boid` / `git` ポリシーは `_ Role` で受け、全 role に同一 op セットを与えます。
+  新しい builtin で role 固有の制限が必要になった場合のみ、 `policyFor` 内に `switch` を追加してください。
+- **情報源** — `internal/orchestrator/policy.go` の `boidPolicy` / `gitPolicy` 関数が source of truth です。
+- **サンドボックス側 enum 定義** — `internal/sandbox/protocol.go`
+- **workspace / project 越えのアクセス** は broker (`internal/sandbox/broker.go` `handleBoidBuiltin`) が
+  `entry.Context.AllowsProject(...)` 等で拒否します。 上記 op セットはこのチェックをバイパスしません。
+
 ## 関連ドキュメント
 
 - [アーキテクチャ概要](overview.md) — sandbox レイヤの位置づけ
