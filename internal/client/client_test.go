@@ -208,6 +208,61 @@ func TestReplayGate_EscapesGateIDPath(t *testing.T) {
 	}
 }
 
+func TestAnswerTask(t *testing.T) {
+	wantTaskID := "task-abc"
+	wantQuestionID := "q-123"
+	wantAnswer := "yes, proceed"
+
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		wantPath := "/api/tasks/" + wantTaskID + "/answer"
+		if req.URL.Path != wantPath {
+			t.Errorf("path: want %q, got %q", wantPath, req.URL.Path)
+		}
+		if req.Method != http.MethodPost {
+			t.Errorf("method: want POST, got %s", req.Method)
+		}
+		var body api.AnswerTaskRequest
+		json.NewDecoder(req.Body).Decode(&body)
+		if body.QuestionID != wantQuestionID {
+			t.Errorf("question_id: want %q, got %q", wantQuestionID, body.QuestionID)
+		}
+		if body.Answer != wantAnswer {
+			t.Errorf("answer: want %q, got %q", wantAnswer, body.Answer)
+		}
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Body:       io.NopCloser(strings.NewReader("")),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	c := newTestClient(transport)
+	err := c.AnswerTask(wantTaskID, wantQuestionID, wantAnswer)
+	if err != nil {
+		t.Fatalf("AnswerTask error: %v", err)
+	}
+}
+
+func TestAnswerTask_ServerError(t *testing.T) {
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		errBody := `{"error":"task not awaiting"}`
+		return &http.Response{
+			StatusCode: http.StatusConflict,
+			Body:       io.NopCloser(strings.NewReader(errBody)),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	c := newTestClient(transport)
+	err := c.AnswerTask("task-x", "q-1", "answer")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "task not awaiting") {
+		t.Errorf("error should mention 'task not awaiting', got %q", err.Error())
+	}
+}
+
 func TestListWorkspaces_ServerError(t *testing.T) {
 	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		errBody := `{"error":"internal error"}`
