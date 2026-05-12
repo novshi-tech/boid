@@ -98,7 +98,7 @@ templ JobDetail(job *JobContextView) {
 					<span class="exit-code">exit { fmt.Sprintf("%d", job.ExitCode) }</span>
 				}
 				<span class="detail-meta-sep">·</span>
-				<span class="detail-time">{ job.UpdatedAt.Format("2006-01-02 15:04") }</span>
+				<span class="detail-time">{ job.UpdatedAt.Local().Format("2006-01-02 15:04") }</span>
 			</div>
 		</div>
 		<section class="job-output">
