@@ -17,6 +17,12 @@ templ Terminal(jobId string, wsPath string) {
 		</div>
 		<div class="boid-terminal-xterm-wrap">
 			<div class="boid-terminal-xterm"></div>
+			<div class="boid-terminal-disconnect-overlay" hidden>
+				<div class="boid-terminal-disconnect-content">
+					<p class="boid-terminal-disconnect-msg">接続が切断されました</p>
+					<button type="button" class="btn btn-primary boid-terminal-reconnect">再接続</button>
+				</div>
+			</div>
 		</div>
 		<div class="boid-terminal-keybar">
 			<button type="button" class="boid-terminal-keybar-btn" data-key="esc">Esc</button>
@@ -26,12 +32,6 @@ templ Terminal(jobId string, wsPath string) {
 			<button type="button" class="boid-terminal-keybar-btn" data-key="left">←</button>
 			<button type="button" class="boid-terminal-keybar-btn" data-key="right">→</button>
 			<button type="button" class="boid-terminal-keybar-btn boid-terminal-keybar-ctrl" data-key="ctrl">Ctrl</button>
-		</div>
-		<div class="boid-terminal-disconnect-overlay" hidden>
-			<div class="boid-terminal-disconnect-content">
-				<p class="boid-terminal-disconnect-msg">接続が切断されました</p>
-				<button type="button" class="btn btn-primary boid-terminal-reconnect">再接続</button>
-			</div>
 		</div>
 	</div>
 	<script type="module" src={ "/static/boid-terminal-init.js?v=" + BuildID }></script>
