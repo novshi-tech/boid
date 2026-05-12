@@ -376,6 +376,14 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if s.detail == nil {
 			break
 		}
+		// Overview tab, awaiting status: open the answer screen.
+		if s.activeTab == tabOverview && s.detail.Task != nil && s.detail.Task.Status == orchestrator.TaskStatusAwaiting {
+			task := s.detail.Task
+			return func() tea.Msg {
+				ap := orchestrator.GetAwaitingPayload(task.Payload)
+				return pushScreenMsg{screen: NewTaskAnswerScreen(s.shared.Client, task, ap)}
+			}
+		}
 		// Deps tab: navigate to the selected dependency / dependent task.
 		if s.activeTab == tabDeps {
 			items := depSelectableItems(s.detail)
@@ -548,6 +556,14 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 				return abortConfirmDeadlineMsg{}
 			})
 		}
+		// answer: push TaskAnswerScreen instead of sending bare action POST
+		if action == "answer" && s.detail != nil && s.detail.Task != nil {
+			task := s.detail.Task
+			return func() tea.Msg {
+				ap := orchestrator.GetAwaitingPayload(task.Payload)
+				return pushScreenMsg{screen: NewTaskAnswerScreen(s.shared.Client, task, ap)}
+			}
+		}
 		s.statusMsg = actionLoadingMsg(action)
 		s.isError = false
 		return applyActionCmd(s.shared.Client, s.taskID, action)
@@ -685,6 +701,10 @@ func (s *TaskDetailScreen) ShortHelp() string {
 	var tabSpecific string
 	switch s.activeTab {
 	case tabOverview:
+		if s.detail != nil && s.detail.Task != nil && s.detail.Task.Status == orchestrator.TaskStatusAwaiting {
+			tabSpecific = "enter: open answer form  j/k: scroll cursor"
+			break
+		}
 		events := selectableEventsInGroups(buildTreeTimeline(s.detail))
 		if s.timelineCursor >= 0 && s.timelineCursor < len(events) {
 			ev := events[s.timelineCursor]

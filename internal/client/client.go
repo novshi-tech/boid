@@ -361,6 +361,12 @@ func (c *Client) ReplayGate(taskID, gateID, overrideStatus string) (*api.ReplayG
 	return &result, nil
 }
 
+// AnswerTask submits an answer for an awaiting task via POST /api/tasks/{id}/answer.
+func (c *Client) AnswerTask(taskID, questionID, answer string) error {
+	req := api.AnswerTaskRequest{QuestionID: questionID, Answer: answer}
+	return c.Do("POST", "/api/tasks/"+taskID+"/answer", req, nil)
+}
+
 // ApplyAction sends an action to POST /api/tasks/{taskID}/actions.
 func (c *Client) ApplyAction(taskID string, req api.ApplyActionRequest) (*api.ActionApplication, error) {
 	var result api.ActionApplication

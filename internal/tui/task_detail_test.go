@@ -1773,6 +1773,112 @@ func TestTaskDetail_BlinkOff_DoneStatusNotDim(t *testing.T) {
 	}
 }
 
+// --- awaiting / answer tests ---
+
+// makeDetailAwaiting returns a TaskDetailView with awaiting status and a question payload.
+func makeDetailAwaiting(question, questionID string) *api.TaskDetailView {
+	ap, _ := json.Marshal(orchestrator.AwaitingPayload{
+		Question:   question,
+		QuestionID: questionID,
+	})
+	payload, _ := json.Marshal(map[string]json.RawMessage{
+		"awaiting": ap,
+	})
+	return &api.TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:        "test-task-id",
+			Title:     "Test Task",
+			Status:    orchestrator.TaskStatusAwaiting,
+			Behavior:  "dev",
+			Payload:   payload,
+			CreatedAt: time.Now().Add(-5 * time.Minute),
+		},
+		AvailableActions: []string{"answer", "abort"},
+	}
+}
+
+// TestAnswerActionKey_PushesAnswerScreen verifies that the "answer" action key
+// pushes TaskAnswerScreen instead of calling applyActionCmd.
+func TestAnswerActionKey_PushesAnswerScreen(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailAwaiting("Is this correct?", "q-1")
+
+	// assignKeys(["answer","abort"]) → 'a'→answer, 'b'→abort
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if cmd == nil {
+		t.Fatal("answer key: expected non-nil cmd (pushScreenMsg)")
+	}
+	msg := cmd()
+	push, ok := msg.(pushScreenMsg)
+	if !ok {
+		t.Fatalf("answer key: expected pushScreenMsg, got %T", msg)
+	}
+	if _, ok := push.screen.(*TaskAnswerScreen); !ok {
+		t.Errorf("answer key: expected *TaskAnswerScreen, got %T", push.screen)
+	}
+}
+
+// TestEnterOverview_Awaiting_PushesAnswerScreen verifies that Enter in Overview
+// when the task is awaiting pushes TaskAnswerScreen.
+func TestEnterOverview_Awaiting_PushesAnswerScreen(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailAwaiting("Shall we continue?", "q-2")
+	s.activeTab = tabOverview
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter in overview (awaiting): expected non-nil cmd")
+	}
+	msg := cmd()
+	push, ok := msg.(pushScreenMsg)
+	if !ok {
+		t.Fatalf("enter in overview (awaiting): expected pushScreenMsg, got %T", msg)
+	}
+	if _, ok := push.screen.(*TaskAnswerScreen); !ok {
+		t.Errorf("enter in overview (awaiting): expected *TaskAnswerScreen, got %T", push.screen)
+	}
+}
+
+// TestRenderOverview_Awaiting_ShowsBanner verifies that renderOverview includes
+// the "Question from agent" banner when status is awaiting.
+func TestRenderOverview_Awaiting_ShowsBanner(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailAwaiting("Is this the right approach?", "q-3")
+
+	view := s.renderOverview(80, 20)
+	if !containsStr(view, "Question from agent") {
+		t.Error("renderOverview (awaiting): expected 'Question from agent' banner")
+	}
+	if !containsStr(view, "Is this the right approach?") {
+		t.Error("renderOverview (awaiting): expected question text in banner")
+	}
+}
+
+// TestRenderOverview_NonAwaiting_NoBanner verifies that renderOverview does NOT
+// include the banner when status is not awaiting.
+func TestRenderOverview_NonAwaiting_NoBanner(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailWithStatus(orchestrator.TaskStatusExecuting)
+
+	view := s.renderOverview(80, 20)
+	if containsStr(view, "Question from agent") {
+		t.Error("renderOverview (executing): 'Question from agent' banner should not appear")
+	}
+}
+
+// TestShortHelp_Awaiting_ShowsEnterAnswer verifies ShortHelp in Overview shows
+// enter: open answer form when task is awaiting.
+func TestShortHelp_Awaiting_ShowsEnterAnswer(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailAwaiting("Question?", "q-4")
+	s.activeTab = tabOverview
+
+	help := s.ShortHelp()
+	if !containsStr(help, "enter: open answer form") {
+		t.Errorf("ShortHelp (awaiting, overview): expected 'enter: open answer form', got %q", help)
+	}
+}
+
 // TestScreenResumed_RestartsTick verifies that screenResumedMsg returns a Batch
 // containing a tick cmd, so polling resumes after returning from a pushed screen.
 //
