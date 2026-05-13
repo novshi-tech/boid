@@ -13,7 +13,7 @@ e2e_log "creating readonly task"
 task_create_output="$("$E2E_BIN_DIR/boid" task create <<'YAML'
 project_id: readonly-hook-gate
 title: Readonly Hook Gate
-behavior: readonly
+behavior: supervisor
 YAML
 )"
 printf '%s\n' "$task_create_output"

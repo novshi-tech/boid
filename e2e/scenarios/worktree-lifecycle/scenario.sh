@@ -10,7 +10,7 @@ e2e_log "creating worktree-lifecycle task"
 task_create_output="$("$E2E_BIN_DIR/boid" task create <<'YAML'
 project_id: worktree-lifecycle
 title: Worktree Lifecycle Test
-behavior: worktree
+behavior: executor
 YAML
 )"
 printf '%s\n' "$task_create_output"

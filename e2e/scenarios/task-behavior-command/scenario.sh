@@ -9,12 +9,12 @@ PROJECT_ID="e2e-task-behavior-cmd"
 e2e_log "registering project from $PROJECT_DIR"
 e2e_run "$E2E_BIN_DIR/boid" project add "$PROJECT_DIR"
 
-# --- Step 1: create a task with the "plan" behavior (has echo-task-id command) ---
-e2e_log "creating task with plan behavior"
+# --- Step 1: create a task with the "supervisor" behavior (has echo-task-id command) ---
+e2e_log "creating task with supervisor behavior"
 task_create_output="$("$E2E_BIN_DIR/boid" task create <<YAML
 project_id: $PROJECT_ID
 title: Task Behavior Command Test
-behavior: plan
+behavior: supervisor
 YAML
 )"
 printf '%s\n' "$task_create_output"
