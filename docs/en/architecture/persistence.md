@@ -100,7 +100,7 @@ The `output` column holds the handler's full stderr; stdout is consumed by the p
 
 ## `worktrees`
 
-Metadata for the per-task git worktrees created by behaviors with `worktree: true`.
+Metadata for the per-task git worktrees created for executor tasks when the project has `worktree: true` at the top level.
 
 | Column | Type | Role |
 |---|---|---|

@@ -60,9 +60,8 @@ kits:
   - github.com/novshi-tech/boid-kits/claude-code
 
 task_behaviors:
-  ask:
-    name: Ask
-    readonly: true
+  supervisor:
+    name: Supervisor
     default_instruction:
       type: execution
       agent: claude-code
@@ -75,7 +74,7 @@ task_behaviors:
 ポイント:
 
 - **トップレベルの `kits:`** には、 project 全体で使う kit を並べます。ここでは `claude-code` 1 つだけ
-- **`task_behaviors.ask`** で behavior `ask` を宣言。 `readonly: true` でサンドボックスを書き込み禁止に (今回はファイルの編集ではなく回答だけ書ければよい)
+- **`task_behaviors.supervisor`** で canonical な readonly behavior を宣言。 readonly フラグは canonical 名から自動導出されるので明示する必要はありません (今回はファイルの編集ではなく回答だけ書ければよいため readonly で十分)
 - **`default_instruction`** は `executing` 状態で claude-code エージェントに渡す指示の雛形 (単一 Instruction object)。 `agent: claude-code` で、 claude-code kit の hook が「自分宛の指示だ」と認識します
 
 書き換えたら project を reload します。
@@ -94,7 +93,7 @@ boid project reload
 boid task create <<'YAML'
 project_id: demo
 title: Linux って一言でいうと？
-behavior: ask
+behavior: supervisor
 auto_start: true
 YAML
 ```

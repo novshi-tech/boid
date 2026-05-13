@@ -25,17 +25,15 @@ cat > .boid/project.yaml <<'YAML'
 id: demo
 name: Demo
 task_behaviors:
-  hello:
-    name: Hello
-    readonly: true
+  supervisor:
+    name: Supervisor
 YAML
 ```
 
 最小構成です。
 
 - `id: demo` — `boid` 内でこのプロジェクトを識別する名前
-- `task_behaviors.hello` — 「タスクの種類」が 1 つだけ。 hook も gate も紐付いていません
-- `readonly: true` — このタスクが動くサンドボックスを書き込み禁止にします (今回はそもそも実行スクリプトが無いので影響しませんが、 副作用が無いことを宣言する意味で付けています)
+- `task_behaviors.supervisor` — 「タスクの種類」が 1 つだけ。 hook も gate も紐付いていません。 `supervisor` は canonical な 2 つの behavior 名のうち readonly な方で、 readonly フラグは canonical 名から自動導出されるので明示しなくて済みます
 
 `boid` に登録します。
 
@@ -53,7 +51,7 @@ boid project add .
 boid task create <<'YAML'
 project_id: demo
 title: First task
-behavior: hello
+behavior: supervisor
 YAML
 ```
 
@@ -78,7 +76,7 @@ boid action send --task <task-id> --type start
 
 `task status: executing` と返ってきます。
 
-ただし、この `hello` behavior には hook が紐付いていないため、 `executing` に入っても何も実行されません。 `boid task show <task-id>` で見ても `payload: {}` のままです。
+ただし、この最小構成では `supervisor` behavior に hook が紐付いていないため、 `executing` に入っても何も実行されません。 `boid task show <task-id>` で見ても `payload: {}` のままです。
 
 ここでは本来 hook が成果物として書き込むはずの `artifact` trait を、手で書き込んでみます。 タスク自体は hook が無い (= `boid job done` の発火が無い) ため `executing` で止まったままになるので、 続けて `done` アクションで強制完了させます。
 

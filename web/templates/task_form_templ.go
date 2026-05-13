@@ -30,8 +30,10 @@ func taskNewProjectLabel(p *orchestrator.Project) string {
 // all projects, sorted alphabetically. Used as the default Behavior
 // option list when no project is selected.
 //
-// Back-compat alias mirror entries (e.g. "plan" when "supervisor" is also
-// present) are filtered out so the UI does not show the same behavior twice.
+// The two canonical behaviors are `supervisor` and `executor`. Legacy
+// alias mirror entries (the now-deprecated `plan` / `dev` keys, kept in
+// the in-memory project map for back-compat) are filtered out so the UI
+// shows each behavior once and uses the canonical name.
 func taskNewBehaviors(projects []*orchestrator.Project) []string {
 	seen := map[string]bool{}
 	for _, p := range projects {
@@ -82,10 +84,11 @@ func visibleBehaviorNames(behaviors map[string]orchestrator.TaskBehavior) []stri
 
 // TaskNew renders the minimal task-creation form. Only the fields a human
 // realistically touches when creating a task from the Web UI are shown
-// (title / project / behavior / description / auto-start). Advanced
-// settings like worktree / readonly / depends_on / traits / branch
-// overrides are provided by project.yaml defaults or kit policy; they're
-// not worth cluttering the happy-path form. The back arrow in the header
+// (title / project / behavior / description / auto-start). Per-task
+// overrides for worktree / readonly / base_branch / branch_prefix have
+// been removed: those are now derived from the canonical behavior name
+// (supervisor / executor) combined with the project-top `worktree:` /
+// `base_branch:` fields in project.yaml. The back arrow in the header
 // acts as cancel, so no separate cancel button is needed.
 func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
@@ -128,7 +131,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 				var templ_7745c5c3_Var3 string
 				templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(errorMsg)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 69, Col: 39}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 88, Col: 39}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 				if templ_7745c5c3_Err != nil {
@@ -146,7 +149,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 			var templ_7745c5c3_Var4 string
 			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(form.Get("title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 75, Col: 130}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 94, Col: 130}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 			if templ_7745c5c3_Err != nil {
@@ -164,7 +167,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 				var templ_7745c5c3_Var5 string
 				templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(p.ID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 82, Col: 27}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 101, Col: 27}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 				if templ_7745c5c3_Err != nil {
@@ -187,7 +190,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 				var templ_7745c5c3_Var6 string
 				templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(taskNewProjectLabel(p))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 82, Col: 99}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 101, Col: 99}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 				if templ_7745c5c3_Err != nil {
@@ -205,7 +208,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 			var templ_7745c5c3_Var7 string
 			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(taskNewBehaviorsByProjectJSON(projects))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 92, Col: 73}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 111, Col: 73}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 			if templ_7745c5c3_Err != nil {
@@ -223,7 +226,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 				var templ_7745c5c3_Var8 string
 				templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(b)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 96, Col: 24}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 115, Col: 24}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 				if templ_7745c5c3_Err != nil {
@@ -246,7 +249,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 				var templ_7745c5c3_Var9 string
 				templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(b)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 96, Col: 70}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 115, Col: 70}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 				if templ_7745c5c3_Err != nil {
@@ -264,7 +267,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 			var templ_7745c5c3_Var10 string
 			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(form.Get("description"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 102, Col: 104}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 121, Col: 104}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 			if templ_7745c5c3_Err != nil {

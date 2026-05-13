@@ -2,7 +2,7 @@
 
 `boid` does not have its own notification-firing logic. It only invokes the `notify.command` configured in `~/.config/boid/config.yaml` when an agent explicitly calls `boid task notify <id> --message "..."`.
 
-The main use case is **plan agent decision branching and up-front approval**: when the agent reaches a point where it cannot proceed without a human judgment call, it sends a push notification to let you know. You check the session in the Web UI and reply.
+The main use case is **supervisor agent decision branching and up-front approval**: when the agent reaches a point where it cannot proceed without a human judgment call, it sends a push notification to let you know. You check the session in the Web UI and reply.
 
 ## Configuration
 
@@ -45,7 +45,7 @@ Notify is only called in **interactive mode** (`BOID_INTERACTIVE=1`). In autonom
 
 Immediately after calling notify, the agent outputs the question body (options, context, decision criteria) to the session and waits for your reply. You read it in the Web UI session viewer and respond there.
 
-For the full calling policy, see the "いつ notify を呼ぶか" (when to call notify) section in the plan agent SKILL.md.
+For the full calling policy, see the "いつ notify を呼ぶか" (when to call notify) section in [`/boid-supervisor` SKILL.md](../../../internal/skills/data/boid-supervisor/SKILL.md).
 
 ## Script example 1: ntfy.sh
 

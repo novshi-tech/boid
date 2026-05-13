@@ -30,12 +30,12 @@ TaskJSON の主なフィールド:
 | `title` | string | タスクのタイトル |
 | `description` | string | 任意の本文 |
 | `status` | string | 現在の status (`pending` / `executing` / ...) |
-| `behavior` | string | このタスクの behavior 名 (例: `dev`) |
+| `behavior` | string | canonical な behavior 名 (`supervisor` / `executor`)。 旧 alias (`plan` / `dev`) は handler に届く前に正規化される |
 | `traits` | string のリスト | この behavior が宣言した payload trait |
-| `readonly` | bool | サンドボックスが読み取り専用か |
-| `worktree` | bool | このタスクが worktree を持つか |
-| `branch_prefix` | string | worktree のブランチ名プレフィックス |
-| `base_branch` | string | worktree のベースブランチ |
+| `readonly` | bool | サンドボックスが読み取り専用か (canonical 名から導出: supervisor=true / executor=false) |
+| `worktree` | bool | このタスクが worktree を持つか (project トップ `worktree:` と canonical 名の組み合わせで決まる) |
+| `branch_prefix` | string | worktree のブランチ名プレフィックス (常に `boid/` で固定。 設定不可) |
+| `base_branch` | string | worktree のベースブランチ (project トップ `base_branch:` を `${TASK_REMOTE_ID}` / `${current_branch}` 展開して解決) |
 | `payload` | object | 現在の payload 全体 (handler が読みたい主要素) |
 | `instructions` | map (role → Instruction) | `kind: agent` の hook でのみ意味を持つ、 routing 済みの instruction |
 | `auto_start` | bool | タスク作成時の auto_start 指定 |
@@ -61,14 +61,14 @@ handler の実行コンテキストには次の環境変数が設定されます
 
 ### 作業ディレクトリ
 
-- behavior が `worktree: true` のとき、 handler の cwd は **その worktree のルート** です
-- そうでないとき、 cwd は **プロジェクトルート** (project.yaml がある親ディレクトリ) です
+- タスクが worktree を持つとき (project トップ `worktree: true` + executor behavior の組み合わせ) は、 handler の cwd は **その worktree のルート** です
+- そうでないとき (supervisor タスク、 または project トップ `worktree:` 未設定の executor) は、 cwd は **プロジェクトルート** (project.yaml がある親ディレクトリ) です
 
 これにより、 `git`、 `gh`、ビルドコマンド等は明示的にディレクトリ指定せずに使えます。
 
 ### ファイルシステムアクセス
 
-- **hook (サンドボックス内)**: 読み書き可能なのは worktree (または `readonly: true` ならどこも書けない) のみ。 kit が `additional_bindings` で宣言したパスは追加でマウントされます。 host のホーム / SSH 鍵 / 他プロジェクトは見えません
+- **hook (サンドボックス内)**: 読み書き可能なのは worktree (または readonly = true な supervisor タスクではどこも書けない) のみ。 kit が `additional_bindings` で宣言したパスは追加でマウントされます。 host のホーム / SSH 鍵 / 他プロジェクトは見えません
 - **gate (host 上)**: 通常のホスト権限で動きます。サンドボックスを通さないので、 `systemctl restart` のような環境依存操作はここに置きます
 
 ## 出力

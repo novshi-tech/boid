@@ -24,6 +24,7 @@
 - [2. 最初のタスク](getting-started/02-first-task.md)
 - [3. プロジェクトと拡張パッケージ (kit)](getting-started/03-projects-and-kits.md)
 - [4. GitHub PR ベースの開発ワークフロー](getting-started/04-dev-workflow.md)
+- [ワークフロー](../workflows.md) — エンドツーエンドの 3 つのワークフロー形 (ローカル merge / 1 executor 1 PR / 1 supervisor 1 PR) を project.yaml テンプレート付きで紹介
 
 ### ガイド
 
