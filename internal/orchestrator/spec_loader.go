@@ -113,13 +113,126 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 		return nil, fmt.Errorf("project.yaml: name is required")
 	}
 
+	normalized, err := normalizeBehaviorAliases("project.yaml", meta.TaskBehaviors)
+	if err != nil {
+		return nil, err
+	}
+	meta.TaskBehaviors = normalized
+
 	for name, behavior := range meta.TaskBehaviors {
 		if err := ValidateDefaultPayloadNoInstructions(behavior.DefaultPayload); err != nil {
 			return nil, fmt.Errorf("project.yaml: task_behaviors.%s.default_payload: %w", name, err)
 		}
 	}
 
+	// Add back-compat alias mirror entries so legacy lookups
+	// (meta.TaskBehaviors["dev"]) continue to find the canonical entry.
+	// Callers iterating the map should use the canonical entries as the
+	// source of truth; ReadProjectMetaWithKits explicitly strips and re-adds
+	// mirrors to avoid double-processing during kit merging.
+	meta.TaskBehaviors = addAliasMirrors(meta.TaskBehaviors)
+
 	return &meta, nil
+}
+
+// normalizeBehaviorAliases rewrites the task_behaviors map so that any
+// deprecated alias key (see BehaviorAliases) is renamed to its canonical
+// counterpart. A deprecation warning is emitted for each alias seen. If both
+// the alias and its canonical counterpart are present in the same map, an
+// error is returned — authors must pick exactly one form per behavior.
+//
+// scope identifies the source ("project.yaml" or "kit.yaml ...") for logs and
+// error messages.
+//
+// To keep the rename non-breaking for callers that look up behaviors by the
+// legacy name, addAliasMirrors must be called on the FINAL fully-resolved map
+// (after kit merging, etc.) to add back-compat mirror entries. See
+// ReadProjectMetaWithKits.
+func normalizeBehaviorAliases(scope string, behaviors map[string]TaskBehavior) (map[string]TaskBehavior, error) {
+	if len(behaviors) == 0 {
+		return behaviors, nil
+	}
+	// Detect duplicates first (alias and canonical both present): fail fast.
+	for alias, canonical := range BehaviorAliases {
+		if _, hasAlias := behaviors[alias]; !hasAlias {
+			continue
+		}
+		if _, hasCanonical := behaviors[canonical]; hasCanonical {
+			return nil, fmt.Errorf("%s: duplicate task behavior definition: %q is an alias of %q; remove one", scope, alias, canonical)
+		}
+	}
+	result := make(map[string]TaskBehavior, len(behaviors))
+	for key, behavior := range behaviors {
+		canonical, isAlias := CanonicalBehaviorName(key)
+		if isAlias {
+			slog.Warn("task behavior name is deprecated; use canonical name instead",
+				"scope", scope,
+				"deprecated", key,
+				"canonical", canonical,
+			)
+			// Promote Name to canonical only when Name matched the alias
+			// key. Explicit display names are preserved.
+			if behavior.Name == key {
+				behavior.Name = canonical
+			}
+			result[canonical] = behavior
+			continue
+		}
+		result[key] = behavior
+	}
+	return result, nil
+}
+
+// addAliasMirrors adds back-compat alias key mirror entries to a fully
+// processed task_behaviors map. For every canonical behavior present whose
+// name has a known alias, the alias key is set to the same TaskBehavior
+// value. Existing alias entries are never overwritten.
+//
+// This is the migration-period back-compat: callers that look up by the
+// legacy name (e.g. existing tests, persisted task.Behavior rows that still
+// carry "dev") continue to find their behavior, while new callers can use
+// the canonical name. Phase 5 will drop the mirroring step entirely.
+func addAliasMirrors(behaviors map[string]TaskBehavior) map[string]TaskBehavior {
+	if len(behaviors) == 0 {
+		return behaviors
+	}
+	for alias, canonical := range BehaviorAliases {
+		if _, exists := behaviors[alias]; exists {
+			continue
+		}
+		entry, ok := behaviors[canonical]
+		if !ok {
+			continue
+		}
+		behaviors[alias] = entry
+	}
+	return behaviors
+}
+
+// stripAliasMirrors removes any back-compat alias key entries that have a
+// matching canonical entry. It is the inverse of addAliasMirrors and is used
+// before re-processing a meta map (e.g. in ReadProjectMetaWithKits, which
+// iterates over the map to merge kits — alias entries would cause every
+// behavior to be processed twice).
+//
+// Only the canonical-resolvable aliases are stripped; if the map happens to
+// contain an alias key WITHOUT its canonical counterpart, the entry is left
+// alone (it represents a legitimate user-authored alias-only definition that
+// has not yet been canonicalized).
+func stripAliasMirrors(behaviors map[string]TaskBehavior) map[string]TaskBehavior {
+	if len(behaviors) == 0 {
+		return behaviors
+	}
+	for alias, canonical := range BehaviorAliases {
+		if _, hasAlias := behaviors[alias]; !hasAlias {
+			continue
+		}
+		if _, hasCanonical := behaviors[canonical]; !hasCanonical {
+			continue
+		}
+		delete(behaviors, alias)
+	}
+	return behaviors
 }
 
 // ValidateDefaultPayloadNoInstructions rejects "instructions" as a top-level key
@@ -251,6 +364,11 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 	}
 
 	meta = cloneProjectMeta(meta)
+
+	// Drop alias mirror entries added by ReadProjectMeta so that the
+	// kit-merge loop below iterates each behavior only once. Mirrors are
+	// re-added at the end of this function.
+	meta.TaskBehaviors = stripAliasMirrors(meta.TaskBehaviors)
 
 	// Collect unique kits across all behaviors and commands, preserving first-seen order.
 	var orderedRefs []KitRef
@@ -456,6 +574,12 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		meta.SecretNamespace = local.SecretNamespace
 	}
 
+	// Re-add the back-compat alias mirror entries that were stripped at the
+	// top of this function. After kit merge + overlays, the canonical entries
+	// are fully populated; mirrors must reflect the resolved state so legacy
+	// lookups (e.g. meta.TaskBehaviors["dev"]) see the same data.
+	meta.TaskBehaviors = addAliasMirrors(meta.TaskBehaviors)
+
 	return meta, nil
 }
 
@@ -470,6 +594,11 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 	if err := yaml.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("parse kit.yaml: %w", err)
 	}
+	normalized, err := normalizeBehaviorAliases(fmt.Sprintf("kit.yaml (%s)", dir), meta.TaskBehaviors)
+	if err != nil {
+		return nil, err
+	}
+	meta.TaskBehaviors = normalized
 	for name, behavior := range meta.TaskBehaviors {
 		if err := ValidateDefaultPayloadNoInstructions(behavior.DefaultPayload); err != nil {
 			return nil, fmt.Errorf("kit.yaml: task_behaviors.%s.default_payload: %w", name, err)

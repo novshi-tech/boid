@@ -29,10 +29,13 @@ func taskNewProjectLabel(p *orchestrator.Project) string {
 // taskNewBehaviors returns the union of behavior names defined across
 // all projects, sorted alphabetically. Used as the default Behavior
 // option list when no project is selected.
+//
+// Back-compat alias mirror entries (e.g. "plan" when "supervisor" is also
+// present) are filtered out so the UI does not show the same behavior twice.
 func taskNewBehaviors(projects []*orchestrator.Project) []string {
 	seen := map[string]bool{}
 	for _, p := range projects {
-		for name := range p.Meta.TaskBehaviors {
+		for _, name := range visibleBehaviorNames(p.Meta.TaskBehaviors) {
 			seen[name] = true
 		}
 	}
@@ -50,10 +53,7 @@ func taskNewBehaviors(projects []*orchestrator.Project) []string {
 func taskNewBehaviorsByProjectJSON(projects []*orchestrator.Project) string {
 	m := make(map[string][]string, len(projects))
 	for _, p := range projects {
-		names := make([]string, 0, len(p.Meta.TaskBehaviors))
-		for name := range p.Meta.TaskBehaviors {
-			names = append(names, name)
-		}
+		names := visibleBehaviorNames(p.Meta.TaskBehaviors)
 		sort.Strings(names)
 		m[p.ID] = names
 	}
@@ -62,6 +62,22 @@ func taskNewBehaviorsByProjectJSON(projects []*orchestrator.Project) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+// visibleBehaviorNames returns the canonical (non-mirror) keys of a behavior
+// map. Alias keys are kept only when no canonical counterpart exists.
+func visibleBehaviorNames(behaviors map[string]orchestrator.TaskBehavior) []string {
+	out := make([]string, 0, len(behaviors))
+	for name := range behaviors {
+		if orchestrator.IsBehaviorAliasKey(name) {
+			canonical, _ := orchestrator.CanonicalBehaviorName(name)
+			if _, hasCanonical := behaviors[canonical]; hasCanonical {
+				continue
+			}
+		}
+		out = append(out, name)
+	}
+	return out
 }
 
 // TaskNew renders the minimal task-creation form. Only the fields a human
