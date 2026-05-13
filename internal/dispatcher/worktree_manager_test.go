@@ -1099,3 +1099,137 @@ func TestCreate_StaleFetchFailure(t *testing.T) {
 		t.Fatal("Create should return an error when fetch fails and no local branch exists")
 	}
 }
+
+// ---- Phase 2-2: case 3 base branch auto-create + case 1 HEAD guard ----
+
+// TestCreate_Case3_CreatesBaseBranchFromHead verifies that Create succeeds
+// when the requested base branch is unknown to both local and origin. The
+// expected behaviour is "create it from HEAD before allocating the worktree",
+// matching the dispatcher-side mitigation for ClassifyBaseBranch's Case3NotFound.
+func TestCreate_Case3_CreatesBaseBranchFromHead(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t) // HEAD on main, no other branches
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-p22-1', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-p2200001-0001', 'proj-p22-1', 'case3', 'supervisor')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	// "release-2026" exists neither locally nor on origin. Create must
+	// auto-create it from HEAD and allocate a worktree based on it.
+	w, err := mgr.Create(repo, "proj-p22-1", "task-p2200001-0001", "boid/", "release-2026")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if w.BaseBranch != "release-2026" {
+		t.Errorf("BaseBranch = %q, want %q", w.BaseBranch, "release-2026")
+	}
+
+	// The newly created base branch must exist locally on the project repo.
+	out, err := exec.Command(gitBin, "-C", repo, "branch", "--list", "release-2026").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git branch --list: %v\n%s", err, out)
+	}
+	if len(strings.TrimSpace(string(out))) == 0 {
+		t.Errorf("release-2026 should be created on the project repo as a local branch")
+	}
+}
+
+// TestCreate_Case3_DetachedHead_Errors verifies the detached-HEAD guard:
+// creating a base branch from a detached commit is refused because the
+// resulting branch would not correspond to mainline history.
+func TestCreate_Case3_DetachedHead_Errors(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	// Move HEAD to a detached state on the current tip.
+	out, err := exec.Command(gitBin, "-C", repo, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+	hash := strings.TrimSpace(string(out))
+	if out, err := exec.Command(gitBin, "-C", repo, "checkout", "--detach", hash).CombinedOutput(); err != nil {
+		t.Fatalf("checkout --detach: %v\n%s", err, out)
+	}
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-p22-2', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-p2200002-0001', 'proj-p22-2', 'case3 detached', 'supervisor')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	_, err = mgr.Create(repo, "proj-p22-2", "task-p2200002-0001", "boid/", "release-2026")
+	if err == nil {
+		t.Fatal("expected Create to fail with detached HEAD, got nil")
+	}
+	if !strings.Contains(err.Error(), "detached HEAD") {
+		t.Errorf("error message %q should mention detached HEAD", err.Error())
+	}
+}
+
+// TestEnforceHeadOnBaseBranch_Match accepts the dispatch when HEAD matches.
+func TestEnforceHeadOnBaseBranch_Match(t *testing.T) {
+	repo := initGitRepo(t)
+	mgr := &dispatcher.WorktreeManager{GitBin: gitBin}
+	if err := mgr.EnforceHeadOnBaseBranch(repo, "main"); err != nil {
+		t.Errorf("expected nil error for HEAD on main, got %v", err)
+	}
+	if err := mgr.EnforceHeadOnBaseBranch(repo, "origin/main"); err != nil {
+		t.Errorf("expected origin/main to be treated as main, got %v", err)
+	}
+}
+
+// TestEnforceHeadOnBaseBranch_Mismatch rejects dispatch when HEAD has been
+// moved to a different branch since task creation.
+func TestEnforceHeadOnBaseBranch_Mismatch(t *testing.T) {
+	repo := initGitRepo(t)
+	// Create a feature branch and check it out.
+	if out, err := exec.Command(gitBin, "-C", repo, "checkout", "-b", "feature").CombinedOutput(); err != nil {
+		t.Fatalf("checkout -b feature: %v\n%s", err, out)
+	}
+
+	mgr := &dispatcher.WorktreeManager{GitBin: gitBin}
+	err := mgr.EnforceHeadOnBaseBranch(repo, "main")
+	if err == nil {
+		t.Fatal("expected error for HEAD on feature but task base_branch=main")
+	}
+	if !strings.Contains(err.Error(), "HEAD guard") {
+		t.Errorf("error should mention HEAD guard, got %v", err)
+	}
+}
+
+// TestEnforceHeadOnBaseBranch_DetachedRejected rejects detached HEAD as a
+// case 1 mismatch (case 1 by definition implies a real branch).
+func TestEnforceHeadOnBaseBranch_DetachedRejected(t *testing.T) {
+	repo := initGitRepo(t)
+	out, err := exec.Command(gitBin, "-C", repo, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+	hash := strings.TrimSpace(string(out))
+	if out, err := exec.Command(gitBin, "-C", repo, "checkout", "--detach", hash).CombinedOutput(); err != nil {
+		t.Fatalf("checkout --detach: %v\n%s", err, out)
+	}
+
+	mgr := &dispatcher.WorktreeManager{GitBin: gitBin}
+	err = mgr.EnforceHeadOnBaseBranch(repo, "main")
+	if err == nil {
+		t.Fatal("expected error for detached HEAD")
+	}
+	if !strings.Contains(err.Error(), "detached") {
+		t.Errorf("error should mention detached, got %v", err)
+	}
+}
+
+// TestEnforceHeadOnBaseBranch_EmptyBaseBranch is a no-op for tasks without a
+// recorded base_branch (existing legacy tasks).
+func TestEnforceHeadOnBaseBranch_EmptyBaseBranch(t *testing.T) {
+	repo := initGitRepo(t)
+	mgr := &dispatcher.WorktreeManager{GitBin: gitBin}
+	if err := mgr.EnforceHeadOnBaseBranch(repo, ""); err != nil {
+		t.Errorf("expected nil for empty base_branch, got %v", err)
+	}
+}
+
+// ---- end Phase 2-2 ----

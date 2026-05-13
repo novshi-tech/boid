@@ -607,6 +607,86 @@ func applyCanonicalBehaviorOverrides(res *behaviorResolution, behavior orchestra
 	res.worktree = behavior.Worktree
 }
 
+// classifyAndApplyBaseBranchCase performs the Phase 2-2 supervisor 3-case
+// classification and adjusts task.Worktree based on the result. It is also
+// where the "parent-less executor pointed at a non-existent base" error is
+// surfaced — a child executor with a parent inherits the parent's already-
+// resolved base (which by construction exists or will be created when the
+// parent runs) and thus skips classification entirely.
+//
+// Returns the updated worktree flag (the task field) and a *StatusError on
+// validation failure. The function is conservative: when classification
+// itself fails (e.g. detached HEAD, project lookup unwired) it surfaces the
+// error so callers cannot silently fall through to a broken supervisor run.
+//
+// Rationale for living on the service (rather than orchestrator pkg): the
+// decision combines task-row metadata (behaviorName, parent), project meta
+// (workdir lookup), and orchestrator primitives. Pushing it into orchestrator
+// would require importing the ProjectWorkDirLookup interface back, which is
+// the wrong direction for the layer boundary (orchestrator → api is forbidden
+// per feedback_layer_boundary_enforcement). Service is the right join point.
+func (s *TaskAppService) classifyAndApplyBaseBranchCase(req CreateTaskRequest, behaviorName, baseBranch string, worktree, inheritedFromParent bool) (bool, error) {
+	// Inherited base branches were already validated when the parent was
+	// scheduled; re-checking here would either double-trip (parent already
+	// exists → case 2) or fight the parent's case-3 promise. Same reasoning
+	// as the inheritance branch in CreateTask.
+	if inheritedFromParent {
+		return worktree, nil
+	}
+	if behaviorName != "supervisor" && behaviorName != "executor" {
+		// Non-canonical behaviors keep the existing semantics (P3-1 will
+		// remove the divergence entirely).
+		return worktree, nil
+	}
+	if s.Projects == nil {
+		// No project workdir lookup available (e.g. test wiring without a
+		// Projects stub). Without it we cannot classify; leave the worktree
+		// decision untouched and skip the check. CreateTask paths that need
+		// the classification wire the Projects field — silent skipping here
+		// matches the legacy behavior of the base_branch expander.
+		return worktree, nil
+	}
+	proj, projErr := s.Projects.GetProject(req.ProjectID)
+	if projErr != nil {
+		return worktree, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project lookup failed: %v", projErr)}
+	}
+	if proj == nil || proj.WorkDir == "" {
+		return worktree, nil
+	}
+
+	state, err := orchestrator.ClassifyBaseBranch(proj.WorkDir, baseBranch)
+	if err != nil {
+		return worktree, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("classify base_branch %q: %v", baseBranch, err)}
+	}
+
+	switch behaviorName {
+	case "supervisor":
+		// Supervisor case routing:
+		//   case 1 → worktree=false (run in project dir)
+		//   case 2 → worktree=true  (check out the existing base in a worktree)
+		//   case 3 → worktree=true  (worktree manager will create the base)
+		switch state {
+		case orchestrator.Case1HeadMatches:
+			worktree = false
+		case orchestrator.Case2ExistsButNotCheckedOut, orchestrator.Case3NotFound:
+			worktree = true
+		}
+	case "executor":
+		// Executor never runs in the project dir, so case 1 / case 2 are both
+		// fine. Case 3 with no parent is an error: a child executor inherits
+		// its parent's base_branch (so its presence is the parent's
+		// responsibility), but a parent-less executor has nobody to create
+		// the missing base.
+		if state == orchestrator.Case3NotFound && req.ParentID == "" {
+			return worktree, &StatusError{
+				Code: http.StatusBadRequest,
+				Message: fmt.Sprintf("executor base_branch %q does not exist locally or on origin, and the task has no parent supervisor to create it", baseBranch),
+			}
+		}
+	}
+	return worktree, nil
+}
+
 func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
 	var meta *orchestrator.ProjectMeta
 	if s.Meta != nil {
@@ -709,6 +789,17 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 			}
 			baseBranch = expanded
 		}
+	}
+
+	// Phase 2-2: supervisor 3-case execution location decision + executor base
+	// existence check. classifyAndApplyBaseBranchCase mutates worktree (and
+	// short-circuits with an error in the "executor + case 3 + no parent" case);
+	// inheritedFromParent skips the classify entirely because the parent's
+	// base must already exist (case 1/2) or have been created (case 3) when
+	// the parent itself was scheduled.
+	worktree, err = s.classifyAndApplyBaseBranchCase(req, res.behaviorName, baseBranch, worktree, inheritedFromParent)
+	if err != nil {
+		return nil, err
 	}
 
 	var resolvedDeps []string
