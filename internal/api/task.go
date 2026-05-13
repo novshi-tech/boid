@@ -2,9 +2,12 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -12,6 +15,45 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
+
+// deprecatedTaskRowFields enumerates the JSON keys that used to override
+// task-row settings at create/update time. Phase 2-3 of the task_behavior
+// simplification removes them: behavior type (supervisor/executor) and
+// project-level defaults now fully determine these values.
+//
+// Requests that still carry them are accepted (the keys are silently dropped
+// by json.Unmarshal because the struct no longer has fields for them) and
+// logged at WARN so legacy clients can be located and migrated.
+var deprecatedTaskRowFields = []string{
+	"readonly",
+	"worktree",
+	"branch_prefix",
+	"base_branch",
+}
+
+// warnDeprecatedTaskRowFields scans a JSON object for keys that were
+// previously used to override task-row settings. It returns the request body
+// (already drained from r.Body) so the caller can decode it.
+//
+// Non-object payloads and decode errors are tolerated: this helper is a
+// best-effort warning, not a validator. Real parsing happens in the caller.
+func warnDeprecatedTaskRowFields(body []byte, scope string) {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return
+	}
+	for _, key := range deprecatedTaskRowFields {
+		if _, ok := probe[key]; ok {
+			slog.Warn("task-row override is deprecated and ignored; value is determined by behavior type and project defaults",
+				"scope", scope,
+				"field", key,
+			)
+		}
+	}
+}
 
 // TaskNotifyService dispatches an agent-driven notification for a task.
 // Wired to *TaskAppService at runtime; left optional on TaskHandler so
@@ -117,9 +159,6 @@ type UpdateTaskRequest struct {
 	Description      string          `json:"description"`
 	Payload          json.RawMessage `json:"payload,omitempty"`
 	Instructions     json.RawMessage `json:"instructions,omitempty"`
-	BaseBranch       *string         `json:"base_branch,omitempty"`
-	BranchPrefix     *string         `json:"branch_prefix,omitempty"`
-	Worktree         *bool           `json:"worktree,omitempty"`
 	DependsOn        []string        `json:"depends_on,omitempty"`
 	DependsOnPayload *string         `json:"depends_on_payload,omitempty"`
 	ParentID         *string         `json:"parent_id,omitempty"`
@@ -127,31 +166,33 @@ type UpdateTaskRequest struct {
 }
 
 type CreateTaskRequest struct {
-	ID           string                     `json:"id,omitempty"`
-	ProjectID    string                     `json:"project_id"`
-	Title        string                     `json:"title"`
-	Description  string                     `json:"description,omitempty"`
-	Behavior     string                     `json:"behavior,omitempty"`
-	BehaviorSpec *orchestrator.BehaviorSpec `json:"behavior_spec,omitempty"`
-	RemoteID     string                     `json:"remote_id,omitempty"`
-	DataSourceID string                     `json:"datasource_id,omitempty"`
-	Payload      json.RawMessage            `json:"payload,omitempty"`
-	Instructions json.RawMessage            `json:"instructions,omitempty"`
-	AutoStart    bool                       `json:"auto_start,omitempty"`
-	Traits       []string                   `json:"traits,omitempty"`
-	Readonly     *bool                      `json:"readonly,omitempty"`
-	Worktree     *bool                      `json:"worktree,omitempty"`
-	BranchPrefix *string                    `json:"branch_prefix,omitempty"`
-	BaseBranch   *string                    `json:"base_branch,omitempty"`
-	DependsOn        []string               `json:"depends_on,omitempty"`
-	DependsOnPayload string                 `json:"depends_on_payload,omitempty"`
-	Ref              string                 `json:"ref,omitempty"`
-	ParentID     string                     `json:"parent_id,omitempty"`
+	ID               string                     `json:"id,omitempty"`
+	ProjectID        string                     `json:"project_id"`
+	Title            string                     `json:"title"`
+	Description      string                     `json:"description,omitempty"`
+	Behavior         string                     `json:"behavior,omitempty"`
+	BehaviorSpec     *orchestrator.BehaviorSpec `json:"behavior_spec,omitempty"`
+	RemoteID         string                     `json:"remote_id,omitempty"`
+	DataSourceID     string                     `json:"datasource_id,omitempty"`
+	Payload          json.RawMessage            `json:"payload,omitempty"`
+	Instructions     json.RawMessage            `json:"instructions,omitempty"`
+	AutoStart        bool                       `json:"auto_start,omitempty"`
+	Traits           []string                   `json:"traits,omitempty"`
+	DependsOn        []string                   `json:"depends_on,omitempty"`
+	DependsOnPayload string                     `json:"depends_on_payload,omitempty"`
+	Ref              string                     `json:"ref,omitempty"`
+	ParentID         string                     `json:"parent_id,omitempty"`
 }
 
 func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	warnDeprecatedTaskRowFields(body, "POST /api/tasks")
 	var req CreateTaskRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -209,13 +250,19 @@ func (h *TaskHandler) Detail(w http.ResponseWriter, r *http.Request) {
 
 func (h *TaskHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	var req UpdateTaskRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Title == "" && req.Description == "" && len(req.Payload) == 0 && len(req.Instructions) == 0 && req.BaseBranch == nil && req.BranchPrefix == nil && req.Worktree == nil && req.DependsOn == nil && req.DependsOnPayload == nil && req.ParentID == nil && req.AutoStart == nil {
-		writeError(w, http.StatusBadRequest, "at least one of title, description, payload, instructions, base_branch, branch_prefix, worktree, depends_on, depends_on_payload, parent_id, or auto_start is required")
+	warnDeprecatedTaskRowFields(body, "PATCH /api/tasks/{id}")
+	var req UpdateTaskRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Title == "" && req.Description == "" && len(req.Payload) == 0 && len(req.Instructions) == 0 && req.DependsOn == nil && req.DependsOnPayload == nil && req.ParentID == nil && req.AutoStart == nil {
+		writeError(w, http.StatusBadRequest, "at least one of title, description, payload, instructions, depends_on, depends_on_payload, parent_id, or auto_start is required")
 		return
 	}
 	task, err := h.Service.UpdateTask(id, req)
@@ -239,6 +286,7 @@ func (h *TaskHandler) Import(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			lineNum++
+			warnDeprecatedTaskRowFields([]byte(line), fmt.Sprintf("POST /api/tasks/import line %d", lineNum))
 			var req CreateTaskRequest
 			if err := json.Unmarshal([]byte(line), &req); err != nil {
 				writeError(w, http.StatusBadRequest, fmt.Sprintf("line %d: invalid JSON: %s", lineNum, err))
@@ -251,7 +299,19 @@ func (h *TaskHandler) Import(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		if err := json.NewDecoder(r.Body).Decode(&reqs); err != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		// Probe each element for deprecated keys before decoding into typed reqs.
+		var rawList []json.RawMessage
+		if err := json.Unmarshal(body, &rawList); err == nil {
+			for i, raw := range rawList {
+				warnDeprecatedTaskRowFields(raw, fmt.Sprintf("POST /api/tasks/import index %d", i))
+			}
+		}
+		if err := json.Unmarshal(body, &reqs); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}

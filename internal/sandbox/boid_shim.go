@@ -170,9 +170,9 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 	}
 
 	// Unmarshal the entire YAML spec into a generic map so that every field
-	// (including previously dropped ones such as instructions, traits, readonly,
-	// worktree, branch_prefix, id, datasource_id) is forwarded without
-	// explicit enumeration.
+	// is forwarded without explicit enumeration. The API server applies its
+	// own schema and (per Phase 2-3) silently drops deprecated task-row
+	// override keys (readonly / worktree / branch_prefix / base_branch).
 	var v map[string]any
 	if err := yaml.Unmarshal(data, &v); err != nil {
 		return nil, fmt.Errorf("boid shim: parse task spec: %w", err)

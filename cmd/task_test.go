@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -89,9 +91,9 @@ behavior_spec:
 }
 
 func TestParseTaskCreateSpec_AllTopLevelFields(t *testing.T) {
-	// CreateTaskRequest 全フィールドが YAML で受け取れることを確認する
-	// (旧 taskCreateSpec で欠落していた traits / readonly / worktree / branch_prefix /
-	//  remote_id / datasource_id を含む)。
+	// CreateTaskRequest の全フィールドが YAML で受け取れることを確認する。
+	// Phase 2-3 で readonly / worktree / branch_prefix / base_branch の
+	// task-row override は廃止されたため、 これらは spec に含めない。
 	input := `
 project_id: proj-1
 title: Full Task
@@ -101,10 +103,6 @@ remote_id: REM-1
 datasource_id: ds-github
 traits:
   - artifact
-readonly: true
-worktree: true
-branch_prefix: feat/
-base_branch: main
 auto_start: true
 depends_on:
   - task-a
@@ -124,18 +122,6 @@ instructions:
 	}
 	if spec.Traits == nil || spec.Traits[0] != "artifact" {
 		t.Errorf("Traits = %v, want [artifact]", spec.Traits)
-	}
-	if spec.Readonly == nil || !*spec.Readonly {
-		t.Errorf("Readonly = %v, want true", spec.Readonly)
-	}
-	if spec.Worktree == nil || !*spec.Worktree {
-		t.Errorf("Worktree = %v, want true", spec.Worktree)
-	}
-	if spec.BranchPrefix == nil || *spec.BranchPrefix != "feat/" {
-		t.Errorf("BranchPrefix = %v, want feat/", spec.BranchPrefix)
-	}
-	if spec.BaseBranch == nil || *spec.BaseBranch != "main" {
-		t.Errorf("BaseBranch = %v, want main", spec.BaseBranch)
 	}
 	if spec.RemoteID != "REM-1" {
 		t.Errorf("RemoteID = %q, want REM-1", spec.RemoteID)
@@ -157,6 +143,38 @@ instructions:
 	}
 	if len(spec.Instructions) == 0 {
 		t.Error("Instructions is empty, want non-empty JSON")
+	}
+}
+
+func TestParseTaskCreateSpec_DroppedTaskRowOverrideFields(t *testing.T) {
+	// Phase 2-3: readonly / worktree / branch_prefix / base_branch in a task
+	// YAML spec are no longer fields on CreateTaskRequest. They are silently
+	// dropped at parse time (the API server emits a slog.Warn on the wire).
+	// This test pins that behavior so a future regression that re-adds a
+	// field on CreateTaskRequest gets caught.
+	input := `
+project_id: proj-1
+title: Override Task
+behavior: dev
+readonly: true
+worktree: true
+branch_prefix: feat/
+base_branch: develop
+`
+	spec, err := parseTaskCreateSpec([]byte(input))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Encode the spec back to JSON and confirm none of the dropped keys
+	// survive the round-trip.
+	encoded, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatalf("marshal spec: %v", err)
+	}
+	for _, key := range []string{`"readonly"`, `"worktree"`, `"branch_prefix"`, `"base_branch"`} {
+		if strings.Contains(string(encoded), key) {
+			t.Errorf("spec retained dropped key %s in JSON: %s", key, encoded)
+		}
 	}
 }
 

@@ -126,21 +126,9 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 		req.Traits = strings.Fields(raw)
 	}
 
-	if v := r.FormValue("base_branch"); v != "" {
-		req.BaseBranch = &v
-	}
-	if v := r.FormValue("branch_prefix"); v != "" {
-		req.BranchPrefix = &v
-	}
-
-	if r.FormValue("worktree") == "on" {
-		t := true
-		req.Worktree = &t
-	}
-	if r.FormValue("readonly") == "on" {
-		t := true
-		req.Readonly = &t
-	}
+	// Phase 2-3: task-row overrides for base_branch / branch_prefix / worktree /
+	// readonly were removed. Values are derived from the behavior type and
+	// project-level defaults; the Web form no longer exposes these inputs.
 
 	task, err := h.Service.CreateTask(req)
 	if err != nil {

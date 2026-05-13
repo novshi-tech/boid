@@ -710,31 +710,9 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 	if req.Traits != nil {
 		traits = req.Traits
 	}
-	if req.Readonly != nil {
-		// Phase 2-1: request-level Readonly override is being phased out by
-		// P2-3. For now we still honor it for compatibility, but warn so
-		// callers can migrate.
-		slog.Warn("CreateTask request-level 'readonly' override is deprecated and will be removed in a future release",
-			"scope", "CreateTask",
-			"behavior", res.behaviorName,
-			"override", *req.Readonly,
-		)
-		readonly = *req.Readonly
-	}
-	if req.Worktree != nil {
-		slog.Warn("CreateTask request-level 'worktree' override is deprecated and will be removed in a future release",
-			"scope", "CreateTask",
-			"behavior", res.behaviorName,
-			"override", *req.Worktree,
-		)
-		worktree = *req.Worktree
-	}
-	if req.BranchPrefix != nil {
-		branchPrefix = *req.BranchPrefix
-	}
-	if req.BaseBranch != nil {
-		baseBranch = *req.BaseBranch
-	}
+	// Phase 2-3: task-row level overrides for readonly / worktree / base_branch
+	// / branch_prefix have been removed. Values come from the resolved behavior
+	// (and project-level defaults for worktree / base_branch).
 
 	// Phase 1-3: parent-child base_branch inheritance.
 	//
@@ -1137,23 +1115,9 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	if req.ParentID != nil {
 		task.ParentID = *req.ParentID
 	}
-	if req.BaseBranch != nil || req.BranchPrefix != nil || req.Worktree != nil {
-		if !isInstructionsEditable(task.Status) {
-			return nil, &StatusError{
-				Code:    http.StatusConflict,
-				Message: fmt.Sprintf("cannot edit base_branch/branch_prefix/worktree while task is running (status: %s)", task.Status),
-			}
-		}
-		if req.BaseBranch != nil {
-			task.BaseBranch = *req.BaseBranch
-		}
-		if req.BranchPrefix != nil {
-			task.BranchPrefix = *req.BranchPrefix
-		}
-		if req.Worktree != nil {
-			task.Worktree = *req.Worktree
-		}
-	}
+	// Phase 2-3: task-row level base_branch / branch_prefix / worktree updates
+	// have been removed. These values are determined at create time from the
+	// behavior type and project-level defaults, and are no longer mutable.
 	var instructionsBefore orchestrator.Instructions
 	if len(req.Instructions) > 0 {
 		if !isInstructionsEditable(task.Status) {

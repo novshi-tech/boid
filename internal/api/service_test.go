@@ -685,108 +685,12 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		}
 	})
 
-	t.Run("base_branch updated when pending", func(t *testing.T) {
-		task := &orchestrator.Task{
-			ID:         "task-8",
-			Title:      "title",
-			Status:     orchestrator.TaskStatusPending,
-			BaseBranch: "main",
-		}
-		store := &stubTaskStore{task: task}
-		svc := &TaskAppService{Tasks: store}
-
-		v := "master"
-		got, err := svc.UpdateTask("task-8", UpdateTaskRequest{BaseBranch: &v})
-		if err != nil {
-			t.Fatalf("UpdateTask() error = %v", err)
-		}
-		if got.BaseBranch != "master" {
-			t.Errorf("BaseBranch = %q, want %q", got.BaseBranch, "master")
-		}
-		if store.updateCalls != 1 {
-			t.Errorf("UpdateTask store calls = %d, want 1", store.updateCalls)
-		}
-	})
-
-	t.Run("branch_prefix updated when pending", func(t *testing.T) {
-		task := &orchestrator.Task{
-			ID:           "task-9",
-			Title:        "title",
-			Status:       orchestrator.TaskStatusPending,
-			BranchPrefix: "old-prefix/",
-		}
-		store := &stubTaskStore{task: task}
-		svc := &TaskAppService{Tasks: store}
-
-		v := "feature/"
-		got, err := svc.UpdateTask("task-9", UpdateTaskRequest{BranchPrefix: &v})
-		if err != nil {
-			t.Fatalf("UpdateTask() error = %v", err)
-		}
-		if got.BranchPrefix != "feature/" {
-			t.Errorf("BranchPrefix = %q, want %q", got.BranchPrefix, "feature/")
-		}
-	})
-
-	t.Run("base_branch empty string clears value", func(t *testing.T) {
-		task := &orchestrator.Task{
-			ID:         "task-10",
-			Title:      "title",
-			Status:     orchestrator.TaskStatusPending,
-			BaseBranch: "main",
-		}
-		store := &stubTaskStore{task: task}
-		svc := &TaskAppService{Tasks: store}
-
-		empty := ""
-		got, err := svc.UpdateTask("task-10", UpdateTaskRequest{BaseBranch: &empty})
-		if err != nil {
-			t.Fatalf("UpdateTask() error = %v", err)
-		}
-		if got.BaseBranch != "" {
-			t.Errorf("BaseBranch = %q, want empty", got.BaseBranch)
-		}
-	})
-
-	t.Run("base_branch update rejected while executing", func(t *testing.T) {
-		task := &orchestrator.Task{
-			ID:     "task-11",
-			Title:  "title",
-			Status: orchestrator.TaskStatusExecuting,
-		}
-		store := &stubTaskStore{task: task}
-		svc := &TaskAppService{Tasks: store}
-
-		v := "master"
-		_, err := svc.UpdateTask("task-11", UpdateTaskRequest{BaseBranch: &v})
-		if err == nil {
-			t.Fatal("expected UpdateTask to reject base_branch change while running")
-		}
-		se, ok := err.(*StatusError)
-		if !ok || se.Code != http.StatusConflict {
-			t.Fatalf("expected StatusConflict, got %v", err)
-		}
-	})
-
-	t.Run("branch_prefix update rejected while executing", func(t *testing.T) {
-		task := &orchestrator.Task{
-			ID:     "task-12",
-			Title:  "title",
-			Status: orchestrator.TaskStatusExecuting,
-		}
-		store := &stubTaskStore{task: task}
-		svc := &TaskAppService{Tasks: store}
-
-		v := "feature/"
-		_, err := svc.UpdateTask("task-12", UpdateTaskRequest{BranchPrefix: &v})
-		if err == nil {
-			t.Fatal("expected UpdateTask to reject branch_prefix change while executing")
-		}
-		se, ok := err.(*StatusError)
-		if !ok || se.Code != http.StatusConflict {
-			t.Fatalf("expected StatusConflict, got %v", err)
-		}
-	})
+	// Phase 2-3: base_branch / branch_prefix / worktree task-row updates were
+	// removed. The fields no longer exist on UpdateTaskRequest, so the API
+	// silently drops them (with a slog.Warn at the handler boundary). The
+	// drop behavior is covered by TestTaskHandlerPatch_DeprecatedTaskRowOverridesIgnored
+	// in task_patch_test.go; the per-status conflict paths once tested here
+	// are obsolete.
 }
 
 func TestTaskAppServiceImportTasks_AllCreated(t *testing.T) {
@@ -960,7 +864,13 @@ func TestCreateTask_BehaviorFieldsExpandedToTask(t *testing.T) {
 	}
 }
 
-func TestCreateTask_RequestOverridesTemplateFields(t *testing.T) {
+// TestCreateTask_NoTaskRowOverridesAvailable replaces the former
+// TestCreateTask_RequestOverridesTemplateFields. Phase 2-3 removed per-task
+// overrides for readonly / worktree / branch_prefix / base_branch from
+// CreateTaskRequest. The resulting Task must reflect the behavior template
+// (and project-level defaults) verbatim — Traits is the only knob that the
+// request still tweaks.
+func TestCreateTask_NoTaskRowOverridesAvailable(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
 			"dev": {
@@ -978,14 +888,10 @@ func TestCreateTask_RequestOverridesTemplateFields(t *testing.T) {
 	}
 
 	task, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID:    "proj-1",
-		Title:        "test task",
-		Behavior:     "dev",
-		Traits:       []string{"artifact"},
-		Readonly:     boolPtr(true),
-		Worktree:     boolPtr(false),
-		BranchPrefix: strPtr("task/"),
-		BaseBranch:   strPtr("develop"),
+		ProjectID: "proj-1",
+		Title:     "test task",
+		Behavior:  "dev",
+		Traits:    []string{"artifact"},
 	})
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
@@ -993,17 +899,19 @@ func TestCreateTask_RequestOverridesTemplateFields(t *testing.T) {
 	if !reflect.DeepEqual(task.Traits, []string{"artifact"}) {
 		t.Errorf("Traits = %v, want %v", task.Traits, []string{"artifact"})
 	}
-	if task.Readonly != true {
-		t.Errorf("Readonly = %v, want true", task.Readonly)
+	// Readonly / Worktree / BranchPrefix / BaseBranch come from the behavior
+	// template; the request has no knobs to override them.
+	if task.Readonly != false {
+		t.Errorf("Readonly = %v, want false (from behavior template)", task.Readonly)
 	}
-	if task.Worktree != false {
-		t.Errorf("Worktree = %v, want false", task.Worktree)
+	if task.Worktree != true {
+		t.Errorf("Worktree = %v, want true (from behavior template)", task.Worktree)
 	}
-	if task.BranchPrefix != "task/" {
-		t.Errorf("BranchPrefix = %q, want %q", task.BranchPrefix, "task/")
+	if task.BranchPrefix != "feature/" {
+		t.Errorf("BranchPrefix = %q, want %q (from behavior template)", task.BranchPrefix, "feature/")
 	}
-	if task.BaseBranch != "develop" {
-		t.Errorf("BaseBranch = %q, want %q", task.BaseBranch, "develop")
+	if task.BaseBranch != "main" {
+		t.Errorf("BaseBranch = %q, want %q (from behavior template)", task.BaseBranch, "main")
 	}
 }
 
@@ -2862,35 +2770,11 @@ func TestCreateTask_BehaviorBaseBranch_VariableExpanded(t *testing.T) {
 	}
 }
 
-func TestCreateTask_RequestBaseBranch_VariableExpanded(t *testing.T) {
-	meta := &orchestrator.ProjectMeta{
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {},
-		},
-	}
-	svc := &TaskAppService{
-		Tasks:    &stubTaskStore{},
-		Meta:     stubMetaStore{meta: meta},
-		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: t.TempDir()}},
-	}
-	bb := "${current_branch}"
-	_, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID:  "proj-1",
-		Title:      "test",
-		Behavior:   "dev",
-		BaseBranch: &bb,
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	se, ok := err.(*StatusError)
-	if !ok {
-		t.Fatalf("error type = %T, want *StatusError", err)
-	}
-	if se.Code != http.StatusBadRequest {
-		t.Fatalf("status code = %d, want 400", se.Code)
-	}
-}
+// Phase 2-3: TestCreateTask_RequestBaseBranch_VariableExpanded was removed.
+// The behavior-level path is already covered by
+// TestCreateTask_BehaviorBaseBranch_VariableExpanded above; the per-request
+// override path no longer exists because CreateTaskRequest.BaseBranch was
+// deleted.
 
 func TestCreateTask_InlineBehaviorSpec_BaseBranch_VariableExpanded(t *testing.T) {
 	svc := &TaskAppService{
