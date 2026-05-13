@@ -1,6 +1,8 @@
 package orchestrator_test
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +10,17 @@ import (
 
 	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 )
+
+// captureSlog redirects the default slog logger to an in-memory buffer for the
+// duration of the test. Helper for verifying deprecation warnings.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
 
 // mergeKitsIntoBehavior is a test helper that builds a fresh TaskBehavior and
 // merges the given kits into it via MergeKitMetaIntoBehavior.
@@ -59,8 +72,15 @@ env:
 	if meta.ID != "test-proj" || meta.Name != "Test Project" {
 		t.Fatalf("unexpected meta: %+v", meta)
 	}
-	if len(meta.TaskBehaviors) != 1 {
-		t.Fatalf("unexpected task_behaviors count: %+v", meta.TaskBehaviors)
+	// Note: "dev" is a deprecated alias of the canonical name "executor";
+	// ReadProjectMeta normalizes the key to "executor" and adds a "dev"
+	// mirror entry for back-compat, so the map has 2 entries that both
+	// point to the same behavior.
+	if _, ok := meta.TaskBehaviors["executor"]; !ok {
+		t.Fatalf("expected canonical 'executor' behavior to be present, got %+v", meta.TaskBehaviors)
+	}
+	if _, ok := meta.TaskBehaviors["dev"]; !ok {
+		t.Fatalf("expected legacy alias 'dev' to remain reachable, got %+v", meta.TaskBehaviors)
 	}
 	if _, ok := meta.HostCommands["git"]; !ok {
 		t.Fatal("expected host_commands to contain 'git'")
@@ -2244,4 +2264,383 @@ func TestReadProjectMetaWithKits_BehaviorCommands(t *testing.T) {
 			t.Errorf("cmd.Env[GOPATH] = %q, want /home/user/go", cmd.Env["GOPATH"])
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1-2: supervisor / executor canonical names + plan / dev aliases.
+//
+// These tests pin down the behavior-name alias contract: the YAML loader
+// accepts both the legacy alias keys ("plan" / "dev") and the new canonical
+// keys ("supervisor" / "executor"). When an alias is used, the map is
+// normalized to the canonical key and a deprecation warning is logged. When
+// both an alias and its canonical counterpart appear in the same file, the
+// loader fails with a duplicate-definition error.
+// ---------------------------------------------------------------------------
+
+func TestCanonicalBehaviorName(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantName  string
+		wantAlias bool
+	}{
+		{name: "plan -> supervisor", input: "plan", wantName: "supervisor", wantAlias: true},
+		{name: "dev -> executor", input: "dev", wantName: "executor", wantAlias: true},
+		{name: "supervisor passthrough", input: "supervisor", wantName: "supervisor", wantAlias: false},
+		{name: "executor passthrough", input: "executor", wantName: "executor", wantAlias: false},
+		{name: "unknown name passthrough", input: "custom", wantName: "custom", wantAlias: false},
+		{name: "empty passthrough", input: "", wantName: "", wantAlias: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, isAlias := projectspec.CanonicalBehaviorName(tc.input)
+			if got != tc.wantName || isAlias != tc.wantAlias {
+				t.Errorf("CanonicalBehaviorName(%q) = (%q, %v), want (%q, %v)",
+					tc.input, got, isAlias, tc.wantName, tc.wantAlias)
+			}
+		})
+	}
+}
+
+// TestReadProjectMeta_BehaviorAlias_PlanIsCanonicalizedToSupervisor verifies
+// that a project.yaml using the legacy alias "plan" is loaded into a meta
+// whose TaskBehaviors map is keyed by the canonical name "supervisor". A
+// deprecation warning must be logged.
+func TestReadProjectMeta_BehaviorAlias_PlanIsCanonicalizedToSupervisor(t *testing.T) {
+	buf := captureSlog(t)
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	yaml := `
+id: test-proj
+name: Test Project
+task_behaviors:
+  plan:
+    name: plan
+    readonly: true
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadProjectMeta: %v", err)
+	}
+	if _, ok := meta.TaskBehaviors["supervisor"]; !ok {
+		t.Fatalf("expected canonical key 'supervisor' to be present, got keys=%v", behaviorKeys(meta))
+	}
+	// ReadProjectMeta adds a back-compat mirror for legacy callers that
+	// still look up by the alias key.
+	if _, ok := meta.TaskBehaviors["plan"]; !ok {
+		t.Fatalf("expected back-compat alias 'plan' to remain reachable, got keys=%v", behaviorKeys(meta))
+	}
+	if got := meta.TaskBehaviors["supervisor"].Name; got != "supervisor" {
+		t.Errorf("Name = %q, want %q (alias must promote to canonical)", got, "supervisor")
+	}
+	if !meta.TaskBehaviors["supervisor"].Readonly {
+		t.Errorf("Readonly fell off during alias normalization")
+	}
+	// Mirror entry must carry the same values as the canonical entry.
+	if !meta.TaskBehaviors["plan"].Readonly {
+		t.Errorf("alias mirror lost Readonly value")
+	}
+	if !strings.Contains(buf.String(), "deprecated") || !strings.Contains(buf.String(), "plan") {
+		t.Errorf("expected deprecation log mentioning %q, got:\n%s", "plan", buf.String())
+	}
+}
+
+// TestReadProjectMeta_BehaviorAlias_DevIsCanonicalizedToExecutor mirrors the
+// plan -> supervisor test for dev -> executor.
+func TestReadProjectMeta_BehaviorAlias_DevIsCanonicalizedToExecutor(t *testing.T) {
+	buf := captureSlog(t)
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	yaml := `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev:
+    name: dev
+    worktree: true
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadProjectMeta: %v", err)
+	}
+	if _, ok := meta.TaskBehaviors["executor"]; !ok {
+		t.Fatalf("expected canonical key 'executor' to be present, got keys=%v", behaviorKeys(meta))
+	}
+	if _, ok := meta.TaskBehaviors["dev"]; !ok {
+		t.Fatalf("expected back-compat alias 'dev' to remain reachable, got keys=%v", behaviorKeys(meta))
+	}
+	if got := meta.TaskBehaviors["executor"].Name; got != "executor" {
+		t.Errorf("Name = %q, want %q (alias must promote to canonical)", got, "executor")
+	}
+	if !meta.TaskBehaviors["executor"].Worktree {
+		t.Errorf("Worktree fell off during alias normalization")
+	}
+	if !meta.TaskBehaviors["dev"].Worktree {
+		t.Errorf("alias mirror lost Worktree value")
+	}
+	if !strings.Contains(buf.String(), "deprecated") || !strings.Contains(buf.String(), "dev") {
+		t.Errorf("expected deprecation log mentioning %q, got:\n%s", "dev", buf.String())
+	}
+}
+
+// TestReadProjectMeta_BehaviorCanonicalName_NoWarning verifies that project
+// authors who already use the canonical names see no deprecation noise.
+func TestReadProjectMeta_BehaviorCanonicalName_NoWarning(t *testing.T) {
+	buf := captureSlog(t)
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	yaml := `
+id: test-proj
+name: Test Project
+task_behaviors:
+  supervisor:
+    name: supervisor
+    readonly: true
+  executor:
+    name: executor
+    worktree: true
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadProjectMeta: %v", err)
+	}
+	if _, ok := meta.TaskBehaviors["supervisor"]; !ok {
+		t.Errorf("supervisor missing: keys=%v", behaviorKeys(meta))
+	}
+	if _, ok := meta.TaskBehaviors["executor"]; !ok {
+		t.Errorf("executor missing: keys=%v", behaviorKeys(meta))
+	}
+	if strings.Contains(buf.String(), "deprecated") {
+		t.Errorf("did not expect deprecation log for canonical names, got:\n%s", buf.String())
+	}
+}
+
+// TestReadProjectMeta_BehaviorAlias_DuplicateDefinitionRejected verifies that
+// defining both an alias and its canonical counterpart in the same file is a
+// load-time error. Authors must pick exactly one form per behavior.
+func TestReadProjectMeta_BehaviorAlias_DuplicateDefinitionRejected(t *testing.T) {
+	cases := []struct {
+		name     string
+		yaml     string
+		needWord string
+	}{
+		{
+			name: "plan and supervisor",
+			yaml: `
+id: test-proj
+name: Test Project
+task_behaviors:
+  plan:
+    name: plan
+  supervisor:
+    name: supervisor
+`,
+			needWord: "plan",
+		},
+		{
+			name: "dev and executor",
+			yaml: `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev:
+    name: dev
+  executor:
+    name: executor
+`,
+			needWord: "dev",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			boidDir := filepath.Join(dir, ".boid")
+			if err := os.MkdirAll(boidDir, 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(tc.yaml), 0o644); err != nil {
+				t.Fatalf("write yaml: %v", err)
+			}
+			_, err := projectspec.ReadProjectMeta(dir)
+			if err == nil {
+				t.Fatalf("expected duplicate-definition error, got nil")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "duplicate") || !strings.Contains(msg, tc.needWord) {
+				t.Errorf("expected duplicate error mentioning %q, got: %v", tc.needWord, err)
+			}
+		})
+	}
+}
+
+// TestReadProjectMeta_BehaviorAlias_NameFieldRespectsExplicitValue ensures the
+// normalize step does NOT overwrite an explicitly-set Name field that differs
+// from the alias key. Name is a free-form display label, not a routing key.
+func TestReadProjectMeta_BehaviorAlias_NameFieldRespectsExplicitValue(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	yaml := `
+id: test-proj
+name: Test Project
+task_behaviors:
+  plan:
+    name: custom-display-name
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadProjectMeta: %v", err)
+	}
+	b, ok := meta.TaskBehaviors["supervisor"]
+	if !ok {
+		t.Fatalf("expected key 'supervisor', got keys=%v", behaviorKeys(meta))
+	}
+	if b.Name != "custom-display-name" {
+		t.Errorf("Name = %q, want %q (explicit Name must be preserved)", b.Name, "custom-display-name")
+	}
+}
+
+// TestReadKitMeta_BehaviorAlias_PlanIsCanonicalizedToSupervisor verifies the
+// alias normalization runs for kit.yaml as well — kits can declare
+// task_behaviors too, and the same canonicalization contract applies.
+func TestReadKitMeta_BehaviorAlias_PlanIsCanonicalizedToSupervisor(t *testing.T) {
+	buf := captureSlog(t)
+	dir := t.TempDir()
+	writeKitYAML(t, dir, `
+task_behaviors:
+  plan:
+    name: plan
+    readonly: true
+`)
+	meta, err := projectspec.ReadKitMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadKitMeta: %v", err)
+	}
+	if _, ok := meta.TaskBehaviors["supervisor"]; !ok {
+		t.Errorf("expected canonical key 'supervisor' in kit, got keys=%v", kitBehaviorKeys(meta))
+	}
+	// ReadKitMeta normalizes alias keys to canonical without adding mirror
+	// entries. (Mirror entries are only added at the ReadProjectMetaWithKits
+	// boundary, where the fully resolved meta is exposed to runtime code.)
+	if _, ok := meta.TaskBehaviors["plan"]; ok {
+		t.Errorf("expected alias key 'plan' to be normalized away in kit")
+	}
+	if !strings.Contains(buf.String(), "deprecated") {
+		t.Errorf("expected deprecation log, got:\n%s", buf.String())
+	}
+}
+
+// TestReadProjectMetaWithKits_BehaviorAlias_MirrorsAddedAtRuntimeBoundary
+// verifies the second half of the alias contract: while ReadProjectMeta and
+// ReadKitMeta normalize keys to canonical without mirrors,
+// ReadProjectMetaWithKits — the function used by runtime code — adds a
+// back-compat mirror entry so legacy lookups by alias name still find the
+// behavior.
+func TestReadProjectMetaWithKits_BehaviorAlias_MirrorsAddedAtRuntimeBoundary(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	yaml := `
+id: test-proj
+name: Test Project
+task_behaviors:
+  plan:
+    name: plan
+    readonly: true
+  dev:
+    name: dev
+    worktree: true
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadProjectMetaWithKits: %v", err)
+	}
+	// Canonical entries must be present.
+	if _, ok := meta.TaskBehaviors["supervisor"]; !ok {
+		t.Errorf("canonical key 'supervisor' missing, got keys=%v", behaviorKeys(meta))
+	}
+	if _, ok := meta.TaskBehaviors["executor"]; !ok {
+		t.Errorf("canonical key 'executor' missing, got keys=%v", behaviorKeys(meta))
+	}
+	// Alias mirrors must also be present (back-compat for legacy callers).
+	if _, ok := meta.TaskBehaviors["plan"]; !ok {
+		t.Errorf("alias mirror 'plan' missing after ReadProjectMetaWithKits, got keys=%v", behaviorKeys(meta))
+	}
+	if _, ok := meta.TaskBehaviors["dev"]; !ok {
+		t.Errorf("alias mirror 'dev' missing after ReadProjectMetaWithKits, got keys=%v", behaviorKeys(meta))
+	}
+	// Mirrors must reflect the same template values.
+	if !meta.TaskBehaviors["plan"].Readonly || !meta.TaskBehaviors["supervisor"].Readonly {
+		t.Errorf("Readonly disagreement between alias and canonical: plan=%v supervisor=%v",
+			meta.TaskBehaviors["plan"].Readonly, meta.TaskBehaviors["supervisor"].Readonly)
+	}
+	if !meta.TaskBehaviors["dev"].Worktree || !meta.TaskBehaviors["executor"].Worktree {
+		t.Errorf("Worktree disagreement between alias and canonical: dev=%v executor=%v",
+			meta.TaskBehaviors["dev"].Worktree, meta.TaskBehaviors["executor"].Worktree)
+	}
+}
+
+// TestReadKitMeta_BehaviorAlias_DuplicateRejected verifies the duplicate-
+// definition error also triggers for kit.yaml.
+func TestReadKitMeta_BehaviorAlias_DuplicateRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeKitYAML(t, dir, `
+task_behaviors:
+  plan:
+    name: plan
+  supervisor:
+    name: supervisor
+`)
+	_, err := projectspec.ReadKitMeta(dir)
+	if err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("expected duplicate error, got %v", err)
+	}
+}
+
+func behaviorKeys(meta *projectspec.ProjectMeta) []string {
+	out := make([]string, 0, len(meta.TaskBehaviors))
+	for k := range meta.TaskBehaviors {
+		out = append(out, k)
+	}
+	return out
+}
+
+func kitBehaviorKeys(meta *projectspec.KitMeta) []string {
+	out := make([]string, 0, len(meta.TaskBehaviors))
+	for k := range meta.TaskBehaviors {
+		out = append(out, k)
+	}
+	return out
 }

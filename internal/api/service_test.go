@@ -1152,12 +1152,15 @@ func TestTaskAppServiceCreateTask_NeitherBehaviorNorSpec_DefaultsToPlan(t *testi
 }
 
 func TestTaskAppServiceCreateTask_DefaultPlan_InheritsTemplate(t *testing.T) {
-	// project が plan behavior を template として持っているとき、
+	// project が supervisor behavior を template として持っているとき、
 	// behavior を省略した create がその template (readonly 等) を継承することを確認する。
+	// ProjectMeta は ReadProjectMeta 経由で読まれた状態を模して canonical 名で構築する
+	// (legacy "plan" キーは spec_loader の normalizeBehaviorAliases で
+	// 既に "supervisor" に正規化されている前提)。
 	store := &stubTaskStore{}
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"plan": {Readonly: true},
+			"supervisor": {Readonly: true},
 		},
 	}
 	svc := &TaskAppService{
@@ -1167,16 +1170,16 @@ func TestTaskAppServiceCreateTask_DefaultPlan_InheritsTemplate(t *testing.T) {
 
 	task, err := svc.CreateTask(CreateTaskRequest{
 		ProjectID: "proj-1",
-		Title:     "default to plan",
+		Title:     "default to supervisor",
 	})
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v, want nil", err)
 	}
-	if task.Behavior != "plan" {
-		t.Errorf("Behavior = %q, want %q", task.Behavior, "plan")
+	if task.Behavior != DefaultBehavior {
+		t.Errorf("Behavior = %q, want %q", task.Behavior, DefaultBehavior)
 	}
 	if !task.Readonly {
-		t.Errorf("Readonly = false, want true (inherited from plan template)")
+		t.Errorf("Readonly = false, want true (inherited from supervisor template)")
 	}
 }
 
@@ -2488,5 +2491,50 @@ func TestWebAppService_ReopenTask_WithMessage_HasInstructionPayload(t *testing.T
 	}
 	if p.Instruction.Message != "fix review" {
 		t.Errorf("instruction.message = %q, want 'fix review'", p.Instruction.Message)
+	}
+}
+
+// TestTaskAppServiceCreateTask_BehaviorAlias_RequestSideResolution verifies
+// that CreateTask requests with the legacy alias name ("plan" / "dev") are
+// resolved to the canonical name ("supervisor" / "executor") before lookup.
+// This handles older callers (CLI invocations, UI clients, persisted instructions)
+// that pre-date the rename.
+func TestTaskAppServiceCreateTask_BehaviorAlias_RequestSideResolution(t *testing.T) {
+	cases := []struct {
+		name          string
+		canonicalKey  string
+		requestedName string
+	}{
+		{name: "plan request hits supervisor", canonicalKey: "supervisor", requestedName: "plan"},
+		{name: "dev request hits executor", canonicalKey: "executor", requestedName: "dev"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &stubTaskStore{}
+			meta := &orchestrator.ProjectMeta{
+				TaskBehaviors: map[string]orchestrator.TaskBehavior{
+					tc.canonicalKey: {Readonly: true},
+				},
+			}
+			svc := &TaskAppService{
+				Tasks: store,
+				Meta:  stubMetaStore{meta: meta},
+			}
+			task, err := svc.CreateTask(CreateTaskRequest{
+				ProjectID: "proj-1",
+				Title:     "via alias",
+				Behavior:  tc.requestedName,
+			})
+			if err != nil {
+				t.Fatalf("CreateTask() error = %v, want nil", err)
+			}
+			if task.Behavior != tc.canonicalKey {
+				t.Errorf("Behavior = %q, want %q (alias must canonicalize before persist)",
+					task.Behavior, tc.canonicalKey)
+			}
+			if !task.Readonly {
+				t.Errorf("Readonly = false, want true (template from canonical behavior must apply)")
+			}
+		})
 	}
 }

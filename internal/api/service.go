@@ -281,7 +281,7 @@ func (s *TaskAppService) GetTaskBehaviorCommand(taskID, name string) (*CommandRe
 	if !ok {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("project %q meta not loaded", task.ProjectID)}
 	}
-	behavior, ok := meta.TaskBehaviors[task.Behavior]
+	behavior, _, ok := lookupBehaviorWithAlias(meta, task.Behavior)
 	if !ok {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("behavior %q not found", task.Behavior)}
 	}
@@ -307,7 +307,7 @@ func (s *TaskAppService) ListTaskBehaviorCommands(taskID string) ([]CommandSumma
 	if !ok {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("project %q meta not loaded", task.ProjectID)}
 	}
-	behavior, ok := meta.TaskBehaviors[task.Behavior]
+	behavior, _, ok := lookupBehaviorWithAlias(meta, task.Behavior)
 	if !ok {
 		return []CommandSummary{}, nil
 	}
@@ -384,7 +384,56 @@ type behaviorResolution struct {
 // omits both behavior and behavior_spec. Projects are expected to define a
 // behavior with this name in project.yaml's task_behaviors (typically with
 // readonly: true) so that bare-task creation routes to a planning/triage step.
-const DefaultBehavior = "plan"
+//
+// Note: this is the canonical name; project.yaml files written with the
+// legacy alias "plan" continue to work because spec_loader normalizes them
+// to "supervisor" at load time (see BehaviorAliases).
+const DefaultBehavior = "supervisor"
+
+// lookupBehaviorWithAlias finds a TaskBehavior in meta.TaskBehaviors by name,
+// being tolerant of the plan / dev → supervisor / executor rename. Lookup is
+// tried in this order:
+//
+//  1. exact match against the requested name
+//  2. if the request is a legacy alias, try the canonical name
+//  3. if the request is a canonical name, try the legacy alias (handles
+//     unnormalized in-memory ProjectMeta values that may exist in tests or
+//     transitional code paths)
+//
+// When (2) or (3) hits, a deprecation warning is logged. The returned key
+// is the map key that actually matched; callers may use it for further
+// logging or store the canonical form on the task.
+func lookupBehaviorWithAlias(meta *orchestrator.ProjectMeta, name string) (orchestrator.TaskBehavior, string, bool) {
+	if b, ok := meta.TaskBehaviors[name]; ok {
+		return b, name, true
+	}
+	if canonical, isAlias := orchestrator.CanonicalBehaviorName(name); isAlias {
+		if b, ok := meta.TaskBehaviors[canonical]; ok {
+			slog.Warn("task behavior name is deprecated; use canonical name instead",
+				"scope", "CreateTask request",
+				"deprecated", name,
+				"canonical", canonical,
+			)
+			return b, canonical, true
+		}
+	}
+	// Reverse: caller used the new canonical name, but meta still uses the
+	// alias key (legacy in-memory meta, e.g. hand-built test fixtures).
+	for alias, canonical := range orchestrator.BehaviorAliases {
+		if canonical != name {
+			continue
+		}
+		if b, ok := meta.TaskBehaviors[alias]; ok {
+			slog.Warn("project meta uses deprecated behavior name; please regenerate via ReadProjectMetaWithKits",
+				"scope", "CreateTask request",
+				"deprecated", alias,
+				"canonical", name,
+			)
+			return b, alias, true
+		}
+	}
+	return orchestrator.TaskBehavior{}, "", false
+}
 
 // resolveBehavior validates and resolves behavior fields from a CreateTaskRequest.
 // It handles both the named behavior path (meta lookup) and the inline behavior_spec path.
@@ -431,9 +480,18 @@ func resolveBehavior(meta *orchestrator.ProjectMeta, req CreateTaskRequest) (*be
 	// Named behavior path (existing logic).
 	res.behaviorName = req.Behavior
 	if meta != nil {
-		behavior, ok := meta.TaskBehaviors[req.Behavior]
+		behavior, lookupKey, ok := lookupBehaviorWithAlias(meta, req.Behavior)
 		if !ok {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("behavior %q not found", req.Behavior)}
+		}
+		// When alias resolution kicked in (the meta key we matched differs
+		// from what the caller asked for), persist the canonical form on
+		// the task so rows converge regardless of which alias the caller
+		// or the meta used. Exact matches are preserved verbatim to keep
+		// legacy callers / fixtures stable until Phase 5.
+		if lookupKey != req.Behavior {
+			canonical, _ := orchestrator.CanonicalBehaviorName(req.Behavior)
+			res.behaviorName = canonical
 		}
 		res.traits = behavior.Traits
 		res.readonly = behavior.Readonly
@@ -1343,7 +1401,7 @@ func (s *WebAppService) ListTaskBehaviorCommands(taskID string) ([]CommandSummar
 	if !ok {
 		return []CommandSummary{}, nil
 	}
-	behavior, ok := meta.TaskBehaviors[task.Behavior]
+	behavior, _, ok := lookupBehaviorWithAlias(meta, task.Behavior)
 	if !ok {
 		return []CommandSummary{}, nil
 	}
@@ -1528,7 +1586,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	var matchedHooks []string
 	if s.Coordinator != nil {
 		if coord, ok := s.Coordinator.(*orchestrator.Coordinator); ok && coord.Evaluator != nil {
-			if behavior, found := meta.TaskBehaviors[newTask.Behavior]; found {
+			if behavior, _, found := lookupBehaviorWithAlias(meta, newTask.Behavior); found {
 				for _, hook := range coord.Evaluator.Evaluate(newTask, behavior.Hooks) {
 					matchedHooks = append(matchedHooks, hook.ID)
 				}
