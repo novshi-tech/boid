@@ -1249,6 +1249,283 @@ func TestTaskAppServiceImportTasks_BehaviorSpec_Success(t *testing.T) {
 
 // ---- end behavior_spec tests ----
 
+// ---- Phase 2-1: supervisor/executor canonical readonly/worktree auto-determination ----
+
+// TestCreateTask_CanonicalSupervisor_ForcesReadonly verifies that the canonical
+// "supervisor" behavior is hard-wired to readonly=true regardless of the
+// behavior-level value, including a stray behavior-level readonly:false on
+// the supervisor entry. (Warning emission on the conflicting value is
+// best-effort — see the note in applyCanonicalBehaviorOverrides — so the test
+// only asserts the resolved value here.)
+func TestCreateTask_CanonicalSupervisor_ForcesReadonly(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			// Behavior-level readonly:false on supervisor is ignored.
+			"supervisor": {Readonly: false},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "supervisor task",
+		Behavior:  "supervisor",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if !task.Readonly {
+		t.Errorf("Readonly = false, want true (supervisor is canonically readonly)")
+	}
+}
+
+// TestCreateTask_CanonicalExecutor_ForcesNotReadonly verifies that the canonical
+// "executor" behavior is hard-wired to readonly=false even when the behavior
+// entry sets readonly:true.
+func TestCreateTask_CanonicalExecutor_ForcesNotReadonly(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"executor": {Readonly: true},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "executor task",
+		Behavior:  "executor",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if task.Readonly {
+		t.Errorf("Readonly = true, want false (executor is canonically writable)")
+	}
+}
+
+// TestCreateTask_PlanAlias_ResolvesToSupervisorReadonly verifies that the legacy
+// alias "plan" still works and is forced to readonly=true via the canonical
+// supervisor rule.
+func TestCreateTask_PlanAlias_ResolvesToSupervisorReadonly(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			// Use the canonical key as ReadProjectMeta would produce.
+			"supervisor": {Readonly: true},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "plan-aliased task",
+		Behavior:  "plan",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if !task.Readonly {
+		t.Errorf("Readonly = false, want true (plan alias → supervisor → readonly:true)")
+	}
+}
+
+// TestCreateTask_DevAlias_ResolvesToExecutorWritable verifies that "dev" still
+// works and is forced to readonly=false via the canonical executor rule.
+func TestCreateTask_DevAlias_ResolvesToExecutorWritable(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			// Behavior-level readonly:true here would have been honored
+			// pre-P2-1; under the new rule executor pins readonly=false.
+			"executor": {Readonly: true},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "dev-aliased task",
+		Behavior:  "dev",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if task.Readonly {
+		t.Errorf("Readonly = true, want false (dev alias → executor → readonly:false)")
+	}
+}
+
+// TestCreateTask_NonCanonicalBehavior_PreservesBehaviorLevelReadonly verifies
+// that for behaviors that are neither supervisor nor executor (e.g. a kit-
+// provided custom behavior) the behavior-level readonly value is still
+// authoritative — the canonical rule only fires for the two reserved names.
+func TestCreateTask_NonCanonicalBehavior_PreservesBehaviorLevelReadonly(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"impl":   {Readonly: true},
+			"verify": {Readonly: false},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	implTask, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "impl",
+		Behavior:  "impl",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask(impl) error = %v", err)
+	}
+	if !implTask.Readonly {
+		t.Errorf("impl: Readonly = false, want true (behavior-level wins for non-canonical)")
+	}
+
+	verifyTask, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "verify",
+		Behavior:  "verify",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask(verify) error = %v", err)
+	}
+	if verifyTask.Readonly {
+		t.Errorf("verify: Readonly = true, want false (behavior-level wins for non-canonical)")
+	}
+}
+
+// TestCreateTask_ProjectLevelWorktreeTrue_AppliedToCanonicalBehavior verifies
+// that the project-level worktree flag wins over the behavior-level value for
+// the canonical supervisor / executor behaviors.
+func TestCreateTask_ProjectLevelWorktreeTrue_AppliedToCanonicalBehavior(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		Worktree: true,
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			// Behavior-level worktree:false would have meant "no worktree"
+			// pre-P2-1; project-level worktree:true now overrides this.
+			"executor": {Worktree: false},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "executor with project worktree",
+		Behavior:  "executor",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if !task.Worktree {
+		t.Errorf("Worktree = false, want true (project-level worktree:true wins)")
+	}
+}
+
+// TestCreateTask_ProjectLevelWorktreeUnset_FallsBackToBehavior verifies the
+// minimum-wire-up Phase 2-1 semantics: project-level worktree:true wins for
+// canonical behaviors, but when the project-level flag is unset (the bool
+// zero value) we fall through to the behavior-level value. This lets
+// pre-existing project.yaml files that only declare worktree:true on the
+// behavior keep working until P4-2 migrates them to the project-top form
+// (a deprecation warning is still emitted on every CreateTask).
+func TestCreateTask_ProjectLevelWorktreeUnset_FallsBackToBehavior(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		// Worktree intentionally omitted (false / unset).
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"executor": {Worktree: true},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "executor with legacy behavior-level worktree",
+		Behavior:  "executor",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if !task.Worktree {
+		t.Errorf("Worktree = false, want true (project-level unset → behavior-level value used as fallback)")
+	}
+}
+
+// TestCreateTask_ProjectLevelWorktreeFalseAndBehaviorFalse_TaskIsFalse covers
+// the "both unset" case from the Phase 2-1 brief: project-level worktree=false
+// and behavior-level worktree=false → task.Worktree=false.
+func TestCreateTask_ProjectLevelWorktreeFalseAndBehaviorFalse_TaskIsFalse(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"executor": {Worktree: false},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "executor no worktree anywhere",
+		Behavior:  "executor",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if task.Worktree {
+		t.Errorf("Worktree = true, want false (both project-level and behavior-level unset)")
+	}
+}
+
+// TestCreateTask_NonCanonicalBehavior_PreservesBehaviorLevelWorktree verifies
+// that non-canonical behaviors continue to read the behavior-level worktree
+// field as the source of truth (the project-level switch only governs the
+// reserved supervisor / executor pair in P2-1).
+func TestCreateTask_NonCanonicalBehavior_PreservesBehaviorLevelWorktree(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		// Project-level worktree:false but behavior-level true.
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"impl": {Worktree: true},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "impl with behavior worktree",
+		Behavior:  "impl",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if !task.Worktree {
+		t.Errorf("Worktree = false, want true (behavior-level wins for non-canonical)")
+	}
+}
+
+// ---- end Phase 2-1 ----
+
 type stubTaskStore struct {
 	task           *orchestrator.Task
 	tasks          map[string]*orchestrator.Task // id → task (for multi-task lookups)
@@ -2766,21 +3043,29 @@ func TestCreateTask_ParentNotFound_TemplateStillFails(t *testing.T) {
 // resolved to the canonical name ("supervisor" / "executor") before lookup.
 // This handles older callers (CLI invocations, UI clients, persisted instructions)
 // that pre-date the rename.
+//
+// Under Phase 2-1 the canonical behavior name also dictates the readonly value
+// (supervisor → true, executor → false), so the per-case expected readonly
+// reflects the canonical rule rather than the behavior-level Readonly field.
 func TestTaskAppServiceCreateTask_BehaviorAlias_RequestSideResolution(t *testing.T) {
 	cases := []struct {
-		name          string
-		canonicalKey  string
-		requestedName string
+		name             string
+		canonicalKey     string
+		requestedName    string
+		expectedReadonly bool
 	}{
-		{name: "plan request hits supervisor", canonicalKey: "supervisor", requestedName: "plan"},
-		{name: "dev request hits executor", canonicalKey: "executor", requestedName: "dev"},
+		{name: "plan request hits supervisor", canonicalKey: "supervisor", requestedName: "plan", expectedReadonly: true},
+		{name: "dev request hits executor", canonicalKey: "executor", requestedName: "dev", expectedReadonly: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := &stubTaskStore{}
 			meta := &orchestrator.ProjectMeta{
 				TaskBehaviors: map[string]orchestrator.TaskBehavior{
-					tc.canonicalKey: {Readonly: true},
+					// Behavior-level readonly is intentionally the *opposite*
+					// of the canonical decision; P2-1 must ignore it and use
+					// the canonical readonly value.
+					tc.canonicalKey: {Readonly: !tc.expectedReadonly},
 				},
 			}
 			svc := &TaskAppService{
@@ -2799,8 +3084,9 @@ func TestTaskAppServiceCreateTask_BehaviorAlias_RequestSideResolution(t *testing
 				t.Errorf("Behavior = %q, want %q (alias must canonicalize before persist)",
 					task.Behavior, tc.canonicalKey)
 			}
-			if !task.Readonly {
-				t.Errorf("Readonly = false, want true (template from canonical behavior must apply)")
+			if task.Readonly != tc.expectedReadonly {
+				t.Errorf("Readonly = %v, want %v (canonical %q decides readonly under P2-1)",
+					task.Readonly, tc.expectedReadonly, tc.canonicalKey)
 			}
 		})
 	}
