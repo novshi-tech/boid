@@ -244,7 +244,7 @@ func TestGCTasks_WorktreeDiskCleanup(t *testing.T) {
 	}
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: d.Conn, GitBin: gcTestGitBin}
-	w, err := mgr.Create(repo, "proj-1", doneTask.ID, "boid/", "HEAD")
+	w, err := mgr.Create(repo, "proj-1", doneTask.ID, "HEAD")
 	if err != nil {
 		t.Fatalf("create worktree: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestGCTasks_WorktreeDiskCleanup_DoneDeletesBranch(t *testing.T) {
 	}
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: d.Conn, GitBin: gcTestGitBin}
-	w, err := mgr.Create(repo, "proj-gcd1", doneTask.ID, "boid/", "HEAD")
+	w, err := mgr.Create(repo, "proj-gcd1", doneTask.ID, "HEAD")
 	if err != nil {
 		t.Fatalf("create worktree: %v", err)
 	}
@@ -354,7 +354,7 @@ func TestGCTasks_WorktreeDiskCleanup_DryRun(t *testing.T) {
 	}
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: d.Conn, GitBin: gcTestGitBin}
-	w, err := mgr.Create(repo, "proj-1", doneTask.ID, "boid/", "HEAD")
+	w, err := mgr.Create(repo, "proj-1", doneTask.ID, "HEAD")
 	if err != nil {
 		t.Fatalf("create worktree: %v", err)
 	}

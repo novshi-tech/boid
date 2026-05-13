@@ -1,11 +1,11 @@
 package orchestrator
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -94,6 +94,9 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 			return nil, fmt.Errorf("project.yaml: top-level %q is no longer supported; move it into task_behaviors.<name>.kits (for kits) or define inside a local kit under .boid/kits/", field)
 		}
 	}
+	if err := rejectRemovedBehaviorFields("project.yaml", raw); err != nil {
+		return nil, err
+	}
 
 	var meta ProjectMeta
 	if err := yaml.Unmarshal(data, &meta); err != nil {
@@ -119,12 +122,6 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	}
 	meta.TaskBehaviors = normalized
 
-	for name, behavior := range meta.TaskBehaviors {
-		if err := ValidateDefaultPayloadNoInstructions(behavior.DefaultPayload); err != nil {
-			return nil, fmt.Errorf("project.yaml: task_behaviors.%s.default_payload: %w", name, err)
-		}
-	}
-
 	// Add back-compat alias mirror entries so legacy lookups
 	// (meta.TaskBehaviors["dev"]) continue to find the canonical entry.
 	// Callers iterating the map should use the canonical entries as the
@@ -133,6 +130,59 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	meta.TaskBehaviors = addAliasMirrors(meta.TaskBehaviors)
 
 	return &meta, nil
+}
+
+// removedBehaviorFieldGuidance maps each removed task_behaviors.<name>.<field>
+// to a human-readable message that explains the new resolution path. Keeping
+// the messages in a table (rather than inline error literals) ensures that
+// project.yaml and kit.yaml report the same migration guidance for the same
+// field — and lets the tests assert against a single source of truth.
+var removedBehaviorFieldGuidance = map[string]string{
+	"readonly":        "readonly is auto-determined from behavior name (supervisor=true, executor=false); for non-canonical behaviors, readonly is false",
+	"worktree":        "worktree is determined by the project-top 'worktree' field combined with the behavior name (supervisor/executor)",
+	"base_branch":     "base_branch is resolved from the project-top 'base_branch' field (with ${TASK_REMOTE_ID} / ${current_branch} expansion)",
+	"branch_prefix":   "branch_prefix is no longer configurable; worktree branches are always created under 'boid/'",
+	"default_payload": "default_payload is no longer supported; provide payload data at task creation time instead",
+}
+
+// rejectRemovedBehaviorFields scans the raw YAML map for any task_behaviors
+// entry that still carries one of the fields removed in Phase 3-1
+// (readonly / worktree / base_branch / branch_prefix / default_payload) and
+// returns a descriptive load-time error pointing callers at the new
+// resolution path. scope identifies the source ("project.yaml" / "kit.yaml
+// <dir>") for error messages.
+func rejectRemovedBehaviorFields(scope string, raw map[string]any) error {
+	behaviors, ok := raw["task_behaviors"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	// Preserve a stable key order so the same fixture always produces the
+	// same error message (helpful for tests that match on substring).
+	names := make([]string, 0, len(behaviors))
+	for k := range behaviors {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		entry, ok := behaviors[name].(map[string]any)
+		if !ok {
+			continue
+		}
+		fields := make([]string, 0, len(entry))
+		for k := range entry {
+			fields = append(fields, k)
+		}
+		sort.Strings(fields)
+		for _, field := range fields {
+			guidance, removed := removedBehaviorFieldGuidance[field]
+			if !removed {
+				continue
+			}
+			return fmt.Errorf("%s: task_behaviors.%s.%s is no longer supported; %s",
+				scope, name, field, guidance)
+		}
+	}
+	return nil
 }
 
 // normalizeBehaviorAliases rewrites the task_behaviors map so that any
@@ -233,23 +283,6 @@ func stripAliasMirrors(behaviors map[string]TaskBehavior) map[string]TaskBehavio
 		delete(behaviors, alias)
 	}
 	return behaviors
-}
-
-// ValidateDefaultPayloadNoInstructions rejects "instructions" as a top-level key
-// in default_payload. instructions live on Task.Instructions via default_instruction.
-func ValidateDefaultPayloadNoInstructions(p RawPayload) error {
-	raw := json.RawMessage(p)
-	if len(raw) == 0 || string(raw) == "{}" || string(raw) == "null" {
-		return nil
-	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil
-	}
-	if _, ok := m["instructions"]; ok {
-		return fmt.Errorf(`"instructions" is no longer allowed here; use "default_instruction" instead`)
-	}
-	return nil
 }
 
 // validateHookKind enforces the Hook.Kind / Hook.Agent invariants at load time:
@@ -590,6 +623,14 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 		return nil, fmt.Errorf("read kit.yaml: %w", err)
 	}
 
+	var rawTop map[string]any
+	if err := yaml.Unmarshal(data, &rawTop); err != nil {
+		return nil, fmt.Errorf("parse kit.yaml: %w", err)
+	}
+	if err := rejectRemovedBehaviorFields(fmt.Sprintf("kit.yaml (%s)", dir), rawTop); err != nil {
+		return nil, err
+	}
+
 	var meta KitMeta
 	if err := yaml.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("parse kit.yaml: %w", err)
@@ -599,11 +640,6 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 		return nil, err
 	}
 	meta.TaskBehaviors = normalized
-	for name, behavior := range meta.TaskBehaviors {
-		if err := ValidateDefaultPayloadNoInstructions(behavior.DefaultPayload); err != nil {
-			return nil, fmt.Errorf("kit.yaml: task_behaviors.%s.default_payload: %w", name, err)
-		}
-	}
 
 	interpolateBindMounts(meta.AdditionalBindings)
 	interpolateHostCommands(meta.HostCommands)
@@ -644,11 +680,8 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 	meta.KitRoot = dir
 
 	// Reject legacy scripts: section in kit.yaml.
-	var rawMap map[string]any
-	if err := yaml.Unmarshal(data, &rawMap); err == nil {
-		if _, ok := rawMap["scripts"]; ok {
-			return nil, fmt.Errorf("kit.yaml: 'scripts:' section is no longer supported; migrate scripts to gates")
-		}
+	if _, ok := rawTop["scripts"]; ok {
+		return nil, fmt.Errorf("kit.yaml: 'scripts:' section is no longer supported; migrate scripts to gates")
 	}
 
 	return &meta, nil

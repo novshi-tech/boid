@@ -9,66 +9,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestMergeDefaultPayload_NilDefault(t *testing.T) {
-	request := json.RawMessage(`{"artifact":{"url":"example"}}`)
-	result, err := orchestrator.MergeDefaultPayload(nil, request)
-	if err != nil {
-		t.Fatalf("MergeDefaultPayload() error = %v", err)
-	}
-	if string(result) != string(request) {
-		t.Fatalf("expected request payload unchanged, got %s", result)
+// Phase 3-1: MergeDefaultPayload and ValidateDefaultPayloadNoInstructions have
+// been removed along with TaskBehavior.DefaultPayload / BehaviorSpec.DefaultPayload.
+// The remaining tests cover the surviving payload helpers
+// (RejectPayloadInstructions, RejectReservedPayloadKeys, MergePayloadPatch).
+
+func TestRejectPayloadInstructions_Empty_OK(t *testing.T) {
+	if err := orchestrator.RejectPayloadInstructions(json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("RejectPayloadInstructions({}) error = %v", err)
 	}
 }
 
-func TestMergeDefaultPayload_NilRequest(t *testing.T) {
-	defaultPayload := json.RawMessage(`{"artifact":{"url":"default"}}`)
-	result, err := orchestrator.MergeDefaultPayload(defaultPayload, nil)
-	if err != nil {
-		t.Fatalf("MergeDefaultPayload() error = %v", err)
-	}
-	if string(result) != string(defaultPayload) {
-		t.Fatalf("expected default payload unchanged, got %s", result)
-	}
-}
-
-func TestMergeDefaultPayload_Override(t *testing.T) {
-	defaultPayload := json.RawMessage(`{"artifact":{"url":"default"}}`)
-	requestPayload := json.RawMessage(`{"artifact":{"url":"override"}}`)
-
-	result, err := orchestrator.MergeDefaultPayload(defaultPayload, requestPayload)
-	if err != nil {
-		t.Fatalf("MergeDefaultPayload() error = %v", err)
-	}
-
-	var merged map[string]json.RawMessage
-	if err := json.Unmarshal(result, &merged); err != nil {
-		t.Fatalf("unmarshal result: %v", err)
-	}
-	var artifact map[string]string
-	if err := json.Unmarshal(merged["artifact"], &artifact); err != nil {
-		t.Fatalf("unmarshal artifact: %v", err)
-	}
-	if artifact["url"] != "override" {
-		t.Fatalf("expected artifact url %q, got %q", "override", artifact["url"])
-	}
-}
-
-func TestMergeDefaultPayload_RejectsInstructionsInDefault(t *testing.T) {
-	defaultPayload := json.RawMessage(`{"instructions":{"executor":{"type":"execution","agent":"c","message":"m"}}}`)
-	_, err := orchestrator.MergeDefaultPayload(defaultPayload, nil)
+func TestRejectPayloadInstructions_HasInstructions_Errors(t *testing.T) {
+	payload := json.RawMessage(`{"instructions":{"executor":{"type":"execution","agent":"c","message":"m"}}}`)
+	err := orchestrator.RejectPayloadInstructions(payload)
 	if err == nil {
-		t.Fatal("expected error when default payload contains instructions, got nil")
+		t.Fatal("expected error when payload contains instructions, got nil")
 	}
 	if !strings.Contains(err.Error(), "instructions") {
 		t.Fatalf("expected error to mention instructions, got %v", err)
-	}
-}
-
-func TestMergeDefaultPayload_RejectsInstructionsInRequest(t *testing.T) {
-	requestPayload := json.RawMessage(`{"instructions":{"executor":{"type":"execution","agent":"c","message":"m"}}}`)
-	_, err := orchestrator.MergeDefaultPayload(nil, requestPayload)
-	if err == nil {
-		t.Fatal("expected error when request payload contains instructions, got nil")
 	}
 }
 
@@ -101,27 +60,6 @@ default_instruction:
 	}
 	if got.Message != "TDD で実装してください。" {
 		t.Fatalf("expected message %q, got %q", "TDD で実装してください。", got.Message)
-	}
-}
-
-func TestDefaultPayload_YAMLUnmarshal_RejectsInstructions(t *testing.T) {
-	data := `
-name: impl
-default_payload:
-  instructions:
-    executor:
-      type: execution
-      agent: claude-code
-`
-	var behavior orchestrator.TaskBehavior
-	if err := yaml.Unmarshal([]byte(data), &behavior); err != nil {
-		t.Fatalf("yaml.Unmarshal: %v", err)
-	}
-	if len(behavior.DefaultPayload) == 0 {
-		t.Fatal("expected default_payload to parse")
-	}
-	if err := orchestrator.ValidateDefaultPayloadNoInstructions(behavior.DefaultPayload); err == nil {
-		t.Fatal("expected ValidateDefaultPayloadNoInstructions to reject instructions key")
 	}
 }
 

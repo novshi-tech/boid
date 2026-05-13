@@ -294,17 +294,15 @@ func renderProjectBehaviors(p *projectspec.Project) {
 		if len(b.Traits) > 0 {
 			fmt.Printf("  traits: %s\n", strings.Join(b.Traits, ", "))
 		}
-		if b.Worktree {
-			fmt.Printf("  worktree: true\n")
-		}
-		if b.Readonly {
-			fmt.Printf("  readonly: true\n")
-		}
-		if b.BranchPrefix != "" {
-			fmt.Printf("  branch_prefix: %s\n", b.BranchPrefix)
-		}
-		if b.BaseBranch != "" {
-			fmt.Printf("  base_branch: %s\n", b.BaseBranch)
-		}
+	}
+	// Project-level worktree / base_branch (Phase 3-1: behavior-level
+	// readonly / worktree / branch_prefix / base_branch are gone; the only
+	// place where these values still appear in project.yaml is at the
+	// project top level).
+	if p.Meta.Worktree {
+		fmt.Printf("\nworktree: true\n")
+	}
+	if p.Meta.BaseBranch != "" {
+		fmt.Printf("base_branch: %s\n", p.Meta.BaseBranch)
 	}
 }

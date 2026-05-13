@@ -415,16 +415,11 @@ func IsBehaviorAliasKey(key string) bool {
 }
 
 type TaskBehavior struct {
-	Name                string                 `yaml:"name" json:"name"`
-	Traits              []string               `yaml:"traits" json:"traits"`
-	Readonly            bool                   `yaml:"readonly" json:"readonly,omitempty"`
-	Worktree            bool                   `yaml:"worktree" json:"worktree,omitempty"`
-	BranchPrefix        string                 `yaml:"branch_prefix" json:"branch_prefix,omitempty"`
-	BaseBranch          string                 `yaml:"base_branch" json:"base_branch,omitempty"`
-	DefaultInstruction *Instruction            `yaml:"default_instruction,omitempty" json:"default_instruction,omitempty"`
-	DefaultPayload     RawPayload              `yaml:"default_payload" json:"default_payload,omitempty"`
-	Kits               []KitRef                `yaml:"kits,omitempty" json:"kits,omitempty"`
-	Commands           map[string]CommandSpec  `yaml:"commands,omitempty" json:"commands,omitempty"`
+	Name               string                 `yaml:"name" json:"name"`
+	Traits             []string               `yaml:"traits" json:"traits"`
+	DefaultInstruction *Instruction           `yaml:"default_instruction,omitempty" json:"default_instruction,omitempty"`
+	Kits               []KitRef               `yaml:"kits,omitempty" json:"kits,omitempty"`
+	Commands           map[string]CommandSpec `yaml:"commands,omitempty" json:"commands,omitempty"`
 
 	// Resolved fields populated by ReadProjectMetaWithKits after merging kit data
 	// and project-level overlays. These are not serialized to YAML.
@@ -442,14 +437,9 @@ type TaskBehavior struct {
 // referencing a named behavior from project.yaml task_behaviors. This allows
 // kits to self-describe the behavior they need without depending on project config.
 type BehaviorSpec struct {
-	Name                string                 `yaml:"name" json:"name"`
-	Traits              []string               `yaml:"traits,omitempty" json:"traits,omitempty"`
-	Readonly            bool                   `yaml:"readonly,omitempty" json:"readonly,omitempty"`
-	Worktree            bool                   `yaml:"worktree,omitempty" json:"worktree,omitempty"`
-	BranchPrefix        string                 `yaml:"branch_prefix,omitempty" json:"branch_prefix,omitempty"`
-	BaseBranch          string                 `yaml:"base_branch,omitempty" json:"base_branch,omitempty"`
+	Name               string       `yaml:"name" json:"name"`
+	Traits             []string     `yaml:"traits,omitempty" json:"traits,omitempty"`
 	DefaultInstruction *Instruction `yaml:"default_instruction,omitempty" json:"default_instruction,omitempty"`
-	DefaultPayload     RawPayload   `yaml:"default_payload,omitempty" json:"default_payload,omitempty"`
 }
 
 type KitRef struct {
@@ -486,15 +476,15 @@ type ProjectMeta struct {
 	TaskBehaviors map[string]TaskBehavior `yaml:"task_behaviors" json:"task_behaviors"`
 	Commands      map[string]CommandSpec  `yaml:"commands,omitempty" json:"commands,omitempty"`
 	// Worktree controls whether tasks in this project run in a per-task git
-	// worktree by default. It is a Phase 1 placeholder for the
-	// task_behavior simplification effort: the YAML loader accepts it, but
-	// task resolution does not yet consult it (Phase 2 will wire it up).
-	// Until Phase 3 the legacy behavior-level TaskBehavior.Worktree field
-	// remains authoritative.
+	// worktree by default. For the canonical "executor" behavior the value
+	// is used as-is; for "supervisor" the worktree decision is governed by
+	// the base_branch state classification (see ClassifyBaseBranch). For
+	// non-canonical behaviors, this is the worktree flag verbatim.
 	Worktree bool `yaml:"worktree,omitempty" json:"worktree,omitempty"`
 	// BaseBranch is the default git base branch for worktrees created by
-	// tasks in this project. Like Worktree it is currently parsed but
-	// unused; see the comment on Worktree above.
+	// tasks in this project. It is resolved at task creation time (with
+	// ${TASK_REMOTE_ID} / ${current_branch} expansion) and persisted on
+	// each task row.
 	BaseBranch         string            `yaml:"base_branch,omitempty" json:"base_branch,omitempty"`
 	HostCommands       HostCommands      `yaml:"host_commands" json:"host_commands"`
 	AdditionalBindings []BindMount       `yaml:"additional_bindings" json:"additional_bindings"`
