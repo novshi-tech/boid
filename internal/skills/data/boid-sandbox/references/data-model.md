@@ -14,8 +14,10 @@ id: "abc-12345678"
 title: "Implement user authentication"
 description: "Add a login feature using OAuth2"
 status: "executing"
-behavior: "dev"
+behavior: "executor"
 ```
+
+Canonical behavior names are `supervisor` (readonly orchestrator) and `executor` (writable implementer). The legacy keys `plan` / `dev` are accepted as aliases and rewritten by the daemon, so by the time you read `task.yaml` the field is usually already canonical.
 
 | Field | Description |
 |-----------|------|
