@@ -141,7 +141,7 @@ The bridge layer for job execution.
 - **sandbox_builder** — turns `orchestrator.ProjectMeta` into a primitive sandbox plan.
 - **policy_translate** — maps a kit's `host_commands` declaration to sandbox-side `CommandDef`s.
 - **runner / runtime** — runs jobs and collects results.
-- **worktree_manager** — creates, recreates, and tears down git worktrees for behaviors with `worktree: true`.
+- **worktree_manager** — creates, recreates, and tears down git worktrees for executor tasks when the project has `worktree: true` at the top level.
 - **secret_store** — encrypts and serves stored secret values.
 
 Entry: [`internal/dispatcher/runner.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/runner.go), [`internal/dispatcher/worktree_manager.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/worktree_manager.go).

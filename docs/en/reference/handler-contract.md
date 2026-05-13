@@ -30,12 +30,12 @@ The main fields of TaskJSON:
 | `title` | string | Task title. |
 | `description` | string | Free-form body. |
 | `status` | string | Current state (`pending` / `executing` / ...). |
-| `behavior` | string | Behavior name (e.g. `dev`). |
+| `behavior` | string | Canonical behavior name (`supervisor` or `executor`); legacy aliases (`plan`, `dev`) are normalised before reaching handlers. |
 | `traits` | list of string | Traits the behavior declared. |
-| `readonly` | bool | Whether the sandbox is read-only. |
-| `worktree` | bool | Whether this task has a worktree. |
-| `branch_prefix` | string | Worktree branch-name prefix. |
-| `base_branch` | string | Worktree base branch. |
+| `readonly` | bool | Whether the sandbox is read-only (derived: `true` for supervisor, `false` for executor). |
+| `worktree` | bool | Whether this task has a worktree (project-top `worktree:` flag combined with the behavior name). |
+| `branch_prefix` | string | Worktree branch-name prefix (always `boid/` — no longer user-configurable). |
+| `base_branch` | string | Worktree base branch (resolved from project-top `base_branch:` with `${TASK_REMOTE_ID}` / `${current_branch}` expansion). |
 | `payload` | object | The full current payload — most handlers read from here. |
 | `instructions` | map (role → Instruction) | Routed instructions; meaningful only to hooks declared `kind: agent`. |
 | `auto_start` | bool | Whether the task was created with auto-start. |
@@ -61,8 +61,8 @@ Any variables declared in the kit's `kit.yaml` or the behavior's `env` field are
 
 ### Working directory
 
-- When the behavior has `worktree: true`, the handler runs with the cwd set to **the worktree root**.
-- Otherwise, the cwd is **the project root** (the directory containing `project.yaml`).
+- When the task has a worktree (project-top `worktree: true` combined with the executor behavior), the handler runs with the cwd set to **the worktree root**.
+- Otherwise (supervisor task, or executor in a project without `worktree:`), the cwd is **the project root** (the directory containing `project.yaml`).
 
 This means commands like `git`, `gh`, and language toolchains do not need explicit directory arguments.
 

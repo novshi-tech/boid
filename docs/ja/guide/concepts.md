@@ -8,7 +8,7 @@
 
 - **status** — タスクが今どの段階にあるかを表す値。 `pending → executing → done` を順に進み、失敗で終わった場合は `aborted` で終端します。各状態の意味と遷移条件は [状態機械](state-machine.md) で扱います
 - **payload** — タスクが進行する過程で蓄積される JSON ドキュメント。最初の依頼内容、生成された成果物、レビューでの指摘などをキー名 (後述する trait) ごとに格納します
-- **behavior** — `dev` や `plan` といったラベルで、このタスクで何の作業をするかを示します。プロジェクト側の設定でラベルごとに「どの拡張パッケージ (kit) を使うか」が紐付いており、選んだ behavior に応じて発火するスクリプトが切り替わります
+- **behavior** — `supervisor` (旧 `plan`) や `executor` (旧 `dev`) といったラベルで、このタスクで何の作業をするかを示します。プロジェクト側の設定でラベルごとに「どの拡張パッケージ (kit) を使うか」が紐付いており、選んだ behavior に応じて発火するスクリプトが切り替わります
 - 所属する **プロジェクト**
 
 タスクは `boid task create` で作成し、 `boid task list` / `boid task show` / `boid task watch`、TUI、Web UI で観察します。
@@ -18,14 +18,22 @@
 `.boid/project.yaml` を持つディレクトリのこと。 `project.yaml` には次を書きます。
 
 - `id` (この `boid` 内でプロジェクトを一意に識別する文字列) と `name` (表示名)
-- 1 つ以上の **task_behaviors** — タスクの behavior ラベルごとに、サンドボックスを read-only にするか worktree を切るかなどの設定と、使う拡張パッケージ (kit) のリストを束ねたもの
+- 任意の project トップ `worktree: true` フラグ — executor タスクごとに専用 git worktree を切るかどうか
+- 1 つ以上の **task_behaviors** — behavior ラベル (典型的には `supervisor` と `executor`) ごとに、使う拡張パッケージ (kit) のリストと任意の `default_instruction` 雛形を束ねたもの。 サンドボックスを read-only にするか worktree を切るかは behavior 単位では設定せず、 canonical 名と project トップフラグから自動で導出されます
 - (任意) 各 kit に渡す設定値
 
 プロジェクトは `boid project add <path>` で `boid` に登録します。プロジェクトは何個でも登録でき、各タスクはいずれか 1 つに属します。
 
 ## behavior
 
-プロジェクトの `task_behaviors` マップに並ぶ、名前付きの「タスクの種類」を表すエントリ。タスク作成時に behavior 名 (例: `dev`、 `plan`) を選ぶと、 `boid` はその behavior に紐付いた拡張パッケージを読み込み、状態遷移に応じてその中のスクリプトを発火します。
+プロジェクトの `task_behaviors` マップに並ぶ、名前付きの「タスクの種類」を表すエントリ。タスク作成時に behavior 名を選ぶと、 `boid` はその behavior に紐付いた拡張パッケージを読み込み、状態遷移に応じてその中のスクリプトを発火します。
+
+**canonical な名前は 2 つ** に絞られています:
+
+- **`supervisor`** (旧 alias: `plan`) — readonly な統括役。 要求を読み、 必要な子タスクを決め、 作成し、 監視し、 結果を統合する
+- **`executor`** (旧 alias: `dev`) — 書き込み可能な実装役。 単一の集中したタスクを受けて成果物 (commit / PR / payload trait) を作る
+
+旧 alias は load 時に翻訳されるので、 改名前に書かれた `project.yaml` もそのまま動作します。 新規プロジェクトは canonical 名で書いてください。
 
 `boid` の状態機械は behavior に関わらず 1 種類だけです。タスクの動作の違いは、 behavior に紐付ける hook / gate の組み合わせと、 失敗時に `reopen` で executing に戻して新しい instruction を渡すかどうかで表現します。検証ループはハーネスではなく agent instruction 側の責務です。
 
@@ -38,7 +46,7 @@ payload は、タスクが進む過程で情報を蓄積していく JSON ドキ
 | `artifact` | 実行スクリプト | 実装系タスクが残す成果物 (commit / PR URL / 変更ファイル等) を格納する自由形 |
 | `lifecycle.abort` | `boid` 本体 | abort の `code` / `message` 等、履歴から自動算出される値 |
 
-サブタスクの生成 (plan 系タスクの主要な仕事) は payload trait ではなく、 hook / gate から `boid task create` builtin を直接呼ぶ形で行います。 詳細は [boid-plan SKILL](../../../internal/skills/data/boid-plan/SKILL.md) を参照してください。
+サブタスクの生成 (supervisor 系タスクの主要な仕事) は payload trait ではなく、 hook / gate から `boid task create` builtin を直接呼ぶ形で行います。 詳細は [`/boid-supervisor` SKILL](../../../internal/skills/data/boid-supervisor/SKILL.md) を参照してください。
 
 instructions は payload の trait ではなく、 タスクの top-level フィールド (`Task.Instructions` 配列) に保持されます。 配列の最後の要素が active な指示で、 `boid task reopen <id> --message "..."` で append されます。
 
@@ -64,7 +72,7 @@ handler を 1 度実行した記録のこと。 job には独自の status (`run
 
 hook を実行する隔離環境です。実装としては Linux の mount namespace + chroot を使い、
 
-- 読み書きできるパスは worktree (または worktree を使わない behavior ではプロジェクトのルートディレクトリ) のみに絞る
+- 読み書きできるパスは worktree (または worktree を持たないタスク — supervisor タスクや、 project トップ `worktree:` を設定していないプロジェクトの executor タスク — ではプロジェクトのルートディレクトリ) のみに絞る
 - ネットワーク接続先は kit が宣言したドメインに限定する
 - ホストマシンのその他のディレクトリ (ホーム、 SSH 鍵、他プロジェクトなど) は見えなくする
 
@@ -74,7 +82,9 @@ hook を実行する隔離環境です。実装としては Linux の mount name
 
 ## worktree
 
-git のリポジトリ変更を伴う behavior では、 `boid` は新しいブランチで専用の **git worktree** を作成します。worktree は同じリポジトリの複数ブランチを別々のディレクトリとして同時にチェックアウトする git の機能で、これを使うと変更が他のタスクと独立した別ディレクトリに閉じます。 hook はその worktree 内で動作し、生成された commit が push され、必要であれば PR が作成されます。 PR がマージされると worktree は片付けられます。
+project トップで `worktree: true` を宣言したプロジェクトでは、 **executor** タスクごとに新しいブランチで専用の **git worktree** が作成されます。worktree は同じリポジトリの複数ブランチを別々のディレクトリとして同時にチェックアウトする git の機能で、これを使うと変更が他のタスクと独立した別ディレクトリに閉じます。 hook はその worktree 内で動作し、生成された commit が push され、必要であれば PR が作成されます。 タスクが done になると worktree は片付けられます。
+
+supervisor タスクは `worktree:` フラグに関わらず worktree を持たず、 常に readonly で project root 上を走ります。
 
 ## アクション (action)
 

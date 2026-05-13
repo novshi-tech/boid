@@ -17,9 +17,8 @@
 id: demo
 name: Demo
 task_behaviors:
-  hello:
-    name: Hello
-    readonly: true
+  supervisor:
+    name: Supervisor
 ```
 
 ## トップレベルのフィールド
@@ -28,6 +27,8 @@ task_behaviors:
 |---|---|---|---|
 | `id` | string | はい | `boid` 内でプロジェクトを一意に識別する文字列。タスク作成時に `project_id` で参照される |
 | `name` | string | はい | UI で表示するプロジェクト名 |
+| `worktree` | bool | `false` | `true` にすると、このプロジェクト内の **executor** タスクごとに専用の git worktree を作る。 supervisor タスクはこのフラグに関わらず、常に readonly で project root 上を走る |
+| `base_branch` | string | リポジトリの既定ブランチ | executor worktree のベースブランチ。 `${TASK_REMOTE_ID}` / `${current_branch}` の展開をサポート (後述 [動的 base_branch](#動的-base_branch)) |
 | `kits` | KitRef のリスト | いいえ | プロジェクト全体で読み込む kit。 全 behavior で共通に使われる |
 | `task_behaviors` | map (string → TaskBehavior) | はい | このプロジェクトで作れる「タスクの種類」一覧 |
 | `commands` | map (string → CommandSpec) | いいえ | サンドボックス内から `boid exec` 経由で呼べる名前付きコマンド |
@@ -38,19 +39,46 @@ task_behaviors:
 
 ## `task_behaviors.<name>`
 
-map のキーが behavior の識別子 (例: `dev`, `plan`) で、タスク作成時に `behavior:` で指定する名前です。値は次のフィールドを持ちます。
+map のキーが behavior の識別子で、タスク作成時に `behavior:` で指定する名前です。 **canonical な名前は 2 つ** に絞られており、 旧 alias は back-compat 期間中だけ受理されます:
+
+| canonical | 旧 alias | 役割 |
+|---|---|---|
+| `supervisor` | `plan` | readonly な統括役。 要求を triage し、 child executor task を作り、 監視する。 ファイル編集はしない |
+| `executor` | `dev` | 書き込み可能な実装役。 単一の集中したタスクを受けて成果物 (commit / PR / payload trait) を作る |
+
+alias は load 時に正規化されます。 `project.yaml` 内で `plan` / `dev` と書いても deprecation warning と共に動作しますが、 新規プロジェクトは canonical 名で書いてください。
+
+各 behavior エントリの設定項目はわずかです:
 
 | キー | 型 | 既定 | 役割 |
 |---|---|---|---|
 | `name` | string | キー名 | UI 表示用のラベル (省略可) |
 | `traits` | string のリスト | (空) | この behavior のタスクが扱う payload trait の宣言 (例: `[artifact]`) |
-| `readonly` | bool | `false` | `true` にするとサンドボックスを読み取り専用にする |
-| `worktree` | bool | `false` | `true` にするとタスクごとに専用の git worktree を作る |
-| `branch_prefix` | string | `boid/` | worktree 用に作るブランチ名のプレフィックス |
-| `base_branch` | string | リポジトリの既定ブランチ | worktree のベースとして使うブランチ |
 | `default_instruction` | Instruction | (空) | タスク作成時の active instruction として `Task.Instructions` 配列に積まれる雛形 (単一 Instruction object) |
-| `default_payload` | YAML/JSON | (空) | この behavior でタスクを作ったときの初期 payload |
 | `kits` | KitRef のリスト | (空) | この behavior 専用の追加 kit |
+
+### 廃止された behavior レベルのフィールド
+
+以下のフィールドは旧 `task_behaviors.<name>.*` 配下にありましたが、 1 プロジェクト 1 ワークフロー形 を貫くため、 project トップ移動 または canonical 名から導出する形に再設計されました。
+
+| 廃止フィールド | 現在の解決方法 |
+|---|---|
+| `readonly` | canonical 名から導出: `supervisor` ⇒ `true`、 `executor` ⇒ `false` |
+| `worktree` | project トップの `worktree:` と canonical 名の組み合わせから決まる。 supervisor は常に worktree なし、 executor は project トップ `worktree: true` の時のみ worktree あり |
+| `base_branch` | project トップの `base_branch:` に移動 |
+| `branch_prefix` | 設定不可。 worktree branch は常に `boid/` プレフィックスで作られる |
+| `default_payload` | 廃止。 payload はタスク作成時に渡すこと |
+
+これらを `task_behaviors.<name>` 配下に書くと load 時にエラーになり、 移行先を指し示すメッセージが返ります。
+
+### 動的 `base_branch`
+
+`base_branch` には dispatch 時に解決される 2 つの interpolation token が使えます:
+
+- `${TASK_REMOTE_ID}` — 親 supervisor がこのタスクに記録した remote 識別子 (GitHub PR 番号など)。 "1 Supervisor 1 PR" ワークフローで、 supervisor セッションごとに専用の統合ブランチを切るために使う
+- `${current_branch}` — executor worktree を作る瞬間に project リポジトリの daemon の HEAD ブランチ
+
+`base_branch` を省略すると、 executor worktree は daemon の現 HEAD ブランチから切られます (= `${current_branch}` と同じ挙動)。 エンドツーエンドの例は [docs/workflows.md](../../workflows.md) を参照。
 
 `worktree: true` の挙動については [概念 / worktree](../guide/concepts.md#worktree) を参照してください。
 
@@ -219,11 +247,15 @@ secret_namespace: ...
 
 ## 例: 実プロジェクトの構成
 
-`boid` 自身のリポジトリにある `.boid/project.yaml` (抜粋) を載せておきます。 `dev` / `plan` の 2 つの behavior を定義し、 `worktree: true` の `dev` で AI エージェントによる開発タスクを回しています。
+`boid` 自身のリポジトリにある `.boid/project.yaml` (抜粋) を載せておきます。 canonical な 2 つの behavior (`supervisor`, `executor`) を定義し、 project トップで `worktree: true` を宣言することで executor タスクが専用の git worktree を持つ構成です。
 
 ```yaml
 id: boid
 name: boid
+
+# Project トップの worktree フラグ: executor タスクごとに worktree を作る。
+# supervisor タスクはこのフラグを無視して、 常に readonly で project root 上を走る。
+worktree: true
 
 kits:
   - github.com/novshi-tech/boid-kits/claude-code
@@ -241,18 +273,12 @@ commands:
     command: [bash]
 
 task_behaviors:
-  dev:
-    name: dev
-    worktree: true
-    kits:
-      - github.com/novshi-tech/boid-kits/github-auto-merge
+  executor:
+    name: executor
     default_instruction: { ... }
-  plan:
-    name: Plan
-    readonly: true
-    kits:
-      - github.com/novshi-tech/boid-kits/boid-tasks
+  supervisor:
+    name: Supervisor
     default_instruction: { ... }
 ```
 
-詳しい例は [4. GitHub PR ベースの開発ワークフロー](../getting-started/04-dev-workflow.md) を参照してください。
+このスキーマで作れる 3 種類のワークフローの例は [ワークフロー](../../workflows.md) と [4. GitHub PR ベースの開発ワークフロー](../getting-started/04-dev-workflow.md) を参照してください。

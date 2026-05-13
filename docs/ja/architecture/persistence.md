@@ -100,7 +100,7 @@ handler (hook / gate) の 1 回の実行記録です。
 
 ## `worktrees`
 
-`worktree: true` な behavior でタスクごとに作られた git worktree のメタです。
+project トップで `worktree: true` を宣言したプロジェクトの executor タスクごとに作られる git worktree のメタです。
 
 | カラム | 型 | 役割 |
 |---|---|---|

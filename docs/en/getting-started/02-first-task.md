@@ -25,17 +25,15 @@ cat > .boid/project.yaml <<'YAML'
 id: demo
 name: Demo
 task_behaviors:
-  hello:
-    name: Hello
-    readonly: true
+  supervisor:
+    name: Supervisor
 YAML
 ```
 
 This is the smallest possible project file:
 
 - `id: demo` — the identifier `boid` uses for this project.
-- `task_behaviors.hello` — a single "kind of task". No hooks or gates are wired to it.
-- `readonly: true` — declares that the sandbox for this task should be read-only. Since we have no scripts to run anyway, this just records "no side effects expected".
+- `task_behaviors.supervisor` — a single "kind of task". No hooks or gates are wired to it. `supervisor` is one of the two canonical behavior names; readonly is derived automatically from the name (supervisor ⇒ readonly), so we do not need to set it explicitly.
 
 Register the project:
 
@@ -53,7 +51,7 @@ You should see something like `project added: demo`. Confirm with `boid project 
 boid task create <<'YAML'
 project_id: demo
 title: First task
-behavior: hello
+behavior: supervisor
 YAML
 ```
 
@@ -78,7 +76,7 @@ boid action send --task <task-id> --type start
 
 `task status: executing` comes back.
 
-Because `hello` has no hooks attached, nothing actually runs in `executing`. `boid task show <task-id>` will keep showing `payload: {}`.
+Because the `supervisor` behavior has no hooks attached in this minimal example, nothing actually runs in `executing`. `boid task show <task-id>` will keep showing `payload: {}`.
 
 Write the `artifact` trait by hand — the trait a real hook would normally produce — and then send the `done` action to advance the task. Without a hook there is no `boid job done` event to drive the auto-transition, so we close the task manually.
 

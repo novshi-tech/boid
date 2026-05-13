@@ -60,9 +60,8 @@ kits:
   - github.com/novshi-tech/boid-kits/claude-code
 
 task_behaviors:
-  ask:
-    name: Ask
-    readonly: true
+  supervisor:
+    name: Supervisor
     default_instruction:
       type: execution
       agent: claude-code
@@ -76,7 +75,7 @@ task_behaviors:
 What is going on:
 
 - **Top-level `kits:`** lists the kits used across the whole project. Here, just `claude-code`.
-- **`task_behaviors.ask`** declares a behavior called `ask`. `readonly: true` makes the sandbox read-only, which is fine because this task only needs to write back to the payload, not edit files.
+- **`task_behaviors.supervisor`** declares the canonical readonly behavior. We don't need to set `readonly:` explicitly — supervisor is always readonly, which is fine because this task only needs to write back to the payload, not edit files.
 - **`default_instruction`** holds a single Instruction object passed to the agent on `executing`. `agent: claude-code` is how the claude-code kit's hook recognises "this instruction is meant for me".
 
 Reload the project:
@@ -95,7 +94,7 @@ Create a task and have it start automatically.
 boid task create <<'YAML'
 project_id: demo
 title: What is Linux, in one sentence?
-behavior: ask
+behavior: supervisor
 auto_start: true
 YAML
 ```

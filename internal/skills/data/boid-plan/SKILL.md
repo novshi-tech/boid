@@ -7,6 +7,12 @@ description: Runs a plan task (readonly supervisor) for the boid orchestrator.
   tasks based on child state and notifies the user when needed.
 ---
 
+> **Deprecated.** This skill is the legacy entry point for the `plan` behavior.
+> New projects should use [`/boid-supervisor`](../boid-supervisor/SKILL.md)
+> directly. The content below is kept for back-compat during the alias period
+> (Phase 5 will remove this skill). The runtime alias `plan → supervisor` keeps
+> existing `project.yaml` files working without changes.
+
 # boid Plan
 
 A plan task **triages** a request, creates child tasks with the appropriate behavior, and **monitors them as a supervisor** until completion. The plan itself is readonly - it can read `git` but does not edit files.

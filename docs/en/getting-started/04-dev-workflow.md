@@ -18,7 +18,7 @@ In the configuration below, most of the workflow is encoded as **instructions to
 
 | Component | Role |
 |---|---|
-| `boid` itself (`worktree: true`) | Creates a per-task git worktree on a new branch, then cleans it up. |
+| `boid` itself (project-top `worktree: true`) | Creates a per-task git worktree on a new branch for each **executor** task, then cleans it up. |
 | `claude-code` kit (hook) | Launches the Claude Code agent in `executing`. |
 | `github-cli` kit | Lets the sandbox use `gh`. |
 | **Instructions to the agent** | Edit, commit, push, open the PR, wait for CI, abort on failure. |
@@ -34,14 +34,16 @@ Create `~/src/github.com/<you>/boid-demo-repo/.boid/project.yaml`:
 id: boid-demo
 name: boid demo repo
 
+# Project-top: each executor task gets its own worktree on a fresh branch.
+worktree: true
+
 kits:
   - github.com/novshi-tech/boid-kits/claude-code
   - github.com/novshi-tech/boid-kits/github-cli
 
 task_behaviors:
-  dev:
-    name: dev
-    worktree: true
+  executor:
+    name: executor
     kits:
       - github.com/novshi-tech/boid-kits/github-auto-merge
     default_instruction:
@@ -70,10 +72,9 @@ task_behaviors:
 
 What is going on:
 
+- **Project-top `worktree: true`** gives each executor task its own branch and directory. The flag is no longer set per behavior — it applies to every executor task in the project. Supervisor tasks in the same project always run readonly in the project root regardless of this flag.
 - **Top-level `kits:`** loads the kits used across the whole project (`claude-code` and `github-cli`).
-- **`task_behaviors.dev`** is the focus here.
-  - `worktree: true` gives each task its own branch and directory.
-  - Only `github-auto-merge` is listed under the behavior's kits. PR creation and CI checking come from the instructions.
+- **`task_behaviors.executor`** is the focus here. Only `github-auto-merge` is listed under the behavior's kits. PR creation and CI checking come from the instructions. (`executor` is the canonical name; the legacy alias `dev` is still accepted with a deprecation warning.)
 - **`default_instruction`** is the single Instruction object that `executing` passes to claude-code. The whole sequence — commit, push, open the PR, wait for CI, decide what to do on failure — lives in this text.
 - There is no separate verification or rework instruction. On failure the agent aborts, or an operator runs `boid task reopen <id> --message "..."` to send a new instruction.
 
@@ -90,7 +91,7 @@ A small example: append a line to README.
 boid task create <<'YAML'
 project_id: boid-demo
 title: Add a one-line "hello from boid" to README.md
-behavior: dev
+behavior: executor
 auto_start: true
 YAML
 ```
@@ -150,6 +151,7 @@ The key insight here is that **most of the workflow is written in the instructio
 
 ## What to read next
 
+- [Workflows](../../workflows.md) — three end-to-end workflow shapes (local merge / 1 executor 1 PR / 1 supervisor 1 PR) with copy-pasteable `project.yaml` examples.
 - [Concepts](../guide/concepts.md) — re-read with concrete examples in mind.
 - [State machine](../guide/state-machine.md) — the exact transition rules.
 - [Web UI](../guide/web-ui.md) — to watch a task from a browser or your phone.

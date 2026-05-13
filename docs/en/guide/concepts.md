@@ -8,7 +8,7 @@ The unit of work that `boid` tracks from request to completion. Every task carri
 
 - A **status** — what stage the task is in right now. Tasks move through `pending → executing → done`, and end at `aborted` if they fail. The meaning of each state and the transition rules between them are covered in [State machine](state-machine.md).
 - A **payload** — a JSON document that accumulates information as the task progresses. Generated artifacts and similar outputs are stored under predefined keys called *traits* (defined below).
-- A **behavior** — a label such as `dev` or `plan` that says what kind of work this task is. The project's configuration maps each label to a set of extension packages (*kits*), so picking a behavior selects which scripts will fire.
+- A **behavior** — a label such as `supervisor` (formerly `plan`) or `executor` (formerly `dev`) that says what kind of work this task is. The project's configuration maps each label to a set of extension packages (*kits*), so picking a behavior selects which scripts will fire.
 - The **project** the task belongs to.
 
 Tasks are created with `boid task create` and observed with `boid task list`, `boid task show`, `boid task watch`, the TUI, or the Web UI.
@@ -18,14 +18,22 @@ Tasks are created with `boid task create` and observed with `boid task list`, `b
 A directory that contains a `.boid/project.yaml` file. The project file declares:
 
 - An `id` (the unique identifier `boid` uses for the project) and a `name` (display name).
-- One or more **task_behaviors** — for each behavior label, settings like whether the sandbox should be read-only or run inside a git worktree, and the list of extension packages (kits) to load.
+- An optional project-top `worktree: true` flag that gives each executor task its own git worktree.
+- One or more **task_behaviors** — for each behavior label (typically `supervisor` and `executor`), the list of extension packages (kits) to load and an optional `default_instruction` template. Whether the sandbox is read-only / runs in a worktree is no longer set per behavior; it is derived from the canonical name combined with the project-top flag.
 - Optional configuration values passed through to each kit.
 
 You register a project with `boid project add <path>`. Any number of projects can coexist; each task belongs to exactly one of them.
 
 ## Behavior
 
-A named entry in the project's `task_behaviors` map representing a kind of task. When you create a task and pick a behavior name (e.g. `dev`, `plan`), `boid` loads the extension packages bound to that behavior and fires their scripts as the task changes state.
+A named entry in the project's `task_behaviors` map representing a kind of task. When you create a task and pick a behavior name, `boid` loads the extension packages bound to that behavior and fires their scripts as the task changes state.
+
+There are **two canonical behavior names**:
+
+- **`supervisor`** (legacy alias: `plan`) — readonly orchestrator. Reads a request, decides what child tasks are needed, creates them, monitors them, integrates results.
+- **`executor`** (legacy alias: `dev`) — writable implementer. Receives a single focused task and produces an artifact (commit / PR / payload trait).
+
+The aliases are translated at load time, so existing `project.yaml` files written before the rename keep working. New projects should use the canonical names.
 
 `boid` runs a single state machine regardless of behavior. Different task shapes come from which hooks and gates a behavior wires in, and from how failures are recovered: either by `reopen`ing the task with a new instruction, or by spawning a fresh task. The harness does not encode a verification loop — failure detection and the recovery plan live in the agent's instruction text.
 
@@ -38,7 +46,7 @@ The payload is a JSON document that grows as the task progresses. Only a fixed s
 | `artifact` | execution scripts | Free-form record of what the task produced (commit, PR URL, changed files, ...). |
 | `lifecycle.abort` | `boid` itself | Auto-derived `code` / `message` for an aborted task. |
 
-Subtask creation (the main job of plan-style behaviors) is no longer expressed through a payload trait. Hooks and gates call the `boid task create` builtin directly — see the [boid-plan SKILL](../../../internal/skills/data/boid-plan/SKILL.md) for the typical shape.
+Subtask creation (the main job of supervisor-style behaviors) is no longer expressed through a payload trait. Hooks and gates call the `boid task create` builtin directly — see the [`/boid-supervisor` SKILL](../../../internal/skills/data/boid-supervisor/SKILL.md) for the typical shape.
 
 Instructions are not a payload trait. They live in the top-level `Task.Instructions` array on the task itself; the last element is the active one, and `boid task reopen <id> --message "..."` appends a new entry.
 
@@ -64,7 +72,7 @@ A record of a single handler invocation. Each job carries its own status (`runni
 
 The isolated environment that hooks execute inside. Internally it is built from a Linux mount namespace plus a chroot, and applies these constraints:
 
-- Reads and writes are confined to the worktree (or the project root, for behaviors that do not use a worktree).
+- Reads and writes are confined to the worktree (or the project root, for tasks that do not get a worktree — supervisor tasks, and executor tasks in projects that do not set `worktree: true`).
 - Outbound network connections are limited to the domains the kit declares.
 - Other parts of the host filesystem (your home directory, SSH keys, other projects) are not visible.
 
@@ -74,7 +82,9 @@ Some commands legitimately need to reach outside the sandbox (for example `git p
 
 ## Worktree
 
-For behaviors that change a git repository, `boid` creates a fresh **git worktree** on a new branch. A worktree is a git feature that lets you check out multiple branches of the same repository into separate directories simultaneously, so the task's edits stay in their own directory and do not collide with other tasks. The hook runs inside that worktree, its commits are pushed, and (if needed) a PR is created. Once the PR is merged, the worktree is cleaned up.
+For projects that opt in with project-top `worktree: true`, each **executor** task runs inside a fresh **git worktree** on a new branch. A worktree is a git feature that lets you check out multiple branches of the same repository into separate directories simultaneously, so the task's edits stay in their own directory and do not collide with other tasks. The hook runs inside that worktree, its commits are pushed, and (if needed) a PR is created. Once the task is done, the worktree is cleaned up.
+
+Supervisor tasks never get a worktree — they are readonly and run in the project root regardless of the `worktree:` flag.
 
 ## Action
 

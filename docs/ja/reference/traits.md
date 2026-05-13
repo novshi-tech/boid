@@ -25,7 +25,7 @@
 
 ### サブタスクの生成
 
-計画系の behavior (`plan` 等) は payload trait に書く形ではなく、 hook / gate から `boid task create` builtin を直接呼び出してサブタスクを登録します。 詳細は [boid-plan SKILL](../../../internal/skills/data/boid-plan/SKILL.md) を参照してください。
+統括系の behavior (canonical `supervisor`, 旧 alias `plan`) は payload trait に書く形ではなく、 hook / gate から `boid task create` builtin を直接呼び出してサブタスクを登録します。 詳細は [`/boid-supervisor` SKILL](../../../internal/skills/data/boid-supervisor/SKILL.md) を参照してください。
 
 ## 自動算出される値
 

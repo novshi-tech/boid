@@ -17,9 +17,8 @@ This page is the schema reference. For the meaning of the underlying terms, see 
 id: demo
 name: Demo
 task_behaviors:
-  hello:
-    name: Hello
-    readonly: true
+  supervisor:
+    name: Supervisor
 ```
 
 ## Top-level fields
@@ -28,6 +27,8 @@ task_behaviors:
 |---|---|---|---|
 | `id` | string | yes | Unique identifier for this project inside `boid`. Tasks reference it via `project_id`. |
 | `name` | string | yes | Display name shown in UIs. |
+| `worktree` | bool | `false` | If `true`, **executor** tasks in this project run in their own git worktree on a fresh branch. Supervisor tasks always run readonly in the project root regardless of this flag. |
+| `base_branch` | string | repository default | Branch used as the base for executor worktrees. Supports `${TASK_REMOTE_ID}` and `${current_branch}` expansion (see [Dynamic base_branch](#dynamic-base_branch)). |
 | `kits` | list of KitRef | no | Kits loaded for the whole project; available to every behavior. |
 | `task_behaviors` | map (string → TaskBehavior) | yes | The kinds of tasks this project can produce. |
 | `commands` | map (string → CommandSpec) | no | Named commands the sandbox can invoke through `boid exec`. |
@@ -38,19 +39,46 @@ task_behaviors:
 
 ## `task_behaviors.<name>`
 
-The map key is the behavior's identifier (e.g. `dev`, `plan`) — what `boid task create` references via `behavior:`. The value carries:
+The map key is the behavior's identifier and is what `boid task create` references via `behavior:`. There are **two canonical behavior names**, with a single legacy alias each kept for back-compat:
+
+| Canonical | Legacy alias | Role |
+|---|---|---|
+| `supervisor` | `plan` | Readonly orchestrator. Reads the request, triages it, creates child executor tasks, monitors them. Never edits files. |
+| `executor` | `dev` | Writable implementer. Receives a single focused task and produces an artifact (commit / PR / payload trait). |
+
+The aliases are normalised at load time — using `plan` / `dev` in `project.yaml` triggers a deprecation warning but still works. New projects should use the canonical names directly.
+
+Each behavior entry has very few knobs:
 
 | Key | Type | Default | Role |
 |---|---|---|---|
 | `name` | string | the map key | Display label (optional). |
 | `traits` | list of string | (empty) | Top-level payload trait names this behavior is allowed to use (e.g. `[artifact]`). |
-| `readonly` | bool | `false` | If `true`, the sandbox is mounted read-only. |
-| `worktree` | bool | `false` | If `true`, each task gets its own git worktree on a fresh branch. |
-| `branch_prefix` | string | `boid/` | Prefix used when generating the worktree branch name. |
-| `base_branch` | string | repository default | Branch used as the base for the worktree. |
 | `default_instruction` | Instruction | (empty) | A single Instruction template appended to `Task.Instructions` when a task is created. |
-| `default_payload` | YAML/JSON | (empty) | Initial payload applied to tasks created with this behavior. |
 | `kits` | list of KitRef | (empty) | Additional kits loaded only for this behavior. |
+
+### Removed behavior-level fields
+
+The fields below used to live under `task_behaviors.<name>.*`. They have been moved to the project top level (or derived from the canonical behavior name) so that any one project pins one workflow shape.
+
+| Removed field | Where it lives now |
+|---|---|
+| `readonly` | Derived from the behavior name: `supervisor` ⇒ `true`, `executor` ⇒ `false`. |
+| `worktree` | Project-top `worktree:` combined with the behavior name. Supervisor never gets a worktree; executor gets one when project-top `worktree: true`. |
+| `base_branch` | Project-top `base_branch:`. |
+| `branch_prefix` | Not configurable. Worktree branches are always created under `boid/`. |
+| `default_payload` | Removed. Provide payload at task creation time instead. |
+
+Setting any of these inside `task_behaviors.<name>` is a load-time error that points at the new location.
+
+### Dynamic `base_branch`
+
+`base_branch` accepts two interpolation tokens that are resolved per task at dispatch time:
+
+- `${TASK_REMOTE_ID}` — the remote identifier (e.g. a GitHub PR number) the parent supervisor recorded for this task. Used in the "1 Supervisor 1 PR" workflow to give each supervisor session its own integration branch.
+- `${current_branch}` — the daemon's current HEAD branch in the project repository at the moment the executor worktree is created.
+
+If `base_branch` is omitted, executor worktrees branch from the daemon's current HEAD branch (i.e. the same behaviour as `${current_branch}`). See [docs/workflows.md](../../workflows.md) for end-to-end examples.
 
 For how `worktree: true` behaves, see [Concepts / Worktree](../guide/concepts.md#worktree).
 
@@ -198,11 +226,16 @@ secret_namespace: ...
 
 ## Example: a real project
 
-An excerpt from `.boid/project.yaml` in the `boid` repository itself, showing two behaviors (`dev`, `plan`) with the `dev` behavior using `worktree: true` to run AI-driven development tasks.
+An excerpt from `.boid/project.yaml` in the `boid` repository itself, showing the two canonical behaviors (`supervisor`, `executor`) with `worktree: true` declared at the project top level so each executor task runs in its own git worktree.
 
 ```yaml
 id: boid
 name: boid
+
+# Project-top worktree flag: executor tasks get a per-task worktree.
+# Supervisor tasks ignore this flag — they always run readonly in the
+# project root.
+worktree: true
 
 kits:
   - github.com/novshi-tech/boid-kits/claude-code
@@ -220,18 +253,12 @@ commands:
     command: [bash]
 
 task_behaviors:
-  dev:
-    name: dev
-    worktree: true
-    kits:
-      - github.com/novshi-tech/boid-kits/github-auto-merge
+  executor:
+    name: executor
     default_instruction: { ... }
-  plan:
-    name: Plan
-    readonly: true
-    kits:
-      - github.com/novshi-tech/boid-kits/boid-tasks
+  supervisor:
+    name: Supervisor
     default_instruction: { ... }
 ```
 
-For a fuller example see [4. The GitHub PR-driven dev workflow](../getting-started/04-dev-workflow.md).
+For a fuller example — and three different workflow shapes built on top of this schema — see [Workflows](../../workflows.md) and [4. The GitHub PR-driven dev workflow](../getting-started/04-dev-workflow.md).
