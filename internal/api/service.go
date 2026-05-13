@@ -1372,6 +1372,10 @@ type TaskWorkflowService struct {
 	Lifecycle   JobLifecycle
 	Worktrees   WorktreeCleaner
 	Hub         *TaskEventHub
+	// Locks pins the project-level worktree lock to the executing lifetime of
+	// each task. Optional: when nil, no project locking is performed (matches
+	// pre-P0-2 behaviour for tests that don't exercise concurrency).
+	Locks *orchestrator.ProjectLockManager
 
 	dispatchCtx    context.Context
 	dispatchCancel context.CancelFunc
@@ -1392,6 +1396,27 @@ func (s *TaskWorkflowService) Shutdown() {
 		s.dispatchCancel()
 	}
 	s.dispatchWG.Wait()
+}
+
+// shouldHoldProjectLock reports whether the given task needs an exclusive
+// project worktree lock while executing. Mirrors the legacy condition that
+// guarded dispatchHooksLocked: readonly tasks (no writes) and worktree=true
+// tasks (private working directory) bypass the lock and can run in parallel.
+func shouldHoldProjectLock(task *orchestrator.Task) bool {
+	if task == nil {
+		return false
+	}
+	return !task.Readonly && !task.Worktree
+}
+
+// releaseProjectLock drops the executing-lifetime project lock for the given
+// task. Safe to call multiple times; safe when the task never acquired the
+// lock (e.g. readonly/worktree tasks).
+func (s *TaskWorkflowService) releaseProjectLock(taskID string) {
+	if s.Locks == nil || taskID == "" {
+		return
+	}
+	s.Locks.ReleaseForTask(taskID)
 }
 
 func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, req ApplyActionRequest) (*ActionApplication, error) {
@@ -1467,6 +1492,13 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		return tx.CreateAction(action)
 	}); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+
+	// Release the project lock whenever the action moves the task out of
+	// executing (ask, done, abort, ...). Idempotent — safe when the task did
+	// not hold the lock (e.g. readonly/worktree tasks, or repeated abort).
+	if newTask.Status != orchestrator.TaskStatusExecuting {
+		s.releaseProjectLock(newTask.ID)
 	}
 
 	if s.Hub != nil {
@@ -1624,6 +1656,12 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 		})
 	}
 
+	// job_failed moves the task out of executing — release the project lock so
+	// queued tasks on the same project can advance. Idempotent.
+	if newTask.Status != orchestrator.TaskStatusExecuting {
+		s.releaseProjectLock(newTask.ID)
+	}
+
 	slog.Info("job done: job_failed applied", "job_id", job.ID, "new_status", newTask.Status)
 	s.cleanupWorktree(newTask.ID, job.ProjectID, newTask.Status)
 	return job, nil
@@ -1632,6 +1670,30 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine) {
 	const maxCycles = 10
 	current := task
+
+	// Project-level worktree lock — held for the entire executing lifetime so
+	// concurrent tasks on the same project don't race over the working tree.
+	// Idempotent: re-spawned dispatch loops for an already-locked task no-op.
+	//
+	// Eligibility:
+	//   - task.Status == executing (no-op when dispatching a terminal task,
+	//     e.g. a `done` ApplyAction that spawns the loop solely to fire
+	//     finalizeTerminal → triggerDependentTasks)
+	//   - !readonly && !worktree (matches the legacy dispatchHooksLocked gate)
+	//   - the behavior actually declares hooks that would fire in executing
+	//     (a hook-less behavior leaves the project working tree untouched, so
+	//     locking it would serialize unrelated tasks for no reason — this
+	//     was the regression that broke auto-start-deps in CI)
+	if s.Locks != nil && current.Status == orchestrator.TaskStatusExecuting && shouldHoldProjectLock(current) {
+		if len(orchestrator.ListHooksForStatus(meta, current, orchestrator.TaskStatusExecuting)) > 0 {
+			if err := s.Locks.AcquireForTask(ctx, current.ProjectID, current.ID); err != nil {
+				slog.Warn("dispatch loop: project lock acquire failed",
+					"task_id", current.ID, "project_id", current.ProjectID, "error", err)
+				s.recordDispatchError(current.ID, current.Status, fmt.Errorf("project lock: %w", err))
+				return
+			}
+		}
+	}
 
 	for cycle := 0; cycle < maxCycles; cycle++ {
 		result, err := s.Coordinator.DispatchAndAdvance(ctx, current, meta, sm)
@@ -1712,6 +1774,9 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 		if current.Status == orchestrator.TaskStatusAwaiting {
 			slog.Info("dispatch loop: task is awaiting user answer, skipping auto-advance",
 				"task_id", current.ID, "would_advance_to", result.NewStatus)
+			// awaiting means the task left executing — release the project
+			// lock so other tasks can run. answer will re-acquire on resume.
+			s.releaseProjectLock(current.ID)
 			return
 		}
 
@@ -2056,6 +2121,10 @@ func (s *TaskWorkflowService) finalizeTerminal(ctx context.Context, task *orches
 	if task.Status != orchestrator.TaskStatusDone && task.Status != orchestrator.TaskStatusAborted {
 		return
 	}
+	// Release the executing-lifetime project lock first so a queued waiter on
+	// the same project can acquire while the cleanup below is still in flight.
+	// Idempotent — safe if the task never acquired the lock.
+	s.releaseProjectLock(task.ID)
 	s.cleanupWorktree(task.ID, task.ProjectID, task.Status)
 	if s.Lifecycle != nil {
 		s.Lifecycle.CleanupTaskWindow(task.ID)

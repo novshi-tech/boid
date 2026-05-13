@@ -28,7 +28,11 @@ func (m *mockWorktreeLocker) Acquire(ctx context.Context, key string) (func(), e
 	}, nil
 }
 
-func TestCoordinator_DispatchAndAdvance_LockerAcquiredForNonReadonlyNonWorktree(t *testing.T) {
+// The coordinator must NOT take any project-level lock anymore — the workflow
+// service now owns the executing-lifetime lock (see internal/api/service.go).
+// These tests guard against accidental regressions where someone reintroduces
+// inner locking inside DispatchAndAdvance.
+func TestCoordinator_DispatchAndAdvance_DoesNotAcquireWorktreeLock(t *testing.T) {
 	mock := newMockExecutorWaiter()
 	mock.setHookCompletion("hook-a", `{"payload_patch":{"prompt":"done"}}`, 0)
 
@@ -39,7 +43,7 @@ func TestCoordinator_DispatchAndAdvance_LockerAcquiredForNonReadonlyNonWorktree(
 		GateExecutor: mock,
 		Waiter:       mock,
 		MaxDepth:     5,
-		Locker:       locker,
+		Locker:       locker, // deprecated; must be ignored by the coordinator
 	}
 
 	task := &orchestrator.Task{
@@ -59,15 +63,15 @@ func TestCoordinator_DispatchAndAdvance_LockerAcquiredForNonReadonlyNonWorktree(
 		t.Fatalf("dispatch: %v", err)
 	}
 
-	if len(locker.acquired) != 1 || locker.acquired[0] != "proj-1" {
-		t.Errorf("expected lock acquired for proj-1, got %v", locker.acquired)
+	if len(locker.acquired) != 0 {
+		t.Errorf("expected coordinator NOT to acquire any lock, got %v", locker.acquired)
 	}
-	if len(locker.released) != 1 || locker.released[0] != "proj-1" {
-		t.Errorf("expected lock released for proj-1, got %v", locker.released)
+	if len(locker.released) != 0 {
+		t.Errorf("expected coordinator NOT to release any lock, got %v", locker.released)
 	}
 }
 
-func TestCoordinator_DispatchAndAdvance_LockerSkippedForWorktree(t *testing.T) {
+func TestCoordinator_DispatchAndAdvance_DoesNotAcquireForWorktreeTask(t *testing.T) {
 	mock := newMockExecutorWaiter()
 	mock.setHookCompletion("hook-a", `{"payload_patch":{"prompt":"done"}}`, 0)
 
