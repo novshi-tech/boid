@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/dispatcher"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/testutil"
 )
 
@@ -801,6 +802,217 @@ func TestManager_Recreate_EnsuresBoidDir(t *testing.T) {
 	}
 	if !info.IsDir() {
 		t.Errorf(".boid should be a directory")
+	}
+}
+
+// TestManager_EnsureBindingTargets_CreatesWorktreeSubdirs verifies that
+// EnsureBindingTargets pre-mkdirs additional_bindings targets that live under
+// the worktree, so a later readonly bind-remount of the worktree does not cause
+// EROFS when the sandbox setup script tries to mkdir the target.
+//
+// Repro: readonly:true + worktree:true + a binding whose target is ${WORKTREE}/sub
+// would fail because render.go bind-mounts and ro-remounts the worktree before
+// `additionalBindingMounts` runs, leaving subsequent `mkdir -p $ROOT<worktree>/sub`
+// to hit the parent's readonly bind. Pre-mkdir on the host (writable) sidesteps
+// the trap entirely — `mount --bind` only needs the target to exist.
+func TestManager_EnsureBindingTargets_CreatesWorktreeSubdirs(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-1', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-ebt10001-0001', 'proj-1', 'ensure binding targets', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	w, err := mgr.Create(repo, "proj-1", "task-ebt10001-0001", "boid/", "HEAD")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { mgr.Remove(repo, "task-ebt10001-0001", true) })
+
+	bindings := []orchestrator.BindMount{
+		// 1) directory target under the worktree → mkdir-p the target dir
+		{Source: "/opt/external-build-cache", Target: "${WORKTREE}/build"},
+		// 2) file target under the worktree → mkdir-p the parent dir
+		{Source: "${PROJECT_WORKDIR}/etc/global.json", Target: "${WORKTREE}/etc/global.json", IsFile: true},
+		// 3) deeply nested directory target under the worktree → mkdir-p
+		{Source: "/opt/another", Target: "${WORKTREE}/deeply/nested/dir"},
+		// 4) target outside the worktree → must be skipped (not created)
+		{Source: "/opt/sock", Target: "/var/run/some.sock", IsFile: true},
+		// 5) target omitted (defaults to source, outside worktree) → skipped
+		{Source: "/opt/external-tool"},
+	}
+
+	if err := mgr.EnsureBindingTargets(w.Path, bindings, repo); err != nil {
+		t.Fatalf("EnsureBindingTargets: %v", err)
+	}
+
+	// Case 1: directory target exists as a directory.
+	if info, err := os.Stat(filepath.Join(w.Path, "build")); err != nil {
+		t.Errorf("expected <worktree>/build to exist: %v", err)
+	} else if !info.IsDir() {
+		t.Errorf("<worktree>/build should be a directory")
+	}
+
+	// Case 2: file target's parent dir exists. The target file itself does not
+	// have to be created — `mount --bind` does not need a pre-existing file when
+	// the source is a regular file, and the sandbox setup script touches the
+	// target when needed. What we MUST avoid is EROFS on `mkdir -p <parent>`.
+	if info, err := os.Stat(filepath.Join(w.Path, "etc")); err != nil {
+		t.Errorf("expected <worktree>/etc to exist: %v", err)
+	} else if !info.IsDir() {
+		t.Errorf("<worktree>/etc should be a directory")
+	}
+
+	// Case 3: deeply nested directory exists.
+	if info, err := os.Stat(filepath.Join(w.Path, "deeply", "nested", "dir")); err != nil {
+		t.Errorf("expected nested dir to exist: %v", err)
+	} else if !info.IsDir() {
+		t.Errorf("nested target should be a directory")
+	}
+
+	// Case 4 + 5: targets outside the worktree must not have been auto-created
+	// under the worktree.
+	if _, err := os.Stat(filepath.Join(w.Path, "var")); !os.IsNotExist(err) {
+		t.Errorf("worktree should not contain stray %q dir, got err=%v", "var", err)
+	}
+	if _, err := os.Stat(filepath.Join(w.Path, "opt")); !os.IsNotExist(err) {
+		t.Errorf("worktree should not contain stray %q dir, got err=%v", "opt", err)
+	}
+}
+
+// TestManager_EnsureBindingTargets_NonGit verifies the pre-mkdir semantics on
+// a plain directory, without depending on git availability. Mirrors the cases
+// in TestManager_EnsureBindingTargets_CreatesWorktreeSubdirs so the
+// EROFS-prevention contract is enforced even in environments where the git
+// fixture is unavailable (e.g. sandboxed CI shells).
+func TestManager_EnsureBindingTargets_NonGit(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	wt := t.TempDir() // stand-in for a freshly created worktree
+	projectDir := t.TempDir()
+
+	mgr := &dispatcher.WorktreeManager{RootDir: t.TempDir(), DB: db.Conn, GitBin: gitBin}
+
+	bindings := []orchestrator.BindMount{
+		// directory target under the worktree
+		{Source: "/opt/external-build-cache", Target: "${WORKTREE}/build"},
+		// file target under the worktree
+		{Source: "${PROJECT_WORKDIR}/etc/global.json", Target: "${WORKTREE}/etc/global.json", IsFile: true},
+		// nested directory target
+		{Source: "/opt/another", Target: "${WORKTREE}/deeply/nested/dir"},
+		// target outside the worktree → must be skipped
+		{Source: "/opt/sock", Target: "/var/run/some.sock", IsFile: true},
+		// target omitted → defaults to source, outside worktree → skipped
+		{Source: "/opt/external-tool"},
+	}
+
+	if err := mgr.EnsureBindingTargets(wt, bindings, projectDir); err != nil {
+		t.Fatalf("EnsureBindingTargets: %v", err)
+	}
+
+	if info, err := os.Stat(filepath.Join(wt, "build")); err != nil {
+		t.Errorf("<worktree>/build should exist: %v", err)
+	} else if !info.IsDir() {
+		t.Errorf("<worktree>/build should be a directory")
+	}
+	if info, err := os.Stat(filepath.Join(wt, "etc")); err != nil {
+		t.Errorf("<worktree>/etc should exist: %v", err)
+	} else if !info.IsDir() {
+		t.Errorf("<worktree>/etc should be a directory")
+	}
+	if info, err := os.Stat(filepath.Join(wt, "deeply", "nested", "dir")); err != nil {
+		t.Errorf("nested dir should exist: %v", err)
+	} else if !info.IsDir() {
+		t.Errorf("nested target should be a directory")
+	}
+	// Targets that do not live under the worktree must not pollute the worktree.
+	if entries, err := os.ReadDir(wt); err != nil {
+		t.Errorf("read worktree: %v", err)
+	} else {
+		for _, e := range entries {
+			switch e.Name() {
+			case "build", "etc", "deeply":
+				// expected
+			default:
+				t.Errorf("unexpected entry created under worktree: %q", e.Name())
+			}
+		}
+	}
+}
+
+// TestManager_EnsureBindingTargets_RejectsEscapeNonGit verifies that
+// path-traversal targets do not get created on the host, without needing git.
+func TestManager_EnsureBindingTargets_RejectsEscapeNonGit(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	parent := t.TempDir()
+	wt := filepath.Join(parent, "wt")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatalf("mkdir wt: %v", err)
+	}
+	mgr := &dispatcher.WorktreeManager{RootDir: t.TempDir(), DB: db.Conn, GitBin: gitBin}
+
+	bindings := []orchestrator.BindMount{
+		{Source: "/opt/x", Target: "${WORKTREE}/../sibling"},
+	}
+	if err := mgr.EnsureBindingTargets(wt, bindings, ""); err != nil {
+		t.Fatalf("EnsureBindingTargets: %v", err)
+	}
+	sibling := filepath.Join(parent, "sibling")
+	if _, err := os.Stat(sibling); !os.IsNotExist(err) {
+		t.Errorf("escape target must NOT be created on host, but found: %v", err)
+	}
+}
+
+// TestManager_EnsureBindingTargets_EmptyAndNil verifies that EnsureBindingTargets
+// is a no-op when there are no bindings or the worktree path is empty.
+func TestManager_EnsureBindingTargets_EmptyAndNil(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	mgr := &dispatcher.WorktreeManager{RootDir: t.TempDir(), DB: db.Conn, GitBin: gitBin}
+
+	if err := mgr.EnsureBindingTargets("", nil, ""); err != nil {
+		t.Errorf("empty inputs: unexpected error: %v", err)
+	}
+	if err := mgr.EnsureBindingTargets(t.TempDir(), nil, ""); err != nil {
+		t.Errorf("nil bindings: unexpected error: %v", err)
+	}
+	if err := mgr.EnsureBindingTargets("", []orchestrator.BindMount{{Source: "/x", Target: "/y"}}, ""); err != nil {
+		t.Errorf("empty worktree: unexpected error: %v", err)
+	}
+}
+
+// TestManager_EnsureBindingTargets_RejectsEscape verifies that EnsureBindingTargets
+// does not mkdir for targets that *appear* to be under the worktree via path
+// traversal (`${WORKTREE}/../sibling`). Such bindings simply don't fall under the
+// worktree and must be ignored by the pre-mkdir step. The rest of the binding
+// stack (renderMount) handles the actual mount; pre-mkdir is purely about
+// avoiding EROFS for genuine worktree-internal targets.
+func TestManager_EnsureBindingTargets_RejectsEscape(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-1', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-ebtesc01-0001', 'proj-1', 'ensure binding targets escape', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+	w, err := mgr.Create(repo, "proj-1", "task-ebtesc01-0001", "boid/", "HEAD")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { mgr.Remove(repo, "task-ebtesc01-0001", true) })
+
+	// Sibling path that escapes the worktree via ${WORKTREE}/../sibling.
+	bindings := []orchestrator.BindMount{
+		{Source: "/opt/x", Target: "${WORKTREE}/../sibling"},
+	}
+	if err := mgr.EnsureBindingTargets(w.Path, bindings, repo); err != nil {
+		t.Fatalf("EnsureBindingTargets: %v", err)
+	}
+
+	siblingDir := filepath.Join(filepath.Dir(w.Path), "sibling")
+	if _, err := os.Stat(siblingDir); !os.IsNotExist(err) {
+		t.Errorf("escape target must NOT be created on host, but found: %v", err)
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 // WorktreeManager handles git worktree lifecycle for task isolation.
@@ -282,6 +284,85 @@ func (m *WorktreeManager) Recreate(projectDir string, taskID string) (*Worktree,
 	w.CleanedAt = nil
 	slog.Info("worktree recreated", "task_id", taskID, "path", w.Path, "branch", w.Branch)
 	return w, nil
+}
+
+// EnsureBindingTargets pre-creates additional_bindings mount targets that fall
+// under worktreePath, so a subsequent readonly bind-remount of the worktree
+// does not trigger EROFS when the sandbox setup script tries to mkdir those
+// targets. Bindings whose target lives outside the worktree (and bindings that
+// would escape the worktree via path traversal) are skipped — the sandbox layer
+// handles those during normal mount setup.
+//
+// projectDir is used to expand the ${PROJECT_WORKDIR} token. ${WORKTREE}
+// expands to worktreePath. Other tokens are passed through unchanged (matching
+// expandWorktreeBindings, which keeps them literal for debuggability).
+//
+// Idempotent: dirs that already exist are left alone (os.MkdirAll). Safe to
+// call after either Create or Recreate.
+func (m *WorktreeManager) EnsureBindingTargets(worktreePath string, bindings []orchestrator.BindMount, projectDir string) error {
+	if worktreePath == "" || len(bindings) == 0 {
+		return nil
+	}
+	cleanWT := filepath.Clean(worktreePath)
+	for _, bm := range expandWorktreeBindings(bindings, worktreePath, projectDir) {
+		target := bm.Target
+		if target == "" {
+			target = bm.Source
+		}
+		if target == "" {
+			continue
+		}
+		cleanTarget := filepath.Clean(target)
+		// Reject bindings that don't actually live under the worktree (including
+		// path-traversal escapes after Clean). Skipping is fine — those targets
+		// either resolve outside the ro bind or the sandbox layer creates them.
+		if !isUnderDir(cleanTarget, cleanWT) {
+			continue
+		}
+		dirToCreate := cleanTarget
+		if bm.IsFile {
+			dirToCreate = filepath.Dir(cleanTarget)
+		}
+		// Final guard: after stripping a filename, dirToCreate must still be
+		// strictly under the worktree (i.e. not the worktree root itself, which
+		// already exists, and not a parent).
+		if !isAtOrUnderDir(dirToCreate, cleanWT) {
+			continue
+		}
+		if dirToCreate == cleanWT {
+			// Nothing to do — worktree root already exists.
+			continue
+		}
+		if err := os.MkdirAll(dirToCreate, 0o755); err != nil {
+			return fmt.Errorf("pre-mkdir additional_bindings target %q: %w", dirToCreate, err)
+		}
+	}
+	return nil
+}
+
+// isUnderDir reports whether path is strictly inside parent (parent itself
+// returns false). Both inputs are expected to be filepath.Clean'd.
+func isUnderDir(path, parent string) bool {
+	if path == parent {
+		return false
+	}
+	if parent == "" {
+		return false
+	}
+	prefix := parent
+	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+		prefix += string(filepath.Separator)
+	}
+	return strings.HasPrefix(path, prefix)
+}
+
+// isAtOrUnderDir reports whether path is either parent or strictly inside it.
+// Used as the final mkdir guard so we never traverse out of the worktree.
+func isAtOrUnderDir(path, parent string) bool {
+	if path == parent {
+		return true
+	}
+	return isUnderDir(path, parent)
 }
 
 func (m *WorktreeManager) CleanOrphaned(resolve func(taskID, projectID string) (string, string, error)) error {
