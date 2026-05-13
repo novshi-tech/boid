@@ -52,6 +52,89 @@ func (m *WorktreeManager) resolveBaseBranch(projectDir, baseBranch string) (stri
 	return "", false, fmt.Errorf("base branch %q not found locally or on origin", baseBranch)
 }
 
+// ensureBaseBranchExists is the Phase 2-2 case 3 mitigation: if the requested
+// base branch does not exist locally or on origin, create a local branch with
+// that name pointed at the current project HEAD.
+//
+// No-op when:
+//   - baseBranch is empty (Create defaults to "main" elsewhere; if "main"
+//     itself is missing we still create it from HEAD)
+//   - baseBranch carries an explicit "origin/" prefix (callers asking for a
+//     remote-tracking ref accept that it must exist; auto-creating a local
+//     branch from HEAD would silently subvert that intent)
+//   - the local branch already exists
+//   - origin/<baseBranch> exists
+//
+// Returns an error when:
+//   - HEAD is detached (no branch / commit to derive from in a useful way)
+//   - the git branch command itself fails
+func (m *WorktreeManager) ensureBaseBranchExists(projectDir, baseBranch string) error {
+	base := baseBranch
+	if base == "" {
+		base = "main"
+	}
+	if strings.HasPrefix(base, "origin/") {
+		return nil
+	}
+	// Already exists locally?
+	if exec.Command(m.gitBin(), "-C", projectDir, "rev-parse", "--verify", "--quiet", base).Run() == nil {
+		return nil
+	}
+	// Already exists on origin? Do not fetch — the existing remote ref view
+	// is all we trust at this point (parity with ClassifyBaseBranch).
+	if exec.Command(m.gitBin(), "-C", projectDir, "rev-parse", "--verify", "--quiet", "origin/"+base).Run() == nil {
+		return nil
+	}
+	// Case 3: derive the branch from HEAD. Reject detached HEAD up-front
+	// because creating a branch from a detached commit produces a dangling
+	// reference unrelated to the project's mainline history.
+	if err := exec.Command(m.gitBin(), "-C", projectDir, "symbolic-ref", "--quiet", "HEAD").Run(); err != nil {
+		return fmt.Errorf("cannot create base branch %q from detached HEAD in %s", base, projectDir)
+	}
+	cmd := exec.Command(m.gitBin(), "-C", projectDir, "branch", base, "HEAD")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git branch %s HEAD: %w\n%s", base, err, strings.TrimSpace(string(out)))
+	}
+	slog.Info("base branch created from HEAD (case 3)", "project_dir", projectDir, "base_branch", base)
+	return nil
+}
+
+// EnforceHeadOnBaseBranch is the Phase 2-2 case 1 HEAD guard. Supervisors
+// running in the project dir (worktree=false) require the project HEAD to
+// remain on the resolved baseBranch from task creation time through job
+// dispatch. A mismatch means the user (or another process) has moved the
+// project branch while a supervisor task was queued; running the supervisor
+// against an unexpected branch silently is the foot-gun that this guard
+// rejects.
+//
+// Returns nil when baseBranch is empty (no expectation to enforce), nil on a
+// successful match, and an error otherwise. Detached HEAD is reported as an
+// error: a case 1 task should never have been classified for a detached
+// project at creation time, so this code path indicates a state divergence
+// that must abort the run.
+func (m *WorktreeManager) EnforceHeadOnBaseBranch(projectDir, baseBranch string) error {
+	if baseBranch == "" {
+		return nil
+	}
+	// "origin/main" and "main" both expect HEAD on "main".
+	expected := strings.TrimPrefix(baseBranch, "origin/")
+
+	cmd := exec.Command(m.gitBin(), "-C", projectDir, "symbolic-ref", "--quiet", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return fmt.Errorf("project HEAD guard: %s is in detached HEAD state (expected branch %q)", projectDir, expected)
+		}
+		return fmt.Errorf("project HEAD guard: git symbolic-ref failed in %s: %w", projectDir, err)
+	}
+	actual := strings.TrimPrefix(strings.TrimSpace(string(out)), "refs/heads/")
+	if actual != expected {
+		return fmt.Errorf("project HEAD guard: %s is on %q but task base_branch is %q (refusing to run supervisor against unexpected branch)",
+			projectDir, actual, expected)
+	}
+	return nil
+}
+
 // resolveRecreateBasePoint picks the start-point for a fresh branch when
 // Recreate cannot find either the local or remote task branch. Prefers
 // origin/<base> (already fetched by the caller), falls back to the local base.
@@ -84,6 +167,15 @@ func (m *WorktreeManager) Create(projectDir, projectID, taskID, branchPrefix, ba
 
 	if err := os.MkdirAll(filepath.Dir(wtPath), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir worktree parent: %w", err)
+	}
+
+	// Phase 2-2 case 3: if baseBranch is unknown to both local and origin we
+	// create it from the project HEAD before falling through to the normal
+	// resolveBaseBranch path. Detached HEAD is rejected by EnsureBaseBranch.
+	// Worktree creation for case 1 / case 2 is unaffected (the function
+	// returns early with no-op when the branch already exists).
+	if err := m.ensureBaseBranchExists(projectDir, baseBranch); err != nil {
+		return nil, err
 	}
 
 	resolvedBase, shouldFetch, err := m.resolveBaseBranch(projectDir, baseBranch)

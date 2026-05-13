@@ -87,6 +87,21 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	}
 	j.ID = uuid.New().String()
 
+	// Phase 2-2 case 1 HEAD guard: supervisors running in the project dir
+	// (worktree=false) must find the project HEAD still on the base_branch
+	// they were created for. If the user (or a parallel process) moved the
+	// branch between task creation and now, refuse to dispatch — running a
+	// supervisor against an unexpected branch is the precise foot-gun the
+	// Phase 2-2 design exists to prevent. The check is best-effort: failing
+	// to look up the task or the project (test wiring without stubs, etc.)
+	// degrades to a no-op rather than blocking the dispatch.
+	if err := r.enforceCaseOneHeadInvariant(spec); err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		return "", err
+	}
+
 	// Resolve the worktree path before sandbox construction, so the mount
 	// layout sees the correct project root.
 	worktreePath, err := r.resolveWorktree(spec)
@@ -215,6 +230,53 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		return "", err
 	}
 	return r.launchSandbox(ctx, j, sbSpec, cleanup)
+}
+
+// enforceCaseOneHeadInvariant verifies the Phase 2-2 case 1 HEAD guard:
+// when a supervisor task is scheduled to run in the project dir (no worktree)
+// the project HEAD must still match the task's BaseBranch. The guard is
+// degraded to a no-op when dependencies are unwired (TaskLookup or Projects
+// absent — typical in unit tests that only exercise Dispatch's argv plumbing)
+// so the existing test suite stays untouched.
+//
+// Returns a non-nil error only when the invariant is genuinely violated. The
+// caller fails the job dispatch with the message so the orchestrator surfaces
+// "project dir was moved out from under us" to the user instead of silently
+// running against the wrong branch.
+func (r *Runner) enforceCaseOneHeadInvariant(spec *orchestrator.JobSpec) error {
+	if spec == nil || spec.Visibility.UseWorktree {
+		return nil
+	}
+	if spec.TaskID == "" || r.TaskLookup == nil || r.Projects == nil || r.Worktrees == nil {
+		return nil
+	}
+	task, err := r.TaskLookup.GetTask(spec.TaskID)
+	if err != nil || task == nil {
+		// Task not found mid-flight: not our error to surface here. The
+		// downstream sandbox build will catch the inconsistency.
+		return nil
+	}
+	canonical, _ := orchestrator.CanonicalBehaviorName(task.Behavior)
+	if canonical != "supervisor" {
+		return nil
+	}
+	if task.BaseBranch == "" {
+		return nil
+	}
+	proj, err := r.Projects.GetProject(spec.ProjectID)
+	if err != nil || proj == nil || proj.WorkDir == "" {
+		return nil
+	}
+	if err := r.Worktrees.EnforceHeadOnBaseBranch(proj.WorkDir, task.BaseBranch); err != nil {
+		slog.Warn("supervisor HEAD guard rejected dispatch",
+			"task_id", spec.TaskID,
+			"project_dir", proj.WorkDir,
+			"base_branch", task.BaseBranch,
+			"error", err,
+		)
+		return err
+	}
+	return nil
 }
 
 func (r *Runner) resolveProjectRuntime(projectID string) (string, string, error) {

@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -13,6 +16,10 @@ import (
 
 func strPtr(s string) *string { return &s }
 func boolPtr(b bool) *bool    { return &b }
+
+// newCmd is a tiny wrapper around exec.Command that exists so the Phase 2-2
+// test helpers can stay consistent if we ever need to inject a shared env.
+func newCmd(name string, args ...string) *exec.Cmd { return exec.Command(name, args...) }
 
 // TestCompleteJobSuccessNotifiesWithoutTransition verifies that a successful
 // (exit 0) job completion only records the job result and notifies Lifecycle.
@@ -1525,6 +1532,210 @@ func TestCreateTask_NonCanonicalBehavior_PreservesBehaviorLevelWorktree(t *testi
 }
 
 // ---- end Phase 2-1 ----
+
+// ---- Phase 2-2: supervisor 3-case execution location + executor base check ----
+
+// initServiceTestRepo creates a temporary git repo on the named branch, with
+// any additional branches listed in extraBranches. HEAD stays on `branch`.
+// Returns the directory or skips the test if /usr/bin/git is not available.
+func initServiceTestRepo(t *testing.T, branch string, extraBranches ...string) string {
+	t.Helper()
+	const bin = "/usr/bin/git"
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+		{"symbolic-ref", "HEAD", "refs/heads/" + branch},
+	} {
+		cmd := newCmd(bin, args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git not available in this environment: %v\n%s", err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("p2-2 test"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	for _, args := range [][]string{
+		{"add", "."},
+		{"commit", "-q", "-m", "init"},
+	} {
+		cmd := newCmd(bin, append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	for _, b := range extraBranches {
+		cmd := newCmd(bin, "-C", dir, "branch", b)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git branch %s: %v\n%s", b, err, out)
+		}
+	}
+	return dir
+}
+
+// TestCreateTask_SupervisorCase1_WorktreeFalse covers the supervisor "project
+// dir HEAD already matches base_branch" path: Worktree must come out false so
+// the dispatcher runs the supervisor in the project dir itself.
+func TestCreateTask_SupervisorCase1_WorktreeFalse(t *testing.T) {
+	dir := initServiceTestRepo(t, "main")
+	meta := &orchestrator.ProjectMeta{
+		Worktree: true, // project-level says "yes worktree" — case 1 must still win
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"supervisor": {BaseBranch: "main"},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{},
+		Meta:     stubMetaStore{meta: meta},
+		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
+	}
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "case1 supervisor",
+		Behavior:  "supervisor",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if task.Worktree {
+		t.Errorf("Worktree = true, want false (case 1 supervisor runs in project dir)")
+	}
+}
+
+// TestCreateTask_SupervisorCase2_WorktreeTrue covers the supervisor case where
+// the base branch exists but project HEAD is elsewhere: must allocate a
+// worktree.
+func TestCreateTask_SupervisorCase2_WorktreeTrue(t *testing.T) {
+	dir := initServiceTestRepo(t, "feature", "main")
+	meta := &orchestrator.ProjectMeta{
+		Worktree: false, // project-level off → would normally mean no worktree
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"supervisor": {BaseBranch: "main"},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{},
+		Meta:     stubMetaStore{meta: meta},
+		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
+	}
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "case2 supervisor",
+		Behavior:  "supervisor",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if !task.Worktree {
+		t.Errorf("Worktree = false, want true (case 2 supervisor needs a worktree)")
+	}
+}
+
+// TestCreateTask_SupervisorCase3_WorktreeTrue covers the supervisor case 3:
+// base branch does not exist locally or on origin. Task creation must succeed
+// (the dispatcher will create the branch) and Worktree must be true.
+func TestCreateTask_SupervisorCase3_WorktreeTrue(t *testing.T) {
+	dir := initServiceTestRepo(t, "main")
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"supervisor": {BaseBranch: "release-2026"}, // does not exist anywhere
+		},
+	}
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{},
+		Meta:     stubMetaStore{meta: meta},
+		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
+	}
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "case3 supervisor",
+		Behavior:  "supervisor",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if !task.Worktree {
+		t.Errorf("Worktree = false, want true (case 3 supervisor needs a worktree backed by a fresh base branch)")
+	}
+	if task.BaseBranch != "release-2026" {
+		t.Errorf("BaseBranch = %q, want %q", task.BaseBranch, "release-2026")
+	}
+}
+
+// TestCreateTask_ExecutorCase3_NoParent_Errors verifies that a parent-less
+// executor pointed at a non-existent base_branch is rejected at creation time
+// instead of waiting for the dispatcher to fail.
+func TestCreateTask_ExecutorCase3_NoParent_Errors(t *testing.T) {
+	dir := initServiceTestRepo(t, "main")
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"executor": {BaseBranch: "release-2026"},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{},
+		Meta:     stubMetaStore{meta: meta},
+		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
+	}
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "case3 executor no parent",
+		Behavior:  "executor",
+	})
+	if err == nil {
+		t.Fatal("expected error for case 3 executor with no parent, got nil")
+	}
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("error type = %T, want *StatusError", err)
+	}
+	if se.Code != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want 400", se.Code)
+	}
+}
+
+// TestCreateTask_ExecutorCase3_WithParent_OK verifies that a child executor
+// (with a parent task) is accepted even though its inherited base_branch does
+// not yet exist locally — the parent supervisor is responsible for creating
+// it. Parent inheritance is exercised by stubbing a parent task whose
+// BaseBranch is the same missing ref.
+func TestCreateTask_ExecutorCase3_WithParent_OK(t *testing.T) {
+	dir := initServiceTestRepo(t, "main")
+	parent := &orchestrator.Task{
+		ID:         "task-parent",
+		Behavior:   "supervisor",
+		BaseBranch: "release-2026",
+	}
+	store := &stubTaskStore{
+		tasks: map[string]*orchestrator.Task{parent.ID: parent},
+	}
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"executor": {BaseBranch: "release-2026"},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks:    store,
+		Meta:     stubMetaStore{meta: meta},
+		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
+	}
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "case3 executor with parent",
+		Behavior:  "executor",
+		ParentID:  parent.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if task.BaseBranch != "release-2026" {
+		t.Errorf("BaseBranch = %q, want %q (inherited from parent)", task.BaseBranch, "release-2026")
+	}
+}
+
+// ---- end Phase 2-2 ----
 
 type stubTaskStore struct {
 	task           *orchestrator.Task
