@@ -260,7 +260,13 @@ func TestRunTaskUpdate_NotFound(t *testing.T) {
 	}
 }
 
-func TestRunTaskUpdate_PatchFileUpdatesWorktreeAndBaseBranch(t *testing.T) {
+// TestRunTaskUpdate_PatchFileDropsDeprecatedTaskRowOverrides covers Phase 2-3.
+// `boid task update --patch-file` previously let callers mutate task-row
+// worktree / base_branch / branch_prefix fields. Those fields are now
+// dropped at the API boundary and a PATCH whose body only contains the
+// dropped keys is rejected as an empty patch (HTTP 400 → command returns
+// an error).
+func TestRunTaskUpdate_PatchFileDropsDeprecatedTaskRowOverrides(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "update-patch-proj", "Update Patch Project")
@@ -270,20 +276,19 @@ func TestRunTaskUpdate_PatchFileUpdatesWorktreeAndBaseBranch(t *testing.T) {
 
 	var task orchestrator.Task
 	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
-		"project_id":  "update-patch-proj",
-		"title":       "patch target",
-		"behavior":    "dev",
-		"worktree":    true,
-		"base_branch": "main",
+		"project_id": "update-patch-proj",
+		"title":      "patch target",
+		"behavior":   "dev",
 	}, &task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if !task.Worktree {
-		t.Fatalf("setup precondition: Worktree = false, want true")
-	}
+	beforeWorktree := task.Worktree
+	beforeBase := task.BaseBranch
 
 	patchPath := writePatch(t, `worktree: false
 base_branch: develop
+branch_prefix: feature/
+readonly: true
 `)
 
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
@@ -295,23 +300,25 @@ base_branch: develop
 		t.Fatalf("set --patch-file: %v", err)
 	}
 
-	if err := runTaskUpdate(cmd, []string{task.ID}); err != nil {
-		t.Fatalf("runTaskUpdate() error = %v", err)
+	if err := runTaskUpdate(cmd, []string{task.ID}); err == nil {
+		t.Fatal("runTaskUpdate() expected error for patch containing only deprecated keys, got nil")
 	}
 
 	var updated orchestrator.Task
 	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID, nil, &updated); err != nil {
 		t.Fatalf("get updated task: %v", err)
 	}
-	if updated.Worktree {
-		t.Errorf("Worktree = true, want false")
+	if updated.Worktree != beforeWorktree {
+		t.Errorf("Worktree changed: before=%v after=%v (deprecated key must be dropped)", beforeWorktree, updated.Worktree)
 	}
-	if updated.BaseBranch != "develop" {
-		t.Errorf("BaseBranch = %q, want %q", updated.BaseBranch, "develop")
+	if updated.BaseBranch != beforeBase {
+		t.Errorf("BaseBranch changed: before=%q after=%q (deprecated key must be dropped)", beforeBase, updated.BaseBranch)
 	}
 }
 
 func TestRunTaskUpdate_PatchFileFromStdin(t *testing.T) {
+	// Phase 2-3: a non-empty patch must touch a still-supported field. We use
+	// description instead of the now-dropped worktree.
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "update-patch-stdin-proj", "Update Patch Stdin Project")
@@ -321,10 +328,10 @@ func TestRunTaskUpdate_PatchFileFromStdin(t *testing.T) {
 
 	var task orchestrator.Task
 	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
-		"project_id": "update-patch-stdin-proj",
-		"title":      "stdin patch target",
-		"behavior":   "dev",
-		"worktree":   true,
+		"project_id":  "update-patch-stdin-proj",
+		"title":       "stdin patch target",
+		"behavior":    "dev",
+		"description": "original",
 	}, &task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -332,7 +339,7 @@ func TestRunTaskUpdate_PatchFileFromStdin(t *testing.T) {
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
 
 	cmd := newTaskUpdateCmd(t)
-	cmd.SetIn(strings.NewReader(`{"worktree": false}`))
+	cmd.SetIn(strings.NewReader(`{"description": "rewritten"}`))
 	if err := cmd.Flags().Set("patch-file", "-"); err != nil {
 		t.Fatalf("set --patch-file: %v", err)
 	}
@@ -345,8 +352,8 @@ func TestRunTaskUpdate_PatchFileFromStdin(t *testing.T) {
 	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID, nil, &updated); err != nil {
 		t.Fatalf("get updated task: %v", err)
 	}
-	if updated.Worktree {
-		t.Errorf("Worktree = true, want false")
+	if updated.Description != "rewritten" {
+		t.Errorf("Description = %q, want %q", updated.Description, "rewritten")
 	}
 }
 

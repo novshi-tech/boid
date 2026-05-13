@@ -300,7 +300,12 @@ func TestBoidBuiltinExecutor_PropagatesDependencyFields(t *testing.T) {
 	}
 }
 
-func TestBoidBuiltinExecutor_TaskCreate_BaseBranchOverride(t *testing.T) {
+// TestBoidBuiltinExecutor_TaskCreate_DropsDeprecatedBaseBranch covers Phase
+// 2-3. Sandbox-side `boid task create` still forwards the entire YAML map,
+// so an old caller might keep emitting `base_branch:`. The API server now
+// drops the key at decode time and the resulting Task must reflect the
+// behavior-level value instead of the override.
+func TestBoidBuiltinExecutor_TaskCreate_DropsDeprecatedBaseBranch(t *testing.T) {
 	store := &capturingTaskStore{}
 	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
@@ -317,7 +322,7 @@ func TestBoidBuiltinExecutor_TaskCreate_BaseBranchOverride(t *testing.T) {
 
 	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
-		CreatePatch: json.RawMessage(`{"title":"branch override","behavior":"dev","base_branch":"feature/x"}`),
+		CreatePatch: json.RawMessage(`{"title":"branch override","behavior":"dev","base_branch":"feature/x","readonly":true,"worktree":false,"branch_prefix":"task/"}`),
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
@@ -325,8 +330,8 @@ func TestBoidBuiltinExecutor_TaskCreate_BaseBranchOverride(t *testing.T) {
 	if len(store.created) != 1 {
 		t.Fatalf("created tasks = %d, want 1", len(store.created))
 	}
-	if got := store.created[0].BaseBranch; got != "feature/x" {
-		t.Errorf("base_branch = %q, want feature/x (per-task override)", got)
+	if got := store.created[0].BaseBranch; got != "main" {
+		t.Errorf("base_branch = %q, want main (deprecated task-row override is dropped)", got)
 	}
 }
 

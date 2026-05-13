@@ -18,7 +18,11 @@ func newTaskCreateCmd(t *testing.T) *cobra.Command {
 	return cmd
 }
 
-func TestRunTaskCreate_PassesBaseBranchFromStdin(t *testing.T) {
+// TestRunTaskCreate_DropsDeprecatedBaseBranchFromStdin covers Phase 2-3.
+// Legacy YAML specs with `base_branch:` still parse without error (the key
+// is stripped + warned), and the created task picks up its base_branch from
+// the behavior-level template instead.
+func TestRunTaskCreate_DropsDeprecatedBaseBranchFromStdin(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "create-base-branch-proj", "Create Base Branch Project")
@@ -29,7 +33,7 @@ func TestRunTaskCreate_PassesBaseBranchFromStdin(t *testing.T) {
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
 
 	input := `project_id: create-base-branch-proj
-title: child task with base branch
+title: child task with deprecated base_branch
 behavior: dev
 base_branch: feature/BGO-170
 `
@@ -47,7 +51,6 @@ base_branch: feature/BGO-170
 		t.Fatalf("output should contain 'task created:', got %q", got)
 	}
 
-	// Recover task ID from stdout: "task created: <id> (<status>)"
 	parts := strings.Split(strings.TrimSpace(got), " ")
 	if len(parts) < 3 {
 		t.Fatalf("unexpected output format: %q", got)
@@ -58,13 +61,14 @@ base_branch: feature/BGO-170
 	if err := ts.Client.Do("GET", "/api/tasks/"+taskID, nil, &task); err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if task.BaseBranch != "feature/BGO-170" {
-		t.Errorf("BaseBranch = %q, want %q", task.BaseBranch, "feature/BGO-170")
+	if task.BaseBranch == "feature/BGO-170" {
+		t.Errorf("BaseBranch = %q, want value from behavior (deprecated task-row override must be dropped)", task.BaseBranch)
 	}
 }
 
-func TestRunTaskCreate_PassesBaseBranchFromJSONStdin(t *testing.T) {
-	// agent / gate スクリプトが json.dumps した spec を `boid task create` に stdin で流す経路を再現する。
+// TestRunTaskCreate_DropsDeprecatedBaseBranchFromJSONStdin: same as above
+// for the JSON-on-stdin entry point (agent / gate scripts).
+func TestRunTaskCreate_DropsDeprecatedBaseBranchFromJSONStdin(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "create-base-branch-json-proj", "Create Base Branch JSON Project")
@@ -94,8 +98,8 @@ func TestRunTaskCreate_PassesBaseBranchFromJSONStdin(t *testing.T) {
 	if err := ts.Client.Do("GET", "/api/tasks/"+taskID, nil, &task); err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if task.BaseBranch != "feature/X" {
-		t.Errorf("BaseBranch = %q, want %q", task.BaseBranch, "feature/X")
+	if task.BaseBranch == "feature/X" {
+		t.Errorf("BaseBranch = %q, want value from behavior (deprecated task-row override must be dropped)", task.BaseBranch)
 	}
 }
 

@@ -42,12 +42,6 @@ func (s *patchTaskService) UpdateTask(id string, req UpdateTaskRequest) (*orches
 	if req.Description != "" {
 		t.Description = req.Description
 	}
-	if req.BaseBranch != nil {
-		t.BaseBranch = *req.BaseBranch
-	}
-	if req.BranchPrefix != nil {
-		t.BranchPrefix = *req.BranchPrefix
-	}
 	return &t, nil
 }
 func (s *patchTaskService) DeleteTask(id string, force bool) error       { return nil }
@@ -121,42 +115,30 @@ func TestTaskHandlerPatch_AllEmpty_ReturnsBadRequest(t *testing.T) {
 	}
 }
 
-func TestTaskHandlerPatch_BaseBranchOnly(t *testing.T) {
-	task := &orchestrator.Task{ID: "t4", Title: "original"}
-	svc := &patchTaskService{task: task}
-	h := &TaskHandler{Service: svc}
+// TestTaskHandlerPatch_DeprecatedTaskRowOverridesIgnored covers Phase 2-3.
+// A PATCH body that only sets the deprecated task-row override fields
+// (base_branch / branch_prefix / worktree / readonly) is treated as empty:
+// the keys are silently dropped at decode time and the handler rejects the
+// resulting empty patch with 400. This pins the "ignore + warning" wire
+// compatibility policy: old clients keep working, but their override values
+// no longer take effect.
+func TestTaskHandlerPatch_DeprecatedTaskRowOverridesIgnored(t *testing.T) {
+	cases := []map[string]any{
+		{"base_branch": "master"},
+		{"branch_prefix": "feature/"},
+		{"worktree": true},
+		{"readonly": true},
+		{"base_branch": "master", "branch_prefix": "feature/", "worktree": true, "readonly": true},
+	}
+	for _, body := range cases {
+		task := &orchestrator.Task{ID: "tx", Title: "original"}
+		svc := &patchTaskService{task: task}
+		h := &TaskHandler{Service: svc}
 
-	w := patchRequest(t, http.HandlerFunc(h.Patch), "t4", map[string]any{
-		"base_branch": "master",
-	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d: body=%s", w.Code, http.StatusOK, w.Body.String())
-	}
-	var got orchestrator.Task
-	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if got.BaseBranch != "master" {
-		t.Errorf("BaseBranch = %q, want %q", got.BaseBranch, "master")
-	}
-}
-
-func TestTaskHandlerPatch_BranchPrefixOnly(t *testing.T) {
-	task := &orchestrator.Task{ID: "t5", Title: "original"}
-	svc := &patchTaskService{task: task}
-	h := &TaskHandler{Service: svc}
-
-	w := patchRequest(t, http.HandlerFunc(h.Patch), "t5", map[string]any{
-		"branch_prefix": "feature/",
-	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d: body=%s", w.Code, http.StatusOK, w.Body.String())
-	}
-	var got orchestrator.Task
-	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if got.BranchPrefix != "feature/" {
-		t.Errorf("BranchPrefix = %q, want %q", got.BranchPrefix, "feature/")
+		w := patchRequest(t, http.HandlerFunc(h.Patch), "tx", body)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("body=%v: status = %d, want %d (deprecated keys must be dropped, leaving the patch empty); body=%s",
+				body, w.Code, http.StatusBadRequest, w.Body.String())
+		}
 	}
 }
