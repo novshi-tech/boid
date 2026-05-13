@@ -48,12 +48,20 @@ func (r *Runner) allocateWorktree(spec *orchestrator.JobSpec) (string, error) {
 		return "", fmt.Errorf("lookup worktree: %w", err)
 	}
 	if existing != nil && existing.CleanedAt == nil {
+		// Re-run case: worktree already on disk. Still pre-mkdir binding targets
+		// in case the job's additional_bindings have changed (new kit/version).
+		if err := r.Worktrees.EnsureBindingTargets(existing.Path, spec.Visibility.AdditionalBindings, spec.Visibility.ProjectDir); err != nil {
+			return "", fmt.Errorf("ensure binding targets: %w", err)
+		}
 		return existing.Path, nil
 	}
 	if existing != nil && existing.CleanedAt != nil {
 		w, err := r.Worktrees.Recreate(spec.Visibility.ProjectDir, spec.TaskID)
 		if err != nil {
 			return "", fmt.Errorf("recreate worktree: %w", err)
+		}
+		if err := r.Worktrees.EnsureBindingTargets(w.Path, spec.Visibility.AdditionalBindings, spec.Visibility.ProjectDir); err != nil {
+			return "", fmt.Errorf("ensure binding targets: %w", err)
 		}
 		return w.Path, nil
 	}
@@ -75,6 +83,13 @@ func (r *Runner) allocateWorktree(spec *orchestrator.JobSpec) (string, error) {
 	)
 	if err != nil {
 		return "", fmt.Errorf("create worktree: %w", err)
+	}
+	// Pre-mkdir any additional_bindings target dir that lives under the worktree.
+	// The worktree is later bind-mounted readonly for readonly:true tasks; doing
+	// the mkdir on the host (still writable) before the sandbox setup script
+	// runs sidesteps the EROFS trap.
+	if err := r.Worktrees.EnsureBindingTargets(w.Path, spec.Visibility.AdditionalBindings, spec.Visibility.ProjectDir); err != nil {
+		return "", fmt.Errorf("ensure binding targets: %w", err)
 	}
 	return w.Path, nil
 }
