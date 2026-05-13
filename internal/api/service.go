@@ -556,16 +556,59 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		baseBranch = *req.BaseBranch
 	}
 
-	if baseBranch != "" && s.Projects != nil {
-		proj, err := s.Projects.GetProject(req.ProjectID)
-		if err != nil {
-			return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project lookup failed: %v", err)}
+	// Phase 1-3: parent-child base_branch inheritance.
+	//
+	// If the new task has a parent, inherit the parent's already-resolved
+	// BaseBranch verbatim and skip both expanders. The parent's BaseBranch
+	// was expanded when the parent was created, so re-expansion (especially
+	// of ${TASK_REMOTE_ID}) on the child would diverge from the parent's
+	// branch and break the worktree assumption that all children of a
+	// task share its base.
+	//
+	// Static base_branch values (e.g. "main") on the child are also discarded
+	// in favor of the parent's value: "parent's resolved base wins" is the
+	// invariant. See README of Phase 1-3 for the rationale.
+	//
+	// Parent-not-found is logged and we fall through to behavior-level
+	// expansion: legacy callers that pre-date strict parent validation
+	// (and many existing tests) wire parent_ids that aren't real rows.
+	// Phase 2 will tighten this once those callers are migrated.
+	inheritedFromParent := false
+	if req.ParentID != "" {
+		parent, parentErr := s.Tasks.GetTask(req.ParentID)
+		if parentErr != nil || parent == nil {
+			slog.Warn("parent task not found for base_branch inheritance; falling back to behavior-level resolution",
+				"scope", "CreateTask",
+				"task_id", req.ID,
+				"parent_id", req.ParentID,
+				"error", parentErr,
+			)
+		} else {
+			baseBranch = parent.BaseBranch
+			inheritedFromParent = true
 		}
-		expanded, err := orchestrator.ExpandBaseBranch(baseBranch, proj.WorkDir)
+	}
+
+	if !inheritedFromParent && baseBranch != "" {
+		// Phase 1-3: expand ${TASK_REMOTE_ID} first so a missing remote_id
+		// errors out before we touch the project working directory.
+		expanded, err := orchestrator.ExpandTaskBaseBranch(baseBranch, req.RemoteID)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 		}
 		baseBranch = expanded
+
+		if s.Projects != nil {
+			proj, projErr := s.Projects.GetProject(req.ProjectID)
+			if projErr != nil {
+				return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project lookup failed: %v", projErr)}
+			}
+			expanded, err := orchestrator.ExpandBaseBranch(baseBranch, proj.WorkDir)
+			if err != nil {
+				return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+			}
+			baseBranch = expanded
+		}
 	}
 
 	var resolvedDeps []string

@@ -2494,6 +2494,273 @@ func TestWebAppService_ReopenTask_WithMessage_HasInstructionPayload(t *testing.T
 	}
 }
 
+// ---- Phase 1-3: dynamic base_branch (${TASK_REMOTE_ID}) tests ----
+
+func TestCreateTask_StaticBaseBranch_PassesThrough(t *testing.T) {
+	// A behavior with a static base_branch (no template) should be copied
+	// verbatim onto the task, even when no Projects lookup is wired.
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"executor": {BaseBranch: "main"},
+		},
+	}
+	store := &stubTaskStore{}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: meta},
+		// Projects intentionally nil: static base_branch must not require
+		// project lookup.
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "t",
+		Behavior:  "executor",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if task.BaseBranch != "main" {
+		t.Errorf("BaseBranch = %q, want %q", task.BaseBranch, "main")
+	}
+}
+
+func TestCreateTask_DynamicBaseBranch_ExpandsTaskRemoteID(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"executor": {BaseBranch: "feature/${TASK_REMOTE_ID}"},
+		},
+	}
+	store := &stubTaskStore{}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: meta},
+		// Projects intentionally nil: ${TASK_REMOTE_ID} expansion is
+		// independent of the project working directory.
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "t",
+		Behavior:  "executor",
+		RemoteID:  "PROJ-123",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if task.BaseBranch != "feature/PROJ-123" {
+		t.Errorf("BaseBranch = %q, want %q", task.BaseBranch, "feature/PROJ-123")
+	}
+}
+
+func TestCreateTask_DynamicBaseBranch_MissingRemoteID_Returns400(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"executor": {BaseBranch: "feature/${TASK_REMOTE_ID}"},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "t",
+		Behavior:  "executor",
+		// RemoteID intentionally empty.
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("error type = %T, want *StatusError", err)
+	}
+	if se.Code != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want 400", se.Code)
+	}
+}
+
+func TestCreateTask_ChildInheritsParentBaseBranch(t *testing.T) {
+	// Child task inherits the parent's already-resolved base_branch even
+	// when the child has its own remote_id and the behavior template would
+	// otherwise expand to a different value.
+	parent := &orchestrator.Task{
+		ID:         "parent-1",
+		ProjectID:  "proj-1",
+		BaseBranch: "feature/PROJ-100",
+		RemoteID:   "PROJ-100",
+	}
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"executor": {BaseBranch: "feature/${TASK_REMOTE_ID}"},
+		},
+	}
+	store := &stubTaskStore{
+		tasks: map[string]*orchestrator.Task{parent.ID: parent},
+	}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "child",
+		Behavior:  "executor",
+		RemoteID:  "PROJ-200",
+		ParentID:  parent.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if task.BaseBranch != "feature/PROJ-100" {
+		t.Errorf("child BaseBranch = %q, want %q (parent's resolved base must win)",
+			task.BaseBranch, "feature/PROJ-100")
+	}
+}
+
+func TestCreateTask_ChildInheritsParentBaseBranch_NoRemoteIDNeeded(t *testing.T) {
+	// Even when the child has no remote_id and the behavior template
+	// references ${TASK_REMOTE_ID}, inheritance from parent bypasses the
+	// expander so the child still gets a sensible value.
+	parent := &orchestrator.Task{
+		ID:         "parent-1",
+		ProjectID:  "proj-1",
+		BaseBranch: "feature/PROJ-100",
+		RemoteID:   "PROJ-100",
+	}
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"executor": {BaseBranch: "feature/${TASK_REMOTE_ID}"},
+		},
+	}
+	store := &stubTaskStore{
+		tasks: map[string]*orchestrator.Task{parent.ID: parent},
+	}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "child",
+		Behavior:  "executor",
+		// RemoteID intentionally empty: parent inheritance must not require it.
+		ParentID: parent.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if task.BaseBranch != "feature/PROJ-100" {
+		t.Errorf("child BaseBranch = %q, want %q", task.BaseBranch, "feature/PROJ-100")
+	}
+}
+
+func TestCreateTask_ChildIgnoresOwnStaticBase_PreferParent(t *testing.T) {
+	// Even if the child's behavior has a *different* static base_branch,
+	// the parent's resolved base still wins. This is the natural consequence
+	// of "parent's resolved base wins" — child-level overrides are deferred
+	// to Phase 2-3 (row-level overrides removal).
+	parent := &orchestrator.Task{
+		ID:         "parent-1",
+		ProjectID:  "proj-1",
+		BaseBranch: "feature/PROJ-100",
+	}
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"executor": {BaseBranch: "release/v9"},
+		},
+	}
+	store := &stubTaskStore{
+		tasks: map[string]*orchestrator.Task{parent.ID: parent},
+	}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "child",
+		Behavior:  "executor",
+		ParentID:  parent.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if task.BaseBranch != "feature/PROJ-100" {
+		t.Errorf("child BaseBranch = %q, want %q", task.BaseBranch, "feature/PROJ-100")
+	}
+}
+
+func TestCreateTask_ParentNotFound_FallsBackToBehavior(t *testing.T) {
+	// Parent-not-found is logged and we fall back to behavior-level
+	// resolution. With a static behavior base_branch ("main") and no
+	// template, the resulting task uses "main" verbatim. This mirrors
+	// the legacy pre-1-3 behavior and protects callers that pass
+	// non-existent parent_ids (a wide pattern in the test suite).
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"executor": {BaseBranch: "main"},
+		},
+	}
+	svc := &TaskAppService{
+		// task store with no rows: GetTask returns "task not found"
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "child",
+		Behavior:  "executor",
+		ParentID:  "missing-parent",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if task.BaseBranch != "main" {
+		t.Errorf("BaseBranch = %q, want %q (fallback to behavior when parent missing)", task.BaseBranch, "main")
+	}
+}
+
+func TestCreateTask_ParentNotFound_TemplateStillFails(t *testing.T) {
+	// When the fallback path expands a template that requires
+	// ${TASK_REMOTE_ID} but the request has no remote_id, we still get
+	// the usual 400 — the fallback only swallows the parent lookup, not
+	// downstream resolution.
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"executor": {BaseBranch: "feature/${TASK_REMOTE_ID}"},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{},
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "child",
+		Behavior:  "executor",
+		ParentID:  "missing-parent",
+		// no RemoteID
+	})
+	if err == nil {
+		t.Fatal("expected error from template expansion fallback, got nil")
+	}
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("error type = %T, want *StatusError", err)
+	}
+	if se.Code != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want 400", se.Code)
+	}
+}
+
 // TestTaskAppServiceCreateTask_BehaviorAlias_RequestSideResolution verifies
 // that CreateTask requests with the legacy alias name ("plan" / "dev") are
 // resolved to the canonical name ("supervisor" / "executor") before lookup.
