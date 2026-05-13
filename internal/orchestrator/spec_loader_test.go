@@ -192,10 +192,10 @@ task_behaviors:
 		}
 	})
 
-	// Legacy form: only behavior-level fields are set. Verifies that the
-	// new top-level fields default to zero and that behavior-level fields
-	// are still honored (no regression on Phase 0 behavior).
-	t.Run("legacy behavior-level fields still parsed independently", func(t *testing.T) {
+	// Phase 3-1: behavior-level readonly / worktree / branch_prefix /
+	// base_branch / default_payload are no longer supported. Files that
+	// still carry them must produce a descriptive load-time error.
+	t.Run("legacy behavior-level worktree is rejected", func(t *testing.T) {
 		dir := t.TempDir()
 		boidDir := filepath.Join(dir, ".boid")
 		if err := os.MkdirAll(boidDir, 0o755); err != nil {
@@ -208,78 +208,17 @@ task_behaviors:
   dev:
     name: dev
     worktree: true
-    base_branch: main
 `
 		if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
 			t.Fatalf("write yaml: %v", err)
 		}
 
-		meta, err := projectspec.ReadProjectMeta(dir)
-		if err != nil {
-			t.Fatalf("read meta: %v", err)
+		_, err := projectspec.ReadProjectMeta(dir)
+		if err == nil {
+			t.Fatal("expected error for legacy behavior-level worktree, got nil")
 		}
-		if meta.Worktree {
-			t.Errorf("expected project-level Worktree=false (legacy form), got true")
-		}
-		if meta.BaseBranch != "" {
-			t.Errorf("expected project-level BaseBranch=\"\" (legacy form), got %q", meta.BaseBranch)
-		}
-		dev, ok := meta.TaskBehaviors["dev"]
-		if !ok {
-			t.Fatalf("expected task_behaviors.dev to be present")
-		}
-		if !dev.Worktree {
-			t.Errorf("expected behavior-level Worktree=true, got false")
-		}
-		if dev.BaseBranch != "main" {
-			t.Errorf("expected behavior-level BaseBranch=main, got %q", dev.BaseBranch)
-		}
-	})
-
-	// Cohabitation: both project-level and behavior-level fields can be
-	// present and they are independent (no merging happens at this phase).
-	// Phase 2 will introduce resolution semantics; this test pins down the
-	// "store both verbatim" contract that Phase 1 establishes.
-	t.Run("project-level and behavior-level cohabit without merging", func(t *testing.T) {
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		if err := os.MkdirAll(boidDir, 0o755); err != nil {
-			t.Fatalf("mkdir: %v", err)
-		}
-		yaml := `
-id: test-proj
-name: Test Project
-worktree: true
-base_branch: develop
-task_behaviors:
-  dev:
-    name: dev
-    worktree: false
-    base_branch: main
-`
-		if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
-			t.Fatalf("write yaml: %v", err)
-		}
-
-		meta, err := projectspec.ReadProjectMeta(dir)
-		if err != nil {
-			t.Fatalf("read meta: %v", err)
-		}
-		if !meta.Worktree {
-			t.Errorf("expected project-level Worktree=true, got false")
-		}
-		if meta.BaseBranch != "develop" {
-			t.Errorf("expected project-level BaseBranch=develop, got %q", meta.BaseBranch)
-		}
-		dev, ok := meta.TaskBehaviors["dev"]
-		if !ok {
-			t.Fatalf("expected task_behaviors.dev to be present")
-		}
-		if dev.Worktree {
-			t.Errorf("expected behavior-level Worktree=false (independent), got true")
-		}
-		if dev.BaseBranch != "main" {
-			t.Errorf("expected behavior-level BaseBranch=main (independent), got %q", dev.BaseBranch)
+		if !strings.Contains(err.Error(), "task_behaviors.dev.worktree") {
+			t.Errorf("expected error to point at task_behaviors.dev.worktree, got: %v", err)
 		}
 	})
 }
@@ -2319,7 +2258,8 @@ name: Test Project
 task_behaviors:
   plan:
     name: plan
-    readonly: true
+    traits:
+      - artifact
 `
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
@@ -2340,12 +2280,8 @@ task_behaviors:
 	if got := meta.TaskBehaviors["supervisor"].Name; got != "supervisor" {
 		t.Errorf("Name = %q, want %q (alias must promote to canonical)", got, "supervisor")
 	}
-	if !meta.TaskBehaviors["supervisor"].Readonly {
-		t.Errorf("Readonly fell off during alias normalization")
-	}
-	// Mirror entry must carry the same values as the canonical entry.
-	if !meta.TaskBehaviors["plan"].Readonly {
-		t.Errorf("alias mirror lost Readonly value")
+	if len(meta.TaskBehaviors["supervisor"].Traits) != 1 || meta.TaskBehaviors["supervisor"].Traits[0] != "artifact" {
+		t.Errorf("Traits fell off during alias normalization: %v", meta.TaskBehaviors["supervisor"].Traits)
 	}
 	if !strings.Contains(buf.String(), "deprecated") || !strings.Contains(buf.String(), "plan") {
 		t.Errorf("expected deprecation log mentioning %q, got:\n%s", "plan", buf.String())
@@ -2367,7 +2303,8 @@ name: Test Project
 task_behaviors:
   dev:
     name: dev
-    worktree: true
+    traits:
+      - artifact
 `
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
@@ -2386,11 +2323,8 @@ task_behaviors:
 	if got := meta.TaskBehaviors["executor"].Name; got != "executor" {
 		t.Errorf("Name = %q, want %q (alias must promote to canonical)", got, "executor")
 	}
-	if !meta.TaskBehaviors["executor"].Worktree {
-		t.Errorf("Worktree fell off during alias normalization")
-	}
-	if !meta.TaskBehaviors["dev"].Worktree {
-		t.Errorf("alias mirror lost Worktree value")
+	if len(meta.TaskBehaviors["executor"].Traits) != 1 || meta.TaskBehaviors["executor"].Traits[0] != "artifact" {
+		t.Errorf("Traits fell off during alias normalization: %v", meta.TaskBehaviors["executor"].Traits)
 	}
 	if !strings.Contains(buf.String(), "deprecated") || !strings.Contains(buf.String(), "dev") {
 		t.Errorf("expected deprecation log mentioning %q, got:\n%s", "dev", buf.String())
@@ -2409,13 +2343,12 @@ func TestReadProjectMeta_BehaviorCanonicalName_NoWarning(t *testing.T) {
 	yaml := `
 id: test-proj
 name: Test Project
+worktree: true
 task_behaviors:
   supervisor:
     name: supervisor
-    readonly: true
   executor:
     name: executor
-    worktree: true
 `
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
@@ -2433,6 +2366,70 @@ task_behaviors:
 	}
 	if strings.Contains(buf.String(), "deprecated") {
 		t.Errorf("did not expect deprecation log for canonical names, got:\n%s", buf.String())
+	}
+}
+
+// TestReadProjectMeta_RemovedBehaviorFields_RejectsAtLoad verifies that every
+// field removed in Phase 3-1 produces a descriptive load-time error pointing
+// callers at the new resolution path. The error format is fixed by
+// removedBehaviorFieldGuidance — the test pins the message so accidental
+// rewording trips CI.
+func TestReadProjectMeta_RemovedBehaviorFields_RejectsAtLoad(t *testing.T) {
+	cases := []struct {
+		field string
+		body  string
+	}{
+		{"readonly", "    readonly: true\n"},
+		{"worktree", "    worktree: true\n"},
+		{"base_branch", "    base_branch: main\n"},
+		{"branch_prefix", "    branch_prefix: feature/\n"},
+		{"default_payload", "    default_payload:\n      foo: bar\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.field, func(t *testing.T) {
+			dir := t.TempDir()
+			boidDir := filepath.Join(dir, ".boid")
+			if err := os.MkdirAll(boidDir, 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			yaml := `id: test-proj
+name: Test Project
+task_behaviors:
+  dev:
+    name: dev
+` + tc.body
+			if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+				t.Fatalf("write yaml: %v", err)
+			}
+			_, err := projectspec.ReadProjectMeta(dir)
+			if err == nil {
+				t.Fatalf("expected error for %q, got nil", tc.field)
+			}
+			needle := "task_behaviors.dev." + tc.field + " is no longer supported"
+			if !strings.Contains(err.Error(), needle) {
+				t.Errorf("expected error to contain %q, got: %v", needle, err)
+			}
+		})
+	}
+}
+
+// TestReadKitMeta_RemovedBehaviorFields_RejectsAtLoad mirrors the above check
+// for kit.yaml — kits can declare task_behaviors too and must produce the
+// same load-time error.
+func TestReadKitMeta_RemovedBehaviorFields_RejectsAtLoad(t *testing.T) {
+	for _, field := range []string{"readonly", "worktree", "base_branch", "branch_prefix"} {
+		t.Run(field, func(t *testing.T) {
+			dir := t.TempDir()
+			writeKitYAML(t, dir, "task_behaviors:\n  dev:\n    name: dev\n    "+field+": true\n")
+			_, err := projectspec.ReadKitMeta(dir)
+			if err == nil {
+				t.Fatalf("expected error for %q, got nil", field)
+			}
+			needle := "task_behaviors.dev." + field + " is no longer supported"
+			if !strings.Contains(err.Error(), needle) {
+				t.Errorf("expected error to contain %q, got: %v", needle, err)
+			}
+		})
 	}
 }
 
@@ -2536,7 +2533,8 @@ func TestReadKitMeta_BehaviorAlias_PlanIsCanonicalizedToSupervisor(t *testing.T)
 task_behaviors:
   plan:
     name: plan
-    readonly: true
+    traits:
+      - artifact
 `)
 	meta, err := projectspec.ReadKitMeta(dir)
 	if err != nil {
@@ -2574,10 +2572,12 @@ name: Test Project
 task_behaviors:
   plan:
     name: plan
-    readonly: true
+    traits:
+      - artifact
   dev:
     name: dev
-    worktree: true
+    traits:
+      - verification
 `
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
@@ -2602,13 +2602,13 @@ task_behaviors:
 		t.Errorf("alias mirror 'dev' missing after ReadProjectMetaWithKits, got keys=%v", behaviorKeys(meta))
 	}
 	// Mirrors must reflect the same template values.
-	if !meta.TaskBehaviors["plan"].Readonly || !meta.TaskBehaviors["supervisor"].Readonly {
-		t.Errorf("Readonly disagreement between alias and canonical: plan=%v supervisor=%v",
-			meta.TaskBehaviors["plan"].Readonly, meta.TaskBehaviors["supervisor"].Readonly)
+	if len(meta.TaskBehaviors["plan"].Traits) != 1 || len(meta.TaskBehaviors["supervisor"].Traits) != 1 {
+		t.Errorf("Traits disagreement between alias and canonical: plan=%v supervisor=%v",
+			meta.TaskBehaviors["plan"].Traits, meta.TaskBehaviors["supervisor"].Traits)
 	}
-	if !meta.TaskBehaviors["dev"].Worktree || !meta.TaskBehaviors["executor"].Worktree {
-		t.Errorf("Worktree disagreement between alias and canonical: dev=%v executor=%v",
-			meta.TaskBehaviors["dev"].Worktree, meta.TaskBehaviors["executor"].Worktree)
+	if len(meta.TaskBehaviors["dev"].Traits) != 1 || len(meta.TaskBehaviors["executor"].Traits) != 1 {
+		t.Errorf("Traits disagreement between alias and canonical: dev=%v executor=%v",
+			meta.TaskBehaviors["dev"].Traits, meta.TaskBehaviors["executor"].Traits)
 	}
 }
 

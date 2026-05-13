@@ -825,15 +825,18 @@ func TestTaskAppServiceImportTasks_EmptyInput(t *testing.T) {
 	}
 }
 
+// TestCreateTask_BehaviorFieldsExpandedToTask verifies that the behavior's
+// Traits and the project-top worktree/base_branch flow onto the created Task.
+// Phase 3-1 removed the behavior-level readonly/worktree/branch_prefix/
+// base_branch/default_payload fields; the same task-row fields are now
+// populated entirely from {project-top, canonical behavior name}.
 func TestCreateTask_BehaviorFieldsExpandedToTask(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
+		Worktree:   true,
+		BaseBranch: "main",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {
-				Traits:       []string{"artifact", "verification"},
-				Readonly:     false,
-				Worktree:     true,
-				BranchPrefix: "feature/",
-				BaseBranch:   "main",
+			"executor": {
+				Traits: []string{"artifact", "verification"},
 			},
 		},
 	}
@@ -845,7 +848,7 @@ func TestCreateTask_BehaviorFieldsExpandedToTask(t *testing.T) {
 	task, err := svc.CreateTask(CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "test task",
-		Behavior:  "dev",
+		Behavior:  "executor",
 	})
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
@@ -855,9 +858,6 @@ func TestCreateTask_BehaviorFieldsExpandedToTask(t *testing.T) {
 	}
 	if task.Worktree != true {
 		t.Errorf("Worktree = %v, want true", task.Worktree)
-	}
-	if task.BranchPrefix != "feature/" {
-		t.Errorf("BranchPrefix = %q, want %q", task.BranchPrefix, "feature/")
 	}
 	if task.BaseBranch != "main" {
 		t.Errorf("BaseBranch = %q, want %q", task.BaseBranch, "main")
@@ -872,13 +872,11 @@ func TestCreateTask_BehaviorFieldsExpandedToTask(t *testing.T) {
 // request still tweaks.
 func TestCreateTask_NoTaskRowOverridesAvailable(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
+		Worktree:   true,
+		BaseBranch: "main",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {
-				Traits:       []string{"artifact"},
-				Readonly:     false,
-				Worktree:     true,
-				BranchPrefix: "feature/",
-				BaseBranch:   "main",
+			"executor": {
+				Traits: []string{"artifact"},
 			},
 		},
 	}
@@ -890,7 +888,7 @@ func TestCreateTask_NoTaskRowOverridesAvailable(t *testing.T) {
 	task, err := svc.CreateTask(CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "test task",
-		Behavior:  "dev",
+		Behavior:  "executor",
 		Traits:    []string{"artifact"},
 	})
 	if err != nil {
@@ -899,28 +897,25 @@ func TestCreateTask_NoTaskRowOverridesAvailable(t *testing.T) {
 	if !reflect.DeepEqual(task.Traits, []string{"artifact"}) {
 		t.Errorf("Traits = %v, want %v", task.Traits, []string{"artifact"})
 	}
-	// Readonly / Worktree / BranchPrefix / BaseBranch come from the behavior
-	// template; the request has no knobs to override them.
+	// Readonly / Worktree / BaseBranch come from the canonical behavior name
+	// + project-top fields; the request has no knobs to override them.
 	if task.Readonly != false {
-		t.Errorf("Readonly = %v, want false (from behavior template)", task.Readonly)
+		t.Errorf("Readonly = %v, want false (executor is canonically writable)", task.Readonly)
 	}
 	if task.Worktree != true {
-		t.Errorf("Worktree = %v, want true (from behavior template)", task.Worktree)
-	}
-	if task.BranchPrefix != "feature/" {
-		t.Errorf("BranchPrefix = %q, want %q (from behavior template)", task.BranchPrefix, "feature/")
+		t.Errorf("Worktree = %v, want true (project-top worktree)", task.Worktree)
 	}
 	if task.BaseBranch != "main" {
-		t.Errorf("BaseBranch = %q, want %q (from behavior template)", task.BaseBranch, "main")
+		t.Errorf("BaseBranch = %q, want %q (project-top base_branch)", task.BaseBranch, "main")
 	}
 }
 
 func TestCreateTask_NoOverrideUsesTemplateValue(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
+		Worktree: true,
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {
-				Traits:   []string{"artifact"},
-				Worktree: true,
+			"executor": {
+				Traits: []string{"artifact"},
 			},
 		},
 	}
@@ -932,7 +927,7 @@ func TestCreateTask_NoOverrideUsesTemplateValue(t *testing.T) {
 	task, err := svc.CreateTask(CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "test task",
-		Behavior:  "dev",
+		Behavior:  "executor",
 		// no override fields
 	})
 	if err != nil {
@@ -942,7 +937,7 @@ func TestCreateTask_NoOverrideUsesTemplateValue(t *testing.T) {
 		t.Errorf("Traits = %v, want template value %v", task.Traits, []string{"artifact"})
 	}
 	if task.Worktree != true {
-		t.Errorf("Worktree = %v, want template value true", task.Worktree)
+		t.Errorf("Worktree = %v, want project-top value true", task.Worktree)
 	}
 }
 
@@ -954,13 +949,17 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_Success(t *testing.T) {
 		Meta:  stubMetaStore{meta: nil},
 	}
 
+	// Phase 3-1: BehaviorSpec.Worktree was removed. Worktree is now governed
+	// by the project-top setting; install a stub Meta carrying Worktree:true
+	// so the inline behavior_spec path picks it up.
+	svc.Meta = stubMetaStore{meta: &orchestrator.ProjectMeta{Worktree: true}}
+
 	task, err := svc.CreateTask(CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "spec task",
 		BehaviorSpec: &orchestrator.BehaviorSpec{
-			Name:     "kit/my-behavior",
-			Traits:   []string{"artifact"},
-			Worktree: true,
+			Name:   "kit/my-behavior",
+			Traits: []string{"artifact"},
 		},
 	})
 	if err != nil {
@@ -973,7 +972,7 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_Success(t *testing.T) {
 		t.Errorf("Traits = %v, want [artifact]", task.Traits)
 	}
 	if !task.Worktree {
-		t.Errorf("Worktree = false, want true")
+		t.Errorf("Worktree = false, want true (project-top worktree)")
 	}
 }
 
@@ -999,24 +998,10 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_DefaultInstructionsMerged(t *test
 	}
 }
 
-func TestTaskAppServiceCreateTask_BehaviorSpec_DefaultPayloadRejectsInstructions(t *testing.T) {
-	svc := &TaskAppService{
-		Tasks: &stubTaskStore{},
-		Meta:  stubMetaStore{meta: nil},
-	}
-	defaultPayload := `{"instructions":{"main":{"type":"execution","agent":"c"}}}`
-	_, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID: "proj-1",
-		Title:     "bad",
-		BehaviorSpec: &orchestrator.BehaviorSpec{
-			Name:           "kit/my-behavior",
-			DefaultPayload: orchestrator.RawPayload(defaultPayload),
-		},
-	})
-	if err == nil {
-		t.Fatal("expected CreateTask to reject BehaviorSpec.default_payload with instructions")
-	}
-}
+// Phase 3-1: BehaviorSpec.DefaultPayload was removed. The
+// ValidateDefaultPayloadNoInstructions check is dead with it; the
+// "instructions" guard now only applies to the wire-level payload via
+// rejectPayloadInstructions, covered by other tests.
 
 func TestTaskAppServiceCreateTask_BehaviorAndSpecMutuallyExclusive(t *testing.T) {
 	svc := &TaskAppService{
@@ -1068,14 +1053,12 @@ func TestTaskAppServiceCreateTask_NeitherBehaviorNorSpec_DefaultsToPlan(t *testi
 
 func TestTaskAppServiceCreateTask_DefaultPlan_InheritsTemplate(t *testing.T) {
 	// project が supervisor behavior を template として持っているとき、
-	// behavior を省略した create がその template (readonly 等) を継承することを確認する。
-	// ProjectMeta は ReadProjectMeta 経由で読まれた状態を模して canonical 名で構築する
-	// (legacy "plan" キーは spec_loader の normalizeBehaviorAliases で
-	// 既に "supervisor" に正規化されている前提)。
+	// behavior を省略した create がそれに routing され readonly=true になる。
+	// Phase 3-1 以降 readonly は behavior 名のみで決まる (template field は無い)。
 	store := &stubTaskStore{}
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"supervisor": {Readonly: true},
+			"supervisor": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -1094,7 +1077,7 @@ func TestTaskAppServiceCreateTask_DefaultPlan_InheritsTemplate(t *testing.T) {
 		t.Errorf("Behavior = %q, want %q", task.Behavior, DefaultBehavior)
 	}
 	if !task.Readonly {
-		t.Errorf("Readonly = false, want true (inherited from supervisor template)")
+		t.Errorf("Readonly = false, want true (supervisor is canonically readonly)")
 	}
 }
 
@@ -1138,9 +1121,8 @@ func TestTaskAppServiceImportTasks_BehaviorSpec_Success(t *testing.T) {
 			RemoteID:     "KIT-1",
 			DataSourceID: "github",
 			BehaviorSpec: &orchestrator.BehaviorSpec{
-				Name:     "kit/conflict-fix",
-				Traits:   []string{"artifact"},
-				Worktree: true,
+				Name:   "kit/conflict-fix",
+				Traits: []string{"artifact"},
 			},
 		},
 	}
@@ -1164,19 +1146,14 @@ func TestTaskAppServiceImportTasks_BehaviorSpec_Success(t *testing.T) {
 
 // ---- end behavior_spec tests ----
 
-// ---- Phase 2-1: supervisor/executor canonical readonly/worktree auto-determination ----
+// ---- Phase 3-1: canonical readonly comes from behavior name, worktree from project-top ----
 
 // TestCreateTask_CanonicalSupervisor_ForcesReadonly verifies that the canonical
-// "supervisor" behavior is hard-wired to readonly=true regardless of the
-// behavior-level value, including a stray behavior-level readonly:false on
-// the supervisor entry. (Warning emission on the conflicting value is
-// best-effort — see the note in applyCanonicalBehaviorOverrides — so the test
-// only asserts the resolved value here.)
+// "supervisor" behavior is hard-wired to readonly=true.
 func TestCreateTask_CanonicalSupervisor_ForcesReadonly(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			// Behavior-level readonly:false on supervisor is ignored.
-			"supervisor": {Readonly: false},
+			"supervisor": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -1198,12 +1175,11 @@ func TestCreateTask_CanonicalSupervisor_ForcesReadonly(t *testing.T) {
 }
 
 // TestCreateTask_CanonicalExecutor_ForcesNotReadonly verifies that the canonical
-// "executor" behavior is hard-wired to readonly=false even when the behavior
-// entry sets readonly:true.
+// "executor" behavior is hard-wired to readonly=false.
 func TestCreateTask_CanonicalExecutor_ForcesNotReadonly(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {Readonly: true},
+			"executor": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -1230,8 +1206,7 @@ func TestCreateTask_CanonicalExecutor_ForcesNotReadonly(t *testing.T) {
 func TestCreateTask_PlanAlias_ResolvesToSupervisorReadonly(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			// Use the canonical key as ReadProjectMeta would produce.
-			"supervisor": {Readonly: true},
+			"supervisor": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -1257,9 +1232,7 @@ func TestCreateTask_PlanAlias_ResolvesToSupervisorReadonly(t *testing.T) {
 func TestCreateTask_DevAlias_ResolvesToExecutorWritable(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			// Behavior-level readonly:true here would have been honored
-			// pre-P2-1; under the new rule executor pins readonly=false.
-			"executor": {Readonly: true},
+			"executor": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -1280,15 +1253,15 @@ func TestCreateTask_DevAlias_ResolvesToExecutorWritable(t *testing.T) {
 	}
 }
 
-// TestCreateTask_NonCanonicalBehavior_PreservesBehaviorLevelReadonly verifies
-// that for behaviors that are neither supervisor nor executor (e.g. a kit-
-// provided custom behavior) the behavior-level readonly value is still
-// authoritative — the canonical rule only fires for the two reserved names.
-func TestCreateTask_NonCanonicalBehavior_PreservesBehaviorLevelReadonly(t *testing.T) {
+// TestCreateTask_NonCanonicalBehavior_NotReadonly verifies that for behaviors
+// that are neither supervisor nor executor (e.g. a kit-provided custom
+// behavior) the resulting Task is not readonly. P3-1 removed the per-behavior
+// readonly knob, so non-canonical behaviors always default to writable.
+func TestCreateTask_NonCanonicalBehavior_NotReadonly(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"impl":   {Readonly: true},
-			"verify": {Readonly: false},
+			"impl":   {},
+			"verify": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -1304,8 +1277,8 @@ func TestCreateTask_NonCanonicalBehavior_PreservesBehaviorLevelReadonly(t *testi
 	if err != nil {
 		t.Fatalf("CreateTask(impl) error = %v", err)
 	}
-	if !implTask.Readonly {
-		t.Errorf("impl: Readonly = false, want true (behavior-level wins for non-canonical)")
+	if implTask.Readonly {
+		t.Errorf("impl: Readonly = true, want false (non-canonical behaviors are writable)")
 	}
 
 	verifyTask, err := svc.CreateTask(CreateTaskRequest{
@@ -1317,20 +1290,18 @@ func TestCreateTask_NonCanonicalBehavior_PreservesBehaviorLevelReadonly(t *testi
 		t.Fatalf("CreateTask(verify) error = %v", err)
 	}
 	if verifyTask.Readonly {
-		t.Errorf("verify: Readonly = true, want false (behavior-level wins for non-canonical)")
+		t.Errorf("verify: Readonly = true, want false (non-canonical behaviors are writable)")
 	}
 }
 
 // TestCreateTask_ProjectLevelWorktreeTrue_AppliedToCanonicalBehavior verifies
-// that the project-level worktree flag wins over the behavior-level value for
-// the canonical supervisor / executor behaviors.
+// that the project-level worktree flag is the only source of truth for the
+// canonical executor behavior in P3-1.
 func TestCreateTask_ProjectLevelWorktreeTrue_AppliedToCanonicalBehavior(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		Worktree: true,
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			// Behavior-level worktree:false would have meant "no worktree"
-			// pre-P2-1; project-level worktree:true now overrides this.
-			"executor": {Worktree: false},
+			"executor": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -1347,22 +1318,18 @@ func TestCreateTask_ProjectLevelWorktreeTrue_AppliedToCanonicalBehavior(t *testi
 		t.Fatalf("CreateTask() error = %v", err)
 	}
 	if !task.Worktree {
-		t.Errorf("Worktree = false, want true (project-level worktree:true wins)")
+		t.Errorf("Worktree = false, want true (project-level worktree:true)")
 	}
 }
 
-// TestCreateTask_ProjectLevelWorktreeUnset_FallsBackToBehavior verifies the
-// minimum-wire-up Phase 2-1 semantics: project-level worktree:true wins for
-// canonical behaviors, but when the project-level flag is unset (the bool
-// zero value) we fall through to the behavior-level value. This lets
-// pre-existing project.yaml files that only declare worktree:true on the
-// behavior keep working until P4-2 migrates them to the project-top form
-// (a deprecation warning is still emitted on every CreateTask).
-func TestCreateTask_ProjectLevelWorktreeUnset_FallsBackToBehavior(t *testing.T) {
+// TestCreateTask_ProjectLevelWorktreeUnset_ExecutorTaskIsFalse verifies that
+// when the project-level worktree flag is unset, executor tasks end up with
+// worktree=false. (P3-1 removed the fallback to a behavior-level value.)
+func TestCreateTask_ProjectLevelWorktreeUnset_ExecutorTaskIsFalse(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		// Worktree intentionally omitted (false / unset).
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {Worktree: true},
+			"executor": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -1372,53 +1339,24 @@ func TestCreateTask_ProjectLevelWorktreeUnset_FallsBackToBehavior(t *testing.T) 
 
 	task, err := svc.CreateTask(CreateTaskRequest{
 		ProjectID: "proj-1",
-		Title:     "executor with legacy behavior-level worktree",
-		Behavior:  "executor",
-	})
-	if err != nil {
-		t.Fatalf("CreateTask() error = %v", err)
-	}
-	if !task.Worktree {
-		t.Errorf("Worktree = false, want true (project-level unset → behavior-level value used as fallback)")
-	}
-}
-
-// TestCreateTask_ProjectLevelWorktreeFalseAndBehaviorFalse_TaskIsFalse covers
-// the "both unset" case from the Phase 2-1 brief: project-level worktree=false
-// and behavior-level worktree=false → task.Worktree=false.
-func TestCreateTask_ProjectLevelWorktreeFalseAndBehaviorFalse_TaskIsFalse(t *testing.T) {
-	meta := &orchestrator.ProjectMeta{
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {Worktree: false},
-		},
-	}
-	svc := &TaskAppService{
-		Tasks: &stubTaskStore{},
-		Meta:  stubMetaStore{meta: meta},
-	}
-
-	task, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID: "proj-1",
-		Title:     "executor no worktree anywhere",
+		Title:     "executor without project worktree",
 		Behavior:  "executor",
 	})
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
 	if task.Worktree {
-		t.Errorf("Worktree = true, want false (both project-level and behavior-level unset)")
+		t.Errorf("Worktree = true, want false (project-level worktree unset)")
 	}
 }
 
-// TestCreateTask_NonCanonicalBehavior_PreservesBehaviorLevelWorktree verifies
-// that non-canonical behaviors continue to read the behavior-level worktree
-// field as the source of truth (the project-level switch only governs the
-// reserved supervisor / executor pair in P2-1).
-func TestCreateTask_NonCanonicalBehavior_PreservesBehaviorLevelWorktree(t *testing.T) {
+// TestCreateTask_NonCanonicalBehavior_UsesProjectWorktree verifies that
+// non-canonical behaviors take the project-level worktree value verbatim.
+func TestCreateTask_NonCanonicalBehavior_UsesProjectWorktree(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
-		// Project-level worktree:false but behavior-level true.
+		Worktree: true,
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"impl": {Worktree: true},
+			"impl": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -1428,18 +1366,18 @@ func TestCreateTask_NonCanonicalBehavior_PreservesBehaviorLevelWorktree(t *testi
 
 	task, err := svc.CreateTask(CreateTaskRequest{
 		ProjectID: "proj-1",
-		Title:     "impl with behavior worktree",
+		Title:     "impl with project worktree",
 		Behavior:  "impl",
 	})
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
 	if !task.Worktree {
-		t.Errorf("Worktree = false, want true (behavior-level wins for non-canonical)")
+		t.Errorf("Worktree = false, want true (non-canonical: project-top worktree applies)")
 	}
 }
 
-// ---- end Phase 2-1 ----
+// ---- end Phase 3-1 ----
 
 // ---- Phase 2-2: supervisor 3-case execution location + executor base check ----
 
@@ -1489,9 +1427,10 @@ func initServiceTestRepo(t *testing.T, branch string, extraBranches ...string) s
 func TestCreateTask_SupervisorCase1_WorktreeFalse(t *testing.T) {
 	dir := initServiceTestRepo(t, "main")
 	meta := &orchestrator.ProjectMeta{
-		Worktree: true, // project-level says "yes worktree" — case 1 must still win
+		Worktree:   true, // project-level says "yes worktree" — case 1 must still win
+		BaseBranch: "main",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"supervisor": {BaseBranch: "main"},
+			"supervisor": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -1518,9 +1457,10 @@ func TestCreateTask_SupervisorCase1_WorktreeFalse(t *testing.T) {
 func TestCreateTask_SupervisorCase2_WorktreeTrue(t *testing.T) {
 	dir := initServiceTestRepo(t, "feature", "main")
 	meta := &orchestrator.ProjectMeta{
-		Worktree: false, // project-level off → would normally mean no worktree
+		Worktree:   false, // project-level off → case 2 promotes worktree anyway
+		BaseBranch: "main",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"supervisor": {BaseBranch: "main"},
+			"supervisor": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -1547,8 +1487,9 @@ func TestCreateTask_SupervisorCase2_WorktreeTrue(t *testing.T) {
 func TestCreateTask_SupervisorCase3_WorktreeTrue(t *testing.T) {
 	dir := initServiceTestRepo(t, "main")
 	meta := &orchestrator.ProjectMeta{
+		BaseBranch: "release-2026", // does not exist anywhere
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"supervisor": {BaseBranch: "release-2026"}, // does not exist anywhere
+			"supervisor": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -1578,8 +1519,9 @@ func TestCreateTask_SupervisorCase3_WorktreeTrue(t *testing.T) {
 func TestCreateTask_ExecutorCase3_NoParent_Errors(t *testing.T) {
 	dir := initServiceTestRepo(t, "main")
 	meta := &orchestrator.ProjectMeta{
+		BaseBranch: "release-2026",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {BaseBranch: "release-2026"},
+			"executor": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -1620,8 +1562,9 @@ func TestCreateTask_ExecutorCase3_WithParent_OK(t *testing.T) {
 		tasks: map[string]*orchestrator.Task{parent.ID: parent},
 	}
 	meta := &orchestrator.ProjectMeta{
+		BaseBranch: "release-2026",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {BaseBranch: "release-2026"},
+			"executor": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -2737,13 +2680,14 @@ func (s *stubProjectLookup) GetProject(id string) (*orchestrator.Project, error)
 }
 
 func TestCreateTask_BehaviorBaseBranch_VariableExpanded(t *testing.T) {
-	// When behavior.base_branch is "${current_branch}", the service calls
+	// When project.base_branch is "${current_branch}", the service calls
 	// ExpandBaseBranch. With a stub workDir that is not a real git repo the
 	// call should fail; here we only verify that the Projects.GetProject path
 	// is reached and returns a 400 on git failure.
 	meta := &orchestrator.ProjectMeta{
+		BaseBranch: "${current_branch}",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {BaseBranch: "${current_branch}"},
+			"dev": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -2777,16 +2721,21 @@ func TestCreateTask_BehaviorBaseBranch_VariableExpanded(t *testing.T) {
 // deleted.
 
 func TestCreateTask_InlineBehaviorSpec_BaseBranch_VariableExpanded(t *testing.T) {
+	// P3-1: BehaviorSpec no longer carries BaseBranch; the project-top
+	// base_branch (with template expansion) governs both named and inline
+	// behavior_spec paths.
 	svc := &TaskAppService{
-		Tasks:    &stubTaskStore{},
+		Tasks: &stubTaskStore{},
+		Meta: stubMetaStore{meta: &orchestrator.ProjectMeta{
+			BaseBranch: "${current_branch}",
+		}},
 		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: t.TempDir()}},
 	}
 	_, err := svc.CreateTask(CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "test",
 		BehaviorSpec: &orchestrator.BehaviorSpec{
-			Name:       "myspec",
-			BaseBranch: "${current_branch}",
+			Name: "myspec",
 		},
 	})
 	if err == nil {
@@ -2805,7 +2754,7 @@ func TestCreateTask_DetachedHead_Returns400(t *testing.T) {
 	// ProjectWorkDirLookup error should surface as 400.
 	svc := &TaskAppService{
 		Tasks:    &stubTaskStore{},
-		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {BaseBranch: "${current_branch}"}}}},
+		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{BaseBranch: "${current_branch}", TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
 		Projects: &stubProjectLookup{err: fmt.Errorf("project not found")},
 	}
 	_, err := svc.CreateTask(CreateTaskRequest{
@@ -2869,11 +2818,12 @@ func TestWebAppService_ReopenTask_WithMessage_HasInstructionPayload(t *testing.T
 // ---- Phase 1-3: dynamic base_branch (${TASK_REMOTE_ID}) tests ----
 
 func TestCreateTask_StaticBaseBranch_PassesThrough(t *testing.T) {
-	// A behavior with a static base_branch (no template) should be copied
+	// A project with a static base_branch (no template) should be copied
 	// verbatim onto the task, even when no Projects lookup is wired.
 	meta := &orchestrator.ProjectMeta{
+		BaseBranch: "main",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {BaseBranch: "main"},
+			"executor": {},
 		},
 	}
 	store := &stubTaskStore{}
@@ -2899,8 +2849,9 @@ func TestCreateTask_StaticBaseBranch_PassesThrough(t *testing.T) {
 
 func TestCreateTask_DynamicBaseBranch_ExpandsTaskRemoteID(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
+		BaseBranch: "feature/${TASK_REMOTE_ID}",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {BaseBranch: "feature/${TASK_REMOTE_ID}"},
+			"executor": {},
 		},
 	}
 	store := &stubTaskStore{}
@@ -2927,8 +2878,9 @@ func TestCreateTask_DynamicBaseBranch_ExpandsTaskRemoteID(t *testing.T) {
 
 func TestCreateTask_DynamicBaseBranch_MissingRemoteID_Returns400(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
+		BaseBranch: "feature/${TASK_REMOTE_ID}",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {BaseBranch: "feature/${TASK_REMOTE_ID}"},
+			"executor": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -2965,8 +2917,9 @@ func TestCreateTask_ChildInheritsParentBaseBranch(t *testing.T) {
 		RemoteID:   "PROJ-100",
 	}
 	meta := &orchestrator.ProjectMeta{
+		BaseBranch: "feature/${TASK_REMOTE_ID}",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {BaseBranch: "feature/${TASK_REMOTE_ID}"},
+			"executor": {},
 		},
 	}
 	store := &stubTaskStore{
@@ -3004,8 +2957,9 @@ func TestCreateTask_ChildInheritsParentBaseBranch_NoRemoteIDNeeded(t *testing.T)
 		RemoteID:   "PROJ-100",
 	}
 	meta := &orchestrator.ProjectMeta{
+		BaseBranch: "feature/${TASK_REMOTE_ID}",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {BaseBranch: "feature/${TASK_REMOTE_ID}"},
+			"executor": {},
 		},
 	}
 	store := &stubTaskStore{
@@ -3042,8 +2996,9 @@ func TestCreateTask_ChildIgnoresOwnStaticBase_PreferParent(t *testing.T) {
 		BaseBranch: "feature/PROJ-100",
 	}
 	meta := &orchestrator.ProjectMeta{
+		BaseBranch: "release/v9",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {BaseBranch: "release/v9"},
+			"executor": {},
 		},
 	}
 	store := &stubTaskStore{
@@ -3069,14 +3024,15 @@ func TestCreateTask_ChildIgnoresOwnStaticBase_PreferParent(t *testing.T) {
 }
 
 func TestCreateTask_ParentNotFound_FallsBackToBehavior(t *testing.T) {
-	// Parent-not-found is logged and we fall back to behavior-level
-	// resolution. With a static behavior base_branch ("main") and no
+	// Parent-not-found is logged and we fall back to project-top
+	// resolution. With a static project base_branch ("main") and no
 	// template, the resulting task uses "main" verbatim. This mirrors
 	// the legacy pre-1-3 behavior and protects callers that pass
 	// non-existent parent_ids (a wide pattern in the test suite).
 	meta := &orchestrator.ProjectMeta{
+		BaseBranch: "main",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {BaseBranch: "main"},
+			"executor": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -3105,8 +3061,9 @@ func TestCreateTask_ParentNotFound_TemplateStillFails(t *testing.T) {
 	// the usual 400 — the fallback only swallows the parent lookup, not
 	// downstream resolution.
 	meta := &orchestrator.ProjectMeta{
+		BaseBranch: "feature/${TASK_REMOTE_ID}",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {BaseBranch: "feature/${TASK_REMOTE_ID}"},
+			"executor": {},
 		},
 	}
 	svc := &TaskAppService{
@@ -3139,9 +3096,9 @@ func TestCreateTask_ParentNotFound_TemplateStillFails(t *testing.T) {
 // This handles older callers (CLI invocations, UI clients, persisted instructions)
 // that pre-date the rename.
 //
-// Under Phase 2-1 the canonical behavior name also dictates the readonly value
-// (supervisor → true, executor → false), so the per-case expected readonly
-// reflects the canonical rule rather than the behavior-level Readonly field.
+// Under Phase 3-1 the canonical behavior name dictates the readonly value
+// (supervisor → true, executor → false); there is no behavior-level knob to
+// disagree with.
 func TestTaskAppServiceCreateTask_BehaviorAlias_RequestSideResolution(t *testing.T) {
 	cases := []struct {
 		name             string
@@ -3157,10 +3114,7 @@ func TestTaskAppServiceCreateTask_BehaviorAlias_RequestSideResolution(t *testing
 			store := &stubTaskStore{}
 			meta := &orchestrator.ProjectMeta{
 				TaskBehaviors: map[string]orchestrator.TaskBehavior{
-					// Behavior-level readonly is intentionally the *opposite*
-					// of the canonical decision; P2-1 must ignore it and use
-					// the canonical readonly value.
-					tc.canonicalKey: {Readonly: !tc.expectedReadonly},
+					tc.canonicalKey: {},
 				},
 			}
 			svc := &TaskAppService{
@@ -3180,7 +3134,7 @@ func TestTaskAppServiceCreateTask_BehaviorAlias_RequestSideResolution(t *testing
 					task.Behavior, tc.canonicalKey)
 			}
 			if task.Readonly != tc.expectedReadonly {
-				t.Errorf("Readonly = %v, want %v (canonical %q decides readonly under P2-1)",
+				t.Errorf("Readonly = %v, want %v (canonical %q decides readonly)",
 					task.Readonly, tc.expectedReadonly, tc.canonicalKey)
 			}
 		})

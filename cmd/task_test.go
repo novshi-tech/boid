@@ -60,6 +60,11 @@ depends_on_payload: task-x
 }
 
 func TestParseTaskCreateSpec_BehaviorSpec_ParsedFromYAML(t *testing.T) {
+	// Phase 3-1: BehaviorSpec.worktree / readonly / base_branch /
+	// branch_prefix / default_payload have been removed. Inline
+	// behavior_spec now carries only the discriminating fields
+	// (name / traits / default_instruction); worktree is taken from the
+	// project-top setting at task creation time.
 	input := `
 project_id: proj-1
 title: Kit Task
@@ -67,7 +72,6 @@ behavior_spec:
   name: kit/conflict-fix
   traits:
     - instructions
-  worktree: true
 `
 	spec, err := parseTaskCreateSpec([]byte(input))
 	if err != nil {
@@ -84,9 +88,6 @@ behavior_spec:
 	}
 	if len(spec.BehaviorSpec.Traits) != 1 || spec.BehaviorSpec.Traits[0] != "instructions" {
 		t.Errorf("Traits = %v, want [instructions]", spec.BehaviorSpec.Traits)
-	}
-	if !spec.BehaviorSpec.Worktree {
-		t.Error("Worktree = false, want true")
 	}
 }
 
@@ -198,36 +199,9 @@ description: figure out what to do
 	}
 }
 
-func TestParseTaskCreateSpec_BehaviorSpec_DefaultPayload(t *testing.T) {
-	// behavior_spec.default_payload (orchestrator.RawPayload) は YAML/JSON
-	// 経路で object/array を受け取れる必要がある。 RawPayload は named type で
-	// json.RawMessage の UnmarshalJSON を継承しないため、 専用実装が無いと
-	// encoding/json が base64 string を要求して弾いてしまう。
-	input := `
-project_id: proj-1
-title: Kit Task
-behavior_spec:
-  name: kit/conflict-fix
-  default_payload:
-    foo: bar
-    nested:
-      n: 1
-`
-	spec, err := parseTaskCreateSpec([]byte(input))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if spec.BehaviorSpec == nil {
-		t.Fatal("BehaviorSpec is nil")
-	}
-	if len(spec.BehaviorSpec.DefaultPayload) == 0 {
-		t.Fatal("DefaultPayload is empty, want JSON object bytes")
-	}
-	got := string(spec.BehaviorSpec.DefaultPayload.RawMessage())
-	if got == "" || got[0] != '{' {
-		t.Errorf("DefaultPayload = %q, want JSON object", got)
-	}
-}
+// Phase 3-1: behavior_spec.default_payload was removed; the
+// orchestrator.RawPayload type lingers (used elsewhere by hooks/gates) but
+// the unmarshal contract is no longer exercised through BehaviorSpec.
 
 func TestParseTaskCreateSpec_RejectsUnknownField(t *testing.T) {
 	// typo した field 名は弾かれる。

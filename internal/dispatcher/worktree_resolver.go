@@ -66,7 +66,9 @@ func (r *Runner) allocateWorktree(spec *orchestrator.JobSpec) (string, error) {
 		return w.Path, nil
 	}
 
-	// First-time creation: task metadata is needed for branch name / base.
+	// First-time creation: task metadata is needed for base branch.
+	// Branch prefix is hardcoded to "boid/" (Phase 3-1: branch_prefix is
+	// no longer configurable per behavior).
 	task, err := r.TaskLookup.GetTask(spec.TaskID)
 	if err != nil {
 		return "", fmt.Errorf("lookup task for worktree: %w", err)
@@ -78,7 +80,6 @@ func (r *Runner) allocateWorktree(spec *orchestrator.JobSpec) (string, error) {
 		spec.Visibility.ProjectDir,
 		spec.ProjectID,
 		task.ID,
-		task.BranchPrefix,
 		task.BaseBranch,
 	)
 	if err != nil {

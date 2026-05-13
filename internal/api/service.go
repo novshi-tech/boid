@@ -453,22 +453,18 @@ func resolveBehavior(meta *orchestrator.ProjectMeta, req CreateTaskRequest) (*be
 		if spec.Name == "" {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: "behavior_spec.name is required"}
 		}
-		if err := orchestrator.ValidateDefaultPayloadNoInstructions(spec.DefaultPayload); err != nil {
-			return nil, &StatusError{Code: http.StatusBadRequest, Message: "behavior_spec.default_payload: " + err.Error()}
-		}
 		res.behaviorName = spec.Name
 		res.traits = spec.Traits
-		res.readonly = spec.Readonly
-		res.worktree = spec.Worktree
-		res.branchPrefix = spec.BranchPrefix
-		res.baseBranch = spec.BaseBranch
-		if len(spec.DefaultPayload) > 0 {
-			merged, err := orchestrator.MergeDefaultPayload(spec.DefaultPayload.RawMessage(), req.Payload)
-			if err != nil {
-				return nil, &StatusError{Code: http.StatusBadRequest, Message: "payload merge: " + err.Error()}
-			}
-			res.payload = merged
+		// Phase 3-1: behavior-level readonly/worktree/branch_prefix/base_branch
+		// and default_payload are gone. Inline specs receive the canonical
+		// readonly/worktree treatment along with named behaviors below — set
+		// here from project-top defaults (worktree only) and finalised by
+		// applyCanonicalBehaviorOverrides.
+		if meta != nil {
+			res.worktree = meta.Worktree
+			res.baseBranch = meta.BaseBranch
 		}
+		applyCanonicalBehaviorOverrides(res, meta)
 		mergedInstructions, err := orchestrator.MergeDefaultInstructions(spec.DefaultInstruction, req.Instructions)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: "instructions merge: " + err.Error()}
@@ -494,31 +490,20 @@ func resolveBehavior(meta *orchestrator.ProjectMeta, req CreateTaskRequest) (*be
 			res.behaviorName = canonical
 		}
 		res.traits = behavior.Traits
-		res.readonly = behavior.Readonly
-		res.worktree = behavior.Worktree
-		res.branchPrefix = behavior.BranchPrefix
-		res.baseBranch = behavior.BaseBranch
-		if len(behavior.DefaultPayload) > 0 {
-			merged, err := orchestrator.MergeDefaultPayload(behavior.DefaultPayload.RawMessage(), req.Payload)
-			if err != nil {
-				return nil, &StatusError{Code: http.StatusBadRequest, Message: "payload merge: " + err.Error()}
-			}
-			res.payload = merged
-		}
+		// Phase 3-1: behavior-level readonly / worktree / branch_prefix /
+		// base_branch / default_payload are deleted. readonly comes from the
+		// behavior name (supervisor / executor) via
+		// applyCanonicalBehaviorOverrides; worktree and base_branch come
+		// from project-top fields.
+		res.worktree = meta.Worktree
+		res.baseBranch = meta.BaseBranch
 		mergedInstructions, err := orchestrator.MergeDefaultInstructions(behavior.DefaultInstruction, req.Instructions)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: "instructions merge: " + err.Error()}
 		}
 		res.instructions = mergedInstructions
 
-		// Phase 2-1: apply canonical readonly/worktree rules.
-		// For the two reserved canonical behavior names (supervisor / executor)
-		// readonly is hard-wired by the behavior type, and worktree is governed
-		// by the project-level setting. Behavior-level readonly / worktree are
-		// being deprecated and emit a warning when they would have changed the
-		// outcome (i.e. when the writer plainly went out of their way to set
-		// a value that contradicts the canonical decision).
-		applyCanonicalBehaviorOverrides(res, behavior, meta)
+		applyCanonicalBehaviorOverrides(res, meta)
 	} else if len(req.Instructions) > 0 {
 		mergedInstructions, err := orchestrator.MergeDefaultInstructions(nil, req.Instructions)
 		if err != nil {
@@ -529,82 +514,29 @@ func resolveBehavior(meta *orchestrator.ProjectMeta, req CreateTaskRequest) (*be
 	return res, nil
 }
 
-// applyCanonicalBehaviorOverrides enforces the Phase 2-1 rules: for the
-// canonical behavior names "supervisor" and "executor", readonly is fixed by
-// behavior type and worktree is decided by the project-level worktree flag.
+// applyCanonicalBehaviorOverrides enforces the Phase 3-1 readonly/worktree
+// rules. After the behavior-level fields were removed, readonly is decided
+// entirely by the canonical behavior name (supervisor=true, executor=false);
+// non-canonical behaviors get readonly=false (the legacy zero-value default).
+// worktree is taken from the project-top setting verbatim.
 //
-// Behavior-level readonly / worktree are still accepted by the YAML loader for
-// migration ease, but emit slog.Warn deprecation entries when they would have
-// changed the resulting Task value (or were redundantly set). Non-canonical
-// behaviors keep the existing behavior-level semantics unchanged.
-//
-// Note on warning detection: TaskBehavior.{Readonly,Worktree} are plain bool
-// fields, so we cannot tell "user wrote false" from "user omitted the field"
-// at this layer. We only warn on conflicts we can detect — i.e. when the
-// override changes the outcome away from what the behavior-level value would
-// have produced. For supervisor: behavior.Readonly=false (Go zero / default)
-// is treated as "no real conflict, no warning"; an explicit readonly:false on
-// a supervisor entry is regrettably silent under this implementation but the
-// outcome is still canonically readonly:true. P3-1 removes the field, so this
-// is a transient compromise.
-func applyCanonicalBehaviorOverrides(res *behaviorResolution, behavior orchestrator.TaskBehavior, meta *orchestrator.ProjectMeta) {
-	canonical := res.behaviorName
-	var canonicalReadonly bool
-	switch canonical {
+// meta may be nil when behavior_spec is in use without a project meta; the
+// only effect of nil is that res.worktree stays at its caller-supplied value
+// (typically the bool zero) which mirrors the pre-Phase-3-1 behavior of
+// inline specs.
+func applyCanonicalBehaviorOverrides(res *behaviorResolution, meta *orchestrator.ProjectMeta) {
+	switch res.behaviorName {
 	case "supervisor":
-		canonicalReadonly = true
+		res.readonly = true
 	case "executor":
-		canonicalReadonly = false
+		res.readonly = false
 	default:
-		// Non-canonical behavior: leave readonly/worktree as behavior-level values.
-		return
+		// Non-canonical behavior: readonly stays at the zero value (false).
+		res.readonly = false
 	}
-	if behavior.Readonly != canonicalReadonly && behavior.Readonly {
-		// behavior.Readonly was explicitly set to a value other than the
-		// canonical one (the only detectable case is the non-zero true).
-		slog.Warn("behavior-level 'readonly' is deprecated for canonical behaviors and will be ignored in a future release",
-			"scope", "CreateTask",
-			"behavior", canonical,
-			"behavior_readonly", behavior.Readonly,
-			"canonical_readonly", canonicalReadonly,
-		)
-	}
-	res.readonly = canonicalReadonly
-
-	// For supervisor / executor: project-level worktree:true wins over the
-	// behavior-level value (minimum wire-up per the Phase 2-1 brief; the
-	// supervisor 3-case decision lands in P2-2). When the project-level
-	// flag is false (or unset — bool zero value), we currently fall through
-	// to the behavior-level value so legacy project.yaml files with only a
-	// behavior-level worktree:true continue to work until P4-2 migrates
-	// them to the project-top form.
-	//
-	// Behavior-level worktree:true is detectably user-written (Go zero
-	// value is false). We emit a deprecation warning when the behavior-level
-	// value was explicitly set on a canonical behavior so callers can
-	// migrate, but the value is still honored as the resolved worktree
-	// outcome whenever project-level worktree is not opted in.
-	if meta.Worktree {
-		if behavior.Worktree != meta.Worktree {
-			slog.Warn("behavior-level 'worktree' is deprecated for canonical behaviors; use project-level 'worktree' instead",
-				"scope", "CreateTask",
-				"behavior", canonical,
-				"behavior_worktree", behavior.Worktree,
-				"project_worktree", meta.Worktree,
-			)
-		}
+	if meta != nil {
 		res.worktree = meta.Worktree
-		return
 	}
-	if behavior.Worktree {
-		slog.Warn("behavior-level 'worktree' is deprecated for canonical behaviors; use project-level 'worktree' instead",
-			"scope", "CreateTask",
-			"behavior", canonical,
-			"behavior_worktree", behavior.Worktree,
-			"project_worktree", meta.Worktree,
-		)
-	}
-	res.worktree = behavior.Worktree
 }
 
 // classifyAndApplyBaseBranchCase performs the Phase 2-2 supervisor 3-case

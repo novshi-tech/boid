@@ -152,11 +152,13 @@ func (m *WorktreeManager) resolveRecreateBasePoint(projectDir, recordedBase stri
 	return "", fmt.Errorf("base branch %q not found (checked origin/%s and %s)", base, base, base)
 }
 
-func (m *WorktreeManager) Create(projectDir, projectID, taskID, branchPrefix, baseBranch string) (*Worktree, error) {
-	if branchPrefix == "" {
-		branchPrefix = "boid/"
-	}
+// branchPrefix is the hardcoded prefix used for all per-task worktree
+// branches. Phase 3-1 removed the per-behavior `branch_prefix` knob; the
+// constant is centralised here so that other code paths reach for the same
+// literal.
+const branchPrefix = "boid/"
 
+func (m *WorktreeManager) Create(projectDir, projectID, taskID, baseBranch string) (*Worktree, error) {
 	shortID := taskID
 	if len(shortID) > 8 {
 		shortID = shortID[:8]

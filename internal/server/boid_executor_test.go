@@ -304,12 +304,13 @@ func TestBoidBuiltinExecutor_PropagatesDependencyFields(t *testing.T) {
 // 2-3. Sandbox-side `boid task create` still forwards the entire YAML map,
 // so an old caller might keep emitting `base_branch:`. The API server now
 // drops the key at decode time and the resulting Task must reflect the
-// behavior-level value instead of the override.
+// project-level value instead of the override.
 func TestBoidBuiltinExecutor_TaskCreate_DropsDeprecatedBaseBranch(t *testing.T) {
 	store := &capturingTaskStore{}
 	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
+		BaseBranch: "main",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {BaseBranch: "main"},
+			"dev": {},
 		},
 	}}
 	exec := &boidBuiltinExecutor{
@@ -335,11 +336,12 @@ func TestBoidBuiltinExecutor_TaskCreate_DropsDeprecatedBaseBranch(t *testing.T) 
 	}
 }
 
-func TestBoidBuiltinExecutor_TaskCreate_BaseBranchInheritsFromBehavior(t *testing.T) {
+func TestBoidBuiltinExecutor_TaskCreate_BaseBranchInheritsFromProject(t *testing.T) {
 	store := &capturingTaskStore{}
 	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
+		BaseBranch: "main",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {BaseBranch: "main"},
+			"dev": {},
 		},
 	}}
 	exec := &boidBuiltinExecutor{
@@ -358,7 +360,7 @@ func TestBoidBuiltinExecutor_TaskCreate_BaseBranchInheritsFromBehavior(t *testin
 		t.Fatalf("create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
 	}
 	if got := store.created[0].BaseBranch; got != "main" {
-		t.Errorf("base_branch = %q, want main (inherited from behavior)", got)
+		t.Errorf("base_branch = %q, want main (inherited from project)", got)
 	}
 }
 

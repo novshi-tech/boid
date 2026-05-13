@@ -5,53 +5,6 @@ import (
 	"fmt"
 )
 
-// MergeDefaultPayload merges behavior default payload with request payload.
-// Request payload takes precedence over default.
-// Strategy:
-//   - Use default_payload as base
-//   - Override with request payload's top-level keys
-//   - A null override top-level key means deletion
-//
-// "instructions" is no longer allowed in payload; use MergeDefaultInstructions instead.
-func MergeDefaultPayload(defaultPayload, requestPayload json.RawMessage) (json.RawMessage, error) {
-	if err := RejectPayloadInstructions(defaultPayload); err != nil {
-		return nil, fmt.Errorf("default_payload: %w", err)
-	}
-	if err := RejectPayloadInstructions(requestPayload); err != nil {
-		return nil, fmt.Errorf("request payload: %w", err)
-	}
-
-	if len(defaultPayload) == 0 || string(defaultPayload) == "null" {
-		if len(requestPayload) == 0 {
-			return json.RawMessage("{}"), nil
-		}
-		return requestPayload, nil
-	}
-	if len(requestPayload) == 0 || string(requestPayload) == "{}" || string(requestPayload) == "null" {
-		return defaultPayload, nil
-	}
-
-	var base map[string]json.RawMessage
-	if err := json.Unmarshal(defaultPayload, &base); err != nil {
-		return nil, err
-	}
-
-	var override map[string]json.RawMessage
-	if err := json.Unmarshal(requestPayload, &override); err != nil {
-		return nil, err
-	}
-
-	for key, val := range override {
-		if string(val) == "null" {
-			delete(base, key)
-			continue
-		}
-		base[key] = val
-	}
-
-	return json.Marshal(base)
-}
-
 // RejectPayloadInstructions returns an error if payload contains an "instructions" top-level key.
 // instructions moved out of payload into Task.Instructions; accepting it here would silently drop it.
 func RejectPayloadInstructions(payload json.RawMessage) error {
