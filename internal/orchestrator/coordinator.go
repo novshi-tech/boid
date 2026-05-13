@@ -22,13 +22,20 @@ func lookupBehavior(meta *ProjectMeta, task *Task) (TaskBehavior, bool) {
 }
 
 // Coordinator orchestrates the hook → gate → advance flow.
+//
+// The project-level worktree lock is intentionally NOT held inside the
+// coordinator anymore: it is acquired by the workflow service for the entire
+// executing lifetime of the task and released on every executing-leaving path
+// (see internal/api/service.go). The Locker field is preserved for backward
+// compatibility with callers that still pass it (e.g. older tests); it is
+// otherwise unused.
 type Coordinator struct {
 	Evaluator      *Evaluator
 	HookExecutor   HookExecutor
 	GateExecutor   GateExecutor
 	Waiter         JobWaiter
 	MaxDepth       int
-	Locker         WorktreeLocker // optional; nil skips locking
+	Locker         WorktreeLocker // deprecated: locking now owned by the workflow service
 	LifecycleStore LifecycleStore // optional; nil skips rework_count/abort derivation
 }
 
@@ -59,7 +66,7 @@ func (d *Coordinator) DispatchAndAdvance(
 	}
 	matchedHooks := d.Evaluator.Evaluate(task, behaviorHooks)
 	if len(matchedHooks) > 0 {
-		hookResults, err := d.dispatchHooksLocked(ctx, task, matchedHooks, readonly)
+		hookResults, err := d.dispatchHooks(ctx, task, matchedHooks, readonly)
 		// Always record FiredEvents for hooks that ran — even on error the
 		// partial results let the caller persist hook_fired actions, which is
 		// what makes failed runs visible in the UI timeline.
@@ -227,25 +234,6 @@ func (d *Coordinator) DispatchEntryGates(
 		FiredEvents:  firedEvents,
 		FinalPayload: payload,
 	}, nil
-}
-
-// dispatchHooksLocked wraps dispatchHooks with an optional worktree lock.
-// The lock is acquired for non-readonly, non-worktree tasks and released
-// via defer after dispatchHooks completes (gates are excluded from the lock scope).
-func (d *Coordinator) dispatchHooksLocked(
-	ctx context.Context,
-	task *Task,
-	hooks []Hook,
-	readonly bool,
-) ([]HandlerResult, error) {
-	if d.Locker != nil && !readonly && !task.Worktree {
-		release, err := d.Locker.Acquire(ctx, task.ProjectID)
-		if err != nil {
-			return nil, fmt.Errorf("worktree lock: %w", err)
-		}
-		defer release()
-	}
-	return d.dispatchHooks(ctx, task, hooks, readonly)
 }
 
 // dispatchHooks executes hooks, either in parallel (readonly) or sequentially.
@@ -690,9 +678,11 @@ func (d *Coordinator) ReplayHook(
 		return nil, fmt.Errorf("hook %q does not match current status %q", hookID, task.Status)
 	}
 
-	// Execute the hook (respects readonly flag, acquires worktree lock when needed).
+	// Execute the hook. Project-level locking is owned by the workflow service
+	// (executing-lifetime lock); the replay path here runs in-line with the
+	// caller and assumes the surrounding task is currently held.
 	readonly := IsReadonly(task)
-	hookResults, err := d.dispatchHooksLocked(ctx, task, matched, readonly)
+	hookResults, err := d.dispatchHooks(ctx, task, matched, readonly)
 
 	payload := task.Payload
 	var result HandlerResult

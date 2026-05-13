@@ -184,16 +184,23 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// surface in task timelines without polling. Completion broadcasts live
 	// in TaskWorkflowService.CompleteJob (where exit-code semantics are known).
 	runner.JobEvents = hubJobEventSink{hub: hub}
+	// Project worktree lock — held by the workflow service for the full
+	// executing lifetime of each task (not just per-hook dispatch). The same
+	// underlying locker is no longer threaded through the coordinator: the
+	// workflow service owns acquisition/release and the coordinator simply
+	// dispatches hooks under the assumption that the lock is already held.
+	projectLocks := orchestrator.NewProjectLockManager(orchestrator.NewInMemoryWorktreeLockManager())
 	workflow := &api.TaskWorkflowService{
 		Tasks:       taskRepo,
 		Jobs:        jobStore,
 		Projects:    projectRepo,
 		Tx:          tx,
 		Meta:        store,
-		Coordinator: &orchestrator.Coordinator{Evaluator: &orchestrator.Evaluator{}, HookExecutor: adapter, GateExecutor: adapter, Waiter: adapter, MaxDepth: 5, Locker: orchestrator.NewInMemoryWorktreeLockManager(), LifecycleStore: taskRepo},
+		Coordinator: &orchestrator.Coordinator{Evaluator: &orchestrator.Evaluator{}, HookExecutor: adapter, GateExecutor: adapter, Waiter: adapter, MaxDepth: 5, LifecycleStore: taskRepo},
 		Lifecycle:   jobLifecycleAdapter{runner: runner},
 		Worktrees:   wtMgr,
 		Hub:         hub,
+		Locks:       projectLocks,
 	}
 	workflow.InitDispatch(context.Background())
 	projectSvc := &api.ProjectAppService{
