@@ -8,6 +8,21 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
+// projectMetaWithHook builds a ProjectMeta whose "impl" behavior declares a
+// single hook that fires on executing. The lock acquisition path requires
+// at least one matching hook before it touches the project lock, so all
+// workflow tests that exercise lock state must use this helper.
+func projectMetaWithHook(behaviorName string) *orchestrator.ProjectMeta {
+	return &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			behaviorName: {
+				Name:  behaviorName,
+				Hooks: []orchestrator.Hook{{ID: "test-hook"}},
+			},
+		},
+	}
+}
+
 // holdingDispatchCoordinator runs DispatchAndAdvance synchronously and blocks
 // on a channel so tests can observe the "while-executing" state.
 type holdingDispatchCoordinator struct {
@@ -85,7 +100,7 @@ func TestProjectLock_RunDispatchLoop_AcquiresAndReleasesOnDone(t *testing.T) {
 	svc.runDispatchLoop(
 		context.Background(),
 		task,
-		&orchestrator.ProjectMeta{},
+		projectMetaWithHook("impl"),
 		orchestrator.DefaultMachine(),
 	)
 
@@ -123,7 +138,7 @@ func TestProjectLock_RunDispatchLoop_SkipsLockForReadonly(t *testing.T) {
 	svc.runDispatchLoop(
 		context.Background(),
 		task,
-		&orchestrator.ProjectMeta{},
+		projectMetaWithHook("plan"),
 		orchestrator.DefaultMachine(),
 	)
 
@@ -160,12 +175,55 @@ func TestProjectLock_RunDispatchLoop_SkipsLockForWorktreeTask(t *testing.T) {
 	svc.runDispatchLoop(
 		context.Background(),
 		task,
-		&orchestrator.ProjectMeta{},
+		projectMetaWithHook("dev"),
 		orchestrator.DefaultMachine(),
 	)
 
 	if locks.IsHeldForTask(task.ID) {
 		t.Fatal("worktree=true task must not hold the project lock")
+	}
+}
+
+// TestProjectLock_RunDispatchLoop_SkipsLockForHooklessBehavior verifies that
+// behaviors that declare no hooks (and therefore touch no project files) do
+// not acquire the project lock. This is the auto-start-deps regression: a
+// hook-less behavior like `smoke` must not serialize unrelated tasks.
+func TestProjectLock_RunDispatchLoop_SkipsLockForHooklessBehavior(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "task-smoke",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "smoke",
+		Payload:   []byte(`{}`),
+	}
+	doneInDB := *task
+	doneInDB.Status = orchestrator.TaskStatusDone
+
+	locks := orchestrator.NewProjectLockManager(orchestrator.NewInMemoryWorktreeLockManager())
+	txStore := &recordingTxStore{task: &doneInDB}
+	hooklessMeta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"smoke": {Name: "smoke"}, // no hooks
+		},
+	}
+	svc := &TaskWorkflowService{
+		Tx: recordingTransactor{store: txStore},
+		Coordinator: fixedDispatchResult{
+			result: &orchestrator.DispatchResult{FinalPayload: task.Payload},
+		},
+		Lifecycle: &stubLifecycle{},
+		Locks:     locks,
+	}
+
+	svc.runDispatchLoop(
+		context.Background(),
+		task,
+		hooklessMeta,
+		orchestrator.DefaultMachine(),
+	)
+
+	if locks.IsHeldForTask(task.ID) {
+		t.Fatal("behavior without hooks must not hold the project lock")
 	}
 }
 
@@ -195,7 +253,7 @@ func TestProjectLock_RunDispatchLoop_HeldDuringDispatch(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		svc.runDispatchLoop(context.Background(), task, &orchestrator.ProjectMeta{}, orchestrator.DefaultMachine())
+		svc.runDispatchLoop(context.Background(), task, projectMetaWithHook("impl"), orchestrator.DefaultMachine())
 	}()
 
 	select {
@@ -244,7 +302,7 @@ func TestProjectLock_RunDispatchLoop_HeldUntilTerminal_BlocksConcurrentTask(t *t
 	doneA := make(chan struct{})
 	go func() {
 		defer close(doneA)
-		svcA.runDispatchLoop(context.Background(), taskA, &orchestrator.ProjectMeta{}, orchestrator.DefaultMachine())
+		svcA.runDispatchLoop(context.Background(), taskA, projectMetaWithHook("impl"), orchestrator.DefaultMachine())
 	}()
 
 	// Wait for A to enter dispatch and confirm it holds the lock.
@@ -279,7 +337,7 @@ func TestProjectLock_RunDispatchLoop_HeldUntilTerminal_BlocksConcurrentTask(t *t
 	doneB := make(chan struct{})
 	go func() {
 		defer close(doneB)
-		svcB.runDispatchLoop(context.Background(), taskB, &orchestrator.ProjectMeta{}, orchestrator.DefaultMachine())
+		svcB.runDispatchLoop(context.Background(), taskB, projectMetaWithHook("impl"), orchestrator.DefaultMachine())
 	}()
 
 	select {
@@ -357,11 +415,11 @@ func TestProjectLock_RunDispatchLoop_DifferentProjectsInParallel(t *testing.T) {
 	doneB := make(chan struct{})
 	go func() {
 		defer close(doneA)
-		svcA.runDispatchLoop(context.Background(), taskA, &orchestrator.ProjectMeta{}, orchestrator.DefaultMachine())
+		svcA.runDispatchLoop(context.Background(), taskA, projectMetaWithHook("impl"), orchestrator.DefaultMachine())
 	}()
 	go func() {
 		defer close(doneB)
-		svcB.runDispatchLoop(context.Background(), taskB, &orchestrator.ProjectMeta{}, orchestrator.DefaultMachine())
+		svcB.runDispatchLoop(context.Background(), taskB, projectMetaWithHook("impl"), orchestrator.DefaultMachine())
 	}()
 
 	// Both should enter dispatch concurrently.
@@ -413,7 +471,7 @@ func TestProjectLock_RunDispatchLoop_ReleasesOnAwaiting(t *testing.T) {
 	svc.runDispatchLoop(
 		context.Background(),
 		task,
-		&orchestrator.ProjectMeta{},
+		projectMetaWithHook("impl"),
 		orchestrator.DefaultMachine(),
 	)
 
@@ -447,7 +505,7 @@ func TestProjectLock_ApplyAction_ReleasesOnAbort(t *testing.T) {
 	svc := &TaskWorkflowService{
 		Tasks: &stubTaskStore{task: task},
 		Tx:    recordingTransactor{store: txStore},
-		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {}}}},
+		Meta:  stubMetaStore{meta: projectMetaWithHook("impl")},
 		// No coordinator → no background dispatch loop.
 		Locks: locks,
 	}
@@ -480,7 +538,7 @@ func TestProjectLock_ApplyAction_ReleasesOnAsk(t *testing.T) {
 	svc := &TaskWorkflowService{
 		Tasks: &stubTaskStore{task: task},
 		Tx:    recordingTransactor{store: txStore},
-		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {}}}},
+		Meta:  stubMetaStore{meta: projectMetaWithHook("impl")},
 		Locks: locks,
 	}
 

@@ -1674,13 +1674,24 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 	// Project-level worktree lock — held for the entire executing lifetime so
 	// concurrent tasks on the same project don't race over the working tree.
 	// Idempotent: re-spawned dispatch loops for an already-locked task no-op.
-	// Readonly tasks and worktree=true tasks skip the lock entirely.
-	if s.Locks != nil && shouldHoldProjectLock(current) {
-		if err := s.Locks.AcquireForTask(ctx, current.ProjectID, current.ID); err != nil {
-			slog.Warn("dispatch loop: project lock acquire failed",
-				"task_id", current.ID, "project_id", current.ProjectID, "error", err)
-			s.recordDispatchError(current.ID, current.Status, fmt.Errorf("project lock: %w", err))
-			return
+	//
+	// Eligibility:
+	//   - task.Status == executing (no-op when dispatching a terminal task,
+	//     e.g. a `done` ApplyAction that spawns the loop solely to fire
+	//     finalizeTerminal → triggerDependentTasks)
+	//   - !readonly && !worktree (matches the legacy dispatchHooksLocked gate)
+	//   - the behavior actually declares hooks that would fire in executing
+	//     (a hook-less behavior leaves the project working tree untouched, so
+	//     locking it would serialize unrelated tasks for no reason — this
+	//     was the regression that broke auto-start-deps in CI)
+	if s.Locks != nil && current.Status == orchestrator.TaskStatusExecuting && shouldHoldProjectLock(current) {
+		if len(orchestrator.ListHooksForStatus(meta, current, orchestrator.TaskStatusExecuting)) > 0 {
+			if err := s.Locks.AcquireForTask(ctx, current.ProjectID, current.ID); err != nil {
+				slog.Warn("dispatch loop: project lock acquire failed",
+					"task_id", current.ID, "project_id", current.ProjectID, "error", err)
+				s.recordDispatchError(current.ID, current.Status, fmt.Errorf("project lock: %w", err))
+				return
+			}
 		}
 	}
 
