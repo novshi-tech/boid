@@ -103,6 +103,167 @@ func TestReadProjectMeta_TopLevelKitsAccepted(t *testing.T) {
 	}
 }
 
+// TestReadProjectMeta_TopLevelWorktreeBaseBranch verifies that the new
+// project-level "worktree" and "base_branch" fields are accepted by the
+// YAML loader and exposed on ProjectMeta. This is Phase 1-1 of the
+// task_behavior simplification effort: at this stage the fields are
+// accepted at the YAML layer but not yet wired into task resolution
+// (that happens in Phase 2). The behavior-level fields
+// (task_behaviors.<name>.worktree / base_branch) remain in place until
+// Phase 3.
+func TestReadProjectMeta_TopLevelWorktreeBaseBranch(t *testing.T) {
+	t.Run("accepts new top-level fields", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		if err := os.MkdirAll(boidDir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		yaml := `
+id: test-proj
+name: Test Project
+worktree: true
+base_branch: develop
+task_behaviors:
+  dev:
+    name: dev
+`
+		if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+			t.Fatalf("write yaml: %v", err)
+		}
+
+		meta, err := projectspec.ReadProjectMeta(dir)
+		if err != nil {
+			t.Fatalf("read meta: %v", err)
+		}
+		if !meta.Worktree {
+			t.Errorf("expected project-level Worktree=true, got false")
+		}
+		if meta.BaseBranch != "develop" {
+			t.Errorf("expected project-level BaseBranch=develop, got %q", meta.BaseBranch)
+		}
+	})
+
+	t.Run("defaults to zero values when omitted", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		if err := os.MkdirAll(boidDir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		yaml := `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev:
+    name: dev
+`
+		if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+			t.Fatalf("write yaml: %v", err)
+		}
+
+		meta, err := projectspec.ReadProjectMeta(dir)
+		if err != nil {
+			t.Fatalf("read meta: %v", err)
+		}
+		if meta.Worktree {
+			t.Errorf("expected project-level Worktree default false, got true")
+		}
+		if meta.BaseBranch != "" {
+			t.Errorf("expected project-level BaseBranch default empty, got %q", meta.BaseBranch)
+		}
+	})
+
+	// Legacy form: only behavior-level fields are set. Verifies that the
+	// new top-level fields default to zero and that behavior-level fields
+	// are still honored (no regression on Phase 0 behavior).
+	t.Run("legacy behavior-level fields still parsed independently", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		if err := os.MkdirAll(boidDir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		yaml := `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev:
+    name: dev
+    worktree: true
+    base_branch: main
+`
+		if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+			t.Fatalf("write yaml: %v", err)
+		}
+
+		meta, err := projectspec.ReadProjectMeta(dir)
+		if err != nil {
+			t.Fatalf("read meta: %v", err)
+		}
+		if meta.Worktree {
+			t.Errorf("expected project-level Worktree=false (legacy form), got true")
+		}
+		if meta.BaseBranch != "" {
+			t.Errorf("expected project-level BaseBranch=\"\" (legacy form), got %q", meta.BaseBranch)
+		}
+		dev, ok := meta.TaskBehaviors["dev"]
+		if !ok {
+			t.Fatalf("expected task_behaviors.dev to be present")
+		}
+		if !dev.Worktree {
+			t.Errorf("expected behavior-level Worktree=true, got false")
+		}
+		if dev.BaseBranch != "main" {
+			t.Errorf("expected behavior-level BaseBranch=main, got %q", dev.BaseBranch)
+		}
+	})
+
+	// Cohabitation: both project-level and behavior-level fields can be
+	// present and they are independent (no merging happens at this phase).
+	// Phase 2 will introduce resolution semantics; this test pins down the
+	// "store both verbatim" contract that Phase 1 establishes.
+	t.Run("project-level and behavior-level cohabit without merging", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		if err := os.MkdirAll(boidDir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		yaml := `
+id: test-proj
+name: Test Project
+worktree: true
+base_branch: develop
+task_behaviors:
+  dev:
+    name: dev
+    worktree: false
+    base_branch: main
+`
+		if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+			t.Fatalf("write yaml: %v", err)
+		}
+
+		meta, err := projectspec.ReadProjectMeta(dir)
+		if err != nil {
+			t.Fatalf("read meta: %v", err)
+		}
+		if !meta.Worktree {
+			t.Errorf("expected project-level Worktree=true, got false")
+		}
+		if meta.BaseBranch != "develop" {
+			t.Errorf("expected project-level BaseBranch=develop, got %q", meta.BaseBranch)
+		}
+		dev, ok := meta.TaskBehaviors["dev"]
+		if !ok {
+			t.Fatalf("expected task_behaviors.dev to be present")
+		}
+		if dev.Worktree {
+			t.Errorf("expected behavior-level Worktree=false (independent), got true")
+		}
+		if dev.BaseBranch != "main" {
+			t.Errorf("expected behavior-level BaseBranch=main (independent), got %q", dev.BaseBranch)
+		}
+	})
+}
+
 func TestReadProjectMeta_Errors(t *testing.T) {
 	t.Run("missing id", func(t *testing.T) {
 		dir := t.TempDir()

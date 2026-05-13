@@ -448,15 +448,26 @@ type CommandSpec struct {
 }
 
 type ProjectMeta struct {
-	ID                 string                    `yaml:"id" json:"id"`
-	Name               string                    `yaml:"name" json:"name"`
-	Kits               []KitRef                  `yaml:"kits,omitempty" json:"kits,omitempty"`
-	TaskBehaviors      map[string]TaskBehavior   `yaml:"task_behaviors" json:"task_behaviors"`
-	Commands           map[string]CommandSpec    `yaml:"commands,omitempty" json:"commands,omitempty"`
-	HostCommands       HostCommands              `yaml:"host_commands" json:"host_commands"`
-	AdditionalBindings []BindMount               `yaml:"additional_bindings" json:"additional_bindings"`
-	Env                map[string]string         `yaml:"env" json:"env"`
-	SecretNamespace    string                    `yaml:"secret_namespace,omitempty" json:"secret_namespace,omitempty"`
+	ID            string                  `yaml:"id" json:"id"`
+	Name          string                  `yaml:"name" json:"name"`
+	Kits          []KitRef                `yaml:"kits,omitempty" json:"kits,omitempty"`
+	TaskBehaviors map[string]TaskBehavior `yaml:"task_behaviors" json:"task_behaviors"`
+	Commands      map[string]CommandSpec  `yaml:"commands,omitempty" json:"commands,omitempty"`
+	// Worktree controls whether tasks in this project run in a per-task git
+	// worktree by default. It is a Phase 1 placeholder for the
+	// task_behavior simplification effort: the YAML loader accepts it, but
+	// task resolution does not yet consult it (Phase 2 will wire it up).
+	// Until Phase 3 the legacy behavior-level TaskBehavior.Worktree field
+	// remains authoritative.
+	Worktree bool `yaml:"worktree,omitempty" json:"worktree,omitempty"`
+	// BaseBranch is the default git base branch for worktrees created by
+	// tasks in this project. Like Worktree it is currently parsed but
+	// unused; see the comment on Worktree above.
+	BaseBranch         string            `yaml:"base_branch,omitempty" json:"base_branch,omitempty"`
+	HostCommands       HostCommands      `yaml:"host_commands" json:"host_commands"`
+	AdditionalBindings []BindMount       `yaml:"additional_bindings" json:"additional_bindings"`
+	Env                map[string]string `yaml:"env" json:"env"`
+	SecretNamespace    string            `yaml:"secret_namespace,omitempty" json:"secret_namespace,omitempty"`
 }
 
 type ProjectLocalMeta struct {
