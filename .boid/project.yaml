@@ -1,6 +1,12 @@
 id: 40652295-c610-42da-95c4-6c6e8d28b643
 name: boid
 
+# Phase 4-2 (task_behavior simplification): project-top worktree replaces the
+# behavior-level `worktree: true` that previously sat on the dev (now executor)
+# behavior. `base_branch` is intentionally omitted so executor tasks branch
+# from the daemon's current HEAD branch.
+worktree: true
+
 kits:
   - github.com/novshi-tech/boid-kits/claude-code
   - github.com/novshi-tech/boid-kits/go-dev
@@ -16,10 +22,15 @@ commands:
     command:
       - bash
 
+# Canonical behavior names: supervisor (formerly "plan") and executor
+# (formerly "dev"). The alias map in spec_loader.go still accepts the old
+# keys for back-compat, but the boid repo itself uses the canonical names.
+# readonly/worktree are no longer settable per-behavior — they are derived
+# from the canonical name (supervisor => readonly, executor => writable
+# under the project-top worktree).
 task_behaviors:
-  dev:
-    name: dev
-    worktree: true
+  executor:
+    name: executor
     default_instruction:
       type: execution
       agent: claude-code
@@ -33,9 +44,8 @@ task_behaviors:
           - If CI fails, exit with a non-zero code (boid will then transition job_failed → aborted).
           Exit normally on CI success. The hook exit trap fires `boid job done`,
           and the parent plan task will merge the PR as part of its supervise loop.
-  plan:
-    name: Plan
-    readonly: true
+  supervisor:
+    name: Supervisor
     default_instruction:
       type: execution
       agent: claude-code

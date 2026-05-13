@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -2643,4 +2644,82 @@ func kitBehaviorKeys(meta *projectspec.KitMeta) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// repoRootFromTestFile returns the absolute path to the boid repo root by
+// walking up from the location of this test file. The test file lives at
+// internal/orchestrator/spec_loader_test.go, so the repo root is two
+// directories above it. The helper centralizes the lookup so the Phase 4-2
+// self-yaml verify test below remains stable if the file is ever moved.
+func repoRootFromTestFile(t *testing.T) string {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatalf("runtime.Caller(0) failed; cannot locate test source path")
+	}
+	// thisFile = .../internal/orchestrator/spec_loader_test.go
+	return filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", ".."))
+}
+
+// TestReadProjectMeta_BoidSelfProjectYAML_LoadsInCanonicalForm is the Phase
+// 4-2 verify test: the boid repo's own .boid/project.yaml has been migrated
+// to the canonical schema (project-top worktree + canonical behavior names
+// supervisor / executor, with no behavior-level readonly/worktree/etc.).
+// Loading it must succeed (i.e. Phase 3-1's reject-removed-fields check must
+// not fire) and the canonical behaviors must be present.
+//
+// This test guards against accidental regressions where someone edits
+// .boid/project.yaml in a way that re-introduces the removed fields or
+// reverts to the legacy "plan" / "dev" keys without updating the canonical
+// pair. It mirrors the spirit of the e2e fixtures migration done in P3-2
+// (PR #408), but for the boid repo's own self-configuration.
+func TestReadProjectMeta_BoidSelfProjectYAML_LoadsInCanonicalForm(t *testing.T) {
+	repoRoot := repoRootFromTestFile(t)
+	yamlPath := filepath.Join(repoRoot, ".boid", "project.yaml")
+	if _, err := os.Stat(yamlPath); err != nil {
+		t.Skipf("self project.yaml not found at %s (this is expected only when running tests outside a checkout): %v", yamlPath, err)
+	}
+
+	// ReadProjectMeta runs the same rejectRemovedBehaviorFields guard as the
+	// daemon, so this also asserts that the file is free of the Phase 3-1
+	// removed fields.
+	meta, err := projectspec.ReadProjectMeta(repoRoot)
+	if err != nil {
+		t.Fatalf("ReadProjectMeta on boid self project.yaml failed: %v\n"+
+			"Hint: behavior-level readonly/worktree/base_branch/branch_prefix/default_payload "+
+			"were removed in Phase 3-1; if you see one of those in the error, migrate the field "+
+			"to the project-top equivalent or remove it.", err)
+	}
+
+	// Project-top worktree must be true (executor tasks branch into a
+	// worktree under boid/<task_id8>). base_branch is intentionally
+	// omitted to let the daemon default to the current HEAD branch.
+	if !meta.Worktree {
+		t.Errorf("expected project-top worktree=true, got false; executor tasks would lose their isolation")
+	}
+
+	// Canonical behaviors must be present.
+	for _, name := range []string{"supervisor", "executor"} {
+		if _, ok := meta.TaskBehaviors[name]; !ok {
+			t.Errorf("canonical behavior %q missing from self project.yaml; keys=%v", name, behaviorKeys(meta))
+		}
+	}
+
+	// Each canonical behavior must carry a default_instruction (the daemon
+	// dispatches against it when a task is created without an explicit
+	// payload). The exact message contents are out of scope here — P4-1
+	// will refresh those — but the field must be populated.
+	for _, name := range []string{"supervisor", "executor"} {
+		b, ok := meta.TaskBehaviors[name]
+		if !ok {
+			continue
+		}
+		if b.DefaultInstruction == nil {
+			t.Errorf("behavior %q has no default_instruction; agents would receive an empty prompt", name)
+			continue
+		}
+		if strings.TrimSpace(b.DefaultInstruction.Message) == "" {
+			t.Errorf("behavior %q default_instruction.message is empty", name)
+		}
+	}
 }
