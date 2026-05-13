@@ -36,14 +36,19 @@ task_behaviors:
       agent: claude-code
       model: sonnet
       message: |
-          Implement what is described in task.yaml's title and description.
+          Follow the /boid-executor skill to implement what is described in
+          task.yaml's title and description.
 
-          When the implementation is complete, run the /dev-pr-flow skill.
+          This project overrides the default local-merge model with a PR-per-
+          executor model. When the implementation is complete, run the
+          /dev-pr-flow skill instead of the default `commit + push`:
           - Use task.yaml's title as the PR title.
           - Start the PR body with `task: <task_id>`, followed by a summary.
-          - If CI fails, exit with a non-zero code (boid will then transition job_failed → aborted).
+          - If CI fails, exit with a non-zero code (boid will then transition
+            job_failed → aborted).
           Exit normally on CI success. The hook exit trap fires `boid job done`,
-          and the parent plan task will merge the PR as part of its supervise loop.
+          and the parent supervisor task will merge the PR as part of its
+          supervise loop.
   supervisor:
     name: Supervisor
     default_instruction:
@@ -51,19 +56,22 @@ task_behaviors:
       agent: claude-code
       model: opus
       message: |
-        Build an implementation plan as described in /boid-plan.
+        Follow the /boid-supervisor skill to build an implementation plan and
+        monitor child executor tasks.
 
-        You own PR-merge responsibility for the dev children you spawn (the
-        github-auto-merge kit is no longer attached to dev in this project).
-        Once a child dev task reaches `done` in your monitoring loop:
+        This project uses the PR-mode integration path (see "Integration: PR
+        Model" in /boid-supervisor). You own PR-merge responsibility for the
+        executor children you spawn (the github-auto-merge kit is not attached
+        to executor in this project). Once a child executor task reaches `done`
+        in your monitoring loop:
 
         1. Locate the PR via `gh pr list --head boid/<task_id8>` (first 8
            chars of the child task id).
         2. If the PR is open and mergeable, run
            `gh pr merge --merge --delete-branch`, then
            `git fetch origin && git pull --ff-only origin main`, verify
-           against the plan, and either spawn the next dev task or move on
-           to exit handling.
+           against the plan, and either spawn the next executor task or move
+           on to exit handling.
         3. If the merge cannot proceed:
            - Plain conflict or CI failure with a clear remediation:
              `boid task reopen <child_id> -m "<focused fix instruction>"`
@@ -73,5 +81,5 @@ task_behaviors:
              branch protection, etc.): `boid task notify "$BOID_TASK_ID" --ask "..."`
              to consult the user; do not guess.
 
-        Treat aborted children per /boid-plan's existing guidance (no merge
-        attempt; diagnose and either retry or escalate).
+        Treat aborted children per /boid-supervisor's existing guidance (no
+        merge attempt; diagnose and either retry or escalate).
