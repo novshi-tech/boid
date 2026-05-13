@@ -1043,8 +1043,12 @@ func TestManager_DefaultBranchPrefix(t *testing.T) {
 	mgr.Remove(repo, "task-dflt1234-5678", true)
 }
 
-// TestCreate_NonexistentBaseBranch verifies that Create returns an early error when
-// base_branch does not exist either locally or on origin, preventing silent DWIM failures.
+// TestCreate_NonexistentBaseBranch verifies the Phase 2-2 case-3 contract:
+// when base_branch does not exist either locally or on origin, Create
+// auto-creates it from the project HEAD instead of failing. The earlier
+// contract (return an error) has been intentionally relaxed; see
+// dispatcher.WorktreeManager.ensureBaseBranchExists / orchestrator.ClassifyBaseBranch
+// for the Phase 2-2 design.
 func TestCreate_NonexistentBaseBranch(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	local, _ := initGitRepoWithRemote(t)
@@ -1055,12 +1059,20 @@ func TestCreate_NonexistentBaseBranch(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	_, err := mgr.Create(local, "proj-neb1", "task-neb10001-0001", "boid/", "nonexistent-branch")
-	if err == nil {
-		t.Fatal("Create should return an error for a nonexistent base_branch")
+	w, err := mgr.Create(local, "proj-neb1", "task-neb10001-0001", "boid/", "nonexistent-branch")
+	if err != nil {
+		t.Fatalf("Create with nonexistent base_branch should succeed (case 3 auto-create), got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("error should mention branch not found, got: %v", err)
+	// The local branch must exist on the project repo after Create returns.
+	out, listErr := exec.Command(gitBin, "-C", local, "branch", "--list", "nonexistent-branch").CombinedOutput()
+	if listErr != nil {
+		t.Fatalf("git branch --list: %v\n%s", listErr, out)
+	}
+	if len(strings.TrimSpace(string(out))) == 0 {
+		t.Errorf("nonexistent-branch should be created locally on the project repo")
+	}
+	if w.BaseBranch != "nonexistent-branch" {
+		t.Errorf("BaseBranch = %q, want %q", w.BaseBranch, "nonexistent-branch")
 	}
 }
 
