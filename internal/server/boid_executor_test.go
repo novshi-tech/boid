@@ -4,12 +4,71 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
+
+// recordingLifecycle implements api.JobLifecycle for boid_executor agent stop
+// tests. It records SignalJobRuntime calls so the test can assert SIGUSR1 was
+// delivered to the right runtime; other methods are recorded only to verify
+// they are NOT called from the BoidOpAgentStop path.
+type recordingLifecycle struct {
+	mu                sync.Mutex
+	signaledRuntime   string
+	signaledSignal    syscall.Signal
+	signaledCount     int
+	completedJobID    string
+	unregisteredJobID string
+	stoppedRuntime    string
+}
+
+func (l *recordingLifecycle) CompleteJob(jobID string, _ api.JobCompletion) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.completedJobID = jobID
+}
+
+func (l *recordingLifecycle) UnregisterJob(jobID string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.unregisteredJobID = jobID
+}
+
+func (l *recordingLifecycle) CleanupTaskWindow(string) {}
+
+func (l *recordingLifecycle) StopJobRuntime(runtimeID string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.stoppedRuntime = runtimeID
+}
+
+func (l *recordingLifecycle) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.signaledRuntime = runtimeID
+	l.signaledSignal = sig
+	l.signaledCount++
+}
+
+func (l *recordingLifecycle) waitSignaled(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		l.mu.Lock()
+		ok := l.signaledRuntime != ""
+		l.mu.Unlock()
+		if ok {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
 
 type capturingTaskStore struct {
 	created           []*orchestrator.Task
@@ -460,6 +519,114 @@ func TestBoidBuiltinExecutor_TaskCreate_BrokerResolvedIDOverridesCreatePatch(t *
 	}
 	if store.created[0].ProjectID != peerUUID {
 		t.Errorf("created task ProjectID = %q, want %q (broker-resolved UUID)", store.created[0].ProjectID, peerUUID)
+	}
+}
+
+// --- agent_stop executor tests ---
+
+// BoidOpAgentStop は SignalJobRuntime(SIGUSR1) を runtime に発するだけで、
+// CompleteJob / UnregisterJob / StopJobRuntime には触れない。 これは
+// CompleteJob の preemptive call が broker token を失効させて bash EXIT trap
+// の `boid job done --output-file payload_patch.json` を invalid token と
+// して silently drop する notify --ask race (#417) と同じ理由で、 explicit
+// exit 経路でも canonical CompleteJob caller を EXIT trap に温存する設計。
+func TestBoidBuiltinExecutor_AgentStop_SignalsRuntimeOnly(t *testing.T) {
+	jobs := &stubJobStore{
+		jobs: map[string]*api.Job{
+			"job-1": {
+				ID:        "job-1",
+				TaskID:    "task-1",
+				ProjectID: "proj-1",
+				Status:    api.JobStatusRunning,
+				RuntimeID: "rt-1",
+			},
+		},
+	}
+	lifecycle := &recordingLifecycle{}
+	wf := &api.TaskWorkflowService{Lifecycle: lifecycle}
+	exec := &boidBuiltinExecutor{workflow: wf, jobs: jobs}
+	ctx := sandbox.TokenContext{JobID: "job-1", ProjectID: "proj-1"}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:    sandbox.BoidOpAgentStop,
+		JobID: "job-1",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stdout, "job-1") {
+		t.Errorf("stdout = %q, want job-1", resp.Stdout)
+	}
+
+	// StopAgent は go-routine 内で SignalJobRuntime を呼ぶ。
+	lifecycle.waitSignaled(t)
+
+	lifecycle.mu.Lock()
+	defer lifecycle.mu.Unlock()
+	if lifecycle.signaledRuntime != "rt-1" {
+		t.Errorf("signaled runtime = %q, want rt-1", lifecycle.signaledRuntime)
+	}
+	if lifecycle.signaledSignal != syscall.SIGUSR1 {
+		t.Errorf("signaled signal = %v, want SIGUSR1", lifecycle.signaledSignal)
+	}
+	if lifecycle.signaledCount != 1 {
+		t.Errorf("signaled count = %d, want 1 (no SIGKILL follow-up)", lifecycle.signaledCount)
+	}
+	if lifecycle.completedJobID != "" {
+		t.Errorf("CompleteJob lifecycle called with %q, want empty (must defer to EXIT trap)", lifecycle.completedJobID)
+	}
+	if lifecycle.unregisteredJobID != "" {
+		t.Errorf("UnregisterJob called with %q, want empty (broker token must stay valid for the EXIT trap)", lifecycle.unregisteredJobID)
+	}
+	if lifecycle.stoppedRuntime != "" {
+		t.Errorf("StopJobRuntime called with %q, want empty (agent stop must not SIGTERM the whole runtime)", lifecycle.stoppedRuntime)
+	}
+}
+
+// RuntimeID 空 (host foreground job など) は no-op 成功で返す。 失敗ではなく
+// 成功にしておかないと、 agent が誤って agent stop を呼んだ場合に bash が
+// 後続の `exit 1` を踏んで EXIT trap が failed CompleteJob を送ってしまう。
+func TestBoidBuiltinExecutor_AgentStop_NoRuntimeIsSuccess(t *testing.T) {
+	jobs := &stubJobStore{
+		jobs: map[string]*api.Job{
+			"job-foreground": {
+				ID:        "job-foreground",
+				TaskID:    "task-1",
+				ProjectID: "proj-1",
+				Status:    api.JobStatusRunning,
+				RuntimeID: "",
+			},
+		},
+	}
+	lifecycle := &recordingLifecycle{}
+	wf := &api.TaskWorkflowService{Lifecycle: lifecycle}
+	exec := &boidBuiltinExecutor{workflow: wf, jobs: jobs}
+	ctx := sandbox.TokenContext{JobID: "job-foreground", ProjectID: "proj-1"}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:    sandbox.BoidOpAgentStop,
+		JobID: "job-foreground",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s (expected 0 for no-runtime no-op)", resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stdout, "no runtime") {
+		t.Errorf("stdout = %q, want 'no runtime' hint", resp.Stdout)
+	}
+	if lifecycle.signaledCount != 0 {
+		t.Errorf("signaled count = %d, want 0 (no runtime → no signal)", lifecycle.signaledCount)
+	}
+}
+
+func TestBoidBuiltinExecutor_AgentStop_Unavailable(t *testing.T) {
+	exec := &boidBuiltinExecutor{workflow: nil, jobs: nil}
+	ctx := sandbox.TokenContext{JobID: "job-1", ProjectID: "proj-1"}
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:    sandbox.BoidOpAgentStop,
+		JobID: "job-1",
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "unavailable") {
+		t.Fatalf("expected unavailable error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
 	}
 }
 

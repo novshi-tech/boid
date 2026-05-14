@@ -1,6 +1,6 @@
 # C2 フロー：Q&A 運用
 
-> **2026-05-14 更新:** Claude Code の料金プラン変更で `claude --print` (非対話) が別枠クレジット消費となるため、 hook 経由のエージェントセッションは **再び PTY 上で interactive に起動** されるようになりました。 ただし `--resume <session_id>` による状態継承と Q&A チャンネル (state machine 経由のユーザ回答配送) は引き続き利用されており、 終了は agent 内の "paused" sentinel ではなく daemon 側 SIGTERM (`notify --ask` 成功時または `boid job done` 受領時) で行います。 本ドキュメント内の `claude --print` 記述は historic な設計意図として参照してください。
+> **2026-05-14 更新:** Claude Code の料金プラン変更で `claude --print` (非対話) が別枠クレジット消費となるため、 hook 経由のエージェントセッションは **再び PTY 上で interactive に起動** されるようになりました。 ただし `--resume <session_id>` による状態継承と Q&A チャンネル (state machine 経由のユーザ回答配送) は引き続き利用されており、 終了は agent 内の "paused" sentinel ではなく daemon 側のシグナル配送で行います: `notify --ask` 成功時または `boid agent stop` 受領時に SIGUSR1 を runtime の process group に送り、 `run-agent.py` が catch して `claude` だけに SIGTERM を転送します (bash と EXIT trap は `trap '' USR1` で生き残り、 EXIT trap の `boid job done --output-file payload_patch.json` が canonical な CompleteJob caller になります)。 本ドキュメント内の `claude --print` 記述は historic な設計意図として参照してください。
 
 C2 (Command and Control) は、 boid のエージェント実行モデルから PTY 直接対話への依存を取り払い、ユーザとのやり取りを **状態機械を介した Q&A チャンネル** に乗せる設計です。
 

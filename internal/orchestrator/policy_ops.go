@@ -11,6 +11,7 @@ const (
 	OpBoidJobShow    = "job_show"
 	OpBoidJobLog     = "job_log"
 	OpBoidActionSend = "action_send"
+	OpBoidAgentStop  = "agent_stop"
 	OpBoidTaskCreate = "task_create"
 	OpBoidTaskGet    = "task_get"
 	OpBoidTaskUpdate = "task_update"

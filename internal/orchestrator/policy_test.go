@@ -121,6 +121,7 @@ func TestDefaultBuiltinPolicies_GateBoidOps(t *testing.T) {
 		OpBoidJobShow,
 		OpBoidJobLog,
 		OpBoidActionSend,
+		OpBoidAgentStop,
 		OpBoidTaskCreate,
 		OpBoidTaskGet,
 		OpBoidTaskUpdate,

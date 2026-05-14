@@ -103,7 +103,7 @@ boid task notify "$BOID_TASK_ID" \
   --ask "<full question body>"
 ```
 
-Both `--message` (short) and `--ask` (full body) are required. The call transitions the task to `awaiting`, fires the notify hook, and the daemon then SIGTERMs your runtime — **just stop generating after the call returns**. No sentinel output, no explicit exit; the EXIT trap's follow-up `boid job done` is absorbed idempotently.
+Both `--message` (short) and `--ask` (full body) are required. The call transitions the task to `awaiting`, fires the notify hook, and the daemon then signals your runtime (SIGUSR1 → `run-agent.py` SIGTERMs `claude`; bash and the EXIT trap survive) — **just stop generating after the call returns**. No sentinel output, no explicit exit; the EXIT trap fires `boid job done --output-file payload_patch.json` as the canonical completion call, preserving your session id for the next resume.
 
 When the user replies, the kit re-invokes you with:
 
@@ -136,7 +136,7 @@ Multiple Q&A turns are fine — each `--ask` replaces the previous pending answe
 When the active instruction is a question about prior behavior ("explain why you stopped", "summarize what happened", "what is the cause"), the answer **still goes through `boid task notify`** — never as bare assistant text. The Claude session has no other channel to the user; whatever you write as a closing paragraph in the agent transcript is invisible.
 
 - If the answer naturally invites a next-step decision ("should I proceed with X?"), put the explanation in `--ask` and present the follow-up options there.
-- If the answer is purely informational, put it in `--message` (FYI mode, no `--ask`) and then exit via `boid job done`. Without `--ask`, the task will not transition to `awaiting`, so the user has no built-in reply turn — make sure that is the intent.
+- If the answer is purely informational, put it in `--message` (FYI mode, no `--ask`) and then exit via `boid agent stop`. Without `--ask`, the task will not transition to `awaiting`, so the user has no built-in reply turn — make sure that is the intent.
 
 A reopen turn that ends with bare assistant text is treated by boid as "no ask, no exit action" → `auto_advance` closes the task to `done` with **no visible response surfaced**. This is the failure mode behind the 2026-05-14 incident where a correct diagnostic reply never reached the user.
 
@@ -185,12 +185,14 @@ These numbers can be overridden by the active instruction.
 
 ## Exit Handling (required)
 
-**Every invocation** — first start, user-reply resume, reopen — must terminate in a `boid` command. boid records `notify` / `notify --ask` / `job done` actions; it does **not** record agent transcript text. Ending the session with bare assistant text is equivalent to leaving it open without action: the user sees an empty `done` task with no visible response.
+**Every invocation** — first start, user-reply resume, reopen — must terminate in a `boid` command. boid records `notify` / `notify --ask` / `agent stop` (and the bash EXIT trap's follow-up `job done`) actions; it does **not** record agent transcript text. Ending the session with bare assistant text is equivalent to leaving it open without action: the user sees an empty `done` task with no visible response.
 
 When all children are terminal, the supervisor **must execute exactly one of the following**. Leaving the session open without action is forbidden (users cannot tell the supervisor finished unless a hook fires).
 
-- **A. Autonomous exit** — `boid job done "$BOID_JOB_ID" --exit-code 0`
+- **A. Autonomous exit** — `boid agent stop "$BOID_JOB_ID"` (the daemon SIGUSR1s your runtime; bash EXIT trap then fires `boid job done --output-file payload_patch.json` as the canonical completion path — keep the session id intact)
 - **B. Exit-confirmation ask** — Call `notify --ask` to confirm closing. On resume, execute A if the user approves; otherwise continue with the requested work.
+
+> Safety net: the claude-code kit registers a `Stop` hook that calls `boid agent stop` whenever your response loop ends. If you forget to take action A or B, the Stop hook still drives the runtime to a clean shutdown — but the task ends silently with no follow-up surfaced to the user. Always pick A or B explicitly so the user sees a final notification.
 
 Choose A only when **all** of:
 

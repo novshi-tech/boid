@@ -48,6 +48,14 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 			return nil, fmt.Errorf("boid shim: unsupported boid action subcommand %q", args[1])
 		}
 		return parseBoidActionSend(args[2:])
+	case "agent":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("boid shim: missing boid agent subcommand")
+		}
+		if args[1] != "stop" {
+			return nil, fmt.Errorf("boid shim: unsupported boid agent subcommand %q", args[1])
+		}
+		return parseBoidAgentStop(args[2:])
 	case "job":
 		if len(args) < 2 {
 			return nil, fmt.Errorf("boid shim: missing boid job subcommand")
@@ -90,6 +98,26 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 	default:
 		return nil, fmt.Errorf("boid shim: unsupported boid subcommand %q", args[0])
 	}
+}
+
+// parseBoidAgentStop builds the BoidRequest for `boid agent stop <job-id>`.
+// The agent (claude) invokes this to ask the daemon to terminate its own
+// claude process while leaving bash and the EXIT trap alive — so the
+// trap's `boid job done --output-file payload_patch.json` can complete the
+// job through the broker normally with the session id intact. The job
+// id is the current job (BOID_JOB_ID); broker rejects calls targeting any
+// other job.
+func parseBoidAgentStop(args []string) (*BoidRequest, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("boid shim: agent stop requires a job id")
+	}
+	if len(args) > 1 {
+		return nil, fmt.Errorf("boid shim: unsupported argument %q for boid agent stop", args[1])
+	}
+	return &BoidRequest{
+		Op:    BoidOpAgentStop,
+		JobID: args[0],
+	}, nil
 }
 
 func parseBoidJobDone(args []string) (*BoidRequest, error) {

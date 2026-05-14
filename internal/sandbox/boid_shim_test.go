@@ -78,6 +78,70 @@ func TestRunBoidShim_JobDoneSendsTypedRequest(t *testing.T) {
 	}
 }
 
+// `boid agent stop $JOB` は BoidOpAgentStop + JobID だけを broker に送る。
+// shim 経由でも host 経由でも runtime の解決は server 側に任せる契約。
+func TestRunBoidShim_AgentStopSendsTypedRequest(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.Remove(sockPath)
+	})
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-agent-stop")
+
+	resp, err := sandbox.RunBoidShim([]string{"agent", "stop", "job-7"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpAgentStop {
+		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpAgentStop)
+	}
+	if req.Boid.JobID != "job-7" {
+		t.Fatalf("job id = %q, want job-7", req.Boid.JobID)
+	}
+}
+
+func TestRunBoidShim_AgentStopRejectsMissingArg(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/unused")
+	t.Setenv("BOID_BROKER_TOKEN", "tok")
+	_, err := sandbox.RunBoidShim([]string{"agent", "stop"})
+	if err == nil {
+		t.Fatal("expected error for missing job id")
+	}
+	if !strings.Contains(err.Error(), "requires a job id") {
+		t.Fatalf("error = %v, want 'requires a job id'", err)
+	}
+}
+
 func TestRunBoidShim_TaskCreateSendsTypedRequest(t *testing.T) {
 	dir := t.TempDir()
 	sockPath := filepath.Join(dir, "broker.sock")

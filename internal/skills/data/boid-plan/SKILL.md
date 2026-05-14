@@ -260,7 +260,7 @@ The notification script (configured under `notify.command` in `~/.config/boid/co
 
 When all children have reached `done` / `aborted`, the plan agent **must execute exactly one of the following**. Do not let the session hang without action (users cannot notice the plan has completed unless something fires):
 
-- **A. Autonomous exit**: Execute `boid job done "$BOID_JOB_ID" --exit-code 0`
+- **A. Autonomous exit**: Execute `boid agent stop "$BOID_JOB_ID"` (the daemon SIGUSR1s your runtime; bash EXIT trap then fires the canonical `boid job done --output-file payload_patch.json` so the agent's session id survives into `task.payload`)
 - **B. Exit-confirmation ask**: Use `boid task notify --ask` to ask the user whether to close the session. On resume, execute A when the user confirms; otherwise proceed with the requested additional work.
 
 Choose A when **all** of the following are met; otherwise B:
@@ -284,13 +284,15 @@ B. Request additional work" \
 # Session ends here. On resume, BOID_USER_ANSWER will be set.
 ```
 
-On resume, branch on `$BOID_USER_ANSWER`: when it indicates approval ("A" / "ok" / "approve"), run `boid job done "$BOID_JOB_ID" --exit-code 0`. Otherwise, proceed with the requested additional work.
+On resume, branch on `$BOID_USER_ANSWER`: when it indicates approval ("A" / "ok" / "approve"), run `boid agent stop "$BOID_JOB_ID"`. Otherwise, proceed with the requested additional work.
 
 ### Relationship with EXIT trap
 
-Calling `boid job done` causes the daemon to send SIGTERM to the process.
-When bash exits due to SIGTERM, the EXIT trap fires `boid job done` again,
-but the daemon absorbs the double-fire so no double-processing occurs.
+`boid agent stop` asks the daemon to deliver SIGUSR1 to the runtime's process group. `run-agent.py` catches it and SIGTERMs only the `claude` process; bash and the EXIT trap survive (`trap '' USR1` propagates as SIG_IGN across execve). The trap then fires `boid job done --output-file payload_patch.json` against a still-valid broker token, completing the job through the normal path with `payload_patch.json` (the agent's session id + any artifact) intact.
+
+Do **not** call `boid job done` directly from the agent: it would unregister the broker token immediately, and the EXIT trap's follow-up `boid job done --output-file ...` would be silently rejected as `invalid token` — dropping the session id and breaking the next hook's `--resume`.
+
+> Safety net: the claude-code kit registers a `Stop` hook (via `--settings`) that calls `boid agent stop "$BOID_JOB_ID"` whenever your response loop ends, so a forgotten exit call won't strand the task in `executing`. Still pick A or B explicitly so the user sees a clear final state.
 
 ## Hard Cap (runaway prevention)
 
