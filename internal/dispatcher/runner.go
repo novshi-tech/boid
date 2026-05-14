@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"sort"
 	"sync"
+	"syscall"
 
 	"github.com/google/uuid"
 
@@ -539,6 +540,22 @@ func (r *Runner) StopJobRuntime(runtimeID string) {
 	}
 	if err := r.Runtime.Stop(context.Background(), runtimeID); err != nil {
 		slog.Debug("stop job runtime", "runtime_id", runtimeID, "error", err)
+	}
+}
+
+// SignalJobRuntime delivers a single signal to the runtime's process group
+// without any SIGKILL follow-up. NotifyTask uses this for SIGUSR1 to ask the
+// agent (run-agent.py) to stop the claude session gracefully — bash and the
+// EXIT trap stay alive (via `trap '' USR1` propagated as SIG_IGN across
+// execve), so payload_patch capture and `boid job done --output-file`
+// continue through the normal completion path. Best-effort: errors at debug
+// level only.
+func (r *Runner) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
+	if r.Runtime == nil || runtimeID == "" {
+		return
+	}
+	if err := r.Runtime.Signal(context.Background(), runtimeID, sig); err != nil {
+		slog.Debug("signal job runtime", "runtime_id", runtimeID, "signal", sig, "error", err)
 	}
 }
 

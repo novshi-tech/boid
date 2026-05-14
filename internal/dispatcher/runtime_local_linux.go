@@ -307,6 +307,25 @@ func (r *LocalRuntime) Stop(ctx context.Context, runtimeID string) error {
 	}
 }
 
+// Signal delivers a single signal to the runtime's process group without any
+// SIGKILL follow-up. NotifyTask uses this for SIGUSR1 (agent-stop) — the
+// signal is delivered process-group-wide (kill(-pgid, sig)) and processes
+// configured to ignore it via `trap '' USR1` / SIG_IGN survive unaffected.
+// No-op when the runtime session has already exited.
+func (r *LocalRuntime) Signal(_ context.Context, runtimeID string, sig syscall.Signal) error {
+	session, err := r.session(runtimeID)
+	if err != nil {
+		return err
+	}
+	if !session.isRunning() {
+		return nil
+	}
+	if err := terminateProcessGroup(session.cmd.Process.Pid, sig); err != nil && !errors.Is(err, unix.ESRCH) {
+		return err
+	}
+	return nil
+}
+
 // WriteInputRuntime writes data to the PTY master of the given runtime.
 // Returns nil if the session is not running or has already exited.
 func (r *LocalRuntime) WriteInputRuntime(runtimeID string, data []byte) error {

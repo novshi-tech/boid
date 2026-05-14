@@ -100,10 +100,16 @@ func TestNotifyTask_AskMode_TransitionsToAwaiting(t *testing.T) {
 	}
 }
 
-// notify --ask must terminate any running hook jobs for the task so the
-// interactive claude session that called notify actually exits. Without this
-// the PTY-backed runtime keeps running even though the task is now awaiting.
-func TestNotifyTask_AskMode_CompletesRunningJobs(t *testing.T) {
+// notify --ask must signal the agent (claude) of each running hook job so
+// the interactive session that called notify actually pauses. Without this
+// the PTY-backed runtime keeps running forever even though the task is now
+// awaiting. The signal is routed as a StopAgent call (SIGUSR1 to the
+// runtime process group, handled by run-agent.py) rather than CompleteJob:
+// CompleteJob would release the broker token and reject the bash EXIT
+// trap's `boid job done --output-file payload_patch.json` as "invalid
+// token", silently dropping the agent's session id and breaking the next
+// hook's resume.
+func TestNotifyTask_AskMode_StopsAgentForRunningJobs(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "t1",
 		ProjectID: "proj-1",
@@ -112,9 +118,10 @@ func TestNotifyTask_AskMode_CompletesRunningJobs(t *testing.T) {
 		Behavior:  "executor",
 	}
 	jobs := []*Job{
-		{ID: "j-completed", TaskID: "t1", Status: JobStatusCompleted},
-		{ID: "j-running", TaskID: "t1", Status: JobStatusRunning, Interactive: true},
-		{ID: "j-failed", TaskID: "t1", Status: JobStatusFailed},
+		{ID: "j-completed", TaskID: "t1", Status: JobStatusCompleted, RuntimeID: "rt-completed"},
+		{ID: "j-running", TaskID: "t1", Status: JobStatusRunning, Interactive: true, RuntimeID: "rt-running"},
+		{ID: "j-failed", TaskID: "t1", Status: JobStatusFailed, RuntimeID: "rt-failed"},
+		{ID: "j-no-runtime", TaskID: "t1", Status: JobStatusRunning, Interactive: true, RuntimeID: ""},
 	}
 	notifier := &capturingNotifier{}
 	workflow := &stubWorkflowService{}
@@ -131,14 +138,17 @@ func TestNotifyTask_AskMode_CompletesRunningJobs(t *testing.T) {
 	if workflow.appliedType != "ask" {
 		t.Fatalf("applied action type = %q, want ask", workflow.appliedType)
 	}
-	if len(workflow.completedJobs) != 1 {
-		t.Fatalf("completed jobs = %d, want 1 (only the running one)", len(workflow.completedJobs))
+	// CompleteJob must NOT be called preemptively — that would invalidate the
+	// broker token and lose the EXIT trap's payload_patch.
+	if len(workflow.completedJobs) != 0 {
+		t.Fatalf("completed jobs = %d, want 0 (CompleteJob must not preempt the EXIT trap path)", len(workflow.completedJobs))
 	}
-	if workflow.completedJobs[0].JobID != "j-running" {
-		t.Errorf("completed jobs[0].JobID = %q, want j-running (terminal-state jobs must be skipped)", workflow.completedJobs[0].JobID)
+	// Only the running job with a RuntimeID should receive StopAgent.
+	if len(workflow.stoppedAgentRuntimes) != 1 {
+		t.Fatalf("stopped agent runtimes = %v, want exactly [rt-running]", workflow.stoppedAgentRuntimes)
 	}
-	if workflow.completedJobs[0].ExitCode != 0 {
-		t.Errorf("completed jobs[0].ExitCode = %d, want 0 (Q&A pause must not look like a job_failed)", workflow.completedJobs[0].ExitCode)
+	if workflow.stoppedAgentRuntimes[0] != "rt-running" {
+		t.Errorf("stopped agent runtimes[0] = %q, want rt-running", workflow.stoppedAgentRuntimes[0])
 	}
 }
 

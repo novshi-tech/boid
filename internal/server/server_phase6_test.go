@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -32,6 +33,9 @@ func (noopRuntime) Wait(_ context.Context, _ string) (dispatcher.RuntimeExit, er
 	return dispatcher.RuntimeExit{}, dispatcher.ErrRuntimeUnsupported
 }
 func (noopRuntime) Stop(_ context.Context, _ string) error { return nil }
+func (noopRuntime) Signal(_ context.Context, _ string, _ syscall.Signal) error {
+	return nil
+}
 
 func TestServer_Smoke_StartDispatchJobDoneAndAutoAdvance(t *testing.T) {
 	ts := newSmokeServer(t)

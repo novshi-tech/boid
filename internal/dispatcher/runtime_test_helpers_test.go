@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"syscall"
 
 	"github.com/novshi-tech/boid/internal/dispatcher"
 )
@@ -66,6 +67,10 @@ func (r *statefulRuntime) Stop(_ context.Context, runtimeID string) error {
 	}
 	delete(r.starts, runtimeID)
 	r.stopped = append(r.stopped, runtimeID)
+	return nil
+}
+
+func (r *statefulRuntime) Signal(_ context.Context, _ string, _ syscall.Signal) error {
 	return nil
 }
 

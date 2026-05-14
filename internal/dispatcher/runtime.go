@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"syscall"
 )
 
 var ErrRuntimeUnsupported = errors.New("job runtime operation is not supported")
@@ -50,4 +51,11 @@ type JobRuntime interface {
 	Resize(ctx context.Context, runtimeID string, size TerminalSize) error
 	Wait(ctx context.Context, runtimeID string) (RuntimeExit, error)
 	Stop(ctx context.Context, runtimeID string) error
+	// Signal sends a single signal to the runtime's process group without
+	// any follow-up SIGKILL. Used by NotifyTask to drive an "agent-stop"
+	// SIGUSR1 to run-agent.py while leaving bash / EXIT trap intact (see
+	// generateOuterScript / generateInnerScript for the matching `trap ''
+	// USR1`). Implementations should be no-op when the runtime has already
+	// exited.
+	Signal(ctx context.Context, runtimeID string, sig syscall.Signal) error
 }
