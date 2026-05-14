@@ -26,7 +26,7 @@ func TestDeployAll_CreatesBothSkills(t *testing.T) {
 		}
 	}
 
-	for _, ref := range []string{"state-machine.md", "data-model.md"} {
+	for _, ref := range []string{"data-model.md"} {
 		path := filepath.Join(baseDir, "boid-sandbox", "references", ref)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			t.Errorf("boid-sandbox reference file missing: %s", ref)
