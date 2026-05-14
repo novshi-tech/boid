@@ -1,0 +1,7 @@
+id: hook-attach-smoke
+name: Hook Attach Smoke
+task_behaviors:
+  slow:
+    name: Slow Hook
+    kits:
+      - github.com/novshi-tech/boid-kits/hook-attach-smoke

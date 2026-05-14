@@ -52,7 +52,7 @@
 ### アーキテクチャ
 
 - [概要](architecture/overview.md) — プロセス構成、レイヤと依存方向、主要コンポーネント、 1 アクションのデータの流れ
-- [C2 フロー](architecture/c2-flow.md) — 非対話セッション (claude --print) + Q&A 経由運用の設計と移行ノート
+- [C2 フロー](architecture/c2-flow.md) — Q&A チャンネル経由運用の設計と移行ノート (claude --print 由来の設計が現在は PTY interactive に戻った経緯あり)
 - [永続化レイヤ](architecture/persistence.md) — SQLite のテーブル一覧、 主要カラム、 JSON カラムの中身、 マイグレーションの扱い
 - [サンドボックス内部実装](architecture/sandbox-internals.md) — outer / setup / inner の 3 段スクリプト、 mount / user namespace、 pasta + nftables、 broker と shim の連携、後片付けの安全弁
 - [Web UI 内部実装](architecture/web-internals.md) — 認証ミドルウェア、 セッション cookie (HMAC)、ペアリングフロー、CSRF、 Server-Sent Events

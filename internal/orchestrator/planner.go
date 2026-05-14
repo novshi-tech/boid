@@ -74,6 +74,13 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		SecretNamespace: meta.SecretNamespace,
 		Env:             mergeStringMaps(behavior.Env, taskBusinessEnv(task)),
 		ExecutionState:  string(task.Status),
+		// Hook jobs run an agent session (claude code etc.) that requires a
+		// real PTY: non-interactive `claude --print` consumes a separate Max
+		// credit pool that bills extra, and we therefore route every agent
+		// invocation through an interactive session. The EXIT trap added by
+		// dispatcher (Foreground=false) still fires `boid job done` on
+		// process exit so the daemon learns when the agent finishes.
+		Interactive: true,
 	}
 	return spec, nil, nil
 }

@@ -1,6 +1,8 @@
-# C2 Flow: Non-interactive Sessions + Q&A
+# C2 Flow: Q&A Channel
 
-C2 (Command and Control) is an architectural shift in boid's agent execution model: from **direct PTY interaction** to **`claude --print` non-interactive + Q&A-based communication**.
+> **Updated 2026-05-14:** Claude Code's upcoming pricing change moves `claude --print` (non-interactive) to a separate metered credit pool, so hook-launched agent sessions now run on a **real PTY in interactive mode** again. The `--resume <session_id>` continuation contract and the state-machine Q&A channel survive unchanged; what changed is that session termination is driven by daemon-side SIGTERM (on a successful `notify --ask` or `boid job done` from the agent) rather than the agent emitting a "paused" sentinel. References to `claude --print` below describe the historical design.
+
+C2 (Command and Control) is the design that decouples boid's agent execution model from direct PTY interaction and routes user interaction through a **state-machine Q&A channel**.
 
 ## Motivation
 

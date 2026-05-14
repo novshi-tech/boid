@@ -145,6 +145,63 @@ func TestPlanHook_UsesScriptPathDirectlyAndSetsKitRoots(t *testing.T) {
 	}
 }
 
+// Hook jobs always request an interactive PTY: agent runners (claude code etc.)
+// are launched via real PTY sessions and rely on daemon-side SIGTERM (on
+// `boid task notify --ask` or `boid job done`) to terminate. Gate jobs run on
+// the host directly and have no use for the flag.
+func TestPlanHook_AlwaysInteractive(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{
+		Name: "executor",
+	}, &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Status: TaskStatusExecuting})
+
+	hookReq, cleanup, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook: Hook{
+			ID:         "hook-1",
+			ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if !hookReq.Interactive {
+		t.Errorf("PlanHook spec.Interactive = false, want true (hook jobs must allocate a PTY)")
+	}
+
+	// Sanity: gate jobs do NOT inherit Interactive — they run on host and have
+	// no PTY to drive.
+	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "gates"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gateReq, gateCleanup, err := planner.PlanGate(&GateFireEvent{
+		EventID:   "event-2",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Gate: Gate{
+			ID:         "gate-1",
+			ScriptPath: filepath.Join(projectDir, ".boid/gates", "gate-1.sh"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanGate: %v", err)
+	}
+	if gateCleanup != nil {
+		defer gateCleanup()
+	}
+	if gateReq.Interactive {
+		t.Errorf("PlanGate spec.Interactive = true, want false (gates run host-direct without a PTY)")
+	}
+}
+
 // PlanGate uses Gate.ScriptPath directly as Argv[0]. No staging directory is
 // created. Gates run on the host directly, so Visibility (including KitRoots)
 // is not populated.

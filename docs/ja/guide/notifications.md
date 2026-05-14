@@ -41,9 +41,9 @@ agent は以下のようにコマンドを呼び出します。
 boid task notify ${BOID_TASK_ID} --message "PR #42 のレビュー反映方針を判断してほしい"
 ```
 
-notify は **interactive モード** (`BOID_INTERACTIVE=1`) のときだけ呼ばれます。自律モードでは agent は notify を呼ばず、状況を artifact に書いて終了します。
+hook 経由のエージェントセッションは常に PTY 上で対話的に起動されるため、 `BOID_INTERACTIVE` による自律 / 対話の場合分けは不要です。 `boid task notify --ask` を呼べば boid daemon が task を `awaiting` に遷移させ、 同時にこのランタイムを SIGTERM します。 ユーザの回答が届いた時点で daemon が新しいセッションを spawn し、 `$BOID_USER_ANSWER` を介して回答を引き渡します。
 
-notify 直後、agent はセッション内に質問本文 (選択肢・判断材料・context) を出力してユーザの返答を待ちます。ユーザは Web UI のセッションビューアで確認し、返答します。
+notify 直後、agent はセッション内に質問本文 (選択肢・判断材料・context) を出力します。 ユーザは Web UI のセッションビューアで確認し、返答します。
 
 呼び出しポリシーの詳細は [`/boid-supervisor` SKILL.md](../../../internal/skills/data/boid-supervisor/SKILL.md) の「いつ notify を呼ぶか」節を参照してください。
 

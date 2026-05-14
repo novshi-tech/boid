@@ -103,7 +103,7 @@ boid task notify "$BOID_TASK_ID" \
   --ask "<full question body>"
 ```
 
-Both `--message` (short) and `--ask` (full body) are required. The call transitions the task to `awaiting`, fires the notify hook, and ends your session naturally — **do not wait in the session**, just stop generating.
+Both `--message` (short) and `--ask` (full body) are required. The call transitions the task to `awaiting`, fires the notify hook, and the daemon then SIGTERMs your runtime — **just stop generating after the call returns**. No sentinel output, no explicit exit; the EXIT trap's follow-up `boid job done` is absorbed idempotently.
 
 When the user replies, the kit re-invokes you with:
 

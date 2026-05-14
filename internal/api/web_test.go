@@ -146,6 +146,13 @@ type stubWorkflowService struct {
 	appliedTaskID  string
 	appliedType    string
 	appliedPayload json.RawMessage
+
+	completedJobs []completedJobCall
+}
+
+type completedJobCall struct {
+	JobID    string
+	ExitCode int
 }
 
 func (s *stubWorkflowService) ApplyAction(ctx context.Context, taskID string, req ApplyActionRequest) (*ActionApplication, error) {
@@ -162,7 +169,8 @@ func (s *stubWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 }
 
 func (s *stubWorkflowService) CompleteJob(ctx context.Context, jobID string, req JobDoneRequest) (*Job, error) {
-	return nil, nil
+	s.completedJobs = append(s.completedJobs, completedJobCall{JobID: jobID, ExitCode: req.ExitCode})
+	return &Job{ID: jobID, Status: JobStatusCompleted, ExitCode: req.ExitCode}, nil
 }
 
 func (s *stubWorkflowService) TriggerDependents(ctx context.Context, taskID string) {}

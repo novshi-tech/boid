@@ -41,9 +41,9 @@ An agent calls the command like this:
 boid task notify ${BOID_TASK_ID} --message "Need a decision on how to apply PR #42 review feedback"
 ```
 
-Notify is only called in **interactive mode** (`BOID_INTERACTIVE=1`). In autonomous mode the agent writes the situation to the task artifact and exits instead.
+Hook-launched agent sessions always run interactively on a PTY, so there is no need to branch on `BOID_INTERACTIVE` between autonomous and interactive modes. Calling `boid task notify --ask` transitions the task to `awaiting` and the boid daemon SIGTERMs the runtime immediately. When the user replies, the daemon spawns a fresh session and surfaces the answer through `$BOID_USER_ANSWER`.
 
-Immediately after calling notify, the agent outputs the question body (options, context, decision criteria) to the session and waits for your reply. You read it in the Web UI session viewer and respond there.
+Immediately before notify, the agent emits the question body (options, context, decision criteria) to the session so the user can read it in the Web UI session viewer and respond there.
 
 For the full calling policy, see the "いつ notify を呼ぶか" (when to call notify) section in [`/boid-supervisor` SKILL.md](../../../internal/skills/data/boid-supervisor/SKILL.md).
 
