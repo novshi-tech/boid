@@ -12,7 +12,7 @@ A supervisor task **triages** a request, creates child executor tasks, and **mon
 
 ## Context to Read First
 
-Read these files from the sandbox before doing anything else (full schema in [boid-sandbox / data-model.md](../boid-sandbox/references/data-model.md)):
+Read these files from the sandbox before doing anything else (full schema in [boid-sandbox / data-model.md](../boid-sandbox/references/data-model.md)). **Always re-read on every invocation — including resume after a user reply and reopen with a new instruction.** `claude --resume` carries chat history but does **not** guarantee that prior tool-call inputs remain accessible (in particular, the body of your own previous `notify --ask` is frequently missing). If a user reply or reopen instruction looks fragmentary or context-free, the active instruction and payload on disk almost certainly have the missing piece — read them before deciding "I don't have context".
 
 | File | Contents |
 |---|---|
@@ -131,6 +131,15 @@ Multiple Q&A turns are fine — each `--ask` replaces the previous pending answe
 
 **Never use `notify` without `--ask` for decision branches.** Bare `notify` is FYI-only and does not block.
 
+### Reopen with a Question / Explanation Request
+
+When the active instruction is a question about prior behavior ("explain why you stopped", "summarize what happened", "what is the cause"), the answer **still goes through `boid task notify`** — never as bare assistant text. The Claude session has no other channel to the user; whatever you write as a closing paragraph in the agent transcript is invisible.
+
+- If the answer naturally invites a next-step decision ("should I proceed with X?"), put the explanation in `--ask` and present the follow-up options there.
+- If the answer is purely informational, put it in `--message` (FYI mode, no `--ask`) and then exit via `boid job done`. Without `--ask`, the task will not transition to `awaiting`, so the user has no built-in reply turn — make sure that is the intent.
+
+A reopen turn that ends with bare assistant text is treated by boid as "no ask, no exit action" → `auto_advance` closes the task to `done` with **no visible response surfaced**. This is the failure mode behind the 2026-05-14 incident where a correct diagnostic reply never reached the user.
+
 ## When to Ask (notify --ask)
 
 - **Plan-approval (conditionally required)** — Before creating children, present the plan via `notify --ask` and obtain approval. Skip when:
@@ -175,6 +184,8 @@ The daemon does not enforce caps; enforce them in your own control flow.
 These numbers can be overridden by the active instruction.
 
 ## Exit Handling (required)
+
+**Every invocation** — first start, user-reply resume, reopen — must terminate in a `boid` command. boid records `notify` / `notify --ask` / `job done` actions; it does **not** record agent transcript text. Ending the session with bare assistant text is equivalent to leaving it open without action: the user sees an empty `done` task with no visible response.
 
 When all children are terminal, the supervisor **must execute exactly one of the following**. Leaving the session open without action is forbidden (users cannot tell the supervisor finished unless a hook fires).
 
