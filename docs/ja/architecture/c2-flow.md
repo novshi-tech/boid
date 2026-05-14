@@ -1,6 +1,8 @@
-# C2 フロー：非対話セッション + Q&A 運用
+# C2 フロー：Q&A 運用
 
-C2 (Command and Control) は、 boid のエージェント実行モデルを **PTY 直接対話** から **`claude --print` 非対話 + Q&A 経由** に切り替えるアーキテクチャです。
+> **2026-05-14 更新:** Claude Code の料金プラン変更で `claude --print` (非対話) が別枠クレジット消費となるため、 hook 経由のエージェントセッションは **再び PTY 上で interactive に起動** されるようになりました。 ただし `--resume <session_id>` による状態継承と Q&A チャンネル (state machine 経由のユーザ回答配送) は引き続き利用されており、 終了は agent 内の "paused" sentinel ではなく daemon 側 SIGTERM (`notify --ask` 成功時または `boid job done` 受領時) で行います。 本ドキュメント内の `claude --print` 記述は historic な設計意図として参照してください。
+
+C2 (Command and Control) は、 boid のエージェント実行モデルから PTY 直接対話への依存を取り払い、ユーザとのやり取りを **状態機械を介した Q&A チャンネル** に乗せる設計です。
 
 ## 動機
 

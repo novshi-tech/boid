@@ -100,6 +100,77 @@ func TestNotifyTask_AskMode_TransitionsToAwaiting(t *testing.T) {
 	}
 }
 
+// notify --ask must terminate any running hook jobs for the task so the
+// interactive claude session that called notify actually exits. Without this
+// the PTY-backed runtime keeps running even though the task is now awaiting.
+func TestNotifyTask_AskMode_CompletesRunningJobs(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "t1",
+		ProjectID: "proj-1",
+		Title:     "my task",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "executor",
+	}
+	jobs := []*Job{
+		{ID: "j-completed", TaskID: "t1", Status: JobStatusCompleted},
+		{ID: "j-running", TaskID: "t1", Status: JobStatusRunning, Interactive: true},
+		{ID: "j-failed", TaskID: "t1", Status: JobStatusFailed},
+	}
+	notifier := &capturingNotifier{}
+	workflow := &stubWorkflowService{}
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{task: task},
+		Jobs:     &stubJobStore{jobsByTask: map[string][]*Job{task.ID: jobs}},
+		Notify:   notifier,
+		Workflow: workflow,
+	}
+
+	if err := svc.NotifyTask(context.Background(), "t1", "Need decision", "Continue?", "q-1", "", ""); err != nil {
+		t.Fatalf("NotifyTask: %v", err)
+	}
+	if workflow.appliedType != "ask" {
+		t.Fatalf("applied action type = %q, want ask", workflow.appliedType)
+	}
+	if len(workflow.completedJobs) != 1 {
+		t.Fatalf("completed jobs = %d, want 1 (only the running one)", len(workflow.completedJobs))
+	}
+	if workflow.completedJobs[0].JobID != "j-running" {
+		t.Errorf("completed jobs[0].JobID = %q, want j-running (terminal-state jobs must be skipped)", workflow.completedJobs[0].JobID)
+	}
+	if workflow.completedJobs[0].ExitCode != 0 {
+		t.Errorf("completed jobs[0].ExitCode = %d, want 0 (Q&A pause must not look like a job_failed)", workflow.completedJobs[0].ExitCode)
+	}
+}
+
+// Progress mode (notify --progress) never terminates jobs — it just records a
+// timeline entry — so the running hook job is left alone.
+func TestNotifyTask_ProgressMode_LeavesRunningJobsAlone(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "t1",
+		ProjectID: "proj-1",
+		Title:     "my task",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "executor",
+	}
+	jobs := []*Job{
+		{ID: "j-running", TaskID: "t1", Status: JobStatusRunning, Interactive: true},
+	}
+	workflow := &stubWorkflowService{}
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{task: task},
+		Actions:  stubActionStore{},
+		Jobs:     &stubJobStore{jobsByTask: map[string][]*Job{task.ID: jobs}},
+		Workflow: workflow,
+	}
+
+	if err := svc.NotifyTask(context.Background(), "t1", "", "", "", "", "stage 2 done"); err != nil {
+		t.Fatalf("NotifyTask: %v", err)
+	}
+	if len(workflow.completedJobs) != 0 {
+		t.Errorf("completed jobs = %v, want none (progress mode does not pause)", workflow.completedJobs)
+	}
+}
+
 func TestNotifyTask_AskMode_SetsQuestionPageURLPath(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "t1",

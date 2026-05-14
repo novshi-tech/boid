@@ -60,7 +60,7 @@ else
 fi
 ```
 
-After calling `notify --ask`, do not "wait in the session" - just stop generating. Multiple Q&A turns are fine; each `--ask` clears the previous `pending_answer` and stores a fresh question.
+After calling `notify --ask`, just stop generating - the boid daemon SIGTERMs your runtime once the awaiting transition succeeds and re-spawns you with `$BOID_USER_ANSWER` set when the user replies. No sentinel output, no explicit exit. Multiple Q&A turns are fine; each `--ask` clears the previous `pending_answer` and stores a fresh question.
 
 ## Behavior Catalog
 

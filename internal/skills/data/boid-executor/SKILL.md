@@ -29,7 +29,9 @@ When the task has been reopened, earlier elements of `instructions.yaml` are pri
 2. **Implement** — make the code / test / doc changes the task asks for. Stay inside the executor's worktree.
 3. **Verify** — run the project's quick verification (typically tests + lint) before committing. The active instruction usually names the verification command or release skill that includes verification.
 4. **Release** — follow the release steps in the active instruction. Common shapes: `git add` + `git commit` (+ optional `git push`), or invoking a project release skill.
-5. **Exit** — exit 0. The hook EXIT trap fires `boid job done` and the task transitions to `done`. The parent supervisor takes it from there.
+5. **Exit** — run `boid job done "$BOID_JOB_ID" --exit-code 0`. The daemon then SIGTERMs the runtime; the bash EXIT trap fires `boid job done` again and CompleteJob's idempotency guard absorbs the second call. The task transitions to `done` and the parent supervisor takes it from there.
+
+> Note: executor agents now run in interactive PTY sessions (the `claude` binary does not exit on its own), so the EXIT trap alone is not enough — you must call `boid job done` explicitly.
 
 ## Asking the User
 
@@ -41,7 +43,7 @@ boid task notify "$BOID_TASK_ID" \
   --ask "<full question body>"
 ```
 
-Both `--message` (short) and `--ask` (full body) are required. The call transitions the task to `awaiting`, fires the notify hook, and ends your session naturally — **do not wait in the session**, just stop generating. When the user replies, the kit re-invokes you with `$BOID_USER_ANSWER` set. Branch on the answer to continue.
+Both `--message` (short) and `--ask` (full body) are required. The call transitions the task to `awaiting`, fires the notify hook, and the daemon then SIGTERMs your runtime — **just stop generating after the call returns**. No sentinel output, no explicit exit. When the user replies, the kit re-invokes you with `$BOID_USER_ANSWER` set and your prior `claude --resume` session id restored. Branch on the answer to continue.
 
 ## Aborting
 

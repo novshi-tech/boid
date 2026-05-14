@@ -935,6 +935,29 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 	}); err != nil {
 		return err
 	}
+
+	// Terminate any hook jobs still running for this task so PTY-backed
+	// interactive agent sessions actually stop after a notify --ask. Without
+	// this the claude (interactive) process keeps the runtime alive forever:
+	// nothing else SIGTERMs it. CompleteJob marks the job completed, fires the
+	// dispatch loop (which short-circuits on the awaiting status we just set),
+	// and async-SIGTERMs the runtime. The EXIT trap's follow-up `boid job done`
+	// is absorbed by CompleteJob's idempotency guard.
+	if s.Jobs != nil {
+		jobs, err := s.Jobs.ListJobsByTask(taskID)
+		if err == nil {
+			for _, j := range jobs {
+				if j.Status != JobStatusRunning {
+					continue
+				}
+				if _, err := s.Workflow.CompleteJob(ctx, j.ID, JobDoneRequest{ExitCode: 0}); err != nil {
+					slog.Warn("notify --ask: complete-job after awaiting transition failed", "job_id", j.ID, "error", err)
+				}
+			}
+		} else {
+			slog.Warn("notify --ask: list running jobs failed", "task_id", taskID, "error", err)
+		}
+	}
 	return nil
 }
 
