@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1730,11 +1731,13 @@ func (s stubMetaStore) Get(id string) (*orchestrator.ProjectMeta, bool) {
 }
 
 type stubLifecycle struct {
-	completedJobID    string
-	unregisteredJobID string
-	cleanupTaskID     string
-	stoppedRuntimeID  string
-	result            JobCompletion
+	completedJobID     string
+	unregisteredJobID  string
+	cleanupTaskID      string
+	stoppedRuntimeID   string
+	signaledRuntimeID  string
+	signaledSignal     syscall.Signal
+	result             JobCompletion
 }
 
 func (l *stubLifecycle) CompleteJob(jobID string, result JobCompletion) {
@@ -1752,6 +1755,11 @@ func (l *stubLifecycle) CleanupTaskWindow(taskID string) {
 
 func (l *stubLifecycle) StopJobRuntime(runtimeID string) {
 	l.stoppedRuntimeID = runtimeID
+}
+
+func (l *stubLifecycle) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
+	l.signaledRuntimeID = runtimeID
+	l.signaledSignal = sig
 }
 
 func TestDuplicateTask_CopiesFields(t *testing.T) {

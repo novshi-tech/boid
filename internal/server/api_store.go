@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"syscall"
 
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/db"
@@ -319,6 +320,10 @@ func (a jobLifecycleAdapter) CleanupTaskWindow(taskID string) {
 
 func (a jobLifecycleAdapter) StopJobRuntime(runtimeID string) {
 	a.runner.StopJobRuntime(runtimeID)
+}
+
+func (a jobLifecycleAdapter) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
+	a.runner.SignalJobRuntime(runtimeID, sig)
 }
 
 // hubJobEventSink lets the dispatcher runner push job-created events into

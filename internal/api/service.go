@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -936,13 +937,21 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		return err
 	}
 
-	// Terminate any hook jobs still running for this task so PTY-backed
-	// interactive agent sessions actually stop after a notify --ask. Without
-	// this the claude (interactive) process keeps the runtime alive forever:
-	// nothing else SIGTERMs it. CompleteJob marks the job completed, fires the
-	// dispatch loop (which short-circuits on the awaiting status we just set),
-	// and async-SIGTERMs the runtime. The EXIT trap's follow-up `boid job done`
-	// is absorbed by CompleteJob's idempotency guard.
+	// Ask the agent (claude) of each running hook job to terminate via a
+	// SIGUSR1 routed to run-agent.py. This leaves bash and the EXIT trap
+	// alive: bash receives SIGUSR1 too but ignores it via `trap '' USR1`
+	// (SIG_IGN propagates across execve to pasta/unshare/inner bash); only
+	// run-agent.py's Python handler reacts, forwarding SIGTERM to the
+	// claude process (which it launched in its own session via
+	// start_new_session=True so it doesn't receive the group signal).
+	//
+	// Crucially, we do NOT call CompleteJob preemptively here. CompleteJob's
+	// finalize releases the broker token, which would reject the bash EXIT
+	// trap's follow-up `boid job done --output-file payload_patch.json` as
+	// "invalid token" — silently dropping the agent's session id and
+	// breaking the next hook's resume. By letting the EXIT trap be the sole
+	// CompleteJob caller (through the broker), the standard completion path
+	// runs with the agent's payload_patch intact.
 	if s.Jobs != nil {
 		jobs, err := s.Jobs.ListJobsByTask(taskID)
 		if err == nil {
@@ -950,9 +959,10 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 				if j.Status != JobStatusRunning {
 					continue
 				}
-				if _, err := s.Workflow.CompleteJob(ctx, j.ID, JobDoneRequest{ExitCode: 0}); err != nil {
-					slog.Warn("notify --ask: complete-job after awaiting transition failed", "job_id", j.ID, "error", err)
+				if j.RuntimeID == "" {
+					continue
 				}
+				s.Workflow.StopAgent(j.RuntimeID)
 			}
 		} else {
 			slog.Warn("notify --ask: list running jobs failed", "task_id", taskID, "error", err)
@@ -1752,6 +1762,18 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		Action:       action,
 		MatchedHooks: matchedHooks,
 	}, nil
+}
+
+// StopAgent asynchronously delivers a SIGUSR1 to the runtime's process group.
+// The agent runner (run-agent.py) catches this and SIGTERMs claude only —
+// bash stays alive so the EXIT trap can fire `boid job done --output-file
+// payload_patch.json` through the broker normally. See WorkflowService
+// interface doc for the full lifecycle rationale.
+func (s *TaskWorkflowService) StopAgent(runtimeID string) {
+	if runtimeID == "" || s.Lifecycle == nil {
+		return
+	}
+	go s.Lifecycle.SignalJobRuntime(runtimeID, syscall.SIGUSR1)
 }
 
 func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req JobDoneRequest) (*Job, error) {

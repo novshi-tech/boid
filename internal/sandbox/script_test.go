@@ -242,8 +242,11 @@ func TestPrepare_ArgvExec(t *testing.T) {
 	if !strings.Contains(inner, "\nexec go test ./...\n") {
 		t.Errorf("inner: expected exec argv form\n%s", inner)
 	}
-	if strings.Contains(inner, "trap") {
-		t.Errorf("inner: unexpected trap in exec mode\n%s", inner)
+	// The only trap that should appear is the SIGUSR1 ignore that the daemon
+	// uses to route an "agent-stop" signal to run-agent.py without killing
+	// bash. EXIT-trap (boid job done) must remain absent here.
+	if strings.Contains(inner, "trap '<exit-script>'") || strings.Contains(inner, "boid job done") {
+		t.Errorf("inner: unexpected EXIT trap in exec mode\n%s", inner)
 	}
 }
 

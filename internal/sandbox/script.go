@@ -86,6 +86,12 @@ func generateOuterScript(spec Spec, outerPath, setupPath, innerPath string) stri
 	qInner := shellQuote(innerPath)
 	if spec.TTY {
 		return fmt.Sprintf(`#!/bin/bash
+# Ignore SIGUSR1 — this is the daemon's "agent-stop" signal, meant for
+# run-agent.py only. SIG_IGN propagates across execve(2) so pasta / unshare /
+# inner bash all inherit this disposition and survive a process-group
+# SIGUSR1 without dying. run-agent.py overrides via signal.signal() to act
+# on it.
+trap '' USR1
 root_dir=%s
 exec 3>&2
 pasta_stderr=$(mktemp -t boid-pasta-stderr-XXXXXX.log)
@@ -109,6 +115,7 @@ exit $exit_code
 `, rootDir, setupPath, qOuter, qSetup, qInner)
 	}
 	return fmt.Sprintf(`#!/bin/bash
+trap '' USR1
 root_dir=%s
 pasta_stderr=$(mktemp -t boid-pasta-stderr-XXXXXX.log)
 pasta --config-net \
@@ -136,7 +143,11 @@ exit $exit_code
 func generateInnerScript(spec Spec) string {
 	var b strings.Builder
 
-	b.WriteString("#!/bin/bash\nset -e\n\n")
+	b.WriteString("#!/bin/bash\nset -e\n")
+	// Defense-in-depth: SIG_IGN should already be inherited from the outer
+	// script across all the execve hops, but re-applying it here documents
+	// the contract that only run-agent.py acts on SIGUSR1.
+	b.WriteString("trap '' USR1\n\n")
 
 	// Stable env ordering for deterministic script output.
 	keys := make([]string, 0, len(spec.Env))

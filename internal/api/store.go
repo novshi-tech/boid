@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"syscall"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -60,6 +61,12 @@ type JobLifecycle interface {
 	UnregisterJob(jobID string)
 	CleanupTaskWindow(taskID string)
 	StopJobRuntime(runtimeID string)
+	// SignalJobRuntime delivers a single signal to a runtime's process group
+	// without any SIGKILL follow-up. NotifyTask drives SIGUSR1 through this
+	// path to ask run-agent.py to stop the agent (claude) while leaving
+	// bash / EXIT trap / boid CLI alive so payload_patch capture can complete
+	// normally.
+	SignalJobRuntime(runtimeID string, sig syscall.Signal)
 }
 
 type BrokerRegistry interface {
@@ -155,6 +162,15 @@ type WorkflowService interface {
 	ApplyAction(ctx context.Context, taskID string, req ApplyActionRequest) (*ActionApplication, error)
 	CompleteJob(ctx context.Context, jobID string, req JobDoneRequest) (*Job, error)
 	TriggerDependents(ctx context.Context, taskID string)
+	// StopAgent asks the agent (claude) backing a running hook job to
+	// terminate, *without* tearing down the rest of the runtime tree. The
+	// agent runner (run-agent.py) catches SIGUSR1 and forwards SIGTERM to
+	// just the claude process, leaving bash alive so the EXIT trap fires
+	// `boid job done --output-file payload_patch.json` through the broker
+	// normally. NotifyTask uses this after `ApplyAction("ask")` so the
+	// awaiting transition does not race with payload_patch capture.
+	// No-op when the job has no RuntimeID.
+	StopAgent(runtimeID string)
 }
 
 type TaskStore interface {

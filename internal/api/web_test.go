@@ -147,7 +147,8 @@ type stubWorkflowService struct {
 	appliedType    string
 	appliedPayload json.RawMessage
 
-	completedJobs []completedJobCall
+	completedJobs       []completedJobCall
+	stoppedAgentRuntimes []string
 }
 
 type completedJobCall struct {
@@ -174,6 +175,10 @@ func (s *stubWorkflowService) CompleteJob(ctx context.Context, jobID string, req
 }
 
 func (s *stubWorkflowService) TriggerDependents(ctx context.Context, taskID string) {}
+
+func (s *stubWorkflowService) StopAgent(runtimeID string) {
+	s.stoppedAgentRuntimes = append(s.stoppedAgentRuntimes, runtimeID)
+}
 
 func TestWebAppServiceApplyAction_Success(t *testing.T) {
 	workflow := &stubWorkflowService{}

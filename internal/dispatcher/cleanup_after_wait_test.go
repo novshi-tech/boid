@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -29,6 +30,9 @@ func (r *waitableRuntime) Wait(_ context.Context, _ string) (RuntimeExit, error)
 	return r.exit, r.err
 }
 func (r *waitableRuntime) Stop(_ context.Context, _ string) error {
+	return nil
+}
+func (r *waitableRuntime) Signal(_ context.Context, _ string, _ syscall.Signal) error {
 	return nil
 }
 
