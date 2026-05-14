@@ -3,7 +3,6 @@ name: Worktree Lifecycle
 worktree: true
 task_behaviors:
   executor:
-    name: Executor
     transition: one-shot
     kits:
       - github.com/novshi-tech/boid-kits/worktree-smoke

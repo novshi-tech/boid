@@ -2,6 +2,5 @@ id: readonly-hook-gate
 name: Readonly Hook Gate
 task_behaviors:
   supervisor:
-    name: Supervisor
     kits:
       - github.com/novshi-tech/boid-kits/readonly-hook-gate

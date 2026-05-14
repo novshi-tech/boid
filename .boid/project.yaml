@@ -30,7 +30,6 @@ commands:
 # under the project-top worktree).
 task_behaviors:
   executor:
-    name: executor
     default_instruction:
       type: execution
       agent: claude-code
@@ -39,7 +38,6 @@ task_behaviors:
         Release step: /dev-pr-flow. The parent supervisor merges the
         PR after CI passes; do not merge here.
   supervisor:
-    name: Supervisor
     default_instruction:
       type: execution
       agent: claude-code

@@ -32,7 +32,6 @@ func TestCoordinator_DispatchAndAdvance_GateExitZeroEmptyOutput_NoArtifactInject
 	meta := &projectspec.ProjectMeta{
 		TaskBehaviors: map[string]projectspec.TaskBehavior{
 			"custom-behavior": {
-				Name: "custom-behavior",
 				Gates: []projectspec.Gate{
 					{ID: "regular-gate"},
 				},

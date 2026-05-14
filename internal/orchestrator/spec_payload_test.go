@@ -17,7 +17,6 @@ id: proj-1
 name: My Project
 task_behaviors:
   dev:
-    name: development
     traits:
       - instructions
       - artifact
@@ -43,7 +42,7 @@ func TestProjectMeta_JSONRoundTrip(t *testing.T) {
 		ID:   "proj-1",
 		Name: "Test Project",
 		TaskBehaviors: map[string]projectspec.TaskBehavior{
-			"dev": {Name: "development", Traits: []string{"artifact"}},
+			"dev": {Traits: []string{"artifact"}},
 		},
 		HostCommands: projectspec.HostCommands{"git": {Path: "/usr/bin/git"}},
 		Env:          map[string]string{"KEY": "val"},
@@ -57,7 +56,7 @@ func TestProjectMeta_JSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if decoded.TaskBehaviors["dev"].Name != "development" {
+	if len(decoded.TaskBehaviors["dev"].Traits) == 0 || decoded.TaskBehaviors["dev"].Traits[0] != "artifact" {
 		t.Fatalf("unexpected decoded: %+v", decoded.TaskBehaviors["dev"])
 	}
 }

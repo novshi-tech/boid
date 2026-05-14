@@ -2,5 +2,4 @@ id: project-beta
 name: Project Beta
 task_behaviors:
   beta:
-    name: Beta
     transition: one-shot

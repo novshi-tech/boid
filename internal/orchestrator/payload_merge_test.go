@@ -33,7 +33,6 @@ func TestRejectPayloadInstructions_HasInstructions_Errors(t *testing.T) {
 
 func TestDefaultInstruction_YAMLUnmarshal(t *testing.T) {
 	data := `
-name: impl
 default_instruction:
   type: execution
   agent: claude-code
@@ -42,10 +41,6 @@ default_instruction:
 	var behavior orchestrator.TaskBehavior
 	if err := yaml.Unmarshal([]byte(data), &behavior); err != nil {
 		t.Fatalf("yaml.Unmarshal: %v", err)
-	}
-
-	if behavior.Name != "impl" {
-		t.Fatalf("expected name %q, got %q", "impl", behavior.Name)
 	}
 
 	if behavior.DefaultInstruction == nil {

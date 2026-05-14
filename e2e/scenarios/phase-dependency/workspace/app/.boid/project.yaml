@@ -2,5 +2,4 @@ id: phase-dependency
 name: Phase Dependency
 task_behaviors:
   smoke:
-    name: Smoke
     transition: one-shot

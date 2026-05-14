@@ -2,7 +2,6 @@ id: e2e-host-ops
 name: E2E Host Ops
 task_behaviors:
   smoke:
-    name: Smoke
     transition: one-shot
     kits:
       - github.com/novshi-tech/boid-kits/host-ops

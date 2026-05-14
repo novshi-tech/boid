@@ -109,7 +109,7 @@ func (m *mockExecutorWaiter) WaitForJob(ctx context.Context, jobID string) (orch
 func metaWithBehavior(hooks []projectspec.Hook, gates []projectspec.Gate) *projectspec.ProjectMeta {
 	return &projectspec.ProjectMeta{
 		TaskBehaviors: map[string]projectspec.TaskBehavior{
-			"dev": {Name: "dev", Hooks: hooks, Gates: gates},
+			"dev": {Hooks: hooks, Gates: gates},
 		},
 	}
 }

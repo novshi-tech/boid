@@ -3,7 +3,6 @@ name: E2E Task Behavior Command
 
 task_behaviors:
   supervisor:
-    name: supervisor
     commands:
       echo-task-id:
         command: [echo]
