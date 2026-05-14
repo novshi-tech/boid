@@ -103,9 +103,9 @@ templ JobDetail(job *JobContextView) {
 		</div>
 		<section class="job-output">
 			<h2 class="section-title">Output</h2>
-			if job.Interactive && job.Status == "running" && job.HookID == "" && job.GateID == "" {
+			if job.Interactive && job.Status == "running" && job.GateID == "" {
 				@components.Terminal(job.ID, "/api/jobs/"+job.ID+"/attach/ws")
-			} else if job.Interactive && job.HookID == "" && job.GateID == "" {
+			} else if job.Interactive && job.GateID == "" {
 				// 完了後の transcript は ANSI エスケープを含むため再現が困難。
 				<p class="job-log-note">
 					This job is interactive. Live output is not available
@@ -133,7 +133,7 @@ templ JobDetail(job *JobContextView) {
 				}
 			}
 		</section>
-		if job.GateID != "" || job.HookID != "" || (job.Interactive && job.Status == "running" && job.HookID == "" && job.GateID == "") {
+		if job.GateID != "" || job.HookID != "" || (job.Interactive && job.Status == "running" && job.GateID == "") {
 			<div class="action-bar">
 				<div class="action-bar-inner">
 					if job.GateID != "" {
@@ -147,7 +147,7 @@ templ JobDetail(job *JobContextView) {
 						</form>
 					}
 					<span class="action-bar-spacer"></span>
-					if job.Interactive && job.Status == "running" && job.HookID == "" && job.GateID == "" {
+					if job.Interactive && job.Status == "running" && job.GateID == "" {
 						<a href={ templ.SafeURL("/jobs/" + job.ID + "/terminal") } target="_blank" rel="noopener" class="btn btn-secondary">Open Fullscreen</a>
 					}
 				</div>

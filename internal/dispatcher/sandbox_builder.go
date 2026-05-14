@@ -190,12 +190,20 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	})
 
 	// stdin / stdout routing.
+	//
+	// Interactive jobs must inherit the PTY on stdin/stdout — piping PrimaryInput
+	// via `printf | argv` or redirecting stdout to a capture file would break
+	// isatty() detection in TUIs like claude code and force them into
+	// non-interactive mode. Interactive hook agents read PrimaryInput from the
+	// context file ($HOME/.boid/context/payload.json) rather than stdin, and
+	// the EXIT trap (buildExitScript) handles output via payload_patch.json
+	// when the fallback capture file is absent.
 	var stdinBytes []byte
-	if len(spec.PrimaryInput) > 0 {
+	if !spec.Interactive && len(spec.PrimaryInput) > 0 {
 		stdinBytes = append(stdinBytes, spec.PrimaryInput...)
 	}
 	var stdoutCapture string
-	if !rt.Foreground {
+	if !rt.Foreground && !spec.Interactive {
 		stdoutCapture = "/tmp/boid-output"
 	}
 

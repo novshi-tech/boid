@@ -187,9 +187,32 @@ func TestJobDetail_GateJobWithRunningTerminal(t *testing.T) {
 	}
 }
 
-func TestJobDetail_HookJob_InteractiveStale_NoInteractiveMessage(t *testing.T) {
-	// DB に残る旧 hook job レコードが interactive=true を持つ場合でも
-	// Interactive 向けメッセージが表示されないことを検証する。
+func TestJobDetail_HookJob_InteractiveRunning_EmbedsTerminal(t *testing.T) {
+	// Phase 1 of fa18b3f: hook job は PTY 上で interactive に動く。 running
+	// 中であれば Web UI も xterm.js を埋め込み、 attach できなければならない。
+	job := newJobView("running")
+	job.Interactive = true
+	job.Role = "hook"
+	job.HookID = "claude-code/run-agent"
+	html := renderJobDetail(t, job)
+
+	if !strings.Contains(html, "boid-terminal") {
+		t.Error("interactive running hook job should embed boid-terminal widget")
+	}
+	if !strings.Contains(html, `data-job-id="test-job-id-1234"`) {
+		t.Error("interactive running hook job should have boid-terminal div with data-job-id")
+	}
+	if !strings.Contains(html, "/jobs/test-job-id-1234/terminal") {
+		t.Error("interactive running hook job should link to /jobs/{id}/terminal")
+	}
+	if strings.Contains(html, "EventSource") {
+		t.Error("interactive running hook job should not fall back to SSE EventSource")
+	}
+}
+
+func TestJobDetail_HookJob_InteractiveCompleted_ShowsStaticPre(t *testing.T) {
+	// runtime は完了後 GC されるため、 attach はできない。
+	// 静的 pre + ANSI 注意メッセージにフォールバックする。
 	job := newJobView("completed")
 	job.Interactive = true
 	job.Role = "hook"
@@ -197,18 +220,14 @@ func TestJobDetail_HookJob_InteractiveStale_NoInteractiveMessage(t *testing.T) {
 	job.Output = "hook output"
 	html := renderJobDetail(t, job)
 
-	if strings.Contains(html, "job-log-note") {
-		t.Error("hook job with stale interactive=true should not show interactive note paragraph")
+	if strings.Contains(html, "boid-terminal-xterm") {
+		t.Error("completed hook job should not embed xterm widget")
 	}
-	if strings.Contains(html, "This job is interactive") {
-		t.Error("hook job with stale interactive=true should not show interactive message")
-	}
-	// SSE 分岐に流れるので静的 pre は出力されること。
-	if !strings.Contains(html, `id="job-log"`) {
-		t.Error("hook job should show static pre with id=job-log")
+	if !strings.Contains(html, "job-log-note") {
+		t.Error("completed interactive hook job should show ANSI note paragraph")
 	}
 	if !strings.Contains(html, "hook output") {
-		t.Error("hook job should render existing output")
+		t.Error("completed interactive hook job should render existing output")
 	}
 }
 

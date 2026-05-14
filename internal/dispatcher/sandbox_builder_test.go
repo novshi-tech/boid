@@ -11,6 +11,49 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
+// Interactive=true の hook job は PTY 上で動かす必要があるため、 PrimaryInput を
+// stdin に pipe したり stdout を capture file へ落としたりすると claude code 等の
+// TUI が isatty() で非対話判定して落ちる。 Interactive 時は両方とも抑止し、
+// PrimaryInput は context file 経路 ($HOME/.boid/context/payload.json) で渡す。
+func TestBuildSandboxSpec_InteractiveDisablesStdinAndStdoutCapture(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		Interactive:  true,
+		PrimaryInput: []byte(`{"payload":"x"}`),
+	}
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{Foreground: false})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	if len(result.StdinBytes) != 0 {
+		t.Errorf("StdinBytes = %q, want empty (Interactive jobs must not pipe stdin)", string(result.StdinBytes))
+	}
+	if result.StdoutCaptureFile != "" {
+		t.Errorf("StdoutCaptureFile = %q, want empty (Interactive jobs must not redirect stdout to a file)", result.StdoutCaptureFile)
+	}
+	if !result.TTY {
+		t.Errorf("TTY = false, want true (Interactive=true should request a PTY)")
+	}
+}
+
+// 非 Interactive な non-foreground hook は従来どおり PrimaryInput を stdin に流し、
+// stdout を /tmp/boid-output に capture する。
+func TestBuildSandboxSpec_NonInteractiveKeepsStdinPipeAndStdoutCapture(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		Interactive:  false,
+		PrimaryInput: []byte(`{"payload":"x"}`),
+	}
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{Foreground: false})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	if string(result.StdinBytes) != `{"payload":"x"}` {
+		t.Errorf("StdinBytes = %q, want PrimaryInput", string(result.StdinBytes))
+	}
+	if result.StdoutCaptureFile != "/tmp/boid-output" {
+		t.Errorf("StdoutCaptureFile = %q, want /tmp/boid-output", result.StdoutCaptureFile)
+	}
+}
+
 // TTY はspec.Interactive のみで決まる。Instruction の有無や PrimaryInput(stdin)
 // は Phase 2 以降では TTY に影響しない。
 func TestBuildSandboxSpec_TTYFollowsInteractiveOnly(t *testing.T) {
