@@ -741,7 +741,7 @@ func TestReadProjectMetaWithKits_RejectsBuiltinInHostCommands(t *testing.T) {
 
 func TestMergeKitMetaIntoBehavior(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
-		b := projectspec.TaskBehavior{Name: "dev", Env: map[string]string{"KEY": "val"}}
+		b := projectspec.TaskBehavior{Env: map[string]string{"KEY": "val"}}
 		result := mergeKitsIntoBehavior(t, b, nil, nil)
 		if result.Env["KEY"] != "val" {
 			t.Errorf("env KEY = %q, want val", result.Env["KEY"])
@@ -750,7 +750,6 @@ func TestMergeKitMetaIntoBehavior(t *testing.T) {
 
 	t.Run("single kit", func(t *testing.T) {
 		base := projectspec.TaskBehavior{
-			Name:         "dev",
 			HostCommands: projectspec.HostCommands{"git": {Path: "/usr/bin/git"}},
 			Hooks:        []projectspec.Hook{{ID: "proj-hook"}},
 			Env:          map[string]string{"PROJECT_VAR": "pval"},
@@ -783,7 +782,7 @@ func TestMergeKitMetaIntoBehavior(t *testing.T) {
 	})
 
 	t.Run("multiple kits", func(t *testing.T) {
-		base := projectspec.TaskBehavior{Name: "dev", Env: map[string]string{"PROJ": "yes"}}
+		base := projectspec.TaskBehavior{Env: map[string]string{"PROJ": "yes"}}
 		m1 := &projectspec.KitMeta{Env: map[string]string{"A": "from-m1", "SHARED": "m1"}, HostCommands: projectspec.HostCommands{"go": {Path: "/usr/bin/go"}}}
 		m2 := &projectspec.KitMeta{Env: map[string]string{"B": "from-m2", "SHARED": "m2"}, HostCommands: projectspec.HostCommands{"gh": {Path: "/usr/bin/gh"}}}
 
@@ -794,7 +793,7 @@ func TestMergeKitMetaIntoBehavior(t *testing.T) {
 	})
 
 	t.Run("same raw hook id across kit and base both survive with qualified IDs", func(t *testing.T) {
-		base := projectspec.TaskBehavior{Name: "dev", Hooks: []projectspec.Hook{{ID: "build", ScriptPath: "/proj/hooks/build.sh"}}}
+		base := projectspec.TaskBehavior{Hooks: []projectspec.Hook{{ID: "build", ScriptPath: "/proj/hooks/build.sh"}}}
 		kit := &projectspec.KitMeta{Hooks: []projectspec.Hook{{ID: "build", ScriptPath: "/kit/hooks/build.sh"}}, HooksDir: "/kit/hooks"}
 
 		result := mergeKitsIntoBehavior(t, base, []*projectspec.KitMeta{kit}, []string{"mykit"})
@@ -887,7 +886,7 @@ func TestReadProjectMetaWithKits_DuplicateAgent(t *testing.T) {
 
 func TestMergeKitMetaIntoBehavior_KitAgentFields(t *testing.T) {
 	t.Run("kit agent hook without explicit agent inherits kit agent name", func(t *testing.T) {
-		base := projectspec.TaskBehavior{Name: "dev"}
+		base := projectspec.TaskBehavior{}
 		kit := &projectspec.KitMeta{
 			Hooks: []projectspec.Hook{{ID: "kit-hook", Kind: projectspec.HandlerKindAgent, ScriptPath: "/kit/hooks/kit-hook.sh"}},
 		}
@@ -903,7 +902,7 @@ func TestMergeKitMetaIntoBehavior_KitAgentFields(t *testing.T) {
 	})
 
 	t.Run("kit non-agent hook gets Kit provenance but no Agent", func(t *testing.T) {
-		base := projectspec.TaskBehavior{Name: "dev"}
+		base := projectspec.TaskBehavior{}
 		kit := &projectspec.KitMeta{
 			Hooks: []projectspec.Hook{{ID: "util-hook", ScriptPath: "/kit/hooks/util-hook.sh"}},
 		}
@@ -919,7 +918,7 @@ func TestMergeKitMetaIntoBehavior_KitAgentFields(t *testing.T) {
 	})
 
 	t.Run("kit agent hook with explicit agent retains its agent", func(t *testing.T) {
-		base := projectspec.TaskBehavior{Name: "dev"}
+		base := projectspec.TaskBehavior{}
 		kit := &projectspec.KitMeta{
 			Hooks: []projectspec.Hook{{ID: "kit-hook", Kind: projectspec.HandlerKindAgent, ScriptPath: "/kit/hooks/kit-hook.sh", Agent: "explicit-agent"}},
 		}
@@ -932,7 +931,7 @@ func TestMergeKitMetaIntoBehavior_KitAgentFields(t *testing.T) {
 	})
 
 	t.Run("kit hook/gate IDs are qualified with agent prefix", func(t *testing.T) {
-		base := projectspec.TaskBehavior{Name: "dev"}
+		base := projectspec.TaskBehavior{}
 		kit := &projectspec.KitMeta{
 			Hooks: []projectspec.Hook{{ID: "run-agent", ScriptPath: "/kit/hooks/run-agent.sh"}},
 			Gates: []projectspec.Gate{{ID: "check-quality", ScriptPath: "/kit/gates/check-quality.sh"}},
@@ -948,7 +947,7 @@ func TestMergeKitMetaIntoBehavior_KitAgentFields(t *testing.T) {
 	})
 
 	t.Run("different kits with same hook ID both survive", func(t *testing.T) {
-		base := projectspec.TaskBehavior{Name: "dev"}
+		base := projectspec.TaskBehavior{}
 		kitA := &projectspec.KitMeta{
 			Hooks: []projectspec.Hook{{ID: "run-agent", ScriptPath: "/a/hooks/run-agent.sh"}},
 		}
@@ -967,7 +966,6 @@ func TestMergeKitMetaIntoBehavior_KitAgentFields(t *testing.T) {
 
 	t.Run("base hooks are not prefixed", func(t *testing.T) {
 		base := projectspec.TaskBehavior{
-			Name:  "dev",
 			Hooks: []projectspec.Hook{{ID: "my-hook", ScriptPath: "/proj/hooks/my-hook.sh"}},
 		}
 		result := mergeKitsIntoBehavior(t, base, nil, nil)
@@ -1405,7 +1403,7 @@ scaffold:
 			t.Fatalf("ReadKitMeta: %v", err)
 		}
 
-		base := projectspec.TaskBehavior{Name: "dev"}
+		base := projectspec.TaskBehavior{}
 		merged := mergeKitsIntoBehavior(t, base, []*projectspec.KitMeta{kitMeta}, []string{"test-kit"})
 		_ = merged
 	})
@@ -1416,7 +1414,7 @@ func TestMergeKitMetaIntoBehavior_HostCommandConflict(t *testing.T) {
 		kitA := &projectspec.KitMeta{HostCommands: projectspec.HostCommands{"gh": {Path: "/usr/bin/gh"}}}
 		kitB := &projectspec.KitMeta{HostCommands: projectspec.HostCommands{"gh": {Path: "/usr/local/bin/gh"}}}
 
-		b := projectspec.TaskBehavior{Name: "dev"}
+		b := projectspec.TaskBehavior{}
 		err := projectspec.MergeKitMetaIntoBehavior(&b, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"})
 		if err == nil {
 			t.Fatal("expected error for duplicate host_commands, got nil")
@@ -1430,7 +1428,7 @@ func TestMergeKitMetaIntoBehavior_HostCommandConflict(t *testing.T) {
 		kitA := &projectspec.KitMeta{HostCommands: projectspec.HostCommands{"go": {Path: "/usr/bin/go"}}}
 		kitB := &projectspec.KitMeta{HostCommands: projectspec.HostCommands{"gh": {Path: "/usr/bin/gh"}}}
 
-		b := projectspec.TaskBehavior{Name: "dev"}
+		b := projectspec.TaskBehavior{}
 		if err := projectspec.MergeKitMetaIntoBehavior(&b, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"}); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1441,7 +1439,7 @@ func TestMergeKitMetaIntoBehavior_HostCommandConflict(t *testing.T) {
 
 	t.Run("behavior-level host command wins over kit", func(t *testing.T) {
 		kit := &projectspec.KitMeta{HostCommands: projectspec.HostCommands{"gh": {Path: "/usr/bin/gh"}}}
-		b := projectspec.TaskBehavior{Name: "dev", HostCommands: projectspec.HostCommands{"gh": {Path: "/custom/gh"}}}
+		b := projectspec.TaskBehavior{HostCommands: projectspec.HostCommands{"gh": {Path: "/custom/gh"}}}
 		if err := projectspec.MergeKitMetaIntoBehavior(&b, []*projectspec.KitMeta{kit}, []string{"mykit"}); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1552,7 +1550,7 @@ func TestMergeKitRuntime(t *testing.T) {
 			t.Fatalf("MergeKitRuntime error: %v", err)
 		}
 
-		b := projectspec.TaskBehavior{Name: "dev"}
+		b := projectspec.TaskBehavior{}
 		if err := projectspec.MergeKitMetaIntoBehavior(&b, []*projectspec.KitMeta{kit1, kit2}, agents); err != nil {
 			t.Fatalf("MergeKitMetaIntoBehavior error: %v", err)
 		}
@@ -1574,7 +1572,7 @@ func TestUnionBindMounts_ModePromotion(t *testing.T) {
 		kitA := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "ro"}}}
 		kitB := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "rw"}}}
 
-		result := mergeKitsIntoBehavior(t, projectspec.TaskBehavior{Name: "dev"}, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"})
+		result := mergeKitsIntoBehavior(t, projectspec.TaskBehavior{}, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"})
 		if len(result.AdditionalBindings) != 1 || result.AdditionalBindings[0].Mode != "rw" {
 			t.Errorf("expected 1 binding in rw mode, got %+v", result.AdditionalBindings)
 		}
@@ -1584,7 +1582,7 @@ func TestUnionBindMounts_ModePromotion(t *testing.T) {
 		kitA := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "rw"}}}
 		kitB := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "ro"}}}
 
-		result := mergeKitsIntoBehavior(t, projectspec.TaskBehavior{Name: "dev"}, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"})
+		result := mergeKitsIntoBehavior(t, projectspec.TaskBehavior{}, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"})
 		if len(result.AdditionalBindings) != 1 || result.AdditionalBindings[0].Mode != "rw" {
 			t.Errorf("expected 1 binding in rw mode, got %+v", result.AdditionalBindings)
 		}
@@ -1594,7 +1592,7 @@ func TestUnionBindMounts_ModePromotion(t *testing.T) {
 		kitA := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "ro"}}}
 		kitB := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "ro"}}}
 
-		result := mergeKitsIntoBehavior(t, projectspec.TaskBehavior{Name: "dev"}, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"})
+		result := mergeKitsIntoBehavior(t, projectspec.TaskBehavior{}, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"})
 		if len(result.AdditionalBindings) != 1 || result.AdditionalBindings[0].Mode != "ro" {
 			t.Errorf("expected 1 binding in ro mode, got %+v", result.AdditionalBindings)
 		}
@@ -1604,7 +1602,7 @@ func TestUnionBindMounts_ModePromotion(t *testing.T) {
 		kitA := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "rw"}}}
 		kitB := &projectspec.KitMeta{AdditionalBindings: []projectspec.BindMount{{Source: "/data", Mode: "rw"}}}
 
-		result := mergeKitsIntoBehavior(t, projectspec.TaskBehavior{Name: "dev"}, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"})
+		result := mergeKitsIntoBehavior(t, projectspec.TaskBehavior{}, []*projectspec.KitMeta{kitA, kitB}, []string{"kit-a", "kit-b"})
 		if len(result.AdditionalBindings) != 1 || result.AdditionalBindings[0].Mode != "rw" {
 			t.Errorf("expected 1 binding in rw mode, got %+v", result.AdditionalBindings)
 		}
@@ -2278,9 +2276,6 @@ task_behaviors:
 	if _, ok := meta.TaskBehaviors["plan"]; !ok {
 		t.Fatalf("expected back-compat alias 'plan' to remain reachable, got keys=%v", behaviorKeys(meta))
 	}
-	if got := meta.TaskBehaviors["supervisor"].Name; got != "supervisor" {
-		t.Errorf("Name = %q, want %q (alias must promote to canonical)", got, "supervisor")
-	}
 	if len(meta.TaskBehaviors["supervisor"].Traits) != 1 || meta.TaskBehaviors["supervisor"].Traits[0] != "artifact" {
 		t.Errorf("Traits fell off during alias normalization: %v", meta.TaskBehaviors["supervisor"].Traits)
 	}
@@ -2320,9 +2315,6 @@ task_behaviors:
 	}
 	if _, ok := meta.TaskBehaviors["dev"]; !ok {
 		t.Fatalf("expected back-compat alias 'dev' to remain reachable, got keys=%v", behaviorKeys(meta))
-	}
-	if got := meta.TaskBehaviors["executor"].Name; got != "executor" {
-		t.Errorf("Name = %q, want %q (alias must promote to canonical)", got, "executor")
 	}
 	if len(meta.TaskBehaviors["executor"].Traits) != 1 || meta.TaskBehaviors["executor"].Traits[0] != "artifact" {
 		t.Errorf("Traits fell off during alias normalization: %v", meta.TaskBehaviors["executor"].Traits)
@@ -2489,38 +2481,6 @@ task_behaviors:
 				t.Errorf("expected duplicate error mentioning %q, got: %v", tc.needWord, err)
 			}
 		})
-	}
-}
-
-// TestReadProjectMeta_BehaviorAlias_NameFieldRespectsExplicitValue ensures the
-// normalize step does NOT overwrite an explicitly-set Name field that differs
-// from the alias key. Name is a free-form display label, not a routing key.
-func TestReadProjectMeta_BehaviorAlias_NameFieldRespectsExplicitValue(t *testing.T) {
-	dir := t.TempDir()
-	boidDir := filepath.Join(dir, ".boid")
-	if err := os.MkdirAll(boidDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	yaml := `
-id: test-proj
-name: Test Project
-task_behaviors:
-  plan:
-    name: custom-display-name
-`
-	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
-		t.Fatalf("write yaml: %v", err)
-	}
-	meta, err := projectspec.ReadProjectMeta(dir)
-	if err != nil {
-		t.Fatalf("ReadProjectMeta: %v", err)
-	}
-	b, ok := meta.TaskBehaviors["supervisor"]
-	if !ok {
-		t.Fatalf("expected key 'supervisor', got keys=%v", behaviorKeys(meta))
-	}
-	if b.Name != "custom-display-name" {
-		t.Errorf("Name = %q, want %q (explicit Name must be preserved)", b.Name, "custom-display-name")
 	}
 }
 

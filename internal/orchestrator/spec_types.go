@@ -415,7 +415,6 @@ func IsBehaviorAliasKey(key string) bool {
 }
 
 type TaskBehavior struct {
-	Name               string                 `yaml:"name" json:"name"`
 	Traits             []string               `yaml:"traits" json:"traits"`
 	DefaultInstruction *Instruction           `yaml:"default_instruction,omitempty" json:"default_instruction,omitempty"`
 	Kits               []KitRef               `yaml:"kits,omitempty" json:"kits,omitempty"`

@@ -16,7 +16,6 @@ func projectMetaWithHook(behaviorName string) *orchestrator.ProjectMeta {
 	return &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
 			behaviorName: {
-				Name:  behaviorName,
 				Hooks: []orchestrator.Hook{{ID: "test-hook"}},
 			},
 		},
@@ -203,7 +202,7 @@ func TestProjectLock_RunDispatchLoop_SkipsLockForHooklessBehavior(t *testing.T) 
 	txStore := &recordingTxStore{task: &doneInDB}
 	hooklessMeta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"smoke": {Name: "smoke"}, // no hooks
+			"smoke": {}, // no hooks
 		},
 	}
 	svc := &TaskWorkflowService{

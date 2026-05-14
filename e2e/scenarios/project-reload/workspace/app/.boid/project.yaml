@@ -2,5 +2,4 @@ id: project-reload
 name: Project Reload
 task_behaviors:
   smoke-v1:
-    name: Smoke V1
     transition: one-shot

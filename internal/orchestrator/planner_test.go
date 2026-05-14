@@ -54,9 +54,7 @@ func TestDispatchPlannerInjectsDefaultBuiltinsForHookAndGate(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "gates"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{
-		Name: "dev",
-	}, &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
 
 	hookReq, hookCleanup, err := planner.PlanHook(&HookFireEvent{
 		EventID:   "event-1",
@@ -121,7 +119,6 @@ func TestPlanHook_UsesScriptPathDirectlyAndSetsKitRoots(t *testing.T) {
 	}
 
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{
-		Name:     "dev",
 		KitRoots: []string{kitRoot},
 	}, &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
 
@@ -154,9 +151,7 @@ func TestPlanHook_AlwaysInteractive(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{
-		Name: "executor",
-	}, &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Status: TaskStatusExecuting})
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Status: TaskStatusExecuting})
 
 	hookReq, cleanup, err := planner.PlanHook(&HookFireEvent{
 		EventID:   "event-1",
@@ -218,7 +213,6 @@ func TestPlanGate_UsesScriptPathDirectly(t *testing.T) {
 	}
 
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{
-		Name:     "dev",
 		KitRoots: []string{kitRoot},
 	}, &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
 
@@ -260,7 +254,7 @@ func TestPlanHook_Instruction_MatchingAgent(t *testing.T) {
 			{Type: InstructionTypeExecution, Agent: "claude-code", Message: "do X"},
 		},
 	}
-	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{Name: "dev"}, task)
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
 
 	req, hookCleanup, err := planner.PlanHook(&HookFireEvent{
 		EventID:   "event-1",
@@ -305,7 +299,7 @@ func TestPlanHook_TaskSnapshot(t *testing.T) {
 		Behavior:    "dev",
 		Description: "short desc",
 	}
-	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{Name: "dev"}, task)
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
 
 	req, hookCleanup, err := planner.PlanHook(&HookFireEvent{
 		EventID:   "event-1",
@@ -347,7 +341,7 @@ func TestPlanHook_PrimaryInput_FilteredByConsumes(t *testing.T) {
 			"verification": {"findings": []}
 		}`),
 	}
-	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{Name: "dev"}, task)
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
 
 	req, hookCleanup, err := planner.PlanHook(&HookFireEvent{
 		EventID:   "event-1",
@@ -388,7 +382,7 @@ func TestPlanGate_PrimaryInputIsFullTaskJSON(t *testing.T) {
 		Behavior:  "dev",
 		Payload:   json.RawMessage(`{"verification":{"findings":[]}}`),
 	}
-	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{Name: "dev"}, task)
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
 
 	req, gateCleanup, err := planner.PlanGate(&GateFireEvent{
 		EventID:   "event-1",
@@ -430,8 +424,7 @@ func TestDispatchPlanner_PropagatesBaseBranchEnv(t *testing.T) {
 	}
 
 	behavior := TaskBehavior{
-		Name: "dev",
-		Env:  map[string]string{"KIT_VAR": "kit-value"},
+		Env: map[string]string{"KIT_VAR": "kit-value"},
 	}
 	task := &Task{
 		ID:         "task-1",
@@ -508,7 +501,6 @@ func TestPlanHook_PropagatesHostCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	behavior := TaskBehavior{
-		Name: "dev",
 		HostCommands: HostCommands{
 			"gh": {Allow: []string{"pr", "issue"}},
 			"jq": {},
@@ -568,7 +560,7 @@ func TestPlanHook_WritableControlledByTaskReadonly(t *testing.T) {
 				Readonly:  tc.readonly,
 				Status:    tc.status,
 			}
-			planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{Name: "dev"}, task)
+			planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
 			req, cleanup, err := planner.PlanHook(&HookFireEvent{
 				EventID:   "event-1",
 				TaskID:    "task-1",
@@ -605,7 +597,7 @@ func TestPlanExec_WritableControlledByCommandReadonly(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			projectDir := t.TempDir()
-			planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{Name: "dev"},
+			planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{},
 				&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
 			req, cleanup, err := planner.PlanExec(&ExecFireEvent{
 				ProjectID: "proj-1",
@@ -652,7 +644,7 @@ func TestDispatchPlanner_PropagatesAwaitingEnv(t *testing.T) {
 		Status:    TaskStatusExecuting,
 		Payload:   awaitingPayload,
 	}
-	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{Name: "dev"}, task)
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
 
 	req, _, err := planner.PlanHook(&HookFireEvent{
 		EventID:   "event-1",
@@ -676,7 +668,7 @@ func TestDispatchPlanner_PropagatesAwaitingEnv(t *testing.T) {
 
 	// Initial-start task (no awaiting payload): env vars must be absent.
 	task.Payload = nil
-	plainPlanner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{Name: "dev"}, task)
+	plainPlanner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
 	plainReq, _, err := plainPlanner.PlanHook(&HookFireEvent{
 		EventID:   "event-2",
 		TaskID:    "task-1",
@@ -698,7 +690,7 @@ func TestDispatchPlanner_PropagatesAwaitingEnv(t *testing.T) {
 func newPlannerForTest(proj *Project, behavior TaskBehavior, task *Task) *DispatchPlanner {
 	meta := &ProjectMeta{
 		ID:            proj.ID,
-		TaskBehaviors: map[string]TaskBehavior{behavior.Name: behavior},
+		TaskBehaviors: map[string]TaskBehavior{task.Behavior: behavior},
 	}
 	return &DispatchPlanner{
 		Meta:     stubMetaCache{meta: meta},

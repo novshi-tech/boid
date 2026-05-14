@@ -214,7 +214,7 @@ func renderProjectDetail(p *projectspec.Project) {
 		sort.Strings(keys)
 		for _, k := range keys {
 			b := m.TaskBehaviors[k]
-			fmt.Printf("  %-20s  %s\n", k, b.Name)
+			fmt.Printf("  %-20s\n", k)
 			for _, kit := range b.Kits {
 				if kit.Alias != "" {
 					fmt.Printf("    kit: %s (as %s)\n", kit.Ref, kit.Alias)
@@ -290,7 +290,7 @@ func renderProjectBehaviors(p *projectspec.Project) {
 
 	for _, k := range keys {
 		b := p.Meta.TaskBehaviors[k]
-		fmt.Printf("%-20s  %s\n", k, b.Name)
+		fmt.Printf("%-20s\n", k)
 		if len(b.Traits) > 0 {
 			fmt.Printf("  traits: %s\n", strings.Join(b.Traits, ", "))
 		}

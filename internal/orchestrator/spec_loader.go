@@ -220,11 +220,6 @@ func normalizeBehaviorAliases(scope string, behaviors map[string]TaskBehavior) (
 				"deprecated", key,
 				"canonical", canonical,
 			)
-			// Promote Name to canonical only when Name matched the alias
-			// key. Explicit display names are preserved.
-			if behavior.Name == key {
-				behavior.Name = canonical
-			}
 			result[canonical] = behavior
 			continue
 		}

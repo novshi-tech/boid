@@ -46,7 +46,6 @@ func TestRenderProjectDetail_MetaSections(t *testing.T) {
 			Name: "Meta Test",
 			TaskBehaviors: map[string]projectspec.TaskBehavior{
 				"dev": {
-					Name: "Development",
 					Kits: []projectspec.KitRef{
 						{Ref: "github.com/novshi-tech/boid-kits/dev"},
 					},
@@ -77,7 +76,6 @@ func TestRenderProjectDetail_MetaSections(t *testing.T) {
 	checks := []string{
 		"TaskBehaviors:",
 		"dev",
-		"Development",
 		"kit: github.com/novshi-tech/boid-kits/dev",
 		"hook: on-start",
 		"gate: auto-merge",
@@ -104,9 +102,9 @@ func TestRenderProjectBehaviors_AlphaOrder(t *testing.T) {
 		ID: "proj-beh",
 		Meta: projectspec.ProjectMeta{
 			TaskBehaviors: map[string]projectspec.TaskBehavior{
-				"zzz": {Name: "Zzz behavior"},
-				"aaa": {Name: "Aaa behavior"},
-				"mmm": {Name: "Mmm behavior"},
+				"zzz": {},
+				"aaa": {},
+				"mmm": {},
 			},
 		},
 	}
@@ -133,7 +131,6 @@ func TestRenderProjectBehaviors_Fields(t *testing.T) {
 		Meta: projectspec.ProjectMeta{
 			TaskBehaviors: map[string]projectspec.TaskBehavior{
 				"dev": {
-					Name:   "Development",
 					Traits: []string{"artifact", "worktree"},
 				},
 			},
@@ -146,7 +143,6 @@ func TestRenderProjectBehaviors_Fields(t *testing.T) {
 
 	checks := []string{
 		"dev",
-		"Development",
 		"artifact",
 	}
 	for _, want := range checks {
