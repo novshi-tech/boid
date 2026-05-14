@@ -92,6 +92,7 @@ func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 			OpBoidJobShow,
 			OpBoidJobLog,
 			OpBoidActionSend,
+			OpBoidAgentStop,
 			OpBoidTaskCreate,
 			OpBoidTaskGet,
 			OpBoidTaskUpdate,

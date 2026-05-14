@@ -14,6 +14,7 @@ These `boid` subcommands are available inside the supervisor's sandbox via the s
 - [boid task delete](#boid-task-delete)
 - [boid task import](#boid-task-import)
 - [boid action send](#boid-action-send)
+- [boid agent stop](#boid-agent-stop)
 - [boid job done](#boid-job-done)
 - [boid job list](#boid-job-list)
 - [boid job show](#boid-job-show)
@@ -145,13 +146,25 @@ Submits a manual state-machine action against the task (see [state-machine.md](s
 
 Most workflows go through the dedicated subcommands (`reopen`, `notify`, etc.) and never need `action send`.
 
+## boid agent stop
+
+```bash
+boid agent stop <job-id>
+```
+
+Canonical "I'm done, please end my session" call for interactive agents (supervisor / executor / plan). Use this for the autonomous exit path: `boid agent stop "$BOID_JOB_ID"`.
+
+The daemon delivers SIGUSR1 to the runtime's process group. `run-agent.py` catches it and SIGTERMs only the `claude` process; bash and the EXIT trap survive (`trap '' USR1` is inherited as SIG_IGN). The trap then fires `boid job done --output-file payload_patch.json` against a still-valid broker token, completing the job through the normal path with the agent's session id (and any artifact written to `payload_patch.json`) intact.
+
+> Why not call `boid job done` directly? `CompleteJob` unregisters the broker token immediately, so the bash EXIT trap's follow-up `boid job done --output-file ...` would be silently rejected as `invalid token` — dropping the session id and breaking the next hook's `--resume`. Always go through `agent stop`.
+
 ## boid job done
 
 ```bash
 boid job done <job-id> --exit-code <n> [--output-file <path>]
 ```
 
-Marks the supervisor's own job complete. Use this for the autonomous exit path: `boid job done "$BOID_JOB_ID" --exit-code 0`. The daemon then sends SIGTERM; the bash EXIT trap fires `boid job done` again, but the daemon absorbs the double-fire.
+Low-level CompleteJob call. The bash EXIT trap fires this automatically with `--output-file payload_patch.json` after `boid agent stop` (or after `notify --ask`). Agents normally do not invoke `boid job done` themselves — use `boid agent stop` instead.
 
 ## boid job list
 

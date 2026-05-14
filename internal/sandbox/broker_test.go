@@ -23,9 +23,10 @@ const (
 func testHookBoidPolicies() map[string]sandbox.BuiltinPolicy {
 	return map[string]sandbox.BuiltinPolicy{
 		"boid": {AllowedOps: map[string]struct{}{
-			string(sandbox.BoidOpJobDone):    {},
-			string(sandbox.BoidOpTaskGet):    {},
-			string(sandbox.BoidOpTaskList):   {},
+			string(sandbox.BoidOpJobDone):   {},
+			string(sandbox.BoidOpAgentStop): {},
+			string(sandbox.BoidOpTaskGet):   {},
+			string(sandbox.BoidOpTaskList):  {},
 		}},
 	}
 }
@@ -819,6 +820,72 @@ func TestBroker_BoidBuiltinTaskUpdateRequiresTaskID(t *testing.T) {
 	}
 	if len(exec.calls) != 0 {
 		t.Fatalf("executor should not receive request without task id, calls=%d", len(exec.calls))
+	}
+}
+
+// BoidOpAgentStop は own job 以外への配送を拒否する。 job_done と同じガード。
+// agent stop は 「自分の agent (claude) を止めて」 という意図なので、 他の
+// runtime に SIGUSR1 を撃ち込めると agent クロストークの hijack 経路になる。
+func TestBroker_BoidBuiltinAgentStopRejectsWrongJob(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	ctx := sandbox.TokenContext{
+		JobID:      "job-keep",
+		TaskID:     "task-keep",
+		ProjectID:  "proj-keep",
+		Role:       testRoleHook,
+		ProjectDir: projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, testHookBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:    sandbox.BoidOpAgentStop,
+			JobID: "other-job",
+		},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "restricted to the current job") {
+		t.Fatalf("expected job id rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not receive cross-job agent stop, calls=%d", len(exec.calls))
+	}
+
+	resp = broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:    sandbox.BoidOpAgentStop,
+			JobID: "",
+		},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "requires a job id") {
+		t.Fatalf("expected missing job id rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+
+	// 正規ケース: own job への agent stop は executor に届く。
+	resp = broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:    sandbox.BoidOpAgentStop,
+			JobID: "job-keep",
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("self-job agent stop should succeed, exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor should receive own-job agent stop, calls=%d", len(exec.calls))
+	}
+	if exec.calls[0].Op != sandbox.BoidOpAgentStop || exec.calls[0].JobID != "job-keep" {
+		t.Fatalf("unexpected executor call: %+v", exec.calls[0])
 	}
 }
 

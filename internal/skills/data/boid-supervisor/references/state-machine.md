@@ -30,7 +30,7 @@ Triggered by explicit CLI calls (`boid task ...` or `boid action send --type ...
 | Action | From | To | Triggered by |
 |---|---|---|---|
 | `start` | pending | executing | dispatch loop (auto_start) or `boid action send --type start` |
-| `done` | executing | done | `boid job done "$BOID_JOB_ID" --exit-code 0` from the agent (the EXIT trap of the harness fires the same call, which CompleteJob absorbs idempotently) |
+| `done` | executing | done | `boid agent stop "$BOID_JOB_ID"` from the agent (daemon SIGUSR1s the runtime → `run-agent.py` SIGTERMs `claude`; bash EXIT trap then fires `boid job done --output-file payload_patch.json` as the canonical CompleteJob caller — preserves the session id) |
 | `reopen` | done | executing | `boid task reopen <id> -m "<msg>"` |
 | `ask` | executing | awaiting | `boid task notify --ask` |
 | `answer` | awaiting | executing | `boid task answer` (or the Web UI Q&A reply) |

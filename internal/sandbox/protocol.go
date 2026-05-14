@@ -54,6 +54,7 @@ const (
 	BoidOpJobShow    BoidOp = "job_show"
 	BoidOpJobLog     BoidOp = "job_log"
 	BoidOpActionSend BoidOp = "action_send"
+	BoidOpAgentStop  BoidOp = "agent_stop"
 	BoidOpTaskCreate BoidOp = "task_create"
 	BoidOpTaskGet    BoidOp = "task_get"
 	BoidOpTaskUpdate BoidOp = "task_update"

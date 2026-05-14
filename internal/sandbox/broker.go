@@ -241,6 +241,13 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 		if boidReq.JobID != entry.Context.JobID {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid job done is restricted to the current job"}
 		}
+	case BoidOpAgentStop:
+		if boidReq.JobID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid agent stop requires a job id"}
+		}
+		if boidReq.JobID != entry.Context.JobID {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid agent stop is restricted to the current job"}
+		}
 	case BoidOpTaskCreate:
 		if boidReq.ProjectID == "" {
 			boidReq.ProjectID = entry.Context.ProjectID

@@ -29,9 +29,11 @@ When the task has been reopened, earlier elements of `instructions.yaml` are pri
 2. **Implement** — make the code / test / doc changes the task asks for. Stay inside the executor's worktree.
 3. **Verify** — run the project's quick verification (typically tests + lint) before committing. The active instruction usually names the verification command or release skill that includes verification.
 4. **Release** — follow the release steps in the active instruction. Common shapes: `git add` + `git commit` (+ optional `git push`), or invoking a project release skill.
-5. **Exit** — run `boid job done "$BOID_JOB_ID" --exit-code 0`. The daemon then SIGTERMs the runtime; the bash EXIT trap fires `boid job done` again and CompleteJob's idempotency guard absorbs the second call. The task transitions to `done` and the parent supervisor takes it from there.
+5. **Exit** — run `boid agent stop "$BOID_JOB_ID"`. The daemon delivers SIGUSR1 to the runtime; `run-agent.py` catches it and SIGTERMs only the `claude` process, leaving bash and the EXIT trap alive. The trap fires `boid job done --output-file payload_patch.json`, which is the canonical CompleteJob call — it transports the agent's session id and any artifact written to `payload_patch.json` to the daemon through a still-valid broker token. The task then transitions to `done` and the parent supervisor takes it from there.
 
-> Note: executor agents now run in interactive PTY sessions (the `claude` binary does not exit on its own), so the EXIT trap alone is not enough — you must call `boid job done` explicitly.
+> Note: executor agents run in interactive PTY sessions (the `claude` binary does not exit on its own), so the EXIT trap alone is not enough — you must call `boid agent stop` explicitly. Do **not** call `boid job done` from the agent: that would unregister the broker token before the EXIT trap runs and silently drop the agent's `payload_patch.json` (session id, artifact).
+>
+> Safety net: the claude-code kit injects a `Stop` hook via `--settings` that calls `boid agent stop "$BOID_JOB_ID"` whenever your response loop ends, so a forgotten exit call will not strand the task in `executing`. Still call `boid agent stop` explicitly — the Stop hook is a backstop, not the contract.
 
 ## Asking the User
 

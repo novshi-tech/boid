@@ -52,6 +52,35 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 		return &sandbox.ExecResponse{
 			Stdout: fmt.Sprintf("job %s completed (exit_code=%d)\n", req.JobID, req.ExitCode),
 		}
+	case sandbox.BoidOpAgentStop:
+		// agent stop: deliver SIGUSR1 to the runtime so run-agent.py SIGTERMs
+		// just the claude process. bash + the EXIT trap stay alive so the
+		// trap's `boid job done --output-file payload_patch.json` is the sole
+		// CompleteJob caller — keeping the broker token valid until then and
+		// preserving the agent's session id in payload_patch.json. Mirrors
+		// NotifyTask's StopAgent path; do NOT call CompleteJob here.
+		if e.workflow == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid agent stop unavailable"}
+		}
+		if e.jobs == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid agent stop unavailable (no job store)"}
+		}
+		job, err := e.jobs.GetJob(req.JobID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		if job.RuntimeID == "" {
+			// No runtime to signal — likely a host-foreground job that
+			// shouldn't have called agent stop in the first place. Treat as
+			// a no-op success so the caller can `exit` afterwards if needed.
+			return &sandbox.ExecResponse{
+				Stdout: fmt.Sprintf("agent stop: job %s has no runtime\n", req.JobID),
+			}
+		}
+		e.workflow.StopAgent(job.RuntimeID)
+		return &sandbox.ExecResponse{
+			Stdout: fmt.Sprintf("agent stop signalled for job %s\n", req.JobID),
+		}
 	case sandbox.BoidOpTaskCreate:
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create unavailable"}
