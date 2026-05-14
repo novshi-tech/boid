@@ -1,102 +1,74 @@
 ---
 name: boid-executor
 description: Runs an executor task (writable implementation) for the boid orchestrator.
-  Reads task.yaml title/description, implements the requested change, and either
-  calls a project-side release skill (e.g. /dev-pr-flow) or just commits and pushes
-  before exiting. This is the canonical writable counterpart to /boid-supervisor.
+  Reads task.yaml + instructions.yaml, makes the requested change inside its
+  writable worktree, commits, and exits. The release step (commit-only, push,
+  PR creation, etc.) is specified by the active instruction.
 ---
 
 # boid Executor
 
-An executor task **implements** what the parent supervisor asked for. It runs inside a writable worktree (the project-top `worktree: true` setting in `.boid/project.yaml` provisions one automatically), edits files, runs tests, and finishes with a commit.
+An executor task **implements** what the parent supervisor asked for. It runs inside a writable worktree (provisioned by the project-top `worktree: true` setting in `.boid/project.yaml`), edits files, runs tests, and finishes with a commit. The parent supervisor handles integration — the executor only commits and exits.
 
-This is the canonical behavior counterpart to the old `dev` behavior. Implementation work happens here; the parent `/boid-supervisor` only watches and integrates results.
-
-## Context
+## Context to Read First
 
 | File | Contents |
-|---------|------|
-| `~/.boid/context/task.yaml` | Task ID, title, description, status, behavior |
-| `~/.boid/context/instructions.yaml` | Instructions addressed to you (array) |
-| `~/.boid/context/payload.yaml` | Full payload (existing artifacts, verification results) |
+|---|---|
+| `~/.boid/context/task.yaml` | Title, description, status, behavior |
+| `~/.boid/context/instructions.yaml` | Instructions array; **the last element is active** |
+| `~/.boid/context/payload.yaml` | Existing artifacts (parent context, prior results) |
 | `~/.boid/context/environment.yaml` | Sandbox constraints (RO/RW, network, tools) |
 
-Start by reading `task.yaml` and `instructions.yaml` to understand the task. Past instructions are kept at the front of the `instructions.yaml` array (when the task has been reopened); the **last element** is the currently active instruction. Use earlier elements as context only.
+The **active instruction** (last element of `instructions.yaml`) carries the project-specific release step — e.g. plain `git add` + `git commit` (local merge model), or invoking a project release skill such as `/dev-pr-flow` (PR model). This skill describes only the generic implement-and-commit loop; the release details come from the instruction.
+
+When the task has been reopened, earlier elements of `instructions.yaml` are prior context only — act on the tail.
 
 ## Workflow
 
-1. **Read the task.** Title + description in `task.yaml`, current instruction at the tail of `instructions.yaml`. Inspect `environment.yaml` to confirm the worktree path and writability.
-2. **Implement.** Make the code / test / doc changes the task asks for. Stay within the executor's worktree — do **not** edit files outside it.
-3. **Verify locally.** Run the project's quick verification (typically tests + lint) before committing. If the project ships a verification skill / script, use it.
-4. **Release.** Pick one of two paths depending on the project conventions (see "Release Step" below).
-5. **Exit.** Exit 0; the hook EXIT trap fires `boid job done` and the daemon transitions you to `done`. The supervisor sees the transition and runs its integration step.
+1. **Read** — title + description in `task.yaml`, the active instruction at the tail of `instructions.yaml`. Confirm the worktree path and writability via `environment.yaml`.
+2. **Implement** — make the code / test / doc changes the task asks for. Stay inside the executor's worktree.
+3. **Verify** — run the project's quick verification (typically tests + lint) before committing. The active instruction usually names the verification command or release skill that includes verification.
+4. **Release** — follow the release steps in the active instruction. Common shapes: `git add` + `git commit` (+ optional `git push`), or invoking a project release skill.
+5. **Exit** — exit 0. The hook EXIT trap fires `boid job done` and the task transitions to `done`. The parent supervisor takes it from there.
 
-If the work cannot proceed (missing fact, ambiguous spec, unrecoverable environment problem), call:
+## Asking the User
 
-```bash
-boid task notify "$BOID_TASK_ID" --ask "<what you need to know>"
-```
-
-This pauses the task in `awaiting` and notifies the user. When the user replies, the kit resumes you with `$BOID_USER_ANSWER` set. If the situation is unrecoverable, call `boid task abort "$BOID_TASK_ID" --code <reason> --message "<summary>"`.
-
-## Release Step
-
-The release step ships your committed work to the place the supervisor expects to find it. Two models are common:
-
-### Default: Local Merge Model
-
-`commit + push` is enough. The supervisor will fast-forward / merge the branch locally into the base branch as part of its supervise loop.
+When the work cannot proceed (missing fact, ambiguous spec), pause and ask:
 
 ```bash
-git add -A
-git commit -m "<conventional commit message>"
-git push origin HEAD   # only if the project pushes branches; otherwise skip
+boid task notify "$BOID_TASK_ID" \
+  --message "<short summary for the push notification>" \
+  --ask "<full question body>"
 ```
 
-If the project does **not** push child branches to a remote (purely local supervisor merge), skip the `push` — the supervisor will read the branch from the worktree directly.
+Both `--message` (short) and `--ask` (full body) are required. The call transitions the task to `awaiting`, fires the notify hook, and ends your session naturally — **do not wait in the session**, just stop generating. When the user replies, the kit re-invokes you with `$BOID_USER_ANSWER` set. Branch on the answer to continue.
 
-### Override: PR Model
+## Aborting
 
-If a project-side release skill exists (typically `/dev-pr-flow`), **call it** instead of the manual commit + push above. Example for the boid repo:
+For unrecoverable problems (broken sandbox, prerequisites the user cannot fix), abort instead of exiting normally:
 
+```bash
+boid action send --task "$BOID_TASK_ID" --type abort \
+  --payload '{"code":"<short-code>","message":"<summary>"}'
 ```
-/dev-pr-flow
-```
 
-The skill handles the project's release conventions: running the right verifications, picking the commit / PR title from `task.yaml`, opening the PR, watching CI, and exiting with the right status. Use the skill exactly as the project documents it; do not reimplement the flow inline.
-
-To know which model the current project uses, read the executor behavior's `default_instruction.message` in `.boid/project.yaml`. Projects that want PR mode will explicitly mention `/dev-pr-flow` (or a similar skill) in the instruction; otherwise default to local commit + push.
+This transitions the task to `aborted` and records the reason in `lifecycle.abort.message`. The parent supervisor sees the abort and decides whether to retry or escalate to the user.
 
 ## Progress Reporting
 
-During long-running work you can leave a progress note on the task timeline at any time:
+For long-running work, leave a progress note on the task timeline:
 
+```bash
+boid task notify "$BOID_TASK_ID" --progress "<message>"
 ```
-boid task notify <task_id> --progress "<message>"
-```
 
-- **No state transition** — executing stays executing
-- **No notify hook** — `notify.command` is not invoked
-- **Timeline entry** — shown on Web UI / TUI task detail
-
-Use this for milestone signals during multi-hour implementations. For decision branches use `--ask`; for FYI use the bare form (which fires the notify hook).
+No state change, no notify hook — just a timeline entry visible in the Web UI / TUI. Useful for multi-hour implementations.
 
 ## Rules
 
-- Only edit files inside your worktree (the path in `environment.yaml`). The worktree is removed when the task transitions to `done`, so anything outside it would be lost anyway.
-- Do not write to `instructions` in the task payload — it is delivered as a separate read-only file (`instructions.yaml`).
+- Only edit files inside your worktree (path in `environment.yaml`). Anything written outside is lost when the worktree is removed on `done`.
 - Follow constraints in `environment.yaml` (`network.restricted`, `tools`).
-- Always commit before exiting. Uncommitted changes vanish with the worktree.
-- Do **not** spawn child tasks unless the project's executor instruction tells you to. Triage and decomposition are the supervisor's job; executors implement.
-
-## State Machine
-
-The executor only runs in the `executing` state. State transitions are automatic:
-
-| Condition | Transition |
-|------|------|
-| Exit 0 (`boid job done` fires via the EXIT trap) | executing → done |
-| Exit non-zero / `boid task abort` | * → aborted |
-| Supervisor calls `boid task reopen <id> -m "<new instruction>"` | done → executing (with the new instruction appended to `instructions.yaml`) |
-
-When reopened, read the **last element** of `instructions.yaml` as the new active instruction; earlier elements are prior context.
+- **Always commit before exiting.** Uncommitted changes vanish with the worktree.
+- Do not spawn child tasks. Triage and decomposition belong to the supervisor; executors implement.
+- Do not write to `instructions` in the task payload — it is delivered as the read-only file `instructions.yaml`.
+- On reopen, the new instruction is appended as the last element of `instructions.yaml`. Read the new tail; earlier elements are context.

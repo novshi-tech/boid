@@ -59,11 +59,10 @@ task_behaviors:
         Follow the /boid-supervisor skill to build an implementation plan and
         monitor child executor tasks.
 
-        This project uses the PR-mode integration path (see "Integration: PR
-        Model" in /boid-supervisor). You own PR-merge responsibility for the
-        executor children you spawn (the github-auto-merge kit is not attached
-        to executor in this project). Once a child executor task reaches `done`
-        in your monitoring loop:
+        This project uses a PR-per-executor integration path. You own
+        PR-merge responsibility for the executor children you spawn (the
+        github-auto-merge kit is not attached to executor in this project).
+        Once a child executor task reaches `done` in your monitoring loop:
 
         1. Locate the PR via `gh pr list --head boid/<task_id8>` (first 8
            chars of the child task id).

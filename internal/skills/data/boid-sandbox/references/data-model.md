@@ -24,7 +24,7 @@ Canonical behavior names are `supervisor` (readonly orchestrator) and `executor`
 | id | Unique task identifier |
 | title | Task title |
 | description | Detailed task description |
-| status | Current state (see [state-machine.md](state-machine.md)) |
+| status | Current state — one of `pending`, `executing`, `awaiting`, `done`, `aborted` |
 | behavior | Task execution model name |
 
 ## instructions.yaml
