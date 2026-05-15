@@ -221,11 +221,18 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	var conditions []string
 	var args []any
 	var joins []string
+	var ctePrefix string
 
-	// "open" は特殊フィルタ: 自身が open 状態 OR 閉じているが open な子を持つ（グループヘッダー救済）
+	// "open" は特殊フィルタ: 自身が open 状態 OR open な子を持つ（ヘッダー救済）OR open な祖先を持つ（子孫救済）
 	if filter.Status == "open" {
+		ctePrefix = `WITH RECURSIVE open_descendants(id) AS (` +
+			`SELECT id FROM tasks WHERE status NOT IN ('done','aborted') ` +
+			`UNION ` +
+			`SELECT c.id FROM tasks c JOIN open_descendants od ON c.parent_id = od.id` +
+			`) `
 		conditions = append(conditions, `(t.status NOT IN ('done', 'aborted') OR `+
-			`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status NOT IN ('done', 'aborted')) > 0)`)
+			`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status NOT IN ('done', 'aborted')) > 0 OR `+
+			`t.id IN (SELECT id FROM open_descendants))`)
 	} else if filter.Status == "closed" {
 		conditions = append(conditions, "t.status IN ('done', 'aborted')")
 	} else if filter.Status != "" {
@@ -255,7 +262,7 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM task_dependencies td WHERE td.task_id = t.id)")
 	}
 
-	query := `SELECT ` + taskSelectCols + `, ` + taskChildCountCols + ` FROM tasks t`
+	query := ctePrefix + `SELECT ` + taskSelectCols + `, ` + taskChildCountCols + ` FROM tasks t`
 	for _, j := range joins {
 		query += " " + j
 	}
