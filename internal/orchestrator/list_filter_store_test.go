@@ -166,3 +166,133 @@ func TestListTasks_NoDependsOn(t *testing.T) {
 		}
 	}
 }
+
+func taskInResults(tasks []*orchestrator.Task, id string) bool {
+	for _, t := range tasks {
+		if t.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// TestListTasks_OpenTab_ExecutingParentDoneChild verifies that a done child of an executing parent
+// appears in the open tab.
+func TestListTasks_OpenTab_ExecutingParentDoneChild(t *testing.T) {
+	d := setupFilterTestDB(t)
+
+	parent := &orchestrator.Task{ID: "parent-1", ProjectID: "proj-ws1-a", Title: "Parent", Behavior: "dev", Status: orchestrator.TaskStatusExecuting}
+	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	child := &orchestrator.Task{ID: "child-1", ProjectID: "proj-ws1-a", Title: "Child", Behavior: "dev", Status: orchestrator.TaskStatusDone, ParentID: "parent-1"}
+	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "open"})
+	if err != nil {
+		t.Fatalf("ListTasks(open): %v", err)
+	}
+	if !taskInResults(got, "child-1") {
+		t.Errorf("done child of executing parent should appear in open tab, got IDs: %v", taskIDs(got))
+	}
+}
+
+// TestListTasks_OpenTab_DoneParentDoneChild verifies that a done child of a done parent
+// does NOT appear in the open tab.
+func TestListTasks_OpenTab_DoneParentDoneChild(t *testing.T) {
+	d := setupFilterTestDB(t)
+
+	parent := &orchestrator.Task{ID: "parent-2", ProjectID: "proj-ws1-a", Title: "Parent", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	child := &orchestrator.Task{ID: "child-2", ProjectID: "proj-ws1-a", Title: "Child", Behavior: "dev", Status: orchestrator.TaskStatusDone, ParentID: "parent-2"}
+	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "open"})
+	if err != nil {
+		t.Fatalf("ListTasks(open): %v", err)
+	}
+	if taskInResults(got, "child-2") {
+		t.Errorf("done child of done parent should NOT appear in open tab")
+	}
+	if taskInResults(got, "parent-2") {
+		t.Errorf("done parent with done child should NOT appear in open tab")
+	}
+}
+
+// TestListTasks_OpenTab_ThreeLevels verifies that a done grandchild of an executing grandparent
+// appears in the open tab (recursive ancestor check).
+func TestListTasks_OpenTab_ThreeLevels(t *testing.T) {
+	d := setupFilterTestDB(t)
+
+	gp := &orchestrator.Task{ID: "gp-3", ProjectID: "proj-ws1-a", Title: "Grandparent", Behavior: "dev", Status: orchestrator.TaskStatusExecuting}
+	if err := orchestrator.CreateTask(d.Conn, gp); err != nil {
+		t.Fatalf("create grandparent: %v", err)
+	}
+	mid := &orchestrator.Task{ID: "mid-3", ProjectID: "proj-ws1-a", Title: "Middle", Behavior: "dev", Status: orchestrator.TaskStatusDone, ParentID: "gp-3"}
+	if err := orchestrator.CreateTask(d.Conn, mid); err != nil {
+		t.Fatalf("create middle: %v", err)
+	}
+	gc := &orchestrator.Task{ID: "gc-3", ProjectID: "proj-ws1-a", Title: "Grandchild", Behavior: "dev", Status: orchestrator.TaskStatusDone, ParentID: "mid-3"}
+	if err := orchestrator.CreateTask(d.Conn, gc); err != nil {
+		t.Fatalf("create grandchild: %v", err)
+	}
+
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "open"})
+	if err != nil {
+		t.Fatalf("ListTasks(open): %v", err)
+	}
+	if !taskInResults(got, "mid-3") {
+		t.Errorf("done middle child of executing grandparent should appear in open tab, got IDs: %v", taskIDs(got))
+	}
+	if !taskInResults(got, "gc-3") {
+		t.Errorf("done grandchild of executing grandparent should appear in open tab, got IDs: %v", taskIDs(got))
+	}
+}
+
+// TestListTasks_OpenTab_DoneParentExecutingChildDoneGrandchild verifies:
+// - done parent with executing child is rescued by the "has open child" rule
+// - done grandchild of executing child appears via ancestor rescue
+func TestListTasks_OpenTab_DoneParentExecutingChildDoneGrandchild(t *testing.T) {
+	d := setupFilterTestDB(t)
+
+	parent := &orchestrator.Task{ID: "parent-4", ProjectID: "proj-ws1-a", Title: "Parent", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	child := &orchestrator.Task{ID: "child-4", ProjectID: "proj-ws1-a", Title: "Child", Behavior: "dev", Status: orchestrator.TaskStatusExecuting, ParentID: "parent-4"}
+	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	gc := &orchestrator.Task{ID: "gc-4", ProjectID: "proj-ws1-a", Title: "Grandchild", Behavior: "dev", Status: orchestrator.TaskStatusDone, ParentID: "child-4"}
+	if err := orchestrator.CreateTask(d.Conn, gc); err != nil {
+		t.Fatalf("create grandchild: %v", err)
+	}
+
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "open"})
+	if err != nil {
+		t.Fatalf("ListTasks(open): %v", err)
+	}
+	if !taskInResults(got, "parent-4") {
+		t.Errorf("done parent with executing child should appear in open tab (has-open-child rule), got IDs: %v", taskIDs(got))
+	}
+	if !taskInResults(got, "child-4") {
+		t.Errorf("executing child should appear in open tab, got IDs: %v", taskIDs(got))
+	}
+	if !taskInResults(got, "gc-4") {
+		t.Errorf("done grandchild of executing child should appear in open tab, got IDs: %v", taskIDs(got))
+	}
+}
+
+func taskIDs(tasks []*orchestrator.Task) []string {
+	ids := make([]string, len(tasks))
+	for i, t := range tasks {
+		ids[i] = t.ID
+	}
+	return ids
+}
