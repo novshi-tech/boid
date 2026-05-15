@@ -557,7 +557,7 @@ func (h *WebHandler) PostHookReplay(w http.ResponseWriter, r *http.Request) {
 }
 
 func isGateRole(role string) bool {
-	return role == "gate" || role == "exit_gate" || role == "entry_gate"
+	return timeline.IsGateRole(role)
 }
 
 func (h *WebHandler) JobDetail(w http.ResponseWriter, r *http.Request) {

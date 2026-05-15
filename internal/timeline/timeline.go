@@ -162,11 +162,18 @@ func FormatElapsed(t time.Time) string {
 	return fmt.Sprintf("%02d:%02d", m, s)
 }
 
+// IsGateRole reports whether a job role is a gate variant (entry_gate, exit_gate, gate).
+// Gate jobs are excluded from the timeline display because they are no longer actively used.
+func IsGateRole(role string) bool {
+	return role == "gate" || role == "exit_gate" || role == "entry_gate"
+}
+
 // Build groups filtered events by the task-status visit in which they occurred.
 // Only state-transition actions and jobs are included. hook_fired /
 // exit_gate_fired / entry_gate_fired actions are intentionally dropped because
 // the associated job carries the same information (success, handler id,
-// duration) plus output.
+// duration) plus output. gate / exit_gate / entry_gate jobs are also excluded
+// from display as they are no longer actively used.
 //
 // Each visit to a status creates a new group so repeated visits
 // (e.g. executing → aborted → pending → executing) produce distinct groups
@@ -191,6 +198,9 @@ func Build(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobI
 		items = append(items, rawItem{t: a.CreatedAt, hasTime: !a.CreatedAt.IsZero(), action: a})
 	}
 	for _, j := range jobs {
+		if IsGateRole(j.Role) {
+			continue
+		}
 		items = append(items, rawItem{t: j.CreatedAt, hasTime: !j.CreatedAt.IsZero(), job: j})
 	}
 
