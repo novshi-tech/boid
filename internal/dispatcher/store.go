@@ -171,6 +171,52 @@ func MarkStaleJobsFailed(dbtx db.DBTX) error {
 	return err
 }
 
+// MarkStaleExecutingTasksAborted transitions all tasks in "executing" status to
+// "aborted" and records a daemon_restart abort action for each. Call this on
+// server startup after MarkStaleJobsFailed. Returns the number of tasks transitioned.
+func MarkStaleExecutingTasksAborted(conn *sql.DB) (int, error) {
+	var count int
+	err := db.InTxDB(conn, func(tx db.DBTX) error {
+		rows, err := tx.Query(`SELECT id FROM tasks WHERE status = 'executing'`)
+		if err != nil {
+			return fmt.Errorf("query executing tasks: %w", err)
+		}
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan task id: %w", err)
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate executing tasks: %w", err)
+		}
+
+		const abortPayload = `{"code":"daemon_restart","message":"daemon が再起動されたため中断されました。 boid task reopen で再開できます。"}`
+		now := time.Now().UTC()
+		for _, id := range ids {
+			if _, err := tx.Exec(
+				`INSERT INTO actions (id, task_id, type, payload, from_status, to_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				uuid.New().String(), id, "abort", abortPayload, "executing", "aborted", now,
+			); err != nil {
+				return fmt.Errorf("insert abort action for task %s: %w", id, err)
+			}
+			if _, err := tx.Exec(
+				`UPDATE tasks SET status = 'aborted', updated_at = ? WHERE id = ?`,
+				now, id,
+			); err != nil {
+				return fmt.Errorf("update task status for %s: %w", id, err)
+			}
+		}
+		count = len(ids)
+		return nil
+	})
+	return count, err
+}
+
 func UpdateJob(dbtx db.DBTX, j *Job) error {
 	j.UpdatedAt = time.Now().UTC()
 

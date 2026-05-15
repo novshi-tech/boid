@@ -139,6 +139,13 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		slog.Warn("failed to mark stale jobs as failed", "error", err)
 	}
 
+	// Abort tasks left in executing state from a previous crash or restart.
+	if n, err := dispatcher.MarkStaleExecutingTasksAborted(srv.db); err != nil {
+		slog.Warn("failed to abort stale executing tasks", "error", err)
+	} else if n > 0 {
+		slog.Info("aborted stale executing tasks on startup", "count", n)
+	}
+
 	projectRepo := orchestrator.NewProjectRepository(srv.db)
 	taskRepo := orchestrator.NewTaskRepository(srv.db)
 	jobRepo := dispatcher.NewJobRepository(srv.db)
