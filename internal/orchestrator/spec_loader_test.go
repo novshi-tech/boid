@@ -2683,3 +2683,33 @@ func TestReadProjectMeta_BoidSelfProjectYAML_LoadsInCanonicalForm(t *testing.T) 
 		}
 	}
 }
+
+func TestHook_NameFieldDecodedFromYAML(t *testing.T) {
+	kitDir := t.TempDir()
+	// ReadKitMeta resolves scripts in <kitDir>/hooks/<hookID>.sh
+	hookScript := filepath.Join(kitDir, "hooks", "my-kit", "pr-verify.sh")
+	if err := os.MkdirAll(filepath.Dir(hookScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hookScript, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeKitYAML(t, kitDir, `
+hooks:
+  - id: my-kit/pr-verify
+    name: "PR Verify"
+    kind: agent
+    agent: claude-code
+`)
+	meta, err := projectspec.ReadKitMeta(kitDir)
+	if err != nil {
+		t.Fatalf("ReadKitMeta: %v", err)
+	}
+	if len(meta.Hooks) == 0 {
+		t.Fatal("expected at least one hook in kit meta")
+	}
+	h := meta.Hooks[0]
+	if h.Name != "PR Verify" {
+		t.Errorf("Hook.Name = %q, want %q", h.Name, "PR Verify")
+	}
+}

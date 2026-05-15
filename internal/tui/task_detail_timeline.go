@@ -32,13 +32,14 @@ func jobsToInfo(jobs []*api.Job) []*timeline.JobInfo {
 			continue
 		}
 		out = append(out, &timeline.JobInfo{
-			ID:        j.ID,
-			Role:      j.Role,
-			HandlerID: j.HandlerID,
-			Status:    string(j.Status),
-			ExitCode:  j.ExitCode,
-			CreatedAt: j.CreatedAt,
-			UpdatedAt: j.UpdatedAt,
+			ID:          j.ID,
+			Role:        j.Role,
+			HandlerID:   j.HandlerID,
+			DisplayName: j.DisplayName,
+			Status:      string(j.Status),
+			ExitCode:    j.ExitCode,
+			CreatedAt:   j.CreatedAt,
+			UpdatedAt:   j.UpdatedAt,
 		})
 	}
 	return out

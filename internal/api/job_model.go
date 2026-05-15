@@ -15,6 +15,7 @@ type Job struct {
 	TaskID         string    `json:"task_id"`
 	ProjectID      string    `json:"project_id"`
 	HandlerID      string    `json:"handler_id"`
+	DisplayName    string    `json:"display_name,omitempty"`
 	Role           string    `json:"role"`
 	RuntimeID      string    `json:"runtime_id,omitempty"`
 	WorkspacePath  string    `json:"workspace_path,omitempty"`

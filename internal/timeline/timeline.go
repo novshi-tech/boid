@@ -38,13 +38,14 @@ const (
 // render its label / status icon / link target. Callers convert from their
 // native job type (api.Job for TUI / Web).
 type JobInfo struct {
-	ID        string
-	Role      string
-	HandlerID string
-	Status    string // one of JobStatusRunning / Completed / Failed (or other)
-	ExitCode  int
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID          string
+	Role        string
+	HandlerID   string
+	DisplayName string // optional; shown instead of HandlerID when non-empty
+	Status      string // one of JobStatusRunning / Completed / Failed (or other)
+	ExitCode    int
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // Event is a single row in the unified timeline. Exactly one of Action / Job
@@ -104,18 +105,24 @@ func buildProgressLabel(a *orchestrator.Action) string {
 }
 
 // BuildJobLabel returns the display label for a job.
-//   - completed: "[role] <handler> ✓ <duration>" (handler omitted when empty)
-//   - failed:    "[role] <handler> ✗ <duration>"
+//   - completed: "[role] <name> ✓ <duration>" (name omitted when empty)
+//   - failed:    "[role] <name> ✗ <duration>"
 //   - running:   "[role] <elapsed> ago"
-//   - other:     "[role] <handler><status>"
+//   - other:     "[role] <name><status>"
+//
+// DisplayName is used when set; otherwise HandlerID is used as fallback.
 func BuildJobLabel(j *JobInfo) string {
 	role := j.Role
 	if role == "" {
 		role = "job"
 	}
+	label := j.DisplayName
+	if label == "" {
+		label = j.HandlerID
+	}
 	handler := ""
-	if j.HandlerID != "" {
-		handler = j.HandlerID + " "
+	if label != "" {
+		handler = label + " "
 	}
 	switch j.Status {
 	case JobStatusCompleted:

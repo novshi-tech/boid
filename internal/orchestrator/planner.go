@@ -50,10 +50,11 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 	instruction := selectInstruction(task, event.Hook.Agent)
 
 	spec := &JobSpec{
-		TaskID:       event.TaskID,
-		ProjectID:    event.ProjectID,
-		HandlerID:    event.Hook.ID,
-		Kind:         JobKindHook,
+		TaskID:      event.TaskID,
+		ProjectID:   event.ProjectID,
+		HandlerID:   event.Hook.ID,
+		DisplayName: event.Hook.Name,
+		Kind:        JobKindHook,
 		Argv:         []string{event.Hook.ScriptPath},
 		Instruction:  instruction,
 		Task:         snapshotTask(task),

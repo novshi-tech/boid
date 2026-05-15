@@ -239,6 +239,7 @@ const (
 
 type Hook struct {
 	ID         string        `yaml:"id" json:"id"`
+	Name       string        `yaml:"name,omitempty" json:"name,omitempty"`
 	Kind       HandlerKind   `yaml:"kind,omitempty" json:"kind,omitempty"`
 	Traits     HandlerTraits `yaml:"traits" json:"traits"`
 	Requires   []string      `yaml:"requires" json:"requires"`
