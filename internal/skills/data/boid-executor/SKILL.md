@@ -28,7 +28,7 @@ When the task has been reopened, earlier elements of `instructions.yaml` are pri
 Your **owner** is the parent supervisor (`parent_id != ""`) or the user (`parent_id == ""`). Before exiting, you must:
 
 1. **Write your structured report** to `payload.artifact.report` — your owner reads it as the canonical source for your work product
-2. **Signal upward** via `boid task notify --ask "done_request: ..."` (or `failure_report: ...`) — unless you are a root executor (`parent_id == ""`), in which case the existing `boid agent stop` flow applies
+2. **Signal upward** via `boid task notify` with the appropriate flag — `--done` (success), `--fail` (failure), or `--ask` (mid-flight question). The flag chooses the state transition: `done`, `aborted`, or `awaiting` respectively. Same contract for root and child executors.
 
 Children that exit silently without notification leave the task in `executing` with no signal to the owner. The supervisor's polling can detect that as a stuck child, but **explicit notification is the contract**.
 
@@ -68,54 +68,36 @@ EOF
 
 ## Exit Handling
 
-Check your owner first:
-
-```bash
-parent=$(boid task show "$BOID_TASK_ID" --field parent_id)
-```
-
-### Child executor (`parent_id != ""`)
-
 After writing your report, emit exactly one of:
 
-- **Complete** — your task is done:
+- **Complete** — your task is done. Transitions to `done`:
   ```bash
   boid task notify "$BOID_TASK_ID" \
     --message "<short summary>" \
-    --ask "done_request: <one-line achievement>"
+    --done "<one-line achievement>"
   ```
-- **Failure** — you cannot complete (let your supervisor decide reopen / abort):
+- **Failure** — you cannot complete (let your supervisor decide reopen / leave aborted). Transitions to `aborted`:
   ```bash
   boid task notify "$BOID_TASK_ID" \
     --message "<short summary>" \
-    --ask "failure_report: <what went wrong, what you tried>"
+    --fail "<what went wrong, what you tried>"
   ```
-- **Decision needed** — mid-flight question for your supervisor:
+- **Decision needed** — mid-flight question for your owner. Transitions to `awaiting`:
   ```bash
   boid task notify "$BOID_TASK_ID" \
     --message "<short summary>" \
     --ask "<question>"
   ```
 
-After the call returns, the daemon SIGTERMs your runtime — **just stop generating**. The bash EXIT trap fires `boid job done` to seal your session id. Do **not** call `boid agent stop` when you have a parent — the supervisor never sees the silent termination (the anti-pattern that motivated this model).
+The contract is identical for child (`parent_id != ""`) and root (`parent_id == ""`) executors. After the call returns, the daemon SIGTERMs your runtime — **just stop generating**. The bash EXIT trap fires `boid job done` to seal your session id. For root tasks the user-facing notify hook also fires (desktop notification with deep-link to the task page); for child tasks the parent supervisor's polling picks up the new status.
 
-### Root executor (`parent_id == ""`)
+> Do **not** call `boid job done` or `boid agent stop` directly. The first unregisters the broker token before the EXIT trap runs (silently dropping your `payload_patch.json`); the second is a legacy escape hatch superseded by `notify --done` / `--fail` / `--ask` which give your owner an explicit state signal.
 
-You are an autonomous dev task with no supervisor. Use the existing pattern:
-
-```bash
-boid agent stop "$BOID_JOB_ID"
-```
-
-The daemon delivers SIGUSR1 to the runtime; `run-agent.py` SIGTERMs only the `claude` process. The bash EXIT trap fires `boid job done --output-file payload_patch.json`, transporting your session id and any artifact through the still-valid broker token. The task auto-advances to `done`.
-
-> Note: do **not** call `boid job done` directly from the agent — that would unregister the broker token before the EXIT trap runs and silently drop your `payload_patch.json`.
-
-> No exit safety net: the claude-code kit no longer auto-fires `boid agent stop` when your response loop ends (the Stop hook was removed in lifecycle-accountability Phase 2.a). Child executors that end with bare assistant text leave the task stuck in `executing` — **always emit `notify --ask "done_request: ..."` explicitly** before ending the turn.
+> No exit safety net: the claude-code kit no longer auto-fires `boid agent stop` when your response loop ends (the Stop hook was removed in lifecycle-accountability Phase 2.a). Executors that end with bare assistant text leave the task stuck in `executing` — **always emit a `notify --done` / `--fail` / `--ask` call explicitly** before ending the turn.
 
 ## Asking Your Owner
 
-When the work cannot proceed (missing fact, ambiguous spec), pause and ask. Use the same `notify --ask` mechanism as exit, but with a question (no prefix):
+When the work cannot proceed (missing fact, ambiguous spec), pause and ask:
 
 ```bash
 boid task notify "$BOID_TASK_ID" \
@@ -125,18 +107,14 @@ boid task notify "$BOID_TASK_ID" \
 
 The daemon transitions the task to `awaiting`. For child executors, the supervisor's polling picks up the question. For root executors, the user is notified directly. **Just stop generating after the call returns** — no sentinel, no explicit exit. The kit re-invokes you with `$BOID_USER_ANSWER` set and your `claude --resume` session id restored. Branch on the answer to continue.
 
-## Aborting (terminal, no parent decision)
+## Aborting vs Failing
 
-For unrecoverable problems where you have **no useful information to surface** to your owner (broken sandbox at startup, missing prerequisites), abort directly:
+Two transitions land in `aborted`, with different intent:
 
-```bash
-boid action send --task "$BOID_TASK_ID" --type abort \
-  --payload '{"code":"<short-code>","message":"<summary>"}'
-```
+- `boid task notify --fail "<message>"` — agent self-reports failure with a structured report on `payload.artifact.report`. **Default for any failure**: lets the supervisor read the report and decide reopen / accept.
+- `boid action send --task "$BOID_TASK_ID" --type abort --payload '{"code":"<code>","message":"<summary>"}'` — terminal abort with no payload to surface. Use only for situations where the executor has no useful information (broken sandbox at startup, missing prerequisites). The supervisor still sees the abort but has nothing to verify.
 
-This transitions the task to `aborted` immediately. The parent supervisor sees the abort and decides whether to retry or escalate.
-
-Prefer `failure_report:` via `notify --ask` (above) when the situation might be recoverable — that lets your supervisor decide between reopen / abort / escalate. Use `action send --type abort` only when truly nothing can be done from the executor side.
+Prefer `--fail`. Use `action send --type abort` only when truly nothing can be done from the executor side.
 
 ## Progress Reporting
 

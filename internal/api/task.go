@@ -62,10 +62,13 @@ func warnDeprecatedTaskRowFields(body []byte, scope string) {
 // task is transitioned to awaiting after the notification is sent. sessionID
 // is stored in the awaiting trait and surfaced as BOID_AGENT_SESSION_ID on
 // the next hook invocation.
-// progress is mutually exclusive with ask: when set, no hook fires and no
-// state transition occurs — only a progress Action is written to the timeline.
+// progress is a no-state-change progress note (timeline action only).
+// done / fail are agent self-completion / self-failure: they transition the
+// task to done / aborted respectively and SIGTERM running hook runtimes —
+// the parent supervisor's polling drives the response (verify + optional
+// reopen). ask/progress/done/fail are mutually exclusive.
 type TaskNotifyService interface {
-	NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID, progress string) error
+	NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID, progress, done, fail string) error
 }
 
 // TaskAnswerService records a user reply to a pending Q&A question and
@@ -120,6 +123,8 @@ type NotifyTaskRequest struct {
 	QuestionID string `json:"question_id,omitempty"`
 	SessionID  string `json:"session_id,omitempty"`
 	Progress   string `json:"progress,omitempty"`
+	Done       string `json:"done,omitempty"`
+	Fail       string `json:"fail,omitempty"`
 }
 
 type AnswerTaskRequest struct {
@@ -134,7 +139,7 @@ func (h *TaskHandler) Notify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	taskID := chi.URLParam(r, "id")
-	if err := h.Notifier.NotifyTask(r.Context(), taskID, req.Message, req.Ask, req.QuestionID, req.SessionID, req.Progress); err != nil {
+	if err := h.Notifier.NotifyTask(r.Context(), taskID, req.Message, req.Ask, req.QuestionID, req.SessionID, req.Progress, req.Done, req.Fail); err != nil {
 		writeServiceError(w, err)
 		return
 	}

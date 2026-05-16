@@ -88,6 +88,40 @@ func TestDefaultMachine_AwaitingToDone(t *testing.T) {
 	}
 }
 
+// TestDefaultMachine_FailFromExecuting verifies that an executor reporting an
+// unrecoverable failure transitions directly to aborted. The `fail` action is
+// the up-event canonical counterpart of `done` from executing: the agent
+// self-reports the outcome and the parent supervisor's polling decides
+// recovery (reopen / leave aborted). Symmetric to `done: executing → done`.
+func TestDefaultMachine_FailFromExecuting(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusExecuting}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "fail"})
+	if err != nil {
+		t.Fatalf("fail from executing: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusAborted {
+		t.Fatalf("expected aborted, got %s", next.Status)
+	}
+}
+
+// TestDefaultMachine_Reopen_AbortedToExecuting verifies that the parent
+// supervisor can recover a failed child via `boid task reopen` — symmetric
+// to reopen from done. Without this transition `--fail` would be a dead-end
+// and failure_report's "Recoverable with a hint" path could not be expressed
+// without first un-aborting through some other mechanism.
+func TestDefaultMachine_Reopen_AbortedToExecuting(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusAborted}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "reopen"})
+	if err != nil {
+		t.Fatalf("reopen from aborted: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusExecuting {
+		t.Fatalf("expected executing, got %s", next.Status)
+	}
+}
+
 func TestDefaultMachine_InvalidTransition_PendingToAwaiting(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
 	task := &orchestrator.Task{Status: orchestrator.TaskStatusPending}
@@ -182,7 +216,7 @@ func TestDefaultMachine_AvailableActions_Pending(t *testing.T) {
 func TestDefaultMachine_AvailableActions_Executing(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
 	actions := sm.AvailableActions(orchestrator.TaskStatusExecuting)
-	want := map[string]bool{"done": true, "ask": true, "abort": true}
+	want := map[string]bool{"done": true, "fail": true, "ask": true, "abort": true}
 	if len(actions) != len(want) {
 		t.Fatalf("AvailableActions(executing) = %v, want %v", actions, want)
 	}
@@ -221,10 +255,21 @@ func TestDefaultMachine_AvailableActions_Done(t *testing.T) {
 	}
 }
 
-func TestDefaultMachine_AvailableActions_AbortedIsEmpty(t *testing.T) {
+// TestDefaultMachine_AvailableActions_Aborted verifies that aborted tasks
+// can be reopened. This is the recovery path for `--fail` (executing →
+// aborted): supervisor inspects the failure_report, then either reopens
+// with a hint or leaves the task aborted as final.
+func TestDefaultMachine_AvailableActions_Aborted(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
-	if actions := sm.AvailableActions(orchestrator.TaskStatusAborted); len(actions) != 0 {
-		t.Errorf("AvailableActions(aborted) = %v, want empty", actions)
+	actions := sm.AvailableActions(orchestrator.TaskStatusAborted)
+	want := map[string]bool{"reopen": true}
+	if len(actions) != len(want) {
+		t.Fatalf("AvailableActions(aborted) = %v, want %v", actions, want)
+	}
+	for _, a := range actions {
+		if !want[a] {
+			t.Errorf("unexpected action %q in AvailableActions(aborted)", a)
+		}
 	}
 }
 

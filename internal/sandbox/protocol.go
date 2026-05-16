@@ -107,6 +107,8 @@ type BoidRequest struct {
 	QuestionID string `json:"question_id,omitempty"`
 	SessionID  string `json:"session_id,omitempty"`
 	Progress   string `json:"progress,omitempty"`
+	Done       string `json:"done,omitempty"`
+	Fail       string `json:"fail,omitempty"`
 
 	// task answer fields
 	Answer string `json:"answer,omitempty"`

@@ -863,9 +863,19 @@ func (s *TaskAppService) GetTaskField(id, path string) (string, error) {
 // When progress is non-empty (progress mode), no hook fires and no state transition
 // occurs — only a progress Action is written to the timeline.
 // ask and progress are mutually exclusive.
-func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID, progress string) error {
-	if ask != "" && progress != "" {
-		return &StatusError{Code: http.StatusBadRequest, Message: "--ask and --progress are mutually exclusive"}
+func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID, progress, done, fail string) error {
+	// ask / progress / done / fail are mutually exclusive: each represents a
+	// distinct lifecycle signal (Q&A pause, FYI-only progress, success
+	// self-report, failure self-report). Allowing more than one would
+	// ambiguate which state transition (if any) to fire.
+	modes := 0
+	for _, m := range []string{ask, progress, done, fail} {
+		if m != "" {
+			modes++
+		}
+	}
+	if modes > 1 {
+		return &StatusError{Code: http.StatusBadRequest, Message: "--ask, --progress, --done, --fail are mutually exclusive"}
 	}
 	if message == "" && progress == "" {
 		return &StatusError{Code: http.StatusBadRequest, Message: "message is required"}
@@ -917,21 +927,30 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		return &StatusError{Code: http.StatusNotImplemented, Message: "notify is not configured"}
 	}
 
+	// Lifecycle signal modes (ask / done / fail) all advance the task state
+	// machine and SIGTERM running hook runtimes. Plain FYI notify (none of
+	// those flags) only fires the user-notify hook for root tasks.
+	signalsTransition := ask != "" || done != "" || fail != ""
+
 	ev := notify.Event{
 		TaskID:    taskID,
 		TaskTitle: task.Title,
 		ProjectID: task.ProjectID,
 		Message:   message,
 	}
-	// In ask mode, generate the question_id up front (when not supplied)
-	// and set URLPath so the notification deep-links to the Q&A turn page.
-	// We replicate the same questionID into the awaiting transition below
-	// so the URL matches the persisted question_id.
-	if ask != "" {
+	// Deep-link target depends on mode:
+	//   ask  → Q&A turn page (reply form)
+	//   done → task detail (success outcome to inspect)
+	//   fail → task detail (failure outcome to inspect / decide reopen)
+	//   FYI  → most recent interactive running job (live session attach)
+	switch {
+	case ask != "":
 		if questionID == "" {
 			questionID = newQuestionID()
 		}
 		ev.URLPath = "/tasks/" + taskID + "/questions/" + questionID
+	case done != "" || fail != "":
+		ev.URLPath = "/tasks/" + taskID
 	}
 	// Project name is best-effort: omit silently if Projects lookup fails or is unwired.
 	if s.Projects != nil {
@@ -939,9 +958,10 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 			ev.ProjectName = proj.Meta.Name
 		}
 	}
-	// Find the most recent interactive running job (best-effort; errors silently skipped).
-	// Only used when not in ask mode — ask mode deep-links to the Q&A page instead.
-	if ask == "" && s.Jobs != nil {
+	// FYI mode only: find the most recent interactive running job so the
+	// notification deep-links to the live session. ask/done/fail set
+	// URLPath above to a more specific destination.
+	if !signalsTransition && s.Jobs != nil {
 		if jobs, jobsErr := s.Jobs.ListJobsByTask(taskID); jobsErr == nil {
 			for i := len(jobs) - 1; i >= 0; i-- {
 				j := jobs[i]
@@ -954,43 +974,60 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 	}
 	if fireUserNotify && s.Notify != nil {
 		if err := s.Notify.Notify(ctx, ev); err != nil {
-			if ask == "" {
+			if !signalsTransition {
 				return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 			}
-			slog.Warn("notify: notification failed in ask mode, continuing with state transition", "error", err)
+			slog.Warn("notify: notification failed in signal mode, continuing with state transition", "error", err, "mode", notifyModeName(ask, done, fail))
 		}
 	} else if !fireUserNotify {
 		slog.Debug("notify: skipped user-facing hook (child task, owner is parent supervisor)",
-			"task_id", taskID, "parent_id", task.ParentID, "ask_mode", ask != "")
+			"task_id", taskID, "parent_id", task.ParentID, "mode", notifyModeName(ask, done, fail))
 	}
 
-	if ask == "" {
+	if !signalsTransition {
 		return nil
 	}
 
-	// Q&A mode: transition the task to awaiting and save the question.
+	// Lifecycle signal: ApplyAction(ask|done|fail) and SIGTERM running jobs.
 	if s.Workflow == nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
 	}
-	if questionID == "" {
-		questionID = newQuestionID()
-	}
-	ap := orchestrator.AwaitingPayload{
-		SessionID:  sessionID,
-		Question:   ask,
-		QuestionID: questionID,
-	}
-	apJSON, err := json.Marshal(ap)
-	if err != nil {
-		return &StatusError{Code: http.StatusInternalServerError, Message: "encode awaiting payload: " + err.Error()}
-	}
-	awaitingPayload, err := json.Marshal(map[string]json.RawMessage{string(orchestrator.TraitAwaiting): apJSON})
-	if err != nil {
-		return &StatusError{Code: http.StatusInternalServerError, Message: "encode action payload: " + err.Error()}
+	var actionType string
+	var actionPayload []byte
+	switch {
+	case ask != "":
+		actionType = "ask"
+		ap := orchestrator.AwaitingPayload{
+			SessionID:  sessionID,
+			Question:   ask,
+			QuestionID: questionID,
+		}
+		apJSON, err := json.Marshal(ap)
+		if err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: "encode awaiting payload: " + err.Error()}
+		}
+		actionPayload, err = json.Marshal(map[string]json.RawMessage{string(orchestrator.TraitAwaiting): apJSON})
+		if err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: "encode action payload: " + err.Error()}
+		}
+	case done != "":
+		actionType = "done"
+		ap, err := json.Marshal(map[string]string{"message": done})
+		if err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: "encode done payload: " + err.Error()}
+		}
+		actionPayload = ap
+	case fail != "":
+		actionType = "fail"
+		ap, err := json.Marshal(map[string]string{"message": fail})
+		if err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: "encode fail payload: " + err.Error()}
+		}
+		actionPayload = ap
 	}
 	if _, err := s.Workflow.ApplyAction(ctx, taskID, ApplyActionRequest{
-		Type:    "ask",
-		Payload: awaitingPayload,
+		Type:    actionType,
+		Payload: actionPayload,
 	}); err != nil {
 		return err
 	}
@@ -1023,10 +1060,25 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 				s.Workflow.StopAgent(j.RuntimeID)
 			}
 		} else {
-			slog.Warn("notify --ask: list running jobs failed", "task_id", taskID, "error", err)
+			slog.Warn("notify: list running jobs failed", "task_id", taskID, "mode", actionType, "error", err)
 		}
 	}
 	return nil
+}
+
+// notifyModeName returns a short label identifying which lifecycle signal
+// (if any) was supplied to NotifyTask. Used only for slog context.
+func notifyModeName(ask, done, fail string) string {
+	switch {
+	case ask != "":
+		return "ask"
+	case done != "":
+		return "done"
+	case fail != "":
+		return "fail"
+	default:
+		return "fyi"
+	}
 }
 
 // AnswerTask saves the user's reply and transitions the task awaiting → executing.
