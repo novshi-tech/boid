@@ -91,6 +91,39 @@ func TestBuildJobLabel_FallsBackToHandlerID(t *testing.T) {
 	}
 }
 
+func TestBuildJobLabel_HookRoleOmitsPrefix(t *testing.T) {
+	now := time.Now()
+	j := &JobInfo{
+		Role:      "hook",
+		HandlerID: "my-kit/pr-verify",
+		Status:    JobStatusCompleted,
+		CreatedAt: now.Add(-5 * time.Second),
+		UpdatedAt: now,
+	}
+	label := BuildJobLabel(j)
+	if strings.Contains(label, "[hook]") {
+		t.Errorf("BuildJobLabel with role=hook: should not contain '[hook]', got %q", label)
+	}
+	if !strings.Contains(label, "my-kit/pr-verify") {
+		t.Errorf("BuildJobLabel with role=hook: should contain handler name, got %q", label)
+	}
+}
+
+func TestBuildJobLabel_ExecutorRoleKeepsPrefix(t *testing.T) {
+	now := time.Now()
+	j := &JobInfo{
+		Role:      "executor",
+		HandlerID: "run-agent",
+		Status:    JobStatusCompleted,
+		CreatedAt: now.Add(-5 * time.Second),
+		UpdatedAt: now,
+	}
+	label := BuildJobLabel(j)
+	if !strings.Contains(label, "[executor]") {
+		t.Errorf("BuildJobLabel with role=executor: should contain '[executor]', got %q", label)
+	}
+}
+
 func TestIsGateRole(t *testing.T) {
 	gateRoles := []string{"gate", "exit_gate", "entry_gate"}
 	for _, r := range gateRoles {

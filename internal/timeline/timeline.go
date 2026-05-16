@@ -111,6 +111,8 @@ func buildProgressLabel(a *orchestrator.Action) string {
 //   - other:     "[role] <name><status>"
 //
 // DisplayName is used when set; otherwise HandlerID is used as fallback.
+// When role is "hook", the "[hook]" prefix is omitted — the handler name alone
+// identifies the hook sufficiently.
 func BuildJobLabel(j *JobInfo) string {
 	role := j.Role
 	if role == "" {
@@ -123,6 +125,18 @@ func BuildJobLabel(j *JobInfo) string {
 	handler := ""
 	if label != "" {
 		handler = label + " "
+	}
+	if role == "hook" {
+		switch j.Status {
+		case JobStatusCompleted:
+			return fmt.Sprintf("%s✓ %s", handler, JobDuration(j))
+		case JobStatusFailed:
+			return fmt.Sprintf("%s✗ %s", handler, JobDuration(j))
+		case JobStatusRunning:
+			return fmt.Sprintf("%s%s ago", handler, FormatElapsed(j.CreatedAt))
+		default:
+			return fmt.Sprintf("%s%s", handler, j.Status)
+		}
 	}
 	switch j.Status {
 	case JobStatusCompleted:
