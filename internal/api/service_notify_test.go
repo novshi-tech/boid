@@ -10,12 +10,14 @@ import (
 )
 
 type capturingNotifier struct {
-	event notify.Event
-	err   error
+	event  notify.Event
+	called int
+	err    error
 }
 
 func (n *capturingNotifier) Notify(_ context.Context, ev notify.Event) error {
 	n.event = ev
+	n.called++
 	return n.err
 }
 
@@ -331,6 +333,105 @@ func TestNotifyTask_ProgressAndAskMutuallyExclusive(t *testing.T) {
 	se, ok := err.(*StatusError)
 	if !ok || se.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 StatusError, got %v", err)
+	}
+}
+
+// Lifecycle-accountability gate: child tasks (parent_id != "") never fire the
+// user-facing notify hook. The supervisor is responsible for noticing the
+// awaiting child via its monitoring loop.
+func TestNotifyTask_ChildTaskAsk_SkipsHookButTransitionsToAwaiting(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "child-1",
+		ParentID:  "supervisor-1",
+		ProjectID: "proj-1",
+		Title:     "child work",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "executor",
+	}
+	notifier := &capturingNotifier{}
+	workflow := &stubWorkflowService{}
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{task: task},
+		Notify:   notifier,
+		Workflow: workflow,
+	}
+
+	if err := svc.NotifyTask(context.Background(), "child-1", "done", "done_request: subtree finished", "q-1", "", ""); err != nil {
+		t.Fatalf("NotifyTask: %v", err)
+	}
+	if notifier.called != 0 {
+		t.Errorf("notifier called %d times for child task, want 0 (parent_id gate)", notifier.called)
+	}
+	if workflow.appliedType != "ask" {
+		t.Errorf("applied action type = %q, want ask (state transition must still happen)", workflow.appliedType)
+	}
+}
+
+func TestNotifyTask_ChildTaskFYI_SkipsHookSilently(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "child-1",
+		ParentID:  "supervisor-1",
+		ProjectID: "proj-1",
+		Title:     "child work",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "executor",
+	}
+	notifier := &capturingNotifier{}
+	svc := &TaskAppService{
+		Tasks:  &stubTaskStore{task: task},
+		Notify: notifier,
+	}
+
+	if err := svc.NotifyTask(context.Background(), "child-1", "milestone", "", "", "", ""); err != nil {
+		t.Fatalf("NotifyTask: %v", err)
+	}
+	if notifier.called != 0 {
+		t.Errorf("notifier called %d times for child task FYI, want 0", notifier.called)
+	}
+}
+
+// Without a notifier, a child task FYI must NOT error out — the hook is skipped
+// anyway. (Root task FYI without a notifier still errors; see existing tests.)
+func TestNotifyTask_ChildTaskFYI_NoNotifierIsFine(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "child-1",
+		ParentID:  "supervisor-1",
+		ProjectID: "proj-1",
+		Title:     "child work",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "executor",
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{task: task},
+		// Notify intentionally nil
+	}
+
+	if err := svc.NotifyTask(context.Background(), "child-1", "milestone", "", "", "", ""); err != nil {
+		t.Errorf("NotifyTask returned error for child FYI without notifier: %v", err)
+	}
+}
+
+func TestNotifyTask_RootTaskFYI_NoNotifierStillErrors(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "root-1",
+		ParentID:  "",
+		ProjectID: "proj-1",
+		Title:     "root work",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "supervisor",
+	}
+	svc := &TaskAppService{
+		Tasks: &stubTaskStore{task: task},
+		// Notify intentionally nil
+	}
+
+	err := svc.NotifyTask(context.Background(), "root-1", "milestone", "", "", "", "")
+	if err == nil {
+		t.Fatal("expected error: root FYI without notifier should fail")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusNotImplemented {
+		t.Errorf("expected 501 StatusError, got %v", err)
 	}
 }
 

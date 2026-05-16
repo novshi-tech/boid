@@ -829,14 +829,11 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 	if message == "" && progress == "" {
 		return &StatusError{Code: http.StatusBadRequest, Message: "message is required"}
 	}
-	// Without ask, a working notifier is required (that's the only purpose of the call).
-	// With ask, notification is best-effort; the state transition is what matters.
-	// In progress mode neither check applies — no notifier needed.
-	if s.Notify == nil && ask == "" && progress == "" {
-		return &StatusError{Code: http.StatusNotImplemented, Message: "notify is not configured"}
-	}
 
 	// Progress mode: write a timeline Action directly, skip hook firing entirely.
+	// Progress is a pure observability event with no user-facing surface, so the
+	// parent_id gate below does not apply — both root and child tasks can record
+	// progress without further checks.
 	if progress != "" {
 		task, err := s.Tasks.GetTask(taskID)
 		if err != nil {
@@ -862,6 +859,23 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 	if err != nil {
 		return &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
+
+	// Lifecycle-accountability hard gate: only root tasks (parent_id == "")
+	// fire user-facing notify hooks. Child tasks signal their parent supervisor
+	// via the awaiting state transition (for ask mode) or are silently dropped
+	// (for FYI mode) — the supervisor's monitoring loop is the canonical
+	// delivery path. This is a daemon-level invariant rather than a project.yaml
+	// hook expression, so child tasks cannot accidentally page the user when a
+	// project author forgets the condition. See docs/plans/lifecycle-accountability.md.
+	fireUserNotify := task.ParentID == ""
+
+	// Without ask, a working notifier is required to surface the FYI — but only
+	// when we would actually fire the hook. Child tasks skip the hook unconditionally,
+	// so a missing notifier is fine.
+	if s.Notify == nil && ask == "" && fireUserNotify {
+		return &StatusError{Code: http.StatusNotImplemented, Message: "notify is not configured"}
+	}
+
 	ev := notify.Event{
 		TaskID:    taskID,
 		TaskTitle: task.Title,
@@ -897,13 +911,16 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 			}
 		}
 	}
-	if s.Notify != nil {
+	if fireUserNotify && s.Notify != nil {
 		if err := s.Notify.Notify(ctx, ev); err != nil {
 			if ask == "" {
 				return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 			}
 			slog.Warn("notify: notification failed in ask mode, continuing with state transition", "error", err)
 		}
+	} else if !fireUserNotify {
+		slog.Debug("notify: skipped user-facing hook (child task, owner is parent supervisor)",
+			"task_id", taskID, "parent_id", task.ParentID, "ask_mode", ask != "")
 	}
 
 	if ask == "" {
