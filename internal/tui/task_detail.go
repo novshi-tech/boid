@@ -376,8 +376,8 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if s.detail == nil {
 			break
 		}
-		// Overview tab, awaiting status: open the answer screen.
-		if s.activeTab == tabOverview && s.detail.Task != nil && s.detail.Task.Status == orchestrator.TaskStatusAwaiting {
+		// Overview tab, awaiting status: open the answer screen (root tasks only).
+		if s.activeTab == tabOverview && s.detail.Task != nil && s.detail.Task.Status == orchestrator.TaskStatusAwaiting && s.detail.Task.ParentID == "" {
 			task := s.detail.Task
 			return func() tea.Msg {
 				ap := orchestrator.GetAwaitingPayload(task.Payload)
@@ -672,6 +672,17 @@ func (s *TaskDetailScreen) availableActions() []string {
 	if s.detail == nil {
 		return nil
 	}
+	// For child tasks the parent supervisor answers via CLI; suppress the
+	// "answer" key binding so the user is not prompted to respond themselves.
+	if s.detail.Task != nil && s.detail.Task.ParentID != "" {
+		filtered := make([]string, 0, len(s.detail.AvailableActions))
+		for _, a := range s.detail.AvailableActions {
+			if a != "answer" {
+				filtered = append(filtered, a)
+			}
+		}
+		return filtered
+	}
 	return s.detail.AvailableActions
 }
 
@@ -701,7 +712,7 @@ func (s *TaskDetailScreen) ShortHelp() string {
 	var tabSpecific string
 	switch s.activeTab {
 	case tabOverview:
-		if s.detail != nil && s.detail.Task != nil && s.detail.Task.Status == orchestrator.TaskStatusAwaiting {
+		if s.detail != nil && s.detail.Task != nil && s.detail.Task.Status == orchestrator.TaskStatusAwaiting && s.detail.Task.ParentID == "" {
 			tabSpecific = "enter: open answer form  j/k: scroll cursor"
 			break
 		}
