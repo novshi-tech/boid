@@ -10,7 +10,6 @@ import (
 const (
 	tabOverview     = "overview"
 	tabDescription  = "description"
-	tabDeps         = "deps"
 	tabInstructions = "instructions"
 	tabPayload      = "payload"
 )
@@ -23,7 +22,6 @@ type tabDef struct {
 var detailTabs = []tabDef{
 	{tabOverview, "Overview"},
 	{tabDescription, "Description"},
-	{tabDeps, "Deps"},
 	{tabInstructions, "Instructions"},
 	{tabPayload, "Payload"},
 }

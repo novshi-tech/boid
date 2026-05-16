@@ -758,11 +758,6 @@ func TestTabSwitch(t *testing.T) {
 	}
 
 	s.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if s.activeTab != tabDeps {
-		t.Errorf("after tab: want %q, got %q", tabDeps, s.activeTab)
-	}
-
-	s.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if s.activeTab != tabInstructions {
 		t.Errorf("after tab: want %q, got %q", tabInstructions, s.activeTab)
 	}
@@ -775,11 +770,6 @@ func TestTabSwitch(t *testing.T) {
 	s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 	if s.activeTab != tabInstructions {
 		t.Errorf("after shift+tab: want %q, got %q", tabInstructions, s.activeTab)
-	}
-
-	s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-	if s.activeTab != tabDeps {
-		t.Errorf("after shift+tab: want %q, got %q", tabDeps, s.activeTab)
 	}
 
 	s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
@@ -1319,18 +1309,8 @@ func TestTabCycle_ForwardFromDescription(t *testing.T) {
 	s.activeTab = tabDescription
 
 	s.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if s.activeTab != tabDeps {
-		t.Errorf("tab from description: want %q, got %q", tabDeps, s.activeTab)
-	}
-}
-
-func TestTabCycle_ForwardFromDeps(t *testing.T) {
-	s := newTestTaskDetailScreen()
-	s.activeTab = tabDeps
-
-	s.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if s.activeTab != tabInstructions {
-		t.Errorf("tab from deps: want %q, got %q", tabInstructions, s.activeTab)
+		t.Errorf("tab from description: want %q, got %q", tabInstructions, s.activeTab)
 	}
 }
 
@@ -1361,33 +1341,6 @@ func TestTabCycle_BackwardFromOverview_Wraps(t *testing.T) {
 	s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 	if s.activeTab != tabPayload {
 		t.Errorf("shift+tab from overview (wrap): want %q, got %q", tabPayload, s.activeTab)
-	}
-}
-
-func TestTabCycle_DepsTabReachable(t *testing.T) {
-	// Verify Deps tab is reachable via Tab from Description.
-	s := newTestTaskDetailScreen()
-	s.activeTab = tabDescription
-
-	s.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if s.activeTab != tabDeps {
-		t.Errorf("deps tab not reachable via tab from description: got %q", s.activeTab)
-	}
-}
-
-func TestTabCycle_DepsTabReachable_Backward(t *testing.T) {
-	// Verify Instructions tab sits between Deps and Payload; Payload→shift+tab
-	// now lands on Instructions, and Deps is reachable one more step back.
-	s := newTestTaskDetailScreen()
-	s.activeTab = tabPayload
-
-	s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-	if s.activeTab != tabInstructions {
-		t.Errorf("instructions tab not reachable via shift+tab from payload: got %q", s.activeTab)
-	}
-	s.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-	if s.activeTab != tabDeps {
-		t.Errorf("deps tab not reachable via two shift+tab from payload: got %q", s.activeTab)
 	}
 }
 
@@ -1590,7 +1543,7 @@ func TestOKey_CursorInTimeline_IsNoOp(t *testing.T) {
 
 // TestOKey_NotOverviewTab_IsNoOp verifies that o is ignored in non-Overview tabs.
 func TestOKey_NotOverviewTab_IsNoOp(t *testing.T) {
-	for _, tab := range []string{tabDescription, tabDeps, tabPayload} {
+	for _, tab := range []string{tabDescription, tabPayload} {
 		s := newTestTaskDetailScreen()
 		s.detail = makeDetailWithRunningJob(true)
 		s.shared.TmuxEnabled = true
