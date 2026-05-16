@@ -1,4 +1,4 @@
 hooks:
   - id: test-peer-write-reject
 env:
-  E2E_PEER_PROJECT_DIR: ${E2E_PEER_PROJECT_DIR}
+  E2E_PEER_PROJECT_DIR: ${E2E_WORKSPACE_DIR}/peer

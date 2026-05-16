@@ -11,8 +11,6 @@ PEER_DIR="$E2E_WORKSPACE_DIR/peer"
 # ピアプロジェクトのディレクトリが workspace テンプレートからコピーされていることを確認
 [[ -d "$PEER_DIR" ]] || e2e_fail "peer project workspace dir not found: $PEER_DIR"
 
-export E2E_PEER_PROJECT_DIR="$PEER_DIR"
-
 e2e_log "registering main project from $APP_DIR"
 e2e_run "$E2E_BIN_DIR/boid" project add "$APP_DIR"
 
