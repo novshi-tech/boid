@@ -1584,6 +1584,7 @@ func (s *WebAppService) GetJob(id string) (*JobWithContext, error) {
 	result := &JobWithContext{Job: *job}
 	if task, err := s.Tasks.GetTask(job.TaskID); err == nil {
 		result.TaskTitle = task.Title
+		enrichJobDisplayName(&result.Job, task.Behavior, s.Meta)
 	}
 	return result, nil
 }

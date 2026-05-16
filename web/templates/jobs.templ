@@ -27,6 +27,7 @@ type JobContextView struct {
 	ProjectID   string
 	TaskTitle   string
 	HandlerID   string
+	DisplayName string // optional; preferred over HandlerID when non-empty (hook job's `name`)
 	Role        string
 	GateID      string // set when job is a gate job; used for gate replay form
 	HookID      string // set when job is a hook job; used for hook replay form
@@ -68,24 +69,26 @@ func jobStatusStripe(status string) string {
 	}
 }
 
-// jobPageTitle builds the page-header title from the job's identity
-// (role + handler), e.g. "[executor] claude-code/run-agent". The job's own
-// UUID is demoted to the detail-meta row — UUIDs are unreadable at a
-// glance, while "what handler ran" is the question most readers are
-// actually trying to answer on this page.
-// Hook jobs omit the [hook] prefix (mirrors BuildJobLabel / timelineJobIdentity).
+// jobPageTitle builds the page-header title from the job's identity.
+// DisplayName (hook's `name` property) is preferred over HandlerID when set,
+// mirroring BuildJobLabel / timelineJobIdentity in the timeline package.
+// Hook jobs omit the [hook] prefix.
 func jobPageTitle(job *JobContextView) string {
+	label := job.DisplayName
+	if label == "" {
+		label = job.HandlerID
+	}
 	if job.Role == "hook" {
-		if job.HandlerID != "" {
-			return job.HandlerID
+		if label != "" {
+			return label
 		}
 		return "Job " + shortID(job.ID)
 	}
 	switch {
-	case job.Role != "" && job.HandlerID != "":
-		return "[" + job.Role + "] " + job.HandlerID
-	case job.HandlerID != "":
-		return job.HandlerID
+	case job.Role != "" && label != "":
+		return "[" + job.Role + "] " + label
+	case label != "":
+		return label
 	case job.Role != "":
 		return "[" + job.Role + "]"
 	default:
