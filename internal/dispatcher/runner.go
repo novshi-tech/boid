@@ -78,9 +78,10 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	}
 
 	j := &Job{
-		TaskID:    spec.TaskID,
-		ProjectID: spec.ProjectID,
-		HandlerID: spec.HandlerID,
+		TaskID:      spec.TaskID,
+		ProjectID:   spec.ProjectID,
+		HandlerID:   spec.HandlerID,
+		DisplayName: spec.DisplayName,
 		// Role は DB ラベル / TUI 表示のみに使われる。sandbox 構築側は
 		// 一切これを読まない。
 		Role:           string(spec.Kind),

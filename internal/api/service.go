@@ -368,6 +368,29 @@ func enrichJob(runtimesDir string, job *Job) {
 	job.WorkspacePath = filepath.Join(runtimesDir, job.RuntimeID)
 }
 
+// enrichJobDisplayName sets job.DisplayName from the project meta's hook definitions
+// when the job is a hook job and DisplayName is not yet set. This resolves the
+// display name in-memory from the project meta store (no DB read needed).
+func enrichJobDisplayName(job *Job, behavior string, meta MetaStore) {
+	if job.DisplayName != "" || job.Role != "hook" || behavior == "" || meta == nil {
+		return
+	}
+	projectMeta, ok := meta.Get(job.ProjectID)
+	if !ok {
+		return
+	}
+	tb, ok := projectMeta.TaskBehaviors[behavior]
+	if !ok {
+		return
+	}
+	for _, h := range tb.Hooks {
+		if h.ID == job.HandlerID && h.Name != "" {
+			job.DisplayName = h.Name
+			return
+		}
+	}
+}
+
 // behaviorResolution holds the resolved behavior fields after processing either
 // a named behavior or an inline behavior_spec.
 type behaviorResolution struct {
@@ -1290,6 +1313,7 @@ func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 	}
 	for _, j := range jobs {
 		enrichJob(s.RuntimesDir, j)
+		enrichJobDisplayName(j, task.Behavior, s.Meta)
 	}
 
 	dependents, err := s.Tasks.FindDependentTasks(task.ID)
@@ -1385,7 +1409,11 @@ func (s *WebAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 	}
 
 	actions, _ := s.Actions.ListActionsByTask(task.ID)
-	jobs, _ := s.Jobs.ListJobsByTask(task.ID)
+	rawJobs, _ := s.Jobs.ListJobsByTask(task.ID)
+	for _, j := range rawJobs {
+		enrichJobDisplayName(j, task.Behavior, s.Meta)
+	}
+	jobs := rawJobs
 	dependents, _ := s.Tasks.FindDependentTasks(task.ID)
 
 	var dependsOnResolved []*orchestrator.Task

@@ -15,6 +15,7 @@ type Job struct {
 	TaskID         string    `json:"task_id"`
 	ProjectID      string    `json:"project_id"`
 	HandlerID      string    `json:"handler_id"`
+	DisplayName    string    `json:"display_name,omitempty"` // in-memory only; not persisted to DB
 	Role           string    `json:"role"`
 	RuntimeID      string    `json:"runtime_id,omitempty"`
 	Interactive    bool      `json:"interactive"`

@@ -35,13 +35,14 @@ func detailTimelineGroups(detail *TaskDetailView) []timeline.StatusGroup {
 			continue
 		}
 		infos = append(infos, &timeline.JobInfo{
-			ID:        j.ID,
-			Role:      j.Role,
-			HandlerID: j.HandlerID,
-			Status:    string(j.Status),
-			ExitCode:  j.ExitCode,
-			CreatedAt: j.CreatedAt,
-			UpdatedAt: j.UpdatedAt,
+			ID:          j.ID,
+			Role:        j.Role,
+			HandlerID:   j.HandlerID,
+			DisplayName: j.DisplayName,
+			Status:      string(j.Status),
+			ExitCode:    j.ExitCode,
+			CreatedAt:   j.CreatedAt,
+			UpdatedAt:   j.UpdatedAt,
 		})
 	}
 	return timeline.Build(detail.Task, detail.Actions, infos)

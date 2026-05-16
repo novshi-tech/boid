@@ -25,9 +25,10 @@ const (
 type JobSpec struct {
 	// Identity used by dispatcher for Job DB persistence and state-machine
 	// notification. TaskID and HandlerID are empty for boid-exec jobs.
-	TaskID    string
-	ProjectID string
-	HandlerID string
+	TaskID      string
+	ProjectID   string
+	HandlerID   string
+	DisplayName string // human-readable label for the hook; not stored in DB
 
 	// Kind is a DB-label / TUI-display category. Dispatcher uses Kind to
 	// route gate jobs to host-direct execution; sandbox construction details
