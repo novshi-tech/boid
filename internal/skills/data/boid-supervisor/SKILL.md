@@ -25,6 +25,18 @@ The **active instruction** carries the project-specific integration policy — f
 
 `.boid/project.yaml` declares the available `task_behaviors`. Canonical names: `supervisor` (this skill — readonly) and `executor` (writable; see `/boid-executor`).
 
+## Lifecycle Accountability
+
+You **own the lifecycle of every child task you create**. Children that enter `awaiting` are asking **you**, not the user — the daemon hardcodes "only root tasks (parent_id == \"\") fire user-facing notify hooks". For each child event, you choose:
+
+- **answer** (`boid task answer`) — child asked a question
+- **confirm done** (`boid action send --type done`) — child reports completion and you agree
+- **reopen** (`boid task reopen <id> -m "..."`) — push back with instructions
+- **abort** (`boid task abort <id>`) — unrecoverable, stop the child
+- **escalate up** (your own `notify --ask`) — you cannot decide; ask your own parent (or user)
+
+See [docs/plans/lifecycle-accountability.md](../../../docs/plans/lifecycle-accountability.md) for the full contract.
+
 ## Overall Flow
 
 1. **Plan** — Read the title and the active instruction; decide on child decomposition and ordering.
@@ -86,12 +98,100 @@ done
 ```
 
 - On `done` — read its artifact (`boid task get <id> --field artifact.<key>`), run the integration step from the active instruction, then decide on the next child.
-- On `aborted` — read `lifecycle.abort.message`, diagnose with `boid job list/show/log`, then retry / redesign / escalate.
-- On `awaiting` — the child is asking the user. Keep polling; it returns to `executing` once the user replies.
+- On `aborted` — read `lifecycle.abort.message`, diagnose with `boid job list/show/log` (note: `job log` returns the runtime's **raw PTY capture** — ANSI-laden, useful for shape diagnostics rather than structured parsing), then retry / redesign / escalate.
+- On `awaiting` — the child is asking **you**. See [Handling Child Awaiting](#handling-child-awaiting).
 
 Adjust the `sleep` interval to the implementation scale (30s for small tasks, 2–5 min for larger builds).
 
 Full status semantics: [references/state-machine.md](references/state-machine.md). Diagnostic commands: [references/builtins.md](references/builtins.md).
+
+## Handling Child Awaiting
+
+When a child enters `awaiting`, the daemon has already gated user-facing notifications (children never reach the user directly). Read the question and parse the **prefix** to identify intent:
+
+| prefix | meaning |
+|---|---|
+| `done_request:` | child believes it has completed; verify and confirm or reopen |
+| `failure_report:` | child reports an unrecoverable problem; decide reopen / abort / escalate |
+| (no prefix) | generic question / decision request; answer or escalate |
+
+```bash
+question=$(boid task get "$child" --field awaiting.question)
+```
+
+### done_request
+
+Verify before confirming. Pull from the three diagnostic layers:
+
+```bash
+short=$(echo "$child" | cut -c1-8)
+
+# Layer A: child's structured self-report (one-shot canonical source)
+boid task get "$child" --field payload.artifact.report
+
+# Layer B: independent fact-check via git / gh (push not required — local branch is enough)
+git log "main..boid/$short"
+git diff "main..boid/$short"
+gh pr view --head "boid/$short" 2>/dev/null || true
+
+# Layer C: shape diagnostics (size / tail / last update — not for content parsing)
+last_job=$(boid job list --task "$child" --output json | jq -r '.[0].id')
+boid job log "$last_job" | tail -200
+```
+
+Then choose one:
+
+```bash
+boid action send --task "$child" --type done                       # confirm
+boid task reopen "$child" -m "<what to change>"                    # reopen with revision
+boid task abort "$child"                                           # unrecoverable
+boid task notify "$BOID_TASK_ID" --message "..." --ask "done_request: ..."  # escalate up
+```
+
+If `payload.artifact.report` is empty or missing required fields, treat that as a **missing-report anomaly**: reopen with `-m "Re-run with payload.artifact.report populated (summary, evidence, verification)."` rather than confirming on faith.
+
+### failure_report
+
+Read the failure detail. Same toolbox as `done_request` (Layers A–C) — just driven by a different intent. Common outcomes:
+
+- Recoverable with a hint → `boid task reopen <child> -m "..."`
+- Genuinely unrecoverable → `boid task abort <child>`
+- You don't know → escalate via your own `notify --ask`
+
+### bare ask
+
+Answer in your own context, or escalate:
+
+```bash
+boid task answer "$child" "<reply>"
+# or
+boid task notify "$BOID_TASK_ID" --message "..." --ask "<question for your own parent>"
+```
+
+## Detecting Stuck Children
+
+Some children fail silently — `claude` exits without issuing `notify --ask`, leaving the child in `executing` with no live job. On each poll iteration, check for staleness:
+
+```bash
+status=$(boid task get "$child" --field status)
+if [ "$status" = "executing" ]; then
+  last_job_id=$(boid job list --task "$child" --output json | jq -r '.[0].id // empty')
+  if [ -n "$last_job_id" ]; then
+    last_status=$(boid job show "$last_job_id" --output json | jq -r '.status')
+    last_update=$(boid job show "$last_job_id" --output json | jq -r '.updated_at')
+    # If status != running and updated_at older than your threshold (e.g. 10 minutes),
+    # the child is stuck — no live job, but task didn't transition.
+  fi
+fi
+```
+
+Decisions:
+
+- **Reopen with a status check** — `boid task reopen "$child" -m "Status check: where are you? Emit notify --ask 'done_request: ...' if you finished, or describe what you need."`
+- **Abort** when clearly unrecoverable
+- **Escalate up** when you cannot decide
+
+Stuck-child detection is the structural safety net for "agent forgot to call `notify --ask`". Treat it as routine — not exceptional — until executors universally emit explicit done_request.
 
 ## Q&A Pattern (asking the user)
 
@@ -207,3 +307,4 @@ When in doubt, choose B.
 
 - [references/builtins.md](references/builtins.md) — flags and fields for the `boid task` / `boid job` / `boid action` subcommands available inside the sandbox.
 - [references/state-machine.md](references/state-machine.md) — child task statuses, manual / event-driven / auto transitions, and how the supervisor reacts to each.
+- [docs/plans/lifecycle-accountability.md](../../../docs/plans/lifecycle-accountability.md) — design contract: how children's lifecycle events route to the supervisor, and the parent-id-based notify gate.
