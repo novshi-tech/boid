@@ -1146,31 +1146,6 @@ body:has(.action-bar) {
   padding-bottom: 60px;
 }
 
-/* --- Dependency tree (Dependencies tab) ---
-   Two stacked sub-trees — "依存先" (upstream) and "依存元" (downstream)
-   — each rendered with the Open-tab task-list look (.task-row). Pre-
-   order DFS keeps parents above their indented children so the default
-   tree guide lines draw correctly; no self row is rendered because the
-   detail page header already identifies the current task. */
-.deps-section-title {
-  margin: var(--space-3) 0 var(--space-1);
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--fg);
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-}
-
-.deps-section-title:first-child {
-  margin-top: 0;
-}
-
-.deps-section-hint {
-  font-weight: 400;
-  font-size: 0.75rem;
-  color: var(--muted);
-}
 
 /* --- Tabs --- */
 .tabs {
