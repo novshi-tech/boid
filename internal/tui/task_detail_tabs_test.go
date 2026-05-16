@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-// TestDetailTabs_Order verifies the tab order is Overview → Description → Deps → Instructions → Payload.
+// TestDetailTabs_Order verifies the tab order is Overview → Description → Instructions → Payload.
 func TestDetailTabs_Order(t *testing.T) {
-	want := []string{tabOverview, tabDescription, tabDeps, tabInstructions, tabPayload}
+	want := []string{tabOverview, tabDescription, tabInstructions, tabPayload}
 	if len(detailTabs) != len(want) {
 		t.Fatalf("detailTabs: want %d tabs, got %d", len(want), len(detailTabs))
 	}
@@ -35,9 +35,9 @@ func TestDetailTabs_DefaultIsOverview(t *testing.T) {
 	}
 }
 
-// TestCycleTab_ForwardSequence verifies full forward cycle: Overview → Description → Deps → Instructions → Payload → Overview.
+// TestCycleTab_ForwardSequence verifies full forward cycle: Overview → Description → Instructions → Payload → Overview.
 func TestCycleTab_ForwardSequence(t *testing.T) {
-	sequence := []string{tabOverview, tabDescription, tabDeps, tabInstructions, tabPayload, tabOverview}
+	sequence := []string{tabOverview, tabDescription, tabInstructions, tabPayload, tabOverview}
 	current := tabOverview
 	for i := 1; i < len(sequence); i++ {
 		next := cycleTab(current, 1)
@@ -48,9 +48,9 @@ func TestCycleTab_ForwardSequence(t *testing.T) {
 	}
 }
 
-// TestCycleTab_BackwardSequence verifies full backward cycle: Overview → Payload → Instructions → Deps → Description → Overview.
+// TestCycleTab_BackwardSequence verifies full backward cycle: Overview → Payload → Instructions → Description → Overview.
 func TestCycleTab_BackwardSequence(t *testing.T) {
-	sequence := []string{tabOverview, tabPayload, tabInstructions, tabDeps, tabDescription, tabOverview}
+	sequence := []string{tabOverview, tabPayload, tabInstructions, tabDescription, tabOverview}
 	current := tabOverview
 	for i := 1; i < len(sequence); i++ {
 		next := cycleTab(current, -1)
@@ -70,7 +70,6 @@ func TestShortHelp_TabSpecific(t *testing.T) {
 	}{
 		{tabOverview, "e: edit title", "e: edit description"},
 		{tabDescription, "e: edit description", "e: edit title"},
-		{tabDeps, "enter: jump to task", "e: edit title"},
 		{tabPayload, "e: edit section", "e: edit title"},
 		{tabInstructions, "e: edit role", "e: edit title"},
 	}
@@ -126,7 +125,7 @@ func TestRenderTabBar_PayloadActiveWithBadge(t *testing.T) {
 
 // TestShortHelp_AlwaysContainsTabKey verifies tab/shift+tab is always present.
 func TestShortHelp_AlwaysContainsTabKey(t *testing.T) {
-	tabs := []string{tabOverview, tabDescription, tabDeps, tabInstructions, tabPayload}
+	tabs := []string{tabOverview, tabDescription, tabInstructions, tabPayload}
 	for _, tab := range tabs {
 		s := newTestTaskDetailScreen()
 		s.activeTab = tab

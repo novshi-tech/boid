@@ -75,7 +75,6 @@ type TaskDetailScreen struct {
 	activeTab          string
 	cursor             int
 	timelineCursor     int
-	depsCursor         int
 	descScroll         int
 	descPageHeight     int
 	descWidth          int
@@ -304,11 +303,6 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 					s.descScroll++
 				}
 			}
-		case tabDeps:
-			items := depSelectableItems(s.detail)
-			if s.depsCursor < len(items)-1 {
-				s.depsCursor++
-			}
 		case tabPayload:
 			if s.detail != nil && s.detail.Task != nil {
 				sections := extractPayloadSections(s.detail.Task.Payload)
@@ -336,10 +330,6 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 		case tabDescription:
 			if s.descScroll > 0 {
 				s.descScroll--
-			}
-		case tabDeps:
-			if s.depsCursor > 0 {
-				s.depsCursor--
 			}
 		case tabPayload:
 			if s.payloadCursor > 0 {
@@ -383,19 +373,6 @@ func (s *TaskDetailScreen) handleKey(msg tea.KeyMsg) tea.Cmd {
 				ap := orchestrator.GetAwaitingPayload(task.Payload)
 				return pushScreenMsg{screen: NewTaskAnswerScreen(s.shared.Client, task, ap)}
 			}
-		}
-		// Deps tab: navigate to the selected dependency / dependent task.
-		if s.activeTab == tabDeps {
-			items := depSelectableItems(s.detail)
-			if s.depsCursor >= 0 && s.depsCursor < len(items) {
-				task := items[s.depsCursor]
-				// Use ProjectID as project name (resolution is a future improvement).
-				projectName := task.ProjectID
-				return func() tea.Msg {
-					return pushScreenMsg{screen: NewTaskDetailScreen(s.shared, task.ID, projectName)}
-				}
-			}
-			break
 		}
 		// Payload tab: no-op.
 		if s.activeTab == tabPayload {
@@ -631,8 +608,6 @@ func (s *TaskDetailScreen) View(width, height int) string {
 		s.descPageHeight = contentHeight
 		s.descWidth = width
 		sb.WriteString(renderDescription(s.detail, s.descScroll, width, contentHeight))
-	case tabDeps:
-		sb.WriteString(renderDeps(s.detail, width, contentHeight, s.depsCursor))
 	case tabPayload:
 		sb.WriteString(renderPayload(s.detail, s.payloadCursor, s.payloadScroll, width, contentHeight))
 	case tabInstructions:
@@ -727,8 +702,6 @@ func (s *TaskDetailScreen) ShortHelp() string {
 		tabSpecific = "e: edit title  enter: drill into event  j/k: scroll cursor"
 	case tabDescription:
 		tabSpecific = "e: edit description  j/k: scroll  pgup/pgdn: page"
-	case tabDeps:
-		tabSpecific = "enter: jump to task  j/k: move cursor"
 	case tabPayload:
 		tabSpecific = "e: edit section  j/k: select section"
 	case tabInstructions:
