@@ -1,18 +1,16 @@
 # boid
 
-**A personal AI orchestrator (Linux only).** Track each request, from kickoff to a finished artifact, as a single task and hand it to an AI agent. The agent reads and writes your local filesystem directly, so it can use the tools and environment you already have. Writes are confined to a sandbox-bounded scope, so a runaway agent cannot damage the rest of your machine.
+**A personal AI orchestrator (Linux only).** Built to keep the human from becoming the bottleneck when several AI coding agents run in parallel. Agents are given room to make progress autonomously; a sandbox with a configurable write scope keeps them from doing damage; and every in-flight task is visible at a glance through a Web UI and TUI.
 
 [日本語 README](README.ja.md)
 
 ## Features
 
-- **Use the tools you already installed.** Hand the agent your local Claude Code, Codex, git, gh, editors, and language toolchains. Cloud-side agent sandboxes can't touch your real environment; this one does.
-- **Up and running in two commands.** `go install`, then `boid start`. No config file, no server provisioning, no signup.
-- **The task model is built in.** Request → execute → done, with the data captured at each step pre-defined. You don't have to re-explain context every time you reopen a task with new instructions.
-- **Bound the write scope with a sandbox.** The agent reads your real directories directly, but its writes are confined to a scope you choose (typically a git worktree). A runaway agent cannot reach your home directory or other projects.
-- **Run several requests in parallel.** You can give each task its own git worktree, so concurrent jobs run on separate branches in separate directories without colliding.
-- **Extensions are swappable packages.** Pick which AI agent (Claude Code, Codex), which CI integration, which PR / auto-merge flow — the building blocks live in separate packages such as [boid-kits](https://github.com/novshi-tech/boid-kits).
-- **Drive it from the terminal or a browser.** TUI and CLI for everyday use; expose the Web UI through Cloudflare Tunnel to drive it from your phone.
+- **Give agents room to run on their own.** The task lifecycle — request → execute → verify → fix → done — and the data captured at each step are predefined, so you don't have to re-feed context on every revision cycle. Hand the agent your local Claude Code, Codex, git, gh, editors, and language toolchains; it uses the tools you already have.
+- **Autonomy and safety, reconciled by the sandbox.** Agents read your real directories directly, but writes are confined to a scope you choose (typically a git worktree). A runaway agent can't reach your home directory or other projects. Give each task its own worktree and several requests run on separate branches in separate directories without colliding.
+- **See every task at a glance.** Every task lives in a single list with its current state, viewable from CLI, TUI, or Web UI. Expose the Web UI through Cloudflare Tunnel and you can check or steer progress from your phone.
+- **Stays on your own machine.** `go install`, then `boid start`. No config file, no server provisioning, no signup. Unlike cloud-side sandboxes, the agent can act on the real environment you actually work in.
+- **Swappable extension packages.** Pick which AI agent (Claude Code, Codex), which CI integration, which PR / auto-merge flow — the building blocks live in separate packages such as [boid-kits](https://github.com/novshi-tech/boid-kits).
 
 ## Install
 
