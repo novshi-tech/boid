@@ -233,12 +233,13 @@ Multiple Q&A turns are fine — each `--ask` replaces the previous pending answe
 
 ### Reopen with a Question / Explanation Request
 
-When the active instruction is a question about prior behavior ("explain why you stopped", "summarize what happened", "what is the cause"), the answer **still goes through `boid task notify`** — never as bare assistant text. The Claude session has no other channel to the user; whatever you write as a closing paragraph in the agent transcript is invisible.
+When the active instruction is a question about prior behavior ("explain why you stopped", "summarize what happened", "what is the cause"), the answer **still goes through `boid task notify`** — never as bare assistant text. The Claude session has no other channel to your owner; whatever you write as a closing paragraph in the agent transcript is invisible.
 
 - If the answer naturally invites a next-step decision ("should I proceed with X?"), put the explanation in `--ask` and present the follow-up options there.
-- If the answer is purely informational, put it in `--message` (FYI mode, no `--ask`) and then exit via `boid agent stop`. Without `--ask`, the task will not transition to `awaiting`, so the user has no built-in reply turn — make sure that is the intent.
+- If the answer is purely informational and you have a parent (`parent_id != ""`), wrap it as `--ask "done_request: <explanation>"` — your parent supervisor receives it and decides. Bare `--message` (FYI) is timeline-only and your parent never reacts to it.
+- If the answer is purely informational and you are a root supervisor, put it in `--message` (FYI mode, no `--ask`) and then exit via `boid agent stop`. Without `--ask`, the task will not transition to `awaiting`, so the user has no built-in reply turn — make sure that is the intent.
 
-A reopen turn that ends with bare assistant text is treated by boid as "no ask, no exit action" → `auto_advance` closes the task to `done` with **no visible response surfaced**. This is the failure mode behind the 2026-05-14 incident where a correct diagnostic reply never reached the user.
+A reopen turn that ends with bare assistant text is treated by boid as "no ask, no exit action" → `auto_advance` closes the task to `done` with **no visible response surfaced**. This is the failure mode behind the 2026-05-14 incident where a correct diagnostic reply never reached the user — generalized into the lifecycle-accountability model.
 
 ## When to Ask (notify --ask)
 
@@ -285,23 +286,50 @@ These numbers can be overridden by the active instruction.
 
 ## Exit Handling (required)
 
-**Every invocation** — first start, user-reply resume, reopen — must terminate in a `boid` command. boid records `notify` / `notify --ask` / `agent stop` (and the bash EXIT trap's follow-up `job done`) actions; it does **not** record agent transcript text. Ending the session with bare assistant text is equivalent to leaving it open without action: the user sees an empty `done` task with no visible response.
+**Every invocation** — first start, user-reply resume, reopen — must terminate in a `boid` command. boid records `notify` / `notify --ask` / `agent stop` (and the bash EXIT trap's follow-up `job done`) actions; it does **not** record agent transcript text. Ending the session with bare assistant text is equivalent to leaving it open without action: your owner sees an empty `done` task with no visible response.
 
-When all children are terminal, the supervisor **must execute exactly one of the following**. Leaving the session open without action is forbidden (users cannot tell the supervisor finished unless a hook fires).
+You are an agent task yourself — the lifecycle accountability rules apply to your own termination too. Your **owner** is the parent supervisor (`parent_id != ""`) or the user (`parent_id == ""`). Check first:
 
-- **A. Autonomous exit** — `boid agent stop "$BOID_JOB_ID"` (the daemon SIGUSR1s your runtime; bash EXIT trap then fires `boid job done --output-file payload_patch.json` as the canonical completion path — keep the session id intact)
-- **B. Exit-confirmation ask** — Call `notify --ask` to confirm closing. On resume, execute A if the user approves; otherwise continue with the requested work.
+```bash
+parent=$(boid task get "$BOID_TASK_ID" --field parent_id)
+```
 
-> Safety net: the claude-code kit registers a `Stop` hook that calls `boid agent stop` whenever your response loop ends. If you forget to take action A or B, the Stop hook still drives the runtime to a clean shutdown — but the task ends silently with no follow-up surfaced to the user. Always pick A or B explicitly so the user sees a final notification.
+### Child supervisor (`parent_id != ""`)
 
-Choose A only when **all** of:
+Your owner is another supervisor. The daemon will not surface your exit to the user — your parent must see it via `notify --ask`. **Do not call `boid agent stop`** when you have a parent: it would silently transition to `done` with no signal upward (the same anti-pattern that motivated the lifecycle-accountability model).
 
-1. All children are terminal with no remaining supervisor work
-2. The user's most recent reply was a closing response ("ok", "thanks") — not a new request
-3. No unanswered asks
-4. The last summary was a completion report with little room for follow-up
+Emit exactly one of:
+
+- **Subtree complete** — your children are all terminal, the parent's request is satisfied:
+  ```bash
+  boid task notify "$BOID_TASK_ID" \
+    --message "<short summary>" \
+    --ask "done_request: <what your subtree achieved>"
+  ```
+- **Subtree failed** — you could not complete the request:
+  ```bash
+  boid task notify "$BOID_TASK_ID" \
+    --message "<short summary>" \
+    --ask "failure_report: <what went wrong, what you tried>"
+  ```
+- **Need a parent decision before continuing** — `notify --ask "<question>"` (no prefix). Resume picks up after the parent answers.
+
+After `notify --ask` returns, the daemon SIGTERMs your runtime — **just stop generating**. The bash EXIT trap fires `boid job done` to seal your session id.
+
+### Root supervisor (`parent_id == ""`)
+
+Your owner is the user. The daemon fires user-facing notify hooks for your `notify --ask`. Choose **A** or **B** explicitly:
+
+- **A. Autonomous exit** — `boid agent stop "$BOID_JOB_ID"` (the daemon SIGUSR1s your runtime; bash EXIT trap fires `boid job done --output-file payload_patch.json`). Use **only** when **all** of:
+  1. All children are terminal with no remaining supervisor work
+  2. The user's most recent reply was a closing response ("ok", "thanks") — not a new request
+  3. No unanswered asks
+  4. The last summary was a completion report with little room for follow-up
+- **B. Exit-confirmation ask** — `notify --ask "done_request: <summary>"` (or `failure_report: <error>`). Use this when there is anything worth surfacing — completion confirmation, summary, or pending decision.
 
 When in doubt, choose B.
+
+> Safety net: the claude-code kit registers a `Stop` hook that calls `boid agent stop` whenever your response loop ends. This rescues a forgotten exit — but ends the task silently with no follow-up surfaced to your owner. **Always pick the appropriate option explicitly.** The Stop hook is scheduled for removal in lifecycle-accountability Phase 2; do not rely on it.
 
 ## References
 
