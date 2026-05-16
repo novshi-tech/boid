@@ -38,12 +38,6 @@ type ProjectReloadResult struct {
 	Errors []string `json:"errors,omitempty"`
 }
 
-// TaskNode represents a node in the recursive dependency tree.
-type TaskNode struct {
-	Task     *orchestrator.Task `json:"task"`
-	Children []*TaskNode        `json:"children,omitempty"`
-}
-
 type TaskDetailView struct {
 	Task              *orchestrator.Task
 	Actions           []*orchestrator.Action
@@ -51,46 +45,6 @@ type TaskDetailView struct {
 	AvailableActions  []string             `json:"available_actions"`
 	Dependents        []*orchestrator.Task `json:"dependents,omitempty"`
 	DependsOnResolved []*orchestrator.Task `json:"depends_on_resolved,omitempty"`
-	DependsOnTree     []*TaskNode          `json:"depends_on_tree,omitempty"`
-	DependentsTree    []*TaskNode          `json:"dependents_tree,omitempty"`
-}
-
-// buildDependsOnTree recursively builds the upstream (DependsOn) tree.
-// visited prevents infinite loops on circular dependencies.
-func buildDependsOnTree(store TaskStore, ids []string, visited map[string]bool) []*TaskNode {
-	var nodes []*TaskNode
-	for _, id := range ids {
-		if visited[id] {
-			continue
-		}
-		visited[id] = true
-		task, err := store.GetTask(id)
-		if err != nil {
-			continue
-		}
-		children := buildDependsOnTree(store, task.DependsOn, visited)
-		nodes = append(nodes, &TaskNode{Task: task, Children: children})
-	}
-	return nodes
-}
-
-// buildDependentsTree recursively builds the downstream (Dependents) tree.
-// visited prevents infinite loops on circular dependencies.
-func buildDependentsTree(store TaskStore, taskID string, visited map[string]bool) []*TaskNode {
-	dependents, err := store.FindDependentTasks(taskID)
-	if err != nil || len(dependents) == 0 {
-		return nil
-	}
-	var nodes []*TaskNode
-	for _, t := range dependents {
-		if visited[t.ID] {
-			continue
-		}
-		visited[t.ID] = true
-		children := buildDependentsTree(store, t.ID, visited)
-		nodes = append(nodes, &TaskNode{Task: t, Children: children})
-	}
-	return nodes
 }
 
 type ProjectAppService struct {
@@ -1400,12 +1354,6 @@ func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 		dependsOnResolved = append(dependsOnResolved, dep)
 	}
 
-	visitedUp := map[string]bool{task.ID: true}
-	dependsOnTree := buildDependsOnTree(s.Tasks, task.DependsOn, visitedUp)
-
-	visitedDown := map[string]bool{task.ID: true}
-	dependentsTree := buildDependentsTree(s.Tasks, task.ID, visitedDown)
-
 	return &TaskDetailView{
 		Task:              task,
 		Actions:           actions,
@@ -1413,8 +1361,6 @@ func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 		AvailableActions:  computeAvailableActions(task),
 		Dependents:        dependents,
 		DependsOnResolved: dependsOnResolved,
-		DependsOnTree:     dependsOnTree,
-		DependentsTree:    dependentsTree,
 	}, nil
 }
 
@@ -1495,12 +1441,6 @@ func (s *WebAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 		dependsOnResolved = append(dependsOnResolved, dep)
 	}
 
-	visitedUp := map[string]bool{task.ID: true}
-	dependsOnTree := buildDependsOnTree(s.Tasks, task.DependsOn, visitedUp)
-
-	visitedDown := map[string]bool{task.ID: true}
-	dependentsTree := buildDependentsTree(s.Tasks, task.ID, visitedDown)
-
 	return &TaskDetailView{
 		Task:              task,
 		Actions:           actions,
@@ -1508,8 +1448,6 @@ func (s *WebAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 		AvailableActions:  computeAvailableActions(task),
 		Dependents:        dependents,
 		DependsOnResolved: dependsOnResolved,
-		DependsOnTree:     dependsOnTree,
-		DependentsTree:    dependentsTree,
 	}, nil
 }
 
