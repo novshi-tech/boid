@@ -101,8 +101,12 @@ var taskRerunCmd = &cobra.Command{
 var taskNotifyCmd = &cobra.Command{
 	Use:   "notify <id>",
 	Short: "Send a user notification for the given task",
-	Long: "ユーザの判断が必要なときに、 config.yaml の `notify.command` を実行する。\n" +
-		"--ask を指定すると Q&A モードになり、 通知後にタスクを awaiting に遷移させる。\n" +
+	Long: "タスクのライフサイクル signal を発信する。 排他的な 4 モード:\n" +
+		"  --ask      ユーザに判断を求める Q&A モード。 awaiting に遷移。\n" +
+		"  --done     成功報告。 done に遷移。 親 supervisor が verify + (必要なら) reopen。\n" +
+		"  --fail     失敗報告。 aborted に遷移。 親 supervisor が reopen / 受容 / abort。\n" +
+		"  --progress 進捗ノート (timeline 行のみ、 状態遷移なし)。\n" +
+		"いずれも指定しなければ FYI 通知のみ (root task は notify hook が発火、 child task は無音)。\n" +
 		"--question-id を省略した場合は boid 側で UUID を生成する。",
 	Args: cobra.ExactArgs(1),
 	RunE: runTaskNotify,
@@ -136,11 +140,13 @@ func init() {
 	taskDuplicateCmd.Flags().Bool("auto-start", false, "Automatically start the duplicated task")
 	taskRerunCmd.Flags().Bool("auto-start", false, "Automatically start the rerun task")
 	taskRerunCmd.Flags().String("instructions-file", "", "Instructions override file (YAML/JSON) for role-wise merge; - for stdin")
-	taskNotifyCmd.Flags().StringP("message", "m", "", "Notification message text (required for FYI/ask modes)")
-	taskNotifyCmd.Flags().String("ask", "", "Question text; when set, transitions task to awaiting (Q&A mode)")
+	taskNotifyCmd.Flags().StringP("message", "m", "", "Notification message text (required for FYI/ask/done/fail modes)")
+	taskNotifyCmd.Flags().String("ask", "", "Question text; transitions task to awaiting (Q&A mode)")
 	taskNotifyCmd.Flags().String("question-id", "", "Q&A turn ID (generated when omitted)")
 	taskNotifyCmd.Flags().String("session-id", "", "Agent session ID stored in awaiting trait and surfaced as BOID_AGENT_SESSION_ID on next hook invocation")
-	taskNotifyCmd.Flags().String("progress", "", "Progress message; records timeline Action only — no hook fires, no state change (mutually exclusive with --ask)")
+	taskNotifyCmd.Flags().String("progress", "", "Progress message; records timeline Action only — no hook fires, no state change")
+	taskNotifyCmd.Flags().String("done", "", "Success summary (one-line headline); transitions task to done. Parent supervisor verifies and optionally reopens.")
+	taskNotifyCmd.Flags().String("fail", "", "Failure summary (one-line headline); transitions task to aborted. Parent supervisor inspects and optionally reopens with a fix.")
 	taskAnswerCmd.Flags().String("task", "", "Task ID (required)")
 	taskAnswerCmd.Flags().String("question-id", "", "Question ID to answer (required)")
 	taskAnswerCmd.Flags().String("answer", "", "Answer text (required)")
@@ -575,18 +581,34 @@ func runTaskNotify(cmd *cobra.Command, args []string) error {
 	message, _ := cmd.Flags().GetString("message")
 	ask, _ := cmd.Flags().GetString("ask")
 	progress, _ := cmd.Flags().GetString("progress")
+	done, _ := cmd.Flags().GetString("done")
+	fail, _ := cmd.Flags().GetString("fail")
 	questionID, _ := cmd.Flags().GetString("question-id")
 	sessionID, _ := cmd.Flags().GetString("session-id")
 
-	if ask != "" && progress != "" {
-		return fmt.Errorf("--ask and --progress are mutually exclusive")
+	modes := 0
+	for _, m := range []string{ask, progress, done, fail} {
+		if m != "" {
+			modes++
+		}
+	}
+	if modes > 1 {
+		return fmt.Errorf("--ask, --progress, --done, --fail are mutually exclusive")
 	}
 	if message == "" && progress == "" {
 		return fmt.Errorf("--message is required")
 	}
 
 	c := client.NewUnixClient(client.DefaultSocketPath())
-	req := api.NotifyTaskRequest{Message: message, Ask: ask, QuestionID: questionID, SessionID: sessionID, Progress: progress}
+	req := api.NotifyTaskRequest{
+		Message:    message,
+		Ask:        ask,
+		QuestionID: questionID,
+		SessionID:  sessionID,
+		Progress:   progress,
+		Done:       done,
+		Fail:       fail,
+	}
 	if err := c.Do("POST", "/api/tasks/"+args[0]+"/notify", req, nil); err != nil {
 		return fmt.Errorf("notify task: %w", err)
 	}

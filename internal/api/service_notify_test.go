@@ -40,7 +40,7 @@ func TestNotifyTask_InteractiveRunningJobSetsJobID(t *testing.T) {
 		Notify: notifier,
 	}
 
-	if err := svc.NotifyTask(context.Background(), "t1", "hello", "", "", "", ""); err != nil {
+	if err := svc.NotifyTask(context.Background(), "t1", "hello", "", "", "", "", "", ""); err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
 	if notifier.event.JobID != "j2" {
@@ -67,7 +67,7 @@ func TestNotifyTask_NoInteractiveRunningJob_JobIDEmpty(t *testing.T) {
 		Notify: notifier,
 	}
 
-	if err := svc.NotifyTask(context.Background(), "t1", "hello", "", "", "", ""); err != nil {
+	if err := svc.NotifyTask(context.Background(), "t1", "hello", "", "", "", "", "", ""); err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
 	if notifier.event.JobID != "" {
@@ -91,7 +91,7 @@ func TestNotifyTask_AskMode_TransitionsToAwaiting(t *testing.T) {
 		Workflow: workflow,
 	}
 
-	if err := svc.NotifyTask(context.Background(), "t1", "Plan ready", "Approve?", "q-1", "", ""); err != nil {
+	if err := svc.NotifyTask(context.Background(), "t1", "Plan ready", "Approve?", "q-1", "", "", "", ""); err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
 	if notifier.event.Message != "Plan ready" {
@@ -134,7 +134,7 @@ func TestNotifyTask_AskMode_StopsAgentForRunningJobs(t *testing.T) {
 		Workflow: workflow,
 	}
 
-	if err := svc.NotifyTask(context.Background(), "t1", "Need decision", "Continue?", "q-1", "", ""); err != nil {
+	if err := svc.NotifyTask(context.Background(), "t1", "Need decision", "Continue?", "q-1", "", "", "", ""); err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
 	if workflow.appliedType != "ask" {
@@ -175,7 +175,7 @@ func TestNotifyTask_ProgressMode_LeavesRunningJobsAlone(t *testing.T) {
 		Workflow: workflow,
 	}
 
-	if err := svc.NotifyTask(context.Background(), "t1", "", "", "", "", "stage 2 done"); err != nil {
+	if err := svc.NotifyTask(context.Background(), "t1", "", "", "", "", "stage 2 done", "", ""); err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
 	if len(workflow.completedJobs) != 0 {
@@ -199,7 +199,7 @@ func TestNotifyTask_AskMode_SetsQuestionPageURLPath(t *testing.T) {
 		Workflow: workflow,
 	}
 
-	if err := svc.NotifyTask(context.Background(), "t1", "Plan ready", "Approve?", "q-1", "", ""); err != nil {
+	if err := svc.NotifyTask(context.Background(), "t1", "Plan ready", "Approve?", "q-1", "", "", "", ""); err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
 	want := "/tasks/t1/questions/q-1"
@@ -228,7 +228,7 @@ func TestNotifyTask_AskMode_GeneratesQuestionIDForURL(t *testing.T) {
 	}
 
 	// Caller omits questionID; service must generate one and reflect it in the URL.
-	if err := svc.NotifyTask(context.Background(), "t1", "msg", "Approve?", "", "", ""); err != nil {
+	if err := svc.NotifyTask(context.Background(), "t1", "msg", "Approve?", "", "", "", "", ""); err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
 	prefix := "/tasks/t1/questions/"
@@ -267,7 +267,7 @@ func TestNotifyTask_ProgressMode_CreatesActionNoHook(t *testing.T) {
 		Notify:  notifier,
 	}
 
-	if err := svc.NotifyTask(context.Background(), "t1", "", "", "", "", "step 2 done"); err != nil {
+	if err := svc.NotifyTask(context.Background(), "t1", "", "", "", "", "step 2 done", "", ""); err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
 
@@ -308,7 +308,7 @@ func TestNotifyTask_ProgressMode_NoNotifierRequired(t *testing.T) {
 		// Notify is nil — progress should still work
 	}
 
-	err := svc.NotifyTask(context.Background(), "t1", "", "", "", "", "midway")
+	err := svc.NotifyTask(context.Background(), "t1", "", "", "", "", "midway", "", "")
 	if err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestNotifyTask_ProgressAndAskMutuallyExclusive(t *testing.T) {
 		Tasks: &stubTaskStore{task: task},
 	}
 
-	err := svc.NotifyTask(context.Background(), "t1", "msg", "question?", "", "", "progress text")
+	err := svc.NotifyTask(context.Background(), "t1", "msg", "question?", "", "", "progress text", "", "")
 	if err == nil {
 		t.Fatal("expected error when both ask and progress are set")
 	}
@@ -356,7 +356,7 @@ func TestNotifyTask_ChildTaskAsk_SkipsHookButTransitionsToAwaiting(t *testing.T)
 		Workflow: workflow,
 	}
 
-	if err := svc.NotifyTask(context.Background(), "child-1", "done", "done_request: subtree finished", "q-1", "", ""); err != nil {
+	if err := svc.NotifyTask(context.Background(), "child-1", "done", "done_request: subtree finished", "q-1", "", "", "", ""); err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
 	if notifier.called != 0 {
@@ -382,7 +382,7 @@ func TestNotifyTask_ChildTaskFYI_SkipsHookSilently(t *testing.T) {
 		Notify: notifier,
 	}
 
-	if err := svc.NotifyTask(context.Background(), "child-1", "milestone", "", "", "", ""); err != nil {
+	if err := svc.NotifyTask(context.Background(), "child-1", "milestone", "", "", "", "", "", ""); err != nil {
 		t.Fatalf("NotifyTask: %v", err)
 	}
 	if notifier.called != 0 {
@@ -406,7 +406,7 @@ func TestNotifyTask_ChildTaskFYI_NoNotifierIsFine(t *testing.T) {
 		// Notify intentionally nil
 	}
 
-	if err := svc.NotifyTask(context.Background(), "child-1", "milestone", "", "", "", ""); err != nil {
+	if err := svc.NotifyTask(context.Background(), "child-1", "milestone", "", "", "", "", "", ""); err != nil {
 		t.Errorf("NotifyTask returned error for child FYI without notifier: %v", err)
 	}
 }
@@ -425,7 +425,7 @@ func TestNotifyTask_RootTaskFYI_NoNotifierStillErrors(t *testing.T) {
 		// Notify intentionally nil
 	}
 
-	err := svc.NotifyTask(context.Background(), "root-1", "milestone", "", "", "", "")
+	err := svc.NotifyTask(context.Background(), "root-1", "milestone", "", "", "", "", "", "")
 	if err == nil {
 		t.Fatal("expected error: root FYI without notifier should fail")
 	}

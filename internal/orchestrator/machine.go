@@ -85,20 +85,23 @@ func (sm *StateMachine) Advance(task *Task) (*Task, bool) {
 // task in the given status. Condition-based (automatic) rules and non-manual
 // rules are excluded. Terminal statuses (done, aborted) return an empty list.
 func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
-	if status == TaskStatusAborted {
-		return nil
-	}
 	var actions []string
 	seen := map[string]bool{}
 	for _, r := range sm.Rules {
 		if r.Condition != nil || !r.Manual {
 			continue
 		}
-		if r.FromStatus == "*" || r.FromStatus == string(status) {
-			if !seen[r.Action] {
-				seen[r.Action] = true
-				actions = append(actions, r.Action)
-			}
+		if r.FromStatus != "*" && r.FromStatus != string(status) {
+			continue
+		}
+		// Skip self-loops (e.g. abort: * → aborted when status=aborted).
+		// A user-actionable transition must change state.
+		if r.ToStatus == string(status) {
+			continue
+		}
+		if !seen[r.Action] {
+			seen[r.Action] = true
+			actions = append(actions, r.Action)
 		}
 	}
 	return actions
@@ -114,9 +117,11 @@ func DefaultMachine() *StateMachine {
 // Manual transitions:
 //
 //	start  : pending → executing
-//	done   : executing → done    (agent self-completion)
-//	done   : awaiting → done     (parent confirms child's done_request)
+//	done   : executing → done     (agent self-completion / `notify --done`)
+//	done   : awaiting → done      (parent confirms child's done_request)
+//	fail   : executing → aborted  (agent self-reports failure / `notify --fail`)
 //	reopen : done → executing
+//	reopen : aborted → executing  (recover from failure via fix)
 //	ask    : executing → awaiting
 //	answer : awaiting → executing
 //	abort  : * → aborted
@@ -144,7 +149,9 @@ func NewMachine() *StateMachine {
 			{Action: "start",  FromStatus: "pending",   ToStatus: "executing", Manual: true},
 			{Action: "done",   FromStatus: "executing", ToStatus: "done",      Manual: true},
 			{Action: "done",   FromStatus: "awaiting",  ToStatus: "done",      Manual: true},
+			{Action: "fail",   FromStatus: "executing", ToStatus: "aborted",   Manual: true},
 			{Action: "reopen", FromStatus: "done",      ToStatus: "executing", Manual: true},
+			{Action: "reopen", FromStatus: "aborted",   ToStatus: "executing", Manual: true},
 			{Action: "ask",    FromStatus: "executing", ToStatus: "awaiting",  Manual: true},
 			{Action: "answer", FromStatus: "awaiting",  ToStatus: "executing", Manual: true},
 			{Action: "abort",  FromStatus: "*",         ToStatus: "aborted",   Manual: true},

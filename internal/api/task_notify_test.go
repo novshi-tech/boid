@@ -18,15 +18,19 @@ type fakeNotifier struct {
 	calledAsk      string
 	calledQID      string
 	calledProgress string
+	calledDone     string
+	calledFail     string
 	err            error
 }
 
-func (n *fakeNotifier) NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID, progress string) error {
+func (n *fakeNotifier) NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID, progress, done, fail string) error {
 	n.calledTaskID = taskID
 	n.calledMessage = message
 	n.calledAsk = ask
 	n.calledQID = questionID
 	n.calledProgress = progress
+	n.calledDone = done
+	n.calledFail = fail
 	return n.err
 }
 
@@ -91,6 +95,38 @@ func TestNotifyHandler_ProgressMode(t *testing.T) {
 	}
 	if notifier.calledAsk != "" {
 		t.Errorf("ask should be empty in progress mode, got %q", notifier.calledAsk)
+	}
+}
+
+func TestNotifyHandler_DoneMode(t *testing.T) {
+	notifier := &fakeNotifier{}
+	h := &TaskHandler{Notifier: notifier}
+
+	w := notifyRequest(t, h.Routes(), "task-1", NotifyTaskRequest{Message: "headline", Done: "PR #437 merged"})
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d, want %d (body=%s)", w.Code, http.StatusNoContent, w.Body.String())
+	}
+	if notifier.calledDone != "PR #437 merged" {
+		t.Errorf("done = %q, want %q", notifier.calledDone, "PR #437 merged")
+	}
+	if notifier.calledAsk != "" || notifier.calledFail != "" {
+		t.Errorf("ask/fail should be empty in done mode, got ask=%q fail=%q", notifier.calledAsk, notifier.calledFail)
+	}
+}
+
+func TestNotifyHandler_FailMode(t *testing.T) {
+	notifier := &fakeNotifier{}
+	h := &TaskHandler{Notifier: notifier}
+
+	w := notifyRequest(t, h.Routes(), "task-1", NotifyTaskRequest{Message: "headline", Fail: "tests broken in main"})
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d, want %d (body=%s)", w.Code, http.StatusNoContent, w.Body.String())
+	}
+	if notifier.calledFail != "tests broken in main" {
+		t.Errorf("fail = %q, want %q", notifier.calledFail, "tests broken in main")
+	}
+	if notifier.calledAsk != "" || notifier.calledDone != "" {
+		t.Errorf("ask/done should be empty in fail mode, got ask=%q done=%q", notifier.calledAsk, notifier.calledDone)
 	}
 }
 

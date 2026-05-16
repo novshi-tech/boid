@@ -27,13 +27,15 @@ The **active instruction** carries the project-specific integration policy — f
 
 ## Lifecycle Accountability
 
-You **own the lifecycle of every child task you create**. Children that enter `awaiting` are asking **you**, not the user — the daemon hardcodes "only root tasks (parent_id == \"\") fire user-facing notify hooks". For each child event, you choose:
+You **own the lifecycle of every child task you create**. Children that enter `awaiting` are asking **you**, not the user — the daemon hardcodes "only root tasks (parent_id == \"\") fire user-facing notify hooks". For each child status transition, you choose:
 
-- **answer** (`boid task answer`) — child asked a question
-- **confirm done** (`boid action send --type done`) — child reports completion and you agree
-- **reopen** (`boid task reopen <id> -m "..."`) — push back with instructions
-- **abort** (`boid task abort <id>`) — unrecoverable, stop the child
-- **escalate up** (your own `notify --ask`) — you cannot decide; ask your own parent (or user)
+| child status | source | your response options |
+|---|---|---|
+| `done` | child called `notify --done` | verify and either leave as-is (accept) or `reopen` to revise |
+| `aborted` | child called `notify --fail` or `action send --type abort` | inspect the failure, then `reopen` with a hint, leave aborted, or escalate up |
+| `awaiting` | child called `notify --ask` (mid-flight question) | `task answer` to reply, `reopen` to redirect, or escalate up |
+
+In all cases, "escalate up" means your own `notify --ask` (or `--done` / `--fail`) toward your own parent (or the user, for root supervisors).
 
 See [docs/plans/lifecycle-accountability.md](../../../docs/plans/lifecycle-accountability.md) for the full contract.
 
@@ -92,36 +94,25 @@ Poll each child until terminal (`done` / `aborted`):
 while true; do
   case "$(boid task show "$id" --field status)" in
     done|aborted) break ;;
+    awaiting)     handle_awaiting "$id" ;;
   esac
   sleep 60
 done
 ```
 
-- On `done` — read its artifact (`boid task show <id> --field artifact.<key>`), run the integration step from the active instruction, then decide on the next child.
-- On `aborted` — read `lifecycle.abort.message`, diagnose with `boid job list/show/log` (note: `job log` returns the runtime's **raw PTY capture** — ANSI-laden, useful for shape diagnostics rather than structured parsing), then retry / redesign / escalate.
-- On `awaiting` — the child is asking **you**. See [Handling Child Awaiting](#handling-child-awaiting).
+The status itself carries the intent — there is no longer a textual prefix to parse:
+
+- `done` — child called `notify --done` (success self-report). See [Handling Done](#handling-done).
+- `aborted` — child called `notify --fail` or `action send --type abort`. See [Handling Aborted](#handling-aborted).
+- `awaiting` — child called `notify --ask` (mid-flight question). See [Handling Awaiting](#handling-awaiting).
 
 Adjust the `sleep` interval to the implementation scale (30s for small tasks, 2–5 min for larger builds).
 
 Full status semantics: [references/state-machine.md](references/state-machine.md). Diagnostic commands: [references/builtins.md](references/builtins.md).
 
-## Handling Child Awaiting
+## Handling Done
 
-When a child enters `awaiting`, the daemon has already gated user-facing notifications (children never reach the user directly). Read the question and parse the **prefix** to identify intent:
-
-| prefix | meaning |
-|---|---|
-| `done_request:` | child believes it has completed; verify and confirm or reopen |
-| `failure_report:` | child reports an unrecoverable problem; decide reopen / abort / escalate |
-| (no prefix) | generic question / decision request; answer or escalate |
-
-```bash
-question=$(boid task show "$child" --field awaiting.question)
-```
-
-### done_request
-
-Verify before confirming. Pull from the three diagnostic layers:
+The child believes it succeeded. Verify before integrating:
 
 ```bash
 short=$(echo "$child" | cut -c1-8)
@@ -142,30 +133,46 @@ boid job log "$last_job" | tail -200
 Then choose one:
 
 ```bash
-boid action send --task "$child" --type done                       # confirm
-boid task reopen "$child" -m "<what to change>"                    # reopen with revision
-boid task abort "$child"                                           # unrecoverable
-boid task notify "$BOID_TASK_ID" --message "..." --ask "done_request: ..."  # escalate up
+# Accept: leave the child in `done` and proceed to integration / next child.
+# (No action needed — `done` is already terminal.)
+
+boid task reopen "$child" -m "<what to change>"                              # revise
+boid task abort  "$child"                                                    # repudiate (rare; usually reopen is enough)
+boid task notify "$BOID_TASK_ID" --message "..." --ask "<escalation>"        # escalate up
 ```
 
-If `payload.artifact.report` is empty or missing required fields, treat that as a **missing-report anomaly**: reopen with `-m "Re-run with payload.artifact.report populated (summary, evidence, verification)."` rather than confirming on faith.
+If `payload.artifact.report` is empty or missing required fields, treat that as a **missing-report anomaly**: reopen with `-m "Re-run with payload.artifact.report populated (summary, evidence, verification)."` rather than accepting on faith.
 
-### failure_report
+## Handling Aborted
 
-Read the failure detail. Same toolbox as `done_request` (Layers A–C) — just driven by a different intent. Common outcomes:
+The child reported failure (via `notify --fail`) or aborted outright (via `action send --type abort`). Same diagnostic toolbox as Done (Layers A–C). Common outcomes:
 
-- Recoverable with a hint → `boid task reopen <child> -m "..."`
-- Genuinely unrecoverable → `boid task abort <child>`
+- Recoverable with a hint → `boid task reopen <child> -m "..."` (aborted → executing)
+- Genuinely unrecoverable → leave the child aborted, redesign or escalate
 - You don't know → escalate via your own `notify --ask`
 
-### bare ask
-
-Answer in your own context, or escalate:
+To distinguish self-failure (`notify --fail`) from forced abort, check the last action:
 
 ```bash
-boid task answer "$child" "<reply>"
-# or
-boid task notify "$BOID_TASK_ID" --message "..." --ask "<question for your own parent>"
+last_action=$(boid task show "$child" --field 'actions[-1].type')
+# last_action == "fail"  → child self-reported; read action payload + artifact.report
+# last_action == "abort" → forced; read lifecycle.abort.message and payload.code
+```
+
+## Handling Awaiting
+
+The child has a mid-flight question. Read it and decide:
+
+```bash
+question=$(boid task show "$child" --field awaiting.question)
+```
+
+Then one of:
+
+```bash
+boid task answer "$child" "<reply>"                                          # answer in your context
+boid task reopen "$child" -m "<redirect>"                                    # redirect via reopen
+boid task notify "$BOID_TASK_ID" --message "..." --ask "<question for own parent>"  # escalate up
 ```
 
 ## Detecting Stuck Children
@@ -236,10 +243,9 @@ Multiple Q&A turns are fine — each `--ask` replaces the previous pending answe
 When the active instruction is a question about prior behavior ("explain why you stopped", "summarize what happened", "what is the cause"), the answer **still goes through `boid task notify`** — never as bare assistant text. The Claude session has no other channel to your owner; whatever you write as a closing paragraph in the agent transcript is invisible.
 
 - If the answer naturally invites a next-step decision ("should I proceed with X?"), put the explanation in `--ask` and present the follow-up options there.
-- If the answer is purely informational and you have a parent (`parent_id != ""`), wrap it as `--ask "done_request: <explanation>"` — your parent supervisor receives it and decides. Bare `--message` (FYI) is timeline-only and your parent never reacts to it.
-- If the answer is purely informational and you are a root supervisor, put it in `--message` (FYI mode, no `--ask`) and then exit via `boid agent stop`. Without `--ask`, the task will not transition to `awaiting`, so the user has no built-in reply turn — make sure that is the intent.
+- If the answer is purely informational, wrap it as `--done "<explanation>"` — the task transitions to `done` with the message on the timeline. Your owner reads it and reopens if anything is off.
 
-A reopen turn that ends with bare assistant text is treated by boid as "no ask, no exit action" → `auto_advance` closes the task to `done` with **no visible response surfaced**. This is the failure mode behind the 2026-05-14 incident where a correct diagnostic reply never reached the user — generalized into the lifecycle-accountability model.
+A reopen turn that ends with bare assistant text leaves the task stuck in `executing` with no visible response surfaced. This is the failure mode behind the 2026-05-14 incident where a correct diagnostic reply never reached the user — generalized into the lifecycle-accountability model.
 
 ## When to Ask (notify --ask)
 
@@ -286,50 +292,34 @@ These numbers can be overridden by the active instruction.
 
 ## Exit Handling (required)
 
-**Every invocation** — first start, user-reply resume, reopen — must terminate in a `boid` command. boid records `notify` / `notify --ask` / `agent stop` (and the bash EXIT trap's follow-up `job done`) actions; it does **not** record agent transcript text. Ending the session with bare assistant text is equivalent to leaving it open without action: your owner sees an empty `done` task with no visible response.
+**Every invocation** — first start, user-reply resume, reopen — must terminate in a `boid` command. boid records `notify` (`--done` / `--fail` / `--ask`) and EXIT-trap `job done` actions; it does **not** record agent transcript text. Ending the session with bare assistant text leaves the task stuck in `executing` with no visible response to your owner.
 
-You are an agent task yourself — the lifecycle accountability rules apply to your own termination too. Your **owner** is the parent supervisor (`parent_id != ""`) or the user (`parent_id == ""`). Check first:
+The contract is identical for child (`parent_id != ""`) and root (`parent_id == ""`) supervisors — emit exactly one of:
 
-```bash
-parent=$(boid task show "$BOID_TASK_ID" --field parent_id)
-```
-
-### Child supervisor (`parent_id != ""`)
-
-Your owner is another supervisor. The daemon will not surface your exit to the user — your parent must see it via `notify --ask`. **Do not call `boid agent stop`** when you have a parent: it would silently transition to `done` with no signal upward (the same anti-pattern that motivated the lifecycle-accountability model).
-
-Emit exactly one of:
-
-- **Subtree complete** — your children are all terminal, the parent's request is satisfied:
+- **Subtree complete** — your children are all terminal, the request is satisfied. Transitions to `done`:
   ```bash
   boid task notify "$BOID_TASK_ID" \
     --message "<short summary>" \
-    --ask "done_request: <what your subtree achieved>"
+    --done "<what your subtree achieved>"
   ```
-- **Subtree failed** — you could not complete the request:
+- **Subtree failed** — you could not complete the request. Transitions to `aborted`:
   ```bash
   boid task notify "$BOID_TASK_ID" \
     --message "<short summary>" \
-    --ask "failure_report: <what went wrong, what you tried>"
+    --fail "<what went wrong, what you tried>"
   ```
-- **Need a parent decision before continuing** — `notify --ask "<question>"` (no prefix). Resume picks up after the parent answers.
+- **Need a decision before continuing** — mid-flight question. Transitions to `awaiting`:
+  ```bash
+  boid task notify "$BOID_TASK_ID" \
+    --message "<short summary>" \
+    --ask "<question>"
+  ```
 
-After `notify --ask` returns, the daemon SIGTERMs your runtime — **just stop generating**. The bash EXIT trap fires `boid job done` to seal your session id.
+After the call returns, the daemon SIGTERMs your runtime — **just stop generating**. For root supervisors the user receives a desktop notification (with deep-link to the task page); for child supervisors the parent's polling picks up the new status. For root supervisors specifically, `--done` is the canonical close — the user reopens or escalates if anything is off, which is cheaper than an extra awaiting + confirm round-trip for content the user typically does not read carefully.
 
-### Root supervisor (`parent_id == ""`)
+> Do **not** call `boid agent stop` or `boid job done` directly. The first is the legacy silent-termination path that motivated this model; the second unregisters the broker token before the EXIT trap runs and silently drops your `payload_patch.json`.
 
-Your owner is the user. The daemon fires user-facing notify hooks for your `notify --ask`. Choose **A** or **B** explicitly:
-
-- **A. Autonomous exit** — `boid agent stop "$BOID_JOB_ID"` (the daemon SIGUSR1s your runtime; bash EXIT trap fires `boid job done --output-file payload_patch.json`). Use **only** when **all** of:
-  1. All children are terminal with no remaining supervisor work
-  2. The user's most recent reply was a closing response ("ok", "thanks") — not a new request
-  3. No unanswered asks
-  4. The last summary was a completion report with little room for follow-up
-- **B. Exit-confirmation ask** — `notify --ask "done_request: <summary>"` (or `failure_report: <error>`). Use this when there is anything worth surfacing — completion confirmation, summary, or pending decision.
-
-When in doubt, choose B.
-
-> No exit safety net: the claude-code kit no longer auto-fires `boid agent stop` when your response loop ends (the Stop hook was removed in lifecycle-accountability Phase 2.a). If you end a turn with bare assistant text, the runtime stays alive waiting for input and your owner sees a stuck `executing` task — **always exit via an explicit `boid` command** (`notify --ask "done_request: ..."` for option B, or `boid agent stop "$BOID_JOB_ID"` for option A).
+> No exit safety net: the claude-code kit no longer auto-fires `boid agent stop` when your response loop ends (the Stop hook was removed in lifecycle-accountability Phase 2.a). Ending a turn with bare assistant text leaves the task stuck in `executing` — **always exit via an explicit `notify --done` / `--fail` / `--ask`** before ending the turn.
 
 ## References
 

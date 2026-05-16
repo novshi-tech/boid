@@ -471,6 +471,20 @@ func parseBoidTaskNotify(args []string) (*BoidRequest, error) {
 			}
 			i = next
 			req.Progress = value
+		case arg == "--done" || strings.HasPrefix(arg, "--done="):
+			value, next, err := takeStringFlagValue(args, i, "--done")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.Done = value
+		case arg == "--fail" || strings.HasPrefix(arg, "--fail="):
+			value, next, err := takeStringFlagValue(args, i, "--fail")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.Fail = value
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task notify", arg)
 		}
@@ -479,8 +493,14 @@ func parseBoidTaskNotify(args []string) (*BoidRequest, error) {
 	if req.TaskID == "" {
 		return nil, fmt.Errorf("boid shim: task notify requires a task id")
 	}
-	if req.Ask != "" && req.Progress != "" {
-		return nil, fmt.Errorf("boid shim: --ask and --progress are mutually exclusive")
+	modes := 0
+	for _, m := range []string{req.Ask, req.Progress, req.Done, req.Fail} {
+		if m != "" {
+			modes++
+		}
+	}
+	if modes > 1 {
+		return nil, fmt.Errorf("boid shim: --ask, --progress, --done, --fail are mutually exclusive")
 	}
 	if req.Message == "" && req.Progress == "" {
 		return nil, fmt.Errorf("boid shim: task notify requires --message")
