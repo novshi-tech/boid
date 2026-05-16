@@ -70,6 +70,24 @@ func TestDefaultMachine_AwaitingToExecuting(t *testing.T) {
 	}
 }
 
+// TestDefaultMachine_AwaitingToDone verifies that a parent supervisor can
+// approve a child's `done_request` (= terminate the awaiting child) via
+// `boid action send --type done`. The transition is the canonical
+// down-action documented in docs/plans/lifecycle-accountability.md and
+// boid-supervisor/SKILL.md; without it the supervisor falls back to
+// `boid task answer` which forces a wasteful agent re-spawn.
+func TestDefaultMachine_AwaitingToDone(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusAwaiting}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "done"})
+	if err != nil {
+		t.Fatalf("done from awaiting: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusDone {
+		t.Fatalf("expected done, got %s", next.Status)
+	}
+}
+
 func TestDefaultMachine_InvalidTransition_PendingToAwaiting(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
 	task := &orchestrator.Task{Status: orchestrator.TaskStatusPending}
@@ -178,7 +196,7 @@ func TestDefaultMachine_AvailableActions_Executing(t *testing.T) {
 func TestDefaultMachine_AvailableActions_Awaiting(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
 	actions := sm.AvailableActions(orchestrator.TaskStatusAwaiting)
-	want := map[string]bool{"answer": true, "abort": true}
+	want := map[string]bool{"answer": true, "done": true, "abort": true}
 	if len(actions) != len(want) {
 		t.Fatalf("AvailableActions(awaiting) = %v, want %v", actions, want)
 	}

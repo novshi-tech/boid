@@ -111,7 +111,7 @@ The daemon delivers SIGUSR1 to the runtime; `run-agent.py` SIGTERMs only the `cl
 
 > Note: do **not** call `boid job done` directly from the agent — that would unregister the broker token before the EXIT trap runs and silently drop your `payload_patch.json`.
 
-> Safety net: the claude-code kit registers a `Stop` hook that calls `boid agent stop` whenever your response loop ends. For child executors this fallback is the **wrong behavior** (silently terminates without signalling the supervisor); always emit explicit `notify --ask` first. The Stop hook is scheduled for removal in lifecycle-accountability Phase 2.
+> No exit safety net: the claude-code kit no longer auto-fires `boid agent stop` when your response loop ends (the Stop hook was removed in lifecycle-accountability Phase 2.a). Child executors that end with bare assistant text leave the task stuck in `executing` — **always emit `notify --ask "done_request: ..."` explicitly** before ending the turn.
 
 ## Asking Your Owner
 

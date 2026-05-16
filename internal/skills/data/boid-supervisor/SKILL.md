@@ -329,7 +329,7 @@ Your owner is the user. The daemon fires user-facing notify hooks for your `noti
 
 When in doubt, choose B.
 
-> Safety net: the claude-code kit registers a `Stop` hook that calls `boid agent stop` whenever your response loop ends. This rescues a forgotten exit — but ends the task silently with no follow-up surfaced to your owner. **Always pick the appropriate option explicitly.** The Stop hook is scheduled for removal in lifecycle-accountability Phase 2; do not rely on it.
+> No exit safety net: the claude-code kit no longer auto-fires `boid agent stop` when your response loop ends (the Stop hook was removed in lifecycle-accountability Phase 2.a). If you end a turn with bare assistant text, the runtime stays alive waiting for input and your owner sees a stuck `executing` task — **always exit via an explicit `boid` command** (`notify --ask "done_request: ..."` for option B, or `boid agent stop "$BOID_JOB_ID"` for option A).
 
 ## References
 
