@@ -90,14 +90,14 @@ Poll each child until terminal (`done` / `aborted`):
 
 ```bash
 while true; do
-  case "$(boid task get "$id" --field status)" in
+  case "$(boid task show "$id" --field status)" in
     done|aborted) break ;;
   esac
   sleep 60
 done
 ```
 
-- On `done` — read its artifact (`boid task get <id> --field artifact.<key>`), run the integration step from the active instruction, then decide on the next child.
+- On `done` — read its artifact (`boid task show <id> --field artifact.<key>`), run the integration step from the active instruction, then decide on the next child.
 - On `aborted` — read `lifecycle.abort.message`, diagnose with `boid job list/show/log` (note: `job log` returns the runtime's **raw PTY capture** — ANSI-laden, useful for shape diagnostics rather than structured parsing), then retry / redesign / escalate.
 - On `awaiting` — the child is asking **you**. See [Handling Child Awaiting](#handling-child-awaiting).
 
@@ -116,7 +116,7 @@ When a child enters `awaiting`, the daemon has already gated user-facing notific
 | (no prefix) | generic question / decision request; answer or escalate |
 
 ```bash
-question=$(boid task get "$child" --field awaiting.question)
+question=$(boid task show "$child" --field awaiting.question)
 ```
 
 ### done_request
@@ -127,7 +127,7 @@ Verify before confirming. Pull from the three diagnostic layers:
 short=$(echo "$child" | cut -c1-8)
 
 # Layer A: child's structured self-report (one-shot canonical source)
-boid task get "$child" --field payload.artifact.report
+boid task show "$child" --field payload.artifact.report
 
 # Layer B: independent fact-check via git / gh (push not required — local branch is enough)
 git log "main..boid/$short"
@@ -173,7 +173,7 @@ boid task notify "$BOID_TASK_ID" --message "..." --ask "<question for your own p
 Some children fail silently — `claude` exits without issuing `notify --ask`, leaving the child in `executing` with no live job. On each poll iteration, check for staleness:
 
 ```bash
-status=$(boid task get "$child" --field status)
+status=$(boid task show "$child" --field status)
 if [ "$status" = "executing" ]; then
   last_job_id=$(boid job list --task "$child" --output json | jq -r '.[0].id // empty')
   if [ -n "$last_job_id" ]; then
@@ -291,7 +291,7 @@ These numbers can be overridden by the active instruction.
 You are an agent task yourself — the lifecycle accountability rules apply to your own termination too. Your **owner** is the parent supervisor (`parent_id != ""`) or the user (`parent_id == ""`). Check first:
 
 ```bash
-parent=$(boid task get "$BOID_TASK_ID" --field parent_id)
+parent=$(boid task show "$BOID_TASK_ID" --field parent_id)
 ```
 
 ### Child supervisor (`parent_id != ""`)

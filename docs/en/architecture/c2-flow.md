@@ -160,8 +160,8 @@ When the answer arrives, the task transitions `awaiting → executing` and the h
 
 ```bash
 # 1. Read values from the awaiting payload
-SESSION_ID=$(boid task get "${BOID_TASK_ID}" --field payload | jq -r '.awaiting.session_id // ""')
-ANSWER=$(boid task get "${BOID_TASK_ID}" --field payload | jq -r '.awaiting.pending_answer // ""')
+SESSION_ID=$(boid task show "${BOID_TASK_ID}" --field payload | jq -r '.awaiting.session_id // ""')
+ANSWER=$(boid task show "${BOID_TASK_ID}" --field payload | jq -r '.awaiting.pending_answer // ""')
 
 if [ -n "$ANSWER" ]; then
   # 2. Consume (clear) pending_answer

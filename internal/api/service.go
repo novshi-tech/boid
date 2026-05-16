@@ -837,6 +837,24 @@ func (s *TaskAppService) GetTask(id string) (*orchestrator.Task, error) {
 	return task, nil
 }
 
+// GetTaskField resolves a dotted field path against the task. See
+// ResolveTaskField for the path syntax (top-level fields, payload traits,
+// computed lifecycle).
+func (s *TaskAppService) GetTaskField(id, path string) (string, error) {
+	if path == "" {
+		return "", &StatusError{Code: http.StatusBadRequest, Message: "field path is required"}
+	}
+	task, err := s.Tasks.GetTask(id)
+	if err != nil {
+		return "", &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	value, err := ResolveTaskField(task, s.Actions, path)
+	if err != nil {
+		return "", &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+	}
+	return value, nil
+}
+
 // NotifyTask invokes the configured notify command for the given task.
 // Returns 501 when no notifier is wired and ask is empty (notifications disabled in config).
 // When ask is non-empty the task is transitioned to awaiting; the notification is

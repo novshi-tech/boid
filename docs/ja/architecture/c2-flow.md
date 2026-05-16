@@ -160,8 +160,8 @@ boid task answer \
 
 ```bash
 # 1. awaiting payload から値を取得
-SESSION_ID=$(boid task get "${BOID_TASK_ID}" --field payload | jq -r '.awaiting.session_id // ""')
-ANSWER=$(boid task get "${BOID_TASK_ID}" --field payload | jq -r '.awaiting.pending_answer // ""')
+SESSION_ID=$(boid task show "${BOID_TASK_ID}" --field payload | jq -r '.awaiting.session_id // ""')
+ANSWER=$(boid task show "${BOID_TASK_ID}" --field payload | jq -r '.awaiting.pending_answer // ""')
 
 if [ -n "$ANSWER" ]; then
   # 2. pending_answer を消費 (クリア)

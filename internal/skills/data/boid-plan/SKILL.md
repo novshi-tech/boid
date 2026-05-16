@@ -121,7 +121,7 @@ After creating child tasks, wait and watch their status until they complete. The
 
 ```bash
 # Check an individual child's status
-boid task get ${CHILD_A} --field status
+boid task show ${CHILD_A} --field status
 ```
 
 Basic monitoring loop:
@@ -132,7 +132,7 @@ CHILDREN="$CHILD_A $CHILD_B $CHILD_C"
 while true; do
   PENDING=0
   for id in $CHILDREN; do
-    case "$(boid task get "$id" --field status)" in
+    case "$(boid task show "$id" --field status)" in
       done|aborted) ;;
       *) PENDING=$((PENDING + 1)) ;;
     esac
@@ -144,8 +144,8 @@ done
 
 On each iteration:
 
-- Read the artifact of newly `done` children (`boid task get <id> --field artifact.<key>` etc.) and decide whether to create follow-up children
-- For `aborted` children, check the cause (`boid task get <id> --field lifecycle.abort.message`), then retry / take a different approach, or escalate to the user
+- Read the artifact of newly `done` children (`boid task show <id> --field artifact.<key>` etc.) and decide whether to create follow-up children
+- For `aborted` children, check the cause (`boid task show <id> --field lifecycle.abort.message`), then retry / take a different approach, or escalate to the user
 - When stuck on a decision, consult the user via `boid task notify` (see below)
 
 More detailed diagnostics for an aborted child:
@@ -174,7 +174,7 @@ You can background the monitoring loop and have Claude Code Monitor read a scrip
 while true; do
   cur=""
   for id in $CHILDREN; do
-    cur="$cur $(boid task get "$id" --field status)"
+    cur="$cur $(boid task show "$id" --field status)"
   done
   if [ "$cur" != "$prev" ]; then
     echo "$cur"

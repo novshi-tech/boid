@@ -70,9 +70,8 @@ Creating, observing, and updating tasks lives under `boid task`. See [Concepts /
 |---|---|
 | `boid task list [--status STATUS] [--workspace ID] [--behavior NAME] [--has-depends-on \| --no-depends-on]` | List tasks. |
 | `boid task create [-f FILE]` | Create a task; YAML on stdin (or via `-f`). |
-| `boid task show <id>` | Task detail (status and payload). |
+| `boid task show <id> [--field PATH]` | Task detail (status and payload). With `--field <path>`, prints a single value as plain text — dotted JSON path resolved against the task (e.g. `--field status`, `--field payload.artifact.report`, `--field awaiting.question`, `--field lifecycle.abort.message`). |
 | `boid task watch <id> [--interval DURATION]` | Stream status / payload changes live. |
-| `boid task get <id> --field <name>` | Fetch a single field (e.g. `--field title`). |
 | `boid task update <id> [--patch-file FILE] [--payload-file FILE] [--instructions-file FILE]` | Update a task; use `-` for stdin. |
 | `boid task delete <id> [--force]` | Delete a task (`--force` if active). |
 | `boid task duplicate <source_id> [--auto-start]` | Duplicate an existing task. |

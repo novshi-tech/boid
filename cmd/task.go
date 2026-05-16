@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -36,9 +37,14 @@ var taskCreateCmd = &cobra.Command{
 
 var taskShowCmd = &cobra.Command{
 	Use:   "show <id>",
-	Short: "Show task details",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runTaskShow,
+	Short: "Show task details, or a single field with --field",
+	Long: "Without --field, shows the full task detail view.\n" +
+		"With --field <path>, prints just the value at that dotted path:\n" +
+		"  - top-level fields: id, title, status, parent_id, ...\n" +
+		"  - payload traits (auto-prefixed): awaiting.question, artifact.report, ...\n" +
+		"  - computed lifecycle: lifecycle.abort.message, lifecycle.executed",
+	Args: cobra.ExactArgs(1),
+	RunE: runTaskShow,
 }
 
 var taskWatchCmd = &cobra.Command{
@@ -46,13 +52,6 @@ var taskWatchCmd = &cobra.Command{
 	Short: "Watch task progress",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runTaskWatch,
-}
-
-var taskGetCmd = &cobra.Command{
-	Use:   "get <id>",
-	Short: "Get a single field from a task",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runTaskGet,
 }
 
 var taskDeleteCmd = &cobra.Command{
@@ -125,7 +124,7 @@ func init() {
 	taskListCmd.Flags().Bool("no-depends-on", false, "Show only tasks that have no depends_on")
 	taskCreateCmd.Flags().StringP("file", "f", "", "YAML file to read task spec from (default: stdin)")
 	taskWatchCmd.Flags().Duration("interval", time.Second, "Polling interval")
-	taskGetCmd.Flags().String("field", "", "Field name to retrieve (required)")
+	taskShowCmd.Flags().String("field", "", "Dotted path to a single field (e.g. status, payload.artifact.report, awaiting.question, lifecycle.abort.message). Prints the value as plain text.")
 	taskDeleteCmd.Flags().Bool("force", false, "Delete even if task is active")
 	taskImportCmd.Flags().StringP("file", "f", "", "JSONL file to import (default: stdin)")
 	taskImportCmd.Flags().String("project", "", "Override project_id for all tasks (id or name, partial match supported)")
@@ -145,7 +144,7 @@ func init() {
 	taskAnswerCmd.Flags().String("task", "", "Task ID (required)")
 	taskAnswerCmd.Flags().String("question-id", "", "Question ID to answer (required)")
 	taskAnswerCmd.Flags().String("answer", "", "Answer text (required)")
-	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskGetCmd, taskDeleteCmd, taskUpdateCmd, taskImportCmd, taskDuplicateCmd, taskReopenCmd, taskRerunCmd, taskNotifyCmd, taskAnswerCmd)
+	taskCmd.AddCommand(taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskDeleteCmd, taskUpdateCmd, taskImportCmd, taskDuplicateCmd, taskReopenCmd, taskRerunCmd, taskNotifyCmd, taskAnswerCmd)
 	rootCmd.AddCommand(taskCmd)
 }
 
@@ -365,7 +364,25 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 }
 
 func runTaskShow(cmd *cobra.Command, args []string) error {
+	field, _ := cmd.Flags().GetString("field")
 	c := client.NewUnixClient(client.DefaultSocketPath())
+
+	if field != "" {
+		path := "/api/tasks/" + args[0] + "/field?path=" + url.QueryEscape(field)
+		status, body, err := c.GetRaw(path)
+		if err != nil {
+			return fmt.Errorf("get task field: %w", err)
+		}
+		if status >= 400 {
+			msg := strings.TrimSpace(string(body))
+			if msg == "" {
+				msg = fmt.Sprintf("HTTP %d", status)
+			}
+			return fmt.Errorf("get task field: %s", msg)
+		}
+		_, _ = cmd.OutOrStdout().Write(body)
+		return nil
+	}
 
 	var detail api.TaskDetailView
 	if err := c.Do("GET", "/api/tasks/"+args[0]+"/detail", nil, &detail); err != nil {
@@ -431,32 +448,6 @@ func runTaskDelete(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "task deleted: %s\n", args[0])
 		return nil
 	})
-}
-
-func runTaskGet(cmd *cobra.Command, args []string) error {
-	field, _ := cmd.Flags().GetString("field")
-	if field == "" {
-		return fmt.Errorf("--field is required")
-	}
-
-	c := client.NewUnixClient(client.DefaultSocketPath())
-
-	var task orchestrator.Task
-	if err := c.Do("GET", "/api/tasks/"+args[0], nil, &task); err != nil {
-		return fmt.Errorf("get task: %w", err)
-	}
-
-	switch field {
-	case "title":
-		fmt.Print(task.Title)
-	case "description":
-		fmt.Print(task.Description)
-	case "status":
-		fmt.Print(task.Status)
-	default:
-		return fmt.Errorf("unknown field %q (supported: title, description, status)", field)
-	}
-	return nil
 }
 
 func runTaskImport(cmd *cobra.Command, args []string) error {

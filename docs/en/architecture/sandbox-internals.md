@@ -180,7 +180,7 @@ All roles (hook and gate) share the same allowed op set — there is no role bra
 | `job_log` | `boid job log <id>` | Retrieve job execution log |
 | `action_send` | `boid action send` | Dispatch a manual action |
 | `task_create` | `boid task create` | Create a child task |
-| `task_get` | `boid task get <id> --field <name>` | Read a single task field |
+| `task_get` | `boid task show <id> --field <path>` | Read a single task field (dotted JSON path) |
 | `task_update` | `boid task update <id>` | Update task fields |
 | `task_import` | `boid task import` | Bulk-import tasks |
 | `task.reopen` | `boid task reopen <id>` | Transition a done task back to executing |
