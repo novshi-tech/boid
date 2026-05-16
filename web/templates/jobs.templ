@@ -69,11 +69,18 @@ func jobStatusStripe(status string) string {
 }
 
 // jobPageTitle builds the page-header title from the job's identity
-// (role + handler), e.g. "[hook] claude-code/run-agent". The job's own
+// (role + handler), e.g. "[executor] claude-code/run-agent". The job's own
 // UUID is demoted to the detail-meta row — UUIDs are unreadable at a
-// glance, while "what hook/gate ran" is the question most readers are
+// glance, while "what handler ran" is the question most readers are
 // actually trying to answer on this page.
+// Hook jobs omit the [hook] prefix (mirrors BuildJobLabel / timelineJobIdentity).
 func jobPageTitle(job *JobContextView) string {
+	if job.Role == "hook" {
+		if job.HandlerID != "" {
+			return job.HandlerID
+		}
+		return "Job " + shortID(job.ID)
+	}
 	switch {
 	case job.Role != "" && job.HandlerID != "":
 		return "[" + job.Role + "] " + job.HandlerID

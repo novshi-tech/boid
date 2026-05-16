@@ -231,6 +231,31 @@ func TestJobDetail_HookJob_InteractiveCompleted_ShowsStaticPre(t *testing.T) {
 	}
 }
 
+func TestJobPageTitle_HookRole_OmitsBracketPrefix(t *testing.T) {
+	got := jobPageTitle(&JobContextView{
+		ID:        "abc123",
+		Role:      "hook",
+		HandlerID: "claude-code/run-agent",
+	})
+	if strings.Contains(got, "[hook]") {
+		t.Errorf("hook job title must not contain [hook], got %q", got)
+	}
+	if !strings.Contains(got, "claude-code/run-agent") {
+		t.Errorf("hook job title must contain handler name, got %q", got)
+	}
+}
+
+func TestJobPageTitle_ExecutorRole_IncludesBracketPrefix(t *testing.T) {
+	got := jobPageTitle(&JobContextView{
+		ID:        "abc123",
+		Role:      "executor",
+		HandlerID: "claude-code/run-agent",
+	})
+	if !strings.Contains(got, "[executor]") {
+		t.Errorf("executor job title must contain [executor], got %q", got)
+	}
+}
+
 func TestJobDetail_NoTask_WithProject_BackURL(t *testing.T) {
 	job := &JobContextView{
 		ID:        "job-cmd-1",
