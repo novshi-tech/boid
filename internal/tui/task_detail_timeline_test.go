@@ -57,8 +57,9 @@ func TestBuildJobTimelineLabel_Failed(t *testing.T) {
 		CreatedAt: now.Add(-106 * time.Second), UpdatedAt: now,
 	}
 	label := buildJobTimelineLabel(j)
-	if !containsStr(label, "[hook]") {
-		t.Errorf("failed label: expected '[hook]', got %q", label)
+	// hook role omits the "[hook]" prefix
+	if containsStr(label, "[hook]") {
+		t.Errorf("failed label: hook role should not contain '[hook]', got %q", label)
 	}
 	if !containsStr(label, "✗") {
 		t.Errorf("failed label: expected '✗', got %q", label)
@@ -211,8 +212,9 @@ func TestBuildJobTimelineLabel_IncludesHandlerID(t *testing.T) {
 	if !containsStr(label, "claude-code/run-agent") {
 		t.Errorf("job label: want handler id, got %q", label)
 	}
-	if !containsStr(label, "[hook]") {
-		t.Errorf("job label: want role prefix, got %q", label)
+	// hook role omits the "[hook]" prefix — handler name alone is sufficient
+	if containsStr(label, "[hook]") {
+		t.Errorf("job label: hook role should not contain '[hook]', got %q", label)
 	}
 }
 
@@ -549,6 +551,50 @@ func TestBuildTreeTimeline_MultiVisit_ChronologicalGroups(t *testing.T) {
 	}
 	if !foundPending2 {
 		t.Error("want a second 'pending' group after the first cycle, not found")
+	}
+}
+
+// TestRenderTreeTimeline_EventIndentDeeperThanHeader verifies that event rows
+// are indented more (have more leading spaces) than status header rows, so
+// events visually hang under the status anchor.
+func TestRenderTreeTimeline_EventIndentDeeperThanHeader(t *testing.T) {
+	groups := []statusGroup{
+		{
+			Status: "pending",
+			Events: []timelineEvent{
+				{Kind: timelineKindAction, Label: "start", HasTime: false},
+			},
+		},
+	}
+	// cursor=99 so the event (index 0) is not selected → cursorStr = "  " (two raw spaces)
+	out := renderTreeTimeline(groups, 80, 20, 99, false)
+
+	headerSpaces := -1
+	eventSpaces := -1
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" {
+			continue
+		}
+		// count leading ASCII space characters (before any ANSI or other content)
+		n := 0
+		for _, ch := range line {
+			if ch == ' ' {
+				n++
+			} else {
+				break
+			}
+		}
+		if strings.Contains(line, "pending") && !strings.Contains(line, "─") {
+			headerSpaces = n
+		} else if strings.Contains(line, "─") {
+			eventSpaces = n
+		}
+	}
+	if headerSpaces < 0 || eventSpaces < 0 {
+		t.Fatalf("could not locate header or event line in output:\n%s", out)
+	}
+	if eventSpaces <= headerSpaces {
+		t.Errorf("event indent (%d spaces) should be deeper than header indent (%d spaces)", eventSpaces, headerSpaces)
 	}
 }
 

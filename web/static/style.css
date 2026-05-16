@@ -1534,6 +1534,13 @@ body:has(.action-bar) {
   font-size: 0.8125rem;
 }
 
+/* Event rows (job / action / progress / ask) are indented relative to the
+   status header so the visual hierarchy is clear: header is the anchor,
+   events hang below it as subordinate items. */
+.timeline-row-event {
+  padding-left: var(--space-4);
+}
+
 /* Header rows are slightly taller and more spaced to anchor each status
    group visually. The badge (within the label slot) provides the color. */
 .timeline-row-header {

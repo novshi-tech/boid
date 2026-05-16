@@ -352,10 +352,11 @@ func timelineJobStatusClass(ev timeline.Event) string {
 	return "default"
 }
 
-// timelineJobIdentity returns the "[role] handler" prefix used as the
-// running-job label (no elapsed duration — that lives in a separate span
-// so JS can tick it once per second). Falls back to just the role when
-// handler_id is empty, and to "job" when role is also empty.
+// timelineJobIdentity returns the label prefix used as the running-job label
+// (no elapsed duration — that lives in a separate span so JS can tick it once
+// per second). For hook jobs the "[hook]" prefix is omitted — the handler name
+// alone identifies the hook. For all other roles the "[role] handler" form is
+// used, falling back to just "[role]" when handler_id is empty.
 func timelineJobIdentity(ev timeline.Event) string {
 	if ev.Job == nil {
 		return ""
@@ -363,6 +364,13 @@ func timelineJobIdentity(ev timeline.Event) string {
 	role := ev.Job.Role
 	if role == "" {
 		role = "job"
+	}
+	if role == "hook" {
+		name := ev.Job.DisplayName
+		if name == "" {
+			name = ev.Job.HandlerID
+		}
+		return name
 	}
 	if ev.Job.HandlerID != "" {
 		return fmt.Sprintf("[%s] %s", role, ev.Job.HandlerID)
