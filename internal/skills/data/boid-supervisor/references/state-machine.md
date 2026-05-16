@@ -61,8 +61,8 @@ Triggered by condition rules evaluated after each dispatch step.
 | `pending` (lingering) | Verify `auto_start: true` was set; rarely seen otherwise. |
 | `executing` | Sleep and re-poll. |
 | `awaiting` | Sleep and re-poll. The child returns to `executing` on user reply. |
-| `done` | Read artifacts (`boid task get <id> --field artifact.<key>`), run the integration step from the active instruction, then either spawn the next child or move to exit handling. |
-| `aborted` | Read `lifecycle.abort.message` (`boid task get <id> --field lifecycle.abort.message`) and the job log (`boid job list/show/log`). Decide between: retry via `boid task reopen` (only valid from `done`, so unavailable here — see "Reopen Semantics"), creating a fresh child with a revised description, or escalating via `notify --ask`. |
+| `done` | Read artifacts (`boid task show <id> --field artifact.<key>`), run the integration step from the active instruction, then either spawn the next child or move to exit handling. |
+| `aborted` | Read `lifecycle.abort.message` (`boid task show <id> --field lifecycle.abort.message`) and the job log (`boid job list/show/log`). Decide between: retry via `boid task reopen` (only valid from `done`, so unavailable here — see "Reopen Semantics"), creating a fresh child with a revised description, or escalating via `notify --ask`. |
 
 ## Reopen Semantics
 

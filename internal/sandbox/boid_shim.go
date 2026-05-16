@@ -76,8 +76,8 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 		switch args[1] {
 		case "create":
 			return parseBoidTaskCreate(args[2:])
-		case "get":
-			return parseBoidTaskGet(args[2:])
+		case "show":
+			return parseBoidTaskShow(args[2:])
 		case "update":
 			return parseBoidTaskUpdate(args[2:])
 		case "import":
@@ -234,7 +234,7 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 	}, nil
 }
 
-func parseBoidTaskGet(args []string) (*BoidRequest, error) {
+func parseBoidTaskShow(args []string) (*BoidRequest, error) {
 	req := &BoidRequest{Op: BoidOpTaskGet}
 
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -253,15 +253,15 @@ func parseBoidTaskGet(args []string) (*BoidRequest, error) {
 			i = next
 			req.TaskField = value
 		default:
-			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task get", arg)
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task show", arg)
 		}
 	}
 
 	if req.TaskID == "" {
-		return nil, fmt.Errorf("boid shim: task get requires a task id")
+		return nil, fmt.Errorf("boid shim: task show requires a task id")
 	}
 	if req.TaskField == "" {
-		return nil, fmt.Errorf("boid shim: task get requires --field")
+		return nil, fmt.Errorf("boid shim: task show in sandbox requires --field (full detail view is host-only)")
 	}
 
 	return req, nil

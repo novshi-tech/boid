@@ -46,6 +46,7 @@ func (s *patchTaskService) UpdateTask(id string, req UpdateTaskRequest) (*orches
 }
 func (s *patchTaskService) DeleteTask(id string, force bool) error       { return nil }
 func (s *patchTaskService) GetTaskDetail(id string) (*TaskDetailView, error) { return nil, nil }
+func (s *patchTaskService) GetTaskField(id, path string) (string, error)     { return "", nil }
 func (s *patchTaskService) ImportTasks(reqs []CreateTaskRequest) (*ImportResult, error) {
 	return nil, nil
 }

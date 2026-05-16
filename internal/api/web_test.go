@@ -494,6 +494,7 @@ func (s *dupTaskSvcStub) DeleteTask(id string, force bool) error { return nil }
 func (s *dupTaskSvcStub) GetTaskDetail(id string) (*TaskDetailView, error) {
 	return nil, nil
 }
+func (s *dupTaskSvcStub) GetTaskField(id, path string) (string, error) { return "", nil }
 func (s *dupTaskSvcStub) ImportTasks(reqs []CreateTaskRequest) (*ImportResult, error) {
 	return nil, nil
 }

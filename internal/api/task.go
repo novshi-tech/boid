@@ -89,6 +89,7 @@ func (h *TaskHandler) Routes() chi.Router {
 	r.Post("/import", h.Import)
 	r.Get("/", h.List)
 	r.Get("/{id}/detail", h.Detail)
+	r.Get("/{id}/field", h.Field)
 	r.Get("/{id}", h.Get)
 	r.Patch("/{id}", h.Patch)
 	r.Delete("/{id}", h.Delete)
@@ -246,6 +247,21 @@ func (h *TaskHandler) Detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)
+}
+
+// Field returns a single dotted-path value extracted from the task. The
+// response is text/plain so it can be consumed directly by shell scripts
+// (e.g. `STATUS=$(boid task show $ID --field status)`).
+func (h *TaskHandler) Field(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	path := r.URL.Query().Get("path")
+	value, err := h.Service.GetTaskField(id, path)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, value)
 }
 
 func (h *TaskHandler) Patch(w http.ResponseWriter, r *http.Request) {

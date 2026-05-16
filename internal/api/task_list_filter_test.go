@@ -33,6 +33,7 @@ func (s *filterTaskService) DeleteTask(id string, force bool) error { return nil
 func (s *filterTaskService) GetTaskDetail(id string) (*TaskDetailView, error) {
 	return nil, nil
 }
+func (s *filterTaskService) GetTaskField(id, path string) (string, error) { return "", nil }
 func (s *filterTaskService) ImportTasks(reqs []CreateTaskRequest) (*ImportResult, error) {
 	return nil, nil
 }

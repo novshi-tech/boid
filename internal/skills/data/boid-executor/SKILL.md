@@ -71,7 +71,7 @@ EOF
 Check your owner first:
 
 ```bash
-parent=$(boid task get "$BOID_TASK_ID" --field parent_id)
+parent=$(boid task show "$BOID_TASK_ID" --field parent_id)
 ```
 
 ### Child executor (`parent_id != ""`)

@@ -178,7 +178,7 @@ role (hook / gate) による分岐はなく、全 role で同じ op セットが
 | `job_log` | `boid job log <id>` | job 実行ログを取得する |
 | `action_send` | `boid action send` | 手動アクションを発行する |
 | `task_create` | `boid task create` | サブ task を作成する |
-| `task_get` | `boid task get <id> --field <name>` | task の単項目を取得する |
+| `task_get` | `boid task show <id> --field <path>` | task の 1 フィールドを dotted JSON path で取得する |
 | `task_update` | `boid task update <id>` | task のフィールドを更新する |
 | `task_import` | `boid task import` | task を一括 import する |
 | `task.reopen` | `boid task reopen <id>` | done の task を executing に戻す |

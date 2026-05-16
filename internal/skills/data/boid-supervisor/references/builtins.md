@@ -5,7 +5,7 @@ These `boid` subcommands are available inside the supervisor's sandbox via the s
 ## Contents
 
 - [boid task create](#boid-task-create)
-- [boid task get](#boid-task-get)
+- [boid task show](#boid-task-show)
 - [boid task list](#boid-task-list)
 - [boid task notify](#boid-task-notify)
 - [boid task reopen](#boid-task-reopen)
@@ -46,19 +46,20 @@ Reads YAML/JSON from stdin (or `-f <file>`). Prints `task created: <id> (<status
 | `behavior_spec` | Inline behavior definition. Not normally needed — prefer named behaviors from `project.yaml`. |
 | `ref`, `depends_on`, `depends_on_payload` | Accepted but discouraged for supervisor-managed children — sequence them explicitly in the supervisor's control flow instead. |
 
-## boid task get
+## boid task show
 
 ```bash
-boid task get <task-id> --field <name>
+boid task show <task-id> --field <path>
 ```
 
-Reads a single field. `--field` is required. Common values:
+Inside the sandbox, `--field` is required and the value is printed as plain text. The `<path>` is a dotted JSON path that resolves first against top-level Task fields and then falls back to the payload (so payload traits work without an explicit `payload.` prefix). Common paths:
 
 - `status` — current TaskStatus (`pending` / `executing` / `awaiting` / `done` / `aborted`).
-- `title`, `behavior` — task metadata.
-- `lifecycle.abort.message` — abort reason on aborted tasks.
-- `artifact.<key>` — values written by the child via its payload.
-- `payload.<key>` — full payload dotted-path.
+- `title`, `description`, `behavior`, `parent_id` — task metadata.
+- `awaiting.question`, `awaiting.question_id` — question text and turn id when a child is in `awaiting`.
+- `artifact.<key>` / `payload.artifact.<key>` — values written by the child into its payload.
+- `lifecycle.abort.message`, `lifecycle.executed` — computed lifecycle (derived from action history; does not require persisted payload).
+- `payload` — whole payload as compact JSON (pipe through `jq` for further extraction).
 
 ## boid task list
 
