@@ -114,7 +114,8 @@ func DefaultMachine() *StateMachine {
 // Manual transitions:
 //
 //	start  : pending → executing
-//	done   : executing → done
+//	done   : executing → done    (agent self-completion)
+//	done   : awaiting → done     (parent confirms child's done_request)
 //	reopen : done → executing
 //	ask    : executing → awaiting
 //	answer : awaiting → executing
@@ -142,6 +143,7 @@ func NewMachine() *StateMachine {
 			// Manual actions
 			{Action: "start",  FromStatus: "pending",   ToStatus: "executing", Manual: true},
 			{Action: "done",   FromStatus: "executing", ToStatus: "done",      Manual: true},
+			{Action: "done",   FromStatus: "awaiting",  ToStatus: "done",      Manual: true},
 			{Action: "reopen", FromStatus: "done",      ToStatus: "executing", Manual: true},
 			{Action: "ask",    FromStatus: "executing", ToStatus: "awaiting",  Manual: true},
 			{Action: "answer", FromStatus: "awaiting",  ToStatus: "executing", Manual: true},
