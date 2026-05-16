@@ -71,7 +71,12 @@ func renderSectionHeader(title string, width int) string {
 
 // renderAwaitingBanner renders the "Question from agent" banner for awaiting tasks.
 // Shows the question preview (up to 2 lines) and a hint to open the answer form.
+// Only rendered for root tasks (ParentID == ""); child-task questions are answered
+// by the parent supervisor, so showing the user-facing prompt would be misleading.
 func renderAwaitingBanner(task *orchestrator.Task, width int) string {
+	if task.ParentID != "" {
+		return ""
+	}
 	ap := orchestrator.GetAwaitingPayload(task.Payload)
 	if ap.QuestionID == "" && ap.Question == "" {
 		return ""

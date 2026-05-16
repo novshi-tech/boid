@@ -1879,6 +1879,75 @@ func TestShortHelp_Awaiting_ShowsEnterAnswer(t *testing.T) {
 	}
 }
 
+// makeDetailAwaitingChild is like makeDetailAwaiting but the task has a non-empty
+// ParentID so it represents a child (non-root) task.
+func makeDetailAwaitingChild(question, questionID string) *api.TaskDetailView {
+	d := makeDetailAwaiting(question, questionID)
+	d.Task.ParentID = "parent-task-id"
+	return d
+}
+
+// TestAnswerActionKey_ChildTask_DoesNothing verifies that pressing the action key
+// mapped to "answer" on a child (non-root) awaiting task returns nil — the key is
+// not registered for child tasks so no screen is pushed and no action is sent.
+func TestAnswerActionKey_ChildTask_DoesNothing(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailAwaitingChild("Supervisor handles this", "q-child-1")
+
+	// "answer" is excluded from availableActions() for child tasks, so pressing
+	// the first rune of "answer" ('a') should not be bound to anything.
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if cmd != nil {
+		msg := cmd()
+		if _, ok := msg.(pushScreenMsg); ok {
+			t.Error("child task: 'a' key must not push TaskAnswerScreen")
+		}
+	}
+}
+
+// TestEnterOverview_ChildTask_Awaiting_DoesNothing verifies that Enter on the
+// Overview tab of a child (non-root) awaiting task does NOT push TaskAnswerScreen.
+func TestEnterOverview_ChildTask_Awaiting_DoesNothing(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailAwaitingChild("Supervisor handles this", "q-child-2")
+	s.activeTab = tabOverview
+
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		msg := cmd()
+		if push, ok := msg.(pushScreenMsg); ok {
+			if _, isAnswer := push.screen.(*TaskAnswerScreen); isAnswer {
+				t.Error("child task enter: must not push TaskAnswerScreen")
+			}
+		}
+	}
+}
+
+// TestRenderOverview_ChildTask_Awaiting_NoBanner verifies that renderOverview does
+// NOT include the "Question from agent" banner for a child (non-root) awaiting task.
+func TestRenderOverview_ChildTask_Awaiting_NoBanner(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailAwaitingChild("Some question", "q-child-3")
+
+	view := s.renderOverview(80, 20)
+	if containsStr(view, "Question from agent") {
+		t.Error("child task renderOverview (awaiting): banner must not appear")
+	}
+}
+
+// TestShortHelp_ChildTask_Awaiting_NoEnterAnswerHint verifies that ShortHelp in
+// Overview does NOT include "enter: open answer form" for a child awaiting task.
+func TestShortHelp_ChildTask_Awaiting_NoEnterAnswerHint(t *testing.T) {
+	s := newTestTaskDetailScreen()
+	s.detail = makeDetailAwaitingChild("Question?", "q-child-4")
+	s.activeTab = tabOverview
+
+	help := s.ShortHelp()
+	if containsStr(help, "enter: open answer form") {
+		t.Errorf("child task ShortHelp (awaiting): 'enter: open answer form' must not appear, got %q", help)
+	}
+}
+
 // TestScreenResumed_RestartsTick verifies that screenResumedMsg returns a Batch
 // containing a tick cmd, so polling resumes after returning from a pushed screen.
 //
