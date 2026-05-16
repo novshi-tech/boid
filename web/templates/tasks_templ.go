@@ -1195,7 +1195,7 @@ func TaskDetailTimelineSection(task *orchestrator.Task, groups []timeline.Status
 						}
 					} else if ev.Action != nil && ev.Action.Type == "ask" {
 						qid := orchestrator.GetAwaitingPayload(ev.Action.Payload).QuestionID
-						if qid != "" && task != nil {
+						if qid != "" && task != nil && task.ParentID == "" {
 							templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 76, "<a class=\"timeline-row timeline-row-event timeline-row-action timeline-row-ask\" href=\"")
 							if templ_7745c5c3_Err != nil {
 								return templ_7745c5c3_Err
@@ -1374,7 +1374,7 @@ func TaskDetailAwaitingBanner(task *orchestrator.Task) templ.Component {
 		}
 		ctx = templ.ClearChildren(ctx)
 		ap := orchestrator.GetAwaitingPayload(task.Payload)
-		if ap.QuestionID != "" {
+		if ap.QuestionID != "" && task.ParentID == "" {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 91, "<a class=\"awaiting-banner\" href=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
