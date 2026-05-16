@@ -87,19 +87,43 @@ func TestDefaultBuiltinPolicies_GateGitHasFetchPush(t *testing.T) {
 	}
 }
 
-// gate×git policy は cwd に /tmp, ProjectDir, HomeDir を許可する。
-// gate sandbox は worktree を mount しないため cwd は必ずホスト worktree と
-// 別名前空間になる。broker 側の cwd check を通すため policy で明示許可する。
+// gate×git policy は cwd に /tmp と ProjectDir のみを許可する。
+// HomeDir は意図的に除外（peer project への git plumbing 書き込みを防ぐため）。
+// WorktreeRoot 配下は validateGitBuiltinCwd が独立チェックするため policy 不要。
 func TestDefaultBuiltinPolicies_GateGitCwdRoots(t *testing.T) {
 	pctx := PolicyContext{ProjectDir: "/work/project", HomeDir: "/home/user"}
 	gitPolicy := DefaultBuiltinPolicies(RoleGate, []string{"git"}, pctx)["git"]
-	for _, cwd := range []string{"/tmp", "/work/project", "/home/user", "/home/user/nested"} {
+	for _, cwd := range []string{"/tmp", "/tmp/subdir", "/work/project", "/work/project/sub"} {
 		if !gitPolicy.AllowsCwd(cwd) {
 			t.Errorf("gate×git should allow cwd %q, AllowedCwdRoots=%v", cwd, gitPolicy.AllowedCwdRoots)
 		}
 	}
-	if gitPolicy.AllowsCwd("/etc") {
-		t.Errorf("gate×git should reject cwd /etc")
+	// HomeDir および HomeDir 配下 (peer project 等) は拒否される。
+	for _, cwd := range []string{"/home/user", "/home/user/nested", "/etc"} {
+		if gitPolicy.AllowsCwd(cwd) {
+			t.Errorf("gate×git should reject cwd %q", cwd)
+		}
+	}
+}
+
+// git policy は HomeDir を AllowedCwdRoots に含まない。
+// 含まれていると peer project 配下の cwd が通り、plumbing 経由で
+// peer project に書き込めてしまう (security hole)。
+func TestDefaultBuiltinPolicies_GitPolicyExcludesHomeDir(t *testing.T) {
+	homeDir := "/home/testuser"
+	pctx := PolicyContext{ProjectDir: "/work/project", HomeDir: homeDir}
+	for _, role := range []Role{RoleGate, RoleHook, ""} {
+		p := DefaultBuiltinPolicies(role, []string{"git"}, pctx)["git"]
+		for _, root := range p.AllowedCwdRoots {
+			if root == homeDir {
+				t.Errorf("role=%q: git policy AllowedCwdRoots contains HomeDir %q (must be excluded)", role, homeDir)
+			}
+		}
+		// peer project under HomeDir must be rejected by AllowsCwd
+		peer := homeDir + "/src/peer-project"
+		if p.AllowsCwd(peer) {
+			t.Errorf("role=%q: git policy allows peer project cwd %q (HomeDir must not be in AllowedCwdRoots)", role, peer)
+		}
 	}
 }
 

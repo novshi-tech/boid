@@ -132,12 +132,12 @@ func handleGitBuiltinRequest(req *ExecRequest, entry *tokenEntry) *ExecResponse 
 			return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		// direct subcommand (commit/merge/rebase/log/diff/worktree 等) は
-		// ネットワーク非接触なので送信先制御が不要。op policy をスキップして
-		// host の git をそのまま実行する。送信系 (push/fetch) は下の
-		// allowsBuiltinOp で role 別に判定する。
+		// push/fetch のような送信先制御が不要なため op policy をスキップして
+		// host の git をそのまま実行する。cwd 制限は上の validateGitBuiltinCwd
+		// で既に適用済み (WorktreeRoot 外・AllowedCwdRoots 外は弾かれる)。
 		if invocation.mode == gitInvocationDirect {
 			// gate sandbox は worktree FS を mount しないため、sandbox 側 cwd
-			// (HOME/ProjectDir 等) はホスト上で git repo として成立しない。
+			// (ProjectDir 等) はホスト上で git repo として成立しない。
 			// broker は binding.WorktreeRoot を権威源として持っているので
 			// gate からの direct git はそこにチェンジディレクトリして実行する。
 			// hook など worktree が見える role では cwd がすでに WorktreeRoot

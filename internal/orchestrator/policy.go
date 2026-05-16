@@ -108,15 +108,14 @@ func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 }
 
 func gitPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
-	// broker は binding.WorktreeRoot で git を実行するため cwd 検証は冗長だが、
-	// 他の builtin と同じポリシー構造を保つために AllowedCwdRoots を
-	// HomeDir/ProjectDir/tmp で埋める (boid policy と同じ扱い)。
+	// AllowedCwdRoots は /tmp と自タスクの ProjectDir のみを許可する。
+	// WorktreeRoot 配下は validateGitBuiltinCwd が独立して許可するため不要。
+	// HomeDir は意図的に除外: HomeDir 配下には同一 workspace の peer project が
+	// 存在し得る。HomeDir を追加すると peer project 配下の cwd が通り、
+	// git plumbing 経由で peer project に書き込めてしまう (GitHub Issue 相当)。
 	cwds := []string{"/tmp"}
 	if pctx.ProjectDir != "" {
 		cwds = append(cwds, pctx.ProjectDir)
-	}
-	if pctx.HomeDir != "" {
-		cwds = append(cwds, pctx.HomeDir)
 	}
 	return BuiltinPolicy{
 		AllowedOps:      sortedOps(OpGitFetch, OpGitPush, OpGitPushDelete),
