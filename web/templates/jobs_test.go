@@ -232,6 +232,7 @@ func TestJobDetail_HookJob_InteractiveCompleted_ShowsStaticPre(t *testing.T) {
 }
 
 func TestJobPageTitle_HookRole_OmitsBracketPrefix(t *testing.T) {
+	// DisplayName 未設定時のフォールバック: HandlerID が使われること。
 	got := jobPageTitle(&JobContextView{
 		ID:        "abc123",
 		Role:      "hook",
@@ -246,6 +247,7 @@ func TestJobPageTitle_HookRole_OmitsBracketPrefix(t *testing.T) {
 }
 
 func TestJobPageTitle_ExecutorRole_IncludesBracketPrefix(t *testing.T) {
+	// DisplayName 未設定時のフォールバック: HandlerID が使われること。
 	got := jobPageTitle(&JobContextView{
 		ID:        "abc123",
 		Role:      "executor",
@@ -253,6 +255,51 @@ func TestJobPageTitle_ExecutorRole_IncludesBracketPrefix(t *testing.T) {
 	})
 	if !strings.Contains(got, "[executor]") {
 		t.Errorf("executor job title must contain [executor], got %q", got)
+	}
+}
+
+func TestJobPageTitle_HookRole_PrefersDisplayName(t *testing.T) {
+	got := jobPageTitle(&JobContextView{
+		ID:          "abc123",
+		Role:        "hook",
+		DisplayName: "Format Check",
+		HandlerID:   "go-dev/format-check",
+	})
+	if !strings.Contains(got, "Format Check") {
+		t.Errorf("hook job title must contain DisplayName, got %q", got)
+	}
+	if strings.Contains(got, "go-dev/format-check") {
+		t.Errorf("hook job title must not contain HandlerID when DisplayName is set, got %q", got)
+	}
+}
+
+func TestJobPageTitle_ExecutorRole_PrefersDisplayName(t *testing.T) {
+	got := jobPageTitle(&JobContextView{
+		ID:          "abc123",
+		Role:        "executor",
+		DisplayName: "PR Verify",
+		HandlerID:   "go-dev/pr-verify",
+	})
+	if !strings.Contains(got, "PR Verify") {
+		t.Errorf("executor job title must contain DisplayName, got %q", got)
+	}
+	if !strings.Contains(got, "[executor]") {
+		t.Errorf("executor job title must retain [executor] prefix, got %q", got)
+	}
+	if strings.Contains(got, "go-dev/pr-verify") {
+		t.Errorf("executor job title must not contain HandlerID when DisplayName is set, got %q", got)
+	}
+}
+
+func TestJobPageTitle_FallsBackToHandlerID(t *testing.T) {
+	// DisplayName が空の場合は HandlerID を使うこと (既存テストのカバー範囲と同じ)。
+	got := jobPageTitle(&JobContextView{
+		ID:        "abc123",
+		Role:      "hook",
+		HandlerID: "go-dev/format-check",
+	})
+	if !strings.Contains(got, "go-dev/format-check") {
+		t.Errorf("hook job title must fall back to HandlerID when DisplayName is empty, got %q", got)
 	}
 }
 
