@@ -1,6 +1,6 @@
 # boid Documentation
 
-`boid` is a personal AI orchestrator. It hands a request, end to end, to an AI agent following a predefined task model — and confines the agent's writes to a sandbox-bounded scope so the rest of your machine stays safe.
+`boid` is a personal AI orchestrator. It is built to keep the human from becoming the bottleneck when several AI coding agents run in parallel: agents are given room to make progress autonomously, a sandbox with a configurable write scope keeps them from doing damage, and every in-flight task is visible at a glance through the CLI, TUI, and Web UI. Everything stays on your own machine — no servers, no signup.
 
 This index is the entry point. The doc set is being built out incrementally; planned pages are listed below without links until they are written.
 

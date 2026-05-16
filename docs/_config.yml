@@ -5,7 +5,7 @@
 # that layout to the static site Jekyll generates.
 
 title: boid
-description: A personal AI orchestrator
+description: A personal AI orchestrator for running AI coding agents in parallel
 theme: minima
 
 # Limit minima's header navigation to just the home page. Without this, minima
