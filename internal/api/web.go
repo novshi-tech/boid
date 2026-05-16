@@ -258,18 +258,16 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("HX-Request") == "true" {
 		// Tab clicks swap the entire #tabs section so the active class on
 		// the visible tabs and the "more" summary label stay in sync.
-		depsUp, depsDown := buildDepsTreeRows(detail.DependsOnTree, detail.DependentsTree)
-		templates.TaskDetailTabsSection(detail.Task, timelineGroups, jobs, depsUp, depsDown, detail.AvailableActions, tab, editMode).Render(r.Context(), w)
+		templates.TaskDetailTabsSection(detail.Task, timelineGroups, jobs, detail.AvailableActions, tab, editMode).Render(r.Context(), w)
 		return
 	}
 	projectName := h.lookupProjectName(detail.Task.ProjectID)
-	depsUp, depsDown := buildDepsTreeRows(detail.DependsOnTree, detail.DependentsTree)
 	cmdSummaries, _ := h.Service.ListTaskBehaviorCommands(id)
 	cmdViews := make([]templates.CommandView, len(cmdSummaries))
 	for i, c := range cmdSummaries {
 		cmdViews[i] = templates.CommandView{Name: c.Name, Command: c.Command, Readonly: c.Readonly}
 	}
-	templates.TaskDetail(detail.Task, timelineGroups, jobs, depsUp, depsDown, detail.AvailableActions, errorMsg, tab, editMode, projectName, cmdViews).Render(r.Context(), w)
+	templates.TaskDetail(detail.Task, timelineGroups, jobs, detail.AvailableActions, errorMsg, tab, editMode, projectName, cmdViews).Render(r.Context(), w)
 }
 
 // lookupProjectName resolves a project ID to its display name (Meta.Name),

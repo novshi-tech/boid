@@ -238,15 +238,6 @@ func actionPrimaryClass(action string) string {
 	}
 }
 
-// DepsTreeRow is one row in a flattened dependency tree (either the
-// upstream "depends on" tree or the downstream "dependents" tree).
-// Rows are emitted in pre-order DFS with direct deps/dependents at
-// depth 0 and deeper chain members at depth 1, 2, … — i.e., the same
-// "parent above, child indented below" layout as the Open-tab task list.
-type DepsTreeRow struct {
-	Task  *orchestrator.Task
-	Depth int
-}
 
 // TaskActionBar renders the sticky bottom action bar with tab-specific
 // content:
@@ -483,50 +474,6 @@ templ TaskDetailAwaitingBanner(task *orchestrator.Task) {
 	}
 }
 
-// TaskDetailDependenciesSection renders the dependency graph as two
-// separate trees — "依存先" (upstream) and "依存元" (downstream) — each
-// styled like the Open-tab task list (status stripe, depth indent,
-// two-line body). The current task is not re-rendered here; the detail
-// page header already identifies it.
-templ TaskDetailDependenciesSection(upstream, downstream []DepsTreeRow) {
-	<div class="tab-content">
-		if len(upstream) == 0 && len(downstream) == 0 {
-			<p class="tab-empty">(no dependencies)</p>
-		} else {
-			if len(upstream) > 0 {
-				<h3 class="deps-section-title">Depends on <span class="deps-section-hint">tasks this task depends on</span></h3>
-				@depsTree(upstream)
-			}
-			if len(downstream) > 0 {
-				<h3 class="deps-section-title">Depended by <span class="deps-section-hint">tasks that depend on this task</span></h3>
-				@depsTree(downstream)
-			}
-		}
-	</div>
-}
-
-// depsTree renders a single dependency sub-tree as a flat list of
-// .task-row items. Pre-order DFS means parents come before their
-// children, so the depth-based indent reads like the Open-tab tree.
-templ depsTree(rows []DepsTreeRow) {
-	<div class="task-list deps-tree" role="list">
-		for _, row := range rows {
-			<a
-				href={ templ.SafeURL("/tasks/" + row.Task.ID) }
-				class={ "task-row", "task-row-status-" + string(row.Task.Status), templ.KV("task-row-blocked", row.Task.Blocked) }
-				role="listitem"
-				style={ fmt.Sprintf("--depth: %d", row.Depth) }
-			>
-				<div class="task-row-body">
-					<div class="task-row-title" title={ row.Task.Title }>{ row.Task.Title }</div>
-					<div class="task-row-meta">
-						<span class={ taskStatusClass(string(row.Task.Status)) }>{ string(row.Task.Status) }</span>
-					</div>
-				</div>
-			</a>
-		}
-	</div>
-}
 
 // TaskDetailJobsSection renders the jobs card.
 // Wrapped in <div id="task-jobs"> so EventSource JS can replace it via outerHTML.
@@ -569,7 +516,7 @@ templ TaskDetailJobsSection(jobs []*JobView) {
 // id="tab-panel" is the HTMX swap target for tab switching.
 // editMode=true flips an editable tab (currently: description) into an
 // inline edit form instead of the read-only view.
-templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, depsUp, depsDown []DepsTreeRow, activeTab string, editMode bool) {
+templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, activeTab string, editMode bool) {
 	<div id="tab-panel" data-task-id={ task.ID }>
 		if activeTab == "timeline" {
 			@TaskDetailTimelineSection(task, timelineGroups)
@@ -720,8 +667,6 @@ templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Stat
 					<p class="tab-empty">(not set)</p>
 				}
 			</div>
-		} else if activeTab == "dependencies" {
-			@TaskDetailDependenciesSection(depsUp, depsDown)
 		}
 	</div>
 }
@@ -754,8 +699,6 @@ func detailDropdownActiveSub(activeTab string) (tab, label string) {
 		return "payload", "Payload"
 	case "instructions":
 		return "instructions", "Instructions"
-	case "dependencies":
-		return "dependencies", "Dependencies"
 	default:
 		return "description", "Description"
 	}
@@ -797,7 +740,7 @@ templ detailMoreItem(taskID, tab, label, activeTab string) {
 //     summary label reflects the new active tab when it's a hidden one)
 //   - the action bar primary button becomes tab-contextual (edit vs. state
 //     action) without a separate swap
-templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, depsUp, depsDown []DepsTreeRow, availableActions []string, activeTab string, editMode bool) {
+templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, activeTab string, editMode bool) {
 	<div id="tabs" class="tabs">
 		<div class="tab-list" role="tablist">
 			@detailTabLink(task.ID, "timeline", "Timeline", activeTab)
@@ -819,12 +762,11 @@ templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.S
 						@detailMoreItem(task.ID, "description", "Description", activeTab)
 						@detailMoreItem(task.ID, "payload", "Payload", activeTab)
 						@detailMoreItem(task.ID, "instructions", "Instructions", activeTab)
-						@detailMoreItem(task.ID, "dependencies", "Dependencies", activeTab)
 					</div>
 				</details>
 			</div>
 		</div>
-		@TaskDetailTabPanel(task, timelineGroups, jobs, depsUp, depsDown, activeTab, editMode)
+		@TaskDetailTabPanel(task, timelineGroups, jobs, activeTab, editMode)
 		@TaskActionBar(task, availableActions, activeTab, editMode)
 	</div>
 }
@@ -860,10 +802,10 @@ templ TaskDetailCommandsSection(taskID string, commands []CommandView) {
 	}
 }
 
-templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, depsUp, depsDown []DepsTreeRow, availableActions []string, errorMsg string, activeTab string, editMode bool, projectName string, commands []CommandView) {
+templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, editMode bool, projectName string, commands []CommandView) {
 	@Layout(task.Title, "/") {
 		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName)
 		@TaskDetailCommandsSection(task.ID, commands)
-		@TaskDetailTabsSection(task, timelineGroups, jobs, depsUp, depsDown, availableActions, activeTab, editMode)
+		@TaskDetailTabsSection(task, timelineGroups, jobs, availableActions, activeTab, editMode)
 	}
 }
