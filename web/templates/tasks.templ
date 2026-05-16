@@ -432,7 +432,7 @@ templ TaskDetailTimelineSection(task *orchestrator.Task, groups []timeline.Statu
 							</a>
 						} else if ev.Action != nil && ev.Action.Type == "ask" {
 							{{ qid := orchestrator.GetAwaitingPayload(ev.Action.Payload).QuestionID }}
-							if qid != "" && task != nil {
+							if qid != "" && task != nil && task.ParentID == "" {
 								<a class="timeline-row timeline-row-event timeline-row-action timeline-row-ask" href={ templ.SafeURL("/tasks/" + task.ID + "/questions/" + qid) }>
 									<time class="timeline-time">{ timelineEventTime(ev) }</time>
 									<span class="timeline-marker timeline-marker-action" aria-hidden="true"></span>
@@ -471,7 +471,7 @@ templ TaskDetailTimelineSection(task *orchestrator.Task, groups []timeline.Statu
 // dedicated Q&A page for the current question turn so the user can answer.
 templ TaskDetailAwaitingBanner(task *orchestrator.Task) {
 	{{ ap := orchestrator.GetAwaitingPayload(task.Payload) }}
-	if ap.QuestionID != "" {
+	if ap.QuestionID != "" && task.ParentID == "" {
 		<a class="awaiting-banner" href={ templ.SafeURL("/tasks/" + task.ID + "/questions/" + ap.QuestionID) }>
 			<span class="awaiting-banner-icon" aria-hidden="true">?</span>
 			<span class="awaiting-banner-body">

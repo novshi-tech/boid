@@ -270,7 +270,7 @@ func taskTreeRow(item TreeItem) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		if item.Task.Status == orchestrator.TaskStatusAwaiting {
+		if item.Task.Status == orchestrator.TaskStatusAwaiting && item.Task.ParentID == "" {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "<span class=\"badge badge-call-to-action\">Needs answer</span> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
