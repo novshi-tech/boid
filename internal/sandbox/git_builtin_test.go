@@ -712,6 +712,47 @@ func TestBroker_GitDirectExec_HookKeepsSandboxCwd(t *testing.T) {
 	}
 }
 
+// peer project 配下を cwd にした git plumbing (hash-object / commit) は
+// "restricted to the current worktree" で拒否される。
+// AllowedCwdRoots に HomeDir を含まない git policy 下では peer project の
+// パスは WorktreeRoot 外になるため broker が弾く。
+func TestBroker_GitDirectExec_RejectsPeerProjectForPlumbingCommands(t *testing.T) {
+	repo := initGitRepo(t)
+	peer := initGitRepo(t)
+
+	broker := &sandbox.Broker{}
+	// hookGitPolicies() は AllowedCwdRoots を持たないため
+	// WorktreeRoot (= repo) 以外の cwd は全て弾かれる。
+	token := broker.Register(nil, hookGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"hash-object", []string{"hash-object", "--stdin"}},
+		{"commit", []string{"commit", "--allow-empty", "-m", "evil"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := broker.Handle(&sandbox.ExecRequest{
+				Command: "git",
+				Cwd:     peer, // peer project cwd
+				Token:   token,
+				Args:    tc.args,
+			})
+			if resp.ExitCode == 0 {
+				t.Fatalf("args=%v: expected rejection for peer project cwd, got exit=0", tc.args)
+			}
+			if !strings.Contains(resp.Stderr, "restricted to the current worktree") {
+				t.Fatalf("args=%v: stderr = %q, want 'restricted to the current worktree'", tc.args, resp.Stderr)
+			}
+		})
+	}
+}
+
 // direct exec でも cwd 制限は有効。
 func TestBroker_GitDirectExec_RestrictsCwd(t *testing.T) {
 	repo := initGitRepo(t)

@@ -69,6 +69,43 @@ func TestValidateGitBuiltinCwd(t *testing.T) {
 	}
 }
 
+// validateGitBuiltinCwd は HomeDir 配下の peer project パスを拒否する。
+// gitPolicy は HomeDir を AllowedCwdRoots に含まないため、peer project の
+// cwd は WorktreeRoot でも AllowedCwdRoots でもなく弾かれる。
+func TestValidateGitBuiltinCwd_PeerProjectRejectedWhenNotInPolicy(t *testing.T) {
+	tmp := t.TempDir()
+	worktree := filepath.Join(tmp, "worktree")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	projectDir := filepath.Join(tmp, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	// peer project はホスト HOME 配下にあるが AllowedCwdRoots に homeDir を含まない。
+	homeDir := filepath.Join(tmp, "home")
+	peerProject := filepath.Join(homeDir, "src", "peer-project")
+	if err := os.MkdirAll(peerProject, 0o755); err != nil {
+		t.Fatalf("mkdir peer: %v", err)
+	}
+
+	// gitPolicy の新実装: homeDir を含まない (projectDir と /tmp のみ)。
+	entry := &tokenEntry{
+		BuiltinPolicies: map[string]BuiltinPolicy{
+			"git": {AllowedCwdRoots: []string{projectDir}},
+		},
+		Git: &GitBinding{WorktreeRoot: worktree},
+	}
+
+	err := validateGitBuiltinCwd(peerProject, entry)
+	if err == nil {
+		t.Fatal("peer project under homeDir should be rejected when homeDir is not in AllowedCwdRoots")
+	}
+	if !strings.Contains(err.Error(), "restricted to the current worktree") {
+		t.Fatalf("error = %q, want 'restricted to the current worktree'", err.Error())
+	}
+}
+
 // ---------- resolveGitRemote ----------
 
 func TestResolveGitRemote(t *testing.T) {

@@ -1,0 +1,8 @@
+id: git-peer-isolation
+name: Git Peer Isolation
+worktree: true
+task_behaviors:
+  executor:
+    transition: one-shot
+    kits:
+      - github.com/novshi-tech/boid-kits/git-peer-write-reject
