@@ -1,114 +1,139 @@
 # 2. Initialize a project
 
-This page walks you through initializing one **project** in `boid`. `boid` drives work as tasks, and every task belongs to a project. Setting one up first gives the tasks created in later tutorials somewhere to live. It takes about two minutes.
+This page uses `boid init` to set up a project. The wizard also picks the **kits** (extension packages) the project will use, so by the end of this chapter the project is ready to file tasks against an AI agent. It takes about five minutes.
 
 This page assumes you have completed [1. Install](01-install.md).
 
-## What a project is
+## What this tutorial covers
 
-On disk a project is any directory that contains a `.boid/project.yaml`. It is typical for a project to correspond 1:1 with a repository, but a plain working directory is fine.
+- Installing the official kit repository.
+- Running `boid init`'s interactive wizard to scaffold a project.
+- Inspecting the generated `.boid/project.yaml`.
 
-The minimum `.boid/project.yaml` declares the project's identifier (`id`) and the kinds of tasks the project can spawn (`task_behaviors`). Hooks and kits — which is where the actual work hangs off — are layered on top later.
+## A note on agents
+
+`boid`'s architecture is intentionally agent-neutral, but **Claude Code is currently the only agent with production-grade support**. The rest of the tutorial assumes Claude Code is set up locally: the `claude` CLI is on your `PATH` and you have signed in. See [Claude Code's docs](https://docs.claude.com/en/docs/claude-code/overview) for the CLI setup.
+
+## Install the kit repository
+
+`boid init` selects from kits that are **already installed**. Pull down the official kit registry first:
+
+```bash
+boid kit install github.com/novshi-tech/boid-kits
+```
+
+The repo is cloned to `~/.local/share/boid/kits/github.com/novshi-tech/boid-kits/`. Each subdirectory under it is one kit (`claude-code`, `github-cli`, and so on). The full story of what a kit packages lives in the [Kit authoring overview](../kit-authoring/overview.md).
+
+Confirm what is installed:
+
+```bash
+boid kit list
+```
 
 ## Create a workspace directory
 
-Make a directory dedicated to this tutorial:
+Pick a directory for this tutorial:
 
 ```bash
 mkdir -p ~/boid-demo
 cd ~/boid-demo
 ```
 
-Dropping `.boid/project.yaml` into an existing repository works just as well.
+Dropping `.boid/project.yaml` into an existing repository works too — just `cd` into it and skip the `mkdir`.
 
-## Write `.boid/project.yaml`
-
-Create the smallest possible `project.yaml`:
+## Run `boid init`
 
 ```bash
-mkdir .boid
-cat > .boid/project.yaml <<'YAML'
-id: demo
-name: Demo
+boid init
+```
+
+The interactive wizard opens. Every prompt has a sensible default — pressing Enter without input accepts it.
+
+```
+Project name [boid-demo]:
+Available kits (auto-detected marked with ✓):
+  [✓] 1. Claude Code (github.com/novshi-tech/boid-kits/claude-code)
+  [ ] 2. GitHub CLI (github.com/novshi-tech/boid-kits/github-cli) (optional)
+  [ ] 3. Go development (github.com/novshi-tech/boid-kits/go-dev)
+  ...
+Enable/disable kits (space-separated numbers, prefix - to deselect, Enter to keep defaults):
+>
+Task behavior provider: boid-tasks - Default task behaviors
+Use this? [Y/n]:
+Checking requirements...
+  ✓ claude (/home/<you>/.local/bin/claude)
+
+✓ Created /home/<you>/boid-demo/.boid/project.yaml
+project registered: <uuid> (boid-demo)
+```
+
+What each prompt asks:
+
+1. **Project name** — the label shown in the Web UI / TUI. Defaults to the directory name.
+2. **Available kits** — installed kits that look applicable to this machine are pre-selected (e.g. Claude Code shows up if `claude` is on your `PATH`). Type numbers to toggle.
+3. **Task behavior provider** — which kit supplies the `task_behaviors.supervisor` / `task_behaviors.executor` scaffold. The default `boid-tasks` is normally what you want.
+4. **Requirements check** — verifies that the host commands each selected kit needs are on your `PATH`.
+
+The wizard then writes `.boid/project.yaml` and registers the project with the daemon.
+
+## Inspect the generated project.yaml
+
+```bash
+cat .boid/project.yaml
+```
+
+You should see something close to:
+
+```yaml
+id: <uuid>
+name: boid-demo
+kits:
+  - github.com/novshi-tech/boid-kits/claude-code
 task_behaviors:
+  executor:
+    default_instruction:
+      type: execution
+      message: |
+        ...
   supervisor:
-    name: Supervisor
-YAML
+    default_instruction:
+      type: execution
+      message: |
+        ...
 ```
 
-What each field means:
+- **`kits:`** lists the kits you selected.
+- **`task_behaviors.supervisor` / `task_behaviors.executor`** are the two canonical roles `boid` understands. Supervisor is the readonly orchestrator; executor is the writable implementer (see [Concepts / behavior](../guide/concepts.md#behavior)).
+- **`default_instruction`** is the template message sent to the agent when a task starts. Edit it if you want, then run `boid project reload` to pick the change up.
 
-- **`id: demo`** — the identifier `boid` uses internally. Tasks reference it via `project_id: demo` when you call `boid task create`.
-- **`name: Demo`** — the human-readable label shown in the Web UI and TUI.
-- **`task_behaviors.supervisor`** — declares one kind of task this project can spawn. `supervisor` is one of the two canonical behavior names; readonly is derived automatically from the name (supervisor ⇒ readonly), so we do not need to set it explicitly.
-
-In real use you would wire hooks or kits to the behavior so it launches an AI agent or opens a sandbox. We deliberately keep this minimal here; [4. Set up a kit](04-kits.md) adds a kit that drives Claude Code on top of this project. `boid`'s architecture is intentionally agent-neutral, but at the moment Claude Code is the only agent with production-grade support.
-
-## Register the project
-
-Tell the daemon about the project:
-
-```bash
-boid project add .
-```
-
-You should see `project added: demo`. The `.` points at the current directory (`~/boid-demo`); the daemon reads the `.boid/project.yaml` underneath it and ingests the contents.
-
-List registered projects:
+Inspect the registration:
 
 ```bash
 boid project list
+boid project show boid-demo
 ```
-
-Show the details:
-
-```bash
-boid project show demo
-```
-
-You should see `id`, `name`, and `task_behaviors` reflected.
-
-## When you edit `project.yaml`
-
-`project.yaml` is loaded into the daemon at registration time. After editing the file, reload every project with:
-
-```bash
-boid project reload
-```
-
-You do not need to restart the daemon; in-flight tasks are not affected.
-
-## Local overrides (`project.local.yaml`)
-
-Settings you do not want to commit to the repository (personal extra bindings, environment variables) can be layered on via `.boid/project.local.yaml`. Generate a skeleton with:
-
-```bash
-boid project local init
-```
-
-See the [`project.yaml` reference](../reference/project-yaml.md) for details. This tutorial does not use it; knowing it exists is enough for now.
 
 ## Recap
 
 What this tutorial introduced:
 
-- Declaring `id` and `task_behaviors` in `.boid/project.yaml`.
-- Registering the project with the daemon via `boid project add`.
-- Inspecting the registration with `boid project list` / `show`.
-- Reloading edits with `boid project reload`.
+- Pulling the official kit repository with **`boid kit install`**.
+- Letting **`boid init`** assemble `.boid/project.yaml` and register the project in one shot.
+- Reading back the generated `kits:` and `task_behaviors`.
+- Reloading hand edits with `boid project reload`.
 
-The next tutorial uses this project to set up the Web UI before running a task against it.
+The next chapter sets up the Web UI against this same project.
 
 ## Cleanup (optional)
 
-To remove what this tutorial created:
+To remove what this chapter created:
 
 ```bash
-boid project remove demo
+boid project remove boid-demo
 rm -rf ~/boid-demo
 ```
 
-The next tutorial reuses this project though, so leave it in place if you plan to keep reading.
+The later chapters reuse this project, so leave it in place if you plan to keep reading.
 
 ---
 

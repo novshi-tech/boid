@@ -1,14 +1,34 @@
 # 2. プロジェクトを初期化する
 
-このページでは `boid` で扱う **プロジェクト** を 1 つ初期化します。 `boid` は「タスク」を実行単位として動きますが、 タスクは必ず何らかのプロジェクトに属します。 まずプロジェクトを 1 つ用意しておくと、 以降のチュートリアルで作るタスクが居場所を持てます。 所要時間は 2 分ほどです。
+このページでは `boid init` でプロジェクトを 1 つ立ち上げます。 同じウィザード内で **kit** (拡張パッケージ) のセットアップも済ませるので、 ここを抜けると 「タスクを投げれば AI エージェントが動く」 状態のプロジェクトが出来あがります。 所要時間は 5 分ほどです。
 
 [1. インストール](01-install.md) を完了している前提です。
 
-## プロジェクトとは
+## このページのねらい
 
-ディスク上のプロジェクトは、 任意のディレクトリの直下に `.boid/project.yaml` を置いただけのものです。 リポジトリと 1:1 で対応させるのが典型的ですが、 単なる作業ディレクトリでも構いません。
+- 公式 kit リポジトリをインストールする
+- `boid init` の対話ウィザードでプロジェクトを 1 つ作る
+- 生成された `.boid/project.yaml` の内容を確認する
 
-`.boid/project.yaml` は最低限、 プロジェクトの識別子 (`id`) と、 そのプロジェクトで作れるタスクの種類 (`task_behaviors`) を宣言します。 hook や kit といった実作業の定義はあとから足せます。
+## エージェントについて
+
+`boid` のアーキテクチャは特定の AI エージェントに依存しない設計ですが、 現時点で実用的に動作確認が取れている agent は **Claude Code** のみです。 このチュートリアル以降は Claude Code が手元にあることを前提に進めます。 `claude` CLI が PATH にあり、 Claude Code としてサインイン済みであることを確認してください (Claude Code 側のセットアップ手順は [Claude Code の公式ドキュメント](https://docs.claude.com/en/docs/claude-code/overview) を参照)。
+
+## kit リポジトリをインストールする
+
+`boid init` は **インストール済み** の kit からプロジェクトに組み込むものを選びます。 まず公式 kit リポジトリを 1 つ持ってきます。
+
+```bash
+boid kit install github.com/novshi-tech/boid-kits
+```
+
+クローン先は `~/.local/share/boid/kits/github.com/novshi-tech/boid-kits/` です。 リポジトリ直下の各サブディレクトリがそれぞれ 1 つの kit になります (`claude-code` や `github-cli` など)。 kit 全体の仕組みは [Kit 作者向け 概要](../kit-authoring/overview.md) を参照してください。
+
+インストール済みの一覧は次で確認できます:
+
+```bash
+boid kit list
+```
 
 ## 作業ディレクトリを用意する
 
@@ -19,96 +39,101 @@ mkdir -p ~/boid-demo
 cd ~/boid-demo
 ```
 
-既存のリポジトリの直下に `.boid/project.yaml` を置く形でも問題ありません。
+既存のリポジトリの直下で `boid init` する形でも問題ありません。
 
-## `.boid/project.yaml` を書く
-
-最小構成の `project.yaml` を作成します。
+## `boid init` を走らせる
 
 ```bash
-mkdir .boid
-cat > .boid/project.yaml <<'YAML'
-id: demo
-name: Demo
+boid init
+```
+
+対話ウィザードが立ち上がります。 全プロンプトとも Enter で既定値が選ばれるので、 迷わなければそのまま進めて構いません。
+
+```
+Project name [boid-demo]:
+Available kits (auto-detected marked with ✓):
+  [✓] 1. Claude Code (github.com/novshi-tech/boid-kits/claude-code)
+  [ ] 2. GitHub CLI (github.com/novshi-tech/boid-kits/github-cli) (optional)
+  [ ] 3. Go development (github.com/novshi-tech/boid-kits/go-dev)
+  ...
+Enable/disable kits (space-separated numbers, prefix - to deselect, Enter to keep defaults):
+>
+Task behavior provider: boid-tasks - Default task behaviors
+Use this? [Y/n]:
+Checking requirements...
+  ✓ claude (/home/<you>/.local/bin/claude)
+
+✓ Created /home/<you>/boid-demo/.boid/project.yaml
+project registered: <uuid> (boid-demo)
+```
+
+順に何を聞かれているか:
+
+1. **Project name** — Web UI / TUI 表示用の名前。 ディレクトリ名がそのまま既定値
+2. **Available kits** — インストール済み kit のうち、 このマシンで動かせるものに `✓` が付いて自動選択されます (例: `claude` CLI が PATH にあれば Claude Code がオンに)。 番号を打って on/off を切り替えられます
+3. **Task behavior provider** — `task_behaviors.supervisor` / `task_behaviors.executor` の雛形を提供する kit。 通常はデフォルトの `boid-tasks` で OK
+4. **Requirements check** — 選んだ kit が必要とする host コマンドが PATH 上にあるかを確認
+
+最後にウィザードが `.boid/project.yaml` を生成し、 `boid` の daemon に自動登録します。
+
+## 生成された project.yaml を眺める
+
+```bash
+cat .boid/project.yaml
+```
+
+おおむね次のような内容になっています:
+
+```yaml
+id: <uuid>
+name: boid-demo
+kits:
+  - github.com/novshi-tech/boid-kits/claude-code
 task_behaviors:
+  executor:
+    default_instruction:
+      type: execution
+      message: |
+        ...
   supervisor:
-    name: Supervisor
-YAML
+    default_instruction:
+      type: execution
+      message: |
+        ...
 ```
 
-各フィールドの意味:
+- **`kits:`** にウィザードで選んだ kit が並びます
+- **`task_behaviors.supervisor` / `task_behaviors.executor`** が `boid` の 2 つの canonical な役割。 supervisor は readonly な統括役、 executor は書き込み可能な実装役です (詳細は [概念 / behavior](../guide/concepts.md#behavior))
+- **`default_instruction`** はタスク作成時に agent に最初に渡る指示の雛形。 必要なら手で書き換えて `boid project reload` してください
 
-- **`id: demo`** — `boid` 内でこのプロジェクトを識別する名前。 `boid task create` などで `project_id: demo` として参照する
-- **`name: Demo`** — Web UI / TUI に表示する人間向けの名前
-- **`task_behaviors.supervisor`** — このプロジェクトで作れる「タスクの種類」を 1 つだけ宣言。 `supervisor` は canonical な 2 つの behavior 名のうち readonly な方で、 readonly フラグは canonical 名から自動導出されるため明示する必要はありません
-
-実運用では behavior に hook / kit を紐付けて、 AI エージェントを起動したりサンドボックスを開いたりします。 ここではまだ何も紐付けず、 [4. kit をセットアップする](04-kits.md) で Claude Code を呼ぶ kit を足す形で進めます。 `boid` のアーキテクチャ自体は特定のエージェントに依存しませんが、 現時点で動作確認が取れているのは Claude Code のみです。
-
-## プロジェクトを登録する
-
-`boid` の daemon にプロジェクトを認識させます。
-
-```bash
-boid project add .
-```
-
-成功すると `project added: demo` のような行が出ます。 `.` は現在のディレクトリ (`~/boid-demo`) を指し、 daemon はこのパス配下の `.boid/project.yaml` を読み込んで内容を取り込みます。
-
-登録済みプロジェクトの一覧:
+登録済みプロジェクトの一覧 / 詳細は次で確認できます:
 
 ```bash
 boid project list
+boid project show boid-demo
 ```
-
-詳細を見る:
-
-```bash
-boid project show demo
-```
-
-`id` / `name` / `task_behaviors` などが反映されているはずです。
-
-## `project.yaml` を編集したとき
-
-`project.yaml` は登録時に内容が daemon にロードされます。 ファイルを編集した場合は、
-
-```bash
-boid project reload
-```
-
-で全プロジェクトを再読み込みします。 daemon の再起動は不要で、 実行中のタスクも巻き込まれません。
-
-## ローカル上書き (`project.local.yaml`)
-
-リポジトリにコミットしたくない設定 (個人の追加 binding や環境変数) は `.boid/project.local.yaml` で上書きできます。 雛形は
-
-```bash
-boid project local init
-```
-
-で作れます。 詳細は [`project.yaml` リファレンス](../reference/project-yaml.md) を参照してください。 本チュートリアルでは使わないので、 ここでは存在だけ覚えておけば十分です。
 
 ## まとめ
 
 このチュートリアルで触れた要素:
 
-- **`.boid/project.yaml`** に `id` と `task_behaviors` を宣言した
-- **`boid project add`** で daemon にプロジェクトを認識させた
-- **`boid project list` / `show`** で登録内容を確認した
-- **`boid project reload`** で `project.yaml` の編集を反映できることを覚えた
+- **`boid kit install`** で公式 kit リポジトリをインストール
+- **`boid init`** の対話ウィザードで `.boid/project.yaml` を生成 + 自動登録
+- 生成された yaml の `kits:` / `task_behaviors` を確認
+- 次に編集した場合は `boid project reload` で反映
 
-次のチュートリアルではここで初期化したプロジェクトを使って Web UI をセットアップし、 そのあと実際にタスクを動かします。
+次の章では、 ここで初期化したプロジェクトに対して Web UI のセットアップを行います。
 
 ## 後片付け (任意)
 
 このチュートリアルだけを試したい場合の片付け:
 
 ```bash
-boid project remove demo
+boid project remove boid-demo
 rm -rf ~/boid-demo
 ```
 
-ただし、 次のチュートリアルでも同じプロジェクトを使うので、 続けて読むなら残しておいてください。
+ただし、 以降のチュートリアルでも同じプロジェクトを使うので、 続けて読むなら残しておいてください。
 
 ---
 

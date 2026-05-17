@@ -1,8 +1,8 @@
-# 5. 最初のタスク
+# 4. 最初のタスク
 
 このページでは Claude Code エージェントに小さな質問を 1 つ依頼します。 `boid` の本来の用途 — タスクを 1 行作って投げると、 サンドボックスの中で AI が動き、 結果が記録される — を最短で 1 周します。所要時間は 5 分ほどです。
 
-[4. kit をセットアップする](04-kits.md) まで終えている前提です。
+[3. Web UI をセットアップする](03-web-ui.md) まで終えている前提です。
 
 ## このページのねらい
 
@@ -10,20 +10,30 @@
 - CLI (`boid task watch`) と Web UI の両方で進行を観察する
 - `payload.artifact` に書き込まれた結果を確認する
 
+## プロジェクト ID を控える
+
+`boid task create` は `project_id` フィールドにプロジェクトの ID (uuid) を要求します。 `boid init` の出力末尾に `project registered: <uuid> (boid-demo)` の形で表示されていたあの uuid です。 手元に残っていない場合は次で確認できます。
+
+```bash
+boid project list
+```
+
+以降では `<project-id>` をその uuid に読み替えてください。
+
 ## タスクを 1 本走らせる
 
 タスクを作って自動実行させます。
 
 ```bash
-boid task create <<'YAML'
-project_id: demo
+boid task create <<YAML
+project_id: <project-id>
 title: Linux って一言でいうと？
 behavior: supervisor
 auto_start: true
 YAML
 ```
 
-`auto_start: true` を付けると、 `pending` を経ずに直接 `executing` に入ります。
+`auto_start: true` を付けると、 `pending` を経ずに直接 `executing` に入ります。 出力に表示されるタスク ID をメモしておきます (以降 `<task-id>`)。
 
 ### CLI で観察する
 
@@ -33,11 +43,11 @@ YAML
 boid task watch <task-id>
 ```
 
-しばらくすると hook ジョブの中で claude が動き、 [4. kit をセットアップする](04-kits.md) で書いた指示に従って `boid task update` で artifact が書き込まれ、 hook が正常終了すると自動遷移で `executing → done` に進むはずです。
+しばらくすると hook ジョブの中で claude が動き、 `boid init` が雛形に書いた指示に従って `boid task update` で artifact が書き込まれ、 hook が正常終了すると自動遷移で `executing → done` に進むはずです。
 
 ### Web UI で観察する
 
-[3. Web UI をセットアップする](03-web-ui.md) で開いたブラウザの `http://localhost:8080` を再読み込みすると、 作成したタスクが一覧に乗っているはずです。 行をクリックするとタスク詳細・payload・ジョブ一覧がライブで更新されます。
+[3. Web UI をセットアップする](03-web-ui.md) で開いたブラウザの `http://localhost:8080` を再読み込みすると、 作成したタスクが一覧に乗っているはずです。 行をクリックするとタスク詳細・ payload・ ジョブ一覧がライブで更新されます。
 
 ## 結果を確認する
 
@@ -72,7 +82,7 @@ Web UI からも各ジョブのログを開けます。
 
 ```bash
 boid task delete <task-id>
-boid project remove demo
+boid project remove boid-demo
 rm -rf ~/boid-demo
 boid kit remove github.com/novshi-tech/boid-kits
 ```
