@@ -21,9 +21,10 @@ This index is the entry point. The doc set is being built out incrementally; pla
 Step-by-step walkthroughs.
 
 - [1. Install](getting-started/01-install.md)
-- [2. Your first task](getting-started/02-first-task.md)
-- [3. Projects and extension packages (kits)](getting-started/03-projects-and-kits.md)
-- [4. The GitHub PR-driven dev workflow](getting-started/04-dev-workflow.md)
+- [2. Initialize a project](getting-started/02-init-project.md)
+- [3. Your first task](getting-started/03-first-task.md)
+- [4. Projects and extension packages (kits)](getting-started/04-projects-and-kits.md)
+- [5. The GitHub PR-driven dev workflow](getting-started/05-dev-workflow.md)
 - [Workflows](../workflows.md) — three end-to-end workflow shapes (local merge / 1 executor 1 PR / 1 supervisor 1 PR) with project.yaml templates
 
 ### Guide

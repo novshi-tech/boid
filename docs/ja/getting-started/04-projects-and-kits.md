@@ -1,6 +1,6 @@
-# 3. プロジェクトと拡張パッケージ (kit)
+# 4. プロジェクトと拡張パッケージ (kit)
 
-[2. 最初のタスク](02-first-task.md) では handler を 1 つも紐付けずに状態機械だけを動かしました。このページでは **kit** を導入し、 hook を介して実作業を `boid` に任せます。所要時間は 10 分ほどです。
+[3. 最初のタスク](03-first-task.md) では handler を 1 つも紐付けずに状態機械だけを動かしました。このページでは **kit** を導入し、 hook を介して実作業を `boid` に任せます。所要時間は 10 分ほどです。
 
 ## このページのねらい
 
@@ -50,7 +50,7 @@ boid kit list
 
 ## project.yaml に kit を書く
 
-[2. 最初のタスク](02-first-task.md) で作った `~/boid-demo/.boid/project.yaml` を、 Claude Code エージェントを呼ぶ behavior に書き換えます。
+[2. プロジェクトを初期化する](02-init-project.md) で作った `~/boid-demo/.boid/project.yaml` を、 Claude Code エージェントを呼ぶ behavior に書き換えます。
 
 ```yaml
 id: demo
@@ -146,4 +146,4 @@ rm -rf ~/boid-demo
 
 ---
 
-次: [4. GitHub PR ベースの開発ワークフロー](04-dev-workflow.md)
+次: [5. GitHub PR ベースの開発ワークフロー](05-dev-workflow.md)

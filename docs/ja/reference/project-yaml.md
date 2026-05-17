@@ -281,4 +281,4 @@ task_behaviors:
     default_instruction: { ... }
 ```
 
-このスキーマで作れる 3 種類のワークフローの例は [ワークフロー](../../workflows.md) と [4. GitHub PR ベースの開発ワークフロー](../getting-started/04-dev-workflow.md) を参照してください。
+このスキーマで作れる 3 種類のワークフローの例は [ワークフロー](../../workflows.md) と [5. GitHub PR ベースの開発ワークフロー](../getting-started/05-dev-workflow.md) を参照してください。

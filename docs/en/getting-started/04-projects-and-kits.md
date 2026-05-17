@@ -1,6 +1,6 @@
-# 3. Projects and extension packages (kits)
+# 4. Projects and extension packages (kits)
 
-In [2. Your first task](02-first-task.md) you ran the state machine with no handlers attached. This page introduces **kits** so `boid` can do real work for you. It takes about ten minutes.
+In [3. Your first task](03-first-task.md) you ran the state machine with no handlers attached. This page introduces **kits** so `boid` can do real work for you. It takes about ten minutes.
 
 ## What this tutorial covers
 
@@ -50,7 +50,7 @@ boid kit list
 
 ## Wire a kit into project.yaml
 
-Edit the `~/boid-demo/.boid/project.yaml` from [2. Your first task](02-first-task.md) so that the behavior invokes the Claude Code agent.
+Edit the `~/boid-demo/.boid/project.yaml` from [2. Initialize a project](02-init-project.md) so that the behavior invokes the Claude Code agent.
 
 ```yaml
 id: demo
@@ -147,4 +147,4 @@ rm -rf ~/boid-demo
 
 ---
 
-Next: [4. The GitHub PR-driven dev workflow](04-dev-workflow.md)
+Next: [5. The GitHub PR-driven dev workflow](05-dev-workflow.md)

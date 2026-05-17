@@ -93,4 +93,4 @@ The first `rm` removes all local data including tasks, secret values, and instal
 
 ---
 
-Next: [2. Your first task](02-first-task.md)
+Next: [2. Initialize a project](02-init-project.md)

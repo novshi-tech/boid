@@ -261,4 +261,4 @@ task_behaviors:
     default_instruction: { ... }
 ```
 
-For a fuller example — and three different workflow shapes built on top of this schema — see [Workflows](../../workflows.md) and [4. The GitHub PR-driven dev workflow](../getting-started/04-dev-workflow.md).
+For a fuller example — and three different workflow shapes built on top of this schema — see [Workflows](../../workflows.md) and [5. The GitHub PR-driven dev workflow](../getting-started/05-dev-workflow.md).

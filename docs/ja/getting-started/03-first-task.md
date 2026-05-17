@@ -1,47 +1,12 @@
-# 2. 最初のタスク
+# 3. 最初のタスク
 
-このページでは AI エージェントを動かす前に、まずは `boid` のタスクライフサイクルだけを観察します。プロジェクトを 1 つ登録し、タスクを作って、状態が `pending → executing → done` と進む様子を CLI から手で確認します。所要時間は 5 分ほどです。
+このページでは AI エージェントを動かす前に、まずは `boid` のタスクライフサイクルだけを観察します。タスクを作って、状態が `pending → executing → done` と進む様子を CLI から手で確認します。所要時間は 5 分ほどです。
 
-[1. インストール](01-install.md) を完了している前提です。
+[2. プロジェクトを初期化する](02-init-project.md) で `demo` プロジェクトを登録済みである前提です。
 
 ## ねらい
 
 `boid` の主役は AI エージェントですが、その前にエージェントを動かす器であるタスクと状態機械の動きを掴んでおきます。 AI を呼び出さない分、何が起きているかが見えやすく、後続のチュートリアルで kit を入れたときも「いま状態機械はどこを動いているのか」が分かるようになります。
-
-## プロジェクトを用意する
-
-任意のディレクトリを作業場所にします。
-
-```bash
-mkdir -p ~/boid-demo
-cd ~/boid-demo
-```
-
-`.boid/project.yaml` でこのディレクトリを `boid` のプロジェクトとして宣言します。
-
-```bash
-mkdir .boid
-cat > .boid/project.yaml <<'YAML'
-id: demo
-name: Demo
-task_behaviors:
-  supervisor:
-    name: Supervisor
-YAML
-```
-
-最小構成です。
-
-- `id: demo` — `boid` 内でこのプロジェクトを識別する名前
-- `task_behaviors.supervisor` — 「タスクの種類」が 1 つだけ。 hook も gate も紐付いていません。 `supervisor` は canonical な 2 つの behavior 名のうち readonly な方で、 readonly フラグは canonical 名から自動導出されるので明示しなくて済みます
-
-`boid` に登録します。
-
-```bash
-boid project add .
-```
-
-成功すると "project added: demo" のような行が出ます。 `boid project list` で確認できます。
 
 ## タスクを作る
 
@@ -97,7 +62,7 @@ boid task show <task-id>
 
 ## 履歴を確認する
 
-`boid` は状態遷移と payload の更新をすべて記録しています。 watch コマンドで時系列に流せます。
+`boid` は状態遷移と payload の更新をすべて記録しています。
 
 ```bash
 boid task show <task-id>
@@ -115,7 +80,6 @@ boid job list --task <task-id>
 
 このチュートリアルで触れた要素:
 
-- **プロジェクト** を `boid project add` で登録した
 - **behavior** を 1 つ宣言したが、 handler は紐付けなかった
 - **アクション** (`start` / `done`) で `pending → executing → done` を手動遷移させた
 - **payload patch** (`artifact`) を手で書き、 タスクの成果物として残した
@@ -124,14 +88,14 @@ boid job list --task <task-id>
 
 ## 後片付け
 
-このチュートリアルでできた状態を消したい場合:
+このチュートリアルで作ったタスクを片付けるには:
 
 ```bash
 boid task delete <task-id>
-boid project remove demo
-rm -rf ~/boid-demo
 ```
+
+`demo` プロジェクト自体は次のチュートリアルでも使うので残しておいてください。
 
 ---
 
-次: [3. プロジェクトと拡張パッケージ (kit)](03-projects-and-kits.md)
+次: [4. プロジェクトと拡張パッケージ (kit)](04-projects-and-kits.md)

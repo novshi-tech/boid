@@ -21,9 +21,10 @@
 順を追って手を動かすチュートリアル。
 
 - [1. インストール](getting-started/01-install.md)
-- [2. 最初のタスク](getting-started/02-first-task.md)
-- [3. プロジェクトと拡張パッケージ (kit)](getting-started/03-projects-and-kits.md)
-- [4. GitHub PR ベースの開発ワークフロー](getting-started/04-dev-workflow.md)
+- [2. プロジェクトを初期化する](getting-started/02-init-project.md)
+- [3. 最初のタスク](getting-started/03-first-task.md)
+- [4. プロジェクトと拡張パッケージ (kit)](getting-started/04-projects-and-kits.md)
+- [5. GitHub PR ベースの開発ワークフロー](getting-started/05-dev-workflow.md)
 - [ワークフロー](../workflows.md) — エンドツーエンドの 3 つのワークフロー形 (ローカル merge / 1 executor 1 PR / 1 supervisor 1 PR) を project.yaml テンプレート付きで紹介
 
 ### ガイド
