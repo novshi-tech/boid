@@ -1,13 +1,20 @@
-# 3. Projects and extension packages (kits)
+# 4. Set up a kit
 
-In [2. Your first task](02-first-task.md) you ran the state machine with no handlers attached. This page introduces **kits** so `boid` can do real work for you. It takes about ten minutes.
+This page installs the **kit** that lets `boid` invoke an AI agent (Claude Code) and wires it into the `demo` project from [2. Initialize a project](02-init-project.md). After this chapter `boid` is ready to accept tasks and launch Claude Code for them. It takes about five minutes.
+
+This page assumes you have completed [3. Set up the Web UI](03-web-ui.md).
 
 ## What this tutorial covers
 
-- What a kit actually is on disk, beyond the abstract description.
-- Installing a kit repository with `boid kit install`.
-- Wiring kits into `project.yaml` under `task_behaviors`.
-- Running one minimal end-to-end task driven by an AI agent (Claude Code).
+- A concrete look at what a **kit** packages.
+- Installing the `claude-code` kit.
+- Referencing the kit from `project.yaml` so a `task_behaviors` entry can use it.
+
+## A note on agents
+
+`boid`'s architecture is intentionally agent-neutral, but **Claude Code is currently the only agent with production-grade support**. A kit for the OpenAI Codex CLI (`github.com/novshi-tech/boid-kits/codex`) is shipped, but harness-side support for it is still in flux.
+
+From this chapter onward we assume Claude Code is set up locally: the `claude` CLI is on your `PATH` and you have signed in. See [Claude Code's docs](https://docs.claude.com/en/docs/claude-code/overview) for the CLI setup.
 
 ## What a kit packages
 
@@ -27,7 +34,7 @@ The official kits live in the [`github.com/novshi-tech/boid-kits`](https://githu
 | Kit ref | What it does |
 |---|---|
 | `github.com/novshi-tech/boid-kits/claude-code` | Runs the Claude Code agent as a hook. |
-| `github.com/novshi-tech/boid-kits/codex` | Runs the OpenAI Codex CLI agent as a hook. |
+| `github.com/novshi-tech/boid-kits/codex` | Runs the OpenAI Codex CLI agent as a hook (experimental). |
 | `github.com/novshi-tech/boid-kits/go-dev` | Mounts `~/go` and friends into the sandbox. |
 | `github.com/novshi-tech/boid-kits/github-cli` | Makes `gh` callable from inside the sandbox. |
 | `github.com/novshi-tech/boid-kits/github-auto-merge` | Adds an exit gate on `executing → done` that runs `gh pr merge`. |
@@ -48,9 +55,9 @@ List what is installed:
 boid kit list
 ```
 
-## Wire a kit into project.yaml
+## Wire the kit into project.yaml
 
-Edit the `~/boid-demo/.boid/project.yaml` from [2. Your first task](02-first-task.md) so that the behavior invokes the Claude Code agent.
+Edit the `~/boid-demo/.boid/project.yaml` from [2. Initialize a project](02-init-project.md) so that the behavior invokes the Claude Code agent.
 
 ```yaml
 id: demo
@@ -84,67 +91,17 @@ Reload the project:
 boid project reload
 ```
 
-## Run it
-
-You will need the `claude` CLI on your `PATH` and a signed-in Claude Code session. See [Claude Code's docs](https://docs.claude.com/en/docs/claude-code/overview) for how to set that up.
-
-Create a task and have it start automatically.
-
-```bash
-boid task create <<'YAML'
-project_id: demo
-title: What is Linux, in one sentence?
-behavior: supervisor
-auto_start: true
-YAML
-```
-
-`auto_start: true` skips `pending` and goes straight to `executing`.
-
-In another terminal, follow the task:
-
-```bash
-boid task watch <task-id>
-```
-
-After a moment the hook job runs Claude, the agent calls `boid task update` to write `artifact`, and once the hook exits cleanly the auto-transition moves the task `executing → done`.
-
-Final state:
-
-```bash
-boid task show <task-id>
-```
-
-If `payload.artifact.answer` holds the answer, it worked.
-
-To inspect what the hook actually printed:
-
-```bash
-boid job list --task <task-id>
-boid job show <job-id>
-```
-
 ## Recap
 
 What this tutorial covered:
 
 - The contents of a kit (hooks / gates / commands / bindings / env).
 - Pulling a kit repository in with `boid kit install`.
-- The shape of `project.yaml`, including `kits` and `default_instruction`.
-- Skipping `pending` with `auto_start: true`.
+- Referencing a kit from `project.yaml` via `kits:` and binding it to a behavior through `default_instruction`.
+- Picking edits up with `boid project reload`.
 
-Next: a GitHub PR-driven dev workflow that combines a worktree with auto-merge.
-
-## Cleanup
-
-```bash
-boid task delete <task-id>
-boid project remove demo
-rm -rf ~/boid-demo
-```
-
-`boid kit remove github.com/novshi-tech/boid-kits` removes the installed repository, but it is convenient to keep it around for the next tutorial.
+In the next chapter you will run a task against this setup and watch it execute from the CLI and the Web UI.
 
 ---
 
-Next: [4. The GitHub PR-driven dev workflow](04-dev-workflow.md)
+Next: [5. Your first task](05-first-task.md)

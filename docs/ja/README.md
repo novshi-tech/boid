@@ -2,6 +2,8 @@
 
 `boid` はパーソナル AI オーケストレータです。複数の AI コーディングエージェントを並行で走らせるとき、人間がボトルネックにならないことを目標としています。エージェントに自律的に進める余地を与え、書き込み範囲を絞れるサンドボックスで安全性を担保し、進行中の全タスクを CLI / TUI / Web UI で横断的に把握できます。すべて手元のマシン上で完結し、サーバもサインアップも不要です。
 
+アーキテクチャ自体は特定の AI エージェントに依存しない設計ですが、 現時点で実用的に動作確認が取れているのは **Claude Code** のみです。 チュートリアル類はこの前提で書かれています。
+
 このページはエントリポイントです。ドキュメントは段階的に整備中で、未着手のページはリンクなしで予定として記載しています。
 
 [English version](../en/README.md)
@@ -21,9 +23,11 @@
 順を追って手を動かすチュートリアル。
 
 - [1. インストール](getting-started/01-install.md)
-- [2. 最初のタスク](getting-started/02-first-task.md)
-- [3. プロジェクトと拡張パッケージ (kit)](getting-started/03-projects-and-kits.md)
-- [4. GitHub PR ベースの開発ワークフロー](getting-started/04-dev-workflow.md)
+- [2. プロジェクトを初期化する](getting-started/02-init-project.md)
+- [3. Web UI をセットアップする](getting-started/03-web-ui.md)
+- [4. kit をセットアップする](getting-started/04-kits.md)
+- [5. 最初のタスク](getting-started/05-first-task.md)
+- [6. GitHub PR ベースの開発ワークフロー](getting-started/06-dev-workflow.md)
 - [ワークフロー](../workflows.md) — エンドツーエンドの 3 つのワークフロー形 (ローカル merge / 1 executor 1 PR / 1 supervisor 1 PR) を project.yaml テンプレート付きで紹介
 
 ### ガイド

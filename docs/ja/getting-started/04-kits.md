@@ -1,13 +1,20 @@
-# 3. プロジェクトと拡張パッケージ (kit)
+# 4. kit をセットアップする
 
-[2. 最初のタスク](02-first-task.md) では handler を 1 つも紐付けずに状態機械だけを動かしました。このページでは **kit** を導入し、 hook を介して実作業を `boid` に任せます。所要時間は 10 分ほどです。
+このページでは AI エージェント (Claude Code) を呼ぶための **kit** をインストールし、 [2. プロジェクトを初期化する](02-init-project.md) で作った `demo` プロジェクトに紐付けます。 ここまでで `boid` がタスクを受け取って Claude Code を起動できる状態になります。所要時間は 5 分ほどです。
+
+[3. Web UI をセットアップする](03-web-ui.md) まで終えている前提です。
 
 ## このページのねらい
 
-- `kit` が `boid` で何を提供するか、概念ではなく実体として理解する
-- `boid kit install` でリポジトリをインストールする
+- **kit** が何をパッケージしているかを 1 つの実例で押さえる
+- `claude-code` kit をインストールする
 - `project.yaml` の `task_behaviors` に kit を紐付ける
-- AI エージェント (Claude Code) を呼ぶ、最小の動作例を 1 本通す
+
+## エージェントについて
+
+`boid` のアーキテクチャは特定の AI エージェントに依存しない設計ですが、 現時点で実用的に動作確認が取れている agent は **Claude Code** のみです。 OpenAI Codex CLI 用の kit (`github.com/novshi-tech/boid-kits/codex`) も同梱はされていますが、 ハーネス側の対応はまだ発展途上です。
+
+このチュートリアル以降は Claude Code が手元にあることを前提に進めます。 `claude` CLI が PATH にあり、 Claude Code としてサインイン済みであることを確認してください (Claude Code 側のセットアップ手順は [Claude Code の公式ドキュメント](https://docs.claude.com/en/docs/claude-code/overview) を参照)。
 
 ## kit が何をパッケージしているか
 
@@ -27,7 +34,7 @@
 | kit ref | 役割 |
 |---|---|
 | `github.com/novshi-tech/boid-kits/claude-code` | Claude Code エージェントを hook で起動 |
-| `github.com/novshi-tech/boid-kits/codex` | OpenAI Codex CLI エージェントを hook で起動 |
+| `github.com/novshi-tech/boid-kits/codex` | OpenAI Codex CLI エージェントを hook で起動 (実験的) |
 | `github.com/novshi-tech/boid-kits/go-dev` | サンドボックスに `~/go` などをマウント |
 | `github.com/novshi-tech/boid-kits/github-cli` | サンドボックスから `gh` を使えるようにする |
 | `github.com/novshi-tech/boid-kits/github-auto-merge` | executing → done の exit gate で `gh pr merge` を実行 |
@@ -50,7 +57,7 @@ boid kit list
 
 ## project.yaml に kit を書く
 
-[2. 最初のタスク](02-first-task.md) で作った `~/boid-demo/.boid/project.yaml` を、 Claude Code エージェントを呼ぶ behavior に書き換えます。
+[2. プロジェクトを初期化する](02-init-project.md) で作った `~/boid-demo/.boid/project.yaml` を、 Claude Code エージェントを呼ぶ behavior に書き換えます。
 
 ```yaml
 id: demo
@@ -83,67 +90,17 @@ task_behaviors:
 boid project reload
 ```
 
-## 動かしてみる
-
-前提として `claude` CLI が PATH にあり、 Claude Code としてサインイン済みであることを確認してください (Claude Code 側のセットアップ手順は [Claude Code のドキュメント](https://docs.claude.com/en/docs/claude-code/overview) を参照)。
-
-タスクを作って自動実行させます。
-
-```bash
-boid task create <<'YAML'
-project_id: demo
-title: Linux って一言でいうと？
-behavior: supervisor
-auto_start: true
-YAML
-```
-
-`auto_start: true` を付けると、 `pending` を経ずに直接 `executing` に入ります。
-
-別ターミナルで状態を流し見ます。
-
-```bash
-boid task watch <task-id>
-```
-
-しばらくすると hook ジョブの中で claude が動き、 `boid task update` で artifact が書き込まれ、 hook が正常終了すると自動遷移で `executing → done` に進むはずです。
-
-最終結果:
-
-```bash
-boid task show <task-id>
-```
-
-`payload.artifact.answer` に回答が入っていれば成功です。
-
-ジョブのログ (claude の出力) は次で見られます。
-
-```bash
-boid job list --task <task-id>
-boid job show <job-id>
-```
-
 ## まとめ
 
 このチュートリアルで触れた要素:
 
 - kit の中身 (hook / gate / commands / bindings / env)
 - `boid kit install` でのリポジトリ取得
-- `project.yaml` の `kits` と `default_instruction`
-- `auto_start: true` で `pending` をスキップ
+- `project.yaml` の `kits` と `default_instruction` で kit を behavior に紐付ける
+- `boid project reload` で編集を反映
 
-次は worktree と auto-merge を組み合わせた、 GitHub PR ベースの開発ワークフローに進みます。
-
-## 後片付け
-
-```bash
-boid task delete <task-id>
-boid project remove demo
-rm -rf ~/boid-demo
-```
-
-`boid kit remove github.com/novshi-tech/boid-kits` でインストール済みリポジトリも消せますが、後続のチュートリアルで再利用するため残しておくのが便利です。
+次の章では、 ここでセットアップした構成でタスクを 1 本走らせて、 CLI と Web UI から実行の様子を観察します。
 
 ---
 
-次: [4. GitHub PR ベースの開発ワークフロー](04-dev-workflow.md)
+次: [5. 最初のタスク](05-first-task.md)

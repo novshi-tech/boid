@@ -93,4 +93,4 @@ rm "$(go env GOPATH)/bin/boid"
 
 ---
 
-次: [2. 最初のタスク](02-first-task.md)
+次: [2. プロジェクトを初期化する](02-init-project.md)

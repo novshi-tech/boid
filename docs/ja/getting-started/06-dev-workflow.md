@@ -1,12 +1,12 @@
-# 4. GitHub PR ベースの開発ワークフロー
+# 6. GitHub PR ベースの開発ワークフロー
 
-このページでは、 GitHub PR ベースの開発ワークフローを最初から最後まで通して実行します。 AI エージェントが新しいブランチでコードを書き、 PR を作り、 CI 完了を待ち、最後に `boid` が PR を自動マージするところまでを 1 タスクで動かします。 [3. プロジェクトと拡張パッケージ (kit)](03-projects-and-kits.md) の続きです。
+このページでは、 GitHub PR ベースの開発ワークフローを最初から最後まで通して実行します。 AI エージェントが新しいブランチでコードを書き、 PR を作り、 CI 完了を待ち、最後に `boid` が PR を自動マージするところまでを 1 タスクで動かします。 [5. 最初のタスク](05-first-task.md) の続きです。
 
 このチュートリアルが終わると、 `boid` の主用途の 1 つである **AI エージェントへの開発タスク委譲** の最小構成を 1 本通せたことになります。
 
 ## 前提
 
-- [3. プロジェクトと拡張パッケージ (kit)](03-projects-and-kits.md) の手順で `boid kit install github.com/novshi-tech/boid-kits` 済み
+- [4. kit をセットアップする](04-kits.md) の手順で `boid kit install github.com/novshi-tech/boid-kits` 済み
 - `claude` CLI がサインイン済みで PATH 上にある
 - `gh` CLI が `gh auth login` 済み
 - 「捨ててよい」 GitHub リポジトリが 1 つあり、 `git clone` 済み (例: `~/src/github.com/<you>/boid-demo-repo`)
