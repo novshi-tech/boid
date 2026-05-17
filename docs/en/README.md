@@ -27,7 +27,6 @@ Step-by-step walkthroughs.
 - [3. Set up the Web UI](getting-started/03-web-ui.md)
 - [4. Set up a kit](getting-started/04-kits.md)
 - [5. Your first task](getting-started/05-first-task.md)
-- [6. The GitHub PR-driven dev workflow](getting-started/06-dev-workflow.md)
 - [Workflows](../workflows.md) — three end-to-end workflow shapes (local merge / 1 executor 1 PR / 1 supervisor 1 PR) with project.yaml templates
 
 ### Guide
