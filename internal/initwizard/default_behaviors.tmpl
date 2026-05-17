@@ -1,0 +1,30 @@
+executor:
+  default_instruction:
+    type: execution
+{{- if .Agent}}
+    agent: {{.Agent}}
+{{- end}}
+    message: |
+      Implement what the task.yaml title and description ask
+      for, then commit on the current branch (boid/<task_id8>,
+      cut from the project's base branch) and exit. Do not
+      push, do not open a PR — the parent supervisor merges
+      the branch into the base branch locally.
+supervisor:
+  default_instruction:
+    type: execution
+{{- if .Agent}}
+    agent: {{.Agent}}
+{{- end}}
+    message: |
+      Triage the request, create child executor tasks, and
+      monitor them in order. Each child commits onto its
+      boid/<task_id8> branch (cut from the base branch by
+      boid's worktree feature). When a child reaches `done`:
+        1. git checkout <base_branch>
+        2. git merge --no-ff boid/<child_id8>
+           -m "Merge boid/<child_id8>"
+        3. Verify the merged result, then launch the next
+           child.
+      If a merge conflicts or the verification fails, reopen
+      the child with `boid task reopen <child_id> -m "..."`.

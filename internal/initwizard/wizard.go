@@ -2,6 +2,7 @@ package initwizard
 
 import (
 	"bufio"
+	_ "embed"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,9 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"gopkg.in/yaml.v3"
 )
+
+//go:embed default_behaviors.tmpl
+var defaultBehaviorsTmpl string
 
 // KitInfo holds a discovered kit's reference, directory, and parsed metadata.
 type KitInfo struct {
@@ -42,6 +46,7 @@ type Wizard struct {
 type projectFileOut struct {
 	ID            string         `yaml:"id"`
 	Name          string         `yaml:"name"`
+	Worktree      bool           `yaml:"worktree"`
 	Kits          []string       `yaml:"kits,omitempty"`
 	TaskBehaviors map[string]any `yaml:"task_behaviors,omitempty"`
 }
@@ -84,16 +89,10 @@ func ListAllKits(reg *orchestrator.KitRegistry) ([]KitInfo, error) {
 	return kits, nil
 }
 
-// ExpandScaffoldTemplate reads a template file relative to kitDir, executes it
-// with data, and parses the result as a map[string]interface{} representing task_behaviors.
-func ExpandScaffoldTemplate(kitDir, templatePath string, data ScaffoldTemplateData) (map[string]any, error) {
-	fullPath := filepath.Join(kitDir, templatePath)
-	raw, err := os.ReadFile(fullPath)
-	if err != nil {
-		return nil, fmt.Errorf("read template %q: %w", fullPath, err)
-	}
-
-	tmpl, err := template.New("scaffold").Parse(string(raw))
+// ExpandScaffoldTemplate executes the built-in default_behaviors.tmpl with data
+// and parses the result as a map[string]interface{} representing task_behaviors.
+func ExpandScaffoldTemplate(data ScaffoldTemplateData) (map[string]any, error) {
+	tmpl, err := template.New("scaffold").Parse(defaultBehaviorsTmpl)
 	if err != nil {
 		return nil, fmt.Errorf("parse template: %w", err)
 	}
@@ -124,26 +123,18 @@ func (w *Wizard) Run(projectDir string) error {
 		return fmt.Errorf("list kits: %w", err)
 	}
 
-	// Partition kits: project-scope kits vs scaffold.task_behaviors providers.
-	// Kits with non-agent hooks or gates can only be referenced per-behavior in
-	// project.yaml and are not shown in the wizard.
+	// [3] Select project-scope kits (all kits are project-scope kits now that
+	// the scaffold/behavior-provider step is removed).
 	var projectScopeKits []KitInfo
-	var behaviorKits []KitInfo
 	for _, ki := range allKits {
-		if ki.Meta.Scaffold != nil && ki.Meta.Scaffold.TaskBehaviors != nil {
-			behaviorKits = append(behaviorKits, ki)
-		} else if orchestrator.IsProjectScopable(ki.Meta) == nil {
+		if orchestrator.IsProjectScopable(ki.Meta) == nil {
 			projectScopeKits = append(projectScopeKits, ki)
 		}
 	}
 
-	// [3] Select project-scope kits
 	selectedProjectKits := w.selectProjectScopeKits(scanner, projectDir, projectScopeKits)
 
-	// [4] Select behavior kit
-	selectedBehaviorKit := w.selectBehaviorKit(scanner, behaviorKits)
-
-	// [4.5] Select agent from selected project-scope kits that provide one
+	// [4] Select agent from selected project-scope kits that provide one
 	agent := w.selectAgent(scanner, selectedProjectKits)
 
 	// Build metadata list for validation
@@ -151,16 +142,13 @@ func (w *Wizard) Run(projectDir string) error {
 	for _, ki := range selectedProjectKits {
 		selectedKitMetas = append(selectedKitMetas, *ki.Meta)
 	}
-	if selectedBehaviorKit != nil {
-		selectedKitMetas = append(selectedKitMetas, *selectedBehaviorKit.Meta)
-	}
 
 	// [5] Validate requirements
 	fmt.Fprintln(w.Out, "\nChecking requirements...")
 	reqErrs := kit.ValidateRequirements(selectedKitMetas)
 	if len(reqErrs) > 0 {
 		for _, e := range reqErrs {
-			fmt.Fprintf(w.Out, "  \u2717 %s が PATH 上に見つかりません\n", e.Command)
+			fmt.Fprintf(w.Out, "  ✗ %s が PATH 上に見つかりません\n", e.Command)
 		}
 		return fmt.Errorf("missing required commands; install them and retry")
 	}
@@ -170,12 +158,12 @@ func (w *Wizard) Run(projectDir string) error {
 		}
 		for _, cmd := range km.Requires.Commands {
 			if path, lookErr := exec.LookPath(cmd); lookErr == nil {
-				fmt.Fprintf(w.Out, "  \u2713 %s (%s)\n", cmd, path)
+				fmt.Fprintf(w.Out, "  ✓ %s (%s)\n", cmd, path)
 			}
 		}
 	}
 
-	// [6] Generate project ID and expand scaffold template
+	// [6] Generate project ID and expand built-in scaffold template
 	projectID := uuid.New().String()
 
 	tplData := ScaffoldTemplateData{
@@ -184,19 +172,9 @@ func (w *Wizard) Run(projectDir string) error {
 		Agent:       agent,
 	}
 
-	var taskBehaviors map[string]any
-	if selectedBehaviorKit != nil &&
-		selectedBehaviorKit.Meta.Scaffold != nil &&
-		selectedBehaviorKit.Meta.Scaffold.TaskBehaviors != nil {
-		expanded, expandErr := ExpandScaffoldTemplate(
-			selectedBehaviorKit.Dir,
-			selectedBehaviorKit.Meta.Scaffold.TaskBehaviors.Template,
-			tplData,
-		)
-		if expandErr != nil {
-			return fmt.Errorf("expand scaffold template: %w", expandErr)
-		}
-		taskBehaviors = expanded
+	taskBehaviors, err := ExpandScaffoldTemplate(tplData)
+	if err != nil {
+		return fmt.Errorf("expand scaffold template: %w", err)
 	}
 
 	// [7] Write project.yaml and create directories
@@ -213,6 +191,7 @@ func (w *Wizard) Run(projectDir string) error {
 	proj := projectFileOut{
 		ID:            projectID,
 		Name:          name,
+		Worktree:      true,
 		Kits:          kitRefs,
 		TaskBehaviors: taskBehaviors,
 	}
@@ -227,7 +206,7 @@ func (w *Wizard) Run(projectDir string) error {
 		return fmt.Errorf("write project.yaml: %w", err)
 	}
 
-	fmt.Fprintf(w.Out, "\n\u2713 Created %s\n", projectYAMLPath)
+	fmt.Fprintf(w.Out, "\n✓ Created %s\n", projectYAMLPath)
 	return nil
 }
 
@@ -291,63 +270,6 @@ func (w *Wizard) selectProjectScopeKits(scanner *bufio.Scanner, projectDir strin
 	}
 
 	return filterSelected(kits, selected)
-}
-
-func (w *Wizard) selectBehaviorKit(scanner *bufio.Scanner, kits []KitInfo) *KitInfo {
-	if len(kits) == 0 {
-		return nil
-	}
-
-	if len(kits) == 1 {
-		name := kitDisplayName(kits[0])
-		desc := ""
-		if kits[0].Meta.Scaffold != nil && kits[0].Meta.Scaffold.TaskBehaviors != nil {
-			desc = kits[0].Meta.Scaffold.TaskBehaviors.Description
-		}
-		fmt.Fprintf(w.Out, "\nTask behavior provider: %s", name)
-		if desc != "" {
-			fmt.Fprintf(w.Out, " - %s", desc)
-		}
-		fmt.Fprintln(w.Out)
-		fmt.Fprint(w.Out, "Use this? [Y/n]: ")
-		if scanner.Scan() {
-			ans := strings.TrimSpace(scanner.Text())
-			if strings.EqualFold(ans, "n") {
-				return nil
-			}
-		}
-		return &kits[0]
-	}
-
-	// Multiple behavior kits: show menu
-	fmt.Fprintln(w.Out, "\nSelect task behavior provider:")
-	fmt.Fprintln(w.Out, "  0. None (write task_behaviors manually)")
-	for i, ki := range kits {
-		name := kitDisplayName(ki)
-		desc := ""
-		if ki.Meta.Scaffold != nil && ki.Meta.Scaffold.TaskBehaviors != nil {
-			desc = ki.Meta.Scaffold.TaskBehaviors.Description
-		}
-		if desc != "" {
-			fmt.Fprintf(w.Out, "  %d. %s - %s\n", i+1, name, desc)
-		} else {
-			fmt.Fprintf(w.Out, "  %d. %s (%s)\n", i+1, name, ki.Ref)
-		}
-	}
-	fmt.Fprint(w.Out, "Choice [0]: ")
-
-	if !scanner.Scan() {
-		return nil
-	}
-	input := strings.TrimSpace(scanner.Text())
-	if input == "" || input == "0" {
-		return nil
-	}
-	n, err := strconv.Atoi(input)
-	if err != nil || n < 1 || n > len(kits) {
-		return nil
-	}
-	return &kits[n-1]
 }
 
 func (w *Wizard) selectAgent(scanner *bufio.Scanner, kits []KitInfo) string {

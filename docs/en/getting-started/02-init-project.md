@@ -6,7 +6,7 @@ This page assumes you have completed [1. Install](01-install.md).
 
 ## What this tutorial covers
 
-- Installing the official kit repository.
+- Installing the official kit repository (optional).
 - Running `boid init`'s interactive wizard to scaffold a project.
 - Inspecting the generated `.boid/project.yaml`.
 
@@ -14,9 +14,9 @@ This page assumes you have completed [1. Install](01-install.md).
 
 `boid`'s architecture is intentionally agent-neutral, but **Claude Code is currently the only agent with production-grade support**. The rest of the tutorial assumes Claude Code is set up locally: the `claude` CLI is on your `PATH` and you have signed in. See [Claude Code's docs](https://docs.claude.com/en/docs/claude-code/overview) for the CLI setup.
 
-## Install the kit repository
+## Install the kit repository (optional)
 
-`boid init` selects from kits that are **already installed**. Pull down the official kit registry first:
+Kits add extra hooks and host commands. Pull down the official registry if you need them:
 
 ```bash
 boid kit install github.com/novshi-tech/boid-kits
@@ -58,8 +58,6 @@ Available kits (auto-detected marked with ✓):
   ...
 Enable/disable kits (space-separated numbers, prefix - to deselect, Enter to keep defaults):
 >
-Task behavior provider: boid-tasks - Default task behaviors
-Use this? [Y/n]:
 Checking requirements...
   ✓ claude (/home/<you>/.local/bin/claude)
 
@@ -71,8 +69,9 @@ What each prompt asks:
 
 1. **Project name** — the label shown in the Web UI / TUI. Defaults to the directory name.
 2. **Available kits** — installed kits that look applicable to this machine are pre-selected (e.g. Claude Code shows up if `claude` is on your `PATH`). Type numbers to toggle.
-3. **Task behavior provider** — which kit supplies the `task_behaviors.supervisor` / `task_behaviors.executor` scaffold. The default `boid-tasks` is normally what you want.
-4. **Requirements check** — verifies that the host commands each selected kit needs are on your `PATH`.
+3. **Requirements check** — verifies that the host commands each selected kit needs are on your `PATH`.
+
+The `task_behaviors.supervisor` / `task_behaviors.executor` template is now built into the boid binary itself — no kit install required.
 
 The wizard then writes `.boid/project.yaml` and registers the project with the daemon.
 
@@ -87,21 +86,27 @@ You should see something close to:
 ```yaml
 id: <uuid>
 name: boid-demo
+worktree: true
 kits:
   - github.com/novshi-tech/boid-kits/claude-code
 task_behaviors:
   executor:
     default_instruction:
       type: execution
+      agent: claude-code
       message: |
-        ...
+        Implement what the task.yaml title and description ask
+        for, then commit on the current branch and exit. ...
   supervisor:
     default_instruction:
       type: execution
+      agent: claude-code
       message: |
-        ...
+        Triage the request, create child executor tasks, and
+        monitor them in order. ...
 ```
 
+- **`worktree: true`** — executor tasks run in a dedicated git worktree (branch `boid/<task_id8>`).
 - **`kits:`** lists the kits you selected.
 - **`task_behaviors.supervisor` / `task_behaviors.executor`** are the two canonical roles `boid` understands. Supervisor is the readonly orchestrator; executor is the writable implementer (see [Concepts / behavior](../guide/concepts.md#behavior)).
 - **`default_instruction`** is the template message sent to the agent when a task starts. Edit it if you want, then run `boid project reload` to pick the change up.
