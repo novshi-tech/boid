@@ -2,7 +2,7 @@
 
 A minimal guide for people who want to write their own kit.
 
-The definition of "kit" lives in [Concepts](../guide/concepts.md#hook-and-kit). This page covers the on-disk layout, the main `kit.yaml` fields, the hook script protocol, and how to ship a kit.
+The definition of "kit" lives in [Concepts](../guide/concepts.md#kit). This page covers the on-disk layout, the main `kit.yaml` fields, the hook script protocol, and how to ship a kit.
 
 ## On-disk layout
 
