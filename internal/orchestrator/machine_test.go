@@ -197,6 +197,105 @@ func TestDefaultMachine_Executing_NoLifecycleExecuted_NoTransition(t *testing.T)
 	}
 }
 
+// When the agent has reported via notify --done (recorded as done_request,
+// surfaced as lifecycle.done) AND the runtime has cleanly completed
+// (lifecycle.executed), the auto-advance fires the executing→done path and
+// the resulting action carries the agent's message.
+func TestDefaultMachine_LifecycleDone_AutoAdvanceWithMessage(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(
+			`{"lifecycle":{"executed":true,"done":{"message":"PR #439 merged"}}}`),
+	}
+	outcome := sm.AdvanceFull(task)
+	if outcome == nil {
+		t.Fatal("expected advance, got nil")
+	}
+	if outcome.Task.Status != orchestrator.TaskStatusDone {
+		t.Fatalf("expected status=done, got %s", outcome.Task.Status)
+	}
+	var m map[string]string
+	if err := json.Unmarshal(outcome.ActionPayload, &m); err != nil {
+		t.Fatalf("ActionPayload not parseable: %v (%s)", err, outcome.ActionPayload)
+	}
+	if m["message"] != "PR #439 merged" {
+		t.Errorf("ActionPayload.message = %q, want %q", m["message"], "PR #439 merged")
+	}
+}
+
+// Symmetric path for lifecycle.fail → executing→aborted with the message
+// preserved on the auto_advance action.
+func TestDefaultMachine_LifecycleFail_AutoAdvanceToAborted(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(
+			`{"lifecycle":{"executed":true,"fail":{"message":"tests broken"}}}`),
+	}
+	outcome := sm.AdvanceFull(task)
+	if outcome == nil {
+		t.Fatal("expected advance, got nil")
+	}
+	if outcome.Task.Status != orchestrator.TaskStatusAborted {
+		t.Fatalf("expected status=aborted, got %s", outcome.Task.Status)
+	}
+	var m map[string]string
+	if err := json.Unmarshal(outcome.ActionPayload, &m); err != nil {
+		t.Fatalf("ActionPayload not parseable: %v (%s)", err, outcome.ActionPayload)
+	}
+	if m["message"] != "tests broken" {
+		t.Errorf("ActionPayload.message = %q, want %q", m["message"], "tests broken")
+	}
+}
+
+// Rule ordering: lifecycle.fail must take precedence over the bare
+// lifecycle.executed → done fallback. If both rules could fire, evaluating
+// `done` first would silently turn a fail report into a success.
+func TestDefaultMachine_LifecycleFail_TakesPrecedenceOverBareExecuted(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusExecuting,
+		Payload: json.RawMessage(
+			`{"lifecycle":{"executed":true,"fail":{"message":"x"}}}`),
+	}
+	next, ok := sm.Advance(task)
+	if !ok {
+		t.Fatal("expected advance, got none")
+	}
+	if next.Status != orchestrator.TaskStatusAborted {
+		t.Fatalf("expected aborted (fail wins), got %s", next.Status)
+	}
+}
+
+// done_request / fail_request are recorded as non-transitioning actions. The
+// state machine must accept them (no error) but leave the task status
+// unchanged so NotifyTask can persist the intent without re-entering the
+// state machine.
+func TestDefaultMachine_DoneRequest_NonTransitioning(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusExecuting}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "done_request"})
+	if err != nil {
+		t.Fatalf("done_request must be a recognized noop: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusExecuting {
+		t.Errorf("expected status unchanged, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_FailRequest_NonTransitioning(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusExecuting}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "fail_request"})
+	if err != nil {
+		t.Fatalf("fail_request must be a recognized noop: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusExecuting {
+		t.Errorf("expected status unchanged, got %s", next.Status)
+	}
+}
+
 // ---- AvailableActions ----
 
 func TestDefaultMachine_AvailableActions_Pending(t *testing.T) {

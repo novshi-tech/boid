@@ -942,15 +942,25 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		return nil
 	}
 
-	// Lifecycle signal: ApplyAction(ask|done|fail) and SIGTERM running jobs.
+	// Lifecycle signal: persist the agent's intent + SIGUSR1 the running jobs.
+	//
+	// --ask still goes through ApplyAction(ask): the awaiting transition is
+	// synchronous (the agent expects the task to be visibly in `awaiting`
+	// immediately after the call returns so the parent supervisor's polling
+	// loop sees it).
+	//
+	// --done / --fail record a `done_request` / `fail_request` action
+	// directly WITHOUT calling ApplyAction. The state transition fires later
+	// via the condition-based auto rule (`lifecycle.executed && lifecycle.done`
+	// → done; ditto for fail), which only kicks in after the runtime has
+	// cleanly exited and bash's EXIT trap has called `boid job done`. This
+	// preserves the agent's payload_patch (session id) and avoids the race
+	// where ApplyAction(done)'s spawned dispatch loop SIGTERM'd the still-
+	// running runtime, leaving the job marked failed.
 	if s.Workflow == nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
 	}
-	var actionType string
-	var actionPayload []byte
-	switch {
-	case ask != "":
-		actionType = "ask"
+	if ask != "" {
 		ap := orchestrator.AwaitingPayload{
 			SessionID:  sessionID,
 			Question:   ask,
@@ -960,30 +970,45 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		if err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: "encode awaiting payload: " + err.Error()}
 		}
-		actionPayload, err = json.Marshal(map[string]json.RawMessage{string(orchestrator.TraitAwaiting): apJSON})
+		askPayload, err := json.Marshal(map[string]json.RawMessage{string(orchestrator.TraitAwaiting): apJSON})
 		if err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: "encode action payload: " + err.Error()}
 		}
-	case done != "":
-		actionType = "done"
-		ap, err := json.Marshal(map[string]string{"message": done})
-		if err != nil {
-			return &StatusError{Code: http.StatusInternalServerError, Message: "encode done payload: " + err.Error()}
+		if _, err := s.Workflow.ApplyAction(ctx, taskID, ApplyActionRequest{
+			Type:    "ask",
+			Payload: askPayload,
+		}); err != nil {
+			return err
 		}
-		actionPayload = ap
-	case fail != "":
-		actionType = "fail"
-		ap, err := json.Marshal(map[string]string{"message": fail})
-		if err != nil {
-			return &StatusError{Code: http.StatusInternalServerError, Message: "encode fail payload: " + err.Error()}
+	} else {
+		// done / fail: record the intent as a non-transitioning action.
+		// The dispatch loop's auto-advance picks it up once the runtime exits.
+		if s.Actions == nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: "action store not configured"}
 		}
-		actionPayload = ap
-	}
-	if _, err := s.Workflow.ApplyAction(ctx, taskID, ApplyActionRequest{
-		Type:    actionType,
-		Payload: actionPayload,
-	}); err != nil {
-		return err
+		if task.Status != orchestrator.TaskStatusExecuting {
+			return &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf("task is not executing (status: %s); cannot record %s_request", task.Status, notifyModeName(ask, done, fail))}
+		}
+		var actionType, msg string
+		if done != "" {
+			actionType, msg = "done_request", done
+		} else {
+			actionType, msg = "fail_request", fail
+		}
+		payload, err := json.Marshal(map[string]string{"message": msg})
+		if err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: "encode " + actionType + " payload: " + err.Error()}
+		}
+		action := &orchestrator.Action{
+			TaskID:     taskID,
+			Type:       actionType,
+			FromStatus: task.Status,
+			ToStatus:   task.Status,
+			Payload:    payload,
+		}
+		if err := s.Actions.CreateAction(action); err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
 	}
 
 	// Ask the agent (claude) of each running hook job to terminate via a
@@ -1014,7 +1039,7 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 				s.Workflow.StopAgent(j.RuntimeID)
 			}
 		} else {
-			slog.Warn("notify: list running jobs failed", "task_id", taskID, "mode", actionType, "error", err)
+			slog.Warn("notify: list running jobs failed", "task_id", taskID, "mode", notifyModeName(ask, done, fail), "error", err)
 		}
 	}
 	return nil
