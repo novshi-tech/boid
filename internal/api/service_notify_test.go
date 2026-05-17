@@ -251,6 +251,144 @@ func (s *capturingActionStore) ListActionsByTask(taskID string) ([]*orchestrator
 	return nil, nil
 }
 
+// Per-mode regression tests for notify --done / --fail: they MUST NOT call
+// ApplyAction (which would synchronously transition the task and SIGTERM the
+// runtime), and MUST instead record a non-transitioning done_request /
+// fail_request action so the dispatch loop's auto-advance picks up the intent
+// once the runtime exits cleanly. See investigation of job 69b1b0a4 (Phase
+// 2.c race: notify --done → ApplyAction(done) → finalizeTerminal →
+// CleanupTaskWindow SIGTERM → bash dies before EXIT trap can call boid job
+// done → watchRuntime marks job failed).
+func TestNotifyTask_DoneMode_RecordsDoneRequestActionNotApplyAction(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "t1",
+		ProjectID: "proj-1",
+		Title:     "my task",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "executor",
+	}
+	jobs := []*Job{
+		{ID: "j-running", TaskID: "t1", Status: JobStatusRunning, Interactive: true, RuntimeID: "rt-running"},
+	}
+	notifier := &capturingNotifier{}
+	workflow := &stubWorkflowService{}
+	actions := &capturingActionStore{}
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{task: task},
+		Jobs:     &stubJobStore{jobsByTask: map[string][]*Job{task.ID: jobs}},
+		Actions:  actions,
+		Notify:   notifier,
+		Workflow: workflow,
+	}
+
+	if err := svc.NotifyTask(context.Background(), "t1", "headline", "", "", "", "", "PR #439 merged", ""); err != nil {
+		t.Fatalf("NotifyTask: %v", err)
+	}
+
+	if workflow.appliedType != "" {
+		t.Errorf("ApplyAction must NOT be called for --done (got type=%q); transition must happen via auto-advance after the runtime exits", workflow.appliedType)
+	}
+	if actions.createdAction == nil {
+		t.Fatal("expected done_request action to be recorded")
+	}
+	a := actions.createdAction
+	if a.Type != "done_request" {
+		t.Errorf("action.Type = %q, want done_request", a.Type)
+	}
+	if a.FromStatus != orchestrator.TaskStatusExecuting || a.ToStatus != orchestrator.TaskStatusExecuting {
+		t.Errorf("action must be non-transitioning, got %s → %s", a.FromStatus, a.ToStatus)
+	}
+	if string(a.Payload) != `{"message":"PR #439 merged"}` {
+		t.Errorf("action.Payload = %s, want {\"message\":\"PR #439 merged\"}", a.Payload)
+	}
+	// SIGUSR1 path (graceful claude shutdown) must still fire so the runtime
+	// can exit and the bash EXIT trap can call boid job done. This is the
+	// signal the auto-advance is waiting for (lifecycle.executed).
+	if len(workflow.stoppedAgentRuntimes) != 1 || workflow.stoppedAgentRuntimes[0] != "rt-running" {
+		t.Errorf("stopped agent runtimes = %v, want [rt-running]", workflow.stoppedAgentRuntimes)
+	}
+}
+
+func TestNotifyTask_FailMode_RecordsFailRequestActionNotApplyAction(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "t1",
+		ProjectID: "proj-1",
+		Title:     "my task",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "executor",
+	}
+	jobs := []*Job{
+		{ID: "j-running", TaskID: "t1", Status: JobStatusRunning, Interactive: true, RuntimeID: "rt-running"},
+	}
+	notifier := &capturingNotifier{}
+	workflow := &stubWorkflowService{}
+	actions := &capturingActionStore{}
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{task: task},
+		Jobs:     &stubJobStore{jobsByTask: map[string][]*Job{task.ID: jobs}},
+		Actions:  actions,
+		Notify:   notifier,
+		Workflow: workflow,
+	}
+
+	if err := svc.NotifyTask(context.Background(), "t1", "headline", "", "", "", "", "", "tests broken"); err != nil {
+		t.Fatalf("NotifyTask: %v", err)
+	}
+
+	if workflow.appliedType != "" {
+		t.Errorf("ApplyAction must NOT be called for --fail (got type=%q)", workflow.appliedType)
+	}
+	if actions.createdAction == nil {
+		t.Fatal("expected fail_request action to be recorded")
+	}
+	a := actions.createdAction
+	if a.Type != "fail_request" {
+		t.Errorf("action.Type = %q, want fail_request", a.Type)
+	}
+	if a.FromStatus != orchestrator.TaskStatusExecuting || a.ToStatus != orchestrator.TaskStatusExecuting {
+		t.Errorf("action must be non-transitioning, got %s → %s", a.FromStatus, a.ToStatus)
+	}
+	if string(a.Payload) != `{"message":"tests broken"}` {
+		t.Errorf("action.Payload = %s, want {\"message\":\"tests broken\"}", a.Payload)
+	}
+	if len(workflow.stoppedAgentRuntimes) != 1 || workflow.stoppedAgentRuntimes[0] != "rt-running" {
+		t.Errorf("stopped agent runtimes = %v, want [rt-running]", workflow.stoppedAgentRuntimes)
+	}
+}
+
+// notify --done from a non-executing task must error out cleanly rather than
+// silently record an orphan done_request. The previous design routed
+// awaiting → done through `notify --done` from the parent supervisor, but
+// that path now belongs to `action send --type done`; agents only call
+// notify --done from executing.
+func TestNotifyTask_DoneMode_NonExecutingTask_Errors(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "t1",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusAwaiting,
+	}
+	notifier := &capturingNotifier{}
+	actions := &capturingActionStore{}
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{task: task},
+		Actions:  actions,
+		Notify:   notifier,
+		Workflow: &stubWorkflowService{},
+	}
+
+	err := svc.NotifyTask(context.Background(), "t1", "headline", "", "", "", "", "done msg", "")
+	if err == nil {
+		t.Fatal("expected error when calling --done on non-executing task")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected StatusConflict, got %v", err)
+	}
+	if actions.createdAction != nil {
+		t.Errorf("no action should be recorded on error, got %+v", actions.createdAction)
+	}
+}
+
 func TestNotifyTask_ProgressMode_CreatesActionNoHook(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "t1",
