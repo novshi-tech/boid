@@ -1304,7 +1304,7 @@ host_commands:
 }
 
 func TestReadKitMeta_NewFields(t *testing.T) {
-	t.Run("parses meta/detect/requires/scaffold", func(t *testing.T) {
+	t.Run("parses meta/detect/requires", func(t *testing.T) {
 		dir := t.TempDir()
 		writeKitYAML(t, dir, `
 meta:
@@ -1316,10 +1316,6 @@ detect:
 requires:
   commands:
     - go
-scaffold:
-  task_behaviors:
-    description: Go task behaviors scaffold
-    template: scaffold/task_behaviors.yaml
 `)
 		meta, err := projectspec.ReadKitMeta(dir)
 		if err != nil {
@@ -1349,13 +1345,6 @@ scaffold:
 		if len(meta.Requires.Commands) != 1 || meta.Requires.Commands[0] != "go" {
 			t.Errorf("Requires.Commands = %v", meta.Requires.Commands)
 		}
-
-		if meta.Scaffold == nil || meta.Scaffold.TaskBehaviors == nil {
-			t.Fatal("expected Scaffold.TaskBehaviors to be set")
-		}
-		if meta.Scaffold.TaskBehaviors.Template != "scaffold/task_behaviors.yaml" {
-			t.Errorf("Scaffold.TaskBehaviors.Template = %q", meta.Scaffold.TaskBehaviors.Template)
-		}
 	})
 
 	t.Run("backward compatible: no new fields", func(t *testing.T) {
@@ -1379,9 +1368,6 @@ task_behaviors:
 		if meta.Requires != nil {
 			t.Error("expected Requires to be nil")
 		}
-		if meta.Scaffold != nil {
-			t.Error("expected Scaffold to be nil")
-		}
 	})
 
 	t.Run("new fields excluded from MergeKitMetaIntoBehavior", func(t *testing.T) {
@@ -1393,10 +1379,6 @@ detect:
   files: [go.mod]
 requires:
   commands: [go]
-scaffold:
-  task_behaviors:
-    description: desc
-    template: tmpl.yaml
 `)
 		kitMeta, err := projectspec.ReadKitMeta(dir)
 		if err != nil {

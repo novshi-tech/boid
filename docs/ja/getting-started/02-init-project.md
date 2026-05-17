@@ -6,7 +6,7 @@
 
 ## このページのねらい
 
-- 公式 kit リポジトリをインストールする
+- 公式 kit リポジトリをインストールする (オプション)
 - `boid init` の対話ウィザードでプロジェクトを 1 つ作る
 - 生成された `.boid/project.yaml` の内容を確認する
 
@@ -14,9 +14,9 @@
 
 `boid` のアーキテクチャは特定の AI エージェントに依存しない設計ですが、 現時点で実用的に動作確認が取れている agent は **Claude Code** のみです。 このチュートリアル以降は Claude Code が手元にあることを前提に進めます。 `claude` CLI が PATH にあり、 Claude Code としてサインイン済みであることを確認してください (Claude Code 側のセットアップ手順は [Claude Code の公式ドキュメント](https://docs.claude.com/en/docs/claude-code/overview) を参照)。
 
-## kit リポジトリをインストールする
+## kit リポジトリをインストールする (オプション)
 
-`boid init` は **インストール済み** の kit からプロジェクトに組み込むものを選びます。 まず公式 kit リポジトリを 1 つ持ってきます。
+追加の hooks や host_commands が必要な場合は公式 kit リポジトリをインストールできます。
 
 ```bash
 boid kit install github.com/novshi-tech/boid-kits
@@ -58,8 +58,6 @@ Available kits (auto-detected marked with ✓):
   ...
 Enable/disable kits (space-separated numbers, prefix - to deselect, Enter to keep defaults):
 >
-Task behavior provider: boid-tasks - Default task behaviors
-Use this? [Y/n]:
 Checking requirements...
   ✓ claude (/home/<you>/.local/bin/claude)
 
@@ -71,8 +69,9 @@ project registered: <uuid> (boid-demo)
 
 1. **Project name** — Web UI / TUI 表示用の名前。 ディレクトリ名がそのまま既定値
 2. **Available kits** — インストール済み kit のうち、 このマシンで動かせるものに `✓` が付いて自動選択されます (例: `claude` CLI が PATH にあれば Claude Code がオンに)。 番号を打って on/off を切り替えられます
-3. **Task behavior provider** — `task_behaviors.supervisor` / `task_behaviors.executor` の雛形を提供する kit。 通常はデフォルトの `boid-tasks` で OK
-4. **Requirements check** — 選んだ kit が必要とする host コマンドが PATH 上にあるかを確認
+3. **Requirements check** — 選んだ kit が必要とする host コマンドが PATH 上にあるかを確認
+
+`task_behaviors.supervisor` / `task_behaviors.executor` の雛形は boid バイナリに内蔵されており、 kit のインストールなしで自動生成されます。
 
 最後にウィザードが `.boid/project.yaml` を生成し、 `boid` の daemon に自動登録します。
 
@@ -87,21 +86,27 @@ cat .boid/project.yaml
 ```yaml
 id: <uuid>
 name: boid-demo
+worktree: true
 kits:
   - github.com/novshi-tech/boid-kits/claude-code
 task_behaviors:
   executor:
     default_instruction:
       type: execution
+      agent: claude-code
       message: |
-        ...
+        Implement what the task.yaml title and description ask
+        for, then commit on the current branch and exit. ...
   supervisor:
     default_instruction:
       type: execution
+      agent: claude-code
       message: |
-        ...
+        Triage the request, create child executor tasks, and
+        monitor them in order. ...
 ```
 
+- **`worktree: true`** — executor タスクが専用の git worktree (ブランチ `boid/<task_id8>`) で動くことを示す
 - **`kits:`** にウィザードで選んだ kit が並びます
 - **`task_behaviors.supervisor` / `task_behaviors.executor`** が `boid` の 2 つの canonical な役割。 supervisor は readonly な統括役、 executor は書き込み可能な実装役です (詳細は [概念 / behavior](../guide/concepts.md#behavior))
 - **`default_instruction`** はタスク作成時に agent に最初に渡る指示の雛形。 必要なら手で書き換えて `boid project reload` してください

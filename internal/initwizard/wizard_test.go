@@ -14,108 +14,73 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// ExpandScaffoldTemplate tests
+// ExpandScaffoldTemplate tests (built-in embedded template)
 // ---------------------------------------------------------------------------
 
-func TestExpandScaffoldTemplate_Basic(t *testing.T) {
-	kitDir := t.TempDir()
-	tplContent := `dev:
-  name: Development
-  project_id: {{.ProjectID}}
-  project_name: {{.ProjectName}}
-`
-	if err := os.WriteFile(filepath.Join(kitDir, "behaviors.tmpl"), []byte(tplContent), 0o644); err != nil {
-		t.Fatalf("write template: %v", err)
-	}
-
-	data := initwizard.ScaffoldTemplateData{
-		ProjectID:   "abc-123",
-		ProjectName: "My Project",
-	}
-
-	result, err := initwizard.ExpandScaffoldTemplate(kitDir, "behaviors.tmpl", data)
-	if err != nil {
-		t.Fatalf("ExpandScaffoldTemplate: %v", err)
-	}
-
-	devVal, ok := result["dev"]
-	if !ok {
-		t.Fatal("expected 'dev' key in result")
-	}
-	devMap, ok := devVal.(map[string]any)
-	if !ok {
-		t.Fatalf("expected dev to be map, got %T", devVal)
-	}
-	if devMap["project_id"] != "abc-123" {
-		t.Errorf("project_id = %v, want %q", devMap["project_id"], "abc-123")
-	}
-	if devMap["project_name"] != "My Project" {
-		t.Errorf("project_name = %v, want %q", devMap["project_name"], "My Project")
-	}
-	if devMap["name"] != "Development" {
-		t.Errorf("name = %v, want %q", devMap["name"], "Development")
-	}
-}
-
 func TestExpandScaffoldTemplate_WithAgent(t *testing.T) {
-	kitDir := t.TempDir()
-	tplContent := "dev:\n  agent: {{.Agent}}\n"
-	if err := os.WriteFile(filepath.Join(kitDir, "behaviors.tmpl"), []byte(tplContent), 0o644); err != nil {
-		t.Fatalf("write template: %v", err)
-	}
-
 	data := initwizard.ScaffoldTemplateData{
 		ProjectID:   "abc-123",
 		ProjectName: "My Project",
 		Agent:       "claude-code",
 	}
 
-	result, err := initwizard.ExpandScaffoldTemplate(kitDir, "behaviors.tmpl", data)
+	result, err := initwizard.ExpandScaffoldTemplate(data)
 	if err != nil {
 		t.Fatalf("ExpandScaffoldTemplate: %v", err)
 	}
 
-	devVal, ok := result["dev"]
-	if !ok {
-		t.Fatal("expected 'dev' key in result")
-	}
-	devMap, ok := devVal.(map[string]any)
-	if !ok {
-		t.Fatalf("expected dev to be map, got %T", devVal)
-	}
-	if devMap["agent"] != "claude-code" {
-		t.Errorf("agent = %v, want 'claude-code'", devMap["agent"])
-	}
-}
-
-func TestExpandScaffoldTemplate_InvalidTemplate(t *testing.T) {
-	kitDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(kitDir, "bad.tmpl"), []byte(`{{ .Foo {{`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, err := initwizard.ExpandScaffoldTemplate(kitDir, "bad.tmpl", initwizard.ScaffoldTemplateData{})
-	if err == nil {
-		t.Fatal("expected error for invalid template syntax")
-	}
-}
-
-func TestExpandScaffoldTemplate_MissingFile(t *testing.T) {
-	kitDir := t.TempDir()
-	_, err := initwizard.ExpandScaffoldTemplate(kitDir, "nonexistent.tmpl", initwizard.ScaffoldTemplateData{})
-	if err == nil {
-		t.Fatal("expected error for missing template file")
+	// Must produce both supervisor and executor behaviors.
+	for _, key := range []string{"supervisor", "executor"} {
+		val, ok := result[key]
+		if !ok {
+			t.Fatalf("expected %q key in result", key)
+		}
+		m, ok := val.(map[string]any)
+		if !ok {
+			t.Fatalf("expected %s to be map, got %T", key, val)
+		}
+		instr, ok := m["default_instruction"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s.default_instruction is not a map", key)
+		}
+		if instr["agent"] != "claude-code" {
+			t.Errorf("%s.default_instruction.agent = %v, want 'claude-code'", key, instr["agent"])
+		}
+		if instr["type"] != "execution" {
+			t.Errorf("%s.default_instruction.type = %v, want 'execution'", key, instr["type"])
+		}
 	}
 }
 
-func TestExpandScaffoldTemplate_InvalidYAML(t *testing.T) {
-	kitDir := t.TempDir()
-	// Template renders to invalid YAML
-	if err := os.WriteFile(filepath.Join(kitDir, "bad.tmpl"), []byte(":\nfoo: [unclosed"), 0o644); err != nil {
-		t.Fatal(err)
+func TestExpandScaffoldTemplate_AgentEmpty(t *testing.T) {
+	data := initwizard.ScaffoldTemplateData{
+		ProjectID:   "abc-123",
+		ProjectName: "My Project",
+		Agent:       "",
 	}
-	_, err := initwizard.ExpandScaffoldTemplate(kitDir, "bad.tmpl", initwizard.ScaffoldTemplateData{})
-	if err == nil {
-		t.Fatal("expected error for invalid YAML output")
+
+	result, err := initwizard.ExpandScaffoldTemplate(data)
+	if err != nil {
+		t.Fatalf("ExpandScaffoldTemplate: %v", err)
+	}
+
+	// When Agent is empty the agent: field should be absent.
+	for _, key := range []string{"supervisor", "executor"} {
+		val, ok := result[key]
+		if !ok {
+			t.Fatalf("expected %q key in result", key)
+		}
+		m, ok := val.(map[string]any)
+		if !ok {
+			t.Fatalf("expected %s to be map, got %T", key, val)
+		}
+		instr, ok := m["default_instruction"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s.default_instruction is not a map", key)
+		}
+		if v, exists := instr["agent"]; exists && v != nil && v != "" {
+			t.Errorf("%s.default_instruction.agent = %v, want absent/nil", key, v)
+		}
 	}
 }
 
@@ -173,8 +138,8 @@ func TestListAllKits_Empty(t *testing.T) {
 
 func TestListAllKits_WithKits(t *testing.T) {
 	kitsDir := t.TempDir()
-	createFakeKit(t, kitsDir, "github.com/test/repo/kit-a", "kit-a", "", false)
-	createFakeKit(t, kitsDir, "github.com/test/repo/kit-b", "kit-b", "go.mod", false)
+	createFakeKit(t, kitsDir, "github.com/test/repo/kit-a", "kit-a", "")
+	createFakeKit(t, kitsDir, "github.com/test/repo/kit-b", "kit-b", "go.mod")
 	initFakeGitRepo(t, kitsDir, "github.com/test/repo")
 
 	reg := orchestrator.NewRegistry(kitsDir)
@@ -193,8 +158,8 @@ func TestListAllKits_WithKits(t *testing.T) {
 
 func TestWizardRun_Basic(t *testing.T) {
 	kitsDir := t.TempDir()
-	createFakeKit(t, kitsDir, "github.com/test/repo/go-kit", "go-kit", "go.mod", false)
-	createFakeKit(t, kitsDir, "github.com/test/repo/node-kit", "node-kit", "package.json", false)
+	createFakeKit(t, kitsDir, "github.com/test/repo/go-kit", "go-kit", "go.mod")
+	createFakeKit(t, kitsDir, "github.com/test/repo/node-kit", "node-kit", "package.json")
 	initFakeGitRepo(t, kitsDir, "github.com/test/repo")
 
 	projectDir := t.TempDir()
@@ -204,7 +169,6 @@ func TestWizardRun_Basic(t *testing.T) {
 	}
 
 	// Stdin: project name, keep kit defaults (Enter)
-	// No behavior kits → behavior selection step is skipped
 	input := "my-test-project\n\n"
 	var out bytes.Buffer
 
@@ -226,8 +190,10 @@ func TestWizardRun_Basic(t *testing.T) {
 	}
 
 	var proj struct {
-		ID   string `yaml:"id"`
-		Name string `yaml:"name"`
+		ID            string         `yaml:"id"`
+		Name          string         `yaml:"name"`
+		Worktree      bool           `yaml:"worktree"`
+		TaskBehaviors map[string]any `yaml:"task_behaviors"`
 	}
 	if err := yaml.Unmarshal(data, &proj); err != nil {
 		t.Fatalf("parse project.yaml: %v", err)
@@ -238,6 +204,16 @@ func TestWizardRun_Basic(t *testing.T) {
 	}
 	if proj.ID == "" {
 		t.Error("ID must not be empty")
+	}
+	if !proj.Worktree {
+		t.Error("worktree must be true")
+	}
+
+	// Embedded template always produces both behaviors.
+	for _, key := range []string{"supervisor", "executor"} {
+		if _, ok := proj.TaskBehaviors[key]; !ok {
+			t.Errorf("expected %q behavior in task_behaviors", key)
+		}
 	}
 
 	// go-kit is project-scopable and auto-detected, so it must appear in top-level kits.
@@ -303,19 +279,16 @@ func TestWizardRun_DefaultProjectName(t *testing.T) {
 	}
 }
 
-func TestWizardRun_WithScaffold(t *testing.T) {
+// TestWizardRun_EmbeddedBehaviors verifies that the wizard always generates
+// supervisor and executor behaviors from the built-in template, and sets
+// worktree: true, without requiring any behavior kit to be installed.
+func TestWizardRun_EmbeddedBehaviors(t *testing.T) {
 	kitsDir := t.TempDir()
-	createFakeKit(t, kitsDir, "github.com/test/repo/go-kit", "go-kit", "go.mod", false)
-	createFakeKit(t, kitsDir, "github.com/test/repo/dev-kit", "dev-kit", "", true)
-	initFakeGitRepo(t, kitsDir, "github.com/test/repo")
+	initFakeGitRepo(t, kitsDir, "github.com/test/empty")
 
 	projectDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(projectDir, "go.mod"), []byte("module test"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
-	// Stdin: project name, keep kit defaults, accept the single behavior kit (Y)
-	input := "scaffold-project\n\nY\n"
+	input := "embed-project\n"
 	var out bytes.Buffer
 
 	w := &initwizard.Wizard{
@@ -328,40 +301,30 @@ func TestWizardRun_WithScaffold(t *testing.T) {
 		t.Fatalf("Run: %v\nOutput:\n%s", err, out.String())
 	}
 
-	yamlPath := filepath.Join(projectDir, ".boid", "project.yaml")
-	data, err := os.ReadFile(yamlPath)
+	data, err := os.ReadFile(filepath.Join(projectDir, ".boid", "project.yaml"))
 	if err != nil {
 		t.Fatalf("read project.yaml: %v", err)
 	}
 
 	var proj struct {
 		Name          string         `yaml:"name"`
-		Kits          []string       `yaml:"kits"`
+		Worktree      bool           `yaml:"worktree"`
 		TaskBehaviors map[string]any `yaml:"task_behaviors"`
 	}
 	if err := yaml.Unmarshal(data, &proj); err != nil {
 		t.Fatalf("parse project.yaml: %v", err)
 	}
 
-	if proj.Name != "scaffold-project" {
-		t.Errorf("Name = %q, want %q", proj.Name, "scaffold-project")
+	if proj.Name != "embed-project" {
+		t.Errorf("Name = %q, want %q", proj.Name, "embed-project")
 	}
-	if len(proj.TaskBehaviors) == 0 {
-		t.Error("expected task_behaviors to be non-empty when scaffold kit is selected")
+	if !proj.Worktree {
+		t.Error("worktree must be true")
 	}
-	if _, ok := proj.TaskBehaviors["dev"]; !ok {
-		t.Fatalf("expected 'dev' behavior in task_behaviors, got keys: %v", mapKeys(proj.TaskBehaviors))
-	}
-	// go-kit is project-scopable and auto-detected: must be in top-level kits.
-	found := false
-	for _, k := range proj.Kits {
-		if strings.Contains(k, "go-kit") {
-			found = true
-			break
+	for _, key := range []string{"supervisor", "executor"} {
+		if _, ok := proj.TaskBehaviors[key]; !ok {
+			t.Errorf("expected %q in task_behaviors, got keys: %v", key, mapKeys(proj.TaskBehaviors))
 		}
-	}
-	if !found {
-		t.Errorf("expected go-kit in top-level kits, got %v", proj.Kits)
 	}
 }
 
@@ -369,7 +332,6 @@ func TestWizardRun_ExistingProjectYAML(t *testing.T) {
 	// The conflict check happens in cmd/init.go, not in the wizard itself.
 	// We verify that the wizard CAN run even if there is a project.yaml
 	// (it would overwrite – the guard lives in the cmd layer).
-	// This test just ensures the wizard path itself doesn't error on a clean dir.
 	kitsDir := t.TempDir()
 	initFakeGitRepo(t, kitsDir, "github.com/test/empty")
 	projectDir := t.TempDir()
@@ -454,7 +416,6 @@ func TestWizardRun_OptionalKit(t *testing.T) {
 	}
 
 	// 2. project.yaml must NOT include the optional kit (default OFF).
-	// Top-level kits field is omitted (omitempty) when no project-scope kits are selected.
 	data, err := os.ReadFile(filepath.Join(projectDir, ".boid", "project.yaml"))
 	if err != nil {
 		t.Fatalf("read project.yaml: %v", err)
@@ -472,7 +433,7 @@ func TestWizardRun_OptionalKit(t *testing.T) {
 // helpers
 // ---------------------------------------------------------------------------
 
-func createFakeKit(t *testing.T, kitsDir, ref, name, detectMarker string, hasScaffold bool) {
+func createFakeKit(t *testing.T, kitsDir, ref, name, detectMarker string) {
 	t.Helper()
 	kitDir := filepath.Join(kitsDir, ref)
 	if err := os.MkdirAll(kitDir, 0o755); err != nil {
@@ -489,13 +450,6 @@ func createFakeKit(t *testing.T, kitsDir, ref, name, detectMarker string, hasSca
 			t.Fatalf("write detect.sh: %v", err)
 		}
 		sb.WriteString("detect:\n  script: detect.sh\n")
-	}
-	if hasScaffold {
-		sb.WriteString("scaffold:\n  task_behaviors:\n    description: Test scaffold\n    template: behaviors.tmpl\n")
-		tpl := "dev:\n  name: Development\n"
-		if err := os.WriteFile(filepath.Join(kitDir, "behaviors.tmpl"), []byte(tpl), 0o644); err != nil {
-			t.Fatalf("write scaffold template: %v", err)
-		}
 	}
 
 	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(sb.String()), 0o644); err != nil {
@@ -568,38 +522,17 @@ func createFakeKitWithAgent(t *testing.T, kitsDir, ref, name, detectMarker, agen
 	}
 }
 
-// createFakeScaffoldKitAgentTemplate creates a behavior kit whose scaffold template
-// uses {{.Agent}}, so tests can verify Agent injection.
-func createFakeScaffoldKitAgentTemplate(t *testing.T, kitsDir, ref, name string) {
-	t.Helper()
-	kitDir := filepath.Join(kitsDir, ref)
-	if err := os.MkdirAll(kitDir, 0o755); err != nil {
-		t.Fatalf("mkdir kit: %v", err)
-	}
-	tpl := "dev:\n  agent: {{.Agent}}\n"
-	if err := os.WriteFile(filepath.Join(kitDir, "behaviors.tmpl"), []byte(tpl), 0o644); err != nil {
-		t.Fatalf("write behaviors.tmpl: %v", err)
-	}
-	kitYAML := "meta:\n  name: " + name + "\n" +
-		"scaffold:\n  task_behaviors:\n    description: Test scaffold\n    template: behaviors.tmpl\n"
-	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
-		t.Fatalf("write kit.yaml: %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Agent selection tests
 // ---------------------------------------------------------------------------
 
 // TestWizardRun_AgentAutoSelected verifies that when exactly one feature kit
 // provides an agent, it is auto-selected without prompting and injected into
-// the scaffold template.
+// the built-in template.
 func TestWizardRun_AgentAutoSelected(t *testing.T) {
 	kitsDir := t.TempDir()
 	// Feature kit: provides_agent, auto-detected via claude-marker.txt
 	createFakeKitWithAgent(t, kitsDir, "github.com/test/repo/claude-kit", "claude-code-kit", "claude-marker.txt", "claude-code")
-	// Behavior kit: scaffold template uses {{.Agent}}
-	createFakeScaffoldKitAgentTemplate(t, kitsDir, "github.com/test/repo/dev-kit", "dev-kit")
 	initFakeGitRepo(t, kitsDir, "github.com/test/repo")
 
 	projectDir := t.TempDir()
@@ -607,9 +540,9 @@ func TestWizardRun_AgentAutoSelected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Input: project name (default), keep kit defaults (claude-kit auto-selected), accept behavior kit (Y)
+	// Input: project name (default), keep kit defaults (claude-kit auto-selected)
 	// Agent: auto-selected — no additional input line needed
-	input := "agent-project\n\nY\n"
+	input := "agent-project\n\n"
 	var out bytes.Buffer
 
 	w := &initwizard.Wizard{In: strings.NewReader(input), Out: &out, KitsDir: kitsDir}
@@ -622,7 +555,7 @@ func TestWizardRun_AgentAutoSelected(t *testing.T) {
 		t.Errorf("expected 'claude-code' in output, got:\n%s", out.String())
 	}
 
-	// Verify Agent was injected into the scaffold template
+	// Verify Agent was injected into the built-in template
 	data, err := os.ReadFile(filepath.Join(projectDir, ".boid", "project.yaml"))
 	if err != nil {
 		t.Fatalf("read project.yaml: %v", err)
@@ -633,28 +566,30 @@ func TestWizardRun_AgentAutoSelected(t *testing.T) {
 	if err := yaml.Unmarshal(data, &proj); err != nil {
 		t.Fatalf("parse project.yaml: %v", err)
 	}
-	devBehavior, ok := proj.TaskBehaviors["dev"]
+	execBehavior, ok := proj.TaskBehaviors["executor"]
 	if !ok {
-		t.Fatalf("expected 'dev' in task_behaviors, got keys: %v", mapKeys(proj.TaskBehaviors))
+		t.Fatalf("expected 'executor' in task_behaviors, got keys: %v", mapKeys(proj.TaskBehaviors))
 	}
-	devMap, ok := devBehavior.(map[string]any)
+	execMap, ok := execBehavior.(map[string]any)
 	if !ok {
-		t.Fatalf("expected dev to be map, got %T", devBehavior)
+		t.Fatalf("expected executor to be map, got %T", execBehavior)
 	}
-	if devMap["agent"] != "claude-code" {
-		t.Errorf("agent = %v, want 'claude-code'", devMap["agent"])
+	instr, ok := execMap["default_instruction"].(map[string]any)
+	if !ok {
+		t.Fatalf("executor.default_instruction is not a map")
+	}
+	if instr["agent"] != "claude-code" {
+		t.Errorf("agent = %v, want 'claude-code'", instr["agent"])
 	}
 }
 
 // TestWizardRun_AgentMenu verifies that when two feature kits provide agents,
-// a menu is shown and the user's choice is injected into the scaffold template.
+// a menu is shown and the user's choice is injected into the built-in template.
 func TestWizardRun_AgentMenu(t *testing.T) {
 	kitsDir := t.TempDir()
 	// Two feature kits with agents (lexicographic order: kit-a-consumer < kit-b-consumer)
 	createFakeKitWithAgent(t, kitsDir, "github.com/test/repo/kit-a-consumer", "agent-a-kit", "marker-a.txt", "agent-a")
 	createFakeKitWithAgent(t, kitsDir, "github.com/test/repo/kit-b-consumer", "agent-b-kit", "marker-b.txt", "agent-b")
-	// Behavior kit
-	createFakeScaffoldKitAgentTemplate(t, kitsDir, "github.com/test/repo/dev-kit", "dev-kit")
 	initFakeGitRepo(t, kitsDir, "github.com/test/repo")
 
 	projectDir := t.TempDir()
@@ -665,8 +600,8 @@ func TestWizardRun_AgentMenu(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Input: default name, keep kit defaults (both auto-selected), accept behavior kit, select agent #2 (agent-b)
-	input := "\n\nY\n2\n"
+	// Input: default name, keep kit defaults (both auto-selected), select agent #2 (agent-b)
+	input := "\n\n2\n"
 	var out bytes.Buffer
 
 	w := &initwizard.Wizard{In: strings.NewReader(input), Out: &out, KitsDir: kitsDir}
@@ -685,24 +620,23 @@ func TestWizardRun_AgentMenu(t *testing.T) {
 	if err := yaml.Unmarshal(data, &proj); err != nil {
 		t.Fatalf("parse project.yaml: %v", err)
 	}
-	devBehavior, ok := proj.TaskBehaviors["dev"]
+	execBehavior, ok := proj.TaskBehaviors["executor"]
 	if !ok {
-		t.Fatalf("expected 'dev' in task_behaviors")
+		t.Fatalf("expected 'executor' in task_behaviors")
 	}
-	devMap := devBehavior.(map[string]any)
-	if devMap["agent"] != "agent-b" {
-		t.Errorf("agent = %v, want 'agent-b'", devMap["agent"])
+	execMap := execBehavior.(map[string]any)
+	instr := execMap["default_instruction"].(map[string]any)
+	if instr["agent"] != "agent-b" {
+		t.Errorf("agent = %v, want 'agent-b'", instr["agent"])
 	}
 }
 
 // TestWizardRun_AgentNone verifies that when no feature kit provides an agent,
-// the Agent field is empty and {{.Agent}} renders to an empty string without error.
+// the agent field is absent from the generated task_behaviors.
 func TestWizardRun_AgentNone(t *testing.T) {
 	kitsDir := t.TempDir()
 	// Feature kit without provides_agent
-	createFakeKit(t, kitsDir, "github.com/test/repo/go-kit", "go-kit", "go.mod", false)
-	// Behavior kit with {{.Agent}} template
-	createFakeScaffoldKitAgentTemplate(t, kitsDir, "github.com/test/repo/dev-kit", "dev-kit")
+	createFakeKit(t, kitsDir, "github.com/test/repo/go-kit", "go-kit", "go.mod")
 	initFakeGitRepo(t, kitsDir, "github.com/test/repo")
 
 	projectDir := t.TempDir()
@@ -710,9 +644,8 @@ func TestWizardRun_AgentNone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Input: default name, keep kit defaults, accept behavior kit
-	// No agent prompt since no agent kits selected
-	input := "\n\nY\n"
+	// Input: default name, keep kit defaults
+	input := "\n\n"
 	var out bytes.Buffer
 
 	w := &initwizard.Wizard{In: strings.NewReader(input), Out: &out, KitsDir: kitsDir}
@@ -720,7 +653,7 @@ func TestWizardRun_AgentNone(t *testing.T) {
 		t.Fatalf("Run: %v\nOutput:\n%s", err, out.String())
 	}
 
-	// Verify Agent is empty (renders to empty string, not error)
+	// Verify agent field is absent when no agent provided
 	data, err := os.ReadFile(filepath.Join(projectDir, ".boid", "project.yaml"))
 	if err != nil {
 		t.Fatalf("read project.yaml: %v", err)
@@ -731,13 +664,16 @@ func TestWizardRun_AgentNone(t *testing.T) {
 	if err := yaml.Unmarshal(data, &proj); err != nil {
 		t.Fatalf("parse project.yaml: %v", err)
 	}
-	devBehavior, ok := proj.TaskBehaviors["dev"]
+	execBehavior, ok := proj.TaskBehaviors["executor"]
 	if !ok {
-		t.Fatalf("expected 'dev' in task_behaviors")
+		t.Fatalf("expected 'executor' in task_behaviors")
 	}
-	devMap := devBehavior.(map[string]any)
-	// agent key should be nil/empty (YAML renders "" as null or empty string)
-	if v := devMap["agent"]; v != nil && v != "" {
-		t.Errorf("agent = %v, want empty/nil", v)
+	execMap := execBehavior.(map[string]any)
+	instr, ok := execMap["default_instruction"].(map[string]any)
+	if !ok {
+		t.Fatalf("executor.default_instruction is not a map")
+	}
+	if v, exists := instr["agent"]; exists && v != nil && v != "" {
+		t.Errorf("agent = %v, want absent/nil", v)
 	}
 }

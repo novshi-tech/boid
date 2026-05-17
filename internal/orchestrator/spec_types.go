@@ -528,11 +528,10 @@ type KitMeta struct {
 	KitRoot            string                  `yaml:"-"` // directory containing kit.yaml
 
 	// Init-time metadata — not merged into runtime spec by MergeKitMeta.
-	Meta             *KitMetaInfo `yaml:"meta,omitempty"`
-	Detect           *KitDetect   `yaml:"detect,omitempty"`
-	Requires         *KitRequires `yaml:"requires,omitempty"`
-	Scaffold         *KitScaffold `yaml:"scaffold,omitempty"`
-	ProvidesAgent    string       `yaml:"provides_agent,omitempty"`
+	Meta          *KitMetaInfo `yaml:"meta,omitempty"`
+	Detect        *KitDetect   `yaml:"detect,omitempty"`
+	Requires      *KitRequires `yaml:"requires,omitempty"`
+	ProvidesAgent string       `yaml:"provides_agent,omitempty"`
 }
 
 // KitMetaInfo holds human-readable metadata for a kit.
@@ -561,13 +560,3 @@ type KitRequires struct {
 	Commands []string `yaml:"commands"`
 }
 
-// KitScaffold declares scaffold templates bundled with this kit.
-type KitScaffold struct {
-	TaskBehaviors *ScaffoldTemplate `yaml:"task_behaviors,omitempty"`
-}
-
-// ScaffoldTemplate points to a template file relative to the kit directory.
-type ScaffoldTemplate struct {
-	Description string `yaml:"description"`
-	Template    string `yaml:"template"`
-}
