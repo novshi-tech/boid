@@ -42,7 +42,7 @@ What each field means:
 - **`name: Demo`** — the human-readable label shown in the Web UI and TUI.
 - **`task_behaviors.supervisor`** — declares one kind of task this project can spawn. `supervisor` is one of the two canonical behavior names; readonly is derived automatically from the name (supervisor ⇒ readonly), so we do not need to set it explicitly.
 
-In real use you would wire hooks, gates, or kits to the behavior so it launches an AI agent or opens a sandbox. We deliberately keep this minimal here so the next tutorial ([3. Your first task](03-first-task.md)) can show the state machine moving on its own.
+In real use you would wire hooks, gates, or kits to the behavior so it launches an AI agent or opens a sandbox. We deliberately keep this minimal here; [4. Your first task](04-first-task.md) adds a kit that drives Claude Code on top of this project. `boid`'s architecture is intentionally agent-neutral, but at the moment Claude Code is the only agent with production-grade support.
 
 ## Register the project
 
@@ -97,7 +97,7 @@ What this tutorial introduced:
 - Inspecting the registration with `boid project list` / `show`.
 - Reloading edits with `boid project reload`.
 
-The next tutorial uses this project to drive a task through the state machine.
+The next tutorial uses this project to set up the Web UI before running a task against it.
 
 ## Cleanup (optional)
 
@@ -112,4 +112,4 @@ The next tutorial reuses this project though, so leave it in place if you plan t
 
 ---
 
-Next: [3. Your first task](03-first-task.md)
+Next: [3. Set up the Web UI](03-web-ui.md)

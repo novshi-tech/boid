@@ -1,13 +1,20 @@
-# 4. プロジェクトと拡張パッケージ (kit)
+# 4. 最初のタスク
 
-[3. 最初のタスク](03-first-task.md) では handler を 1 つも紐付けずに状態機械だけを動かしました。このページでは **kit** を導入し、 hook を介して実作業を `boid` に任せます。所要時間は 10 分ほどです。
+このページでは Claude Code エージェントに小さな質問を 1 つ依頼します。 `boid` の本来の用途 — タスクを 1 行作って投げると、 サンドボックスの中で AI が動き、 結果が記録される — を最短で 1 周します。所要時間は 10 分ほどです。
+
+[3. Web UI をセットアップする](03-web-ui.md) まで終えている前提です。
 
 ## このページのねらい
 
-- `kit` が `boid` で何を提供するか、概念ではなく実体として理解する
-- `boid kit install` でリポジトリをインストールする
-- `project.yaml` の `task_behaviors` に kit を紐付ける
-- AI エージェント (Claude Code) を呼ぶ、最小の動作例を 1 本通す
+- **kit** の役割を 1 つの実例で理解する
+- `claude-code` kit をインストールして `project.yaml` に紐付ける
+- 小さなタスクを 1 本走らせ、 CLI と Web UI の両方で結果を確認する
+
+## エージェントについて
+
+`boid` のアーキテクチャは特定の AI エージェントに依存しない設計ですが、 現時点で実用的に動作確認が取れている agent は **Claude Code** のみです。 OpenAI Codex CLI 用の kit (`github.com/novshi-tech/boid-kits/codex`) も同梱はされていますが、 ハーネス側の対応はまだ発展途上です。
+
+このチュートリアル以降は Claude Code が手元にあることを前提に進めます。 `claude` CLI が PATH にあり、 Claude Code としてサインイン済みであることを確認してください (Claude Code 側のセットアップ手順は [Claude Code の公式ドキュメント](https://docs.claude.com/en/docs/claude-code/overview) を参照)。
 
 ## kit が何をパッケージしているか
 
@@ -27,7 +34,7 @@
 | kit ref | 役割 |
 |---|---|
 | `github.com/novshi-tech/boid-kits/claude-code` | Claude Code エージェントを hook で起動 |
-| `github.com/novshi-tech/boid-kits/codex` | OpenAI Codex CLI エージェントを hook で起動 |
+| `github.com/novshi-tech/boid-kits/codex` | OpenAI Codex CLI エージェントを hook で起動 (実験的) |
 | `github.com/novshi-tech/boid-kits/go-dev` | サンドボックスに `~/go` などをマウント |
 | `github.com/novshi-tech/boid-kits/github-cli` | サンドボックスから `gh` を使えるようにする |
 | `github.com/novshi-tech/boid-kits/github-auto-merge` | executing → done の exit gate で `gh pr merge` を実行 |
@@ -83,9 +90,7 @@ task_behaviors:
 boid project reload
 ```
 
-## 動かしてみる
-
-前提として `claude` CLI が PATH にあり、 Claude Code としてサインイン済みであることを確認してください (Claude Code 側のセットアップ手順は [Claude Code のドキュメント](https://docs.claude.com/en/docs/claude-code/overview) を参照)。
+## タスクを 1 本走らせる
 
 タスクを作って自動実行させます。
 
@@ -100,6 +105,8 @@ YAML
 
 `auto_start: true` を付けると、 `pending` を経ずに直接 `executing` に入ります。
 
+### CLI で観察する
+
 別ターミナルで状態を流し見ます。
 
 ```bash
@@ -108,7 +115,13 @@ boid task watch <task-id>
 
 しばらくすると hook ジョブの中で claude が動き、 `boid task update` で artifact が書き込まれ、 hook が正常終了すると自動遷移で `executing → done` に進むはずです。
 
-最終結果:
+### Web UI で観察する
+
+[3. Web UI をセットアップする](03-web-ui.md) で開いたブラウザの `http://localhost:8080` を再読み込みすると、 作成したタスクが一覧に乗っているはずです。 行をクリックするとタスク詳細・payload・ジョブ一覧がライブで更新されます。
+
+## 結果を確認する
+
+タスクが `done` になったら最終結果を見ます。
 
 ```bash
 boid task show <task-id>
@@ -123,6 +136,8 @@ boid job list --task <task-id>
 boid job show <job-id>
 ```
 
+Web UI からも各ジョブのログを開けます。
+
 ## まとめ
 
 このチュートリアルで触れた要素:
@@ -130,7 +145,8 @@ boid job show <job-id>
 - kit の中身 (hook / gate / commands / bindings / env)
 - `boid kit install` でのリポジトリ取得
 - `project.yaml` の `kits` と `default_instruction`
-- `auto_start: true` で `pending` をスキップ
+- `auto_start: true` で `pending` をスキップして即実行
+- 状態機械が `executing → done` を自動遷移するきっかけ (hook の正常終了 + artifact trait)
 
 次は worktree と auto-merge を組み合わせた、 GitHub PR ベースの開発ワークフローに進みます。
 

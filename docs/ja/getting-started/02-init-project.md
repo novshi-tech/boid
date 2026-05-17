@@ -42,7 +42,7 @@ YAML
 - **`name: Demo`** — Web UI / TUI に表示する人間向けの名前
 - **`task_behaviors.supervisor`** — このプロジェクトで作れる「タスクの種類」を 1 つだけ宣言。 `supervisor` は canonical な 2 つの behavior 名のうち readonly な方で、 readonly フラグは canonical 名から自動導出されるため明示する必要はありません
 
-実運用では behavior に hook / gate / kit を紐付けて、 AI エージェントを起動したりサンドボックスを開いたりします。 ここではまだ何も紐付けず、 次のチュートリアル ([3. 最初のタスク](03-first-task.md)) で状態機械の動きを観察するための最小構成に留めています。
+実運用では behavior に hook / gate / kit を紐付けて、 AI エージェントを起動したりサンドボックスを開いたりします。 ここではまだ何も紐付けず、 [4. 最初のタスク](04-first-task.md) で Claude Code を呼ぶ kit を足す形で進めます。 `boid` のアーキテクチャ自体は特定のエージェントに依存しませんが、 現時点で動作確認が取れているのは Claude Code のみです。
 
 ## プロジェクトを登録する
 
@@ -97,7 +97,7 @@ boid project local init
 - **`boid project list` / `show`** で登録内容を確認した
 - **`boid project reload`** で `project.yaml` の編集を反映できることを覚えた
 
-次のチュートリアルでは、 ここで初期化したプロジェクトを使って実際にタスクを動かします。
+次のチュートリアルではここで初期化したプロジェクトを使って Web UI をセットアップし、 そのあと実際にタスクを動かします。
 
 ## 後片付け (任意)
 
@@ -112,4 +112,4 @@ rm -rf ~/boid-demo
 
 ---
 
-次: [3. 最初のタスク](03-first-task.md)
+次: [3. Web UI をセットアップする](03-web-ui.md)

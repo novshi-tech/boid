@@ -1,13 +1,20 @@
-# 4. Projects and extension packages (kits)
+# 4. Your first task
 
-In [3. Your first task](03-first-task.md) you ran the state machine with no handlers attached. This page introduces **kits** so `boid` can do real work for you. It takes about ten minutes.
+This page hands a small question to the Claude Code agent and walks through `boid`'s core use case in the shortest possible loop: file a task, the AI runs it inside a sandbox, the result lands on the task. It takes about ten minutes.
+
+This page assumes you have completed [3. Set up the Web UI](03-web-ui.md).
 
 ## What this tutorial covers
 
-- What a kit actually is on disk, beyond the abstract description.
-- Installing a kit repository with `boid kit install`.
-- Wiring kits into `project.yaml` under `task_behaviors`.
-- Running one minimal end-to-end task driven by an AI agent (Claude Code).
+- A concrete look at what a **kit** is.
+- Installing the `claude-code` kit and wiring it into `project.yaml`.
+- Running one small task and observing it from both the CLI and the Web UI.
+
+## A note on agents
+
+`boid`'s architecture is intentionally agent-neutral, but **Claude Code is currently the only agent with production-grade support**. A kit for the OpenAI Codex CLI (`github.com/novshi-tech/boid-kits/codex`) is shipped, but harness-side support for it is still in flux.
+
+From this chapter onward we assume Claude Code is set up locally: the `claude` CLI is on your `PATH` and you have signed in. See [Claude Code's docs](https://docs.claude.com/en/docs/claude-code/overview) for the CLI setup.
 
 ## What a kit packages
 
@@ -27,7 +34,7 @@ The official kits live in the [`github.com/novshi-tech/boid-kits`](https://githu
 | Kit ref | What it does |
 |---|---|
 | `github.com/novshi-tech/boid-kits/claude-code` | Runs the Claude Code agent as a hook. |
-| `github.com/novshi-tech/boid-kits/codex` | Runs the OpenAI Codex CLI agent as a hook. |
+| `github.com/novshi-tech/boid-kits/codex` | Runs the OpenAI Codex CLI agent as a hook (experimental). |
 | `github.com/novshi-tech/boid-kits/go-dev` | Mounts `~/go` and friends into the sandbox. |
 | `github.com/novshi-tech/boid-kits/github-cli` | Makes `gh` callable from inside the sandbox. |
 | `github.com/novshi-tech/boid-kits/github-auto-merge` | Adds an exit gate on `executing → done` that runs `gh pr merge`. |
@@ -84,11 +91,9 @@ Reload the project:
 boid project reload
 ```
 
-## Run it
+## Run one task
 
-You will need the `claude` CLI on your `PATH` and a signed-in Claude Code session. See [Claude Code's docs](https://docs.claude.com/en/docs/claude-code/overview) for how to set that up.
-
-Create a task and have it start automatically.
+Create a task and have it start automatically:
 
 ```bash
 boid task create <<'YAML'
@@ -101,6 +106,8 @@ YAML
 
 `auto_start: true` skips `pending` and goes straight to `executing`.
 
+### Watch from the CLI
+
 In another terminal, follow the task:
 
 ```bash
@@ -109,7 +116,13 @@ boid task watch <task-id>
 
 After a moment the hook job runs Claude, the agent calls `boid task update` to write `artifact`, and once the hook exits cleanly the auto-transition moves the task `executing → done`.
 
-Final state:
+### Watch from the Web UI
+
+Refresh the `http://localhost:8080` tab opened in [3. Set up the Web UI](03-web-ui.md) and you should see the task in the list. Click the row to drill into details — payload and jobs update live.
+
+## Inspect the result
+
+When the task reaches `done`, look at the final state:
 
 ```bash
 boid task show <task-id>
@@ -124,6 +137,8 @@ boid job list --task <task-id>
 boid job show <job-id>
 ```
 
+The Web UI also surfaces per-job logs.
+
 ## Recap
 
 What this tutorial covered:
@@ -131,7 +146,8 @@ What this tutorial covered:
 - The contents of a kit (hooks / gates / commands / bindings / env).
 - Pulling a kit repository in with `boid kit install`.
 - The shape of `project.yaml`, including `kits` and `default_instruction`.
-- Skipping `pending` with `auto_start: true`.
+- Skipping `pending` with `auto_start: true` and going straight to execution.
+- What triggers the auto-transition `executing → done` (a clean hook exit plus the `artifact` trait).
 
 Next: a GitHub PR-driven dev workflow that combines a worktree with auto-merge.
 

@@ -2,6 +2,8 @@
 
 `boid` is a personal AI orchestrator. It is built to keep the human from becoming the bottleneck when several AI coding agents run in parallel: agents are given room to make progress autonomously, a sandbox with a configurable write scope keeps them from doing damage, and every in-flight task is visible at a glance through the CLI, TUI, and Web UI. Everything stays on your own machine — no servers, no signup.
 
+The architecture is intentionally agent-neutral, but **Claude Code is currently the only agent with production-grade support**. The tutorials assume that setup.
+
 This index is the entry point. The doc set is being built out incrementally; planned pages are listed below without links until they are written.
 
 [日本語版](../ja/README.md)
@@ -22,8 +24,8 @@ Step-by-step walkthroughs.
 
 - [1. Install](getting-started/01-install.md)
 - [2. Initialize a project](getting-started/02-init-project.md)
-- [3. Your first task](getting-started/03-first-task.md)
-- [4. Projects and extension packages (kits)](getting-started/04-projects-and-kits.md)
+- [3. Set up the Web UI](getting-started/03-web-ui.md)
+- [4. Your first task](getting-started/04-first-task.md)
 - [5. The GitHub PR-driven dev workflow](getting-started/05-dev-workflow.md)
 - [Workflows](../workflows.md) — three end-to-end workflow shapes (local merge / 1 executor 1 PR / 1 supervisor 1 PR) with project.yaml templates
 
