@@ -151,7 +151,7 @@ kit は別リポジトリで配布するのが標準です。 `boid kit install 
 
 ## 参考実装
 
-- [`github.com/novshi-tech/boid-kits`](https://github.com/novshi-tech/boid-kits) — 公式 kit 群。 `claude-code`、 `github-auto-merge`、 `go-dev` などが多様な構成のサンプルとして読みやすい
+- [`github.com/novshi-tech/boid-kits`](https://github.com/novshi-tech/boid-kits) — 公式 kit 群。 `claude-code`、 `github-cli`、 `go-dev` などが多様な構成のサンプルとして読みやすい
 
 ## 関連ドキュメント
 
