@@ -25,8 +25,9 @@ Step-by-step walkthroughs.
 - [1. Install](getting-started/01-install.md)
 - [2. Initialize a project](getting-started/02-init-project.md)
 - [3. Set up the Web UI](getting-started/03-web-ui.md)
-- [4. Your first task](getting-started/04-first-task.md)
-- [5. The GitHub PR-driven dev workflow](getting-started/05-dev-workflow.md)
+- [4. Set up a kit](getting-started/04-kits.md)
+- [5. Your first task](getting-started/05-first-task.md)
+- [6. The GitHub PR-driven dev workflow](getting-started/06-dev-workflow.md)
 - [Workflows](../workflows.md) — three end-to-end workflow shapes (local merge / 1 executor 1 PR / 1 supervisor 1 PR) with project.yaml templates
 
 ### Guide

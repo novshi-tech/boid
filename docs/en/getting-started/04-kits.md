@@ -1,14 +1,14 @@
-# 4. Your first task
+# 4. Set up a kit
 
-This page hands a small question to the Claude Code agent and walks through `boid`'s core use case in the shortest possible loop: file a task, the AI runs it inside a sandbox, the result lands on the task. It takes about ten minutes.
+This page installs the **kit** that lets `boid` invoke an AI agent (Claude Code) and wires it into the `demo` project from [2. Initialize a project](02-init-project.md). After this chapter `boid` is ready to accept tasks and launch Claude Code for them. It takes about five minutes.
 
 This page assumes you have completed [3. Set up the Web UI](03-web-ui.md).
 
 ## What this tutorial covers
 
-- A concrete look at what a **kit** is.
-- Installing the `claude-code` kit and wiring it into `project.yaml`.
-- Running one small task and observing it from both the CLI and the Web UI.
+- A concrete look at what a **kit** packages.
+- Installing the `claude-code` kit.
+- Referencing the kit from `project.yaml` so a `task_behaviors` entry can use it.
 
 ## A note on agents
 
@@ -55,7 +55,7 @@ List what is installed:
 boid kit list
 ```
 
-## Wire a kit into project.yaml
+## Wire the kit into project.yaml
 
 Edit the `~/boid-demo/.boid/project.yaml` from [2. Initialize a project](02-init-project.md) so that the behavior invokes the Claude Code agent.
 
@@ -91,76 +91,17 @@ Reload the project:
 boid project reload
 ```
 
-## Run one task
-
-Create a task and have it start automatically:
-
-```bash
-boid task create <<'YAML'
-project_id: demo
-title: What is Linux, in one sentence?
-behavior: supervisor
-auto_start: true
-YAML
-```
-
-`auto_start: true` skips `pending` and goes straight to `executing`.
-
-### Watch from the CLI
-
-In another terminal, follow the task:
-
-```bash
-boid task watch <task-id>
-```
-
-After a moment the hook job runs Claude, the agent calls `boid task update` to write `artifact`, and once the hook exits cleanly the auto-transition moves the task `executing → done`.
-
-### Watch from the Web UI
-
-Refresh the `http://localhost:8080` tab opened in [3. Set up the Web UI](03-web-ui.md) and you should see the task in the list. Click the row to drill into details — payload and jobs update live.
-
-## Inspect the result
-
-When the task reaches `done`, look at the final state:
-
-```bash
-boid task show <task-id>
-```
-
-If `payload.artifact.answer` holds the answer, it worked.
-
-To inspect what the hook actually printed:
-
-```bash
-boid job list --task <task-id>
-boid job show <job-id>
-```
-
-The Web UI also surfaces per-job logs.
-
 ## Recap
 
 What this tutorial covered:
 
 - The contents of a kit (hooks / gates / commands / bindings / env).
 - Pulling a kit repository in with `boid kit install`.
-- The shape of `project.yaml`, including `kits` and `default_instruction`.
-- Skipping `pending` with `auto_start: true` and going straight to execution.
-- What triggers the auto-transition `executing → done` (a clean hook exit plus the `artifact` trait).
+- Referencing a kit from `project.yaml` via `kits:` and binding it to a behavior through `default_instruction`.
+- Picking edits up with `boid project reload`.
 
-Next: a GitHub PR-driven dev workflow that combines a worktree with auto-merge.
-
-## Cleanup
-
-```bash
-boid task delete <task-id>
-boid project remove demo
-rm -rf ~/boid-demo
-```
-
-`boid kit remove github.com/novshi-tech/boid-kits` removes the installed repository, but it is convenient to keep it around for the next tutorial.
+In the next chapter you will run a task against this setup and watch it execute from the CLI and the Web UI.
 
 ---
 
-Next: [5. The GitHub PR-driven dev workflow](05-dev-workflow.md)
+Next: [5. Your first task](05-first-task.md)

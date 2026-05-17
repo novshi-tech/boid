@@ -1,14 +1,14 @@
-# 4. 最初のタスク
+# 4. kit をセットアップする
 
-このページでは Claude Code エージェントに小さな質問を 1 つ依頼します。 `boid` の本来の用途 — タスクを 1 行作って投げると、 サンドボックスの中で AI が動き、 結果が記録される — を最短で 1 周します。所要時間は 10 分ほどです。
+このページでは AI エージェント (Claude Code) を呼ぶための **kit** をインストールし、 [2. プロジェクトを初期化する](02-init-project.md) で作った `demo` プロジェクトに紐付けます。 ここまでで `boid` がタスクを受け取って Claude Code を起動できる状態になります。所要時間は 5 分ほどです。
 
 [3. Web UI をセットアップする](03-web-ui.md) まで終えている前提です。
 
 ## このページのねらい
 
-- **kit** の役割を 1 つの実例で理解する
-- `claude-code` kit をインストールして `project.yaml` に紐付ける
-- 小さなタスクを 1 本走らせ、 CLI と Web UI の両方で結果を確認する
+- **kit** が何をパッケージしているかを 1 つの実例で押さえる
+- `claude-code` kit をインストールする
+- `project.yaml` の `task_behaviors` に kit を紐付ける
 
 ## エージェントについて
 
@@ -90,76 +90,17 @@ task_behaviors:
 boid project reload
 ```
 
-## タスクを 1 本走らせる
-
-タスクを作って自動実行させます。
-
-```bash
-boid task create <<'YAML'
-project_id: demo
-title: Linux って一言でいうと？
-behavior: supervisor
-auto_start: true
-YAML
-```
-
-`auto_start: true` を付けると、 `pending` を経ずに直接 `executing` に入ります。
-
-### CLI で観察する
-
-別ターミナルで状態を流し見ます。
-
-```bash
-boid task watch <task-id>
-```
-
-しばらくすると hook ジョブの中で claude が動き、 `boid task update` で artifact が書き込まれ、 hook が正常終了すると自動遷移で `executing → done` に進むはずです。
-
-### Web UI で観察する
-
-[3. Web UI をセットアップする](03-web-ui.md) で開いたブラウザの `http://localhost:8080` を再読み込みすると、 作成したタスクが一覧に乗っているはずです。 行をクリックするとタスク詳細・payload・ジョブ一覧がライブで更新されます。
-
-## 結果を確認する
-
-タスクが `done` になったら最終結果を見ます。
-
-```bash
-boid task show <task-id>
-```
-
-`payload.artifact.answer` に回答が入っていれば成功です。
-
-ジョブのログ (claude の出力) は次で見られます。
-
-```bash
-boid job list --task <task-id>
-boid job show <job-id>
-```
-
-Web UI からも各ジョブのログを開けます。
-
 ## まとめ
 
 このチュートリアルで触れた要素:
 
 - kit の中身 (hook / gate / commands / bindings / env)
 - `boid kit install` でのリポジトリ取得
-- `project.yaml` の `kits` と `default_instruction`
-- `auto_start: true` で `pending` をスキップして即実行
-- 状態機械が `executing → done` を自動遷移するきっかけ (hook の正常終了 + artifact trait)
+- `project.yaml` の `kits` と `default_instruction` で kit を behavior に紐付ける
+- `boid project reload` で編集を反映
 
-次は worktree と auto-merge を組み合わせた、 GitHub PR ベースの開発ワークフローに進みます。
-
-## 後片付け
-
-```bash
-boid task delete <task-id>
-boid project remove demo
-rm -rf ~/boid-demo
-```
-
-`boid kit remove github.com/novshi-tech/boid-kits` でインストール済みリポジトリも消せますが、後続のチュートリアルで再利用するため残しておくのが便利です。
+次の章では、 ここでセットアップした構成でタスクを 1 本走らせて、 CLI と Web UI から実行の様子を観察します。
 
 ---
 
-次: [5. GitHub PR ベースの開発ワークフロー](05-dev-workflow.md)
+次: [5. 最初のタスク](05-first-task.md)

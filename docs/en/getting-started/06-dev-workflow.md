@@ -1,12 +1,12 @@
-# 5. The GitHub PR-driven dev workflow
+# 6. The GitHub PR-driven dev workflow
 
-This page runs a GitHub PR-driven dev workflow end to end: an AI agent works on a fresh branch, opens a PR, waits for CI to finish, and `boid` finally merges the PR automatically. All in one task. It picks up where [4. Your first task](04-first-task.md) left off.
+This page runs a GitHub PR-driven dev workflow end to end: an AI agent works on a fresh branch, opens a PR, waits for CI to finish, and `boid` finally merges the PR automatically. All in one task. It picks up where [5. Your first task](05-first-task.md) left off.
 
 After this tutorial you will have run the smallest realistic configuration of one of `boid`'s primary use cases: **delegating a dev task to an AI agent**.
 
 ## Prerequisites
 
-- You finished [4. Your first task](04-first-task.md) and ran `boid kit install github.com/novshi-tech/boid-kits`.
+- You finished [4. Set up a kit](04-kits.md) and ran `boid kit install github.com/novshi-tech/boid-kits`.
 - The `claude` CLI is on your `PATH` and signed in.
 - The `gh` CLI is signed in (`gh auth login`).
 - A throw-away GitHub repository cloned locally (e.g. `~/src/github.com/<you>/boid-demo-repo`).

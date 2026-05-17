@@ -42,7 +42,7 @@ What each field means:
 - **`name: Demo`** — the human-readable label shown in the Web UI and TUI.
 - **`task_behaviors.supervisor`** — declares one kind of task this project can spawn. `supervisor` is one of the two canonical behavior names; readonly is derived automatically from the name (supervisor ⇒ readonly), so we do not need to set it explicitly.
 
-In real use you would wire hooks, gates, or kits to the behavior so it launches an AI agent or opens a sandbox. We deliberately keep this minimal here; [4. Your first task](04-first-task.md) adds a kit that drives Claude Code on top of this project. `boid`'s architecture is intentionally agent-neutral, but at the moment Claude Code is the only agent with production-grade support.
+In real use you would wire hooks, gates, or kits to the behavior so it launches an AI agent or opens a sandbox. We deliberately keep this minimal here; [4. Set up a kit](04-kits.md) adds a kit that drives Claude Code on top of this project. `boid`'s architecture is intentionally agent-neutral, but at the moment Claude Code is the only agent with production-grade support.
 
 ## Register the project
 

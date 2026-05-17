@@ -294,6 +294,6 @@ You can mix workflows across projects — one project per workflow shape — but
 
 - [`project.yaml` reference](en/reference/project-yaml.md) — the canonical schema this document builds on.
 - [Concepts](en/guide/concepts.md) — vocabulary (task / behavior / kit / worktree / ...).
-- [5. The GitHub PR-driven dev workflow](en/getting-started/05-dev-workflow.md) — an end-to-end run of workflow 2 with annotated output.
+- [6. The GitHub PR-driven dev workflow](en/getting-started/06-dev-workflow.md) — an end-to-end run of workflow 2 with annotated output.
 - [`/boid-supervisor` SKILL](../internal/skills/data/boid-supervisor/SKILL.md) — the readonly supervisor's contract.
 - [`/boid-executor` SKILL](../internal/skills/data/boid-executor/SKILL.md) — the writable executor's contract.

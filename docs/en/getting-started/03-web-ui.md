@@ -73,8 +73,8 @@ What this tutorial introduced:
 - Showed how to change the listen address (`boid web set-addr`).
 - Outlined how to expose the UI to other devices (`boid web set-url` + `boid web pair`).
 
-In the next chapter you will run a small task through the Claude Code agent and watch it from this Web UI.
+In the next chapter you will set up the Claude Code kit; the chapter after that runs a small task and watches it from this same Web UI.
 
 ---
 
-Next: [4. Your first task](04-first-task.md)
+Next: [4. Set up a kit](04-kits.md)

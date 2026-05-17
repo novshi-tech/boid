@@ -42,7 +42,7 @@ YAML
 - **`name: Demo`** — Web UI / TUI に表示する人間向けの名前
 - **`task_behaviors.supervisor`** — このプロジェクトで作れる「タスクの種類」を 1 つだけ宣言。 `supervisor` は canonical な 2 つの behavior 名のうち readonly な方で、 readonly フラグは canonical 名から自動導出されるため明示する必要はありません
 
-実運用では behavior に hook / gate / kit を紐付けて、 AI エージェントを起動したりサンドボックスを開いたりします。 ここではまだ何も紐付けず、 [4. 最初のタスク](04-first-task.md) で Claude Code を呼ぶ kit を足す形で進めます。 `boid` のアーキテクチャ自体は特定のエージェントに依存しませんが、 現時点で動作確認が取れているのは Claude Code のみです。
+実運用では behavior に hook / gate / kit を紐付けて、 AI エージェントを起動したりサンドボックスを開いたりします。 ここではまだ何も紐付けず、 [4. kit をセットアップする](04-kits.md) で Claude Code を呼ぶ kit を足す形で進めます。 `boid` のアーキテクチャ自体は特定のエージェントに依存しませんが、 現時点で動作確認が取れているのは Claude Code のみです。
 
 ## プロジェクトを登録する
 
