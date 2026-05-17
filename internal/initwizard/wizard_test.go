@@ -429,6 +429,40 @@ func TestWizardRun_OptionalKit(t *testing.T) {
 	}
 }
 
+// TestWizardRun_DeprecatedKitExcluded verifies that a kit with deprecated: true
+// is not shown in the "Available kits" list and not added to project.yaml.
+func TestWizardRun_DeprecatedKitExcluded(t *testing.T) {
+	kitsDir := t.TempDir()
+	createFakeKit(t, kitsDir, "github.com/test/repo/active-kit", "active-kit", "")
+	createFakeKitDeprecated(t, kitsDir, "github.com/test/repo/old-kit", "old-kit")
+	initFakeGitRepo(t, kitsDir, "github.com/test/repo")
+
+	projectDir := t.TempDir()
+
+	// Stdin: project name, keep defaults (Enter)
+	input := "dep-project\n\n"
+	var out bytes.Buffer
+
+	w := &initwizard.Wizard{In: strings.NewReader(input), Out: &out, KitsDir: kitsDir}
+	if err := w.Run(projectDir); err != nil {
+		t.Fatalf("Run: %v\nOutput:\n%s", err, out.String())
+	}
+
+	// The deprecated kit must not appear in the wizard output.
+	if strings.Contains(out.String(), "old-kit") {
+		t.Errorf("expected deprecated kit 'old-kit' to be absent from output, got:\n%s", out.String())
+	}
+
+	// The deprecated kit must not appear in project.yaml kits list.
+	data, err := os.ReadFile(filepath.Join(projectDir, ".boid", "project.yaml"))
+	if err != nil {
+		t.Fatalf("read project.yaml: %v", err)
+	}
+	if strings.Contains(string(data), "old-kit") {
+		t.Errorf("expected deprecated kit 'old-kit' to be absent from project.yaml, got:\n%s", string(data))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
@@ -453,6 +487,18 @@ func createFakeKit(t *testing.T, kitsDir, ref, name, detectMarker string) {
 	}
 
 	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(sb.String()), 0o644); err != nil {
+		t.Fatalf("write kit.yaml: %v", err)
+	}
+}
+
+func createFakeKitDeprecated(t *testing.T, kitsDir, ref, name string) {
+	t.Helper()
+	kitDir := filepath.Join(kitsDir, ref)
+	if err := os.MkdirAll(kitDir, 0o755); err != nil {
+		t.Fatalf("mkdir kit: %v", err)
+	}
+	content := "deprecated: true\nmeta:\n  name: " + name + "\n"
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(content), 0o644); err != nil {
 		t.Fatalf("write kit.yaml: %v", err)
 	}
 }

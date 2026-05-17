@@ -532,6 +532,7 @@ type KitMeta struct {
 	Detect        *KitDetect   `yaml:"detect,omitempty"`
 	Requires      *KitRequires `yaml:"requires,omitempty"`
 	ProvidesAgent string       `yaml:"provides_agent,omitempty"`
+	Deprecated    bool         `yaml:"deprecated,omitempty"`
 }
 
 // KitMetaInfo holds human-readable metadata for a kit.
