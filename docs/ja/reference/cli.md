@@ -142,13 +142,6 @@ depends_on_payload: <expr>
 
 `behavior_spec` を渡すと `project.yaml` の task_behaviors を参照せず、 inline でタスクの設定を指定できます。
 
-### `task gate` (タスク単位の gate 操作)
-
-| コマンド | 役割 |
-|---|---|
-| `boid task gate list <task-id>` | このタスクの現状で発火する gate 一覧 |
-| `boid task gate replay <task-id> <gate-id>` | 特定の gate を再実行 |
-
 ### `task hook` (タスク単位の hook 操作)
 
 | コマンド | 役割 |
@@ -177,7 +170,7 @@ boid action send --task <task-id> --type <action-type> [--payload FILE]
 
 ## ジョブ
 
-handler の実行記録を扱います。
+hook の実行記録を扱います。
 
 | コマンド | 役割 |
 |---|---|
@@ -187,7 +180,7 @@ handler の実行記録を扱います。
 | `boid job log <job-id>` | transcript ログ (実行ストリーム) |
 | `boid job done <job-id> [--exit-code N] [--output-file FILE]` | (内部用) ジョブ完了を daemon に通知 |
 
-`boid job done` は通常 sandbox の EXIT trap や host gate wrapper から呼ばれるもので、ユーザが直接叩くことは稀です。
+`boid job done` は通常 sandbox の EXIT trap から呼ばれるもので、 ユーザが直接叩くことは稀です。
 
 ## Kit
 
@@ -253,7 +246,7 @@ boid task show <id> -o yaml
 ## 関連ドキュメント
 
 - [Getting started](../getting-started/) — 順を追ったチュートリアル
-- [概念](../guide/concepts.md) — task / job / hook / gate / kit / payload / trait の意味
+- [概念](../guide/concepts.md) — task / job / hook / kit / payload / trait の意味
 - [状態機械](../guide/state-machine.md) — 手動遷移と自動遷移のルール
 - [`project.yaml` リファレンス](project-yaml.md) — プロジェクト定義のフィールド
-- [Handler スクリプトプロトコル](handler-contract.md) — hook / gate の入出力契約
+- [Hook スクリプトプロトコル](hook-contract.md) — hook の入出力契約

@@ -142,13 +142,6 @@ depends_on_payload: <expr>
 
 Pass `behavior_spec` to specify the behavior inline instead of referencing a name in `project.yaml`'s `task_behaviors`.
 
-### `task gate` (per-task gate operations)
-
-| Command | Role |
-|---|---|
-| `boid task gate list <task-id>` | List gates that fire on the task's current status. |
-| `boid task gate replay <task-id> <gate-id>` | Replay a specific gate. |
-
 ### `task hook` (per-task hook operations)
 
 | Command | Role |
@@ -177,7 +170,7 @@ Common `<action-type>` values: `start`, `done`, `reopen`, `abort`. See [State ma
 
 ## Job
 
-Inspect handler execution records.
+Inspect hook execution records.
 
 | Command | Role |
 |---|---|
@@ -187,7 +180,7 @@ Inspect handler execution records.
 | `boid job log <job-id>` | Show the execution transcript. |
 | `boid job done <job-id> [--exit-code N] [--output-file FILE]` | (Internal) Notify the daemon that a job finished. |
 
-`boid job done` is normally invoked by the sandbox EXIT trap or the host-gate wrapper; you would not type it by hand.
+`boid job done` is normally invoked by the sandbox EXIT trap; you would not type it by hand.
 
 ## Kit
 
@@ -253,7 +246,7 @@ boid task show <id> -o yaml
 ## Related documents
 
 - [Getting started](../getting-started/) — guided tutorials.
-- [Concepts](../guide/concepts.md) — meanings of task / job / hook / gate / kit / payload / trait.
+- [Concepts](../guide/concepts.md) — meanings of task / job / hook / kit / payload / trait.
 - [State machine](../guide/state-machine.md) — manual and automatic transition rules.
 - [`project.yaml` reference](project-yaml.md) — project-definition fields.
-- [Handler script protocol](handler-contract.md) — hook / gate I/O contract.
+- [Hook script protocol](hook-contract.md) — hook I/O contract.

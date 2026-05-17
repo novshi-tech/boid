@@ -88,7 +88,7 @@ From this point inside the sandbox:
 
 Now we are inside the sandbox. `inner.sh` exports environment variables (`BOID_TASK_ID` and friends, including anything declared by the kit / behavior), then feeds the TaskJSON on stdin to the handler's argv. The handler's exit code propagates through `exec`, back through `setup.sh`, and out via `outer.sh`.
 
-The handler-side protocol is documented in [Handler script protocol](../reference/handler-contract.md).
+The handler-side protocol is documented in [Hook script protocol](../reference/hook-contract.md).
 
 ## Network control
 
@@ -214,5 +214,5 @@ All roles share the same allowed op set.
 
 - [Architecture overview](overview.md) — where the sandbox layer sits.
 - [Concepts / Sandbox](../guide/concepts.md#sandbox) — the user-visible meaning.
-- [Handler script protocol](../reference/handler-contract.md) — the I/O contract for handlers running inside.
+- [Hook script protocol](../reference/hook-contract.md) — the I/O contract for handlers running inside.
 - [`project.yaml` reference](../reference/project-yaml.md) — declaring `host_commands` / `additional_bindings` / `env`.

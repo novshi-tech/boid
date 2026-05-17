@@ -8,7 +8,7 @@ This page assumes you have completed [1. Install](01-install.md).
 
 On disk a project is any directory that contains a `.boid/project.yaml`. It is typical for a project to correspond 1:1 with a repository, but a plain working directory is fine.
 
-The minimum `.boid/project.yaml` declares the project's identifier (`id`) and the kinds of tasks the project can spawn (`task_behaviors`). Hooks, gates, and kits — which is where the actual work hangs off — are layered on top later.
+The minimum `.boid/project.yaml` declares the project's identifier (`id`) and the kinds of tasks the project can spawn (`task_behaviors`). Hooks and kits — which is where the actual work hangs off — are layered on top later.
 
 ## Create a workspace directory
 
@@ -42,7 +42,7 @@ What each field means:
 - **`name: Demo`** — the human-readable label shown in the Web UI and TUI.
 - **`task_behaviors.supervisor`** — declares one kind of task this project can spawn. `supervisor` is one of the two canonical behavior names; readonly is derived automatically from the name (supervisor ⇒ readonly), so we do not need to set it explicitly.
 
-In real use you would wire hooks, gates, or kits to the behavior so it launches an AI agent or opens a sandbox. We deliberately keep this minimal here; [4. Set up a kit](04-kits.md) adds a kit that drives Claude Code on top of this project. `boid`'s architecture is intentionally agent-neutral, but at the moment Claude Code is the only agent with production-grade support.
+In real use you would wire hooks or kits to the behavior so it launches an AI agent or opens a sandbox. We deliberately keep this minimal here; [4. Set up a kit](04-kits.md) adds a kit that drives Claude Code on top of this project. `boid`'s architecture is intentionally agent-neutral, but at the moment Claude Code is the only agent with production-grade support.
 
 ## Register the project
 

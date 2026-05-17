@@ -7,7 +7,7 @@ This page is the schema reference. For the meaning of the underlying terms, see 
 ## Role and location
 
 - Path: `.boid/project.yaml` directly under the project root.
-- Role: registers the directory as a `boid` project, declares the kinds of tasks (behaviors) it supports, and the extension packages (kits) each behavior loads.
+- Role: registers the directory as a `boid` project, declares the kinds of tasks (behaviors) it supports, and the extension packages (kits) the project loads.
 - Registration: `boid project add <project-root>` reads the file into `boid`'s database.
 - Reload: after editing, run `boid project reload`.
 
@@ -29,7 +29,7 @@ task_behaviors:
 | `name` | string | yes | Display name shown in UIs. |
 | `worktree` | bool | `false` | If `true`, **executor** tasks in this project run in their own git worktree on a fresh branch. Supervisor tasks always run readonly in the project root regardless of this flag. |
 | `base_branch` | string | repository default | Branch used as the base for executor worktrees. Supports `${TASK_REMOTE_ID}` and `${current_branch}` expansion (see [Dynamic base_branch](#dynamic-base_branch)). |
-| `kits` | list of KitRef | no | Kits loaded for the whole project; available to every behavior. |
+| `kits` | list of KitRef | no | Kits loaded for this project. |
 | `task_behaviors` | map (string → TaskBehavior) | yes | The kinds of tasks this project can produce. |
 | `commands` | map (string → CommandSpec) | no | Named commands the sandbox can invoke through `boid exec`. |
 | `host_commands` | HostCommands | no | External commands the sandbox is allowed to forward to the host. |
@@ -39,14 +39,12 @@ task_behaviors:
 
 ## `task_behaviors.<name>`
 
-The map key is the behavior's identifier and is what `boid task create` references via `behavior:`. There are **two canonical behavior names**, with a single legacy alias each kept for back-compat:
+The map key is the behavior's identifier and is what `boid task create` references via `behavior:`. **Only two names are supported**:
 
-| Canonical | Legacy alias | Role |
-|---|---|---|
-| `supervisor` | `plan` | Readonly orchestrator. Reads the request, triages it, creates child executor tasks, monitors them. Never edits files. |
-| `executor` | `dev` | Writable implementer. Receives a single focused task and produces an artifact (commit / PR / payload trait). |
-
-The aliases are normalised at load time — using `plan` / `dev` in `project.yaml` triggers a deprecation warning but still works. New projects should use the canonical names directly.
+| Name | Role |
+|---|---|
+| `supervisor` | Readonly orchestrator. Reads the request, triages it, creates child executor tasks, monitors them. Never edits files. |
+| `executor` | Writable implementer. Receives a single focused task and produces an artifact (commit / PR / payload trait). |
 
 Each behavior entry has very few knobs:
 
@@ -55,11 +53,10 @@ Each behavior entry has very few knobs:
 | `name` | string | the map key | Display label (optional). |
 | `traits` | list of string | (empty) | Top-level payload trait names this behavior is allowed to use (e.g. `[artifact]`). |
 | `default_instruction` | Instruction | (empty) | A single Instruction template appended to `Task.Instructions` when a task is created. |
-| `kits` | list of KitRef | (empty) | Additional kits loaded only for this behavior. |
 
 ### Removed behavior-level fields
 
-The fields below used to live under `task_behaviors.<name>.*`. They have been moved to the project top level (or derived from the canonical behavior name) so that any one project pins one workflow shape.
+The fields below used to live under `task_behaviors.<name>.*`. They have been moved to the project top level (or derived from the behavior name) so that any one project pins one workflow shape.
 
 | Removed field | Where it lives now |
 |---|---|
@@ -226,7 +223,7 @@ secret_namespace: ...
 
 ## Example: a real project
 
-An excerpt from `.boid/project.yaml` in the `boid` repository itself, showing the two canonical behaviors (`supervisor`, `executor`) with `worktree: true` declared at the project top level so each executor task runs in its own git worktree.
+An excerpt from `.boid/project.yaml` in the `boid` repository itself, showing the two behaviors (`supervisor`, `executor`) with `worktree: true` declared at the project top level so each executor task runs in its own git worktree.
 
 ```yaml
 id: boid

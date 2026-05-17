@@ -8,7 +8,7 @@
 
 ディスク上のプロジェクトは、 任意のディレクトリの直下に `.boid/project.yaml` を置いただけのものです。 リポジトリと 1:1 で対応させるのが典型的ですが、 単なる作業ディレクトリでも構いません。
 
-`.boid/project.yaml` は最低限、 プロジェクトの識別子 (`id`) と、 そのプロジェクトで作れるタスクの種類 (`task_behaviors`) を宣言します。 hook / gate / kit といった実作業の定義はあとから足せます。
+`.boid/project.yaml` は最低限、 プロジェクトの識別子 (`id`) と、 そのプロジェクトで作れるタスクの種類 (`task_behaviors`) を宣言します。 hook や kit といった実作業の定義はあとから足せます。
 
 ## 作業ディレクトリを用意する
 
@@ -42,7 +42,7 @@ YAML
 - **`name: Demo`** — Web UI / TUI に表示する人間向けの名前
 - **`task_behaviors.supervisor`** — このプロジェクトで作れる「タスクの種類」を 1 つだけ宣言。 `supervisor` は canonical な 2 つの behavior 名のうち readonly な方で、 readonly フラグは canonical 名から自動導出されるため明示する必要はありません
 
-実運用では behavior に hook / gate / kit を紐付けて、 AI エージェントを起動したりサンドボックスを開いたりします。 ここではまだ何も紐付けず、 [4. kit をセットアップする](04-kits.md) で Claude Code を呼ぶ kit を足す形で進めます。 `boid` のアーキテクチャ自体は特定のエージェントに依存しませんが、 現時点で動作確認が取れているのは Claude Code のみです。
+実運用では behavior に hook / kit を紐付けて、 AI エージェントを起動したりサンドボックスを開いたりします。 ここではまだ何も紐付けず、 [4. kit をセットアップする](04-kits.md) で Claude Code を呼ぶ kit を足す形で進めます。 `boid` のアーキテクチャ自体は特定のエージェントに依存しませんが、 現時点で動作確認が取れているのは Claude Code のみです。
 
 ## プロジェクトを登録する
 

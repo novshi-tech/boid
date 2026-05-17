@@ -7,8 +7,8 @@ This page walks through the main concepts that make up `boid`. The rest of the d
 The unit of work that `boid` tracks from request to completion. Every task carries the following fields:
 
 - A **status** — what stage the task is in right now. Tasks move through `pending → executing → done`, and end at `aborted` if they fail. The meaning of each state and the transition rules between them are covered in [State machine](state-machine.md).
-- A **payload** — a JSON document that accumulates information as the task progresses. Generated artifacts and similar outputs are stored under predefined keys called *traits* (defined below).
-- A **behavior** — a label such as `supervisor` (formerly `plan`) or `executor` (formerly `dev`) that says what kind of work this task is. The project's configuration maps each label to a set of extension packages (*kits*), so picking a behavior selects which scripts will fire.
+- A **payload** — a JSON document that accumulates information as the task progresses. Outputs that execution scripts leave behind are stored under predefined keys called *traits* (defined below).
+- A **behavior** — either `supervisor` or `executor`. It says whether the task is the orchestrator or the implementer, and it also determines whether the sandbox is read-only and whether a worktree is allocated.
 - The **project** the task belongs to.
 
 Tasks are created with `boid task create` and observed with `boid task list`, `boid task show`, `boid task watch`, the TUI, or the Web UI.
@@ -19,52 +19,54 @@ A directory that contains a `.boid/project.yaml` file. The project file declares
 
 - An `id` (the unique identifier `boid` uses for the project) and a `name` (display name).
 - An optional project-top `worktree: true` flag that gives each executor task its own git worktree.
-- One or more **task_behaviors** — for each behavior label (typically `supervisor` and `executor`), the list of extension packages (kits) to load and an optional `default_instruction` template. Whether the sandbox is read-only / runs in a worktree is no longer set per behavior; it is derived from the canonical name combined with the project-top flag.
-- Optional configuration values passed through to each kit.
+- The list of **kits** the project uses (`kits:`).
+- One or more **task_behaviors** — for `supervisor` and/or `executor`, an optional `default_instruction` template. Whether the sandbox is read-only / runs in a worktree is not set per behavior; it is derived from the behavior name combined with the project-top flag.
 
 You register a project with `boid project add <path>`. Any number of projects can coexist; each task belongs to exactly one of them.
 
+## Workspace
+
+A label for grouping projects. You might bucket projects as "personal", "work", and "OSS" so the Web UI and TUI can filter the views by group. Workspaces are not declared in `project.yaml`; they are assigned with `boid workspace assign <project> <workspace-id>` (and removed with `boid workspace clear`). A project can belong to at most one workspace.
+
+- `boid workspace list` lists the configured workspaces.
+- `boid workspace show <id>` lists the projects in a workspace along with their recent tasks.
+
+Workspaces are purely classification metadata — they do not affect sandbox configuration or hook execution.
+
 ## Behavior
 
-A named entry in the project's `task_behaviors` map representing a kind of task. When you create a task and pick a behavior name, `boid` loads the extension packages bound to that behavior and fires their scripts as the task changes state.
+A `task_behaviors` entry, naming one kind of task the project supports. When you create a task and pick a behavior name, `boid` decides the isolation level for the task and loads the hooks bound to it, then fires them while the task is in `executing`.
 
-There are **two canonical behavior names**:
+**Only two names are supported**:
 
-- **`supervisor`** (legacy alias: `plan`) — readonly orchestrator. Reads a request, decides what child tasks are needed, creates them, monitors them, integrates results.
-- **`executor`** (legacy alias: `dev`) — writable implementer. Receives a single focused task and produces an artifact (commit / PR / payload trait).
+- **`supervisor`** — readonly orchestrator. Reads a request, decides what child tasks are needed, creates them, monitors them, integrates results.
+- **`executor`** — writable implementer. Receives a single focused task and produces an artifact (commit / PR / payload trait).
 
-The aliases are translated at load time, so existing `project.yaml` files written before the rename keep working. New projects should use the canonical names.
-
-`boid` runs a single state machine regardless of behavior. Different task shapes come from which hooks and gates a behavior wires in, and from how failures are recovered: either by `reopen`ing the task with a new instruction, or by spawning a fresh task. The harness does not encode a verification loop — failure detection and the recovery plan live in the agent's instruction text.
+`boid` runs a single state machine regardless of behavior. Different task shapes come from which hooks a behavior wires in, and from how failures are recovered: either by `reopen`ing the task with a new instruction, or by spawning a fresh task. The harness does not encode a verification loop — failure detection and the recovery plan live in the agent's instruction text.
 
 ## Payload and traits
 
-The payload is a JSON document that grows as the task progresses. Only a fixed set of keys is allowed at the top level — these are called **traits** — and each trait specifies who is allowed to write it and what writing it triggers.
+The payload is a JSON document that grows as the task progresses. Only a fixed set of keys is allowed at the top level — these are called **traits**.
 
-| Trait | Written by | What writing it does |
-|---|---|---|
-| `artifact` | execution scripts | Free-form record of what the task produced (commit, PR URL, changed files, ...). |
-| `lifecycle.abort` | `boid` itself | Auto-derived `code` / `message` for an aborted task. |
+Today the only trait hooks can write is **`artifact`**: a free-form map where implementation-style tasks record what they produced (commits, PR URLs, changed files, and so on).
 
-Subtask creation (the main job of supervisor-style behaviors) is no longer expressed through a payload trait. Hooks and gates call the `boid task create` builtin directly — see the [`/boid-supervisor` SKILL](../../../internal/skills/data/boid-supervisor/SKILL.md) for the typical shape.
+You may also see fields like `lifecycle.abort` on the payload, but those are virtual — `boid` derives them from task history at evaluation time and they are never actually stored. See the [Payload trait reference](../reference/traits.md) for details.
 
 Instructions are not a payload trait. They live in the top-level `Task.Instructions` array on the task itself; the last element is the active one, and `boid task reopen <id> --message "..."` appends a new entry.
 
 Scripts update the payload by emitting **payload patches** (JSON merge instructions). The daemon stores each patch in order, so the history of a task can be replayed for debugging.
 
-## Hook, gate, kit, handler
+## Hook and kit
 
-`boid` divides task-related scripts into two kinds — **hook** and **gate** — and uses **handler** as the umbrella term for both. The packaged unit that bundles a set of handlers for reuse is a **kit**.
+A **hook** is a script that runs while the task is in `executing`. Hooks do the substantive work: invoking an AI agent, editing code, running tests, opening a PR. They run inside the sandbox, and several hooks bound to the same behavior run in parallel.
 
-- **Hook** — a script that runs while the task is in `executing`. Hooks do the substantive work: invoking an AI agent, editing code, running tests. They run inside the sandbox; several hooks bound to the same behavior run in parallel. Hooks only ever run in `executing`.
-- **Gate** — a script that fires at a state transition. Use `phase: entry` (just before entering the next state) or `phase: exit` (just before leaving the current one). Gates do host-side work — opening a PR, calling `gh pr merge`, restarting a service — and act as a checkpoint at the boundary.
-- **Kit** — a directory holding a `kit.yaml` together with hook and gate scripts and any supporting assets. Once installed, a kit can be referenced from any project's `task_behaviors`. Official packages live in the [boid-kits](https://github.com/novshi-tech/boid-kits) repository.
+A **kit** is a hook packaged for reuse — a directory holding a `kit.yaml` together with hook scripts and any supporting assets. Once installed, a kit can be referenced from any project's `kits:` field. Official packages live in the [boid-kits](https://github.com/novshi-tech/boid-kits) repository.
 
-Handlers communicate with `boid` over a fixed protocol: the task payload arrives on stdin, and a payload patch is expected on stdout.
+Hooks communicate with `boid` over a fixed protocol: the task payload arrives on stdin, and a payload patch is expected on stdout (see the [hook script protocol](../reference/hook-contract.md) for details).
 
 ## Job
 
-A record of a single handler invocation. Each job carries its own status (`running` / `success` / `failed`) and an exit code. "Watching a task" really means watching the jobs attached to that task come and go.
+A record of a single hook invocation. Each job carries its own status (`running` / `success` / `failed`) and an exit code. "Watching a task" really means watching the jobs attached to that task come and go.
 
 `boid job list --task <id>` and `boid job show <id>` are the primary inspection commands.
 
@@ -102,7 +104,7 @@ The long-running `boid` server process. It owns:
 
 - A UNIX socket for the CLI and an HTTP listener for the Web UI.
 - Exclusive access to the SQLite database.
-- The dispatch loop that fires handlers in order.
+- The dispatch loop that fires hooks in order.
 - The lifecycle of worktrees and sandboxes (creation and cleanup).
 
 Started with `boid start`, stopped with `boid stop`. Most subcommands launch the daemon automatically if it is not already running.

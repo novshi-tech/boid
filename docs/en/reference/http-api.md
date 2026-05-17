@@ -79,8 +79,6 @@ For the schema, see [`project.yaml` reference](project-yaml.md). For the CLI, se
 | DELETE | `/api/tasks/{id}` | Delete a task. |
 | POST | `/api/tasks/{id}/duplicate` | Duplicate a task. |
 | POST | `/api/tasks/{id}/rerun` | Reset a `done` / `aborted` task to `pending` and re-run. |
-| GET | `/api/tasks/{id}/gates` | List gates that fire at the task's current status. |
-| POST | `/api/tasks/{id}/gates/{gate_id}/replay` | Replay one gate. |
 | GET | `/api/tasks/{id}/hooks` | List hooks that fire at the task's current status. |
 | POST | `/api/tasks/{id}/hooks/{hook_id}/replay` | Replay one hook. |
 | GET | `/api/tasks/{id}/events` | **SSE** stream of task events. |
@@ -194,7 +192,7 @@ Append `?follow=true` to wait until the state machine's auto-transitions settle 
 |---|---|---|
 | GET | `/api/jobs` | List jobs (filter with `task_id`, etc.). |
 | GET | `/api/jobs/{id}` | Job detail (status / exit_code / output). |
-| POST | `/api/jobs/{id}/done` | (Internal) Notify the daemon that a handler has finished. Accepts `--exit-code` and a payload-patch file. |
+| POST | `/api/jobs/{id}/done` | (Internal) Notify the daemon that a hook has finished. Accepts `--exit-code` and a payload-patch file. |
 | GET | `/api/jobs/{id}/log` | **SSE** stream of live job log. |
 | GET | `/api/jobs/{id}/attach/ws` | **WebSocket** to attach to a running runtime (interactive jobs). |
 
@@ -237,7 +235,7 @@ Endpoints used by the `boid` shim inside a sandbox to reach back to the host. No
 
 | Method | Path | Role |
 |---|---|---|
-| POST | `/api/broker/register` | Issue a shim token when a hook / gate starts. |
+| POST | `/api/broker/register` | Issue a shim token when a hook starts. |
 
 ## Server-Sent Events (SSE)
 
@@ -247,7 +245,7 @@ The two SSE endpoints are `/api/tasks/{id}/events` and `/api/jobs/{id}/log`.
 
 - `Content-Type: text/event-stream`.
 - A `:ping\n\n` keepalive every 20 seconds to keep idle proxies from disconnecting.
-- Client disconnects (`r.Context().Done()`) cause the handler to clean up.
+- Client disconnects (`r.Context().Done()`) cause the request handler to clean up.
 
 ### `/api/tasks/{id}/events`
 
@@ -289,5 +287,5 @@ Common status codes:
 
 - [CLI reference](cli.md) — the CLI commands that hit each endpoint.
 - [`project.yaml` reference](project-yaml.md) — schemas required when creating tasks.
-- [Handler script protocol](handler-contract.md) — what the EXIT trap calls when it hits `POST /api/jobs/{id}/done`.
+- [Hook script protocol](hook-contract.md) — what the EXIT trap calls when it hits `POST /api/jobs/{id}/done`.
 - [Web UI internals](../architecture/web-internals.md) — auth middleware, SSE, and the route mount layout.
