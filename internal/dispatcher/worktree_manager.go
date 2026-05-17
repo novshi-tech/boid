@@ -12,6 +12,23 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
+// WorktreeSetupError is returned by worktree creation when the project's git
+// state prevents the worktree from being built. It carries a machine-readable
+// Cause code and a user-actionable Hint message so callers can surface
+// remediation instructions.
+type WorktreeSetupError struct {
+	// Cause is one of: "missing_initial_commit", "detached_head",
+	// "base_branch_unresolved", "other".
+	Cause string
+	// Hint is a short, user-actionable remediation message.
+	Hint string
+	// Err is the underlying error.
+	Err error
+}
+
+func (e *WorktreeSetupError) Error() string { return e.Err.Error() }
+func (e *WorktreeSetupError) Unwrap() error { return e.Err }
+
 // WorktreeManager handles git worktree lifecycle for task isolation.
 type WorktreeManager struct {
 	RootDir string // e.g. ~/.local/share/boid/worktrees
@@ -89,11 +106,28 @@ func (m *WorktreeManager) ensureBaseBranchExists(projectDir, baseBranch string) 
 	// because creating a branch from a detached commit produces a dangling
 	// reference unrelated to the project's mainline history.
 	if err := exec.Command(m.gitBin(), "-C", projectDir, "symbolic-ref", "--quiet", "HEAD").Run(); err != nil {
-		return fmt.Errorf("cannot create base branch %q from detached HEAD in %s", base, projectDir)
+		return &WorktreeSetupError{
+			Cause: "detached_head",
+			Hint:  "HEAD is detached; check out a branch first (e.g. 'git checkout main')",
+			Err:   fmt.Errorf("cannot create base branch %q from detached HEAD in %s", base, projectDir),
+		}
 	}
 	cmd := exec.Command(m.gitBin(), "-C", projectDir, "branch", base, "HEAD")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git branch %s HEAD: %w\n%s", base, err, strings.TrimSpace(string(out)))
+		outStr := strings.TrimSpace(string(out))
+		// "not a valid object name: 'HEAD'" → the project has no commits yet.
+		if strings.Contains(strings.ToLower(outStr), "not a valid object name") {
+			return &WorktreeSetupError{
+				Cause: "missing_initial_commit",
+				Hint:  "create an initial commit (e.g. 'git commit --allow-empty -m initial')",
+				Err:   fmt.Errorf("project %q has no commits yet; create an initial commit (e.g. 'git commit --allow-empty -m initial')", projectDir),
+			}
+		}
+		return &WorktreeSetupError{
+			Cause: "other",
+			Hint:  "",
+			Err:   fmt.Errorf("git branch %s HEAD: %w\n%s", base, err, outStr),
+		}
 	}
 	slog.Info("base branch created from HEAD (case 3)", "project_dir", projectDir, "base_branch", base)
 	return nil

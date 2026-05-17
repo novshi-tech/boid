@@ -1,6 +1,7 @@
 package dispatcher_test
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1245,3 +1246,92 @@ func TestEnforceHeadOnBaseBranch_EmptyBaseBranch(t *testing.T) {
 }
 
 // ---- end Phase 2-2 ----
+
+// initGitRepoNoCommits creates a temporary git repo that has no commits (HEAD is
+// a symbolic-ref pointing to "main" but no objects exist yet).
+func initGitRepoNoCommits(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+		{"symbolic-ref", "HEAD", "refs/heads/main"},
+	} {
+		cmd := exec.Command(gitBin, args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			if strings.Contains(string(out), "cwd does not exist") {
+				t.Skip("git not available outside worktree in this environment")
+			}
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	return dir
+}
+
+// TestCreate_NoCommits_WorktreeSetupError verifies that Create fails with a
+// *WorktreeSetupError carrying Cause="missing_initial_commit" when the project
+// repo has no commits (symbolic-ref is valid but HEAD has no object).
+func TestCreate_NoCommits_WorktreeSetupError(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepoNoCommits(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-nc1', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-nc001234-0001', 'proj-nc1', 'no commits', 'executor')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	_, err := mgr.Create(repo, "proj-nc1", "task-nc001234-0001", "main")
+	if err == nil {
+		t.Fatal("Create should fail for a repo with no commits")
+	}
+
+	var wse *dispatcher.WorktreeSetupError
+	if !errors.As(err, &wse) {
+		t.Fatalf("error should be *WorktreeSetupError, got %T: %v", err, err)
+	}
+	if wse.Cause != "missing_initial_commit" {
+		t.Errorf("Cause = %q, want %q", wse.Cause, "missing_initial_commit")
+	}
+	if wse.Hint == "" {
+		t.Errorf("Hint should be non-empty")
+	}
+}
+
+// TestCreate_DetachedHead_WorktreeSetupError verifies that Create fails with a
+// *WorktreeSetupError carrying Cause="detached_head" when the project HEAD is
+// in detached state.
+func TestCreate_DetachedHead_WorktreeSetupError(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	out, err := exec.Command(gitBin, "-C", repo, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+	hash := strings.TrimSpace(string(out))
+	if out, err := exec.Command(gitBin, "-C", repo, "checkout", "--detach", hash).CombinedOutput(); err != nil {
+		t.Fatalf("checkout --detach: %v\n%s", err, out)
+	}
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-dh2', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-dh002345-0001', 'proj-dh2', 'detached', 'executor')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	_, err = mgr.Create(repo, "proj-dh2", "task-dh002345-0001", "release-2026")
+	if err == nil {
+		t.Fatal("Create should fail for detached HEAD")
+	}
+
+	var wse *dispatcher.WorktreeSetupError
+	if !errors.As(err, &wse) {
+		t.Fatalf("error should be *WorktreeSetupError, got %T: %v", err, err)
+	}
+	if wse.Cause != "detached_head" {
+		t.Errorf("Cause = %q, want %q", wse.Cause, "detached_head")
+	}
+}
