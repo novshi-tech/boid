@@ -122,8 +122,6 @@ boid task answer \
   --answer "yes"
 ```
 
-詳細な Q&A フローは [C2 フロー](../architecture/c2-flow.md) を参照してください。
-
 ### `task create` の入力
 
 YAML schema:
