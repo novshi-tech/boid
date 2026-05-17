@@ -122,8 +122,6 @@ boid task answer \
   --answer "yes"
 ```
 
-For the full Q&A flow, see [C2 flow](../architecture/c2-flow.md).
-
 ### `task create` input
 
 YAML schema:

@@ -102,9 +102,9 @@ For the schema, see [`project.yaml` reference](project-yaml.md). For the CLI, se
 
 Pass `behavior_spec` instead of `behavior` to specify the behavior inline (see [`project.yaml` / BehaviorSpec](project-yaml.md)).
 
-### Notify and answer (C2)
+### Notify and answer
 
-Two endpoints that control the C2 Q&A flow — where an agent pauses to ask the user a question and resumes once answered. See [C2 flow](../architecture/c2-flow.md) for the full picture.
+Two endpoints that control the Q&A flow — where an agent pauses to ask the user a question and resumes once answered.
 
 #### `POST /api/tasks/{id}/notify`
 

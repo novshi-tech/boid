@@ -54,7 +54,6 @@ Concept-oriented how-to.
 ### Architecture
 
 - [Overview](architecture/overview.md) — process layout, layering, the major components, and one action traced end to end
-- [C2 flow](architecture/c2-flow.md) — Q&A channel design and migration notes (the `claude --print` story has since been reverted to a real PTY)
 - [Persistence layer](architecture/persistence.md) — SQLite tables, key columns, JSON column contents, and migration conventions
 - [Sandbox internals](architecture/sandbox-internals.md) — the outer / setup / inner three-script chain, mount / user namespaces, pasta + nftables, the broker / shim split, and the cleanup safety guards
 - [Web UI internals](architecture/web-internals.md) — auth middleware, session cookie (HMAC), the pairing flow, CSRF, and Server-Sent Events
