@@ -56,13 +56,23 @@ instructions は payload の trait ではなく、 タスクの top-level フィ
 
 スクリプト側は **payload patch** (JSON のマージ指示) を出力して payload を更新します。 daemon は受け取った patch を順に保存しており、 各タスクの状態変化を後から再生してデバッグできます。
 
-## hook と kit
+## hook
 
 タスクの `executing` 状態で実行されるスクリプトを **hook** と呼びます。 AI エージェントの呼び出し、 コード変更、 テスト実行、 PR 作成といった実作業は すべて hook 側で行います。 hook はサンドボックス内で動き、 同じ behavior に複数の hook が紐付いていれば並列に実行されます。
 
-hook をパッケージ化して再利用可能な単位にしたものが **kit** です。 `kit.yaml` と hook スクリプト、 付随アセットをまとめたディレクトリで、 1 度インストールすればどのプロジェクトの `kits:` からも参照できます。 公式パッケージは [boid-kits](https://github.com/novshi-tech/boid-kits) リポジトリにあります。
-
 hook と `boid` 本体は、 stdin にタスクの payload、 stdout に payload patch、 というプロトコルで通信します (詳細は [hook スクリプトプロトコル](../reference/hook-contract.md))。
+
+## kit
+
+サンドボックスで動かす作業に必要な部品をひとまとめに束ねた配布単位が **kit** です。 1 つの kit は次のような要素を任意に同梱します:
+
+- **hook** — 上記の executing 中に動くスクリプト
+- **commands** — サンドボックス内から `boid exec` で呼べる named コマンド
+- **host_commands** — サンドボックスから host に流せるコマンドの許可リスト
+- **additional_bindings** — サンドボックスにマウントしたい追加パス
+- **env** — サンドボックス内に設定する環境変数
+
+ディスク上は `kit.yaml` と関連スクリプトを並べたディレクトリで、 1 度インストールすればどのプロジェクトの `kits:` からも参照できます。 公式パッケージは [boid-kits](https://github.com/novshi-tech/boid-kits) リポジトリにあり、 ファイル構造や各フィールドの詳細は [Kit 作者向け 概要](../kit-authoring/overview.md) を参照してください。
 
 ## ジョブ (job)
 

@@ -56,13 +56,23 @@ Instructions are not a payload trait. They live in the top-level `Task.Instructi
 
 Scripts update the payload by emitting **payload patches** (JSON merge instructions). The daemon stores each patch in order, so the history of a task can be replayed for debugging.
 
-## Hook and kit
+## Hook
 
 A **hook** is a script that runs while the task is in `executing`. Hooks do the substantive work: invoking an AI agent, editing code, running tests, opening a PR. They run inside the sandbox, and several hooks bound to the same behavior run in parallel.
 
-A **kit** is a hook packaged for reuse — a directory holding a `kit.yaml` together with hook scripts and any supporting assets. Once installed, a kit can be referenced from any project's `kits:` field. Official packages live in the [boid-kits](https://github.com/novshi-tech/boid-kits) repository.
-
 Hooks communicate with `boid` over a fixed protocol: the task payload arrives on stdin, and a payload patch is expected on stdout (see the [hook script protocol](../reference/hook-contract.md) for details).
+
+## Kit
+
+A **kit** is the distribution unit that bundles whatever a project needs to run work inside the sandbox. A single kit may package any of:
+
+- **hooks** — the scripts described above that run during `executing`.
+- **commands** — named commands invokable through `boid exec` from inside the sandbox.
+- **host_commands** — the allow-list of commands the sandbox may forward to the host.
+- **additional_bindings** — extra paths to mount into the sandbox.
+- **env** — environment variables set inside the sandbox.
+
+On disk a kit is a directory holding a `kit.yaml` alongside the relevant scripts. Once installed, a kit can be referenced from any project's `kits:` field. Official packages live in the [boid-kits](https://github.com/novshi-tech/boid-kits) repository; see the [kit authoring overview](../kit-authoring/overview.md) for the on-disk layout and the full field reference.
 
 ## Job
 
