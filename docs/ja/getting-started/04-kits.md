@@ -20,8 +20,7 @@
 
 ディスク上で kit は `kit.yaml` と数枚のスクリプトが入ったディレクトリです。 `kit.yaml` は次のような内容を宣言します。
 
-- **hook** — どの状態 (`executing` など) で何のスクリプトを動かすか
-- **gate** — どの状態遷移 (entry / exit) で何のスクリプトを動かすか
+- **hook** — `executing` 状態で動かすスクリプト
 - **commands** — サンドボックス内で `boid exec` 経由から呼べるコマンド
 - **host_commands** — サンドボックスから host 側に流せるコマンドの宣言
 - **additional_bindings** — サンドボックスにマウントしたい追加パス
@@ -92,7 +91,7 @@ boid project reload
 
 このチュートリアルで触れた要素:
 
-- kit の中身 (hook / gate / commands / bindings / env)
+- kit の中身 (hook / commands / bindings / env)
 - `boid kit install` でのリポジトリ取得
 - `project.yaml` の `kits` と `default_instruction` で kit を behavior に紐付ける
 - `boid project reload` で編集を反映

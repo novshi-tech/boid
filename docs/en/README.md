@@ -33,7 +33,7 @@ Step-by-step walkthroughs.
 
 Concept-oriented how-to.
 
-- [Concepts](guide/concepts.md) — explains the internal vocabulary: task, job, hook, gate, kit, payload, trait, and more
+- [Concepts](guide/concepts.md) — explains the internal vocabulary: task, job, hook, kit, payload, trait, and more
 - [State machine](guide/state-machine.md) — `pending → executing → done` (plus `aborted`)
 - [Web UI](guide/web-ui.md) — pairing and revoking devices, exposing the UI through Cloudflare Tunnel
 - [Notifications](guide/notifications.md) — configuring `notify.command`, ntfy and Pushover script examples
@@ -42,14 +42,14 @@ Concept-oriented how-to.
 ### Reference
 
 - [`project.yaml` reference](reference/project-yaml.md) — every field of the project definition file
-- [Handler script protocol](reference/handler-contract.md) — the hook / gate I/O contract (stdin, env vars, `payload_patch.json`, exit codes, ...)
+- [Hook script protocol](reference/hook-contract.md) — the hook I/O contract (stdin, env vars, `payload_patch.json`, exit codes, ...)
 - [Payload trait reference](reference/traits.md) — the shape of `artifact` / `lifecycle`, what the state machine reads, and the merge modes
 - [CLI reference](reference/cli.md) — index of every subcommand grouped by role (per-flag detail lives in `boid <subcommand> --help`)
 - [HTTP API reference](reference/http-api.md) — the `/api/*` endpoints the daemon exposes over the UNIX socket and HTTP listener, plus SSE and error format
 
 ### Kit authoring
 
-- [Overview](kit-authoring/overview.md) — on-disk layout, key `kit.yaml` fields, the hook/gate script protocol
+- [Overview](kit-authoring/overview.md) — on-disk layout, key `kit.yaml` fields, the hook script protocol
 - Official kits: [boid-kits](https://github.com/novshi-tech/boid-kits)
 
 ### Architecture

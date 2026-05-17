@@ -86,7 +86,7 @@ exec unshare --user --map-user=1000 --map-group=1000 --root="$ROOT" -- /bin/bash
 
 ここからは sandbox 内です。 環境変数 (`BOID_TASK_ID` 等の kit / behavior が宣言したもの) を `export` してから、 stdin に渡された TaskJSON を handler の argv に流し込みます。 hook の終了コードはそのまま `exec` で置き換える形で返り、 `setup.sh` を経て `outer.sh` まで伝播します。
 
-handler のプロトコル詳細は [Handler スクリプトプロトコル](../reference/handler-contract.md)。
+handler のプロトコル詳細は [Hook スクリプトプロトコル](../reference/hook-contract.md)。
 
 ## ネットワーク制御
 
@@ -212,5 +212,5 @@ role (hook / gate) による分岐はなく、全 role で同じ op セットが
 
 - [アーキテクチャ概要](overview.md) — sandbox レイヤの位置づけ
 - [概念 / サンドボックス](../guide/concepts.md#サンドボックス-sandbox) — ユーザ視点での意味
-- [Handler スクリプトプロトコル](../reference/handler-contract.md) — sandbox 内 handler の I/O
+- [Hook スクリプトプロトコル](../reference/hook-contract.md) — sandbox 内 handler の I/O
 - [`project.yaml` リファレンス](../reference/project-yaml.md) — `host_commands` / `additional_bindings` / `env` の宣言

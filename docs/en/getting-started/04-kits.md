@@ -20,8 +20,7 @@ From this chapter onward we assume Claude Code is set up locally: the `claude` C
 
 On disk a kit is a directory containing a `kit.yaml` file plus a few scripts. The `kit.yaml` declares some combination of:
 
-- **hooks** — which scripts to run in which states (e.g. `executing`).
-- **gates** — which scripts to run on which state transitions (entry / exit).
+- **hooks** — scripts that run while the task is in `executing`.
 - **commands** — commands that can be invoked through `boid exec` from within the sandbox.
 - **host_commands** — commands the kit is allowed to forward from the sandbox out to the host.
 - **additional_bindings** — extra paths to mount into the sandbox.
@@ -93,7 +92,7 @@ boid project reload
 
 What this tutorial covered:
 
-- The contents of a kit (hooks / gates / commands / bindings / env).
+- The contents of a kit (hooks / commands / bindings / env).
 - Pulling a kit repository in with `boid kit install`.
 - Referencing a kit from `project.yaml` via `kits:` and binding it to a behavior through `default_instruction`.
 - Picking edits up with `boid project reload`.

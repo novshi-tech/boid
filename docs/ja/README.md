@@ -33,7 +33,7 @@
 
 概念別の how-to。
 
-- [概念](guide/concepts.md) — task / job / hook / gate / kit / payload / trait など内部用語の解説
+- [概念](guide/concepts.md) — task / job / hook / kit / payload / trait など内部用語の解説
 - [状態機械](guide/state-machine.md) — `pending → executing → done` (+ `aborted`)
 - [Web UI](guide/web-ui.md) — デバイスのペアリング・失効、 Cloudflare Tunnel での公開
 - [通知](guide/notifications.md) — `notify.command` の設定、 ntfy / Pushover スクリプト例
@@ -42,14 +42,14 @@
 ### リファレンス
 
 - [`project.yaml` リファレンス](reference/project-yaml.md) — プロジェクト定義ファイルの全フィールド
-- [Handler スクリプトプロトコル](reference/handler-contract.md) — hook / gate の入出力契約 (stdin、 環境変数、 `payload_patch.json`、 終了コード等)
+- [Hook スクリプトプロトコル](reference/hook-contract.md) — hook の入出力契約 (stdin、 環境変数、 `payload_patch.json`、 終了コード等)
 - [Payload trait リファレンス](reference/traits.md) — `artifact` / `lifecycle` の構造、状態機械が見ている条件、マージモード
 - [CLI リファレンス](reference/cli.md) — 全サブコマンドの役割別一覧 (詳細フラグは `boid <subcommand> --help`)
 - [HTTP API リファレンス](reference/http-api.md) — daemon が公開する `/api/*` エンドポイント (UNIX socket / HTTP listener)、 SSE、 エラーフォーマット
 
 ### Kit 作者向け
 
-- [概要](kit-authoring/overview.md) — kit のディスク上のレイアウト、 `kit.yaml` 主要フィールド、 hook / gate スクリプトのプロトコル
+- [概要](kit-authoring/overview.md) — kit のディスク上のレイアウト、 `kit.yaml` 主要フィールド、 hook スクリプトのプロトコル
 - 公式 kit 群: [boid-kits](https://github.com/novshi-tech/boid-kits)
 
 ### アーキテクチャ

@@ -1,6 +1,6 @@
 # State machine
 
-Every task in `boid` moves through the same state machine. There is one machine, not one per behavior — what differs between behaviors is which hooks and gates run.
+Every task in `boid` moves through the same state machine. There is one machine, not one per behavior — what differs between behaviors is which hooks run.
 
 This page documents the states, the transitions, and the rules that fire them. For the broader vocabulary, read [Concepts](concepts.md) first.
 
@@ -32,12 +32,12 @@ pending -----> executing -----> done             |
 
 ## Manual transitions
 
-Sent as actions by the user or by handlers (`boid action send --task <id> --type <action>`):
+Sent as actions by the user or by hooks (`boid action send --task <id> --type <action>`):
 
 | Action | From | To | Notes |
 |---|---|---|---|
 | `start` | `pending` | `executing` | |
-| `done` | `executing` | `done` | Force completion (still runs the entry gate; usually let auto-transitions handle it). |
+| `done` | `executing` | `done` | Force completion (usually let auto-transitions handle it). |
 | `reopen` | `done` | `executing` | Appends a new instruction and restarts (`--message` to supply it). |
 | `ask` | `executing` | `awaiting` | Issued by `boid task notify --ask`. Enters Q&A wait mode (see [C2 flow](../architecture/c2-flow.md)). |
 | `answer` | `awaiting` | `executing` | Issued by `boid task answer` or the Web UI. Restarts the hook. |
@@ -54,10 +54,6 @@ Auto transitions fire on payload changes. After every payload update, the state 
 
 `lifecycle.executed` is not a persisted trait; the state machine reads the hook completion event and re-evaluates. After a `done` transition the flag resets, so a `reopen` returns to `executing` and waits for the next hook completion.
 
-### Entry gate before `done`
-
-If an entry gate is registered for `done` (gates run on the host), it fires immediately before the transition. A non-zero exit blocks the transition and keeps the task in `executing`.
-
 ## Reopen with a new instruction
 
 `boid task reopen <id> --message "..."` returns a `done` task to `executing` and appends a new `Instruction` to `Task.Instructions`. The last element of the array is the active instruction; `agent`, `model`, and `interactive` are inherited from the previously active one.
@@ -69,18 +65,15 @@ boid task reopen abc-123 --message "Resolve the merge conflict against origin/ma
 
 Each reopen appends to the array, so historical instructions are preserved and observable as `Task.Instructions[..]`.
 
-## Hooks and gates
+## Hooks
 
 - **hook**: the substantive work, runs in the sandbox. Hooks only fire while the task is `executing`. A clean exit (`boid job done`) sets `lifecycle.executed = true`, which drives the auto-transition.
-- **gate**: optional host-side scripts. Only `phase: entry` (just before `pending → executing`) and `phase: exit` (just before `executing → done`) are valid. Use them for actions that must touch the host: opening PRs, calling `gh pr merge`, restarting services, and so on.
-
-The old `on:` field on hooks and gates has been removed. Hooks always run in `executing`; gates are controlled solely by `phase`.
 
 ## Modes of operation
 
 Because there is one state machine, behavior shapes come from:
 
-- which hooks and gates are wired into the behavior, and
+- which hooks are wired into the behavior, and
 - whether failures are handled by `reopen` or by spawning a fresh task.
 
 The harness does not encode a verification loop. Failure detection and the recovery plan live in the agent's instruction text.

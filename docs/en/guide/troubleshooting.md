@@ -41,10 +41,7 @@ This is the single most common reason "I fixed it but it still happens" — when
 
 ## A task is stuck in `executing` forever
 
-Two possibilities:
-
-1. **The hook is not finishing.** A hook blocked on a prompt, on an interactive command that never returns, or on an unresponsive agent leaves the daemon waiting for the job to complete. `boid job list --task <id>` will show a job stuck in `running`. Run `boid task abort <id>` to release it, then inspect the hook script.
-2. **The `done` exit gate is failing.** If a host-side gate such as `gh pr merge` exits non-zero (e.g. PR conflict), the state machine blocks the `executing → done` transition. Inspect the gate job's exit code with `boid job list --task <id>`, then run `boid task reopen <id> --message "..."` to ask the agent to fix the underlying problem.
+**The hook is not finishing.** A hook blocked on a prompt, on an interactive command that never returns, or on an unresponsive agent leaves the daemon waiting for the job to complete. `boid job list --task <id>` will show a job stuck in `running`. Run `boid task abort <id>` to release it, then inspect the hook script.
 
 ## `boid task list` is slow / disk fills up
 
@@ -74,10 +71,7 @@ gc:
 
 ## "permission denied" or "unknown command" inside a hook
 
-Hooks run inside a sandbox, so any command the kit has not declared in `host_commands` is rejected. Two ways to fix it:
-
-- Add the missing command to the kit's `host_commands` list (preferred for general-purpose tools like `git push`).
-- Move the work to a gate (a script that runs on the host at a state transition) — preferred for environment-specific operations like `systemctl restart`.
+Hooks run inside a sandbox, so any command the kit has not declared in `host_commands` is rejected. Add the missing command to the kit's `host_commands` list (this is how `git push`, `gh`, and similar tools are exposed to hooks).
 
 ## Web UI: the device keeps getting logged out
 

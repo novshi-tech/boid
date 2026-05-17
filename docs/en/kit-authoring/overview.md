@@ -2,7 +2,7 @@
 
 A minimal guide for people who want to write their own kit.
 
-The definition of "kit" lives in [Concepts](../guide/concepts.md#hook-gate-kit-handler). This page covers the on-disk layout, the main `kit.yaml` fields, the hook/gate script protocol, and how to ship a kit.
+The definition of "kit" lives in [Concepts](../guide/concepts.md#hook-and-kit). This page covers the on-disk layout, the main `kit.yaml` fields, the hook script protocol, and how to ship a kit.
 
 ## On-disk layout
 
@@ -12,10 +12,8 @@ A kit is a directory that contains a `kit.yaml`. Smallest example:
 my-kit/
 ├── kit.yaml
 ├── detect.sh         (optional)
-├── hooks/
-│   └── my-hook.sh
-└── gates/
-    └── my-gate.sh
+└── hooks/
+    └── my-hook.sh
 ```
 
 To ship multiple kits in one repository, place each kit in its own subdirectory at the repo root (the official [boid-kits](https://github.com/novshi-tech/boid-kits) follows this layout).
@@ -43,12 +41,6 @@ hooks:
     agent: my-agent             # (optional) instructions addressed to this agent
     traits:
       consumes: [instructions]
-      produces: [artifact]
-
-gates:
-  - id: my-gate
-    phase: exit                 # entry (just before pending → executing) or exit (just before executing → done)
-    traits:
       produces: [artifact]
 
 commands:                       # (optional) commands callable via boid exec inside the sandbox
@@ -90,15 +82,15 @@ Host-side commands that need to be on `PATH` for this kit to function. Used duri
 
 Declares which agent name's instructions this kit is responsible for. For example, `claude-code` sets `provides_agent: claude-code` and handles any instruction whose `agent:` is `claude-code`.
 
-### `hooks` and `gates`
+### `hooks`
 
-The script protocol is in the next section. Hooks always run in `executing`; gates fire on `phase: entry` (just before `pending → executing`) or `phase: exit` (just before `executing → done`). The old `on:` field has been removed.
+The script protocol is in the next section. Hooks always run in `executing`.
 
-`traits.consumes` and `traits.produces` declare which payload traits the handler reads and writes. Suffixing a `consumes` entry with `?` makes it optional (no error if absent).
+`traits.consumes` and `traits.produces` declare which payload traits the hook reads and writes. Suffixing a `consumes` entry with `?` makes it optional (no error if absent).
 
-## Hook / gate script protocol
+## Hook script protocol
 
-Hooks and gates share the same I/O contract. This section is the summary; the full reference (every TaskJSON field, environment variables, the `payload_patch.json` file path, ...) lives in [Handler script protocol reference](../reference/handler-contract.md).
+This section is the summary; the full reference (every TaskJSON field, environment variables, the `payload_patch.json` file path, ...) lives in the [Hook script protocol reference](../reference/hook-contract.md).
 
 ### Input (stdin)
 
@@ -125,7 +117,7 @@ To update the payload, write JSON of this shape to `$HOME/.boid/output/payload_p
 }
 ```
 
-Only when that file is absent does the runtime fall back to stdout, treating its content as the payload patch. New handlers should prefer the file path — agent-style hooks write incidental output to stdout, and the file path avoids mistaking that for a payload patch.
+Only when that file is absent does the runtime fall back to stdout, treating its content as the payload patch. New hooks should prefer the file path — agent-style hooks write incidental output to stdout, and the file path avoids mistaking that for a payload patch.
 
 The `payload_patch` body is a JSON merge instruction applied to the payload. Nested keys merge into their corresponding subtrees. If you have nothing to write, output nothing.
 
@@ -155,6 +147,6 @@ Conventions for publishing:
 
 ## Related docs
 
-- [Concepts](../guide/concepts.md) — for the meaning of hook / gate / kit / trait.
+- [Concepts](../guide/concepts.md) — for the meaning of hook / kit / trait.
 - [`project.yaml` reference](../reference/project-yaml.md) — how `project.yaml` references kits.
-- [State machine](../guide/state-machine.md) — when hooks and gates fire.
+- [State machine](../guide/state-machine.md) — when hooks fire.

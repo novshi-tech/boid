@@ -7,7 +7,7 @@
 ## 役割と配置
 
 - パス: プロジェクトルート直下の `.boid/project.yaml`
-- 役割: そのディレクトリを `boid` プロジェクトとして登録し、タスクの種類 (behavior) と各 behavior が使う拡張パッケージ (kit) を宣言する
+- 役割: そのディレクトリを `boid` プロジェクトとして登録し、タスクの種類 (behavior) と、 プロジェクトで使う拡張パッケージ (kit) を宣言する
 - 登録: `boid project add <project-root>` で `boid` の DB に取り込まれる
 - 変更後の反映: `boid project reload` で再読み込みする
 
@@ -39,14 +39,12 @@ task_behaviors:
 
 ## `task_behaviors.<name>`
 
-map のキーが behavior の識別子で、タスク作成時に `behavior:` で指定する名前です。 **canonical な名前は 2 つ** に絞られており、 旧 alias は back-compat 期間中だけ受理されます:
+map のキーが behavior の識別子で、 タスク作成時に `behavior:` で指定する名前です。 **サポートする名前は 2 つだけ** です:
 
-| canonical | 旧 alias | 役割 |
-|---|---|---|
-| `supervisor` | `plan` | readonly な統括役。 要求を triage し、 child executor task を作り、 監視する。 ファイル編集はしない |
-| `executor` | `dev` | 書き込み可能な実装役。 単一の集中したタスクを受けて成果物 (commit / PR / payload trait) を作る |
-
-alias は load 時に正規化されます。 `project.yaml` 内で `plan` / `dev` と書いても deprecation warning と共に動作しますが、 新規プロジェクトは canonical 名で書いてください。
+| 名前 | 役割 |
+|---|---|
+| `supervisor` | readonly な統括役。 要求を triage し、 child executor task を作り、 監視する。 ファイル編集はしない |
+| `executor` | 書き込み可能な実装役。 単一の集中したタスクを受けて成果物 (commit / PR / payload trait) を作る |
 
 各 behavior エントリの設定項目はわずかです:
 
@@ -55,16 +53,15 @@ alias は load 時に正規化されます。 `project.yaml` 内で `plan` / `de
 | `name` | string | キー名 | UI 表示用のラベル (省略可) |
 | `traits` | string のリスト | (空) | この behavior のタスクが扱う payload trait の宣言 (例: `[artifact]`) |
 | `default_instruction` | Instruction | (空) | タスク作成時の active instruction として `Task.Instructions` 配列に積まれる雛形 (単一 Instruction object) |
-| `kits` | KitRef のリスト | (空) | この behavior 専用の追加 kit |
 
 ### 廃止された behavior レベルのフィールド
 
-以下のフィールドは旧 `task_behaviors.<name>.*` 配下にありましたが、 1 プロジェクト 1 ワークフロー形 を貫くため、 project トップ移動 または canonical 名から導出する形に再設計されました。
+以下のフィールドは旧 `task_behaviors.<name>.*` 配下にありましたが、 1 プロジェクト 1 ワークフロー形 を貫くため、 project トップ移動 または behavior 名から導出する形に再設計されました。
 
 | 廃止フィールド | 現在の解決方法 |
 |---|---|
-| `readonly` | canonical 名から導出: `supervisor` ⇒ `true`、 `executor` ⇒ `false` |
-| `worktree` | project トップの `worktree:` と canonical 名の組み合わせから決まる。 supervisor は常に worktree なし、 executor は project トップ `worktree: true` の時のみ worktree あり |
+| `readonly` | behavior 名から導出: `supervisor` ⇒ `true`、 `executor` ⇒ `false` |
+| `worktree` | project トップの `worktree:` と behavior 名の組み合わせから決まる。 supervisor は常に worktree なし、 executor は project トップ `worktree: true` の時のみ worktree あり |
 | `base_branch` | project トップの `base_branch:` に移動 |
 | `branch_prefix` | 設定不可。 worktree branch は常に `boid/` プレフィックスで作られる |
 | `default_payload` | 廃止。 payload はタスク作成時に渡すこと |
@@ -247,7 +244,7 @@ secret_namespace: ...
 
 ## 例: 実プロジェクトの構成
 
-`boid` 自身のリポジトリにある `.boid/project.yaml` (抜粋) を載せておきます。 canonical な 2 つの behavior (`supervisor`, `executor`) を定義し、 project トップで `worktree: true` を宣言することで executor タスクが専用の git worktree を持つ構成です。
+`boid` 自身のリポジトリにある `.boid/project.yaml` (抜粋) を載せておきます。 2 つの behavior (`supervisor`, `executor`) を定義し、 project トップで `worktree: true` を宣言することで executor タスクが専用の git worktree を持つ構成です。
 
 ```yaml
 id: boid
