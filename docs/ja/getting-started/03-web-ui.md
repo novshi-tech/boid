@@ -73,8 +73,8 @@ boid web revoke-all              # 全部失効
 - listen アドレスの変更方法 (`boid web set-addr`)
 - 他デバイスからアクセスする場合の流れ (`boid web set-url` + `boid web pair`)
 
-次の章で Claude Code を呼ぶ kit をセットアップし、 そのあと小さなタスクを 1 本走らせて、 ここで開いた Web UI からライブで観察します。
+次の章で小さなタスクを 1 本走らせて、 ここで開いた Web UI からライブで観察します。
 
 ---
 
-次: [4. kit をセットアップする](04-kits.md)
+次: [4. 最初のタスク](04-first-task.md)
