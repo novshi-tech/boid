@@ -127,6 +127,9 @@ func (w *Wizard) Run(projectDir string) error {
 	// the scaffold/behavior-provider step is removed).
 	var projectScopeKits []KitInfo
 	for _, ki := range allKits {
+		if ki.Meta.Deprecated {
+			continue
+		}
 		if orchestrator.IsProjectScopable(ki.Meta) == nil {
 			projectScopeKits = append(projectScopeKits, ki)
 		}

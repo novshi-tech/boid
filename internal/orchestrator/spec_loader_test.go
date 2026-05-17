@@ -720,6 +720,18 @@ task_behaviors:
 			t.Fatalf("expected gate-kind error, got %v", err)
 		}
 	})
+
+	t.Run("deprecated flag is parsed", func(t *testing.T) {
+		dir := t.TempDir()
+		writeKitYAML(t, dir, "deprecated: true\nmeta:\n  name: old-kit\n")
+		meta, err := projectspec.ReadKitMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadKitMeta: %v", err)
+		}
+		if !meta.Deprecated {
+			t.Error("expected Deprecated to be true")
+		}
+	})
 }
 
 func TestReadProjectMetaWithKits_RejectsBuiltinInHostCommands(t *testing.T) {
