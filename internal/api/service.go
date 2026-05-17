@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -2001,7 +2003,9 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			if err := s.Locks.AcquireForTask(ctx, current.ProjectID, current.ID); err != nil {
 				slog.Warn("dispatch loop: project lock acquire failed",
 					"task_id", current.ID, "project_id", current.ProjectID, "error", err)
-				s.recordDispatchError(current.ID, current.Status, fmt.Errorf("project lock: %w", err))
+				// Lock was never acquired, so no release needed. terminateForDispatchError
+				// calls finalizeTerminal which calls releaseProjectLock idempotently (no-op).
+				s.terminateForDispatchError(ctx, current, fmt.Errorf("project lock: %w", err))
 				return
 			}
 		}
@@ -2017,7 +2021,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 				s.persistFiredEvents(current.ID, current.Status, result.FiredEvents)
 			}
 			slog.Error("dispatch loop error", "task_id", current.ID, "cycle", cycle, "error", err)
-			s.recordDispatchError(current.ID, current.Status, err)
+			s.terminateForDispatchError(ctx, current, err)
 			return
 		}
 
@@ -2127,7 +2131,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 					s.persistFiredEvents(current.ID, current.Status, entryResult.FiredEvents)
 				}
 				slog.Error("entry gate dispatch failed", "task_id", current.ID, "error", err)
-				s.recordDispatchError(current.ID, current.Status, err)
+				s.terminateForDispatchError(ctx, current, err)
 				return
 			}
 			s.persistFiredEvents(current.ID, current.Status, entryResult.FiredEvents)
@@ -2179,6 +2183,61 @@ func (s *TaskWorkflowService) triggerDependentTasks(ctx context.Context, taskID 
 			slog.Warn("trigger dependent tasks: start failed", "dependent_id", dep.ID, "error", err)
 		}
 	}
+}
+
+// terminateForDispatchError transitions the task to aborted, records a
+// dispatch_error action with aborted_reason and optional cause fields, then
+// calls finalizeTerminal to release the project lock, clean up any worktree,
+// and trigger dependent tasks.
+//
+// It is safe to call this even when the project lock was never acquired
+// (lock acquire failure path): releaseProjectLock is idempotent.
+func (s *TaskWorkflowService) terminateForDispatchError(ctx context.Context, task *orchestrator.Task, err error) {
+	payloadData := map[string]any{
+		"error":          err.Error(),
+		"aborted_reason": "dispatch_error",
+	}
+	var wse *dispatcher.WorktreeSetupError
+	if errors.As(err, &wse) {
+		payloadData["cause"] = wse.Cause
+	}
+	payload, marshalErr := json.Marshal(payloadData)
+	if marshalErr != nil {
+		slog.Error("terminate for dispatch error: marshal payload failed", "task_id", task.ID, "error", marshalErr)
+		return
+	}
+
+	sm := orchestrator.DefaultMachine()
+	abortedTask, smErr := sm.Apply(task, &orchestrator.Action{Type: "abort"})
+	if smErr != nil {
+		// Abort is a wildcard transition; this should not happen. Fall back to
+		// just recording the error without a state transition.
+		slog.Error("terminate for dispatch error: abort transition failed",
+			"task_id", task.ID, "status", task.Status, "error", smErr)
+		s.recordDispatchError(task.ID, task.Status, err)
+		return
+	}
+
+	action := &orchestrator.Action{
+		TaskID:     task.ID,
+		Type:       "dispatch_error",
+		Payload:    payload,
+		FromStatus: task.Status,
+		ToStatus:   abortedTask.Status,
+	}
+	if s.Tx != nil {
+		if txErr := s.Tx.WithinTx(func(tx TxStore) error {
+			if err := tx.UpdateTask(abortedTask); err != nil {
+				return err
+			}
+			return tx.CreateAction(action)
+		}); txErr != nil {
+			slog.Error("terminate for dispatch error: persist failed", "task_id", task.ID, "error", txErr)
+			return
+		}
+	}
+
+	s.finalizeTerminal(ctx, abortedTask)
 }
 
 func (s *TaskWorkflowService) recordDispatchError(taskID string, taskStatus orchestrator.TaskStatus, err error) {
