@@ -12,7 +12,7 @@ This page assumes you have completed [3. Set up the Web UI](03-web-ui.md).
 
 ## A note on agents
 
-`boid`'s architecture is intentionally agent-neutral, but **Claude Code is currently the only agent with production-grade support**. A kit for the OpenAI Codex CLI (`github.com/novshi-tech/boid-kits/codex`) is shipped, but harness-side support for it is still in flux.
+`boid`'s architecture is intentionally agent-neutral, but **Claude Code is currently the only agent with production-grade support**.
 
 From this chapter onward we assume Claude Code is set up locally: the `claude` CLI is on your `PATH` and you have signed in. See [Claude Code's docs](https://docs.claude.com/en/docs/claude-code/overview) for the CLI setup.
 
@@ -34,10 +34,8 @@ The official kits live in the [`github.com/novshi-tech/boid-kits`](https://githu
 | Kit ref | What it does |
 |---|---|
 | `github.com/novshi-tech/boid-kits/claude-code` | Runs the Claude Code agent as a hook. |
-| `github.com/novshi-tech/boid-kits/codex` | Runs the OpenAI Codex CLI agent as a hook (experimental). |
 | `github.com/novshi-tech/boid-kits/go-dev` | Mounts `~/go` and friends into the sandbox. |
 | `github.com/novshi-tech/boid-kits/github-cli` | Makes `gh` callable from inside the sandbox. |
-| `github.com/novshi-tech/boid-kits/github-auto-merge` | Adds an exit gate on `executing → done` that runs `gh pr merge`. |
 
 ## Install a kit repository
 

@@ -151,7 +151,7 @@ Conventions for publishing:
 
 ## Reference implementations
 
-- [`github.com/novshi-tech/boid-kits`](https://github.com/novshi-tech/boid-kits) — the official kits. `claude-code`, `github-auto-merge`, `go-dev`, and similar are good reference reads for different shapes of kit.
+- [`github.com/novshi-tech/boid-kits`](https://github.com/novshi-tech/boid-kits) — the official kits. `claude-code`, `github-cli`, `go-dev`, and similar are good reference reads for different shapes of kit.
 
 ## Related docs
 

@@ -66,7 +66,7 @@ What this tutorial covered:
 - What triggers the auto-transition `executing → done` (a clean hook exit plus the `artifact` trait).
 - That the same task can be followed from either the CLI or the Web UI.
 
-Next: a GitHub PR-driven dev workflow that combines a worktree with auto-merge.
+This is the end of the Getting started tutorials. For richer project shapes see [Workflows](../../workflows.md), and for per-field detail see the [Reference](../reference/project-yaml.md).
 
 ## Cleanup
 
@@ -74,10 +74,5 @@ Next: a GitHub PR-driven dev workflow that combines a worktree with auto-merge.
 boid task delete <task-id>
 boid project remove demo
 rm -rf ~/boid-demo
+boid kit remove github.com/novshi-tech/boid-kits
 ```
-
-`boid kit remove github.com/novshi-tech/boid-kits` removes the installed repository, but it is convenient to keep it around for the next tutorial.
-
----
-
-Next: [6. The GitHub PR-driven dev workflow](06-dev-workflow.md)

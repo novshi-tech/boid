@@ -12,7 +12,7 @@
 
 ## エージェントについて
 
-`boid` のアーキテクチャは特定の AI エージェントに依存しない設計ですが、 現時点で実用的に動作確認が取れている agent は **Claude Code** のみです。 OpenAI Codex CLI 用の kit (`github.com/novshi-tech/boid-kits/codex`) も同梱はされていますが、 ハーネス側の対応はまだ発展途上です。
+`boid` のアーキテクチャは特定の AI エージェントに依存しない設計ですが、 現時点で実用的に動作確認が取れている agent は **Claude Code** のみです。
 
 このチュートリアル以降は Claude Code が手元にあることを前提に進めます。 `claude` CLI が PATH にあり、 Claude Code としてサインイン済みであることを確認してください (Claude Code 側のセットアップ手順は [Claude Code の公式ドキュメント](https://docs.claude.com/en/docs/claude-code/overview) を参照)。
 
@@ -34,10 +34,8 @@
 | kit ref | 役割 |
 |---|---|
 | `github.com/novshi-tech/boid-kits/claude-code` | Claude Code エージェントを hook で起動 |
-| `github.com/novshi-tech/boid-kits/codex` | OpenAI Codex CLI エージェントを hook で起動 (実験的) |
 | `github.com/novshi-tech/boid-kits/go-dev` | サンドボックスに `~/go` などをマウント |
 | `github.com/novshi-tech/boid-kits/github-cli` | サンドボックスから `gh` を使えるようにする |
-| `github.com/novshi-tech/boid-kits/github-auto-merge` | executing → done の exit gate で `gh pr merge` を実行 |
 
 ## kit リポジトリをインストールする
 

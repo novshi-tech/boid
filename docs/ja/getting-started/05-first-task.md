@@ -66,7 +66,7 @@ Web UI からも各ジョブのログを開けます。
 - 状態機械が `executing → done` を自動遷移するきっかけ (hook の正常終了 + artifact trait)
 - 同じタスクを CLI と Web UI のどちらからも追跡できる
 
-次は worktree と auto-merge を組み合わせた、 GitHub PR ベースの開発ワークフローに進みます。
+ここまでで Getting started のチュートリアルは一通り終了です。 さらに踏み込んだ構成例は [ワークフロー](../../workflows.md) を、 個々のフィールドや CLI の詳細は [リファレンス](../reference/project-yaml.md) を参照してください。
 
 ## 後片付け
 
@@ -74,10 +74,5 @@ Web UI からも各ジョブのログを開けます。
 boid task delete <task-id>
 boid project remove demo
 rm -rf ~/boid-demo
+boid kit remove github.com/novshi-tech/boid-kits
 ```
-
-`boid kit remove github.com/novshi-tech/boid-kits` でインストール済みリポジトリも消せますが、後続のチュートリアルで再利用するため残しておくのが便利です。
-
----
-
-次: [6. GitHub PR ベースの開発ワークフロー](06-dev-workflow.md)
