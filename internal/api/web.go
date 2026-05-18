@@ -66,6 +66,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
 	r.Post("/tasks/{id}/edit/description", h.PostEditDescription)
 	r.Post("/tasks/{id}/edit/title", h.PostEditTitle)
+	r.Post("/tasks/{id}/edit/project", h.PostEditProject)
 	r.Post("/tasks/{id}/action", h.PostAction)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	r.Post("/tasks/{id}/rerun", h.PostRerun)
@@ -253,9 +254,11 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	// ?mode=edit switches an editable area into inline edit mode.
 	// - tab=description → description textarea (editMode)
 	// - field=title     → title input at the top of the page (editTitle)
+	// - field=project   → project select in the meta strip (editProject)
 	// Mutually exclusive; both default to false.
 	editMode := r.URL.Query().Get("mode") == "edit" && tab == "description"
 	editTitle := r.URL.Query().Get("mode") == "edit" && r.URL.Query().Get("field") == "title"
+	editProject := r.URL.Query().Get("mode") == "edit" && r.URL.Query().Get("field") == "project"
 	errorMsg := r.URL.Query().Get("error")
 	timelineGroups := detailTimelineGroups(detail)
 	if r.Header.Get("HX-Request") == "true" {
@@ -265,12 +268,16 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	projectName := h.lookupProjectName(detail.Task.ProjectID)
+	var allProjects []*orchestrator.Project
+	if editProject {
+		allProjects, _ = h.Service.ListProjects()
+	}
 	cmdSummaries, _ := h.Service.ListTaskBehaviorCommands(id)
 	cmdViews := make([]templates.CommandView, len(cmdSummaries))
 	for i, c := range cmdSummaries {
 		cmdViews[i] = templates.CommandView{Name: c.Name, Command: c.Command, Readonly: c.Readonly}
 	}
-	templates.TaskDetail(detail.Task, timelineGroups, jobs, detail.AvailableActions, errorMsg, tab, editMode, projectName, cmdViews, editTitle).Render(r.Context(), w)
+	templates.TaskDetail(detail.Task, timelineGroups, jobs, detail.AvailableActions, errorMsg, tab, editMode, projectName, cmdViews, editTitle, editProject, allProjects).Render(r.Context(), w)
 }
 
 // lookupProjectName resolves a project ID to its display name (Meta.Name),
@@ -325,7 +332,7 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 		templates.TaskDetailTimelineSection(detail.Task, detailTimelineGroups(detail)).Render(r.Context(), w)
 	case "status":
 		projectName := h.lookupProjectName(detail.Task.ProjectID)
-		templates.TaskDetailStatusSection(detail.Task, detail.AvailableActions, "", projectName).Render(r.Context(), w)
+		templates.TaskDetailStatusSection(detail.Task, detail.AvailableActions, "", projectName, false, nil).Render(r.Context(), w)
 	case "jobs":
 		templates.TaskDetailJobsSection(jobs).Render(r.Context(), w)
 	default:
@@ -381,6 +388,26 @@ func (h *WebHandler) PostEditTitle(w http.ResponseWriter, r *http.Request) {
 	target := "/tasks/" + id
 	if err := h.Service.UpdateTask(id, req); err != nil {
 		target = "/tasks/" + id + "?mode=edit&field=title&error=" + url.QueryEscape(err.Error())
+	}
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", target)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+func (h *WebHandler) PostEditProject(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	projectID := strings.TrimSpace(r.FormValue("project_id"))
+	req := UpdateTaskRequest{ProjectID: projectID}
+	target := "/tasks/" + id
+	if err := h.Service.UpdateTask(id, req); err != nil {
+		target = "/tasks/" + id + "?mode=edit&field=project&error=" + url.QueryEscape(err.Error())
 	}
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("HX-Redirect", target)
