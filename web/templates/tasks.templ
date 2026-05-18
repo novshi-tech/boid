@@ -57,6 +57,22 @@ func payloadAsYAML(raw []byte) string {
 	return string(out)
 }
 
+// instrActiveField returns the named field of inst, or "" when inst is nil.
+func instrActiveField(inst *orchestrator.Instruction, field string) string {
+	if inst == nil {
+		return ""
+	}
+	switch field {
+	case "message":
+		return inst.Message
+	case "model":
+		return inst.Model
+	case "agent":
+		return inst.Agent
+	}
+	return ""
+}
+
 // taskFilterActive reports whether the user has narrowed the list with any
 // filter beyond the default status view. Used to switch the empty-state copy
 // between "no tasks at all" and "filters match nothing".
@@ -293,6 +309,20 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 		<div class="action-bar">
 			<div class="action-bar-inner">
 				<a href={ templ.SafeURL("/tasks/" + task.ID + "?tab=description&mode=edit") } class="btn btn-secondary action-bar-primary-form">Edit</a>
+				<span class="action-bar-spacer"></span>
+			</div>
+		</div>
+	} else if activeTab == "instructions" && editMode {
+		<div class="action-bar">
+			<div class="action-bar-inner">
+				<button type="submit" form="instr-edit-form" class="btn btn-primary action-bar-primary-form">Save</button>
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "?tab=instructions") } class="btn btn-secondary">Cancel</a>
+			</div>
+		</div>
+	} else if activeTab == "instructions" && task.Status == orchestrator.TaskStatusPending {
+		<div class="action-bar">
+			<div class="action-bar-inner">
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "?tab=instructions&mode=edit") } class="btn btn-secondary action-bar-primary-form">Edit</a>
 				<span class="action-bar-spacer"></span>
 			</div>
 		</div>
@@ -672,33 +702,58 @@ templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Stat
 				}
 			</div>
 		} else if activeTab == "instructions" {
-			<div class="tab-content">
-				if len(task.Instructions) > 0 {
-					for _, entry := range orderedInstructions(task.Instructions) {
-						{{ inst := entry.Instruction }}
-						<section class="instr-block">
-							<h3 class="instr-role">{ entry.Label }</h3>
-							<div class="instr-meta">
-								<span class="instr-kv"><span class="instr-k">type</span>{ string(inst.Type) }</span>
-								<span class="instr-kv"><span class="instr-k">agent</span>{ inst.Agent }</span>
-								if inst.Model != "" {
-									<span class="instr-kv"><span class="instr-k">model</span>{ inst.Model }</span>
+			if editMode {
+				{{ active := task.Instructions.Active() }}
+				<div class="tab-content">
+					<form
+						id="instr-edit-form"
+						hx-post={ "/tasks/" + task.ID + "/edit/instructions" }
+						hx-target="body"
+						hx-swap="outerHTML"
+					>
+						<div class="form-field">
+							<label class="form-label">Message</label>
+							<textarea name="message" class="form-input tab-edit-textarea" rows="10" autofocus placeholder="指示メッセージ">{ instrActiveField(active, "message") }</textarea>
+						</div>
+						<div class="form-field">
+							<label class="form-label">Model</label>
+							<input type="text" name="model" class="form-input" placeholder="opus / sonnet / haiku" value={ instrActiveField(active, "model") }/>
+						</div>
+						<div class="form-field">
+							<label class="form-label">Agent (consumer)</label>
+							<input type="text" name="agent" class="form-input" placeholder="claude-code" value={ instrActiveField(active, "agent") }/>
+						</div>
+					</form>
+				</div>
+			} else {
+				<div class="tab-content">
+					if len(task.Instructions) > 0 {
+						for _, entry := range orderedInstructions(task.Instructions) {
+							{{ inst := entry.Instruction }}
+							<section class="instr-block">
+								<h3 class="instr-role">{ entry.Label }</h3>
+								<div class="instr-meta">
+									<span class="instr-kv"><span class="instr-k">type</span>{ string(inst.Type) }</span>
+									<span class="instr-kv"><span class="instr-k">agent</span>{ inst.Agent }</span>
+									if inst.Model != "" {
+										<span class="instr-kv"><span class="instr-k">model</span>{ inst.Model }</span>
+									}
+									if inst.Name != "" {
+										<span class="instr-kv"><span class="instr-k">name</span>{ inst.Name }</span>
+									}
+								</div>
+								if inst.Message != "" {
+									<pre class="tab-body-pre instr-message">{ inst.Message }</pre>
+								} else {
+									<p class="tab-empty">(no message)</p>
 								}
-								if inst.Name != "" {
-									<span class="instr-kv"><span class="instr-k">name</span>{ inst.Name }</span>
-								}
-							</div>
-							if inst.Message != "" {
-								<pre class="tab-body-pre instr-message">{ inst.Message }</pre>
-							} else {
-								<p class="tab-empty">(no message)</p>
-							}
-						</section>
+							</section>
+						}
+					} else {
+						<p class="tab-empty">(not set)</p>
 					}
-				} else {
-					<p class="tab-empty">(not set)</p>
-				}
-			</div>
+				</div>
+			}
 		}
 	</div>
 }

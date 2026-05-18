@@ -1231,16 +1231,10 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 }
 
 // isInstructionsEditable reports whether a task's instructions can be edited
-// in its current status. Editing is only allowed while the task is stopped
-// (pending/done/aborted) to avoid racing with in-flight handlers.
+// in its current status. Editing is only allowed while the task is pending to
+// avoid racing with in-flight handlers and to prevent post-execution mutations.
 func isInstructionsEditable(status orchestrator.TaskStatus) bool {
-	switch status {
-	case orchestrator.TaskStatusPending,
-		orchestrator.TaskStatusDone,
-		orchestrator.TaskStatusAborted:
-		return true
-	}
-	return false
+	return status == orchestrator.TaskStatusPending
 }
 
 // rejectPayloadInstructions is the local shim around orchestrator's validation

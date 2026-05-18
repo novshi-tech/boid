@@ -778,6 +778,31 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		}
 	})
 
+	for _, status := range []orchestrator.TaskStatus{
+		orchestrator.TaskStatusDone,
+		orchestrator.TaskStatusAborted,
+	} {
+		t.Run("instructions update is rejected when task is "+string(status), func(t *testing.T) {
+			task := &orchestrator.Task{
+				ID:     "task-instr-" + string(status),
+				Title:  "title",
+				Status: status,
+			}
+			store := &stubTaskStore{task: task}
+			svc := &TaskAppService{Tasks: store}
+
+			body := json.RawMessage(`[{"type":"execution","agent":"claude-code","message":"do stuff"}]`)
+			_, err := svc.UpdateTask(task.ID, UpdateTaskRequest{Instructions: body})
+			if err == nil {
+				t.Fatalf("expected UpdateTask to reject instructions change when status=%s", status)
+			}
+			se, ok := err.(*StatusError)
+			if !ok || se.Code != http.StatusConflict {
+				t.Fatalf("expected StatusConflict, got %v", err)
+			}
+		})
+	}
+
 	// Phase 2-3: base_branch / branch_prefix / worktree task-row updates were
 	// removed. The fields no longer exist on UpdateTaskRequest, so the API
 	// silently drops them (with a slog.Warn at the handler boundary). The
