@@ -1218,14 +1218,6 @@ body:has(.action-bar) {
   word-break: break-word;
 }
 
-/* Pending-only "Edit title" affordance rendered above the status card.
-   Shows as a right-aligned compact button row. */
-.task-title-bar {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: var(--space-2);
-}
-
 /* Inline title edit form (pending + ?mode=edit&field=title).
    Input + actions share a horizontal row on desktop; stack on mobile. */
 .task-title-edit-wrap {

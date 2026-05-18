@@ -295,6 +295,9 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 						<span class="action-bar-spacer"></span>
 					}
 				}
+				if task.Status == orchestrator.TaskStatusPending {
+					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit") } class="btn btn-secondary">Edit</a>
+				}
 				<details class="action-menu">
 					<summary class="action-menu-summary" aria-label="More actions">⋯</summary>
 					<div class="action-menu-list" role="menu">
@@ -789,22 +792,8 @@ templ TaskDetailCommandsSection(taskID string, commands []CommandView) {
 	}
 }
 
-// TaskDetailTitleSection renders an "Edit" button for pending tasks that
-// navigates to the dedicated edit page /tasks/{id}/edit.
-templ TaskDetailTitleSection(task *orchestrator.Task) {
-	if task.Status == orchestrator.TaskStatusPending {
-		<div class="task-title-bar">
-			<a
-				href={ templ.SafeURL("/tasks/" + task.ID + "/edit") }
-				class="btn btn-secondary btn-sm"
-			>Edit</a>
-		</div>
-	}
-}
-
 templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, projectName string, commands []CommandView) {
 	@Layout(task.Title, "/") {
-		@TaskDetailTitleSection(task)
 		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName)
 		@TaskDetailCommandsSection(task.ID, commands)
 		@TaskDetailTabsSection(task, timelineGroups, jobs, availableActions, activeTab)
