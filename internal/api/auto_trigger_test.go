@@ -167,7 +167,6 @@ func TestAutoTrigger_PayloadUpdate_WithPayloadCondition_TriggersDependents(t *te
 
 	// A の payload に pr_merged=false をセット → B は pending 維持
 	patchFalse := map[string]any{
-		"title":   "Task A",
 		"payload": json.RawMessage(`{"pr_merged": false}`),
 	}
 	if err := ts.Client.Do("PATCH", "/api/tasks/"+taskA.ID, patchFalse, nil); err != nil {
@@ -184,7 +183,6 @@ func TestAutoTrigger_PayloadUpdate_WithPayloadCondition_TriggersDependents(t *te
 
 	// A の payload に pr_merged=true をセット → B が自動 start されるはず
 	patchTrue := map[string]any{
-		"title":   "Task A",
 		"payload": json.RawMessage(`{"pr_merged": true}`),
 	}
 	if err := ts.Client.Do("PATCH", "/api/tasks/"+taskA.ID, patchTrue, nil); err != nil {

@@ -802,8 +802,47 @@ templ TaskDetailCommandsSection(taskID string, commands []CommandView) {
 	}
 }
 
-templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, editMode bool, projectName string, commands []CommandView) {
+// TaskDetailTitleSection renders the inline title-edit affordance.
+// For pending tasks it shows an "Edit title" link that switches to edit mode
+// (?mode=edit&field=title). When editTitle is true the title is replaced by
+// a single-line input with inline Save/Cancel. Renders nothing for non-pending
+// tasks so the Layout's <h1> remains the sole title display.
+templ TaskDetailTitleSection(task *orchestrator.Task, editTitle bool) {
+	if editTitle {
+		<div class="task-title-edit-wrap">
+			<form
+				id="title-edit-form"
+				hx-post={ "/tasks/" + task.ID + "/edit/title" }
+				hx-target="body"
+				hx-swap="outerHTML"
+			>
+				<input
+					type="text"
+					name="title"
+					value={ task.Title }
+					class="form-input task-title-input"
+					autofocus
+					required
+				/>
+			</form>
+			<div class="task-title-edit-actions">
+				<button type="submit" form="title-edit-form" class="btn btn-primary btn-sm">Save</button>
+				<a href={ templ.SafeURL("/tasks/" + task.ID) } class="btn btn-secondary btn-sm">Cancel</a>
+			</div>
+		</div>
+	} else if task.Status == orchestrator.TaskStatusPending {
+		<div class="task-title-bar">
+			<a
+				href={ templ.SafeURL("/tasks/" + task.ID + "?mode=edit&field=title") }
+				class="btn btn-secondary btn-sm"
+			>Edit title</a>
+		</div>
+	}
+}
+
+templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, editMode bool, projectName string, commands []CommandView, editTitle bool) {
 	@Layout(task.Title, "/") {
+		@TaskDetailTitleSection(task, editTitle)
 		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName)
 		@TaskDetailCommandsSection(task.ID, commands)
 		@TaskDetailTabsSection(task, timelineGroups, jobs, availableActions, activeTab, editMode)

@@ -522,6 +522,7 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 			ID:          "task-1",
 			Title:       "old title",
 			Description: "old desc",
+			Status:      orchestrator.TaskStatusPending,
 		}
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
@@ -554,6 +555,28 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 			t.Fatalf("expected StatusNotFound, got %v", err)
 		}
 	})
+
+	t.Run("title update rejected when not pending", func(t *testing.T) {
+		for _, status := range []orchestrator.TaskStatus{
+			orchestrator.TaskStatusExecuting,
+			orchestrator.TaskStatusAwaiting,
+			orchestrator.TaskStatusDone,
+			orchestrator.TaskStatusAborted,
+		} {
+			task := &orchestrator.Task{ID: "task-x", Title: "old", Status: status}
+			store := &stubTaskStore{task: task}
+			svc := &TaskAppService{Tasks: store}
+
+			_, err := svc.UpdateTask("task-x", UpdateTaskRequest{Title: "new"})
+			if err == nil {
+				t.Fatalf("status=%s: expected conflict error, got nil", status)
+			}
+			se, ok := err.(*StatusError)
+			if !ok || se.Code != http.StatusConflict {
+				t.Fatalf("status=%s: expected StatusConflict, got %v", status, err)
+			}
+		}
+	})
 }
 
 func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
@@ -561,6 +584,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		task := &orchestrator.Task{
 			ID:      "task-1",
 			Title:   "old title",
+			Status:  orchestrator.TaskStatusPending,
 			Payload: json.RawMessage(`{"artifact":{"url":"https://example.com"}}`),
 		}
 		store := &stubTaskStore{task: task}
@@ -584,6 +608,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		task := &orchestrator.Task{
 			ID:      "task-3",
 			Title:   "title",
+			Status:  orchestrator.TaskStatusPending,
 			Payload: existingPayload,
 		}
 		store := &stubTaskStore{task: task}
@@ -612,6 +637,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		task := &orchestrator.Task{
 			ID:      "task-4",
 			Title:   "title",
+			Status:  orchestrator.TaskStatusPending,
 			Payload: existingPayload,
 		}
 		store := &stubTaskStore{task: task}
