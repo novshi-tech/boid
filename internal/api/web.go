@@ -64,10 +64,8 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Post("/tasks", h.PostTaskCreate)
 	r.Get("/tasks/{id}", h.TaskDetail)
 	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
-	r.Post("/tasks/{id}/edit/description", h.PostEditDescription)
-	r.Post("/tasks/{id}/edit/title", h.PostEditTitle)
-	r.Post("/tasks/{id}/edit/project", h.PostEditProject)
-	r.Post("/tasks/{id}/edit/instructions", h.PostEditInstructions)
+	r.Get("/tasks/{id}/edit", h.GetTaskEdit)
+	r.Post("/tasks/{id}/edit", h.PostEdit)
 	r.Post("/tasks/{id}/action", h.PostAction)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	r.Post("/tasks/{id}/rerun", h.PostRerun)
@@ -252,33 +250,21 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	if tab == "" {
 		tab = "timeline"
 	}
-	// ?mode=edit switches an editable area into inline edit mode.
-	// - tab=description → description textarea (editMode)
-	// - field=title     → title input at the top of the page (editTitle)
-	// - field=project   → project select in the meta strip (editProject)
-	// Mutually exclusive; both default to false.
-	editMode := r.URL.Query().Get("mode") == "edit" && (tab == "description" || tab == "instructions")
-	editTitle := r.URL.Query().Get("mode") == "edit" && r.URL.Query().Get("field") == "title"
-	editProject := r.URL.Query().Get("mode") == "edit" && r.URL.Query().Get("field") == "project"
 	errorMsg := r.URL.Query().Get("error")
 	timelineGroups := detailTimelineGroups(detail)
 	if r.Header.Get("HX-Request") == "true" {
 		// Tab clicks swap the entire #tabs section so the active class on
 		// the visible tabs and the "more" summary label stay in sync.
-		templates.TaskDetailTabsSection(detail.Task, timelineGroups, jobs, detail.AvailableActions, tab, editMode).Render(r.Context(), w)
+		templates.TaskDetailTabsSection(detail.Task, timelineGroups, jobs, detail.AvailableActions, tab).Render(r.Context(), w)
 		return
 	}
 	projectName := h.lookupProjectName(detail.Task.ProjectID)
-	var allProjects []*orchestrator.Project
-	if editProject {
-		allProjects, _ = h.Service.ListProjects()
-	}
 	cmdSummaries, _ := h.Service.ListTaskBehaviorCommands(id)
 	cmdViews := make([]templates.CommandView, len(cmdSummaries))
 	for i, c := range cmdSummaries {
 		cmdViews[i] = templates.CommandView{Name: c.Name, Command: c.Command, Readonly: c.Readonly}
 	}
-	templates.TaskDetail(detail.Task, timelineGroups, jobs, detail.AvailableActions, errorMsg, tab, editMode, projectName, cmdViews, editTitle, editProject, allProjects).Render(r.Context(), w)
+	templates.TaskDetail(detail.Task, timelineGroups, jobs, detail.AvailableActions, errorMsg, tab, projectName, cmdViews).Render(r.Context(), w)
 }
 
 // lookupProjectName resolves a project ID to its display name (Meta.Name),
@@ -333,7 +319,7 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 		templates.TaskDetailTimelineSection(detail.Task, detailTimelineGroups(detail)).Render(r.Context(), w)
 	case "status":
 		projectName := h.lookupProjectName(detail.Task.ProjectID)
-		templates.TaskDetailStatusSection(detail.Task, detail.AvailableActions, "", projectName, false, nil).Render(r.Context(), w)
+		templates.TaskDetailStatusSection(detail.Task, detail.AvailableActions, "", projectName).Render(r.Context(), w)
 	case "jobs":
 		templates.TaskDetailJobsSection(jobs).Render(r.Context(), w)
 	default:
@@ -355,90 +341,45 @@ func (h *WebHandler) PostAction(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
 }
 
-func (h *WebHandler) PostEditDescription(w http.ResponseWriter, r *http.Request) {
+func (h *WebHandler) GetTaskEdit(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	detail, err := h.Service.GetTaskDetail(id)
+	if err != nil {
+		http.Error(w, "Task not found", http.StatusNotFound)
 		return
 	}
-	description := r.FormValue("description")
-	req := UpdateTaskRequest{Description: description}
-	target := "/tasks/" + id + "?tab=description"
-	if err := h.Service.UpdateTask(id, req); err != nil {
-		target = "/tasks/" + id + "?tab=description&mode=edit&error=" + url.QueryEscape(err.Error())
-	}
-	// HTMX requests receive HX-Redirect so the client performs a full
-	// navigation (re-renders the tab out of edit mode). Non-HTMX falls
-	// back to a regular 303 redirect for older clients / direct POSTs.
-	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Redirect", target)
-		w.WriteHeader(http.StatusOK)
+	if detail.Task.Status != orchestrator.TaskStatusPending {
+		http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	projects, _ := h.Service.ListProjects()
+	errorMsg := r.URL.Query().Get("error")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templates.TaskEditPage(detail.Task, projects, errorMsg).Render(r.Context(), w)
 }
 
-func (h *WebHandler) PostEditTitle(w http.ResponseWriter, r *http.Request) {
+func (h *WebHandler) PostEdit(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		http.Redirect(w, r, "/tasks/"+id+"/edit?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
+
+	detail, err := h.Service.GetTaskDetail(id)
+	if err != nil {
+		http.Redirect(w, r, "/tasks/"+id+"/edit?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+
 	title := strings.TrimSpace(r.FormValue("title"))
-	req := UpdateTaskRequest{Title: title}
-	target := "/tasks/" + id
-	if err := h.Service.UpdateTask(id, req); err != nil {
-		target = "/tasks/" + id + "?mode=edit&field=title&error=" + url.QueryEscape(err.Error())
-	}
-	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Redirect", target)
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
-}
-
-func (h *WebHandler) PostEditProject(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
 	projectID := strings.TrimSpace(r.FormValue("project_id"))
-	req := UpdateTaskRequest{ProjectID: projectID}
-	target := "/tasks/" + id
-	if err := h.Service.UpdateTask(id, req); err != nil {
-		target = "/tasks/" + id + "?mode=edit&field=project&error=" + url.QueryEscape(err.Error())
-	}
-	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Redirect", target)
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
-}
-
-func (h *WebHandler) PostEditInstructions(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
+	description := r.FormValue("description")
 	message := r.FormValue("message")
 	model := strings.TrimSpace(r.FormValue("model"))
 	agent := strings.TrimSpace(r.FormValue("agent"))
 
-	// Fetch the current task to carry forward existing instructions.
-	detail, err := h.Service.GetTaskDetail(id)
-	target := "/tasks/" + id + "?tab=instructions"
-	if err != nil {
-		http.Redirect(w, r, target+"&mode=edit&error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
-		return
-	}
-
 	insts := detail.Task.Instructions
 	if len(insts) == 0 {
-		// No existing instructions: create a minimal one.
 		insts = orchestrator.Instructions{{
 			Type:    orchestrator.InstructionTypeExecution,
 			Agent:   agent,
@@ -446,7 +387,6 @@ func (h *WebHandler) PostEditInstructions(w http.ResponseWriter, r *http.Request
 			Model:   model,
 		}}
 	} else {
-		// Clone and update only the active (last) element.
 		clone := make(orchestrator.Instructions, len(insts))
 		copy(clone, insts)
 		active := clone[len(clone)-1]
@@ -459,12 +399,20 @@ func (h *WebHandler) PostEditInstructions(w http.ResponseWriter, r *http.Request
 
 	instsJSON, err := json.Marshal(insts)
 	if err != nil {
-		target += "&mode=edit&error=" + url.QueryEscape(err.Error())
-	} else {
-		req := UpdateTaskRequest{Instructions: json.RawMessage(instsJSON)}
-		if err := h.Service.UpdateTask(id, req); err != nil {
-			target += "&mode=edit&error=" + url.QueryEscape(err.Error())
-		}
+		http.Redirect(w, r, "/tasks/"+id+"/edit?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+
+	req := UpdateTaskRequest{
+		Title:        title,
+		ProjectID:    projectID,
+		Description:  description,
+		Instructions: json.RawMessage(instsJSON),
+	}
+
+	target := "/tasks/" + id
+	if err := h.Service.UpdateTask(id, req); err != nil {
+		target = "/tasks/" + id + "/edit?error=" + url.QueryEscape(err.Error())
 	}
 
 	if r.Header.Get("HX-Request") == "true" {

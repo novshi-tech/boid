@@ -771,20 +771,94 @@ func TestWebHandler_PostTaskCreate_ValidationError(t *testing.T) {
 	}
 }
 
-func newTestWebHandlerWithEditDescription(svc WebService) *chi.Mux {
+func newTestWebHandlerWithEdit(svc WebService) *chi.Mux {
 	h := &WebHandler{Service: svc}
 	r := chi.NewRouter()
 	r.Get("/tasks/{id}", h.TaskDetail)
-	r.Post("/tasks/{id}/edit/description", h.PostEditDescription)
+	r.Get("/tasks/{id}/edit", h.GetTaskEdit)
+	r.Post("/tasks/{id}/edit", h.PostEdit)
 	return r
 }
 
-func TestWebHandler_PostEditDescription_Success(t *testing.T) {
-	svc := &stubWebService{}
-	r := newTestWebHandlerWithEditDescription(svc)
+func TestWebHandler_GetTaskEdit_PendingTask(t *testing.T) {
+	detail := &TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:     "task-1",
+			Title:  "My Task",
+			Status: orchestrator.TaskStatusPending,
+		},
+	}
+	svc := &stubWebService{taskDetail: detail}
+	r := newTestWebHandlerWithEdit(svc)
 
-	body := url.Values{"description": {"updated description"}}.Encode()
-	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/edit/description", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1/edit", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `name="title"`) {
+		t.Error("edit page should contain title field")
+	}
+	if !strings.Contains(body, `name="project_id"`) {
+		t.Error("edit page should contain project_id field")
+	}
+	if !strings.Contains(body, `name="description"`) {
+		t.Error("edit page should contain description field")
+	}
+	if !strings.Contains(body, `name="message"`) {
+		t.Error("edit page should contain message field")
+	}
+}
+
+func TestWebHandler_GetTaskEdit_NonPendingRedirects(t *testing.T) {
+	detail := &TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:     "task-1",
+			Status: orchestrator.TaskStatusExecuting,
+		},
+	}
+	svc := &stubWebService{taskDetail: detail}
+	r := newTestWebHandlerWithEdit(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1/edit", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d (non-pending should redirect)", w.Code, http.StatusSeeOther)
+	}
+	if loc := w.Header().Get("Location"); loc != "/tasks/task-1" {
+		t.Errorf("Location = %q, want /tasks/task-1", loc)
+	}
+}
+
+func TestWebHandler_PostEdit_Success(t *testing.T) {
+	detail := &TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:     "task-1",
+			Status: orchestrator.TaskStatusPending,
+			Instructions: orchestrator.Instructions{{
+				Type:    orchestrator.InstructionTypeExecution,
+				Message: "old message",
+				Model:   "sonnet",
+			}},
+		},
+	}
+	svc := &stubWebService{taskDetail: detail}
+	r := newTestWebHandlerWithEdit(svc)
+
+	body := url.Values{
+		"title":       {"New Title"},
+		"project_id":  {"proj-1"},
+		"description": {"new description"},
+		"message":     {"new message"},
+		"model":       {"opus"},
+		"agent":       {"claude-code"},
+	}.Encode()
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/edit", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -792,37 +866,24 @@ func TestWebHandler_PostEditDescription_Success(t *testing.T) {
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
 	}
-	loc := w.Header().Get("Location")
-	if loc != "/tasks/task-1?tab=description" {
-		t.Errorf("Location = %q, want /tasks/task-1?tab=description", loc)
+	if loc := w.Header().Get("Location"); loc != "/tasks/task-1" {
+		t.Errorf("Location = %q, want /tasks/task-1", loc)
 	}
 	if len(svc.updateTaskCalls) != 1 {
 		t.Fatalf("UpdateTask calls = %d, want 1", len(svc.updateTaskCalls))
 	}
-	if svc.updateTaskCalls[0].Description != "updated description" {
-		t.Errorf("UpdateTask description = %q, want %q", svc.updateTaskCalls[0].Description, "updated description")
+	call := svc.updateTaskCalls[0]
+	if call.Title != "New Title" {
+		t.Errorf("Title = %q, want New Title", call.Title)
 	}
-}
-
-func TestWebHandler_PostEditDescription_Empty(t *testing.T) {
-	// 空文字 POST は UpdateTask を呼び出すが、サービス内で空文字は無視されるため成功扱い
-	svc := &stubWebService{}
-	r := newTestWebHandlerWithEditDescription(svc)
-
-	body := url.Values{"description": {""}}.Encode()
-	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/edit/description", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d (empty description should redirect)", w.Code, http.StatusSeeOther)
+	if call.Description != "new description" {
+		t.Errorf("Description = %q, want new description", call.Description)
 	}
-	if len(svc.updateTaskCalls) != 1 {
-		t.Fatalf("UpdateTask calls = %d, want 1", len(svc.updateTaskCalls))
+	if call.ProjectID != "proj-1" {
+		t.Errorf("ProjectID = %q, want proj-1", call.ProjectID)
 	}
-	if svc.updateTaskCalls[0].Description != "" {
-		t.Errorf("UpdateTask description = %q, want empty string", svc.updateTaskCalls[0].Description)
+	if len(call.Instructions) == 0 {
+		t.Error("Instructions should be set")
 	}
 }
 
