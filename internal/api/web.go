@@ -67,6 +67,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Post("/tasks/{id}/edit/description", h.PostEditDescription)
 	r.Post("/tasks/{id}/edit/title", h.PostEditTitle)
 	r.Post("/tasks/{id}/edit/project", h.PostEditProject)
+	r.Post("/tasks/{id}/edit/instructions", h.PostEditInstructions)
 	r.Post("/tasks/{id}/action", h.PostAction)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	r.Post("/tasks/{id}/rerun", h.PostRerun)
@@ -256,7 +257,7 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	// - field=title     → title input at the top of the page (editTitle)
 	// - field=project   → project select in the meta strip (editProject)
 	// Mutually exclusive; both default to false.
-	editMode := r.URL.Query().Get("mode") == "edit" && tab == "description"
+	editMode := r.URL.Query().Get("mode") == "edit" && (tab == "description" || tab == "instructions")
 	editTitle := r.URL.Query().Get("mode") == "edit" && r.URL.Query().Get("field") == "title"
 	editProject := r.URL.Query().Get("mode") == "edit" && r.URL.Query().Get("field") == "project"
 	errorMsg := r.URL.Query().Get("error")
@@ -409,6 +410,63 @@ func (h *WebHandler) PostEditProject(w http.ResponseWriter, r *http.Request) {
 	if err := h.Service.UpdateTask(id, req); err != nil {
 		target = "/tasks/" + id + "?mode=edit&field=project&error=" + url.QueryEscape(err.Error())
 	}
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", target)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+func (h *WebHandler) PostEditInstructions(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	message := r.FormValue("message")
+	model := strings.TrimSpace(r.FormValue("model"))
+	agent := strings.TrimSpace(r.FormValue("agent"))
+
+	// Fetch the current task to carry forward existing instructions.
+	detail, err := h.Service.GetTaskDetail(id)
+	target := "/tasks/" + id + "?tab=instructions"
+	if err != nil {
+		http.Redirect(w, r, target+"&mode=edit&error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+
+	insts := detail.Task.Instructions
+	if len(insts) == 0 {
+		// No existing instructions: create a minimal one.
+		insts = orchestrator.Instructions{{
+			Type:    orchestrator.InstructionTypeExecution,
+			Agent:   agent,
+			Message: message,
+			Model:   model,
+		}}
+	} else {
+		// Clone and update only the active (last) element.
+		clone := make(orchestrator.Instructions, len(insts))
+		copy(clone, insts)
+		active := clone[len(clone)-1]
+		active.Message = message
+		active.Model = model
+		active.Agent = agent
+		clone[len(clone)-1] = active
+		insts = clone
+	}
+
+	instsJSON, err := json.Marshal(insts)
+	if err != nil {
+		target += "&mode=edit&error=" + url.QueryEscape(err.Error())
+	} else {
+		req := UpdateTaskRequest{Instructions: json.RawMessage(instsJSON)}
+		if err := h.Service.UpdateTask(id, req); err != nil {
+			target += "&mode=edit&error=" + url.QueryEscape(err.Error())
+		}
+	}
+
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("HX-Redirect", target)
 		w.WriteHeader(http.StatusOK)
