@@ -1218,6 +1218,33 @@ body:has(.action-bar) {
   word-break: break-word;
 }
 
+/* Pending-only "Edit title" affordance rendered above the status card.
+   Shows as a right-aligned compact button row. */
+.task-title-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-2);
+}
+
+/* Inline title edit form (pending + ?mode=edit&field=title).
+   Input + actions share a horizontal row on desktop; stack on mobile. */
+.task-title-edit-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.task-title-input {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.task-title-edit-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
 /* Inline edit textarea inside a tab (currently description only). Sized
    to stretch to the tab panel's width and feel like continuation of the
    view-mode <pre>. */

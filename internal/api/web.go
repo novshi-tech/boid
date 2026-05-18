@@ -65,6 +65,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/tasks/{id}", h.TaskDetail)
 	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
 	r.Post("/tasks/{id}/edit/description", h.PostEditDescription)
+	r.Post("/tasks/{id}/edit/title", h.PostEditTitle)
 	r.Post("/tasks/{id}/action", h.PostAction)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	r.Post("/tasks/{id}/rerun", h.PostRerun)
@@ -249,10 +250,12 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	if tab == "" {
 		tab = "timeline"
 	}
-	// ?mode=edit switches an editable tab (currently: description) into
-	// inline edit mode: the tab body becomes a form and the action bar
-	// primary flips to save/cancel. Ignored on read-only tabs.
+	// ?mode=edit switches an editable area into inline edit mode.
+	// - tab=description → description textarea (editMode)
+	// - field=title     → title input at the top of the page (editTitle)
+	// Mutually exclusive; both default to false.
 	editMode := r.URL.Query().Get("mode") == "edit" && tab == "description"
+	editTitle := r.URL.Query().Get("mode") == "edit" && r.URL.Query().Get("field") == "title"
 	errorMsg := r.URL.Query().Get("error")
 	timelineGroups := detailTimelineGroups(detail)
 	if r.Header.Get("HX-Request") == "true" {
@@ -267,7 +270,7 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	for i, c := range cmdSummaries {
 		cmdViews[i] = templates.CommandView{Name: c.Name, Command: c.Command, Readonly: c.Readonly}
 	}
-	templates.TaskDetail(detail.Task, timelineGroups, jobs, detail.AvailableActions, errorMsg, tab, editMode, projectName, cmdViews).Render(r.Context(), w)
+	templates.TaskDetail(detail.Task, timelineGroups, jobs, detail.AvailableActions, errorMsg, tab, editMode, projectName, cmdViews, editTitle).Render(r.Context(), w)
 }
 
 // lookupProjectName resolves a project ID to its display name (Meta.Name),
@@ -359,6 +362,26 @@ func (h *WebHandler) PostEditDescription(w http.ResponseWriter, r *http.Request)
 	// HTMX requests receive HX-Redirect so the client performs a full
 	// navigation (re-renders the tab out of edit mode). Non-HTMX falls
 	// back to a regular 303 redirect for older clients / direct POSTs.
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", target)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+func (h *WebHandler) PostEditTitle(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	title := strings.TrimSpace(r.FormValue("title"))
+	req := UpdateTaskRequest{Title: title}
+	target := "/tasks/" + id
+	if err := h.Service.UpdateTask(id, req); err != nil {
+		target = "/tasks/" + id + "?mode=edit&field=title&error=" + url.QueryEscape(err.Error())
+	}
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("HX-Redirect", target)
 		w.WriteHeader(http.StatusOK)
