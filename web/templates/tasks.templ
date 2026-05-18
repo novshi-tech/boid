@@ -160,6 +160,14 @@ func detailProjectLabel(task *orchestrator.Task, projectName string) string {
 	return task.ProjectID
 }
 
+// projectOptionLabel returns the display label for a project in a select dropdown.
+func projectOptionLabel(p *orchestrator.Project) string {
+	if p.Meta.Name != "" {
+		return p.Meta.Name
+	}
+	return p.ID
+}
+
 // detailRowClasses returns the class list for the unified status card,
 // reusing the list-row palette (status stripe + blocked dim).
 func detailRowClasses(task *orchestrator.Task) []string {
@@ -176,7 +184,7 @@ func detailRowClasses(task *orchestrator.Task) []string {
 // (status / behavior / project / updated). Actions are intentionally
 // NOT rendered here — they live in the sticky action bar at the bottom
 // of the page (see TaskActionBar).
-templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string) {
+templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string, editProject bool, allProjects []*orchestrator.Project) {
 	<div id="task-status">
 		<div class={ detailRowClasses(task) }>
 			<div class="detail-meta">
@@ -185,7 +193,31 @@ templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string
 				<span>{ task.Behavior }</span>
 				if task.ProjectID != "" {
 					<span class="detail-meta-sep">·</span>
-					<span>{ detailProjectLabel(task, projectName) }</span>
+					if editProject {
+						<form
+							hx-post={ "/tasks/" + task.ID + "/edit/project" }
+							hx-target="body"
+							hx-swap="outerHTML"
+							style="display:inline-flex;align-items:center;gap:4px;"
+						>
+							<select name="project_id" class="filter-select">
+								for _, p := range allProjects {
+									if p.ID == task.ProjectID {
+										<option value={ p.ID } selected>{ projectOptionLabel(p) }</option>
+									} else {
+										<option value={ p.ID }>{ projectOptionLabel(p) }</option>
+									}
+								}
+							</select>
+							<button type="submit" class="btn btn-primary btn-sm">Save</button>
+							<a href={ templ.SafeURL("/tasks/" + task.ID) } class="btn btn-secondary btn-sm">Cancel</a>
+						</form>
+					} else {
+						<span>{ detailProjectLabel(task, projectName) }</span>
+						if task.Status == orchestrator.TaskStatusPending {
+							<a href={ templ.SafeURL("/tasks/" + task.ID + "?mode=edit&field=project") } class="btn btn-secondary btn-sm">Edit</a>
+						}
+					}
 				}
 				<span class="detail-meta-sep">·</span>
 				<span class="detail-time">{ task.UpdatedAt.Local().Format("2006-01-02 15:04") }</span>
@@ -840,10 +872,10 @@ templ TaskDetailTitleSection(task *orchestrator.Task, editTitle bool) {
 	}
 }
 
-templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, editMode bool, projectName string, commands []CommandView, editTitle bool) {
+templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, editMode bool, projectName string, commands []CommandView, editTitle bool, editProject bool, allProjects []*orchestrator.Project) {
 	@Layout(task.Title, "/") {
 		@TaskDetailTitleSection(task, editTitle)
-		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName)
+		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName, editProject, allProjects)
 		@TaskDetailCommandsSection(task.ID, commands)
 		@TaskDetailTabsSection(task, timelineGroups, jobs, availableActions, activeTab, editMode)
 	}

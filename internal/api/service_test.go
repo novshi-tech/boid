@@ -577,6 +577,72 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("project update success", func(t *testing.T) {
+		task := &orchestrator.Task{
+			ID:        "task-p",
+			Title:     "t",
+			ProjectID: "proj-old",
+			Status:    orchestrator.TaskStatusPending,
+		}
+		store := &stubTaskStore{task: task}
+		projects := &stubProjectRepository{
+			projects: []*orchestrator.Project{{ID: "proj-new"}},
+		}
+		svc := &TaskAppService{Tasks: store, Projects: projects}
+
+		got, err := svc.UpdateTask("task-p", UpdateTaskRequest{ProjectID: "proj-new"})
+		if err != nil {
+			t.Fatalf("UpdateTask() error = %v", err)
+		}
+		if got.ProjectID != "proj-new" {
+			t.Fatalf("ProjectID = %q, want %q", got.ProjectID, "proj-new")
+		}
+	})
+
+	t.Run("project update rejected when not pending", func(t *testing.T) {
+		for _, status := range []orchestrator.TaskStatus{
+			orchestrator.TaskStatusExecuting,
+			orchestrator.TaskStatusDone,
+			orchestrator.TaskStatusAborted,
+		} {
+			task := &orchestrator.Task{ID: "task-x", ProjectID: "proj-old", Status: status}
+			store := &stubTaskStore{task: task}
+			projects := &stubProjectRepository{
+				projects: []*orchestrator.Project{{ID: "proj-new"}},
+			}
+			svc := &TaskAppService{Tasks: store, Projects: projects}
+
+			_, err := svc.UpdateTask("task-x", UpdateTaskRequest{ProjectID: "proj-new"})
+			if err == nil {
+				t.Fatalf("status=%s: expected conflict error, got nil", status)
+			}
+			se, ok := err.(*StatusError)
+			if !ok || se.Code != http.StatusConflict {
+				t.Fatalf("status=%s: expected StatusConflict, got %v", status, err)
+			}
+		}
+	})
+
+	t.Run("project update rejected for nonexistent project", func(t *testing.T) {
+		task := &orchestrator.Task{
+			ID:        "task-p",
+			ProjectID: "proj-old",
+			Status:    orchestrator.TaskStatusPending,
+		}
+		store := &stubTaskStore{task: task}
+		projects := &stubProjectRepository{projects: nil}
+		svc := &TaskAppService{Tasks: store, Projects: projects}
+
+		_, err := svc.UpdateTask("task-p", UpdateTaskRequest{ProjectID: "proj-nonexistent"})
+		if err == nil {
+			t.Fatal("UpdateTask() error = nil, want error")
+		}
+		se, ok := err.(*StatusError)
+		if !ok || se.Code != http.StatusBadRequest {
+			t.Fatalf("expected StatusBadRequest, got %v", err)
+		}
+	})
 }
 
 func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {

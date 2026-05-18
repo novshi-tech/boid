@@ -1116,6 +1116,20 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		}
 		task.Title = req.Title
 	}
+	if req.ProjectID != "" {
+		if task.Status != orchestrator.TaskStatusPending {
+			return nil, &StatusError{
+				Code:    http.StatusConflict,
+				Message: fmt.Sprintf("cannot edit project while task is not pending (status: %s)", task.Status),
+			}
+		}
+		if s.Projects != nil {
+			if _, err := s.Projects.GetProject(req.ProjectID); err != nil {
+				return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project %q not found", req.ProjectID)}
+			}
+		}
+		task.ProjectID = req.ProjectID
+	}
 	if req.Description != "" {
 		task.Description = req.Description
 	}
