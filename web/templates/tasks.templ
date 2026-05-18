@@ -200,7 +200,7 @@ func detailRowClasses(task *orchestrator.Task) []string {
 // (status / behavior / project / updated). Actions are intentionally
 // NOT rendered here — they live in the sticky action bar at the bottom
 // of the page (see TaskActionBar).
-templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string, editProject bool, allProjects []*orchestrator.Project) {
+templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string) {
 	<div id="task-status">
 		<div class={ detailRowClasses(task) }>
 			<div class="detail-meta">
@@ -209,31 +209,7 @@ templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string
 				<span>{ task.Behavior }</span>
 				if task.ProjectID != "" {
 					<span class="detail-meta-sep">·</span>
-					if editProject {
-						<form
-							hx-post={ "/tasks/" + task.ID + "/edit/project" }
-							hx-target="body"
-							hx-swap="outerHTML"
-							style="display:inline-flex;align-items:center;gap:4px;"
-						>
-							<select name="project_id" class="filter-select">
-								for _, p := range allProjects {
-									if p.ID == task.ProjectID {
-										<option value={ p.ID } selected>{ projectOptionLabel(p) }</option>
-									} else {
-										<option value={ p.ID }>{ projectOptionLabel(p) }</option>
-									}
-								}
-							</select>
-							<button type="submit" class="btn btn-primary btn-sm">Save</button>
-							<a href={ templ.SafeURL("/tasks/" + task.ID) } class="btn btn-secondary btn-sm">Cancel</a>
-						</form>
-					} else {
-						<span>{ detailProjectLabel(task, projectName) }</span>
-						if task.Status == orchestrator.TaskStatusPending {
-							<a href={ templ.SafeURL("/tasks/" + task.ID + "?mode=edit&field=project") } class="btn btn-secondary btn-sm">Edit</a>
-						}
-					}
+					<span>{ detailProjectLabel(task, projectName) }</span>
 				}
 				<span class="detail-meta-sep">·</span>
 				<span class="detail-time">{ task.UpdatedAt.Local().Format("2006-01-02 15:04") }</span>
@@ -287,46 +263,11 @@ func actionPrimaryClass(action string) string {
 }
 
 
-// TaskActionBar renders the sticky bottom action bar with tab-specific
-// content:
-//   - Timeline (read): state-aware primary (Start/Abort/Rerun) +
-//     "⋯" kebab (duplicate / abort / delete). Task-level actions live
-//     here because Timeline is the lifecycle view.
-//   - Description (read): 編集 to enter inline edit mode.
-//   - Description (edit): 保存 / キャンセル for the edit form.
-//   - Other tabs (Payload / Instructions / Deps): no bottom bar.
-// Keeping tab-contextual primary actions at the same bottom position
-// (editorial consistency) while scoping Start/Abort/Rerun to Timeline.
-templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab string, editMode bool) {
-	if activeTab == "description" && editMode {
-		<div class="action-bar">
-			<div class="action-bar-inner">
-				<button type="submit" form="desc-edit-form" class="btn btn-primary action-bar-primary-form">Save</button>
-				<a href={ templ.SafeURL("/tasks/" + task.ID + "?tab=description") } class="btn btn-secondary">Cancel</a>
-			</div>
-		</div>
-	} else if activeTab == "description" {
-		<div class="action-bar">
-			<div class="action-bar-inner">
-				<a href={ templ.SafeURL("/tasks/" + task.ID + "?tab=description&mode=edit") } class="btn btn-secondary action-bar-primary-form">Edit</a>
-				<span class="action-bar-spacer"></span>
-			</div>
-		</div>
-	} else if activeTab == "instructions" && editMode {
-		<div class="action-bar">
-			<div class="action-bar-inner">
-				<button type="submit" form="instr-edit-form" class="btn btn-primary action-bar-primary-form">Save</button>
-				<a href={ templ.SafeURL("/tasks/" + task.ID + "?tab=instructions") } class="btn btn-secondary">Cancel</a>
-			</div>
-		</div>
-	} else if activeTab == "instructions" && task.Status == orchestrator.TaskStatusPending {
-		<div class="action-bar">
-			<div class="action-bar-inner">
-				<a href={ templ.SafeURL("/tasks/" + task.ID + "?tab=instructions&mode=edit") } class="btn btn-secondary action-bar-primary-form">Edit</a>
-				<span class="action-bar-spacer"></span>
-			</div>
-		</div>
-	} else if activeTab == "timeline" && !editMode {
+// TaskActionBar renders the sticky bottom action bar.
+// Timeline tab: state-aware primary (Start/Abort/Rerun) + "⋯" kebab
+// (duplicate / abort / delete). Other tabs show no bar.
+templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab string) {
+	if activeTab == "timeline" {
 		<div class="action-bar">
 			<div class="action-bar-inner">
 				if task.Status == orchestrator.TaskStatusDone {
@@ -576,9 +517,7 @@ templ TaskDetailJobsSection(jobs []*JobView) {
 
 // TaskDetailTabPanel renders the tab panel content for the given activeTab.
 // id="tab-panel" is the HTMX swap target for tab switching.
-// editMode=true flips an editable tab (currently: description) into an
-// inline edit form instead of the read-only view.
-templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, activeTab string, editMode bool) {
+templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, activeTab string) {
 	<div id="tab-panel" data-task-id={ task.ID }>
 		if activeTab == "timeline" {
 			@TaskDetailTimelineSection(task, timelineGroups)
@@ -672,26 +611,13 @@ templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Stat
 				})();
 			</script>
 		} else if activeTab == "description" {
-			if editMode {
-				<div class="tab-content">
-					<form
-						id="desc-edit-form"
-						hx-post={ "/tasks/" + task.ID + "/edit/description" }
-						hx-target="body"
-						hx-swap="outerHTML"
-					>
-						<textarea name="description" class="form-input tab-edit-textarea" rows="12" autofocus>{ task.Description }</textarea>
-					</form>
-				</div>
-			} else {
-				<div class="tab-content">
-					if task.Description != "" {
-						<div class="qa-md-body">@renderMarkdown(task.Description)</div>
-					} else {
-						<p class="tab-empty">(not set)</p>
-					}
-				</div>
-			}
+			<div class="tab-content">
+				if task.Description != "" {
+					<div class="qa-md-body">@renderMarkdown(task.Description)</div>
+				} else {
+					<p class="tab-empty">(not set)</p>
+				}
+			</div>
 		} else if activeTab == "payload" {
 			<div class="tab-content">
 				{{ yamlStr := payloadAsYAML(task.Payload) }}
@@ -702,58 +628,33 @@ templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Stat
 				}
 			</div>
 		} else if activeTab == "instructions" {
-			if editMode {
-				{{ active := task.Instructions.Active() }}
-				<div class="tab-content">
-					<form
-						id="instr-edit-form"
-						hx-post={ "/tasks/" + task.ID + "/edit/instructions" }
-						hx-target="body"
-						hx-swap="outerHTML"
-					>
-						<div class="form-field">
-							<label class="form-label">Message</label>
-							<textarea name="message" class="form-input tab-edit-textarea" rows="10" autofocus placeholder="指示メッセージ">{ instrActiveField(active, "message") }</textarea>
-						</div>
-						<div class="form-field">
-							<label class="form-label">Model</label>
-							<input type="text" name="model" class="form-input" placeholder="opus / sonnet / haiku" value={ instrActiveField(active, "model") }/>
-						</div>
-						<div class="form-field">
-							<label class="form-label">Agent (consumer)</label>
-							<input type="text" name="agent" class="form-input" placeholder="claude-code" value={ instrActiveField(active, "agent") }/>
-						</div>
-					</form>
-				</div>
-			} else {
-				<div class="tab-content">
-					if len(task.Instructions) > 0 {
-						for _, entry := range orderedInstructions(task.Instructions) {
-							{{ inst := entry.Instruction }}
-							<section class="instr-block">
-								<h3 class="instr-role">{ entry.Label }</h3>
-								<div class="instr-meta">
-									<span class="instr-kv"><span class="instr-k">type</span>{ string(inst.Type) }</span>
-									<span class="instr-kv"><span class="instr-k">agent</span>{ inst.Agent }</span>
-									if inst.Model != "" {
-										<span class="instr-kv"><span class="instr-k">model</span>{ inst.Model }</span>
-									}
-									if inst.Name != "" {
-										<span class="instr-kv"><span class="instr-k">name</span>{ inst.Name }</span>
-									}
-								</div>
-								if inst.Message != "" {
-									<pre class="tab-body-pre instr-message">{ inst.Message }</pre>
-								} else {
-									<p class="tab-empty">(no message)</p>
+			<div class="tab-content">
+				if len(task.Instructions) > 0 {
+					for _, entry := range orderedInstructions(task.Instructions) {
+						{{ inst := entry.Instruction }}
+						<section class="instr-block">
+							<h3 class="instr-role">{ entry.Label }</h3>
+							<div class="instr-meta">
+								<span class="instr-kv"><span class="instr-k">type</span>{ string(inst.Type) }</span>
+								<span class="instr-kv"><span class="instr-k">agent</span>{ inst.Agent }</span>
+								if inst.Model != "" {
+									<span class="instr-kv"><span class="instr-k">model</span>{ inst.Model }</span>
 								}
-							</section>
-						}
-					} else {
-						<p class="tab-empty">(not set)</p>
+								if inst.Name != "" {
+									<span class="instr-kv"><span class="instr-k">name</span>{ inst.Name }</span>
+								}
+							</div>
+							if inst.Message != "" {
+								<pre class="tab-body-pre instr-message">{ inst.Message }</pre>
+							} else {
+								<p class="tab-empty">(no message)</p>
+							}
+						</section>
 					}
-				</div>
-			}
+				} else {
+					<p class="tab-empty">(not set)</p>
+				}
+			</div>
 		}
 	</div>
 }
@@ -825,9 +726,8 @@ templ detailMoreItem(taskID, tab, label, activeTab string) {
 //   - the active class on the visible tabs updates
 //   - the "more" details element is freshly rendered (closed by default,
 //     summary label reflects the new active tab when it's a hidden one)
-//   - the action bar primary button becomes tab-contextual (edit vs. state
-//     action) without a separate swap
-templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, activeTab string, editMode bool) {
+//   - the action bar primary button becomes tab-contextual without a separate swap
+templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, activeTab string) {
 	<div id="tabs" class="tabs">
 		<div class="tab-list" role="tablist">
 			@detailTabLink(task.ID, "timeline", "Timeline", activeTab)
@@ -853,8 +753,8 @@ templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.S
 				</details>
 			</div>
 		</div>
-		@TaskDetailTabPanel(task, timelineGroups, jobs, activeTab, editMode)
-		@TaskActionBar(task, availableActions, activeTab, editMode)
+		@TaskDetailTabPanel(task, timelineGroups, jobs, activeTab)
+		@TaskActionBar(task, availableActions, activeTab)
 	</div>
 }
 
@@ -889,49 +789,79 @@ templ TaskDetailCommandsSection(taskID string, commands []CommandView) {
 	}
 }
 
-// TaskDetailTitleSection renders the inline title-edit affordance.
-// For pending tasks it shows an "Edit title" link that switches to edit mode
-// (?mode=edit&field=title). When editTitle is true the title is replaced by
-// a single-line input with inline Save/Cancel. Renders nothing for non-pending
-// tasks so the Layout's <h1> remains the sole title display.
-templ TaskDetailTitleSection(task *orchestrator.Task, editTitle bool) {
-	if editTitle {
-		<div class="task-title-edit-wrap">
-			<form
-				id="title-edit-form"
-				hx-post={ "/tasks/" + task.ID + "/edit/title" }
-				hx-target="body"
-				hx-swap="outerHTML"
-			>
-				<input
-					type="text"
-					name="title"
-					value={ task.Title }
-					class="form-input task-title-input"
-					autofocus
-					required
-				/>
-			</form>
-			<div class="task-title-edit-actions">
-				<button type="submit" form="title-edit-form" class="btn btn-primary btn-sm">Save</button>
-				<a href={ templ.SafeURL("/tasks/" + task.ID) } class="btn btn-secondary btn-sm">Cancel</a>
-			</div>
-		</div>
-	} else if task.Status == orchestrator.TaskStatusPending {
+// TaskDetailTitleSection renders an "Edit" button for pending tasks that
+// navigates to the dedicated edit page /tasks/{id}/edit.
+templ TaskDetailTitleSection(task *orchestrator.Task) {
+	if task.Status == orchestrator.TaskStatusPending {
 		<div class="task-title-bar">
 			<a
-				href={ templ.SafeURL("/tasks/" + task.ID + "?mode=edit&field=title") }
+				href={ templ.SafeURL("/tasks/" + task.ID + "/edit") }
 				class="btn btn-secondary btn-sm"
-			>Edit title</a>
+			>Edit</a>
 		</div>
 	}
 }
 
-templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, editMode bool, projectName string, commands []CommandView, editTitle bool, editProject bool, allProjects []*orchestrator.Project) {
+templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, projectName string, commands []CommandView) {
 	@Layout(task.Title, "/") {
-		@TaskDetailTitleSection(task, editTitle)
-		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName, editProject, allProjects)
+		@TaskDetailTitleSection(task)
+		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName)
 		@TaskDetailCommandsSection(task.ID, commands)
-		@TaskDetailTabsSection(task, timelineGroups, jobs, availableActions, activeTab, editMode)
+		@TaskDetailTabsSection(task, timelineGroups, jobs, availableActions, activeTab)
+	}
+}
+
+// TaskEditPage renders the dedicated edit form for a pending task.
+// All four fields (title / project / description / instructions) are
+// shown on one page; Save POSTs to /tasks/{id}/edit.
+templ TaskEditPage(task *orchestrator.Task, projects []*orchestrator.Project, errorMsg string) {
+	@Layout("Edit: "+task.Title, "/tasks/"+task.ID) {
+		if errorMsg != "" {
+			<div class="action-error">{ errorMsg }</div>
+		}
+		<div class="task-form-body">
+			<form id="task-edit-form" method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/edit") }>
+				<div class="form-group">
+					<label class="form-label">Title</label>
+					<input type="text" name="title" value={ task.Title } class="form-input" required autofocus/>
+				</div>
+				<div class="form-group">
+					<label class="form-label">Project</label>
+					<select name="project_id" class="form-input">
+						<option value="">— no project —</option>
+						for _, p := range projects {
+							if p.ID == task.ProjectID {
+								<option value={ p.ID } selected>{ projectOptionLabel(p) }</option>
+							} else {
+								<option value={ p.ID }>{ projectOptionLabel(p) }</option>
+							}
+						}
+					</select>
+				</div>
+				<div class="form-group">
+					<label class="form-label">Description</label>
+					<textarea name="description" class="form-input" rows="8">{ task.Description }</textarea>
+				</div>
+				{{ active := task.Instructions.Active() }}
+				<div class="form-group">
+					<label class="form-label">Message</label>
+					<textarea name="message" class="form-input tab-edit-textarea" rows="8" placeholder="指示メッセージ">{ instrActiveField(active, "message") }</textarea>
+				</div>
+				<div class="form-group">
+					<label class="form-label">Model</label>
+					<input type="text" name="model" class="form-input" placeholder="opus / sonnet / haiku" value={ instrActiveField(active, "model") }/>
+				</div>
+				<div class="form-group">
+					<label class="form-label">Agent</label>
+					<input type="text" name="agent" class="form-input" placeholder="claude-code" value={ instrActiveField(active, "agent") }/>
+				</div>
+			</form>
+		</div>
+		<div class="action-bar">
+			<div class="action-bar-inner">
+				<button type="submit" form="task-edit-form" class="btn btn-primary action-bar-primary-form">Save</button>
+				<a href={ templ.SafeURL("/tasks/" + task.ID) } class="btn btn-secondary">Cancel</a>
+			</div>
+		</div>
 	}
 }
