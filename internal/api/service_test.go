@@ -643,6 +643,51 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 			t.Fatalf("expected StatusBadRequest, got %v", err)
 		}
 	})
+
+	t.Run("remote_id and datasource_id updated", func(t *testing.T) {
+		task := &orchestrator.Task{
+			ID:           "task-r",
+			Title:        "t",
+			RemoteID:     "OLD-1",
+			DataSourceID: "old-ds",
+			Status:       orchestrator.TaskStatusPending,
+		}
+		store := &stubTaskStore{task: task}
+		svc := &TaskAppService{Tasks: store}
+
+		newRemote := "JIRA-999"
+		newDS := "jira"
+		got, err := svc.UpdateTask("task-r", UpdateTaskRequest{RemoteID: &newRemote, DataSourceID: &newDS})
+		if err != nil {
+			t.Fatalf("UpdateTask() error = %v", err)
+		}
+		if got.RemoteID != "JIRA-999" {
+			t.Errorf("RemoteID = %q, want JIRA-999", got.RemoteID)
+		}
+		if got.DataSourceID != "jira" {
+			t.Errorf("DataSourceID = %q, want jira", got.DataSourceID)
+		}
+	})
+
+	t.Run("remote_id updated while executing", func(t *testing.T) {
+		task := &orchestrator.Task{
+			ID:       "task-exec",
+			Title:    "t",
+			RemoteID: "OLD",
+			Status:   orchestrator.TaskStatusExecuting,
+		}
+		store := &stubTaskStore{task: task}
+		svc := &TaskAppService{Tasks: store}
+
+		newRemote := "NEW-1"
+		got, err := svc.UpdateTask("task-exec", UpdateTaskRequest{RemoteID: &newRemote})
+		if err != nil {
+			t.Fatalf("UpdateTask() error = %v (should allow remote_id edit while executing)", err)
+		}
+		if got.RemoteID != "NEW-1" {
+			t.Errorf("RemoteID = %q, want NEW-1", got.RemoteID)
+		}
+	})
 }
 
 func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {

@@ -115,6 +115,8 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 		Title:            title,
 		Behavior:         r.FormValue("behavior"),
 		Description:      r.FormValue("description"),
+		RemoteID:         r.FormValue("remote_id"),
+		DataSourceID:     r.FormValue("datasource_id"),
 		ParentID:         r.FormValue("parent_id"),
 		DependsOnPayload: r.FormValue("depends_on_payload"),
 		AutoStart:        r.FormValue("auto_start") == "on",
@@ -403,10 +405,14 @@ func (h *WebHandler) PostEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	remoteID := r.FormValue("remote_id")
+	dataSourceID := r.FormValue("datasource_id")
 	req := UpdateTaskRequest{
 		Title:        title,
 		ProjectID:    projectID,
 		Description:  description,
+		RemoteID:     &remoteID,
+		DataSourceID: &dataSourceID,
 		Instructions: json.RawMessage(instsJSON),
 	}
 

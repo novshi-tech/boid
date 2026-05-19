@@ -30,6 +30,7 @@ type stubWebService struct {
 	duplicateTaskErr     error
 	createTaskResult     *orchestrator.Task
 	createTaskErr        error
+	createTaskCalls      []CreateTaskRequest
 	updateTaskErr        error
 	updateTaskCalls      []UpdateTaskRequest
 	projectByID          *orchestrator.Project
@@ -92,6 +93,7 @@ func (s *stubWebService) GetJob(id string) (*JobWithContext, error) {
 }
 
 func (s *stubWebService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
+	s.createTaskCalls = append(s.createTaskCalls, req)
 	return s.createTaskResult, s.createTaskErr
 }
 
@@ -884,6 +886,82 @@ func TestWebHandler_PostEdit_Success(t *testing.T) {
 	}
 	if len(call.Instructions) == 0 {
 		t.Error("Instructions should be set")
+	}
+}
+
+func TestWebHandler_PostTaskCreate_RemoteIDAndDatasourceID(t *testing.T) {
+	newTask := &orchestrator.Task{ID: "new-task-id", Title: "My Task"}
+	svc := &stubWebService{createTaskResult: newTask}
+	r := newTestWebHandlerWithTaskCreate(svc)
+
+	body := url.Values{
+		"title":        {"My Task"},
+		"project_id":   {"proj-1"},
+		"behavior":     {"executor"},
+		"remote_id":    {"JIRA-123"},
+		"datasource_id": {"jira"},
+	}.Encode()
+	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if len(svc.createTaskCalls) != 1 {
+		t.Fatalf("CreateTask calls = %d, want 1", len(svc.createTaskCalls))
+	}
+	call := svc.createTaskCalls[0]
+	if call.RemoteID != "JIRA-123" {
+		t.Errorf("RemoteID = %q, want JIRA-123", call.RemoteID)
+	}
+	if call.DataSourceID != "jira" {
+		t.Errorf("DataSourceID = %q, want jira", call.DataSourceID)
+	}
+}
+
+func TestWebHandler_PostEdit_RemoteIDAndDatasourceID(t *testing.T) {
+	detail := &TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:           "task-1",
+			Status:       orchestrator.TaskStatusPending,
+			RemoteID:     "OLD-1",
+			DataSourceID: "old-ds",
+			Instructions: orchestrator.Instructions{{
+				Type:    orchestrator.InstructionTypeExecution,
+				Message: "old message",
+			}},
+		},
+	}
+	svc := &stubWebService{taskDetail: detail}
+	r := newTestWebHandlerWithEdit(svc)
+
+	body := url.Values{
+		"title":         {"New Title"},
+		"project_id":    {"proj-1"},
+		"description":   {"new description"},
+		"message":       {"new message"},
+		"remote_id":     {"JIRA-456"},
+		"datasource_id": {"github"},
+	}.Encode()
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/edit", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if len(svc.updateTaskCalls) != 1 {
+		t.Fatalf("UpdateTask calls = %d, want 1", len(svc.updateTaskCalls))
+	}
+	call := svc.updateTaskCalls[0]
+	if call.RemoteID == nil || *call.RemoteID != "JIRA-456" {
+		t.Errorf("RemoteID = %v, want JIRA-456", call.RemoteID)
+	}
+	if call.DataSourceID == nil || *call.DataSourceID != "github" {
+		t.Errorf("DataSourceID = %v, want github", call.DataSourceID)
 	}
 }
 

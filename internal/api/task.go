@@ -164,6 +164,8 @@ type UpdateTaskRequest struct {
 	Title            string          `json:"title"`
 	Description      string          `json:"description"`
 	ProjectID        string          `json:"project_id,omitempty"`
+	RemoteID         *string         `json:"remote_id,omitempty"`
+	DataSourceID     *string         `json:"datasource_id,omitempty"`
 	Payload          json.RawMessage `json:"payload,omitempty"`
 	Instructions     json.RawMessage `json:"instructions,omitempty"`
 	DependsOn        []string        `json:"depends_on,omitempty"`
