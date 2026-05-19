@@ -186,6 +186,13 @@ func Apply(conn *sql.DB) error {
 				return count == 0, nil
 			},
 		},
+		{
+			version: "0024_drop_tasks_remote_unique",
+			path:    "migrations/0024_drop_tasks_remote_unique.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return indexNotExists(tx, "idx_tasks_remote")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {
@@ -381,4 +388,17 @@ func tableExists(q interface {
 		return false, fmt.Errorf("check table %s: %w", table, err)
 	}
 	return count > 0, nil
+}
+
+func indexNotExists(q interface {
+	QueryRow(string, ...any) *sql.Row
+}, index string) (bool, error) {
+	var count int
+	if err := q.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`,
+		index,
+	).Scan(&count); err != nil {
+		return false, fmt.Errorf("check index %s: %w", index, err)
+	}
+	return count == 0, nil
 }

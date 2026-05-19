@@ -1055,6 +1055,7 @@ pre {
   position: relative;
   max-height: 36px;
   overflow: visible;
+  margin-left: auto;
 }
 
 .action-menu-summary {

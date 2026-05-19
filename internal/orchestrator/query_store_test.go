@@ -1021,6 +1021,30 @@ func TestCreateTask_WithDependsOnPayload(t *testing.T) {
 	}
 }
 
+func TestFindTaskByRemote_MultipleMatches_ReturnsLatest(t *testing.T) {
+	d := createTestProject(t)
+
+	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "T1", Behavior: "dev", RemoteID: "PROJ-42", DataSourceID: "jira"}
+	task2 := &orchestrator.Task{ProjectID: "proj-1", Title: "T2", Behavior: "dev", RemoteID: "PROJ-42", DataSourceID: "jira"}
+	if err := orchestrator.CreateTask(d.Conn, task1); err != nil {
+		t.Fatalf("create task1: %v", err)
+	}
+	if err := orchestrator.CreateTask(d.Conn, task2); err != nil {
+		t.Fatalf("create task2 (duplicate remote): %v", err)
+	}
+
+	got, err := orchestrator.FindTaskByRemote(d.Conn, "PROJ-42", "jira")
+	if err != nil {
+		t.Fatalf("FindTaskByRemote() error = %v", err)
+	}
+	if got == nil {
+		t.Fatal("FindTaskByRemote() = nil, want task")
+	}
+	if got.ID != task2.ID {
+		t.Fatalf("ID = %q, want latest %q", got.ID, task2.ID)
+	}
+}
+
 func TestCreateTask_WithoutDependsOnPayload(t *testing.T) {
 	d := createTestProject(t)
 

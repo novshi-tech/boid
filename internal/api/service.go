@@ -1133,6 +1133,12 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	if req.Description != "" {
 		task.Description = req.Description
 	}
+	if req.RemoteID != nil {
+		task.RemoteID = *req.RemoteID
+	}
+	if req.DataSourceID != nil {
+		task.DataSourceID = *req.DataSourceID
+	}
 	payloadUpdated := false
 	if len(req.Payload) > 0 {
 		if err := rejectPayloadInstructions(req.Payload); err != nil {
