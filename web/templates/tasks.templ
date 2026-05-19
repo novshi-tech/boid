@@ -828,6 +828,14 @@ templ TaskEditPage(task *orchestrator.Task, projects []*orchestrator.Project, er
 					</select>
 				</div>
 				<div class="form-group">
+					<label class="form-label">Remote ID</label>
+					<input type="text" name="remote_id" class="form-input" autocomplete="off" value={ task.RemoteID }/>
+				</div>
+				<div class="form-group">
+					<label class="form-label">Datasource ID</label>
+					<input type="text" name="datasource_id" class="form-input" autocomplete="off" value={ task.DataSourceID }/>
+				</div>
+				<div class="form-group">
 					<label class="form-label">Description</label>
 					<textarea name="description" class="form-input" rows="8">{ task.Description }</textarea>
 				</div>
