@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"syscall"
@@ -828,6 +829,16 @@ func (r *stubJobLogReader) ReadJobLog(runtimeID string) ([]byte, error) {
 		return d, nil
 	}
 	return nil, fmt.Errorf("log not found: %s", runtimeID)
+}
+
+func (r *stubJobLogReader) StatJobLog(runtimeID string) (int64, time.Time, error) {
+	if r.err != nil {
+		return 0, time.Time{}, r.err
+	}
+	if d, ok := r.data[runtimeID]; ok {
+		return int64(len(d)), time.Time{}, nil
+	}
+	return 0, time.Time{}, os.ErrNotExist
 }
 
 func newJobExecutor(t *testing.T) (*boidBuiltinExecutor, *capturingTaskStore, *stubJobStore) {

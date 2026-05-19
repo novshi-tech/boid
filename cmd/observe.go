@@ -107,6 +107,9 @@ func renderJob(job *api.Job) {
 	fmt.Printf("Exit Code:  %s\n", formatExitCode(job.Status, job.ExitCode))
 	fmt.Printf("Created At: %s\n", formatTime(job.CreatedAt))
 	fmt.Printf("Updated At: %s\n", formatTime(job.UpdatedAt))
+	if job.TranscriptSize > 0 || job.TranscriptMtime != nil {
+		fmt.Printf("Transcript: %d bytes, idle %s\n", job.TranscriptSize, formatIdleSeconds(job.TranscriptIdleSeconds))
+	}
 	if strings.TrimSpace(job.Output) != "" {
 		fmt.Println("Output:")
 		printPrettyJSONOrText(job.Output, "  ")
@@ -192,6 +195,23 @@ func truncate(s string, max int) string {
 
 func printWatchHeader(kind, id string) {
 	fmt.Fprintf(os.Stdout, "== %s %s ==\n", kind, id)
+}
+
+func formatIdleSeconds(s int64) string {
+	if s <= 0 {
+		return "0s"
+	}
+	d := time.Duration(s) * time.Second
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	sec := int(d.Seconds()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%dh%dm%ds", h, m, sec)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%dm%ds", m, sec)
+	}
+	return fmt.Sprintf("%ds", sec)
 }
 
 func formatExitCode(status api.JobStatus, code int) string {

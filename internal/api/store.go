@@ -240,6 +240,7 @@ type DeviceGCStore interface {
 // JobLogReader reads the transcript log for a given runtime.
 type JobLogReader interface {
 	ReadJobLog(runtimeID string) ([]byte, error)
+	StatJobLog(runtimeID string) (size int64, mtime time.Time, err error)
 }
 
 // ExecuteCommandResult is the response for POST /api/projects/{id}/commands/{name}/execute.

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -21,12 +22,19 @@ func newChiContext(params map[string]string) context.Context {
 }
 
 type stubJobLogReader struct {
-	data []byte
-	err  error
+	data     []byte
+	err      error
+	statSize int64
+	statTime time.Time
+	statErr  error
 }
 
 func (r *stubJobLogReader) ReadJobLog(runtimeID string) ([]byte, error) {
 	return r.data, r.err
+}
+
+func (r *stubJobLogReader) StatJobLog(runtimeID string) (int64, time.Time, error) {
+	return r.statSize, r.statTime, r.statErr
 }
 
 func TestJobHandler_Log_OK(t *testing.T) {
@@ -150,5 +158,96 @@ func TestJobHandler_Log_ReadError(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestJobHandler_Get_WithTranscriptStat(t *testing.T) {
+	past := time.Now().Add(-5 * time.Minute).Truncate(time.Second)
+	job := &Job{
+		ID:        "job-ts",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		RuntimeID: "runtime-ts",
+		Status:    JobStatusRunning,
+	}
+	h := &JobHandler{
+		Jobs: &stubJobStore{job: job},
+		LogReader: &stubJobLogReader{
+			statSize: 1234,
+			statTime: past,
+		},
+	}
+
+	req := httptest.NewRequest("GET", "/job-ts", nil)
+	w := httptest.NewRecorder()
+	rctx := newChiContext(map[string]string{"id": "job-ts"})
+	h.Get(w, req.WithContext(rctx))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"transcript_size":1234`) {
+		t.Errorf("body missing transcript_size: %s", body)
+	}
+	if !strings.Contains(body, `"transcript_mtime"`) {
+		t.Errorf("body missing transcript_mtime: %s", body)
+	}
+	if !strings.Contains(body, `"transcript_idle_seconds"`) {
+		t.Errorf("body missing transcript_idle_seconds: %s", body)
+	}
+}
+
+func TestJobHandler_Get_NoRuntime(t *testing.T) {
+	job := &Job{
+		ID:        "job-nr",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		RuntimeID: "",
+		Status:    JobStatusCompleted,
+	}
+	h := &JobHandler{
+		Jobs:      &stubJobStore{job: job},
+		LogReader: &stubJobLogReader{statSize: 999},
+	}
+
+	req := httptest.NewRequest("GET", "/job-nr", nil)
+	w := httptest.NewRecorder()
+	rctx := newChiContext(map[string]string{"id": "job-nr"})
+	h.Get(w, req.WithContext(rctx))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "transcript_size") {
+		t.Errorf("body should not contain transcript_size when RuntimeID is empty: %s", body)
+	}
+}
+
+func TestJobHandler_Get_TranscriptMissing(t *testing.T) {
+	job := &Job{
+		ID:        "job-tm",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		RuntimeID: "runtime-tm",
+		Status:    JobStatusCompleted,
+	}
+	h := &JobHandler{
+		Jobs:      &stubJobStore{job: job},
+		LogReader: &stubJobLogReader{statErr: os.ErrNotExist},
+	}
+
+	req := httptest.NewRequest("GET", "/job-tm", nil)
+	w := httptest.NewRecorder()
+	rctx := newChiContext(map[string]string{"id": "job-tm"})
+	h.Get(w, req.WithContext(rctx))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 even when transcript is missing", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "transcript_size") {
+		t.Errorf("body should not contain transcript_size when file is missing: %s", body)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"syscall"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/db"
@@ -299,6 +300,14 @@ type transcriptLogReader struct {
 
 func (r transcriptLogReader) ReadJobLog(runtimeID string) ([]byte, error) {
 	return dispatcher.ReadTranscript(r.rootDir, runtimeID)
+}
+
+func (r transcriptLogReader) StatJobLog(runtimeID string) (int64, time.Time, error) {
+	fi, err := dispatcher.StatTranscript(r.rootDir, runtimeID)
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+	return fi.Size(), fi.ModTime(), nil
 }
 
 type jobLifecycleAdapter struct {

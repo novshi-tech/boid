@@ -2,6 +2,8 @@ package server
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"testing"
@@ -164,5 +166,39 @@ func TestToDispatcherJob_PreservesExecutionState(t *testing.T) {
 	got := toDispatcherJob(src)
 	if got.ExecutionState != "done" {
 		t.Fatalf("toDispatcherJob dropped ExecutionState: got %q, want %q", got.ExecutionState, "done")
+	}
+}
+
+func TestTranscriptLogReader_StatJobLog(t *testing.T) {
+	rootDir := t.TempDir()
+	runtimeID := "rt-stat"
+	runtimeDir := filepath.Join(rootDir, runtimeID)
+	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := "some transcript data\n"
+	if err := os.WriteFile(filepath.Join(runtimeDir, "transcript.log"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	r := transcriptLogReader{rootDir: rootDir}
+	size, mtime, err := r.StatJobLog(runtimeID)
+	if err != nil {
+		t.Fatalf("StatJobLog() error = %v", err)
+	}
+	if size != int64(len(content)) {
+		t.Errorf("size = %d, want %d", size, len(content))
+	}
+	if mtime.IsZero() {
+		t.Error("mtime should not be zero")
+	}
+}
+
+func TestTranscriptLogReader_StatJobLog_NotFound(t *testing.T) {
+	rootDir := t.TempDir()
+	r := transcriptLogReader{rootDir: rootDir}
+	_, _, err := r.StatJobLog("nonexistent-rt")
+	if !os.IsNotExist(err) {
+		t.Errorf("error = %v, want os.ErrNotExist", err)
 	}
 }
