@@ -27,8 +27,8 @@ task_behaviors:
 |---|---|---|---|
 | `id` | string | yes | Unique identifier for this project inside `boid`. Tasks reference it via `project_id`. |
 | `name` | string | yes | Display name shown in UIs. |
-| `worktree` | bool | `false` | If `true`, **executor** tasks in this project run in their own git worktree on a fresh branch. Supervisor tasks always run readonly in the project root regardless of this flag. |
-| `base_branch` | string | repository default | Branch used as the base for executor worktrees. Supports `${TASK_REMOTE_ID}` and `${current_branch}` expansion (see [Dynamic base_branch](#dynamic-base_branch)). |
+| `worktree` | bool | `false` | If `true`, **executor** tasks in this project run in their own git worktree on a fresh branch. A supervisor task's worktree allocation is decided by the 3-case `base_branch` classification (see below): case 1 (`base_branch` matches HEAD, or omitted) runs in the project root; cases 2 and 3 (`base_branch` differs from HEAD) allocate a readonly worktree. |
+| `base_branch` | string | repository default | Branch used as the base for executor worktrees and for supervisor worktrees that require dynamic resolution (cases 2 and 3). Supports `${TASK_REMOTE_ID}` and `${current_branch}` expansion (see [Dynamic base_branch](#dynamic-base_branch)). |
 | `kits` | list of KitRef | no | Kits loaded for this project. |
 | `task_behaviors` | map (string → TaskBehavior) | yes | The kinds of tasks this project can produce. |
 | `commands` | map (string → CommandSpec) | no | Named commands the sandbox can invoke through `boid exec`. |
@@ -61,7 +61,7 @@ The fields below used to live under `task_behaviors.<name>.*`. They have been mo
 | Removed field | Where it lives now |
 |---|---|
 | `readonly` | Derived from the behavior name: `supervisor` ⇒ `true`, `executor` ⇒ `false`. |
-| `worktree` | Project-top `worktree:` combined with the behavior name. Supervisor never gets a worktree; executor gets one when project-top `worktree: true`. |
+| `worktree` | Project-top `worktree:` combined with the 3-case `base_branch` classification. Executor gets a worktree when project-top `worktree: true`. Supervisor: no worktree in case 1 (`base_branch` = HEAD or omitted); readonly worktree in cases 2 and 3. |
 | `base_branch` | Project-top `base_branch:`. |
 | `branch_prefix` | Not configurable. Worktree branches are always created under `boid/`. |
 | `default_payload` | Removed. Provide payload at task creation time instead. |
@@ -72,10 +72,10 @@ Setting any of these inside `task_behaviors.<name>` is a load-time error that po
 
 `base_branch` accepts two interpolation tokens that are resolved per task at dispatch time:
 
-- `${TASK_REMOTE_ID}` — the remote identifier (e.g. a GitHub PR number) the parent supervisor recorded for this task. Used in the "1 Supervisor 1 PR" workflow to give each supervisor session its own integration branch.
-- `${current_branch}` — the daemon's current HEAD branch in the project repository at the moment the executor worktree is created.
+- `${TASK_REMOTE_ID}` — the remote identifier (e.g. a GitHub PR number) the parent supervisor recorded for this task. Resolved for both supervisor and executor. Used in the "1 Supervisor 1 PR" workflow ([Workflow 3](../../workflows.md#workflow-3--1-supervisor-1-pr)) to give each supervisor session its own integration branch.
+- `${current_branch}` — the daemon's current HEAD branch in the project repository at the moment the worktree is created.
 
-If `base_branch` is omitted, executor worktrees branch from the daemon's current HEAD branch (i.e. the same behaviour as `${current_branch}`). See [docs/workflows.md](../../workflows.md) for end-to-end examples.
+If `base_branch` is omitted, executor worktrees branch from the daemon's current HEAD branch (the same behaviour as `${current_branch}`), and the supervisor runs in the project root (case 1). See [docs/workflows.md](../../workflows.md) for end-to-end examples (Workflow 3 is the canonical example of a dynamic supervisor `base_branch`).
 
 For how `worktree: true` behaves, see [Concepts / Worktree](../guide/concepts.md#worktree).
 
@@ -230,8 +230,8 @@ id: boid
 name: boid
 
 # Project-top worktree flag: executor tasks get a per-task worktree.
-# Supervisor tasks ignore this flag — they always run readonly in the
-# project root.
+# Supervisor task worktree allocation is decided by the 3-case base_branch
+# classification (case 1 → project root, cases 2/3 → readonly worktree).
 worktree: true
 
 kits:
