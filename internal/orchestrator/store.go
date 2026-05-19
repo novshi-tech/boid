@@ -504,11 +504,11 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 	return result, nil
 }
 
-// FindTaskByRemote returns the task matching the given remote_id and datasource_id,
-// or nil if no matching task is found.
+// FindTaskByRemote returns the most recently created task (by created_at DESC, id DESC)
+// matching the given remote_id and datasource_id, or nil if no matching task is found.
 func FindTaskByRemote(dbtx db.DBTX, remoteID, datasourceID string) (*Task, error) {
 	row := dbtx.QueryRow(
-		`SELECT `+taskSelectCols+`, `+taskChildCountCols+` FROM tasks t WHERE t.remote_id = ? AND t.datasource_id = ?`,
+		`SELECT `+taskSelectCols+`, `+taskChildCountCols+` FROM tasks t WHERE t.remote_id = ? AND t.datasource_id = ? ORDER BY t.created_at DESC, t.id DESC LIMIT 1`,
 		remoteID, datasourceID,
 	)
 	t, err := scanTask(row)
