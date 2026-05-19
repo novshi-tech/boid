@@ -24,9 +24,12 @@ type Job struct {
 	Status         JobStatus `json:"status"`
 	ExitCode       int       `json:"exit_code,omitempty"`
 	Output         string    `json:"output,omitempty"`
-	ExecutionState string    `json:"execution_state,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ExecutionState        string     `json:"execution_state,omitempty"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+	TranscriptSize        int64      `json:"transcript_size,omitempty"`
+	TranscriptMtime       *time.Time `json:"transcript_mtime,omitempty"`
+	TranscriptIdleSeconds int64      `json:"transcript_idle_seconds,omitempty"`
 }
 
 type JobCompletion struct {

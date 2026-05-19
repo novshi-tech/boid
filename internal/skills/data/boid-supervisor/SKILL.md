@@ -177,20 +177,39 @@ boid task notify "$BOID_TASK_ID" --message "..." --ask "<question for own parent
 
 ## Detecting Stuck Children
 
-Some children fail silently — `claude` exits without issuing `notify --ask`, leaving the child in `executing` with no live job. On each poll iteration, check for staleness:
+Two distinct failure modes require detection:
+
+1. **Silent exit** — `claude` exits without issuing `notify --ask`, leaving the child in `executing` with no live job (`job.status != running`, `updated_at` old).
+2. **PTY hang** — `claude` is still running (`job.status == running`) but the PTY is waiting for input and `transcript.log` has had no new writes for a long time (`transcript_idle_seconds` large).
+
+On each poll iteration, check both:
 
 ```bash
 status=$(boid task show "$child" --field status)
 if [ "$status" = "executing" ]; then
-  last_job_id=$(boid job list --task "$child" --output json | jq -r '.[0].id // empty')
-  if [ -n "$last_job_id" ]; then
-    last_status=$(boid job show "$last_job_id" --output json | jq -r '.status')
-    last_update=$(boid job show "$last_job_id" --output json | jq -r '.updated_at')
-    # If status != running and updated_at older than your threshold (e.g. 10 minutes),
-    # the child is stuck — no live job, but task didn't transition.
+  last_job=$(boid job list --task "$child" --output json | jq -r '.[0].id // empty')
+  if [ -n "$last_job" ]; then
+    last_status=$(boid job show "$last_job" --field status)
+    idle=$(boid job show "$last_job" --field transcript_idle_seconds 2>/dev/null)
+    idle=${idle:-0}
+    last_updated=$(boid job show "$last_job" --field updated_at)
+    # silent exit: job finished but task didn't transition
+    if [ "$last_status" != "running" ] && [ <updated_at old check> ]; then
+      handle_stuck "$child" "job exited without state transition"
+    # PTY hang: job still running but transcript has been idle too long
+    elif [ "$last_status" = "running" ] && [ "$idle" -gt 600 ]; then
+      handle_stuck "$child" "PTY idle ${idle}s"
+    fi
   fi
 fi
 ```
+
+Threshold guidance for `transcript_idle_seconds`:
+- Default: **600** (10 min) — covers most executor tasks
+- Fast iteration: **300** (5 min) — when the executor should be actively writing
+- Long build / slow network: **1800** (30 min) — when legitimate pauses are expected
+
+Note: `boid task notify --progress` does **not** update `transcript.log` (it goes through the broker, not the PTY). Only actual agent output (e.g. tool results, text written to the PTY) advances the mtime.
 
 Decisions:
 

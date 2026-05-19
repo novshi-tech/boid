@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -90,6 +91,17 @@ func (h *JobHandler) Get(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
+	}
+	if h.LogReader != nil && j.RuntimeID != "" {
+		size, mtime, statErr := h.LogReader.StatJobLog(j.RuntimeID)
+		if statErr == nil {
+			j.TranscriptSize = size
+			j.TranscriptMtime = &mtime
+			j.TranscriptIdleSeconds = int64(time.Since(mtime).Seconds())
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			// log only; don't fail the response
+			_ = statErr
+		}
 	}
 	writeJSON(w, http.StatusOK, j)
 }
