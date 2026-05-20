@@ -1315,6 +1315,138 @@ host_commands:
 	})
 }
 
+func TestReadProjectMeta_HostCommandSymlinkRejection(t *testing.T) {
+	t.Run("absolute symlink path rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+
+		// Create a real file outside the project and a symlink that points to
+		// it, mirroring the volta-shim layout (path: wrapper-symlink → dispatcher).
+		toolDir := t.TempDir()
+		realBin := filepath.Join(toolDir, "dispatcher")
+		if err := os.WriteFile(realBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("write dispatcher: %v", err)
+		}
+		symlinkPath := filepath.Join(toolDir, "playwright-cli")
+		if err := os.Symlink(realBin, symlinkPath); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+
+		yaml := `
+id: test-proj
+name: Test Project
+host_commands:
+  playwright-cli:
+    path: ` + symlinkPath + `
+`
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
+
+		_, err := projectspec.ReadProjectMeta(dir)
+		if err == nil {
+			t.Fatal("expected error for symlink host command path")
+		}
+		if !strings.Contains(err.Error(), "is a symlink") {
+			t.Fatalf("error should mention symlink, got %v", err)
+		}
+		if !strings.Contains(err.Error(), realBin) {
+			t.Fatalf("error should include symlink target %q, got %v", realBin, err)
+		}
+		if !strings.Contains(err.Error(), "playwright-cli") {
+			t.Fatalf("error should mention the host_commands key, got %v", err)
+		}
+	})
+
+	t.Run("relative symlink path rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+
+		// Put both the real file and the symlink inside the project, so the
+		// traversal check passes and the new symlink check is what fires.
+		binDir := filepath.Join(dir, "bin")
+		_ = os.MkdirAll(binDir, 0o755)
+		realBin := filepath.Join(binDir, "real-tool")
+		if err := os.WriteFile(realBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("write real-tool: %v", err)
+		}
+		linkBin := filepath.Join(binDir, "my-tool")
+		if err := os.Symlink(realBin, linkBin); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+
+		yaml := `
+id: test-proj
+name: Test Project
+host_commands:
+  my-tool:
+    path: bin/my-tool
+`
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
+
+		_, err := projectspec.ReadProjectMeta(dir)
+		if err == nil {
+			t.Fatal("expected error for relative symlink host command path")
+		}
+		if !strings.Contains(err.Error(), "is a symlink") {
+			t.Fatalf("error should mention symlink, got %v", err)
+		}
+	})
+
+	t.Run("regular file path accepted", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+
+		toolDir := t.TempDir()
+		realBin := filepath.Join(toolDir, "tool")
+		if err := os.WriteFile(realBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("write tool: %v", err)
+		}
+
+		yaml := `
+id: test-proj
+name: Test Project
+host_commands:
+  tool:
+    path: ` + realBin + `
+`
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
+
+		meta, err := projectspec.ReadProjectMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadProjectMeta: %v", err)
+		}
+		if got := meta.HostCommands["tool"].Path; got != realBin {
+			t.Fatalf("expected path %q, got %q", realBin, got)
+		}
+	})
+
+	t.Run("nonexistent absolute path tolerated", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+
+		ghostPath := filepath.Join(t.TempDir(), "does-not-exist")
+		yaml := `
+id: test-proj
+name: Test Project
+host_commands:
+  ghost:
+    path: ` + ghostPath + `
+`
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
+
+		meta, err := projectspec.ReadProjectMeta(dir)
+		if err != nil {
+			t.Fatalf("ReadProjectMeta: %v", err)
+		}
+		if got := meta.HostCommands["ghost"].Path; got != ghostPath {
+			t.Fatalf("expected path %q preserved, got %q", ghostPath, got)
+		}
+	})
+}
+
 func TestReadKitMeta_NewFields(t *testing.T) {
 	t.Run("parses meta/detect/requires", func(t *testing.T) {
 		dir := t.TempDir()

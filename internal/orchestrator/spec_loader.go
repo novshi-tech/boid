@@ -300,29 +300,66 @@ func validateHookKind(h *Hook) error {
 
 // resolveProjectHostCommandPaths resolves relative paths in host_commands
 // against the project root directory. It rejects paths that escape the project
-// directory via traversal (e.g. "../../etc/passwd") or symlinks.
+// directory via traversal (e.g. "../../etc/passwd") or that point at a symlink
+// (since the sandbox bind-mount dereferences the symlink — see
+// rejectSymlinkHostCommandPath for details).
 func resolveProjectHostCommandPaths(projectDir string, cmds HostCommands) error {
 	for name, spec := range cmds {
-		if spec.Path == "" || filepath.IsAbs(spec.Path) {
+		if spec.Path == "" {
 			continue
 		}
-		joined := filepath.Join(projectDir, spec.Path)
-		resolved, err := filepath.EvalSymlinks(filepath.Dir(joined))
-		if err != nil {
-			// If the directory doesn't exist we can still detect traversal
-			// via a lexical clean.
-			resolved = filepath.Clean(joined)
-		} else {
-			resolved = filepath.Join(resolved, filepath.Base(joined))
+		if !filepath.IsAbs(spec.Path) {
+			joined := filepath.Join(projectDir, spec.Path)
+			resolved, err := filepath.EvalSymlinks(filepath.Dir(joined))
+			if err != nil {
+				// If the directory doesn't exist we can still detect traversal
+				// via a lexical clean.
+				resolved = filepath.Clean(joined)
+			} else {
+				resolved = filepath.Join(resolved, filepath.Base(joined))
+			}
+			absProject, _ := filepath.Abs(projectDir)
+			if !strings.HasPrefix(resolved, absProject+string(filepath.Separator)) && resolved != absProject {
+				return fmt.Errorf("project.yaml: host_commands.%s.path %q resolves outside project directory", name, spec.Path)
+			}
+			spec.Path = joined
 		}
-		absProject, _ := filepath.Abs(projectDir)
-		if !strings.HasPrefix(resolved, absProject+string(filepath.Separator)) && resolved != absProject {
-			return fmt.Errorf("project.yaml: host_commands.%s.path %q resolves outside project directory", name, spec.Path)
+		if err := rejectSymlinkHostCommandPath(name, spec.Path); err != nil {
+			return err
 		}
-		spec.Path = joined
 		cmds[name] = spec
 	}
 	return nil
+}
+
+// rejectSymlinkHostCommandPath returns an error when path is a symlink. The
+// sandbox shim is bind-mounted onto host_commands paths, and mount(2)
+// dereferences symlinks — so binding onto a symlink replaces the symlink
+// target instead of the symlink itself. Two failure modes follow:
+//
+//  1. Broker authorization mismatch: the broker keys host_commands by the
+//     original path (e.g. /home/u/.volta/bin/playwright-cli), but the shim
+//     running inside the sandbox reports os.Executable() which has already
+//     been resolved to the symlink target (e.g. /home/u/.volta/bin/volta-shim).
+//     The lookup fails with "command not allowed: volta-shim".
+//  2. Collateral damage: when several commands point at the same dispatcher
+//     symlink (volta-shim's playwright-cli / npm / node / npx all link to
+//     volta-shim), bind-mounting onto one symlink replaces the shared target
+//     and silently turns the others into the boid shim binary.
+//
+// Missing paths are intentionally tolerated (existing behavior — the binary
+// may be installed at sandbox startup). Only an actual symlink triggers the
+// rejection.
+func rejectSymlinkHostCommandPath(name, path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return nil
+	}
+	target, _ := os.Readlink(path)
+	return fmt.Errorf("project.yaml: host_commands.%s.path %q is a symlink to %q; mount --bind dereferences it and replaces the symlink target (which may be shared with other commands). Point path at a regular wrapper script you control, not at a dispatcher symlink like volta-shim", name, path, target)
 }
 
 func resolveKitRef(ref, projectDir string, resolver KitResolver) (string, error) {
