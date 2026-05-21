@@ -207,37 +207,23 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		return nil, err
 	}
 
-	var resolvedDeps []string
-	for _, dep := range req.DependsOn {
-		t, err := s.Tasks.FindTaskByRef(dep, req.ParentID)
-		if err != nil {
-			return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("depends_on: ref %q lookup failed: %v", dep, err)}
-		}
-		if t == nil {
-			return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("depends_on: ref %q not found (parent_id: %s)", dep, req.ParentID)}
-		}
-		resolvedDeps = append(resolvedDeps, t.ID)
-	}
-
 	task := &orchestrator.Task{
-		ID:               req.ID,
-		ProjectID:        req.ProjectID,
-		Title:            req.Title,
-		Description:      req.Description,
-		Behavior:         res.BehaviorName,
-		Traits:           traits,
-		Readonly:         readonly,
-		Worktree:         worktree,
-		BranchPrefix:     branchPrefix,
-		BaseBranch:       baseBranch,
-		RemoteID:         req.RemoteID,
-		Payload:          payload,
-		Instructions:     res.Instructions,
-		AutoStart:        req.AutoStart,
-		DependsOn:        resolvedDeps,
-		DependsOnPayload: req.DependsOnPayload,
-		Ref:              req.Ref,
-		ParentID:         req.ParentID,
+		ID:           req.ID,
+		ProjectID:    req.ProjectID,
+		Title:        req.Title,
+		Description:  req.Description,
+		Behavior:     res.BehaviorName,
+		Traits:       traits,
+		Readonly:     readonly,
+		Worktree:     worktree,
+		BranchPrefix: branchPrefix,
+		BaseBranch:   baseBranch,
+		RemoteID:     req.RemoteID,
+		Payload:      payload,
+		Instructions: res.Instructions,
+		AutoStart:    req.AutoStart,
+		Ref:          req.Ref,
+		ParentID:     req.ParentID,
 	}
 	if err := s.Tasks.CreateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}

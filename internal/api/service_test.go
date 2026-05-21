@@ -2397,17 +2397,15 @@ func TestRerunTask_AutoStartUnit(t *testing.T) {
 
 func TestRerunTask_PreservesTaskMetadata(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:               "task-meta",
-		ProjectID:        "proj-1",
-		Title:            "Meta Task",
-		Description:      "Some description",
-		Behavior:         "dev",
-		Status:           orchestrator.TaskStatusDone,
-		DependsOn:        []string{"dep-id-1"},
-		DependsOnPayload: "artifact.url",
-		Ref:              "my-ref",
-		AutoStart:        true,
-		Worktree:         true,
+		ID:          "task-meta",
+		ProjectID:   "proj-1",
+		Title:       "Meta Task",
+		Description: "Some description",
+		Behavior:    "dev",
+		Status:      orchestrator.TaskStatusDone,
+		Ref:         "my-ref",
+		AutoStart:   true,
+		Worktree:    true,
 	}
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store}
@@ -2427,12 +2425,6 @@ func TestRerunTask_PreservesTaskMetadata(t *testing.T) {
 	}
 	if result.Behavior != "dev" {
 		t.Errorf("Behavior = %q, want %q", result.Behavior, "dev")
-	}
-	if len(result.DependsOn) == 0 || result.DependsOn[0] != "dep-id-1" {
-		t.Errorf("DependsOn = %v, want [dep-id-1]", result.DependsOn)
-	}
-	if result.DependsOnPayload != "artifact.url" {
-		t.Errorf("DependsOnPayload = %q, want %q", result.DependsOnPayload, "artifact.url")
 	}
 	if result.Ref != "my-ref" {
 		t.Errorf("Ref = %q, want %q", result.Ref, "my-ref")
@@ -2473,69 +2465,8 @@ func TestGetTaskDetail_IncludesDependents(t *testing.T) {
 	if got.Dependents[0].ID != dependent.ID {
 		t.Fatalf("Dependents[0].ID = %q, want %q", got.Dependents[0].ID, dependent.ID)
 	}
-	// タスク自身に DependsOn がない場合 DependsOnResolved は nil
-	if got.DependsOnResolved != nil {
-		t.Fatalf("DependsOnResolved = %v, want nil", got.DependsOnResolved)
-	}
 }
 
-func TestGetTaskDetail_IncludesDependsOnResolved(t *testing.T) {
-	dep1 := &orchestrator.Task{
-		ID:        "dep-task-1",
-		ProjectID: "proj-1",
-		Title:     "Dependency One",
-		Status:    orchestrator.TaskStatusDone,
-		Behavior:  "dev",
-	}
-	dep2 := &orchestrator.Task{
-		ID:        "dep-task-2",
-		ProjectID: "proj-1",
-		Title:     "Dependency Two",
-		Status:    orchestrator.TaskStatusDone,
-		Behavior:  "dev",
-	}
-	task := &orchestrator.Task{
-		ID:        "task-main",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusPending,
-		Behavior:  "dev",
-		DependsOn: []string{dep1.ID, dep2.ID},
-	}
-
-	svc := &TaskAppService{
-		Tasks: &stubTaskStore{
-			task: task,
-			tasks: map[string]*orchestrator.Task{
-				dep1.ID: dep1,
-				dep2.ID: dep2,
-			},
-		},
-		Actions: stubActionStore{},
-		Jobs:    &stubJobStore{},
-	}
-
-	got, err := svc.GetTaskDetail(task.ID)
-	if err != nil {
-		t.Fatalf("GetTaskDetail() error = %v", err)
-	}
-	if len(got.DependsOnResolved) != 2 {
-		t.Fatalf("DependsOnResolved len = %d, want 2", len(got.DependsOnResolved))
-	}
-	ids := make(map[string]bool)
-	for _, d := range got.DependsOnResolved {
-		ids[d.ID] = true
-	}
-	if !ids[dep1.ID] {
-		t.Errorf("DependsOnResolved missing %q", dep1.ID)
-	}
-	if !ids[dep2.ID] {
-		t.Errorf("DependsOnResolved missing %q", dep2.ID)
-	}
-	// 依存するタスクがいない場合 Dependents は nil
-	if got.Dependents != nil {
-		t.Fatalf("Dependents = %v, want nil", got.Dependents)
-	}
-}
 
 // TestGetTaskDetail_JobsIncludeWorkspacePath verifies that GetTaskDetail enriches
 // returned jobs with WorkspacePath derived from RuntimesDir + RuntimeID.

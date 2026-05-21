@@ -109,18 +109,13 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := CreateTaskRequest{
-		ProjectID:        r.FormValue("project_id"),
-		Title:            title,
-		Behavior:         r.FormValue("behavior"),
-		Description:      r.FormValue("description"),
-		RemoteID:         r.FormValue("remote_id"),
-		ParentID:         r.FormValue("parent_id"),
-		DependsOnPayload: r.FormValue("depends_on_payload"),
-		AutoStart:        r.FormValue("auto_start") == "on",
-	}
-
-	if raw := strings.TrimSpace(r.FormValue("depends_on")); raw != "" {
-		req.DependsOn = strings.Fields(raw)
+		ProjectID:   r.FormValue("project_id"),
+		Title:       title,
+		Behavior:    r.FormValue("behavior"),
+		Description: r.FormValue("description"),
+		RemoteID:    r.FormValue("remote_id"),
+		ParentID:    r.FormValue("parent_id"),
+		AutoStart:   r.FormValue("auto_start") == "on",
 	}
 
 	if raw := strings.TrimSpace(r.FormValue("traits")); raw != "" {

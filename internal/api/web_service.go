@@ -77,22 +77,12 @@ func (s *WebAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 	jobs := rawJobs
 	dependents, _ := s.Tasks.FindDependentTasks(task.ID)
 
-	var dependsOnResolved []*orchestrator.Task
-	for _, depID := range task.DependsOn {
-		dep, err := s.Tasks.GetTask(depID)
-		if err != nil {
-			continue
-		}
-		dependsOnResolved = append(dependsOnResolved, dep)
-	}
-
 	return &TaskDetailView{
-		Task:              task,
-		Actions:           actions,
-		Jobs:              jobs,
-		AvailableActions:  orchestrator.DefaultMachine().AvailableActions(task.Status),
-		Dependents:        dependents,
-		DependsOnResolved: dependsOnResolved,
+		Task:             task,
+		Actions:          actions,
+		Jobs:             jobs,
+		AvailableActions: orchestrator.DefaultMachine().AvailableActions(task.Status),
+		Dependents:       dependents,
 	}, nil
 }
 

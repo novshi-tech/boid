@@ -186,21 +186,6 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		task.Payload = merged
 		payloadUpdated = true
 	}
-	if req.DependsOn != nil {
-		for _, depID := range req.DependsOn {
-			dep, err := s.Tasks.GetTask(depID)
-			if err != nil || dep == nil {
-				return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("depends_on: task %q not found", depID)}
-			}
-		}
-		if hasCycleInUpdate(id, req.DependsOn, s.Tasks.GetTask) {
-			return nil, &StatusError{Code: http.StatusBadRequest, Message: "depends_on: circular dependency detected"}
-		}
-		task.DependsOn = req.DependsOn
-	}
-	if req.DependsOnPayload != nil {
-		task.DependsOnPayload = *req.DependsOnPayload
-	}
 	if req.ParentID != nil {
 		task.ParentID = *req.ParentID
 	}
@@ -381,21 +366,11 @@ func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 
-	var dependsOnResolved []*orchestrator.Task
-	for _, depID := range task.DependsOn {
-		dep, err := s.Tasks.GetTask(depID)
-		if err != nil {
-			continue
-		}
-		dependsOnResolved = append(dependsOnResolved, dep)
-	}
-
 	return &TaskDetailView{
-		Task:              task,
-		Actions:           actions,
-		Jobs:              jobs,
-		AvailableActions:  orchestrator.DefaultMachine().AvailableActions(task.Status),
-		Dependents:        dependents,
-		DependsOnResolved: dependsOnResolved,
+		Task:             task,
+		Actions:          actions,
+		Jobs:             jobs,
+		AvailableActions: orchestrator.DefaultMachine().AvailableActions(task.Status),
+		Dependents:       dependents,
 	}, nil
 }
