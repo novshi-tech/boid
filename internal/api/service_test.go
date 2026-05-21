@@ -1878,10 +1878,9 @@ func TestCreateTask_EmptyBaseBranch_ChildInheritsParent(t *testing.T) {
 // ---- end Phase 2-2 ----
 
 type stubTaskStore struct {
-	task           *orchestrator.Task
-	tasks          map[string]*orchestrator.Task // id → task (for multi-task lookups)
-	dependentTasks []*orchestrator.Task          // returned by FindDependentTasks
-	err            error
+	task        *orchestrator.Task
+	tasks       map[string]*orchestrator.Task // id → task (for multi-task lookups)
+	err         error
 	updateCalls    int
 	deleted        bool
 	remoteTasks    map[string]*orchestrator.Task // remoteID → task
@@ -1929,8 +1928,8 @@ func (s *stubTaskStore) FindTaskByRemote(remoteID string) (*orchestrator.Task, e
 func (s *stubTaskStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {
 	return nil, nil
 }
-func (s *stubTaskStore) FindDependentTasks(taskID string) ([]*orchestrator.Task, error) {
-	return s.dependentTasks, nil
+func (s *stubTaskStore) FindDependentTasks(_ string) ([]*orchestrator.Task, error) {
+	return nil, nil
 }
 
 type stubTx struct {
@@ -2430,43 +2429,6 @@ func TestRerunTask_PreservesTaskMetadata(t *testing.T) {
 		t.Errorf("Ref = %q, want %q", result.Ref, "my-ref")
 	}
 }
-
-func TestGetTaskDetail_IncludesDependents(t *testing.T) {
-	task := &orchestrator.Task{
-		ID:        "task-main",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusDone,
-		Behavior:  "dev",
-	}
-	dependent := &orchestrator.Task{
-		ID:        "task-dep",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusPending,
-		Behavior:  "dev",
-		DependsOn: []string{task.ID},
-	}
-
-	svc := &TaskAppService{
-		Tasks: &stubTaskStore{
-			task:           task,
-			dependentTasks: []*orchestrator.Task{dependent},
-		},
-		Actions: stubActionStore{},
-		Jobs:    &stubJobStore{},
-	}
-
-	got, err := svc.GetTaskDetail(task.ID)
-	if err != nil {
-		t.Fatalf("GetTaskDetail() error = %v", err)
-	}
-	if len(got.Dependents) != 1 {
-		t.Fatalf("Dependents len = %d, want 1", len(got.Dependents))
-	}
-	if got.Dependents[0].ID != dependent.ID {
-		t.Fatalf("Dependents[0].ID = %q, want %q", got.Dependents[0].ID, dependent.ID)
-	}
-}
-
 
 // TestGetTaskDetail_JobsIncludeWorkspacePath verifies that GetTaskDetail enriches
 // returned jobs with WorkspacePath derived from RuntimesDir + RuntimeID.

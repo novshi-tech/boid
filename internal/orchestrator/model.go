@@ -31,8 +31,6 @@ type Task struct {
 	Payload          json.RawMessage `json:"payload"`
 	Instructions     Instructions    `json:"instructions,omitempty"`
 	AutoStart        bool            `json:"auto_start,omitempty"`
-	DependsOn        []string        `json:"depends_on,omitempty"`
-	DependsOnPayload string          `json:"depends_on_payload,omitempty"`
 	Ref              string          `json:"ref,omitempty"`
 	ParentID         string          `json:"parent_id,omitempty"`
 	CreatedAt        time.Time       `json:"created_at"`
@@ -42,7 +40,7 @@ type Task struct {
 	DoneChildCount    int `json:"done_child_count,omitempty"`
 	AbortedChildCount int `json:"aborted_child_count,omitempty"`
 	OpenChildCount    int `json:"open_child_count,omitempty"`
-	// Blocked は pending 状態でかつ依存条件が未充足のとき true（DBには保存しない）
+	// Blocked は表示用フィールド（DBには保存しない）
 	Blocked bool `json:"blocked,omitempty"`
 }
 

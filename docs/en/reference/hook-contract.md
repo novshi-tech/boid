@@ -28,7 +28,6 @@ The main fields of TaskJSON:
 | `payload` | object | The full current payload — most hooks read from here. |
 | `instructions` | map (role → Instruction) | Routed instructions; meaningful only to hooks declared `kind: agent`. |
 | `auto_start` | bool | Whether the task was created with auto-start. |
-| `depends_on` | list of string | Dependency task IDs. |
 | `parent_id` | string | Optional parent task ID. |
 | `created_at` / `updated_at` | RFC3339 timestamp | Creation / update times. |
 

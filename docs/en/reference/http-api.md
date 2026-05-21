@@ -70,7 +70,7 @@ For the schema, see [`project.yaml` reference](project-yaml.md). For the CLI, se
 
 | Method | Path | Role |
 |---|---|---|
-| GET | `/api/tasks` | List tasks (query params: `status`, `behavior`, `workspace_id`, `has_depends_on`, `no_depends_on`). |
+| GET | `/api/tasks` | List tasks (query params: `status`, `behavior`, `workspace_id`). |
 | POST | `/api/tasks` | Create a task (body is the JSON form of `taskCreateSpec`). |
 | POST | `/api/tasks/import` | Bulk import (JSONL). |
 | GET | `/api/tasks/{id}` | Task detail. |
@@ -94,9 +94,7 @@ For the schema, see [`project.yaml` reference](project-yaml.md). For the CLI, se
   "behavior": "<name>",
   "auto_start": true,
   "payload": { ... },
-  "instructions": { ... },
-  "depends_on": ["<task-id>", ...],
-  "depends_on_payload": "<expr>"
+  "instructions": { ... }
 }
 ```
 

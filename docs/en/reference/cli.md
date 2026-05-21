@@ -134,8 +134,6 @@ auto_start: false
 description: ...
 payload:    { ... }
 instructions: { ... }
-depends_on:  [<task-id>, ...]
-depends_on_payload: <expr>
 ```
 
 Pass `behavior_spec` to specify the behavior inline instead of referencing a name in `project.yaml`'s `task_behaviors`.

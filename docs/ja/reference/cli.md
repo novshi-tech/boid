@@ -134,8 +134,6 @@ auto_start: false
 description: ...
 payload:    { ... }
 instructions: { ... }
-depends_on:  [<task-id>, ...]
-depends_on_payload: <expr>
 ```
 
 `behavior_spec` を渡すと `project.yaml` の task_behaviors を参照せず、 inline でタスクの設定を指定できます。

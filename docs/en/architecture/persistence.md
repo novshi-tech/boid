@@ -48,7 +48,6 @@ Key columns:
 | `traits` | TEXT (JSON array) | Trait names declared by the behavior. |
 | `readonly` / `worktree` | BOOLEAN | Sandbox mode flags. |
 | `branch_prefix` / `base_branch` | TEXT | Worktree settings. |
-| `depends_on_payload` | TEXT | Condition on a `depends_on` task's payload (JSON-Path-ish). |
 | `ref` / `parent_id` | TEXT | Optional parent reference. |
 | `created_at` / `updated_at` | DATETIME | Timestamps. |
 
@@ -127,17 +126,6 @@ Encrypted storage for API tokens and similar values. The encryption key lives at
 | `created_at` / `updated_at` | DATETIME | Timestamps. |
 
 `(namespace, key)` is unique. `boid secret set` / `boid secret get` are the front-door commands.
-
-## `task_dependencies`
-
-Many-to-many edges between dependent tasks.
-
-| Column | Type | Role |
-|---|---|---|
-| `task_id` | TEXT FK → tasks.id | The waiter. |
-| `depends_on` | TEXT FK → tasks.id | The waited-for. |
-
-PK is `(task_id, depends_on)`. Combined with the `task.depends_on_payload` JSON column, the daemon checks "the prerequisite task is `done` AND its payload satisfies this condition".
 
 ## `web_devices` / `web_pairing_codes`
 

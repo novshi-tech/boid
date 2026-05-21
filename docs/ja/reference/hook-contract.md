@@ -28,7 +28,6 @@ TaskJSON の主なフィールド:
 | `payload` | object | 現在の payload 全体 (hook が読みたい主要素) |
 | `instructions` | map (role → Instruction) | `kind: agent` の hook でのみ意味を持つ、 routing 済みの instruction |
 | `auto_start` | bool | タスク作成時の auto_start 指定 |
-| `depends_on` | string のリスト | 依存先タスク ID |
 | `parent_id` | string | 親タスク (任意) |
 | `created_at` / `updated_at` | RFC3339 timestamp | 作成 / 更新時刻 |
 

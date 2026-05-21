@@ -51,7 +51,7 @@ Even with only one child, remain as supervisor and see it through. Users rely on
 
 ## Sequencing Children
 
-Sequence children **inside the supervisor session** by creating → monitoring → creating-next. Do **not** use boid's `depends_on` / `depends_on_payload` features — keeping ordering explicit in the supervisor's control flow makes the intent visible from the session transcript and avoids a parallel ordering mechanism.
+Sequence children **inside the supervisor session** by creating → monitoring → creating-next. Keep ordering explicit in the supervisor's control flow; it makes the intent visible from the session transcript.
 
 Use parallel creation only when children are genuinely order-independent.
 

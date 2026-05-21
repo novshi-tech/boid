@@ -84,12 +84,6 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 	return nil
 }
 
-// FindDependentTasks は taskID に依存している pending 状態のタスクを返す。
-// depends_on 機能削除後は常に空スライスを返す (transitional stub)。
-func FindDependentTasks(_ db.DBTX, _ string) ([]*Task, error) {
-	return nil, nil
-}
-
 func GetTask(dbtx db.DBTX, id string) (*Task, error) {
 	row := dbtx.QueryRow(
 		`SELECT `+taskSelectCols+`, `+taskChildCountCols+` FROM tasks t WHERE t.id = ?`, id,
