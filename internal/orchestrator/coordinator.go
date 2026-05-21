@@ -23,19 +23,16 @@ func lookupBehavior(meta *ProjectMeta, task *Task) (TaskBehavior, bool) {
 
 // Coordinator orchestrates the hook → gate → advance flow.
 //
-// The project-level worktree lock is intentionally NOT held inside the
-// coordinator anymore: it is acquired by the workflow service for the entire
-// executing lifetime of the task and released on every executing-leaving path
-// (see internal/api/service.go). The Locker field is preserved for backward
-// compatibility with callers that still pass it (e.g. older tests); it is
-// otherwise unused.
+// Locking is owned by the workflow service for the entire executing lifetime
+// of each task (see internal/api/service.go). The coordinator dispatches hooks
+// and gates under the assumption that the branch lock is already held by the
+// caller.
 type Coordinator struct {
 	Evaluator      *Evaluator
 	HookExecutor   HookExecutor
 	GateExecutor   GateExecutor
 	Waiter         JobWaiter
 	MaxDepth       int
-	Locker         WorktreeLocker // deprecated: locking now owned by the workflow service
 	LifecycleStore LifecycleStore // optional; nil skips rework_count/abort derivation
 }
 
