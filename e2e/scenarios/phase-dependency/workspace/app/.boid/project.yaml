@@ -1,5 +1,0 @@
-id: phase-dependency
-name: Phase Dependency
-task_behaviors:
-  smoke:
-    transition: one-shot
