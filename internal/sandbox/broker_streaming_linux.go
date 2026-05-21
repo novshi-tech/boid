@@ -92,6 +92,7 @@ func (b *Broker) execCommandStreaming(conn net.Conn, req *ExecRequest, def Comma
 	}
 	defer ptm.Close()
 	setPTYSize(ptm, 220, 50)
+	disablePTYOutputProcessing(pts)
 
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
