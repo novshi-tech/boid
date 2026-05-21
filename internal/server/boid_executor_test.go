@@ -75,7 +75,7 @@ type capturingTaskStore struct {
 	created           []*orchestrator.Task
 	updated           []*orchestrator.Task
 	deleted           []string
-	findByRemoteFunc  func(remoteID, datasourceID string) (*orchestrator.Task, error)
+	findByRemoteFunc  func(remoteID string) (*orchestrator.Task, error)
 }
 
 // executorMetaStub provides a minimal MetaStore for boid executor tests.
@@ -124,9 +124,9 @@ func (s *capturingTaskStore) DeleteTask(id string) error {
 	s.deleted = append(s.deleted, id)
 	return nil
 }
-func (s *capturingTaskStore) FindTaskByRemote(remoteID, datasourceID string) (*orchestrator.Task, error) {
+func (s *capturingTaskStore) FindTaskByRemote(remoteID string) (*orchestrator.Task, error) {
 	if s.findByRemoteFunc != nil {
-		return s.findByRemoteFunc(remoteID, datasourceID)
+		return s.findByRemoteFunc(remoteID)
 	}
 	return nil, nil
 }
@@ -657,8 +657,8 @@ func TestBoidBuiltinExecutor_TaskImport_HappyPath(t *testing.T) {
 	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
 		Op: sandbox.BoidOpTaskImport,
 		ImportTasks: []json.RawMessage{
-			json.RawMessage(`{"project_id":"proj-1","title":"t1","behavior":"dev","remote_id":"r1","datasource_id":"ds1"}`),
-			json.RawMessage(`{"project_id":"proj-1","title":"t2","behavior":"dev","remote_id":"r2","datasource_id":"ds1"}`),
+			json.RawMessage(`{"project_id":"proj-1","title":"t1","behavior":"dev","remote_id":"r1"}`),
+			json.RawMessage(`{"project_id":"proj-1","title":"t2","behavior":"dev","remote_id":"r2"}`),
 		},
 	})
 	if resp.ExitCode != 0 {
@@ -672,30 +672,6 @@ func TestBoidBuiltinExecutor_TaskImport_HappyPath(t *testing.T) {
 	}
 }
 
-func TestBoidBuiltinExecutor_TaskImport_DatasourceOverride(t *testing.T) {
-	exec, store := newImportExecutor(t)
-	ctx := sandbox.TokenContext{
-		ProjectID:         "proj-1",
-		AllowedProjectIDs: []string{"proj-1"},
-	}
-
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
-		Op:                      sandbox.BoidOpTaskImport,
-		ImportDatasourceOverride: "ds-override",
-		ImportTasks: []json.RawMessage{
-			json.RawMessage(`{"project_id":"proj-1","title":"t1","behavior":"dev","remote_id":"r1","datasource_id":"ds-original"}`),
-		},
-	})
-	if resp.ExitCode != 0 {
-		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
-	}
-	if len(store.created) != 1 {
-		t.Fatalf("created tasks = %d, want 1", len(store.created))
-	}
-	if store.created[0].DataSourceID != "ds-override" {
-		t.Errorf("DataSourceID = %q, want ds-override", store.created[0].DataSourceID)
-	}
-}
 
 func TestBoidBuiltinExecutor_TaskImport_ProjectOverride(t *testing.T) {
 	exec, store := newImportExecutor(t)
@@ -708,7 +684,7 @@ func TestBoidBuiltinExecutor_TaskImport_ProjectOverride(t *testing.T) {
 		Op:                   sandbox.BoidOpTaskImport,
 		ImportProjectOverride: "proj-1",
 		ImportTasks: []json.RawMessage{
-			json.RawMessage(`{"title":"t1","behavior":"dev","remote_id":"r1","datasource_id":"ds1"}`), // project_id 未指定
+			json.RawMessage(`{"title":"t1","behavior":"dev","remote_id":"r1"}`), // project_id 未指定
 		},
 	})
 	if resp.ExitCode != 0 {
@@ -725,7 +701,7 @@ func TestBoidBuiltinExecutor_TaskImport_ProjectOverride(t *testing.T) {
 func TestBoidBuiltinExecutor_TaskImport_Dedup(t *testing.T) {
 	exec, store := newImportExecutor(t)
 	// remote_id=r1 が既存として返される
-	store.findByRemoteFunc = func(remoteID, datasourceID string) (*orchestrator.Task, error) {
+	store.findByRemoteFunc = func(remoteID string) (*orchestrator.Task, error) {
 		if remoteID == "r1" {
 			return &orchestrator.Task{ID: "existing-1", ProjectID: "proj-1"}, nil
 		}
@@ -739,8 +715,8 @@ func TestBoidBuiltinExecutor_TaskImport_Dedup(t *testing.T) {
 	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
 		Op: sandbox.BoidOpTaskImport,
 		ImportTasks: []json.RawMessage{
-			json.RawMessage(`{"project_id":"proj-1","title":"t1","behavior":"dev","remote_id":"r1","datasource_id":"ds1"}`), // dedup
-			json.RawMessage(`{"project_id":"proj-1","title":"t2","behavior":"dev","remote_id":"r2","datasource_id":"ds1"}`), // new
+			json.RawMessage(`{"project_id":"proj-1","title":"t1","behavior":"dev","remote_id":"r1"}`), // dedup
+			json.RawMessage(`{"project_id":"proj-1","title":"t2","behavior":"dev","remote_id":"r2"}`), // new
 		},
 	})
 	if resp.ExitCode != 0 {
@@ -758,13 +734,13 @@ func TestBoidBuiltinExecutor_TaskImport_PartialError(t *testing.T) {
 		AllowedProjectIDs: []string{"proj-1"},
 	}
 
-	// 1件目: behavior 欠落 (remote_id/datasource_id あり) → CreateTask でエラー
+	// 1件目: behavior 欠落 (remote_id あり) → CreateTask でエラー
 	// 2件目: 正常
 	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
 		Op: sandbox.BoidOpTaskImport,
 		ImportTasks: []json.RawMessage{
-			json.RawMessage(`{"project_id":"proj-1","title":"t1","remote_id":"r1","datasource_id":"ds1"}`),
-			json.RawMessage(`{"project_id":"proj-1","title":"t2","behavior":"dev","remote_id":"r2","datasource_id":"ds1"}`),
+			json.RawMessage(`{"project_id":"proj-1","title":"t1","remote_id":"r1"}`),
+			json.RawMessage(`{"project_id":"proj-1","title":"t2","behavior":"dev","remote_id":"r2"}`),
 		},
 	})
 	if resp.ExitCode != 0 {

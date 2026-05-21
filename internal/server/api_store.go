@@ -41,8 +41,8 @@ func (s apiTxStore) DeleteTask(id string) error {
 	return s.tasks.DeleteTask(id)
 }
 
-func (s apiTxStore) FindTaskByRemote(remoteID, datasourceID string) (*orchestrator.Task, error) {
-	return s.tasks.FindTaskByRemote(remoteID, datasourceID)
+func (s apiTxStore) FindTaskByRemote(remoteID string) (*orchestrator.Task, error) {
+	return s.tasks.FindTaskByRemote(remoteID)
 }
 
 func (s apiTxStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {

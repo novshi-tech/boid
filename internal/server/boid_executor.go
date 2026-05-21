@@ -252,9 +252,6 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 			if req.ImportProjectOverride != "" {
 				r.ProjectID = req.ImportProjectOverride
 			}
-			if req.ImportDatasourceOverride != "" {
-				r.DataSourceID = req.ImportDatasourceOverride
-			}
 			if r.ProjectID == "" {
 				r.ProjectID = ctx.ProjectID
 			}

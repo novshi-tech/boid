@@ -92,9 +92,8 @@ type BoidRequest struct {
 	UpdatePatch json.RawMessage `json:"update_patch,omitempty"`
 
 	// task import fields
-	ImportTasks              []json.RawMessage `json:"import_tasks,omitempty"`
-	ImportProjectOverride    string            `json:"import_project_override,omitempty"`
-	ImportDatasourceOverride string            `json:"import_datasource_override,omitempty"`
+	ImportTasks           []json.RawMessage `json:"import_tasks,omitempty"`
+	ImportProjectOverride string            `json:"import_project_override,omitempty"`
 
 	// task list fields
 	WorkspaceID string `json:"workspace_id,omitempty"`

@@ -38,7 +38,7 @@
 |---|---|---|
 | `id` | TEXT PK | タスク ID (UUID) |
 | `project_id` | TEXT FK → projects.id | 所属プロジェクト |
-| `remote_id` / `datasource_id` | TEXT | 外部 issue tracker との対応 (任意) |
+| `remote_id` | TEXT | 外部 issue tracker との対応 (任意) |
 | `title` / `description` | TEXT | 表示用 |
 | `status` | TEXT | `pending` / `executing` / `done` / `aborted` (旧 `verifying` / `reworking` は migration 0022 で `aborted` に強制遷移済み) |
 | `behavior` | TEXT | このタスクの behavior 名 |
@@ -58,7 +58,7 @@
 - `instructions` — Instruction の配列。 配列の最後の要素が active、 reopen で append される
 - `traits` — このタスクが扱う trait 名の配列 (behavior 由来)
 
-`(remote_id, datasource_id)` には部分インデックスがあり、外部 ID のユニーク性を担保しています。 `(parent_id)` には部分インデックス、 `(parent_id, ref)` にはユニークインデックスがあり、親子参照と ref 衝突を防いでいます。
+`(parent_id)` には部分インデックス、 `(parent_id, ref)` にはユニークインデックスがあり、親子参照と ref 衝突を防いでいます。
 
 ## `actions`
 

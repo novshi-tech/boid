@@ -769,30 +769,6 @@ func TestParseBoidTaskImport_ProjectOverride(t *testing.T) {
 	}
 }
 
-func TestParseBoidTaskImport_DatasourceOverride(t *testing.T) {
-	sockPath, reqCh := newFakeBrokerForImport(t)
-	t.Setenv("BOID_BROKER_SOCKET", sockPath)
-	t.Setenv("BOID_BROKER_TOKEN", "token-import-ds")
-
-	redirectStdinForTest(t, `{"title":"t1"}`+"\n")
-
-	// スペース区切り
-	resp, err := sandbox.RunBoidShim([]string{"task", "import", "--datasource", "gh-am"})
-	if err != nil {
-		t.Fatalf("RunBoidShim: %v", err)
-	}
-	if resp.ExitCode != 0 {
-		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
-	}
-
-	req := <-reqCh
-	if req.Boid == nil {
-		t.Fatal("expected typed boid request")
-	}
-	if req.Boid.ImportDatasourceOverride != "gh-am" {
-		t.Errorf("ImportDatasourceOverride = %q, want gh-am", req.Boid.ImportDatasourceOverride)
-	}
-}
 
 func TestParseBoidTaskImport_EmptyLines(t *testing.T) {
 	sockPath, reqCh := newFakeBrokerForImport(t)

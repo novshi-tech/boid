@@ -665,7 +665,6 @@ func parseBoidTaskDelete(args []string) (*BoidRequest, error) {
 func parseBoidTaskImport(args []string) (*BoidRequest, error) {
 	var filePath string
 	var projectOverride string
-	var datasourceOverride string
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -688,13 +687,6 @@ func parseBoidTaskImport(args []string) (*BoidRequest, error) {
 			}
 			i = next
 			projectOverride = value
-		case arg == "--datasource" || strings.HasPrefix(arg, "--datasource="):
-			value, next, err := takeStringFlagValue(args, i, "--datasource")
-			if err != nil {
-				return nil, err
-			}
-			i = next
-			datasourceOverride = value
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task import", arg)
 		}
@@ -735,9 +727,8 @@ func parseBoidTaskImport(args []string) (*BoidRequest, error) {
 	}
 
 	return &BoidRequest{
-		Op:                      BoidOpTaskImport,
-		ImportTasks:             tasks,
-		ImportProjectOverride:   projectOverride,
-		ImportDatasourceOverride: datasourceOverride,
+		Op:                    BoidOpTaskImport,
+		ImportTasks:           tasks,
+		ImportProjectOverride: projectOverride,
 	}, nil
 }

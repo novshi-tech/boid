@@ -645,28 +645,23 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 		}
 	})
 
-	t.Run("remote_id and datasource_id updated", func(t *testing.T) {
+	t.Run("remote_id updated", func(t *testing.T) {
 		task := &orchestrator.Task{
-			ID:           "task-r",
-			Title:        "t",
-			RemoteID:     "OLD-1",
-			DataSourceID: "old-ds",
-			Status:       orchestrator.TaskStatusPending,
+			ID:       "task-r",
+			Title:    "t",
+			RemoteID: "OLD-1",
+			Status:   orchestrator.TaskStatusPending,
 		}
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
 
 		newRemote := "JIRA-999"
-		newDS := "jira"
-		got, err := svc.UpdateTask("task-r", UpdateTaskRequest{RemoteID: &newRemote, DataSourceID: &newDS})
+		got, err := svc.UpdateTask("task-r", UpdateTaskRequest{RemoteID: &newRemote})
 		if err != nil {
 			t.Fatalf("UpdateTask() error = %v", err)
 		}
 		if got.RemoteID != "JIRA-999" {
 			t.Errorf("RemoteID = %q, want JIRA-999", got.RemoteID)
-		}
-		if got.DataSourceID != "jira" {
-			t.Errorf("DataSourceID = %q, want jira", got.DataSourceID)
 		}
 	})
 
@@ -870,8 +865,8 @@ func TestTaskAppServiceImportTasks_AllCreated(t *testing.T) {
 	}
 
 	reqs := []CreateTaskRequest{
-		{ProjectID: "proj-1", Title: "Task 1", Behavior: "dev", RemoteID: "PROJ-1", DataSourceID: "jira"},
-		{ProjectID: "proj-1", Title: "Task 2", Behavior: "dev", RemoteID: "PROJ-2", DataSourceID: "jira"},
+		{ProjectID: "proj-1", Title: "Task 1", Behavior: "dev", RemoteID: "PROJ-1"},
+		{ProjectID: "proj-1", Title: "Task 2", Behavior: "dev", RemoteID: "PROJ-2"},
 	}
 	result, err := svc.ImportTasks(reqs)
 	if err != nil {
@@ -890,13 +885,12 @@ func TestTaskAppServiceImportTasks_AllCreated(t *testing.T) {
 
 func TestTaskAppServiceImportTasks_SkipsDuplicate(t *testing.T) {
 	existingTask := &orchestrator.Task{
-		ID:           "existing-id",
-		RemoteID:     "PROJ-1",
-		DataSourceID: "jira",
+		ID:       "existing-id",
+		RemoteID: "PROJ-1",
 	}
 	store := &stubTaskStore{
 		remoteTasks: map[string]*orchestrator.Task{
-			"PROJ-1:jira": existingTask,
+			"PROJ-1": existingTask,
 		},
 	}
 	svc := &TaskAppService{
@@ -905,8 +899,8 @@ func TestTaskAppServiceImportTasks_SkipsDuplicate(t *testing.T) {
 	}
 
 	reqs := []CreateTaskRequest{
-		{ProjectID: "proj-1", Title: "Task 1", Behavior: "any", RemoteID: "PROJ-1", DataSourceID: "jira"},
-		{ProjectID: "proj-1", Title: "Task 2", Behavior: "any", RemoteID: "PROJ-2", DataSourceID: "jira"},
+		{ProjectID: "proj-1", Title: "Task 1", Behavior: "any", RemoteID: "PROJ-1"},
+		{ProjectID: "proj-1", Title: "Task 2", Behavior: "any", RemoteID: "PROJ-2"},
 	}
 	result, err := svc.ImportTasks(reqs)
 	if err != nil {
@@ -958,7 +952,7 @@ func TestTaskAppServiceImportTasks_BehaviorError(t *testing.T) {
 	}
 
 	reqs := []CreateTaskRequest{
-		{ProjectID: "proj-1", Title: "Task 1", Behavior: "unknown", RemoteID: "PROJ-1", DataSourceID: "jira"},
+		{ProjectID: "proj-1", Title: "Task 1", Behavior: "unknown", RemoteID: "PROJ-1"},
 	}
 	result, err := svc.ImportTasks(reqs)
 	if err != nil {
@@ -1283,7 +1277,6 @@ func TestTaskAppServiceImportTasks_BehaviorSpec_Success(t *testing.T) {
 			ProjectID:    "proj-1",
 			Title:        "Spec Task",
 			RemoteID:     "KIT-1",
-			DataSourceID: "github",
 			BehaviorSpec: &orchestrator.BehaviorSpec{
 				Name:   "kit/conflict-fix",
 				Traits: []string{"artifact"},
@@ -1891,7 +1884,7 @@ type stubTaskStore struct {
 	err            error
 	updateCalls    int
 	deleted        bool
-	remoteTasks    map[string]*orchestrator.Task // "remoteID:datasourceID" → task
+	remoteTasks    map[string]*orchestrator.Task // remoteID → task
 	createdTask    *orchestrator.Task            // captures the last created task
 }
 
@@ -1927,9 +1920,9 @@ func (s *stubTaskStore) DeleteTask(id string) error {
 	s.deleted = true
 	return nil
 }
-func (s *stubTaskStore) FindTaskByRemote(remoteID, datasourceID string) (*orchestrator.Task, error) {
+func (s *stubTaskStore) FindTaskByRemote(remoteID string) (*orchestrator.Task, error) {
 	if s.remoteTasks != nil {
-		return s.remoteTasks[remoteID+":"+datasourceID], nil
+		return s.remoteTasks[remoteID], nil
 	}
 	return nil, nil
 }
@@ -1957,7 +1950,7 @@ func (s *stubTx) UpdateTask(task *orchestrator.Task) error {
 	return nil
 }
 func (s *stubTx) DeleteTask(id string) error { return nil }
-func (s *stubTx) FindTaskByRemote(remoteID, datasourceID string) (*orchestrator.Task, error) {
+func (s *stubTx) FindTaskByRemote(remoteID string) (*orchestrator.Task, error) {
 	return nil, nil
 }
 func (s *stubTx) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {
@@ -2059,15 +2052,14 @@ func (l *stubLifecycle) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
 
 func TestDuplicateTask_CopiesFields(t *testing.T) {
 	source := &orchestrator.Task{
-		ID:           "src-1",
-		ProjectID:    "proj-1",
-		Title:        "Original Task",
-		Description:  "task description",
-		Behavior:     "dev",
-		Status:       orchestrator.TaskStatusAborted,
-		Payload:      json.RawMessage(`{"old":"data"}`),
-		RemoteID:     "PROJ-1",
-		DataSourceID: "jira",
+		ID:          "src-1",
+		ProjectID:   "proj-1",
+		Title:       "Original Task",
+		Description: "task description",
+		Behavior:    "dev",
+		Status:      orchestrator.TaskStatusAborted,
+		Payload:     json.RawMessage(`{"old":"data"}`),
+		RemoteID:    "PROJ-1",
 	}
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
@@ -2098,9 +2090,6 @@ func TestDuplicateTask_CopiesFields(t *testing.T) {
 	}
 	if task.RemoteID != "" {
 		t.Errorf("RemoteID = %q, want empty", task.RemoteID)
-	}
-	if task.DataSourceID != "" {
-		t.Errorf("DataSourceID = %q, want empty", task.DataSourceID)
 	}
 }
 

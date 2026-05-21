@@ -19,7 +19,6 @@ type Task struct {
 	ID               string          `json:"id"`
 	ProjectID        string          `json:"project_id"`
 	RemoteID         string          `json:"remote_id,omitempty"`
-	DataSourceID     string          `json:"datasource_id,omitempty"`
 	Title            string          `json:"title"`
 	Description      string          `json:"description,omitempty"`
 	Status           TaskStatus      `json:"status"`
