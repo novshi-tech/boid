@@ -142,8 +142,12 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 	// tasks on the same base_branch serialize while child tasks (boid/<id8>)
 	// always run in parallel. Idempotent: re-spawned dispatch loops for an
 	// already-locked task no-op. Only acquired when task.Status == executing;
-	// terminal-task dispatch loops skip acquisition.
-	if s.Locks != nil && current.Status == orchestrator.TaskStatusExecuting {
+	// terminal-task dispatch loops skip acquisition. Readonly tasks (supervisor)
+	// skip acquisition: their sandbox hooks run on a readonly mount so no
+	// write-level conflict exists, and git operations self-serialize via
+	// .git/index.lock. Skipping lets supervisors and executors share the same
+	// base_branch without the supervisor blocking the executor.
+	if s.Locks != nil && current.Status == orchestrator.TaskStatusExecuting && !current.Readonly {
 		headBranch := orchestrator.ComputeHeadBranch(current)
 		if err := s.Locks.AcquireForTask(ctx, current.ProjectID, headBranch, current.ID); err != nil {
 			slog.Warn("dispatch loop: branch lock acquire failed",
