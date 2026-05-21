@@ -313,53 +313,6 @@ func TestBoidBuiltinExecutor_TaskUpdate_RequiresTaskID(t *testing.T) {
 	}
 }
 
-func TestBoidBuiltinExecutor_PropagatesDependencyFields(t *testing.T) {
-	store := &capturingTaskStore{}
-	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"dev": {},
-		},
-	}}
-	exec := &boidBuiltinExecutor{
-		tasks: &api.TaskAppService{Tasks: store, Meta: meta},
-	}
-	ctx := sandbox.TokenContext{
-		ProjectID:         "proj-1",
-		AllowedProjectIDs: []string{"proj-1"},
-	}
-
-	// Pre-populate dependency targets so depends_on resolution succeeds.
-	store.created = append(store.created,
-		&orchestrator.Task{ID: "id-a", Ref: "task-a", ParentID: "parent-1", ProjectID: "proj-1"},
-		&orchestrator.Task{ID: "id-b", Ref: "task-b", ParentID: "parent-1", ProjectID: "proj-1"},
-	)
-
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
-		Op:          sandbox.BoidOpTaskCreate,
-		CreatePatch: json.RawMessage(`{"title":"child","behavior":"dev","description":"desc","ref":"task-c","parent_id":"parent-1","depends_on":["task-a","task-b"],"depends_on_payload":"artifact.auto-merge.merged","auto_start":false}`),
-	})
-	if resp.ExitCode != 0 {
-		t.Fatalf("create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
-	}
-
-	if len(store.created) != 3 {
-		t.Fatalf("created tasks = %d, want 3", len(store.created))
-	}
-	got := store.created[2]
-	if got.Ref != "task-c" {
-		t.Errorf("ref = %q, want task-c", got.Ref)
-	}
-	if got.ParentID != "parent-1" {
-		t.Errorf("parent_id = %q, want parent-1", got.ParentID)
-	}
-	if got.DependsOnPayload != "artifact.auto-merge.merged" {
-		t.Errorf("depends_on_payload = %q, want artifact.auto-merge.merged", got.DependsOnPayload)
-	}
-	if want := []string{"id-a", "id-b"}; len(got.DependsOn) != len(want) || got.DependsOn[0] != want[0] || got.DependsOn[1] != want[1] {
-		t.Errorf("depends_on = %v, want %v (resolved IDs)", got.DependsOn, want)
-	}
-}
-
 // TestBoidBuiltinExecutor_TaskCreate_DropsDeprecatedBaseBranch covers Phase
 // 2-3. Sandbox-side `boid task create` still forwards the entire YAML map,
 // so an old caller might keep emitting `base_branch:`. The API server now

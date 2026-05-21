@@ -23,13 +23,11 @@ func isUUID(s string) bool {
 }
 
 type TaskFilter struct {
-	Status       string
-	ProjectID    string
-	Behavior     string
-	WorkspaceID  string
-	Title        string
-	HasDependsOn bool
-	NoDependsOn  bool
+	Status      string
+	ProjectID   string
+	Behavior    string
+	WorkspaceID string
+	Title       string
 }
 
 // taskSelectCols は tasks テーブルの基本カラム一覧（テーブル別名 t を使用）。

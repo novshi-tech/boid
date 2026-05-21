@@ -156,34 +156,30 @@ func (h *TaskHandler) Answer(w http.ResponseWriter, r *http.Request) {
 }
 
 type UpdateTaskRequest struct {
-	Title            string          `json:"title"`
-	Description      string          `json:"description"`
-	ProjectID        string          `json:"project_id,omitempty"`
-	RemoteID         *string         `json:"remote_id,omitempty"`
-	Payload          json.RawMessage `json:"payload,omitempty"`
-	Instructions     json.RawMessage `json:"instructions,omitempty"`
-	DependsOn        []string        `json:"depends_on,omitempty"`
-	DependsOnPayload *string         `json:"depends_on_payload,omitempty"`
-	ParentID         *string         `json:"parent_id,omitempty"`
-	AutoStart        *bool           `json:"auto_start,omitempty"`
+	Title        string          `json:"title"`
+	Description  string          `json:"description"`
+	ProjectID    string          `json:"project_id,omitempty"`
+	RemoteID     *string         `json:"remote_id,omitempty"`
+	Payload      json.RawMessage `json:"payload,omitempty"`
+	Instructions json.RawMessage `json:"instructions,omitempty"`
+	ParentID     *string         `json:"parent_id,omitempty"`
+	AutoStart    *bool           `json:"auto_start,omitempty"`
 }
 
 type CreateTaskRequest struct {
-	ID               string                     `json:"id,omitempty"`
-	ProjectID        string                     `json:"project_id"`
-	Title            string                     `json:"title"`
-	Description      string                     `json:"description,omitempty"`
-	Behavior         string                     `json:"behavior,omitempty"`
-	BehaviorSpec     *orchestrator.BehaviorSpec `json:"behavior_spec,omitempty"`
-	RemoteID         string                     `json:"remote_id,omitempty"`
-	Payload          json.RawMessage            `json:"payload,omitempty"`
-	Instructions     json.RawMessage            `json:"instructions,omitempty"`
-	AutoStart        bool                       `json:"auto_start,omitempty"`
-	Traits           []string                   `json:"traits,omitempty"`
-	DependsOn        []string                   `json:"depends_on,omitempty"`
-	DependsOnPayload string                     `json:"depends_on_payload,omitempty"`
-	Ref              string                     `json:"ref,omitempty"`
-	ParentID         string                     `json:"parent_id,omitempty"`
+	ID           string                     `json:"id,omitempty"`
+	ProjectID    string                     `json:"project_id"`
+	Title        string                     `json:"title"`
+	Description  string                     `json:"description,omitempty"`
+	Behavior     string                     `json:"behavior,omitempty"`
+	BehaviorSpec *orchestrator.BehaviorSpec `json:"behavior_spec,omitempty"`
+	RemoteID     string                     `json:"remote_id,omitempty"`
+	Payload      json.RawMessage            `json:"payload,omitempty"`
+	Instructions json.RawMessage            `json:"instructions,omitempty"`
+	AutoStart    bool                       `json:"auto_start,omitempty"`
+	Traits       []string                   `json:"traits,omitempty"`
+	Ref          string                     `json:"ref,omitempty"`
+	ParentID     string                     `json:"parent_id,omitempty"`
 }
 
 func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -214,12 +210,10 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	filter := orchestrator.TaskFilter{
-		Status:       q.Get("status"),
-		ProjectID:    q.Get("project_id"),
-		Behavior:     q.Get("behavior"),
-		WorkspaceID:  q.Get("workspace_id"),
-		HasDependsOn: q.Get("has_depends_on") == "true",
-		NoDependsOn:  q.Get("no_depends_on") == "true",
+		Status:      q.Get("status"),
+		ProjectID:   q.Get("project_id"),
+		Behavior:    q.Get("behavior"),
+		WorkspaceID: q.Get("workspace_id"),
 	}
 
 	tasks, err := h.Service.ListTasks(filter)
@@ -278,8 +272,8 @@ func (h *TaskHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Title == "" && req.Description == "" && len(req.Payload) == 0 && len(req.Instructions) == 0 && req.DependsOn == nil && req.DependsOnPayload == nil && req.ParentID == nil && req.AutoStart == nil {
-		writeError(w, http.StatusBadRequest, "at least one of title, description, payload, instructions, depends_on, depends_on_payload, parent_id, or auto_start is required")
+	if req.Title == "" && req.Description == "" && len(req.Payload) == 0 && len(req.Instructions) == 0 && req.ParentID == nil && req.AutoStart == nil {
+		writeError(w, http.StatusBadRequest, "at least one of title, description, payload, instructions, parent_id, or auto_start is required")
 		return
 	}
 	task, err := h.Service.UpdateTask(id, req)

@@ -255,13 +255,12 @@ func TestRerunTask_DownstreamUntouched(t *testing.T) {
 		t.Fatalf("create parent task: %v", err)
 	}
 
-	// 下流タスク (親に depends_on)
+	// 下流タスク (親とは独立した pending タスク)
 	var downstream orchestrator.Task
 	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
 		"project_id": "rerun-proj-ds",
 		"title":      "Downstream Task",
 		"behavior":   "planning",
-		"depends_on": []string{parent.ID},
 	}, &downstream); err != nil {
 		t.Fatalf("create downstream task: %v", err)
 	}

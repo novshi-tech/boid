@@ -6,59 +6,6 @@ import (
 	"testing"
 )
 
-func TestParseTaskCreateSpec_DependsOnPayload(t *testing.T) {
-	input := `
-project_id: proj-1
-title: My Task
-behavior: dev
-depends_on_payload: task-abc
-`
-	spec, err := parseTaskCreateSpec([]byte(input))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if spec.DependsOnPayload != "task-abc" {
-		t.Errorf("DependsOnPayload = %q, want %q", spec.DependsOnPayload, "task-abc")
-	}
-}
-
-func TestParseTaskCreateSpec_DependsOnPayload_Empty(t *testing.T) {
-	input := `
-project_id: proj-1
-title: My Task
-behavior: dev
-`
-	spec, err := parseTaskCreateSpec([]byte(input))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if spec.DependsOnPayload != "" {
-		t.Errorf("DependsOnPayload = %q, want empty string", spec.DependsOnPayload)
-	}
-}
-
-func TestParseTaskCreateSpec_DependsOnPayload_WithDependsOn(t *testing.T) {
-	input := `
-project_id: proj-1
-title: My Task
-behavior: dev
-depends_on:
-  - task-x
-  - task-y
-depends_on_payload: task-x
-`
-	spec, err := parseTaskCreateSpec([]byte(input))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if spec.DependsOnPayload != "task-x" {
-		t.Errorf("DependsOnPayload = %q, want %q", spec.DependsOnPayload, "task-x")
-	}
-	if len(spec.DependsOn) != 2 {
-		t.Errorf("DependsOn length = %d, want 2", len(spec.DependsOn))
-	}
-}
-
 func TestParseTaskCreateSpec_BehaviorSpec_ParsedFromYAML(t *testing.T) {
 	// Phase 3-1: BehaviorSpec.worktree / readonly / base_branch /
 	// branch_prefix / default_payload have been removed. Inline
@@ -104,9 +51,6 @@ remote_id: REM-1
 traits:
   - artifact
 auto_start: true
-depends_on:
-  - task-a
-depends_on_payload: artifact.auto-merge.merged
 ref: my-task
 parent_id: parent-1
 payload:

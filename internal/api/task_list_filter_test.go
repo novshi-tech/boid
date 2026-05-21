@@ -89,34 +89,3 @@ func TestTaskHandler_List_WorkspaceFilter(t *testing.T) {
 	}
 }
 
-func TestTaskHandler_List_HasDependsOnFilter(t *testing.T) {
-	svc := &filterTaskService{}
-	h := &TaskHandler{Service: svc}
-
-	req := httptest.NewRequest(http.MethodGet, "/?has_depends_on=true", nil)
-	rr := httptest.NewRecorder()
-	h.List(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200", rr.Code)
-	}
-	if !svc.capturedFilter.HasDependsOn {
-		t.Errorf("captured HasDependsOn = false, want true")
-	}
-}
-
-func TestTaskHandler_List_NoDependsOnFilter(t *testing.T) {
-	svc := &filterTaskService{}
-	h := &TaskHandler{Service: svc}
-
-	req := httptest.NewRequest(http.MethodGet, "/?no_depends_on=true", nil)
-	rr := httptest.NewRecorder()
-	h.List(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200", rr.Code)
-	}
-	if !svc.capturedFilter.NoDependsOn {
-		t.Errorf("captured NoDependsOn = false, want true")
-	}
-}
