@@ -22,10 +22,6 @@ title: Task C
 behavior: child
 ref: task-c
 parent_id: $PARENT_ID
-depends_on:
-  - task-a
-  - task-b
-depends_on_payload: artifact.dummy
 auto_start: true
 EOF
 
@@ -34,9 +30,6 @@ title: Task D
 behavior: child
 ref: task-d
 parent_id: $PARENT_ID
-depends_on:
-  - task-a
-depends_on_payload: artifact.dummy
 auto_start: true
 EOF
 

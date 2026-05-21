@@ -9,8 +9,7 @@ task_behaviors:
   child:
     transition: one-shot
     traits: []
-    kits:
-      - github.com/novshi-tech/boid-kits/builtin-task-create
+    kits: []
   hook-parent:
     transition: one-shot
     traits: []

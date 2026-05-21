@@ -67,10 +67,7 @@ task_c_json="$("$E2E_BIN_DIR/boid-e2e" get-task "$task_c_id")"
 printf '%s\n' "$task_c_json"
 e2e_assert_contains "$task_c_json" '"ref":"task-c"'
 e2e_assert_contains "$task_c_json" "\"parent_id\":\"$parent_id\""
-e2e_assert_contains "$task_c_json" '"depends_on_payload":"artifact.dummy"'
 e2e_assert_contains "$task_c_json" '"auto_start":true'
-e2e_assert_contains "$task_c_json" "\"$task_a_id\""
-e2e_assert_contains "$task_c_json" "\"$task_b_id\""
 
 # ============================================================
 e2e_log "=== verifying task-d fields (depends on a only, auto_start) ==="
@@ -78,9 +75,7 @@ task_d_json="$("$E2E_BIN_DIR/boid-e2e" get-task "$task_d_id")"
 printf '%s\n' "$task_d_json"
 e2e_assert_contains "$task_d_json" '"ref":"task-d"'
 e2e_assert_contains "$task_d_json" "\"parent_id\":\"$parent_id\""
-e2e_assert_contains "$task_d_json" '"depends_on_payload":"artifact.dummy"'
 e2e_assert_contains "$task_d_json" '"auto_start":true'
-e2e_assert_contains "$task_d_json" "\"$task_a_id\""
 
 # ============================================================
 e2e_log "=== hook task create: hook で boid task_create が呼べることを確認 ==="

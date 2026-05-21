@@ -1,5 +1,0 @@
-id: auto-start-deps
-name: Auto Start Deps
-task_behaviors:
-  smoke:
-    transition: one-shot

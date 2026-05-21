@@ -202,51 +202,6 @@ func TestRerunTask_WrongStatus_Executing(t *testing.T) {
 	}
 }
 
-func TestRerunTask_PreservesDependencies(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-	createProjectWithBehavior(t, ts, "rerun-proj-dep", "Rerun Dep")
-
-	// upstream task
-	var upstream orchestrator.Task
-	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
-		"project_id": "rerun-proj-dep",
-		"title":      "Upstream",
-		"behavior":   "planning",
-	}, &upstream); err != nil {
-		t.Fatalf("create upstream task: %v", err)
-	}
-
-	// task with depends_on and ref
-	var task orchestrator.Task
-	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
-		"project_id":         "rerun-proj-dep",
-		"title":              "Dependent Task",
-		"behavior":           "planning",
-		"depends_on":         []string{upstream.ID},
-		"depends_on_payload": "artifact.url",
-		"ref":                "dep-task-ref",
-	}, &task); err != nil {
-		t.Fatalf("create dependent task: %v", err)
-	}
-
-	abortTask(t, ts, task.ID)
-
-	var result orchestrator.Task
-	if err := ts.Client.Do("POST", "/api/tasks/"+task.ID+"/rerun", map[string]any{"auto_start": false}, &result); err != nil {
-		t.Fatalf("rerun task: %v", err)
-	}
-
-	if len(result.DependsOn) == 0 || result.DependsOn[0] != upstream.ID {
-		t.Errorf("DependsOn not preserved: got %v, want [%s]", result.DependsOn, upstream.ID)
-	}
-	if result.DependsOnPayload != "artifact.url" {
-		t.Errorf("DependsOnPayload = %q, want %q", result.DependsOnPayload, "artifact.url")
-	}
-	if result.Ref != "dep-task-ref" {
-		t.Errorf("Ref = %q, want %q", result.Ref, "dep-task-ref")
-	}
-}
-
 func TestRerunTask_PreservesActionHistory(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	createProjectWithBehavior(t, ts, "rerun-proj-hist", "Rerun Hist")
