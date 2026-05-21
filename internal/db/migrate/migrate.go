@@ -193,6 +193,27 @@ func Apply(conn *sql.DB) error {
 				return indexNotExists(tx, "idx_tasks_remote")
 			},
 		},
+		{
+			version: "0025_drop_tasks_depends_on",
+			path:    "migrations/0025_drop_tasks_depends_on.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				tableGone, err := func() (bool, error) {
+					ok, e := tableExists(tx, "task_dependencies")
+					return !ok, e
+				}()
+				if err != nil {
+					return false, err
+				}
+				colGone, err := func() (bool, error) {
+					ok, e := columnExists(tx, "tasks", "depends_on_payload")
+					return !ok, e
+				}()
+				if err != nil {
+					return false, err
+				}
+				return tableGone && colGone, nil
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

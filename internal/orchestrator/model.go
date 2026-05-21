@@ -32,18 +32,19 @@ type Task struct {
 	Payload          json.RawMessage `json:"payload"`
 	Instructions     Instructions    `json:"instructions,omitempty"`
 	AutoStart        bool            `json:"auto_start,omitempty"`
-	DependsOn        []string        `json:"depends_on,omitempty"`
-	DependsOnPayload string          `json:"depends_on_payload,omitempty"`
-	Ref              string          `json:"ref,omitempty"`
-	ParentID         string          `json:"parent_id,omitempty"`
-	CreatedAt        time.Time       `json:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at"`
+	// DependsOn and DependsOnPayload are kept for API/TUI compatibility; removed in child 2/3.
+	DependsOn        []string `json:"depends_on,omitempty"`
+	DependsOnPayload string   `json:"depends_on_payload,omitempty"`
+	Ref              string   `json:"ref,omitempty"`
+	ParentID         string   `json:"parent_id,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 	// 以下はDBに保存しない派生フィールド（list/get クエリ時にサブクエリで集計）
 	TotalChildCount   int `json:"total_child_count,omitempty"`
 	DoneChildCount    int `json:"done_child_count,omitempty"`
 	AbortedChildCount int `json:"aborted_child_count,omitempty"`
 	OpenChildCount    int `json:"open_child_count,omitempty"`
-	// Blocked は pending 状態でかつ依存条件が未充足のとき true（DBには保存しない）
+	// Blocked is kept for TUI compatibility; always false after task_dependencies removal. Removed in child 3/3.
 	Blocked bool `json:"blocked,omitempty"`
 }
 

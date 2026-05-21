@@ -821,32 +821,6 @@ func TestUpdateTask_BehaviorFields(t *testing.T) {
 	}
 }
 
-func TestUpdateTask_DependsOnPayload(t *testing.T) {
-	d := createTestProject(t)
-
-	task := &orchestrator.Task{
-		ProjectID:        "proj-1",
-		Title:            "Task",
-		Behavior:         "dev",
-		DependsOnPayload: "artifact.auto-merge.merged",
-	}
-	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-
-	task.DependsOnPayload = ""
-	if err := orchestrator.UpdateTask(d.Conn, task); err != nil {
-		t.Fatalf("update: %v", err)
-	}
-
-	got, err := orchestrator.GetTask(d.Conn, task.ID)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if got.DependsOnPayload != "" {
-		t.Fatalf("DependsOnPayload = %q, want empty", got.DependsOnPayload)
-	}
-}
 
 func TestUpdateTask_ParentID(t *testing.T) {
 	d := createTestProject(t)
@@ -884,85 +858,6 @@ func TestUpdateTask_ParentID(t *testing.T) {
 	}
 }
 
-func TestUpdateTask_DependsOn(t *testing.T) {
-	d := createTestProject(t)
-
-	dep1 := &orchestrator.Task{ProjectID: "proj-1", Title: "Dep1", Behavior: "dev"}
-	dep2 := &orchestrator.Task{ProjectID: "proj-1", Title: "Dep2", Behavior: "dev"}
-	dep3 := &orchestrator.Task{ProjectID: "proj-1", Title: "Dep3", Behavior: "dev"}
-	for _, dt := range []*orchestrator.Task{dep1, dep2, dep3} {
-		if err := orchestrator.CreateTask(d.Conn, dt); err != nil {
-			t.Fatalf("create dep: %v", err)
-		}
-	}
-
-	task := &orchestrator.Task{
-		ProjectID: "proj-1",
-		Title:     "Task",
-		Behavior:  "dev",
-		DependsOn: []string{dep1.ID, dep2.ID},
-	}
-	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-
-	// dep1 を外し、dep3 を追加
-	task.DependsOn = []string{dep2.ID, dep3.ID}
-	if err := orchestrator.UpdateTask(d.Conn, task); err != nil {
-		t.Fatalf("update: %v", err)
-	}
-
-	got, err := orchestrator.GetTask(d.Conn, task.ID)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if len(got.DependsOn) != 2 {
-		t.Fatalf("DependsOn len = %d, want 2", len(got.DependsOn))
-	}
-	depSet := map[string]bool{}
-	for _, id := range got.DependsOn {
-		depSet[id] = true
-	}
-	if !depSet[dep2.ID] || !depSet[dep3.ID] {
-		t.Fatalf("DependsOn = %v, want [dep2, dep3]", got.DependsOn)
-	}
-	if depSet[dep1.ID] {
-		t.Fatalf("DependsOn = %v, dep1 should be removed", got.DependsOn)
-	}
-}
-
-func TestUpdateTask_DependsOn_Cleared(t *testing.T) {
-	d := createTestProject(t)
-
-	dep := &orchestrator.Task{ProjectID: "proj-1", Title: "Dep", Behavior: "dev"}
-	if err := orchestrator.CreateTask(d.Conn, dep); err != nil {
-		t.Fatalf("create dep: %v", err)
-	}
-
-	task := &orchestrator.Task{
-		ProjectID: "proj-1",
-		Title:     "Task",
-		Behavior:  "dev",
-		DependsOn: []string{dep.ID},
-	}
-	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-
-	// 空スライスに更新 → 全削除
-	task.DependsOn = []string{}
-	if err := orchestrator.UpdateTask(d.Conn, task); err != nil {
-		t.Fatalf("update: %v", err)
-	}
-
-	got, err := orchestrator.GetTask(d.Conn, task.ID)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if len(got.DependsOn) != 0 {
-		t.Fatalf("DependsOn = %v, want empty", got.DependsOn)
-	}
-}
 
 func TestFindTaskByRemote_MatchesBothFields(t *testing.T) {
 	d := createTestProject(t)
@@ -999,27 +894,6 @@ func TestFindTaskByRemote_MatchesBothFields(t *testing.T) {
 	}
 }
 
-func TestCreateTask_WithDependsOnPayload(t *testing.T) {
-	d := createTestProject(t)
-
-	task := &orchestrator.Task{
-		ProjectID:        "proj-1",
-		Title:            "Task with depends_on_payload",
-		Behavior:         "dev",
-		DependsOnPayload: "branch_merged",
-	}
-	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-
-	got, err := orchestrator.GetTask(d.Conn, task.ID)
-	if err != nil {
-		t.Fatalf("get task: %v", err)
-	}
-	if got.DependsOnPayload != "branch_merged" {
-		t.Fatalf("DependsOnPayload = %q, want %q", got.DependsOnPayload, "branch_merged")
-	}
-}
 
 func TestFindTaskByRemote_MultipleMatches_ReturnsLatest(t *testing.T) {
 	d := createTestProject(t)
@@ -1045,24 +919,4 @@ func TestFindTaskByRemote_MultipleMatches_ReturnsLatest(t *testing.T) {
 	}
 }
 
-func TestCreateTask_WithoutDependsOnPayload(t *testing.T) {
-	d := createTestProject(t)
-
-	task := &orchestrator.Task{
-		ProjectID: "proj-1",
-		Title:     "Task without depends_on_payload",
-		Behavior:  "dev",
-	}
-	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-
-	got, err := orchestrator.GetTask(d.Conn, task.ID)
-	if err != nil {
-		t.Fatalf("get task: %v", err)
-	}
-	if got.DependsOnPayload != "" {
-		t.Fatalf("DependsOnPayload = %q, want empty", got.DependsOnPayload)
-	}
-}
 
