@@ -48,6 +48,9 @@ func gitCurrentBranch(workDir string) (string, error) {
 		return "", fmt.Errorf("git rev-parse failed in %s: %w", workDir, err)
 	}
 	b := strings.TrimSpace(string(out))
+	if b == "" {
+		return "", fmt.Errorf("git rev-parse --abbrev-ref HEAD returned empty output in %s (not a git repository?)", workDir)
+	}
 	if b == "HEAD" {
 		return "", fmt.Errorf("${current_branch} cannot be expanded: project is in detached HEAD state")
 	}

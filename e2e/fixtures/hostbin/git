@@ -20,6 +20,25 @@ fi
 
 subcmd="${args[$idx]:-}"
 
+# Return the current branch for a given directory.
+# Reads HEAD file if present; defaults to "main" for directories without one.
+_fake_head_branch() {
+  local dir="${1:-$PWD}"
+  local head_file="${dir}/HEAD"
+  if [[ -f "$head_file" ]]; then
+    local content
+    content=$(cat "$head_file")
+    # "ref: refs/heads/foo" → "foo"; bare SHA or anything else → ""
+    local branch="${content#ref: refs/heads/}"
+    if [[ "$branch" != "$content" ]]; then
+      printf '%s' "$branch"
+    fi
+    # detached HEAD: print nothing (caller interprets empty as detached)
+  else
+    printf 'main'
+  fi
+}
+
 if [[ "$subcmd" == "worktree" ]]; then
   action="${args[$((idx + 1))]:-}"
   case "$action" in
@@ -55,15 +74,41 @@ if [[ "$subcmd" == "worktree" ]]; then
       ;;
   esac
 elif [[ "$subcmd" == "symbolic-ref" ]]; then
-  ref_name="${args[$((idx + 1))]:-}"
-  if [[ "$ref_name" == "HEAD" ]]; then
-    head_dir="${cdir:-$PWD}"
-    head_file="${head_dir}/HEAD"
-    if [[ -f "$head_file" ]]; then
-      head_content=$(cat "$head_file")
-      printf '%s\n' "${head_content#ref: }"
-    fi
+  # git symbolic-ref [--quiet] HEAD  →  "refs/heads/<branch>" or nothing for detached
+  head_dir="${cdir:-$PWD}"
+  branch="$(_fake_head_branch "$head_dir")"
+  if [[ -n "$branch" ]]; then
+    printf 'refs/heads/%s\n' "$branch"
   fi
+elif [[ "$subcmd" == "rev-parse" ]]; then
+  # Handle: git rev-parse --abbrev-ref HEAD  →  branch name (or "HEAD" for detached)
+  # Handle: git rev-parse HEAD               →  fake SHA
+  # Handle: git rev-parse --verify --quiet <ref>  →  exit 0 if ref exists (fake: always OK)
+  head_dir="${cdir:-$PWD}"
+  abbrev=0
+  want_verify=0
+  target=""
+  for arg in "${args[@]:$((idx + 1))}"; do
+    case "$arg" in
+      --abbrev-ref) abbrev=1 ;;
+      --verify) want_verify=1 ;;
+      --quiet) ;;
+      -*) ;;
+      *) target="$arg" ;;
+    esac
+  done
+  if [[ "$abbrev" -eq 1 && "$target" == "HEAD" ]]; then
+    branch="$(_fake_head_branch "$head_dir")"
+    if [[ -n "$branch" ]]; then
+      printf '%s\n' "$branch"
+    else
+      printf 'HEAD\n'  # detached
+    fi
+  elif [[ "$want_verify" -eq 0 && "$target" == "HEAD" ]]; then
+    # git rev-parse HEAD → fake SHA
+    printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+  fi
+  # --verify: exit 0 (ref always "exists" in fake git)
 fi
 
 exit 0
