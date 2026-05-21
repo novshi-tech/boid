@@ -43,6 +43,8 @@ hook の実行コンテキストには次の環境変数が設定されます。
 | `BOID_TASK_ID` | 現在のタスク ID (TaskJSON の `id` と同じ値) |
 | `BOID_JOB_ID` | 現在のジョブ ID (`boid job show <id>` で参照される) |
 | `BOID_PROJECT_ID` | プロジェクト ID |
+| `BOID_BASE_BRANCH` | タスクの `base_branch` (PR target となるブランチ名)。 root / child ともに設定される |
+| `BOID_PARENT_BRANCH` | 親タスクの HEAD branch。 root task では未設定 (空)。 sub-sup が `git merge $BOID_PARENT_BRANCH` などで使う |
 | `HOME` | サンドボックス内のホーム |
 | `PATH` | 起動側から継承したパス (kit の `env` で上書き可能) |
 
@@ -50,8 +52,8 @@ hook の実行コンテキストには次の環境変数が設定されます。
 
 ### 作業ディレクトリ
 
-- タスクが worktree を持つとき (project トップ `worktree: true` + executor behavior の組み合わせ) は、 hook の cwd は **その worktree のルート** です
-- そうでないとき (supervisor タスク、 または project トップ `worktree:` 未設定の executor) は、 cwd は **プロジェクトルート** (`project.yaml` がある親ディレクトリ) です
+- **worktree を持つタスク** (root case 2/3、 または child タスク) は、 hook の cwd は **その worktree のルート** です
+- **worktree を持たないタスク** (root case 1: `base_branch` が project HEAD と一致、 または project トップ `worktree:` 未設定の executor) は、 cwd は **プロジェクトルート** (`project.yaml` がある親ディレクトリ) です
 
 これにより、 `git`、 `gh`、ビルドコマンド等は明示的にディレクトリ指定せずに使えます。
 

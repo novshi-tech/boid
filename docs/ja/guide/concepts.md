@@ -94,9 +94,20 @@ hook を実行する隔離環境です。 実装としては Linux の mount nam
 
 ## worktree
 
-project トップで `worktree: true` を宣言したプロジェクトでは、 **executor** タスクごとに新しいブランチで専用の **git worktree** が作成されます。 worktree は同じリポジトリの複数ブランチを別々のディレクトリとして同時にチェックアウトする git の機能で、 これを使うと変更が他のタスクと独立した別ディレクトリに閉じます。 hook はその worktree 内で動作し、 生成された commit が push され、 必要であれば PR が作成されます。 タスクが done になると worktree は片付けられます。
+project トップで `worktree: true` を宣言したプロジェクトでは、 **executor / supervisor** タスクに専用の **git worktree** が割り当てられます。 worktree は同じリポジトリの複数ブランチを別々のディレクトリとして同時にチェックアウトする git の機能で、 これを使うと変更が他のタスクと独立した別ディレクトリに閉じます。
 
-supervisor タスクは `worktree:` フラグに関わらず worktree を持たず、 常に readonly で project root 上を走ります。
+タスク種別によって worktree の割り当て方が異なります:
+
+| タスク種別 | HEAD branch | fork 元 | readonly |
+|---|---|---|---|
+| **root sup / root exec** | `task.BaseBranch` | n/a | sup=true / exec=false |
+| **child sup / child exec** | `boid/<task_id8>` | **親タスクの HEAD branch** | sup=true / exec=false |
+
+- **root タスク** (親なし): `base_branch` が project の現 HEAD と一致する場合 (case 1) は worktree を持たず project root 上で動く。 不一致の場合 (case 2/3) は `base_branch` を HEAD とした専用 worktree が割り当てられる
+- **child タスク** (親あり): 常に `boid/<task_id8>` branch の worktree を持つ。 fork 元は **親タスクの HEAD branch** であり、 直接の親のみを参照する (1 hop)
+- `base_branch` は PR target として全子タスクに継承され、 `BOID_BASE_BRANCH` env で executor に渡る
+
+hook はその worktree 内で動作し、 生成された commit が push され、 必要であれば PR が作成されます。 タスクが done になると worktree は片付けられます。 同一 project 内で同一 HEAD branch を持つタスクは直列実行 (FIFO ロック) されます。 詳細は [`project.yaml` リファレンス / HEAD branch ロック](../reference/project-yaml.md#head-branch-ロック-1-project--1-head-branch) を参照してください。
 
 ## アクション (action)
 

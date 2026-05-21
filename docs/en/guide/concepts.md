@@ -94,9 +94,20 @@ Some commands legitimately need to reach outside the sandbox (for example `git p
 
 ## Worktree
 
-For projects that opt in with project-top `worktree: true`, each **executor** task runs inside a fresh **git worktree** on a new branch. A worktree is a git feature that lets you check out multiple branches of the same repository into separate directories simultaneously, so the task's edits stay in their own directory and do not collide with other tasks. The hook runs inside that worktree, its commits are pushed, and (if needed) a PR is created. Once the task is done, the worktree is cleaned up.
+For projects that opt in with project-top `worktree: true`, **executor and supervisor** tasks receive dedicated **git worktrees**. A worktree is a git feature that lets you check out multiple branches of the same repository into separate directories simultaneously, so changes stay isolated per task.
 
-Supervisor tasks never get a worktree — they are readonly and run in the project root regardless of the `worktree:` flag.
+Worktree allocation varies by task kind:
+
+| Task kind | HEAD branch | Fork point | Read-only |
+|---|---|---|---|
+| **root sup / root exec** | `task.BaseBranch` | n/a | sup=true / exec=false |
+| **child sup / child exec** | `boid/<task_id8>` | **parent task's HEAD branch** | sup=true / exec=false |
+
+- **Root tasks** (no parent): if `base_branch` matches the project's current HEAD (case 1), no worktree is allocated and the task runs in the project root. If they differ (cases 2/3), a dedicated worktree is created with `base_branch` as its HEAD.
+- **Child tasks** (have a parent): always receive a `boid/<task_id8>` branch worktree. The fork point is the **parent task's HEAD branch** — only the immediate parent is referenced (1 hop).
+- `base_branch` propagates to all child tasks as the PR target and is passed to executors as the `BOID_BASE_BRANCH` environment variable.
+
+The hook runs inside the worktree, its commits are pushed, and (if needed) a PR is created. Once the task is done, the worktree is cleaned up. Within the same project, tasks that share the same HEAD branch are serialised in FIFO order. See [`project.yaml` reference / HEAD branch lock](../reference/project-yaml.md#head-branch-lock-1-active-task-per-project--head-branch) for details.
 
 ## Action
 

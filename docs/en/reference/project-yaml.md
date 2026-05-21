@@ -27,8 +27,8 @@ task_behaviors:
 |---|---|---|---|
 | `id` | string | yes | Unique identifier for this project inside `boid`. Tasks reference it via `project_id`. |
 | `name` | string | yes | Display name shown in UIs. |
-| `worktree` | bool | `false` | If `true`, **executor** tasks in this project run in their own git worktree on a fresh branch. A supervisor task's worktree allocation is decided by the 3-case `base_branch` classification (see below): case 1 (`base_branch` matches HEAD, or omitted) runs in the project root; cases 2 and 3 (`base_branch` differs from HEAD) allocate a readonly worktree. |
-| `base_branch` | string | repository default | Branch used as the base for executor worktrees and for supervisor worktrees that require dynamic resolution (cases 2 and 3). Supports `${TASK_REMOTE_ID}` and `${current_branch}` expansion (see [Dynamic base_branch](#dynamic-base_branch)). |
+| `worktree` | bool | `false` | If `true`, allocates a dedicated git worktree for executor and supervisor tasks. **Root tasks** (`parent_id == ""`) use `base_branch` directly as the worktree HEAD; case 1 (`base_branch` matches the project HEAD) runs in the project root with no worktree. **Child tasks** always get a `boid/<task_id8>` branch worktree. See [Task kinds and worktree HEAD](#task-kinds-and-worktree-head). |
+| `base_branch` | string | (see below) | The PR target branch, resolved at task creation and stored in the row. **When omitted**: root tasks expand to the daemon's current HEAD branch (`${current_branch}` equivalent) at creation time — a detached-HEAD repository returns 400. Child tasks inherit the parent's `base_branch`. Supports `${TASK_REMOTE_ID}` and `${current_branch}` expansion (see [Dynamic base_branch](#dynamic-base_branch)). |
 | `kits` | list of KitRef | no | Kits loaded for this project. |
 | `task_behaviors` | map (string → TaskBehavior) | yes | The kinds of tasks this project can produce. |
 | `commands` | map (string → CommandSpec) | no | Named commands the sandbox can invoke through `boid exec`. |
@@ -70,14 +70,61 @@ Setting any of these inside `task_behaviors.<name>` is a load-time error that po
 
 ### Dynamic `base_branch`
 
-`base_branch` accepts two interpolation tokens that are resolved per task at dispatch time:
+`base_branch` supports two interpolation tokens:
 
 - `${TASK_REMOTE_ID}` — the remote identifier (e.g. a GitHub PR number) the parent supervisor recorded for this task. Resolved for both supervisor and executor. Used in the "1 Supervisor 1 PR" workflow ([Workflow 3](../../workflows.md#workflow-3--1-supervisor-1-pr)) to give each supervisor session its own integration branch.
-- `${current_branch}` — the daemon's current HEAD branch in the project repository at the moment the worktree is created.
+- `${current_branch}` — resolved to the daemon's current HEAD branch in the project repository at task creation time.
 
-If `base_branch` is omitted, executor worktrees branch from the daemon's current HEAD branch (the same behaviour as `${current_branch}`), and the supervisor runs in the project root (case 1). See [docs/workflows.md](../../workflows.md) for end-to-end examples (Workflow 3 is the canonical example of a dynamic supervisor `base_branch`).
+**Resolution priority when omitted:**
+
+1. **Child task** (`parent_id` is set): inherits the parent's `base_branch` verbatim. No template expansion is performed.
+2. **Root task, base_branch omitted** (`parent_id` is empty): the value is expanded to `${current_branch}` and saved into the task row at creation time. If the repository is in detached-HEAD state, the request returns 400.
+3. **Root task, base_branch provided**: template tokens (`${TASK_REMOTE_ID}` / `${current_branch}`) are expanded normally.
+
+See [docs/workflows.md](../../workflows.md) for end-to-end examples (Workflow 3 is the canonical example of a dynamic supervisor `base_branch`).
 
 For how `worktree: true` behaves, see [Concepts / Worktree](../guide/concepts.md#worktree).
+
+### Task kinds and worktree HEAD
+
+When `worktree: true` is set, the HEAD branch and fork point differ by task kind:
+
+| Task kind | HEAD branch | Fork point | Read-only |
+|---|---|---|---|
+| **root sup / root exec** | `task.BaseBranch` | n/a | sup=true / exec=false |
+| **child sup / child exec** | `boid/<task_id8>` | **parent task's HEAD branch** | sup=true / exec=false |
+
+- **Root tasks** (`parent_id == ""`): placed directly on `base_branch`. When `base_branch` matches the project HEAD (case 1), no worktree is created and the task runs in the project root. When they differ (cases 2/3), a dedicated worktree is created with `base_branch` as its HEAD.
+- **Child tasks** (have a parent): always get a `boid/<task_id8>` branch worktree. The fork point is the **parent task's HEAD branch** (the parent's `base_branch` if the parent is a root task; `boid/<parent_id8>` if the parent is itself a child task). Only the immediate parent is referenced (1 hop).
+- `task.BaseBranch` propagates to all child tasks as the PR target and is passed to executors via the `BOID_BASE_BRANCH` environment variable.
+
+### HEAD branch lock (1 active task per project × HEAD branch)
+
+To prevent two tasks from sharing the same working copy simultaneously, `boid` holds a **`<projectID>:<HEAD branch>`** lock for every executing task:
+
+| Task kind | HEAD branch | Lock key |
+|---|---|---|
+| root sup / root exec | `task.BaseBranch` | `<projectID>:<baseBranch>` |
+| child sup / child exec | `boid/<task_id8>` | `<projectID>:boid/<task_id8>` |
+
+- **Serialised**: two root tasks in the same project with the same `base_branch` queue in FIFO order — the second waits until the first reaches a terminal state.
+- **Parallel-safe**: root tasks with different `base_branch` values, root + child combinations, and any two child tasks are all allowed to run simultaneously.
+- The lock is held for the full executing lifetime, including while the task is in `awaiting`. It is released only on a terminal transition.
+- No validation at task-creation time — the lock is acquired when the task transitions to `executing`.
+
+### Base synchronisation and merge responsibility
+
+`boid` core does not control child task dispatch order or base synchronisation. A sub-supervisor orchestrates its children:
+
+```
+A (executor) done → A's PR is merged into base
+                         ↓
+            sub-sup: git fetch && merge → updates own branch (boid/<subid8>)
+                         ↓
+            sub-sup dispatches B → B's worktree forks from the updated boid/<subid8>
+```
+
+The merge command, timing, and target are the **responsibility of the project instruction**, not of any skill or boid core component. Core's only contribution is passing `BOID_BASE_BRANCH` and `BOID_PARENT_BRANCH` environment variables to executors.
 
 ### `default_instruction`
 
@@ -229,9 +276,9 @@ An excerpt from `.boid/project.yaml` in the `boid` repository itself, showing th
 id: boid
 name: boid
 
-# Project-top worktree flag: executor tasks get a per-task worktree.
-# Supervisor task worktree allocation is decided by the 3-case base_branch
-# classification (case 1 → project root, cases 2/3 → readonly worktree).
+# Project-top worktree flag: allocates worktrees by task kind.
+# Root task HEAD = base_branch (case 1 → project root, cases 2/3 → worktree).
+# Child tasks always get a boid/<id8> worktree.
 worktree: true
 
 kits:

@@ -43,6 +43,8 @@ The hook runs with the following environment variables set:
 | `BOID_TASK_ID` | Current task ID (same value as TaskJSON's `id`). |
 | `BOID_JOB_ID` | Current job ID (used by `boid job show <id>`). |
 | `BOID_PROJECT_ID` | Project ID. |
+| `BOID_BASE_BRANCH` | The task's `base_branch` (the PR target branch). Set for both root and child tasks. |
+| `BOID_PARENT_BRANCH` | The parent task's HEAD branch. Empty for root tasks. Used by sub-supervisors (e.g. `git merge $BOID_PARENT_BRANCH`). |
 | `HOME` | The sandbox home. |
 | `PATH` | Inherited from the launcher; may be overridden by the kit's `env`. |
 
@@ -50,8 +52,8 @@ Any variables declared in the kit's `kit.yaml` are also exported.
 
 ### Working directory
 
-- When the task has a worktree (project-top `worktree: true` combined with the executor behavior), the hook runs with the cwd set to **the worktree root**.
-- Otherwise (supervisor task, or executor in a project without `worktree:`), the cwd is **the project root** (the directory containing `project.yaml`).
+- **Tasks with a worktree** (root case 2/3, or any child task) run with the cwd set to **the worktree root**.
+- **Tasks without a worktree** (root case 1: `base_branch` matches the project HEAD, or executor in a project without `worktree:`) run with the cwd set to **the project root** (the directory containing `project.yaml`).
 
 This means commands like `git`, `gh`, and language toolchains do not need explicit directory arguments.
 
