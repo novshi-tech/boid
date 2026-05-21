@@ -195,11 +195,11 @@ func runTaskTree(cmd *cobra.Command, args []string) error {
 		})
 	}
 
-	// all tasks: show roots (no parent_id AND no depends_on)
+	// all tasks: show roots (no parent_id)
 	var roots []*orchestrator.Task
 	for i := range tasks {
 		t := &tasks[i]
-		if t.ParentID == "" && len(t.DependsOn) == 0 {
+		if t.ParentID == "" {
 			roots = append(roots, t)
 		}
 	}

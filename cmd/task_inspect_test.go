@@ -162,7 +162,7 @@ func TestRunTaskTree_AllTasks(t *testing.T) {
 	createInspectProject(t, ts)
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
 
-	// root task (no parent, no depends_on)
+	// root task (no parent)
 	var root orchestrator.Task
 	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
 		"project_id": "inspect-proj",
@@ -294,8 +294,6 @@ func TestRunTaskList_BehaviorFilter(t *testing.T) {
 	cmd.Flags().String("status", "", "")
 	cmd.Flags().String("workspace", "", "")
 	cmd.Flags().String("behavior", "", "")
-	cmd.Flags().Bool("has-depends-on", false, "")
-	cmd.Flags().Bool("no-depends-on", false, "")
 	if err := cmd.Flags().Set("behavior", "dev"); err != nil {
 		t.Fatalf("set flag: %v", err)
 	}
@@ -351,8 +349,6 @@ func TestRunTaskList_JSONOutput(t *testing.T) {
 	cmd.Flags().String("status", "", "")
 	cmd.Flags().String("workspace", "", "")
 	cmd.Flags().String("behavior", "", "")
-	cmd.Flags().Bool("has-depends-on", false, "")
-	cmd.Flags().Bool("no-depends-on", false, "")
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 

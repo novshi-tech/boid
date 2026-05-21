@@ -955,11 +955,6 @@ func TestRenderOverview_WithOpenFindings_NotShownInOverview(t *testing.T) {
 // TestRenderOverview_NoDepsSection verifies the Deps summary section is removed from Overview.
 func TestRenderOverview_NoDepsSection(t *testing.T) {
 	s := newTestTaskDetailScreen()
-	depTask := &orchestrator.Task{
-		ID:     "dep-1",
-		Title:  "task-a",
-		Status: orchestrator.TaskStatusDone,
-	}
 	s.detail = &api.TaskDetailView{
 		Task: &orchestrator.Task{
 			ID:        "test",
@@ -968,7 +963,6 @@ func TestRenderOverview_NoDepsSection(t *testing.T) {
 			Behavior:  "dev",
 			CreatedAt: time.Now(),
 		},
-		DependsOnResolved: []*orchestrator.Task{depTask},
 	}
 
 	view := s.renderOverview(80, 20)

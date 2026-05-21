@@ -124,8 +124,6 @@ func init() {
 	taskListCmd.Flags().String("status", "", "Filter by status")
 	taskListCmd.Flags().String("workspace", "", "Filter by workspace ID")
 	taskListCmd.Flags().String("behavior", "", "Filter by behavior name")
-	taskListCmd.Flags().Bool("has-depends-on", false, "Show only tasks that have depends_on")
-	taskListCmd.Flags().Bool("no-depends-on", false, "Show only tasks that have no depends_on")
 	taskCreateCmd.Flags().StringP("file", "f", "", "YAML file to read task spec from (default: stdin)")
 	taskWatchCmd.Flags().Duration("interval", time.Second, "Polling interval")
 	taskShowCmd.Flags().String("field", "", "Dotted path to a single field (e.g. status, payload.artifact.report, awaiting.question, lifecycle.abort.message). Prints the value as plain text.")
@@ -230,8 +228,6 @@ func runTaskList(cmd *cobra.Command, args []string) error {
 	status, _ := cmd.Flags().GetString("status")
 	workspace, _ := cmd.Flags().GetString("workspace")
 	behavior, _ := cmd.Flags().GetString("behavior")
-	hasDependsOn, _ := cmd.Flags().GetBool("has-depends-on")
-	noDependsOn, _ := cmd.Flags().GetBool("no-depends-on")
 
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
@@ -244,12 +240,6 @@ func runTaskList(cmd *cobra.Command, args []string) error {
 	}
 	if behavior != "" {
 		params = append(params, "behavior="+behavior)
-	}
-	if hasDependsOn {
-		params = append(params, "has_depends_on=true")
-	}
-	if noDependsOn {
-		params = append(params, "no_depends_on=true")
 	}
 
 	path := "/api/tasks"

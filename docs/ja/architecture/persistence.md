@@ -24,7 +24,6 @@
 | `jobs` | handler の実行記録 | handler 1 回の実行 |
 | `worktrees` | タスク用に作成された git worktree | 1 worktree |
 | `secrets` | 暗号化された secret 値 | 1 namespace × 1 key |
-| `task_dependencies` | タスク間の依存エッジ | 1 依存関係 |
 | `web_devices` | Web UI のペアリング済みデバイス | 1 デバイス |
 | `web_pairing_codes` | 発行済みのペアリングコード | 1 コード |
 
@@ -48,7 +47,6 @@
 | `traits` | TEXT (JSON 配列) | このタスクの behavior が宣言する trait |
 | `readonly` / `worktree` | BOOLEAN | サンドボックスのモード |
 | `branch_prefix` / `base_branch` | TEXT | worktree 設定 |
-| `depends_on_payload` | TEXT | depends_on 先タスクの payload に関する条件 (JSON Path 風) |
 | `ref` / `parent_id` | TEXT | 親タスク参照 (任意) |
 | `created_at` / `updated_at` | DATETIME | 作成 / 更新時刻 |
 
@@ -127,17 +125,6 @@ API トークンなどを暗号化して保存します。鍵は `~/.local/share
 | `created_at` / `updated_at` | DATETIME | 作成 / 更新時刻 |
 
 `(namespace, key)` でユニーク。 `boid secret set` / `boid secret get` 等のコマンドで操作します。
-
-## `task_dependencies`
-
-タスク間の依存エッジを表す多対多テーブルです。
-
-| カラム | 型 | 役割 |
-|---|---|---|
-| `task_id` | TEXT FK → tasks.id | 待つ側のタスク |
-| `depends_on` | TEXT FK → tasks.id | 待たれる側のタスク |
-
-PK は `(task_id, depends_on)`。 `task.depends_on_payload` (JSON カラム) と組み合わせて 「先行タスクが done で、かつ payload にこの条件が立っているか」 を判定します。
 
 ## `web_devices` / `web_pairing_codes`
 

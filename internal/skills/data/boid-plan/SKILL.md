@@ -105,10 +105,8 @@ YAML
 | Field | Description |
 |---|---|
 | `description` | Instructions for the agent. Describe what to implement and how in detail |
-| `ref` | Name for dependency resolution (within the same batch) |
-| `depends_on` | Array of dependency ref names |
-| `depends_on_payload` | Wait condition (see below) |
-| `auto_start` | bool. When true, auto-starts once dependencies are resolved |
+| `ref` | Name for referencing this child within the supervisor's session |
+| `auto_start` | bool. When true, starts automatically on creation |
 | `base_branch` | Branch to fork the worktree from. Inherits from behavior if omitted |
 | `project_id` | Project to create the task in. Defaults to same as parent |
 | `behavior_spec` | Inline behavior definition (for kits that bring their own behavior). Usually not needed if a behavior name defined in project.yaml is used |
@@ -303,34 +301,6 @@ To prevent the supervisor from creating children indefinitely, enforce limits on
 
 Numbers can be adjusted based on implementation scale. The one rule that must be absolute: **never create a supervisor without a cap**.
 
-## Dependencies
-
-For tasks with ordering dependencies, set them on the downstream task:
-
-```bash
-boid task create <<YAML
-title: Downstream task
-behavior: <name>
-ref: task-b
-description: ...
-depends_on:
-  - task-a
-depends_on_payload: artifact.auto-merge.merged
-auto_start: true
-YAML
-```
-
-Tasks without ordering dependencies should have no `depends_on` (they run in parallel).
-
-Primary `depends_on_payload` values:
-
-| Value | Wait condition |
-|---|---|
-| `artifact.auto-merge.merged` | Until the dependency task's PR is merged by auto-merge |
-| `artifact.children.all_done` | Until all children of the dependency task are done |
-
-If the supervisor manages ordering itself, it can create the next child inside the monitoring loop without using `depends_on_payload`. Using both simultaneously causes conflicting behavior - pick one approach and stick to it.
-
 ## Child Phase Splitting
 
 For projects with long dependency chains, the supervisor can manage phases by creating children → waiting for completion → creating the next phase:
@@ -344,18 +314,6 @@ PHASE1_B=$(boid task create <<<... | awk '{print $3}')
 # Plan Phase 2 based on Phase 1 results
 PHASE2_A=$(boid task create <<<... | awk '{print $3}')
 # ...
-```
-
-When the plan is fixed upfront and the supervisor doesn't need to relay, you can also use a declarative pattern with a phase plan as a child:
-
-```bash
-boid task create <<YAML
-title: Phase 2 Plan
-ref: phase2
-depends_on: [phase1-a, phase1-b]
-depends_on_payload: artifact.children.all_done
-auto_start: true
-YAML
 ```
 
 ## base_branch

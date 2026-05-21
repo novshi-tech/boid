@@ -7,10 +7,10 @@ import (
 
 // CreatePatch / UpdatePatch fields below replace the old individual fields
 // (Title, Description, Behavior, BehaviorSpec, BaseBranch, Ref, ParentID,
-// DependsOn, DependsOnPayload, AutoStart) that were previously hand-crafted
-// into BoidRequest. The patch is a JSON-serialised api.CreateTaskRequest or
-// api.UpdateTaskRequest and is passed through verbatim to the executor, which
-// unmarshals it and fills in context-derived defaults (ProjectID, ParentID).
+// AutoStart) that were previously hand-crafted into BoidRequest.
+// The patch is a JSON-serialised api.CreateTaskRequest or api.UpdateTaskRequest
+// and is passed through verbatim to the executor, which unmarshals it and
+// fills in context-derived defaults (ProjectID, ParentID).
 
 type ExecRequest struct {
 	Command   string       `json:"command"`

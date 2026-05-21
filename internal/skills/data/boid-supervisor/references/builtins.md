@@ -44,7 +44,7 @@ Reads YAML/JSON from stdin (or `-f <file>`). Prints `task created: <id> (<status
 | `base_branch` | Branch to fork the worktree from. Inherits the project-top `base_branch`, else the daemon's current HEAD. |
 | `project_id` | Project to create in. Defaults to the same project as the parent. |
 | `behavior_spec` | Inline behavior definition. Not normally needed — prefer named behaviors from `project.yaml`. |
-| `ref`, `depends_on`, `depends_on_payload` | Accepted but discouraged for supervisor-managed children — sequence them explicitly in the supervisor's control flow instead. |
+| `ref` | Child ref name within the parent scope. |
 
 ## boid task show
 

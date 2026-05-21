@@ -28,5 +28,4 @@ type TaskDetailView struct {
 	Jobs              []*Job
 	AvailableActions  []string             `json:"available_actions"`
 	Dependents        []*orchestrator.Task `json:"dependents,omitempty"`
-	DependsOnResolved []*orchestrator.Task `json:"depends_on_resolved,omitempty"`
 }
