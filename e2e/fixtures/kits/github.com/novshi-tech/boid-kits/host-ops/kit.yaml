@@ -1,7 +1,7 @@
 hooks:
   - id: emit-artifact
     traits:
-      produces: [artifact]
+      produces: [artifact, verification]
 env:
   E2E_STATE_DIR: ${E2E_STATE_DIR}
 host_commands:
