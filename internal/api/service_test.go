@@ -1210,8 +1210,8 @@ func TestTaskAppServiceCreateTask_NeitherBehaviorNorSpec_DefaultsToPlan(t *testi
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v, want nil", err)
 	}
-	if task.Behavior != DefaultBehavior {
-		t.Errorf("Behavior = %q, want %q", task.Behavior, DefaultBehavior)
+	if task.Behavior != orchestrator.DefaultBehavior {
+		t.Errorf("Behavior = %q, want %q", task.Behavior, orchestrator.DefaultBehavior)
 	}
 }
 
@@ -1237,8 +1237,8 @@ func TestTaskAppServiceCreateTask_DefaultPlan_InheritsTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v, want nil", err)
 	}
-	if task.Behavior != DefaultBehavior {
-		t.Errorf("Behavior = %q, want %q", task.Behavior, DefaultBehavior)
+	if task.Behavior != orchestrator.DefaultBehavior {
+		t.Errorf("Behavior = %q, want %q", task.Behavior, orchestrator.DefaultBehavior)
 	}
 	if !task.Readonly {
 		t.Errorf("Readonly = false, want true (supervisor is canonically readonly)")

@@ -236,7 +236,7 @@ func (s *TaskAppService) GetTaskBehaviorCommand(taskID, name string) (*CommandRe
 	if !ok {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("project %q meta not loaded", task.ProjectID)}
 	}
-	behavior, _, ok := lookupBehaviorWithAlias(meta, task.Behavior)
+	behavior, _, ok := orchestrator.LookupBehaviorWithAlias(meta, task.Behavior)
 	if !ok {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("behavior %q not found", task.Behavior)}
 	}
@@ -262,7 +262,7 @@ func (s *TaskAppService) ListTaskBehaviorCommands(taskID string) ([]CommandSumma
 	if !ok {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("project %q meta not loaded", task.ProjectID)}
 	}
-	behavior, _, ok := lookupBehaviorWithAlias(meta, task.Behavior)
+	behavior, _, ok := orchestrator.LookupBehaviorWithAlias(meta, task.Behavior)
 	if !ok {
 		return []CommandSummary{}, nil
 	}
@@ -342,178 +342,6 @@ func enrichJobDisplayName(job *Job, behavior string, meta MetaStore) {
 			job.DisplayName = h.Name
 			return
 		}
-	}
-}
-
-// behaviorResolution holds the resolved behavior fields after processing either
-// a named behavior or an inline behavior_spec.
-type behaviorResolution struct {
-	behaviorName string
-	traits       []string
-	readonly     bool
-	worktree     bool
-	branchPrefix string
-	baseBranch   string
-	payload      json.RawMessage
-	instructions orchestrator.Instructions
-}
-
-// DefaultBehavior is the reserved behavior name used when a CreateTaskRequest
-// omits both behavior and behavior_spec. Projects are expected to define a
-// behavior with this name in project.yaml's task_behaviors (typically with
-// readonly: true) so that bare-task creation routes to a planning/triage step.
-//
-// Note: this is the canonical name; project.yaml files written with the
-// legacy alias "plan" continue to work because spec_loader normalizes them
-// to "supervisor" at load time (see BehaviorAliases).
-const DefaultBehavior = "supervisor"
-
-// lookupBehaviorWithAlias finds a TaskBehavior in meta.TaskBehaviors by name,
-// being tolerant of the plan / dev → supervisor / executor rename. Lookup is
-// tried in this order:
-//
-//  1. exact match against the requested name
-//  2. if the request is a legacy alias, try the canonical name
-//  3. if the request is a canonical name, try the legacy alias (handles
-//     unnormalized in-memory ProjectMeta values that may exist in tests or
-//     transitional code paths)
-//
-// When (2) or (3) hits, a deprecation warning is logged. The returned key
-// is the map key that actually matched; callers may use it for further
-// logging or store the canonical form on the task.
-func lookupBehaviorWithAlias(meta *orchestrator.ProjectMeta, name string) (orchestrator.TaskBehavior, string, bool) {
-	if b, ok := meta.TaskBehaviors[name]; ok {
-		return b, name, true
-	}
-	if canonical, isAlias := orchestrator.CanonicalBehaviorName(name); isAlias {
-		if b, ok := meta.TaskBehaviors[canonical]; ok {
-			slog.Warn("task behavior name is deprecated; use canonical name instead",
-				"scope", "CreateTask request",
-				"deprecated", name,
-				"canonical", canonical,
-			)
-			return b, canonical, true
-		}
-	}
-	// Reverse: caller used the new canonical name, but meta still uses the
-	// alias key (legacy in-memory meta, e.g. hand-built test fixtures).
-	for alias, canonical := range orchestrator.BehaviorAliases {
-		if canonical != name {
-			continue
-		}
-		if b, ok := meta.TaskBehaviors[alias]; ok {
-			slog.Warn("project meta uses deprecated behavior name; please regenerate via ReadProjectMetaWithKits",
-				"scope", "CreateTask request",
-				"deprecated", alias,
-				"canonical", name,
-			)
-			return b, alias, true
-		}
-	}
-	return orchestrator.TaskBehavior{}, "", false
-}
-
-// resolveBehavior validates and resolves behavior fields from a CreateTaskRequest.
-// It handles both the named behavior path (meta lookup) and the inline behavior_spec path.
-// When both behavior and behavior_spec are empty, the request is routed to DefaultBehavior.
-func resolveBehavior(meta *orchestrator.ProjectMeta, req CreateTaskRequest) (*behaviorResolution, error) {
-	if req.Behavior != "" && req.BehaviorSpec != nil {
-		return nil, &StatusError{Code: http.StatusBadRequest, Message: "behavior and behavior_spec are mutually exclusive"}
-	}
-	if req.Behavior == "" && req.BehaviorSpec == nil {
-		req.Behavior = DefaultBehavior
-	}
-
-	res := &behaviorResolution{payload: req.Payload}
-
-	if req.BehaviorSpec != nil {
-		spec := req.BehaviorSpec
-		if spec.Name == "" {
-			return nil, &StatusError{Code: http.StatusBadRequest, Message: "behavior_spec.name is required"}
-		}
-		res.behaviorName = spec.Name
-		res.traits = spec.Traits
-		// Phase 3-1: behavior-level readonly/worktree/branch_prefix/base_branch
-		// and default_payload are gone. Inline specs receive the canonical
-		// readonly/worktree treatment along with named behaviors below — set
-		// here from project-top defaults (worktree only) and finalised by
-		// applyCanonicalBehaviorOverrides.
-		if meta != nil {
-			res.worktree = meta.Worktree
-			res.baseBranch = meta.BaseBranch
-		}
-		applyCanonicalBehaviorOverrides(res, meta)
-		mergedInstructions, err := orchestrator.MergeDefaultInstructions(spec.DefaultInstruction, req.Instructions)
-		if err != nil {
-			return nil, &StatusError{Code: http.StatusBadRequest, Message: "instructions merge: " + err.Error()}
-		}
-		res.instructions = mergedInstructions
-		return res, nil
-	}
-
-	// Named behavior path (existing logic).
-	res.behaviorName = req.Behavior
-	if meta != nil {
-		behavior, lookupKey, ok := lookupBehaviorWithAlias(meta, req.Behavior)
-		if !ok {
-			return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("behavior %q not found", req.Behavior)}
-		}
-		// When alias resolution kicked in (the meta key we matched differs
-		// from what the caller asked for), persist the canonical form on
-		// the task so rows converge regardless of which alias the caller
-		// or the meta used. Exact matches are preserved verbatim to keep
-		// legacy callers / fixtures stable until Phase 5.
-		if lookupKey != req.Behavior {
-			canonical, _ := orchestrator.CanonicalBehaviorName(req.Behavior)
-			res.behaviorName = canonical
-		}
-		res.traits = behavior.Traits
-		// Phase 3-1: behavior-level readonly / worktree / branch_prefix /
-		// base_branch / default_payload are deleted. readonly comes from the
-		// behavior name (supervisor / executor) via
-		// applyCanonicalBehaviorOverrides; worktree and base_branch come
-		// from project-top fields.
-		res.worktree = meta.Worktree
-		res.baseBranch = meta.BaseBranch
-		mergedInstructions, err := orchestrator.MergeDefaultInstructions(behavior.DefaultInstruction, req.Instructions)
-		if err != nil {
-			return nil, &StatusError{Code: http.StatusBadRequest, Message: "instructions merge: " + err.Error()}
-		}
-		res.instructions = mergedInstructions
-
-		applyCanonicalBehaviorOverrides(res, meta)
-	} else if len(req.Instructions) > 0 {
-		mergedInstructions, err := orchestrator.MergeDefaultInstructions(nil, req.Instructions)
-		if err != nil {
-			return nil, &StatusError{Code: http.StatusBadRequest, Message: "instructions merge: " + err.Error()}
-		}
-		res.instructions = mergedInstructions
-	}
-	return res, nil
-}
-
-// applyCanonicalBehaviorOverrides enforces the Phase 3-1 readonly/worktree
-// rules. After the behavior-level fields were removed, readonly is decided
-// entirely by the canonical behavior name (supervisor=true, executor=false);
-// non-canonical behaviors get readonly=false (the legacy zero-value default).
-// worktree is taken from the project-top setting verbatim.
-//
-// meta may be nil when behavior_spec is in use without a project meta; the
-// only effect of nil is that res.worktree stays at its caller-supplied value
-// (typically the bool zero) which mirrors the pre-Phase-3-1 behavior of
-// inline specs.
-func applyCanonicalBehaviorOverrides(res *behaviorResolution, meta *orchestrator.ProjectMeta) {
-	switch res.behaviorName {
-	case "supervisor":
-		res.readonly = true
-	case "executor":
-		res.readonly = false
-	default:
-		// Non-canonical behavior: readonly stays at the zero value (false).
-		res.readonly = false
-	}
-	if meta != nil {
-		res.worktree = meta.Worktree
 	}
 }
 
@@ -605,17 +433,22 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		}
 	}
 
-	res, err := resolveBehavior(meta, req)
+	res, err := orchestrator.ResolveBehavior(meta, orchestrator.BehaviorResolveRequest{
+		Behavior:     req.Behavior,
+		BehaviorSpec: req.BehaviorSpec,
+		Payload:      req.Payload,
+		Instructions: req.Instructions,
+	})
 	if err != nil {
-		return nil, err
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 	}
 
-	traits := res.traits
-	readonly := res.readonly
-	worktree := res.worktree
-	branchPrefix := res.branchPrefix
-	baseBranch := res.baseBranch
-	payload := res.payload
+	traits := res.Traits
+	readonly := res.Readonly
+	worktree := res.Worktree
+	branchPrefix := res.BranchPrefix
+	baseBranch := res.BaseBranch
+	payload := res.Payload
 
 	if req.Traits != nil {
 		traits = req.Traits
@@ -658,7 +491,7 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 	}
 
 	if !inheritedFromParent {
-		if baseBranch == "" && (res.behaviorName == "supervisor" || res.behaviorName == "executor") {
+		if baseBranch == "" && (res.BehaviorName == "supervisor" || res.BehaviorName == "executor") {
 			// P1 priority 2: root canonical task with no base_branch → expand
 			// ${current_branch}. Detached HEAD is surfaced as a 400. Non-canonical
 			// behaviors are allowed an empty baseBranch (they bypass ClassifyBaseBranch).
@@ -705,7 +538,7 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 	// inheritedFromParent skips the classify entirely because the parent's
 	// base must already exist (case 1/2) or have been created (case 3) when
 	// the parent itself was scheduled.
-	worktree, err = s.classifyAndApplyBaseBranchCase(req, res.behaviorName, baseBranch, worktree, inheritedFromParent)
+	worktree, err = s.classifyAndApplyBaseBranchCase(req, res.BehaviorName, baseBranch, worktree, inheritedFromParent)
 	if err != nil {
 		return nil, err
 	}
@@ -727,7 +560,7 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		ProjectID:        req.ProjectID,
 		Title:            req.Title,
 		Description:      req.Description,
-		Behavior:         res.behaviorName,
+		Behavior:         res.BehaviorName,
 		Traits:           traits,
 		Readonly:         readonly,
 		Worktree:         worktree,
@@ -736,7 +569,7 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		RemoteID:         req.RemoteID,
 		DataSourceID:     req.DataSourceID,
 		Payload:          payload,
-		Instructions:     res.instructions,
+		Instructions:     res.Instructions,
 		AutoStart:        req.AutoStart,
 		DependsOn:        resolvedDeps,
 		DependsOnPayload: req.DependsOnPayload,
@@ -1161,7 +994,7 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	}
 	payloadUpdated := false
 	if len(req.Payload) > 0 {
-		if err := rejectPayloadInstructions(req.Payload); err != nil {
+		if err := orchestrator.RejectPayloadInstructions(req.Payload); err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 		}
 		if err := orchestrator.RejectReservedPayloadKeys(req.Payload); err != nil {
@@ -1220,7 +1053,7 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	// behavior type and project-level defaults, and are no longer mutable.
 	var instructionsBefore orchestrator.Instructions
 	if len(req.Instructions) > 0 {
-		if !isInstructionsEditable(task.Status) {
+		if !orchestrator.IsInstructionsEditable(task.Status) {
 			return nil, &StatusError{
 				Code:    http.StatusConflict,
 				Message: fmt.Sprintf("cannot edit instructions while task is running (status: %s)", task.Status),
@@ -1256,19 +1089,6 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	return task, nil
 }
 
-// isInstructionsEditable reports whether a task's instructions can be edited
-// in its current status. Editing is only allowed while the task is pending to
-// avoid racing with in-flight handlers and to prevent post-execution mutations.
-func isInstructionsEditable(status orchestrator.TaskStatus) bool {
-	return status == orchestrator.TaskStatusPending
-}
-
-// rejectPayloadInstructions is the local shim around orchestrator's validation
-// so that API layer can report 400 on payload containing "instructions" key.
-func rejectPayloadInstructions(payload json.RawMessage) error {
-	return orchestrator.RejectPayloadInstructions(payload)
-}
-
 func (s *TaskAppService) DeleteTask(id string, force bool) error {
 	task, err := s.Tasks.GetTask(id)
 	if err != nil {
@@ -1288,10 +1108,6 @@ func (s *TaskAppService) DeleteTask(id string, force bool) error {
 	return nil
 }
 
-// computeAvailableActions returns the list of manual actions applicable to the task's current status.
-func computeAvailableActions(task *orchestrator.Task) []string {
-	return orchestrator.DefaultMachine().AvailableActions(task.Status)
-}
 
 func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orchestrator.Task, error) {
 	source, err := s.GetTask(sourceID)
@@ -1423,7 +1239,7 @@ func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 		Task:              task,
 		Actions:           actions,
 		Jobs:              jobs,
-		AvailableActions:  computeAvailableActions(task),
+		AvailableActions:  orchestrator.DefaultMachine().AvailableActions(task.Status),
 		Dependents:        dependents,
 		DependsOnResolved: dependsOnResolved,
 	}, nil
@@ -1510,7 +1326,7 @@ func (s *WebAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 		Task:              task,
 		Actions:           actions,
 		Jobs:              jobs,
-		AvailableActions:  computeAvailableActions(task),
+		AvailableActions:  orchestrator.DefaultMachine().AvailableActions(task.Status),
 		Dependents:        dependents,
 		DependsOnResolved: dependsOnResolved,
 	}, nil
@@ -1683,7 +1499,7 @@ func (s *WebAppService) ListTaskBehaviorCommands(taskID string) ([]CommandSummar
 	if !ok {
 		return []CommandSummary{}, nil
 	}
-	behavior, _, ok := lookupBehaviorWithAlias(meta, task.Behavior)
+	behavior, _, ok := orchestrator.LookupBehaviorWithAlias(meta, task.Behavior)
 	if !ok {
 		return []CommandSummary{}, nil
 	}
@@ -1856,7 +1672,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	var matchedHooks []string
 	if s.Coordinator != nil {
 		if coord, ok := s.Coordinator.(*orchestrator.Coordinator); ok && coord.Evaluator != nil {
-			if behavior, _, found := lookupBehaviorWithAlias(meta, newTask.Behavior); found {
+			if behavior, _, found := orchestrator.LookupBehaviorWithAlias(meta, newTask.Behavior); found {
 				for _, hook := range coord.Evaluator.Evaluate(newTask, behavior.Hooks) {
 					matchedHooks = append(matchedHooks, hook.ID)
 				}

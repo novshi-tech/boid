@@ -132,6 +132,13 @@ func failReportFromPayload(payload json.RawMessage) *FailReport {
 	return &FailReport{Message: m.Message}
 }
 
+// IsInstructionsEditable reports whether a task's instructions can be edited
+// in the given status. Editing is only allowed while the task is pending to
+// avoid racing with in-flight handlers and to prevent post-execution mutations.
+func IsInstructionsEditable(status TaskStatus) bool {
+	return status == TaskStatusPending
+}
+
 func abortReasonFromPayload(payload json.RawMessage) *AbortReason {
 	if len(payload) == 0 || string(payload) == "{}" || string(payload) == "null" {
 		return &AbortReason{}
