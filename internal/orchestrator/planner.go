@@ -40,6 +40,11 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		return nil, nil, err
 	}
 
+	parent, err := p.lookupParent(task)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	behavior, _ := lookupBehavior(meta, task)
 
 	// Business payload filter: limit task.payload to the traits this hook declares.
@@ -73,7 +78,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		),
 		HostCommands: behavior.HostCommands.ToCommandDefs(),
 		SecretNamespace: meta.SecretNamespace,
-		Env:             mergeStringMaps(behavior.Env, taskBusinessEnv(task)),
+		Env:             mergeStringMaps(behavior.Env, taskBusinessEnv(task, parent)),
 		ExecutionState:  string(task.Status),
 		// Hook jobs run an agent session (claude code etc.) that requires a
 		// real PTY: non-interactive `claude --print` consumes a separate Max
@@ -100,6 +105,11 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, CleanupFunc,
 		return nil, nil, err
 	}
 
+	parent, err := p.lookupParent(task)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	behavior, _ := lookupBehavior(meta, task)
 
 	// hook-updated payload overrides the DB value for this gate's task snapshot.
@@ -121,7 +131,7 @@ func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, CleanupFunc,
 		Argv:            []string{event.Gate.ScriptPath},
 		PrimaryInput:    taskJSON,
 		SecretNamespace: meta.SecretNamespace,
-		Env:             mergeStringMaps(behavior.Env, taskBusinessEnv(task)),
+		Env:             mergeStringMaps(behavior.Env, taskBusinessEnv(task, parent)),
 		ExecutionState:  string(task.Status),
 	}
 	return spec, nil, nil
@@ -180,18 +190,39 @@ func (p *DispatchPlanner) PlanExec(event *ExecFireEvent) (*JobSpec, CleanupFunc,
 	return spec, nil, nil
 }
 
+// lookupParent returns the parent task when task.ParentID is set, or nil for
+// root tasks. Used to propagate BOID_PARENT_BRANCH into the job environment.
+func (p *DispatchPlanner) lookupParent(task *Task) (*Task, error) {
+	if task == nil || task.ParentID == "" || p.Tasks == nil {
+		return nil, nil
+	}
+	parent, err := p.Tasks.GetTask(task.ParentID)
+	if err != nil {
+		return nil, fmt.Errorf("lookup parent task %q: %w", task.ParentID, err)
+	}
+	return parent, nil
+}
+
 // taskBusinessEnv returns env vars derived from business-level task fields
 // that hook / gate scripts may need at runtime. Surfaces the task's base
-// branch and, when the task has an awaiting trait (i.e. the hook is a resume
-// after awaiting → executing), the session_id, user answer, and question_id
-// for the kit to resume the claude session.
-func taskBusinessEnv(task *Task) map[string]string {
+// branch, the parent task's HEAD branch (BOID_PARENT_BRANCH, P3), and, when
+// the task has an awaiting trait (i.e. the hook is a resume after
+// awaiting → executing), the session_id, user answer, and question_id for
+// the kit to resume the claude session.
+//
+// parent is nil for root tasks; when set, BOID_PARENT_BRANCH is emitted.
+func taskBusinessEnv(task *Task, parent *Task) map[string]string {
 	if task == nil {
 		return nil
 	}
 	out := map[string]string{}
 	if task.BaseBranch != "" {
 		out["BOID_BASE_BRANCH"] = task.BaseBranch
+	}
+	if parent != nil {
+		if pb := ComputeHeadBranch(parent); pb != "" {
+			out["BOID_PARENT_BRANCH"] = pb
+		}
 	}
 	ap := GetAwaitingPayload(task.Payload)
 	if ap.SessionID != "" {

@@ -1437,3 +1437,150 @@ func TestCreate_TwoRootTasks_SameBaseBranch_Sequential(t *testing.T) {
 }
 
 // ---- end P2 ----
+
+// ---- P3: child の worktree fork 元を親タスクの HEAD branch に ----
+
+// TestCreate_ForkPoint_BoidBranch_ForksFromParentBranch verifies that when
+// CreateOpts.ForkPoint is a "boid/<parent_id8>" branch, the new child
+// worktree is forked from that branch tip rather than from baseBranch.
+func TestCreate_ForkPoint_BoidBranch_ForksFromParentBranch(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	// Create "boid/parent00" with one extra commit (simulates parent's worktree branch).
+	if out, err := exec.Command(gitBin, "-C", repo, "checkout", "-b", "boid/parent00").CombinedOutput(); err != nil {
+		t.Fatalf("checkout -b boid/parent00: %v\n%s", err, out)
+	}
+	f := filepath.Join(repo, "parent_work.txt")
+	os.WriteFile(f, []byte("parent work"), 0o644)
+	exec.Command(gitBin, "-C", repo, "add", ".").Run()
+	if out, err := exec.Command(gitBin, "-C", repo, "commit", "-m", "parent commit").CombinedOutput(); err != nil {
+		t.Fatalf("parent commit: %v\n%s", err, out)
+	}
+	parentTip, err := exec.Command(gitBin, "-C", repo, "rev-parse", "boid/parent00").Output()
+	if err != nil {
+		t.Fatalf("rev-parse boid/parent00: %v", err)
+	}
+	exec.Command(gitBin, "-C", repo, "checkout", "main").Run()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-fp1', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-fp001234-0001', 'proj-fp1', 'child fork', 'executor')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	w, err := mgr.Create(repo, "proj-fp1", "task-fp001234-0001", "main", dispatcher.CreateOpts{
+		ForkPoint: "boid/parent00",
+	})
+	if err != nil {
+		t.Fatalf("Create with ForkPoint=boid/parent00: %v", err)
+	}
+
+	// Child worktree HEAD must match boid/parent00 tip.
+	wtTip, err := exec.Command(gitBin, "-C", w.Path, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD in child worktree: %v", err)
+	}
+	if strings.TrimSpace(string(wtTip)) != strings.TrimSpace(string(parentTip)) {
+		t.Errorf("child worktree HEAD = %s, want %s (from boid/parent00)",
+			strings.TrimSpace(string(wtTip)), strings.TrimSpace(string(parentTip)))
+	}
+
+	mgr.Remove(repo, "task-fp001234-0001", true)
+}
+
+// TestCreate_ForkPoint_BoidBranch_NoRemoteFetch verifies that when
+// CreateOpts.ForkPoint starts with "boid/", no remote fetch is attempted
+// for the fork point. The test proves this by invalidating the remote URL
+// and verifying that Create still succeeds — a fetch would have caused an
+// error (the local branch still exists so the baseBranch fetch degrades
+// gracefully, but any extra fetch for the fork point would fail).
+func TestCreate_ForkPoint_BoidBranch_NoRemoteFetch(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	local, _ := initGitRepoWithRemote(t)
+	wtRoot := t.TempDir()
+
+	// Create a local "boid/parentxx" branch (parent worktree simulation).
+	if out, err := exec.Command(gitBin, "-C", local, "checkout", "-b", "boid/parentxx").CombinedOutput(); err != nil {
+		t.Fatalf("checkout -b boid/parentxx: %v\n%s", err, out)
+	}
+	exec.Command(gitBin, "-C", local, "checkout", "main").Run()
+
+	// Invalidate remote URL — any fetch would fail.
+	exec.Command(gitBin, "-C", local, "remote", "set-url", "origin", "/nonexistent/invalid").Run()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-fp2', ?)`, local)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-fp001234-0002', 'proj-fp2', 'no fetch', 'executor')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	// baseBranch = "main" (fetch fails, falls back to local — existing behaviour).
+	// ForkPoint = "boid/parentxx" — must NOT trigger a remote fetch.
+	w, err := mgr.Create(local, "proj-fp2", "task-fp001234-0002", "main", dispatcher.CreateOpts{
+		ForkPoint: "boid/parentxx",
+	})
+	if err != nil {
+		t.Fatalf("Create should succeed without fetching boid/ fork point: %v", err)
+	}
+	if w.Branch != "boid/task-fp0" {
+		t.Errorf("Branch = %q, want boid/task-fp0", w.Branch)
+	}
+
+	mgr.Remove(local, "task-fp001234-0002", true)
+}
+
+// TestCreate_ForkPoint_Missing_Errors verifies that Create returns an error
+// when ForkPoint is a "boid/" branch that does not exist locally.
+func TestCreate_ForkPoint_Missing_Errors(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-fp3', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-fp001234-0003', 'proj-fp3', 'missing fork', 'executor')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	_, err := mgr.Create(repo, "proj-fp3", "task-fp001234-0003", "main", dispatcher.CreateOpts{
+		ForkPoint: "boid/doesnotexist",
+	})
+	if err == nil {
+		t.Fatal("Create should fail when boid/ ForkPoint does not exist locally")
+	}
+	if !strings.Contains(err.Error(), "fork point") {
+		t.Errorf("error should mention fork point, got: %v", err)
+	}
+}
+
+// TestCreate_ForkPoint_Empty_FallsBackToBaseBranch verifies that an empty
+// ForkPoint retains the existing behavior: child worktrees fork from the
+// resolved base branch (regression guard).
+func TestCreate_ForkPoint_Empty_FallsBackToBaseBranch(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-fp4', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-fp001234-0004', 'proj-fp4', 'empty forkpoint', 'executor')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	mainTip, _ := exec.Command(gitBin, "-C", repo, "rev-parse", "main").Output()
+
+	w, err := mgr.Create(repo, "proj-fp4", "task-fp001234-0004", "main", dispatcher.CreateOpts{
+		// ForkPoint == "" → default: fork from baseBranch (existing P2 behavior)
+	})
+	if err != nil {
+		t.Fatalf("Create with empty ForkPoint: %v", err)
+	}
+
+	wtTip, _ := exec.Command(gitBin, "-C", w.Path, "rev-parse", "HEAD").Output()
+	if strings.TrimSpace(string(wtTip)) != strings.TrimSpace(string(mainTip)) {
+		t.Errorf("child worktree HEAD = %s, want %s (from main)",
+			strings.TrimSpace(string(wtTip)), strings.TrimSpace(string(mainTip)))
+	}
+
+	mgr.Remove(repo, "task-fp001234-0004", true)
+}
+
+// ---- end P3 ----

@@ -158,6 +158,46 @@ func (m *WorktreeManager) resolveRecreateBasePoint(projectDir, recordedBase stri
 // literal.
 const branchPrefix = "boid/"
 
+// resolveForkPoint resolves the git start-point for a child task's new
+// boid/<id8> branch when CreateOpts.ForkPoint is explicitly set (P3).
+//
+// If forkPoint starts with "boid/", it is a local-only branch (the parent's
+// worktree HEAD). Only a local existence check is performed — no remote fetch
+// is attempted, because local-only branches are never pushed.
+//
+// For any other prefix, the same resolution logic as resolveBaseBranch is
+// applied (origin/<name> if available, remote fetch, local fallback).
+func (m *WorktreeManager) resolveForkPoint(projectDir, forkPoint string) (string, error) {
+	if strings.HasPrefix(forkPoint, branchPrefix) {
+		// Local-only branch: verify it exists and return as-is.
+		if err := exec.Command(m.gitBin(), "-C", projectDir, "rev-parse", "--verify", "--quiet", forkPoint).Run(); err != nil {
+			return "", fmt.Errorf("fork point %q not found locally (parent task worktree missing?): %w", forkPoint, err)
+		}
+		return forkPoint, nil
+	}
+	// Remote-backed fork point: resolve the same way as baseBranch.
+	resolved, shouldFetch, err := m.resolveBaseBranch(projectDir, forkPoint)
+	if err != nil {
+		return "", fmt.Errorf("resolve fork point %q: %w", forkPoint, err)
+	}
+	if shouldFetch {
+		branchToFetch := strings.TrimPrefix(resolved, "origin/")
+		fetchCmd := exec.Command(m.gitBin(), "fetch", "origin", branchToFetch)
+		fetchCmd.Dir = projectDir
+		if out, fetchErr := fetchCmd.CombinedOutput(); fetchErr != nil {
+			localCheck := exec.Command(m.gitBin(), "-C", projectDir, "rev-parse", "--verify", branchToFetch)
+			if localCheck.Run() != nil {
+				return "", fmt.Errorf("git fetch origin %s for fork point failed and local branch not found: %w\n%s",
+					branchToFetch, fetchErr, strings.TrimSpace(string(out)))
+			}
+			slog.Warn("git fetch for fork point failed, falling back to local branch",
+				"fork_point", forkPoint, "error", fetchErr)
+			resolved = branchToFetch
+		}
+	}
+	return resolved, nil
+}
+
 // CreateOpts controls optional worktree creation behaviour.
 type CreateOpts struct {
 	// CheckoutBranch, when non-empty, causes Create to check out an existing
@@ -228,7 +268,17 @@ func (m *WorktreeManager) Create(projectDir, projectID, taskID, baseBranch strin
 		// is created; the worktree HEAD is set to opts.CheckoutBranch (P2).
 		cmd = exec.Command(m.gitBin(), "worktree", "add", wtPath, opts.CheckoutBranch)
 	} else {
-		cmd = exec.Command(m.gitBin(), "worktree", "add", "--no-track", "-b", branch, wtPath, resolvedBase)
+		// Child task: fork from opts.ForkPoint when set (P3), otherwise fall
+		// back to the resolved baseBranch (existing pre-P3 behaviour).
+		forkStart := resolvedBase
+		if opts.ForkPoint != "" {
+			var forkErr error
+			forkStart, forkErr = m.resolveForkPoint(projectDir, opts.ForkPoint)
+			if forkErr != nil {
+				return nil, forkErr
+			}
+		}
+		cmd = exec.Command(m.gitBin(), "worktree", "add", "--no-track", "-b", branch, wtPath, forkStart)
 	}
 	cmd.Dir = projectDir
 	out, err := cmd.CombinedOutput()
