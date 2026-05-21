@@ -153,6 +153,89 @@ func TestAllocateWorktree_ChildTask_ForksFromParentHeadBranch(t *testing.T) {
 	mgr.Remove(repo, "child00012345678", true)
 }
 
+// TestAllocateWorktree_RootTask_ReuseProjectRoot_BaseMatchesHostHEAD verifies
+// case-1 of the dynamic-base-branch-overhaul: when a root task's base_branch
+// equals the host HEAD branch, allocateWorktree returns the project dir
+// directly without creating a git worktree or a DB row.
+func TestAllocateWorktree_RootTask_ReuseProjectRoot_BaseMatchesHostHEAD(t *testing.T) {
+	conn := newTestDBForResolver(t)
+	repo := initGitRepoResolver(t) // HEAD is on "main"
+	wtRoot := t.TempDir()
+
+	rootTask := &orchestrator.Task{
+		ID:         "case1root12345678",
+		ProjectID:  "proj-case1",
+		BaseBranch: "main", // matches host HEAD
+		Worktree:   true,
+		// ParentID == "" → root
+	}
+
+	conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-case1', ?)`, repo)
+	conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES (?, 'proj-case1', 'root', 'executor')`,
+		"case1root12345678")
+
+	mgr := &WorktreeManager{RootDir: wtRoot, DB: conn, GitBin: "/usr/bin/git"}
+	r := &Runner{
+		DB:        conn,
+		Worktrees: mgr,
+		TaskLookup: &fakeTaskLookupResolver{tasks: map[string]*orchestrator.Task{
+			"case1root12345678": rootTask,
+		}},
+	}
+
+	spec := &orchestrator.JobSpec{
+		TaskID:    "case1root12345678",
+		ProjectID: "proj-case1",
+		Visibility: orchestrator.Visibility{
+			ProjectDir:  repo,
+			UseWorktree: true,
+		},
+	}
+
+	wtPath, err := r.allocateWorktree(spec)
+	if err != nil {
+		t.Fatalf("allocateWorktree: %v", err)
+	}
+	if wtPath != repo {
+		t.Errorf("want project root %q, got %q", repo, wtPath)
+	}
+
+	// No DB row must be created.
+	w, err := mgr.Get("case1root12345678")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if w != nil {
+		t.Errorf("expected no DB row for case-1 task, got %+v", w)
+	}
+
+	// No new git worktree should be registered (only the main worktree exists).
+	listOut, _ := exec.Command("/usr/bin/git", "-C", repo, "worktree", "list").Output()
+	if n := strings.Count(strings.TrimSpace(string(listOut)), "\n"); n > 0 {
+		t.Errorf("expected only the main worktree line, got %d extra lines:\n%s", n, listOut)
+	}
+}
+
+// TestAllocateWorktree_RootTask_ReuseProjectRoot_CleanupIsNoop verifies that
+// CleanupForTask is a noop for a case-1 task (no DB row, project root intact).
+func TestAllocateWorktree_RootTask_ReuseProjectRoot_CleanupIsNoop(t *testing.T) {
+	conn := newTestDBForResolver(t)
+	repo := initGitRepoResolver(t)
+	wtRoot := t.TempDir()
+
+	mgr := &WorktreeManager{RootDir: wtRoot, DB: conn, GitBin: "/usr/bin/git"}
+
+	// No DB row for this task (case-1: allocateWorktree never inserted one).
+	if err := mgr.CleanupForTask("case1root12345678", repo, "done"); err != nil {
+		t.Fatalf("CleanupForTask should be noop for case-1 (no DB row): %v", err)
+	}
+
+	// Project root must still exist and be a valid git repo.
+	if _, err := os.Stat(filepath.Join(repo, ".git")); err != nil {
+		t.Errorf("project root .git dir must still exist after cleanup: %v", err)
+	}
+}
+
 // TestAllocateWorktree_RootTask_UseCheckoutBranch verifies that root tasks
 // (ParentID == "") still get CheckoutBranch = task.BaseBranch (P2 retention).
 // Uses a "feature" branch so "main" (already checked out in the repo's main
