@@ -155,15 +155,30 @@ func TestAllocateWorktree_ChildTask_ForksFromParentHeadBranch(t *testing.T) {
 
 // TestAllocateWorktree_RootTask_UseCheckoutBranch verifies that root tasks
 // (ParentID == "") still get CheckoutBranch = task.BaseBranch (P2 retention).
+// Uses a "feature" branch so "main" (already checked out in the repo's main
+// worktree) does not conflict with the new worktree add.
 func TestAllocateWorktree_RootTask_UseCheckoutBranch(t *testing.T) {
 	conn := newTestDBForResolver(t)
 	repo := initGitRepoResolver(t)
 	wtRoot := t.TempDir()
 
+	// Create a "feature" branch so the root task can check it out without
+	// conflicting with the main worktree (which already holds "main").
+	if out, err := exec.Command("/usr/bin/git", "-C", repo, "checkout", "-b", "feature").CombinedOutput(); err != nil {
+		t.Fatalf("create feature branch: %v\n%s", err, out)
+	}
+	f2 := filepath.Join(repo, "feature.txt")
+	os.WriteFile(f2, []byte("feature"), 0o644)
+	exec.Command("/usr/bin/git", "-C", repo, "add", ".").Run()
+	if out, err := exec.Command("/usr/bin/git", "-C", repo, "commit", "-m", "feature commit").CombinedOutput(); err != nil {
+		t.Fatalf("feature commit: %v\n%s", err, out)
+	}
+	exec.Command("/usr/bin/git", "-C", repo, "checkout", "main").Run()
+
 	rootTask := &orchestrator.Task{
 		ID:         "rootrootabcd1234",
 		ProjectID:  "proj-resolver2",
-		BaseBranch: "main",
+		BaseBranch: "feature",
 		Worktree:   true,
 		// ParentID == "" → root
 	}
@@ -195,13 +210,13 @@ func TestAllocateWorktree_RootTask_UseCheckoutBranch(t *testing.T) {
 		t.Fatalf("allocateWorktree for root task: %v", err)
 	}
 
-	// Root task: worktree HEAD should be on "main" (CheckoutBranch path, P2).
+	// Root task: worktree HEAD should be on "feature" (CheckoutBranch path, P2).
 	headOut, err := exec.Command("/usr/bin/git", "-C", wtPath, "symbolic-ref", "HEAD").Output()
 	if err != nil {
 		t.Fatalf("symbolic-ref HEAD: %v", err)
 	}
-	if got := strings.TrimSpace(string(headOut)); got != "refs/heads/main" {
-		t.Errorf("root task worktree HEAD = %q, want refs/heads/main", got)
+	if got := strings.TrimSpace(string(headOut)); got != "refs/heads/feature" {
+		t.Errorf("root task worktree HEAD = %q, want refs/heads/feature", got)
 	}
 
 	mgr.Remove(repo, "rootrootabcd1234", false)
