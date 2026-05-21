@@ -2,9 +2,22 @@ package dispatcher
 
 import (
 	"fmt"
+	"log/slog"
+	"os/exec"
+	"strings"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
+
+// hostHEADBranch returns the symbolic HEAD branch of the git repo at projectDir,
+// or "" if HEAD is detached or the command fails (detached HEAD = case-1 not applicable).
+func hostHEADBranch(gitBin, projectDir string) string {
+	out, err := exec.Command(gitBin, "-C", projectDir, "symbolic-ref", "--short", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
 
 // resolveWorktree returns the host path of the worktree to bind into the
 // sandbox, creating or re-creating it via WorktreeManager as needed. If the
@@ -76,6 +89,23 @@ func (r *Runner) allocateWorktree(spec *orchestrator.JobSpec) (string, error) {
 	if task == nil {
 		return "", fmt.Errorf("task %q not found for worktree creation", spec.TaskID)
 	}
+
+	// Case-1 (dynamic-base-branch-overhaul §case-1): when a root executor's
+	// base_branch equals the currently checked-out host HEAD branch, reuse the
+	// project root directly. git worktree add would fail with "already used by
+	// worktree" because the host tree already holds that branch. No DB row is
+	// created; cleanup is therefore a noop (Remove returns early when w == nil).
+	if task.ParentID == "" {
+		if head := hostHEADBranch(r.Worktrees.gitBin(), spec.Visibility.ProjectDir); head != "" && head == task.BaseBranch {
+			slog.Info("root executor reusing project root (base==host HEAD)",
+				"task_id", task.ID, "branch", head, "project_dir", spec.Visibility.ProjectDir)
+			if err := r.Worktrees.EnsureBindingTargets(spec.Visibility.ProjectDir, spec.Visibility.AdditionalBindings, spec.Visibility.ProjectDir); err != nil {
+				return "", fmt.Errorf("ensure binding targets (project root reuse): %w", err)
+			}
+			return spec.Visibility.ProjectDir, nil
+		}
+	}
+
 	var createOpts CreateOpts
 	if task.ParentID == "" {
 		// Root task: occupy the base_branch directly rather than creating a
