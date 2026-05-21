@@ -1,0 +1,314 @@
+package api
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+
+	"github.com/novshi-tech/boid/internal/notify"
+	"github.com/novshi-tech/boid/internal/orchestrator"
+)
+
+// NotifyTask invokes the configured notify command for the given task.
+// Returns 501 when no notifier is wired and ask is empty (notifications disabled in config).
+// When ask is non-empty the task is transitioned to awaiting; the notification is
+// best-effort and skipped if no notifier is configured. questionID identifies the
+// Q&A turn (generated when empty).
+// When progress is non-empty (progress mode), no hook fires and no state transition
+// occurs — only a progress Action is written to the timeline.
+// ask and progress are mutually exclusive.
+func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID, progress, done, fail string) error {
+	// ask / progress / done / fail are mutually exclusive: each represents a
+	// distinct lifecycle signal (Q&A pause, FYI-only progress, success
+	// self-report, failure self-report). Allowing more than one would
+	// ambiguate which state transition (if any) to fire.
+	modes := 0
+	for _, m := range []string{ask, progress, done, fail} {
+		if m != "" {
+			modes++
+		}
+	}
+	if modes > 1 {
+		return &StatusError{Code: http.StatusBadRequest, Message: "--ask, --progress, --done, --fail are mutually exclusive"}
+	}
+	if message == "" && progress == "" {
+		return &StatusError{Code: http.StatusBadRequest, Message: "message is required"}
+	}
+
+	// Progress mode: write a timeline Action directly, skip hook firing entirely.
+	// Progress is a pure observability event with no user-facing surface, so the
+	// parent_id gate below does not apply — both root and child tasks can record
+	// progress without further checks.
+	if progress != "" {
+		task, err := s.Tasks.GetTask(taskID)
+		if err != nil {
+			return &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+		}
+		payload, err := json.Marshal(map[string]string{"message": progress})
+		if err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: "encode progress payload: " + err.Error()}
+		}
+		action := &orchestrator.Action{
+			TaskID:     taskID,
+			Type:       "progress",
+			FromStatus: task.Status,
+			ToStatus:   task.Status,
+			Payload:    payload,
+		}
+		if err := s.Actions.CreateAction(action); err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+		return nil
+	}
+	task, err := s.Tasks.GetTask(taskID)
+	if err != nil {
+		return &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+
+	// Lifecycle-accountability hard gate: only root tasks (parent_id == "")
+	// fire user-facing notify hooks. Child tasks signal their parent supervisor
+	// via the awaiting state transition (for ask mode) or are silently dropped
+	// (for FYI mode) — the supervisor's monitoring loop is the canonical
+	// delivery path. This is a daemon-level invariant rather than a project.yaml
+	// hook expression, so child tasks cannot accidentally page the user when a
+	// project author forgets the condition. See docs/plans/lifecycle-accountability.md.
+	fireUserNotify := task.ParentID == ""
+
+	// Without ask, a working notifier is required to surface the FYI — but only
+	// when we would actually fire the hook. Child tasks skip the hook unconditionally,
+	// so a missing notifier is fine.
+	if s.Notify == nil && ask == "" && fireUserNotify {
+		return &StatusError{Code: http.StatusNotImplemented, Message: "notify is not configured"}
+	}
+
+	// Lifecycle signal modes (ask / done / fail) all advance the task state
+	// machine and SIGTERM running hook runtimes. Plain FYI notify (none of
+	// those flags) only fires the user-notify hook for root tasks.
+	signalsTransition := ask != "" || done != "" || fail != ""
+
+	ev := notify.Event{
+		TaskID:    taskID,
+		TaskTitle: task.Title,
+		ProjectID: task.ProjectID,
+		Message:   message,
+	}
+	// Deep-link target depends on mode:
+	//   ask  → Q&A turn page (reply form)
+	//   done → task detail (success outcome to inspect)
+	//   fail → task detail (failure outcome to inspect / decide reopen)
+	//   FYI  → most recent interactive running job (live session attach)
+	switch {
+	case ask != "":
+		if questionID == "" {
+			questionID = newQuestionID()
+		}
+		ev.URLPath = "/tasks/" + taskID + "/questions/" + questionID
+	case done != "" || fail != "":
+		ev.URLPath = "/tasks/" + taskID
+	}
+	// Project name is best-effort: omit silently if Projects lookup fails or is unwired.
+	if s.Projects != nil {
+		if proj, lookupErr := s.Projects.GetProject(task.ProjectID); lookupErr == nil && proj != nil {
+			ev.ProjectName = proj.Meta.Name
+		}
+	}
+	// FYI mode only: find the most recent interactive running job so the
+	// notification deep-links to the live session. ask/done/fail set
+	// URLPath above to a more specific destination.
+	if !signalsTransition && s.Jobs != nil {
+		if jobs, jobsErr := s.Jobs.ListJobsByTask(taskID); jobsErr == nil {
+			for i := len(jobs) - 1; i >= 0; i-- {
+				j := jobs[i]
+				if j.Status == JobStatusRunning && j.Interactive {
+					ev.JobID = j.ID
+					break
+				}
+			}
+		}
+	}
+	if fireUserNotify && s.Notify != nil {
+		if err := s.Notify.Notify(ctx, ev); err != nil {
+			if !signalsTransition {
+				return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+			}
+			slog.Warn("notify: notification failed in signal mode, continuing with state transition", "error", err, "mode", notifyModeName(ask, done, fail))
+		}
+	} else if !fireUserNotify {
+		slog.Debug("notify: skipped user-facing hook (child task, owner is parent supervisor)",
+			"task_id", taskID, "parent_id", task.ParentID, "mode", notifyModeName(ask, done, fail))
+	}
+
+	if !signalsTransition {
+		return nil
+	}
+
+	// Lifecycle signal: persist the agent's intent + SIGUSR1 the running jobs.
+	//
+	// --ask still goes through ApplyAction(ask): the awaiting transition is
+	// synchronous (the agent expects the task to be visibly in `awaiting`
+	// immediately after the call returns so the parent supervisor's polling
+	// loop sees it).
+	//
+	// --done / --fail record a `done_request` / `fail_request` action
+	// directly WITHOUT calling ApplyAction. The state transition fires later
+	// via the condition-based auto rule (`lifecycle.executed && lifecycle.done`
+	// → done; ditto for fail), which only kicks in after the runtime has
+	// cleanly exited and bash's EXIT trap has called `boid job done`. This
+	// preserves the agent's payload_patch (session id) and avoids the race
+	// where ApplyAction(done)'s spawned dispatch loop SIGTERM'd the still-
+	// running runtime, leaving the job marked failed.
+	if s.Workflow == nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
+	}
+	if ask != "" {
+		ap := orchestrator.AwaitingPayload{
+			SessionID:  sessionID,
+			Question:   ask,
+			QuestionID: questionID,
+		}
+		apJSON, err := json.Marshal(ap)
+		if err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: "encode awaiting payload: " + err.Error()}
+		}
+		askPayload, err := json.Marshal(map[string]json.RawMessage{string(orchestrator.TraitAwaiting): apJSON})
+		if err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: "encode action payload: " + err.Error()}
+		}
+		if _, err := s.Workflow.ApplyAction(ctx, taskID, ApplyActionRequest{
+			Type:    "ask",
+			Payload: askPayload,
+		}); err != nil {
+			return err
+		}
+	} else {
+		// done / fail: record the intent as a non-transitioning action.
+		// The dispatch loop's auto-advance picks it up once the runtime exits.
+		if s.Actions == nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: "action store not configured"}
+		}
+		if task.Status != orchestrator.TaskStatusExecuting {
+			return &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf("task is not executing (status: %s); cannot record %s_request", task.Status, notifyModeName(ask, done, fail))}
+		}
+		var actionType, msg string
+		if done != "" {
+			actionType, msg = "done_request", done
+		} else {
+			actionType, msg = "fail_request", fail
+		}
+		payload, err := json.Marshal(map[string]string{"message": msg})
+		if err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: "encode " + actionType + " payload: " + err.Error()}
+		}
+		action := &orchestrator.Action{
+			TaskID:     taskID,
+			Type:       actionType,
+			FromStatus: task.Status,
+			ToStatus:   task.Status,
+			Payload:    payload,
+		}
+		if err := s.Actions.CreateAction(action); err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+	}
+
+	// Ask the agent (claude) of each running hook job to terminate via a
+	// SIGUSR1 routed to run-agent.py. This leaves bash and the EXIT trap
+	// alive: bash receives SIGUSR1 too but ignores it via `trap '' USR1`
+	// (SIG_IGN propagates across execve to pasta/unshare/inner bash); only
+	// run-agent.py's Python handler reacts, forwarding SIGTERM to the
+	// claude process (which it launched in its own session via
+	// start_new_session=True so it doesn't receive the group signal).
+	//
+	// Crucially, we do NOT call CompleteJob preemptively here. CompleteJob's
+	// finalize releases the broker token, which would reject the bash EXIT
+	// trap's follow-up `boid job done --output-file payload_patch.json` as
+	// "invalid token" — silently dropping the agent's session id and
+	// breaking the next hook's resume. By letting the EXIT trap be the sole
+	// CompleteJob caller (through the broker), the standard completion path
+	// runs with the agent's payload_patch intact.
+	if s.Jobs != nil {
+		jobs, err := s.Jobs.ListJobsByTask(taskID)
+		if err == nil {
+			for _, j := range jobs {
+				if j.Status != JobStatusRunning {
+					continue
+				}
+				if j.RuntimeID == "" {
+					continue
+				}
+				s.Workflow.StopAgent(j.RuntimeID)
+			}
+		} else {
+			slog.Warn("notify: list running jobs failed", "task_id", taskID, "mode", notifyModeName(ask, done, fail), "error", err)
+		}
+	}
+	return nil
+}
+
+// notifyModeName returns a short label identifying which lifecycle signal
+// (if any) was supplied to NotifyTask. Used only for slog context.
+func notifyModeName(ask, done, fail string) string {
+	switch {
+	case ask != "":
+		return "ask"
+	case done != "":
+		return "done"
+	case fail != "":
+		return "fail"
+	default:
+		return "fyi"
+	}
+}
+
+// AnswerTask saves the user's reply and transitions the task awaiting → executing.
+func (s *TaskAppService) AnswerTask(ctx context.Context, taskID, questionID, answer string) error {
+	if questionID == "" {
+		return &StatusError{Code: http.StatusBadRequest, Message: "question_id is required"}
+	}
+	if answer == "" {
+		return &StatusError{Code: http.StatusBadRequest, Message: "answer is required"}
+	}
+	task, err := s.Tasks.GetTask(taskID)
+	if err != nil {
+		return &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	if task.Status != orchestrator.TaskStatusAwaiting {
+		return &StatusError{
+			Code:    http.StatusConflict,
+			Message: fmt.Sprintf("task is not awaiting (status: %s)", task.Status),
+		}
+	}
+	if s.Workflow == nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
+	}
+
+	// Merge pending_answer into the existing awaiting trait.
+	existing := orchestrator.GetAwaitingPayload(task.Payload)
+	existing.PendingAnswer = answer
+	apJSON, err := json.Marshal(existing)
+	if err != nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "encode awaiting payload: " + err.Error()}
+	}
+	answerPayload, err := json.Marshal(map[string]json.RawMessage{string(orchestrator.TraitAwaiting): apJSON})
+	if err != nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "encode action payload: " + err.Error()}
+	}
+	if _, err := s.Workflow.ApplyAction(ctx, taskID, ApplyActionRequest{
+		Type:    "answer",
+		Payload: answerPayload,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+// newQuestionID generates a random hex identifier for a Q&A turn.
+func newQuestionID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
