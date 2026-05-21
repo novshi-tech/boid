@@ -165,7 +165,6 @@ type UpdateTaskRequest struct {
 	Description      string          `json:"description"`
 	ProjectID        string          `json:"project_id,omitempty"`
 	RemoteID         *string         `json:"remote_id,omitempty"`
-	DataSourceID     *string         `json:"datasource_id,omitempty"`
 	Payload          json.RawMessage `json:"payload,omitempty"`
 	Instructions     json.RawMessage `json:"instructions,omitempty"`
 	DependsOn        []string        `json:"depends_on,omitempty"`
@@ -182,7 +181,6 @@ type CreateTaskRequest struct {
 	Behavior         string                     `json:"behavior,omitempty"`
 	BehaviorSpec     *orchestrator.BehaviorSpec `json:"behavior_spec,omitempty"`
 	RemoteID         string                     `json:"remote_id,omitempty"`
-	DataSourceID     string                     `json:"datasource_id,omitempty"`
 	Payload          json.RawMessage            `json:"payload,omitempty"`
 	Instructions     json.RawMessage            `json:"instructions,omitempty"`
 	AutoStart        bool                       `json:"auto_start,omitempty"`

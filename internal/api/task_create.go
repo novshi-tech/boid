@@ -231,7 +231,6 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		BranchPrefix:     branchPrefix,
 		BaseBranch:       baseBranch,
 		RemoteID:         req.RemoteID,
-		DataSourceID:     req.DataSourceID,
 		Payload:          payload,
 		Instructions:     res.Instructions,
 		AutoStart:        req.AutoStart,
@@ -257,16 +256,16 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 func (s *TaskAppService) ImportTasks(reqs []CreateTaskRequest) (*ImportResult, error) {
 	result := &ImportResult{Errors: []ImportError{}}
 	for i, req := range reqs {
-		if req.RemoteID == "" && req.DataSourceID == "" {
+		if req.RemoteID == "" {
 			result.Errors = append(result.Errors, ImportError{
 				Line:     i + 1,
 				RemoteID: req.RemoteID,
-				Error:    "remote_id and datasource_id are required",
+				Error:    "remote_id is required",
 			})
 			continue
 		}
 
-		existing, err := s.Tasks.FindTaskByRemote(req.RemoteID, req.DataSourceID)
+		existing, err := s.Tasks.FindTaskByRemote(req.RemoteID)
 		if err != nil {
 			result.Errors = append(result.Errors, ImportError{Line: i + 1, RemoteID: req.RemoteID, Error: err.Error()})
 			continue

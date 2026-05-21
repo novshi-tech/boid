@@ -83,7 +83,7 @@ type BoidRequest struct {
 	// CreatePatch is a JSON-serialised api.CreateTaskRequest. The shim builds
 	// it from the full YAML map so that every field (including previously
 	// dropped ones such as instructions, traits, readonly, worktree,
-	// branch_prefix, id, datasource_id) is forwarded without enumeration.
+	// branch_prefix, id) is forwarded without enumeration.
 	CreatePatch json.RawMessage `json:"create_patch,omitempty"`
 
 	// UpdatePatch is a JSON-serialised api.UpdateTaskRequest. The shim
@@ -92,9 +92,8 @@ type BoidRequest struct {
 	UpdatePatch json.RawMessage `json:"update_patch,omitempty"`
 
 	// task import fields
-	ImportTasks              []json.RawMessage `json:"import_tasks,omitempty"`
-	ImportProjectOverride    string            `json:"import_project_override,omitempty"`
-	ImportDatasourceOverride string            `json:"import_datasource_override,omitempty"`
+	ImportTasks           []json.RawMessage `json:"import_tasks,omitempty"`
+	ImportProjectOverride string            `json:"import_project_override,omitempty"`
 
 	// task list fields
 	WorkspaceID string `json:"workspace_id,omitempty"`

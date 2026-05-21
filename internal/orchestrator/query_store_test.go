@@ -665,17 +665,16 @@ func TestFindTaskByRemote_Found(t *testing.T) {
 	d := createTestProject(t)
 
 	task := &orchestrator.Task{
-		ProjectID:    "proj-1",
-		Title:        "Remote Task",
-		Behavior:     "dev",
-		RemoteID:     "PROJ-1",
-		DataSourceID: "jira",
+		ProjectID: "proj-1",
+		Title:     "Remote Task",
+		Behavior:  "dev",
+		RemoteID:  "PROJ-1",
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 
-	got, err := orchestrator.FindTaskByRemote(d.Conn, "PROJ-1", "jira")
+	got, err := orchestrator.FindTaskByRemote(d.Conn, "PROJ-1")
 	if err != nil {
 		t.Fatalf("FindTaskByRemote() error = %v", err)
 	}
@@ -688,15 +687,12 @@ func TestFindTaskByRemote_Found(t *testing.T) {
 	if got.RemoteID != "PROJ-1" {
 		t.Fatalf("RemoteID = %q, want %q", got.RemoteID, "PROJ-1")
 	}
-	if got.DataSourceID != "jira" {
-		t.Fatalf("DataSourceID = %q, want %q", got.DataSourceID, "jira")
-	}
 }
 
 func TestFindTaskByRemote_NotFound(t *testing.T) {
 	d := createTestProject(t)
 
-	got, err := orchestrator.FindTaskByRemote(d.Conn, "PROJ-NONE", "jira")
+	got, err := orchestrator.FindTaskByRemote(d.Conn, "PROJ-NONE")
 	if err != nil {
 		t.Fatalf("FindTaskByRemote() error = %v", err)
 	}
@@ -964,19 +960,15 @@ func TestUpdateTask_DependsOn_Cleared(t *testing.T) {
 	}
 }
 
-func TestFindTaskByRemote_MatchesBothFields(t *testing.T) {
+func TestFindTaskByRemote_MatchesRemoteID(t *testing.T) {
 	d := createTestProject(t)
 
-	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "T1", Behavior: "dev", RemoteID: "PROJ-1", DataSourceID: "jira"}
-	task2 := &orchestrator.Task{ProjectID: "proj-1", Title: "T2", Behavior: "dev", RemoteID: "PROJ-1", DataSourceID: "github"}
+	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "T1", Behavior: "dev", RemoteID: "PROJ-1"}
 	if err := orchestrator.CreateTask(d.Conn, task1); err != nil {
 		t.Fatalf("create task1: %v", err)
 	}
-	if err := orchestrator.CreateTask(d.Conn, task2); err != nil {
-		t.Fatalf("create task2: %v", err)
-	}
 
-	got, err := orchestrator.FindTaskByRemote(d.Conn, "PROJ-1", "jira")
+	got, err := orchestrator.FindTaskByRemote(d.Conn, "PROJ-1")
 	if err != nil {
 		t.Fatalf("FindTaskByRemote() error = %v", err)
 	}
@@ -987,15 +979,12 @@ func TestFindTaskByRemote_MatchesBothFields(t *testing.T) {
 		t.Fatalf("ID = %q, want %q", got.ID, task1.ID)
 	}
 
-	got2, err := orchestrator.FindTaskByRemote(d.Conn, "PROJ-1", "github")
+	got2, err := orchestrator.FindTaskByRemote(d.Conn, "PROJ-2")
 	if err != nil {
 		t.Fatalf("FindTaskByRemote() error = %v", err)
 	}
-	if got2 == nil {
-		t.Fatal("FindTaskByRemote() = nil, want task2")
-	}
-	if got2.ID != task2.ID {
-		t.Fatalf("ID = %q, want %q", got2.ID, task2.ID)
+	if got2 != nil {
+		t.Fatalf("FindTaskByRemote() = %+v, want nil", got2)
 	}
 }
 
@@ -1024,8 +1013,8 @@ func TestCreateTask_WithDependsOnPayload(t *testing.T) {
 func TestFindTaskByRemote_MultipleMatches_ReturnsLatest(t *testing.T) {
 	d := createTestProject(t)
 
-	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "T1", Behavior: "dev", RemoteID: "PROJ-42", DataSourceID: "jira"}
-	task2 := &orchestrator.Task{ProjectID: "proj-1", Title: "T2", Behavior: "dev", RemoteID: "PROJ-42", DataSourceID: "jira"}
+	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "T1", Behavior: "dev", RemoteID: "PROJ-42"}
+	task2 := &orchestrator.Task{ProjectID: "proj-1", Title: "T2", Behavior: "dev", RemoteID: "PROJ-42"}
 	if err := orchestrator.CreateTask(d.Conn, task1); err != nil {
 		t.Fatalf("create task1: %v", err)
 	}
@@ -1033,7 +1022,7 @@ func TestFindTaskByRemote_MultipleMatches_ReturnsLatest(t *testing.T) {
 		t.Fatalf("create task2 (duplicate remote): %v", err)
 	}
 
-	got, err := orchestrator.FindTaskByRemote(d.Conn, "PROJ-42", "jira")
+	got, err := orchestrator.FindTaskByRemote(d.Conn, "PROJ-42")
 	if err != nil {
 		t.Fatalf("FindTaskByRemote() error = %v", err)
 	}

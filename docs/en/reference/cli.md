@@ -79,7 +79,7 @@ Creating, observing, and updating tasks lives under `boid task`. See [Concepts /
 | `boid task rerun <id> [--auto-start] [--instructions-file FILE]` | Reset a `done` / `aborted` task to `pending` and re-run it under the same ID. |
 | `boid task notify <id> --message MSG [--ask QUESTION] [--question-id ID]` | Send a notification to the user from an agent. Invokes `notify.command` from `~/.config/boid/config.yaml`. With `--ask`, enters Q&A mode and transitions the task to `awaiting`. |
 | `boid task answer --task ID --question-id ID --answer TEXT` | Submit a user reply to an `awaiting` task. Transitions the task `awaiting → executing` and restarts the hook. |
-| `boid task import [-f FILE] [--project ID] [--datasource ID]` | Bulk import tasks from JSONL. |
+| `boid task import [-f FILE] [--project ID]` | Bulk import tasks from JSONL. |
 
 The notify script receives: `BOID_TASK_ID`, `BOID_TASK_TITLE`, `BOID_PROJECT_ID`, `BOID_PROJECT_NAME`, `BOID_MESSAGE`, `BOID_TASK_URL` (set only when `web.public_url` is configured).
 

@@ -895,11 +895,10 @@ func TestWebHandler_PostTaskCreate_RemoteIDAndDatasourceID(t *testing.T) {
 	r := newTestWebHandlerWithTaskCreate(svc)
 
 	body := url.Values{
-		"title":        {"My Task"},
-		"project_id":   {"proj-1"},
-		"behavior":     {"executor"},
-		"remote_id":    {"JIRA-123"},
-		"datasource_id": {"jira"},
+		"title":      {"My Task"},
+		"project_id": {"proj-1"},
+		"behavior":   {"executor"},
+		"remote_id":  {"JIRA-123"},
 	}.Encode()
 	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -916,18 +915,14 @@ func TestWebHandler_PostTaskCreate_RemoteIDAndDatasourceID(t *testing.T) {
 	if call.RemoteID != "JIRA-123" {
 		t.Errorf("RemoteID = %q, want JIRA-123", call.RemoteID)
 	}
-	if call.DataSourceID != "jira" {
-		t.Errorf("DataSourceID = %q, want jira", call.DataSourceID)
-	}
 }
 
-func TestWebHandler_PostEdit_RemoteIDAndDatasourceID(t *testing.T) {
+func TestWebHandler_PostEdit_RemoteID(t *testing.T) {
 	detail := &TaskDetailView{
 		Task: &orchestrator.Task{
-			ID:           "task-1",
-			Status:       orchestrator.TaskStatusPending,
-			RemoteID:     "OLD-1",
-			DataSourceID: "old-ds",
+			ID:       "task-1",
+			Status:   orchestrator.TaskStatusPending,
+			RemoteID: "OLD-1",
 			Instructions: orchestrator.Instructions{{
 				Type:    orchestrator.InstructionTypeExecution,
 				Message: "old message",
@@ -938,12 +933,11 @@ func TestWebHandler_PostEdit_RemoteIDAndDatasourceID(t *testing.T) {
 	r := newTestWebHandlerWithEdit(svc)
 
 	body := url.Values{
-		"title":         {"New Title"},
-		"project_id":    {"proj-1"},
-		"description":   {"new description"},
-		"message":       {"new message"},
-		"remote_id":     {"JIRA-456"},
-		"datasource_id": {"github"},
+		"title":       {"New Title"},
+		"project_id":  {"proj-1"},
+		"description": {"new description"},
+		"message":     {"new message"},
+		"remote_id":   {"JIRA-456"},
 	}.Encode()
 	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/edit", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -959,9 +953,6 @@ func TestWebHandler_PostEdit_RemoteIDAndDatasourceID(t *testing.T) {
 	call := svc.updateTaskCalls[0]
 	if call.RemoteID == nil || *call.RemoteID != "JIRA-456" {
 		t.Errorf("RemoteID = %v, want JIRA-456", call.RemoteID)
-	}
-	if call.DataSourceID == nil || *call.DataSourceID != "github" {
-		t.Errorf("DataSourceID = %v, want github", call.DataSourceID)
 	}
 }
 

@@ -132,7 +132,6 @@ func init() {
 	taskDeleteCmd.Flags().Bool("force", false, "Delete even if task is active")
 	taskImportCmd.Flags().StringP("file", "f", "", "JSONL file to import (default: stdin)")
 	taskImportCmd.Flags().String("project", "", "Override project_id for all tasks (id or name, partial match supported)")
-	taskImportCmd.Flags().String("datasource", "", "Override datasource_id for all tasks")
 	taskUpdateCmd.Flags().StringP("patch-file", "f", "", "Patch file (YAML/JSON) with task fields to update; - for stdin")
 	taskUpdateCmd.Flags().String("payload-file", "", "Payload file (YAML/JSON) merged into task.payload; - for stdin")
 	taskUpdateCmd.Flags().String("instructions-file", "", "Instructions file (YAML/JSON) for role-wise merge; - for stdin")
@@ -459,7 +458,6 @@ func runTaskDelete(cmd *cobra.Command, args []string) error {
 func runTaskImport(cmd *cobra.Command, args []string) error {
 	filePath, _ := cmd.Flags().GetString("file")
 	projectRef, _ := cmd.Flags().GetString("project")
-	datasourceID, _ := cmd.Flags().GetString("datasource")
 
 	var r io.Reader
 	if filePath != "" {
@@ -489,7 +487,7 @@ func runTaskImport(cmd *cobra.Command, args []string) error {
 		projectID = p.ID
 	}
 
-	reqs = applyImportFlags(reqs, projectID, datasourceID)
+	reqs = applyImportFlags(reqs, projectID)
 
 	var result api.ImportResult
 	if err := c.Do("POST", "/api/tasks/import", reqs, &result); err != nil {
@@ -660,13 +658,10 @@ func parseImportLines(r io.Reader) ([]api.CreateTaskRequest, error) {
 	return reqs, nil
 }
 
-func applyImportFlags(reqs []api.CreateTaskRequest, projectID, datasourceID string) []api.CreateTaskRequest {
+func applyImportFlags(reqs []api.CreateTaskRequest, projectID string) []api.CreateTaskRequest {
 	for i := range reqs {
 		if projectID != "" {
 			reqs[i].ProjectID = projectID
-		}
-		if datasourceID != "" {
-			reqs[i].DataSourceID = datasourceID
 		}
 	}
 	return reqs

@@ -101,7 +101,6 @@ title: Full Task
 description: a task with every field
 behavior: dev
 remote_id: REM-1
-datasource_id: ds-github
 traits:
   - artifact
 auto_start: true
@@ -126,9 +125,6 @@ instructions:
 	}
 	if spec.RemoteID != "REM-1" {
 		t.Errorf("RemoteID = %q, want REM-1", spec.RemoteID)
-	}
-	if spec.DataSourceID != "ds-github" {
-		t.Errorf("DataSourceID = %q, want ds-github", spec.DataSourceID)
 	}
 	if !spec.AutoStart {
 		t.Error("AutoStart = false, want true")

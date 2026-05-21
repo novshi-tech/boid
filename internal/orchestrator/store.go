@@ -33,7 +33,7 @@ type TaskFilter struct {
 }
 
 // taskSelectCols は tasks テーブルの基本カラム一覧（テーブル別名 t を使用）。
-const taskSelectCols = `t.id, t.project_id, t.remote_id, t.datasource_id, t.title, t.description,` +
+const taskSelectCols = `t.id, t.project_id, t.remote_id, t.title, t.description,` +
 	` t.status, t.behavior, t.traits, t.readonly, t.worktree,` +
 	` t.branch_prefix, t.base_branch, t.payload, t.instructions, t.auto_start, t.depends_on_payload,` +
 	` t.ref, t.parent_id, t.created_at, t.updated_at`
@@ -82,9 +82,9 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 	}
 
 	_, err = dbtx.Exec(
-		`INSERT INTO tasks (id, project_id, remote_id, datasource_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, instructions, auto_start, depends_on_payload, ref, parent_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.ProjectID, t.RemoteID, t.DataSourceID, t.Title, t.Description, t.Status, t.Behavior, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.AutoStart, t.DependsOnPayload, t.Ref, t.ParentID, t.CreatedAt, t.UpdatedAt,
+		`INSERT INTO tasks (id, project_id, remote_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, instructions, auto_start, depends_on_payload, ref, parent_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.ProjectID, t.RemoteID, t.Title, t.Description, t.Status, t.Behavior, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.AutoStart, t.DependsOnPayload, t.Ref, t.ParentID, t.CreatedAt, t.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
@@ -505,11 +505,11 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 }
 
 // FindTaskByRemote returns the most recently created task (by created_at DESC, id DESC)
-// matching the given remote_id and datasource_id, or nil if no matching task is found.
-func FindTaskByRemote(dbtx db.DBTX, remoteID, datasourceID string) (*Task, error) {
+// matching the given remote_id, or nil if no matching task is found.
+func FindTaskByRemote(dbtx db.DBTX, remoteID string) (*Task, error) {
 	row := dbtx.QueryRow(
-		`SELECT `+taskSelectCols+`, `+taskChildCountCols+` FROM tasks t WHERE t.remote_id = ? AND t.datasource_id = ? ORDER BY t.created_at DESC, t.id DESC LIMIT 1`,
-		remoteID, datasourceID,
+		`SELECT `+taskSelectCols+`, `+taskChildCountCols+` FROM tasks t WHERE t.remote_id = ? ORDER BY t.created_at DESC, t.id DESC LIMIT 1`,
+		remoteID,
 	)
 	t, err := scanTask(row)
 	if err != nil {
@@ -586,7 +586,7 @@ func scanTask(s taskScanner) (*Task, error) {
 	var instructionsJSON string
 	var traitsJSON string
 	if err := s.Scan(
-		&t.ID, &t.ProjectID, &t.RemoteID, &t.DataSourceID, &t.Title, &t.Description,
+		&t.ID, &t.ProjectID, &t.RemoteID, &t.Title, &t.Description,
 		&t.Status, &t.Behavior, &traitsJSON, &t.Readonly, &t.Worktree,
 		&t.BranchPrefix, &t.BaseBranch, &payload, &instructionsJSON, &t.AutoStart, &t.DependsOnPayload,
 		&t.Ref, &t.ParentID, &t.CreatedAt, &t.UpdatedAt,

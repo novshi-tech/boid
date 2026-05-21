@@ -35,7 +35,7 @@ func (s *fieldTaskStore) ListTasks(_ orchestrator.TaskFilter) ([]*orchestrator.T
 }
 func (s *fieldTaskStore) UpdateTask(_ *orchestrator.Task) error { return nil }
 func (s *fieldTaskStore) DeleteTask(_ string) error             { return nil }
-func (s *fieldTaskStore) FindTaskByRemote(_, _ string) (*orchestrator.Task, error) {
+func (s *fieldTaskStore) FindTaskByRemote(_ string) (*orchestrator.Task, error) {
 	return nil, nil
 }
 func (s *fieldTaskStore) FindTaskByRef(_, _ string) (*orchestrator.Task, error) {
