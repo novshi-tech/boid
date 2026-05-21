@@ -2,11 +2,34 @@ package api
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
+
+// errorDispatchCoordinator is a coordinator that always returns an error from
+// DispatchAndAdvance so tests can exercise the dispatch-error abort path.
+type errorDispatchCoordinator struct {
+	err error
+}
+
+func (e *errorDispatchCoordinator) DispatchAndAdvance(_ context.Context, task *orchestrator.Task, _ *orchestrator.ProjectMeta, _ *orchestrator.StateMachine) (*orchestrator.DispatchResult, error) {
+	return nil, e.err
+}
+
+func (e *errorDispatchCoordinator) DispatchEntryGates(_ context.Context, task *orchestrator.Task, _ *orchestrator.ProjectMeta) (*orchestrator.EntryGateResult, error) {
+	return &orchestrator.EntryGateResult{FinalPayload: task.Payload}, nil
+}
+
+func (e *errorDispatchCoordinator) ReplayGate(_ context.Context, task *orchestrator.Task, _ *orchestrator.ProjectMeta, _ *orchestrator.StateMachine, _ string) (*orchestrator.ReplayResult, error) {
+	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
+}
+
+func (e *errorDispatchCoordinator) ReplayHook(_ context.Context, task *orchestrator.Task, _ *orchestrator.ProjectMeta, _ *orchestrator.StateMachine, _ string) (*orchestrator.ReplayResult, error) {
+	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
+}
 
 // holdingDispatchCoordinator runs DispatchAndAdvance synchronously and blocks
 // on a channel so tests can observe the "while-executing" state.
@@ -763,4 +786,108 @@ func TestBranchLock_ApplyAction_ReleasesOnAsk(t *testing.T) {
 	if locks.IsHeldForTask("task-1") {
 		t.Fatal("expected lock released after ask moved task to awaiting")
 	}
+}
+
+// TestBranchLock_RunDispatchLoop_ReleasesOnDispatchError verifies that when
+// DispatchAndAdvance returns an error, the branch lock is released and the
+// task is transitioned to aborted (not left stuck in executing).
+func TestBranchLock_RunDispatchLoop_ReleasesOnDispatchError(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:         "task-fail",
+		ProjectID:  "proj-1",
+		BaseBranch: "main",
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "impl",
+		Payload:    []byte(`{}`),
+	}
+
+	locks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
+	txStore := &recordingTxStore{task: task}
+	svc := &TaskWorkflowService{
+		Tx:          recordingTransactor{store: txStore},
+		Coordinator: &errorDispatchCoordinator{err: errors.New("worktree creation failed")},
+		Lifecycle:   &stubLifecycle{},
+		Locks:       locks,
+	}
+
+	svc.runDispatchLoop(context.Background(), task, anyMeta("impl"), orchestrator.DefaultMachine())
+
+	if locks.IsHeldForTask(task.ID) {
+		t.Fatal("expected lock released after dispatch error")
+	}
+	if txStore.updatedTask == nil {
+		t.Fatal("expected task to be updated in DB after dispatch error")
+	}
+	if txStore.updatedTask.Status != orchestrator.TaskStatusAborted {
+		t.Fatalf("expected task status aborted after dispatch error, got %q", txStore.updatedTask.Status)
+	}
+}
+
+// TestBranchLock_DispatchError_UnblocksSubsequentTask verifies the key scenario
+// from the bug report: when task A fails with dispatch_error, task B (same
+// base_branch) is unblocked and can proceed to dispatch.
+func TestBranchLock_DispatchError_UnblocksSubsequentTask(t *testing.T) {
+	locks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
+
+	taskA := &orchestrator.Task{
+		ID:         "task-a",
+		ProjectID:  "proj-1",
+		BaseBranch: "main",
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "impl",
+		Payload:    []byte(`{}`),
+	}
+	txStoreA := &recordingTxStore{task: taskA}
+	svcA := &TaskWorkflowService{
+		Tx:          recordingTransactor{store: txStoreA},
+		Coordinator: &errorDispatchCoordinator{err: errors.New("worktree creation failed")},
+		Lifecycle:   &stubLifecycle{},
+		Locks:       locks,
+	}
+
+	taskB := &orchestrator.Task{
+		ID:         "task-b",
+		ProjectID:  "proj-1",
+		BaseBranch: "main",
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "impl",
+		Payload:    []byte(`{}`),
+	}
+	taskBDoneInDB := *taskB
+	taskBDoneInDB.Status = orchestrator.TaskStatusDone
+
+	holdingB := newHoldingDispatchCoordinator(&orchestrator.DispatchResult{FinalPayload: taskB.Payload})
+	svcB := &TaskWorkflowService{
+		Tx:          recordingTransactor{store: &recordingTxStore{task: &taskBDoneInDB}},
+		Coordinator: holdingB,
+		Lifecycle:   &stubLifecycle{},
+		Locks:       locks,
+	}
+
+	// Start task B in background — it will block waiting for the lock task A holds.
+	doneB := make(chan struct{})
+	go func() {
+		defer close(doneB)
+		svcB.runDispatchLoop(context.Background(), taskB, anyMeta("impl"), orchestrator.DefaultMachine())
+	}()
+
+	// Task A fails with dispatch error while holding the lock.
+	svcA.runDispatchLoop(context.Background(), taskA, anyMeta("impl"), orchestrator.DefaultMachine())
+
+	if locks.IsHeldForTask(taskA.ID) {
+		t.Fatal("task A: expected lock released after dispatch error")
+	}
+	if txStoreA.updatedTask == nil || txStoreA.updatedTask.Status != orchestrator.TaskStatusAborted {
+		t.Fatalf("task A: expected aborted in DB, got %v", txStoreA.updatedTask)
+	}
+
+	// Task B should now be able to enter dispatch.
+	select {
+	case <-holdingB.enter:
+		// expected
+	case <-time.After(time.Second):
+		t.Fatal("task B never entered dispatch after task A released the lock via dispatch error")
+	}
+	close(holdingB.release)
+	<-doneB
 }
