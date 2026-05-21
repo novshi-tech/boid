@@ -38,7 +38,7 @@ Key columns:
 |---|---|---|
 | `id` | TEXT PK | Task ID (UUID). |
 | `project_id` | TEXT FK → projects.id | Owning project. |
-| `remote_id` / `datasource_id` | TEXT | Mapping to an external issue tracker (optional). |
+| `remote_id` | TEXT | Mapping to an external issue tracker (optional). |
 | `title` / `description` | TEXT | Display fields. |
 | `status` | TEXT | `pending` / `executing` / `done` / `aborted` (legacy `verifying` / `reworking` rows were force-aborted by migration 0022). |
 | `behavior` | TEXT | The behavior name. |
@@ -58,7 +58,7 @@ Key columns:
 - `instructions` — An array of `Instruction` objects. The last element is the active one; `reopen` appends to it.
 - `traits` — A JSON array of trait names this task uses, derived from the behavior.
 
-A partial index on `(remote_id, datasource_id)` enforces uniqueness of the external ID. There is also a partial index on `parent_id` and a unique partial index on `(parent_id, ref)` to prevent collisions in the parent-child reference scheme.
+A partial index on `remote_id` is present. There is also a partial index on `parent_id` and a unique partial index on `(parent_id, ref)` to prevent collisions in the parent-child reference scheme.
 
 ## `actions`
 

@@ -24,8 +24,8 @@ func TestImportTasks_JSONArray(t *testing.T) {
 	createProjectWithBehavior(t, ts, "test-import", "Test Import")
 
 	tasks := []api.CreateTaskRequest{
-		{ProjectID: "test-import", Title: "Task 1", Behavior: "planning", RemoteID: "PROJ-1", DataSourceID: "jira"},
-		{ProjectID: "test-import", Title: "Task 2", Behavior: "planning", RemoteID: "PROJ-2", DataSourceID: "jira"},
+		{ProjectID: "test-import", Title: "Task 1", Behavior: "planning", RemoteID: "PROJ-1"},
+		{ProjectID: "test-import", Title: "Task 2", Behavior: "planning", RemoteID: "PROJ-2"},
 	}
 	body, _ := json.Marshal(tasks)
 
@@ -49,8 +49,8 @@ func TestImportTasks_NDJSON(t *testing.T) {
 	createProjectWithBehavior(t, ts, "test-import-ndjson", "Test Import NDJSON")
 
 	lines := strings.Join([]string{
-		`{"project_id":"test-import-ndjson","title":"Task A","behavior":"planning","remote_id":"PROJ-A","datasource_id":"jira"}`,
-		`{"project_id":"test-import-ndjson","title":"Task B","behavior":"planning","remote_id":"PROJ-B","datasource_id":"jira"}`,
+		`{"project_id":"test-import-ndjson","title":"Task A","behavior":"planning","remote_id":"PROJ-A"}`,
+		`{"project_id":"test-import-ndjson","title":"Task B","behavior":"planning","remote_id":"PROJ-B"}`,
 	}, "\n")
 
 	var result api.ImportResult
@@ -67,7 +67,7 @@ func TestImportTasks_SkipsDuplicate(t *testing.T) {
 	createProjectWithBehavior(t, ts, "test-import-dup", "Test Import Dup")
 
 	tasks := []api.CreateTaskRequest{
-		{ProjectID: "test-import-dup", Title: "Task 1", Behavior: "planning", RemoteID: "PROJ-1", DataSourceID: "jira"},
+		{ProjectID: "test-import-dup", Title: "Task 1", Behavior: "planning", RemoteID: "PROJ-1"},
 	}
 	body, _ := json.Marshal(tasks)
 

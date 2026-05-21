@@ -148,7 +148,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 		if err := s.Locks.AcquireForTask(ctx, current.ProjectID, headBranch, current.ID); err != nil {
 			slog.Warn("dispatch loop: branch lock acquire failed",
 				"task_id", current.ID, "project_id", current.ProjectID, "error", err)
-			s.recordDispatchError(current.ID, current.Status, fmt.Errorf("branch lock: %w", err))
+			s.abortOnDispatchError(ctx, current, fmt.Errorf("branch lock: %w", err))
 			return
 		}
 	}
@@ -157,13 +157,13 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 		result, err := s.Coordinator.DispatchAndAdvance(ctx, current, meta, sm)
 		if err != nil {
 			// Persist any partial FiredEvents first so the failing hook/gate
-			// remains visible in the timeline; recordDispatchError then logs
-			// the dispatcher-level error for context.
+			// remains visible in the timeline; abortOnDispatchError then logs
+			// the dispatcher-level error and transitions the task to aborted.
 			if result != nil {
 				s.persistFiredEvents(current.ID, current.Status, result.FiredEvents)
 			}
 			slog.Error("dispatch loop error", "task_id", current.ID, "cycle", cycle, "error", err)
-			s.recordDispatchError(current.ID, current.Status, err)
+			s.abortOnDispatchError(ctx, current, err)
 			return
 		}
 
@@ -209,6 +209,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			return nil
 		}); err != nil {
 			slog.Error("persist payload failed", "task_id", current.ID, "error", err)
+			s.abortOnDispatchError(ctx, current, fmt.Errorf("persist payload: %w", err))
 			return
 		}
 		current = persisted
@@ -273,7 +274,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 					s.persistFiredEvents(current.ID, current.Status, entryResult.FiredEvents)
 				}
 				slog.Error("entry gate dispatch failed", "task_id", current.ID, "error", err)
-				s.recordDispatchError(current.ID, current.Status, err)
+				s.abortOnDispatchError(ctx, current, err)
 				return
 			}
 			s.persistFiredEvents(current.ID, current.Status, entryResult.FiredEvents)
@@ -283,6 +284,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 					return tx.UpdateTask(current)
 				}); err != nil {
 					slog.Error("persist entry gate payload failed", "task_id", current.ID, "error", err)
+					s.abortOnDispatchError(ctx, current, fmt.Errorf("persist entry gate payload: %w", err))
 					return
 				}
 			}
@@ -351,6 +353,37 @@ func (s *TaskWorkflowService) recordDispatchError(taskID string, taskStatus orch
 	}); txErr != nil {
 		slog.Error("persist dispatch error failed", "task_id", taskID, "error", txErr)
 	}
+}
+
+// abortOnDispatchError records a dispatch_error action for the audit trail and
+// then transitions the task to aborted so the branch lock is released and
+// terminal cleanup (worktree removal, lifecycle window) runs. Safe to call
+// even when the lock was never acquired — releaseProjectLock is idempotent.
+func (s *TaskWorkflowService) abortOnDispatchError(ctx context.Context, task *orchestrator.Task, err error) {
+	s.recordDispatchError(task.ID, task.Status, err)
+
+	abortPayload, _ := json.Marshal(map[string]string{
+		"code":    "dispatch_error",
+		"message": err.Error(),
+	})
+	abortAction := &orchestrator.Action{
+		TaskID:     task.ID,
+		Type:       "abort",
+		FromStatus: task.Status,
+		ToStatus:   orchestrator.TaskStatusAborted,
+		Payload:    abortPayload,
+	}
+	task.Status = orchestrator.TaskStatusAborted
+	if txErr := s.Tx.WithinTx(func(tx TxStore) error {
+		if updErr := tx.UpdateTask(task); updErr != nil {
+			return updErr
+		}
+		return tx.CreateAction(abortAction)
+	}); txErr != nil {
+		slog.Error("abort on dispatch error: persist abort failed",
+			"task_id", task.ID, "error", txErr)
+	}
+	s.finalizeTerminal(ctx, task)
 }
 
 func (s *TaskWorkflowService) persistFiredEvents(taskID string, status orchestrator.TaskStatus, events []orchestrator.FiredEvent) {

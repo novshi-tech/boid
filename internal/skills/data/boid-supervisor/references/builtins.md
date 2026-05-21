@@ -129,7 +129,7 @@ boid task delete <task-id> [--force]
 ## boid task import
 
 ```bash
-boid task import [-f <file>] [--project <id>] [--datasource <id>]
+boid task import [-f <file>] [--project <id>]
 ```
 
 Bulk-imports tasks from a JSONL stream. Used by data-source integrations (Jira, To Do, etc.); supervisors generally do not need it.

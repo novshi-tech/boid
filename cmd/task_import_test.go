@@ -81,7 +81,7 @@ func TestApplyImportFlags_OverridesProject(t *testing.T) {
 		{ProjectID: "old-project", Title: "Task 2", Behavior: "dev"},
 	}
 
-	result := applyImportFlags(reqs, "new-project", "")
+	result := applyImportFlags(reqs, "new-project")
 	for i, r := range result {
 		if r.ProjectID != "new-project" {
 			t.Errorf("reqs[%d].ProjectID = %q, want %q", i, r.ProjectID, "new-project")
@@ -89,28 +89,14 @@ func TestApplyImportFlags_OverridesProject(t *testing.T) {
 	}
 }
 
-func TestApplyImportFlags_OverridesDatasource(t *testing.T) {
+func TestApplyImportFlags_EmptyFlagNoChange(t *testing.T) {
 	reqs := []api.CreateTaskRequest{
-		{DataSourceID: "old-ds", Title: "Task 1", Behavior: "dev"},
+		{ProjectID: "proj", Title: "Task 1", Behavior: "dev"},
 	}
 
-	result := applyImportFlags(reqs, "", "new-ds")
-	if result[0].DataSourceID != "new-ds" {
-		t.Errorf("DataSourceID = %q, want %q", result[0].DataSourceID, "new-ds")
-	}
-}
-
-func TestApplyImportFlags_EmptyFlagsNoChange(t *testing.T) {
-	reqs := []api.CreateTaskRequest{
-		{ProjectID: "proj", DataSourceID: "ds", Title: "Task 1", Behavior: "dev"},
-	}
-
-	result := applyImportFlags(reqs, "", "")
+	result := applyImportFlags(reqs, "")
 	if result[0].ProjectID != "proj" {
 		t.Errorf("ProjectID should not change: %q", result[0].ProjectID)
-	}
-	if result[0].DataSourceID != "ds" {
-		t.Errorf("DataSourceID should not change: %q", result[0].DataSourceID)
 	}
 }
 
@@ -127,8 +113,8 @@ func TestRunTaskImport_FileInput(t *testing.T) {
 
 	// JSONL ファイルを作成
 	lines := strings.Join([]string{
-		`{"project_id":"import-proj","title":"Task A","behavior":"dev","remote_id":"RA","datasource_id":"src"}`,
-		`{"project_id":"import-proj","title":"Task B","behavior":"dev","remote_id":"RB","datasource_id":"src"}`,
+		`{"project_id":"import-proj","title":"Task A","behavior":"dev","remote_id":"RA"}`,
+		`{"project_id":"import-proj","title":"Task B","behavior":"dev","remote_id":"RB"}`,
 	}, "\n")
 
 	tmpFile := filepath.Join(t.TempDir(), "tasks.jsonl")
@@ -144,7 +130,6 @@ func TestRunTaskImport_FileInput(t *testing.T) {
 	cmd.ResetFlags()
 	cmd.Flags().StringP("file", "f", "", "JSONL file")
 	cmd.Flags().String("project", "", "project override")
-	cmd.Flags().String("datasource", "", "datasource override")
 	if err := cmd.Flags().Set("file", tmpFile); err != nil {
 		t.Fatalf("set --file: %v", err)
 	}
@@ -171,7 +156,7 @@ func TestRunTaskImport_ProjectFlag(t *testing.T) {
 	}
 
 	// JSONL に project_id なし → --project フラグで補完
-	line := `{"title":"Task X","behavior":"dev","remote_id":"RX","datasource_id":"src"}`
+	line := `{"title":"Task X","behavior":"dev","remote_id":"RX"}`
 
 	tmpFile := filepath.Join(t.TempDir(), "tasks.jsonl")
 	if err := os.WriteFile(tmpFile, []byte(line), 0o644); err != nil {
@@ -186,7 +171,6 @@ func TestRunTaskImport_ProjectFlag(t *testing.T) {
 	cmd.ResetFlags()
 	cmd.Flags().StringP("file", "f", "", "JSONL file")
 	cmd.Flags().String("project", "", "project override")
-	cmd.Flags().String("datasource", "", "datasource override")
 	if err := cmd.Flags().Set("file", tmpFile); err != nil {
 		t.Fatalf("set --file: %v", err)
 	}
@@ -230,7 +214,6 @@ func TestRunTaskImport_ErrorsToStderr(t *testing.T) {
 	cmd.ResetFlags()
 	cmd.Flags().StringP("file", "f", "", "JSONL file")
 	cmd.Flags().String("project", "", "project override")
-	cmd.Flags().String("datasource", "", "datasource override")
 	if err := cmd.Flags().Set("file", tmpFile); err != nil {
 		t.Fatalf("set --file: %v", err)
 	}

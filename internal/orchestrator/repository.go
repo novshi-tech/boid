@@ -47,8 +47,8 @@ func (r *TaskRepository) DeleteTask(id string) error {
 	})
 }
 
-func (r *TaskRepository) FindTaskByRemote(remoteID, datasourceID string) (*Task, error) {
-	return FindTaskByRemote(r.db, remoteID, datasourceID)
+func (r *TaskRepository) FindTaskByRemote(remoteID string) (*Task, error) {
+	return FindTaskByRemote(r.db, remoteID)
 }
 
 func (r *TaskRepository) FindTaskByRef(ref, parentID string) (*Task, error) {
