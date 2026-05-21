@@ -123,7 +123,7 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 	}
 
 	ctx := sandbox.TokenContext{
-		Role:              "gate",
+		Role:              "hook",
 		ProjectID:         project.ID,
 		WorkspaceID:       project.WorkspaceID,
 		AllowedProjectIDs: allowedProjectIDs,

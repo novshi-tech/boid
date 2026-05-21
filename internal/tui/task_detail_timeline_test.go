@@ -38,12 +38,12 @@ func TestJobDuration_ZeroUpdatedAt(t *testing.T) {
 func TestBuildJobTimelineLabel_Completed(t *testing.T) {
 	now := time.Now()
 	j := &api.Job{
-		Role: "gate", Status: api.JobStatusCompleted, ExitCode: 0,
+		Role: "main", Status: api.JobStatusCompleted, ExitCode: 0,
 		CreatedAt: now.Add(-30 * time.Second), UpdatedAt: now,
 	}
 	label := buildJobTimelineLabel(j)
-	if !containsStr(label, "[gate]") {
-		t.Errorf("completed label: expected '[gate]', got %q", label)
+	if !containsStr(label, "[main]") {
+		t.Errorf("completed label: expected '[main]', got %q", label)
 	}
 	if !containsStr(label, "✓") {
 		t.Errorf("completed label: expected '✓', got %q", label)
@@ -155,10 +155,10 @@ func TestBuildTreeTimeline_ActionLabel_Transition(t *testing.T) {
 	}
 }
 
-// TestBuildTreeTimeline_DropsHookAndGateFiredActions verifies that hook_fired /
-// exit_gate_fired / entry_gate_fired action events are excluded — the
-// corresponding job event already conveys hook id, success, and duration.
-func TestBuildTreeTimeline_DropsHookAndGateFiredActions(t *testing.T) {
+// TestBuildTreeTimeline_DropsHookFiredActions verifies that hook_fired action
+// events are excluded — the corresponding job event already conveys hook id,
+// success, and duration.
+func TestBuildTreeTimeline_DropsHookFiredActions(t *testing.T) {
 	now := time.Now()
 	detail := &api.TaskDetailView{
 		Task: &orchestrator.Task{ID: "t", Status: orchestrator.TaskStatusExecuting, CreatedAt: now.Add(-5 * time.Minute)},
@@ -176,22 +176,13 @@ func TestBuildTreeTimeline_DropsHookAndGateFiredActions(t *testing.T) {
 				Payload:    json.RawMessage(`{"hook_id":"x/y","success":true}`),
 				CreatedAt:  now.Add(-3 * time.Minute),
 			},
-			{
-				ID: "a3", Type: "exit_gate_fired",
-				FromStatus: orchestrator.TaskStatusExecuting,
-				ToStatus:   orchestrator.TaskStatusExecuting,
-				Payload:    json.RawMessage(`{"hook_id":"x/z","success":true}`),
-				CreatedAt:  now.Add(-2 * time.Minute),
-			},
 		},
 	}
 	groups := buildTreeTimeline(detail)
 	for _, g := range groups {
 		for _, ev := range g.Events {
-			if containsStr(ev.Label, "hook_fired") ||
-				containsStr(ev.Label, "exit_gate_fired") ||
-				containsStr(ev.Label, "entry_gate_fired") {
-				t.Errorf("hook/gate fired action should be dropped, got label %q", ev.Label)
+			if containsStr(ev.Label, "hook_fired") {
+				t.Errorf("hook_fired action should be dropped, got label %q", ev.Label)
 			}
 		}
 	}

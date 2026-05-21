@@ -6,10 +6,8 @@ import (
 )
 
 // PolicyContext carries non-role data needed to compute role-derived policies.
-// ProjectDir lets gate boid policy accept the host project dir as cwd (gate
-// sandboxes do not mount it under the entry root). HomeDir accepts the
-// sandbox HOME, which is the default WorkDir for gate jobs (their
-// Visibility.ProjectDir is empty, so resolveWorkDir falls back to HOME).
+// ProjectDir lets boid policy accept the host project dir as cwd.
+// HomeDir accepts the sandbox HOME, which is the default WorkDir for hook jobs.
 type PolicyContext struct {
 	ProjectDir string
 	HomeDir    string

@@ -19,7 +19,6 @@ type WebAppService struct {
 	Meta       MetaStore
 	Workflow   WorkflowService
 	TaskSvc    TaskService
-	Gates      GateService
 	Hooks      HookService
 	Answerer   TaskAnswerService // optional: enables POST /tasks/{id}/answer
 }
@@ -201,20 +200,6 @@ func (s *WebAppService) ReopenTask(id string, req ReopenTaskRequest) error {
 	}
 	_, err := s.Workflow.ApplyAction(context.Background(), id, ApplyActionRequest{Type: "reopen", Payload: payload})
 	return err
-}
-
-func (s *WebAppService) ListGatesForStatus(taskID, status string) ([]orchestrator.Gate, error) {
-	if s.Gates == nil {
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "gate service not configured"}
-	}
-	return s.Gates.ListGatesForStatus(taskID, status)
-}
-
-func (s *WebAppService) ReplayGate(ctx context.Context, taskID string, req ReplayGateRequest) (*ReplayGateResult, error) {
-	if s.Gates == nil {
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "gate service not configured"}
-	}
-	return s.Gates.ReplayGate(ctx, taskID, req)
 }
 
 func (s *WebAppService) ListHooksForStatus(taskID, status string) ([]orchestrator.Hook, error) {

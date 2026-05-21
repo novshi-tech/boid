@@ -29,14 +29,6 @@ func (a *OrchestratorAdapter) ExecuteHook(ctx context.Context, event *orchestrat
 	return a.dispatcher.Dispatch(ctx, spec, cleanup)
 }
 
-func (a *OrchestratorAdapter) ExecuteGate(ctx context.Context, event *orchestrator.GateFireEvent) (string, error) {
-	spec, cleanup, err := a.planner.PlanGate(event)
-	if err != nil {
-		return "", err
-	}
-	return a.dispatcher.Dispatch(ctx, spec, cleanup)
-}
-
 func (a *OrchestratorAdapter) WaitForJob(ctx context.Context, jobID string) (orchestrator.JobCompletion, error) {
 	result, err := a.dispatcher.WaitForJobCtx(ctx, jobID)
 	return orchestrator.JobCompletion{

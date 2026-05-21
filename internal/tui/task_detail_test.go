@@ -829,8 +829,8 @@ func TestParseOpenFindings_OpenAndResolved(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("want 1 open finding, got %d", len(findings))
 	}
-	if findings[0].gate != "mergeable-check" {
-		t.Errorf("gate: want %q, got %q", "mergeable-check", findings[0].gate)
+	if findings[0].key != "mergeable-check" {
+		t.Errorf("key: want %q, got %q", "mergeable-check", findings[0].key)
 	}
 	if findings[0].message != "2 conflicts" {
 		t.Errorf("message: want %q, got %q", "2 conflicts", findings[0].message)

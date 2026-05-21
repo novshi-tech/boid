@@ -8,33 +8,6 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-func TestBuild_DropsGateJobs(t *testing.T) {
-	now := time.Now()
-	task := &orchestrator.Task{Status: "executing", CreatedAt: now.Add(-10 * time.Second)}
-	actions := []*orchestrator.Action{
-		{Type: "start", FromStatus: "pending", ToStatus: "executing", CreatedAt: now.Add(-5 * time.Second)},
-	}
-	jobs := []*JobInfo{
-		{ID: "j1", Role: "gate", Status: JobStatusCompleted, CreatedAt: now.Add(-4 * time.Second), UpdatedAt: now.Add(-3 * time.Second)},
-		{ID: "j2", Role: "exit_gate", Status: JobStatusCompleted, CreatedAt: now.Add(-3 * time.Second), UpdatedAt: now.Add(-2 * time.Second)},
-		{ID: "j3", Role: "entry_gate", Status: JobStatusCompleted, CreatedAt: now.Add(-2 * time.Second), UpdatedAt: now.Add(-time.Second)},
-		{ID: "j4", Role: "hook", Status: JobStatusCompleted, CreatedAt: now.Add(-time.Second), UpdatedAt: now},
-	}
-
-	groups := Build(task, actions, jobs)
-
-	for _, g := range groups {
-		for _, ev := range g.Events {
-			if ev.Kind != KindJob {
-				continue
-			}
-			if IsGateRole(ev.Job.Role) {
-				t.Errorf("gate job role %q should be excluded from timeline", ev.Job.Role)
-			}
-		}
-	}
-}
-
 func TestBuild_KeepsHookJobs(t *testing.T) {
 	now := time.Now()
 	task := &orchestrator.Task{Status: "executing", CreatedAt: now.Add(-10 * time.Second)}
@@ -124,17 +97,3 @@ func TestBuildJobLabel_ExecutorRoleKeepsPrefix(t *testing.T) {
 	}
 }
 
-func TestIsGateRole(t *testing.T) {
-	gateRoles := []string{"gate", "exit_gate", "entry_gate"}
-	for _, r := range gateRoles {
-		if !IsGateRole(r) {
-			t.Errorf("IsGateRole(%q) = false, want true", r)
-		}
-	}
-	nonGateRoles := []string{"hook", "exec", "", "dispatcher"}
-	for _, r := range nonGateRoles {
-		if IsGateRole(r) {
-			t.Errorf("IsGateRole(%q) = true, want false", r)
-		}
-	}
-}

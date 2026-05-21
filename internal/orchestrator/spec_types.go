@@ -234,7 +234,6 @@ type Role string
 
 const (
 	RoleHook Role = "hook"
-	RoleGate Role = "gate"
 )
 
 type Hook struct {
@@ -275,75 +274,12 @@ func hookIDFromNode(node *yaml.Node) string {
 	return "<unknown>"
 }
 
-// GatePhase determines when a gate fires relative to a state transition.
-type GatePhase string
-
-const (
-	GatePhaseEntry GatePhase = "entry"
-	GatePhaseExit  GatePhase = "exit"
-)
-
-type Gate struct {
-	ID         string        `yaml:"id" json:"id"`
-	Phase      GatePhase     `yaml:"phase,omitempty" json:"phase,omitempty"`
-	Traits     HandlerTraits `yaml:"traits" json:"traits"`
-	Kit        string        `yaml:"-" json:"kit,omitempty"`
-	ScriptPath string        `yaml:"-" json:"-"`
-}
-
-// UnmarshalYAML defaults Phase to GatePhaseExit when omitted.
-// Rejects `kind:` because gates cannot participate in instructions routing
-// (project directory is not mounted, so no agent can do meaningful work).
-// Rejects `on:` since gates are scoped to task entry/exit, not per-state.
-func (g *Gate) UnmarshalYAML(node *yaml.Node) error {
-	if node.Kind == yaml.MappingNode {
-		for i := 0; i+1 < len(node.Content); i += 2 {
-			switch node.Content[i].Value {
-			case "kind":
-				return fmt.Errorf("gate %q: 'kind' is not supported on gates", gateIDFromNode(node))
-			case "on":
-				return fmt.Errorf("gate %q: 'on:' is no longer supported (gates run on task entry/exit, set 'phase: entry|exit' instead)", gateIDFromNode(node))
-			}
-		}
-	}
-	type gateAlias Gate
-	var alias gateAlias
-	if err := node.Decode(&alias); err != nil {
-		return err
-	}
-	*g = Gate(alias)
-	if g.Phase == "" {
-		g.Phase = GatePhaseExit
-	}
-	return nil
-}
-
-// gateIDFromNode extracts the id value from a gate YAML mapping, if present.
-// Used only for error messages.
-func gateIDFromNode(node *yaml.Node) string {
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == "id" {
-			return node.Content[i+1].Value
-		}
-	}
-	return "<unknown>"
-}
-
 type HookFireEvent struct {
 	EventID   string
 	TaskID    string
 	ProjectID string
 	Hook      Hook
 }
-
-type GateFireEvent struct {
-	EventID         string
-	TaskID          string
-	ProjectID       string
-	Gate            Gate
-	TaskPayloadJSON string // hook-updated payload to override DB value; empty = use DB
-}
-
 
 type RawPayload json.RawMessage
 
@@ -424,7 +360,6 @@ type TaskBehavior struct {
 	// Resolved fields populated by ReadProjectMetaWithKits after merging kit data
 	// and project-level overlays. These are not serialized to YAML.
 	Hooks              []Hook            `yaml:"-" json:"-"`
-	Gates              []Gate            `yaml:"-" json:"-"`
 	Env                map[string]string `yaml:"-" json:"-"`
 	HostCommands       HostCommands      `yaml:"-" json:"-"`
 	AdditionalBindings []BindMount       `yaml:"-" json:"-"`
@@ -519,12 +454,10 @@ type KitMeta struct {
 	TaskBehaviors      map[string]TaskBehavior `yaml:"task_behaviors"`
 	Commands           map[string]CommandSpec  `yaml:"commands,omitempty"`
 	Hooks              []Hook                  `yaml:"hooks"`
-	Gates              []Gate                  `yaml:"gates"`
 	HostCommands       HostCommands            `yaml:"host_commands"`
 	AdditionalBindings []BindMount             `yaml:"additional_bindings"`
 	Env                map[string]string       `yaml:"env"`
 	HooksDir           string                  `yaml:"-"`
-	GatesDir           string                  `yaml:"-"`
 	KitRoot            string                  `yaml:"-"` // directory containing kit.yaml
 
 	// Init-time metadata — not merged into runtime spec by MergeKitMeta.

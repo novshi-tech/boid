@@ -8,13 +8,6 @@ import (
 	"github.com/novshi-tech/boid/web/templates/components"
 )
 
-// gateReplayPath は gate ID が '/' を含む (kit-name/gate-name 形式) ため、
-// chi の単一セグメント match に合わせて %2F へエンコードする。
-// 素のまま連結すると 404 になる (CLI/TUI と同じ罠なので共通化)。
-func gateReplayPath(taskID, gateID string) string {
-	return fmt.Sprintf("/tasks/%s/gates/%s/replay", url.PathEscape(taskID), url.PathEscape(gateID))
-}
-
 // hookReplayPath は hook ID が '/' を含む (kit-name/hook-name 形式) ため、
 // chi の単一セグメント match に合わせて %2F へエンコードする。
 func hookReplayPath(taskID, hookID string) string {
@@ -29,7 +22,6 @@ type JobContextView struct {
 	HandlerID   string
 	DisplayName string // optional; preferred over HandlerID when non-empty (hook job's `name`)
 	Role        string
-	GateID      string // set when job is a gate job; used for gate replay form
 	HookID      string // set when job is a hook job; used for hook replay form
 	Status      string
 	ExitCode    int
@@ -113,9 +105,9 @@ templ JobDetail(job *JobContextView) {
 		</div>
 		<section class="job-output">
 			<h2 class="section-title">Output</h2>
-			if job.Interactive && job.Status == "running" && job.GateID == "" {
+			if job.Interactive && job.Status == "running" {
 				@components.Terminal(job.ID, "/api/jobs/"+job.ID+"/attach/ws")
-			} else if job.Interactive && job.GateID == "" {
+			} else if job.Interactive {
 				// 完了後の transcript は ANSI エスケープを含むため再現が困難。
 				<p class="job-log-note">
 					This job is interactive. Live output is not available
@@ -143,21 +135,16 @@ templ JobDetail(job *JobContextView) {
 				}
 			}
 		</section>
-		if job.GateID != "" || job.HookID != "" || (job.Interactive && job.Status == "running" && job.GateID == "") {
+		if job.HookID != "" || (job.Interactive && job.Status == "running") {
 			<div class="action-bar">
 				<div class="action-bar-inner">
-					if job.GateID != "" {
-						<form method="post" action={ templ.SafeURL(gateReplayPath(job.TaskID, job.GateID)) } onsubmit="return confirm('Replay this gate?')" class="action-bar-primary-form">
-							<button type="submit" class="btn btn-primary">Replay gate</button>
-						</form>
-					}
 					if job.HookID != "" {
 						<form method="post" action={ templ.SafeURL(hookReplayPath(job.TaskID, job.HookID)) } onsubmit="return confirm('Replay this hook?')" class="action-bar-primary-form">
 							<button type="submit" class="btn btn-primary">Replay hook</button>
 						</form>
 					}
 					<span class="action-bar-spacer"></span>
-					if job.Interactive && job.Status == "running" && job.GateID == "" {
+					if job.Interactive && job.Status == "running" {
 						<a href={ templ.SafeURL("/jobs/" + job.ID + "/terminal") } target="_blank" rel="noopener" class="btn btn-secondary">Open Fullscreen</a>
 					}
 				</div>

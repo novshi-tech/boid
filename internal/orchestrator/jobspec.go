@@ -5,14 +5,13 @@ import "encoding/json"
 // JobKind is a DB / observability label for a job. It is NOT a sandbox
 // construction signal — dispatcher's mount/env logic must derive everything
 // from Visibility / HostCommands / Instruction, never from Kind. Kind exists
-// purely so the Job row / TUI can tell apart "agent hook", "verification
-// gate", and "user-initiated exec" without re-deriving the category from
-// loosely-related primitives like HandlerID.
+// purely so the Job row / TUI can tell apart "agent hook" and "user-initiated
+// exec" without re-deriving the category from loosely-related primitives like
+// HandlerID.
 type JobKind string
 
 const (
 	JobKindHook JobKind = "hook"
-	JobKindGate JobKind = "gate"
 	JobKindExec JobKind = "exec"
 )
 
@@ -30,24 +29,22 @@ type JobSpec struct {
 	HandlerID   string
 	DisplayName string // human-readable label for the hook; not stored in DB
 
-	// Kind is a DB-label / TUI-display category. Dispatcher uses Kind to
-	// route gate jobs to host-direct execution; sandbox construction details
+	// Kind is a DB-label / TUI-display category. Sandbox construction details
 	// MUST NOT branch on this value.
 	Kind JobKind
 
 	// Argv is the command to execute. Argv[0] is either a host absolute path
-	// (hook / gate scripts) or a bare command name resolved via broker shim
+	// (hook scripts) or a bare command name resolved via broker shim
 	// (boid exec). Everything after Argv[0] is passed as-is.
 	Argv []string
 
 	// Instruction, when non-nil, materializes at $HOME/.boid/context/instructions.yaml
 	// and identifies the agent that should pick up the job. Agent-less jobs
-	// (gate scripts, boid exec) leave this nil.
+	// (boid exec) leave this nil.
 	Instruction *RoutedInstruction
 
-	// Task, when non-nil, materializes at $HOME/.boid/context/task.yaml. Gate
-	// jobs typically leave this nil and receive task data through PrimaryInput
-	// instead; boid-exec jobs always leave it nil.
+	// Task, when non-nil, materializes at $HOME/.boid/context/task.yaml.
+	// boid-exec jobs always leave it nil.
 	Task *TaskSnapshot
 
 	// PrimaryInput is the payload the script expects to read on stdin (or,
@@ -62,9 +59,8 @@ type JobSpec struct {
 	// BuiltinPolicies authorises broker-mediated builtin operations (boid, git).
 	BuiltinPolicies map[string]BuiltinPolicy
 
-	// HostCommands authorises broker-mediated host command invocations. Hook
-	// jobs leave this empty; exec jobs populate it from behavior. Gate jobs
-	// always run on the host directly and never use broker-mediated commands.
+	// HostCommands authorises broker-mediated host command invocations.
+	// Hook jobs leave this empty; exec jobs populate it from behavior.
 	HostCommands map[string]CommandDef
 
 	// SecretNamespace scopes the broker's secret resolver.
@@ -89,8 +85,8 @@ type JobSpec struct {
 // writable. orchestrator sets this once per JobSpec; dispatcher turns it into
 // mount entries with no further role-aware logic.
 type Visibility struct {
-	// ProjectDir is the host path to the project working directory. Empty
-	// means the project filesystem is not visible at all (gate jobs).
+	// ProjectDir is the host path to the project working directory.
+	// Empty means the project filesystem is not visible.
 	ProjectDir string
 
 	// UseWorktree asks dispatcher to replace ProjectDir with a per-task git
@@ -123,7 +119,7 @@ type TaskSnapshot struct {
 }
 
 // CleanupFunc releases transient resources created while planning a JobSpec
-// (e.g. staging directories for hook/gate scripts). dispatcher invokes it
+// (e.g. staging directories for hook scripts). dispatcher invokes it
 // after the sandbox process has exited. A nil CleanupFunc means nothing to
 // release.
 type CleanupFunc func()

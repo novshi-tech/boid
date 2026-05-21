@@ -79,7 +79,6 @@ type TaskAnswerService interface {
 
 type TaskHandler struct {
 	Service    TaskService
-	Gates      GateService             // optional: enables gate replay/list when set
 	Hooks      HookService             // optional: enables hook replay/list when set
 	Notifier   TaskNotifyService       // optional: enables POST /{id}/notify when set
 	Answerer   TaskAnswerService       // optional: enables POST /{id}/answer when set
@@ -100,10 +99,6 @@ func (h *TaskHandler) Routes() chi.Router {
 	r.Post("/{id}/rerun", h.Rerun)
 	r.Get("/{id}/commands", h.ListTaskCommands)
 	r.Post("/{id}/commands/{name}/execute", h.ExecuteTaskCommand)
-	if h.Gates != nil {
-		r.Get("/{id}/gates", h.ListGates)
-		r.Post("/{id}/gates/{gate_id}/replay", h.ReplayGate)
-	}
 	if h.Hooks != nil {
 		r.Get("/{id}/hooks", h.ListHooks)
 		r.Post("/{id}/hooks/{hook_id}/replay", h.ReplayHook)
@@ -396,51 +391,6 @@ func (h *TaskHandler) Rerun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, task)
-}
-
-// replayGateBody is the optional request body for gate replay.
-type replayGateBody struct {
-	Status string `json:"status,omitempty"`
-}
-
-func (h *TaskHandler) ReplayGate(w http.ResponseWriter, r *http.Request) {
-	taskID := chi.URLParam(r, "id")
-	// gate IDs contain '/' (kit-name/gate-name); the CLI encodes them as %2F
-	// so chi treats them as a single path segment. chi.URLParam returns the
-	// raw value so we have to undo the encoding here.
-	gateID, err := url.PathUnescape(chi.URLParam(r, "gate_id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid gate id")
-		return
-	}
-
-	var body replayGateBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err.Error() != "EOF" {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
-	result, err := h.Gates.ReplayGate(r.Context(), taskID, ReplayGateRequest{
-		GateID: gateID,
-		Status: body.Status,
-	})
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
-}
-
-func (h *TaskHandler) ListGates(w http.ResponseWriter, r *http.Request) {
-	taskID := chi.URLParam(r, "id")
-	status := r.URL.Query().Get("status")
-
-	gates, err := h.Gates.ListGatesForStatus(taskID, status)
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, gates)
 }
 
 // replayHookBody is the optional request body for hook replay.

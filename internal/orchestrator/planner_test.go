@@ -44,14 +44,10 @@ func (s stubTaskLookup) GetTask(id string) (*Task, error) {
 }
 
 // Hooks include boid and git as builtin policies; host commands are propagated
-// from behavior (nil when behavior has none). Gates run directly on the host
-// and have no builtin policies or host commands (no broker is involved).
-func TestDispatchPlannerInjectsDefaultBuiltinsForHookAndGate(t *testing.T) {
+// from behavior (nil when behavior has none).
+func TestDispatchPlannerInjectsDefaultBuiltinsForHook(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "gates"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
@@ -77,30 +73,6 @@ func TestDispatchPlannerInjectsDefaultBuiltinsForHookAndGate(t *testing.T) {
 	}
 	if hookReq.HostCommands != nil {
 		t.Fatalf("hook host commands = %#v, want nil", hookReq.HostCommands)
-	}
-
-	gateReq, gateCleanup, err := planner.PlanGate(&GateFireEvent{
-		EventID:   "event-2",
-		TaskID:    "task-1",
-		ProjectID: "proj-1",
-		Gate: Gate{
-			ID:         "gate-1",
-			ScriptPath: filepath.Join(projectDir, ".boid/gates", "gate-1.sh"),
-		},
-	})
-	if err != nil {
-		t.Fatalf("PlanGate: %v", err)
-	}
-	if gateCleanup != nil {
-		defer gateCleanup()
-	}
-
-	// Gates run directly on the host; no broker policies are needed.
-	if len(gateReq.BuiltinPolicies) != 0 {
-		t.Fatalf("gate builtin policies = %#v, want nil (gates use host-direct, no broker)", gateReq.BuiltinPolicies)
-	}
-	if len(gateReq.HostCommands) != 0 {
-		t.Fatalf("gate host commands = %#v, want nil (gates use host-direct, no broker)", gateReq.HostCommands)
 	}
 }
 
@@ -144,8 +116,7 @@ func TestPlanHook_UsesScriptPathDirectlyAndSetsKitRoots(t *testing.T) {
 
 // Hook jobs always request an interactive PTY: agent runners (claude code etc.)
 // are launched via real PTY sessions and rely on daemon-side SIGTERM (on
-// `boid task notify --ask` or `boid job done`) to terminate. Gate jobs run on
-// the host directly and have no use for the flag.
+// `boid task notify --ask` or `boid job done`) to terminate.
 func TestPlanHook_AlwaysInteractive(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
@@ -171,72 +142,8 @@ func TestPlanHook_AlwaysInteractive(t *testing.T) {
 	if !hookReq.Interactive {
 		t.Errorf("PlanHook spec.Interactive = false, want true (hook jobs must allocate a PTY)")
 	}
-
-	// Sanity: gate jobs do NOT inherit Interactive — they run on host and have
-	// no PTY to drive.
-	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "gates"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	gateReq, gateCleanup, err := planner.PlanGate(&GateFireEvent{
-		EventID:   "event-2",
-		TaskID:    "task-1",
-		ProjectID: "proj-1",
-		Gate: Gate{
-			ID:         "gate-1",
-			ScriptPath: filepath.Join(projectDir, ".boid/gates", "gate-1.sh"),
-		},
-	})
-	if err != nil {
-		t.Fatalf("PlanGate: %v", err)
-	}
-	if gateCleanup != nil {
-		defer gateCleanup()
-	}
-	if gateReq.Interactive {
-		t.Errorf("PlanGate spec.Interactive = true, want false (gates run host-direct without a PTY)")
-	}
 }
 
-// PlanGate uses Gate.ScriptPath directly as Argv[0]. No staging directory is
-// created. Gates run on the host directly, so Visibility (including KitRoots)
-// is not populated.
-func TestPlanGate_UsesScriptPathDirectly(t *testing.T) {
-	projectDir := t.TempDir()
-	kitRoot := t.TempDir()
-	kitGatesDir := filepath.Join(kitRoot, "gates")
-	if err := os.MkdirAll(kitGatesDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	scriptPath := filepath.Join(kitGatesDir, "gate-1.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/bash\n"), 0o755); err != nil {
-		t.Fatalf("write kit gate: %v", err)
-	}
-
-	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{
-		KitRoots: []string{kitRoot},
-	}, &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
-
-	req, cleanup, err := planner.PlanGate(&GateFireEvent{
-		EventID:   "event-1",
-		TaskID:    "task-1",
-		ProjectID: "proj-1",
-		Gate:      Gate{ID: "gate-1", ScriptPath: scriptPath},
-	})
-	if err != nil {
-		t.Fatalf("PlanGate: %v", err)
-	}
-	if cleanup != nil {
-		t.Error("PlanGate should return nil cleanup (no staging dir)")
-	}
-	if len(req.Argv) == 0 || req.Argv[0] != scriptPath {
-		t.Errorf("Argv[0] = %q, want %q", req.Argv[0], scriptPath)
-	}
-	// Gates run on the host directly; Visibility (including KitRoots) is not
-	// populated — the host gate wrapper handles env/cwd directly.
-	if len(req.Visibility.KitRoots) != 0 {
-		t.Errorf("KitRoots = %v, want empty (gates use host-direct, no sandbox visibility)", req.Visibility.KitRoots)
-	}
-}
 
 // FilterInstructions picks a matching agent; planner surfaces exactly one
 // RoutedInstruction on JobSpec.
@@ -368,58 +275,13 @@ func TestPlanHook_PrimaryInput_FilteredByConsumes(t *testing.T) {
 	}
 }
 
-// PlanGate feeds the full task (including payload) through PrimaryInput and
-// leaves Task nil (no task.yaml context file).
-func TestPlanGate_PrimaryInputIsFullTaskJSON(t *testing.T) {
-	projectDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "gates"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	task := &Task{
-		ID:        "task-1",
-		ProjectID: "proj-1",
-		Status:    TaskStatusExecuting,
-		Behavior:  "dev",
-		Payload:   json.RawMessage(`{"verification":{"findings":[]}}`),
-	}
-	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
 
-	req, gateCleanup, err := planner.PlanGate(&GateFireEvent{
-		EventID:   "event-1",
-		TaskID:    "task-1",
-		ProjectID: "proj-1",
-		Gate: Gate{
-			ID:         "gate-1",
-			ScriptPath: filepath.Join(projectDir, ".boid/gates", "gate-1.sh"),
-		},
-	})
-	if err != nil {
-		t.Fatalf("PlanGate: %v", err)
-	}
-	if gateCleanup != nil {
-		defer gateCleanup()
-	}
-
-	if req.Task != nil {
-		t.Errorf("gate should not emit task.yaml: %#v", req.Task)
-	}
-	if !strings.Contains(string(req.PrimaryInput), "\"verification\"") {
-		t.Errorf("gate PrimaryInput missing payload data: %s", req.PrimaryInput)
-	}
-	if req.Visibility.ProjectDir != "" {
-		t.Errorf("gate Visibility.ProjectDir = %q, want empty", req.Visibility.ProjectDir)
-	}
-}
-
-// Hook / gate jobs must receive task.BaseBranch via BOID_BASE_BRANCH so kits
+// Hook jobs must receive task.BaseBranch via BOID_BASE_BRANCH so kits
 // like git-auto-merge can identify the merge target without inspecting the
-// worktree (gate sandboxes hide the project filesystem).
+// worktree.
 func TestDispatchPlanner_PropagatesBaseBranchEnv(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "gates"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -452,25 +314,6 @@ func TestDispatchPlanner_PropagatesBaseBranchEnv(t *testing.T) {
 	}
 	if got := hookReq.Env["KIT_VAR"]; got != "kit-value" {
 		t.Errorf("hook KIT_VAR = %q, want kit-value (behavior env must be preserved)", got)
-	}
-
-	gateReq, _, err := planner.PlanGate(&GateFireEvent{
-		EventID:   "event-2",
-		TaskID:    "task-1",
-		ProjectID: "proj-1",
-		Gate: Gate{
-			ID:         "gate-1",
-			ScriptPath: filepath.Join(projectDir, ".boid/gates", "gate-1.sh"),
-		},
-	})
-	if err != nil {
-		t.Fatalf("PlanGate: %v", err)
-	}
-	if got := gateReq.Env["BOID_BASE_BRANCH"]; got != "feature/BGO-170" {
-		t.Errorf("gate BOID_BASE_BRANCH = %q, want feature/BGO-170", got)
-	}
-	if got := gateReq.Env["KIT_VAR"]; got != "kit-value" {
-		t.Errorf("gate KIT_VAR = %q, want kit-value", got)
 	}
 
 	// Tasks without a base branch should not surface an empty BOID_BASE_BRANCH:

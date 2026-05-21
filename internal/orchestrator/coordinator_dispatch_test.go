@@ -18,7 +18,6 @@ func TestCoordinator_DispatchAndAdvance_HooksSequential(t *testing.T) {
 	coord := &orchestrator.Coordinator{
 		Evaluator:    eval,
 		HookExecutor: mock,
-		GateExecutor: mock,
 		Waiter:       mock,
 		MaxDepth:     5,
 	}
@@ -33,7 +32,7 @@ func TestCoordinator_DispatchAndAdvance_HooksSequential(t *testing.T) {
 	meta := metaWithBehavior([]projectspec.Hook{
 		{ID: "hook-a"},
 		{ID: "hook-b"},
-	}, nil)
+	})
 	sm := simpleStateMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -64,7 +63,6 @@ func TestCoordinator_DispatchAndAdvance_NoAdvanceWhenConditionNotMet(t *testing.
 	coord := &orchestrator.Coordinator{
 		Evaluator:    eval,
 		HookExecutor: mock,
-		GateExecutor: mock,
 		Waiter:       mock,
 		MaxDepth:     5,
 	}
@@ -78,7 +76,7 @@ func TestCoordinator_DispatchAndAdvance_NoAdvanceWhenConditionNotMet(t *testing.
 	}
 	meta := metaWithBehavior([]projectspec.Hook{
 		{ID: "hook-a"},
-	}, nil)
+	})
 	sm := simpleStateMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -88,53 +86,6 @@ func TestCoordinator_DispatchAndAdvance_NoAdvanceWhenConditionNotMet(t *testing.
 
 	if result.NewStatus != "" {
 		t.Errorf("expected empty new status, got %q", result.NewStatus)
-	}
-}
-
-func TestCoordinator_DispatchAndAdvance_GatesExecuteAfterHooks(t *testing.T) {
-	mock := newMockExecutorWaiter()
-	mock.setHookCompletion("hook-a", `{"payload_patch":{"prompt":"done"}}`, 0)
-	mock.setGateCompletion("gate-push", `{"payload_patch":{"pr":"http://pr-url"}}`, 0)
-
-	eval := &orchestrator.Evaluator{}
-	coord := &orchestrator.Coordinator{
-		Evaluator:    eval,
-		HookExecutor: mock,
-		GateExecutor: mock,
-		Waiter:       mock,
-		MaxDepth:     5,
-	}
-
-	task := &orchestrator.Task{
-		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
-		Payload:   json.RawMessage(`{}`),
-	}
-	meta := metaWithBehavior(
-		[]projectspec.Hook{{ID: "hook-a"}},
-		[]projectspec.Gate{{ID: "gate-push"}},
-	)
-	sm := simpleStateMachine()
-
-	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
-	if err != nil {
-		t.Fatalf("dispatch: %v", err)
-	}
-
-	if len(result.Results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(result.Results))
-	}
-
-	if len(mock.execOrder) != 2 {
-		t.Fatalf("expected 2 executions, got %d", len(mock.execOrder))
-	}
-	if mock.execOrder[0] != "hook:hook-a" {
-		t.Errorf("expected hook first, got %s", mock.execOrder[0])
-	}
-	if mock.execOrder[1] != "gate:gate-push" {
-		t.Errorf("expected gate second, got %s", mock.execOrder[1])
 	}
 }
 
@@ -152,7 +103,6 @@ func TestCoordinator_DispatchAndAdvance_ReadonlyHookFailure_DoesNotAdvance(t *te
 	coord := &orchestrator.Coordinator{
 		Evaluator:    eval,
 		HookExecutor: mock,
-		GateExecutor: mock,
 		Waiter:       mock,
 		MaxDepth:     5,
 	}
@@ -167,7 +117,7 @@ func TestCoordinator_DispatchAndAdvance_ReadonlyHookFailure_DoesNotAdvance(t *te
 	}
 	meta := metaWithBehavior([]projectspec.Hook{
 		{ID: "hook-a"},
-	}, nil)
+	})
 	sm := lifecycleExecutedStateMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -185,74 +135,12 @@ func TestCoordinator_DispatchAndAdvance_ReadonlyHookFailure_DoesNotAdvance(t *te
 	}
 }
 
-// TestCoordinator_DispatchAndAdvance_HookThenExitGateThenAdvance is a pin test
-// that verifies hook → exit gate → sm.Advance all fire in order and that
-// payloads flow correctly between phases. This guards evaluateExitAndAdvance
-// extraction from DispatchAndAdvance.
-func TestCoordinator_DispatchAndAdvance_HookThenExitGateThenAdvance(t *testing.T) {
-	mock := newMockExecutorWaiter()
-	mock.setHookCompletion("hook-a", `{"payload_patch":{"step":"hooked"}}`, 0)
-	mock.setGateCompletion("gate-check", `{"payload_patch":{"prompt":"from-gate"}}`, 0)
-
-	eval := &orchestrator.Evaluator{}
-	coord := &orchestrator.Coordinator{
-		Evaluator:    eval,
-		HookExecutor: mock,
-		GateExecutor: mock,
-		Waiter:       mock,
-		MaxDepth:     5,
-	}
-
-	task := &orchestrator.Task{
-		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
-		ProjectID: "proj-pin",
-		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
-		Payload:   json.RawMessage(`{}`),
-	}
-	meta := metaWithBehavior(
-		[]projectspec.Hook{{ID: "hook-a"}},
-		[]projectspec.Gate{{ID: "gate-check", Phase: projectspec.GatePhaseExit}},
-	)
-	sm := simpleStateMachine() // advances to done when "prompt" key exists
-
-	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
-	if err != nil {
-		t.Fatalf("dispatch: %v", err)
-	}
-
-	// hook first, gate second
-	if len(mock.execOrder) != 2 || mock.execOrder[0] != "hook:hook-a" || mock.execOrder[1] != "gate:gate-check" {
-		t.Fatalf("exec order = %v, want [hook:hook-a gate:gate-check]", mock.execOrder)
-	}
-
-	// both patches merged into final payload
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(result.FinalPayload, &payload); err != nil {
-		t.Fatalf("unmarshal payload: %v", err)
-	}
-	if string(payload["step"]) != `"hooked"` {
-		t.Errorf("step = %s, want \"hooked\"", payload["step"])
-	}
-
-	// gate patch provided "prompt" → advance to done
-	if result.NewStatus != orchestrator.TaskStatusDone {
-		t.Errorf("NewStatus = %q, want done", result.NewStatus)
-	}
-
-	// both events recorded
-	if len(result.FiredEvents) != 2 {
-		t.Errorf("FiredEvents = %d, want 2", len(result.FiredEvents))
-	}
-}
-
-func TestCoordinator_DispatchAndAdvance_EmptyHooksAndGates(t *testing.T) {
+func TestCoordinator_DispatchAndAdvance_EmptyHooks(t *testing.T) {
 	mock := newMockExecutorWaiter()
 	eval := &orchestrator.Evaluator{}
 	coord := &orchestrator.Coordinator{
 		Evaluator:    eval,
 		HookExecutor: mock,
-		GateExecutor: mock,
 		Waiter:       mock,
 		MaxDepth:     5,
 	}

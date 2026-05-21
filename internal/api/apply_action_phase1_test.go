@@ -94,14 +94,6 @@ func (p *dispatchContextProbe) DispatchAndAdvance(ctx context.Context, task *orc
 	}
 }
 
-func (p *dispatchContextProbe) DispatchEntryGates(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta) (*orchestrator.EntryGateResult, error) {
-	return &orchestrator.EntryGateResult{FinalPayload: task.Payload}, nil
-}
-
-func (p *dispatchContextProbe) ReplayGate(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, gateID string) (*orchestrator.ReplayResult, error) {
-	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
-}
-
 func (p *dispatchContextProbe) ReplayHook(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, hookID string) (*orchestrator.ReplayResult, error) {
 	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
 }
@@ -157,14 +149,6 @@ type fixedDispatchResult struct {
 
 func (d fixedDispatchResult) DispatchAndAdvance(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine) (*orchestrator.DispatchResult, error) {
 	return d.result, nil
-}
-
-func (d fixedDispatchResult) DispatchEntryGates(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta) (*orchestrator.EntryGateResult, error) {
-	return &orchestrator.EntryGateResult{FinalPayload: task.Payload}, nil
-}
-
-func (d fixedDispatchResult) ReplayGate(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, gateID string) (*orchestrator.ReplayResult, error) {
-	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
 }
 
 func (d fixedDispatchResult) ReplayHook(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, hookID string) (*orchestrator.ReplayResult, error) {

@@ -13,10 +13,7 @@ import (
 type hookFiredCoordinator struct {
 	dispatchResult *orchestrator.DispatchResult
 	dispatchErr    error
-	entryResult    *orchestrator.EntryGateResult
-	entryErr       error
 	dispatchCalls  int
-	entryGateCalls int
 }
 
 func (c *hookFiredCoordinator) DispatchAndAdvance(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine) (*orchestrator.DispatchResult, error) {
@@ -27,24 +24,12 @@ func (c *hookFiredCoordinator) DispatchAndAdvance(ctx context.Context, task *orc
 	return &orchestrator.DispatchResult{FinalPayload: task.Payload}, c.dispatchErr
 }
 
-func (c *hookFiredCoordinator) DispatchEntryGates(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta) (*orchestrator.EntryGateResult, error) {
-	c.entryGateCalls++
-	if c.entryResult != nil {
-		return c.entryResult, c.entryErr
-	}
-	return &orchestrator.EntryGateResult{FinalPayload: task.Payload}, c.entryErr
-}
-
-func (c *hookFiredCoordinator) ReplayGate(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, gateID string) (*orchestrator.ReplayResult, error) {
-	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
-}
-
 func (c *hookFiredCoordinator) ReplayHook(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, hookID string) (*orchestrator.ReplayResult, error) {
 	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
 }
 
-// TestRunDispatchLoop_HookFiredActionsRecorded verifies that hook_fired and
-// exit_gate_fired actions are persisted when FiredEvents are returned from dispatch.
+// TestRunDispatchLoop_HookFiredActionsRecorded verifies that hook_fired actions
+// are persisted when FiredEvents are returned from dispatch.
 func TestRunDispatchLoop_HookFiredActionsRecorded(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-fired-1",
@@ -55,7 +40,6 @@ func TestRunDispatchLoop_HookFiredActionsRecorded(t *testing.T) {
 
 	firedEvents := []orchestrator.FiredEvent{
 		{KitID: "go-dev", HandlerID: "go-dev/pr-verify", Kind: "hook", SourceState: "executing", Success: true},
-		{KitID: "go-dev", HandlerID: "go-dev/pr-push", Kind: "exit_gate", SourceState: "executing", Success: false, Error: "exit code 1"},
 	}
 
 	coord := &hookFiredCoordinator{
@@ -79,9 +63,6 @@ func TestRunDispatchLoop_HookFiredActionsRecorded(t *testing.T) {
 	}
 	if actionTypes["hook_fired"] != 1 {
 		t.Errorf("hook_fired actions = %d, want 1", actionTypes["hook_fired"])
-	}
-	if actionTypes["exit_gate_fired"] != 1 {
-		t.Errorf("exit_gate_fired actions = %d, want 1", actionTypes["exit_gate_fired"])
 	}
 }
 
@@ -189,86 +170,3 @@ func TestRunDispatchLoop_PersistsFiredEventsOnFailedDispatch(t *testing.T) {
 	}
 }
 
-// TestRunDispatchLoop_PersistsFiredEventsOnFailedEntryGate mirrors the above
-// for entry-gate dispatch failures.
-func TestRunDispatchLoop_PersistsFiredEventsOnFailedEntryGate(t *testing.T) {
-	task := &orchestrator.Task{
-		ID:        "task-fired-fail-2",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusExecuting,
-		Payload:   json.RawMessage(`{}`),
-	}
-
-	coord := &hookFiredCoordinator{
-		dispatchResult: &orchestrator.DispatchResult{
-			FinalPayload: task.Payload,
-			NewStatus:    orchestrator.TaskStatusDone,
-		},
-		entryResult: &orchestrator.EntryGateResult{
-			FiredEvents: []orchestrator.FiredEvent{
-				{KitID: "go-dev", HandlerID: "go-dev/fetch-jira", Kind: "entry_gate", SourceState: "verifying", Success: false, Error: "exit code 2"},
-			},
-		},
-		entryErr: errors.New(`entry gate dispatch: gate "go-dev/fetch-jira" failed: exit code 2`),
-	}
-
-	txStore := &recordingTxStore{task: task}
-	svc := &TaskWorkflowService{
-		Tx:          recordingTransactor{store: txStore},
-		Coordinator: coord,
-	}
-
-	svc.runDispatchLoop(context.Background(), task, &orchestrator.ProjectMeta{}, orchestrator.DefaultMachine())
-
-	actionTypes := make(map[string]int)
-	for _, a := range txStore.actions {
-		actionTypes[a.Type]++
-	}
-	if actionTypes["entry_gate_fired"] != 1 {
-		t.Errorf("entry_gate_fired actions on failed entry-gate dispatch = %d, want 1", actionTypes["entry_gate_fired"])
-	}
-	if actionTypes["dispatch_error"] != 1 {
-		t.Errorf("dispatch_error actions on failed entry-gate dispatch = %d, want 1", actionTypes["dispatch_error"])
-	}
-}
-
-// TestRunDispatchLoop_EntryGateFiredActionsRecorded verifies that entry_gate_fired
-// actions are persisted when entry gates return FiredEvents.
-func TestRunDispatchLoop_EntryGateFiredActionsRecorded(t *testing.T) {
-	task := &orchestrator.Task{
-		ID:        "task-fired-3",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusExecuting,
-		Payload:   json.RawMessage(`{}`),
-	}
-
-	coord := &hookFiredCoordinator{
-		// First dispatch advances to verifying, second returns no advance
-		dispatchResult: &orchestrator.DispatchResult{
-			FinalPayload: task.Payload,
-			NewStatus:    orchestrator.TaskStatusDone,
-		},
-		entryResult: &orchestrator.EntryGateResult{
-			FiredEvents: []orchestrator.FiredEvent{
-				{KitID: "go-dev", HandlerID: "go-dev/fetch-jira", Kind: "entry_gate", SourceState: "verifying", Success: true},
-			},
-			FinalPayload: task.Payload,
-		},
-	}
-
-	txStore := &recordingTxStore{task: task}
-	svc := &TaskWorkflowService{
-		Tx:          recordingTransactor{store: txStore},
-		Coordinator: coord,
-	}
-
-	svc.runDispatchLoop(context.Background(), task, &orchestrator.ProjectMeta{}, orchestrator.DefaultMachine())
-
-	actionTypes := make(map[string]int)
-	for _, a := range txStore.actions {
-		actionTypes[a.Type]++
-	}
-	if actionTypes["entry_gate_fired"] != 1 {
-		t.Errorf("entry_gate_fired actions = %d, want 1", actionTypes["entry_gate_fired"])
-	}
-}

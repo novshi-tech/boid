@@ -1,7 +1,6 @@
 package orchestrator
 
 import (
-	"encoding/json"
 	"fmt"
 )
 
@@ -17,7 +16,7 @@ type TaskLookup interface {
 	GetTask(id string) (*Task, error)
 }
 
-// DispatchPlanner turns state-machine-driven hook / gate fire events into a
+// DispatchPlanner turns state-machine-driven hook fire events into a
 // sandbox-agnostic JobSpec. All sandbox construction concerns (mounts, env,
 // proxy wiring, exit scripts, worktree recreation) live in dispatcher.
 type DispatchPlanner struct {
@@ -91,52 +90,6 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 	return spec, nil, nil
 }
 
-// PlanGate renders a gate fire event into a JobSpec.
-func (p *DispatchPlanner) PlanGate(event *GateFireEvent) (*JobSpec, CleanupFunc, error) {
-	if event == nil {
-		return nil, nil, fmt.Errorf("gate event is required")
-	}
-	if event.Gate.ScriptPath == "" {
-		return nil, nil, fmt.Errorf("gate %q: no script path resolved", event.Gate.ID)
-	}
-
-	meta, _, task, err := p.loadContext(event.ProjectID, event.TaskID)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	parent, err := p.lookupParent(task)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	behavior, _ := lookupBehavior(meta, task)
-
-	// hook-updated payload overrides the DB value for this gate's task snapshot.
-	if event.TaskPayloadJSON != "" {
-		task.Payload = json.RawMessage(event.TaskPayloadJSON)
-	}
-
-	// gate scripts read the full task snapshot (including payload) from stdin.
-	taskJSON, err := json.Marshal(task)
-	if err != nil {
-		return nil, nil, fmt.Errorf("marshal task: %w", err)
-	}
-
-	spec := &JobSpec{
-		TaskID:          event.TaskID,
-		ProjectID:       event.ProjectID,
-		HandlerID:       event.Gate.ID,
-		Kind:            JobKindGate,
-		Argv:            []string{event.Gate.ScriptPath},
-		PrimaryInput:    taskJSON,
-		SecretNamespace: meta.SecretNamespace,
-		Env:             mergeStringMaps(behavior.Env, taskBusinessEnv(task, parent)),
-		ExecutionState:  string(task.Status),
-	}
-	return spec, nil, nil
-}
-
 // ExecFireEvent carries the data needed to plan a boid-exec job.
 // Command must be the fully resolved CommandSpec (ResolvedCommand populated).
 type ExecFireEvent struct {
@@ -204,7 +157,7 @@ func (p *DispatchPlanner) lookupParent(task *Task) (*Task, error) {
 }
 
 // taskBusinessEnv returns env vars derived from business-level task fields
-// that hook / gate scripts may need at runtime. Surfaces the task's base
+// that hook scripts may need at runtime. Surfaces the task's base
 // branch, the parent task's HEAD branch (BOID_PARENT_BRANCH, P3), and, when
 // the task has an awaiting trait (i.e. the hook is a resume after
 // awaiting → executing), the session_id, user answer, and question_id for

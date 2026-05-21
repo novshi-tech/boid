@@ -15,7 +15,6 @@ var scriptSuffixes = []string{"-inner.sh", "-outer.sh", "-setup.sh"}
 
 // cleanSandboxTmp removes leaked sandbox temp artifacts from tmpDir:
 //   - boid-root-*   (mount ROOT dirs; skipped while any mount is active underneath)
-//   - boid-gates-*  (gate script staging dirs)
 //   - boid-<jobID>-{inner,outer,setup}.sh  (generated sandbox scripts)
 //
 // Only entries whose mtime is older than olderThan are considered. olderThan<=0
@@ -109,7 +108,7 @@ func cleanSandboxTmp(tmpDir string, olderThan time.Duration) int {
 // sandbox temp artifact patterns.
 func isSandboxTmpCandidate(name string, isDir bool) bool {
 	if isDir {
-		return strings.HasPrefix(name, "boid-root-") || strings.HasPrefix(name, "boid-gates-")
+		return strings.HasPrefix(name, "boid-root-")
 	}
 	if !strings.HasPrefix(name, "boid-") {
 		return false

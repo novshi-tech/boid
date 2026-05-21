@@ -136,17 +136,7 @@ func handleGitBuiltinRequest(req *ExecRequest, entry *tokenEntry) *ExecResponse 
 		// host の git をそのまま実行する。cwd 制限は上の validateGitBuiltinCwd
 		// で既に適用済み (WorktreeRoot 外・AllowedCwdRoots 外は弾かれる)。
 		if invocation.mode == gitInvocationDirect {
-			// gate sandbox は worktree FS を mount しないため、sandbox 側 cwd
-			// (ProjectDir 等) はホスト上で git repo として成立しない。
-			// broker は binding.WorktreeRoot を権威源として持っているので
-			// gate からの direct git はそこにチェンジディレクトリして実行する。
-			// hook など worktree が見える role では cwd がすでに WorktreeRoot
-			// 配下なので変更しない (subdirectory 起動の挙動を保つため)。
-			cwd := req.Cwd
-			if entry.Context.Role == "gate" && entry.Git.WorktreeRoot != "" {
-				cwd = entry.Git.WorktreeRoot
-			}
-			return execDirectGit(cwd, req.Args)
+			return execDirectGit(req.Cwd, req.Args)
 		}
 		gitReq = invocation.request
 	}

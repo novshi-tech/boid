@@ -709,18 +709,6 @@ task_behaviors:
 		}
 	})
 
-	t.Run("gate with kind is rejected", func(t *testing.T) {
-		dir := t.TempDir()
-		gatesDir := filepath.Join(dir, "gates")
-		_ = os.MkdirAll(gatesDir, 0o755)
-		_ = os.WriteFile(filepath.Join(gatesDir, "check.sh"), []byte("#!/bin/bash\n"), 0o755)
-		writeKitYAML(t, dir, "gates:\n  - id: check\n    kind: agent\n")
-		_, err := projectspec.ReadKitMeta(dir)
-		if err == nil || !strings.Contains(err.Error(), "kind") {
-			t.Fatalf("expected gate-kind error, got %v", err)
-		}
-	})
-
 	t.Run("deprecated flag is parsed", func(t *testing.T) {
 		dir := t.TempDir()
 		writeKitYAML(t, dir, "deprecated: true\nmeta:\n  name: old-kit\n")
@@ -939,22 +927,6 @@ func TestMergeKitMetaIntoBehavior_KitAgentFields(t *testing.T) {
 		h := result.Hooks[0]
 		if h.Kit != "claude-code" || h.Agent != "explicit-agent" {
 			t.Errorf("unexpected kit/agent: %+v", h)
-		}
-	})
-
-	t.Run("kit hook/gate IDs are qualified with agent prefix", func(t *testing.T) {
-		base := projectspec.TaskBehavior{}
-		kit := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{{ID: "run-agent", ScriptPath: "/kit/hooks/run-agent.sh"}},
-			Gates: []projectspec.Gate{{ID: "check-quality", ScriptPath: "/kit/gates/check-quality.sh"}},
-		}
-
-		result := mergeKitsIntoBehavior(t, base, []*projectspec.KitMeta{kit}, []string{"my-kit"})
-		if result.Hooks[0].ID != "my-kit/run-agent" {
-			t.Errorf("hook ID = %q, want my-kit/run-agent", result.Hooks[0].ID)
-		}
-		if result.Gates[0].ID != "my-kit/check-quality" || result.Gates[0].Kit != "my-kit" {
-			t.Errorf("unexpected gate: %+v", result.Gates[0])
 		}
 	})
 
@@ -1828,33 +1800,6 @@ task_behaviors:
 	}
 }
 
-func TestReadProjectMetaWithKits_TopLevelKits_ScopeValidation_GatesRejected(t *testing.T) {
-	dir := t.TempDir()
-	boidDir := filepath.Join(dir, ".boid")
-	kitDir := filepath.Join(boidDir, "kits", "gate-kit")
-	kitGatesDir := filepath.Join(kitDir, "gates")
-	_ = os.MkdirAll(kitGatesDir, 0o755)
-
-	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`id: test-proj
-name: Test
-kits:
-  - gate-kit
-task_behaviors:
-  dev:
-    name: dev
-`), 0o644)
-	_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(`gates:
-  - id: my-gate
-    phase: exit
-`), 0o644)
-	_ = os.WriteFile(filepath.Join(kitGatesDir, "my-gate.sh"), []byte("#!/bin/sh\necho ok"), 0o755)
-
-	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-	if err == nil || !strings.Contains(err.Error(), "gates を持つ kit は top-level kits に指定できません") {
-		t.Fatalf("expected gates rejection error, got: %v", err)
-	}
-}
-
 func TestReadProjectMetaWithKits_TopLevelKits_ScopeValidation_NonAgentHookRejected(t *testing.T) {
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
@@ -1882,7 +1827,7 @@ task_behaviors:
 }
 
 func TestIsProjectScopable(t *testing.T) {
-	t.Run("no gates no hooks", func(t *testing.T) {
+	t.Run("no hooks", func(t *testing.T) {
 		km := &projectspec.KitMeta{}
 		if err := projectspec.IsProjectScopable(km); err != nil {
 			t.Errorf("expected nil, got %v", err)
@@ -1897,15 +1842,6 @@ func TestIsProjectScopable(t *testing.T) {
 		}
 		if err := projectspec.IsProjectScopable(km); err != nil {
 			t.Errorf("expected nil for agent-only hooks, got %v", err)
-		}
-	})
-
-	t.Run("has gates", func(t *testing.T) {
-		km := &projectspec.KitMeta{
-			Gates: []projectspec.Gate{{ID: "g1"}},
-		}
-		if err := projectspec.IsProjectScopable(km); err == nil || !strings.Contains(err.Error(), "gates を持つ kit") {
-			t.Errorf("expected gates rejection, got %v", err)
 		}
 	})
 

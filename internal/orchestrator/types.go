@@ -17,31 +17,26 @@ type HookExecutor interface {
 	ExecuteHook(ctx context.Context, event *HookFireEvent) (jobID string, err error)
 }
 
-// GateExecutor launches a gate and returns the job ID.
-type GateExecutor interface {
-	ExecuteGate(ctx context.Context, event *GateFireEvent) (jobID string, err error)
-}
-
 // JobWaiter waits for a job to complete.
 type JobWaiter interface {
 	WaitForJob(ctx context.Context, jobID string) (JobCompletion, error)
 }
 
-// HandlerResult is the result of a single hook or gate execution.
+// HandlerResult is the result of a single hook execution.
 type HandlerResult struct {
-	ID           string // hook or gate ID
+	ID           string // hook ID
 	Role         Role
 	JobID        string // ID of the job that executed this handler
 	ExitCode     int
 	PayloadPatch json.RawMessage
 }
 
-// FiredEvent records a single hook or gate execution for action logging.
+// FiredEvent records a single hook execution for action logging.
 type FiredEvent struct {
 	KitID       string // kit that owns this handler; empty for project-local
-	HandlerID   string // hook or gate ID
+	HandlerID   string // hook ID
 	JobID       string // ID of the job that executed this handler
-	Kind        string // "hook", "exit_gate", or "entry_gate"
+	Kind        string // "hook" or "hook_replay"
 	SourceState string // task status at the time of dispatch
 	Success     bool
 	Error       string
@@ -56,10 +51,3 @@ type DispatchResult struct {
 	ActionPayload json.RawMessage // optional payload to attach to the auto_advance action
 }
 
-// EntryGateResult holds the output of entry-phase gate dispatch.
-// Unlike DispatchResult it carries no NewStatus — entry gates only produce payload patches.
-type EntryGateResult struct {
-	Results      []HandlerResult
-	FiredEvents  []FiredEvent
-	FinalPayload json.RawMessage
-}

@@ -81,32 +81,12 @@ func TestJobDetail_ExistingOutputRendered(t *testing.T) {
 	}
 }
 
-func TestJobDetail_GateReplayForm(t *testing.T) {
-	job := newJobView("completed")
-	job.TaskID = "task-id-1"
-	job.Role = "gate"
-	job.GateID = "go-dev/pr-verify"
-	html := renderJobDetail(t, job)
-	// gate ID は kit-name/gate-name 形式で '/' を含むため、chi の単一セグメント
-	// match に合わせて %2F へエンコードされている必要がある (生のまま埋め込むと
-	// サーバ側で 404 になる)。
-	want := "/tasks/task-id-1/gates/go-dev%2Fpr-verify/replay"
-	if !strings.Contains(html, want) {
-		t.Errorf("gate job detail should contain replay form action %q, got: %s", want, html)
-	}
-	// 念のため、未エスケープ形式は出力に含まれないことも確認しておく。
-	unescaped := "/tasks/task-id-1/gates/go-dev/pr-verify/replay"
-	if strings.Contains(html, unescaped) {
-		t.Errorf("gate job detail should not contain unescaped path %q", unescaped)
-	}
-}
-
-func TestJobDetail_NoGateReplayForm_NonGateJob(t *testing.T) {
+func TestJobDetail_NoReplayForm_NonHookJob(t *testing.T) {
 	job := newJobView("completed")
 	job.Role = "main"
 	html := renderJobDetail(t, job)
 	if strings.Contains(html, "/replay") {
-		t.Error("non-gate job detail should not contain replay form")
+		t.Error("non-hook job detail should not contain replay form")
 	}
 }
 
@@ -162,28 +142,6 @@ func TestJobDetail_NonInteractive_UnchangedSSE(t *testing.T) {
 	}
 	if !strings.Contains(html, `id="job-log"`) {
 		t.Error("non-interactive running job should have #job-log pre element")
-	}
-}
-
-func TestJobDetail_GateJobWithRunningTerminal(t *testing.T) {
-	job := newJobView("running")
-	job.Interactive = true
-	job.Role = "gate"
-	job.GateID = "go-dev/pr-verify"
-	html := renderJobDetail(t, job)
-
-	// gate ID の '/' は %2F へエンコードされる (chi の単一セグメント match 対策)。
-	want := "/tasks/task-id-1/gates/go-dev%2Fpr-verify/replay"
-	if !strings.Contains(html, want) {
-		t.Errorf("gate+interactive running should contain replay form action %q", want)
-	}
-	// gate job は Interactive であっても Terminal を埋め込まず SSE 分岐に流れる。
-	if strings.Contains(html, "boid-terminal") {
-		t.Error("gate job should not embed boid-terminal (suppressed for hook/gate jobs)")
-	}
-	// gate job は Interactive であっても「全画面で開く」リンクを表示しない。
-	if strings.Contains(html, "Open Fullscreen") {
-		t.Error("gate job should not show Open Fullscreen link (suppressed for hook/gate jobs)")
 	}
 }
 

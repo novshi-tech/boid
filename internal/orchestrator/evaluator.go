@@ -68,34 +68,6 @@ func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 	return matched
 }
 
-// EvaluateGates returns gates that should fire for the given task and phase.
-// Entry gates fire when transitioning into executing (status=pending),
-// exit gates fire when transitioning out of executing (status=executing).
-// Multiple gates may match (kit composition).
-func (e *Evaluator) EvaluateGates(task *Task, gates []Gate, phase GatePhase) []Gate {
-	activeTraits, _ := ActiveTraitTypes(task.Payload)
-	traitSet := make(map[TraitType]bool, len(activeTraits))
-	for _, t := range activeTraits {
-		traitSet[t] = true
-	}
-
-	var matched []Gate
-	for _, g := range gates {
-		gPhase := g.Phase
-		if gPhase == "" {
-			gPhase = GatePhaseExit
-		}
-		if gPhase != phase {
-			continue
-		}
-		if !hasAllTraits(traitSet, g.Traits.Consumes) {
-			continue
-		}
-		matched = append(matched, g)
-	}
-	return matched
-}
-
 // hasAllTraits checks whether all required traits are present in the set.
 // Instructions routing is handled via HandlerKindAgent, not via traits.
 func hasAllTraits(set map[TraitType]bool, required []TraitType) bool {

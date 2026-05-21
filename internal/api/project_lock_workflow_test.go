@@ -19,14 +19,6 @@ func (e *errorDispatchCoordinator) DispatchAndAdvance(_ context.Context, task *o
 	return nil, e.err
 }
 
-func (e *errorDispatchCoordinator) DispatchEntryGates(_ context.Context, task *orchestrator.Task, _ *orchestrator.ProjectMeta) (*orchestrator.EntryGateResult, error) {
-	return &orchestrator.EntryGateResult{FinalPayload: task.Payload}, nil
-}
-
-func (e *errorDispatchCoordinator) ReplayGate(_ context.Context, task *orchestrator.Task, _ *orchestrator.ProjectMeta, _ *orchestrator.StateMachine, _ string) (*orchestrator.ReplayResult, error) {
-	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
-}
-
 func (e *errorDispatchCoordinator) ReplayHook(_ context.Context, task *orchestrator.Task, _ *orchestrator.ProjectMeta, _ *orchestrator.StateMachine, _ string) (*orchestrator.ReplayResult, error) {
 	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
 }
@@ -61,14 +53,6 @@ func (h *holdingDispatchCoordinator) DispatchAndAdvance(ctx context.Context, tas
 		return h.result, nil
 	}
 	return &orchestrator.DispatchResult{FinalPayload: task.Payload}, nil
-}
-
-func (h *holdingDispatchCoordinator) DispatchEntryGates(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta) (*orchestrator.EntryGateResult, error) {
-	return &orchestrator.EntryGateResult{FinalPayload: task.Payload}, nil
-}
-
-func (h *holdingDispatchCoordinator) ReplayGate(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, gateID string) (*orchestrator.ReplayResult, error) {
-	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
 }
 
 func (h *holdingDispatchCoordinator) ReplayHook(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, hookID string) (*orchestrator.ReplayResult, error) {

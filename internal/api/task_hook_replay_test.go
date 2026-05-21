@@ -20,14 +20,6 @@ func (c *replayHookCoordinator) DispatchAndAdvance(ctx context.Context, task *or
 	return &orchestrator.DispatchResult{FinalPayload: task.Payload}, nil
 }
 
-func (c *replayHookCoordinator) DispatchEntryGates(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta) (*orchestrator.EntryGateResult, error) {
-	return &orchestrator.EntryGateResult{FinalPayload: task.Payload}, nil
-}
-
-func (c *replayHookCoordinator) ReplayGate(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, gateID string) (*orchestrator.ReplayResult, error) {
-	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
-}
-
 func (c *replayHookCoordinator) ReplayHook(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, hookID string) (*orchestrator.ReplayResult, error) {
 	c.replayCalls++
 	if c.replayErr != nil {

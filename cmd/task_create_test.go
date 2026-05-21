@@ -67,7 +67,7 @@ base_branch: feature/BGO-170
 }
 
 // TestRunTaskCreate_DropsDeprecatedBaseBranchFromJSONStdin: same as above
-// for the JSON-on-stdin entry point (agent / gate scripts).
+// for the JSON-on-stdin entry point (agent scripts).
 func TestRunTaskCreate_DropsDeprecatedBaseBranchFromJSONStdin(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 

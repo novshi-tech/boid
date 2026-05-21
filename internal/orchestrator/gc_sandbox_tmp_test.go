@@ -21,7 +21,6 @@ func TestCleanSandboxTmp_RemovesOldMatches(t *testing.T) {
 	}
 	dirs := []string{
 		"boid-root-XYZ",
-		"boid-gates-uuid123",
 	}
 
 	for _, f := range files {
@@ -84,7 +83,7 @@ func TestCleanSandboxTmp_IgnoresNonMatchingNames(t *testing.T) {
 	nonMatches := []string{
 		"other-file.sh",            // no boid- prefix
 		"boid-notes.txt",           // not script/dir pattern
-		"boid-go-build-cache",      // dir but doesn't match root/gates
+		"boid-go-build-cache",      // dir but doesn't match boid-root- prefix
 		"boid-start-payload-4.json", // doesn't match script suffix
 	}
 
