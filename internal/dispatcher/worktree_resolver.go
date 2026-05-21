@@ -76,11 +76,18 @@ func (r *Runner) allocateWorktree(spec *orchestrator.JobSpec) (string, error) {
 	if task == nil {
 		return "", fmt.Errorf("task %q not found for worktree creation", spec.TaskID)
 	}
+	var createOpts CreateOpts
+	if task.ParentID == "" {
+		// Root task: occupy the base_branch directly rather than creating a
+		// new boid/<id8> branch. This is P2 of the dynamic base-branch overhaul.
+		createOpts.CheckoutBranch = task.BaseBranch
+	}
 	w, err := r.Worktrees.Create(
 		spec.Visibility.ProjectDir,
 		spec.ProjectID,
 		task.ID,
 		task.BaseBranch,
+		createOpts,
 	)
 	if err != nil {
 		return "", fmt.Errorf("create worktree: %w", err)
