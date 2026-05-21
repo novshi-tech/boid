@@ -209,6 +209,9 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "project_id and title are required")
 		return
 	}
+	if req.ParentID == orchestrator.ParentIDSentinelRoot {
+		req.ParentID = ""
+	}
 
 	task, err := h.Service.CreateTask(req)
 	if err != nil {

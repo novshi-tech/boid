@@ -18,6 +18,14 @@ import (
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
+// ParentIDSentinelRoot is a sentinel value for CreateTaskRequest.ParentID that
+// explicitly requests root-task creation. When this value is detected at an
+// entry point (sandbox, CLI, HTTP API), auto-populate is skipped and the
+// stored parent_id is left empty. Use this when a root task must be created
+// from inside a child context where auto-populate would otherwise attach the
+// current task as parent.
+const ParentIDSentinelRoot = "-"
+
 func isUUID(s string) bool {
 	return uuidPattern.MatchString(s)
 }

@@ -32,7 +32,12 @@ var taskListCmd = &cobra.Command{
 var taskCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a task",
-	RunE:  runTaskCreate,
+	Long: "Create a task from a YAML or JSON spec on stdin (or -f file).\n\n" +
+		"parent_id behaviour:\n" +
+		"  omitted / empty  auto-populated from $BOID_TASK_ID (current task context)\n" +
+		"  \"-\"              sentinel: explicitly create a root task (no parent)\n" +
+		"  \"<uuid>\"         explicit parent task ID",
+	RunE: runTaskCreate,
 }
 
 var taskShowCmd = &cobra.Command{
@@ -350,7 +355,9 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 	if req.ProjectID == "" {
 		req.ProjectID = os.Getenv("BOID_PROJECT_ID")
 	}
-	if req.ParentID == "" {
+	if req.ParentID == orchestrator.ParentIDSentinelRoot {
+		req.ParentID = ""
+	} else if req.ParentID == "" {
 		req.ParentID = os.Getenv("BOID_TASK_ID")
 	}
 	if req.ProjectID == "" || req.Title == "" {
