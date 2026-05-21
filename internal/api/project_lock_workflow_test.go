@@ -8,20 +8,6 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// projectMetaWithHook builds a ProjectMeta whose "impl" behavior declares a
-// single hook that fires on executing. The lock acquisition path requires
-// at least one matching hook before it touches the project lock, so all
-// workflow tests that exercise lock state must use this helper.
-func projectMetaWithHook(behaviorName string) *orchestrator.ProjectMeta {
-	return &orchestrator.ProjectMeta{
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			behaviorName: {
-				Hooks: []orchestrator.Hook{{ID: "test-hook"}},
-			},
-		},
-	}
-}
-
 // holdingDispatchCoordinator runs DispatchAndAdvance synchronously and blocks
 // on a channel so tests can observe the "while-executing" state.
 type holdingDispatchCoordinator struct {
@@ -66,26 +52,37 @@ func (h *holdingDispatchCoordinator) ReplayHook(ctx context.Context, task *orche
 	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
 }
 
-// TestProjectLock_RunDispatchLoop_AcquiresAndReleasesOnDone verifies the
+// anyMeta returns a minimal ProjectMeta for tests that don't exercise hook behavior.
+func anyMeta(behaviorName string) *orchestrator.ProjectMeta {
+	return &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			behaviorName: {},
+		},
+	}
+}
+
+// TestBranchLock_RunDispatchLoop_AcquiresAndReleasesOnDone verifies the
 // happy path: the lock is acquired at runDispatchLoop entry and released
 // once the task reaches done via auto-advance + finalizeTerminal.
-func TestProjectLock_RunDispatchLoop_AcquiresAndReleasesOnDone(t *testing.T) {
+func TestBranchLock_RunDispatchLoop_AcquiresAndReleasesOnDone(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:        "task-1",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
-		Payload:   []byte(`{}`),
+		ID:         "task-1",
+		ProjectID:  "proj-1",
+		BaseBranch: "main",
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "impl",
+		Payload:    []byte(`{}`),
 	}
 	doneInDB := &orchestrator.Task{
-		ID:        task.ID,
-		ProjectID: task.ProjectID,
-		Status:    orchestrator.TaskStatusDone,
-		Behavior:  task.Behavior,
-		Payload:   task.Payload,
+		ID:         task.ID,
+		ProjectID:  task.ProjectID,
+		BaseBranch: task.BaseBranch,
+		Status:     orchestrator.TaskStatusDone,
+		Behavior:   task.Behavior,
+		Payload:    task.Payload,
 	}
 
-	locks := orchestrator.NewProjectLockManager(orchestrator.NewInMemoryWorktreeLockManager())
+	locks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
 	txStore := &recordingTxStore{task: doneInDB}
 	svc := &TaskWorkflowService{
 		Tx: recordingTransactor{store: txStore},
@@ -96,151 +93,30 @@ func TestProjectLock_RunDispatchLoop_AcquiresAndReleasesOnDone(t *testing.T) {
 		Locks:     locks,
 	}
 
-	svc.runDispatchLoop(
-		context.Background(),
-		task,
-		projectMetaWithHook("impl"),
-		orchestrator.DefaultMachine(),
-	)
+	svc.runDispatchLoop(context.Background(), task, anyMeta("impl"), orchestrator.DefaultMachine())
 
 	if locks.IsHeldForTask(task.ID) {
 		t.Fatal("expected lock released after reaching terminal status")
 	}
 }
 
-// TestProjectLock_RunDispatchLoop_SkipsLockForReadonly verifies that readonly
-// tasks bypass the project lock entirely (matches the legacy
-// dispatchHooksLocked eligibility check).
-func TestProjectLock_RunDispatchLoop_SkipsLockForReadonly(t *testing.T) {
+// TestBranchLock_RunDispatchLoop_AcquiresForReadonly verifies that readonly
+// tasks DO acquire the branch lock (P2.5 behavior change: readonly root sups
+// must serialize on the same base_branch).
+func TestBranchLock_RunDispatchLoop_AcquiresForReadonly(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:        "task-ro",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "plan",
-		Readonly:  true,
-		Payload:   []byte(`{}`),
+		ID:         "task-ro",
+		ProjectID:  "proj-1",
+		BaseBranch: "main",
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "plan",
+		Readonly:   true,
+		Payload:    []byte(`{}`),
 	}
 	doneInDB := *task
 	doneInDB.Status = orchestrator.TaskStatusDone
 
-	locks := orchestrator.NewProjectLockManager(orchestrator.NewInMemoryWorktreeLockManager())
-	txStore := &recordingTxStore{task: &doneInDB}
-	svc := &TaskWorkflowService{
-		Tx: recordingTransactor{store: txStore},
-		Coordinator: fixedDispatchResult{
-			result: &orchestrator.DispatchResult{FinalPayload: task.Payload},
-		},
-		Lifecycle: &stubLifecycle{},
-		Locks:     locks,
-	}
-
-	svc.runDispatchLoop(
-		context.Background(),
-		task,
-		projectMetaWithHook("plan"),
-		orchestrator.DefaultMachine(),
-	)
-
-	if locks.IsHeldForTask(task.ID) {
-		t.Fatal("readonly task must not hold the project lock")
-	}
-}
-
-// TestProjectLock_RunDispatchLoop_SkipsLockForWorktreeTask verifies that
-// worktree=true tasks bypass the project lock.
-func TestProjectLock_RunDispatchLoop_SkipsLockForWorktreeTask(t *testing.T) {
-	task := &orchestrator.Task{
-		ID:        "task-wt",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
-		Worktree:  true,
-		Payload:   []byte(`{}`),
-	}
-	doneInDB := *task
-	doneInDB.Status = orchestrator.TaskStatusDone
-
-	locks := orchestrator.NewProjectLockManager(orchestrator.NewInMemoryWorktreeLockManager())
-	txStore := &recordingTxStore{task: &doneInDB}
-	svc := &TaskWorkflowService{
-		Tx: recordingTransactor{store: txStore},
-		Coordinator: fixedDispatchResult{
-			result: &orchestrator.DispatchResult{FinalPayload: task.Payload},
-		},
-		Lifecycle: &stubLifecycle{},
-		Locks:     locks,
-	}
-
-	svc.runDispatchLoop(
-		context.Background(),
-		task,
-		projectMetaWithHook("dev"),
-		orchestrator.DefaultMachine(),
-	)
-
-	if locks.IsHeldForTask(task.ID) {
-		t.Fatal("worktree=true task must not hold the project lock")
-	}
-}
-
-// TestProjectLock_RunDispatchLoop_SkipsLockForHooklessBehavior verifies that
-// behaviors that declare no hooks (and therefore touch no project files) do
-// not acquire the project lock. This is the auto-start-deps regression: a
-// hook-less behavior like `smoke` must not serialize unrelated tasks.
-func TestProjectLock_RunDispatchLoop_SkipsLockForHooklessBehavior(t *testing.T) {
-	task := &orchestrator.Task{
-		ID:        "task-smoke",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "smoke",
-		Payload:   []byte(`{}`),
-	}
-	doneInDB := *task
-	doneInDB.Status = orchestrator.TaskStatusDone
-
-	locks := orchestrator.NewProjectLockManager(orchestrator.NewInMemoryWorktreeLockManager())
-	txStore := &recordingTxStore{task: &doneInDB}
-	hooklessMeta := &orchestrator.ProjectMeta{
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"smoke": {}, // no hooks
-		},
-	}
-	svc := &TaskWorkflowService{
-		Tx: recordingTransactor{store: txStore},
-		Coordinator: fixedDispatchResult{
-			result: &orchestrator.DispatchResult{FinalPayload: task.Payload},
-		},
-		Lifecycle: &stubLifecycle{},
-		Locks:     locks,
-	}
-
-	svc.runDispatchLoop(
-		context.Background(),
-		task,
-		hooklessMeta,
-		orchestrator.DefaultMachine(),
-	)
-
-	if locks.IsHeldForTask(task.ID) {
-		t.Fatal("behavior without hooks must not hold the project lock")
-	}
-}
-
-// TestProjectLock_RunDispatchLoop_HeldDuringDispatch verifies that the lock
-// remains held while the dispatch coordinator is in flight. Uses a holding
-// coordinator that blocks until released.
-func TestProjectLock_RunDispatchLoop_HeldDuringDispatch(t *testing.T) {
-	task := &orchestrator.Task{
-		ID:        "task-1",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
-		Payload:   []byte(`{}`),
-	}
-	doneInDB := *task
-	doneInDB.Status = orchestrator.TaskStatusDone
-
-	locks := orchestrator.NewProjectLockManager(orchestrator.NewInMemoryWorktreeLockManager())
+	locks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
 	holding := newHoldingDispatchCoordinator(&orchestrator.DispatchResult{FinalPayload: task.Payload})
 	svc := &TaskWorkflowService{
 		Tx:          recordingTransactor{store: &recordingTxStore{task: &doneInDB}},
@@ -252,7 +128,149 @@ func TestProjectLock_RunDispatchLoop_HeldDuringDispatch(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		svc.runDispatchLoop(context.Background(), task, projectMetaWithHook("impl"), orchestrator.DefaultMachine())
+		svc.runDispatchLoop(context.Background(), task, anyMeta("plan"), orchestrator.DefaultMachine())
+	}()
+
+	select {
+	case <-holding.enter:
+	case <-time.After(time.Second):
+		t.Fatal("dispatch coordinator never entered")
+	}
+
+	if !locks.IsHeldForTask(task.ID) {
+		t.Fatal("readonly root sup must hold the branch lock while executing")
+	}
+
+	close(holding.release)
+	<-done
+
+	if locks.IsHeldForTask(task.ID) {
+		t.Fatal("expected lock released after done")
+	}
+}
+
+// TestBranchLock_RunDispatchLoop_AcquiresForWorktreeTask verifies that
+// worktree=true tasks also acquire the branch lock (they have unique boid/<id8>
+// keys so they succeed immediately without blocking siblings).
+func TestBranchLock_RunDispatchLoop_AcquiresForWorktreeTask(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "abcd1234-0000-0000-0000-000000000000",
+		ProjectID: "proj-1",
+		ParentID:  "parent-task-id",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
+		Worktree:  true,
+		Payload:   []byte(`{}`),
+	}
+	doneInDB := *task
+	doneInDB.Status = orchestrator.TaskStatusDone
+
+	locks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
+	holding := newHoldingDispatchCoordinator(&orchestrator.DispatchResult{FinalPayload: task.Payload})
+	svc := &TaskWorkflowService{
+		Tx:          recordingTransactor{store: &recordingTxStore{task: &doneInDB}},
+		Coordinator: holding,
+		Lifecycle:   &stubLifecycle{},
+		Locks:       locks,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.runDispatchLoop(context.Background(), task, anyMeta("dev"), orchestrator.DefaultMachine())
+	}()
+
+	select {
+	case <-holding.enter:
+	case <-time.After(time.Second):
+		t.Fatal("dispatch coordinator never entered")
+	}
+
+	if !locks.IsHeldForTask(task.ID) {
+		t.Fatal("worktree=true task must hold the branch lock (unique boid/<id8> key)")
+	}
+
+	close(holding.release)
+	<-done
+}
+
+// TestBranchLock_RunDispatchLoop_AcquiresForHooklessBehavior verifies that
+// behaviors without hooks still acquire the branch lock (hook presence no
+// longer gates locking; branch identity does).
+func TestBranchLock_RunDispatchLoop_AcquiresForHooklessBehavior(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:         "task-smoke",
+		ProjectID:  "proj-1",
+		BaseBranch: "main",
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "smoke",
+		Payload:    []byte(`{}`),
+	}
+	doneInDB := *task
+	doneInDB.Status = orchestrator.TaskStatusDone
+
+	hooklessMeta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"smoke": {}, // no hooks
+		},
+	}
+
+	locks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
+	holding := newHoldingDispatchCoordinator(&orchestrator.DispatchResult{FinalPayload: task.Payload})
+	svc := &TaskWorkflowService{
+		Tx:          recordingTransactor{store: &recordingTxStore{task: &doneInDB}},
+		Coordinator: holding,
+		Lifecycle:   &stubLifecycle{},
+		Locks:       locks,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.runDispatchLoop(context.Background(), task, hooklessMeta, orchestrator.DefaultMachine())
+	}()
+
+	select {
+	case <-holding.enter:
+	case <-time.After(time.Second):
+		t.Fatal("dispatch coordinator never entered")
+	}
+
+	if !locks.IsHeldForTask(task.ID) {
+		t.Fatal("hookless behavior must still hold the branch lock")
+	}
+
+	close(holding.release)
+	<-done
+}
+
+// TestBranchLock_RunDispatchLoop_HeldDuringDispatch verifies that the lock
+// remains held while the dispatch coordinator is in flight.
+func TestBranchLock_RunDispatchLoop_HeldDuringDispatch(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:         "task-1",
+		ProjectID:  "proj-1",
+		BaseBranch: "main",
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "impl",
+		Payload:    []byte(`{}`),
+	}
+	doneInDB := *task
+	doneInDB.Status = orchestrator.TaskStatusDone
+
+	locks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
+	holding := newHoldingDispatchCoordinator(&orchestrator.DispatchResult{FinalPayload: task.Payload})
+	svc := &TaskWorkflowService{
+		Tx:          recordingTransactor{store: &recordingTxStore{task: &doneInDB}},
+		Coordinator: holding,
+		Lifecycle:   &stubLifecycle{},
+		Locks:       locks,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.runDispatchLoop(context.Background(), task, anyMeta("impl"), orchestrator.DefaultMachine())
 	}()
 
 	select {
@@ -273,19 +291,19 @@ func TestProjectLock_RunDispatchLoop_HeldDuringDispatch(t *testing.T) {
 	}
 }
 
-// TestProjectLock_RunDispatchLoop_HeldUntilTerminal_BlocksConcurrentTask
-// is the central correctness test: while task A is executing on project P,
-// task B on the same project blocks at lock acquire. Once A reaches done,
-// B proceeds.
-func TestProjectLock_RunDispatchLoop_HeldUntilTerminal_BlocksConcurrentTask(t *testing.T) {
-	locks := orchestrator.NewProjectLockManager(orchestrator.NewInMemoryWorktreeLockManager())
+// TestBranchLock_SameBaseBranch_Serializes is the central correctness test:
+// two root sup tasks on the same project and same base_branch serialize.
+// Once task A reaches done and releases the lock, task B proceeds.
+func TestBranchLock_SameBaseBranch_Serializes(t *testing.T) {
+	locks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
 
 	taskA := &orchestrator.Task{
-		ID:        "task-a",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
-		Payload:   []byte(`{}`),
+		ID:         "task-a",
+		ProjectID:  "proj-1",
+		BaseBranch: "main",
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "impl",
+		Payload:    []byte(`{}`),
 	}
 	taskADoneInDB := *taskA
 	taskADoneInDB.Status = orchestrator.TaskStatusDone
@@ -301,10 +319,9 @@ func TestProjectLock_RunDispatchLoop_HeldUntilTerminal_BlocksConcurrentTask(t *t
 	doneA := make(chan struct{})
 	go func() {
 		defer close(doneA)
-		svcA.runDispatchLoop(context.Background(), taskA, projectMetaWithHook("impl"), orchestrator.DefaultMachine())
+		svcA.runDispatchLoop(context.Background(), taskA, anyMeta("impl"), orchestrator.DefaultMachine())
 	}()
 
-	// Wait for A to enter dispatch and confirm it holds the lock.
 	select {
 	case <-holdingA.enter:
 	case <-time.After(time.Second):
@@ -314,13 +331,13 @@ func TestProjectLock_RunDispatchLoop_HeldUntilTerminal_BlocksConcurrentTask(t *t
 		t.Fatal("task A should hold the lock")
 	}
 
-	// Try B on the same project — should block at AcquireForTask.
 	taskB := &orchestrator.Task{
-		ID:        "task-b",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
-		Payload:   []byte(`{}`),
+		ID:         "task-b",
+		ProjectID:  "proj-1",
+		BaseBranch: "main", // same base_branch → same lock key
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "impl",
+		Payload:    []byte(`{}`),
 	}
 	taskBDoneInDB := *taskB
 	taskBDoneInDB.Status = orchestrator.TaskStatusDone
@@ -336,24 +353,22 @@ func TestProjectLock_RunDispatchLoop_HeldUntilTerminal_BlocksConcurrentTask(t *t
 	doneB := make(chan struct{})
 	go func() {
 		defer close(doneB)
-		svcB.runDispatchLoop(context.Background(), taskB, projectMetaWithHook("impl"), orchestrator.DefaultMachine())
+		svcB.runDispatchLoop(context.Background(), taskB, anyMeta("impl"), orchestrator.DefaultMachine())
 	}()
 
 	select {
 	case <-holdingB.enter:
-		t.Fatal("task B entered dispatch while task A held the lock")
+		t.Fatal("task B entered dispatch while task A held the lock on the same branch")
 	case <-time.After(80 * time.Millisecond):
 		// expected — B is blocked at AcquireForTask
 	}
 
-	// Release A — terminal status will release the lock.
 	close(holdingA.release)
 	<-doneA
 	if locks.IsHeldForTask("task-a") {
 		t.Fatal("task A lock should be released after done")
 	}
 
-	// Now B should make progress.
 	select {
 	case <-holdingB.enter:
 		// expected
@@ -371,17 +386,18 @@ func TestProjectLock_RunDispatchLoop_HeldUntilTerminal_BlocksConcurrentTask(t *t
 	}
 }
 
-// TestProjectLock_RunDispatchLoop_DifferentProjectsInParallel verifies that
-// tasks on distinct projects do NOT serialize.
-func TestProjectLock_RunDispatchLoop_DifferentProjectsInParallel(t *testing.T) {
-	locks := orchestrator.NewProjectLockManager(orchestrator.NewInMemoryWorktreeLockManager())
+// TestBranchLock_DifferentBaseBranches_Parallel verifies that two root sup
+// tasks on the same project but different base_branches run in parallel.
+func TestBranchLock_DifferentBaseBranches_Parallel(t *testing.T) {
+	locks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
 
 	taskA := &orchestrator.Task{
-		ID:        "task-a",
-		ProjectID: "proj-A",
-		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
-		Payload:   []byte(`{}`),
+		ID:         "task-a",
+		ProjectID:  "proj-1",
+		BaseBranch: "main",
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "impl",
+		Payload:    []byte(`{}`),
 	}
 	taskADone := *taskA
 	taskADone.Status = orchestrator.TaskStatusDone
@@ -394,11 +410,12 @@ func TestProjectLock_RunDispatchLoop_DifferentProjectsInParallel(t *testing.T) {
 	}
 
 	taskB := &orchestrator.Task{
-		ID:        "task-b",
-		ProjectID: "proj-B",
-		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
-		Payload:   []byte(`{}`),
+		ID:         "task-b",
+		ProjectID:  "proj-1",
+		BaseBranch: "feature", // different base_branch → different lock key
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "impl",
+		Payload:    []byte(`{}`),
 	}
 	taskBDone := *taskB
 	taskBDone.Status = orchestrator.TaskStatusDone
@@ -414,20 +431,19 @@ func TestProjectLock_RunDispatchLoop_DifferentProjectsInParallel(t *testing.T) {
 	doneB := make(chan struct{})
 	go func() {
 		defer close(doneA)
-		svcA.runDispatchLoop(context.Background(), taskA, projectMetaWithHook("impl"), orchestrator.DefaultMachine())
+		svcA.runDispatchLoop(context.Background(), taskA, anyMeta("impl"), orchestrator.DefaultMachine())
 	}()
 	go func() {
 		defer close(doneB)
-		svcB.runDispatchLoop(context.Background(), taskB, projectMetaWithHook("impl"), orchestrator.DefaultMachine())
+		svcB.runDispatchLoop(context.Background(), taskB, anyMeta("impl"), orchestrator.DefaultMachine())
 	}()
 
-	// Both should enter dispatch concurrently.
 	for i := 0; i < 2; i++ {
 		select {
 		case <-holdingA.enter:
 		case <-holdingB.enter:
 		case <-time.After(time.Second):
-			t.Fatal("both tasks should enter dispatch concurrently on different projects")
+			t.Fatal("tasks on different base_branches should enter dispatch concurrently")
 		}
 	}
 
@@ -437,26 +453,230 @@ func TestProjectLock_RunDispatchLoop_DifferentProjectsInParallel(t *testing.T) {
 	<-doneB
 }
 
-// TestProjectLock_RunDispatchLoop_ReleasesOnAwaiting verifies that the lock
-// is released when the task transitions to awaiting via mid-hook ask.
-func TestProjectLock_RunDispatchLoop_ReleasesOnAwaiting(t *testing.T) {
-	awaiting := `{"awaiting":{"question":"q?","question_id":"q-1"}}`
-	task := &orchestrator.Task{
-		ID:        "task-1",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
-		Payload:   []byte(`{}`),
+// TestBranchLock_RootSupAndChildExec_Parallel verifies that a root sup task
+// and a child exec task run in parallel (different branch keys).
+func TestBranchLock_RootSupAndChildExec_Parallel(t *testing.T) {
+	locks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
+
+	rootTask := &orchestrator.Task{
+		ID:         "root-task",
+		ProjectID:  "proj-1",
+		BaseBranch: "main",
+		ParentID:   "", // root sup
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "supervisor",
+		Payload:    []byte(`{}`),
 	}
-	awaitingInDB := &orchestrator.Task{
-		ID:        task.ID,
-		ProjectID: task.ProjectID,
-		Status:    orchestrator.TaskStatusAwaiting,
-		Behavior:  task.Behavior,
-		Payload:   []byte(awaiting),
+	rootDone := *rootTask
+	rootDone.Status = orchestrator.TaskStatusDone
+	holdingRoot := newHoldingDispatchCoordinator(&orchestrator.DispatchResult{FinalPayload: rootTask.Payload})
+	svcRoot := &TaskWorkflowService{
+		Tx:          recordingTransactor{store: &recordingTxStore{task: &rootDone}},
+		Coordinator: holdingRoot,
+		Lifecycle:   &stubLifecycle{},
+		Locks:       locks,
 	}
 
-	locks := orchestrator.NewProjectLockManager(orchestrator.NewInMemoryWorktreeLockManager())
+	childTask := &orchestrator.Task{
+		ID:        "abcd1234-0000-0000-0000-000000000000",
+		ProjectID: "proj-1",
+		ParentID:  "root-task", // child exec
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "executor",
+		Payload:   []byte(`{}`),
+	}
+	childDone := *childTask
+	childDone.Status = orchestrator.TaskStatusDone
+	holdingChild := newHoldingDispatchCoordinator(&orchestrator.DispatchResult{FinalPayload: childTask.Payload})
+	svcChild := &TaskWorkflowService{
+		Tx:          recordingTransactor{store: &recordingTxStore{task: &childDone}},
+		Coordinator: holdingChild,
+		Lifecycle:   &stubLifecycle{},
+		Locks:       locks,
+	}
+
+	doneRoot := make(chan struct{})
+	doneChild := make(chan struct{})
+	go func() {
+		defer close(doneRoot)
+		svcRoot.runDispatchLoop(context.Background(), rootTask, anyMeta("supervisor"), orchestrator.DefaultMachine())
+	}()
+	go func() {
+		defer close(doneChild)
+		svcChild.runDispatchLoop(context.Background(), childTask, anyMeta("executor"), orchestrator.DefaultMachine())
+	}()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-holdingRoot.enter:
+		case <-holdingChild.enter:
+		case <-time.After(time.Second):
+			t.Fatal("root sup and child exec should run concurrently (different branch keys)")
+		}
+	}
+
+	close(holdingRoot.release)
+	close(holdingChild.release)
+	<-doneRoot
+	<-doneChild
+}
+
+// TestBranchLock_TwoChildren_Parallel verifies that two child tasks under the
+// same parent run in parallel (each has a unique boid/<id8> branch key).
+func TestBranchLock_TwoChildren_Parallel(t *testing.T) {
+	locks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
+
+	childA := &orchestrator.Task{
+		ID:        "aaaa1111-0000-0000-0000-000000000000",
+		ProjectID: "proj-1",
+		ParentID:  "parent-task",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "executor",
+		Payload:   []byte(`{}`),
+	}
+	childADone := *childA
+	childADone.Status = orchestrator.TaskStatusDone
+	holdingA := newHoldingDispatchCoordinator(&orchestrator.DispatchResult{FinalPayload: childA.Payload})
+	svcA := &TaskWorkflowService{
+		Tx:          recordingTransactor{store: &recordingTxStore{task: &childADone}},
+		Coordinator: holdingA,
+		Lifecycle:   &stubLifecycle{},
+		Locks:       locks,
+	}
+
+	childB := &orchestrator.Task{
+		ID:        "bbbb2222-0000-0000-0000-000000000000",
+		ProjectID: "proj-1",
+		ParentID:  "parent-task",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "executor",
+		Payload:   []byte(`{}`),
+	}
+	childBDone := *childB
+	childBDone.Status = orchestrator.TaskStatusDone
+	holdingB := newHoldingDispatchCoordinator(&orchestrator.DispatchResult{FinalPayload: childB.Payload})
+	svcB := &TaskWorkflowService{
+		Tx:          recordingTransactor{store: &recordingTxStore{task: &childBDone}},
+		Coordinator: holdingB,
+		Lifecycle:   &stubLifecycle{},
+		Locks:       locks,
+	}
+
+	doneA := make(chan struct{})
+	doneB := make(chan struct{})
+	go func() {
+		defer close(doneA)
+		svcA.runDispatchLoop(context.Background(), childA, anyMeta("executor"), orchestrator.DefaultMachine())
+	}()
+	go func() {
+		defer close(doneB)
+		svcB.runDispatchLoop(context.Background(), childB, anyMeta("executor"), orchestrator.DefaultMachine())
+	}()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-holdingA.enter:
+		case <-holdingB.enter:
+		case <-time.After(time.Second):
+			t.Fatal("two child tasks should run concurrently (distinct boid/<id8> keys)")
+		}
+	}
+
+	close(holdingA.release)
+	close(holdingB.release)
+	<-doneA
+	<-doneB
+}
+
+// TestBranchLock_DifferentProjectsInParallel verifies that tasks on distinct
+// projects do not serialize.
+func TestBranchLock_DifferentProjectsInParallel(t *testing.T) {
+	locks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
+
+	taskA := &orchestrator.Task{
+		ID:         "task-a",
+		ProjectID:  "proj-A",
+		BaseBranch: "main",
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "impl",
+		Payload:    []byte(`{}`),
+	}
+	taskADone := *taskA
+	taskADone.Status = orchestrator.TaskStatusDone
+	holdingA := newHoldingDispatchCoordinator(&orchestrator.DispatchResult{FinalPayload: taskA.Payload})
+	svcA := &TaskWorkflowService{
+		Tx:          recordingTransactor{store: &recordingTxStore{task: &taskADone}},
+		Coordinator: holdingA,
+		Lifecycle:   &stubLifecycle{},
+		Locks:       locks,
+	}
+
+	taskB := &orchestrator.Task{
+		ID:         "task-b",
+		ProjectID:  "proj-B",
+		BaseBranch: "main",
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "impl",
+		Payload:    []byte(`{}`),
+	}
+	taskBDone := *taskB
+	taskBDone.Status = orchestrator.TaskStatusDone
+	holdingB := newHoldingDispatchCoordinator(&orchestrator.DispatchResult{FinalPayload: taskB.Payload})
+	svcB := &TaskWorkflowService{
+		Tx:          recordingTransactor{store: &recordingTxStore{task: &taskBDone}},
+		Coordinator: holdingB,
+		Lifecycle:   &stubLifecycle{},
+		Locks:       locks,
+	}
+
+	doneA := make(chan struct{})
+	doneB := make(chan struct{})
+	go func() {
+		defer close(doneA)
+		svcA.runDispatchLoop(context.Background(), taskA, anyMeta("impl"), orchestrator.DefaultMachine())
+	}()
+	go func() {
+		defer close(doneB)
+		svcB.runDispatchLoop(context.Background(), taskB, anyMeta("impl"), orchestrator.DefaultMachine())
+	}()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-holdingA.enter:
+		case <-holdingB.enter:
+		case <-time.After(time.Second):
+			t.Fatal("tasks on different projects should run concurrently")
+		}
+	}
+
+	close(holdingA.release)
+	close(holdingB.release)
+	<-doneA
+	<-doneB
+}
+
+// TestBranchLock_RunDispatchLoop_ReleasesOnAwaiting verifies that the lock
+// is released when the task transitions to awaiting via mid-hook ask.
+func TestBranchLock_RunDispatchLoop_ReleasesOnAwaiting(t *testing.T) {
+	awaiting := `{"awaiting":{"question":"q?","question_id":"q-1"}}`
+	task := &orchestrator.Task{
+		ID:         "task-1",
+		ProjectID:  "proj-1",
+		BaseBranch: "main",
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "impl",
+		Payload:    []byte(`{}`),
+	}
+	awaitingInDB := &orchestrator.Task{
+		ID:         task.ID,
+		ProjectID:  task.ProjectID,
+		BaseBranch: task.BaseBranch,
+		Status:     orchestrator.TaskStatusAwaiting,
+		Behavior:   task.Behavior,
+		Payload:    []byte(awaiting),
+	}
+
+	locks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
 	txStore := &recordingTxStore{task: awaitingInDB}
 	svc := &TaskWorkflowService{
 		Tx: recordingTransactor{store: txStore},
@@ -467,26 +687,21 @@ func TestProjectLock_RunDispatchLoop_ReleasesOnAwaiting(t *testing.T) {
 		Locks:     locks,
 	}
 
-	svc.runDispatchLoop(
-		context.Background(),
-		task,
-		projectMetaWithHook("impl"),
-		orchestrator.DefaultMachine(),
-	)
+	svc.runDispatchLoop(context.Background(), task, anyMeta("impl"), orchestrator.DefaultMachine())
 
 	if locks.IsHeldForTask(task.ID) {
 		t.Fatal("expected lock released after awaiting transition")
 	}
 }
 
-// TestProjectLock_ApplyAction_ReleasesOnLeavingExecuting verifies that
-// ApplyAction releases the lock on transitions out of executing (e.g. abort)
-// even when the dispatch loop hasn't had a chance to release it yet.
-func TestProjectLock_ApplyAction_ReleasesOnAbort(t *testing.T) {
-	locks := orchestrator.NewProjectLockManager(orchestrator.NewInMemoryWorktreeLockManager())
+// TestBranchLock_ApplyAction_ReleasesOnAbort verifies that ApplyAction
+// releases the lock on transitions out of executing (e.g. abort) even when
+// the dispatch loop hasn't had a chance to release it yet.
+func TestBranchLock_ApplyAction_ReleasesOnAbort(t *testing.T) {
+	locks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
 
 	// Pre-acquire the lock to simulate a task that is mid-execution.
-	if err := locks.AcquireForTask(context.Background(), "proj-1", "task-1"); err != nil {
+	if err := locks.AcquireForTask(context.Background(), "proj-1", "main", "task-1"); err != nil {
 		t.Fatalf("pre-acquire: %v", err)
 	}
 	if !locks.IsHeldForTask("task-1") {
@@ -494,18 +709,18 @@ func TestProjectLock_ApplyAction_ReleasesOnAbort(t *testing.T) {
 	}
 
 	task := &orchestrator.Task{
-		ID:        "task-1",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
-		Payload:   []byte(`{}`),
+		ID:         "task-1",
+		ProjectID:  "proj-1",
+		BaseBranch: "main",
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "impl",
+		Payload:    []byte(`{}`),
 	}
 	txStore := &recordingTxStore{task: task}
 	svc := &TaskWorkflowService{
 		Tasks: &stubTaskStore{task: task},
 		Tx:    recordingTransactor{store: txStore},
-		Meta:  stubMetaStore{meta: projectMetaWithHook("impl")},
-		// No coordinator → no background dispatch loop.
+		Meta:  stubMetaStore{meta: anyMeta("impl")},
 		Locks: locks,
 	}
 
@@ -518,26 +733,27 @@ func TestProjectLock_ApplyAction_ReleasesOnAbort(t *testing.T) {
 	}
 }
 
-// TestProjectLock_ApplyAction_ReleasesOnAsk verifies that ask (executing →
-// awaiting) releases the lock so other tasks can run on the project.
-func TestProjectLock_ApplyAction_ReleasesOnAsk(t *testing.T) {
-	locks := orchestrator.NewProjectLockManager(orchestrator.NewInMemoryWorktreeLockManager())
-	if err := locks.AcquireForTask(context.Background(), "proj-1", "task-1"); err != nil {
+// TestBranchLock_ApplyAction_ReleasesOnAsk verifies that ask (executing →
+// awaiting) releases the lock so other tasks can run on the same branch.
+func TestBranchLock_ApplyAction_ReleasesOnAsk(t *testing.T) {
+	locks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
+	if err := locks.AcquireForTask(context.Background(), "proj-1", "main", "task-1"); err != nil {
 		t.Fatalf("pre-acquire: %v", err)
 	}
 
 	task := &orchestrator.Task{
-		ID:        "task-1",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
-		Payload:   []byte(`{}`),
+		ID:         "task-1",
+		ProjectID:  "proj-1",
+		BaseBranch: "main",
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "impl",
+		Payload:    []byte(`{}`),
 	}
 	txStore := &recordingTxStore{task: task}
 	svc := &TaskWorkflowService{
 		Tasks: &stubTaskStore{task: task},
 		Tx:    recordingTransactor{store: txStore},
-		Meta:  stubMetaStore{meta: projectMetaWithHook("impl")},
+		Meta:  stubMetaStore{meta: anyMeta("impl")},
 		Locks: locks,
 	}
 
