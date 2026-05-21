@@ -80,7 +80,7 @@ func TestManager_CreateAndRemove(t *testing.T) {
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
 	// Create
-	w, err := mgr.Create(repo, "proj-1", "task-abcd1234-5678", "HEAD")
+	w, err := mgr.Create(repo, "proj-1", "task-abcd1234-5678", "HEAD", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestManager_RemoveWithBranchDelete(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	w, err := mgr.Create(repo, "proj-1", "task-efgh5678-9012", "HEAD")
+	w, err := mgr.Create(repo, "proj-1", "task-efgh5678-9012", "HEAD", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestResolveBase_EmptyWithRemote(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	_, errEmpty := mgr.Create(local, "proj-1", "task-rb000001-0001", "")
+	_, errEmpty := mgr.Create(local, "proj-1", "task-rb000001-0001", "", dispatcher.CreateOpts{})
 	if errEmpty == nil {
 		t.Fatal("Create with empty baseBranch should return error, got nil")
 	}
@@ -223,7 +223,7 @@ func TestResolveBase_EmptyWithRemote(t *testing.T) {
 
 	// Explicit "main" → resolves to "origin/main" (remote exists)
 	db.Conn.Exec(`UPDATE tasks SET behavior='dev' WHERE id='task-rb000001-0001'`)
-	w, err := mgr.Create(local, "proj-1", "task-rb000001-0001", "main")
+	w, err := mgr.Create(local, "proj-1", "task-rb000001-0001", "main", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create with explicit main: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestResolveBase_LocalBranchWithRemote(t *testing.T) {
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
 	// baseBranch = "main" → should resolve to "origin/main"
-	w, err := mgr.Create(local, "proj-1", "task-rb000002-0001", "main")
+	w, err := mgr.Create(local, "proj-1", "task-rb000002-0001", "main", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestResolveBase_AlreadyOriginPrefixed(t *testing.T) {
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
 	// baseBranch = "origin/main" → used as-is
-	w, err := mgr.Create(local, "proj-1", "task-rb000003-0001", "origin/main")
+	w, err := mgr.Create(local, "proj-1", "task-rb000003-0001", "origin/main", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestResolveBase_NoRemoteFallback(t *testing.T) {
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
 	// No remote → fallback to local "main"
-	w, err := mgr.Create(repo, "proj-1", "task-rb000004-0001", "main")
+	w, err := mgr.Create(repo, "proj-1", "task-rb000004-0001", "main", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestResolveBase_FetchFailureFallback(t *testing.T) {
 
 	// origin/main ref exists locally (from previous fetch), fetch will fail,
 	// should fall back to local "main". Pass explicit "main" (P1: empty is rejected).
-	w, err := mgr.Create(local, "proj-1", "task-rb000005-0001", "main")
+	w, err := mgr.Create(local, "proj-1", "task-rb000005-0001", "main", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create with fetch failure should succeed via fallback: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestManager_CleanupForTask_DoneDeletesBranch(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	w, err := mgr.Create(repo, "proj-cfd1", "task-cfd10001-0001", "HEAD")
+	w, err := mgr.Create(repo, "proj-cfd1", "task-cfd10001-0001", "HEAD", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestManager_CleanupForTask_AbortedDeletesBranch(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	w, err := mgr.Create(repo, "proj-cfa1", "task-cfa10001-0001", "HEAD")
+	w, err := mgr.Create(repo, "proj-cfa1", "task-cfa10001-0001", "HEAD", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestManager_CleanupForTask_PendingNoop(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	w, err := mgr.Create(repo, "proj-cfp1", "task-cfp10001-0001", "HEAD")
+	w, err := mgr.Create(repo, "proj-cfp1", "task-cfp10001-0001", "HEAD", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -439,7 +439,7 @@ func TestRecreate_Success(t *testing.T) {
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
 	// Create worktree and push branch to remote.
-	w, err := mgr.Create(local, "proj-re1", "task-re001234-0001", "main")
+	w, err := mgr.Create(local, "proj-re1", "task-re001234-0001", "main", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -509,7 +509,7 @@ func TestRecreate_LocalAndRemoteBranchMissing(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	w, err := mgr.Create(local, "proj-re2", "task-re001234-0002", "main")
+	w, err := mgr.Create(local, "proj-re2", "task-re001234-0002", "main", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -554,7 +554,7 @@ func TestRecreate_DBConsistency(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	w, err := mgr.Create(local, "proj-re3", "task-re001234-0003", "main")
+	w, err := mgr.Create(local, "proj-re3", "task-re001234-0003", "main", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -606,7 +606,7 @@ func TestRecreate_FetchesBaseBranch(t *testing.T) {
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
 	// Create worktree and push feature branch to remote.
-	w, err := mgr.Create(local, "proj-rebb1", "task-rebb0001-0001", "main")
+	w, err := mgr.Create(local, "proj-rebb1", "task-rebb0001-0001", "main", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -668,7 +668,7 @@ func TestRecreate_LocalBranchFallback(t *testing.T) {
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
 	// Create worktree (local branch is created).
-	w, err := mgr.Create(repo, "proj-rlf1", "task-rlf10001-0001", "HEAD")
+	w, err := mgr.Create(repo, "proj-rlf1", "task-rlf10001-0001", "HEAD", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -726,7 +726,7 @@ func TestRecreate_BaseBranchUnresolvable(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	_, err := mgr.Create(repo, "proj-rbm1", "task-rbm10001-0001", "HEAD")
+	_, err := mgr.Create(repo, "proj-rbm1", "task-rbm10001-0001", "HEAD", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -762,7 +762,7 @@ func TestManager_Create_EnsuresBoidDir(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	w, err := mgr.Create(repo, "proj-1", "task-bdir0001-0001", "HEAD")
+	w, err := mgr.Create(repo, "proj-1", "task-bdir0001-0001", "HEAD", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -792,7 +792,7 @@ func TestManager_Recreate_EnsuresBoidDir(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	if _, err := mgr.Create(repo, "proj-1", "task-rbdir001-0001", "HEAD"); err != nil {
+	if _, err := mgr.Create(repo, "proj-1", "task-rbdir001-0001", "HEAD", dispatcher.CreateOpts{}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := mgr.Remove(repo, "task-rbdir001-0001", false); err != nil {
@@ -834,7 +834,7 @@ func TestManager_EnsureBindingTargets_CreatesWorktreeSubdirs(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	w, err := mgr.Create(repo, "proj-1", "task-ebt10001-0001", "HEAD")
+	w, err := mgr.Create(repo, "proj-1", "task-ebt10001-0001", "HEAD", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -1005,7 +1005,7 @@ func TestManager_EnsureBindingTargets_RejectsEscape(t *testing.T) {
 	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-ebtesc01-0001', 'proj-1', 'ensure binding targets escape', 'dev')`)
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
-	w, err := mgr.Create(repo, "proj-1", "task-ebtesc01-0001", "HEAD")
+	w, err := mgr.Create(repo, "proj-1", "task-ebtesc01-0001", "HEAD", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -1036,7 +1036,7 @@ func TestManager_DefaultBranchPrefix(t *testing.T) {
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
 	// Explicit "main" base branch (P1: empty baseBranch is rejected; pass "main").
-	w, err := mgr.Create(repo, "proj-1", "task-dflt1234-5678", "main")
+	w, err := mgr.Create(repo, "proj-1", "task-dflt1234-5678", "main", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -1068,7 +1068,7 @@ func TestCreate_NonexistentBaseBranch(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	w, err := mgr.Create(local, "proj-neb1", "task-neb10001-0001", "nonexistent-branch")
+	w, err := mgr.Create(local, "proj-neb1", "task-neb10001-0001", "nonexistent-branch", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create with nonexistent base_branch should succeed (case 3 auto-create), got: %v", err)
 	}
@@ -1115,7 +1115,7 @@ func TestCreate_StaleFetchFailure(t *testing.T) {
 
 	// origin/stale-branch exists locally (stale), but local branch "stale-branch" does not exist.
 	// Fetch will fail. Create must return an error rather than silently using the stale ref.
-	_, err := mgr.Create(local, "proj-sff1", "task-sff10001-0001", "stale-branch")
+	_, err := mgr.Create(local, "proj-sff1", "task-sff10001-0001", "stale-branch", dispatcher.CreateOpts{})
 	if err == nil {
 		t.Fatal("Create should return an error when fetch fails and no local branch exists")
 	}
@@ -1139,7 +1139,7 @@ func TestCreate_Case3_CreatesBaseBranchFromHead(t *testing.T) {
 
 	// "release-2026" exists neither locally nor on origin. Create must
 	// auto-create it from HEAD and allocate a worktree based on it.
-	w, err := mgr.Create(repo, "proj-p22-1", "task-p2200001-0001", "release-2026")
+	w, err := mgr.Create(repo, "proj-p22-1", "task-p2200001-0001", "release-2026", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -1180,7 +1180,7 @@ func TestCreate_Case3_DetachedHead_Errors(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	_, err = mgr.Create(repo, "proj-p22-2", "task-p2200002-0001", "release-2026")
+	_, err = mgr.Create(repo, "proj-p22-2", "task-p2200002-0001", "release-2026", dispatcher.CreateOpts{})
 	if err == nil {
 		t.Fatal("expected Create to fail with detached HEAD, got nil")
 	}
@@ -1254,3 +1254,186 @@ func TestEnforceHeadOnBaseBranch_EmptyBaseBranch(t *testing.T) {
 }
 
 // ---- end Phase 2-2 ----
+
+// ---- P2: root task CheckoutBranch (dynamic base-branch overhaul) ----
+
+// initGitRepoWithFeatureBranch creates a repo with "main" and a separate
+// "feature" branch with one extra commit. HEAD is left on "main".
+func initGitRepoWithFeatureBranch(t *testing.T) string {
+	t.Helper()
+	repo := initGitRepo(t)
+	if out, err := exec.Command(gitBin, "-C", repo, "checkout", "-b", "feature").CombinedOutput(); err != nil {
+		t.Fatalf("create feature branch: %v\n%s", err, out)
+	}
+	f := filepath.Join(repo, "feature.txt")
+	os.WriteFile(f, []byte("feature"), 0o644)
+	exec.Command(gitBin, "-C", repo, "add", ".").Run()
+	if out, err := exec.Command(gitBin, "-C", repo, "commit", "-m", "feature commit").CombinedOutput(); err != nil {
+		t.Fatalf("feature commit: %v\n%s", err, out)
+	}
+	exec.Command(gitBin, "-C", repo, "checkout", "main").Run()
+	return repo
+}
+
+// TestCreate_RootTask_CheckoutsExistingBranch verifies that when
+// CreateOpts.CheckoutBranch is set (root sup/exec, case 2), the worktree HEAD
+// is the specified branch rather than a new boid/<id8> branch (P2).
+func TestCreate_RootTask_CheckoutsExistingBranch(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepoWithFeatureBranch(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-rt1', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-rt001234-0001', 'proj-rt1', 'root task', 'executor')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	w, err := mgr.Create(repo, "proj-rt1", "task-rt001234-0001", "feature", dispatcher.CreateOpts{
+		CheckoutBranch: "feature",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if w.Branch != "feature" {
+		t.Errorf("Branch = %q, want %q", w.Branch, "feature")
+	}
+
+	headOut, err := exec.Command(gitBin, "-C", w.Path, "symbolic-ref", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("symbolic-ref HEAD: %v", err)
+	}
+	if got := strings.TrimSpace(string(headOut)); got != "refs/heads/feature" {
+		t.Errorf("worktree HEAD = %q, want refs/heads/feature", got)
+	}
+
+	mgr.Remove(repo, "task-rt001234-0001", false)
+}
+
+// TestCreate_ChildTask_CreatesBoidBranch verifies that when
+// CreateOpts.CheckoutBranch is empty (child task), the existing behaviour is
+// retained: a new boid/<id8> branch is created (P2 retention test).
+func TestCreate_ChildTask_CreatesBoidBranch(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-ct1', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-ct001234-0001', 'proj-ct1', 'child task', 'executor')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	w, err := mgr.Create(repo, "proj-ct1", "task-ct001234-0001", "main", dispatcher.CreateOpts{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	expectedBranch := "boid/task-ct0"
+	if w.Branch != expectedBranch {
+		t.Errorf("Branch = %q, want %q", w.Branch, expectedBranch)
+	}
+
+	headOut, err := exec.Command(gitBin, "-C", w.Path, "symbolic-ref", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("symbolic-ref HEAD: %v", err)
+	}
+	if got := strings.TrimSpace(string(headOut)); got != "refs/heads/"+expectedBranch {
+		t.Errorf("worktree HEAD = %q, want refs/heads/%s", got, expectedBranch)
+	}
+
+	mgr.Remove(repo, "task-ct001234-0001", true)
+}
+
+// TestCreate_RootTask_CleanupDoesNotDeleteBaseBranch verifies that
+// CleanupForTask("done") does not delete the base_branch used by a root task.
+// Only boid/* branches are auto-deleted on cleanup (P2 guard).
+func TestCreate_RootTask_CleanupDoesNotDeleteBaseBranch(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepoWithFeatureBranch(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-rt2', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-rt001234-0002', 'proj-rt2', 'root task cleanup', 'executor')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	w, err := mgr.Create(repo, "proj-rt2", "task-rt001234-0002", "feature", dispatcher.CreateOpts{
+		CheckoutBranch: "feature",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := mgr.CleanupForTask("task-rt001234-0002", repo, "done"); err != nil {
+		t.Fatalf("CleanupForTask done: %v", err)
+	}
+
+	if _, err := os.Stat(w.Path); !os.IsNotExist(err) {
+		t.Error("worktree dir should be removed after done cleanup")
+	}
+
+	// "feature" must still exist — it is user-owned, not a boid/* branch.
+	out, err := exec.Command(gitBin, "-C", repo, "branch", "--list", "feature").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git branch --list: %v", err)
+	}
+	if len(strings.TrimSpace(string(out))) == 0 {
+		t.Error("feature branch must NOT be deleted on root task cleanup")
+	}
+}
+
+// TestCreate_TwoRootTasks_SameBaseBranch_Sequential verifies that two root
+// tasks sharing the same base_branch work sequentially: the second Create
+// fails while the first worktree holds the branch, then succeeds after the
+// first worktree is removed. The BranchLockManager (P2.5) serialises these
+// at the dispatcher level; this test validates the git-layer invariant.
+func TestCreate_TwoRootTasks_SameBaseBranch_Sequential(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepoWithFeatureBranch(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-tr1', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-tr001234-0001', 'proj-tr1', 'root task 1', 'executor')`)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-tr001234-0002', 'proj-tr1', 'root task 2', 'executor')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	// Task 1 occupies "feature".
+	w1, err := mgr.Create(repo, "proj-tr1", "task-tr001234-0001", "feature", dispatcher.CreateOpts{
+		CheckoutBranch: "feature",
+	})
+	if err != nil {
+		t.Fatalf("Create task 1: %v", err)
+	}
+
+	// Task 2 cannot check out "feature" while task 1's worktree holds it.
+	_, err = mgr.Create(repo, "proj-tr1", "task-tr001234-0002", "feature", dispatcher.CreateOpts{
+		CheckoutBranch: "feature",
+	})
+	if err == nil {
+		t.Fatal("Create task 2 should fail while task 1 holds the branch")
+	}
+
+	// Remove task 1's worktree (branch is NOT deleted — it's user-owned).
+	if err := mgr.CleanupForTask("task-tr001234-0001", repo, "done"); err != nil {
+		t.Fatalf("CleanupForTask task 1: %v", err)
+	}
+	if _, err := os.Stat(w1.Path); !os.IsNotExist(err) {
+		t.Error("task 1 worktree dir should be removed after done")
+	}
+
+	// Task 2 can now create its worktree.
+	w2, err := mgr.Create(repo, "proj-tr1", "task-tr001234-0002", "feature", dispatcher.CreateOpts{
+		CheckoutBranch: "feature",
+	})
+	if err != nil {
+		t.Fatalf("Create task 2 after task 1 done: %v", err)
+	}
+	if w2.Branch != "feature" {
+		t.Errorf("task 2 Branch = %q, want feature", w2.Branch)
+	}
+
+	mgr.CleanupForTask("task-tr001234-0002", repo, "done")
+}
+
+// ---- end P2 ----

@@ -158,13 +158,33 @@ func (m *WorktreeManager) resolveRecreateBasePoint(projectDir, recordedBase stri
 // literal.
 const branchPrefix = "boid/"
 
-func (m *WorktreeManager) Create(projectDir, projectID, taskID, baseBranch string) (*Worktree, error) {
+// CreateOpts controls optional worktree creation behaviour.
+type CreateOpts struct {
+	// CheckoutBranch, when non-empty, causes Create to check out an existing
+	// branch directly (git worktree add <path> <branch>) rather than creating
+	// a new boid/<id8> branch. Used for root tasks (ParentID == "") so the
+	// worktree HEAD matches task.BaseBranch directly (P2).
+	CheckoutBranch string
+
+	// ForkPoint overrides the start-point used when creating a new boid/<id8>
+	// branch (CheckoutBranch == ""). Defaults to baseBranch when empty.
+	// Reserved for P3 (child fork from parent HEAD branch); unused in P2.
+	ForkPoint string
+}
+
+func (m *WorktreeManager) Create(projectDir, projectID, taskID, baseBranch string, opts CreateOpts) (*Worktree, error) {
 	shortID := taskID
 	if len(shortID) > 8 {
 		shortID = shortID[:8]
 	}
 
-	branch := branchPrefix + shortID
+	var branch string
+	if opts.CheckoutBranch != "" {
+		// Root task: occupy the base_branch directly (P2).
+		branch = opts.CheckoutBranch
+	} else {
+		branch = branchPrefix + shortID
+	}
 	wtPath := filepath.Join(m.RootDir, projectID, shortID)
 
 	if err := os.MkdirAll(filepath.Dir(wtPath), 0o755); err != nil {
@@ -202,7 +222,14 @@ func (m *WorktreeManager) Create(projectDir, projectID, taskID, baseBranch strin
 		}
 	}
 
-	cmd := exec.Command(m.gitBin(), "worktree", "add", "--no-track", "-b", branch, wtPath, resolvedBase)
+	var cmd *exec.Cmd
+	if opts.CheckoutBranch != "" {
+		// Root task: check out the existing base branch directly. No new branch
+		// is created; the worktree HEAD is set to opts.CheckoutBranch (P2).
+		cmd = exec.Command(m.gitBin(), "worktree", "add", wtPath, opts.CheckoutBranch)
+	} else {
+		cmd = exec.Command(m.gitBin(), "worktree", "add", "--no-track", "-b", branch, wtPath, resolvedBase)
+	}
 	cmd.Dir = projectDir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -263,7 +290,9 @@ func (m *WorktreeManager) Remove(projectDir, taskID string, deleteBranch bool) e
 		exec.Command(m.gitBin(), "-C", projectDir, "worktree", "prune").Run()
 	}
 
-	if deleteBranch {
+	// Only delete boid/* branches. Non-boid branches (e.g. base_branch of a
+	// root task) are user-owned and must never be auto-deleted on cleanup.
+	if deleteBranch && strings.HasPrefix(w.Branch, branchPrefix) {
 		cmd := exec.Command(m.gitBin(), "-C", projectDir, "branch", "-D", w.Branch)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			slog.Warn("git branch -D failed", "branch", w.Branch,
