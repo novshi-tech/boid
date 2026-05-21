@@ -285,7 +285,7 @@ func TestResolveBase_NoRemoteFallback(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	// No remote → fallback to local "main"
+	// No remote — "main" is passed explicitly (P1: empty baseBranch is rejected upstream).
 	w, err := mgr.Create(repo, "proj-1", "task-rb000004-0001", "main", dispatcher.CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
