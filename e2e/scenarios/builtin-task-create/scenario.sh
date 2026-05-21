@@ -7,7 +7,7 @@ e2e_log "registering project from $PROJECT_DIR"
 e2e_run "$E2E_BIN_DIR/boid" project add "$PROJECT_DIR"
 
 # ============================================================
-e2e_log "=== creating parent task that triggers spawn gate ==="
+e2e_log "=== creating parent task that triggers spawn hook ==="
 
 parent_output="$("$E2E_BIN_DIR/boid" task create <<'YAML'
 project_id: e2e-builtin-task-create
@@ -22,7 +22,7 @@ parent_id="$(printf '%s\n' "$parent_output" | sed -n 's/^task created: \([0-9a-f
 e2e_log "starting parent task $parent_id"
 e2e_run "$E2E_BIN_DIR/boid" action send --task "$parent_id" --type start
 
-e2e_log "waiting for parent to reach done (gate fires during executing)"
+e2e_log "waiting for parent to reach done (hook fires during executing)"
 parent_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 60s --interval 200ms "$parent_id" done)"
 printf '%s\n' "$parent_json"
 e2e_assert_contains "$parent_json" '"status":"done"'
@@ -40,10 +40,10 @@ task_b_id="$(resolve_id 'Task B')"
 task_c_id="$(resolve_id 'Task C')"
 task_d_id="$(resolve_id 'Task D')"
 
-[[ -n "$task_a_id" ]] || e2e_fail "Task A not found — gate did not create subtask-a"
-[[ -n "$task_b_id" ]] || e2e_fail "Task B not found — gate did not create subtask-b"
-[[ -n "$task_c_id" ]] || e2e_fail "Task C not found — gate did not create subtask-c"
-[[ -n "$task_d_id" ]] || e2e_fail "Task D not found — gate did not create subtask-d"
+[[ -n "$task_a_id" ]] || e2e_fail "Task A not found — hook did not create subtask-a"
+[[ -n "$task_b_id" ]] || e2e_fail "Task B not found — hook did not create subtask-b"
+[[ -n "$task_c_id" ]] || e2e_fail "Task C not found — hook did not create subtask-c"
+[[ -n "$task_d_id" ]] || e2e_fail "Task D not found — hook did not create subtask-d"
 
 e2e_log "subtask ids: a=$task_a_id b=$task_b_id c=$task_c_id d=$task_d_id"
 

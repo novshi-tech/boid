@@ -1,11 +1,7 @@
 hooks:
   - id: emit-artifact
-
-gates:
-  - id: host-ops
-    phase: exit
     traits:
-      consumes: [artifact]
+      produces: [artifact]
 env:
   E2E_STATE_DIR: ${E2E_STATE_DIR}
 host_commands:

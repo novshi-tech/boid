@@ -1,8 +1,4 @@
 hooks:
-  - id: noop
-
-gates:
   - id: spawn
-    phase: exit
     traits:
       produces: [artifact]
