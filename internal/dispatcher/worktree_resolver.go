@@ -81,6 +81,18 @@ func (r *Runner) allocateWorktree(spec *orchestrator.JobSpec) (string, error) {
 		// Root task: occupy the base_branch directly rather than creating a
 		// new boid/<id8> branch. This is P2 of the dynamic base-branch overhaul.
 		createOpts.CheckoutBranch = task.BaseBranch
+	} else {
+		// Child task: fork from the parent's HEAD branch rather than the shared
+		// baseBranch. ComputeHeadBranch(parent) is "boid/<parent_id8>" for
+		// child parents, or parent.BaseBranch for root parents (P3).
+		parent, parentErr := r.TaskLookup.GetTask(task.ParentID)
+		if parentErr != nil {
+			return "", fmt.Errorf("lookup parent task %q for fork point: %w", task.ParentID, parentErr)
+		}
+		if parent == nil {
+			return "", fmt.Errorf("parent task %q not found for fork point", task.ParentID)
+		}
+		createOpts.ForkPoint = orchestrator.ComputeHeadBranch(parent)
 	}
 	w, err := r.Worktrees.Create(
 		spec.Visibility.ProjectDir,
