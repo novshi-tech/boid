@@ -65,10 +65,9 @@ var ErrDetachedHead = fmt.Errorf("project is in detached HEAD state")
 // a task whose resolved base_branch is baseBranch should be scheduled. See
 // BaseBranchState for the three case definitions.
 //
-// baseBranch must already be expanded (no ${...} templates). An empty
-// baseBranch is treated as "main" to match the existing worktree manager
-// default — the alternative would be to refuse, but that makes the call site
-// in CreateTask more painful for no benefit.
+// baseBranch must already be expanded (no ${...} templates) and non-empty.
+// P1: empty baseBranch is rejected — the service layer must resolve
+// ${current_branch} before calling ClassifyBaseBranch.
 //
 // The classify call is read-only: no branches are created, no fetches are
 // issued, and the project HEAD is not mutated. Case 3 mitigation (creating
@@ -79,7 +78,7 @@ func ClassifyBaseBranch(projectDir, baseBranch string) (BaseBranchState, error) 
 		return BaseBranchStateUnknown, fmt.Errorf("ClassifyBaseBranch: projectDir is required")
 	}
 	if baseBranch == "" {
-		baseBranch = "main"
+		return BaseBranchStateUnknown, fmt.Errorf("ClassifyBaseBranch: baseBranch must be non-empty (resolve ${current_branch} at task creation time)")
 	}
 	// origin/<branch> is treated as a remote-tracking reference: there is no
 	// way for HEAD to equal it (HEAD is always a local branch or detached),

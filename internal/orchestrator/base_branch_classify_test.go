@@ -70,15 +70,14 @@ func TestClassifyBaseBranch_Case1_HeadMatches(t *testing.T) {
 	}
 }
 
-func TestClassifyBaseBranch_Case1_EmptyBaseBranchDefaultsToMain(t *testing.T) {
+func TestClassifyBaseBranch_Empty_ReturnsError(t *testing.T) {
+	// P1: empty baseBranch is rejected — the service layer must resolve
+	// ${current_branch} before calling ClassifyBaseBranch.
 	dir := initClassifyRepo(t, "main")
 
-	state, err := ClassifyBaseBranch(dir, "")
-	if err != nil {
-		t.Fatalf("ClassifyBaseBranch: %v", err)
-	}
-	if state != Case1HeadMatches {
-		t.Errorf("state = %v, want Case1HeadMatches (empty defaults to main)", state)
+	_, err := ClassifyBaseBranch(dir, "")
+	if err == nil {
+		t.Fatal("expected error for empty baseBranch, got nil")
 	}
 }
 

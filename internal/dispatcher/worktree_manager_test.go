@@ -204,6 +204,8 @@ func TestManager_RemoveIdempotent(t *testing.T) {
 // TestResolveBase_* tests verify the resolveBaseBranch logic through Create().
 
 func TestResolveBase_EmptyWithRemote(t *testing.T) {
+	// P1: empty baseBranch is now an error; callers must pass a resolved branch.
+	// Verify that passing the explicit "main" resolves correctly.
 	db := testutil.NewTestDB(t)
 	local, _ := initGitRepoWithRemote(t)
 	wtRoot := t.TempDir()
@@ -213,10 +215,17 @@ func TestResolveBase_EmptyWithRemote(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	// Empty baseBranch → should resolve to "origin/main" (remote exists)
-	w, err := mgr.Create(local, "proj-1", "task-rb000001-0001", "")
+	_, errEmpty := mgr.Create(local, "proj-1", "task-rb000001-0001", "")
+	if errEmpty == nil {
+		t.Fatal("Create with empty baseBranch should return error, got nil")
+	}
+	mgr.Remove(local, "task-rb000001-0001", true)
+
+	// Explicit "main" → resolves to "origin/main" (remote exists)
+	db.Conn.Exec(`UPDATE tasks SET behavior='dev' WHERE id='task-rb000001-0001'`)
+	w, err := mgr.Create(local, "proj-1", "task-rb000001-0001", "main")
 	if err != nil {
-		t.Fatalf("Create: %v", err)
+		t.Fatalf("Create with explicit main: %v", err)
 	}
 	if w.BaseBranch != "origin/main" {
 		t.Errorf("expected origin/main, got %q", w.BaseBranch)
@@ -301,8 +310,8 @@ func TestResolveBase_FetchFailureFallback(t *testing.T) {
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
 	// origin/main ref exists locally (from previous fetch), fetch will fail,
-	// should fall back to local "main"
-	w, err := mgr.Create(local, "proj-1", "task-rb000005-0001", "")
+	// should fall back to local "main". Pass explicit "main" (P1: empty is rejected).
+	w, err := mgr.Create(local, "proj-1", "task-rb000005-0001", "main")
 	if err != nil {
 		t.Fatalf("Create with fetch failure should succeed via fallback: %v", err)
 	}
@@ -1026,8 +1035,8 @@ func TestManager_DefaultBranchPrefix(t *testing.T) {
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	// Empty prefix and base branch should use defaults
-	w, err := mgr.Create(repo, "proj-1", "task-dflt1234-5678", "")
+	// Explicit "main" base branch (P1: empty baseBranch is rejected; pass "main").
+	w, err := mgr.Create(repo, "proj-1", "task-dflt1234-5678", "main")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

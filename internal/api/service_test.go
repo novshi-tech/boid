@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -1748,6 +1749,138 @@ func TestCreateTask_ExecutorCase3_WithParent_OK(t *testing.T) {
 		t.Errorf("BaseBranch = %q, want %q (inherited from parent)", task.BaseBranch, "release-2026")
 	}
 }
+
+// ---- P1: empty base_branch resolution ----
+
+// TestCreateTask_EmptyBaseBranch_ExpandsCurrentBranch reproduces the mera-ui
+// failure mode: project HEAD is on a feature branch and base_branch is left
+// empty. P1 must resolve "" to the current branch so the supervisor ends up on
+// the correct HEAD (case 1 → worktree=false when HEAD matches).
+func TestCreateTask_EmptyBaseBranch_ExpandsCurrentBranch(t *testing.T) {
+	dir := initServiceTestRepo(t, "feature/BGO-170")
+	meta := &orchestrator.ProjectMeta{
+		// BaseBranch intentionally empty → P1 must expand to current branch.
+		Worktree: true,
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"supervisor": {},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{},
+		Meta:     stubMetaStore{meta: meta},
+		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
+	}
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "mera-ui repro",
+		Behavior:  "supervisor",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if task.BaseBranch != "feature/BGO-170" {
+		t.Errorf("BaseBranch = %q, want %q (expanded from current HEAD)", task.BaseBranch, "feature/BGO-170")
+	}
+	// Case 1: HEAD matches baseBranch → supervisor should run in project dir.
+	if task.Worktree {
+		t.Errorf("Worktree = true, want false (case 1: HEAD == baseBranch)")
+	}
+}
+
+// TestCreateTask_EmptyBaseBranch_DetachedHead_Returns400 verifies that a root
+// task with no explicit base_branch created against a detached-HEAD project
+// is rejected at creation time with a 400.
+func TestCreateTask_EmptyBaseBranch_DetachedHead_Returns400(t *testing.T) {
+	const bin = "/usr/bin/git"
+	dir := initServiceTestRepo(t, "main")
+	// Detach HEAD.
+	out, err := newCmd(bin, "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Skipf("git rev-parse HEAD: %v", err)
+	}
+	hash := strings.TrimSpace(string(out))
+	if cmd := newCmd(bin, "-C", dir, "checkout", "-q", "--detach", hash); cmd.Run() != nil {
+		t.Skip("git checkout --detach: failed")
+	}
+
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"executor": {},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{},
+		Meta:     stubMetaStore{meta: meta},
+		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
+	}
+	_, createErr := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "detached root task",
+		Behavior:  "executor",
+	})
+	if createErr == nil {
+		t.Fatal("expected error for detached HEAD + empty base_branch, got nil")
+	}
+	se, ok := createErr.(*StatusError)
+	if !ok {
+		t.Fatalf("error type = %T, want *StatusError", createErr)
+	}
+	if se.Code != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want 400", se.Code)
+	}
+}
+
+// TestCreateTask_EmptyBaseBranch_ChildInheritsParent verifies that a child
+// task with an empty project base_branch inherits from its parent instead of
+// calling gitCurrentBranch. Even when the project HEAD is detached, the child
+// must succeed because inheritance bypasses the ${current_branch} expansion.
+func TestCreateTask_EmptyBaseBranch_ChildInheritsParent(t *testing.T) {
+	const bin = "/usr/bin/git"
+	dir := initServiceTestRepo(t, "main")
+	// Detach HEAD to prove gitCurrentBranch is never called for child tasks.
+	out, err := newCmd(bin, "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Skipf("git rev-parse HEAD: %v", err)
+	}
+	hash := strings.TrimSpace(string(out))
+	if cmd := newCmd(bin, "-C", dir, "checkout", "-q", "--detach", hash); cmd.Run() != nil {
+		t.Skip("git checkout --detach: failed")
+	}
+
+	parent := &orchestrator.Task{
+		ID:         "task-parent",
+		Behavior:   "supervisor",
+		BaseBranch: "main",
+	}
+	store := &stubTaskStore{
+		tasks: map[string]*orchestrator.Task{parent.ID: parent},
+	}
+	meta := &orchestrator.ProjectMeta{
+		// BaseBranch empty — child must use parent's, not gitCurrentBranch.
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"executor": {},
+		},
+	}
+	svc := &TaskAppService{
+		Tasks:    store,
+		Meta:     stubMetaStore{meta: meta},
+		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
+	}
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "child task detached parent",
+		Behavior:  "executor",
+		ParentID:  parent.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v (child must not call gitCurrentBranch)", err)
+	}
+	if task.BaseBranch != "main" {
+		t.Errorf("BaseBranch = %q, want %q (inherited from parent)", task.BaseBranch, "main")
+	}
+}
+
+// ---- end P1 ----
 
 // ---- end Phase 2-2 ----
 

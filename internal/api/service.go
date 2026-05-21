@@ -657,25 +657,45 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		}
 	}
 
-	if !inheritedFromParent && baseBranch != "" {
-		// Phase 1-3: expand ${TASK_REMOTE_ID} first so a missing remote_id
-		// errors out before we touch the project working directory.
-		expanded, err := orchestrator.ExpandTaskBaseBranch(baseBranch, req.RemoteID)
-		if err != nil {
-			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
-		}
-		baseBranch = expanded
-
-		if s.Projects != nil {
-			proj, projErr := s.Projects.GetProject(req.ProjectID)
-			if projErr != nil {
-				return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project lookup failed: %v", projErr)}
+	if !inheritedFromParent {
+		if baseBranch == "" && (res.behaviorName == "supervisor" || res.behaviorName == "executor") {
+			// P1 priority 2: root canonical task with no base_branch → expand
+			// ${current_branch}. Detached HEAD is surfaced as a 400. Non-canonical
+			// behaviors are allowed an empty baseBranch (they bypass ClassifyBaseBranch).
+			if s.Projects != nil {
+				proj, projErr := s.Projects.GetProject(req.ProjectID)
+				if projErr != nil {
+					return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project lookup failed: %v", projErr)}
+				}
+				if proj != nil && proj.WorkDir != "" {
+					expanded, err := orchestrator.ExpandBaseBranch("${current_branch}", proj.WorkDir)
+					if err != nil {
+						return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("base_branch: %v", err)}
+					}
+					baseBranch = expanded
+				}
 			}
-			expanded, err := orchestrator.ExpandBaseBranch(baseBranch, proj.WorkDir)
+		} else if baseBranch != "" {
+			// P1 priority 3: explicit base → expand ${TASK_REMOTE_ID} first so a
+			// missing remote_id errors out before we touch the project working
+			// directory, then expand ${current_branch}.
+			expanded, err := orchestrator.ExpandTaskBaseBranch(baseBranch, req.RemoteID)
 			if err != nil {
 				return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 			}
 			baseBranch = expanded
+
+			if s.Projects != nil {
+				proj, projErr := s.Projects.GetProject(req.ProjectID)
+				if projErr != nil {
+					return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project lookup failed: %v", projErr)}
+				}
+				expanded, err := orchestrator.ExpandBaseBranch(baseBranch, proj.WorkDir)
+				if err != nil {
+					return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+				}
+				baseBranch = expanded
+			}
 		}
 	}
 
