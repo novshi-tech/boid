@@ -193,6 +193,22 @@ func Apply(conn *sql.DB) error {
 				return indexNotExists(tx, "idx_tasks_remote")
 			},
 		},
+		{
+			version: "0025_drop_tasks_datasource_id",
+			path:    "migrations/0025_drop_tasks_datasource_id.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				exists, err := columnExists(tx, "tasks", "datasource_id")
+				return !exists, err
+			},
+		},
+		{
+			version: "0026_drop_tasks_depends_on",
+			path:    "migrations/0026_drop_tasks_depends_on.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				exists, err := columnExists(tx, "tasks", "depends_on_payload")
+				return !exists, err
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

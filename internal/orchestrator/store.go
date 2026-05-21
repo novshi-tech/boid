@@ -35,7 +35,7 @@ type TaskFilter struct {
 // taskSelectCols は tasks テーブルの基本カラム一覧（テーブル別名 t を使用）。
 const taskSelectCols = `t.id, t.project_id, t.remote_id, t.title, t.description,` +
 	` t.status, t.behavior, t.traits, t.readonly, t.worktree,` +
-	` t.branch_prefix, t.base_branch, t.payload, t.instructions, t.auto_start, t.depends_on_payload,` +
+	` t.branch_prefix, t.base_branch, t.payload, t.instructions, t.auto_start,` +
 	` t.ref, t.parent_id, t.created_at, t.updated_at`
 
 // taskChildCountCols は子タスク数を集計するサブクエリカラム群（テーブル別名 t を前提）。
@@ -75,125 +75,21 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 		return fmt.Errorf("marshal instructions: %w", err)
 	}
 
-	if len(t.DependsOn) > 0 {
-		if err := detectCyclicDependency(dbtx, t.ID, t.DependsOn); err != nil {
-			return err
-		}
-	}
-
 	_, err = dbtx.Exec(
-		`INSERT INTO tasks (id, project_id, remote_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, instructions, auto_start, depends_on_payload, ref, parent_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.ProjectID, t.RemoteID, t.Title, t.Description, t.Status, t.Behavior, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.AutoStart, t.DependsOnPayload, t.Ref, t.ParentID, t.CreatedAt, t.UpdatedAt,
+		`INSERT INTO tasks (id, project_id, remote_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, instructions, auto_start, ref, parent_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.ProjectID, t.RemoteID, t.Title, t.Description, t.Status, t.Behavior, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.AutoStart, t.Ref, t.ParentID, t.CreatedAt, t.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
 	}
-	for _, depID := range t.DependsOn {
-		if _, err := dbtx.Exec(
-			`INSERT INTO task_dependencies (task_id, depends_on) VALUES (?, ?)`,
-			t.ID, depID,
-		); err != nil {
-			return fmt.Errorf("insert task dependency %s: %w", depID, err)
-		}
-	}
 	return nil
-}
-
-// detectCyclicDependency は BFS で依存グラフを走査し、newTaskID が
-// dependsOn の推移的依存に含まれるかを検出する。
-func detectCyclicDependency(dbtx db.DBTX, newTaskID string, dependsOn []string) error {
-	visited := make(map[string]bool)
-	queue := make([]string, len(dependsOn))
-	copy(queue, dependsOn)
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		if current == newTaskID {
-			return fmt.Errorf("circular dependency detected: task %s", newTaskID)
-		}
-		if visited[current] {
-			continue
-		}
-		visited[current] = true
-		deps, err := loadDependencyIDs(dbtx, current)
-		if err != nil {
-			return fmt.Errorf("detect cycle: %w", err)
-		}
-		queue = append(queue, deps...)
-	}
-	return nil
-}
-
-func loadDependencyIDs(dbtx db.DBTX, taskID string) ([]string, error) {
-	rows, err := dbtx.Query(
-		`SELECT depends_on FROM task_dependencies WHERE task_id = ?`, taskID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("load dependency ids: %w", err)
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan dependency id: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
 }
 
 // FindDependentTasks は taskID に依存している pending 状態のタスクを返す。
-func FindDependentTasks(dbtx db.DBTX, taskID string) ([]*Task, error) {
-	rows, err := dbtx.Query(`
-		SELECT DISTINCT `+taskSelectCols+`, `+taskChildCountCols+`
-		FROM tasks t
-		INNER JOIN task_dependencies td ON t.id = td.task_id
-		WHERE td.depends_on = ? AND t.status = ?
-		ORDER BY t.created_at`,
-		taskID, string(TaskStatusPending),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("find dependent tasks: %w", err)
-	}
-	defer rows.Close()
-
-	var tasks []*Task
-	for rows.Next() {
-		t, err := scanTask(rows)
-		if err != nil {
-			return nil, err
-		}
-		tasks = append(tasks, t)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for _, t := range tasks {
-		if err := loadTaskDependencies(dbtx, t); err != nil {
-			return nil, err
-		}
-	}
-	return tasks, nil
-}
-
-func loadTaskDependencies(dbtx db.DBTX, t *Task) error {
-	rows, err := dbtx.Query(
-		`SELECT depends_on FROM task_dependencies WHERE task_id = ? ORDER BY depends_on`, t.ID,
-	)
-	if err != nil {
-		return fmt.Errorf("load task dependencies: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var dep string
-		if err := rows.Scan(&dep); err != nil {
-			return fmt.Errorf("scan task dependency: %w", err)
-		}
-		t.DependsOn = append(t.DependsOn, dep)
-	}
-	return rows.Err()
+// depends_on 機能削除後は常に空スライスを返す (transitional stub)。
+func FindDependentTasks(_ db.DBTX, _ string) ([]*Task, error) {
+	return nil, nil
 }
 
 func GetTask(dbtx db.DBTX, id string) (*Task, error) {
@@ -209,9 +105,6 @@ func GetTask(dbtx db.DBTX, id string) (*Task, error) {
 		t, err = scanTask(row)
 	}
 	if err != nil {
-		return nil, err
-	}
-	if err := loadTaskDependencies(dbtx, t); err != nil {
 		return nil, err
 	}
 	return t, nil
@@ -255,13 +148,6 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 		conditions = append(conditions, "LOWER(t.title) LIKE ?")
 		args = append(args, "%"+strings.ToLower(filter.Title)+"%")
 	}
-	if filter.HasDependsOn {
-		conditions = append(conditions, "EXISTS (SELECT 1 FROM task_dependencies td WHERE td.task_id = t.id)")
-	}
-	if filter.NoDependsOn {
-		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM task_dependencies td WHERE td.task_id = t.id)")
-	}
-
 	query := ctePrefix + `SELECT ` + taskSelectCols + `, ` + taskChildCountCols + ` FROM tasks t`
 	for _, j := range joins {
 		query += " " + j
@@ -292,22 +178,6 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	for _, t := range tasks {
-		if err := loadTaskDependencies(dbtx, t); err != nil {
-			return nil, err
-		}
-	}
-
-	// Blocked フィールドを算出する（pending タスクのみ対象）。
-	// N+1 を避けるため、まず全タスクを ID マップに格納してから判定する。
-	taskByID := make(map[string]*Task, len(tasks))
-	for _, t := range tasks {
-		taskByID[t.ID] = t
-	}
-	for _, t := range tasks {
-		t.Blocked = ComputeTaskBlocked(t, taskByID)
-	}
-
 	return tasks, nil
 }
 
@@ -321,28 +191,12 @@ func UpdateTask(dbtx db.DBTX, t *Task) error {
 	if err != nil {
 		return fmt.Errorf("marshal instructions: %w", err)
 	}
-	if len(t.DependsOn) > 0 {
-		if err := detectCyclicDependency(dbtx, t.ID, t.DependsOn); err != nil {
-			return err
-		}
-	}
 	_, err = dbtx.Exec(
-		`UPDATE tasks SET title = ?, description = ?, status = ?, traits = ?, readonly = ?, worktree = ?, branch_prefix = ?, base_branch = ?, payload = ?, instructions = ?, depends_on_payload = ?, parent_id = ?, updated_at = ? WHERE id = ?`,
-		t.Title, t.Description, t.Status, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.DependsOnPayload, t.ParentID, t.UpdatedAt, t.ID,
+		`UPDATE tasks SET title = ?, description = ?, status = ?, traits = ?, readonly = ?, worktree = ?, branch_prefix = ?, base_branch = ?, payload = ?, instructions = ?, parent_id = ?, updated_at = ? WHERE id = ?`,
+		t.Title, t.Description, t.Status, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.ParentID, t.UpdatedAt, t.ID,
 	)
 	if err != nil {
 		return err
-	}
-	if _, err := dbtx.Exec(`DELETE FROM task_dependencies WHERE task_id = ?`, t.ID); err != nil {
-		return fmt.Errorf("delete task dependencies: %w", err)
-	}
-	for _, depID := range t.DependsOn {
-		if _, err := dbtx.Exec(
-			`INSERT INTO task_dependencies (task_id, depends_on) VALUES (?, ?)`,
-			t.ID, depID,
-		); err != nil {
-			return fmt.Errorf("insert task dependency %s: %w", depID, err)
-		}
 	}
 	return nil
 }
@@ -469,14 +323,6 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 		return result, nil
 	}
 
-	depArgs := append(condArgs, condArgs...)
-	if _, err := dbtx.Exec(
-		`DELETE FROM task_dependencies WHERE task_id IN (`+subquery+`) OR depends_on IN (`+subquery+`)`,
-		depArgs...,
-	); err != nil {
-		return nil, fmt.Errorf("delete task_dependencies: %w", err)
-	}
-
 	for _, table := range []string{"actions", "jobs", "worktrees"} {
 		res, err := dbtx.Exec(
 			`DELETE FROM `+table+` WHERE task_id IN (`+subquery+`)`,
@@ -550,20 +396,12 @@ func FindTaskByRef(dbtx db.DBTX, ref, parentID string) (*Task, error) {
 		}
 		return nil, err
 	}
-	if err := loadTaskDependencies(dbtx, t); err != nil {
-		return nil, err
-	}
 	return t, nil
 }
 
 func DeleteTask(dbtx db.DBTX, id string) error {
 	if _, err := GetTask(dbtx, id); err != nil {
 		return err
-	}
-	if _, err := dbtx.Exec(
-		`DELETE FROM task_dependencies WHERE task_id = ? OR depends_on = ?`, id, id,
-	); err != nil {
-		return fmt.Errorf("delete task_dependencies: %w", err)
 	}
 	for _, table := range []string{"actions", "jobs", "worktrees"} {
 		if _, err := dbtx.Exec(`DELETE FROM `+table+` WHERE task_id = ?`, id); err != nil {
@@ -588,7 +426,7 @@ func scanTask(s taskScanner) (*Task, error) {
 	if err := s.Scan(
 		&t.ID, &t.ProjectID, &t.RemoteID, &t.Title, &t.Description,
 		&t.Status, &t.Behavior, &traitsJSON, &t.Readonly, &t.Worktree,
-		&t.BranchPrefix, &t.BaseBranch, &payload, &instructionsJSON, &t.AutoStart, &t.DependsOnPayload,
+		&t.BranchPrefix, &t.BaseBranch, &payload, &instructionsJSON, &t.AutoStart,
 		&t.Ref, &t.ParentID, &t.CreatedAt, &t.UpdatedAt,
 		&t.TotalChildCount, &t.DoneChildCount, &t.AbortedChildCount, &t.OpenChildCount,
 	); err != nil {
