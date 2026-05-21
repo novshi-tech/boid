@@ -10,11 +10,10 @@ import (
 	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// mockExecutorWaiter implements HookExecutor, GateExecutor, and JobWaiter.
+// mockExecutorWaiter implements HookExecutor and JobWaiter.
 type mockExecutorWaiter struct {
 	mu          sync.Mutex
 	hookCalls   []*projectspec.HookFireEvent
-	gateCalls   []*projectspec.GateFireEvent
 	jobCounter  int
 	completions map[string]orchestrator.JobCompletion
 	execOrder   []string
@@ -31,19 +30,6 @@ func (m *mockExecutorWaiter) setHookCompletion(hookID string, output string, exi
 	defer m.mu.Unlock()
 	m.jobCounter++
 	jobID := fmt.Sprintf("job-%s-%d", hookID, m.jobCounter)
-	m.completions[jobID] = orchestrator.JobCompletion{
-		JobID:    jobID,
-		Output:   output,
-		ExitCode: exitCode,
-	}
-	return jobID
-}
-
-func (m *mockExecutorWaiter) setGateCompletion(gateID string, output string, exitCode int) string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.jobCounter++
-	jobID := fmt.Sprintf("job-%s-%d", gateID, m.jobCounter)
 	m.completions[jobID] = orchestrator.JobCompletion{
 		JobID:    jobID,
 		Output:   output,
@@ -76,20 +62,6 @@ func (m *mockExecutorWaiter) ExecuteHook(ctx context.Context, event *projectspec
 	return jobID, nil
 }
 
-func (m *mockExecutorWaiter) ExecuteGate(ctx context.Context, event *projectspec.GateFireEvent) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.gateCalls = append(m.gateCalls, event)
-	m.execOrder = append(m.execOrder, "gate:"+event.Gate.ID)
-	if jobID := m.findJobForID(event.Gate.ID); jobID != "" {
-		return jobID, nil
-	}
-	m.jobCounter++
-	jobID := fmt.Sprintf("job-%s-%d", event.Gate.ID, m.jobCounter)
-	m.completions[jobID] = orchestrator.JobCompletion{JobID: jobID, Output: `{"payload_patch":{}}`, ExitCode: 0}
-	return jobID, nil
-}
-
 // WaitForJob mirrors the production WaitForJobCtx contract: a non-zero exit
 // is NOT reported as an error — callers are expected to inspect the returned
 // JobCompletion.ExitCode. Only true wait-machinery failures (e.g. unknown job)
@@ -104,12 +76,12 @@ func (m *mockExecutorWaiter) WaitForJob(ctx context.Context, jobID string) (orch
 	return c, nil
 }
 
-// metaWithBehavior builds a ProjectMeta that exposes hooks/gates via a single
+// metaWithBehavior builds a ProjectMeta that exposes hooks via a single
 // "dev" behavior. Tests pair this with tasks whose Behavior is "dev".
-func metaWithBehavior(hooks []projectspec.Hook, gates []projectspec.Gate) *projectspec.ProjectMeta {
+func metaWithBehavior(hooks []projectspec.Hook) *projectspec.ProjectMeta {
 	return &projectspec.ProjectMeta{
 		TaskBehaviors: map[string]projectspec.TaskBehavior{
-			"dev": {Hooks: hooks, Gates: gates},
+			"dev": {Hooks: hooks},
 		},
 	}
 }

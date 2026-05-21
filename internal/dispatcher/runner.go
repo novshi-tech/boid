@@ -64,7 +64,7 @@ type Runner struct {
 }
 
 // Dispatch launches a sandbox for the given JobSpec. The optional cleanup
-// callback (typically provided by orchestrator's PlanHook/PlanGate for
+// callback (typically provided by orchestrator's PlanHook for
 // staging dir teardown) runs after the sandbox process has exited.
 func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, cleanup orchestrator.CleanupFunc) (string, error) {
 	if spec == nil {
@@ -113,9 +113,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 		return "", err
 	}
-	// resolvedWorktreePath holds the existing worktree path without allocating
-	// a new one. Gates use it as the starting hint for ensureHostGateWorktree;
-	// the hook sandbox path passes it to the broker TokenContext.WorktreeDir.
+	// resolvedWorktreePath passes the existing worktree path to the broker
+	// TokenContext.WorktreeDir without allocating a new one.
 	resolvedWorktreePath := worktreePath
 	if resolvedWorktreePath == "" {
 		resolvedWorktreePath = r.existingWorktreePath(spec)
@@ -133,22 +132,6 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// it completes. Without this the UI sits idle during the whole hook run.
 	if r.JobEvents != nil && j.TaskID != "" {
 		r.JobEvents.JobCreated(j.TaskID, j.ID)
-	}
-
-	// Gate jobs always run directly on the host with cwd at the worktree;
-	// sandbox/broker construction is skipped entirely. Ensure the worktree
-	// exists (recreate if it was cleaned by a prior abort) so replay scenarios
-	// still have a live tree to operate on.
-	if spec.Kind == orchestrator.JobKindGate {
-		hostWorktree, herr := r.ensureHostGateWorktree(spec, resolvedWorktreePath)
-		if herr != nil {
-			r.failJob(j, herr)
-			if cleanup != nil {
-				cleanup()
-			}
-			return "", herr
-		}
-		return r.dispatchHostGate(ctx, j, spec, hostWorktree, cleanup)
 	}
 
 	workspaceID, projectWorkDir, _ := r.resolveProjectRuntime(spec.ProjectID)

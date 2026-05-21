@@ -25,7 +25,7 @@ func newTestWebHandlerWithReopen(svc WebService) *chi.Mux {
 func TestWebHandler_ReopenForm_Success(t *testing.T) {
 	detail := makeTaskDetailView()
 	detail.Task.Status = orchestrator.TaskStatusDone
-	svc := &stubWebServiceWithGates{
+	svc := &stubWebServiceWithRerun{
 		stubWebService: stubWebService{taskDetail: detail},
 	}
 	r := newTestWebHandlerWithReopen(svc)
@@ -52,7 +52,7 @@ func TestWebHandler_ReopenForm_Success(t *testing.T) {
 func TestWebHandler_ReopenForm_NotDoneRedirects(t *testing.T) {
 	detail := makeTaskDetailView()
 	detail.Task.Status = orchestrator.TaskStatusExecuting
-	svc := &stubWebServiceWithGates{
+	svc := &stubWebServiceWithRerun{
 		stubWebService: stubWebService{taskDetail: detail},
 	}
 	r := newTestWebHandlerWithReopen(svc)
@@ -76,7 +76,7 @@ func TestWebHandler_ReopenForm_NotDoneRedirects(t *testing.T) {
 func TestWebHandler_PostReopen_WithMessage(t *testing.T) {
 	detail := makeTaskDetailView()
 	detail.Task.Status = orchestrator.TaskStatusDone
-	svc := &stubWebServiceWithGates{
+	svc := &stubWebServiceWithRerun{
 		stubWebService: stubWebService{taskDetail: detail},
 	}
 	r := newTestWebHandlerWithReopen(svc)
@@ -106,7 +106,7 @@ func TestWebHandler_PostReopen_WithMessage(t *testing.T) {
 func TestWebHandler_PostReopen_EmptyMessage(t *testing.T) {
 	detail := makeTaskDetailView()
 	detail.Task.Status = orchestrator.TaskStatusDone
-	svc := &stubWebServiceWithGates{
+	svc := &stubWebServiceWithRerun{
 		stubWebService: stubWebService{taskDetail: detail},
 	}
 	r := newTestWebHandlerWithReopen(svc)
@@ -130,7 +130,7 @@ func TestWebHandler_PostReopen_EmptyMessage(t *testing.T) {
 }
 
 func TestWebHandler_PostReopen_Error(t *testing.T) {
-	svc := &stubWebServiceWithGates{reopenErr: fmt.Errorf("state conflict")}
+	svc := &stubWebServiceWithRerun{reopenErr: fmt.Errorf("state conflict")}
 	r := newTestWebHandlerWithReopen(svc)
 
 	form := url.Values{"message": {"msg"}}
@@ -155,7 +155,7 @@ func TestWebHandler_PostReopen_Error(t *testing.T) {
 func TestWebHandler_TaskDetail_DoneContainsReopenAndRerunButtons(t *testing.T) {
 	detail := makeTaskDetailView()
 	detail.Task.Status = orchestrator.TaskStatusDone
-	svc := &stubWebServiceWithGates{
+	svc := &stubWebServiceWithRerun{
 		stubWebService: stubWebService{taskDetail: detail},
 	}
 	r := newTestWebHandlerWithReopen(svc)
@@ -182,7 +182,7 @@ func TestWebHandler_TaskDetail_DoneContainsReopenAndRerunButtons(t *testing.T) {
 func TestWebHandler_TaskDetail_AbortedContainsOnlyRerun(t *testing.T) {
 	detail := makeTaskDetailView()
 	detail.Task.Status = orchestrator.TaskStatusAborted
-	svc := &stubWebServiceWithGates{
+	svc := &stubWebServiceWithRerun{
 		stubWebService: stubWebService{taskDetail: detail},
 	}
 	r := newTestWebHandlerWithReopen(svc)

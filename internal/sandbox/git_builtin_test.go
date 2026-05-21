@@ -18,7 +18,7 @@ import (
 )
 
 // Local policy builders, keeping sandbox tests independent of orchestrator.
-func gateGitPolicies() map[string]sandbox.BuiltinPolicy {
+func fullGitPolicies() map[string]sandbox.BuiltinPolicy {
 	return map[string]sandbox.BuiltinPolicy{
 		"git": {AllowedOps: map[string]struct{}{
 			string(sandbox.GitOpFetch): {},
@@ -42,7 +42,7 @@ func TestBroker_GitBuiltinPushUsesTrustedSnapshot(t *testing.T) {
 	runGit(t, repo, "push", "-u", "origin", "main")
 
 	broker := &sandbox.Broker{}
-	token := broker.Register(nil, gateGitPolicies(), sandbox.TokenContext{
+	token := broker.Register(nil, fullGitPolicies(), sandbox.TokenContext{
 		ProjectID:  "proj-1",
 		ProjectDir: repo,
 	})
@@ -90,7 +90,7 @@ func TestBroker_GitBuiltinFetchWorks(t *testing.T) {
 	runGit(t, peer, "push", "origin", "main")
 
 	broker := &sandbox.Broker{}
-	token := broker.Register(nil, gateGitPolicies(), sandbox.TokenContext{
+	token := broker.Register(nil, fullGitPolicies(), sandbox.TokenContext{
 		ProjectID:  "proj-1",
 		ProjectDir: repo,
 	})
@@ -124,7 +124,7 @@ func TestBroker_GitBuiltinRestrictsWorktree(t *testing.T) {
 	runGit(t, repo, "push", "-u", "origin", "main")
 
 	broker := &sandbox.Broker{}
-	token := broker.Register(nil, gateGitPolicies(), sandbox.TokenContext{
+	token := broker.Register(nil, fullGitPolicies(), sandbox.TokenContext{
 		ProjectID:  "proj-1",
 		ProjectDir: repo,
 	})
@@ -154,7 +154,7 @@ func TestBroker_GitBuiltinRejectsUnknownRemote(t *testing.T) {
 	runGit(t, repo, "push", "-u", "origin", "main")
 
 	broker := &sandbox.Broker{}
-	token := broker.Register(nil, gateGitPolicies(), sandbox.TokenContext{
+	token := broker.Register(nil, fullGitPolicies(), sandbox.TokenContext{
 		ProjectID:  "proj-1",
 		ProjectDir: repo,
 	})
@@ -180,9 +180,7 @@ func TestBroker_GitBuiltinRejectsUnknownRemote(t *testing.T) {
 }
 
 // hook role からの broker 経由 git push は拒否される。
-// agent (Claude 等) が直接 origin に push してしまうと pr-verify gate と
-// 競合して無限 rework ループを引き起こすため、role=hook では builtin git の
-// push 操作を一律禁止する。
+// role=hook では builtin git の push 操作を一律禁止する。
 func TestBroker_GitBuiltinRejectsHookRolePush(t *testing.T) {
 	repo := initGitRepo(t)
 	remote := initBareRemote(t)
@@ -245,45 +243,6 @@ func TestBroker_GitBuiltinRejectsHookRoleFetch(t *testing.T) {
 	}
 	if !strings.Contains(resp.Stderr, "not allowed by policy") {
 		t.Fatalf("stderr = %q, want 'not allowed by policy'", resp.Stderr)
-	}
-}
-
-// gate role からの push は引き続き許可される (pr-verify gate が使う経路)。
-func TestBroker_GitBuiltinAllowsGateRolePush(t *testing.T) {
-	repo := initGitRepo(t)
-	remote := initBareRemote(t)
-
-	runGit(t, repo, "remote", "add", "origin", remote)
-	runGit(t, repo, "push", "-u", "origin", "main")
-
-	writeFile(t, filepath.Join(repo, "gate.txt"), "gate change\n")
-	runGit(t, repo, "add", "gate.txt")
-	runGit(t, repo, "commit", "-m", "gate")
-
-	broker := &sandbox.Broker{}
-	token := broker.Register(nil, gateGitPolicies(), sandbox.TokenContext{
-		ProjectID:  "proj-1",
-		ProjectDir: repo,
-		Role:       "gate",
-	})
-
-	resp := broker.Handle(&sandbox.ExecRequest{
-		Command: "git",
-		Cwd:     repo,
-		Token:   token,
-		Git: &sandbox.GitRequest{
-			Op:     sandbox.GitOpPush,
-			Remote: "origin",
-		},
-	})
-	if resp.ExitCode != 0 {
-		t.Fatalf("git push exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
-	}
-
-	localHead := runGit(t, repo, "rev-parse", "HEAD")
-	remoteHead := runGitBare(t, remote, "rev-parse", "refs/heads/main")
-	if remoteHead != localHead {
-		t.Fatalf("remote head = %q, want %q", remoteHead, localHead)
 	}
 }
 
@@ -394,7 +353,7 @@ func TestBroker_GitPush_RejectsForceAndDeleteRefspecs(t *testing.T) {
 	runGit(t, repo, "push", "-u", "origin", "main")
 
 	broker := &sandbox.Broker{}
-	token := broker.Register(nil, gateGitPolicies(), sandbox.TokenContext{
+	token := broker.Register(nil, fullGitPolicies(), sandbox.TokenContext{
 		ProjectID:  "proj-1",
 		ProjectDir: repo,
 	})
@@ -607,7 +566,7 @@ func TestBroker_GitBuiltin_HardeningArgs(t *testing.T) {
 	runGit(t, repo, "commit", "-m", "hardening")
 
 	broker := &sandbox.Broker{}
-	token := broker.Register(nil, gateGitPolicies(), sandbox.TokenContext{
+	token := broker.Register(nil, fullGitPolicies(), sandbox.TokenContext{
 		ProjectID:  "proj-1",
 		ProjectDir: repo,
 	})
@@ -624,60 +583,6 @@ func TestBroker_GitBuiltin_HardeningArgs(t *testing.T) {
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("git push with hardening args failed: exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
-	}
-}
-
-// gate role からの direct git は sandbox cwd ではなく binding.WorktreeRoot で
-// 実行される。gate sandbox は worktree FS を mount しないため sandbox 側 cwd
-// (HOME 等) はホスト上で git repo として成立せず、cwd をそのまま使うと
-// "fatal: not a git repository" になる。
-func TestBroker_GitDirectExec_GateRedirectsCwdToWorktree(t *testing.T) {
-	repo := initGitRepo(t)
-	// repo の親を許可 cwd 根に含めることで、sandbox 側の "別ディレクトリ" を
-	// validateGitBuiltinCwd で通しつつ、本物の git 実行は WorktreeRoot で
-	// 行われるかを検証する。
-	parent := filepath.Dir(repo)
-	sandboxCwd := filepath.Join(parent, "sandbox-home")
-	if err := os.MkdirAll(sandboxCwd, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	broker := &sandbox.Broker{}
-	policies := map[string]sandbox.BuiltinPolicy{
-		"git": {
-			AllowedOps: map[string]struct{}{
-				string(sandbox.GitOpFetch): {},
-				string(sandbox.GitOpPush):  {},
-			},
-			AllowedCwdRoots: []string{parent},
-		},
-	}
-	token := broker.Register(nil, policies, sandbox.TokenContext{
-		ProjectID:  "proj-1",
-		ProjectDir: repo,
-		Role:       "gate",
-	})
-
-	resp := broker.Handle(&sandbox.ExecRequest{
-		Command: "git",
-		Cwd:     sandboxCwd, // sandbox cwd は git repo ではない
-		Token:   token,
-		Args:    []string{"rev-parse", "--show-toplevel"},
-	})
-	if resp.ExitCode != 0 {
-		t.Fatalf("git rev-parse failed: exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
-	}
-	got := strings.TrimSpace(resp.Stdout)
-	wantRepo, err := filepath.EvalSymlinks(repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gotResolved, err := filepath.EvalSymlinks(got)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotResolved != wantRepo {
-		t.Fatalf("git ran in %q, want %q (gate cwd should be redirected to WorktreeRoot)", got, wantRepo)
 	}
 }
 

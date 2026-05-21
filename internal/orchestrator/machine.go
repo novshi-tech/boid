@@ -156,8 +156,7 @@ func DefaultMachine() *StateMachine {
 // the state transition synchronously, which raced against the SIGUSR1
 // graceful-stop path and left jobs marked failed.
 //
-// `task.exit` gates run before these auto transitions fire (see coordinator).
-// Gate failures surface as job_failed via the dispatcher path, which routes
+// Hook failures surface as job_failed via the dispatcher path, which routes
 // the task to aborted.
 func NewMachine() *StateMachine {
 	return &StateMachine{

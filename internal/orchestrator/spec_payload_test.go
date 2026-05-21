@@ -2,8 +2,6 @@ package orchestrator_test
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"sort"
 	"testing"
 
@@ -61,95 +59,9 @@ func TestProjectMeta_JSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestGate_YAMLRoundTrip(t *testing.T) {
-	data := `
-id: push-pr
-phase: exit
-traits:
-  consumes:
-    - artifact
-`
-	var gate projectspec.Gate
-	if err := yaml.Unmarshal([]byte(data), &gate); err != nil {
-		t.Fatalf("unmarshal yaml: %v", err)
-	}
-	if len(gate.Traits.Consumes) != 1 || gate.Traits.Consumes[0] != projectspec.TraitArtifact {
-		t.Fatalf("unexpected traits.consumes: %v", gate.Traits.Consumes)
-	}
-}
-
-func TestResolveGateScript(t *testing.T) {
-	dir := t.TempDir()
-	gatesDir := filepath.Join(dir, "gates")
-	if err := os.MkdirAll(gatesDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	shPath := filepath.Join(gatesDir, "push-pr.sh")
-	if err := os.WriteFile(shPath, []byte("#!/bin/bash\n"), 0o755); err != nil {
-		t.Fatalf("write sh: %v", err)
-	}
-	got, err := projectspec.ResolveGateScript(gatesDir, "push-pr")
-	if err != nil || got != shPath {
-		t.Fatalf("ResolveGateScript() = %q, %v", got, err)
-	}
-}
-
-func TestGatePhase_YAMLUnmarshal(t *testing.T) {
-	tests := []struct {
-		name     string
-		yaml     string
-		expected projectspec.GatePhase
-	}{
-		{
-			name:     "explicit entry",
-			yaml:     "id: g1\nphase: entry\n",
-			expected: projectspec.GatePhaseEntry,
-		},
-		{
-			name:     "explicit exit",
-			yaml:     "id: g1\nphase: exit\n",
-			expected: projectspec.GatePhaseExit,
-		},
-		{
-			name:     "omitted defaults to exit",
-			yaml:     "id: g1\nphase: exit\n",
-			expected: projectspec.GatePhaseExit,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var gate projectspec.Gate
-			if err := yaml.Unmarshal([]byte(tt.yaml), &gate); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			if gate.Phase != tt.expected {
-				t.Fatalf("phase: got %q, want %q", gate.Phase, tt.expected)
-			}
-		})
-	}
-}
-
-func TestGatePhase_JSONRoundTrip(t *testing.T) {
-	gate := projectspec.Gate{
-		ID:    "g1",
-		Phase: projectspec.GatePhaseEntry,
-	}
-	data, err := json.Marshal(gate)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var decoded projectspec.Gate
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if decoded.Phase != projectspec.GatePhaseEntry {
-		t.Fatalf("phase: got %q, want %q", decoded.Phase, projectspec.GatePhaseEntry)
-	}
-}
-
 func TestRoleConstants(t *testing.T) {
-	if projectspec.RoleHook != "hook" || projectspec.RoleGate != "gate" {
-		t.Fatalf("unexpected roles: %q %q", projectspec.RoleHook, projectspec.RoleGate)
+	if projectspec.RoleHook != "hook" {
+		t.Fatalf("unexpected role: %q", projectspec.RoleHook)
 	}
 }
 

@@ -9,54 +9,6 @@ import (
 	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-func TestCoordinator_DispatchAndAdvance_GateExitZeroEmptyOutput_NoArtifactInjected(t *testing.T) {
-	mock := newMockExecutorWaiter()
-	mock.setGateCompletion("regular-gate", "", 0) // exit 0, empty output
-
-	eval := &orchestrator.Evaluator{}
-	coord := &orchestrator.Coordinator{
-		Evaluator:    eval,
-		HookExecutor: mock,
-		GateExecutor: mock,
-		Waiter:       mock,
-		MaxDepth:     5,
-	}
-
-	task := &orchestrator.Task{
-		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
-		ProjectID: "proj-1",
-		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "custom-behavior",
-		Payload:   json.RawMessage(`{}`),
-	}
-	meta := &projectspec.ProjectMeta{
-		TaskBehaviors: map[string]projectspec.TaskBehavior{
-			"custom-behavior": {
-				Gates: []projectspec.Gate{
-					{ID: "regular-gate"},
-				},
-			},
-		},
-	}
-	sm := orchestrator.DefaultMachine()
-
-	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
-	if err != nil {
-		t.Fatalf("dispatch: %v", err)
-	}
-
-	var payload map[string]json.RawMessage
-	json.Unmarshal(result.FinalPayload, &payload)
-	if _, ok := payload["artifact"]; ok {
-		t.Error("expected no artifact injection for gate with empty output")
-	}
-
-	// gate のみ実行の場合（hook なし）は lifecycle.executed が立たず遷移しない
-	if result.NewStatus != "" {
-		t.Errorf("expected no advance for gate-only execution with empty output, got %q", result.NewStatus)
-	}
-}
-
 func TestCoordinator_DispatchAndAdvance_LifecycleExecuted_OnExitZero(t *testing.T) {
 	// hook が exit 0 で完了（成果物なし）→ lifecycle.executed=true が transient に set され done に遷移
 	mock := newMockExecutorWaiter()
@@ -65,7 +17,6 @@ func TestCoordinator_DispatchAndAdvance_LifecycleExecuted_OnExitZero(t *testing.
 	coord := &orchestrator.Coordinator{
 		Evaluator:    &orchestrator.Evaluator{},
 		HookExecutor: mock,
-		GateExecutor: mock,
 		Waiter:       mock,
 		MaxDepth:     5,
 	}
@@ -79,7 +30,7 @@ func TestCoordinator_DispatchAndAdvance_LifecycleExecuted_OnExitZero(t *testing.
 	}
 	meta := metaWithBehavior([]projectspec.Hook{
 		{ID: "main-hook"},
-	}, nil)
+	})
 	sm := orchestrator.DefaultMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -105,7 +56,6 @@ func TestCoordinator_DispatchAndAdvance_LifecycleExecuted_NotSetOnJobFailure(t *
 	coord := &orchestrator.Coordinator{
 		Evaluator:    &orchestrator.Evaluator{},
 		HookExecutor: mock,
-		GateExecutor: mock,
 		Waiter:       mock,
 		MaxDepth:     5,
 	}
@@ -119,7 +69,7 @@ func TestCoordinator_DispatchAndAdvance_LifecycleExecuted_NotSetOnJobFailure(t *
 	}
 	meta := metaWithBehavior([]projectspec.Hook{
 		{ID: "main-hook"},
-	}, nil)
+	})
 	sm := orchestrator.DefaultMachine()
 
 	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)

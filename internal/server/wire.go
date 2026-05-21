@@ -201,7 +201,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Projects:    projectRepo,
 		Tx:          tx,
 		Meta:        store,
-		Coordinator: &orchestrator.Coordinator{Evaluator: &orchestrator.Evaluator{}, HookExecutor: adapter, GateExecutor: adapter, Waiter: adapter, MaxDepth: 5, LifecycleStore: taskRepo},
+		Coordinator: &orchestrator.Coordinator{Evaluator: &orchestrator.Evaluator{}, HookExecutor: adapter, Waiter: adapter, MaxDepth: 5, LifecycleStore: taskRepo},
 		Lifecycle:   jobLifecycleAdapter{runner: runner},
 		Worktrees:   wtMgr,
 		Hub:         hub,
@@ -250,7 +250,6 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Meta:       store,
 		Workflow:   workflow,
 		TaskSvc:    taskSvc,
-		Gates:      workflow,
 		Hooks:      workflow,
 		Answerer:   taskSvc,
 	}
@@ -467,7 +466,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r.Mount("/api/workspaces", workspaceHandler.Routes())
 
 	taskCmdAdapter := &taskCommandDispatcherAdapter{taskSvc: runtime.taskSvc, projectSvc: runtime.projectSvc, runner: runtime.runner}
-	taskHandler := &api.TaskHandler{Service: runtime.taskSvc, Gates: runtime.workflow, Hooks: runtime.workflow, Notifier: runtime.taskSvc, Answerer: runtime.taskSvc, Dispatcher: taskCmdAdapter}
+	taskHandler := &api.TaskHandler{Service: runtime.taskSvc, Hooks: runtime.workflow, Notifier: runtime.taskSvc, Answerer: runtime.taskSvc, Dispatcher: taskCmdAdapter}
 	r.Mount("/api/tasks", taskHandler.Routes())
 
 	gcStore := orchestrator.NewTaskGCStoreWithWorktree(

@@ -15,27 +15,7 @@ type MetaStore interface {
 
 type DispatchCoordinator interface {
 	DispatchAndAdvance(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine) (*orchestrator.DispatchResult, error)
-	DispatchEntryGates(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta) (*orchestrator.EntryGateResult, error)
-	ReplayGate(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, gateID string) (*orchestrator.ReplayResult, error)
 	ReplayHook(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, hookID string) (*orchestrator.ReplayResult, error)
-}
-
-// GateService provides gate replay and gate listing operations.
-type GateService interface {
-	ReplayGate(ctx context.Context, taskID string, req ReplayGateRequest) (*ReplayGateResult, error)
-	ListGatesForStatus(taskID, status string) ([]orchestrator.Gate, error)
-}
-
-// ReplayGateRequest is the input for gate replay.
-type ReplayGateRequest struct {
-	GateID string
-	Status string // optional: override task.Status before replay
-}
-
-// ReplayGateResult is the output of a gate replay.
-type ReplayGateResult struct {
-	Task        *orchestrator.Task        `json:"task"`
-	FiredEvents []orchestrator.FiredEvent `json:"fired_events,omitempty"`
 }
 
 // HookService provides hook replay and hook listing operations.
@@ -150,8 +130,6 @@ type WebService interface {
 	RerunTask(id string, req RerunTaskRequest) error
 	ReopenTask(id string, req ReopenTaskRequest) error
 	AnswerTask(ctx context.Context, taskID, questionID, answer string) error
-	ListGatesForStatus(taskID, status string) ([]orchestrator.Gate, error)
-	ReplayGate(ctx context.Context, taskID string, req ReplayGateRequest) (*ReplayGateResult, error)
 	ListHooksForStatus(taskID, status string) ([]orchestrator.Hook, error)
 	ReplayHook(ctx context.Context, taskID string, req ReplayHookRequest) (*ReplayHookResult, error)
 	GetProjectByID(id string) (*orchestrator.Project, error)

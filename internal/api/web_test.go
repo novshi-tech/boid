@@ -114,14 +114,6 @@ func (s *stubWebService) AnswerTask(ctx context.Context, taskID, questionID, ans
 	return nil
 }
 
-func (s *stubWebService) ListGatesForStatus(taskID, status string) ([]orchestrator.Gate, error) {
-	return nil, nil
-}
-
-func (s *stubWebService) ReplayGate(ctx context.Context, taskID string, req ReplayGateRequest) (*ReplayGateResult, error) {
-	return &ReplayGateResult{}, nil
-}
-
 func (s *stubWebService) ListHooksForStatus(taskID, status string) ([]orchestrator.Hook, error) {
 	return nil, nil
 }

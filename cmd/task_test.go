@@ -196,7 +196,7 @@ description: figure out what to do
 }
 
 // Phase 3-1: behavior_spec.default_payload was removed; the
-// orchestrator.RawPayload type lingers (used elsewhere by hooks/gates) but
+// orchestrator.RawPayload type lingers (used elsewhere by hooks) but
 // the unmarshal contract is no longer exercised through BehaviorSpec.
 
 func TestParseTaskCreateSpec_RejectsUnknownField(t *testing.T) {

@@ -74,8 +74,6 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Post("/tasks/{id}/delete", h.PostDelete)
 	r.Post("/tasks/{id}/answer", h.PostAnswer)
 	r.Get("/tasks/{id}/questions/{question_id}", h.QuestionPage)
-	r.Get("/tasks/{id}/gates", h.GateReplayList)
-	r.Post("/tasks/{id}/gates/{gate_id}/replay", h.PostGateReplay)
 	r.Get("/tasks/{id}/hooks", h.HookReplayList)
 	r.Post("/tasks/{id}/hooks/{hook_id}/replay", h.PostHookReplay)
 	r.Get("/jobs/{id}", h.JobDetail)
@@ -558,34 +556,6 @@ func (h *WebHandler) PostDelete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-func (h *WebHandler) GateReplayList(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	status := r.URL.Query().Get("status")
-	gates, err := h.Service.ListGatesForStatus(id, status)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	errorMsg := r.URL.Query().Get("error")
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	templates.GateReplayList(id, status, gates, errorMsg).Render(r.Context(), w)
-}
-
-func (h *WebHandler) PostGateReplay(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	gateID, err := url.PathUnescape(chi.URLParam(r, "gate_id"))
-	if err != nil {
-		http.Error(w, "invalid gate id", http.StatusBadRequest)
-		return
-	}
-	_, err = h.Service.ReplayGate(r.Context(), id, ReplayGateRequest{GateID: gateID})
-	if err != nil {
-		http.Redirect(w, r, "/tasks/"+id+"/gates?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
-		return
-	}
-	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
-}
-
 func (h *WebHandler) HookReplayList(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	status := r.URL.Query().Get("status")
@@ -614,20 +584,12 @@ func (h *WebHandler) PostHookReplay(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
 }
 
-func isGateRole(role string) bool {
-	return timeline.IsGateRole(role)
-}
-
 func (h *WebHandler) JobDetail(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	job, err := h.Service.GetJob(id)
 	if err != nil {
 		http.Error(w, "Job not found", http.StatusNotFound)
 		return
-	}
-	gateID := ""
-	if isGateRole(job.Role) {
-		gateID = job.HandlerID
 	}
 	hookID := ""
 	if job.Role == "hook" {
@@ -641,7 +603,6 @@ func (h *WebHandler) JobDetail(w http.ResponseWriter, r *http.Request) {
 		HandlerID:   job.HandlerID,
 		DisplayName: job.DisplayName,
 		Role:        job.Role,
-		GateID:      gateID,
 		HookID:      hookID,
 		Status:      string(job.Status),
 		ExitCode:    job.ExitCode,
@@ -666,10 +627,6 @@ func (h *WebHandler) JobTerminal(w http.ResponseWriter, r *http.Request) {
 		templates.TerminalNotReady(id, "現在 attach できる状態ではありません（ジョブが実行中ではありません）。").Render(r.Context(), w)
 		return
 	}
-	gateID := ""
-	if isGateRole(job.Role) {
-		gateID = job.HandlerID
-	}
 	view := &templates.JobContextView{
 		ID:          job.ID,
 		TaskID:      job.TaskID,
@@ -678,7 +635,6 @@ func (h *WebHandler) JobTerminal(w http.ResponseWriter, r *http.Request) {
 		HandlerID:   job.HandlerID,
 		DisplayName: job.DisplayName,
 		Role:        job.Role,
-		GateID:      gateID,
 		Status:      string(job.Status),
 		ExitCode:    job.ExitCode,
 		Interactive: job.Interactive,

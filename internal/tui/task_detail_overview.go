@@ -16,7 +16,7 @@ var styleAwaitingBanner = lipgloss.NewStyle().
 
 // openFinding represents a single unresolved verification finding.
 type openFinding struct {
-	gate    string
+	key     string
 	message string
 }
 
@@ -48,14 +48,14 @@ func parseOpenFindings(payload json.RawMessage) []openFinding {
 	}
 
 	var result []openFinding
-	for gate, v := range sub {
+	for k, v := range sub {
 		var entry verEntry
 		if err := json.Unmarshal(v, &entry); err != nil {
 			continue
 		}
 		for _, f := range entry.Findings {
 			if f.Status != "resolved" {
-				result = append(result, openFinding{gate: gate, message: f.Message})
+				result = append(result, openFinding{key: k, message: f.Message})
 			}
 		}
 	}

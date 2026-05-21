@@ -36,6 +36,18 @@ func openPTY() (*os.File, *os.File, error) {
 	return master, slave, nil
 }
 
+// disablePTYOutputProcessing clears ONLCR on the slave so the PTY does not
+// translate \n into \r\n. Without this, bash's $() command substitution strips
+// only the trailing \n, leaving a \r in captured variables.
+func disablePTYOutputProcessing(slave *os.File) {
+	t, err := unix.IoctlGetTermios(int(slave.Fd()), unix.TCGETS)
+	if err != nil {
+		return
+	}
+	t.Oflag &^= unix.ONLCR
+	_ = unix.IoctlSetTermios(int(slave.Fd()), unix.TCSETS, t)
+}
+
 func setPTYSize(master *os.File, cols, rows uint16) {
 	_ = unix.IoctlSetWinsize(int(master.Fd()), unix.TIOCSWINSZ, &unix.Winsize{
 		Row: rows,

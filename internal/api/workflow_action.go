@@ -156,7 +156,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 	for cycle := 0; cycle < maxCycles; cycle++ {
 		result, err := s.Coordinator.DispatchAndAdvance(ctx, current, meta, sm)
 		if err != nil {
-			// Persist any partial FiredEvents first so the failing hook/gate
+			// Persist any partial FiredEvents first so the failing hook
 			// remains visible in the timeline; abortOnDispatchError then logs
 			// the dispatcher-level error and transitions the task to aborted.
 			if result != nil {
@@ -180,7 +180,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 		// instead.
 		result.FinalPayload = orchestrator.StripAwaitingTrait(result.FinalPayload)
 
-		// Persist hook + exit gate payload. Always refresh the task row so we
+		// Persist hook payload. Always refresh the task row so we
 		// can detect concurrent terminal transitions (abort/done) and pick up
 		// any awaiting trait written by an ApplyAction("ask") that fired during
 		// the hook.
@@ -265,30 +265,6 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 		}
 
 		slog.Info("auto-advanced", "task_id", current.ID, "new_status", current.Status, "cycle", cycle)
-
-		// Run entry gates on the new state (skip for self-loops)
-		if prevStatus != current.Status {
-			entryResult, err := s.Coordinator.DispatchEntryGates(ctx, current, meta)
-			if err != nil {
-				if entryResult != nil {
-					s.persistFiredEvents(current.ID, current.Status, entryResult.FiredEvents)
-				}
-				slog.Error("entry gate dispatch failed", "task_id", current.ID, "error", err)
-				s.abortOnDispatchError(ctx, current, err)
-				return
-			}
-			s.persistFiredEvents(current.ID, current.Status, entryResult.FiredEvents)
-			if len(entryResult.FinalPayload) > 0 {
-				current.Payload = entryResult.FinalPayload
-				if err := s.Tx.WithinTx(func(tx TxStore) error {
-					return tx.UpdateTask(current)
-				}); err != nil {
-					slog.Error("persist entry gate payload failed", "task_id", current.ID, "error", err)
-					s.abortOnDispatchError(ctx, current, fmt.Errorf("persist entry gate payload: %w", err))
-					return
-				}
-			}
-		}
 
 		if current.Status == orchestrator.TaskStatusDone || current.Status == orchestrator.TaskStatusAborted {
 			s.finalizeTerminal(ctx, current)

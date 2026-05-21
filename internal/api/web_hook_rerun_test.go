@@ -21,14 +21,6 @@ type stubWebServiceWithHooks struct {
 	replayHookCalls []ReplayHookRequest
 }
 
-func (s *stubWebServiceWithHooks) ListGatesForStatus(taskID, status string) ([]orchestrator.Gate, error) {
-	return nil, nil
-}
-
-func (s *stubWebServiceWithHooks) ReplayGate(ctx context.Context, taskID string, req ReplayGateRequest) (*ReplayGateResult, error) {
-	return &ReplayGateResult{Task: &orchestrator.Task{ID: taskID}}, nil
-}
-
 func (s *stubWebServiceWithHooks) ListHooksForStatus(taskID, status string) ([]orchestrator.Hook, error) {
 	return s.hooks, s.hooksErr
 }

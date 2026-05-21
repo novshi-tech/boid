@@ -229,9 +229,6 @@ func renderProjectDetail(p *projectspec.Project) {
 				}
 				fmt.Printf("    hook: %s%s\n", h.ID, requires)
 			}
-			for _, g := range b.Gates {
-				fmt.Printf("    gate: %-24s  phase=%s\n", g.ID, g.Phase)
-			}
 		}
 	}
 

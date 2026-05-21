@@ -20,7 +20,6 @@ func TestCoordinator_DispatchAndAdvance_NoLockerField(t *testing.T) {
 	coord := &orchestrator.Coordinator{
 		Evaluator:    &orchestrator.Evaluator{},
 		HookExecutor: mock,
-		GateExecutor: mock,
 		Waiter:       mock,
 		MaxDepth:     5,
 	}
@@ -34,7 +33,7 @@ func TestCoordinator_DispatchAndAdvance_NoLockerField(t *testing.T) {
 	}
 	meta := metaWithBehavior([]projectspec.Hook{
 		{ID: "hook-a"},
-	}, nil)
+	})
 	sm := simpleStateMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
@@ -55,7 +54,6 @@ func TestCoordinator_DispatchAndAdvance_NilLockerOK(t *testing.T) {
 	coord := &orchestrator.Coordinator{
 		Evaluator:    &orchestrator.Evaluator{},
 		HookExecutor: mock,
-		GateExecutor: mock,
 		Waiter:       mock,
 		MaxDepth:     5,
 	}
@@ -69,7 +67,7 @@ func TestCoordinator_DispatchAndAdvance_NilLockerOK(t *testing.T) {
 	}
 	meta := metaWithBehavior([]projectspec.Hook{
 		{ID: "hook-a"},
-	}, nil)
+	})
 	sm := simpleStateMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)

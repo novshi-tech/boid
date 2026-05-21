@@ -16,8 +16,8 @@ type KitResolver interface {
 }
 
 // KitRuntime holds the merged runtime fields derived from a set of kits.
-// It covers env, host_commands, and additional_bindings. Hooks, gates, and
-// directory metadata are excluded — those are TaskBehavior-specific and handled
+// It covers env, host_commands, and additional_bindings. Hooks and directory
+// metadata are excluded — those are TaskBehavior-specific and handled
 // by MergeKitMetaIntoBehavior.
 type KitRuntime struct {
 	AdditionalBindings []BindMount
@@ -94,6 +94,7 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 			return nil, fmt.Errorf("project.yaml: top-level %q is no longer supported; move it into task_behaviors.<name>.kits (for kits) or define inside a local kit under .boid/kits/", field)
 		}
 	}
+
 	if err := rejectRemovedBehaviorFields("project.yaml", raw); err != nil {
 		return nil, err
 	}
@@ -361,13 +362,10 @@ func ResolveKitAgent(ref KitRef) string {
 }
 
 // IsProjectScopable reports whether a kit may be placed in the top-level
-// project.yaml kits field. A kit is project-scopable when it has no gates
-// and all its hooks have kind == "agent" (opt-in via instructions, so they
-// cannot fire unexpectedly across behaviors).
+// project.yaml kits field. A kit is project-scopable when all its hooks have
+// kind == "agent" (opt-in via instructions, so they cannot fire unexpectedly
+// across behaviors).
 func IsProjectScopable(km *KitMeta) error {
-	if len(km.Gates) > 0 {
-		return fmt.Errorf("gates を持つ kit は top-level kits に指定できません (behavior スコープでのみ使用可能)")
-	}
 	for _, h := range km.Hooks {
 		if h.Kind != HandlerKindAgent {
 			return fmt.Errorf("hook %s の kind が agent 以外のため top-level kits に指定できません", h.ID)
@@ -378,7 +376,7 @@ func IsProjectScopable(km *KitMeta) error {
 
 // ReadProjectMetaWithKits reads project.yaml and project.local.yaml, resolves
 // kits referenced by each task behavior, and merges kit data into each behavior.
-// Returns a ProjectMeta whose TaskBehaviors have their resolved Hooks/Gates/etc.
+// Returns a ProjectMeta whose TaskBehaviors have their resolved Hooks/etc.
 // populated and ready for dispatch.
 func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, error) {
 	meta, err := ReadProjectMeta(dir)
@@ -656,27 +654,10 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 		meta.HooksDir = hooksDir
 	}
 
-	gatesDir := filepath.Join(dir, "gates")
-	for i := range meta.Gates {
-		g := &meta.Gates[i]
-		if g.Phase != GatePhaseEntry && g.Phase != GatePhaseExit {
-			return nil, fmt.Errorf("gate %q: phase must be 'entry' or 'exit', got %q", g.ID, g.Phase)
-		}
-		scriptPath, err := ResolveGateScript(gatesDir, g.ID)
-		if err != nil {
-			return nil, fmt.Errorf("gate %q: %w", g.ID, err)
-		}
-		g.ScriptPath = scriptPath
-	}
-	if len(meta.Gates) > 0 {
-		meta.GatesDir = gatesDir
-	}
-
 	meta.KitRoot = dir
 
-	// Reject legacy scripts: section in kit.yaml.
 	if _, ok := rawTop["scripts"]; ok {
-		return nil, fmt.Errorf("kit.yaml: 'scripts:' section is no longer supported; migrate scripts to gates")
+		return nil, fmt.Errorf("kit.yaml: 'scripts:' section is no longer supported")
 	}
 
 	return &meta, nil
@@ -721,8 +702,8 @@ func ReadProjectLocalMeta(dir string) (*ProjectLocalMeta, error) {
 	return &meta, nil
 }
 
-// MergeKitMetaIntoBehavior merges kit-provided hooks, gates, env, bindings, and
-// host_commands into the given TaskBehavior. Kit hook and gate IDs are prefixed
+// MergeKitMetaIntoBehavior merges kit-provided hooks, env, bindings, and
+// host_commands into the given TaskBehavior. Kit hook IDs are prefixed
 // with the agent name. The behavior is modified in place.
 func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitAgents []string) error {
 	if len(kits) == 0 {
@@ -768,24 +749,6 @@ func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitAgents
 		}
 	}
 	behavior.Hooks = allHooks
-
-	// Gates: prefix IDs with agent.
-	var allGates []Gate
-	allGates = append(allGates, behavior.Gates...)
-	for i, kit := range kits {
-		agent := ""
-		if i < len(kitAgents) {
-			agent = kitAgents[i]
-		}
-		for _, g := range kit.Gates {
-			g.Kit = agent
-			if agent != "" {
-				g.ID = agent + "/" + g.ID
-			}
-			allGates = append(allGates, g)
-		}
-	}
-	behavior.Gates = allGates
 
 	// HostCommands: behavior wins over kits.
 	if len(rt.HostCommands) > 0 || len(behavior.HostCommands) > 0 {
@@ -992,7 +955,6 @@ func cloneTaskBehaviorMap(src map[string]TaskBehavior) map[string]TaskBehavior {
 	for k, v := range src {
 		v.Kits = append([]KitRef(nil), v.Kits...)
 		v.Hooks = nil
-		v.Gates = nil
 		v.Env = nil
 		v.HostCommands = nil
 		v.AdditionalBindings = nil

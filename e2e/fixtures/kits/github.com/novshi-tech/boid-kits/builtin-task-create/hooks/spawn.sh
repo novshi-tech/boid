@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Read parent TaskJSON from stdin and extract the id.
-TASK_JSON="$(cat)"
-PARENT_ID="$(printf '%s' "$TASK_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+PARENT_ID="$BOID_TASK_ID"
 
 boid task create >&2 <<EOF
 title: Task A
