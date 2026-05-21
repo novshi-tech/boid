@@ -27,13 +27,14 @@ func (m *WorktreeManager) gitBin() string {
 }
 
 // resolveBaseBranch resolves a local branch name to its remote tracking counterpart.
-// If baseBranch is empty, "main" is used as default.
+// baseBranch must be non-empty — P1 guarantees the service layer expands
+// ${current_branch} before reaching the dispatcher.
 // If origin/<baseBranch> exists, returns ("origin/<baseBranch>", true, nil).
 // If only a local branch exists, returns (baseBranch, false, nil).
 // If neither origin/<baseBranch> nor the local branch exists, returns an error.
 func (m *WorktreeManager) resolveBaseBranch(projectDir, baseBranch string) (string, bool, error) {
 	if baseBranch == "" {
-		baseBranch = "main"
+		return "", false, fmt.Errorf("resolveBaseBranch: baseBranch must be non-empty")
 	}
 	if strings.HasPrefix(baseBranch, "origin/") {
 		return baseBranch, true, nil
@@ -57,8 +58,6 @@ func (m *WorktreeManager) resolveBaseBranch(projectDir, baseBranch string) (stri
 // that name pointed at the current project HEAD.
 //
 // No-op when:
-//   - baseBranch is empty (Create defaults to "main" elsewhere; if "main"
-//     itself is missing we still create it from HEAD)
 //   - baseBranch carries an explicit "origin/" prefix (callers asking for a
 //     remote-tracking ref accept that it must exist; auto-creating a local
 //     branch from HEAD would silently subvert that intent)
@@ -66,13 +65,14 @@ func (m *WorktreeManager) resolveBaseBranch(projectDir, baseBranch string) (stri
 //   - origin/<baseBranch> exists
 //
 // Returns an error when:
+//   - baseBranch is empty (P1: must be resolved by service layer)
 //   - HEAD is detached (no branch / commit to derive from in a useful way)
 //   - the git branch command itself fails
 func (m *WorktreeManager) ensureBaseBranchExists(projectDir, baseBranch string) error {
-	base := baseBranch
-	if base == "" {
-		base = "main"
+	if baseBranch == "" {
+		return fmt.Errorf("ensureBaseBranchExists: baseBranch must be non-empty")
 	}
+	base := baseBranch
 	if strings.HasPrefix(base, "origin/") {
 		return nil
 	}
