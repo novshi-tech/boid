@@ -22,9 +22,15 @@ func RejectPayloadInstructions(payload json.RawMessage) error {
 }
 
 // MergeDefaultInstructions builds the initial instruction list for a new task.
-// Strategy:
-//   - Take the behavior's default_instruction (if any) as the seed
-//   - If requestInstructions is provided, use it instead of the default
+//
+// Merge semantics:
+//   - defaultInstruction == nil: use requestInstructions as-is (no base to inherit from).
+//   - defaultInstruction != nil:
+//   - override empty/null/[]/{}  → return the default as a single-entry list.
+//   - override has exactly 1 entry → per-field merge: non-empty fields from the
+//     override win; empty fields inherit from defaultInstruction.
+//   - override has 2+ entries → complete replacement (caller is building an
+//     explicit history and partial merge would be ambiguous).
 //
 // requestInstructions accepts the array form `[{...}, ...]` and the legacy
 // single-map form `{"main": {...}}` (handled by Instructions.UnmarshalJSON).
@@ -43,7 +49,34 @@ func MergeDefaultInstructions(defaultInstruction *Instruction, requestInstructio
 	if len(override) == 0 {
 		return base, nil
 	}
+	if defaultInstruction != nil && len(override) == 1 {
+		merged := mergeInstruction(*defaultInstruction, override[0])
+		return Instructions{merged}, nil
+	}
 	return override, nil
+}
+
+// mergeInstruction returns a new Instruction where non-empty fields from
+// override replace the corresponding fields in base, and empty fields in
+// override inherit from base.
+func mergeInstruction(base, override Instruction) Instruction {
+	out := base
+	if override.Type != "" {
+		out.Type = override.Type
+	}
+	if override.Agent != "" {
+		out.Agent = override.Agent
+	}
+	if override.Name != "" {
+		out.Name = override.Name
+	}
+	if override.Message != "" {
+		out.Message = override.Message
+	}
+	if override.Model != "" {
+		out.Model = override.Model
+	}
+	return out
 }
 
 // AppendInstruction returns a new instruction list with `inst` appended. The
