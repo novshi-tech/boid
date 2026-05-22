@@ -86,6 +86,26 @@ Most commonly used optional fields:
 
 Full field reference: [references/builtins.md](references/builtins.md).
 
+### Overriding the Behavior's `default_instruction` (partial)
+
+A behavior's `default_instruction` in `project.yaml` carries `type` / `agent` / `name` / `message` / `model` for the child agent. By default the child task uses it verbatim. You can override **individual fields** without restating the whole instruction by passing a 1-entry `instructions:` array; non-empty fields win, empty fields inherit from `default_instruction`. (Implemented in `MergeDefaultInstructions` — `internal/orchestrator/payload_merge.go`.)
+
+```yaml
+title: heavier-than-usual refactor
+behavior: executor
+auto_start: true
+instructions:
+  - model: claude-opus-4-7   # message / agent / type は default から継承
+```
+
+Rules:
+
+- 1-entry override + non-nil `default_instruction` → per-field merge (this case).
+- 2+ entries → complete replacement (caller is intentionally rewriting the instruction history).
+- empty / omitted `instructions` → use `default_instruction` as-is (the common case).
+
+**Use this sparingly — only when the user explicitly asks for an override.** The project's `default_instruction` exists because the project owner picked it as the right default; silently swapping `model` or `message` because you, as the supervisor, decided it'd "probably be better" undermines that and surprises the user. Reach for partial override **only when** the active instruction (or a user reply via `notify --ask`) explicitly tells you to (e.g. "use opus for the heavy refactor", "rewrite the message to focus on X"). When in doubt, ask via `notify --ask` before overriding.
+
 ## Monitoring Children
 
 Poll each child until terminal (`done` / `aborted`):
