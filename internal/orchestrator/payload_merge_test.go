@@ -111,3 +111,137 @@ func TestMergePayloadPatch_ArtifactChildren_ReturnsError(t *testing.T) {
 		t.Error("want error for artifact.children.* in patch, got nil")
 	}
 }
+
+// --- MergeDefaultInstructions ---
+
+func TestMergeDefaultInstructions_NoDefault_OverrideUsedAsIs(t *testing.T) {
+	raw := json.RawMessage(`[{"type":"execution","agent":"claude-code","model":"claude-opus-4-7"}]`)
+	got, err := orchestrator.MergeDefaultInstructions(nil, raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 instruction, got %d", len(got))
+	}
+	if got[0].Model != "claude-opus-4-7" {
+		t.Errorf("model: want claude-opus-4-7, got %q", got[0].Model)
+	}
+}
+
+func TestMergeDefaultInstructions_EmptyOverride_ReturnsDefault(t *testing.T) {
+	def := &orchestrator.Instruction{
+		Type:    orchestrator.InstructionTypeExecution,
+		Agent:   "claude-code",
+		Message: "default message",
+		Model:   "claude-sonnet-4-6",
+	}
+	got, err := orchestrator.MergeDefaultInstructions(def, json.RawMessage(`[]`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 instruction, got %d", len(got))
+	}
+	if got[0].Model != "claude-sonnet-4-6" {
+		t.Errorf("model: want claude-sonnet-4-6, got %q", got[0].Model)
+	}
+	if got[0].Message != "default message" {
+		t.Errorf("message: want %q, got %q", "default message", got[0].Message)
+	}
+}
+
+func TestMergeDefaultInstructions_SingleOverride_ModelOnly(t *testing.T) {
+	// override only sets model; other fields should inherit from default.
+	def := &orchestrator.Instruction{
+		Type:    orchestrator.InstructionTypeExecution,
+		Agent:   "claude-code",
+		Message: "do the thing",
+		Model:   "claude-sonnet-4-6",
+	}
+	raw := json.RawMessage(`[{"model":"claude-opus-4-7"}]`)
+	got, err := orchestrator.MergeDefaultInstructions(def, raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 instruction, got %d", len(got))
+	}
+	if got[0].Model != "claude-opus-4-7" {
+		t.Errorf("model: want claude-opus-4-7, got %q", got[0].Model)
+	}
+	if got[0].Message != "do the thing" {
+		t.Errorf("message should be inherited: want %q, got %q", "do the thing", got[0].Message)
+	}
+	if got[0].Agent != "claude-code" {
+		t.Errorf("agent should be inherited: want claude-code, got %q", got[0].Agent)
+	}
+	if got[0].Type != orchestrator.InstructionTypeExecution {
+		t.Errorf("type should be inherited: want execution, got %q", got[0].Type)
+	}
+}
+
+func TestMergeDefaultInstructions_SingleOverride_MessageOnly(t *testing.T) {
+	// override only replaces message; model etc. come from default.
+	def := &orchestrator.Instruction{
+		Type:    orchestrator.InstructionTypeExecution,
+		Agent:   "claude-code",
+		Message: "original",
+		Model:   "claude-sonnet-4-6",
+	}
+	raw := json.RawMessage(`[{"message":"replacement"}]`)
+	got, err := orchestrator.MergeDefaultInstructions(def, raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got[0].Message != "replacement" {
+		t.Errorf("message: want replacement, got %q", got[0].Message)
+	}
+	if got[0].Model != "claude-sonnet-4-6" {
+		t.Errorf("model should be inherited: want claude-sonnet-4-6, got %q", got[0].Model)
+	}
+}
+
+func TestMergeDefaultInstructions_SingleOverride_AllFields_NoInheritance(t *testing.T) {
+	// override fills every field → result equals override (no inheritance needed).
+	def := &orchestrator.Instruction{
+		Type:    orchestrator.InstructionTypeExecution,
+		Agent:   "claude-code",
+		Message: "original message",
+		Model:   "claude-sonnet-4-6",
+	}
+	raw := json.RawMessage(`[{"type":"execution","agent":"claude-code","message":"override message","model":"claude-opus-4-7"}]`)
+	got, err := orchestrator.MergeDefaultInstructions(def, raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got[0].Message != "override message" {
+		t.Errorf("message: want override message, got %q", got[0].Message)
+	}
+	if got[0].Model != "claude-opus-4-7" {
+		t.Errorf("model: want claude-opus-4-7, got %q", got[0].Model)
+	}
+}
+
+func TestMergeDefaultInstructions_MultipleOverride_CompleteReplacement(t *testing.T) {
+	// 2 entries → full replacement, default is ignored.
+	def := &orchestrator.Instruction{
+		Type:    orchestrator.InstructionTypeExecution,
+		Agent:   "claude-code",
+		Message: "default",
+		Model:   "claude-sonnet-4-6",
+	}
+	raw := json.RawMessage(`[{"type":"execution","agent":"claude-code","message":"first"},{"type":"execution","agent":"claude-code","message":"second"}]`)
+	got, err := orchestrator.MergeDefaultInstructions(def, raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 instructions (full replacement), got %d", len(got))
+	}
+	if got[0].Message != "first" {
+		t.Errorf("first message: want first, got %q", got[0].Message)
+	}
+	if got[1].Message != "second" {
+		t.Errorf("second message: want second, got %q", got[1].Message)
+	}
+}
