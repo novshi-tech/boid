@@ -39,6 +39,7 @@ function toBase64(str) {
  * @returns {{ term: Terminal, disconnect: () => void }}
  */
 export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
+  const xtermWrap   = rootEl.querySelector('.boid-terminal-xterm-wrap');
   const xtermRoot   = rootEl.querySelector('.boid-terminal-xterm');
   const statusDot   = rootEl.querySelector('.boid-terminal-status');
   const disconnectOverlay = rootEl.querySelector('.boid-terminal-disconnect-overlay');
@@ -159,6 +160,16 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
       const dims = fitAddon.proposeDimensions();
       if (!dims) return;
       if (dims.cols !== prevCols || dims.rows !== prevRows) {
+        // Clear the screen before propagating the new size to the PTY. Most
+        // TUIs (claude code, vim, ...) repaint by cursor-up + erase relative
+        // to the old frame; when cols change, that math is wrong and leftover
+        // characters pile up. Resetting xterm makes those erases land on an
+        // empty screen, and the next frame draws cleanly.
+        // Skip the very first fit (prevCols == 0), where there's nothing to
+        // clear and we'd risk dropping the initial output.
+        if (prevCols !== 0) {
+          term.reset();
+        }
         prevCols = dims.cols;
         prevRows = dims.rows;
         sendResize(dims.cols, dims.rows);
@@ -166,8 +177,13 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
     });
   }
 
+  // Observe the wrap (parent), not xtermRoot. xterm sets explicit width/height
+  // on xtermRoot via fitAddon.fit(), so observing it would only react to our
+  // own writes — never to outer layout changes (e.g. site-main max-width
+  // flipping at the 768px media query). The wrap's width is driven by the
+  // surrounding flex/block layout, so its size mirrors what fit() should target.
   const ro = new ResizeObserver(scheduleFit);
-  ro.observe(xtermRoot);
+  ro.observe(xtermWrap);
 
   // visualViewport: only refit when soft keyboard appears (large height reduction).
   // URL bar show/hide causes small resize events that should not trigger PTY resize.
