@@ -1730,6 +1730,7 @@ details[open] > summary {
 .boid-terminal-xterm-wrap {
   flex: 1 1 0;
   min-height: 0;
+  min-width: 0;
   overflow: hidden;
   position: relative;
   /* モバイル: 縦スワイプをスクロールとして扱い、横は親に委ねる */
@@ -1740,6 +1741,7 @@ details[open] > summary {
 .boid-terminal-xterm {
   width: 100%;
   height: 100%;
+  min-width: 0;
 }
 
 /* Override xterm default background to match our dark bg */

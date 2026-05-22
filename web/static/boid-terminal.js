@@ -55,6 +55,7 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   term.open(xtermRoot);
   resizeToViewport();
   fitAddon.fit();
+  document.fonts.ready.then(function () { scheduleFit(); });
   window.addEventListener('resize', function () {
     resizeToViewport();
   });
