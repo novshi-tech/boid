@@ -11,6 +11,7 @@ kits:
   - github.com/novshi-tech/boid-kits/claude-code
   - github.com/novshi-tech/boid-kits/go-dev
   - github.com/novshi-tech/boid-kits/github-cli
+  - github.com/novshi-tech/boid-kits/volta
 
 host_commands:
   playwright-cli:
