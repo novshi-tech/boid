@@ -17,6 +17,10 @@ host_commands:
     allow: ['*']
   run-e2e:
     path: e2e/run.sh
+
+# playwright-cli をサンドボックス内で動かすため、ホストの Chrome バイナリを bind mount する。
+additional_bindings:
+  - source: /opt/google/chrome
 commands:
   shell:
     command:
