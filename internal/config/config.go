@@ -11,9 +11,15 @@ import (
 
 // Config holds the global boid configuration.
 type Config struct {
-	GC     GCConfig     `yaml:"gc"`
-	Web    WebConfig    `yaml:"web"`
-	Notify NotifyConfig `yaml:"notify"`
+	GC      GCConfig      `yaml:"gc"`
+	Web     WebConfig     `yaml:"web"`
+	Notify  NotifyConfig  `yaml:"notify"`
+	Sandbox SandboxConfig `yaml:"sandbox"`
+}
+
+// SandboxConfig holds sandbox-related settings.
+type SandboxConfig struct {
+	AllowedDomains []string `yaml:"allowed_domains"`
 }
 
 // NotifyConfig holds settings for agent-driven notifications.
@@ -93,6 +99,9 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		Notify struct {
 			Command []string `yaml:"command"`
 		} `yaml:"notify"`
+		Sandbox struct {
+			AllowedDomains []string `yaml:"allowed_domains"`
+		} `yaml:"sandbox"`
 	}
 	if err := value.Decode(&raw); err != nil {
 		return err
@@ -122,6 +131,8 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	c.Web.HTTPAddr = raw.Web.HTTPAddr
 
 	c.Notify.Command = raw.Notify.Command
+
+	c.Sandbox.AllowedDomains = raw.Sandbox.AllowedDomains
 
 	return nil
 }
