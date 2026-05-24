@@ -135,6 +135,7 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 	if cfg.HTTPAddr == "" {
 		cfg.HTTPAddr = defaultStartHTTPAddr
 	}
+	cfg.AllowedDomains = append(cfg.AllowedDomains, appCfg.Sandbox.AllowedDomains...)
 
 	return cfg, nil
 }
