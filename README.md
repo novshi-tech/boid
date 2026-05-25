@@ -29,6 +29,24 @@ boid stop               # stop the daemon
 
 A guided walkthrough lives in [docs/en/getting-started/01-install.md](docs/en/getting-started/01-install.md).
 
+### Shell completion
+
+cobra's built-in `boid completion` generates shell completion scripts. In addition to subcommand and flag completion, when the daemon is running it dynamically completes project refs (`boid project show|remove|behaviors <ref>`, `boid exec -p <ref>`) and `boid exec` command names.
+
+```bash
+# bash (current shell)
+source <(boid completion bash)
+
+# bash (system-wide, sudo required)
+boid completion bash | sudo tee /etc/bash_completion.d/boid >/dev/null
+
+# zsh
+boid completion zsh > "${fpath[1]}/_boid"
+
+# fish
+boid completion fish | source
+```
+
 ## Documentation
 
 - **[Install and quickstart](docs/en/getting-started/01-install.md)**

@@ -13,12 +13,13 @@ import (
 )
 
 var execCmd = &cobra.Command{
-	Use:           "exec -p <ref> <command-name> [args...]",
-	Short:         "Execute a named command in a project sandbox",
-	SilenceUsage:  true,
-	SilenceErrors: true,
-	Args:          cobra.ArbitraryArgs,
-	RunE:          runExec,
+	Use:               "exec -p <ref> <command-name> [args...]",
+	Short:             "Execute a named command in a project sandbox",
+	SilenceUsage:      true,
+	SilenceErrors:     true,
+	Args:              cobra.ArbitraryArgs,
+	ValidArgsFunction: completeExecCommandNames,
+	RunE:              runExec,
 }
 
 var execProjectRef string
@@ -27,6 +28,7 @@ func init() {
 	rootCmd.AddCommand(execCmd)
 	execCmd.Flags().StringVarP(&execProjectRef, "project", "p", "", "project ref (id or name, partial match supported)")
 	execCmd.Flags().SetInterspersed(false)
+	_ = execCmd.RegisterFlagCompletionFunc("project", completeProjectRefs)
 }
 
 type execProjectData struct {
