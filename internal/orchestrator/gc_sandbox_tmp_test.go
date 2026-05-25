@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -137,6 +138,21 @@ func TestCleanSandboxTmp_EmptyTmpDirNoop(t *testing.T) {
 }
 
 func TestReadSystemMountPoints_IncludesRoot(t *testing.T) {
+	// サンドボックス内では / が mountpoint として現れないため、前提が満たせない場合はスキップ。
+	if data, err := os.ReadFile("/proc/self/mountinfo"); err == nil {
+		hasRoot := false
+		for line := range strings.SplitSeq(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 5 && fields[4] == "/" {
+				hasRoot = true
+				break
+			}
+		}
+		if !hasRoot {
+			t.Skip("not running on a host mount namespace (no '/' mountpoint); skipping")
+		}
+	}
+
 	mounts, err := readSystemMountPoints()
 	if err != nil {
 		t.Fatalf("readSystemMountPoints: %v", err)
