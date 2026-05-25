@@ -40,10 +40,11 @@ var projectListCmd = &cobra.Command{
 }
 
 var projectRemoveCmd = &cobra.Command{
-	Use:   "remove <project-ref>",
-	Short: "Remove a project (id or name, partial match supported)",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runProjectRemove,
+	Use:               "remove <project-ref>",
+	Short:             "Remove a project (id or name, partial match supported)",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeProjectRefs,
+	RunE:              runProjectRemove,
 }
 
 var projectReloadCmd = &cobra.Command{
@@ -53,17 +54,19 @@ var projectReloadCmd = &cobra.Command{
 }
 
 var projectShowCmd = &cobra.Command{
-	Use:   "show <project-ref>",
-	Short: "Show project details (id or name, partial match supported)",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runProjectShow,
+	Use:               "show <project-ref>",
+	Short:             "Show project details (id or name, partial match supported)",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeProjectRefs,
+	RunE:              runProjectShow,
 }
 
 var projectBehaviorsCmd = &cobra.Command{
-	Use:   "behaviors <project-ref>",
-	Short: "List task behaviors defined in the project (id or name, partial match supported)",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runProjectBehaviors,
+	Use:               "behaviors <project-ref>",
+	Short:             "List task behaviors defined in the project (id or name, partial match supported)",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeProjectRefs,
+	RunE:              runProjectBehaviors,
 }
 
 func init() {

@@ -22,6 +22,9 @@ var rootCmd = &cobra.Command{
 	// Commands (or any ancestor command) annotated with boid.autostart=skip
 	// bypass this check.
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if isCompletionInvocation(cmd) {
+			return nil
+		}
 		for c := cmd; c != nil; c = c.Parent() {
 			if c.Annotations[annotationSkipAutostart] == "skip" {
 				return nil

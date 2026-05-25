@@ -29,6 +29,24 @@ boid stop               # daemon 停止
 
 詳しい手順は [docs/ja/getting-started/01-install.md](docs/ja/getting-started/01-install.md) を参照してください。
 
+### シェル補完
+
+cobra ビルトインの `boid completion` でシェル補完スクリプトを生成できます。 サブコマンド名・フラグに加えて、 daemon が起動していればプロジェクト名 (`boid project show|remove|behaviors <ref>`, `boid exec -p <ref>`) と `boid exec` のコマンド名も動的補完されます。
+
+```bash
+# bash (current shell)
+source <(boid completion bash)
+
+# bash (system-wide, 要 sudo)
+boid completion bash | sudo tee /etc/bash_completion.d/boid >/dev/null
+
+# zsh
+boid completion zsh > "${fpath[1]}/_boid"
+
+# fish
+boid completion fish | source
+```
+
 ## ドキュメント
 
 - **[インストールとクイックスタート](docs/ja/getting-started/01-install.md)**
