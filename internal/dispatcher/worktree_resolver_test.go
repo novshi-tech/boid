@@ -94,12 +94,13 @@ func TestAllocateWorktree_ChildTask_ForksFromParentHeadBranch(t *testing.T) {
 	}
 	exec.Command("/usr/bin/git", "-C", repo, "checkout", "main").Run()
 
-	// Parent: has ParentID set → ComputeHeadBranch = "boid/parent00".
+	// Parent: has ParentID set and Worktree=true → ComputeHeadBranch = "boid/parent00".
 	parentTask := &orchestrator.Task{
 		ID:         "parent0012345678",
 		ProjectID:  "proj-resolver",
 		ParentID:   "grandparent-root",
 		BaseBranch: "main",
+		Worktree:   true,
 	}
 	// Child: ParentID = parent's ID.
 	childTask := &orchestrator.Task{
