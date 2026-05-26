@@ -112,12 +112,20 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 	// / branch_prefix have been removed. Values come from the resolved behavior
 	// (and project-level defaults for worktree / base_branch).
 
-	// Each task resolves its own base_branch from the project-top template +
-	// its own remote_id. Children no longer inherit the parent's already-
-	// resolved branch — pass the same remote_id from parent → child at create
-	// time if you want them to land on the same feature branch. This keeps
-	// cross-project parent/child (e.g. meta-supervisor in project A spawning a
-	// supervisor in project B) from dragging A's base_branch into B.
+	// Children inherit remote_id from their parent when they don't supply
+	// their own. With base_branch derived from the project-top template +
+	// remote_id, this keeps "parent and child share the same feature branch"
+	// the default without forcing every spawn site to pass remote_id by hand.
+	// Explicit remote_id on the child overrides the parent's (cross-track
+	// children stay supported). base_branch itself is NOT inherited — each
+	// task resolves it from its own project-top template + its own
+	// (possibly inherited) remote_id, so cross-project parent/child works
+	// correctly without dragging the parent project's branch into the child.
+	if req.RemoteID == "" && req.ParentID != "" {
+		if parent, parentErr := s.Tasks.GetTask(req.ParentID); parentErr == nil && parent != nil && parent.RemoteID != "" {
+			req.RemoteID = parent.RemoteID
+		}
+	}
 	if baseBranch == "" && (res.BehaviorName == "supervisor" || res.BehaviorName == "executor") {
 		// P1 priority 2: root canonical task with no base_branch → expand
 		// ${current_branch}. Detached HEAD is surfaced as a 400. Non-canonical
