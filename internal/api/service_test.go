@@ -1823,56 +1823,6 @@ func TestCreateTask_EmptyBaseBranch_DetachedHead_Returns400(t *testing.T) {
 	}
 }
 
-// TestCreateTask_EmptyBaseBranch_ChildInheritsParent verifies that a child
-// task with an empty project base_branch inherits from its parent instead of
-// calling gitCurrentBranch. Even when the project HEAD is detached, the child
-// must succeed because inheritance bypasses the ${current_branch} expansion.
-func TestCreateTask_EmptyBaseBranch_ChildInheritsParent(t *testing.T) {
-	const bin = "/usr/bin/git"
-	dir := initServiceTestRepo(t, "main")
-	// Detach HEAD to prove gitCurrentBranch is never called for child tasks.
-	out, err := newCmd(bin, "-C", dir, "rev-parse", "HEAD").Output()
-	if err != nil {
-		t.Skipf("git rev-parse HEAD: %v", err)
-	}
-	hash := strings.TrimSpace(string(out))
-	if cmd := newCmd(bin, "-C", dir, "checkout", "-q", "--detach", hash); cmd.Run() != nil {
-		t.Skip("git checkout --detach: failed")
-	}
-
-	parent := &orchestrator.Task{
-		ID:         "task-parent",
-		Behavior:   "supervisor",
-		BaseBranch: "main",
-	}
-	store := &stubTaskStore{
-		tasks: map[string]*orchestrator.Task{parent.ID: parent},
-	}
-	meta := &orchestrator.ProjectMeta{
-		// BaseBranch empty — child must use parent's, not gitCurrentBranch.
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {},
-		},
-	}
-	svc := &TaskAppService{
-		Tasks:    store,
-		Meta:     stubMetaStore{meta: meta},
-		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
-	}
-	task, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID: "proj-1",
-		Title:     "child task detached parent",
-		Behavior:  "executor",
-		ParentID:  parent.ID,
-	})
-	if err != nil {
-		t.Fatalf("CreateTask: %v (child must not call gitCurrentBranch)", err)
-	}
-	if task.BaseBranch != "main" {
-		t.Errorf("BaseBranch = %q, want %q (inherited from parent)", task.BaseBranch, "main")
-	}
-}
-
 // ---- end P1 ----
 
 // ---- end Phase 2-2 ----
@@ -2882,10 +2832,11 @@ func TestCreateTask_DynamicBaseBranch_MissingRemoteID_Returns400(t *testing.T) {
 	}
 }
 
-func TestCreateTask_ChildInheritsParentBaseBranch(t *testing.T) {
-	// Child task inherits the parent's already-resolved base_branch even
-	// when the child has its own remote_id and the behavior template would
-	// otherwise expand to a different value.
+func TestCreateTask_ChildResolvesOwnBaseBranch(t *testing.T) {
+	// Child resolves its own base_branch from the project template +
+	// its own remote_id. The parent's resolved branch has no influence
+	// (so cross-project parents do not drag their base_branch into the
+	// child's project).
 	parent := &orchestrator.Task{
 		ID:         "parent-1",
 		ProjectID:  "proj-1",
@@ -2916,16 +2867,16 @@ func TestCreateTask_ChildInheritsParentBaseBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
-	if task.BaseBranch != "feature/PROJ-100" {
-		t.Errorf("child BaseBranch = %q, want %q (parent's resolved base must win)",
-			task.BaseBranch, "feature/PROJ-100")
+	if task.BaseBranch != "feature/PROJ-200" {
+		t.Errorf("child BaseBranch = %q, want %q (resolved from child's own remote_id)",
+			task.BaseBranch, "feature/PROJ-200")
 	}
 }
 
-func TestCreateTask_ChildInheritsParentBaseBranch_NoRemoteIDNeeded(t *testing.T) {
-	// Even when the child has no remote_id and the behavior template
-	// references ${TASK_REMOTE_ID}, inheritance from parent bypasses the
-	// expander so the child still gets a sensible value.
+func TestCreateTask_ChildShareesParentBranchWhenSameRemoteID(t *testing.T) {
+	// To land children on the same feature branch as the parent, callers
+	// pass the same remote_id from parent → child. The template + child's
+	// own remote_id resolves to the same value the parent ended up with.
 	parent := &orchestrator.Task{
 		ID:         "parent-1",
 		ProjectID:  "proj-1",
@@ -2950,29 +2901,30 @@ func TestCreateTask_ChildInheritsParentBaseBranch_NoRemoteIDNeeded(t *testing.T)
 		ProjectID: "proj-1",
 		Title:     "child",
 		Behavior:  "executor",
-		// RemoteID intentionally empty: parent inheritance must not require it.
-		ParentID: parent.ID,
+		RemoteID:  "PROJ-100",
+		ParentID:  parent.ID,
 	})
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
 	if task.BaseBranch != "feature/PROJ-100" {
-		t.Errorf("child BaseBranch = %q, want %q", task.BaseBranch, "feature/PROJ-100")
+		t.Errorf("child BaseBranch = %q, want %q (same remote_id → same branch)",
+			task.BaseBranch, "feature/PROJ-100")
 	}
 }
 
-func TestCreateTask_ChildIgnoresOwnStaticBase_PreferParent(t *testing.T) {
-	// Even if the child's behavior has a *different* static base_branch,
-	// the parent's resolved base still wins. This is the natural consequence
-	// of "parent's resolved base wins" — child-level overrides are deferred
-	// to Phase 2-3 (row-level overrides removal).
+func TestCreateTask_ChildMissingRemoteIDForTemplate_Returns400(t *testing.T) {
+	// A child whose project template references ${TASK_REMOTE_ID} but has
+	// no remote_id of its own gets a 400 — children no longer inherit the
+	// parent's branch as a fallback.
 	parent := &orchestrator.Task{
 		ID:         "parent-1",
 		ProjectID:  "proj-1",
 		BaseBranch: "feature/PROJ-100",
+		RemoteID:   "PROJ-100",
 	}
 	meta := &orchestrator.ProjectMeta{
-		BaseBranch: "release/v9",
+		BaseBranch: "feature/${TASK_REMOTE_ID}",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
 			"executor": {},
 		},
@@ -2985,77 +2937,15 @@ func TestCreateTask_ChildIgnoresOwnStaticBase_PreferParent(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID: "proj-1",
-		Title:     "child",
-		Behavior:  "executor",
-		ParentID:  parent.ID,
-	})
-	if err != nil {
-		t.Fatalf("CreateTask() error = %v", err)
-	}
-	if task.BaseBranch != "feature/PROJ-100" {
-		t.Errorf("child BaseBranch = %q, want %q", task.BaseBranch, "feature/PROJ-100")
-	}
-}
-
-func TestCreateTask_ParentNotFound_FallsBackToBehavior(t *testing.T) {
-	// Parent-not-found is logged and we fall back to project-top
-	// resolution. With a static project base_branch ("main") and no
-	// template, the resulting task uses "main" verbatim. This mirrors
-	// the legacy pre-1-3 behavior and protects callers that pass
-	// non-existent parent_ids (a wide pattern in the test suite).
-	meta := &orchestrator.ProjectMeta{
-		BaseBranch: "main",
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {},
-		},
-	}
-	svc := &TaskAppService{
-		// task store with no rows: GetTask returns "task not found"
-		Tasks: &stubTaskStore{},
-		Meta:  stubMetaStore{meta: meta},
-	}
-
-	task, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID: "proj-1",
-		Title:     "child",
-		Behavior:  "executor",
-		ParentID:  "missing-parent",
-	})
-	if err != nil {
-		t.Fatalf("CreateTask() error = %v", err)
-	}
-	if task.BaseBranch != "main" {
-		t.Errorf("BaseBranch = %q, want %q (fallback to behavior when parent missing)", task.BaseBranch, "main")
-	}
-}
-
-func TestCreateTask_ParentNotFound_TemplateStillFails(t *testing.T) {
-	// When the fallback path expands a template that requires
-	// ${TASK_REMOTE_ID} but the request has no remote_id, we still get
-	// the usual 400 — the fallback only swallows the parent lookup, not
-	// downstream resolution.
-	meta := &orchestrator.ProjectMeta{
-		BaseBranch: "feature/${TASK_REMOTE_ID}",
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {},
-		},
-	}
-	svc := &TaskAppService{
-		Tasks: &stubTaskStore{},
-		Meta:  stubMetaStore{meta: meta},
-	}
-
 	_, err := svc.CreateTask(CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "child",
 		Behavior:  "executor",
-		ParentID:  "missing-parent",
+		ParentID:  parent.ID,
 		// no RemoteID
 	})
 	if err == nil {
-		t.Fatal("expected error from template expansion fallback, got nil")
+		t.Fatal("expected 400 from template expansion, got nil")
 	}
 	se, ok := err.(*StatusError)
 	if !ok {
