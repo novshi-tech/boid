@@ -568,7 +568,6 @@ func TestDispatchPlanner_PropagatesParentBranchEnv(t *testing.T) {
 				ID:        "parentab00000000",
 				ProjectID: "proj-1",
 				ParentID:  "grandparent-root",
-				Worktree:  true,
 			},
 			task: &Task{
 				ID:         "childabc00000000",
@@ -579,25 +578,6 @@ func TestDispatchPlanner_PropagatesParentBranchEnv(t *testing.T) {
 				ParentID:   "parentab00000000",
 			},
 			wantParentBranch: "boid/parentab", // parentab00000000[:8] = "parentab"
-		},
-		{
-			name: "child of worktree-less child — parent has no boid/ branch so BOID_PARENT_BRANCH = parent.BaseBranch",
-			parent: &Task{
-				ID:         "parentab00000000",
-				ProjectID:  "proj-1",
-				BaseBranch: "feature/foo",
-				ParentID:   "grandparent-root",
-				Worktree:   false,
-			},
-			task: &Task{
-				ID:         "childabc00000000",
-				ProjectID:  "proj-1",
-				Behavior:   "executor",
-				Status:     TaskStatusExecuting,
-				BaseBranch: "feature/foo",
-				ParentID:   "parentab00000000",
-			},
-			wantParentBranch: "feature/foo",
 		},
 		{
 			name: "root task — BOID_PARENT_BRANCH must be absent",

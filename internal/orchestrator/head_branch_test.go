@@ -33,7 +33,6 @@ func TestComputeHeadBranch_ChildTask_ReturnsBoidPrefix(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:       "abcd1234-0000-0000-0000-000000000000",
 		ParentID: "parent-task-id",
-		Worktree: true,
 	}
 	got := orchestrator.ComputeHeadBranch(task)
 	if got != "boid/abcd1234" {
@@ -45,7 +44,6 @@ func TestComputeHeadBranch_ChildTask_ShortID(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:       "abc",
 		ParentID: "parent-task-id",
-		Worktree: true,
 	}
 	got := orchestrator.ComputeHeadBranch(task)
 	if got != "boid/abc" {
@@ -58,7 +56,6 @@ func TestComputeHeadBranch_ChildTask_IgnoresBaseBranch(t *testing.T) {
 		ID:         "abcd1234-0000-0000-0000-000000000000",
 		BaseBranch: "main",
 		ParentID:   "parent-task-id",
-		Worktree:   true,
 	}
 	got := orchestrator.ComputeHeadBranch(task)
 	if got != "boid/abcd1234" {
@@ -66,20 +63,54 @@ func TestComputeHeadBranch_ChildTask_IgnoresBaseBranch(t *testing.T) {
 	}
 }
 
-// TestComputeHeadBranch_ChildTask_NoWorktree_ReturnsBaseBranch covers the
-// Phase 2-2 supervisor case 1 path: a child task with Worktree=false runs in
-// the host project dir on its base_branch and does not occupy a boid/<id8>
-// branch. Returning base_branch lets the worktree resolver point grandchild
-// fork points at an existing branch instead of the never-created boid/<id8>.
-func TestComputeHeadBranch_ChildTask_NoWorktree_ReturnsBaseBranch(t *testing.T) {
-	task := &orchestrator.Task{
+func TestComputeForkPoint_NilParent(t *testing.T) {
+	got := orchestrator.ComputeForkPoint(nil)
+	if got != "" {
+		t.Errorf("nil parent should return empty string, got %q", got)
+	}
+}
+
+func TestComputeForkPoint_RootParent_ReturnsBaseBranch(t *testing.T) {
+	parent := &orchestrator.Task{
+		ID:         "root00001234567",
+		BaseBranch: "main",
+		ParentID:   "",
+		Worktree:   true,
+	}
+	got := orchestrator.ComputeForkPoint(parent)
+	if got != "main" {
+		t.Errorf("expected %q, got %q", "main", got)
+	}
+}
+
+func TestComputeForkPoint_ChildParent_Worktree_ReturnsBoidPrefix(t *testing.T) {
+	parent := &orchestrator.Task{
+		ID:         "abcd1234-0000-0000-0000-000000000000",
+		BaseBranch: "main",
+		ParentID:   "grandparent-id",
+		Worktree:   true,
+	}
+	got := orchestrator.ComputeForkPoint(parent)
+	if got != "boid/abcd1234" {
+		t.Errorf("worktree=true child parent should return boid/<id8>, got %q", got)
+	}
+}
+
+// TestComputeForkPoint_WorktreeLessParent_ReturnsBaseBranch covers the
+// Phase 2-2 supervisor case 1 path: a parent task with Worktree=false runs in
+// the host project dir on its base_branch and never creates a boid/<id8>
+// branch. The child must fork from parent.BaseBranch instead of the
+// never-created boid/<id8> — otherwise worktree creation fails with
+// `fork point boid/<id8> not found locally (parent task worktree missing?)`.
+func TestComputeForkPoint_WorktreeLessParent_ReturnsBaseBranch(t *testing.T) {
+	parent := &orchestrator.Task{
 		ID:         "abcd1234-0000-0000-0000-000000000000",
 		BaseBranch: "feature/BGO-170",
-		ParentID:   "parent-task-id",
+		ParentID:   "grandparent-id",
 		Worktree:   false,
 	}
-	got := orchestrator.ComputeHeadBranch(task)
+	got := orchestrator.ComputeForkPoint(parent)
 	if got != "feature/BGO-170" {
-		t.Errorf("worktree-less child should return base_branch, got %q", got)
+		t.Errorf("worktree-less parent should return base_branch, got %q", got)
 	}
 }

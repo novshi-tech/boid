@@ -605,7 +605,6 @@ func TestBranchLock_TwoChildren_Parallel(t *testing.T) {
 		ParentID:  "parent-task",
 		Status:    orchestrator.TaskStatusExecuting,
 		Behavior:  "executor",
-		Worktree:  true,
 		Payload:   []byte(`{}`),
 	}
 	childADone := *childA
@@ -624,7 +623,6 @@ func TestBranchLock_TwoChildren_Parallel(t *testing.T) {
 		ParentID:  "parent-task",
 		Status:    orchestrator.TaskStatusExecuting,
 		Behavior:  "executor",
-		Worktree:  true,
 		Payload:   []byte(`{}`),
 	}
 	childBDone := *childB
