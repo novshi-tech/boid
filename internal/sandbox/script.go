@@ -47,7 +47,9 @@ type Spec struct {
 	// RootDir, if non-empty, is used as the sandbox ROOT directory so Go-side
 	// cleanup can remove it after exit. If empty, setup script creates one with mktemp.
 	RootDir string
-	// CleanupPaths are removed by the setup script's EXIT trap (used for staging dirs).
+	// CleanupPaths are removed by outer.sh after pasta returns (used for staging dirs).
+	// Removal runs outside the sandbox mount namespace, so still-active bind
+	// mounts cannot cause rm to traverse onto host files.
 	CleanupPaths []string
 }
 
@@ -84,6 +86,12 @@ func generateOuterScript(spec Spec, outerPath, setupPath, innerPath string) stri
 	qOuter := shellQuote(outerPath)
 	qSetup := shellQuote(setupPath)
 	qInner := shellQuote(innerPath)
+	// Always-run cleanup (host-side, after pasta returns). The sandbox's
+	// `unshare --mount` namespace is already gone by this point, so every bind
+	// mount inside it has been reclaimed by the kernel and rm cannot traverse
+	// onto host files via a stale bind. The case guard prevents an unrelated
+	// $root_dir from being rm'd if the daemon was misconfigured.
+	cleanup := buildOuterCleanup(spec.CleanupPaths)
 	if spec.TTY {
 		return fmt.Sprintf(`#!/bin/bash
 # Ignore SIGUSR1 — this is the daemon's "agent-stop" signal, meant for
@@ -107,12 +115,11 @@ if [ "$exit_code" -ne 0 ] && [ -s "$pasta_stderr" ]; then
     cat "$pasta_stderr" >&2
 fi
 rm -f "$pasta_stderr" 2>/dev/null || true
-if [ "$exit_code" -eq 0 ]; then
-    rm -rf "$root_dir" 2>/dev/null || true
+%sif [ "$exit_code" -eq 0 ]; then
     rm -f %s %s %s 2>/dev/null || true
 fi
 exit $exit_code
-`, rootDir, setupPath, qOuter, qSetup, qInner)
+`, rootDir, setupPath, cleanup, qOuter, qSetup, qInner)
 	}
 	return fmt.Sprintf(`#!/bin/bash
 trap '' USR1
@@ -130,12 +137,28 @@ if [ "$exit_code" -ne 0 ] && [ -s "$pasta_stderr" ]; then
     cat "$pasta_stderr" >&2
 fi
 rm -f "$pasta_stderr" 2>/dev/null || true
-if [ "$exit_code" -eq 0 ]; then
-    rm -rf "$root_dir" 2>/dev/null || true
+%sif [ "$exit_code" -eq 0 ]; then
     rm -f %s %s %s 2>/dev/null || true
 fi
 exit $exit_code
-`, rootDir, setupPath, qOuter, qSetup, qInner)
+`, rootDir, setupPath, cleanup, qOuter, qSetup, qInner)
+}
+
+// buildOuterCleanup returns the unconditional cleanup snippet inserted into
+// outer.sh between the pasta_stderr cleanup and the exit-code-gated script
+// removal. The snippet operates on the bash variable $root_dir defined just
+// after #!/bin/bash, guarded by a /tmp/boid-root-* prefix check.
+func buildOuterCleanup(cleanupPaths []string) string {
+	var b strings.Builder
+	b.WriteString(`case "$root_dir" in
+    /tmp/boid-root-*) rm -rf "$root_dir" 2>/dev/null || true ;;
+    *) echo "[boid] WARNING: root_dir=$root_dir not under /tmp/boid-root-*, skipping cleanup" >&2 ;;
+esac
+`)
+	for _, p := range cleanupPaths {
+		fmt.Fprintf(&b, "rm -rf %s 2>/dev/null || true\n", shellQuote(p))
+	}
+	return b.String()
 }
 
 // generateInnerScript builds the script that runs inside the sandbox.

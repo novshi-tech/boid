@@ -137,31 +137,34 @@ The token is issued at sandbox start and passed in via environment variables suc
 
 ## Cleanup
 
-`setup.sh` installs an EXIT trap right at the top:
+Cleanup runs in **`outer.sh`** after pasta returns; `setup.sh` no longer installs a trap.
 
 ```bash
-cleanup() {
-    case "$ROOT" in
-        /tmp/boid-root-*) ;;
-        *) echo "FATAL: ROOT=$ROOT is not a boid tmpdir, refusing cleanup" >&2; return 1 ;;
-    esac
-    umount -R "$ROOT" 2>/dev/null || true
-    if findmnt --noheadings --output TARGET 2>/dev/null | awk -v r="$ROOT" '$0 == r || index($0, r "/") == 1 { found=1 } END { exit !found }'; then
-        echo "WARNING: mounts still active under $ROOT, skipping rm" >&2
-    else
-        rm -rf "$ROOT"
-    fi
-    rm -f <outer.sh> <setup.sh> <inner.sh>
-}
-trap cleanup EXIT
+# outer.sh (excerpt)
+...
+exit_code=$?
+...
+rm -f "$pasta_stderr" 2>/dev/null || true
+case "$root_dir" in
+    /tmp/boid-root-*) rm -rf "$root_dir" 2>/dev/null || true ;;
+    *) echo "[boid] WARNING: root_dir=$root_dir not under /tmp/boid-root-*, skipping cleanup" >&2 ;;
+esac
+rm -rf <staging-dirs...> 2>/dev/null || true
+if [ "$exit_code" -eq 0 ]; then
+    rm -f <outer.sh> <setup.sh> <inner.sh> 2>/dev/null || true
+fi
+exit $exit_code
 ```
 
-The two safety guards:
+Three points:
 
-1. **Refuse to remove anything if `$ROOT` does not match `/tmp/boid-root-*`.** A misconfigured environment or a bug cannot trick `rm -rf` into wiping a host directory.
-2. **Refuse to remove if any live mount remains under `$ROOT`.** If a bind mount was not unmounted, a naive `rm -rf` would traverse into the bound source and delete host files. Skip the removal and log instead.
+1. **The kernel reclaims mounts.** `setup.sh` runs inside `unshare --mount`; when its bash exits the namespace is destroyed and every bind underneath is reclaimed by the kernel. The previous implementation called `umount -R "$ROOT"` from a trap, which failed immediately because `$ROOT` itself was never a mountpoint, leaving every sub-bind alive and forcing the cleanup to skip `rm`.
+2. **`$root_dir` is rm'd from outside the sandbox namespace.** By the time `outer.sh` resumes, the sandbox mount namespace is gone, so `rm -rf` only sees the empty scaffolding directory on the host. It cannot traverse a bind mount into host content.
+3. **`/tmp/boid-root-*` prefix guard.** If `$root_dir` is set to an unexpected path (misconfiguration or bug), the case skips the rm and logs a warning instead.
 
-Both guards are there because this code path was broken at one point: a stale bind mount caused a sandbox cleanup to delete files outside `$ROOT`. The current implementation hardens the own-namespace, cross-namespace, and chroot-holder paths.
+On `exit_code != 0` the script files (`*-outer.sh`, `*-setup.sh`, `*-inner.sh`) are retained for post-mortem diagnosis (see `cleanupSandboxAfterWait` in `internal/dispatcher/runner.go`). `root_dir` and the staging dir are not retained — once the namespace is gone they are just empty scaffolding, so they are always removed.
+
+A previous regression where bind mounts traversed during `rm -rf` deleted host files (memory: "feedback: bind_rm_traverses_source") motivated the current design — all three paths (own-namespace, cross-namespace, chroot-holder) now fail closed.
 
 ## Allowed boid builtins from inside the sandbox
 

@@ -476,23 +476,35 @@ func (r *Runner) cleanupSandboxAfterWait(runtimeID string, prepared *PreparedSan
 		slog.Warn("skip sandbox cleanup: runtime wait failed", "runtime_id", runtimeID, "error", err)
 		return
 	}
+	// Scaffolding (RootDir, StagingDir) は outer.sh が常に削除するので、
+	// ここでは保険として idempotent に rm するだけ。 exit_code に関わらず実行。
+	cleanupSandboxScaffolding(prepared)
 	if result.ExitCode != 0 {
-		// silent な exit_code != 0 ケースの事後解析を可能にするため artifacts を保全。
-		// transcript.log が 0 byte で daemon log にも有用情報が無い場合、 outer.sh /
-		// setup.sh / inner.sh の中身がほぼ唯一の手がかりになる。 GC や手動削除に任せる。
-		slog.Warn("retained sandbox artifacts for diagnosis (exit_code!=0)",
+		// silent な exit_code != 0 ケースの事後解析を可能にするため、 script
+		// ファイルだけ保全する。 transcript.log が 0 byte で daemon log にも
+		// 有用情報が無い場合、 outer.sh / setup.sh / inner.sh の中身がほぼ唯一の
+		// 手がかりになる。 GC や手動削除に任せる。
+		slog.Warn("retained sandbox scripts for diagnosis (exit_code!=0)",
 			"runtime_id", runtimeID,
 			"exit_code", result.ExitCode,
 			"scripts", prepared.ScriptPaths,
-			"root_dir", prepared.RootDir,
-			"staging_dir", prepared.StagingDir,
 		)
 		return
 	}
-	cleanupSandboxArtifacts(prepared)
+	cleanupSandboxScripts(prepared)
 }
 
+// cleanupSandboxArtifacts removes every sandbox artifact (scaffolding +
+// scripts). Used by runtime-unsupported paths and tests.
 func cleanupSandboxArtifacts(prepared *PreparedSandbox) {
+	cleanupSandboxScaffolding(prepared)
+	cleanupSandboxScripts(prepared)
+}
+
+// cleanupSandboxScaffolding removes the sandbox ROOT directory and the staging
+// dir. Both are normally rm'd by outer.sh; this call is a best-effort safety
+// net for the case where outer.sh was killed before its cleanup ran.
+func cleanupSandboxScaffolding(prepared *PreparedSandbox) {
 	if prepared == nil {
 		return
 	}
@@ -501,17 +513,25 @@ func cleanupSandboxArtifacts(prepared *PreparedSandbox) {
 			slog.Warn("remove sandbox root", "path", prepared.RootDir, "error", err)
 		}
 	}
+	if prepared.StagingDir != "" {
+		if err := os.RemoveAll(prepared.StagingDir); err != nil {
+			slog.Warn("remove sandbox staging dir", "path", prepared.StagingDir, "error", err)
+		}
+	}
+}
+
+// cleanupSandboxScripts removes the generated outer/setup/inner scripts. These
+// are deliberately retained on exit_code != 0 for post-hoc diagnosis.
+func cleanupSandboxScripts(prepared *PreparedSandbox) {
+	if prepared == nil {
+		return
+	}
 	for _, p := range prepared.ScriptPaths {
 		if p == "" {
 			continue
 		}
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			slog.Warn("remove sandbox script", "path", p, "error", err)
-		}
-	}
-	if prepared.StagingDir != "" {
-		if err := os.RemoveAll(prepared.StagingDir); err != nil {
-			slog.Warn("remove sandbox staging dir", "path", prepared.StagingDir, "error", err)
 		}
 	}
 }
