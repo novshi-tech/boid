@@ -101,7 +101,9 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 		if createReq.ProjectID == "" {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create requires a project"}
 		}
-		if createReq.ParentID == "" {
+		if createReq.ParentID == orchestrator.ParentIDSentinelRoot {
+			createReq.ParentID = ""
+		} else if createReq.ParentID == "" {
 			createReq.ParentID = ctx.TaskID
 		}
 		if !ctx.AllowsProject(createReq.ProjectID) {
