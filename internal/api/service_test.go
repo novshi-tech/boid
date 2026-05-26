@@ -2913,10 +2913,11 @@ func TestCreateTask_ChildShareesParentBranchWhenSameRemoteID(t *testing.T) {
 	}
 }
 
-func TestCreateTask_ChildMissingRemoteIDForTemplate_Returns400(t *testing.T) {
-	// A child whose project template references ${TASK_REMOTE_ID} but has
-	// no remote_id of its own gets a 400 — children no longer inherit the
-	// parent's branch as a fallback.
+func TestCreateTask_ChildInheritsParentRemoteIDByDefault(t *testing.T) {
+	// A child without an explicit remote_id inherits the parent's, so the
+	// project-top template expands to the same branch the parent ended up on.
+	// This is what makes "spawn a child under the same Jira issue" the no-effort
+	// default — callers don't have to thread remote_id through every spawn site.
 	parent := &orchestrator.Task{
 		ID:         "parent-1",
 		ProjectID:  "proj-1",
@@ -2937,12 +2938,98 @@ func TestCreateTask_ChildMissingRemoteIDForTemplate_Returns400(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "child",
+		Behavior:  "executor",
+		ParentID:  parent.ID,
+		// RemoteID omitted: inherited from parent.
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if task.RemoteID != "PROJ-100" {
+		t.Errorf("child RemoteID = %q, want %q (inherited from parent)", task.RemoteID, "PROJ-100")
+	}
+	if task.BaseBranch != "feature/PROJ-100" {
+		t.Errorf("child BaseBranch = %q, want %q (template expanded with inherited remote_id)",
+			task.BaseBranch, "feature/PROJ-100")
+	}
+}
+
+func TestCreateTask_ChildExplicitRemoteIDOverridesParent(t *testing.T) {
+	// A child that supplies its own remote_id wins over the parent's. This
+	// supports the rare cross-track case where a child belongs to a different
+	// Jira issue than its parent.
+	parent := &orchestrator.Task{
+		ID:         "parent-1",
+		ProjectID:  "proj-1",
+		BaseBranch: "feature/PROJ-100",
+		RemoteID:   "PROJ-100",
+	}
+	meta := &orchestrator.ProjectMeta{
+		BaseBranch: "feature/${TASK_REMOTE_ID}",
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"executor": {},
+		},
+	}
+	store := &stubTaskStore{
+		tasks: map[string]*orchestrator.Task{parent.ID: parent},
+	}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "child",
+		Behavior:  "executor",
+		RemoteID:  "PROJ-200",
+		ParentID:  parent.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if task.RemoteID != "PROJ-200" {
+		t.Errorf("child RemoteID = %q, want %q (explicit child value wins)", task.RemoteID, "PROJ-200")
+	}
+	if task.BaseBranch != "feature/PROJ-200" {
+		t.Errorf("child BaseBranch = %q, want %q (resolved from explicit remote_id)",
+			task.BaseBranch, "feature/PROJ-200")
+	}
+}
+
+func TestCreateTask_ChildAndParentMissingRemoteID_Returns400(t *testing.T) {
+	// If neither the child nor the parent supplies remote_id and the project
+	// template requires ${TASK_REMOTE_ID}, there is nothing to expand and we
+	// surface the usual 400.
+	parent := &orchestrator.Task{
+		ID:         "parent-1",
+		ProjectID:  "proj-1",
+		BaseBranch: "main",
+		// RemoteID intentionally empty.
+	}
+	meta := &orchestrator.ProjectMeta{
+		BaseBranch: "feature/${TASK_REMOTE_ID}",
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"executor": {},
+		},
+	}
+	store := &stubTaskStore{
+		tasks: map[string]*orchestrator.Task{parent.ID: parent},
+	}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: meta},
+	}
+
 	_, err := svc.CreateTask(CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "child",
 		Behavior:  "executor",
 		ParentID:  parent.ID,
-		// no RemoteID
+		// no RemoteID anywhere.
 	})
 	if err == nil {
 		t.Fatal("expected 400 from template expansion, got nil")
