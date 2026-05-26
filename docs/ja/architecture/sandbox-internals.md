@@ -152,31 +152,34 @@ broker は `internal/sandbox/broker.go` にあり、次の責務を持ちます:
 
 ## 後片付け
 
-`setup.sh` の冒頭には EXIT トラップが仕掛けられています。
+後片付けは **`outer.sh`** が pasta の戻り後に行います。 `setup.sh` 側にはトラップを置きません。
 
 ```bash
-cleanup() {
-    case "$ROOT" in
-        /tmp/boid-root-*) ;;
-        *) echo "FATAL: ROOT=$ROOT is not a boid tmpdir, refusing cleanup" >&2; return 1 ;;
-    esac
-    umount -R "$ROOT" 2>/dev/null || true
-    if findmnt --noheadings --output TARGET 2>/dev/null | awk -v r="$ROOT" '$0 == r || index($0, r "/") == 1 { found=1 } END { exit !found }'; then
-        echo "WARNING: mounts still active under $ROOT, skipping rm" >&2
-    else
-        rm -rf "$ROOT"
-    fi
-    rm -f <outer.sh> <setup.sh> <inner.sh>
-}
-trap cleanup EXIT
+# outer.sh (抜粋)
+...
+exit_code=$?
+...
+rm -f "$pasta_stderr" 2>/dev/null || true
+case "$root_dir" in
+    /tmp/boid-root-*) rm -rf "$root_dir" 2>/dev/null || true ;;
+    *) echo "[boid] WARNING: root_dir=$root_dir not under /tmp/boid-root-*, skipping cleanup" >&2 ;;
+esac
+rm -rf <staging-dirs...> 2>/dev/null || true
+if [ "$exit_code" -eq 0 ]; then
+    rm -f <outer.sh> <setup.sh> <inner.sh> 2>/dev/null || true
+fi
+exit $exit_code
 ```
 
-ポイントは 2 つの安全弁です。
+ポイントは 3 つです。
 
-1. **`$ROOT` が `/tmp/boid-root-*` プレフィックスでなければ削除しない**。 環境変数の取り違えやバグで意図しないパスが入っても、 `rm -rf` が host を壊さないようにする
-2. **`$ROOT` 配下に live なマウントが残っていたら削除しない**。 bind mount が残ったまま `rm -rf` するとマウント先のホストファイルが消えるので、 マウントを全部 unmount できなかった場合は警告ログを残して削除をスキップする
+1. **マウント解除はカーネルに任せる**。 setup.sh は `unshare --mount` の名前空間内で動いており、 そのプロセスが exit すれば名前空間が破棄されて配下の bind mount は全てカーネルに回収される。 `umount -R` を明示的に呼ぶ必要は無い (旧実装では `$ROOT` 自体が mountpoint ではないため `umount -R` が初手で失敗し、 配下が一切剥がれないバグになっていた)。
+2. **`$root_dir` の削除は `unshare` の外で行う**。 outer.sh が動くのは pasta の親側 = ホストの mount 名前空間。 ここまで来れば sandbox 名前空間に居た bind mount は既に消えているので、 `rm -rf` がホストファイルに到達する余地が無い。
+3. **`/tmp/boid-root-*` プレフィックスでなければ rm しない**。 `$root_dir` が意図しない値になっていても host を壊さない安全弁。
 
-過去にこの 2 段ガードが破られた事例があり (memory: "feedback: bind_rm_traverses_source")、現在の実装は own ns / cross ns / chroot holder の 3 経路すべてで安全側に倒すようになっています。
+`exit_code != 0` のときは script ファイル (`*-outer.sh` `*-setup.sh` `*-inner.sh`) だけ保全して事後解析に使えるようにします (`internal/dispatcher/runner.go` の `cleanupSandboxAfterWait` 参照)。 `root_dir` / staging dir は名前空間破棄後はカラのスケルトンなので保全する意味が無く、 常に削除します。
+
+過去にマウント越しの `rm -rf` でホストファイルが消えた事例があり (memory: "feedback: bind_rm_traverses_source")、 現在の実装は own ns / cross ns / chroot holder の 3 経路すべてで安全側に倒すようになっています。
 
 ## サンドボックス内から呼べる boid builtin 一覧
 

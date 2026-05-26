@@ -99,9 +99,17 @@ func TestPrepare_OuterScriptCleansUp(t *testing.T) {
 	if strings.Contains(outer, "exec pasta") {
 		t.Errorf("outer should not use 'exec pasta' (prevents cleanup)\n%s", outer)
 	}
-	// outer.sh must clean up the root dir after pasta exits
+	// outer.sh must clean up the root dir after pasta exits — unconditionally,
+	// because by this point the unshare --mount namespace is gone and rm only
+	// sees the empty scaffolding directory on host.
 	if !strings.Contains(outer, `rm -rf "$root_dir"`) {
 		t.Errorf("outer should rm -rf $root_dir\n%s", outer)
+	}
+	// The root_dir cleanup must be gated by a /tmp/boid-root-* prefix check so
+	// a misconfigured daemon (e.g. unrelated $root_dir) cannot accidentally rm
+	// a host path.
+	if !strings.Contains(outer, `case "$root_dir" in`) || !strings.Contains(outer, `/tmp/boid-root-*)`) {
+		t.Errorf("outer should guard root_dir rm with /tmp/boid-root-* case check\n%s", outer)
 	}
 	// outer.sh must propagate pasta's exit code
 	if !strings.Contains(outer, "exit $exit_code") {
@@ -111,10 +119,11 @@ func TestPrepare_OuterScriptCleansUp(t *testing.T) {
 	if !strings.Contains(outer, "/tmp/boid-root-test-cleanup") {
 		t.Errorf("outer should embed the RootDir path\n%s", outer)
 	}
-	// outer.sh must skip cleanup on non-zero exit so that the diagnostic
-	// retain path (cleanupSandboxAfterWait) can preserve the scripts.
+	// Script files (outer/setup/inner) must be retained on exit_code != 0 for
+	// post-hoc diagnosis. The exit_code==0 guard now only protects scripts;
+	// root_dir is rm'd above unconditionally.
 	if !strings.Contains(outer, `if [ "$exit_code" -eq 0 ]; then`) {
-		t.Errorf("outer should guard rm with exit_code==0\n%s", outer)
+		t.Errorf("outer should retain script files on exit_code != 0\n%s", outer)
 	}
 	// pasta の stderr を /dev/null に捨てると user namespace 不可等の致命的
 	// エラーが silent failure として観測不能になる (#322 / 2026-04-30 障害)。
@@ -179,11 +188,14 @@ func TestPrepare_OuterScriptCleansUpTTY(t *testing.T) {
 	if !strings.Contains(outer, `rm -rf "$root_dir"`) {
 		t.Errorf("outer TTY should rm -rf $root_dir\n%s", outer)
 	}
+	if !strings.Contains(outer, `case "$root_dir" in`) || !strings.Contains(outer, `/tmp/boid-root-*)`) {
+		t.Errorf("outer TTY should guard root_dir rm with /tmp/boid-root-* case check\n%s", outer)
+	}
 	if !strings.Contains(outer, "exit $exit_code") {
 		t.Errorf("outer TTY should exit with pasta's exit code\n%s", outer)
 	}
 	if !strings.Contains(outer, `if [ "$exit_code" -eq 0 ]; then`) {
-		t.Errorf("outer TTY should guard rm with exit_code==0\n%s", outer)
+		t.Errorf("outer TTY should retain script files on exit_code != 0\n%s", outer)
 	}
 	if strings.Contains(outer, "2>/dev/null \\\n") {
 		t.Errorf("outer TTY should not swallow pasta stderr with 2>/dev/null\n%s", outer)
@@ -401,6 +413,10 @@ func TestPrepare_RootDirMktempFallback(t *testing.T) {
 	}
 }
 
+// CleanupPaths (staging dirs etc.) are removed by outer.sh after pasta
+// returns. They used to live in setup.sh's cleanup trap, but that ran inside
+// the sandbox mount namespace where rm could traverse onto host files via a
+// still-active rw bind.
 func TestPrepare_CleanupPaths(t *testing.T) {
 	spec := minimalSpec("test-cleanup")
 	spec.CleanupPaths = []string{"/tmp/staging-xyz"}
@@ -409,9 +425,12 @@ func TestPrepare_CleanupPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	_, setup, _ := readScripts(t, outerPath)
+	outer, setup, _ := readScripts(t, outerPath)
 
-	if !strings.Contains(setup, "rm -rf /tmp/staging-xyz") {
-		t.Errorf("setup: CleanupPaths entry missing from cleanup trap\n%s", setup)
+	if !strings.Contains(outer, "rm -rf /tmp/staging-xyz") {
+		t.Errorf("outer: CleanupPaths entry missing from outer.sh cleanup\n%s", outer)
+	}
+	if strings.Contains(setup, "rm -rf /tmp/staging-xyz") {
+		t.Errorf("setup: CleanupPaths must NOT appear in setup.sh anymore\n%s", setup)
 	}
 }

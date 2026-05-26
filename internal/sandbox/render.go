@@ -11,6 +11,13 @@ import (
 // rootDir, if non-empty, is used as the sandbox ROOT (pre-created by caller) so
 // Go-side cleanup can delete it after the sandbox exits; if empty, the script
 // falls back to creating ROOT with mktemp (legacy behavior, leaks on success).
+//
+// Cleanup is deliberately not handled here. Bind mounts created below live in
+// the caller-provided `unshare --mount` namespace and are reclaimed by the
+// kernel when the namespace is torn down (i.e. when this script's bash exits).
+// Any leftover scaffolding under ROOT, the script files, and CleanupPaths are
+// removed from outer.sh after pasta returns, where the namespace is already
+// gone and rm cannot accidentally traverse a still-active bind mount.
 func renderSetupScript(plan *sandboxPlan, rootDir, innerPath, setupPath, outerPath string) string {
 	var b strings.Builder
 
@@ -20,8 +27,6 @@ func renderSetupScript(plan *sandboxPlan, rootDir, innerPath, setupPath, outerPa
 	} else {
 		b.WriteString("ROOT=$(mktemp -d /tmp/boid-root-XXXXXX)\n\n")
 	}
-
-	renderCleanup(&b, plan.CleanupPaths, innerPath, setupPath, outerPath)
 
 	for _, m := range plan.Mounts {
 		renderMount(&b, m)
@@ -51,31 +56,6 @@ func renderSetupScript(plan *sandboxPlan, rootDir, innerPath, setupPath, outerPa
 	b.WriteString("\nexec unshare --user --map-user=1000 --map-group=1000 --root=\"$ROOT\" -- /bin/bash /tmp/inner.sh\n")
 
 	return b.String()
-}
-
-func renderCleanup(b *strings.Builder, cleanupPaths []string, innerPath, setupPath, outerPath string) {
-	fmt.Fprintf(b, `cleanup() {
-    # Safety: refuse to rm if ROOT is not our tmpdir prefix
-    case "$ROOT" in
-        /tmp/boid-root-*) ;;
-        *) echo "FATAL: ROOT=$ROOT is not a boid tmpdir, refusing cleanup" >&2; return 1 ;;
-    esac
-    # Unmount all bind mounts under $ROOT
-    umount -R "$ROOT" 2>/dev/null || true
-    # Safety: only rm if no mounts remain under $ROOT (prevent deleting host files
-    # via stale bind mounts). findmnt --submounts requires $ROOT itself to be a
-    # mount point, which it isn't, so enumerate every mount target instead.
-    if findmnt --noheadings --output TARGET 2>/dev/null | awk -v r="$ROOT" '$0 == r || index($0, r "/") == 1 { found=1 } END { exit !found }'; then
-        echo "WARNING: mounts still active under $ROOT, skipping rm" >&2
-    else
-        rm -rf "$ROOT"
-    fi
-    rm -f %s %s %s
-`, shellQuote(outerPath), shellQuote(setupPath), shellQuote(innerPath))
-	for _, p := range cleanupPaths {
-		fmt.Fprintf(b, "    rm -rf %s\n", shellQuote(p))
-	}
-	b.WriteString("}\ntrap cleanup EXIT\n")
 }
 
 func renderMount(b *strings.Builder, m Mount) {

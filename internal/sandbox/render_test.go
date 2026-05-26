@@ -173,14 +173,21 @@ func TestRenderMount_DetectTypeRuntimeBehavior(t *testing.T) {
 	}
 }
 
-// The cleanup() trap must enumerate mount targets globally rather than calling
-// `findmnt --submounts "$ROOT"`, because $ROOT is a regular tmpdir (not a mount
-// point) and the --submounts query returns empty even when sub-mounts are
-// present. Prior to this fix, `rm -rf "$ROOT"` ran against still-mounted host
-// directories.
-func TestPrepare_CleanupChecksMountsGlobally(t *testing.T) {
+// setup.sh must not carry an in-namespace cleanup trap. Prior implementations
+// installed `trap cleanup EXIT` and tried to umount + rm inside the sandbox
+// mount namespace, which was broken in two ways:
+//  1. `umount -R "$ROOT"` failed silently because $ROOT was a plain mktemp dir
+//     and not a mountpoint, so sub-binds stayed alive and findmnt forced
+//     `skipping rm`, leaking /tmp/boid-root-* scaffolding on every failure.
+//  2. If the cleanup ever did reach `rm -rf "$ROOT"` while a rw bind was still
+//     active, rm could traverse the bind and delete host files.
+//
+// The fix moves cleanup to outer.sh, where the unshare --mount namespace is
+// already torn down. This test guards against a regression that reintroduces
+// in-namespace cleanup.
+func TestPrepare_SetupScriptHasNoCleanupTrap(t *testing.T) {
 	spec := Spec{
-		ID:      "cleanup-mount-check",
+		ID:      "no-setup-cleanup",
 		WorkDir: "/tmp/p",
 		Env:     map[string]string{"HOME": "/tmp/p"},
 		Argv:    []string{"/bin/true"},
@@ -201,48 +208,14 @@ func TestPrepare_CleanupChecksMountsGlobally(t *testing.T) {
 	}
 	got := string(content)
 
-	if strings.Contains(got, `findmnt --submounts --noheadings --output TARGET "$ROOT"`) {
-		t.Errorf("cleanup must not rely on --submounts against a non-mountpoint $ROOT:\n%s", got)
-	}
-	if !strings.Contains(got, `findmnt --noheadings --output TARGET`) {
-		t.Errorf("cleanup should enumerate all mount targets via findmnt:\n%s", got)
-	}
-	if !strings.Contains(got, `awk -v r="$ROOT"`) {
-		t.Errorf("cleanup should scan targets for $ROOT-prefixed paths via awk:\n%s", got)
-	}
-}
-
-// Verify the guard's awk selector matches "$ROOT" exactly and any "$ROOT/..."
-// prefix, but rejects coincidental prefix collisions (e.g. sibling tmpdirs).
-func TestPrepare_CleanupAwkGuardSemantics(t *testing.T) {
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("bash not available")
-	}
-
-	script := `ROOT=/tmp/boid-root-XYZ
-found=$(printf '%s\n' "$1" | awk -v r="$ROOT" '$0 == r || index($0, r "/") == 1 { found=1 } END { exit !found }' && echo match || echo no-match)
-echo "$found"
-`
-	cases := []struct {
-		line string
-		want string
-	}{
-		{"/tmp/boid-root-XYZ", "match"},
-		{"/tmp/boid-root-XYZ/lib", "match"},
-		{"/tmp/boid-root-XYZ/lib/node_modules/npm", "match"},
-		{"/tmp/boid-root-XYZ-other", "no-match"}, // sibling tmpdir with same prefix
-		{"/tmp/boid-root-OTHER", "no-match"},
-		{"/", "no-match"},
-	}
-	for _, tc := range cases {
-		out, err := exec.Command(bash, "-c", script, "bash", tc.line).Output()
-		if err != nil {
-			t.Fatalf("run awk guard with %q: %v", tc.line, err)
-		}
-		got := strings.TrimSpace(string(out))
-		if got != tc.want {
-			t.Errorf("line %q: got %q, want %q", tc.line, got, tc.want)
+	for _, banned := range []string{
+		"trap cleanup EXIT",
+		"cleanup() {",
+		"umount -R",
+		"findmnt --noheadings --output TARGET",
+	} {
+		if strings.Contains(got, banned) {
+			t.Errorf("setup.sh must not contain %q (cleanup is owned by outer.sh now):\n%s", banned, got)
 		}
 	}
 }

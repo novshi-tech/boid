@@ -77,17 +77,26 @@ func TestCleanupSandboxAfterWait_RemovesArtifactsOnSuccess(t *testing.T) {
 	}
 }
 
-// silent exit_code=1 の事後解析を可能にするため、 失敗時は sandbox script /
-// rootDir / stagingDir を削除せずに残す。
-func TestCleanupSandboxAfterWait_RetainsArtifactsOnFailure(t *testing.T) {
+// silent exit_code=1 の事後解析を可能にするため、 失敗時は **script ファイルだけ**
+// 残す。 rootDir / stagingDir は中身が無いので保全しても診断材料にならず、 旧来は
+// setup.sh の cleanup trap で消えず leak していたため意図的に削除に変更。
+func TestCleanupSandboxAfterWait_RetainsScriptsOnFailure(t *testing.T) {
 	prep := makePreparedFixture(t)
 	r := &Runner{Runtime: &waitableRuntime{exit: RuntimeExit{ExitCode: 1}}}
 
 	r.cleanupSandboxAfterWait("rt-failed", prep, nil)
 
-	for _, p := range append([]string{prep.RootDir, prep.StagingDir}, prep.ScriptPaths...) {
+	// Scaffolding must be removed (outer.sh は失敗時もこれを rm するが、
+	// daemon は保険として idempotent に同じことをする)。
+	for _, p := range []string{prep.RootDir, prep.StagingDir} {
+		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("expected %s removed on exit_code!=0, stat err = %v", p, err)
+		}
+	}
+	// Script ファイルは事後解析のため保全する。
+	for _, p := range prep.ScriptPaths {
 		if _, err := os.Stat(p); err != nil {
-			t.Errorf("expected %s retained on exit_code!=0, stat err = %v", p, err)
+			t.Errorf("expected script %s retained on exit_code!=0, stat err = %v", p, err)
 		}
 	}
 }
