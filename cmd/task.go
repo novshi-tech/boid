@@ -339,7 +339,9 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 	if req.ProjectID == "" {
 		req.ProjectID = os.Getenv("BOID_PROJECT_ID")
 	}
-	if req.ParentID == "" {
+	if req.ParentID == orchestrator.ParentIDSentinelRoot {
+		req.ParentID = ""
+	} else if req.ParentID == "" {
 		req.ParentID = os.Getenv("BOID_TASK_ID")
 	}
 	if req.ProjectID == "" || req.Title == "" {

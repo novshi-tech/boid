@@ -439,6 +439,57 @@ func TestBoidBuiltinExecutor_TaskCreate_ExplicitParentIDOverridesContext(t *test
 	}
 }
 
+// TestBoidBuiltinExecutor_TaskCreate_SentinelRootParentID verifies that
+// CreatePatch with parent_id:"-" skips ctx.TaskID auto-populate and stores
+// an empty ParentID (root task), while empty/absent parent_id still gets
+// auto-populated with ctx.TaskID.
+func TestBoidBuiltinExecutor_TaskCreate_SentinelRootParentID(t *testing.T) {
+	store := &capturingTaskStore{}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {},
+		},
+	}}
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{Tasks: store, Meta: meta},
+	}
+	ctx := sandbox.TokenContext{
+		ProjectID:         "proj-1",
+		TaskID:            "parent-task-id",
+		AllowedProjectIDs: []string{"proj-1"},
+	}
+
+	// sentinel "-" → stored ParentID must be empty (root task, no auto-populate)
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:          sandbox.BoidOpTaskCreate,
+		CreatePatch: json.RawMessage(`{"title":"root task","behavior":"dev","parent_id":"-"}`),
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("sentinel create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("want 1 created task, got %d", len(store.created))
+	}
+	if got := store.created[0].ParentID; got != "" {
+		t.Errorf("sentinel: ParentID = %q, want empty (root task)", got)
+	}
+
+	// empty parent_id → auto-populated with ctx.TaskID
+	resp = exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:          sandbox.BoidOpTaskCreate,
+		CreatePatch: json.RawMessage(`{"title":"child task","behavior":"dev"}`),
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("auto-populate create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if len(store.created) != 2 {
+		t.Fatalf("want 2 created tasks, got %d", len(store.created))
+	}
+	if got := store.created[1].ParentID; got != "parent-task-id" {
+		t.Errorf("auto-populate: ParentID = %q, want %q", got, "parent-task-id")
+	}
+}
+
 // TestBoidBuiltinExecutor_TaskCreate_BrokerResolvedIDOverridesCreatePatch は
 // broker が project 名 ("boid-kits") を UUID ("dad1961a-...") に解決済みの場合に
 // CreatePatch.project_id (名前) をそのまま AllowsProject に渡すバグを再現する。

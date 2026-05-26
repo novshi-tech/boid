@@ -142,6 +142,49 @@ behavior: dev
 	}
 }
 
+// TestRunTaskCreate_SentinelRootParentID verifies that parent_id:"-" in the
+// YAML spec skips BOID_TASK_ID auto-populate and creates a root task
+// (stored ParentID is empty), even when BOID_TASK_ID is set in the environment.
+func TestRunTaskCreate_SentinelRootParentID(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+
+	dir := writeImportTestProject(t, "sentinel-parent-proj", "Sentinel Parent Project")
+	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	t.Setenv("BOID_TASK_ID", "some-parent-task")
+
+	input := `project_id: sentinel-parent-proj
+title: root task via sentinel
+behavior: dev
+parent_id: "-"
+`
+	cmd := newTaskCreateCmd(t)
+	cmd.SetIn(strings.NewReader(input))
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	if err := runTaskCreate(cmd, nil); err != nil {
+		t.Fatalf("runTaskCreate() error = %v", err)
+	}
+
+	parts := strings.Split(strings.TrimSpace(out.String()), " ")
+	if len(parts) < 3 {
+		t.Fatalf("unexpected output format: %q", out.String())
+	}
+	taskID := parts[2]
+
+	var task orchestrator.Task
+	if err := ts.Client.Do("GET", "/api/tasks/"+taskID, nil, &task); err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if task.ParentID != "" {
+		t.Errorf("ParentID = %q, want empty (sentinel must skip auto-populate)", task.ParentID)
+	}
+}
+
 func TestRunTaskCreate_ExplicitParentIDOverridesEnv(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
