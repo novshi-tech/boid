@@ -107,10 +107,10 @@ func TestBranchLock_RunDispatchLoop_AcquiresAndReleasesOnDone(t *testing.T) {
 	}
 }
 
-// TestBranchLock_RunDispatchLoop_AcquiresForReadonly verifies that readonly
-// tasks DO acquire the branch lock (P2.5 behavior change: readonly root sups
-// must serialize on the same base_branch).
-func TestBranchLock_RunDispatchLoop_AcquiresForReadonly(t *testing.T) {
+// TestBranchLock_RunDispatchLoop_SkipsLockForReadonly verifies that readonly
+// tasks (supervisor) do not acquire the branch lock, so they do not block
+// concurrent executor tasks on the same base_branch.
+func TestBranchLock_RunDispatchLoop_SkipsLockForReadonly(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:         "task-ro",
 		ProjectID:  "proj-1",
@@ -144,16 +144,82 @@ func TestBranchLock_RunDispatchLoop_AcquiresForReadonly(t *testing.T) {
 		t.Fatal("dispatch coordinator never entered")
 	}
 
-	if !locks.IsHeldForTask(task.ID) {
-		t.Fatal("readonly root sup must hold the branch lock while executing")
+	if locks.IsHeldForTask(task.ID) {
+		t.Fatal("readonly task must not acquire the branch lock")
 	}
 
 	close(holding.release)
 	<-done
+}
 
-	if locks.IsHeldForTask(task.ID) {
-		t.Fatal("expected lock released after done")
+// TestBranchLock_ReadonlySup_WritableExec_SameBaseBranch_Parallel verifies
+// that a readonly supervisor and a writable executor on the same base_branch
+// run concurrently — the supervisor must not block the executor.
+func TestBranchLock_ReadonlySup_WritableExec_SameBaseBranch_Parallel(t *testing.T) {
+	locks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
+
+	supTask := &orchestrator.Task{
+		ID:         "sup-task",
+		ProjectID:  "proj-1",
+		BaseBranch: "main",
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "supervisor",
+		Readonly:   true,
+		Payload:    []byte(`{}`),
 	}
+	supDone := *supTask
+	supDone.Status = orchestrator.TaskStatusDone
+	holdingSup := newHoldingDispatchCoordinator(&orchestrator.DispatchResult{FinalPayload: supTask.Payload})
+	svcSup := &TaskWorkflowService{
+		Tx:          recordingTransactor{store: &recordingTxStore{task: &supDone}},
+		Coordinator: holdingSup,
+		Lifecycle:   &stubLifecycle{},
+		Locks:       locks,
+	}
+
+	execTask := &orchestrator.Task{
+		ID:         "exec-task",
+		ProjectID:  "proj-1",
+		BaseBranch: "main",
+		Status:     orchestrator.TaskStatusExecuting,
+		Behavior:   "executor",
+		Readonly:   false,
+		Payload:    []byte(`{}`),
+	}
+	execDone := *execTask
+	execDone.Status = orchestrator.TaskStatusDone
+	holdingExec := newHoldingDispatchCoordinator(&orchestrator.DispatchResult{FinalPayload: execTask.Payload})
+	svcExec := &TaskWorkflowService{
+		Tx:          recordingTransactor{store: &recordingTxStore{task: &execDone}},
+		Coordinator: holdingExec,
+		Lifecycle:   &stubLifecycle{},
+		Locks:       locks,
+	}
+
+	doneSup := make(chan struct{})
+	doneExec := make(chan struct{})
+	go func() {
+		defer close(doneSup)
+		svcSup.runDispatchLoop(context.Background(), supTask, anyMeta("supervisor"), orchestrator.DefaultMachine())
+	}()
+	go func() {
+		defer close(doneExec)
+		svcExec.runDispatchLoop(context.Background(), execTask, anyMeta("executor"), orchestrator.DefaultMachine())
+	}()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-holdingSup.enter:
+		case <-holdingExec.enter:
+		case <-time.After(time.Second):
+			t.Fatal("readonly supervisor and writable executor must run concurrently on the same base_branch")
+		}
+	}
+
+	close(holdingSup.release)
+	close(holdingExec.release)
+	<-doneSup
+	<-doneExec
 }
 
 // TestBranchLock_RunDispatchLoop_AcquiresForWorktreeTask verifies that
