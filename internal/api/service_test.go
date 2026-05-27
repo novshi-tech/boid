@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -258,11 +259,11 @@ func TestCompleteJobStopsRuntime(t *testing.T) {
 	// Give the goroutine a moment to run.
 	deadline := 100 * time.Millisecond
 	start := time.Now()
-	for lifecycle.stoppedRuntimeID == "" && time.Since(start) < deadline {
+	for lifecycle.StoppedRuntimeID() == "" && time.Since(start) < deadline {
 		time.Sleep(time.Millisecond)
 	}
-	if lifecycle.stoppedRuntimeID != job.RuntimeID {
-		t.Fatalf("StopJobRuntime called with %q, want %q", lifecycle.stoppedRuntimeID, job.RuntimeID)
+	if got := lifecycle.StoppedRuntimeID(); got != job.RuntimeID {
+		t.Fatalf("StopJobRuntime called with %q, want %q", got, job.RuntimeID)
 	}
 }
 
@@ -1968,13 +1969,19 @@ func (s stubMetaStore) Get(id string) (*orchestrator.ProjectMeta, bool) {
 }
 
 type stubLifecycle struct {
-	completedJobID     string
-	unregisteredJobID  string
-	cleanupTaskID      string
-	stoppedRuntimeID   string
-	signaledRuntimeID  string
-	signaledSignal     syscall.Signal
-	result             JobCompletion
+	completedJobID    string
+	unregisteredJobID string
+	cleanupTaskID     string
+	result            JobCompletion
+
+	// StopJobRuntime / SignalJobRuntime are invoked from goroutines spawned
+	// by CompleteJob and StopAgent, so the fields they touch must be
+	// mutex-protected. Tests read them via the StoppedRuntimeID /
+	// SignaledRuntimeID / SignaledSignal accessors.
+	mu                sync.Mutex
+	stoppedRuntimeID  string
+	signaledRuntimeID string
+	signaledSignal    syscall.Signal
 }
 
 func (l *stubLifecycle) CompleteJob(jobID string, result JobCompletion) {
@@ -1991,12 +1998,34 @@ func (l *stubLifecycle) CleanupTaskWindow(taskID string) {
 }
 
 func (l *stubLifecycle) StopJobRuntime(runtimeID string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.stoppedRuntimeID = runtimeID
 }
 
 func (l *stubLifecycle) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.signaledRuntimeID = runtimeID
 	l.signaledSignal = sig
+}
+
+func (l *stubLifecycle) StoppedRuntimeID() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.stoppedRuntimeID
+}
+
+func (l *stubLifecycle) SignaledRuntimeID() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.signaledRuntimeID
+}
+
+func (l *stubLifecycle) SignaledSignal() syscall.Signal {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.signaledSignal
 }
 
 func TestDuplicateTask_CopiesFields(t *testing.T) {
