@@ -85,8 +85,8 @@ func TestMarkStaleExecutingTasksAborted_RecordsAbortAction(t *testing.T) {
 	if err := json.Unmarshal(a.Payload, &payload); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
-	if payload["code"] != "daemon_restart" {
-		t.Errorf("expected code daemon_restart, got %s", payload["code"])
+	if payload["code"] != "daemon_shutdown" {
+		t.Errorf("expected code daemon_shutdown, got %s", payload["code"])
 	}
 	if payload["message"] == "" {
 		t.Error("expected non-empty message in abort payload")
@@ -130,6 +130,131 @@ func TestMarkStaleExecutingTasksAborted_SkipsNonExecuting(t *testing.T) {
 		if status != statuses[i] {
 			t.Errorf("task %s: expected status %s unchanged, got %s", task.ID, statuses[i], status)
 		}
+	}
+}
+
+// FindDaemonShutdownAbortedTasks must return tasks whose latest aborted-
+// transition action has code=daemon_shutdown, and skip those aborted for
+// other reasons. Used by the startup auto-reopen path.
+func TestFindDaemonShutdownAbortedTasks_ReturnsShutdownTasks(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	// Task A: aborted via daemon_shutdown — should be returned
+	taskA := &orchestrator.Task{ProjectID: "proj-1", Title: "A", Behavior: "executor"}
+	if err := orchestrator.CreateTask(d.Conn, taskA); err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	if _, err := d.Conn.Exec(`UPDATE tasks SET status = 'aborted' WHERE id = ?`, taskA.ID); err != nil {
+		t.Fatalf("set A aborted: %v", err)
+	}
+	if err := orchestrator.CreateAction(d.Conn, &orchestrator.Action{
+		TaskID:     taskA.ID,
+		Type:       "abort",
+		FromStatus: orchestrator.TaskStatusExecuting,
+		ToStatus:   orchestrator.TaskStatusAborted,
+		Payload:    json.RawMessage(`{"code":"daemon_shutdown","message":"shutdown"}`),
+	}); err != nil {
+		t.Fatalf("create A action: %v", err)
+	}
+
+	// Task B: aborted via dispatch_error — should NOT be returned
+	taskB := &orchestrator.Task{ProjectID: "proj-1", Title: "B", Behavior: "executor"}
+	if err := orchestrator.CreateTask(d.Conn, taskB); err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+	if _, err := d.Conn.Exec(`UPDATE tasks SET status = 'aborted' WHERE id = ?`, taskB.ID); err != nil {
+		t.Fatalf("set B aborted: %v", err)
+	}
+	if err := orchestrator.CreateAction(d.Conn, &orchestrator.Action{
+		TaskID:     taskB.ID,
+		Type:       "abort",
+		FromStatus: orchestrator.TaskStatusExecuting,
+		ToStatus:   orchestrator.TaskStatusAborted,
+		Payload:    json.RawMessage(`{"code":"dispatch_error","message":"hook failed"}`),
+	}); err != nil {
+		t.Fatalf("create B action: %v", err)
+	}
+
+	// Task C: executing — should NOT be returned even if some action history
+	taskC := &orchestrator.Task{ProjectID: "proj-1", Title: "C", Behavior: "executor"}
+	if err := orchestrator.CreateTask(d.Conn, taskC); err != nil {
+		t.Fatalf("create C: %v", err)
+	}
+	if _, err := d.Conn.Exec(`UPDATE tasks SET status = 'executing' WHERE id = ?`, taskC.ID); err != nil {
+		t.Fatalf("set C executing: %v", err)
+	}
+
+	ids, err := dispatcher.FindDaemonShutdownAbortedTasks(d.Conn)
+	if err != nil {
+		t.Fatalf("FindDaemonShutdownAbortedTasks: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != taskA.ID {
+		t.Errorf("expected [%s], got %v", taskA.ID, ids)
+	}
+}
+
+// If a task was aborted by daemon_shutdown first and then aborted again
+// later for another reason (e.g. user retried, hook failed), the LATER
+// abort wins and the task must NOT be auto-reopened.
+func TestFindDaemonShutdownAbortedTasks_LatestAbortWins(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "task", Behavior: "executor"}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := d.Conn.Exec(`UPDATE tasks SET status = 'aborted' WHERE id = ?`, task.ID); err != nil {
+		t.Fatalf("set aborted: %v", err)
+	}
+
+	// First abort: daemon_shutdown
+	if err := orchestrator.CreateAction(d.Conn, &orchestrator.Action{
+		TaskID:     task.ID,
+		Type:       "abort",
+		FromStatus: orchestrator.TaskStatusExecuting,
+		ToStatus:   orchestrator.TaskStatusAborted,
+		Payload:    json.RawMessage(`{"code":"daemon_shutdown"}`),
+	}); err != nil {
+		t.Fatalf("create first abort: %v", err)
+	}
+	// Newer abort: dispatch_error (e.g. reopen then hook failed)
+	if err := orchestrator.CreateAction(d.Conn, &orchestrator.Action{
+		TaskID:     task.ID,
+		Type:       "abort",
+		FromStatus: orchestrator.TaskStatusExecuting,
+		ToStatus:   orchestrator.TaskStatusAborted,
+		Payload:    json.RawMessage(`{"code":"dispatch_error"}`),
+	}); err != nil {
+		t.Fatalf("create second abort: %v", err)
+	}
+
+	ids, err := dispatcher.FindDaemonShutdownAbortedTasks(d.Conn)
+	if err != nil {
+		t.Fatalf("FindDaemonShutdownAbortedTasks: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected no tasks (latest abort is dispatch_error), got %v", ids)
+	}
+}
+
+// Empty DB / no aborted tasks must return nil, not an error.
+func TestFindDaemonShutdownAbortedTasks_Empty(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	ids, err := dispatcher.FindDaemonShutdownAbortedTasks(d.Conn)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected empty result, got %v", ids)
 	}
 }
 

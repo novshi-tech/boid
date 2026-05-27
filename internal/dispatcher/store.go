@@ -2,6 +2,8 @@ package dispatcher
 
 import (
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -195,7 +197,7 @@ func MarkStaleExecutingTasksAborted(conn *sql.DB) (int, error) {
 			return fmt.Errorf("iterate executing tasks: %w", err)
 		}
 
-		const abortPayload = `{"code":"daemon_restart","message":"daemon が再起動されたため中断されました。 boid task reopen で再開できます。"}`
+		const abortPayload = `{"code":"daemon_shutdown","message":"daemon が再起動されたため中断されました。 起動時に自動 reopen されます。"}`
 		now := time.Now().UTC()
 		for _, id := range ids {
 			if _, err := tx.Exec(
@@ -215,6 +217,61 @@ func MarkStaleExecutingTasksAborted(conn *sql.DB) (int, error) {
 		return nil
 	})
 	return count, err
+}
+
+// FindDaemonShutdownAbortedTasks returns IDs of tasks currently in aborted
+// status whose most recent aborted-transition action carries
+// payload.code == "daemon_shutdown". Use this on daemon startup to
+// auto-reopen tasks that were interrupted by the previous shutdown.
+//
+// "Most recent" means the latest action with to_status='aborted' for that
+// task (ordered by created_at desc). If a task was aborted by
+// daemon_shutdown and then aborted again later for another reason, the
+// later code wins and the task is NOT returned — matching the intuition
+// that only freshly-shutdown tasks deserve auto-reopen.
+func FindDaemonShutdownAbortedTasks(conn *sql.DB) ([]string, error) {
+	rows, err := conn.Query(`SELECT id FROM tasks WHERE status = 'aborted'`)
+	if err != nil {
+		return nil, fmt.Errorf("query aborted tasks: %w", err)
+	}
+	var abortedIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan aborted id: %w", err)
+		}
+		abortedIDs = append(abortedIDs, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate aborted tasks: %w", err)
+	}
+
+	var result []string
+	for _, id := range abortedIDs {
+		var payload []byte
+		err := conn.QueryRow(
+			`SELECT payload FROM actions WHERE task_id = ? AND to_status = 'aborted' ORDER BY created_at DESC LIMIT 1`,
+			id,
+		).Scan(&payload)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("query latest abort action for %s: %w", id, err)
+		}
+		var p struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal(payload, &p); err != nil {
+			continue
+		}
+		if p.Code == "daemon_shutdown" {
+			result = append(result, id)
+		}
+	}
+	return result, nil
 }
 
 func UpdateJob(dbtx db.DBTX, j *Job) error {

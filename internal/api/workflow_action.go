@@ -3,12 +3,24 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
+
+// isShutdownErr reports whether the dispatch failure was caused by the
+// dispatch context being canceled (daemon shutdown). Checks both the ctx
+// directly and the error chain so wrapped child-ctx cancellations are
+// covered.
+func isShutdownErr(ctx context.Context, err error) bool {
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		return true
+	}
+	return errors.Is(err, context.Canceled)
+}
 
 func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, req ApplyActionRequest) (*ActionApplication, error) {
 	task, err := s.Tasks.GetTask(taskID)
@@ -339,12 +351,28 @@ func (s *TaskWorkflowService) recordDispatchError(taskID string, taskStatus orch
 // then transitions the task to aborted so the branch lock is released and
 // terminal cleanup (worktree removal, lifecycle window) runs. Safe to call
 // even when the lock was never acquired — releaseProjectLock is idempotent.
+//
+// When the dispatch context has been canceled (typically because the daemon
+// is shutting down via SIGTERM), the abort is recorded with
+// code=daemon_shutdown instead of dispatch_error. The startup auto-reopen
+// path looks for this code via the derived lifecycle.abort trait and
+// re-dispatches the task on next boot. No dispatch_error action is emitted
+// for shutdown — that channel is reserved for genuine hook failures.
 func (s *TaskWorkflowService) abortOnDispatchError(ctx context.Context, task *orchestrator.Task, err error) {
-	s.recordDispatchError(task.ID, task.Status, err)
+	shutdown := isShutdownErr(ctx, err)
+
+	code := "dispatch_error"
+	message := err.Error()
+	if shutdown {
+		code = "daemon_shutdown"
+		message = "daemon が停止したため中断されました。 起動時に自動 reopen されます。"
+	} else {
+		s.recordDispatchError(task.ID, task.Status, err)
+	}
 
 	abortPayload, _ := json.Marshal(map[string]string{
-		"code":    "dispatch_error",
-		"message": err.Error(),
+		"code":    code,
+		"message": message,
 	})
 	abortAction := &orchestrator.Action{
 		TaskID:     task.ID,
