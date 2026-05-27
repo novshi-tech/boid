@@ -114,20 +114,47 @@ func (m *WorktreeManager) ensureBaseBranchExists(projectDir, baseBranch, forkPoi
 // creation. forkPoint (from project.yaml) takes precedence; otherwise
 // origin/HEAD is consulted. Returns (ref, source, error) where source is a
 // short label suitable for logging.
+//
+// When the chosen start references an origin remote-tracking ref, a
+// `git fetch origin <branch>` is issued first so we fork from the latest
+// upstream commit rather than whatever was in the local cache. Mirrors the
+// case-2 fetch in Create. Fetch failures degrade to a warning + the existing
+// local ref view (parity with case 2); a missing ref afterwards still errors.
 func (m *WorktreeManager) resolveCase3ForkStart(projectDir, forkPoint string) (string, string, error) {
 	if forkPoint != "" {
+		if strings.HasPrefix(forkPoint, "origin/") {
+			m.fetchOriginBranch(projectDir, strings.TrimPrefix(forkPoint, "origin/"), "fork_point")
+		}
 		if err := exec.Command(m.gitBin(), "-C", projectDir, "rev-parse", "--verify", "--quiet", forkPoint).Run(); err != nil {
 			return "", "", fmt.Errorf("fork_point %q does not resolve in %s (configure project.yaml fork_point or fetch the ref)", forkPoint, projectDir)
 		}
 		return forkPoint, "project.yaml fork_point", nil
 	}
-	// Fall back to origin/HEAD. symbolic-ref returns the resolved ref name;
-	// we only need it to succeed, then pass refs/remotes/origin/HEAD itself
-	// to git branch (which dereferences it).
-	if err := exec.Command(m.gitBin(), "-C", projectDir, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD").Run(); err != nil {
+	// Fall back to origin/HEAD. symbolic-ref returns the resolved ref name
+	// (e.g. "refs/remotes/origin/main"); we strip the prefix to get the
+	// upstream branch name and fetch it so the resulting fork is fresh.
+	out, err := exec.Command(m.gitBin(), "-C", projectDir, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD").Output()
+	if err != nil {
 		return "", "", fmt.Errorf("no fork point available: project.yaml fork_point is unset and refs/remotes/origin/HEAD is not configured (run `git remote set-head origin --auto` in %s or set fork_point in project.yaml)", projectDir)
 	}
+	headRef := strings.TrimSpace(string(out))
+	if remoteBranch := strings.TrimPrefix(headRef, "refs/remotes/origin/"); remoteBranch != headRef && remoteBranch != "" {
+		m.fetchOriginBranch(projectDir, remoteBranch, "origin/HEAD")
+	}
 	return "refs/remotes/origin/HEAD", "origin/HEAD", nil
+}
+
+// fetchOriginBranch issues `git fetch origin <branch>` and logs a warning
+// on failure without surfacing the error. The caller still re-verifies the
+// resulting ref, so a stale cache is acceptable but a missing ref will be
+// rejected downstream.
+func (m *WorktreeManager) fetchOriginBranch(projectDir, branch, reason string) {
+	cmd := exec.Command(m.gitBin(), "-C", projectDir, "fetch", "origin", branch)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		slog.Warn("case 3 pre-fork fetch failed; falling back to local remote-tracking ref",
+			"project_dir", projectDir, "branch", branch, "reason", reason,
+			"error", err, "output", strings.TrimSpace(string(out)))
+	}
 }
 
 // EnforceHeadOnBaseBranch is the Phase 2-2 case 1 HEAD guard. Supervisors

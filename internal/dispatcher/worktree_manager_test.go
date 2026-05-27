@@ -1298,6 +1298,147 @@ func TestCreate_Case3_ErrorsOnInvalidForkPoint(t *testing.T) {
 	}
 }
 
+// TestCreate_Case3_FetchesOriginForkPoint verifies that when fork_point
+// references an origin/* ref, Create issues a `git fetch origin <branch>`
+// before forking — so a new base branch created in case 3 reflects the
+// latest upstream commit, not a stale local remote-tracking ref.
+func TestCreate_Case3_FetchesOriginForkPoint(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	local, remote := initGitRepoWithRemote(t)
+	wtRoot := t.TempDir()
+
+	// Capture the SHA local sees for origin/main right now (pre-update).
+	staleOut, err := exec.Command(gitBin, "-C", local, "rev-parse", "refs/remotes/origin/main").Output()
+	if err != nil {
+		t.Fatalf("rev-parse origin/main: %v", err)
+	}
+	staleSHA := strings.TrimSpace(string(staleOut))
+
+	// Push a new commit to the remote's main without fetching locally.
+	f := filepath.Join(remote, "new.txt")
+	if err := os.WriteFile(f, []byte("upstream advanced"), 0o644); err != nil {
+		t.Fatalf("write upstream file: %v", err)
+	}
+	if out, err := exec.Command(gitBin, "-C", remote, "add", ".").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(gitBin, "-C", remote, "commit", "-m", "upstream commit").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+	freshOut, err := exec.Command(gitBin, "-C", remote, "rev-parse", "main").Output()
+	if err != nil {
+		t.Fatalf("rev-parse remote main: %v", err)
+	}
+	freshSHA := strings.TrimSpace(string(freshOut))
+	if freshSHA == staleSHA {
+		t.Fatalf("test setup: upstream did not advance")
+	}
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-c3fo', ?)`, local)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-c3fo0001-0001', 'proj-c3fo', 'case3 fetch origin', 'supervisor')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	if _, err := mgr.Create(local, "proj-c3fo", "task-c3fo0001-0001", "release-2026", dispatcher.CreateOpts{
+		BaseBranchForkPoint: "origin/main",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	gotOut, err := exec.Command(gitBin, "-C", local, "rev-parse", "release-2026").Output()
+	if err != nil {
+		t.Fatalf("rev-parse release-2026: %v", err)
+	}
+	if got := strings.TrimSpace(string(gotOut)); got != freshSHA {
+		t.Errorf("release-2026 forked from %q, want %q (fresh upstream)", got, freshSHA)
+	}
+}
+
+// TestCreate_Case3_FetchesOriginHeadFallback verifies that the origin/HEAD
+// fallback also fetches the upstream branch before forking, mirroring the
+// fork_point=origin/* path.
+func TestCreate_Case3_FetchesOriginHeadFallback(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	local, remote := initGitRepoWithRemote(t)
+	wtRoot := t.TempDir()
+
+	if out, err := exec.Command(gitBin, "-C", local, "remote", "set-head", "origin", "--auto").CombinedOutput(); err != nil {
+		t.Fatalf("remote set-head: %v\n%s", err, out)
+	}
+
+	// Advance upstream without fetching locally.
+	f := filepath.Join(remote, "new.txt")
+	if err := os.WriteFile(f, []byte("upstream advanced"), 0o644); err != nil {
+		t.Fatalf("write upstream file: %v", err)
+	}
+	exec.Command(gitBin, "-C", remote, "add", ".").Run()
+	if out, err := exec.Command(gitBin, "-C", remote, "commit", "-m", "upstream commit").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+	freshOut, err := exec.Command(gitBin, "-C", remote, "rev-parse", "main").Output()
+	if err != nil {
+		t.Fatalf("rev-parse remote main: %v", err)
+	}
+	freshSHA := strings.TrimSpace(string(freshOut))
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-c3fh', ?)`, local)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-c3fh0001-0001', 'proj-c3fh', 'case3 fetch origin/HEAD', 'supervisor')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	if _, err := mgr.Create(local, "proj-c3fh", "task-c3fh0001-0001", "release-2026", dispatcher.CreateOpts{}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	gotOut, err := exec.Command(gitBin, "-C", local, "rev-parse", "release-2026").Output()
+	if err != nil {
+		t.Fatalf("rev-parse release-2026: %v", err)
+	}
+	if got := strings.TrimSpace(string(gotOut)); got != freshSHA {
+		t.Errorf("release-2026 forked from %q, want %q (fresh upstream via origin/HEAD)", got, freshSHA)
+	}
+}
+
+// TestCreate_Case3_FetchFailureFallsBackToStaleRef verifies the case-2
+// parity contract for fetch failures: when fetch cannot reach origin but
+// the local remote-tracking ref still exists, Create proceeds using the
+// stale ref (with a warning log) rather than erroring out.
+func TestCreate_Case3_FetchFailureFallsBackToStaleRef(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	local, _ := initGitRepoWithRemote(t)
+	wtRoot := t.TempDir()
+
+	staleOut, err := exec.Command(gitBin, "-C", local, "rev-parse", "refs/remotes/origin/main").Output()
+	if err != nil {
+		t.Fatalf("rev-parse origin/main: %v", err)
+	}
+	staleSHA := strings.TrimSpace(string(staleOut))
+
+	// Point origin at a path that will fail to fetch.
+	if out, err := exec.Command(gitBin, "-C", local, "remote", "set-url", "origin", "/nonexistent/invalid/path").CombinedOutput(); err != nil {
+		t.Fatalf("remote set-url: %v\n%s", err, out)
+	}
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-c3ff', ?)`, local)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-c3ff0001-0001', 'proj-c3ff', 'case3 fetch failure', 'supervisor')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	if _, err := mgr.Create(local, "proj-c3ff", "task-c3ff0001-0001", "release-2026", dispatcher.CreateOpts{
+		BaseBranchForkPoint: "origin/main",
+	}); err != nil {
+		t.Fatalf("Create should fall back to stale origin/main on fetch failure, got: %v", err)
+	}
+
+	gotOut, err := exec.Command(gitBin, "-C", local, "rev-parse", "release-2026").Output()
+	if err != nil {
+		t.Fatalf("rev-parse release-2026: %v", err)
+	}
+	if got := strings.TrimSpace(string(gotOut)); got != staleSHA {
+		t.Errorf("release-2026 forked from %q, want %q (stale origin/main after failed fetch)", got, staleSHA)
+	}
+}
+
 // TestEnforceHeadOnBaseBranch_Match accepts the dispatch when HEAD matches.
 func TestEnforceHeadOnBaseBranch_Match(t *testing.T) {
 	repo := initGitRepo(t)
