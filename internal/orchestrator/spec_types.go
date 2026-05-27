@@ -420,7 +420,16 @@ type ProjectMeta struct {
 	// tasks in this project. It is resolved at task creation time (with
 	// ${TASK_REMOTE_ID} / ${current_branch} expansion) and persisted on
 	// each task row.
-	BaseBranch         string            `yaml:"base_branch,omitempty" json:"base_branch,omitempty"`
+	BaseBranch string `yaml:"base_branch,omitempty" json:"base_branch,omitempty"`
+	// ForkPoint is the git ref used as the start point when creating a
+	// base branch that does not yet exist (ClassifyBaseBranch case 3).
+	// Accepts any ref that `git rev-parse --verify` resolves (e.g. "main",
+	// "origin/main", a tag, or a commit SHA). When empty, the dispatcher
+	// falls back to "refs/remotes/origin/HEAD"; if that is also unset the
+	// case-3 worktree creation fails. The project root's working-tree HEAD
+	// is intentionally never consulted, since it can drift to an
+	// unexpected branch between task creation and dispatch.
+	ForkPoint          string            `yaml:"fork_point,omitempty" json:"fork_point,omitempty"`
 	HostCommands       HostCommands      `yaml:"host_commands" json:"host_commands"`
 	AdditionalBindings []BindMount       `yaml:"additional_bindings" json:"additional_bindings"`
 	Env                map[string]string `yaml:"env" json:"env"`

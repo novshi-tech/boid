@@ -1052,16 +1052,21 @@ func TestManager_DefaultBranchPrefix(t *testing.T) {
 	mgr.Remove(repo, "task-dflt1234-5678", true)
 }
 
-// TestCreate_NonexistentBaseBranch verifies the Phase 2-2 case-3 contract:
-// when base_branch does not exist either locally or on origin, Create
-// auto-creates it from the project HEAD instead of failing. The earlier
-// contract (return an error) has been intentionally relaxed; see
-// dispatcher.WorktreeManager.ensureBaseBranchExists / orchestrator.ClassifyBaseBranch
-// for the Phase 2-2 design.
+// TestCreate_NonexistentBaseBranch verifies the case-3 contract: when
+// base_branch does not exist either locally or on origin, Create auto-creates
+// it from a stable fork start (here, origin/HEAD set via remote set-head).
+// The earlier contract (forked from the project root's working-tree HEAD) has
+// been intentionally retired; see ensureBaseBranchExists.
 func TestCreate_NonexistentBaseBranch(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	local, _ := initGitRepoWithRemote(t)
 	wtRoot := t.TempDir()
+
+	// Set origin/HEAD so case 3 has a fork start to fall back on. A fresh
+	// clone normally does this automatically; init+fetch does not.
+	if out, err := exec.Command(gitBin, "-C", local, "remote", "set-head", "origin", "--auto").CombinedOutput(); err != nil {
+		t.Fatalf("remote set-head: %v\n%s", err, out)
+	}
 
 	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-neb1', ?)`, local)
 	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-neb10001-0001', 'proj-neb1', 'nonexistent base', 'dev')`)
@@ -1121,25 +1126,33 @@ func TestCreate_StaleFetchFailure(t *testing.T) {
 	}
 }
 
-// ---- Phase 2-2: case 3 base branch auto-create + case 1 HEAD guard ----
+// ---- case 3 base branch auto-create + case 1 HEAD guard ----
 
-// TestCreate_Case3_CreatesBaseBranchFromHead verifies that Create succeeds
-// when the requested base branch is unknown to both local and origin. The
-// expected behaviour is "create it from HEAD before allocating the worktree",
-// matching the dispatcher-side mitigation for ClassifyBaseBranch's Case3NotFound.
-func TestCreate_Case3_CreatesBaseBranchFromHead(t *testing.T) {
+// TestCreate_Case3_UsesForkPointFromOpts verifies that when CreateOpts
+// carries a BaseBranchForkPoint (from project.yaml fork_point), case 3
+// creates the new base branch starting from that ref — not from the project
+// root's working-tree HEAD.
+func TestCreate_Case3_UsesForkPointFromOpts(t *testing.T) {
 	db := testutil.NewTestDB(t)
-	repo := initGitRepo(t) // HEAD on main, no other branches
+	repo := initGitRepoWithFeatureBranch(t) // main + feature; HEAD on main
 	wtRoot := t.TempDir()
 
-	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-p22-1', ?)`, repo)
-	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-p2200001-0001', 'proj-p22-1', 'case3', 'supervisor')`)
+	// Capture the SHA at the tip of "feature" so we can confirm the new base
+	// branch ends up there (and not at main, where HEAD sits).
+	out, err := exec.Command(gitBin, "-C", repo, "rev-parse", "feature").Output()
+	if err != nil {
+		t.Fatalf("rev-parse feature: %v", err)
+	}
+	wantSHA := strings.TrimSpace(string(out))
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-c3fp', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-c3fp0001-0001', 'proj-c3fp', 'case3 fork_point', 'supervisor')`)
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	// "release-2026" exists neither locally nor on origin. Create must
-	// auto-create it from HEAD and allocate a worktree based on it.
-	w, err := mgr.Create(repo, "proj-p22-1", "task-p2200001-0001", "release-2026", dispatcher.CreateOpts{})
+	w, err := mgr.Create(repo, "proj-c3fp", "task-c3fp0001-0001", "release-2026", dispatcher.CreateOpts{
+		BaseBranchForkPoint: "feature",
+	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -1147,45 +1160,141 @@ func TestCreate_Case3_CreatesBaseBranchFromHead(t *testing.T) {
 		t.Errorf("BaseBranch = %q, want %q", w.BaseBranch, "release-2026")
 	}
 
-	// The newly created base branch must exist locally on the project repo.
-	out, err := exec.Command(gitBin, "-C", repo, "branch", "--list", "release-2026").CombinedOutput()
-	if err != nil {
-		t.Fatalf("git branch --list: %v\n%s", err, out)
+	// The new base branch must point at "feature" (the fork_point), not main.
+	gotOut, gotErr := exec.Command(gitBin, "-C", repo, "rev-parse", "release-2026").Output()
+	if gotErr != nil {
+		t.Fatalf("rev-parse release-2026: %v", gotErr)
 	}
-	if len(strings.TrimSpace(string(out))) == 0 {
-		t.Errorf("release-2026 should be created on the project repo as a local branch")
+	if got := strings.TrimSpace(string(gotOut)); got != wantSHA {
+		t.Errorf("release-2026 forked from %q, want %q (feature tip)", got, wantSHA)
 	}
 }
 
-// TestCreate_Case3_DetachedHead_Errors verifies the detached-HEAD guard:
-// creating a base branch from a detached commit is refused because the
-// resulting branch would not correspond to mainline history.
-func TestCreate_Case3_DetachedHead_Errors(t *testing.T) {
+// TestCreate_Case3_FallsBackToOriginHead verifies that when no fork_point
+// is configured, case 3 falls back to refs/remotes/origin/HEAD.
+func TestCreate_Case3_FallsBackToOriginHead(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	local, _ := initGitRepoWithRemote(t)
+	wtRoot := t.TempDir()
+
+	// Set origin/HEAD (a fresh clone would do this automatically).
+	if out, err := exec.Command(gitBin, "-C", local, "remote", "set-head", "origin", "--auto").CombinedOutput(); err != nil {
+		t.Fatalf("remote set-head: %v\n%s", err, out)
+	}
+
+	originHEADSHA, err := exec.Command(gitBin, "-C", local, "rev-parse", "refs/remotes/origin/HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse origin/HEAD: %v", err)
+	}
+	wantSHA := strings.TrimSpace(string(originHEADSHA))
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-c3oh', ?)`, local)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-c3oh0001-0001', 'proj-c3oh', 'case3 origin/HEAD', 'supervisor')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	_, err = mgr.Create(local, "proj-c3oh", "task-c3oh0001-0001", "release-2026", dispatcher.CreateOpts{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	gotOut, gotErr := exec.Command(gitBin, "-C", local, "rev-parse", "release-2026").Output()
+	if gotErr != nil {
+		t.Fatalf("rev-parse release-2026: %v", gotErr)
+	}
+	if got := strings.TrimSpace(string(gotOut)); got != wantSHA {
+		t.Errorf("release-2026 forked from %q, want %q (origin/HEAD)", got, wantSHA)
+	}
+}
+
+// TestCreate_Case3_ErrorsWhenNoForkPointAndNoOriginHead verifies that case 3
+// refuses to invent a fork start: with neither project.yaml fork_point
+// configured nor refs/remotes/origin/HEAD set, Create returns an error
+// rather than silently using the project root's working-tree HEAD.
+func TestCreate_Case3_ErrorsWhenNoForkPointAndNoOriginHead(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t) // no remote, no origin/HEAD
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-c3no', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-c3no0001-0001', 'proj-c3no', 'case3 no fork start', 'supervisor')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	_, err := mgr.Create(repo, "proj-c3no", "task-c3no0001-0001", "release-2026", dispatcher.CreateOpts{})
+	if err == nil {
+		t.Fatal("expected error when neither fork_point nor origin/HEAD is configured, got nil")
+	}
+	if !strings.Contains(err.Error(), "fork_point") {
+		t.Errorf("error %q should mention fork_point as the remedy", err.Error())
+	}
+}
+
+// TestCreate_Case3_IgnoresProjectRootHead verifies that case 3 never derives
+// the new base branch from the project root's working-tree HEAD, even when
+// HEAD has been moved to an unrelated feature branch. The fix exists
+// precisely because the old "fork from HEAD" path produced branches cut from
+// whatever the user happened to have checked out.
+func TestCreate_Case3_IgnoresProjectRootHead(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepoWithFeatureBranch(t) // main + feature
+	wtRoot := t.TempDir()
+
+	// Park the project root on "feature" — historically this would cause
+	// case 3 to fork the new base from feature instead of main.
+	if out, err := exec.Command(gitBin, "-C", repo, "checkout", "feature").CombinedOutput(); err != nil {
+		t.Fatalf("checkout feature: %v\n%s", err, out)
+	}
+
+	// fork_point=main → new base must be at main's tip, not feature's.
+	mainSHA, err := exec.Command(gitBin, "-C", repo, "rev-parse", "main").Output()
+	if err != nil {
+		t.Fatalf("rev-parse main: %v", err)
+	}
+	wantSHA := strings.TrimSpace(string(mainSHA))
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-c3ih', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-c3ih0001-0001', 'proj-c3ih', 'case3 ignore HEAD', 'supervisor')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	_, err = mgr.Create(repo, "proj-c3ih", "task-c3ih0001-0001", "release-2026", dispatcher.CreateOpts{
+		BaseBranchForkPoint: "main",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	gotOut, gotErr := exec.Command(gitBin, "-C", repo, "rev-parse", "release-2026").Output()
+	if gotErr != nil {
+		t.Fatalf("rev-parse release-2026: %v", gotErr)
+	}
+	if got := strings.TrimSpace(string(gotOut)); got != wantSHA {
+		t.Errorf("release-2026 forked from %q, want %q (main, despite HEAD being on feature)", got, wantSHA)
+	}
+}
+
+// TestCreate_Case3_ErrorsOnInvalidForkPoint verifies that an unresolvable
+// fork_point produces a clear error rather than silently falling back to
+// origin/HEAD or HEAD.
+func TestCreate_Case3_ErrorsOnInvalidForkPoint(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	repo := initGitRepo(t)
 	wtRoot := t.TempDir()
 
-	// Move HEAD to a detached state on the current tip.
-	out, err := exec.Command(gitBin, "-C", repo, "rev-parse", "HEAD").Output()
-	if err != nil {
-		t.Fatalf("rev-parse HEAD: %v", err)
-	}
-	hash := strings.TrimSpace(string(out))
-	if out, err := exec.Command(gitBin, "-C", repo, "checkout", "--detach", hash).CombinedOutput(); err != nil {
-		t.Fatalf("checkout --detach: %v\n%s", err, out)
-	}
-
-	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-p22-2', ?)`, repo)
-	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-p2200002-0001', 'proj-p22-2', 'case3 detached', 'supervisor')`)
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-c3if', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-c3if0001-0001', 'proj-c3if', 'case3 invalid fork_point', 'supervisor')`)
 
 	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
 
-	_, err = mgr.Create(repo, "proj-p22-2", "task-p2200002-0001", "release-2026", dispatcher.CreateOpts{})
+	_, err := mgr.Create(repo, "proj-c3if", "task-c3if0001-0001", "release-2026", dispatcher.CreateOpts{
+		BaseBranchForkPoint: "no-such-ref-anywhere",
+	})
 	if err == nil {
-		t.Fatal("expected Create to fail with detached HEAD, got nil")
+		t.Fatal("expected error for unresolvable fork_point, got nil")
 	}
-	if !strings.Contains(err.Error(), "detached HEAD") {
-		t.Errorf("error message %q should mention detached HEAD", err.Error())
+	if !strings.Contains(err.Error(), "fork_point") {
+		t.Errorf("error %q should mention fork_point", err.Error())
 	}
 }
 

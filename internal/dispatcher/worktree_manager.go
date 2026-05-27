@@ -53,22 +53,32 @@ func (m *WorktreeManager) resolveBaseBranch(projectDir, baseBranch string) (stri
 	return "", false, fmt.Errorf("base branch %q not found locally or on origin", baseBranch)
 }
 
-// ensureBaseBranchExists is the Phase 2-2 case 3 mitigation: if the requested
-// base branch does not exist locally or on origin, create a local branch with
-// that name pointed at the current project HEAD.
+// ensureBaseBranchExists is the case-3 mitigation: if the requested base
+// branch does not exist locally or on origin, create a local branch with
+// that name from a stable fork point.
+//
+// The fork point is resolved in this order:
+//  1. forkPoint argument (from ProjectMeta.ForkPoint), if non-empty and
+//     `git rev-parse --verify` recognises it
+//  2. refs/remotes/origin/HEAD, if `git symbolic-ref` can resolve it
+//     (i.e. `git remote set-head origin --auto` has been run on the clone)
+//
+// The project root's working-tree HEAD is intentionally never used: it can
+// drift to an unexpected branch between task creation and dispatch, which
+// historically produced new branches forked from the wrong commit.
 //
 // No-op when:
 //   - baseBranch carries an explicit "origin/" prefix (callers asking for a
 //     remote-tracking ref accept that it must exist; auto-creating a local
-//     branch from HEAD would silently subvert that intent)
+//     branch would silently subvert that intent)
 //   - the local branch already exists
 //   - origin/<baseBranch> exists
 //
 // Returns an error when:
 //   - baseBranch is empty (P1: must be resolved by service layer)
-//   - HEAD is detached (no branch / commit to derive from in a useful way)
+//   - no usable fork point can be resolved
 //   - the git branch command itself fails
-func (m *WorktreeManager) ensureBaseBranchExists(projectDir, baseBranch string) error {
+func (m *WorktreeManager) ensureBaseBranchExists(projectDir, baseBranch, forkPoint string) error {
 	if baseBranch == "" {
 		return fmt.Errorf("ensureBaseBranchExists: baseBranch must be non-empty")
 	}
@@ -85,18 +95,39 @@ func (m *WorktreeManager) ensureBaseBranchExists(projectDir, baseBranch string) 
 	if exec.Command(m.gitBin(), "-C", projectDir, "rev-parse", "--verify", "--quiet", "origin/"+base).Run() == nil {
 		return nil
 	}
-	// Case 3: derive the branch from HEAD. Reject detached HEAD up-front
-	// because creating a branch from a detached commit produces a dangling
-	// reference unrelated to the project's mainline history.
-	if err := exec.Command(m.gitBin(), "-C", projectDir, "symbolic-ref", "--quiet", "HEAD").Run(); err != nil {
-		return fmt.Errorf("cannot create base branch %q from detached HEAD in %s", base, projectDir)
+	// Case 3: derive the branch from a stable fork point. The project root's
+	// working-tree HEAD is intentionally not consulted.
+	start, source, err := m.resolveCase3ForkStart(projectDir, forkPoint)
+	if err != nil {
+		return fmt.Errorf("cannot create base branch %q in %s: %w", base, projectDir, err)
 	}
-	cmd := exec.Command(m.gitBin(), "-C", projectDir, "branch", base, "HEAD")
+	cmd := exec.Command(m.gitBin(), "-C", projectDir, "branch", base, start)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git branch %s HEAD: %w\n%s", base, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("git branch %s %s: %w\n%s", base, start, err, strings.TrimSpace(string(out)))
 	}
-	slog.Info("base branch created from HEAD (case 3)", "project_dir", projectDir, "base_branch", base)
+	slog.Info("base branch created (case 3)",
+		"project_dir", projectDir, "base_branch", base, "fork_start", start, "fork_source", source)
 	return nil
+}
+
+// resolveCase3ForkStart picks the start point for a case-3 base-branch
+// creation. forkPoint (from project.yaml) takes precedence; otherwise
+// origin/HEAD is consulted. Returns (ref, source, error) where source is a
+// short label suitable for logging.
+func (m *WorktreeManager) resolveCase3ForkStart(projectDir, forkPoint string) (string, string, error) {
+	if forkPoint != "" {
+		if err := exec.Command(m.gitBin(), "-C", projectDir, "rev-parse", "--verify", "--quiet", forkPoint).Run(); err != nil {
+			return "", "", fmt.Errorf("fork_point %q does not resolve in %s (configure project.yaml fork_point or fetch the ref)", forkPoint, projectDir)
+		}
+		return forkPoint, "project.yaml fork_point", nil
+	}
+	// Fall back to origin/HEAD. symbolic-ref returns the resolved ref name;
+	// we only need it to succeed, then pass refs/remotes/origin/HEAD itself
+	// to git branch (which dereferences it).
+	if err := exec.Command(m.gitBin(), "-C", projectDir, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD").Run(); err != nil {
+		return "", "", fmt.Errorf("no fork point available: project.yaml fork_point is unset and refs/remotes/origin/HEAD is not configured (run `git remote set-head origin --auto` in %s or set fork_point in project.yaml)", projectDir)
+	}
+	return "refs/remotes/origin/HEAD", "origin/HEAD", nil
 }
 
 // EnforceHeadOnBaseBranch is the Phase 2-2 case 1 HEAD guard. Supervisors
@@ -210,6 +241,13 @@ type CreateOpts struct {
 	// branch (CheckoutBranch == ""). Defaults to baseBranch when empty.
 	// Reserved for P3 (child fork from parent HEAD branch); unused in P2.
 	ForkPoint string
+
+	// BaseBranchForkPoint is the start point used when the requested
+	// baseBranch does not exist yet (ClassifyBaseBranch case 3) and must
+	// be created locally. Sourced from ProjectMeta.ForkPoint via
+	// Visibility.ForkPoint. Empty falls back to refs/remotes/origin/HEAD;
+	// if that is also unset, Create returns an error.
+	BaseBranchForkPoint string
 }
 
 func (m *WorktreeManager) Create(projectDir, projectID, taskID, baseBranch string, opts CreateOpts) (*Worktree, error) {
@@ -231,12 +269,13 @@ func (m *WorktreeManager) Create(projectDir, projectID, taskID, baseBranch strin
 		return nil, fmt.Errorf("mkdir worktree parent: %w", err)
 	}
 
-	// Phase 2-2 case 3: if baseBranch is unknown to both local and origin we
-	// create it from the project HEAD before falling through to the normal
-	// resolveBaseBranch path. Detached HEAD is rejected by EnsureBaseBranch.
-	// Worktree creation for case 1 / case 2 is unaffected (the function
-	// returns early with no-op when the branch already exists).
-	if err := m.ensureBaseBranchExists(projectDir, baseBranch); err != nil {
+	// Case 3: if baseBranch is unknown to both local and origin we create it
+	// from a stable fork point (project.yaml fork_point or origin/HEAD —
+	// never the project root's working-tree HEAD) before falling through
+	// to the normal resolveBaseBranch path. Worktree creation for case 1 /
+	// case 2 is unaffected (the function returns early with no-op when the
+	// branch already exists).
+	if err := m.ensureBaseBranchExists(projectDir, baseBranch, opts.BaseBranchForkPoint); err != nil {
 		return nil, err
 	}
 

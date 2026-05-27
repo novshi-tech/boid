@@ -69,6 +69,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 			AdditionalBindings: behavior.AdditionalBindings,
 			Writable:           !IsReadonly(task),
 			KitRoots:           behavior.KitRoots,
+			ForkPoint:          meta.ForkPoint,
 		},
 		BuiltinPolicies: DefaultBuiltinPolicies(
 			RoleHook,
