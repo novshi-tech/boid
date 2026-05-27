@@ -208,6 +208,24 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Locks:       projectLocks,
 	}
 	workflow.InitDispatch(context.Background())
+
+	// Auto-reopen tasks that were interrupted by the previous daemon shutdown.
+	// These tasks were aborted with code=daemon_shutdown either by
+	// abortOnDispatchError (hook in flight when SIGTERM fired) or by
+	// MarkStaleExecutingTasksAborted above (executing-state remnants from a
+	// crash that bypassed the dispatch loop). Both paths set the same code
+	// so a single startup query covers them.
+	if shutdownIDs, err := dispatcher.FindDaemonShutdownAbortedTasks(srv.db); err != nil {
+		slog.Warn("failed to query daemon_shutdown aborted tasks", "error", err)
+	} else {
+		for _, id := range shutdownIDs {
+			if _, err := workflow.ApplyAction(context.Background(), id, api.ApplyActionRequest{Type: "reopen"}); err != nil {
+				slog.Warn("auto-reopen on startup failed", "task_id", id, "error", err)
+				continue
+			}
+			slog.Info("auto-reopened task interrupted by daemon shutdown", "task_id", id)
+		}
+	}
 	projectSvc := &api.ProjectAppService{
 		Projects: projectRepo,
 		Meta:     store,
