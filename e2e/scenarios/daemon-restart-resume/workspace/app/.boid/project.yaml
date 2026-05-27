@@ -1,0 +1,6 @@
+id: daemon-restart-resume
+name: Daemon Restart Resume
+task_behaviors:
+  supervisor:
+    kits:
+      - github.com/novshi-tech/boid-kits/daemon-restart-resume
