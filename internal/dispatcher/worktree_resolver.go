@@ -107,6 +107,7 @@ func (r *Runner) allocateWorktree(spec *orchestrator.JobSpec) (string, error) {
 	}
 
 	var createOpts CreateOpts
+	createOpts.BaseBranchForkPoint = spec.Visibility.ForkPoint
 	if task.ParentID == "" {
 		// Root task: occupy the base_branch directly rather than creating a
 		// new boid/<id8> branch. This is P2 of the dynamic base-branch overhaul.

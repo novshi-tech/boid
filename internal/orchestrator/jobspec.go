@@ -105,6 +105,12 @@ type Visibility struct {
 	// host paths inside the sandbox. This lets scripts source sibling helpers
 	// via relative paths (e.g. ${SCRIPT_DIR}/../scripts/lib.sh).
 	KitRoots []string
+
+	// ForkPoint is ProjectMeta.ForkPoint passed through to the dispatcher.
+	// Used as the start point when a worktree's base_branch does not exist
+	// (ClassifyBaseBranch case 3). Empty means dispatcher falls back to
+	// refs/remotes/origin/HEAD.
+	ForkPoint string
 }
 
 // TaskSnapshot is the business metadata that materializes at
