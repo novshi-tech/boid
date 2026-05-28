@@ -126,7 +126,22 @@ func (r *Runner) allocateWorktree(spec *orchestrator.JobSpec) (string, error) {
 		if parent == nil {
 			return "", fmt.Errorf("parent task %q not found for fork point", task.ParentID)
 		}
-		createOpts.ForkPoint = orchestrator.ComputeForkPoint(parent)
+		// Cross-project guard: ComputeForkPoint(parent) returns a branch name
+		// (parent.BaseBranch or "boid/<parent_id8>") that only resolves in the
+		// parent's repository. When the child lives in a different project (e.g.
+		// a meta-supervisor in one repo spawning a per-project supervisor in
+		// another), that name is meaningless here and resolveForkPoint would
+		// silently fork from an unrelated same-named branch (e.g. the child
+		// repo's own "main") instead of the child's declared base_branch. Leave
+		// ForkPoint empty so Create falls back to the resolved base_branch.
+		if parent.ProjectID == task.ProjectID {
+			createOpts.ForkPoint = orchestrator.ComputeForkPoint(parent)
+		} else {
+			slog.Info("cross-project child worktree forks from own base_branch",
+				"task_id", task.ID, "task_project", task.ProjectID,
+				"parent_id", parent.ID, "parent_project", parent.ProjectID,
+				"base_branch", task.BaseBranch)
+		}
 	}
 	w, err := r.Worktrees.Create(
 		spec.Visibility.ProjectDir,

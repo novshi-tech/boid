@@ -305,3 +305,105 @@ func TestAllocateWorktree_RootTask_UseCheckoutBranch(t *testing.T) {
 
 	mgr.Remove(repo, "rootrootabcd1234", false)
 }
+
+// TestAllocateWorktree_CrossProjectChild_ForksFromOwnBaseBranch is the BGO-195
+// regression: a worktree-less meta-supervisor in project A (base_branch "main")
+// spawns a per-project supervisor child in project B with its own base_branch
+// "feature/BGO-195". ComputeForkPoint(parent) would return the parent's
+// "main", which (resolved in project B) collides with B's unrelated "main"
+// branch and silently forks the child there instead of from feature/BGO-195.
+// The cross-project guard must make the child fork from its own base_branch.
+func TestAllocateWorktree_CrossProjectChild_ForksFromOwnBaseBranch(t *testing.T) {
+	conn := newTestDBForResolver(t)
+	repo := initGitRepoResolver(t) // HEAD on "main", one initial commit
+	wtRoot := t.TempDir()
+
+	// Create feature/BGO-195 with a distinct commit, then advance main so the
+	// two branch tips differ. The child must land on feature/BGO-195's tip.
+	if out, err := exec.Command("/usr/bin/git", "-C", repo, "checkout", "-b", "feature/BGO-195").CombinedOutput(); err != nil {
+		t.Fatalf("create feature/BGO-195: %v\n%s", err, out)
+	}
+	os.WriteFile(filepath.Join(repo, "feature_work.txt"), []byte("feature work"), 0o644)
+	exec.Command("/usr/bin/git", "-C", repo, "add", ".").Run()
+	if out, err := exec.Command("/usr/bin/git", "-C", repo, "commit", "-m", "feature commit").CombinedOutput(); err != nil {
+		t.Fatalf("feature commit: %v\n%s", err, out)
+	}
+	featureTip, err := exec.Command("/usr/bin/git", "-C", repo, "rev-parse", "feature/BGO-195").Output()
+	if err != nil {
+		t.Fatalf("rev-parse feature/BGO-195: %v", err)
+	}
+	// Advance "main" so its tip diverges from feature/BGO-195.
+	exec.Command("/usr/bin/git", "-C", repo, "checkout", "main").Run()
+	os.WriteFile(filepath.Join(repo, "main_work.txt"), []byte("main work"), 0o644)
+	exec.Command("/usr/bin/git", "-C", repo, "add", ".").Run()
+	if out, err := exec.Command("/usr/bin/git", "-C", repo, "commit", "-m", "main commit").CombinedOutput(); err != nil {
+		t.Fatalf("main commit: %v\n%s", err, out)
+	}
+	mainTip, err := exec.Command("/usr/bin/git", "-C", repo, "rev-parse", "main").Output()
+	if err != nil {
+		t.Fatalf("rev-parse main: %v", err)
+	}
+
+	// Parent: worktree-less supervisor in a DIFFERENT project, base_branch "main".
+	parentTask := &orchestrator.Task{
+		ID:         "metaparent012345",
+		ProjectID:  "proj-meta",
+		BaseBranch: "main",
+		Worktree:   false,
+		// ParentID == "" → root meta-supervisor
+	}
+	// Child: per-project supervisor in project B, own base_branch feature/BGO-195.
+	childTask := &orchestrator.Task{
+		ID:         "childbgo19500001",
+		ProjectID:  "proj-child",
+		ParentID:   "metaparent012345",
+		BaseBranch: "feature/BGO-195",
+		Worktree:   true,
+	}
+
+	conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-child', ?)`, repo)
+	conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES (?, 'proj-meta', 'meta', 'supervisor')`,
+		"metaparent012345")
+	conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior, parent_id) VALUES (?, 'proj-child', 'child', 'supervisor', ?)`,
+		"childbgo19500001", "metaparent012345")
+
+	mgr := &WorktreeManager{RootDir: wtRoot, DB: conn, GitBin: "/usr/bin/git"}
+	r := &Runner{
+		DB:        conn,
+		Worktrees: mgr,
+		TaskLookup: &fakeTaskLookupResolver{tasks: map[string]*orchestrator.Task{
+			"metaparent012345": parentTask,
+			"childbgo19500001": childTask,
+		}},
+	}
+
+	spec := &orchestrator.JobSpec{
+		TaskID:    "childbgo19500001",
+		ProjectID: "proj-child",
+		Visibility: orchestrator.Visibility{
+			ProjectDir:  repo,
+			UseWorktree: true,
+		},
+	}
+
+	wtPath, err := r.allocateWorktree(spec)
+	if err != nil {
+		t.Fatalf("allocateWorktree: %v", err)
+	}
+
+	wtTip, err := exec.Command("/usr/bin/git", "-C", wtPath, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD in child worktree: %v", err)
+	}
+	got := strings.TrimSpace(string(wtTip))
+	if got != strings.TrimSpace(string(featureTip)) {
+		t.Errorf("child worktree HEAD = %s, want %s (feature/BGO-195 tip)",
+			got, strings.TrimSpace(string(featureTip)))
+	}
+	if got == strings.TrimSpace(string(mainTip)) {
+		t.Errorf("child worktree forked from main (%s) — cross-project guard failed",
+			strings.TrimSpace(string(mainTip)))
+	}
+
+	mgr.Remove(repo, "childbgo19500001", true)
+}
