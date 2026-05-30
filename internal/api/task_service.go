@@ -261,7 +261,6 @@ func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orches
 		Behavior:    source.Behavior,
 		RemoteID:    source.RemoteID,
 		Traits:      source.Traits,
-		Ref:         source.Ref,
 		AutoStart:   autoStart,
 	}
 	// Carry the source's instructions (e.g. a per-project release-policy override)
@@ -270,6 +269,15 @@ func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orches
 	// without it, so a duplicate that dropped remote_id failed outright. Leave
 	// Instructions unset when the source has none, so CreateTask falls back to the
 	// behavior's default_instruction.
+	//
+	// Ref is deliberately NOT copied. It is a within-parent identity key guarded by
+	// the partial unique index idx_tasks_ref_parent (ref, parent_id) WHERE ref != ''.
+	// Copying a non-empty source ref into a sibling with the same parent_id collides
+	// on that index, so duplicating any task that carries a ref (e.g. a re-duplicated
+	// supervisor) failed outright. A duplicate is a brand-new task and must get its
+	// own ref scope: CreateTask leaves it empty for a root task or auto-generates a
+	// fresh unique ref for a child. Multiple tasks per remote_id are expected
+	// (one issue can spawn several tasks), so nothing here should be unique-keyed.
 	if len(source.Instructions) > 0 {
 		raw, err := json.Marshal(source.Instructions)
 		if err != nil {
