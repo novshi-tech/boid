@@ -2,13 +2,14 @@ package sandbox
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
+	"time"
 )
 
 type GitBinding struct {
@@ -29,13 +30,53 @@ type GitRemote struct {
 	PushURL  string
 }
 
-const realGitPath = "/usr/bin/git"
+var realGitPath = "/usr/bin/git"
 
 func realGitBinary() string {
 	return filepath.Clean(realGitPath)
 }
 
-var gitRepoLocks sync.Map
+// Host-side git execution timeouts. These bound an otherwise-unbounded
+// cmd.Run(): without them a hung git (e.g. a network op whose connect stalls)
+// blocks forever, the agent's tool call eventually times out, and it sees an
+// empty result with no indication of the cause. Vars (not consts) so tests can
+// shorten them.
+var (
+	// gitDirectTimeout bounds local ops (rev-parse, status, commit, merge, …).
+	gitDirectTimeout = 120 * time.Second
+	// gitNetworkTimeout bounds fetch/push, which legitimately take longer.
+	gitNetworkTimeout = 300 * time.Second
+	// gitWaitDelay force-closes the output pipes shortly after git is killed,
+	// so cmd.Run() returns even when git left children (network helpers, the
+	// shell in tests) holding the pipe open. Without it Wait() blocks on those
+	// grandchildren and the deadline is defeated.
+	gitWaitDelay = 2 * time.Second
+)
+
+// runGitCommand runs cmd, enforcing ctx's deadline (exec.CommandContext kills
+// the process when ctx fires). A deadline hit is surfaced as a non-zero exit
+// with an explicit message rather than an empty/ambiguous result.
+func runGitCommand(ctx context.Context, cmd *exec.Cmd, stdout, stderr *bytes.Buffer) *ExecResponse {
+	cmd.WaitDelay = gitWaitDelay
+	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		msg := strings.TrimRight(stderr.String(), "\n")
+		if msg != "" {
+			msg += "\n"
+		}
+		msg += "boid: git timed out and was killed"
+		return &ExecResponse{ExitCode: 1, Stdout: stdout.String(), Stderr: msg}
+	}
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return &ExecResponse{ExitCode: 1, Stdout: stdout.String(), Stderr: err.Error()}
+		}
+	}
+	return &ExecResponse{ExitCode: exitCode, Stdout: stdout.String(), Stderr: stderr.String()}
+}
 
 func captureGitBinding(projectDir, worktreeDir string) (*GitBinding, error) {
 	worktreeRoot := worktreeDir
@@ -197,27 +238,17 @@ func validateGitBuiltinCwd(cwd string, entry *tokenEntry) error {
 }
 
 func execDirectGit(cwd string, args []string) *ExecResponse {
-	cmd := exec.Command(realGitBinary(), args...)
+	ctx, cancel := context.WithTimeout(context.Background(), gitDirectTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, realGitBinary(), args...)
 	cmd.Dir = cwd
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
-	exitCode := 0
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
-		}
-	}
-	return &ExecResponse{
-		ExitCode: exitCode,
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
-	}
+	return runGitCommand(ctx, cmd, &stdout, &stderr)
 }
 
 func execGitBuiltin(req *GitRequest, binding *GitBinding) *ExecResponse {
@@ -225,10 +256,11 @@ func execGitBuiltin(req *GitRequest, binding *GitBinding) *ExecResponse {
 		return &ExecResponse{ExitCode: 1, Stderr: "missing git request"}
 	}
 
-	lock := gitRepoLock(binding.WorktreeRoot)
-	lock.Lock()
-	defer lock.Unlock()
-
+	// No broker-side lock here. git's own ref/index locking already makes
+	// concurrent operations on the same worktree safe — they fail fast with a
+	// clear error, they do not corrupt. A mutex held across the git run added
+	// nothing git wasn't already doing, while turning a single hung git into a
+	// permanent deadlock of every later op on the worktree. We rely on git.
 	remoteName, remote, err := resolveGitRemote(req, binding)
 	if err != nil {
 		return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
@@ -239,7 +271,10 @@ func execGitBuiltin(req *GitRequest, binding *GitBinding) *ExecResponse {
 		return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
 	}
 
-	cmd := exec.Command(realGitBinary(), args...)
+	ctx, cancel := context.WithTimeout(context.Background(), gitNetworkTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, realGitBinary(), args...)
 	cmd.Dir = binding.WorktreeRoot
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ATTR_NOSYSTEM=1")
 
@@ -247,32 +282,20 @@ func execGitBuiltin(req *GitRequest, binding *GitBinding) *ExecResponse {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err = cmd.Run()
-	exitCode := 0
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
-		}
-	}
+	resp := runGitCommand(ctx, cmd, &stdout, &stderr)
 
 	if req.Op == GitOpPush {
 		slog.Info("git builtin push completed",
 			"worktree_root", binding.WorktreeRoot,
 			"remote", remoteName,
 			"refspecs", req.Refspecs,
-			"exit_code", exitCode,
+			"exit_code", resp.ExitCode,
 			"stdout", strings.TrimSpace(stdout.String()),
 			"stderr", strings.TrimSpace(stderr.String()),
 		)
 	}
 
-	return &ExecResponse{
-		ExitCode: exitCode,
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
-	}
+	return resp
 }
 
 func resolveGitRemote(req *GitRequest, binding *GitBinding) (string, GitRemote, error) {
@@ -426,10 +449,6 @@ func resolveGitPushRefspecs(req *GitRequest, binding *GitBinding, remoteName str
 	return []string{"HEAD:" + targetRef}, nil
 }
 
-func gitRepoLock(root string) *sync.Mutex {
-	lock, _ := gitRepoLocks.LoadOrStore(root, &sync.Mutex{})
-	return lock.(*sync.Mutex)
-}
 
 func logGitBindingSnapshot(ctx TokenContext, binding *GitBinding, err error) {
 	if err != nil {
