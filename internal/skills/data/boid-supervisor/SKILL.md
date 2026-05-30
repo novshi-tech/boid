@@ -108,25 +108,56 @@ Rules:
 
 ## Monitoring Children
 
-Poll each child until terminal (`done` / `aborted`):
+> **Critical — do not poll in the foreground.** The agent harness **blocks
+> foreground `sleep`**: a `while true; …; sleep N; done` loop run as a Bash tool
+> call returns `<tool_use_error>Blocked: sleep …` and never executes. Polling by
+> hand across turns (firing `boid task show` repeatedly) collides with the
+> harness's tool-call scheduler and yields `<tool_use_error>Cancelled: parallel
+> tool call …`. **Empty / cancelled / blocked tool results are transient harness
+> artifacts — never read them as a sandbox failure or as evidence a child is
+> stuck.** The correct way to wait is a single background watcher: arm it, then
+> stop generating.
+
+Arm one **Monitor** per child. The watch script polls the child's status and
+emits one line **on every status change** — so you wake for `awaiting` mid-flight
+as well as for the terminal `done` / `aborted` — and exits when the child is
+terminal:
 
 ```bash
+# Monitor tool — command:
+CHILD="<child-id>"
+prev=""
 while true; do
-  case "$(boid task show "$id" --field status)" in
-    done|aborted) break ;;
-    awaiting)     handle_awaiting "$id" ;;
-  esac
-  sleep 60
+  st=$(boid task show "$CHILD" --field status 2>/dev/null || echo "")
+  if [ -n "$st" ] && [ "$st" != "$prev" ]; then
+    echo "child $CHILD -> $st"        # one line per change → one notification
+    prev="$st"
+  fi
+  case "$st" in done|aborted) exit 0 ;; esac  # terminal → end the watch
+  sleep 30                                      # sleep is fine *inside* Monitor
 done
 ```
 
-The status itself carries the intent — there is no longer a textual prefix to parse:
+Give the Monitor a `description` like `child <short-id> status changes` and a
+`timeout_ms` matched to scale (default 300000; up to 3600000 for long builds), or
+`persistent: true` for very long children. `sleep` **inside** the Monitor script
+is fine — the script runs in the background; only a *foreground* `sleep` is
+blocked. After arming, **stop generating**; you are notified on each event.
 
-- `done` — child called `notify --done` (success self-report). See [Handling Done](#handling-done).
-- `aborted` — child called `notify --fail` or `action send --type abort`. See [Handling Aborted](#handling-aborted).
-- `awaiting` — child called `notify --ask` (mid-flight question). See [Handling Awaiting](#handling-awaiting).
+On each notification, branch on the reported status:
 
-Adjust the `sleep` interval to the implementation scale (30s for small tasks, 2–5 min for larger builds).
+- `awaiting` — child called `notify --ask` (mid-flight question). Handle it (see
+  [Handling Awaiting](#handling-awaiting)), then **keep waiting**: `boid task
+  answer` / `reopen` do not terminate you, so the same Monitor stays armed and
+  wakes you on the next change — no re-arm needed.
+- `done` — child called `notify --done` (success self-report). Verify and
+  integrate (see [Handling Done](#handling-done)); the Monitor has already exited.
+- `aborted` — child called `notify --fail` or `action send --type abort`. See
+  [Handling Aborted](#handling-aborted); the Monitor has already exited.
+
+**Re-arm only when you yourself paused.** If you escalate the child's question up
+with your own `notify --ask`, the daemon SIGTERMs your runtime and the Monitor
+dies with it. On resume, arm a fresh Monitor for the child before stopping again.
 
 Full status semantics: [references/state-machine.md](references/state-machine.md). Diagnostic commands: [references/builtins.md](references/builtins.md).
 
@@ -199,29 +230,34 @@ boid task notify "$BOID_TASK_ID" --message "..." --ask "<question for own parent
 
 Two distinct failure modes require detection:
 
-1. **Silent exit** — `claude` exits without issuing `notify --ask`, leaving the child in `executing` with no live job (`job.status != running`, `updated_at` old).
+1. **Silent exit** — `claude` exits without issuing `notify --ask`, leaving the child in `executing` with no live job (`job.status != running`).
 2. **PTY hang** — `claude` is still running (`job.status == running`) but the PTY is waiting for input and `transcript.log` has had no new writes for a long time (`transcript_idle_seconds` large).
 
-On each poll iteration, check both:
+Detect this **in the background, inside the same Monitor watch script** — never by
+foreground polling (foreground `sleep` is blocked; see [Monitoring Children](#monitoring-children)).
+Augment the watch loop to emit a one-shot `stuck` event when the child sits in
+`executing` with an idle / exited job past a threshold:
 
 ```bash
-status=$(boid task show "$child" --field status)
-if [ "$status" = "executing" ]; then
-  last_job=$(boid job list --task "$child" --output json | jq -r '.[0].id // empty')
-  if [ -n "$last_job" ]; then
-    last_status=$(boid job show "$last_job" --field status)
-    idle=$(boid job show "$last_job" --field transcript_idle_seconds 2>/dev/null)
-    idle=${idle:-0}
-    last_updated=$(boid job show "$last_job" --field updated_at)
-    # silent exit: job finished but task didn't transition
-    if [ "$last_status" != "running" ] && [ <updated_at old check> ]; then
-      handle_stuck "$child" "job exited without state transition"
-    # PTY hang: job still running but transcript has been idle too long
-    elif [ "$last_status" = "running" ] && [ "$idle" -gt 600 ]; then
-      handle_stuck "$child" "PTY idle ${idle}s"
+# Monitor tool — command (extends the watch loop from "Monitoring Children"):
+CHILD="<child-id>"; IDLE_MAX=600       # 300 fast-iter / 1800 long-build
+prev=""; stuck=""
+while true; do
+  st=$(boid task show "$CHILD" --field status 2>/dev/null || echo "")
+  if [ -n "$st" ] && [ "$st" != "$prev" ]; then echo "child $CHILD -> $st"; prev="$st"; stuck=""; fi
+  if [ "$st" = "executing" ] && [ -z "$stuck" ]; then
+    lj=$(boid job list --task "$CHILD" --output json 2>/dev/null | jq -r '.[0].id // empty')
+    if [ -n "$lj" ]; then
+      ljs=$(boid job show "$lj" --field status 2>/dev/null || echo "")
+      idle=$(boid job show "$lj" --field transcript_idle_seconds 2>/dev/null || echo 0)
+      if [ "$ljs" != "running" ] || [ "${idle:-0}" -gt "$IDLE_MAX" ]; then
+        echo "child $CHILD -> stuck (job=$ljs idle=${idle}s)"; stuck=1
+      fi
     fi
   fi
-fi
+  case "$st" in done|aborted) exit 0 ;; esac
+  sleep 30
+done
 ```
 
 Threshold guidance for `transcript_idle_seconds`:
@@ -229,13 +265,17 @@ Threshold guidance for `transcript_idle_seconds`:
 - Fast iteration: **300** (5 min) — when the executor should be actively writing
 - Long build / slow network: **1800** (30 min) — when legitimate pauses are expected
 
-Note: `boid task notify --progress` does **not** update `transcript.log` (it goes through the broker, not the PTY). Only actual agent output (e.g. tool results, text written to the PTY) advances the mtime.
+Note: `boid task notify --progress` does **not** update `transcript.log` (it goes through the broker, not the PTY). Only actual agent output advances the mtime.
 
-Decisions:
+**On a `stuck` event, confirm before acting.** Re-read the child's last job/action
+and git state **once** (a single command — not a foreground poll loop). Empty,
+cancelled, or blocked tool output is never itself evidence of a stuck child; if a
+read comes back empty, re-run that one command rather than concluding failure.
+Only after a real signal, decide:
 
 - **Reopen with a status check** — `boid task reopen "$child" -m "Status check: where are you? Emit notify --ask 'done_request: ...' if you finished, or describe what you need."`
 - **Abort** when clearly unrecoverable
-- **Escalate up** when you cannot decide
+- **Escalate up** when you cannot decide (your own `notify --ask`; re-arm the Monitor on resume)
 
 Stuck-child detection is the structural safety net for "agent forgot to call `notify --ask`". Treat it as routine — not exceptional — until executors universally emit explicit done_request.
 

@@ -2066,8 +2066,8 @@ func TestDuplicateTask_CopiesFields(t *testing.T) {
 	if task.Behavior != "dev" {
 		t.Errorf("Behavior = %q, want %q", task.Behavior, "dev")
 	}
-	if task.RemoteID != "" {
-		t.Errorf("RemoteID = %q, want empty", task.RemoteID)
+	if task.RemoteID != "PROJ-1" {
+		t.Errorf("RemoteID = %q, want %q (duplicate must carry remote_id so base_branch templates resolve)", task.RemoteID, "PROJ-1")
 	}
 }
 

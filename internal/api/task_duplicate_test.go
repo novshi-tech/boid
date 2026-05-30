@@ -53,6 +53,42 @@ func TestDuplicateTask_CreatesNewTask(t *testing.T) {
 	}
 }
 
+func TestDuplicateTask_CarriesRemoteIDAndInstructions(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	createProjectWithBehavior(t, ts, "dup-rid-proj", "Dup RemoteID Project")
+
+	// ソース: remote_id と instructions(リリース上書き相当)を持つ
+	var source orchestrator.Task
+	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
+		"project_id":   "dup-rid-proj",
+		"title":        "Source With RemoteID",
+		"behavior":     "planning",
+		"remote_id":    "BGO-170",
+		"instructions": []map[string]any{{"type": "execution", "agent": "claude-code", "message": "release policy: push + PR"}},
+	}, &source); err != nil {
+		t.Fatalf("create source task: %v", err)
+	}
+
+	var dup orchestrator.Task
+	if err := ts.Client.Do("POST", "/api/tasks/"+source.ID+"/duplicate", map[string]any{
+		"auto_start": false,
+	}, &dup); err != nil {
+		t.Fatalf("duplicate task: %v", err)
+	}
+
+	// remote_id を引き継ぐこと(これが無いと feature/${TASK_REMOTE_ID} テンプレが解決できず複製が失敗していた)
+	if dup.RemoteID != source.RemoteID {
+		t.Errorf("RemoteID = %q, want %q", dup.RemoteID, source.RemoteID)
+	}
+	// instructions(リリース上書き)を引き継ぐこと
+	if len(dup.Instructions) == 0 {
+		t.Fatalf("duplicated task should carry source instructions, got none")
+	}
+	if dup.Instructions[0].Message != source.Instructions[0].Message {
+		t.Errorf("Instructions[0].Message = %q, want %q", dup.Instructions[0].Message, source.Instructions[0].Message)
+	}
+}
+
 func TestDuplicateTask_NotFound(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
