@@ -89,6 +89,51 @@ func TestDuplicateTask_CarriesRemoteIDAndInstructions(t *testing.T) {
 	}
 }
 
+// TestDuplicateTask_SourceWithRefDoesNotCollide guards the regression where a
+// duplicate copied the source's ref verbatim. A source carrying a non-empty ref
+// (e.g. a re-duplicated supervisor) sits in the partial unique index
+// idx_tasks_ref_parent(ref, parent_id) WHERE ref != ''. Copying that ref into the
+// duplicate, which shares the source's (root) parent_id, violated the index and
+// failed the duplicate outright. The duplicate must instead get its own ref scope.
+func TestDuplicateTask_SourceWithRefDoesNotCollide(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	createProjectWithBehavior(t, ts, "dup-ref-proj", "Dup Ref Project")
+
+	// ソース: 非空 ref を持つ root タスク (再複製された supervisor 相当)。
+	var source orchestrator.Task
+	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
+		"project_id": "dup-ref-proj",
+		"title":      "Source With Ref",
+		"behavior":   "planning",
+		"remote_id":  "BGO-195",
+		"ref":        "warm_jacobi",
+	}, &source); err != nil {
+		t.Fatalf("create source task: %v", err)
+	}
+	if source.Ref != "warm_jacobi" {
+		t.Fatalf("source Ref = %q, want %q (precondition)", source.Ref, "warm_jacobi")
+	}
+
+	// 複製が UNIQUE(ref, parent_id) 制約で失敗しないこと。
+	var dup orchestrator.Task
+	if err := ts.Client.Do("POST", "/api/tasks/"+source.ID+"/duplicate", map[string]any{
+		"auto_start": false,
+	}, &dup); err != nil {
+		t.Fatalf("duplicate task with non-empty source ref: %v", err)
+	}
+	if dup.ID == "" || dup.ID == source.ID {
+		t.Fatalf("duplicated task should have a fresh ID, got %q (source %q)", dup.ID, source.ID)
+	}
+	// 複製はソースの ref を継がない (継ぐと衝突するため)。root なので ref は空のまま。
+	if dup.Ref == source.Ref {
+		t.Errorf("duplicate inherited source ref %q; expected a fresh/empty ref scope", dup.Ref)
+	}
+	// remote_id は引き継ぐ (一課題に複数タスクは正常)。
+	if dup.RemoteID != source.RemoteID {
+		t.Errorf("RemoteID = %q, want %q", dup.RemoteID, source.RemoteID)
+	}
+}
+
 func TestDuplicateTask_NotFound(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
