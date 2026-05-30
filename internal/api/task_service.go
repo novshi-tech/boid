@@ -259,7 +259,23 @@ func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orches
 		Title:       source.Title,
 		Description: source.Description,
 		Behavior:    source.Behavior,
+		RemoteID:    source.RemoteID,
+		Traits:      source.Traits,
+		Ref:         source.Ref,
 		AutoStart:   autoStart,
+	}
+	// Carry the source's instructions (e.g. a per-project release-policy override)
+	// so the duplicate behaves identically. RemoteID in particular must be copied:
+	// a base_branch template such as "feature/${TASK_REMOTE_ID}" cannot resolve
+	// without it, so a duplicate that dropped remote_id failed outright. Leave
+	// Instructions unset when the source has none, so CreateTask falls back to the
+	// behavior's default_instruction.
+	if len(source.Instructions) > 0 {
+		raw, err := json.Marshal(source.Instructions)
+		if err != nil {
+			return nil, fmt.Errorf("marshal source instructions: %w", err)
+		}
+		req.Instructions = raw
 	}
 	return s.CreateTask(req)
 }
