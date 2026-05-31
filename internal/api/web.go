@@ -445,8 +445,8 @@ func (h *WebHandler) ReopenForm(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
-	if detail.Task.Status != orchestrator.TaskStatusDone {
-		http.Redirect(w, r, "/tasks/"+id+"?error=reopen+is+only+available+for+done+tasks", http.StatusSeeOther)
+	if detail.Task.Status != orchestrator.TaskStatusDone && detail.Task.Status != orchestrator.TaskStatusAborted {
+		http.Redirect(w, r, "/tasks/"+id+"?error=reopen+is+only+available+for+done+or+aborted+tasks", http.StatusSeeOther)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
