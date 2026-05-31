@@ -179,7 +179,7 @@ func TestWebHandler_TaskDetail_DoneContainsReopenAndRerunButtons(t *testing.T) {
 	}
 }
 
-func TestWebHandler_TaskDetail_AbortedContainsOnlyRerun(t *testing.T) {
+func TestWebHandler_TaskDetail_AbortedContainsReopenAndRerun(t *testing.T) {
 	detail := makeTaskDetailView()
 	detail.Task.Status = orchestrator.TaskStatusAborted
 	svc := &stubWebServiceWithRerun{
@@ -195,10 +195,63 @@ func TestWebHandler_TaskDetail_AbortedContainsOnlyRerun(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	body := w.Body.String()
-	if strings.Contains(body, "/tasks/task-1/reopen") {
-		t.Errorf("aborted task detail should NOT contain reopen link, got: %s", body)
+	if !strings.Contains(body, "/tasks/task-1/reopen") {
+		t.Errorf("aborted task detail should contain reopen link, got: %s", body)
+	}
+	if !strings.Contains(body, "Reopen") {
+		t.Errorf("aborted task detail should contain Reopen button text, got: %s", body)
 	}
 	if !strings.Contains(body, "rerun") {
 		t.Errorf("aborted task detail should contain rerun button, got: %s", body)
+	}
+}
+
+func TestWebHandler_ReopenForm_AbortedSuccess(t *testing.T) {
+	detail := makeTaskDetailView()
+	detail.Task.Status = orchestrator.TaskStatusAborted
+	svc := &stubWebServiceWithRerun{
+		stubWebService: stubWebService{taskDetail: detail},
+	}
+	r := newTestWebHandlerWithReopen(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1/reopen", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Reopen") {
+		t.Errorf("form should contain Reopen button, got: %s", body)
+	}
+}
+
+func TestWebHandler_ReopenForm_NonReopenableRedirects(t *testing.T) {
+	for _, status := range []orchestrator.TaskStatus{
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusPending,
+	} {
+		detail := makeTaskDetailView()
+		detail.Task.Status = status
+		svc := &stubWebServiceWithRerun{
+			stubWebService: stubWebService{taskDetail: detail},
+		}
+		r := newTestWebHandlerWithReopen(svc)
+
+		req := httptest.NewRequest(http.MethodGet, "/tasks/task-1/reopen", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusSeeOther {
+			t.Fatalf("status %s: got %d, want 303", status, w.Code)
+		}
+		loc := w.Header().Get("Location")
+		if !strings.Contains(loc, "/tasks/task-1") {
+			t.Errorf("status %s: Location = %q, want redirect to task", status, loc)
+		}
+		if !strings.Contains(loc, "error=") {
+			t.Errorf("status %s: Location = %q, want error param", status, loc)
+		}
 	}
 }

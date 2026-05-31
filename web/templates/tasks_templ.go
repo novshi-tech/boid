@@ -509,7 +509,7 @@ func TaskDetailStatusSection(task *orchestrator.Task, availableActions []string,
 //   - pending          → start  (forward, primary)
 //   - executing        → abort  (the only safe manual move; done is intentionally hidden)
 //   - done             → reopen+rerun (both primary; see TaskActionBar)
-//   - aborted          → rerun  (re-create + restart)
+//   - aborted          → reopen+rerun (both primary; see TaskActionBar)
 //
 // Returns ("", "") when no primary action applies.
 func detailPrimaryAction(task *orchestrator.Task, availableActions []string) (action, label string) {
@@ -575,7 +575,7 @@ func TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			if task.Status == orchestrator.TaskStatusDone {
+			if task.Status == orchestrator.TaskStatusDone || task.Status == orchestrator.TaskStatusAborted {
 				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "<a href=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err

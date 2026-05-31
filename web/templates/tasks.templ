@@ -226,7 +226,7 @@ templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string
 //   - pending          → start  (forward, primary)
 //   - executing        → abort  (the only safe manual move; done is intentionally hidden)
 //   - done             → reopen+rerun (both primary; see TaskActionBar)
-//   - aborted          → rerun  (re-create + restart)
+//   - aborted          → reopen+rerun (both primary; see TaskActionBar)
 // Returns ("", "") when no primary action applies.
 func detailPrimaryAction(task *orchestrator.Task, availableActions []string) (action, label string) {
 	switch task.Status {
@@ -270,7 +270,7 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 	if activeTab == "timeline" {
 		<div class="action-bar">
 			<div class="action-bar-inner">
-				if task.Status == orchestrator.TaskStatusDone {
+				if task.Status == orchestrator.TaskStatusDone || task.Status == orchestrator.TaskStatusAborted {
 					<a href={ templ.SafeURL("/tasks/" + task.ID + "/reopen") } class="btn btn-primary action-bar-primary-form">Reopen</a>
 					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('Rerun this task?')">
 						<button type="submit" class="btn btn-secondary">Rerun</button>
