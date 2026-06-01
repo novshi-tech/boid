@@ -83,7 +83,17 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		setIfNonEmpty(env, "BOID_MODEL", inst.Model)
 		env["BOID_INVOKED_ROLE"] = inst.Role
 		env["BOID_INVOKED_NAME"] = inst.Name
-		env["BOID_INVOKED_TYPE"] = string(inst.Type)
+		// BOID_INVOKED_BEHAVIOR drives the agent runner's skill selection
+		// (/boid-executor vs /boid-supervisor). Canonicalise here so deprecated
+		// aliases (dev/plan) resolve to the canonical skill — the runner only
+		// knows canonical names and falls back to /boid-sandbox otherwise.
+		// (Previously this exported BOID_INVOKED_TYPE = inst.Type, but that
+		// carried the instruction phase — always "execution" — which the runner
+		// mistook for a behavior name and so always hit the /boid-sandbox shim.)
+		if spec.Task != nil {
+			canonical, _ := orchestrator.CanonicalBehaviorName(spec.Task.Behavior)
+			env["BOID_INVOKED_BEHAVIOR"] = canonical
+		}
 		// Legacy env var consumed by hook scripts that predate the
 		// $HOME/.boid/context/instructions.yaml context-file delivery.
 		if encoded, err := json.Marshal([]orchestrator.RoutedInstruction{*inst}); err == nil {

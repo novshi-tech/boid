@@ -110,18 +110,11 @@ func (h HostCommands) ToCommandDefs() map[string]CommandDef {
 	return out
 }
 
-type InstructionType string
-
-const (
-	InstructionTypeExecution InstructionType = "execution"
-)
-
 type Instruction struct {
-	Type    InstructionType `json:"type" yaml:"type"`
-	Agent   string          `json:"agent" yaml:"agent"`
-	Name    string          `json:"name,omitempty" yaml:"name,omitempty"`
-	Message string          `json:"message,omitempty" yaml:"message,omitempty"`
-	Model   string          `json:"model,omitempty" yaml:"model,omitempty"`
+	Agent   string `json:"agent" yaml:"agent"`
+	Name    string `json:"name,omitempty" yaml:"name,omitempty"`
+	Message string `json:"message,omitempty" yaml:"message,omitempty"`
+	Model   string `json:"model,omitempty" yaml:"model,omitempty"`
 }
 
 // Instructions is the persisted instruction history for a task. The most
@@ -178,12 +171,11 @@ func (is *Instructions) UnmarshalJSON(data []byte) error {
 }
 
 type RoutedInstruction struct {
-	Role    string          `json:"role"`
-	Type    InstructionType `json:"type"`
-	Agent   string          `json:"agent"`
-	Name    string          `json:"name,omitempty"`
-	Message string          `json:"message"`
-	Model   string          `json:"model,omitempty"`
+	Role    string `json:"role"`
+	Agent   string `json:"agent"`
+	Name    string `json:"name,omitempty"`
+	Message string `json:"message"`
+	Model   string `json:"model,omitempty"`
 }
 
 type TraitType string

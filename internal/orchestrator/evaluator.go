@@ -2,27 +2,17 @@ package orchestrator
 
 type Evaluator struct{}
 
-// InstructionTypeForStatus maps a task status to the corresponding InstructionType.
-// Only executing tasks have an instruction type now that verifying/reworking are removed.
-func InstructionTypeForStatus(status TaskStatus) InstructionType {
-	if status == TaskStatusExecuting {
-		return InstructionTypeExecution
-	}
-	return ""
-}
-
-// extractInstructionAgents returns the set of agent names that appear
-// in the task's instruction history matching the given type. Empty type or
-// empty list yields nil.
-func extractInstructionAgents(instructions Instructions, instType InstructionType) map[string]bool {
-	if instType == "" || len(instructions) == 0 {
+// extractInstructionAgents returns the set of agent names that appear in the
+// task's instruction history. Empty list yields nil. Routing is gated on
+// status==executing by the callers (Evaluate / selectInstruction), so no
+// per-instruction phase filter is needed here.
+func extractInstructionAgents(instructions Instructions) map[string]bool {
+	if len(instructions) == 0 {
 		return nil
 	}
 	agents := make(map[string]bool)
 	for _, inst := range instructions {
-		if inst.Type == "" || inst.Type == instType {
-			agents[inst.Agent] = true
-		}
+		agents[inst.Agent] = true
 	}
 	if len(agents) == 0 {
 		return nil
@@ -44,8 +34,9 @@ func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 		traitSet[t] = true
 	}
 
-	instType := InstructionTypeForStatus(task.Status)
-	agents := extractInstructionAgents(task.Instructions, instType)
+	// status == executing is guaranteed above, so every instruction in the
+	// history is live for routing; just collect the agents it addresses.
+	agents := extractInstructionAgents(task.Instructions)
 
 	var matched []Hook
 	for _, h := range hooks {
@@ -53,9 +44,6 @@ func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 			continue
 		}
 		if h.Kind == HandlerKindAgent {
-			if instType == "" {
-				continue
-			}
 			if h.Agent == "" {
 				continue // loader validation 後は到達しない想定
 			}

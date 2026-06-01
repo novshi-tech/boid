@@ -17,7 +17,6 @@ func newTestInstructionsRoleEditScreen(role string) *InstructionsRoleEditScreen 
 		Status: orchestrator.TaskStatusPending,
 		Instructions: orchestrator.Instructions{
 			{
-				Type:    orchestrator.InstructionTypeExecution,
 				Agent:   "claude-code",
 				Message: "do this",
 				Model:   "sonnet-4-6",
@@ -33,9 +32,6 @@ func TestInstructionsRoleEdit_InitialYAML_ExistingRole(t *testing.T) {
 	val := s.editor.Value()
 	if val == "" {
 		t.Fatal("editor should be pre-filled for existing role")
-	}
-	if !containsStr(val, "type: execution") {
-		t.Errorf("expected 'type: execution', got: %q", val)
 	}
 	if !containsStr(val, "agent: claude-code") {
 		t.Errorf("expected 'agent: claude-code', got: %q", val)

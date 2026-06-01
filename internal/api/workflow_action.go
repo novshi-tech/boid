@@ -64,9 +64,6 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		}
 		if err := json.Unmarshal(req.Payload, &p); err == nil && p.Instruction != nil {
 			inst := *p.Instruction
-			if inst.Type == "" {
-				inst.Type = orchestrator.InstructionTypeExecution
-			}
 			if active := task.Instructions.Active(); active != nil {
 				if inst.Agent == "" {
 					inst.Agent = active.Agent

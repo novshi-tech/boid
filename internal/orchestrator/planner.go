@@ -215,8 +215,13 @@ func (p *DispatchPlanner) loadContext(projectID, taskID string) (*ProjectMeta, *
 }
 
 func selectInstruction(task *Task, agent string) *RoutedInstruction {
-	instType := InstructionTypeForStatus(task.Status)
-	routed := FilterInstructions(task.Instructions, instType, agent)
+	// Instructions only drive dispatch while the task is executing; other
+	// statuses carry no live instruction. This guard makes that explicit —
+	// it was previously enforced indirectly through the instruction phase.
+	if task.Status != TaskStatusExecuting {
+		return nil
+	}
+	routed := FilterInstructions(task.Instructions, agent)
 	if len(routed) == 0 {
 		return nil
 	}

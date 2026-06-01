@@ -14,7 +14,7 @@ func TestEvaluate_MatchingHookFires(t *testing.T) {
 	task := &orchestrator.Task{
 		Status: orchestrator.TaskStatusExecuting,
 		Instructions: orchestrator.Instructions{
-			{Type: orchestrator.InstructionTypeExecution, Agent: "claude-code", Message: "do stuff"},
+			{Agent: "claude-code", Message:"do stuff"},
 		},
 	}
 	hooks := []projectspec.Hook{
@@ -102,7 +102,7 @@ func TestEvaluate_InstructionsRouting_AgentMatch(t *testing.T) {
 	task := &orchestrator.Task{
 		Status: orchestrator.TaskStatusExecuting,
 		Instructions: orchestrator.Instructions{
-			{Type: orchestrator.InstructionTypeExecution, Agent: "claude-code", Message: "do something"},
+			{Agent: "claude-code", Message:"do something"},
 		},
 	}
 	hooks := []projectspec.Hook{
@@ -128,7 +128,7 @@ func TestEvaluate_InstructionsRouting_AgentMismatch(t *testing.T) {
 	task := &orchestrator.Task{
 		Status: orchestrator.TaskStatusExecuting,
 		Instructions: orchestrator.Instructions{
-			{Type: orchestrator.InstructionTypeExecution, Agent: "claude-code", Message: "do something"},
+			{Agent: "claude-code", Message:"do something"},
 		},
 	}
 	hooks := []projectspec.Hook{
@@ -178,7 +178,7 @@ func TestEvaluate_OptionalTrait_FiresWhenAbsent(t *testing.T) {
 		Status:  orchestrator.TaskStatusExecuting,
 		Payload: json.RawMessage(`{}`),
 		Instructions: orchestrator.Instructions{
-			{Type: orchestrator.InstructionTypeExecution, Agent: "claude-code", Message: "impl"},
+			{Agent: "claude-code", Message:"impl"},
 		},
 	}
 	hooks := []projectspec.Hook{
