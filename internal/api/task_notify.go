@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -8,6 +9,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os/exec"
+	"regexp"
+	"strings"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -195,6 +200,13 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		}
 		var actionType, msg string
 		if done != "" {
+			// Anti-confabulation gate: reject premature / fabricated done
+			// reports before recording the intent (see verifyDoneClaim). The
+			// agent's notify call fails loudly so it must actually wait /
+			// re-verify instead of the daemon silently accepting fiction.
+			if verr := s.verifyDoneClaim(ctx, task); verr != nil {
+				return verr
+			}
 			actionType, msg = "done_request", done
 		} else {
 			actionType, msg = "fail_request", fail
@@ -262,6 +274,131 @@ func notifyModeName(ask, done, fail string) string {
 	default:
 		return "fyi"
 	}
+}
+
+// releaseCommitRe matches a bare git object name (7–40 hex chars). It validates
+// the structured release.commit field only — it is deliberately NOT used to
+// scan free-form prose, where session ids, UUIDs and issue numbers would
+// false-match.
+var releaseCommitRe = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
+
+// verifyDoneClaim guards `notify --done` against two confabulation patterns
+// observed in supervisor agents (2026-05-30): (1) reporting done while child
+// tasks are still open — a parent owns its children's lifecycle and a premature
+// done orphans them; and (2) citing a release commit that does not exist in the
+// repository — a fabricated success report. A rejected claim is returned as a
+// StatusError so the agent's `notify` call fails loudly (the runtime is NOT
+// signalled to stop) and it must actually wait / re-verify. All git checks are
+// best-effort: any inconclusive result (missing repo, exec/network error,
+// timeout) skips the check so infrastructure hiccups never block a real done.
+func (s *TaskAppService) verifyDoneClaim(ctx context.Context, task *orchestrator.Task) *StatusError {
+	if task.OpenChildCount > 0 {
+		return &StatusError{
+			Code: http.StatusConflict,
+			Message: fmt.Sprintf(
+				"cannot report done: %d child task(s) are still open (not done/aborted). "+
+					"You own your children's lifecycle — wait for every child to reach a "+
+					"terminal state (arm a Monitor and stop generating), verify their results, "+
+					"then report done.", task.OpenChildCount),
+		}
+	}
+
+	commit, branch, pushed := releaseClaim(task.Payload)
+	if commit == "" || s.Projects == nil {
+		return nil
+	}
+	proj, err := s.Projects.GetProject(task.ProjectID)
+	if err != nil || proj == nil || proj.WorkDir == "" {
+		return nil
+	}
+	if exists, conclusive := gitObjectExists(ctx, proj.WorkDir, commit); conclusive && !exists {
+		return &StatusError{
+			Code: http.StatusConflict,
+			Message: fmt.Sprintf(
+				"reported release commit %q does not exist in the repository. Do not write a "+
+					"commit hash you have not seen in actual git output this session. Run the "+
+					"real merge, capture the true hash (git rev-parse HEAD), and report again.",
+				commit),
+		}
+	}
+	if pushed && branch != "" {
+		if tip, ok := gitRemoteTip(ctx, proj.WorkDir, branch); ok && tip != "" &&
+			!strings.HasPrefix(tip, commit) && !strings.HasPrefix(commit, tip) {
+			return &StatusError{
+				Code: http.StatusConflict,
+				Message: fmt.Sprintf(
+					"reported a push of %q to %s, but origin/%s is at %s. Re-run the real push "+
+						"and report the actually-pushed commit.", commit, branch, branch, tip),
+			}
+		}
+	}
+	return nil
+}
+
+// releaseClaim extracts the structured release report
+// (payload.artifact.report.release) the boid-supervisor skill asks agents to
+// populate from real git output before `notify --done`. Missing or malformed
+// fields yield zero values, which callers treat as "nothing to verify".
+func releaseClaim(payload json.RawMessage) (commit, branch string, pushed bool) {
+	if len(payload) == 0 {
+		return "", "", false
+	}
+	var p struct {
+		Artifact struct {
+			Report struct {
+				Release struct {
+					Commit string `json:"commit"`
+					Branch string `json:"branch"`
+					Pushed bool   `json:"pushed"`
+				} `json:"release"`
+			} `json:"report"`
+		} `json:"artifact"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return "", "", false
+	}
+	commit = strings.TrimSpace(p.Artifact.Report.Release.Commit)
+	if !releaseCommitRe.MatchString(commit) {
+		commit = "" // only verify well-formed object names
+	}
+	return commit, strings.TrimSpace(p.Artifact.Report.Release.Branch), p.Artifact.Report.Release.Pushed
+}
+
+// gitObjectExists reports whether hash resolves to an object in the repo at
+// workdir. conclusive is false when git cannot give a definitive answer (binary
+// missing, not a repo, timeout) so the caller can skip rather than block.
+func gitObjectExists(ctx context.Context, workdir, hash string) (exists, conclusive bool) {
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, "git", "-C", workdir, "cat-file", "-t", hash)
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err == nil {
+		return true, true
+	}
+	es := errb.String()
+	if strings.Contains(es, "Not a valid object name") || strings.Contains(es, "could not get object info") {
+		return false, true
+	}
+	return false, false
+}
+
+// gitRemoteTip returns the origin tip of branch (best-effort: ok is false on any
+// exec/network error so the caller skips the push check rather than blocking).
+func gitRemoteTip(ctx context.Context, workdir, branch string) (tip string, ok bool) {
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, "git", "-C", workdir, "ls-remote", "origin", branch)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return "", false
+	}
+	fields := strings.Fields(out.String())
+	if len(fields) == 0 {
+		return "", true // ran cleanly; branch absent on origin
+	}
+	return fields[0], true
 }
 
 // AnswerTask saves the user's reply and transitions the task awaiting → executing.

@@ -16,6 +16,33 @@ This skill is a **shim**. The canonical agent-side skills are now per-behavior:
 
 When a project's `task_behaviors[*].default_instruction.message` still says "follow `/boid-sandbox`" (older projects), read `~/.boid/context/task.yaml` and follow the matching canonical skill instead.
 
+## Your tools work — never invent an I/O failure
+
+**This is the single most important rule for a clean run.** Your Bash and Read
+results are reliable. Empty or odd-looking output is almost always REAL and
+EXPECTED, not a broken tool channel:
+
+- `git status --short` prints nothing on a clean tree.
+- `git branch --show-current` can be empty (detached HEAD).
+- A command that matched nothing prints nothing.
+- This interactive harness occasionally renders a result a beat late or shows a
+  transient empty — the result is still real and still arrives.
+
+**NEVER** halt or escalate with a claim like "no command output is reaching me",
+"the tool-execution channel appears broken", or "tools are returning empty". That
+is a known **confabulation**: agents have escalated exactly this while their
+commands were in fact returning output (verified from transcripts). It wastes a
+whole dispatch. If a result looks empty or wrong:
+
+1. Re-run that ONE command with explicit markers: `echo "RC=$?"; <cmd>; echo END`.
+2. Or write to a file and Read it: `<cmd> >/tmp/p 2>&1; cat /tmp/p` (then Read `/tmp/p`).
+3. If it still looks off, **proceed with your task anyway** — a single empty or
+   late result is never evidence the sandbox is broken.
+
+Reserve `notify --ask` for genuine task blockers (a missing requirement, a real
+decision for your owner) — never for "I think my I/O is broken." Do not run
+"is my I/O working?" probe commands; just do the task.
+
 ## Dispatch Table
 
 | `task.yaml` `behavior` field | Follow |

@@ -10,6 +10,16 @@ description: Runs a supervisor task (readonly orchestrator) for the boid orchest
 
 A supervisor task **triages** a request, creates child executor tasks, and **monitors them** until completion. The supervisor is **readonly** — it reads the working tree and runs `git` queries but never edits project files. Implementation always happens in child executor tasks.
 
+> **Your tools work — do not invent an I/O failure.** Empty or odd output is
+> normal (`git status` on a clean tree is empty; a command that matched nothing
+> prints nothing; the interactive harness can render a result a beat late).
+> **Never** halt or escalate with "no command output is reaching me" / "the tool
+> channel is broken" — that is a known confabulation that has wasted whole
+> dispatches while commands were in fact returning output. If output looks empty,
+> re-run that one command with `echo "RC=$?"` markers or write-to-file + Read;
+> otherwise just proceed. Reserve `notify --ask` for real task blockers, never for
+> suspected I/O trouble. Do not run "is my I/O working?" probe commands.
+
 ## Context to Read First
 
 Read these files from the sandbox before doing anything else (full schema in [boid-sandbox / data-model.md](../boid-sandbox/references/data-model.md)). **Always re-read on every invocation — including resume after a user reply and reopen with a new instruction.** `claude --resume` carries chat history but does **not** guarantee that prior tool-call inputs remain accessible (in particular, the body of your own previous `notify --ask` is frequently missing). If a user reply or reopen instruction looks fragmentary or context-free, the active instruction and payload on disk almost certainly have the missing piece — read them before deciding "I don't have context".
@@ -193,6 +203,52 @@ boid task notify "$BOID_TASK_ID" --message "..." --ask "<escalation>"        # e
 ```
 
 If `payload.artifact.report` is empty or missing required fields, treat that as a **missing-report anomaly**: reopen with `-m "Re-run with payload.artifact.report populated (summary, evidence, verification)."` rather than accepting on faith.
+
+## Reporting Your Own Done (the daemon verifies — do not fabricate)
+
+When **you** finish and report up with `notify --done`, the daemon **rejects
+fabricated or premature reports**. A rejected `notify --done` returns an error in
+your Bash tool result and does **not** end your session — fix the real state and
+report again. Two rules:
+
+1. **Never report done while a child is open.** Wait until every child you created
+   is `done` / `aborted`, confirmed by an actual Monitor `done` event or a real
+   `boid task show "$child" --field status` result — not by assuming the wait
+   finished. The daemon rejects `notify --done` while any child is still open
+   (`cannot report done: N child task(s) are still open`). This is the most common
+   failure: after delegating, agents *narrate* the child finishing instead of
+   actually waiting. Arm the Monitor, **stop generating**, and resume on the real
+   event.
+
+2. **Never cite a commit/branch you have not seen in real git output.** If your
+   done involves a release (merge/push), record it in
+   `payload.artifact.report.release` from the **actual** command output, then
+   report done:
+
+   ```bash
+   merged=$(git rev-parse HEAD)                 # the real merged commit
+   git push origin "$merged:$BRANCH"            # real push
+   boid task update "$BOID_TASK_ID" --payload-file - <<EOF
+   artifact:
+     report:
+       release:
+         commit: "$merged"
+         branch: "$BRANCH"
+         pushed: true
+   EOF
+   boid task notify "$BOID_TASK_ID" --done "Released $merged to $BRANCH (PR updated)."
+   ```
+
+   The daemon verifies `release.commit` exists in the repo (and, when
+   `pushed: true`, that `origin/<branch>` matches). A hash you invented to fill the
+   report — a plausible-looking object name you never saw in a tool result — is
+   rejected (`reported release commit ... does not exist`).
+
+**If you did not actually run the merge/push and see its output, you have not done
+it — do not claim it.** Report the true state instead: escalate the blocker via
+your own `notify --ask`, or `--done` with an honest description of what remains.
+Inventing a successful-looking report is the single failure mode this skill most
+needs you to avoid.
 
 ## Handling Aborted
 
