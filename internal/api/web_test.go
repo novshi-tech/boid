@@ -835,7 +835,6 @@ func TestWebHandler_PostEdit_Success(t *testing.T) {
 			ID:     "task-1",
 			Status: orchestrator.TaskStatusPending,
 			Instructions: orchestrator.Instructions{{
-				Type:    orchestrator.InstructionTypeExecution,
 				Message: "old message",
 				Model:   "sonnet",
 			}},
@@ -916,7 +915,6 @@ func TestWebHandler_PostEdit_RemoteID(t *testing.T) {
 			Status:   orchestrator.TaskStatusPending,
 			RemoteID: "OLD-1",
 			Instructions: orchestrator.Instructions{{
-				Type:    orchestrator.InstructionTypeExecution,
 				Message: "old message",
 			}},
 		},

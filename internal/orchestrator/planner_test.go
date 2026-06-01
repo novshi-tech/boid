@@ -158,7 +158,7 @@ func TestPlanHook_Instruction_MatchingAgent(t *testing.T) {
 		Behavior:  "dev",
 		Status:    TaskStatusExecuting,
 		Instructions: Instructions{
-			{Type: InstructionTypeExecution, Agent: "claude-code", Message: "do X"},
+			{Agent: "claude-code", Message: "do X"},
 		},
 	}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)

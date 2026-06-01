@@ -375,7 +375,6 @@ func (h *WebHandler) PostEdit(w http.ResponseWriter, r *http.Request) {
 	insts := detail.Task.Instructions
 	if len(insts) == 0 {
 		insts = orchestrator.Instructions{{
-			Type:    orchestrator.InstructionTypeExecution,
 			Agent:   agent,
 			Message: message,
 			Model:   model,

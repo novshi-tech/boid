@@ -47,9 +47,6 @@ default_instruction:
 		t.Fatal("expected default_instruction to be set")
 	}
 	got := behavior.DefaultInstruction
-	if got.Type != orchestrator.InstructionTypeExecution {
-		t.Fatalf("expected type %q, got %q", orchestrator.InstructionTypeExecution, got.Type)
-	}
 	if got.Agent != "claude-code" {
 		t.Fatalf("expected agent %q, got %q", "claude-code", got.Agent)
 	}
@@ -60,7 +57,6 @@ default_instruction:
 
 func TestInstruction_Name_OmittedWhenEmpty(t *testing.T) {
 	inst := orchestrator.Instruction{
-		Type:    orchestrator.InstructionTypeExecution,
 		Agent:   "claude-code",
 		Message: "タスクを実行してください",
 	}
@@ -130,7 +126,6 @@ func TestMergeDefaultInstructions_NoDefault_OverrideUsedAsIs(t *testing.T) {
 
 func TestMergeDefaultInstructions_EmptyOverride_ReturnsDefault(t *testing.T) {
 	def := &orchestrator.Instruction{
-		Type:    orchestrator.InstructionTypeExecution,
 		Agent:   "claude-code",
 		Message: "default message",
 		Model:   "claude-sonnet-4-6",
@@ -153,7 +148,6 @@ func TestMergeDefaultInstructions_EmptyOverride_ReturnsDefault(t *testing.T) {
 func TestMergeDefaultInstructions_SingleOverride_ModelOnly(t *testing.T) {
 	// override only sets model; other fields should inherit from default.
 	def := &orchestrator.Instruction{
-		Type:    orchestrator.InstructionTypeExecution,
 		Agent:   "claude-code",
 		Message: "do the thing",
 		Model:   "claude-sonnet-4-6",
@@ -175,15 +169,11 @@ func TestMergeDefaultInstructions_SingleOverride_ModelOnly(t *testing.T) {
 	if got[0].Agent != "claude-code" {
 		t.Errorf("agent should be inherited: want claude-code, got %q", got[0].Agent)
 	}
-	if got[0].Type != orchestrator.InstructionTypeExecution {
-		t.Errorf("type should be inherited: want execution, got %q", got[0].Type)
-	}
 }
 
 func TestMergeDefaultInstructions_SingleOverride_MessageOnly(t *testing.T) {
 	// override only replaces message; model etc. come from default.
 	def := &orchestrator.Instruction{
-		Type:    orchestrator.InstructionTypeExecution,
 		Agent:   "claude-code",
 		Message: "original",
 		Model:   "claude-sonnet-4-6",
@@ -204,7 +194,6 @@ func TestMergeDefaultInstructions_SingleOverride_MessageOnly(t *testing.T) {
 func TestMergeDefaultInstructions_SingleOverride_AllFields_NoInheritance(t *testing.T) {
 	// override fills every field → result equals override (no inheritance needed).
 	def := &orchestrator.Instruction{
-		Type:    orchestrator.InstructionTypeExecution,
 		Agent:   "claude-code",
 		Message: "original message",
 		Model:   "claude-sonnet-4-6",
@@ -225,7 +214,6 @@ func TestMergeDefaultInstructions_SingleOverride_AllFields_NoInheritance(t *test
 func TestMergeDefaultInstructions_MultipleOverride_CompleteReplacement(t *testing.T) {
 	// 2 entries → full replacement, default is ignored.
 	def := &orchestrator.Instruction{
-		Type:    orchestrator.InstructionTypeExecution,
 		Agent:   "claude-code",
 		Message: "default",
 		Model:   "claude-sonnet-4-6",

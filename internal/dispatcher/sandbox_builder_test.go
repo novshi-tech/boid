@@ -115,6 +115,41 @@ func TestBuildSandboxSpec_BoidHostIPAlwaysInjected(t *testing.T) {
 	}
 }
 
+// behavior は canonical 名 (executor/supervisor) で BOID_INVOKED_BEHAVIOR に渡す。
+// run-agent.py はこれを見て /boid-executor / /boid-supervisor を直接起動プロンプトに
+// 選ぶ。deprecated 別名 (dev/plan) は canonical 化してから渡すので、 agent ランナーは
+// 別名を知らなくてよい。 旧 BOID_INVOKED_TYPE は instruction の phase 種別 (常に
+// "execution") を運んでいて behavior と取り違えられていたため廃止する。
+func TestBuildSandboxSpec_InvokedBehaviorIsCanonical(t *testing.T) {
+	cases := []struct {
+		behavior string
+		want     string
+	}{
+		{"executor", "executor"},
+		{"supervisor", "supervisor"},
+		{"dev", "executor"},    // deprecated alias → canonical
+		{"plan", "supervisor"}, // deprecated alias → canonical
+	}
+	for _, tc := range cases {
+		t.Run(tc.behavior, func(t *testing.T) {
+			spec := &orchestrator.JobSpec{
+				Instruction: &orchestrator.RoutedInstruction{Agent: "claude-code"},
+				Task:        &orchestrator.TaskSnapshot{Behavior: tc.behavior},
+			}
+			result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+			if err != nil {
+				t.Fatalf("BuildSandboxSpec: %v", err)
+			}
+			if got := result.Env["BOID_INVOKED_BEHAVIOR"]; got != tc.want {
+				t.Errorf("BOID_INVOKED_BEHAVIOR = %q, want %q", got, tc.want)
+			}
+			if _, ok := result.Env["BOID_INVOKED_TYPE"]; ok {
+				t.Errorf("BOID_INVOKED_TYPE must be gone (replaced by BOID_INVOKED_BEHAVIOR)")
+			}
+		})
+	}
+}
+
 // KitRoots in Visibility are bound at their original host paths inside the sandbox.
 func TestBuildSandboxSpec_KitRootsAreBound(t *testing.T) {
 	const kitRoot = "/home/user/.local/share/boid/kits/git-auto-merge"
@@ -763,7 +798,6 @@ func TestBuildSandboxSpec_WorktreeBindingExpansion(t *testing.T) {
 func TestContextFiles_PayloadWrittenForNonInteractiveHook(t *testing.T) {
 	inst := &orchestrator.RoutedInstruction{
 		Role:    "rework",
-		Type:    "rework",
 		Agent:   "claude-code",
 		Message: "verification findings に記載された問題を修正せよ。",
 	}
@@ -806,7 +840,6 @@ func TestContextFiles_PayloadWrittenForNonInteractiveHook(t *testing.T) {
 func TestContextFiles_PayloadWrittenForInteractiveHook(t *testing.T) {
 	inst := &orchestrator.RoutedInstruction{
 		Role:  "main",
-		Type:  "execution",
 		Agent: "claude-code",
 	}
 	primary := []byte(`{"artifact":null}`)
@@ -877,7 +910,6 @@ func TestBuildExitScript_NoFallback(t *testing.T) {
 func TestContextFiles_NoPayloadFilesWhenPrimaryInputEmpty(t *testing.T) {
 	inst := &orchestrator.RoutedInstruction{
 		Role:  "main",
-		Type:  "execution",
 		Agent: "claude-code",
 	}
 

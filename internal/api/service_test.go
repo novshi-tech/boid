@@ -1146,7 +1146,7 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_DefaultInstructionsMerged(t *test
 		Title:     "spec task",
 		BehaviorSpec: &orchestrator.BehaviorSpec{
 			Name:               "kit/my-behavior",
-			DefaultInstruction: &orchestrator.Instruction{Type: orchestrator.InstructionTypeExecution, Agent: "claude-code", Message: "do it"},
+			DefaultInstruction: &orchestrator.Instruction{Agent: "claude-code", Message: "do it"},
 		},
 	})
 	if err != nil {
@@ -2083,7 +2083,7 @@ func TestDuplicateTask_InstructionsFromDefaultInstructions(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
 			"dev": {
-				DefaultInstruction: &orchestrator.Instruction{Type: orchestrator.InstructionTypeExecution, Agent: "claude-code", Message: "do stuff"},
+				DefaultInstruction: &orchestrator.Instruction{Agent: "claude-code", Message: "do stuff"},
 			},
 		},
 	}
@@ -2307,7 +2307,7 @@ func TestRerunTask_PreservesInstructionsUnit(t *testing.T) {
 		Status:       orchestrator.TaskStatusAborted,
 		Behavior:     "dev",
 		Payload:      json.RawMessage(`{"artifact":{"url":"old"}}`),
-		Instructions: orchestrator.Instructions{{Type: orchestrator.InstructionTypeExecution, Agent: "c"}},
+		Instructions: orchestrator.Instructions{{Agent: "c"}},
 	}
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store}
@@ -2334,7 +2334,7 @@ func TestRerunTask_InstructionsOverrideApplied(t *testing.T) {
 		Status:   orchestrator.TaskStatusAborted,
 		Behavior: "dev",
 		Instructions: orchestrator.Instructions{
-			{Type: orchestrator.InstructionTypeExecution, Agent: "claude-code", Model: "sonnet-4-6"},
+			{Agent: "claude-code", Model: "sonnet-4-6"},
 		},
 	}
 	store := &stubTaskStore{task: task}

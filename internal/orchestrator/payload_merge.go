@@ -61,9 +61,6 @@ func MergeDefaultInstructions(defaultInstruction *Instruction, requestInstructio
 // override inherit from base.
 func mergeInstruction(base, override Instruction) Instruction {
 	out := base
-	if override.Type != "" {
-		out.Type = override.Type
-	}
 	if override.Agent != "" {
 		out.Agent = override.Agent
 	}
@@ -90,42 +87,37 @@ func AppendInstruction(existing Instructions, inst Instruction) Instructions {
 	return out
 }
 
-// defaultMessages maps InstructionType to a fallback message used when
-// a role's message field is omitted.
-var defaultMessages = map[InstructionType]string{
-	InstructionTypeExecution: "タスクを実行してください",
-}
+// defaultInstructionMessage is the fallback dispatched to an agent when an
+// instruction omits its message field.
+const defaultInstructionMessage = "タスクを実行してください"
 
 // resolveMessage returns the message for an instruction, falling back to the
-// type's default when the message field is empty.
-func resolveMessage(inst Instruction, instType InstructionType) string {
+// default when the message field is empty.
+func resolveMessage(inst Instruction) string {
 	if inst.Message != "" {
 		return inst.Message
 	}
-	return defaultMessages[instType]
+	return defaultInstructionMessage
 }
 
 // FilterInstructions returns the active routed instruction for the given
 // agent. Only the most recent entry in the history is considered (older
 // entries are kept for audit but do not drive dispatch). Returns nil when
-// type/agent is empty or the active entry does not match.
-func FilterInstructions(instructions Instructions, instType InstructionType, agent string) []RoutedInstruction {
-	if instType == "" || agent == "" || len(instructions) == 0 {
+// agent is empty or the active entry does not address it. Callers gate on
+// status==executing before routing (see selectInstruction).
+func FilterInstructions(instructions Instructions, agent string) []RoutedInstruction {
+	if agent == "" || len(instructions) == 0 {
 		return nil
 	}
 	active := instructions[len(instructions)-1]
-	if active.Type != "" && active.Type != instType {
-		return nil
-	}
 	if active.Agent != agent {
 		return nil
 	}
 	return []RoutedInstruction{{
 		Role:    active.Name,
-		Type:    instType,
 		Agent:   active.Agent,
 		Name:    active.Name,
-		Message: resolveMessage(active, instType),
+		Message: resolveMessage(active),
 		Model:   active.Model,
 	}}
 }
