@@ -49,7 +49,10 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   const term = new window.Terminal({
     fontFamily: "'IBM Plex Mono', 'Menlo', 'Monaco', 'Courier New', monospace",
     fontSize: 14,
-    scrollback: 1000,
+    // Keep aligned with maxSnapshotScrollback in runtime_local_linux.go: the
+    // connect snapshot prepends up to that many scrolled-off history lines, so
+    // xterm must retain at least as many for the user to scroll back to them.
+    scrollback: 2000,
   });
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);

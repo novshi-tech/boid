@@ -317,16 +317,18 @@ func TestLocalRuntimeNonInteractiveResizeIsNoop(t *testing.T) {
 
 // TestLocalRuntimeInteractiveSnapshotIsRenderedGrid verifies that the
 // snapshot returned to an attaching client is the resolved screen grid, not
-// the raw transcript. A TUI that clears the screen and repaints (ESC[2J) must
-// not leave the pre-clear content in the snapshot — replaying that raw history
-// at a different width is what corrupts the mobile web terminal.
+// the raw transcript. A TUI that overwrites in place (here via carriage
+// return) must show only the final cells — replaying the raw bytes at a
+// different width is what corrupts the mobile web terminal. We use an in-place
+// overwrite (not ESC[2J) so nothing scrolls into scrollback, isolating the
+// "rendered vs raw" property from the scrollback test below.
 func TestLocalRuntimeInteractiveSnapshotIsRenderedGrid(t *testing.T) {
 	rt := &dispatcher.LocalRuntime{RootDir: t.TempDir()}
 
-	// Print OLDLINE, erase the whole screen, home the cursor, then print
-	// NEWLINE. On a real terminal only NEWLINE is visible afterwards.
+	// Print OLDLINE, carriage-return to column 0, then overwrite with NEWLINE
+	// (same length). On a real terminal only NEWLINE is visible afterwards.
 	handle, err := rt.Start(context.Background(), dispatcher.RuntimeStartSpec{
-		Command:     `printf 'OLDLINE\033[2J\033[HNEWLINE'`,
+		Command:     `printf 'OLDLINE\rNEWLINE'`,
 		Interactive: true,
 		TTY:         true,
 	})
@@ -373,7 +375,7 @@ func TestLocalRuntimeNonInteractiveSnapshotIsRaw(t *testing.T) {
 	rt := &dispatcher.LocalRuntime{RootDir: t.TempDir()}
 
 	handle, err := rt.Start(context.Background(), dispatcher.RuntimeStartSpec{
-		Command:     `printf 'OLDLINE\033[2J\033[HNEWLINE'`,
+		Command:     `printf 'OLDLINE\rNEWLINE'`,
 		Interactive: false,
 		TTY:         false,
 	})
@@ -396,6 +398,47 @@ func TestLocalRuntimeNonInteractiveSnapshotIsRaw(t *testing.T) {
 	// survive (the escape sequence is just data here, not interpreted).
 	if !strings.Contains(got, "OLDLINE") || !strings.Contains(got, "NEWLINE") {
 		t.Fatalf("non-interactive snapshot should be raw, got %q", got)
+	}
+}
+
+// TestLocalRuntimeSnapshotIncludesScrollback verifies that lines which scroll
+// off the top of the screen are preserved in the snapshot, so the web client
+// can scroll back through history. Rendering only the visible grid would drop
+// everything above the current viewport.
+func TestLocalRuntimeSnapshotIncludesScrollback(t *testing.T) {
+	rt := &dispatcher.LocalRuntime{RootDir: t.TempDir()}
+
+	// Print 60 numbered lines. The PTY defaults to 24 rows, so the early lines
+	// scroll off into the emulator's scrollback while the last ~24 stay on the
+	// visible screen.
+	handle, err := rt.Start(context.Background(), dispatcher.RuntimeStartSpec{
+		Command:     `for i in $(seq 1 60); do printf 'HISTLINE%d\r\n' "$i"; done`,
+		Interactive: true,
+		TTY:         true,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := rt.Wait(context.Background(), handle.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	var replay bytes.Buffer
+	if err := rt.Attach(context.Background(), handle.ID, dispatcher.RuntimeAttachRequest{
+		Output: &replay,
+	}); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	got := replay.String()
+	// HISTLINE60 is on the visible screen.
+	if !strings.Contains(got, "HISTLINE60") {
+		t.Fatalf("snapshot missing visible HISTLINE60: %q", got)
+	}
+	// HISTLINE1 scrolled off the top — it must survive via scrollback. The
+	// trailing CRLF disambiguates it from HISTLINE10..HISTLINE19.
+	if !strings.Contains(got, "HISTLINE1\r\n") {
+		t.Fatalf("snapshot dropped scrolled-off HISTLINE1 (no scrollback): %q", got)
 	}
 }
 
