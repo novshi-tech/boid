@@ -23,6 +23,12 @@ import (
 
 const localRuntimeTranscriptFile = "transcript.log"
 
+// maxSnapshotScrollback bounds how many scrolled-off lines a connect-time
+// snapshot prepends ahead of the visible screen, so the web client can scroll
+// back through history without an unbounded payload on long sessions. Keep
+// aligned with the xterm scrollback in web/static/boid-terminal.js.
+const maxSnapshotScrollback = 2000
+
 type LocalRuntime struct {
 	RootDir string
 
@@ -508,12 +514,30 @@ func renderTerminalSnapshot(raw []byte, cols, rows int) []byte {
 		<-drained
 	}
 
-	dump := emu.Render()
+	// Prepend the lines that have scrolled off the top (the emulator collects
+	// them in its scrollback) so the client can scroll back through history,
+	// then the current visible screen. Without this the dump is only the
+	// viewport and all earlier output is lost on (re)connect. Cap to the most
+	// recent maxSnapshotScrollback lines to bound the payload on long sessions;
+	// keep it aligned with the xterm scrollback in web/static/boid-terminal.js.
+	var b strings.Builder
+	if sb := emu.Scrollback(); sb != nil {
+		lines := sb.Lines()
+		if start := len(lines) - maxSnapshotScrollback; start > 0 {
+			lines = lines[start:]
+		}
+		for _, ln := range lines {
+			b.WriteString(ln.Render())
+			b.WriteByte('\n')
+		}
+	}
+	b.WriteString(emu.Render())
 
-	// Buffer.Render joins rows with a bare LF. A raw-mode xterm treats LF as
-	// line-feed-only (no carriage return), which would stagger the grid into a
-	// staircase, so emit CRLF to keep each row anchored at column 0.
-	return []byte(strings.ReplaceAll(dump, "\n", "\r\n"))
+	// Buffer.Render joins rows with a bare LF (and we used LF above). A raw-mode
+	// xterm treats LF as line-feed-only (no carriage return), which would
+	// stagger the output into a staircase, so emit CRLF to anchor each row at
+	// column 0.
+	return []byte(strings.ReplaceAll(b.String(), "\n", "\r\n"))
 }
 
 func (s *localRuntimeSession) unsubscribe(subID int) {
