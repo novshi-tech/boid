@@ -109,6 +109,12 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
 
     ws.onopen = function () {
       setStatus('connected');
+      // The server's first output message is a freshly-rendered screen grid
+      // (see runtime_local_linux.go subscribe / renderTerminalSnapshot), not a
+      // replay of the whole transcript. It's a full-screen paint, so wipe the
+      // terminal first — on reconnect this clears the previous session's frame
+      // so the snapshot lands on a clean screen.
+      term.reset();
       const dims = fitAddon.proposeDimensions();
       if (dims) sendResize(dims.cols, dims.rows);
     };

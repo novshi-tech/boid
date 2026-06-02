@@ -11,10 +11,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/x/vt"
 	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
 )
@@ -39,6 +41,7 @@ type localRuntimeSession struct {
 	mu          sync.Mutex
 	writerMu    sync.Mutex // protects concurrent writes to master
 	transcript  bytes.Buffer
+	cols, rows  int // current PTY size = the width the transcript is recorded at
 	subscribers map[int]chan []byte
 	nextSubID   int
 	running     bool
@@ -141,6 +144,8 @@ func (r *LocalRuntime) Start(_ context.Context, spec RuntimeStartSpec) (*Runtime
 		interactive:    spec.Interactive,
 		transcriptFile: transcriptFile,
 		transcriptPath: transcriptPath,
+		cols:           80, // matches the default PTY size set above (setPTYSize 80x24)
+		rows:           24,
 		subscribers:    make(map[int]chan []byte),
 		running:        true,
 		done:           make(chan struct{}),
@@ -254,7 +259,16 @@ func (r *LocalRuntime) Resize(_ context.Context, runtimeID string, size Terminal
 	if !session.running || !session.interactive {
 		return nil
 	}
-	return setPTYSize(session.master, size)
+	if err := setPTYSize(session.master, size); err != nil {
+		return err
+	}
+	// Track the new size so a later subscribe() rebuilds the grid at the width
+	// the transcript is actually being recorded at.
+	if size.Cols > 0 && size.Rows > 0 {
+		session.cols = size.Cols
+		session.rows = size.Rows
+	}
+	return nil
 }
 
 func (r *LocalRuntime) Wait(ctx context.Context, runtimeID string) (RuntimeExit, error) {
@@ -414,19 +428,92 @@ func (s *localRuntimeSession) appendTranscript(chunk []byte) {
 }
 
 func (s *localRuntimeSession) subscribe() ([]byte, int, chan []byte, bool) {
+	// Capture the recorded bytes, the recording width, and register the live
+	// channel atomically under the lock so the snapshot and the subsequent
+	// deltas share an exact boundary: the snapshot resolves bytes[:N] and every
+	// chunk delivered on the channel is bytes[N:]. The client paints the
+	// snapshot, then applies the raw deltas on top.
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	raw := append([]byte(nil), s.transcript.Bytes()...)
+	cols, rows := s.cols, s.rows
+	interactive := s.interactive
+	running := s.running
 
-	snapshot := append([]byte(nil), s.transcript.Bytes()...)
-	if !s.running {
-		return snapshot, 0, nil, false
+	var subID int
+	var ch chan []byte
+	if running {
+		subID = s.nextSubID
+		s.nextSubID++
+		ch = make(chan []byte, 64)
+		s.subscribers[subID] = ch
+	}
+	s.mu.Unlock()
+
+	// Interactive sessions carry a TUI whose output is a stream of width-
+	// dependent relative cursor moves. Replaying the raw history at a different
+	// width accumulates into garbage, so resolve it to the current screen grid
+	// (done outside the lock — it is CPU-bound and must not block live
+	// broadcast). Non-interactive sessions are plain log streams replayed
+	// verbatim. See docs/plans/web-terminal-vt-emulator.md.
+	snapshot := raw
+	if interactive {
+		snapshot = renderTerminalSnapshot(raw, cols, rows)
+	}
+	return snapshot, subID, ch, running
+}
+
+// renderTerminalSnapshot feeds the recorded PTY bytes through a virtual
+// terminal emulator sized to the recording width and returns the resolved
+// screen as a width-independent ANSI dump (SGR styles preserved). The client
+// paints this onto a cleared terminal and its xterm reflows it to the client's
+// own width — far cleaner than replaying the raw transcript, where relative
+// cursor moves recorded at one width corrupt at another.
+func renderTerminalSnapshot(raw []byte, cols, rows int) []byte {
+	if len(raw) == 0 {
+		return nil
+	}
+	if cols <= 0 || rows <= 0 {
+		cols, rows = 80, 24
 	}
 
-	subID := s.nextSubID
-	s.nextSubID++
-	ch := make(chan []byte, 64)
-	s.subscribers[subID] = ch
-	return snapshot, subID, ch, true
+	emu := vt.NewEmulator(cols, rows)
+
+	// The emulator answers device queries (DA1, DSR, XTVERSION, ...) embedded in
+	// the recorded output by writing replies to its synchronous input pipe.
+	// Nobody consumes those replies here — the real PTY already answered the
+	// queries — but the pipe write blocks until drained, so emu.Write() would
+	// deadlock without a concurrent reader.
+	drained := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, emu)
+		close(drained)
+	}()
+
+	_, _ = emu.Write(raw)
+
+	// Stop the drain reader by closing only the reply pipe's write end, which
+	// hands the reader a clean EOF. We deliberately do NOT call emu.Close() to
+	// stop it: emu.Close flips an internal `closed` flag that the reader checks
+	// on every emu.Read, and the race detector (correctly) flags that as a data
+	// race in x/vt. Once <-drained confirms the reader is gone, flipping that
+	// flag has no concurrent observer.
+	if pw, ok := emu.InputPipe().(*io.PipeWriter); ok {
+		_ = pw.Close()
+		<-drained
+		_ = emu.Close()
+	} else {
+		// Defensive fallback if x/vt ever changes the pipe type: emu.Close
+		// still unblocks the reader (with the data race noted above).
+		_ = emu.Close()
+		<-drained
+	}
+
+	dump := emu.Render()
+
+	// Buffer.Render joins rows with a bare LF. A raw-mode xterm treats LF as
+	// line-feed-only (no carriage return), which would stagger the grid into a
+	// staircase, so emit CRLF to keep each row anchored at column 0.
+	return []byte(strings.ReplaceAll(dump, "\n", "\r\n"))
 }
 
 func (s *localRuntimeSession) unsubscribe(subID int) {
