@@ -315,6 +315,90 @@ func TestLocalRuntimeNonInteractiveResizeIsNoop(t *testing.T) {
 	}
 }
 
+// TestLocalRuntimeInteractiveSnapshotIsRenderedGrid verifies that the
+// snapshot returned to an attaching client is the resolved screen grid, not
+// the raw transcript. A TUI that clears the screen and repaints (ESC[2J) must
+// not leave the pre-clear content in the snapshot — replaying that raw history
+// at a different width is what corrupts the mobile web terminal.
+func TestLocalRuntimeInteractiveSnapshotIsRenderedGrid(t *testing.T) {
+	rt := &dispatcher.LocalRuntime{RootDir: t.TempDir()}
+
+	// Print OLDLINE, erase the whole screen, home the cursor, then print
+	// NEWLINE. On a real terminal only NEWLINE is visible afterwards.
+	handle, err := rt.Start(context.Background(), dispatcher.RuntimeStartSpec{
+		Command:     `printf 'OLDLINE\033[2J\033[HNEWLINE'`,
+		Interactive: true,
+		TTY:         true,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := rt.Wait(context.Background(), handle.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	var replay bytes.Buffer
+	if err := rt.Attach(context.Background(), handle.ID, dispatcher.RuntimeAttachRequest{
+		Output: &replay,
+	}); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	got := replay.String()
+	if !strings.Contains(got, "NEWLINE") {
+		t.Fatalf("rendered snapshot missing NEWLINE: %q", got)
+	}
+	if strings.Contains(got, "OLDLINE") {
+		t.Fatalf("rendered snapshot still contains cleared OLDLINE (raw replay, not vt grid): %q", got)
+	}
+	// The grid is joined with CRLF so a raw-mode xterm starts each row at
+	// column 0. A bare LF without a preceding CR would stagger the output.
+	if strings.Contains(got, "\n") && !strings.Contains(got, "\r\n") {
+		t.Fatalf("rendered snapshot uses bare LF line breaks: %q", got)
+	}
+
+	// The raw transcript on disk is untouched — the cleared bytes are still
+	// there for `boid job log` / the static /log endpoint.
+	raw, err := os.ReadFile(filepath.Join(rt.RootDir, handle.ID, "transcript.log"))
+	if err == nil && !strings.Contains(string(raw), "OLDLINE") {
+		t.Fatalf("raw transcript.log lost OLDLINE: %q", string(raw))
+	}
+}
+
+// TestLocalRuntimeNonInteractiveSnapshotIsRaw verifies the vt rendering is NOT
+// applied to non-interactive (pipe) sessions. Their transcript is plain log
+// output streamed line-by-line (e.g. the SSE /log follow), and collapsing it
+// into a screen-sized grid would discard scrolled-off lines.
+func TestLocalRuntimeNonInteractiveSnapshotIsRaw(t *testing.T) {
+	rt := &dispatcher.LocalRuntime{RootDir: t.TempDir()}
+
+	handle, err := rt.Start(context.Background(), dispatcher.RuntimeStartSpec{
+		Command:     `printf 'OLDLINE\033[2J\033[HNEWLINE'`,
+		Interactive: false,
+		TTY:         false,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := rt.Wait(context.Background(), handle.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	var replay bytes.Buffer
+	if err := rt.Attach(context.Background(), handle.ID, dispatcher.RuntimeAttachRequest{
+		Output: &replay,
+	}); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	got := replay.String()
+	// Non-interactive output is replayed verbatim, so the pre-clear bytes
+	// survive (the escape sequence is just data here, not interpreted).
+	if !strings.Contains(got, "OLDLINE") || !strings.Contains(got, "NEWLINE") {
+		t.Fatalf("non-interactive snapshot should be raw, got %q", got)
+	}
+}
+
 func TestLocalRuntimeWriteInputParallelNoRace(t *testing.T) {
 	rt := &dispatcher.LocalRuntime{RootDir: t.TempDir()}
 
