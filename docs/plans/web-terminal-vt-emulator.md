@@ -1,6 +1,7 @@
 # Web ターミナル: サーバ側 vt エミュレータによる描画崩壊の根治
 
-> Status: Phase 1 実装完了 (2026-06-02)。Phase 2 (履歴リフロー等) は未着手。
+> Status: Phase 1 (snapshot グリッド化, boid#514) + ライブ幅修正 (SIGWINCH 転送, boid-kits#38)
+> 実装完了 (2026-06-02)。単一クライアントは綺麗になる。Phase 2 (履歴リフロー / per-client 幅) は未着手。
 > 調査・PoC 完了日: 2026-06-02
 >
 > ## 実装メモ (Phase 1)
@@ -23,6 +24,54 @@
 >   output メッセージ (= グリッドダンプ) を綺麗な画面に描く。
 > - テスト: `runtime_local_linux_test.go` に interactive=グリッド解決 / non-interactive=生
 >   の 2 本を追加。`go test -race ./internal/dispatcher/ ./internal/api/` グリーン。
+
+## Phase 1 後の追加調査: 真因はライブ出力の幅 (SIGWINCH 不達)
+
+> 調査日: 2026-06-02。Phase 1 マージ後もモバイルで崩れが残った件の根本原因と修正。
+
+Phase 1 (初期スナップショットのグリッド化) を入れてもモバイルで崩れが残った。一次証拠で
+切り分けた結果、**崩れていたのはスナップショットでなくその後のライブ出力**だった。
+
+### 一次証拠
+
+- 実 transcript (`runtimes/<rid>/transcript.log`) の罫線 `─` は**末尾フレームも含め全部 80 桁**
+  = PTY は終始 80 桁。`renderTerminalSnapshot(raw, 80, 24)` は**完全に綺麗**、`(raw, 44, 24)` は
+  崩壊 (録画幅でないと崩れる、というプラン記載どおり)。→ スナップショットは正しく綺麗を返している。
+- ライブ delta は生の 80 桁バイト (相対カーソル移動が大量)。これを狭い (≒44) モバイル xterm に
+  流すと崩壊する。xterm は**ライブのカーソル移動出力を再折り返しできない** (再折り返しは自身の
+  resize 時のみ)。
+- クライアントは接続時に resize を送るが PTY は 80 のまま。`ps -o pid,pgid,sid,tty` で確認すると、
+  サンドボックス内 `claude` は **`SID ≠ PTY セッション`・`tty=?` (制御端末なし)**。fd 0/1/2 は PTY
+  slave を指す。
+
+### 根本原因
+
+サンドボックスのプロセス構造は `outer.sh(bash) → pasta → inner bash → run-agent.py → claude` で、
+`run-agent.py` は `subprocess.Popen(args, start_new_session=True)` で **claude を独自セッションに**
+起動している (agent-stop の `SIGUSR1` を claude に当てないための意図的な設計)。その副作用として、
+PTY リサイズ時にカーネルが**前景プロセスグループ** (outer bash / pasta / run-agent.py) に送る
+**`SIGWINCH` を claude が受け取れない**。よって claude は起動時の幅 (既定 80 桁) のまま描画し続け、
+ライブ出力が常に 80 桁になる。Phase 1 の vt リサイズ機構自体は正常 (直接の PTY 子プロセスは
+リサイズを受け取ることをテストで確認済み)。
+
+### 修正
+
+`boid-kits` の `claude-code/hooks/run-agent.py` に **`SIGWINCH` ハンドラを追加し、受信したら子
+claude に転送**する (run-agent.py は前景 pgrp にいるのでカーネル `SIGWINCH` を受け取れる)。claude は
+更新済みの PTY winsize を読み直し、クライアント幅で描き直す。`SIGUSR1` と同じ `proc_holder` パターン・
+防御的 unblock を踏襲。(PR: novshi-tech/boid-kits#38)
+
+検証: `PTY + 前景pgrp forwarder + start_new_session=True の子` のトポロジを再現し、転送なし=子は
+`SIGWINCH` を一切受けない / 転送あり=子が新サイズ (`24 44`) を取得、を確認。
+
+### 教訓・残課題
+
+- Web 端末の崩れは「**初期描画 (snapshot)**」と「**ライブ (PTY 実幅 vs client 幅)**」を分けて診る。
+  PTY 実幅は transcript の罫線幅で判る。
+- Phase 1 (boid 側 snapshot グリッド化) と本修正 (kit 側 SIGWINCH 転送) は**相補的**。両方で単一
+  クライアントが完全に綺麗になる。
+- **複数クライアント異幅 / read-only 観測**は依然未解決 (PTY = 1 幅、後勝ち)。完全な per-client
+  幅は Phase 2 の常駐エミュレータ + グリッド配信が必要。
 
 ## 背景
 
