@@ -8,9 +8,13 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/coder/websocket"
@@ -47,6 +51,8 @@ func run(args []string) error {
 		return runAssertJobRoleCount(args[1:])
 	case "ws-job-output":
 		return runWSJobOutput(args[1:])
+	case "fake-docker":
+		return runFakeDocker(args[1:])
 	default:
 		return usageError(fmt.Sprintf("unknown command %q", args[0]))
 	}
@@ -409,5 +415,107 @@ func printJSON(v any) error {
 }
 
 func usageError(msg string) error {
-	return errors.New(msg + "\nusage: boid-e2e <wait-unix-socket|wait-health|get-task|wait-task-status|list-jobs|wait-job-count|assert-job-role-count|ws-job-output> ...")
+	return errors.New(msg + "\nusage: boid-e2e <wait-unix-socket|wait-health|get-task|wait-task-status|list-jobs|wait-job-count|assert-job-role-count|ws-job-output|fake-docker> ...")
+}
+
+// runFakeDocker starts a minimal Docker API-compatible HTTP server on a Unix
+// socket.  It returns fixed responses for Docker create/stop/delete endpoints
+// and logs every request to a JSONL file (one entry per line).  The server
+// runs until it receives SIGTERM or SIGINT.
+//
+// Usage: boid-e2e fake-docker [--log <logfile>] <socket-path>
+func runFakeDocker(args []string) error {
+	fs := flag.NewFlagSet("fake-docker", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	logPath := fs.String("log", "", "path to request log file (JSONL, optional)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return usageError("fake-docker requires <socket-path>")
+	}
+	socketPath := fs.Arg(0)
+
+	// Remove stale socket file if present.
+	_ = os.Remove(socketPath)
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		return fmt.Errorf("fake-docker listen %s: %w", socketPath, err)
+	}
+	defer ln.Close()
+
+	// Open log file (append+create so multiple runs accumulate).
+	var (
+		logMu  sync.Mutex
+		logF   *os.File
+	)
+	if *logPath != "" {
+		logF, err = os.OpenFile(*logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return fmt.Errorf("fake-docker open log: %w", err)
+		}
+		defer logF.Close()
+	}
+
+	writeLog := func(method, path string, status int) {
+		if logF == nil {
+			return
+		}
+		line := fmt.Sprintf("{\"method\":%q,\"path\":%q,\"status\":%d}\n", method, path, status)
+		logMu.Lock()
+		defer logMu.Unlock()
+		_, _ = logF.WriteString(line)
+		_ = logF.Sync()
+	}
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method := strings.ToUpper(r.Method)
+		path := r.URL.Path
+		status, body := fakeDockerRoute(method, path)
+		writeLog(method, path, status)
+		if len(body) > 0 {
+			w.Header().Set("Content-Type", "application/json")
+		}
+		w.WriteHeader(status)
+		if len(body) > 0 {
+			_, _ = w.Write(body)
+		}
+	})
+
+	srv := &http.Server{Handler: handler}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	go func() {
+		<-ctx.Done()
+		_ = srv.Close()
+	}()
+
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("fake-docker serve: %w", err)
+	}
+	return nil
+}
+
+// fakeDockerRoute returns the (statusCode, body) for a fake Docker API
+// response.  It covers the endpoints exercised by the docker proxy E2E tests.
+func fakeDockerRoute(method, path string) (int, []byte) {
+	switch {
+	case method == "GET" || method == "HEAD":
+		return http.StatusOK, []byte(`{}`)
+	case method == "POST" && path == "/containers/create":
+		return http.StatusCreated, []byte(`{"Id":"fake-c1","Warnings":[]}`)
+	case method == "POST" && path == "/networks/create":
+		return http.StatusCreated, []byte(`{"Id":"fake-n1","Warning":""}`)
+	case method == "POST" && path == "/volumes/create":
+		return http.StatusCreated, []byte(`{"Name":"fake-v1","Driver":"local","Mountpoint":"","Labels":{},"Scope":"local"}`)
+	case method == "DELETE":
+		return http.StatusNoContent, nil
+	case method == "POST":
+		return http.StatusNoContent, nil
+	default:
+		return http.StatusOK, []byte(`{}`)
+	}
 }

@@ -362,10 +362,14 @@ func (r *Runner) proxyPort() int {
 	return *r.ProxyPort
 }
 
-// startDockerProxy creates a per-sandbox docker proxy socket under
-// <RuntimesDir>/<runtimeID>/ and starts the proxy server. Returns the
-// dockerProxyState on success; the caller must call stopDockerProxy on error
-// or when the sandbox exits.
+// startDockerProxy creates a per-sandbox docker proxy socket and starts the
+// proxy server. Returns the dockerProxyState on success; the caller must call
+// stopDockerProxy on error or when the sandbox exits.
+//
+// The socket is placed next to the boid server socket (not inside runtimeDir)
+// to stay under the 108-byte Unix domain socket path limit. Long test
+// environment paths (e.g. /tmp/boid-e2e-<scenario>-xxx/data/boid/runtimes/UUID)
+// would exceed the limit if the socket were placed there.
 func (r *Runner) startDockerProxy(runtimeID string) (*dockerProxyState, error) {
 	upstream, err := dockerproxy.ResolveUpstream("")
 	if err != nil {
@@ -375,7 +379,10 @@ func (r *Runner) startDockerProxy(runtimeID string) (*dockerProxyState, error) {
 	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir docker proxy runtime dir: %w", err)
 	}
-	socketPath := filepath.Join(runtimeDir, "docker-proxy.sock")
+	// Place the socket in the boid server socket directory (short path) rather
+	// than inside runtimeDir. Long E2E scenario names make runtimeDir exceed
+	// the 108-byte Unix socket path limit (EINVAL on bind).
+	socketPath := r.dockerProxySocketPath(runtimeID)
 	ledgerPath := filepath.Join(runtimeDir, "docker-resources.jsonl")
 
 	ln, err := net.Listen("unix", socketPath)
@@ -404,6 +411,28 @@ func (r *Runner) startDockerProxy(runtimeID string) (*dockerProxyState, error) {
 		socketPath: socketPath,
 		ledger:     ledger,
 	}, nil
+}
+
+// dockerProxySocketPath returns a short socket path for the per-sandbox docker
+// proxy. Unix domain sockets on Linux have a 108-byte path limit (EINVAL on
+// bind). Long test or system paths can push the proxy socket over this limit,
+// so the socket is placed next to the boid server socket rather than inside
+// the deep runtimeDir hierarchy.
+//
+// Falls back to the runtimeDir path when ServerSocket is not configured (e.g.
+// in unit tests that construct a minimal Runner).
+func (r *Runner) dockerProxySocketPath(runtimeID string) string {
+	const maxUnixSocketPath = 107
+	if r.ServerSocket != "" {
+		// Short name uses first 12 hex chars of the UUID to avoid collisions
+		// across concurrent jobs while staying well under the path limit.
+		short := filepath.Join(filepath.Dir(r.ServerSocket), runtimeID[:12]+".dp.s")
+		if len(short) <= maxUnixSocketPath {
+			return short
+		}
+	}
+	// Fallback (ServerSocket unset or still too long): use runtimeDir.
+	return filepath.Join(r.RuntimesDir, runtimeID, "docker-proxy.sock")
 }
 
 func (r *Runner) trackDockerState(runtimeID string, ds *dockerProxyState) {

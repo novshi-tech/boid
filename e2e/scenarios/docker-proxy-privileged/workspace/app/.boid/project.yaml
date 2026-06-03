@@ -1,0 +1,10 @@
+id: docker-proxy-privileged
+name: Docker Proxy Test - privileged
+capabilities:
+  docker: {}
+env:
+  DOCKER_PROXY_TEST_CASE: privileged
+task_behaviors:
+  smoke:
+    kits:
+      - github.com/novshi-tech/boid-kits/docker-proxy-test

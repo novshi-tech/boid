@@ -1,0 +1,10 @@
+id: docker-proxy-cross-job-isolation
+name: Docker Proxy Test - cross-job-isolation
+capabilities:
+  docker: {}
+env:
+  DOCKER_PROXY_TEST_CASE: cross-job-isolation
+task_behaviors:
+  smoke:
+    kits:
+      - github.com/novshi-tech/boid-kits/docker-proxy-test

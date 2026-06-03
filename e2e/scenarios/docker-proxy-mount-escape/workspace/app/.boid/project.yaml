@@ -1,0 +1,10 @@
+id: docker-proxy-mount-escape
+name: Docker Proxy Test - mount-escape
+capabilities:
+  docker: {}
+env:
+  DOCKER_PROXY_TEST_CASE: mount-escape
+task_behaviors:
+  smoke:
+    kits:
+      - github.com/novshi-tech/boid-kits/docker-proxy-test
