@@ -544,9 +544,15 @@ README での complementary mitigation 案内は引き続き行う。
 
 ## テスト戦略
 
-### 単体テスト (内部ポリシー評価)
+**検証は docker daemon 非依存を基本とする。** proxy のポリシー判定・転送・GC 記録は
+すべて mock upstream（固定レスポンスを返す Docker API 互換の fake unix socket）で検証でき、
+本物の docker daemon を必要としない。クライアントは docker CLI ではなく **curl で Docker API を
+直接叩く**ことで CLI 非依存・再現可能にする。実 daemon が要るのは実コンテナを立てる結合
+テストのみで、これは optional とする（後述）。
 
-`internal/sandbox/dockerproxy/policy_test.go` として:
+### 単体テスト (ポリシー判定ロジック・依存なし)
+
+`internal/sandbox/dockerproxy/policy_test.go` として、ポリシー判定を純粋関数で検証:
 
 - `HostConfig.Binds` に bind 指定（パス不問）→ deny
 - `HostConfig.Mounts` (Type=bind, パス不問) → deny
@@ -570,9 +576,21 @@ README での complementary mitigation 案内は引き続き行う。
 - `MaxBodyBytes` 超過のボディ → deny
 - parser differential: 重複 `HostConfig` キーや大文字小文字を変えた攻撃ボディ → 見落とさない
 
-### E2E テスト (e2e/scenarios/ 配下)
+### 統合テスト (proxy 本体 × mock upstream・docker 不要)
 
-敵対的シナリオとして:
+`internal/sandbox/dockerproxy/` の Go テストで、proxy を起動し mock upstream
+（固定レスポンスを返す Docker API 互換の fake unix socket）に繋いで検証:
+
+- deny 系: 危険リクエストを proxy に送ると 403 が返り、**mock upstream には到達しない**
+- transfer 系: 正当リクエストが mock upstream へ転送され、応答がそのまま返る
+- ID 記録: `POST /containers/create` の mock 応答（固定 `Id`）から ID を拾い、記録ファイルへ追記される
+- GC: job 完了相当で、記録ファイルのリソースに対し mock upstream へ stop/rm が発行される
+- 生ボディ転送: リクエストボディが改変されず upstream に届く
+
+### E2E テスト (サンドボックス統合 × mock upstream・docker 不要)
+
+サンドボックスに proxy socket が bind され、`DOCKER_HOST` 経由で **curl が通る**ことを
+mock upstream に対して検証する敵対的シナリオ:
 
 - `docker-proxy-bind-escape`: `-v /etc:/etc` で bind mount 脱出を試みる
 - `docker-proxy-mount-escape`: `--mount type=bind,src=/etc,dst=/etc` で同様の脱出を試みる
@@ -583,11 +601,22 @@ README での complementary mitigation 案内は引き続き行う。
 - `docker-proxy-security-opt`: `--security-opt seccomp=unconfined` を試みる
 - `docker-proxy-capadd`: `--cap-add SYS_ADMIN` を試みる
 - `docker-proxy-device`: `--device /dev/sda` を試みる
-- `docker-proxy-build-denied`: `docker build`（BuildKit / legacy とも）が拒否される
-- `docker-proxy-testcontainers`: TestContainers ベースのテストが Ryuk 無効化込みで正常完走する
-- `docker-proxy-reap-on-success`: job が正常完了すると、起動したコンテナが消える
-- `docker-proxy-reap-on-failure`: job が失敗（exit≠0）しても、起動したコンテナが消える
-- `docker-proxy-passthrough`: 通常の `docker run`, `docker ps`, `docker logs` が正常動作する
+- `docker-proxy-build-denied`: `POST /build` / `POST /session` が拒否される（403）
+- `docker-proxy-reap-on-success`: job 正常完了で、記録したコンテナへ stop/rm が発行される
+- `docker-proxy-reap-on-failure`: job 失敗（exit≠0）でも、同様に stop/rm が発行される
+- `docker-proxy-passthrough`: 通常の API（`/containers/json`, `/version` 等）が転送される
+
+### 実 docker/podman 結合テスト (optional・実 daemon がある環境のみ)
+
+mock では確認できない「実際にコンテナが立つ」経路だけは本物の daemon が要る。
+**proxy は upstream が docker か podman かを区別しない**ため、podman の docker 互換 socket
+（`podman system service`）でも代替できる。実 daemon が無い環境（本リポジトリの開発機は
+podman remote client、CI も既定では docker/podman 無し）では **skip** する。
+
+- `docker-proxy-testcontainers`: 実 daemon に対し TestContainers が Ryuk 無効化込みで完走する
+
+CI で実結合まで回す場合は、ジョブに rootless docker か `podman system service` の
+セットアップを追加し、上流 socket の動的解決でそのパスを拾わせる。
 
 ---
 
