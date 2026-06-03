@@ -950,3 +950,80 @@ func TestSandboxRuntimeInfo_DockerEnabled(t *testing.T) {
 	}
 }
 
+// TestBuildSandboxSpec_DockerProxy_EnvAndMount verifies that when
+// ProxySocketPath is set (DockerEnabled), BuildSandboxSpec injects the docker
+// env vars and bind-mounts the proxy socket at the fixed sandbox path.
+func TestBuildSandboxSpec_DockerProxy_EnvAndMount(t *testing.T) {
+	hostSocketPath := "/run/some/runtime/docker-proxy.sock"
+	spec := &orchestrator.JobSpec{
+		Visibility: orchestrator.Visibility{DockerEnabled: true},
+	}
+	rt := SandboxRuntimeInfo{
+		DockerEnabled:   true,
+		ProxySocketPath: hostSocketPath,
+	}
+	result, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+
+	// Check environment variables.
+	wantDockerHost := "unix://" + dockerProxySandboxSocket
+	for _, kv := range []struct{ key, val string }{
+		{"DOCKER_HOST", wantDockerHost},
+		{"CONTAINER_HOST", wantDockerHost},
+		{"TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", dockerProxySandboxSocket},
+		{"TESTCONTAINERS_RYUK_DISABLED", "true"},
+	} {
+		if got := result.Env[kv.key]; got != kv.val {
+			t.Errorf("env %s = %q, want %q", kv.key, got, kv.val)
+		}
+	}
+
+	// Check bind-mount of proxy socket.
+	found := false
+	for _, m := range result.Mounts {
+		if m.Source == hostSocketPath && m.Target == dockerProxySandboxSocket {
+			found = true
+			if !m.IsFile {
+				t.Errorf("docker proxy mount should have IsFile=true")
+			}
+			if m.ReadOnly {
+				t.Errorf("docker proxy mount should not be ReadOnly")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("docker proxy socket not found in mounts (source=%s, target=%s)",
+			hostSocketPath, dockerProxySandboxSocket)
+	}
+}
+
+// TestBuildSandboxSpec_DockerProxy_DisabledWhenNoSocketPath verifies that
+// without ProxySocketPath no docker env vars are injected and no proxy socket
+// is mounted — even when DockerEnabled is true (proxy failed to start upstream).
+func TestBuildSandboxSpec_DockerProxy_DisabledWhenNoSocketPath(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		Visibility: orchestrator.Visibility{DockerEnabled: true},
+	}
+	rt := SandboxRuntimeInfo{DockerEnabled: true, ProxySocketPath: ""}
+	result, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+
+	for _, key := range []string{
+		"DOCKER_HOST", "CONTAINER_HOST",
+		"TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", "TESTCONTAINERS_RYUK_DISABLED",
+	} {
+		if v, ok := result.Env[key]; ok {
+			t.Errorf("env %s = %q, want absent (no proxy socket path)", key, v)
+		}
+	}
+	for _, m := range result.Mounts {
+		if m.Target == dockerProxySandboxSocket {
+			t.Errorf("unexpected docker proxy mount present when ProxySocketPath is empty")
+		}
+	}
+}
+

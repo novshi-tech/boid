@@ -26,6 +26,11 @@ type WireConfig struct {
 	// ProxyPort, when non-zero, enables HTTP(S) proxy environment variables
 	// pointing at host-gateway:<ProxyPort>.
 	ProxyPort *int
+	// RuntimesDir is the root directory where per-sandbox runtime directories
+	// are created. When non-empty and DockerEnabled, the runner pre-allocates a
+	// runtime directory here to host the per-sandbox docker proxy socket and
+	// resource ledger.
+	RuntimesDir string
 }
 
 func Wire(cfg WireConfig) *Runner {
@@ -41,5 +46,6 @@ func Wire(cfg WireConfig) *Runner {
 		BoidBinary:   cfg.BoidBinary,
 		ServerSocket: cfg.ServerSocket,
 		ProxyPort:    cfg.ProxyPort,
+		RuntimesDir:  cfg.RuntimesDir,
 	}
 }

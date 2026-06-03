@@ -65,7 +65,10 @@ func (r *LocalRuntime) Start(_ context.Context, spec RuntimeStartSpec) (*Runtime
 		return nil, fmt.Errorf("runtime command is required")
 	}
 
-	runtimeID := uuid.NewString()
+	runtimeID := spec.DesiredID
+	if runtimeID == "" {
+		runtimeID = uuid.NewString()
+	}
 	runtimeDir := filepath.Join(r.RootDir, runtimeID)
 	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir runtime dir: %w", err)
