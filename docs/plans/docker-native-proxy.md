@@ -369,6 +369,9 @@ bind を一律 deny する本設計では、この docker.sock bind も deny さ
 この方針なら bind 許可リストを一切設けずに済む。「Phase 1 完成と同時に TestContainers が
 動く」ことを E2E (`docker-proxy-testcontainers`) で担保する。
 
+Ryuk を無効化した分のリソース掃除（コンテナの後始末）は boid が肩代わりする。
+→ 別節「コンテナのライフサイクル管理 (Ryuk の内製化)」を参照。
+
 ### proxy socket のアクセス制御
 
 - proxy socket はサンドボックスごとに 1 本（socket per sandbox）とし、所有者を
@@ -385,6 +388,75 @@ bind を一律 deny する本設計では、この docker.sock bind も deny さ
 3. docker kit の `additional_bindings` から cetusguard ソケットの記述を削除
 4. `requires.commands: docker` の扱いは変えない (docker CLI は引き続き必要)
 5. cetusguard の systemd unit は boid が管理しなくなるため、ユーザが手動で停止可能
+
+---
+
+## コンテナのライフサイクル管理 (Ryuk の内製化)
+
+TestContainers の Ryuk を無効化する（前節）ため、その掃除役 ── job が起動した
+コンテナ・ネットワーク・ボリュームの後始末 ── を boid が肩代わりする。
+コンテナの実体は **サンドボックス内ではなくホストの docker daemon（rootless, uid 単位）
+配下に作られる**ため、サンドボックスを破棄してもコンテナは残る。明示的な掃除が要る。
+
+### スコープ: job (runtime_id) 単位
+
+boid は 1 job = 1 サンドボックス = 1 runtime_id の粒度で動く
+（`internal/dispatcher/runtime_local_linux.go`。`boid exec` も JobKind=exec の job）。
+コンテナのライフサイクルもこの **runtime_id 単位**に紐付ける。これにより
+TestContainers / hook / `boid exec` を区別なく同一ルールで掃除できる。
+
+> job をまたいだコンテナの共有・永続化は、既定では掃除対象とする
+> （サンドボックスの隔離境界を越えて生き残らせない）。永続の需要が出たら、
+> 将来、明示的なオプトインを検討する。
+
+### 識別: socket per sandbox
+
+docker クライアント（TestContainers 等）は boid 固有の認証トークンを載せないため、
+「daemon 単位の単一 proxy socket + token で job を識別」はできない。
+**サンドボックスごとに別の proxy socket を渡し、socket = runtime_id で識別する**
+（各サンドボックスが独立した proxy socket を持つ既存方針と一致）。
+
+### ID 取得: レスポンスから拾う (リクエストは無改変)
+
+生ボディ転送の原則（parser differential 回避）を崩さないため、
+**リクエストボディにラベルを注入しない**。代わりに作成系エンドポイントの
+**レスポンス**から ID を拾う:
+
+- `POST /containers/create` → レスポンス JSON の `Id`
+- `POST /networks/create` → `Id`
+- `POST /volumes/create` → `Name`
+
+これらのレスポンスは hijack されない通常の JSON であり、サイズも小さい。
+proxy はレスポンスを読み取って ID を記録し、ボディは改変せず下流へ返す。
+
+### 記録: runtime ディレクトリ内のファイル
+
+proxy が対応表をメモリだけに持つと daemon 再起動で失われ、孤児コンテナを追えなくなる。
+そこで拾った ID を runtime ディレクトリに永続化する:
+
+```
+~/.local/share/boid/runtimes/<runtime_id>/docker-resources.jsonl
+```
+
+1 行 1 リソース（`{type, id}` 形式）で追記する。これは既存 GC が runtime ディレクトリ
+単位で動く構造（`internal/orchestrator/repository.go` の `cleanRuntimes`）と整合し、
+daemon 再起動後も記録から掃除できる。**複数ユーザ環境でも「自分が記録したリソース」
+だけを消す**ため、同一マシン上の他ユーザの docker コンテナを巻き込まない。
+
+### 掃除: 同期 + safety net
+
+- **同期掃除（job 完了時）**: 既存の `runner.cleanupSandboxAfterWait()`
+  （`internal/dispatcher/runner.go`）に、記録ファイルを読んで stop + rm する処理を追加。
+  削除順序は **コンテナ → ネットワーク → ボリューム**（依存順）。
+- **safety net（daemon GC loop）**: 既存の GC loop が runtime ディレクトリを削除する前に、
+  記録ファイルのリソースを掃除する。daemon クラッシュ等で同期掃除を取りこぼした
+  孤児リソースを定期的に回収する。
+
+### 失敗時も消す
+
+既存挙動では job 失敗時に runtime ディレクトリを診断用に残すが、**コンテナは
+成功・失敗を問わず stop + rm する**。rootless docker のディスク・メモリを
+じわじわ食うのを避けるため。診断が要る場合はコンテナのログで取得する。
 
 ---
 
@@ -446,6 +518,8 @@ README での complementary mitigation 案内は引き続き行う。
 - `docker-proxy-capadd`: `--cap-add SYS_ADMIN` を試みる
 - `docker-proxy-device`: `--device /dev/sda` を試みる
 - `docker-proxy-testcontainers`: TestContainers ベースのテストが Ryuk 無効化込みで正常完走する
+- `docker-proxy-reap-on-success`: job が正常完了すると、起動したコンテナが消える
+- `docker-proxy-reap-on-failure`: job が失敗（exit≠0）しても、起動したコンテナが消える
 - `docker-proxy-passthrough`: 通常の `docker run`, `docker ps`, `docker logs` が正常動作する
 
 ---
@@ -474,9 +548,12 @@ README での complementary mitigation 案内は引き続き行う。
 - `sandbox_builder.go` に socket bind-mount と環境変数設定を追加
   （`DOCKER_HOST` 等 + **`TESTCONTAINERS_RYUK_DISABLED=true`**）
 - **TestContainers (Ryuk) 互換性** を担保（`TESTCONTAINERS_RYUK_DISABLED=true` で Ryuk 無効化）
+- **コンテナ GC（Ryuk の内製化）**: 作成系のレスポンスから ID を拾い
+  `runtimes/<runtime_id>/docker-resources.jsonl` に記録、`cleanupSandboxAfterWait()` で
+  同期掃除（成功・失敗とも消す）+ daemon GC loop で孤児リソースを回収
 - 単体テスト + E2E (`docker-proxy-bind-escape` / `-volume-bind-escape` /
   `-privileged` / `-host-network` / `-security-opt` / `-capadd` / `-device` /
-  `-testcontainers` / `-passthrough`)
+  `-testcontainers` / `-reap-on-success` / `-reap-on-failure` / `-passthrough`)
 - ✅ ここまで揃ってから docker kit の `additional_bindings` を
   cetusguard → native proxy に切り替える
 
