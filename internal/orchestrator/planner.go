@@ -70,6 +70,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 			Writable:           !IsReadonly(task),
 			KitRoots:           behavior.KitRoots,
 			ForkPoint:          meta.ForkPoint,
+			DockerEnabled:      meta.Capabilities.Docker != nil,
 		},
 		BuiltinPolicies: DefaultBuiltinPolicies(
 			RoleHook,
@@ -118,8 +119,10 @@ func (p *DispatchPlanner) PlanExec(event *ExecFireEvent) (*JobSpec, CleanupFunc,
 	}
 
 	var secretNS string
+	var dockerEnabled bool
 	if meta, ok := p.Meta.Get(event.ProjectID); ok {
 		secretNS = meta.SecretNamespace
+		dockerEnabled = meta.Capabilities.Docker != nil
 	}
 
 	spec := &JobSpec{
@@ -131,6 +134,7 @@ func (p *DispatchPlanner) PlanExec(event *ExecFireEvent) (*JobSpec, CleanupFunc,
 			UseWorktree:        false,
 			AdditionalBindings: event.Command.AdditionalBindings,
 			Writable:           !event.Command.Readonly,
+			DockerEnabled:      dockerEnabled,
 		},
 		BuiltinPolicies: DefaultBuiltinPolicies(
 			RoleHook,

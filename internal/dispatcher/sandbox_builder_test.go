@@ -932,3 +932,21 @@ func TestContextFiles_NoPayloadFilesWhenPrimaryInputEmpty(t *testing.T) {
 	}
 }
 
+// TestSandboxRuntimeInfo_DockerEnabled verifies that SandboxRuntimeInfo carries
+// a DockerEnabled field that can be set from Visibility.DockerEnabled, and that
+// BuildSandboxSpec accepts it without error. Phase 2 PR will wire this to
+// actually mount the docker proxy socket.
+func TestSandboxRuntimeInfo_DockerEnabled(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		Visibility: orchestrator.Visibility{DockerEnabled: true},
+	}
+	rtInfo := SandboxRuntimeInfo{DockerEnabled: true}
+	if _, err := BuildSandboxSpec(spec, rtInfo); err != nil {
+		t.Fatalf("BuildSandboxSpec with DockerEnabled=true: %v", err)
+	}
+	rtInfoOff := SandboxRuntimeInfo{DockerEnabled: false}
+	if _, err := BuildSandboxSpec(spec, rtInfoOff); err != nil {
+		t.Fatalf("BuildSandboxSpec with DockerEnabled=false: %v", err)
+	}
+}
+

@@ -111,6 +111,10 @@ type Visibility struct {
 	// (ClassifyBaseBranch case 3). Empty means dispatcher falls back to
 	// refs/remotes/origin/HEAD.
 	ForkPoint string
+
+	// DockerEnabled, when true, indicates capabilities.docker was declared in
+	// project.yaml. Dispatcher uses this to start a per-sandbox docker proxy.
+	DockerEnabled bool
 }
 
 // TaskSnapshot is the business metadata that materializes at

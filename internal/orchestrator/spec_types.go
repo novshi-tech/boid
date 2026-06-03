@@ -396,6 +396,18 @@ type CommandSpec struct {
 	AdditionalBindings []BindMount       `yaml:"-" json:"-"`
 }
 
+// DockerCapability is the opt-in marker for the native docker proxy.
+// Presence (non-nil pointer in Capabilities) enables the proxy; the empty
+// struct is a placeholder for future per-project policy fields.
+type DockerCapability struct{}
+
+// Capabilities declares optional sandbox capabilities declared in project.yaml.
+type Capabilities struct {
+	// Docker, when non-nil, enables the per-sandbox native docker proxy.
+	// Declared as capabilities.docker: {} in project.yaml.
+	Docker *DockerCapability `yaml:"docker,omitempty" json:"docker,omitempty"`
+}
+
 type ProjectMeta struct {
 	ID            string                  `yaml:"id" json:"id"`
 	Name          string                  `yaml:"name" json:"name"`
@@ -426,6 +438,8 @@ type ProjectMeta struct {
 	AdditionalBindings []BindMount       `yaml:"additional_bindings" json:"additional_bindings"`
 	Env                map[string]string `yaml:"env" json:"env"`
 	SecretNamespace    string            `yaml:"secret_namespace,omitempty" json:"secret_namespace,omitempty"`
+	// Capabilities declares optional sandbox capabilities for jobs in this project.
+	Capabilities Capabilities `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
 }
 
 type ProjectLocalMeta struct {
