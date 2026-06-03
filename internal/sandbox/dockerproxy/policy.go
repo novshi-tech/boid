@@ -1,0 +1,372 @@
+package dockerproxy
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"regexp"
+	"strings"
+)
+
+// MaxBodyBytes caps body reads to prevent DoS / memory exhaustion.
+const MaxBodyBytes = 32 * 1024 * 1024 // 32 MiB
+
+// Verdict is the result of a policy check.
+type Verdict struct {
+	Allow  bool
+	Reason string // populated when Allow==false
+}
+
+func allow() Verdict                  { return Verdict{Allow: true} }
+func deny(reason string) Verdict      { return Verdict{Allow: false, Reason: reason} }
+
+// apiVersionRe matches /v<major>.<minor> prefix.
+var apiVersionRe = regexp.MustCompile(`^/v\d+\.\d+(/.*)?$`)
+
+// stripVersion removes the /vN.N prefix from path so routing can use bare paths.
+func stripVersion(path string) string {
+	if !apiVersionRe.MatchString(path) {
+		return path
+	}
+	// find second slash
+	idx := strings.Index(path[1:], "/")
+	if idx < 0 {
+		return "/"
+	}
+	return path[1+idx:]
+}
+
+// CheckRequest is the main policy entry point.
+// method is the HTTP method, path is the raw request path (may include API version prefix),
+// body is the request body bytes (may be nil for GET/HEAD).
+func CheckRequest(method, path string, body []byte) Verdict {
+	bare := stripVersion(path)
+	method = strings.ToUpper(method)
+
+	// GET and HEAD are always allowed (read-only).
+	if method == "GET" || method == "HEAD" {
+		return allow()
+	}
+
+	// Explicit allow-list for mutating endpoints that don't need body inspection.
+	// Everything not listed here is fail-closed (deny).
+	if isAllowedMutating(method, bare) {
+		return allow()
+	}
+
+	// Endpoints that require body inspection.
+	if method == "POST" {
+		switch {
+		case bare == "/containers/create":
+			return checkContainersCreate(body)
+		case matchesPattern(bare, "/containers/*/exec"):
+			return checkExecCreate(body)
+		case matchesPattern(bare, "/containers/*/start"):
+			return checkContainerStart(body)
+		case bare == "/build" || bare == "/session":
+			return deny("image build is not permitted")
+		}
+	}
+
+	// Fail-closed: unknown mutating endpoint.
+	return deny("unknown mutating endpoint: " + method + " " + bare)
+}
+
+// isAllowedMutating returns true for mutating endpoints that are explicitly safe
+// (no body inspection needed, transparent pass-through allowed).
+func isAllowedMutating(method, bare string) bool {
+	switch method {
+	case "POST":
+		return matchesAny(bare,
+			"/containers/*/stop",
+			"/containers/*/wait",
+			"/containers/*/kill",
+			"/containers/*/restart",
+			"/containers/*/pause",
+			"/containers/*/unpause",
+			"/containers/*/attach",
+			"/containers/*/resize",
+			"/containers/*/rename",
+			"/exec/*/start",
+			"/exec/*/resize",
+			"/images/create",    // pull
+			"/images/*/tag",
+			"/images/*/push",
+			"/networks/*/connect",
+			"/networks/*/disconnect",
+			"/volumes/prune",
+			"/containers/prune",
+			"/images/prune",
+			"/networks/prune",
+			"/system/prune",
+		)
+	case "PUT":
+		return false
+	case "DELETE":
+		return matchesAny(bare,
+			"/containers/*",
+			"/images/*",
+			"/networks/*",
+			"/volumes/*",
+		)
+	}
+	return false
+}
+
+// matchesPattern checks a bare path against a glob-style pattern where * matches
+// a single path segment (no slashes).
+func matchesPattern(path, pattern string) bool {
+	pparts := strings.Split(pattern, "/")
+	aparts := strings.Split(path, "/")
+	if len(pparts) != len(aparts) {
+		return false
+	}
+	for i, p := range pparts {
+		if p == "*" {
+			continue
+		}
+		if p != aparts[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func matchesAny(path string, patterns ...string) bool {
+	for _, p := range patterns {
+		if matchesPattern(path, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// --- body inspection structs ---
+
+// containerCreateBody mirrors the Docker API POST /containers/create body.
+// Only dangerous fields are listed; unknown safe fields are ignored.
+type containerCreateBody struct {
+	HostConfig hostConfig `json:"HostConfig"`
+}
+
+type hostConfig struct {
+	Binds           []string       `json:"Binds"`
+	Mounts          []mountSpec    `json:"Mounts"`
+	Privileged      bool           `json:"Privileged"`
+	NetworkMode     string         `json:"NetworkMode"`
+	PidMode         string         `json:"PidMode"`
+	IpcMode         string         `json:"IpcMode"`
+	UsernsMode      string         `json:"UsernsMode"`
+	CgroupnsMode    string         `json:"CgroupnsMode"`
+	SecurityOpt     []string       `json:"SecurityOpt"`
+	CapAdd          []string       `json:"CapAdd"`
+	Devices         []interface{}  `json:"Devices"`
+	DeviceCgroupRules []string     `json:"DeviceCgroupRules"`
+	Runtime         string         `json:"Runtime"`
+	Sysctls         map[string]string `json:"Sysctls"`
+	CgroupParent    string         `json:"CgroupParent"`
+}
+
+type mountSpec struct {
+	Type          string        `json:"Type"`
+	VolumeOptions *volumeOpts   `json:"VolumeOptions"`
+}
+
+type volumeOpts struct {
+	DriverConfig *driverConfig `json:"DriverConfig"`
+}
+
+type driverConfig struct {
+	Name    string            `json:"Name"`
+	Options map[string]string `json:"Options"`
+}
+
+// execCreateBody mirrors POST /containers/{id}/exec body.
+type execCreateBody struct {
+	Privileged bool `json:"Privileged"`
+}
+
+// containerStartBody mirrors POST /containers/{id}/start body (legacy HostConfig).
+type containerStartBody struct {
+	HostConfig *json.RawMessage `json:"HostConfig"`
+}
+
+func readBody(body []byte) ([]byte, bool) {
+	if body == nil {
+		return nil, true
+	}
+	r := io.LimitReader(bytes.NewReader(body), MaxBodyBytes+1)
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return nil, false
+	}
+	if len(b) > MaxBodyBytes {
+		return nil, false // exceeded limit
+	}
+	return b, true
+}
+
+func checkContainersCreate(body []byte) Verdict {
+	b, ok := readBody(body)
+	if !ok {
+		return deny("body exceeds maximum size limit")
+	}
+	if len(b) == 0 {
+		return allow()
+	}
+
+	var req containerCreateBody
+	if err := json.Unmarshal(b, &req); err != nil {
+		return deny("invalid JSON body")
+	}
+
+	hc := req.HostConfig
+
+	if len(hc.Binds) > 0 {
+		return deny("HostConfig.Binds: bind mounts are not permitted")
+	}
+
+	for _, m := range hc.Mounts {
+		switch strings.ToLower(m.Type) {
+		case "bind":
+			return deny("HostConfig.Mounts: type=bind mount is not permitted")
+		case "volume":
+			if v := m.VolumeOptions; v != nil {
+				if dc := v.DriverConfig; dc != nil && dc.Options != nil {
+					if _, hasDevice := dc.Options["device"]; hasDevice {
+						return deny("HostConfig.Mounts: volume with device option (system 3 bind) is not permitted")
+					}
+					if o := dc.Options["o"]; strings.Contains(o, "bind") {
+						return deny("HostConfig.Mounts: volume with o=bind option (system 3 bind) is not permitted")
+					}
+				}
+			}
+		}
+	}
+
+	if hc.Privileged {
+		return deny("HostConfig.Privileged: privileged containers are not permitted")
+	}
+
+	if v := hc.NetworkMode; v != "" {
+		if isDangerousMode(v) {
+			return deny("HostConfig.NetworkMode: " + v + " is not permitted")
+		}
+	}
+
+	if v := hc.PidMode; v != "" {
+		if isDangerousMode(v) {
+			return deny("HostConfig.PidMode: " + v + " is not permitted")
+		}
+	}
+
+	if v := hc.IpcMode; v != "" {
+		if isDangerousMode(v) {
+			return deny("HostConfig.IpcMode: " + v + " is not permitted")
+		}
+	}
+
+	if hc.UsernsMode == "host" {
+		return deny("HostConfig.UsernsMode: host is not permitted")
+	}
+
+	if hc.CgroupnsMode == "host" {
+		return deny("HostConfig.CgroupnsMode: host is not permitted")
+	}
+
+	if len(hc.SecurityOpt) > 0 {
+		return deny("HostConfig.SecurityOpt: security options are not permitted")
+	}
+
+	if len(hc.CapAdd) > 0 {
+		return deny("HostConfig.CapAdd: adding capabilities is not permitted")
+	}
+
+	if len(hc.Devices) > 0 {
+		return deny("HostConfig.Devices: device access is not permitted")
+	}
+
+	if len(hc.DeviceCgroupRules) > 0 {
+		return deny("HostConfig.DeviceCgroupRules: device cgroup rules are not permitted")
+	}
+
+	if hc.Runtime != "" && hc.Runtime != "runc" {
+		return deny("HostConfig.Runtime: only runc runtime is permitted, got " + hc.Runtime)
+	}
+
+	if len(hc.Sysctls) > 0 {
+		return deny("HostConfig.Sysctls: sysctl settings are not permitted")
+	}
+
+	if hc.CgroupParent != "" {
+		return deny("HostConfig.CgroupParent: custom cgroup parent is not permitted")
+	}
+
+	return allow()
+}
+
+// isDangerousMode returns true for host/container:/ns: namespace sharing modes.
+func isDangerousMode(mode string) bool {
+	if mode == "host" {
+		return true
+	}
+	if strings.HasPrefix(mode, "container:") {
+		return true
+	}
+	if strings.HasPrefix(mode, "ns:") {
+		return true
+	}
+	return false
+}
+
+func checkExecCreate(body []byte) Verdict {
+	b, ok := readBody(body)
+	if !ok {
+		return deny("body exceeds maximum size limit")
+	}
+	if len(b) == 0 {
+		return allow()
+	}
+
+	var req execCreateBody
+	if err := json.Unmarshal(b, &req); err != nil {
+		return deny("invalid JSON body")
+	}
+
+	if req.Privileged {
+		return deny("exec Privileged: privileged exec is not permitted")
+	}
+
+	return allow()
+}
+
+func checkContainerStart(body []byte) Verdict {
+	b, ok := readBody(body)
+	if !ok {
+		return deny("body exceeds maximum size limit")
+	}
+	if len(b) == 0 {
+		return allow()
+	}
+
+	// Empty object or whitespace-only is fine.
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("{}")) {
+		return allow()
+	}
+
+	var req containerStartBody
+	if err := json.Unmarshal(b, &req); err != nil {
+		return deny("invalid JSON body")
+	}
+
+	if req.HostConfig != nil {
+		// HostConfig present — check it's not null and not empty.
+		raw := bytes.TrimSpace([]byte(*req.HostConfig))
+		if len(raw) > 0 && !bytes.Equal(raw, []byte("null")) && !bytes.Equal(raw, []byte("{}")) {
+			return deny("POST /containers/{id}/start with HostConfig is not permitted")
+		}
+	}
+
+	return allow()
+}
