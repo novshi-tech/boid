@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Start fake Docker upstream socket at $XDG_RUNTIME_DIR/docker.sock so the
-# boid daemon's startDockerProxy finds it via ResolveUpstream.
 FAKE_DOCKER_LOG="$E2E_STATE_DIR/fake-docker.log"
 "$E2E_BIN_DIR/boid-e2e" fake-docker --log "$FAKE_DOCKER_LOG" "$XDG_RUNTIME_DIR/docker.sock" &
 FAKE_DOCKER_PID=$!
@@ -27,7 +25,6 @@ task_id="$(printf '%s\n' "$task_create_output" | sed -n 's/^task created: \([0-9
 e2e_run "$E2E_BIN_DIR/boid" action send --task "$task_id" --type start
 
 e2e_log "waiting for task done"
-# Poll for done; fail fast if the task reaches aborted instead.
 _deadline=$((SECONDS + 30))
 while true; do
   _task_json="$("$E2E_BIN_DIR/boid-e2e" get-task "$task_id" 2>/dev/null)" || true
@@ -36,10 +33,10 @@ while true; do
     break
   fi
   if printf '%s' "$_task_json" | grep -q '"status":"aborted"'; then
-    e2e_fail "task reached aborted (hook failed). details: $_task_json"
+    e2e_fail "hook failed. task JSON: $_task_json"
   fi
   if [[ $SECONDS -ge $_deadline ]]; then
-    e2e_fail "timeout waiting for task done. last status: $_task_json"
+    e2e_fail "timeout waiting for task done. last: $_task_json"
   fi
   sleep 0.2
 done

@@ -1,11 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+mkdir -p "$HOME/.boid/output"
+
+# Write a diagnostic payload on failure so the aborted task has debug info.
+fail_with_diag() {
+  local reason="$1"
+  local diag
+  diag="DOCKER_HOST=${DOCKER_HOST:-UNSET} DOCKER_PROXY_TEST_CASE=${DOCKER_PROXY_TEST_CASE:-UNSET}"
+  printf '{"payload_patch":{"artifact":{"result":"fail","reason":"%s","diag":"%s"}}}\n' \
+    "$reason" "$diag" > "$HOME/.boid/output/payload_patch.json"
+  echo "FAIL: $reason ($diag)" >&2
+  exit 1
+}
+
 # DOCKER_HOST is injected by the proxy: unix:///run/boid/docker-proxy.sock
 DOCKER_SOCK="${DOCKER_HOST#unix://}"
 if [[ -z "$DOCKER_SOCK" ]]; then
-  echo "ERROR: DOCKER_HOST not set or not a unix:// path" >&2
-  exit 1
+  fail_with_diag "DOCKER_HOST not set or not a unix:// path"
 fi
 
 # Send a request through the proxy and return the HTTP status code.
@@ -20,18 +32,20 @@ proxy_req() {
   curl "${curl_args[@]}" "http://localhost${path}"
 }
 
-# Assert HTTP status; exit 1 on mismatch (fails the task → tests the deny path).
+# Assert HTTP status; write diagnostic and exit 1 on mismatch.
 assert_http() {
   local want="$1"
   local got="$2"
   local desc="$3"
   if [[ "$got" != "$want" ]]; then
-    echo "FAIL [$desc]: expected HTTP $want, got HTTP $got" >&2
-    exit 1
+    fail_with_diag "[$desc] expected HTTP $want, got HTTP $got"
   fi
 }
 
-case "${DOCKER_PROXY_TEST_CASE:?}" in
+case "${DOCKER_PROXY_TEST_CASE:-}" in
+  "")
+    fail_with_diag "DOCKER_PROXY_TEST_CASE not set"
+    ;;
 
   bind-escape)
     code=$(proxy_req POST /containers/create '{"HostConfig":{"Binds":["/etc:/etc"]}}')
@@ -104,7 +118,7 @@ case "${DOCKER_PROXY_TEST_CASE:?}" in
     code=$(proxy_req POST /containers/create '{}')
     assert_http 201 "$code" "reap-on-failure: container create"
     # Intentional failure: exit 1 → task aborted, but reap still fires.
-    echo "intentional failure for reap-on-failure test" >&2
+    printf '{"payload_patch":{"artifact":{"result":"intentional-fail"}}}\n' > "$HOME/.boid/output/payload_patch.json"
     exit 1
     ;;
 
@@ -116,12 +130,10 @@ case "${DOCKER_PROXY_TEST_CASE:?}" in
     ;;
 
   *)
-    echo "ERROR: unknown DOCKER_PROXY_TEST_CASE=${DOCKER_PROXY_TEST_CASE}" >&2
-    exit 1
+    fail_with_diag "unknown DOCKER_PROXY_TEST_CASE=${DOCKER_PROXY_TEST_CASE}"
     ;;
 esac
 
-mkdir -p "$HOME/.boid/output"
 cat > "$HOME/.boid/output/payload_patch.json" <<'EOF'
 {"payload_patch":{"artifact":{"result":"pass"}}}
 EOF
