@@ -33,10 +33,11 @@ while true; do
     break
   fi
   if printf '%s' "$_task_json" | grep -q '"status":"aborted"'; then
-    e2e_fail "hook failed. task JSON: $_task_json"
+    _jobs="$("$E2E_BIN_DIR/boid-e2e" list-jobs "$task_id" 2>/dev/null)" || true
+    e2e_fail "hook failed. task: $_task_json | jobs: $_jobs"
   fi
   if [[ $SECONDS -ge $_deadline ]]; then
-    e2e_fail "timeout waiting for task done. last: $_task_json"
+    e2e_fail "timeout. last: $_task_json"
   fi
   sleep 0.2
 done
