@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -20,12 +21,20 @@ type Server struct {
 	upstream  string
 	transport *http.Transport
 	srv       *http.Server
+	ledger    *Ledger
 	mu        sync.Mutex
 }
 
 // New creates a Server that forwards to the given upstream Unix socket path.
 func New(upstreamSocket string) *Server {
-	s := &Server{upstream: upstreamSocket}
+	return NewWithLedger(upstreamSocket, nil)
+}
+
+// NewWithLedger creates a Server with an attached resource ledger.
+// The ledger enables id scope checks (404 for IDs not owned by this sandbox)
+// and write-ahead ID recording from creation responses.
+func NewWithLedger(upstreamSocket string, l *Ledger) *Server {
+	s := &Server{upstream: upstreamSocket, ledger: l}
 	s.transport = &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
@@ -66,6 +75,27 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	bare := stripVersion(r.URL.Path)
+
+	// Scope check: when a ledger is attached, reject operations on resource IDs
+	// not owned by this sandbox with 404 (behave as if the resource doesn't exist).
+	if s.ledger != nil {
+		resType, id := scopeTarget(bare)
+		if resType != "" {
+			ok, err := s.ledger.Contains(resType, id)
+			if err != nil {
+				slog.Warn("docker proxy: scope check error", "err", err)
+				http.Error(w, "scope check: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if !ok {
+				slog.Info("docker proxy: SCOPE DENY", "method", method, "path", r.URL.Path, "type", resType, "id", id)
+				http.NotFound(w, r)
+				return
+			}
+		}
+	}
+
 	verdict := CheckRequest(method, r.URL.Path, bodyBytes)
 	if !verdict.Allow {
 		slog.Warn("docker proxy: DENY", "method", method, "path", r.URL.Path, "reason", verdict.Reason)
@@ -75,7 +105,6 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 	slog.Debug("docker proxy: ALLOW", "method", method, "path", r.URL.Path)
 
-	bare := stripVersion(r.URL.Path)
 	if isHijackEndpoint(method, bare) {
 		s.serveHijack(w, r, bodyBytes)
 		return
@@ -94,6 +123,9 @@ func isHijackEndpoint(method, bare string) bool {
 
 // serveForward proxies a standard request/response to the upstream daemon.
 // The original URL (including any API version prefix) is sent verbatim.
+// When a ledger is attached and this is a creation endpoint, the new resource
+// ID is recorded in the ledger (with fsync) before the response is returned to
+// the client, ensuring "every ID the client knows is already in the ledger".
 func (s *Server) serveForward(w http.ResponseWriter, r *http.Request, bodyBytes []byte) {
 	upURL := &url.URL{
 		Scheme:   "http",
@@ -117,6 +149,33 @@ func (s *Server) serveForward(w http.ResponseWriter, r *http.Request, bodyBytes 
 	}
 	defer resp.Body.Close()
 
+	// For creation endpoints with a ledger: buffer the response body, record
+	// the new resource ID (fsync), then forward the unmodified body to the client.
+	if s.ledger != nil {
+		bare := stripVersion(r.URL.Path)
+		resType, idField := creationResourceType(strings.ToUpper(r.Method), bare)
+		if resType != "" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, int64(MaxBodyBytes+1)))
+			if readErr == nil && len(respBody) <= MaxBodyBytes {
+				if id := extractCreationID(respBody, idField); id != "" {
+					if err := s.ledger.Append(ResourceEntry{Type: resType, ID: id}); err != nil {
+						slog.Warn("docker proxy: ledger append", "type", resType, "id", id, "err", err)
+					}
+				}
+			}
+			// Forward headers and the buffered (unmodified) body.
+			for k, vv := range resp.Header {
+				for _, v := range vv {
+					w.Header().Add(k, v)
+				}
+			}
+			w.WriteHeader(resp.StatusCode)
+			w.Write(respBody) //nolint:errcheck
+			return
+		}
+	}
+
+	// Standard streaming path (no ID recording needed).
 	for k, vv := range resp.Header {
 		for _, v := range vv {
 			w.Header().Add(k, v)
@@ -124,6 +183,24 @@ func (s *Server) serveForward(w http.ResponseWriter, r *http.Request, bodyBytes 
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body) //nolint:errcheck
+}
+
+// extractCreationID parses the upstream creation response body and returns the
+// value of the given JSON field (e.g. "Id" or "Name").
+func extractCreationID(body []byte, field string) string {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return ""
+	}
+	raw, ok := m[field]
+	if !ok {
+		return ""
+	}
+	var id string
+	if err := json.Unmarshal(raw, &id); err != nil {
+		return ""
+	}
+	return id
 }
 
 // serveHijack handles endpoints that switch to raw bidirectional streaming

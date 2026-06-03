@@ -63,6 +63,10 @@ func CheckRequest(method, path string, body []byte) Verdict {
 			return checkExecCreate(body)
 		case matchesPattern(bare, "/containers/*/start"):
 			return checkContainerStart(body)
+		case bare == "/networks/create":
+			return checkNetworksCreate(body)
+		case bare == "/volumes/create":
+			return checkVolumesCreate(body)
 		case bare == "/build" || bare == "/session":
 			return deny("image build is not permitted")
 		}
@@ -305,6 +309,57 @@ func checkContainersCreate(body []byte) Verdict {
 	return allow()
 }
 
+// networksCreateBody mirrors the Docker API POST /networks/create body.
+type networksCreateBody struct {
+	Driver string `json:"Driver"`
+}
+
+// volumesCreateBody mirrors the Docker API POST /volumes/create body.
+type volumesCreateBody struct {
+	DriverOpts map[string]string `json:"DriverOpts"`
+}
+
+func checkNetworksCreate(body []byte) Verdict {
+	b, ok := readBody(body)
+	if !ok {
+		return deny("body exceeds maximum size limit")
+	}
+	if len(b) == 0 {
+		return allow()
+	}
+	var req networksCreateBody
+	if err := json.Unmarshal(b, &req); err != nil {
+		return deny("invalid JSON body")
+	}
+	// "host" driver gives the container full access to the host network stack.
+	if req.Driver == "host" {
+		return deny("networks/create: Driver=host is not permitted")
+	}
+	return allow()
+}
+
+func checkVolumesCreate(body []byte) Verdict {
+	b, ok := readBody(body)
+	if !ok {
+		return deny("body exceeds maximum size limit")
+	}
+	if len(b) == 0 {
+		return allow()
+	}
+	var req volumesCreateBody
+	if err := json.Unmarshal(b, &req); err != nil {
+		return deny("invalid JSON body")
+	}
+	// DriverOpts with device= or o=bind is a host bind mount via local driver (system 3).
+	if _, hasDevice := req.DriverOpts["device"]; hasDevice {
+		return deny("volumes/create: DriverOpts.device (host bind mount) is not permitted")
+	}
+	if o := req.DriverOpts["o"]; strings.Contains(o, "bind") {
+		return deny("volumes/create: DriverOpts.o=bind (host bind mount) is not permitted")
+	}
+	return allow()
+}
+
 // isDangerousMode returns true for host/container:/ns: namespace sharing modes.
 func isDangerousMode(mode string) bool {
 	if mode == "host" {
@@ -338,6 +393,75 @@ func checkExecCreate(body []byte) Verdict {
 	}
 
 	return allow()
+}
+
+// scopeTarget extracts the resource type and ID that must be scope-checked for
+// the given bare path (version prefix already stripped).  Returns ("", "") for
+// paths that do not carry a resource ID (creation endpoints, list endpoints,
+// and paths that do not belong to a tracked resource type).
+func scopeTarget(bare string) (resourceType, id string) {
+	trimmed := strings.TrimPrefix(bare, "/")
+	slash := strings.IndexByte(trimmed, '/')
+	var resource, rest string
+	if slash < 0 {
+		resource = trimmed
+	} else {
+		resource = trimmed[:slash]
+		rest = trimmed[slash+1:]
+	}
+
+	// Extract the first segment after the resource type (the ID or a keyword).
+	seg := rest
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		seg = rest[:i]
+	}
+	if seg == "" {
+		return "", ""
+	}
+
+	switch resource {
+	case "containers":
+		switch seg {
+		case "create", "json", "prune":
+			return "", ""
+		}
+		return "container", seg
+	case "networks":
+		switch seg {
+		case "create", "prune":
+			return "", ""
+		}
+		return "network", seg
+	case "volumes":
+		switch seg {
+		case "create", "prune":
+			return "", ""
+		}
+		return "volume", seg
+	case "exec":
+		return "exec", seg
+	}
+	return "", ""
+}
+
+// creationResourceType returns the resource type name and the JSON field that
+// holds the new resource's ID in the upstream response, for endpoints that
+// create new Docker resources.  Returns ("", "") for non-creation paths.
+func creationResourceType(method, bare string) (resourceType, idField string) {
+	if method != "POST" {
+		return "", ""
+	}
+	switch {
+	case bare == "/containers/create":
+		return "container", "Id"
+	case bare == "/networks/create":
+		return "network", "Id"
+	case bare == "/volumes/create":
+		return "volume", "Name"
+	case matchesPattern(bare, "/containers/*/exec"):
+		return "exec", "Id"
+	}
+	return "", ""
 }
 
 func checkContainerStart(body []byte) Verdict {
