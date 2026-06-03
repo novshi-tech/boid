@@ -20,6 +20,7 @@ import (
 	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/sandbox/dockerproxy"
 	"github.com/novshi-tech/boid/web"
 )
 
@@ -178,6 +179,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		BoidBinary:   boidBin,
 		ServerSocket: cfg.SocketPath,
 		ProxyPort:    &srv.proxyPort,
+		RuntimesDir:  runtimesDirFor(cfg),
 	})
 
 	planner := orchestrator.WireDispatchPlanner(orchestrator.PlannerWireConfig{
@@ -301,6 +303,37 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		sessionSigner:  sessionSigner,
 		connRegistry:   connRegistry,
 	}, nil
+}
+
+// makeDockerRuntimeReaper returns a GC runtime-reaper function that checks each
+// runtime directory for a docker-resources.jsonl ledger and, when found, calls
+// dockerproxy.Reap to clean up any Docker resources that weren't cleaned up when
+// the sandbox exited (safety net for daemon-restart scenarios).
+func makeDockerRuntimeReaper() func(runtimeDir string) error {
+	return func(runtimeDir string) error {
+		ledgerPath := filepath.Join(runtimeDir, "docker-resources.jsonl")
+		if _, err := os.Stat(ledgerPath); err != nil {
+			if os.IsNotExist(err) {
+				return nil // no ledger → no docker resources to reap
+			}
+			return err
+		}
+		upstream, err := dockerproxy.ResolveUpstream("")
+		if err != nil {
+			// No docker socket available: log at debug and skip. This is
+			// expected when the machine has no docker daemon.
+			slog.Debug("docker gc reap: no upstream socket, skipping", "runtime_dir", runtimeDir, "err", err)
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		ledger := dockerproxy.NewLedger(ledgerPath)
+		if err := dockerproxy.Reap(ctx, upstream, ledger); err != nil {
+			slog.Warn("docker gc reap failed", "runtime_dir", runtimeDir, "error", err)
+			// Non-fatal: let GC continue to remove the directory.
+		}
+		return nil
+	}
 }
 
 // projectResolverFor adapts ProjectAppService.ResolveProjectRef into the
@@ -498,7 +531,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		},
 		"",
 		runtimesDirFor(srv.cfg),
-	).WithSandboxTmpDir(os.TempDir())
+	).WithSandboxTmpDir(os.TempDir()).WithRuntimeReaper(makeDockerRuntimeReaper())
 	gcAppService := &api.GCAppService{Store: gcStore, DeviceStore: runtime.authStore}
 	gcHandler := &api.GCHandler{Service: gcAppService}
 	r.Mount("/api/gc", gcHandler.Routes())

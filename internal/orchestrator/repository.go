@@ -106,6 +106,11 @@ type TaskGCStore struct {
 	gitBin            string
 	runtimesDir       string
 	sandboxTmpDir     string
+	// RuntimeReaper, when set, is called with each runtime directory path
+	// before os.RemoveAll removes it. Use this to Reap docker resources that
+	// may still be alive in the upstream daemon (safety net for jobs whose
+	// cleanupSandboxAfterWait did not complete, e.g. daemon restart).
+	RuntimeReaper func(runtimeDir string) error
 }
 
 func NewTaskGCStore(conn *sql.DB) *TaskGCStore {
@@ -124,6 +129,15 @@ func NewTaskGCStoreWithWorktree(conn *sql.DB, resolveProjectDir func(projectID s
 		gitBin:            gitBin,
 		runtimesDir:       runtimesDir,
 	}
+}
+
+// WithRuntimeReaper sets a callback that is invoked with each runtime directory
+// path before it is deleted. This allows the caller to Reap docker resources
+// created by sandbox jobs (safety net when cleanupSandboxAfterWait didn't run,
+// e.g. after a daemon restart).
+func (s *TaskGCStore) WithRuntimeReaper(fn func(runtimeDir string) error) *TaskGCStore {
+	s.RuntimeReaper = fn
+	return s
 }
 
 // WithSandboxTmpDir enables safety-net cleanup of leaked /tmp/boid-* sandbox
@@ -210,6 +224,14 @@ func (s *TaskGCStore) cleanRuntimes(olderThan time.Duration) int {
 	count := 0
 	for _, id := range runtimeIDs {
 		dir := filepath.Join(s.runtimesDir, id)
+		// Reap docker resources before removing the directory so the ledger
+		// is still readable (safety net for jobs whose cleanupSandboxAfterWait
+		// didn't complete, e.g. after a daemon restart).
+		if s.RuntimeReaper != nil {
+			if err := s.RuntimeReaper(dir); err != nil {
+				slog.Warn("gc docker reap failed", "runtime_id", id, "error", err)
+			}
+		}
 		if err := os.RemoveAll(dir); err != nil {
 			slog.Warn("gc runtimes: remove failed", "runtime_id", id, "error", err)
 			continue

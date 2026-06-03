@@ -23,6 +23,13 @@ type RuntimeStartSpec struct {
 	Command     string
 	Interactive bool
 	TTY         bool
+	// DesiredID, when non-empty, asks the runtime to use this UUID as its
+	// session identifier instead of generating a fresh one. The caller uses
+	// this to pre-allocate a runtime directory (e.g. for a per-sandbox docker
+	// proxy socket) before Start is called. The runtime honours the request
+	// on a best-effort basis: if the directory already exists or the ID is
+	// otherwise unusable, Start returns an error.
+	DesiredID string
 }
 
 type RuntimeHandle struct {

@@ -642,3 +642,107 @@ func TestGC_RuntimesDirCleanup_OlderThanFilter(t *testing.T) {
 		t.Errorf("recent runtime dir should still exist: %v", err)
 	}
 }
+
+// TestGC_RuntimesDirCleanup_CallsRuntimeReaperBeforeRemoval verifies that
+// WithRuntimeReaper's callback is called with each runtime directory path
+// before os.RemoveAll removes it.
+func TestGC_RuntimesDirCleanup_CallsRuntimeReaperBeforeRemoval(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	runtimesDir := t.TempDir()
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-reaper", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	doneTask := &orchestrator.Task{ProjectID: "proj-reaper", Title: "T", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	const runtimeID = "runtime-reaper-test"
+	job := &dispatcher.Job{
+		TaskID:    doneTask.ID,
+		ProjectID: "proj-reaper",
+		HandlerID: "test",
+		RuntimeID: runtimeID,
+		Status:    dispatcher.JobStatusCompleted,
+	}
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	runtimeDir := makeRuntimeDir(t, runtimesDir, runtimeID)
+
+	var reaperCalled []string
+	var dirExistedOnReap bool
+	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, nil, "", runtimesDir).
+		WithRuntimeReaper(func(dir string) error {
+			reaperCalled = append(reaperCalled, dir)
+			// Directory must still exist when the reaper is called.
+			_, err := os.Stat(dir)
+			dirExistedOnReap = err == nil
+			return nil
+		})
+
+	_, err := gcStore.GC(0, false)
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+
+	if len(reaperCalled) != 1 {
+		t.Fatalf("RuntimeReaper called %d times, want 1", len(reaperCalled))
+	}
+	expectedDir := filepath.Join(runtimesDir, runtimeID)
+	if reaperCalled[0] != expectedDir {
+		t.Errorf("RuntimeReaper called with %q, want %q", reaperCalled[0], expectedDir)
+	}
+	if !dirExistedOnReap {
+		t.Error("runtime dir should still exist when RuntimeReaper is called (reap before remove)")
+	}
+	// After GC, the directory should be removed.
+	if _, err := os.Stat(runtimeDir); !os.IsNotExist(err) {
+		t.Errorf("runtime dir should be removed after GC with reaper, err: %v", err)
+	}
+}
+
+// TestGC_RuntimesDirCleanup_ReaperErrorContinues verifies that a RuntimeReaper
+// error does not abort cleanup — the runtime directory is still removed and GC
+// continues with remaining runtimes.
+func TestGC_RuntimesDirCleanup_ReaperErrorContinues(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	runtimesDir := t.TempDir()
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-reap-err", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	doneTask := &orchestrator.Task{ProjectID: "proj-reap-err", Title: "T", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	const runtimeID = "runtime-reap-err"
+	job := &dispatcher.Job{
+		TaskID:    doneTask.ID,
+		ProjectID: "proj-reap-err",
+		HandlerID: "test",
+		RuntimeID: runtimeID,
+		Status:    dispatcher.JobStatusCompleted,
+	}
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	runtimeDir := makeRuntimeDir(t, runtimesDir, runtimeID)
+
+	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, nil, "", runtimesDir).
+		WithRuntimeReaper(func(dir string) error {
+			return os.ErrInvalid // simulate reap failure
+		})
+
+	result, err := gcStore.GC(0, false)
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if result.Runtimes != 1 {
+		t.Errorf("expected 1 runtime deleted despite reaper error, got %d", result.Runtimes)
+	}
+	// Runtime dir should still be removed (reaper error is non-fatal).
+	if _, err := os.Stat(runtimeDir); !os.IsNotExist(err) {
+		t.Errorf("runtime dir should be removed even when reaper errors, err: %v", err)
+	}
+}

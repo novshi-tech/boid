@@ -56,9 +56,15 @@ type SandboxRuntimeInfo struct {
 	ResolvedHostCommands map[string]orchestrator.CommandDef
 
 	// DockerEnabled, when true, indicates capabilities.docker is declared in
-	// project.yaml. A later PR uses this to start the per-sandbox docker proxy
-	// socket and wire it into the sandbox spec.
+	// project.yaml.
 	DockerEnabled bool
+
+	// ProxySocketPath, when non-empty, is the host-side Unix socket path of the
+	// per-sandbox docker proxy. sandbox_builder bind-mounts it into the sandbox
+	// at the fixed sandbox path (see dockerProxySandboxSocket) and injects
+	// DOCKER_HOST / CONTAINER_HOST / TESTCONTAINERS_* env vars.
+	// Set by the runner before BuildSandboxSpec when DockerEnabled is true.
+	ProxySocketPath string
 }
 
 // BuildSandboxSpec turns a business-level JobSpec and dispatcher-side runtime
@@ -117,6 +123,9 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	env["BOID_HOST_IP"] = hostGatewayIP
 	if rt.ProxyPort > 0 {
 		applyProxyEnv(env, rt.ProxyPort)
+	}
+	if rt.ProxySocketPath != "" {
+		applyDockerProxyEnv(env)
 	}
 
 	var mounts []sandbox.Mount
@@ -182,6 +191,16 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 			IsFile: true,
 		})
 		env["BOID_SOCKET"] = "/run/boid/server.sock"
+	}
+
+	// Docker proxy socket (per-sandbox docker proxy for capabilities.docker).
+	if rt.ProxySocketPath != "" {
+		mounts = append(mounts, sandbox.Mount{
+			Source: rt.ProxySocketPath,
+			Target: dockerProxySandboxSocket,
+			Type:   sandbox.MountBind,
+			IsFile: true,
+		})
 	}
 
 	argv := append([]string(nil), spec.Argv...)
@@ -542,6 +561,10 @@ func buildExitScript(jobID, payloadFile, stdoutFallback string) string {
 // として機能する。sandbox 側 (pasta/nftables) と値を揃える。
 const hostGatewayIP = "10.0.2.2"
 
+// dockerProxySandboxSocket is the fixed Unix socket path inside the sandbox
+// that the per-sandbox docker proxy is bind-mounted to.
+const dockerProxySandboxSocket = "/run/boid/docker-proxy.sock"
+
 func applyProxyEnv(env map[string]string, port int) {
 	proxyURL := fmt.Sprintf("http://%s:%d", hostGatewayIP, port)
 	env["http_proxy"] = proxyURL
@@ -550,6 +573,18 @@ func applyProxyEnv(env map[string]string, port int) {
 	env["HTTPS_PROXY"] = proxyURL
 	env["no_proxy"] = hostGatewayIP + ",10.0.2.3,localhost,127.0.0.1"
 	env["NO_PROXY"] = hostGatewayIP + ",10.0.2.3,localhost,127.0.0.1"
+}
+
+// applyDockerProxyEnv injects DOCKER_HOST, CONTAINER_HOST,
+// TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE, and TESTCONTAINERS_RYUK_DISABLED into
+// the sandbox environment so Docker API clients and TestContainers route through
+// the per-sandbox proxy socket rather than the host docker socket.
+func applyDockerProxyEnv(env map[string]string) {
+	sockURI := "unix://" + dockerProxySandboxSocket
+	env["DOCKER_HOST"] = sockURI
+	env["CONTAINER_HOST"] = sockURI
+	env["TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE"] = dockerProxySandboxSocket
+	env["TESTCONTAINERS_RYUK_DISABLED"] = "true"
 }
 
 // contextFiles materializes business data under $HOME/.boid/context/:

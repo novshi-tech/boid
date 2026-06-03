@@ -6,16 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/sandbox/dockerproxy"
 )
 
 // TaskLookup mirrors the subset of orchestrator.TaskLookup the dispatcher
@@ -40,6 +44,15 @@ type JobEventSink interface {
 	JobCreated(taskID, jobID string)
 }
 
+// dockerProxyState holds the lifecycle handles for a per-sandbox docker proxy.
+type dockerProxyState struct {
+	proxy      *dockerproxy.Server
+	listener   net.Listener
+	upstream   string
+	socketPath string
+	ledger     *dockerproxy.Ledger
+}
+
 type Runner struct {
 	DB           *sql.DB
 	Runtime      JobRuntime
@@ -52,6 +65,7 @@ type Runner struct {
 	BoidBinary   string
 	ServerSocket string
 	ProxyPort    *int
+	RuntimesDir  string
 	JobEvents    JobEventSink // optional; nil disables job lifecycle broadcasts
 
 	tokenMu       sync.Mutex
@@ -61,6 +75,8 @@ type Runner struct {
 	completedJobs map[string]JobCompletionResult
 	runtimeMu     sync.Mutex
 	taskRuntimes  map[string]map[string]struct{}
+	dockerMu      sync.Mutex
+	dockerStates  map[string]*dockerProxyState // keyed by runtimeID
 }
 
 // Dispatch launches a sandbox for the given JobSpec. The optional cleanup
@@ -187,6 +203,18 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		r.trackToken(j.ID, brokerToken)
 	}
 
+	// Validate host_commands when docker proxy is enabled: full docker access
+	// via host_commands bypasses the proxy and is therefore forbidden.
+	if spec.Visibility.DockerEnabled {
+		if err := validateDockerHostCommands(spec.HostCommands); err != nil {
+			r.failJob(j, err)
+			if cleanup != nil {
+				cleanup()
+			}
+			return "", err
+		}
+	}
+
 	rtInfo := SandboxRuntimeInfo{
 		JobID:                j.ID,
 		BoidBinary:           r.BoidBinary,
@@ -207,15 +235,37 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		rtInfo.ServerSocket = ""
 	}
 
+	// Per-sandbox docker proxy setup: start before BuildSandboxSpec so the
+	// socket path can be injected into env and mounts.
+	var desiredRuntimeID string
+	if spec.Visibility.DockerEnabled && r.RuntimesDir != "" {
+		runtimeID := uuid.New().String()
+		ds, err := r.startDockerProxy(runtimeID)
+		if err != nil {
+			// Non-fatal: log and continue without docker proxy rather than
+			// blocking the job entirely. The sandbox will start but DOCKER_HOST
+			// won't be set.
+			slog.Warn("docker proxy: failed to start, docker unavailable for this job",
+				"job_id", j.ID, "error", err)
+		} else {
+			rtInfo.ProxySocketPath = ds.socketPath
+			desiredRuntimeID = runtimeID
+			r.trackDockerState(runtimeID, ds)
+		}
+	}
+
 	sbSpec, err := BuildSandboxSpec(spec, rtInfo)
 	if err != nil {
+		if desiredRuntimeID != "" {
+			r.stopDockerProxy(desiredRuntimeID)
+		}
 		r.failJob(j, err)
 		if cleanup != nil {
 			cleanup()
 		}
 		return "", err
 	}
-	return r.launchSandbox(ctx, j, sbSpec, cleanup)
+	return r.launchSandbox(ctx, j, sbSpec, cleanup, desiredRuntimeID)
 }
 
 // enforceCaseOneHeadInvariant verifies the Phase 2-2 case 1 HEAD guard:
@@ -312,6 +362,128 @@ func (r *Runner) proxyPort() int {
 	return *r.ProxyPort
 }
 
+// startDockerProxy creates a per-sandbox docker proxy socket under
+// <RuntimesDir>/<runtimeID>/ and starts the proxy server. Returns the
+// dockerProxyState on success; the caller must call stopDockerProxy on error
+// or when the sandbox exits.
+func (r *Runner) startDockerProxy(runtimeID string) (*dockerProxyState, error) {
+	upstream, err := dockerproxy.ResolveUpstream("")
+	if err != nil {
+		return nil, fmt.Errorf("resolve docker upstream: %w", err)
+	}
+	runtimeDir := filepath.Join(r.RuntimesDir, runtimeID)
+	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir docker proxy runtime dir: %w", err)
+	}
+	socketPath := filepath.Join(runtimeDir, "docker-proxy.sock")
+	ledgerPath := filepath.Join(runtimeDir, "docker-resources.jsonl")
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		return nil, fmt.Errorf("listen docker proxy socket: %w", err)
+	}
+	// Restrict access to the owner only: sandbox processes run as the same
+	// uid and need access; other users must not reach the proxy.
+	if err := os.Chmod(socketPath, 0o600); err != nil {
+		ln.Close()
+		return nil, fmt.Errorf("chmod docker proxy socket: %w", err)
+	}
+
+	ledger := dockerproxy.NewLedger(ledgerPath)
+	proxy := dockerproxy.NewWithLedger(upstream, ledger)
+	go func() {
+		if err := proxy.Serve(ln); err != nil {
+			slog.Debug("docker proxy serve ended", "runtime_id", runtimeID, "error", err)
+		}
+	}()
+	slog.Info("docker proxy started", "runtime_id", runtimeID, "socket", socketPath)
+	return &dockerProxyState{
+		proxy:      proxy,
+		listener:   ln,
+		upstream:   upstream,
+		socketPath: socketPath,
+		ledger:     ledger,
+	}, nil
+}
+
+func (r *Runner) trackDockerState(runtimeID string, ds *dockerProxyState) {
+	r.dockerMu.Lock()
+	defer r.dockerMu.Unlock()
+	if r.dockerStates == nil {
+		r.dockerStates = make(map[string]*dockerProxyState)
+	}
+	r.dockerStates[runtimeID] = ds
+}
+
+func (r *Runner) redockeyDockerState(oldID, newID string) {
+	r.dockerMu.Lock()
+	defer r.dockerMu.Unlock()
+	if r.dockerStates == nil {
+		return
+	}
+	if ds, ok := r.dockerStates[oldID]; ok {
+		delete(r.dockerStates, oldID)
+		r.dockerStates[newID] = ds
+	}
+}
+
+// stopDockerProxy closes the proxy and removes its state from the map.
+func (r *Runner) stopDockerProxy(runtimeID string) {
+	r.dockerMu.Lock()
+	ds, ok := r.dockerStates[runtimeID]
+	if ok {
+		delete(r.dockerStates, runtimeID)
+	}
+	r.dockerMu.Unlock()
+	if !ok {
+		return
+	}
+	if err := ds.proxy.Close(); err != nil {
+		slog.Debug("docker proxy close", "runtime_id", runtimeID, "error", err)
+	}
+}
+
+// reapAndCloseDockerProxy calls Reap to clean up docker resources created by
+// the sandbox job, then closes the proxy server. Called after the sandbox exits
+// (success or failure) so cleanup always runs.
+func (r *Runner) reapAndCloseDockerProxy(runtimeID string) {
+	r.dockerMu.Lock()
+	ds, ok := r.dockerStates[runtimeID]
+	if ok {
+		delete(r.dockerStates, runtimeID)
+	}
+	r.dockerMu.Unlock()
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := dockerproxy.Reap(ctx, ds.upstream, ds.ledger); err != nil {
+		slog.Warn("docker reap failed", "runtime_id", runtimeID, "error", err)
+	}
+	if err := ds.proxy.Close(); err != nil {
+		slog.Debug("docker proxy close", "runtime_id", runtimeID, "error", err)
+	}
+}
+
+// validateDockerHostCommands returns an error when the spec registers a
+// docker host command without subcommand restrictions, which would allow
+// sandbox processes to bypass the docker proxy by calling docker directly.
+func validateDockerHostCommands(hostCommands map[string]orchestrator.CommandDef) error {
+	cmd, ok := hostCommands["docker"]
+	if !ok {
+		return nil
+	}
+	// If AllowedSubcommands is non-empty or AllowedPatterns is non-empty, the
+	// registration is subcommand-restricted (e.g. build-only) and is acceptable.
+	if len(cmd.AllowedSubcommands) > 0 || len(cmd.AllowedPatterns) > 0 {
+		return nil
+	}
+	return fmt.Errorf("host_commands.docker: unrestricted docker access bypasses the docker proxy " +
+		"(capabilities.docker is enabled); remove docker from host_commands or restrict to specific " +
+		"subcommands (e.g. allow: [build])")
+}
+
 func allowedProjectIDs(selfID string, workspacePeers map[string]string) []string {
 	seen := make(map[string]struct{})
 	var ids []string
@@ -391,7 +563,7 @@ func (r *Runner) CompleteJob(jobID string, result JobCompletionResult) {
 }
 
 // launchSandbox writes sandbox scripts and launches via the configured runtime.
-func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec, cleanup orchestrator.CleanupFunc) (string, error) {
+func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec, cleanup orchestrator.CleanupFunc, desiredRuntimeID string) (string, error) {
 	if job == nil {
 		return "", fmt.Errorf("job is required")
 	}
@@ -431,8 +603,12 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 		Command:     fmt.Sprintf("bash %s", prepared.OuterPath),
 		Interactive: spec.TTY,
 		TTY:         spec.TTY,
+		DesiredID:   desiredRuntimeID,
 	})
 	if err != nil {
+		if desiredRuntimeID != "" {
+			r.stopDockerProxy(desiredRuntimeID)
+		}
 		cleanupSandboxArtifacts(prepared)
 		if cleanup != nil {
 			cleanup()
@@ -440,11 +616,19 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 		return "", fmt.Errorf("start runtime: %w", err)
 	}
 
+	// When DesiredID was set, the proxy was pre-registered under desiredRuntimeID.
+	// After Start, handle.ID may differ only if the runtime didn't honour DesiredID
+	// (e.g. a test stub). In that case, re-key the dockerState entry.
+	if desiredRuntimeID != "" && handle.ID != desiredRuntimeID {
+		r.redockeyDockerState(desiredRuntimeID, handle.ID)
+	}
+
 	job.RuntimeID = handle.ID
 	job.Interactive = handle.Interactive
 	job.TTY = handle.TTY
 	if err := UpdateJob(r.DB, job); err != nil {
 		_ = r.Runtime.Stop(context.Background(), handle.ID)
+		r.stopDockerProxy(handle.ID)
 		cleanupSandboxArtifacts(prepared)
 		if cleanup != nil {
 			cleanup()
@@ -471,12 +655,19 @@ func (r *Runner) cleanupSandboxAfterWait(runtimeID string, prepared *PreparedSan
 	result, err := r.Runtime.Wait(context.Background(), runtimeID)
 	if err != nil {
 		if errors.Is(err, ErrRuntimeUnsupported) {
+			// Reap docker resources even on unsupported-wait paths (best effort).
+			r.reapAndCloseDockerProxy(runtimeID)
 			cleanupSandboxArtifacts(prepared)
 			return
 		}
 		slog.Warn("skip sandbox cleanup: runtime wait failed", "runtime_id", runtimeID, "error", err)
 		return
 	}
+
+	// Docker Reap + proxy Close: run unconditionally (success or failure) and
+	// before the runtime dir is removed so the ledger is still readable.
+	r.reapAndCloseDockerProxy(runtimeID)
+
 	// Scaffolding (RootDir, StagingDir) は outer.sh が常に削除するので、
 	// ここでは保険として idempotent に rm するだけ。 exit_code に関わらず実行。
 	cleanupSandboxScaffolding(prepared)
