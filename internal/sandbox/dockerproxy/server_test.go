@@ -623,3 +623,301 @@ func TestResolveUpstream_dockerHost_priority_over_candidates(t *testing.T) {
 	}
 }
 
+// --- helpers for ledger-aware proxy tests ---
+
+// newProxyWithLedger starts a proxy with an attached ledger and returns its socket path.
+func newProxyWithLedger(t *testing.T, upstreamSock string, l *Ledger) string {
+	t.Helper()
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "proxy.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal("proxy listen:", err)
+	}
+	srv := NewWithLedger(upstreamSock, l)
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() {
+		srv.Close()
+		ln.Close()
+	})
+	return sock
+}
+
+func newTempLedger(t *testing.T) *Ledger {
+	t.Helper()
+	return NewLedger(filepath.Join(t.TempDir(), "docker-resources.jsonl"))
+}
+
+// --- id scope check tests ---
+
+func TestScope_unknownID_returns404_noUpstreamHit(t *testing.T) {
+	var hits int
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	l := newTempLedger(t)
+	proxySock := newProxyWithLedger(t, upstream.sockPath, l)
+
+	// Container ID not in ledger — scope check should 404.
+	resp := doProxyRequest(t, proxySock, "POST", "/containers/unknown123/stop", nil)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", resp.StatusCode)
+	}
+	if hits != 0 {
+		t.Errorf("upstream received %d requests; expected 0", hits)
+	}
+}
+
+func TestScope_knownID_transparent(t *testing.T) {
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	l := newTempLedger(t)
+	_ = l.Append(ResourceEntry{Type: "container", ID: "known123"})
+
+	proxySock := newProxyWithLedger(t, upstream.sockPath, l)
+
+	resp := doProxyRequest(t, proxySock, "POST", "/containers/known123/stop", nil)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("expected 204, got %d", resp.StatusCode)
+	}
+}
+
+func TestScope_networkID_unknownReturns404(t *testing.T) {
+	var hits int
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	})
+
+	l := newTempLedger(t)
+	proxySock := newProxyWithLedger(t, upstream.sockPath, l)
+
+	resp := doProxyRequest(t, proxySock, "DELETE", "/networks/foreign-net", nil)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", resp.StatusCode)
+	}
+	if hits != 0 {
+		t.Errorf("upstream received %d requests; expected 0", hits)
+	}
+}
+
+func TestScope_execID_unknownReturns404(t *testing.T) {
+	var hits int
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	})
+
+	l := newTempLedger(t)
+	proxySock := newProxyWithLedger(t, upstream.sockPath, l)
+
+	// exec/{id}/start — ID not in ledger
+	clientConn, err := net.Dial("unix", proxySock)
+	if err != nil {
+		t.Fatal("dial proxy:", err)
+	}
+	defer clientConn.Close()
+
+	reqBody := `{"Detach":false}`
+	fmt.Fprintf(clientConn,
+		"POST /exec/unknownExec/start HTTP/1.1\r\nHost: docker\r\nContent-Length: %d\r\n\r\n%s",
+		len(reqBody), reqBody,
+	)
+	br := bufio.NewReader(clientConn)
+	httpResp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatal("reading response:", err)
+	}
+	io.Copy(io.Discard, httpResp.Body) //nolint:errcheck
+	httpResp.Body.Close()
+
+	if httpResp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", httpResp.StatusCode)
+	}
+	if hits != 0 {
+		t.Errorf("upstream received %d requests; expected 0", hits)
+	}
+}
+
+// TestScope_noLedger verifies that without a ledger the proxy passes all IDs through.
+func TestScope_noLedger_passesAll(t *testing.T) {
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	proxySock := newProxy(t, upstream.sockPath) // no ledger
+
+	resp := doProxyRequest(t, proxySock, "POST", "/containers/anyid/stop", nil)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("expected 204 without ledger, got %d", resp.StatusCode)
+	}
+}
+
+// --- ID recording tests ---
+
+func TestIDRecord_containerCreate_recordedBeforeResponse(t *testing.T) {
+	const fixedID = "deadbeef0123456789abcdef"
+
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"Id":%q,"Warnings":[]}`, fixedID)
+	})
+
+	l := newTempLedger(t)
+	proxySock := newProxyWithLedger(t, upstream.sockPath, l)
+
+	body := mustJSON(map[string]interface{}{"Image": "alpine:latest"})
+	resp := doProxyRequest(t, proxySock, "POST", "/containers/create", body)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+
+	// By the time the response is returned the ID must already be in the ledger.
+	ok, err := l.Contains("container", fixedID)
+	if err != nil || !ok {
+		t.Errorf("container ID not in ledger after response: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestIDRecord_networkCreate(t *testing.T) {
+	const fixedID = "net-id-aabbcc"
+
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"Id":%q}`, fixedID)
+	})
+
+	l := newTempLedger(t)
+	proxySock := newProxyWithLedger(t, upstream.sockPath, l)
+
+	resp := doProxyRequest(t, proxySock, "POST", "/networks/create",
+		mustJSON(map[string]interface{}{"Name": "mynet"}))
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	ok, err := l.Contains("network", fixedID)
+	if err != nil || !ok {
+		t.Errorf("network ID not in ledger: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestIDRecord_volumeCreate_usesName(t *testing.T) {
+	const volName = "my-volume"
+
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"Name":%q,"Driver":"local"}`, volName)
+	})
+
+	l := newTempLedger(t)
+	proxySock := newProxyWithLedger(t, upstream.sockPath, l)
+
+	resp := doProxyRequest(t, proxySock, "POST", "/volumes/create",
+		mustJSON(map[string]interface{}{"Name": volName}))
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	ok, err := l.Contains("volume", volName)
+	if err != nil || !ok {
+		t.Errorf("volume Name not in ledger: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestIDRecord_execCreate_recordsExecID(t *testing.T) {
+	const containerID = "ctr-abc"
+	const execID = "exec-xyz"
+
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"Id":%q}`, execID)
+	})
+
+	l := newTempLedger(t)
+	// Pre-register the container so scope check passes.
+	_ = l.Append(ResourceEntry{Type: "container", ID: containerID})
+	proxySock := newProxyWithLedger(t, upstream.sockPath, l)
+
+	resp := doProxyRequest(t, proxySock, "POST", "/containers/"+containerID+"/exec",
+		mustJSON(map[string]interface{}{"Cmd": []string{"ls"}}))
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	ok, err := l.Contains("exec", execID)
+	if err != nil || !ok {
+		t.Errorf("exec ID not in ledger: ok=%v err=%v", ok, err)
+	}
+}
+
+// TestIDRecord_responseBodyUnmodified verifies the response body reaches the
+// client byte-for-byte unchanged even after ID extraction.
+func TestIDRecord_responseBodyUnmodified(t *testing.T) {
+	const rawResponse = `{"Id":"cafebabe1234","Warnings":[]}`
+
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, rawResponse)
+	})
+
+	l := newTempLedger(t)
+	proxySock := newProxyWithLedger(t, upstream.sockPath, l)
+
+	resp := doProxyRequest(t, proxySock, "POST", "/containers/create",
+		mustJSON(map[string]interface{}{"Image": "alpine"}))
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+
+	if string(got) != rawResponse {
+		t.Errorf("response body modified:\n got:  %q\n want: %q", got, rawResponse)
+	}
+}
+
+// TestIDRecord_versionPrefixedPath verifies recording works with /v1.43/ prefix.
+func TestIDRecord_versionPrefixedPath(t *testing.T) {
+	const fixedID = "versioned-id-001"
+
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"Id":%q}`, fixedID)
+	})
+
+	l := newTempLedger(t)
+	proxySock := newProxyWithLedger(t, upstream.sockPath, l)
+
+	resp := doProxyRequest(t, proxySock, "POST", "/v1.43/containers/create",
+		mustJSON(map[string]interface{}{"Image": "alpine"}))
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	ok, err := l.Contains("container", fixedID)
+	if err != nil || !ok {
+		t.Errorf("versioned path: container ID not in ledger: ok=%v err=%v", ok, err)
+	}
+}
+
