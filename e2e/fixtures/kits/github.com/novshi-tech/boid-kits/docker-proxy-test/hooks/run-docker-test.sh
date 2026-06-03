@@ -15,10 +15,16 @@ fail_with_diag() {
 }
 
 # DOCKER_HOST is injected by the proxy: unix:///run/boid/docker-proxy.sock
-DOCKER_SOCK="${DOCKER_HOST#unix://}"
-if [[ -z "$DOCKER_SOCK" ]]; then
-  fail_with_diag "DOCKER_HOST not set or not a unix:// path"
+# Use ${:-} to avoid -u "unbound variable" error when DOCKER_HOST is unset
+# (which happens when startDockerProxy failed silently in the daemon).
+_dh="${DOCKER_HOST:-}"
+if [[ -z "$_dh" ]]; then
+  fail_with_diag "DOCKER_HOST is unset (startDockerProxy likely failed)"
 fi
+if [[ "$_dh" != unix://* ]]; then
+  fail_with_diag "DOCKER_HOST is not a unix:// path: $_dh"
+fi
+DOCKER_SOCK="${_dh#unix://}"
 
 # Send a request through the proxy and return the HTTP status code.
 proxy_req() {
