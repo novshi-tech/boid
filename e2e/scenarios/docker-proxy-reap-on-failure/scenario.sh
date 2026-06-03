@@ -27,7 +27,19 @@ e2e_run "$E2E_BIN_DIR/boid" action send --task "$task_id" --type start
 
 # The hook intentionally exits 1, so the task must reach aborted.
 e2e_log "waiting for task aborted (hook exits 1)"
-task_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 30s --interval 200ms "$task_id" aborted)"
+_deadline=$((SECONDS + 30))
+while true; do
+  _task_json="$("$E2E_BIN_DIR/boid-e2e" get-task "$task_id" 2>/dev/null)" || true
+  if printf '%s' "$_task_json" | grep -q '"status":"aborted"'; then
+    task_json="$_task_json"
+    break
+  fi
+  if [[ $SECONDS -ge $_deadline ]]; then
+    e2e_fail "timeout waiting for task aborted. last status: $_task_json"
+  fi
+  sleep 0.2
+done
+
 printf '%s\n' "$task_json"
 e2e_assert_contains "$task_json" '"status":"aborted"'
 

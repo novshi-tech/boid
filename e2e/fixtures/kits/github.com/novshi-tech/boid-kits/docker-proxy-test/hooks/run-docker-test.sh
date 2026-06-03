@@ -13,7 +13,7 @@ proxy_req() {
   local method="$1"
   local path="$2"
   local body="${3:-}"
-  local -a curl_args=(-s -o /dev/null -w "%{http_code}" --unix-socket "$DOCKER_SOCK" -X "$method")
+  local -a curl_args=(-s -o /dev/null -w "%{http_code}" --max-time 10 --unix-socket "$DOCKER_SOCK" -X "$method")
   if [[ -n "$body" ]]; then
     curl_args+=(-H 'Content-Type: application/json' -d "$body")
   fi
