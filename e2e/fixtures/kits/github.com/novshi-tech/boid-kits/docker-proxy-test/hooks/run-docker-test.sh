@@ -128,6 +128,20 @@ case "${DOCKER_PROXY_TEST_CASE:-}" in
     exit 1
     ;;
 
+  network-create)
+    code=$(proxy_req POST /networks/create '{"Driver":"host"}')
+    assert_http 403 "$code" "network-create: Driver=host deny"
+    code=$(proxy_req POST /networks/create '{"Driver":"bridge"}')
+    assert_http 201 "$code" "network-create: Driver=bridge allow"
+    ;;
+
+  volume-create)
+    code=$(proxy_req POST /volumes/create '{"DriverOpts":{"type":"none","device":"/etc","o":"bind"}}')
+    assert_http 403 "$code" "volume-create: DriverOpts device=/etc deny"
+    code=$(proxy_req POST /volumes/create '{"Driver":"local"}')
+    assert_http 201 "$code" "volume-create: Driver=local allow"
+    ;;
+
   passthrough)
     c1=$(proxy_req GET /version)
     assert_http 200 "$c1" "passthrough: GET /version"
