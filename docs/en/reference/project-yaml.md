@@ -36,6 +36,7 @@ task_behaviors:
 | `additional_bindings` | list of BindMount | no | Extra paths to mount into the sandbox. |
 | `env` | map (string → string) | no | Environment variables to set inside the sandbox. |
 | `secret_namespace` | string | no | Namespace under which this project's secrets are resolved. |
+| `capabilities` | Capabilities | no | Declares optional sandbox capabilities. The only supported capability today is `docker`. |
 
 ## `task_behaviors.<name>`
 
@@ -248,6 +249,70 @@ commands:
 |---|---|---|
 | `command` | list of string | The argv to execute. `${VAR}` references are expanded at load time. |
 | `readonly` | bool | `true` to force the sandbox into read-only mode for this command alone. |
+
+## capabilities
+
+Top-level field for enabling optional sandbox capabilities.
+
+### `capabilities.docker`
+
+Declaring `capabilities.docker: {}` enables the **native Docker proxy** for the project's sandboxes.
+
+```yaml
+capabilities:
+  docker: {}   # empty object is the opt-in marker
+```
+
+When enabled the boid daemon automatically:
+
+1. Starts a per-sandbox proxy socket (`/run/boid/docker-proxy.sock`)
+2. Bind-mounts the socket into the sandbox
+3. Sets the following environment variables in the sandbox
+
+| Variable | Value |
+|---|---|
+| `DOCKER_HOST` | `unix:///run/boid/docker-proxy.sock` |
+| `CONTAINER_HOST` | `unix:///run/boid/docker-proxy.sock` |
+| `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` | `/run/boid/docker-proxy.sock` |
+| `TESTCONTAINERS_RYUK_DISABLED` | `true` |
+
+The Docker CLI, Docker SDKs, and TestContainers all respect `DOCKER_HOST`, so they work through the proxy without additional configuration. `TESTCONTAINERS_RYUK_DISABLED=true` disables the TestContainers Ryuk reaper (Ryuk requires a docker.sock bind-mount that the proxy's sandbox isolation prohibits; boid cleans up containers on job exit instead).
+
+For the proxy's security model, body-inspection rules, and container GC details, see [Sandbox internals / Docker proxy](../architecture/sandbox-internals.md#docker-proxy-capabilitiesdocker).
+
+#### docker CLI and host_commands
+
+Docker commands inside the sandbox run through the proxy socket (`DOCKER_HOST`). **When `capabilities.docker` is enabled, registering `docker` in `host_commands` without subcommand restrictions is an error.** An unrestricted `docker` entry in `host_commands` means host-side direct execution (bypassing the proxy), which boid rejects at job launch:
+
+```
+host_commands.docker: unrestricted docker access bypasses the docker proxy
+(capabilities.docker is enabled); remove docker from host_commands or restrict
+to specific subcommands (e.g. allow: [build])
+```
+
+If image builds must run on the host, restrict to the `build` subcommand:
+
+```yaml
+host_commands:
+  docker:
+    allow: [build]   # host-side docker build only
+```
+
+Note that host-side execution still carries the risks of `--network host`, `--secret`, etc. For ordinary `docker run` and TestContainers usage the proxy is sufficient — no `host_commands` entry is needed.
+
+#### Rootless Docker recommendation
+
+The proxy is the primary defence layer. To limit the blast radius of a proxy bypass, we strongly recommend running the host Docker daemon in **rootless mode**. Rootless Docker confines containers to a user namespace, so host-root escalation is structurally impossible.
+
+```sh
+# Set up rootless Docker (one time)
+curl -fsSL https://get.docker.com/rootless | sh
+# or via distro package: apt install docker-ce-rootless-extras
+```
+
+boid resolves the upstream socket at startup in this order: `DOCKER_HOST` environment variable → rootless path (`$XDG_RUNTIME_DIR/docker.sock`) → rootful `/var/run/docker.sock`.
+
+For migration from the docker kit (cetusguard-based) to the native proxy, see the [Docker proxy migration guide](../guide/docker-proxy-migration.md).
 
 ## Project-local overrides (`.boid/project.local.yaml`)
 

@@ -37,6 +37,7 @@ task_behaviors:
 | `additional_bindings` | BindMount のリスト | いいえ | サンドボックスにマウントしたい追加パス |
 | `env` | map (string → string) | いいえ | サンドボックス内に流す環境変数 |
 | `secret_namespace` | string | いいえ | このプロジェクトの secret を解決する際のネームスペース |
+| `capabilities` | Capabilities | いいえ | サンドボックスのオプション機能を宣言する。現在サポートする機能は `docker` のみ |
 
 ## `task_behaviors.<name>`
 
@@ -273,6 +274,71 @@ commands:
 |---|---|---|
 | `command` | string のリスト | 実行する argv。 `${VAR}` 形式の環境変数は読み込み時に展開される |
 | `readonly` | bool | このコマンド単発でサンドボックスを読み取り専用にしたい場合に `true` |
+
+## capabilities
+
+サンドボックスのオプション機能を有効化するトップレベルのフィールドです。
+
+### `capabilities.docker`
+
+`capabilities.docker: {}` を宣言すると、そのプロジェクトのサンドボックスに **ネイティブ Docker プロキシ** が有効になります。
+
+```yaml
+capabilities:
+  docker: {}   # 空オブジェクトが有効化マーカー
+```
+
+有効化すると boid daemon は自動的に次の処理を行います:
+
+1. サンドボックス専用の proxy socket を起動（`/run/boid/docker-proxy.sock`）
+2. その socket をサンドボックスに bind-mount
+3. 以下の環境変数をサンドボックスに自動設定
+
+| 環境変数 | 値 |
+|---|---|
+| `DOCKER_HOST` | `unix:///run/boid/docker-proxy.sock` |
+| `CONTAINER_HOST` | `unix:///run/boid/docker-proxy.sock` |
+| `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` | `/run/boid/docker-proxy.sock` |
+| `TESTCONTAINERS_RYUK_DISABLED` | `true` |
+
+docker CLI・Docker SDK・TestContainers はいずれも `DOCKER_HOST` を参照するため、追加設定なしに proxy 経由で動作します。`TESTCONTAINERS_RYUK_DISABLED=true` は TestContainers の Ryuk reaper を無効化します（Ryuk はサンドボックス分離が禁止する docker.sock bind-mount を要求するため。boid は代わりにジョブ終了時にコンテナを掃除します）。
+
+proxy のセキュリティモデル、ボディ検査ルール、コンテナ GC の詳細は [サンドボックス内部実装 / Docker プロキシ](../architecture/sandbox-internals.md#docker-プロキシ-capabilitiesdocker) を参照してください。
+
+#### docker CLI と host_commands の注意
+
+サンドボックス内の docker コマンドは proxy socket (`DOCKER_HOST`) 経由で動作します。**`capabilities.docker` が有効なプロジェクトで `host_commands` に `docker` をサブコマンド制限なしで登録するとエラーになります。** `host_commands` への `docker` 登録はホスト直実行（proxy バイパス）になるため、boid が起動時に拒否します。
+
+エラーメッセージ:
+```
+host_commands.docker: unrestricted docker access bypasses the docker proxy
+(capabilities.docker is enabled); remove docker from host_commands or restrict
+to specific subcommands (e.g. allow: [build])
+```
+
+image build だけをホスト側 docker で実行させたい場合は、サブコマンドを制限すれば可能です:
+
+```yaml
+host_commands:
+  docker:
+    allow: [build]   # build サブコマンドのみ許可 (ホスト直実行)
+```
+
+ただしこれはホスト直実行なので `--network host` / `--secret` 等のリスクは残ります。通常の `docker run` / TestContainers は proxy 経由で十分動作するため、`host_commands` への `docker` 登録は不要です。
+
+#### rootless Docker の推奨
+
+proxy 自体が第一防衛線ですが、万一 proxy が迂回された場合の影響を限定するため、ホスト側 Docker daemon は **rootless** で動かすことを推奨します。rootless Docker ではコンテナが user namespace 内で動くため、host root へのエスカレーションが原理的に起きません。
+
+```sh
+# rootless Docker のセットアップ (初回のみ)
+curl -fsSL https://get.docker.com/rootless | sh
+# または distro パッケージ: apt install docker-ce-rootless-extras
+```
+
+boid は起動時に docker upstream socket を `DOCKER_HOST` 環境変数 → rootless path (`$XDG_RUNTIME_DIR/docker.sock`) → rootful `/var/run/docker.sock` の順で自動解決します。
+
+docker kit (cetusguard ベース) からの移行手順は [Docker プロキシ移行ガイド](../guide/docker-proxy-migration.md) を参照してください。
 
 ## プロジェクトローカル設定 (`.boid/project.local.yaml`)
 

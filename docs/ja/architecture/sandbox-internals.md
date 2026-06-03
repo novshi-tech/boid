@@ -123,6 +123,105 @@ sandbox:
 
 変更は `boid stop && boid start` で反映されます。
 
+## Docker プロキシ (`capabilities.docker`)
+
+`project.yaml` で `capabilities.docker: {}` を宣言すると、boid daemon がサンドボックスごとに **Docker プロキシ** を起動し、sandbox 内プロセスの Docker API アクセスを仲介します。実装は [`internal/sandbox/dockerproxy/`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/dockerproxy/) にあります。
+
+```
+サンドボックス内プロセス (docker CLI / SDK / TestContainers)
+        |
+        | DOCKER_HOST=unix:///run/boid/docker-proxy.sock
+        v
+[Docker Native Proxy] (内部 Unix socket)
+        |
+        | ポリシー評価 (policy.go)
+        v
+上流 Docker daemon (/run/user/<uid>/docker.sock 等)
+```
+
+### ルーティング: fail-closed 方式
+
+リクエストの通過ルールは **fail-closed** です ([`server.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/dockerproxy/server.go)):
+
+| リクエスト | 動作 |
+|---|---|
+| `GET` / `HEAD` (全エンドポイント) | 透過転送 (読み取り専用) |
+| 明示許可リストに載っている mutating エンドポイント | 透過転送 |
+| ボディ検査が必要な mutating エンドポイント | 検査後 ALLOW / DENY |
+| `POST /build`, `POST /session` (image build) | 固定 deny |
+| それ以外の未知 mutating エンドポイント | 既定 deny (fail-closed) |
+
+image build を deny する理由: BuildKit は `/session` エンドポイントで HTTP をハイジャックし gRPC を流すため、ボディ検査が不可能です。
+
+### ボディ検査: 拒否される HostConfig 設定
+
+`POST /containers/create` のボディは詳細に検査されます ([`policy.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/dockerproxy/policy.go))。以下の設定が含まれていると `403 Forbidden` が返されます:
+
+| フィールド | 拒否条件 | エラーメッセージ |
+|---|---|---|
+| `HostConfig.Binds` | 要素が 1 つ以上 | `HostConfig.Binds: bind mounts are not permitted` |
+| `HostConfig.Mounts` | `Type=bind` の要素が存在 | `HostConfig.Mounts: type=bind mount is not permitted` |
+| `HostConfig.Mounts` | `Type=volume` + `VolumeOptions.DriverConfig.Options.device` | `HostConfig.Mounts: volume with device option (system 3 bind) is not permitted` |
+| `HostConfig.Mounts` | `Type=volume` + `Options.o` に `bind` を含む | `HostConfig.Mounts: volume with o=bind option (system 3 bind) is not permitted` |
+| `HostConfig.Privileged` | `true` | `HostConfig.Privileged: privileged containers are not permitted` |
+| `HostConfig.NetworkMode` | `host` / `container:<id>` / `ns:<path>` | `HostConfig.NetworkMode: <値> is not permitted` |
+| `HostConfig.PidMode` | `host` / `container:<id>` / `ns:<path>` | `HostConfig.PidMode: <値> is not permitted` |
+| `HostConfig.IpcMode` | `host` / `container:<id>` / `ns:<path>` | `HostConfig.IpcMode: <値> is not permitted` |
+| `HostConfig.UsernsMode` | `host` | `HostConfig.UsernsMode: host is not permitted` |
+| `HostConfig.CgroupnsMode` | `host` | `HostConfig.CgroupnsMode: host is not permitted` |
+| `HostConfig.SecurityOpt` | 要素が 1 つ以上（値を問わず） | `HostConfig.SecurityOpt: security options are not permitted` |
+| `HostConfig.CapAdd` | 要素が 1 つ以上（capability 名を問わず） | `HostConfig.CapAdd: adding capabilities is not permitted` |
+| `HostConfig.Devices` | 要素が 1 つ以上 | `HostConfig.Devices: device access is not permitted` |
+| `HostConfig.DeviceCgroupRules` | 要素が 1 つ以上 | `HostConfig.DeviceCgroupRules: device cgroup rules are not permitted` |
+| `HostConfig.Runtime` | `runc` 以外 | `HostConfig.Runtime: only runc runtime is permitted, got <値>` |
+| `HostConfig.Sysctls` | 要素が 1 つ以上 | `HostConfig.Sysctls: sysctl settings are not permitted` |
+| `HostConfig.CgroupParent` | 空文字列以外 | `HostConfig.CgroupParent: custom cgroup parent is not permitted` |
+
+`POST /containers/{id}/exec` では `Privileged=true` を拒否します。
+`POST /containers/{id}/start` ではボディに HostConfig が存在する場合を拒否します（旧 API の legacy 形式対策）。
+`POST /networks/create` では `Driver=host` を拒否します。
+`POST /volumes/create` では `DriverOpts.device` および `DriverOpts.o` に `bind` を含む場合を拒否します。
+
+proxy はボディを **decode → re-encode せず、受信した生バイトをそのまま上流へ転送** します（parser differential 攻撃の回避）。
+
+### コンテナ GC (Ryuk の内製化)
+
+TestContainers の Ryuk reaper は docker.sock への bind-mount を要求しますが、本 proxy は bind を禁止しています。そのため `TESTCONTAINERS_RYUK_DISABLED=true` が自動設定され、Ryuk は無効化されます。その代わり boid が掃除役を担います。
+
+- **ID 記録**: 作成系エンドポイント (`POST /containers/create`・`/networks/create`・`/volumes/create`) のレスポンスから ID を拾い、**クライアントへ返す前に** `<runtimes-dir>/<runtime_id>/docker-resources.jsonl` に fsync 付きで追記します ([`ledger.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/dockerproxy/ledger.go))。
+- **同期掃除**: ジョブ完了時（成功・失敗とも）に `Reap()` が台帳を読み取り、コンテナ → ネットワーク → ボリュームの順で `stop` + `rm` を発行します ([`reap.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/dockerproxy/reap.go))。
+- **GC による安全網**: daemon の 24 時間 GC loop が runtime ディレクトリを削除する前に台帳のリソースを掃除し、クラッシュ等で取りこぼした孤児リソースを回収します。
+
+### job 間分離 (id スコープ検査)
+
+rootless Docker の upstream daemon は同一ユーザの全 job で共有されます。proxy は台帳を使って **自分の job が作成したリソース ID だけにアクセスを制限** します:
+
+- `/containers/{id}/` 系・`/networks/{id}/` 系・`/volumes/{name}/` 系・`/exec/{id}/` 系のエンドポイントは、id が自 job の台帳に存在する場合のみ透過します。
+- 台帳にない id への操作は **404 で拒否**し、他 job のリソースの存在を漏らしません ([`server.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/dockerproxy/server.go))。
+
+### 環境変数の自動設定
+
+`capabilities.docker` 有効時、以下の環境変数がサンドボックスに自動設定されます ([`sandbox_builder.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/sandbox_builder.go)):
+
+| 環境変数 | 値 |
+|---|---|
+| `DOCKER_HOST` | `unix:///run/boid/docker-proxy.sock` |
+| `CONTAINER_HOST` | `unix:///run/boid/docker-proxy.sock` |
+| `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` | `/run/boid/docker-proxy.sock` |
+| `TESTCONTAINERS_RYUK_DISABLED` | `true` |
+
+### host_commands への docker 登録禁止
+
+`capabilities.docker` が有効なプロジェクトで `host_commands` に `docker` をサブコマンド制限なしで登録しようとすると、ジョブ起動時にエラーになります ([`runner.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/runner.go) `validateDockerHostCommands`):
+
+```
+host_commands.docker: unrestricted docker access bypasses the docker proxy
+(capabilities.docker is enabled); remove docker from host_commands or restrict
+to specific subcommands (e.g. allow: [build])
+```
+
+`host_commands` への `docker` 登録はホスト直実行（proxy バイパス）になるためです。`AllowedSubcommands` または `AllowedPatterns` を指定すれば許可されます（例: `allow: [build]`）。
+
 ## host commands と broker
 
 サンドボックスから host のコマンドを呼ぶには、 `boid` shim と broker のペアが要ります。
@@ -233,4 +332,5 @@ role (hook / gate) による分岐はなく、全 role で同じ op セットが
 - [アーキテクチャ概要](overview.md) — sandbox レイヤの位置づけ
 - [概念 / サンドボックス](../guide/concepts.md#サンドボックス-sandbox) — ユーザ視点での意味
 - [Hook スクリプトプロトコル](../reference/hook-contract.md) — sandbox 内 handler の I/O
-- [`project.yaml` リファレンス](../reference/project-yaml.md) — `host_commands` / `additional_bindings` / `env` の宣言
+- [`project.yaml` リファレンス](../reference/project-yaml.md) — `host_commands` / `additional_bindings` / `capabilities` の宣言
+- [Docker プロキシ移行ガイド](../guide/docker-proxy-migration.md) — docker kit (cetusguard) から native proxy への移行

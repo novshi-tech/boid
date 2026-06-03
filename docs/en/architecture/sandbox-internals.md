@@ -108,6 +108,105 @@ pasta is a user-privilege network-namespace wrapper. The sandbox sees only pasta
 
 The proxy itself lives in [`internal/sandbox/proxy.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/proxy.go) and runs as a goroutine inside the daemon.
 
+## Docker proxy (`capabilities.docker`)
+
+When `capabilities.docker: {}` is declared in `project.yaml`, the boid daemon starts a **Docker proxy** for each sandbox and interposes it between sandbox processes and the upstream Docker daemon. The implementation lives in [`internal/sandbox/dockerproxy/`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/dockerproxy/).
+
+```
+sandbox process (docker CLI / SDK / TestContainers)
+        |
+        | DOCKER_HOST=unix:///run/boid/docker-proxy.sock
+        v
+[Docker Native Proxy]  (internal Unix socket)
+        |
+        | policy evaluation (policy.go)
+        v
+upstream Docker daemon (/run/user/<uid>/docker.sock etc.)
+```
+
+### Routing: fail-closed
+
+The routing rules are **fail-closed** ([`server.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/dockerproxy/server.go)):
+
+| Request | Action |
+|---|---|
+| `GET` / `HEAD` (all endpoints) | transparent forward (read-only) |
+| explicitly-allowed mutating endpoints | transparent forward |
+| mutating endpoints requiring body inspection | inspect then ALLOW / DENY |
+| `POST /build`, `POST /session` (image build) | fixed deny |
+| any other unknown mutating endpoint | default deny (fail-closed) |
+
+Image build is denied because BuildKit hijacks the `/session` connection to run gRPC, making body inspection impossible.
+
+### Body inspection: denied HostConfig settings
+
+`POST /containers/create` bodies are inspected in detail ([`policy.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/dockerproxy/policy.go)). The following settings return `403 Forbidden`:
+
+| Field | Deny condition | Error message |
+|---|---|---|
+| `HostConfig.Binds` | one or more entries | `HostConfig.Binds: bind mounts are not permitted` |
+| `HostConfig.Mounts` | any entry with `Type=bind` | `HostConfig.Mounts: type=bind mount is not permitted` |
+| `HostConfig.Mounts` | `Type=volume` + `VolumeOptions.DriverConfig.Options.device` | `HostConfig.Mounts: volume with device option (system 3 bind) is not permitted` |
+| `HostConfig.Mounts` | `Type=volume` + `Options.o` contains `bind` | `HostConfig.Mounts: volume with o=bind option (system 3 bind) is not permitted` |
+| `HostConfig.Privileged` | `true` | `HostConfig.Privileged: privileged containers are not permitted` |
+| `HostConfig.NetworkMode` | `host` / `container:<id>` / `ns:<path>` | `HostConfig.NetworkMode: <value> is not permitted` |
+| `HostConfig.PidMode` | `host` / `container:<id>` / `ns:<path>` | `HostConfig.PidMode: <value> is not permitted` |
+| `HostConfig.IpcMode` | `host` / `container:<id>` / `ns:<path>` | `HostConfig.IpcMode: <value> is not permitted` |
+| `HostConfig.UsernsMode` | `host` | `HostConfig.UsernsMode: host is not permitted` |
+| `HostConfig.CgroupnsMode` | `host` | `HostConfig.CgroupnsMode: host is not permitted` |
+| `HostConfig.SecurityOpt` | one or more entries (any value) | `HostConfig.SecurityOpt: security options are not permitted` |
+| `HostConfig.CapAdd` | one or more entries (any capability name) | `HostConfig.CapAdd: adding capabilities is not permitted` |
+| `HostConfig.Devices` | one or more entries | `HostConfig.Devices: device access is not permitted` |
+| `HostConfig.DeviceCgroupRules` | one or more entries | `HostConfig.DeviceCgroupRules: device cgroup rules are not permitted` |
+| `HostConfig.Runtime` | anything other than `runc` | `HostConfig.Runtime: only runc runtime is permitted, got <value>` |
+| `HostConfig.Sysctls` | one or more entries | `HostConfig.Sysctls: sysctl settings are not permitted` |
+| `HostConfig.CgroupParent` | non-empty | `HostConfig.CgroupParent: custom cgroup parent is not permitted` |
+
+`POST /containers/{id}/exec` denies `Privileged=true`.
+`POST /containers/{id}/start` denies requests that carry a non-empty `HostConfig` (legacy API form).
+`POST /networks/create` denies `Driver=host`.
+`POST /volumes/create` denies `DriverOpts.device` and `DriverOpts.o` containing `bind`.
+
+The proxy **forwards the raw received bytes verbatim** — it never decodes and re-encodes the body. This prevents parser-differential attacks where a crafted body would be parsed differently by the proxy and the upstream daemon.
+
+### Container GC (Ryuk replacement)
+
+TestContainers' Ryuk reaper requires a docker.sock bind-mount, which the proxy prohibits. `TESTCONTAINERS_RYUK_DISABLED=true` is set automatically to disable Ryuk; boid takes over the cleanup role.
+
+- **ID recording**: For creation endpoints (`POST /containers/create`, `/networks/create`, `/volumes/create`) the proxy reads the ID from the upstream response and appends it to `<runtimes-dir>/<runtime_id>/docker-resources.jsonl` with fsync — **before returning the response to the client** — so that "every ID the client knows is already in the ledger" ([`ledger.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/dockerproxy/ledger.go)).
+- **Synchronous cleanup**: On job exit (success or failure) `Reap()` reads the ledger and issues `stop` + `rm` for containers, then networks, then volumes ([`reap.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/dockerproxy/reap.go)).
+- **GC safety net**: The daemon's 24-hour GC loop cleans up ledger resources before removing their runtime directory, recovering orphaned resources from daemon crashes or other missed cleanups.
+
+### Job isolation (ID scope check)
+
+A rootless Docker upstream daemon is shared across all jobs for the same UID. The proxy restricts access using the ledger: **only resource IDs created by the current job's proxy are allowed**.
+
+- Endpoints with an `{id}` segment (`/containers/{id}/`, `/networks/{id}/`, `/volumes/{name}/`, `/exec/{id}/`) are only forwarded when the ID is in the current job's ledger.
+- Operations on an ID not in the ledger return **404**, hiding the existence of other jobs' resources ([`server.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/dockerproxy/server.go)).
+
+### Environment variables injected
+
+When `capabilities.docker` is enabled, the following variables are set in the sandbox ([`sandbox_builder.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/sandbox_builder.go)):
+
+| Variable | Value |
+|---|---|
+| `DOCKER_HOST` | `unix:///run/boid/docker-proxy.sock` |
+| `CONTAINER_HOST` | `unix:///run/boid/docker-proxy.sock` |
+| `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` | `/run/boid/docker-proxy.sock` |
+| `TESTCONTAINERS_RYUK_DISABLED` | `true` |
+
+### Restriction: no unrestricted docker in host_commands
+
+Registering `docker` in `host_commands` without subcommand restrictions is rejected at job launch when `capabilities.docker` is active ([`runner.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/runner.go) `validateDockerHostCommands`):
+
+```
+host_commands.docker: unrestricted docker access bypasses the docker proxy
+(capabilities.docker is enabled); remove docker from host_commands or restrict
+to specific subcommands (e.g. allow: [build])
+```
+
+An unrestricted entry would let sandbox processes run the real `docker` binary directly on the host, bypassing the proxy entirely. Entries restricted with `AllowedSubcommands` or `AllowedPatterns` (e.g. `allow: [build]`) are accepted.
+
 ## Host commands and the broker
 
 To call a host-side command from inside the sandbox, two pieces work together: the `boid` shim and the broker.
@@ -218,4 +317,5 @@ All roles share the same allowed op set.
 - [Architecture overview](overview.md) — where the sandbox layer sits.
 - [Concepts / Sandbox](../guide/concepts.md#sandbox) — the user-visible meaning.
 - [Hook script protocol](../reference/hook-contract.md) — the I/O contract for handlers running inside.
-- [`project.yaml` reference](../reference/project-yaml.md) — declaring `host_commands` / `additional_bindings` / `env`.
+- [`project.yaml` reference](../reference/project-yaml.md) — declaring `host_commands` / `additional_bindings` / `capabilities`.
+- [Docker proxy migration guide](../guide/docker-proxy-migration.md) — migrating from the docker kit (cetusguard) to the native proxy.
