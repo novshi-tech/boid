@@ -144,6 +144,64 @@ func TestPlanHook_AlwaysInteractive(t *testing.T) {
 	}
 }
 
+// TestPlanHook_DockerEnabled verifies that capabilities.docker in ProjectMeta
+// flows through to Visibility.DockerEnabled on the resulting JobSpec.
+func TestPlanHook_DockerEnabled_WhenCapabilitySet(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dockerCap := &DockerCapability{}
+	planner := newPlannerWithCapabilities(
+		&Project{ID: "proj-1", WorkDir: projectDir},
+		TaskBehavior{},
+		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Status: TaskStatusExecuting},
+		Capabilities{Docker: dockerCap},
+	)
+	req, cleanup, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "ev-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook:      Hook{ID: "h-1", ScriptPath: filepath.Join(projectDir, ".boid/hooks/h-1.sh")},
+	})
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if !req.Visibility.DockerEnabled {
+		t.Error("Visibility.DockerEnabled should be true when capabilities.docker is declared")
+	}
+}
+
+func TestPlanHook_DockerEnabled_WhenCapabilityNotSet(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	planner := newPlannerWithCapabilities(
+		&Project{ID: "proj-1", WorkDir: projectDir},
+		TaskBehavior{},
+		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Status: TaskStatusExecuting},
+		Capabilities{},
+	)
+	req, cleanup, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "ev-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook:      Hook{ID: "h-1", ScriptPath: filepath.Join(projectDir, ".boid/hooks/h-1.sh")},
+	})
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if req.Visibility.DockerEnabled {
+		t.Error("Visibility.DockerEnabled should be false when capabilities.docker is not declared")
+	}
+}
 
 // FilterInstructions picks a matching agent; planner surfaces exactly one
 // RoutedInstruction on JobSpec.
@@ -681,6 +739,19 @@ func newPlannerForTest(proj *Project, behavior TaskBehavior, task *Task) *Dispat
 	meta := &ProjectMeta{
 		ID:            proj.ID,
 		TaskBehaviors: map[string]TaskBehavior{task.Behavior: behavior},
+	}
+	return &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj}},
+		Tasks:    stubTaskLookup{task: task},
+	}
+}
+
+func newPlannerWithCapabilities(proj *Project, behavior TaskBehavior, task *Task, caps Capabilities) *DispatchPlanner {
+	meta := &ProjectMeta{
+		ID:            proj.ID,
+		TaskBehaviors: map[string]TaskBehavior{task.Behavior: behavior},
+		Capabilities:  caps,
 	}
 	return &DispatchPlanner{
 		Meta:     stubMetaCache{meta: meta},

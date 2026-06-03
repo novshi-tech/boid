@@ -2643,3 +2643,71 @@ hooks:
 		t.Errorf("Hook.Name = %q, want %q", h.Name, "PR Verify")
 	}
 }
+
+func writeProjectYAML(t *testing.T, dir, content string) {
+	t.Helper()
+	boidDir := filepath.Join(dir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir boid: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write project.yaml: %v", err)
+	}
+}
+
+func TestReadProjectMeta_Capabilities_DockerPresent(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: proj-docker
+name: Docker Project
+task_behaviors:
+  executor:
+    name: executor
+capabilities:
+  docker: {}
+`)
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadProjectMeta: %v", err)
+	}
+	if meta.Capabilities.Docker == nil {
+		t.Error("Capabilities.Docker should be non-nil when capabilities.docker: {} is declared")
+	}
+}
+
+func TestReadProjectMeta_Capabilities_DockerAbsent(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: proj-no-docker
+name: No Docker
+task_behaviors:
+  executor:
+    name: executor
+`)
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadProjectMeta: %v", err)
+	}
+	if meta.Capabilities.Docker != nil {
+		t.Error("Capabilities.Docker should be nil when capabilities section is absent")
+	}
+}
+
+func TestReadProjectMeta_Capabilities_NoDockerKey(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: proj-caps-no-docker
+name: Caps No Docker
+task_behaviors:
+  executor:
+    name: executor
+capabilities: {}
+`)
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadProjectMeta: %v", err)
+	}
+	if meta.Capabilities.Docker != nil {
+		t.Error("Capabilities.Docker should be nil when capabilities has no docker key")
+	}
+}

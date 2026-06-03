@@ -197,6 +197,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		WorktreeDir:          worktreePath,
 		WorkspacePeers:       workspacePeers,
 		ResolvedHostCommands: resolvedHostCommands,
+		DockerEnabled:        spec.Visibility.DockerEnabled,
 	}
 	// Server socket is only exposed to jobs that have no broker policies
 	// attached — i.e. boid exec invocations that need to talk to the daemon

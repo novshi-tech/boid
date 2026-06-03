@@ -54,6 +54,11 @@ type SandboxRuntimeInfo struct {
 	// broker so the shim's os.Executable() lookup hits a known key. Empty when
 	// the job declares no host commands.
 	ResolvedHostCommands map[string]orchestrator.CommandDef
+
+	// DockerEnabled, when true, indicates capabilities.docker is declared in
+	// project.yaml. A later PR uses this to start the per-sandbox docker proxy
+	// socket and wire it into the sandbox spec.
+	DockerEnabled bool
 }
 
 // BuildSandboxSpec turns a business-level JobSpec and dispatcher-side runtime
