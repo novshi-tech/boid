@@ -1,0 +1,4 @@
+hooks:
+  - id: run-docker-test
+env:
+  E2E_STATE_DIR: ${E2E_STATE_DIR}

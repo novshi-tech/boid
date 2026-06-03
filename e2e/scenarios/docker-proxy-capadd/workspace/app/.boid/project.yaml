@@ -1,0 +1,10 @@
+id: docker-proxy-capadd
+name: Docker Proxy Test - capadd
+capabilities:
+  docker: {}
+env:
+  DOCKER_PROXY_TEST_CASE: capadd
+task_behaviors:
+  smoke:
+    kits:
+      - github.com/novshi-tech/boid-kits/docker-proxy-test

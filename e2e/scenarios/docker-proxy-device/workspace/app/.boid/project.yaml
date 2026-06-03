@@ -1,0 +1,10 @@
+id: docker-proxy-device
+name: Docker Proxy Test - device
+capabilities:
+  docker: {}
+env:
+  DOCKER_PROXY_TEST_CASE: device
+task_behaviors:
+  smoke:
+    kits:
+      - github.com/novshi-tech/boid-kits/docker-proxy-test

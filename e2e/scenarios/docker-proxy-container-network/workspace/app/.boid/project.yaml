@@ -1,0 +1,10 @@
+id: docker-proxy-container-network
+name: Docker Proxy Test - container-network
+capabilities:
+  docker: {}
+env:
+  DOCKER_PROXY_TEST_CASE: container-network
+task_behaviors:
+  smoke:
+    kits:
+      - github.com/novshi-tech/boid-kits/docker-proxy-test
