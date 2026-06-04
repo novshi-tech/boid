@@ -85,6 +85,10 @@ func (s *stubWebService) ListJobs(status string) ([]JobWithContext, error) {
 	return nil, nil
 }
 
+func (s *stubWebService) ListSessions() ([]JobWithContext, error) {
+	return nil, nil
+}
+
 func (s *stubWebService) GetJob(id string) (*JobWithContext, error) {
 	if s.jobDetail == nil {
 		return nil, fmt.Errorf("job not found: %s", id)

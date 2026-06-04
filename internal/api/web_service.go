@@ -149,6 +149,17 @@ func (s *WebAppService) ListJobs(status string) ([]JobWithContext, error) {
 	return jobs, nil
 }
 
+func (s *WebAppService) ListSessions() ([]JobWithContext, error) {
+	jobs, err := s.GlobalJobs.ListJobsWithContext(JobListFilter{Status: "running", TasklessOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	if jobs == nil {
+		jobs = []JobWithContext{}
+	}
+	return jobs, nil
+}
+
 func (s *WebAppService) GetJob(id string) (*JobWithContext, error) {
 	job, err := s.Jobs.GetJob(id)
 	if err != nil {

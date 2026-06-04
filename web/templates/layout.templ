@@ -9,6 +9,9 @@ import "github.com/novshi-tech/boid/web/templates/components"
 // empty the back button is hidden (top-level pages: Tasks list, login).
 // The back button is icon-only so the current page title gets the full
 // remaining header width.
+//
+// Top-level pages (Tasks / Sessions) show a global nav bar below the
+// header so users can switch between the two views.
 templ Layout(title string, backURL string) {
 	<!DOCTYPE html>
 	<html lang="ja">
@@ -95,6 +98,12 @@ templ Layout(title string, backURL string) {
 				}
 				<h1 class="site-title">{ title }</h1>
 			</header>
+			if backURL == "" && (title == "Tasks" || title == "Sessions") {
+				<nav class="site-nav">
+					<a href="/" class={ "site-nav-link", templ.KV("site-nav-link-active", title == "Tasks") }>タスク</a>
+					<a href="/sessions" class={ "site-nav-link", templ.KV("site-nav-link-active", title == "Sessions") }>セッション</a>
+				</nav>
+			}
 			<main class="site-main">
 				{ children... }
 			</main>
