@@ -77,6 +77,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/tasks/{id}/hooks", h.HookReplayList)
 	r.Post("/tasks/{id}/hooks/{hook_id}/replay", h.PostHookReplay)
 	r.Get("/sessions", h.SessionList)
+	r.Get("/sessions/new", h.SessionNew)
 	r.Get("/jobs/{id}", h.JobDetail)
 	r.Get("/jobs/{id}/terminal", h.JobTerminal)
 	r.Get("/projects/{id}/commands", h.ProjectCommandList)
@@ -220,6 +221,29 @@ func (h *WebHandler) SessionList(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	templates.SessionList(sessions, projectFilter).Render(r.Context(), w)
+}
+
+func (h *WebHandler) SessionNew(w http.ResponseWriter, r *http.Request) {
+	projects, _ := h.Service.ListProjects()
+	selectedProjectID := r.URL.Query().Get("project")
+
+	var commands []templates.CommandView
+	if selectedProjectID != "" {
+		cmds, err := h.Service.ListProjectCommands(selectedProjectID)
+		if err == nil {
+			commands = make([]templates.CommandView, len(cmds))
+			for i, c := range cmds {
+				commands[i] = templates.CommandView{
+					Name:     c.Name,
+					Command:  c.Command,
+					Readonly: c.Readonly,
+				}
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templates.SessionNew(projects, selectedProjectID, commands).Render(r.Context(), w)
 }
 
 // filterProjectsByWorkspace filters projects to only those in the given workspace.
