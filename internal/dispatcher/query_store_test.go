@@ -377,3 +377,75 @@ func TestGetWorktreeByTask_NotFound(t *testing.T) {
 		t.Error("expected nil for nonexistent task")
 	}
 }
+
+func TestListJobsFiltered_TasklessOnly(t *testing.T) {
+	d := createDispatcherTask(t)
+
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	// job with a task
+	jobWithTask := &dispatcher.Job{TaskID: task.ID, ProjectID: "proj-1", HandlerID: "h1"}
+	if err := dispatcher.CreateJob(d.Conn, jobWithTask); err != nil {
+		t.Fatalf("create jobWithTask: %v", err)
+	}
+
+	// taskless running job
+	tasklessRunning := &dispatcher.Job{ProjectID: "proj-1", HandlerID: "h2"}
+	if err := dispatcher.CreateJob(d.Conn, tasklessRunning); err != nil {
+		t.Fatalf("create tasklessRunning: %v", err)
+	}
+
+	// taskless completed job
+	tasklessDone := &dispatcher.Job{ProjectID: "proj-1", HandlerID: "h3", Status: dispatcher.JobStatusCompleted}
+	if err := dispatcher.CreateJob(d.Conn, tasklessDone); err != nil {
+		t.Fatalf("create tasklessDone: %v", err)
+	}
+	tasklessDone.Status = dispatcher.JobStatusCompleted
+	if err := dispatcher.UpdateJob(d.Conn, tasklessDone); err != nil {
+		t.Fatalf("update tasklessDone: %v", err)
+	}
+
+	t.Run("taskless only", func(t *testing.T) {
+		jobs, err := dispatcher.ListJobsFiltered(d.Conn, dispatcher.JobFilter{TasklessOnly: true})
+		if err != nil {
+			t.Fatalf("ListJobsFiltered: %v", err)
+		}
+		if len(jobs) != 2 {
+			t.Fatalf("expected 2 taskless jobs, got %d", len(jobs))
+		}
+		for _, j := range jobs {
+			if j.TaskID != "" {
+				t.Errorf("expected taskless job, got task_id=%q", j.TaskID)
+			}
+		}
+	})
+
+	t.Run("taskless + running", func(t *testing.T) {
+		jobs, err := dispatcher.ListJobsFiltered(d.Conn, dispatcher.JobFilter{
+			TasklessOnly: true,
+			Status:       string(dispatcher.JobStatusRunning),
+		})
+		if err != nil {
+			t.Fatalf("ListJobsFiltered: %v", err)
+		}
+		if len(jobs) != 1 {
+			t.Fatalf("expected 1 taskless running job, got %d", len(jobs))
+		}
+		if jobs[0].ID != tasklessRunning.ID {
+			t.Errorf("expected job %s, got %s", tasklessRunning.ID, jobs[0].ID)
+		}
+	})
+
+	t.Run("no taskless filter returns all", func(t *testing.T) {
+		jobs, err := dispatcher.ListJobsFiltered(d.Conn, dispatcher.JobFilter{})
+		if err != nil {
+			t.Fatalf("ListJobsFiltered: %v", err)
+		}
+		if len(jobs) != 3 {
+			t.Fatalf("expected 3 jobs without filter, got %d", len(jobs))
+		}
+	})
+}

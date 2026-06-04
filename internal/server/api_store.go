@@ -272,8 +272,9 @@ type globalJobStore struct {
 
 func (s *globalJobStore) ListJobsWithContext(filter api.JobListFilter) ([]api.JobWithContext, error) {
 	jobs, err := s.jobs.ListJobsFiltered(dispatcher.JobFilter{
-		Status:      filter.Status,
-		Interactive: filter.Interactive,
+		Status:       filter.Status,
+		Interactive:  filter.Interactive,
+		TasklessOnly: filter.TasklessOnly,
 	})
 	if err != nil {
 		return nil, err
