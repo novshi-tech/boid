@@ -469,6 +469,23 @@ pre {
   opacity: 0.5;
 }
 
+/* --- Sessions list ---
+   Sessions reuse .task-row but render a flat list with no tree nesting. The
+   rows carry no inline --depth, so .task-row's --pad-left gutter calc would
+   reference an undefined variable and collapse (content jammed against the
+   left edge). Pin depth/chevron to zero for a normal, balanced left padding,
+   and hide the tree guide lines that the depth-less selector would otherwise
+   draw. */
+.session-list .task-row {
+  --depth: 0;
+  --chev: 0px;
+}
+
+.session-list .task-row::before,
+.session-list .task-row::after {
+  display: none;
+}
+
 /* --- Job List --- */
 .job-list {
   display: flex;
@@ -1892,6 +1909,37 @@ details[open] > summary {
 .cmd-name {
   font-weight: 600;
   white-space: nowrap;
+}
+
+/* Session-name input + Start button. A bare <form> is block and .form-input
+   is width:100%, so the two used to stack (input on top, button below). Lay
+   them out as one inline row: the input stretches to fill the row's right
+   half, the button keeps its intrinsic width. */
+.cmd-row-form {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.cmd-name-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.cmd-row-form .btn {
+  width: auto;
+  flex-shrink: 0;
+}
+
+/* Small form control: drop the 44px tap-target height and match .btn-sm's
+   box metrics so input and button line up. */
+.form-input-sm {
+  width: auto;
+  min-height: auto;
+  padding: var(--space-1) var(--space-2);
+  font-size: 0.875rem;
 }
 
 .cmd-preview {

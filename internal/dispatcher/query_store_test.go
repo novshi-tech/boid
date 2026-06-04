@@ -105,6 +105,28 @@ func TestGetJob(t *testing.T) {
 	}
 }
 
+func TestCreateJob_PersistsDisplayName(t *testing.T) {
+	d := createDispatcherTask(t)
+
+	// A command-launched session: taskless job carrying a human-readable name.
+	// The name must survive the DB round-trip so the sessions list can show it.
+	job := &dispatcher.Job{
+		ProjectID:   "proj-1",
+		DisplayName: "my session",
+	}
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	got, err := dispatcher.GetJob(d.Conn, job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if got.DisplayName != "my session" {
+		t.Fatalf("expected display_name %q, got %q", "my session", got.DisplayName)
+	}
+}
+
 func TestCreateJob_NoTask(t *testing.T) {
 	d := createDispatcherTask(t)
 

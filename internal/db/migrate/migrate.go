@@ -209,6 +209,13 @@ func Apply(conn *sql.DB) error {
 				return !exists, err
 			},
 		},
+		{
+			version: "0027_add_jobs_display_name",
+			path:    "migrations/0027_add_jobs_display_name.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnExists(tx, "jobs", "display_name")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {
