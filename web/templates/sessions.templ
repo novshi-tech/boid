@@ -54,9 +54,9 @@ templ SessionList(sessions []SessionView, projectFilter string) {
 		<div class="session-list" id="session-list">
 			if len(sessions) == 0 {
 				<div class="empty-state">
-					<div class="empty-state-title">走っているセッションは無い</div>
-					<p class="empty-state-hint">実行中のセッションはありません。</p>
-					<a href="/sessions/new" class="btn btn-primary empty-state-cta">+ セッションを開始</a>
+					<div class="empty-state-title">No running sessions</div>
+					<p class="empty-state-hint">No sessions are currently running.</p>
+					<a href="/sessions/new" class="btn btn-primary empty-state-cta">+ Start session</a>
 				</div>
 			} else {
 				for _, s := range sessions {
@@ -99,7 +99,7 @@ templ SessionNew(projects []*orchestrator.Project, selectedProjectID string, com
 		<div class="session-new">
 			<form method="get" action="/sessions/new">
 				<div class="form-group">
-					<label for="project" class="form-label">プロジェクト</label>
+					<label for="project" class="form-label">Project</label>
 					<select id="project" name="project" class="form-input" onchange="this.form.submit()">
 						<option value="">-- Select --</option>
 						for _, p := range projects {
@@ -111,7 +111,7 @@ templ SessionNew(projects []*orchestrator.Project, selectedProjectID string, com
 			if selectedProjectID != "" {
 				if len(commands) == 0 {
 					<div class="empty-state">
-						<div class="empty-state-title">(コマンドが定義されていません)</div>
+						<div class="empty-state-title">(No commands defined)</div>
 					</div>
 				} else {
 					<div class="cmd-list">

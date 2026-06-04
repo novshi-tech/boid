@@ -95,7 +95,7 @@ func SessionList(sessions []SessionView, projectFilter string) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			if len(sessions) == 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "<div class=\"empty-state\"><div class=\"empty-state-title\">走っているセッションは無い</div><p class=\"empty-state-hint\">実行中のセッションはありません。</p><a href=\"/sessions/new\" class=\"btn btn-primary empty-state-cta\">+ セッションを開始</a></div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "<div class=\"empty-state\"><div class=\"empty-state-title\">No running sessions</div><p class=\"empty-state-hint\">No sessions are currently running.</p><a href=\"/sessions/new\" class=\"btn btn-primary empty-state-cta\">+ Start session</a></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -238,7 +238,7 @@ func SessionNew(projects []*orchestrator.Project, selectedProjectID string, comm
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, " <div class=\"session-new\"><form method=\"get\" action=\"/sessions/new\"><div class=\"form-group\"><label for=\"project\" class=\"form-label\">プロジェクト</label> <select id=\"project\" name=\"project\" class=\"form-input\" onchange=\"this.form.submit()\"><option value=\"\">-- Select --</option> ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, " <div class=\"session-new\"><form method=\"get\" action=\"/sessions/new\"><div class=\"form-group\"><label for=\"project\" class=\"form-label\">Project</label> <select id=\"project\" name=\"project\" class=\"form-input\" onchange=\"this.form.submit()\"><option value=\"\">-- Select --</option> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -290,7 +290,7 @@ func SessionNew(projects []*orchestrator.Project, selectedProjectID string, comm
 			}
 			if selectedProjectID != "" {
 				if len(commands) == 0 {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "<div class=\"empty-state\"><div class=\"empty-state-title\">(コマンドが定義されていません)</div></div>")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "<div class=\"empty-state\"><div class=\"empty-state-title\">(No commands defined)</div></div>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
