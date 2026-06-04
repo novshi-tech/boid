@@ -90,14 +90,16 @@ templ Layout(title string, backURL string) {
 			</script>
 		</head>
 		<body>
-			<header class="site-header">
-				if backURL != "" {
-					<a class="site-back" href={ templ.SafeURL(backURL) } aria-label="Back">
-						@components.IconBack("site-back-icon")
-					</a>
-				}
-				<h1 class="site-title">{ title }</h1>
-			</header>
+			if !(backURL == "" && (title == "Tasks" || title == "Sessions")) {
+				<header class="site-header">
+					if backURL != "" {
+						<a class="site-back" href={ templ.SafeURL(backURL) } aria-label="Back">
+							@components.IconBack("site-back-icon")
+						</a>
+					}
+					<h1 class="site-title">{ title }</h1>
+				</header>
+			}
 			if backURL == "" && (title == "Tasks" || title == "Sessions") {
 				<nav class="site-nav">
 					<a href="/" class={ "site-nav-link", templ.KV("site-nav-link-active", title == "Tasks") }>Tasks</a>
