@@ -101,8 +101,8 @@ func TestJobDetail_InteractiveRunning_EmbedsTerminal(t *testing.T) {
 	if !strings.Contains(html, "boid-terminal") {
 		t.Error("interactive running job should contain boid-terminal class")
 	}
-	if !strings.Contains(html, "/jobs/test-job-id-1234/terminal") {
-		t.Errorf("interactive running job should have link to /jobs/{id}/terminal, got: %s", html)
+	if strings.Contains(html, "/terminal") {
+		t.Error("interactive running job must not contain legacy /terminal link")
 	}
 	if strings.Contains(html, "EventSource") {
 		t.Error("interactive running job should not contain SSE EventSource")
@@ -160,8 +160,8 @@ func TestJobDetail_HookJob_InteractiveRunning_EmbedsTerminal(t *testing.T) {
 	if !strings.Contains(html, `data-job-id="test-job-id-1234"`) {
 		t.Error("interactive running hook job should have boid-terminal div with data-job-id")
 	}
-	if !strings.Contains(html, "/jobs/test-job-id-1234/terminal") {
-		t.Error("interactive running hook job should link to /jobs/{id}/terminal")
+	if strings.Contains(html, "/terminal") {
+		t.Error("interactive running hook job must not contain legacy /terminal link")
 	}
 	if strings.Contains(html, "EventSource") {
 		t.Error("interactive running hook job should not fall back to SSE EventSource")

@@ -72,7 +72,7 @@ func (s *Service) targetURL(ev Event) string {
 		return base + ev.URLPath
 	}
 	if ev.JobID != "" {
-		return base + "/jobs/" + ev.JobID + "/terminal"
+		return base + "/jobs/" + ev.JobID
 	}
 	return base + "/tasks/" + ev.TaskID
 }
