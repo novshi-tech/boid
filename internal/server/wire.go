@@ -360,7 +360,7 @@ type commandDispatcherAdapter struct {
 	runner  *dispatcher.Runner
 }
 
-func (a *commandDispatcherAdapter) ExecuteCommand(ctx context.Context, projectID, commandName string) (*api.ExecuteCommandResult, error) {
+func (a *commandDispatcherAdapter) ExecuteCommand(ctx context.Context, projectID, commandName, displayName string) (*api.ExecuteCommandResult, error) {
 	project, err := a.service.GetProject(projectID)
 	if err != nil {
 		return nil, err
@@ -368,6 +368,9 @@ func (a *commandDispatcherAdapter) ExecuteCommand(ctx context.Context, projectID
 	cmd, err := a.service.GetCommand(projectID, commandName)
 	if err != nil {
 		return nil, err
+	}
+	if displayName == "" {
+		displayName = commandName
 	}
 	spec := dispatcher.BuildCommandJobSpec(dispatcher.CommandJobInput{
 		ProjectID:          projectID,
@@ -378,6 +381,7 @@ func (a *commandDispatcherAdapter) ExecuteCommand(ctx context.Context, projectID
 		AdditionalBindings: cmd.AdditionalBindings,
 		Readonly:           cmd.Readonly,
 		Interactive:        true, // Web UI always wants a PTY
+		Name:               displayName,
 	})
 	jobID, err := a.runner.Dispatch(ctx, spec, nil)
 	if err != nil {

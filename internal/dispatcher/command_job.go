@@ -17,6 +17,10 @@ type CommandJobInput struct {
 	// state and sets this before calling BuildCommandJobSpec; daemon API (Web
 	// UI) sets this to true unconditionally.
 	Interactive bool
+	// Name is the human-readable display name for the session. Callers set
+	// this to either an explicit user-provided value or the project command
+	// name as an automatic fallback. Empty leaves DisplayName unset.
+	Name string
 }
 
 // BuildCommandJobSpec converts a resolved CommandJobInput into a JobSpec.
@@ -32,10 +36,11 @@ func BuildCommandJobSpec(input CommandJobInput) *orchestrator.JobSpec {
 	hostCommands := orchestrator.HostCommands(input.HostCommands).ToCommandDefs()
 
 	return &orchestrator.JobSpec{
-		ProjectID: input.ProjectID,
-		HandlerID: "",
-		Kind:      orchestrator.JobKindExec,
-		Argv:      input.Argv,
+		ProjectID:   input.ProjectID,
+		HandlerID:   "",
+		DisplayName: input.Name,
+		Kind:        orchestrator.JobKindExec,
+		Argv:        input.Argv,
 		Visibility: orchestrator.Visibility{
 			ProjectDir:         input.ProjectWorkDir,
 			UseWorktree:        false,

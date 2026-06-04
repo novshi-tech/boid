@@ -137,6 +137,44 @@ func TestBuildCommandJobSpec_Interactive(t *testing.T) {
 	}
 }
 
+func TestBuildCommandJobSpec_DisplayName_AutoNaming(t *testing.T) {
+	// When Name is empty, DisplayName should be empty (caller is responsible for auto-naming).
+	spec := dispatcher.BuildCommandJobSpec(dispatcher.CommandJobInput{
+		ProjectID:      "p",
+		ProjectWorkDir: "/work",
+		Argv:           []string{"bash"},
+		Name:           "",
+	})
+	if spec.DisplayName != "" {
+		t.Errorf("DisplayName = %q, want empty when Name is not set", spec.DisplayName)
+	}
+}
+
+func TestBuildCommandJobSpec_DisplayName_ExplicitName(t *testing.T) {
+	spec := dispatcher.BuildCommandJobSpec(dispatcher.CommandJobInput{
+		ProjectID:      "p",
+		ProjectWorkDir: "/work",
+		Argv:           []string{"bash"},
+		Name:           "my session",
+	})
+	if spec.DisplayName != "my session" {
+		t.Errorf("DisplayName = %q, want %q", spec.DisplayName, "my session")
+	}
+}
+
+func TestBuildCommandJobSpec_DisplayName_CommandNameFallback(t *testing.T) {
+	// Callers set Name to the command name for auto-naming.
+	spec := dispatcher.BuildCommandJobSpec(dispatcher.CommandJobInput{
+		ProjectID:      "p",
+		ProjectWorkDir: "/work",
+		Argv:           []string{"bash"},
+		Name:           "shell",
+	})
+	if spec.DisplayName != "shell" {
+		t.Errorf("DisplayName = %q, want %q", spec.DisplayName, "shell")
+	}
+}
+
 func TestBuildCommandJobSpec_CLIAndDaemonSameJobSpec(t *testing.T) {
 	// Verifies that CLI and daemon paths produce identical JobSpec except for
 	// the Interactive flag, which the CLI sets based on terminal detection at

@@ -108,7 +108,7 @@ func TestBuildExecJob_WorkspaceVisibility(t *testing.T) {
 
 	setTestSocket(t, ts.Server.SocketPath())
 
-	prepared, err := buildExecJob("proj-1", "test-cmd", nil, false)
+	prepared, err := buildExecJob("proj-1", "test-cmd", nil, false, "")
 	if err != nil {
 		t.Fatalf("buildExecJob: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestBuildExecJob_RegistersBrokerForBoidBuiltin(t *testing.T) {
 
 	setTestSocket(t, ts.Server.SocketPath())
 
-	prepared, err := buildExecJob("proj-1", "test-cmd", nil, false)
+	prepared, err := buildExecJob("proj-1", "test-cmd", nil, false, "")
 	if err != nil {
 		t.Fatalf("buildExecJob: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestBuildExecJob_ArgvPreserved(t *testing.T) {
 
 	setTestSocket(t, ts.Server.SocketPath())
 
-	prepared, err := buildExecJob("proj-q", "run", nil, false)
+	prepared, err := buildExecJob("proj-q", "run", nil, false, "")
 	if err != nil {
 		t.Fatalf("buildExecJob: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestBuildExecJob_ResolvedHostCommandsWired(t *testing.T) {
 
 	setTestSocket(t, ts.Server.SocketPath())
 
-	prepared, err := buildExecJob("proj-hc", "test-cmd", nil, false)
+	prepared, err := buildExecJob("proj-hc", "test-cmd", nil, false, "")
 	if err != nil {
 		t.Fatalf("buildExecJob: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestBuildExecJob_UserArgsAppended(t *testing.T) {
 	setTestSocket(t, ts.Server.SocketPath())
 
 	userArgs := []string{"--model", "claude-opus-4-7", "write a test"}
-	prepared, err := buildExecJob("proj-ua", "run", userArgs, false)
+	prepared, err := buildExecJob("proj-ua", "run", userArgs, false, "")
 	if err != nil {
 		t.Fatalf("buildExecJob: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestBuildExecJob_CommandNotFound(t *testing.T) {
 
 	setTestSocket(t, ts.Server.SocketPath())
 
-	_, err := buildExecJob("proj-nc", "nonexistent-cmd", nil, false)
+	_, err := buildExecJob("proj-nc", "nonexistent-cmd", nil, false, "")
 	if err == nil {
 		t.Fatal("expected error for nonexistent command, got nil")
 	}

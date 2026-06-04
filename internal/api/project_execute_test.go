@@ -42,11 +42,11 @@ func (s *stubProjectService) ListCommands(string) ([]api.CommandSummary, error) 
 
 // stubCommandDispatcher implements CommandDispatcher for testing.
 type stubCommandDispatcher struct {
-	executeFunc func(ctx context.Context, projectID, commandName string) (*api.ExecuteCommandResult, error)
+	executeFunc func(ctx context.Context, projectID, commandName, displayName string) (*api.ExecuteCommandResult, error)
 }
 
-func (s *stubCommandDispatcher) ExecuteCommand(ctx context.Context, projectID, commandName string) (*api.ExecuteCommandResult, error) {
-	return s.executeFunc(ctx, projectID, commandName)
+func (s *stubCommandDispatcher) ExecuteCommand(ctx context.Context, projectID, commandName, displayName string) (*api.ExecuteCommandResult, error) {
+	return s.executeFunc(ctx, projectID, commandName, displayName)
 }
 
 func newExecuteTestRouter(svc api.ProjectService, disp api.CommandDispatcher) http.Handler {
@@ -63,7 +63,7 @@ func TestProjectExecuteCommand_Success(t *testing.T) {
 		},
 	}
 	disp := &stubCommandDispatcher{
-		executeFunc: func(_ context.Context, projectID, commandName string) (*api.ExecuteCommandResult, error) {
+		executeFunc: func(_ context.Context, projectID, commandName, _ string) (*api.ExecuteCommandResult, error) {
 			if projectID != "exec-proj" || commandName != "build" {
 				t.Errorf("unexpected execute call: projectID=%q commandName=%q", projectID, commandName)
 			}
@@ -91,7 +91,7 @@ func TestProjectExecuteCommand_Success(t *testing.T) {
 func TestProjectExecuteCommand_UnknownProject(t *testing.T) {
 	svc := &stubProjectService{projects: map[string]*orchestrator.Project{}}
 	disp := &stubCommandDispatcher{
-		executeFunc: func(_ context.Context, _, _ string) (*api.ExecuteCommandResult, error) {
+		executeFunc: func(_ context.Context, _, _, _ string) (*api.ExecuteCommandResult, error) {
 			t.Error("dispatcher should not be called for unknown project")
 			return nil, nil
 		},
@@ -114,7 +114,7 @@ func TestProjectExecuteCommand_UnknownCommand(t *testing.T) {
 		},
 	}
 	disp := &stubCommandDispatcher{
-		executeFunc: func(_ context.Context, _, _ string) (*api.ExecuteCommandResult, error) {
+		executeFunc: func(_ context.Context, _, _, _ string) (*api.ExecuteCommandResult, error) {
 			return nil, &api.StatusError{Code: http.StatusNotFound, Message: "command \"no-cmd\" not found"}
 		},
 	}
