@@ -66,6 +66,7 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
 
   let ws = null;
   let ctrlActive = false;
+  let exitReceived = false;
 
   // --- status indicator ---
   const STATUS_TITLES = {
@@ -104,6 +105,7 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
 
   // --- connect / reconnect ---
   function connect() {
+    exitReceived = false;
     setStatus('connecting');
     disconnectOverlay.hidden = true;
 
@@ -129,6 +131,7 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
         const bytes = Uint8Array.from(atob(msg.data), c => c.charCodeAt(0));
         term.write(bytes);
       } else if (msg.type === 'exit') {
+        exitReceived = true;
         term.write('\r\n\x1b[90m[プロセス終了: ' + msg.code + ']\x1b[0m\r\n');
         ws.close();
       } else if (msg.type === 'error') {
@@ -138,7 +141,9 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
 
     ws.onclose = function () {
       setStatus('disconnected');
-      disconnectOverlay.hidden = false;
+      if (!exitReceived) {
+        disconnectOverlay.hidden = false;
+      }
     };
 
     ws.onerror = function () {

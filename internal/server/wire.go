@@ -389,7 +389,7 @@ func (a *commandDispatcherAdapter) ExecuteCommand(ctx context.Context, projectID
 	}
 	return &api.ExecuteCommandResult{
 		JobID:     jobID,
-		AttachURL: fmt.Sprintf("/jobs/%s/terminal", jobID),
+		AttachURL: fmt.Sprintf("/jobs/%s", jobID),
 	}, nil
 }
 
@@ -452,7 +452,7 @@ func (a *taskCommandDispatcherAdapter) ExecuteTaskBehaviorCommand(ctx context.Co
 	}
 	return &api.ExecuteCommandResult{
 		JobID:     jobID,
-		AttachURL: fmt.Sprintf("/jobs/%s/terminal", jobID),
+		AttachURL: fmt.Sprintf("/jobs/%s", jobID),
 	}, nil
 }
 

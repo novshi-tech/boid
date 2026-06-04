@@ -94,7 +94,7 @@ func TestNotify_WithJobID(t *testing.T) {
 		t.Fatalf("read out: %v", err)
 	}
 	got := string(data)
-	want := "https://example.com/jobs/j1/terminal"
+	want := "https://example.com/jobs/j1"
 	if got != want {
 		t.Errorf("BOID_TASK_URL:\n got=%q\nwant=%q", got, want)
 	}

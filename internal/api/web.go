@@ -665,35 +665,11 @@ func (h *WebHandler) JobDetail(w http.ResponseWriter, r *http.Request) {
 	templates.JobDetail(view).Render(r.Context(), w)
 }
 
+// JobTerminal redirects legacy deep-links (/jobs/{id}/terminal) to the job
+// detail page (/jobs/{id}), which now renders the terminal inline.
 func (h *WebHandler) JobTerminal(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	job, err := h.Service.GetJob(id)
-	if err != nil {
-		http.Error(w, "Job not found", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if job.Status != JobStatusRunning {
-		templates.TerminalNotReady(id, "現在 attach できる状態ではありません（ジョブが実行中ではありません）。").Render(r.Context(), w)
-		return
-	}
-	view := &templates.JobContextView{
-		ID:          job.ID,
-		TaskID:      job.TaskID,
-		ProjectID:   job.ProjectID,
-		TaskTitle:   job.TaskTitle,
-		HandlerID:   job.HandlerID,
-		DisplayName: job.DisplayName,
-		Role:        job.Role,
-		Status:      string(job.Status),
-		ExitCode:    job.ExitCode,
-		Interactive: job.Interactive,
-		CreatedAt:   job.CreatedAt,
-		UpdatedAt:   job.UpdatedAt,
-		Output:      job.Output,
-	}
-	wsPath := "/api/jobs/" + id + "/attach/ws"
-	templates.TerminalPage(buildJobTitle(view), "/jobs/"+id, id, wsPath).Render(r.Context(), w)
+	http.Redirect(w, r, "/jobs/"+id, http.StatusFound)
 }
 
 func (h *WebHandler) PostTaskExecuteCommand(w http.ResponseWriter, r *http.Request) {
@@ -745,24 +721,6 @@ func (h *WebHandler) PostProjectExecuteCommand(w http.ResponseWriter, r *http.Re
 		return
 	}
 	http.Redirect(w, r, jobURL, http.StatusSeeOther)
-}
-
-// buildJobTitle returns a display title for the job terminal page.
-// Mirrors the jobPageTitle logic in web/templates/jobs.templ.
-func buildJobTitle(job *templates.JobContextView) string {
-	switch {
-	case job.Role != "" && job.HandlerID != "":
-		return "[" + job.Role + "] " + job.HandlerID
-	case job.HandlerID != "":
-		return job.HandlerID
-	case job.Role != "":
-		return "[" + job.Role + "]"
-	default:
-		if len(job.ID) > 8 {
-			return "Job " + job.ID[:8]
-		}
-		return "Job " + job.ID
-	}
 }
 
 // WebManagementHandler serves the CLI management API at /api/web/*.

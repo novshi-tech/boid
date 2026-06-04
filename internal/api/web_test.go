@@ -1047,13 +1047,8 @@ func TestTaskDetailFragment_JobLink(t *testing.T) {
 }
 
 // --- Terminal page tests ---
-
-func newTestWebHandlerWithTerminal(svc WebService) *chi.Mux {
-	h := &WebHandler{Service: svc}
-	r := chi.NewRouter()
-	r.Get("/jobs/{id}/terminal", h.JobTerminal)
-	return r
-}
+// /jobs/{id}/terminal is now a redirect to /jobs/{id}; the terminal widget is
+// embedded in the job detail page for interactive running jobs.
 
 func TestTerminalPage_RendersForInteractiveRunningJob(t *testing.T) {
 	svc := &stubWebService{
@@ -1069,9 +1064,9 @@ func TestTerminalPage_RendersForInteractiveRunningJob(t *testing.T) {
 			TaskTitle: "My Task",
 		},
 	}
-	r := newTestWebHandlerWithTerminal(svc)
+	r := newTestWebHandlerWithJobDetail(svc)
 
-	req := httptest.NewRequest(http.MethodGet, "/jobs/job-term-1/terminal", nil)
+	req := httptest.NewRequest(http.MethodGet, "/jobs/job-term-1", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -1101,9 +1096,9 @@ func TestTerminalPage_ShowsEmptyStateWhenNotRunning(t *testing.T) {
 			},
 		},
 	}
-	r := newTestWebHandlerWithTerminal(svc)
+	r := newTestWebHandlerWithJobDetail(svc)
 
-	req := httptest.NewRequest(http.MethodGet, "/jobs/job-done-1/terminal", nil)
+	req := httptest.NewRequest(http.MethodGet, "/jobs/job-done-1", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -1112,15 +1107,15 @@ func TestTerminalPage_ShowsEmptyStateWhenNotRunning(t *testing.T) {
 	}
 	body := w.Body.String()
 	if strings.Contains(body, "boid-terminal-xterm") {
-		t.Error("error page should not render xterm widget")
+		t.Error("job detail should not render xterm widget for non-running interactive job")
 	}
-	if !strings.Contains(body, "attach") && !strings.Contains(body, "接続") {
-		t.Errorf("error page should mention attach/connection state: %s", body[:min(300, len(body))])
+	if !strings.Contains(body, "interactive") && !strings.Contains(body, "Live output") {
+		t.Errorf("page should mention interactive/live-output note: %s", body[:min(300, len(body))])
 	}
 }
 
 func TestTerminalPage_RequiresAuth(t *testing.T) {
-	// Verify the route is registered in the main WebHandler router.
+	// Verify /jobs/{id}/terminal is still registered and redirects (not chi 404).
 	svc := &stubWebService{}
 	h := &WebHandler{Service: svc}
 	r := h.Routes()
@@ -1129,9 +1124,12 @@ func TestTerminalPage_RequiresAuth(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	// Route is registered; handler returns 404 (job not found) not chi's 404.
+	// Route is registered as a redirect; must not return chi's 404.
 	if strings.Contains(w.Body.String(), "404 page not found") {
 		t.Error("/jobs/{id}/terminal route should be registered in WebHandler.Routes()")
+	}
+	if w.Code != http.StatusFound {
+		t.Errorf("/jobs/{id}/terminal should redirect (302), got %d", w.Code)
 	}
 }
 
