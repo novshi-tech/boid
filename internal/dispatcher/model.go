@@ -15,7 +15,7 @@ type Job struct {
 	TaskID         string    `json:"task_id"`
 	ProjectID      string    `json:"project_id"`
 	HandlerID      string    `json:"handler_id"`
-	DisplayName    string    `json:"display_name,omitempty"` // in-memory only; not persisted to DB
+	DisplayName    string    `json:"display_name,omitempty"` // persisted via the jobs.display_name column (migration 0027)
 	Role           string    `json:"role"`
 	RuntimeID      string    `json:"runtime_id,omitempty"`
 	Interactive    bool      `json:"interactive"`

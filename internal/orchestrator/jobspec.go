@@ -27,7 +27,7 @@ type JobSpec struct {
 	TaskID      string
 	ProjectID   string
 	HandlerID   string
-	DisplayName string // human-readable label for the hook; not stored in DB
+	DisplayName string // human-readable label (hook name or command-session name); persisted to jobs.display_name
 
 	// Kind is a DB-label / TUI-display category. Sandbox construction details
 	// MUST NOT branch on this value.
