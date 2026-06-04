@@ -129,7 +129,15 @@ templ SessionNew(projects []*orchestrator.Project, selectedProjectID string, com
 									action={ templ.SafeURL("/projects/" + selectedProjectID + "/commands/" + cmd.Name + "/execute") }
 									data-preview={ cmdPreview(cmd.Command) }
 									onsubmit="return confirm('Run: ' + this.dataset.preview + '?')"
+									class="cmd-row-form"
 								>
+									<input
+										type="text"
+										name="name"
+										placeholder={ cmd.Name }
+										class="form-input form-input-sm cmd-name-input"
+										aria-label="Session name"
+									/>
 									<button type="submit" class="btn btn-primary btn-sm">Start</button>
 								</form>
 							</div>

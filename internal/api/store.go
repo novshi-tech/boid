@@ -230,7 +230,10 @@ type ExecuteCommandResult struct {
 
 // CommandDispatcher launches a named command as an interactive daemon-side job.
 type CommandDispatcher interface {
-	ExecuteCommand(ctx context.Context, projectID, commandName string) (*ExecuteCommandResult, error)
+	// ExecuteCommand launches commandName in projectID. displayName is the
+	// human-readable session label; callers pass "" to use commandName as the
+	// default auto-name.
+	ExecuteCommand(ctx context.Context, projectID, commandName, displayName string) (*ExecuteCommandResult, error)
 }
 
 // TaskCommandDispatcher manages task behavior commands: listing and execution.

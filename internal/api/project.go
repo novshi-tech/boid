@@ -175,7 +175,7 @@ func (h *ProjectHandler) ExecuteCommand(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	name := chi.URLParam(r, "name")
-	result, err := h.Dispatcher.ExecuteCommand(r.Context(), project.ID, name)
+	result, err := h.Dispatcher.ExecuteCommand(r.Context(), project.ID, name, "")
 	if err != nil {
 		writeServiceError(w, err)
 		return

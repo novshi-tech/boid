@@ -23,10 +23,12 @@ var execCmd = &cobra.Command{
 }
 
 var execProjectRef string
+var execName string
 
 func init() {
 	rootCmd.AddCommand(execCmd)
 	execCmd.Flags().StringVarP(&execProjectRef, "project", "p", "", "project ref (id or name, partial match supported)")
+	execCmd.Flags().StringVar(&execName, "name", "", "session display name (defaults to command name)")
 	execCmd.Flags().SetInterspersed(false)
 	_ = execCmd.RegisterFlagCompletionFunc("project", completeProjectRefs)
 }
@@ -52,7 +54,7 @@ type execPreparedJob struct {
 	rt   dispatcher.SandboxRuntimeInfo
 }
 
-func buildExecJob(projectID, commandName string, userArgs []string, interactive bool) (*execPreparedJob, error) {
+func buildExecJob(projectID, commandName string, userArgs []string, interactive bool, name string) (*execPreparedJob, error) {
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
 	var p execProjectData
@@ -89,6 +91,10 @@ func buildExecJob(projectID, commandName string, userArgs []string, interactive 
 	var proxyInfo struct{ Port int }
 	_ = c.Do("GET", "/api/proxy", nil, &proxyInfo)
 
+	sessionName := name
+	if sessionName == "" {
+		sessionName = commandName
+	}
 	spec := dispatcher.BuildCommandJobSpec(dispatcher.CommandJobInput{
 		ProjectID:          p.ID,
 		ProjectWorkDir:     p.WorkDir,
@@ -98,6 +104,7 @@ func buildExecJob(projectID, commandName string, userArgs []string, interactive 
 		AdditionalBindings: cmd.AdditionalBindings,
 		Readonly:           cmd.Readonly,
 		Interactive:        interactive,
+		Name:               sessionName,
 	})
 
 	var brokerSocket, brokerToken string
@@ -202,7 +209,7 @@ func runExec(cobraCmd *cobra.Command, args []string) error {
 		interactive = true
 	}
 
-	prepared, err := buildExecJob(p.ID, commandName, userArgs, interactive)
+	prepared, err := buildExecJob(p.ID, commandName, userArgs, interactive, execName)
 	if err != nil {
 		return err
 	}

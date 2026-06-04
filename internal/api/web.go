@@ -728,7 +728,10 @@ func (h *WebHandler) PostProjectExecuteCommand(w http.ResponseWriter, r *http.Re
 	projectID := chi.URLParam(r, "id")
 	commandName := chi.URLParam(r, "name")
 
-	result, err := h.Dispatcher.ExecuteCommand(r.Context(), projectID, commandName)
+	_ = r.ParseForm()
+	displayName := strings.TrimSpace(r.FormValue("name"))
+
+	result, err := h.Dispatcher.ExecuteCommand(r.Context(), projectID, commandName, displayName)
 	if err != nil {
 		backURL := "/sessions/new?project=" + url.QueryEscape(projectID) + "&error=" + url.QueryEscape(err.Error())
 		http.Redirect(w, r, backURL, http.StatusSeeOther)

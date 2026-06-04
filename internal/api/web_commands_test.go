@@ -15,11 +15,11 @@ import (
 type stubCmdDispatcher struct {
 	result *ExecuteCommandResult
 	err    error
-	calls  []struct{ projectID, commandName string }
+	calls  []struct{ projectID, commandName, displayName string }
 }
 
-func (s *stubCmdDispatcher) ExecuteCommand(ctx context.Context, projectID, commandName string) (*ExecuteCommandResult, error) {
-	s.calls = append(s.calls, struct{ projectID, commandName string }{projectID, commandName})
+func (s *stubCmdDispatcher) ExecuteCommand(ctx context.Context, projectID, commandName, displayName string) (*ExecuteCommandResult, error) {
+	s.calls = append(s.calls, struct{ projectID, commandName, displayName string }{projectID, commandName, displayName})
 	return s.result, s.err
 }
 
@@ -56,6 +56,52 @@ func TestPostProjectExecuteCommand_Success(t *testing.T) {
 	}
 	if disp.calls[0].projectID != "proj-1" || disp.calls[0].commandName != "build" {
 		t.Errorf("dispatcher call = %+v", disp.calls[0])
+	}
+}
+
+func TestPostProjectExecuteCommand_PassesDisplayName(t *testing.T) {
+	svc := &stubWebService{}
+	disp := &stubCmdDispatcher{
+		result: &ExecuteCommandResult{JobID: "job-named"},
+	}
+	r := newTestWebHandlerWithCommands(svc, disp)
+
+	body := strings.NewReader("name=my+session")
+	req := httptest.NewRequest(http.MethodPost, "/projects/proj-1/commands/build/execute", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", w.Code)
+	}
+	if len(disp.calls) != 1 {
+		t.Fatalf("dispatcher calls = %d, want 1", len(disp.calls))
+	}
+	if disp.calls[0].displayName != "my session" {
+		t.Errorf("displayName = %q, want %q", disp.calls[0].displayName, "my session")
+	}
+}
+
+func TestPostProjectExecuteCommand_EmptyNamePassedThrough(t *testing.T) {
+	svc := &stubWebService{}
+	disp := &stubCmdDispatcher{
+		result: &ExecuteCommandResult{JobID: "job-noname"},
+	}
+	r := newTestWebHandlerWithCommands(svc, disp)
+
+	req := httptest.NewRequest(http.MethodPost, "/projects/proj-1/commands/shell/execute", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", w.Code)
+	}
+	if len(disp.calls) != 1 {
+		t.Fatalf("dispatcher calls = %d, want 1", len(disp.calls))
+	}
+	if disp.calls[0].displayName != "" {
+		t.Errorf("displayName = %q, want empty when form field is absent", disp.calls[0].displayName)
 	}
 }
 
