@@ -48,8 +48,8 @@ func TestPostProjectExecuteCommand_Success(t *testing.T) {
 		t.Fatalf("status = %d, want 303", w.Code)
 	}
 	loc := w.Header().Get("Location")
-	if loc != "/jobs/job-abc/terminal" {
-		t.Errorf("Location = %q, want /jobs/job-abc/terminal", loc)
+	if loc != "/jobs/job-abc" {
+		t.Errorf("Location = %q, want /jobs/job-abc", loc)
 	}
 	if len(disp.calls) != 1 {
 		t.Fatalf("dispatcher calls = %d, want 1", len(disp.calls))
@@ -120,8 +120,8 @@ func TestPostProjectExecuteCommand_HTMXRedirect(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (HX-Redirect)", w.Code)
 	}
-	if w.Header().Get("HX-Redirect") != "/jobs/job-htmx/terminal" {
-		t.Errorf("HX-Redirect = %q, want /jobs/job-htmx/terminal", w.Header().Get("HX-Redirect"))
+	if w.Header().Get("HX-Redirect") != "/jobs/job-htmx" {
+		t.Errorf("HX-Redirect = %q, want /jobs/job-htmx", w.Header().Get("HX-Redirect"))
 	}
 }
 

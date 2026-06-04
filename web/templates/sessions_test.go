@@ -29,14 +29,14 @@ func newSessionView(id, projectName, handlerID string) SessionView {
 	}
 }
 
-func TestSessionList_LinksToTerminal(t *testing.T) {
+func TestSessionList_LinksToJobDetail(t *testing.T) {
 	sessions := []SessionView{
 		newSessionView("job-abc123", "myproject", "claude-code"),
 	}
 	html := renderSessionList(t, sessions, "")
-	want := `/jobs/job-abc123/terminal`
+	want := `/jobs/job-abc123`
 	if !strings.Contains(html, want) {
-		t.Errorf("session row should link to /jobs/{id}/terminal, want %q in: %s", want, html)
+		t.Errorf("session row should link to /jobs/{id}, want %q in: %s", want, html)
 	}
 }
 
@@ -85,10 +85,10 @@ func TestSessionList_MultipleRows(t *testing.T) {
 		newSessionView("job-2", "proj-b", "cmd-b"),
 	}
 	html := renderSessionList(t, sessions, "")
-	if !strings.Contains(html, "/jobs/job-1/terminal") {
+	if !strings.Contains(html, "/jobs/job-1") {
 		t.Error("first session should appear")
 	}
-	if !strings.Contains(html, "/jobs/job-2/terminal") {
+	if !strings.Contains(html, "/jobs/job-2") {
 		t.Error("second session should appear")
 	}
 }
