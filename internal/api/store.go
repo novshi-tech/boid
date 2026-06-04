@@ -124,6 +124,7 @@ type WebService interface {
 	DuplicateTask(id string) (string, error)
 	DeleteTask(id string, force bool) error
 	ListJobs(status string) ([]JobWithContext, error)
+	ListSessions() ([]JobWithContext, error)
 	GetJob(id string) (*JobWithContext, error)
 	CreateTask(req CreateTaskRequest) (*orchestrator.Task, error)
 	UpdateTask(id string, req UpdateTaskRequest) error

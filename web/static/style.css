@@ -142,6 +142,40 @@ pre {
   padding: var(--space-3);
 }
 
+/* Global nav — appears below the header on top-level pages (Tasks / Sessions). */
+.site-nav {
+  display: flex;
+  gap: var(--space-1);
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.site-nav-link {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--fg-muted, var(--fg));
+  opacity: 0.65;
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: opacity 0.12s ease, border-color 0.12s ease;
+}
+
+.site-nav-link:hover {
+  opacity: 1;
+  text-decoration: none;
+}
+
+.site-nav-link-active {
+  opacity: 1;
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
 /* Icon-only back button — the current page title gets the remaining
    width. Tap area is padded out to the standard target size. */
 .site-back {

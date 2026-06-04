@@ -76,6 +76,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/tasks/{id}/questions/{question_id}", h.QuestionPage)
 	r.Get("/tasks/{id}/hooks", h.HookReplayList)
 	r.Post("/tasks/{id}/hooks/{hook_id}/replay", h.PostHookReplay)
+	r.Get("/sessions", h.SessionList)
 	r.Get("/jobs/{id}", h.JobDetail)
 	r.Get("/jobs/{id}/terminal", h.JobTerminal)
 	r.Get("/projects/{id}/commands", h.ProjectCommandList)
@@ -188,6 +189,37 @@ func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 
 	workspaces, _ := h.Service.ListWorkspaces()
 	templates.TaskList(items, filter, projects, workspaces, r.URL.RequestURI()).Render(r.Context(), w)
+}
+
+func (h *WebHandler) SessionList(w http.ResponseWriter, r *http.Request) {
+	projectFilter := r.URL.Query().Get("project")
+	jobs, err := h.Service.ListSessions()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if projectFilter != "" {
+		filtered := jobs[:0]
+		for _, j := range jobs {
+			if j.ProjectID == projectFilter {
+				filtered = append(filtered, j)
+			}
+		}
+		jobs = filtered
+	}
+	sessions := make([]templates.SessionView, 0, len(jobs))
+	for _, j := range jobs {
+		sessions = append(sessions, templates.SessionView{
+			ID:          j.ID,
+			ProjectID:   j.ProjectID,
+			ProjectName: j.ProjectName,
+			HandlerID:   j.HandlerID,
+			DisplayName: j.DisplayName,
+			CreatedAt:   j.CreatedAt,
+		})
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templates.SessionList(sessions, projectFilter).Render(r.Context(), w)
 }
 
 // filterProjectsByWorkspace filters projects to only those in the given workspace.
