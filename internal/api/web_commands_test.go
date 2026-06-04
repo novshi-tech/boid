@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 // stubCmdDispatcher implements CommandDispatcher for testing.
@@ -27,111 +26,8 @@ func (s *stubCmdDispatcher) ExecuteCommand(ctx context.Context, projectID, comma
 func newTestWebHandlerWithCommands(svc WebService, disp CommandDispatcher) *chi.Mux {
 	h := &WebHandler{Service: svc, Dispatcher: disp}
 	r := chi.NewRouter()
-	r.Get("/projects/{id}/commands", h.ProjectCommandList)
 	r.Post("/projects/{id}/commands/{name}/execute", h.PostProjectExecuteCommand)
 	return r
-}
-
-func TestProjectCommandList_RendersCommands(t *testing.T) {
-	svc := &stubWebService{
-		projectByID: &orchestrator.Project{
-			ID:   "proj-1",
-			Meta: orchestrator.ProjectMeta{Name: "My Project"},
-		},
-		projectCommands: []CommandSummary{
-			{Name: "build", Command: []string{"make", "build"}},
-			{Name: "test", Command: []string{"go", "test", "./..."}, Readonly: true},
-		},
-	}
-	r := newTestWebHandlerWithCommands(svc, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/projects/proj-1/commands", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, "<html") {
-		t.Error("should return full HTML page")
-	}
-	if !strings.Contains(body, "My Project") {
-		t.Errorf("should contain project name, got: %s", body[:min(300, len(body))])
-	}
-	if !strings.Contains(body, "build") {
-		t.Error("should contain command name 'build'")
-	}
-	if !strings.Contains(body, "make build") {
-		t.Error("should contain command preview 'make build'")
-	}
-	if !strings.Contains(body, "readonly") {
-		t.Error("should contain readonly badge for 'test' command")
-	}
-	if !strings.Contains(body, `/projects/proj-1/commands/build/execute`) {
-		t.Error("should contain execute form action")
-	}
-}
-
-func TestProjectCommandList_EmptyCommands(t *testing.T) {
-	svc := &stubWebService{
-		projectByID: &orchestrator.Project{
-			ID:   "proj-1",
-			Meta: orchestrator.ProjectMeta{Name: "My Project"},
-		},
-		projectCommands: []CommandSummary{},
-	}
-	r := newTestWebHandlerWithCommands(svc, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/projects/proj-1/commands", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, "no commands defined") {
-		t.Errorf("should show empty state, got: %s", body[:min(300, len(body))])
-	}
-}
-
-func TestProjectCommandList_ProjectNotFound(t *testing.T) {
-	svc := &stubWebService{
-		projectByIDErr: fmt.Errorf("project not found"),
-	}
-	r := newTestWebHandlerWithCommands(svc, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/projects/no-such/commands", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", w.Code)
-	}
-}
-
-func TestProjectCommandList_CommandsError(t *testing.T) {
-	svc := &stubWebService{
-		projectByID: &orchestrator.Project{
-			ID:   "proj-1",
-			Meta: orchestrator.ProjectMeta{Name: "My Project"},
-		},
-		projectCommandsErr: fmt.Errorf("meta not loaded"),
-	}
-	r := newTestWebHandlerWithCommands(svc, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/projects/proj-1/commands", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (error shown as banner)", w.Code)
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, "meta not loaded") {
-		t.Errorf("should show error banner, got: %s", body[:min(300, len(body))])
-	}
 }
 
 func TestPostProjectExecuteCommand_Success(t *testing.T) {
@@ -198,11 +94,14 @@ func TestPostProjectExecuteCommand_DispatchError(t *testing.T) {
 		t.Fatalf("status = %d, want 303", w.Code)
 	}
 	loc := w.Header().Get("Location")
-	if !strings.Contains(loc, "/projects/proj-1/commands") {
-		t.Errorf("Location = %q, should redirect back to commands page", loc)
+	if !strings.Contains(loc, "/sessions/new") {
+		t.Errorf("Location = %q, should redirect to /sessions/new", loc)
 	}
 	if !strings.Contains(loc, "error=") {
 		t.Errorf("Location = %q, should contain error param", loc)
+	}
+	if !strings.Contains(loc, "project=proj-1") {
+		t.Errorf("Location = %q, should contain project param", loc)
 	}
 }
 
@@ -216,20 +115,5 @@ func TestPostProjectExecuteCommand_NoDispatcher(t *testing.T) {
 
 	if w.Code != http.StatusNotImplemented {
 		t.Fatalf("status = %d, want 501", w.Code)
-	}
-}
-
-func TestProjectCommandList_RouteRegistered(t *testing.T) {
-	// Service returns 404 for any project; route must be registered (not chi's 404).
-	svc := &stubWebService{projectByIDErr: fmt.Errorf("not found")}
-	h := &WebHandler{Service: svc}
-	r := h.Routes()
-
-	req := httptest.NewRequest(http.MethodGet, "/projects/proj-x/commands", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if strings.Contains(w.Body.String(), "404 page not found") {
-		t.Error("/projects/{id}/commands route should be registered in WebHandler.Routes()")
 	}
 }

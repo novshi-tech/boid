@@ -1908,10 +1908,6 @@ details[open] > summary {
   color: #475569;
 }
 
-.filter-cmd-link {
-  white-space: nowrap;
-}
-
 @media (prefers-color-scheme: dark) {
   .cmd-badge-readonly {
     background: #1e293b;
