@@ -46,6 +46,7 @@ type JobWithContext struct {
 
 // JobListFilter specifies optional filters for global job listing.
 type JobListFilter struct {
-	Status      string
-	Interactive *bool // nil = no filter
+	Status       string
+	Interactive  *bool // nil = no filter
+	TasklessOnly bool  // true = only jobs where task_id IS NULL
 }

@@ -115,8 +115,9 @@ func ListJobsByTask(dbtx db.DBTX, taskID string) ([]*Job, error) {
 
 // JobFilter specifies optional filters for listing jobs globally.
 type JobFilter struct {
-	Status      string
-	Interactive *bool // nil = no filter
+	Status       string
+	Interactive  *bool // nil = no filter
+	TasklessOnly bool  // true = only jobs where task_id IS NULL
 }
 
 // ListJobsFiltered returns jobs across all tasks matching the given filter.
@@ -135,6 +136,9 @@ func ListJobsFiltered(dbtx db.DBTX, filter JobFilter) ([]*Job, error) {
 	if filter.Interactive != nil && cols.hasInteractive {
 		conditions = append(conditions, "interactive = ?")
 		args = append(args, boolToInt(*filter.Interactive))
+	}
+	if filter.TasklessOnly {
+		conditions = append(conditions, "task_id IS NULL")
 	}
 
 	suffix := "ORDER BY created_at"

@@ -74,6 +74,9 @@ func (h *JobHandler) listGlobal(w http.ResponseWriter, r *http.Request) {
 		f := false
 		filter.Interactive = &f
 	}
+	if r.URL.Query().Get("taskless") == "true" {
+		filter.TasklessOnly = true
+	}
 	jobs, err := h.Global.ListJobsWithContext(filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
