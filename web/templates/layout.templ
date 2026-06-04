@@ -100,8 +100,8 @@ templ Layout(title string, backURL string) {
 			</header>
 			if backURL == "" && (title == "Tasks" || title == "Sessions") {
 				<nav class="site-nav">
-					<a href="/" class={ "site-nav-link", templ.KV("site-nav-link-active", title == "Tasks") }>タスク</a>
-					<a href="/sessions" class={ "site-nav-link", templ.KV("site-nav-link-active", title == "Sessions") }>セッション</a>
+					<a href="/" class={ "site-nav-link", templ.KV("site-nav-link-active", title == "Tasks") }>Tasks</a>
+					<a href="/sessions" class={ "site-nav-link", templ.KV("site-nav-link-active", title == "Sessions") }>Sessions</a>
 				</nav>
 			}
 			<main class="site-main">
