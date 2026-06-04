@@ -61,7 +61,7 @@ templ SessionList(sessions []SessionView, projectFilter string) {
 			} else {
 				for _, s := range sessions {
 					<a
-						href={ templ.SafeURL("/jobs/" + s.ID + "/terminal") }
+						href={ templ.SafeURL("/jobs/" + s.ID) }
 						class="task-row task-row-status-executing"
 						role="listitem"
 					>
@@ -127,8 +127,6 @@ templ SessionNew(projects []*orchestrator.Project, selectedProjectID string, com
 								<form
 									method="post"
 									action={ templ.SafeURL("/projects/" + selectedProjectID + "/commands/" + cmd.Name + "/execute") }
-									data-preview={ cmdPreview(cmd.Command) }
-									onsubmit="return confirm('Run: ' + this.dataset.preview + '?')"
 									class="cmd-row-form"
 								>
 									<input

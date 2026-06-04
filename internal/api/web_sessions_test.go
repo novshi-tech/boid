@@ -70,8 +70,8 @@ func TestSessionList_Handler_ShowsJob(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, "/jobs/job-abc/terminal") {
-		t.Error("should link to /jobs/{id}/terminal")
+	if !strings.Contains(body, "/jobs/job-abc") {
+		t.Error("should link to /jobs/{id}")
 	}
 	if !strings.Contains(body, "my-project") {
 		t.Error("should show project name")
@@ -217,10 +217,10 @@ func TestSessionList_Handler_ProjectFilter(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, "/jobs/job-1/terminal") {
+	if !strings.Contains(body, "/jobs/job-1") {
 		t.Error("project-a job should appear")
 	}
-	if strings.Contains(body, "/jobs/job-2/terminal") {
+	if strings.Contains(body, "/jobs/job-2") {
 		t.Error("project-b job should be filtered out")
 	}
 }

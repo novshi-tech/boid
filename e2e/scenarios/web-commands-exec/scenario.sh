@@ -77,7 +77,7 @@ exec_headers="$(curl -sS -D - -o /dev/null \
   "http://${WEB_ADDR}/projects/${PROJECT_ID}/commands/echo/execute")"
 printf '%s\n' "$exec_headers"
 location="$(printf '%s\n' "$exec_headers" | grep -i '^location:' | head -1 | sed -E 's/[Ll]ocation:[[:space:]]*//' | tr -d '\r')"
-job_id="$(printf '%s\n' "$location" | sed -E 's|.*/jobs/([^/]+)/.*|\1|')"
+job_id="$(printf '%s\n' "$location" | sed -E 's|.*/jobs/([^/]+)(/.*)?$|\1|')"
 [[ -n "$job_id" ]] || e2e_fail "failed to extract job_id from Location header: '$location'"
 e2e_log "job_id: $job_id"
 

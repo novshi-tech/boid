@@ -711,13 +711,13 @@ func (h *WebHandler) PostTaskExecuteCommand(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	termURL := "/jobs/" + result.JobID + "/terminal"
+	jobURL := "/jobs/" + result.JobID
 	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Redirect", termURL)
+		w.Header().Set("HX-Redirect", jobURL)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	http.Redirect(w, r, termURL, http.StatusSeeOther)
+	http.Redirect(w, r, jobURL, http.StatusSeeOther)
 }
 
 func (h *WebHandler) PostProjectExecuteCommand(w http.ResponseWriter, r *http.Request) {
@@ -738,13 +738,13 @@ func (h *WebHandler) PostProjectExecuteCommand(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	termURL := "/jobs/" + result.JobID + "/terminal"
+	jobURL := "/jobs/" + result.JobID
 	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Redirect", termURL)
+		w.Header().Set("HX-Redirect", jobURL)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	http.Redirect(w, r, termURL, http.StatusSeeOther)
+	http.Redirect(w, r, jobURL, http.StatusSeeOther)
 }
 
 // buildJobTitle returns a display title for the job terminal page.

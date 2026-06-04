@@ -779,8 +779,6 @@ templ TaskDetailCommandsSection(taskID string, commands []CommandView) {
 						<form
 							method="post"
 							action={ templ.SafeURL("/tasks/" + taskID + "/commands/" + cmd.Name + "/execute") }
-							data-name={ cmd.Name }
-							onsubmit="return confirm('Run ' + this.dataset.name + '?')"
 						>
 							<button type="submit" class="btn btn-secondary btn-sm">Run</button>
 						</form>
