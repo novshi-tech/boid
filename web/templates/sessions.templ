@@ -3,6 +3,8 @@ package templates
 import (
 	"fmt"
 	"time"
+
+	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 // SessionView is a running taskless job displayed in the sessions list.
@@ -53,7 +55,8 @@ templ SessionList(sessions []SessionView, projectFilter string) {
 			if len(sessions) == 0 {
 				<div class="empty-state">
 					<div class="empty-state-title">走っているセッションは無い</div>
-					<p class="empty-state-hint">実行中のセッションはありません。プロジェクトのコマンドから新しいセッションを開始してください。</p>
+					<p class="empty-state-hint">実行中のセッションはありません。</p>
+					<a href="/sessions/new" class="btn btn-primary empty-state-cta">+ セッションを開始</a>
 				</div>
 			} else {
 				for _, s := range sessions {
@@ -73,6 +76,62 @@ templ SessionList(sessions []SessionView, projectFilter string) {
 							</div>
 						</div>
 					</a>
+				}
+			}
+		</div>
+		<div class="action-bar">
+			<div class="action-bar-inner">
+				<a href="/sessions/new" class="btn btn-primary action-bar-primary-form">Create</a>
+				<span class="action-bar-spacer"></span>
+			</div>
+		</div>
+	}
+}
+
+// SessionNew renders the /sessions/new page.
+// Step 1: user selects a project (GET ?project=<id>).
+// Step 2: commands for the project are shown; each has a form POST to /projects/{id}/commands/{name}/execute.
+templ SessionNew(projects []*orchestrator.Project, selectedProjectID string, commands []CommandView) {
+	@Layout("New Session", "/sessions") {
+		<div class="session-new">
+			<form method="get" action="/sessions/new">
+				<div class="form-group">
+					<label for="project" class="form-label">プロジェクト</label>
+					<select id="project" name="project" class="form-input" onchange="this.form.submit()">
+						<option value="">-- Select --</option>
+						for _, p := range projects {
+							<option value={ p.ID } selected?={ selectedProjectID == p.ID }>{ taskNewProjectLabel(p) }</option>
+						}
+					</select>
+				</div>
+			</form>
+			if selectedProjectID != "" {
+				if len(commands) == 0 {
+					<div class="empty-state">
+						<div class="empty-state-title">(コマンドが定義されていません)</div>
+					</div>
+				} else {
+					<div class="cmd-list">
+						for _, cmd := range commands {
+							<div class="cmd-row">
+								<div class="cmd-row-body">
+									<span class="cmd-name">{ cmd.Name }</span>
+									if cmd.Readonly {
+										<span class="badge cmd-badge-readonly">readonly</span>
+									}
+									<code class="cmd-preview">{ cmdPreview(cmd.Command) }</code>
+								</div>
+								<form
+									method="post"
+									action={ templ.SafeURL("/projects/" + selectedProjectID + "/commands/" + cmd.Name + "/execute") }
+									data-preview={ cmdPreview(cmd.Command) }
+									onsubmit="return confirm('Run: ' + this.dataset.preview + '?')"
+								>
+									<button type="submit" class="btn btn-primary btn-sm">Start</button>
+								</form>
+							</div>
+						}
+					</div>
 				}
 			}
 		</div>
