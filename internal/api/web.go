@@ -80,7 +80,6 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/sessions/new", h.SessionNew)
 	r.Get("/jobs/{id}", h.JobDetail)
 	r.Get("/jobs/{id}/terminal", h.JobTerminal)
-	r.Get("/projects/{id}/commands", h.ProjectCommandList)
 	r.Post("/projects/{id}/commands/{name}/execute", h.PostProjectExecuteCommand)
 	r.Post("/tasks/{id}/commands/{name}/execute", h.PostTaskExecuteCommand)
 	return r
@@ -226,6 +225,7 @@ func (h *WebHandler) SessionList(w http.ResponseWriter, r *http.Request) {
 func (h *WebHandler) SessionNew(w http.ResponseWriter, r *http.Request) {
 	projects, _ := h.Service.ListProjects()
 	selectedProjectID := r.URL.Query().Get("project")
+	errorMsg := r.URL.Query().Get("error")
 
 	var commands []templates.CommandView
 	if selectedProjectID != "" {
@@ -243,7 +243,7 @@ func (h *WebHandler) SessionNew(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	templates.SessionNew(projects, selectedProjectID, commands).Render(r.Context(), w)
+	templates.SessionNew(projects, selectedProjectID, commands, errorMsg).Render(r.Context(), w)
 }
 
 // filterProjectsByWorkspace filters projects to only those in the given workspace.
@@ -696,38 +696,6 @@ func (h *WebHandler) JobTerminal(w http.ResponseWriter, r *http.Request) {
 	templates.TerminalPage(buildJobTitle(view), "/jobs/"+id, id, wsPath).Render(r.Context(), w)
 }
 
-func (h *WebHandler) ProjectCommandList(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	project, err := h.Service.GetProjectByID(id)
-	if err != nil {
-		http.Error(w, "Project not found", http.StatusNotFound)
-		return
-	}
-
-	commands, err := h.Service.ListProjectCommands(id)
-	var errorMsg string
-	if err != nil {
-		errorMsg = err.Error()
-	}
-
-	views := make([]templates.CommandView, len(commands))
-	for i, cmd := range commands {
-		views[i] = templates.CommandView{
-			Name:     cmd.Name,
-			Command:  cmd.Command,
-			Readonly: cmd.Readonly,
-		}
-	}
-
-	projectName := project.Meta.Name
-	if projectName == "" {
-		projectName = project.ID
-	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	templates.ProjectCommandList(projectName, id, views, errorMsg).Render(r.Context(), w)
-}
-
 func (h *WebHandler) PostTaskExecuteCommand(w http.ResponseWriter, r *http.Request) {
 	if h.TaskDispatcher == nil {
 		http.Error(w, "command execution not available", http.StatusNotImplemented)
@@ -762,7 +730,7 @@ func (h *WebHandler) PostProjectExecuteCommand(w http.ResponseWriter, r *http.Re
 
 	result, err := h.Dispatcher.ExecuteCommand(r.Context(), projectID, commandName)
 	if err != nil {
-		backURL := "/projects/" + projectID + "/commands?error=" + url.QueryEscape(err.Error())
+		backURL := "/sessions/new?project=" + url.QueryEscape(projectID) + "&error=" + url.QueryEscape(err.Error())
 		http.Redirect(w, r, backURL, http.StatusSeeOther)
 		return
 	}

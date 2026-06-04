@@ -44,7 +44,7 @@ func jobBackURL(job *JobContextView) string {
 		return "/tasks/" + job.TaskID
 	}
 	if job.ProjectID != "" {
-		return "/projects/" + job.ProjectID + "/commands"
+		return "/sessions"
 	}
 	return "/"
 }

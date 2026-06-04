@@ -271,7 +271,7 @@ func TestJobDetail_NoTask_WithProject_BackURL(t *testing.T) {
 		UpdatedAt: time.Now(),
 	}
 	html := renderJobDetail(t, job)
-	want := `href="/projects/proj-1/commands"`
+	want := `href="/sessions"`
 	if !strings.Contains(html, want) {
 		t.Errorf("project-command job back link should be %q, got: %s", want, html)
 	}

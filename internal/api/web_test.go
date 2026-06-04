@@ -1149,7 +1149,7 @@ func newTestWebHandlerWithJobDetail(svc WebService) *chi.Mux {
 	return r
 }
 
-func TestJobDetail_NoTask_BackToProjectCommands(t *testing.T) {
+func TestJobDetail_NoTask_BackToSessions(t *testing.T) {
 	svc := &stubWebService{
 		jobDetail: &JobWithContext{
 			Job: Job{
@@ -1172,7 +1172,7 @@ func TestJobDetail_NoTask_BackToProjectCommands(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	body := w.Body.String()
-	want := `/projects/proj-1/commands`
+	want := `/sessions`
 	if !strings.Contains(body, want) {
 		t.Errorf("back link should contain %q, got: %s", want, body[:min(500, len(body))])
 	}

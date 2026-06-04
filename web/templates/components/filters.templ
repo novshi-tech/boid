@@ -92,8 +92,5 @@ templ TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Proje
 		if filter.Behavior != "" {
 			<input type="hidden" name="behavior" value={ filter.Behavior }/>
 		}
-		if filter.ProjectID != "" {
-			<a href={ templ.SafeURL("/projects/" + filter.ProjectID + "/commands") } class="btn btn-secondary btn-sm filter-cmd-link">コマンド</a>
-		}
 	</form>
 }

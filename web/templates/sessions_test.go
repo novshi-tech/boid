@@ -112,7 +112,7 @@ func TestSessionList_EmptyStateLinksToNew(t *testing.T) {
 func renderSessionNew(t *testing.T, projects []*orchestrator.Project, selectedProjectID string, commands []CommandView) string {
 	t.Helper()
 	var buf bytes.Buffer
-	if err := SessionNew(projects, selectedProjectID, commands).Render(context.Background(), &buf); err != nil {
+	if err := SessionNew(projects, selectedProjectID, commands, "").Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	return buf.String()
