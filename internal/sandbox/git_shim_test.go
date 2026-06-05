@@ -13,6 +13,8 @@ func TestClassifyGitInvocation(t *testing.T) {
 		wantOp       GitOp
 		wantRemote   string
 		wantRefspecs []string
+		wantSource   string
+		wantDest     string
 		wantErr      bool
 	}{
 		{
@@ -136,8 +138,51 @@ func TestClassifyGitInvocation(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "deny clone",
+			name:    "deny clone network",
 			args:    []string{"clone", "https://evil"},
+			wantErr: true,
+		},
+		{
+			name:    "deny clone without --local",
+			args:    []string{"clone", "/tmp/peer", "/tmp/dest"},
+			wantErr: true,
+		},
+		{
+			name:       "brokered clone --local",
+			args:       []string{"clone", "--local", "/tmp/peer", "/workspace/dest"},
+			wantMode:   gitInvocationBrokered,
+			wantOp:     GitOpCloneLocal,
+			wantSource: "/tmp/peer",
+			wantDest:   "/workspace/dest",
+		},
+		{
+			name:    "deny clone --local with dangerous -c flag",
+			args:    []string{"clone", "--local", "-c", "core.hooksPath=/tmp/evil", "/tmp/peer", "/workspace/dest"},
+			wantErr: true,
+		},
+		{
+			name:    "deny clone --local with --upload-pack",
+			args:    []string{"clone", "--local", "--upload-pack=/evil", "/tmp/peer", "/workspace/dest"},
+			wantErr: true,
+		},
+		{
+			name:    "deny clone --local with --template",
+			args:    []string{"clone", "--local", "--template=/evil", "/tmp/peer", "/workspace/dest"},
+			wantErr: true,
+		},
+		{
+			name:    "deny clone --local with --config",
+			args:    []string{"clone", "--local", "--config=core.hooksPath=/evil", "/tmp/peer", "/workspace/dest"},
+			wantErr: true,
+		},
+		{
+			name:    "deny clone --local with --reference",
+			args:    []string{"clone", "--local", "--reference=/tmp/ref", "/tmp/peer", "/workspace/dest"},
+			wantErr: true,
+		},
+		{
+			name:    "deny clone --local with --separate-git-dir",
+			args:    []string{"clone", "--local", "--separate-git-dir=/tmp/git", "/tmp/peer", "/workspace/dest"},
 			wantErr: true,
 		},
 		{
@@ -287,6 +332,12 @@ func TestClassifyGitInvocation(t *testing.T) {
 			}
 			if tt.wantRefspecs != nil && !reflect.DeepEqual(invocation.request.Refspecs, tt.wantRefspecs) {
 				t.Fatalf("refspecs = %v, want %v", invocation.request.Refspecs, tt.wantRefspecs)
+			}
+			if tt.wantSource != "" && invocation.request.Source != tt.wantSource {
+				t.Fatalf("source = %q, want %q", invocation.request.Source, tt.wantSource)
+			}
+			if tt.wantDest != "" && invocation.request.Dest != tt.wantDest {
+				t.Fatalf("dest = %q, want %q", invocation.request.Dest, tt.wantDest)
 			}
 		})
 	}

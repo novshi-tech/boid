@@ -191,6 +191,10 @@ func handleGitBuiltinRequest(req *ExecRequest, entry *tokenEntry) *ExecResponse 
 		}
 	}
 
+	if gitReq.Op == GitOpCloneLocal {
+		return execGitCloneLocal(gitReq, entry)
+	}
+
 	if gitReq.Op == GitOpPush {
 		slog.Info("git builtin push requested",
 			"job_id", entry.Context.JobID,
@@ -449,6 +453,76 @@ func resolveGitPushRefspecs(req *GitRequest, binding *GitBinding, remoteName str
 	return []string{"HEAD:" + targetRef}, nil
 }
 
+
+// execGitCloneLocal handles the GitOpCloneLocal operation: clone a peer project
+// directory (source) into a subdirectory of the current worktree (dest).
+// Both paths are validated against the token's WorkspacePeers and WorktreeRoot
+// to prevent sandbox escapes and path traversal.
+func execGitCloneLocal(req *GitRequest, entry *tokenEntry) *ExecResponse {
+	if req.Source == "" {
+		return &ExecResponse{ExitCode: 1, Stderr: "git clone --local: source path is required"}
+	}
+
+	worktreeRoot := entry.Git.WorktreeRoot
+	peers := entry.Context.WorkspacePeers
+
+	// Canonicalize paths to prevent traversal via ".." components.
+	cleanSource := filepath.Clean(req.Source)
+	cleanDest := filepath.Clean(req.Dest)
+
+	// Validate source is within a known peer project directory.
+	validSource := false
+	for _, peerPath := range peers {
+		if peerPath == "" {
+			continue
+		}
+		cleanPeer := filepath.Clean(peerPath)
+		if cleanSource == cleanPeer || strings.HasPrefix(cleanSource, cleanPeer+"/") {
+			validSource = true
+			break
+		}
+	}
+	if !validSource {
+		return &ExecResponse{
+			ExitCode: 1,
+			Stderr:   fmt.Sprintf("git clone --local: source %q is not within a workspace peer project", req.Source),
+		}
+	}
+
+	// Validate dest is within the worktree root.
+	if worktreeRoot == "" {
+		return &ExecResponse{ExitCode: 1, Stderr: "git clone --local: worktree root not configured"}
+	}
+	cleanWorktree := filepath.Clean(worktreeRoot)
+	if cleanDest != cleanWorktree && !strings.HasPrefix(cleanDest, cleanWorktree+"/") {
+		return &ExecResponse{
+			ExitCode: 1,
+			Stderr:   fmt.Sprintf("git clone --local: dest %q is not within the current worktree", req.Dest),
+		}
+	}
+
+	// Build the git command. The broker re-constructs args from the validated
+	// paths, ignoring what the sandbox originally sent.
+	base := []string{
+		"-c", "core.hooksPath=/dev/null",
+		"-c", "core.attributesfile=/dev/null",
+		"-c", "core.editor=false",
+	}
+	args := append(base, "clone", "--local", "--", cleanSource, cleanDest)
+
+	ctx, cancel := context.WithTimeout(context.Background(), gitDirectTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, realGitBinary(), args...)
+	cmd.Dir = worktreeRoot
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ATTR_NOSYSTEM=1")
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	return runGitCommand(ctx, cmd, &stdout, &stderr)
+}
 
 func logGitBindingSnapshot(ctx TokenContext, binding *GitBinding, err error) {
 	if err != nil {

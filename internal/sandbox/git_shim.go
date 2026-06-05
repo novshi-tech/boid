@@ -31,8 +31,8 @@ type gitInvocation struct {
 // broker 経路でも直接実行でも許可しないサブコマンドの deny-list。
 // fetch/push は別経路 (brokered) で許可し、config は validateGitConfigArgs で
 // キー単位に制御するため、ここには含めない。
+// clone は --local 限定の brokered op として別途許可するため deny-list から除外。
 var deniedGitSubcommands = map[string]struct{}{
-	"clone":     {},
 	"pull":      {},
 	"remote":    {},
 	"submodule": {},
@@ -121,6 +121,12 @@ func classifyGitInvocation(args []string) (*gitInvocation, error) {
 			return nil, err
 		}
 		return &gitInvocation{mode: gitInvocationBrokered, request: req}, nil
+	case "clone":
+		req, err := parseGitCloneRequest(rest)
+		if err != nil {
+			return nil, err
+		}
+		return &gitInvocation{mode: gitInvocationBrokered, request: req}, nil
 	case "config":
 		if err := validateGitConfigArgs(rest); err != nil {
 			return nil, err
@@ -161,6 +167,108 @@ func isDeniedGitGlobalOption(arg string) bool {
 			strings.HasPrefix(arg, "--namespace=") ||
 			strings.HasPrefix(arg, "--config-env=")
 	}
+}
+
+// parseGitCloneRequest parses "git clone" arguments and produces a GitRequest
+// for GitOpCloneLocal. Only --local clones are permitted; network clones and
+// dangerous flags are rejected. The broker re-validates source and dest.
+func parseGitCloneRequest(args []string) (*GitRequest, error) {
+	hasLocal := false
+	var positional []string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		if arg == "--local" || arg == "-l" {
+			hasLocal = true
+			continue
+		}
+		// Dangerous flags that could cause code execution or repo pollution.
+		if isDeniedCloneFlag(arg) {
+			return nil, fmt.Errorf("git clone option %q is not allowed", arg)
+		}
+		// Permitted passthrough flags (depth, branch, no-tags, etc.).
+		if strings.HasPrefix(arg, "-") && arg != "-" {
+			// Allow only explicitly whitelisted flags; reject anything else.
+			if !isAllowedCloneFlag(arg) {
+				return nil, fmt.Errorf("git clone option %q is not allowed", arg)
+			}
+			// Consume value for flags that take an argument (e.g. --branch value).
+			if cloneFlagTakesValue(arg) && !strings.Contains(arg, "=") {
+				i++
+			}
+			continue
+		}
+		positional = append(positional, args[i:]...)
+		break
+	}
+
+	if !hasLocal {
+		return nil, fmt.Errorf("git clone requires --local flag (network clones are not allowed)")
+	}
+	if len(positional) == 0 {
+		return nil, fmt.Errorf("git clone requires a source path")
+	}
+	source := positional[0]
+	dest := ""
+	if len(positional) >= 2 {
+		dest = positional[1]
+	}
+	return &GitRequest{Op: GitOpCloneLocal, Source: source, Dest: dest}, nil
+}
+
+// isDeniedCloneFlag reports whether a clone flag is dangerous and must be rejected.
+func isDeniedCloneFlag(arg string) bool {
+	// Flags that inject config, hooks, alternate object stores, or external commands.
+	dangerousPrefixes := []string{
+		"-c", "--upload-pack", "--template", "--config",
+		"--reference", "--separate-git-dir", "--recurse-submodules",
+		"--server-option",
+	}
+	for _, prefix := range dangerousPrefixes {
+		if arg == prefix || strings.HasPrefix(arg, prefix+"=") || strings.HasPrefix(arg, prefix+" ") {
+			return true
+		}
+	}
+	// Short forms
+	if arg == "-u" { // --upload-pack short form
+		return true
+	}
+	return false
+}
+
+// isAllowedCloneFlag reports whether a clone flag is safe to pass through.
+func isAllowedCloneFlag(arg string) bool {
+	allowed := []string{
+		"--no-hardlinks", "--shared", "--no-checkout", "-n",
+		"--bare", "--mirror", "--origin", "-o",
+		"--branch", "-b", "--depth", "--shallow-since",
+		"--shallow-exclude", "--single-branch", "--no-single-branch",
+		"--no-tags", "--sparse", "--filter", "--also-filter-submodules",
+		"--quiet", "-q", "--verbose", "-v", "--progress", "--no-progress",
+		"--bundle-uri",
+	}
+	for _, a := range allowed {
+		if arg == a || strings.HasPrefix(arg, a+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+// cloneFlagTakesValue reports whether a clone flag consumes the next argument.
+func cloneFlagTakesValue(arg string) bool {
+	valueFlags := []string{"--origin", "-o", "--branch", "-b", "--depth",
+		"--shallow-since", "--shallow-exclude", "--filter"}
+	for _, f := range valueFlags {
+		if arg == f {
+			return true
+		}
+	}
+	return false
 }
 
 func parseGitFetchRequest(args []string) (*GitRequest, error) {
