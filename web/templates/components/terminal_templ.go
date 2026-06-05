@@ -33,7 +33,7 @@ func Terminal(jobId string, wsPath string) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<link rel=\"stylesheet\" href=\"/static/vendor/xterm-5.x/xterm.css\"><script src=\"/static/vendor/xterm-5.x/xterm.js\"></script><div class=\"boid-terminal\" data-job-id=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<link rel=\"stylesheet\" href=\"/static/assets/xterm-5.x/xterm.css\"><script src=\"/static/assets/xterm-5.x/xterm.js\"></script><div class=\"boid-terminal\" data-job-id=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
