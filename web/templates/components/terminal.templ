@@ -5,8 +5,8 @@ package components
 // The component is self-contained: it loads xterm.js, addon-fit.mjs, and
 // boid-terminal.js, then initialises the terminal on DOMContentLoaded.
 templ Terminal(jobId string, wsPath string) {
-	<link rel="stylesheet" href="/static/vendor/xterm-5.x/xterm.css"/>
-	<script src="/static/vendor/xterm-5.x/xterm.js"></script>
+	<link rel="stylesheet" href="/static/assets/xterm-5.x/xterm.css"/>
+	<script src="/static/assets/xterm-5.x/xterm.js"></script>
 	<div
 		class="boid-terminal"
 		data-job-id={ jobId }

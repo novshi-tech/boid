@@ -1,4 +1,4 @@
-import { FitAddon } from '/static/vendor/xterm-5.x/addon-fit.mjs';
+import { FitAddon } from '/static/assets/xterm-5.x/addon-fit.mjs';
 
 // Control character codes for the special keybar.
 const KEY_CODES = {
