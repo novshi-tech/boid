@@ -25,4 +25,5 @@ const (
 	OpGitFetch      = "fetch"
 	OpGitPush       = "push"
 	OpGitPushDelete = "push_delete"
+	OpGitCloneLocal = "clone_local"
 )

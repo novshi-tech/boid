@@ -135,6 +135,10 @@ type TokenContext struct {
 	// care whether the sandbox itself can see the tree.
 	ProjectDir  string
 	WorktreeDir string
+	// WorkspacePeers maps peer project IDs to their host-side work directories.
+	// Used by the broker to validate git clone --local source paths: only paths
+	// within a known peer project are permitted as clone sources.
+	WorkspacePeers map[string]string
 }
 
 func (c TokenContext) AllowsProject(projectID string) bool {
@@ -169,6 +173,7 @@ const (
 	GitOpFetch      GitOp = "fetch"
 	GitOpPush       GitOp = "push"
 	GitOpPushDelete GitOp = "push_delete"
+	GitOpCloneLocal GitOp = "clone_local"
 )
 
 // BuiltinPolicy defines which operations are permitted for a named builtin command.
@@ -218,4 +223,9 @@ type GitRequest struct {
 	Porcelain      bool     `json:"porcelain,omitempty"`
 	ForceWithLease bool     `json:"force_with_lease,omitempty"`
 	Delete         bool     `json:"delete,omitempty"`
+	// Source and Dest are used exclusively for GitOpCloneLocal.
+	// Source is the peer project path to clone from; Dest is the destination
+	// directory within the current worktree. Both are validated by the broker.
+	Source string `json:"source,omitempty"`
+	Dest   string `json:"dest,omitempty"`
 }

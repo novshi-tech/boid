@@ -387,6 +387,133 @@ func TestHandleGitBuiltinRequest_OpNotAllowed(t *testing.T) {
 	}
 }
 
+// ---------- validateGitCloneLocal ----------
+
+func TestValidateGitCloneLocal_SourceMustBePeer(t *testing.T) {
+	tmp := t.TempDir()
+	worktree := filepath.Join(tmp, "worktree")
+	peerDir := filepath.Join(tmp, "peer")
+	for _, d := range []string{worktree, peerDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+
+	entry := &tokenEntry{
+		Context: TokenContext{
+			WorkspacePeers: map[string]string{"peer-id": peerDir},
+		},
+		BuiltinPolicies: map[string]BuiltinPolicy{
+			"git": {AllowedOps: map[string]struct{}{string(GitOpCloneLocal): {}}},
+		},
+		Git: &GitBinding{WorktreeRoot: worktree},
+	}
+
+	// source not in peers → rejected
+	req := &GitRequest{Op: GitOpCloneLocal, Source: "/tmp/notapeer", Dest: filepath.Join(worktree, "clone")}
+	resp := handleGitBuiltinRequest(&ExecRequest{Command: "git", Cwd: worktree, Git: req}, entry)
+	if resp.ExitCode == 0 {
+		t.Fatal("expected error: source not in workspace peers")
+	}
+	if !strings.Contains(resp.Stderr, "source") {
+		t.Fatalf("stderr = %q, want 'source'", resp.Stderr)
+	}
+}
+
+func TestValidateGitCloneLocal_DestMustBeInWorktree(t *testing.T) {
+	tmp := t.TempDir()
+	worktree := filepath.Join(tmp, "worktree")
+	peerDir := filepath.Join(tmp, "peer")
+	for _, d := range []string{worktree, peerDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+
+	entry := &tokenEntry{
+		Context: TokenContext{
+			WorkspacePeers: map[string]string{"peer-id": peerDir},
+		},
+		BuiltinPolicies: map[string]BuiltinPolicy{
+			"git": {AllowedOps: map[string]struct{}{string(GitOpCloneLocal): {}}},
+		},
+		Git: &GitBinding{WorktreeRoot: worktree},
+	}
+
+	// dest outside worktree → rejected
+	req := &GitRequest{Op: GitOpCloneLocal, Source: peerDir, Dest: "/tmp/outside"}
+	resp := handleGitBuiltinRequest(&ExecRequest{Command: "git", Cwd: worktree, Git: req}, entry)
+	if resp.ExitCode == 0 {
+		t.Fatal("expected error: dest outside worktree")
+	}
+	if !strings.Contains(resp.Stderr, "dest") {
+		t.Fatalf("stderr = %q, want 'dest'", resp.Stderr)
+	}
+}
+
+func TestValidateGitCloneLocal_PathTraversal(t *testing.T) {
+	tmp := t.TempDir()
+	worktree := filepath.Join(tmp, "worktree")
+	peerDir := filepath.Join(tmp, "peer")
+	for _, d := range []string{worktree, peerDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+
+	entry := &tokenEntry{
+		Context: TokenContext{
+			WorkspacePeers: map[string]string{"peer-id": peerDir},
+		},
+		BuiltinPolicies: map[string]BuiltinPolicy{
+			"git": {AllowedOps: map[string]struct{}{string(GitOpCloneLocal): {}}},
+		},
+		Git: &GitBinding{WorktreeRoot: worktree},
+	}
+
+	// source with path traversal attempting to escape peer
+	traversalSrc := peerDir + "/../../../etc"
+	req := &GitRequest{Op: GitOpCloneLocal, Source: traversalSrc, Dest: filepath.Join(worktree, "clone")}
+	resp := handleGitBuiltinRequest(&ExecRequest{Command: "git", Cwd: worktree, Git: req}, entry)
+	if resp.ExitCode == 0 {
+		t.Fatal("expected error: path traversal in source")
+	}
+
+	// dest with path traversal attempting to escape worktree
+	traversalDest := worktree + "/../../../tmp/evil"
+	req2 := &GitRequest{Op: GitOpCloneLocal, Source: peerDir, Dest: traversalDest}
+	resp2 := handleGitBuiltinRequest(&ExecRequest{Command: "git", Cwd: worktree, Git: req2}, entry)
+	if resp2.ExitCode == 0 {
+		t.Fatal("expected error: path traversal in dest")
+	}
+}
+
+func TestValidateGitCloneLocal_EmptyPeersRejects(t *testing.T) {
+	tmp := t.TempDir()
+	worktree := filepath.Join(tmp, "worktree")
+	peerDir := filepath.Join(tmp, "peer")
+	for _, d := range []string{worktree, peerDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+
+	// no workspace peers configured
+	entry := &tokenEntry{
+		Context: TokenContext{WorkspacePeers: nil},
+		BuiltinPolicies: map[string]BuiltinPolicy{
+			"git": {AllowedOps: map[string]struct{}{string(GitOpCloneLocal): {}}},
+		},
+		Git: &GitBinding{WorktreeRoot: worktree},
+	}
+
+	req := &GitRequest{Op: GitOpCloneLocal, Source: peerDir, Dest: filepath.Join(worktree, "clone")}
+	resp := handleGitBuiltinRequest(&ExecRequest{Command: "git", Cwd: worktree, Git: req}, entry)
+	if resp.ExitCode == 0 {
+		t.Fatal("expected error: no workspace peers")
+	}
+}
+
 // ---------- helpers ----------
 
 func assertArgs(t *testing.T, got, want []string) {

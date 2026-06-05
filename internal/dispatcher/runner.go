@@ -180,8 +180,9 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			WorkspaceID:       workspaceID,
 			AllowedProjectIDs: allowedProjectIDs(spec.ProjectID, workspacePeers),
 			Role:              j.Role,
-			ProjectDir:  projectWorkDir,
-			WorktreeDir: resolvedWorktreePath,
+			ProjectDir:        projectWorkDir,
+			WorktreeDir:       resolvedWorktreePath,
+			WorkspacePeers:    workspacePeers,
 		}
 		var resolve SecretResolver
 		if r.SecretStore != nil {

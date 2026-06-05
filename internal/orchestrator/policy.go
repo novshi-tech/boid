@@ -116,7 +116,7 @@ func gitPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 		cwds = append(cwds, pctx.ProjectDir)
 	}
 	return BuiltinPolicy{
-		AllowedOps:      sortedOps(OpGitFetch, OpGitPush, OpGitPushDelete),
+		AllowedOps:      sortedOps(OpGitFetch, OpGitPush, OpGitPushDelete, OpGitCloneLocal),
 		AllowedCwdRoots: cwds,
 	}
 }
