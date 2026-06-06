@@ -267,7 +267,28 @@ func execGitBuiltin(req *GitRequest, binding *GitBinding) *ExecResponse {
 	// permanent deadlock of every later op on the worktree. We rely on git.
 	remoteName, remote, err := resolveGitRemote(req, binding)
 	if err != nil {
-		return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		// The binding's remotes are snapshotted once, at token registration. A
+		// remote configured later in the same session — e.g. `gh repo create`,
+		// which adds `origin` to a freshly `git init`-ed worktree after the
+		// token already exists — is absent from that snapshot, so resolution
+		// fails even though the remote now exists on disk. Re-read the worktree
+		// once and retry against the fresh binding.
+		//
+		// This does not weaken the trusted-snapshot guarantee that
+		// TestBroker_GitBuiltinPushUsesTrustedSnapshot pins down: an
+		// already-known remote resolves from the snapshot above (no re-capture),
+		// so its URL stays fixed and cannot be redirected via `remote set-url`.
+		// We only re-read when resolution found no remote to pin in the first
+		// place. The fresh binding is used locally for this op only; the cached
+		// entry.Git is left untouched to avoid racing concurrent ops.
+		if fresh, recErr := captureGitBinding(binding.ProjectDir, binding.WorktreeRoot); recErr == nil {
+			if rn, r, rerr := resolveGitRemote(req, fresh); rerr == nil {
+				binding, remoteName, remote, err = fresh, rn, r, nil
+			}
+		}
+		if err != nil {
+			return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
 	}
 
 	args, err := buildGitBuiltinArgs(req, binding, remoteName, remote)
