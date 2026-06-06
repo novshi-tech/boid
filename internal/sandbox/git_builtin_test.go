@@ -76,6 +76,83 @@ func TestBroker_GitBuiltinPushUsesTrustedSnapshot(t *testing.T) {
 	}
 }
 
+// 回帰テスト: トークン登録「後」に追加された remote (例: gh repo create が
+// origin を足す) を、broker が push 時に拾えること。
+//
+// 再現元 (ubs-apps, 2026-06-06):
+//   git init → トークン登録 (この時点で remote 無し → snapshot remotes=0)
+//   → gh repo create で origin 追加 → git push が "remote must be specified"
+//   で弾かれた。binding はトークン登録時に1回しか capture されないのが原因。
+//
+// 期待挙動: resolveGitRemote が snapshot で解決できなかったら worktree を
+// 読み直して再解決する。既知 remote は snapshot から解決されるため
+// TestBroker_GitBuiltinPushUsesTrustedSnapshot の URL 固定性は保たれる。
+func TestBroker_GitBuiltinPush_RecapturesRemoteAddedAfterRegistration(t *testing.T) {
+	repo := initGitRepo(t) // remote 無しの新規リポ (ubs-apps の git init 直後相当)
+	remote := initBareRemote(t)
+
+	broker := &sandbox.Broker{}
+	// 登録時点では origin が無い → snapshot は remotes=0。
+	token := broker.Register(nil, fullGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	// 登録後に origin を追加 (gh repo create 相当)。
+	runGit(t, repo, "remote", "add", "origin", remote)
+
+	// 明示 remote の push: snapshot に origin が無くても re-capture で解決される。
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     repo,
+		Token:   token,
+		Git: &sandbox.GitRequest{
+			Op:       sandbox.GitOpPush,
+			Remote:   "origin",
+			Refspecs: []string{"main"},
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("explicit-remote push exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
+	}
+	remoteHead := runGitBare(t, remote, "rev-parse", "refs/heads/main")
+	localHead := runGit(t, repo, "rev-parse", "HEAD")
+	if remoteHead != localHead {
+		t.Fatalf("remote head = %q, want %q", remoteHead, localHead)
+	}
+}
+
+// 上と同じだが remote 名を省略した素の git push のケース。
+// snapshot が空でも、re-capture 後に remote が1個だけなら自動採用される。
+func TestBroker_GitBuiltinPush_BareRecapturesSingleRemote(t *testing.T) {
+	repo := initGitRepo(t)
+	remote := initBareRemote(t)
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(nil, fullGitPolicies(), sandbox.TokenContext{
+		ProjectID:  "proj-1",
+		ProjectDir: repo,
+	})
+
+	runGit(t, repo, "remote", "add", "origin", remote)
+
+	// remote 省略 (req.Remote == "")。
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "git",
+		Cwd:     repo,
+		Token:   token,
+		Git:     &sandbox.GitRequest{Op: sandbox.GitOpPush},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("bare push exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
+	}
+	remoteHead := runGitBare(t, remote, "rev-parse", "refs/heads/main")
+	localHead := runGit(t, repo, "rev-parse", "HEAD")
+	if remoteHead != localHead {
+		t.Fatalf("remote head = %q, want %q", remoteHead, localHead)
+	}
+}
+
 func TestBroker_GitBuiltinFetchWorks(t *testing.T) {
 	repo := initGitRepo(t)
 	remote := initBareRemote(t)
