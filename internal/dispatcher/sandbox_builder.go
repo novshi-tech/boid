@@ -119,7 +119,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	}
 	env["HOME"] = homeDir
 	env["TERM"] = "xterm-256color"
-	env["PATH"] = buildPATH(expandedBindings, rt.BoidBinary)
+	env["PATH"] = buildPATH(expandedBindings, rt.ResolvedHostCommands, rt.BoidBinary)
 	env["BOID_HOST_IP"] = hostGatewayIP
 	if rt.ProxyPort > 0 {
 		applyProxyEnv(env, rt.ProxyPort)
@@ -504,28 +504,48 @@ func hostCommandMounts(boidBinary string, resolved map[string]orchestrator.Comma
 	return out
 }
 
-// buildPATH prepends additional-binding bin directories and the boid binary
-// directory to the canonical PATH. The boid binary directory is included so
-// scripts inside the sandbox can call `boid` by name. When boidBinary already
-// lives in a standard directory it is already covered by the base and is not
-// duplicated.
-func buildPATH(bindings []orchestrator.BindMount, boidBinary string) string {
+// buildPATH prepends additional-binding bin directories, host command
+// directories and the boid binary directory to the canonical PATH.
+//
+// The boid binary directory is included so scripts inside the sandbox can call
+// `boid` by name. Host command shims are bind-mounted at their resolved
+// absolute host paths (see hostCommandMounts); those paths never appear on PATH
+// on their own, so a command living outside a standard directory (e.g. a tool
+// in ~/.local/bin added via the user's shell rc) would not resolve by name
+// inside the sandbox. Prepending each shim's parent directory fixes that.
+//
+// Directories already covered by the base PATH (/usr/local/bin, /usr/bin, /bin)
+// are skipped, and each directory is added at most once.
+func buildPATH(bindings []orchestrator.BindMount, hostCommands map[string]orchestrator.CommandDef, boidBinary string) string {
 	var prefix []string
-	if boidBinary != "" {
-		boidDir := filepath.Dir(boidBinary)
-		switch boidDir {
-		case "/usr/local/bin", "/usr/bin", "/bin":
-			// already covered by the base PATH — skip
-		default:
-			prefix = append(prefix, boidDir)
+	seen := map[string]bool{}
+	add := func(dir string) {
+		switch dir {
+		case "", "/usr/local/bin", "/usr/bin", "/bin":
+			// empty or already covered by the base PATH — skip
+			return
 		}
+		if seen[dir] {
+			return
+		}
+		seen[dir] = true
+		prefix = append(prefix, dir)
+	}
+	if boidBinary != "" {
+		add(filepath.Dir(boidBinary))
 	}
 	for _, bm := range bindings {
 		if strings.HasSuffix(bm.Source, "/bin") {
-			prefix = append(prefix, bm.Source)
+			add(bm.Source)
 		} else {
-			prefix = append(prefix, bm.Source+"/bin")
+			add(bm.Source + "/bin")
 		}
+	}
+	// The map is keyed by absolute mount target — the same key hostCommandMounts
+	// bind-mounts the shim at — so the parent directory is exactly where the
+	// shim becomes visible. sortedKeys keeps the order deterministic for tests.
+	for _, target := range sortedKeys(hostCommands) {
+		add(filepath.Dir(target))
 	}
 	base := "/usr/local/bin:/usr/bin:/bin"
 	if len(prefix) > 0 {
