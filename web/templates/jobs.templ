@@ -90,6 +90,34 @@ func jobPageTitle(job *JobContextView) string {
 
 templ JobDetail(job *JobContextView) {
 	@Layout(jobPageTitle(job), jobBackURL(job)) {
+		<div class="job-rename" id="job-rename" data-job-id={ job.ID } data-fallback={ job.HandlerID }>
+			<span id="job-rename-label" class="job-rename-label">{ jobPageTitle(job) }</span>
+			<button
+				id="job-rename-edit-btn"
+				class="btn-icon job-rename-edit-btn"
+				aria-label="Rename"
+				title="Rename"
+				onclick="(function(){var c=document.getElementById('job-rename');c.querySelector('.job-rename-label').hidden=true;document.getElementById('job-rename-edit-btn').hidden=true;var f=c.querySelector('.job-rename-form');f.hidden=false;f.querySelector('input').focus();f.querySelector('input').select();})()"
+			>✎</button>
+			<form
+				class="job-rename-form"
+				hidden
+				onsubmit="(function(f){f.preventDefault();var c=document.getElementById('job-rename');var input=f.querySelector('input');var name=input.value.trim();var csrfM=document.cookie.match(/(?:^|;)\s*csrf_token=([^;]+)/);var hdrs={'Content-Type':'application/json'};if(csrfM)hdrs['X-CSRF-Token']=decodeURIComponent(csrfM[1]);fetch('/api/jobs/'+c.dataset.jobId,{method:'PATCH',headers:hdrs,body:JSON.stringify({display_name:name})}).then(function(r){if(r.ok){var label=c.querySelector('.job-rename-label');label.textContent=name||c.dataset.fallback;label.hidden=false;document.getElementById('job-rename-edit-btn').hidden=false;f.hidden=true;}});})(this)"
+			>
+				<input
+					type="text"
+					value={ job.DisplayName }
+					placeholder={ job.HandlerID }
+					class="job-rename-input"
+				/>
+				<button type="submit" class="btn btn-sm btn-primary">Save</button>
+				<button
+					type="button"
+					class="btn btn-sm"
+					onclick="(function(){var c=document.getElementById('job-rename');c.querySelector('.job-rename-label').hidden=false;document.getElementById('job-rename-edit-btn').hidden=false;c.querySelector('.job-rename-form').hidden=true;})()"
+				>Cancel</button>
+			</form>
+		</div>
 		if job.Interactive && job.Status == "running" {
 			<style>
 				html, body { overflow: hidden; height: 100%; }

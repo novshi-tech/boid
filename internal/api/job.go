@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -22,6 +23,7 @@ func (h *JobHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.List)
 	r.Get("/{id}", h.Get)
+	r.Patch("/{id}", h.Patch)
 	r.Post("/{id}/done", h.Done)
 	r.Post("/{id}/agent-stop", h.AgentStop)
 	if h.LogReader != nil || h.SSEHandler != nil {
@@ -158,6 +160,34 @@ func (h *JobHandler) Done(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	writeJSON(w, http.StatusOK, job)
+}
+
+type UpdateJobRequest struct {
+	DisplayName *string `json:"display_name"`
+}
+
+func (h *JobHandler) Patch(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req UpdateJobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.DisplayName == nil {
+		writeError(w, http.StatusBadRequest, "display_name is required")
+		return
+	}
+	job, err := h.Jobs.GetJob(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	job.DisplayName = strings.TrimSpace(*req.DisplayName)
+	if err := h.Jobs.UpdateJob(job); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, job)
 }
 
