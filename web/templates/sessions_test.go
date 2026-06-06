@@ -3,6 +3,7 @@ package templates
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -186,6 +187,29 @@ func TestSessionNew_EmptyCommands(t *testing.T) {
 	}
 	if strings.Contains(html, "/execute") {
 		t.Error("empty commands should not show any execute forms")
+	}
+}
+
+func TestSessionList_ElapsedHasDataSince(t *testing.T) {
+	now := time.Now()
+	s := newSessionView("job-1", "proj", "cmd")
+	s.CreatedAt = now
+	html := renderSessionList(t, []SessionView{s}, "")
+	want := fmt.Sprintf(`data-since="%d"`, now.Unix())
+	if !strings.Contains(html, want) {
+		t.Errorf("elapsed span should have data-since with unix seconds, want %q in: %s", want, html)
+	}
+	if !strings.Contains(html, "session-elapsed") {
+		t.Error("elapsed span should have class session-elapsed")
+	}
+}
+
+func TestSessionList_ElapsedZeroCreatedAt(t *testing.T) {
+	s := SessionView{ID: "job-zero", ProjectName: "proj", HandlerID: "cmd"}
+	// CreatedAt is zero value
+	html := renderSessionList(t, []SessionView{s}, "")
+	if strings.Contains(html, `data-since="0"`) {
+		t.Error("zero CreatedAt should not emit data-since with unix 0")
 	}
 }
 
