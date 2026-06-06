@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -30,5 +31,28 @@ func TestNoVendorDirInStatic(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("WalkDir: %v", err)
+	}
+}
+
+// TestTerminalResizeSetsMaxHeight guards a non-obvious mobile fix: the soft
+// keyboard must not hide the special keybar at the bottom of the terminal.
+//
+// .boid-terminal is a `flex: 1 1 0` item inside the explicit-height flex
+// column .site-main. A flex item with flex-basis:0 + flex-grow:1 IGNORES its
+// `height` (flex-grow stretches it to fill the column), so resizeToViewport's
+// inline `height` was a no-op on the job-detail page: when the soft keyboard
+// shrank visualViewport, the terminal — and the keybar at its bottom — stayed
+// at full height, hidden behind the keyboard. `max-height` DOES clamp
+// flex-grow, so resizeToViewport must set it. If someone "cleans up" the
+// seemingly-redundant max-height, the keybar regresses on mobile.
+func TestTerminalResizeSetsMaxHeight(t *testing.T) {
+	src, err := os.ReadFile("static/boid-terminal.js")
+	if err != nil {
+		t.Fatalf("read boid-terminal.js: %v", err)
+	}
+	if !strings.Contains(string(src), "style.maxHeight") {
+		t.Error("boid-terminal.js resizeToViewport must set rootEl.style.maxHeight — " +
+			"plain `height` is ignored by flex-grow:1 (flex-basis:0), so the special " +
+			"keybar would be hidden behind the soft keyboard on mobile")
 	}
 }

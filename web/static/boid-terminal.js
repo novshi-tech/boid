@@ -87,12 +87,22 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   // pushed rootEl down to.
   // On mobile, use visualViewport.height so the terminal shrinks when the soft
   // keyboard opens (window.innerHeight does not shrink on iOS/Android Chrome).
+  //
+  // rootEl is .boid-terminal, which has `flex: 1 1 0` inside the explicit-height
+  // flex column .site-main. A flex item with flex-basis:0 + flex-grow:1 IGNORES
+  // its `height` (flex-grow stretches it to fill the column regardless), so the
+  // soft keyboard would otherwise leave the terminal — and the keybar at its
+  // bottom — at full height, hidden behind the keyboard. `max-height` DOES clamp
+  // flex-grow, so set it too: when the keyboard shrinks visualViewport, max-height
+  // pulls the terminal (and the keybar) up into the visible area. `height` is kept
+  // for any future block-parent embedding where flex-grow is not in play.
   function resizeToViewport() {
     const rect = rootEl.getBoundingClientRect();
     const bottomGap = 8;
     const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
     const height = Math.max(200, vh - rect.top - bottomGap);
     rootEl.style.height = height + 'px';
+    rootEl.style.maxHeight = height + 'px';
   }
 
   // --- WS send helpers ---
