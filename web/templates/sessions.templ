@@ -48,6 +48,15 @@ func sessionElapsed(t time.Time) string {
 	return fmt.Sprintf("%02d:%02d", m, sec)
 }
 
+// sessionSinceUnix returns CreatedAt as a unix-seconds string for the
+// data-since attribute on the live-elapsed span. Returns "" for zero times.
+func sessionSinceUnix(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return fmt.Sprintf("%d", t.Unix())
+}
+
 // SessionList renders the /sessions page listing running taskless jobs.
 templ SessionList(sessions []SessionView, projectFilter string) {
 	@Layout("Sessions", "") {
@@ -72,7 +81,7 @@ templ SessionList(sessions []SessionView, projectFilter string) {
 								if sessionProjectLabel(s) != "" {
 									<span class="task-row-project">{ sessionProjectLabel(s) }</span>
 								}
-								<span class="task-row-behavior">{ sessionElapsed(s.CreatedAt) }</span>
+								<span class="task-row-behavior session-elapsed" data-since={ sessionSinceUnix(s.CreatedAt) }>{ sessionElapsed(s.CreatedAt) }</span>
 							</div>
 						</div>
 					</a>
@@ -85,6 +94,28 @@ templ SessionList(sessions []SessionView, projectFilter string) {
 				<span class="action-bar-spacer"></span>
 			</div>
 		</div>
+		<script>
+			if (!window.__boidSessionTicker) {
+				window.__boidSessionTicker = true;
+				function tickSessionElapsed() {
+					var now = Math.floor(Date.now() / 1000);
+					document.querySelectorAll('.session-elapsed[data-since]').forEach(function(el) {
+						var since = parseInt(el.dataset.since, 10);
+						if (!since) return;
+						var d = Math.max(0, now - since);
+						var h = Math.floor(d / 3600);
+						var m = Math.floor((d % 3600) / 60);
+						var s = d % 60;
+						var pad = function(n) { return (n < 10 ? '0' : '') + n; };
+						el.textContent = h > 0
+							? (pad(h) + ':' + pad(m) + ':' + pad(s))
+							: (pad(m) + ':' + pad(s));
+					});
+				}
+				tickSessionElapsed();
+				setInterval(tickSessionElapsed, 1000);
+			}
+		</script>
 	}
 }
 
