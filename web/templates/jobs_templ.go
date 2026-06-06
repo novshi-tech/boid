@@ -199,7 +199,7 @@ func JobDetail(job *JobContextView) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			if job.Interactive && job.Status == "running" {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<style>\n\t\t\t\thtml, body { overflow: hidden; height: 100%; }\n\t\t\t\t.site-main {\n\t\t\t\t\tdisplay: flex;\n\t\t\t\t\tflex-direction: column;\n\t\t\t\t\theight: calc(100vh - 48px);\n\t\t\t\t\tpadding: 0;\n\t\t\t\t\toverflow: hidden;\n\t\t\t\t}\n\t\t\t\t@media (min-width: 768px) {\n\t\t\t\t\t.site-main {\n\t\t\t\t\t\tmax-width: 100%;\n\t\t\t\t\t\tmargin: 0;\n\t\t\t\t\t\tpadding: 0;\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t</style> ")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<style>\n\t\t\t\thtml, body { overflow: hidden; height: 100%; }\n\t\t\t\t.site-main {\n\t\t\t\t\tdisplay: flex;\n\t\t\t\t\tflex-direction: column;\n\t\t\t\t\theight: calc(100vh - 48px);\n\t\t\t\t\theight: calc(100dvh - 48px);\n\t\t\t\t\tpadding: 0;\n\t\t\t\t\toverflow: hidden;\n\t\t\t\t}\n\t\t\t\t@media (min-width: 768px) {\n\t\t\t\t\t.site-main {\n\t\t\t\t\t\tmax-width: 100%;\n\t\t\t\t\t\tmargin: 0;\n\t\t\t\t\t\tpadding: 0;\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t</style> ")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -220,7 +220,7 @@ func JobDetail(job *JobContextView) templ.Component {
 					var templ_7745c5c3_Var8 string
 					templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(job.Output)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/jobs.templ`, Line: 148, Col: 51}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/jobs.templ`, Line: 149, Col: 51}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 					if templ_7745c5c3_Err != nil {
@@ -243,7 +243,7 @@ func JobDetail(job *JobContextView) templ.Component {
 				var templ_7745c5c3_Var9 string
 				templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(job.ID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/jobs.templ`, Line: 153, Col: 58}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/jobs.templ`, Line: 154, Col: 58}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 				if templ_7745c5c3_Err != nil {
@@ -256,7 +256,7 @@ func JobDetail(job *JobContextView) templ.Component {
 				var templ_7745c5c3_Var10 string
 				templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(job.Output)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/jobs.templ`, Line: 153, Col: 73}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/jobs.templ`, Line: 154, Col: 73}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 				if templ_7745c5c3_Err != nil {
@@ -289,7 +289,7 @@ func JobDetail(job *JobContextView) templ.Component {
 				var templ_7745c5c3_Var11 templ.SafeURL
 				templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(hookReplayPath(job.TaskID, job.HookID)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/jobs.templ`, Line: 174, Col: 87}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/jobs.templ`, Line: 175, Col: 87}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 				if templ_7745c5c3_Err != nil {
