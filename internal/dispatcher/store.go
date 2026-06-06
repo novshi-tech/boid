@@ -313,6 +313,10 @@ func UpdateJob(dbtx db.DBTX, j *Job) error {
 		assignments = append(assignments, "execution_state = ?")
 		args = append(args, j.ExecutionState)
 	}
+	if cols.hasDisplayName {
+		assignments = append(assignments, "display_name = ?")
+		args = append(args, j.DisplayName)
+	}
 
 	assignments = append(assignments, "updated_at = ?")
 	args = append(args, j.UpdatedAt, j.ID)

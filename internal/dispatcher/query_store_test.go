@@ -127,6 +127,50 @@ func TestCreateJob_PersistsDisplayName(t *testing.T) {
 	}
 }
 
+func TestUpdateJob_PersistsDisplayName(t *testing.T) {
+	d := createDispatcherTask(t)
+
+	job := &dispatcher.Job{ProjectID: "proj-1", DisplayName: "original"}
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	job.DisplayName = "renamed"
+	if err := dispatcher.UpdateJob(d.Conn, job); err != nil {
+		t.Fatalf("update job: %v", err)
+	}
+
+	got, err := dispatcher.GetJob(d.Conn, job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if got.DisplayName != "renamed" {
+		t.Fatalf("expected display_name %q, got %q", "renamed", got.DisplayName)
+	}
+}
+
+func TestUpdateJob_ClearsDisplayName(t *testing.T) {
+	d := createDispatcherTask(t)
+
+	job := &dispatcher.Job{ProjectID: "proj-1", DisplayName: "original"}
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	job.DisplayName = ""
+	if err := dispatcher.UpdateJob(d.Conn, job); err != nil {
+		t.Fatalf("update job: %v", err)
+	}
+
+	got, err := dispatcher.GetJob(d.Conn, job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if got.DisplayName != "" {
+		t.Fatalf("expected empty display_name, got %q", got.DisplayName)
+	}
+}
+
 func TestCreateJob_NoTask(t *testing.T) {
 	d := createDispatcherTask(t)
 
