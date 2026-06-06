@@ -599,7 +599,7 @@ func TestBuildPATH_BoidDirAddedWhenNonStandard(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			path := buildPATH(nil, tc.boidBinary)
+			path := buildPATH(nil, nil, tc.boidBinary)
 			if !strings.HasPrefix(path, tc.wantPrefix) {
 				t.Errorf("buildPATH = %q, want prefix %q", path, tc.wantPrefix)
 			}
@@ -614,11 +614,58 @@ func TestBuildPATH_BoidDirNotDuplicatedForStandardPaths(t *testing.T) {
 		"/usr/bin/boid",
 		"/bin/boid",
 	} {
-		path := buildPATH(nil, boidBinary)
+		path := buildPATH(nil, nil, boidBinary)
 		want := "/usr/local/bin:/usr/bin:/bin"
 		if path != want {
 			t.Errorf("buildPATH(%q) = %q, want %q", boidBinary, path, want)
 		}
+	}
+}
+
+// host command の解決済み絶対パスのディレクトリが PATH に乗る。非標準ディレクトリ
+// (~/.local/bin 等) に置かれた host command が、サンドボックス内で名前解決できる
+// ようにするための配線。shim 自体は絶対パスに bind mount されるだけで PATH には
+// 現れないため、ここで親ディレクトリを PATH に足さないと command not found になる。
+func TestBuildPATH_HostCommandDirsAdded(t *testing.T) {
+	hostCommands := map[string]orchestrator.CommandDef{
+		"/home/user/.local/bin/mytool": {Name: "mytool", Path: "/home/user/.local/bin/mytool"},
+		"/opt/custom/sbin/other":       {Name: "other", Path: "/opt/custom/sbin/other"},
+	}
+	path := buildPATH(nil, hostCommands, "/usr/local/bin/boid")
+	for _, dir := range []string{"/home/user/.local/bin", "/opt/custom/sbin"} {
+		if !strings.Contains(":"+path+":", ":"+dir+":") {
+			t.Errorf("buildPATH = %q, want dir %q on PATH", path, dir)
+		}
+	}
+	if !strings.HasSuffix(path, "/usr/local/bin:/usr/bin:/bin") {
+		t.Errorf("buildPATH = %q, want base PATH suffix", path)
+	}
+}
+
+// 標準ディレクトリにある host command は base PATH でカバーされるので重複追加しない。
+func TestBuildPATH_HostCommandStandardDirNotDuplicated(t *testing.T) {
+	hostCommands := map[string]orchestrator.CommandDef{
+		"/usr/bin/gh":       {Name: "gh", Path: "/usr/bin/gh"},
+		"/usr/local/bin/jq": {Name: "jq", Path: "/usr/local/bin/jq"},
+		"/bin/cat":          {Name: "cat", Path: "/bin/cat"},
+	}
+	path := buildPATH(nil, hostCommands, "/usr/local/bin/boid")
+	want := "/usr/local/bin:/usr/bin:/bin"
+	if path != want {
+		t.Errorf("buildPATH = %q, want %q", path, want)
+	}
+}
+
+// 同一ディレクトリに複数の host command があってもディレクトリは一度だけ追加。
+func TestBuildPATH_HostCommandDirDeduplicated(t *testing.T) {
+	hostCommands := map[string]orchestrator.CommandDef{
+		"/home/user/.local/bin/a": {Name: "a", Path: "/home/user/.local/bin/a"},
+		"/home/user/.local/bin/b": {Name: "b", Path: "/home/user/.local/bin/b"},
+	}
+	path := buildPATH(nil, hostCommands, "/usr/local/bin/boid")
+	want := "/home/user/.local/bin:/usr/local/bin:/usr/bin:/bin"
+	if path != want {
+		t.Errorf("buildPATH = %q, want %q", path, want)
 	}
 }
 
