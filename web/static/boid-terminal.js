@@ -85,10 +85,13 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   // the job detail page). Measuring rootEl.top each time handles both cases:
   // flex parents give us a stable top, block parents give us whatever layout
   // pushed rootEl down to.
+  // On mobile, use visualViewport.height so the terminal shrinks when the soft
+  // keyboard opens (window.innerHeight does not shrink on iOS/Android Chrome).
   function resizeToViewport() {
     const rect = rootEl.getBoundingClientRect();
     const bottomGap = 8;
-    const height = Math.max(200, window.innerHeight - rect.top - bottomGap);
+    const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    const height = Math.max(200, vh - rect.top - bottomGap);
     rootEl.style.height = height + 'px';
   }
 
@@ -199,14 +202,21 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   const ro = new ResizeObserver(scheduleFit);
   ro.observe(xtermWrap);
 
-  // visualViewport: only refit when soft keyboard appears (large height reduction).
-  // URL bar show/hide causes small resize events that should not trigger PTY resize.
+  // visualViewport: resize/scroll updates container height on every change
+  // (covers URL bar show/hide and soft keyboard open/close).
+  // PTY resize (scheduleFit) is guarded to >150px changes only — smaller
+  // events from URL bar transitions should not send a new PTY resize message.
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', function () {
+      resizeToViewport();
       const diff = window.innerHeight - window.visualViewport.height;
       if (diff > 150) {
         scheduleFit();
       }
+    });
+    // scroll fires on iOS when the page shifts to keep a focused element visible
+    window.visualViewport.addEventListener('scroll', function () {
+      resizeToViewport();
     });
   }
 
@@ -287,6 +297,27 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
 
       if (Math.abs(vel) >= MIN_VEL) {
         rafId = requestAnimationFrame(step);
+      }
+    }, { passive: true });
+  })();
+
+  // --- mobile tap-to-focus (soft keyboard) ---
+  // On mobile, touchmove's preventDefault() kills synthetic click events, so
+  // xterm.js never receives the click that normally triggers term.focus().
+  // Detect taps on the xterm wrap and focus explicitly so the soft keyboard
+  // appears when the user taps the terminal area.
+  (function attachTapFocus() {
+    let tapX = 0, tapY = 0;
+    xtermWrap.addEventListener('touchstart', function (e) {
+      tapX = e.touches[0].clientX;
+      tapY = e.touches[0].clientY;
+    }, { passive: true });
+    xtermWrap.addEventListener('touchend', function (e) {
+      if (e.changedTouches.length !== 1) return;
+      const dx = e.changedTouches[0].clientX - tapX;
+      const dy = e.changedTouches[0].clientY - tapY;
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) {
+        term.focus();
       }
     }, { passive: true });
   })();
