@@ -96,11 +96,21 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   // flex-grow, so set it too: when the keyboard shrinks visualViewport, max-height
   // pulls the terminal (and the keybar) up into the visible area. `height` is kept
   // for any future block-parent embedding where flex-grow is not in play.
+  //
+  // Do NOT clamp the result to a fixed minimum (this used to floor it at 200px).
+  // A floor taller than the available space makes rootEl overflow the viewport,
+  // and .site-main's `overflow:hidden` then clips its bottom — the keybar — back
+  // out of sight. This bites whenever the visible area is short: small phones,
+  // landscape, a tall header pushing rect.top down, or a soft keyboard shrinking
+  // visualViewport below rect.top + 200. The keybar (flex-shrink:0) and status
+  // bar stay visible without a floor because the xterm viewport (flex:1 1 0,
+  // min-height:0) absorbs the shrink instead. Clamp only at 0 to avoid a
+  // negative height.
   function resizeToViewport() {
     const rect = rootEl.getBoundingClientRect();
     const bottomGap = 8;
     const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
-    const height = Math.max(200, vh - rect.top - bottomGap);
+    const height = Math.max(0, vh - rect.top - bottomGap);
     rootEl.style.height = height + 'px';
     rootEl.style.maxHeight = height + 'px';
   }
