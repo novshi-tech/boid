@@ -395,7 +395,7 @@ func TestBoidBuiltinExecutor_TaskCreate_DefaultsParentIDFromContext(t *testing.T
 
 	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
-		CreatePatch: json.RawMessage(`{"title":"child task","behavior":"dev"}`),
+		CreatePatch: json.RawMessage(`{"title":"child task","behavior":"dev","ref":"step-1"}`),
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
@@ -426,7 +426,7 @@ func TestBoidBuiltinExecutor_TaskCreate_ExplicitParentIDOverridesContext(t *test
 
 	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
-		CreatePatch: json.RawMessage(`{"title":"child task","behavior":"dev","parent_id":"explicit-parent-id"}`),
+		CreatePatch: json.RawMessage(`{"title":"child task","behavior":"dev","parent_id":"explicit-parent-id","ref":"step-2"}`),
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
@@ -474,10 +474,10 @@ func TestBoidBuiltinExecutor_TaskCreate_SentinelRootParentID(t *testing.T) {
 		t.Errorf("sentinel: ParentID = %q, want empty (root task)", got)
 	}
 
-	// empty parent_id → auto-populated with ctx.TaskID
+	// empty parent_id → auto-populated with ctx.TaskID; ref required for children
 	resp = exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
-		CreatePatch: json.RawMessage(`{"title":"child task","behavior":"dev"}`),
+		CreatePatch: json.RawMessage(`{"title":"child task","behavior":"dev","ref":"step-auto"}`),
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("auto-populate create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
@@ -487,6 +487,69 @@ func TestBoidBuiltinExecutor_TaskCreate_SentinelRootParentID(t *testing.T) {
 	}
 	if got := store.created[1].ParentID; got != "parent-task-id" {
 		t.Errorf("auto-populate: ParentID = %q, want %q", got, "parent-task-id")
+	}
+}
+
+// TestBoidBuiltinExecutor_TaskCreate_ChildRequiresRef verifies that sandbox
+// agent creates of child tasks (parent_id != "") are rejected when ref is empty.
+// Root-task creates (parent_id empty after sentinel handling) must still succeed
+// without a ref.
+func TestBoidBuiltinExecutor_TaskCreate_ChildRequiresRef(t *testing.T) {
+	store := &capturingTaskStore{}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}},
+	}}
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{Tasks: store, Meta: meta},
+	}
+	ctx := sandbox.TokenContext{
+		ProjectID:         "proj-1",
+		TaskID:            "parent-task-id",
+		AllowedProjectIDs: []string{"proj-1"},
+	}
+
+	// Child create without ref → must be rejected.
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:          sandbox.BoidOpTaskCreate,
+		CreatePatch: json.RawMessage(`{"title":"child no ref","behavior":"dev"}`),
+	})
+	if resp.ExitCode != 1 {
+		t.Fatalf("child create without ref: exit code = %d, want 1", resp.ExitCode)
+	}
+	if !strings.Contains(resp.Stderr, "stable ref") {
+		t.Errorf("stderr = %q, want 'stable ref' hint", resp.Stderr)
+	}
+	if len(store.created) != 0 {
+		t.Fatalf("child create without ref should not reach store, created=%d", len(store.created))
+	}
+
+	// Child create WITH ref → must succeed.
+	resp = exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:          sandbox.BoidOpTaskCreate,
+		CreatePatch: json.RawMessage(`{"title":"child with ref","behavior":"dev","ref":"migrate-schema"}`),
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("child create with ref: exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("child create with ref should reach store, created=%d", len(store.created))
+	}
+
+	// Root create without ref (sentinel parent_id) → must succeed.
+	rootCtx := sandbox.TokenContext{
+		ProjectID:         "proj-1",
+		TaskID:            "parent-task-id",
+		AllowedProjectIDs: []string{"proj-1"},
+	}
+	resp = exec.ExecuteBoidBuiltin(rootCtx, &sandbox.BoidRequest{
+		Op:          sandbox.BoidOpTaskCreate,
+		CreatePatch: json.RawMessage(`{"title":"root no ref","behavior":"dev","parent_id":"-"}`),
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("root create without ref: exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if len(store.created) != 2 {
+		t.Fatalf("root create without ref should reach store, created=%d", len(store.created))
 	}
 }
 

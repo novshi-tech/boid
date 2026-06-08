@@ -106,6 +106,9 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 		} else if createReq.ParentID == "" {
 			createReq.ParentID = ctx.TaskID
 		}
+		if createReq.ParentID != "" && createReq.Ref == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "child create requires a stable ref; pass ref: <slug> in the task spec"}
+		}
 		if !ctx.AllowsProject(createReq.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
 		}

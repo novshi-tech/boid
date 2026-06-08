@@ -1835,12 +1835,16 @@ type stubTaskStore struct {
 	updateCalls    int
 	deleted        bool
 	remoteTasks    map[string]*orchestrator.Task // remoteID → task
+	refTasks       map[string]*orchestrator.Task // "ref:parentID" → task
 	createdTask    *orchestrator.Task            // captures the last created task
 }
 
 func (s *stubTaskStore) CreateTask(task *orchestrator.Task) error {
 	if task.ID == "" {
 		task.ID = "stub-task-id"
+	}
+	if task.Status == "" {
+		task.Status = orchestrator.TaskStatusPending
 	}
 	s.createdTask = task
 	return nil
@@ -1877,6 +1881,10 @@ func (s *stubTaskStore) FindTaskByRemote(remoteID string) (*orchestrator.Task, e
 	return nil, nil
 }
 func (s *stubTaskStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {
+	if s.refTasks != nil {
+		key := ref + ":" + parentID
+		return s.refTasks[key], nil
+	}
 	return nil, nil
 }
 func (s *stubTaskStore) FindDependentTasks(_ string) ([]*orchestrator.Task, error) {

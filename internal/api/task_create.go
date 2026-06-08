@@ -173,6 +173,22 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		return nil, err
 	}
 
+	// Get-or-create: when ref and parent are both present, check for an existing
+	// child before building and inserting a new task. This is the service-level
+	// dedup guard; the store has an identical check for the concurrent-create
+	// race. Returning early here avoids a redundant INSERT round-trip.
+	if req.Ref != "" && req.ParentID != "" {
+		existing, err := s.Tasks.FindTaskByRef(req.Ref, req.ParentID)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+		if existing != nil {
+			// First-write-wins: return the existing task. Do not fire auto_start
+			// because the task may already be executing or terminal.
+			return existing, nil
+		}
+	}
+
 	task := &orchestrator.Task{
 		ID:           req.ID,
 		ProjectID:    req.ProjectID,
@@ -194,7 +210,10 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 	if err := s.Tasks.CreateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
-	if req.AutoStart && s.Workflow != nil {
+	// Guard: only fire auto_start for a freshly pending task. When get-or-create
+	// at the store level returns an existing task (e.g. concurrent create race),
+	// the task may already be executing or terminal.
+	if req.AutoStart && s.Workflow != nil && task.Status == orchestrator.TaskStatusPending {
 		result, err := s.Workflow.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
 		if err != nil {
 			slog.Error("auto_start: failed to apply start action", "task_id", task.ID, "error", err)

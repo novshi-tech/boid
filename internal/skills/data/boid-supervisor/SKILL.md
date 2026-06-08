@@ -69,6 +69,7 @@ Use parallel creation only when children are genuinely order-independent.
 A=$(boid task create <<YAML | awk '{print $3}'
 title: phase A
 behavior: executor
+ref: phase-a
 description: ...
 auto_start: true
 YAML
@@ -77,6 +78,7 @@ YAML
 B=$(boid task create <<YAML | awk '{print $3}'
 title: phase B (uses A's result)
 behavior: executor
+ref: phase-b
 description: ...
 auto_start: true
 YAML
@@ -87,14 +89,43 @@ YAML
 
 `boid task create` reads YAML/JSON from stdin and prints `task created: <id> (<status>)`. Required field: `title`. `parent_id` is auto-filled from `BOID_TASK_ID`.
 
-Most commonly used optional fields:
+Most commonly used fields:
 
+- **`ref`** — **required for every child task.** A stable role slug that uniquely identifies this child within its parent (e.g. `migrate-schema`, `write-tests`). Never use random values or titles; the ref must be the same across resume cycles. Omitting `ref` is a hard error from the sandbox path.
 - `behavior` — `executor` for implementation. Omit to default to `supervisor` (re-delegate triage to the child).
 - `description` — detailed instructions for the child agent.
 - `auto_start: true` — start immediately on create.
 - `base_branch` — branch to fork the worktree from. Omit to inherit from project-top.
 
 Full field reference: [references/builtins.md](references/builtins.md).
+
+### Resume: reconcile before create
+
+`boid task create` is idempotent when `ref` is stable: a second call with the same `(ref, parent_id)` returns the **existing** task rather than creating a duplicate. This means **you can safely re-run your entire create loop on every invocation** — tasks that already exist are returned as-is, and only missing ones are inserted.
+
+However, for efficiency and clarity, use `artifact.children` to skip creates of tasks that are already terminal:
+
+```bash
+# Typical reconcile-before-create pattern
+children_json=$(boid task show "$BOID_TASK_ID" --field payload.artifact.children 2>/dev/null || echo '{}')
+
+# Read existing child IDs from the payload (written automatically by the daemon)
+CHILD_A=$(printf '%s' "$children_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('migrate-schema',{}).get('id',''))" 2>/dev/null || echo "")
+
+if [ -z "$CHILD_A" ]; then
+  CHILD_A=$(boid task create <<YAML | awk '{print $3}'
+title: Migrate schema
+behavior: executor
+ref: migrate-schema
+description: ...
+auto_start: true
+YAML
+  )
+fi
+# CHILD_A is now set whether this is first run or a resume.
+```
+
+Simplified: if you always pass the same `ref`, calling `boid task create` again on resume is safe — the idempotent store returns the existing task. Only skip if you need to avoid the round-trip or check terminal state before re-monitoring.
 
 ### Overriding the Behavior's `default_instruction` (partial)
 
