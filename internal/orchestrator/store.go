@@ -52,6 +52,20 @@ const taskChildCountCols = `` +
 	`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status NOT IN ('done', 'aborted'))`
 
 func CreateTask(dbtx db.DBTX, t *Task) error {
+	// Get-or-create: when ref and parent are both set, return the existing task
+	// instead of inserting a duplicate. This makes create idempotent across
+	// supervisor resume cycles, where the same child-create call may be replayed.
+	if t.Ref != "" && t.ParentID != "" {
+		existing, err := FindTaskByRef(dbtx, t.Ref, t.ParentID)
+		if err != nil {
+			return fmt.Errorf("find existing ref: %w", err)
+		}
+		if existing != nil {
+			*t = *existing
+			return nil
+		}
+	}
+
 	if t.ID == "" {
 		t.ID = uuid.New().String()
 	}
@@ -87,6 +101,15 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 		t.ID, t.ProjectID, t.RemoteID, t.Title, t.Description, t.Status, t.Behavior, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.AutoStart, t.Ref, t.ParentID, t.CreatedAt, t.UpdatedAt,
 	)
 	if err != nil {
+		// Concurrent create: if another goroutine just inserted the same (ref, parent_id),
+		// fall back to the existing task rather than returning an error.
+		if t.Ref != "" && t.ParentID != "" && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			existing, findErr := FindTaskByRef(dbtx, t.Ref, t.ParentID)
+			if findErr == nil && existing != nil {
+				*t = *existing
+				return nil
+			}
+		}
 		return fmt.Errorf("insert task: %w", err)
 	}
 	return nil

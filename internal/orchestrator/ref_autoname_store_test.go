@@ -58,9 +58,10 @@ func TestCreateTask_ExplicitRefRespected(t *testing.T) {
 	}
 }
 
-// TestCreateTask_ExplicitRefConflict_Error verifies that a duplicate explicit ref
-// returns an error instead of silently overriding.
-func TestCreateTask_ExplicitRefConflict_Error(t *testing.T) {
+// TestCreateTask_ExplicitRefConflict_GetOrCreate verifies that a second create
+// with the same (ref, parent_id) returns the existing task (get-or-create),
+// not an error. First-write-wins: the original title is preserved.
+func TestCreateTask_ExplicitRefConflict_GetOrCreate(t *testing.T) {
 	d := createTestProject(t)
 
 	t1 := &orchestrator.Task{
@@ -76,13 +77,19 @@ func TestCreateTask_ExplicitRefConflict_Error(t *testing.T) {
 
 	t2 := &orchestrator.Task{
 		ProjectID: "proj-1",
-		Title:     "Second child (conflicting ref)",
+		Title:     "Second child (same ref)",
 		Behavior:  "dev",
 		ParentID:  "parent-conflict",
 		Ref:       "shared-ref",
 	}
-	if err := orchestrator.CreateTask(d.Conn, t2); err == nil {
-		t.Fatal("expected unique constraint error for duplicate explicit ref, got nil")
+	if err := orchestrator.CreateTask(d.Conn, t2); err != nil {
+		t.Fatalf("second CreateTask with same ref: %v (want get-or-create, not error)", err)
+	}
+	if t2.ID != t1.ID {
+		t.Errorf("second CreateTask returned id=%q, want existing id=%q", t2.ID, t1.ID)
+	}
+	if t2.Title != "First child" {
+		t.Errorf("Title = %q, want %q (first-write-wins: original must be preserved)", t2.Title, "First child")
 	}
 }
 

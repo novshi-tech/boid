@@ -76,6 +76,7 @@ Omitting `behavior` in `boid task create` routes to **`plan` by default**. Use t
 boid task create <<YAML
 title: Task title
 behavior: <key from task_behaviors in project.yaml, or omit>
+ref: stable-role-slug
 description: |
   Implementation instructions for this subtask. Describe what to build and how in detail.
 auto_start: true
@@ -87,6 +88,7 @@ stdout returns `task created: <id> (<status>)`, which you can capture in a shell
 ```bash
 CHILD_A=$(boid task create <<YAML | awk '{print $3}'
 title: ...
+ref: phase-a
 auto_start: true
 YAML
 )
@@ -95,6 +97,9 @@ YAML
 ### Required fields
 
 - `title`: required.
+- `ref`: **required for child tasks.** A stable role slug that uniquely identifies this child
+  within its parent (e.g. `migrate-schema`). Must be the same value on every run/resume.
+  Omitting `ref` is a hard error from the sandbox path.
 - `parent_id`: optional. When omitted, automatically defaults to the current task ID
   (the `BOID_TASK_ID` env var the sandbox provides). This keeps the new task under the
   supervisor's monitoring scope. Specify it explicitly only when you need to attach the

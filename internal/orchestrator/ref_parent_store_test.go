@@ -50,7 +50,10 @@ func TestCreateTask_EmptyRef_NoUniqueConstraint(t *testing.T) {
 	}
 }
 
-func TestCreateTask_SameRefSameParent_UniqueConflict(t *testing.T) {
+// TestCreateTask_SameRefSameParent_GetOrCreate verifies that creating a second
+// task with the same (ref, parent_id) returns the existing task instead of
+// failing with a unique constraint error (get-or-create semantics).
+func TestCreateTask_SameRefSameParent_GetOrCreate(t *testing.T) {
 	d := createTestProject(t)
 
 	t1 := &orchestrator.Task{
@@ -66,14 +69,16 @@ func TestCreateTask_SameRefSameParent_UniqueConflict(t *testing.T) {
 
 	t2 := &orchestrator.Task{
 		ProjectID: "proj-1",
-		Title:     "Task B (duplicate ref)",
+		Title:     "Task B (same ref — should get existing)",
 		Behavior:  "dev",
 		Ref:       "step-1",
 		ParentID:  "parent-uuid-abc",
 	}
-	err := orchestrator.CreateTask(d.Conn, t2)
-	if err == nil {
-		t.Fatal("expected unique constraint error for same (ref, parent_id), got nil")
+	if err := orchestrator.CreateTask(d.Conn, t2); err != nil {
+		t.Fatalf("second CreateTask with same ref: %v (want get-or-create, not error)", err)
+	}
+	if t2.ID != t1.ID {
+		t.Errorf("second CreateTask returned id=%q, want existing id=%q", t2.ID, t1.ID)
 	}
 }
 
