@@ -12,7 +12,31 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const boidShimUsage = `Usage: boid <command> [subcommand] [flags]
+
+Commands:
+  task    Manage tasks (create, show, update, list, notify, answer, delete, import, reopen)
+  job     Manage jobs (done, list, show, log)
+  action  Send actions (send)
+  agent   Manage agent (stop)
+
+Run "boid <command> --help" for subcommand usage.
+`
+
+func containsHelpFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--help" || a == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
 func RunBoidShim(args []string) (*ExecResponse, error) {
+	if containsHelpFlag(args) {
+		return &ExecResponse{ExitCode: 0, Stdout: boidShimUsage}, nil
+	}
+
 	brokerSocket := os.Getenv("BOID_BROKER_SOCKET")
 	if brokerSocket == "" {
 		return nil, fmt.Errorf("boid shim: BOID_BROKER_SOCKET not set")

@@ -1289,6 +1289,88 @@ func TestRunBoidShim_JobLog_RequiresJobID(t *testing.T) {
 	}
 }
 
+// --- --help / -h flag tests ---
+
+func TestRunBoidShim_HelpFlag_TopLevel(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+
+	for _, args := range [][]string{
+		{"--help"},
+		{"-h"},
+	} {
+		resp, err := sandbox.RunBoidShim(args)
+		if err != nil {
+			t.Fatalf("RunBoidShim(%v): unexpected error: %v", args, err)
+		}
+		if resp.ExitCode != 0 {
+			t.Errorf("RunBoidShim(%v): exit code = %d, want 0", args, resp.ExitCode)
+		}
+		if resp.Stdout == "" {
+			t.Errorf("RunBoidShim(%v): stdout is empty, want usage text", args)
+		}
+	}
+}
+
+func TestRunBoidShim_HelpFlag_SubcommandLevel(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+
+	cases := [][]string{
+		{"task", "--help"},
+		{"task", "-h"},
+		{"job", "--help"},
+		{"job", "-h"},
+		{"action", "--help"},
+		{"action", "-h"},
+		{"agent", "--help"},
+		{"agent", "-h"},
+	}
+	for _, args := range cases {
+		resp, err := sandbox.RunBoidShim(args)
+		if err != nil {
+			t.Fatalf("RunBoidShim(%v): unexpected error: %v", args, err)
+		}
+		if resp.ExitCode != 0 {
+			t.Errorf("RunBoidShim(%v): exit code = %d, want 0", args, resp.ExitCode)
+		}
+		if resp.Stdout == "" {
+			t.Errorf("RunBoidShim(%v): stdout is empty, want usage text", args)
+		}
+	}
+}
+
+func TestRunBoidShim_HelpFlag_DeepArgs(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+
+	cases := [][]string{
+		{"task", "show", "some-id", "--help"},
+		{"task", "show", "some-id", "-h"},
+		{"task", "create", "--help"},
+		{"task", "update", "task-1", "--help"},
+		{"task", "list", "--help"},
+		{"task", "notify", "task-1", "--help"},
+		{"task", "answer", "--help"},
+		{"task", "delete", "task-1", "--help"},
+		{"task", "import", "--help"},
+		{"job", "done", "job-1", "--help"},
+		{"job", "list", "--help"},
+		{"job", "show", "--help"},
+		{"job", "log", "--help"},
+		{"action", "send", "--help"},
+	}
+	for _, args := range cases {
+		resp, err := sandbox.RunBoidShim(args)
+		if err != nil {
+			t.Fatalf("RunBoidShim(%v): unexpected error: %v", args, err)
+		}
+		if resp.ExitCode != 0 {
+			t.Errorf("RunBoidShim(%v): exit code = %d, want 0", args, resp.ExitCode)
+		}
+		if resp.Stdout == "" {
+			t.Errorf("RunBoidShim(%v): stdout is empty, want usage text", args)
+		}
+	}
+}
+
 // --- task delete ---
 
 func TestRunBoidShim_TaskDelete_Normal(t *testing.T) {
