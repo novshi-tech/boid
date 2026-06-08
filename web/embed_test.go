@@ -56,3 +56,28 @@ func TestTerminalResizeSetsMaxHeight(t *testing.T) {
 			"keybar would be hidden behind the soft keyboard on mobile")
 	}
 }
+
+// TestTerminalResizeHasNoFixedFloor guards a recurring mobile regression: the
+// special keybar at the bottom of the terminal must never be clipped when the
+// visible area is short (small phones, landscape, tall header, or an open soft
+// keyboard shrinking visualViewport).
+//
+// resizeToViewport sizes .boid-terminal to fit between its top and the bottom of
+// the visible area. An earlier version clamped that to `Math.max(200, …)`. When
+// the available space dropped below the floor, .boid-terminal grew taller than
+// the viewport and .site-main's `overflow:hidden` clipped its bottom — the
+// keybar — out of view. The floor must stay at 0: the xterm viewport
+// (flex:1 1 0, min-height:0) absorbs the shrink so the keybar (flex-shrink:0)
+// stays visible. If someone reintroduces a non-zero floor, the keybar regresses.
+func TestTerminalResizeHasNoFixedFloor(t *testing.T) {
+	src, err := os.ReadFile("static/boid-terminal.js")
+	if err != nil {
+		t.Fatalf("read boid-terminal.js: %v", err)
+	}
+	if strings.Contains(string(src), "Math.max(200") {
+		t.Error("boid-terminal.js resizeToViewport must not clamp the terminal " +
+			"height to a fixed floor (e.g. Math.max(200, …)) — when the visible " +
+			"area is shorter than the floor, .boid-terminal overflows and " +
+			".site-main's overflow:hidden clips the special keybar. Clamp at 0 only")
+	}
+}
