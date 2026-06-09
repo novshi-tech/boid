@@ -318,9 +318,59 @@ func execGitBuiltin(req *GitRequest, binding *GitBinding) *ExecResponse {
 			"stdout", strings.TrimSpace(stdout.String()),
 			"stderr", strings.TrimSpace(stderr.String()),
 		)
+		if req.SetUpstream && !req.DryRun && resp.ExitCode == 0 {
+			if err := setGitUpstreamConfig(binding.WorktreeRoot, remoteName, req, binding); err != nil {
+				slog.Warn("git push --set-upstream: could not configure upstream", "err", err)
+				resp.Stderr += "\nwarning: could not set upstream tracking: " + err.Error()
+			}
+		}
 	}
 
 	return resp
+}
+
+// setGitUpstreamConfig sets branch.<current>.remote and branch.<current>.merge
+// after a successful push with -u / --set-upstream. git cannot set upstream when
+// pushing to a URL directly (instead of a named remote), so we apply the config
+// ourselves using the named remote we already resolved from the binding.
+func setGitUpstreamConfig(worktreeRoot, remoteName string, req *GitRequest, binding *GitBinding) error {
+	currentBranch, err := gitOutput(worktreeRoot, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil || currentBranch == "" {
+		return fmt.Errorf("could not determine current branch")
+	}
+
+	refspecs, err := resolveGitPushRefspecs(req, binding, remoteName)
+	if err != nil {
+		return fmt.Errorf("could not resolve push refspecs: %w", err)
+	}
+
+	mergeRef := upstreamMergeRef(refspecs, currentBranch)
+
+	if _, err := gitOutput(worktreeRoot, "config", "branch."+currentBranch+".remote", remoteName); err != nil {
+		return fmt.Errorf("set branch remote: %w", err)
+	}
+	if _, err := gitOutput(worktreeRoot, "config", "branch."+currentBranch+".merge", mergeRef); err != nil {
+		return fmt.Errorf("set branch merge: %w", err)
+	}
+	return nil
+}
+
+// upstreamMergeRef extracts the remote-side ref from the push refspecs.
+// For a refspec like "HEAD:refs/heads/feature" it returns "refs/heads/feature".
+// If no target is found it falls back to "refs/heads/<currentBranch>".
+func upstreamMergeRef(refspecs []string, currentBranch string) string {
+	for _, refspec := range refspecs {
+		if idx := strings.Index(refspec, ":"); idx >= 0 {
+			target := refspec[idx+1:]
+			if target != "" {
+				if !strings.HasPrefix(target, "refs/") {
+					target = "refs/heads/" + target
+				}
+				return target
+			}
+		}
+	}
+	return "refs/heads/" + currentBranch
 }
 
 func resolveGitRemote(req *GitRequest, binding *GitBinding) (string, GitRemote, error) {
