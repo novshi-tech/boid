@@ -7,15 +7,16 @@ import (
 
 func TestClassifyGitInvocation(t *testing.T) {
 	tests := []struct {
-		name         string
-		args         []string
-		wantMode     gitInvocationMode
-		wantOp       GitOp
-		wantRemote   string
-		wantRefspecs []string
-		wantSource   string
-		wantDest     string
-		wantErr      bool
+		name            string
+		args            []string
+		wantMode        gitInvocationMode
+		wantOp          GitOp
+		wantRemote      string
+		wantRefspecs    []string
+		wantSource      string
+		wantDest        string
+		wantSetUpstream bool
+		wantErr         bool
 	}{
 		{
 			name:     "direct status",
@@ -261,6 +262,31 @@ func TestClassifyGitInvocation(t *testing.T) {
 			args:     []string{"cat-file", "-t", "HEAD"},
 			wantMode: gitInvocationDirect,
 		},
+		// push -u / --set-upstream cases
+		{
+			name:            "push -u origin",
+			args:            []string{"push", "-u", "origin"},
+			wantMode:        gitInvocationBrokered,
+			wantOp:          GitOpPush,
+			wantRemote:      "origin",
+			wantSetUpstream: true,
+		},
+		{
+			name:            "push --set-upstream origin HEAD",
+			args:            []string{"push", "--set-upstream", "origin", "HEAD"},
+			wantMode:        gitInvocationBrokered,
+			wantOp:          GitOpPush,
+			wantRemote:      "origin",
+			wantRefspecs:    []string{"HEAD"},
+			wantSetUpstream: true,
+		},
+		{
+			name:            "push -u without remote",
+			args:            []string{"push", "-u"},
+			wantMode:        gitInvocationBrokered,
+			wantOp:          GitOpPush,
+			wantSetUpstream: true,
+		},
 		// push_delete cases
 		{
 			name:         "push --delete origin feature",
@@ -338,6 +364,9 @@ func TestClassifyGitInvocation(t *testing.T) {
 			}
 			if tt.wantDest != "" && invocation.request.Dest != tt.wantDest {
 				t.Fatalf("dest = %q, want %q", invocation.request.Dest, tt.wantDest)
+			}
+			if tt.wantSetUpstream && !invocation.request.SetUpstream {
+				t.Fatalf("SetUpstream = false, want true")
 			}
 		})
 	}

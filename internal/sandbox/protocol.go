@@ -223,6 +223,7 @@ type GitRequest struct {
 	Porcelain      bool     `json:"porcelain,omitempty"`
 	ForceWithLease bool     `json:"force_with_lease,omitempty"`
 	Delete         bool     `json:"delete,omitempty"`
+	SetUpstream    bool     `json:"set_upstream,omitempty"`
 	// Source and Dest are used exclusively for GitOpCloneLocal.
 	// Source is the peer project path to clone from; Dest is the destination
 	// directory within the current worktree. Both are validated by the broker.

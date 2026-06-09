@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -511,6 +512,85 @@ func TestValidateGitCloneLocal_EmptyPeersRejects(t *testing.T) {
 	resp := handleGitBuiltinRequest(&ExecRequest{Command: "git", Cwd: worktree, Git: req}, entry)
 	if resp.ExitCode == 0 {
 		t.Fatal("expected error: no workspace peers")
+	}
+}
+
+// ---------- setGitUpstreamConfig ----------
+
+func initGitRepo(t *testing.T, branch string) string {
+	t.Helper()
+	dir := t.TempDir()
+	type step struct {
+		args []string
+		dir  string
+	}
+	steps := []step{
+		{args: []string{"init", "-b", branch, dir}},
+		{args: []string{"config", "user.email", "test@test.com"}, dir: dir},
+		{args: []string{"config", "user.name", "Test"}, dir: dir},
+		{args: []string{"commit", "--allow-empty", "-m", "init"}, dir: dir},
+	}
+	for _, s := range steps {
+		cmd := exec.Command("git", s.args...)
+		cmd.Dir = s.dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", s.args, err, out)
+		}
+	}
+	return dir
+}
+
+func TestSetGitUpstreamConfig_DefaultRefspec(t *testing.T) {
+	dir := initGitRepo(t, "feature")
+	binding := &GitBinding{
+		WorktreeRoot: dir,
+		Remotes: map[string]GitRemote{
+			"origin": {FetchURL: "https://example.com/repo"},
+		},
+	}
+	req := &GitRequest{Op: GitOpPush, Remote: "origin"}
+
+	if err := setGitUpstreamConfig(dir, "origin", req, binding); err != nil {
+		t.Fatalf("setGitUpstreamConfig: %v", err)
+	}
+
+	remote, err := gitOutput(dir, "config", "branch.feature.remote")
+	if err != nil {
+		t.Fatalf("read branch.feature.remote: %v", err)
+	}
+	if remote != "origin" {
+		t.Fatalf("branch.feature.remote = %q, want %q", remote, "origin")
+	}
+
+	merge, err := gitOutput(dir, "config", "branch.feature.merge")
+	if err != nil {
+		t.Fatalf("read branch.feature.merge: %v", err)
+	}
+	if merge != "refs/heads/feature" {
+		t.Fatalf("branch.feature.merge = %q, want %q", merge, "refs/heads/feature")
+	}
+}
+
+func TestSetGitUpstreamConfig_ExplicitRefspec(t *testing.T) {
+	dir := initGitRepo(t, "local-branch")
+	binding := &GitBinding{
+		WorktreeRoot: dir,
+		Remotes: map[string]GitRemote{
+			"origin": {FetchURL: "https://example.com/repo"},
+		},
+	}
+	req := &GitRequest{Op: GitOpPush, Remote: "origin", Refspecs: []string{"HEAD:refs/heads/remote-branch"}}
+
+	if err := setGitUpstreamConfig(dir, "origin", req, binding); err != nil {
+		t.Fatalf("setGitUpstreamConfig: %v", err)
+	}
+
+	merge, err := gitOutput(dir, "config", "branch.local-branch.merge")
+	if err != nil {
+		t.Fatalf("read branch.local-branch.merge: %v", err)
+	}
+	if merge != "refs/heads/remote-branch" {
+		t.Fatalf("branch.local-branch.merge = %q, want %q", merge, "refs/heads/remote-branch")
 	}
 }
 

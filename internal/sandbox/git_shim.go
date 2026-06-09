@@ -459,6 +459,8 @@ func parseGitSyncFlags(req *GitRequest, op GitOp, args []string) ([]string, erro
 				req.ForceWithLease = true
 			case "--delete", "-D":
 				req.Delete = true
+			case "-u", "--set-upstream":
+				req.SetUpstream = true
 			default:
 				if strings.HasPrefix(arg, "--force-with-lease=") {
 					req.ForceWithLease = true
