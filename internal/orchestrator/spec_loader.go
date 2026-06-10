@@ -1011,7 +1011,7 @@ func mergeHostCommands(base, overlay HostCommands) HostCommands {
 // always available as builtins (git, boid). Those names are broker-mediated by
 // the sandbox runtime and cannot be redirected to a host binary.
 func validateBuiltinHostConflict(scope string, hostCommands HostCommands) error {
-	for _, name := range []string{"git", "boid"} {
+	for _, name := range []string{"git", "boid", "fetch"} {
 		if _, conflict := hostCommands[name]; conflict {
 			return fmt.Errorf("%s: %q is a builtin command and cannot be declared in host_commands", scope, name)
 		}

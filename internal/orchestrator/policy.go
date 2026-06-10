@@ -70,6 +70,8 @@ func policyFor(role Role, name string, pctx PolicyContext) BuiltinPolicy {
 		return boidPolicy(role, pctx)
 	case "git":
 		return gitPolicy(role, pctx)
+	case "fetch":
+		return fetchPolicy(role, pctx)
 	default:
 		return BuiltinPolicy{}
 	}
@@ -118,6 +120,15 @@ func gitPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 	return BuiltinPolicy{
 		AllowedOps:      sortedOps(OpGitFetch, OpGitPush, OpGitPushDelete, OpGitCloneLocal),
 		AllowedCwdRoots: cwds,
+	}
+}
+
+// fetchPolicy returns the policy for the fetch builtin (HTTP GET only).
+// No cwd restriction is needed since fetch does not perform local filesystem
+// operations; it is broker-mediated and the SSRF guard lives in the handler.
+func fetchPolicy(_ Role, _ PolicyContext) BuiltinPolicy {
+	return BuiltinPolicy{
+		AllowedOps: sortedOps(OpFetchGet),
 	}
 }
 

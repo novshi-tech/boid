@@ -111,6 +111,26 @@ func TestDefaultBuiltinPolicies_HookBoidCwdRoots(t *testing.T) {
 	}
 }
 
+func TestDefaultBuiltinPolicies_FetchPolicy(t *testing.T) {
+	policies := DefaultBuiltinPolicies(RoleHook, []string{"fetch"}, PolicyContext{})
+	p, ok := policies["fetch"]
+	if !ok {
+		t.Fatal("missing fetch policy")
+	}
+	if !p.Allows(OpFetchGet) {
+		t.Errorf("fetch policy should allow op %q", OpFetchGet)
+	}
+}
+
+// hook×fetch policy is identical regardless of role (no special gate overrides).
+func TestDefaultBuiltinPolicies_FetchRoleInvariant(t *testing.T) {
+	pHook := DefaultBuiltinPolicies(RoleHook, []string{"fetch"}, PolicyContext{})["fetch"]
+	pEmpty := DefaultBuiltinPolicies("", []string{"fetch"}, PolicyContext{})["fetch"]
+	if !opsEqual(pHook.AllowedOps, pEmpty.AllowedOps) {
+		t.Errorf("fetch policy should be role-invariant; hook=%v empty=%v", pHook.AllowedOps, pEmpty.AllowedOps)
+	}
+}
+
 func opsEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

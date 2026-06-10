@@ -42,6 +42,11 @@ func RunBoidShim(args []string) (*ExecResponse, error) {
 		return nil, fmt.Errorf("boid shim: BOID_BROKER_SOCKET not set")
 	}
 
+	// boid fetch <url> is dispatched via FetchRequest, not BoidRequest.
+	if len(args) > 0 && args[0] == "fetch" {
+		return runFetchShim(args[1:], brokerSocket)
+	}
+
 	req, err := parseBoidRequest(args)
 	if err != nil {
 		return nil, err
@@ -54,6 +59,29 @@ func RunBoidShim(args []string) (*ExecResponse, error) {
 		Cwd:     cwd,
 		Token:   os.Getenv("BOID_BROKER_TOKEN"),
 		Boid:    req,
+	}
+	return sendExecRequest(brokerSocket, execReq)
+}
+
+func runFetchShim(args []string, brokerSocket string) (*ExecResponse, error) {
+	if len(args) == 0 || args[0] == "" {
+		return nil, fmt.Errorf("boid fetch: URL is required")
+	}
+	if strings.HasPrefix(args[0], "-") {
+		return nil, fmt.Errorf("boid fetch: unsupported flag %q", args[0])
+	}
+	url := args[0]
+	if len(args) > 1 {
+		return nil, fmt.Errorf("boid fetch: unexpected argument %q", args[1])
+	}
+
+	cwd, _ := os.Getwd()
+	execReq := ExecRequest{
+		Command: shimBinaryPath(os.Args[0]),
+		Args:    append([]string{"fetch"}, url),
+		Cwd:     cwd,
+		Token:   os.Getenv("BOID_BROKER_TOKEN"),
+		Fetch:   &FetchRequest{URL: url},
 	}
 	return sendExecRequest(brokerSocket, execReq)
 }

@@ -730,7 +730,7 @@ func builtinTools(policies map[string]orchestrator.BuiltinPolicy) []string {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		if k == "boid" || k == "git" {
+		if k == "boid" || k == "git" || k == "fetch" {
 			continue
 		}
 		tools = append(tools, k)
