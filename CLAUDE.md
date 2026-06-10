@@ -68,6 +68,11 @@ Cloudflare Tunnel 公開手順は docs/plans/web-ui-rebuild.md を参照。
 
 Gate はホスト直実行、Hook と Exec はサンドボックス実行。サンドボックスの書き込み可否は `task.readonly` および `command.readonly`（Exec の場合）のみで決まる。role による差分はない。
 
+## サンドボックス内での Web アクセス
+
+サンドボックス内では `WebFetch` ツールは無効化されている。web ページを読む場合は
+`/boid-web` スキル経由で行う（haiku サブエージェントが `boid fetch <url>` を実行して要約を返す）。
+
 ## コーディング規約
 
 - Go モジュールパスは `github.com/novshi-tech/boid` を使う
