@@ -912,6 +912,155 @@ func TestWebHandler_PostTaskCreate_RemoteIDAndDatasourceID(t *testing.T) {
 	}
 }
 
+func TestWebHandler_PostTaskCreate_AgentAndModel(t *testing.T) {
+	newTask := &orchestrator.Task{ID: "new-task-id", Title: "My Task"}
+	svc := &stubWebService{createTaskResult: newTask}
+	r := newTestWebHandlerWithTaskCreate(svc)
+
+	body := url.Values{
+		"title":   {"My Task"},
+		"agent":   {"claude-code"},
+		"model":   {"opus"},
+	}.Encode()
+	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if len(svc.createTaskCalls) != 1 {
+		t.Fatalf("CreateTask calls = %d, want 1", len(svc.createTaskCalls))
+	}
+	call := svc.createTaskCalls[0]
+	if len(call.Instructions) == 0 {
+		t.Fatal("Instructions should be set when agent and model are provided")
+	}
+	var insts orchestrator.Instructions
+	if err := json.Unmarshal(call.Instructions, &insts); err != nil {
+		t.Fatalf("failed to unmarshal Instructions: %v", err)
+	}
+	if len(insts) != 1 {
+		t.Fatalf("Instructions length = %d, want 1", len(insts))
+	}
+	if insts[0].Agent != "claude-code" {
+		t.Errorf("Agent = %q, want claude-code", insts[0].Agent)
+	}
+	if insts[0].Model != "opus" {
+		t.Errorf("Model = %q, want opus", insts[0].Model)
+	}
+}
+
+func TestWebHandler_PostTaskCreate_AgentOnly(t *testing.T) {
+	newTask := &orchestrator.Task{ID: "new-task-id", Title: "My Task"}
+	svc := &stubWebService{createTaskResult: newTask}
+	r := newTestWebHandlerWithTaskCreate(svc)
+
+	body := url.Values{
+		"title": {"My Task"},
+		"agent": {"claude-code"},
+	}.Encode()
+	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if len(svc.createTaskCalls) != 1 {
+		t.Fatalf("CreateTask calls = %d, want 1", len(svc.createTaskCalls))
+	}
+	call := svc.createTaskCalls[0]
+	if len(call.Instructions) == 0 {
+		t.Fatal("Instructions should be set when agent is provided")
+	}
+	var insts orchestrator.Instructions
+	if err := json.Unmarshal(call.Instructions, &insts); err != nil {
+		t.Fatalf("failed to unmarshal Instructions: %v", err)
+	}
+	if insts[0].Agent != "claude-code" {
+		t.Errorf("Agent = %q, want claude-code", insts[0].Agent)
+	}
+	if insts[0].Model != "" {
+		t.Errorf("Model = %q, want empty (unset)", insts[0].Model)
+	}
+}
+
+func TestWebHandler_PostTaskCreate_NoAgentNoModel(t *testing.T) {
+	newTask := &orchestrator.Task{ID: "new-task-id", Title: "My Task"}
+	svc := &stubWebService{createTaskResult: newTask}
+	r := newTestWebHandlerWithTaskCreate(svc)
+
+	body := url.Values{
+		"title": {"My Task"},
+	}.Encode()
+	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if len(svc.createTaskCalls) != 1 {
+		t.Fatalf("CreateTask calls = %d, want 1", len(svc.createTaskCalls))
+	}
+	call := svc.createTaskCalls[0]
+	if len(call.Instructions) != 0 {
+		t.Errorf("Instructions should be nil when neither agent nor model is provided, got: %s", call.Instructions)
+	}
+}
+
+func TestWebHandler_TaskNew_RendersAgentAndModelFields(t *testing.T) {
+	svc := &stubWebService{}
+	r := newTestWebHandlerWithTaskCreate(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/new", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `name="agent"`) {
+		t.Error("form should contain agent field")
+	}
+	if !strings.Contains(body, `name="model"`) {
+		t.Error("form should contain model field")
+	}
+}
+
+func TestWebHandler_PostTaskCreate_ValidationError_PreservesAgentModel(t *testing.T) {
+	svc := &stubWebService{
+		projects: []*orchestrator.Project{{ID: "proj-1"}},
+	}
+	r := newTestWebHandlerWithTaskCreate(svc)
+
+	body := url.Values{
+		"title": {""},
+		"agent": {"claude-code"},
+		"model": {"sonnet"},
+	}.Encode()
+	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	respBody := w.Body.String()
+	if !strings.Contains(respBody, `value="claude-code"`) {
+		t.Errorf("response should preserve agent value, got: %s", respBody)
+	}
+	if !strings.Contains(respBody, `value="sonnet"`) {
+		t.Errorf("response should preserve model value, got: %s", respBody)
+	}
+}
+
 func TestWebHandler_PostEdit_RemoteID(t *testing.T) {
 	detail := &TaskDetailView{
 		Task: &orchestrator.Task{

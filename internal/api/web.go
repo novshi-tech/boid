@@ -123,6 +123,20 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 		req.Traits = strings.Fields(raw)
 	}
 
+	agent := strings.TrimSpace(r.FormValue("agent"))
+	model := strings.TrimSpace(r.FormValue("model"))
+	if agent != "" || model != "" {
+		instsJSON, err := json.Marshal(orchestrator.Instructions{{Agent: agent, Model: model}})
+		if err != nil {
+			projects, _ := h.Service.ListProjects()
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			templates.TaskNew(projects, err.Error(), r.PostForm).Render(r.Context(), w)
+			return
+		}
+		req.Instructions = instsJSON
+	}
+
 	// Phase 2-3: task-row overrides for base_branch / branch_prefix / worktree /
 	// readonly were removed. Values are derived from the behavior type and
 	// project-level defaults; the Web form no longer exposes these inputs.
