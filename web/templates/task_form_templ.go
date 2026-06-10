@@ -273,30 +273,56 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "</textarea></div><div class=\"form-group\"><label for=\"remote_id\" class=\"form-label\">Remote ID</label> <input type=\"text\" id=\"remote_id\" name=\"remote_id\" class=\"form-input\" autocomplete=\"off\" value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "</textarea></div><div class=\"form-group\"><label for=\"model\" class=\"form-label\">Model</label> <input type=\"text\" id=\"model\" name=\"model\" class=\"form-input\" autocomplete=\"off\" placeholder=\"opus / sonnet / haiku\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var11 string
-			templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(form.Get("remote_id"))
+			templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(form.Get("model"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 125, Col: 123}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 125, Col: 147}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "\"></div><div class=\"form-group\"><label class=\"form-check\"><input type=\"checkbox\" name=\"auto_start\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "\"></div><div class=\"form-group\"><label for=\"agent\" class=\"form-label\">Agent</label> <input type=\"text\" id=\"agent\" name=\"agent\" class=\"form-input\" autocomplete=\"off\" placeholder=\"claude-code\" value=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var12 string
+			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(form.Get("agent"))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 129, Col: 137}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "\"></div><div class=\"form-group\"><label for=\"remote_id\" class=\"form-label\">Remote ID</label> <input type=\"text\" id=\"remote_id\" name=\"remote_id\" class=\"form-input\" autocomplete=\"off\" value=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var13 string
+			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(form.Get("remote_id"))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 133, Col: 123}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, "\"></div><div class=\"form-group\"><label class=\"form-check\"><input type=\"checkbox\" name=\"auto_start\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			if form.Get("auto_start") == "on" {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, " checked")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 22, " checked")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, "> <span>Auto Start</span></label></div></form></div><div class=\"action-bar\"><div class=\"action-bar-inner\"><button type=\"submit\" form=\"task-new-form\" class=\"btn btn-primary action-bar-primary-form\">Create</button> <span class=\"action-bar-spacer\"></span></div></div><script>\n\t\t\t(function () {\n\t\t\t\tvar projSel = document.getElementById(\"project_id\");\n\t\t\t\tvar behSel = document.getElementById(\"behavior\");\n\t\t\t\tvar data = {};\n\t\t\t\ttry {\n\t\t\t\t\tdata = JSON.parse(behSel.dataset.behaviorsByProject || \"{}\");\n\t\t\t\t} catch (e) { data = {}; }\n\t\t\t\t// Snapshot the initial (union) behavior options as fallback\n\t\t\t\t// when no project is selected.\n\t\t\t\tvar allOptions = Array.prototype.slice.call(behSel.options).map(function (o) {\n\t\t\t\t\treturn { value: o.value, label: o.textContent };\n\t\t\t\t});\n\t\t\t\tfunction rebuild() {\n\t\t\t\t\tvar pid = projSel.value;\n\t\t\t\t\tvar current = behSel.value;\n\t\t\t\t\tvar list;\n\t\t\t\t\tif (pid && data[pid]) {\n\t\t\t\t\t\tlist = [{ value: \"\", label: \"-- Select --\" }].concat(\n\t\t\t\t\t\t\tdata[pid].map(function (b) { return { value: b, label: b }; })\n\t\t\t\t\t\t);\n\t\t\t\t\t} else {\n\t\t\t\t\t\tlist = allOptions;\n\t\t\t\t\t}\n\t\t\t\t\tbehSel.innerHTML = \"\";\n\t\t\t\t\tlist.forEach(function (o) {\n\t\t\t\t\t\tvar opt = document.createElement(\"option\");\n\t\t\t\t\t\topt.value = o.value;\n\t\t\t\t\t\topt.textContent = o.label;\n\t\t\t\t\t\tif (o.value === current) opt.selected = true;\n\t\t\t\t\t\tbehSel.appendChild(opt);\n\t\t\t\t\t});\n\t\t\t\t}\n\t\t\t\tprojSel.addEventListener(\"change\", rebuild);\n\t\t\t\trebuild();\n\t\t\t})();\n\t\t</script>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 23, "> <span>Auto Start</span></label></div></form></div><div class=\"action-bar\"><div class=\"action-bar-inner\"><button type=\"submit\" form=\"task-new-form\" class=\"btn btn-primary action-bar-primary-form\">Create</button> <span class=\"action-bar-spacer\"></span></div></div><script>\n\t\t\t(function () {\n\t\t\t\tvar projSel = document.getElementById(\"project_id\");\n\t\t\t\tvar behSel = document.getElementById(\"behavior\");\n\t\t\t\tvar data = {};\n\t\t\t\ttry {\n\t\t\t\t\tdata = JSON.parse(behSel.dataset.behaviorsByProject || \"{}\");\n\t\t\t\t} catch (e) { data = {}; }\n\t\t\t\t// Snapshot the initial (union) behavior options as fallback\n\t\t\t\t// when no project is selected.\n\t\t\t\tvar allOptions = Array.prototype.slice.call(behSel.options).map(function (o) {\n\t\t\t\t\treturn { value: o.value, label: o.textContent };\n\t\t\t\t});\n\t\t\t\tfunction rebuild() {\n\t\t\t\t\tvar pid = projSel.value;\n\t\t\t\t\tvar current = behSel.value;\n\t\t\t\t\tvar list;\n\t\t\t\t\tif (pid && data[pid]) {\n\t\t\t\t\t\tlist = [{ value: \"\", label: \"-- Select --\" }].concat(\n\t\t\t\t\t\t\tdata[pid].map(function (b) { return { value: b, label: b }; })\n\t\t\t\t\t\t);\n\t\t\t\t\t} else {\n\t\t\t\t\t\tlist = allOptions;\n\t\t\t\t\t}\n\t\t\t\t\tbehSel.innerHTML = \"\";\n\t\t\t\t\tlist.forEach(function (o) {\n\t\t\t\t\t\tvar opt = document.createElement(\"option\");\n\t\t\t\t\t\topt.value = o.value;\n\t\t\t\t\t\topt.textContent = o.label;\n\t\t\t\t\t\tif (o.value === current) opt.selected = true;\n\t\t\t\t\t\tbehSel.appendChild(opt);\n\t\t\t\t\t});\n\t\t\t\t}\n\t\t\t\tprojSel.addEventListener(\"change\", rebuild);\n\t\t\t\trebuild();\n\t\t\t})();\n\t\t</script>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

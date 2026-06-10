@@ -121,6 +121,14 @@ templ TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values
 					<textarea id="description" name="description" class="form-input" rows="6">{ form.Get("description") }</textarea>
 				</div>
 				<div class="form-group">
+					<label for="model" class="form-label">Model</label>
+					<input type="text" id="model" name="model" class="form-input" autocomplete="off" placeholder="opus / sonnet / haiku" value={ form.Get("model") }/>
+				</div>
+				<div class="form-group">
+					<label for="agent" class="form-label">Agent</label>
+					<input type="text" id="agent" name="agent" class="form-input" autocomplete="off" placeholder="claude-code" value={ form.Get("agent") }/>
+				</div>
+				<div class="form-group">
 					<label for="remote_id" class="form-label">Remote ID</label>
 					<input type="text" id="remote_id" name="remote_id" class="form-input" autocomplete="off" value={ form.Get("remote_id") }/>
 				</div>
