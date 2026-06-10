@@ -13,14 +13,22 @@ import (
 // fills in context-derived defaults (ProjectID, ParentID).
 
 type ExecRequest struct {
-	Command   string       `json:"command"`
-	Args      []string     `json:"args"`
-	Cwd       string       `json:"cwd,omitempty"`
-	Stdin     []byte       `json:"stdin,omitempty"`
-	Token     string       `json:"token"`
-	Boid      *BoidRequest `json:"boid,omitempty"`
-	Git       *GitRequest  `json:"git,omitempty"`
-	Streaming bool         `json:"streaming,omitempty"`
+	Command   string        `json:"command"`
+	Args      []string      `json:"args"`
+	Cwd       string        `json:"cwd,omitempty"`
+	Stdin     []byte        `json:"stdin,omitempty"`
+	Token     string        `json:"token"`
+	Boid      *BoidRequest  `json:"boid,omitempty"`
+	Git       *GitRequest   `json:"git,omitempty"`
+	Fetch     *FetchRequest `json:"fetch,omitempty"`
+	Streaming bool          `json:"streaming,omitempty"`
+}
+
+// FetchRequest carries the parameters for a broker-mediated HTTP GET.
+// Only GET is supported; the broker performs the request on the host and
+// returns the response body (HTML converted to markdown, other types verbatim).
+type FetchRequest struct {
+	URL string `json:"url"`
 }
 
 type ExecResponse struct {

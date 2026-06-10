@@ -30,7 +30,7 @@ type CommandJobInput struct {
 func BuildCommandJobSpec(input CommandJobInput) *orchestrator.JobSpec {
 	builtinPolicies := orchestrator.DefaultBuiltinPolicies(
 		orchestrator.RoleHook,
-		[]string{"boid", "git"},
+		[]string{"boid", "git", "fetch"},
 		orchestrator.PolicyContext{ProjectDir: input.ProjectWorkDir},
 	)
 	hostCommands := orchestrator.HostCommands(input.HostCommands).ToCommandDefs()

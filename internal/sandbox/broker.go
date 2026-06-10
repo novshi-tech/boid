@@ -193,6 +193,11 @@ func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
 		return b.handleBoidBuiltin(req, entry)
 	}
 
+	// Fetch builtin: broker-side HTTP GET dispatched via boid shim.
+	if req.Fetch != nil {
+		return handleFetchBuiltin(req, entry)
+	}
+
 	// Git builtin: shim mount target's basename is the only stable name we
 	// have on the broker side. The mount target equals the host's git binary
 	// (e.g. /usr/bin/git), so basename(req.Command) == "git" identifies it.

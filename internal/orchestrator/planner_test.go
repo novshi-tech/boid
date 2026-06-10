@@ -68,8 +68,11 @@ func TestDispatchPlannerInjectsDefaultBuiltinsForHook(t *testing.T) {
 		defer hookCleanup()
 	}
 
-	if len(hookReq.BuiltinPolicies) != 2 {
-		t.Fatalf("hook builtin policies = %#v, want 2 (git, boid)", hookReq.BuiltinPolicies)
+	if len(hookReq.BuiltinPolicies) != 3 {
+		t.Fatalf("hook builtin policies = %#v, want 3 (git, boid, fetch)", hookReq.BuiltinPolicies)
+	}
+	if _, ok := hookReq.BuiltinPolicies["fetch"]; !ok {
+		t.Errorf("hook builtin policies missing \"fetch\": %#v", hookReq.BuiltinPolicies)
 	}
 	if hookReq.HostCommands != nil {
 		t.Fatalf("hook host commands = %#v, want nil", hookReq.HostCommands)

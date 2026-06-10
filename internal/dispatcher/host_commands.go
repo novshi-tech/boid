@@ -33,7 +33,7 @@ func ResolveHostCommands(
 	out := make(map[string]orchestrator.CommandDef)
 
 	for _, name := range builtins {
-		if name == "boid" || name == "git" {
+		if name == "boid" || name == "git" || name == "fetch" {
 			continue
 		}
 		if _, ok := hostCommands[name]; ok {
@@ -50,7 +50,7 @@ func ResolveHostCommands(
 	}
 
 	for name, def := range hostCommands {
-		if name == "boid" || name == "git" {
+		if name == "boid" || name == "git" || name == "fetch" {
 			continue
 		}
 		var absPath string
