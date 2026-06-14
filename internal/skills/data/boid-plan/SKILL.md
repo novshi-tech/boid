@@ -215,8 +215,8 @@ Use the following format when presenting a plan alongside a plan-approval notify
 ### Child Tasks
 | # | title | behavior | parallel/serial | estimate |
 |---|-------|----------|-----------------|----------|
-| 1 | ... | dev | - | a few hours |
-| 2 | ... | dev | after 1 | a few hours |
+| 1 | ... | <behavior> | - | a few hours |
+| 2 | ... | <behavior> | after 1 | a few hours |
 
 ### Risks & Assumptions
 - ...
