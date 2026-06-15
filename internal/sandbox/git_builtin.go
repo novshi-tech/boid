@@ -498,13 +498,63 @@ func buildGitBuiltinArgs(req *GitRequest, binding *GitBinding, remoteName string
 
 func resolveGitFetchRefspecs(req *GitRequest, binding *GitBinding, remoteName string) ([]string, error) {
 	if len(req.Refspecs) > 0 {
-		return append([]string(nil), req.Refspecs...), nil
+		expanded := make([]string, len(req.Refspecs))
+		for i, refspec := range req.Refspecs {
+			expanded[i] = expandFetchRefspec(refspec, remoteName)
+		}
+		return expanded, nil
 	}
 	if binding.Upstream.Remote == remoteName && binding.Upstream.MergeRef != "" {
 		branch := strings.TrimPrefix(binding.Upstream.MergeRef, "refs/heads/")
 		return []string{binding.Upstream.MergeRef + ":refs/remotes/" + remoteName + "/" + branch}, nil
 	}
 	return nil, fmt.Errorf("git fetch without refspec requires an upstream branch")
+}
+
+// expandFetchRefspec expands a bare branch name to a full refspec that updates
+// the remote tracking branch alongside FETCH_HEAD. Without expansion, running
+// "git fetch <url> main" only writes FETCH_HEAD and leaves refs/remotes/origin/main
+// stale, causing git rev-parse origin/main to return an old SHA that differs from
+// git ls-remote origin main.
+//
+// Refspecs that already contain ':' are returned unchanged. Tags and special refs
+// (HEAD, refs/tags/*, refs/notes/*) are also returned unchanged since they do not
+// map to remote tracking branches.
+func expandFetchRefspec(refspec, remoteName string) string {
+	force := strings.HasPrefix(refspec, "+")
+	bare := refspec
+	if force {
+		bare = refspec[1:]
+	}
+
+	// Already has an explicit destination; don't modify it.
+	if strings.Contains(bare, ":") {
+		return refspec
+	}
+	// Special refs that don't map to remote tracking branches.
+	if bare == "HEAD" || strings.HasPrefix(bare, "refs/tags/") || strings.HasPrefix(bare, "refs/notes/") {
+		return refspec
+	}
+
+	var src, dst string
+	if strings.HasPrefix(bare, "refs/heads/") {
+		branch := strings.TrimPrefix(bare, "refs/heads/")
+		src = bare
+		dst = "refs/remotes/" + remoteName + "/" + branch
+	} else if strings.HasPrefix(bare, "refs/") {
+		// Other full ref paths: pass through unchanged.
+		return refspec
+	} else {
+		// Bare branch name (e.g. "main") — treat as refs/heads/<name>.
+		src = "refs/heads/" + bare
+		dst = "refs/remotes/" + remoteName + "/" + bare
+	}
+
+	result := src + ":" + dst
+	if force {
+		return "+" + result
+	}
+	return result
 }
 
 func resolveGitPushRefspecs(req *GitRequest, binding *GitBinding, remoteName string) ([]string, error) {
