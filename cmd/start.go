@@ -18,8 +18,13 @@ import (
 )
 
 const (
-	defaultStartHTTPAddr  = ":8080"
-	daemonSocketTimeout   = 10 * time.Second
+	// defaultStartHTTPAddr binds the Web UI / HTTP API to loopback only. The
+	// data/control API is auth-gated over TCP (see auth.NewTCPAPIAuthMiddleware),
+	// but binding to loopback keeps it off other interfaces by default; expose
+	// it deliberately with `boid web set-addr`. Cloudflare Tunnel connects to
+	// 127.0.0.1 so the documented tunnel flow is unaffected.
+	defaultStartHTTPAddr = "127.0.0.1:8080"
+	daemonSocketTimeout  = 10 * time.Second
 )
 
 var startCmd = &cobra.Command{
