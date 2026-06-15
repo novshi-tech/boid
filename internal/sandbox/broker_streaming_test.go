@@ -389,6 +389,51 @@ func TestBroker_StreamingMultiLineOutput(t *testing.T) {
 	}
 }
 
+// TestBroker_StreamingANSIStripped verifies that ANSI/OSC escape sequences
+// emitted by a command on the PTY are stripped before being forwarded as
+// stdout chunks. This covers the gh terminal-query corruption bug (#559):
+// OSC background-color queries and CSI sequences must not appear in output
+// captured by $(...) or JSON parsers.
+func TestBroker_StreamingANSIStripped(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "gh_mock.sh")
+	// Simulate the kind of output gh emits when it detects a terminal:
+	//   OSC 11 background-color query (BEL terminated)
+	//   CSI cursor-position query (DSR)
+	//   The actual useful output (a PR number)
+	content := "#!/bin/sh\n" +
+		`printf '\033]11;?\007'` + "\n" + // OSC background query
+		`printf '\033[6n'` + "\n" + // CSI cursor position query
+		`printf '42\n'` + "\n" // real output
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	sockPath, token := startStreamingBroker(t,
+		map[string]sandbox.CommandDef{
+			script: {Name: "gh_mock", Path: script, AllowedPatterns: []string{"*"}},
+		},
+		sandbox.TokenContext{JobID: "j8", TaskID: "t8", ProjectID: "p8", Role: "hook"},
+	)
+
+	stdout, _, code := dialStreaming(t, sockPath, sandbox.ExecRequest{
+		Command: script,
+		Token:   token,
+	})
+
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	// Escape sequences must be gone.
+	if strings.Contains(stdout, "\x1b") {
+		t.Errorf("stdout contains ESC after stripping: %q", stdout)
+	}
+	// The real output must survive.
+	if !strings.Contains(stdout, "42") {
+		t.Errorf("stdout %q does not contain expected value '42'", stdout)
+	}
+}
+
 // TestBroker_StreamingStdinPassthrough verifies that stdin bytes provided in
 // the request reach the host command when AllowStdin is true.
 func TestBroker_StreamingStdinPassthrough(t *testing.T) {
