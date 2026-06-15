@@ -622,5 +622,12 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		}).ServeHTTP)
 		r.Mount("/", webHandler.Routes())
 	})
+
+	// The router above is served as-is to the UNIX socket (trusted CLI/agent
+	// transport). The TCP listener — which may be exposed directly, via a
+	// tunnel, or to other local users on the shared loopback — is served the
+	// same router wrapped with transport-aware API auth, so the data/control
+	// /api/* surface requires a session over TCP. See Server.Start.
+	srv.tcpHandler = auth.NewTCPAPIAuthMiddleware(runtime.sessionSigner, runtime.authStore)(r)
 	return nil
 }

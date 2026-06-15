@@ -10,18 +10,20 @@
 
 | 経路 | アドレス | 認証 |
 |---|---|---|
-| UNIX socket (CLI 用) | `$XDG_RUNTIME_DIR/boid.sock` (fallback `/tmp/boid-<uid>.sock`) | OS のファイルパーミッション |
-| HTTP listener (Web UI 用) | `:8080` (既定、 `--http-addr` で変更可) | デバイスペアリング (loopback bootstrap 例外あり) |
+| UNIX socket (CLI 用) | `$XDG_RUNTIME_DIR/boid.sock` (fallback `/tmp/boid-<uid>.sock`) | OS のファイルパーミッション — 信頼済 (CLI・サンドボックス内エージェント) |
+| HTTP listener (Web UI 用) | `127.0.0.1:8080` (既定、 `boid web set-addr` で変更) | デバイスセッション。データ/制御系 `/api/*` は TCP 経由では認証必須 |
 
-CLI は UNIX socket 経由で `/api/*` に HTTP リクエストを投げます。 Web UI からは HTTP listener 経由で同じ `/api/*` を叩きますが、 [認証ミドルウェア](../architecture/web-internals.md#認証ミドルウェア) と CSRF が間に挟まります。
+CLI とサンドボックス内エージェントは UNIX socket 経由で `/api/*` を叩きます。 UNIX socket はファイルパーミッションで保護された信頼済み経路で、認証ゲートはかかりません。
+
+HTTP/TCP listener 経由では、データ/制御系の `/api/*` は有効な `boid_session` cookie を要求します。 例外は 2 つ: `/api/health` は公開、 および最初のデバイスをペアリング (`boid web pair`) するまでの間は loopback bootstrap 例外で実ローカルブラウザを通します。 リバースプロキシ / トンネル経由のリクエストには bootstrap は適用されません。 未認証の呼び出しは `401` を返します。 `/api/*` は CSRF 免除ですが、 `boid_session` cookie は `SameSite=Lax` でクロスサイトリクエストを遮断します。
+
+listener の既定 bind は **loopback のみ**です。 外部公開は (`boid web set-addr <addr>` + トンネル / リバースプロキシで) 意図的に行ってください。全インターフェースへの bind を既定にはしません。
 
 curl で UNIX socket 経由に直接叩く例:
 
 ```bash
 curl --unix-socket "$XDG_RUNTIME_DIR/boid.sock" http://localhost/api/health
 ```
-
-HTTP listener から直接叩く場合は事前に `boid web pair` でペアリングし、 `boid_session` cookie と `csrf_token` ヘッダを付与する必要があります。
 
 ## 共通の規約
 

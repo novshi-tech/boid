@@ -10,18 +10,20 @@ The `boid` daemon listens on two transports:
 
 | Transport | Address | Authentication |
 |---|---|---|
-| UNIX socket (CLI) | `$XDG_RUNTIME_DIR/boid.sock` (fallback `/tmp/boid-<uid>.sock`) | OS file permissions |
-| HTTP listener (Web UI) | `:8080` (default; override with `--http-addr`) | Device pairing, with a loopback bootstrap exemption |
+| UNIX socket (CLI) | `$XDG_RUNTIME_DIR/boid.sock` (fallback `/tmp/boid-<uid>.sock`) | OS file permissions — trusted (CLI and in-sandbox agents) |
+| HTTP listener (Web UI) | `127.0.0.1:8080` (default; change with `boid web set-addr`) | Device session; data/control `/api/*` require auth over TCP |
 
-The CLI sends `/api/*` HTTP requests through the UNIX socket. The Web UI hits the same `/api/*` over the HTTP listener, but with [auth middleware](../architecture/web-internals.md#auth-middleware) and CSRF in front.
+The CLI and in-sandbox agents send `/api/*` requests through the UNIX socket, which is trusted (filesystem permissions) and never gated.
+
+Over the HTTP/TCP listener the data and control `/api/*` endpoints require a valid `boid_session` cookie. Two exceptions: `/api/health` is public, and a loopback bootstrap exemption lets a genuine local browser through until the first device is paired (`boid web pair`). Requests forwarded by a reverse proxy / tunnel get no bootstrap. Unauthenticated calls receive `401`. `/api/*` is CSRF-exempt; the `boid_session` cookie is `SameSite=Lax`, which blocks cross-site requests.
+
+The listener binds to **loopback only** by default. Expose it deliberately (`boid web set-addr <addr>`, then a tunnel or reverse proxy) rather than binding all interfaces.
 
 A curl example over the UNIX socket:
 
 ```bash
 curl --unix-socket "$XDG_RUNTIME_DIR/boid.sock" http://localhost/api/health
 ```
-
-To call the HTTP listener directly you must pair first (`boid web pair`) and attach the `boid_session` cookie and `csrf_token` header.
 
 ## Conventions
 

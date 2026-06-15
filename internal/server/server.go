@@ -43,9 +43,14 @@ type Server struct {
 	unixLn      net.Listener
 	tcpLn       net.Listener
 	httpServer  *http.Server
-	gcLoop      *orchestrator.GCLoop // nil if GC is disabled
-	workflow    *api.TaskWorkflowService
-	mu          sync.Mutex
+	// tcpHandler wraps the router with transport-aware API auth and is served
+	// to the TCP listener only. The UNIX socket is served the bare router
+	// (trusted CLI/agent transport). Set by mountRoutes.
+	tcpHandler http.Handler
+	tcpServer  *http.Server
+	gcLoop     *orchestrator.GCLoop // nil if GC is disabled
+	workflow   *api.TaskWorkflowService
+	mu         sync.Mutex
 }
 
 func New(cfg Config) (*Server, error) {
@@ -175,7 +180,17 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("listen tcp: %w", err)
 	}
 	s.tcpLn = tcpLn
-	go s.httpServer.Serve(tcpLn)
+
+	// The TCP listener is potentially externally exposed (direct bind, tunnel,
+	// shared-host loopback), so it is served the auth-wrapped handler rather
+	// than the bare router. mountRoutes always sets tcpHandler; the fallback
+	// only guards against a misconstructed Server in tests.
+	tcpHandler := s.tcpHandler
+	if tcpHandler == nil {
+		tcpHandler = s.router
+	}
+	s.tcpServer = &http.Server{Handler: tcpHandler}
+	go s.tcpServer.Serve(tcpLn)
 
 	return nil
 }
@@ -187,6 +202,11 @@ func (s *Server) Stop() error {
 	var errs []error
 	if s.httpServer != nil {
 		if err := s.httpServer.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if s.tcpServer != nil {
+		if err := s.tcpServer.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
