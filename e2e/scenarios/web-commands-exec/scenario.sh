@@ -95,7 +95,9 @@ e2e_log "OK: 'hello-from-web' received via WebSocket"
 e2e_log "waiting for job ${job_id} to reach completed status"
 deadline=$((SECONDS + 10))
 while true; do
-  job_resp="$(curl -sS "http://${WEB_ADDR}/api/jobs/${job_id}" 2>/dev/null || true)"
+  job_resp="$(curl -sS \
+    -H "Cookie: boid_session=${cookie_val}" \
+    "http://${WEB_ADDR}/api/jobs/${job_id}" 2>/dev/null || true)"
   if printf '%s\n' "$job_resp" | grep -q '"completed"'; then
     break
   fi
