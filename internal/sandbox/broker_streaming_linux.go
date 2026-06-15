@@ -159,6 +159,9 @@ func (b *Broker) execCommandStreaming(conn net.Conn, req *ExecRequest, def Comma
 	var wg sync.WaitGroup
 
 	// Forward PTY master output as stdout chunks (line-buffered via PTY).
+	// Strip ANSI/OSC escape sequences before forwarding: the PTY causes
+	// programs like gh to emit terminal queries (OSC 11, CSI 6n) that corrupt
+	// command substitution and JSON parsing in the sandbox.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -166,7 +169,10 @@ func (b *Broker) execCommandStreaming(conn net.Conn, req *ExecRequest, def Comma
 		for {
 			n, err := ptm.Read(buf)
 			if n > 0 {
-				writeChunk(StreamChunk{Type: StreamTypeStdout, Data: string(buf[:n])})
+				data := stripANSIEscapes(string(buf[:n]))
+				if data != "" {
+					writeChunk(StreamChunk{Type: StreamTypeStdout, Data: data})
+				}
 			}
 			if err != nil {
 				// EIO is the normal EOF signal when the PTY slave closes.
