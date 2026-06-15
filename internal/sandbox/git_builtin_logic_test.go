@@ -178,14 +178,29 @@ func TestResolveGitRemote(t *testing.T) {
 // ---------- resolveGitFetchRefspecs ----------
 
 func TestResolveGitFetchRefspecs(t *testing.T) {
-	t.Run("explicit refspecs", func(t *testing.T) {
+	t.Run("bare branch names expanded to tracking refspecs", func(t *testing.T) {
 		binding := &GitBinding{}
 		got, err := resolveGitFetchRefspecs(&GitRequest{Refspecs: []string{"main", "dev"}}, binding, "origin")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(got) != 2 || got[0] != "main" || got[1] != "dev" {
-			t.Fatalf("got %v, want [main dev]", got)
+		want := []string{
+			"refs/heads/main:refs/remotes/origin/main",
+			"refs/heads/dev:refs/remotes/origin/dev",
+		}
+		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("explicit dst refspec passed through unchanged", func(t *testing.T) {
+		binding := &GitBinding{}
+		got, err := resolveGitFetchRefspecs(&GitRequest{Refspecs: []string{"main:refs/heads/local-main"}}, binding, "origin")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 1 || got[0] != "main:refs/heads/local-main" {
+			t.Fatalf("got %v, want [main:refs/heads/local-main]", got)
 		}
 	})
 
@@ -222,6 +237,39 @@ func TestResolveGitFetchRefspecs(t *testing.T) {
 	})
 }
 
+// ---------- expandFetchRefspec ----------
+
+func TestExpandFetchRefspec(t *testing.T) {
+	cases := []struct {
+		refspec  string
+		remote   string
+		want     string
+	}{
+		// bare branch name → expanded
+		{"main", "origin", "refs/heads/main:refs/remotes/origin/main"},
+		{"dev", "upstream", "refs/heads/dev:refs/remotes/upstream/dev"},
+		// refs/heads/ prefix → expanded
+		{"refs/heads/main", "origin", "refs/heads/main:refs/remotes/origin/main"},
+		// force prefix preserved
+		{"+main", "origin", "+refs/heads/main:refs/remotes/origin/main"},
+		{"+refs/heads/main", "origin", "+refs/heads/main:refs/remotes/origin/main"},
+		// explicit dst → unchanged
+		{"main:refs/heads/local", "origin", "main:refs/heads/local"},
+		// special refs → unchanged
+		{"HEAD", "origin", "HEAD"},
+		{"refs/tags/v1.0", "origin", "refs/tags/v1.0"},
+		{"refs/notes/commits", "origin", "refs/notes/commits"},
+		// other full refs → unchanged
+		{"refs/pull/42/head", "origin", "refs/pull/42/head"},
+	}
+	for _, tc := range cases {
+		got := expandFetchRefspec(tc.refspec, tc.remote)
+		if got != tc.want {
+			t.Errorf("expandFetchRefspec(%q, %q) = %q, want %q", tc.refspec, tc.remote, got, tc.want)
+		}
+	}
+}
+
 // ---------- resolveGitPushRefspecs ----------
 
 func TestResolveGitPushRefspecs_Explicit(t *testing.T) {
@@ -254,13 +302,13 @@ func TestBuildGitBuiltinArgs_Fetch(t *testing.T) {
 		},
 	}
 
-	t.Run("basic with explicit refspec", func(t *testing.T) {
+	t.Run("bare branch name expanded to tracking refspec", func(t *testing.T) {
 		req := &GitRequest{Op: GitOpFetch, Remote: "origin", Refspecs: []string{"main"}}
 		args, err := buildGitBuiltinArgs(req, binding, "origin", binding.Remotes["origin"])
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		want := append(hardeningPrefix(), "fetch", "https://example.com/repo", "main")
+		want := append(hardeningPrefix(), "fetch", "https://example.com/repo", "refs/heads/main:refs/remotes/origin/main")
 		assertArgs(t, args, want)
 	})
 
@@ -275,7 +323,7 @@ func TestBuildGitBuiltinArgs_Fetch(t *testing.T) {
 		}
 		want := append(hardeningPrefix(), "fetch",
 			"--dry-run", "--verbose", "--quiet", "--prune", "--tags", "--force",
-			"https://example.com/repo", "main",
+			"https://example.com/repo", "refs/heads/main:refs/remotes/origin/main",
 		)
 		assertArgs(t, args, want)
 	})
