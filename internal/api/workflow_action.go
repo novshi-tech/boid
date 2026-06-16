@@ -441,6 +441,13 @@ func (s *TaskWorkflowService) persistFiredEvents(taskID string, status orchestra
 // a terminal status. No-op for non-terminal tasks. Safe to call multiple
 // times: cleanupWorktree skips already-removed worktrees and
 // CleanupTaskWindow atomically drains runtimes.
+//
+// Branch lifecycle: cleanupWorktree intentionally does NOT delete this task's
+// boid/<id8> branch. Instead, sweepChildBranches deletes the boid/* branches
+// of this task's direct children — children retain their branches through
+// their own finalize so that this (parent) supervisor can merge them into the
+// base branch before they're swept. The sweep is one level deep: nested
+// supervisors get cleaned in the same way when their own parent terminates.
 func (s *TaskWorkflowService) finalizeTerminal(ctx context.Context, task *orchestrator.Task) {
 	if task.Status != orchestrator.TaskStatusDone && task.Status != orchestrator.TaskStatusAborted {
 		return
@@ -450,6 +457,7 @@ func (s *TaskWorkflowService) finalizeTerminal(ctx context.Context, task *orches
 	// Idempotent — safe if the task never acquired the lock.
 	s.releaseProjectLock(task.ID)
 	s.cleanupWorktree(task.ID, task.ProjectID, task.Status)
+	s.sweepChildBranches(task.ID, task.ProjectID)
 	if s.Lifecycle != nil {
 		s.Lifecycle.CleanupTaskWindow(task.ID)
 	}
@@ -473,5 +481,39 @@ func (s *TaskWorkflowService) cleanupWorktree(taskID, projectID string, status o
 	}
 	if err := s.Worktrees.CleanupForTask(taskID, project.WorkDir, string(status)); err != nil {
 		slog.Warn("worktree cleanup failed", "task_id", taskID, "project_id", projectID, "error", err)
+	}
+}
+
+// sweepChildBranches deletes the boid/<id8> branches of the given task's
+// direct children. No-op when the task has no children (executor / leaf
+// task), no recorded children with worktrees, or required services are
+// missing. Errors are logged and non-fatal: branch retention is a hygiene
+// concern, not a correctness one.
+func (s *TaskWorkflowService) sweepChildBranches(parentTaskID, projectID string) {
+	if s.Projects == nil || s.Worktrees == nil || s.Tasks == nil || projectID == "" {
+		return
+	}
+	children, err := s.Tasks.ListChildren(parentTaskID)
+	if err != nil {
+		slog.Warn("sweep child branches: list children failed",
+			"parent_task_id", parentTaskID, "error", err)
+		return
+	}
+	if len(children) == 0 {
+		return
+	}
+	project, err := s.Projects.GetProject(projectID)
+	if err != nil {
+		slog.Warn("sweep child branches: project lookup failed",
+			"parent_task_id", parentTaskID, "project_id", projectID, "error", err)
+		return
+	}
+	taskIDs := make([]string, 0, len(children))
+	for _, c := range children {
+		taskIDs = append(taskIDs, c.ID)
+	}
+	if err := s.Worktrees.SweepChildBranches(project.WorkDir, taskIDs); err != nil {
+		slog.Warn("sweep child branches failed",
+			"parent_task_id", parentTaskID, "project_id", projectID, "error", err)
 	}
 }

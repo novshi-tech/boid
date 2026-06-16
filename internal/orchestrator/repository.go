@@ -59,6 +59,10 @@ func (r *TaskRepository) FindDependentTasks(_ string) ([]*Task, error) {
 	return nil, nil
 }
 
+func (r *TaskRepository) ListChildren(parentID string) ([]*Task, error) {
+	return ListChildren(r.db, parentID)
+}
+
 func (r *TaskRepository) CreateAction(action *Action) error {
 	return CreateAction(r.db, action)
 }
