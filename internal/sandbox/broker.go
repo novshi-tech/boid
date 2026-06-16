@@ -73,6 +73,7 @@ func (b *Broker) RegisterWithSecrets(commands map[string]CommandDef, builtinPoli
 	for name, def := range commands {
 		if len(def.Env) > 0 {
 			newEnv := make(map[string]string, len(def.Env))
+			var missing []string
 			for k, v := range def.Env {
 				if strings.HasPrefix(v, "secret:") {
 					secretKey := v[len("secret:"):]
@@ -81,7 +82,9 @@ func (b *Broker) RegisterWithSecrets(commands map[string]CommandDef, builtinPoli
 					}
 					val, err := resolver(secretKey)
 					if err != nil {
-						slog.Warn("failed to resolve secret", "key", secretKey, "error", err)
+						slog.Warn("failed to resolve secret; host_command will be rejected at exec time",
+							"command", def.Name, "env", k, "key", secretKey, "error", err)
+						missing = append(missing, fmt.Sprintf("%s (secret:%s)", k, secretKey))
 						continue
 					}
 					newEnv[k] = val
@@ -90,6 +93,9 @@ func (b *Broker) RegisterWithSecrets(commands map[string]CommandDef, builtinPoli
 				}
 			}
 			def.Env = newEnv
+			if len(missing) > 0 {
+				def.MissingSecrets = append(def.MissingSecrets, missing...)
+			}
 		}
 		resolved[name] = def
 	}
@@ -472,6 +478,10 @@ func isWithinRoot(path, root string) bool {
 
 func (b *Broker) execCommand(req *ExecRequest, def CommandDef, entry *tokenEntry) *ExecResponse {
 	req.Stdin = sanitizeStdin(def, req.Stdin)
+
+	if msg := def.MissingSecretsMessage(); msg != "" {
+		return &ExecResponse{ExitCode: 1, Stderr: msg}
+	}
 
 	if !CheckPolicy(def, req.Args) {
 		return &ExecResponse{ExitCode: 1, Stderr: "arguments not allowed"}

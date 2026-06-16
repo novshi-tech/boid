@@ -515,6 +515,46 @@ func TestBroker_SecretResolutionEmptyKey(t *testing.T) {
 	}
 }
 
+// TestBroker_SecretMissing_RejectsExecution verifies fail-closed behavior:
+// when a host_command declares an env var via "secret:" but the secret can't
+// be resolved, the command must be rejected at exec time rather than silently
+// dropping the env entry (which would let host-side fallbacks like
+// ~/.config/gh/hosts.yml or inherited host env take over an intended-isolated
+// invocation).
+func TestBroker_SecretMissing_RejectsExecution(t *testing.T) {
+	broker := &sandbox.Broker{}
+	resolver := func(key string) (string, error) {
+		return "", fmt.Errorf("not found: %s", key)
+	}
+
+	token := broker.RegisterWithSecrets(map[string]sandbox.CommandDef{
+		"/usr/bin/env": {
+			Name:            "env",
+			Path:            "/usr/bin/env",
+			AllowedPatterns: []string{"*"},
+			Env:             map[string]string{"GH_TOKEN": "secret:github/pat", "PLAIN": "value"},
+		},
+	}, nil, sandbox.TokenContext{
+		JobID: "job-1", TaskID: "task-1", ProjectID: "proj-1", Role: testRoleGate,
+	}, resolver)
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "/usr/bin/env",
+		Token:   token,
+	})
+	if resp.ExitCode == 0 {
+		t.Fatalf("expected non-zero exit code (fail-closed); stdout=%q stderr=%q", resp.Stdout, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stderr, "GH_TOKEN") {
+		t.Errorf("expected GH_TOKEN env name in stderr, got: %s", resp.Stderr)
+	}
+	if !strings.Contains(resp.Stderr, "github/pat") {
+		t.Errorf("expected secret key github/pat in stderr, got: %s", resp.Stderr)
+	}
+	if strings.Contains(resp.Stdout, "GH_TOKEN=") || strings.Contains(resp.Stdout, "PLAIN=value") {
+		t.Errorf("command should not have executed; stdout=%q", resp.Stdout)
+	}
+}
+
 func TestBroker_RegisterReturnsUniqueTokens(t *testing.T) {
 	broker := &sandbox.Broker{}
 	cmds := map[string]sandbox.CommandDef{

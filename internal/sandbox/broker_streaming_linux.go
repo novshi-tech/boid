@@ -52,6 +52,11 @@ func (b *Broker) handleStreamingExec(conn net.Conn, req *ExecRequest) {
 func (b *Broker) execCommandStreaming(conn net.Conn, req *ExecRequest, def CommandDef, entry *tokenEntry) {
 	req.Stdin = sanitizeStdin(def, req.Stdin)
 
+	if msg := def.MissingSecretsMessage(); msg != "" {
+		sendStreamError(conn, msg, 1)
+		return
+	}
+
 	if !CheckPolicy(def, req.Args) {
 		sendStreamError(conn, "arguments not allowed", 1)
 		return
