@@ -1,6 +1,9 @@
 package sandbox
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // CommandDef is the canonical sandbox-side policy for brokered host commands.
 // Dispatcher and orchestrator mirror this shape as transport data, but the
@@ -13,6 +16,22 @@ type CommandDef struct {
 	AllowedSubcommands []string
 	AllowStdin         bool
 	Env                map[string]string
+	// MissingSecrets lists "ENV_NAME (secret:key)" entries for env vars that
+	// the kit declared via the "secret:" prefix but failed to resolve at
+	// register time. When non-empty, the broker rejects exec requests for
+	// this command (fail-closed) instead of silently letting host env /
+	// host-side config fallbacks take over.
+	MissingSecrets []string
+}
+
+// MissingSecretsMessage returns the human-readable rejection message used when
+// a host_command is invoked despite unresolved declared secrets. Returns an
+// empty string if MissingSecrets is empty.
+func (d CommandDef) MissingSecretsMessage() string {
+	if len(d.MissingSecrets) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("host_commands.%s: rejected — required secret(s) unavailable: %s", d.Name, strings.Join(d.MissingSecrets, ", "))
 }
 
 func CheckPolicy(def CommandDef, args []string) bool {
