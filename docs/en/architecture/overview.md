@@ -20,15 +20,15 @@ This is not an exhaustive `internal/` reference — it is the picture you need i
                                    │
                           ┌────────┴────────┐
                           │ sandboxed hook  │
-                          │ / gate script   │
+                          │   script        │
                           └─────────────────┘
 ```
 
 Three kinds of process are involved:
 
 - **CLI (`boid`)** — the command users invoke. By default it is just a thin client that goes over the UNIX socket to the daemon and prints the response. The actual work happens in the daemon.
-- **Daemon** (started by `boid start`) — the long-running server. Owns the SQLite database, accepts CLI / Web UI requests, drives the state machine, and launches hooks and gates. One per host.
-- **Broker + sandboxed hook/gate scripts** — the daemon spawns scripts inside a sandbox; the broker forwards requests that need to cross the sandbox boundary (host commands, `boid task update`) back to the host.
+- **Daemon** (started by `boid start`) — the long-running server. Owns the SQLite database, accepts CLI / Web UI requests, drives the state machine, and launches hooks. One per host.
+- **Broker + sandboxed hook scripts** — the daemon spawns hook scripts inside a sandbox; the broker forwards requests that need to cross the sandbox boundary (host commands, `boid task update`) back to the host.
 
 The CLI also auto-starts the daemon: any subcommand that needs the socket starts `boid` in the background if it is not already running ([`internal/client/autostart.go`](https://github.com/novshi-tech/boid/blob/main/internal/client/autostart.go)).
 
@@ -45,7 +45,7 @@ internal/
   server/             - HTTP / UNIX listeners and chi router wiring
   api/                - HTTP handlers and TaskWorkflowService
   orchestrator/       - state machine, ProjectStore, persistence and evaluation
-  dispatcher/         - hook/gate job launching, sandbox plan building, worktree management
+  dispatcher/         - hook job launching, sandbox plan building, worktree management
   sandbox/            - mount namespace + chroot, host-command broker, HTTP proxy
   kit/                - cloning, loading, and detection for kit repositories
   tui/                - bubbletea-based TUI
@@ -116,7 +116,7 @@ The HTTP handlers and the `TaskWorkflowService` that backs them. When the daemon
 `runDispatchLoop` does:
 
 1. Call `orchestrator.Coordinator.DispatchAndAdvance`.
-2. The coordinator picks the hooks/gates that match the current status, runs them through the dispatcher, applies the returned payload patches, and re-evaluates the state machine's auto-transition rules.
+2. The coordinator picks the hooks that match the current status, runs them through the dispatcher, applies the returned payload patches, and re-evaluates the state machine's auto-transition rules.
 3. If the status changed, loop. If not, return.
 
 Entry: [`internal/api/service.go`](https://github.com/novshi-tech/boid/blob/main/internal/api/service.go).
@@ -125,9 +125,9 @@ Entry: [`internal/api/service.go`](https://github.com/novshi-tech/boid/blob/main
 
 The domain layer.
 
-- **State machine** (`machine.go`) — rules for `pending → executing → done`, auto-transitions, abort conditions.
+- **State machine** (`machine.go`) — rules for `pending → executing → awaiting / done`, auto-transitions, abort conditions.
 - **Coordinator** (`coordinator.go`) — runs one dispatch + advance step.
-- **Evaluator** (`evaluator.go`) — picks which hooks/gates fire.
+- **Evaluator** (`evaluator.go`) — picks which hooks fire.
 - **ProjectStore** (`project_store.go`) — in-memory cache of projects with kit metadata resolved.
 - **lifecycle / payload merge / blocked / readonly** — computed traits and helpers used in transition rules.
 
@@ -137,7 +137,7 @@ Because it does not depend on dispatcher or sandbox, the state machine is fully 
 
 The bridge layer for job execution.
 
-- **broker** — wraps `sandbox.Broker` and exposes `RunJob` for running one hook or gate.
+- **broker** — wraps `sandbox.Broker` and exposes `RunJob` for running one hook.
 - **sandbox_builder** — turns `orchestrator.ProjectMeta` into a primitive sandbox plan.
 - **policy_translate** — maps a kit's `host_commands` declaration to sandbox-side `CommandDef`s.
 - **runner / runtime** — runs jobs and collects results.
@@ -176,7 +176,7 @@ What happens when a user runs `boid action send --task <id> --type start`:
 3. **State machine:** `orchestrator.StateMachine.ApplyAction` evaluates the `start` rule and returns `pending → executing`.
 4. **Persistence:** the new status and lifecycle are written to SQLite.
 5. **Dispatch loop:** `runDispatchLoop` kicks in and calls `Coordinator.DispatchAndAdvance`.
-6. **Hook selection:** `Evaluator` picks the hooks bound to this behavior in the kit metadata. Hooks always fire while the task is in `executing`.
+6. **Hook selection:** `Evaluator` picks the hooks bound to this behavior in the kit metadata. Hooks fire while the task is in `executing` (or `awaiting`, depending on the hook's trigger).
 7. **Execution:** dispatcher assembles the sandbox plan and calls `sandbox.Broker.RunJob` to launch the hook script.
 8. **Payload merge:** the hook's stdout is parsed as JSON and the `payload_patch` is merged into the payload.
 9. **Auto-transition:** the state machine re-evaluates; any matching auto-transition fires another round.
@@ -189,7 +189,7 @@ Job logs (stderr) are stored in SQLite and surfaced via `boid job show <job-id>`
 | If you want to ... | Start at ... |
 |---|---|
 | Change a state-machine rule | [`internal/orchestrator/machine.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/machine.go) |
-| Change which hooks/gates fire | [`internal/orchestrator/evaluator.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/evaluator.go) |
+| Change which hooks fire | [`internal/orchestrator/evaluator.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/evaluator.go) |
 | Trace the whole dispatch cycle | `runDispatchLoop` in [`internal/api/service.go`](https://github.com/novshi-tech/boid/blob/main/internal/api/service.go) |
 | Trace a single job | [`internal/dispatcher/runner.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/runner.go) |
 | Worktree handling | [`internal/dispatcher/worktree_manager.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/worktree_manager.go) |

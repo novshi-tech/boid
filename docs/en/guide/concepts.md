@@ -85,7 +85,7 @@ A record of a single hook invocation. Each job carries its own status (`running`
 The isolated environment that hooks execute inside. Internally it is built from a Linux mount namespace plus a chroot, and applies these constraints:
 
 - Reads and writes are confined to the worktree (or the project root, for tasks that do not get a worktree — supervisor tasks, and executor tasks in projects that do not set `worktree: true`).
-- Outbound network connections are limited to the domains the kit declares.
+- Outbound network connections are limited to a built-in allowlist (`defaultAllowedDomains` in `cmd/start.go`) merged with any extra entries in `sandbox.allowed_domains` from `~/.config/boid/config.yaml`. There is no per-kit domain declaration — the allowlist is global.
 - Other parts of the host filesystem (your home directory, SSH keys, other projects) are not visible.
 
 This means that even a runaway agent cannot leave the task's working area.

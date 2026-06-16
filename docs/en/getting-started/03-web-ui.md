@@ -30,13 +30,9 @@ boid stop
 boid start
 ```
 
-`boid web set-addr` writes to `web.listen` in `~/.config/boid/config.yaml`. The change only takes effect after a daemon restart.
+`boid web set-addr` writes to `web.http_addr` in `~/.config/boid/config.yaml`. The change only takes effect after a daemon restart.
 
-To disable the Web UI entirely, pass an empty string:
-
-```bash
-boid web set-addr ""
-```
+> **Note:** There is currently no way to disable the Web UI entirely. Passing an empty string still causes the daemon to fall back to `:8080` and keep the TCP listener running.
 
 ## Reach it from another device (optional)
 
@@ -70,7 +66,7 @@ The rest of this tutorial only needs loopback access, so you can skip the extern
 What this tutorial introduced:
 
 - Opened the Web UI locally (loopback skips pairing).
-- Showed how to change the listen address (`boid web set-addr`).
+- Showed how to change the listen address (`boid web set-addr`; the Web UI cannot be disabled entirely).
 - Outlined how to expose the UI to other devices (`boid web set-url` + `boid web pair`).
 
 In the next chapter you will run a small task and watch it live from this same Web UI.

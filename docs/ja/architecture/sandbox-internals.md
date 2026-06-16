@@ -9,7 +9,7 @@
 サンドボックスは 4 つの境界をまとめて作ります。
 
 1. **ファイルシステム** — 書き込み可能な領域を worktree (もしくはプロジェクトルート) に絞る
-2. **ネットワーク** — kit が宣言したドメインしか出ていけない
+2. **ネットワーク** — 組み込みリストと `config.yaml` の `sandbox.allowed_domains` に含まれるドメインしか出ていけない
 3. **ユーザ ID** — ホストの root には触れない (rootless)
 4. **コマンド** — host で動かすコマンドは kit の `host_commands` で宣言された分だけ通る
 
@@ -84,7 +84,7 @@ exec unshare --user --map-user=1000 --map-group=1000 --root="$ROOT" -- /bin/bash
 
 ### 3. `inner.sh`
 
-ここからは sandbox 内です。 環境変数 (`BOID_TASK_ID` 等の kit / behavior が宣言したもの) を `export` してから、 stdin に渡された TaskJSON を handler の argv に流し込みます。 hook の終了コードはそのまま `exec` で置き換える形で返り、 `setup.sh` を経て `outer.sh` まで伝播します。
+ここからは sandbox 内です。 環境変数 (`BOID_TASK_ID` 等の kit / behavior が宣言したもの) を `export` してから handler の argv を実行します。 タスクメタは stdin では渡されません — 全 hook は interactive (PTY) ジョブとして動作し、タスクコンテキストは `$HOME/.boid/context/{task,instructions,environment,payload}.{yaml,json}` のコンテキストファイル経由で参照します。 hook の終了コードはそのまま `exec` で置き換える形で返り、 `setup.sh` を経て `outer.sh` まで伝播します。
 
 handler のプロトコル詳細は [Hook スクリプトプロトコル](../reference/hook-contract.md)。
 
@@ -282,12 +282,12 @@ exit $exit_code
 
 ## サンドボックス内から呼べる boid builtin 一覧
 
-サンドボックス内のハンドラ (hook / gate / exec) は `boid` と `git` の 2 つの builtin を呼ぶことができます。
+サンドボックス内のハンドラ (hook / exec) は `boid`、`git`、`fetch` の 3 つの builtin を呼ぶことができます。
 いずれも自動的に注入されるため、 `project.yaml` / `kit.yaml` での宣言は不要です。
 
 ### boid builtin
 
-role (hook / gate) による分岐はなく、全 role で同じ op セットが許可されます。
+role 分岐はなく、全 role で同じ op セットが許可されます。
 
 | Op (sandbox protocol) | 対応 CLI | 用途 |
 |---|---|---|
@@ -296,6 +296,7 @@ role (hook / gate) による分岐はなく、全 role で同じ op セットが
 | `job_show` | `boid job show <id>` | job の詳細を表示する |
 | `job_log` | `boid job log <id>` | job 実行ログを取得する |
 | `action_send` | `boid action send` | 手動アクションを発行する |
+| `agent_stop` | `boid agent stop <job-id>` | 実行中のエージェント job に SIGUSR1 を送る |
 | `task_create` | `boid task create` | サブ task を作成する |
 | `task_get` | `boid task show <id> --field <path>` | task の 1 フィールドを dotted JSON path で取得する |
 | `task_update` | `boid task update <id>` | task のフィールドを更新する |
@@ -317,12 +318,21 @@ role (hook / gate) による分岐はなく、全 role で同じ op セットが
 | `fetch` | `git fetch ...` | リモートから取得する |
 | `push` | `git push ...` | リモートへ反映する |
 | `push_delete` | `git push origin --delete <branch>` | リモートブランチを削除する |
+| `clone_local` | `git clone --local ...` | ローカルリポジトリを clone する (peer ブランチ参照用) |
+
+### fetch builtin
+
+`boid fetch <url>` はサンドボックス内からプロキシ allowlist を通じて HTTP GET を行います。 `curl` / `wget` を `host_commands` で宣言せずに web リソースを取得したいときに使います。
+
+| Op | 対応 CLI | 用途 |
+|---|---|---|
+| `fetch` | `boid fetch <url>` | アウトバウンドプロキシ経由で HTTP GET する |
 
 ### 設計上の注記
 
-- **role 分岐なし** — `boid` / `git` ポリシーは `_ Role` で受け、全 role に同一 op セットを与えます。
+- **role 分岐なし** — `boid` / `git` / `fetch` ポリシーは `_ Role` で受け、全 role に同一 op セットを与えます。
   新しい builtin で role 固有の制限が必要になった場合のみ、 `policyFor` 内に `switch` を追加してください。
-- **情報源** — `internal/orchestrator/policy.go` の `boidPolicy` / `gitPolicy` 関数が source of truth です。
+- **情報源** — `internal/orchestrator/policy.go` の `boidPolicy` / `gitPolicy` / `fetchPolicy` 関数が source of truth です。
 - **サンドボックス側 enum 定義** — `internal/sandbox/protocol.go`
 - **workspace / project 越えのアクセス** は broker (`internal/sandbox/broker.go` `handleBoidBuiltin`) が
   `entry.Context.AllowsProject(...)` 等で拒否します。 上記 op セットはこのチェックをバイパスしません。

@@ -22,15 +22,17 @@ boid <command> --help       # per-command help
 
 ### Auto-start
 
-If the daemon is not running when you invoke any other command, `boid` starts it automatically (the exceptions are `start`, `stop`, and `gc`). You rarely need to call `boid start` by hand.
+If the daemon is not running when you invoke any other command, `boid` starts it automatically. The exceptions (commands that skip auto-start) are: `start`, `stop`, `gc`, `check`, `init`, `fetch`, `project local *`, `web set-url`, and `web set-addr`. You rarely need to call `boid start` by hand.
+
+Set `BOID_NO_AUTOSTART=1` to disable auto-start globally.
 
 ## Server lifecycle
 
 | Command | Role |
 |---|---|
-| `boid start [--http-addr ADDR] [--db-path PATH] [--socket-path PATH] [--kits-dir DIR] [--key-file-path PATH]` | Start the daemon (it forks itself into a detached child and returns immediately). |
+| `boid start [--db-path PATH] [--socket-path PATH] [--kits-dir DIR] [--key-file-path PATH]` | Start the daemon (it forks itself into a detached child and returns immediately). HTTP address is configured via `web.http_addr` in `config.yaml` or `boid web set-addr`. |
 | `boid stop` | Stop the daemon. Killing by PID can leave a stale socket; prefer this. |
-| `boid gc [--older-than DURATION]` | Garbage collect old completed/aborted tasks (the daemon also runs this on its own at startup). |
+| `boid gc [--older-than DURATION] [--dry-run]` | Garbage collect old completed/aborted tasks (the daemon also runs this on its own at startup). `--dry-run` prints what would be deleted without removing anything. |
 | `boid check` | Check host prerequisites and hook dependencies. |
 | `boid init [DIR]` | Interactively scaffold a new project. |
 
@@ -55,11 +57,11 @@ Local-only overrides (intended to be `gitignore`d). Lets you add `host_commands`
 
 | Command | Role |
 |---|---|
-| `boid project local init [DIR]` | Create an empty `project.local.yaml`. |
+| `boid project local init [--force] [DIR]` | Create an empty `project.local.yaml`. `--force` overwrites an existing file. |
 | `boid project local show [DIR]` | Print the file. |
 | `boid project local set-env <key> <value> [DIR]` | Add an env override. |
 | `boid project local unset-env <key> [DIR]` | Remove an env override. |
-| `boid project local add-binding <path> [DIR]` | Add an additional binding. |
+| `boid project local add-binding <path> [--mode MODE] [DIR]` | Add an additional binding. `--mode` sets the mount mode (`ro` or `rw`). |
 | `boid project local remove-binding <path> [DIR]` | Remove an additional binding. |
 
 ## Task
@@ -68,16 +70,16 @@ Creating, observing, and updating tasks lives under `boid task`. See [Concepts /
 
 | Command | Role |
 |---|---|
-| `boid task list [--status STATUS] [--workspace ID] [--behavior NAME] [--has-depends-on \| --no-depends-on]` | List tasks. |
+| `boid task list [--status STATUS] [--workspace ID] [--behavior NAME]` | List tasks. |
 | `boid task create [-f FILE]` | Create a task; YAML on stdin (or via `-f`). |
 | `boid task show <id> [--field PATH]` | Task detail (status and payload). With `--field <path>`, prints a single value as plain text — dotted JSON path resolved against the task (e.g. `--field status`, `--field payload.artifact.report`, `--field awaiting.question`, `--field lifecycle.abort.message`). |
 | `boid task watch <id> [--interval DURATION]` | Stream status / payload changes live. |
-| `boid task update <id> [--patch-file FILE] [--payload-file FILE] [--instructions-file FILE]` | Update a task; use `-` for stdin. |
+| `boid task update <id> [-f FILE \| --patch-file FILE] [--payload-file FILE] [--instructions-file FILE]` | Update a task; use `-` for stdin. `-f` is a shorthand for `--patch-file`. |
 | `boid task delete <id> [--force]` | Delete a task (`--force` if active). |
 | `boid task duplicate <source_id> [--auto-start]` | Duplicate an existing task. |
-| `boid task reopen <id> [--message MSG]` | Return a `done` task to `executing`, appending the `--message` text as a new entry on `Task.Instructions` (e.g. when auto-merge hits a conflict). |
+| `boid task reopen <id> [-m MSG \| --message MSG]` | Return a `done` task to `executing`, appending the `--message` text as a new entry on `Task.Instructions` (e.g. when auto-merge hits a conflict). `-m` is a shorthand for `--message`. |
 | `boid task rerun <id> [--auto-start] [--instructions-file FILE]` | Reset a `done` / `aborted` task to `pending` and re-run it under the same ID. |
-| `boid task notify <id> --message MSG [--ask QUESTION] [--question-id ID]` | Send a notification to the user from an agent. Invokes `notify.command` from `~/.config/boid/config.yaml`. With `--ask`, enters Q&A mode and transitions the task to `awaiting`. |
+| `boid task notify <id> --message MSG [--ask QUESTION] [--question-id ID] [--done] [--fail] [--progress] [--session-id ID]` | Send a notification to the user from an agent. Invokes `notify.command` from `~/.config/boid/config.yaml`. With `--ask`, enters Q&A mode and transitions the task to `awaiting`. |
 | `boid task answer --task ID --question-id ID --answer TEXT` | Submit a user reply to an `awaiting` task. Transitions the task `awaiting → executing` and restarts the hook. |
 | `boid task import [-f FILE] [--project ID]` | Bulk import tasks from JSONL. |
 
@@ -87,11 +89,15 @@ The notify script receives: `BOID_TASK_ID`, `BOID_TASK_TITLE`, `BOID_PROJECT_ID`
 
 | Flag | Required | Description |
 |---|---|---|
-| `--message, -m MSG` | ◎ | Notification text. Passed to the notify script as `BOID_MESSAGE`. |
-| `--ask QUESTION` | | Question text. When set, transitions the task to `awaiting` (Q&A mode). |
+| `--message, -m MSG` | ◎ (except `--progress`) | Notification text. Passed to the notify script as `BOID_MESSAGE`. Required for all modes except `--progress`. |
+| `--ask QUESTION` | | Question text. Transitions the task to `awaiting` (Q&A mode). |
 | `--question-id ID` | | UUID identifying this Q&A turn. Auto-generated when omitted. |
+| `--done` | | Signal successful completion. Records a `done_request` lifecycle entry; the daemon transitions the task to `done` after the job exits. |
+| `--fail` | | Signal failure. Records a `fail_request` lifecycle entry; the daemon transitions the task to `aborted` after the job exits. |
+| `--progress` | | Record a progress entry on the timeline only (no state change, `--message` optional). |
+| `--session-id ID` | | Associate this notification with a specific agent session. |
 
-Without `--ask` this is a simple notification (no state change). With `--ask` the task transitions `executing → awaiting` and waits for a user reply.
+`--ask`, `--done`, `--fail`, and `--progress` are mutually exclusive. Without any of them, this is a plain FYI notification (no state change).
 
 ```bash
 # Plain notification
@@ -101,6 +107,15 @@ boid task notify ${BOID_TASK_ID} --message "Please review PR #42"
 boid task notify ${BOID_TASK_ID} \
   --message "A merge decision is needed" \
   --ask "Should I merge PR #42?"
+
+# Signal done (task transitions to done after job exits)
+boid task notify ${BOID_TASK_ID} --done --message "All done"
+
+# Signal failure (task transitions to aborted after job exits)
+boid task notify ${BOID_TASK_ID} --fail --message "Encountered an error"
+
+# Progress update (timeline only, no state change)
+boid task notify ${BOID_TASK_ID} --progress --message "Step 2 of 5 complete"
 ```
 
 #### `boid task answer` flags
@@ -142,8 +157,8 @@ Pass `behavior_spec` to specify the behavior inline instead of referencing a nam
 
 | Command | Role |
 |---|---|
-| `boid task hook list <task-id>` | List hooks that fire on the task's current status. |
-| `boid task hook replay <task-id> <hook-id>` | Replay a specific hook. |
+| `boid task hook list <task-id> [--status STATUS]` | List hooks that fire on the task's current status. `--status` filters by hook job status. |
+| `boid task hook replay <task-id> <hook-id> [--status STATUS]` | Replay a specific hook. `--status` filters by hook job status. |
 
 If an agent hook was interrupted (e.g., by `boid stop`), use `boid task hook list <task-id>` to see which hooks can be re-fired, then `boid task hook replay <task-id> <hook-id>` to recover.
 
@@ -151,7 +166,7 @@ If an agent hook was interrupted (e.g., by `boid stop`), use `boid task hook lis
 
 | Command | Role |
 |---|---|
-| `boid task artifacts <id>` | Pretty-print `payload.artifact`. |
+| `boid task artifacts <id> [--field PATH] [--output-file FILE]` | Pretty-print `payload.artifact`. `--field` extracts a single field; `--output-file` writes the output to a file. |
 | `boid task tree [<id>]` | Show the parent/child task tree. |
 
 ## Action
@@ -172,7 +187,7 @@ Inspect hook execution records.
 |---|---|
 | `boid job list --task <task-id>` | All jobs that ran for a task. |
 | `boid job show <job-id>` | Job detail (status / exit_code / full output). |
-| `boid job watch <job-id>` | Block until the job finishes. |
+| `boid job watch <job-id> [--interval DURATION]` | Block until the job finishes. `--interval` sets the polling interval. |
 | `boid job log <job-id>` | Show the execution transcript. |
 | `boid job done <job-id> [--exit-code N] [--output-file FILE]` | (Internal) Notify the daemon that a job finished. |
 
@@ -184,7 +199,7 @@ Install and update [extension packages](../kit-authoring/overview.md).
 
 | Command | Role |
 |---|---|
-| `boid kit install [repo]` | `git clone` a repository into `~/.local/share/boid/kits/`. With no argument, install all repos referenced by the current project. |
+| `boid kit install [--ssh] [repo]` | `git clone` a repository into `~/.local/share/boid/kits/`. With no argument, install all repos referenced by the current project. `--ssh` forces SSH transport. |
 | `boid kit list` | List installed repositories. |
 | `boid kit update <repo>` | `git pull` an installed repository. |
 | `boid kit remove <repo>` | Remove an installed repository. |
@@ -195,11 +210,12 @@ Manage [Web UI](../guide/web-ui.md) device authentication.
 
 | Command | Role |
 |---|---|
-| `boid web pair` | Issue a pairing code (5-minute lifetime, single use). |
+| `boid web pair [--label LABEL]` | Issue a pairing code (5-minute lifetime, single use). `--label` sets a human-readable label for the new device. |
 | `boid web devices` | List paired devices. |
 | `boid web revoke <id>` | Revoke a specific device. |
 | `boid web revoke-all` | Revoke every device. |
 | `boid web set-url <URL>` | Write the public URL to `config.yaml` (used to render magic links). |
+| `boid web set-addr <ADDR>` | Write the HTTP listen address to `config.yaml` (e.g. `boid web set-addr :9090`). Takes effect on the next daemon start. |
 
 ## Secret
 
@@ -207,10 +223,10 @@ Encrypted storage for tokens and similar values. The encryption key is `~/.local
 
 | Command | Role |
 |---|---|
-| `boid secret set <key>` | Store a value (read from stdin or interactive prompt). |
-| `boid secret get <key>` | Retrieve a value. |
-| `boid secret list` | List keys. |
-| `boid secret delete <key>` | Remove a value. |
+| `boid secret set <key> [-n NAMESPACE \| --namespace NAMESPACE]` | Store a value (read from stdin or interactive prompt). |
+| `boid secret get <key> [-n NAMESPACE \| --namespace NAMESPACE]` | Retrieve a value. |
+| `boid secret list [-n NAMESPACE \| --namespace NAMESPACE]` | List keys. |
+| `boid secret delete <key> [-n NAMESPACE \| --namespace NAMESPACE]` | Remove a value. |
 
 ## Workspace
 
@@ -227,8 +243,27 @@ Group several projects together.
 
 | Command | Role |
 |---|---|
-| `boid exec -p <project-ref> [command-name]` | Run a named command (declared in the project's `commands`) inside the project sandbox. |
+| `boid exec -p <project-ref> [--name NAME] [command-name]` | Run a named command (declared in the project's `commands`) inside the project sandbox. `--name` sets a display name for the job. |
 | `boid attach <job-id>` | Attach to a running job's runtime (for interactive jobs). |
+| `boid fetch <url>` | Fetch and print the content of a URL from the host (usable inside a sandbox where direct HTTP access may be restricted). |
+
+## Agent
+
+Control running agent jobs.
+
+| Command | Role |
+|---|---|
+| `boid agent stop <job-id>` | Send SIGUSR1 to the agent process, requesting a graceful stop. |
+
+## Shell completion
+
+```bash
+boid completion bash   # generate Bash completion script
+boid completion zsh    # generate Zsh completion script
+boid completion fish   # generate Fish completion script
+```
+
+Source the output in your shell profile (e.g. `source <(boid completion bash)`).
 
 ## Output formats
 

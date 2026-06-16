@@ -13,15 +13,36 @@ The keys you can place at the top level of a task payload (the *traits*), and ho
 
 ## Defined traits
 
-Only the `artifact` trait lives in the payload. The state machine's auto-transitions are *not* driven by trait values directly; they fire on hook completion (`boid job done`).
+The following traits are defined for task payloads. The state machine's auto-transitions are *not* driven by trait values directly; they fire on hook completion (`boid job done`).
 
-| Trait | Producible by | Contents |
-|---|---|---|
-| `artifact` | hooks | Free-form map for the task's output (commit, PR URL, files changed, ...). |
+| Trait | Producible by | Merge mode | Contents |
+|---|---|---|---|
+| `artifact` | hooks | exclusive | Free-form map for the task's output (commit, PR URL, files changed, ...). |
+| `verification` | hooks | shared | Results from verification hooks, merged by handler ID sub-key. |
+| `awaiting` | boid core | exclusive | Persistent Q&A state set by `boid task notify --ask`. See [awaiting trait](#awaiting-trait). |
 
 ### `artifact`
 
 Where the executing hook writes its results. The internal shape is up to the project / kit, except that `artifact.children.*` is reserved by `boid` (used as a view from a parent task into its children) and a hook that tries to write under it gets an error.
+
+### `verification`
+
+Written by hooks that perform verification steps. Unlike `artifact`, the merge mode is **shared**: each hook writes under its own handler-ID sub-key, so multiple verification hooks can run in parallel without overwriting each other's results.
+
+### `awaiting` trait
+
+Set automatically by `boid` when `boid task notify --ask` is called. This trait persists across the `awaiting` state and is consumed by the kit on resume.
+
+Fields:
+
+| Field | Type | Set by | Role |
+|---|---|---|---|
+| `session_id` | string | kit (via `notify --ask`) | The Claude `--print` session ID to resume with `--resume`. |
+| `question` | string | kit (via `notify --ask`) | Human-readable question text shown to the user. |
+| `question_id` | string | kit (via `notify --ask`) | UUID identifying this Q&A turn. |
+| `pending_answer` | string | boid core | The user's reply; consumed by the kit on next resume and cleared afterwards. |
+
+The `awaiting` trait is managed exclusively by `boid` core and the `ApplyAction("ask"/"answer")` path. Hooks must not write to it directly.
 
 ### Subtask creation
 
@@ -37,8 +58,17 @@ Available fields:
 
 | Field | Type | Meaning |
 |---|---|---|
+| `lifecycle.executed` | bool | `true` when the hook job completed successfully in the current dispatch cycle. This is the primary trigger for auto-advance rules. |
+| `lifecycle.done` | object | Set when `boid task notify --done` was called in the current executing cycle. Contains `message`. Drives the `executing→done` auto-transition (combined with `lifecycle.executed`). |
+| `lifecycle.fail` | object | Set when `boid task notify --fail` was called in the current executing cycle. Contains `message`. Drives the `executing→aborted` auto-transition (takes precedence over `lifecycle.done`). |
 | `lifecycle.abort.code` | string | Reason code captured when the task aborted. |
 | `lifecycle.abort.message` | string | Human-readable abort message. |
+
+Auto-advance rules evaluated on hook completion:
+
+1. `executing→aborted` when `lifecycle.executed && lifecycle.fail`
+2. `executing→done` when `lifecycle.executed && lifecycle.done`
+3. `executing→done` when `lifecycle.executed` only (legacy hook path, no explicit notify)
 
 A hook that emits a payload patch writing to `lifecycle` accomplishes nothing — the auto-derived value overwrites it. Listing `lifecycle` under a hook's `traits.produces` is meaningless.
 
@@ -56,9 +86,20 @@ For the shape of an `Instruction`, see [`project.yaml` reference / Instruction](
 
 ## Merge modes
 
-| Trait | Mode | Meaning |
-|---|---|---|
-| `artifact`, anything else | **exclusive** | Last writer wins. The hook's value replaces the existing same-key value. |
+There are three merge modes:
+
+| Mode | Meaning |
+|---|---|
+| **exclusive** | Last writer wins. The hook's value replaces the existing same-key value. |
+| **shared** | The hook's value is merged at the handler-ID sub-key level, so multiple hooks can write without overwriting each other. |
+| **default** | Falls back to **exclusive** unless overridden. |
+
+Merge mode per trait:
+
+| Trait | Mode |
+|---|---|
+| `verification` | **shared** (merges by handler ID sub-key) |
+| `artifact`, anything else | **exclusive** |
 
 When multiple hooks run in parallel, give each one its own sub-key (e.g. `artifact.<my-hook-id>`) to avoid collisions.
 

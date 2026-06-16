@@ -41,7 +41,7 @@ This is the single most common reason "I fixed it but it still happens" — when
 
 ## A task is stuck in `executing` forever
 
-**The hook is not finishing.** A hook blocked on a prompt, on an interactive command that never returns, or on an unresponsive agent leaves the daemon waiting for the job to complete. `boid job list --task <id>` will show a job stuck in `running`. Run `boid task abort <id>` to release it, then inspect the hook script.
+**The hook is not finishing.** A hook blocked on a prompt, on an interactive command that never returns, or on an unresponsive agent leaves the daemon waiting for the job to complete. `boid job list --task <id>` will show a job stuck in `running`. Run `boid action send --task <id> --type abort` to release it, then inspect the hook script.
 
 ## `boid task list` is slow / disk fills up
 
@@ -68,6 +68,8 @@ gc:
   interval: 24h
   older_than: 720h    # 30 days
 ```
+
+**What the daemon GC actually removes:** In addition to `runtimes/<runtime_id>/` directories, the GC pass also cleans up: terminal tasks/actions/jobs from the database, worktree directories, `/tmp/boid-*` temporary files, and revoked devices. The first GC run happens **10 seconds after daemon start**, not immediately on startup.
 
 ## "permission denied" or "unknown command" inside a hook
 

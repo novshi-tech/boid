@@ -8,30 +8,37 @@ The [Kit authoring overview](../kit-authoring/overview.md) summarises the protoc
 
 ### stdin
 
-When a hook is launched, stdin carries the entire task as a single JSON document (TaskJSON). The size is variable, so read until EOF before parsing.
+All hook jobs run with `Interactive: true`, which means stdin is a PTY — **no data is written to stdin** at launch. Do not attempt to read TaskJSON from stdin; doing so will block indefinitely.
 
-The main fields of TaskJSON:
+Task metadata is provided via **context files** written to `$HOME/.boid/context/` before the hook starts:
+
+| File | Format | Contents |
+|---|---|---|
+| `task.yaml` | YAML | Core task fields (see table below). |
+| `instructions.yaml` | YAML | Routing instructions (for `kind: agent` hooks). |
+| `environment.yaml` | YAML | Additional environment metadata. |
+| `payload.json` | JSON | The current full payload. |
+
+**`task.yaml` fields** (the only fields present; the document is intentionally minimal):
 
 | Key | Type | Role |
 |---|---|---|
 | `id` | string | Task ID (UUID). |
-| `project_id` | string | The owning project's ID. |
 | `title` | string | Task title. |
-| `description` | string | Free-form body. |
-| `status` | string | Current state (`pending` / `executing` / ...). |
+| `status` | string | Current state (`pending` / `executing` / `awaiting` / `done` / `aborted`). |
 | `behavior` | string | Behavior name (`supervisor` or `executor`). |
-| `traits` | list of string | Traits the behavior declared. |
-| `readonly` | bool | Whether the sandbox is read-only (derived: `true` for supervisor, `false` for executor). |
-| `worktree` | bool | Whether this task has a worktree (project-top `worktree:` flag combined with the behavior name). |
-| `branch_prefix` | string | Worktree branch-name prefix (always `boid/` — no longer user-configurable). |
-| `base_branch` | string | Worktree base branch (resolved from project-top `base_branch:` with `${TASK_REMOTE_ID}` / `${current_branch}` expansion). |
-| `payload` | object | The full current payload — most hooks read from here. |
-| `instructions` | map (role → Instruction) | Routed instructions; meaningful only to hooks declared `kind: agent`. |
-| `auto_start` | bool | Whether the task was created with auto-start. |
-| `parent_id` | string | Optional parent task ID. |
-| `created_at` / `updated_at` | RFC3339 timestamp | Creation / update times. |
+| `description` | string | Free-form body. |
 
-The complete shape lives in the `Task` type at [`internal/orchestrator/spec_types.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/spec_types.go).
+Read the context files at script startup before doing any other work:
+
+```bash
+TASK_ID=$(yq -r .id "$HOME/.boid/context/task.yaml")
+PAYLOAD=$(cat "$HOME/.boid/context/payload.json")
+```
+
+> **Non-interactive jobs only**: hooks that set `kind: exec` (non-interactive) receive a trait-filtered payload on stdin in addition to the context files. Interactive agent hooks do not receive stdin data.
+
+The complete task shape lives in the `Task` type at [`internal/orchestrator/spec_types.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/spec_types.go).
 
 ### Environment variables
 
@@ -39,13 +46,31 @@ The hook runs with the following environment variables set:
 
 | Variable | Role |
 |---|---|
-| `BOID_TASK_ID` | Current task ID (same value as TaskJSON's `id`). |
+| `BOID_TASK_ID` | Current task ID. |
 | `BOID_JOB_ID` | Current job ID (used by `boid job show <id>`). |
-| `BOID_PROJECT_ID` | Project ID. |
 | `BOID_BASE_BRANCH` | The task's `base_branch` (the PR target branch). Set for both root and child tasks. |
 | `BOID_PARENT_BRANCH` | The parent task's HEAD branch. Empty for root tasks. Used by sub-supervisors (e.g. `git merge $BOID_PARENT_BRANCH`). |
-| `HOME` | The sandbox home. |
+| `BOID_MODEL` | The model name configured for this task's instruction. |
+| `BOID_INVOKED_ROLE` | The role name that triggered this hook invocation. |
+| `BOID_INVOKED_NAME` | The hook name within the role. |
+| `BOID_INVOKED_BEHAVIOR` | The behavior name (`supervisor` or `executor`). |
+| `BOID_INSTRUCTIONS` | Serialized instructions passed to this hook (for `kind: agent` hooks). |
+| `BOID_INTERACTIVE` | `1` if the job is interactive (PTY), `0` otherwise. |
+| `BOID_BUILTIN_SHIM` | Path to the built-in shim binary injected into the sandbox. |
+| `BOID_HOST_IP` | IP address of the host, reachable from inside the sandbox. |
+| `BOID_BROKER_SOCKET` | Path to the host-command broker UNIX socket. |
+| `BOID_BROKER_TOKEN` | Auth token for the broker socket. |
+| `BOID_SOCKET` | Path to the boid daemon UNIX socket (for `boid` CLI calls from inside the hook). |
+| `BOID_AGENT_SESSION_ID` | Session ID of the running agent job. Used by Q&A resume flows to correlate the answer with the correct agent session. |
+| `BOID_USER_ANSWER` | The user's answer text, populated when the hook is resumed after a `notify --ask` question. |
+| `BOID_QUESTION_ID` | The question ID corresponding to `BOID_USER_ANSWER`. |
+| `TERM` | Terminal type (e.g. `xterm-256color`). |
+| `HOME` | The sandbox home directory. |
 | `PATH` | Inherited from the launcher; may be overridden by the kit's `env`. |
+
+> **Note**: `BOID_PROJECT_ID` is **not** set in the hook environment. It is only exported by the `boid task notify` command internally.
+
+> **Q&A resume** (`BOID_AGENT_SESSION_ID` / `BOID_USER_ANSWER` / `BOID_QUESTION_ID`): when an agent hook calls `boid task notify --ask`, boid suspends the task. When the user answers, boid resumes the hook with these three variables populated. Kit authors can use them to branch on the answer or route it back to the agent.
 
 Any variables declared in the kit's `kit.yaml` are also exported.
 
@@ -122,7 +147,7 @@ Even on a non-zero exit, if `payload_patch.json` was written it is still merged.
 
 ## Extra context for agent hooks
 
-A hook declared with `kind: agent` participates in instruction routing. Its TaskJSON has the `instructions` field populated with a map of `Instruction` values addressed to that hook. The claude-code kit's hook, for example, reads `instructions.main` and feeds it to the agent as the message.
+A hook declared with `kind: agent` participates in instruction routing. The routed instructions are available via `$HOME/.boid/context/instructions.yaml` and the `BOID_INSTRUCTIONS` environment variable. The claude-code kit's hook, for example, reads `instructions.main` from the context file and feeds it to the agent as the message.
 
 The fields of `Instruction` are listed in [`project.yaml` reference / Instruction](project-yaml.md#instruction).
 
@@ -132,9 +157,8 @@ The fields of `Instruction` are listed in [`project.yaml` reference / Instructio
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Read input
-TASK_JSON=$(cat)
-TASK_ID=$(echo "$TASK_JSON" | jq -r .id)
+# Read task metadata from context files (stdin is a PTY — do not read from it)
+TASK_ID=$(yq -r .id "$HOME/.boid/context/task.yaml")
 echo "[my-hook] processing task $TASK_ID" >&2
 
 # Do something — here, write a fixed value to artifact

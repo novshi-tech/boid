@@ -38,11 +38,26 @@ Sent as actions by the user or by hooks (`boid action send --task <id> --type <a
 |---|---|---|---|
 | `start` | `pending` | `executing` | |
 | `done` | `executing` | `done` | Force completion (usually let auto-transitions handle it). |
+| `done` | `awaiting` | `done` | Force completion from the awaiting state. |
+| `fail` | `executing` | `aborted` | Force abort from executing. |
 | `reopen` | `done` | `executing` | Appends a new instruction and restarts (`--message` to supply it). |
+| `reopen` | `aborted` | `executing` | Return an aborted task to executing. |
 | `ask` | `executing` | `awaiting` | Issued by `boid task notify --ask`. Pauses the task while it waits for an `answer`. |
 | `answer` | `awaiting` | `executing` | Issued by `boid task answer` or the Web UI. Restarts the hook. |
 | `abort` | any non-terminal state | `aborted` | |
 | `job_failed` (system) | any non-terminal state | `aborted` | |
+
+### Non-transitioning actions (timeline record only)
+
+These actions record an entry in the task timeline but do **not** change the task status:
+
+| Action | Purpose |
+|---|---|
+| `progress` | Progress report from the agent (informational). |
+| `done_request` | Recorded by `boid task notify --done`; triggers auto-advance after the runtime exits. |
+| `fail_request` | Recorded by `boid task notify --fail`; triggers auto-advance after the runtime exits. |
+
+`notify --done` and `notify --fail` do **not** transition the task immediately. They record a `done_request` / `fail_request` entry and the daemon advances the state automatically once the runtime process exits.
 
 ## Auto transitions
 
@@ -50,13 +65,21 @@ Auto transitions fire on payload changes. After every payload update, the state 
 
 ### From `executing`
 
-- `lifecycle.executed` is `true` (the most recent hook exited cleanly via `boid job done`) → `done`.
+Three rules are evaluated in order:
+
+1. `lifecycle.executed` is set **and** `lifecycle.fail` is set → `aborted`.
+2. `lifecycle.executed` is set **and** `lifecycle.done` is set → `done`.
+3. `lifecycle.executed` is set (legacy hook path, no explicit done/fail signal) → `done`.
 
 `lifecycle.executed` is not a persisted trait; the state machine reads the hook completion event and re-evaluates. After a `done` transition the flag resets, so a `reopen` returns to `executing` and waits for the next hook completion.
 
+### Project lock and `awaiting`
+
+While a task is in `awaiting`, the project lock is **released**. Other tasks that share the same project (and same HEAD branch) may proceed. The lock is reacquired when the task transitions back to `executing` via an `answer` action.
+
 ## Reopen with a new instruction
 
-`boid task reopen <id> --message "..."` returns a `done` task to `executing` and appends a new `Instruction` to `Task.Instructions`. The last element of the array is the active instruction; `agent`, `model`, and `interactive` are inherited from the previously active one.
+`boid task reopen <id> --message "..."` returns a `done` or `aborted` task to `executing` and appends a new `Instruction` to `Task.Instructions`. The last element of the array is the active instruction; `agent` and `model` are inherited from the previously active one.
 
 ```bash
 # Send the task back through executing with a new ask

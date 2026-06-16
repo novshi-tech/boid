@@ -52,7 +52,7 @@ boid completion fish | source
 - **[Install and quickstart](docs/en/getting-started/01-install.md)**
 - **[Concepts](docs/en/guide/concepts.md)** — vocabulary
 - **[State machine](docs/en/guide/state-machine.md)** — including the `awaiting` state for C2 Q&A
-- **[C2 flow](docs/en/architecture/c2-flow.md)** — non-interactive sessions + Q&A architecture
+- **[Architecture overview](docs/en/architecture/overview.md)** — non-interactive sessions + Q&A architecture
 - **[Web UI](docs/en/guide/web-ui.md)** — including Cloudflare Tunnel setup
 - **[Troubleshooting](docs/en/guide/troubleshooting.md)**
 

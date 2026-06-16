@@ -90,13 +90,20 @@ cookie 属性: `Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=7776000` (90 日
 ```
 host (CLI)               daemon (HTTP)              browser
 ========================================================
-boid web pair      → POST /auth/pair
+boid web pair      → POST /api/web/pair
                   ←  code: WX7K-4QJP
 "WX7K-4QJP"
 を表示
                                                     GET /login
                                                     code 入力
-                                                    POST /auth/redeem
+                                                    POST /login  (フォーム送信)
+                  ← session cookie + 302 /
+
+                         -- マジックリンク経由 --
+
+boid web pair      → POST /api/web/pair
+                  ←  マジックリンク URL
+                                                    GET /auth?token=<token>
                   ← session cookie + 302 /
 ```
 
@@ -145,7 +152,7 @@ JS 側 (HTMX) は `hx-headers` で `X-CSRF-Token` を付けるよう設定して
 
 `boid` は 2 系統の SSE エンドポイントを持ちます。
 
-### タスクイベント (`/events/tasks/<id>`)
+### タスクイベント (`GET /api/tasks/{id}/events`)
 
 `internal/api/events_handler.go` の `WebHandler.TaskEvents` がハンドラ。タスクの状態変化や payload 更新を browser に push します。
 
@@ -160,12 +167,12 @@ JS 側 (HTMX) は `hx-headers` で `X-CSRF-Token` を付けるよう設定して
 
 `TaskEventHub` 自体は `internal/api/task_event_hub.go` 等で実装されており、 dispatch ループが状態遷移を行うたびにイベントを publish しています。
 
-### ジョブログ (`/events/jobs/<id>/log`)
+### ジョブログ (`GET /api/jobs/{id}/log`)
 
-`internal/api/job_log_sse.go` の `JobLogSSEHandler` がハンドラ。 hook / gate のリアルタイム stdout/stderr を browser に流します。
+`internal/api/job_log_sse.go` の `JobLogSSEHandler` がハンドラ。 hook のリアルタイム stdout/stderr を browser に流します。
 
-- snapshot (現時点までのログ) を最初に送信
-- 以降は `RuntimeSubscriber.Subscribe` でランタイム側から流れてくる差分を append
+- `?follow=true` なし: 現時点までのログをプレーンテキスト (`text/plain`) のスナップショットとして返す
+- `?follow=true` あり: SSE (`text/event-stream`) にアップグレード。まずスナップショットを送信し、以降は `RuntimeSubscriber.Subscribe` でランタイム側から流れてくる差分を append。SSE フォーマットは `data: <line>` のみ (`event:` フィールドなし)。20 秒ごとに `:ping` keepalive を送信
 
 ジョブが終了すると subscriber チャネルが閉じ、 SSE もクローズします。
 
@@ -175,19 +182,27 @@ JS 側 (HTMX) は `hx-headers` で `X-CSRF-Token` を付けるよう設定して
 
 ```
 chi.Router
-├── /static/*           (静的アセット)
-├── /login              (ペアリング画面)
-├── /auth/pair          (POST: コード発行)
-├── /auth/redeem        (POST: コード引き換え)
-├── /auth/logout        (POST: cookie クリア + device revoke)
+├── /static/*                             (静的アセット)
+├── /login                                (GET: ペアリング画面; POST: フォームからコード引き換え)
+├── /auth                                 (GET: マジックリンクトークン引き換え, ?token=<token>)
+├── /api/web/pair                         (POST: ペアリングコード発行)
+├── /api/web/devices                      (GET: デバイス一覧)
+├── /api/web/devices/{id}                 (DELETE: デバイス revoke)
 ├── (以下は WebAuthMiddleware + CSRFMiddleware の保護下)
-├── /                   (タスク一覧)
-├── /tasks/<id>         (タスク詳細)
-├── /projects/<id>      (プロジェクト詳細)
-├── /jobs/<id>          (ジョブ詳細)
-├── /events/tasks/<id>  (SSE: タスクイベント)
-└── /events/jobs/<id>/log (SSE: ジョブログ)
+├── /                                     (タスク一覧)
+├── /tasks/new                            (タスク作成フォーム)
+├── /tasks/{id}                           (タスク詳細)
+├── /tasks/{id}/edit                      (タスク編集)
+├── /tasks/{id}/questions/{question_id}   (Q&A ページ)
+├── /tasks/{id}/hooks                     (hook リプレイ一覧)
+├── /sessions                             (セッション一覧)
+├── /sessions/new                         (セッション作成フォーム)
+├── /jobs/{id}                            (ジョブ詳細)
+├── /api/tasks/{id}/events                (SSE: タスクイベント)
+└── /api/jobs/{id}/log                    (SSE またはスナップショット: ジョブログ)
 ```
+
+> **注記:** `/auth/redeem`・`/auth/logout`・`/projects/<id>` (ページ) は存在しません。プロジェクト詳細は API エンドポイント (`/api/projects/{id}`) であり、 Web ページではありません。
 
 ## 関連ドキュメント
 

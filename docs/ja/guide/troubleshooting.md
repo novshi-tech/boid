@@ -39,7 +39,7 @@ boid start
 
 ## タスクが `executing` のまま終わらない
 
-**hook (実行スクリプト) が終了していない。** プロンプト待ち、終わらない対話コマンド、応答停止したエージェントなどでブロックされていると、 daemon 側はそのジョブの完了を待ち続けます。 `boid job list --task <id>` に `running` のままのジョブが見えるはずです。 `boid task abort <id>` で打ち切り、 hook スクリプトを確認してください。
+**hook (実行スクリプト) が終了していない。** プロンプト待ち、終わらない対話コマンド、応答停止したエージェントなどでブロックされていると、 daemon 側はそのジョブの完了を待ち続けます。 `boid job list --task <id>` に `running` のままのジョブが見えるはずです。 `boid action send --task <id> --type abort` で打ち切り、 hook スクリプトを確認してください。
 
 ## `boid task list` が遅い / ディスクが膨れる
 
@@ -66,6 +66,8 @@ gc:
   interval: 24h
   older_than: 720h    # 30 日
 ```
+
+**GC が実際に削除するもの:** `runtimes/<runtime_id>/` ディレクトリに加え、 DB 上の終端済みタスク / アクション / ジョブ、 worktree ディレクトリ、 `/tmp/boid-*` 一時ファイル、 revoke 済みデバイスも削除されます。 初回 GC はデーモン起動直後ではなく、**起動から 10 秒後**に実行されます。
 
 ## hook 内で "permission denied" や "unknown command" が出る
 

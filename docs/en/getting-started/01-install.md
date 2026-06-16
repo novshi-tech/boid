@@ -60,12 +60,14 @@ boid stop
 |---|---|
 | `~/.local/share/boid/boid.db` | SQLite database holding tasks, jobs, and projects |
 | `~/.local/share/boid/kits/` | Source trees of installed extension packages (kits) |
-| `~/.local/share/boid/runtimes/` | Per-task working directories used during execution (auto-deleted after a retention window) |
+| `~/.local/share/boid/runtimes/` | Per-task working directories used during execution (auto-deleted by the GC loop) |
 | `~/.local/share/boid/secret.key` | Encryption key for stored secret values such as API tokens (mode 0600) |
 | `~/.local/share/boid/web_secret` | Signing key for the Web UI session cookies (mode 0600) |
 | `~/.local/state/boid/boid.log` | Captured stdout/stderr of the daemon (rotated by size) |
 | `~/.config/boid/config.yaml` | User-supplied configuration overrides |
 | `$XDG_RUNTIME_DIR/boid.sock` | UNIX socket bridging the CLI and the daemon (falls back to `/tmp/boid-<uid>.sock` when `XDG_RUNTIME_DIR` is unset) |
+
+The daemon runs a GC loop that starts 10 seconds after launch and then repeats every 24 hours. It removes data older than 30 days across several scopes: `runtimes/<runtime_id>/` directories, worktree directories, `/tmp/boid-*` temporary files, terminal tasks/actions/jobs records from the database, and revoked device entries. You can also trigger GC manually with `boid gc`.
 
 `~/.config/boid/config.yaml` is optional. Defaults are used if it does not exist.
 

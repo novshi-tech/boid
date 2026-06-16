@@ -80,7 +80,6 @@ task_behaviors:
   supervisor:
     name: Supervisor
     default_instruction:
-      type: execution
       agent: claude-code
       model: opus
       message: |
@@ -100,7 +99,6 @@ task_behaviors:
   executor:
     name: executor
     default_instruction:
-      type: execution
       agent: claude-code
       model: sonnet
       message: |
@@ -151,7 +149,6 @@ task_behaviors:
   supervisor:
     name: Supervisor
     default_instruction:
-      type: execution
       agent: claude-code
       model: opus
       message: |
@@ -174,7 +171,6 @@ task_behaviors:
   executor:
     name: executor
     default_instruction:
-      type: execution
       agent: claude-code
       model: sonnet
       message: |
@@ -232,7 +228,6 @@ task_behaviors:
   supervisor:
     name: Supervisor
     default_instruction:
-      type: execution
       agent: claude-code
       model: opus
       message: |
@@ -263,7 +258,6 @@ task_behaviors:
   executor:
     name: executor
     default_instruction:
-      type: execution
       agent: claude-code
       model: sonnet
       message: |

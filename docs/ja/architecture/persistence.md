@@ -39,7 +39,7 @@
 | `project_id` | TEXT FK → projects.id | 所属プロジェクト |
 | `remote_id` | TEXT | 外部 issue tracker との対応 (任意) |
 | `title` / `description` | TEXT | 表示用 |
-| `status` | TEXT | `pending` / `executing` / `done` / `aborted` (旧 `verifying` / `reworking` は migration 0022 で `aborted` に強制遷移済み) |
+| `status` | TEXT | `pending` / `executing` / `awaiting` / `done` / `aborted` (旧 `verifying` / `reworking` は migration 0022 で `aborted` に強制遷移済み) |
 | `behavior` | TEXT | このタスクの behavior 名 |
 | `payload` | TEXT (JSON) | 現在の payload 全体 |
 | `instructions` | TEXT (JSON) | Instruction の配列 (最後の要素が active、 reopen で append される) |
@@ -56,7 +56,7 @@
 - `instructions` — Instruction の配列。 配列の最後の要素が active、 reopen で append される
 - `traits` — このタスクが扱う trait 名の配列 (behavior 由来)
 
-`remote_id` には部分インデックスがあります。 `(parent_id)` には部分インデックス、 `(parent_id, ref)` にはユニークインデックスがあり、親子参照と ref 衝突を防いでいます。
+`(parent_id)` には部分インデックス、 `(parent_id, ref)` にはユニークインデックスがあり、親子参照と ref 衝突を防いでいます。(`remote_id` の部分インデックスは migration 0024 で削除済み、`datasource_id` カラムは migration 0025 で削除済み。)
 
 ## `actions`
 
@@ -75,26 +75,27 @@
 
 ## `jobs`
 
-handler (hook / gate) の 1 回の実行記録です。
+handler (hook) の 1 回の実行記録です。
 
 | カラム | 型 | 役割 |
 |---|---|---|
 | `id` | TEXT PK | ジョブ ID |
 | `task_id` | TEXT FK → tasks.id (NULLABLE) | 関連タスク。 `boid exec` 経由のスタンドアロン実行では NULL |
 | `project_id` | TEXT FK → projects.id | プロジェクト |
-| `handler_id` | TEXT | hook / gate の id |
-| `role` | TEXT | `hook` または `gate` |
+| `handler_id` | TEXT | hook の id |
+| `role` | TEXT | `hook` (gate 概念は廃止済み、dispatch は hook に一本化) |
 | `runtime_id` | TEXT | dispatcher が割り当てた runtime の ID |
 | `interactive` / `tty` | INTEGER (bool) | PTY 接続の要否 |
-| `status` | TEXT | `running` / `success` / `failed` |
+| `status` | TEXT | `running` / `completed` / `failed` |
 | `exit_code` | INTEGER | プロセス終了コード |
 | `output` | TEXT | stderr (ログ) 全文 |
 | `execution_state` | TEXT | runtime 側の補助状態 |
+| `display_name` | TEXT | ジョブの表示名 (migration 0027 で追加) |
 | `created_at` / `updated_at` | DATETIME | 作成 / 更新時刻 |
 
 `output` カラムには handler の stderr が丸ごと入ります (stdout は payload patch 解析後にこの内容に追加されない)。 大きなログを書く handler では DB サイズが膨らむため、 ストリーム制御は handler 側で行ってください。
 
-`task_id` が NULLABLE なのは、 `boid exec` で hook/gate に紐付かないコマンドを動かしたときの記録もここに入るためです。
+`task_id` が NULLABLE なのは、 `boid exec` でタスクに紐付かないコマンドを動かしたときの記録もここに入るためです。
 
 ## `worktrees`
 
@@ -147,7 +148,12 @@ migrations/
 ├── 0002_add_jobs_handler_id.sql
 ├── ...
 ├── 0021_jobs_nullable_task_id.sql
-└── 0022_drop_verifying_reworking.sql
+├── 0022_drop_verifying_reworking.sql
+├── 0023_rename_instruction_consumer_to_agent.sql
+├── 0024_drop_tasks_remote_unique.sql   (remote_id の部分インデックスを削除)
+├── 0025_drop_tasks_datasource_id.sql   (datasource_id カラムを削除)
+├── 0026_drop_tasks_depends_on.sql      (depends_on_payload と task_dependencies テーブルを削除)
+└── 0027_add_jobs_display_name.sql      (jobs.display_name TEXT を追加)
 ```
 
 特徴:

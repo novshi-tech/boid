@@ -13,15 +13,36 @@
 
 ## 定義済みの trait
 
-`boid` の payload で扱える trait は `artifact` のみです。 状態機械の自動遷移は payload trait を直接見ず、 hook の終了 (`boid job done`) だけで駆動されます。
+以下の trait が定義されています。 状態機械の自動遷移は payload trait を直接見ず、 hook の終了 (`boid job done`) だけで駆動されます。
 
-| Trait | 書き込み可能 | 内容 |
-|---|---|---|
-| `artifact` | hook が produce | 実装系タスクが残す成果物 (commit / PR URL / 変更ファイル等) を格納する自由形マップ |
+| Trait | 書き込み | マージモード | 内容 |
+|---|---|---|---|
+| `artifact` | hook が produce | exclusive | 実装系タスクが残す成果物 (commit / PR URL / 変更ファイル等) を格納する自由形マップ |
+| `verification` | hook が produce | shared | 検証系 hook の結果。 handler ID 配下の sub-key にマージされる |
+| `awaiting` | boid コアが管理 | exclusive | `boid task notify --ask` で設定される Q&A 状態。 [awaiting trait](#awaiting-trait) を参照 |
 
 ### `artifact`
 
 実行 hook が成果物を書く先。 構造はプロジェクト / kit によって自由ですが、 `artifact.children.*` は `boid` 本体が予約しており、 hook が書こうとするとエラーになります (親タスクから子タスクの状態を参照するためのビュー)。
+
+### `verification`
+
+検証ステップを実行する hook が書く先。 `artifact` と異なり、 マージモードは **shared** です。 各 hook が handler-ID sub-key の下に書くことで、 複数の検証 hook が並走しても互いの結果を上書きしません。
+
+### awaiting trait
+
+`boid task notify --ask` が呼ばれたときに `boid` コアが自動的に設定します。 このトレイトは `awaiting` 状態を跨いで永続化され、 resume 時に kit 側が消費します。
+
+フィールド:
+
+| フィールド | 型 | 設定者 | 役割 |
+|---|---|---|---|
+| `session_id` | string | kit (`notify --ask` 経由) | `--resume` で再開するための Claude `--print` session ID |
+| `question` | string | kit (`notify --ask` 経由) | ユーザに表示する質問テキスト |
+| `question_id` | string | kit (`notify --ask` 経由) | この Q&A ターンを識別する UUID |
+| `pending_answer` | string | boid コア | ユーザの回答。 次の resume 時に kit が消費し、 その後クリアされる |
+
+`awaiting` トレイトは boid コアと `ApplyAction("ask"/"answer")` のみが管理します。 hook から直接書き込んではいけません。
 
 ### サブタスクの生成
 
@@ -37,8 +58,17 @@
 
 | フィールド | 型 | 内容 |
 |---|---|---|
+| `lifecycle.executed` | bool | 現在のディスパッチサイクルで hook job が正常完了した場合 `true`。 自動遷移ルールの主トリガー |
+| `lifecycle.done` | object | 現在の executing サイクルで `boid task notify --done` が呼ばれた場合に設定される。 `message` フィールドを持つ。 `lifecycle.executed` と合わせて `executing→done` 自動遷移を駆動する |
+| `lifecycle.fail` | object | 現在の executing サイクルで `boid task notify --fail` が呼ばれた場合に設定される。 `message` フィールドを持つ。 `executing→aborted` 自動遷移を駆動する (`lifecycle.done` より優先) |
 | `lifecycle.abort.code` | string | abort 時の理由コード |
 | `lifecycle.abort.message` | string | abort 時の人間可読メッセージ |
+
+hook 完了時に評価される自動遷移ルール:
+
+1. `executing→aborted` (`lifecycle.executed && lifecycle.fail` が成立する場合)
+2. `executing→done` (`lifecycle.executed && lifecycle.done` が成立する場合)
+3. `executing→done` (`lifecycle.executed` のみ、 explicit な notify がないレガシー hook 経路)
 
 hook から `lifecycle` を書き込む payload patch を出すと、 自動算出に上書きされて意味を成しません。 hook の `traits.produces` に `lifecycle` を含める意味はありません。
 
@@ -56,11 +86,20 @@ instructions の構造は [`project.yaml` リファレンス / Instruction](proj
 
 ## マージモード
 
-hook が出した payload patch をどう merge するかは trait ごとに決まっています。
+hook が出した payload patch をどう merge するかは trait ごとに決まっています。 3 つのマージモードがあります:
 
-| Trait | モード | 意味 |
-|---|---|---|
-| `artifact` / 任意のキー | **exclusive** | 後勝ち。 hook が書いた値で base の同一キーを置き換える |
+| モード | 意味 |
+|---|---|
+| **exclusive** | 後勝ち。 hook が書いた値で base の同一キーを置き換える |
+| **shared** | handler-ID sub-key 単位でマージする。 複数 hook が並走しても互いを上書きしない |
+| **default** | 明示的な上書きがなければ **exclusive** にフォールバック |
+
+trait ごとのマージモード:
+
+| Trait | モード |
+|---|---|
+| `verification` | **shared** (handler ID sub-key にマージ) |
+| `artifact` / 任意のキー | **exclusive** |
 
 複数 hook が並走する場合、 `artifact.<my-hook-id>` のように hook ごとに独立した sub-key を使うことで衝突を避けます。
 

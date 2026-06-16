@@ -52,7 +52,7 @@ boid completion fish | source
 - **[インストールとクイックスタート](docs/ja/getting-started/01-install.md)**
 - **[概念](docs/ja/guide/concepts.md)** — 用語解説
 - **[状態機械](docs/ja/guide/state-machine.md)** — C2 Q&A の `awaiting` 状態を含む
-- **[C2 フロー](docs/ja/architecture/c2-flow.md)** — 非対話セッション + Q&A アーキテクチャ
+- **[アーキテクチャ概要](docs/ja/architecture/overview.md)** — 非対話セッション + Q&A アーキテクチャ
 - **[Web UI](docs/ja/guide/web-ui.md)** — Cloudflare Tunnel 構成を含む
 - **[トラブルシューティング](docs/ja/guide/troubleshooting.md)**
 

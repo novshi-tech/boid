@@ -30,13 +30,9 @@ boid stop
 boid start
 ```
 
-`boid web set-addr` は `~/.config/boid/config.yaml` の `web.listen` を書き換えます。 daemon を再起動するまで反映されないので注意してください。
+`boid web set-addr` は `~/.config/boid/config.yaml` の `web.http_addr` を書き換えます。 daemon を再起動するまで反映されないので注意してください。
 
-Web UI を完全に無効化したい場合は空文字を渡します:
-
-```bash
-boid web set-addr ""
-```
+> **注意:** 現状、Web UI を完全に停止する手段はありません。空文字を渡しても daemon は `:8080` にフォールバックし、TCP リスナーは常に起動します。
 
 ## 他デバイスからアクセスする (任意)
 
@@ -70,7 +66,7 @@ boid web revoke-all              # 全部失効
 このチュートリアルで触れた要素:
 
 - ローカルから Web UI を開いた (loopback はペアリング不要)
-- listen アドレスの変更方法 (`boid web set-addr`)
+- listen アドレスの変更方法 (`boid web set-addr`；Web UI を完全停止することは現状できない)
 - 他デバイスからアクセスする場合の流れ (`boid web set-url` + `boid web pair`)
 
 次の章で小さなタスクを 1 本走らせて、 ここで開いた Web UI からライブで観察します。
