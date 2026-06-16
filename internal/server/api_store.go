@@ -53,6 +53,10 @@ func (s apiTxStore) FindDependentTasks(taskID string) ([]*orchestrator.Task, err
 	return s.tasks.FindDependentTasks(taskID)
 }
 
+func (s apiTxStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {
+	return s.tasks.ListChildren(parentID)
+}
+
 func (s apiTxStore) CreateAction(action *orchestrator.Action) error {
 	return s.actions.CreateAction(action)
 }

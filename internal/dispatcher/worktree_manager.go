@@ -428,6 +428,14 @@ func (m *WorktreeManager) Get(taskID string) (*Worktree, error) {
 	return GetWorktreeByTask(m.DB, taskID)
 }
 
+// CleanupForTask removes the worktree filesystem for a task that has reached a
+// terminal state (done / aborted). The associated boid/<id8> branch is NOT
+// deleted here: that responsibility is deferred to the parent supervisor's own
+// finalizeTerminal (via SweepChildBranches), so the supervisor can merge the
+// child branch into the base branch in its post-execution phase before the
+// branch is dropped. Root tasks (no parent) run on the base branch directly
+// and have no boid/* branch to delete in the first place, so this method is
+// uniformly safe regardless of whether the task has a parent.
 func (m *WorktreeManager) CleanupForTask(taskID, projectDir, newStatus string) error {
 	if newStatus != "done" && newStatus != "aborted" {
 		return nil
@@ -441,7 +449,47 @@ func (m *WorktreeManager) CleanupForTask(taskID, projectDir, newStatus string) e
 		return nil
 	}
 
-	return m.Remove(projectDir, taskID, true)
+	return m.Remove(projectDir, taskID, false)
+}
+
+// SweepChildBranches deletes the boid/<id8> branches associated with the given
+// task IDs. Called after a parent supervisor reaches a terminal state: its
+// children's branches were retained through CleanupForTask so the supervisor
+// could merge them into the base branch; once the supervisor is terminal, the
+// merged refs are safe to drop.
+//
+// Behaviour:
+//   - Task IDs with no worktree record are silently skipped (e.g. root tasks
+//     that ran in the project dir directly).
+//   - Non-boid/* branches are skipped (root-task base branches must never be
+//     auto-deleted; the prefix check is a defence-in-depth).
+//   - `git branch -D` failures are logged but not returned: a child branch may
+//     have been deleted already (e.g. by an explicit user merge that ran
+//     `git branch -d`), in which case the sweep is a no-op.
+func (m *WorktreeManager) SweepChildBranches(projectDir string, taskIDs []string) error {
+	for _, taskID := range taskIDs {
+		w, err := m.Get(taskID)
+		if err != nil {
+			slog.Warn("sweep child branches: worktree lookup failed",
+				"task_id", taskID, "error", err)
+			continue
+		}
+		if w == nil {
+			continue
+		}
+		if !strings.HasPrefix(w.Branch, branchPrefix) {
+			continue
+		}
+		cmd := exec.Command(m.gitBin(), "-C", projectDir, "branch", "-D", w.Branch)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			slog.Debug("sweep child branches: git branch -D skipped",
+				"task_id", taskID, "branch", w.Branch,
+				"error", err, "output", strings.TrimSpace(string(out)))
+			continue
+		}
+		slog.Info("child branch swept", "task_id", taskID, "branch", w.Branch)
+	}
+	return nil
 }
 
 // Recreate reconstructs a previously cleaned worktree by fetching from the remote branch.
@@ -620,7 +668,10 @@ func (m *WorktreeManager) CleanOrphaned(resolve func(taskID, projectID string) (
 			continue
 		}
 
-		if err := m.Remove(projectDir, w.TaskID, true); err != nil {
+		// Same rationale as CleanupForTask: don't delete the boid/<id8> branch
+		// here. The parent supervisor's finalizeTerminal (or, eventually, GC)
+		// drops the branch once it's no longer needed.
+		if err := m.Remove(projectDir, w.TaskID, false); err != nil {
 			slog.Warn("orphan cleanup failed", "task_id", w.TaskID, "error", err)
 		}
 	}

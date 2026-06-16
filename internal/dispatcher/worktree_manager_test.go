@@ -321,7 +321,10 @@ func TestResolveBase_FetchFailureFallback(t *testing.T) {
 	mgr.Remove(local, "task-rb000005-0001", true)
 }
 
-func TestManager_CleanupForTask_DoneDeletesBranch(t *testing.T) {
+// CleanupForTask は terminal 時に worktree dir を撤去するが、boid/<id8>
+// ブランチは残す (親 supervisor が merge 完了するまでの保護)。
+// ブランチの削除は SweepChildBranches の責務。
+func TestManager_CleanupForTask_DoneRetainsBranch(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	repo := initGitRepo(t)
 	wtRoot := t.TempDir()
@@ -340,22 +343,22 @@ func TestManager_CleanupForTask_DoneDeletesBranch(t *testing.T) {
 		t.Fatalf("CleanupForTask done: %v", err)
 	}
 
-	// worktree ディレクトリが削除されていること
+	// worktree ディレクトリは削除される
 	if _, err := os.Stat(w.Path); !os.IsNotExist(err) {
 		t.Error("worktree dir should be removed after done cleanup")
 	}
 
-	// ブランチが削除されていること
+	// ブランチは残る (親 supervisor が merge するまで保持)
 	out, err := exec.Command(gitBin, "-C", repo, "branch", "--list", w.Branch).CombinedOutput()
 	if err != nil {
 		t.Fatalf("git branch --list: %v", err)
 	}
-	if len(out) > 0 {
-		t.Errorf("branch should be deleted after done cleanup, got: %q", string(out))
+	if len(out) == 0 {
+		t.Errorf("branch should be retained after done cleanup (parent supervisor merges it), got empty list")
 	}
 }
 
-func TestManager_CleanupForTask_AbortedDeletesBranch(t *testing.T) {
+func TestManager_CleanupForTask_AbortedRetainsBranch(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	repo := initGitRepo(t)
 	wtRoot := t.TempDir()
@@ -374,18 +377,110 @@ func TestManager_CleanupForTask_AbortedDeletesBranch(t *testing.T) {
 		t.Fatalf("CleanupForTask aborted: %v", err)
 	}
 
-	// worktree ディレクトリが削除されていること
+	// worktree ディレクトリは削除される
 	if _, err := os.Stat(w.Path); !os.IsNotExist(err) {
 		t.Error("worktree dir should be removed after aborted cleanup")
 	}
 
-	// ブランチが削除されていること
+	// ブランチは残る (aborted でもユーザ救済のため即削除しない;
+	// 親 supervisor の終端時に SweepChildBranches で片付ける)
 	out, err := exec.Command(gitBin, "-C", repo, "branch", "--list", w.Branch).CombinedOutput()
 	if err != nil {
 		t.Fatalf("git branch --list: %v", err)
 	}
-	if len(out) > 0 {
-		t.Errorf("branch should be deleted after aborted cleanup, got: %q", string(out))
+	if len(out) == 0 {
+		t.Errorf("branch should be retained after aborted cleanup, got empty list")
+	}
+}
+
+func TestManager_SweepChildBranches_DeletesBoidBranches(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-scb1', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('aa111111-0001', 'proj-scb1', 'child', 'dev')`)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('bb222222-0002', 'proj-scb1', 'child2', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	w1, err := mgr.Create(repo, "proj-scb1", "aa111111-0001", "HEAD", dispatcher.CreateOpts{})
+	if err != nil {
+		t.Fatalf("Create child1: %v", err)
+	}
+	w2, err := mgr.Create(repo, "proj-scb1", "bb222222-0002", "HEAD", dispatcher.CreateOpts{})
+	if err != nil {
+		t.Fatalf("Create child2: %v", err)
+	}
+
+	// Both children reached done — worktree dir gone, branch retained.
+	if err := mgr.CleanupForTask("aa111111-0001", repo, "done"); err != nil {
+		t.Fatalf("CleanupForTask child1: %v", err)
+	}
+	if err := mgr.CleanupForTask("bb222222-0002", repo, "done"); err != nil {
+		t.Fatalf("CleanupForTask child2: %v", err)
+	}
+
+	// Sanity: branches still exist before sweep.
+	for _, br := range []string{w1.Branch, w2.Branch} {
+		out, _ := exec.Command(gitBin, "-C", repo, "branch", "--list", br).CombinedOutput()
+		if len(out) == 0 {
+			t.Fatalf("branch %q should still exist before sweep", br)
+		}
+	}
+
+	// Parent supervisor terminates → sweep direct children's branches.
+	if err := mgr.SweepChildBranches(repo, []string{"aa111111-0001", "bb222222-0002"}); err != nil {
+		t.Fatalf("SweepChildBranches: %v", err)
+	}
+
+	for _, br := range []string{w1.Branch, w2.Branch} {
+		out, err := exec.Command(gitBin, "-C", repo, "branch", "--list", br).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git branch --list: %v", err)
+		}
+		if len(out) > 0 {
+			t.Errorf("branch %q should be deleted after sweep, got: %q", br, string(out))
+		}
+	}
+}
+
+// SweepChildBranches は worktree レコードが無い (= 子じゃない / root task) を無視する。
+func TestManager_SweepChildBranches_SkipsUnknownTaskIDs(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	if err := mgr.SweepChildBranches(repo, []string{"task-noexist-0001", "task-noexist-0002"}); err != nil {
+		t.Fatalf("SweepChildBranches with unknown IDs should not error: %v", err)
+	}
+}
+
+// SweepChildBranches は既に削除済みのブランチを skip する (冪等)。
+func TestManager_SweepChildBranches_IdempotentOnMissingBranch(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	repo := initGitRepo(t)
+	wtRoot := t.TempDir()
+
+	db.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('proj-scb2', ?)`, repo)
+	db.Conn.Exec(`INSERT INTO tasks (id, project_id, title, behavior) VALUES ('task-scb20001-0001', 'proj-scb2', 'child', 'dev')`)
+
+	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: db.Conn, GitBin: gitBin}
+
+	if _, err := mgr.Create(repo, "proj-scb2", "task-scb20001-0001", "HEAD", dispatcher.CreateOpts{}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := mgr.CleanupForTask("task-scb20001-0001", repo, "done"); err != nil {
+		t.Fatalf("CleanupForTask: %v", err)
+	}
+	if err := mgr.SweepChildBranches(repo, []string{"task-scb20001-0001"}); err != nil {
+		t.Fatalf("SweepChildBranches first call: %v", err)
+	}
+	// Second call: branch is already gone. Should be a no-op, no error.
+	if err := mgr.SweepChildBranches(repo, []string{"task-scb20001-0001"}); err != nil {
+		t.Fatalf("SweepChildBranches second call (idempotent): %v", err)
 	}
 }
 

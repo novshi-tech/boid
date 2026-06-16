@@ -55,6 +55,14 @@ type BrokerRegistry interface {
 
 type WorktreeCleaner interface {
 	CleanupForTask(taskID, projectDir, newStatus string) error
+	// SweepChildBranches deletes the boid/<id8> branches associated with the
+	// given child task IDs. Called by finalizeTerminal once a supervisor task
+	// reaches a terminal state — its children's branches were retained through
+	// CleanupForTask so the supervisor could merge them into the base branch;
+	// now that the supervisor is done, the merged refs are safe to drop.
+	// Branches that don't exist (already deleted, never created) are silently
+	// skipped. Non-boid/* branches (root-task base branches) are never deleted.
+	SweepChildBranches(projectDir string, taskIDs []string) error
 }
 
 // CommandResponse is the API response for GET /api/projects/:id/commands/:name.
@@ -162,6 +170,11 @@ type TaskStore interface {
 	FindTaskByRemote(remoteID string) (*orchestrator.Task, error)
 	FindTaskByRef(ref, parentID string) (*orchestrator.Task, error)
 	FindDependentTasks(taskID string) ([]*orchestrator.Task, error)
+	// ListChildren returns direct children (one level only) of the given parent
+	// task, ordered by created_at ASC. Returns an empty slice (not nil) when the
+	// task has no children. Used by finalizeTerminal to sweep boid/<id8> branches
+	// once a supervisor reaches a terminal state.
+	ListChildren(parentID string) ([]*orchestrator.Task, error)
 }
 
 type ActionStore interface {

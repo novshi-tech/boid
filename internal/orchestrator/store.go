@@ -422,6 +422,38 @@ func FindTaskByRef(dbtx db.DBTX, ref, parentID string) (*Task, error) {
 	return t, nil
 }
 
+// ListChildren returns all direct children of the given parent task, ordered
+// by created_at ASC (oldest first). Returns an empty slice if the task has no
+// children — never nil. parentID must be non-empty; passing "" returns an
+// empty result (root tasks have no parent record, so they can't be queried as
+// children either).
+func ListChildren(dbtx db.DBTX, parentID string) ([]*Task, error) {
+	if parentID == "" {
+		return nil, nil
+	}
+	rows, err := dbtx.Query(
+		`SELECT `+taskSelectCols+`, `+taskChildCountCols+` FROM tasks t WHERE t.parent_id = ? ORDER BY t.created_at ASC`,
+		parentID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list children: %w", err)
+	}
+	defer rows.Close()
+
+	var tasks []*Task
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}
+
 func DeleteTask(dbtx db.DBTX, id string) error {
 	if _, err := GetTask(dbtx, id); err != nil {
 		return err

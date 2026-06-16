@@ -141,6 +141,9 @@ func (s *capturingTaskStore) FindTaskByRef(ref, parentID string) (*orchestrator.
 func (s *capturingTaskStore) FindDependentTasks(taskID string) ([]*orchestrator.Task, error) {
 	return nil, nil
 }
+func (s *capturingTaskStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {
+	return nil, nil
+}
 
 func TestBoidBuiltinExecutor_EnforcesWorkspaceScope(t *testing.T) {
 	store := &capturingTaskStore{}

@@ -39,6 +39,9 @@ func (s *recordingTxStore) FindTaskByRef(ref, parentID string) (*orchestrator.Ta
 func (s *recordingTxStore) FindDependentTasks(taskID string) ([]*orchestrator.Task, error) {
 	return nil, nil
 }
+func (s *recordingTxStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {
+	return nil, nil
+}
 func (s *recordingTxStore) CreateAction(action *orchestrator.Action) error {
 	s.actions = append(s.actions, action)
 	return nil
