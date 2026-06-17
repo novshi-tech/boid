@@ -108,9 +108,14 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 	if req.Traits != nil {
 		traits = req.Traits
 	}
-	// Phase 2-3: task-row level overrides for readonly / worktree / base_branch
-	// / branch_prefix have been removed. Values come from the resolved behavior
+	if req.Readonly != nil {
+		readonly = *req.Readonly
+	}
+	// Phase 2-3: task-row level overrides for worktree / base_branch /
+	// branch_prefix have been removed. Values come from the resolved behavior
 	// (and project-level defaults for worktree / base_branch).
+	// readonly is now a first-class override: when supplied, it wins over the
+	// behavior default set by applyCanonicalBehaviorOverrides.
 
 	// Children inherit remote_id from their parent when they don't supply
 	// their own. With base_branch derived from the project-top template +
