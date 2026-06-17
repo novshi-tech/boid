@@ -2,6 +2,8 @@ package orchestrator
 
 import (
 	"fmt"
+
+	"github.com/novshi-tech/boid/internal/adapters"
 )
 
 type MetaCache interface {
@@ -23,6 +25,7 @@ type DispatchPlanner struct {
 	Meta     MetaCache
 	Projects ProjectCatalog
 	Tasks    TaskLookup
+	Adapter  adapters.HarnessAdapter
 }
 
 // PlanHook renders a hook fire event into a JobSpec.
@@ -79,15 +82,13 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		),
 		HostCommands: behavior.HostCommands.ToCommandDefs(),
 		SecretNamespace: meta.SecretNamespace,
-		Env:             mergeStringMaps(behavior.Env, taskBusinessEnv(task, parent)),
+		Env:             mergeStringMaps(mergeStringMaps(behavior.Env, taskBusinessEnv(task, parent)), p.resumeEnv(task)),
 		ExecutionState:  string(task.Status),
-		// Hook jobs run an agent session (claude code etc.) that requires a
-		// real PTY: non-interactive `claude --print` consumes a separate Max
-		// credit pool that bills extra, and we therefore route every agent
-		// invocation through an interactive session. The EXIT trap added by
+		// Hook jobs run an agent session that requires a real PTY. The
+		// adapter decides whether a PTY is needed; the EXIT trap added by
 		// dispatcher (Foreground=false) still fires `boid job done` on
 		// process exit so the daemon learns when the agent finishes.
-		Interactive: true,
+		Interactive: p.interactive(),
 	}
 	return spec, nil, nil
 }
@@ -161,12 +162,35 @@ func (p *DispatchPlanner) lookupParent(task *Task) (*Task, error) {
 	return parent, nil
 }
 
+// interactive returns whether the harness requires a PTY. Defaults to true
+// (claude behaviour) when no adapter is configured.
+func (p *DispatchPlanner) interactive() bool {
+	if p.Adapter == nil {
+		return true
+	}
+	return p.Adapter.Interactive()
+}
+
+// resumeEnv returns the harness-specific env vars to set when resuming an
+// awaiting task (session ID key name is owned by the adapter). Returns nil
+// when no adapter is configured or the task has no awaiting session ID.
+func (p *DispatchPlanner) resumeEnv(task *Task) map[string]string {
+	if p.Adapter == nil {
+		return nil
+	}
+	ap := GetAwaitingPayload(task.Payload)
+	if ap.SessionID == "" {
+		return nil
+	}
+	_, env := p.Adapter.ResumePayload(ap.SessionID)
+	return env
+}
+
 // taskBusinessEnv returns env vars derived from business-level task fields
-// that hook scripts may need at runtime. Surfaces the task's base
-// branch, the parent task's HEAD branch (BOID_PARENT_BRANCH, P3), and, when
-// the task has an awaiting trait (i.e. the hook is a resume after
-// awaiting → executing), the session_id, user answer, and question_id for
-// the kit to resume the claude session.
+// that hook scripts may need at runtime. Surfaces the task's base branch,
+// the parent task's HEAD branch (BOID_PARENT_BRANCH), and, when the task has
+// an awaiting trait, the user answer and question ID. The harness-specific
+// session ID env var is produced separately via DispatchPlanner.resumeEnv.
 //
 // parent is nil for root tasks; when set, BOID_PARENT_BRANCH is emitted.
 func taskBusinessEnv(task *Task, parent *Task) map[string]string {
@@ -183,9 +207,6 @@ func taskBusinessEnv(task *Task, parent *Task) map[string]string {
 		}
 	}
 	ap := GetAwaitingPayload(task.Payload)
-	if ap.SessionID != "" {
-		out["BOID_AGENT_SESSION_ID"] = ap.SessionID
-	}
 	if ap.PendingAnswer != "" {
 		out["BOID_USER_ANSWER"] = ap.PendingAnswer
 	}

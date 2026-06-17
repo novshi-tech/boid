@@ -183,10 +183,13 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		RuntimesDir:  runtimesDirFor(cfg),
 	})
 
+	lifecycle := jobLifecycleAdapter{runner: runner}
+	claudeAdapter := claude.New(lifecycle)
 	planner := orchestrator.WireDispatchPlanner(orchestrator.PlannerWireConfig{
 		Meta:     store,
 		Projects: projectCatalog,
 		Tasks:    taskLookup,
+		Adapter:  claudeAdapter,
 	})
 	adapter := dispatcher.NewOrchestratorAdapter(runner, planner)
 	hub := api.NewTaskEventHub()
@@ -198,7 +201,6 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// lifetime of each task. Root tasks on the same base_branch serialize;
 	// child tasks (boid/<id8>) always run in parallel.
 	projectLocks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
-	lifecycle := jobLifecycleAdapter{runner: runner}
 	workflow := &api.TaskWorkflowService{
 		Tasks:       taskRepo,
 		Jobs:        jobStore,
@@ -210,7 +212,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Worktrees:   wtMgr,
 		Hub:         hub,
 		Locks:       projectLocks,
-		Adapter:     claude.New(lifecycle),
+		Adapter:     claudeAdapter,
 	}
 	workflow.InitDispatch(context.Background())
 

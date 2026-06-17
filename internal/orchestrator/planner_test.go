@@ -1,12 +1,33 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/novshi-tech/boid/internal/adapters"
 )
+
+// stubHarnessAdapter is a test double that mimics claude adapter behaviour.
+type stubHarnessAdapter struct{}
+
+func (stubHarnessAdapter) StopAgent(_ context.Context, _ string) error { return nil }
+func (stubHarnessAdapter) Interactive() bool                            { return true }
+func (stubHarnessAdapter) ResumePayload(sessionID string) ([]string, map[string]string) {
+	if sessionID == "" {
+		return nil, nil
+	}
+	return []string{"--resume", sessionID}, map[string]string{"BOID_AGENT_SESSION_ID": sessionID}
+}
+func (stubHarnessAdapter) SessionIDFromHookEnv(env map[string]string) string {
+	return env["BOID_AGENT_SESSION_ID"]
+}
+func (stubHarnessAdapter) Usage(_ context.Context, _ string) (adapters.Usage, error) {
+	return adapters.Usage{}, nil
+}
 
 type stubProjectCatalog struct {
 	projects []*Project
@@ -747,6 +768,7 @@ func newPlannerForTest(proj *Project, behavior TaskBehavior, task *Task) *Dispat
 		Meta:     stubMetaCache{meta: meta},
 		Projects: stubProjectCatalog{projects: []*Project{proj}},
 		Tasks:    stubTaskLookup{task: task},
+		Adapter:  stubHarnessAdapter{},
 	}
 }
 
@@ -760,6 +782,7 @@ func newPlannerWithCapabilities(proj *Project, behavior TaskBehavior, task *Task
 		Meta:     stubMetaCache{meta: meta},
 		Projects: stubProjectCatalog{projects: []*Project{proj}},
 		Tasks:    stubTaskLookup{task: task},
+		Adapter:  stubHarnessAdapter{},
 	}
 }
 
@@ -776,5 +799,6 @@ func newPlannerForTestWithParent(proj *Project, behavior TaskBehavior, task *Tas
 		Meta:     stubMetaCache{meta: meta},
 		Projects: stubProjectCatalog{projects: []*Project{proj}},
 		Tasks:    stubMultiTaskLookup{tasks: tasks},
+		Adapter:  stubHarnessAdapter{},
 	}
 }
