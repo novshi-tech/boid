@@ -60,6 +60,7 @@ func (a *recordingAdapter) StopAgent(_ context.Context, runtimeID string) error 
 	return nil
 }
 
+func (a *recordingAdapter) StopSignalName() string                                { return "USR1" }
 func (a *recordingAdapter) ResumePayload(_ string) ([]string, map[string]string) { return nil, nil }
 func (a *recordingAdapter) Interactive() bool                                     { return true }
 func (a *recordingAdapter) SessionIDFromHookEnv(_ map[string]string) string       { return "" }

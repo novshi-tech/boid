@@ -31,21 +31,27 @@ type WireConfig struct {
 	// runtime directory here to host the per-sandbox docker proxy socket and
 	// resource ledger.
 	RuntimesDir string
+
+	// StopSignalName is the bash signal name (e.g. "USR1") used in `trap ''
+	// <name>` inside generated sandbox scripts. Set from
+	// HarnessAdapter.StopSignalName(). Defaults to "USR1" when empty.
+	StopSignalName string
 }
 
 func Wire(cfg WireConfig) *Runner {
 	return &Runner{
-		DB:           cfg.DB,
-		Runtime:      cfg.Runtime,
-		Broker:       cfg.Broker,
-		Sandbox:      cfg.Sandbox,
-		SecretStore:  cfg.SecretStore,
-		Worktrees:    cfg.Worktrees,
-		TaskLookup:   cfg.TaskLookup,
-		Projects:     cfg.Projects,
-		BoidBinary:   cfg.BoidBinary,
-		ServerSocket: cfg.ServerSocket,
-		ProxyPort:    cfg.ProxyPort,
-		RuntimesDir:  cfg.RuntimesDir,
+		DB:             cfg.DB,
+		Runtime:        cfg.Runtime,
+		Broker:         cfg.Broker,
+		Sandbox:        cfg.Sandbox,
+		SecretStore:    cfg.SecretStore,
+		Worktrees:      cfg.Worktrees,
+		TaskLookup:     cfg.TaskLookup,
+		Projects:       cfg.Projects,
+		BoidBinary:     cfg.BoidBinary,
+		ServerSocket:   cfg.ServerSocket,
+		ProxyPort:      cfg.ProxyPort,
+		RuntimesDir:    cfg.RuntimesDir,
+		StopSignalName: cfg.StopSignalName,
 	}
 }

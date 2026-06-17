@@ -199,6 +199,10 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// child tasks (boid/<id8>) always run in parallel.
 	projectLocks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
 	lifecycle := jobLifecycleAdapter{runner: runner}
+	claudeAdapter := claude.New(lifecycle)
+	// Propagate the harness-specific agent-stop signal name so sandbox scripts
+	// generate `trap '' <signal>` from the adapter rather than a hardcoded name.
+	runner.StopSignalName = claudeAdapter.StopSignalName()
 	workflow := &api.TaskWorkflowService{
 		Tasks:       taskRepo,
 		Jobs:        jobStore,
@@ -210,7 +214,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Worktrees:   wtMgr,
 		Hub:         hub,
 		Locks:       projectLocks,
-		Adapter:     claude.New(lifecycle),
+		Adapter:     claudeAdapter,
 	}
 	workflow.InitDispatch(context.Background())
 

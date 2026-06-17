@@ -4,9 +4,9 @@
 // shared interface; each harness sub-package hosts its implementation).
 //
 // Stopping convention: SIGUSR1 is delivered to the runtime process group.
-// run-agent.py intercepts it and forwards SIGTERM to the claude process only,
-// leaving bash and the EXIT trap alive so payload_patch capture completes
-// normally through the broker.
+// The agent runner (run-agent.py) intercepts it and forwards SIGTERM to the
+// agent subprocess only, leaving bash and the EXIT trap alive so payload_patch
+// capture completes normally through the broker.
 package claude
 
 import (
@@ -32,15 +32,23 @@ func New(lifecycle runtimeSignaler) *Adapter {
 	return &Adapter{lifecycle: lifecycle}
 }
 
-// StopAgent delivers SIGUSR1 to the runtime's process group. run-agent.py
-// handles it by sending SIGTERM to the claude subprocess only; bash and the
-// EXIT trap survive so boid job done fires through the broker normally.
+// StopAgent delivers SIGUSR1 to the runtime's process group. The agent
+// runner handles it by sending SIGTERM to the agent subprocess only; bash
+// and the EXIT trap survive so boid job done fires through the broker normally.
 func (a *Adapter) StopAgent(_ context.Context, runtimeID string) error {
 	if a.lifecycle == nil || runtimeID == "" {
 		return nil
 	}
 	a.lifecycle.SignalJobRuntime(runtimeID, syscall.SIGUSR1)
 	return nil
+}
+
+// StopSignalName returns "USR1" — the bash signal name for SIGUSR1, which is
+// what StopAgent delivers to the process group. Sandbox scripts use this value
+// to build `trap '' USR1` so that bash ignores the signal while only the
+// agent runner (run-agent.py) intercepts and forwards SIGTERM to the agent.
+func (a *Adapter) StopSignalName() string {
+	return "USR1"
 }
 
 // ResumePayload returns the --resume flag for the given session ID. The caller

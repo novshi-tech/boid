@@ -54,19 +54,20 @@ type dockerProxyState struct {
 }
 
 type Runner struct {
-	DB           *sql.DB
-	Runtime      JobRuntime
-	Broker       CommandBroker
-	Sandbox      SandboxPreparer
-	SecretStore  *SecretStore
-	Worktrees    *WorktreeManager
-	TaskLookup   TaskLookup
-	Projects     ProjectLookup
-	BoidBinary   string
-	ServerSocket string
-	ProxyPort    *int
-	RuntimesDir  string
-	JobEvents    JobEventSink // optional; nil disables job lifecycle broadcasts
+	DB             *sql.DB
+	Runtime        JobRuntime
+	Broker         CommandBroker
+	Sandbox        SandboxPreparer
+	SecretStore    *SecretStore
+	Worktrees      *WorktreeManager
+	TaskLookup     TaskLookup
+	Projects       ProjectLookup
+	BoidBinary     string
+	ServerSocket   string
+	ProxyPort      *int
+	RuntimesDir    string
+	JobEvents      JobEventSink // optional; nil disables job lifecycle broadcasts
+	StopSignalName string       // bash signal name for agent-stop trap (from HarnessAdapter.StopSignalName)
 
 	tokenMu       sync.Mutex
 	jobTokens     map[string]string
@@ -227,6 +228,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		WorkspacePeers:       workspacePeers,
 		ResolvedHostCommands: resolvedHostCommands,
 		DockerEnabled:        spec.Visibility.DockerEnabled,
+		StopSignalName:       r.StopSignalName,
 	}
 	// Server socket is only exposed to jobs that have no broker policies
 	// attached — i.e. boid exec invocations that need to talk to the daemon

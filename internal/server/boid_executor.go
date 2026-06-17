@@ -53,12 +53,12 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 			Stdout: fmt.Sprintf("job %s completed (exit_code=%d)\n", req.JobID, req.ExitCode),
 		}
 	case sandbox.BoidOpAgentStop:
-		// agent stop: deliver SIGUSR1 to the runtime so run-agent.py SIGTERMs
-		// just the claude process. bash + the EXIT trap stay alive so the
-		// trap's `boid job done --output-file payload_patch.json` is the sole
-		// CompleteJob caller — keeping the broker token valid until then and
-		// preserving the agent's session id in payload_patch.json. Mirrors
-		// NotifyTask's StopAgent path; do NOT call CompleteJob here.
+		// agent stop: ask the harness adapter to stop the agent gracefully.
+		// bash + the EXIT trap stay alive so the trap's `boid job done
+		// --output-file payload_patch.json` is the sole CompleteJob caller —
+		// keeping the broker token valid until then and preserving the agent's
+		// session id in payload_patch.json. Mirrors NotifyTask's StopAgent
+		// path; do NOT call CompleteJob here.
 		if e.workflow == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid agent stop unavailable"}
 		}

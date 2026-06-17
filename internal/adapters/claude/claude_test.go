@@ -89,6 +89,13 @@ func TestAdapter_ResumePayload_EmptySessionID(t *testing.T) {
 	}
 }
 
+func TestAdapter_StopSignalName_IsUSR1(t *testing.T) {
+	a := New(nil)
+	if got := a.StopSignalName(); got != "USR1" {
+		t.Errorf("StopSignalName() = %q, want USR1", got)
+	}
+}
+
 func TestAdapter_Interactive_AlwaysTrue(t *testing.T) {
 	a := New(nil)
 	if !a.Interactive() {

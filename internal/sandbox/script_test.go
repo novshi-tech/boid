@@ -417,6 +417,43 @@ func TestPrepare_RootDirMktempFallback(t *testing.T) {
 // returns. They used to live in setup.sh's cleanup trap, but that ran inside
 // the sandbox mount namespace where rm could traverse onto host files via a
 // still-active rw bind.
+// TestPrepare_StopSignalName verifies that the agent-stop trap in both outer
+// and inner scripts uses Spec.StopSignalName, and defaults to "USR1" when empty.
+func TestPrepare_StopSignalName(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		sigName    string
+		wantSignal string
+		tty        bool
+	}{
+		{"default-empty", "", "USR1", false},
+		{"default-empty-tty", "", "USR1", true},
+		{"explicit-USR1", "USR1", "USR1", false},
+		{"explicit-USR2", "USR2", "USR2", false},
+		{"explicit-USR2-tty", "USR2", "USR2", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := minimalSpec("test-stopsig-" + tc.name)
+			spec.StopSignalName = tc.sigName
+			spec.TTY = tc.tty
+
+			outerPath, err := sandbox.Prepare(spec)
+			if err != nil {
+				t.Fatalf("Prepare: %v", err)
+			}
+			outer, _, inner := readScripts(t, outerPath)
+
+			trapLine := "trap '' " + tc.wantSignal
+			if !strings.Contains(outer, trapLine) {
+				t.Errorf("outer: expected %q\n%s", trapLine, outer)
+			}
+			if !strings.Contains(inner, trapLine) {
+				t.Errorf("inner: expected %q\n%s", trapLine, inner)
+			}
+		})
+	}
+}
+
 func TestPrepare_CleanupPaths(t *testing.T) {
 	spec := minimalSpec("test-cleanup")
 	spec.CleanupPaths = []string{"/tmp/staging-xyz"}

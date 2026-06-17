@@ -46,6 +46,12 @@ type HarnessAdapter interface {
 	// capture completes through the broker normally.
 	StopAgent(ctx context.Context, runtimeID string) error
 
+	// StopSignalName returns the bash signal name (e.g. "USR1") used in
+	// `trap '' <name>` inside generated sandbox scripts. The outer and inner
+	// bash scripts ignore this signal so that only the agent process itself
+	// reacts when StopAgent delivers it to the process group.
+	StopSignalName() string
+
 	// ResumePayload returns argv flags and environment variables to pass to
 	// the start hook when resuming an existing agent session identified by
 	// sessionID.
