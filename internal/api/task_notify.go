@@ -151,7 +151,7 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		return nil
 	}
 
-	// Lifecycle signal: persist the agent's intent + SIGUSR1 the running jobs.
+	// Lifecycle signal: persist the agent's intent and stop the running jobs via the adapter.
 	//
 	// --ask still goes through ApplyAction(ask): the awaiting transition is
 	// synchronous (the agent expects the task to be visibly in `awaiting`
@@ -227,13 +227,9 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		}
 	}
 
-	// Ask the agent (claude) of each running hook job to terminate via a
-	// SIGUSR1 routed to run-agent.py. This leaves bash and the EXIT trap
-	// alive: bash receives SIGUSR1 too but ignores it via `trap '' USR1`
-	// (SIG_IGN propagates across execve to pasta/unshare/inner bash); only
-	// run-agent.py's Python handler reacts, forwarding SIGTERM to the
-	// claude process (which it launched in its own session via
-	// start_new_session=True so it doesn't receive the group signal).
+	// Ask the harness adapter to stop the agent of each running hook job
+	// gracefully. The core delegates to adapter.StopAgent, leaving bash and
+	// the EXIT trap alive so the normal completion path runs through the broker.
 	//
 	// Crucially, we do NOT call CompleteJob preemptively here. CompleteJob's
 	// finalize releases the broker token, which would reject the bash EXIT

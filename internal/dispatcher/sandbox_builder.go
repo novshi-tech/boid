@@ -65,6 +65,10 @@ type SandboxRuntimeInfo struct {
 	// DOCKER_HOST / CONTAINER_HOST / TESTCONTAINERS_* env vars.
 	// Set by the runner before BuildSandboxSpec when DockerEnabled is true.
 	ProxySocketPath string
+
+	// StopSignalName is forwarded to sandbox.Spec so generated bash scripts trap
+	// the correct harness-specific signal as SIG_IGN. Defaults to "USR1" when empty.
+	StopSignalName string
 }
 
 // BuildSandboxSpec turns a business-level JobSpec and dispatcher-side runtime
@@ -303,6 +307,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		TTY:               tty,
 		RootDir:           rt.RootDir,
 		CleanupPaths:      cleanup,
+		StopSignalName:    rt.StopSignalName,
 	}
 	return out, nil
 }

@@ -70,3 +70,8 @@ func (a *Adapter) SessionIDFromHookEnv(env map[string]string) string {
 func (a *Adapter) Usage(_ context.Context, _ string) (adapters.Usage, error) {
 	return adapters.Usage{}, nil
 }
+
+// StopSignalName returns "USR1". Claude Code uses SIGUSR1 as its agent-stop
+// signal, so the generated sandbox script traps USR1 as SIG_IGN so that
+// run-agent.py is the only process that acts on it.
+func (a *Adapter) StopSignalName() string { return "USR1" }

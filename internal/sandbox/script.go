@@ -51,6 +51,19 @@ type Spec struct {
 	// Removal runs outside the sandbox mount namespace, so still-active bind
 	// mounts cannot cause rm to traverse onto host files.
 	CleanupPaths []string
+	// StopSignalName is the bash signal name written into `trap '' <name>` in the
+	// generated scripts so harness-specific stop signals are ignored by bash/pasta/
+	// unshare but intercepted by the harness runner. Defaults to "USR1" if empty.
+	StopSignalName string
+}
+
+// stopSigName returns the bash signal name to use for the SIG_IGN trap.
+// Defaults to "USR1" when Spec.StopSignalName is empty.
+func stopSigName(spec Spec) string {
+	if spec.StopSignalName != "" {
+		return spec.StopSignalName
+	}
+	return "USR1"
 }
 
 // Prepare writes the 3 scripts (outer / setup / inner) to /tmp and returns
@@ -92,14 +105,14 @@ func generateOuterScript(spec Spec, outerPath, setupPath, innerPath string) stri
 	// onto host files via a stale bind. The case guard prevents an unrelated
 	// $root_dir from being rm'd if the daemon was misconfigured.
 	cleanup := buildOuterCleanup(spec.CleanupPaths)
+	sigName := stopSigName(spec)
 	if spec.TTY {
 		return fmt.Sprintf(`#!/bin/bash
-# Ignore SIGUSR1 — this is the daemon's "agent-stop" signal, meant for
-# run-agent.py only. SIG_IGN propagates across execve(2) so pasta / unshare /
-# inner bash all inherit this disposition and survive a process-group
-# SIGUSR1 without dying. run-agent.py overrides via signal.signal() to act
-# on it.
-trap '' USR1
+# Ignore the harness agent-stop signal (SIG_IGN). SIG_IGN propagates across
+# execve(2) so pasta / unshare / inner bash all inherit this disposition and
+# survive a process-group signal without dying. The harness runner overrides
+# the disposition to act on it.
+trap '' %s
 root_dir=%s
 exec 3>&2
 pasta_stderr=$(mktemp -t boid-pasta-stderr-XXXXXX.log)
@@ -119,10 +132,10 @@ rm -f "$pasta_stderr" 2>/dev/null || true
     rm -f %s %s %s 2>/dev/null || true
 fi
 exit $exit_code
-`, rootDir, setupPath, cleanup, qOuter, qSetup, qInner)
+`, sigName, rootDir, setupPath, cleanup, qOuter, qSetup, qInner)
 	}
 	return fmt.Sprintf(`#!/bin/bash
-trap '' USR1
+trap '' %s
 root_dir=%s
 pasta_stderr=$(mktemp -t boid-pasta-stderr-XXXXXX.log)
 pasta --config-net \
@@ -141,7 +154,7 @@ rm -f "$pasta_stderr" 2>/dev/null || true
     rm -f %s %s %s 2>/dev/null || true
 fi
 exit $exit_code
-`, rootDir, setupPath, cleanup, qOuter, qSetup, qInner)
+`, sigName, rootDir, setupPath, cleanup, qOuter, qSetup, qInner)
 }
 
 // buildOuterCleanup returns the unconditional cleanup snippet inserted into
@@ -168,9 +181,9 @@ func generateInnerScript(spec Spec) string {
 
 	b.WriteString("#!/bin/bash\nset -e\n")
 	// Defense-in-depth: SIG_IGN should already be inherited from the outer
-	// script across all the execve hops, but re-applying it here documents
-	// the contract that only run-agent.py acts on SIGUSR1.
-	b.WriteString("trap '' USR1\n\n")
+	// script across all execve hops, but re-applying it here documents the
+	// contract that only the harness runner acts on the stop signal.
+	fmt.Fprintf(&b, "trap '' %s\n\n", stopSigName(spec))
 
 	// Stable env ordering for deterministic script output.
 	keys := make([]string, 0, len(spec.Env))

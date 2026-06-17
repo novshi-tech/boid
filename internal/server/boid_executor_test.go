@@ -66,6 +66,7 @@ func (a *recordingAdapter) SessionIDFromHookEnv(_ map[string]string) string     
 func (a *recordingAdapter) Usage(_ context.Context, _ string) (adapters.Usage, error) {
 	return adapters.Usage{}, nil
 }
+func (a *recordingAdapter) StopSignalName() string { return "USR1" }
 
 func (a *recordingAdapter) waitStopped(t *testing.T) {
 	t.Helper()

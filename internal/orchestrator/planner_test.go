@@ -28,6 +28,7 @@ func (stubHarnessAdapter) SessionIDFromHookEnv(env map[string]string) string {
 func (stubHarnessAdapter) Usage(_ context.Context, _ string) (adapters.Usage, error) {
 	return adapters.Usage{}, nil
 }
+func (stubHarnessAdapter) StopSignalName() string { return "USR1" }
 
 type stubProjectCatalog struct {
 	projects []*Project
