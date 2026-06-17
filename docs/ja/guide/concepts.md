@@ -85,7 +85,7 @@ hook を 1 度実行した記録のこと。 job には独自の status (`runnin
 hook を実行する隔離環境です。 実装としては Linux の mount namespace + chroot を使い、
 
 - 読み書きできるパスは worktree (または worktree を持たないタスク — supervisor タスクや、 project トップ `worktree:` を設定していないプロジェクトの executor タスク — ではプロジェクトのルートディレクトリ) のみに絞る
-- ネットワーク接続先は kit が宣言したドメインに限定する
+- ネットワーク接続先は `cmd/start.go` の `defaultAllowedDomains` による組み込みリストと `~/.config/boid/config.yaml` の `sandbox.allowed_domains` をマージした許可リストに限定する。 kit ごとのドメイン宣言は存在せず、 許可リストはグローバルに適用される
 - ホストマシンのその他のディレクトリ (ホーム、 SSH 鍵、 他プロジェクトなど) は見えなくする
 
 という制約をかけます。 これにより、 エージェントが暴走してもタスクの作業領域から外には出られません。

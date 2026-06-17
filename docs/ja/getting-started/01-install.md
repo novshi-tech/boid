@@ -60,12 +60,14 @@ boid stop
 |---|---|
 | `~/.local/share/boid/boid.db` | タスク・ジョブ・プロジェクト等を保存する SQLite データベース |
 | `~/.local/share/boid/kits/` | インストール済みの拡張パッケージ (kit) のソースツリー |
-| `~/.local/share/boid/runtimes/` | タスクごとに作業ディレクトリを切るための一時領域 (一定期間で自動削除) |
+| `~/.local/share/boid/runtimes/` | タスクごとに作業ディレクトリを切るための一時領域 (GC ループで自動削除) |
 | `~/.local/share/boid/secret.key` | API キー等の機密値を暗号化するための鍵 (パーミッション 0600) |
 | `~/.local/share/boid/web_secret` | Web UI のセッション cookie 署名鍵 (パーミッション 0600) |
 | `~/.local/state/boid/boid.log` | daemon の標準出力・エラーを書き出すログ (サイズ上限でローテーション) |
 | `~/.config/boid/config.yaml` | ユーザによる任意の設定上書き |
 | `$XDG_RUNTIME_DIR/boid.sock` | CLI と daemon を繋ぐ UNIX ソケット ( `XDG_RUNTIME_DIR` が無い環境では `/tmp/boid-<uid>.sock` ) |
+
+daemon は起動 10 秒後に GC ループを開始し、以降 24 時間ごとに繰り返します。30 日より古いデータを複数のスコープにわたって削除します: `runtimes/<runtime_id>/` ディレクトリ、worktree ディレクトリ、`/tmp/boid-*` 一時ファイル、DB 上の terminal タスク・アクション・ジョブレコード、失効済みデバイスのエントリが対象です。手動実行は `boid gc` で行えます。
 
 `~/.config/boid/config.yaml` は任意です。存在しない場合は既定値で動作します。
 

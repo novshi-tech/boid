@@ -52,11 +52,14 @@ curl --unix-socket "$XDG_RUNTIME_DIR/boid.sock" http://localhost/api/health
 
 | Method | Path | Role |
 |---|---|---|
-| GET | `/api/projects` | List registered projects. |
+| GET | `/api/projects` | List registered projects (query: `workspace_id`). |
 | POST | `/api/projects` | Register a project (`{"work_dir": "<path>"}`). |
+| GET | `/api/projects/{id}` | Project detail. |
+| DELETE | `/api/projects/{id}` | Unregister a project. |
 | POST | `/api/projects/reload` | Re-read every project's `project.yaml`. |
 | GET | `/api/projects/{id}/commands` | List the project's `commands`. |
 | GET | `/api/projects/{id}/commands/{name}` | Show one command. |
+| POST | `/api/projects/{id}/commands/{name}/execute` | Execute a named command. |
 | PUT | `/api/projects/{id}/workspace` | Update workspace assignment. |
 
 For the schema, see [`project.yaml` reference](project-yaml.md). For the CLI, see [CLI / Project](cli.md#project).
@@ -66,22 +69,24 @@ For the schema, see [`project.yaml` reference](project-yaml.md). For the CLI, se
 | Method | Path | Role |
 |---|---|---|
 | GET | `/api/workspaces` | List workspaces. |
-| GET | `/api/workspaces/{id}` | Workspace detail. |
 
 ### Task
 
 | Method | Path | Role |
 |---|---|---|
-| GET | `/api/tasks` | List tasks (query params: `status`, `behavior`, `workspace_id`). |
+| GET | `/api/tasks` | List tasks (query params: `status`, `behavior`, `workspace_id`, `project_id`). |
 | POST | `/api/tasks` | Create a task (body is the JSON form of `taskCreateSpec`). |
 | POST | `/api/tasks/import` | Bulk import (JSONL). |
 | GET | `/api/tasks/{id}` | Task detail. |
 | GET | `/api/tasks/{id}/detail` | Task detail plus actions / jobs (used by the Web UI detail view). |
 | PATCH | `/api/tasks/{id}` | Update a task (`UpdateTaskRequest`: `payload` / `instructions` / other fields). |
-| DELETE | `/api/tasks/{id}` | Delete a task. |
+| DELETE | `/api/tasks/{id}` | Delete a task (`?force=true` to skip state checks). |
 | POST | `/api/tasks/{id}/duplicate` | Duplicate a task. |
 | POST | `/api/tasks/{id}/rerun` | Reset a `done` / `aborted` task to `pending` and re-run. |
-| GET | `/api/tasks/{id}/hooks` | List hooks that fire at the task's current status. |
+| GET | `/api/tasks/{id}/hooks` | List hooks that fire at the task's current status (query: `status`). |
+| GET | `/api/tasks/{id}/field` | Fetch a single field value from the task. |
+| GET | `/api/tasks/{id}/commands` | List the task's project commands. |
+| POST | `/api/tasks/{id}/commands/{name}/execute` | Execute a named project command in the task's context. |
 | POST | `/api/tasks/{id}/hooks/{hook_id}/replay` | Replay one hook. |
 | GET | `/api/tasks/{id}/events` | **SSE** stream of task events. |
 | POST | `/api/tasks/{id}/notify` | Send an agent notification. When `ask` is present, transitions the task to `awaiting`. |
@@ -91,16 +96,22 @@ For the schema, see [`project.yaml` reference](project-yaml.md). For the CLI, se
 
 ```json
 {
+  "id": "<uuid>",
   "project_id": "<id>",
   "title": "...",
+  "description": "...",
   "behavior": "<name>",
   "auto_start": true,
   "payload": { ... },
-  "instructions": { ... }
+  "instructions": { ... },
+  "remote_id": "...",
+  "traits": { ... },
+  "ref": "...",
+  "parent_id": "<uuid>"
 }
 ```
 
-Pass `behavior_spec` instead of `behavior` to specify the behavior inline (see [`project.yaml` / BehaviorSpec](project-yaml.md)).
+Pass `behavior_spec` instead of `behavior` to specify the behavior inline (see [`project.yaml` / BehaviorSpec](project-yaml.md)). `id` lets callers supply a deterministic UUID (idempotent create). `parent_id` links the task to a parent task.
 
 ### Notify and answer
 
@@ -116,15 +127,25 @@ Request body:
 {
   "message": "Should I merge PR #42?",
   "ask": "Proceed with the merge?",
-  "question_id": "q-550e8400"
+  "question_id": "q-550e8400",
+  "session_id": "<agent-session-id>",
+  "progress": true,
+  "done": true,
+  "fail": true
 }
 ```
 
 | Field | Required | Description |
 |---|---|---|
-| `message` | ◎ | Notification text. Passed to the notify script as `BOID_MESSAGE`. |
-| `ask` | | Question text. When present, transitions the task to `awaiting`. |
+| `message` | ◎ (except when `progress` is set) | Notification text. Passed to the notify script as `BOID_MESSAGE`. |
+| `ask` | | Question text. When present, transitions the task to `awaiting`. Mutually exclusive with `done`/`fail`/`progress`. |
 | `question_id` | | UUID for this Q&A turn. Auto-generated when omitted. |
+| `session_id` | | Agent session ID that originated this notification. |
+| `progress` | | When `true`, records a progress entry on the timeline only (no state transition). |
+| `done` | | When `true`, records a `done_request` on the timeline; the task transitions to `done` after the runtime exits. |
+| `fail` | | When `true`, records a `fail_request` on the timeline; the task transitions to `aborted` after the runtime exits. |
+
+`ask`, `done`, `fail`, and `progress` are mutually exclusive. FYI notifications (none of the above) from child tasks are silently dropped — only root-task FYI fires the notify hook.
 
 Response: `204 No Content`
 
@@ -132,9 +153,9 @@ Error codes:
 
 | Code | Meaning |
 |---|---|
-| 400 | `message` is empty |
+| 400 | `message` is empty (when required) |
 | 404 | Task not found |
-| 501 | `notify.command` is not configured |
+| 501 | `notify.command` is not configured (rare; service is always wired) |
 | 409 | `ask` was given but the task is not in `executing` state |
 
 #### `POST /api/tasks/{id}/answer`
@@ -184,36 +205,38 @@ Body:
 
 `type` is one of `start`, `done`, `reopen`, `ask`, `answer`, `abort`. `payload` is optional metadata. For the `ask` / `answer` operations the dedicated `/notify` / `/answer` endpoints above are simpler to use.
 
-Append `?follow=true` to wait until the state machine's auto-transitions settle before returning.
-
 ### Job
 
 | Method | Path | Role |
 |---|---|---|
-| GET | `/api/jobs` | List jobs (filter with `task_id`, etc.). |
+| GET | `/api/jobs` | List jobs (query: `task_id`, `status`, `interactive`, `taskless`). |
 | GET | `/api/jobs/{id}` | Job detail (status / exit_code / output). |
-| POST | `/api/jobs/{id}/done` | (Internal) Notify the daemon that a hook has finished. Accepts `--exit-code` and a payload-patch file. |
-| GET | `/api/jobs/{id}/log` | **SSE** stream of live job log. |
+| PATCH | `/api/jobs/{id}` | Update job metadata (e.g. `display_name`). |
+| POST | `/api/jobs/{id}/done` | (Internal) Notify the daemon that a hook has finished. Accepts `exit_code` and `output` in body; a payload-patch file may be included. |
+| GET | `/api/jobs/{id}/log` | Job log. Without `?follow=true` returns a `text/plain` snapshot. With `?follow=true` streams as **SSE** (`data: <line>` events only; no `event:` field). |
 | GET | `/api/jobs/{id}/attach/ws` | **WebSocket** to attach to a running runtime (interactive jobs). |
+| POST | `/api/jobs/{id}/agent-stop` | Send a stop signal to the agent running this job. |
+| POST | `/api/jobs/{id}/attach` | (Internal) Attach a PTY/pipe to a running job. |
+| POST | `/api/jobs/{id}/resize` | Resize the PTY for a running interactive job. |
 
 ### Secret
 
 | Method | Path | Role |
 |---|---|---|
-| GET | `/api/secrets` | List keys (values are not returned). |
-| POST | `/api/secrets` | Set a secret (key / value in body, namespace via query parameter). |
-| DELETE | `/api/secrets/{key}` | Delete a secret. |
+| GET | `/api/secrets` | List keys (values are not returned). Namespace via query `?namespace=`. |
+| POST | `/api/secrets` | Set a secret. Body: `{"key": "...", "value": "...", "namespace": "..."}`. |
+| DELETE | `/api/secrets/{key}` | Delete a secret. Namespace via query `?namespace=`. |
 | GET | `/api/secrets/{key}/value` | Fetch the value (intended for sandbox / agent callers). |
 
-The namespace is set with `?namespace=...`; defaults to `default` when omitted.
+For `POST`, namespace is a **body field** (not a query parameter). For `GET` and `DELETE`, namespace is a **query parameter** (`?namespace=`). Both default to `default` when omitted.
 
 ### GC
 
 | Method | Path | Role |
 |---|---|---|
-| POST | `/api/gc` | Run GC immediately. The body can carry `older_than` and similar parameters. |
+| POST | `/api/gc` | Run GC immediately. The body can carry `older_than`, `dry_run`, and similar parameters. |
 
-The daemon's automatic GC loop runs in the background, so you rarely call this manually. Useful for debugging.
+The daemon's automatic GC loop runs in the background, so you rarely call this manually. Useful for debugging. When `dry_run` is `true`, reports what would be deleted without removing anything.
 
 ### Web UI management
 
@@ -221,11 +244,10 @@ Pairing and device management for the [Web UI](../guide/web-ui.md). These endpoi
 
 | Method | Path | Role |
 |---|---|---|
-| POST | `/api/web/pair` | Issue a pairing code. |
+| POST | `/api/web/pair` | Issue a pairing code. Optional body: `{"label": "...", "expires_in": "<duration>"}`. |
 | GET | `/api/web/devices` | List paired devices. |
 | DELETE | `/api/web/devices/{id}` | Revoke one device. |
 | DELETE | `/api/web/devices` | Revoke every device. |
-| POST | `/api/web/url` | Save the public URL to `config.yaml`. |
 
 The pairing screen at `/login` (HTML) and the cookie-issuing `/auth/redeem` (POST) live alongside these. See [Web UI internals](../architecture/web-internals.md) for the full picture.
 
@@ -235,16 +257,17 @@ Endpoints used by the `boid` shim inside a sandbox to reach back to the host. No
 
 | Method | Path | Role |
 |---|---|---|
+| GET | `/api/broker` | List active broker tokens / shim connections. |
 | POST | `/api/broker/register` | Issue a shim token when a hook starts. |
 
 ## Server-Sent Events (SSE)
 
-The two SSE endpoints are `/api/tasks/{id}/events` and `/api/jobs/{id}/log`.
+The primary SSE endpoint is `/api/tasks/{id}/events`. `/api/jobs/{id}/log` supports an optional SSE mode.
 
-### Common
+### Common (SSE endpoints)
 
 - `Content-Type: text/event-stream`.
-- A `:ping\n\n` keepalive every 20 seconds to keep idle proxies from disconnecting.
+- A `:ping\n\n` keepalive every 20 seconds to keep idle proxies from disconnecting (events endpoints only).
 - Client disconnects (`r.Context().Done()`) cause the request handler to clean up.
 
 ### `/api/tasks/{id}/events`
@@ -261,7 +284,8 @@ For details, see [Web UI internals / SSE](../architecture/web-internals.md#serve
 
 ### `/api/jobs/{id}/log`
 
-Sends a snapshot (everything captured so far) once, then forwards live runtime stdout/stderr deltas. Ends when the job finishes.
+- **Without `?follow=true`**: returns a `text/plain` snapshot of the log captured so far and closes.
+- **With `?follow=true`**: streams as SSE. Format is `data: <line>` only — no `event:` field. `:ping` keepalive is **not** sent on this endpoint. Ends when the job finishes.
 
 ## Error format
 

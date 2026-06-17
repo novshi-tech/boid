@@ -22,6 +22,13 @@ gc:
 | `interval` | duration | `24h` | GC run interval |
 | `older_than` | duration | `720h` | Minimum age of data to delete |
 
+These settings are read from `config.yaml` via a custom YAML parser (`Config.UnmarshalYAML`).
+Although the `GCConfig` struct fields carry `yaml:"-"` tags, the values are explicitly decoded and applied at load time.
+
+> **Note:** `older_than` in `config.yaml` only affects the **automatic GC loop** (daemon background goroutine).
+> Manual `boid gc` (and `POST /api/gc`) uses a **hardcoded default of 720h (30 days)** and does not read the config value.
+> To override the threshold for a one-off manual run, use `boid gc --older-than <duration>`.
+
 Manual GC can be triggered with `boid gc`.
 
 ---
@@ -36,10 +43,14 @@ web:
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `http_addr` | string | `":8080"` | HTTP server listen address |
+| `http_addr` | string | `""` | HTTP server listen address |
 | `public_url` | string | — | External URL when exposed via Cloudflare Tunnel etc. |
 
+> **Default address:** `config.DefaultConfig()` leaves `http_addr` empty. The effective default of `127.0.0.1:8080` is applied as a fallback in `cmd/start.go` at startup time.
+
 `http_addr` can also be changed with `boid web set-addr <addr>`.
+
+> **Warning:** `boid web set-addr` and `boid web set-url` rewrite `config.yaml` via YAML round-trip (`yaml.Marshal`), which **strips all comments** from the file.
 
 ---
 

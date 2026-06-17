@@ -16,7 +16,7 @@ notify:
 
 `command` is a `[]string`. The first element is the executable and the rest are additional arguments. It is spawned directly via `exec.CommandContext`, not through a shell, so shell expansions (e.g. `~`) do not apply.
 
-If the setting is empty or `config.yaml` does not exist, `boid task notify` returns HTTP 501 and the notification is silently skipped. Task execution is unaffected.
+If `notify.command` is empty or omitted, the notification is silently skipped and task execution is unaffected. (The HTTP 501 path is effectively unreachable in normal operation because the notify service is always wired up by the daemon.)
 
 ## Environment variables passed to the script
 
@@ -29,9 +29,19 @@ The notification script receives the following environment variables:
 | `BOID_PROJECT_ID` | Project UUID |
 | `BOID_PROJECT_NAME` | Project name (best-effort; empty if unavailable) |
 | `BOID_MESSAGE` | Text the agent passed with `--message` |
-| `BOID_TASK_URL` | Task detail URL (`<public_url>/tasks/<id>` if `web.public_url` is set, otherwise empty) |
+| `BOID_TASK_URL` | Context-dependent URL (see below). Empty if `web.public_url` is not set. |
 
 The authoritative source is the `Notify` function in `internal/notify/notify.go`.
+
+### `BOID_TASK_URL` by notify mode
+
+The value of `BOID_TASK_URL` depends on how the notification was triggered:
+
+| Notify mode | `BOID_TASK_URL` value |
+|---|---|
+| `--ask` | `<public_url>/tasks/{id}/questions/{question_id}` |
+| `--done` / `--fail` | `<public_url>/tasks/{id}` |
+| FYI (no lifecycle flag) | `<public_url>/jobs/{job_id}` if a running interactive job exists, otherwise `<public_url>/tasks/{id}` |
 
 ## How agents call it
 
@@ -41,11 +51,20 @@ An agent calls the command like this:
 boid task notify ${BOID_TASK_ID} --message "Need a decision on how to apply PR #42 review feedback"
 ```
 
-Hook-launched agent sessions always run interactively on a PTY, so there is no need to branch on `BOID_INTERACTIVE` between autonomous and interactive modes. Calling `boid task notify --ask` transitions the task to `awaiting` and the boid daemon SIGTERMs the runtime immediately. When the user replies, the daemon spawns a fresh session and surfaces the answer through `$BOID_USER_ANSWER`.
+Hook-launched agent sessions always run interactively on a PTY, so there is no need to branch on `BOID_INTERACTIVE` between autonomous and interactive modes. Calling `boid task notify --ask` transitions the task to `awaiting` and the boid daemon sends **SIGUSR1** to the runtime to request a stop. This preserves the EXIT trap so that `boid job done` can still complete normally. When the user replies, the daemon spawns a fresh session and surfaces the answer through `$BOID_USER_ANSWER`.
 
 Immediately before notify, the agent emits the question body (options, context, decision criteria) to the session so the user can read it in the Web UI session viewer and respond there.
 
 For the full calling policy, see the "いつ notify を呼ぶか" (when to call notify) section in [`/boid-supervisor` SKILL.md](../../../internal/skills/data/boid-supervisor/SKILL.md).
+
+## Guards on `notify --done`
+
+`boid task notify --done` goes through a `verifyDoneClaim` check before recording the `done_request`. The daemon rejects the request (HTTP 409) in two cases:
+
+1. **Incomplete child tasks**: one or more child tasks are still in a non-terminal state.
+2. **Missing release commit**: the agent reported a commit SHA that does not exist in the repository.
+
+These checks are anti-confabulation guards — they prevent an agent from marking a task done when the actual work was not completed.
 
 ## Script example 1: ntfy.sh
 

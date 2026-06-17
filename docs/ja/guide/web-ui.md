@@ -6,13 +6,13 @@
 
 `boid start` した後、ブラウザで `http://localhost:8080` を開くとタスク一覧が表示されます。
 
-listen アドレスは変更可能です:
+listen アドレスは `boid web set-addr` で変更できます:
 
 ```bash
-boid start --http-addr 127.0.0.1:5171
+boid web set-addr 127.0.0.1:5171
 ```
 
-Web UI を完全に無効化したい場合は空文字を渡します (`--http-addr ""`)。 daemon が HTTP listener を立てなくなります。
+**Web UI を無効化することはできません。** アドレスを空文字に設定しても HTTP listener の起動は止まらず、 daemon は `:8080` にフォールバックします。 現時点では HTTP listener を完全に停止する手段はありません。
 
 ## 他デバイスから
 
@@ -128,10 +128,8 @@ boid web revoke-all              # 全部失効
 - **タスク一覧** (status / behavior / project でフィルタ)
 - **タスク詳細** (payload / job / インライン action)
 - **プロジェクト一覧・詳細**
-- **ジョブ一覧・詳細** (read-only ログ)
+- **ジョブ一覧・詳細** インラインインタラクティブ端末付き (xterm.js、`GET /api/jobs/{id}/attach/ws` で live attach)
 - **ペアリング / ログイン** フロー
-
-xterm.js による interactive PTY (live agent attach) はロードマップにあり、未提供です。
 
 ---
 

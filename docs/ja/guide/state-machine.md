@@ -38,11 +38,26 @@ pending -----> executing -----> done             |
 |---|---|---|---|
 | `start` | `pending` | `executing` | |
 | `done` | `executing` | `done` | 強制完了 (通常は自動遷移にまかせる) |
+| `done` | `awaiting` | `done` | awaiting 状態からの強制完了 |
+| `fail` | `executing` | `aborted` | executing から強制 abort |
 | `reopen` | `done` | `executing` | 新しい instruction を append して再開 (`--message` で渡す) |
+| `reopen` | `aborted` | `executing` | aborted のタスクを executing に戻す |
 | `ask` | `executing` | `awaiting` | `boid task notify --ask` が発行。 `answer` が届くまでタスクを停止する |
 | `answer` | `awaiting` | `executing` | `boid task answer` または Web UI が発行。 hook が再起動される |
 | `abort` | 終端でない任意の状態 | `aborted` | |
 | `job_failed` (system) | 終端でない任意の状態 | `aborted` | |
+
+### 非遷移アクション (タイムライン記録のみ)
+
+以下のアクションはタスクの status を変えず、 タイムラインにエントリを記録するだけです。
+
+| Action | 用途 |
+|---|---|
+| `progress` | エージェントからの進捗報告 (情報提供) |
+| `done_request` | `boid task notify --done` が記録。 ランタイム終了後に自動 advance が起動する |
+| `fail_request` | `boid task notify --fail` が記録。 ランタイム終了後に自動 advance が起動する |
+
+`notify --done` / `notify --fail` は **即時遷移ではありません**。 `done_request` / `fail_request` を記録し、 ランタイムプロセスが終了した後でデーモンが状態を自動的に進めます。
 
 ## 自動遷移
 
@@ -50,13 +65,21 @@ pending -----> executing -----> done             |
 
 ### `executing` から
 
-- `lifecycle.executed` が `true` (= 直近の hook が `boid job done` で正常終了した) → `done`
+以下の 3 つのルールを優先度順に評価します:
+
+1. `lifecycle.executed` が設定され **かつ** `lifecycle.fail` が設定されている → `aborted`
+2. `lifecycle.executed` が設定され **かつ** `lifecycle.done` が設定されている → `done`
+3. `lifecycle.executed` のみが設定されている (レガシー hook 経路、明示的な done/fail シグナルなし) → `done`
 
 `lifecycle.executed` は履歴から自動算出される transient な値ではなく、 hook の終了をフックして state machine が評価するだけのフラグです。 一度 done に遷移するとリセットされ、 reopen で executing に戻った場合は再度 hook の完了を待ちます。
 
+### プロジェクトロックと `awaiting`
+
+タスクが `awaiting` 状態にある間、 プロジェクトロックは **解放されます**。 同一プロジェクト (同一 HEAD branch) の他のタスクは実行可能な状態になります。 ロックは `answer` アクションでタスクが `executing` に戻る際に再取得されます。
+
 ## reopen で instruction を追加する
 
-`boid task reopen <id> --message "..."` は done のタスクを再 executing に戻し、 新しい `Instruction` を `Task.Instructions` 配列に append します。 配列の最後の要素が active として扱われ、 agent / model / interactive は前回 active の値を継承します。
+`boid task reopen <id> --message "..."` は done または aborted のタスクを再 executing に戻し、 新しい `Instruction` を `Task.Instructions` 配列に append します。 配列の最後の要素が active として扱われ、 `agent` / `model` は前回 active の値を継承します。
 
 ```bash
 # done のタスクを再開して 「conflict を解消して再 push」 を依頼する

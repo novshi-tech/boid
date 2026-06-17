@@ -40,7 +40,7 @@ hooks:
     kind: agent                 # (任意) "agent" を付けると instruction routing 対象
     agent: my-agent             # (任意) この hook 宛の instruction を受け取る
     traits:
-      consumes: [instructions]
+      consumes: [artifact?]     # 読み取る payload trait; 有効値: artifact / verification / awaiting
       produces: [artifact]
 
 commands:                       # (任意) サンドボックス内 boid exec 用コマンド
@@ -86,24 +86,24 @@ kit が動くために PATH 上に必要な host コマンド。 インストー
 
 詳細は次章のスクリプトプロトコルを参照。 hook は `executing` 状態でのみ走ります。
 
-`traits.consumes` と `traits.produces` は、 hook がどの payload trait を読み書きするかを宣言します。 `consumes` の末尾に `?` を付けると optional (なくてもエラーにしない) になります。
+`traits.consumes` と `traits.produces` は、 hook がどの payload trait を読み書きするかを宣言します。 `consumes` の末尾に `?` を付けると optional になります (その trait が payload にない場合でも hook は発火します)。 有効な trait 名は `artifact`、 `verification`、 `awaiting` の 3 つです。
 
 ## Hook スクリプトのプロトコル
 
-ここでは概略のみ示します。 完全な仕様 (TaskJSON のフィールド一覧、 環境変数、 `payload_patch.json` ファイル経路など) は [Hook スクリプトプロトコル リファレンス](../reference/hook-contract.md) を参照してください。
+ここでは概略のみ示します。 完全な仕様 (コンテキストファイルのスキーマ、 環境変数一覧、 `payload_patch.json` ファイル経路など) は [Hook スクリプトプロトコル リファレンス](../reference/hook-contract.md) を参照してください。
 
-### 入力 (stdin)
+### 入力 (コンテキストファイルと環境変数)
 
-タスク全体を JSON で受け取ります (TaskJSON)。 代表的なフィールド:
+hook ジョブはインタラクティブな PTY セッション (`Interactive: true`) で実行されるため、 **stdin はデータ受け渡しに使われません**。 タスクのメタデータはコンテキストファイルと環境変数を通じて提供されます。
 
-- `id` — タスク ID
-- `project_id`、 `behavior`
-- `status` — 現在の状態
-- `title`、 `description`
-- `payload` — 現在の payload
-- `instructions` — routed 済みの instruction (`kind: agent` の hook のみ)
+**コンテキストファイル** (hook 実行前に `$HOME/.boid/context/` へ書き込まれます):
 
-加えて環境変数として `BOID_TASK_ID` / `BOID_JOB_ID` / `BOID_PROJECT_ID` などがセットされます。
+- `task.yaml` — タスクのスナップショット: `id`、 `title`、 `status`、 `behavior`、 `description`
+- `instructions.yaml` — この hook へ routing された instruction (`kind: agent` の hook のみ)
+- `environment.yaml` — 環境メタデータ
+- `payload.yaml` / `payload.json` — フィルタ済み payload (`consumes` に宣言した trait のみ)
+
+**環境変数** として `BOID_TASK_ID` / `BOID_JOB_ID` などがサンドボックス内にセットされます。 完全なリストは [Hook スクリプトプロトコル リファレンス](../reference/hook-contract.md) を参照してください。
 
 ### 出力 (payload patch)
 

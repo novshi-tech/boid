@@ -22,6 +22,13 @@ gc:
 | `interval` | duration | `24h` | GC の実行間隔 |
 | `older_than` | duration | `720h` | 削除対象とする最小経過時間 |
 
+これらの設定は `Config.UnmarshalYAML` によって `config.yaml` から読み込まれます。
+`GCConfig` 構造体フィールドには `yaml:"-"` タグが付いていますが、ロード時に独自デコード処理で明示的に適用されます。
+
+> **注意:** `config.yaml` の `older_than` は **daemon の自動 GC ループ**にのみ反映されます。
+> 手動実行の `boid gc`（および `POST /api/gc`）は **720h（30 日）のハードコード値**を使用し、config の値は参照しません。
+> 一回限りの手動実行で閾値を変えたい場合は `boid gc --older-than <duration>` を使用してください。
+
 手動実行は `boid gc` で可能。
 
 ---
@@ -36,10 +43,14 @@ web:
 
 | キー | 型 | デフォルト | 説明 |
 |---|---|---|---|
-| `http_addr` | string | `":8080"` | HTTP サーバの listen アドレス |
+| `http_addr` | string | `""` | HTTP サーバの listen アドレス |
 | `public_url` | string | — | Cloudflare Tunnel 等で公開する場合の外部 URL |
 
+> **デフォルトアドレスについて:** `config.DefaultConfig()` では `http_addr` は空です。実効デフォルトの `127.0.0.1:8080` は起動時に `cmd/start.go` のフォールバック処理で適用されます。
+
 `http_addr` は `boid web set-addr <addr>` コマンドでも変更できます。
+
+> **警告:** `boid web set-addr` および `boid web set-url` は YAML round-trip（`yaml.Marshal`）で `config.yaml` を書き換えるため、**ファイル内のコメントがすべて削除**されます。
 
 ---
 

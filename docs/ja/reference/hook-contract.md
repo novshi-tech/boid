@@ -8,30 +8,37 @@
 
 ### stdin
 
-hook が起動されるとき、 stdin にはタスク全体を JSON でシリアライズしたもの (TaskJSON) が流し込まれます。長さは可変なので、 スクリプト側は EOF まで読み切ってから JSON パースしてください。
+すべての hook ジョブは `Interactive: true` で起動されます。つまり stdin は PTY であり、**起動時に stdin へデータは書き込まれません**。stdin から TaskJSON を読もうとすると永遠にブロックします。
 
-TaskJSON の主なフィールド:
+タスクのメタデータは、hook 起動前に `$HOME/.boid/context/` へ書き込まれた**コンテキストファイル**経由で提供されます:
+
+| ファイル | フォーマット | 内容 |
+|---|---|---|
+| `task.yaml` | YAML | コアタスクフィールド (下表参照) |
+| `instructions.yaml` | YAML | routing 済み instruction (`kind: agent` hook 向け) |
+| `environment.yaml` | YAML | 追加の環境メタデータ |
+| `payload.json` | JSON | 現在の payload 全体 |
+
+**`task.yaml` のフィールド** (存在するフィールドはこれだけです。意図的に最小化されています):
 
 | キー | 型 | 役割 |
 |---|---|---|
 | `id` | string | タスク ID (UUID 形式) |
-| `project_id` | string | 所属プロジェクトの ID |
 | `title` | string | タスクのタイトル |
-| `description` | string | 任意の本文 |
-| `status` | string | 現在の status (`pending` / `executing` / ...) |
+| `status` | string | 現在の status (`pending` / `executing` / `awaiting` / `done` / `aborted`) |
 | `behavior` | string | behavior 名 (`supervisor` / `executor`) |
-| `traits` | string のリスト | この behavior が宣言した payload trait |
-| `readonly` | bool | サンドボックスが読み取り専用か (behavior 名から導出: supervisor=true / executor=false) |
-| `worktree` | bool | このタスクが worktree を持つか (project トップ `worktree:` と behavior 名の組み合わせで決まる) |
-| `branch_prefix` | string | worktree のブランチ名プレフィックス (常に `boid/` で固定。 設定不可) |
-| `base_branch` | string | worktree のベースブランチ (project トップ `base_branch:` を `${TASK_REMOTE_ID}` / `${current_branch}` 展開して解決) |
-| `payload` | object | 現在の payload 全体 (hook が読みたい主要素) |
-| `instructions` | map (role → Instruction) | `kind: agent` の hook でのみ意味を持つ、 routing 済みの instruction |
-| `auto_start` | bool | タスク作成時の auto_start 指定 |
-| `parent_id` | string | 親タスク (任意) |
-| `created_at` / `updated_at` | RFC3339 timestamp | 作成 / 更新時刻 |
+| `description` | string | 任意の本文 |
 
-完全な構造は [`internal/orchestrator/spec_types.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/spec_types.go) の `Task` 型を参照してください。
+スクリプト起動直後にコンテキストファイルを読んでおきます:
+
+```bash
+TASK_ID=$(yq -r .id "$HOME/.boid/context/task.yaml")
+PAYLOAD=$(cat "$HOME/.boid/context/payload.json")
+```
+
+> **非インタラクティブジョブのみ**: `kind: exec` (非インタラクティブ) の hook は、コンテキストファイルに加えて trait フィルタ済み payload を stdin でも受け取ります。インタラクティブな agent hook は stdin データを受け取りません。
+
+完全なタスク構造は [`internal/orchestrator/spec_types.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/spec_types.go) の `Task` 型を参照してください。
 
 ### 環境変数
 
@@ -39,13 +46,31 @@ hook の実行コンテキストには次の環境変数が設定されます。
 
 | 変数 | 役割 |
 |---|---|
-| `BOID_TASK_ID` | 現在のタスク ID (TaskJSON の `id` と同じ値) |
+| `BOID_TASK_ID` | 現在のタスク ID |
 | `BOID_JOB_ID` | 現在のジョブ ID (`boid job show <id>` で参照される) |
-| `BOID_PROJECT_ID` | プロジェクト ID |
 | `BOID_BASE_BRANCH` | タスクの `base_branch` (PR target となるブランチ名)。 root / child ともに設定される |
 | `BOID_PARENT_BRANCH` | 親タスクの HEAD branch。 root task では未設定 (空)。 sub-sup が `git merge $BOID_PARENT_BRANCH` などで使う |
-| `HOME` | サンドボックス内のホーム |
+| `BOID_MODEL` | このタスクの instruction に設定されているモデル名 |
+| `BOID_INVOKED_ROLE` | この hook 呼び出しを起動したロール名 |
+| `BOID_INVOKED_NAME` | ロール内の hook 名 |
+| `BOID_INVOKED_BEHAVIOR` | behavior 名 (`supervisor` / `executor`) |
+| `BOID_INSTRUCTIONS` | この hook に渡される instruction のシリアライズ済み文字列 (`kind: agent` hook 向け) |
+| `BOID_INTERACTIVE` | インタラクティブ (PTY) ジョブなら `1`、そうでなければ `0` |
+| `BOID_BUILTIN_SHIM` | サンドボックスに注入される組み込みシムバイナリのパス |
+| `BOID_HOST_IP` | サンドボックス内から到達可能なホストの IP アドレス |
+| `BOID_BROKER_SOCKET` | ホストコマンドブローカーの UNIX ソケットパス |
+| `BOID_BROKER_TOKEN` | ブローカーソケットの認証トークン |
+| `BOID_SOCKET` | boid デーモンの UNIX ソケットパス (hook 内から `boid` CLI を呼ぶために使う) |
+| `BOID_AGENT_SESSION_ID` | 実行中の agent ジョブのセッション ID。 Q&A resume フローで回答を正しい agent セッションと紐づけるために使う |
+| `BOID_USER_ANSWER` | `notify --ask` による質問に対するユーザーの回答テキスト。 resume 時に設定される |
+| `BOID_QUESTION_ID` | `BOID_USER_ANSWER` に対応する質問 ID |
+| `TERM` | ターミナルタイプ (例: `xterm-256color`) |
+| `HOME` | サンドボックス内のホームディレクトリ |
 | `PATH` | 起動側から継承したパス (kit の `env` で上書き可能) |
+
+> **注意**: `BOID_PROJECT_ID` は hook 環境には**設定されません**。この変数は `boid task notify` コマンドが内部的にエクスポートするもので、hook スクリプトには渡されません。
+
+> **Q&A resume** (`BOID_AGENT_SESSION_ID` / `BOID_USER_ANSWER` / `BOID_QUESTION_ID`): agent hook が `boid task notify --ask` を呼んだとき、boid はタスクを一時停止します。ユーザーが回答するとこの 3 変数が設定された状態で hook が resume されます。kit 作者はこれらを使って回答に応じた分岐処理や agent への転送を実装できます。
 
 加えて、 kit の `kit.yaml` で宣言した変数がすべて流し込まれます。
 
@@ -122,7 +147,7 @@ hook が stderr に書いた内容はジョブのログとして保存され、 
 
 ## agent 用の追加コンテキスト
 
-`kind: agent` で宣言した hook は、 instruction routing の対象になります。 TaskJSON の `instructions` フィールドにこの hook 宛の instruction (`Instruction` のマップ) が入って渡されます。 たとえば claude-code kit の hook は `instructions.main` を読んで agent への message として組み立てます。
+`kind: agent` で宣言した hook は、 instruction routing の対象になります。 routing 済みの instruction は `$HOME/.boid/context/instructions.yaml` と環境変数 `BOID_INSTRUCTIONS` 経由で参照できます。 たとえば claude-code kit の hook は `instructions.main` をコンテキストファイルから読んで agent への message として組み立てます。
 
 `Instruction` のフィールドは [`project.yaml` リファレンス / Instruction](project-yaml.md#instruction) を参照。
 
@@ -132,9 +157,8 @@ hook が stderr に書いた内容はジョブのログとして保存され、 
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 入力
-TASK_JSON=$(cat)
-TASK_ID=$(echo "$TASK_JSON" | jq -r .id)
+# コンテキストファイルからタスクメタデータを読む (stdin は PTY のため読まないこと)
+TASK_ID=$(yq -r .id "$HOME/.boid/context/task.yaml")
 echo "[my-hook] processing task $TASK_ID" >&2
 
 # 何かする (ここでは固定値を artifact に書くだけ)

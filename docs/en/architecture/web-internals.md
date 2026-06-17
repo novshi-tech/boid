@@ -88,13 +88,20 @@ A bad cookie or a cookie for a revoked device gets cleared, and the request is r
 ```
 host (CLI)               daemon (HTTP)              browser
 ========================================================
-boid web pair      → POST /auth/pair
+boid web pair      → POST /api/web/pair
                   ←  code: WX7K-4QJP
 displays
 "WX7K-4QJP"
                                                     GET /login
                                                     enter code
-                                                    POST /auth/redeem
+                                                    POST /login  (form submit)
+                  ← session cookie + 302 /
+
+                         -- or via magic link --
+
+boid web pair      → POST /api/web/pair
+                  ←  magic link URL
+                                                    GET /auth?token=<token>
                   ← session cookie + 302 /
 ```
 
@@ -143,7 +150,7 @@ The JS layer (HTMX) is configured via `hx-headers` to send `X-CSRF-Token`. The c
 
 `boid` exposes two SSE endpoints.
 
-### Task events (`/events/tasks/<id>`)
+### Task events (`GET /api/tasks/{id}/events`)
 
 Handler: `WebHandler.TaskEvents` in `internal/api/events_handler.go`. Pushes task status changes and payload updates to the browser.
 
@@ -158,12 +165,12 @@ Implementation notes:
 
 `TaskEventHub` is implemented separately (e.g. `internal/api/task_event_hub.go`); the dispatch loop publishes events whenever it advances a task.
 
-### Job log (`/events/jobs/<id>/log`)
+### Job log (`GET /api/jobs/{id}/log`)
 
-Handler: `JobLogSSEHandler` in `internal/api/job_log_sse.go`. Streams the live stdout/stderr of a running hook or gate.
+Handler: `JobLogSSEHandler` in `internal/api/job_log_sse.go`. Streams the live stdout/stderr of a running hook.
 
-- A snapshot (everything captured up to now) is sent first.
-- Subsequent stdout/stderr deltas come through `RuntimeSubscriber.Subscribe`.
+- Without `?follow=true`: returns a plain-text snapshot of the log captured so far (`text/plain`).
+- With `?follow=true`: upgrades to SSE (`text/event-stream`). A snapshot is sent first, then subsequent stdout/stderr deltas come through `RuntimeSubscriber.Subscribe`. SSE format is `data: <line>` only (no `event:` field). `:ping` keepalive is sent every 20 seconds.
 
 When the job ends, the subscriber channel is closed and the SSE connection terminates.
 
@@ -173,19 +180,27 @@ When the job ends, the subscriber channel is closed and the SSE connection termi
 
 ```
 chi.Router
-├── /static/*             (static assets)
-├── /login                (pairing screen)
-├── /auth/pair            (POST: issue a code)
-├── /auth/redeem          (POST: redeem a code)
-├── /auth/logout          (POST: clear cookie + revoke device)
+├── /static/*                             (static assets)
+├── /login                                (GET: pairing screen; POST: redeem code via form)
+├── /auth                                 (GET: redeem magic link token, ?token=<token>)
+├── /api/web/pair                         (POST: issue a pairing code)
+├── /api/web/devices                      (GET: list devices)
+├── /api/web/devices/{id}                 (DELETE: revoke a device)
 ├── (everything below is behind WebAuthMiddleware + CSRFMiddleware)
-├── /                     (task list)
-├── /tasks/<id>           (task detail)
-├── /projects/<id>        (project detail)
-├── /jobs/<id>            (job detail)
-├── /events/tasks/<id>    (SSE: task events)
-└── /events/jobs/<id>/log (SSE: job log)
+├── /                                     (task list)
+├── /tasks/new                            (new task form)
+├── /tasks/{id}                           (task detail)
+├── /tasks/{id}/edit                      (edit task)
+├── /tasks/{id}/questions/{question_id}   (Q&A page)
+├── /tasks/{id}/hooks                     (hook replay list)
+├── /sessions                             (session list)
+├── /sessions/new                         (new session form)
+├── /jobs/{id}                            (job detail)
+├── /api/tasks/{id}/events                (SSE: task events)
+└── /api/jobs/{id}/log                    (SSE or snapshot: job log)
 ```
+
+> **Note:** There is no `/auth/redeem`, `/auth/logout`, or `/projects/<id>` page route. Project detail is an API endpoint (`/api/projects/{id}`), not a web page.
 
 ## Related documents
 

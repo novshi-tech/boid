@@ -6,13 +6,13 @@
 
 After `boid start`, point a browser at `http://localhost:8080`. You should see the task list.
 
-The listen address is configurable:
+The listen address can be changed with `boid web set-addr`:
 
 ```bash
-boid start --http-addr 127.0.0.1:5171
+boid web set-addr 127.0.0.1:5171
 ```
 
-To disable the Web UI entirely, set the address to an empty string (or use `--http-addr ""`); the daemon will skip the HTTP listener.
+**The Web UI cannot be disabled.** Setting the address to an empty string (e.g. `boid web set-addr ""`) does not prevent the HTTP listener from starting; the daemon falls back to `:8080`. There is currently no way to stop the HTTP listener entirely.
 
 ## Access from another device
 
@@ -128,10 +128,8 @@ The current Web UI covers:
 - **Task list** with filters (status, behavior, project)
 - **Task detail** with payload, jobs, and inline actions
 - **Project list / detail**
-- **Job list / detail** (read-only logs)
+- **Job list / detail** with inline interactive terminal (xterm.js, live attach via `GET /api/jobs/{id}/attach/ws`)
 - **Pairing / login** flow
-
-Interactive PTY (xterm.js) for live agent attach is on the roadmap and not yet shipped.
 
 ---
 

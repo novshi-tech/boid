@@ -29,6 +29,7 @@ task_behaviors:
 | `name` | string | yes | Display name shown in UIs. |
 | `worktree` | bool | `false` | If `true`, allocates a dedicated git worktree for executor and supervisor tasks. **Root tasks** (`parent_id == ""`) use `base_branch` directly as the worktree HEAD; case 1 (`base_branch` matches the project HEAD) runs in the project root with no worktree. **Child tasks** always get a `boid/<task_id8>` branch worktree. See [Task kinds and worktree HEAD](#task-kinds-and-worktree-head). |
 | `base_branch` | string | (see below) | The PR target branch, resolved at task creation and stored in the row. **When omitted**: root tasks expand to the daemon's current HEAD branch (`${current_branch}` equivalent) at creation time — a detached-HEAD repository returns 400. Child tasks inherit the parent's `base_branch`. Supports `${TASK_REMOTE_ID}` and `${current_branch}` expansion (see [Dynamic base_branch](#dynamic-base_branch)). |
+| `fork_point` | string | (falls back to `origin/HEAD`) | Fork origin for case 3 (when `base_branch` does not yet exist locally or on `origin`). Any ref resolvable by `git rev-parse --verify` (branch / tag / SHA / `origin/main`). Falls back to `refs/remotes/origin/HEAD`; errors if neither is resolvable. |
 | `kits` | list of KitRef | no | Kits loaded for this project. |
 | `task_behaviors` | map (string → TaskBehavior) | yes | The kinds of tasks this project can produce. |
 | `commands` | map (string → CommandSpec) | no | Named commands the sandbox can invoke through `boid exec`. |
@@ -40,20 +41,25 @@ task_behaviors:
 
 ## `task_behaviors.<name>`
 
-The map key is the behavior's identifier and is what `boid task create` references via `behavior:`. **Only two names are supported**:
+The map key is the behavior's identifier and is what `boid task create` references via `behavior:`. The two **canonical** names are:
 
 | Name | Role |
 |---|---|
 | `supervisor` | Readonly orchestrator. Reads the request, triages it, creates child executor tasks, monitors them. Never edits files. |
 | `executor` | Writable implementer. Receives a single focused task and produces an artifact (commit / PR / payload trait). |
 
+Any other map key is also accepted (readonly defaults to `false` for non-canonical names). The legacy keys `plan` (alias for `supervisor`) and `dev` (alias for `executor`) are still accepted during the migration period but are deprecated.
+
 Each behavior entry has very few knobs:
 
 | Key | Type | Default | Role |
 |---|---|---|---|
-| `name` | string | the map key | Display label (optional). |
 | `traits` | list of string | (empty) | Top-level payload trait names this behavior is allowed to use (e.g. `[artifact]`). |
 | `default_instruction` | Instruction | (empty) | A single Instruction template appended to `Task.Instructions` when a task is created. |
+| `kits` | list of KitRef | (empty) | Additional kits loaded only for this behavior, merged with the project-top `kits` list. |
+| `commands` | map (string → CommandSpec) | (empty) | Additional named commands available inside this behavior's sandbox, merged with the project-top `commands` map. |
+
+> **Note:** a `name` field under `task_behaviors.<name>` is silently ignored by the loader. Use the map key as the behavior identifier.
 
 ### Removed behavior-level fields
 
@@ -110,7 +116,7 @@ To prevent two tasks from sharing the same working copy simultaneously, `boid` h
 
 - **Serialised**: two root tasks in the same project with the same `base_branch` queue in FIFO order — the second waits until the first reaches a terminal state.
 - **Parallel-safe**: root tasks with different `base_branch` values, root + child combinations, and any two child tasks are all allowed to run simultaneously.
-- The lock is held for the full executing lifetime, including while the task is in `awaiting`. It is released only on a terminal transition.
+- The lock is held for the full executing lifetime. When a task enters `awaiting` (via `boid task notify --ask`), the lock is **released** so that other tasks on the same branch can proceed; the lock is re-acquired when the task resumes (via `answer`). It is finally released on a terminal transition.
 - No validation at task-creation time — the lock is acquired when the task transitions to `executing`.
 
 ### Base synchronisation and merge responsibility
@@ -131,7 +137,7 @@ The merge command, timing, and target are the **responsibility of the project in
 
 A single Instruction object. At task creation it is appended to `Task.Instructions` and becomes the active instruction the first time the task enters `executing`.
 
-A `boid task reopen <id> --message "..."` call appends a new Instruction at the end of the array; the last element is what the agent sees, and `agent` / `model` / `interactive` are inherited from the previously active one.
+A `boid task reopen <id> --message "..."` call appends a new Instruction at the end of the array; the last element is what the agent sees, and `agent` / `model` are inherited from the previously active one.
 
 ## Shared building blocks
 
@@ -188,6 +194,10 @@ Each entry (a `HostCommandSpec`) has:
 
 A specialised use: setting `path` to a relative path inside the project or a kit forwards only that exact path to the host (for example `path: e2e/run.sh`).
 
+> **Reserved names:** `git`, `boid`, and `fetch` are built-in sandbox commands. Declaring them in `host_commands` has no effect — they are always routed internally.
+
+`local/<name>` kit references (e.g. `local/my-kit`) resolve to a kit directory relative to the project root, allowing local kit development without publishing to a remote registry.
+
 ### BindMount
 
 Each `additional_bindings` entry mounts a path from the host into the sandbox.
@@ -200,6 +210,11 @@ additional_bindings:
   - source: ${HOME}/.netrc
     is_file: true
     optional: true
+  # bind a gitignored file from the project root into the worktree
+  - source: ${PROJECT_WORKDIR}/global.json
+    target: ${WORKTREE}/global.json
+    is_file: true
+    optional: true
 ```
 
 | Key | Type | Default | Role |
@@ -210,13 +225,23 @@ additional_bindings:
 | `is_file` | bool | `false` | Set to `true` if `source` is a single file. |
 | `optional` | bool | `false` | If `true`, skip silently when `source` does not exist on the host. |
 
+#### Dynamic tokens: `${WORKTREE}` / `${PROJECT_WORKDIR}`
+
+In addition to regular environment variables (`${HOME}`, etc.), `source` and `target` support two tokens that boid resolves at dispatch time:
+
+- `${PROJECT_WORKDIR}` — the host-side project directory (e.g. `/home/you/src/your-project`).
+- `${WORKTREE}` — the sandbox working directory for this task. For `worktree: true` tasks this is the worktree path; for `worktree: false` tasks it equals `${PROJECT_WORKDIR}`.
+
+A binding whose resolved `target` equals its resolved `source` is skipped automatically (self-mount prevention).
+
+> **Note:** `project.local.yaml` bindings require an explicit `mode` value (`ro` or `rw`). An empty `mode` string is not accepted in local overrides.
+
 ### Instruction
 
 The shape of the `default_instruction` value.
 
 ```yaml
 default_instruction:
-  type: execution
   agent: claude-code
   model: sonnet
   message: |
@@ -225,12 +250,12 @@ default_instruction:
 
 | Key | Type | Role |
 |---|---|---|
-| `type` | enum | `execution` (the old `rework` / `verification` values are gone). |
 | `agent` | string | The kit identifier expected to receive this instruction (e.g. `claude-code`). |
 | `name` | string | Optional sub-identifier when several instructions go to the same agent. |
 | `message` | string | The instruction text given to the agent. |
-| `interactive` | bool | `true` to start the agent in interactive mode (if the kit supports it). |
 | `model` | string | Model selector the kit will pass through (e.g. `opus`, `sonnet`). |
+
+> **Note:** `type:` and `interactive:` are not fields of `Instruction` and are silently ignored if present in YAML.
 
 ### CommandSpec
 

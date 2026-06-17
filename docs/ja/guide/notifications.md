@@ -16,7 +16,7 @@ notify:
 
 `command` は `[]string` で、1 番目の要素が実行ファイル、残りは追加引数として渡されます。シェル経由ではなく `exec.CommandContext` で直接 spawn されるため、シェル展開 (`~` の展開等) は効きません。
 
-設定が空 (または config.yaml 自体が存在しない) の場合、`boid task notify` は HTTP 501 を返し、通知はスキップされます。タスクの実行には影響しません。
+`notify.command` が空または未設定の場合、通知はスキップされます。タスクの実行には影響しません。 (HTTP 501 経路はデーモンが常に notify サービスを wire するため、通常運用では実質的に到達できません。)
 
 ## スクリプトに渡される環境変数
 
@@ -29,9 +29,19 @@ notify:
 | `BOID_PROJECT_ID` | プロジェクト UUID |
 | `BOID_PROJECT_NAME` | プロジェクト名 (ベストエフォート、未設定なら空) |
 | `BOID_MESSAGE` | agent が `--message` で渡したテキスト |
-| `BOID_TASK_URL` | タスク詳細 URL (`web.public_url` が設定済みなら `<public_url>/tasks/<id>`、未設定なら空文字) |
+| `BOID_TASK_URL` | 呼び出しモードに依存する URL (後述)。 `web.public_url` 未設定なら空文字 |
 
 ソースは `internal/notify/notify.go` の `Notify` 関数です。
+
+### notify モード別の `BOID_TASK_URL`
+
+`BOID_TASK_URL` の値は通知の呼び出しモードによって変わります。
+
+| notify モード | `BOID_TASK_URL` の値 |
+|---|---|
+| `--ask` | `<public_url>/tasks/{id}/questions/{question_id}` |
+| `--done` / `--fail` | `<public_url>/tasks/{id}` |
+| FYI (ライフサイクルフラグなし) | 実行中 interactive job があれば `<public_url>/jobs/{job_id}`、なければ `<public_url>/tasks/{id}` |
 
 ## agent 側からの呼び方
 
@@ -41,11 +51,20 @@ agent は以下のようにコマンドを呼び出します。
 boid task notify ${BOID_TASK_ID} --message "PR #42 のレビュー反映方針を判断してほしい"
 ```
 
-hook 経由のエージェントセッションは常に PTY 上で対話的に起動されるため、 `BOID_INTERACTIVE` による自律 / 対話の場合分けは不要です。 `boid task notify --ask` を呼べば boid daemon が task を `awaiting` に遷移させ、 同時にこのランタイムを SIGTERM します。 ユーザの回答が届いた時点で daemon が新しいセッションを spawn し、 `$BOID_USER_ANSWER` を介して回答を引き渡します。
+hook 経由のエージェントセッションは常に PTY 上で対話的に起動されるため、 `BOID_INTERACTIVE` による自律 / 対話の場合分けは不要です。 `boid task notify --ask` を呼べば boid daemon が task を `awaiting` に遷移させ、 ランタイムに **SIGUSR1** を送って停止を要求します。 SIGTERM ではなく SIGUSR1 を使うことで EXIT trap が生きたまま `boid job done` の正常完了を維持できます。 ユーザの回答が届いた時点で daemon が新しいセッションを spawn し、 `$BOID_USER_ANSWER` を介して回答を引き渡します。
 
 notify 直後、agent はセッション内に質問本文 (選択肢・判断材料・context) を出力します。 ユーザは Web UI のセッションビューアで確認し、返答します。
 
 呼び出しポリシーの詳細は [`/boid-supervisor` SKILL.md](../../../internal/skills/data/boid-supervisor/SKILL.md) の「いつ notify を呼ぶか」節を参照してください。
+
+## `notify --done` のガード
+
+`boid task notify --done` は `done_request` を記録する前に `verifyDoneClaim` チェックを通ります。 以下の条件のどちらかに該当するとデーモンがリクエストを拒否します (HTTP 409)。
+
+1. **未完了の子タスクがある**: 非終端状態の子タスクが 1 つ以上残っている
+2. **リリースコミットが見つからない**: エージェントが報告したコミット SHA がリポジトリに存在しない
+
+これらは幻覚 (confabulation) 防止ガードであり、 実際の作業が完了していないのにタスクを done にしてしまうのを防ぎます。
 
 ## スクリプト例 1: ntfy.sh
 

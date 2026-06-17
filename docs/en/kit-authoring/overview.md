@@ -40,7 +40,7 @@ hooks:
     kind: agent                 # (optional) "agent" opts in to instruction routing
     agent: my-agent             # (optional) instructions addressed to this agent
     traits:
-      consumes: [instructions]
+      consumes: [artifact?]     # payload traits to read; valid values: artifact, verification, awaiting
       produces: [artifact]
 
 commands:                       # (optional) commands callable via boid exec inside the sandbox
@@ -86,24 +86,24 @@ Declares which agent name's instructions this kit is responsible for. For exampl
 
 The script protocol is in the next section. Hooks always run in `executing`.
 
-`traits.consumes` and `traits.produces` declare which payload traits the hook reads and writes. Suffixing a `consumes` entry with `?` makes it optional (no error if absent).
+`traits.consumes` and `traits.produces` declare which payload traits the hook reads and writes. Suffixing a `consumes` entry with `?` makes it optional (hook fires even if that trait is absent from the payload). Valid trait names are `artifact`, `verification`, and `awaiting`.
 
 ## Hook script protocol
 
-This section is the summary; the full reference (every TaskJSON field, environment variables, the `payload_patch.json` file path, ...) lives in the [Hook script protocol reference](../reference/hook-contract.md).
+This section is the summary; the full reference (context file schemas, all environment variables, the `payload_patch.json` file path, ...) lives in the [Hook script protocol reference](../reference/hook-contract.md).
 
-### Input (stdin)
+### Input (context files and environment variables)
 
-The full task as JSON (TaskJSON). Frequently used fields:
+Hook jobs run with an interactive PTY session (`Interactive: true`), so **stdin is not used for data delivery**. Task metadata is provided through context files and environment variables instead.
 
-- `id` — task id
-- `project_id`, `behavior`
-- `status` — current state
-- `title`, `description`
-- `payload` — current payload
-- `instructions` — routed instructions (only for hooks declared with `kind: agent`)
+**Context files** (written to `$HOME/.boid/context/` before the hook runs):
 
-Environment variables such as `BOID_TASK_ID` / `BOID_JOB_ID` / `BOID_PROJECT_ID` are also set.
+- `task.yaml` — task snapshot: `id`, `title`, `status`, `behavior`, `description`
+- `instructions.yaml` — routed instructions for this hook (only for `kind: agent` hooks)
+- `environment.yaml` — environment metadata
+- `payload.yaml` / `payload.json` — the filtered payload (traits declared in `consumes`)
+
+**Environment variables** such as `BOID_TASK_ID` / `BOID_JOB_ID` are set in the sandbox. See the [Hook script protocol reference](../reference/hook-contract.md) for the full list.
 
 ### Output (payload patch)
 

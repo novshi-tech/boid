@@ -9,7 +9,7 @@ The intended readers are contributors who touch `internal/sandbox/`, anyone debu
 The sandbox draws four boundaries simultaneously:
 
 1. **Filesystem.** Writable areas are confined to the worktree (or the project root).
-2. **Network.** Only domains the kit declares can be reached.
+2. **Network.** Only domains in the built-in allowlist or `config.yaml`'s `sandbox.allowed_domains` can be reached.
 3. **User ID.** The host's `root` is unreachable (rootless).
 4. **Commands.** Only host commands declared in the kit's `host_commands` cross the boundary.
 
@@ -86,7 +86,7 @@ From this point inside the sandbox:
 
 ### 3. `inner.sh`
 
-Now we are inside the sandbox. `inner.sh` exports environment variables (`BOID_TASK_ID` and friends, including anything declared by the kit / behavior), then feeds the TaskJSON on stdin to the handler's argv. The handler's exit code propagates through `exec`, back through `setup.sh`, and out via `outer.sh`.
+Now we are inside the sandbox. `inner.sh` exports environment variables (`BOID_TASK_ID` and friends, including anything declared by the kit / behavior), then runs the handler's argv. Task metadata is not delivered on stdin — all hooks run as interactive (PTY) jobs; task context is available through the context files at `$HOME/.boid/context/{task,instructions,environment,payload}.{yaml,json}`. The handler's exit code propagates through `exec`, back through `setup.sh`, and out via `outer.sh`.
 
 The handler-side protocol is documented in [Hook script protocol](../reference/hook-contract.md).
 
@@ -103,10 +103,27 @@ pasta is a user-privilege network-namespace wrapper. The sandbox sees only pasta
 `setup.sh` programmes nftables to drop all outbound traffic except to the proxy port. The end result:
 
 - HTTP/HTTPS goes only through `http_proxy` / `https_proxy` pointing at `10.0.2.2:<port>`.
-- The proxy forwards only those domains the kit declared in `kit.yaml`.
+- The proxy forwards only those domains in the allowlist (see below).
 - Other TCP/UDP is blocked.
 
 The proxy itself lives in [`internal/sandbox/proxy.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/proxy.go) and runs as a goroutine inside the daemon.
+
+#### Proxy allowlist
+
+The allowed domains come from two sources merged at daemon startup:
+
+1. **Built-in list** — Anthropic/OpenAI API endpoints, language package registries, Docker Hub, and similar; hardcoded in `cmd/start.go`'s `defaultAllowedDomains()`.
+2. **User additions** — entries in `sandbox.allowed_domains` in `~/.config/boid/config.yaml`, appended to the built-in list.
+
+```yaml
+# ~/.config/boid/config.yaml
+sandbox:
+  allowed_domains:
+    - ".github.com"      # leading dot = suffix match
+    - "api.example.com"  # no dot = exact match
+```
+
+Changes take effect after `boid stop && boid start`.
 
 ## Docker proxy (`capabilities.docker`)
 
@@ -267,12 +284,12 @@ A previous regression where bind mounts traversed during `rm -rf` deleted host f
 
 ## Allowed boid builtins from inside the sandbox
 
-Handlers running inside the sandbox (hook, gate, exec) can call two built-in commands: `boid` and `git`.
-Both are injected automatically — no declaration in `project.yaml` / `kit.yaml` is needed.
+Handlers running inside the sandbox (hook, exec) can call three built-in commands: `boid`, `git`, and `fetch`.
+All are injected automatically — no declaration in `project.yaml` / `kit.yaml` is needed.
 
 ### boid builtin
 
-All roles (hook and gate) share the same allowed op set — there is no role branching.
+All roles (hook) share the same allowed op set — there is no role branching.
 
 | Op (sandbox protocol) | Corresponding CLI | Purpose |
 |---|---|---|
@@ -281,6 +298,7 @@ All roles (hook and gate) share the same allowed op set — there is no role bra
 | `job_show` | `boid job show <id>` | Show job detail |
 | `job_log` | `boid job log <id>` | Retrieve job execution log |
 | `action_send` | `boid action send` | Dispatch a manual action |
+| `agent_stop` | `boid agent stop <job-id>` | Send SIGUSR1 to a running agent job |
 | `task_create` | `boid task create` | Create a child task |
 | `task_get` | `boid task show <id> --field <path>` | Read a single task field (dotted JSON path) |
 | `task_update` | `boid task update <id>` | Update task fields |
@@ -302,12 +320,21 @@ All roles share the same allowed op set.
 | `fetch` | `git fetch ...` | Fetch from remote |
 | `push` | `git push ...` | Push to remote |
 | `push_delete` | `git push origin --delete <branch>` | Delete a remote branch |
+| `clone_local` | `git clone --local ...` | Clone a local repository (for peer-branch access) |
+
+### fetch builtin
+
+`boid fetch <url>` performs an HTTP GET from inside the sandbox through the proxy allowlist. Useful for retrieving web resources without requiring `host_commands` for `curl`/`wget`.
+
+| Op | Corresponding CLI | Purpose |
+|---|---|---|
+| `fetch` | `boid fetch <url>` | HTTP GET through the outbound proxy |
 
 ### Design notes
 
-- **No role branching** — `boid` and `git` policies use `_ Role`; every role gets the same op set.
+- **No role branching** — `boid`, `git`, and `fetch` policies use `_ Role`; every role gets the same op set.
   Add a role `switch` inside `policyFor` only when a new builtin genuinely needs role-specific restrictions.
-- **Source of truth** — `internal/orchestrator/policy.go`, functions `boidPolicy` / `gitPolicy`.
+- **Source of truth** — `internal/orchestrator/policy.go`, functions `boidPolicy` / `gitPolicy` / `fetchPolicy`.
 - **Sandbox-side enum** — `internal/sandbox/protocol.go`.
 - **Cross-workspace access** is denied by the broker (`internal/sandbox/broker.go` `handleBoidBuiltin`)
   via `entry.Context.AllowsProject(...)` and similar guards — the op set above does not bypass these checks.

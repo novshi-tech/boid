@@ -24,7 +24,6 @@ The full schema lives in [`internal/db/migrate/migrations/`](https://github.com/
 | `jobs` | Handler execution records | One handler run |
 | `worktrees` | Git worktrees created for tasks | One worktree |
 | `secrets` | Encrypted secret values | One namespace × key |
-| `task_dependencies` | Edges between dependent tasks | One dependency |
 | `web_devices` | Paired Web UI devices | One device |
 | `web_pairing_codes` | Issued pairing codes | One code |
 
@@ -40,7 +39,7 @@ Key columns:
 | `project_id` | TEXT FK → projects.id | Owning project. |
 | `remote_id` | TEXT | Mapping to an external issue tracker (optional). |
 | `title` / `description` | TEXT | Display fields. |
-| `status` | TEXT | `pending` / `executing` / `done` / `aborted` (legacy `verifying` / `reworking` rows were force-aborted by migration 0022). |
+| `status` | TEXT | `pending` / `executing` / `awaiting` / `done` / `aborted` (legacy `verifying` / `reworking` rows were force-aborted by migration 0022). |
 | `behavior` | TEXT | The behavior name. |
 | `payload` | TEXT (JSON) | The current full payload. |
 | `instructions` | TEXT (JSON) | An array of `Instruction`s; the last element is the active one and `reopen` appends to it. |
@@ -57,7 +56,7 @@ Key columns:
 - `instructions` — An array of `Instruction` objects. The last element is the active one; `reopen` appends to it.
 - `traits` — A JSON array of trait names this task uses, derived from the behavior.
 
-A partial index on `remote_id` is present. There is also a partial index on `parent_id` and a unique partial index on `(parent_id, ref)` to prevent collisions in the parent-child reference scheme.
+There is a partial index on `parent_id` and a unique partial index on `(parent_id, ref)` to prevent collisions in the parent-child reference scheme. (The partial index on `remote_id` was removed by migration 0024; the `datasource_id` column was removed by migration 0025.)
 
 ## `actions`
 
@@ -76,21 +75,22 @@ An append-only audit log of actions (`start` / `done` / `abort` / ...) and the r
 
 ## `jobs`
 
-The execution record of a handler (hook or gate) run.
+The execution record of a handler (hook) run.
 
 | Column | Type | Role |
 |---|---|---|
 | `id` | TEXT PK | Job ID. |
 | `task_id` | TEXT FK → tasks.id (NULLABLE) | Related task; NULL for standalone runs through `boid exec`. |
 | `project_id` | TEXT FK → projects.id | Project. |
-| `handler_id` | TEXT | Hook / gate ID. |
-| `role` | TEXT | `hook` or `gate`. |
+| `handler_id` | TEXT | Hook ID. |
+| `role` | TEXT | `hook` (gate concept is removed; all dispatch goes through hooks). |
 | `runtime_id` | TEXT | The runtime ID assigned by the dispatcher. |
 | `interactive` / `tty` | INTEGER (bool) | PTY connection flags. |
-| `status` | TEXT | `running` / `success` / `failed`. |
+| `status` | TEXT | `running` / `completed` / `failed`. |
 | `exit_code` | INTEGER | The process exit code. |
 | `output` | TEXT | Full stderr (the log). |
 | `execution_state` | TEXT | Auxiliary runtime state. |
+| `display_name` | TEXT | Human-readable label for the job (added by migration 0027). |
 | `created_at` / `updated_at` | DATETIME | Timestamps. |
 
 The `output` column holds the handler's full stderr; stdout is consumed by the payload-patch parser and is not appended here. Handlers that log heavily can grow the database, so prefer to throttle on the handler side.
@@ -148,7 +148,12 @@ migrations/
 ├── 0002_add_jobs_handler_id.sql
 ├── ...
 ├── 0021_jobs_nullable_task_id.sql
-└── 0022_drop_verifying_reworking.sql
+├── 0022_drop_verifying_reworking.sql
+├── 0023_rename_instruction_consumer_to_agent.sql
+├── 0024_drop_tasks_remote_unique.sql   (removes the partial index on remote_id)
+├── 0025_drop_tasks_datasource_id.sql   (drops datasource_id column)
+├── 0026_drop_tasks_depends_on.sql      (drops depends_on_payload + task_dependencies table)
+└── 0027_add_jobs_display_name.sql      (adds jobs.display_name TEXT)
 ```
 
 Notes:
