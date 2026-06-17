@@ -223,3 +223,89 @@ func taskIDs(tasks []*orchestrator.Task) []string {
 	}
 	return ids
 }
+
+func strPtr(s string) *string { return &s }
+
+func TestListTasks_FilterByParentID_Children(t *testing.T) {
+	d := setupFilterTestDB(t)
+
+	parent := &orchestrator.Task{ID: "parent-p1", ProjectID: "proj-ws1-a", Title: "Parent", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	child1 := &orchestrator.Task{ID: "child-p1a", ProjectID: "proj-ws1-a", Title: "Child A", Behavior: "dev", ParentID: "parent-p1"}
+	if err := orchestrator.CreateTask(d.Conn, child1); err != nil {
+		t.Fatalf("create child1: %v", err)
+	}
+	child2 := &orchestrator.Task{ID: "child-p1b", ProjectID: "proj-ws1-a", Title: "Child B", Behavior: "dev", ParentID: "parent-p1"}
+	if err := orchestrator.CreateTask(d.Conn, child2); err != nil {
+		t.Fatalf("create child2: %v", err)
+	}
+	unrelated := &orchestrator.Task{ID: "unrelated-p1", ProjectID: "proj-ws1-a", Title: "Unrelated", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, unrelated); err != nil {
+		t.Fatalf("create unrelated: %v", err)
+	}
+
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{ParentID: strPtr("parent-p1")})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("ListTasks(parent_id=parent-p1): got %d tasks, want 2; ids=%v", len(got), taskIDs(got))
+	}
+	for _, task := range got {
+		if task.ParentID != "parent-p1" {
+			t.Errorf("unexpected parent_id %q, want parent-p1", task.ParentID)
+		}
+	}
+}
+
+func TestListTasks_FilterByParentID_RootOnly(t *testing.T) {
+	d := setupFilterTestDB(t)
+
+	root := &orchestrator.Task{ID: "root-r1", ProjectID: "proj-ws1-a", Title: "Root", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, root); err != nil {
+		t.Fatalf("create root: %v", err)
+	}
+	child := &orchestrator.Task{ID: "child-r1", ProjectID: "proj-ws1-a", Title: "Child", Behavior: "dev", ParentID: "root-r1"}
+	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	// empty string selects root tasks (parent_id = "")
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{ParentID: strPtr("")})
+	if err != nil {
+		t.Fatalf("ListTasks(parent_id=\"\"): %v", err)
+	}
+	if !taskInResults(got, "root-r1") {
+		t.Errorf("root task should appear when parent_id=\"\", got ids=%v", taskIDs(got))
+	}
+	if taskInResults(got, "child-r1") {
+		t.Errorf("child task should NOT appear when parent_id=\"\", got ids=%v", taskIDs(got))
+	}
+}
+
+func TestListTasks_FilterByParentID_Nil_ReturnsAll(t *testing.T) {
+	d := setupFilterTestDB(t)
+
+	root := &orchestrator.Task{ID: "root-n1", ProjectID: "proj-ws1-a", Title: "Root", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, root); err != nil {
+		t.Fatalf("create root: %v", err)
+	}
+	child := &orchestrator.Task{ID: "child-n1", ProjectID: "proj-ws1-a", Title: "Child", Behavior: "dev", ParentID: "root-n1"}
+	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	// nil ParentID means no filter — both root and child appear
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{ParentID: nil})
+	if err != nil {
+		t.Fatalf("ListTasks(parent_id=nil): %v", err)
+	}
+	if !taskInResults(got, "root-n1") {
+		t.Errorf("root task should appear when ParentID=nil, got ids=%v", taskIDs(got))
+	}
+	if !taskInResults(got, "child-n1") {
+		t.Errorf("child task should appear when ParentID=nil, got ids=%v", taskIDs(got))
+	}
+}

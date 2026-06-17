@@ -89,3 +89,57 @@ func TestTaskHandler_List_WorkspaceFilter(t *testing.T) {
 	}
 }
 
+func TestTaskHandler_List_ParentIDFilter(t *testing.T) {
+	svc := &filterTaskService{}
+	h := &TaskHandler{Service: svc}
+
+	req := httptest.NewRequest(http.MethodGet, "/?parent_id=abc-123", nil)
+	rr := httptest.NewRecorder()
+	h.List(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rr.Code)
+	}
+	if svc.capturedFilter.ParentID == nil {
+		t.Fatal("capturedFilter.ParentID is nil, want non-nil")
+	}
+	if *svc.capturedFilter.ParentID != "abc-123" {
+		t.Errorf("captured ParentID = %q, want abc-123", *svc.capturedFilter.ParentID)
+	}
+}
+
+func TestTaskHandler_List_ParentIDFilter_Empty(t *testing.T) {
+	svc := &filterTaskService{}
+	h := &TaskHandler{Service: svc}
+
+	req := httptest.NewRequest(http.MethodGet, "/?parent_id=", nil)
+	rr := httptest.NewRecorder()
+	h.List(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rr.Code)
+	}
+	if svc.capturedFilter.ParentID == nil {
+		t.Fatal("capturedFilter.ParentID is nil when parent_id= is present, want non-nil pointer to empty string")
+	}
+	if *svc.capturedFilter.ParentID != "" {
+		t.Errorf("captured ParentID = %q, want empty string", *svc.capturedFilter.ParentID)
+	}
+}
+
+func TestTaskHandler_List_ParentIDFilter_NotPresent(t *testing.T) {
+	svc := &filterTaskService{}
+	h := &TaskHandler{Service: svc}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	h.List(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rr.Code)
+	}
+	if svc.capturedFilter.ParentID != nil {
+		t.Errorf("capturedFilter.ParentID = %v, want nil when parent_id not in query", svc.capturedFilter.ParentID)
+	}
+}
+
