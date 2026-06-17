@@ -61,4 +61,9 @@ type HarnessAdapter interface {
 	// Usage returns token consumption metrics for the job identified by jobID.
 	// Returns a zero Usage and a nil error when metrics are not yet available.
 	Usage(ctx context.Context, jobID string) (Usage, error)
+
+	// StopSignalName returns the bash signal name used in the generated sandbox
+	// `trap '' <name>` line. The sandbox script inherits SIG_IGN so that only
+	// the harness runner (e.g. run-agent.py) intercepts the signal. Example: "USR1".
+	StopSignalName() string
 }

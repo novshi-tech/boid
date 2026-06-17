@@ -413,6 +413,83 @@ func TestPrepare_RootDirMktempFallback(t *testing.T) {
 	}
 }
 
+// TestPrepare_StopSignalName verifies that the generated bash trap line uses
+// the signal name from Spec.StopSignalName in all three scripts (outer TTY,
+// outer non-TTY, and inner), and that the default is "USR1" when empty.
+func TestPrepare_StopSignalName(t *testing.T) {
+	t.Run("default_USR1", func(t *testing.T) {
+		spec := minimalSpec("test-stopsig-default")
+		spec.TTY = false
+		outerPath, err := sandbox.Prepare(spec)
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		outer, _, inner := readScripts(t, outerPath)
+		if !strings.Contains(outer, "trap '' USR1") {
+			t.Errorf("outer: expected trap '' USR1 when StopSignalName is empty\n%s", outer)
+		}
+		if !strings.Contains(inner, "trap '' USR1") {
+			t.Errorf("inner: expected trap '' USR1 when StopSignalName is empty\n%s", inner)
+		}
+	})
+	t.Run("default_USR1_tty", func(t *testing.T) {
+		spec := minimalSpec("test-stopsig-default-tty")
+		spec.TTY = true
+		outerPath, err := sandbox.Prepare(spec)
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		outer, _, inner := readScripts(t, outerPath)
+		if !strings.Contains(outer, "trap '' USR1") {
+			t.Errorf("outer TTY: expected trap '' USR1 when StopSignalName is empty\n%s", outer)
+		}
+		if !strings.Contains(inner, "trap '' USR1") {
+			t.Errorf("inner (tty spec): expected trap '' USR1 when StopSignalName is empty\n%s", inner)
+		}
+	})
+	t.Run("custom_signal", func(t *testing.T) {
+		spec := minimalSpec("test-stopsig-custom")
+		spec.StopSignalName = "USR2"
+		spec.TTY = false
+		outerPath, err := sandbox.Prepare(spec)
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		outer, _, inner := readScripts(t, outerPath)
+		if !strings.Contains(outer, "trap '' USR2") {
+			t.Errorf("outer: expected trap '' USR2 for custom StopSignalName\n%s", outer)
+		}
+		if strings.Contains(outer, "trap '' USR1") {
+			t.Errorf("outer: must not contain trap '' USR1 when custom signal is set\n%s", outer)
+		}
+		if !strings.Contains(inner, "trap '' USR2") {
+			t.Errorf("inner: expected trap '' USR2 for custom StopSignalName\n%s", inner)
+		}
+		if strings.Contains(inner, "trap '' USR1") {
+			t.Errorf("inner: must not contain trap '' USR1 when custom signal is set\n%s", inner)
+		}
+	})
+	t.Run("custom_signal_tty", func(t *testing.T) {
+		spec := minimalSpec("test-stopsig-custom-tty")
+		spec.StopSignalName = "USR2"
+		spec.TTY = true
+		outerPath, err := sandbox.Prepare(spec)
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		outer, _, inner := readScripts(t, outerPath)
+		if !strings.Contains(outer, "trap '' USR2") {
+			t.Errorf("outer TTY: expected trap '' USR2 for custom StopSignalName\n%s", outer)
+		}
+		if strings.Contains(outer, "trap '' USR1") {
+			t.Errorf("outer TTY: must not contain trap '' USR1 when custom signal is set\n%s", outer)
+		}
+		if !strings.Contains(inner, "trap '' USR2") {
+			t.Errorf("inner (tty spec): expected trap '' USR2 for custom StopSignalName\n%s", inner)
+		}
+	})
+}
+
 // CleanupPaths (staging dirs etc.) are removed by outer.sh after pasta
 // returns. They used to live in setup.sh's cleanup trap, but that ran inside
 // the sandbox mount namespace where rm could traverse onto host files via a

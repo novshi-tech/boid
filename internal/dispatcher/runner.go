@@ -67,6 +67,10 @@ type Runner struct {
 	ProxyPort    *int
 	RuntimesDir  string
 	JobEvents    JobEventSink // optional; nil disables job lifecycle broadcasts
+	// StopSignalName is the bash signal name used in `trap '' <name>` inside
+	// generated sandbox scripts. Set by the caller from the active HarnessAdapter.
+	// Defaults to "USR1" (via sandbox.Spec) when empty.
+	StopSignalName string
 
 	tokenMu       sync.Mutex
 	jobTokens     map[string]string
@@ -227,6 +231,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		WorkspacePeers:       workspacePeers,
 		ResolvedHostCommands: resolvedHostCommands,
 		DockerEnabled:        spec.Visibility.DockerEnabled,
+		StopSignalName:       r.StopSignalName,
 	}
 	// Server socket is only exposed to jobs that have no broker policies
 	// attached — i.e. boid exec invocations that need to talk to the daemon
