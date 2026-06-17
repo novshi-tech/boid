@@ -40,8 +40,8 @@ behavior_spec:
 
 func TestParseTaskCreateSpec_AllTopLevelFields(t *testing.T) {
 	// CreateTaskRequest の全フィールドが YAML で受け取れることを確認する。
-	// Phase 2-3 で readonly / worktree / branch_prefix / base_branch の
-	// task-row override は廃止されたため、 これらは spec に含めない。
+	// Phase 2-3 で worktree / branch_prefix / base_branch の task-row override
+	// は廃止された。readonly は Track A1.1 で復活し first-class field になった。
 	input := `
 project_id: proj-1
 title: Full Task
@@ -88,11 +88,14 @@ instructions:
 }
 
 func TestParseTaskCreateSpec_DroppedTaskRowOverrideFields(t *testing.T) {
-	// Phase 2-3: readonly / worktree / branch_prefix / base_branch in a task
-	// YAML spec are no longer fields on CreateTaskRequest. They are silently
-	// dropped at parse time (the API server emits a slog.Warn on the wire).
-	// This test pins that behavior so a future regression that re-adds a
-	// field on CreateTaskRequest gets caught.
+	// Phase 2-3: worktree / branch_prefix / base_branch in a task YAML spec
+	// are no longer fields on CreateTaskRequest. They are silently dropped at
+	// parse time (the API server emits a slog.Warn on the wire). This test
+	// pins that behavior so a future regression that re-adds a field on
+	// CreateTaskRequest gets caught.
+	//
+	// Track A1.1: readonly is now a first-class field on CreateTaskRequest;
+	// it is accepted and round-trips through the JSON encoding.
 	input := `
 project_id: proj-1
 title: Override Task
@@ -106,13 +109,17 @@ base_branch: develop
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Encode the spec back to JSON and confirm none of the dropped keys
-	// survive the round-trip.
+	// readonly must survive the round-trip as a first-class field.
+	if spec.Readonly == nil || !*spec.Readonly {
+		t.Errorf("Readonly = %v, want *true (readonly is now a first-class field)", spec.Readonly)
+	}
+	// Encode the spec back to JSON and confirm the still-deprecated keys do
+	// not survive.
 	encoded, err := json.Marshal(spec)
 	if err != nil {
 		t.Fatalf("marshal spec: %v", err)
 	}
-	for _, key := range []string{`"readonly"`, `"worktree"`, `"branch_prefix"`, `"base_branch"`} {
+	for _, key := range []string{`"worktree"`, `"branch_prefix"`, `"base_branch"`} {
 		if strings.Contains(string(encoded), key) {
 			t.Errorf("spec retained dropped key %s in JSON: %s", key, encoded)
 		}

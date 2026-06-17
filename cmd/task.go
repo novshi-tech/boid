@@ -267,16 +267,17 @@ func runTaskList(cmd *cobra.Command, args []string) error {
 // deprecatedTaskRowSpecFields enumerates the task-row override keys that
 // Phase 2-3 removed. Specs that still carry them are accepted (the keys are
 // stripped and a warning is printed) so legacy YAML on disk keeps working.
-var deprecatedTaskRowSpecFields = []string{"readonly", "worktree", "branch_prefix", "base_branch"}
+var deprecatedTaskRowSpecFields = []string{"worktree", "branch_prefix", "base_branch"}
 
 // parseTaskCreateSpec decodes a YAML/JSON task spec into api.CreateTaskRequest.
 // The intermediate YAML→JSON conversion is what lets api.CreateTaskRequest's
 // json tags drive the schema (yaml tags are intentionally absent there to keep
 // a single source of truth). Unknown fields are rejected to surface typos.
 //
-// As of Phase 2-3, four task-row override keys (readonly / worktree /
-// branch_prefix / base_branch) are silently dropped (with a stderr warning)
-// before strict decoding so legacy specs do not break.
+// As of Phase 2-3, three task-row override keys (worktree / branch_prefix /
+// base_branch) are silently dropped (with a stderr warning) before strict
+// decoding so legacy specs do not break. readonly was re-enabled in Track A1.1
+// and is now a first-class field on CreateTaskRequest.
 func parseTaskCreateSpec(data []byte) (api.CreateTaskRequest, error) {
 	var raw any
 	if err := yaml.Unmarshal(data, &raw); err != nil {

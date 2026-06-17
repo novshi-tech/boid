@@ -25,7 +25,6 @@ import (
 // by json.Unmarshal because the struct no longer has fields for them) and
 // logged at WARN so legacy clients can be located and migrated.
 var deprecatedTaskRowFields = []string{
-	"readonly",
 	"worktree",
 	"branch_prefix",
 	"base_branch",
@@ -180,6 +179,7 @@ type CreateTaskRequest struct {
 	Traits       []string                   `json:"traits,omitempty"`
 	Ref          string                     `json:"ref,omitempty"`
 	ParentID     string                     `json:"parent_id,omitempty"`
+	Readonly     *bool                      `json:"readonly,omitempty"`
 }
 
 func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
