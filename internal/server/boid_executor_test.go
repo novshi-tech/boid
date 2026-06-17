@@ -1,29 +1,25 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
+	"github.com/novshi-tech/boid/internal/adapters"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
-// recordingLifecycle implements api.JobLifecycle for boid_executor agent stop
-// tests. It records SignalJobRuntime calls so the test can assert SIGUSR1 was
-// delivered to the right runtime; other methods are recorded only to verify
-// they are NOT called from the BoidOpAgentStop path.
+// recordingLifecycle implements api.JobLifecycle for boid_executor tests.
+// It records StopJobRuntime calls to verify they are NOT triggered by BoidOpAgentStop.
 type recordingLifecycle struct {
 	mu                sync.Mutex
-	signaledRuntime   string
-	signaledSignal    syscall.Signal
-	signaledCount     int
 	completedJobID    string
 	unregisteredJobID string
 	stoppedRuntime    string
@@ -49,21 +45,35 @@ func (l *recordingLifecycle) StopJobRuntime(runtimeID string) {
 	l.stoppedRuntime = runtimeID
 }
 
-func (l *recordingLifecycle) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.signaledRuntime = runtimeID
-	l.signaledSignal = sig
-	l.signaledCount++
+// recordingAdapter implements adapters.HarnessAdapter for boid_executor agent
+// stop tests. It records StopAgent calls so tests can assert the right runtimeID
+// was targeted. The SIGUSR1 detail is tested in the claude adapter's own tests.
+type recordingAdapter struct {
+	mu       sync.Mutex
+	stopped  []string
 }
 
-func (l *recordingLifecycle) waitSignaled(t *testing.T) {
+func (a *recordingAdapter) StopAgent(_ context.Context, runtimeID string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.stopped = append(a.stopped, runtimeID)
+	return nil
+}
+
+func (a *recordingAdapter) ResumePayload(_ string) ([]string, map[string]string) { return nil, nil }
+func (a *recordingAdapter) Interactive() bool                                     { return true }
+func (a *recordingAdapter) SessionIDFromHookEnv(_ map[string]string) string       { return "" }
+func (a *recordingAdapter) Usage(_ context.Context, _ string) (adapters.Usage, error) {
+	return adapters.Usage{}, nil
+}
+
+func (a *recordingAdapter) waitStopped(t *testing.T) {
 	t.Helper()
 	deadline := time.Now().Add(200 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		l.mu.Lock()
-		ok := l.signaledRuntime != ""
-		l.mu.Unlock()
+		a.mu.Lock()
+		ok := len(a.stopped) > 0
+		a.mu.Unlock()
 		if ok {
 			return
 		}
@@ -595,12 +605,13 @@ func TestBoidBuiltinExecutor_TaskCreate_BrokerResolvedIDOverridesCreatePatch(t *
 
 // --- agent_stop executor tests ---
 
-// BoidOpAgentStop は SignalJobRuntime(SIGUSR1) を runtime に発するだけで、
-// CompleteJob / UnregisterJob / StopJobRuntime には触れない。 これは
-// CompleteJob の preemptive call が broker token を失効させて bash EXIT trap
-// の `boid job done --output-file payload_patch.json` を invalid token と
-// して silently drop する notify --ask race (#417) と同じ理由で、 explicit
-// exit 経路でも canonical CompleteJob caller を EXIT trap に温存する設計。
+// BoidOpAgentStop は adapter.StopAgent を runtime に対して呼ぶだけで、
+// CompleteJob / UnregisterJob / StopJobRuntime には触れない。 CompleteJob の
+// preemptive call が broker token を失効させて bash EXIT trap の
+// `boid job done --output-file payload_patch.json` を invalid token として
+// silently drop するためで、 canonical CompleteJob caller を EXIT trap に
+// 温存する設計 (notify --ask race #417 と同じ理由)。
+// SIGUSR1 の詳細は claude adapter のテストで検証する。
 func TestBoidBuiltinExecutor_AgentStop_SignalsRuntimeOnly(t *testing.T) {
 	jobs := &stubJobStore{
 		jobs: map[string]*api.Job{
@@ -614,7 +625,8 @@ func TestBoidBuiltinExecutor_AgentStop_SignalsRuntimeOnly(t *testing.T) {
 		},
 	}
 	lifecycle := &recordingLifecycle{}
-	wf := &api.TaskWorkflowService{Lifecycle: lifecycle}
+	adapter := &recordingAdapter{}
+	wf := &api.TaskWorkflowService{Lifecycle: lifecycle, Adapter: adapter}
 	exec := &boidBuiltinExecutor{workflow: wf, jobs: jobs}
 	ctx := sandbox.TokenContext{JobID: "job-1", ProjectID: "proj-1"}
 
@@ -629,22 +641,19 @@ func TestBoidBuiltinExecutor_AgentStop_SignalsRuntimeOnly(t *testing.T) {
 		t.Errorf("stdout = %q, want job-1", resp.Stdout)
 	}
 
-	// StopAgent は go-routine 内で SignalJobRuntime を呼ぶ。
-	lifecycle.waitSignaled(t)
+	// StopAgent は go-routine 内で adapter.StopAgent を呼ぶ。
+	adapter.waitStopped(t)
+
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	if len(adapter.stopped) != 1 || adapter.stopped[0] != "rt-1" {
+		t.Errorf("adapter.stopped = %v, want [rt-1]", adapter.stopped)
+	}
 
 	lifecycle.mu.Lock()
 	defer lifecycle.mu.Unlock()
-	if lifecycle.signaledRuntime != "rt-1" {
-		t.Errorf("signaled runtime = %q, want rt-1", lifecycle.signaledRuntime)
-	}
-	if lifecycle.signaledSignal != syscall.SIGUSR1 {
-		t.Errorf("signaled signal = %v, want SIGUSR1", lifecycle.signaledSignal)
-	}
-	if lifecycle.signaledCount != 1 {
-		t.Errorf("signaled count = %d, want 1 (no SIGKILL follow-up)", lifecycle.signaledCount)
-	}
 	if lifecycle.completedJobID != "" {
-		t.Errorf("CompleteJob lifecycle called with %q, want empty (must defer to EXIT trap)", lifecycle.completedJobID)
+		t.Errorf("CompleteJob called with %q, want empty (must defer to EXIT trap)", lifecycle.completedJobID)
 	}
 	if lifecycle.unregisteredJobID != "" {
 		t.Errorf("UnregisterJob called with %q, want empty (broker token must stay valid for the EXIT trap)", lifecycle.unregisteredJobID)
@@ -669,8 +678,8 @@ func TestBoidBuiltinExecutor_AgentStop_NoRuntimeIsSuccess(t *testing.T) {
 			},
 		},
 	}
-	lifecycle := &recordingLifecycle{}
-	wf := &api.TaskWorkflowService{Lifecycle: lifecycle}
+	adapter := &recordingAdapter{}
+	wf := &api.TaskWorkflowService{Lifecycle: &recordingLifecycle{}, Adapter: adapter}
 	exec := &boidBuiltinExecutor{workflow: wf, jobs: jobs}
 	ctx := sandbox.TokenContext{JobID: "job-foreground", ProjectID: "proj-1"}
 
@@ -684,8 +693,11 @@ func TestBoidBuiltinExecutor_AgentStop_NoRuntimeIsSuccess(t *testing.T) {
 	if !strings.Contains(resp.Stdout, "no runtime") {
 		t.Errorf("stdout = %q, want 'no runtime' hint", resp.Stdout)
 	}
-	if lifecycle.signaledCount != 0 {
-		t.Errorf("signaled count = %d, want 0 (no runtime → no signal)", lifecycle.signaledCount)
+	// RuntimeID 空のため adapter.StopAgent は呼ばれない
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	if len(adapter.stopped) != 0 {
+		t.Errorf("adapter.stopped = %v, want empty (no runtime → no StopAgent)", adapter.stopped)
 	}
 }
 

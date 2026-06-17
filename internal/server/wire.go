@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/novshi-tech/boid/internal/adapters/claude"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/api/auth"
 	"github.com/novshi-tech/boid/internal/config"
@@ -197,6 +198,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// lifetime of each task. Root tasks on the same base_branch serialize;
 	// child tasks (boid/<id8>) always run in parallel.
 	projectLocks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
+	lifecycle := jobLifecycleAdapter{runner: runner}
 	workflow := &api.TaskWorkflowService{
 		Tasks:       taskRepo,
 		Jobs:        jobStore,
@@ -204,10 +206,11 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Tx:          tx,
 		Meta:        store,
 		Coordinator: &orchestrator.Coordinator{Evaluator: &orchestrator.Evaluator{}, HookExecutor: adapter, Waiter: adapter, MaxDepth: 5, LifecycleStore: taskRepo},
-		Lifecycle:   jobLifecycleAdapter{runner: runner},
+		Lifecycle:   lifecycle,
 		Worktrees:   wtMgr,
 		Hub:         hub,
 		Locks:       projectLocks,
+		Adapter:     claude.New(lifecycle),
 	}
 	workflow.InitDispatch(context.Background())
 

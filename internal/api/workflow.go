@@ -4,8 +4,8 @@ import (
 	"context"
 	"path/filepath"
 	"sync"
-	"syscall"
 
+	"github.com/novshi-tech/boid/internal/adapters"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -23,6 +23,9 @@ type TaskWorkflowService struct {
 	// Optional: when nil, no branch locking is performed (matches pre-P0-2
 	// behaviour for tests that don't exercise concurrency).
 	Locks *orchestrator.BranchLockManager
+	// Adapter is the harness adapter used to stop agents and query usage.
+	// When nil, StopAgent is a no-op (safe for tests that don't exercise the path).
+	Adapter adapters.HarnessAdapter
 
 	dispatchCtx    context.Context
 	dispatchCancel context.CancelFunc
@@ -54,16 +57,14 @@ func (s *TaskWorkflowService) releaseProjectLock(taskID string) {
 	s.Locks.ReleaseForTask(taskID)
 }
 
-// StopAgent asynchronously delivers a SIGUSR1 to the runtime's process group.
-// The agent runner (run-agent.py) catches this and SIGTERMs claude only —
-// bash stays alive so the EXIT trap can fire `boid job done --output-file
-// payload_patch.json` through the broker normally. See WorkflowService
-// interface doc for the full lifecycle rationale.
+// StopAgent delegates to the configured HarnessAdapter to gracefully stop the
+// agent backing runtimeID, leaving bash and the EXIT trap alive. No-op when
+// runtimeID is empty or no Adapter has been configured.
 func (s *TaskWorkflowService) StopAgent(runtimeID string) {
-	if runtimeID == "" || s.Lifecycle == nil {
+	if runtimeID == "" || s.Adapter == nil {
 		return
 	}
-	go s.Lifecycle.SignalJobRuntime(runtimeID, syscall.SIGUSR1)
+	go s.Adapter.StopAgent(context.Background(), runtimeID) //nolint:errcheck
 }
 
 // enrichJob fills WorkspacePath from RuntimesDir and the job's RuntimeID.
