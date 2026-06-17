@@ -771,7 +771,7 @@ func (r *Runner) StopJobRuntime(runtimeID string) {
 
 // SignalJobRuntime delivers a single signal to the runtime's process group
 // without any SIGKILL follow-up. NotifyTask uses this for SIGUSR1 to ask the
-// agent (run-agent.py) to stop the claude session gracefully — bash and the
+// agent (run-agent.py) to stop the agent session gracefully — bash and the
 // EXIT trap stay alive (via `trap '' USR1` propagated as SIG_IGN across
 // execve), so payload_patch capture and `boid job done --output-file`
 // continue through the normal completion path. Best-effort: errors at debug
