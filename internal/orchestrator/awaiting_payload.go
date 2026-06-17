@@ -5,7 +5,7 @@ import "encoding/json"
 // AwaitingPayload holds the fields of the "awaiting" trait in task.Payload.
 //
 // Fields written by kits (via boid task notify --ask):
-//   - SessionID: the claude --print session ID to resume with --resume
+//   - SessionID: the harness session ID used to resume the agent on next invocation
 //   - Question: human-readable question text shown to the user
 //   - QuestionID: UUID identifying this Q&A turn (for multi-turn tracking)
 //

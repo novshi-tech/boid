@@ -104,7 +104,7 @@ func (s *WebAppService) ListProjects() ([]*orchestrator.Project, error) {
 // CreateTask + resolveBehavior so that Instructions and Payload come from
 // the behavior's DefaultInstruction / DefaultPayload, not from the source
 // task's runtime state. Without this delegation the duplicate inherited
-// the source's runtime payload (claude_code.sessions, awaiting trait) and
+// the source's runtime payload (awaiting trait and harness session state) and
 // missing Instructions caused the hook evaluator to skip the agent hook,
 // so no hook fired on Start.
 //
