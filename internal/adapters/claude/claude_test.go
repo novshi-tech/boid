@@ -76,8 +76,8 @@ func TestAdapter_ResumePayload_WithSessionID(t *testing.T) {
 	if len(args) != 2 || args[0] != "--resume" || args[1] != "sess-123" {
 		t.Errorf("args = %v, want [--resume sess-123]", args)
 	}
-	if len(env) != 0 {
-		t.Errorf("env = %v, want empty", env)
+	if got := env["BOID_AGENT_SESSION_ID"]; got != "sess-123" {
+		t.Errorf("env[BOID_AGENT_SESSION_ID] = %q, want sess-123", got)
 	}
 }
 

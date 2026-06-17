@@ -43,13 +43,14 @@ func (a *Adapter) StopAgent(_ context.Context, runtimeID string) error {
 	return nil
 }
 
-// ResumePayload returns the --resume flag for the given session ID. The caller
-// passes these args to the start hook so claude resumes its prior session.
+// ResumePayload returns the --resume flag and the BOID_AGENT_SESSION_ID env
+// var for the given session ID. The caller passes these to the start hook so
+// claude resumes its prior session.
 func (a *Adapter) ResumePayload(sessionID string) ([]string, map[string]string) {
 	if sessionID == "" {
 		return nil, nil
 	}
-	return []string{"--resume", sessionID}, nil
+	return []string{"--resume", sessionID}, map[string]string{"BOID_AGENT_SESSION_ID": sessionID}
 }
 
 // Interactive returns true. Non-interactive claude --print invocations
