@@ -4,7 +4,17 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'internal/skills/data/**'
+      - '.claude/skills/**'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'internal/skills/data/**'
+      - '.claude/skills/**'
 
 permissions:
   contents: read
