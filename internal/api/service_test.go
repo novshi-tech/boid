@@ -1411,15 +1411,16 @@ func TestCreateTask_DevAlias_ResolvesToExecutorWritable(t *testing.T) {
 	}
 }
 
-// TestCreateTask_NonCanonicalBehavior_NotReadonly verifies that for behaviors
-// that are neither supervisor nor executor (e.g. a kit-provided custom
-// behavior) the resulting Task is not readonly. P3-1 removed the per-behavior
-// readonly knob, so non-canonical behaviors always default to writable.
-func TestCreateTask_NonCanonicalBehavior_NotReadonly(t *testing.T) {
+// TestCreateTask_NonCanonicalBehavior_ReadonlyDefaultTrue verifies that for
+// behaviors that are neither supervisor nor executor (Track A2 free naming),
+// the resulting Task defaults to readonly=true (fail-safe). An explicit
+// Readonly:false in the behavior YAML overrides this default.
+func TestCreateTask_NonCanonicalBehavior_ReadonlyDefaultTrue(t *testing.T) {
+	falseVal := false
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"impl":   {},
-			"verify": {},
+			"research":  {},          // no explicit readonly → defaults to true
+			"dev-task":  {Readonly: &falseVal}, // explicit false → writable
 		},
 	}
 	svc := &TaskAppService{
@@ -1427,28 +1428,28 @@ func TestCreateTask_NonCanonicalBehavior_NotReadonly(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	implTask, err := svc.CreateTask(CreateTaskRequest{
+	researchTask, err := svc.CreateTask(CreateTaskRequest{
 		ProjectID: "proj-1",
-		Title:     "impl",
-		Behavior:  "impl",
+		Title:     "research",
+		Behavior:  "research",
 	})
 	if err != nil {
-		t.Fatalf("CreateTask(impl) error = %v", err)
+		t.Fatalf("CreateTask(research) error = %v", err)
 	}
-	if implTask.Readonly {
-		t.Errorf("impl: Readonly = true, want false (non-canonical behaviors are writable)")
+	if !researchTask.Readonly {
+		t.Errorf("research: Readonly = false, want true (non-canonical default is fail-safe readonly)")
 	}
 
-	verifyTask, err := svc.CreateTask(CreateTaskRequest{
+	devTask, err := svc.CreateTask(CreateTaskRequest{
 		ProjectID: "proj-1",
-		Title:     "verify",
-		Behavior:  "verify",
+		Title:     "dev-task",
+		Behavior:  "dev-task",
 	})
 	if err != nil {
-		t.Fatalf("CreateTask(verify) error = %v", err)
+		t.Fatalf("CreateTask(dev-task) error = %v", err)
 	}
-	if verifyTask.Readonly {
-		t.Errorf("verify: Readonly = true, want false (non-canonical behaviors are writable)")
+	if devTask.Readonly {
+		t.Errorf("dev-task: Readonly = true, want false (explicit readonly:false in behavior)")
 	}
 }
 

@@ -2302,7 +2302,6 @@ func TestReadProjectMeta_RemovedBehaviorFields_RejectsAtLoad(t *testing.T) {
 		field string
 		body  string
 	}{
-		{"readonly", "    readonly: true\n"},
 		{"worktree", "    worktree: true\n"},
 		{"base_branch", "    base_branch: main\n"},
 		{"branch_prefix", "    branch_prefix: feature/\n"},
@@ -2340,7 +2339,7 @@ task_behaviors:
 // for kit.yaml — kits can declare task_behaviors too and must produce the
 // same load-time error.
 func TestReadKitMeta_RemovedBehaviorFields_RejectsAtLoad(t *testing.T) {
-	for _, field := range []string{"readonly", "worktree", "base_branch", "branch_prefix"} {
+	for _, field := range []string{"worktree", "base_branch", "branch_prefix"} {
 		t.Run(field, func(t *testing.T) {
 			dir := t.TempDir()
 			writeKitYAML(t, dir, "task_behaviors:\n  dev:\n    name: dev\n    "+field+": true\n")
@@ -2576,9 +2575,9 @@ func TestReadProjectMeta_BoidSelfProjectYAML_LoadsInCanonicalForm(t *testing.T) 
 	meta, err := projectspec.ReadProjectMeta(repoRoot)
 	if err != nil {
 		t.Fatalf("ReadProjectMeta on boid self project.yaml failed: %v\n"+
-			"Hint: behavior-level readonly/worktree/base_branch/branch_prefix/default_payload "+
+			"Hint: behavior-level worktree/base_branch/branch_prefix/default_payload "+
 			"were removed in Phase 3-1; if you see one of those in the error, migrate the field "+
-			"to the project-top equivalent or remove it.", err)
+			"to the project-top equivalent or remove it. readonly is allowed again as of Track A2.", err)
 	}
 
 	// Project-top worktree must be true (executor tasks branch into a
@@ -2709,5 +2708,192 @@ capabilities: {}
 	}
 	if meta.Capabilities.Docker != nil {
 		t.Error("Capabilities.Docker should be nil when capabilities has no docker key")
+	}
+}
+
+// Track A2: free naming, default_task_behavior, readonly in behaviors, and
+// canonical-name deprecation warnings.
+
+// TestReadProjectMeta_DefaultTaskBehavior_Parsed verifies that the new
+// default_task_behavior top-level key is parsed correctly.
+func TestReadProjectMeta_DefaultTaskBehavior_Parsed(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: proj-default-behavior
+name: DefaultTaskBehavior Test
+default_task_behavior: dev-task
+task_behaviors:
+  dev-task:
+    traits:
+      - artifact
+`)
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadProjectMeta: %v", err)
+	}
+	if meta.DefaultTaskBehavior != "dev-task" {
+		t.Errorf("DefaultTaskBehavior = %q, want %q", meta.DefaultTaskBehavior, "dev-task")
+	}
+}
+
+// TestReadProjectMeta_TaskBehaviorReadonly_Parsed verifies that readonly:false
+// in a behavior entry is parsed correctly into TaskBehavior.Readonly.
+func TestReadProjectMeta_TaskBehaviorReadonly_Parsed(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: proj-behavior-readonly
+name: Readonly Test
+task_behaviors:
+  dev-task:
+    readonly: false
+  research:
+    readonly: true
+`)
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadProjectMeta: %v", err)
+	}
+	devTask := meta.TaskBehaviors["dev-task"]
+	if devTask.Readonly == nil {
+		t.Error("dev-task: Readonly is nil, want *false")
+	} else if *devTask.Readonly {
+		t.Errorf("dev-task: Readonly = true, want false")
+	}
+	research := meta.TaskBehaviors["research"]
+	if research.Readonly == nil {
+		t.Error("research: Readonly is nil, want *true")
+	} else if !*research.Readonly {
+		t.Errorf("research: Readonly = false, want true")
+	}
+}
+
+// TestReadProjectMetaWithKits_CanonicalNameDeprecation_EmitsWarn verifies that
+// ReadProjectMetaWithKits emits deprecation warnings when the project uses
+// canonical behavior names "supervisor" or "executor".
+func TestReadProjectMetaWithKits_CanonicalNameDeprecation_EmitsWarn(t *testing.T) {
+	buf := captureSlog(t)
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: proj-canonical-warn-`+t.Name()+`
+name: Canonical Warn Test
+task_behaviors:
+  supervisor:
+    traits:
+      - artifact
+  executor:
+    readonly: false
+`)
+	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadProjectMetaWithKits: %v", err)
+	}
+	log := buf.String()
+	if !strings.Contains(log, "deprecated") {
+		t.Errorf("expected deprecation warning, got:\n%s", log)
+	}
+	if !strings.Contains(log, "supervisor") || !strings.Contains(log, "executor") {
+		t.Errorf("expected deprecation for both supervisor and executor, got:\n%s", log)
+	}
+}
+
+// TestReadProjectMetaWithKits_CanonicalNameDeprecation_OncePerProject verifies
+// that the deprecation warning fires at most once per project directory per
+// daemon run (second call emits nothing new).
+func TestReadProjectMetaWithKits_CanonicalNameDeprecation_OncePerProject(t *testing.T) {
+	buf := captureSlog(t)
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: proj-canonical-once-`+t.Name()+`
+name: Once Per Project Test
+task_behaviors:
+  supervisor:
+    traits:
+      - artifact
+`)
+	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadProjectMetaWithKits (first): %v", err)
+	}
+	countAfterFirst := strings.Count(buf.String(), "deprecated")
+	if countAfterFirst == 0 {
+		t.Error("expected deprecation warning after first load, got none")
+	}
+
+	// Second load of same directory: no new deprecation warnings.
+	_, err = projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadProjectMetaWithKits (second): %v", err)
+	}
+	countAfterSecond := strings.Count(buf.String(), "deprecated")
+	if countAfterSecond != countAfterFirst {
+		t.Errorf("second load of same project emitted new warnings: count went from %d to %d", countAfterFirst, countAfterSecond)
+	}
+}
+
+// TestReadProjectMetaWithKits_CanonicalNameDeprecation_SuppressedByEnvVar verifies
+// that BOID_NO_DEPRECATION_WARN=1 suppresses the canonical name warning.
+func TestReadProjectMetaWithKits_CanonicalNameDeprecation_SuppressedByEnvVar(t *testing.T) {
+	t.Setenv("BOID_NO_DEPRECATION_WARN", "1")
+	buf := captureSlog(t)
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: proj-canonical-suppressed-`+t.Name()+`
+name: Suppressed Warning Test
+task_behaviors:
+  supervisor:
+    traits:
+      - artifact
+`)
+	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadProjectMetaWithKits: %v", err)
+	}
+	if strings.Contains(buf.String(), "deprecated") {
+		t.Errorf("expected no deprecation warning with BOID_NO_DEPRECATION_WARN=1, got:\n%s", buf.String())
+	}
+}
+
+// TestReadProjectMetaWithKits_ExecutorNoReadonly_ExtraWarn verifies that
+// "executor" without explicit readonly emits an extra compat warning.
+func TestReadProjectMetaWithKits_ExecutorNoReadonly_ExtraWarn(t *testing.T) {
+	buf := captureSlog(t)
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: proj-executor-compat-`+t.Name()+`
+name: Executor Compat Test
+task_behaviors:
+  executor:
+`)
+	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadProjectMetaWithKits: %v", err)
+	}
+	log := buf.String()
+	if !strings.Contains(log, "readonly") {
+		t.Errorf("expected compat readonly warning for executor without explicit readonly, got:\n%s", log)
+	}
+}
+
+// TestReadProjectMetaWithKits_ExecutorExplicitReadonly_NoCompatWarn verifies
+// that executor with explicit readonly:false does NOT emit the extra compat warning.
+func TestReadProjectMetaWithKits_ExecutorExplicitReadonly_NoCompatWarn(t *testing.T) {
+	buf := captureSlog(t)
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: proj-executor-explicit-`+t.Name()+`
+name: Executor Explicit Readonly Test
+task_behaviors:
+  executor:
+    readonly: false
+`)
+	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadProjectMetaWithKits: %v", err)
+	}
+	log := buf.String()
+	// Should still warn about canonical name "executor" being deprecated,
+	// but NOT the readonly compat warning.
+	if strings.Contains(log, "backward compatibility") {
+		t.Errorf("unexpected compat readonly warning when explicit readonly:false is set, got:\n%s", log)
 	}
 }

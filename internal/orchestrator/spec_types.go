@@ -344,6 +344,12 @@ func IsBehaviorAliasKey(key string) bool {
 }
 
 type TaskBehavior struct {
+	// Readonly controls whether the sandbox working directory is mounted read-only
+	// for tasks using this behavior. When nil (unset), the daemon applies a
+	// fail-safe default: readonly=true for all behaviors except the canonical
+	// "executor" (which retains readonly=false during the compat period).
+	// Set explicitly to override: readonly: false in project.yaml.
+	Readonly           *bool                  `yaml:"readonly,omitempty" json:"readonly,omitempty"`
 	Traits             []string               `yaml:"traits" json:"traits"`
 	DefaultInstruction *Instruction           `yaml:"default_instruction,omitempty" json:"default_instruction,omitempty"`
 	Kits               []KitRef               `yaml:"kits,omitempty" json:"kits,omitempty"`
@@ -440,6 +446,11 @@ type ProjectMeta struct {
 	SecretNamespace    string            `yaml:"secret_namespace,omitempty" json:"secret_namespace,omitempty"`
 	// Capabilities declares optional sandbox capabilities for jobs in this project.
 	Capabilities Capabilities `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
+	// DefaultTaskBehavior names the behavior to use when a CreateTaskRequest
+	// omits both behavior and behavior_spec. When empty, the daemon falls back
+	// to "supervisor" if that behavior exists (with a deprecation warning);
+	// if neither is set, CreateTask returns an error.
+	DefaultTaskBehavior string `yaml:"default_task_behavior,omitempty" json:"default_task_behavior,omitempty"`
 }
 
 type ProjectLocalMeta struct {

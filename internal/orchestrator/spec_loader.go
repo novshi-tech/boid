@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -139,7 +140,6 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 // project.yaml and kit.yaml report the same migration guidance for the same
 // field — and lets the tests assert against a single source of truth.
 var removedBehaviorFieldGuidance = map[string]string{
-	"readonly":        "readonly is auto-determined from behavior name (supervisor=true, executor=false); for non-canonical behaviors, readonly is false",
 	"worktree":        "worktree is determined by the project-top 'worktree' field combined with the behavior name (supervisor/executor)",
 	"base_branch":     "base_branch is resolved from the project-top 'base_branch' field (with ${TASK_REMOTE_ID} / ${current_branch} expansion)",
 	"branch_prefix":   "branch_prefix is no longer configurable; worktree branches are always created under 'boid/'",
@@ -606,7 +606,48 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 	// lookups (e.g. meta.TaskBehaviors["dev"]) see the same data.
 	meta.TaskBehaviors = addAliasMirrors(meta.TaskBehaviors)
 
+	emitCanonicalBehaviorDeprecation(dir, meta)
+
 	return meta, nil
+}
+
+// canonicalBehaviorWarnedProjects tracks which project directories have already
+// received the canonical-name deprecation warning this daemon run (keyed by
+// absolute directory path). Resets on daemon restart.
+var canonicalBehaviorWarnedProjects sync.Map
+
+// emitCanonicalBehaviorDeprecation logs deprecation warnings when the project
+// uses the canonical behavior names "supervisor" or "executor". These names
+// are deprecated in favour of free naming (Track A2). Fires at most once per
+// project directory per daemon run. Suppressed by BOID_NO_DEPRECATION_WARN=1.
+func emitCanonicalBehaviorDeprecation(dir string, meta *ProjectMeta) {
+	if os.Getenv("BOID_NO_DEPRECATION_WARN") == "1" {
+		return
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		abs = dir
+	}
+	if _, alreadyWarned := canonicalBehaviorWarnedProjects.LoadOrStore(abs, struct{}{}); alreadyWarned {
+		return
+	}
+	for name, behavior := range meta.TaskBehaviors {
+		if IsBehaviorAliasKey(name) {
+			continue // skip back-compat mirror entries
+		}
+		switch name {
+		case "supervisor":
+			slog.Warn("task behavior name 'supervisor' is deprecated; rename to a project-specific name and set default_task_behavior. See docs/ja/reference/task-behavior-migration.md",
+				"project_id", meta.ID, "behavior", name)
+		case "executor":
+			slog.Warn("task behavior name 'executor' is deprecated; rename to a project-specific name and set default_task_behavior. See docs/ja/reference/task-behavior-migration.md",
+				"project_id", meta.ID, "behavior", name)
+			if behavior.Readonly == nil {
+				slog.Warn("executor behavior has no explicit 'readonly: false'; applying readonly=false for backward compatibility. Set 'readonly: false' in task_behaviors.executor to silence this warning.",
+					"project_id", meta.ID, "behavior", name)
+			}
+		}
+	}
 }
 
 func ReadKitMeta(dir string) (*KitMeta, error) {
