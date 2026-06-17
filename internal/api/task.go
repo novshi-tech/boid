@@ -218,6 +218,10 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 		Behavior:    q.Get("behavior"),
 		WorkspaceID: q.Get("workspace_id"),
 	}
+	if _, ok := q["parent_id"]; ok {
+		v := q.Get("parent_id")
+		filter.ParentID = &v
+	}
 
 	tasks, err := h.Service.ListTasks(filter)
 	if err != nil {

@@ -36,6 +36,7 @@ type TaskFilter struct {
 	Behavior    string
 	WorkspaceID string
 	Title       string
+	ParentID    *string
 }
 
 // taskSelectCols は tasks テーブルの基本カラム一覧（テーブル別名 t を使用）。
@@ -170,6 +171,10 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	if filter.Title != "" {
 		conditions = append(conditions, "LOWER(t.title) LIKE ?")
 		args = append(args, "%"+strings.ToLower(filter.Title)+"%")
+	}
+	if filter.ParentID != nil {
+		conditions = append(conditions, "t.parent_id = ?")
+		args = append(args, *filter.ParentID)
 	}
 	query := ctePrefix + `SELECT ` + taskSelectCols + `, ` + taskChildCountCols + ` FROM tasks t`
 	for _, j := range joins {
