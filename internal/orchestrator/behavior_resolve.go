@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 )
 
 // BehaviorResolution holds the resolved behavior fields after processing either
@@ -19,15 +20,18 @@ type BehaviorResolution struct {
 	Instructions Instructions
 }
 
-// DefaultBehavior is the reserved behavior name used when a CreateTaskRequest
-// omits both behavior and behavior_spec. Projects are expected to define a
-// behavior with this name in project.yaml's task_behaviors (typically with
-// readonly: true) so that bare-task creation routes to a planning/triage step.
-//
-// Note: this is the canonical name; project.yaml files written with the
-// legacy alias "plan" continue to work because spec_loader normalizes them
-// to "supervisor" at load time (see BehaviorAliases).
+// DefaultBehavior is the hardcoded fallback behavior name used when a
+// CreateTaskRequest omits both behavior and behavior_spec, the project meta is
+// nil, and no default_task_behavior is configured. When meta is non-nil, the
+// default resolution consults meta.DefaultTaskBehavior first, then falls back
+// to "supervisor" with a deprecation warning if that behavior exists.
 const DefaultBehavior = "supervisor"
+
+// shouldWarnDeprecation reports whether deprecation warnings should be emitted.
+// Suppressed by the BOID_NO_DEPRECATION_WARN=1 environment variable.
+func shouldWarnDeprecation() bool {
+	return os.Getenv("BOID_NO_DEPRECATION_WARN") != "1"
+}
 
 // BehaviorResolveRequest carries the behavior-relevant fields from a task creation request.
 type BehaviorResolveRequest struct {
@@ -84,13 +88,29 @@ func LookupBehaviorWithAlias(meta *ProjectMeta, name string) (TaskBehavior, stri
 
 // ResolveBehavior validates and resolves behavior fields from a task creation request.
 // It handles both the named behavior path (meta lookup) and the inline behavior_spec path.
-// When both behavior and behavior_spec are empty, the request is routed to DefaultBehavior.
+// When both behavior and behavior_spec are empty, the default is resolved via:
+//  1. meta.DefaultTaskBehavior if set
+//  2. implicit "supervisor" fallback if that behavior exists in meta (with WARN)
+//  3. error if neither is available
+//  4. hardcoded DefaultBehavior when meta is nil (nil-meta paths, e.g. test wiring)
 func ResolveBehavior(meta *ProjectMeta, req BehaviorResolveRequest) (*BehaviorResolution, error) {
 	if req.Behavior != "" && req.BehaviorSpec != nil {
 		return nil, fmt.Errorf("behavior and behavior_spec are mutually exclusive")
 	}
 	if req.Behavior == "" && req.BehaviorSpec == nil {
-		req.Behavior = DefaultBehavior
+		if meta == nil {
+			req.Behavior = DefaultBehavior
+		} else if meta.DefaultTaskBehavior != "" {
+			req.Behavior = meta.DefaultTaskBehavior
+		} else if _, hasSupervisor := meta.TaskBehaviors["supervisor"]; hasSupervisor {
+			if shouldWarnDeprecation() {
+				slog.Warn("no default_task_behavior set; falling back to 'supervisor'. Set default_task_behavior in project.yaml to silence this warning.",
+					"project_id", meta.ID)
+			}
+			req.Behavior = "supervisor"
+		} else {
+			return nil, fmt.Errorf("no default_task_behavior specified and no 'supervisor' behavior found in project %q", meta.ID)
+		}
 	}
 
 	res := &BehaviorResolution{Payload: req.Payload}
@@ -102,16 +122,12 @@ func ResolveBehavior(meta *ProjectMeta, req BehaviorResolveRequest) (*BehaviorRe
 		}
 		res.BehaviorName = spec.Name
 		res.Traits = spec.Traits
-		// Phase 3-1: behavior-level readonly/worktree/branch_prefix/base_branch
-		// and default_payload are gone. Inline specs receive the canonical
-		// readonly/worktree treatment along with named behaviors below — set
-		// here from project-top defaults (worktree only) and finalised by
-		// applyCanonicalBehaviorOverrides.
 		if meta != nil {
 			res.Worktree = meta.Worktree
 			res.BaseBranch = meta.BaseBranch
 		}
-		applyCanonicalBehaviorOverrides(res, meta)
+		// Inline specs have no TaskBehavior.Readonly field; pass nil → uses default.
+		applyCanonicalBehaviorOverrides(res, meta, nil)
 		mergedInstructions, err := MergeDefaultInstructions(spec.DefaultInstruction, req.Instructions)
 		if err != nil {
 			return nil, fmt.Errorf("instructions merge: %w", err)
@@ -120,7 +136,7 @@ func ResolveBehavior(meta *ProjectMeta, req BehaviorResolveRequest) (*BehaviorRe
 		return res, nil
 	}
 
-	// Named behavior path (existing logic).
+	// Named behavior path.
 	res.BehaviorName = req.Behavior
 	if meta != nil {
 		behavior, lookupKey, ok := LookupBehaviorWithAlias(meta, req.Behavior)
@@ -137,11 +153,6 @@ func ResolveBehavior(meta *ProjectMeta, req BehaviorResolveRequest) (*BehaviorRe
 			res.BehaviorName = canonical
 		}
 		res.Traits = behavior.Traits
-		// Phase 3-1: behavior-level readonly / worktree / branch_prefix /
-		// base_branch / default_payload are deleted. readonly comes from the
-		// behavior name (supervisor / executor) via
-		// applyCanonicalBehaviorOverrides; worktree and base_branch come
-		// from project-top fields.
 		res.Worktree = meta.Worktree
 		res.BaseBranch = meta.BaseBranch
 		mergedInstructions, err := MergeDefaultInstructions(behavior.DefaultInstruction, req.Instructions)
@@ -150,34 +161,36 @@ func ResolveBehavior(meta *ProjectMeta, req BehaviorResolveRequest) (*BehaviorRe
 		}
 		res.Instructions = mergedInstructions
 
-		applyCanonicalBehaviorOverrides(res, meta)
+		applyCanonicalBehaviorOverrides(res, meta, behavior.Readonly)
 	} else if len(req.Instructions) > 0 {
 		mergedInstructions, err := MergeDefaultInstructions(nil, req.Instructions)
 		if err != nil {
 			return nil, fmt.Errorf("instructions merge: %w", err)
 		}
 		res.Instructions = mergedInstructions
+		applyCanonicalBehaviorOverrides(res, nil, nil)
+	} else {
+		applyCanonicalBehaviorOverrides(res, nil, nil)
 	}
 	return res, nil
 }
 
-// applyCanonicalBehaviorOverrides enforces the Phase 3-1 readonly/worktree
-// rules. After the behavior-level fields were removed, readonly is decided
-// entirely by the canonical behavior name (supervisor=true, executor=false);
-// non-canonical behaviors get readonly=false (the legacy zero-value default).
-// worktree is taken from the project-top setting verbatim.
+// applyCanonicalBehaviorOverrides sets res.Readonly using Track A2 semantics:
 //
-// meta may be nil when behavior_spec is in use without a project meta; the
-// only effect of nil is that res.Worktree stays at its caller-supplied value
-// (typically the bool zero) which mirrors the pre-Phase-3-1 behavior of
-// inline specs.
-func applyCanonicalBehaviorOverrides(res *BehaviorResolution, meta *ProjectMeta) {
-	switch res.BehaviorName {
-	case "supervisor":
-		res.Readonly = true
-	case "executor":
-		res.Readonly = false
-	default:
+//  1. Default is readonly=true (fail-safe for free naming).
+//  2. If behaviorExplicitReadonly is non-nil, that value wins unconditionally.
+//  3. Compat exception: canonical "executor" without an explicit readonly
+//     setting gets readonly=false to preserve the pre-A2 behaviour.
+//     A deprecation warning is emitted at project load time (see
+//     emitCanonicalBehaviorDeprecation in spec_loader.go); nothing is logged here.
+//
+// meta may be nil; its only effect is setting res.Worktree.
+func applyCanonicalBehaviorOverrides(res *BehaviorResolution, meta *ProjectMeta, behaviorExplicitReadonly *bool) {
+	res.Readonly = true // fail-safe default
+	if behaviorExplicitReadonly != nil {
+		res.Readonly = *behaviorExplicitReadonly
+	} else if res.BehaviorName == "executor" {
+		// Compat: canonical "executor" without explicit readonly → keep false.
 		res.Readonly = false
 	}
 	if meta != nil {
