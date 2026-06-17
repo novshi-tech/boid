@@ -306,4 +306,3 @@ echo "タスク作成: $TASK_ID"
 - [`/boid-supervisor`](../boid-supervisor/SKILL.md) — タスク内部で子タスクを作成・監視する（タスクコンテキストあり）
 - [`/boid-executor`](../boid-executor/SKILL.md) — タスク内部でコードを実装してコミットする
 - [`/boid-task`](../boid-task/SKILL.md) — supervisor / executor の統合汎用スキル
-- [`/boid-discuss`](../boid-discuss/SKILL.md) — **Deprecated**: 機能は本スキルに吸収済み
