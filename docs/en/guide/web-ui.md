@@ -1,6 +1,6 @@
 # Web UI
 
-`boid` ships a Web UI alongside the CLI and TUI. It is enabled by default and listens on `:8080`. From the loopback interface no authentication is needed; from anywhere else (typically a phone over Cloudflare Tunnel) you pair a device first.
+`boid` ships a Web UI alongside the CLI. It is enabled by default and listens on `:8080`. From the loopback interface no authentication is needed; from anywhere else (typically a phone over Cloudflare Tunnel) you pair a device first.
 
 ## Open the UI locally
 

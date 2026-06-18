@@ -1,6 +1,6 @@
 # boid Documentation
 
-`boid` is a personal AI orchestrator. It is built to keep the human from becoming the bottleneck when several AI coding agents run in parallel: agents are given room to make progress autonomously, a sandbox with a configurable write scope keeps them from doing damage, and every in-flight task is visible at a glance through the CLI, TUI, and Web UI. Everything stays on your own machine — no servers, no signup.
+`boid` is a personal AI orchestrator. It is built to keep the human from becoming the bottleneck when several AI coding agents run in parallel: agents are given room to make progress autonomously, a sandbox with a configurable write scope keeps them from doing damage, and every in-flight task is visible at a glance through the CLI and Web UI. Everything stays on your own machine — no servers, no signup.
 
 The architecture is intentionally agent-neutral, but **Claude Code is currently the only agent with production-grade support**. The tutorials assume that setup.
 

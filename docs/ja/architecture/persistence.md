@@ -71,7 +71,7 @@
 | `from_status` / `to_status` | TEXT | 遷移前後の status (タスク履歴を再構築する手がかり) |
 | `created_at` | DATETIME | 発行時刻 |
 
-`actions` は append-only で、上書きや削除を想定していません。 `boid task show` のタイムライン、 TUI / Web UI のヒストリ表示の元データです。
+`actions` は append-only で、上書きや削除を想定していません。 `boid task show` のタイムライン、 Web UI のヒストリ表示の元データです。
 
 ## `jobs`
 

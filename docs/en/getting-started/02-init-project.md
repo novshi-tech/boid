@@ -67,7 +67,7 @@ project registered: <uuid> (boid-demo)
 
 What each prompt asks:
 
-1. **Project name** — the label shown in the Web UI / TUI. Defaults to the directory name.
+1. **Project name** — the label shown in the Web UI. Defaults to the directory name.
 2. **Available kits** — installed kits that look applicable to this machine are pre-selected (e.g. Claude Code shows up if `claude` is on your `PATH`). Type numbers to toggle.
 3. **Requirements check** — verifies that the host commands each selected kit needs are on your `PATH`.
 

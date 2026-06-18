@@ -11,7 +11,7 @@ The unit of work that `boid` tracks from request to completion. Every task carri
 - A **behavior** — either `supervisor` or `executor`. It says whether the task is the orchestrator or the implementer, and it also determines whether the sandbox is read-only and whether a worktree is allocated.
 - The **project** the task belongs to.
 
-Tasks are created with `boid task create` and observed with `boid task list`, `boid task show`, `boid task watch`, the TUI, or the Web UI.
+Tasks are created with `boid task create` and observed with `boid task list`, `boid task show`, `boid task watch`, or the Web UI.
 
 ## Project
 
@@ -26,7 +26,7 @@ You register a project with `boid project add <path>`. Any number of projects ca
 
 ## Workspace
 
-A label for grouping projects. You might bucket projects as "personal", "work", and "OSS" so the Web UI and TUI can filter the views by group. Workspaces are not declared in `project.yaml`; they are assigned with `boid workspace assign <project> <workspace-id>` (and removed with `boid workspace clear`). A project can belong to at most one workspace.
+A label for grouping projects. You might bucket projects as "personal", "work", and "OSS" so the Web UI can filter the views by group. Workspaces are not declared in `project.yaml`; they are assigned with `boid workspace assign <project> <workspace-id>` (and removed with `boid workspace clear`). A project can belong to at most one workspace.
 
 - `boid workspace list` lists the configured workspaces.
 - `boid workspace show <id>` lists the projects in a workspace along with their recent tasks.
@@ -117,7 +117,7 @@ A discrete event that triggers a manual state transition. Examples:
 - `reopen` — return a `done` task to `executing`, appending a new instruction to `Task.Instructions` (`--message "..."`).
 - `abort` — force the task into `aborted` from any non-terminal state.
 
-Send actions with `boid action send --task <id> --type <action>`, or issue them from the TUI / Web UI.
+Send actions with `boid action send --task <id> --type <action>`, or issue them from the Web UI.
 
 ## Daemon
 

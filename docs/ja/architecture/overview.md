@@ -48,7 +48,6 @@ internal/
   dispatcher/         - hook のジョブ起動、サンドボックスの組み立て、 worktree 管理
   sandbox/            - mount namespace + chroot 実装、 host command broker、 HTTP プロキシ
   kit/                - kit リポジトリの clone・読み込み・detect
-  tui/                - bubbletea ベースの TUI
   initwizard/         - boid init の対話セットアップ
   logrotate/          - daemon ログのサイズローテーション
   qrterm/             - ターミナルへの QR コード描画
@@ -200,7 +199,6 @@ SQLite のハンドルとマイグレーション。 `modernc.org/sqlite` (純 G
 | host command の許可ロジック | [`internal/dispatcher/policy_translate.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/policy_translate.go) |
 | サンドボックスの境界 | [`internal/sandbox/broker.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/broker.go) |
 | Web UI 認証 | [`internal/api/web_auth.go`](https://github.com/novshi-tech/boid/blob/main/internal/api/) (関連ファイルを参照) |
-| TUI 全体 | [`internal/tui/app.go`](https://github.com/novshi-tech/boid/blob/main/internal/tui/app.go) |
 
 ## 関連ドキュメント
 

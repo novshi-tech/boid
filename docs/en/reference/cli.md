@@ -6,10 +6,9 @@ A complete index of `boid`'s subcommands, grouped by what they do. The authorita
 
 ### Invocation
 
-`boid` with no arguments launches the TUI.
+`boid` with no arguments prints help.
 
 ```bash
-boid                        # launch the TUI
 boid --help                 # list subcommands
 boid <command> --help       # per-command help
 ```

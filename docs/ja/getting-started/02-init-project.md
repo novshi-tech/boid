@@ -67,7 +67,7 @@ project registered: <uuid> (boid-demo)
 
 順に何を聞かれているか:
 
-1. **Project name** — Web UI / TUI 表示用の名前。 ディレクトリ名がそのまま既定値
+1. **Project name** — Web UI 表示用の名前。 ディレクトリ名がそのまま既定値
 2. **Available kits** — インストール済み kit のうち、 このマシンで動かせるものに `✓` が付いて自動選択されます (例: `claude` CLI が PATH にあれば Claude Code がオンに)。 番号を打って on/off を切り替えられます
 3. **Requirements check** — 選んだ kit が必要とする host コマンドが PATH 上にあるかを確認
 
