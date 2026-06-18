@@ -65,7 +65,7 @@ type specDump struct {
 	Foreground   bool              `json:"foreground"`
 	StopSignal   string            `json:"stop_signal"`
 	Cloneflags   []string          `json:"cloneflags"`
-	PivotRoot    string            `json:"pivot_root"`
+	Chroot       string            `json:"chroot"`
 	PastaCmdline []string          `json:"pasta_cmdline"`
 	Mounts       []mountDump       `json:"mounts"`
 	NFTRules     [][]string        `json:"nft_rules"`
@@ -109,8 +109,8 @@ func buildSpecDump(spec sandbox.Spec, pastaCmdline []string) specDump {
 		TTY:          spec.TTY,
 		Foreground:   spec.Foreground,
 		StopSignal:   stopSignalName(spec),
-		Cloneflags:   []string{"CLONE_NEWUSER", "CLONE_NEWNS"},
-		PivotRoot:    spec.RootDir,
+		Cloneflags:   []string{"runner-mount=CLONE_NEWNS", "runner-inner-child=CLONE_NEWUSER"},
+		Chroot:       spec.RootDir,
 		PastaCmdline: pastaCmdline,
 		Mounts:       mounts,
 		NFTRules:     nft,
@@ -153,6 +153,18 @@ func OpenState(path string) *State {
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
+		return nil
+	}
+	return &State{f: f}
+}
+
+// OpenStateFromFD wraps an inherited file descriptor (passed by runner-mount via
+// ExtraFiles) as a State. runner-inner-child is chrooted and cannot open the
+// host runner-state path, so it appends through this fd instead. Returns nil
+// (making all methods no-ops) when the fd is unusable.
+func OpenStateFromFD(fd int) *State {
+	f := os.NewFile(uintptr(fd), "runner-state")
+	if f == nil {
 		return nil
 	}
 	return &State{f: f}
