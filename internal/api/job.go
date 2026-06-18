@@ -191,11 +191,13 @@ func (h *JobHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, job)
 }
 
-// AgentStop asks the harness adapter to stop the agent gracefully. bash and
-// the EXIT trap remain alive so the trap's `boid job done --output-file
-// payload_patch.json` remains the canonical CompleteJob caller — preserving
-// the agent's session id through the broker token without racing against
-// UnregisterJob. See WorkflowService.StopAgent for the lifecycle rationale.
+// AgentStop asks the daemon to deliver SIGUSR1 to the runtime pgrp.
+// claude.Adapter.Run() catches the signal and forwards SIGTERM to the claude
+// child while the surrounding runner-inner-child keeps running and posts
+// `boid job done --output-file payload_patch.json` through the broker — that
+// callback remains the canonical CompleteJob caller, preserving the agent's
+// session id without racing against UnregisterJob. See WorkflowService.StopAgent
+// for the lifecycle rationale.
 func (h *JobHandler) AgentStop(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	job, err := h.Jobs.GetJob(id)

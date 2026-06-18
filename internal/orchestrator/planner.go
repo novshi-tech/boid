@@ -56,12 +56,22 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 	// and agent), take the first after filtering.
 	instruction := selectInstruction(task, event.Hook.Agent)
 
+	// Phase 3-b: hooks whose RoutedInstruction is non-nil are agent-bearing —
+	// the runner-inner-child hands them off to the HarnessAdapter.Run() path
+	// instead of exec-ing the kit's run-agent shim. claude is the only
+	// supported harness today; Phase 3-c extends this to codex / opencode.
+	harnessType := ""
+	if instruction != nil {
+		harnessType = "claude"
+	}
+
 	spec := &JobSpec{
 		TaskID:      event.TaskID,
 		ProjectID:   event.ProjectID,
 		HandlerID:   event.Hook.ID,
 		DisplayName: event.Hook.Name,
 		Kind:        JobKindHook,
+		HarnessType: harnessType,
 		Argv:         []string{event.Hook.ScriptPath},
 		Instruction:  instruction,
 		Task:         snapshotTask(task),
@@ -84,11 +94,12 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		SecretNamespace: meta.SecretNamespace,
 		Env:             mergeStringMaps(mergeStringMaps(behavior.Env, taskBusinessEnv(task, parent)), p.resumeEnv(task)),
 		ExecutionState:  string(task.Status),
-		// Hook jobs run an agent session that requires a real PTY. The
-		// adapter decides whether a PTY is needed; the EXIT trap added by
-		// dispatcher (Foreground=false) still fires `boid job done` on
-		// process exit so the daemon learns when the agent finishes.
-		Interactive: p.interactive(),
+		// All hook jobs allocate a PTY: agent hooks (HarnessType="claude")
+		// need it so the harness' TUI behaves correctly, and pure shell hooks
+		// rely on it for live stdout streaming to the Web UI's WebSocket
+		// attach endpoint (see e2e/scenarios/hook-attach-smoke). Phase 3-c
+		// can revisit per-harness PTY hints if a non-PTY harness lands.
+		Interactive: true,
 	}
 	return spec, nil, nil
 }
@@ -162,28 +173,18 @@ func (p *DispatchPlanner) lookupParent(task *Task) (*Task, error) {
 	return parent, nil
 }
 
-// interactive returns whether the harness requires a PTY. Defaults to true
-// (claude behaviour) when no adapter is configured.
-func (p *DispatchPlanner) interactive() bool {
-	if p.Adapter == nil {
-		return true
-	}
-	return p.Adapter.Interactive()
-}
-
-// resumeEnv returns the harness-specific env vars to set when resuming an
-// awaiting task (session ID key name is owned by the adapter). Returns nil
-// when no adapter is configured or the task has no awaiting session ID.
+// resumeEnv returns BOID_AGENT_SESSION_ID for the awaiting session, if any.
+// Phase 3-b: the env var is fixed by boid core (it is the contract that
+// runner-inner-child translates into adapters.RunContext.SessionID) rather
+// than owned by a per-harness adapter — keeping per-harness session-id key
+// names out of the env is a deliberate simplification of the matrix that
+// the deprecated ResumePayload method advertised.
 func (p *DispatchPlanner) resumeEnv(task *Task) map[string]string {
-	if p.Adapter == nil {
-		return nil
-	}
 	ap := GetAwaitingPayload(task.Payload)
 	if ap.SessionID == "" {
 		return nil
 	}
-	_, env := p.Adapter.ResumePayload(ap.SessionID)
-	return env
+	return map[string]string{"BOID_AGENT_SESSION_ID": ap.SessionID}
 }
 
 // taskBusinessEnv returns env vars derived from business-level task fields

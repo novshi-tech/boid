@@ -31,6 +31,23 @@ func DeployAll(baseDir string) error {
 	return nil
 }
 
+// EmbeddedSkillNames returns the slugs of the embedded skill directories in
+// stable lexical order. dispatcher uses it to compute the claude-side
+// ~/.claude/skills/<name> bind targets without hard-coding the list.
+func EmbeddedSkillNames() []string {
+	entries, err := skillsFS.ReadDir("data")
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	return names
+}
+
 func deploySkill(name, targetDir string) error {
 	prefix := "data/" + name
 	return fs.WalkDir(skillsFS, prefix, func(path string, d fs.DirEntry, err error) error {

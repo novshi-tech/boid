@@ -27,22 +27,9 @@ func TestPastaArgs_Matches1to1(t *testing.T) {
 	}
 }
 
-func TestStopSignal(t *testing.T) {
-	cases := []struct {
-		name string
-		want syscall.Signal
-	}{
-		{"", syscall.SIGUSR1},
-		{"USR1", syscall.SIGUSR1},
-		{"USR2", syscall.SIGUSR2},
-		{"TERM", syscall.SIGTERM},
-		{"bogus", syscall.SIGUSR1},
-	}
-	for _, tc := range cases {
-		got := stopSignal(sandbox.Spec{StopSignalName: tc.name})
-		if got != tc.want {
-			t.Errorf("stopSignal(%q) = %v, want %v", tc.name, got, tc.want)
-		}
+func TestStopSignalIsSIGUSR1(t *testing.T) {
+	if got := stopSignal(); got != syscall.SIGUSR1 {
+		t.Errorf("stopSignal() = %v, want SIGUSR1", got)
 	}
 }
 

@@ -108,7 +108,7 @@ func buildSpecDump(spec sandbox.Spec, pastaCmdline []string) specDump {
 		ProxyPort:    spec.ProxyPort,
 		TTY:          spec.TTY,
 		Foreground:   spec.Foreground,
-		StopSignal:   stopSignalName(spec),
+		StopSignal:   "USR1", // Phase 3-b hardcoded; see runner.stopSignal()
 		Cloneflags:   []string{"CLONE_NEWUSER", "CLONE_NEWNS"},
 		PivotRoot:    spec.RootDir,
 		PastaCmdline: pastaCmdline,
@@ -116,14 +116,6 @@ func buildSpecDump(spec sandbox.Spec, pastaCmdline []string) specDump {
 		NFTRules:     nft,
 		Env:          redactEnv(spec.Env),
 	}
-}
-
-// stopSignalName returns the configured stop signal name, defaulting to USR1.
-func stopSignalName(spec sandbox.Spec) string {
-	if spec.StopSignalName != "" {
-		return spec.StopSignalName
-	}
-	return "USR1"
 }
 
 // stateLine is one NDJSON record in runner-state.json. Either Spec (the first,

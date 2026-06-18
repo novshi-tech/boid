@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"sync"
+	"syscall"
 
 	"github.com/novshi-tech/boid/internal/adapters"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -23,8 +24,11 @@ type TaskWorkflowService struct {
 	// Optional: when nil, no branch locking is performed (matches pre-P0-2
 	// behaviour for tests that don't exercise concurrency).
 	Locks *orchestrator.BranchLockManager
-	// Adapter is the harness adapter used to stop agents and query usage.
-	// When nil, StopAgent is a no-op (safe for tests that don't exercise the path).
+	// Adapter is the harness adapter used to query post-run usage. Phase 3-b
+	// dropped the StopAgent role: graceful stop is delivered as a SIGUSR1
+	// directly via Lifecycle.SignalJobRuntime, which claude.Adapter.Run()'s
+	// signal.Notify handler intercepts. Adapter remains optional; when nil,
+	// usage / future per-harness queries become no-ops.
 	Adapter adapters.HarnessAdapter
 
 	dispatchCtx    context.Context
@@ -57,14 +61,17 @@ func (s *TaskWorkflowService) releaseProjectLock(taskID string) {
 	s.Locks.ReleaseForTask(taskID)
 }
 
-// StopAgent delegates to the configured HarnessAdapter to gracefully stop the
-// agent backing runtimeID, leaving bash and the EXIT trap alive. No-op when
-// runtimeID is empty or no Adapter has been configured.
+// StopAgent gracefully stops the agent backing runtimeID by delivering
+// SIGUSR1 to its process group. claude.Adapter.Run()'s signal.Notify(SIGUSR1)
+// handler forwards a SIGTERM to the claude child and returns
+// Result.StoppedByDaemon=true, so the surrounding sandbox runtime survives
+// long enough to post `boid job done` through the broker normally. No-op
+// when runtimeID is empty or no JobLifecycle has been configured.
 func (s *TaskWorkflowService) StopAgent(runtimeID string) {
-	if runtimeID == "" || s.Adapter == nil {
+	if runtimeID == "" || s.Lifecycle == nil {
 		return
 	}
-	go s.Adapter.StopAgent(context.Background(), runtimeID) //nolint:errcheck
+	go s.Lifecycle.SignalJobRuntime(runtimeID, syscall.SIGUSR1)
 }
 
 // enrichJob fills WorkspacePath from RuntimesDir and the job's RuntimeID.
