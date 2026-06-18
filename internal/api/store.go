@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"syscall"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -40,6 +41,13 @@ type JobLifecycle interface {
 	UnregisterJob(jobID string)
 	CleanupTaskWindow(taskID string)
 	StopJobRuntime(runtimeID string)
+	// SignalJobRuntime delivers a single Unix signal to the runtime's process
+	// group. Phase 3-b uses it to graceful-stop the agent (SIGUSR1) without
+	// tearing down the surrounding sandbox runtime: claude.Adapter.Run() has a
+	// signal.Notify(SIGUSR1) handler that translates the group signal into a
+	// SIGTERM toward the claude child, then normalises the resulting exit
+	// status into Result.StoppedByDaemon=true.
+	SignalJobRuntime(runtimeID string, sig syscall.Signal)
 }
 
 type BrokerRegistry interface {

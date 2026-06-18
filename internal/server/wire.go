@@ -184,8 +184,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	})
 
 	lifecycle := jobLifecycleAdapter{runner: runner}
-	claudeAdapter := claude.New(lifecycle)
-	runner.StopSignalName = claudeAdapter.StopSignalName()
+	claudeAdapter := claude.New()
 	planner := orchestrator.WireDispatchPlanner(orchestrator.PlannerWireConfig{
 		Meta:     store,
 		Projects: projectCatalog,

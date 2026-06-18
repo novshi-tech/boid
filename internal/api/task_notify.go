@@ -227,17 +227,18 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		}
 	}
 
-	// Ask the harness adapter to stop the agent of each running hook job
-	// gracefully. The core delegates to adapter.StopAgent, leaving bash and
-	// the EXIT trap alive so the normal completion path runs through the broker.
+	// Stop the agent of each running hook job gracefully. StopAgent delivers
+	// SIGUSR1 to the runtime pgrp; claude.Adapter.Run()'s signal.Notify handler
+	// translates that into a SIGTERM toward the claude child and returns with
+	// Result.StoppedByDaemon=true so the surrounding runner-inner-child still
+	// posts `boid job done --output-file payload_patch.json` through the broker.
 	//
 	// Crucially, we do NOT call CompleteJob preemptively here. CompleteJob's
-	// finalize releases the broker token, which would reject the bash EXIT
-	// trap's follow-up `boid job done --output-file payload_patch.json` as
-	// "invalid token" — silently dropping the agent's session id and
-	// breaking the next hook's resume. By letting the EXIT trap be the sole
-	// CompleteJob caller (through the broker), the standard completion path
-	// runs with the agent's payload_patch intact.
+	// finalize releases the broker token, which would reject the runner's
+	// follow-up `boid job done` as "invalid token" — silently dropping the
+	// agent's session id and breaking the next hook's resume. By letting the
+	// runner-inner-child be the sole CompleteJob caller (through the broker),
+	// the standard completion path runs with the agent's payload_patch intact.
 	if s.Jobs != nil {
 		jobs, err := s.Jobs.ListJobsByTask(taskID)
 		if err == nil {

@@ -47,32 +47,21 @@ func pastaArgs(self, specPath, statePath string) []string {
 	}
 }
 
-// stopSignal maps the harness stop-signal name (Spec.StopSignalName, default
-// "USR1") to the OS signal the runner sets to SIG_IGN. The former bash scripts
-// did `trap ” <name>`; the go runner uses signal.Ignore so the disposition is
-// inherited (SIG_IGN survives execve) by pasta and the child runners while the
-// harness runner (run-agent.py) re-installs its own handler.
-func stopSignal(spec sandbox.Spec) syscall.Signal {
-	switch stopSignalName(spec) {
-	case "USR1":
-		return syscall.SIGUSR1
-	case "USR2":
-		return syscall.SIGUSR2
-	case "TERM":
-		return syscall.SIGTERM
-	case "INT":
-		return syscall.SIGINT
-	case "HUP":
-		return syscall.SIGHUP
-	default:
-		return syscall.SIGUSR1
-	}
+// stopSignal returns the OS signal the runner sets to SIG_IGN. Phase 3-b
+// reduced the per-harness StopSignalName to a hard-coded SIGUSR1: claude is
+// the only supported harness, and Phase 3-c will revisit this if codex /
+// opencode pick a different stop signal. SIG_IGN survives execve so the
+// disposition is inherited by pasta and the child runners; the harness
+// adapter (claude.Adapter.Run) re-installs signal.Notify on the same signal
+// to translate the group signal into a SIGTERM toward the agent process.
+func stopSignal() syscall.Signal {
+	return syscall.SIGUSR1
 }
 
 // ignoreStopSignal sets the harness stop signal to SIG_IGN for the current
 // process. SIG_IGN is preserved across execve, so children inherit it.
-func ignoreStopSignal(spec sandbox.Spec) {
-	signal.Ignore(stopSignal(spec))
+func ignoreStopSignal(_ sandbox.Spec) {
+	signal.Ignore(stopSignal())
 }
 
 // envSlice converts the spec env map into the KEY=VALUE slice exec.Cmd wants,

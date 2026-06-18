@@ -61,9 +61,14 @@ type Spec struct {
 	// exits (used for staging dirs). Removal runs in the host mount namespace,
 	// where the sandbox's bind mounts are already gone.
 	CleanupPaths []string
-	// StopSignalName is the harness agent-stop signal name (e.g. "USR1"). The
-	// runner subcommands set this signal to SIG_IGN so they survive a
-	// process-group signal while the harness runner (run-agent.py) acts on it.
-	// Defaults to "USR1" when empty.
-	StopSignalName string
+	// HarnessType, when non-empty, directs runner-inner-child to hand the
+	// agent process off to the matching HarnessAdapter.Run() instead of
+	// exec-ing Argv verbatim. Empty preserves the legacy exec path used by
+	// boid exec jobs and any non-agent hook job. See sandbox.HarnessType.
+	HarnessType HarnessType
+
+	// UserAnswer carries the Q&A reply that should be threaded into the
+	// adapter's RunContext.UserAnswer. Empty for fresh starts and for resumes
+	// without a Q&A reply.
+	UserAnswer string
 }

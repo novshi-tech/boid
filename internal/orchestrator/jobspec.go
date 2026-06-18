@@ -79,6 +79,14 @@ type JobSpec struct {
 	// Instruction is attached. Used by daemon-side command execution (Web UI)
 	// where the caller always expects a PTY-backed terminal.
 	Interactive bool
+
+	// HarnessType identifies which HarnessAdapter implementation the runner
+	// hands the agent process off to. Empty means "no adapter; exec Argv as a
+	// plain command" (boid exec jobs and any non-agent hook). For agent-bearing
+	// hook jobs the planner sets "claude" (the only supported harness today;
+	// Phase 3-c will extend to codex / opencode). dispatcher bridges this into
+	// sandbox.Spec.HarnessType and the runner-inner-child branches on it.
+	HarnessType string
 }
 
 // Visibility captures which host paths the sandbox sees and whether they are

@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1989,9 +1990,12 @@ type stubLifecycle struct {
 	result            JobCompletion
 
 	// StopJobRuntime is invoked from a goroutine spawned by CompleteJob, so
-	// the field it touches must be mutex-protected.
+	// the field it touches must be mutex-protected. SignalJobRuntime is
+	// similarly invoked from a goroutine spawned by StopAgent.
 	mu               sync.Mutex
 	stoppedRuntimeID string
+	signaledRuntime  string
+	signaledSig      syscall.Signal
 }
 
 func (l *stubLifecycle) CompleteJob(jobID string, result JobCompletion) {
@@ -2017,6 +2021,19 @@ func (l *stubLifecycle) StoppedRuntimeID() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.stoppedRuntimeID
+}
+
+func (l *stubLifecycle) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.signaledRuntime = runtimeID
+	l.signaledSig = sig
+}
+
+func (l *stubLifecycle) SignaledRuntime() (string, syscall.Signal) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.signaledRuntime, l.signaledSig
 }
 
 func TestDuplicateTask_CopiesFields(t *testing.T) {

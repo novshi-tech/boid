@@ -132,37 +132,20 @@ type Result struct {
 // HarnessAdapter abstracts harness-specific agent protocol from boid core.
 // Each supported harness (claude, codex, opencode, …) provides one implementation.
 // The boid core calls these methods without knowing which harness is in use.
+//
+// Phase 3-b shrank the interface to two members: Run() owns the entire agent
+// process lifecycle (session resolve, fork, signal handling, payload capture,
+// exit normalisation), and Usage() exposes post-run token metrics. Signal
+// stop is delivered out-of-band via api.JobLifecycle.SignalJobRuntime so the
+// daemon does not need to round-trip through the adapter to nudge a running
+// agent.
 type HarnessAdapter interface {
 	// Run forks the agent process, manages its signal lifecycle, and returns
 	// the captured payload patch and usage. See RunContext / Result for the
-	// I/O contract. Run() is the Phase 3-b consolidation target — the five
-	// helper methods below are slated for removal once dispatcher and
-	// runner-inner-child route through Run() exclusively (Phase 3-b PR2).
+	// I/O contract.
 	Run(ctx context.Context, rc RunContext) (Result, error)
-
-	// StopAgent asks the agent backing runtimeID to terminate gracefully,
-	// leaving the surrounding bash runtime and EXIT trap alive so payload_patch
-	// capture completes through the broker normally.
-	StopAgent(ctx context.Context, runtimeID string) error
-
-	// ResumePayload returns argv flags and environment variables to pass to
-	// the start hook when resuming an existing agent session identified by
-	// sessionID.
-	ResumePayload(sessionID string) (args []string, env map[string]string)
-
-	// Interactive reports whether this harness requires a PTY allocation.
-	Interactive() bool
-
-	// SessionIDFromHookEnv extracts the harness session ID from env variables
-	// delivered to a start hook. The inverse of the env produced by ResumePayload.
-	SessionIDFromHookEnv(env map[string]string) string
 
 	// Usage returns token consumption metrics for the job identified by jobID.
 	// Returns a zero Usage and a nil error when metrics are not yet available.
 	Usage(ctx context.Context, jobID string) (Usage, error)
-
-	// StopSignalName returns the bash signal name used in the generated sandbox
-	// `trap '' <name>` line. The sandbox script inherits SIG_IGN so that only
-	// the harness runner (e.g. run-agent.py) intercepts the signal. Example: "USR1".
-	StopSignalName() string
 }

@@ -11,27 +11,18 @@ import (
 	"github.com/novshi-tech/boid/internal/adapters"
 )
 
-// stubHarnessAdapter is a test double that mimics claude adapter behaviour.
+// stubHarnessAdapter is a test double matching the Phase 3-b two-method
+// HarnessAdapter contract. planner currently only stores the adapter pointer
+// (Phase 3-c is expected to expose harness capability hints again); the
+// concrete behaviour of Run() is exercised end-to-end via runner-inner-child.
 type stubHarnessAdapter struct{}
 
 func (stubHarnessAdapter) Run(_ context.Context, _ adapters.RunContext) (adapters.Result, error) {
 	return adapters.Result{}, nil
 }
-func (stubHarnessAdapter) StopAgent(_ context.Context, _ string) error { return nil }
-func (stubHarnessAdapter) Interactive() bool                           { return true }
-func (stubHarnessAdapter) ResumePayload(sessionID string) ([]string, map[string]string) {
-	if sessionID == "" {
-		return nil, nil
-	}
-	return []string{"--resume", sessionID}, map[string]string{"BOID_AGENT_SESSION_ID": sessionID}
-}
-func (stubHarnessAdapter) SessionIDFromHookEnv(env map[string]string) string {
-	return env["BOID_AGENT_SESSION_ID"]
-}
 func (stubHarnessAdapter) Usage(_ context.Context, _ string) (adapters.Usage, error) {
 	return adapters.Usage{}, nil
 }
-func (stubHarnessAdapter) StopSignalName() string { return "USR1" }
 
 type stubProjectCatalog struct {
 	projects []*Project
@@ -142,15 +133,25 @@ func TestPlanHook_UsesScriptPathDirectlyAndSetsKitRoots(t *testing.T) {
 	}
 }
 
-// Hook jobs always request an interactive PTY: agent runners (claude code etc.)
-// are launched via real PTY sessions and rely on daemon-side SIGTERM (on
-// `boid task notify --ask` or `boid job done`) to terminate.
-func TestPlanHook_AlwaysInteractive(t *testing.T) {
+// Agent-bearing hooks (HarnessType != "") request an interactive PTY:
+// agent runners (claude code etc.) are launched via real PTY sessions and
+// rely on daemon-side SIGUSR1 (on `boid task notify --ask` or `boid job
+// done`) to terminate.
+func TestPlanHook_AgentHookInteractive(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Status: TaskStatusExecuting})
+	task := &Task{
+		ID:        "task-1",
+		ProjectID: "proj-1",
+		Behavior:  "executor",
+		Status:    TaskStatusExecuting,
+		Instructions: Instructions{{
+			Agent: "claude-code",
+		}},
+	}
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
 
 	hookReq, cleanup, err := planner.PlanHook(&HookFireEvent{
 		EventID:   "event-1",
@@ -159,6 +160,7 @@ func TestPlanHook_AlwaysInteractive(t *testing.T) {
 		Hook: Hook{
 			ID:         "hook-1",
 			ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
+			Agent:      "claude-code",
 		},
 	})
 	if err != nil {
@@ -167,8 +169,11 @@ func TestPlanHook_AlwaysInteractive(t *testing.T) {
 	if cleanup != nil {
 		defer cleanup()
 	}
+	if hookReq.HarnessType != "claude" {
+		t.Errorf("PlanHook spec.HarnessType = %q, want %q (instruction-bearing hook routes through claude adapter)", hookReq.HarnessType, "claude")
+	}
 	if !hookReq.Interactive {
-		t.Errorf("PlanHook spec.Interactive = false, want true (hook jobs must allocate a PTY)")
+		t.Errorf("PlanHook spec.Interactive = false, want true (agent-bearing hooks must allocate a PTY)")
 	}
 }
 

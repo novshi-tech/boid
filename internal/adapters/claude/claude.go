@@ -3,37 +3,30 @@
 // Package placement: internal/adapters/claude/ (internal/adapters/ hosts the
 // shared interface; each harness sub-package hosts its implementation).
 //
-// Stopping convention: SIGUSR1 is delivered to the runtime process group.
-// run-agent.py intercepts it and forwards SIGTERM to the claude process only,
-// leaving bash and the EXIT trap alive so payload_patch capture completes
-// normally through the broker.
+// Stopping convention (Phase 3-b): SIGUSR1 is delivered to the runtime
+// process group by api.JobLifecycle.SignalJobRuntime. Run()'s
+// signal.Notify(SIGUSR1) handler intercepts it and forwards SIGTERM to the
+// claude child only, normalising the resulting exit status into
+// Result.StoppedByDaemon=true. There is no separate "stop agent" entry on
+// the adapter — the daemon owns the signal, the adapter owns the response.
 package claude
 
 import (
 	"context"
-	"syscall"
 
 	"github.com/novshi-tech/boid/internal/adapters"
 )
 
-// runtimeSignaler delivers a signal to a running runtime's process group.
-// Satisfied by jobLifecycleAdapter (internal/server) and Runner (internal/dispatcher).
-type runtimeSignaler interface {
-	SignalJobRuntime(runtimeID string, sig syscall.Signal)
-}
-
 // Adapter implements adapters.HarnessAdapter for Claude Code.
 type Adapter struct {
-	lifecycle runtimeSignaler
 	// abortCodeLookup resolves lifecycle.abort.code for a task id. Defaults
 	// to invoking `boid task get`; tests override via WithAbortCodeLookup.
 	abortCodeLookup func(ctx context.Context, taskID string) string
 }
 
-// New returns a new Adapter backed by the given runtimeSignaler.
-func New(lifecycle runtimeSignaler) *Adapter {
+// New returns a new Adapter.
+func New() *Adapter {
 	return &Adapter{
-		lifecycle:       lifecycle,
 		abortCodeLookup: defaultAbortCodeLookup,
 	}
 }
@@ -45,46 +38,8 @@ func (a *Adapter) WithAbortCodeLookup(f func(ctx context.Context, taskID string)
 	return a
 }
 
-// StopAgent delivers SIGUSR1 to the runtime's process group. run-agent.py
-// handles it by sending SIGTERM to the claude subprocess only; bash and the
-// EXIT trap survive so boid job done fires through the broker normally.
-func (a *Adapter) StopAgent(_ context.Context, runtimeID string) error {
-	if a.lifecycle == nil || runtimeID == "" {
-		return nil
-	}
-	a.lifecycle.SignalJobRuntime(runtimeID, syscall.SIGUSR1)
-	return nil
-}
-
-// ResumePayload returns the --resume flag and the BOID_AGENT_SESSION_ID env
-// var for the given session ID. The caller passes these to the start hook so
-// claude resumes its prior session.
-func (a *Adapter) ResumePayload(sessionID string) ([]string, map[string]string) {
-	if sessionID == "" {
-		return nil, nil
-	}
-	return []string{"--resume", sessionID}, map[string]string{"BOID_AGENT_SESSION_ID": sessionID}
-}
-
-// Interactive returns true. Non-interactive claude --print invocations
-// consume a separate Max credit pool that bills at a higher rate than PTY sessions.
-func (a *Adapter) Interactive() bool {
-	return true
-}
-
-// SessionIDFromHookEnv returns the BOID_AGENT_SESSION_ID variable from env.
-// boid sets this variable from the awaiting trait when dispatching a resume hook.
-func (a *Adapter) SessionIDFromHookEnv(env map[string]string) string {
-	return env["BOID_AGENT_SESSION_ID"]
-}
-
-// Usage is not yet implemented. It will be wired in Phase 3 when the jobs
+// Usage is not yet implemented. It will be wired in Phase 4 when the jobs
 // table gains usage columns and the jsonl read path is finalised.
 func (a *Adapter) Usage(_ context.Context, _ string) (adapters.Usage, error) {
 	return adapters.Usage{}, nil
 }
-
-// StopSignalName returns "USR1". Claude Code uses SIGUSR1 as its agent-stop
-// signal, so the generated sandbox script traps USR1 as SIG_IGN so that
-// run-agent.py is the only process that acts on it.
-func (a *Adapter) StopSignalName() string { return "USR1" }

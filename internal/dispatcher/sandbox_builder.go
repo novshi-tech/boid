@@ -10,6 +10,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/skills"
 	"gopkg.in/yaml.v3"
 )
 
@@ -66,9 +67,6 @@ type SandboxRuntimeInfo struct {
 	// Set by the runner before BuildSandboxSpec when DockerEnabled is true.
 	ProxySocketPath string
 
-	// StopSignalName is forwarded to sandbox.Spec so generated bash scripts trap
-	// the correct harness-specific signal as SIG_IGN. Defaults to "USR1" when empty.
-	StopSignalName string
 }
 
 // BuildSandboxSpec turns a business-level JobSpec and dispatcher-side runtime
@@ -172,18 +170,26 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		})
 	}
 
-	// Additional bindings (kit CLIs, exec-provided pass-throughs).
-	mounts = append(mounts, additionalBindingMounts(expandedBindings)...)
-
-	// Kit root bind-mounts: each kit's root directory is bound at its original
-	// host path so hook/gate scripts can source sibling helpers via relative paths.
-	for _, kitRoot := range spec.Visibility.KitRoots {
-		mounts = append(mounts, sandbox.Mount{
-			Source:   kitRoot,
-			Target:   kitRoot,
-			Type:     sandbox.MountBind,
-			ReadOnly: true,
-		})
+	// Additional bindings and kit roots:
+	//   * HarnessType=="claude" hands the agent off to claude.Adapter.Run(),
+	//     which owns the claude binary + ~/.claude / ~/.claude.json layout
+	//     directly. The kit's run-agent.sh and additional_bindings are
+	//     irrelevant on this path, so we ignore them and inject a hard-coded
+	//     set of bindings instead.
+	//   * For every other job (boid exec, gate hooks, non-agent hooks) the
+	//     kit-declared bindings + KitRoots still apply.
+	if spec.HarnessType == string(sandbox.HarnessClaude) {
+		mounts = append(mounts, claudeHarnessBindingMounts(homeDir)...)
+	} else {
+		mounts = append(mounts, additionalBindingMounts(expandedBindings)...)
+		for _, kitRoot := range spec.Visibility.KitRoots {
+			mounts = append(mounts, sandbox.Mount{
+				Source:   kitRoot,
+				Target:   kitRoot,
+				Type:     sandbox.MountBind,
+				ReadOnly: true,
+			})
+		}
 	}
 
 	// Server socket (exec jobs that need to talk to boid daemon).
@@ -288,6 +294,18 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 
 	tty := spec.Interactive
 
+	// Resolve harness-specific extras before assembling the Spec. For
+	// HarnessType=="claude" the runner hands the agent off to
+	// internal/adapters/claude.Adapter.Run(), so the runner needs the
+	// user-answer threaded through and the spec needs to advertise the
+	// harness type.
+	var harness sandbox.HarnessType
+	var userAnswer string
+	if spec.HarnessType != "" {
+		harness = sandbox.HarnessType(spec.HarnessType)
+		userAnswer = spec.Env["BOID_USER_ANSWER"]
+	}
+
 	out := sandbox.Spec{
 		ID:                rt.JobID,
 		Mounts:            mounts,
@@ -307,7 +325,8 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		PayloadPatchPath: homeDir + "/.boid/output/payload_patch.json",
 		RootDir:          rt.RootDir,
 		CleanupPaths:     cleanup,
-		StopSignalName:   rt.StopSignalName,
+		HarnessType:      harness,
+		UserAnswer:       userAnswer,
 	}
 	return out, nil
 }
@@ -419,6 +438,64 @@ func projectVisibilityMounts(
 		})
 	}
 
+	return out
+}
+
+// claudeHarnessBindingMounts produces the hard-coded set of host bind-mounts
+// that claude.Adapter.Run() needs inside the sandbox. They replace the bindings
+// that boid-kits' claude-code/kit.yaml used to declare; the dispatcher no longer
+// reads that kit when HarnessType=="claude". Layout (Phase 3-b):
+//
+//   - ~/.local/bin               (ro, dir) — claude CLI directory
+//   - ~/.local/share/claude      (ro, dir, optional) — claude shared data
+//   - ~/.claude                  (rw, dir, optional) — claude config / state
+//   - ~/.claude.json             (rw, file, optional) — claude main settings
+//   - ~/.local/share/boid/skills/<name> → ~/.claude/skills/<name> per embedded
+//     skill so /boid-supervisor / /boid-executor / ... resolve inside claude.
+func claudeHarnessBindingMounts(homeDir string) []sandbox.Mount {
+	var out []sandbox.Mount
+
+	out = append(out,
+		sandbox.Mount{
+			Source:   homeDir + "/.local/bin",
+			Target:   homeDir + "/.local/bin",
+			Type:     sandbox.MountBind,
+			ReadOnly: true,
+			Guard:    dirGuardExpr(homeDir + "/.local/bin"),
+		},
+		sandbox.Mount{
+			Source:   homeDir + "/.local/share/claude",
+			Target:   homeDir + "/.local/share/claude",
+			Type:     sandbox.MountBind,
+			ReadOnly: true,
+			Guard:    dirGuardExpr(homeDir + "/.local/share/claude"),
+		},
+		sandbox.Mount{
+			Source: homeDir + "/.claude",
+			Target: homeDir + "/.claude",
+			Type:   sandbox.MountBind,
+			Guard:  dirGuardExpr(homeDir + "/.claude"),
+		},
+		sandbox.Mount{
+			Source: homeDir + "/.claude.json",
+			Target: homeDir + "/.claude.json",
+			Type:   sandbox.MountBind,
+			IsFile: true,
+			Guard:  existsGuardExpr(homeDir + "/.claude.json"),
+		},
+	)
+
+	skillsBase := homeDir + "/.local/share/boid/skills"
+	for _, name := range skills.EmbeddedSkillNames() {
+		src := skillsBase + "/" + name
+		out = append(out, sandbox.Mount{
+			Source:   src,
+			Target:   homeDir + "/.claude/skills/" + name,
+			Type:     sandbox.MountBind,
+			ReadOnly: true,
+			Guard:    dirGuardExpr(src),
+		})
+	}
 	return out
 }
 
