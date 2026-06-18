@@ -84,6 +84,20 @@ run_scenario() {
     cleanup() {
       local exit_code=$?
 
+      # On failure, surface the daemon log and any retained runner-state.json so
+      # CI (which discards the temp root) still shows why a sandbox launch failed.
+      if [[ $exit_code -ne 0 ]]; then
+        if [[ -f "$E2E_LOG_DIR/server.stderr.log" ]]; then
+          printf '[e2e] ===== server.stderr.log (tail) =====\n' >&2
+          tail -n 200 "$E2E_LOG_DIR/server.stderr.log" >&2 || true
+        fi
+        for sf in /tmp/boid-*-runner-state.json; do
+          [[ -f "$sf" ]] || continue
+          printf '[e2e] ===== %s =====\n' "$sf" >&2
+          cat "$sf" >&2 || true
+        done
+      fi
+
       "$E2E_BIN_DIR/boid" stop >/dev/null 2>&1 || true
 
       if [[ $exit_code -ne 0 || $KEEP_TEMP -eq 1 ]]; then

@@ -1,36 +1,29 @@
 package sandbox
 
-// MountType represents the type of filesystem mount.
-type MountType string
-
-const (
-	MountBind  MountType = "bind"
-	MountRBind MountType = "rbind"
-	MountTmpfs MountType = "tmpfs"
-)
-
-// HookFile describes a single hook file to bind-mount into the sandbox.
-// Retained as a helper shape; dispatcher composes these into Spec.Mounts.
-type HookFile struct {
-	Source     string // host-side absolute path
-	TargetName string // filename inside sandbox .boid/hooks/
+// NFTRule is a single nftables command expressed as an argv. The go-native
+// sandbox runner applies it with exec.Command("nft", Args...). Replaces the
+// former []string of pre-rendered shell lines so the runner can exec nft
+// directly without a shell.
+type NFTRule struct {
+	Args []string
 }
 
-// sandboxPlan is the internal declarative description of the sandbox layout
-// that the setup script renders. Only the sandbox package manipulates it.
-type sandboxPlan struct {
+// Plan is the declarative description of the sandbox layout that the go-native
+// runner materializes via syscalls. It starts with base mounts (system dirs,
+// /dev, /proc, /tmp, DNS) plus optional nft rules and then appends everything
+// the caller supplied in Spec.
+type Plan struct {
 	Mounts       []Mount
 	Files        []FileWrite
 	Symlinks     []Symlink
-	NFTRules     []string
+	NFTRules     []NFTRule
 	CleanupPaths []string
 }
 
-// buildPlan constructs the internal plan from a Spec. The plan starts with
-// base mounts (system dirs, /dev, /proc, /tmp, DNS, optional nft rules) and
-// then appends everything the caller provided in Spec.
-func buildPlan(spec Spec) *sandboxPlan {
-	plan := &sandboxPlan{}
+// BuildPlan constructs the Plan from a Spec. The base mounts and nft rules are
+// sandbox-package knowledge; the runner package consumes the result.
+func BuildPlan(spec Spec) *Plan {
+	plan := &Plan{}
 
 	// Host system directories (ro, rbind, rslave)
 	for _, d := range []string{"/bin", "/sbin", "/lib", "/lib64", "/usr", "/etc"} {
@@ -58,20 +51,20 @@ func buildPlan(spec Spec) *sandboxPlan {
 
 	// Network filtering (nftables) — drops everything except the proxy hosts.
 	if spec.ProxyPort > 0 {
-		plan.NFTRules = []string{
-			"nft add table inet filter",
-			`nft 'add chain inet filter output { type filter hook output priority 0 ; policy drop ; }'`,
-			`nft add rule inet filter output oifname "lo" accept`,
-			"nft add rule inet filter output ip daddr 10.0.2.2 accept",
-			"nft add rule inet filter output ip daddr 10.0.2.3 accept",
+		plan.NFTRules = []NFTRule{
+			{Args: []string{"add", "table", "inet", "filter"}},
+			{Args: []string{"add", "chain", "inet", "filter", "output", "{ type filter hook output priority 0 ; policy drop ; }"}},
+			{Args: []string{"add", "rule", "inet", "filter", "output", "oifname", "lo", "accept"}},
+			{Args: []string{"add", "rule", "inet", "filter", "output", "ip", "daddr", "10.0.2.2", "accept"}},
+			{Args: []string{"add", "rule", "inet", "filter", "output", "ip", "daddr", "10.0.2.3", "accept"}},
 		}
 	}
 
-	// Caller-supplied mounts/files/symlinks.
+	// Caller-supplied mounts/symlinks.
 	plan.Mounts = append(plan.Mounts, spec.Mounts...)
-	// (Note: spec.Files are written by generateInnerScript, not as plan files,
-	// because they live inside the sandbox and we want them to go through the
-	// normal HOME/env setup of the inner script.)
+	// (Note: spec.Files are written by the runner inside the sandbox after
+	// pivot_root, not as plan files, because they live under the tmpfs HOME and
+	// must not be shadowed by the HOME tmpfs mount.)
 	plan.Symlinks = append(plan.Symlinks, spec.Symlinks...)
 
 	plan.CleanupPaths = append(plan.CleanupPaths, spec.CleanupPaths...)

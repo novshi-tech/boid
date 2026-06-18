@@ -914,43 +914,34 @@ func TestContextFiles_PayloadWrittenForInteractiveHook(t *testing.T) {
 	}
 }
 
-func TestBuildExitScript_FallbackChecksFileExistence(t *testing.T) {
-	const jobID = "test-job-id"
-	const payload = "/home/agent/.boid/output/payload_patch.json"
-	const fallback = "/tmp/boid-output"
+// The go-native runner replaces the former EXIT-trap `boid job done` script:
+// BuildSandboxSpec now carries Foreground (whether to post job-done) and the
+// PayloadPatchPath the runner reads the result from.
+func TestBuildSandboxSpec_HookSetsForegroundFalseAndPayloadPatchPath(t *testing.T) {
+	spec := &orchestrator.JobSpec{Interactive: true}
 
-	script := buildExitScript(jobID, payload, fallback)
-
-	// payload branch
-	if !strings.Contains(script, fmt.Sprintf("if [ -f %q ]", payload)) {
-		t.Errorf("expected if-check for payload file\n%s", script)
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{Foreground: false})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
 	}
-	// fallback branch must use elif (not else) so that boid job done is only
-	// called with --output-file when the file actually exists at runtime.
-	// TTY jobs do not capture stdout to a file, so the fallback may be absent.
-	if !strings.Contains(script, fmt.Sprintf("elif [ -f %q ]", fallback)) {
-		t.Errorf("expected elif-check for fallback file\n%s", script)
+	if result.Foreground {
+		t.Error("hook job must have Foreground=false so the runner posts boid job done")
 	}
-	// final else must call boid job done without --output-file
-	if !strings.Contains(script, fmt.Sprintf("  boid job done %s --exit-code $_exit\n", jobID)) {
-		t.Errorf("expected bare boid job done in else branch\n%s", script)
+	wantPatch := result.Env["HOME"] + "/.boid/output/payload_patch.json"
+	if result.PayloadPatchPath != wantPatch {
+		t.Errorf("PayloadPatchPath = %q, want %q", result.PayloadPatchPath, wantPatch)
 	}
 }
 
-func TestBuildExitScript_NoFallback(t *testing.T) {
-	const jobID = "test-job-id"
-	const payload = "/home/agent/.boid/output/payload_patch.json"
+func TestBuildSandboxSpec_ForegroundExecSkipsJobDone(t *testing.T) {
+	spec := &orchestrator.JobSpec{}
 
-	script := buildExitScript(jobID, payload, "")
-
-	if !strings.Contains(script, fmt.Sprintf("if [ -f %q ]", payload)) {
-		t.Errorf("expected if-check for payload file\n%s", script)
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{Foreground: true})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
 	}
-	if strings.Contains(script, "elif") {
-		t.Errorf("expected no elif when fallback is empty\n%s", script)
-	}
-	if !strings.Contains(script, fmt.Sprintf("  boid job done %s --exit-code $_exit\n", jobID)) {
-		t.Errorf("expected bare boid job done in else branch\n%s", script)
+	if !result.Foreground {
+		t.Error("foreground exec job must have Foreground=true (no broker job done)")
 	}
 }
 

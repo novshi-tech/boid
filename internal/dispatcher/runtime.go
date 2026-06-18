@@ -60,9 +60,10 @@ type JobRuntime interface {
 	Stop(ctx context.Context, runtimeID string) error
 	// Signal sends a single signal to the runtime's process group without
 	// any follow-up SIGKILL. Used by NotifyTask to drive an "agent-stop"
-	// SIGUSR1 to run-agent.py while leaving bash / EXIT trap intact (see
-	// generateOuterScript / generateInnerScript for the matching `trap ''
-	// USR1`). Implementations should be no-op when the runtime has already
-	// exited.
+	// SIGUSR1 to run-agent.py while leaving the runner chain intact: the
+	// go-native runner subcommands set this signal to SIG_IGN (see
+	// runner.ignoreStopSignal), which is inherited across execve so pasta and
+	// the child runners survive while run-agent.py re-installs its own handler.
+	// Implementations should be no-op when the runtime has already exited.
 	Signal(ctx context.Context, runtimeID string, sig syscall.Signal) error
 }

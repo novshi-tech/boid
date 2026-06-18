@@ -233,9 +233,9 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	// via `printf | argv` or redirecting stdout to a capture file would break
 	// isatty() detection in TUIs and force them into
 	// non-interactive mode. Interactive hook agents read PrimaryInput from the
-	// context file ($HOME/.boid/context/payload.json) rather than stdin, and
-	// the EXIT trap (buildExitScript) handles output via payload_patch.json
-	// when the fallback capture file is absent.
+	// context file ($HOME/.boid/context/payload.json) rather than stdin, and the
+	// runner's broker job-done reads the result from PayloadPatchPath, falling
+	// back to this stdout-capture file when no payload patch was written.
 	var stdinBytes []byte
 	if !spec.Interactive && len(spec.PrimaryInput) > 0 {
 		stdinBytes = append(stdinBytes, spec.PrimaryInput...)
@@ -288,11 +288,6 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 
 	tty := spec.Interactive
 
-	var exitScript string
-	if !rt.Foreground {
-		exitScript = buildExitScript(rt.JobID, homeDir+"/.boid/output/payload_patch.json", stdoutCapture)
-	}
-
 	out := sandbox.Spec{
 		ID:                rt.JobID,
 		Mounts:            mounts,
@@ -303,11 +298,16 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		Env:               env,
 		StdinBytes:        stdinBytes,
 		StdoutCaptureFile: stdoutCapture,
-		ExitScript:        exitScript,
 		TTY:               tty,
-		RootDir:           rt.RootDir,
-		CleanupPaths:      cleanup,
-		StopSignalName:    rt.StopSignalName,
+		// Foreground jobs (boid exec) get no broker job-done; hook jobs leave it
+		// false so runner-inner-child posts `boid job done` on agent exit. The
+		// runner reads the result from PayloadPatchPath (falling back to the
+		// stdout-capture file), reproducing the former EXIT-trap behaviour.
+		Foreground:       rt.Foreground,
+		PayloadPatchPath: homeDir + "/.boid/output/payload_patch.json",
+		RootDir:          rt.RootDir,
+		CleanupPaths:     cleanup,
+		StopSignalName:   rt.StopSignalName,
 	}
 	return out, nil
 }
@@ -557,28 +557,6 @@ func buildPATH(bindings []orchestrator.BindMount, hostCommands map[string]orches
 		return strings.Join(prefix, ":") + ":" + base
 	}
 	return base
-}
-
-// buildExitScript renders the EXIT trap that calls `boid job done`.
-// stdoutFallback is only used when the file actually exists at runtime
-// (TTY jobs do not capture stdout to a file, so the fallback may be absent).
-func buildExitScript(jobID, payloadFile, stdoutFallback string) string {
-	var b strings.Builder
-	b.WriteString("_exit=$?\n")
-	fmt.Fprintf(&b, "mkdir -p \"$(dirname %q)\"\n", payloadFile)
-	fmt.Fprintf(&b, "if [ -f %q ]; then\n", payloadFile)
-	fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit --output-file %q\n", jobID, payloadFile)
-	if stdoutFallback != "" {
-		fmt.Fprintf(&b, "elif [ -f %q ]; then\n", stdoutFallback)
-		fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit --output-file %q\n", jobID, stdoutFallback)
-		b.WriteString("else\n")
-		fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit\n", jobID)
-	} else {
-		b.WriteString("else\n")
-		fmt.Fprintf(&b, "  boid job done %s --exit-code $_exit\n", jobID)
-	}
-	b.WriteString("fi")
-	return b.String()
 }
 
 // hostGatewayIP は pasta が NS に提示するゲートウェイ IP。NS 内から届くパケット

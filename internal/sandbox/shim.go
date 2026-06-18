@@ -8,6 +8,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+
+	"github.com/novshi-tech/boid/internal/sandbox/brokerclient"
 )
 
 func CommandFromArgv0(argv0 string) string {
@@ -104,21 +106,13 @@ func sendStreamingExecRequest(brokerSocket string, req ExecRequest) (*ExecRespon
 	return &ExecResponse{ExitCode: exitCode}, nil
 }
 
+// sendExecRequest is a thin wrapper over brokerclient.SendJSON, which holds the
+// shared dial/encode/decode transport (also used by the go-native sandbox
+// runner's broker job-done path).
 func sendExecRequest(brokerSocket string, req ExecRequest) (*ExecResponse, error) {
-	conn, err := net.Dial("unix", brokerSocket)
-	if err != nil {
-		return nil, fmt.Errorf("connect to broker: %w", err)
-	}
-	defer conn.Close()
-
-	if err := json.NewEncoder(conn).Encode(&req); err != nil {
-		return nil, fmt.Errorf("send request: %w", err)
-	}
-
 	var resp ExecResponse
-	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+	if err := brokerclient.SendJSON(brokerSocket, &req, &resp); err != nil {
+		return nil, err
 	}
-
 	return &resp, nil
 }

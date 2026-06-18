@@ -9,13 +9,20 @@ import (
 	"time"
 )
 
-// scriptSuffixes are the sandbox script name suffixes written by
-// sandbox.WriteSandboxScripts.
-var scriptSuffixes = []string{"-inner.sh", "-outer.sh", "-setup.sh"}
+// scriptSuffixes are the sandbox temp-file name suffixes the dispatcher writes.
+// The go-native runner writes -runner-spec.json (the JSON sandbox spec) and
+// -runner-state.json (the diagnostic dump). The legacy bash suffixes
+// (-inner.sh / -outer.sh / -setup.sh) are retained here only to sweep up any
+// files leaked before the Phase 3-a cutover; the runner no longer produces them.
+var scriptSuffixes = []string{
+	"-runner-spec.json",
+	"-runner-state.json",
+	"-inner.sh", "-outer.sh", "-setup.sh",
+}
 
 // cleanSandboxTmp removes leaked sandbox temp artifacts from tmpDir:
 //   - boid-root-*   (mount ROOT dirs; skipped while any mount is active underneath)
-//   - boid-<jobID>-{inner,outer,setup}.sh  (generated sandbox scripts)
+//   - boid-<jobID>-runner-{spec,state}.json  (go-native runner artifacts)
 //
 // Only entries whose mtime is older than olderThan are considered. olderThan<=0
 // disables the age filter. Returns the number of entries successfully removed.

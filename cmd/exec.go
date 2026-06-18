@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"syscall"
 
 	"github.com/novshi-tech/boid/internal/client"
@@ -219,23 +218,21 @@ func runExec(cobraCmd *cobra.Command, args []string) error {
 		return fmt.Errorf("build sandbox spec: %w", err)
 	}
 
-	outerPath, err := dispatcher.NewSandboxPreparer().PrepareSandbox(sbSpec)
+	sb, err := dispatcher.NewSandboxPreparer().PrepareSandbox(sbSpec)
 	if err != nil {
 		return fmt.Errorf("prepare sandbox: %w", err)
 	}
-	if outerPath == nil || outerPath.OuterPath == "" {
-		return fmt.Errorf("prepare sandbox: missing outer script path")
+	if sb == nil || sb.SpecPath == "" {
+		return fmt.Errorf("prepare sandbox: missing spec path")
 	}
 
-	bashArgs := []string{"bash", outerPath.OuterPath}
-	if os.Getenv("BOID_DEBUG") != "" {
-		bashArgs = []string{"bash", "-x", outerPath.OuterPath}
-	}
-
-	bashPath, err := exec.LookPath("bash")
+	// Exec the go-native sandbox launcher in place of this process. boid exec is
+	// foreground (Foreground=true → no broker job-done), so runner-outer just
+	// runs the command in the sandbox and propagates its exit code.
+	self, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("find bash: %w", err)
+		return fmt.Errorf("resolve boid binary: %w", err)
 	}
-
-	return syscall.Exec(bashPath, bashArgs, os.Environ())
+	runnerArgs := []string{self, "runner-outer", "--spec", sb.SpecPath, "--state", sb.StatePath}
+	return syscall.Exec(self, runnerArgs, os.Environ())
 }
