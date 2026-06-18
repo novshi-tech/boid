@@ -4,10 +4,8 @@ package runner
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,36 +15,6 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/brokerclient"
 	"golang.org/x/sys/unix"
-)
-
-// The go-native sandbox launch chain mirrors the former bash trio. Namespaces
-// must be created at fork (SysProcAttr.Cloneflags) — never via unix.Unshare on a
-// running goroutine, which EINVALs/EPERMs under Go's multi-threaded runtime — so
-// each namespace transition is its own re-exec of this binary:
-//
-//	daemon → bash -lc → runner-outer → pasta → runner-inner → runner-mount → runner-inner-child → agent
-//	                    (host)         (netns)  (L2 uid 0)     (L2 mountns)   (L3 uid 1000, chroot)
-//
-//   - runner-inner: applies nft (in pasta's net ns, uid 0), then clones the
-//     mount-ns child with CLONE_NEWNS *only*. Doing the mounts in a CLONE_NEWNS
-//     ns that stays in pasta's user namespace is essential: the new mount ns is
-//     then owned by a user ns we hold CAP_SYS_ADMIN in, so MS_PRIVATE / bind /
-//     etc. succeed. (Combining NEWUSER|NEWNS in one clone makes "/" owned by the
-//     parent user ns → MS_PRIVATE EPERMs.) This reproduces `unshare --mount`.
-//   - runner-mount: lays out the sandbox root via bind mounts, then clones the
-//     agent host with CLONE_NEWUSER + uid map 1000←0 + Chroot=ROOT. chroot (not
-//     pivot_root) is used because pivot_root needs CAP_SYS_ADMIN over the mount
-//     ns's owning user ns, which the L3 user ns does not have; chroot only needs
-//     CAP_SYS_CHROOT in L3. This reproduces `unshare --user --map-user=1000 --root`.
-//   - runner-inner-child: chrooted as uid 1000. It cannot read the host
-//     /tmp/...-runner-spec.json (its /tmp is the sandbox tmpfs), so runner-mount
-//     passes the spec and runner-state files as inherited fds (ExtraFiles → fd
-//     3/4). It writes the context files, runs the agent, and posts broker job-done.
-
-// fd numbers runner-mount passes to runner-inner-child via ExtraFiles.
-const (
-	innerChildSpecFD  = 3
-	innerChildStateFD = 4
 )
 
 // RunOuter is the `boid runner-outer` entry point. It runs on the host as the
@@ -152,8 +120,8 @@ func cleanupRoot(rootDir string) {
 
 // RunInner is the `boid runner-inner` entry point. It runs inside pasta's
 // user+net namespace (inner uid 0). It applies the nft egress rules, then clones
-// runner-mount into a fresh mount namespace (CLONE_NEWNS only, staying in this
-// user namespace). Mirrors setup.sh's nft step.
+// runner-inner-child into a fresh user+mount namespace. Mirrors the former
+// setup.sh's nft + `unshare --user … --root` hand-off.
 func RunInner(specPath, statePath string) (int, error) {
 	spec, err := readSpec(specPath)
 	if err != nil {
@@ -182,30 +150,48 @@ func RunInner(specPath, statePath string) (int, error) {
 	if err != nil {
 		return 1, fmt.Errorf("resolve boid binary: %w", err)
 	}
-	child := exec.Command(self, "runner-mount", "--spec", specPath, "--state", statePath)
+
+	child := exec.Command(self, "runner-inner-child", "--spec", specPath, "--state", statePath)
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
 	child.Env = os.Environ()
-	// CLONE_NEWNS only: the new mount ns is owned by pasta's user ns, where we
-	// hold CAP_SYS_ADMIN, so the mounts (incl. MS_PRIVATE) succeed.
-	child.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWNS}
+	// Create the L3 user+mount namespace via clone flags on the child (pitfall:
+	// unix.Unshare(CLONE_NEWUSER) on a running goroutine EINVALs because the Go
+	// runtime is multi-threaded; SysProcAttr.Cloneflags does it correctly at
+	// fork). uid_map: host uid 1000 → inner uid 0. Inner uid 0 is essential —
+	// only the owner of a user ns holds CAP_SYS_ADMIN over the mount ns it owns,
+	// so MS_PRIVATE / bind / pivot_root all succeed inside L3. Mapping to inner
+	// uid 1000 (the earlier mistake on commit 89e1307) loses CAP_SYS_ADMIN and
+	// MS_PRIVATE on / EPERMs. setgroups is denied per the unprivileged user-ns
+	// safety requirement.
+	child.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
+		GidMappingsEnableSetgroups: false,
+		UidMappings: []syscall.SysProcIDMap{
+			{ContainerID: 0, HostID: os.Geteuid(), Size: 1},
+		},
+		GidMappings: []syscall.SysProcIDMap{
+			{ContainerID: 0, HostID: os.Getegid(), Size: 1},
+		},
+	}
 
-	st.OK("inner", "clone-mountns")
-	exitCode := commandExitCode(child.Run())
+	st.OK("inner", "clone-child")
+	runErr := child.Run()
+	exitCode := commandExitCode(runErr)
 	if exitCode != 0 {
-		st.Fail("inner", "mount-exit", fmt.Errorf("exit_code=%d", exitCode))
+		st.Fail("inner", "child-exit", fmt.Errorf("exit_code=%d", exitCode))
 	} else {
-		st.OK("inner", "mount-exit")
+		st.OK("inner", "child-exit")
 	}
 	return exitCode, nil
 }
 
-// RunMount is the `boid runner-mount` entry point. It runs in the fresh mount
-// namespace (still pasta's user ns, uid 0) and lays out the sandbox root via
-// bind mounts, then clones runner-inner-child into a new user ns (uid 1000) and
-// chroots it into ROOT. Mirrors setup.sh's mount work + `unshare --user --root`.
-func RunMount(specPath, statePath string) (int, error) {
+// RunInnerChild is the `boid runner-inner-child` entry point (L3). It runs in
+// the cloned user+mount namespace, lays out the sandbox root via bind mounts,
+// pivot_root's into it, writes the context files, runs the agent, and posts the
+// broker job-done. Mirrors the former inner.sh.
+func RunInnerChild(specPath, statePath string) (exitCode int, retErr error) {
 	spec, err := readSpec(specPath)
 	if err != nil {
 		return 1, err
@@ -215,74 +201,11 @@ func RunMount(specPath, statePath string) (int, error) {
 	st := OpenState(statePath)
 	defer st.Close()
 
-	root := spec.RootDir
-	if root == "" {
-		return 1, errors.New("runner-mount: spec.RootDir is empty")
-	}
-	if err := setupMounts(spec, root, st); err != nil {
-		st.Fail("mount", "mount-setup", err)
-		return 1, err
-	}
-
-	self, err := os.Executable()
-	if err != nil {
-		return 1, fmt.Errorf("resolve boid binary: %w", err)
-	}
-
-	// The chrooted child cannot read the host spec/state by path (its /tmp is the
-	// sandbox tmpfs), so hand them over as inherited fds.
-	specF, err := os.Open(specPath)
-	if err != nil {
-		return 1, fmt.Errorf("open spec for child: %w", err)
-	}
-	defer specF.Close()
-
-	child := exec.Command(self, "runner-inner-child")
-	child.Stdin = os.Stdin
-	child.Stdout = os.Stdout
-	child.Stderr = os.Stderr
-	child.Env = os.Environ()
-	child.Dir = spec.WorkDir // chdir (after chroot) into the project/worktree
-	child.ExtraFiles = []*os.File{specF}
-	if st != nil && st.f != nil {
-		child.ExtraFiles = append(child.ExtraFiles, st.f) // fd 4 = runner-state
-	}
-	child.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:                 syscall.CLONE_NEWUSER,
-		GidMappingsEnableSetgroups: false,
-		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 1000, HostID: os.Geteuid(), Size: 1}},
-		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 1000, HostID: os.Getegid(), Size: 1}},
-		Chroot:                     root,
-	}
-
-	st.OK("mount", "clone-userns-chroot")
-	exitCode := commandExitCode(child.Run())
-	if exitCode != 0 {
-		st.Fail("mount", "child-exit", fmt.Errorf("exit_code=%d", exitCode))
-	} else {
-		st.OK("mount", "child-exit")
-	}
-	return exitCode, nil
-}
-
-// RunInnerChild is the `boid runner-inner-child` entry point (L3). It is already
-// chrooted into ROOT and mapped to uid 1000 by runner-mount's clone. It reads
-// the spec / runner-state from inherited fds (3 / 4), writes the context files,
-// runs the agent, and posts the broker job-done. Mirrors inner.sh.
-func RunInnerChild() (exitCode int, retErr error) {
-	spec, err := readSpecFromFD(innerChildSpecFD)
-	if err != nil {
-		return 1, err
-	}
-	ignoreStopSignal(spec)
-
-	st := OpenStateFromFD(innerChildStateFD)
-	defer st.Close()
-
-	// reachedAgent gates the broker job-done: inner.sh installed its EXIT trap
-	// only just before running argv, so a setup failure sent no `boid job done`
-	// and relied on the daemon's "exited without boid job done" net. Reproduce
-	// that: only post job-done once we are about to (or did) run the agent.
+	// reachedAgent gates the broker job-done: the former inner.sh installed its
+	// EXIT trap only just before running argv, so a setup failure (mounts /
+	// pivot) sent no `boid job done` and relied on the daemon's "exited without
+	// boid job done" net. Reproduce that: only post job-done once we are about
+	// to (or did) run the agent.
 	reachedAgent := false
 	defer func() {
 		if !reachedAgent || spec.Foreground {
@@ -291,8 +214,24 @@ func RunInnerChild() (exitCode int, retErr error) {
 		postJobDone(spec, exitCode, st)
 	}()
 
-	// Context files live under the tmpfs HOME (mounted by runner-mount); we are
-	// chrooted, so absolute paths resolve inside the sandbox root.
+	root := spec.RootDir
+	if root == "" {
+		return 1, errors.New("runner-inner-child: spec.RootDir is empty")
+	}
+
+	if err := setupMountNamespace(spec, root, st); err != nil {
+		st.Fail("inner-child", "mount-setup", err)
+		return 1, err
+	}
+
+	if err := pivotInto(root); err != nil {
+		st.Fail("inner-child", "pivot-root", err)
+		return 1, err
+	}
+	st.OK("inner-child", "pivot-root")
+
+	// Context files live under the now-mounted tmpfs HOME, so they must be
+	// written after pivot_root (otherwise the HOME tmpfs would shadow them).
 	for _, f := range spec.Files {
 		if err := writeFileAt(f.Path, f.Content); err != nil {
 			st.Fail("inner-child", "write-file "+f.Path, err)
@@ -317,21 +256,26 @@ func RunInnerChild() (exitCode int, retErr error) {
 	return exitCode, nil
 }
 
-// setupMounts composes the sandbox root filesystem under root: make all mounts
-// private (so binds don't leak to the parent ns), apply the base + caller
-// mounts into root's subtree, and write the plan files (DNS). root stays a plain
-// directory (chroot, not pivot_root, enters it), mirroring setup.sh.
-func setupMounts(spec sandbox.Spec, root string, st *State) error {
-	// `unshare --mount` defaulted to recursive-private propagation; reproduce it
-	// so the binds below do not propagate back to the host mount namespace.
+// setupMountNamespace composes the sandbox root filesystem inside the cloned
+// mount namespace: make all mounts private, mount a tmpfs as the new root,
+// apply the base + caller mounts, and write the plan files (DNS) under ROOT.
+func setupMountNamespace(spec sandbox.Spec, root string, st *State) error {
+	// 1) Detach mount propagation so binds don't leak to the parent ns and
+	// pivot_root is permitted (MS_SHARED on / would EINVAL).
 	if err := unix.Mount("none", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
 		return fmt.Errorf("make / private: %w", err)
 	}
-	st.OK("mount", "ms-private")
+	st.OK("inner-child", "ms-private")
 
+	// 2) New root as its own tmpfs mount (pivot_root requires new_root to be a
+	// mount point distinct from the old root).
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return fmt.Errorf("mkdir root: %w", err)
 	}
+	if err := unix.Mount("tmpfs", root, "tmpfs", 0, ""); err != nil {
+		return fmt.Errorf("mount tmpfs root: %w", err)
+	}
+	st.OK("inner-child", "tmpfs-root")
 
 	plan := sandbox.BuildPlan(spec)
 	for _, m := range plan.Mounts {
@@ -339,8 +283,9 @@ func setupMounts(spec sandbox.Spec, root string, st *State) error {
 			return fmt.Errorf("mount %s: %w", m.Target, err)
 		}
 	}
-	st.OK("mount", "mounts")
+	st.OK("inner-child", "mounts")
 
+	// Plan files (DNS stub) are written under ROOT before pivot.
 	for _, f := range plan.Files {
 		if err := writeFileAt(filepath.Join(root, f.Path), f.Content); err != nil {
 			return fmt.Errorf("write plan file %s: %w", f.Path, err)
@@ -424,9 +369,29 @@ func applyMount(root string, m sandbox.Mount) error {
 	return nil
 }
 
+// pivotInto pivots into root and detaches the old root. Mirrors §3 工程 7.
+func pivotInto(root string) error {
+	oldRoot := filepath.Join(root, ".oldroot")
+	if err := os.MkdirAll(oldRoot, 0o755); err != nil {
+		return fmt.Errorf("mkdir .oldroot: %w", err)
+	}
+	if err := unix.PivotRoot(root, oldRoot); err != nil {
+		return fmt.Errorf("pivot_root: %w", err)
+	}
+	if err := os.Chdir("/"); err != nil {
+		return fmt.Errorf("chdir /: %w", err)
+	}
+	if err := unix.Unmount("/.oldroot", unix.MNT_DETACH); err != nil {
+		return fmt.Errorf("unmount old root: %w", err)
+	}
+	if err := os.Remove("/.oldroot"); err != nil {
+		return fmt.Errorf("remove .oldroot: %w", err)
+	}
+	return nil
+}
+
 // runAgent fork-execs the agent argv, wiring stdio per the same precedence the
-// former inner.sh used, and returns its exit code. cwd is already spec.WorkDir
-// (set by runner-mount via cmd.Dir after chroot).
+// former inner.sh used, and returns its exit code. cwd is spec.WorkDir.
 func runAgent(spec sandbox.Spec) int {
 	if len(spec.Argv) == 0 {
 		fmt.Fprintln(os.Stderr, "[boid] runner-inner-child: empty argv")
@@ -499,24 +464,6 @@ func resolveJobOutput(spec sandbox.Spec) []byte {
 		}
 	}
 	return nil
-}
-
-// readSpecFromFD reads and decodes the sandbox spec from an inherited fd.
-func readSpecFromFD(fd int) (sandbox.Spec, error) {
-	var spec sandbox.Spec
-	f := os.NewFile(uintptr(fd), "runner-spec")
-	if f == nil {
-		return spec, fmt.Errorf("runner spec fd %d not available", fd)
-	}
-	defer f.Close()
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return spec, fmt.Errorf("read runner spec fd %d: %w", fd, err)
-	}
-	if err := json.Unmarshal(data, &spec); err != nil {
-		return spec, fmt.Errorf("decode runner spec fd %d: %w", fd, err)
-	}
-	return spec, nil
 }
 
 func touchIfMissing(path string) error {

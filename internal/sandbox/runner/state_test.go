@@ -77,8 +77,8 @@ func TestBuildSpecDump_RedactsEnvAndCapturesLayout(t *testing.T) {
 	if dump.Env["HOME"] != "/home/x" {
 		t.Errorf("HOME must be kept, got %q", dump.Env["HOME"])
 	}
-	if dump.Chroot != "/tmp/boid-root-abc" {
-		t.Errorf("Chroot = %q, want root dir", dump.Chroot)
+	if dump.PivotRoot != "/tmp/boid-root-abc" {
+		t.Errorf("PivotRoot = %q, want root dir", dump.PivotRoot)
 	}
 	// ProxyPort > 0 means nft rules must be present in the dump.
 	if len(dump.NFTRules) == 0 {
