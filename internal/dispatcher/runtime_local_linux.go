@@ -100,6 +100,13 @@ func (r *LocalRuntime) Start(_ context.Context, spec RuntimeStartSpec) (*Runtime
 		cmd.Stdin = slave
 		cmd.Stdout = slave
 		cmd.Stderr = slave
+		// TERM=dumb suppresses the OSC 11 background-color query that
+		// bubbletea's init() emits via lipgloss.HasDarkBackground(). Without
+		// this each runner-* re-exec (outer → inner → inner-child) hangs for 5s
+		// waiting for a terminal response that the daemon's PTY reader never
+		// sends. The hook process itself gets its real TERM via spec.Env when
+		// runAgent execs it, so this only neutralizes the runner bootstrap.
+		cmd.Env = append(os.Environ(), "TERM=dumb")
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			Setsid:  true,
 			Setctty: true,
@@ -128,6 +135,10 @@ func (r *LocalRuntime) Start(_ context.Context, spec RuntimeStartSpec) (*Runtime
 		cmd = exec.Command("bash", "-lc", spec.Command)
 		cmd.Stdout = pw
 		cmd.Stderr = pw
+		// TERM=dumb: same suppression as the interactive branch above. Even
+		// without a PTY the runner re-execs would print stray OSC queries; we
+		// short-circuit them at the bootstrap level so transcripts stay clean.
+		cmd.Env = append(os.Environ(), "TERM=dumb")
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			Setsid: true,
 		}
