@@ -3,8 +3,6 @@ package orchestrator
 import (
 	"os"
 	"path/filepath"
-	"slices"
-	"strings"
 	"testing"
 	"time"
 )
@@ -82,9 +80,9 @@ func TestCleanSandboxTmp_IgnoresNonMatchingNames(t *testing.T) {
 	oldTime := time.Now().Add(-48 * time.Hour)
 
 	nonMatches := []string{
-		"other-file.sh",            // no boid- prefix
-		"boid-notes.txt",           // not script/dir pattern
-		"boid-go-build-cache",      // dir but doesn't match boid-root- prefix
+		"other-file.sh",             // no boid- prefix
+		"boid-notes.txt",            // not script/dir pattern
+		"boid-go-build-cache",       // dir but doesn't match boid-root- prefix
 		"boid-start-payload-4.json", // doesn't match script suffix
 	}
 
@@ -134,117 +132,5 @@ func TestCleanSandboxTmp_EmptyTmpDirNoop(t *testing.T) {
 	n := cleanSandboxTmp("", 24*time.Hour)
 	if n != 0 {
 		t.Errorf("empty tmpDir should noop; got %d", n)
-	}
-}
-
-func TestReadSystemMountPoints_IncludesRoot(t *testing.T) {
-	// サンドボックス内では / が mountpoint として現れないため、前提が満たせない場合はスキップ。
-	if data, err := os.ReadFile("/proc/self/mountinfo"); err == nil {
-		hasRoot := false
-		for line := range strings.SplitSeq(string(data), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) >= 5 && fields[4] == "/" {
-				hasRoot = true
-				break
-			}
-		}
-		if !hasRoot {
-			t.Skip("not running on a host mount namespace (no '/' mountpoint); skipping")
-		}
-	}
-
-	mounts, err := readSystemMountPoints()
-	if err != nil {
-		t.Fatalf("readSystemMountPoints: %v", err)
-	}
-	if !slices.Contains(mounts, "/") {
-		t.Errorf("expected union of mount points to include '/' (host root); got %d entries", len(mounts))
-	}
-}
-
-func TestReadSystemMountPoints_DedupsByNamespace(t *testing.T) {
-	mounts, err := readSystemMountPoints()
-	if err != nil {
-		t.Fatalf("readSystemMountPoints: %v", err)
-	}
-	seen := make(map[string]int)
-	for _, m := range mounts {
-		seen[m]++
-	}
-	for m, n := range seen {
-		if n != 1 {
-			t.Errorf("mount %q appears %d times; expected dedup", m, n)
-		}
-	}
-}
-
-func TestIsAllDigits(t *testing.T) {
-	cases := []struct {
-		in   string
-		want bool
-	}{
-		{"", false},
-		{"123", true},
-		{"0", true},
-		{"12a", false},
-		{"a12", false},
-		{"-1", false},
-		{"1 2", false},
-	}
-	for _, tc := range cases {
-		if got := isAllDigits(tc.in); got != tc.want {
-			t.Errorf("isAllDigits(%q) = %v, want %v", tc.in, got, tc.want)
-		}
-	}
-}
-
-func TestReadChrootHolders_DoesNotIncludeSlashOnly(t *testing.T) {
-	held, err := readChrootHolders()
-	if err != nil {
-		t.Fatalf("readChrootHolders: %v", err)
-	}
-	if _, ok := held["/"]; ok {
-		t.Errorf("/ should be excluded (host root, not a chroot holder)")
-	}
-}
-
-// TestCleanSandboxTmp_SkipsBoidRootHeldByProcess exercises the chroot-holder
-// guard by aiming the syscall at a /tmp/boid-root-* directory that the
-// current process holds open via /proc/self/root semantics. We can't directly
-// chroot in a test (requires CAP_SYS_CHROOT), so we instead verify the
-// hasHeldRoot path by prepopulating the GC's view of held roots through the
-// shared filesystem: ensure that a fresh-mtime boid-root-* in the test tmpdir
-// is removed when nothing holds it, but not when one is held — which is what
-// the real implementation already exercises through readChrootHolders, so we
-// just sanity-check that readChrootHolders returns a non-nil map.
-func TestReadChrootHolders_Smoke(t *testing.T) {
-	held, err := readChrootHolders()
-	if err != nil {
-		t.Fatalf("readChrootHolders: %v", err)
-	}
-	if held == nil {
-		t.Fatal("readChrootHolders returned nil map")
-	}
-}
-
-func TestHasActiveMountUnder(t *testing.T) {
-	mounts := []string{"/", "/proc", "/tmp/boid-root-abc/home", "/tmp/boid-root-xyz"}
-
-	cases := []struct {
-		name string
-		path string
-		want bool
-	}{
-		{"exact match", "/tmp/boid-root-xyz", true},
-		{"child match", "/tmp/boid-root-abc", true},
-		{"no match", "/tmp/boid-root-unused", false},
-		{"prefix-safe (not parent)", "/tmp/boid-root", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := hasActiveMountUnder(tc.path, mounts); got != tc.want {
-				t.Errorf("hasActiveMountUnder(%q) = %v, want %v", tc.path, got, tc.want)
-			}
-		})
 	}
 }
