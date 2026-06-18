@@ -71,7 +71,7 @@ An append-only audit log of actions (`start` / `done` / `abort` / ...) and the r
 | `from_status` / `to_status` | TEXT | The status before and after the transition. |
 | `created_at` | DATETIME | When the action was issued. |
 
-`actions` is append-only; we do not update or delete rows. It is the source data for `boid task show`'s timeline and for the history views in the TUI / Web UI.
+`actions` is append-only; we do not update or delete rows. It is the source data for `boid task show`'s timeline and for the history views in the Web UI.
 
 ## `jobs`
 

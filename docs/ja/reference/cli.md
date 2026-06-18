@@ -6,10 +6,9 @@
 
 ### 起動
 
-引数無しの `boid` は TUI を起動します。
+引数無しの `boid` はヘルプを表示します。
 
 ```bash
-boid                        # TUI 起動
 boid --help                 # サブコマンド一覧
 boid <command> --help       # 個別ヘルプ
 ```

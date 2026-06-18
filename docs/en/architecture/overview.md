@@ -48,7 +48,6 @@ internal/
   dispatcher/         - hook job launching, sandbox plan building, worktree management
   sandbox/            - mount namespace + chroot, host-command broker, HTTP proxy
   kit/                - cloning, loading, and detection for kit repositories
-  tui/                - bubbletea-based TUI
   initwizard/         - interactive setup for `boid init`
   logrotate/          - size-based rotation for the daemon log
   qrterm/             - terminal-side QR rendering
@@ -196,7 +195,6 @@ Job logs (stderr) are stored in SQLite and surfaced via `boid job show <job-id>`
 | Host command policy | [`internal/dispatcher/policy_translate.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/policy_translate.go) |
 | Sandbox boundary | [`internal/sandbox/broker.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/broker.go) |
 | Web UI auth | files under [`internal/api/`](https://github.com/novshi-tech/boid/blob/main/internal/api/) prefixed `web_auth_` |
-| The whole TUI | [`internal/tui/app.go`](https://github.com/novshi-tech/boid/blob/main/internal/tui/app.go) |
 
 ## Related docs
 
