@@ -8,34 +8,33 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
-func TestCleanupSandboxArtifacts_RemovesRootScriptsAndStaging(t *testing.T) {
+func TestCleanupSandboxArtifacts_RemovesRootSpecStateAndStaging(t *testing.T) {
 	dir := t.TempDir()
 
 	rootDir := filepath.Join(dir, "boid-root-XXX")
-	stagingDir := filepath.Join(dir, "boid-gates-YYY")
-	outerPath := filepath.Join(dir, "boid-job-outer.sh")
-	setupPath := filepath.Join(dir, "boid-job-setup.sh")
-	innerPath := filepath.Join(dir, "boid-job-inner.sh")
+	stagingDir := filepath.Join(dir, "boid-staging-YYY")
+	specPath := filepath.Join(dir, "boid-job-runner-spec.json")
+	statePath := filepath.Join(dir, "boid-job-runner-state.json")
 
 	for _, d := range []string{rootDir, stagingDir} {
 		if err := os.MkdirAll(filepath.Join(d, "nested"), 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", d, err)
 		}
 	}
-	for _, f := range []string{outerPath, setupPath, innerPath} {
-		if err := os.WriteFile(f, []byte("#!/bin/bash\n"), 0o755); err != nil {
+	for _, f := range []string{specPath, statePath} {
+		if err := os.WriteFile(f, []byte("{}"), 0o600); err != nil {
 			t.Fatalf("write %s: %v", f, err)
 		}
 	}
 
 	cleanupSandboxArtifacts(&PreparedSandbox{
-		OuterPath:   outerPath,
-		RootDir:     rootDir,
-		ScriptPaths: []string{outerPath, setupPath, innerPath},
-		StagingDir:  stagingDir,
+		SpecPath:   specPath,
+		StatePath:  statePath,
+		RootDir:    rootDir,
+		StagingDir: stagingDir,
 	})
 
-	for _, p := range []string{rootDir, stagingDir, outerPath, setupPath, innerPath} {
+	for _, p := range []string{rootDir, stagingDir, specPath, statePath} {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Errorf("expected %s to be removed, stat error = %v", p, err)
 		}
@@ -47,25 +46,26 @@ func TestCleanupSandboxArtifacts_NilSafe(t *testing.T) {
 	cleanupSandboxArtifacts(&PreparedSandbox{})
 }
 
-func TestCleanupSandboxArtifacts_MissingScriptIsIgnored(t *testing.T) {
+func TestCleanupSandboxArtifacts_MissingFileIsIgnored(t *testing.T) {
 	dir := t.TempDir()
-	existing := filepath.Join(dir, "exists.sh")
-	if err := os.WriteFile(existing, []byte("x"), 0o644); err != nil {
+	existing := filepath.Join(dir, "boid-job-runner-spec.json")
+	if err := os.WriteFile(existing, []byte("{}"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	missing := filepath.Join(dir, "missing.sh")
+	missing := filepath.Join(dir, "boid-missing-runner-state.json")
 
 	cleanupSandboxArtifacts(&PreparedSandbox{
-		ScriptPaths: []string{existing, missing},
+		SpecPath:  existing,
+		StatePath: missing,
 	})
 
 	if _, err := os.Stat(existing); !os.IsNotExist(err) {
-		t.Errorf("existing script should be removed, got err = %v", err)
+		t.Errorf("existing spec should be removed, got err = %v", err)
 	}
 }
 
 func TestSandboxPreparer_PopulatesCleanupFields(t *testing.T) {
-	stagingDir := "/tmp/boid-gates-preparertest"
+	stagingDir := "/tmp/boid-staging-preparertest"
 	spec := sandbox.Spec{
 		ID:      "prep-test-job",
 		WorkDir: "/host/project",
@@ -89,18 +89,17 @@ func TestSandboxPreparer_PopulatesCleanupFields(t *testing.T) {
 	if info, err := os.Stat(prep.RootDir); err != nil || !info.IsDir() {
 		t.Errorf("RootDir %q should exist as directory, stat err = %v", prep.RootDir, err)
 	}
-	if prep.OuterPath == "" {
-		t.Error("PreparedSandbox.OuterPath should be set")
+	if prep.SpecPath == "" {
+		t.Error("PreparedSandbox.SpecPath should be set")
 	}
-	if len(prep.ScriptPaths) != 3 {
-		t.Errorf("expected 3 ScriptPaths, got %d: %v", len(prep.ScriptPaths), prep.ScriptPaths)
+	if prep.StatePath == "" {
+		t.Error("PreparedSandbox.StatePath should be set")
 	}
 	if prep.StagingDir != stagingDir {
 		t.Errorf("StagingDir = %q, want %q", prep.StagingDir, stagingDir)
 	}
-	for _, p := range prep.ScriptPaths {
-		if _, err := os.Stat(p); err != nil {
-			t.Errorf("script %q should exist, err = %v", p, err)
-		}
+	// The spec file is materialized; the state file is created lazily by the runner.
+	if _, err := os.Stat(prep.SpecPath); err != nil {
+		t.Errorf("spec file %q should exist, err = %v", prep.SpecPath, err)
 	}
 }

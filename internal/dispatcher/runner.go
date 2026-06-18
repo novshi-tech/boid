@@ -622,11 +622,11 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 		}
 		return "", fmt.Errorf("prepare sandbox: %w", err)
 	}
-	if prepared == nil || prepared.OuterPath == "" {
+	if prepared == nil || prepared.SpecPath == "" {
 		if cleanup != nil {
 			cleanup()
 		}
-		return "", fmt.Errorf("prepare sandbox: missing outer script path")
+		return "", fmt.Errorf("prepare sandbox: missing spec path")
 	}
 
 	handle, err := r.Runtime.Start(ctx, RuntimeStartSpec{
@@ -635,7 +635,7 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 		ProjectID:   job.ProjectID,
 		HandlerID:   job.HandlerID,
 		Role:        job.Role,
-		Command:     fmt.Sprintf("bash %s", prepared.OuterPath),
+		Command:     r.runnerCommand(prepared),
 		Interactive: spec.TTY,
 		TTY:         spec.TTY,
 		DesiredID:   desiredRuntimeID,
@@ -678,6 +678,21 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 	return job.ID, nil
 }
 
+// runnerCommand builds the shell command the runtime executes (via `bash -lc`)
+// to launch the go-native sandbox runner: `boid runner-outer --spec … --state …`.
+// This replaces the former `bash <outer.sh>` invocation.
+func (r *Runner) runnerCommand(prepared *PreparedSandbox) string {
+	boidBin := r.BoidBinary
+	if boidBin == "" {
+		boidBin = "boid"
+	}
+	return fmt.Sprintf("%s runner-outer --spec %s --state %s",
+		shellQuoteDir(boidBin),
+		shellQuoteDir(prepared.SpecPath),
+		shellQuoteDir(prepared.StatePath),
+	)
+}
+
 func (r *Runner) cleanupSandboxAfterWait(runtimeID string, prepared *PreparedSandbox, extra orchestrator.CleanupFunc) {
 	defer func() {
 		if extra != nil {
@@ -703,34 +718,39 @@ func (r *Runner) cleanupSandboxAfterWait(runtimeID string, prepared *PreparedSan
 	// before the runtime dir is removed so the ledger is still readable.
 	r.reapAndCloseDockerProxy(runtimeID)
 
-	// Scaffolding (RootDir, StagingDir) は outer.sh が常に削除するので、
+	// Scaffolding (RootDir, StagingDir) は runner-outer が常に削除するので、
 	// ここでは保険として idempotent に rm するだけ。 exit_code に関わらず実行。
 	cleanupSandboxScaffolding(prepared)
+	// The spec file carries secrets (broker token / API keys), so it is removed
+	// unconditionally — even on failure. The redacted runner-state.json is the
+	// diagnostic artifact retained for post-hoc analysis instead.
+	cleanupSandboxSpec(prepared)
 	if result.ExitCode != 0 {
-		// silent な exit_code != 0 ケースの事後解析を可能にするため、 script
-		// ファイルだけ保全する。 transcript.log が 0 byte で daemon log にも
-		// 有用情報が無い場合、 outer.sh / setup.sh / inner.sh の中身がほぼ唯一の
-		// 手がかりになる。 GC や手動削除に任せる。
-		slog.Warn("retained sandbox scripts for diagnosis (exit_code!=0)",
+		// silent な exit_code != 0 ケースの事後解析を可能にするため、 runner-state
+		// だけ保全する。 transcript.log が 0 byte で daemon log にも有用情報が無い
+		// 場合、 runner-state.json (spec dump + 到達 phase) がほぼ唯一の手がかりに
+		// なる。 GC や手動削除に任せる。
+		slog.Warn("retained runner-state for diagnosis (exit_code!=0)",
 			"runtime_id", runtimeID,
 			"exit_code", result.ExitCode,
-			"scripts", prepared.ScriptPaths,
+			"state_path", prepared.StatePath,
 		)
 		return
 	}
-	cleanupSandboxScripts(prepared)
+	cleanupSandboxState(prepared)
 }
 
-// cleanupSandboxArtifacts removes every sandbox artifact (scaffolding +
-// scripts). Used by runtime-unsupported paths and tests.
+// cleanupSandboxArtifacts removes every sandbox artifact (scaffolding + spec +
+// state). Used by runtime-unsupported paths and tests.
 func cleanupSandboxArtifacts(prepared *PreparedSandbox) {
 	cleanupSandboxScaffolding(prepared)
-	cleanupSandboxScripts(prepared)
+	cleanupSandboxSpec(prepared)
+	cleanupSandboxState(prepared)
 }
 
 // cleanupSandboxScaffolding removes the sandbox ROOT directory and the staging
-// dir. Both are normally rm'd by outer.sh; this call is a best-effort safety
-// net for the case where outer.sh was killed before its cleanup ran.
+// dir. Both are normally rm'd by runner-outer; this call is a best-effort safety
+// net for the case where runner-outer was killed before its cleanup ran.
 func cleanupSandboxScaffolding(prepared *PreparedSandbox) {
 	if prepared == nil {
 		return
@@ -747,19 +767,25 @@ func cleanupSandboxScaffolding(prepared *PreparedSandbox) {
 	}
 }
 
-// cleanupSandboxScripts removes the generated outer/setup/inner scripts. These
-// are deliberately retained on exit_code != 0 for post-hoc diagnosis.
-func cleanupSandboxScripts(prepared *PreparedSandbox) {
-	if prepared == nil {
+// cleanupSandboxSpec removes the JSON sandbox spec file (carries secrets, so it
+// is removed unconditionally).
+func cleanupSandboxSpec(prepared *PreparedSandbox) {
+	if prepared == nil || prepared.SpecPath == "" {
 		return
 	}
-	for _, p := range prepared.ScriptPaths {
-		if p == "" {
-			continue
-		}
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			slog.Warn("remove sandbox script", "path", p, "error", err)
-		}
+	if err := os.Remove(prepared.SpecPath); err != nil && !os.IsNotExist(err) {
+		slog.Warn("remove sandbox spec", "path", prepared.SpecPath, "error", err)
+	}
+}
+
+// cleanupSandboxState removes the runner-state.json diagnostic file. It is
+// deliberately retained on exit_code != 0 for post-hoc diagnosis.
+func cleanupSandboxState(prepared *PreparedSandbox) {
+	if prepared == nil || prepared.StatePath == "" {
+		return
+	}
+	if err := os.Remove(prepared.StatePath); err != nil && !os.IsNotExist(err) {
+		slog.Warn("remove runner-state", "path", prepared.StatePath, "error", err)
 	}
 }
 
@@ -776,11 +802,10 @@ func (r *Runner) StopJobRuntime(runtimeID string) {
 
 // SignalJobRuntime delivers a single signal to the runtime's process group
 // without any SIGKILL follow-up. NotifyTask uses this for SIGUSR1 to ask the
-// agent (run-agent.py) to stop the agent session gracefully — bash and the
-// EXIT trap stay alive (via `trap '' USR1` propagated as SIG_IGN across
-// execve), so payload_patch capture and `boid job done --output-file`
-// continue through the normal completion path. Best-effort: errors at debug
-// level only.
+// agent (run-agent.py) to stop the agent session gracefully — the go-native
+// runner subcommands keep the signal SIG_IGN (inherited across execve), so they
+// survive while run-agent.py acts on it and runner-inner-child still posts
+// `boid job done` through the broker. Best-effort: errors at debug level only.
 func (r *Runner) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
 	if r.Runtime == nil || runtimeID == "" {
 		return

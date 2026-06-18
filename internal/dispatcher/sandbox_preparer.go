@@ -1,18 +1,18 @@
 package dispatcher
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 type sandboxPreparerImpl struct{}
 
-// NewSandboxPreparer returns the sandbox provider adapter.
-// It is a thin wrapper over sandbox.Prepare: all role-aware translation
-// lives in orchestrator.BuildSandboxSpec.
+// NewSandboxPreparer returns the sandbox provider adapter. It serializes the
+// sandbox.Spec to a JSON file that the go-native runner (`boid runner-outer`)
+// reads back; all role-aware translation lives in BuildSandboxSpec.
 func NewSandboxPreparer() SandboxPreparer {
 	return sandboxPreparerImpl{}
 }
@@ -26,17 +26,18 @@ func (sandboxPreparerImpl) PrepareSandbox(spec sandbox.Spec) (*PreparedSandbox, 
 		spec.RootDir = rootDir
 	}
 
-	outerPath, err := sandbox.Prepare(spec)
+	specPath := fmt.Sprintf("/tmp/boid-%s-runner-spec.json", spec.ID)
+	statePath := fmt.Sprintf("/tmp/boid-%s-runner-state.json", spec.ID)
+
+	data, err := json.Marshal(spec)
 	if err != nil {
 		_ = os.RemoveAll(spec.RootDir)
-		return nil, err
+		return nil, fmt.Errorf("marshal sandbox spec: %w", err)
 	}
-
-	prefix := strings.TrimSuffix(outerPath, "-outer.sh")
-	scriptPaths := []string{
-		outerPath,
-		prefix + "-setup.sh",
-		prefix + "-inner.sh",
+	// 0600: the spec carries the broker token and any project secrets in Env.
+	if err := os.WriteFile(specPath, data, 0o600); err != nil {
+		_ = os.RemoveAll(spec.RootDir)
+		return nil, fmt.Errorf("write sandbox spec: %w", err)
 	}
 
 	var stagingDir string
@@ -45,9 +46,9 @@ func (sandboxPreparerImpl) PrepareSandbox(spec sandbox.Spec) (*PreparedSandbox, 
 	}
 
 	return &PreparedSandbox{
-		OuterPath:   outerPath,
-		RootDir:     spec.RootDir,
-		ScriptPaths: scriptPaths,
-		StagingDir:  stagingDir,
+		SpecPath:   specPath,
+		StatePath:  statePath,
+		RootDir:    spec.RootDir,
+		StagingDir: stagingDir,
 	}, nil
 }

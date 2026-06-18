@@ -1,5 +1,14 @@
 package sandbox
 
+// MountType represents the type of filesystem mount.
+type MountType string
+
+const (
+	MountBind  MountType = "bind"
+	MountRBind MountType = "rbind"
+	MountTmpfs MountType = "tmpfs"
+)
+
 // BindMount is the dispatcher-facing DTO for arbitrary bind-mount requests.
 // It is used by the dispatcher boundary (via SandboxSpec.AdditionalBindings)
 // and is converted into Mount entries at the edge. The sandbox layer itself

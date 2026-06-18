@@ -27,11 +27,14 @@ func newFakeSandboxPrep(t *testing.T) *fakeSandboxPrep {
 }
 
 func (p *fakeSandboxPrep) PrepareSandbox(_ sandbox.Spec) (*dispatcher.PreparedSandbox, error) {
-	outer := filepath.Join(p.dir, "outer.sh")
-	if err := os.WriteFile(outer, []byte("#!/bin/bash\n"), 0o755); err != nil {
-		return nil, fmt.Errorf("write outer script: %w", err)
+	specPath := filepath.Join(p.dir, "runner-spec.json")
+	if err := os.WriteFile(specPath, []byte("{}"), 0o600); err != nil {
+		return nil, fmt.Errorf("write runner spec: %w", err)
 	}
-	return &dispatcher.PreparedSandbox{OuterPath: outer}, nil
+	return &dispatcher.PreparedSandbox{
+		SpecPath:  specPath,
+		StatePath: filepath.Join(p.dir, "runner-state.json"),
+	}, nil
 }
 
 // newDispatchRunner returns a Runner backed by a fresh in-memory DB with

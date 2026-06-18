@@ -45,26 +45,25 @@ func makePreparedFixture(t *testing.T) *PreparedSandbox {
 	dir := t.TempDir()
 
 	rootDir := filepath.Join(dir, "boid-root-XXX")
-	stagingDir := filepath.Join(dir, "boid-gates-YYY")
-	outerPath := filepath.Join(dir, "boid-job-outer.sh")
-	setupPath := filepath.Join(dir, "boid-job-setup.sh")
-	innerPath := filepath.Join(dir, "boid-job-inner.sh")
+	stagingDir := filepath.Join(dir, "boid-staging-YYY")
+	specPath := filepath.Join(dir, "boid-job-runner-spec.json")
+	statePath := filepath.Join(dir, "boid-job-runner-state.json")
 
 	for _, d := range []string{rootDir, stagingDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", d, err)
 		}
 	}
-	for _, f := range []string{outerPath, setupPath, innerPath} {
-		if err := os.WriteFile(f, []byte("#!/bin/bash\n"), 0o755); err != nil {
+	for _, f := range []string{specPath, statePath} {
+		if err := os.WriteFile(f, []byte("{}"), 0o600); err != nil {
 			t.Fatalf("write %s: %v", f, err)
 		}
 	}
 	return &PreparedSandbox{
-		OuterPath:   outerPath,
-		RootDir:     rootDir,
-		ScriptPaths: []string{outerPath, setupPath, innerPath},
-		StagingDir:  stagingDir,
+		SpecPath:   specPath,
+		StatePath:  statePath,
+		RootDir:    rootDir,
+		StagingDir: stagingDir,
 	}
 }
 
@@ -74,34 +73,31 @@ func TestCleanupSandboxAfterWait_RemovesArtifactsOnSuccess(t *testing.T) {
 
 	r.cleanupSandboxAfterWait("rt-success", prep, nil)
 
-	for _, p := range append([]string{prep.RootDir, prep.StagingDir}, prep.ScriptPaths...) {
+	for _, p := range []string{prep.RootDir, prep.StagingDir, prep.SpecPath, prep.StatePath} {
 		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("expected %s removed on exit_code=0, stat err = %v", p, err)
 		}
 	}
 }
 
-// silent exit_code=1 の事後解析を可能にするため、 失敗時は **script ファイルだけ**
-// 残す。 rootDir / stagingDir は中身が無いので保全しても診断材料にならず、 旧来は
-// setup.sh の cleanup trap で消えず leak していたため意図的に削除に変更。
-func TestCleanupSandboxAfterWait_RetainsScriptsOnFailure(t *testing.T) {
+// silent exit_code=1 の事後解析を可能にするため、 失敗時は **runner-state.json
+// だけ** 残す。 rootDir / stagingDir は保全しても診断材料にならず削除し、 secrets を
+// 抱える spec ファイルも常に削除する。 redact 済みの runner-state.json だけが残る。
+func TestCleanupSandboxAfterWait_RetainsStateOnFailure(t *testing.T) {
 	prep := makePreparedFixture(t)
 	r := &Runner{Runtime: &waitableRuntime{exit: RuntimeExit{ExitCode: 1}}}
 
 	r.cleanupSandboxAfterWait("rt-failed", prep, nil)
 
-	// Scaffolding must be removed (outer.sh は失敗時もこれを rm するが、
-	// daemon は保険として idempotent に同じことをする)。
-	for _, p := range []string{prep.RootDir, prep.StagingDir} {
+	// Scaffolding + spec (secrets) must be removed even on failure.
+	for _, p := range []string{prep.RootDir, prep.StagingDir, prep.SpecPath} {
 		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("expected %s removed on exit_code!=0, stat err = %v", p, err)
 		}
 	}
-	// Script ファイルは事後解析のため保全する。
-	for _, p := range prep.ScriptPaths {
-		if _, err := os.Stat(p); err != nil {
-			t.Errorf("expected script %s retained on exit_code!=0, stat err = %v", p, err)
-		}
+	// runner-state.json は事後解析のため保全する。
+	if _, err := os.Stat(prep.StatePath); err != nil {
+		t.Errorf("expected runner-state %s retained on exit_code!=0, stat err = %v", prep.StatePath, err)
 	}
 }
 
