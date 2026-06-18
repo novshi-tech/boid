@@ -25,11 +25,24 @@ type runtimeSignaler interface {
 // Adapter implements adapters.HarnessAdapter for Claude Code.
 type Adapter struct {
 	lifecycle runtimeSignaler
+	// abortCodeLookup resolves lifecycle.abort.code for a task id. Defaults
+	// to invoking `boid task get`; tests override via WithAbortCodeLookup.
+	abortCodeLookup func(ctx context.Context, taskID string) string
 }
 
 // New returns a new Adapter backed by the given runtimeSignaler.
 func New(lifecycle runtimeSignaler) *Adapter {
-	return &Adapter{lifecycle: lifecycle}
+	return &Adapter{
+		lifecycle:       lifecycle,
+		abortCodeLookup: defaultAbortCodeLookup,
+	}
+}
+
+// WithAbortCodeLookup overrides the abort-code resolver. Intended for tests
+// that want to exercise Run without spawning the `boid` CLI.
+func (a *Adapter) WithAbortCodeLookup(f func(ctx context.Context, taskID string) string) *Adapter {
+	a.abortCodeLookup = f
+	return a
 }
 
 // StopAgent delivers SIGUSR1 to the runtime's process group. run-agent.py
