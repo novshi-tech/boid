@@ -53,6 +53,9 @@ type recordingAdapter struct {
 	stopped  []string
 }
 
+func (a *recordingAdapter) Run(_ context.Context, _ adapters.RunContext) (adapters.Result, error) {
+	return adapters.Result{}, nil
+}
 func (a *recordingAdapter) StopAgent(_ context.Context, runtimeID string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()

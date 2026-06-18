@@ -14,8 +14,11 @@ import (
 // stubHarnessAdapter is a test double that mimics claude adapter behaviour.
 type stubHarnessAdapter struct{}
 
+func (stubHarnessAdapter) Run(_ context.Context, _ adapters.RunContext) (adapters.Result, error) {
+	return adapters.Result{}, nil
+}
 func (stubHarnessAdapter) StopAgent(_ context.Context, _ string) error { return nil }
-func (stubHarnessAdapter) Interactive() bool                            { return true }
+func (stubHarnessAdapter) Interactive() bool                           { return true }
 func (stubHarnessAdapter) ResumePayload(sessionID string) ([]string, map[string]string) {
 	if sessionID == "" {
 		return nil, nil
