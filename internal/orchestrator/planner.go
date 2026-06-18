@@ -94,12 +94,12 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		SecretNamespace: meta.SecretNamespace,
 		Env:             mergeStringMaps(mergeStringMaps(behavior.Env, taskBusinessEnv(task, parent)), p.resumeEnv(task)),
 		ExecutionState:  string(task.Status),
-		// Agent-bearing hooks (HarnessType != "") need a PTY so the harness'
-		// TUI behaves correctly. Non-agent hooks (gate-style script hooks)
-		// keep the historical non-interactive default. Phase 3-c will route
-		// PTY requirement through a future per-harness capability map; the
-		// current claude-only world makes the hard-coded mapping safe.
-		Interactive: harnessType != "",
+		// All hook jobs allocate a PTY: agent hooks (HarnessType="claude")
+		// need it so the harness' TUI behaves correctly, and pure shell hooks
+		// rely on it for live stdout streaming to the Web UI's WebSocket
+		// attach endpoint (see e2e/scenarios/hook-attach-smoke). Phase 3-c
+		// can revisit per-harness PTY hints if a non-PTY harness lands.
+		Interactive: true,
 	}
 	return spec, nil, nil
 }
