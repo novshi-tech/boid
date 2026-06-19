@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"sort"
-	"syscall"
 
 	"github.com/novshi-tech/boid/internal/adapters"
 	"github.com/novshi-tech/boid/internal/adapters/sigutil"
@@ -30,24 +29,25 @@ import (
 //
 // Stderr always flows through RunContext.Stderr.
 //
-// Signal handling matches the claude/codex/opencode adapters:
+// Signal handling: we run sigutil.ForwardAndWait but deliberately do NOT set
+// Setsid. The claude / codex / opencode adapters do set Setsid because they
+// need to intercept the daemon's runtime-pgrp SIGUSR1 broadcast and translate
+// it into a SIGTERM the agent CLI can drain (jsonl flush, etc). The shell
+// adapter cannot follow suit: PTY-attached hook scripts in the E2E suite
+// (hook-attach-smoke) open /dev/tty directly, and Setsid detaches the child
+// from the controlling terminal — the open() then fails with ENXIO and breaks
+// the hook before it can speak. The shrunken byte-equivalent runExecArgv
+// path PR1 retired never set Setsid for the same reason.
 //
-//  - Setsid=true places the child in its own session/pgrp so the daemon's
-//    runtime-pgrp SIGUSR1 broadcast does NOT reach the child directly. Only
-//    our sigutil.ForwardAndWait loop sees the SIGUSR1 and translates it into
-//    a child SIGTERM. (Without Setsid, bash would terminate immediately on
-//    SIGUSR1 since its default disposition is "terminate", racing the
-//    forwarding loop.)
-//  - sigutil.ForwardAndWait owns the wait + signal forward + exit code
-//    normalisation (143 → 0 when StoppedByDaemon).
-//
-// The shell adapter has no graceful-stop concept of its own (unlike a claude
-// session which flushes the jsonl on SIGTERM), but the forwarding path stays
-// uniformly wired so `boid agent shell` interactive sessions resize their PTY
-// (SIGWINCH passthrough) and surface a clean StoppedByDaemon=true exit when
-// the daemon kills the run. Hook / exec callers do not observe a behaviour
-// change because the daemon never sends SIGUSR1 to those runtimes — the
-// forwarding loop simply idles until cmd.Wait() returns.
+// Trade-off without Setsid: if `boid agent shell` ever exposes a SIGUSR1-
+// based daemon stop to an interactive bash session, the SIGUSR1 will also
+// reach bash directly (bash's default disposition is "terminate"). The race
+// is harmless in practice because sigutil's exit-code normalisation maps any
+// stop-signal exit to 0 with StoppedByDaemon=true regardless of whether bash
+// died from our forwarded SIGTERM or from the racing SIGUSR1; the boid side
+// reads "session paused" the same way. Hook / exec runtimes observe no
+// behaviour change either way — the daemon never sends SIGUSR1 to them so
+// the forwarding loop simply idles until cmd.Wait() returns.
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
 	if len(rc.Argv) == 0 {
 		return adapters.Result{}, errors.New("shell adapter: RunContext.Argv is empty")
@@ -56,7 +56,9 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 	cmd := exec.CommandContext(ctx, rc.Argv[0], rc.Argv[1:]...)
 	cmd.Dir = rc.Workspace
 	cmd.Env = envSlice(rc.Env)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// Deliberately no SysProcAttr.Setsid: see the package-level Run() comment
+	// for why PTY-attached hook scripts open /dev/tty and need the controlling
+	// terminal preserved through the fork.
 
 	var captureFile *os.File
 	switch {
