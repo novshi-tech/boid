@@ -255,3 +255,51 @@ type TaskCommandDispatcher interface {
 	ListTaskBehaviorCommands(taskID string) ([]CommandSummary, error)
 	ExecuteTaskBehaviorCommand(ctx context.Context, taskID, commandName string) (*ExecuteCommandResult, error)
 }
+
+// StartSessionRequest is the body of POST /api/sessions and
+// POST /api/projects/{id}/sessions. Phase 3-d (PR1) introduced the session
+// concept as a first-class JobKind so the WebUI [New Session] dialog and
+// the `boid agent` CLI share one daemon entry point.
+type StartSessionRequest struct {
+	// ProjectID names the project whose traits the session inherits. For the
+	// project-scoped route (`/api/projects/{id}/sessions`) it is taken from
+	// the URL and the body field is ignored.
+	ProjectID string `json:"project_id"`
+
+	// HarnessType selects the agent adapter. Must be one of "claude",
+	// "codex", or "opencode". The shell harness is reserved for hooks and
+	// `boid exec` and is rejected here.
+	HarnessType string `json:"harness_type"`
+
+	// SessionID, when set, asks the harness to resume an existing session
+	// rather than start fresh. Empty starts a new session.
+	SessionID string `json:"session_id,omitempty"`
+
+	// Instruction is the optional bootstrap prompt for the first turn. Empty
+	// leaves the harness to pick its default (e.g. /boid-sandbox for claude).
+	Instruction string `json:"instruction,omitempty"`
+
+	// Readonly, when true, mounts the project workspace read-only. Sessions
+	// default to writable (developer ergonomics > fail-safety).
+	Readonly bool `json:"readonly,omitempty"`
+
+	// Model overrides the harness binary's default model selection.
+	Model string `json:"model,omitempty"`
+
+	// DisplayName is the human-readable session label persisted to
+	// jobs.display_name. Empty falls back to "<harness> session".
+	DisplayName string `json:"display_name,omitempty"`
+}
+
+// StartSessionResult is the response shape for POST /api/sessions and the
+// project-scoped variant.
+type StartSessionResult struct {
+	JobID     string `json:"job_id"`
+	AttachURL string `json:"attach_url"`
+}
+
+// SessionDispatcher launches a session job (claude / codex / opencode under
+// a HarnessAdapter) and returns the runtime job id.
+type SessionDispatcher interface {
+	StartSession(ctx context.Context, req StartSessionRequest) (*StartSessionResult, error)
+}

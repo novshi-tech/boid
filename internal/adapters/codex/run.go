@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/signal"
 	"strings"
 	"syscall"
 
 	"github.com/novshi-tech/boid/internal/adapters"
+	"github.com/novshi-tech/boid/internal/adapters/sigutil"
 )
 
 // defaultPrompt is sent when the caller does not supply one. Phase 3-c
@@ -88,45 +88,12 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 		return adapters.Result{}, fmt.Errorf("start codex: %w", err)
 	}
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGUSR1)
-	defer signal.Stop(sigCh)
-
-	winchCh := make(chan os.Signal, 1)
-	signal.Notify(winchCh, syscall.SIGWINCH)
-	defer signal.Stop(winchCh)
-
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	stoppedByDaemon := false
-	for {
-		select {
-		case <-sigCh:
-			stoppedByDaemon = true
-			if cmd.Process != nil {
-				_ = cmd.Process.Signal(syscall.SIGTERM)
-			}
-		case <-winchCh:
-			if cmd.Process != nil {
-				_ = cmd.Process.Signal(syscall.SIGWINCH)
-			}
-		case err := <-done:
-			exitCode := 0
-			if err != nil {
-				if ee, ok := err.(*exec.ExitError); ok {
-					exitCode = ee.ExitCode()
-				} else {
-					return adapters.Result{}, fmt.Errorf("wait codex: %w", err)
-				}
-			}
-			if stoppedByDaemon {
-				exitCode = 0
-			}
-			return adapters.Result{
-				ExitCode:        exitCode,
-				StoppedByDaemon: stoppedByDaemon,
-			}, nil
-		}
+	exitCode, stoppedByDaemon, werr := sigutil.ForwardAndWait(cmd, "codex")
+	if werr != nil {
+		return adapters.Result{}, werr
 	}
+	return adapters.Result{
+		ExitCode:        exitCode,
+		StoppedByDaemon: stoppedByDaemon,
+	}, nil
 }

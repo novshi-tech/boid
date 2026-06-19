@@ -3,7 +3,6 @@
 package runner
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,9 +13,7 @@ import (
 	"syscall"
 
 	"github.com/novshi-tech/boid/internal/adapters"
-	"github.com/novshi-tech/boid/internal/adapters/claude"
-	"github.com/novshi-tech/boid/internal/adapters/codex"
-	"github.com/novshi-tech/boid/internal/adapters/opencode"
+	"github.com/novshi-tech/boid/internal/adapters/registry"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/brokerclient"
 	"golang.org/x/sys/unix"
@@ -395,59 +392,43 @@ func pivotInto(root string) error {
 	return nil
 }
 
-// runAgent dispatches the agent on behalf of the runner-inner-child. When
-// spec.HarnessType identifies a known harness, the matching HarnessAdapter
-// owns the child process (signal handling, session resolution, payload
-// emission, exit-code normalisation); otherwise the former exec-Argv path
-// remains in effect for non-agent hooks and boid exec jobs.
+// runAgent dispatches every sandbox job (hook / session / exec) through the
+// HarnessAdapter pipeline. Phase 3-d retired the legacy runExecArgv branch:
+// spec.HarnessType is invariant non-empty here, so the adapter registry
+// always returns a concrete implementation. The shell adapter handles
+// non-agent hooks and `boid exec`; the claude / codex / opencode adapters
+// handle their respective agent jobs.
 func runAgent(spec sandbox.Spec) int {
-	switch spec.HarnessType {
-	case sandbox.HarnessClaude, sandbox.HarnessCodex, sandbox.HarnessOpenCode:
-		return runHarnessAgent(spec)
-	default:
-		return runExecArgv(spec)
+	if spec.HarnessType == "" {
+		fmt.Fprintln(os.Stderr, "[boid] runner-inner-child: spec.HarnessType is empty; planner / dispatcher must resolve a harness before dispatch")
+		return 127
 	}
-}
-
-// runHarnessAgent constructs a RunContext from the spec and hands the agent
-// process off to the HarnessAdapter. The adapter writes payload_patch.json
-// under HOME/.boid/output/ — the same location postJobDone resolves to — so
-// the broker job-done callback continues to work unchanged.
-func runHarnessAgent(spec sandbox.Spec) int {
-	var adapter adapters.HarnessAdapter
-	switch spec.HarnessType {
-	case sandbox.HarnessClaude:
-		adapter = claude.New()
-	case sandbox.HarnessCodex:
-		// Phase 3-c prototype: codex / opencode adapters are minimum-viable
-		// (argv + signal + exit normalisation). Session persistence and
-		// payload_patch capture are deliberate no-ops; see
-		// internal/adapters/codex/run.go for the documented scope.
-		adapter = codex.New()
-	case sandbox.HarnessOpenCode:
-		adapter = opencode.New()
-	default:
+	adapter := registry.For(spec.HarnessType)
+	if adapter == nil {
 		fmt.Fprintf(os.Stderr, "[boid] runner-inner-child: unknown harness %q\n", spec.HarnessType)
 		return 127
 	}
 
-	// runner-inner-child exports only PATH (see runAgent path); the rest of
-	// spec.Env reaches claude only by flowing through rc.Env, which Run()
-	// appends to cmd.Env after os.Environ() so the spec values win on
-	// duplicate keys.
+	// Shell adapter consumes Argv / StdinBytes / StdoutCaptureFile from the
+	// RunContext directly (it has no CLI conventions to build argv from).
+	// Agent adapters ignore those fields and build their own argv per
+	// harness convention.
 	rc := adapters.RunContext{
-		JobID:           spec.ID,
-		TaskID:          spec.Env["BOID_TASK_ID"],
-		SessionID:       spec.Env["BOID_AGENT_SESSION_ID"],
-		UserAnswer:      spec.UserAnswer,
-		InvokedBehavior: spec.Env["BOID_INVOKED_BEHAVIOR"],
-		InvokedName:     spec.Env["BOID_INVOKED_NAME"],
-		Model:           spec.Env["BOID_MODEL"],
-		Workspace:       spec.WorkDir,
-		Env:             spec.Env,
-		Stdin:           os.Stdin,
-		Stdout:          os.Stdout,
-		Stderr:          os.Stderr,
+		JobID:             spec.ID,
+		TaskID:            spec.Env["BOID_TASK_ID"],
+		SessionID:         spec.Env["BOID_AGENT_SESSION_ID"],
+		UserAnswer:        spec.UserAnswer,
+		InvokedBehavior:   spec.Env["BOID_INVOKED_BEHAVIOR"],
+		InvokedName:       spec.Env["BOID_INVOKED_NAME"],
+		Model:             spec.Env["BOID_MODEL"],
+		Workspace:         spec.WorkDir,
+		Env:               spec.Env,
+		Argv:              spec.Argv,
+		StdinBytes:        spec.StdinBytes,
+		StdoutCaptureFile: spec.StdoutCaptureFile,
+		Stdin:             os.Stdin,
+		Stdout:            os.Stdout,
+		Stderr:            os.Stderr,
 	}
 
 	res, err := adapter.Run(context.Background(), rc)
@@ -456,46 +437,6 @@ func runHarnessAgent(spec sandbox.Spec) int {
 		return 1
 	}
 	return res.ExitCode
-}
-
-// runExecArgv fork-execs the agent argv, wiring stdio per the same precedence
-// the former inner.sh used, and returns its exit code. cwd is spec.WorkDir.
-func runExecArgv(spec sandbox.Spec) int {
-	if len(spec.Argv) == 0 {
-		fmt.Fprintln(os.Stderr, "[boid] runner-inner-child: empty argv")
-		return 127
-	}
-	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
-	cmd.Env = envSlice(spec.Env)
-	cmd.Dir = spec.WorkDir
-
-	var captureFile *os.File
-	switch {
-	case len(spec.StdinBytes) > 0 && spec.StdoutCaptureFile != "":
-		cmd.Stdin = bytes.NewReader(spec.StdinBytes)
-		f, err := os.Create(spec.StdoutCaptureFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[boid] create stdout capture: %v\n", err)
-			return 127
-		}
-		captureFile = f
-		cmd.Stdout = f
-		cmd.Stderr = os.Stderr
-	case len(spec.StdinBytes) > 0:
-		cmd.Stdin = bytes.NewReader(spec.StdinBytes)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	default:
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
-
-	err := cmd.Run()
-	if captureFile != nil {
-		_ = captureFile.Close()
-	}
-	return commandExitCode(err)
 }
 
 // postJobDone resolves the job output (payload patch → stdout capture → empty)

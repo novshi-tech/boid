@@ -121,7 +121,11 @@ templ SessionList(sessions []SessionView, projectFilter string) {
 
 // SessionNew renders the /sessions/new page.
 // Step 1: user selects a project (GET ?project=<id>).
-// Step 2: commands for the project are shown; each has a form POST to /projects/{id}/commands/{name}/execute.
+// Step 2 (Phase 3-d, new): a harness-selection form is shown so the user can
+// launch an agent session (claude / codex / opencode) directly.
+// Step 3 (legacy): the project's commands list — kept side-by-side during the
+// Phase 3-d互換期間 so existing Commands users are not broken. PR2 will
+// retire the commands form together with the ProjectCommand endpoint.
 templ SessionNew(projects []*orchestrator.Project, selectedProjectID string, commands []CommandView, errorMsg string) {
 	@Layout("New Session", "/sessions") {
 		if errorMsg != "" {
@@ -140,12 +144,41 @@ templ SessionNew(projects []*orchestrator.Project, selectedProjectID string, com
 				</div>
 			</form>
 			if selectedProjectID != "" {
+				<form
+					method="post"
+					action={ templ.SafeURL("/projects/" + selectedProjectID + "/sessions/start") }
+					class="session-agent-form"
+				>
+					<div class="form-group">
+						<label for="harness" class="form-label">Harness</label>
+						<select id="harness" name="harness_type" class="form-input">
+							<option value="claude">claude</option>
+							<option value="codex">codex</option>
+							<option value="opencode">opencode</option>
+						</select>
+					</div>
+					<div class="form-group">
+						<label for="instruction" class="form-label">Instruction (optional)</label>
+						<textarea id="instruction" name="instruction" class="form-input" rows="3" placeholder="First turn prompt — leave empty for the harness default"></textarea>
+					</div>
+					<div class="form-group form-group-inline">
+						<label class="form-checkbox-label">
+							<input type="checkbox" name="readonly" value="on"/>
+							readonly (default: writable)
+						</label>
+					</div>
+					<div class="form-group form-group-inline">
+						<input type="text" name="name" placeholder="Session name (optional)" class="form-input form-input-sm" aria-label="Session name"/>
+						<button type="submit" class="btn btn-primary">Start session</button>
+					</div>
+				</form>
 				if len(commands) == 0 {
 					<div class="empty-state">
-						<div class="empty-state-title">(No commands defined)</div>
+						<div class="empty-state-title">(No legacy commands defined)</div>
 					</div>
 				} else {
 					<div class="cmd-list">
+						<div class="cmd-list-heading">Legacy commands (Phase 3-e で廃止予定)</div>
 						for _, cmd := range commands {
 							<div class="cmd-row">
 								<div class="cmd-row-body">

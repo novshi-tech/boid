@@ -9,8 +9,9 @@ import (
 )
 
 type ProjectHandler struct {
-	Service    ProjectService
-	Dispatcher CommandDispatcher // optional; nil disables the execute endpoint
+	Service           ProjectService
+	Dispatcher        CommandDispatcher // optional; nil disables the execute endpoint
+	SessionDispatcher SessionDispatcher // optional; nil disables the start-session endpoint
 }
 
 type projectCandidate struct {
@@ -51,6 +52,7 @@ func (h *ProjectHandler) Routes() chi.Router {
 	r.Get("/{id}/commands", h.ListCommands)
 	r.Get("/{id}/commands/{name}", h.GetCommand)
 	r.Post("/{id}/commands/{name}/execute", h.ExecuteCommand)
+	r.Post("/{id}/sessions", h.StartSession)
 	r.Get("/{id}", h.Get)
 	r.Delete("/{id}", h.Delete)
 	return r
@@ -176,6 +178,38 @@ func (h *ProjectHandler) ExecuteCommand(w http.ResponseWriter, r *http.Request) 
 	}
 	name := chi.URLParam(r, "name")
 	result, err := h.Dispatcher.ExecuteCommand(r.Context(), project.ID, name, "")
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
+// StartSession handles POST /api/projects/{id}/sessions. The project is
+// resolved from the URL ref (so refs like a name or short id work the same
+// way other project routes do); the body specifies harness_type and the
+// optional knobs (instruction / readonly / model / session_id / display_name).
+func (h *ProjectHandler) StartSession(w http.ResponseWriter, r *http.Request) {
+	if h.SessionDispatcher == nil {
+		writeError(w, http.StatusNotImplemented, "session dispatcher not wired")
+		return
+	}
+	ref := chi.URLParam(r, "id")
+	project := h.resolveRef(w, ref)
+	if project == nil {
+		return
+	}
+	var req StartSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	req.ProjectID = project.ID
+	if msg := validateHarnessType(req.HarnessType); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	result, err := h.SessionDispatcher.StartSession(r.Context(), req)
 	if err != nil {
 		writeServiceError(w, err)
 		return
