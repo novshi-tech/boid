@@ -302,8 +302,25 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	// Env: inherit, overlay RunContext.Env, then force IS_SANDBOX=1.
-	env := os.Environ()
+	// Strip CLAUDE_CODE_CHILD_SESSION from the inherited env first: if boid
+	// daemon was launched from a parent claude-code session it inherits this
+	// var, which propagates through runner-outer/inner/inner-child to here.
+	// Claude CLI 2.1.181+ treats CLAUDE_CODE_CHILD_SESSION=1 as a signal that
+	// this run is a nested child session and disables jsonl persistence
+	// entirely (jOe() → K8() → materializeSessionFile() early-return →
+	// sessionFile stays null → zero writes), breaking ask→answer resume.
+	parentEnv := os.Environ()
+	env := make([]string, 0, len(parentEnv)+len(rc.Env)+2)
+	for _, e := range parentEnv {
+		if strings.HasPrefix(e, "CLAUDE_CODE_CHILD_SESSION=") {
+			continue
+		}
+		env = append(env, e)
+	}
 	for k, v := range rc.Env {
+		if k == "CLAUDE_CODE_CHILD_SESSION" {
+			continue
+		}
 		env = append(env, k+"="+v)
 	}
 	// IS_SANDBOX=1 is Claude CLI's own escape hatch for uid 0 root checks
@@ -313,6 +330,10 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 	// so this must be injected unconditionally — see memory
 	// claude-cli-uid0-rejection.
 	env = append(env, "IS_SANDBOX=1")
+	// Belt and suspenders: even if some other path flips a persistence-skip
+	// flag (CLAUDE_CODE_SKIP_PROMPT_HISTORY etc.), this env forces the
+	// internal jOe() check to false so jsonl write is always attempted.
+	env = append(env, "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1")
 	cmd.Env = env
 
 	if err := cmd.Start(); err != nil {
