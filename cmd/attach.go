@@ -28,7 +28,15 @@ func init() {
 }
 
 func runAttach(cmd *cobra.Command, args []string) error {
-	jobID := args[0]
+	return attachToJob(args[0])
+}
+
+// attachToJob is the shared attach core called by `boid attach` and by
+// the session-starting subcommands (`boid agent claude`, ...) once they
+// have a job id back from POST /api/sessions. It mirrors the original
+// runAttach behaviour: a non-running job replays its saved output through
+// a pager, a running job opens a live PTY attach with WINCH forwarding.
+func attachToJob(jobID string) error {
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
 	var job api.Job

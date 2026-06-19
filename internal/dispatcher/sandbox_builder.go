@@ -131,8 +131,14 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	if a := registry.For(sandbox.HarnessType(spec.HarnessType)); a != nil {
 		harnessBindings = adapterBindingsToOrchestrator(a.Bindings(homeDir))
 	}
+	// adapter-driven bindings は adapter が non-nil Bindings() を返したときだけ
+	// 採用する。 spec.HarnessType != "" だけで分岐すると shell adapter
+	// (Bindings()=nil) のとき pathBindings/mounts が空に潰れ、 kit 由来の
+	// spawn.sh / additional_bindings が sandbox に bind されず hook script
+	// が見えなくなる (E2E builtin-task-create が exit 143 で死亡する PR #594
+	// 退行の真因)。 shell adapter は legacy kit binding 経路に乗せたい。
 	pathBindings := expandedBindings
-	if spec.HarnessType != "" {
+	if len(harnessBindings) > 0 {
 		pathBindings = harnessBindings
 	}
 	env["PATH"] = buildPATH(pathBindings, rt.ResolvedHostCommands, rt.BoidBinary)
@@ -185,15 +191,20 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	}
 
 	// Additional bindings and kit roots:
-	//   * When HarnessType identifies a known adapter (claude/codex/opencode)
-	//     its Bindings() are the only source of bind-mounts for the agent —
-	//     boid-kits' run-agent.sh / additional_bindings / KitRoots are
-	//     ignored on this path (the kit-free dispatch path Phase 3-c expects;
-	//     Phase 3-d retires the kit entirely).
-	//   * For every other job (boid exec, gate hooks, non-agent hooks, kits
-	//     that have not migrated to adapter-driven Bindings yet) the
-	//     kit-declared bindings + KitRoots still apply.
-	if spec.HarnessType != "" {
+	//   * When the adapter declares Bindings() (claude/codex/opencode in
+	//     Phase 3-c) those are the only source of bind-mounts for the agent
+	//     — boid-kits' run-agent.sh / additional_bindings / KitRoots are
+	//     ignored on this kit-free dispatch path that Phase 3-c introduced
+	//     and Phase 3-e will lean on when the kit is retired entirely.
+	//   * For every other job (boid exec, gate hooks, non-agent shell hooks
+	//     dispatched via the shell adapter, kits that have not migrated to
+	//     adapter-driven Bindings yet) the kit-declared bindings + KitRoots
+	//     still apply. The dispatch is keyed on `len(harnessBindings) > 0`
+	//     rather than `spec.HarnessType != ""` because shell adapter is
+	//     declared (HarnessType="shell") but intentionally returns nil
+	//     Bindings — we want those jobs on the legacy kit path until
+	//     Phase 3-e collapses both.
+	if len(harnessBindings) > 0 {
 		mounts = append(mounts, additionalBindingMounts(harnessBindings)...)
 	} else {
 		mounts = append(mounts, additionalBindingMounts(expandedBindings)...)

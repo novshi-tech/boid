@@ -14,18 +14,22 @@ import (
 	"github.com/novshi-tech/boid/internal/adapters/claude"
 	"github.com/novshi-tech/boid/internal/adapters/codex"
 	"github.com/novshi-tech/boid/internal/adapters/opencode"
+	"github.com/novshi-tech/boid/internal/adapters/shell"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 // For returns the HarnessAdapter that owns the given HarnessType, or nil if
-// the harness is unknown (HarnessType="", non-agent jobs, or a value the
-// caller has not yet wired up).
+// the harness is unknown.
 //
-// Callers must tolerate a nil return: the dispatcher falls back to the
-// kit-script bind set when there is no harness, and the runner-inner-child
-// already routes unknown harnesses through runExecArgv.
+// Phase 3-d made the four built-in harnesses (shell / claude / codex /
+// opencode) authoritative; the runner-inner-child rejects an empty / unknown
+// HarnessType because the planner now resolves every job to one of these.
+// The nil return path is kept for forward compatibility (a future harness
+// the caller has not yet wired) but is no longer expected on any live path.
 func For(harness sandbox.HarnessType) adapters.HarnessAdapter {
 	switch harness {
+	case sandbox.HarnessShell:
+		return shell.New()
 	case sandbox.HarnessClaude:
 		return claude.New()
 	case sandbox.HarnessCodex:

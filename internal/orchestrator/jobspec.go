@@ -13,6 +13,12 @@ type JobKind string
 const (
 	JobKindHook JobKind = "hook"
 	JobKindExec JobKind = "exec"
+	// JobKindSession is the Phase 3-d label for a user-initiated agent
+	// session not tied to a task lifecycle (WebUI [New Session] / `boid
+	// agent` CLI). It is distinct from JobKindHook (state-machine driven)
+	// and JobKindExec (sandboxed argv with no harness), so the TUI / Web UI
+	// can present it as a separate top-level concept.
+	JobKindSession JobKind = "session"
 )
 
 // JobSpec is the orchestrator-owned, sandbox-agnostic execution request.
@@ -81,11 +87,14 @@ type JobSpec struct {
 	Interactive bool
 
 	// HarnessType identifies which HarnessAdapter implementation the runner
-	// hands the agent process off to. Empty means "no adapter; exec Argv as a
-	// plain command" (boid exec jobs and any non-agent hook). For agent-bearing
-	// hook jobs the planner sets "claude" (the only supported harness today;
-	// Phase 3-c will extend to codex / opencode). dispatcher bridges this into
-	// sandbox.Spec.HarnessType and the runner-inner-child branches on it.
+	// hands the agent process off to. Phase 3-d made this invariant
+	// non-empty for every dispatched job:
+	//   - "shell" for hooks without an `agent:` declaration, every `boid
+	//     exec`, and the fall-through for unknown agents
+	//   - "claude" / "codex" / "opencode" for the corresponding agent hooks
+	//     and user-initiated sessions
+	// dispatcher bridges this into sandbox.Spec.HarnessType and the
+	// runner-inner-child resolves the adapter via the registry.
 	HarnessType string
 }
 

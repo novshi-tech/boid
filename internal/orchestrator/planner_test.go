@@ -139,9 +139,11 @@ func TestPlanHook_UsesScriptPathDirectlyAndSetsKitRoots(t *testing.T) {
 // rely on daemon-side SIGUSR1 (on `boid task notify --ask` or `boid job
 // done`) to terminate.
 //
-// Phase 3-c table-extended: hook.Agent → HarnessType mapping. Known agents
-// are routed to their adapter; an unknown agent leaves HarnessType empty
-// so the runner falls back to the legacy kit-script exec path.
+// Phase 3-d table-extended: hook.Agent → HarnessType mapping. Known agents
+// are routed to their adapter; an unknown agent (including hooks without
+// `agent:` declared) falls through to the shell adapter so every job flows
+// through the adapter pipeline. HarnessType is invariant non-empty from
+// Phase 3-d onward.
 func TestPlanHook_AgentHookInteractive(t *testing.T) {
 	cases := []struct {
 		agent       string
@@ -150,8 +152,9 @@ func TestPlanHook_AgentHookInteractive(t *testing.T) {
 		{"claude-code", "claude"},
 		{"codex", "codex"},
 		{"opencode", "opencode"},
-		// Unknown agent: kit still owns dispatch via its hook script.
-		{"some-future-agent", ""},
+		// Unknown agent: shell adapter takes over and execs the hook
+		// script's argv directly.
+		{"some-future-agent", "shell"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.agent, func(t *testing.T) {

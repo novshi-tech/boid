@@ -129,6 +129,24 @@ type RunContext struct {
 	// use; PR1 does not act on it (skill bind-mounts are wired in the
 	// dispatcher under Phase 3-b PR2).
 	SkillsDir string
+
+	// Argv is the literal program + arguments to exec. Only the shell adapter
+	// consumes this field — claude / codex / opencode build their own argv
+	// from their CLI conventions and ignore Argv entirely. Phase 3-d added
+	// Argv so non-agent hooks and `boid exec` can flow through the same
+	// adapter pipeline as agent jobs instead of branching to a separate
+	// runExecArgv path in the runner-inner-child.
+	Argv []string
+
+	// StdinBytes, when non-empty, is piped into the child's stdin instead of
+	// Stdin. Shell adapter only — agent adapters allocate a PTY and route
+	// through Stdin. Used by hook scripts that read a JSON payload on stdin.
+	StdinBytes []byte
+	// StdoutCaptureFile, when non-empty, makes the shell adapter redirect the
+	// child's stdout to this host-side path (instead of writing to Stdout).
+	// Doubles as the broker job-done output fallback when no payload patch
+	// exists.
+	StdoutCaptureFile string
 }
 
 // Result is the output of HarnessAdapter.Run.

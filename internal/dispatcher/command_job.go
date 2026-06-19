@@ -1,6 +1,9 @@
 package dispatcher
 
-import "github.com/novshi-tech/boid/internal/orchestrator"
+import (
+	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
+)
 
 // CommandJobInput carries the resolved data from a project command definition
 // needed to build an orchestrator.JobSpec. It is shared between the CLI exec
@@ -40,6 +43,12 @@ func BuildCommandJobSpec(input CommandJobInput) *orchestrator.JobSpec {
 		HandlerID:   "",
 		DisplayName: input.Name,
 		Kind:        orchestrator.JobKindExec,
+		// Phase 3-d: exec jobs are now adapter-driven (shell adapter).
+		// HarnessType="shell" makes runner-inner-child's `if HarnessType == ""`
+		// guard pass and routes the argv through internal/adapters/shell.Adapter.
+		// Without this exec-smoke fails with runner-inner-child exit 127
+		// (the empty-HarnessType branch errors out by design).
+		HarnessType: string(sandbox.HarnessShell),
 		Argv:        input.Argv,
 		Visibility: orchestrator.Visibility{
 			ProjectDir:         input.ProjectWorkDir,

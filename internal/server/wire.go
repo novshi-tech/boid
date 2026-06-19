@@ -403,6 +403,47 @@ type jobDispatcher interface {
 	Dispatch(ctx context.Context, spec *orchestrator.JobSpec, cleanup orchestrator.CleanupFunc) (string, error)
 }
 
+// sessionDispatcherAdapter implements api.SessionDispatcher by translating
+// StartSessionRequest into a SessionJobInput and handing it to the runner.
+// Phase 3-d (PR1) wired this in alongside the legacy ExecuteCommand path so
+// the new entry can coexist with the existing Commands buttons until PR2
+// removes them.
+type sessionDispatcherAdapter struct {
+	service *api.ProjectAppService
+	runner  *dispatcher.Runner
+}
+
+func (a *sessionDispatcherAdapter) StartSession(ctx context.Context, req api.StartSessionRequest) (*api.StartSessionResult, error) {
+	project, err := a.service.GetProject(req.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	meta := project.Meta
+	spec := dispatcher.BuildSessionJobSpec(dispatcher.SessionJobInput{
+		ProjectID:          project.ID,
+		ProjectWorkDir:     project.WorkDir,
+		HarnessType:        req.HarnessType,
+		SessionID:          req.SessionID,
+		Instruction:        req.Instruction,
+		Readonly:           req.Readonly,
+		Model:              req.Model,
+		DisplayName:        req.DisplayName,
+		Env:                meta.Env,
+		HostCommands:       meta.HostCommands,
+		AdditionalBindings: meta.AdditionalBindings,
+		SecretNamespace:    meta.SecretNamespace,
+		DockerEnabled:      meta.Capabilities.Docker != nil,
+	})
+	jobID, err := a.runner.Dispatch(ctx, spec, nil)
+	if err != nil {
+		return nil, &api.StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return &api.StartSessionResult{
+		JobID:     jobID,
+		AttachURL: fmt.Sprintf("/jobs/%s", jobID),
+	}, nil
+}
+
 // taskCommandDispatcherAdapter implements api.TaskCommandDispatcher by resolving
 // the task → behavior → command chain and dispatching as an exec job with
 // the task ID appended to argv.
@@ -516,11 +557,19 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		r.Mount("/api/secrets", secretHandler.Routes())
 	}
 
+	sessionAdapter := &sessionDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner}
 	projectHandler := &api.ProjectHandler{
-		Service:    runtime.projectSvc,
-		Dispatcher: &commandDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner},
+		Service:           runtime.projectSvc,
+		Dispatcher:        &commandDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner},
+		SessionDispatcher: sessionAdapter,
 	}
 	r.Mount("/api/projects", projectHandler.Routes())
+
+	sessionHandler := &api.SessionHandler{
+		Service:    runtime.projectSvc,
+		Dispatcher: sessionAdapter,
+	}
+	r.Mount("/api/sessions", sessionHandler.Routes())
 
 	workspaceHandler := &api.WorkspaceHandler{Service: runtime.projectSvc}
 	r.Mount("/api/workspaces", workspaceHandler.Routes())
@@ -612,11 +661,12 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r.Group(func(r chi.Router) {
 		r.Use(auth.NewWebAuthMiddleware(runtime.sessionSigner, runtime.authStore))
 		webHandler := &api.WebHandler{
-			Service:        runtime.webSvc,
-			Hub:            runtime.hub,
-			Dispatcher:     &commandDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner},
-			TaskDispatcher: taskCmdAdapter,
-			Registry:       runtime.connRegistry,
+			Service:           runtime.webSvc,
+			Hub:               runtime.hub,
+			Dispatcher:        &commandDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner},
+			TaskDispatcher:    taskCmdAdapter,
+			SessionDispatcher: sessionAdapter,
+			Registry:          runtime.connRegistry,
 		}
 		r.Get("/api/tasks/{id}/events", webHandler.TaskEvents)
 		r.Get("/api/jobs/{id}/attach/ws", (&api.WSAttachHandler{

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -15,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/novshi-tech/boid/internal/adapters"
+	"github.com/novshi-tech/boid/internal/adapters/sigutil"
 )
 
 // sessionType is the fixed tag for the agent's session entry in
@@ -340,70 +340,31 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 		return adapters.Result{}, fmt.Errorf("start claude: %w", err)
 	}
 
-	// 5. Wire signal forwarding.
+	// 5. Drive the shared signal-forwarding loop. sigutil.ForwardAndWait
+	// translates SIGUSR1 into a child SIGTERM, forwards SIGWINCH verbatim,
+	// and normalises the daemon-initiated stop exit (143) into 0 so the
+	// awaiting task settles as paused, not failed.
 	//
 	// Phase 3-b PoC (/tmp/sig-poc) verified that Go's signal.Notify
 	// auto-overrides an inherited SIG_IGN or sigprocmask block. Python's
 	// equivalent required pthread_sigmask SIG_UNBLOCK; the Go runtime's
 	// dedicated signal thread makes that redundant.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGUSR1)
-	defer signal.Stop(sigCh)
-
-	winchCh := make(chan os.Signal, 1)
-	signal.Notify(winchCh, syscall.SIGWINCH)
-	defer signal.Stop(winchCh)
-
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	stoppedByDaemon := false
-	for {
-		select {
-		case <-sigCh:
-			// daemon agent-stop. Translate to child SIGTERM only; bash
-			// equivalent (Phase 3-a runner-inner-child) keeps payload
-			// capture alive.
-			stoppedByDaemon = true
-			if cmd.Process != nil {
-				_ = cmd.Process.Signal(syscall.SIGTERM)
-			}
-		case <-winchCh:
-			// Terminal resize forwarding. Without this claude renders at
-			// its startup width and garbles narrower (mobile) clients.
-			if cmd.Process != nil {
-				_ = cmd.Process.Signal(syscall.SIGWINCH)
-			}
-		case err := <-done:
-			exitCode := 0
-			if err != nil {
-				if ee, ok := err.(*exec.ExitError); ok {
-					exitCode = ee.ExitCode()
-				} else {
-					return adapters.Result{}, fmt.Errorf("wait claude: %w", err)
-				}
-			}
-			if stoppedByDaemon {
-				// daemon-initiated stop is success from boid's perspective
-				// (Q&A pause). Without this normalisation, SIGTERM-induced
-				// 143 would propagate to `boid job done --exit-code 143`
-				// and the awaiting task would settle as job_failed.
-				exitCode = 0
-			}
-
-			// Read the final payload_patch.json best-effort. Missing file
-			// → nil PayloadPatch (the dispatcher treats nil as "no patch").
-			payloadPatchPath := filepath.Join(outputDir, "payload_patch.json")
-			var patch json.RawMessage
-			if data, err := os.ReadFile(payloadPatchPath); err == nil {
-				patch = data
-			}
-
-			return adapters.Result{
-				ExitCode:        exitCode,
-				PayloadPatch:    patch,
-				StoppedByDaemon: stoppedByDaemon,
-			}, nil
-		}
+	exitCode, stoppedByDaemon, werr := sigutil.ForwardAndWait(cmd, "claude")
+	if werr != nil {
+		return adapters.Result{}, werr
 	}
+
+	// Read the final payload_patch.json best-effort. Missing file →
+	// nil PayloadPatch (the dispatcher treats nil as "no patch").
+	payloadPatchPath := filepath.Join(outputDir, "payload_patch.json")
+	var patch json.RawMessage
+	if data, err := os.ReadFile(payloadPatchPath); err == nil {
+		patch = data
+	}
+
+	return adapters.Result{
+		ExitCode:        exitCode,
+		PayloadPatch:    patch,
+		StoppedByDaemon: stoppedByDaemon,
+	}, nil
 }

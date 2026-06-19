@@ -10,12 +10,20 @@ const (
 )
 
 // HarnessType identifies which HarnessAdapter the runner should hand the
-// agent process off to via adapter.Run(). Empty string preserves the legacy
-// behaviour of exec-ing Spec.Argv verbatim (used by foreground exec jobs and
-// any hook job that has not been migrated to the adapter path).
+// process off to via adapter.Run(). Phase 3-d (PR1) made this field
+// invariant non-empty for every dispatched job — hook / session / exec
+// all resolve to shell / claude / codex / opencode. The empty string is no
+// longer a valid value and the runner-inner-child rejects it; the legacy
+// runExecArgv fallback was retired in the same change.
 type HarnessType string
 
 const (
+	// HarnessShell routes through internal/adapters/shell.Adapter.Run() and
+	// is the fall-through for hooks without an `agent:` declaration, every
+	// `boid exec` job, and the default for unknown agent values. Shell
+	// adapter forwards SIGUSR1 / SIGWINCH and normalises stop-signal exits
+	// like the agent adapters do but performs no session resolution.
+	HarnessShell HarnessType = "shell"
 	// HarnessClaude routes through internal/adapters/claude.Adapter.Run().
 	HarnessClaude HarnessType = "claude"
 	// HarnessCodex routes through internal/adapters/codex.Adapter.Run().

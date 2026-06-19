@@ -50,11 +50,12 @@ func detailTimelineGroups(detail *TaskDetailView) []timeline.StatusGroup {
 
 
 type WebHandler struct {
-	Service        WebService
-	Hub            *TaskEventHub
-	Dispatcher     CommandDispatcher
-	TaskDispatcher TaskCommandDispatcher
-	Registry       *auth.ConnectionRegistry
+	Service           WebService
+	Hub               *TaskEventHub
+	Dispatcher        CommandDispatcher
+	TaskDispatcher    TaskCommandDispatcher
+	SessionDispatcher SessionDispatcher
+	Registry          *auth.ConnectionRegistry
 }
 
 func (h *WebHandler) Routes() chi.Router {
@@ -82,6 +83,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/jobs/{id}/terminal", h.JobTerminal)
 	r.Post("/projects/{id}/commands/{name}/execute", h.PostProjectExecuteCommand)
 	r.Post("/tasks/{id}/commands/{name}/execute", h.PostTaskExecuteCommand)
+	r.Post("/projects/{id}/sessions/start", h.PostStartSession)
 	return r
 }
 
@@ -701,6 +703,45 @@ func (h *WebHandler) PostTaskExecuteCommand(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	jobURL := "/jobs/" + result.JobID
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", jobURL)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, jobURL, http.StatusSeeOther)
+}
+
+// PostStartSession launches a HarnessAdapter-backed session for the project
+// from the Web UI's [New Session] dialog. Phase 3-d (PR1) introduced this
+// alongside PostProjectExecuteCommand so users can start a claude / codex /
+// opencode session without going through the legacy commands path.
+func (h *WebHandler) PostStartSession(w http.ResponseWriter, r *http.Request) {
+	if h.SessionDispatcher == nil {
+		http.Error(w, "session dispatcher not wired", http.StatusNotImplemented)
+		return
+	}
+	projectID := chi.URLParam(r, "id")
+	_ = r.ParseForm()
+	req := StartSessionRequest{
+		ProjectID:   projectID,
+		HarnessType: strings.TrimSpace(r.FormValue("harness_type")),
+		Instruction: strings.TrimSpace(r.FormValue("instruction")),
+		Model:       strings.TrimSpace(r.FormValue("model")),
+		Readonly:    r.FormValue("readonly") == "on",
+		DisplayName: strings.TrimSpace(r.FormValue("name")),
+	}
+	if msg := validateHarnessType(req.HarnessType); msg != "" {
+		backURL := "/sessions/new?project=" + url.QueryEscape(projectID) + "&error=" + url.QueryEscape(msg)
+		http.Redirect(w, r, backURL, http.StatusSeeOther)
+		return
+	}
+	result, err := h.SessionDispatcher.StartSession(r.Context(), req)
+	if err != nil {
+		backURL := "/sessions/new?project=" + url.QueryEscape(projectID) + "&error=" + url.QueryEscape(err.Error())
+		http.Redirect(w, r, backURL, http.StatusSeeOther)
+		return
+	}
 	jobURL := "/jobs/" + result.JobID
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("HX-Redirect", jobURL)
