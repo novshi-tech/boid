@@ -7,28 +7,37 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"syscall"
+	"sort"
 
 	"github.com/novshi-tech/boid/internal/adapters"
-	"github.com/novshi-tech/boid/internal/adapters/sigutil"
 )
 
-// Run forks the argv supplied via RunContext.Argv and forwards SIGUSR1 /
-// SIGWINCH to the child the same way claude / codex / opencode adapters do.
-// It is intentionally close in shape to internal/adapters/codex.Run — the
-// helper extraction lives in a follow-up refactor so each adapter still
-// reads independently.
+// Run forks the argv supplied via RunContext.Argv. The body is intentionally
+// byte-equivalent with the retired runExecArgv in internal/sandbox/runner
+// (see git history of runner_linux.go before PR #594): a single exec.Cmd
+// built from the spec, stdio routed per StdinBytes / StdoutCaptureFile
+// precedence, env taken straight from RunContext.Env (no PWD injection,
+// no host inherit), and a synchronous cmd.Run() to drive it to completion.
+//
+// SIGUSR1 → SIGTERM forwarding, SIGWINCH passthrough, and Setsid are
+// deliberately NOT wired in this PR. The legacy runExecArgv path the
+// shell adapter replaces wired none of them — hook scripts have no use
+// for SIGUSR1 (NotifyTask.StopAgent only signals agents), and adding a
+// process-group split via Setsid breaks the bash broker handshake (an
+// early PR #594 iteration regressed E2E builtin-task-create that way).
+// The follow-up PR that lands `boid agent shell` as a first-class
+// session entry point will reintroduce signal forwarding via sigutil at
+// that boundary, where it actually matters.
 //
 // I/O resolution precedence mirrors the retired runExecArgv:
 //
-//  1. StdinBytes non-empty → pipe a *bytes.Reader as child stdin (host file
-//     descriptor is not exposed to the child).
+//  1. StdinBytes non-empty → pipe a *bytes.Reader as child stdin (host
+//     file descriptor is not exposed to the child).
 //  2. StdoutCaptureFile non-empty → create that host path and route stdout
 //     into it (broker job-done reads from this file).
 //  3. Otherwise → pass RunContext.Stdin / Stdout verbatim.
 //
-// Stderr always flows through RunContext.Stderr (or os.Stderr fallback) so
-// runner-inner-child can stream diagnostics back to the daemon transcript.
+// Stderr always flows through RunContext.Stderr.
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
 	if len(rc.Argv) == 0 {
 		return adapters.Result{}, errors.New("shell adapter: RunContext.Argv is empty")
@@ -36,30 +45,8 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 
 	cmd := exec.CommandContext(ctx, rc.Argv[0], rc.Argv[1:]...)
 	cmd.Dir = rc.Workspace
-	// Setsid mirrors the agent adapters so a daemon-driven group SIGUSR1 does
-	// not reach the child directly; only our signal.Notify handler sees it.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Env = envSlice(rc.Env)
 
-	// Env: shell adapter uses ONLY RunContext.Env, mirroring the retired
-	// runExecArgv behaviour. We deliberately do NOT inherit os.Environ()
-	// here — the runner-inner-child has already pivoted into the sandbox
-	// root, but Go's exec preserves duplicate keys in cmd.Env and the
-	// child's getenv() resolves to the first hit. Mixing host HOME /
-	// PATH with the sandbox-side spec.Env therefore leaks the host paths
-	// into the child even though spec.Env was appended later. That
-	// broke `boid task create` inside hooks because the inherited
-	// HOME=/home/runner pointed at a directory not visible inside the
-	// sandbox FS view (E2E builtin-task-create timeout, PR #594).
-	env := make([]string, 0, len(rc.Env)+1)
-	for k, v := range rc.Env {
-		env = append(env, k+"="+v)
-	}
-	if rc.Workspace != "" {
-		env = append(env, "PWD="+rc.Workspace)
-	}
-	cmd.Env = env
-
-	// stdin / stdout routing.
 	var captureFile *os.File
 	switch {
 	case len(rc.StdinBytes) > 0 && rc.StdoutCaptureFile != "":
@@ -87,22 +74,39 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 	}
 	cmd.Stderr = rc.Stderr
 
-	if err := cmd.Start(); err != nil {
-		if captureFile != nil {
-			_ = captureFile.Close()
-		}
-		return adapters.Result{}, fmt.Errorf("start shell argv: %w", err)
-	}
-
-	exitCode, stoppedByDaemon, werr := sigutil.ForwardAndWait(cmd, "shell argv")
+	err := cmd.Run()
 	if captureFile != nil {
 		_ = captureFile.Close()
 	}
-	if werr != nil {
-		return adapters.Result{}, werr
+
+	exitCode := 0
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			exitCode = ee.ExitCode()
+		} else {
+			return adapters.Result{}, fmt.Errorf("run shell argv: %w", err)
+		}
 	}
-	return adapters.Result{
-		ExitCode:        exitCode,
-		StoppedByDaemon: stoppedByDaemon,
-	}, nil
+	return adapters.Result{ExitCode: exitCode}, nil
+}
+
+// envSlice mirrors internal/sandbox/runner.envSlice: deterministic
+// KEY=VALUE slice in sorted key order, with no PWD injection and no
+// inheritance from os.Environ() (the runner-inner-child has already
+// pivoted into the sandbox root, so leaking host paths through duplicate
+// keys would shadow spec.Env at the child's first getenv()).
+func envSlice(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, k+"="+env[k])
+	}
+	return out
 }

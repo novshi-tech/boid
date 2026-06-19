@@ -3,13 +3,10 @@ package shell_test
 import (
 	"bytes"
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
-	"time"
 
 	"github.com/novshi-tech/boid/internal/adapters"
 	"github.com/novshi-tech/boid/internal/adapters/shell"
@@ -108,36 +105,11 @@ func TestRun_EmptyArgv(t *testing.T) {
 	}
 }
 
-// TestRun_StopSignalNormalisesExit covers the SIGUSR1 → SIGTERM → ExitCode=0
-// path: a daemon-driven stop must surface as a success exit so the awaiting
-// task settles as paused, not failed.
-func TestRun_StopSignalNormalisesExit(t *testing.T) {
-	a := shell.New()
-	stdout := &bytes.Buffer{}
-	// Drive the SIGUSR1 from a goroutine 50ms after Run starts so the
-	// `sleep` child is alive when the signal arrives.
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		_ = syscall.Kill(os.Getpid(), syscall.SIGUSR1)
-	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	// `exec sleep` so the trapped sleep is the direct child of exec.Cmd —
-	// otherwise the intermediate /bin/sh blocks on its waitpid and the
-	// daemon's SIGTERM has to wait for the sleep to finish or for the ctx
-	// deadline to fire (whichever wins).
-	res, err := a.Run(ctx, adapters.RunContext{
-		Argv:   []string{"/bin/sh", "-c", "exec sleep 5"},
-		Stdout: stdout,
-		Stderr: os.Stderr,
-	})
-	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Run: %v", err)
-	}
-	if !res.StoppedByDaemon {
-		t.Errorf("StoppedByDaemon = false, want true")
-	}
-	if res.ExitCode != 0 {
-		t.Errorf("ExitCode = %d, want 0 (stop-normalised)", res.ExitCode)
-	}
-}
+// Phase 3-d PR1: the SIGUSR1 → SIGTERM normalisation test was removed
+// alongside the sigutil.ForwardAndWait wiring. The shell adapter's body
+// is now byte-equivalent with the retired runExecArgv, which never
+// listened for SIGUSR1 either (NotifyTask.StopAgent only signals agent
+// runtimes — claude / codex / opencode). When `boid agent shell` lands
+// as a first-class session entry point in a follow-up PR, the signal
+// forwarding loop and a corresponding StoppedByDaemon test will return
+// at that boundary.
