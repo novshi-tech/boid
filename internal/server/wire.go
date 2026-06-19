@@ -379,10 +379,18 @@ func (a *sessionDispatcherAdapter) StartSession(ctx context.Context, req api.Sta
 		return nil, err
 	}
 	meta := project.Meta
+	// shell sessions get a hard-coded interactive bash. Agent harnesses
+	// (claude / codex / opencode) build their own argv from CLI conventions
+	// and ignore SessionJobInput.Argv entirely.
+	var argv []string
+	if req.HarnessType == "shell" {
+		argv = []string{"/bin/bash"}
+	}
 	spec := dispatcher.BuildSessionJobSpec(dispatcher.SessionJobInput{
 		ProjectID:          project.ID,
 		ProjectWorkDir:     project.WorkDir,
 		HarnessType:        req.HarnessType,
+		Argv:               argv,
 		SessionID:          req.SessionID,
 		Instruction:        req.Instruction,
 		Readonly:           req.Readonly,

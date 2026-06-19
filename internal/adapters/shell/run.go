@@ -10,34 +10,44 @@ import (
 	"sort"
 
 	"github.com/novshi-tech/boid/internal/adapters"
+	"github.com/novshi-tech/boid/internal/adapters/sigutil"
 )
 
-// Run forks the argv supplied via RunContext.Argv. The body is intentionally
-// byte-equivalent with the retired runExecArgv in internal/sandbox/runner
-// (see git history of runner_linux.go before PR #594): a single exec.Cmd
-// built from the spec, stdio routed per StdinBytes / StdoutCaptureFile
-// precedence, env taken straight from RunContext.Env (no PWD injection,
-// no host inherit), and a synchronous cmd.Run() to drive it to completion.
+// Run forks the argv supplied via RunContext.Argv and drives it through the
+// shared sigutil.ForwardAndWait loop so every harness adapter (claude / codex
+// / opencode / shell) reaches the daemon's "stop this job" out-of-band signal
+// the same way.
 //
-// SIGUSR1 → SIGTERM forwarding, SIGWINCH passthrough, and Setsid are
-// deliberately NOT wired in this PR. The legacy runExecArgv path the
-// shell adapter replaces wired none of them — hook scripts have no use
-// for SIGUSR1 (NotifyTask.StopAgent only signals agents), and adding a
-// process-group split via Setsid breaks the bash broker handshake (an
-// early PR #594 iteration regressed E2E builtin-task-create that way).
-// The follow-up PR that lands `boid agent shell` as a first-class
-// session entry point will reintroduce signal forwarding via sigutil at
-// that boundary, where it actually matters.
+// I/O resolution precedence (StdinBytes / StdoutCaptureFile / Stdin / Stdout)
+// mirrors the retired runExecArgv path the shell adapter replaced in PR1:
 //
-// I/O resolution precedence mirrors the retired runExecArgv:
-//
-//  1. StdinBytes non-empty → pipe a *bytes.Reader as child stdin (host
-//     file descriptor is not exposed to the child).
+//  1. StdinBytes non-empty → pipe a *bytes.Reader as child stdin (host file
+//     descriptor is not exposed to the child).
 //  2. StdoutCaptureFile non-empty → create that host path and route stdout
 //     into it (broker job-done reads from this file).
 //  3. Otherwise → pass RunContext.Stdin / Stdout verbatim.
 //
 // Stderr always flows through RunContext.Stderr.
+//
+// Signal handling: we run sigutil.ForwardAndWait but deliberately do NOT set
+// Setsid. The claude / codex / opencode adapters do set Setsid because they
+// need to intercept the daemon's runtime-pgrp SIGUSR1 broadcast and translate
+// it into a SIGTERM the agent CLI can drain (jsonl flush, etc). The shell
+// adapter cannot follow suit: PTY-attached hook scripts in the E2E suite
+// (hook-attach-smoke) open /dev/tty directly, and Setsid detaches the child
+// from the controlling terminal — the open() then fails with ENXIO and breaks
+// the hook before it can speak. The shrunken byte-equivalent runExecArgv
+// path PR1 retired never set Setsid for the same reason.
+//
+// Trade-off without Setsid: if `boid agent shell` ever exposes a SIGUSR1-
+// based daemon stop to an interactive bash session, the SIGUSR1 will also
+// reach bash directly (bash's default disposition is "terminate"). The race
+// is harmless in practice because sigutil's exit-code normalisation maps any
+// stop-signal exit to 0 with StoppedByDaemon=true regardless of whether bash
+// died from our forwarded SIGTERM or from the racing SIGUSR1; the boid side
+// reads "session paused" the same way. Hook / exec runtimes observe no
+// behaviour change either way — the daemon never sends SIGUSR1 to them so
+// the forwarding loop simply idles until cmd.Wait() returns.
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
 	if len(rc.Argv) == 0 {
 		return adapters.Result{}, errors.New("shell adapter: RunContext.Argv is empty")
@@ -46,6 +56,9 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 	cmd := exec.CommandContext(ctx, rc.Argv[0], rc.Argv[1:]...)
 	cmd.Dir = rc.Workspace
 	cmd.Env = envSlice(rc.Env)
+	// Deliberately no SysProcAttr.Setsid: see the package-level Run() comment
+	// for why PTY-attached hook scripts open /dev/tty and need the controlling
+	// terminal preserved through the fork.
 
 	var captureFile *os.File
 	switch {
@@ -74,20 +87,24 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 	}
 	cmd.Stderr = rc.Stderr
 
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		if captureFile != nil {
+			_ = captureFile.Close()
+		}
+		return adapters.Result{}, fmt.Errorf("start shell argv: %w", err)
+	}
+
+	exitCode, stoppedByDaemon, werr := sigutil.ForwardAndWait(cmd, "shell")
 	if captureFile != nil {
 		_ = captureFile.Close()
 	}
-
-	exitCode := 0
-	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			exitCode = ee.ExitCode()
-		} else {
-			return adapters.Result{}, fmt.Errorf("run shell argv: %w", err)
-		}
+	if werr != nil {
+		return adapters.Result{}, werr
 	}
-	return adapters.Result{ExitCode: exitCode}, nil
+	return adapters.Result{
+		ExitCode:        exitCode,
+		StoppedByDaemon: stoppedByDaemon,
+	}, nil
 }
 
 // envSlice mirrors internal/sandbox/runner.envSlice: deterministic

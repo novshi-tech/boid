@@ -18,9 +18,15 @@ type SessionJobInput struct {
 	ProjectWorkDir string
 
 	// HarnessType selects the agent adapter the runner-inner-child will
-	// dispatch through. Must be one of "claude" / "codex" / "opencode"
-	// (validated by the caller; BuildSessionJobSpec does not police it).
+	// dispatch through. Must be one of "claude" / "codex" / "opencode" /
+	// "shell" (validated by the caller; BuildSessionJobSpec does not police it).
 	HarnessType string
+
+	// Argv is the literal program + arguments the shell adapter consumes.
+	// The claude / codex / opencode adapters ignore it (they build their
+	// argv from CLI conventions). Required when HarnessType == "shell";
+	// ignored otherwise.
+	Argv []string
 
 	// SessionID is the resume target. Empty starts a fresh session and the
 	// adapter generates a new id.
@@ -90,6 +96,7 @@ func BuildSessionJobSpec(input SessionJobInput) *orchestrator.JobSpec {
 		DisplayName: displayName,
 		Kind:        orchestrator.JobKindSession,
 		HarnessType: input.HarnessType,
+		Argv:        input.Argv, // consumed by shell adapter only; agent adapters ignore it
 		Visibility: orchestrator.Visibility{
 			ProjectDir:         input.ProjectWorkDir,
 			UseWorktree:        false,

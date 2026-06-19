@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/adapters"
 	"github.com/novshi-tech/boid/internal/adapters/shell"
@@ -105,11 +107,48 @@ func TestRun_EmptyArgv(t *testing.T) {
 	}
 }
 
-// Phase 3-d PR1: the SIGUSR1 → SIGTERM normalisation test was removed
-// alongside the sigutil.ForwardAndWait wiring. The shell adapter's body
-// is now byte-equivalent with the retired runExecArgv, which never
-// listened for SIGUSR1 either (NotifyTask.StopAgent only signals agent
-// runtimes — claude / codex / opencode). When `boid agent shell` lands
-// as a first-class session entry point in a follow-up PR, the signal
-// forwarding loop and a corresponding StoppedByDaemon test will return
-// at that boundary.
+// TestRun_StopSignalNormalisesExit asserts that when the parent process
+// receives SIGUSR1 while a shell-adapter child is alive, sigutil.ForwardAndWait
+// translates that into a child SIGTERM, normalises the resulting exit (143)
+// into 0, and sets Result.StoppedByDaemon=true. This is the same contract
+// the claude / codex / opencode adapters honour — `boid agent shell` relies
+// on it so a daemon-driven stop surfaces as paused, not failed.
+//
+// We fork /bin/sleep directly (not via a shell) so the SIGTERM the adapter
+// forwards reaches a process whose default disposition is "terminate" with
+// no shell wait-loop in between. Setsid on the cmd places sleep in its own
+// session/pgrp so the SIGUSR1 we deliver to ourselves never reaches sleep
+// directly — only the adapter's sigutil loop sees it and forwards SIGTERM
+// to sleep's PID.
+func TestRun_StopSignalNormalisesExit(t *testing.T) {
+	a := shell.New()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Schedule the SIGUSR1 to fire shortly after Run() forks the child.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-time.After(150 * time.Millisecond):
+			_ = syscall.Kill(os.Getpid(), syscall.SIGUSR1)
+		case <-ctx.Done():
+		}
+	}()
+
+	res, err := a.Run(ctx, adapters.RunContext{
+		Argv:   []string{"/bin/sleep", "30"},
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	})
+	<-done
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !res.StoppedByDaemon {
+		t.Errorf("StoppedByDaemon = false, want true")
+	}
+	if res.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0 (normalised)", res.ExitCode)
+	}
+}
