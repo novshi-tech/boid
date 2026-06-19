@@ -40,10 +40,17 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 	// not reach the child directly; only our signal.Notify handler sees it.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
-	// Env: inherit, overlay RunContext.Env. PWD is forced to Workspace so a
-	// child that reads PWD instead of getcwd() sees the sandbox-side path.
-	env := make([]string, 0, len(os.Environ())+len(rc.Env)+1)
-	env = append(env, os.Environ()...)
+	// Env: shell adapter uses ONLY RunContext.Env, mirroring the retired
+	// runExecArgv behaviour. We deliberately do NOT inherit os.Environ()
+	// here — the runner-inner-child has already pivoted into the sandbox
+	// root, but Go's exec preserves duplicate keys in cmd.Env and the
+	// child's getenv() resolves to the first hit. Mixing host HOME /
+	// PATH with the sandbox-side spec.Env therefore leaks the host paths
+	// into the child even though spec.Env was appended later. That
+	// broke `boid task create` inside hooks because the inherited
+	// HOME=/home/runner pointed at a directory not visible inside the
+	// sandbox FS view (E2E builtin-task-create timeout, PR #594).
+	env := make([]string, 0, len(rc.Env)+1)
 	for k, v := range rc.Env {
 		env = append(env, k+"="+v)
 	}
