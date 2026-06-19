@@ -102,69 +102,6 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 	return spec, nil, nil
 }
 
-// ExecFireEvent carries the data needed to plan a boid-exec job.
-// Command must be the fully resolved CommandSpec (ResolvedCommand populated).
-type ExecFireEvent struct {
-	ProjectID string
-	Command   CommandSpec
-}
-
-// PlanExec renders an exec fire event into a JobSpec.
-// Visibility.Writable is driven by Command.Readonly, mirroring how PlanHook
-// derives it from IsReadonly(task) — task.readonly is the sole arbiter.
-func (p *DispatchPlanner) PlanExec(event *ExecFireEvent) (*JobSpec, CleanupFunc, error) {
-	if event == nil {
-		return nil, nil, fmt.Errorf("exec event is required")
-	}
-	if len(event.Command.ResolvedCommand) == 0 {
-		return nil, nil, fmt.Errorf("exec event: no command resolved")
-	}
-	if p.Meta == nil || p.Projects == nil {
-		return nil, nil, fmt.Errorf("dispatch planner is not fully configured")
-	}
-
-	proj, err := p.Projects.GetProject(event.ProjectID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("get project: %w", err)
-	}
-
-	var secretNS string
-	var dockerEnabled bool
-	if meta, ok := p.Meta.Get(event.ProjectID); ok {
-		secretNS = meta.SecretNamespace
-		dockerEnabled = meta.Capabilities.Docker != nil
-	}
-
-	spec := &JobSpec{
-		ProjectID:   event.ProjectID,
-		Kind:        JobKindExec,
-		HarnessType: string(harnessShell),
-		Argv:        event.Command.ResolvedCommand,
-		Visibility: Visibility{
-			ProjectDir:         proj.WorkDir,
-			UseWorktree:        false,
-			AdditionalBindings: event.Command.AdditionalBindings,
-			Writable:           !event.Command.Readonly,
-			DockerEnabled:      dockerEnabled,
-		},
-		BuiltinPolicies: DefaultBuiltinPolicies(
-			RoleHook,
-			[]string{"boid", "git", "fetch"},
-			PolicyContext{ProjectDir: proj.WorkDir, HomeDir: sandboxHomeDir()},
-		),
-		HostCommands:    event.Command.HostCommands.ToCommandDefs(),
-		SecretNamespace: secretNS,
-		Env:             event.Command.Env,
-	}
-	return spec, nil, nil
-}
-
-// harnessShell mirrors sandbox.HarnessShell as a string-typed constant so
-// the orchestrator package can populate JobSpec.HarnessType without pulling
-// in the sandbox package (which would close an import cycle for the
-// dispatcher's existing consumers of orchestrator).
-const harnessShell = "shell"
-
 // lookupParent returns the parent task when task.ParentID is set, or nil for
 // root tasks. Used to propagate BOID_PARENT_BRANCH into the job environment.
 func (p *DispatchPlanner) lookupParent(task *Task) (*Task, error) {

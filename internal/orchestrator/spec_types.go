@@ -349,11 +349,10 @@ type TaskBehavior struct {
 	// fail-safe default: readonly=true for all behaviors except the canonical
 	// "executor" (which retains readonly=false during the compat period).
 	// Set explicitly to override: readonly: false in project.yaml.
-	Readonly           *bool                  `yaml:"readonly,omitempty" json:"readonly,omitempty"`
-	Traits             []string               `yaml:"traits" json:"traits"`
-	DefaultInstruction *Instruction           `yaml:"default_instruction,omitempty" json:"default_instruction,omitempty"`
-	Kits               []KitRef               `yaml:"kits,omitempty" json:"kits,omitempty"`
-	Commands           map[string]CommandSpec `yaml:"commands,omitempty" json:"commands,omitempty"`
+	Readonly           *bool        `yaml:"readonly,omitempty" json:"readonly,omitempty"`
+	Traits             []string     `yaml:"traits" json:"traits"`
+	DefaultInstruction *Instruction `yaml:"default_instruction,omitempty" json:"default_instruction,omitempty"`
+	Kits               []KitRef     `yaml:"kits,omitempty" json:"kits,omitempty"`
 
 	// Resolved fields populated by ReadProjectMetaWithKits after merging kit data
 	// and project-level overlays. These are not serialized to YAML.
@@ -389,19 +388,6 @@ func (k *KitRef) UnmarshalYAML(value *yaml.Node) error {
 	return value.Decode((*kitRefAlias)(k))
 }
 
-// CommandSpec defines a named sandbox command available via `boid exec`.
-// The Command slice is expanded with os.ExpandEnv at load time and stored in ResolvedCommand.
-type CommandSpec struct {
-	Command  []string `yaml:"command" json:"command"`
-	Readonly bool     `yaml:"readonly,omitempty" json:"readonly,omitempty"`
-
-	// Resolved fields populated by ReadProjectMetaWithKits.
-	ResolvedCommand    []string          `yaml:"-" json:"-"`
-	Env                map[string]string `yaml:"-" json:"-"`
-	HostCommands       HostCommands      `yaml:"-" json:"-"`
-	AdditionalBindings []BindMount       `yaml:"-" json:"-"`
-}
-
 // DockerCapability is the opt-in marker for the native docker proxy.
 // Presence (non-nil pointer in Capabilities) enables the proxy; the empty
 // struct is a placeholder for future per-project policy fields.
@@ -419,7 +405,6 @@ type ProjectMeta struct {
 	Name          string                  `yaml:"name" json:"name"`
 	Kits          []KitRef                `yaml:"kits,omitempty" json:"kits,omitempty"`
 	TaskBehaviors map[string]TaskBehavior `yaml:"task_behaviors" json:"task_behaviors"`
-	Commands      map[string]CommandSpec  `yaml:"commands,omitempty" json:"commands,omitempty"`
 	// Worktree controls whether tasks in this project run in a per-task git
 	// worktree by default. For the canonical "executor" behavior the value
 	// is used as-is; for "supervisor" the worktree decision is governed by
@@ -478,7 +463,6 @@ type WorkspaceSummary struct {
 // KitMeta holds the parsed content of a kit.yaml file.
 type KitMeta struct {
 	TaskBehaviors      map[string]TaskBehavior `yaml:"task_behaviors"`
-	Commands           map[string]CommandSpec  `yaml:"commands,omitempty"`
 	Hooks              []Hook                  `yaml:"hooks"`
 	HostCommands       HostCommands            `yaml:"host_commands"`
 	AdditionalBindings []BindMount             `yaml:"additional_bindings"`

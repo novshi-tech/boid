@@ -57,10 +57,10 @@ type SessionJobInput struct {
 	DisplayName string
 }
 
-// BuildSessionJobSpec converts a resolved SessionJobInput into a JobSpec.
-// Mirrors BuildCommandJobSpec's role but produces JobKindSession with an
-// adapter-bound HarnessType. The result is fed straight to dispatcher.Runner
-// which builds the sandbox and hands the agent process to adapter.Run().
+// BuildSessionJobSpec converts a resolved SessionJobInput into a JobSpec
+// (JobKindSession, adapter-bound HarnessType). The result is fed straight to
+// dispatcher.Runner which builds the sandbox and hands the agent process to
+// adapter.Run().
 func BuildSessionJobSpec(input SessionJobInput) *orchestrator.JobSpec {
 	builtinPolicies := orchestrator.DefaultBuiltinPolicies(
 		orchestrator.RoleHook,
@@ -111,5 +111,28 @@ func BuildSessionJobSpec(input SessionJobInput) *orchestrator.JobSpec {
 	if input.Instruction != "" {
 		spec.Env["BOID_USER_ANSWER"] = input.Instruction
 	}
+	return spec
+}
+
+// BuildExecJobSpec is the shell-harness variant of BuildSessionJobSpec used by
+// `boid exec` to run a user-supplied argv inside the project sandbox. It reuses
+// BuildSessionJobSpec for project trait inheritance and overrides the result:
+//
+//   - Kind = JobKindExec (TUI displays an "exec" badge instead of "session")
+//   - Argv = the user's argv (runner-inner-child hands this to the shell adapter)
+//   - Interactive = caller's tty detection (sessions are always PTY-attached;
+//     exec may be piped from a non-TTY stdin)
+//   - DisplayName falls back to argv[0] when the caller leaves it empty
+//
+// HarnessType in input is ignored and forced to "shell"; argv must be non-empty.
+func BuildExecJobSpec(input SessionJobInput, argv []string, interactive bool) *orchestrator.JobSpec {
+	input.HarnessType = "shell"
+	if input.DisplayName == "" && len(argv) > 0 {
+		input.DisplayName = argv[0]
+	}
+	spec := BuildSessionJobSpec(input)
+	spec.Kind = orchestrator.JobKindExec
+	spec.Argv = argv
+	spec.Interactive = interactive
 	return spec
 }

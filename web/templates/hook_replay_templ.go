@@ -53,7 +53,7 @@ func HookReplayList(taskID, status string, hooks []orchestrator.Hook, errorMsg s
 				var templ_7745c5c3_Var3 string
 				templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(errorMsg)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/hook_replay.templ`, Line: 11, Col: 14}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `hook_replay.templ`, Line: 11, Col: 14}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 				if templ_7745c5c3_Err != nil {
@@ -86,7 +86,7 @@ func HookReplayList(taskID, status string, hooks []orchestrator.Hook, errorMsg s
 					var templ_7745c5c3_Var4 string
 					templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(hook.ID)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/hook_replay.templ`, Line: 22, Col: 38}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `hook_replay.templ`, Line: 22, Col: 38}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 					if templ_7745c5c3_Err != nil {
@@ -104,7 +104,7 @@ func HookReplayList(taskID, status string, hooks []orchestrator.Hook, errorMsg s
 						var templ_7745c5c3_Var5 string
 						templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(hook.Kit)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/hook_replay.templ`, Line: 24, Col: 25}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `hook_replay.templ`, Line: 24, Col: 25}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 						if templ_7745c5c3_Err != nil {
@@ -122,7 +122,7 @@ func HookReplayList(taskID, status string, hooks []orchestrator.Hook, errorMsg s
 					var templ_7745c5c3_Var6 templ.SafeURL
 					templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(hookReplayPath(taskID, hook.ID)))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/hook_replay.templ`, Line: 28, Col: 83}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `hook_replay.templ`, Line: 28, Col: 83}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 					if templ_7745c5c3_Err != nil {

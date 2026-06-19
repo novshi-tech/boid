@@ -35,8 +35,6 @@ type stubWebService struct {
 	updateTaskCalls      []UpdateTaskRequest
 	projectByID          *orchestrator.Project
 	projectByIDErr       error
-	projectCommands      []CommandSummary
-	projectCommandsErr   error
 }
 
 type applyActionCall struct {
@@ -128,14 +126,6 @@ func (s *stubWebService) ReplayHook(ctx context.Context, taskID string, req Repl
 
 func (s *stubWebService) GetProjectByID(id string) (*orchestrator.Project, error) {
 	return s.projectByID, s.projectByIDErr
-}
-
-func (s *stubWebService) ListProjectCommands(projectID string) ([]CommandSummary, error) {
-	return s.projectCommands, s.projectCommandsErr
-}
-
-func (s *stubWebService) ListTaskBehaviorCommands(taskID string) ([]CommandSummary, error) {
-	return nil, nil
 }
 
 // stubWorkflowService implements WorkflowService for WebAppService tests.

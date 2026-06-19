@@ -1,8 +1,0 @@
-id: e2e-web-exec
-name: E2E Web Exec
-task_behaviors: {}
-
-commands:
-  echo:
-    command: [echo, "hello-from-web"]
-    readonly: true

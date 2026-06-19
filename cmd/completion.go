@@ -53,32 +53,3 @@ func completeProjectRefs(_ *cobra.Command, _ []string, _ string) ([]string, cobr
 	return out, cobra.ShellCompDirectiveNoFileComp
 }
 
-// completeExecCommandNames supplies command names defined for the project
-// referenced by the -p flag. Returns nothing when no -p was given yet, the
-// daemon is down, or the ref does not resolve.
-func completeExecCommandNames(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
-	if len(args) > 0 {
-		return nil, cobra.ShellCompDirectiveDefault
-	}
-	if execProjectRef == "" || !daemonReady() {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	c := client.NewUnixClient(client.DefaultSocketPath())
-	var p projectspec.Project
-	if err := c.Do("GET", "/api/projects/"+execProjectRef, nil, &p); err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	var resp struct {
-		Commands []struct {
-			Name string `json:"name"`
-		} `json:"commands"`
-	}
-	if err := c.Do("GET", "/api/projects/"+p.ID+"/commands", nil, &resp); err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	out := make([]string, 0, len(resp.Commands))
-	for _, cmd := range resp.Commands {
-		out = append(out, cmd.Name)
-	}
-	return out, cobra.ShellCompDirectiveNoFileComp
-}

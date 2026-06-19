@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"sort"
 
 	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -65,53 +64,6 @@ func (s *TaskAppService) GetTaskField(id, path string) (string, error) {
 		return "", &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 	}
 	return value, nil
-}
-
-func (s *TaskAppService) GetTaskBehaviorCommand(taskID, name string) (*CommandResponse, error) {
-	task, err := s.GetTask(taskID)
-	if err != nil {
-		return nil, err
-	}
-	meta, ok := s.Meta.Get(task.ProjectID)
-	if !ok {
-		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("project %q meta not loaded", task.ProjectID)}
-	}
-	behavior, _, ok := orchestrator.LookupBehaviorWithAlias(meta, task.Behavior)
-	if !ok {
-		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("behavior %q not found", task.Behavior)}
-	}
-	cmd, ok := behavior.Commands[name]
-	if !ok {
-		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("command %q not found", name)}
-	}
-	return &CommandResponse{
-		Command:            cmd.ResolvedCommand,
-		Env:                cmd.Env,
-		HostCommands:       map[string]orchestrator.HostCommandSpec(cmd.HostCommands),
-		AdditionalBindings: cmd.AdditionalBindings,
-		Readonly:           cmd.Readonly,
-	}, nil
-}
-
-func (s *TaskAppService) ListTaskBehaviorCommands(taskID string) ([]CommandSummary, error) {
-	task, err := s.GetTask(taskID)
-	if err != nil {
-		return nil, err
-	}
-	meta, ok := s.Meta.Get(task.ProjectID)
-	if !ok {
-		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("project %q meta not loaded", task.ProjectID)}
-	}
-	behavior, _, ok := orchestrator.LookupBehaviorWithAlias(meta, task.Behavior)
-	if !ok {
-		return []CommandSummary{}, nil
-	}
-	summaries := make([]CommandSummary, 0, len(behavior.Commands))
-	for name, cmd := range behavior.Commands {
-		summaries = append(summaries, CommandSummary{Name: name, Command: cmd.ResolvedCommand, Readonly: cmd.Readonly})
-	}
-	sort.Slice(summaries, func(i, j int) bool { return summaries[i].Name < summaries[j].Name })
-	return summaries, nil
 }
 
 func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestrator.Task, error) {

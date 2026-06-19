@@ -1,9 +1,0 @@
-id: e2e-task-behavior-cmd
-name: E2E Task Behavior Command
-
-task_behaviors:
-  supervisor:
-    commands:
-      echo-task-id:
-        command: [echo]
-        readonly: true

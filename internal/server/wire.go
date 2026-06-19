@@ -358,46 +358,6 @@ func projectResolverFor(svc *api.ProjectAppService) sandbox.ProjectResolver {
 	}
 }
 
-// commandDispatcherAdapter implements api.CommandDispatcher by bridging the
-// project service (command resolution) and the dispatcher runner (job launch).
-type commandDispatcherAdapter struct {
-	service *api.ProjectAppService
-	runner  *dispatcher.Runner
-}
-
-func (a *commandDispatcherAdapter) ExecuteCommand(ctx context.Context, projectID, commandName, displayName string) (*api.ExecuteCommandResult, error) {
-	project, err := a.service.GetProject(projectID)
-	if err != nil {
-		return nil, err
-	}
-	cmd, err := a.service.GetCommand(projectID, commandName)
-	if err != nil {
-		return nil, err
-	}
-	if displayName == "" {
-		displayName = commandName
-	}
-	spec := dispatcher.BuildCommandJobSpec(dispatcher.CommandJobInput{
-		ProjectID:          projectID,
-		ProjectWorkDir:     project.WorkDir,
-		Argv:               cmd.Command,
-		Env:                cmd.Env,
-		HostCommands:       cmd.HostCommands,
-		AdditionalBindings: cmd.AdditionalBindings,
-		Readonly:           cmd.Readonly,
-		Interactive:        true, // Web UI always wants a PTY
-		Name:               displayName,
-	})
-	jobID, err := a.runner.Dispatch(ctx, spec, nil)
-	if err != nil {
-		return nil, &api.StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
-	}
-	return &api.ExecuteCommandResult{
-		JobID:     jobID,
-		AttachURL: fmt.Sprintf("/jobs/%s", jobID),
-	}, nil
-}
-
 // jobDispatcher abstracts the Dispatch method of *dispatcher.Runner for testability.
 type jobDispatcher interface {
 	Dispatch(ctx context.Context, spec *orchestrator.JobSpec, cleanup orchestrator.CleanupFunc) (string, error)
@@ -439,64 +399,6 @@ func (a *sessionDispatcherAdapter) StartSession(ctx context.Context, req api.Sta
 		return nil, &api.StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 	return &api.StartSessionResult{
-		JobID:     jobID,
-		AttachURL: fmt.Sprintf("/jobs/%s", jobID),
-	}, nil
-}
-
-// taskCommandDispatcherAdapter implements api.TaskCommandDispatcher by resolving
-// the task → behavior → command chain and dispatching as an exec job with
-// the task ID appended to argv.
-type taskCommandDispatcherAdapter struct {
-	taskSvc    *api.TaskAppService
-	projectSvc *api.ProjectAppService
-	runner     jobDispatcher
-}
-
-func (a *taskCommandDispatcherAdapter) ListTaskBehaviorCommands(taskID string) ([]api.CommandSummary, error) {
-	return a.taskSvc.ListTaskBehaviorCommands(taskID)
-}
-
-func (a *taskCommandDispatcherAdapter) ExecuteTaskBehaviorCommand(ctx context.Context, taskID, commandName string) (*api.ExecuteCommandResult, error) {
-	task, err := a.taskSvc.GetTask(taskID)
-	if err != nil {
-		return nil, err
-	}
-	project, err := a.projectSvc.GetProject(task.ProjectID)
-	if err != nil {
-		return nil, err
-	}
-	cmd, err := a.taskSvc.GetTaskBehaviorCommand(taskID, commandName)
-	if err != nil {
-		return nil, err
-	}
-	argv := append(cmd.Command, task.ID)
-	spec := dispatcher.BuildCommandJobSpec(dispatcher.CommandJobInput{
-		ProjectID:          task.ProjectID,
-		ProjectWorkDir:     project.WorkDir,
-		Argv:               argv,
-		Env:                cmd.Env,
-		HostCommands:       cmd.HostCommands,
-		AdditionalBindings: cmd.AdditionalBindings,
-		Readonly:           cmd.Readonly,
-		Interactive:        true,
-	})
-	spec.TaskID = task.ID
-	spec.Task = &orchestrator.TaskSnapshot{
-		ID:          task.ID,
-		Title:       task.Title,
-		Status:      string(task.Status),
-		Behavior:    task.Behavior,
-		Description: task.Description,
-	}
-	if len(task.Payload) > 0 {
-		spec.PrimaryInput = task.Payload
-	}
-	jobID, err := a.runner.Dispatch(ctx, spec, nil)
-	if err != nil {
-		return nil, &api.StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
-	}
-	return &api.ExecuteCommandResult{
 		JobID:     jobID,
 		AttachURL: fmt.Sprintf("/jobs/%s", jobID),
 	}, nil
@@ -560,7 +462,6 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	sessionAdapter := &sessionDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner}
 	projectHandler := &api.ProjectHandler{
 		Service:           runtime.projectSvc,
-		Dispatcher:        &commandDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner},
 		SessionDispatcher: sessionAdapter,
 	}
 	r.Mount("/api/projects", projectHandler.Routes())
@@ -574,8 +475,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	workspaceHandler := &api.WorkspaceHandler{Service: runtime.projectSvc}
 	r.Mount("/api/workspaces", workspaceHandler.Routes())
 
-	taskCmdAdapter := &taskCommandDispatcherAdapter{taskSvc: runtime.taskSvc, projectSvc: runtime.projectSvc, runner: runtime.runner}
-	taskHandler := &api.TaskHandler{Service: runtime.taskSvc, Hooks: runtime.workflow, Notifier: runtime.taskSvc, Answerer: runtime.taskSvc, Dispatcher: taskCmdAdapter}
+	taskHandler := &api.TaskHandler{Service: runtime.taskSvc, Hooks: runtime.workflow, Notifier: runtime.taskSvc, Answerer: runtime.taskSvc}
 	r.Mount("/api/tasks", taskHandler.Routes())
 
 	gcStore := orchestrator.NewTaskGCStoreWithWorktree(
@@ -663,8 +563,6 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		webHandler := &api.WebHandler{
 			Service:           runtime.webSvc,
 			Hub:               runtime.hub,
-			Dispatcher:        &commandDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner},
-			TaskDispatcher:    taskCmdAdapter,
 			SessionDispatcher: sessionAdapter,
 			Registry:          runtime.connRegistry,
 		}

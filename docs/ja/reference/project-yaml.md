@@ -32,7 +32,6 @@ task_behaviors:
 | `fork_point` | string | (省略時 `origin/HEAD` フォールバック) | `base_branch` がまだローカル / origin のどちらにも存在しない状態 (case 3) で worktree を作るときの fork 起点。 任意の `git rev-parse --verify` で解決可能な ref を指定 (branch / tag / SHA / `origin/main` など)。 **未設定時は `refs/remotes/origin/HEAD` にフォールバック**。 origin/HEAD も未設定なら case 3 はエラー (`git remote set-head origin --auto` を実行するか、 `fork_point` を設定する)。 **project root の作業ツリー HEAD は意図的に参照されない** — タスク作成からディスパッチまでの間にユーザが root で別 branch をチェックアウトしていても、 fork 起点が暴れない。 詳細は [`fork_point` と case 3](#fork_point-と-case-3) を参照 |
 | `kits` | KitRef のリスト | いいえ | プロジェクト全体で読み込む kit。 全 behavior で共通に使われる |
 | `task_behaviors` | map (string → TaskBehavior) | はい | このプロジェクトで作れる「タスクの種類」一覧 |
-| `commands` | map (string → CommandSpec) | いいえ | サンドボックス内から `boid exec` 経由で呼べる名前付きコマンド |
 | `host_commands` | HostCommands | いいえ | サンドボックスから host へ流せる外部コマンドの宣言 |
 | `additional_bindings` | BindMount のリスト | いいえ | サンドボックスにマウントしたい追加パス |
 | `env` | map (string → string) | いいえ | サンドボックス内に流す環境変数 |
@@ -57,7 +56,6 @@ canonical 以外の任意のキー名も使用できます (readonly は `false`
 | `traits` | string のリスト | (空) | この behavior のタスクが扱う payload trait の宣言 (例: `[artifact]`) |
 | `default_instruction` | Instruction | (空) | タスク作成時の active instruction として `Task.Instructions` 配列に積まれる雛形 (単一 Instruction object) |
 | `kits` | KitRef のリスト | (空) | この behavior だけに追加で読み込む kit。 プロジェクトトップの `kits` リストとマージされる |
-| `commands` | map (string → CommandSpec) | (空) | この behavior のサンドボックスで使える追加の名前付きコマンド。 プロジェクトトップの `commands` マップとマージされる |
 
 > **注意:** `task_behaviors.<name>` 配下に `name` フィールドを書いてもローダーに無視されます。 behavior の識別子はマップキーを使ってください。
 
@@ -267,23 +265,17 @@ default_instruction:
 
 > **注意:** `type:` と `interactive:` は `Instruction` のフィールドではなく、 YAML に書いても黙殺されます。
 
-### CommandSpec
+### CommandSpec (廃止)
 
-`commands` 配下のエントリはサンドボックス内から `boid exec <name>` で呼び出せる名前付きコマンドを宣言します。
+Phase 3-d (2026-06 リリース) で `commands:` map は廃止されました。 project.yaml / task_behaviors.<name> 配下のいずれに書かれていても **silent に無視され、 起動時に deprecation warning が 1 回出力されます** (boid daemon ログ)。 既存 yaml はそのままでも壊れません。
 
-```yaml
-commands:
-  shell:
-    command: [bash]
-  test:
-    command: [go, test, "./..."]
-    readonly: false
-```
+代替手段:
 
-| キー | 型 | 役割 |
-|---|---|---|
-| `command` | string のリスト | 実行する argv。 `${VAR}` 形式の環境変数は読み込み時に展開される |
-| `readonly` | bool | このコマンド単発でサンドボックスを読み取り専用にしたい場合に `true` |
+| 旧 | 新 |
+|---|---|
+| `boid exec <project_id> <command-name>` で名前付き登録コマンドを起動 | `boid exec -p <project_id> -- <argv...>` で任意 argv を直渡し |
+| Web UI の **Commands** ボタンで claude セッションを起動 | Web UI の `/sessions/new` から harness (claude / codex / opencode) を選んでセッション起動。 同等の `POST /api/projects/{id}/sessions` も提供 |
+| task 詳細の **Commands** ボタンで behavior commands を実行 | task が要求する継続的な実行は behavior の hooks で記述する。 ad hoc な実行は task に紐付けず `boid exec` でよい |
 
 ## capabilities
 
@@ -392,10 +384,6 @@ host_commands:
     allow: ['*']
   run-e2e:
     path: e2e/run.sh
-
-commands:
-  shell:
-    command: [bash]
 
 task_behaviors:
   executor:

@@ -32,7 +32,6 @@ task_behaviors:
 | `fork_point` | string | (falls back to `origin/HEAD`) | Fork origin for case 3 (when `base_branch` does not yet exist locally or on `origin`). Any ref resolvable by `git rev-parse --verify` (branch / tag / SHA / `origin/main`). Falls back to `refs/remotes/origin/HEAD`; errors if neither is resolvable. |
 | `kits` | list of KitRef | no | Kits loaded for this project. |
 | `task_behaviors` | map (string → TaskBehavior) | yes | The kinds of tasks this project can produce. |
-| `commands` | map (string → CommandSpec) | no | Named commands the sandbox can invoke through `boid exec`. |
 | `host_commands` | HostCommands | no | External commands the sandbox is allowed to forward to the host. |
 | `additional_bindings` | list of BindMount | no | Extra paths to mount into the sandbox. |
 | `env` | map (string → string) | no | Environment variables to set inside the sandbox. |
@@ -57,7 +56,6 @@ Each behavior entry has very few knobs:
 | `traits` | list of string | (empty) | Top-level payload trait names this behavior is allowed to use (e.g. `[artifact]`). |
 | `default_instruction` | Instruction | (empty) | A single Instruction template appended to `Task.Instructions` when a task is created. |
 | `kits` | list of KitRef | (empty) | Additional kits loaded only for this behavior, merged with the project-top `kits` list. |
-| `commands` | map (string → CommandSpec) | (empty) | Additional named commands available inside this behavior's sandbox, merged with the project-top `commands` map. |
 
 > **Note:** a `name` field under `task_behaviors.<name>` is silently ignored by the loader. Use the map key as the behavior identifier.
 
@@ -257,23 +255,17 @@ default_instruction:
 
 > **Note:** `type:` and `interactive:` are not fields of `Instruction` and are silently ignored if present in YAML.
 
-### CommandSpec
+### CommandSpec (removed)
 
-Entries under `commands` declare named commands the sandbox can call via `boid exec <name>`.
+Phase 3-d (2026-06 release) retired the `commands:` map. Any `commands:` entries left in `project.yaml` (top level or under `task_behaviors.<name>`) are **silently ignored, with a single deprecation warning emitted at load time** (boid daemon log). Existing yaml keeps loading.
 
-```yaml
-commands:
-  shell:
-    command: [bash]
-  test:
-    command: [go, test, "./..."]
-    readonly: false
-```
+Migration:
 
-| Key | Type | Role |
-|---|---|---|
-| `command` | list of string | The argv to execute. `${VAR}` references are expanded at load time. |
-| `readonly` | bool | `true` to force the sandbox into read-only mode for this command alone. |
+| Old | New |
+|---|---|
+| `boid exec <project_id> <command-name>` invokes a named registered command | `boid exec -p <project_id> -- <argv...>` runs an arbitrary argv directly |
+| Web UI **Commands** button starts a claude session | `/sessions/new` lets you pick the harness (claude / codex / opencode) and starts a session. The same path is exposed as `POST /api/projects/{id}/sessions`. |
+| Task-detail **Commands** button runs behavior commands | Long-running task flows belong in behavior hooks. One-off runs that don't need a task can use `boid exec`. |
 
 ## capabilities
 
@@ -381,10 +373,6 @@ host_commands:
     allow: ['*']
   run-e2e:
     path: e2e/run.sh
-
-commands:
-  shell:
-    command: [bash]
 
 task_behaviors:
   executor:

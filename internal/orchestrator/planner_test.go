@@ -539,48 +539,6 @@ func TestPlanHook_WritableControlledByTaskReadonly(t *testing.T) {
 	}
 }
 
-// CommandSpec.Readonly drives Visibility.Writable for exec jobs, mirroring the
-// hook behavior. task.readonly is the sole arbiter in both cases.
-func TestPlanExec_WritableControlledByCommandReadonly(t *testing.T) {
-	cases := []struct {
-		name     string
-		readonly bool
-		want     bool
-	}{
-		{"exec + readonly=false", false, true},
-		{"exec + readonly=true", true, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			projectDir := t.TempDir()
-			planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{},
-				&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
-			req, cleanup, err := planner.PlanExec(&ExecFireEvent{
-				ProjectID: "proj-1",
-				Command: CommandSpec{
-					ResolvedCommand: []string{"bash"},
-					Readonly:        tc.readonly,
-				},
-			})
-			if err != nil {
-				t.Fatalf("PlanExec: %v", err)
-			}
-			if cleanup != nil {
-				defer cleanup()
-			}
-			if req.Visibility.Writable != tc.want {
-				t.Errorf("Writable = %v, want %v (readonly=%v)", req.Visibility.Writable, tc.want, tc.readonly)
-			}
-			if req.Visibility.ProjectDir != projectDir {
-				t.Errorf("ProjectDir = %q, want %q", req.Visibility.ProjectDir, projectDir)
-			}
-			if req.Kind != JobKindExec {
-				t.Errorf("Kind = %q, want exec", req.Kind)
-			}
-		})
-	}
-}
-
 // When a task has an awaiting trait with session_id / pending_answer /
 // question_id, PlanHook must surface them as BOID_AGENT_SESSION_ID,
 // BOID_USER_ANSWER, and BOID_QUESTION_ID so the kit can resume the session.
