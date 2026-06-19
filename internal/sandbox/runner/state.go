@@ -56,7 +56,12 @@ func envKeyAllowed(key string) bool {
 // specDump is the redacted, JSON-friendly view of a sandbox.Spec written to the
 // first line of runner-state.json.
 type specDump struct {
-	ID           string            `json:"id"`
+	ID string `json:"id"`
+	// HarnessType identifies the HarnessAdapter the runner-inner-child will
+	// hand the agent off to. Added in Phase 3-c so post-hoc diagnostics can
+	// tell apart claude / codex / opencode runs and the legacy exec-Argv
+	// path (HarnessType="") without having to grep the kit binding set.
+	HarnessType  string            `json:"harness_type,omitempty"`
 	Argv         []string          `json:"argv"`
 	WorkDir      string            `json:"workdir"`
 	RootDir      string            `json:"root_dir"`
@@ -102,6 +107,7 @@ func buildSpecDump(spec sandbox.Spec, pastaCmdline []string) specDump {
 	}
 	return specDump{
 		ID:           spec.ID,
+		HarnessType:  string(spec.HarnessType),
 		Argv:         spec.Argv,
 		WorkDir:      spec.WorkDir,
 		RootDir:      spec.RootDir,

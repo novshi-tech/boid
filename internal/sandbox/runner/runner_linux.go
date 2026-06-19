@@ -15,6 +15,8 @@ import (
 
 	"github.com/novshi-tech/boid/internal/adapters"
 	"github.com/novshi-tech/boid/internal/adapters/claude"
+	"github.com/novshi-tech/boid/internal/adapters/codex"
+	"github.com/novshi-tech/boid/internal/adapters/opencode"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/brokerclient"
 	"golang.org/x/sys/unix"
@@ -399,10 +401,12 @@ func pivotInto(root string) error {
 // emission, exit-code normalisation); otherwise the former exec-Argv path
 // remains in effect for non-agent hooks and boid exec jobs.
 func runAgent(spec sandbox.Spec) int {
-	if spec.HarnessType == sandbox.HarnessClaude {
+	switch spec.HarnessType {
+	case sandbox.HarnessClaude, sandbox.HarnessCodex, sandbox.HarnessOpenCode:
 		return runHarnessAgent(spec)
+	default:
+		return runExecArgv(spec)
 	}
-	return runExecArgv(spec)
 }
 
 // runHarnessAgent constructs a RunContext from the spec and hands the agent
@@ -414,6 +418,14 @@ func runHarnessAgent(spec sandbox.Spec) int {
 	switch spec.HarnessType {
 	case sandbox.HarnessClaude:
 		adapter = claude.New()
+	case sandbox.HarnessCodex:
+		// Phase 3-c prototype: codex / opencode adapters are minimum-viable
+		// (argv + signal + exit normalisation). Session persistence and
+		// payload_patch capture are deliberate no-ops; see
+		// internal/adapters/codex/run.go for the documented scope.
+		adapter = codex.New()
+	case sandbox.HarnessOpenCode:
+		adapter = opencode.New()
 	default:
 		fmt.Fprintf(os.Stderr, "[boid] runner-inner-child: unknown harness %q\n", spec.HarnessType)
 		return 127

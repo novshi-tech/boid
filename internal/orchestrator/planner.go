@@ -58,11 +58,13 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 
 	// Phase 3-b: hooks whose RoutedInstruction is non-nil are agent-bearing —
 	// the runner-inner-child hands them off to the HarnessAdapter.Run() path
-	// instead of exec-ing the kit's run-agent shim. claude is the only
-	// supported harness today; Phase 3-c extends this to codex / opencode.
+	// instead of exec-ing the kit's run-agent shim. Phase 3-c extended the
+	// mapping to codex / opencode; unknown agents fall back to the legacy
+	// kit-script path (HarnessType="") so existing kits keep working until
+	// Phase 3-d retires them.
 	harnessType := ""
 	if instruction != nil {
-		harnessType = "claude"
+		harnessType = harnessTypeForAgent(event.Hook.Agent)
 	}
 
 	spec := &JobSpec{
@@ -238,6 +240,24 @@ func (p *DispatchPlanner) loadContext(projectID, taskID string) (*ProjectMeta, *
 		return nil, nil, nil, fmt.Errorf("get task: %w", err)
 	}
 	return meta, proj, task, nil
+}
+
+// harnessTypeForAgent maps a hook's agent declaration (project.yaml `hooks: agent: ...`)
+// to the HarnessType the runner should hand it off to. Returns "" for unknown
+// agents so the runner falls back to the legacy kit-script exec path. The
+// mapping must stay in sync with the runner-inner-child adapter switch in
+// internal/sandbox/runner/runner_linux.go.
+func harnessTypeForAgent(agent string) string {
+	switch agent {
+	case "claude-code":
+		return "claude"
+	case "codex":
+		return "codex"
+	case "opencode":
+		return "opencode"
+	default:
+		return ""
+	}
 }
 
 func selectInstruction(task *Task, agent string) *RoutedInstruction {

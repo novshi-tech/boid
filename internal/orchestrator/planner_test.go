@@ -23,6 +23,7 @@ func (stubHarnessAdapter) Run(_ context.Context, _ adapters.RunContext) (adapter
 func (stubHarnessAdapter) Usage(_ context.Context, _ string) (adapters.Usage, error) {
 	return adapters.Usage{}, nil
 }
+func (stubHarnessAdapter) Bindings(_ string) []adapters.BindMount { return nil }
 
 type stubProjectCatalog struct {
 	projects []*Project
@@ -137,43 +138,61 @@ func TestPlanHook_UsesScriptPathDirectlyAndSetsKitRoots(t *testing.T) {
 // agent runners (claude code etc.) are launched via real PTY sessions and
 // rely on daemon-side SIGUSR1 (on `boid task notify --ask` or `boid job
 // done`) to terminate.
+//
+// Phase 3-c table-extended: hook.Agent → HarnessType mapping. Known agents
+// are routed to their adapter; an unknown agent leaves HarnessType empty
+// so the runner falls back to the legacy kit-script exec path.
 func TestPlanHook_AgentHookInteractive(t *testing.T) {
-	projectDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		agent       string
+		wantHarness string
+	}{
+		{"claude-code", "claude"},
+		{"codex", "codex"},
+		{"opencode", "opencode"},
+		// Unknown agent: kit still owns dispatch via its hook script.
+		{"some-future-agent", ""},
 	}
-	task := &Task{
-		ID:        "task-1",
-		ProjectID: "proj-1",
-		Behavior:  "executor",
-		Status:    TaskStatusExecuting,
-		Instructions: Instructions{{
-			Agent: "claude-code",
-		}},
-	}
-	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
+	for _, tc := range cases {
+		t.Run(tc.agent, func(t *testing.T) {
+			projectDir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			task := &Task{
+				ID:        "task-1",
+				ProjectID: "proj-1",
+				Behavior:  "executor",
+				Status:    TaskStatusExecuting,
+				Instructions: Instructions{{
+					Agent: tc.agent,
+				}},
+			}
+			planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
 
-	hookReq, cleanup, err := planner.PlanHook(&HookFireEvent{
-		EventID:   "event-1",
-		TaskID:    "task-1",
-		ProjectID: "proj-1",
-		Hook: Hook{
-			ID:         "hook-1",
-			ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
-			Agent:      "claude-code",
-		},
-	})
-	if err != nil {
-		t.Fatalf("PlanHook: %v", err)
-	}
-	if cleanup != nil {
-		defer cleanup()
-	}
-	if hookReq.HarnessType != "claude" {
-		t.Errorf("PlanHook spec.HarnessType = %q, want %q (instruction-bearing hook routes through claude adapter)", hookReq.HarnessType, "claude")
-	}
-	if !hookReq.Interactive {
-		t.Errorf("PlanHook spec.Interactive = false, want true (agent-bearing hooks must allocate a PTY)")
+			hookReq, cleanup, err := planner.PlanHook(&HookFireEvent{
+				EventID:   "event-1",
+				TaskID:    "task-1",
+				ProjectID: "proj-1",
+				Hook: Hook{
+					ID:         "hook-1",
+					ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
+					Agent:      tc.agent,
+				},
+			})
+			if err != nil {
+				t.Fatalf("PlanHook: %v", err)
+			}
+			if cleanup != nil {
+				defer cleanup()
+			}
+			if hookReq.HarnessType != tc.wantHarness {
+				t.Errorf("PlanHook agent=%q: HarnessType = %q, want %q", tc.agent, hookReq.HarnessType, tc.wantHarness)
+			}
+			if !hookReq.Interactive {
+				t.Errorf("PlanHook agent=%q: Interactive = false, want true (all agent-bearing hooks allocate a PTY)", tc.agent)
+			}
+		})
 	}
 }
 

@@ -18,6 +18,15 @@ type HarnessType string
 const (
 	// HarnessClaude routes through internal/adapters/claude.Adapter.Run().
 	HarnessClaude HarnessType = "claude"
+	// HarnessCodex routes through internal/adapters/codex.Adapter.Run().
+	// Added in Phase 3-c as a prototype to validate the HarnessAdapter
+	// abstraction beyond claude. Minimum implementation: 1-turn launch with
+	// signal forwarding; session resume / payload patch are deliberately
+	// left as no-ops (see docs/plans/agent-aware-boid.md Phase 3-c).
+	HarnessCodex HarnessType = "codex"
+	// HarnessOpenCode routes through internal/adapters/opencode.Adapter.Run().
+	// Phase 3-c prototype, same scope as HarnessCodex.
+	HarnessOpenCode HarnessType = "opencode"
 )
 
 // BindMount is the dispatcher-facing DTO for arbitrary bind-mount requests.
