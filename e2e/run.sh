@@ -86,10 +86,17 @@ run_scenario() {
 
       # On failure, surface the daemon log and any retained runner-state.json so
       # CI (which discards the temp root) still shows why a sandbox launch failed.
+      # daemon の slog 出力は server.stderr.log ではなく $HOME/.local/state/boid/boid.log
+      # に行く (daemon.LogFilePath() を参照)。 失敗診断の主資料はこちら。
       if [[ $exit_code -ne 0 ]]; then
         if [[ -f "$E2E_LOG_DIR/server.stderr.log" ]]; then
           printf '[e2e] ===== server.stderr.log (tail) =====\n' >&2
           tail -n 200 "$E2E_LOG_DIR/server.stderr.log" >&2 || true
+        fi
+        local daemon_log="$HOME/.local/state/boid/boid.log"
+        if [[ -f "$daemon_log" ]]; then
+          printf '[e2e] ===== %s (tail) =====\n' "$daemon_log" >&2
+          tail -n 200 "$daemon_log" >&2 || true
         fi
         for sf in /tmp/boid-*-runner-state.json; do
           [[ -f "$sf" ]] || continue
