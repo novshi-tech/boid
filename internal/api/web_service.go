@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"sort"
 
@@ -226,40 +225,6 @@ func (s *WebAppService) GetProjectByID(id string) (*orchestrator.Project, error)
 		project.Meta = *meta
 	}
 	return project, nil
-}
-
-func (s *WebAppService) ListProjectCommands(projectID string) ([]CommandSummary, error) {
-	meta, ok := s.Meta.Get(projectID)
-	if !ok {
-		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("project %q meta not loaded", projectID)}
-	}
-	summaries := make([]CommandSummary, 0, len(meta.Commands))
-	for name, cmd := range meta.Commands {
-		summaries = append(summaries, CommandSummary{Name: name, Command: cmd.ResolvedCommand, Readonly: cmd.Readonly})
-	}
-	sort.Slice(summaries, func(i, j int) bool { return summaries[i].Name < summaries[j].Name })
-	return summaries, nil
-}
-
-func (s *WebAppService) ListTaskBehaviorCommands(taskID string) ([]CommandSummary, error) {
-	task, err := s.Tasks.GetTask(taskID)
-	if err != nil {
-		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
-	}
-	meta, ok := s.Meta.Get(task.ProjectID)
-	if !ok {
-		return []CommandSummary{}, nil
-	}
-	behavior, _, ok := orchestrator.LookupBehaviorWithAlias(meta, task.Behavior)
-	if !ok {
-		return []CommandSummary{}, nil
-	}
-	summaries := make([]CommandSummary, 0, len(behavior.Commands))
-	for name, cmd := range behavior.Commands {
-		summaries = append(summaries, CommandSummary{Name: name, Command: cmd.ResolvedCommand, Readonly: cmd.Readonly})
-	}
-	sort.Slice(summaries, func(i, j int) bool { return summaries[i].Name < summaries[j].Name })
-	return summaries, nil
 }
 
 func (s *WebAppService) AnswerTask(ctx context.Context, taskID, questionID, answer string) error {

@@ -112,59 +112,6 @@ func TestSessionNew_Handler_RendersProjects(t *testing.T) {
 	}
 }
 
-func TestSessionNew_Handler_WithProjectShowsCommands(t *testing.T) {
-	svc := &stubWebService{
-		projects: []*orchestrator.Project{
-			{ID: "proj-1", Meta: orchestrator.ProjectMeta{Name: "My Project"}},
-		},
-		projectCommands: []CommandSummary{
-			{Name: "build", Command: []string{"make", "build"}},
-			{Name: "test", Command: []string{"go", "test", "./..."}, Readonly: true},
-		},
-	}
-	r := newTestWebHandlerSessionNew(svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/sessions/new?project=proj-1", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, "build") {
-		t.Error("should show command name 'build'")
-	}
-	if !strings.Contains(body, "make build") {
-		t.Error("should show command preview")
-	}
-}
-
-func TestSessionNew_Handler_CommandFormAction(t *testing.T) {
-	svc := &stubWebService{
-		projects: []*orchestrator.Project{
-			{ID: "proj-abc", Meta: orchestrator.ProjectMeta{Name: "My Project"}},
-		},
-		projectCommands: []CommandSummary{
-			{Name: "deploy", Command: []string{"./deploy.sh"}},
-		},
-	}
-	r := newTestWebHandlerSessionNew(svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/sessions/new?project=proj-abc", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
-	}
-	body := w.Body.String()
-	want := `/projects/proj-abc/commands/deploy/execute`
-	if !strings.Contains(body, want) {
-		t.Errorf("form action should be %q, got: %s", want, body[:min(500, len(body))])
-	}
-}
-
 func TestSessionNew_RouteRegistered(t *testing.T) {
 	svc := &stubWebService{}
 	h := &WebHandler{Service: svc}

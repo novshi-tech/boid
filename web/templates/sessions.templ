@@ -120,13 +120,9 @@ templ SessionList(sessions []SessionView, projectFilter string) {
 }
 
 // SessionNew renders the /sessions/new page.
-// Step 1: user selects a project (GET ?project=<id>).
-// Step 2 (Phase 3-d, new): a harness-selection form is shown so the user can
-// launch an agent session (claude / codex / opencode) directly.
-// Step 3 (legacy): the project's commands list — kept side-by-side during the
-// Phase 3-d互換期間 so existing Commands users are not broken. PR2 will
-// retire the commands form together with the ProjectCommand endpoint.
-templ SessionNew(projects []*orchestrator.Project, selectedProjectID string, commands []CommandView, errorMsg string) {
+// Phase 3-d PR2: project.yaml の commands: schema を廃止し、 セッション起動の唯一の
+// 入口を harness 直選択フォームに統合した。
+templ SessionNew(projects []*orchestrator.Project, selectedProjectID string, errorMsg string) {
 	@Layout("New Session", "/sessions") {
 		if errorMsg != "" {
 			<div class="error-banner">{ errorMsg }</div>
@@ -172,40 +168,6 @@ templ SessionNew(projects []*orchestrator.Project, selectedProjectID string, com
 						<button type="submit" class="btn btn-primary">Start session</button>
 					</div>
 				</form>
-				if len(commands) == 0 {
-					<div class="empty-state">
-						<div class="empty-state-title">(No legacy commands defined)</div>
-					</div>
-				} else {
-					<div class="cmd-list">
-						<div class="cmd-list-heading">Legacy commands (Phase 3-e で廃止予定)</div>
-						for _, cmd := range commands {
-							<div class="cmd-row">
-								<div class="cmd-row-body">
-									<span class="cmd-name">{ cmd.Name }</span>
-									if cmd.Readonly {
-										<span class="badge cmd-badge-readonly">readonly</span>
-									}
-									<code class="cmd-preview">{ cmdPreview(cmd.Command) }</code>
-								</div>
-								<form
-									method="post"
-									action={ templ.SafeURL("/projects/" + selectedProjectID + "/commands/" + cmd.Name + "/execute") }
-									class="cmd-row-form"
-								>
-									<input
-										type="text"
-										name="name"
-										placeholder={ cmd.Name }
-										class="form-input form-input-sm cmd-name-input"
-										aria-label="Session name"
-									/>
-									<button type="submit" class="btn btn-primary btn-sm">Start</button>
-								</form>
-							</div>
-						}
-					</div>
-				}
 			}
 		</div>
 	}

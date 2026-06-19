@@ -242,7 +242,7 @@ Group several projects together.
 
 | Command | Role |
 |---|---|
-| `boid exec -p <project-ref> [--name NAME] [command-name]` | Run a named command (declared in the project's `commands`) inside the project sandbox. `--name` sets a display name for the job. |
+| `boid exec -p <project-ref> [--name NAME] [--readonly] -- <argv...>` | Run an arbitrary argv inside the project sandbox. Inherits the project's `host_commands` / `env` / `additional_bindings`. Everything after `--` is the in-sandbox argv (the legacy named-command form was retired in Phase 3-d). `--name` sets a display name; `--readonly` mounts the workspace read-only. |
 | `boid attach <job-id>` | Attach to a running job's runtime (for interactive jobs). |
 | `boid fetch <url>` | Fetch and print the content of a URL from the host (usable inside a sandbox where direct HTTP access may be restricted). |
 

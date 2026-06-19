@@ -52,8 +52,6 @@ func detailTimelineGroups(detail *TaskDetailView) []timeline.StatusGroup {
 type WebHandler struct {
 	Service           WebService
 	Hub               *TaskEventHub
-	Dispatcher        CommandDispatcher
-	TaskDispatcher    TaskCommandDispatcher
 	SessionDispatcher SessionDispatcher
 	Registry          *auth.ConnectionRegistry
 }
@@ -81,8 +79,6 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/sessions/new", h.SessionNew)
 	r.Get("/jobs/{id}", h.JobDetail)
 	r.Get("/jobs/{id}/terminal", h.JobTerminal)
-	r.Post("/projects/{id}/commands/{name}/execute", h.PostProjectExecuteCommand)
-	r.Post("/tasks/{id}/commands/{name}/execute", h.PostTaskExecuteCommand)
 	r.Post("/projects/{id}/sessions/start", h.PostStartSession)
 	return r
 }
@@ -243,23 +239,8 @@ func (h *WebHandler) SessionNew(w http.ResponseWriter, r *http.Request) {
 	selectedProjectID := r.URL.Query().Get("project")
 	errorMsg := r.URL.Query().Get("error")
 
-	var commands []templates.CommandView
-	if selectedProjectID != "" {
-		cmds, err := h.Service.ListProjectCommands(selectedProjectID)
-		if err == nil {
-			commands = make([]templates.CommandView, len(cmds))
-			for i, c := range cmds {
-				commands[i] = templates.CommandView{
-					Name:     c.Name,
-					Command:  c.Command,
-					Readonly: c.Readonly,
-				}
-			}
-		}
-	}
-
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	templates.SessionNew(projects, selectedProjectID, commands, errorMsg).Render(r.Context(), w)
+	templates.SessionNew(projects, selectedProjectID, errorMsg).Render(r.Context(), w)
 }
 
 // filterProjectsByWorkspace filters projects to only those in the given workspace.
@@ -325,12 +306,7 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	projectName := h.lookupProjectName(detail.Task.ProjectID)
-	cmdSummaries, _ := h.Service.ListTaskBehaviorCommands(id)
-	cmdViews := make([]templates.CommandView, len(cmdSummaries))
-	for i, c := range cmdSummaries {
-		cmdViews[i] = templates.CommandView{Name: c.Name, Command: c.Command, Readonly: c.Readonly}
-	}
-	templates.TaskDetail(detail.Task, timelineGroups, jobs, detail.AvailableActions, errorMsg, tab, projectName, cmdViews).Render(r.Context(), w)
+	templates.TaskDetail(detail.Task, timelineGroups, jobs, detail.AvailableActions, errorMsg, tab, projectName).Render(r.Context(), w)
 }
 
 // lookupProjectName resolves a project ID to its display name (Meta.Name),
@@ -688,30 +664,6 @@ func (h *WebHandler) JobTerminal(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/jobs/"+id, http.StatusFound)
 }
 
-func (h *WebHandler) PostTaskExecuteCommand(w http.ResponseWriter, r *http.Request) {
-	if h.TaskDispatcher == nil {
-		http.Error(w, "command execution not available", http.StatusNotImplemented)
-		return
-	}
-	taskID := chi.URLParam(r, "id")
-	commandName := chi.URLParam(r, "name")
-
-	result, err := h.TaskDispatcher.ExecuteTaskBehaviorCommand(r.Context(), taskID, commandName)
-	if err != nil {
-		backURL := "/tasks/" + taskID + "?error=" + url.QueryEscape(err.Error())
-		http.Redirect(w, r, backURL, http.StatusSeeOther)
-		return
-	}
-
-	jobURL := "/jobs/" + result.JobID
-	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Redirect", jobURL)
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	http.Redirect(w, r, jobURL, http.StatusSeeOther)
-}
-
 // PostStartSession launches a HarnessAdapter-backed session for the project
 // from the Web UI's [New Session] dialog. Phase 3-d (PR1) introduced this
 // alongside PostProjectExecuteCommand so users can start a claude / codex /
@@ -751,32 +703,6 @@ func (h *WebHandler) PostStartSession(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, jobURL, http.StatusSeeOther)
 }
 
-func (h *WebHandler) PostProjectExecuteCommand(w http.ResponseWriter, r *http.Request) {
-	if h.Dispatcher == nil {
-		http.Error(w, "command execution not available", http.StatusNotImplemented)
-		return
-	}
-	projectID := chi.URLParam(r, "id")
-	commandName := chi.URLParam(r, "name")
-
-	_ = r.ParseForm()
-	displayName := strings.TrimSpace(r.FormValue("name"))
-
-	result, err := h.Dispatcher.ExecuteCommand(r.Context(), projectID, commandName, displayName)
-	if err != nil {
-		backURL := "/sessions/new?project=" + url.QueryEscape(projectID) + "&error=" + url.QueryEscape(err.Error())
-		http.Redirect(w, r, backURL, http.StatusSeeOther)
-		return
-	}
-
-	jobURL := "/jobs/" + result.JobID
-	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Redirect", jobURL)
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	http.Redirect(w, r, jobURL, http.StatusSeeOther)
-}
 
 // WebManagementHandler serves the CLI management API at /api/web/*.
 // All routes are accessible only via UNIX socket (CLI control plane).

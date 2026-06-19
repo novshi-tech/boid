@@ -3,7 +3,6 @@ package api
 import (
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -156,37 +155,6 @@ func (s *ProjectAppService) ResolveProjectRef(ref string) ([]*orchestrator.Proje
 	}
 
 	return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("no project matches ref %q", ref)}
-}
-
-func (s *ProjectAppService) GetCommand(id, name string) (*CommandResponse, error) {
-	meta, ok := s.Meta.Get(id)
-	if !ok {
-		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("project %q meta not loaded", id)}
-	}
-	cmd, ok := meta.Commands[name]
-	if !ok {
-		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("command %q not found", name)}
-	}
-	return &CommandResponse{
-		Command:            cmd.ResolvedCommand,
-		Env:                cmd.Env,
-		HostCommands:       map[string]orchestrator.HostCommandSpec(cmd.HostCommands),
-		AdditionalBindings: cmd.AdditionalBindings,
-		Readonly:           cmd.Readonly,
-	}, nil
-}
-
-func (s *ProjectAppService) ListCommands(id string) ([]CommandSummary, error) {
-	meta, ok := s.Meta.Get(id)
-	if !ok {
-		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("project %q meta not loaded", id)}
-	}
-	summaries := make([]CommandSummary, 0, len(meta.Commands))
-	for name, cmd := range meta.Commands {
-		summaries = append(summaries, CommandSummary{Name: name, Command: cmd.ResolvedCommand, Readonly: cmd.Readonly})
-	}
-	sort.Slice(summaries, func(i, j int) bool { return summaries[i].Name < summaries[j].Name })
-	return summaries, nil
 }
 
 func (s *ProjectAppService) ReloadProjects() (*ProjectReloadResult, error) {

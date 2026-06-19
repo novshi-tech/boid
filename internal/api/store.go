@@ -66,22 +66,6 @@ type WorktreeCleaner interface {
 	SweepChildBranches(projectDir string, taskIDs []string) error
 }
 
-// CommandResponse is the API response for GET /api/projects/:id/commands/:name.
-type CommandResponse struct {
-	Command            []string                                `json:"command"`
-	Env                map[string]string                       `json:"env,omitempty"`
-	HostCommands       map[string]orchestrator.HostCommandSpec `json:"host_commands,omitempty"`
-	AdditionalBindings []orchestrator.BindMount                `json:"additional_bindings,omitempty"`
-	Readonly           bool                                    `json:"readonly,omitempty"`
-}
-
-// CommandSummary is a single entry in the GET /api/projects/:id/commands response.
-type CommandSummary struct {
-	Name     string   `json:"name"`
-	Command  []string `json:"command"`
-	Readonly bool     `json:"readonly,omitempty"`
-}
-
 type ProjectService interface {
 	CreateProject(workDir string) (*orchestrator.Project, error)
 	ListProjects(workspaceID string) ([]*orchestrator.Project, error)
@@ -94,8 +78,6 @@ type ProjectService interface {
 	// Priority: id exact match > name exact match > name substring match (case-insensitive).
 	// Returns 1 project on unambiguous match, multiple on ambiguous match, StatusError{404} on no match.
 	ResolveProjectRef(ref string) ([]*orchestrator.Project, error)
-	GetCommand(id, name string) (*CommandResponse, error)
-	ListCommands(id string) ([]CommandSummary, error)
 }
 
 type TaskService interface {
@@ -143,8 +125,6 @@ type WebService interface {
 	ListHooksForStatus(taskID, status string) ([]orchestrator.Hook, error)
 	ReplayHook(ctx context.Context, taskID string, req ReplayHookRequest) (*ReplayHookResult, error)
 	GetProjectByID(id string) (*orchestrator.Project, error)
-	ListProjectCommands(projectID string) ([]CommandSummary, error)
-	ListTaskBehaviorCommands(taskID string) ([]CommandSummary, error)
 }
 
 type WorkflowService interface {
@@ -233,27 +213,6 @@ type DeviceGCStore interface {
 type JobLogReader interface {
 	ReadJobLog(runtimeID string) ([]byte, error)
 	StatJobLog(runtimeID string) (size int64, mtime time.Time, err error)
-}
-
-// ExecuteCommandResult is the response for POST /api/projects/{id}/commands/{name}/execute.
-type ExecuteCommandResult struct {
-	JobID     string `json:"job_id"`
-	AttachURL string `json:"attach_url"`
-}
-
-// CommandDispatcher launches a named command as an interactive daemon-side job.
-type CommandDispatcher interface {
-	// ExecuteCommand launches commandName in projectID. displayName is the
-	// human-readable session label; callers pass "" to use commandName as the
-	// default auto-name.
-	ExecuteCommand(ctx context.Context, projectID, commandName, displayName string) (*ExecuteCommandResult, error)
-}
-
-// TaskCommandDispatcher manages task behavior commands: listing and execution.
-// The task ID is appended to the command argv on execution so scripts can reference it as $1.
-type TaskCommandDispatcher interface {
-	ListTaskBehaviorCommands(taskID string) ([]CommandSummary, error)
-	ExecuteTaskBehaviorCommand(ctx context.Context, taskID, commandName string) (*ExecuteCommandResult, error)
 }
 
 // StartSessionRequest is the body of POST /api/sessions and

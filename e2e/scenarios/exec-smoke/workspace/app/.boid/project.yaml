@@ -1,11 +1,3 @@
 id: e2e-exec
 name: E2E Exec
 task_behaviors: {}
-
-commands:
-  echo-hello:
-    command: [echo, "hello from sandbox"]
-  cat-sentinel:
-    command: [cat, "${E2E_STATE_DIR}/host-sentinel.txt"]
-  which-boid:
-    command: [which, boid]

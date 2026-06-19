@@ -10,7 +10,6 @@ import (
 
 type ProjectHandler struct {
 	Service           ProjectService
-	Dispatcher        CommandDispatcher // optional; nil disables the execute endpoint
 	SessionDispatcher SessionDispatcher // optional; nil disables the start-session endpoint
 }
 
@@ -49,9 +48,6 @@ func (h *ProjectHandler) Routes() chi.Router {
 	r.Get("/", h.List)
 	r.Post("/reload", h.Reload)
 	r.Put("/{id}/workspace", h.SetWorkspace)
-	r.Get("/{id}/commands", h.ListCommands)
-	r.Get("/{id}/commands/{name}", h.GetCommand)
-	r.Post("/{id}/commands/{name}/execute", h.ExecuteCommand)
 	r.Post("/{id}/sessions", h.StartSession)
 	r.Get("/{id}", h.Get)
 	r.Delete("/{id}", h.Delete)
@@ -135,54 +131,6 @@ func (h *ProjectHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-}
-
-func (h *ProjectHandler) ListCommands(w http.ResponseWriter, r *http.Request) {
-	ref := chi.URLParam(r, "id")
-	project := h.resolveRef(w, ref)
-	if project == nil {
-		return
-	}
-	summaries, err := h.Service.ListCommands(project.ID)
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"commands": summaries})
-}
-
-func (h *ProjectHandler) GetCommand(w http.ResponseWriter, r *http.Request) {
-	ref := chi.URLParam(r, "id")
-	project := h.resolveRef(w, ref)
-	if project == nil {
-		return
-	}
-	name := chi.URLParam(r, "name")
-	cmd, err := h.Service.GetCommand(project.ID, name)
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, cmd)
-}
-
-func (h *ProjectHandler) ExecuteCommand(w http.ResponseWriter, r *http.Request) {
-	if h.Dispatcher == nil {
-		writeError(w, http.StatusNotImplemented, "command execution not available")
-		return
-	}
-	ref := chi.URLParam(r, "id")
-	project := h.resolveRef(w, ref)
-	if project == nil {
-		return
-	}
-	name := chi.URLParam(r, "name")
-	result, err := h.Dispatcher.ExecuteCommand(r.Context(), project.ID, name, "")
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, result)
 }
 
 // StartSession handles POST /api/projects/{id}/sessions. The project is

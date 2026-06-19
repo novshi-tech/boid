@@ -760,39 +760,9 @@ templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.S
 	</div>
 }
 
-// TaskDetailCommandsSection renders the behavior commands panel for the task detail page.
-// Only rendered when the behavior defines at least one command.
-templ TaskDetailCommandsSection(taskID string, commands []CommandView) {
-	if len(commands) > 0 {
-		<div class="card">
-			<h2 class="section-title">Commands</h2>
-			<div class="cmd-list">
-				for _, cmd := range commands {
-					<div class="cmd-row">
-						<div class="cmd-row-body">
-							<span class="cmd-name">{ cmd.Name }</span>
-							if cmd.Readonly {
-								<span class="badge cmd-badge-readonly">readonly</span>
-							}
-							<code class="cmd-preview">{ cmdPreview(cmd.Command) }</code>
-						</div>
-						<form
-							method="post"
-							action={ templ.SafeURL("/tasks/" + taskID + "/commands/" + cmd.Name + "/execute") }
-						>
-							<button type="submit" class="btn btn-secondary btn-sm">Run</button>
-						</form>
-					</div>
-				}
-			</div>
-		</div>
-	}
-}
-
-templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, projectName string, commands []CommandView) {
+templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, projectName string) {
 	@Layout(task.Title, "/") {
 		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName)
-		@TaskDetailCommandsSection(task.ID, commands)
 		@TaskDetailTabsSection(task, timelineGroups, jobs, availableActions, activeTab)
 	}
 }

@@ -242,7 +242,7 @@ API トークン等を暗号化して保存します。鍵は `~/.local/share/bo
 
 | コマンド | 役割 |
 |---|---|
-| `boid exec -p <project-ref> [--name NAME] [command-name]` | プロジェクトの `commands` で定義した名前付きコマンドをサンドボックス内で実行。`--name` でジョブの表示名を設定する |
+| `boid exec -p <project-ref> [--name NAME] [--readonly] -- <argv...>` | サンドボックス内で任意の argv を実行。 project の `host_commands` / `env` / `additional_bindings` を継承する。 `--` 以降が sandbox 内の argv (旧 `commands:` 名前指定は Phase 3-d で廃止)。 `--name` でジョブの表示名、 `--readonly` でワークスペースを read-only に |
 | `boid attach <job-id>` | 実行中のジョブの runtime に attach (interactive ジョブ向け) |
 | `boid fetch <url>` | URL のコンテンツをホスト側で取得して出力する (直接 HTTP アクセスが制限されているサンドボックス内から使用可) |
 

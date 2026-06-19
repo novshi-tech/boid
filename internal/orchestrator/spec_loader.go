@@ -100,6 +100,8 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 		return nil, err
 	}
 
+	warnDeprecatedCommandsKey("project.yaml", dir, raw)
+
 	var meta ProjectMeta
 	if err := yaml.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("parse project.yaml: %w", err)
@@ -132,6 +134,51 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	meta.TaskBehaviors = addAliasMirrors(meta.TaskBehaviors)
 
 	return &meta, nil
+}
+
+// commandsDeprecationWarned tracks which (scope+dir) pairs have already received
+// the Phase 3-d commands: deprecation warning this daemon run. Resets on daemon
+// restart. Both project.yaml and kit.yaml share the same map so each location
+// warns at most once.
+var commandsDeprecationWarned sync.Map
+
+// warnDeprecatedCommandsKey emits a Phase 3-d deprecation warning when the raw
+// YAML still carries a top-level or per-task-behavior commands: key. The schema
+// was removed when ProjectCommand / BehaviorCommand was retired; remaining keys
+// are silently ignored at the loader level (no parse error), but users should
+// be told once so they can clean up their project.yaml / kit.yaml.
+//
+// scope identifies the file ("project.yaml" / "kit.yaml (<dir>)") for the log
+// message; dir is the deduplication key so the same project / kit does not
+// re-emit on every reload.
+func warnDeprecatedCommandsKey(scope, dir string, raw map[string]any) {
+	emit := func(suffix string) {
+		key := scope + "@" + dir + suffix
+		if _, loaded := commandsDeprecationWarned.LoadOrStore(key, true); loaded {
+			return
+		}
+		slog.Warn(scope+": 'commands:' is deprecated and ignored. Use 'boid agent <harness> -p <project>' to start an agent session, or 'boid exec -p <project> -- <argv...>' to run a one-off command.",
+			"location", dir, "key", "commands"+suffix)
+	}
+	if _, ok := raw["commands"]; ok {
+		emit("")
+	}
+	if behaviors, ok := raw["task_behaviors"].(map[string]any); ok {
+		names := make([]string, 0, len(behaviors))
+		for k := range behaviors {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			entry, ok := behaviors[name].(map[string]any)
+			if !ok {
+				continue
+			}
+			if _, ok := entry["commands"]; ok {
+				emit(" (task_behaviors." + name + ")")
+			}
+		}
+	}
 }
 
 // removedBehaviorFieldGuidance maps each removed task_behaviors.<name>.<field>
@@ -450,30 +497,6 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		}
 	}
 
-	// Kit-provided commands (from top-level project kits): field-level overlay.
-	// project.Command wins when non-empty; kit.Command is inherited when project leaves it empty.
-	// Conflict between two kits providing the same command name is an error.
-	if meta.Commands == nil {
-		meta.Commands = make(map[string]CommandSpec)
-	}
-	kitCmdSource := make(map[string]string) // commandName -> kit agent (for conflict detection)
-	for _, kitRef := range meta.Kits {
-		kitMeta := kitMetaByRef[kitRef.Ref]
-		agent := ResolveKitAgent(kitRef)
-		for cmdName, kitCmdSpec := range kitMeta.Commands {
-			if existingAgent, ok := kitCmdSource[cmdName]; ok {
-				return nil, fmt.Errorf("command %q: conflict between kits %q and %q", cmdName, existingAgent, agent)
-			}
-			kitCmdSource[cmdName] = agent
-			if projCmdSpec, exists := meta.Commands[cmdName]; !exists {
-				meta.Commands[cmdName] = kitCmdSpec
-			} else if len(projCmdSpec.Command) == 0 {
-				projCmdSpec.Command = kitCmdSpec.Command
-				meta.Commands[cmdName] = projCmdSpec
-			}
-		}
-	}
-
 	// For each behavior, resolve its kits and merge data into the behavior.
 	for name, behavior := range meta.TaskBehaviors {
 		var kits []*KitMeta
@@ -533,67 +556,7 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 			return nil, err
 		}
 
-		// Resolve behavior-level commands: inherit the behavior's merged runtime.
-		for cmdName, cmd := range behavior.Commands {
-			cmd.Env = behavior.Env
-			cmd.HostCommands = behavior.HostCommands
-			cmd.AdditionalBindings = behavior.AdditionalBindings
-			resolved := make([]string, len(cmd.Command))
-			for i, arg := range cmd.Command {
-				resolved[i] = interpolateEnv(arg)
-			}
-			cmd.ResolvedCommand = resolved
-			if err := validateBuiltinHostConflict(fmt.Sprintf("behavior %q command %q", name, cmdName), cmd.HostCommands); err != nil {
-				return nil, err
-			}
-			behavior.Commands[cmdName] = cmd
-		}
-
 		meta.TaskBehaviors[name] = behavior
-	}
-
-	// Compute project-level kit runtime once; apply to all commands.
-	var projectKits []*KitMeta
-	var projectKitAgents []string
-	for _, kitRef := range meta.Kits {
-		km, ok := kitMetaByRef[kitRef.Ref]
-		if !ok {
-			continue
-		}
-		projectKits = append(projectKits, km)
-		projectKitAgents = append(projectKitAgents, ResolveKitAgent(kitRef))
-	}
-	projectKitRuntime, err := MergeKitRuntime(projectKits, projectKitAgents)
-	if err != nil {
-		return nil, fmt.Errorf("project kits runtime: %w", err)
-	}
-
-	// Resolve Commands: apply project-level kit runtime and expand env vars in each command spec.
-	for name, cmd := range meta.Commands {
-		rt := projectKitRuntime
-
-		// Apply overlays in the same order as TaskBehavior: kit → project.yaml → project.local.yaml.
-		cmd.Env = mergeStringMaps(rt.Env, meta.Env)
-		cmd.HostCommands = mergeHostCommands(rt.HostCommands, meta.HostCommands)
-		cmd.AdditionalBindings = mergeBindMounts(rt.AdditionalBindings, meta.AdditionalBindings)
-		if local != nil {
-			cmd.Env = mergeStringMaps(cmd.Env, local.Env)
-			cmd.HostCommands = mergeHostCommands(cmd.HostCommands, local.HostCommands)
-			cmd.AdditionalBindings = mergeBindMounts(cmd.AdditionalBindings, local.AdditionalBindings)
-		}
-
-		// Expand env vars in each command argument.
-		resolved := make([]string, len(cmd.Command))
-		for i, arg := range cmd.Command {
-			resolved[i] = interpolateEnv(arg)
-		}
-		cmd.ResolvedCommand = resolved
-
-		if err := validateBuiltinHostConflict(fmt.Sprintf("command %q", name), cmd.HostCommands); err != nil {
-			return nil, err
-		}
-
-		meta.Commands[name] = cmd
 	}
 
 	if local != nil && local.SecretNamespace != "" {
@@ -664,6 +627,8 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 	if err := rejectRemovedBehaviorFields(fmt.Sprintf("kit.yaml (%s)", dir), rawTop); err != nil {
 		return nil, err
 	}
+
+	warnDeprecatedCommandsKey(fmt.Sprintf("kit.yaml (%s)", dir), dir, rawTop)
 
 	var meta KitMeta
 	if err := yaml.Unmarshal(data, &meta); err != nil {
@@ -963,26 +928,7 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 	result.HostCommands = cloneHostCommands(meta.HostCommands)
 	result.AdditionalBindings = cloneBindMounts(meta.AdditionalBindings)
 	result.TaskBehaviors = cloneTaskBehaviorMap(meta.TaskBehaviors)
-	result.Commands = cloneCommandSpecMap(meta.Commands)
 	return &result
-}
-
-// cloneCommandSpecMap deep-copies the commands map. Resolved fields are reset
-// to their zero values; the caller must recompute them via ReadProjectMetaWithKits.
-func cloneCommandSpecMap(src map[string]CommandSpec) map[string]CommandSpec {
-	if len(src) == 0 {
-		return nil
-	}
-	result := make(map[string]CommandSpec, len(src))
-	for k, v := range src {
-		v.Command = append([]string(nil), v.Command...)
-		v.ResolvedCommand = nil
-		v.Env = nil
-		v.HostCommands = nil
-		v.AdditionalBindings = nil
-		result[k] = v
-	}
-	return result
 }
 
 // cloneTaskBehaviorMap deep-copies the task behavior map including each
