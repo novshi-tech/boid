@@ -8,36 +8,46 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"syscall"
 
 	"github.com/novshi-tech/boid/internal/adapters"
+	"github.com/novshi-tech/boid/internal/adapters/sigutil"
 )
 
-// Run forks the argv supplied via RunContext.Argv. The body is intentionally
-// byte-equivalent with the retired runExecArgv in internal/sandbox/runner
-// (see git history of runner_linux.go before PR #594): a single exec.Cmd
-// built from the spec, stdio routed per StdinBytes / StdoutCaptureFile
-// precedence, env taken straight from RunContext.Env (no PWD injection,
-// no host inherit), and a synchronous cmd.Run() to drive it to completion.
+// Run forks the argv supplied via RunContext.Argv and drives it through the
+// shared sigutil.ForwardAndWait loop so every harness adapter (claude / codex
+// / opencode / shell) reaches the daemon's "stop this job" out-of-band signal
+// the same way.
 //
-// SIGUSR1 → SIGTERM forwarding, SIGWINCH passthrough, and Setsid are
-// deliberately NOT wired in this PR. The legacy runExecArgv path the
-// shell adapter replaces wired none of them — hook scripts have no use
-// for SIGUSR1 (NotifyTask.StopAgent only signals agents), and adding a
-// process-group split via Setsid breaks the bash broker handshake (an
-// early PR #594 iteration regressed E2E builtin-task-create that way).
-// The follow-up PR that lands `boid agent shell` as a first-class
-// session entry point will reintroduce signal forwarding via sigutil at
-// that boundary, where it actually matters.
+// I/O resolution precedence (StdinBytes / StdoutCaptureFile / Stdin / Stdout)
+// mirrors the retired runExecArgv path the shell adapter replaced in PR1:
 //
-// I/O resolution precedence mirrors the retired runExecArgv:
-//
-//  1. StdinBytes non-empty → pipe a *bytes.Reader as child stdin (host
-//     file descriptor is not exposed to the child).
+//  1. StdinBytes non-empty → pipe a *bytes.Reader as child stdin (host file
+//     descriptor is not exposed to the child).
 //  2. StdoutCaptureFile non-empty → create that host path and route stdout
 //     into it (broker job-done reads from this file).
 //  3. Otherwise → pass RunContext.Stdin / Stdout verbatim.
 //
 // Stderr always flows through RunContext.Stderr.
+//
+// Signal handling matches the claude/codex/opencode adapters:
+//
+//  - Setsid=true places the child in its own session/pgrp so the daemon's
+//    runtime-pgrp SIGUSR1 broadcast does NOT reach the child directly. Only
+//    our sigutil.ForwardAndWait loop sees the SIGUSR1 and translates it into
+//    a child SIGTERM. (Without Setsid, bash would terminate immediately on
+//    SIGUSR1 since its default disposition is "terminate", racing the
+//    forwarding loop.)
+//  - sigutil.ForwardAndWait owns the wait + signal forward + exit code
+//    normalisation (143 → 0 when StoppedByDaemon).
+//
+// The shell adapter has no graceful-stop concept of its own (unlike a claude
+// session which flushes the jsonl on SIGTERM), but the forwarding path stays
+// uniformly wired so `boid agent shell` interactive sessions resize their PTY
+// (SIGWINCH passthrough) and surface a clean StoppedByDaemon=true exit when
+// the daemon kills the run. Hook / exec callers do not observe a behaviour
+// change because the daemon never sends SIGUSR1 to those runtimes — the
+// forwarding loop simply idles until cmd.Wait() returns.
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
 	if len(rc.Argv) == 0 {
 		return adapters.Result{}, errors.New("shell adapter: RunContext.Argv is empty")
@@ -46,6 +56,7 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 	cmd := exec.CommandContext(ctx, rc.Argv[0], rc.Argv[1:]...)
 	cmd.Dir = rc.Workspace
 	cmd.Env = envSlice(rc.Env)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	var captureFile *os.File
 	switch {
@@ -74,20 +85,24 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 	}
 	cmd.Stderr = rc.Stderr
 
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		if captureFile != nil {
+			_ = captureFile.Close()
+		}
+		return adapters.Result{}, fmt.Errorf("start shell argv: %w", err)
+	}
+
+	exitCode, stoppedByDaemon, werr := sigutil.ForwardAndWait(cmd, "shell")
 	if captureFile != nil {
 		_ = captureFile.Close()
 	}
-
-	exitCode := 0
-	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			exitCode = ee.ExitCode()
-		} else {
-			return adapters.Result{}, fmt.Errorf("run shell argv: %w", err)
-		}
+	if werr != nil {
+		return adapters.Result{}, werr
 	}
-	return adapters.Result{ExitCode: exitCode}, nil
+	return adapters.Result{
+		ExitCode:        exitCode,
+		StoppedByDaemon: stoppedByDaemon,
+	}, nil
 }
 
 // envSlice mirrors internal/sandbox/runner.envSlice: deterministic

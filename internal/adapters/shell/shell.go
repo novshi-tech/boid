@@ -18,6 +18,13 @@
 //   - no Bindings() (Phase 3-c claude / codex / opencode each declared their
 //     own CLI bindings; shell relies on the base mount set the dispatcher
 //     applies for every sandbox).
+//
+// Signal handling is shared with the agent adapters via sigutil.ForwardAndWait:
+// SIGUSR1 → child SIGTERM (out-of-band daemon stop), SIGWINCH passthrough
+// (PTY resize for `boid agent shell` interactive sessions), and stop-signal
+// exit normalisation (143 → 0 with StoppedByDaemon=true). Hook / exec callers
+// observe no behaviour change because the daemon never sends SIGUSR1 to those
+// runtimes — the forwarding loop simply idles until cmd.Wait() returns.
 package shell
 
 import (

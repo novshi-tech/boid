@@ -44,7 +44,7 @@ func addAgentSessionFlags(cmd *cobra.Command, f *agentSessionFlags) {
 }
 
 func init() {
-	for _, harness := range []string{"claude", "codex", "opencode"} {
+	for _, harness := range []string{"claude", "codex", "opencode", "shell"} {
 		h := harness // capture
 		flags := &agentSessionFlags{}
 		c := &cobra.Command{
