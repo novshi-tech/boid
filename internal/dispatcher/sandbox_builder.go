@@ -8,9 +8,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/novshi-tech/boid/internal/adapters"
+	"github.com/novshi-tech/boid/internal/adapters/registry"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
-	"github.com/novshi-tech/boid/internal/skills"
 	"gopkg.in/yaml.v3"
 )
 
@@ -121,7 +122,20 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	}
 	env["HOME"] = homeDir
 	env["TERM"] = "xterm-256color"
-	env["PATH"] = buildPATH(expandedBindings, rt.ResolvedHostCommands, rt.BoidBinary)
+	// Resolve adapter bindings once. When HarnessType identifies a known
+	// adapter (claude/codex/opencode) its Bindings() take the place of the
+	// kit-declared additional_bindings — that's the kit-free dispatch path
+	// the Phase 3-c plan calls for. For unknown harnesses we fall back to
+	// kit-declared bindings + KitRoots below.
+	var harnessBindings []orchestrator.BindMount
+	if a := registry.For(sandbox.HarnessType(spec.HarnessType)); a != nil {
+		harnessBindings = adapterBindingsToOrchestrator(a.Bindings(homeDir))
+	}
+	pathBindings := expandedBindings
+	if spec.HarnessType != "" {
+		pathBindings = harnessBindings
+	}
+	env["PATH"] = buildPATH(pathBindings, rt.ResolvedHostCommands, rt.BoidBinary)
 	env["BOID_HOST_IP"] = hostGatewayIP
 	if rt.ProxyPort > 0 {
 		applyProxyEnv(env, rt.ProxyPort)
@@ -171,15 +185,16 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	}
 
 	// Additional bindings and kit roots:
-	//   * HarnessType=="claude" hands the agent off to claude.Adapter.Run(),
-	//     which owns the claude binary + ~/.claude / ~/.claude.json layout
-	//     directly. The kit's run-agent.sh and additional_bindings are
-	//     irrelevant on this path, so we ignore them and inject a hard-coded
-	//     set of bindings instead.
-	//   * For every other job (boid exec, gate hooks, non-agent hooks) the
+	//   * When HarnessType identifies a known adapter (claude/codex/opencode)
+	//     its Bindings() are the only source of bind-mounts for the agent —
+	//     boid-kits' run-agent.sh / additional_bindings / KitRoots are
+	//     ignored on this path (the kit-free dispatch path Phase 3-c expects;
+	//     Phase 3-d retires the kit entirely).
+	//   * For every other job (boid exec, gate hooks, non-agent hooks, kits
+	//     that have not migrated to adapter-driven Bindings yet) the
 	//     kit-declared bindings + KitRoots still apply.
-	if spec.HarnessType == string(sandbox.HarnessClaude) {
-		mounts = append(mounts, claudeHarnessBindingMounts(homeDir)...)
+	if spec.HarnessType != "" {
+		mounts = append(mounts, additionalBindingMounts(harnessBindings)...)
 	} else {
 		mounts = append(mounts, additionalBindingMounts(expandedBindings)...)
 		for _, kitRoot := range spec.Visibility.KitRoots {
@@ -441,60 +456,24 @@ func projectVisibilityMounts(
 	return out
 }
 
-// claudeHarnessBindingMounts produces the hard-coded set of host bind-mounts
-// that claude.Adapter.Run() needs inside the sandbox. They replace the bindings
-// that boid-kits' claude-code/kit.yaml used to declare; the dispatcher no longer
-// reads that kit when HarnessType=="claude". Layout (Phase 3-b):
-//
-//   - ~/.local/bin               (ro, dir) — claude CLI directory
-//   - ~/.local/share/claude      (ro, dir, optional) — claude shared data
-//   - ~/.claude                  (rw, dir, optional) — claude config / state
-//   - ~/.claude.json             (rw, file, optional) — claude main settings
-//   - ~/.local/share/boid/skills/<name> → ~/.claude/skills/<name> per embedded
-//     skill so /boid-supervisor / /boid-executor / ... resolve inside claude.
-func claudeHarnessBindingMounts(homeDir string) []sandbox.Mount {
-	var out []sandbox.Mount
-
-	out = append(out,
-		sandbox.Mount{
-			Source:   homeDir + "/.local/bin",
-			Target:   homeDir + "/.local/bin",
-			Type:     sandbox.MountBind,
-			ReadOnly: true,
-			Guard:    dirGuardExpr(homeDir + "/.local/bin"),
-		},
-		sandbox.Mount{
-			Source:   homeDir + "/.local/share/claude",
-			Target:   homeDir + "/.local/share/claude",
-			Type:     sandbox.MountBind,
-			ReadOnly: true,
-			Guard:    dirGuardExpr(homeDir + "/.local/share/claude"),
-		},
-		sandbox.Mount{
-			Source: homeDir + "/.claude",
-			Target: homeDir + "/.claude",
-			Type:   sandbox.MountBind,
-			Guard:  dirGuardExpr(homeDir + "/.claude"),
-		},
-		sandbox.Mount{
-			Source: homeDir + "/.claude.json",
-			Target: homeDir + "/.claude.json",
-			Type:   sandbox.MountBind,
-			IsFile: true,
-			Guard:  existsGuardExpr(homeDir + "/.claude.json"),
-		},
-	)
-
-	skillsBase := homeDir + "/.local/share/boid/skills"
-	for _, name := range skills.EmbeddedSkillNames() {
-		src := skillsBase + "/" + name
-		out = append(out, sandbox.Mount{
-			Source:   src,
-			Target:   homeDir + "/.claude/skills/" + name,
-			Type:     sandbox.MountBind,
-			ReadOnly: true,
-			Guard:    dirGuardExpr(src),
-		})
+// adapterBindingsToOrchestrator converts the adapter-facing BindMount DTO
+// into the orchestrator-facing one so adapter Bindings() flow through the
+// same additionalBindingMounts / buildPATH pipeline that kit-declared
+// bindings do. The two structs are intentionally shape-compatible (see
+// adapters.BindMount); this is a layering-only translation.
+func adapterBindingsToOrchestrator(in []adapters.BindMount) []orchestrator.BindMount {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]orchestrator.BindMount, len(in))
+	for i, bm := range in {
+		out[i] = orchestrator.BindMount{
+			Source:   bm.Source,
+			Target:   bm.Target,
+			Mode:     bm.Mode,
+			IsFile:   bm.IsFile,
+			Optional: bm.Optional,
+		}
 	}
 	return out
 }
@@ -526,7 +505,15 @@ func additionalBindingMounts(bindings []orchestrator.BindMount) []sandbox.Mount 
 			DetectType: !bm.IsFile,
 		}
 		if bm.Optional {
-			m.Guard = dirGuardExpr(bm.Source)
+			// IsFile bindings need an `-e` test (file or symlink), the dir
+			// case wants `-d` so an accidental file collision still fails
+			// loudly. Mirrors the Phase 3-b claude binding behaviour for
+			// ~/.claude.json (existsGuardExpr) vs ~/.claude (dirGuardExpr).
+			if bm.IsFile {
+				m.Guard = existsGuardExpr(bm.Source)
+			} else {
+				m.Guard = dirGuardExpr(bm.Source)
+			}
 		}
 		out = append(out, m)
 	}

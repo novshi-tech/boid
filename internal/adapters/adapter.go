@@ -12,6 +12,29 @@ import (
 	"io"
 )
 
+// BindMount is the adapter-facing DTO for a host bind-mount request.
+//
+// It is shape-compatible with orchestrator.BindMount and sandbox.BindMount on
+// purpose — the dispatcher converts adapter-declared BindMounts straight into
+// the same sandbox.Mount entries the kit-declared additional_bindings produce
+// — but is defined here so the adapters package stays free of orchestrator
+// and sandbox imports. orchestrator depends on adapters (HarnessAdapter is
+// held on JobSpec.Adapter); the reverse import would close that cycle.
+type BindMount struct {
+	// Source is the absolute host path to mount in.
+	Source string
+	// Target is the absolute sandbox path. Empty means "same as Source".
+	Target string
+	// Mode is "rw" for read-write, "" (default) for read-only.
+	Mode string
+	// IsFile flips the mount to file-bind (touch target first) instead of
+	// directory-bind. Used by the claude binding for ~/.claude.json.
+	IsFile bool
+	// Optional makes a missing Source on the host skip the mount instead of
+	// failing dispatch. Dispatcher converts this to a shell-level if-guard.
+	Optional bool
+}
+
 // Usage holds token consumption metrics for a completed job.
 // Fixed fields cover the common denominator across harnesses; Extra stores
 // harness-specific data without requiring schema migrations.
@@ -148,4 +171,30 @@ type HarnessAdapter interface {
 	// Usage returns token consumption metrics for the job identified by jobID.
 	// Returns a zero Usage and a nil error when metrics are not yet available.
 	Usage(ctx context.Context, jobID string) (Usage, error)
+
+	// Bindings declares the host bind-mounts this harness needs inside the
+	// sandbox. The dispatcher prepends this set to the kit-declared
+	// additional_bindings (if any) and lets the standard buildPATH / mount
+	// pipeline turn them into sandbox.Mount entries — so a binding whose
+	// Source ends in "/bin" automatically lands on PATH inside the sandbox.
+	//
+	// homeDir is the host home of the user the daemon runs as ($HOME, not the
+	// sandbox-internal HOME); adapters compose Source paths against it. The
+	// dispatcher fills it from os/user so the call is pure (testable without
+	// touching the environment).
+	//
+	// Returned BindMounts should typically set Optional=true so a missing
+	// source dir is silently skipped (the dispatcher converts Optional →
+	// shell-level if-guard). The recipe an adapter normally follows:
+	//
+	//  1. its private state dir (e.g. ~/.codex) — Mode "rw", Optional
+	//  2. the resolved CLI binary's parent dir found via exec.LookPath +
+	//     filepath.EvalSymlinks — Mode "" (ro), Optional
+	//  3. any runtime shim tree the CLI needs at exec time (e.g. ~/.volta for
+	//     volta-shimmed installs) — Mode "" (ro), Optional
+	//
+	// Adapters return nil when they have nothing to declare (claude.Adapter,
+	// which Phase 3-d will retire alongside the boid-kits claude-code kit, is
+	// the only adapter that ships a non-trivial set today).
+	Bindings(homeDir string) []BindMount
 }
