@@ -470,7 +470,27 @@ func parseBoidTaskReopen(args []string) (*BoidRequest, error) {
 	if len(args) == 0 {
 		return nil, fmt.Errorf("boid shim: task reopen requires a task id")
 	}
-	return &BoidRequest{Op: BoidOpTaskReopen, TaskID: args[0]}, nil
+	req := &BoidRequest{Op: BoidOpTaskReopen, TaskID: args[0]}
+	rest := args[1:]
+	for i := 0; i < len(rest); i++ {
+		arg := rest[i]
+		switch {
+		case arg == "-m" || arg == "--message" || strings.HasPrefix(arg, "--message="):
+			flagName := "--message"
+			if arg == "-m" {
+				flagName = "-m"
+			}
+			value, next, err := takeStringFlagValue(rest, i, flagName)
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.Message = value
+		default:
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task reopen", arg)
+		}
+	}
+	return req, nil
 }
 
 func parseBoidTaskNotify(args []string) (*BoidRequest, error) {
