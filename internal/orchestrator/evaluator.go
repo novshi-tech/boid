@@ -24,6 +24,15 @@ func extractInstructionAgents(instructions Instructions) map[string]bool {
 // Hooks fire only during executing state. Hooks with Kind == HandlerKindAgent
 // additionally require an instruction in task.Instructions addressed to that
 // hook's Agent.
+//
+// Phase 3-e fallback: when the behavior declares no agent-kind hook at all
+// (typical after the boid-kits claude-code/codex retirement landed in PR
+// #604), the evaluator synthesizes a virtual agent-kind hook for the active
+// instruction's agent. The runner-inner-child hands every agent-kind job to
+// its HarnessAdapter directly, so a hook with no ScriptPath is dispatch-ready
+// — see planner.PlanHook and adapters.HarnessAdapter.Run. The synthesis is
+// gated to known harness agents (claude-code / codex / opencode) so unknown
+// agent names do not collide with the shell adapter's Argv requirement.
 func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 	if task.Status != TaskStatusExecuting {
 		return nil
@@ -39,7 +48,11 @@ func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 	agents := extractInstructionAgents(task.Instructions)
 
 	var matched []Hook
+	var agentHookDeclared bool
 	for _, h := range hooks {
+		if h.Kind == HandlerKindAgent {
+			agentHookDeclared = true
+		}
 		if !hasAllTraits(traitSet, h.Traits.Consumes) {
 			continue
 		}
@@ -53,7 +66,38 @@ func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 		}
 		matched = append(matched, h)
 	}
+
+	if !agentHookDeclared {
+		if syn := synthesizeAgentHook(task); syn != nil {
+			matched = append(matched, *syn)
+		}
+	}
 	return matched
+}
+
+// synthesizeAgentHook returns a virtual agent-kind hook for the task's
+// active instruction, or nil if no synthesis applies. The fallback is gated
+// on: (1) at least one instruction in the history, (2) the active
+// instruction's agent name resolves to a known harness adapter via
+// harnessTypeForAgent (anything that would fall through to "shell" is
+// excluded — the shell adapter needs a real Argv it cannot produce here).
+func synthesizeAgentHook(task *Task) *Hook {
+	if task == nil || len(task.Instructions) == 0 {
+		return nil
+	}
+	active := task.Instructions[len(task.Instructions)-1]
+	if active.Agent == "" {
+		return nil
+	}
+	if harnessTypeForAgent(active.Agent) == "shell" {
+		return nil
+	}
+	return &Hook{
+		ID:    "agent:" + active.Agent,
+		Name:  active.Agent,
+		Kind:  HandlerKindAgent,
+		Agent: active.Agent,
+	}
 }
 
 // hasAllTraits checks whether all required traits are present in the set.
