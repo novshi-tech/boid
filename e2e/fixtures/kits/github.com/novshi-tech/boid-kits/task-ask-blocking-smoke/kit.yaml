@@ -1,0 +1,4 @@
+hooks:
+  - id: fake-agent
+    traits:
+      produces: [artifact]
