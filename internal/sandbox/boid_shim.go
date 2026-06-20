@@ -15,7 +15,7 @@ import (
 const boidShimUsage = `Usage: boid <command> [subcommand] [flags]
 
 Commands:
-  task    Manage tasks (create, show, update, list, notify, answer, delete, import, reopen)
+  task    Manage tasks (create, show, update, list, notify, answer, ask, delete, import, reopen)
   job     Manage jobs (done, list, show, log)
   action  Send actions (send)
   agent   Manage agent (stop)
@@ -142,6 +142,8 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 			return parseBoidTaskNotify(args[2:])
 		case "answer":
 			return parseBoidTaskAnswer(args[2:])
+		case "ask":
+			return parseBoidTaskAsk(args[2:])
 		case "delete":
 			return parseBoidTaskDelete(args[2:])
 		default:
@@ -624,6 +626,27 @@ func parseBoidTaskAnswer(args []string) (*BoidRequest, error) {
 	}
 
 	return req, nil
+}
+
+// parseBoidTaskAsk builds the BoidRequest for `boid task ask <question>`.
+// The question is the positional argument(s); flags are rejected. TaskID is
+// intentionally left empty — the broker fills it from the token's current
+// task, so the agent does not have to pass its own id (matching the skill's
+// `ANSWER=$(boid task ask "<question>")` form). The broker holds the
+// connection open until the user/supervisor answers (no timeout, decision C1).
+func parseBoidTaskAsk(args []string) (*BoidRequest, error) {
+	parts := make([]string, 0, len(args))
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task ask", a)
+		}
+		parts = append(parts, a)
+	}
+	question := strings.TrimSpace(strings.Join(parts, " "))
+	if question == "" {
+		return nil, fmt.Errorf("boid shim: task ask requires a question")
+	}
+	return &BoidRequest{Op: BoidOpTaskAsk, Question: question}, nil
 }
 
 func parseBoidActionSend(args []string) (*BoidRequest, error) {

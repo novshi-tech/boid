@@ -20,6 +20,7 @@ const (
 	OpBoidTaskList   = "task_list"
 	OpBoidTaskNotify = "task_notify"
 	OpBoidTaskAnswer = "task_answer"
+	OpBoidTaskAsk    = "task_ask"
 	OpBoidTaskDelete = "task_delete"
 
 	OpGitFetch      = "fetch"

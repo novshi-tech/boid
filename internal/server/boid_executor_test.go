@@ -86,12 +86,11 @@ func (l *recordingLifecycle) SignalJobRuntime(runtimeID string, sig syscall.Sign
 	l.signaledSig = sig
 }
 
-
 type capturingTaskStore struct {
-	created           []*orchestrator.Task
-	updated           []*orchestrator.Task
-	deleted           []string
-	findByRemoteFunc  func(remoteID, datasourceID string) (*orchestrator.Task, error)
+	created          []*orchestrator.Task
+	updated          []*orchestrator.Task
+	deleted          []string
+	findByRemoteFunc func(remoteID, datasourceID string) (*orchestrator.Task, error)
 }
 
 // executorMetaStub provides a minimal MetaStore for boid executor tests.
@@ -177,7 +176,7 @@ func TestBoidBuiltinExecutor_EnforcesWorkspaceScope(t *testing.T) {
 		AllowedProjectIDs: []string{"proj-1", "proj-2"},
 	}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
 		CreatePatch: json.RawMessage(`{"title":"same workspace","behavior":"dev"}`),
 	})
@@ -188,7 +187,7 @@ func TestBoidBuiltinExecutor_EnforcesWorkspaceScope(t *testing.T) {
 		t.Fatalf("created tasks = %+v, want current project", store.created)
 	}
 
-	resp = exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp = exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
 		ProjectID:   "proj-2",
 		CreatePatch: json.RawMessage(`{"title":"peer workspace","behavior":"dev"}`),
@@ -200,7 +199,7 @@ func TestBoidBuiltinExecutor_EnforcesWorkspaceScope(t *testing.T) {
 		t.Fatalf("created tasks = %+v, want peer project", store.created)
 	}
 
-	resp = exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp = exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
 		ProjectID:   "proj-3",
 		CreatePatch: json.RawMessage(`{"title":"cross workspace","behavior":"dev"}`),
@@ -243,7 +242,7 @@ func TestBoidBuiltinExecutor_TaskUpdate_EnforcesWorkspaceScope(t *testing.T) {
 	// 自プロジェクトのタスクを更新できる。
 	// shallow merge のため artifact.run-agent (別 top-level キー) は保持され、
 	// artifact.auto-merge が追記される。
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskUpdate,
 		TaskID:      "target-1",
 		UpdatePatch: json.RawMessage(`{"payload":{"artifact.auto-merge":{"pr":{"merged":true,"number":42}}}}`),
@@ -275,7 +274,7 @@ func TestBoidBuiltinExecutor_TaskUpdate_EnforcesWorkspaceScope(t *testing.T) {
 	}
 
 	// workspace 内の peer プロジェクトのタスクも更新できる
-	resp = exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp = exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskUpdate,
 		TaskID:      "peer-1",
 		UpdatePatch: json.RawMessage(`{"payload":{"hello":"world"}}`),
@@ -288,7 +287,7 @@ func TestBoidBuiltinExecutor_TaskUpdate_EnforcesWorkspaceScope(t *testing.T) {
 	}
 
 	// workspace 外のタスクは更新できない
-	resp = exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp = exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskUpdate,
 		TaskID:      "foreign-1",
 		UpdatePatch: json.RawMessage(`{"payload":{"x":1}}`),
@@ -301,7 +300,7 @@ func TestBoidBuiltinExecutor_TaskUpdate_EnforcesWorkspaceScope(t *testing.T) {
 	}
 
 	// 存在しない TaskID は NotFound
-	resp = exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp = exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskUpdate,
 		TaskID:      "unknown",
 		UpdatePatch: json.RawMessage(`{"payload":{"x":1}}`),
@@ -320,7 +319,7 @@ func TestBoidBuiltinExecutor_TaskUpdate_RequiresTaskID(t *testing.T) {
 	}
 	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskUpdate,
 		UpdatePatch: json.RawMessage(`{"payload":{"x":1}}`),
 	})
@@ -353,7 +352,7 @@ func TestBoidBuiltinExecutor_TaskCreate_DropsDeprecatedBaseBranch(t *testing.T) 
 		AllowedProjectIDs: []string{"proj-1"},
 	}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
 		CreatePatch: json.RawMessage(`{"title":"branch override","behavior":"dev","base_branch":"feature/x","readonly":true,"worktree":false,"branch_prefix":"task/"}`),
 	})
@@ -384,7 +383,7 @@ func TestBoidBuiltinExecutor_TaskCreate_BaseBranchInheritsFromProject(t *testing
 		AllowedProjectIDs: []string{"proj-1"},
 	}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
 		CreatePatch: json.RawMessage(`{"title":"no override","behavior":"dev"}`),
 	})
@@ -412,7 +411,7 @@ func TestBoidBuiltinExecutor_TaskCreate_DefaultsParentIDFromContext(t *testing.T
 		AllowedProjectIDs: []string{"proj-1"},
 	}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
 		CreatePatch: json.RawMessage(`{"title":"child task","behavior":"dev","ref":"step-1"}`),
 	})
@@ -443,7 +442,7 @@ func TestBoidBuiltinExecutor_TaskCreate_ExplicitParentIDOverridesContext(t *test
 		AllowedProjectIDs: []string{"proj-1"},
 	}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
 		CreatePatch: json.RawMessage(`{"title":"child task","behavior":"dev","parent_id":"explicit-parent-id","ref":"step-2"}`),
 	})
@@ -479,7 +478,7 @@ func TestBoidBuiltinExecutor_TaskCreate_SentinelRootParentID(t *testing.T) {
 	}
 
 	// sentinel "-" → stored ParentID must be empty (root task, no auto-populate)
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
 		CreatePatch: json.RawMessage(`{"title":"root task","behavior":"dev","parent_id":"-"}`),
 	})
@@ -494,7 +493,7 @@ func TestBoidBuiltinExecutor_TaskCreate_SentinelRootParentID(t *testing.T) {
 	}
 
 	// empty parent_id → auto-populated with ctx.TaskID; ref required for children
-	resp = exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp = exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
 		CreatePatch: json.RawMessage(`{"title":"child task","behavior":"dev","ref":"step-auto"}`),
 	})
@@ -528,7 +527,7 @@ func TestBoidBuiltinExecutor_TaskCreate_ChildRequiresRef(t *testing.T) {
 	}
 
 	// Child create without ref → must be rejected.
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
 		CreatePatch: json.RawMessage(`{"title":"child no ref","behavior":"dev"}`),
 	})
@@ -543,7 +542,7 @@ func TestBoidBuiltinExecutor_TaskCreate_ChildRequiresRef(t *testing.T) {
 	}
 
 	// Child create WITH ref → must succeed.
-	resp = exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp = exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
 		CreatePatch: json.RawMessage(`{"title":"child with ref","behavior":"dev","ref":"migrate-schema"}`),
 	})
@@ -560,7 +559,7 @@ func TestBoidBuiltinExecutor_TaskCreate_ChildRequiresRef(t *testing.T) {
 		TaskID:            "parent-task-id",
 		AllowedProjectIDs: []string{"proj-1"},
 	}
-	resp = exec.ExecuteBoidBuiltin(rootCtx, &sandbox.BoidRequest{
+	resp = exec.ExecuteBoidBuiltin(context.Background(), rootCtx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
 		CreatePatch: json.RawMessage(`{"title":"root no ref","behavior":"dev","parent_id":"-"}`),
 	})
@@ -593,7 +592,7 @@ func TestBoidBuiltinExecutor_TaskCreate_BrokerResolvedIDOverridesCreatePatch(t *
 
 	// req.ProjectID = UUID (broker 解決済み)
 	// CreatePatch.project_id = 名前 ("boid-kits")  — broker は上書きしない
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
 		ProjectID:   peerUUID,
 		CreatePatch: json.RawMessage(`{"project_id":"boid-kits","title":"peer task","behavior":"dev"}`),
@@ -635,7 +634,7 @@ func TestBoidBuiltinExecutor_AgentStop_SignalsRuntimeOnly(t *testing.T) {
 	exec := &boidBuiltinExecutor{workflow: wf, jobs: jobs}
 	ctx := sandbox.TokenContext{JobID: "job-1", ProjectID: "proj-1"}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:    sandbox.BoidOpAgentStop,
 		JobID: "job-1",
 	})
@@ -694,7 +693,7 @@ func TestBoidBuiltinExecutor_AgentStop_NoRuntimeIsSuccess(t *testing.T) {
 	exec := &boidBuiltinExecutor{workflow: wf, jobs: jobs}
 	ctx := sandbox.TokenContext{JobID: "job-foreground", ProjectID: "proj-1"}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:    sandbox.BoidOpAgentStop,
 		JobID: "job-foreground",
 	})
@@ -715,7 +714,7 @@ func TestBoidBuiltinExecutor_AgentStop_NoRuntimeIsSuccess(t *testing.T) {
 func TestBoidBuiltinExecutor_AgentStop_Unavailable(t *testing.T) {
 	exec := &boidBuiltinExecutor{workflow: nil, jobs: nil}
 	ctx := sandbox.TokenContext{JobID: "job-1", ProjectID: "proj-1"}
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:    sandbox.BoidOpAgentStop,
 		JobID: "job-1",
 	})
@@ -747,7 +746,7 @@ func TestBoidBuiltinExecutor_TaskImport_HappyPath(t *testing.T) {
 		AllowedProjectIDs: []string{"proj-1"},
 	}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op: sandbox.BoidOpTaskImport,
 		ImportTasks: []json.RawMessage{
 			json.RawMessage(`{"project_id":"proj-1","title":"t1","behavior":"dev","remote_id":"r1"}`),
@@ -772,8 +771,8 @@ func TestBoidBuiltinExecutor_TaskImport_ProjectOverride(t *testing.T) {
 		AllowedProjectIDs: []string{"proj-1"},
 	}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
-		Op:                   sandbox.BoidOpTaskImport,
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:                    sandbox.BoidOpTaskImport,
 		ImportProjectOverride: "proj-1",
 		ImportTasks: []json.RawMessage{
 			json.RawMessage(`{"title":"t1","behavior":"dev","remote_id":"r1"}`), // project_id 未指定
@@ -804,7 +803,7 @@ func TestBoidBuiltinExecutor_TaskImport_Dedup(t *testing.T) {
 		AllowedProjectIDs: []string{"proj-1"},
 	}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op: sandbox.BoidOpTaskImport,
 		ImportTasks: []json.RawMessage{
 			json.RawMessage(`{"project_id":"proj-1","title":"t1","behavior":"dev","remote_id":"r1"}`), // dedup
@@ -828,7 +827,7 @@ func TestBoidBuiltinExecutor_TaskImport_PartialError(t *testing.T) {
 
 	// 1件目: behavior 欠落 → CreateTask でエラー
 	// 2件目: 正常
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op: sandbox.BoidOpTaskImport,
 		ImportTasks: []json.RawMessage{
 			json.RawMessage(`{"project_id":"proj-1","title":"t1","remote_id":"r1"}`),
@@ -850,7 +849,7 @@ func TestBoidBuiltinExecutor_TaskImport_Unavailable(t *testing.T) {
 	exec := &boidBuiltinExecutor{tasks: nil}
 	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op: sandbox.BoidOpTaskImport,
 		ImportTasks: []json.RawMessage{
 			json.RawMessage(`{"title":"t"}`),
@@ -945,7 +944,7 @@ func TestBoidBuiltinExecutor_ActionSend_WorkspaceIsolation(t *testing.T) {
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
 	// cross-workspace task は拒否
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:         sandbox.BoidOpActionSend,
 		TaskID:     "task-x",
 		ActionType: "reopen",
@@ -959,7 +958,7 @@ func TestBoidBuiltinExecutor_ActionSend_TaskNotFound(t *testing.T) {
 	exec, _, _ := newJobExecutor(t)
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:         sandbox.BoidOpActionSend,
 		TaskID:     "no-such-task",
 		ActionType: "reopen",
@@ -972,7 +971,7 @@ func TestBoidBuiltinExecutor_ActionSend_TaskNotFound(t *testing.T) {
 func TestBoidBuiltinExecutor_ActionSend_Unavailable(t *testing.T) {
 	exec := &boidBuiltinExecutor{workflow: nil}
 	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:         sandbox.BoidOpActionSend,
 		TaskID:     "t1",
 		ActionType: "reopen",
@@ -989,7 +988,7 @@ func TestBoidBuiltinExecutor_TaskReopen_NoMessage_EmptyPayload(t *testing.T) {
 	exec := &boidBuiltinExecutor{workflow: wf}
 	ctx := sandbox.TokenContext{TaskID: "task-1", ProjectID: "proj-1"}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:     sandbox.BoidOpTaskReopen,
 		TaskID: "task-1",
 	})
@@ -1015,7 +1014,7 @@ func TestBoidBuiltinExecutor_TaskReopen_WithMessage_BuildsInstructionPayload(t *
 	exec := &boidBuiltinExecutor{workflow: wf}
 	ctx := sandbox.TokenContext{TaskID: "task-1", ProjectID: "proj-1"}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:      sandbox.BoidOpTaskReopen,
 		TaskID:  "task-1",
 		Message: "fix the typo in section 3",
@@ -1049,7 +1048,7 @@ func TestBoidBuiltinExecutor_TaskReopen_Unavailable(t *testing.T) {
 	exec := &boidBuiltinExecutor{workflow: nil}
 	ctx := sandbox.TokenContext{TaskID: "task-1", ProjectID: "proj-1"}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:     sandbox.BoidOpTaskReopen,
 		TaskID: "task-1",
 	})
@@ -1063,7 +1062,7 @@ func TestBoidBuiltinExecutor_TaskReopen_RequiresTaskID(t *testing.T) {
 	exec := &boidBuiltinExecutor{workflow: wf}
 	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:      sandbox.BoidOpTaskReopen,
 		Message: "ignored without task id",
 	})
@@ -1081,7 +1080,7 @@ func TestBoidBuiltinExecutor_JobList_HappyPath(t *testing.T) {
 	exec, _, _ := newJobExecutor(t)
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:     sandbox.BoidOpJobList,
 		TaskID: "task-1",
 	})
@@ -1097,7 +1096,7 @@ func TestBoidBuiltinExecutor_JobList_WorkspaceIsolation(t *testing.T) {
 	exec, _, _ := newJobExecutor(t)
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:     sandbox.BoidOpJobList,
 		TaskID: "task-x",
 	})
@@ -1109,7 +1108,7 @@ func TestBoidBuiltinExecutor_JobList_WorkspaceIsolation(t *testing.T) {
 func TestBoidBuiltinExecutor_JobList_Unavailable(t *testing.T) {
 	exec := &boidBuiltinExecutor{jobs: nil}
 	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:     sandbox.BoidOpJobList,
 		TaskID: "t1",
 	})
@@ -1124,7 +1123,7 @@ func TestBoidBuiltinExecutor_JobShow_HappyPath(t *testing.T) {
 	exec, _, _ := newJobExecutor(t)
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:    sandbox.BoidOpJobShow,
 		JobID: "job-1",
 	})
@@ -1146,7 +1145,7 @@ func TestBoidBuiltinExecutor_JobShow_CrossProjectReject(t *testing.T) {
 	exec, _, _ := newJobExecutor(t)
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:    sandbox.BoidOpJobShow,
 		JobID: "job-x",
 	})
@@ -1159,7 +1158,7 @@ func TestBoidBuiltinExecutor_JobShow_NotFound(t *testing.T) {
 	exec, _, _ := newJobExecutor(t)
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:    sandbox.BoidOpJobShow,
 		JobID: "no-such-job",
 	})
@@ -1175,7 +1174,7 @@ func TestBoidBuiltinExecutor_JobLog_HappyPath(t *testing.T) {
 	js.jobs["job-1"].RuntimeID = "rt-1"
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:    sandbox.BoidOpJobLog,
 		JobID: "job-1",
 	})
@@ -1192,7 +1191,7 @@ func TestBoidBuiltinExecutor_JobLog_NoRuntime(t *testing.T) {
 	// job-1 の RuntimeID は空 (newJobExecutor でセットされていない)
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:    sandbox.BoidOpJobLog,
 		JobID: "job-1",
 	})
@@ -1208,7 +1207,7 @@ func TestBoidBuiltinExecutor_JobLog_CrossProjectReject(t *testing.T) {
 	exec, _, _ := newJobExecutor(t)
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:    sandbox.BoidOpJobLog,
 		JobID: "job-x",
 	})
@@ -1239,7 +1238,7 @@ func TestBoidBuiltinExecutor_TaskDelete_HappyPath(t *testing.T) {
 	exec, store := newDeleteExecutor(t)
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:     sandbox.BoidOpTaskDelete,
 		TaskID: "task-1",
 	})
@@ -1258,7 +1257,7 @@ func TestBoidBuiltinExecutor_TaskDelete_CrossProjectReject(t *testing.T) {
 	exec, store := newDeleteExecutor(t)
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:     sandbox.BoidOpTaskDelete,
 		TaskID: "task-foreign",
 	})
@@ -1274,7 +1273,7 @@ func TestBoidBuiltinExecutor_TaskDelete_ActiveTaskForceRequired(t *testing.T) {
 	exec, store := newDeleteExecutor(t)
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:     sandbox.BoidOpTaskDelete,
 		TaskID: "task-exec",
 		Force:  false,
@@ -1294,11 +1293,225 @@ func TestBoidBuiltinExecutor_TaskDelete_Unavailable(t *testing.T) {
 	exec := &boidBuiltinExecutor{tasks: nil}
 	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
 
-	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:     sandbox.BoidOpTaskDelete,
 		TaskID: "task-1",
 	})
 	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "unavailable") {
 		t.Fatalf("expected unavailable error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+}
+
+// askWorkflowStub reflects ask/abort transitions into a capturingTaskStore so
+// AskTaskBlocking + AnswerTask behave end-to-end in unit tests, and records the
+// applied actions for assertions.
+type askWorkflowStub struct {
+	mu      sync.Mutex
+	store   *capturingTaskStore
+	applied []api.ApplyActionRequest
+}
+
+func (w *askWorkflowStub) ApplyAction(_ context.Context, taskID string, req api.ApplyActionRequest) (*api.ActionApplication, error) {
+	// Whole method under the lock so the store mutation is ordered-before any
+	// reader (lastAskQID / appliedTypes) that re-acquires the lock — otherwise a
+	// waiter could observe the qid before the store reflects awaiting.
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.applied = append(w.applied, req)
+	if w.store != nil {
+		if t, err := w.store.GetTask(taskID); err == nil {
+			switch req.Type {
+			case "ask":
+				t.Status = orchestrator.TaskStatusAwaiting
+				if merged, mErr := orchestrator.MergePayload(t.Payload, req.Payload); mErr == nil {
+					t.Payload = merged
+				}
+			case "abort":
+				t.Status = orchestrator.TaskStatusAborted
+			}
+			_ = w.store.UpdateTask(t)
+		}
+	}
+	return &api.ActionApplication{Task: &orchestrator.Task{ID: taskID}}, nil
+}
+
+func (w *askWorkflowStub) CompleteJob(_ context.Context, _ string, _ api.JobDoneRequest) (*api.Job, error) {
+	return &api.Job{}, nil
+}
+func (w *askWorkflowStub) TriggerDependents(_ context.Context, _ string) {}
+func (w *askWorkflowStub) StopAgent(_ string)                            {}
+
+func (w *askWorkflowStub) lastAskQID() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for i := len(w.applied) - 1; i >= 0; i-- {
+		if w.applied[i].Type == "ask" {
+			return orchestrator.GetAwaitingPayload(w.applied[i].Payload).QuestionID
+		}
+	}
+	return ""
+}
+
+func (w *askWorkflowStub) appliedTypes() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]string, len(w.applied))
+	for i, a := range w.applied {
+		out[i] = a.Type
+	}
+	return out
+}
+
+func waitForExecCond(t *testing.T, cond func() bool) {
+	t.Helper()
+	for i := 0; i < 400; i++ {
+		if cond() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("condition not met within timeout")
+}
+
+// Full blocking Q&A loop: the agent's `boid task ask` blocks, AnswerTask (the
+// answer path) delivers the reply via the registry and flips the task back to
+// executing, and the ask RPC returns the answer on stdout.
+func TestBoidBuiltinExecutor_TaskAsk_BlockingRoundTrip(t *testing.T) {
+	store := &capturingTaskStore{created: []*orchestrator.Task{
+		{ID: "task-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Payload: []byte(`{}`)},
+	}}
+	reg := api.NewBlockingAskRegistry()
+	wf := &askWorkflowStub{store: store}
+	taskSvc := &api.TaskAppService{Tasks: store, Workflow: wf, BlockingAsk: reg}
+	exec := &boidBuiltinExecutor{tasks: taskSvc, workflow: wf}
+	ctx := sandbox.TokenContext{TaskID: "task-1", ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	done := make(chan *sandbox.ExecResponse, 1)
+	go func() {
+		done <- exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+			Op:       sandbox.BoidOpTaskAsk,
+			Question: "Proceed with the migration?",
+		})
+	}()
+
+	var qid string
+	waitForExecCond(t, func() bool {
+		qid = wf.lastAskQID()
+		return qid != "" && reg.Has(qid)
+	})
+
+	// Deliver via the real answer path (exercises answerBlocking).
+	if err := taskSvc.AnswerTask(context.Background(), "task-1", qid, "yes, proceed"); err != nil {
+		t.Fatalf("AnswerTask: %v", err)
+	}
+
+	select {
+	case resp := <-done:
+		if resp.ExitCode != 0 {
+			t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+		}
+		if resp.Stdout != "yes, proceed" {
+			t.Fatalf("stdout = %q, want the delivered answer", resp.Stdout)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ask did not return after the answer was delivered")
+	}
+
+	if reg.Has(qid) {
+		t.Error("registration should be cleaned up after the answer (defer Cancel)")
+	}
+	// The task is back to executing (answerBlocking flips it without dispatch).
+	got, _ := store.GetTask("task-1")
+	if got.Status != orchestrator.TaskStatusExecuting {
+		t.Errorf("task status = %q, want executing after blocking answer", got.Status)
+	}
+	// answerBlocking must NOT call ApplyAction (no resume dispatch); only the
+	// initial ask transition went through ApplyAction.
+	if types := wf.appliedTypes(); len(types) != 1 || types[0] != "ask" {
+		t.Errorf("applied actions = %v, want exactly [ask] (no resume dispatch on answer)", types)
+	}
+}
+
+// Decision B1: a second pending blocking ask for the same task fails
+// immediately with "another question is pending".
+func TestBoidBuiltinExecutor_TaskAsk_SecondPendingFails(t *testing.T) {
+	store := &capturingTaskStore{created: []*orchestrator.Task{
+		{ID: "task-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Payload: []byte(`{}`)},
+	}}
+	reg := api.NewBlockingAskRegistry()
+	wf := &askWorkflowStub{store: nil} // keep the store executing so we reach Register
+	taskSvc := &api.TaskAppService{Tasks: store, Workflow: wf, BlockingAsk: reg}
+	exec := &boidBuiltinExecutor{tasks: taskSvc, workflow: wf}
+	ctx := sandbox.TokenContext{TaskID: "task-1", ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	// Simulate an in-flight ask already registered for this task.
+	if err := reg.Register("task-1", "q-existing"); err != nil {
+		t.Fatalf("pre-Register: %v", err)
+	}
+	defer reg.Cancel("q-existing")
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:       sandbox.BoidOpTaskAsk,
+		Question: "Second question?",
+	})
+	if resp.ExitCode != 1 {
+		t.Fatalf("exit code = %d, want 1 for a second pending ask", resp.ExitCode)
+	}
+	if !strings.Contains(resp.Stderr, "another question is pending") {
+		t.Fatalf("stderr = %q, want B1 'another question is pending'", resp.Stderr)
+	}
+}
+
+// On context cancellation (daemon shutdown / sandbox disconnect) the blocking
+// ask returns an error, the registration is cancelled, and the task is aborted
+// so it is not left dangling in awaiting.
+func TestBoidBuiltinExecutor_TaskAsk_ContextCancelAbortsTask(t *testing.T) {
+	store := &capturingTaskStore{created: []*orchestrator.Task{
+		{ID: "task-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Payload: []byte(`{}`)},
+	}}
+	reg := api.NewBlockingAskRegistry()
+	wf := &askWorkflowStub{store: store}
+	taskSvc := &api.TaskAppService{Tasks: store, Workflow: wf, BlockingAsk: reg}
+	exec := &boidBuiltinExecutor{tasks: taskSvc, workflow: wf}
+	ctx := sandbox.TokenContext{TaskID: "task-1", ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan *sandbox.ExecResponse, 1)
+	go func() {
+		done <- exec.ExecuteBoidBuiltin(cancelCtx, ctx, &sandbox.BoidRequest{
+			Op:       sandbox.BoidOpTaskAsk,
+			Question: "Will this be answered?",
+		})
+	}()
+
+	var qid string
+	waitForExecCond(t, func() bool {
+		qid = wf.lastAskQID()
+		return qid != "" && reg.Has(qid)
+	})
+
+	cancel()
+
+	select {
+	case resp := <-done:
+		if resp.ExitCode != 1 {
+			t.Fatalf("exit code = %d, want 1 on cancellation", resp.ExitCode)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ask did not return after context cancellation")
+	}
+
+	// Cancel was called (registration cleaned up).
+	if reg.Has(qid) {
+		t.Error("registration should be cleaned up on cancellation")
+	}
+	// The task was aborted (abortDanglingAsk).
+	types := wf.appliedTypes()
+	if len(types) < 2 || types[len(types)-1] != "abort" {
+		t.Errorf("applied actions = %v, want last action 'abort'", types)
+	}
+	got, _ := store.GetTask("task-1")
+	if got.Status != orchestrator.TaskStatusAborted {
+		t.Errorf("task status = %q, want aborted after cancellation", got.Status)
 	}
 }

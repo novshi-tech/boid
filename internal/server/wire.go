@@ -257,6 +257,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Projects:    projectRepo,
 		RuntimesDir: runtimesDirFor(cfg),
 		Notify:      notifySvc,
+		BlockingAsk: api.NewBlockingAskRegistry(),
 	}
 	if srv.broker != nil {
 		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: runtimesDirFor(cfg)})
@@ -546,10 +547,10 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 
 	// Management API — accessible via UNIX socket (CLI only), no session auth.
 	webMgmt := &api.WebManagementHandler{
-		Pairing:  auth.NewPairingManager(runtime.authStore),
-		Store:    runtime.authStore,
+		Pairing:   auth.NewPairingManager(runtime.authStore),
+		Store:     runtime.authStore,
 		PublicURL: gcCfg.Web.PublicURL,
-		Registry: runtime.connRegistry,
+		Registry:  runtime.connRegistry,
 	}
 	r.Mount("/api/web", webMgmt.Routes())
 

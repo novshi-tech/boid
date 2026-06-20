@@ -33,7 +33,7 @@ func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppServ
 	}
 }
 
-func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *sandbox.BoidRequest) *sandbox.ExecResponse {
+func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sandbox.TokenContext, req *sandbox.BoidRequest) *sandbox.ExecResponse {
 	if req == nil {
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: "missing boid request"}
 	}
@@ -221,6 +221,33 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 		return &sandbox.ExecResponse{
 			Stdout: fmt.Sprintf("answered: %s\n", req.TaskID),
 		}
+	case sandbox.BoidOpTaskAsk:
+		// Harness-independent blocking Q&A: AskTaskBlocking transitions the task
+		// to awaiting and blocks (on goCtx) until the user/supervisor answers.
+		// goCtx is cancelled by the broker on daemon shutdown / sandbox
+		// disconnect, so the wait cannot hang forever.
+		if e.tasks == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task ask unavailable"}
+		}
+		taskID := req.TaskID
+		if taskID == "" {
+			taskID = ctx.TaskID
+		}
+		if taskID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task ask requires a task id"}
+		}
+		existing, err := e.tasks.GetTask(taskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		if !ctx.AllowsProject(existing.ProjectID) {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task ask is restricted to the current workspace"}
+		}
+		answer, err := e.tasks.AskTaskBlocking(goCtx, taskID, req.Question)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{Stdout: answer}
 	case sandbox.BoidOpTaskList:
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task list unavailable"}
