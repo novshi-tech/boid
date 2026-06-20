@@ -34,17 +34,19 @@ const defaultPrompt = "boid codex non-interactive smoke fallback: respond with o
 //     that `boid task` integration via the hook path is out of scope; the
 //     prompt-driven flow continues to work as a thin smoke-test surface.
 //
-// Common flags:
+// Flags:
 //
-//   - `--skip-git-repo-check` lets codex run outside a git repo; boid's
-//     sandbox bind-mounts arbitrary workspaces, not all of them are repos.
-//   - `--dangerously-bypass-approvals-and-sandbox` because the agent is
-//     already inside the boid sandbox; codex's own confirm / sandbox layer
-//     would prompt the user for every shell command otherwise.
+//   - `--dangerously-bypass-approvals-and-sandbox` (both modes): the agent
+//     is already inside the boid sandbox; codex's own confirm / sandbox
+//     layer would prompt the user for every shell command otherwise.
+//   - `--skip-git-repo-check` (exec mode only): lets codex run outside a
+//     git repo; boid's sandbox bind-mounts arbitrary workspaces, not all
+//     of them are repos. As of codex-cli 0.141.0 this flag lives on the
+//     `exec` subcommand only — passing it at the top level (TUI mode)
+//     errors out with "unexpected argument", so interactive argv omits it.
 func buildArgs(interactive bool, sessionID, model, prompt string) []string {
 	if interactive {
 		args := []string{"codex",
-			"--skip-git-repo-check",
 			"--dangerously-bypass-approvals-and-sandbox",
 		}
 		if model != "" {
