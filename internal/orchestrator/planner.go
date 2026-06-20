@@ -29,11 +29,18 @@ type DispatchPlanner struct {
 }
 
 // PlanHook renders a hook fire event into a JobSpec.
+//
+// Agent-kind hooks (Hook.Kind == HandlerKindAgent) may omit ScriptPath — the
+// HarnessAdapter builds its own argv from CLI conventions, so an empty Argv
+// flows through fine. Non-agent hooks (shell-bound) still require a resolved
+// script path. The Evaluator may synthesize a script-less agent hook when the
+// behavior declares none of its own (Phase 3-e kit-retirement fallback); the
+// relaxed validation here is what makes those virtual hooks dispatch-ready.
 func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc, error) {
 	if event == nil {
 		return nil, nil, fmt.Errorf("hook event is required")
 	}
-	if event.Hook.ScriptPath == "" {
+	if event.Hook.ScriptPath == "" && event.Hook.Kind != HandlerKindAgent {
 		return nil, nil, fmt.Errorf("hook %q: no script path resolved", event.Hook.ID)
 	}
 
@@ -63,6 +70,11 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 	// adapter, which forwards the hook script's argv straight to exec.
 	harnessType := harnessTypeForAgent(event.Hook.Agent)
 
+	var argv []string
+	if event.Hook.ScriptPath != "" {
+		argv = []string{event.Hook.ScriptPath}
+	}
+
 	spec := &JobSpec{
 		TaskID:      event.TaskID,
 		ProjectID:   event.ProjectID,
@@ -70,7 +82,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		DisplayName: event.Hook.Name,
 		Kind:        JobKindHook,
 		HarnessType: harnessType,
-		Argv:         []string{event.Hook.ScriptPath},
+		Argv:         argv,
 		Instruction:  instruction,
 		Task:         snapshotTask(task),
 		PrimaryInput: payload,

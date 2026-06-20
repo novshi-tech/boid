@@ -199,6 +199,87 @@ func TestPlanHook_AgentHookInteractive(t *testing.T) {
 	}
 }
 
+// Phase 3-e fallback: PlanHook must accept an agent-kind Hook with empty
+// ScriptPath — that's the shape the Evaluator synthesizes when the behavior
+// declares no hook of its own and the active instruction targets a known
+// harness. The resulting JobSpec carries an empty Argv (the HarnessAdapter
+// builds its own argv from CLI conventions) but a populated HarnessType so
+// the runner-inner-child hands the job off to the right adapter.
+func TestPlanHook_AcceptsScriptlessAgentHook(t *testing.T) {
+	projectDir := t.TempDir()
+	task := &Task{
+		ID:        "task-1",
+		ProjectID: "proj-1",
+		Behavior:  "executor",
+		Status:    TaskStatusExecuting,
+		Instructions: Instructions{{
+			Agent:   "claude-code",
+			Message: "do stuff",
+		}},
+	}
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
+
+	req, cleanup, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook: Hook{
+			ID:    "agent:claude-code",
+			Kind:  HandlerKindAgent,
+			Agent: "claude-code",
+			// ScriptPath intentionally empty.
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if req.HarnessType != "claude" {
+		t.Errorf("HarnessType = %q, want claude", req.HarnessType)
+	}
+	if len(req.Argv) != 0 {
+		t.Errorf("Argv = %v, want empty (agent adapter ignores Argv)", req.Argv)
+	}
+	if !req.Interactive {
+		t.Error("Interactive = false, want true (agent hooks always allocate a PTY)")
+	}
+	if req.Instruction == nil {
+		t.Fatal("Instruction = nil, want routed instruction for claude-code agent")
+	}
+	if req.Instruction.Agent != "claude-code" {
+		t.Errorf("Instruction.Agent = %q, want claude-code", req.Instruction.Agent)
+	}
+}
+
+// Non-agent hooks (Kind == "") still require ScriptPath: the shell adapter
+// has no way to build an Argv on their behalf.
+func TestPlanHook_RejectsScriptlessNonAgentHook(t *testing.T) {
+	projectDir := t.TempDir()
+	planner := newPlannerForTest(
+		&Project{ID: "proj-1", WorkDir: projectDir},
+		TaskBehavior{},
+		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Status: TaskStatusExecuting},
+	)
+
+	_, _, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook: Hook{
+			ID:   "no-script",
+			Kind: "", // non-agent
+		},
+	})
+	if err == nil {
+		t.Fatal("PlanHook accepted a non-agent hook with empty ScriptPath; want error")
+	}
+	if !strings.Contains(err.Error(), "no script path resolved") {
+		t.Errorf("error = %v, want one mentioning 'no script path resolved'", err)
+	}
+}
+
 // TestPlanHook_DockerEnabled verifies that capabilities.docker in ProjectMeta
 // flows through to Visibility.DockerEnabled on the resulting JobSpec.
 func TestPlanHook_DockerEnabled_WhenCapabilitySet(t *testing.T) {
