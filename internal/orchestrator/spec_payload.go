@@ -233,9 +233,20 @@ func MergePayload(base, update json.RawMessage) (json.RawMessage, error) {
 	}
 
 	for key, value := range updateMap {
-		if string(value) != "null" {
-			baseMap[key] = value
+		if string(value) == "null" {
+			// null は既存 base 値を変えない (delete しない)
+			continue
 		}
+		// base/update が両方 object なら 1 段 deep merge して sub-key を共存させる。
+		// これにより artifact.report (agent 書込) と artifact.claude_code (runner patch)
+		// が MergePayload 後も両方残る。
+		if existing, ok := baseMap[key]; ok && len(existing) > 0 {
+			if merged, ok := mergeObjectsShallow(existing, value); ok {
+				baseMap[key] = merged
+				continue
+			}
+		}
+		baseMap[key] = value
 	}
 
 	result, err := json.Marshal(baseMap)

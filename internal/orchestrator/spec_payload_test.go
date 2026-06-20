@@ -338,3 +338,89 @@ func TestMergePayloadPatch_Shared(t *testing.T) {
 		t.Fatalf("unexpected verification payload: %v", verification)
 	}
 }
+
+// TestMergePayload_DeepMergesObjectSubkeys は executor が書いた artifact.report と
+// runner が書いた artifact.claude_code が MergePayload 後に共存できることを確認する。
+// これが退行の直接テスト: 修正前は artifact 丸ごと上書きされ report が消える。
+func TestMergePayload_DeepMergesObjectSubkeys(t *testing.T) {
+	base := json.RawMessage(`{"artifact":{"report":{"summary":"impl done"}}}`)
+	update := json.RawMessage(`{"artifact":{"claude_code":{"sessions":[{"id":"s1"}]}}}`)
+	result, err := projectspec.MergePayload(base, update)
+	if err != nil {
+		t.Fatalf("MergePayload: %v", err)
+	}
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(result, &merged); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	var artifact map[string]json.RawMessage
+	if err := json.Unmarshal(merged["artifact"], &artifact); err != nil {
+		t.Fatalf("unmarshal artifact: %v", err)
+	}
+	if _, ok := artifact["report"]; !ok {
+		t.Errorf("base sub-key report must be preserved; got artifact=%v", artifact)
+	}
+	if _, ok := artifact["claude_code"]; !ok {
+		t.Errorf("update sub-key claude_code must be merged in; got artifact=%v", artifact)
+	}
+}
+
+// TestMergePayload_OverwritesWhenNotBothObjects は base/update の一方が object でない
+// ときに従来通り whole-value 上書きになることを確認する。
+func TestMergePayload_OverwritesWhenNotBothObjects(t *testing.T) {
+	// scalar base → object update: 上書き
+	r1, err := projectspec.MergePayload(
+		json.RawMessage(`{"artifact":"old"}`),
+		json.RawMessage(`{"artifact":{"k":"v"}}`),
+	)
+	if err != nil {
+		t.Fatalf("scalar->object: %v", err)
+	}
+	var m1 map[string]json.RawMessage
+	if err := json.Unmarshal(r1, &m1); err != nil {
+		t.Fatalf("unmarshal r1: %v", err)
+	}
+	if string(m1["artifact"]) != `{"k":"v"}` {
+		t.Errorf("scalar base must be overwritten by object update: got %s", m1["artifact"])
+	}
+
+	// object base → scalar update: 上書き
+	r2, err := projectspec.MergePayload(
+		json.RawMessage(`{"artifact":{"k":"v"}}`),
+		json.RawMessage(`{"artifact":"new"}`),
+	)
+	if err != nil {
+		t.Fatalf("object->scalar: %v", err)
+	}
+	var m2 map[string]json.RawMessage
+	if err := json.Unmarshal(r2, &m2); err != nil {
+		t.Fatalf("unmarshal r2: %v", err)
+	}
+	if string(m2["artifact"]) != `"new"` {
+		t.Errorf("scalar update must overwrite object base: got %s", m2["artifact"])
+	}
+}
+
+// TestMergePayload_DeleteWithNull は update の null 値に対して既存挙動 (base を変更しない)
+// が維持されることを確認する。
+func TestMergePayload_DeleteWithNull(t *testing.T) {
+	base := json.RawMessage(`{"a":"keep","b":"also-keep"}`)
+	update := json.RawMessage(`{"a":null,"c":"new"}`)
+	result, err := projectspec.MergePayload(base, update)
+	if err != nil {
+		t.Fatalf("MergePayload: %v", err)
+	}
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(result, &merged); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if string(merged["a"]) != `"keep"` {
+		t.Errorf("null update should leave base value unchanged; got a=%s", merged["a"])
+	}
+	if string(merged["b"]) != `"also-keep"` {
+		t.Errorf("untouched key b should remain; got b=%s", merged["b"])
+	}
+	if string(merged["c"]) != `"new"` {
+		t.Errorf("new key c should be set; got c=%s", merged["c"])
+	}
+}
