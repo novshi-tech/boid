@@ -8,7 +8,7 @@ The unit of work that `boid` tracks from request to completion. Every task carri
 
 - A **status** — what stage the task is in right now. Tasks move through `pending → executing → done`, and end at `aborted` if they fail. The meaning of each state and the transition rules between them are covered in [State machine](state-machine.md).
 - A **payload** — a JSON document that accumulates information as the task progresses. Outputs that execution scripts leave behind are stored under predefined keys called *traits* (defined below).
-- A **behavior** — either `supervisor` or `executor`. It says whether the task is the orchestrator or the implementer, and it also determines whether the sandbox is read-only and whether a worktree is allocated.
+- A **behavior** — the name that identifies what kind of task this is. The behavior determines which hooks fire and whether the sandbox is read-only.
 - The **project** the task belongs to.
 
 Tasks are created with `boid task create` and observed with `boid task list`, `boid task show`, `boid task watch`, or the Web UI.
@@ -20,7 +20,7 @@ A directory that contains a `.boid/project.yaml` file. The project file declares
 - An `id` (the unique identifier `boid` uses for the project) and a `name` (display name).
 - An optional project-top `worktree: true` flag that gives each executor task its own git worktree.
 - The list of **kits** the project uses (`kits:`).
-- One or more **task_behaviors** — for `supervisor` and/or `executor`, an optional `default_instruction` template. Whether the sandbox is read-only / runs in a worktree is not set per behavior; it is derived from the behavior name combined with the project-top flag.
+- One or more **task_behaviors** — a map of behavior names to `default_instruction` templates. Names are free-form (free naming). Each behavior can set `readonly`; the default when omitted is `true` (fail-safe).
 
 You register a project with `boid project add <path>`. Any number of projects can coexist; each task belongs to exactly one of them.
 
@@ -37,12 +37,15 @@ Workspaces are purely classification metadata — they do not affect sandbox con
 
 A `task_behaviors` entry, naming one kind of task the project supports. When you create a task and pick a behavior name, `boid` decides the isolation level for the task and loads the hooks bound to it, then fires them while the task is in `executing`.
 
-**Only two names are supported**:
+**Since Track A2, behavior names are free** — any name is valid. You can use `plan` / `dev` / `review` or anything else that fits your project's vocabulary.
 
-- **`supervisor`** — readonly orchestrator. Reads a request, decides what child tasks are needed, creates them, monitors them, integrates results.
-- **`executor`** — writable implementer. Receives a single focused task and produces an artifact (commit / PR / payload trait).
+- `readonly` defaults to **`true`** (fail-safe). Set `readonly: false` explicitly for a writable sandbox.
+- `default_task_behavior` is a new top-level key that sets the behavior used by `boid task create` when `--behavior` is omitted.
+- `supervisor` and `executor` remain as backwards-compatible aliases but are now **deprecated**. The daemon emits a warning on startup when they are detected.
 
 `boid` runs a single state machine regardless of behavior. Different task shapes come from which hooks a behavior wires in, and from how failures are recovered: either by `reopen`ing the task with a new instruction, or by spawning a fresh task. The harness does not encode a verification loop — failure detection and the recovery plan live in the agent's instruction text.
+
+For the full migration procedure and a `readonly` default table, see the [task_behaviors migration guide](../../ja/reference/task-behavior-migration.md) (Japanese).
 
 ## Payload and traits
 
@@ -79,6 +82,30 @@ On disk a kit is a directory holding a `kit.yaml` alongside the relevant scripts
 A record of a single hook invocation. Each job carries its own status (`running` / `success` / `failed`) and an exit code. "Watching a task" really means watching the jobs attached to that task come and go.
 
 `boid job list --task <id>` and `boid job show <id>` are the primary inspection commands.
+
+## Session
+
+A **session** is an interactive job that is not tied to any task. You start one with `boid agent <harness>`, which attaches a PTY to your terminal. Valid harness values are `claude`, `codex`, `opencode`, and `shell`.
+
+```bash
+boid agent claude   -p <project>                        # start a Claude Code session
+boid agent shell    -p <project>                        # start a shell session
+boid agent claude   -p <project> --resume <session-id> # reattach to an existing session
+```
+
+### Sessions vs. tasks
+
+| | Task | Session |
+|---|---|---|
+| Start | `boid task create` | `boid agent <harness>` |
+| Tracking | status / payload / instructions | none |
+| State machine | `pending → executing → done` | none (running only) |
+| Config | behavior (hooks / kits / readonly …) | project-level traits only |
+| Use case | autonomous long-running work | interactive or exploratory work |
+
+A session inherits the project's `env`, `host_commands`, `additional_bindings`, and `secret_namespace` traits. It does not use any behavior definition.
+
+To stop a session, exit the agent or run `boid agent stop <job-id>`. Closing the browser does not kill the session process — you can reattach from the Web UI.
 
 ## Sandbox
 

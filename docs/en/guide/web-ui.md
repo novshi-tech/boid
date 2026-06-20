@@ -121,12 +121,41 @@ Visit `https://boid.example.com`, enter the pairing code from `boid web pair`, a
 - Cloudflare Access can be layered on top of the tunnel for an additional auth check (email or service token), if you want belt-and-suspenders.
 - Revoke any device you no longer use. There is no inactivity timeout shorter than 30 days.
 
+## Sessions
+
+A session is a running job that is not tied to any task — started via `boid agent` or the Web UI's [New Session] dialog. The mental model is similar to `tmux ls`: interactive sessions that are currently running and can be reattached at any time.
+
+### Session list (/sessions)
+
+Click **Sessions** in the global nav. The page shows only **currently running sessions** across all projects. Finished sessions disappear from the list (no history is kept).
+
+Click any row to navigate to `/jobs/{id}` and reattach to the agent's terminal.
+
+### New session (/sessions/new)
+
+Click **Create** at the bottom right of the sessions list, or navigate to `/sessions/new` directly.
+
+1. **Select a project** — the harness form appears once you pick one.
+2. **Select a harness** — `claude`, `codex`, `opencode`, or `shell`.
+3. **Instruction (optional)** — a prompt delivered as the first turn. Leave empty to use the harness default.
+4. **readonly checkbox** — check to mount the project directory read-only (default: writable).
+5. **Session name (optional)** — the label shown in the sessions list.
+6. Click **Start session**. The browser redirects to `/jobs/{id}/terminal` automatically.
+
+### CLI equivalent
+
+```bash
+boid agent claude -p <project>   # same as [New Session] from the Web UI
+```
+
 ## Pages
 
 The current Web UI covers:
 
 - **Task list** with filters (status, behavior, project)
 - **Task detail** with payload, jobs, and inline actions
+- **Session list** (running task-less jobs across all projects)
+- **New session** (pick a project and harness, then launch)
 - **Project list / detail**
 - **Job list / detail** with inline interactive terminal (xterm.js, live attach via `GET /api/jobs/{id}/attach/ws`)
 - **Pairing / login** flow

@@ -121,12 +121,41 @@ boid web revoke-all              # 全部失効
 - 念のため、 Cloudflare Access (メール / service token 認証) をトンネルの上に重ねるとより安全です
 - 使わなくなったデバイスは revoke してください。 30 日より短いアイドルタイムアウトはありません
 
+## セッション
+
+セッションとは、 タスクに紐づかない実行中のジョブです (`boid agent` コマンドや Web UI の [New Session] で起動したもの)。 `tmux ls` に近いモデルで、 「今走っていて attach し直せる対話セッション」を表します。
+
+### セッション一覧 (/sessions)
+
+グローバルナビの **Sessions** リンクから開きます。**現在 running 状態のセッションのみ**を全プロジェクト横断で表示します。 完了したセッションは一覧から消えます (履歴は表示しません)。
+
+各行をクリックすると `/jobs/{id}` のターミナル画面に遷移し、 エージェントの出力に再 attach できます。
+
+### 新規セッション (/sessions/new)
+
+一覧右下の **Create** ボタン、 または `/sessions/new` に直接アクセスします。
+
+1. **プロジェクトを選択** — ドロップダウンで絞り込むとフォームが展開します
+2. **Harness を選択** — `claude` / `codex` / `opencode` / `shell` のいずれかを選びます
+3. **Instruction (任意)** — 最初のターンに渡すプロンプト。 空欄ならハーネスのデフォルト起動になります
+4. **readonly チェックボックス** — チェックするとプロジェクトディレクトリが読み取り専用になります (既定: writable)
+5. **Session name (任意)** — 一覧での表示ラベル
+6. **Start session** ボタンで起動、 `/jobs/{id}/terminal` に自動遷移します
+
+### CLI との対称性
+
+```bash
+boid agent claude -p <project>   # Web UI の New Session と同じ操作をターミナルから
+```
+
 ## ページ
 
 現在の Web UI は以下に対応しています。
 
 - **タスク一覧** (status / behavior / project でフィルタ)
 - **タスク詳細** (payload / job / インライン action)
+- **セッション一覧** (running の task-less job を全プロジェクト横断表示)
+- **新規セッション** (プロジェクト + ハーネスを選んで起動)
 - **プロジェクト一覧・詳細**
 - **ジョブ一覧・詳細** インラインインタラクティブ端末付き (xterm.js、`GET /api/jobs/{id}/attach/ws` で live attach)
 - **ペアリング / ログイン** フロー
