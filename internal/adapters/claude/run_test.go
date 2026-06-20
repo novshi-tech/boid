@@ -10,51 +10,33 @@ import (
 )
 
 func TestSelectPrompt_UserAnswerWins(t *testing.T) {
-	got := selectPrompt(false, true, "reply text", "supervisor", "daemon_restart")
+	got := selectPrompt(false, true, "reply text", "daemon_restart")
 	if got != "reply text" {
 		t.Errorf("got %q, want UserAnswer to take precedence", got)
 	}
 }
 
 func TestSelectPrompt_DaemonRestartResume(t *testing.T) {
-	got := selectPrompt(false, true, "", "executor", "daemon_restart")
+	got := selectPrompt(false, true, "", "daemon_restart")
 	if got != daemonRestartResumePrompt {
 		t.Errorf("got %q, want daemonRestartResumePrompt", got)
 	}
 }
 
 func TestSelectPrompt_NormalResume(t *testing.T) {
-	got := selectPrompt(false, true, "", "executor", "")
+	got := selectPrompt(false, true, "", "")
 	if got != resumePrompt {
 		t.Errorf("got %q, want resumePrompt", got)
 	}
 }
 
-func TestSelectPrompt_FreshSupervisor(t *testing.T) {
-	got := selectPrompt(false, false, "", "supervisor", "")
-	if got != "/boid-supervisor" {
-		t.Errorf("got %q, want /boid-supervisor", got)
-	}
-}
-
-func TestSelectPrompt_FreshExecutor(t *testing.T) {
-	got := selectPrompt(false, false, "", "executor", "")
-	if got != "/boid-executor" {
-		t.Errorf("got %q, want /boid-executor", got)
-	}
-}
-
-func TestSelectPrompt_FreshUnknownBehaviorFallsBack(t *testing.T) {
-	got := selectPrompt(false, false, "", "research", "")
-	if got != "/boid-sandbox" {
-		t.Errorf("got %q, want /boid-sandbox fallback", got)
-	}
-}
-
-func TestSelectPrompt_FreshEmptyBehaviorFallsBack(t *testing.T) {
-	got := selectPrompt(false, false, "", "", "")
-	if got != "/boid-sandbox" {
-		t.Errorf("got %q, want /boid-sandbox fallback for empty behaviour", got)
+// Fresh task-mode start (any behavior, free-naming era) bootstraps via the
+// unified /boid-task skill. Mode determination happens inside the skill from
+// environment.yaml `readonly`, so the prompt does not branch on behavior name.
+func TestSelectPrompt_FreshReturnsTaskSkill(t *testing.T) {
+	got := selectPrompt(false, false, "", "")
+	if got != "/boid-task" {
+		t.Errorf("got %q, want /boid-task", got)
 	}
 }
 
@@ -62,7 +44,7 @@ func TestSelectPrompt_FreshEmptyBehaviorFallsBack(t *testing.T) {
 // skill bootstrap. A user typed `boid agent claude -p <project>` to open a
 // blank chat, not to dispatch behaviour-driven work.
 func TestSelectPrompt_SessionFreshReturnsEmpty(t *testing.T) {
-	got := selectPrompt(true, false, "", "", "")
+	got := selectPrompt(true, false, "", "")
 	if got != "" {
 		t.Errorf("got %q, want empty prompt for fresh session", got)
 	}
@@ -71,7 +53,7 @@ func TestSelectPrompt_SessionFreshReturnsEmpty(t *testing.T) {
 // Session mode still honours an explicit --instruction (delivered via
 // BOID_USER_ANSWER).
 func TestSelectPrompt_SessionWithInstructionDelivers(t *testing.T) {
-	got := selectPrompt(true, false, "fix bug X", "", "")
+	got := selectPrompt(true, false, "fix bug X", "")
 	if got != "fix bug X" {
 		t.Errorf("got %q, want instruction text to pass through", got)
 	}
@@ -80,7 +62,7 @@ func TestSelectPrompt_SessionWithInstructionDelivers(t *testing.T) {
 // Session resume retains the resumePrompt re-read cue — once a session has
 // state, the agent still needs to re-read context on wakeup.
 func TestSelectPrompt_SessionResumeUsesResumePrompt(t *testing.T) {
-	got := selectPrompt(true, true, "", "", "")
+	got := selectPrompt(true, true, "", "")
 	if got != resumePrompt {
 		t.Errorf("got %q, want resumePrompt for session resume", got)
 	}
@@ -164,7 +146,7 @@ func TestUpdateSessions_PreservesOrder(t *testing.T) {
 }
 
 func TestBuildClaudeArgs_FreshSession(t *testing.T) {
-	args := buildClaudeArgs(false, "sess-1", "claude-opus-4-8", "/boid-supervisor", taskSystemPrompt)
+	args := buildClaudeArgs(false, "sess-1", "claude-opus-4-8", "/boid-task", taskSystemPrompt)
 
 	wantHead := []string{
 		"claude",
@@ -173,7 +155,7 @@ func TestBuildClaudeArgs_FreshSession(t *testing.T) {
 		"--session-id", "sess-1",
 		"--model", "claude-opus-4-8",
 		"--append-system-prompt", taskSystemPrompt,
-		"/boid-supervisor",
+		"/boid-task",
 	}
 	if !reflect.DeepEqual(args, wantHead) {
 		t.Errorf("got %v, want %v", args, wantHead)
@@ -197,7 +179,7 @@ func TestBuildClaudeArgs_Resume(t *testing.T) {
 }
 
 func TestBuildClaudeArgs_NoModelOmitsFlag(t *testing.T) {
-	args := buildClaudeArgs(false, "sess-1", "", "/boid-sandbox", taskSystemPrompt)
+	args := buildClaudeArgs(false, "sess-1", "", "/boid-task", taskSystemPrompt)
 	for i, a := range args {
 		if a == "--model" {
 			t.Errorf("unexpected --model flag at %d: %v", i, args)
@@ -208,9 +190,9 @@ func TestBuildClaudeArgs_NoModelOmitsFlag(t *testing.T) {
 func TestBuildClaudeArgs_PromptIsLast(t *testing.T) {
 	// Claude binary treats the trailing positional as the prompt; if it
 	// slips earlier the agent will not see it.
-	args := buildClaudeArgs(false, "sess-1", "claude-opus-4-8", "/boid-executor", taskSystemPrompt)
-	if args[len(args)-1] != "/boid-executor" {
-		t.Errorf("last arg = %q, want prompt /boid-executor", args[len(args)-1])
+	args := buildClaudeArgs(false, "sess-1", "claude-opus-4-8", "/boid-task", taskSystemPrompt)
+	if args[len(args)-1] != "/boid-task" {
+		t.Errorf("last arg = %q, want prompt /boid-task", args[len(args)-1])
 	}
 }
 

@@ -46,7 +46,7 @@
 
 ### サブタスクの生成
 
-統括系の behavior (`supervisor`) は payload trait に書く形ではなく、 hook から `boid task create` builtin を直接呼び出してサブタスクを登録します。 詳細は [`/boid-supervisor` SKILL](../../../internal/skills/data/boid-supervisor/SKILL.md) を参照してください。
+統括系の behavior (`supervisor`) は payload trait に書く形ではなく、 hook から `boid task create` builtin を直接呼び出してサブタスクを登録します。 詳細は [`/boid-task` SKILL — Supervisor Mode](../../../internal/skills/data/boid-task/SKILL.md) を参照してください。
 
 ## 自動算出される値
 

@@ -5,7 +5,7 @@ description: >
   起動コンテキストを自動検出し、タスクコンテキストがある場合は対話的なタスク管理モード
   （description / instructions 更新、notify --ask への回答）で動作し、コンテキストがない
   場合は外部から supervisor タスクを作成・追跡する外部オーケストレーションモードで動作する。
-  `boid-discuss` の機能を吸収し、CLI / Web UI Commands ボタン両対応の統合 entry point。
+  CLI / Web UI Commands ボタン両対応の統合 entry point。
 ---
 
 # boid-orchestrate — CLI / Web UI 両対応の統合 entry point
@@ -108,7 +108,7 @@ fi
 ### やってはいけないこと
 
 - status 遷移（done / aborted）を勝手に行わない（ユーザーが reopen で明示）
-- 子タスクを作らない（それは boid-supervisor の役割）
+- 子タスクを作らない（それは `/boid-task` の Supervisor Mode の役割）
 - 対象タスク以外のタスクを変更しない
 
 ### セッション終了
@@ -123,11 +123,11 @@ PTY が閉じることで exec job が完了する。
 `~/.boid/context/task.yaml` が存在しない場合はこのモードで動作する。
 外部セッション（`BOID_TASK_ID` がない状態）から supervisor タスクを作成し、完了まで追跡する。
 
-> **このスキルは `/boid-supervisor` と何が違うか**
+> **このスキルは `/boid-task` と何が違うか**
 >
 > | スキル | 動作コンテキスト | 作るタスクの親 |
 > |---|---|---|
-> | `/boid-supervisor` | タスク内部（`BOID_TASK_ID` あり、`~/.boid/context/*.yaml` あり） | 自分の子タスク |
+> | `/boid-task` | タスク内部（`BOID_TASK_ID` あり、`~/.boid/context/*.yaml` あり） | 自分の子タスク |
 > | `/boid-orchestrate` | タスク外部（`BOID_TASK_ID` なし、context ファイルなし） | root タスク（親なし） |
 >
 > `boid exec` セッションや一般の project command セッションなど、タスクコンテキストが
@@ -159,8 +159,8 @@ boid project show 2>/dev/null || echo "no active project"
 #### 2. タイトルと description を整える
 
 委譲する作業の title と description を決める。description には実装の詳細・期待する
-成果物・参照すべきファイルなどを含める。大きなタスクは事前に `/boid-supervisor` 相当の
-分解計画を立ててから description に落とすとよい。
+成果物・参照すべきファイルなどを含める。大きなタスクは事前に `/boid-task` の Supervisor
+Mode 相当の分解計画を立ててから description に落とすとよい。
 
 #### 3. supervisor タスクを作成する
 
@@ -303,6 +303,4 @@ echo "タスク作成: $TASK_ID"
 
 ## 関連スキル
 
-- [`/boid-supervisor`](../boid-supervisor/SKILL.md) — タスク内部で子タスクを作成・監視する（タスクコンテキストあり）
-- [`/boid-executor`](../boid-executor/SKILL.md) — タスク内部でコードを実装してコミットする
-- [`/boid-task`](../boid-task/SKILL.md) — supervisor / executor の統合汎用スキル
+- [`/boid-task`](../boid-task/SKILL.md) — タスク内部で動く統合スキル。Supervisor Mode（子タスクの作成・監視）と Executor Mode（実装してコミット）を `environment.yaml` の `readonly` フラグで切り替える。

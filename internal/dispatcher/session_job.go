@@ -37,7 +37,8 @@ type SessionJobInput struct {
 	// WebUI Session dialog's text field). When non-empty it is plumbed
 	// through RunContext.UserAnswer so the adapter's existing "user reply"
 	// path delivers it as the first turn of input. Empty leaves the adapter
-	// to pick its default bootstrap (e.g. /boid-sandbox skill for claude).
+	// to pick its default bootstrap (no positional for session mode on claude,
+	// since the /boid-task skill is meaningless without a task.yaml).
 	Instruction string
 
 	// Readonly controls Visibility.Writable. Sessions default to writable

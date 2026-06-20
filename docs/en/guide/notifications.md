@@ -55,7 +55,7 @@ Hook-launched agent sessions always run interactively on a PTY, so there is no n
 
 Immediately before notify, the agent emits the question body (options, context, decision criteria) to the session so the user can read it in the Web UI session viewer and respond there.
 
-For the full calling policy, see the "いつ notify を呼ぶか" (when to call notify) section in [`/boid-supervisor` SKILL.md](../../../internal/skills/data/boid-supervisor/SKILL.md).
+For the full calling policy, see the "When to ask (plan approval)" section under Supervisor Mode in [`/boid-task` SKILL.md](../../../internal/skills/data/boid-task/SKILL.md).
 
 ## Guards on `notify --done`
 

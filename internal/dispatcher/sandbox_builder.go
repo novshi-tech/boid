@@ -102,13 +102,15 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		setIfNonEmpty(env, "BOID_MODEL", inst.Model)
 		env["BOID_INVOKED_ROLE"] = inst.Role
 		env["BOID_INVOKED_NAME"] = inst.Name
-		// BOID_INVOKED_BEHAVIOR drives the agent runner's skill selection
-		// (/boid-executor vs /boid-supervisor). Canonicalise here so deprecated
-		// aliases (dev/plan) resolve to the canonical skill — the runner only
-		// knows canonical names and falls back to /boid-sandbox otherwise.
+		// BOID_INVOKED_BEHAVIOR carries the resolved (canonical) behavior name
+		// for the runner / hook scripts. Skill selection no longer branches on
+		// this — every task agent bootstraps via /boid-task and determines
+		// supervisor/executor mode from environment.yaml `readonly`. The env
+		// var is still exported for legacy run-agent.py and any consumer that
+		// wants to log / branch on behavior name.
 		// (Previously this exported BOID_INVOKED_TYPE = inst.Type, but that
 		// carried the instruction phase — always "execution" — which the runner
-		// mistook for a behavior name and so always hit the /boid-sandbox shim.)
+		// mistook for a behavior name.)
 		if spec.Task != nil {
 			canonical, _ := orchestrator.CanonicalBehaviorName(spec.Task.Behavior)
 			env["BOID_INVOKED_BEHAVIOR"] = canonical
@@ -825,7 +827,7 @@ type environmentHostCommand struct {
 type environmentDoc struct {
 	// Top-level fields kept for backward compatibility with skills that match
 	// `readonly: true` / `tools:` / `network.restricted` by literal field name.
-	// Removing them would break /boid-executor & /boid-task dispatch logic.
+	// Removing them would break /boid-task dispatch logic.
 	Readonly          bool                    `yaml:"readonly"`
 	Worktree          bool                    `yaml:"worktree"`
 	Network           environmentNetwork      `yaml:"network"`

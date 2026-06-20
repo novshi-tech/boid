@@ -333,9 +333,9 @@ func (s *TaskAppService) verifyDoneClaim(ctx context.Context, task *orchestrator
 }
 
 // releaseClaim extracts the structured release report
-// (payload.artifact.report.release) the boid-supervisor skill asks agents to
-// populate from real git output before `notify --done`. Missing or malformed
-// fields yield zero values, which callers treat as "nothing to verify".
+// (payload.artifact.report.release) the boid-task skill (Supervisor Mode) asks
+// agents to populate from real git output before `notify --done`. Missing or
+// malformed fields yield zero values, which callers treat as "nothing to verify".
 func releaseClaim(payload json.RawMessage) (commit, branch string, pushed bool) {
 	if len(payload) == 0 {
 		return "", "", false

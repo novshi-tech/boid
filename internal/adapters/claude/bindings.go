@@ -16,7 +16,7 @@ import (
 //   - ~/.claude                  (rw, dir) — claude config / state
 //   - ~/.claude.json             (rw, file) — claude main settings
 //   - ~/.local/share/boid/skills/<name> → ~/.claude/skills/<name> per embedded
-//     skill so /boid-supervisor / /boid-executor / ... resolve inside claude.
+//     skill so /boid-task / /boid-orchestrate / /boid-web resolve inside claude.
 //
 // All entries are Optional so a missing source on the host is silently
 // skipped (the dispatcher converts Optional → shell-level if-guard, matching

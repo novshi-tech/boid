@@ -46,7 +46,7 @@ The `awaiting` trait is managed exclusively by `boid` core and the `ApplyAction(
 
 ### Subtask creation
 
-Supervisor behaviors no longer emit subtasks via a payload trait. Instead the hook calls the `boid task create` builtin directly. See the [`/boid-supervisor` SKILL](../../../internal/skills/data/boid-supervisor/SKILL.md) for the typical shape.
+Supervisor behaviors no longer emit subtasks via a payload trait. Instead the hook calls the `boid task create` builtin directly. See the [`/boid-task` SKILL — Supervisor Mode](../../../internal/skills/data/boid-task/SKILL.md) for the typical shape.
 
 ## Computed values
 
