@@ -416,6 +416,16 @@ func (s *TaskAppService) AnswerTask(ctx context.Context, taskID, questionID, ans
 			Message: fmt.Sprintf("task is not awaiting (status: %s)", task.Status),
 		}
 	}
+
+	// Blocking mode (boid task ask): the agent is still alive, parked inside a
+	// broker RPC. Hand the answer straight to it via the registry and flip the
+	// task back to executing WITHOUT dispatching anything — there is no exited
+	// agent to resume. A missing Mode means the legacy session_resume path
+	// (notify --ask), handled below, so existing awaiting records are unaffected.
+	if orchestrator.GetAwaitingPayload(task.Payload).Mode == orchestrator.AwaitingModeBlocking {
+		return s.answerBlocking(task, answer)
+	}
+
 	if s.Workflow == nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
 	}

@@ -76,7 +76,10 @@ The `readonly` flag is auto-set by the daemon from the behavior name during the
 compatibility period. Reading it from `environment.yaml` is always safe and will
 remain the sole ground truth after Track A2 (free naming) ships.
 
-After reading context, check `$BOID_USER_ANSWER`:
+After reading context, check `$BOID_USER_ANSWER`. This is set **only** when
+resuming from the legacy `notify --ask` path; the preferred blocking
+`boid task ask` returns its answer inline (same turn) and never sets it — see
+"Asking your owner" below.
 
 ```bash
 if [ -n "$BOID_USER_ANSWER" ]; then
@@ -117,30 +120,39 @@ exit leaves the task stuck in `executing` with no signal to the owner.
 
 ### Asking your owner (mid-flight Q&A)
 
-```bash
-boid task notify "$BOID_TASK_ID" \
-  --message "<short summary for push notification>" \
-  --ask "<full question body>"
-```
-
-Transitions to `awaiting`. For child tasks the parent supervisor picks it up; for
-root tasks the user is notified directly. **Stop generating after the call
-returns** — no sentinel, no explicit exit.
-
-On resume, branch on `$BOID_USER_ANSWER`:
+Prefer the **blocking** form: `boid task ask` keeps your turn alive and returns
+the answer on stdout. No exit, no resume, no `$BOID_USER_ANSWER` — capture it and
+branch:
 
 ```bash
-if [ -n "$BOID_USER_ANSWER" ]; then
-  case "$BOID_USER_ANSWER" in
-    A|*approve*|*proceed*) ... ;;
-    B|*revise*)            ... ;;
-    *)                     ... ;;
-  esac
-fi
+ANSWER=$(boid task ask "<full question body>")
+case "$ANSWER" in
+  *approve*|*proceed*) ... ;;
+  *revise*)            ... ;;
+  *)                   ... ;;
+esac
 ```
 
-`$BOID_QUESTION_ID` holds the turn ID for correlation. Multiple Q&A rounds are
-fine — each `--ask` replaces the previous.
+`boid task ask` targets your own task (no id needed), transitions it to
+`awaiting`, and **blocks** until the user/supervisor answers — then the task
+returns to `executing` and the call prints the reply. For child tasks the parent
+supervisor answers (`boid task answer`); for root tasks the user is notified
+directly. There is no timeout (it waits indefinitely). Only one blocking ask per
+task at a time: a second concurrent `boid task ask` fails immediately with
+`task_ask: another question is pending`. This works under any harness — it never
+relies on session resume — so prefer it for portable Q&A.
+
+> **Legacy parity:** `boid task notify "$BOID_TASK_ID" --ask "<question>"` still
+> works and is retained. Unlike the blocking call, it **exits** your turn
+> (transition to `awaiting`); on the next invocation the reply arrives in
+> `$BOID_USER_ANSWER` (`$BOID_QUESTION_ID` holds the turn id) and you branch on it
+> as shown in Step 0. **Stop generating after a `notify --ask` returns** — no
+> sentinel, no explicit exit. Use this fallback only when a blocking call is
+> impractical.
+
+`boid task answer` (used by supervisors to reply to a child) handles both forms,
+so the supervisor Q&A guidance below is unchanged regardless of which the child
+used.
 
 **Never use `notify` without `--ask` for decision branches.** Bare `notify` is
 FYI-only and does not block.

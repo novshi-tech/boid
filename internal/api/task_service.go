@@ -20,6 +20,11 @@ type TaskAppService struct {
 	Projects    ProjectWorkDirLookup
 	RuntimesDir string
 	Notify      Notifier
+	// BlockingAsk coordinates harness-independent blocking Q&A (boid task ask).
+	// Shared with the sandbox boid builtin executor (which calls AskTaskBlocking)
+	// and the answer path (AnswerTask), so both halves of a blocking ask use the
+	// same in-memory registry. Nil disables blocking ask (notify --ask still works).
+	BlockingAsk *BlockingAskRegistry
 }
 
 // Notifier sends an agent-driven notification for a task. Implementations

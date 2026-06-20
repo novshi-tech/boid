@@ -71,6 +71,7 @@ const (
 	BoidOpTaskList   BoidOp = "task_list"
 	BoidOpTaskNotify BoidOp = "task_notify"
 	BoidOpTaskAnswer BoidOp = "task_answer"
+	BoidOpTaskAsk    BoidOp = "task_ask"
 	BoidOpTaskDelete BoidOp = "task_delete"
 )
 
@@ -119,6 +120,13 @@ type BoidRequest struct {
 
 	// task answer fields
 	Answer string `json:"answer,omitempty"`
+
+	// task ask fields. Question carries the blocking-RPC question text for
+	// `boid task ask <text>`. The broker holds the connection open until the
+	// answer arrives; the answer is returned verbatim in ExecResponse.Stdout
+	// (the boid builtin reply framing is ExecResponse, so no separate
+	// BoidResponse type is needed).
+	Question string `json:"question,omitempty"`
 
 	// task delete fields
 	Force bool `json:"force,omitempty"`

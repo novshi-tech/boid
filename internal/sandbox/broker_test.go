@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
@@ -68,7 +69,7 @@ type fakeBoidExecutor struct {
 	resp  *sandbox.ExecResponse
 }
 
-func (f *fakeBoidExecutor) ExecuteBoidBuiltin(_ sandbox.TokenContext, req *sandbox.BoidRequest) *sandbox.ExecResponse {
+func (f *fakeBoidExecutor) ExecuteBoidBuiltin(_ context.Context, _ sandbox.TokenContext, req *sandbox.BoidRequest) *sandbox.ExecResponse {
 	if req != nil {
 		f.calls = append(f.calls, *req)
 	}
@@ -658,6 +659,159 @@ func TestBroker_BoidBuiltinPolicy_HookRole(t *testing.T) {
 	})
 	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "not allowed") {
 		t.Fatalf("hook task create should be rejected, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+}
+
+// task_ask leaves TaskID empty in the shim; the broker fills it from the token
+// context (the agent's own task) before dispatching to the executor, and passes
+// the question through. The executor (not the broker) blocks for the answer.
+func TestBroker_TaskAsk_FillsTaskIDFromContext(t *testing.T) {
+	exec := &fakeBoidExecutor{resp: &sandbox.ExecResponse{Stdout: "go ahead"}}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	hookCtx := sandbox.TokenContext{
+		JobID:      "j1",
+		TaskID:     "t1",
+		ProjectID:  "p1",
+		Role:       testRoleHook,
+		ProjectDir: projectDir,
+	}
+	policies := map[string]sandbox.BuiltinPolicy{
+		"boid": {AllowedOps: map[string]struct{}{
+			string(sandbox.BoidOpTaskAsk): {},
+		}},
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, policies, hookCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:       sandbox.BoidOpTaskAsk,
+			Question: "Proceed?",
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if resp.Stdout != "go ahead" {
+		t.Fatalf("stdout = %q, want the executor's answer", resp.Stdout)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor calls = %d, want 1", len(exec.calls))
+	}
+	if exec.calls[0].Op != sandbox.BoidOpTaskAsk {
+		t.Fatalf("op = %q, want task_ask", exec.calls[0].Op)
+	}
+	if exec.calls[0].TaskID != "t1" {
+		t.Fatalf("task id = %q, want t1 (filled from token context)", exec.calls[0].TaskID)
+	}
+	if exec.calls[0].Question != "Proceed?" {
+		t.Fatalf("question = %q, want Proceed?", exec.calls[0].Question)
+	}
+}
+
+// A task_ask with no question (defensive: the shim already rejects this) is
+// refused by the broker before reaching the executor.
+func TestBroker_TaskAsk_RejectsEmptyQuestion(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	hookCtx := sandbox.TokenContext{
+		JobID:      "j1",
+		TaskID:     "t1",
+		ProjectID:  "p1",
+		Role:       testRoleHook,
+		ProjectDir: projectDir,
+	}
+	policies := map[string]sandbox.BuiltinPolicy{
+		"boid": {AllowedOps: map[string]struct{}{string(sandbox.BoidOpTaskAsk): {}}},
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, policies, hookCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpTaskAsk},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "requires a question") {
+		t.Fatalf("empty question should be rejected, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called for an invalid ask, got %d calls", len(exec.calls))
+	}
+}
+
+// ctxBlockingExecutor mimics the blocking AskTaskBlocking handler: it blocks
+// until its context is cancelled, signalling start and release so a test can
+// observe the broker's per-connection cancellation.
+type ctxBlockingExecutor struct {
+	started  chan struct{}
+	released chan struct{}
+}
+
+func (e *ctxBlockingExecutor) ExecuteBoidBuiltin(ctx context.Context, _ sandbox.TokenContext, _ *sandbox.BoidRequest) *sandbox.ExecResponse {
+	close(e.started)
+	<-ctx.Done()
+	close(e.released)
+	return &sandbox.ExecResponse{ExitCode: 1, Stderr: "canceled"}
+}
+
+// When the sandbox closes its connection mid-ask (process death), the broker's
+// connection-close watcher must cancel the request context so the blocking
+// handler unblocks instead of leaking. Exercises the live handleConn path.
+func TestBroker_TaskAsk_ConnCloseCancelsContext(t *testing.T) {
+	exec := &ctxBlockingExecutor{started: make(chan struct{}), released: make(chan struct{})}
+	sockPath := filepath.Join(t.TempDir(), "broker.sock")
+	broker := &sandbox.Broker{SocketPath: sockPath, BoidExecutor: exec}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := broker.Start(ctx); err != nil {
+		t.Fatalf("start broker: %v", err)
+	}
+
+	projectDir := t.TempDir()
+	policies := map[string]sandbox.BuiltinPolicy{
+		"boid": {AllowedOps: map[string]struct{}{string(sandbox.BoidOpTaskAsk): {}}},
+	}
+	token := broker.Register(nil, policies, sandbox.TokenContext{
+		JobID:      "j1",
+		TaskID:     "t1",
+		ProjectID:  "p1",
+		ProjectDir: projectDir,
+	})
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	req := sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpTaskAsk, Question: "Q?"},
+	}
+	if err := json.NewEncoder(conn).Encode(&req); err != nil {
+		t.Fatalf("encode request: %v", err)
+	}
+
+	select {
+	case <-exec.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("executor never started blocking")
+	}
+
+	// Simulate sandbox death: close the connection without reading the response.
+	conn.Close()
+
+	select {
+	case <-exec.released:
+		// good: the per-connection context was cancelled by the close watcher.
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocking executor was not cancelled when the connection closed")
 	}
 }
 

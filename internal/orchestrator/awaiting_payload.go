@@ -2,6 +2,21 @@ package orchestrator
 
 import "encoding/json"
 
+// Awaiting Q&A delivery modes. Mode selects how an answer reaches the agent:
+//
+//   - AwaitingModeSessionResume (default / empty): the agent exited on `notify
+//     --ask`; the answer is stored as PendingAnswer and a fresh `claude
+//     --resume` hook consumes it on the next dispatch. This is the legacy path
+//     and remains the behaviour when Mode is absent (existing records are not
+//     broken by the new field).
+//   - AwaitingModeBlocking: the agent is still alive, blocked inside a
+//     `boid task ask` broker RPC. The answer is handed back to it directly via
+//     the in-memory BlockingAskRegistry; no resume hook is dispatched.
+const (
+	AwaitingModeSessionResume = "session_resume"
+	AwaitingModeBlocking      = "blocking"
+)
+
 // AwaitingPayload holds the fields of the "awaiting" trait in task.Payload.
 //
 // Fields written by kits (via boid task notify --ask):
@@ -11,11 +26,19 @@ import "encoding/json"
 //
 // Fields written by boid (set when the user submits an answer):
 //   - PendingAnswer: the user's reply, consumed by the kit on next resume
+//
+// Mode/Source are optional and omitempty so existing awaiting records (which
+// predate these fields) deserialize unchanged. A missing Mode is treated as
+// AwaitingModeSessionResume (the historical default). Source is a placeholder
+// for future multi-agent messaging (who asked / who should answer); it is not
+// consumed by the current Q&A logic.
 type AwaitingPayload struct {
 	SessionID     string `json:"session_id,omitempty"`
 	Question      string `json:"question,omitempty"`
 	QuestionID    string `json:"question_id,omitempty"`
 	PendingAnswer string `json:"pending_answer,omitempty"`
+	Mode          string `json:"mode,omitempty"`
+	Source        string `json:"source,omitempty"`
 }
 
 // ClearPendingAnswer removes the pending_answer field from the awaiting trait

@@ -142,6 +142,88 @@ func TestRunBoidShim_AgentStopRejectsMissingArg(t *testing.T) {
 	}
 }
 
+// `boid task ask "<question>"` carries Op=task_ask + Question to the broker.
+// TaskID is intentionally empty — the broker fills it from the token context.
+func TestRunBoidShim_TaskAskSendsTypedRequest(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.Remove(sockPath)
+	})
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{Stdout: "approved"})
+	}()
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-ask")
+
+	resp, err := sandbox.RunBoidShim([]string{"task", "ask", "Proceed with the migration?"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+	if resp.Stdout != "approved" {
+		t.Fatalf("stdout = %q, want the answer 'approved'", resp.Stdout)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpTaskAsk {
+		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskAsk)
+	}
+	if req.Boid.Question != "Proceed with the migration?" {
+		t.Fatalf("question = %q, want the question text", req.Boid.Question)
+	}
+	if req.Boid.TaskID != "" {
+		t.Fatalf("task id = %q, want empty (broker fills from token context)", req.Boid.TaskID)
+	}
+}
+
+func TestRunBoidShim_TaskAskRejectsMissingQuestion(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/unused")
+	t.Setenv("BOID_BROKER_TOKEN", "tok")
+	_, err := sandbox.RunBoidShim([]string{"task", "ask"})
+	if err == nil {
+		t.Fatal("expected error for missing question")
+	}
+	if !strings.Contains(err.Error(), "requires a question") {
+		t.Fatalf("error = %v, want 'requires a question'", err)
+	}
+}
+
+func TestRunBoidShim_TaskAskRejectsFlags(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/unused")
+	t.Setenv("BOID_BROKER_TOKEN", "tok")
+	_, err := sandbox.RunBoidShim([]string{"task", "ask", "--mode", "x"})
+	if err == nil {
+		t.Fatal("expected error for unsupported flag")
+	}
+	if !strings.Contains(err.Error(), "unsupported flag") {
+		t.Fatalf("error = %v, want 'unsupported flag'", err)
+	}
+}
+
 func TestRunBoidShim_TaskCreateSendsTypedRequest(t *testing.T) {
 	dir := t.TempDir()
 	sockPath := filepath.Join(dir, "broker.sock")
@@ -222,7 +304,6 @@ func TestRunBoidShim_TaskCreateSendsTypedRequest(t *testing.T) {
 		t.Fatalf("payload = %s, want %s", string(createPatch.Payload), `{"name":"alice"}`)
 	}
 }
-
 
 func TestRunBoidShim_TaskCreatePropagatesBaseBranch(t *testing.T) {
 	dir := t.TempDir()
@@ -442,7 +523,7 @@ behavior_spec:
 	var createPatch struct {
 		Behavior     string `json:"behavior"`
 		BehaviorSpec *struct {
-			Name    string `json:"name"`
+			Name     string `json:"name"`
 			Worktree bool   `json:"worktree"`
 		} `json:"behavior_spec"`
 	}

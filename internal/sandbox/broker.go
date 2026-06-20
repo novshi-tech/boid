@@ -31,6 +31,20 @@ type Broker struct {
 	listener        net.Listener
 	mu              sync.RWMutex
 	registry        map[string]*tokenEntry
+	// lifecycleCtx is the context passed to Start. It parents every per-request
+	// context so a daemon shutdown cancels in-flight blocking ops (task_ask).
+	// nil when Start has not been called (e.g. tests that drive Handle directly),
+	// in which case baseContext falls back to context.Background().
+	lifecycleCtx context.Context
+}
+
+// baseContext returns the parent context for a request: the broker's lifecycle
+// context when running under Start, otherwise a background context.
+func (b *Broker) baseContext() context.Context {
+	if b.lifecycleCtx != nil {
+		return b.lifecycleCtx
+	}
+	return context.Background()
 }
 
 // resolveProjectRef applies the broker's ProjectResolver when configured.
@@ -126,6 +140,9 @@ func (b *Broker) Start(ctx context.Context) error {
 		return fmt.Errorf("listen: %w", err)
 	}
 	b.listener = ln
+	// Stored before the accept goroutine starts, so per-connection handlers
+	// (which only run after Accept) observe it without a data race.
+	b.lifecycleCtx = ctx
 
 	go func() {
 		for {
@@ -165,8 +182,40 @@ func (b *Broker) handleConn(conn net.Conn) {
 		return
 	}
 
-	resp := b.Handle(&req)
+	ctx := b.baseContext()
+	// A blocking ask holds this connection open until an answer arrives. Tie a
+	// per-connection context to the socket so that if the sandbox dies (or the
+	// daemon shuts down) the server-side wait unblocks instead of leaking.
+	if isBlockingAskRequest(&req) {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		go watchConnClose(conn, cancel)
+	}
+
+	resp := b.handle(ctx, &req)
 	json.NewEncoder(conn).Encode(resp)
+}
+
+// isBlockingAskRequest reports whether req is a `boid task ask` builtin call,
+// which the broker must handle by holding the connection open.
+func isBlockingAskRequest(req *ExecRequest) bool {
+	return req.Boid != nil && req.Boid.Op == BoidOpTaskAsk
+}
+
+// watchConnClose cancels the connection context when the peer closes the socket.
+// It only cancels on a read error (EOF / reset); stray bytes (e.g. a trailing
+// newline left by the request encoder) are ignored so a still-open connection is
+// never treated as closed. It exits when the read fails, which also happens when
+// handleConn's deferred Close runs after a normal response.
+func watchConnClose(conn net.Conn, cancel context.CancelFunc) {
+	buf := make([]byte, 64)
+	for {
+		if _, err := conn.Read(buf); err != nil {
+			cancel()
+			return
+		}
+	}
 }
 
 // sendStreamResponse converts a completed ExecResponse to the streaming chunk
@@ -183,7 +232,14 @@ func sendStreamResponse(conn net.Conn, resp *ExecResponse) {
 	_ = enc.Encode(&StreamChunk{Type: StreamTypeExit, ExitCode: resp.ExitCode})
 }
 
+// Handle dispatches a request using the broker's base context. Retained for
+// callers (mainly tests) that drive the broker synchronously without a
+// per-connection context; the live socket path uses handle with a request ctx.
 func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
+	return b.handle(b.baseContext(), req)
+}
+
+func (b *Broker) handle(ctx context.Context, req *ExecRequest) *ExecResponse {
 	b.mu.RLock()
 	entry, ok := b.registry[req.Token]
 	b.mu.RUnlock()
@@ -196,7 +252,7 @@ func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
 	// The shim only attaches req.Boid when the caller went through the boid
 	// CLI shim entry point.
 	if req.Boid != nil {
-		return b.handleBoidBuiltin(req, entry)
+		return b.handleBoidBuiltin(ctx, req, entry)
 	}
 
 	// Fetch builtin: broker-side HTTP GET dispatched via boid shim.
@@ -225,7 +281,7 @@ func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
 	return b.execCommand(req, def, entry)
 }
 
-func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecResponse {
+func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry *tokenEntry) *ExecResponse {
 	// req.Boid is guaranteed non-nil — Handle dispatches here only when the
 	// shim attaches a typed boid payload.
 	if !entry.hasBuiltinPolicy("boid") {
@@ -274,6 +330,19 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 	case BoidOpTaskGet:
 		if boidReq.TaskID == "" {
 			boidReq.TaskID = entry.Context.TaskID
+		}
+	case BoidOpTaskAsk:
+		// `boid task ask` targets the caller's own task; the shim leaves TaskID
+		// empty, so fill it from the token context (project authorization runs
+		// in the executor, as for task_get / task_notify).
+		if boidReq.TaskID == "" {
+			boidReq.TaskID = entry.Context.TaskID
+		}
+		if boidReq.TaskID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task ask requires a task id"}
+		}
+		if boidReq.Question == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task ask requires a question"}
 		}
 	case BoidOpTaskUpdate:
 		if boidReq.TaskID == "" {
@@ -406,7 +475,7 @@ func (b *Broker) handleBoidBuiltin(req *ExecRequest, entry *tokenEntry) *ExecRes
 	if b.BoidExecutor == nil {
 		return &ExecResponse{ExitCode: 1, Stderr: "boid builtin unavailable"}
 	}
-	return b.BoidExecutor.ExecuteBoidBuiltin(entry.Context, &boidReq)
+	return b.BoidExecutor.ExecuteBoidBuiltin(ctx, entry.Context, &boidReq)
 }
 
 // rewriteImportTaskProjectID replaces the "project_id" field of a task import
