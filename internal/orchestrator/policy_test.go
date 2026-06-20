@@ -90,6 +90,7 @@ func TestDefaultBuiltinPolicies_HookBoidOps(t *testing.T) {
 		OpBoidTaskList,
 		OpBoidTaskNotify,
 		OpBoidTaskAnswer,
+		OpBoidTaskAsk,
 		OpBoidTaskDelete,
 	}
 	if !opsEqual(boidP.AllowedOps, wantOps) {
