@@ -785,6 +785,59 @@ func TestRunBoidShim_TaskReopen_RequiresTaskID(t *testing.T) {
 	}
 }
 
+func TestRunBoidShim_TaskReopen_WithMessage(t *testing.T) {
+	sockPath, reqCh := newFakeBrokerSingle(t)
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-reopen-msg")
+
+	resp, err := sandbox.RunBoidShim([]string{
+		"task", "reopen", "task-abc",
+		"-m", "please fix the typo in section 3",
+	})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpTaskReopen {
+		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskReopen)
+	}
+	if req.Boid.TaskID != "task-abc" {
+		t.Fatalf("task id = %q, want task-abc", req.Boid.TaskID)
+	}
+	if req.Boid.Message != "please fix the typo in section 3" {
+		t.Fatalf("message = %q, want %q", req.Boid.Message, "please fix the typo in section 3")
+	}
+}
+
+func TestRunBoidShim_TaskReopen_WithLongMessageFlag(t *testing.T) {
+	sockPath, reqCh := newFakeBrokerSingle(t)
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-reopen-msg2")
+
+	resp, err := sandbox.RunBoidShim([]string{
+		"task", "reopen", "task-abc",
+		"--message=do over",
+	})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil || req.Boid.Message != "do over" {
+		t.Fatalf("message = %q, want %q", req.Boid.Message, "do over")
+	}
+}
+
 func TestParseBoidTaskImport_EmptyBatch(t *testing.T) {
 	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
 

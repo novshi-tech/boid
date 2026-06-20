@@ -15,13 +15,13 @@ import (
 )
 
 type boidBuiltinExecutor struct {
-	workflow  *api.TaskWorkflowService
+	workflow  api.WorkflowService
 	tasks     *api.TaskAppService
 	jobs      api.JobStore
 	logReader api.JobLogReader
 }
 
-func newBoidBuiltinExecutor(workflow *api.TaskWorkflowService, tasks *api.TaskAppService, jobs api.JobStore, logReader api.JobLogReader) sandbox.BoidExecutor {
+func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppService, jobs api.JobStore, logReader api.JobLogReader) sandbox.BoidExecutor {
 	if workflow == nil && tasks == nil {
 		return nil
 	}
@@ -163,7 +163,19 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(ctx sandbox.TokenContext, req *
 		if req.TaskID == "" {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task reopen requires a task id"}
 		}
-		if _, err := e.workflow.ApplyAction(context.Background(), req.TaskID, api.ApplyActionRequest{Type: "reopen"}); err != nil {
+		applyReq := api.ApplyActionRequest{Type: "reopen"}
+		if req.Message != "" {
+			payload, err := json.Marshal(map[string]any{
+				"instruction": map[string]any{
+					"message": req.Message,
+				},
+			})
+			if err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task reopen: marshal instruction: %s", err)}
+			}
+			applyReq.Payload = payload
+		}
+		if _, err := e.workflow.ApplyAction(context.Background(), req.TaskID, applyReq); err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{

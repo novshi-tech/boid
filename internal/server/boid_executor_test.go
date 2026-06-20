@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +15,37 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
+
+// recordingWorkflow is a minimal WorkflowService stub that records the last
+// ApplyAction call so reopen-payload tests can assert what the executor
+// forwarded.
+type recordingWorkflow struct {
+	mu             sync.Mutex
+	appliedTaskID  string
+	appliedReq     api.ApplyActionRequest
+	applyCallCount int
+	applyErr       error
+}
+
+func (w *recordingWorkflow) ApplyAction(_ context.Context, taskID string, req api.ApplyActionRequest) (*api.ActionApplication, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.appliedTaskID = taskID
+	w.appliedReq = req
+	w.applyCallCount++
+	if w.applyErr != nil {
+		return nil, w.applyErr
+	}
+	return &api.ActionApplication{Task: &orchestrator.Task{ID: taskID, Status: orchestrator.TaskStatusExecuting}}, nil
+}
+
+func (w *recordingWorkflow) CompleteJob(_ context.Context, _ string, _ api.JobDoneRequest) (*api.Job, error) {
+	return &api.Job{}, nil
+}
+
+func (w *recordingWorkflow) TriggerDependents(_ context.Context, _ string) {}
+
+func (w *recordingWorkflow) StopAgent(_ string) {}
 
 // recordingLifecycle implements api.JobLifecycle for boid_executor tests.
 // It records StopJobRuntime / SignalJobRuntime calls so tests can assert
@@ -947,6 +979,99 @@ func TestBoidBuiltinExecutor_ActionSend_Unavailable(t *testing.T) {
 	})
 	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "unavailable") {
 		t.Fatalf("expected unavailable error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+}
+
+// --- task.reopen executor tests ---
+
+func TestBoidBuiltinExecutor_TaskReopen_NoMessage_EmptyPayload(t *testing.T) {
+	wf := &recordingWorkflow{}
+	exec := &boidBuiltinExecutor{workflow: wf}
+	ctx := sandbox.TokenContext{TaskID: "task-1", ProjectID: "proj-1"}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:     sandbox.BoidOpTaskReopen,
+		TaskID: "task-1",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if wf.applyCallCount != 1 {
+		t.Fatalf("ApplyAction calls = %d, want 1", wf.applyCallCount)
+	}
+	if wf.appliedReq.Type != "reopen" {
+		t.Errorf("ApplyAction type = %q, want reopen", wf.appliedReq.Type)
+	}
+	if wf.appliedTaskID != "task-1" {
+		t.Errorf("ApplyAction taskID = %q, want task-1", wf.appliedTaskID)
+	}
+	if len(wf.appliedReq.Payload) != 0 {
+		t.Errorf("ApplyAction payload = %s, want empty (no message)", wf.appliedReq.Payload)
+	}
+}
+
+func TestBoidBuiltinExecutor_TaskReopen_WithMessage_BuildsInstructionPayload(t *testing.T) {
+	wf := &recordingWorkflow{}
+	exec := &boidBuiltinExecutor{workflow: wf}
+	ctx := sandbox.TokenContext{TaskID: "task-1", ProjectID: "proj-1"}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:      sandbox.BoidOpTaskReopen,
+		TaskID:  "task-1",
+		Message: "fix the typo in section 3",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if wf.applyCallCount != 1 {
+		t.Fatalf("ApplyAction calls = %d, want 1", wf.applyCallCount)
+	}
+	if wf.appliedReq.Type != "reopen" {
+		t.Errorf("ApplyAction type = %q, want reopen", wf.appliedReq.Type)
+	}
+	if len(wf.appliedReq.Payload) == 0 {
+		t.Fatal("ApplyAction payload is empty; expected instruction object")
+	}
+	var p struct {
+		Instruction struct {
+			Message string `json:"message"`
+		} `json:"instruction"`
+	}
+	if err := json.Unmarshal(wf.appliedReq.Payload, &p); err != nil {
+		t.Fatalf("payload unmarshal: %v (payload=%s)", err, wf.appliedReq.Payload)
+	}
+	if p.Instruction.Message != "fix the typo in section 3" {
+		t.Errorf("instruction.message = %q, want %q", p.Instruction.Message, "fix the typo in section 3")
+	}
+}
+
+func TestBoidBuiltinExecutor_TaskReopen_Unavailable(t *testing.T) {
+	exec := &boidBuiltinExecutor{workflow: nil}
+	ctx := sandbox.TokenContext{TaskID: "task-1", ProjectID: "proj-1"}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:     sandbox.BoidOpTaskReopen,
+		TaskID: "task-1",
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "unavailable") {
+		t.Fatalf("expected unavailable error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+}
+
+func TestBoidBuiltinExecutor_TaskReopen_RequiresTaskID(t *testing.T) {
+	wf := &recordingWorkflow{}
+	exec := &boidBuiltinExecutor{workflow: wf}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
+
+	resp := exec.ExecuteBoidBuiltin(ctx, &sandbox.BoidRequest{
+		Op:      sandbox.BoidOpTaskReopen,
+		Message: "ignored without task id",
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "task id") {
+		t.Fatalf("expected task id error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if wf.applyCallCount != 0 {
+		t.Errorf("ApplyAction should not be called when task id is missing (got %d calls)", wf.applyCallCount)
 	}
 }
 
