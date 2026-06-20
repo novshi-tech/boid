@@ -252,6 +252,10 @@ Control running agent jobs.
 
 | Command | Role |
 |---|---|
+| `boid agent claude   -p <project> [--resume <session-id>] [--instruction "..."] [--readonly] [--model M] [--name NAME] [--no-attach]` | Start a claude session inside the project sandbox and attach to its PTY. `--resume` resumes an existing session; `--no-attach` prints the job id and exits. |
+| `boid agent codex    -p <project> [same flags]` | Start a codex session. |
+| `boid agent opencode -p <project> [same flags]` | Start an opencode session. |
+| `boid agent shell    -p <project> [same flags]` | Start an arbitrary shell session (harness = shell adapter). |
 | `boid agent stop <job-id>` | Send SIGUSR1 to the agent process, requesting a graceful stop. |
 
 ## Shell completion
