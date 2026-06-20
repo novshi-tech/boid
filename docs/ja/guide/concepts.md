@@ -37,11 +37,11 @@
 
 プロジェクトの `task_behaviors` マップに並ぶ、 「タスクの種類」を表すエントリ。 タスク作成時に behavior 名を選ぶと、 `boid` はそのタスクの隔離レベルと、 紐付いた hook を読み込み、 `executing` 状態で発火します。
 
-**Track A2 から任意の名前 (free naming) が使えます。** behavior 名に制限はなく、 `plan` / `dev` / `review` のようにプロジェクトの文脈に合った名前をつけられます。
+**Track A2 から任意の名前 (free naming) が使えます。** behavior 名に制限はなく、 `review` / `lint` / `release-mgr` のようにプロジェクトの文脈に合った名前をつけられます。
 
 - `readonly` の既定値は **`true`** (fail-safe)。 サンドボックスを書き込み可能にするには `readonly: false` を明示してください
 - `default_task_behavior` トップレベルキーで `boid task create` のデフォルト behavior を指定できます
-- `supervisor` / `executor` は後方互換エイリアスとして引き続き動作しますが **deprecated** 扱いです。 デーモン起動時に WARN ログが出ます
+- `supervisor` / `executor` は **旧 canonical 名** で、 現在は project 固有の名前への移行が推奨されており **deprecated** 扱いです (デーモン起動時に WARN ログが出ます)。 なお `plan` / `dev` は `BehaviorAliases` で `supervisor` / `executor` に展開される予約名なので、 free naming の例としては使えません
 
 `boid` の状態機械は behavior に関わらず 1 種類だけです。 タスクの動作の違いは、 hook の組み合わせと、 失敗時に `reopen` で executing に戻して新しい instruction を渡すかどうかで表現します。 検証ループはハーネスではなく agent instruction 側の責務です。
 

@@ -37,11 +37,11 @@ Workspaces are purely classification metadata — they do not affect sandbox con
 
 A `task_behaviors` entry, naming one kind of task the project supports. When you create a task and pick a behavior name, `boid` decides the isolation level for the task and loads the hooks bound to it, then fires them while the task is in `executing`.
 
-**Since Track A2, behavior names are free** — any name is valid. You can use `plan` / `dev` / `review` or anything else that fits your project's vocabulary.
+**Since Track A2, behavior names are free** — any name is valid. You can use `review` / `lint` / `release-mgr` or anything else that fits your project's vocabulary.
 
 - `readonly` defaults to **`true`** (fail-safe). Set `readonly: false` explicitly for a writable sandbox.
 - `default_task_behavior` is a new top-level key that sets the behavior used by `boid task create` when `--behavior` is omitted.
-- `supervisor` and `executor` remain as backwards-compatible aliases but are now **deprecated**. The daemon emits a warning on startup when they are detected.
+- `supervisor` and `executor` are the **legacy canonical names**, now **deprecated** in favor of project-specific names. The daemon emits a warning on startup when they are detected. (The names `plan` and `dev` are reserved as `BehaviorAliases` mapping to `supervisor` / `executor` respectively, so they are unavailable as free-naming choices.)
 
 `boid` runs a single state machine regardless of behavior. Different task shapes come from which hooks a behavior wires in, and from how failures are recovered: either by `reopen`ing the task with a new instruction, or by spawning a fresh task. The harness does not encode a verification loop — failure detection and the recovery plan live in the agent's instruction text.
 
