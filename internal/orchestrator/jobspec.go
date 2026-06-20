@@ -91,8 +91,8 @@ type JobSpec struct {
 	// non-empty for every dispatched job:
 	//   - "shell" for hooks without an `agent:` declaration, every `boid
 	//     exec`, and the fall-through for unknown agents
-	//   - "claude" / "opencode" for the corresponding agent hooks and
-	//     user-initiated sessions
+	//   - "claude" / "codex" / "opencode" for the corresponding agent hooks
+	//     and user-initiated sessions
 	// dispatcher bridges this into sandbox.Spec.HarnessType and the
 	// runner-inner-child resolves the adapter via the registry.
 	HarnessType string

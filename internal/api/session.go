@@ -79,11 +79,11 @@ func (h *SessionHandler) dispatch(w http.ResponseWriter, r *http.Request, req St
 // "drop me into a sandbox shell" entry point — see `boid agent shell`.
 func validateHarnessType(harness string) string {
 	switch harness {
-	case "claude", "opencode", "shell":
+	case "claude", "codex", "opencode", "shell":
 		return ""
 	case "":
-		return "harness_type is required (claude / opencode / shell)"
+		return "harness_type is required (claude / codex / opencode / shell)"
 	default:
-		return fmt.Sprintf("unsupported harness_type %q (allowed: claude / opencode / shell)", harness)
+		return fmt.Sprintf("unsupported harness_type %q (allowed: claude / codex / opencode / shell)", harness)
 	}
 }

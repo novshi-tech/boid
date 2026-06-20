@@ -136,7 +136,7 @@ Click any row to navigate to `/jobs/{id}` and reattach to the agent's terminal.
 Click **Create** at the bottom right of the sessions list, or navigate to `/sessions/new` directly.
 
 1. **Select a project** — the harness form appears once you pick one.
-2. **Select a harness** — `claude`, `opencode`, or `shell`.
+2. **Select a harness** — `claude`, `codex`, `opencode`, or `shell`.
 3. **Instruction (optional)** — a prompt delivered as the first turn. Leave empty to use the harness default.
 4. **readonly checkbox** — check to mount the project directory read-only (default: writable).
 5. **Session name (optional)** — the label shown in the sessions list.

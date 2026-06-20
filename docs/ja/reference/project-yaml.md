@@ -260,7 +260,7 @@ default_instruction:
 
 | キー | 型 | 役割 |
 |---|---|---|
-| `agent` | string | この instruction を受け取る harness の識別子。`claude-code` は claude harness (boid 本体 builtin)、`opencode` は builtin opencode adapter、省略または未知値は shell adapter に fallback する |
+| `agent` | string | この instruction を受け取る harness の識別子。`claude-code` は claude harness (boid 本体 builtin)、`codex` は builtin codex adapter、`opencode` は builtin opencode adapter、省略または未知値は shell adapter に fallback する |
 | `name` | string | 同じ agent に複数 instruction を渡す場合の識別子 (省略可) |
 | `message` | string | agent に渡される指示文 |
 | `model` | string | agent が選ぶモデル名 (例: `opus`、 `sonnet`)。 kit 側で解釈される |
@@ -276,7 +276,7 @@ Phase 3-d (2026-06 リリース) で `commands:` map は廃止されました。
 | 旧 | 新 |
 |---|---|
 | `boid exec <project_id> <command-name>` で名前付き登録コマンドを起動 | `boid exec -p <project_id> -- <argv...>` で任意 argv を直渡し |
-| Web UI の **Commands** ボタンで claude セッションを起動 | Web UI の `/sessions/new` から harness (claude / opencode / shell) を選んでセッション起動。 同等の `POST /api/projects/{id}/sessions` も提供 |
+| Web UI の **Commands** ボタンで claude セッションを起動 | Web UI の `/sessions/new` から harness (claude / codex / opencode / shell) を選んでセッション起動。 同等の `POST /api/projects/{id}/sessions` も提供 |
 | task 詳細の **Commands** ボタンで behavior commands を実行 | task が要求する継続的な実行は behavior の hooks で記述する。 ad hoc な実行は task に紐付けず `boid exec` でよい |
 
 ## capabilities

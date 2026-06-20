@@ -12,6 +12,7 @@ package registry
 import (
 	"github.com/novshi-tech/boid/internal/adapters"
 	"github.com/novshi-tech/boid/internal/adapters/claude"
+	"github.com/novshi-tech/boid/internal/adapters/codex"
 	"github.com/novshi-tech/boid/internal/adapters/opencode"
 	"github.com/novshi-tech/boid/internal/adapters/shell"
 	"github.com/novshi-tech/boid/internal/sandbox"
@@ -31,6 +32,8 @@ func For(harness sandbox.HarnessType) adapters.HarnessAdapter {
 		return shell.New()
 	case sandbox.HarnessClaude:
 		return claude.New()
+	case sandbox.HarnessCodex:
+		return codex.New()
 	case sandbox.HarnessOpenCode:
 		return opencode.New()
 	default:

@@ -133,9 +133,9 @@ func TestEvaluate_InstructionsRouting_AgentMismatch(t *testing.T) {
 	}
 	hooks := []projectspec.Hook{
 		{
-			ID:       "run-opencode",
+			ID:       "run-codex",
 			Kind:     projectspec.HandlerKindAgent,
-			Agent: "opencode",
+			Agent: "codex",
 		},
 	}
 

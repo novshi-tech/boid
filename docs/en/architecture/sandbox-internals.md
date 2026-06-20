@@ -81,7 +81,7 @@ Main steps:
 - **`pivot_root`** — switches the root to `$ROOT`; the old root is pivoted to `/.old_root` then unmounted and removed.
 - **context files** — after `pivot_root`, writes `$HOME/.boid/context/{task,instructions,environment,payload}.{yaml,json}` from the spec.
 - **symlinks** — the `boid` shim is symlinked at `/opt/boid/bin/<command>` etc.
-- **`adapter.Run()`** — invokes the HarnessAdapter (claude / opencode / shell) to exec the agent, relay the stop signal (SIGUSR1 → SIGTERM to the agent), normalise the exit code, and post the broker job-done via `brokerclient`.
+- **`adapter.Run()`** — invokes the HarnessAdapter (claude / codex / opencode / shell) to exec the agent, relay the stop signal (SIGUSR1 → SIGTERM to the agent), normalise the exit code, and post the broker job-done via `brokerclient`.
 
 From inside the sandbox:
 

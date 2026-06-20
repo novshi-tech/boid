@@ -85,7 +85,7 @@ hook を 1 度実行した記録のこと。 job には独自の status (`runnin
 
 ## セッション (session)
 
-**セッション**は、 タスクに紐づかない対話的ジョブです。 `boid agent <harness>` で起動し、 ターミナルに PTY が attach されます。 `harness` には `claude` / `opencode` / `shell` のいずれかを指定します。
+**セッション**は、 タスクに紐づかない対話的ジョブです。 `boid agent <harness>` で起動し、 ターミナルに PTY が attach されます。 `harness` には `claude` / `codex` / `opencode` / `shell` のいずれかを指定します。
 
 ```bash
 boid agent claude   -p <project>   # Claude Code セッションを起動
