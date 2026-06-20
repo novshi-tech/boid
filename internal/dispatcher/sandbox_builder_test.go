@@ -9,6 +9,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"gopkg.in/yaml.v3"
 )
 
 // Interactive=true の hook job は PTY 上で動かす必要があるため、 PrimaryInput を
@@ -890,10 +891,7 @@ func TestContextFiles_PayloadWrittenForNonInteractiveHook(t *testing.T) {
 		nil,
 		inst,
 		primary,
-		orchestrator.Visibility{},
-		nil,
-		nil,
-		false,
+		EnvironmentInput{},
 	)
 
 	var gotJSON, gotYAML bool
@@ -931,10 +929,7 @@ func TestContextFiles_PayloadWrittenForInteractiveHook(t *testing.T) {
 		nil,
 		inst,
 		primary,
-		orchestrator.Visibility{},
-		nil,
-		nil,
-		false,
+		EnvironmentInput{},
 	)
 
 	var gotJSON bool
@@ -991,10 +986,7 @@ func TestContextFiles_NoPayloadFilesWhenPrimaryInputEmpty(t *testing.T) {
 		nil,
 		inst,
 		nil,
-		orchestrator.Visibility{},
-		nil,
-		nil,
-		false,
+		EnvironmentInput{},
 	)
 
 	for _, f := range files {
@@ -1097,6 +1089,202 @@ func TestBuildSandboxSpec_DockerProxy_DisabledWhenNoSocketPath(t *testing.T) {
 		if m.Target == dockerProxySandboxSocket {
 			t.Errorf("unexpected docker proxy mount present when ProxySocketPath is empty")
 		}
+	}
+}
+
+// parsedEnvDoc parses the YAML environment.yaml emitted by buildEnvironmentYAML
+// into a generic map for assertion in the tests below. Keeping it a map rather
+// than the typed environmentDoc keeps the tests robust to additive layout
+// changes — they only assert on what they care about.
+func parsedEnvDoc(t *testing.T, in EnvironmentInput) map[string]any {
+	t.Helper()
+	raw := buildEnvironmentYAML(in)
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(raw), &doc); err != nil {
+		t.Fatalf("unmarshal env yaml: %v\n----\n%s", err, raw)
+	}
+	return doc
+}
+
+// Skills downstream match on the literal top-level `readonly:` field. Renaming
+// or nesting it would silently break /boid-task and /boid-executor dispatch.
+func TestBuildEnvironmentYAML_BackcompatTopLevelFields(t *testing.T) {
+	doc := parsedEnvDoc(t, EnvironmentInput{
+		Visibility: orchestrator.Visibility{
+			ProjectDir: "/workspace/proj",
+			Writable:   false,
+			UseWorktree: true,
+		},
+		ProxyPort: 9001,
+	})
+
+	if doc["readonly"] != true {
+		t.Errorf("top-level readonly = %v, want true (skills match on this key)", doc["readonly"])
+	}
+	if doc["worktree"] != true {
+		t.Errorf("top-level worktree = %v, want true", doc["worktree"])
+	}
+	network, ok := doc["network"].(map[string]any)
+	if !ok {
+		t.Fatalf("network section is missing or wrong type: %T", doc["network"])
+	}
+	if network["restricted"] != true {
+		t.Errorf("network.restricted = %v, want true", network["restricted"])
+	}
+	if _, has := doc["tools"]; !has {
+		t.Error("top-level tools list must remain present for skill compatibility")
+	}
+}
+
+func TestBuildEnvironmentYAML_SandboxSectionPresent(t *testing.T) {
+	doc := parsedEnvDoc(t, EnvironmentInput{})
+	sb, ok := doc["sandbox"].(map[string]any)
+	if !ok {
+		t.Fatalf("sandbox section missing: %v", doc["sandbox"])
+	}
+	if sb["kind"] != "rootless-userns" {
+		t.Errorf("sandbox.kind = %v, want rootless-userns", sb["kind"])
+	}
+	if sb["pid_isolated"] != true {
+		t.Errorf("sandbox.pid_isolated = %v, want true", sb["pid_isolated"])
+	}
+	if sb["uid_inside"] != 0 {
+		t.Errorf("sandbox.uid_inside = %v, want 0", sb["uid_inside"])
+	}
+}
+
+func TestBuildEnvironmentYAML_NetworkProxyURLAndAllowedDomains(t *testing.T) {
+	doc := parsedEnvDoc(t, EnvironmentInput{
+		ProxyPort:      8118,
+		HostGatewayIP:  "10.0.2.2",
+		AllowedDomains: []string{"pypi.org", "github.com"},
+	})
+	network, ok := doc["network"].(map[string]any)
+	if !ok {
+		t.Fatalf("network section missing")
+	}
+	if network["proxy_url"] != "http://10.0.2.2:8118" {
+		t.Errorf("proxy_url = %v, want http://10.0.2.2:8118", network["proxy_url"])
+	}
+	if network["egress"] != "proxy-only" {
+		t.Errorf("egress = %v, want proxy-only", network["egress"])
+	}
+	if network["webfetch"] != "disabled" {
+		t.Errorf("webfetch = %v, want disabled", network["webfetch"])
+	}
+	allowed, ok := network["allowed_domains"].([]any)
+	if !ok || len(allowed) != 2 {
+		t.Fatalf("allowed_domains = %v, want 2 entries", network["allowed_domains"])
+	}
+	if allowed[0] != "pypi.org" || allowed[1] != "github.com" {
+		t.Errorf("allowed_domains order = %v, want [pypi.org, github.com]", allowed)
+	}
+}
+
+// When the proxy is off (e.g. unit-test wiring without a real proxy port) the
+// proxy_url / egress / webfetch fields must be absent so agents don't believe
+// there's a proxy enforcing rules that isn't there.
+func TestBuildEnvironmentYAML_ProxyOffOmitsProxyFields(t *testing.T) {
+	doc := parsedEnvDoc(t, EnvironmentInput{ProxyPort: 0})
+	network := doc["network"].(map[string]any)
+	if v, ok := network["proxy_url"]; ok {
+		t.Errorf("proxy_url should be absent when ProxyPort=0, got %v", v)
+	}
+	if v, ok := network["egress"]; ok {
+		t.Errorf("egress should be absent when ProxyPort=0, got %v", v)
+	}
+	if network["restricted"] != false {
+		t.Errorf("network.restricted = %v, want false", network["restricted"])
+	}
+}
+
+func TestBuildEnvironmentYAML_FilesystemReflectsVisibility(t *testing.T) {
+	bindings := []orchestrator.BindMount{
+		{Source: "/host/cli/claude", Target: "/usr/local/bin/claude", Mode: "", IsFile: true},
+		{Source: "/host/data", Target: "/data", Mode: "rw"},
+	}
+	kits := []string{"/host/.local/share/boid/kits/claude-code"}
+	doc := parsedEnvDoc(t, EnvironmentInput{
+		Visibility: orchestrator.Visibility{
+			ProjectDir:         "/workspace/proj",
+			Writable:           true,
+			UseWorktree:        false,
+			AdditionalBindings: bindings,
+			KitRoots:           kits,
+		},
+	})
+	fs, ok := doc["filesystem"].(map[string]any)
+	if !ok {
+		t.Fatalf("filesystem section missing")
+	}
+	if fs["project_dir"] != "/workspace/proj" {
+		t.Errorf("project_dir = %v", fs["project_dir"])
+	}
+	if fs["writable"] != true {
+		t.Errorf("writable = %v, want true", fs["writable"])
+	}
+	roots, ok := fs["kit_roots"].([]any)
+	if !ok || len(roots) != 1 || roots[0] != kits[0] {
+		t.Errorf("kit_roots = %v, want [%s]", fs["kit_roots"], kits[0])
+	}
+	binds, ok := fs["additional_bindings"].([]any)
+	if !ok || len(binds) != 2 {
+		t.Fatalf("additional_bindings = %v, want 2 entries", fs["additional_bindings"])
+	}
+	first := binds[0].(map[string]any)
+	if first["source"] != "/host/cli/claude" || first["mode"] != "ro" || first["is_file"] != true {
+		t.Errorf("first binding = %v, want source=/host/cli/claude mode=ro is_file=true", first)
+	}
+	second := binds[1].(map[string]any)
+	if second["mode"] != "rw" {
+		t.Errorf("second binding mode = %v, want rw", second["mode"])
+	}
+}
+
+func TestBuildEnvironmentYAML_SessionSectionOnlyForSessions(t *testing.T) {
+	// JobKindHook (task) -> no session section.
+	docTask := parsedEnvDoc(t, EnvironmentInput{
+		Kind:        orchestrator.JobKindHook,
+		HarnessType: "claude",
+		SessionID:   "ignored-for-tasks",
+		DisplayName: "executor",
+	})
+	if _, has := docTask["session"]; has {
+		t.Errorf("session section should be absent for JobKindHook, got %v", docTask["session"])
+	}
+
+	// JobKindSession -> session section reflects harness + id + name.
+	docSession := parsedEnvDoc(t, EnvironmentInput{
+		Kind:        orchestrator.JobKindSession,
+		HarnessType: "claude",
+		SessionID:   "abc-123",
+		DisplayName: "Claude session",
+	})
+	sess, ok := docSession["session"].(map[string]any)
+	if !ok {
+		t.Fatalf("session section missing for JobKindSession: %v", docSession["session"])
+	}
+	if sess["harness"] != "claude" || sess["id"] != "abc-123" || sess["display_name"] != "Claude session" {
+		t.Errorf("session = %v, want harness=claude id=abc-123 display_name=Claude session", sess)
+	}
+}
+
+func TestBuildEnvironmentYAML_HostCommandsSortedDeterministic(t *testing.T) {
+	in := EnvironmentInput{
+		HostCommands: map[string]orchestrator.CommandDef{
+			"gh":  {Name: "gh", AllowedSubcommands: []string{"pr", "issue"}},
+			"aws": {Name: "aws"},
+		},
+	}
+	doc := parsedEnvDoc(t, in)
+	hc, ok := doc["host_commands"].([]any)
+	if !ok || len(hc) != 2 {
+		t.Fatalf("host_commands = %v, want 2 entries", doc["host_commands"])
+	}
+	first := hc[0].(map[string]any)
+	second := hc[1].(map[string]any)
+	if first["name"] != "aws" || second["name"] != "gh" {
+		t.Errorf("host_commands order = [%v, %v], want [aws, gh]", first["name"], second["name"])
 	}
 }
 

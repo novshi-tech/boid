@@ -23,16 +23,26 @@ import (
 // Skill selection is keyed off InvokedBehavior, not this tag.
 const sessionType = "execution"
 
-// pauseSystemPrompt is appended to every claude run via --append-system-prompt.
-// It reminds the agent to call boid task notify before terminating so the
-// task never hangs in PTY input wait.
-const pauseSystemPrompt = "セッションを終える前に必ず `boid task notify \"$BOID_TASK_ID\"` を呼ぶこと。" +
+// taskSystemPrompt is appended to claude runs that drive a boid task lifecycle
+// (BOID_TASK_ID set, i.e. JobKindHook). It reminds the agent to call boid task
+// notify before terminating so the task never hangs in PTY input wait.
+const taskSystemPrompt = "セッションを終える前に必ず `boid task notify \"$BOID_TASK_ID\"` を呼ぶこと。" +
 	" 完了時は `--message \"<要約>\" --done \"<成果>\"`、 失敗時は" +
 	" `--message \"<要約>\" --fail \"<原因>\"`、 ユーザへの質問・判断要求時は" +
 	" `--message \"<コンテキスト>\" --ask \"<質問>\"` を使う。 呼ばずに応答を text" +
 	" のみで返すと、 claude が PTY で永遠に入力待ちになり task が hang する。" +
 	" notify 後は boid daemon が自動的にこのセッションを終了する。 詳細は" +
 	" `/boid-q-and-a` および `/boid-supervisor` / `/boid-executor` skill 参照。"
+
+// sessionSystemPrompt is appended to claude runs that are user-initiated
+// sessions (JobKindSession, no BOID_TASK_ID). These have no task to notify
+// and no behavior-driven instructions; the agent's only system-level cue is
+// where to find the sandbox constraints.
+const sessionSystemPrompt = "あなたは boid のサンドボックス内で起動されました。" +
+	" サンドボックスの制約 (network / filesystem の制限、 利用可能な builtin と" +
+	" host_commands、 git/gh などの quirk) は `~/.boid/context/environment.yaml`" +
+	" を読んで確認してください (sandbox / network / filesystem / host_commands /" +
+	" notes 節)。 これは固定の参照ファイルで、 ユーザに尋ねる必要はありません。"
 
 // resumePrompt is used when resuming an existing session without a user
 // answer (e.g. reopen with new instruction). It counters claude's implicit
@@ -72,8 +82,14 @@ type session struct {
 
 // selectPrompt picks the bootstrap text for the claude positional arg.
 // Precedence: UserAnswer (Q&A reply) → resume prompt (daemon_restart vs
-// normal) → behaviour-specific skill invocation → /boid-sandbox fallback.
-func selectPrompt(isResume bool, userAnswer, invokedBehavior, abortCode string) string {
+// normal) → session mode (empty: no positional) → behaviour-specific skill
+// invocation → /boid-sandbox fallback.
+//
+// isSession=true (JobKindSession, no BOID_TASK_ID) skips the behaviour-skill
+// fallback entirely: user-initiated sessions have no task to dispatch and
+// the /boid-sandbox shim is meaningless without a task.yaml to read. The
+// system prompt still points the agent at environment.yaml.
+func selectPrompt(isSession, isResume bool, userAnswer, invokedBehavior, abortCode string) string {
 	if userAnswer != "" {
 		return userAnswer
 	}
@@ -82,6 +98,9 @@ func selectPrompt(isResume bool, userAnswer, invokedBehavior, abortCode string) 
 			return daemonRestartResumePrompt
 		}
 		return resumePrompt
+	}
+	if isSession {
+		return ""
 	}
 	if s, ok := skillByBehavior[invokedBehavior]; ok {
 		return s
@@ -125,7 +144,11 @@ func updateSessions(sessions []session, invokedType, invokedName, id string) []s
 // run-agent.py so existing claude binary behaviour is preserved byte-for-byte.
 // WebFetch is disabled because the sandbox egress allowlist (boid proxy)
 // would 403 every fetch, burning agent turns.
-func buildClaudeArgs(isResume bool, sessionID, model, prompt string) []string {
+//
+// Empty systemPrompt skips --append-system-prompt entirely. Empty prompt
+// skips the trailing positional (passing "" makes claude treat it as a
+// blank first user turn, which fires the agent on nothing).
+func buildClaudeArgs(isResume bool, sessionID, model, prompt, systemPrompt string) []string {
 	args := []string{
 		"claude",
 		"--permission-mode", "bypassPermissions",
@@ -139,8 +162,12 @@ func buildClaudeArgs(isResume bool, sessionID, model, prompt string) []string {
 	if model != "" {
 		args = append(args, "--model", model)
 	}
-	args = append(args, "--append-system-prompt", pauseSystemPrompt)
-	args = append(args, prompt)
+	if systemPrompt != "" {
+		args = append(args, "--append-system-prompt", systemPrompt)
+	}
+	if prompt != "" {
+		args = append(args, prompt)
+	}
 	return args
 }
 
@@ -286,8 +313,16 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 	}
 
 	// 3. Build claude argv.
-	prompt := selectPrompt(isResume, rc.UserAnswer, rc.InvokedBehavior, abortCode)
-	args := buildClaudeArgs(isResume, sessionID, rc.Model, prompt)
+	// isSession is the JobKindSession discriminator. Sessions are user-
+	// initiated and have no task lifecycle, so they receive neither the
+	// behaviour-skill bootstrap nor the "notify before exit" system prompt.
+	isSession := rc.TaskID == ""
+	prompt := selectPrompt(isSession, isResume, rc.UserAnswer, rc.InvokedBehavior, abortCode)
+	systemPrompt := taskSystemPrompt
+	if isSession {
+		systemPrompt = sessionSystemPrompt
+	}
+	args := buildClaudeArgs(isResume, sessionID, rc.Model, prompt, systemPrompt)
 
 	// 4. Fork claude.
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)

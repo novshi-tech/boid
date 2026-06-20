@@ -10,51 +10,79 @@ import (
 )
 
 func TestSelectPrompt_UserAnswerWins(t *testing.T) {
-	got := selectPrompt(true, "reply text", "supervisor", "daemon_restart")
+	got := selectPrompt(false, true, "reply text", "supervisor", "daemon_restart")
 	if got != "reply text" {
 		t.Errorf("got %q, want UserAnswer to take precedence", got)
 	}
 }
 
 func TestSelectPrompt_DaemonRestartResume(t *testing.T) {
-	got := selectPrompt(true, "", "executor", "daemon_restart")
+	got := selectPrompt(false, true, "", "executor", "daemon_restart")
 	if got != daemonRestartResumePrompt {
 		t.Errorf("got %q, want daemonRestartResumePrompt", got)
 	}
 }
 
 func TestSelectPrompt_NormalResume(t *testing.T) {
-	got := selectPrompt(true, "", "executor", "")
+	got := selectPrompt(false, true, "", "executor", "")
 	if got != resumePrompt {
 		t.Errorf("got %q, want resumePrompt", got)
 	}
 }
 
 func TestSelectPrompt_FreshSupervisor(t *testing.T) {
-	got := selectPrompt(false, "", "supervisor", "")
+	got := selectPrompt(false, false, "", "supervisor", "")
 	if got != "/boid-supervisor" {
 		t.Errorf("got %q, want /boid-supervisor", got)
 	}
 }
 
 func TestSelectPrompt_FreshExecutor(t *testing.T) {
-	got := selectPrompt(false, "", "executor", "")
+	got := selectPrompt(false, false, "", "executor", "")
 	if got != "/boid-executor" {
 		t.Errorf("got %q, want /boid-executor", got)
 	}
 }
 
 func TestSelectPrompt_FreshUnknownBehaviorFallsBack(t *testing.T) {
-	got := selectPrompt(false, "", "research", "")
+	got := selectPrompt(false, false, "", "research", "")
 	if got != "/boid-sandbox" {
 		t.Errorf("got %q, want /boid-sandbox fallback", got)
 	}
 }
 
 func TestSelectPrompt_FreshEmptyBehaviorFallsBack(t *testing.T) {
-	got := selectPrompt(false, "", "", "")
+	got := selectPrompt(false, false, "", "", "")
 	if got != "/boid-sandbox" {
 		t.Errorf("got %q, want /boid-sandbox fallback for empty behaviour", got)
+	}
+}
+
+// Session mode (JobKindSession, no BOID_TASK_ID) never falls through to a
+// skill bootstrap. A user typed `boid agent claude -p <project>` to open a
+// blank chat, not to dispatch behaviour-driven work.
+func TestSelectPrompt_SessionFreshReturnsEmpty(t *testing.T) {
+	got := selectPrompt(true, false, "", "", "")
+	if got != "" {
+		t.Errorf("got %q, want empty prompt for fresh session", got)
+	}
+}
+
+// Session mode still honours an explicit --instruction (delivered via
+// BOID_USER_ANSWER).
+func TestSelectPrompt_SessionWithInstructionDelivers(t *testing.T) {
+	got := selectPrompt(true, false, "fix bug X", "", "")
+	if got != "fix bug X" {
+		t.Errorf("got %q, want instruction text to pass through", got)
+	}
+}
+
+// Session resume retains the resumePrompt re-read cue — once a session has
+// state, the agent still needs to re-read context on wakeup.
+func TestSelectPrompt_SessionResumeUsesResumePrompt(t *testing.T) {
+	got := selectPrompt(true, true, "", "", "")
+	if got != resumePrompt {
+		t.Errorf("got %q, want resumePrompt for session resume", got)
 	}
 }
 
@@ -136,7 +164,7 @@ func TestUpdateSessions_PreservesOrder(t *testing.T) {
 }
 
 func TestBuildClaudeArgs_FreshSession(t *testing.T) {
-	args := buildClaudeArgs(false, "sess-1", "claude-opus-4-8", "/boid-supervisor")
+	args := buildClaudeArgs(false, "sess-1", "claude-opus-4-8", "/boid-supervisor", taskSystemPrompt)
 
 	wantHead := []string{
 		"claude",
@@ -144,7 +172,7 @@ func TestBuildClaudeArgs_FreshSession(t *testing.T) {
 		"--disallowedTools", "WebFetch",
 		"--session-id", "sess-1",
 		"--model", "claude-opus-4-8",
-		"--append-system-prompt", pauseSystemPrompt,
+		"--append-system-prompt", taskSystemPrompt,
 		"/boid-supervisor",
 	}
 	if !reflect.DeepEqual(args, wantHead) {
@@ -153,14 +181,14 @@ func TestBuildClaudeArgs_FreshSession(t *testing.T) {
 }
 
 func TestBuildClaudeArgs_Resume(t *testing.T) {
-	args := buildClaudeArgs(true, "sess-1", "", "user answer text")
+	args := buildClaudeArgs(true, "sess-1", "", "user answer text", taskSystemPrompt)
 	// Resume + no model + UserAnswer prompt.
 	want := []string{
 		"claude",
 		"--permission-mode", "bypassPermissions",
 		"--disallowedTools", "WebFetch",
 		"--resume", "sess-1",
-		"--append-system-prompt", pauseSystemPrompt,
+		"--append-system-prompt", taskSystemPrompt,
 		"user answer text",
 	}
 	if !reflect.DeepEqual(args, want) {
@@ -169,7 +197,7 @@ func TestBuildClaudeArgs_Resume(t *testing.T) {
 }
 
 func TestBuildClaudeArgs_NoModelOmitsFlag(t *testing.T) {
-	args := buildClaudeArgs(false, "sess-1", "", "/boid-sandbox")
+	args := buildClaudeArgs(false, "sess-1", "", "/boid-sandbox", taskSystemPrompt)
 	for i, a := range args {
 		if a == "--model" {
 			t.Errorf("unexpected --model flag at %d: %v", i, args)
@@ -180,9 +208,38 @@ func TestBuildClaudeArgs_NoModelOmitsFlag(t *testing.T) {
 func TestBuildClaudeArgs_PromptIsLast(t *testing.T) {
 	// Claude binary treats the trailing positional as the prompt; if it
 	// slips earlier the agent will not see it.
-	args := buildClaudeArgs(false, "sess-1", "claude-opus-4-8", "/boid-executor")
+	args := buildClaudeArgs(false, "sess-1", "claude-opus-4-8", "/boid-executor", taskSystemPrompt)
 	if args[len(args)-1] != "/boid-executor" {
 		t.Errorf("last arg = %q, want prompt /boid-executor", args[len(args)-1])
+	}
+}
+
+// Session-mode fresh start: no positional prompt at all (we'd otherwise pass
+// "" which claude treats as a blank first turn). Also sessionSystemPrompt
+// must replace taskSystemPrompt so the agent isn't told to call notify on a
+// task that doesn't exist.
+func TestBuildClaudeArgs_SessionFreshOmitsPromptAndUsesSessionSystemPrompt(t *testing.T) {
+	args := buildClaudeArgs(false, "sess-1", "", "", sessionSystemPrompt)
+	want := []string{
+		"claude",
+		"--permission-mode", "bypassPermissions",
+		"--disallowedTools", "WebFetch",
+		"--session-id", "sess-1",
+		"--append-system-prompt", sessionSystemPrompt,
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("got %v, want %v", args, want)
+	}
+}
+
+// Empty systemPrompt skips --append-system-prompt entirely. Belt-and-
+// suspenders for callers that explicitly opt out of a system prompt.
+func TestBuildClaudeArgs_EmptySystemPromptOmitsFlag(t *testing.T) {
+	args := buildClaudeArgs(false, "sess-1", "", "", "")
+	for _, a := range args {
+		if a == "--append-system-prompt" {
+			t.Errorf("--append-system-prompt should be omitted when systemPrompt is empty, got args=%v", args)
+		}
 	}
 }
 
@@ -340,8 +397,8 @@ func readWrappedSessions(t *testing.T, path string) []session {
 func TestPauseSystemPromptMentionsNotify(t *testing.T) {
 	// Smoke test: a future maintainer that drops the notify guidance from
 	// the prompt should fail this so the regression is loud.
-	if !strings.Contains(pauseSystemPrompt, "boid task notify") {
-		t.Error("pauseSystemPrompt no longer mentions `boid task notify`")
+	if !strings.Contains(taskSystemPrompt, "boid task notify") {
+		t.Error("taskSystemPrompt no longer mentions `boid task notify`")
 	}
 }
 

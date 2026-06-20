@@ -26,6 +26,10 @@ type WireConfig struct {
 	// ProxyPort, when non-zero, enables HTTP(S) proxy environment variables
 	// pointing at host-gateway:<ProxyPort>.
 	ProxyPort *int
+	// AllowedDomains is the proxy egress allowlist. Plumbed through to
+	// environment.yaml so agents can see which hosts the proxy will let
+	// through without having to probe with a 403-burning fetch.
+	AllowedDomains []string
 	// RuntimesDir is the root directory where per-sandbox runtime directories
 	// are created. When non-empty and DockerEnabled, the runner pre-allocates a
 	// runtime directory here to host the per-sandbox docker proxy socket and
@@ -35,17 +39,18 @@ type WireConfig struct {
 
 func Wire(cfg WireConfig) *Runner {
 	return &Runner{
-		DB:           cfg.DB,
-		Runtime:      cfg.Runtime,
-		Broker:       cfg.Broker,
-		Sandbox:      cfg.Sandbox,
-		SecretStore:  cfg.SecretStore,
-		Worktrees:    cfg.Worktrees,
-		TaskLookup:   cfg.TaskLookup,
-		Projects:     cfg.Projects,
-		BoidBinary:   cfg.BoidBinary,
-		ServerSocket: cfg.ServerSocket,
-		ProxyPort:    cfg.ProxyPort,
-		RuntimesDir:  cfg.RuntimesDir,
+		DB:             cfg.DB,
+		Runtime:        cfg.Runtime,
+		Broker:         cfg.Broker,
+		Sandbox:        cfg.Sandbox,
+		SecretStore:    cfg.SecretStore,
+		Worktrees:      cfg.Worktrees,
+		TaskLookup:     cfg.TaskLookup,
+		Projects:       cfg.Projects,
+		BoidBinary:     cfg.BoidBinary,
+		ServerSocket:   cfg.ServerSocket,
+		ProxyPort:      cfg.ProxyPort,
+		AllowedDomains: cfg.AllowedDomains,
+		RuntimesDir:    cfg.RuntimesDir,
 	}
 }

@@ -169,18 +169,19 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	projectCatalog := orchestrator.DBProjectCatalog{DB: srv.db}
 	taskLookup := orchestrator.DBTaskLookup{DB: srv.db}
 	runner := dispatcher.Wire(dispatcher.WireConfig{
-		DB:           srv.db,
-		Runtime:      jobRuntime,
-		Broker:       broker,
-		Sandbox:      dispatcher.NewSandboxPreparer(),
-		SecretStore:  secretStore,
-		Worktrees:    wtMgr,
-		TaskLookup:   taskLookup,
-		Projects:     projectCatalog,
-		BoidBinary:   boidBin,
-		ServerSocket: cfg.SocketPath,
-		ProxyPort:    &srv.proxyPort,
-		RuntimesDir:  runtimesDirFor(cfg),
+		DB:             srv.db,
+		Runtime:        jobRuntime,
+		Broker:         broker,
+		Sandbox:        dispatcher.NewSandboxPreparer(),
+		SecretStore:    secretStore,
+		Worktrees:      wtMgr,
+		TaskLookup:     taskLookup,
+		Projects:       projectCatalog,
+		BoidBinary:     boidBin,
+		ServerSocket:   cfg.SocketPath,
+		ProxyPort:      &srv.proxyPort,
+		AllowedDomains: cfg.AllowedDomains,
+		RuntimesDir:    runtimesDirFor(cfg),
 	})
 
 	lifecycle := jobLifecycleAdapter{runner: runner}
