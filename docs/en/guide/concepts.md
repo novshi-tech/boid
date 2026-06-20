@@ -85,7 +85,7 @@ A record of a single hook invocation. Each job carries its own status (`running`
 
 ## Session
 
-A **session** is an interactive job that is not tied to any task. You start one with `boid agent <harness>`, which attaches a PTY to your terminal. Valid harness values are `claude`, `opencode`, and `shell`.
+A **session** is an interactive job that is not tied to any task. You start one with `boid agent <harness>`, which attaches a PTY to your terminal. Valid harness values are `claude`, `codex`, `opencode`, and `shell`.
 
 ```bash
 boid agent claude   -p <project>                        # start a Claude Code session

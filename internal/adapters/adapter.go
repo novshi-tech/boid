@@ -131,11 +131,11 @@ type RunContext struct {
 	SkillsDir string
 
 	// Argv is the literal program + arguments to exec. Only the shell adapter
-	// consumes this field — claude / opencode build their own argv from
-	// their CLI conventions and ignore Argv entirely. Phase 3-d added Argv
-	// so non-agent hooks and `boid exec` can flow through the same adapter
-	// pipeline as agent jobs instead of branching to a separate runExecArgv
-	// path in the runner-inner-child.
+	// consumes this field — claude / codex / opencode build their own argv
+	// from their CLI conventions and ignore Argv entirely. Phase 3-d added
+	// Argv so non-agent hooks and `boid exec` can flow through the same
+	// adapter pipeline as agent jobs instead of branching to a separate
+	// runExecArgv path in the runner-inner-child.
 	Argv []string
 
 	// StdinBytes, when non-empty, is piped into the child's stdin instead of
@@ -171,7 +171,7 @@ type Result struct {
 }
 
 // HarnessAdapter abstracts harness-specific agent protocol from boid core.
-// Each supported harness (claude, opencode, …) provides one implementation.
+// Each supported harness (claude, codex, opencode, …) provides one implementation.
 // The boid core calls these methods without knowing which harness is in use.
 //
 // Phase 3-b shrank the interface to two members: Run() owns the entire agent

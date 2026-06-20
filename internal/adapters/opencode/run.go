@@ -12,16 +12,40 @@ import (
 	"github.com/novshi-tech/boid/internal/adapters/sigutil"
 )
 
-// defaultPrompt mirrors the codex adapter: 1-turn smoke for Phase 3-c.
-const defaultPrompt = "boid Phase 3-c smoke test: respond with one short line then exit."
+// defaultPrompt is sent when the task hook path forgets to supply a prompt.
+// Mirrors the codex adapter's no-op fallback. Interactive mode never reaches
+// it (no prompt arg is appended to the TUI argv).
+const defaultPrompt = "boid opencode non-interactive smoke fallback: respond with one short line then exit."
 
 // buildArgs constructs the argv for opencode.
-// Format: `opencode run [-s <id> --continue] [-m M] <prompt>`.
 //
-// `opencode run` is the documented non-interactive entry. `-s/--session`
-// selects an existing session id; `--continue` must be paired with `-s` to
-// avoid opencode treating the id as a new title.
-func buildArgs(sessionID, model, prompt string) []string {
+// Two modes, picked by the caller:
+//
+//   - interactive == true (boid agent opencode session): `opencode [project]`
+//     launches the TUI. opencode treats the first positional as the project
+//     root; we pass rc.Workspace so the TUI's file picker opens on the
+//     correct directory inside the sandbox. The PTY is already allocated
+//     by the dispatcher so opencode inherits the user's terminal.
+//   - interactive == false (task hook path, legacy non-interactive entry):
+//     `opencode run [-s <id> --continue] [-m M] <prompt>` is the documented
+//     one-prompt entry point. Same scope-out story as codex: this path is
+//     kept functional but task hook integration is out of scope for the
+//     multi-harness-production plan.
+//
+// `-s/--session` selects an existing session id; `--continue` must be
+// paired with `-s` to avoid opencode treating the id as a new title.
+func buildArgs(interactive bool, workspace, sessionID, model, prompt string) []string {
+	if interactive {
+		args := []string{"opencode"}
+		if workspace != "" {
+			args = append(args, workspace)
+		}
+		if model != "" {
+			args = append(args, "-m", model)
+		}
+		return args
+	}
+
 	args := []string{"opencode", "run"}
 	if sessionID != "" {
 		args = append(args, "-s", sessionID, "--continue")
@@ -33,16 +57,30 @@ func buildArgs(sessionID, model, prompt string) []string {
 	return args
 }
 
-// Run is the Phase 3-c entry point. Minimum implementation: argv +
-// SIGUSR1→child SIGTERM forwarding + SIGWINCH passthrough + exit code
-// normalisation. No session persistence, no payload_patch capture.
+// Run forks opencode. Interactive vs non-interactive is keyed off rc.TaskID:
+// session jobs (JobKindSession) carry no task and are user-initiated, so
+// they land in interactive TUI mode; hook jobs carry a BOID_TASK_ID and
+// fall through to non-interactive `opencode run`. Mirrors the codex adapter
+// and how the claude adapter discriminates JobKindSession from JobKindHook
+// via rc.TaskID == "".
+//
+// Other responsibilities mirror the claude / codex adapters: signal
+// forwarding via sigutil, exit code normalisation for daemon-initiated
+// stops, PWD strip on the child env, and cmd.Dir as the source of truth
+// for the workdir.
+//
+// Session persistence and payload_patch.json writes are deliberately NOT
+// wired here — see docs/plans/multi-harness-production.md for the explicit
+// non-goals (interactive sessions are run-and-done, no resume yet).
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
+	interactive := rc.TaskID == ""
+
 	prompt := rc.UserAnswer
-	if prompt == "" {
+	if !interactive && prompt == "" {
 		prompt = defaultPrompt
 	}
 
-	args := buildArgs(rc.SessionID, rc.Model, prompt)
+	args := buildArgs(interactive, rc.Workspace, rc.SessionID, rc.Model, prompt)
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Dir = rc.Workspace

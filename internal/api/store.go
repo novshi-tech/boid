@@ -226,8 +226,8 @@ type StartSessionRequest struct {
 	ProjectID string `json:"project_id"`
 
 	// HarnessType selects the agent adapter. Must be one of "claude",
-	// "opencode", or "shell" — the shell harness drops the user into an
-	// interactive bash inside the project sandbox (`boid agent shell`).
+	// "codex", "opencode", or "shell" — the shell harness drops the user
+	// into an interactive bash inside the project sandbox (`boid agent shell`).
 	HarnessType string `json:"harness_type"`
 
 	// SessionID, when set, asks the harness to resume an existing session

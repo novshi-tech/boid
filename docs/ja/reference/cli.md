@@ -253,7 +253,8 @@ API トークン等を暗号化して保存します。鍵は `~/.local/share/bo
 | コマンド | 役割 |
 |---|---|
 | `boid agent claude  -p <project> [--resume <session-id>] [--instruction "..."] [--readonly] [--model M] [--name NAME] [--no-attach]` | claude セッションをサンドボックス内で起動し PTY に attach する。 `--resume` で既存セッションを再開、 `--no-attach` で job-id だけ表示して終了 |
-| `boid agent opencode -p <project> [同上]` | **[実験的]** opencode セッションを起動 (Phase 3-c プロトタイプ)。 セッション永続化・`boid task notify` 連携・usage 計上は未実装 |
+| `boid agent codex   -p <project> [同上]` | **[実験的]** codex セッションを起動。 `--instruction` なしでは sandbox 内で `codex` TUI を起動、 `--instruction` ありでは `codex exec` (1 ターン smoke) にフォールバック。 セッション永続化・`boid task notify` 連携・usage 計上は未実装 (詳細は `docs/plans/multi-harness-production.md`) |
+| `boid agent opencode -p <project> [同上]` | **[実験的]** opencode セッションを起動。 `--instruction` なしでは sandbox 内で `opencode <project>` TUI を起動、 `--instruction` ありでは `opencode run` (1 ターン smoke) にフォールバック。 セッション永続化・`boid task notify` 連携・usage 計上は未実装 (詳細は `docs/plans/multi-harness-production.md`) |
 | `boid agent shell   -p <project> [同上]` | 任意シェルセッションを起動 (harness = shell adapter) |
 | `boid agent stop <job-id>` | エージェントプロセスに SIGUSR1 を送り、正常停止を要求する |
 

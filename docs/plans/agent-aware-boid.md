@@ -1001,6 +1001,13 @@ WebUI Commands ボタン on task の 3 経路はすべて `BuildCommandJobSpec` 
   `harnessTypeForAgent` が `"claude-code"` → `"claude"` (HarnessType) にマップする経路はそのまま。
   これで既存 project.yaml は無修正で動作する。
 
+> **追記 (2026-06-20 以降)**: Phase 3-e で撤去した codex adapter は、 続く
+> **multi-harness 本番化 plan** (`docs/plans/multi-harness-production.md`)
+> Phase 1 で「`boid agent codex` 対話セッション」用途に再採用された。
+> 撤去理由は「常用ハーネスとして昇格しない」 判断だったが、 `boid agent`
+> 対話入口だけを限定スコープで戻す位置付け。 task hook 経路は引き続き
+> スコープ外で、 詳細は当該 plan の「スコープに入らない」 節を参照。
+
 ### Phase 4 (暫定): token / cost 会計
 
 1. jobs テーブル拡張 (Phase 2 で確定した schema 方針に基づく)、 adapter で usage 収集、
