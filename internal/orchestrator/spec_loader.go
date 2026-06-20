@@ -447,16 +447,33 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 	var orderedRefs []KitRef
 	kitMetaByRef := make(map[string]*KitMeta)
 	agentByRef := make(map[string]string)
+	// missingKits tracks refs whose resolution failed (kit removed, registry
+	// not configured, ...). Resolution failure is downgraded from error to
+	// warning: the project is allowed to keep stale kit references in
+	// project.yaml during the kit-deprecation transition (Phase 3-c onward,
+	// where adapter-driven dispatch no longer needs a kit at all). The kit is
+	// skipped everywhere downstream — behavior merge, IsProjectScopable, and
+	// the meta-level kit→meta overlay below.
+	missingKits := make(map[string]bool)
 	loadKitRef := func(kitRef KitRef) error {
 		if _, loaded := kitMetaByRef[kitRef.Ref]; loaded {
 			return nil
 		}
+		if missingKits[kitRef.Ref] {
+			return nil
+		}
 		kitDir, err := resolveKitRef(kitRef.Ref, dir, resolver)
 		if err != nil {
-			return fmt.Errorf("kit %q: %w", kitRef.Ref, err)
+			slog.Warn("kit unresolved; ignoring (likely stale ref from a deprecated kit). "+
+				"Remove the entry from project.yaml/task_behaviors to silence this warning.",
+				"ref", kitRef.Ref, "error", err.Error())
+			missingKits[kitRef.Ref] = true
+			return nil
 		}
 		kitMeta, err := ReadKitMeta(kitDir)
 		if err != nil {
+			// kit.yaml exists but couldn't be parsed — that is a real bug to
+			// surface, not a missing-kit case.
 			return fmt.Errorf("kit %q: %w", kitRef.Ref, err)
 		}
 		slog.Info("resolved kit", "ref", kitRef.Ref, "hooks", len(kitMeta.Hooks))
@@ -478,7 +495,11 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		if err := loadKitRef(kitRef); err != nil {
 			return nil, err
 		}
-		km := kitMetaByRef[kitRef.Ref]
+		km, ok := kitMetaByRef[kitRef.Ref]
+		if !ok {
+			// Missing kit was warned by loadKitRef; nothing to scope-validate.
+			continue
+		}
 		if err := IsProjectScopable(km); err != nil {
 			return nil, fmt.Errorf("kit %s: %w", kitRef.Ref, err)
 		}
@@ -505,12 +526,17 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		seen := make(map[string]bool)
 
 		// Project-level kits come first and are merged into every behavior.
+		// Missing kits (resolution failed and downgraded to warning above) are
+		// skipped — appending a nil KitMeta would crash MergeKitMetaIntoBehavior.
 		for _, kitRef := range meta.Kits {
 			if seen[kitRef.Ref] {
 				continue
 			}
 			seen[kitRef.Ref] = true
-			km := kitMetaByRef[kitRef.Ref]
+			km, ok := kitMetaByRef[kitRef.Ref]
+			if !ok {
+				continue
+			}
 			agent := ResolveKitAgent(kitRef)
 			kits = append(kits, km)
 			agents = append(agents, agent)
@@ -561,6 +587,48 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 
 	if local != nil && local.SecretNamespace != "" {
 		meta.SecretNamespace = local.SecretNamespace
+	}
+
+	// Project-level kits also enrich top-level meta.HostCommands /
+	// AdditionalBindings / Env so session jobs (which do not resolve through a
+	// behavior — boid agent <harness>, boid exec, POST /api/projects/{id}/sessions)
+	// inherit the same authorised host commands, bindings, and env as tasks.
+	// Behavior dispatch is unaffected: each behavior already absorbed these via
+	// MergeKitMetaIntoBehavior above. Overlay order mirrors the per-behavior
+	// path — kit (base) → project.yaml top-level → project.local.yaml — so a
+	// name declared in project.yaml still wins over the same name in a kit, and
+	// project.local.yaml wins over both.
+	//
+	// Regression target: Phase 3-d PR1 (commit 871c522) wired
+	// sessionDispatcherAdapter to read meta.HostCommands directly. Before this
+	// merge, only project.yaml top-level entries were visible to sessions, so
+	// kit-supplied gh / go / etc. were not bind-mounted as boid shims.
+	if len(meta.Kits) > 0 {
+		var topKits []*KitMeta
+		var topAgents []string
+		for _, kitRef := range meta.Kits {
+			km, ok := kitMetaByRef[kitRef.Ref]
+			if !ok {
+				continue
+			}
+			topKits = append(topKits, km)
+			topAgents = append(topAgents, ResolveKitAgent(kitRef))
+		}
+		rt, err := MergeKitRuntime(topKits, topAgents)
+		if err != nil {
+			return nil, err
+		}
+		meta.HostCommands = mergeHostCommands(rt.HostCommands, meta.HostCommands)
+		meta.AdditionalBindings = mergeBindMounts(rt.AdditionalBindings, meta.AdditionalBindings)
+		meta.Env = mergeStringMaps(rt.Env, meta.Env)
+		if local != nil {
+			meta.HostCommands = mergeHostCommands(meta.HostCommands, local.HostCommands)
+			meta.AdditionalBindings = mergeBindMounts(meta.AdditionalBindings, local.AdditionalBindings)
+			meta.Env = mergeStringMaps(meta.Env, local.Env)
+		}
+		if err := validateBuiltinHostConflict("project", meta.HostCommands); err != nil {
+			return nil, err
+		}
 	}
 
 	// Re-add the back-compat alias mirror entries that were stripped at the
