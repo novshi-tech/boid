@@ -480,15 +480,25 @@ func TestReadProjectMetaWithKits_LocalKits(t *testing.T) {
 		}
 	})
 
-	t.Run("missing local kit", func(t *testing.T) {
+	t.Run("missing local kit is warned, not fatal", func(t *testing.T) {
+		// Resolution failure is downgraded to a warning so projects can keep
+		// stale kit references in project.yaml during the kit-deprecation
+		// transition. See TestReadProjectMetaWithKits_MissingBehaviorKit_*.
 		dir := t.TempDir()
 		boidDir := filepath.Join(dir, ".boid")
 		_ = os.MkdirAll(boidDir, 0o755)
 		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    name: dev\n    kits:\n      - nonexistent-kit\n"), 0o644)
 
-		_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-		if err == nil || !strings.Contains(err.Error(), "kit.yaml not found") {
-			t.Fatalf("expected kit.yaml not found, got %v", err)
+		buf := captureSlog(t)
+		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+		if err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+		if _, ok := meta.TaskBehaviors["dev"]; !ok {
+			t.Fatalf("dev behavior should still load when its kit is missing: %+v", meta.TaskBehaviors)
+		}
+		if !strings.Contains(buf.String(), "kit unresolved") {
+			t.Fatalf("expected slog.Warn about unresolved kit, got: %q", buf.String())
 		}
 	})
 
@@ -1613,6 +1623,194 @@ additional_bindings:
 		if len(b.AdditionalBindings) == 0 || b.AdditionalBindings[0].Source != "/usr/local/go" {
 			t.Errorf("behavior %q: expected additional_bindings from top-level kit, got %v", name, b.AdditionalBindings)
 		}
+	}
+}
+
+// Top-level kit-supplied host_commands / additional_bindings / env must also
+// surface on meta itself so session jobs (boid agent <harness>, boid exec,
+// POST /api/projects/{id}/sessions) — which do not resolve through a behavior
+// — inherit the same authorised host commands and bindings as task jobs.
+// Regression target: Phase 3-d PR1 (commit 871c522) wired
+// sessionDispatcherAdapter to read meta.HostCommands directly, leaving
+// kit-supplied gh / go / etc. invisible to sessions until this merge landed.
+func TestReadProjectMetaWithKits_TopLevelKits_PropagatedToMeta(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	kitDir := filepath.Join(boidDir, "kits", "github-cli")
+	_ = os.MkdirAll(kitDir, 0o755)
+
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`id: test-proj
+name: Test
+kits:
+  - github-cli
+host_commands:
+  playwright-cli:
+    allow: ['*']
+additional_bindings:
+  - source: /opt/google/chrome
+env:
+  PROJ_ENV: from-project
+task_behaviors:
+  dev:
+    name: dev
+`), 0o644)
+	_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(`host_commands:
+  gh:
+    path: /usr/bin/gh
+    allow:
+      - pr
+      - issue
+additional_bindings:
+  - source: /home/user/.volta
+env:
+  VOLTA_HOME: /home/user/.volta
+  PROJ_ENV: from-kit
+`), 0o644)
+
+	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadProjectMetaWithKits: %v", err)
+	}
+
+	if _, ok := meta.HostCommands["gh"]; !ok {
+		t.Errorf("meta.HostCommands missing kit-supplied gh: %+v", meta.HostCommands)
+	}
+	if _, ok := meta.HostCommands["playwright-cli"]; !ok {
+		t.Errorf("meta.HostCommands lost project-yaml playwright-cli: %+v", meta.HostCommands)
+	}
+
+	sources := make(map[string]bool, len(meta.AdditionalBindings))
+	for _, b := range meta.AdditionalBindings {
+		sources[b.Source] = true
+	}
+	if !sources["/home/user/.volta"] || !sources["/opt/google/chrome"] {
+		t.Errorf("meta.AdditionalBindings missing kit or project entry: %+v", meta.AdditionalBindings)
+	}
+
+	if meta.Env["VOLTA_HOME"] != "/home/user/.volta" {
+		t.Errorf("meta.Env missing kit-supplied VOLTA_HOME: %+v", meta.Env)
+	}
+	// project.yaml top-level wins over kit on PROJ_ENV.
+	if meta.Env["PROJ_ENV"] != "from-project" {
+		t.Errorf("project.yaml top-level should win over kit on PROJ_ENV, got %q", meta.Env["PROJ_ENV"])
+	}
+}
+
+// project.local.yaml entries continue to win over both kit-supplied and
+// project.yaml top-level entries at the meta level — mirroring the precedence
+// applied per-behavior. Tests both host_commands and env overlays.
+func TestReadProjectMetaWithKits_TopLevelKits_ProjectLocalWinsOnMeta(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	kitDir := filepath.Join(boidDir, "kits", "kit-a")
+	_ = os.MkdirAll(kitDir, 0o755)
+
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`id: test-proj
+name: Test
+kits:
+  - kit-a
+host_commands:
+  gh:
+    path: /usr/bin/gh
+    allow:
+      - pr
+env:
+  FOO: project
+task_behaviors:
+  dev:
+    name: dev
+`), 0o644)
+	_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(`version: 1
+host_commands:
+  gh:
+    path: /custom/bin/gh
+env:
+  FOO: local
+`), 0o644)
+	_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(`host_commands:
+  gh:
+    path: /usr/bin/gh
+    allow:
+      - issue
+env:
+  FOO: kit
+`), 0o644)
+
+	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadProjectMetaWithKits: %v", err)
+	}
+
+	if meta.HostCommands["gh"].Path != "/custom/bin/gh" {
+		t.Errorf("project.local.yaml should win on meta.HostCommands.gh.path, got %q", meta.HostCommands["gh"].Path)
+	}
+	if meta.Env["FOO"] != "local" {
+		t.Errorf("project.local.yaml should win on meta.Env.FOO, got %q", meta.Env["FOO"])
+	}
+}
+
+// A missing top-level kit (project.yaml still references a kit that was
+// removed from boid-kits) must not break meta loading. The kit reference
+// is downgraded to a warning, the kit is skipped, and the rest of the
+// project meta loads normally so the daemon's cache stays usable during
+// the kit-deprecation transition (Phase 3-c onward).
+func TestReadProjectMetaWithKits_MissingTopLevelKit_WarnsAndSkips(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	_ = os.MkdirAll(boidDir, 0o755)
+
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`id: test-proj
+name: Test
+kits:
+  - github.com/novshi-tech/boid-kits/claude-code
+host_commands:
+  gh:
+    path: /usr/bin/gh
+    allow: ['*']
+task_behaviors:
+  dev:
+    name: dev
+`), 0o644)
+
+	buf := captureSlog(t)
+	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("expected missing kit to be a warning, got error: %v", err)
+	}
+	if meta.HostCommands["gh"].Path != "/usr/bin/gh" {
+		t.Errorf("project.yaml host_commands should still load when kit is missing: %+v", meta.HostCommands)
+	}
+	if !strings.Contains(buf.String(), "kit unresolved") || !strings.Contains(buf.String(), "claude-code") {
+		t.Errorf("expected slog.Warn about unresolved kit, got: %q", buf.String())
+	}
+}
+
+// Same downgrade applies to behavior-level kit references — a behavior may
+// list a now-removed kit without bringing down the entire project meta.
+func TestReadProjectMetaWithKits_MissingBehaviorKit_WarnsAndSkips(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	_ = os.MkdirAll(boidDir, 0o755)
+
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`id: test-proj
+name: Test
+task_behaviors:
+  dev:
+    name: dev
+    kits:
+      - github.com/novshi-tech/boid-kits/claude-code
+`), 0o644)
+
+	buf := captureSlog(t)
+	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err != nil {
+		t.Fatalf("expected missing kit to be a warning, got error: %v", err)
+	}
+	if _, ok := meta.TaskBehaviors["dev"]; !ok {
+		t.Errorf("dev behavior should still load when its kit is missing: %+v", meta.TaskBehaviors)
+	}
+	if !strings.Contains(buf.String(), "kit unresolved") {
+		t.Errorf("expected slog.Warn about unresolved kit, got: %q", buf.String())
 	}
 }
 
