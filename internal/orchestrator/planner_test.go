@@ -150,7 +150,6 @@ func TestPlanHook_AgentHookInteractive(t *testing.T) {
 		wantHarness string
 	}{
 		{"claude-code", "claude"},
-		{"codex", "codex"},
 		{"opencode", "opencode"},
 		// Unknown agent: shell adapter takes over and execs the hook
 		// script's argv directly.

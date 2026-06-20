@@ -817,8 +817,8 @@ func TestResolveKitAgent(t *testing.T) {
 	}{
 		{
 			name: "simple name",
-			ref:  projectspec.KitRef{Ref: "codex"},
-			want: "codex",
+			ref:  projectspec.KitRef{Ref: "opencode"},
+			want: "opencode",
 		},
 		{
 			name: "local path",
@@ -939,11 +939,11 @@ func TestMergeKitMetaIntoBehavior_KitAgentFields(t *testing.T) {
 			Hooks: []projectspec.Hook{{ID: "run-agent", ScriptPath: "/b/hooks/run-agent.sh"}},
 		}
 
-		result := mergeKitsIntoBehavior(t, base, []*projectspec.KitMeta{kitA, kitB}, []string{"claude-code", "codex"})
+		result := mergeKitsIntoBehavior(t, base, []*projectspec.KitMeta{kitA, kitB}, []string{"claude-code", "opencode"})
 		if len(result.Hooks) != 2 {
 			t.Fatalf("expected 2 hooks, got %d", len(result.Hooks))
 		}
-		if result.Hooks[0].ID != "claude-code/run-agent" || result.Hooks[1].ID != "codex/run-agent" {
+		if result.Hooks[0].ID != "claude-code/run-agent" || result.Hooks[1].ID != "opencode/run-agent" {
 			t.Errorf("unexpected IDs: %+v", result.Hooks)
 		}
 	})

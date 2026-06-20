@@ -136,7 +136,7 @@ boid web revoke-all              # 全部失効
 一覧右下の **Create** ボタン、 または `/sessions/new` に直接アクセスします。
 
 1. **プロジェクトを選択** — ドロップダウンで絞り込むとフォームが展開します
-2. **Harness を選択** — `claude` / `codex` / `opencode` / `shell` のいずれかを選びます
+2. **Harness を選択** — `claude` / `opencode` / `shell` のいずれかを選びます
 3. **Instruction (任意)** — 最初のターンに渡すプロンプト。 空欄ならハーネスのデフォルト起動になります
 4. **readonly チェックボックス** — チェックするとプロジェクトディレクトリが読み取り専用になります (既定: writable)
 5. **Session name (任意)** — 一覧での表示ラベル

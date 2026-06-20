@@ -81,7 +81,7 @@ pasta の user+net namespace の内側で動きます。 この時点では**内
 - **`pivot_root`** — `$ROOT` を新しいルートに切り替える。 旧ルートは `/.old_root` にピボットしてから umount + rmdir する
 - **コンテキストファイル書き出し** — `$HOME/.boid/context/{task,instructions,environment,payload}.{yaml,json}` に spec の内容を書き出す (pivot_root 後)
 - **シンボリックリンク** — `boid` shim を `/opt/boid/bin/<command>` 等にリンク
-- **`adapter.Run()`** — HarnessAdapter 経由でエージェント (claude / codex / opencode / shell) を exec し、停止シグナル (SIGUSR1 → 子に SIGTERM) の中継・終了コード正規化・broker job-done 送信を行う
+- **`adapter.Run()`** — HarnessAdapter 経由でエージェント (claude / opencode / shell) を exec し、停止シグナル (SIGUSR1 → 子に SIGTERM) の中継・終了コード正規化・broker job-done 送信を行う
 
 sandbox 内のプロセスからは:
 
