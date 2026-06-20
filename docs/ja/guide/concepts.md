@@ -8,7 +8,7 @@
 
 - **status** — タスクが今どの段階にあるかを表す値。 `pending → executing → done` を順に進み、失敗で終わった場合は `aborted` で終端します。各状態の意味と遷移条件は [状態機械](state-machine.md) で扱います
 - **payload** — タスクが進行する過程で蓄積される JSON ドキュメント。実行スクリプトが書き残した成果物などをキー名 (後述する trait) ごとに格納します
-- **behavior** — `supervisor` か `executor` のいずれか。 このタスクが統括役か実装役かを示し、 サンドボックスの読み書き可否や worktree の有無もこれで決まります
+- **behavior** — タスクの種類を表す名前。 サンドボックスの読み書き可否と紐付く hook セットが behavior ごとに決まります
 - 所属する **プロジェクト**
 
 タスクは `boid task create` で作成し、 `boid task list` / `boid task show` / `boid task watch`、Web UI で観察します。
@@ -20,7 +20,7 @@
 - `id` (この `boid` 内でプロジェクトを一意に識別する文字列) と `name` (表示名)
 - 任意の project トップ `worktree: true` フラグ — executor タスクごとに専用 git worktree を切るかどうか
 - このプロジェクトで使う **kit** のリスト (`kits:`)
-- 1 つ以上の **task_behaviors** — `supervisor` / `executor` ごとに任意の `default_instruction` 雛形を束ねたもの。 サンドボックスを read-only にするか worktree を切るかは behavior 単位では設定せず、 behavior 名と project トップフラグから自動で導出されます
+- 1 つ以上の **task_behaviors** — behavior 名をキーにして `default_instruction` 雛形を束ねたもの。 名前は自由 (free naming)。 `readonly` は behavior ごとに設定でき、 省略時は `true` (fail-safe)
 
 プロジェクトは `boid project add <path>` で `boid` に登録します。プロジェクトは何個でも登録でき、各タスクはいずれか 1 つに属します。
 
@@ -37,12 +37,15 @@
 
 プロジェクトの `task_behaviors` マップに並ぶ、 「タスクの種類」を表すエントリ。 タスク作成時に behavior 名を選ぶと、 `boid` はそのタスクの隔離レベルと、 紐付いた hook を読み込み、 `executing` 状態で発火します。
 
-**サポートする名前は 2 つだけ** です:
+**Track A2 から任意の名前 (free naming) が使えます。** behavior 名に制限はなく、 `plan` / `dev` / `review` のようにプロジェクトの文脈に合った名前をつけられます。
 
-- **`supervisor`** — readonly な統括役。 要求を読み、 必要な子タスクを決め、 作成し、 監視し、 結果を統合する
-- **`executor`** — 書き込み可能な実装役。 単一の集中したタスクを受けて成果物 (commit / PR / payload trait) を作る
+- `readonly` の既定値は **`true`** (fail-safe)。 サンドボックスを書き込み可能にするには `readonly: false` を明示してください
+- `default_task_behavior` トップレベルキーで `boid task create` のデフォルト behavior を指定できます
+- `supervisor` / `executor` は後方互換エイリアスとして引き続き動作しますが **deprecated** 扱いです。 デーモン起動時に WARN ログが出ます
 
 `boid` の状態機械は behavior に関わらず 1 種類だけです。 タスクの動作の違いは、 hook の組み合わせと、 失敗時に `reopen` で executing に戻して新しい instruction を渡すかどうかで表現します。 検証ループはハーネスではなく agent instruction 側の責務です。
+
+移行手順とテーブルは [task_behaviors 移行ガイド](../reference/task-behavior-migration.md) を参照してください。
 
 ## payload と trait
 
@@ -79,6 +82,30 @@ hook と `boid` 本体は、 stdin にタスクの payload、 stdout に payload
 hook を 1 度実行した記録のこと。 job には独自の status (`running` / `success` / `failed`) と終了コードが残ります。 「タスクを観察する」とは、 実体としてはタスクに紐付くジョブの推移を見ることです。
 
 `boid job list --task <id>` と `boid job show <id>` が主な観測コマンドです。
+
+## セッション (session)
+
+**セッション**は、 タスクに紐づかない対話的ジョブです。 `boid agent <harness>` で起動し、 ターミナルに PTY が attach されます。 `harness` には `claude` / `codex` / `opencode` / `shell` のいずれかを指定します。
+
+```bash
+boid agent claude   -p <project>   # Claude Code セッションを起動
+boid agent shell    -p <project>   # シェルセッションを起動
+boid agent claude   -p <project> --resume <session-id>   # 既存セッションに再接続
+```
+
+### タスクとセッションの違い
+
+| | タスク | セッション |
+|---|---|---|
+| 起動 | `boid task create` | `boid agent <harness>` |
+| 追跡 | status / payload / instructions | なし |
+| 状態機械 | `pending → executing → done` | なし (running のみ) |
+| 設定 | behavior (hook / kit / readonly 等) | プロジェクトのトレイトのみ継承 |
+| 用途 | 自律・長時間タスク | 対話的な作業・試験的なデバッグ |
+
+セッションはプロジェクトの `env` / `host_commands` / `additional_bindings` / `secret_namespace` を継承します。 behavior 定義は参照しません。
+
+セッションを終了するにはエージェントを exit させるか、 `boid agent stop <job-id>` を使います。 ブラウザを閉じてもセッションプロセスは生き続け、 Web UI から再 attach できます。
 
 ## サンドボックス (sandbox)
 
