@@ -62,11 +62,12 @@ type Runner struct {
 	Worktrees    *WorktreeManager
 	TaskLookup   TaskLookup
 	Projects     ProjectLookup
-	BoidBinary   string
-	ServerSocket string
-	ProxyPort    *int
-	RuntimesDir  string
-	JobEvents    JobEventSink // optional; nil disables job lifecycle broadcasts
+	BoidBinary     string
+	ServerSocket   string
+	ProxyPort      *int
+	AllowedDomains []string
+	RuntimesDir    string
+	JobEvents      JobEventSink // optional; nil disables job lifecycle broadcasts
 
 	tokenMu       sync.Mutex
 	jobTokens     map[string]string
@@ -230,6 +231,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		WorkspacePeers:       workspacePeers,
 		ResolvedHostCommands: resolvedHostCommands,
 		DockerEnabled:        spec.Visibility.DockerEnabled,
+		AllowedDomains:       r.AllowedDomains,
 	}
 	// Server socket is only exposed to jobs that have no broker policies
 	// attached — i.e. boid exec invocations that need to talk to the daemon

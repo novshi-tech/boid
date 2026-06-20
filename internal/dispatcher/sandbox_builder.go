@@ -68,6 +68,11 @@ type SandboxRuntimeInfo struct {
 	// Set by the runner before BuildSandboxSpec when DockerEnabled is true.
 	ProxySocketPath string
 
+	// AllowedDomains is the proxy egress allowlist. It is purely informational
+	// inside the sandbox (the proxy itself enforces it on the host), surfaced
+	// to the agent via environment.yaml so it knows which hosts are reachable
+	// without burning a turn on a 403.
+	AllowedDomains []string
 }
 
 // BuildSandboxSpec turns a business-level JobSpec and dispatcher-side runtime
@@ -242,15 +247,25 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	argv := append([]string(nil), spec.Argv...)
 
 	// Context files: task.yaml / instructions.yaml / environment.yaml / payload.json.
+	envInput := EnvironmentInput{
+		Visibility:      spec.Visibility,
+		WorkspacePeers:  rt.WorkspacePeers,
+		BuiltinPolicies: spec.BuiltinPolicies,
+		HostCommands:    spec.HostCommands,
+		ProxyPort:       rt.ProxyPort,
+		HostGatewayIP:   hostGatewayIP,
+		AllowedDomains:  rt.AllowedDomains,
+		Kind:            spec.Kind,
+		HarnessType:     spec.HarnessType,
+		SessionID:       spec.Env["BOID_AGENT_SESSION_ID"],
+		DisplayName:     spec.DisplayName,
+	}
 	files = append(files, contextFiles(
 		homeDir,
 		spec.Task,
 		spec.Instruction,
 		spec.PrimaryInput,
-		spec.Visibility,
-		rt.WorkspacePeers,
-		spec.BuiltinPolicies,
-		rt.ProxyPort > 0,
+		envInput,
 	)...)
 
 	// Output dir sentinel — guarantees $HOME/.boid/output/ exists before the
@@ -679,10 +694,7 @@ func contextFiles(
 	task *orchestrator.TaskSnapshot,
 	inst *orchestrator.RoutedInstruction,
 	primaryInput json.RawMessage,
-	visibility orchestrator.Visibility,
-	workspacePeers map[string]string,
-	policies map[string]orchestrator.BuiltinPolicy,
-	proxyEnabled bool,
+	envInput EnvironmentInput,
 ) []sandbox.FileWrite {
 	var out []sandbox.FileWrite
 	contextDir := homeDir + "/.boid/context"
@@ -701,7 +713,7 @@ func contextFiles(
 	}
 	out = append(out, sandbox.FileWrite{
 		Path:    contextDir + "/environment.yaml",
-		Content: buildEnvironmentYAML(visibility, workspacePeers, policies, proxyEnabled),
+		Content: buildEnvironmentYAML(envInput),
 	})
 	if len(primaryInput) > 0 {
 		out = append(out, sandbox.FileWrite{
@@ -740,44 +752,228 @@ type workspaceProjectEntry struct {
 	Name string `yaml:"name"`
 }
 
+// EnvironmentInput is the single input bundle for buildEnvironmentYAML. It is
+// derived from JobSpec + dispatcher runtime facts before contextFiles is
+// called. Centralising the inputs in one struct keeps the call sites in
+// BuildSandboxSpec / tests stable as the YAML layout grows new fields.
+type EnvironmentInput struct {
+	Visibility      orchestrator.Visibility
+	WorkspacePeers  map[string]string
+	BuiltinPolicies map[string]orchestrator.BuiltinPolicy
+	HostCommands    map[string]orchestrator.CommandDef
+
+	// Network plumbing. ProxyPort=0 means no proxy (and therefore no egress
+	// restriction wired by dispatcher). HostGatewayIP is the address agents
+	// see for the host; combined with ProxyPort it becomes proxy_url.
+	ProxyPort      int
+	HostGatewayIP  string
+	AllowedDomains []string
+
+	// Job category — Kind=Session gates the `session:` block; everything
+	// else inherits the same layout but without per-session metadata.
+	Kind        orchestrator.JobKind
+	HarnessType string
+	SessionID   string
+	DisplayName string
+}
+
+// environmentBindingEntry mirrors a BindMount in a yaml-friendly shape.
+// Mode reflects what the sandbox actually applies: empty → "ro" (default),
+// "rw" → "rw". IsFile is exposed so agents can tell a file mount from a
+// directory mount without re-running stat.
+type environmentBindingEntry struct {
+	Source string `yaml:"source"`
+	Target string `yaml:"target,omitempty"`
+	Mode   string `yaml:"mode"`
+	IsFile bool   `yaml:"is_file,omitempty"`
+}
+
+type environmentSandbox struct {
+	Kind        string `yaml:"kind"`
+	PIDIsolated bool   `yaml:"pid_isolated"`
+	UIDInside   int    `yaml:"uid_inside"`
+}
+
+type environmentNetwork struct {
+	Restricted     bool     `yaml:"restricted"`
+	Egress         string   `yaml:"egress,omitempty"`
+	ProxyURL       string   `yaml:"proxy_url,omitempty"`
+	WebFetch       string   `yaml:"webfetch,omitempty"`
+	AllowedDomains []string `yaml:"allowed_domains,omitempty"`
+}
+
+type environmentFilesystem struct {
+	ProjectDir         string                    `yaml:"project_dir,omitempty"`
+	Writable           bool                      `yaml:"writable"`
+	Worktree           bool                      `yaml:"worktree"`
+	AdditionalBindings []environmentBindingEntry `yaml:"additional_bindings,omitempty"`
+	KitRoots           []string                  `yaml:"kit_roots,omitempty"`
+}
+
+type environmentSession struct {
+	ID          string `yaml:"id,omitempty"`
+	Harness     string `yaml:"harness,omitempty"`
+	DisplayName string `yaml:"display_name,omitempty"`
+}
+
+type environmentHostCommand struct {
+	Name  string   `yaml:"name"`
+	Allow []string `yaml:"allow,omitempty"`
+	Deny  []string `yaml:"deny,omitempty"`
+}
+
 type environmentDoc struct {
+	// Top-level fields kept for backward compatibility with skills that match
+	// `readonly: true` / `tools:` / `network.restricted` by literal field name.
+	// Removing them would break /boid-executor & /boid-task dispatch logic.
 	Readonly          bool                    `yaml:"readonly"`
 	Worktree          bool                    `yaml:"worktree"`
-	Network           map[string]bool         `yaml:"network"`
+	Network           environmentNetwork      `yaml:"network"`
 	Tools             []string                `yaml:"tools,omitempty"`
 	WorkspaceProjects []workspaceProjectEntry `yaml:"workspace_projects,omitempty"`
+
+	// Enriched sections introduced for session-mode agent bootstrap (the
+	// `boid agent claude` path). Task-mode agents read these too; the data
+	// is purely additive.
+	Sandbox      environmentSandbox       `yaml:"sandbox"`
+	Filesystem   environmentFilesystem    `yaml:"filesystem"`
+	HostCommands []environmentHostCommand `yaml:"host_commands,omitempty"`
+	Session      *environmentSession      `yaml:"session,omitempty"`
+	Notes        string                   `yaml:"notes,omitempty"`
 }
+
+// environmentNotes is the prose block agents read to learn the sandbox's
+// non-obvious quirks. It is stable across jobs (the quirks are a property of
+// the sandbox implementation, not of any single job) so we keep it as a
+// package constant rather than rebuilding it per call. Use a literal block
+// scalar in the YAML output so LLMs see it as one paragraph per bullet.
+const environmentNotes = `- 内部 git は host へ broker dispatch されます。 -C と -u フラグは弾かれます。 push の remote snapshot はトークン登録時に固定で、 後から gh repo create で足した remote は再 capture が必要です。
+- 内部 fetch も host へ broker dispatch され、 network.allowed_domains の許可ドメインに対してのみ動作します。
+- host 側 gh CLI 経由のコマンドは --body-file のサンドボックスパスが見えません。 --body "$(cat)" で stdin から渡してください。
+- Claude の WebFetch ツールはサンドボックス内では無効化されています。 Web ページを読む場合は /boid-web スキル経由で。
+- additional_bindings の mode が "ro" のパスへの書き込みは EROFS / EACCES で失敗します。 project_dir.writable=false の場合も同様です。
+`
 
 // buildEnvironmentYAML derives the environment.yaml content purely from the
 // primitives orchestrator already exposed: Visibility + BuiltinPolicies +
 // proxy state. orchestrator does not need to know the exact YAML layout.
-func buildEnvironmentYAML(visibility orchestrator.Visibility, workspacePeers map[string]string, policies map[string]orchestrator.BuiltinPolicy, proxyEnabled bool) string {
-	env := environmentDoc{
-		Readonly: visibility.ProjectDir != "" && !visibility.Writable,
-		Worktree: visibility.UseWorktree,
-		Network:  map[string]bool{"restricted": proxyEnabled},
-		Tools:    builtinTools(policies),
+func buildEnvironmentYAML(in EnvironmentInput) string {
+	proxyEnabled := in.ProxyPort > 0
+	readonly := in.Visibility.ProjectDir != "" && !in.Visibility.Writable
+
+	doc := environmentDoc{
+		Readonly: readonly,
+		Worktree: in.Visibility.UseWorktree,
+		Tools:    builtinTools(in.BuiltinPolicies),
+
+		Sandbox: environmentSandbox{
+			Kind:        "rootless-userns",
+			PIDIsolated: true,
+			UIDInside:   0,
+		},
+		Network: environmentNetwork{
+			Restricted:     proxyEnabled,
+			AllowedDomains: append([]string(nil), in.AllowedDomains...),
+		},
+		Filesystem: environmentFilesystem{
+			ProjectDir:         in.Visibility.ProjectDir,
+			Writable:           in.Visibility.Writable,
+			Worktree:           in.Visibility.UseWorktree,
+			AdditionalBindings: convertBindings(in.Visibility.AdditionalBindings),
+			KitRoots:           append([]string(nil), in.Visibility.KitRoots...),
+		},
+		HostCommands: convertHostCommands(in.HostCommands),
+		Notes:        environmentNotes,
 	}
+
+	if proxyEnabled {
+		doc.Network.Egress = "proxy-only"
+		doc.Network.WebFetch = "disabled"
+		if in.HostGatewayIP != "" {
+			doc.Network.ProxyURL = fmt.Sprintf("http://%s:%d", in.HostGatewayIP, in.ProxyPort)
+		}
+	}
+
 	// environment.yaml advertises peers only when the job actually sees its
 	// own project filesystem. Gate jobs (ProjectDir=="") get neither peer
 	// mounts nor peer listings, even though broker-side auth still covers
 	// them via AllowedProjectIDs.
-	if visibility.ProjectDir != "" {
-		peerIDs := make([]string, 0, len(workspacePeers))
-		for id := range workspacePeers {
+	if in.Visibility.ProjectDir != "" {
+		peerIDs := make([]string, 0, len(in.WorkspacePeers))
+		for id := range in.WorkspacePeers {
 			peerIDs = append(peerIDs, id)
 		}
 		sort.Strings(peerIDs)
 		for _, id := range peerIDs {
-			dir := workspacePeers[id]
-			env.WorkspaceProjects = append(env.WorkspaceProjects, workspaceProjectEntry{
+			dir := in.WorkspacePeers[id]
+			doc.WorkspaceProjects = append(doc.WorkspaceProjects, workspaceProjectEntry{
 				Path: dir,
 				Name: filepath.Base(dir),
 			})
 		}
 	}
-	out, _ := yaml.Marshal(env)
+
+	if in.Kind == orchestrator.JobKindSession {
+		doc.Session = &environmentSession{
+			ID:          in.SessionID,
+			Harness:     in.HarnessType,
+			DisplayName: in.DisplayName,
+		}
+	}
+
+	out, _ := yaml.Marshal(doc)
 	return string(out)
+}
+
+// convertBindings turns orchestrator.BindMount records into the yaml-friendly
+// shape exposed in environment.yaml. The default mode in orchestrator is "ro"
+// (empty string), so we normalise to the literal "ro" for readability.
+func convertBindings(bindings []orchestrator.BindMount) []environmentBindingEntry {
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make([]environmentBindingEntry, 0, len(bindings))
+	for _, b := range bindings {
+		mode := b.Mode
+		if mode == "" {
+			mode = "ro"
+		}
+		out = append(out, environmentBindingEntry{
+			Source: b.Source,
+			Target: b.Target,
+			Mode:   mode,
+			IsFile: b.IsFile,
+		})
+	}
+	return out
+}
+
+// convertHostCommands flattens the map form into a sorted slice so the YAML
+// output is deterministic.
+func convertHostCommands(commands map[string]orchestrator.CommandDef) []environmentHostCommand {
+	if len(commands) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(commands))
+	for name := range commands {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]environmentHostCommand, 0, len(names))
+	for _, name := range names {
+		def := commands[name]
+		allow := append([]string(nil), def.AllowedSubcommands...)
+		allow = append(allow, def.AllowedPatterns...)
+		sort.Strings(allow)
+		deny := append([]string(nil), def.DeniedPatterns...)
+		sort.Strings(deny)
+		out = append(out, environmentHostCommand{
+			Name:  name,
+			Allow: allow,
+			Deny:  deny,
+		})
+	}
+	return out
 }
 
 func builtinTools(policies map[string]orchestrator.BuiltinPolicy) []string {
