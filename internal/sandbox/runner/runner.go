@@ -39,6 +39,12 @@ func readSpec(path string) (sandbox.Spec, error) {
 func pastaArgs(self, specPath, statePath string) []string {
 	return []string{
 		"--config-net",
+		// IPv4-only: boid's sandbox is IPv4-only by design (the proxy + DNS
+		// forward both bind v4 addresses). Without `-4`, pasta logs
+		// "No routable interface for IPv6: IPv6 is disabled" on every launch
+		// — pure noise above the harness's own startup output for interactive
+		// sessions.
+		"-4",
 		"-a", "10.0.2.0", "-n", "24", "-g", "10.0.2.2",
 		"--dns-forward", "10.0.2.3",
 		"-t", "none", "-u", "none",

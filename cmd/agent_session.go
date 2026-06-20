@@ -93,10 +93,12 @@ func runAgentSession(harness string, flags *agentSessionFlags) error {
 		return fmt.Errorf("start %s session: %w", harness, err)
 	}
 
-	// Emit the job id on stderr so users with --no-attach or piped stdout
-	// always see it. (stdout in attach mode belongs to the PTY.)
-	fmt.Fprintf(os.Stderr, "job_id=%s\n", result.JobID)
+	// Attach mode hands the terminal straight to the harness, so a leading
+	// `job_id=...` line just clutters the agent's startup output. Print it
+	// only when the caller asked us not to attach (script use, daemon job
+	// inspection, etc.) where the id is the only useful output.
 	if flags.noAttach {
+		fmt.Fprintf(os.Stderr, "job_id=%s\n", result.JobID)
 		return nil
 	}
 	return attachToJob(result.JobID)

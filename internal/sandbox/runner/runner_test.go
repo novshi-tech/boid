@@ -14,6 +14,7 @@ func TestPastaArgs_Matches1to1(t *testing.T) {
 	got := pastaArgs("/usr/local/bin/boid", "/tmp/boid-J-runner-spec.json", "/tmp/boid-J-runner-state.json")
 	want := []string{
 		"--config-net",
+		"-4",
 		"-a", "10.0.2.0", "-n", "24", "-g", "10.0.2.2",
 		"--dns-forward", "10.0.2.3",
 		"-t", "none", "-u", "none",
