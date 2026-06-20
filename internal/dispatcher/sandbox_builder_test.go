@@ -117,10 +117,10 @@ func TestBuildSandboxSpec_BoidHostIPAlwaysInjected(t *testing.T) {
 }
 
 // behavior は canonical 名 (executor/supervisor) で BOID_INVOKED_BEHAVIOR に渡す。
-// run-agent.py はこれを見て /boid-executor / /boid-supervisor を直接起動プロンプトに
-// 選ぶ。deprecated 別名 (dev/plan) は canonical 化してから渡すので、 agent ランナーは
-// 別名を知らなくてよい。 旧 BOID_INVOKED_TYPE は instruction の phase 種別 (常に
-// "execution") を運んでいて behavior と取り違えられていたため廃止する。
+// 現在の agent runner は behavior に依らず /boid-task を起動するが、 deprecated 別名
+// (dev/plan) は canonical 化してから渡す慣習を残しているのでテストも維持する。 旧
+// BOID_INVOKED_TYPE は instruction の phase 種別 (常に "execution") を運んでいて
+// behavior と取り違えられていたため廃止する。
 func TestBuildSandboxSpec_InvokedBehaviorIsCanonical(t *testing.T) {
 	cases := []struct {
 		behavior string
@@ -1107,7 +1107,8 @@ func parsedEnvDoc(t *testing.T, in EnvironmentInput) map[string]any {
 }
 
 // Skills downstream match on the literal top-level `readonly:` field. Renaming
-// or nesting it would silently break /boid-task and /boid-executor dispatch.
+// or nesting it would silently break /boid-task's supervisor/executor mode
+// determination (which keys off `readonly`).
 func TestBuildEnvironmentYAML_BackcompatTopLevelFields(t *testing.T) {
 	doc := parsedEnvDoc(t, EnvironmentInput{
 		Visibility: orchestrator.Visibility{

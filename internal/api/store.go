@@ -235,7 +235,8 @@ type StartSessionRequest struct {
 	SessionID string `json:"session_id,omitempty"`
 
 	// Instruction is the optional bootstrap prompt for the first turn. Empty
-	// leaves the harness to pick its default (e.g. /boid-sandbox for claude).
+	// leaves the harness to pick its default (no positional for session mode
+	// on claude, since /boid-task is meaningless without a task.yaml).
 	Instruction string `json:"instruction,omitempty"`
 
 	// Readonly, when true, mounts the project workspace read-only. Sessions

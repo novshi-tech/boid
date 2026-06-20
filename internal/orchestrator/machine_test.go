@@ -74,8 +74,8 @@ func TestDefaultMachine_AwaitingToExecuting(t *testing.T) {
 // approve a child's `done_request` (= terminate the awaiting child) via
 // `boid action send --type done`. The transition is the canonical
 // down-action documented in docs/plans/lifecycle-accountability.md and
-// boid-supervisor/SKILL.md; without it the supervisor falls back to
-// `boid task answer` which forces a wasteful agent re-spawn.
+// boid-task/SKILL.md (Supervisor Mode); without it the supervisor falls back
+// to `boid task answer` which forces a wasteful agent re-spawn.
 func TestDefaultMachine_AwaitingToDone(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
 	task := &orchestrator.Task{Status: orchestrator.TaskStatusAwaiting}

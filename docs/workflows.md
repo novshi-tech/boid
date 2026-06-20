@@ -83,7 +83,7 @@ task_behaviors:
       agent: claude-code
       model: opus
       message: |
-        Follow the /boid-supervisor skill.
+        Follow the /boid-task skill (Supervisor mode).
 
         Integration policy: LOCAL.
         - Each child executor task commits to its own worktree branch and exits.
@@ -94,7 +94,7 @@ task_behaviors:
           If the merge is not fast-forward, run `git rebase origin/<base>` in
           the child branch first; if that still does not produce a clean merge,
           escalate via `boid task notify --ask`.
-        - Spawn the next child (or exit) as the /boid-supervisor skill
+        - Spawn the next child (or exit) as the /boid-task skill
           describes.
   executor:
     name: executor
@@ -102,7 +102,7 @@ task_behaviors:
       agent: claude-code
       model: sonnet
       message: |
-        Follow the /boid-executor skill to implement what is described in
+        Follow the /boid-task skill (Executor mode) to implement what is described in
         task.yaml's title and description.
 
         When implementation is complete:
@@ -152,7 +152,7 @@ task_behaviors:
       agent: claude-code
       model: opus
       message: |
-        Follow the /boid-supervisor skill.
+        Follow the /boid-task skill (Supervisor mode).
 
         Integration policy: PR PER EXECUTOR.
         Once a child executor task reaches `done`:
@@ -166,7 +166,7 @@ task_behaviors:
         4. Anything ambiguous: `boid task notify "$BOID_TASK_ID" --ask "..."`
            to consult the user.
 
-        Treat aborted children per /boid-supervisor's existing guidance
+        Treat aborted children per /boid-task's existing guidance
         (no merge attempt; diagnose and either retry or escalate).
   executor:
     name: executor
@@ -174,7 +174,7 @@ task_behaviors:
       agent: claude-code
       model: sonnet
       message: |
-        Follow the /boid-executor skill to implement what is described in
+        Follow the /boid-task skill (Executor mode) to implement what is described in
         task.yaml's title and description.
 
         This project ships changes via the PR-per-executor model.
@@ -231,7 +231,7 @@ task_behaviors:
       agent: claude-code
       model: opus
       message: |
-        Follow the /boid-supervisor skill.
+        Follow the /boid-task skill (Supervisor mode).
 
         Integration policy: PR PER SUPERVISOR.
         Setup (before creating the first child):
@@ -261,7 +261,7 @@ task_behaviors:
       agent: claude-code
       model: sonnet
       message: |
-        Follow the /boid-executor skill to implement what is described in
+        Follow the /boid-task skill (Executor mode) to implement what is described in
         task.yaml's title and description.
 
         Your worktree is cut from `feature/${TASK_REMOTE_ID}` (the parent
@@ -288,5 +288,4 @@ You can mix workflows across projects — one project per workflow shape — but
 
 - [`project.yaml` reference](en/reference/project-yaml.md) — the canonical schema this document builds on.
 - [Concepts](en/guide/concepts.md) — vocabulary (task / behavior / kit / worktree / ...).
-- [`/boid-supervisor` SKILL](../internal/skills/data/boid-supervisor/SKILL.md) — the readonly supervisor's contract.
-- [`/boid-executor` SKILL](../internal/skills/data/boid-executor/SKILL.md) — the writable executor's contract.
+- [`/boid-task` SKILL](../internal/skills/data/boid-task/SKILL.md) — the unified task agent: supervisor mode (readonly orchestrator) and executor mode (writable implementer), selected from `environment.yaml` `readonly`.

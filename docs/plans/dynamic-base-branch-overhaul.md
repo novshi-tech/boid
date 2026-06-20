@@ -130,7 +130,7 @@ A (executor) → done → A の PR を base に merge (root or sub sup が gh AP
 - マージのタイミング・対象・コマンドは **project 側 instruction の責務**。 PR-merge
   → fetch → merge にするか、 ローカルブランチを直 merge にするかは project 運用
   ポリシーで決まる。
-- skill (boid-supervisor / boid-executor) には merge 責務を articulate しない
+- skill (boid-task の supervisor / executor mode) には merge 責務を articulate しない
   (instruction で書き分けるなら skill 側の記述は実体を持たない)。
 - boid コア側の責務は **env を渡すこと** に限定 (`BOID_BASE_BRANCH` 既存 +
   `BOID_PARENT_BRANCH` 新規)。
