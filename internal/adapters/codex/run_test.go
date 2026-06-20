@@ -43,7 +43,7 @@ func TestBuildArgs_NonInteractive_Resume(t *testing.T) {
 func TestBuildArgs_Interactive_NoSubcommand(t *testing.T) {
 	got := buildArgs(true, "", "", "")
 	// Interactive form is `codex` (no sub-command) — confirm `exec` is
-	// absent, the bypass flags are present, and no prompt was appended.
+	// absent, the bypass flag is present, and no prompt was appended.
 	if len(got) < 1 || got[0] != "codex" {
 		t.Fatalf("interactive argv must start with codex, got %v", got)
 	}
@@ -53,9 +53,14 @@ func TestBuildArgs_Interactive_NoSubcommand(t *testing.T) {
 		}
 	}
 	joined := strings.Join(got, " ")
-	if !strings.Contains(joined, "--skip-git-repo-check") ||
-		!strings.Contains(joined, "--dangerously-bypass-approvals-and-sandbox") {
-		t.Errorf("interactive argv missing bypass flags: %v", got)
+	if !strings.Contains(joined, "--dangerously-bypass-approvals-and-sandbox") {
+		t.Errorf("interactive argv missing bypass flag: %v", got)
+	}
+	// codex-cli 0.141.0 moved --skip-git-repo-check under the `exec`
+	// subcommand; top-level argv must not carry it or codex errors out
+	// with "unexpected argument".
+	if strings.Contains(joined, "--skip-git-repo-check") {
+		t.Errorf("interactive argv must not include --skip-git-repo-check, got %v", got)
 	}
 	// SessionID and prompt should be ignored in interactive form.
 	if strings.Contains(joined, "session-uuid") {
