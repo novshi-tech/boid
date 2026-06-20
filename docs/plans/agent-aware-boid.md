@@ -4,7 +4,7 @@
 > - **Phase 1 + 2**: 2026-06-17 実装完了・マージ済 (PR #569-#575, #577-#582, boid-kits #43)
 > - **Phase 3-a + 3-b + 3-c**: 2026-06-19 実装完了・マージ済 (PR #585-#592)
 > - **Phase 3-d (session 概念導入 + shell adapter 1 等市民化 + 起動入口整理)**: 2026-06-19 実装完了・マージ済 (PR #594-#596、 フォローアップ修正 #597-#598)
-> - **Phase 3-e (boid-kits claude-code キット廃止)**: Phase 3-d マージ済・1 リリース猶予経過待ち
+> - **Phase 3-e (boid-kits claude-code キット廃止 + codex adapter 廃止)**: 2026-06-20 実装完了 (boid 本体 + boid-kits 同時 PR)。 boid-kits の `claude-code` / `codex` キットを撤去し、 claude binding は `internal/adapters/claude/` に完全内包。 codex adapter は試作後に常用しないと判断、 boid 本体の `internal/adapters/codex/` および `HarnessCodex` 定数も同時撤去
 > - 元 Phase 3 (token / cost 会計) は新 **Phase 4** に押し下げ、 旧 Phase 4 以降の応用は新 **Phase 5 以降** に押し下げ
 >
 > 本ドキュメントは設計議論の結論を起こしたもの。コード参照は議論時点の調査に基づくため、
@@ -984,10 +984,22 @@ WebUI Commands ボタン on task の 3 経路はすべて `BuildCommandJobSpec` 
   追加、 旧入口は残置)、 PR2 で旧入口削除 + boid exec 簡素化。 安全側
 - 着手時に判断 (案 Y がおそらく推奨)
 
-##### Phase 3-e: boid-kits claude-code 互換期間後の廃止
+##### Phase 3-e: boid-kits claude-code 互換期間後の廃止 + codex 撤退 [✅ 完了 2026-06-20]
 
-互換期間 (Phase 3-d マージ後の **1 リリース猶予**) 経過後、 boid-kits の `claude-code` キット
-全体を廃止する。 boid 本体だけで claude adapter が動作する状態がゴール。
+互換期間 (Phase 3-d マージ後の **1 リリース猶予**) 経過。 動作確認 OK を踏まえ、 以下を 1 ラウンドで撤去:
+
+- boid-kits の `claude-code` キット全削除 (`detect.sh` / `hooks/` / `kit.yaml` / 空 `skills/`)。
+  claude binding は Phase 3-b で `internal/adapters/claude/bindings.go` に取り込み済のため動作影響なし。
+- boid-kits の `codex` キット全削除。 boid-kits リポジトリの `.boid/project.yaml` から両 kits の
+  エントリも撤去。
+- boid 本体側で `internal/adapters/codex/` ディレクトリ削除、 registry の codex case 削除、
+  `sandbox.HarnessCodex` 定数削除、 `planner.harnessTypeForAgent` の `case "codex":` 削除、
+  関連テスト / コメントから codex 言及を撤去。 Phase 3-c の試作で抽象妥当性は検証済だが、
+  常用ハーネスとしては採用しないと判断。 別ハーネスを将来また試す場合は同じ adapter テンプレ
+  (opencode が見本) で再実装する。
+- agent 名 `claude-code` (project.yaml の `agent:` フィールドで指定する文字列) は **互換維持で残置**。
+  `harnessTypeForAgent` が `"claude-code"` → `"claude"` (HarnessType) にマップする経路はそのまま。
+  これで既存 project.yaml は無修正で動作する。
 
 ### Phase 4 (暫定): token / cost 会計
 
@@ -1018,7 +1030,8 @@ WebUI Commands ボタン on task の 3 経路はすべて `BuildCommandJobSpec` 
 | 旧 bash dispatcher (`internal/sandbox/script.go` / `render.go` / `mount.go`) | **互換期間なし**。 Phase 3-a PR で削除 | Phase 3-a マージ後は git revert で 1 リリース猶予のみ担保 (設計判断 11) |
 | `run-agent.py` (boid-kits `claude-code` 配下) | Phase 3-a で起動経路は `runner-inner-child → run-agent.py → claude` に置換 (bash 経路は消えるが run-agent.py 自体は残置)。 Phase 3-b マージ後は claude adapter の `Run()` が `signal.Notify` + `setpgid` で代替するため冗長化、 互換期間中のみ並走可能 | Phase 3-b 完了 (`Run()` 統合) + 1 リリース猶予経過後 |
 | ProjectCommand / BehaviorCommand (project.yaml `commands:` / WebUI Commands ボタン / `boid exec <project> <command_name>`) | 旧 API は使用回数少、 **互換期間なしで Phase 3-d 着地と同時に廃止**。 既存 project.yaml の `commands:` セクションは parse warning 付きで無視、 旧 API 呼び出しは 410 Gone | Phase 3-d リリース時点 (代替手段は task 作成 + behavior 指定 / `boid agent` CLI / `boid exec -- argv` 直渡し) |
-| `boid-kits` `claude-code` キット全体 | claude adapter の hook 一式 + `additional_bindings` を提供 | Phase 3-d (session/shell adapter 整理) 完了 + 1 リリース猶予経過 (Phase 3-e) |
+| `boid-kits` `claude-code` キット全体 | claude adapter の hook 一式 + `additional_bindings` を提供 | Phase 3-d (session/shell adapter 整理) 完了 + 1 リリース猶予経過 (Phase 3-e) — **2026-06-20 完全撤去済** |
+| `boid-kits` `codex` キット + `internal/adapters/codex/` | Phase 3-c 試作として開発・常用ハーネスに昇格しない判断 | Phase 3-e で撤去 — **2026-06-20 完全撤去済** (agent 名 `codex` も planner マッピングから消えるため新規 project.yaml では使えない) |
 
 ### 出口条件
 

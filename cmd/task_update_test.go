@@ -197,7 +197,7 @@ func TestRunTaskUpdate_InstructionsFromStdin(t *testing.T) {
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
 
 	cmd := newTaskUpdateCmd(t)
-	cmd.SetIn(strings.NewReader(`{"reviewer":{"type":"verification","agent":"codex","message":"review"}}`))
+	cmd.SetIn(strings.NewReader(`{"reviewer":{"type":"verification","agent":"opencode","message":"review"}}`))
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	if err := cmd.Flags().Set("instructions-file", "-"); err != nil {

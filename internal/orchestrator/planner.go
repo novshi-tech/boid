@@ -57,7 +57,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 	instruction := selectInstruction(task, event.Hook.Agent)
 
 	// Phase 3-d: every hook flows through a HarnessAdapter. The mapping
-	// resolves recognised agents (claude-code / codex / opencode) to their
+	// resolves recognised agents (claude-code / opencode) to their
 	// dedicated adapter; everything else — including hooks with no `agent:`
 	// declaration and instruction-less hooks — falls through to the shell
 	// adapter, which forwards the hook script's argv straight to exec.
@@ -193,8 +193,6 @@ func harnessTypeForAgent(agent string) string {
 	switch agent {
 	case "claude-code":
 		return "claude"
-	case "codex":
-		return "codex"
 	case "opencode":
 		return "opencode"
 	default:

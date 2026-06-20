@@ -12,7 +12,6 @@ package registry
 import (
 	"github.com/novshi-tech/boid/internal/adapters"
 	"github.com/novshi-tech/boid/internal/adapters/claude"
-	"github.com/novshi-tech/boid/internal/adapters/codex"
 	"github.com/novshi-tech/boid/internal/adapters/opencode"
 	"github.com/novshi-tech/boid/internal/adapters/shell"
 	"github.com/novshi-tech/boid/internal/sandbox"
@@ -21,8 +20,8 @@ import (
 // For returns the HarnessAdapter that owns the given HarnessType, or nil if
 // the harness is unknown.
 //
-// Phase 3-d made the four built-in harnesses (shell / claude / codex /
-// opencode) authoritative; the runner-inner-child rejects an empty / unknown
+// Phase 3-d made the three built-in harnesses (shell / claude / opencode)
+// authoritative; the runner-inner-child rejects an empty / unknown
 // HarnessType because the planner now resolves every job to one of these.
 // The nil return path is kept for forward compatibility (a future harness
 // the caller has not yet wired) but is no longer expected on any live path.
@@ -32,8 +31,6 @@ func For(harness sandbox.HarnessType) adapters.HarnessAdapter {
 		return shell.New()
 	case sandbox.HarnessClaude:
 		return claude.New()
-	case sandbox.HarnessCodex:
-		return codex.New()
 	case sandbox.HarnessOpenCode:
 		return opencode.New()
 	default:

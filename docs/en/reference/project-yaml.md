@@ -248,7 +248,7 @@ default_instruction:
 
 | Key | Type | Role |
 |---|---|---|
-| `agent` | string | Selects the harness and routing target for this instruction. `claude-code` → claude harness (requires the claude-code kit); `codex` → built-in codex adapter; `opencode` → built-in opencode adapter. Unrecognised or empty values fall through to the shell adapter. |
+| `agent` | string | Selects the harness and routing target for this instruction. `claude-code` → claude harness (built into boid core); `opencode` → built-in opencode adapter. Unrecognised or empty values fall through to the shell adapter. |
 | `name` | string | Optional sub-identifier when several instructions go to the same agent. |
 | `message` | string | The instruction text given to the agent. |
 | `model` | string | Model selector the kit will pass through (e.g. `opus`, `sonnet`). |
@@ -264,7 +264,7 @@ Migration:
 | Old | New |
 |---|---|
 | `boid exec <project_id> <command-name>` invokes a named registered command | `boid exec -p <project_id> -- <argv...>` runs an arbitrary argv directly |
-| Web UI **Commands** button starts a claude session | `/sessions/new` lets you pick the harness (claude / codex / opencode) and starts a session. The same path is exposed as `POST /api/projects/{id}/sessions`. |
+| Web UI **Commands** button starts a claude session | `/sessions/new` lets you pick the harness (claude / opencode / shell) and starts a session. The same path is exposed as `POST /api/projects/{id}/sessions`. |
 | Task-detail **Commands** button runs behavior commands | Long-running task flows belong in behavior hooks. One-off runs that don't need a task can use `boid exec`. |
 
 ## capabilities

@@ -152,7 +152,7 @@ func TestSessionNew_WithProjectShowsHarnessForm(t *testing.T) {
 	if !strings.Contains(html, want) {
 		t.Errorf("harness form action should target %q, got: %s", want, html)
 	}
-	for _, harness := range []string{"claude", "codex", "opencode"} {
+	for _, harness := range []string{"claude", "opencode"} {
 		if !strings.Contains(html, `value="`+harness+`"`) {
 			t.Errorf("harness dropdown missing option %q", harness)
 		}

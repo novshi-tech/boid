@@ -12,7 +12,7 @@ const (
 // HarnessType identifies which HarnessAdapter the runner should hand the
 // process off to via adapter.Run(). Phase 3-d (PR1) made this field
 // invariant non-empty for every dispatched job — hook / session / exec
-// all resolve to shell / claude / codex / opencode. The empty string is no
+// all resolve to shell / claude / opencode. The empty string is no
 // longer a valid value and the runner-inner-child rejects it; the legacy
 // runExecArgv fallback was retired in the same change.
 type HarnessType string
@@ -26,14 +26,11 @@ const (
 	HarnessShell HarnessType = "shell"
 	// HarnessClaude routes through internal/adapters/claude.Adapter.Run().
 	HarnessClaude HarnessType = "claude"
-	// HarnessCodex routes through internal/adapters/codex.Adapter.Run().
+	// HarnessOpenCode routes through internal/adapters/opencode.Adapter.Run().
 	// Added in Phase 3-c as a prototype to validate the HarnessAdapter
 	// abstraction beyond claude. Minimum implementation: 1-turn launch with
 	// signal forwarding; session resume / payload patch are deliberately
 	// left as no-ops (see docs/plans/agent-aware-boid.md Phase 3-c).
-	HarnessCodex HarnessType = "codex"
-	// HarnessOpenCode routes through internal/adapters/opencode.Adapter.Run().
-	// Phase 3-c prototype, same scope as HarnessCodex.
 	HarnessOpenCode HarnessType = "opencode"
 )
 
