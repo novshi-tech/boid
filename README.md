@@ -10,7 +10,7 @@
 - **Autonomy and safety, reconciled by the sandbox.** Agents read your real directories directly, but writes are confined to a scope you choose (typically a git worktree). A runaway agent can't reach your home directory or other projects. Give each task its own worktree and several requests run on separate branches in separate directories without colliding.
 - **See every task at a glance.** Every task lives in a single list with its current state, viewable from CLI or Web UI. Expose the Web UI through Cloudflare Tunnel and you can check or steer progress from your phone.
 - **Stays on your own machine.** `go install`, then `boid start`. No config file, no server provisioning, no signup. Unlike cloud-side sandboxes, the agent can act on the real environment you actually work in.
-- **Swappable extension packages.** Pick which AI agent (Claude Code, Codex), which CI integration, which PR / auto-merge flow — the building blocks live in separate packages such as [boid-kits](https://github.com/novshi-tech/boid-kits).
+- **Swappable extension packages.** Pick which AI agent (Claude Code; Codex and opencode are also supported in experimental form), which CI integration, which PR / auto-merge flow — the building blocks live in separate packages such as [boid-kits](https://github.com/novshi-tech/boid-kits).
 
 ## Install
 

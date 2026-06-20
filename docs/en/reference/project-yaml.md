@@ -37,6 +37,7 @@ task_behaviors:
 | `env` | map (string → string) | no | Environment variables to set inside the sandbox. |
 | `secret_namespace` | string | no | Namespace under which this project's secrets are resolved. |
 | `capabilities` | Capabilities | no | Declares optional sandbox capabilities. The only supported capability today is `docker`. |
+| `default_task_behavior` | string | no | The behavior to use when `boid task create` omits `--behavior`. When unset, the daemon falls back to `supervisor` if that behavior exists (with a deprecation warning); if neither is configured, `boid task create` returns an error. |
 
 ## `task_behaviors.<name>`
 
@@ -47,12 +48,13 @@ The map key is the behavior's identifier and is what `boid task create` referenc
 | `supervisor` | Readonly orchestrator. Reads the request, triages it, creates child executor tasks, monitors them. Never edits files. |
 | `executor` | Writable implementer. Receives a single focused task and produces an artifact (commit / PR / payload trait). |
 
-Any other map key is also accepted (readonly defaults to `false` for non-canonical names). The legacy keys `plan` (alias for `supervisor`) and `dev` (alias for `executor`) are still accepted during the migration period but are deprecated.
+Any other map key is also accepted (Track A2 and later: `readonly` defaults to `true` as a fail-safe for non-canonical names; set `readonly: false` explicitly for writable behaviors). The legacy keys `plan` (alias for `supervisor`) and `dev` (alias for `executor`) are still accepted during the migration period but are deprecated.
 
-Each behavior entry has very few knobs:
+Each behavior entry's fields:
 
 | Key | Type | Default | Role |
 |---|---|---|---|
+| `readonly` | bool | `true` (fail-safe) | Whether the task's working directory is mounted read-only. `executor` retains `readonly: false` as a compatibility override (with a deprecation warning); all other behaviors default to `true`. Set `readonly: false` explicitly for any writable behavior. |
 | `traits` | list of string | (empty) | Top-level payload trait names this behavior is allowed to use (e.g. `[artifact]`). |
 | `default_instruction` | Instruction | (empty) | A single Instruction template appended to `Task.Instructions` when a task is created. |
 | `kits` | list of KitRef | (empty) | Additional kits loaded only for this behavior, merged with the project-top `kits` list. |
@@ -61,17 +63,15 @@ Each behavior entry has very few knobs:
 
 ### Removed behavior-level fields
 
-The fields below used to live under `task_behaviors.<name>.*`. They have been moved to the project top level (or derived from the behavior name) so that any one project pins one workflow shape.
+The fields below used to live under `task_behaviors.<name>.*`. They have been moved to the project top level (or are now configurable at the behavior level with a different semantic).
 
-| Removed field | Where it lives now |
+| Field | Status / Location |
 |---|---|
-| `readonly` | Derived from the behavior name: `supervisor` ⇒ `true`, `executor` ⇒ `false`. |
+| `readonly` | Re-enabled at the behavior level in Track A2. Defaults to `true` (fail-safe); set `readonly: false` for writable behaviors. |
 | `worktree` | Project-top `worktree:` combined with the 3-case `base_branch` classification. Executor gets a worktree when project-top `worktree: true`. Supervisor: no worktree in case 1 (`base_branch` = HEAD or omitted); readonly worktree in cases 2 and 3. |
 | `base_branch` | Project-top `base_branch:`. |
 | `branch_prefix` | Not configurable. Worktree branches are always created under `boid/`. |
 | `default_payload` | Removed. Provide payload at task creation time instead. |
-
-Setting any of these inside `task_behaviors.<name>` is a load-time error that points at the new location.
 
 ### Dynamic `base_branch`
 
@@ -248,7 +248,7 @@ default_instruction:
 
 | Key | Type | Role |
 |---|---|---|
-| `agent` | string | The kit identifier expected to receive this instruction (e.g. `claude-code`). |
+| `agent` | string | Selects the harness and routing target for this instruction. `claude-code` → claude harness (requires the claude-code kit); `codex` → built-in codex adapter; `opencode` → built-in opencode adapter. Unrecognised or empty values fall through to the shell adapter. |
 | `name` | string | Optional sub-identifier when several instructions go to the same agent. |
 | `message` | string | The instruction text given to the agent. |
 | `model` | string | Model selector the kit will pass through (e.g. `opus`, `sonnet`). |

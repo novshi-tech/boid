@@ -17,78 +17,78 @@ All of this is built from stock Linux primitives (mount namespace, user namespac
 
 ## The launch chain
 
-When the daemon starts a hook, `internal/sandbox.Prepare` writes three shell scripts to `/tmp/boid-<job-id>-{outer,setup,inner}.sh`:
+When the daemon starts a hook, the dispatcher writes a JSON spec file to disk and forks `boid runner-outer`. The full chain is five levels deep:
 
 ```
 +-------------------------------------------------------------+
-| outer.sh  (runs on the host)                                |
-|   wraps the rest with pasta (network namespace), then       |
-|     unshare --mount  ------+                                |
-+----------------------------|--------------------------------+
-                             v
+| runner-outer  (runs on the host)                            |
+|   reads the JSON spec                                       |
+|   forks pasta as a child process  --------+                 |
++-------------------------------------------|------------------+
+                                            v
 +-------------------------------------------------------------+
-| setup.sh  (inside the new mount namespace,                  |
-|            host fs is still fully visible here)             |
-|   bind-mount worktree, kit files, etc. into $ROOT           |
-|   apply nftables rules to drop outbound traffic             |
-|     (allowing only the proxy)                               |
-|   exec unshare --user --map-user --root=$ROOT --            |
-|     bash /tmp/inner.sh   ----+                              |
-+------------------------------|------------------------------+
-                               v
+| pasta (network namespace + user namespace)                  |
+|   -- forks boid runner-inner  ------------+                 |
++-------------------------------------------|------------------+
+                                            v
 +-------------------------------------------------------------+
-| inner.sh  (rootless, $ROOT is the only visible filesystem)  |
-|   set environment variables, then run the handler script    |
+| runner-inner  (inside pasta's user+net ns, inner uid 0)     |
+|   applies nftables egress rules                             |
+|   clone(CLONE_NEWUSER|CLONE_NEWNS) → runner-inner-child -+ |
++-----------------------------------------------------------|--+
+                                                           v
++-------------------------------------------------------------+
+| runner-inner-child  (new user+mount ns, uid 0)              |
+|   bind-mount sandbox fs into $ROOT                          |
+|   pivot_root into $ROOT                                     |
+|   write context files to $HOME/.boid/context/              |
+|   adapter.Run() → exec the agent                            |
 +-------------------------------------------------------------+
 ```
 
-The implementation lives in [`internal/sandbox/script.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/script.go) and [`internal/sandbox/render.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/render.go).
+The implementation lives in [`internal/sandbox/runner/`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/runner/) (replaced the former bash trio in Phase 3-a).
 
-### 1. `outer.sh`
+### 1. `runner-outer`
 
-```bash
-pasta --config-net \
+Reads the JSON spec and launches pasta with:
+
+```
+pasta --config-net -4 \
     -a 10.0.2.0 -n 24 -g 10.0.2.2 \
     --dns-forward 10.0.2.3 \
     -t none -u none \
-    -- unshare --mount -- bash /tmp/boid-<id>-setup.sh
+    -- boid runner-inner --spec <spec.json> --state <state.json>
 ```
 
-`pasta` is a user-mode network-namespace wrapper. It gives the sandbox its own network stack — the host's NICs are not visible. Outbound traffic is relayed through pasta's gateway (`10.0.2.2`) and DNS forwarder (`10.0.2.3`).
+`pasta` is a user-mode network-namespace wrapper. It gives the sandbox its own network stack — the host's NICs are not visible. Outbound traffic is relayed through pasta's gateway (`10.0.2.2`) and DNS forwarder (`10.0.2.3`). After pasta returns, `runner-outer` performs host-side cleanup (see [Cleanup](#cleanup)).
 
-Inside that, `unshare --mount` opens a new mount namespace. From this point on, bind mounts performed by the sandbox cannot leak into other host processes.
+### 2. `runner-inner`
 
-### 2. `setup.sh`
+Runs inside pasta's user+network namespace as **inner uid 0** (uid_map: host uid 1000 → container uid 0; uid 0 is required to hold `CAP_SYS_ADMIN` for the subsequent mount operations).
 
-Right after `unshare --mount`, the host filesystem is still fully visible. `setup.sh` builds a fresh root at `$ROOT` (e.g. `/tmp/boid-root-XXXXXX`) and pivots into it.
+Main steps:
 
-The main steps:
+- **nftables rules** — while holding uid 0 and `CAP_NET_ADMIN`, programmes the egress drop rules (proxy port only).
+- **`clone(CLONE_NEWUSER|CLONE_NEWNS)`** — forks `runner-inner-child` into a fresh user+mount namespace with the same uid_map (`ContainerID=0, HostID=<euid>, Size=1`).
 
-- **bind mounts** — the kit's `additional_bindings`, the worktree, and stock system directories such as `/usr` and `/lib` are bind-mounted (or rbind-mounted) into `$ROOT`. This is what determines the file set visible inside the sandbox.
-- **file writes** — kit and job-specific configuration files are materialised under `$ROOT`.
-- **nftables rules** — drop outbound traffic except to the proxy port. Combined with pasta, this is what restricts where the sandbox can talk to.
-- **symlinks** — the `boid` shim is symlinked at paths like `/opt/boid/bin/<command>` so the sandbox can invoke `boid` from inside.
+### 3. `runner-inner-child`
 
-`setup.sh` then re-runs `unshare` to pivot into the prepared root and launch `inner.sh`:
+Runs in the new user+mount namespace (uid 0). Builds the sandbox filesystem and launches the agent.
 
-```bash
-exec unshare --user --map-user=1000 --map-group=1000 --root="$ROOT" -- /bin/bash /tmp/inner.sh
-```
+Main steps:
 
-- `--user` opens a new user namespace (rootless).
-- `--map-user=1000 --map-group=1000` makes the sandbox's UID/GID 1000:1000.
-- `--root=$ROOT` makes `$ROOT` the new root for the launched process.
+- **bind mounts** — the kit's `additional_bindings`, the worktree, and system directories (`/usr`, `/lib`, etc.) are bind-mounted (or rbind-mounted) into `$ROOT`. This determines the file set visible inside the sandbox.
+- **`pivot_root`** — switches the root to `$ROOT`; the old root is pivoted to `/.old_root` then unmounted and removed.
+- **context files** — after `pivot_root`, writes `$HOME/.boid/context/{task,instructions,environment,payload}.{yaml,json}` from the spec.
+- **symlinks** — the `boid` shim is symlinked at `/opt/boid/bin/<command>` etc.
+- **`adapter.Run()`** — invokes the HarnessAdapter (claude / codex / opencode / shell) to exec the agent, relay the stop signal (SIGUSR1 → SIGTERM to the agent), normalise the exit code, and post the broker job-done via `brokerclient`.
 
-From this point inside the sandbox:
+From inside the sandbox:
 
-- The home directory, SSH keys, and other projects do not exist (their paths simply do not resolve unless they were bind-mounted into `$ROOT`).
-- The process runs as UID 1000 with no escalation path to the host's root.
+- The home directory, SSH keys, and other projects do not exist (paths don't resolve unless bind-mounted into `$ROOT`).
+- The process runs as uid 0 inside the user namespace but cannot escape it — there is no escalation path to the host root.
 
-### 3. `inner.sh`
-
-Now we are inside the sandbox. `inner.sh` exports environment variables (`BOID_TASK_ID` and friends, including anything declared by the kit / behavior), then runs the handler's argv. Task metadata is not delivered on stdin — all hooks run as interactive (PTY) jobs; task context is available through the context files at `$HOME/.boid/context/{task,instructions,environment,payload}.{yaml,json}`. The handler's exit code propagates through `exec`, back through `setup.sh`, and out via `outer.sh`.
-
-The handler-side protocol is documented in [Hook script protocol](../reference/hook-contract.md).
+Task context is available through the context files at `$HOME/.boid/context/`. The handler-side protocol is documented in [Hook script protocol](../reference/hook-contract.md).
 
 ## Network control
 
@@ -100,7 +100,7 @@ pasta is a user-privilege network-namespace wrapper. The sandbox sees only pasta
 
 ### ② nftables drop rules
 
-`setup.sh` programmes nftables to drop all outbound traffic except to the proxy port. The end result:
+`runner-inner` programmes nftables while holding uid 0 to drop all outbound traffic except to the proxy port. The end result:
 
 - HTTP/HTTPS goes only through `http_proxy` / `https_proxy` pointing at `10.0.2.2:<port>`.
 - The proxy forwards only those domains in the allowlist (see below).
@@ -253,34 +253,25 @@ The token is issued at sandbox start and passed in via environment variables suc
 
 ## Cleanup
 
-Cleanup runs in **`outer.sh`** after pasta returns; `setup.sh` no longer installs a trap.
+Cleanup runs in **`runner-outer`** (Go code) after pasta returns:
 
-```bash
-# outer.sh (excerpt)
-...
-exit_code=$?
-...
-rm -f "$pasta_stderr" 2>/dev/null || true
-case "$root_dir" in
-    /tmp/boid-root-*) rm -rf "$root_dir" 2>/dev/null || true ;;
-    *) echo "[boid] WARNING: root_dir=$root_dir not under /tmp/boid-root-*, skipping cleanup" >&2 ;;
-esac
-rm -rf <staging-dirs...> 2>/dev/null || true
-if [ "$exit_code" -eq 0 ]; then
-    rm -f <outer.sh> <setup.sh> <inner.sh> 2>/dev/null || true
-fi
-exit $exit_code
+```go
+// runner-outer (excerpt)
+cleanupRoot(spec.RootDir)          // rm -rf guarded by /tmp/boid-root-* prefix
+for _, p := range spec.CleanupPaths { os.RemoveAll(p) }
+os.Remove(specPath)                // spec contains secrets; remove unconditionally
+if exitCode == 0 { os.Remove(statePath) }  // state file retained on failure
 ```
 
 Three points:
 
-1. **The kernel reclaims mounts.** `setup.sh` runs inside `unshare --mount`; when its bash exits the namespace is destroyed and every bind underneath is reclaimed by the kernel. The previous implementation called `umount -R "$ROOT"` from a trap, which failed immediately because `$ROOT` itself was never a mountpoint, leaving every sub-bind alive and forcing the cleanup to skip `rm`.
-2. **`$root_dir` is rm'd from outside the sandbox namespace.** By the time `outer.sh` resumes, the sandbox mount namespace is gone, so `rm -rf` only sees the empty scaffolding directory on the host. It cannot traverse a bind mount into host content.
-3. **`/tmp/boid-root-*` prefix guard.** If `$root_dir` is set to an unexpected path (misconfiguration or bug), the case skips the rm and logs a warning instead.
+1. **The kernel reclaims mounts.** `runner-inner` and `runner-inner-child` ran inside namespaces owned by pasta's process tree. When pasta exits, those namespaces are destroyed and all bind mounts underneath are automatically reclaimed by the kernel — no explicit `umount` is needed.
+2. **`$ROOT` is removed from outside the sandbox namespace.** By the time `runner-outer` runs its cleanup, the sandbox mount namespace is already gone, so `rm -rf` only sees empty scaffolding on the host and cannot traverse into any bind-mounted host content.
+3. **`/tmp/boid-root-*` prefix guard.** `cleanupRoot` skips and logs a warning if `spec.RootDir` does not start with `/tmp/boid-root-`, preventing accidental host damage from misconfiguration.
 
-On `exit_code != 0` the script files (`*-outer.sh`, `*-setup.sh`, `*-inner.sh`) are retained for post-mortem diagnosis (see `cleanupSandboxAfterWait` in `internal/dispatcher/runner.go`). `root_dir` and the staging dir are not retained — once the namespace is gone they are just empty scaffolding, so they are always removed.
+On failure, a `runner-state.json` file (`/tmp/boid-<runtime_id>-runner-state.json`) is kept for post-mortem diagnosis. It contains the phase-level progress log, the spec (with secrets redacted), and the exit code. The file is removed by the daemon's 30-day GC cycle. The spec file is always removed regardless of exit code (it carries the broker token and other secrets).
 
-A previous regression where bind mounts traversed during `rm -rf` deleted host files (memory: "feedback: bind_rm_traverses_source") motivated the current design — all three paths (own-namespace, cross-namespace, chroot-holder) now fail closed.
+A previous regression where bind mounts traversed during `rm -rf` deleted host files motivated the current design — both the own-namespace and cross-namespace paths now fail closed.
 
 ## Allowed boid builtins from inside the sandbox
 
