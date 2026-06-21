@@ -15,6 +15,8 @@ func TestAwaitingPayload_RoundTrip(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
+	// session_id is a legacy persisted field; the deserialiser must skip it
+	// silently rather than fail (existing rows predate the field removal).
 	payload := json.RawMessage(`{"awaiting":{"session_id":"sess-abc","question":"Should I proceed?","question_id":"qid-1","pending_answer":"yes"}}`)
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
@@ -37,9 +39,6 @@ func TestAwaitingPayload_RoundTrip(t *testing.T) {
 	}
 
 	ap := orchestrator.GetAwaitingPayload(got.Payload)
-	if ap.SessionID != "sess-abc" {
-		t.Errorf("session_id: got %q, want %q", ap.SessionID, "sess-abc")
-	}
 	if ap.Question != "Should I proceed?" {
 		t.Errorf("question: got %q, want %q", ap.Question, "Should I proceed?")
 	}
@@ -52,15 +51,12 @@ func TestAwaitingPayload_RoundTrip(t *testing.T) {
 }
 
 func TestClearPendingAnswer_RemovesAnswerKeepsRest(t *testing.T) {
-	payload := json.RawMessage(`{"awaiting":{"session_id":"sess-1","question":"q","question_id":"qid-1","pending_answer":"yes"}}`)
+	payload := json.RawMessage(`{"awaiting":{"question":"q","question_id":"qid-1","pending_answer":"yes"}}`)
 	got := orchestrator.ClearPendingAnswer(payload)
 
 	ap := orchestrator.GetAwaitingPayload(got)
 	if ap.PendingAnswer != "" {
 		t.Errorf("pending_answer = %q, want empty", ap.PendingAnswer)
-	}
-	if ap.SessionID != "sess-1" {
-		t.Errorf("session_id = %q, want sess-1", ap.SessionID)
 	}
 	if ap.QuestionID != "qid-1" {
 		t.Errorf("question_id = %q, want qid-1", ap.QuestionID)
@@ -74,7 +70,7 @@ func TestClearPendingAnswer_NoOpWhenAbsent(t *testing.T) {
 	cases := []json.RawMessage{
 		json.RawMessage(`{}`),
 		json.RawMessage(`{"artifact":{"url":"x"}}`),
-		json.RawMessage(`{"awaiting":{"session_id":"s","question_id":"q"}}`),
+		json.RawMessage(`{"awaiting":{"question_id":"q"}}`),
 	}
 	for _, payload := range cases {
 		got := orchestrator.ClearPendingAnswer(payload)

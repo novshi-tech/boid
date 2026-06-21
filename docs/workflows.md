@@ -93,7 +93,7 @@ task_behaviors:
             git merge --ff-only <child-branch>
           If the merge is not fast-forward, run `git rebase origin/<base>` in
           the child branch first; if that still does not produce a clean merge,
-          escalate via `boid task notify --ask`.
+          escalate via `boid task ask`.
         - Spawn the next child (or exit) as the /boid-task skill
           describes.
   executor:

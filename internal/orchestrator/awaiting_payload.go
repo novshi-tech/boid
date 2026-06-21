@@ -2,43 +2,31 @@ package orchestrator
 
 import "encoding/json"
 
-// Awaiting Q&A delivery modes. Mode selects how an answer reaches the agent:
-//
-//   - AwaitingModeSessionResume (default / empty): the agent exited on `notify
-//     --ask`; the answer is stored as PendingAnswer and a fresh `claude
-//     --resume` hook consumes it on the next dispatch. This is the legacy path
-//     and remains the behaviour when Mode is absent (existing records are not
-//     broken by the new field).
-//   - AwaitingModeBlocking: the agent is still alive, blocked inside a
-//     `boid task ask` broker RPC. The answer is handed back to it directly via
-//     the in-memory BlockingAskRegistry; no resume hook is dispatched.
-const (
-	AwaitingModeSessionResume = "session_resume"
-	AwaitingModeBlocking      = "blocking"
-)
-
 // AwaitingPayload holds the fields of the "awaiting" trait in task.Payload.
 //
-// Fields written by kits (via boid task notify --ask):
-//   - SessionID: the harness session ID used to resume the agent on next invocation
+// The Q&A flow is now uniformly the blocking RPC `boid task ask`: the agent
+// stays alive inside a broker connection while the daemon waits for a user
+// answer, which is then handed back over the same socket via the in-memory
+// BlockingAskRegistry. There is no session-resume path: the legacy
+// `notify --ask` → `reopen -m` round trip is no longer wired to claude
+// `--resume`, and every dispatch starts a fresh agent process.
+//
+// Fields written when an `ask` action lands:
 //   - Question: human-readable question text shown to the user
 //   - QuestionID: UUID identifying this Q&A turn (for multi-turn tracking)
 //
 // Fields written by boid (set when the user submits an answer):
-//   - PendingAnswer: the user's reply, consumed by the kit on next resume
+//   - PendingAnswer: the user's reply (legacy field; the blocking RPC delivers
+//     answers in-memory and never sets this, but legacy `notify --ask` paths
+//     still surface it as $BOID_USER_ANSWER on the next hook invocation)
 //
-// Mode/Source are optional and omitempty so existing awaiting records (which
-// predate these fields) deserialize unchanged. A missing Mode is treated as
-// AwaitingModeSessionResume (the historical default). Source is a placeholder
-// for future multi-agent messaging (who asked / who should answer); it is not
-// consumed by the current Q&A logic.
+// SessionID/Mode/Source have been removed: the harness-resume mode they
+// described is gone, and persisted records with those fields deserialize
+// cleanly (encoding/json ignores unknown keys).
 type AwaitingPayload struct {
-	SessionID     string `json:"session_id,omitempty"`
 	Question      string `json:"question,omitempty"`
 	QuestionID    string `json:"question_id,omitempty"`
 	PendingAnswer string `json:"pending_answer,omitempty"`
-	Mode          string `json:"mode,omitempty"`
-	Source        string `json:"source,omitempty"`
 }
 
 // ClearPendingAnswer removes the pending_answer field from the awaiting trait

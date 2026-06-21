@@ -15,7 +15,6 @@ func blockingAwaitingPayload(t *testing.T, qid string) json.RawMessage {
 	ap := orchestrator.AwaitingPayload{
 		Question:   "Proceed?",
 		QuestionID: qid,
-		Mode:       orchestrator.AwaitingModeBlocking,
 	}
 	apJSON, err := json.Marshal(ap)
 	if err != nil {
@@ -115,27 +114,32 @@ func TestAnswerTask_BlockingMode_NoWaiterConflict(t *testing.T) {
 	}
 }
 
-// Session-resume mode (the legacy notify --ask path) is unchanged: with no
-// blocking mode in the awaiting trait, AnswerTask still drives ApplyAction.
-func TestAnswerTask_SessionResumeMode_StillDispatches(t *testing.T) {
+// Legacy `notify --ask` awaiting records (carrying a session_id field that
+// the deserialiser now ignores) reach AnswerTask but the agent that triggered
+// them already exited — there is no parked broker connection, so the blocking
+// registry refuses to deliver and AnswerTask surfaces the conflict instead of
+// silently flipping the task back to a zombie executing state. This pins the
+// "session-resume dispatch is gone" contract.
+func TestAnswerTask_LegacyAwaitingWithoutWaiter_Rejects(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "t1",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusAwaiting,
 		Payload:   json.RawMessage(`{"awaiting":{"question":"Q","question_id":"q-1","session_id":"sess-1"}}`),
 	}
-	wf := &stubWorkflowService{}
 	svc := &TaskAppService{
-		Tasks:    &stubTaskStore{task: task},
-		Workflow: wf,
-		// BlockingAsk intentionally nil: session_resume must not need it.
+		Tasks:       &stubTaskStore{task: task},
+		Workflow:    &stubWorkflowService{},
+		BlockingAsk: NewBlockingAskRegistry(),
 	}
 
-	if err := svc.AnswerTask(context.Background(), "t1", "q-1", "yes"); err != nil {
-		t.Fatalf("AnswerTask: %v", err)
+	err := svc.AnswerTask(context.Background(), "t1", "q-1", "yes")
+	if err == nil {
+		t.Fatal("expected conflict for legacy awaiting record (no parked agent), got nil")
 	}
-	if wf.appliedType != "answer" {
-		t.Errorf("applied action type = %q, want answer (session_resume path)", wf.appliedType)
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Errorf("expected 409 StatusError, got %v", err)
 	}
 }
 

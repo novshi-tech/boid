@@ -114,7 +114,7 @@ To prevent two tasks from sharing the same working copy simultaneously, `boid` h
 
 - **Serialised**: two root tasks in the same project with the same `base_branch` queue in FIFO order — the second waits until the first reaches a terminal state.
 - **Parallel-safe**: root tasks with different `base_branch` values, root + child combinations, and any two child tasks are all allowed to run simultaneously.
-- The lock is held for the full executing lifetime. When a task enters `awaiting` (via `boid task notify --ask`), the lock is **released** so that other tasks on the same branch can proceed; the lock is re-acquired when the task resumes (via `answer`). It is finally released on a terminal transition.
+- The lock is held for the full executing lifetime. When a task enters `awaiting` (via `boid task ask` or `boid task notify --ask`), the lock is **released** so that other tasks on the same branch can proceed; the lock is re-acquired when the task resumes (via `answer`). It is finally released on a terminal transition.
 - No validation at task-creation time — the lock is acquired when the task transitions to `executing`.
 
 ### Base synchronisation and merge responsibility

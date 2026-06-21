@@ -23,7 +23,7 @@ type fakeNotifier struct {
 	err            error
 }
 
-func (n *fakeNotifier) NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID, progress, done, fail string) error {
+func (n *fakeNotifier) NotifyTask(ctx context.Context, taskID, message, ask, questionID, progress, done, fail string) error {
 	n.calledTaskID = taskID
 	n.calledMessage = message
 	n.calledAsk = ask

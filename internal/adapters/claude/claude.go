@@ -18,24 +18,11 @@ import (
 )
 
 // Adapter implements adapters.HarnessAdapter for Claude Code.
-type Adapter struct {
-	// abortCodeLookup resolves lifecycle.abort.code for a task id. Defaults
-	// to invoking `boid task get`; tests override via WithAbortCodeLookup.
-	abortCodeLookup func(ctx context.Context, taskID string) string
-}
+type Adapter struct{}
 
 // New returns a new Adapter.
 func New() *Adapter {
-	return &Adapter{
-		abortCodeLookup: defaultAbortCodeLookup,
-	}
-}
-
-// WithAbortCodeLookup overrides the abort-code resolver. Intended for tests
-// that want to exercise Run without spawning the `boid` CLI.
-func (a *Adapter) WithAbortCodeLookup(f func(ctx context.Context, taskID string) string) *Adapter {
-	a.abortCodeLookup = f
-	return a
+	return &Adapter{}
 }
 
 // Usage is not yet implemented. It will be wired in Phase 4 when the jobs

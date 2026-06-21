@@ -61,16 +61,15 @@ hook の実行コンテキストには次の環境変数が設定されます。
 | `BOID_BROKER_SOCKET` | ホストコマンドブローカーの UNIX ソケットパス |
 | `BOID_BROKER_TOKEN` | ブローカーソケットの認証トークン |
 | `BOID_SOCKET` | boid デーモンの UNIX ソケットパス (hook 内から `boid` CLI を呼ぶために使う) |
-| `BOID_AGENT_SESSION_ID` | 実行中の agent ジョブのセッション ID。 Q&A resume フローで回答を正しい agent セッションと紐づけるために使う |
-| `BOID_USER_ANSWER` | `notify --ask` による質問に対するユーザーの回答テキスト。 resume 時に設定される |
-| `BOID_QUESTION_ID` | `BOID_USER_ANSWER` に対応する質問 ID |
+| `BOID_USER_ANSWER` | (レガシー) `notify --ask` 経路の awaiting レコードに残った `pending_answer` を hook 環境に流し込む。 daemon は answer 時の resume hook を dispatch しないため、 通常は空。 `boid task ask` 経由の回答は in-memory で agent に直接届くので env には現れない |
+| `BOID_QUESTION_ID` | `BOID_USER_ANSWER` に対応する質問 ID。 同じくレガシー経路でのみ意味を持つ |
 | `TERM` | ターミナルタイプ (例: `xterm-256color`) |
 | `HOME` | サンドボックス内のホームディレクトリ |
 | `PATH` | 起動側から継承したパス (kit の `env` で上書き可能) |
 
 > **注意**: `BOID_PROJECT_ID` は hook 環境には**設定されません**。この変数は `boid task notify` コマンドが内部的にエクスポートするもので、hook スクリプトには渡されません。
 
-> **Q&A resume** (`BOID_AGENT_SESSION_ID` / `BOID_USER_ANSWER` / `BOID_QUESTION_ID`): agent hook が `boid task notify --ask` を呼んだとき、boid はタスクを一時停止します。ユーザーが回答するとこの 3 変数が設定された状態で hook が resume されます。kit 作者はこれらを使って回答に応じた分岐処理や agent への転送を実装できます。
+> **Q&A**: agent 主導の Q&A は `boid task ask` (blocking RPC) に統一されており、 agent process は exit せず broker 接続を握ったまま回答を待ちます。 `BOID_AGENT_SESSION_ID` は廃止 (session-id resume 経路自体が削除されました)。 `BOID_USER_ANSWER` / `BOID_QUESTION_ID` はレガシー `notify --ask` 経路の awaiting レコードを再ディスパッチする際にしか set されず、 daemon はその再ディスパッチを行わないため実質的に非アクティブな env です。
 
 加えて、 kit の `kit.yaml` で宣言した変数がすべて流し込まれます。
 

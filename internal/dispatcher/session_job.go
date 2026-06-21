@@ -28,10 +28,6 @@ type SessionJobInput struct {
 	// ignored otherwise.
 	Argv []string
 
-	// SessionID is the resume target. Empty starts a fresh session and the
-	// adapter generates a new id.
-	SessionID string
-
 	// Instruction is the optional bootstrap prompt the agent should pick up
 	// on launch (e.g. the `--instruction` flag of `boid agent`, or the
 	// WebUI Session dialog's text field). When non-empty it is plumbed
@@ -79,9 +75,6 @@ func BuildSessionJobSpec(input SessionJobInput) *orchestrator.JobSpec {
 	env := map[string]string{}
 	for k, v := range input.Env {
 		env[k] = v
-	}
-	if input.SessionID != "" {
-		env["BOID_AGENT_SESSION_ID"] = input.SessionID
 	}
 	if input.Model != "" {
 		env["BOID_MODEL"] = input.Model

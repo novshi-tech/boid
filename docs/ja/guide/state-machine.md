@@ -42,8 +42,8 @@ pending -----> executing -----> done             |
 | `fail` | `executing` | `aborted` | executing から強制 abort |
 | `reopen` | `done` | `executing` | 新しい instruction を append して再開 (`--message` で渡す) |
 | `reopen` | `aborted` | `executing` | aborted のタスクを executing に戻す |
-| `ask` | `executing` | `awaiting` | `boid task notify --ask` が発行。 `answer` が届くまでタスクを停止する |
-| `answer` | `awaiting` | `executing` | `boid task answer` または Web UI が発行。 hook が再起動される |
+| `ask` | `executing` | `awaiting` | `boid task ask` (blocking RPC) または `boid task notify --ask` が発行。 task を `awaiting` に置く |
+| `answer` | `awaiting` | `executing` | `boid task answer` または Web UI が発行。 `boid task ask` 経由の awaiting にしか到達できない (parked broker 接続経由で agent に届ける)。 `notify --ask` の場合は agent が既に exit しているため 409 で reject される |
 | `abort` | 終端でない任意の状態 | `aborted` | |
 | `job_failed` (system) | 終端でない任意の状態 | `aborted` | |
 

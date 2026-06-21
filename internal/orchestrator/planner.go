@@ -102,7 +102,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		),
 		HostCommands: behavior.HostCommands.ToCommandDefs(),
 		SecretNamespace: meta.SecretNamespace,
-		Env:             mergeStringMaps(mergeStringMaps(behavior.Env, taskBusinessEnv(task, parent)), p.resumeEnv(task)),
+		Env:             mergeStringMaps(behavior.Env, taskBusinessEnv(task, parent)),
 		ExecutionState:  string(task.Status),
 		// All hook jobs allocate a PTY: agent hooks (HarnessType="claude")
 		// need it so the harness' TUI behaves correctly, and pure shell hooks
@@ -127,25 +127,14 @@ func (p *DispatchPlanner) lookupParent(task *Task) (*Task, error) {
 	return parent, nil
 }
 
-// resumeEnv returns BOID_AGENT_SESSION_ID for the awaiting session, if any.
-// Phase 3-b: the env var is fixed by boid core (it is the contract that
-// runner-inner-child translates into adapters.RunContext.SessionID) rather
-// than owned by a per-harness adapter — keeping per-harness session-id key
-// names out of the env is a deliberate simplification of the matrix that
-// the deprecated ResumePayload method advertised.
-func (p *DispatchPlanner) resumeEnv(task *Task) map[string]string {
-	ap := GetAwaitingPayload(task.Payload)
-	if ap.SessionID == "" {
-		return nil
-	}
-	return map[string]string{"BOID_AGENT_SESSION_ID": ap.SessionID}
-}
-
 // taskBusinessEnv returns env vars derived from business-level task fields
 // that hook scripts may need at runtime. Surfaces the task's base branch,
 // the parent task's HEAD branch (BOID_PARENT_BRANCH), and, when the task has
-// an awaiting trait, the user answer and question ID. The harness-specific
-// session ID env var is produced separately via DispatchPlanner.resumeEnv.
+// an awaiting trait, the user answer and question ID.
+//
+// Note: session-id resume has been removed (task-ask-rpc / reopen session id
+// removal). Every dispatch is a fresh agent process; harness-specific session
+// resume env vars are no longer surfaced.
 //
 // parent is nil for root tasks; when set, BOID_PARENT_BRANCH is emitted.
 func taskBusinessEnv(task *Task, parent *Task) map[string]string {

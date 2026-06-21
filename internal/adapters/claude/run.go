@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -44,28 +43,6 @@ const sessionSystemPrompt = "あなたは boid のサンドボックス内で起
 	" を読んで確認してください (sandbox / network / filesystem / host_commands /" +
 	" notes 節)。 これは固定の参照ファイルで、 ユーザに尋ねる必要はありません。"
 
-// resumePrompt is used when resuming an existing session without a user
-// answer (e.g. reopen with new instruction). It counters claude's implicit
-// "Continue from where you left off" bias toward "no new work" when prior
-// context shows a completed task.
-const resumePrompt = "状態が更新されました。 BOID_USER_ANSWER 環境変数 (Q&A 回答があれば設定されている) " +
-	"と ~/.boid/context/ 以下のファイル (task.yaml, instructions.yaml, payload.yaml) を" +
-	"確認し、 新しい状況に対応してください。 prior context が done に見えても、" +
-	" instructions.yaml の末尾要素は新しい指示の可能性があるので必ず読むこと。" +
-	" **セッションを終える前に `boid task notify --done` / `--fail` /" +
-	" `--ask` のいずれかを必ず呼ぶこと (idle 離脱は禁止)**。"
-
-// daemonRestartResumePrompt is the recovery prompt used when the task's
-// abort_code is "daemon_restart". The agent is told this is a recovery
-// context, not a normal reopen.
-const daemonRestartResumePrompt = "daemon が再起動したため、前回の作業が中断されました。" +
-	" ~/.boid/context/ 以下のファイル (task.yaml, instructions.yaml, payload.yaml) を確認し、" +
-	" 中断前に作業していたファイルや状態を把握してリカバリを試みてください。" +
-	" 不明な点は `boid task notify \"$BOID_TASK_ID\"" +
-	" --message \"<コンテキスト>\" --ask \"<質問>\"` でユーザに確認してください。" +
-	" **セッションを終える前には必ず `--done` / `--fail` / `--ask` のいずれかを呼ぶこと" +
-	" (idle 離脱は禁止)**。"
-
 // taskBootstrapSkill is the single unified skill that drives any task agent
 // regardless of behavior name. With task_behaviors free naming (Track A2 #574)
 // the daemon no longer guarantees canonical names, so we route every task to
@@ -81,38 +58,25 @@ type session struct {
 }
 
 // selectPrompt picks the bootstrap text for the claude positional arg.
-// Precedence: UserAnswer (Q&A reply) → resume prompt (daemon_restart vs
-// normal) → session mode (empty: no positional) → /boid-task.
+// Precedence: UserAnswer (user-initiated session bootstrap text) → session
+// mode (empty: no positional) → /boid-task.
 //
 // isSession=true (JobKindSession, no BOID_TASK_ID) skips the task-skill
 // bootstrap entirely: user-initiated sessions have no task to dispatch and
 // /boid-task is meaningless without a task.yaml to read. The system prompt
 // still points the agent at environment.yaml.
-func selectPrompt(isSession, isResume bool, userAnswer, abortCode string) string {
+//
+// Note: Every dispatch is a fresh claude process (no --resume) since the
+// reopen / Q&A session-id-resume path was removed. Persisted prior-turn
+// context is read by the agent through ~/.boid/context/*.yaml on cold start.
+func selectPrompt(isSession bool, userAnswer string) string {
 	if userAnswer != "" {
 		return userAnswer
-	}
-	if isResume {
-		if abortCode == "daemon_restart" {
-			return daemonRestartResumePrompt
-		}
-		return resumePrompt
 	}
 	if isSession {
 		return ""
 	}
 	return taskBootstrapSkill
-}
-
-// resolveSession returns the existing session id for (invokedType, invokedName)
-// if present in sessions, otherwise a freshly generated uuid and isResume=false.
-func resolveSession(sessions []session, invokedType, invokedName string) (id string, isResume bool) {
-	for _, s := range sessions {
-		if s.Type == invokedType && s.Name == invokedName {
-			return s.ID, true
-		}
-	}
-	return uuid.NewString(), false
 }
 
 // updateSessions returns sessions with the (invokedType, invokedName) entry
@@ -136,24 +100,24 @@ func updateSessions(sessions []session, invokedType, invokedName, id string) []s
 	return out
 }
 
-// buildClaudeArgs constructs the argv handed to exec.Cmd. Order matches
-// run-agent.py so existing claude binary behaviour is preserved byte-for-byte.
-// WebFetch is disabled because the sandbox egress allowlist (boid proxy)
-// would 403 every fetch, burning agent turns.
+// buildClaudeArgs constructs the argv handed to exec.Cmd. WebFetch is
+// disabled because the sandbox egress allowlist (boid proxy) would 403 every
+// fetch, burning agent turns.
+//
+// Every invocation starts a fresh claude session: --session-id is set to a
+// boid-generated uuid so the jsonl transcript path is predictable, but
+// --resume is never used. Persisted prior-turn context is delivered to the
+// agent through ~/.boid/context/*.yaml on cold start.
 //
 // Empty systemPrompt skips --append-system-prompt entirely. Empty prompt
 // skips the trailing positional (passing "" makes claude treat it as a
 // blank first user turn, which fires the agent on nothing).
-func buildClaudeArgs(isResume bool, sessionID, model, prompt, systemPrompt string) []string {
+func buildClaudeArgs(sessionID, model, prompt, systemPrompt string) []string {
 	args := []string{
 		"claude",
 		"--permission-mode", "bypassPermissions",
 		"--disallowedTools", "WebFetch",
-	}
-	if isResume {
-		args = append(args, "--resume", sessionID)
-	} else {
-		args = append(args, "--session-id", sessionID)
+		"--session-id", sessionID,
 	}
 	if model != "" {
 		args = append(args, "--model", model)
@@ -234,36 +198,20 @@ func mapAt(m map[string]any, key string) map[string]any {
 	return child
 }
 
-// defaultAbortCodeLookup shells out to `boid task get <id> --field
-// lifecycle.abort.code` to fetch the abort code. Returns "" on any error
-// (missing CLI, timeout, task without abort metadata).
-func defaultAbortCodeLookup(ctx context.Context, taskID string) string {
-	if taskID == "" {
-		return ""
-	}
-	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(cctx, "boid", "task", "get", taskID, "--field", "lifecycle.abort.code").Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
-
-// Run is the Phase 3-b agent-process entry point. See RunContext / Result
-// in package adapters for the I/O contract. Run owns:
-//   - session resolution (payload.json → resolveSession → uuid fallback)
-//   - up-front payload_patch persistence so SIGKILL / OOM still leave a
-//     resumable session id
-//   - prompt selection (UserAnswer → resume / daemon_restart → behaviour skill)
-//   - claude argv construction
+// Run is the agent-process entry point. See RunContext / Result in package
+// adapters for the I/O contract. Run owns:
+//   - generating a fresh session id and persisting it to payload_patch.json
+//     up front so the jsonl transcript path is recorded in the task artifact
+//     even when the child terminates abnormally (SIGKILL, OOM)
+//   - prompt selection (UserAnswer → bootstrap, otherwise /boid-task or "")
+//   - claude argv construction (always --session-id, never --resume)
 //   - signal.Notify(SIGUSR1 / SIGWINCH) and forwarding to the child
 //   - exit code normalisation (StoppedByDaemon → 0)
 //   - IS_SANDBOX=1 env injection (Claude CLI 2.1.181+ uid 0 bypass)
 //
-// PR1 introduces Run but does not call it from dispatcher / runner — those
-// paths still route through run-agent.py until PR2 flips the runner
-// inner-child to invoke Run directly.
+// Session-id resume was removed: reopen and Q&A both start a fresh claude
+// process. The agent recovers prior-turn context by reading
+// ~/.boid/context/{task,instructions,payload}.yaml on cold start.
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
 	payloadPath := rc.PayloadPath
 	if payloadPath == "" {
@@ -276,49 +224,28 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 		outputDir = filepath.Join(home, ".boid", "output")
 	}
 
-	// 1. Resolve session id and resume status.
-	var (
-		sessionID string
-		isResume  bool
-	)
-	if rc.SessionID != "" {
-		sessionID = rc.SessionID
-		isResume = true
-	} else {
-		sessions := readSessionsFromPayload(payloadPath)
-		sessionID, isResume = resolveSession(sessions, sessionType, rc.InvokedName)
-
-		// Persist session id BEFORE starting claude so that an abnormal
-		// termination (SIGKILL, OOM) still leaves a usable resume target.
-		updated := updateSessions(sessions, sessionType, rc.InvokedName, sessionID)
-		if err := writePayloadPatch(outputDir, updated); err != nil {
-			return adapters.Result{}, err
-		}
+	// 1. Generate a fresh session id. Persist it BEFORE starting claude so
+	// that an abnormal termination (SIGKILL, OOM) still leaves a record of
+	// which jsonl transcript file the agent wrote to (visible in the Web UI
+	// task detail under artifact.claude_code.sessions[]).
+	sessionID := uuid.NewString()
+	sessions := readSessionsFromPayload(payloadPath)
+	updated := updateSessions(sessions, sessionType, rc.InvokedName, sessionID)
+	if err := writePayloadPatch(outputDir, updated); err != nil {
+		return adapters.Result{}, err
 	}
 
-	// 2. Resolve abort_code only on resume without a user answer; this is
-	// the narrow path where daemon_restart prompt vs normal resume prompt
-	// matters. Cached resumes (Q&A reply) and fresh starts skip the CLI hit.
-	abortCode := ""
-	if isResume && rc.UserAnswer == "" {
-		lookup := a.abortCodeLookup
-		if lookup == nil {
-			lookup = defaultAbortCodeLookup
-		}
-		abortCode = lookup(ctx, rc.TaskID)
-	}
-
-	// 3. Build claude argv.
+	// 2. Build claude argv.
 	// isSession is the JobKindSession discriminator. Sessions are user-
 	// initiated and have no task lifecycle, so they receive neither the
 	// behaviour-skill bootstrap nor the "notify before exit" system prompt.
 	isSession := rc.TaskID == ""
-	prompt := selectPrompt(isSession, isResume, rc.UserAnswer, abortCode)
+	prompt := selectPrompt(isSession, rc.UserAnswer)
 	systemPrompt := taskSystemPrompt
 	if isSession {
 		systemPrompt = sessionSystemPrompt
 	}
-	args := buildClaudeArgs(isResume, sessionID, rc.Model, prompt, systemPrompt)
+	args := buildClaudeArgs(sessionID, rc.Model, prompt, systemPrompt)
 
 	// 4. Fork claude.
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)

@@ -28,11 +28,13 @@ const defaultPrompt = "boid codex non-interactive smoke fallback: respond with o
 //     the session interactively. No prompt is appended — the TUI handles
 //     input itself. This is the `boid agent <harness>` entry point.
 //   - interactive == false (task hook path, legacy non-interactive entry):
-//     `codex exec [resume <id>] [-m M] <prompt>` is the documented
-//     one-prompt entry point. This path is left functional for hooks that
-//     still target codex, but the multi-harness-production plan calls out
-//     that `boid task` integration via the hook path is out of scope; the
-//     prompt-driven flow continues to work as a thin smoke-test surface.
+//     `codex exec [-m M] <prompt>` is the documented one-prompt entry point.
+//     This path is left functional for hooks that still target codex, but
+//     the multi-harness-production plan calls out that `boid task`
+//     integration via the hook path is out of scope; the prompt-driven flow
+//     continues to work as a thin smoke-test surface. Session-id resume was
+//     removed alongside the claude --resume path: every dispatch is a fresh
+//     codex run.
 //
 // Flags:
 //
@@ -44,7 +46,7 @@ const defaultPrompt = "boid codex non-interactive smoke fallback: respond with o
 //     of them are repos. As of codex-cli 0.141.0 this flag lives on the
 //     `exec` subcommand only — passing it at the top level (TUI mode)
 //     errors out with "unexpected argument", so interactive argv omits it.
-func buildArgs(interactive bool, sessionID, model, prompt string) []string {
+func buildArgs(interactive bool, model, prompt string) []string {
 	if interactive {
 		args := []string{"codex",
 			"--dangerously-bypass-approvals-and-sandbox",
@@ -58,13 +60,6 @@ func buildArgs(interactive bool, sessionID, model, prompt string) []string {
 	args := []string{"codex", "exec",
 		"--skip-git-repo-check",
 		"--dangerously-bypass-approvals-and-sandbox",
-	}
-	if sessionID != "" {
-		// `codex exec resume <id> <prompt>` is the resume form.
-		args = []string{"codex", "exec", "resume", sessionID,
-			"--skip-git-repo-check",
-			"--dangerously-bypass-approvals-and-sandbox",
-		}
 	}
 	if model != "" {
 		args = append(args, "-m", model)
@@ -96,7 +91,7 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 		prompt = defaultPrompt
 	}
 
-	args := buildArgs(interactive, rc.SessionID, rc.Model, prompt)
+	args := buildArgs(interactive, rc.Model, prompt)
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Dir = rc.Workspace

@@ -12,10 +12,10 @@ import (
 )
 
 // AskTaskBlocking implements the harness-independent blocking Q&A RPC behind
-// `boid task ask <question>`. Unlike notify --ask (which exits the agent and
-// resumes it later via `claude --resume`), the agent stays alive and blocks
-// inside this call until the user/supervisor answers. That makes Q&A work for
-// harnesses that cannot resume a session (codex / opencode).
+// `boid task ask <question>`. The agent stays alive and blocks inside this
+// call until the user/supervisor answers, so the round-trip works for every
+// harness uniformly — there is no session-resume path anywhere in boid
+// anymore (the legacy `notify --ask` → `claude --resume` flow was removed).
 //
 // Flow:
 //  1. Register the answer channel (decision B1: a second pending ask for the
@@ -63,7 +63,6 @@ func (s *TaskAppService) AskTaskBlocking(ctx context.Context, taskID, question s
 	ap := orchestrator.AwaitingPayload{
 		Question:   question,
 		QuestionID: qid,
-		Mode:       orchestrator.AwaitingModeBlocking,
 	}
 	apJSON, err := json.Marshal(ap)
 	if err != nil {
@@ -93,10 +92,10 @@ func (s *TaskAppService) AskTaskBlocking(ctx context.Context, taskID, question s
 	return answer, nil
 }
 
-// answerBlocking resolves a blocking-mode ask (called from AnswerTask when the
-// awaiting trait's Mode is AwaitingModeBlocking). It hands the answer to the
-// agent parked in AskTaskBlocking via the registry and flips the task back to
-// executing WITHOUT spawning a resume dispatch — the agent never exited.
+// answerBlocking resolves a blocking ask (called from AnswerTask). It hands
+// the answer to the agent parked in AskTaskBlocking via the registry and
+// flips the task back to executing WITHOUT spawning a resume dispatch — the
+// agent never exited.
 //
 // The state flip happens before Notify so the resumed agent always observes the
 // executing state (its next move, e.g. notify --done, requires executing). The

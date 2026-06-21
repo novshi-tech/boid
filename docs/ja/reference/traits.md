@@ -19,7 +19,7 @@
 |---|---|---|---|
 | `artifact` | hook が produce | exclusive | 実装系タスクが残す成果物 (commit / PR URL / 変更ファイル等) を格納する自由形マップ |
 | `verification` | hook が produce | shared | 検証系 hook の結果。 handler ID 配下の sub-key にマージされる |
-| `awaiting` | boid コアが管理 | exclusive | `boid task notify --ask` で設定される Q&A 状態。 [awaiting trait](#awaiting-trait) を参照 |
+| `awaiting` | boid コアが管理 | exclusive | `boid task ask` (blocking RPC) または `boid task notify --ask` で設定される Q&A 状態。 [awaiting trait](#awaiting-trait) を参照 |
 
 ### `artifact`
 
@@ -31,18 +31,17 @@
 
 ### awaiting trait
 
-`boid task notify --ask` が呼ばれたときに `boid` コアが自動的に設定します。 このトレイトは `awaiting` 状態を跨いで永続化され、 resume 時に kit 側が消費します。
+`boid task ask` (blocking RPC) または `boid task notify --ask` が呼ばれたときに `boid` コアが自動的に設定します。 `boid task ask` 経路では agent が broker 接続を握ったまま回答を待ち、 daemon の in-memory レジストリ経由で回答が直接 agent に届きます。 `notify --ask` 経路は agent が exit した上で `awaiting` に遷移するだけで、 daemon は resume hook を dispatch しません (session-id resume は廃止済)。 実用の Q&A は `boid task ask` を使ってください。
 
 フィールド:
 
 | フィールド | 型 | 設定者 | 役割 |
 |---|---|---|---|
-| `session_id` | string | kit (`notify --ask` 経由) | `--resume` で再開するための Claude `--print` session ID |
-| `question` | string | kit (`notify --ask` 経由) | ユーザに表示する質問テキスト |
-| `question_id` | string | kit (`notify --ask` 経由) | この Q&A ターンを識別する UUID |
-| `pending_answer` | string | boid コア | ユーザの回答。 次の resume 時に kit が消費し、 その後クリアされる |
+| `question` | string | boid コア | ユーザに表示する質問テキスト |
+| `question_id` | string | boid コア | この Q&A ターンを識別する UUID |
+| `pending_answer` | string | boid コア | レガシー `notify --ask` 経路でユーザの回答を保持していたフィールド。 `boid task ask` 経路では使われません (回答は in-memory で直接配送される) |
 
-`awaiting` トレイトは boid コアと `ApplyAction("ask"/"answer")` のみが管理します。 hook から直接書き込んではいけません。
+`awaiting` トレイトは boid コアと `ApplyAction("ask"/"answer")` のみが管理します。 hook から直接書き込んではいけません。 過去レコードに残っている `session_id` / `mode` フィールドは互換のためデシリアライズは silently 無視されます (構造体からは削除済)。
 
 ### サブタスクの生成
 

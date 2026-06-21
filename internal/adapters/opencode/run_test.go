@@ -7,29 +7,28 @@ import (
 )
 
 func TestBuildArgs_NonInteractive_Fresh(t *testing.T) {
-	got := buildArgs(false, "/ws", "", "", "hello")
+	got := buildArgs(false, "/ws", "", "hello")
 	want := []string{"opencode", "run", "hello"}
 	if !equalSlice(got, want) {
 		t.Errorf("buildArgs fresh = %v, want %v", got, want)
 	}
 }
 
-func TestBuildArgs_NonInteractive_Resume(t *testing.T) {
-	got := buildArgs(false, "/ws", "session-uuid", "", "hello")
+// Session-id resume was removed repo-wide; the non-interactive argv must
+// never contain `-s` / `--continue` regardless of what session metadata the
+// caller might still pass through other channels.
+func TestBuildArgs_NonInteractive_NeverResumes(t *testing.T) {
+	got := buildArgs(false, "/ws", "", "hello")
 	joined := strings.Join(got, " ")
-	if !strings.Contains(joined, "-s session-uuid") {
-		t.Errorf("buildArgs resume missing `-s session-uuid`: %q", joined)
-	}
-	if !strings.Contains(joined, "--continue") {
-		t.Errorf("buildArgs resume must include --continue (opencode requires it with -s): %q", joined)
-	}
-	if got[len(got)-1] != "hello" {
-		t.Errorf("buildArgs prompt must be last positional, got %v", got)
+	for _, bad := range []string{"-s ", "--continue"} {
+		if strings.Contains(joined, bad) {
+			t.Errorf("argv must never contain %q, got %v", bad, got)
+		}
 	}
 }
 
 func TestBuildArgs_NonInteractive_WithModel(t *testing.T) {
-	got := buildArgs(false, "/ws", "", "anthropic/claude-sonnet-4-6", "hello")
+	got := buildArgs(false, "/ws", "anthropic/claude-sonnet-4-6", "hello")
 	joined := strings.Join(got, " ")
 	if !strings.Contains(joined, "-m anthropic/claude-sonnet-4-6") {
 		t.Errorf("buildArgs with model missing `-m ...`: %q", joined)
@@ -37,7 +36,7 @@ func TestBuildArgs_NonInteractive_WithModel(t *testing.T) {
 }
 
 func TestBuildArgs_Interactive_WorkspacePositional(t *testing.T) {
-	got := buildArgs(true, "/workspace", "", "", "")
+	got := buildArgs(true, "/workspace", "", "")
 	if len(got) < 1 || got[0] != "opencode" {
 		t.Fatalf("interactive argv must start with opencode, got %v", got)
 	}
@@ -58,7 +57,7 @@ func TestBuildArgs_Interactive_WorkspacePositional(t *testing.T) {
 func TestBuildArgs_Interactive_NoWorkspace(t *testing.T) {
 	// No workspace: opencode falls back to cwd (which the adapter still
 	// sets via cmd.Dir). argv must not contain an empty string.
-	got := buildArgs(true, "", "", "", "")
+	got := buildArgs(true, "", "", "")
 	for _, a := range got {
 		if a == "" {
 			t.Errorf("interactive argv must not contain empty string, got %v", got)
@@ -70,15 +69,13 @@ func TestBuildArgs_Interactive_NoWorkspace(t *testing.T) {
 }
 
 func TestBuildArgs_Interactive_WithModel(t *testing.T) {
-	got := buildArgs(true, "/workspace", "session-uuid", "anthropic/claude-sonnet-4-6", "hello")
+	got := buildArgs(true, "/workspace", "anthropic/claude-sonnet-4-6", "hello")
 	joined := strings.Join(got, " ")
 	if !strings.Contains(joined, "-m anthropic/claude-sonnet-4-6") {
 		t.Errorf("interactive with model missing `-m ...`: %q", joined)
 	}
-	// session id and prompt have no place in the TUI invocation.
-	if strings.Contains(joined, "session-uuid") {
-		t.Errorf("interactive argv must not include sessionID, got %v", got)
-	}
+	// Prompt has no place in the TUI invocation — opencode reads input
+	// itself.
 	if strings.Contains(joined, " hello") || got[len(got)-1] == "hello" {
 		t.Errorf("interactive argv must not include prompt, got %v", got)
 	}

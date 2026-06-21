@@ -51,7 +51,7 @@ An agent calls the command like this:
 boid task notify ${BOID_TASK_ID} --message "Need a decision on how to apply PR #42 review feedback"
 ```
 
-Hook-launched agent sessions always run interactively on a PTY, so there is no need to branch on `BOID_INTERACTIVE` between autonomous and interactive modes. Calling `boid task notify --ask` transitions the task to `awaiting` and the boid daemon sends **SIGUSR1** to the runtime to request a stop. This preserves the EXIT trap so that `boid job done` can still complete normally. When the user replies, the daemon spawns a fresh session and surfaces the answer through `$BOID_USER_ANSWER`.
+Hook-launched agent sessions always run interactively on a PTY, so there is no need to branch on `BOID_INTERACTIVE` between autonomous and interactive modes. Agent-driven Q&A is unified on `boid task ask "<question>"` (blocking RPC) — the agent process does not exit; it holds the broker connection open and receives the reply on stdout. The legacy `boid task notify --ask` only flips the task into `awaiting` and the daemon no longer dispatches a resume hook on answer (session-id resume was removed). Always use `boid task ask` for real Q&A.
 
 Immediately before notify, the agent emits the question body (options, context, decision criteria) to the session so the user can read it in the Web UI session viewer and respond there.
 

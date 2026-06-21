@@ -132,12 +132,11 @@ type WorkflowService interface {
 	CompleteJob(ctx context.Context, jobID string, req JobDoneRequest) (*Job, error)
 	TriggerDependents(ctx context.Context, taskID string)
 	// StopAgent asks the agent backing runtimeID to terminate gracefully,
-	// without tearing down the surrounding bash runtime or EXIT trap. The
-	// EXIT trap fires `boid job done --output-file payload_patch.json`
-	// through the broker normally, preserving the agent's session id.
-	// NotifyTask calls this after `ApplyAction("ask")` so the awaiting
-	// transition does not race with payload_patch capture.
-	// No-op when runtimeID is empty.
+	// without tearing down the surrounding runner-inner-child. The broker's
+	// `boid job done` call still fires normally, preserving any payload
+	// patch the agent wrote up to that point. NotifyTask calls this after
+	// `ApplyAction("ask")` so the awaiting transition does not race with
+	// payload_patch capture. No-op when runtimeID is empty.
 	StopAgent(runtimeID string)
 }
 
@@ -229,10 +228,6 @@ type StartSessionRequest struct {
 	// "codex", "opencode", or "shell" — the shell harness drops the user
 	// into an interactive bash inside the project sandbox (`boid agent shell`).
 	HarnessType string `json:"harness_type"`
-
-	// SessionID, when set, asks the harness to resume an existing session
-	// rather than start fresh. Empty starts a new session.
-	SessionID string `json:"session_id,omitempty"`
 
 	// Instruction is the optional bootstrap prompt for the first turn. Empty
 	// leaves the harness to pick its default (no positional for session mode

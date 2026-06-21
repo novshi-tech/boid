@@ -140,7 +140,6 @@ func init() {
 	taskNotifyCmd.Flags().StringP("message", "m", "", "Notification message text (required for FYI/ask/done/fail modes)")
 	taskNotifyCmd.Flags().String("ask", "", "Question text; transitions task to awaiting (Q&A mode)")
 	taskNotifyCmd.Flags().String("question-id", "", "Q&A turn ID (generated when omitted)")
-	taskNotifyCmd.Flags().String("session-id", "", "Agent session ID stored in awaiting trait and surfaced as BOID_AGENT_SESSION_ID on next hook invocation")
 	taskNotifyCmd.Flags().String("progress", "", "Progress message; records timeline Action only — no hook fires, no state change")
 	taskNotifyCmd.Flags().String("done", "", "Success summary (one-line headline); transitions task to done. Parent supervisor verifies and optionally reopens.")
 	taskNotifyCmd.Flags().String("fail", "", "Failure summary (one-line headline); transitions task to aborted. Parent supervisor inspects and optionally reopens with a fix.")
@@ -575,7 +574,6 @@ func runTaskNotify(cmd *cobra.Command, args []string) error {
 	done, _ := cmd.Flags().GetString("done")
 	fail, _ := cmd.Flags().GetString("fail")
 	questionID, _ := cmd.Flags().GetString("question-id")
-	sessionID, _ := cmd.Flags().GetString("session-id")
 
 	modes := 0
 	for _, m := range []string{ask, progress, done, fail} {
@@ -595,7 +593,6 @@ func runTaskNotify(cmd *cobra.Command, args []string) error {
 		Message:    message,
 		Ask:        ask,
 		QuestionID: questionID,
-		SessionID:  sessionID,
 		Progress:   progress,
 		Done:       done,
 		Fail:       fail,

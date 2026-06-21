@@ -259,7 +259,6 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		AllowedDomains:  rt.AllowedDomains,
 		Kind:            spec.Kind,
 		HarnessType:     spec.HarnessType,
-		SessionID:       spec.Env["BOID_AGENT_SESSION_ID"],
 		DisplayName:     spec.DisplayName,
 	}
 	files = append(files, contextFiles(
@@ -775,7 +774,6 @@ type EnvironmentInput struct {
 	// else inherits the same layout but without per-session metadata.
 	Kind        orchestrator.JobKind
 	HarnessType string
-	SessionID   string
 	DisplayName string
 }
 
@@ -813,7 +811,6 @@ type environmentFilesystem struct {
 }
 
 type environmentSession struct {
-	ID          string `yaml:"id,omitempty"`
 	Harness     string `yaml:"harness,omitempty"`
 	DisplayName string `yaml:"display_name,omitempty"`
 }
@@ -917,7 +914,6 @@ func buildEnvironmentYAML(in EnvironmentInput) string {
 
 	if in.Kind == orchestrator.JobKindSession {
 		doc.Session = &environmentSession{
-			ID:          in.SessionID,
 			Harness:     in.HarnessType,
 			DisplayName: in.DisplayName,
 		}

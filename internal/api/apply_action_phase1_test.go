@@ -261,7 +261,10 @@ func TestTaskWorkflowServiceRunDispatchLoop_MustNotOverwriteTerminalStatusWhenAd
 
 // After a dispatch cycle, the awaiting.pending_answer must be stripped from
 // the persisted payload so the answer is not re-consumed on the next hook run.
-// awaiting.session_id must survive so the kit can resume the claude session.
+// Other awaiting fields (question / question_id) must survive so the kit can
+// still see what was asked. Legacy persisted records may also carry session_id
+// — the deserialiser ignores it (the field was removed) but the raw payload
+// passes through unchanged.
 func TestTaskWorkflowServiceRunDispatchLoop_ClearsPendingAnswerAfterDispatch(t *testing.T) {
 	withAnswer := `{"awaiting":{"session_id":"sess-1","question_id":"q-1","pending_answer":"yes"}}`
 	task := &orchestrator.Task{
@@ -307,8 +310,8 @@ func TestTaskWorkflowServiceRunDispatchLoop_ClearsPendingAnswerAfterDispatch(t *
 	if ap.PendingAnswer != "" {
 		t.Errorf("pending_answer = %q, want empty after dispatch", ap.PendingAnswer)
 	}
-	if ap.SessionID != "sess-1" {
-		t.Errorf("session_id = %q, want sess-1 (must be preserved)", ap.SessionID)
+	if ap.QuestionID != "q-1" {
+		t.Errorf("question_id = %q, want q-1 (must be preserved)", ap.QuestionID)
 	}
 }
 

@@ -27,14 +27,12 @@ const defaultPrompt = "boid opencode non-interactive smoke fallback: respond wit
 //     correct directory inside the sandbox. The PTY is already allocated
 //     by the dispatcher so opencode inherits the user's terminal.
 //   - interactive == false (task hook path, legacy non-interactive entry):
-//     `opencode run [-s <id> --continue] [-m M] <prompt>` is the documented
-//     one-prompt entry point. Same scope-out story as codex: this path is
-//     kept functional but task hook integration is out of scope for the
-//     multi-harness-production plan.
-//
-// `-s/--session` selects an existing session id; `--continue` must be
-// paired with `-s` to avoid opencode treating the id as a new title.
-func buildArgs(interactive bool, workspace, sessionID, model, prompt string) []string {
+//     `opencode run [-m M] <prompt>` is the documented one-prompt entry
+//     point. Same scope-out story as codex: this path is kept functional but
+//     task hook integration is out of scope for the multi-harness-production
+//     plan. Session-id resume was removed alongside the claude --resume
+//     path: every dispatch is a fresh opencode run.
+func buildArgs(interactive bool, workspace, model, prompt string) []string {
 	if interactive {
 		args := []string{"opencode"}
 		if workspace != "" {
@@ -47,9 +45,6 @@ func buildArgs(interactive bool, workspace, sessionID, model, prompt string) []s
 	}
 
 	args := []string{"opencode", "run"}
-	if sessionID != "" {
-		args = append(args, "-s", sessionID, "--continue")
-	}
 	if model != "" {
 		args = append(args, "-m", model)
 	}
@@ -80,7 +75,7 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 		prompt = defaultPrompt
 	}
 
-	args := buildArgs(interactive, rc.Workspace, rc.SessionID, rc.Model, prompt)
+	args := buildArgs(interactive, rc.Workspace, rc.Model, prompt)
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Dir = rc.Workspace

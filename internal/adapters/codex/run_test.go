@@ -7,7 +7,7 @@ import (
 )
 
 func TestBuildArgs_NonInteractive_Fresh(t *testing.T) {
-	got := buildArgs(false, "", "", "hello")
+	got := buildArgs(false, "", "hello")
 	want := []string{
 		"codex", "exec",
 		"--skip-git-repo-check",
@@ -20,7 +20,7 @@ func TestBuildArgs_NonInteractive_Fresh(t *testing.T) {
 }
 
 func TestBuildArgs_NonInteractive_WithModel(t *testing.T) {
-	got := buildArgs(false, "", "gpt-5", "hello")
+	got := buildArgs(false, "gpt-5", "hello")
 	joined := strings.Join(got, " ")
 	if !strings.Contains(joined, "-m gpt-5") {
 		t.Errorf("buildArgs with model: %q missing `-m gpt-5`", joined)
@@ -30,18 +30,20 @@ func TestBuildArgs_NonInteractive_WithModel(t *testing.T) {
 	}
 }
 
-func TestBuildArgs_NonInteractive_Resume(t *testing.T) {
-	got := buildArgs(false, "session-uuid", "", "hello")
-	if got[1] != "exec" || got[2] != "resume" || got[3] != "session-uuid" {
-		t.Errorf("buildArgs resume order = %v, want codex exec resume <id> ...", got)
-	}
-	if got[len(got)-1] != "hello" {
-		t.Errorf("buildArgs prompt must be last positional, got %v", got)
+// Session-id resume was removed repo-wide; the non-interactive argv must
+// never contain `resume`, regardless of what session metadata the caller
+// might still pass through other channels.
+func TestBuildArgs_NonInteractive_NeverResumes(t *testing.T) {
+	got := buildArgs(false, "", "hello")
+	for _, a := range got {
+		if a == "resume" {
+			t.Errorf("argv must never contain `resume`, got %v", got)
+		}
 	}
 }
 
 func TestBuildArgs_Interactive_NoSubcommand(t *testing.T) {
-	got := buildArgs(true, "", "", "")
+	got := buildArgs(true, "", "")
 	// Interactive form is `codex` (no sub-command) — confirm `exec` is
 	// absent, the bypass flag is present, and no prompt was appended.
 	if len(got) < 1 || got[0] != "codex" {
@@ -62,14 +64,10 @@ func TestBuildArgs_Interactive_NoSubcommand(t *testing.T) {
 	if strings.Contains(joined, "--skip-git-repo-check") {
 		t.Errorf("interactive argv must not include --skip-git-repo-check, got %v", got)
 	}
-	// SessionID and prompt should be ignored in interactive form.
-	if strings.Contains(joined, "session-uuid") {
-		t.Errorf("interactive argv must not include sessionID, got %v", got)
-	}
 }
 
 func TestBuildArgs_Interactive_WithModel(t *testing.T) {
-	got := buildArgs(true, "session-uuid", "gpt-5", "hello")
+	got := buildArgs(true, "gpt-5", "hello")
 	joined := strings.Join(got, " ")
 	if !strings.Contains(joined, "-m gpt-5") {
 		t.Errorf("interactive with model: %q missing `-m gpt-5`", joined)

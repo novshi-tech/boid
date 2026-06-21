@@ -17,17 +17,16 @@ import (
 //
 // Final list per docs/plans/agent-aware-boid.md §5 (runner-state-dump-design).
 var envAllowlist = map[string]struct{}{
-	"HOME":                  {},
-	"PATH":                  {},
-	"USER":                  {},
-	"SHELL":                 {},
-	"LANG":                  {},
-	"TERM":                  {},
-	"BOID_JOB_ID":           {},
-	"BOID_RUNTIME_ID":       {},
-	"BOID_AGENT_SESSION_ID": {},
-	"BOID_BROKER_SOCKET":    {},
-	"CLAUDE_CONFIG_DIR":     {},
+	"HOME":               {},
+	"PATH":               {},
+	"USER":               {},
+	"SHELL":              {},
+	"LANG":               {},
+	"TERM":               {},
+	"BOID_JOB_ID":        {},
+	"BOID_RUNTIME_ID":    {},
+	"BOID_BROKER_SOCKET": {},
+	"CLAUDE_CONFIG_DIR":  {},
 }
 
 // redactEnv returns a copy of env where only allow-listed keys keep their

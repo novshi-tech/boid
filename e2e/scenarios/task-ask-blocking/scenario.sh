@@ -3,15 +3,17 @@ set -euo pipefail
 
 # Scenario: blocking Q&A (boid task ask) end-to-end verification.
 #
-# Verifies the harness-independent blocking Q&A RPC (PR1 = boid task ask, merged
-# as #609). Unlike the session-resume path (notify --ask + reopen, exercised by
-# the q-and-a scenario), the agent stays alive and blocks inside a single hook
-# job until the answer arrives over the held broker connection.
+# Verifies the harness-independent blocking Q&A RPC (`boid task ask`, merged as
+# PR #609). The legacy session-resume path (`notify --ask` + `reopen`) was
+# removed in the session-id-resume cleanup: the agent stays alive and blocks
+# inside a single hook job until the answer arrives over the held broker
+# connection — there is no longer a 2nd resume dispatch to test.
 #
 # Flow:
 #   1. Task starts -> fake-agent hook calls `boid task ask` and BLOCKS -> awaiting
-#   2. awaiting payload carries mode=blocking + the question text (proves the ask
-#      transition fired in blocking mode)
+#   2. awaiting payload carries the question text (proves the ask transition
+#      fired). The legacy mode discriminator was removed alongside session-id
+#      resume: every awaiting record is now blocking by construction.
 #   3. host submits `boid task answer` -> the parked agent unblocks WITHOUT a
 #      resume dispatch (hook job count stays 1) and receives the answer on stdout
 #   4. agent records the answer in the artifact and exits 0 -> done
@@ -41,8 +43,7 @@ task_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 20s --interval 1
 printf '%s\n' "$task_json"
 e2e_assert_contains "$task_json" '"status":"awaiting"'
 
-e2e_log "verifying awaiting payload is blocking-mode and carries the question"
-e2e_assert_contains "$task_json" '"mode":"blocking"'
+e2e_log "verifying awaiting payload carries the question"
 e2e_assert_contains "$task_json" '"question":"What is the magic word?"'
 
 e2e_log "verifying exactly one hook job (blocking holds the same job; no resume dispatch)"

@@ -1,7 +1,0 @@
-id: q-and-a
-name: Q&A Smoke
-task_behaviors:
-  qa:
-    transition: one-shot
-    kits:
-      - github.com/novshi-tech/boid-kits/q-and-a-smoke

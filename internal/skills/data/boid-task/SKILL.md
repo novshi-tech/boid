@@ -36,7 +36,7 @@ whole dispatch. If a result looks empty or wrong:
 3. If it still looks off, **proceed with your task anyway** — a single empty or
    late result is never evidence the sandbox is broken.
 
-Reserve `notify --ask` for genuine task blockers (a missing requirement, a real
+Reserve `boid task ask` for genuine task blockers (a missing requirement, a real
 decision for your owner) — never for "I think my I/O is broken." Do not run
 "is my I/O working?" probe commands; just do the task.
 
@@ -44,11 +44,10 @@ decision for your owner) — never for "I think my I/O is broken." Do not run
 
 ## Step 0 — Read Context and Determine Mode
 
-Read these four files on **every invocation** (first start, resume after user reply,
-reopen). `claude --resume` carries chat history but does **not** guarantee that
-prior tool-call inputs remain accessible. If a user reply or reopen instruction
-looks fragmentary, the active instruction and payload on disk almost certainly have
-the missing piece — read them before deciding "I don't have context".
+Read these four files on **every invocation** (first start, reopen, every fresh
+turn). The boid daemon no longer carries any harness session across dispatches:
+every invocation starts a fresh claude process with no chat history, so the
+files below are the single source of truth for prior-turn context.
 
 | File | Contents |
 |---|---|
@@ -76,20 +75,11 @@ The `readonly` flag is auto-set by the daemon from the behavior name during the
 compatibility period. Reading it from `environment.yaml` is always safe and will
 remain the sole ground truth after Track A2 (free naming) ships.
 
-After reading context, check `$BOID_USER_ANSWER`. This is set **only** when
-resuming from the legacy `notify --ask` path; the preferred blocking
-`boid task ask` returns its answer inline (same turn) and never sets it — see
-"Asking your owner" below.
-
-```bash
-if [ -n "$BOID_USER_ANSWER" ]; then
-  # Resume after notify --ask. Branch on the answer.
-  ...
-else
-  # First invocation or reopen. Proceed normally.
-  ...
-fi
-```
+User-facing Q&A flows through `boid task ask` (a blocking RPC that returns the
+reply on stdout, same turn) — see "Asking your owner" below. `$BOID_USER_ANSWER`
+is no longer surfaced to fresh dispatches: the legacy `notify --ask` →
+`claude --resume` round-trip was removed, so there is no separate "resume after
+user reply" branch to write.
 
 ---
 
@@ -100,15 +90,17 @@ fi
 Before exiting you **must** emit exactly one of:
 
 ```bash
-boid task notify "$BOID_TASK_ID" --message "<short>" --done  "<achievement>"  # done
-boid task notify "$BOID_TASK_ID" --message "<short>" --fail  "<what broke>"   # aborted
-boid task notify "$BOID_TASK_ID" --message "<short>" --ask   "<question>"     # awaiting
+boid task notify "$BOID_TASK_ID" --message "<short>" --done "<achievement>"  # done
+boid task notify "$BOID_TASK_ID" --message "<short>" --fail "<what broke>"   # aborted
 ```
 
+For Q&A use the blocking `boid task ask "<question>"` (see *Asking your owner*
+below) — it keeps your turn alive and returns the reply on stdout, so it does
+NOT count as a terminal signal.
+
 The contract is identical for root tasks (`parent_id == ""`) and child tasks
-(`parent_id != ""`). After the call returns the daemon SIGTERMs your runtime —
-**just stop generating**. The bash EXIT trap fires `boid job done` to seal the
-session id.
+(`parent_id != ""`). After `--done` / `--fail` returns the daemon SIGTERMs
+your runtime — **just stop generating**.
 
 **Never end a turn with bare assistant text.** The claude-code kit no longer
 auto-fires a stop hook (removed in lifecycle-accountability Phase 2.a). Silent
@@ -120,9 +112,8 @@ exit leaves the task stuck in `executing` with no signal to the owner.
 
 ### Asking your owner (mid-flight Q&A)
 
-Prefer the **blocking** form: `boid task ask` keeps your turn alive and returns
-the answer on stdout. No exit, no resume, no `$BOID_USER_ANSWER` — capture it and
-branch:
+Use `boid task ask` — it keeps your turn alive and returns the answer on stdout.
+No exit, no resume, no `$BOID_USER_ANSWER` — capture it and branch:
 
 ```bash
 ANSWER=$(boid task ask "<full question body>")
@@ -139,30 +130,22 @@ returns to `executing` and the call prints the reply. For child tasks the parent
 supervisor answers (`boid task answer`); for root tasks the user is notified
 directly. There is no timeout (it waits indefinitely). Only one blocking ask per
 task at a time: a second concurrent `boid task ask` fails immediately with
-`task_ask: another question is pending`. This works under any harness — it never
-relies on session resume — so prefer it for portable Q&A.
+`task_ask: another question is pending`.
 
-> **Legacy parity:** `boid task notify "$BOID_TASK_ID" --ask "<question>"` still
-> works and is retained. Unlike the blocking call, it **exits** your turn
-> (transition to `awaiting`); on the next invocation the reply arrives in
-> `$BOID_USER_ANSWER` (`$BOID_QUESTION_ID` holds the turn id) and you branch on it
-> as shown in Step 0. **Stop generating after a `notify --ask` returns** — no
-> sentinel, no explicit exit. Use this fallback only when a blocking call is
-> impractical.
+> The legacy `boid task notify --ask` flag still transitions the task to
+> `awaiting`, but the daemon no longer dispatches a resume hook on answer —
+> the answer has nowhere to land. Use `boid task ask` for any real Q&A; treat
+> `notify --ask` as a vestigial API.
 
-`boid task answer` (used by supervisors to reply to a child) handles both forms,
-so the supervisor Q&A guidance below is unchanged regardless of which the child
-used.
-
-**Never use `notify` without `--ask` for decision branches.** Bare `notify` is
-FYI-only and does not block.
+**Never use `notify` without `--done`/`--fail` for decision branches.** Bare
+`notify` is FYI-only and does not block.
 
 ### Reopen with a question / explanation request
 
 When the active instruction is a question about prior behavior, the answer **still
 goes through `boid task notify`** — never as bare assistant text. If the answer
-invites a follow-up decision, put it in `--ask`; if purely informational, use
-`--done "<explanation>"`.
+invites a follow-up decision, ask via `boid task ask "<question>"`; if purely
+informational, use `notify --done "<explanation>"`.
 
 ### Progress reporting
 
@@ -185,6 +168,9 @@ Prefer `--fail`. Use `action send --type abort` only when nothing can be reporte
 
 When this task is reopened, the new instruction is **appended** as the last element
 of `instructions.yaml`. Earlier elements are context only — act only on the tail.
+Reopen always spawns a fresh agent process (no harness session is carried over
+from the previous turn) — re-read every file in *Step 0* before deciding what
+to do, even if you "feel" like you already know the task.
 
 ---
 
@@ -212,14 +198,14 @@ generated by their parent.
 ### Overall flow
 
 1. **Plan** — Read title + active instruction; decide child decomposition and order.
-2. **(Conditional) approval ask** — Present the plan via `notify --ask` when the
+2. **(Conditional) approval ask** — Present the plan via `boid task ask` when the
    request leaves room for interpretation. Skip only when behavior and granularity
    are obvious.
 3. **Create → Monitor → Integrate** — For each child: create, poll until terminal,
    run the integration step from the active instruction, then move to the next.
 4. **Re-plan** — If a child's result changes the plan, spawn additional children
-   or escalate via `notify --ask`.
-5. **Exit** — All children terminal → `notify --done` (or `--fail` / `--ask`).
+   or escalate via `boid task ask`.
+5. **Exit** — All children terminal → `notify --done` (or `--fail`).
 
 Even with a single child, remain as supervisor and see it through.
 
@@ -337,14 +323,15 @@ long builds). Use `persistent: true` for very long children. After arming,
 
 On notification, branch by status:
 
-- `awaiting` — child called `notify --ask`. Handle it (see Handling Awaiting),
-  then keep waiting. The same Monitor stays armed; no re-arm needed unless you
-  yourself escalate via `notify --ask`.
+- `awaiting` — child called `boid task ask` (or, legacy, `notify --ask`).
+  Handle it (see Handling Awaiting), then keep waiting. The same Monitor stays
+  armed; no re-arm needed unless you yourself escalate via `boid task ask`.
 - `done` — child self-reported success. Verify and integrate.
 - `aborted` — child failed. Diagnose and decide.
 
-**Re-arm only when you yourself paused** via `notify --ask`. The daemon SIGTERMs
-your runtime and the Monitor dies with it; arm a fresh Monitor on resume.
+**Re-arm only when you yourself paused** via `boid task ask`. The daemon
+SIGTERMs your runtime and the Monitor dies with it; arm a fresh Monitor on
+resume.
 
 Full status semantics: [references/state-machine.md](references/state-machine.md).
 
@@ -373,7 +360,7 @@ Then choose:
 
 boid task reopen "$child" -m "<what to change>"   # revise
 boid task abort  "$child"                          # repudiate (rare)
-boid task notify "$BOID_TASK_ID" --message "..." --ask "<escalation>"   # escalate
+boid task ask "<escalation question for owner>"   # escalate
 ```
 
 If `payload.artifact.report` is empty or missing `summary`, treat as
@@ -425,17 +412,17 @@ question=$(boid task show "$child" --field awaiting.question)
 Then:
 
 ```bash
-boid task answer "$child" "<reply>"                                          # answer
-boid task reopen "$child" -m "<redirect>"                                    # redirect
-boid task notify "$BOID_TASK_ID" --message "..." --ask "<question for owner>"  # escalate
+boid task answer "$child" "<reply>"                  # answer (works for task ask)
+boid task reopen "$child" -m "<redirect>"            # redirect
+boid task ask "<question for own owner>"             # escalate
 ```
 
 ### Detecting Stuck Children
 
 Two failure modes:
 
-1. **Silent exit** — `claude` exits without `notify --ask`, child stays `executing`
-   with no live job.
+1. **Silent exit** — `claude` exits without `notify --done`/`--fail` and never
+   parked on a `boid task ask`; child stays `executing` with no live job.
 2. **PTY hang** — `claude` still running but PTY idle past threshold.
 
 Detect inside the **same Monitor watch script**:
@@ -466,7 +453,7 @@ done
 On `stuck`, confirm with **one** read (not a poll loop) then:
 - **Reopen** with a status-check message
 - **Abort** if clearly unrecoverable
-- **Escalate** via own `notify --ask`
+- **Escalate** via own `boid task ask`
 
 Note: `boid task notify --progress` does **not** update `transcript.log`.
 
@@ -481,9 +468,9 @@ status transition, you choose:
 |---|---|---|
 | `done` | child called `notify --done` | Verify (Layers A–C); accept / `reopen` to revise / `abort` (rare) / escalate |
 | `aborted` | child called `notify --fail` or `action send --type abort` | Diagnose; `reopen` with hint / create fresh child / leave aborted / escalate |
-| `awaiting` | child called `notify --ask` (mid-flight question) | `task answer` to reply / `reopen` to redirect / escalate up |
+| `awaiting` | child called `boid task ask` (mid-flight question) | `task answer` to reply / `reopen` to redirect / escalate up |
 
-In all cases, "escalate up" means your own `notify --ask` (or `--done` /
+In all cases, "escalate up" means your own `boid task ask` (or `notify --done` /
 `--fail`) toward your own parent (or the user, for root supervisors).
 
 See [docs/plans/lifecycle-accountability.md](../../../docs/plans/lifecycle-accountability.md) for the full contract.
@@ -519,8 +506,8 @@ Plan presentation template:
 
 Enforce in your own control flow — the daemon does not:
 
-- **> 20 children** created in this session → `notify --ask`
-- **> 12 hours** since planning started → `notify --ask`
+- **> 20 children** created in this session → `boid task ask`
+- **> 12 hours** since planning started → `boid task ask`
 
 ---
 

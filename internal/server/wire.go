@@ -393,7 +393,6 @@ func (a *sessionDispatcherAdapter) StartSession(ctx context.Context, req api.Sta
 		ProjectWorkDir:     project.WorkDir,
 		HarnessType:        req.HarnessType,
 		Argv:               argv,
-		SessionID:          req.SessionID,
 		Instruction:        req.Instruction,
 		Readonly:           req.Readonly,
 		Model:              req.Model,

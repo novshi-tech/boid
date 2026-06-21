@@ -57,17 +57,17 @@ func warnDeprecatedTaskRowFields(body []byte, scope string) {
 // TaskNotifyService dispatches an agent-driven notification for a task.
 // Wired to *TaskAppService at runtime; left optional on TaskHandler so
 // existing tests do not need to satisfy this interface.
-// ask/questionID/sessionID are optional Q&A fields: when ask is non-empty the
-// task is transitioned to awaiting after the notification is sent. sessionID
-// is stored in the awaiting trait and surfaced as BOID_AGENT_SESSION_ID on
-// the next hook invocation.
+// ask/questionID are optional Q&A fields: when ask is non-empty the task is
+// transitioned to awaiting after the notification is sent. The session-id
+// resume path was removed, so an answer can only reach an agent that is still
+// alive inside a blocking `boid task ask` RPC.
 // progress is a no-state-change progress note (timeline action only).
 // done / fail are agent self-completion / self-failure: they transition the
 // task to done / aborted respectively and SIGTERM running hook runtimes —
 // the parent supervisor's polling drives the response (verify + optional
 // reopen). ask/progress/done/fail are mutually exclusive.
 type TaskNotifyService interface {
-	NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID, progress, done, fail string) error
+	NotifyTask(ctx context.Context, taskID, message, ask, questionID, progress, done, fail string) error
 }
 
 // TaskAnswerService records a user reply to a pending Q&A question and
@@ -112,7 +112,6 @@ type NotifyTaskRequest struct {
 	Message    string `json:"message"`
 	Ask        string `json:"ask,omitempty"`
 	QuestionID string `json:"question_id,omitempty"`
-	SessionID  string `json:"session_id,omitempty"`
 	Progress   string `json:"progress,omitempty"`
 	Done       string `json:"done,omitempty"`
 	Fail       string `json:"fail,omitempty"`
@@ -130,7 +129,7 @@ func (h *TaskHandler) Notify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	taskID := chi.URLParam(r, "id")
-	if err := h.Notifier.NotifyTask(r.Context(), taskID, req.Message, req.Ask, req.QuestionID, req.SessionID, req.Progress, req.Done, req.Fail); err != nil {
+	if err := h.Notifier.NotifyTask(r.Context(), taskID, req.Message, req.Ask, req.QuestionID, req.Progress, req.Done, req.Fail); err != nil {
 		writeServiceError(w, err)
 		return
 	}
