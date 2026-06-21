@@ -21,12 +21,14 @@ type SessionHandler struct {
 func (h *SessionHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/", h.Start)
-	r.Post("/{session_id}/resume", h.Resume)
 	return r
 }
 
 // Start handles POST /api/sessions. The request body must specify project_id.
 // Use the project-scoped variant when the project is implied by the URL.
+//
+// Session-id resume was removed: every Start launches a fresh agent process,
+// so there is no `/api/sessions/{id}/resume` companion route anymore.
 func (h *SessionHandler) Start(w http.ResponseWriter, r *http.Request) {
 	var req StartSessionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -37,23 +39,6 @@ func (h *SessionHandler) Start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "project_id is required")
 		return
 	}
-	h.dispatch(w, r, req)
-}
-
-// Resume handles POST /api/sessions/{session_id}/resume. The body must
-// specify project_id so the daemon can resolve the project's trait set;
-// session_id from the URL overrides any value in the body.
-func (h *SessionHandler) Resume(w http.ResponseWriter, r *http.Request) {
-	var req StartSessionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if req.ProjectID == "" {
-		writeError(w, http.StatusBadRequest, "project_id is required")
-		return
-	}
-	req.SessionID = chi.URLParam(r, "session_id")
 	h.dispatch(w, r, req)
 }
 

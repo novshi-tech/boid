@@ -11,8 +11,8 @@ import (
 // method. The dropped StopAgent / ResumePayload / Interactive /
 // SessionIDFromHookEnv methods were exercised by tests that have been
 // removed alongside their implementations — graceful stop is now delivered
-// by api.JobLifecycle.SignalJobRuntime, resume / session-id handoff flows
-// through adapters.RunContext.SessionID, and PTY allocation is decided by
+// by api.JobLifecycle.SignalJobRuntime, session-id resume itself was
+// removed (every dispatch is fresh), and PTY allocation is decided by
 // dispatcher / planner from spec.HarnessType.
 func TestAdapter_Usage_ReturnsZeroStub(t *testing.T) {
 	a := New()

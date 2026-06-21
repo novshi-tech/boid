@@ -26,7 +26,12 @@ import (
 // When progress is non-empty (progress mode), no hook fires and no state transition
 // occurs — only a progress Action is written to the timeline.
 // ask and progress are mutually exclusive.
-func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, questionID, sessionID, progress, done, fail string) error {
+//
+// Note: ask transitions the task to awaiting but does NOT spawn a resume
+// dispatch when the user replies. The session-id resume path was removed
+// (every dispatch is a fresh agent process); only `boid task ask` (the
+// blocking RPC) can deliver an answer back to a live agent.
+func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, questionID, progress, done, fail string) error {
 	// ask / progress / done / fail are mutually exclusive: each represents a
 	// distinct lifecycle signal (Q&A pause, FYI-only progress, success
 	// self-report, failure self-report). Allowing more than one would
@@ -171,7 +176,6 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 	}
 	if ask != "" {
 		ap := orchestrator.AwaitingPayload{
-			SessionID:  sessionID,
 			Question:   ask,
 			QuestionID: questionID,
 		}
@@ -417,37 +421,13 @@ func (s *TaskAppService) AnswerTask(ctx context.Context, taskID, questionID, ans
 		}
 	}
 
-	// Blocking mode (boid task ask): the agent is still alive, parked inside a
-	// broker RPC. Hand the answer straight to it via the registry and flip the
-	// task back to executing WITHOUT dispatching anything — there is no exited
-	// agent to resume. A missing Mode means the legacy session_resume path
-	// (notify --ask), handled below, so existing awaiting records are unaffected.
-	if orchestrator.GetAwaitingPayload(task.Payload).Mode == orchestrator.AwaitingModeBlocking {
-		return s.answerBlocking(task, answer)
-	}
-
-	if s.Workflow == nil {
-		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
-	}
-
-	// Merge pending_answer into the existing awaiting trait.
-	existing := orchestrator.GetAwaitingPayload(task.Payload)
-	existing.PendingAnswer = answer
-	apJSON, err := json.Marshal(existing)
-	if err != nil {
-		return &StatusError{Code: http.StatusInternalServerError, Message: "encode awaiting payload: " + err.Error()}
-	}
-	answerPayload, err := json.Marshal(map[string]json.RawMessage{string(orchestrator.TraitAwaiting): apJSON})
-	if err != nil {
-		return &StatusError{Code: http.StatusInternalServerError, Message: "encode action payload: " + err.Error()}
-	}
-	if _, err := s.Workflow.ApplyAction(ctx, taskID, ApplyActionRequest{
-		Type:    "answer",
-		Payload: answerPayload,
-	}); err != nil {
-		return err
-	}
-	return nil
+	// The only supported delivery path is the blocking RPC: the agent must be
+	// parked inside `boid task ask` for the answer to reach it. Legacy
+	// `notify --ask` calls exit the agent and the daemon no longer dispatches a
+	// resume hook, so an answer there has nowhere to land — reject with a clear
+	// error rather than silently flipping the task back to executing with no
+	// live agent behind it.
+	return s.answerBlocking(task, answer)
 }
 
 // newQuestionID generates a random hex identifier for a Q&A turn.

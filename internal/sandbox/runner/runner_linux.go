@@ -416,7 +416,6 @@ func runAgent(spec sandbox.Spec) int {
 	rc := adapters.RunContext{
 		JobID:             spec.ID,
 		TaskID:            spec.Env["BOID_TASK_ID"],
-		SessionID:         spec.Env["BOID_AGENT_SESSION_ID"],
 		UserAnswer:        spec.UserAnswer,
 		InvokedBehavior:   spec.Env["BOID_INVOKED_BEHAVIOR"],
 		InvokedName:       spec.Env["BOID_INVOKED_NAME"],

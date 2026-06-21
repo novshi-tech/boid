@@ -10,7 +10,7 @@
 // the same change; HarnessType is invariant non-empty from PR1 onward.
 //
 // shell adapter is intentionally minimal:
-//   - no session resolution (RunContext.SessionID is ignored)
+//   - no session resolution (session-id resume is gone repo-wide)
 //   - no payload_patch.json writes (the hook script is responsible if it
 //     wants one — broker job-done still flows through PayloadPatchPath)
 //   - no token accounting (Usage() returns zero — shell jobs are not

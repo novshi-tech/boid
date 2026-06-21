@@ -119,7 +119,7 @@ canonical 以外の任意のキー名も使用できます (Track A2 以降、`r
 
 - **直列実行**: 同 project で同 `base_branch` の root タスク 2 つが executing 遷移すると、 後発は前者の完了 (terminal 遷移) まで FIFO キューで待つ
 - **並行 OK**: 異なる `base_branch` の root 同士、 root + child 、 異なる child 同士は並行実行可能
-- lock は executing 中ずっと保持。 タスクが `awaiting` に入ると (`boid task notify --ask` 経由)、 lock は **解放** され、 同じブランチで別タスクが動けるようになる。 resume (`answer`) 時に再取得される。 最終的な release は terminal 遷移時
+- lock は executing 中ずっと保持。 タスクが `awaiting` に入ると (`boid task ask` または `boid task notify --ask` 経由)、 lock は **解放** され、 同じブランチで別タスクが動けるようになる。 resume (`answer`) 時に再取得される。 最終的な release は terminal 遷移時
 - task 作成時には validate しない。 executing 遷移時に acquire を試みる
 
 ### 依存子の最新化とマージ責務

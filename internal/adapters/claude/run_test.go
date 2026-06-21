@@ -10,31 +10,17 @@ import (
 )
 
 func TestSelectPrompt_UserAnswerWins(t *testing.T) {
-	got := selectPrompt(false, true, "reply text", "daemon_restart")
+	got := selectPrompt(false, "reply text")
 	if got != "reply text" {
 		t.Errorf("got %q, want UserAnswer to take precedence", got)
 	}
 }
 
-func TestSelectPrompt_DaemonRestartResume(t *testing.T) {
-	got := selectPrompt(false, true, "", "daemon_restart")
-	if got != daemonRestartResumePrompt {
-		t.Errorf("got %q, want daemonRestartResumePrompt", got)
-	}
-}
-
-func TestSelectPrompt_NormalResume(t *testing.T) {
-	got := selectPrompt(false, true, "", "")
-	if got != resumePrompt {
-		t.Errorf("got %q, want resumePrompt", got)
-	}
-}
-
-// Fresh task-mode start (any behavior, free-naming era) bootstraps via the
-// unified /boid-task skill. Mode determination happens inside the skill from
-// environment.yaml `readonly`, so the prompt does not branch on behavior name.
-func TestSelectPrompt_FreshReturnsTaskSkill(t *testing.T) {
-	got := selectPrompt(false, false, "", "")
+// Fresh task-mode start bootstraps via the unified /boid-task skill. Mode
+// determination happens inside the skill from environment.yaml `readonly`,
+// so the prompt does not branch on behavior name.
+func TestSelectPrompt_TaskModeReturnsTaskSkill(t *testing.T) {
+	got := selectPrompt(false, "")
 	if got != "/boid-task" {
 		t.Errorf("got %q, want /boid-task", got)
 	}
@@ -44,7 +30,7 @@ func TestSelectPrompt_FreshReturnsTaskSkill(t *testing.T) {
 // skill bootstrap. A user typed `boid agent claude -p <project>` to open a
 // blank chat, not to dispatch behaviour-driven work.
 func TestSelectPrompt_SessionFreshReturnsEmpty(t *testing.T) {
-	got := selectPrompt(true, false, "", "")
+	got := selectPrompt(true, "")
 	if got != "" {
 		t.Errorf("got %q, want empty prompt for fresh session", got)
 	}
@@ -53,54 +39,9 @@ func TestSelectPrompt_SessionFreshReturnsEmpty(t *testing.T) {
 // Session mode still honours an explicit --instruction (delivered via
 // BOID_USER_ANSWER).
 func TestSelectPrompt_SessionWithInstructionDelivers(t *testing.T) {
-	got := selectPrompt(true, false, "fix bug X", "")
+	got := selectPrompt(true, "fix bug X")
 	if got != "fix bug X" {
 		t.Errorf("got %q, want instruction text to pass through", got)
-	}
-}
-
-// Session resume retains the resumePrompt re-read cue — once a session has
-// state, the agent still needs to re-read context on wakeup.
-func TestSelectPrompt_SessionResumeUsesResumePrompt(t *testing.T) {
-	got := selectPrompt(true, true, "", "")
-	if got != resumePrompt {
-		t.Errorf("got %q, want resumePrompt for session resume", got)
-	}
-}
-
-func TestResolveSession_Resume(t *testing.T) {
-	sessions := []session{
-		{Type: "execution", Name: "", ID: "abc-123"},
-	}
-	id, isResume := resolveSession(sessions, "execution", "")
-	if !isResume {
-		t.Error("expected isResume=true for matching entry")
-	}
-	if id != "abc-123" {
-		t.Errorf("id = %q, want abc-123", id)
-	}
-}
-
-func TestResolveSession_NewWhenNameMismatch(t *testing.T) {
-	sessions := []session{
-		{Type: "execution", Name: "verifier", ID: "abc-123"},
-	}
-	id, isResume := resolveSession(sessions, "execution", "")
-	if isResume {
-		t.Error("expected isResume=false when name differs")
-	}
-	if id == "" || id == "abc-123" {
-		t.Errorf("id = %q, want freshly generated uuid", id)
-	}
-}
-
-func TestResolveSession_NewWhenEmpty(t *testing.T) {
-	id, isResume := resolveSession(nil, "execution", "")
-	if isResume {
-		t.Error("expected isResume=false for nil sessions")
-	}
-	if id == "" {
-		t.Error("expected freshly generated uuid, got empty")
 	}
 }
 
@@ -146,9 +87,9 @@ func TestUpdateSessions_PreservesOrder(t *testing.T) {
 }
 
 func TestBuildClaudeArgs_FreshSession(t *testing.T) {
-	args := buildClaudeArgs(false, "sess-1", "claude-opus-4-8", "/boid-task", taskSystemPrompt)
+	args := buildClaudeArgs("sess-1", "claude-opus-4-8", "/boid-task", taskSystemPrompt)
 
-	wantHead := []string{
+	want := []string{
 		"claude",
 		"--permission-mode", "bypassPermissions",
 		"--disallowedTools", "WebFetch",
@@ -157,29 +98,37 @@ func TestBuildClaudeArgs_FreshSession(t *testing.T) {
 		"--append-system-prompt", taskSystemPrompt,
 		"/boid-task",
 	}
-	if !reflect.DeepEqual(args, wantHead) {
-		t.Errorf("got %v, want %v", args, wantHead)
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("got %v, want %v", args, want)
 	}
 }
 
-func TestBuildClaudeArgs_Resume(t *testing.T) {
-	args := buildClaudeArgs(true, "sess-1", "", "user answer text", taskSystemPrompt)
-	// Resume + no model + UserAnswer prompt.
+// Resume is gone repo-wide; the argv never includes `--resume`, only
+// `--session-id` (with a freshly generated uuid each call). UserAnswer flows
+// through as the trailing positional, mirroring how an --instruction is
+// delivered in session mode.
+func TestBuildClaudeArgs_UserAnswerBecomesPositional(t *testing.T) {
+	args := buildClaudeArgs("sess-1", "", "user answer text", taskSystemPrompt)
 	want := []string{
 		"claude",
 		"--permission-mode", "bypassPermissions",
 		"--disallowedTools", "WebFetch",
-		"--resume", "sess-1",
+		"--session-id", "sess-1",
 		"--append-system-prompt", taskSystemPrompt,
 		"user answer text",
 	}
 	if !reflect.DeepEqual(args, want) {
 		t.Errorf("got %v, want %v", args, want)
 	}
+	for _, a := range args {
+		if a == "--resume" {
+			t.Errorf("--resume must never appear in argv, got %v", args)
+		}
+	}
 }
 
 func TestBuildClaudeArgs_NoModelOmitsFlag(t *testing.T) {
-	args := buildClaudeArgs(false, "sess-1", "", "/boid-task", taskSystemPrompt)
+	args := buildClaudeArgs("sess-1", "", "/boid-task", taskSystemPrompt)
 	for i, a := range args {
 		if a == "--model" {
 			t.Errorf("unexpected --model flag at %d: %v", i, args)
@@ -190,7 +139,7 @@ func TestBuildClaudeArgs_NoModelOmitsFlag(t *testing.T) {
 func TestBuildClaudeArgs_PromptIsLast(t *testing.T) {
 	// Claude binary treats the trailing positional as the prompt; if it
 	// slips earlier the agent will not see it.
-	args := buildClaudeArgs(false, "sess-1", "claude-opus-4-8", "/boid-task", taskSystemPrompt)
+	args := buildClaudeArgs("sess-1", "claude-opus-4-8", "/boid-task", taskSystemPrompt)
 	if args[len(args)-1] != "/boid-task" {
 		t.Errorf("last arg = %q, want prompt /boid-task", args[len(args)-1])
 	}
@@ -201,7 +150,7 @@ func TestBuildClaudeArgs_PromptIsLast(t *testing.T) {
 // must replace taskSystemPrompt so the agent isn't told to call notify on a
 // task that doesn't exist.
 func TestBuildClaudeArgs_SessionFreshOmitsPromptAndUsesSessionSystemPrompt(t *testing.T) {
-	args := buildClaudeArgs(false, "sess-1", "", "", sessionSystemPrompt)
+	args := buildClaudeArgs("sess-1", "", "", sessionSystemPrompt)
 	want := []string{
 		"claude",
 		"--permission-mode", "bypassPermissions",
@@ -217,7 +166,7 @@ func TestBuildClaudeArgs_SessionFreshOmitsPromptAndUsesSessionSystemPrompt(t *te
 // Empty systemPrompt skips --append-system-prompt entirely. Belt-and-
 // suspenders for callers that explicitly opt out of a system prompt.
 func TestBuildClaudeArgs_EmptySystemPromptOmitsFlag(t *testing.T) {
-	args := buildClaudeArgs(false, "sess-1", "", "", "")
+	args := buildClaudeArgs("sess-1", "", "", "")
 	for _, a := range args {
 		if a == "--append-system-prompt" {
 			t.Errorf("--append-system-prompt should be omitted when systemPrompt is empty, got args=%v", args)
@@ -381,11 +330,5 @@ func TestPauseSystemPromptMentionsNotify(t *testing.T) {
 	// the prompt should fail this so the regression is loud.
 	if !strings.Contains(taskSystemPrompt, "boid task notify") {
 		t.Error("taskSystemPrompt no longer mentions `boid task notify`")
-	}
-}
-
-func TestResumePromptMentionsBoidContext(t *testing.T) {
-	if !strings.Contains(resumePrompt, "~/.boid/context") {
-		t.Error("resumePrompt no longer references ~/.boid/context")
 	}
 }

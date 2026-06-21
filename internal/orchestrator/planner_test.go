@@ -620,10 +620,13 @@ func TestPlanHook_WritableControlledByTaskReadonly(t *testing.T) {
 	}
 }
 
-// When a task has an awaiting trait with session_id / pending_answer /
-// question_id, PlanHook must surface them as BOID_AGENT_SESSION_ID,
-// BOID_USER_ANSWER, and BOID_QUESTION_ID so the kit can resume the session.
-// For a plain initial-start (no awaiting payload) the vars must be absent.
+// When a task has an awaiting trait with pending_answer / question_id,
+// PlanHook surfaces them as BOID_USER_ANSWER / BOID_QUESTION_ID so the kit
+// can read the prior reply on the next invocation. BOID_AGENT_SESSION_ID is
+// no longer emitted — the session-id resume path was removed repo-wide, so
+// even legacy persisted records carrying session_id leave the env vars
+// alone. For a plain initial-start (no awaiting payload) every related var
+// must be absent.
 func TestDispatchPlanner_PropagatesAwaitingEnv(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
@@ -631,6 +634,8 @@ func TestDispatchPlanner_PropagatesAwaitingEnv(t *testing.T) {
 	}
 	scriptPath := filepath.Join(projectDir, ".boid/hooks", "hook-1.sh")
 
+	// Legacy records still hold a session_id; deserialisation must skip it
+	// silently rather than fail, and PlanHook must not surface it as env.
 	awaitingPayload := json.RawMessage(`{"awaiting":{"session_id":"sess-xyz","question":"ok?","question_id":"q-1","pending_answer":"yes"}}`)
 	task := &Task{
 		ID:        "task-1",
@@ -651,8 +656,8 @@ func TestDispatchPlanner_PropagatesAwaitingEnv(t *testing.T) {
 		t.Fatalf("PlanHook: %v", err)
 	}
 
-	if got := req.Env["BOID_AGENT_SESSION_ID"]; got != "sess-xyz" {
-		t.Errorf("BOID_AGENT_SESSION_ID = %q, want sess-xyz", got)
+	if _, ok := req.Env["BOID_AGENT_SESSION_ID"]; ok {
+		t.Errorf("BOID_AGENT_SESSION_ID must not be set anymore, got %q", req.Env["BOID_AGENT_SESSION_ID"])
 	}
 	if got := req.Env["BOID_USER_ANSWER"]; got != "yes" {
 		t.Errorf("BOID_USER_ANSWER = %q, want yes", got)

@@ -51,7 +51,7 @@ agent は以下のようにコマンドを呼び出します。
 boid task notify ${BOID_TASK_ID} --message "PR #42 のレビュー反映方針を判断してほしい"
 ```
 
-hook 経由のエージェントセッションは常に PTY 上で対話的に起動されるため、 `BOID_INTERACTIVE` による自律 / 対話の場合分けは不要です。 `boid task notify --ask` を呼べば boid daemon が task を `awaiting` に遷移させ、 ランタイムに **SIGUSR1** を送って停止を要求します。 SIGTERM ではなく SIGUSR1 を使うことで EXIT trap が生きたまま `boid job done` の正常完了を維持できます。 ユーザの回答が届いた時点で daemon が新しいセッションを spawn し、 `$BOID_USER_ANSWER` を介して回答を引き渡します。
+hook 経由のエージェントセッションは常に PTY 上で対話的に起動されるため、 `BOID_INTERACTIVE` による自律 / 対話の場合分けは不要です。 agent 主導の Q&A は `boid task ask "<質問>"` (blocking RPC) に統一されており、 agent process は exit せず broker 接続を握ったまま回答を待ちます (回答は同じ stdout に返ってきます)。 旧 `boid task notify --ask` は task を `awaiting` に遷移させるだけで、 daemon は user 回答時の resume hook を dispatch しません (session-id resume は廃止)。 実用 Q&A は必ず `boid task ask` を使ってください。
 
 notify 直後、agent はセッション内に質問本文 (選択肢・判断材料・context) を出力します。 ユーザは Web UI のセッションビューアで確認し、返答します。
 

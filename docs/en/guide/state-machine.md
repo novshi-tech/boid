@@ -42,8 +42,8 @@ Sent as actions by the user or by hooks (`boid action send --task <id> --type <a
 | `fail` | `executing` | `aborted` | Force abort from executing. |
 | `reopen` | `done` | `executing` | Appends a new instruction and restarts (`--message` to supply it). |
 | `reopen` | `aborted` | `executing` | Return an aborted task to executing. |
-| `ask` | `executing` | `awaiting` | Issued by `boid task notify --ask`. Pauses the task while it waits for an `answer`. |
-| `answer` | `awaiting` | `executing` | Issued by `boid task answer` or the Web UI. Restarts the hook. |
+| `ask` | `executing` | `awaiting` | Issued by `boid task ask` (blocking RPC) or `boid task notify --ask`. Places the task in `awaiting`. |
+| `answer` | `awaiting` | `executing` | Issued by `boid task answer` or the Web UI. Only the `boid task ask` flow can be resolved (the answer is handed to the parked broker connection). `notify --ask` awaitings are rejected with 409 — the agent already exited and the daemon no longer dispatches a resume hook. |
 | `abort` | any non-terminal state | `aborted` | |
 | `job_failed` (system) | any non-terminal state | `aborted` | |
 

@@ -19,7 +19,7 @@ The following traits are defined for task payloads. The state machine's auto-tra
 |---|---|---|---|
 | `artifact` | hooks | exclusive | Free-form map for the task's output (commit, PR URL, files changed, ...). |
 | `verification` | hooks | shared | Results from verification hooks, merged by handler ID sub-key. |
-| `awaiting` | boid core | exclusive | Persistent Q&A state set by `boid task notify --ask`. See [awaiting trait](#awaiting-trait). |
+| `awaiting` | boid core | exclusive | Persistent Q&A state set by `boid task ask` (blocking RPC) or `boid task notify --ask`. See [awaiting trait](#awaiting-trait). |
 
 ### `artifact`
 
@@ -31,18 +31,17 @@ Written by hooks that perform verification steps. Unlike `artifact`, the merge m
 
 ### `awaiting` trait
 
-Set automatically by `boid` when `boid task notify --ask` is called. This trait persists across the `awaiting` state and is consumed by the kit on resume.
+Set automatically by `boid` when `boid task ask` (blocking RPC) or `boid task notify --ask` is called. The `boid task ask` flow holds the agent's broker connection open and routes the reply back over the same socket via an in-memory registry; `notify --ask` only flips the task into `awaiting` and exits the agent — the daemon no longer dispatches a resume hook on answer (session-id resume was removed). Prefer `boid task ask` for any real Q&A.
 
 Fields:
 
 | Field | Type | Set by | Role |
 |---|---|---|---|
-| `session_id` | string | kit (via `notify --ask`) | The Claude `--print` session ID to resume with `--resume`. |
-| `question` | string | kit (via `notify --ask`) | Human-readable question text shown to the user. |
-| `question_id` | string | kit (via `notify --ask`) | UUID identifying this Q&A turn. |
-| `pending_answer` | string | boid core | The user's reply; consumed by the kit on next resume and cleared afterwards. |
+| `question` | string | boid core | Human-readable question text shown to the user. |
+| `question_id` | string | boid core | UUID identifying this Q&A turn. |
+| `pending_answer` | string | boid core | Legacy `notify --ask` reply slot. Unused by the `boid task ask` path (answers are delivered in-memory). |
 
-The `awaiting` trait is managed exclusively by `boid` core and the `ApplyAction("ask"/"answer")` path. Hooks must not write to it directly.
+The `awaiting` trait is managed exclusively by `boid` core and the `ApplyAction("ask"/"answer")` path. Hooks must not write to it directly. Legacy records may still carry `session_id` / `mode` fields — the deserializer silently ignores them (they were removed from the struct).
 
 ### Subtask creation
 

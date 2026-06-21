@@ -128,7 +128,6 @@ Request body:
   "message": "Should I merge PR #42?",
   "ask": "Proceed with the merge?",
   "question_id": "q-550e8400",
-  "session_id": "<agent-session-id>",
   "progress": true,
   "done": true,
   "fail": true
@@ -138,9 +137,8 @@ Request body:
 | Field | Required | Description |
 |---|---|---|
 | `message` | ◎ (except when `progress` is set) | Notification text. Passed to the notify script as `BOID_MESSAGE`. |
-| `ask` | | Question text. When present, transitions the task to `awaiting`. Mutually exclusive with `done`/`fail`/`progress`. |
+| `ask` | | Question text. When present, transitions the task to `awaiting`. The daemon **no longer dispatches a resume hook** on answer — use `boid task ask` (blocking RPC) for any real Q&A. Mutually exclusive with `done`/`fail`/`progress`. |
 | `question_id` | | UUID for this Q&A turn. Auto-generated when omitted. |
-| `session_id` | | Agent session ID that originated this notification. |
 | `progress` | | When `true`, records a progress entry on the timeline only (no state transition). |
 | `done` | | When `true`, records a `done_request` on the timeline; the task transitions to `done` after the runtime exits. |
 | `fail` | | When `true`, records a `fail_request` on the timeline; the task transitions to `aborted` after the runtime exits. |

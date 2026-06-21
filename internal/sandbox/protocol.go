@@ -113,7 +113,6 @@ type BoidRequest struct {
 	Message    string `json:"message,omitempty"`
 	Ask        string `json:"ask,omitempty"`
 	QuestionID string `json:"question_id,omitempty"`
-	SessionID  string `json:"session_id,omitempty"`
 	Progress   string `json:"progress,omitempty"`
 	Done       string `json:"done,omitempty"`
 	Fail       string `json:"fail,omitempty"`

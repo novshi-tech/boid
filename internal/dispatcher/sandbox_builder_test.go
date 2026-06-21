@@ -1247,26 +1247,29 @@ func TestBuildEnvironmentYAML_SessionSectionOnlyForSessions(t *testing.T) {
 	docTask := parsedEnvDoc(t, EnvironmentInput{
 		Kind:        orchestrator.JobKindHook,
 		HarnessType: "claude",
-		SessionID:   "ignored-for-tasks",
 		DisplayName: "executor",
 	})
 	if _, has := docTask["session"]; has {
 		t.Errorf("session section should be absent for JobKindHook, got %v", docTask["session"])
 	}
 
-	// JobKindSession -> session section reflects harness + id + name.
+	// JobKindSession -> session section reflects harness + display name. The
+	// `id` subfield was removed alongside session-id resume: sessions now
+	// always start fresh, so there is no persistent id to surface here.
 	docSession := parsedEnvDoc(t, EnvironmentInput{
 		Kind:        orchestrator.JobKindSession,
 		HarnessType: "claude",
-		SessionID:   "abc-123",
 		DisplayName: "Claude session",
 	})
 	sess, ok := docSession["session"].(map[string]any)
 	if !ok {
 		t.Fatalf("session section missing for JobKindSession: %v", docSession["session"])
 	}
-	if sess["harness"] != "claude" || sess["id"] != "abc-123" || sess["display_name"] != "Claude session" {
-		t.Errorf("session = %v, want harness=claude id=abc-123 display_name=Claude session", sess)
+	if sess["harness"] != "claude" || sess["display_name"] != "Claude session" {
+		t.Errorf("session = %v, want harness=claude display_name=Claude session", sess)
+	}
+	if _, has := sess["id"]; has {
+		t.Errorf("session must not expose an `id` subfield anymore, got %v", sess["id"])
 	}
 }
 

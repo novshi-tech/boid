@@ -17,15 +17,17 @@ import (
 //
 // Usage:
 //
-//	boid agent claude  -p <project> [--resume <session-id>] [--instruction "..."] [--readonly] [--model M]
+//	boid agent claude  -p <project> [--instruction "..."] [--readonly] [--model M]
 //	boid agent codex    -p <project> [...]
 //	boid agent opencode -p <project> [...]
 //
 // `boid agent stop <job-id>` (defined alongside in agent.go) is unchanged.
+//
+// Sessions always start fresh: the session-id resume path was removed
+// repo-wide so harnesses dispatch a brand-new process each time.
 
 type agentSessionFlags struct {
 	projectRef  string
-	resumeID    string
 	instruction string
 	readonly    bool
 	model       string
@@ -35,7 +37,6 @@ type agentSessionFlags struct {
 
 func addAgentSessionFlags(cmd *cobra.Command, f *agentSessionFlags) {
 	cmd.Flags().StringVarP(&f.projectRef, "project", "p", "", "project ref (id, name, or unique prefix); required")
-	cmd.Flags().StringVar(&f.resumeID, "resume", "", "resume an existing session id instead of starting fresh")
 	cmd.Flags().StringVar(&f.instruction, "instruction", "", "bootstrap prompt delivered as the first user turn (empty uses the harness default)")
 	cmd.Flags().BoolVar(&f.readonly, "readonly", false, "mount the project workspace read-only (default: writable)")
 	cmd.Flags().StringVar(&f.model, "model", "", "override the harness binary's default model")
@@ -82,7 +83,6 @@ func runAgentSession(harness string, flags *agentSessionFlags) error {
 	req := api.StartSessionRequest{
 		ProjectID:   projectID,
 		HarnessType: harness,
-		SessionID:   flags.resumeID,
 		Instruction: flags.instruction,
 		Readonly:    flags.readonly,
 		Model:       flags.model,
