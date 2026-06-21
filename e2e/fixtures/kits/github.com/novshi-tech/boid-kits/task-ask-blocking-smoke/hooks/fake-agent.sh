@@ -3,11 +3,12 @@ set -euo pipefail
 
 # Deterministic fake agent for the blocking Q&A (boid task ask) E2E test.
 #
-# Unlike notify --ask (which exits the agent and resumes it via a 2nd dispatch,
-# see the q-and-a scenario), `boid task ask` keeps THIS process alive and blocks
-# inside the broker RPC until the user/supervisor answers. There is no second
-# invocation: the same process unblocks with the answer on stdout and runs to
-# completion, so the whole Q&A round-trip happens within a single hook job.
+# `boid task ask` keeps THIS process alive and blocks inside the broker RPC
+# until the user/supervisor answers. There is no second invocation: the same
+# process unblocks with the answer on stdout and runs to completion, so the
+# whole Q&A round-trip happens within a single hook job. (The legacy
+# session-resume path that exited the agent and resumed it via a 2nd dispatch
+# was removed in the session-id-resume cleanup.)
 
 printf 'asking the magic word\n'
 

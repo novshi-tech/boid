@@ -3,10 +3,11 @@ set -euo pipefail
 
 # Scenario: blocking Q&A (boid task ask) end-to-end verification.
 #
-# Verifies the harness-independent blocking Q&A RPC (PR1 = boid task ask, merged
-# as #609). Unlike the session-resume path (notify --ask + reopen, exercised by
-# the q-and-a scenario), the agent stays alive and blocks inside a single hook
-# job until the answer arrives over the held broker connection.
+# Verifies the harness-independent blocking Q&A RPC (`boid task ask`, merged as
+# PR #609). The legacy session-resume path (`notify --ask` + `reopen`) was
+# removed in the session-id-resume cleanup: the agent stays alive and blocks
+# inside a single hook job until the answer arrives over the held broker
+# connection — there is no longer a 2nd resume dispatch to test.
 #
 # Flow:
 #   1. Task starts -> fake-agent hook calls `boid task ask` and BLOCKS -> awaiting
