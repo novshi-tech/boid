@@ -11,8 +11,9 @@ set -euo pipefail
 #
 # Flow:
 #   1. Task starts -> fake-agent hook calls `boid task ask` and BLOCKS -> awaiting
-#   2. awaiting payload carries mode=blocking + the question text (proves the ask
-#      transition fired in blocking mode)
+#   2. awaiting payload carries the question text (proves the ask transition
+#      fired). The legacy mode discriminator was removed alongside session-id
+#      resume: every awaiting record is now blocking by construction.
 #   3. host submits `boid task answer` -> the parked agent unblocks WITHOUT a
 #      resume dispatch (hook job count stays 1) and receives the answer on stdout
 #   4. agent records the answer in the artifact and exits 0 -> done
@@ -42,8 +43,7 @@ task_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 20s --interval 1
 printf '%s\n' "$task_json"
 e2e_assert_contains "$task_json" '"status":"awaiting"'
 
-e2e_log "verifying awaiting payload is blocking-mode and carries the question"
-e2e_assert_contains "$task_json" '"mode":"blocking"'
+e2e_log "verifying awaiting payload carries the question"
 e2e_assert_contains "$task_json" '"question":"What is the magic word?"'
 
 e2e_log "verifying exactly one hook job (blocking holds the same job; no resume dispatch)"
