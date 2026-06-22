@@ -50,6 +50,16 @@ type JobInfo struct {
 
 // Event is a single row in the unified timeline. Exactly one of Action / Job
 // is populated, matching Kind.
+//
+// Sticky marks a synthesized reference row that surfaces a long-lived job
+// under the task's CURRENT status group (in addition to the historic group
+// where the job originally landed). Without this, a single hook job that
+// outlives multiple ask/answer round trips (the canonical `boid task ask`
+// blocking RPC pattern) would only render under its starting executing group
+// while later status visits look empty even though the same agent process is
+// still running there. Sticky events are non-authoritative — they share the
+// underlying *JobInfo with the original row — so renderers must treat them as
+// display-only (no separate progress fetch, no double-counted runtime, etc.).
 type Event struct {
 	Time    time.Time
 	HasTime bool
@@ -57,6 +67,7 @@ type Event struct {
 	Label   string
 	Action  *orchestrator.Action
 	Job     *JobInfo
+	Sticky  bool
 }
 
 // StatusGroup groups events under a single task-status visit.
@@ -324,6 +335,47 @@ func Build(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobI
 				EnteredAt:    enteredAt,
 				HasEnteredAt: hasEnteredAt,
 			})
+		}
+	}
+
+	// Sticky "currently-running" reference: when the task is in a live status
+	// (executing or awaiting) and exactly one hook job is still running, append
+	// a Sticky=true reference row to the latest group so the agent shows up
+	// under "where the task is now," not only under the historic executing
+	// group where the job was created. Skip when the running job's original
+	// row is already in the latest group (no double-render on first executing
+	// visit) and when the task is in a terminal status (the historic placement
+	// is the truth there).
+	if task != nil && len(groups) > 0 {
+		cur := string(task.Status)
+		if cur == string(orchestrator.TaskStatusExecuting) || cur == string(orchestrator.TaskStatusAwaiting) {
+			var running *JobInfo
+			for _, j := range jobs {
+				if j != nil && j.Status == JobStatusRunning {
+					running = j
+					break
+				}
+			}
+			if running != nil {
+				last := &groups[len(groups)-1]
+				already := false
+				for _, ev := range last.Events {
+					if ev.Kind == KindJob && ev.Job != nil && ev.Job.ID == running.ID {
+						already = true
+						break
+					}
+				}
+				if !already {
+					last.Events = append(last.Events, Event{
+						Time:    running.CreatedAt,
+						HasTime: !running.CreatedAt.IsZero(),
+						Kind:    KindJob,
+						Label:   BuildJobLabel(running),
+						Job:     running,
+						Sticky:  true,
+					})
+				}
+			}
 		}
 	}
 
