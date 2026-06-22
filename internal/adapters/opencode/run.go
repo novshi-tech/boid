@@ -89,7 +89,14 @@ func buildArgs(interactive bool, workspace, model, prompt string) []string {
 		return args
 	}
 
-	args := []string{"opencode", "run"}
+	// --dangerously-skip-permissions auto-approves tool calls that are not
+	// explicitly denied — required for the task hook bootstrap to work:
+	// opencode's Read tool fails to expand "~" (literal "/tmp/.../~/.boid/..."
+	// not found), retries with the absolute path "/home/$USER/.boid/...",
+	// and then hits the external_directory permission gate which auto-rejects
+	// without this flag. The agent is already inside the boid sandbox, so the
+	// opencode-side permission layer adds no isolation.
+	args := []string{"opencode", "run", "--dangerously-skip-permissions"}
 	if model != "" {
 		args = append(args, "-m", model)
 	}

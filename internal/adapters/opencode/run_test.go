@@ -8,9 +8,26 @@ import (
 
 func TestBuildArgs_NonInteractive_Fresh(t *testing.T) {
 	got := buildArgs(false, "/ws", "", "hello")
-	want := []string{"opencode", "run", "hello"}
+	want := []string{"opencode", "run", "--dangerously-skip-permissions", "hello"}
 	if !equalSlice(got, want) {
 		t.Errorf("buildArgs fresh = %v, want %v", got, want)
+	}
+}
+
+// The permission bypass flag is mandatory for the task hook bootstrap:
+// without it opencode auto-rejects Read of ~/.boid/skills/ as
+// external_directory and the agent never reads SKILL.md.
+func TestBuildArgs_NonInteractive_HasPermissionBypass(t *testing.T) {
+	got := buildArgs(false, "/ws", "", "hello")
+	found := false
+	for _, a := range got {
+		if a == "--dangerously-skip-permissions" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("non-interactive argv must include --dangerously-skip-permissions, got %v", got)
 	}
 }
 
