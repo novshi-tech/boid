@@ -81,6 +81,50 @@ func TestBuildArgs_Interactive_WithModel(t *testing.T) {
 	}
 }
 
+// selectPrompt encodes the four-way decision for the opencode first turn —
+// mirrors the codex adapter's selectPrompt:
+//   - hook (isSession=false): always bootstrap, never UserAnswer
+//   - session + UserAnswer empty: empty (TUI takes no positional)
+//   - session + UserAnswer non-empty: that text verbatim
+func TestSelectPrompt(t *testing.T) {
+	cases := []struct {
+		name       string
+		isSession  bool
+		userAnswer string
+		want       string
+	}{
+		{"hook empty UserAnswer returns bootstrap", false, "", taskBootstrapPrompt},
+		{"hook non-empty UserAnswer is ignored (still bootstrap)", false, "ignored", taskBootstrapPrompt},
+		{"session empty UserAnswer is empty positional", true, "", ""},
+		{"session non-empty UserAnswer is verbatim", true, "boot me up", "boot me up"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := selectPrompt(c.isSession, c.userAnswer)
+			if got != c.want {
+				t.Errorf("selectPrompt(%v, %q) = %q (len=%d), want %q (len=%d)",
+					c.isSession, c.userAnswer, got, len(got), c.want, len(c.want))
+			}
+		})
+	}
+}
+
+// Hook argv must end with the full bootstrap prompt — opencode `run` takes
+// the message as its trailing positional and uses it as the first user turn.
+func TestBuildArgs_Hook_AppendsBootstrap(t *testing.T) {
+	got := buildArgs(false, "/ws", "", selectPrompt(false, ""))
+	if len(got) == 0 {
+		t.Fatalf("buildArgs returned no argv")
+	}
+	if got[len(got)-1] != taskBootstrapPrompt {
+		t.Errorf("hook argv last element should be the bootstrap prompt; got tail %q", got[len(got)-1])
+	}
+	if !strings.Contains(taskBootstrapPrompt, "boid task notify") ||
+		!strings.Contains(taskBootstrapPrompt, "~/.boid/skills/boid-task/SKILL.md") {
+		t.Errorf("taskBootstrapPrompt missing required hooks: %q", taskBootstrapPrompt)
+	}
+}
+
 func TestUsage_Stub(t *testing.T) {
 	a := New()
 	u, err := a.Usage(context.Background(), "job-1")
