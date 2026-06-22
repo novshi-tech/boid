@@ -12,10 +12,55 @@ import (
 	"github.com/novshi-tech/boid/internal/adapters/sigutil"
 )
 
-// defaultPrompt is sent when the task hook path forgets to supply a prompt.
-// Mirrors the codex adapter's no-op fallback. Interactive mode never reaches
-// it (no prompt arg is appended to the TUI argv).
-const defaultPrompt = "boid opencode non-interactive smoke fallback: respond with one short line then exit."
+// taskBootstrapPrompt is sent as the first user turn when opencode is
+// launched for a task hook (rc.TaskID != ""). Same role as the codex
+// adapter's bootstrap text (see internal/adapters/codex/run.go) — point
+// the agent at ~/.boid/skills/boid-task/SKILL.md via its read-file tool
+// and remind it to call boid task notify --done/--fail before exiting.
+//
+// Kept literal-identical to the codex bootstrap on purpose so both harnesses
+// see the exact same first-turn instructions. The duplication is cheap
+// (one constant per adapter) and avoids introducing a shared package just
+// to hold a string.
+const taskBootstrapPrompt = `You are a boid task agent running inside a sandboxed environment.
+
+Step 1: Read the skill manual at ~/.boid/skills/boid-task/SKILL.md with your
+read-file tool. That file is the single source of truth for how this task
+should be handled — it tells you whether you are in supervisor or executor
+mode based on environment.yaml ` + "`readonly`" + `, and how to use boid task notify /
+boid task ask.
+
+Step 2: Read the task context files under ~/.boid/context/ as instructed by
+the skill manual:
+  - task.yaml         (id, title, behavior, status)
+  - instructions.yaml (the LAST element is the active instruction)
+  - environment.yaml  (readonly, network, host_commands)
+  - payload.yaml      (existing artifacts, prior child results)
+
+Step 3: Perform the task. Use $BOID_TASK_ID whenever you call boid task
+notify or boid task ask.
+
+Step 4: Before terminating, you MUST call EXACTLY ONE of:
+  boid task notify "$BOID_TASK_ID" --message "<short>" --done "<achievement>"
+  boid task notify "$BOID_TASK_ID" --message "<short>" --fail "<reason>"
+For mid-flight user questions, use the blocking RPC:
+  ANSWER=$(boid task ask "<question>")
+  # The answer arrives on stdout; the call returns and you continue.
+  # Do NOT use boid task notify --ask (vestigial).
+
+Failure to call notify --done or --fail leaves the task stuck in ` + "`executing`" + `
+forever. The daemon SIGTERMs your runtime after notify.`
+
+// selectPrompt picks the first user turn handed to opencode. Same shape as
+// the codex adapter's selectPrompt — hook (rc.TaskID != "") always gets the
+// bootstrap prompt, session jobs receive UserAnswer (empty string means no
+// positional prompt for the TUI).
+func selectPrompt(isSession bool, userAnswer string) string {
+	if !isSession {
+		return taskBootstrapPrompt
+	}
+	return userAnswer
+}
 
 // buildArgs constructs the argv for opencode.
 //
@@ -69,12 +114,7 @@ func buildArgs(interactive bool, workspace, model, prompt string) []string {
 // non-goals (interactive sessions are run-and-done, no resume yet).
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
 	interactive := rc.TaskID == ""
-
-	prompt := rc.UserAnswer
-	if !interactive && prompt == "" {
-		prompt = defaultPrompt
-	}
-
+	prompt := selectPrompt(interactive, rc.UserAnswer)
 	args := buildArgs(interactive, rc.Workspace, rc.Model, prompt)
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)

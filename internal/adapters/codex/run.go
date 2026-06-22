@@ -12,11 +12,67 @@ import (
 	"github.com/novshi-tech/boid/internal/adapters/sigutil"
 )
 
-// defaultPrompt is sent when the task hook path forgets to supply a prompt.
-// A no-op fallback line keeps non-interactive codex from hanging on empty
-// input. Interactive mode (boid agent codex) never reaches this fallback —
-// the user drives the TUI, so no prompt is appended at all.
-const defaultPrompt = "boid codex non-interactive smoke fallback: respond with one short line then exit."
+// taskBootstrapPrompt is sent as the first user turn when codex is launched
+// for a task hook (rc.TaskID != ""). It tells the agent to read the canonical
+// task skill manual + boid task context yaml files, then run the task and
+// emit boid task notify --done/--fail before exiting.
+//
+// codex has no slash command / skill loader mechanism, so the claude pattern
+// of passing "/boid-task" as positional does not apply. Instead we point the
+// agent at the skill file via its read-file tool — the SKILL.md is bind
+// mounted into ~/.boid/skills/boid-task/ by Bindings() below.
+//
+// codex also has no --append-system-prompt equivalent, so the lifecycle
+// reminder ("call boid task notify before exiting") is collapsed into the
+// same user prompt instead of being delivered as a separate system message.
+const taskBootstrapPrompt = `You are a boid task agent running inside a sandboxed environment.
+
+Step 1: Read the skill manual at ~/.boid/skills/boid-task/SKILL.md with your
+read-file tool. That file is the single source of truth for how this task
+should be handled — it tells you whether you are in supervisor or executor
+mode based on environment.yaml ` + "`readonly`" + `, and how to use boid task notify /
+boid task ask.
+
+Step 2: Read the task context files under ~/.boid/context/ as instructed by
+the skill manual:
+  - task.yaml         (id, title, behavior, status)
+  - instructions.yaml (the LAST element is the active instruction)
+  - environment.yaml  (readonly, network, host_commands)
+  - payload.yaml      (existing artifacts, prior child results)
+
+Step 3: Perform the task. Use $BOID_TASK_ID whenever you call boid task
+notify or boid task ask.
+
+Step 4: Before terminating, you MUST call EXACTLY ONE of:
+  boid task notify "$BOID_TASK_ID" --message "<short>" --done "<achievement>"
+  boid task notify "$BOID_TASK_ID" --message "<short>" --fail "<reason>"
+For mid-flight user questions, use the blocking RPC:
+  ANSWER=$(boid task ask "<question>")
+  # The answer arrives on stdout; the call returns and you continue.
+  # Do NOT use boid task notify --ask (vestigial).
+
+Failure to call notify --done or --fail leaves the task stuck in ` + "`executing`" + `
+forever. The daemon SIGTERMs your runtime after notify.`
+
+// selectPrompt picks the first user turn handed to codex.
+//
+//   - isSession == false (hook job, rc.TaskID != ""): always taskBootstrapPrompt.
+//     Hook jobs do not carry a UserAnswer (the field is reserved for
+//     `boid agent <harness> --instruction` session bootstrap text), but we
+//     ignore it unconditionally to keep hook behaviour deterministic.
+//   - isSession == true + UserAnswer == "": empty string. Session TUI mode
+//     receives no positional prompt — the user drives the harness directly.
+//   - isSession == true + UserAnswer != "": the UserAnswer text is passed
+//     verbatim as the first turn (the `--instruction` flag plumbing).
+//
+// Mirrors the shape of internal/adapters/claude/run.go selectPrompt; the
+// codex bootstrap text replaces claude's "/boid-task" slash command.
+func selectPrompt(isSession bool, userAnswer string) string {
+	if !isSession {
+		return taskBootstrapPrompt
+	}
+	return userAnswer
+}
 
 // buildArgs constructs the argv handed to exec.Cmd for codex.
 //
@@ -85,12 +141,7 @@ func buildArgs(interactive bool, model, prompt string) []string {
 // non-goals (interactive sessions are run-and-done, no resume yet).
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
 	interactive := rc.TaskID == ""
-
-	prompt := rc.UserAnswer
-	if !interactive && prompt == "" {
-		prompt = defaultPrompt
-	}
-
+	prompt := selectPrompt(interactive, rc.UserAnswer)
 	args := buildArgs(interactive, rc.Model, prompt)
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
