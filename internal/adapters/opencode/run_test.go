@@ -15,7 +15,7 @@ func TestBuildArgs_NonInteractive_Fresh(t *testing.T) {
 }
 
 // The permission bypass flag is mandatory for the task hook bootstrap:
-// without it opencode auto-rejects Read of ~/.boid/skills/ as
+// without it opencode auto-rejects Read of ~/.claude/skills/ as
 // external_directory and the agent never reads SKILL.md.
 func TestBuildArgs_NonInteractive_HasPermissionBypass(t *testing.T) {
 	got := buildArgs(false, "/ws", "", "hello")
@@ -137,7 +137,7 @@ func TestBuildArgs_Hook_AppendsBootstrap(t *testing.T) {
 		t.Errorf("hook argv last element should be the bootstrap prompt; got tail %q", got[len(got)-1])
 	}
 	if !strings.Contains(taskBootstrapPrompt, "boid task notify") ||
-		!strings.Contains(taskBootstrapPrompt, "~/.boid/skills/boid-task/SKILL.md") {
+		!strings.Contains(taskBootstrapPrompt, "~/.claude/skills/boid-task/SKILL.md") {
 		t.Errorf("taskBootstrapPrompt missing required hooks: %q", taskBootstrapPrompt)
 	}
 }

@@ -27,7 +27,7 @@ import (
 // same user prompt instead of being delivered as a separate system message.
 const taskBootstrapPrompt = `You are a boid task agent running inside a sandboxed environment.
 
-Step 1: Read the skill manual at ~/.boid/skills/boid-task/SKILL.md with your
+Step 1: Read the skill manual at ~/.claude/skills/boid-task/SKILL.md with your
 read-file tool. That file is the single source of truth for how this task
 should be handled — it tells you whether you are in supervisor or executor
 mode based on environment.yaml ` + "`readonly`" + `, and how to use boid task notify /

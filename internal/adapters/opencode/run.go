@@ -15,7 +15,7 @@ import (
 // taskBootstrapPrompt is sent as the first user turn when opencode is
 // launched for a task hook (rc.TaskID != ""). Same role as the codex
 // adapter's bootstrap text (see internal/adapters/codex/run.go) — point
-// the agent at ~/.boid/skills/boid-task/SKILL.md via its read-file tool
+// the agent at ~/.claude/skills/boid-task/SKILL.md via its read-file tool
 // and remind it to call boid task notify --done/--fail before exiting.
 //
 // Kept literal-identical to the codex bootstrap on purpose so both harnesses
@@ -24,7 +24,7 @@ import (
 // to hold a string.
 const taskBootstrapPrompt = `You are a boid task agent running inside a sandboxed environment.
 
-Step 1: Read the skill manual at ~/.boid/skills/boid-task/SKILL.md with your
+Step 1: Read the skill manual at ~/.claude/skills/boid-task/SKILL.md with your
 read-file tool. That file is the single source of truth for how this task
 should be handled — it tells you whether you are in supervisor or executor
 mode based on environment.yaml ` + "`readonly`" + `, and how to use boid task notify /
