@@ -363,7 +363,7 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 		projectName := h.lookupProjectName(detail.Task.ProjectID)
 		templates.TaskDetailStatusSection(detail.Task, detail.AvailableActions, "", projectName).Render(r.Context(), w)
 	case "jobs":
-		templates.TaskDetailJobsSection(jobs).Render(r.Context(), w)
+		templates.TaskDetailJobsSection(detail.Task, jobs).Render(r.Context(), w)
 	default:
 		http.Error(w, "unknown fragment kind", http.StatusBadRequest)
 	}

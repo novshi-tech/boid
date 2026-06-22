@@ -340,9 +340,22 @@ func timelineGroupTime(g timeline.StatusGroup) string {
 }
 
 // timelineJobStatusClass returns the job-status suffix used for marker
-// coloring (completed / failed / running / default) so CSS can match both
-// kind and status in a single selector.
-func timelineJobStatusClass(ev timeline.Event) string {
+// coloring (completed / failed / running / parked / default) so CSS can match
+// both kind and status in a single selector.
+//
+// A "parked" badge is returned when the underlying job is still running but
+// the surrounding task is parked on a blocking ask: this happens on the
+// synthesized Sticky reference row that the timeline builder appends under
+// the awaiting status group. Treat it as a UI synonym for "running, waiting
+// on a user answer" — the job's DB row is still `running` (the agent process
+// is alive inside `boid task ask`), only the display changes.
+func timelineJobStatusClass(ev timeline.Event, taskStatus string) string {
+	if ev.Job != nil && ev.Job.Status == timeline.JobStatusRunning {
+		if ev.Sticky && taskStatus == string(orchestrator.TaskStatusAwaiting) {
+			return "parked"
+		}
+		return timeline.JobStatusRunning
+	}
 	if ev.Job != nil && ev.Job.Status != "" {
 		return ev.Job.Status
 	}
@@ -413,14 +426,28 @@ templ TaskDetailTimelineSection(task *orchestrator.Task, groups []timeline.Statu
 					</div>
 					for _, ev := range group.Events {
 						if ev.Kind == timeline.KindJob && ev.Job != nil {
-							<a class={ "timeline-row", "timeline-row-event", "timeline-row-job", "timeline-row-job-" + timelineJobStatusClass(ev) } href={ templ.SafeURL("/jobs/" + ev.Job.ID) }>
-								<time class="timeline-time">{ timelineEventTime(ev) }</time>
+							<a class={ "timeline-row", "timeline-row-event", "timeline-row-job", "timeline-row-job-" + timelineJobStatusClass(ev, string(task.Status)), templ.KV("timeline-row-job-sticky", ev.Sticky) } href={ templ.SafeURL("/jobs/" + ev.Job.ID) }>
+								if ev.Sticky {
+									<time class="timeline-time timeline-time-sticky" aria-hidden="true">↻</time>
+								} else {
+									<time class="timeline-time">{ timelineEventTime(ev) }</time>
+								}
 								<span class="timeline-marker timeline-marker-job" aria-hidden="true"></span>
 								if ev.Job.Status == timeline.JobStatusRunning {
 									<span class="timeline-label">
-										{ timelineJobIdentity(ev) + " " }
-										<span class="timeline-elapsed" data-since={ timelineJobSinceUnix(ev) }>{ timeline.FormatElapsed(ev.Job.CreatedAt) }</span>
-										{ " ago" }
+										if ev.Sticky {
+											if task.Status == orchestrator.TaskStatusAwaiting {
+												{ timelineJobIdentity(ev) + " (parked, " }
+											} else {
+												{ timelineJobIdentity(ev) + " (継続中, " }
+											}
+											<span class="timeline-elapsed" data-since={ timelineJobSinceUnix(ev) }>{ timeline.FormatElapsed(ev.Job.CreatedAt) }</span>
+											{ " ago)" }
+										} else {
+											{ timelineJobIdentity(ev) + " " }
+											<span class="timeline-elapsed" data-since={ timelineJobSinceUnix(ev) }>{ timeline.FormatElapsed(ev.Job.CreatedAt) }</span>
+											{ " ago" }
+										}
 									</span>
 								} else {
 									<span class="timeline-label">{ ev.Label }</span>
@@ -481,19 +508,34 @@ templ TaskDetailAwaitingBanner(task *orchestrator.Task) {
 }
 
 
+// jobDisplayStatus returns the badge text used in the Jobs section.
+// "parked" is a UI-only synonym for "running while the surrounding task is
+// awaiting a user answer" — the agent process is alive inside `boid task ask`
+// holding its broker connection open. The job's DB row is still `running`;
+// this label only changes the WebUI rendering.
+func jobDisplayStatus(jobStatus string, taskStatus orchestrator.TaskStatus) string {
+	if jobStatus == "running" && taskStatus == orchestrator.TaskStatusAwaiting {
+		return "parked"
+	}
+	return jobStatus
+}
+
 // TaskDetailJobsSection renders the jobs card.
 // Wrapped in <div id="task-jobs"> so EventSource JS can replace it via outerHTML.
-templ TaskDetailJobsSection(jobs []*JobView) {
+// `task` is needed so a running job can be re-labelled "parked" while the
+// task is awaiting a user answer (see [jobDisplayStatus]).
+templ TaskDetailJobsSection(task *orchestrator.Task, jobs []*JobView) {
 	<div id="task-jobs">
 		if len(jobs) > 0 {
 			<div class="card">
 				<h2 class="section-title">Jobs</h2>
 				<div class="job-list">
 					for _, job := range jobs {
+						{{ displayStatus := jobDisplayStatus(job.Status, task.Status) }}
 						<div class="job-row">
 							<div class="job-row-header">
 								<a href={ templ.SafeURL("/jobs/" + job.ID) } class="job-id">{ shortID(job.ID) }</a>
-								<span class={ taskStatusClass(job.Status) }>{ job.Status }</span>
+								<span class={ taskStatusClass(displayStatus) }>{ displayStatus }</span>
 								<span>{ job.Role }</span>
 								if job.ExitCode != 0 {
 									<span class="exit-code">exit: { fmt.Sprintf("%d", job.ExitCode) }</span>

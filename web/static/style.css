@@ -245,6 +245,10 @@ pre {
 .badge-running             { background: #dcfce7; color: #15803d; }
 .badge-completed           { background: #e5e7eb; color: #6b7280; }
 .badge-failed              { background: #fee2e2; color: #b91c1c; }
+/* `parked` is a WebUI-only synonym for "running while the task is awaiting a
+   user answer" (agent blocked inside `boid task ask`). Same palette as the
+   awaiting badge so the eye groups them as the same waiting-for-human state. */
+.badge-parked              { background: #fef9c3; color: #854d0e; }
 
 @media (prefers-color-scheme: dark) {
   .badge-pending             { background: #1e293b; color: #94a3b8; }
@@ -257,6 +261,7 @@ pre {
   .badge-running             { background: #052e16; color: #4ade80; }
   .badge-completed           { background: #1f2937; color: #9ca3af; }
   .badge-failed              { background: #450a0a; color: #f87171; }
+  .badge-parked              { background: #422006; color: #fbbf24; }
 }
 
 /* --- Card --- */
@@ -1554,10 +1559,33 @@ body:has(.action-bar) {
 .timeline-row-job-running   .timeline-marker-job::before { background: #15803d; }
 .timeline-row-job-completed .timeline-marker-job::before { background: var(--accent); }
 .timeline-row-job-failed    .timeline-marker-job::before { background: #b91c1c; }
+/* Parked: job process is alive but the surrounding task is in `awaiting`
+   (the agent is blocked inside `boid task ask` waiting for an answer). Use
+   the awaiting-amber palette so the marker reads as "paused, attention
+   needed" rather than "running normally". Surface mirrors the awaiting
+   badge color. */
+.timeline-row-job-parked    .timeline-marker-job::before { background: #ca8a04; }
 
 @media (prefers-color-scheme: dark) {
   .timeline-row-job-running .timeline-marker-job::before { background: #4ade80; }
   .timeline-row-job-failed  .timeline-marker-job::before { background: #f87171; }
+  .timeline-row-job-parked  .timeline-marker-job::before { background: #fbbf24; }
+}
+
+/* Sticky reference rows surface a long-lived job under the task's CURRENT
+   status group (in addition to the historic group where it started). They
+   are display-only — clicking still routes to the same /jobs/<id> page —
+   so dim them slightly to mark them as derived rather than primary timeline
+   entries, and replace the time column with a ↻ glyph since the elapsed
+   value is rendered inside the label itself. */
+.timeline-row-job-sticky .timeline-label,
+.timeline-row-job-sticky .timeline-chevron {
+  opacity: 0.85;
+}
+
+.timeline-time-sticky {
+  color: var(--muted);
+  font-variant-numeric: normal;
 }
 
 .timeline-label {
