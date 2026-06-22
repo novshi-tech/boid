@@ -29,9 +29,10 @@ var resolveCommand = func(name string) (string, error) {
 // PATH (e.g. ~/.local/bin/opencode dropped by a packaged install) lands
 // inside the sandbox under the same path the host sees.
 //
-// Embedded skills are surfaced at ~/.boid/skills/<name> for the task hook
-// bootstrap prompt to reference; opencode has no skill loader of its own,
-// see codex/bindings.go for the full rationale.
+// Embedded skills are surfaced at ~/.claude/skills/<name> — opencode
+// auto-detects skills under ~/.claude/ (same convention claude itself uses),
+// so the bootstrap prompt can reference one canonical path across harnesses.
+// See codex/bindings.go for the full rationale.
 //
 // All entries are Optional so a missing source on the host is silently
 // skipped; the dispatcher converts Optional → shell-level if-guard.
@@ -63,14 +64,15 @@ func (a *Adapter) Bindings(homeDir string) []adapters.BindMount {
 		})
 	}
 	// Embedded skills live at ~/.local/share/boid/skills/<name> on the host
-	// and are surfaced inside the sandbox at ~/.boid/skills/<name>, mirroring
-	// the codex adapter so the task hook bootstrap prompt resolves the same
-	// path regardless of which harness is running.
+	// and are surfaced inside the sandbox at ~/.claude/skills/<name>.
+	// opencode auto-detects skills there, mirroring claude's convention; the
+	// task hook bootstrap prompt references the same canonical path across
+	// claude / codex / opencode.
 	skillsBase := homeDir + "/.local/share/boid/skills"
 	for _, name := range skills.EmbeddedSkillNames() {
 		out = append(out, adapters.BindMount{
 			Source:   skillsBase + "/" + name,
-			Target:   homeDir + "/.boid/skills/" + name,
+			Target:   homeDir + "/.claude/skills/" + name,
 			Optional: true,
 		})
 	}

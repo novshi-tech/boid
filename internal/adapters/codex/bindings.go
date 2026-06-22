@@ -30,12 +30,14 @@ var resolveCommand = func(name string) (string, error) {
 //  3. ~/.volta/ — ro shim runtime tree. volta-shim execs binaries from
 //     ~/.volta/tools/ under the hood, so binding only the bin dir is not
 //     enough. Optional means non-volta hosts silently skip this entry.
-//  4. ~/.local/share/boid/skills/<name> → ~/.boid/skills/<name> per embedded
-//     skill. codex has no slash-command / skill loader, so the task hook
-//     bootstrap prompt (see run.go taskBootstrapPrompt) tells the agent to
-//     read ~/.boid/skills/boid-task/SKILL.md via its read-file tool. The
-//     bind target is intentionally distinct from claude's ~/.claude/skills/
-//     mount so the two harnesses do not collide.
+//  4. ~/.local/share/boid/skills/<name> → ~/.claude/skills/<name> per
+//     embedded skill. codex has no slash-command / skill loader, so the task
+//     hook bootstrap prompt (see run.go taskBootstrapPrompt) tells the agent
+//     to read ~/.claude/skills/boid-task/SKILL.md. We deliberately reuse the
+//     ~/.claude/skills/ target that the claude adapter also mounts: opencode
+//     auto-detects skills under ~/.claude/ as well, and aligning the codex
+//     mount with that convention keeps a single canonical sandbox path
+//     ("~/.claude/skills/boid-task/SKILL.md") for every harness.
 //
 // All entries are Optional: missing source paths just drop out of the mount
 // set instead of failing the dispatch. That keeps a host without codex
@@ -62,14 +64,15 @@ func (a *Adapter) Bindings(homeDir string) []adapters.BindMount {
 		Optional: true,
 	})
 	// Embedded skills live at ~/.local/share/boid/skills/<name> on the host
-	// and are surfaced inside the sandbox at ~/.boid/skills/<name> so the
-	// task hook bootstrap prompt can reference a stable path independent of
-	// the harness binary's own data dir.
+	// and are surfaced inside the sandbox at ~/.claude/skills/<name> — the
+	// canonical location that claude auto-loads and that opencode also
+	// auto-detects. Aligning every harness on the same target gives the
+	// bootstrap prompt a single stable path to reference.
 	skillsBase := homeDir + "/.local/share/boid/skills"
 	for _, name := range skills.EmbeddedSkillNames() {
 		out = append(out, adapters.BindMount{
 			Source:   skillsBase + "/" + name,
-			Target:   homeDir + "/.boid/skills/" + name,
+			Target:   homeDir + "/.claude/skills/" + name,
 			Optional: true,
 		})
 	}

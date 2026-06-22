@@ -20,11 +20,11 @@ func withMissingCodex(t *testing.T) {
 }
 
 // Each embedded skill must surface inside the sandbox at
-// ~/.boid/skills/<name>. The task hook bootstrap prompt (see run.go
-// taskBootstrapPrompt) points the codex agent at this path with its
-// read-file tool — codex has no slash-command / skill loader, so the
-// path is the contract.
-func TestBindings_SurfacesEachEmbeddedSkillAtBoidSkillsPath(t *testing.T) {
+// ~/.claude/skills/<name>. The task hook bootstrap prompt (see run.go
+// taskBootstrapPrompt) points the codex agent at this path; aligning with
+// claude's ~/.claude/skills/ convention also lets opencode auto-detect the
+// skill when the same bindings recipe is reused.
+func TestBindings_SurfacesEachEmbeddedSkillAtClaudeSkillsPath(t *testing.T) {
 	withMissingCodex(t)
 	home := "/home/test"
 	a := New()
@@ -37,7 +37,7 @@ func TestBindings_SurfacesEachEmbeddedSkillAtBoidSkillsPath(t *testing.T) {
 
 	for _, name := range names {
 		wantSrc := home + "/.local/share/boid/skills/" + name
-		wantTgt := home + "/.boid/skills/" + name
+		wantTgt := home + "/.claude/skills/" + name
 		found := false
 		for _, m := range mounts {
 			if m.Source == wantSrc {

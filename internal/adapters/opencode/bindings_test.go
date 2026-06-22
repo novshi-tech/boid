@@ -19,9 +19,10 @@ func withMissingOpencode(t *testing.T) {
 }
 
 // Mirror of codex/bindings_test.go: each embedded skill must surface inside
-// the sandbox at ~/.boid/skills/<name> so the task hook bootstrap prompt
-// resolves the same path regardless of which harness is running.
-func TestBindings_SurfacesEachEmbeddedSkillAtBoidSkillsPath(t *testing.T) {
+// the sandbox at ~/.claude/skills/<name> — the path opencode auto-detects
+// (same convention as claude). The bootstrap prompt references this same
+// canonical path regardless of which harness is running.
+func TestBindings_SurfacesEachEmbeddedSkillAtClaudeSkillsPath(t *testing.T) {
 	withMissingOpencode(t)
 	home := "/home/test"
 	a := New()
@@ -34,7 +35,7 @@ func TestBindings_SurfacesEachEmbeddedSkillAtBoidSkillsPath(t *testing.T) {
 
 	for _, name := range names {
 		wantSrc := home + "/.local/share/boid/skills/" + name
-		wantTgt := home + "/.boid/skills/" + name
+		wantTgt := home + "/.claude/skills/" + name
 		found := false
 		for _, m := range mounts {
 			if m.Source == wantSrc {

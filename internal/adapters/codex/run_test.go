@@ -119,7 +119,7 @@ func TestBuildArgs_Hook_AppendsBootstrap(t *testing.T) {
 	}
 	// Sanity: the bootstrap text is the canonical one (catches a typo'd copy).
 	if !strings.Contains(taskBootstrapPrompt, "boid task notify") ||
-		!strings.Contains(taskBootstrapPrompt, "~/.boid/skills/boid-task/SKILL.md") {
+		!strings.Contains(taskBootstrapPrompt, "~/.claude/skills/boid-task/SKILL.md") {
 		t.Errorf("taskBootstrapPrompt missing required hooks: %q", taskBootstrapPrompt)
 	}
 }
