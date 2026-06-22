@@ -1,6 +1,11 @@
 # multi-harness task hook 対応 (codex / opencode)
 
-> Status: Draft (2026-06-22)
+> Status (2026-06-22):
+> - **PR1 = #614** (`360a446`) マージ済 — adapter bootstrap prompt + skill bind + `selectPrompt` ヘルパ
+> - **PR2 = #615** (`d6af7f9`) マージ済 — opencode に `--dangerously-skip-permissions` 追加
+> - **PR3 = #616** (`0d5d00c`) マージ済 — skill bind target を `~/.boid/skills/` → `~/.claude/skills/` に統一
+> - **計画していた E2E scenario PR は A 案で取り下げ** (本 plan「PR 分割」 セクション参照)、 SKILL.md 補強は smoke で発動条件満たさず不要と判定
+> - codex 65s + opencode 2:39 (clean workspace、 qwen3.7-plus) で実機 smoke 完走
 >
 > 前提 plan:
 > - `docs/plans/multi-harness-production.md` (Phase 1/2 で codex/opencode の対話 TUI session 完了、 task hook はスコープ外と明記)
@@ -38,11 +43,14 @@
 - 採用: skill ファイルを sandbox 内 `~/.boid/skills/boid-task/SKILL.md` に bind した上で、 adapter は短い (約 20 行) bootstrap prompt で「あなたの read-file tool で `~/.boid/skills/boid-task/SKILL.md` を読み、 そこに書かれた手順で作業しろ。 終了時に `boid task notify` を呼べ」 と指示する。
 - SKILL.md 本文は無変更で進める (内容は claude 非依存の手順)。 実機で混乱するなら PR3 で冒頭にメタ説明追加。
 
-### 3. skill bind パス: `~/.boid/skills/<name>/`
+### 3. skill bind パス: `~/.claude/skills/<name>/` (3 harness 共通)
 
-- claude 既存 binding (`~/.claude/skills/<name>`) は触らず維持 (claude CLI の auto-discover を壊さない)。
-- codex / opencode の `Bindings()` に **追加で** `Source=~/.local/share/boid/skills/<name>` / `Target=~/.boid/skills/<name>` を append。
-- host 上の skill 実体は 1 箇所のまま、 sandbox 内 target だけ harness 別。 `internal/skills.EmbeddedSkillNames()` を共有して enum。
+> **実装で訂正 (PR #616):** PR1 設計時は「claude と衝突回避のため codex/opencode 側を `~/.boid/skills/<name>` に置く」 としたが、 実機 smoke で opencode の Read tool が cwd 外を permission denied で auto-reject する制約が表面化。 nose の指摘で **opencode は `.claude` 配下を skill として認識する** 挙動を持つことが判明 → 3 harness すべて `~/.claude/skills/<name>` に統一する方が筋。
+
+- claude / codex / opencode の `Bindings()` すべて `Source=~/.local/share/boid/skills/<name>` / `Target=~/.claude/skills/<name>` を append (PR #616 で codex/opencode の target を変更済)。
+- 1 sandbox = 1 adapter なので同じ target を 2 adapter が同時に bind することはない (衝突しない)。
+- host 上の skill 実体は `~/.local/share/boid/skills/<name>` の 1 箇所、 `internal/skills.EmbeddedSkillNames()` で enum。
+- bootstrap prompt 内の SKILL.md パス参照も `~/.claude/skills/boid-task/SKILL.md` に同期 (PR #616)。
 
 ### 4. system prompt の代替: bootstrap prompt の冒頭に「notify を忘れるな」 を埋め込む
 
@@ -80,10 +88,10 @@
 
 ### グループ B: docs
 
-- `docs/plans/multi-harness-task-hook.md` (新規) — 本 plan
-- `docs/plans/multi-harness-production.md` の「残課題 / 未決」 セクション — task hook を「本 plan に引き継ぎ」 と update
-- `docs/ja/reference/project-yaml.md`, `docs/en/reference/project-yaml.md` の agent 表 — task hook 経路が正規対応した旨を追記 (PR2 マージ後)
-- `docs/en/reference/cli.md` の `boid agent codex/opencode` 言及 — `[Experimental]` の扱いを実機検証次第で見直し (PR2 で判断)
+- `docs/plans/multi-harness-task-hook.md` (新規) — 本 plan。 #614 で追加、 本 doc PR で 3 連 PR マージ後の現状に update
+- `docs/plans/multi-harness-production.md` の「残課題 / 未決」 セクション — #614 で「本 plan に引き継ぎ」 と update 済み
+- `docs/ja/reference/project-yaml.md`, `docs/en/reference/project-yaml.md` の agent 表 — 「task hook 経路で codex/opencode を `agent:` に指定可」 + 「host に CLI installed 前提」 を追記する必要あり (未着手、 別 docs PR で対応推奨)
+- `docs/en/reference/cli.md` の `boid agent codex/opencode` 言及 — `[Experimental]` の扱い見直しは別軸 (本 plan は task hook 専用)
 
 ### 触らない箇所
 
@@ -128,25 +136,44 @@ forever. The daemon SIGTERMs your runtime after notify.
 
 文面は両 harness で同一。 DRY のため共通 const 化したければ `internal/adapters/taskbootstrap` パッケージ切り出しも可だが、 文字列定数 1 つを共有するためだけにパッケージ追加するのは過剰なので各 adapter 内に複製を推奨。
 
-## PR 分割
+## PR 分割と実績
 
-### PR 1: codex / opencode の task hook bootstrap 経路を実装 (boid 本体のみ)
+### PR #614 (= 当初の PR1): codex / opencode の task hook bootstrap 経路を実装 — マージ済 (`360a446`)
 
-- グループ A 全 8 ファイル + グループ B の plan doc 2 ファイル
-- CI で機械的に検証可能な部分はここで完結
+- グループ A 全 8 ファイル + plan doc 2 ファイル
+- CI 緑 (Unit tests + Black-box E2E)
 
-### PR 2: E2E scenario 追加 (boid 本体、 PR1 マージ後 + 実機検証で書く)
+### PR #615 (smoke で発見): opencode に `--dangerously-skip-permissions` を追加 — マージ済 (`d6af7f9`)
 
-- `e2e/scenarios/codex-task-hook/` (executor、 1 ファイル作成 + commit + notify --done)
-- `e2e/scenarios/opencode-task-hook/` (同等)
-- `e2e/scenarios/codex-task-hook-readonly/` (supervisor、 子 task 1 件 + notify --done)
-- (オプション) `e2e/scenarios/codex-task-hook-ask/` (`boid task ask` の codex 経由動作)
-- `requires-codex` / `requires-opencode` マーカを `e2e/runner/` に追加 (既存 `requires-sandbox` の skip 機構を踏襲、 host に CLI 無い CI では skip)
-- CI gate には乗せない (model API key 消費 + CLI install コスト)、 開発者ローカル + 手動 trigger で動かす
+PR #614 マージ後の opencode manual smoke で、 opencode の Read tool が cwd 外 (`/home/nosen/.boid/skills/...`) を `external_directory` permission で auto-reject する制約が表面化。 `opencode run --dangerously-skip-permissions` で 2 段目 (絶対パス Read or shell fallback の `cat ~/...`) が通る。
 
-### PR 3 (条件付き): SKILL.md 補強
+これは PR #614 設計時の「残課題 / 未決」 #5 の opencode 版顕在化。 codex 側は `--dangerously-bypass-approvals-and-sandbox` で同等の挙動が確保されており、 PR #614 で見落としていた。
 
-- PR2 実機検証で codex/opencode が SKILL.md Read 後に混乱する箇所が見つかれば、 冒頭にメタ説明 (「Read tool 経路で読まれる前提、 claude 以外でも同じ手順」) を 5-10 行追加。 不要なら skip。
+### PR #616 (skill path 統一): codex/opencode の skill bind target を `~/.claude/skills/` に統一 — マージ済 (`0d5d00c`)
+
+PR #615 で permission gate は通ったが、 opencode の Read tool は literal `~` を解決しない制約が残り、 agent が shell fallback (`cat ~/...`) に retry することで偶然動いていた fragile な状態。 nose の指摘で「opencode は `.claude` 配下を skill として認識する」 仕様が判明 → claude と同じ target に統一すれば Read tool 直接 (絶対パス展開) で SKILL.md を取得できる。
+
+実機 smoke (clean workspace、 opencode + qwen3.7-plus):
+- Read `/home/nosen/.claude/skills/boid-task/SKILL.md` を 1 発で取得
+- context yaml も Read 経由で取得
+- 作業完走 (2:39)、 artifact に commit_sha / summary / verification 込み
+
+### 当初計画していた PR2 (E2E scenario 追加) → **A 案で取り下げ**
+
+理由:
+- 既存 `e2e/scenarios/` 全 36 シナリオに `agent: claude-code` / `codex` / `opencode` のものは 0 件
+- boid 全体として **実 LLM の CI E2E カバレッジを持たない方針** (model API key 消費 + CLI install コスト + flake リスク)
+- claude も同様に CI E2E が無いのに codex/opencode だけ追加するのは整合性悪い
+
+代わりに本 plan の「Manual smoke」 セクションを doc 上の手順書として保持する (= 開発者ローカル + 手動 trigger で smoke を回すときのチェックリスト)。
+
+### 当初計画していた PR3 (SKILL.md 補強) → **不要と判定**
+
+PR #616 の clean smoke で:
+- codex (shell 経由 `sed ~/.claude/skills/...`) — 一発で SKILL.md 読んで作業 + notify、 混乱なし
+- opencode (Read tool 直接) — 一発で SKILL.md 読んで作業 + notify、 混乱なし
+
+SKILL.md 本文は claude slash command 文脈で書かれているが、 claude 以外の harness から `cat` / `Read` で読まれても agent は手順に従って作業できることを確認。 補強は不要、 SKILL.md は無変更で完結。
 
 ## テスト計画
 
@@ -165,13 +192,57 @@ forever. The daemon SIGTERMs your runtime after notify.
 - 4 scenario (上述)
 - CI 外運用、 PR2 merge 条件は「実機 1 回 pass + scenario.sh / project.yaml の構造レビュー」
 
-### Manual smoke (PR1 マージ前)
+### Manual smoke (CI E2E の代替・ 開発者ローカル運用)
 
-実機 boid daemon 上で:
+実 LLM の CI E2E は採用しないので (PR2 取り下げの「代わり」)、 multi-harness task hook を触ったときは下記を開発者ローカルで実行する。 nose の host に codex / opencode の認証 (`~/.codex/auth.json` / opencode auth) が揃っている前提。
 
-1. minimal project (`agent: codex`) で `boid task create` + start → done 遷移
-2. `boid task ask` blocking が codex sandbox から動くか (`boid task answer` で release → 続行)
-3. `~/.boid/skills/boid-task/SKILL.md` が sandbox 内で codex の Read tool で実際に読まれるか
+#### Codex smoke
+
+```bash
+# 1. clean workspace
+rm -rf /tmp/boid-codex-smoke && mkdir -p /tmp/boid-codex-smoke/.boid
+cd /tmp/boid-codex-smoke && git init -q && \
+  git config user.email smoke@local && git config user.name smoke && \
+  touch .gitkeep && git add . && git commit -q -m init
+
+# 2. project.yaml
+cat > .boid/project.yaml <<'YAML'
+id: codex-task-hook-smoke
+name: codex task hook smoke
+task_behaviors:
+  executor:
+    transition: one-shot
+    readonly: false
+    default_instruction:
+      agent: codex
+      message: |
+        Create a file named hello.txt with the line "hi from codex".
+        git add hello.txt && git commit -m "smoke".
+        Finally call `boid task notify "$BOID_TASK_ID" --message "smoke ok" --done "wrote and committed hello.txt"`.
+YAML
+
+# 3. register + run
+boid project add /tmp/boid-codex-smoke
+TID=$(boid task create <<<"project_id: codex-task-hook-smoke
+title: smoke
+behavior: executor" | sed -n 's/^task created: \([0-9a-f-]*\).*/\1/p')
+boid action send --task "$TID" --type start
+
+# 4. wait + verify
+while [ "$(boid task show "$TID" --field status)" = "executing" ]; do sleep 10; done
+boid task show "$TID" | head -25
+cd /tmp/boid-codex-smoke && git log --oneline && cat hello.txt
+```
+
+期待: 60-90 秒で done、 `done_request` action あり、 `hello.txt` commit 済。
+
+#### Opencode smoke
+
+`/tmp/boid-codex-smoke` を `/tmp/boid-opencode-smoke` に、 `agent: codex` を `agent: opencode` に置き換えて同じ手順。 期待: 90-180 秒で done。 artifact payload に commit_sha が入る (codex の report より opencode の方が詳細を残す傾向)。
+
+#### Q&A blocking smoke (オプション)
+
+`boid task ask` の blocking 経路は本 plan のスコープに直接含まれないが、 multi-harness の前提 (task-ask-rpc PR #613) が codex/opencode でも動くことを確認したい場合の手順は `docs/plans/task-ask-rpc.md` 参照。 instruction に「途中で boid task ask を呼んで answer をログに出せ」 と書いて、 別端末から `boid task answer <tid> -m ...` を投げる。
 
 ## 後方互換
 
@@ -180,16 +251,23 @@ forever. The daemon SIGTERMs your runtime after notify.
 - claude task hook 経路: 完全無傷
 - boid-kits: 触らない、 claude-code kit 復活も不要
 
-## 残課題 / 未決 (PR1 manual smoke + PR2 E2E で確認)
+## 残課題 / 未決 (manual smoke 結果と残未確認)
 
-1. **codex `exec` 内で sandbox builtin が PATH 解決されるか** — boid_shim は sandbox PATH に注入されるが、 codex CLI の child shell が継承するかは要確認
-2. **opencode `run` の stdout JSON event が WebUI xterm で見苦しくないか** — task 進行は task UI 側で見れば良いが、 xterm attach UX は劣化する。 `--format text` 相当があれば検討
-3. **bootstrap prompt の Read 経路で agent が混乱しないか** — SKILL.md は claude slash command 文脈で書かれているため、 codex/opencode が困惑するなら PR3 で補強
-4. **bootstrap prompt 約 1.5KB の positional 受け取り** — codex/opencode 共に問題ないはずだが実機で確認 (`getconf ARG_MAX` 余裕)
-5. **PTY 環境で codex/opencode が stdin を user 入力と誤認して hang しないか** — 対話モードは positional 完結で stdin 読まないはずだが要確認
-6. **`boid task ask` blocking 中の SIGTERM 経路で codex/opencode の child が正しく死ぬか** — `sigutil.ForwardAndWait` 共通配線済だが実機確認
-7. **`requires-codex` / `requires-opencode` E2E マーカ実装** — `e2e/runner/` の `requires-sandbox` パターン踏襲、 PR2 着手時に確認
-8. **codex / opencode bin が host に installed されてない場合** — `internal/adapters/codex/bindings.go` で `resolveCommand` が miss すると binding skip、 sandbox 内 `command not found`。 doc に「host に CLI installed 前提」 を明記
+PR1 着手前の 8 件を、 #614 / #615 / #616 マージ後の manual smoke (2026-06-22) 結果で update。
+
+1. **codex `exec` 内で sandbox builtin が PATH 解決されるか** — ✅ codex/opencode 両方 `boid task notify --done` を呼べた (action history に `done_request` を確認)。
+2. **opencode `run` の stdout JSON event が WebUI xterm で見苦しくないか** — 未確認 (task UI で進行見える方針なので深追いしない、 必要なら別 issue)。
+3. **bootstrap prompt の Read 経路で agent が混乱しないか** — ✅ どちらも混乱なし。 SKILL.md を読んで指示通り作業 + notify を完了。 PR3 (SKILL.md 補強) は不要と判定。
+4. **bootstrap prompt 約 1.5KB の positional 受け取り** — ✅ codex/opencode 両方とも受け取って動作。
+5. **PTY 環境で stdin hang しないか** — ✅ どちらも hang せず正常 exit。
+6. **`boid task ask` blocking 中の SIGTERM 経路** — 未確認 (smoke でブロック RPC まで踏んでない)。 `sigutil.ForwardAndWait` 共通配線済なので回帰の確率は低い。
+7. **`requires-codex` / `requires-opencode` E2E マーカ** — 不要 (PR2 取り下げ)。
+8. **codex / opencode bin が host に installed されてない場合** — `Bindings()` の `resolveCommand` miss で binding skip → sandbox 内 `command not found`。 doc に「host に CLI installed 前提」 を明記する必要あり (`docs/ja/reference/project-yaml.md` 等)、 次回まとめて追記推奨。
+
+### 副次発見 (smoke 中に判明、 別軸)
+
+- **opencode の Read tool は literal `~` を解決しない / cwd 外を permission denied で auto-reject する**: PR #615 (`--dangerously-skip-permissions`) + PR #616 (skill bind を `~/.claude/skills/` に統一) で根本解決。 PR #614 単独では fragile な状態だった (shell fallback `cat ~/...` で偶然動いていた)。
+- **hook job が exit=0 で `notify --done` を呼ばずに終わると task が `auto_advance` で done に遷移する挙動** — 1 度「偽 done」 と書きかけたが、 これは boid の **仕様通りの正常挙動**。 非対話モード時代 (notify 機構が存在しなかった頃) からの契約で、 「プロセス exit = 仕事終わり」 はそのまま維持。 仕事の正しさは payload / artifact / git diff で判定するもので、 task 状態遷移は実行ライフサイクルのシグナルにすぎない。 詳細 → memory `hook-exit-equals-done-by-design`。
 
 ## スコープ外 (明示的に)
 
