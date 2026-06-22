@@ -678,7 +678,6 @@ func (h *WebHandler) PostStartSession(w http.ResponseWriter, r *http.Request) {
 	req := StartSessionRequest{
 		ProjectID:   projectID,
 		HarnessType: strings.TrimSpace(r.FormValue("harness_type")),
-		Instruction: strings.TrimSpace(r.FormValue("instruction")),
 		Model:       strings.TrimSpace(r.FormValue("model")),
 		Readonly:    r.FormValue("readonly") == "on",
 		DisplayName: strings.TrimSpace(r.FormValue("name")),

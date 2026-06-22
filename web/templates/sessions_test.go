@@ -193,3 +193,26 @@ func TestSessionNew_SelectedProjectIsPreselected(t *testing.T) {
 			html[strings.Index(html, "proj-2"):strings.Index(html, "proj-2")+100])
 	}
 }
+
+func TestSessionNew_NoInstructionTextarea(t *testing.T) {
+	projects := []*orchestrator.Project{
+		{ID: "proj-1", Meta: orchestrator.ProjectMeta{Name: "My Project"}},
+	}
+	html := renderSessionNew(t, projects, "proj-1")
+	if strings.Contains(html, `name="instruction"`) {
+		t.Error("SessionNew should not render an instruction textarea")
+	}
+	// Harness select, readonly checkbox, session name, and start button must still be present.
+	if !strings.Contains(html, `name="harness_type"`) {
+		t.Error("SessionNew should still render the harness select")
+	}
+	if !strings.Contains(html, `name="readonly"`) {
+		t.Error("SessionNew should still render the readonly checkbox")
+	}
+	if !strings.Contains(html, `name="name"`) {
+		t.Error("SessionNew should still render the session name input")
+	}
+	if !strings.Contains(html, "Start session") {
+		t.Error("SessionNew should still render the Start session button")
+	}
+}
