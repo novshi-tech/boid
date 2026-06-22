@@ -746,3 +746,98 @@ func TestGC_RuntimesDirCleanup_ReaperErrorContinues(t *testing.T) {
 		t.Errorf("runtime dir should be removed even when reaper errors, err: %v", err)
 	}
 }
+
+// 添付ファイル機能の GC: 終端 (done / aborted) タスクの
+// `<attachmentsRoot>/tasks/<id>/` を削除し、 実行中タスクは触らない。
+func TestGC_AttachmentsCleanup(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	dataHome := t.TempDir()
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-att", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	doneTask := &orchestrator.Task{ProjectID: "proj-att", Title: "Done", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	abortedTask := &orchestrator.Task{ProjectID: "proj-att", Title: "Aborted", Behavior: "dev", Status: orchestrator.TaskStatusAborted}
+	runningTask := &orchestrator.Task{ProjectID: "proj-att", Title: "Running", Behavior: "dev", Status: orchestrator.TaskStatusExecuting}
+	for _, tk := range []*orchestrator.Task{doneTask, abortedTask, runningTask} {
+		if err := orchestrator.CreateTask(d.Conn, tk); err != nil {
+			t.Fatalf("create task: %v", err)
+		}
+	}
+
+	// Lay down per-task attachments dirs on disk.
+	mkAttach := func(taskID, fileName string) string {
+		dir := filepath.Join(dataHome, "tasks", taskID, "attachments")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, fileName)
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return filepath.Join(dataHome, "tasks", taskID)
+	}
+	doneDir := mkAttach(doneTask.ID, "shot.png")
+	abortedDir := mkAttach(abortedTask.ID, "trace.log")
+	runningDir := mkAttach(runningTask.ID, "live.png")
+
+	gcStore := orchestrator.NewTaskGCStore(d.Conn).WithAttachmentsRoot(dataHome)
+	if _, err := gcStore.GC(0, false); err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+
+	if _, err := os.Stat(doneDir); !os.IsNotExist(err) {
+		t.Errorf("done task attachments should be removed, err=%v", err)
+	}
+	if _, err := os.Stat(abortedDir); !os.IsNotExist(err) {
+		t.Errorf("aborted task attachments should be removed, err=%v", err)
+	}
+	if _, err := os.Stat(runningDir); err != nil {
+		t.Errorf("running task attachments must survive GC, stat err=%v", err)
+	}
+}
+
+// olderThan が効いていることの sanity check。 直近終了したタスクは残り、
+// 古いタスクだけ消える。 既存の TestGC_RuntimesDirCleanup_OlderThanFilter と
+// 同じノリ。
+func TestGC_AttachmentsCleanup_OlderThanFilter(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	dataHome := t.TempDir()
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-att2", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	old := &orchestrator.Task{ProjectID: "proj-att2", Title: "Old", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	fresh := &orchestrator.Task{ProjectID: "proj-att2", Title: "Fresh", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	for _, tk := range []*orchestrator.Task{old, fresh} {
+		if err := orchestrator.CreateTask(d.Conn, tk); err != nil {
+			t.Fatalf("create task: %v", err)
+		}
+	}
+	// Backdate the "old" task by 60 days.
+	if _, err := d.Conn.Exec(`UPDATE tasks SET updated_at = ? WHERE id = ?`, time.Now().UTC().Add(-60*24*time.Hour), old.ID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	oldDir := filepath.Join(dataHome, "tasks", old.ID)
+	freshDir := filepath.Join(dataHome, "tasks", fresh.ID)
+	for _, d := range []string{oldDir, freshDir} {
+		if err := os.MkdirAll(filepath.Join(d, "attachments"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	gcStore := orchestrator.NewTaskGCStore(d.Conn).WithAttachmentsRoot(dataHome)
+	if _, err := gcStore.GC(30*24*time.Hour, false); err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+
+	if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
+		t.Errorf("old task attachments should be removed, err=%v", err)
+	}
+	if _, err := os.Stat(freshDir); err != nil {
+		t.Errorf("fresh task attachments must survive, err=%v", err)
+	}
+}

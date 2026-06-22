@@ -65,8 +65,9 @@ type Runner struct {
 	BoidBinary     string
 	ServerSocket   string
 	ProxyPort      *int
-	AllowedDomains []string
-	RuntimesDir    string
+	AllowedDomains  []string
+	RuntimesDir     string
+	AttachmentsRoot string
 	JobEvents      JobEventSink // optional; nil disables job lifecycle broadcasts
 
 	tokenMu       sync.Mutex
@@ -232,6 +233,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		ResolvedHostCommands: resolvedHostCommands,
 		DockerEnabled:        spec.Visibility.DockerEnabled,
 		AllowedDomains:       r.AllowedDomains,
+		AttachmentsRoot:      r.AttachmentsRoot,
 	}
 	// Server socket is only exposed to jobs that have no broker policies
 	// attached — i.e. boid exec invocations that need to talk to the daemon

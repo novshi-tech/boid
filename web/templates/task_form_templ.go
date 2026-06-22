@@ -142,7 +142,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, " <div class=\"task-form-body\"><form id=\"task-new-form\" method=\"post\" action=\"/tasks\"><div class=\"form-group\"><label for=\"title\" class=\"form-label\">Title *</label> <input type=\"text\" id=\"title\" name=\"title\" class=\"form-input\" required autocomplete=\"off\" autofocus value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, " <div class=\"task-form-body\"><form id=\"task-new-form\" method=\"post\" action=\"/tasks\" enctype=\"multipart/form-data\" data-paste-attach-form><div class=\"form-group\"><label for=\"title\" class=\"form-label\">Title *</label> <input type=\"text\" id=\"title\" name=\"title\" class=\"form-input\" required autocomplete=\"off\" autofocus value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -260,7 +260,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "</select></div><div class=\"form-group\"><label for=\"description\" class=\"form-label\">Description</label> <textarea id=\"description\" name=\"description\" class=\"form-input\" rows=\"6\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "</select></div><div class=\"form-group\"><label for=\"description\" class=\"form-label\">Description</label> <textarea id=\"description\" name=\"description\" class=\"form-input\" rows=\"6\" data-paste-attach data-paste-attach-prefix=\"~/.boid/attachments/\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -273,7 +273,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "</textarea></div><div class=\"form-group\"><label for=\"model\" class=\"form-label\">Model</label> <input type=\"text\" id=\"model\" name=\"model\" class=\"form-input\" autocomplete=\"off\" placeholder=\"opus / sonnet / haiku\" value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "</textarea><div class=\"form-hint\">画像やテキストファイルはクリップボードから貼り付けできるよ (Ctrl+V)。 サンドボックス内 <code>~/.boid/attachments/</code> にマウントされる。</div><ul class=\"paste-attach-list\" data-paste-attach-list></ul></div><div class=\"form-group\"><label for=\"model\" class=\"form-label\">Model</label> <input type=\"text\" id=\"model\" name=\"model\" class=\"form-input\" autocomplete=\"off\" placeholder=\"opus / sonnet / haiku\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

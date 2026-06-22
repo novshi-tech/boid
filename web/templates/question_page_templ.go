@@ -101,7 +101,7 @@ func QuestionPage(task *orchestrator.Task, turn QuestionTurn) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			if turn.IsActive {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<section class=\"qa-page-section qa-page-section-answer\"><h2 class=\"qa-page-section-title\">Answer</h2><form id=\"qa-form\" method=\"post\" action=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<section class=\"qa-page-section qa-page-section-answer\"><h2 class=\"qa-page-section-title\">Answer</h2><form id=\"qa-form\" method=\"post\" enctype=\"multipart/form-data\" data-paste-attach-form action=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -127,7 +127,7 @@ func QuestionPage(task *orchestrator.Task, turn QuestionTurn) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "\"> <textarea name=\"answer\" class=\"form-input qa-textarea\" rows=\"6\" placeholder=\"Enter your answer…\" autofocus></textarea></form><div class=\"qa-actions\"><button type=\"submit\" form=\"qa-form\" class=\"btn btn-primary\">Submit answer</button><form method=\"post\" action=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "\"> <textarea name=\"answer\" class=\"form-input qa-textarea\" rows=\"6\" placeholder=\"Enter your answer…\" autofocus data-paste-attach data-paste-attach-prefix=\"~/.boid/attachments/\"></textarea><div class=\"form-hint\">画像やテキストはクリップボードから貼り付け可能。 サンドボックス内 <code>~/.boid/attachments/</code> から参照できる。</div><ul class=\"paste-attach-list\" data-paste-attach-list></ul></form><div class=\"qa-actions\"><button type=\"submit\" form=\"qa-form\" class=\"btn btn-primary\">Submit answer</button><form method=\"post\" action=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}

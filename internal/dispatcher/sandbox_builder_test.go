@@ -1273,6 +1273,76 @@ func TestBuildEnvironmentYAML_SessionSectionOnlyForSessions(t *testing.T) {
 	}
 }
 
+// 添付ファイル機能で、 AttachmentsRoot と spec.TaskID の両方が揃ったら
+// `<root>/tasks/<id>/attachments` を read-only で bind する。 dir 不在時は
+// 起動 script が Guard で skip するため、 attachments 0 件のタスクでも mount
+// 行は出るが副作用は無い。 シェル / harness どちらの dispatch 経路でも同じ
+// 結果になるのが要件。
+func TestBuildSandboxSpec_AttachmentsBind(t *testing.T) {
+	const taskID = "abc-123"
+	root := t.TempDir()
+	spec := &orchestrator.JobSpec{TaskID: taskID}
+	rt := SandboxRuntimeInfo{AttachmentsRoot: root}
+
+	result, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+
+	var found *sandbox.Mount
+	wantTarget := hostHomeDir() + "/.boid/attachments"
+	wantSource := root + "/tasks/" + taskID + "/attachments"
+	for i := range result.Mounts {
+		if result.Mounts[i].Target == wantTarget {
+			found = &result.Mounts[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("attachments bind target %q not present in mounts", wantTarget)
+	}
+	if found.Source != wantSource {
+		t.Errorf("attachments bind Source = %q, want %q", found.Source, wantSource)
+	}
+	if !found.ReadOnly {
+		t.Errorf("attachments bind must be ReadOnly")
+	}
+	if found.Guard == "" {
+		t.Errorf("attachments bind must have a Guard so missing dir is skipped")
+	}
+	if !strings.Contains(found.Guard, "-d") {
+		t.Errorf("attachments Guard = %q, want a -d dir test", found.Guard)
+	}
+}
+
+// AttachmentsRoot 未設定 / TaskID 空のときは bind が出ない (regression guard:
+// 既存テストの mount セットに余計な entry を足さない)。
+func TestBuildSandboxSpec_AttachmentsBindAbsentWithoutRootOrTask(t *testing.T) {
+	cases := []struct {
+		name string
+		spec *orchestrator.JobSpec
+		rt   SandboxRuntimeInfo
+	}{
+		{"no root", &orchestrator.JobSpec{TaskID: "t1"}, SandboxRuntimeInfo{}},
+		{"no task", &orchestrator.JobSpec{}, SandboxRuntimeInfo{AttachmentsRoot: "/tmp/dummy"}},
+		{"neither", &orchestrator.JobSpec{}, SandboxRuntimeInfo{}},
+	}
+	wantTarget := hostHomeDir() + "/.boid/attachments"
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := BuildSandboxSpec(tc.spec, tc.rt)
+			if err != nil {
+				t.Fatalf("BuildSandboxSpec: %v", err)
+			}
+			for _, m := range result.Mounts {
+				if m.Target == wantTarget {
+					t.Errorf("unexpected attachments bind mount: %+v", m)
+				}
+			}
+		})
+	}
+}
+
 func TestBuildEnvironmentYAML_HostCommandsSortedDeterministic(t *testing.T) {
 	in := EnvironmentInput{
 		HostCommands: map[string]orchestrator.CommandDef{

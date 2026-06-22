@@ -2280,3 +2280,65 @@ details[open] > summary {
     color: #fef3c7;
   }
 }
+
+/* --- paste-attach (boid-paste-attach.js) ---
+   Renders the live list of clipboard-pasted attachments below the
+   textarea, plus the short hint that tells the user the paste shortcut
+   exists. Intentionally minimal so the visual weight stays on the
+   textarea and submit button. */
+.form-hint {
+  margin-top: var(--space-1);
+  font-size: 0.8125rem;
+  color: var(--fg-muted, #6b7280);
+  line-height: 1.4;
+}
+
+.form-hint code {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  padding: 0 0.25em;
+  background: var(--bg-elevated, rgba(0, 0, 0, 0.05));
+  border-radius: var(--radius-1);
+}
+
+.paste-attach-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.paste-attach-list-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-1);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  background: var(--bg-elevated, transparent);
+}
+
+.paste-attach-list-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.paste-attach-list-remove {
+  border: none;
+  background: transparent;
+  color: var(--fg-muted, #6b7280);
+  cursor: pointer;
+  font-size: 1.125rem;
+  line-height: 1;
+  padding: 0 var(--space-1);
+}
+
+.paste-attach-list-remove:hover {
+  color: var(--danger, #b91c1c);
+}
