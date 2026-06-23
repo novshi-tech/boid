@@ -67,17 +67,17 @@
                 if (!file) continue;
                 var ext = pickExt(file);
                 if (!ext) {
-                    notifyError(textarea, "貼り付けられたファイル形式は許可されていない: " + (file.type || "unknown"));
+                    notifyError(textarea, "Pasted file type is not allowed: " + (file.type || "unknown"));
                     e.preventDefault();
                     return;
                 }
                 if (file.size > MAX_FILE_BYTES) {
-                    notifyError(textarea, file.name + " は 10MB 上限を超えてる");
+                    notifyError(textarea, file.name + " exceeds the 10MB per-file limit");
                     e.preventDefault();
                     return;
                 }
                 if (totalBytes(dt) + file.size > MAX_TOTAL_BYTES) {
-                    notifyError(textarea, "合計サイズが 30MB 上限を超えるよ");
+                    notifyError(textarea, "Total attachment size would exceed the 30MB limit");
                     e.preventDefault();
                     return;
                 }

@@ -52,9 +52,20 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 			submitted := r.Header.Get(csrfHeaderName)
 			if submitted == "" {
 				// Plain HTML form submit (no JS): accept _csrf field.
-				// ParseForm is idempotent, and it buffers the body so the
-				// downstream handler can still read form values.
-				if err := r.ParseForm(); err == nil {
+				// For multipart/form-data we MUST call ParseMultipartForm —
+				// ParseForm alone never touches a multipart body, so the
+				// hidden _csrf input would be invisible. Both calls are
+				// idempotent, so the downstream handler can re-parse with
+				// its own limits.
+				ct := r.Header.Get("Content-Type")
+				if strings.HasPrefix(ct, "multipart/") {
+					// 32 MB ceiling matches parseTaskForm in internal/api/web.go;
+					// keep them in sync so middleware and handler agree on the
+					// memory cap for buffered form data.
+					if err := r.ParseMultipartForm(32 << 20); err == nil {
+						submitted = r.FormValue(csrfFormField)
+					}
+				} else if err := r.ParseForm(); err == nil {
 					submitted = r.FormValue(csrfFormField)
 				}
 			}
