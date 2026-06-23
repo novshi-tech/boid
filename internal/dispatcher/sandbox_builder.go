@@ -73,6 +73,15 @@ type SandboxRuntimeInfo struct {
 	// to the agent via environment.yaml so it knows which hosts are reachable
 	// without burning a turn on a 403.
 	AllowedDomains []string
+
+	// AttachmentsRoot is the data-home directory under which per-task
+	// attachments live (`<AttachmentsRoot>/tasks/<task_id>/attachments`). When
+	// non-empty and the JobSpec has a TaskID, BuildSandboxSpec appends a
+	// read-only bind to `<homeDir>/.boid/attachments` so the agent can read
+	// user-attached files via its standard Read tool. The bind source is
+	// allowed to be missing — the sandbox setup script handles that via the
+	// Guard expression so attachments are optional per task.
+	AttachmentsRoot string
 }
 
 // BuildSandboxSpec turns a business-level JobSpec and dispatcher-side runtime
@@ -223,6 +232,25 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 				ReadOnly: true,
 			})
 		}
+	}
+
+	// Per-task attachments dir — clipboard-pasted screenshots / text uploaded
+	// from the Web UI land in `<AttachmentsRoot>/tasks/<task_id>/attachments/`
+	// and are exposed read-only inside the sandbox at `~/.boid/attachments`.
+	// The bind is appended after the harness/kit branch above so every
+	// adapter (claude / codex / opencode / shell) sees the same path. A dir
+	// Guard makes the bind optional: tasks created before this feature, or
+	// tasks where no attachment has ever been added, simply skip the mount.
+	if rt.AttachmentsRoot != "" && spec.TaskID != "" {
+		attachSrc := filepath.Join(rt.AttachmentsRoot, "tasks", spec.TaskID, "attachments")
+		mounts = append(mounts, sandbox.Mount{
+			Source:     attachSrc,
+			Target:     homeDir + "/.boid/attachments",
+			Type:       sandbox.MountBind,
+			ReadOnly:   true,
+			DetectType: true,
+			Guard:      dirGuardExpr(attachSrc),
+		})
 	}
 
 	// Server socket (exec jobs that need to talk to boid daemon).

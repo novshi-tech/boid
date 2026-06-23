@@ -43,6 +43,8 @@ templ QuestionPage(task *orchestrator.Task, turn QuestionTurn) {
 						id="qa-form"
 						method="post"
 						action={ templ.SafeURL("/tasks/" + task.ID + "/answer") }
+						enctype="multipart/form-data"
+						data-paste-attach-form
 					>
 						<input type="hidden" name="question_id" value={ turn.QuestionID }/>
 						<textarea
@@ -51,7 +53,11 @@ templ QuestionPage(task *orchestrator.Task, turn QuestionTurn) {
 							rows="6"
 							placeholder="Enter your answer…"
 							autofocus
+							data-paste-attach
+							data-paste-attach-prefix="~/.boid/attachments/"
 						></textarea>
+						<div class="form-hint">画像やテキストはクリップボードから貼り付け可能。 サンドボックス内 <code>~/.boid/attachments/</code> から参照できる。</div>
+						<ul class="paste-attach-list" data-paste-attach-list></ul>
 					</form>
 					<div class="qa-actions">
 						<button type="submit" form="qa-form" class="btn btn-primary">Submit answer</button>

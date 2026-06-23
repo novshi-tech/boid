@@ -70,6 +70,21 @@ func runtimesDirFor(cfg Config) string {
 	return filepath.Join(filepath.Dir(cfg.SocketPath), "runtimes")
 }
 
+// dataHomeFor returns the per-installation data root (typically
+// ~/.local/share/boid). It is the parent of runtimesDirFor and the place
+// where per-task data (e.g. tasks/<id>/attachments) lives. Empty when no
+// suitable on-disk path can be derived (DB is in-memory and no socket path
+// is configured) — callers should treat that as "feature disabled".
+func dataHomeFor(cfg Config) string {
+	if cfg.DBPath != "" && cfg.DBPath != ":memory:" {
+		return filepath.Dir(cfg.DBPath)
+	}
+	if cfg.SocketPath != "" {
+		return filepath.Dir(cfg.SocketPath)
+	}
+	return ""
+}
+
 // webSecretPathFor returns the path for the web session signing key.
 func webSecretPathFor(cfg Config) string {
 	if cfg.DBPath != "" && cfg.DBPath != ":memory:" {
@@ -177,11 +192,12 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Worktrees:      wtMgr,
 		TaskLookup:     taskLookup,
 		Projects:       projectCatalog,
-		BoidBinary:     boidBin,
-		ServerSocket:   cfg.SocketPath,
-		ProxyPort:      &srv.proxyPort,
-		AllowedDomains: cfg.AllowedDomains,
-		RuntimesDir:    runtimesDirFor(cfg),
+		BoidBinary:      boidBin,
+		ServerSocket:    cfg.SocketPath,
+		ProxyPort:       &srv.proxyPort,
+		AllowedDomains:  cfg.AllowedDomains,
+		RuntimesDir:     runtimesDirFor(cfg),
+		AttachmentsRoot: dataHomeFor(cfg),
 	})
 
 	lifecycle := jobLifecycleAdapter{runner: runner}
@@ -498,7 +514,9 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		},
 		"",
 		runtimesDirFor(srv.cfg),
-	).WithSandboxTmpDir(os.TempDir()).WithRuntimeReaper(makeDockerRuntimeReaper())
+	).WithSandboxTmpDir(os.TempDir()).
+		WithRuntimeReaper(makeDockerRuntimeReaper()).
+		WithAttachmentsRoot(dataHomeFor(srv.cfg))
 	gcAppService := &api.GCAppService{Store: gcStore, DeviceStore: runtime.authStore}
 	gcHandler := &api.GCHandler{Service: gcAppService}
 	r.Mount("/api/gc", gcHandler.Routes())
@@ -574,6 +592,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 			Hub:               runtime.hub,
 			SessionDispatcher: sessionAdapter,
 			Registry:          runtime.connRegistry,
+			AttachmentsRoot:   dataHomeFor(srv.cfg),
 		}
 		r.Get("/api/tasks/{id}/events", webHandler.TaskEvents)
 		r.Get("/api/jobs/{id}/attach/ws", (&api.WSAttachHandler{

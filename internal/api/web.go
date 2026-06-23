@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -54,6 +55,13 @@ type WebHandler struct {
 	Hub               *TaskEventHub
 	SessionDispatcher SessionDispatcher
 	Registry          *auth.ConnectionRegistry
+
+	// AttachmentsRoot is the data-home directory under which per-task
+	// attachments (`tasks/<id>/attachments`) are persisted. When empty (e.g.
+	// :memory: DB during tests) the multipart code path falls back to
+	// rejecting attachments while still accepting plain form-urlencoded
+	// submissions.
+	AttachmentsRoot string
 }
 
 func (h *WebHandler) Routes() chi.Router {
@@ -90,7 +98,7 @@ func (h *WebHandler) TaskNew(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
+	if err := parseTaskForm(r); err != nil {
 		projects, _ := h.Service.ListProjects()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusBadRequest)
@@ -139,6 +147,26 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 	// readonly were removed. Values are derived from the behavior type and
 	// project-level defaults; the Web form no longer exposes these inputs.
 
+	// Attachments are validated before task creation so a bad upload
+	// (oversized, bad extension) doesn't leave a half-created task.
+	uploads := taskFormAttachments(r)
+	if len(uploads) > 0 {
+		if h.AttachmentsRoot == "" {
+			projects, _ := h.Service.ListProjects()
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			templates.TaskNew(projects, "添付ファイルを保存する場所が設定されていません", r.PostForm).Render(r.Context(), w)
+			return
+		}
+		if err := ValidateAttachmentHeaders(uploads); err != nil {
+			projects, _ := h.Service.ListProjects()
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			templates.TaskNew(projects, err.Error(), r.PostForm).Render(r.Context(), w)
+			return
+		}
+	}
+
 	task, err := h.Service.CreateTask(req)
 	if err != nil {
 		projects, _ := h.Service.ListProjects()
@@ -148,7 +176,52 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(uploads) > 0 {
+		if _, err := SaveMultipartAttachments(h.AttachmentsRoot, task.ID, uploads); err != nil {
+			// Task is already created — surface the error via ?error= so the
+			// user sees the task page with the failure context and can decide
+			// whether to retry, delete, or proceed.
+			http.Redirect(w, r, "/tasks/"+task.ID+"?error="+url.QueryEscape("attachment save failed: "+err.Error()), http.StatusSeeOther)
+			return
+		}
+	} else if h.AttachmentsRoot != "" {
+		// Always pre-create the attachments dir so subsequent task-ask
+		// answers can drop files into a live-bound location. Failure here is
+		// non-fatal — the bind has an optional guard and the worst case is
+		// the user re-attaches after we recover.
+		_, _ = EnsureAttachmentsDir(h.AttachmentsRoot, task.ID)
+	}
+
 	http.Redirect(w, r, "/tasks/"+task.ID, http.StatusSeeOther)
+}
+
+// parseTaskForm dispatches on Content-Type so the same handler accepts both
+// the legacy application/x-www-form-urlencoded submissions (still used by
+// older clients and HTML form fallbacks) and the new multipart/form-data
+// uploads coming from the clipboard-paste flow.
+//
+// net/http's ParseMultipartForm returns ErrNotMultipart for non-multipart
+// bodies, so blindly calling it would break every existing form post — keep
+// the explicit branch.
+func parseTaskForm(r *http.Request) error {
+	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "multipart/") {
+		// 32 MB ceiling — slightly above the 30 MB per-task total cap so the
+		// multipart parser doesn't reject a borderline-legal request before
+		// our per-file / per-task limits kick in.
+		return r.ParseMultipartForm(32 << 20)
+	}
+	return r.ParseForm()
+}
+
+// taskFormAttachments extracts uploaded files from the "attachments" multipart
+// field. Safe to call when the request has no multipart body — it returns
+// nil in that case.
+func taskFormAttachments(r *http.Request) []*multipart.FileHeader {
+	if r.MultipartForm == nil || r.MultipartForm.File == nil {
+		return nil
+	}
+	return r.MultipartForm.File["attachments"]
 }
 
 func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
@@ -568,12 +641,35 @@ func (h *WebHandler) QuestionPage(w http.ResponseWriter, r *http.Request) {
 
 func (h *WebHandler) PostAnswer(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := r.ParseForm(); err != nil {
+	if err := parseTaskForm(r); err != nil {
 		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
 	questionID := r.FormValue("question_id")
 	answer := strings.TrimSpace(r.FormValue("answer"))
+
+	// Validate + persist attachments before submitting the answer so the
+	// running agent observes a consistent view: any file referenced in the
+	// answer text (via the `~/.boid/attachments/<name>` path inserted by the
+	// paste-attach JS) must already be on disk by the time AnswerTask wakes
+	// up the task. The sandbox bind is live, so files become visible
+	// immediately.
+	uploads := taskFormAttachments(r)
+	if len(uploads) > 0 {
+		if h.AttachmentsRoot == "" {
+			http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape("attachments root not configured"), http.StatusSeeOther)
+			return
+		}
+		if err := ValidateAttachmentHeaders(uploads); err != nil {
+			http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+			return
+		}
+		if _, err := SaveMultipartAttachments(h.AttachmentsRoot, id, uploads); err != nil {
+			http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape("attachment save failed: "+err.Error()), http.StatusSeeOther)
+			return
+		}
+	}
+
 	target := "/tasks/" + id
 	if err := h.Service.AnswerTask(r.Context(), id, questionID, answer); err != nil {
 		target = "/tasks/" + id + "?error=" + url.QueryEscape(err.Error())

@@ -110,6 +110,11 @@ type TaskGCStore struct {
 	gitBin            string
 	runtimesDir       string
 	sandboxTmpDir     string
+	// attachmentsRoot, when non-empty, is the data-home directory under which
+	// per-task attachments live at `<root>/tasks/<id>/attachments`. GC
+	// removes the per-task directory for tasks that have been in a terminal
+	// state for olderThan. Empty disables this cleanup.
+	attachmentsRoot string
 	// RuntimeReaper, when set, is called with each runtime directory path
 	// before os.RemoveAll removes it. Use this to Reap docker resources that
 	// may still be alive in the upstream daemon (safety net for jobs whose
@@ -152,6 +157,14 @@ func (s *TaskGCStore) WithSandboxTmpDir(dir string) *TaskGCStore {
 	return s
 }
 
+// WithAttachmentsRoot enables disk-level cleanup of the per-task attachments
+// directory tree rooted at `<dir>/tasks/<id>/attachments`. dir is the
+// data-home (matches dataHomeFor in wire.go). Empty disables the cleanup.
+func (s *TaskGCStore) WithAttachmentsRoot(dir string) *TaskGCStore {
+	s.attachmentsRoot = dir
+	return s
+}
+
 func (s *TaskGCStore) gcGitBin() string {
 	if s.gitBin != "" {
 		return s.gitBin
@@ -170,6 +183,9 @@ func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool) (*GCResult, error
 	sandboxTmpDeleted := 0
 	if s.sandboxTmpDir != "" && !dryRun {
 		sandboxTmpDeleted = cleanSandboxTmp(s.sandboxTmpDir, olderThan)
+	}
+	if s.attachmentsRoot != "" && !dryRun {
+		s.cleanTaskAttachments(olderThan)
 	}
 
 	var result *GCResult
@@ -244,6 +260,64 @@ func (s *TaskGCStore) cleanRuntimes(olderThan time.Duration) int {
 		count++
 	}
 	return count
+}
+
+// cleanTaskAttachments deletes the per-task data directory
+// (`<attachmentsRoot>/tasks/<id>`) for tasks that have been in a terminal
+// state for olderThan. The full per-task directory is removed — not just the
+// attachments/ subdir — so any sibling data we add to that tree in the
+// future is also covered. Errors are logged as warnings; failures do not
+// block subsequent DB deletion. Mirrors the cleanRuntimes pattern.
+//
+// **In-flight safety**: the SELECT explicitly filters `t.status IN ('done',
+// 'aborted')`, so attachments for executing/awaiting tasks (whose
+// directories are live-bound into a running sandbox) are never touched.
+func (s *TaskGCStore) cleanTaskAttachments(olderThan time.Duration) {
+	if s.attachmentsRoot == "" {
+		return
+	}
+	query := `
+		SELECT t.id
+		FROM tasks t
+		WHERE t.status IN ('done', 'aborted')`
+	var args []any
+	if olderThan > 0 {
+		query += ` AND t.updated_at < ?`
+		args = append(args, time.Now().UTC().Add(-olderThan))
+	}
+
+	rows, err := s.conn.Query(query, args...)
+	if err != nil {
+		slog.Warn("gc attachments: query failed", "error", err)
+		return
+	}
+	defer rows.Close()
+
+	var taskIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			slog.Warn("gc attachments: scan failed", "error", err)
+			return
+		}
+		taskIDs = append(taskIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("gc attachments: rows error", "error", err)
+		return
+	}
+
+	for _, id := range taskIDs {
+		dir := filepath.Join(s.attachmentsRoot, "tasks", id)
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			slog.Warn("gc attachments: remove failed", "task_id", id, "error", err)
+			continue
+		}
+		slog.Info("gc attachments removed", "task_id", id)
+	}
 }
 
 type gcWorktreeRecord struct {
