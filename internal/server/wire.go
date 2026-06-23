@@ -592,7 +592,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 			Hub:               runtime.hub,
 			SessionDispatcher: sessionAdapter,
 			Registry:          runtime.connRegistry,
-			AttachmentsRoot:   dataHomeFor(cfg),
+			AttachmentsRoot:   dataHomeFor(srv.cfg),
 		}
 		r.Get("/api/tasks/{id}/events", webHandler.TaskEvents)
 		r.Get("/api/jobs/{id}/attach/ws", (&api.WSAttachHandler{
