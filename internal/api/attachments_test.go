@@ -20,8 +20,12 @@ func TestSanitizeAttachmentName(t *testing.T) {
 		{"plain png", "screenshot.png", "screenshot.png", false},
 		{"with dash and digits", "image-1.png", "image-1.png", false},
 		{"underscore + log", "trace_01.log", "trace_01.log", false},
-		{"path-traversal stripped", "../../etc/passwd", "passwd", true}, // strips to "passwd", missing ext
-		{"slash stripped", "subdir/file.png", "file.png", false},
+		// filepath.Base strips directory components, so "../../etc/passwd"
+		// reduces to "passwd" — which then fails the extension allowlist
+		// (no extension), not the directory check itself. Either way:
+		// rejected at the boundary.
+		{"path-traversal stripped to no-ext", "../../etc/passwd", "", true},
+		{"slash stripped to legal name", "subdir/file.png", "file.png", false},
 		{"dotfile rejected", ".env", "", true},
 		{"empty rejected", "", "", true},
 		{"dot rejected", ".", "", true},
@@ -129,12 +133,16 @@ func TestSaveMultipartAttachments_NameCollision(t *testing.T) {
 
 func TestSaveMultipartAttachments_RejectsBadName(t *testing.T) {
 	dataHome := t.TempDir()
+	// Spaces are not in the ^[A-Za-z0-9._-]+$ allowlist, and filepath.Base
+	// won't strip them (unlike "../foo" which becomes a legal "foo" basename).
+	// This is the actual class of name we want SaveMultipartAttachments to
+	// refuse rather than silently coerce.
 	files := []*multipart.FileHeader{
-		makeFileHeader(t, "../escape.png", "image/png", []byte("x")),
+		makeFileHeader(t, "bad name.png", "image/png", []byte("x")),
 	}
 	_, err := SaveMultipartAttachments(dataHome, "task-bad", files)
 	if err == nil {
-		t.Errorf("expected sanitization error for '../escape.png'")
+		t.Errorf("expected sanitization error for 'bad name.png'")
 	}
 	// The aborted call should have left the dir empty (no half-write).
 	entries, _ := os.ReadDir(filepath.Join(dataHome, "tasks", "task-bad", "attachments"))
