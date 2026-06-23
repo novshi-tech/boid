@@ -119,7 +119,7 @@ templ TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values
 				<div class="form-group">
 					<label for="description" class="form-label">Description</label>
 					<textarea id="description" name="description" class="form-input" rows="6" data-paste-attach data-paste-attach-prefix="~/.boid/attachments/">{ form.Get("description") }</textarea>
-					<div class="form-hint">画像やテキストファイルはクリップボードから貼り付けできるよ (Ctrl+V)。 サンドボックス内 <code>~/.boid/attachments/</code> にマウントされる。</div>
+					<div class="form-hint">Paste images or text files from the clipboard (Ctrl+V). They are mounted inside the sandbox at <code>~/.boid/attachments/</code>.</div>
 					<ul class="paste-attach-list" data-paste-attach-list></ul>
 				</div>
 				<div class="form-group">

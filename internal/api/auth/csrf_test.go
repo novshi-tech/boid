@@ -1,8 +1,11 @@
 package auth
 
 import (
+	"bytes"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -82,6 +85,78 @@ func TestCSRFMiddleware_POST_NoCookie(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+}
+
+// Plain HTML form (application/x-www-form-urlencoded) carries the token in
+// the body as _csrf when JS can't inject the header.
+func TestCSRFMiddleware_POST_FormBodyToken(t *testing.T) {
+	h := CSRFMiddleware(http.HandlerFunc(okHandler))
+	body := strings.NewReader("_csrf=my-token&title=hello")
+	req := httptest.NewRequest(http.MethodPost, "/action", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "my-token"})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+// multipart/form-data forms (the attachment-upload path) also fall back to
+// the _csrf field. Regression test for the bug where ParseForm alone didn't
+// read the multipart body so the hidden _csrf field was invisible to the
+// middleware and every upload 403'd.
+func TestCSRFMiddleware_POST_MultipartBodyToken(t *testing.T) {
+	h := CSRFMiddleware(http.HandlerFunc(okHandler))
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if err := mw.WriteField("title", "hello"); err != nil {
+		t.Fatalf("write field title: %v", err)
+	}
+	if err := mw.WriteField(csrfFormField, "my-token"); err != nil {
+		t.Fatalf("write field _csrf: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "my-token"})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("multipart with _csrf body field should pass: status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+// Multipart submit without a token (neither header nor body field) must still
+// be rejected — proves we don't silently accept multipart just because the
+// content-type is exotic.
+func TestCSRFMiddleware_POST_MultipartNoToken(t *testing.T) {
+	h := CSRFMiddleware(http.HandlerFunc(okHandler))
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if err := mw.WriteField("title", "hello"); err != nil {
+		t.Fatalf("write field title: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "my-token"})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("multipart without token must 403: status = %d, want %d", w.Code, http.StatusForbidden)
 	}
 }
 
