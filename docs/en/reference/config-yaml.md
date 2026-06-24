@@ -84,3 +84,18 @@ sandbox:
 
 These are merged with `defaultAllowedDomains` (Anthropic/OpenAI APIs, language package registries, etc.) at startup.
 See [Sandbox Internals](../architecture/sandbox-internals.md) for details on the proxy allow list.
+
+---
+
+## task_ask — Blocking Q&A
+
+```yaml
+task_ask:
+  disconnect_grace: 30m   # default 30 minutes
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `disconnect_grace` | duration | `30m` | How long a task waiting on `boid task ask` (status `awaiting`) may sit with no live agent attached before the daemon reclaims it |
+
+`boid task ask` is the harness-independent blocking Q&A RPC. Harnesses (claude-code / opencode, etc.) kill long-running shell commands after roughly 2 minutes, so a `boid task ask` that is still waiting for an answer can be disconnected. The agent recovers by re-running the same question and re-attaching to the `awaiting` state (the answer is persisted to the DB, so it is never lost), so a disconnect alone does not abort the task. Only when the grace period elapses with no agent returning **and** no answer delivered does the daemon reclaim the task to `aborted`. A shorter value reaps dead waiters sooner but is more likely to abort cases where a human answer is merely slow.
