@@ -128,8 +128,22 @@ esac
 `awaiting`, and **blocks** until the user/supervisor answers — then the task
 returns to `executing` and the call prints the reply. For child tasks the parent
 supervisor answers (`boid task answer`); for root tasks the user is notified
-directly. There is no timeout (it waits indefinitely). Only one blocking ask per
-task at a time: a second concurrent `boid task ask` fails immediately with
+directly. boid itself never times the call out (it waits indefinitely).
+
+**If the `boid task ask` command is killed before it returns, run the exact same
+command again.** Your harness caps how long a single shell command may run (e.g.
+~2 minutes) and will kill `boid task ask` if the answer takes longer — you will
+see a timeout/terminated error, not an answer. This is expected for any wait that
+outlasts that cap. boid is built for it: re-running the identical `boid task ask`
+re-attaches to the same pending question (or returns the answer instantly if it
+already arrived while you were disconnected). Keep retrying the same command until
+it prints the reply. The task stays `awaiting` across these retries; nothing is
+lost. (If your harness lets you raise a single command's timeout, doing so reduces
+the number of retries, but retrying is the reliable path.)
+
+Only one *distinct* pending question per task at a time: re-asking the **same**
+question is the retry above and is always allowed, but issuing a **different**
+`boid task ask` while one is still pending fails immediately with
 `task_ask: another question is pending`.
 
 > The legacy `boid task notify --ask` flag still transitions the task to

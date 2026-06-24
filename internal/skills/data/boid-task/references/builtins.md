@@ -128,8 +128,8 @@ Harness-independent **blocking** Q&A. The question is a single positional argume
 The call holds the connection open: your turn stays alive, the task transitions to `awaiting`, and the answer arrives on stdout when the user/supervisor replies via `boid task answer`. No `$BOID_USER_ANSWER`, no session resume, no second hook dispatch — the same hook job goes `running → (parked) → running → completed`. Works under any harness (claude-code, codex, opencode, ...).
 
 - TaskID is **not** passed: the broker fills it from the calling agent's token, so `boid task ask` always targets the caller's own task.
-- No timeout (waits indefinitely).
-- Only one blocking ask per task at a time: a second concurrent call fails immediately with `task_ask: another question is pending`.
+- boid never times the call out (it waits indefinitely). Your **harness** does, though: it kills any single shell command after its command-timeout (~2 min on claude-code/opencode). When that happens, **re-run the identical `boid task ask`** — it re-attaches to the same pending question, or returns the answer immediately if it already arrived while you were disconnected. The task stays `awaiting` across retries and the answer is persisted, so nothing is lost. Keep retrying until it prints the reply.
+- Re-asking the **same** question is the retry above and is always allowed. Only a **different** `boid task ask` while one is still pending fails immediately with `task_ask: another question is pending`.
 - The user/parent answers with `boid task answer` (see below).
 
 `boid task ask` is the only supported Q&A path. `notify --ask` still transitions the task to `awaiting` for compatibility, but the daemon no longer dispatches a resume hook on answer — the agent has already exited and there is nowhere for the reply to land.
