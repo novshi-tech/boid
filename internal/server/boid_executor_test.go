@@ -1463,15 +1463,18 @@ func TestBoidBuiltinExecutor_TaskAsk_SecondPendingFails(t *testing.T) {
 }
 
 // On context cancellation (daemon shutdown / sandbox disconnect) the blocking
-// ask returns an error, the registration is cancelled, and the task is aborted
-// so it is not left dangling in awaiting.
-func TestBoidBuiltinExecutor_TaskAsk_ContextCancelAbortsTask(t *testing.T) {
+// ask returns an error and the registration is cancelled, but the task is NOT
+// aborted synchronously: a disconnect is almost always a harness command-timeout
+// killing the foreground `boid task ask`, and the model re-asks to re-attach. The
+// task therefore stays awaiting; a grace-period reaper (long default here, so it
+// never fires during the test) reclaims it only if no agent ever returns.
+func TestBoidBuiltinExecutor_TaskAsk_ContextCancelKeepsAwaiting(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
 		{ID: "task-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Payload: []byte(`{}`)},
 	}}
 	reg := api.NewBlockingAskRegistry()
 	wf := &askWorkflowStub{store: store}
-	taskSvc := &api.TaskAppService{Tasks: store, Workflow: wf, BlockingAsk: reg}
+	taskSvc := &api.TaskAppService{Tasks: store, Workflow: wf, BlockingAsk: reg, AskDisconnectGrace: time.Hour}
 	exec := &boidBuiltinExecutor{tasks: taskSvc, workflow: wf}
 	ctx := sandbox.TokenContext{TaskID: "task-1", ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
@@ -1505,13 +1508,14 @@ func TestBoidBuiltinExecutor_TaskAsk_ContextCancelAbortsTask(t *testing.T) {
 	if reg.Has(qid) {
 		t.Error("registration should be cleaned up on cancellation")
 	}
-	// The task was aborted (abortDanglingAsk).
-	types := wf.appliedTypes()
-	if len(types) < 2 || types[len(types)-1] != "abort" {
-		t.Errorf("applied actions = %v, want last action 'abort'", types)
+	// The task is NOT aborted on disconnect — it stays awaiting for the re-ask.
+	for _, ty := range wf.appliedTypes() {
+		if ty == "abort" {
+			t.Errorf("disconnect must not abort the task; applied actions = %v", wf.appliedTypes())
+		}
 	}
 	got, _ := store.GetTask("task-1")
-	if got.Status != orchestrator.TaskStatusAborted {
-		t.Errorf("task status = %q, want aborted after cancellation", got.Status)
+	if got.Status != orchestrator.TaskStatusAwaiting {
+		t.Errorf("task status = %q, want awaiting after disconnect (re-ask recovers)", got.Status)
 	}
 }

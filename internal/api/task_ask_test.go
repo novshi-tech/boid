@@ -144,6 +144,110 @@ func TestAnswerTask_LegacyAwaitingWithoutWaiter_PersistsDurably(t *testing.T) {
 	}
 }
 
+// A disconnect (ctx cancelled while parked) must NOT abort the task
+// synchronously: the agent's `boid task ask` was killed by a harness
+// command-timeout and will re-ask. blockForAnswer schedules a grace reaper
+// instead, so right after the call the task has not been aborted.
+func TestAskTaskBlocking_DisconnectDoesNotAbortImmediately(t *testing.T) {
+	store := &stubTaskStore{task: &orchestrator.Task{
+		ID:        "t1",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusExecuting,
+		Payload:   json.RawMessage(`{}`),
+	}}
+	wf := &stubWorkflowService{}
+	svc := &TaskAppService{
+		Tasks:              store,
+		Actions:            &capturingActionStore{},
+		Workflow:           wf,
+		BlockingAsk:        NewBlockingAskRegistry(),
+		AskDisconnectGrace: time.Hour, // long enough that the reaper never fires here
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // simulate an immediate disconnect
+
+	_, err := svc.AskTaskBlocking(ctx, "t1", "Proceed?")
+	if err == nil {
+		t.Fatal("expected the cancelled context to surface as an error")
+	}
+	// The fresh-ask transition fired ("ask"), but NOT an abort.
+	if wf.appliedType == "abort" {
+		t.Errorf("disconnect must not abort synchronously, got ApplyAction %q", wf.appliedType)
+	}
+}
+
+// graceAbortCheck reclaims a genuine zombie: still awaiting, same question, no
+// parked answer, no live agent.
+func TestGraceAbortCheck_AbortsZombie(t *testing.T) {
+	store := &stubTaskStore{task: &orchestrator.Task{
+		ID:        "t1",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusAwaiting,
+		Payload:   blockingAwaitingPayload(t, "q-1"),
+	}}
+	wf := &stubWorkflowService{}
+	svc := &TaskAppService{Tasks: store, Workflow: wf, BlockingAsk: NewBlockingAskRegistry()}
+
+	svc.graceAbortCheck("t1", "q-1")
+
+	if wf.appliedType != "abort" {
+		t.Errorf("expected zombie awaiting to be aborted, got ApplyAction %q", wf.appliedType)
+	}
+}
+
+// graceAbortCheck leaves the task alone when the ask recovered or moved on.
+func TestGraceAbortCheck_SkipsRecovered(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(task *orchestrator.Task, reg *BlockingAskRegistry)
+		checkQ  string
+	}{
+		{
+			name:   "answered_moved_to_executing",
+			mutate: func(task *orchestrator.Task, _ *BlockingAskRegistry) { task.Status = orchestrator.TaskStatusExecuting },
+			checkQ: "q-1",
+		},
+		{
+			name: "answer_parked",
+			mutate: func(task *orchestrator.Task, _ *BlockingAskRegistry) {
+				task.Payload = orchestrator.SetPendingAnswer(task.Payload, "parked")
+			},
+			checkQ: "q-1",
+		},
+		{
+			name:   "agent_reattached",
+			mutate: func(_ *orchestrator.Task, reg *BlockingAskRegistry) { _ = reg.Register("t1", "q-1") },
+			checkQ: "q-1",
+		},
+		{
+			name:   "new_episode_different_qid",
+			mutate: func(_ *orchestrator.Task, _ *BlockingAskRegistry) {},
+			checkQ: "q-OLD", // grace was scheduled for an older episode
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			task := &orchestrator.Task{
+				ID:        "t1",
+				ProjectID: "proj-1",
+				Status:    orchestrator.TaskStatusAwaiting,
+				Payload:   blockingAwaitingPayload(t, "q-1"),
+			}
+			reg := NewBlockingAskRegistry()
+			wf := &stubWorkflowService{}
+			svc := &TaskAppService{Tasks: &stubTaskStore{task: task}, Workflow: wf, BlockingAsk: reg}
+			tc.mutate(task, reg)
+
+			svc.graceAbortCheck("t1", tc.checkQ)
+
+			if wf.appliedType == "abort" {
+				t.Errorf("%s: expected no abort, but task was reclaimed", tc.name)
+			}
+		})
+	}
+}
+
 // AskTaskBlocking rejects a second concurrent ask for the same task with the B1
 // error (a pre-registered question stands in for an in-flight ask).
 func TestAskTaskBlocking_B1SecondAskFails(t *testing.T) {

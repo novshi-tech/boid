@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -116,16 +118,64 @@ func (s *TaskAppService) AskTaskBlocking(ctx context.Context, taskID, question s
 // blockForAnswer parks until an answer is delivered over the registry (fast
 // path) or ctx is cancelled (daemon shutdown / agent disconnect). On answer it
 // returns it — the awaiting → executing flip was already done by answerBlocking's
-// fast path. On cancellation it aborts the dangling task so the owner sees a
-// terminal state instead of a permanent awaiting with no live agent behind it
-// (decision C1: no timeout, only cancellation).
+// fast path.
+//
+// On cancellation it does NOT abort immediately: a disconnect is almost always a
+// harness command-timeout killing the foreground `boid task ask`, after which
+// the model re-asks and re-attaches (the task must survive that gap). Instead it
+// schedules a grace-period reaper; only if the task is still awaiting on the same
+// dead question — no re-attach, no parked answer — when the grace expires is it
+// reclaimed.
 func (s *TaskAppService) blockForAnswer(ctx context.Context, taskID, qid string) (string, error) {
 	answer, err := s.BlockingAsk.Wait(ctx, qid)
 	if err != nil {
-		s.abortDanglingAsk(taskID, err)
+		s.scheduleGraceAbort(taskID, qid)
 		return "", err
 	}
 	return answer, nil
+}
+
+// defaultAskDisconnectGrace bounds how long an awaiting task may sit with no
+// live agent before the reaper reclaims it, when AskDisconnectGrace is unset.
+const defaultAskDisconnectGrace = 30 * time.Minute
+
+// scheduleGraceAbort arms a one-shot reaper for a disconnected blocking ask.
+// After the grace period graceAbortCheck decides whether the task is a genuine
+// zombie. The timer is in-process only; a daemon restart drops it, but startup
+// MarkStaleAwaitingTasksAborted reclaims any awaiting leftovers, so coverage is
+// complete across both running and restarted daemons.
+func (s *TaskAppService) scheduleGraceAbort(taskID, qid string) {
+	grace := s.AskDisconnectGrace
+	if grace <= 0 {
+		grace = defaultAskDisconnectGrace
+	}
+	time.AfterFunc(grace, func() { s.graceAbortCheck(taskID, qid) })
+}
+
+// graceAbortCheck reclaims a task whose blocking ask disconnected and never
+// recovered. It aborts only when ALL hold: the task is still awaiting, on the
+// SAME question id (no new ask episode began), with no parked answer (it would
+// be consumed on the next ask) and no live agent re-attached (Has). Any of those
+// being false means the ask recovered or moved on, so it is left alone.
+func (s *TaskAppService) graceAbortCheck(taskID, qid string) {
+	task, err := s.Tasks.GetTask(taskID)
+	if err != nil {
+		return
+	}
+	if task.Status != orchestrator.TaskStatusAwaiting {
+		return // answered (executing), aborted, or otherwise moved on
+	}
+	ap := orchestrator.GetAwaitingPayload(task.Payload)
+	if ap.QuestionID != qid {
+		return // a different ask episode is now in flight
+	}
+	if ap.PendingAnswer != "" {
+		return // an answer is parked; the next re-ask will consume it
+	}
+	if s.BlockingAsk != nil && s.BlockingAsk.Has(qid) {
+		return // an agent re-attached and is live
+	}
+	s.abortDanglingAsk(taskID, errors.New("blocking ask grace period expired with no live agent"))
 }
 
 // consumePendingAnswer delivers a durably-parked answer to a re-asking agent: it
