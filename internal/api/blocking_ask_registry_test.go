@@ -100,6 +100,30 @@ func TestBlockingAskRegistry_CancelFreesTaskSlot(t *testing.T) {
 	r.Cancel("q-2")
 }
 
+// Re-registering the SAME qid for a task is allowed: it is a re-attach by an
+// agent whose `boid task ask` was killed by a harness command-timeout and is
+// retrying the identical question. B1 only rejects a DIFFERENT new question
+// landing while one is already pending. The re-attach yields a fresh channel so
+// the new waiter is not left holding a drained one.
+func TestBlockingAskRegistry_SameQidReattachAllowed(t *testing.T) {
+	r := NewBlockingAskRegistry()
+	if err := r.Register("task-1", "q-1"); err != nil {
+		t.Fatalf("first Register: %v", err)
+	}
+	defer r.Cancel("q-1")
+
+	if err := r.Register("task-1", "q-1"); err != nil {
+		t.Fatalf("re-attach Register (same qid) should succeed, got %v", err)
+	}
+	if !r.Has("q-1") {
+		t.Fatal("question should still be registered after re-attach")
+	}
+	// A different new question for the same task is still rejected (B1).
+	if err := r.Register("task-1", "q-2"); !errors.Is(err, ErrAskPending) {
+		t.Fatalf("different-qid Register err = %v, want ErrAskPending", err)
+	}
+}
+
 func TestBlockingAskRegistry_WaitCancelledByContext(t *testing.T) {
 	r := NewBlockingAskRegistry()
 	if err := r.Register("task-1", "q-1"); err != nil {

@@ -66,6 +66,48 @@ func TestClearPendingAnswer_RemovesAnswerKeepsRest(t *testing.T) {
 	}
 }
 
+func TestSetPendingAnswer_WritesAnswerKeepsQuestion(t *testing.T) {
+	payload := json.RawMessage(`{"awaiting":{"question":"q","question_id":"qid-1"}}`)
+	got := orchestrator.SetPendingAnswer(payload, "do it")
+
+	ap := orchestrator.GetAwaitingPayload(got)
+	if ap.PendingAnswer != "do it" {
+		t.Errorf("pending_answer = %q, want %q", ap.PendingAnswer, "do it")
+	}
+	if ap.QuestionID != "qid-1" {
+		t.Errorf("question_id = %q, want qid-1", ap.QuestionID)
+	}
+	if ap.Question != "q" {
+		t.Errorf("question = %q, want q", ap.Question)
+	}
+}
+
+// SetPendingAnswer must leave sibling traits (e.g. artifact) untouched.
+func TestSetPendingAnswer_PreservesSiblingTraits(t *testing.T) {
+	payload := json.RawMessage(`{"awaiting":{"question":"q","question_id":"qid-1"},"artifact":{"url":"y"}}`)
+	got := orchestrator.SetPendingAnswer(payload, "yes")
+
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(got, &top); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := top["artifact"]; !ok {
+		t.Errorf("artifact trait should be preserved, got %s", got)
+	}
+	if orchestrator.GetAwaitingPayload(got).PendingAnswer != "yes" {
+		t.Errorf("pending_answer not set, got %s", got)
+	}
+}
+
+// Setting the answer on a payload without an awaiting trait creates one so the
+// answer is never silently dropped.
+func TestSetPendingAnswer_CreatesTraitWhenAbsent(t *testing.T) {
+	got := orchestrator.SetPendingAnswer(json.RawMessage(`{}`), "answer")
+	if orchestrator.GetAwaitingPayload(got).PendingAnswer != "answer" {
+		t.Errorf("pending_answer not set on empty payload, got %s", got)
+	}
+}
+
 func TestClearPendingAnswer_NoOpWhenAbsent(t *testing.T) {
 	cases := []json.RawMessage{
 		json.RawMessage(`{}`),

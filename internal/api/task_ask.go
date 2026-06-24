@@ -12,25 +12,30 @@ import (
 )
 
 // AskTaskBlocking implements the harness-independent blocking Q&A RPC behind
-// `boid task ask <question>`. The agent stays alive and blocks inside this
-// call until the user/supervisor answers, so the round-trip works for every
-// harness uniformly — there is no session-resume path anywhere in boid
-// anymore (the legacy `notify --ask` → `claude --resume` flow was removed).
+// `boid task ask <question>`. The agent stays alive and blocks inside this call
+// until the user/supervisor answers, so the round-trip works for every harness
+// uniformly — there is no session-resume path anywhere in boid (the legacy
+// `notify --ask` → `claude --resume` flow was removed).
 //
-// Flow:
-//  1. Register the answer channel (decision B1: a second pending ask for the
-//     same task fails immediately with ErrAskPending).
-//  2. Transition executing → awaiting via ApplyAction("ask") with a
-//     blocking-mode awaiting payload, then fire the user notification (root
-//     tasks only; child tasks are seen by their supervisor's monitor loop).
-//  3. Block in the registry's Wait until an answer arrives or ctx is cancelled.
-//  4. On answer, return it to the caller (the broker writes it back to the
-//     sandbox over the held connection). On ctx cancellation (daemon shutdown
-//     or agent disconnect), abort the task so it is not left dangling in
-//     awaiting forever (decision C1: there is no timeout, only cancellation).
+// The call is disconnect-resilient and idempotent across re-asks. Harnesses kill
+// long-running shell commands on a command-timeout (claude-code / opencode at
+// ~120s), which severs the held connection. When that happens the model retries
+// the identical `boid task ask`; this handler recognises the retry and recovers
+// instead of treating it as a fresh question:
+//
+//   - executing  → fresh ask: register the answer channel, transition
+//     executing → awaiting via ApplyAction("ask"), fire the user notification
+//     (root tasks only; child tasks are seen by their supervisor's monitor
+//     loop), then block in Wait.
+//   - awaiting    → re-ask: if an answer was parked durably while the agent was
+//     disconnected (PendingAnswer), consume it immediately and flip back to
+//     executing. Otherwise re-attach to the SAME question id and block again —
+//     no second "ask" transition, no new notification.
 //
 // Register happens before the awaiting transition so an answer that races in
-// immediately afterwards is never dropped.
+// immediately afterwards is never dropped. Decision B1 (relaxed): a concurrent
+// ask carrying a DIFFERENT question id still fails with ErrAskPending; a re-ask
+// of the same question is a re-attach and is allowed.
 func (s *TaskAppService) AskTaskBlocking(ctx context.Context, taskID, question string) (string, error) {
 	if s.BlockingAsk == nil {
 		return "", &StatusError{Code: http.StatusInternalServerError, Message: "blocking ask is not configured"}
@@ -45,6 +50,29 @@ func (s *TaskAppService) AskTaskBlocking(ctx context.Context, taskID, question s
 	if err != nil {
 		return "", &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
+
+	// Re-ask path: the task is already awaiting from a prior ask whose foreground
+	// command was killed by a harness command-timeout.
+	if task.Status == orchestrator.TaskStatusAwaiting {
+		ap := orchestrator.GetAwaitingPayload(task.Payload)
+		if ap.QuestionID == "" {
+			return "", &StatusError{
+				Code:    http.StatusConflict,
+				Message: "task is awaiting but has no pending question to attach to",
+			}
+		}
+		if ap.PendingAnswer != "" {
+			// An answer arrived while the agent was disconnected. Deliver it now.
+			return s.consumePendingAnswer(task, ap.PendingAnswer)
+		}
+		// Re-attach to the existing question and block again (no fresh ask).
+		if err := s.BlockingAsk.Register(taskID, ap.QuestionID); err != nil {
+			return "", &StatusError{Code: http.StatusConflict, Message: err.Error()}
+		}
+		defer s.BlockingAsk.Cancel(ap.QuestionID)
+		return s.blockForAnswer(ctx, taskID, ap.QuestionID)
+	}
+
 	if task.Status != orchestrator.TaskStatusExecuting {
 		return "", &StatusError{
 			Code:    http.StatusConflict,
@@ -52,6 +80,7 @@ func (s *TaskAppService) AskTaskBlocking(ctx context.Context, taskID, question s
 		}
 	}
 
+	// Fresh ask: executing → awaiting.
 	qid := newQuestionID()
 	if err := s.BlockingAsk.Register(taskID, qid); err != nil {
 		// ErrAskPending (B1) and any other registration failure surface as a
@@ -81,63 +110,97 @@ func (s *TaskAppService) AskTaskBlocking(ctx context.Context, taskID, question s
 	// already persisted and pollable).
 	s.fireUserAskNotification(ctx, task, question, qid)
 
+	return s.blockForAnswer(ctx, taskID, qid)
+}
+
+// blockForAnswer parks until an answer is delivered over the registry (fast
+// path) or ctx is cancelled (daemon shutdown / agent disconnect). On answer it
+// returns it — the awaiting → executing flip was already done by answerBlocking's
+// fast path. On cancellation it aborts the dangling task so the owner sees a
+// terminal state instead of a permanent awaiting with no live agent behind it
+// (decision C1: no timeout, only cancellation).
+func (s *TaskAppService) blockForAnswer(ctx context.Context, taskID, qid string) (string, error) {
 	answer, err := s.BlockingAsk.Wait(ctx, qid)
 	if err != nil {
-		// ctx cancelled: daemon shutdown or the sandbox disconnected. Abort the
-		// task so the owner sees a terminal state instead of a permanent
-		// awaiting with no live agent behind it.
 		s.abortDanglingAsk(taskID, err)
 		return "", err
 	}
 	return answer, nil
 }
 
-// answerBlocking resolves a blocking ask (called from AnswerTask). It hands
-// the answer to the agent parked in AskTaskBlocking via the registry and
-// flips the task back to executing WITHOUT spawning a resume dispatch — the
-// agent never exited.
+// consumePendingAnswer delivers a durably-parked answer to a re-asking agent: it
+// flips the task awaiting → executing, strips the awaiting trait (removing the
+// parked answer), records the audit action, and returns the answer. Used when an
+// answer arrived while the agent was disconnected and the agent has re-asked.
+func (s *TaskAppService) consumePendingAnswer(task *orchestrator.Task, answer string) (string, error) {
+	fromStatus := task.Status
+	task.Status = orchestrator.TaskStatusExecuting
+	task.Payload = orchestrator.StripAwaitingTrait(task.Payload)
+	if err := s.Tasks.UpdateTask(task); err != nil {
+		return "", &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	s.recordAnswerAction(task.ID, fromStatus)
+	return answer, nil
+}
+
+// recordAnswerAction writes the awaiting → executing "answer" audit action.
+// Best-effort: a failure is logged, never returned.
+func (s *TaskAppService) recordAnswerAction(taskID string, fromStatus orchestrator.TaskStatus) {
+	if s.Actions == nil {
+		return
+	}
+	if err := s.Actions.CreateAction(&orchestrator.Action{
+		TaskID:     taskID,
+		Type:       "answer",
+		FromStatus: fromStatus,
+		ToStatus:   orchestrator.TaskStatusExecuting,
+	}); err != nil {
+		slog.Warn("blocking answer: record answer action failed", "task_id", taskID, "error", err)
+	}
+}
+
+// answerBlocking resolves a blocking ask (called from AnswerTask). There are two
+// delivery paths, chosen by whether a live agent is currently parked:
 //
-// The state flip happens before Notify so the resumed agent always observes the
-// executing state (its next move, e.g. notify --done, requires executing). The
-// task pointer is the one returned by GetTask; mutating + UpdateTask persists it.
+//   - Fast path (agent connected): Notify hands the answer to the agent blocked
+//     in blockForAnswer and we flip the task awaiting → executing immediately.
+//     The agent resumes over the held connection; its next move (e.g. notify
+//     --done) requires executing, so the flip must precede return.
+//   - Slow path (agent disconnected): Notify finds no waiter because the agent's
+//     `boid task ask` was killed by a harness command-timeout. We park the
+//     answer durably in PendingAnswer and leave the task awaiting. The agent
+//     picks it up on its next ask (consumePendingAnswer) — the answer is never
+//     dropped and the task is never flipped to a zombie executing state with no
+//     live agent behind it.
+//
+// The task pointer is the one returned by GetTask; mutating + UpdateTask
+// persists it.
 func (s *TaskAppService) answerBlocking(task *orchestrator.Task, answer string) error {
 	if s.BlockingAsk == nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: "blocking ask is not configured"}
 	}
 	qid := orchestrator.GetAwaitingPayload(task.Payload).QuestionID
-	if !s.BlockingAsk.Has(qid) {
-		// No agent is parked on this question — it disconnected before the
-		// answer arrived (the broker's connection-close watcher should have
-		// already aborted the task). Reject rather than flip to a zombie
-		// executing state with no live agent behind it.
-		return &StatusError{
-			Code:    http.StatusConflict,
-			Message: "no agent is waiting for this answer (it may have disconnected)",
+
+	if s.BlockingAsk.Notify(qid, answer) {
+		// Fast path: a live agent received the answer in-memory.
+		fromStatus := task.Status
+		task.Status = orchestrator.TaskStatusExecuting
+		task.Payload = orchestrator.StripAwaitingTrait(task.Payload)
+		if err := s.Tasks.UpdateTask(task); err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 		}
+		s.recordAnswerAction(task.ID, fromStatus)
+		return nil
 	}
 
-	fromStatus := task.Status
-	task.Status = orchestrator.TaskStatusExecuting
-	task.Payload = orchestrator.StripAwaitingTrait(task.Payload)
+	// Slow path: no live waiter. Park the answer durably; the agent collects it
+	// on its next ask. The task stays awaiting until then.
+	task.Payload = orchestrator.SetPendingAnswer(task.Payload, answer)
 	if err := s.Tasks.UpdateTask(task); err != nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
-	if s.Actions != nil {
-		if err := s.Actions.CreateAction(&orchestrator.Action{
-			TaskID:     task.ID,
-			Type:       "answer",
-			FromStatus: fromStatus,
-			ToStatus:   orchestrator.TaskStatusExecuting,
-		}); err != nil {
-			slog.Warn("blocking answer: record answer action failed", "task_id", task.ID, "error", err)
-		}
-	}
-	if !s.BlockingAsk.Notify(qid, answer) {
-		// Raced with the agent disconnecting between the Has check and here. The
-		// task is already executing again; the owner's stuck-task detection will
-		// catch an executing task with no live job.
-		slog.Warn("blocking answer: no waiter for question at delivery", "task_id", task.ID, "question_id", qid)
-	}
+	slog.Info("blocking answer parked durably (no live agent); will deliver on the agent's next ask",
+		"task_id", task.ID, "question_id", qid)
 	return nil
 }
 
