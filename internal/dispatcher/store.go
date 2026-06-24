@@ -182,14 +182,30 @@ func MarkStaleJobsFailed(dbtx db.DBTX) error {
 }
 
 // MarkStaleExecutingTasksAborted transitions all tasks in "executing" status to
-// "aborted" and records a daemon_restart abort action for each. Call this on
+// "aborted" and records a daemon_shutdown abort action for each. Call this on
 // server startup after MarkStaleJobsFailed. Returns the number of tasks transitioned.
 func MarkStaleExecutingTasksAborted(conn *sql.DB) (int, error) {
+	return markStaleTasksAborted(conn, "executing")
+}
+
+// MarkStaleAwaitingTasksAborted does the same for tasks left in "awaiting"
+// status from a previous crash or restart. After a restart no agent is parked
+// in the (purely in-memory) BlockingAskRegistry, so every awaiting task is a
+// zombie with no live agent behind it — reclaim it. It carries the same
+// daemon_shutdown code as the executing path, so the startup auto-reopen sweep
+// (FindDaemonShutdownAbortedTasks) restarts it and the agent re-asks if needed.
+func MarkStaleAwaitingTasksAborted(conn *sql.DB) (int, error) {
+	return markStaleTasksAborted(conn, "awaiting")
+}
+
+// markStaleTasksAborted aborts every task currently in fromStatus, recording a
+// daemon_shutdown abort action (from_status = fromStatus) for each.
+func markStaleTasksAborted(conn *sql.DB, fromStatus string) (int, error) {
 	var count int
 	err := db.InTxDB(conn, func(tx db.DBTX) error {
-		rows, err := tx.Query(`SELECT id FROM tasks WHERE status = 'executing'`)
+		rows, err := tx.Query(`SELECT id FROM tasks WHERE status = ?`, fromStatus)
 		if err != nil {
-			return fmt.Errorf("query executing tasks: %w", err)
+			return fmt.Errorf("query %s tasks: %w", fromStatus, err)
 		}
 		var ids []string
 		for rows.Next() {
@@ -202,7 +218,7 @@ func MarkStaleExecutingTasksAborted(conn *sql.DB) (int, error) {
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
-			return fmt.Errorf("iterate executing tasks: %w", err)
+			return fmt.Errorf("iterate %s tasks: %w", fromStatus, err)
 		}
 
 		const abortPayload = `{"code":"daemon_shutdown","message":"daemon が再起動されたため中断されました。 起動時に自動 reopen されます。"}`
@@ -210,7 +226,7 @@ func MarkStaleExecutingTasksAborted(conn *sql.DB) (int, error) {
 		for _, id := range ids {
 			if _, err := tx.Exec(
 				`INSERT INTO actions (id, task_id, type, payload, from_status, to_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				uuid.New().String(), id, "abort", abortPayload, "executing", "aborted", now,
+				uuid.New().String(), id, "abort", abortPayload, fromStatus, "aborted", now,
 			); err != nil {
 				return fmt.Errorf("insert abort action for task %s: %w", id, err)
 			}

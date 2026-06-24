@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -25,6 +26,11 @@ type TaskAppService struct {
 	// and the answer path (AnswerTask), so both halves of a blocking ask use the
 	// same in-memory registry. Nil disables blocking ask (notify --ask still works).
 	BlockingAsk *BlockingAskRegistry
+	// AskDisconnectGrace is how long an awaiting task may sit with no live agent
+	// parked before the daemon reclaims it (a blocking ask whose foreground
+	// command was killed by a harness command-timeout). Zero falls back to
+	// defaultAskDisconnectGrace.
+	AskDisconnectGrace time.Duration
 }
 
 // Notifier sends an agent-driven notification for a task. Implementations

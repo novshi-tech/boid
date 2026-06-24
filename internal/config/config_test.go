@@ -52,6 +52,41 @@ gc:
 	}
 }
 
+func TestLoadFromPath_TaskAskDisconnectGrace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+task_ask:
+  disconnect_grace: 45m
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.TaskAsk.DisconnectGrace != 45*time.Minute {
+		t.Errorf("DisconnectGrace: got %v, want 45m", cfg.TaskAsk.DisconnectGrace)
+	}
+}
+
+// An unset task_ask falls back to the 30m default.
+func TestLoadFromPath_TaskAskDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("gc:\n  interval: 6h\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.TaskAsk.DisconnectGrace != 30*time.Minute {
+		t.Errorf("DisconnectGrace default: got %v, want 30m", cfg.TaskAsk.DisconnectGrace)
+	}
+}
+
 func TestLoadFromPath_InvalidYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

@@ -163,6 +163,15 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		slog.Info("aborted stale executing tasks on startup", "count", n)
 	}
 
+	// Abort tasks left in awaiting state too: after a restart no agent is parked
+	// in the in-memory BlockingAskRegistry, so an awaiting task is a zombie with
+	// no live agent behind it. Same daemon_shutdown code → auto-reopened below.
+	if n, err := dispatcher.MarkStaleAwaitingTasksAborted(srv.db); err != nil {
+		slog.Warn("failed to abort stale awaiting tasks", "error", err)
+	} else if n > 0 {
+		slog.Info("aborted stale awaiting tasks on startup", "count", n)
+	}
+
 	projectRepo := orchestrator.NewProjectRepository(srv.db)
 	taskRepo := orchestrator.NewTaskRepository(srv.db)
 	jobRepo := dispatcher.NewJobRepository(srv.db)
@@ -265,15 +274,16 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	}
 
 	taskSvc := &api.TaskAppService{
-		Tasks:       taskRepo,
-		Actions:     taskRepo,
-		Jobs:        jobStore,
-		Meta:        store,
-		Workflow:    workflow,
-		Projects:    projectRepo,
-		RuntimesDir: runtimesDirFor(cfg),
-		Notify:      notifySvc,
-		BlockingAsk: api.NewBlockingAskRegistry(),
+		Tasks:              taskRepo,
+		Actions:            taskRepo,
+		Jobs:               jobStore,
+		Meta:               store,
+		Workflow:           workflow,
+		Projects:           projectRepo,
+		RuntimesDir:        runtimesDirFor(cfg),
+		Notify:             notifySvc,
+		BlockingAsk:        api.NewBlockingAskRegistry(),
+		AskDisconnectGrace: boidCfg.TaskAsk.DisconnectGrace,
 	}
 	if srv.broker != nil {
 		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: runtimesDirFor(cfg)})
