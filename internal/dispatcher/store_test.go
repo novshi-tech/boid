@@ -45,6 +45,75 @@ func TestMarkStaleExecutingTasksAborted_TransitionsExecuting(t *testing.T) {
 	}
 }
 
+// After a restart no agent is parked in the in-memory BlockingAskRegistry, so
+// awaiting tasks are zombies and must be reclaimed: aborted with from_status
+// awaiting and the daemon_shutdown code (so the startup auto-reopen picks them
+// up). Executing tasks are left to MarkStaleExecutingTasksAborted.
+func TestMarkStaleAwaitingTasksAborted_TransitionsAwaiting(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	awaiting := &orchestrator.Task{ProjectID: "proj-1", Title: "awaiting", Behavior: "executor"}
+	executing := &orchestrator.Task{ProjectID: "proj-1", Title: "executing", Behavior: "executor"}
+	if err := orchestrator.CreateTask(d.Conn, awaiting); err != nil {
+		t.Fatalf("create awaiting: %v", err)
+	}
+	if err := orchestrator.CreateTask(d.Conn, executing); err != nil {
+		t.Fatalf("create executing: %v", err)
+	}
+	if _, err := d.Conn.Exec(`UPDATE tasks SET status = 'awaiting' WHERE id = ?`, awaiting.ID); err != nil {
+		t.Fatalf("set awaiting: %v", err)
+	}
+	if _, err := d.Conn.Exec(`UPDATE tasks SET status = 'executing' WHERE id = ?`, executing.ID); err != nil {
+		t.Fatalf("set executing: %v", err)
+	}
+
+	n, err := dispatcher.MarkStaleAwaitingTasksAborted(d.Conn)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 awaiting task aborted, got %d", n)
+	}
+
+	var awaitingStatus, execStatus string
+	if err := d.Conn.QueryRow(`SELECT status FROM tasks WHERE id = ?`, awaiting.ID).Scan(&awaitingStatus); err != nil {
+		t.Fatalf("query awaiting status: %v", err)
+	}
+	if awaitingStatus != "aborted" {
+		t.Errorf("awaiting task status = %s, want aborted", awaitingStatus)
+	}
+	if err := d.Conn.QueryRow(`SELECT status FROM tasks WHERE id = ?`, executing.ID).Scan(&execStatus); err != nil {
+		t.Fatalf("query executing status: %v", err)
+	}
+	if execStatus != "executing" {
+		t.Errorf("executing task should be untouched by the awaiting reaper, got %s", execStatus)
+	}
+
+	// The abort action carries from_status=awaiting and the daemon_shutdown code.
+	var fromStatus string
+	var payload []byte
+	if err := d.Conn.QueryRow(
+		`SELECT from_status, payload FROM actions WHERE task_id = ? AND type = 'abort'`, awaiting.ID,
+	).Scan(&fromStatus, &payload); err != nil {
+		t.Fatalf("query abort action: %v", err)
+	}
+	if fromStatus != "awaiting" {
+		t.Errorf("abort from_status = %s, want awaiting", fromStatus)
+	}
+	var pj struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(payload, &pj); err != nil {
+		t.Fatalf("unmarshal abort payload: %v", err)
+	}
+	if pj.Code != "daemon_shutdown" {
+		t.Errorf("abort code = %s, want daemon_shutdown (for auto-reopen)", pj.Code)
+	}
+}
+
 func TestMarkStaleExecutingTasksAborted_RecordsAbortAction(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {

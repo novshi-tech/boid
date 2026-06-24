@@ -15,6 +15,17 @@ type Config struct {
 	Web     WebConfig     `yaml:"web"`
 	Notify  NotifyConfig  `yaml:"notify"`
 	Sandbox SandboxConfig `yaml:"sandbox"`
+	TaskAsk TaskAskConfig `yaml:"task_ask"`
+}
+
+// TaskAskConfig holds settings for the blocking `boid task ask` Q&A RPC.
+type TaskAskConfig struct {
+	// DisconnectGrace is how long an awaiting task may sit with no live agent
+	// parked (the agent's `boid task ask` was killed by a harness command-timeout
+	// and disconnected) before the daemon reclaims it. The agent normally
+	// re-asks within one command-timeout and re-attaches; the grace bounds the
+	// case where it never returns.
+	DisconnectGrace time.Duration `yaml:"-"`
 }
 
 // SandboxConfig holds sandbox-related settings.
@@ -47,6 +58,9 @@ func DefaultConfig() *Config {
 			Enabled:   true,
 			Interval:  24 * time.Hour,
 			OlderThan: 720 * time.Hour,
+		},
+		TaskAsk: TaskAskConfig{
+			DisconnectGrace: 30 * time.Minute,
 		},
 	}
 }
@@ -102,12 +116,16 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		Sandbox struct {
 			AllowedDomains []string `yaml:"allowed_domains"`
 		} `yaml:"sandbox"`
+		TaskAsk struct {
+			DisconnectGrace string `yaml:"disconnect_grace"`
+		} `yaml:"task_ask"`
 	}
 	if err := value.Decode(&raw); err != nil {
 		return err
 	}
 
 	c.GC = defaults.GC
+	c.TaskAsk = defaults.TaskAsk
 
 	if raw.GC.Enabled != nil {
 		c.GC.Enabled = *raw.GC.Enabled
@@ -133,6 +151,14 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	c.Notify.Command = raw.Notify.Command
 
 	c.Sandbox.AllowedDomains = raw.Sandbox.AllowedDomains
+
+	if raw.TaskAsk.DisconnectGrace != "" {
+		d, err := time.ParseDuration(raw.TaskAsk.DisconnectGrace)
+		if err != nil {
+			return fmt.Errorf("task_ask.disconnect_grace: %w", err)
+		}
+		c.TaskAsk.DisconnectGrace = d
+	}
 
 	return nil
 }
