@@ -46,15 +46,22 @@ func (r *BlockingAskRegistry) ensureInit() {
 
 // Register reserves the answer channel for (taskID, qid). It MUST be called
 // before the task transitions to awaiting so an answer that arrives immediately
-// afterwards is never dropped. Returns ErrAskPending if the task already has a
-// pending blocking ask (decision B1). The check-and-insert is atomic under the
-// registry lock, so two concurrent asks for the same task can never both
-// succeed.
+// afterwards is never dropped. The check-and-insert is atomic under the registry
+// lock, so two concurrent asks for the same task can never both succeed.
+//
+// B1 (relaxed): a second pending ask for the same task fails with ErrAskPending
+// ONLY when it carries a DIFFERENT question id. Re-registering the SAME qid is a
+// re-attach — an agent whose `boid task ask` was killed by a harness
+// command-timeout retrying the identical question — and is allowed. The
+// re-attach installs a fresh channel; any prior waiter is already tearing down
+// on its cancelled context. (Even if its deferred Cancel later clobbers this
+// channel, the durable PendingAnswer path backstops delivery, so at worst the
+// fast path degrades to one extra ask round-trip.)
 func (r *BlockingAskRegistry) Register(taskID, qid string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ensureInit()
-	if _, ok := r.qidByTask[taskID]; ok {
+	if cur, ok := r.qidByTask[taskID]; ok && cur != qid {
 		return ErrAskPending
 	}
 	r.channels[qid] = make(chan string, 1)

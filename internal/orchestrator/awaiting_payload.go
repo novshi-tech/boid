@@ -65,6 +65,37 @@ func ClearPendingAnswer(payload json.RawMessage) json.RawMessage {
 	return out
 }
 
+// SetPendingAnswer writes answer into the awaiting trait's pending_answer field
+// while preserving question/question_id and any sibling traits. It is the
+// durable counterpart to the in-memory BlockingAskRegistry delivery: when the
+// answering agent has disconnected (its `boid task ask` foreground command was
+// killed by a harness command-timeout), the answer is parked here so the agent
+// picks it up on its next ask. If the awaiting trait is absent, one is created
+// holding just the answer so it is never silently dropped.
+func SetPendingAnswer(payload json.RawMessage, answer string) json.RawMessage {
+	top := map[string]json.RawMessage{}
+	if len(payload) > 0 {
+		if err := json.Unmarshal(payload, &top); err != nil {
+			return payload
+		}
+	}
+	var ap AwaitingPayload
+	if raw, ok := top[string(TraitAwaiting)]; ok && string(raw) != "null" {
+		_ = json.Unmarshal(raw, &ap)
+	}
+	ap.PendingAnswer = answer
+	apJSON, err := json.Marshal(ap)
+	if err != nil {
+		return payload
+	}
+	top[string(TraitAwaiting)] = apJSON
+	out, err := json.Marshal(top)
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
 // StripAwaitingTrait removes the entire awaiting trait from a payload.
 // The awaiting trait is owned exclusively by ApplyAction("ask"/"answer") and
 // the lifecycle, so any value carried in a coordinator's FinalPayload (which
