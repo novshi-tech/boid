@@ -3,9 +3,7 @@ package cmd
 import (
 	"context"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/novshi-tech/boid/internal/client"
-	"github.com/novshi-tech/boid/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -32,17 +30,6 @@ var rootCmd = &cobra.Command{
 		}
 		return client.EnsureRunning(context.Background())
 	},
-	RunE: runTUI,
-}
-
-func runTUI(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
-	tmuxEnabled := tui.InTmux()
-
-	app := tui.NewApp(c, tmuxEnabled)
-	p := tea.NewProgram(app, tea.WithAltScreen())
-	_, err := p.Run()
-	return err
 }
 
 func init() {
