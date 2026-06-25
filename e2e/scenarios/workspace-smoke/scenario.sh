@@ -36,7 +36,15 @@ e2e_log "verifying ws-1 has 2 projects"
 ws_list="$("$E2E_BIN_DIR/boid" workspace list)"
 printf '%s\n' "$ws_list"
 e2e_assert_contains "$ws_list" "ws-1"
-e2e_assert_contains "$ws_list" "2 projects"
+# New list format: tabular columns SLUG / STATE / PROJECTS.
+# ws-1 has no workspace.yaml so state is "unconfigured", count is 2.
+e2e_assert_contains "$ws_list" "unconfigured"
+# Grab the projects count from the ws-1 row.
+ws1_count="$(echo "$ws_list" | grep "ws-1" | awk '{print $NF}')"
+if [ "$ws1_count" != "2" ]; then
+  echo "ERROR: expected ws-1 project count 2, got '$ws1_count'"
+  exit 1
+fi
 
 # Step 6: Clear project-a's workspace assignment
 e2e_log "clearing project-a workspace assignment"
@@ -49,4 +57,9 @@ e2e_log "verifying ws-1 has 1 project after clearing project-a"
 ws_list="$("$E2E_BIN_DIR/boid" workspace list)"
 printf '%s\n' "$ws_list"
 e2e_assert_contains "$ws_list" "ws-1"
-e2e_assert_contains "$ws_list" "1 projects"
+# Grab the projects count from the ws-1 row.
+ws1_count="$(echo "$ws_list" | grep "ws-1" | awk '{print $NF}')"
+if [ "$ws1_count" != "1" ]; then
+  echo "ERROR: expected ws-1 project count 1, got '$ws1_count'"
+  exit 1
+fi
