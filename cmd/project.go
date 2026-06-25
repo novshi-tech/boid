@@ -162,9 +162,8 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	}
 
 	w := &initwizard.Wizard{
-		In:      os.Stdin,
-		Out:     cmd.OutOrStdout(),
-		KitsDir: defaultKitsDir(),
+		In:  os.Stdin,
+		Out: cmd.OutOrStdout(),
 	}
 
 	if err := w.Run(projectDir); err != nil {
@@ -198,7 +197,16 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 // assignProjectWorkspace sends PUT /api/projects/<id>/workspace to link the
 // project to a workspace. get-or-create semantics: the server creates a DB row
 // for the slug even when no workspace.yaml exists.
+//
+// CLI entry-point validation per plan (3-layer defense): a non-empty slug
+// must satisfy ValidWorkspaceSlug. Empty string means "clear" and is allowed
+// to bypass validation (handled at the domain layer).
 func assignProjectWorkspace(c *client.Client, projectID, workspaceSlug string) error {
+	if workspaceSlug != "" {
+		if err := projectspec.ValidWorkspaceSlug(workspaceSlug); err != nil {
+			return fmt.Errorf("invalid --workspace value: %w", err)
+		}
+	}
 	var result projectspec.Project
 	if err := c.Do("PUT", "/api/projects/"+projectID+"/workspace", map[string]string{"workspace_id": workspaceSlug}, &result); err != nil {
 		return fmt.Errorf("assign workspace %q: %w", workspaceSlug, err)

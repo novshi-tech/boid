@@ -311,6 +311,12 @@ func TestProjectMigrate_Apply_LegacyKit(t *testing.T) {
 	if !strings.Contains(kitContent, "/var/data") {
 		t.Errorf("kit.yaml missing additional_bindings source:\n%s", kitContent)
 	}
+
+	// Env must NOT appear in the legacy kit; per the plan's transformation
+	// table, env migrates only to workspace.yaml, not to the legacy kit.
+	if strings.Contains(kitContent, "\nenv:") {
+		t.Errorf("legacy kit.yaml must not contain top-level env: (env should live in workspace.yaml only):\n%s", kitContent)
+	}
 }
 
 // TestProjectMigrate_NoLegacyKit verifies no legacy kit is created when

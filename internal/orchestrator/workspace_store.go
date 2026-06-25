@@ -55,13 +55,13 @@ func (s *WorkspaceStore) Load(slug string) (*WorkspaceMeta, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("workspace %q: %w", slug, os.ErrNotExist)
+			return nil, fmt.Errorf("workspace %q (%s): %w", slug, path, os.ErrNotExist)
 		}
-		return nil, fmt.Errorf("workspace %q: read: %w", slug, err)
+		return nil, fmt.Errorf("workspace %q (%s): read: %w", slug, path, err)
 	}
 	var meta WorkspaceMeta
 	if err := yaml.Unmarshal(data, &meta); err != nil {
-		return nil, fmt.Errorf("workspace %q: parse: %w", slug, err)
+		return nil, fmt.Errorf("workspace %q (%s): parse: %w", slug, path, err)
 	}
 	return &meta, nil
 }

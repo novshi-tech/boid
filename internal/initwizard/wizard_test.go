@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/initwizard"
-	"github.com/novshi-tech/boid/internal/orchestrator"
 	"gopkg.in/yaml.v3"
 )
 
@@ -84,62 +83,28 @@ func TestExpandScaffoldTemplate_AgentEmpty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ListAllKits tests
-// ---------------------------------------------------------------------------
-
-func TestListAllKits_Empty(t *testing.T) {
-	kitsDir := t.TempDir()
-	reg := orchestrator.NewRegistry(kitsDir)
-	kits, err := initwizard.ListAllKits(reg)
-	if err != nil {
-		t.Fatalf("ListAllKits: %v", err)
-	}
-	if len(kits) != 0 {
-		t.Errorf("expected 0 kits, got %d", len(kits))
-	}
-}
-
-func TestListAllKits_WithKits(t *testing.T) {
-	kitsDir := t.TempDir()
-	createFakeKit(t, kitsDir, "go-tools", "go-tools")
-	createFakeKit(t, kitsDir, "node-lts", "node-lts")
-
-	reg := orchestrator.NewRegistry(kitsDir)
-	kits, err := initwizard.ListAllKits(reg)
-	if err != nil {
-		t.Fatalf("ListAllKits: %v", err)
-	}
-	if len(kits) != 2 {
-		t.Fatalf("expected 2 kits, got %d", len(kits))
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Integration tests: full wizard run
 // ---------------------------------------------------------------------------
 
+// TestWizardRun_Basic verifies the wizard generates a portable project.yaml
+// containing only id / name / worktree / task_behaviors. Per the kit /
+// workspace / project reorg, project.yaml must NOT contain kits, env,
+// host_commands, additional_bindings, secret_namespace, or capabilities.
 func TestWizardRun_Basic(t *testing.T) {
-	kitsDir := t.TempDir()
-	createFakeKit(t, kitsDir, "go-tools", "go-tools")
-	createFakeKit(t, kitsDir, "node-lts", "node-lts")
-
 	projectDir := t.TempDir()
 
-	// Stdin: project name, select kit 1 (Enter)
-	input := "my-test-project\n1\n"
+	input := "my-test-project\n"
 	var out bytes.Buffer
 
 	w := &initwizard.Wizard{
-		In:      strings.NewReader(input),
-		Out:     &out,
-		KitsDir: kitsDir,
+		In:  strings.NewReader(input),
+		Out: &out,
 	}
 
 	if err := w.Run(projectDir); err != nil {
 		t.Fatalf("Run: %v\nOutput:\n%s", err, out.String())
 	}
 
-	// Verify .boid/project.yaml exists and is parseable
 	yamlPath := filepath.Join(projectDir, ".boid", "project.yaml")
 	data, err := os.ReadFile(yamlPath)
 	if err != nil {
@@ -172,11 +137,11 @@ func TestWizardRun_Basic(t *testing.T) {
 			t.Errorf("expected %q behavior in task_behaviors", key)
 		}
 	}
+
+	assertNoMachineLocalKeys(t, data)
 }
 
 func TestWizardRun_DefaultProjectName(t *testing.T) {
-	kitsDir := t.TempDir()
-
 	projectDir := t.TempDir()
 
 	// Stdin: empty line for project name (uses default = dir basename)
@@ -184,9 +149,8 @@ func TestWizardRun_DefaultProjectName(t *testing.T) {
 	var out bytes.Buffer
 
 	w := &initwizard.Wizard{
-		In:      strings.NewReader(input),
-		Out:     &out,
-		KitsDir: kitsDir,
+		In:  strings.NewReader(input),
+		Out: &out,
 	}
 
 	if err := w.Run(projectDir); err != nil {
@@ -210,23 +174,22 @@ func TestWizardRun_DefaultProjectName(t *testing.T) {
 	if proj.Name != expected {
 		t.Errorf("Name = %q, want %q (directory base name)", proj.Name, expected)
 	}
+
+	assertNoMachineLocalKeys(t, data)
 }
 
 // TestWizardRun_EmbeddedBehaviors verifies that the wizard always generates
 // supervisor and executor behaviors from the built-in template, and sets
-// worktree: true, without requiring any kit to be installed.
+// worktree: true.
 func TestWizardRun_EmbeddedBehaviors(t *testing.T) {
-	kitsDir := t.TempDir()
-
 	projectDir := t.TempDir()
 
 	input := "embed-project\n"
 	var out bytes.Buffer
 
 	w := &initwizard.Wizard{
-		In:      strings.NewReader(input),
-		Out:     &out,
-		KitsDir: kitsDir,
+		In:  strings.NewReader(input),
+		Out: &out,
 	}
 
 	if err := w.Run(projectDir); err != nil {
@@ -258,51 +221,24 @@ func TestWizardRun_EmbeddedBehaviors(t *testing.T) {
 			t.Errorf("expected %q in task_behaviors, got keys: %v", key, mapKeys(proj.TaskBehaviors))
 		}
 	}
+
+	assertNoMachineLocalKeys(t, data)
 }
 
 func TestWizardRun_ExistingProjectYAML(t *testing.T) {
-	// The conflict check happens in cmd/init.go, not in the wizard itself.
+	// The conflict check happens in cmd/project.go, not in the wizard itself.
 	// We verify that the wizard CAN run even if there is a project.yaml
-	// (it would overwrite – the guard lives in the cmd layer).
-	kitsDir := t.TempDir()
+	// (it would overwrite — the guard lives in the cmd layer).
 	projectDir := t.TempDir()
 
 	input := "\n"
 	var out bytes.Buffer
 	w := &initwizard.Wizard{
-		In:      strings.NewReader(input),
-		Out:     &out,
-		KitsDir: kitsDir,
+		In:  strings.NewReader(input),
+		Out: &out,
 	}
 	if err := w.Run(projectDir); err != nil {
 		t.Fatalf("Run: %v", err)
-	}
-}
-
-// TestWizardRun_NoKitsInstalled verifies that the wizard works when no kits
-// are installed (skips kit selection prompt).
-func TestWizardRun_NoKitsInstalled(t *testing.T) {
-	kitsDir := t.TempDir()
-	projectDir := t.TempDir()
-
-	input := "no-kit-project\n"
-	var out bytes.Buffer
-
-	w := &initwizard.Wizard{In: strings.NewReader(input), Out: &out, KitsDir: kitsDir}
-	if err := w.Run(projectDir); err != nil {
-		t.Fatalf("Run: %v\nOutput:\n%s", err, out.String())
-	}
-
-	data, err := os.ReadFile(filepath.Join(projectDir, ".boid", "project.yaml"))
-	if err != nil {
-		t.Fatalf("read project.yaml: %v", err)
-	}
-	var projFull map[string]any
-	if err := yaml.Unmarshal(data, &projFull); err != nil {
-		t.Fatalf("parse project.yaml: %v", err)
-	}
-	if _, ok := projFull["kits"]; ok {
-		t.Error("expected no top-level 'kits' field in project.yaml when no kits selected")
 	}
 }
 
@@ -310,16 +246,20 @@ func TestWizardRun_NoKitsInstalled(t *testing.T) {
 // helpers
 // ---------------------------------------------------------------------------
 
-func createFakeKit(t *testing.T, kitsDir, name, displayName string) {
+// assertNoMachineLocalKeys asserts that the project.yaml does not contain any
+// of the machine-local keys that have been moved to workspace.yaml / kit.yaml.
+// See docs/plans/kit-workspace-project-reorg.md (削除キー化するフィールド).
+func assertNoMachineLocalKeys(t *testing.T, data []byte) {
 	t.Helper()
-	kitDir := filepath.Join(kitsDir, name)
-	if err := os.MkdirAll(kitDir, 0o755); err != nil {
-		t.Fatalf("mkdir kit: %v", err)
+	var projFull map[string]any
+	if err := yaml.Unmarshal(data, &projFull); err != nil {
+		t.Fatalf("parse project.yaml as map: %v", err)
 	}
-
-	content := "meta:\n  name: " + displayName + "\n"
-	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(content), 0o644); err != nil {
-		t.Fatalf("write kit.yaml: %v", err)
+	forbidden := []string{"kits", "env", "host_commands", "additional_bindings", "secret_namespace", "capabilities"}
+	for _, key := range forbidden {
+		if _, ok := projFull[key]; ok {
+			t.Errorf("project.yaml must not contain top-level %q (moved to workspace.yaml / kit.yaml)", key)
+		}
 	}
 }
 
