@@ -2,9 +2,10 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/novshi-tech/boid/internal/client"
-	kit "github.com/novshi-tech/boid/internal/orchestrator"
+	orchestrator "github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
 )
 
@@ -13,36 +14,85 @@ var kitCmd = &cobra.Command{
 	Short: "Manage kits",
 }
 
-var kitInstallSSH bool
-
-var kitInstallCmd = &cobra.Command{
-	Use:   "install [repo]",
-	Short: "Install kit repositories",
-	Long:  "Install a kit repository. Without arguments, installs all remote kit repos referenced by the current project.",
-	Args:  cobra.RangeArgs(0, 1),
+// kitInitCmd is a stub for the kit init command. The full implementation
+// (environment scan + kit.yaml generation) will be added in a subsequent PR.
+var kitInitCmd = &cobra.Command{
+	Use:   "init",
+	Short: "Generate kit.yaml for this machine (stub — full implementation in a future PR)",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 1 {
-			return kitInstallSingle(args[0])
-		}
-		return kitInstallFromProject()
+		fmt.Println("boid kit init: 生成スキルは今後の PR で実装予定です")
+		return nil
 	},
 }
 
-func kitInstallSingle(repoRef string) error {
-	reg := kit.NewRegistry(defaultKitsDir())
-	if err := reg.Install(repoRef, kitInstallSSH); err != nil {
-		return err
-	}
-	fmt.Printf("installed: %s\n", repoRef)
-	reloadProjects()
-	return nil
+var kitListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List installed kits",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		reg := orchestrator.NewRegistry(defaultKitsDir())
+		names, err := reg.List()
+		if err != nil {
+			return err
+		}
+		if len(names) == 0 {
+			fmt.Println("no kits installed")
+			return nil
+		}
+		for _, n := range names {
+			fmt.Println(n)
+		}
+		return nil
+	},
 }
 
-func kitInstallFromProject() error {
-	// Kit refs are no longer declared in project.yaml. Use `boid kit install <repo>`
-	// to install a specific kit repository, or configure kits via workspace.yaml.
-	fmt.Println("no remote kit repos to install (kits are no longer declared in project.yaml; use workspace.yaml)")
-	return nil
+var kitRemoveCmd = &cobra.Command{
+	Use:   "remove <name>",
+	Short: "Remove an installed kit",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+
+		// Check if any workspace references this kit.
+		wsStore := orchestrator.NewWorkspaceStore("")
+		slug, checkErr := workspacesReferencingKit(wsStore, name)
+		if checkErr != nil {
+			return fmt.Errorf("check workspace references: %w", checkErr)
+		}
+		if len(slug) > 0 {
+			return fmt.Errorf("kit %q is referenced by workspace(s): %s\nRemove the kit from those workspaces first", name, strings.Join(slug, ", "))
+		}
+
+		reg := orchestrator.NewRegistry(defaultKitsDir())
+		if err := reg.Remove(name); err != nil {
+			return err
+		}
+		fmt.Printf("removed: %s\n", name)
+		return nil
+	},
+}
+
+// workspacesReferencingKit returns the slugs of workspaces whose Kits field
+// contains the given kit name.
+func workspacesReferencingKit(store *orchestrator.WorkspaceStore, kitName string) ([]string, error) {
+	slugs, err := store.List()
+	if err != nil {
+		return nil, err
+	}
+	var refs []string
+	for _, slug := range slugs {
+		ws, err := store.Load(slug)
+		if err != nil {
+			continue // skip unloadable workspaces
+		}
+		for _, k := range ws.Kits {
+			if k == kitName {
+				refs = append(refs, slug)
+				break
+			}
+		}
+	}
+	return refs, nil
 }
 
 func reloadProjects() {
@@ -53,56 +103,7 @@ func reloadProjects() {
 	fmt.Println("projects reloaded")
 }
 
-var kitListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List installed kit repositories",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		reg := kit.NewRegistry(defaultKitsDir())
-		repos, err := reg.List()
-		if err != nil {
-			return err
-		}
-		if len(repos) == 0 {
-			fmt.Println("no kits installed")
-			return nil
-		}
-		for _, r := range repos {
-			fmt.Println(r)
-		}
-		return nil
-	},
-}
-
-var kitRemoveCmd = &cobra.Command{
-	Use:   "remove <repo>",
-	Short: "Remove an installed kit repository",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		reg := kit.NewRegistry(defaultKitsDir())
-		if err := reg.Remove(args[0]); err != nil {
-			return err
-		}
-		fmt.Printf("removed: %s\n", args[0])
-		return nil
-	},
-}
-
-var kitUpdateCmd = &cobra.Command{
-	Use:   "update <repo>",
-	Short: "Update an installed kit repository (git pull)",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		reg := kit.NewRegistry(defaultKitsDir())
-		if err := reg.Update(args[0]); err != nil {
-			return err
-		}
-		fmt.Printf("updated: %s\n", args[0])
-		return nil
-	},
-}
-
 func init() {
-	kitInstallCmd.Flags().BoolVar(&kitInstallSSH, "ssh", false, "Use SSH protocol (git@host:path) instead of HTTPS")
-	kitCmd.AddCommand(kitInstallCmd, kitListCmd, kitRemoveCmd, kitUpdateCmd)
+	kitCmd.AddCommand(kitInitCmd, kitListCmd, kitRemoveCmd)
 	rootCmd.AddCommand(kitCmd)
 }

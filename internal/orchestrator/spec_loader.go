@@ -470,15 +470,9 @@ func ResolveKitAgent(ref KitRef) string {
 }
 
 // IsProjectScopable reports whether a kit may be placed in the top-level
-// project.yaml kits field. A kit is project-scopable when all its hooks have
-// kind == "agent" (opt-in via instructions, so they cannot fire unexpectedly
-// across behaviors).
+// project.yaml kits field. Kits no longer provide hooks or task_behaviors,
+// so all kits are project-scopable by definition.
 func IsProjectScopable(km *KitMeta) error {
-	for _, h := range km.Hooks {
-		if h.Kind != HandlerKindAgent {
-			return fmt.Errorf("hook %s の kind が agent 以外のため top-level kits に指定できません", h.ID)
-		}
-	}
 	return nil
 }
 
@@ -601,31 +595,10 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 	if err := yaml.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("parse kit.yaml: %w", err)
 	}
-	normalized, err := normalizeBehaviorAliases(fmt.Sprintf("kit.yaml (%s)", dir), meta.TaskBehaviors)
-	if err != nil {
-		return nil, err
-	}
-	meta.TaskBehaviors = normalized
 
 	interpolateBindMounts(meta.AdditionalBindings)
 	interpolateHostCommands(meta.HostCommands)
 	interpolateEnvMap(meta.Env)
-
-	hooksDir := filepath.Join(dir, "hooks")
-	for i := range meta.Hooks {
-		h := &meta.Hooks[i]
-		if err := validateHookKind(h); err != nil {
-			return nil, fmt.Errorf("kit.yaml: %w", err)
-		}
-		scriptPath, err := ResolveHookScript(hooksDir, h.ID)
-		if err != nil {
-			return nil, fmt.Errorf("hook %q: %w", h.ID, err)
-		}
-		h.ScriptPath = scriptPath
-	}
-	if len(meta.Hooks) > 0 {
-		meta.HooksDir = hooksDir
-	}
 
 	meta.KitRoot = dir
 
@@ -700,29 +673,6 @@ func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitAgents
 		behavior.Env = mergedEnv
 	}
 
-	// Hooks: prefix IDs with agent, tag with Kit name (provenance).
-	// Agent (routing identity) is inherited from kit agent only for
-	// agent-kind hooks; non-agent hooks don't use Agent for routing.
-	var allHooks []Hook
-	allHooks = append(allHooks, behavior.Hooks...)
-	for i, kit := range kits {
-		agent := ""
-		if i < len(kitAgents) {
-			agent = kitAgents[i]
-		}
-		for _, h := range kit.Hooks {
-			h.Kit = agent
-			if agent != "" {
-				h.ID = agent + "/" + h.ID
-			}
-			if h.Kind == HandlerKindAgent && h.Agent == "" {
-				h.Agent = agent
-			}
-			allHooks = append(allHooks, h)
-		}
-	}
-	behavior.Hooks = allHooks
-
 	// HostCommands: behavior wins over kits.
 	if len(rt.HostCommands) > 0 || len(behavior.HostCommands) > 0 {
 		mergedCmds := make(HostCommands)
@@ -748,15 +698,6 @@ func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitAgents
 		}
 		seen[kit.KitRoot] = true
 		behavior.KitRoots = append(behavior.KitRoots, kit.KitRoot)
-	}
-
-	// Post-merge validation: kind: agent hooks must have an Agent. kit
-	// inheritance may have filled it in; if still empty, the kit had no agent
-	// name to inherit, which is a configuration error.
-	for _, h := range behavior.Hooks {
-		if h.Kind == HandlerKindAgent && h.Agent == "" {
-			return fmt.Errorf("hook %q: kind: agent requires Agent (kit has no agent name to inherit)", h.ID)
-		}
 	}
 
 	return nil

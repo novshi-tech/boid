@@ -520,13 +520,7 @@ additional_bindings:
 func TestReadKitMeta(t *testing.T) {
 	t.Run("valid", func(t *testing.T) {
 		dir := t.TempDir()
-		hooksDir := filepath.Join(dir, "hooks")
-		_ = os.MkdirAll(hooksDir, 0o755)
-		_ = os.WriteFile(filepath.Join(hooksDir, "run-build.sh"), []byte("#!/bin/bash\necho ok"), 0o755)
 		writeKitYAML(t, dir, `
-hooks:
-  - id: run-build
-    requires_traits: [prompt]
 host_commands:
   go:
     path: /usr/bin/go
@@ -534,20 +528,13 @@ additional_bindings:
   - source: /usr/local/go
 env:
   GOPATH: /home/user/go
-task_behaviors:
-  dev:
-    name: development
-    traits: [prompt]
 `)
 
 		meta, err := projectspec.ReadKitMeta(dir)
 		if err != nil {
 			t.Fatalf("ReadKitMeta: %v", err)
 		}
-		if len(meta.Hooks) != 1 || meta.Hooks[0].ID != "run-build" || meta.Hooks[0].ScriptPath == "" {
-			t.Fatalf("unexpected hooks: %+v", meta.Hooks)
-		}
-		if _, ok := meta.HostCommands["go"]; !ok || meta.Env["GOPATH"] != "/home/user/go" || meta.HooksDir != hooksDir {
+		if _, ok := meta.HostCommands["go"]; !ok || meta.Env["GOPATH"] != "/home/user/go" {
 			t.Fatalf("unexpected meta: %+v", meta)
 		}
 	})
@@ -576,59 +563,6 @@ task_behaviors:
 		}
 	})
 
-	t.Run("invalid hook on", func(t *testing.T) {
-		dir := t.TempDir()
-		writeKitYAML(t, dir, "hooks:\n  - id: bad-hook\n    on: invalid_status\n")
-		_, err := projectspec.ReadKitMeta(dir)
-		if err == nil {
-			t.Fatal("expected error for invalid hook on value")
-		}
-	})
-
-	t.Run("missing hook script", func(t *testing.T) {
-		dir := t.TempDir()
-		writeKitYAML(t, dir, "hooks:\n  - id: no-script\n")
-		_, err := projectspec.ReadKitMeta(dir)
-		if err == nil {
-			t.Fatal("expected error for missing hook script")
-		}
-	})
-
-	t.Run("invalid kind value is rejected", func(t *testing.T) {
-		dir := t.TempDir()
-		hooksDir := filepath.Join(dir, "hooks")
-		_ = os.MkdirAll(hooksDir, 0o755)
-		_ = os.WriteFile(filepath.Join(hooksDir, "bad.sh"), []byte("#!/bin/bash\n"), 0o755)
-		writeKitYAML(t, dir, "hooks:\n  - id: bad\n    kind: runner\n")
-		_, err := projectspec.ReadKitMeta(dir)
-		if err == nil || !strings.Contains(err.Error(), "invalid kind") {
-			t.Fatalf("expected invalid kind error, got %v", err)
-		}
-	})
-
-	t.Run("agent field without kind: agent is rejected", func(t *testing.T) {
-		dir := t.TempDir()
-		hooksDir := filepath.Join(dir, "hooks")
-		_ = os.MkdirAll(hooksDir, 0o755)
-		_ = os.WriteFile(filepath.Join(hooksDir, "util.sh"), []byte("#!/bin/bash\n"), 0o755)
-		writeKitYAML(t, dir, "hooks:\n  - id: util\n    agent: claude-code\n")
-		_, err := projectspec.ReadKitMeta(dir)
-		if err == nil || !strings.Contains(err.Error(), "agent") {
-			t.Fatalf("expected agent-without-kind error, got %v", err)
-		}
-	})
-
-	t.Run("deprecated flag is parsed", func(t *testing.T) {
-		dir := t.TempDir()
-		writeKitYAML(t, dir, "deprecated: true\nmeta:\n  name: old-kit\n")
-		meta, err := projectspec.ReadKitMeta(dir)
-		if err != nil {
-			t.Fatalf("ReadKitMeta: %v", err)
-		}
-		if !meta.Deprecated {
-			t.Error("expected Deprecated to be true")
-		}
-	})
 }
 
 func TestReadProjectMetaWithKits_RejectsBuiltinInHostCommands(t *testing.T) {
@@ -673,18 +607,17 @@ func TestMergeKitMetaIntoBehavior(t *testing.T) {
 		kit := &projectspec.KitMeta{
 			HostCommands:       projectspec.HostCommands{"go": {Path: "/usr/bin/go"}, "git": {Path: "/usr/bin/git"}},
 			AdditionalBindings: []projectspec.BindMount{{Source: "/usr/local/go"}},
-			Hooks:              []projectspec.Hook{{ID: "kit-hook", ScriptPath: "/kit/hooks/kit-hook.sh"}},
-			HooksDir:           "/kit/hooks",
 			KitRoot:            "/kit",
 			Env:                map[string]string{"GOPATH": "/home/go", "PROJECT_VAR": "kit-overridden"},
 		}
 
 		result := mergeKitsIntoBehavior(t, base, []*projectspec.KitMeta{kit}, []string{"mykit"})
-		if len(result.HostCommands) != 2 || len(result.AdditionalBindings) != 1 || len(result.Hooks) != 2 {
+		// Kits no longer provide hooks; only base behavior hooks should be present.
+		if len(result.HostCommands) != 2 || len(result.AdditionalBindings) != 1 || len(result.Hooks) != 1 {
 			t.Fatalf("unexpected merge result: %+v", result)
 		}
-		if result.Hooks[0].ID != "proj-hook" || result.Hooks[1].ID != "mykit/kit-hook" {
-			t.Fatalf("unexpected hook order: %+v", result.Hooks)
+		if result.Hooks[0].ID != "proj-hook" {
+			t.Fatalf("unexpected hook: %+v", result.Hooks)
 		}
 		if result.Env["GOPATH"] != "/home/go" || result.Env["PROJECT_VAR"] != "pval" {
 			t.Fatalf("unexpected env: %+v", result.Env)
@@ -708,21 +641,6 @@ func TestMergeKitMetaIntoBehavior(t *testing.T) {
 		}
 	})
 
-	t.Run("same raw hook id across kit and base both survive with qualified IDs", func(t *testing.T) {
-		base := projectspec.TaskBehavior{Hooks: []projectspec.Hook{{ID: "build", ScriptPath: "/proj/hooks/build.sh"}}}
-		kit := &projectspec.KitMeta{Hooks: []projectspec.Hook{{ID: "build", ScriptPath: "/kit/hooks/build.sh"}}, HooksDir: "/kit/hooks"}
-
-		result := mergeKitsIntoBehavior(t, base, []*projectspec.KitMeta{kit}, []string{"mykit"})
-		if len(result.Hooks) != 2 {
-			t.Fatalf("expected 2 hooks (base + kit), got %d: %+v", len(result.Hooks), result.Hooks)
-		}
-		if result.Hooks[0].ID != "build" {
-			t.Errorf("hook[0].ID = %q, want %q", result.Hooks[0].ID, "build")
-		}
-		if result.Hooks[1].ID != "mykit/build" {
-			t.Errorf("hook[1].ID = %q, want %q", result.Hooks[1].ID, "mykit/build")
-		}
-	})
 }
 
 func TestResolveKitAgent(t *testing.T) {
@@ -772,81 +690,6 @@ func TestReadProjectMetaWithKits_BehaviorLevelKitsRejected(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "task_behaviors.dev.kits is no longer supported") {
 			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-}
-
-func TestMergeKitMetaIntoBehavior_KitAgentFields(t *testing.T) {
-	t.Run("kit agent hook without explicit agent inherits kit agent name", func(t *testing.T) {
-		base := projectspec.TaskBehavior{}
-		kit := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{{ID: "kit-hook", Kind: projectspec.HandlerKindAgent, ScriptPath: "/kit/hooks/kit-hook.sh"}},
-		}
-
-		result := mergeKitsIntoBehavior(t, base, []*projectspec.KitMeta{kit}, []string{"claude-code"})
-		if len(result.Hooks) != 1 {
-			t.Fatalf("expected 1 hook, got %d", len(result.Hooks))
-		}
-		h := result.Hooks[0]
-		if h.Kit != "claude-code" || h.Agent != "claude-code" {
-			t.Errorf("unexpected kit/agent: %+v", h)
-		}
-	})
-
-	t.Run("kit non-agent hook gets Kit provenance but no Agent", func(t *testing.T) {
-		base := projectspec.TaskBehavior{}
-		kit := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{{ID: "util-hook", ScriptPath: "/kit/hooks/util-hook.sh"}},
-		}
-
-		result := mergeKitsIntoBehavior(t, base, []*projectspec.KitMeta{kit}, []string{"claude-code"})
-		h := result.Hooks[0]
-		if h.Kit != "claude-code" {
-			t.Errorf("expected Kit=claude-code, got %q", h.Kit)
-		}
-		if h.Agent != "" {
-			t.Errorf("non-agent hook should not inherit Agent, got %q", h.Agent)
-		}
-	})
-
-	t.Run("kit agent hook with explicit agent retains its agent", func(t *testing.T) {
-		base := projectspec.TaskBehavior{}
-		kit := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{{ID: "kit-hook", Kind: projectspec.HandlerKindAgent, ScriptPath: "/kit/hooks/kit-hook.sh", Agent: "explicit-agent"}},
-		}
-
-		result := mergeKitsIntoBehavior(t, base, []*projectspec.KitMeta{kit}, []string{"claude-code"})
-		h := result.Hooks[0]
-		if h.Kit != "claude-code" || h.Agent != "explicit-agent" {
-			t.Errorf("unexpected kit/agent: %+v", h)
-		}
-	})
-
-	t.Run("different kits with same hook ID both survive", func(t *testing.T) {
-		base := projectspec.TaskBehavior{}
-		kitA := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{{ID: "run-agent", ScriptPath: "/a/hooks/run-agent.sh"}},
-		}
-		kitB := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{{ID: "run-agent", ScriptPath: "/b/hooks/run-agent.sh"}},
-		}
-
-		result := mergeKitsIntoBehavior(t, base, []*projectspec.KitMeta{kitA, kitB}, []string{"claude-code", "codex"})
-		if len(result.Hooks) != 2 {
-			t.Fatalf("expected 2 hooks, got %d", len(result.Hooks))
-		}
-		if result.Hooks[0].ID != "claude-code/run-agent" || result.Hooks[1].ID != "codex/run-agent" {
-			t.Errorf("unexpected IDs: %+v", result.Hooks)
-		}
-	})
-
-	t.Run("base hooks are not prefixed", func(t *testing.T) {
-		base := projectspec.TaskBehavior{
-			Hooks: []projectspec.Hook{{ID: "my-hook", ScriptPath: "/proj/hooks/my-hook.sh"}},
-		}
-		result := mergeKitsIntoBehavior(t, base, nil, nil)
-		if len(result.Hooks) != 1 || result.Hooks[0].ID != "my-hook" {
-			t.Errorf("unexpected hooks: %+v", result.Hooks)
 		}
 	})
 }
@@ -1176,19 +1019,6 @@ requires:
 			t.Errorf("Meta.Category = %q, want %q", meta.Meta.Category, "language")
 		}
 
-		if meta.Detect == nil {
-			t.Fatal("expected Detect to be set")
-		}
-		if meta.Detect.Script != "scripts/detect.sh" {
-			t.Errorf("Detect.Script = %q, want %q", meta.Detect.Script, "scripts/detect.sh")
-		}
-
-		if meta.Requires == nil {
-			t.Fatal("expected Requires to be set")
-		}
-		if len(meta.Requires.Commands) != 1 || meta.Requires.Commands[0] != "go" {
-			t.Errorf("Requires.Commands = %v", meta.Requires.Commands)
-		}
 	})
 
 	t.Run("backward compatible: no new fields", func(t *testing.T) {
@@ -1205,12 +1035,6 @@ task_behaviors:
 		}
 		if meta.Meta != nil {
 			t.Error("expected Meta to be nil")
-		}
-		if meta.Detect != nil {
-			t.Error("expected Detect to be nil")
-		}
-		if meta.Requires != nil {
-			t.Error("expected Requires to be nil")
 		}
 	})
 
@@ -1623,32 +1447,11 @@ func TestReadProjectMetaWithKits_TopLevelKits_ScopeValidation_NonAgentHookReject
 }
 
 func TestIsProjectScopable(t *testing.T) {
-	t.Run("no hooks", func(t *testing.T) {
-		km := &projectspec.KitMeta{}
-		if err := projectspec.IsProjectScopable(km); err != nil {
-			t.Errorf("expected nil, got %v", err)
-		}
-	})
-
-	t.Run("agent-only hooks", func(t *testing.T) {
-		km := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{
-				{ID: "h1", Kind: projectspec.HandlerKindAgent},
-			},
-		}
-		if err := projectspec.IsProjectScopable(km); err != nil {
-			t.Errorf("expected nil for agent-only hooks, got %v", err)
-		}
-	})
-
-	t.Run("non-agent hook", func(t *testing.T) {
-		km := &projectspec.KitMeta{
-			Hooks: []projectspec.Hook{{ID: "h1"}},
-		}
-		if err := projectspec.IsProjectScopable(km); err == nil || !strings.Contains(err.Error(), "hook h1 の kind が agent 以外") {
-			t.Errorf("expected non-agent hook rejection, got %v", err)
-		}
-	})
+	// Kits no longer provide hooks; IsProjectScopable always returns nil.
+	km := &projectspec.KitMeta{}
+	if err := projectspec.IsProjectScopable(km); err != nil {
+		t.Errorf("expected nil, got %v", err)
+	}
 }
 
 func TestBindMount_Optional_PropagatedFromKitYAML(t *testing.T) {
@@ -1946,36 +1749,7 @@ task_behaviors:
 	}
 }
 
-// TestReadKitMeta_BehaviorAlias_PlanIsCanonicalizedToSupervisor verifies the
-// alias normalization runs for kit.yaml as well — kits can declare
-// task_behaviors too, and the same canonicalization contract applies.
-func TestReadKitMeta_BehaviorAlias_PlanIsCanonicalizedToSupervisor(t *testing.T) {
-	buf := captureSlog(t)
-	dir := t.TempDir()
-	writeKitYAML(t, dir, `
-task_behaviors:
-  plan:
-    name: plan
-    traits:
-      - artifact
-`)
-	meta, err := projectspec.ReadKitMeta(dir)
-	if err != nil {
-		t.Fatalf("ReadKitMeta: %v", err)
-	}
-	if _, ok := meta.TaskBehaviors["supervisor"]; !ok {
-		t.Errorf("expected canonical key 'supervisor' in kit, got keys=%v", kitBehaviorKeys(meta))
-	}
-	// ReadKitMeta normalizes alias keys to canonical without adding mirror
-	// entries. (Mirror entries are only added at the ReadProjectMetaWithKits
-	// boundary, where the fully resolved meta is exposed to runtime code.)
-	if _, ok := meta.TaskBehaviors["plan"]; ok {
-		t.Errorf("expected alias key 'plan' to be normalized away in kit")
-	}
-	if !strings.Contains(buf.String(), "deprecated") {
-		t.Errorf("expected deprecation log, got:\n%s", buf.String())
-	}
-}
+
 
 // TestReadProjectMetaWithKits_BehaviorAlias_MirrorsAddedAtRuntimeBoundary
 // verifies the second half of the alias contract: while ReadProjectMeta and
@@ -2035,22 +1809,7 @@ task_behaviors:
 	}
 }
 
-// TestReadKitMeta_BehaviorAlias_DuplicateRejected verifies the duplicate-
-// definition error also triggers for kit.yaml.
-func TestReadKitMeta_BehaviorAlias_DuplicateRejected(t *testing.T) {
-	dir := t.TempDir()
-	writeKitYAML(t, dir, `
-task_behaviors:
-  plan:
-    name: plan
-  supervisor:
-    name: supervisor
-`)
-	_, err := projectspec.ReadKitMeta(dir)
-	if err == nil || !strings.Contains(err.Error(), "duplicate") {
-		t.Fatalf("expected duplicate error, got %v", err)
-	}
-}
+
 
 func behaviorKeys(meta *projectspec.ProjectMeta) []string {
 	out := make([]string, 0, len(meta.TaskBehaviors))
@@ -2060,13 +1819,7 @@ func behaviorKeys(meta *projectspec.ProjectMeta) []string {
 	return out
 }
 
-func kitBehaviorKeys(meta *projectspec.KitMeta) []string {
-	out := make([]string, 0, len(meta.TaskBehaviors))
-	for k := range meta.TaskBehaviors {
-		out = append(out, k)
-	}
-	return out
-}
+
 
 // repoRootFromTestFile returns the absolute path to the boid repo root by
 // walking up from the location of this test file. The test file lives at
@@ -2146,35 +1899,7 @@ func TestReadProjectMeta_BoidSelfProjectYAML_LoadsInCanonicalForm(t *testing.T) 
 	}
 }
 
-func TestHook_NameFieldDecodedFromYAML(t *testing.T) {
-	kitDir := t.TempDir()
-	// ReadKitMeta resolves scripts in <kitDir>/hooks/<hookID>.sh
-	hookScript := filepath.Join(kitDir, "hooks", "my-kit", "pr-verify.sh")
-	if err := os.MkdirAll(filepath.Dir(hookScript), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(hookScript, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeKitYAML(t, kitDir, `
-hooks:
-  - id: my-kit/pr-verify
-    name: "PR Verify"
-    kind: agent
-    agent: claude-code
-`)
-	meta, err := projectspec.ReadKitMeta(kitDir)
-	if err != nil {
-		t.Fatalf("ReadKitMeta: %v", err)
-	}
-	if len(meta.Hooks) == 0 {
-		t.Fatal("expected at least one hook in kit meta")
-	}
-	h := meta.Hooks[0]
-	if h.Name != "PR Verify" {
-		t.Errorf("Hook.Name = %q, want %q", h.Name, "PR Verify")
-	}
-}
+
 
 func writeProjectYAML(t *testing.T, dir, content string) {
 	t.Helper()
