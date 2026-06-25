@@ -50,6 +50,11 @@ func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) 
 	}
 	store := orchestrator.NewProjectStore(registry)
 
+	// Wire workspace store so GetWithWorkspace can hydrate workspace.yaml data
+	// (capabilities, kits, env) at dispatch time.
+	wsStore := orchestrator.NewWorkspaceStore("")
+	store.SetWorkspaceStore(wsStore)
+
 	projects, err := projectRepo.ListProjects()
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
@@ -213,6 +218,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	claudeAdapter := claude.New()
 	planner := orchestrator.WireDispatchPlanner(orchestrator.PlannerWireConfig{
 		Meta:     store,
+		Hydrator: store, // workspace-aware hydration at dispatch time
 		Projects: projectCatalog,
 		Tasks:    taskLookup,
 		Adapter:  claudeAdapter,
