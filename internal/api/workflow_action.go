@@ -28,9 +28,18 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
 
-	meta, ok := s.Meta.Get(task.ProjectID)
-	if !ok {
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "project meta not loaded: " + task.ProjectID}
+	// Hydrate with workspace.yaml so kit-supplied hooks / env / capabilities
+	// are visible to the dispatch loop. Falls back to bare Get if workspace
+	// hydration fails (degraded window).
+	var meta *orchestrator.ProjectMeta
+	if hydrated, err := s.Meta.GetWithWorkspace(ctx, task.ProjectID); err == nil && hydrated != nil {
+		meta = hydrated
+	} else {
+		var ok bool
+		meta, ok = s.Meta.Get(task.ProjectID)
+		if !ok {
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: "project meta not loaded: " + task.ProjectID}
+		}
 	}
 
 	sm := orchestrator.DefaultMachine()

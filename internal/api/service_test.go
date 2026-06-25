@@ -1984,6 +1984,13 @@ func (s stubMetaStore) Get(id string) (*orchestrator.ProjectMeta, bool) {
 	return s.meta, true
 }
 
+func (s stubMetaStore) GetWithWorkspace(_ context.Context, _ string) (*orchestrator.ProjectMeta, error) {
+	if s.meta == nil {
+		return nil, fmt.Errorf("stubMetaStore: meta not loaded")
+	}
+	return s.meta, nil
+}
+
 type stubLifecycle struct {
 	completedJobID    string
 	unregisteredJobID string
