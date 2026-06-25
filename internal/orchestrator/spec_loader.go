@@ -855,15 +855,22 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 	return &result
 }
 
-// cloneTaskBehaviorMap deep-copies the task behavior map. Resolved fields are
-// reset to nil; the caller is expected to reapply overlays as needed.
+// cloneTaskBehaviorMap deep-copies the task behavior map. Runtime-overlay fields
+// (Env, HostCommands, AdditionalBindings, KitRoots) are reset to nil so callers
+// can reapply overlays from scratch. Hooks are preserved because they are now
+// defined in project.yaml (not kit-supplied) and must survive the clone.
 func cloneTaskBehaviorMap(src map[string]TaskBehavior) map[string]TaskBehavior {
 	if len(src) == 0 {
 		return nil
 	}
 	result := make(map[string]TaskBehavior, len(src))
 	for k, v := range src {
-		v.Hooks = nil
+		// Preserve Hooks: they come from project.yaml, not from runtime overlays.
+		if len(v.Hooks) > 0 {
+			hooks := make([]Hook, len(v.Hooks))
+			copy(hooks, v.Hooks)
+			v.Hooks = hooks
+		}
 		v.Env = nil
 		v.HostCommands = nil
 		v.AdditionalBindings = nil
