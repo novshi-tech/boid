@@ -2535,6 +2535,7 @@ func (s *stubProjectMetaStore) Get(id string) (*orchestrator.ProjectMeta, bool) 
 }
 func (s *stubProjectMetaStore) Remove(id string)                          {}
 func (s *stubProjectMetaStore) LoadAll(_ []*orchestrator.Project) []error { return nil }
+func (s *stubProjectMetaStore) SetWorkspaceID(_, _ string)                {}
 
 // TestProjectAppService_ResolveProjectRef tests all resolution priority cases.
 func TestProjectAppService_ResolveProjectRef(t *testing.T) {

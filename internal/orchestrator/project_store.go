@@ -184,6 +184,20 @@ func (s *ProjectStore) Set(id string, meta *ProjectMeta) {
 	s.mu.Unlock()
 }
 
+// SetWorkspaceID updates the cached workspace association for a project.
+// Empty workspaceID clears the association. Subsequent GetWithWorkspace calls
+// will hydrate using the new value (or return the cached meta unchanged when
+// cleared).
+func (s *ProjectStore) SetWorkspaceID(projectID, workspaceID string) {
+	s.mu.Lock()
+	if workspaceID == "" {
+		delete(s.workspaceIDs, projectID)
+	} else {
+		s.workspaceIDs[projectID] = workspaceID
+	}
+	s.mu.Unlock()
+}
+
 // Remove deletes a project's meta from the store.
 func (s *ProjectStore) Remove(id string) {
 	s.mu.Lock()
