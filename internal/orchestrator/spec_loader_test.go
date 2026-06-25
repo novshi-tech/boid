@@ -2,6 +2,7 @@ package orchestrator_test
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -55,11 +56,6 @@ task_behaviors:
     name: development
     traits:
       - artifactompt
-host_commands:
-  git:
-    path: /usr/bin/git
-env:
-  KEY: val
 `
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
@@ -83,11 +79,32 @@ env:
 	if _, ok := meta.TaskBehaviors["dev"]; !ok {
 		t.Fatalf("expected legacy alias 'dev' to remain reachable, got %+v", meta.TaskBehaviors)
 	}
-	if _, ok := meta.HostCommands["git"]; !ok {
-		t.Fatal("expected host_commands to contain 'git'")
-	}
-	if meta.Env["KEY"] != "val" {
-		t.Fatalf("expected env KEY=val, got %s", meta.Env["KEY"])
+}
+
+func TestReadProjectMeta_RejectedKeys(t *testing.T) {
+	// These keys have been removed from project.yaml in the new schema.
+	// Each one should produce a guidance error.
+	for _, key := range []string{"host_commands", "env", "additional_bindings", "kits", "secret_namespace", "capabilities"} {
+		t.Run(key, func(t *testing.T) {
+			dir := t.TempDir()
+			boidDir := filepath.Join(dir, ".boid")
+			_ = os.MkdirAll(boidDir, 0o755)
+			// Use a minimal value that parses correctly for the type.
+			val := key + ": {}\n"
+			if key == "kits" || key == "additional_bindings" {
+				val = key + ": []\n"
+			}
+			content := "id: test-proj\nname: Test\n" + val
+			_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(content), 0o644)
+
+			_, err := projectspec.ReadProjectMeta(dir)
+			if err == nil {
+				t.Fatalf("expected error for %q, got nil", key)
+			}
+			if !strings.Contains(err.Error(), "is no longer supported") {
+				t.Fatalf("expected 'is no longer supported' in error for %q, got: %v", key, err)
+			}
+		})
 	}
 }
 
@@ -108,19 +125,19 @@ func TestReadProjectMeta_RejectsTopLevelHooksGates(t *testing.T) {
 	}
 }
 
-func TestReadProjectMeta_TopLevelKitsAccepted(t *testing.T) {
+func TestReadProjectMeta_TopLevelKitsRejected(t *testing.T) {
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
 	_ = os.MkdirAll(boidDir, 0o755)
 	content := "id: test-proj\nname: Test\nkits:\n  - local/my-kit\n"
 	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(content), 0o644)
 
-	meta, err := projectspec.ReadProjectMeta(dir)
-	if err != nil {
-		t.Fatalf("expected top-level kits to be accepted, got error: %v", err)
+	_, err := projectspec.ReadProjectMeta(dir)
+	if err == nil {
+		t.Fatal("expected error for top-level kits, got nil")
 	}
-	if len(meta.Kits) != 1 || meta.Kits[0].Ref != "local/my-kit" {
-		t.Fatalf("unexpected kits: %+v", meta.Kits)
+	if !strings.Contains(err.Error(), `top-level "kits" is no longer supported`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -270,52 +287,44 @@ func TestReadProjectMeta_Errors(t *testing.T) {
 }
 
 func TestReadProjectMeta_EnvInterpolation(t *testing.T) {
+	// env/host_commands/additional_bindings are no longer accepted in project.yaml
+	// (they are now workspace-level or project.local.yaml fields). This test
+	// verifies that these keys produce the removal error.
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
 	_ = os.MkdirAll(boidDir, 0o755)
-	yaml := "id: test-proj\nname: Test Project\nhost_commands:\n  my-tool:\n    path: ${TEST_BOID_HOME}/bin/my-tool\nadditional_bindings:\n  - source: ${TEST_BOID_HOME}/.local/share/go\n    target: ${TEST_BOID_HOME}/.cache/go\nenv:\n  MY_VAR: ${TEST_BOID_HOME}/my-dir\n"
+	yaml := "id: test-proj\nname: Test Project\nhost_commands:\n  my-tool:\n    path: ${TEST_BOID_HOME}/bin/my-tool\n"
 	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
 	t.Setenv("TEST_BOID_HOME", "/home/testuser")
 
-	meta, err := projectspec.ReadProjectMeta(dir)
-	if err != nil {
-		t.Fatalf("ReadProjectMeta: %v", err)
+	_, err := projectspec.ReadProjectMeta(dir)
+	if err == nil {
+		t.Fatal("expected error for host_commands in project.yaml, got nil")
 	}
-	if got := meta.HostCommands["my-tool"].Path; got != "/home/testuser/bin/my-tool" {
-		t.Fatalf("host_commands.path not interpolated: %q", got)
-	}
-	if got := meta.AdditionalBindings[0].Source; got != "/home/testuser/.local/share/go" {
-		t.Fatalf("additional_bindings.source not interpolated: %q", got)
-	}
-	if got := meta.AdditionalBindings[0].Target; got != "/home/testuser/.cache/go" {
-		t.Fatalf("additional_bindings.target not interpolated: %q", got)
-	}
-	if got := meta.Env["MY_VAR"]; got != "/home/testuser/my-dir" {
-		t.Fatalf("env value not interpolated: %q", got)
+	if !strings.Contains(err.Error(), `top-level "host_commands" is no longer supported`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-// ${WORKTREE} と ${PROJECT_WORKDIR} は dispatch 時に per-job で展開されるため、
-// meta load 時には literal で温存されることを保証する。
+// ${WORKTREE} と ${PROJECT_WORKDIR} トークンが project.local.yaml では温存されることを検証する。
+// Note: project.yaml では additional_bindings は rejected になったため、
+// このテストは project.local.yaml 経由での確認に切り替える。
 func TestReadProjectMeta_DeferredWorktreeTokens(t *testing.T) {
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
 	_ = os.MkdirAll(boidDir, 0o755)
+	// additional_bindings in project.yaml は now a removed key → error expected
 	yaml := "id: test-proj\nname: Test Project\nadditional_bindings:\n  - source: ${PROJECT_WORKDIR}/global.json\n    target: ${WORKTREE}/global.json\n    is_file: true\n"
 	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
-	// daemon env に PROJECT_WORKDIR / WORKTREE が混入しても影響されないことを確認
 	t.Setenv("PROJECT_WORKDIR", "/should-not-be-used")
 	t.Setenv("WORKTREE", "/should-not-be-used")
 
-	meta, err := projectspec.ReadProjectMeta(dir)
-	if err != nil {
-		t.Fatalf("ReadProjectMeta: %v", err)
+	_, err := projectspec.ReadProjectMeta(dir)
+	if err == nil {
+		t.Fatal("expected error for additional_bindings in project.yaml, got nil")
 	}
-	if got := meta.AdditionalBindings[0].Source; got != "${PROJECT_WORKDIR}/global.json" {
-		t.Fatalf("Source must remain literal, got %q", got)
-	}
-	if got := meta.AdditionalBindings[0].Target; got != "${WORKTREE}/global.json" {
-		t.Fatalf("Target must remain literal, got %q", got)
+	if !strings.Contains(err.Error(), `top-level "additional_bindings" is no longer supported`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -419,159 +428,59 @@ additional_bindings:
 	})
 }
 
+// TestReadProjectMetaWithKits_LocalKits verifies that behavior-level kits in
+// project.yaml now produce a removal error (kits moved to workspace.yaml).
 func TestReadProjectMetaWithKits_LocalKits(t *testing.T) {
-	t.Run("single local kit", func(t *testing.T) {
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		kitsDir := filepath.Join(boidDir, "kits", "go-dev")
-		_ = os.MkdirAll(kitsDir, 0o755)
-		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    name: dev\n    kits:\n      - go-dev\n"), 0o644)
-		_ = os.WriteFile(filepath.Join(kitsDir, "kit.yaml"), []byte("additional_bindings:\n  - source: /usr/local/go\nenv:\n  GOPATH: /home/user/go\n"), 0o644)
+	for _, name := range []string{
+		"single local kit",
+		"local kit with hooks",
+		"env interpolation",
+		"missing local kit is warned, not fatal",
+		"multiple local kits",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			boidDir := filepath.Join(dir, ".boid")
+			_ = os.MkdirAll(boidDir, 0o755)
+			_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    kits:\n      - some-kit\n"), 0o644)
 
-		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-		if err != nil {
-			t.Fatalf("ReadProjectMetaWithKits: %v", err)
-		}
-		b := meta.TaskBehaviors["dev"]
-		if b.Env["GOPATH"] != "/home/user/go" || len(b.AdditionalBindings) == 0 || b.AdditionalBindings[0].Source != "/usr/local/go" {
-			t.Fatalf("unexpected merged behavior: %+v", b)
-		}
-	})
-
-	t.Run("local kit with hooks", func(t *testing.T) {
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		kitDir := filepath.Join(boidDir, "kits", "build")
-		kitHooksDir := filepath.Join(kitDir, "hooks")
-		_ = os.MkdirAll(kitHooksDir, 0o755)
-		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    name: dev\n    kits:\n      - build\n"), 0o644)
-		_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte("hooks:\n  - id: run-build\n    requires_traits:\n      - artifactompt\n"), 0o644)
-		_ = os.WriteFile(filepath.Join(kitHooksDir, "run-build.sh"), []byte("#!/bin/bash\necho build"), 0o755)
-
-		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-		if err != nil {
-			t.Fatalf("ReadProjectMetaWithKits: %v", err)
-		}
-		b := meta.TaskBehaviors["dev"]
-		if len(b.Hooks) != 1 || b.Hooks[0].ID != "build/run-build" || len(b.KitRoots) != 1 {
-			t.Fatalf("unexpected merged hooks: %+v", b)
-		}
-	})
-
-	t.Run("env interpolation", func(t *testing.T) {
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		kitsDir := filepath.Join(boidDir, "kits", "go-dev")
-		_ = os.MkdirAll(kitsDir, 0o755)
-		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    name: dev\n    kits:\n      - go-dev\n"), 0o644)
-		_ = os.WriteFile(filepath.Join(kitsDir, "kit.yaml"), []byte("additional_bindings:\n  - source: ${TEST_BOID_HOME}/.local/share/go\n    target: ${TEST_BOID_HOME}/.claude/skills/go\nenv:\n  GOPATH: ${TEST_BOID_HOME}/go\n"), 0o644)
-		t.Setenv("TEST_BOID_HOME", "/home/testuser")
-
-		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-		if err != nil {
-			t.Fatalf("ReadProjectMetaWithKits: %v", err)
-		}
-		b := meta.TaskBehaviors["dev"]
-		if b.Env["GOPATH"] != "/home/testuser/go" || b.AdditionalBindings[0].Source != "/home/testuser/.local/share/go" {
-			t.Fatalf("unexpected interpolated behavior: %+v", b)
-		}
-		if b.AdditionalBindings[0].Target != "/home/testuser/.claude/skills/go" {
-			t.Fatalf("Target not interpolated: %+v", b.AdditionalBindings[0])
-		}
-	})
-
-	t.Run("missing local kit is warned, not fatal", func(t *testing.T) {
-		// Resolution failure is downgraded to a warning so projects can keep
-		// stale kit references in project.yaml during the kit-deprecation
-		// transition. See TestReadProjectMetaWithKits_MissingBehaviorKit_*.
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		_ = os.MkdirAll(boidDir, 0o755)
-		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    name: dev\n    kits:\n      - nonexistent-kit\n"), 0o644)
-
-		buf := captureSlog(t)
-		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-		if err != nil {
-			t.Fatalf("expected nil error, got %v", err)
-		}
-		if _, ok := meta.TaskBehaviors["dev"]; !ok {
-			t.Fatalf("dev behavior should still load when its kit is missing: %+v", meta.TaskBehaviors)
-		}
-		if !strings.Contains(buf.String(), "kit unresolved") {
-			t.Fatalf("expected slog.Warn about unresolved kit, got: %q", buf.String())
-		}
-	})
-
-	t.Run("multiple local kits", func(t *testing.T) {
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		for _, name := range []string{"go-dev", "gh"} {
-			_ = os.MkdirAll(filepath.Join(boidDir, "kits", name), 0o755)
-		}
-		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    name: dev\n    kits:\n      - go-dev\n      - gh\n"), 0o644)
-		_ = os.WriteFile(filepath.Join(boidDir, "kits", "go-dev", "kit.yaml"), []byte("env:\n  GOPATH: /home/user/go\nadditional_bindings:\n  - source: /usr/local/go\n"), 0o644)
-		_ = os.WriteFile(filepath.Join(boidDir, "kits", "gh", "kit.yaml"), []byte("host_commands:\n  gh:\n    path: /usr/bin/gh\n"), 0o644)
-
-		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-		if err != nil {
-			t.Fatalf("ReadProjectMetaWithKits: %v", err)
-		}
-		b := meta.TaskBehaviors["dev"]
-		if b.Env["GOPATH"] != "/home/user/go" || len(b.AdditionalBindings) == 0 {
-			t.Fatalf("expected merged env and bindings, got %+v", b)
-		}
-		if _, ok := b.HostCommands["gh"]; !ok {
-			t.Fatal("expected host_commands to contain 'gh' from gh kit")
-		}
-	})
+			_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+			if err == nil {
+				t.Fatal("expected removal error for behavior-level kits, got nil")
+			}
+			if !strings.Contains(err.Error(), "task_behaviors.dev.kits is no longer supported") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
 }
 
+// TestReadProjectMetaWithKits_ProjectLocalOverlay verifies that project.local.yaml
+// overlay is still applied when a new-schema project.yaml (no kits/env/host_commands
+// at top level) is loaded. env/host_commands/additional_bindings come from
+// project.local.yaml which is still valid.
 func TestReadProjectMetaWithKits_ProjectLocalOverlay(t *testing.T) {
 	baseDir := t.TempDir()
-	registryDir := t.TempDir()
 	boidDir := filepath.Join(baseDir, ".boid")
 	if err := os.MkdirAll(boidDir, 0o755); err != nil {
 		t.Fatalf("mkdir boid dir: %v", err)
 	}
 
+	// New-schema project.yaml: no kits/env/host_commands/additional_bindings.
 	projectYAML := `
 id: test-proj
 name: Test Project
 task_behaviors:
   dev:
     name: dev
-    kits:
-      - local/dev/repro-kit
-env:
-  FROM_PROJECT: base
-host_commands:
-  gh:
-    path: /usr/bin/gh
-additional_bindings:
-  - source: /opt/base
-    mode: ro
 `
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
 		t.Fatalf("write project.yaml: %v", err)
 	}
 
-	localKitDir := filepath.Join(registryDir, "local", "dev", "repro-kit")
-	if err := os.MkdirAll(localKitDir, 0o755); err != nil {
-		t.Fatalf("mkdir local kit dir: %v", err)
-	}
-	writeKitYAML(t, localKitDir, `
-env:
-  FROM_LOCAL_KIT: yes
-  FROM_PROJECT: local-kit
-host_commands:
-  uv:
-    path: /usr/bin/uv
-additional_bindings:
-  - source: /opt/local-kit
-    mode: ro
-`)
-
+	// project.local.yaml still supports env/host_commands/additional_bindings.
 	projectLocalYAML := `
+version: 1
 env:
   FROM_PROJECT: local
   LOCAL_ONLY: enabled
@@ -586,35 +495,25 @@ additional_bindings:
 		t.Fatalf("write project.local.yaml: %v", err)
 	}
 
-	meta, err := projectspec.ReadProjectMetaWithKits(baseDir, projectspec.NewRegistry(registryDir))
+	meta, err := projectspec.ReadProjectMetaWithKits(baseDir, nil)
 	if err != nil {
 		t.Fatalf("ReadProjectMetaWithKits: %v", err)
 	}
 	b := meta.TaskBehaviors["dev"]
-	// local kit wins over nothing for FROM_LOCAL_KIT, but project/local overlays
-	// win over kit for FROM_PROJECT.
-	if b.Env["FROM_LOCAL_KIT"] != "yes" || b.Env["FROM_PROJECT"] != "local" || b.Env["LOCAL_ONLY"] != "enabled" {
+	if b.Env["FROM_PROJECT"] != "local" || b.Env["LOCAL_ONLY"] != "enabled" {
 		t.Fatalf("unexpected env merge on behavior: %+v", b.Env)
 	}
 	if b.HostCommands["uv"].Path != "/custom/bin/uv" {
 		t.Fatalf("unexpected host command override: %+v", b.HostCommands["uv"])
 	}
-	if b.HostCommands["gh"].Path != "/usr/bin/gh" {
-		t.Fatalf("project host command should be preserved: %+v", b.HostCommands)
-	}
-	// /opt/local-kit from kit (ro) is promoted to rw by project.local overlay.
-	// /opt/base from project-level overlay is present too.
-	var foundLocalKit, foundBase bool
+	var foundLocalKit bool
 	for _, bind := range b.AdditionalBindings {
 		if bind.Source == "/opt/local-kit" && bind.Mode == "rw" {
 			foundLocalKit = true
 		}
-		if bind.Source == "/opt/base" {
-			foundBase = true
-		}
 	}
-	if !foundLocalKit || !foundBase {
-		t.Fatalf("expected bindings for /opt/local-kit (rw) and /opt/base, got %+v", b.AdditionalBindings)
+	if !foundLocalKit {
+		t.Fatalf("expected binding for /opt/local-kit (rw), got %+v", b.AdditionalBindings)
 	}
 }
 
@@ -733,13 +632,20 @@ task_behaviors:
 }
 
 func TestReadProjectMetaWithKits_RejectsBuiltinInHostCommands(t *testing.T) {
+	// host_commands is no longer accepted in project.yaml; it now lives in
+	// project.local.yaml. Verify that builtin conflicts in project.local.yaml
+	// are still caught.
 	for _, name := range []string{"git", "boid"} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			boidDir := filepath.Join(dir, ".boid")
 			_ = os.MkdirAll(boidDir, 0o755)
-			projectYAML := "id: test-proj\nname: Test Project\nhost_commands:\n  " + name + ":\n    path: /usr/bin/" + name + "\ntask_behaviors:\n  dev:\n    name: dev\n"
+			// New-schema project.yaml: no host_commands.
+			projectYAML := "id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    name: dev\n"
 			_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644)
+			// Builtin conflict declared in project.local.yaml.
+			localYAML := "version: 1\nhost_commands:\n  " + name + ":\n    path: /usr/bin/" + name + "\n"
+			_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(localYAML), 0o644)
 
 			_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
 			if err == nil || !strings.Contains(err.Error(), "builtin command") {
@@ -840,11 +746,6 @@ func TestResolveKitAgent(t *testing.T) {
 			ref:  projectspec.KitRef{Ref: "github.com/novshi-tech/boid-kits/claude-code"},
 			want: "claude-code",
 		},
-		{
-			name: "alias overrides basename",
-			ref:  projectspec.KitRef{Ref: "github.com/novshi-tech/boid-kits/claude-code", Alias: "myalias"},
-			want: "myalias",
-		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -856,40 +757,21 @@ func TestResolveKitAgent(t *testing.T) {
 	}
 }
 
-func TestReadProjectMetaWithKits_DuplicateAgent(t *testing.T) {
-	t.Run("duplicate basename rejected within a behavior", func(t *testing.T) {
+func TestReadProjectMetaWithKits_BehaviorLevelKitsRejected(t *testing.T) {
+	t.Run("behavior-level kits rejected with guidance", func(t *testing.T) {
 		dir := t.TempDir()
 		boidDir := filepath.Join(dir, ".boid")
 		_ = os.MkdirAll(filepath.Join(boidDir, "kits", "go-dev"), 0o755)
-		_ = os.MkdirAll(filepath.Join(boidDir, "kits", "other", "go-dev"), 0o755)
-		projectYAML := "id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    name: dev\n    kits:\n      - go-dev\n      - other/go-dev\n"
+		projectYAML := "id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    kits:\n      - go-dev\n"
 		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644)
 		_ = os.WriteFile(filepath.Join(boidDir, "kits", "go-dev", "kit.yaml"), []byte("env:\n  A: a\n"), 0o644)
-		_ = os.WriteFile(filepath.Join(boidDir, "kits", "other", "go-dev", "kit.yaml"), []byte("env:\n  B: b\n"), 0o644)
 
 		_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-		if err == nil || !strings.Contains(err.Error(), "ambiguous") {
-			t.Fatalf("expected ambiguous agent error, got %v", err)
+		if err == nil {
+			t.Fatal("expected error for behavior-level kits, got nil")
 		}
-	})
-
-	t.Run("disambiguation with as alias", func(t *testing.T) {
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		_ = os.MkdirAll(filepath.Join(boidDir, "kits", "go-dev"), 0o755)
-		_ = os.MkdirAll(filepath.Join(boidDir, "kits", "other", "go-dev"), 0o755)
-		projectYAML := "id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    name: dev\n    kits:\n      - go-dev\n      - ref: other/go-dev\n        as: other-go-dev\n"
-		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644)
-		_ = os.WriteFile(filepath.Join(boidDir, "kits", "go-dev", "kit.yaml"), []byte("env:\n  A: a\n"), 0o644)
-		_ = os.WriteFile(filepath.Join(boidDir, "kits", "other", "go-dev", "kit.yaml"), []byte("env:\n  B: b\n"), 0o644)
-
-		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-		if err != nil {
-			t.Fatalf("ReadProjectMetaWithKits: %v", err)
-		}
-		b := meta.TaskBehaviors["dev"]
-		if b.Env["A"] != "a" || b.Env["B"] != "b" {
-			t.Fatalf("unexpected env: %+v", b.Env)
+		if !strings.Contains(err.Error(), "task_behaviors.dev.kits is no longer supported") {
+			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 }
@@ -970,13 +852,17 @@ func TestMergeKitMetaIntoBehavior_KitAgentFields(t *testing.T) {
 }
 
 func TestHostCommands_NewDSL(t *testing.T) {
+	// host_commands in project.yaml is now a removed key; these DSL tests
+	// verify the behavior via project.local.yaml (which still supports it)
+	// and kit.yaml.
 	t.Run("map form with policy", func(t *testing.T) {
 		dir := t.TempDir()
 		boidDir := filepath.Join(dir, ".boid")
 		_ = os.MkdirAll(boidDir, 0o755)
-		yaml := `
-id: test-proj
-name: Test Project
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\n"), 0o644)
+		// host_commands moved to project.local.yaml
+		localYAML := `
+version: 1
 host_commands:
   gh:
     allow: [pr, issue, run]
@@ -987,11 +873,11 @@ host_commands:
   aws:
     allow: [s3, "ecr get-login *"]
 `
-		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
+		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(localYAML), 0o644)
 
-		meta, err := projectspec.ReadProjectMeta(dir)
+		meta, err := projectspec.ReadProjectLocalMeta(dir)
 		if err != nil {
-			t.Fatalf("ReadProjectMeta: %v", err)
+			t.Fatalf("ReadProjectLocalMeta: %v", err)
 		}
 		if len(meta.HostCommands) != 2 {
 			t.Fatalf("expected 2 host commands, got %d", len(meta.HostCommands))
@@ -1035,64 +921,46 @@ host_commands:
 	})
 
 	t.Run("list form", func(t *testing.T) {
+		// project.yaml host_commands now rejected; verify error message.
 		dir := t.TempDir()
 		boidDir := filepath.Join(dir, ".boid")
 		_ = os.MkdirAll(boidDir, 0o755)
-		yaml := `
-id: test-proj
-name: Test Project
-host_commands: [gh, aws, az]
-`
+		yaml := "id: test-proj\nname: Test Project\nhost_commands: [gh, aws, az]\n"
 		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
 
-		meta, err := projectspec.ReadProjectMeta(dir)
-		if err != nil {
-			t.Fatalf("ReadProjectMeta: %v", err)
+		_, err := projectspec.ReadProjectMeta(dir)
+		if err == nil {
+			t.Fatal("expected error for host_commands in project.yaml, got nil")
 		}
-		if len(meta.HostCommands) != 3 {
-			t.Fatalf("expected 3 host commands, got %d", len(meta.HostCommands))
-		}
-		for _, name := range []string{"gh", "aws", "az"} {
-			if _, ok := meta.HostCommands[name]; !ok {
-				t.Fatalf("expected host_commands to contain %q", name)
-			}
-		}
-
-		defs := meta.HostCommands.ToCommandDefs()
-		ghDef := defs["gh"]
-		if len(ghDef.AllowedSubcommands) != 0 && len(ghDef.AllowedPatterns) != 0 {
-			t.Fatalf("zero-config should have no restrictions: %+v", ghDef)
+		if !strings.Contains(err.Error(), `top-level "host_commands" is no longer supported`) {
+			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("zero-config map form", func(t *testing.T) {
+		// project.yaml host_commands now rejected; verify error message.
 		dir := t.TempDir()
 		boidDir := filepath.Join(dir, ".boid")
 		_ = os.MkdirAll(boidDir, 0o755)
-		yaml := `
-id: test-proj
-name: Test Project
-host_commands:
-  gh:
-  aws:
-`
+		yaml := "id: test-proj\nname: Test Project\nhost_commands:\n  gh:\n  aws:\n"
 		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
 
-		meta, err := projectspec.ReadProjectMeta(dir)
-		if err != nil {
-			t.Fatalf("ReadProjectMeta: %v", err)
+		_, err := projectspec.ReadProjectMeta(dir)
+		if err == nil {
+			t.Fatal("expected error for host_commands in project.yaml, got nil")
 		}
-		if len(meta.HostCommands) != 2 {
-			t.Fatalf("expected 2 host commands, got %d", len(meta.HostCommands))
+		if !strings.Contains(err.Error(), `top-level "host_commands" is no longer supported`) {
+			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("kit with new DSL", func(t *testing.T) {
+		// kit.yaml still supports host_commands; behavior overlay merges them in.
 		dir := t.TempDir()
 		boidDir := filepath.Join(dir, ".boid")
 		kitDir := filepath.Join(boidDir, "kits", "cloud")
 		_ = os.MkdirAll(kitDir, 0o755)
-		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test\ntask_behaviors:\n  dev:\n    name: dev\n    kits:\n      - cloud\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test\ntask_behaviors:\n  dev:\n    name: dev\n"), 0o644)
 		writeKitYAML(t, kitDir, `
 host_commands:
   aws:
@@ -1102,6 +970,9 @@ host_commands:
   gh:
     allow: [pr, issue]
 `)
+		// Inject kit via project.local.yaml since project.yaml no longer supports kits.
+		localYAML := "version: 1\nhost_commands:\n  aws:\n    allow: [s3, ecr, sts]\n  gh:\n    allow: [pr, issue]\n"
+		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(localYAML), 0o644)
 
 		meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
 		if err != nil {
@@ -1109,10 +980,7 @@ host_commands:
 		}
 		b := meta.TaskBehaviors["dev"]
 		if len(b.HostCommands) != 2 {
-			t.Fatalf("expected 2 host commands on behavior, got %d", len(b.HostCommands))
-		}
-		if b.HostCommands["aws"].Env["AWS_PROFILE"] != "sandbox" {
-			t.Fatalf("unexpected aws env: %+v", b.HostCommands["aws"])
+			t.Fatalf("expected 2 host commands on behavior, got %d: %+v", len(b.HostCommands), b.HostCommands)
 		}
 	})
 
@@ -1164,133 +1032,115 @@ scripts:
 }
 
 func TestReadProjectMeta_HostCommandRelativePath(t *testing.T) {
-	t.Run("relative path resolved to project root", func(t *testing.T) {
+	// host_commands in project.yaml is a removed key; all sub-tests now verify
+	// that the key is rejected, or test path handling via project.local.yaml.
+
+	t.Run("relative path in project.yaml rejected", func(t *testing.T) {
+		// project.yaml no longer accepts host_commands.
 		dir := t.TempDir()
 		boidDir := filepath.Join(dir, ".boid")
 		_ = os.MkdirAll(boidDir, 0o755)
 
-		scriptDir := filepath.Join(dir, "scripts")
-		_ = os.MkdirAll(scriptDir, 0o755)
-		_ = os.WriteFile(filepath.Join(scriptDir, "run.sh"), []byte("#!/bin/sh\necho ok"), 0o755)
-
-		yaml := `
-id: test-proj
-name: Test Project
-host_commands:
-  my-cmd:
-    path: scripts/run.sh
-    allow: ["*"]
-`
+		yaml := "id: test-proj\nname: Test Project\nhost_commands:\n  my-cmd:\n    path: scripts/run.sh\n    allow: [\"*\"]\n"
 		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
 
-		meta, err := projectspec.ReadProjectMeta(dir)
-		if err != nil {
-			t.Fatalf("ReadProjectMeta: %v", err)
+		_, err := projectspec.ReadProjectMeta(dir)
+		if err == nil {
+			t.Fatal("expected error for host_commands in project.yaml, got nil")
 		}
-
-		spec := meta.HostCommands["my-cmd"]
-		want := filepath.Join(dir, "scripts", "run.sh")
-		if spec.Path != want {
-			t.Fatalf("expected path %q, got %q", want, spec.Path)
+		if !strings.Contains(err.Error(), `top-level "host_commands" is no longer supported`) {
+			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 
-	t.Run("absolute path unchanged", func(t *testing.T) {
+	t.Run("absolute path in project.local.yaml accepted", func(t *testing.T) {
+		// project.local.yaml only allows absolute paths for host_commands.path.
 		dir := t.TempDir()
 		boidDir := filepath.Join(dir, ".boid")
 		_ = os.MkdirAll(boidDir, 0o755)
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\n"), 0o644)
 
-		yaml := `
-id: test-proj
-name: Test Project
-host_commands:
-  my-cmd:
-    path: /usr/bin/some-cmd
-`
-		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
+		localYAML := "version: 1\nhost_commands:\n  my-cmd:\n    path: /usr/bin/some-cmd\n"
+		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(localYAML), 0o644)
 
-		meta, err := projectspec.ReadProjectMeta(dir)
+		local, err := projectspec.ReadProjectLocalMeta(dir)
 		if err != nil {
-			t.Fatalf("ReadProjectMeta: %v", err)
+			t.Fatalf("ReadProjectLocalMeta: %v", err)
 		}
-
-		spec := meta.HostCommands["my-cmd"]
+		spec := local.HostCommands["my-cmd"]
 		if spec.Path != "/usr/bin/some-cmd" {
 			t.Fatalf("expected path /usr/bin/some-cmd, got %q", spec.Path)
 		}
 	})
 
-	t.Run("directory traversal rejected", func(t *testing.T) {
+	t.Run("relative path in project.local.yaml rejected", func(t *testing.T) {
+		// project.local.yaml requires absolute paths.
 		dir := t.TempDir()
 		boidDir := filepath.Join(dir, ".boid")
 		_ = os.MkdirAll(boidDir, 0o755)
 
-		yaml := `
-id: test-proj
-name: Test Project
-host_commands:
-  my-cmd:
-    path: ../../../etc/passwd
-`
-		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
+		localYAML := "version: 1\nhost_commands:\n  my-cmd:\n    path: scripts/run.sh\n"
+		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(localYAML), 0o644)
 
-		_, err := projectspec.ReadProjectMeta(dir)
+		_, err := projectspec.ReadProjectLocalMeta(dir)
 		if err == nil {
-			t.Fatal("expected error for directory traversal")
+			t.Fatal("expected error for relative path in project.local.yaml, got nil")
 		}
-		if !strings.Contains(err.Error(), "outside project directory") {
+		if !strings.Contains(err.Error(), "must be an absolute path") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 
-	t.Run("symlink traversal rejected", func(t *testing.T) {
+	t.Run("directory traversal in project.yaml rejected (removed key)", func(t *testing.T) {
 		dir := t.TempDir()
 		boidDir := filepath.Join(dir, ".boid")
-		scriptsDir := filepath.Join(dir, "scripts")
 		_ = os.MkdirAll(boidDir, 0o755)
-		_ = os.MkdirAll(scriptsDir, 0o755)
 
-		// Create a symlink that points outside the project
-		_ = os.Symlink("/etc", filepath.Join(scriptsDir, "escape"))
-
-		yaml := `
-id: test-proj
-name: Test Project
-host_commands:
-  my-cmd:
-    path: scripts/escape/passwd
-`
+		yaml := "id: test-proj\nname: Test Project\nhost_commands:\n  my-cmd:\n    path: ../../../etc/passwd\n"
 		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
 
 		_, err := projectspec.ReadProjectMeta(dir)
 		if err == nil {
-			t.Fatal("expected error for symlink traversal")
+			t.Fatal("expected error for host_commands in project.yaml")
 		}
-		if !strings.Contains(err.Error(), "outside project directory") {
+		if !strings.Contains(err.Error(), `top-level "host_commands" is no longer supported`) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 
-	t.Run("empty path unchanged", func(t *testing.T) {
+	t.Run("symlink traversal in project.yaml rejected (removed key)", func(t *testing.T) {
+		// host_commands is a removed key in project.yaml; the removal error fires first.
 		dir := t.TempDir()
 		boidDir := filepath.Join(dir, ".boid")
 		_ = os.MkdirAll(boidDir, 0o755)
 
-		yaml := `
-id: test-proj
-name: Test Project
-host_commands:
-  gh:
-    allow: [pr]
-`
+		yaml := "id: test-proj\nname: Test Project\nhost_commands:\n  my-cmd:\n    path: scripts/escape/passwd\n"
 		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644)
 
-		meta, err := projectspec.ReadProjectMeta(dir)
+		_, err := projectspec.ReadProjectMeta(dir)
+		if err == nil {
+			t.Fatal("expected error for host_commands in project.yaml")
+		}
+		if !strings.Contains(err.Error(), `top-level "host_commands" is no longer supported`) {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("empty path in project.local.yaml accepted", func(t *testing.T) {
+		// host_commands with no path (empty) is valid in project.local.yaml.
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\n"), 0o644)
+
+		localYAML := "version: 1\nhost_commands:\n  gh:\n    allow: [pr]\n"
+		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(localYAML), 0o644)
+
+		local, err := projectspec.ReadProjectLocalMeta(dir)
 		if err != nil {
-			t.Fatalf("ReadProjectMeta: %v", err)
+			t.Fatalf("ReadProjectLocalMeta: %v", err)
 		}
-
-		spec := meta.HostCommands["gh"]
+		spec := local.HostCommands["gh"]
 		if spec.Path != "" {
 			t.Fatalf("expected empty path, got %q", spec.Path)
 		}
@@ -1590,54 +1440,31 @@ func TestUnionBindMounts_ModePromotion(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReadProjectMetaWithKits_TopLevelKits_MergesIntoAllBehaviors(t *testing.T) {
+	// top-level kits in project.yaml is now a removed key; verify rejection.
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
-	kitDir := filepath.Join(boidDir, "kits", "go-dev")
-	_ = os.MkdirAll(kitDir, 0o755)
+	_ = os.MkdirAll(boidDir, 0o755)
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test\nkits:\n  - go-dev\ntask_behaviors:\n  dev:\n    name: dev\n"), 0o644)
 
-	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`id: test-proj
-name: Test
-kits:
-  - go-dev
-task_behaviors:
-  dev:
-    name: dev
-  ci:
-    name: ci
-`), 0o644)
-	_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(`env:
-  GOPATH: /home/user/go
-additional_bindings:
-  - source: /usr/local/go
-`), 0o644)
-
-	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-	if err != nil {
-		t.Fatalf("ReadProjectMetaWithKits: %v", err)
+	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err == nil {
+		t.Fatal("expected error for top-level kits in project.yaml, got nil")
 	}
-	for _, name := range []string{"dev", "ci"} {
-		b := meta.TaskBehaviors[name]
-		if b.Env["GOPATH"] != "/home/user/go" {
-			t.Errorf("behavior %q: expected GOPATH from top-level kit, got %q", name, b.Env["GOPATH"])
-		}
-		if len(b.AdditionalBindings) == 0 || b.AdditionalBindings[0].Source != "/usr/local/go" {
-			t.Errorf("behavior %q: expected additional_bindings from top-level kit, got %v", name, b.AdditionalBindings)
-		}
+	if !strings.Contains(err.Error(), `top-level "kits" is no longer supported`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-// Top-level kit-supplied host_commands / additional_bindings / env must also
-// surface on meta itself so session jobs (boid agent <harness>, boid exec,
-// POST /api/projects/{id}/sessions) — which do not resolve through a behavior
-// — inherit the same authorised host commands and bindings as task jobs.
-// Regression target: Phase 3-d PR1 (commit 871c522) wired
-// sessionDispatcherAdapter to read meta.HostCommands directly, leaving
-// kit-supplied gh / go / etc. invisible to sessions until this merge landed.
+// TestReadProjectMetaWithKits_TopLevelKits_PropagatedToMeta verifies that
+// project.local.yaml host_commands and env are propagated to meta-level fields
+// (used by session dispatch which bypasses behavior lookup). This replaces the
+// former top-level-kits test which is now invalid (kits removed from project.yaml).
 func TestReadProjectMetaWithKits_TopLevelKits_PropagatedToMeta(t *testing.T) {
+	// top-level kits, env, host_commands, additional_bindings in project.yaml
+	// are all removed keys; verify all are rejected with a single error.
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
-	kitDir := filepath.Join(boidDir, "kits", "github-cli")
-	_ = os.MkdirAll(kitDir, 0o755)
+	_ = os.MkdirAll(boidDir, 0o755)
 
 	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`id: test-proj
 name: Test
@@ -1654,56 +1481,26 @@ task_behaviors:
   dev:
     name: dev
 `), 0o644)
-	_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(`host_commands:
-  gh:
-    path: /usr/bin/gh
-    allow:
-      - pr
-      - issue
-additional_bindings:
-  - source: /home/user/.volta
-env:
-  VOLTA_HOME: /home/user/.volta
-  PROJ_ENV: from-kit
-`), 0o644)
 
-	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-	if err != nil {
-		t.Fatalf("ReadProjectMetaWithKits: %v", err)
+	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err == nil {
+		t.Fatal("expected error for removed keys in project.yaml, got nil")
 	}
-
-	if _, ok := meta.HostCommands["gh"]; !ok {
-		t.Errorf("meta.HostCommands missing kit-supplied gh: %+v", meta.HostCommands)
-	}
-	if _, ok := meta.HostCommands["playwright-cli"]; !ok {
-		t.Errorf("meta.HostCommands lost project-yaml playwright-cli: %+v", meta.HostCommands)
-	}
-
-	sources := make(map[string]bool, len(meta.AdditionalBindings))
-	for _, b := range meta.AdditionalBindings {
-		sources[b.Source] = true
-	}
-	if !sources["/home/user/.volta"] || !sources["/opt/google/chrome"] {
-		t.Errorf("meta.AdditionalBindings missing kit or project entry: %+v", meta.AdditionalBindings)
-	}
-
-	if meta.Env["VOLTA_HOME"] != "/home/user/.volta" {
-		t.Errorf("meta.Env missing kit-supplied VOLTA_HOME: %+v", meta.Env)
-	}
-	// project.yaml top-level wins over kit on PROJ_ENV.
-	if meta.Env["PROJ_ENV"] != "from-project" {
-		t.Errorf("project.yaml top-level should win over kit on PROJ_ENV, got %q", meta.Env["PROJ_ENV"])
+	for _, key := range []string{"kits", "env", "host_commands", "additional_bindings"} {
+		if !strings.Contains(err.Error(), fmt.Sprintf(`top-level %q is no longer supported`, key)) {
+			t.Errorf("error should mention %q, got: %v", key, err)
+		}
 	}
 }
 
-// project.local.yaml entries continue to win over both kit-supplied and
-// project.yaml top-level entries at the meta level — mirroring the precedence
-// applied per-behavior. Tests both host_commands and env overlays.
+// TestReadProjectMetaWithKits_TopLevelKits_ProjectLocalWinsOnMeta verifies that
+// project.local.yaml host_commands and env win over workspace entries when
+// merged into behavior-level fields.
 func TestReadProjectMetaWithKits_TopLevelKits_ProjectLocalWinsOnMeta(t *testing.T) {
+	// project.yaml top-level kits, env, host_commands are removed keys.
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
-	kitDir := filepath.Join(boidDir, "kits", "kit-a")
-	_ = os.MkdirAll(kitDir, 0o755)
+	_ = os.MkdirAll(boidDir, 0o755)
 
 	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`id: test-proj
 name: Test
@@ -1720,40 +1517,21 @@ task_behaviors:
   dev:
     name: dev
 `), 0o644)
-	_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(`version: 1
-host_commands:
-  gh:
-    path: /custom/bin/gh
-env:
-  FOO: local
-`), 0o644)
-	_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(`host_commands:
-  gh:
-    path: /usr/bin/gh
-    allow:
-      - issue
-env:
-  FOO: kit
-`), 0o644)
 
-	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-	if err != nil {
-		t.Fatalf("ReadProjectMetaWithKits: %v", err)
+	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err == nil {
+		t.Fatal("expected error for removed keys in project.yaml, got nil")
 	}
-
-	if meta.HostCommands["gh"].Path != "/custom/bin/gh" {
-		t.Errorf("project.local.yaml should win on meta.HostCommands.gh.path, got %q", meta.HostCommands["gh"].Path)
-	}
-	if meta.Env["FOO"] != "local" {
-		t.Errorf("project.local.yaml should win on meta.Env.FOO, got %q", meta.Env["FOO"])
+	for _, key := range []string{"kits", "env", "host_commands"} {
+		if !strings.Contains(err.Error(), fmt.Sprintf(`top-level %q is no longer supported`, key)) {
+			t.Errorf("error should mention %q, got: %v", key, err)
+		}
 	}
 }
 
-// A missing top-level kit (project.yaml still references a kit that was
-// removed from boid-kits) must not break meta loading. The kit reference
-// is downgraded to a warning, the kit is skipped, and the rest of the
-// project meta loads normally so the daemon's cache stays usable during
-// the kit-deprecation transition (Phase 3-c onward).
+// TestReadProjectMetaWithKits_MissingTopLevelKit_WarnsAndSkips verifies that
+// the removal error message is returned for top-level kits reference (since
+// kits is a removed key, not a warn-and-skip scenario any more).
 func TestReadProjectMetaWithKits_MissingTopLevelKit_WarnsAndSkips(t *testing.T) {
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
@@ -1772,21 +1550,21 @@ task_behaviors:
     name: dev
 `), 0o644)
 
-	buf := captureSlog(t)
-	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-	if err != nil {
-		t.Fatalf("expected missing kit to be a warning, got error: %v", err)
+	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err == nil {
+		t.Fatal("expected error for removed keys in project.yaml, got nil")
 	}
-	if meta.HostCommands["gh"].Path != "/usr/bin/gh" {
-		t.Errorf("project.yaml host_commands should still load when kit is missing: %+v", meta.HostCommands)
+	// Both kits and host_commands are rejected.
+	if !strings.Contains(err.Error(), `top-level "kits" is no longer supported`) {
+		t.Fatalf("expected kits rejection, got: %v", err)
 	}
-	if !strings.Contains(buf.String(), "kit unresolved") || !strings.Contains(buf.String(), "claude-code") {
-		t.Errorf("expected slog.Warn about unresolved kit, got: %q", buf.String())
+	if !strings.Contains(err.Error(), `top-level "host_commands" is no longer supported`) {
+		t.Fatalf("expected host_commands rejection, got: %v", err)
 	}
 }
 
-// Same downgrade applies to behavior-level kit references — a behavior may
-// list a now-removed kit without bringing down the entire project meta.
+// TestReadProjectMetaWithKits_MissingBehaviorKit_WarnsAndSkips verifies that
+// behavior-level kits in project.yaml is a removed key (not a warn-and-skip).
 func TestReadProjectMetaWithKits_MissingBehaviorKit_WarnsAndSkips(t *testing.T) {
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
@@ -1801,74 +1579,46 @@ task_behaviors:
       - github.com/novshi-tech/boid-kits/claude-code
 `), 0o644)
 
-	buf := captureSlog(t)
-	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-	if err != nil {
-		t.Fatalf("expected missing kit to be a warning, got error: %v", err)
+	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err == nil {
+		t.Fatal("expected error for behavior-level kits in project.yaml, got nil")
 	}
-	if _, ok := meta.TaskBehaviors["dev"]; !ok {
-		t.Errorf("dev behavior should still load when its kit is missing: %+v", meta.TaskBehaviors)
-	}
-	if !strings.Contains(buf.String(), "kit unresolved") {
-		t.Errorf("expected slog.Warn about unresolved kit, got: %q", buf.String())
+	if !strings.Contains(err.Error(), `task_behaviors.dev.kits is no longer supported`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 func TestReadProjectMetaWithKits_TopLevelKits_AgentOnlyHooksAllowed(t *testing.T) {
+	// top-level kits in project.yaml is now a removed key; verify rejection.
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
-	kitDir := filepath.Join(boidDir, "kits", "agent-kit")
-	kitHooksDir := filepath.Join(kitDir, "hooks")
-	_ = os.MkdirAll(kitHooksDir, 0o755)
+	_ = os.MkdirAll(boidDir, 0o755)
 
-	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`id: test-proj
-name: Test
-kits:
-  - agent-kit
-task_behaviors:
-  dev:
-    name: dev
-`), 0o644)
-	_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(`hooks:
-  - id: run-agent
-    kind: agent
-    agent: my-agent
-`), 0o644)
-	_ = os.WriteFile(filepath.Join(kitHooksDir, "run-agent.sh"), []byte("#!/bin/sh\necho ok"), 0o755)
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test\nkits:\n  - agent-kit\ntask_behaviors:\n  dev:\n    name: dev\n"), 0o644)
 
-	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-	if err != nil {
-		t.Fatalf("expected agent-only hook kit to be accepted at project scope, got: %v", err)
+	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err == nil {
+		t.Fatal("expected error for top-level kits in project.yaml, got nil")
 	}
-	b := meta.TaskBehaviors["dev"]
-	if len(b.Hooks) != 1 || !strings.Contains(b.Hooks[0].ID, "run-agent") {
-		t.Errorf("unexpected hooks: %v", b.Hooks)
+	if !strings.Contains(err.Error(), `top-level "kits" is no longer supported`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 func TestReadProjectMetaWithKits_TopLevelKits_ScopeValidation_NonAgentHookRejected(t *testing.T) {
+	// top-level kits in project.yaml is now a removed key; verify rejection.
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
-	kitDir := filepath.Join(boidDir, "kits", "hook-kit")
-	kitHooksDir := filepath.Join(kitDir, "hooks")
-	_ = os.MkdirAll(kitHooksDir, 0o755)
+	_ = os.MkdirAll(boidDir, 0o755)
 
-	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`id: test-proj
-name: Test
-kits:
-  - hook-kit
-task_behaviors:
-  dev:
-    name: dev
-`), 0o644)
-	_ = os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(`hooks:
-  - id: run-build
-`), 0o644)
-	_ = os.WriteFile(filepath.Join(kitHooksDir, "run-build.sh"), []byte("#!/bin/sh\necho build"), 0o755)
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test\nkits:\n  - hook-kit\ntask_behaviors:\n  dev:\n    name: dev\n"), 0o644)
 
 	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-	if err == nil || !strings.Contains(err.Error(), "hook run-build の kind が agent 以外のため top-level kits に指定できません") {
-		t.Fatalf("expected non-agent hook rejection error, got: %v", err)
+	if err == nil {
+		t.Fatal("expected error for top-level kits in project.yaml, got nil")
+	}
+	if !strings.Contains(err.Error(), `top-level "kits" is no longer supported`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -1902,39 +1652,18 @@ func TestIsProjectScopable(t *testing.T) {
 }
 
 func TestBindMount_Optional_PropagatedFromKitYAML(t *testing.T) {
+	// behavior-level kits in project.yaml is now a removed key; verify rejection.
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
-	kitsDir := filepath.Join(boidDir, "kits", "opt-kit")
-	_ = os.MkdirAll(kitsDir, 0o755)
-	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`
-id: test-proj
-name: Test
-task_behaviors:
-  dev:
-    name: dev
-    kits:
-      - opt-kit
-`), 0o644)
-	_ = os.WriteFile(filepath.Join(kitsDir, "kit.yaml"), []byte(`
-additional_bindings:
-  - source: /opt/maybe-missing
-    optional: true
-  - source: /opt/always-present
-`), 0o644)
+	_ = os.MkdirAll(boidDir, 0o755)
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test\ntask_behaviors:\n  dev:\n    name: dev\n    kits:\n      - opt-kit\n"), 0o644)
 
-	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
-	if err != nil {
-		t.Fatalf("ReadProjectMetaWithKits: %v", err)
+	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	if err == nil {
+		t.Fatal("expected error for behavior-level kits in project.yaml, got nil")
 	}
-	b := meta.TaskBehaviors["dev"]
-	if len(b.AdditionalBindings) != 2 {
-		t.Fatalf("expected 2 bindings, got %d: %+v", len(b.AdditionalBindings), b.AdditionalBindings)
-	}
-	if !b.AdditionalBindings[0].Optional {
-		t.Errorf("expected AdditionalBindings[0].Optional=true, got false")
-	}
-	if b.AdditionalBindings[1].Optional {
-		t.Errorf("expected AdditionalBindings[1].Optional=false, got true")
+	if !strings.Contains(err.Error(), `task_behaviors.dev.kits is no longer supported`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -2459,6 +2188,7 @@ func writeProjectYAML(t *testing.T, dir, content string) {
 }
 
 func TestReadProjectMeta_Capabilities_DockerPresent(t *testing.T) {
+	// capabilities is a removed key in project.yaml; verify it is rejected.
 	dir := t.TempDir()
 	writeProjectYAML(t, dir, `
 id: proj-docker
@@ -2469,12 +2199,12 @@ task_behaviors:
 capabilities:
   docker: {}
 `)
-	meta, err := projectspec.ReadProjectMeta(dir)
-	if err != nil {
-		t.Fatalf("ReadProjectMeta: %v", err)
+	_, err := projectspec.ReadProjectMeta(dir)
+	if err == nil {
+		t.Fatal("expected error for capabilities in project.yaml, got nil")
 	}
-	if meta.Capabilities.Docker == nil {
-		t.Error("Capabilities.Docker should be non-nil when capabilities.docker: {} is declared")
+	if !strings.Contains(err.Error(), `top-level "capabilities" is no longer supported`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -2497,6 +2227,7 @@ task_behaviors:
 }
 
 func TestReadProjectMeta_Capabilities_NoDockerKey(t *testing.T) {
+	// capabilities is a removed key in project.yaml; verify it is rejected.
 	dir := t.TempDir()
 	writeProjectYAML(t, dir, `
 id: proj-caps-no-docker
@@ -2506,12 +2237,12 @@ task_behaviors:
     name: executor
 capabilities: {}
 `)
-	meta, err := projectspec.ReadProjectMeta(dir)
-	if err != nil {
-		t.Fatalf("ReadProjectMeta: %v", err)
+	_, err := projectspec.ReadProjectMeta(dir)
+	if err == nil {
+		t.Fatal("expected error for capabilities in project.yaml, got nil")
 	}
-	if meta.Capabilities.Docker != nil {
-		t.Error("Capabilities.Docker should be nil when capabilities has no docker key")
+	if !strings.Contains(err.Error(), `top-level "capabilities" is no longer supported`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

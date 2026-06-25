@@ -7,23 +7,6 @@ name: boid
 # from the daemon's current HEAD branch.
 worktree: true
 
-kits:
-  - github.com/novshi-tech/boid-kits/claude-code
-  - github.com/novshi-tech/boid-kits/go-dev
-  - github.com/novshi-tech/boid-kits/github-cli
-  - github.com/novshi-tech/boid-kits/volta
-
-host_commands:
-  playwright-cli:
-    allow: ['*']
-  run-e2e:
-    path: e2e/run.sh
-    allow: ['*']
-
-# playwright-cli をサンドボックス内で動かすため、ホストの Chrome バイナリを bind mount する。
-additional_bindings:
-  - source: /opt/google/chrome
-
 # Canonical behavior names: supervisor (formerly "plan") and executor
 # (formerly "dev"). The alias map in spec_loader.go still accepts the old
 # keys for back-compat, but the boid repo itself uses the canonical names.

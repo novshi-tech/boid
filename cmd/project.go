@@ -218,13 +218,6 @@ func renderProjectDetail(p *projectspec.Project) {
 		for _, k := range keys {
 			b := m.TaskBehaviors[k]
 			fmt.Printf("  %-20s\n", k)
-			for _, kit := range b.Kits {
-				if kit.Alias != "" {
-					fmt.Printf("    kit: %s (as %s)\n", kit.Ref, kit.Alias)
-				} else {
-					fmt.Printf("    kit: %s\n", kit.Ref)
-				}
-			}
 			for _, h := range b.Hooks {
 				requires := ""
 				if len(h.Requires) > 0 {

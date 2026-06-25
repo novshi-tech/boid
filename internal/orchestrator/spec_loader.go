@@ -96,6 +96,10 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 		}
 	}
 
+	if err := rejectRemovedProjectFields(dir, raw); err != nil {
+		return nil, err
+	}
+
 	if err := rejectRemovedBehaviorFields("project.yaml", raw); err != nil {
 		return nil, err
 	}
@@ -179,6 +183,67 @@ func warnDeprecatedCommandsKey(scope, dir string, raw map[string]any) {
 			}
 		}
 	}
+}
+
+// removedTopLevelKeys lists the project.yaml top-level keys that have been
+// removed in the new schema and must not appear in project.yaml any more.
+// They are migrated to workspace.yaml (env/host_commands/additional_bindings/
+// capabilities) or runtime-injected (secret_namespace).
+var removedTopLevelKeys = []string{
+	"kits",
+	"env",
+	"host_commands",
+	"additional_bindings",
+	"secret_namespace",
+	"capabilities",
+}
+
+// migrationGuidance returns the multi-line guidance block for removed-key errors.
+func migrationGuidance(dir string) string {
+	return "Migration:\n" +
+		"  1) Run: boid project migrate " + dir + "           (dry-run)\n" +
+		"  2) Confirm the plan, then re-run with --apply\n" +
+		"See docs/ja/guide/migration.md for details."
+}
+
+// rejectRemovedProjectFields scans the raw YAML map for top-level keys and
+// task_behaviors-level kits that have been removed from the new project.yaml
+// schema. Returns a descriptive error with migration guidance when any are
+// found; collects all violations before returning so the user sees them all at
+// once.
+func rejectRemovedProjectFields(dir string, raw map[string]any) error {
+	var msgs []string
+
+	// Check top-level removed keys.
+	for _, key := range removedTopLevelKeys {
+		if _, ok := raw[key]; ok {
+			msgs = append(msgs, fmt.Sprintf("project.yaml: top-level %q is no longer supported.", key))
+		}
+	}
+
+	// Check behavior-level kits.
+	if behaviors, ok := raw["task_behaviors"].(map[string]any); ok {
+		names := make([]string, 0, len(behaviors))
+		for k := range behaviors {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			entry, ok := behaviors[name].(map[string]any)
+			if !ok {
+				continue
+			}
+			if _, ok := entry["kits"]; ok {
+				msgs = append(msgs, fmt.Sprintf("project.yaml: task_behaviors.%s.kits is no longer supported.", name))
+			}
+		}
+	}
+
+	if len(msgs) == 0 {
+		return nil
+	}
+	combined := strings.Join(msgs, "\n")
+	return fmt.Errorf("%s\n%s", combined, migrationGuidance(dir))
 }
 
 // removedBehaviorFieldGuidance maps each removed task_behaviors.<name>.<field>
@@ -398,12 +463,8 @@ func resolveKitRef(ref, projectDir string, resolver KitResolver) (string, error)
 }
 
 // ResolveKitAgent derives the agent name for a kit reference.
-// If an alias is set via 'as:', that alias is returned.
-// Otherwise the last path segment of the ref is used.
+// The last path segment of the ref is used.
 func ResolveKitAgent(ref KitRef) string {
-	if ref.Alias != "" {
-		return ref.Alias
-	}
 	parts := strings.Split(ref.Ref, "/")
 	return parts[len(parts)-1]
 }
@@ -421,10 +482,13 @@ func IsProjectScopable(km *KitMeta) error {
 	return nil
 }
 
-// ReadProjectMetaWithKits reads project.yaml and project.local.yaml, resolves
-// kits referenced by each task behavior, and merges kit data into each behavior.
+// ReadProjectMetaWithKits reads project.yaml and project.local.yaml, and merges
+// project-level overlays into each behavior.
 // Returns a ProjectMeta whose TaskBehaviors have their resolved Hooks/etc.
 // populated and ready for dispatch.
+//
+// Note: kits are no longer supported in project.yaml (removed in the new schema).
+// Workspace kits are resolved at GetWithWorkspace time via WorkspaceStore.
 func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, error) {
 	meta, err := ReadProjectMeta(dir)
 	if err != nil {
@@ -439,135 +503,16 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 	meta = cloneProjectMeta(meta)
 
 	// Drop alias mirror entries added by ReadProjectMeta so that the
-	// kit-merge loop below iterates each behavior only once. Mirrors are
+	// behavior-merge loop below iterates each behavior only once. Mirrors are
 	// re-added at the end of this function.
 	meta.TaskBehaviors = stripAliasMirrors(meta.TaskBehaviors)
 
-	// Collect unique kits across all behaviors and commands, preserving first-seen order.
-	var orderedRefs []KitRef
-	kitMetaByRef := make(map[string]*KitMeta)
-	agentByRef := make(map[string]string)
-	// missingKits tracks refs whose resolution failed (kit removed, registry
-	// not configured, ...). Resolution failure is downgraded from error to
-	// warning: the project is allowed to keep stale kit references in
-	// project.yaml during the kit-deprecation transition (Phase 3-c onward,
-	// where adapter-driven dispatch no longer needs a kit at all). The kit is
-	// skipped everywhere downstream — behavior merge, IsProjectScopable, and
-	// the meta-level kit→meta overlay below.
-	missingKits := make(map[string]bool)
-	loadKitRef := func(kitRef KitRef) error {
-		if _, loaded := kitMetaByRef[kitRef.Ref]; loaded {
-			return nil
-		}
-		if missingKits[kitRef.Ref] {
-			return nil
-		}
-		kitDir, err := resolveKitRef(kitRef.Ref, dir, resolver)
-		if err != nil {
-			slog.Warn("kit unresolved; ignoring (likely stale ref from a deprecated kit). "+
-				"Remove the entry from project.yaml/task_behaviors to silence this warning.",
-				"ref", kitRef.Ref, "error", err.Error())
-			missingKits[kitRef.Ref] = true
-			return nil
-		}
-		kitMeta, err := ReadKitMeta(kitDir)
-		if err != nil {
-			// kit.yaml exists but couldn't be parsed — that is a real bug to
-			// surface, not a missing-kit case.
-			return fmt.Errorf("kit %q: %w", kitRef.Ref, err)
-		}
-		slog.Info("resolved kit", "ref", kitRef.Ref, "hooks", len(kitMeta.Hooks))
-		kitMetaByRef[kitRef.Ref] = kitMeta
-		agentByRef[kitRef.Ref] = ResolveKitAgent(kitRef)
-		orderedRefs = append(orderedRefs, kitRef)
-		return nil
-	}
-	for _, behavior := range meta.TaskBehaviors {
-		for _, kitRef := range behavior.Kits {
-			if err := loadKitRef(kitRef); err != nil {
-				return nil, err
-			}
-		}
-	}
-
-	// Load and validate top-level project-scope kits.
-	for _, kitRef := range meta.Kits {
-		if err := loadKitRef(kitRef); err != nil {
-			return nil, err
-		}
-		km, ok := kitMetaByRef[kitRef.Ref]
-		if !ok {
-			// Missing kit was warned by loadKitRef; nothing to scope-validate.
-			continue
-		}
-		if err := IsProjectScopable(km); err != nil {
-			return nil, fmt.Errorf("kit %s: %w", kitRef.Ref, err)
-		}
-	}
-
-	// Kit-provided task_behaviors act as defaults; project behaviors take precedence.
 	if meta.TaskBehaviors == nil {
 		meta.TaskBehaviors = make(map[string]TaskBehavior)
 	}
-	for _, kitRef := range orderedRefs {
-		kitMeta := kitMetaByRef[kitRef.Ref]
-		for k, v := range kitMeta.TaskBehaviors {
-			if _, exists := meta.TaskBehaviors[k]; !exists {
-				meta.TaskBehaviors[k] = v
-			}
-		}
-	}
 
-	// For each behavior, resolve its kits and merge data into the behavior.
+	// For each behavior, merge project-level overlays.
 	for name, behavior := range meta.TaskBehaviors {
-		var kits []*KitMeta
-		var agents []string
-		var refs []string
-		seen := make(map[string]bool)
-
-		// Project-level kits come first and are merged into every behavior.
-		// Missing kits (resolution failed and downgraded to warning above) are
-		// skipped — appending a nil KitMeta would crash MergeKitMetaIntoBehavior.
-		for _, kitRef := range meta.Kits {
-			if seen[kitRef.Ref] {
-				continue
-			}
-			seen[kitRef.Ref] = true
-			km, ok := kitMetaByRef[kitRef.Ref]
-			if !ok {
-				continue
-			}
-			agent := ResolveKitAgent(kitRef)
-			kits = append(kits, km)
-			agents = append(agents, agent)
-			refs = append(refs, kitRef.Ref)
-		}
-
-		// Behavior-level kits follow.
-		for _, kitRef := range behavior.Kits {
-			if seen[kitRef.Ref] {
-				continue
-			}
-			seen[kitRef.Ref] = true
-			km, ok := kitMetaByRef[kitRef.Ref]
-			if !ok {
-				continue
-			}
-			agent := ResolveKitAgent(kitRef)
-			// Within this behavior, agent names must be unique because hook
-			// IDs are prefixed with the agent name.
-			for i, a := range agents {
-				if a == agent {
-					return nil, fmt.Errorf("behavior %q: kit agent %q is ambiguous: both %q and %q resolve to the same name; use 'as:' to disambiguate", name, agent, refs[i], kitRef.Ref)
-				}
-			}
-			kits = append(kits, km)
-			agents = append(agents, agent)
-			refs = append(refs, kitRef.Ref)
-		}
-		if err := MergeKitMetaIntoBehavior(&behavior, kits, agents); err != nil {
-			return nil, fmt.Errorf("behavior %q: %w", name, err)
-		}
 		// Apply project.yaml-level overlay (env / host_commands / bindings).
 		behavior.Env = mergeStringMaps(behavior.Env, meta.Env)
 		behavior.HostCommands = mergeHostCommands(behavior.HostCommands, meta.HostCommands)
@@ -585,56 +530,10 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		meta.TaskBehaviors[name] = behavior
 	}
 
-	if local != nil && local.SecretNamespace != "" {
-		meta.SecretNamespace = local.SecretNamespace
-	}
-
-	// Project-level kits also enrich top-level meta.HostCommands /
-	// AdditionalBindings / Env so session jobs (which do not resolve through a
-	// behavior — boid agent <harness>, boid exec, POST /api/projects/{id}/sessions)
-	// inherit the same authorised host commands, bindings, and env as tasks.
-	// Behavior dispatch is unaffected: each behavior already absorbed these via
-	// MergeKitMetaIntoBehavior above. Overlay order mirrors the per-behavior
-	// path — kit (base) → project.yaml top-level → project.local.yaml — so a
-	// name declared in project.yaml still wins over the same name in a kit, and
-	// project.local.yaml wins over both.
-	//
-	// Regression target: Phase 3-d PR1 (commit 871c522) wired
-	// sessionDispatcherAdapter to read meta.HostCommands directly. Before this
-	// merge, only project.yaml top-level entries were visible to sessions, so
-	// kit-supplied gh / go / etc. were not bind-mounted as boid shims.
-	if len(meta.Kits) > 0 {
-		var topKits []*KitMeta
-		var topAgents []string
-		for _, kitRef := range meta.Kits {
-			km, ok := kitMetaByRef[kitRef.Ref]
-			if !ok {
-				continue
-			}
-			topKits = append(topKits, km)
-			topAgents = append(topAgents, ResolveKitAgent(kitRef))
-		}
-		rt, err := MergeKitRuntime(topKits, topAgents)
-		if err != nil {
-			return nil, err
-		}
-		meta.HostCommands = mergeHostCommands(rt.HostCommands, meta.HostCommands)
-		meta.AdditionalBindings = mergeBindMounts(rt.AdditionalBindings, meta.AdditionalBindings)
-		meta.Env = mergeStringMaps(rt.Env, meta.Env)
-		if local != nil {
-			meta.HostCommands = mergeHostCommands(meta.HostCommands, local.HostCommands)
-			meta.AdditionalBindings = mergeBindMounts(meta.AdditionalBindings, local.AdditionalBindings)
-			meta.Env = mergeStringMaps(meta.Env, local.Env)
-		}
-		if err := validateBuiltinHostConflict("project", meta.HostCommands); err != nil {
-			return nil, err
-		}
-	}
-
 	// Re-add the back-compat alias mirror entries that were stripped at the
-	// top of this function. After kit merge + overlays, the canonical entries
-	// are fully populated; mirrors must reflect the resolved state so legacy
-	// lookups (e.g. meta.TaskBehaviors["dev"]) see the same data.
+	// top of this function. After overlays, the canonical entries are fully
+	// populated; mirrors must reflect the resolved state so legacy lookups
+	// (e.g. meta.TaskBehaviors["dev"]) see the same data.
 	meta.TaskBehaviors = addAliasMirrors(meta.TaskBehaviors)
 
 	emitCanonicalBehaviorDeprecation(dir, meta)
@@ -991,7 +890,6 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 	}
 
 	result := *meta
-	result.Kits = append([]KitRef(nil), meta.Kits...)
 	result.Env = mergeStringMaps(nil, meta.Env)
 	result.HostCommands = cloneHostCommands(meta.HostCommands)
 	result.AdditionalBindings = cloneBindMounts(meta.AdditionalBindings)
@@ -999,16 +897,14 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 	return &result
 }
 
-// cloneTaskBehaviorMap deep-copies the task behavior map including each
-// behavior's kit refs. Resolved fields are reset to nil; the caller is expected
-// to recompute them via MergeKitMetaIntoBehavior.
+// cloneTaskBehaviorMap deep-copies the task behavior map. Resolved fields are
+// reset to nil; the caller is expected to reapply overlays as needed.
 func cloneTaskBehaviorMap(src map[string]TaskBehavior) map[string]TaskBehavior {
 	if len(src) == 0 {
 		return nil
 	}
 	result := make(map[string]TaskBehavior, len(src))
 	for k, v := range src {
-		v.Kits = append([]KitRef(nil), v.Kits...)
 		v.Hooks = nil
 		v.Env = nil
 		v.HostCommands = nil

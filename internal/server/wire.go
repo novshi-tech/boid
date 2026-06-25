@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -55,14 +56,45 @@ func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) 
 	wsStore := orchestrator.NewWorkspaceStore("")
 	store.SetWorkspaceStore(wsStore)
 
+	// Validate all workspace.yaml files at startup. ErrNotExist means no
+	// workspace directory yet — that is the degraded window and is fine.
+	// Any other error (parse failure, permission error) is a startup blocker.
+	if slugs, err := wsStore.List(); err != nil {
+		return nil, fmt.Errorf("daemon startup refused: list workspaces: %w", err)
+	} else {
+		var wsErrs []error
+		for _, slug := range slugs {
+			if _, err := wsStore.Load(slug); err != nil {
+				wsErrs = append(wsErrs, err)
+			}
+		}
+		if len(wsErrs) > 0 {
+			var msg strings.Builder
+			msg.WriteString("daemon startup refused: failed to load workspace metadata\n")
+			for _, e := range wsErrs {
+				msg.WriteString("  - ")
+				msg.WriteString(e.Error())
+				msg.WriteString("\n")
+			}
+			msg.WriteString("Run `boid workspace configure <slug>` to fix the affected workspace.\n")
+			return nil, fmt.Errorf("%s", msg.String())
+		}
+	}
+
 	projects, err := projectRepo.ListProjects()
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
 	if errs := store.LoadAll(projects); len(errs) > 0 {
+		var msg strings.Builder
+		msg.WriteString("daemon startup refused: failed to load project metadata\n")
 		for _, e := range errs {
-			slog.Warn("failed to load project meta", "error", e)
+			msg.WriteString("  - ")
+			msg.WriteString(e.Error())
+			msg.WriteString("\n")
 		}
+		msg.WriteString("Run `boid project migrate <dir>` for each affected project to migrate to the new schema.\n")
+		return nil, fmt.Errorf("%s", msg.String())
 	}
 	return store, nil
 }

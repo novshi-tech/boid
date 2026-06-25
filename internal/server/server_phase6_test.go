@@ -186,33 +186,25 @@ func writeSmokeProject(t *testing.T) string {
 
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
-	kitDir := filepath.Join(boidDir, "kits", "smoke")
-	kitHooksDir := filepath.Join(kitDir, "hooks")
-	if err := os.MkdirAll(kitHooksDir, 0o755); err != nil {
-		t.Fatalf("mkdir kit hooks: %v", err)
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir boid: %v", err)
 	}
 
+	// Behavior-level kits are no longer supported in project.yaml; hooks are
+	// now supplied by workspace kits. Use default_instruction so that start
+	// synthesises a virtual agent-kind hook job for the executor agent.
 	projectYAML := `id: smoke-proj
 name: Smoke Project
 task_behaviors:
   impl:
     name: implementation
-    kits:
-      - smoke
+    default_instruction:
+      type: execution
+      agent: claude-code
+      message: smoke test
 `
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
 		t.Fatalf("write project yaml: %v", err)
-	}
-
-	kitYAML := `hooks:
-  - id: build-artifact
-    
-`
-	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
-		t.Fatalf("write kit yaml: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(kitHooksDir, "build-artifact.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatalf("write hook: %v", err)
 	}
 
 	return dir

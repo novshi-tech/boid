@@ -352,7 +352,6 @@ type TaskBehavior struct {
 	Readonly           *bool        `yaml:"readonly,omitempty" json:"readonly,omitempty"`
 	Traits             []string     `yaml:"traits" json:"traits"`
 	DefaultInstruction *Instruction `yaml:"default_instruction,omitempty" json:"default_instruction,omitempty"`
-	Kits               []KitRef     `yaml:"kits,omitempty" json:"kits,omitempty"`
 
 	// Resolved fields populated by ReadProjectMetaWithKits after merging kit data
 	// and project-level overlays. These are not serialized to YAML.
@@ -375,8 +374,7 @@ type BehaviorSpec struct {
 }
 
 type KitRef struct {
-	Ref   string `yaml:"ref" json:"ref"`
-	Alias string `yaml:"as,omitempty" json:"as,omitempty"`
+	Ref string `yaml:"ref" json:"ref"`
 }
 
 func (k *KitRef) UnmarshalYAML(value *yaml.Node) error {
@@ -403,7 +401,6 @@ type Capabilities struct {
 type ProjectMeta struct {
 	ID            string                  `yaml:"id" json:"id"`
 	Name          string                  `yaml:"name" json:"name"`
-	Kits          []KitRef                `yaml:"kits,omitempty" json:"kits,omitempty"`
 	TaskBehaviors map[string]TaskBehavior `yaml:"task_behaviors" json:"task_behaviors"`
 	// Worktree controls whether tasks in this project run in a per-task git
 	// worktree by default. For the canonical "executor" behavior the value
@@ -428,9 +425,12 @@ type ProjectMeta struct {
 	HostCommands       HostCommands      `yaml:"host_commands" json:"host_commands"`
 	AdditionalBindings []BindMount       `yaml:"additional_bindings" json:"additional_bindings"`
 	Env                map[string]string `yaml:"env" json:"env"`
-	SecretNamespace    string            `yaml:"secret_namespace,omitempty" json:"secret_namespace,omitempty"`
-	// Capabilities declares optional sandbox capabilities for jobs in this project.
-	Capabilities Capabilities `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
+	// SecretNamespace is a runtime-only field injected at hydration time from the
+	// linked workspace ID. It is intentionally not read from project.yaml (yaml:"-").
+	SecretNamespace string `yaml:"-" json:"secret_namespace,omitempty"`
+	// Capabilities declares optional sandbox capabilities. This is a runtime-only
+	// field injected from workspace.yaml at hydration time (yaml:"-").
+	Capabilities Capabilities `yaml:"-" json:"capabilities,omitempty"`
 	// DefaultTaskBehavior names the behavior to use when a CreateTaskRequest
 	// omits both behavior and behavior_spec. When empty, the daemon falls back
 	// to "supervisor" if that behavior exists (with a deprecation warning);
