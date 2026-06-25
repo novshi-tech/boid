@@ -4,17 +4,24 @@ set -euo pipefail
 PROJECT_DIR="$E2E_WORKSPACE_DIR/app"
 
 # Set up workspace for new schema (PR4 hard cutover).
-WS_SLUG="builtin-task-create"
+# Two workspaces are needed because parent and hook-parent behaviors each
+# have a `spawn` hook that writes the `artifact` trait. Loading both kits
+# at the same workspace makes every behavior fire both hooks, producing
+# an exclusive-trait collision. We assign one workspace for the parent
+# scenario and switch to the other before the hook-parent scenario.
 mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
-cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
+cat > "$XDG_CONFIG_HOME/boid/workspaces/builtin-task-create.yaml" <<YAML
 kits:
   - github.com/novshi-tech/boid-kits/builtin-task-create
+YAML
+cat > "$XDG_CONFIG_HOME/boid/workspaces/hook-task-create.yaml" <<YAML
+kits:
   - github.com/novshi-tech/boid-kits/hook-task-create
 YAML
 
 e2e_log "registering project from $PROJECT_DIR"
 e2e_run "$E2E_BIN_DIR/boid" project add "$PROJECT_DIR"
-e2e_run "$E2E_BIN_DIR/boid" workspace assign "e2e-builtin-task-create" "$WS_SLUG"
+e2e_run "$E2E_BIN_DIR/boid" workspace assign "e2e-builtin-task-create" "builtin-task-create"
 
 # ============================================================
 e2e_log "=== creating parent task that triggers spawn hook ==="
@@ -89,6 +96,11 @@ e2e_assert_contains "$task_d_json" '"auto_start":true'
 
 # ============================================================
 e2e_log "=== hook task create: hook で boid task_create が呼べることを確認 ==="
+
+# Switch to the hook-task-create workspace so the hook-parent behavior fires
+# only the hook-task-create kit's spawn (not both kits, which collide on the
+# artifact trait).
+e2e_run "$E2E_BIN_DIR/boid" workspace assign "e2e-builtin-task-create" "hook-task-create"
 
 hook_parent_output="$("$E2E_BIN_DIR/boid" task create <<'YAML'
 project_id: e2e-builtin-task-create
