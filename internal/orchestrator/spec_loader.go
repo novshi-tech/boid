@@ -461,16 +461,10 @@ func resolveProjectHostCommandPaths(projectDir string, cmds HostCommands) error 
 }
 
 func resolveKitRef(ref, projectDir string, resolver KitResolver) (string, error) {
+	// "local/<name>" refers to a project-scoped kit in <projectDir>/.boid/kits/<name>.
 	if strings.HasPrefix(ref, "local/") {
-		if resolver == nil {
-			return "", fmt.Errorf("kit %q requires registry but none configured", ref)
-		}
-		return resolver.Resolve(ref)
-	}
-
-	parts := strings.Split(ref, "/")
-	if len(parts) < 4 {
-		localDir := filepath.Join(projectDir, ".boid", "kits", ref)
+		name := strings.TrimPrefix(ref, "local/")
+		localDir := filepath.Join(projectDir, ".boid", "kits", name)
 		yamlPath := filepath.Join(localDir, "kit.yaml")
 		if _, err := os.Stat(yamlPath); err != nil {
 			return "", fmt.Errorf("local kit %q: kit.yaml not found at %s", ref, localDir)
@@ -478,6 +472,7 @@ func resolveKitRef(ref, projectDir string, resolver KitResolver) (string, error)
 		return localDir, nil
 	}
 
+	// All other refs are resolved through the global kit registry.
 	if resolver == nil {
 		return "", fmt.Errorf("kit %q requires registry but none configured", ref)
 	}
