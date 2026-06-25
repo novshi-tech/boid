@@ -1,5 +1,26 @@
 package sandbox
 
+// Profile selects the sandbox filesystem layout strategy.
+// The zero value (ProfileDefault) preserves the existing behaviour so callers
+// that do not set the field are unaffected.
+type Profile int
+
+const (
+	// ProfileDefault is the standard layout: a small set of host system dirs
+	// (/bin, /sbin, /lib, /lib64, /usr, /etc) are ro-rbind-mounted plus
+	// /dev, /proc, and a /tmp tmpfs. Broker socket and registration proceed
+	// normally. This is the zero value; any Spec where Profile is not set
+	// explicitly uses this layout.
+	ProfileDefault Profile = iota
+
+	// ProfileInit is the host-scan layout used by kit-init / workspace-configure
+	// generation scripts. The entire host root (/) is ro-rbind-mounted so the
+	// agent can discover installed tools without needing explicit allowlists.
+	// Broker registration and the broker socket mount are both skipped because
+	// init scripts do not call back into boid host-commands.
+	ProfileInit
+)
+
 // Spec describes a sandbox invocation in primitives only. The sandbox layer
 // knows nothing about Role / Task / Job / Broker / Hook — all of those are the
 // caller's concern. Everything needed to build and run the sandbox must already
@@ -71,4 +92,9 @@ type Spec struct {
 	// adapter's RunContext.UserAnswer. Empty for fresh starts and for resumes
 	// without a Q&A reply.
 	UserAnswer string
+
+	// Profile selects the filesystem layout strategy. Zero value (ProfileDefault)
+	// preserves the existing behaviour. Set to ProfileInit for kit-init /
+	// workspace-configure generation scripts that need to read the full host FS.
+	Profile Profile
 }

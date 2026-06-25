@@ -1426,3 +1426,33 @@ func TestBuildSandboxSpec_NonWorktreeHookArgvUnchanged(t *testing.T) {
 		t.Errorf("Argv[0] = %q, want %q (must not be remapped)", result.Argv[0], hookScript)
 	}
 }
+
+// TestBuildSandboxSpec_ProfileInit_IsThreaded verifies that
+// JobSpec.SandboxProfile == sandbox.ProfileInit is correctly threaded through
+// BuildSandboxSpec into sandbox.Spec.Profile.
+func TestBuildSandboxSpec_ProfileInit_IsThreaded(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		SandboxProfile: int(sandbox.ProfileInit),
+	}
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	if result.Profile != sandbox.ProfileInit {
+		t.Errorf("sandbox.Spec.Profile = %v, want ProfileInit (%v)", result.Profile, sandbox.ProfileInit)
+	}
+}
+
+// TestBuildSandboxSpec_ProfileDefault_ZeroValue verifies that the zero value of
+// JobSpec.SandboxProfile maps to sandbox.ProfileDefault in the resulting spec,
+// preserving backward compatibility for callers that do not set the field.
+func TestBuildSandboxSpec_ProfileDefault_ZeroValue(t *testing.T) {
+	spec := &orchestrator.JobSpec{} // SandboxProfile is zero (ProfileDefault)
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	if result.Profile != sandbox.ProfileDefault {
+		t.Errorf("sandbox.Spec.Profile = %v, want ProfileDefault (%v)", result.Profile, sandbox.ProfileDefault)
+	}
+}

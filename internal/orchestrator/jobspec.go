@@ -96,6 +96,14 @@ type JobSpec struct {
 	// dispatcher bridges this into sandbox.Spec.HarnessType and the
 	// runner-inner-child resolves the adapter via the registry.
 	HarnessType string
+
+	// SandboxProfile selects the filesystem layout strategy for the sandbox.
+	// Zero value (sandbox.ProfileDefault) preserves existing behaviour.
+	// Set to sandbox.ProfileInit for kit-init / workspace-configure generation
+	// scripts that need read access to the full host filesystem.
+	// When ProfileInit is set, broker registration and the broker socket mount
+	// are both skipped.
+	SandboxProfile int // sandbox.Profile — kept as int to avoid a circular import
 }
 
 // Visibility captures which host paths the sandbox sees and whether they are

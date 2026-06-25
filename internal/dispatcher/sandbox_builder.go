@@ -408,6 +408,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		CleanupPaths:     cleanup,
 		HarnessType:      harness,
 		UserAnswer:       userAnswer,
+		Profile:          sandbox.Profile(spec.SandboxProfile),
 	}
 	return out, nil
 }
