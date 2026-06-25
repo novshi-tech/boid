@@ -2,4 +2,6 @@ id: docker-proxy-network-create
 name: Docker Proxy Test - network-create
 task_behaviors:
   smoke:
+    hooks:
+      - id: run-docker-test
     name: smoke

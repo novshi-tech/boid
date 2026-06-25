@@ -2,6 +2,10 @@ id: e2e-idempotent-task-create
 name: E2E Idempotent Task Create
 task_behaviors:
   parent:
+    hooks:
+      - id: spawn-idempotent
+        traits:
+          produces: [artifact]
     traits: []
   child:
     traits: []

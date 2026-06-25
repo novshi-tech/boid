@@ -1,4 +1,6 @@
 id: readonly-hook-gate
 name: Readonly Hook Gate
 task_behaviors:
-  supervisor: {}
+  supervisor:
+    hooks:
+      - id: verify-readonly

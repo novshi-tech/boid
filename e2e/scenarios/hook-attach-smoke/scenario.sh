@@ -20,7 +20,7 @@ WS_SLUG="hook-attach-smoke"
 mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
 cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
 kits:
-  - github.com/novshi-tech/boid-kits/hook-attach-smoke
+  - hook-attach-smoke
 YAML
 
 e2e_log "registering project from $PROJECT_DIR"

@@ -8,7 +8,7 @@ WS_SLUG="host-command-smoke"
 mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
 cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
 kits:
-  - github.com/novshi-tech/boid-kits/host-ops
+  - host-ops
 YAML
 
 e2e_log "registering project from $PROJECT_DIR"

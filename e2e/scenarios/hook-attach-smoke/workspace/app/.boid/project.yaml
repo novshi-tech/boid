@@ -1,4 +1,6 @@
 id: hook-attach-smoke
 name: Hook Attach Smoke
 task_behaviors:
-  slow: {}
+  slow:
+    hooks:
+      - id: slow-hook

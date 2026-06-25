@@ -276,6 +276,17 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 
 	argv := append([]string(nil), spec.Argv...)
 
+	// Hook scripts live at projectDir/.boid/hooks/<id>.(sh|py) on the host but
+	// the .boid directory is bind-mounted inside the sandbox at
+	// worktreeDir/.boid (not at projectDir/.boid). Remap argv[0] when running
+	// in worktree mode so the runner-inner-child can exec the script.
+	if spec.Visibility.UseWorktree && rt.WorktreeDir != "" && projectDir != "" && len(argv) > 0 {
+		boidInProject := projectDir + "/.boid/"
+		if strings.HasPrefix(argv[0], boidInProject) {
+			argv[0] = rt.WorktreeDir + "/.boid/" + argv[0][len(boidInProject):]
+		}
+	}
+
 	// Context files: task.yaml / instructions.yaml / environment.yaml / payload.json.
 	envInput := EnvironmentInput{
 		Visibility:      spec.Visibility,

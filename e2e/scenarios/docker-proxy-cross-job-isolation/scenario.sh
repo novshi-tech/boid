@@ -14,7 +14,7 @@ WS_SLUG="docker-proxy-cross-job-isolation"
 mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
 cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
 kits:
-  - github.com/novshi-tech/boid-kits/docker-proxy-test
+  - docker-proxy-test
 env:
   DOCKER_PROXY_TEST_CASE: cross-job-isolation
 capabilities:

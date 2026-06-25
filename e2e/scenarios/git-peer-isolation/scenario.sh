@@ -16,7 +16,7 @@ WS_SLUG="ws-isolation"
 mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
 cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
 kits:
-  - github.com/novshi-tech/boid-kits/git-peer-write-reject
+  - git-peer-write-reject
 YAML
 
 e2e_log "registering main project from $APP_DIR"

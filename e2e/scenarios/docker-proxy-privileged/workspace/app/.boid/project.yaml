@@ -2,4 +2,6 @@ id: docker-proxy-privileged
 name: Docker Proxy Test - privileged
 task_behaviors:
   smoke:
+    hooks:
+      - id: run-docker-test
     name: smoke

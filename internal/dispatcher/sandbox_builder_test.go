@@ -1362,3 +1362,67 @@ func TestBuildEnvironmentYAML_HostCommandsSortedDeterministic(t *testing.T) {
 	}
 }
 
+
+// Regression: hook scripts in worktree mode had argv[0] set to the host-side
+// projectDir/.boid/hooks/<id>.sh path, which is NOT mounted inside the sandbox
+// (the .boid dir is bind-mounted at worktreeDir/.boid, not projectDir/.boid).
+// BuildSandboxSpec must remap argv[0] so the runner-inner-child can exec it.
+func TestBuildSandboxSpec_WorktreeHookArgvRemapped(t *testing.T) {
+	const (
+		projectDir  = "/tmp/test-project"
+		worktreeDir = "/tmp/boid-worktrees/abc123"
+		hookScript  = projectDir + "/.boid/hooks/my-hook.sh"
+	)
+	spec := &orchestrator.JobSpec{
+		HarnessType: "shell",
+		Argv:        []string{hookScript},
+		Visibility: orchestrator.Visibility{
+			ProjectDir:  projectDir,
+			UseWorktree: true,
+		},
+	}
+	rt := SandboxRuntimeInfo{WorktreeDir: worktreeDir}
+
+	result, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+
+	wantArgv0 := worktreeDir + "/.boid/hooks/my-hook.sh"
+	if len(result.Argv) == 0 {
+		t.Fatal("Argv is empty")
+	}
+	if result.Argv[0] != wantArgv0 {
+		t.Errorf("Argv[0] = %q, want %q", result.Argv[0], wantArgv0)
+	}
+}
+
+// When UseWorktree is false, argv[0] must not be remapped even if it looks
+// like a .boid hook path.
+func TestBuildSandboxSpec_NonWorktreeHookArgvUnchanged(t *testing.T) {
+	const (
+		projectDir = "/tmp/test-project"
+		hookScript = projectDir + "/.boid/hooks/my-hook.sh"
+	)
+	spec := &orchestrator.JobSpec{
+		HarnessType: "shell",
+		Argv:        []string{hookScript},
+		Visibility: orchestrator.Visibility{
+			ProjectDir:  projectDir,
+			UseWorktree: false,
+		},
+	}
+	rt := SandboxRuntimeInfo{WorktreeDir: "/tmp/boid-worktrees/abc123"}
+
+	result, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+
+	if len(result.Argv) == 0 {
+		t.Fatal("Argv is empty")
+	}
+	if result.Argv[0] != hookScript {
+		t.Errorf("Argv[0] = %q, want %q (must not be remapped)", result.Argv[0], hookScript)
+	}
+}

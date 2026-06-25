@@ -2,4 +2,6 @@ id: docker-proxy-reap-on-failure
 name: Docker Proxy Test - reap-on-failure
 task_behaviors:
   smoke:
+    hooks:
+      - id: run-docker-test
     name: smoke

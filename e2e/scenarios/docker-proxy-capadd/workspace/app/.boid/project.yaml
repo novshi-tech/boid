@@ -2,4 +2,6 @@ id: docker-proxy-capadd
 name: Docker Proxy Test - capadd
 task_behaviors:
   smoke:
+    hooks:
+      - id: run-docker-test
     name: smoke

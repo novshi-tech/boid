@@ -353,9 +353,12 @@ type TaskBehavior struct {
 	Traits             []string     `yaml:"traits" json:"traits"`
 	DefaultInstruction *Instruction `yaml:"default_instruction,omitempty" json:"default_instruction,omitempty"`
 
-	// Resolved fields populated by ReadProjectMetaWithKits after merging kit data
-	// and project-level overlays. These are not serialized to YAML.
-	Hooks              []Hook            `yaml:"-" json:"-"`
+	// Hooks is parsed from project.yaml task_behaviors.<name>.hooks at load time.
+	// ScriptPath on each Hook is resolved separately by ReadProjectMeta (not stored
+	// in YAML). Env, HostCommands, AdditionalBindings, and KitRoots are
+	// runtime-overlay fields populated by ReadProjectMetaWithKits after merging
+	// kit data and project-level overlays. These are not serialized to YAML.
+	Hooks              []Hook            `yaml:"hooks,omitempty" json:"-"`
 	Env                map[string]string `yaml:"-" json:"-"`
 	HostCommands       HostCommands      `yaml:"-" json:"-"`
 	AdditionalBindings []BindMount       `yaml:"-" json:"-"`
@@ -461,21 +464,16 @@ type WorkspaceSummary struct {
 }
 
 // KitMeta holds the parsed content of a kit.yaml file.
+// A kit provides tooling only: host_commands, env, and additional_bindings.
+// Kits do not provide hooks or task_behaviors (those are project/workspace concerns).
 type KitMeta struct {
-	TaskBehaviors      map[string]TaskBehavior `yaml:"task_behaviors"`
-	Hooks              []Hook                  `yaml:"hooks"`
-	HostCommands       HostCommands            `yaml:"host_commands"`
-	AdditionalBindings []BindMount             `yaml:"additional_bindings"`
-	Env                map[string]string       `yaml:"env"`
-	HooksDir           string                  `yaml:"-"`
-	KitRoot            string                  `yaml:"-"` // directory containing kit.yaml
+	HostCommands       HostCommands      `yaml:"host_commands"`
+	AdditionalBindings []BindMount       `yaml:"additional_bindings"`
+	Env                map[string]string `yaml:"env"`
+	KitRoot            string            `yaml:"-"` // directory containing kit.yaml
 
-	// Init-time metadata — not merged into runtime spec by MergeKitMeta.
-	Meta          *KitMetaInfo `yaml:"meta,omitempty"`
-	Detect        *KitDetect   `yaml:"detect,omitempty"`
-	Requires      *KitRequires `yaml:"requires,omitempty"`
-	ProvidesAgent string       `yaml:"provides_agent,omitempty"`
-	Deprecated    bool         `yaml:"deprecated,omitempty"`
+	// Human-readable metadata — not merged into runtime spec.
+	Meta *KitMetaInfo `yaml:"meta,omitempty"`
 }
 
 // KitMetaInfo holds human-readable metadata for a kit.
@@ -483,24 +481,5 @@ type KitMetaInfo struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
 	Category    string `yaml:"category"` // language / vcs / ci / agent / workflow / utility
-}
-
-// KitDetect declares how to determine whether a kit is applicable to a
-// project. The referenced script is executed with POSIX sh in the project
-// directory; its first line of stdout — "required", "optional", or empty
-// — indicates the detection outcome.
-type KitDetect struct {
-	// Script is a path (relative to the kit directory) to a POSIX sh
-	// script. boid init runs it with sh(1) using projectDir as CWD and a
-	// 5-second timeout. The first trimmed line of stdout is interpreted:
-	//   "required" → kit is auto-selected
-	//   "optional" → kit is shown as a candidate but not auto-selected
-	//   other / empty / non-zero exit → not applicable
-	Script string `yaml:"script"`
-}
-
-// KitRequires declares host commands that must be present in PATH.
-type KitRequires struct {
-	Commands []string `yaml:"commands"`
 }
 

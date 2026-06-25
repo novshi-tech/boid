@@ -1,0 +1,15 @@
+env:
+  E2E_STATE_DIR: ${E2E_STATE_DIR}
+host_commands:
+  gh:
+    path: ${E2E_BIN_DIR}/gh
+    allow:
+      - pr
+  systemctl:
+    path: ${E2E_BIN_DIR}/systemctl
+    allow:
+      - restart
+  fake-hook-cmd:
+    path: ${E2E_BIN_DIR}/fake-hook-cmd
+    allow:
+      - "*"

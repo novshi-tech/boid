@@ -33,7 +33,7 @@ WS_SLUG="ws-clone-local"
 mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
 cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
 kits:
-  - github.com/novshi-tech/boid-kits/git-peer-clone-local
+  - git-peer-clone-local
 YAML
 
 e2e_log "registering main project from $APP_DIR"

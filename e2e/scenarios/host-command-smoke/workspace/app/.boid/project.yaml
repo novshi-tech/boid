@@ -1,4 +1,8 @@
 id: e2e-host-ops
 name: E2E Host Ops
 task_behaviors:
-  smoke: {}
+  smoke:
+    hooks:
+      - id: emit-artifact
+        traits:
+          produces: [artifact, verification]

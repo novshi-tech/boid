@@ -2,4 +2,6 @@ id: docker-proxy-volume-bind-escape
 name: Docker Proxy Test - volume-bind-escape
 task_behaviors:
   smoke:
+    hooks:
+      - id: run-docker-test
     name: smoke

@@ -1,4 +1,0 @@
-hooks:
-  - id: spawn-idempotent
-    traits:
-      produces: [artifact]

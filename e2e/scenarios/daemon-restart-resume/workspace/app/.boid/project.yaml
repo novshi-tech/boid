@@ -1,4 +1,6 @@
 id: daemon-restart-resume
 name: Daemon Restart Resume
 task_behaviors:
-  supervisor: {}
+  supervisor:
+    hooks:
+      - id: block-and-done
