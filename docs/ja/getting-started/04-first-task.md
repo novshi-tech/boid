@@ -12,7 +12,7 @@
 
 ## プロジェクト ID を控える
 
-`boid task create` は `project_id` フィールドにプロジェクトの ID (uuid) を要求します。 `boid init` の出力末尾に `project registered: <uuid> (boid-demo)` の形で表示されていたあの uuid です。 手元に残っていない場合は次で確認できます。
+`boid task create` は `project_id` フィールドにプロジェクトの ID (uuid) を要求します。 `boid project init` の出力末尾に `project registered: <uuid> (boid-demo)` の形で表示されていたあの uuid です。 手元に残っていない場合は次で確認できます。
 
 ```bash
 boid project list
@@ -43,7 +43,7 @@ YAML
 boid task watch <task-id>
 ```
 
-しばらくすると hook ジョブの中で claude が動き、 `boid init` が雛形に書いた指示に従って `boid task update` で artifact が書き込まれ、 hook が正常終了すると自動遷移で `executing → done` に進むはずです。
+しばらくすると hook ジョブの中で claude が動き、 `boid project init` が雛形に書いた指示に従って `boid task update` で artifact が書き込まれ、 hook が正常終了すると自動遷移で `executing → done` に進むはずです。
 
 ### Web UI で観察する
 

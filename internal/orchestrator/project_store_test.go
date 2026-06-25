@@ -89,7 +89,10 @@ task_behaviors:
 	}
 }
 
-func TestProjectStore_Load_WithProjectLocalOverlay(t *testing.T) {
+// TestProjectStore_Load_ProjectLocalIgnored verifies that the deprecated
+// project.local.yaml is silently ignored; its env/host_commands/additional_bindings
+// are no longer merged into behaviors. Users should migrate to workspace.yaml.
+func TestProjectStore_Load_ProjectLocalIgnored(t *testing.T) {
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
 	if err := os.MkdirAll(boidDir, 0o755); err != nil {
@@ -105,10 +108,11 @@ func TestProjectStore_Load_WithProjectLocalOverlay(t *testing.T) {
 	s := orchestrator.NewProjectStore(nil)
 	meta, err := s.Load(dir)
 	if err != nil {
-		t.Fatalf("load with local overlay: %v", err)
+		t.Fatalf("load with project.local.yaml present: %v", err)
 	}
-	if meta.TaskBehaviors["dev"].Env["LOCAL"] != "yes" {
-		t.Fatalf("expected behavior dev env LOCAL=yes, got %+v", meta.TaskBehaviors["dev"].Env)
+	// project.local.yaml is deprecated and must not be merged.
+	if meta.TaskBehaviors["dev"].Env["LOCAL"] == "yes" {
+		t.Fatalf("expected project.local.yaml env to be ignored, but LOCAL=yes was applied")
 	}
 }
 

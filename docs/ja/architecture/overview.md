@@ -48,7 +48,7 @@ internal/
   dispatcher/         - hook のジョブ起動、サンドボックスの組み立て、 worktree 管理
   sandbox/            - mount namespace + chroot 実装、 host command broker、 HTTP プロキシ
   kit/                - kit リポジトリの clone・読み込み・detect
-  initwizard/         - boid init の対話セットアップ
+  initwizard/         - boid project init の対話セットアップ (旧 boid init は廃止済み)
   logrotate/          - daemon ログのサイズローテーション
   qrterm/             - ターミナルへの QR コード描画
   skills/             - Claude Code スキルの埋め込み配布

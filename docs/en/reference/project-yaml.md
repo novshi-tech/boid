@@ -232,7 +232,7 @@ In addition to regular environment variables (`${HOME}`, etc.), `source` and `ta
 
 A binding whose resolved `target` equals its resolved `source` is skipped automatically (self-mount prevention).
 
-> **Note:** `project.local.yaml` bindings require an explicit `mode` value (`ro` or `rw`). An empty `mode` string is not accepted in local overrides.
+> **Note:** `workspace.yaml` bindings require an explicit `mode` value (`ro` or `rw`). An empty `mode` string is not accepted.
 
 ### Instruction
 
@@ -331,24 +331,12 @@ boid resolves the upstream socket at startup in this order: `DOCKER_HOST` enviro
 
 For migration from the docker kit (cetusguard-based) to the native proxy, see the [Docker proxy migration guide](../guide/docker-proxy-migration.md).
 
-## Project-local overrides (`.boid/project.local.yaml`)
+## Project-local overrides (`.boid/project.local.yaml`) — Deprecated
 
-Alongside `project.yaml`, you can place `.boid/project.local.yaml` to override certain fields locally. The intent is for this file to be `gitignore`d and to hold configuration that should not be shared (a personal `host_commands` extension, for instance).
+> **Deprecated**: `project.local.yaml` has been removed. Its settings move to `workspace.yaml`.
+> Run `boid project migrate <dir>` to convert automatically. See the [Migration guide](../guide/migration.md).
 
-Supported fields:
-
-```yaml
-version: 1
-host_commands:
-  ...
-additional_bindings:
-  ...
-env:
-  ...
-secret_namespace: ...
-```
-
-`task_behaviors` and `kits` cannot be overridden here.
+The `host_commands` / `additional_bindings` / `env` / `secret_namespace` fields that `project.local.yaml` used to provide are now set in `workspace.yaml` (machine-local, `gitignore`d).
 
 ## Example: a real project
 
