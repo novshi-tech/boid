@@ -2,4 +2,6 @@ id: docker-proxy-cross-job-isolation
 name: Docker Proxy Test - cross-job-isolation
 task_behaviors:
   smoke:
+    hooks:
+      - id: run-docker-test
     name: smoke

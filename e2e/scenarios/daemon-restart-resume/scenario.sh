@@ -11,7 +11,7 @@ WS_SLUG="daemon-restart-resume"
 mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
 cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
 kits:
-  - github.com/novshi-tech/boid-kits/daemon-restart-resume
+  - daemon-restart-resume
 YAML
 
 e2e_log "registering project from $PROJECT_DIR"

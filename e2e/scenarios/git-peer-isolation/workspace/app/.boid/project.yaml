@@ -3,4 +3,6 @@ name: Git Peer Isolation
 worktree: true
 base_branch: main
 task_behaviors:
-  executor: {}
+  executor:
+    hooks:
+      - id: test-peer-write-reject

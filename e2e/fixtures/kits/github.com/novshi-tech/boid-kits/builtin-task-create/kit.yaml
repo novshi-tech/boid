@@ -1,4 +1,0 @@
-hooks:
-  - id: spawn
-    traits:
-      produces: [artifact]

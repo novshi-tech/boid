@@ -2,4 +2,6 @@ id: docker-proxy-volume-create
 name: Docker Proxy Test - volume-create
 task_behaviors:
   smoke:
+    hooks:
+      - id: run-docker-test
     name: smoke

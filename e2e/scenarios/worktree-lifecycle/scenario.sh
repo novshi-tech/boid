@@ -8,7 +8,7 @@ WS_SLUG="worktree-lifecycle"
 mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
 cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
 kits:
-  - github.com/novshi-tech/boid-kits/worktree-smoke
+  - worktree-smoke
 YAML
 
 e2e_log "registering project from $PROJECT_DIR"

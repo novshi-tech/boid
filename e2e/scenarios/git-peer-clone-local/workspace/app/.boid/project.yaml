@@ -3,4 +3,6 @@ name: Git Peer Clone Local
 worktree: true
 base_branch: main
 task_behaviors:
-  executor: {}
+  executor:
+    hooks:
+      - id: test-peer-clone-local

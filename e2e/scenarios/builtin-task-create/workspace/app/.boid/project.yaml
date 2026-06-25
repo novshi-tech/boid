@@ -2,8 +2,14 @@ id: e2e-builtin-task-create
 name: E2E Builtin Task Create
 task_behaviors:
   parent:
+    hooks:
+      - id: spawn-parent
+        traits:
+          produces: [artifact]
     traits: []
   child:
     traits: []
   hook-parent:
+    hooks:
+      - id: spawn-hook
     traits: []

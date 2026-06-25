@@ -13,13 +13,13 @@ WS_SLUG="builtin-task-create"
 mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
 cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
 kits:
-  - github.com/novshi-tech/boid-kits/builtin-task-create
-  - github.com/novshi-tech/boid-kits/hook-task-create
+  - builtin-task-create
+  - hook-task-create
 behavior_kits:
   parent:
-    - github.com/novshi-tech/boid-kits/builtin-task-create
+    - builtin-task-create
   hook-parent:
-    - github.com/novshi-tech/boid-kits/hook-task-create
+    - hook-task-create
 YAML
 
 e2e_log "registering project from $PROJECT_DIR"

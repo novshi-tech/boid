@@ -15,7 +15,7 @@ WS_SLUG="docker-proxy-reap-on-failure"
 mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
 cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
 kits:
-  - github.com/novshi-tech/boid-kits/docker-proxy-test
+  - docker-proxy-test
 env:
   DOCKER_PROXY_TEST_CASE: reap-on-failure
 capabilities:

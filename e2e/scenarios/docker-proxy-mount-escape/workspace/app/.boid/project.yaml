@@ -2,4 +2,6 @@ id: docker-proxy-mount-escape
 name: Docker Proxy Test - mount-escape
 task_behaviors:
   smoke:
+    hooks:
+      - id: run-docker-test
     name: smoke

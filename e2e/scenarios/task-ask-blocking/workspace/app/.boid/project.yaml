@@ -1,4 +1,8 @@
 id: task-ask-blocking
 name: Blocking Q&A Smoke
 task_behaviors:
-  qa: {}
+  qa:
+    hooks:
+      - id: fake-agent
+        traits:
+          produces: [artifact]

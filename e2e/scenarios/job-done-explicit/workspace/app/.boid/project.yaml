@@ -1,4 +1,6 @@
 id: job-done-explicit
 name: Job Done Explicit
 task_behaviors:
-  explicit: {}
+  explicit:
+    hooks:
+      - id: explicit-done

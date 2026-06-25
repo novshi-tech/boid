@@ -2,4 +2,6 @@ id: worktree-lifecycle
 name: Worktree Lifecycle
 worktree: true
 task_behaviors:
-  executor: {}
+  executor:
+    hooks:
+      - id: emit-artifact

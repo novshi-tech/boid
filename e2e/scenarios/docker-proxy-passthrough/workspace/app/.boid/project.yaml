@@ -2,4 +2,6 @@ id: docker-proxy-passthrough
 name: Docker Proxy Test - passthrough
 task_behaviors:
   smoke:
+    hooks:
+      - id: run-docker-test
     name: smoke

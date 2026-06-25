@@ -117,6 +117,28 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 		return nil, err
 	}
 
+	// Resolve hook ScriptPaths from the project's .boid/hooks/ directory.
+	// Non-agent hooks (Kind != "agent") require a script file; agent-kind hooks
+	// may omit the script and are dispatched to the HarnessAdapter directly.
+	projectHooksDir := filepath.Join(dir, ".boid", "hooks")
+	for name, behavior := range meta.TaskBehaviors {
+		for i := range behavior.Hooks {
+			h := &behavior.Hooks[i]
+			if err := validateHookKind(h); err != nil {
+				return nil, fmt.Errorf("project.yaml: task_behaviors.%s: %w", name, err)
+			}
+			if h.Kind == HandlerKindAgent {
+				continue // agent hooks do not need a script path
+			}
+			scriptPath, err := ResolveHookScript(projectHooksDir, h.ID)
+			if err != nil {
+				return nil, fmt.Errorf("project.yaml: task_behaviors.%s: hook %q: %w", name, h.ID, err)
+			}
+			h.ScriptPath = scriptPath
+		}
+		meta.TaskBehaviors[name] = behavior
+	}
+
 	if meta.ID == "" {
 		return nil, fmt.Errorf("project.yaml: id is required")
 	}

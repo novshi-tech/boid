@@ -11,10 +11,10 @@ WS_SLUG="idempotent-task-create"
 mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
 cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
 kits:
-  - github.com/novshi-tech/boid-kits/idempotent-task-create
+  - idempotent-task-create
 behavior_kits:
   parent:
-    - github.com/novshi-tech/boid-kits/idempotent-task-create
+    - idempotent-task-create
 YAML
 
 e2e_log "registering project from $PROJECT_DIR"

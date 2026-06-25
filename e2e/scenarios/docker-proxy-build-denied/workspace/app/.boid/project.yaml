@@ -2,4 +2,6 @@ id: docker-proxy-build-denied
 name: Docker Proxy Test - build-denied
 task_behaviors:
   smoke:
+    hooks:
+      - id: run-docker-test
     name: smoke

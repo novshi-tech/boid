@@ -2,4 +2,6 @@ id: docker-proxy-security-opt
 name: Docker Proxy Test - security-opt
 task_behaviors:
   smoke:
+    hooks:
+      - id: run-docker-test
     name: smoke
