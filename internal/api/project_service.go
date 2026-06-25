@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -16,8 +18,16 @@ type ProjectAppService struct {
 		Remove(id string)
 		LoadAll(projects []*orchestrator.Project) []error
 	}
+	// Hydrator is optional. When set, callers that need fully-resolved meta
+	// (workspace-level capabilities / kits / env merged in + SecretNamespace
+	// injected) go through GetWithWorkspace instead of the bare Meta.Get path.
+	// Wired in internal/server/wire.go alongside the workspace store.
+	Hydrator orchestrator.MetaHydrator
 }
 
+// hydrateProject fills project.Meta from the cached raw meta. Use this when
+// the caller only needs project-yaml-level fields (e.g. Name for ref
+// matching) and the extra workspace.yaml read would be wasted.
 func (s *ProjectAppService) hydrateProject(project *orchestrator.Project) *orchestrator.Project {
 	if project == nil {
 		return nil
@@ -26,6 +36,29 @@ func (s *ProjectAppService) hydrateProject(project *orchestrator.Project) *orche
 		project.Meta = *meta
 	}
 	return project
+}
+
+// hydrateProjectWithWorkspace fills project.Meta with workspace-aware
+// hydration when a Hydrator is wired; otherwise it falls back to the bare
+// cache. Use this for paths that build sandbox specs (session / exec /
+// hook), where workspace Capabilities / Env / SecretNamespace must take
+// effect.
+func (s *ProjectAppService) hydrateProjectWithWorkspace(ctx context.Context, project *orchestrator.Project) *orchestrator.Project {
+	if project == nil {
+		return nil
+	}
+	if s.Hydrator != nil {
+		meta, err := s.Hydrator.GetWithWorkspace(ctx, project.ID)
+		if err == nil && meta != nil {
+			project.Meta = *meta
+			return project
+		}
+		// Fall back to bare meta on hydration error so the API stays usable
+		// even when workspace.yaml is malformed. The hydrator already logs.
+		slog.Warn("project meta hydration failed; falling back to raw meta",
+			"project_id", project.ID, "error", err)
+	}
+	return s.hydrateProject(project)
 }
 
 func (s *ProjectAppService) CreateProject(workDir string) (*orchestrator.Project, error) {
@@ -72,7 +105,11 @@ func (s *ProjectAppService) GetProject(id string) (*orchestrator.Project, error)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
-	return s.hydrateProject(project), nil
+	// GET /api/projects/{id} is the canonical "give me a sandbox-ready
+	// snapshot" endpoint — `cmd/exec.go` and any future client builds a
+	// SessionJobInput straight from the returned Meta. Hydrate with
+	// workspace so Capabilities / Env / SecretNamespace are populated.
+	return s.hydrateProjectWithWorkspace(context.Background(), project), nil
 }
 
 func (s *ProjectAppService) SetProjectWorkspace(id, workspaceID string) (*orchestrator.Project, error) {

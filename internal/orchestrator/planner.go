@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/novshi-tech/boid/internal/adapters"
@@ -8,6 +9,13 @@ import (
 
 type MetaCache interface {
 	Get(id string) (*ProjectMeta, bool)
+}
+
+// MetaHydrator extends MetaCache with workspace-aware hydration. When a
+// ProjectStore has a WorkspaceStore configured, it implements this interface
+// and returns a ProjectMeta enriched with workspace capabilities/kits/env.
+type MetaHydrator interface {
+	GetWithWorkspace(ctx context.Context, projectID string) (*ProjectMeta, error)
 }
 
 type ProjectCatalog interface {
@@ -23,6 +31,7 @@ type TaskLookup interface {
 // proxy wiring, exit scripts, worktree recreation) live in dispatcher.
 type DispatchPlanner struct {
 	Meta     MetaCache
+	Hydrator MetaHydrator // optional; when set, loadContext uses GetWithWorkspace instead of Get
 	Projects ProjectCatalog
 	Tasks    TaskLookup
 	Adapter  adapters.HarnessAdapter
@@ -168,9 +177,19 @@ func (p *DispatchPlanner) loadContext(projectID, taskID string) (*ProjectMeta, *
 		return nil, nil, nil, fmt.Errorf("dispatch planner is not fully configured")
 	}
 
-	meta, ok := p.Meta.Get(projectID)
-	if !ok {
-		return nil, nil, nil, fmt.Errorf("project %q: meta not loaded", projectID)
+	var meta *ProjectMeta
+	if p.Hydrator != nil {
+		var err error
+		meta, err = p.Hydrator.GetWithWorkspace(context.Background(), projectID)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("project %q: hydrate meta: %w", projectID, err)
+		}
+	} else {
+		ok := false
+		meta, ok = p.Meta.Get(projectID)
+		if !ok {
+			return nil, nil, nil, fmt.Errorf("project %q: meta not loaded", projectID)
+		}
 	}
 	proj, err := p.Projects.GetProject(projectID)
 	if err != nil {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -3128,5 +3129,102 @@ func TestTaskAppServiceCreateTask_BehaviorAlias_RequestSideResolution(t *testing
 					task.Readonly, tc.expectedReadonly, tc.canonicalKey)
 			}
 		})
+	}
+}
+
+// stubMetaHydrator implements orchestrator.MetaHydrator for ProjectAppService
+// tests that verify GetProject returns workspace-hydrated meta.
+type stubMetaHydrator struct {
+	metas map[string]*orchestrator.ProjectMeta
+	err   error
+}
+
+func (s *stubMetaHydrator) GetWithWorkspace(_ context.Context, projectID string) (*orchestrator.ProjectMeta, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	m, ok := s.metas[projectID]
+	if !ok {
+		return nil, fmt.Errorf("not found: %s", projectID)
+	}
+	return m, nil
+}
+
+// TestProjectAppService_GetProject_UsesHydrator verifies that when a
+// Hydrator is wired, GetProject (and therefore GET /api/projects/{id} and
+// the session dispatcher adapter) returns workspace-hydrated meta —
+// SecretNamespace injected, workspace env merged — instead of the raw
+// cache. Regression guard for PR #632 follow-up: the API/session paths
+// must not bypass GetWithWorkspace.
+func TestProjectAppService_GetProject_UsesHydrator(t *testing.T) {
+	proj := &orchestrator.Project{ID: "proj-1", WorkspaceID: "ws-1", WorkDir: "/work/a"}
+	rawMeta := &orchestrator.ProjectMeta{ID: "proj-1", Name: "Alpha"}
+	hydratedMeta := &orchestrator.ProjectMeta{
+		ID:              "proj-1",
+		Name:            "Alpha",
+		SecretNamespace: "ws-1",
+		Env:             map[string]string{"FROM_WORKSPACE": "yes"},
+	}
+
+	svc := &ProjectAppService{
+		Projects: &stubProjectRepository{projects: []*orchestrator.Project{proj}},
+		Meta:     &stubProjectMetaStore{metas: map[string]*orchestrator.ProjectMeta{"proj-1": rawMeta}},
+		Hydrator: &stubMetaHydrator{metas: map[string]*orchestrator.ProjectMeta{"proj-1": hydratedMeta}},
+	}
+
+	got, err := svc.GetProject("proj-1")
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if got.Meta.SecretNamespace != "ws-1" {
+		t.Errorf("SecretNamespace = %q, want %q (hydrator must inject)", got.Meta.SecretNamespace, "ws-1")
+	}
+	if got.Meta.Env["FROM_WORKSPACE"] != "yes" {
+		t.Errorf("Env[FROM_WORKSPACE] = %q, want %q (hydrator must merge workspace env)",
+			got.Meta.Env["FROM_WORKSPACE"], "yes")
+	}
+}
+
+// TestProjectAppService_GetProject_HydratorErrorFallsBack verifies that
+// when the hydrator fails (e.g. workspace.yaml is malformed), GetProject
+// falls back to the raw cached meta so the API stays usable.
+func TestProjectAppService_GetProject_HydratorErrorFallsBack(t *testing.T) {
+	proj := &orchestrator.Project{ID: "proj-1", WorkspaceID: "ws-broken"}
+	rawMeta := &orchestrator.ProjectMeta{ID: "proj-1", Name: "Alpha"}
+
+	svc := &ProjectAppService{
+		Projects: &stubProjectRepository{projects: []*orchestrator.Project{proj}},
+		Meta:     &stubProjectMetaStore{metas: map[string]*orchestrator.ProjectMeta{"proj-1": rawMeta}},
+		Hydrator: &stubMetaHydrator{err: fmt.Errorf("workspace.yaml broken")},
+	}
+
+	got, err := svc.GetProject("proj-1")
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if got.Meta.Name != "Alpha" {
+		t.Errorf("Name = %q, want %q (must fall back to raw meta on hydrator error)",
+			got.Meta.Name, "Alpha")
+	}
+}
+
+// TestProjectAppService_GetProject_NoHydratorUsesRaw verifies that when
+// no hydrator is wired (e.g. server built without WorkspaceStore),
+// GetProject behaves like the legacy bare-cache path.
+func TestProjectAppService_GetProject_NoHydratorUsesRaw(t *testing.T) {
+	proj := &orchestrator.Project{ID: "proj-1"}
+	rawMeta := &orchestrator.ProjectMeta{ID: "proj-1", Name: "Alpha"}
+
+	svc := &ProjectAppService{
+		Projects: &stubProjectRepository{projects: []*orchestrator.Project{proj}},
+		Meta:     &stubProjectMetaStore{metas: map[string]*orchestrator.ProjectMeta{"proj-1": rawMeta}},
+	}
+
+	got, err := svc.GetProject("proj-1")
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if got.Meta.Name != "Alpha" {
+		t.Errorf("Name = %q, want %q", got.Meta.Name, "Alpha")
 	}
 }
