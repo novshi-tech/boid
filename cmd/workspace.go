@@ -46,6 +46,15 @@ var workspaceClearCmd = &cobra.Command{
 	RunE:  runWorkspaceClear,
 }
 
+// workspaceConfigureCmd is a stub for the workspace configure command. The
+// full implementation (project scan + kit matching) will be added in a later PR.
+//
+// When the full implementation dispatches a sandbox-based configuration script,
+// the JobSpec must set:
+//   SandboxProfile: int(sandbox.ProfileInit)
+// This causes BuildPlan to mount the entire host root read-only (so the
+// configuration script can detect installed tools) and skips broker registration
+// / socket mount (configure scripts do not invoke boid host-commands).
 var workspaceConfigureCmd = &cobra.Command{
 	Use:   "configure <slug>",
 	Short: "Configure a workspace (scan projects + kit matching — stub, full implementation in a later PR)",

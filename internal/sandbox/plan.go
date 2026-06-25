@@ -25,23 +25,42 @@ type Plan struct {
 func BuildPlan(spec Spec) *Plan {
 	plan := &Plan{}
 
-	// Host system directories (ro, rbind, rslave)
-	for _, d := range []string{"/bin", "/sbin", "/lib", "/lib64", "/usr", "/etc"} {
+	if spec.Profile == ProfileInit {
+		// ProfileInit: mount the entire host root read-only so the init script
+		// can discover installed tools without an explicit allowlist. /dev, /proc,
+		// and /tmp still need individual mounts because they are special
+		// filesystems that must be layered on top of the rbind.
 		plan.Mounts = append(plan.Mounts, Mount{
-			Source: d,
-			Target: d,
-			Type:   MountRBind,
-			Slave:  true,
-			Guard:  dirGuard(d),
+			Source:   "/",
+			Target:   "/",
+			Type:     MountRBind,
+			Slave:    true,
+			ReadOnly: true,
 		})
-	}
+		plan.Mounts = append(plan.Mounts,
+			Mount{Source: "/dev", Target: "/dev", Type: MountRBind},
+			Mount{Source: "/proc", Target: "/proc", Type: MountRBind},
+			Mount{Target: "/tmp", Type: MountTmpfs},
+		)
+	} else {
+		// ProfileDefault: the standard small set of host system directories.
+		for _, d := range []string{"/bin", "/sbin", "/lib", "/lib64", "/usr", "/etc"} {
+			plan.Mounts = append(plan.Mounts, Mount{
+				Source: d,
+				Target: d,
+				Type:   MountRBind,
+				Slave:  true,
+				Guard:  dirGuard(d),
+			})
+		}
 
-	// Essential filesystems
-	plan.Mounts = append(plan.Mounts,
-		Mount{Source: "/dev", Target: "/dev", Type: MountRBind},
-		Mount{Source: "/proc", Target: "/proc", Type: MountRBind},
-		Mount{Target: "/tmp", Type: MountTmpfs},
-	)
+		// Essential filesystems
+		plan.Mounts = append(plan.Mounts,
+			Mount{Source: "/dev", Target: "/dev", Type: MountRBind},
+			Mount{Source: "/proc", Target: "/proc", Type: MountRBind},
+			Mount{Target: "/tmp", Type: MountTmpfs},
+		)
+	}
 
 	// DNS
 	plan.Files = append(plan.Files, FileWrite{

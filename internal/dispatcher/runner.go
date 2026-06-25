@@ -177,7 +177,11 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	}
 
 	var brokerSocket, brokerToken string
-	if r.Broker != nil && (len(spec.BuiltinPolicies) > 0 || len(resolvedHostCommands) > 0) {
+	// ProfileInit sandboxes scan the host filesystem for tool detection; they
+	// do not call back into boid host-commands, so broker registration and the
+	// broker socket mount are both skipped.
+	if r.Broker != nil && sandbox.Profile(spec.SandboxProfile) != sandbox.ProfileInit &&
+		(len(spec.BuiltinPolicies) > 0 || len(resolvedHostCommands) > 0) {
 		tokenCtx := sandbox.TokenContext{
 			JobID:             j.ID,
 			TaskID:            spec.TaskID,

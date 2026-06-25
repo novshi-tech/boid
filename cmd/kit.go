@@ -16,6 +16,13 @@ var kitCmd = &cobra.Command{
 
 // kitInitCmd is a stub for the kit init command. The full implementation
 // (environment scan + kit.yaml generation) will be added in a subsequent PR.
+//
+// When the full implementation dispatches a sandbox-based generation script,
+// the JobSpec must set:
+//   SandboxProfile: int(sandbox.ProfileInit)
+// This causes BuildPlan to mount the entire host root read-only (so the
+// generation script can detect installed tools) and skips broker registration
+// / socket mount (init scripts do not invoke boid host-commands).
 var kitInitCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Generate kit.yaml for this machine (stub — full implementation in a future PR)",
