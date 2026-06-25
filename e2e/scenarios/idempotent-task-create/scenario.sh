@@ -4,11 +4,17 @@ set -euo pipefail
 PROJECT_DIR="$E2E_WORKSPACE_DIR/app"
 
 # Set up workspace for new schema (PR4 hard cutover).
+# behavior_kits scopes the kit's spawn hook to the parent behavior only;
+# child behavior must not pick it up or the hook recurses on every spawned
+# subtask.
 WS_SLUG="idempotent-task-create"
 mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
 cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
 kits:
   - github.com/novshi-tech/boid-kits/idempotent-task-create
+behavior_kits:
+  parent:
+    - github.com/novshi-tech/boid-kits/idempotent-task-create
 YAML
 
 e2e_log "registering project from $PROJECT_DIR"

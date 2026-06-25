@@ -65,6 +65,16 @@ func (s *ProjectStore) Get(id string) (*ProjectMeta, bool) {
 //     only SecretNamespace injected (no error).
 //   - On other errors: returns nil and the error.
 //
+// Workspace kit merging rules:
+//   - All workspace kits always merge into the top-level meta.HostCommands /
+//     AdditionalBindings / Env so session jobs (which bypass behaviors) see
+//     the resolved tools.
+//   - For per-behavior merging (which adds Hooks/KitRoots and per-behavior
+//     env/host_commands/bindings): when ws.BehaviorKits is non-empty, only
+//     the listed behaviors receive the named kits; behaviors absent from
+//     BehaviorKits receive no kit-supplied hooks. When BehaviorKits is empty,
+//     every behavior receives every workspace kit (default behavior).
+//
 // The returned *ProjectMeta is a fresh copy when hydration occurs; callers
 // must not mutate the value returned when workspaceID is empty (it is the
 // cached pointer).
@@ -146,18 +156,55 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 				return nil, fmt.Errorf("project %q: %w", projectID, err)
 			}
 
+			// Build a per-kit lookup (ref → (meta, agent)) so we can pick a
+			// subset for behavior-scoped merging.
+			kitByRef := make(map[string]struct {
+				meta  *KitMeta
+				agent string
+			}, len(wsKitMetas))
+			for i, ref := range ws.Kits {
+				if i >= len(wsKitMetas) {
+					break
+				}
+				kitByRef[ref] = struct {
+					meta  *KitMeta
+					agent string
+				}{meta: wsKitMetas[i], agent: wsAgents[i]}
+			}
+
 			// Merge workspace kits into each TaskBehavior so kit-provided
 			// hooks / env / bindings / host_commands surface at dispatch
-			// time. This mirrors the per-behavior merge that ReadProjectMetaWithKits
-			// used to do for project-level kits.
+			// time. When BehaviorKits scopes the merge, only the listed
+			// behaviors receive the named kits. Otherwise every behavior
+			// receives every workspace kit.
 			if out.TaskBehaviors == nil {
 				out.TaskBehaviors = make(map[string]TaskBehavior)
 			}
-			// Strip alias mirrors so each canonical behavior is only merged once;
-			// re-add them after.
 			out.TaskBehaviors = stripAliasMirrors(out.TaskBehaviors)
 			for name, behavior := range out.TaskBehaviors {
-				if err := MergeKitMetaIntoBehavior(&behavior, wsKitMetas, wsAgents); err != nil {
+				kits, agents := wsKitMetas, wsAgents
+				if len(ws.BehaviorKits) > 0 {
+					refs, ok := ws.BehaviorKits[name]
+					if !ok {
+						// behavior not listed → no kits merged
+						continue
+					}
+					kits = kits[:0:0]
+					agents = agents[:0:0]
+					for _, ref := range refs {
+						entry, found := kitByRef[ref]
+						if !found {
+							// kit referenced but not in workspace.kits → ignore
+							continue
+						}
+						kits = append(kits, entry.meta)
+						agents = append(agents, entry.agent)
+					}
+					if len(kits) == 0 {
+						continue
+					}
+				}
+				if err := MergeKitMetaIntoBehavior(&behavior, kits, agents); err != nil {
 					return nil, fmt.Errorf("project %q: behavior %q: workspace kit merge: %w", projectID, name, err)
 				}
 				out.TaskBehaviors[name] = behavior
