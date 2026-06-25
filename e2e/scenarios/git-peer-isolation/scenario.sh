@@ -11,6 +11,14 @@ PEER_DIR="$E2E_WORKSPACE_DIR/peer"
 # ピアプロジェクトのディレクトリが workspace テンプレートからコピーされていることを確認
 [[ -d "$PEER_DIR" ]] || e2e_fail "peer project workspace dir not found: $PEER_DIR"
 
+# Set up workspace for new schema (PR4 hard cutover).
+WS_SLUG="ws-isolation"
+mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
+cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
+kits:
+  - github.com/novshi-tech/boid-kits/git-peer-write-reject
+YAML
+
 e2e_log "registering main project from $APP_DIR"
 e2e_run "$E2E_BIN_DIR/boid" project add "$APP_DIR"
 
@@ -18,8 +26,8 @@ e2e_log "registering peer project from $PEER_DIR"
 e2e_run "$E2E_BIN_DIR/boid" project add "$PEER_DIR"
 
 e2e_log "assigning both projects to the same workspace"
-e2e_run "$E2E_BIN_DIR/boid" workspace assign git-peer-isolation     ws-isolation
-e2e_run "$E2E_BIN_DIR/boid" workspace assign git-peer-isolation-peer ws-isolation
+e2e_run "$E2E_BIN_DIR/boid" workspace assign git-peer-isolation     "$WS_SLUG"
+e2e_run "$E2E_BIN_DIR/boid" workspace assign git-peer-isolation-peer "$WS_SLUG"
 
 e2e_log "creating executor task"
 task_create_output="$("$E2E_BIN_DIR/boid" task create <<'YAML'

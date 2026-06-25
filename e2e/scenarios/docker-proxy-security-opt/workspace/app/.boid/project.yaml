@@ -1,10 +1,5 @@
 id: docker-proxy-security-opt
 name: Docker Proxy Test - security-opt
-capabilities:
-  docker: {}
-env:
-  DOCKER_PROXY_TEST_CASE: security-opt
 task_behaviors:
   smoke:
-    kits:
-      - github.com/novshi-tech/boid-kits/docker-proxy-test
+    name: smoke

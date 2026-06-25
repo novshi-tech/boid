@@ -2,11 +2,6 @@ id: e2e-idempotent-task-create
 name: E2E Idempotent Task Create
 task_behaviors:
   parent:
-    transition: one-shot
     traits: []
-    kits:
-      - github.com/novshi-tech/boid-kits/idempotent-task-create
   child:
-    transition: one-shot
     traits: []
-    kits: []

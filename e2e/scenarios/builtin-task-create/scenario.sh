@@ -3,8 +3,18 @@ set -euo pipefail
 
 PROJECT_DIR="$E2E_WORKSPACE_DIR/app"
 
+# Set up workspace for new schema (PR4 hard cutover).
+WS_SLUG="builtin-task-create"
+mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
+cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
+kits:
+  - github.com/novshi-tech/boid-kits/builtin-task-create
+  - github.com/novshi-tech/boid-kits/hook-task-create
+YAML
+
 e2e_log "registering project from $PROJECT_DIR"
 e2e_run "$E2E_BIN_DIR/boid" project add "$PROJECT_DIR"
+e2e_run "$E2E_BIN_DIR/boid" workspace assign "e2e-builtin-task-create" "$WS_SLUG"
 
 # ============================================================
 e2e_log "=== creating parent task that triggers spawn hook ==="

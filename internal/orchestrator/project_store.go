@@ -111,8 +111,9 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 	}
 
 	// Workspace kits are resolved and merged into top-level runtime fields
-	// (HostCommands, AdditionalBindings, Env). They act at lower priority than
-	// project.yaml entries — project wins on conflict.
+	// (HostCommands, AdditionalBindings, Env) and into each TaskBehavior's
+	// Hooks / KitRoots / Env / HostCommands / AdditionalBindings. They act at
+	// lower priority than project.yaml entries — project wins on conflict.
 	if len(ws.Kits) > 0 {
 		var wsKitMetas []*KitMeta
 		var wsAgents []string
@@ -144,6 +145,24 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 			if err := validateBuiltinHostConflict("workspace kits", out.HostCommands); err != nil {
 				return nil, fmt.Errorf("project %q: %w", projectID, err)
 			}
+
+			// Merge workspace kits into each TaskBehavior so kit-provided
+			// hooks / env / bindings / host_commands surface at dispatch
+			// time. This mirrors the per-behavior merge that ReadProjectMetaWithKits
+			// used to do for project-level kits.
+			if out.TaskBehaviors == nil {
+				out.TaskBehaviors = make(map[string]TaskBehavior)
+			}
+			// Strip alias mirrors so each canonical behavior is only merged once;
+			// re-add them after.
+			out.TaskBehaviors = stripAliasMirrors(out.TaskBehaviors)
+			for name, behavior := range out.TaskBehaviors {
+				if err := MergeKitMetaIntoBehavior(&behavior, wsKitMetas, wsAgents); err != nil {
+					return nil, fmt.Errorf("project %q: behavior %q: workspace kit merge: %w", projectID, name, err)
+				}
+				out.TaskBehaviors[name] = behavior
+			}
+			out.TaskBehaviors = addAliasMirrors(out.TaskBehaviors)
 		}
 	}
 

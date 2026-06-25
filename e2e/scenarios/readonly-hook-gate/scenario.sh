@@ -6,8 +6,17 @@ RELEASE_FILE="$PROJECT_DIR/.boid/release-verify-readonly"
 
 rm -f "$RELEASE_FILE"
 
+# Set up workspace for new schema (PR4 hard cutover).
+WS_SLUG="readonly-hook-gate"
+mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
+cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
+kits:
+  - github.com/novshi-tech/boid-kits/readonly-hook-gate
+YAML
+
 e2e_log "registering project from $PROJECT_DIR"
 e2e_run "$E2E_BIN_DIR/boid" project add "$PROJECT_DIR"
+e2e_run "$E2E_BIN_DIR/boid" workspace assign "readonly-hook-gate" "$WS_SLUG"
 
 e2e_log "creating readonly task"
 task_create_output="$("$E2E_BIN_DIR/boid" task create <<'YAML'

@@ -1,10 +1,5 @@
 id: docker-proxy-bind-escape
 name: Docker Proxy Test - bind-escape
-capabilities:
-  docker: {}
-env:
-  DOCKER_PROXY_TEST_CASE: bind-escape
 task_behaviors:
   smoke:
-    kits:
-      - github.com/novshi-tech/boid-kits/docker-proxy-test
+    name: smoke

@@ -28,6 +28,14 @@ e2e_log "initializing peer project as a git repository"
   /usr/bin/git checkout main
 )
 
+# Set up workspace for new schema (PR4 hard cutover).
+WS_SLUG="ws-clone-local"
+mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
+cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
+kits:
+  - github.com/novshi-tech/boid-kits/git-peer-clone-local
+YAML
+
 e2e_log "registering main project from $APP_DIR"
 e2e_run "$E2E_BIN_DIR/boid" project add "$APP_DIR"
 
@@ -35,8 +43,8 @@ e2e_log "registering peer project from $PEER_DIR"
 e2e_run "$E2E_BIN_DIR/boid" project add "$PEER_DIR"
 
 e2e_log "assigning both projects to the same workspace"
-e2e_run "$E2E_BIN_DIR/boid" workspace assign git-peer-clone-local      ws-clone-local
-e2e_run "$E2E_BIN_DIR/boid" workspace assign git-peer-clone-local-peer  ws-clone-local
+e2e_run "$E2E_BIN_DIR/boid" workspace assign git-peer-clone-local      "$WS_SLUG"
+e2e_run "$E2E_BIN_DIR/boid" workspace assign git-peer-clone-local-peer  "$WS_SLUG"
 
 e2e_log "creating executor task"
 task_create_output="$("$E2E_BIN_DIR/boid" task create <<'YAML'

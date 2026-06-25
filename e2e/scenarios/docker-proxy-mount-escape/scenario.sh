@@ -9,8 +9,21 @@ trap 'kill "$FAKE_DOCKER_PID" 2>/dev/null || true' EXIT
 e2e_run "$E2E_BIN_DIR/boid-e2e" wait-unix-socket --timeout 5s "$XDG_RUNTIME_DIR/docker.sock"
 
 PROJECT_DIR="$E2E_WORKSPACE_DIR/app"
+# Set up workspace for new schema (PR4 hard cutover).
+WS_SLUG="docker-proxy-mount-escape"
+mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
+cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
+kits:
+  - github.com/novshi-tech/boid-kits/docker-proxy-test
+env:
+  DOCKER_PROXY_TEST_CASE: mount-escape
+capabilities:
+  docker: {}
+YAML
+
 e2e_log "registering project"
 e2e_run "$E2E_BIN_DIR/boid" project add "$PROJECT_DIR"
+e2e_run "$E2E_BIN_DIR/boid" workspace assign "docker-proxy-mount-escape" "$WS_SLUG"
 
 task_create_output="$("$E2E_BIN_DIR/boid" task create <<'YAML'
 project_id: docker-proxy-mount-escape

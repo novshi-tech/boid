@@ -1,10 +1,5 @@
 id: docker-proxy-reap-on-failure
 name: Docker Proxy Test - reap-on-failure
-capabilities:
-  docker: {}
-env:
-  DOCKER_PROXY_TEST_CASE: reap-on-failure
 task_behaviors:
   smoke:
-    kits:
-      - github.com/novshi-tech/boid-kits/docker-proxy-test
+    name: smoke

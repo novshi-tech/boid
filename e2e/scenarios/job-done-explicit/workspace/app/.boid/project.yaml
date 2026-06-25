@@ -1,6 +1,4 @@
 id: job-done-explicit
 name: Job Done Explicit
 task_behaviors:
-  explicit:
-    kits:
-      - github.com/novshi-tech/boid-kits/job-done-explicit
+  explicit: {}
