@@ -353,9 +353,12 @@ type TaskBehavior struct {
 	Traits             []string     `yaml:"traits" json:"traits"`
 	DefaultInstruction *Instruction `yaml:"default_instruction,omitempty" json:"default_instruction,omitempty"`
 
-	// Resolved fields populated by ReadProjectMetaWithKits after merging kit data
-	// and project-level overlays. These are not serialized to YAML.
-	Hooks              []Hook            `yaml:"-" json:"-"`
+	// Hooks is parsed from project.yaml task_behaviors.<name>.hooks at load time.
+	// ScriptPath on each Hook is resolved separately by ReadProjectMeta (not stored
+	// in YAML). Env, HostCommands, AdditionalBindings, and KitRoots are
+	// runtime-overlay fields populated by ReadProjectMetaWithKits after merging
+	// kit data and project-level overlays. These are not serialized to YAML.
+	Hooks              []Hook            `yaml:"hooks,omitempty" json:"-"`
 	Env                map[string]string `yaml:"-" json:"-"`
 	HostCommands       HostCommands      `yaml:"-" json:"-"`
 	AdditionalBindings []BindMount       `yaml:"-" json:"-"`
