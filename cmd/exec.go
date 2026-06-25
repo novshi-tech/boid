@@ -48,6 +48,9 @@ func runExec(cobraCmd *cobra.Command, args []string) error {
 
 	// Re-fetch with meta hydrated so we inherit project-level traits
 	// (host_commands / env / additional_bindings / kit_roots / capabilities).
+	// The server-side handler hydrates project.Meta against the linked
+	// workspace.yaml (Capabilities / Env / SecretNamespace) before
+	// returning, so the SessionJobInput below sees the merged view.
 	var project orchestrator.Project
 	if err := c.Do("GET", "/api/projects/"+p.ID, nil, &project); err != nil {
 		return fmt.Errorf("get project: %w", err)

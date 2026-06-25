@@ -268,6 +268,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	projectSvc := &api.ProjectAppService{
 		Projects: projectRepo,
 		Meta:     store,
+		Hydrator: store, // workspace-aware hydration for GET /api/projects/{id}
 	}
 	boidCfg, err := config.Load()
 	if err != nil {
@@ -412,6 +413,9 @@ func (a *sessionDispatcherAdapter) StartSession(ctx context.Context, req api.Sta
 	if err != nil {
 		return nil, err
 	}
+	// project.Meta is workspace-hydrated by GetProject (see ProjectAppService
+	// .hydrateProjectWithWorkspace) so Capabilities / Env / SecretNamespace
+	// reflect the linked workspace.yaml.
 	meta := project.Meta
 	// shell sessions get a hard-coded interactive bash. Agent harnesses
 	// (claude / codex / opencode) build their own argv from CLI conventions
