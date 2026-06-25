@@ -1,84 +1,70 @@
 # 2. プロジェクトを初期化する
 
-このページでは `boid init` でプロジェクトを 1 つ立ち上げます。 同じウィザード内で **kit** (拡張パッケージ) のセットアップも済ませるので、 ここを抜けると 「タスクを投げれば AI エージェントが動く」 状態のプロジェクトが出来あがります。 所要時間は 5 分ほどです。
+> **お知らせ**: 旧 `boid init` ウィザードは廃止されました。
+> 新しいセットアップフローは 3 段のコマンドに分かれています。
+> 詳しくは [オンボーディング](../guide/onboarding.md) を参照してください。
 
+このページでは新しい 3 段のフローでプロジェクトを立ち上げます。
 [1. インストール](01-install.md) を完了している前提です。
 
 ## このページのねらい
 
-- 公式 kit リポジトリをインストールする (オプション)
-- `boid init` の対話ウィザードでプロジェクトを 1 つ作る
-- 生成された `.boid/project.yaml` の内容を確認する
+- `boid kit init` でマシンの kit カタログを生成する
+- `boid project init` で新規プロジェクトを作成する
+- `boid workspace configure` で workspace 設定を生成する
 
 ## エージェントについて
 
-`boid` のアーキテクチャは特定の AI エージェントに依存しない設計ですが、 現時点で実用的に動作確認が取れている agent は **Claude Code** のみです。 このチュートリアル以降は Claude Code が手元にあることを前提に進めます。 `claude` CLI が PATH にあり、 Claude Code としてサインイン済みであることを確認してください (Claude Code 側のセットアップ手順は [Claude Code の公式ドキュメント](https://docs.claude.com/en/docs/claude-code/overview) を参照)。
+`boid` のアーキテクチャは特定の AI エージェントに依存しない設計ですが、
+現時点で実用的に動作確認が取れている agent は **Claude Code** のみです。
+このチュートリアル以降は Claude Code が手元にあることを前提に進めます。
+`claude` CLI が PATH にあり、Claude Code としてサインイン済みであることを確認してください
+(Claude Code 側のセットアップ手順は [Claude Code の公式ドキュメント](https://docs.claude.com/en/docs/claude-code/overview) を参照)。
 
-## kit リポジトリをインストールする (オプション)
-
-追加の hooks や host_commands が必要な場合は公式 kit リポジトリをインストールできます。
-
-```bash
-boid kit install github.com/novshi-tech/boid-kits
-```
-
-クローン先は `~/.local/share/boid/kits/github.com/novshi-tech/boid-kits/` です。 リポジトリ直下の各サブディレクトリがそれぞれ 1 つの kit になります (`claude-code` や `github-cli` など)。 kit 全体の仕組みは [Kit 作者向け 概要](../kit-authoring/overview.md) を参照してください。
-
-インストール済みの一覧は次で確認できます:
+## ステップ 1: kit カタログを生成する
 
 ```bash
-boid kit list
+boid kit init
 ```
 
-## 作業ディレクトリを用意する
+このマシンで使える kit カタログを生成します。
+インストール済みの kit 一覧は `boid kit list` で確認できます。
 
-このチュートリアル専用のディレクトリを 1 つ作ります。
+## ステップ 2a: 新規プロジェクトを作成する
 
 ```bash
 mkdir -p ~/boid-demo
-cd ~/boid-demo
+boid project init ~/boid-demo --workspace dev
 ```
 
-既存のリポジトリの直下で `boid init` する形でも問題ありません。
+`--workspace dev` は workspace slug です。省略すると workspace への関連付けが後回しになります。
 
-## `boid init` を走らせる
+既存リポジトリにプロジェクトを作成する場合も同様です:
 
 ```bash
-boid init
+boid project init ~/src/myrepo --workspace dev
 ```
 
-対話ウィザードが立ち上がります。 全プロンプトとも Enter で既定値が選ばれるので、 迷わなければそのまま進めて構いません。
+## ステップ 2b: 既存プロジェクトを登録する (既存 project.yaml がある場合)
 
-```
-Project name [boid-demo]:
-Available kits (auto-detected marked with ✓):
-  [✓] 1. Claude Code (github.com/novshi-tech/boid-kits/claude-code)
-  [ ] 2. GitHub CLI (github.com/novshi-tech/boid-kits/github-cli) (optional)
-  [ ] 3. Go development (github.com/novshi-tech/boid-kits/go-dev)
-  ...
-Enable/disable kits (space-separated numbers, prefix - to deselect, Enter to keep defaults):
->
-Checking requirements...
-  ✓ claude (/home/<you>/.local/bin/claude)
+`.boid/project.yaml` が既にある場合は `project add` を使います:
 
-✓ Created /home/<you>/boid-demo/.boid/project.yaml
-project registered: <uuid> (boid-demo)
+```bash
+boid project add ~/src/myrepo --workspace dev
 ```
 
-順に何を聞かれているか:
+## ステップ 3: workspace を設定する
 
-1. **Project name** — Web UI 表示用の名前。 ディレクトリ名がそのまま既定値
-2. **Available kits** — インストール済み kit のうち、 このマシンで動かせるものに `✓` が付いて自動選択されます (例: `claude` CLI が PATH にあれば Claude Code がオンに)。 番号を打って on/off を切り替えられます
-3. **Requirements check** — 選んだ kit が必要とする host コマンドが PATH 上にあるかを確認
+```bash
+boid workspace configure dev
+```
 
-`task_behaviors.supervisor` / `task_behaviors.executor` の雛形は boid バイナリに内蔵されており、 kit のインストールなしで自動生成されます。
-
-最後にウィザードが `.boid/project.yaml` を生成し、 `boid` の daemon に自動登録します。
+workspace 設定 (有効化する kit / env / host_commands など) を生成します。
 
 ## 生成された project.yaml を眺める
 
 ```bash
-cat .boid/project.yaml
+cat ~/boid-demo/.boid/project.yaml
 ```
 
 おおむね次のような内容になっています:
@@ -87,29 +73,16 @@ cat .boid/project.yaml
 id: <uuid>
 name: boid-demo
 worktree: true
-kits:
-  - github.com/novshi-tech/boid-kits/claude-code
 task_behaviors:
-  executor:
+  dev:
     default_instruction:
-      type: execution
       agent: claude-code
       message: |
-        Implement what the task.yaml title and description ask
-        for, then commit on the current branch and exit. ...
-  supervisor:
-    default_instruction:
-      type: execution
-      agent: claude-code
-      message: |
-        Triage the request, create child executor tasks, and
-        monitor them in order. ...
+        Implement what the task describes, commit on the current branch, and exit.
 ```
 
-- **`worktree: true`** — executor タスクが専用の git worktree (ブランチ `boid/<task_id8>`) で動くことを示す
-- **`kits:`** にウィザードで選んだ kit が並びます
-- **`task_behaviors.supervisor` / `task_behaviors.executor`** が `boid` の 2 つの canonical な役割。 supervisor は readonly な統括役、 executor は書き込み可能な実装役です (詳細は [概念 / behavior](../guide/concepts.md#behavior))
-- **`default_instruction`** はタスク作成時に agent に最初に渡る指示の雛形。 必要なら手で書き換えて `boid project reload` してください
+- **`worktree: true`** — executor タスクが専用の git worktree で動くことを示す
+- **`task_behaviors`** — タスクの動作を定義する (詳細は [概念 / behavior](../guide/concepts.md#behavior))
 
 登録済みプロジェクトの一覧 / 詳細は次で確認できます:
 
@@ -122,12 +95,12 @@ boid project show boid-demo
 
 このチュートリアルで触れた要素:
 
-- **`boid kit install`** で公式 kit リポジトリをインストール
-- **`boid init`** の対話ウィザードで `.boid/project.yaml` を生成 + 自動登録
-- 生成された yaml の `kits:` / `task_behaviors` を確認
-- 次に編集した場合は `boid project reload` で反映
+- **`boid kit init`** でマシンの kit カタログを生成
+- **`boid project init`** で `.boid/project.yaml` を生成 + daemon 登録
+- **`boid workspace configure`** で workspace 設定を生成
+- 後から yaml を編集した場合は `boid project reload` で反映
 
-次の章では、 ここで初期化したプロジェクトに対して Web UI のセットアップを行います。
+次の章では、ここで初期化したプロジェクトに対して Web UI のセットアップを行います。
 
 ## 後片付け (任意)
 
@@ -138,7 +111,7 @@ boid project remove boid-demo
 rm -rf ~/boid-demo
 ```
 
-ただし、 以降のチュートリアルでも同じプロジェクトを使うので、 続けて読むなら残しておいてください。
+ただし、以降のチュートリアルでも同じプロジェクトを使うので、続けて読むなら残しておいてください。
 
 ---
 

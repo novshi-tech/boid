@@ -48,7 +48,7 @@ internal/
   dispatcher/         - hook job launching, sandbox plan building, worktree management
   sandbox/            - mount namespace + chroot, host-command broker, HTTP proxy
   kit/                - cloning, loading, and detection for kit repositories
-  initwizard/         - interactive setup for `boid init`
+  initwizard/         - interactive setup for `boid project init` (the old `boid init` has been removed)
   logrotate/          - size-based rotation for the daemon log
   qrterm/             - terminal-side QR rendering
   skills/             - bundled Claude Code skills

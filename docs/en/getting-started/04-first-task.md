@@ -12,7 +12,7 @@ This page assumes you have completed [3. Set up the Web UI](03-web-ui.md).
 
 ## Grab the project ID
 
-`boid task create` needs the project's ID (a uuid) in the `project_id` field. `boid init` printed it as `project registered: <uuid> (boid-demo)` at the very end. If you have lost the output:
+`boid task create` needs the project's ID (a uuid) in the `project_id` field. `boid project init` printed it as `project registered: <uuid> (boid-demo)` at the very end. If you have lost the output:
 
 ```bash
 boid project list
@@ -43,7 +43,7 @@ In another terminal, follow the task:
 boid task watch <task-id>
 ```
 
-After a moment the hook job runs Claude. Following the template instruction `boid init` wrote into `project.yaml`, the agent calls `boid task update` to write `artifact`, and once the hook exits cleanly the auto-transition moves the task `executing → done`.
+After a moment the hook job runs Claude. Following the template instruction `boid project init` wrote into `project.yaml`, the agent calls `boid task update` to write `artifact`, and once the hook exits cleanly the auto-transition moves the task `executing → done`.
 
 ### Watch from the Web UI
 

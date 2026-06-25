@@ -66,7 +66,7 @@ The label `boid` UIs use to identify the kit. By convention, `category` is one o
 
 ### `detect`
 
-A POSIX sh script used during setup flows (such as `boid init`) to decide whether this kit applies to a given project. Print one of:
+A POSIX sh script used during setup flows (such as `boid project init`) to decide whether this kit applies to a given project. Print one of:
 
 - `required` — auto-select this kit for the project.
 - `optional` — show as a candidate, do not auto-select.

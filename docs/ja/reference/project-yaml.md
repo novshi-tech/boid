@@ -244,7 +244,7 @@ additional_bindings:
 
 ので、 同じ宣言で worktree モードに依存せず動作します。
 
-> **注意:** `project.local.yaml` での `additional_bindings` エントリには `mode` を明示 (`ro` または `rw`) する必要があります。 空文字列は local ファイルでは受け付けられません。
+> **注意:** `workspace.yaml` での `additional_bindings` エントリには `mode` を明示 (`ro` または `rw`) する必要があります。 空文字列は受け付けられません。
 
 ### Instruction
 
@@ -344,24 +344,13 @@ boid は起動時に docker upstream socket を `DOCKER_HOST` 環境変数 → r
 
 docker kit (cetusguard ベース) からの移行手順は [Docker プロキシ移行ガイド](../guide/docker-proxy-migration.md) を参照してください。
 
-## プロジェクトローカル設定 (`.boid/project.local.yaml`)
+## プロジェクトローカル設定 (`.boid/project.local.yaml`) — 廃止
 
-`project.yaml` と並んで、 `.boid/project.local.yaml` を置くと一部フィールドをローカルでだけ上書きできます。 `git ignore` する前提で、共有しない設定 (個人の host_commands など) を入れる場所です。
+> **廃止**: `project.local.yaml` は廃止されました。内容は `workspace.yaml` に集約されます。
+> `boid project migrate <dir>` で自動変換できます。詳細は [移行ガイド](../guide/migration.md) を参照してください。
 
-サポートされるフィールド:
-
-```yaml
-version: 1
-host_commands:
-  ...
-additional_bindings:
-  ...
-env:
-  ...
-secret_namespace: ...
-```
-
-`task_behaviors` や `kits` はここで上書きできません。
+旧スキーマで `project.local.yaml` が担っていた `host_commands` / `additional_bindings` / `env` / `secret_namespace` は、
+現在は `workspace.yaml` で設定します。`workspace.yaml` は machine-local であり `gitignore` 対象です。
 
 ## 例: 実プロジェクトの構成
 

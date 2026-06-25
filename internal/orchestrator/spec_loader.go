@@ -56,7 +56,7 @@ func MergeKitRuntime(kits []*KitMeta, kitAgents []string) (KitRuntime, error) {
 		}
 		for k, v := range kit.HostCommands {
 			if existingAgent, ok := kitCmdSource[k]; ok {
-				return rt, fmt.Errorf("host_commands: command %q is defined in both kit %q and kit %q; remove the duplicate from one kit or override it in project.local.yaml", k, existingAgent, agent)
+				return rt, fmt.Errorf("host_commands: command %q is defined in both kit %q and kit %q; remove the duplicate from one kit or override it in workspace.yaml", k, existingAgent, agent)
 			}
 			kitCmdSource[k] = agent
 			mergedCmds[k] = v
@@ -493,20 +493,16 @@ func IsProjectScopable(km *KitMeta) error {
 	return nil
 }
 
-// ReadProjectMetaWithKits reads project.yaml and project.local.yaml, and merges
-// project-level overlays into each behavior.
+// ReadProjectMetaWithKits reads project.yaml and merges project-level overlays
+// into each behavior.
 // Returns a ProjectMeta whose TaskBehaviors have their resolved Hooks/etc.
 // populated and ready for dispatch.
 //
 // Note: kits are no longer supported in project.yaml (removed in the new schema).
 // Workspace kits are resolved at GetWithWorkspace time via WorkspaceStore.
+// project.local.yaml is deprecated; use workspace.yaml instead.
 func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, error) {
 	meta, err := ReadProjectMeta(dir)
-	if err != nil {
-		return nil, err
-	}
-
-	local, err := ReadProjectLocalMeta(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -528,12 +524,6 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		behavior.Env = mergeStringMaps(behavior.Env, meta.Env)
 		behavior.HostCommands = mergeHostCommands(behavior.HostCommands, meta.HostCommands)
 		behavior.AdditionalBindings = mergeBindMounts(behavior.AdditionalBindings, meta.AdditionalBindings)
-		// Apply project.local.yaml overlay on top.
-		if local != nil {
-			behavior.Env = mergeStringMaps(behavior.Env, local.Env)
-			behavior.HostCommands = mergeHostCommands(behavior.HostCommands, local.HostCommands)
-			behavior.AdditionalBindings = mergeBindMounts(behavior.AdditionalBindings, local.AdditionalBindings)
-		}
 		if err := validateBuiltinHostConflict(fmt.Sprintf("behavior %q", name), behavior.HostCommands); err != nil {
 			return nil, err
 		}

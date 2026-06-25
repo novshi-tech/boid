@@ -21,7 +21,7 @@ boid <command> --help       # per-command help
 
 ### Auto-start
 
-If the daemon is not running when you invoke any other command, `boid` starts it automatically. The exceptions (commands that skip auto-start) are: `start`, `stop`, `gc`, `check`, `init`, `fetch`, `project local *`, `web set-url`, and `web set-addr`. You rarely need to call `boid start` by hand.
+If the daemon is not running when you invoke any other command, `boid` starts it automatically. The exceptions (commands that skip auto-start) are: `start`, `stop`, `gc`, `check`, `init`, `fetch`, `web set-url`, and `web set-addr`. You rarely need to call `boid start` by hand.
 
 Set `BOID_NO_AUTOSTART=1` to disable auto-start globally.
 
@@ -33,7 +33,7 @@ Set `BOID_NO_AUTOSTART=1` to disable auto-start globally.
 | `boid stop` | Stop the daemon. Killing by PID can leave a stale socket; prefer this. |
 | `boid gc [--older-than DURATION] [--dry-run]` | Garbage collect old completed/aborted tasks (the daemon also runs this on its own at startup). `--dry-run` prints what would be deleted without removing anything. |
 | `boid check` | Check host prerequisites and hook dependencies. |
-| `boid init [DIR]` | Interactively scaffold a new project. |
+| `boid init [DIR]` | **(Deprecated)** Prints a deprecation guide. Use `boid kit init` / `boid project init\|add` / `boid workspace configure` instead. See [Onboarding](../guide/onboarding.md). |
 
 See [Getting started / Install](../getting-started/01-install.md) for context.
 
@@ -50,18 +50,11 @@ Manage projects ([`project.yaml` reference](project-yaml.md)).
 | `boid project reload` | Re-read every registered project's `project.yaml`. |
 | `boid project behaviors <ref>` | List `task_behaviors` defined in the project. |
 
-### `project local` (editing `.boid/project.local.yaml`)
+### `project local` — Deprecated
 
-Local-only overrides (intended to be `gitignore`d). Lets you add `host_commands` / `additional_bindings` / `env` without sharing them with the team.
-
-| Command | Role |
-|---|---|
-| `boid project local init [--force] [DIR]` | Create an empty `project.local.yaml`. `--force` overwrites an existing file. |
-| `boid project local show [DIR]` | Print the file. |
-| `boid project local set-env <key> <value> [DIR]` | Add an env override. |
-| `boid project local unset-env <key> [DIR]` | Remove an env override. |
-| `boid project local add-binding <path> [--mode MODE] [DIR]` | Add an additional binding. `--mode` sets the mount mode (`ro` or `rw`). |
-| `boid project local remove-binding <path> [DIR]` | Remove an additional binding. |
+`boid project local ...` commands have been removed.
+The `host_commands` / `additional_bindings` / `env` / `secret_namespace` overrides that `project.local.yaml` used to provide are now part of `workspace.yaml` (machine-local).
+Run `boid project migrate <dir>` to convert automatically. See the [Migration guide](../guide/migration.md).
 
 ## Task
 
