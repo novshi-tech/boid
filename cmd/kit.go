@@ -60,6 +60,13 @@ var kitRemoveCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 
+		// Early validation, consistent with the workspace slug 3-layer
+		// defense: fail fast on path-traversal / invalid characters so we
+		// never filepath.Join an attacker-controlled value.
+		if err := orchestrator.ValidKitName(name); err != nil {
+			return err
+		}
+
 		// Check if any workspace references this kit.
 		wsStore := orchestrator.NewWorkspaceStore("")
 		slug, checkErr := workspacesReferencingKit(wsStore, name)

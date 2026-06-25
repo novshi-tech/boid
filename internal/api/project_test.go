@@ -108,6 +108,26 @@ func TestProjectAPI_SetWorkspaceAndGet(t *testing.T) {
 		t.Fatalf("workspace_id = %q, want %q", updated.WorkspaceID, "ws-1")
 	}
 
+	// API-layer slug validation: invalid slugs must be rejected with a 400-class
+	// error before any DB write happens. See the 3-layer defense in
+	// docs/plans/kit-workspace-project-reorg.md (workspace slug validator).
+	for _, invalid := range []string{"UPPER", "with_underscore", "with space", "..", "with/slash"} {
+		var rejected orchestrator.Project
+		err := ts.Client.Do("PUT", "/api/projects/test-project/workspace", map[string]string{"workspace_id": invalid}, &rejected)
+		if err == nil {
+			t.Errorf("expected API to reject invalid workspace slug %q", invalid)
+		}
+	}
+
+	// Verify the original assignment was not clobbered by the rejected calls.
+	var stillOne orchestrator.Project
+	if err := ts.Client.Do("GET", "/api/projects/test-project", nil, &stillOne); err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if stillOne.WorkspaceID != "ws-1" {
+		t.Fatalf("rejected assignments leaked into DB: workspace_id = %q, want %q", stillOne.WorkspaceID, "ws-1")
+	}
+
 	var got orchestrator.Project
 	if err := ts.Client.Do("GET", "/api/projects/test-project", nil, &got); err != nil {
 		t.Fatalf("get project: %v", err)

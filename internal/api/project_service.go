@@ -114,6 +114,14 @@ func (s *ProjectAppService) GetProject(id string) (*orchestrator.Project, error)
 }
 
 func (s *ProjectAppService) SetProjectWorkspace(id, workspaceID string) (*orchestrator.Project, error) {
+	// API-layer validation per plan (3-layer defense). Empty string clears the
+	// assignment and is handled at the repository layer; non-empty values must
+	// satisfy ValidWorkspaceSlug or we return 400 Bad Request early.
+	if workspaceID != "" {
+		if err := orchestrator.ValidWorkspaceSlug(workspaceID); err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+		}
+	}
 	project, err := s.Projects.GetProject(id)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}

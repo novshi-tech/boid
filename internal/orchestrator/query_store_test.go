@@ -132,6 +132,32 @@ func TestSetProjectWorkspace(t *testing.T) {
 	}
 }
 
+// TestSetProjectWorkspace_RejectsInvalidSlug verifies the final-defense
+// validation at the domain layer: even if upstream layers forget to validate,
+// the DB INSERT must never run with a malformed workspace slug. See the
+// 3-layer defense in docs/plans/kit-workspace-project-reorg.md.
+func TestSetProjectWorkspace_RejectsInvalidSlug(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/a"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	for _, invalid := range []string{"UPPER", "with_underscore", "with space", "..", "with/slash", strings.Repeat("a", 65)} {
+		if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-1", invalid); err == nil {
+			t.Errorf("expected SetProjectWorkspace to reject invalid slug %q", invalid)
+		}
+	}
+
+	// The rejected calls must not have leaked a row into project_workspaces.
+	project, err := orchestrator.GetProject(d.Conn, "proj-1")
+	if err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if project.WorkspaceID != "" {
+		t.Fatalf("invalid slug leaked into DB: workspace_id = %q", project.WorkspaceID)
+	}
+}
+
 func TestListWorkspaces(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	for _, project := range []*orchestrator.Project{

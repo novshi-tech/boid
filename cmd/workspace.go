@@ -212,6 +212,15 @@ func runWorkspaceShow(cmd *cobra.Command, args []string) error {
 	} else if yamlErr != nil {
 		view.Warnings = append(view.Warnings, fmt.Sprintf("workspace.yaml: read error: %v", yamlErr))
 	}
+	// Mirror the yaml-side warning for the other half of the union (DB-side
+	// empty). Plan: "片方欠落時に欠落側を明示" — the `empty` state (yaml is
+	// present but no project is assigned) should be surfaced symmetrically to
+	// the `unconfigured` state above.
+	if meta != nil && len(projects) == 0 {
+		view.Warnings = append(view.Warnings,
+			fmt.Sprintf("project assignments: none — workspace is empty (run `boid workspace remove %s` to delete, or `boid workspace assign <project> %s` to add)", slug, slug),
+		)
+	}
 
 	return renderOutput(cmd, view, func() error {
 		out := cmd.OutOrStdout()
@@ -256,6 +265,13 @@ func runWorkspaceShow(cmd *cobra.Command, args []string) error {
 }
 
 func runWorkspaceAssign(cmd *cobra.Command, args []string) error {
+	// CLI entry-point validation per plan (3-layer defense). Early error gives
+	// a better UX than a 400 from the daemon.
+	slug := args[1]
+	if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
+		return err
+	}
+
 	c := client.NewUnixClient(client.DefaultSocketPath())
 
 	p, err := resolveProjectRef(c, os.Stdin, cmd.OutOrStdout(), args[0])
@@ -265,7 +281,7 @@ func runWorkspaceAssign(cmd *cobra.Command, args []string) error {
 
 	// get-or-create: PUT creates the DB row for the slug even if it's unknown.
 	var project orchestrator.Project
-	if err := c.Do("PUT", "/api/projects/"+p.ID+"/workspace", map[string]string{"workspace_id": args[1]}, &project); err != nil {
+	if err := c.Do("PUT", "/api/projects/"+p.ID+"/workspace", map[string]string{"workspace_id": slug}, &project); err != nil {
 		return fmt.Errorf("assign workspace: %w", err)
 	}
 

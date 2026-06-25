@@ -54,12 +54,21 @@ func ListProjects(dbtx db.DBTX) ([]*Project, error) {
 }
 
 // SetProjectWorkspace updates a project's local workspace membership.
+//
+// Domain-layer validation per plan (3-layer defense, last line before DB
+// INSERT). Empty workspaceID clears the membership and bypasses slug
+// validation; any non-empty slug must satisfy ValidWorkspaceSlug so we never
+// persist a malformed identifier even if an upstream layer forgets to check.
 func SetProjectWorkspace(dbtx db.DBTX, projectID, workspaceID string) error {
 	if workspaceID == "" {
 		if _, err := dbtx.Exec(`DELETE FROM project_workspaces WHERE project_id = ?`, projectID); err != nil {
 			return fmt.Errorf("clear project workspace: %w", err)
 		}
 		return nil
+	}
+
+	if err := ValidWorkspaceSlug(workspaceID); err != nil {
+		return fmt.Errorf("set project workspace: %w", err)
 	}
 
 	_, err := dbtx.Exec(

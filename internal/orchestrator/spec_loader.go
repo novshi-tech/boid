@@ -80,12 +80,12 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	yamlPath := filepath.Join(dir, ".boid", "project.yaml")
 	data, err := os.ReadFile(yamlPath)
 	if err != nil {
-		return nil, fmt.Errorf("read project.yaml: %w", err)
+		return nil, fmt.Errorf("%s: read: %w", yamlPath, err)
 	}
 
 	var raw map[string]any
 	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("parse project.yaml: %w", err)
+		return nil, fmt.Errorf("%s: parse: %w", yamlPath, err)
 	}
 	if _, ok := raw["workspace_id"]; ok {
 		return nil, fmt.Errorf("project.yaml: workspace_id is no longer supported; assign workspace via boid workspace assign <project-id> <workspace-id>")

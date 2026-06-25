@@ -94,11 +94,15 @@ type secretCollision struct {
 }
 
 // legacyKitYAML is the shape we write for the generated legacy kit.
+//
+// Per the migration transformation table in docs/plans/kit-workspace-project-reorg.md,
+// only host_commands + additional_bindings move into the legacy kit; env is
+// migrated to workspace.yaml. We therefore intentionally do not carry an Env
+// field on this struct.
 type legacyKitYAML struct {
-	Meta               legacyKitMeta              `yaml:"meta"`
-	HostCommands       orchestrator.HostCommands   `yaml:"host_commands,omitempty"`
-	AdditionalBindings []orchestrator.BindMount    `yaml:"additional_bindings,omitempty"`
-	Env                map[string]string           `yaml:"env,omitempty"`
+	Meta               legacyKitMeta            `yaml:"meta"`
+	HostCommands       orchestrator.HostCommands `yaml:"host_commands,omitempty"`
+	AdditionalBindings []orchestrator.BindMount  `yaml:"additional_bindings,omitempty"`
 }
 
 type legacyKitMeta struct {
@@ -280,7 +284,6 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string) er
 			},
 			HostCommands:       meta.HostCommands,
 			AdditionalBindings: meta.AdditionalBindings,
-			Env:                meta.Env,
 		}
 
 		// Add the legacy kit to workspace.Kits if not already present.
