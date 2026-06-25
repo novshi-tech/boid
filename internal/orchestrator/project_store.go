@@ -172,6 +172,14 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 	// that precedence: mergeStringMaps(ws.Env, out.Env) → out.Env wins.
 	if len(ws.Env) > 0 {
 		out.Env = mergeStringMaps(ws.Env, out.Env)
+		// Workspace env must also reach each behavior's Env so the planner's
+		// PlanHook (which only reads behavior.Env, not meta.Env) picks it up.
+		out.TaskBehaviors = stripAliasMirrors(out.TaskBehaviors)
+		for name, behavior := range out.TaskBehaviors {
+			behavior.Env = mergeStringMaps(ws.Env, behavior.Env)
+			out.TaskBehaviors[name] = behavior
+		}
+		out.TaskBehaviors = addAliasMirrors(out.TaskBehaviors)
 	}
 
 	return out, nil
