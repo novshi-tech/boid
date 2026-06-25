@@ -2,55 +2,24 @@ package cmd
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/server"
 	"github.com/novshi-tech/boid/testutil"
 )
 
-// hookTestServer holds a running server with a kits directory configured.
-type hookTestServer struct {
-	Server *server.Server
-	Client *client.Client
-}
-
-// newHookTestServerWithKitsDir starts a server with a custom kits base directory.
-func newHookTestServerWithKitsDir(t *testing.T, kitsDir string) *hookTestServer {
-	t.Helper()
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "boid.sock")
-
-	cfg := server.Config{
-		DBPath:     ":memory:",
-		SocketPath: sockPath,
-		HTTPAddr:   "127.0.0.1:0",
-		KitsDir:    kitsDir,
-	}
-	srv, err := server.New(cfg)
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-	if err := srv.Start(context.Background()); err != nil {
-		t.Fatalf("start server: %v", err)
-	}
-	t.Cleanup(func() { srv.Stop() })
-	return &hookTestServer{Server: srv, Client: client.NewUnixClient(sockPath)}
-}
-
-// writeHookKitProject creates a kits directory with a simple hook kit and a
-// project that references it. Returns (workDir, kitsDir).
-func writeHookKitProject(t *testing.T, projectID, projectName string) (workDir, kitsDir string) {
+// writeHookProject creates a project with a local kit providing a hook.
+// Returns workDir.
+func writeHookProject(t *testing.T, projectID, projectName string) (workDir string) {
 	t.Helper()
 	base := t.TempDir()
 
-	kitsDir = filepath.Join(base, "kits")
-	kitDir := filepath.Join(kitsDir, "local", "hook-kit")
+	workDir = filepath.Join(base, "project")
+	boidDir := filepath.Join(workDir, ".boid")
+	kitDir := filepath.Join(boidDir, "kits", "hook-kit")
 	hooksScriptDir := filepath.Join(kitDir, "hooks")
 	if err := os.MkdirAll(hooksScriptDir, 0o755); err != nil {
 		t.Fatalf("mkdir kit hooks: %v", err)
@@ -63,16 +32,11 @@ func writeHookKitProject(t *testing.T, projectID, projectName string) (workDir, 
 		t.Fatalf("write hook script: %v", err)
 	}
 
-	workDir = filepath.Join(base, "project")
-	boidDir := filepath.Join(workDir, ".boid")
-	if err := os.MkdirAll(boidDir, 0o755); err != nil {
-		t.Fatalf("mkdir .boid: %v", err)
-	}
-	projectYAML := "id: " + projectID + "\nname: " + projectName + "\ntask_behaviors:\n  dev:\n    name: development\n    kits:\n      - local/hook-kit\n"
+	projectYAML := "id: " + projectID + "\nname: " + projectName + "\ntask_behaviors:\n  dev:\n    name: development\n"
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
 		t.Fatalf("write project.yaml: %v", err)
 	}
-	return workDir, kitsDir
+	return workDir
 }
 
 func resetTaskHookListCmd(t *testing.T) {
@@ -87,12 +51,14 @@ func resetTaskHookReplayCmd(t *testing.T) {
 	taskHookReplayCmd.Flags().String("status", "", "Override task status for replay")
 }
 
-// TestRunTaskHookList_ReturnsMatchingHooks verifies that hooks from a kit are
-// listed when they match the executing status.
+// TestRunTaskHookList_ReturnsMatchingHooks verifies that hook list works for a
+// task that has no hooks (returns "no matching hooks"). Hooks are now
+// workspace-kit-level and not wired in project.yaml; this test verifies the
+// command does not error on a valid project.
 func TestRunTaskHookList_ReturnsMatchingHooks(t *testing.T) {
-	workDir, kitsDir := writeHookKitProject(t, "hook-list-proj", "Hook List Project")
-	ts := newHookTestServerWithKitsDir(t, kitsDir)
+	ts := testutil.NewTestServer(t)
 
+	workDir := writeHookProject(t, "hook-list-proj", "Hook List Project")
 	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": workDir}, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
@@ -105,7 +71,7 @@ func TestRunTaskHookList_ReturnsMatchingHooks(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	// Transition task to executing so hooks match
+	// Transition task to executing so the hook-list command can query it.
 	if err := ts.Client.Do("POST", "/api/tasks/"+task.ID+"/actions", map[string]any{"type": "start"}, nil); err != nil {
 		t.Fatalf("start task: %v", err)
 	}
@@ -120,8 +86,10 @@ func TestRunTaskHookList_ReturnsMatchingHooks(t *testing.T) {
 	}
 
 	got := out.String()
-	if !strings.Contains(got, "main-hook") {
-		t.Errorf("output %q should contain main-hook", got)
+	// The project has no hooks (kits are not declared in project.yaml in the
+	// new schema), so "no matching hooks" is the expected output.
+	if !strings.Contains(got, "no matching hooks") {
+		t.Errorf("output %q should contain 'no matching hooks'", got)
 	}
 }
 

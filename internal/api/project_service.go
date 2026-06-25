@@ -17,6 +17,7 @@ type ProjectAppService struct {
 		Get(id string) (*orchestrator.ProjectMeta, bool)
 		Remove(id string)
 		LoadAll(projects []*orchestrator.Project) []error
+		SetWorkspaceID(projectID, workspaceID string)
 	}
 	// Hydrator is optional. When set, callers that need fully-resolved meta
 	// (workspace-level capabilities / kits / env merged in + SecretNamespace
@@ -120,6 +121,10 @@ func (s *ProjectAppService) SetProjectWorkspace(id, workspaceID string) (*orches
 	if err := s.Projects.SetProjectWorkspace(id, workspaceID); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
+	// Propagate the workspace association into the in-memory ProjectStore so
+	// the next GetWithWorkspace call sees the new value (otherwise the stale
+	// empty workspaceID stays cached until daemon restart).
+	s.Meta.SetWorkspaceID(id, workspaceID)
 	project.WorkspaceID = workspaceID
 	return s.hydrateProject(project), nil
 }

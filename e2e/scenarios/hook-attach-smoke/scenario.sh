@@ -15,8 +15,17 @@ e2e_require_cmd curl
 PROJECT_DIR="$E2E_WORKSPACE_DIR/app"
 PROJECT_ID="hook-attach-smoke"
 
+# Set up workspace for new schema (PR4 hard cutover).
+WS_SLUG="hook-attach-smoke"
+mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
+cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
+kits:
+  - github.com/novshi-tech/boid-kits/hook-attach-smoke
+YAML
+
 e2e_log "registering project from $PROJECT_DIR"
 e2e_run "$E2E_BIN_DIR/boid" project add "$PROJECT_DIR"
+e2e_run "$E2E_BIN_DIR/boid" workspace assign "$PROJECT_ID" "$WS_SLUG"
 
 # Restart with a dynamic HTTP address so curl can reach the Web UI.
 e2e_log "stopping initial server"

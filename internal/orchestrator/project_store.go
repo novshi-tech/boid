@@ -65,6 +65,16 @@ func (s *ProjectStore) Get(id string) (*ProjectMeta, bool) {
 //     only SecretNamespace injected (no error).
 //   - On other errors: returns nil and the error.
 //
+// Workspace kit merging rules:
+//   - All workspace kits always merge into the top-level meta.HostCommands /
+//     AdditionalBindings / Env so session jobs (which bypass behaviors) see
+//     the resolved tools.
+//   - For per-behavior merging (which adds Hooks/KitRoots and per-behavior
+//     env/host_commands/bindings): when ws.BehaviorKits is non-empty, only
+//     the listed behaviors receive the named kits; behaviors absent from
+//     BehaviorKits receive no kit-supplied hooks. When BehaviorKits is empty,
+//     every behavior receives every workspace kit (default behavior).
+//
 // The returned *ProjectMeta is a fresh copy when hydration occurs; callers
 // must not mutate the value returned when workspaceID is empty (it is the
 // cached pointer).
@@ -111,8 +121,9 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 	}
 
 	// Workspace kits are resolved and merged into top-level runtime fields
-	// (HostCommands, AdditionalBindings, Env). They act at lower priority than
-	// project.yaml entries — project wins on conflict.
+	// (HostCommands, AdditionalBindings, Env) and into each TaskBehavior's
+	// Hooks / KitRoots / Env / HostCommands / AdditionalBindings. They act at
+	// lower priority than project.yaml entries — project wins on conflict.
 	if len(ws.Kits) > 0 {
 		var wsKitMetas []*KitMeta
 		var wsAgents []string
@@ -144,6 +155,61 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 			if err := validateBuiltinHostConflict("workspace kits", out.HostCommands); err != nil {
 				return nil, fmt.Errorf("project %q: %w", projectID, err)
 			}
+
+			// Build a per-kit lookup (ref → (meta, agent)) so we can pick a
+			// subset for behavior-scoped merging.
+			kitByRef := make(map[string]struct {
+				meta  *KitMeta
+				agent string
+			}, len(wsKitMetas))
+			for i, ref := range ws.Kits {
+				if i >= len(wsKitMetas) {
+					break
+				}
+				kitByRef[ref] = struct {
+					meta  *KitMeta
+					agent string
+				}{meta: wsKitMetas[i], agent: wsAgents[i]}
+			}
+
+			// Merge workspace kits into each TaskBehavior so kit-provided
+			// hooks / env / bindings / host_commands surface at dispatch
+			// time. When BehaviorKits scopes the merge, only the listed
+			// behaviors receive the named kits. Otherwise every behavior
+			// receives every workspace kit.
+			if out.TaskBehaviors == nil {
+				out.TaskBehaviors = make(map[string]TaskBehavior)
+			}
+			out.TaskBehaviors = stripAliasMirrors(out.TaskBehaviors)
+			for name, behavior := range out.TaskBehaviors {
+				kits, agents := wsKitMetas, wsAgents
+				if len(ws.BehaviorKits) > 0 {
+					refs, ok := ws.BehaviorKits[name]
+					if !ok {
+						// behavior not listed → no kits merged
+						continue
+					}
+					kits = kits[:0:0]
+					agents = agents[:0:0]
+					for _, ref := range refs {
+						entry, found := kitByRef[ref]
+						if !found {
+							// kit referenced but not in workspace.kits → ignore
+							continue
+						}
+						kits = append(kits, entry.meta)
+						agents = append(agents, entry.agent)
+					}
+					if len(kits) == 0 {
+						continue
+					}
+				}
+				if err := MergeKitMetaIntoBehavior(&behavior, kits, agents); err != nil {
+					return nil, fmt.Errorf("project %q: behavior %q: workspace kit merge: %w", projectID, name, err)
+				}
+				out.TaskBehaviors[name] = behavior
+			}
+			out.TaskBehaviors = addAliasMirrors(out.TaskBehaviors)
 		}
 	}
 
@@ -153,6 +219,14 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 	// that precedence: mergeStringMaps(ws.Env, out.Env) → out.Env wins.
 	if len(ws.Env) > 0 {
 		out.Env = mergeStringMaps(ws.Env, out.Env)
+		// Workspace env must also reach each behavior's Env so the planner's
+		// PlanHook (which only reads behavior.Env, not meta.Env) picks it up.
+		out.TaskBehaviors = stripAliasMirrors(out.TaskBehaviors)
+		for name, behavior := range out.TaskBehaviors {
+			behavior.Env = mergeStringMaps(ws.Env, behavior.Env)
+			out.TaskBehaviors[name] = behavior
+		}
+		out.TaskBehaviors = addAliasMirrors(out.TaskBehaviors)
 	}
 
 	return out, nil
@@ -162,6 +236,20 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 func (s *ProjectStore) Set(id string, meta *ProjectMeta) {
 	s.mu.Lock()
 	s.metas[id] = meta
+	s.mu.Unlock()
+}
+
+// SetWorkspaceID updates the cached workspace association for a project.
+// Empty workspaceID clears the association. Subsequent GetWithWorkspace calls
+// will hydrate using the new value (or return the cached meta unchanged when
+// cleared).
+func (s *ProjectStore) SetWorkspaceID(projectID, workspaceID string) {
+	s.mu.Lock()
+	if workspaceID == "" {
+		delete(s.workspaceIDs, projectID)
+	} else {
+		s.workspaceIDs[projectID] = workspaceID
+	}
 	s.mu.Unlock()
 }
 

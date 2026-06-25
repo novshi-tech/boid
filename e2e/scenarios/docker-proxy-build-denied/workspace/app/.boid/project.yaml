@@ -1,10 +1,5 @@
 id: docker-proxy-build-denied
 name: Docker Proxy Test - build-denied
-capabilities:
-  docker: {}
-env:
-  DOCKER_PROXY_TEST_CASE: build-denied
 task_behaviors:
   smoke:
-    kits:
-      - github.com/novshi-tech/boid-kits/docker-proxy-test
+    name: smoke

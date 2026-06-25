@@ -3,7 +3,4 @@ name: Git Peer Clone Local
 worktree: true
 base_branch: main
 task_behaviors:
-  executor:
-    transition: one-shot
-    kits:
-      - github.com/novshi-tech/boid-kits/git-peer-clone-local
+  executor: {}

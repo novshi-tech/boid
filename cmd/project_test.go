@@ -46,9 +46,6 @@ func TestRenderProjectDetail_MetaSections(t *testing.T) {
 			Name: "Meta Test",
 			TaskBehaviors: map[string]projectspec.TaskBehavior{
 				"dev": {
-					Kits: []projectspec.KitRef{
-						{Ref: "github.com/novshi-tech/boid-kits/dev"},
-					},
 					Hooks: []projectspec.Hook{
 						{ID: "on-start", Requires: []string{"gh"}},
 					},
@@ -73,7 +70,6 @@ func TestRenderProjectDetail_MetaSections(t *testing.T) {
 	checks := []string{
 		"TaskBehaviors:",
 		"dev",
-		"kit: github.com/novshi-tech/boid-kits/dev",
 		"hook: on-start",
 		"HostCommands:",
 		"gh",

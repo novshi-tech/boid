@@ -1984,6 +1984,13 @@ func (s stubMetaStore) Get(id string) (*orchestrator.ProjectMeta, bool) {
 	return s.meta, true
 }
 
+func (s stubMetaStore) GetWithWorkspace(_ context.Context, _ string) (*orchestrator.ProjectMeta, error) {
+	if s.meta == nil {
+		return nil, fmt.Errorf("stubMetaStore: meta not loaded")
+	}
+	return s.meta, nil
+}
+
 type stubLifecycle struct {
 	completedJobID    string
 	unregisteredJobID string
@@ -2535,6 +2542,7 @@ func (s *stubProjectMetaStore) Get(id string) (*orchestrator.ProjectMeta, bool) 
 }
 func (s *stubProjectMetaStore) Remove(id string)                          {}
 func (s *stubProjectMetaStore) LoadAll(_ []*orchestrator.Project) []error { return nil }
+func (s *stubProjectMetaStore) SetWorkspaceID(_, _ string)                {}
 
 // TestProjectAppService_ResolveProjectRef tests all resolution priority cases.
 func TestProjectAppService_ResolveProjectRef(t *testing.T) {

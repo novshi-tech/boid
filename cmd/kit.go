@@ -39,50 +39,9 @@ func kitInstallSingle(repoRef string) error {
 }
 
 func kitInstallFromProject() error {
-	projectDir, err := resolveProjectRoot("")
-	if err != nil {
-		return err
-	}
-
-	meta, err := kit.ReadProjectMeta(projectDir)
-	if err != nil {
-		return err
-	}
-
-	// Collect unique kit refs across all behaviors.
-	seen := make(map[string]struct{})
-	var kitRefStrs []string
-	for _, behavior := range meta.TaskBehaviors {
-		for _, r := range behavior.Kits {
-			if _, ok := seen[r.Ref]; ok {
-				continue
-			}
-			seen[r.Ref] = struct{}{}
-			kitRefStrs = append(kitRefStrs, r.Ref)
-		}
-	}
-	repos := kit.RepoRefsFromKitRefs(kitRefStrs)
-	if len(repos) == 0 {
-		fmt.Println("no remote kit repos to install")
-		return nil
-	}
-
-	reg := kit.NewRegistry(defaultKitsDir())
-	installed := false
-	for _, repo := range repos {
-		if reg.IsInstalled(repo) {
-			fmt.Printf("already installed: %s\n", repo)
-			continue
-		}
-		if err := reg.Install(repo, kitInstallSSH); err != nil {
-			return err
-		}
-		fmt.Printf("installed: %s\n", repo)
-		installed = true
-	}
-	if installed {
-		reloadProjects()
-	}
+	// Kit refs are no longer declared in project.yaml. Use `boid kit install <repo>`
+	// to install a specific kit repository, or configure kits via workspace.yaml.
+	fmt.Println("no remote kit repos to install (kits are no longer declared in project.yaml; use workspace.yaml)")
 	return nil
 }
 

@@ -1,10 +1,5 @@
 id: docker-proxy-volume-create
 name: Docker Proxy Test - volume-create
-capabilities:
-  docker: {}
-env:
-  DOCKER_PROXY_TEST_CASE: volume-create
 task_behaviors:
   smoke:
-    kits:
-      - github.com/novshi-tech/boid-kits/docker-proxy-test
+    name: smoke

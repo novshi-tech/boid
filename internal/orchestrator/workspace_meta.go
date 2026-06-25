@@ -10,8 +10,24 @@ package orchestrator
 // project.yaml.
 type WorkspaceMeta struct {
 	// Kits is the ordered list of kit slugs active in this workspace.
-	// Kit slugs are resolved by KitRegistry at load time.
+	// Kit slugs are resolved by KitRegistry at load time. When BehaviorKits
+	// is empty, these kits are merged into every behavior (host_commands /
+	// env / additional_bindings / hooks).
 	Kits []string `yaml:"kits,omitempty" json:"kits,omitempty"`
+
+	// BehaviorKits scopes kit merging to specific behaviors. When non-empty,
+	// kits are merged into only the listed behaviors (not all). Project-level
+	// resolved fields (HostCommands / AdditionalBindings / Env on meta) still
+	// receive all kits' contributions so session jobs see them.
+	//
+	// Example:
+	//   kits:
+	//     - github.com/foo/bar
+	//     - github.com/foo/baz
+	//   behavior_kits:
+	//     parent: [github.com/foo/bar]
+	//     hook-parent: [github.com/foo/baz]
+	BehaviorKits map[string][]string `yaml:"behavior_kits,omitempty" json:"behavior_kits,omitempty"`
 
 	// Env holds environment variable overrides applied to every sandbox
 	// launched under this workspace. Values here take precedence over

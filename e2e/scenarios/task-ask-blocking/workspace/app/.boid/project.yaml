@@ -1,7 +1,4 @@
 id: task-ask-blocking
 name: Blocking Q&A Smoke
 task_behaviors:
-  qa:
-    transition: one-shot
-    kits:
-      - github.com/novshi-tech/boid-kits/task-ask-blocking-smoke
+  qa: {}

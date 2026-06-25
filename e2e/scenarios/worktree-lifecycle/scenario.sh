@@ -3,8 +3,17 @@ set -euo pipefail
 
 PROJECT_DIR="$E2E_WORKSPACE_DIR/app"
 
+# Set up workspace for new schema (PR4 hard cutover).
+WS_SLUG="worktree-lifecycle"
+mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
+cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
+kits:
+  - github.com/novshi-tech/boid-kits/worktree-smoke
+YAML
+
 e2e_log "registering project from $PROJECT_DIR"
 e2e_run "$E2E_BIN_DIR/boid" project add "$PROJECT_DIR"
+e2e_run "$E2E_BIN_DIR/boid" workspace assign "worktree-lifecycle" "$WS_SLUG"
 
 e2e_log "creating worktree-lifecycle task"
 task_create_output="$("$E2E_BIN_DIR/boid" task create <<'YAML'

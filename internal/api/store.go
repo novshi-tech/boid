@@ -11,6 +11,10 @@ import (
 
 type MetaStore interface {
 	Get(id string) (*orchestrator.ProjectMeta, bool)
+	// GetWithWorkspace returns the project meta with workspace.yaml (kits,
+	// env, capabilities) hydrated in. Use this whenever the caller dispatches
+	// hooks or otherwise needs the resolved runtime view.
+	GetWithWorkspace(ctx context.Context, projectID string) (*orchestrator.ProjectMeta, error)
 }
 
 type DispatchCoordinator interface {

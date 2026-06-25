@@ -146,9 +146,11 @@ func TestGetWithWorkspace_Degraded(t *testing.T) {
 	}
 }
 
-// TestGetWithWorkspace_EnvPriority verifies that project.yaml env takes
-// precedence over workspace.yaml env.
-func TestGetWithWorkspace_EnvPriority(t *testing.T) {
+// TestGetWithWorkspace_EnvMerge verifies that workspace.yaml env is merged into
+// the project meta at GetWithWorkspace time. (env in project.yaml is a removed
+// key as of the new schema; env is now supplied via workspace.yaml or injected
+// into behaviors via project.local.yaml.)
+func TestGetWithWorkspace_EnvMerge(t *testing.T) {
 	t.Parallel()
 
 	projectDir := t.TempDir()
@@ -156,24 +158,17 @@ func TestGetWithWorkspace_EnvPriority(t *testing.T) {
 	if err := os.MkdirAll(boidDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	// Project declares SHARED_VAR and PROJECT_ONLY.
-	projectYAML := `
-id: proj-env-prio
-name: Env Priority Project
-env:
-  SHARED_VAR: from-project
-  PROJECT_ONLY: project-value
-`
+	// Minimal project.yaml with no env.
+	projectYAML := "id: proj-env-prio\nname: Env Priority Project\n"
 	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
 		t.Fatalf("write project.yaml: %v", err)
 	}
 
 	wsDir := t.TempDir()
-	// Workspace declares SHARED_VAR (project should win) and WS_ONLY.
 	setupWorkspaceDir(t, wsDir, "envws", `
 env:
-  SHARED_VAR: from-workspace
-  WS_ONLY: workspace-value
+  WS_KEY_A: value-a
+  WS_KEY_B: value-b
 `)
 
 	s := orchestrator.NewProjectStore(nil)
@@ -187,16 +182,12 @@ env:
 		t.Fatalf("GetWithWorkspace: %v", err)
 	}
 
-	// Project env wins over workspace env.
-	if meta.Env["SHARED_VAR"] != "from-project" {
-		t.Fatalf("expected SHARED_VAR=from-project (project wins), got %q", meta.Env["SHARED_VAR"])
+	// Workspace env is present in the hydrated meta.
+	if meta.Env["WS_KEY_A"] != "value-a" {
+		t.Fatalf("expected WS_KEY_A=value-a, got %q", meta.Env["WS_KEY_A"])
 	}
-	if meta.Env["PROJECT_ONLY"] != "project-value" {
-		t.Fatalf("expected PROJECT_ONLY=project-value, got %q", meta.Env["PROJECT_ONLY"])
-	}
-	// Workspace-only env is still present.
-	if meta.Env["WS_ONLY"] != "workspace-value" {
-		t.Fatalf("expected WS_ONLY=workspace-value, got %q", meta.Env["WS_ONLY"])
+	if meta.Env["WS_KEY_B"] != "value-b" {
+		t.Fatalf("expected WS_KEY_B=value-b, got %q", meta.Env["WS_KEY_B"])
 	}
 }
 

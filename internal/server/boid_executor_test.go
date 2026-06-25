@@ -105,6 +105,13 @@ func (s executorMetaStub) Get(_ string) (*orchestrator.ProjectMeta, bool) {
 	return s.meta, true
 }
 
+func (s executorMetaStub) GetWithWorkspace(_ context.Context, _ string) (*orchestrator.ProjectMeta, error) {
+	if s.meta == nil {
+		return nil, fmt.Errorf("executorMetaStub: meta not loaded")
+	}
+	return s.meta, nil
+}
+
 func (s *capturingTaskStore) CreateTask(task *orchestrator.Task) error {
 	task.ID = "task-1"
 	task.Status = orchestrator.TaskStatusPending
