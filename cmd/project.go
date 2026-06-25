@@ -9,9 +9,14 @@ import (
 	"strings"
 
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/initwizard"
 	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
 )
+
+// --workspace flag values for project add / project init.
+var projectAddWorkspace string
+var projectInitWorkspace string
 
 var projectCmd = &cobra.Command{
 	Use:   "project",
@@ -31,6 +36,27 @@ var projectAddCmd = &cobra.Command{
 	Short: "Register a project from .boid/project.yaml",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runProjectAdd,
+}
+
+var projectInitSubCmd = &cobra.Command{
+	Use:   "init [dir]",
+	Short: "Initialize a new boid project interactively and register it",
+	Long: `Initialize a new boid project in the current directory (or [dir]).
+
+Runs an interactive wizard to set the project name, select kits, choose a
+task behavior provider, and generate .boid/project.yaml, then registers the
+project with the running boid daemon.
+
+Optionally assigns the project to a workspace (get-or-create: creates a DB
+row for the slug even if no workspace.yaml exists yet).
+
+Example:
+  boid project init                              # initialize in current dir
+  boid project init ./my-project                 # initialize in ./my-project
+  boid project init . --workspace main           # also assign to workspace "main"
+`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runProjectInit,
 }
 
 var projectListCmd = &cobra.Command{
@@ -70,7 +96,10 @@ var projectBehaviorsCmd = &cobra.Command{
 }
 
 func init() {
-	projectCmd.AddCommand(projectAddCmd, projectListCmd, projectRemoveCmd, projectReloadCmd, projectShowCmd, projectBehaviorsCmd)
+	projectAddCmd.Flags().StringVar(&projectAddWorkspace, "workspace", "", "Assign the project to a workspace after registration (get-or-create)")
+	projectInitSubCmd.Flags().StringVar(&projectInitWorkspace, "workspace", "", "Assign the project to a workspace after initialization (get-or-create)")
+
+	projectCmd.AddCommand(projectAddCmd, projectInitSubCmd, projectListCmd, projectRemoveCmd, projectReloadCmd, projectShowCmd, projectBehaviorsCmd)
 	rootCmd.AddCommand(projectCmd)
 }
 
@@ -87,8 +116,19 @@ func runProjectAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("register project: %w", err)
 	}
 
+	// Optionally assign workspace (get-or-create: DB row is created even for unknown slug).
+	if projectAddWorkspace != "" {
+		if err := assignProjectWorkspace(c, p.ID, projectAddWorkspace); err != nil {
+			return err
+		}
+		p.WorkspaceID = projectAddWorkspace
+	}
+
 	return renderOutput(cmd, &p, func() error {
 		fmt.Fprintf(cmd.OutOrStdout(), "project registered: %s (%s)\n", p.ID, p.Meta.Name)
+		if p.WorkspaceID != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "  workspace: %s\n", p.WorkspaceID)
+		}
 		// Check hook requires
 		for _, b := range p.Meta.TaskBehaviors {
 			for _, h := range b.Hooks {
@@ -101,6 +141,69 @@ func runProjectAdd(cmd *cobra.Command, args []string) error {
 		}
 		return nil
 	})
+}
+
+// runProjectInit runs the interactive init wizard then registers and (optionally) assigns workspace.
+func runProjectInit(cmd *cobra.Command, args []string) error {
+	dir := "."
+	if len(args) > 0 {
+		dir = args[0]
+	}
+
+	projectDir, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+
+	// Abort if project.yaml already exists.
+	projectYAMLPath := filepath.Join(projectDir, ".boid", "project.yaml")
+	if _, err := os.Stat(projectYAMLPath); err == nil {
+		return fmt.Errorf(".boid/project.yaml already exists in %s; remove it first", projectDir)
+	}
+
+	w := &initwizard.Wizard{
+		In:      os.Stdin,
+		Out:     cmd.OutOrStdout(),
+		KitsDir: defaultKitsDir(),
+	}
+
+	if err := w.Run(projectDir); err != nil {
+		return err
+	}
+
+	// Register with daemon.
+	c := client.NewUnixClient(client.DefaultSocketPath())
+	var p projectspec.Project
+	if err := c.Do("POST", "/api/projects", map[string]string{"work_dir": projectDir}, &p); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not register project with boid server: %v\n", err)
+		fmt.Fprintln(os.Stderr, "Run 'boid project add .' once the server is running.")
+		return nil
+	}
+
+	// Optionally assign workspace (get-or-create).
+	if projectInitWorkspace != "" {
+		if err := assignProjectWorkspace(c, p.ID, projectInitWorkspace); err != nil {
+			return err
+		}
+		p.WorkspaceID = projectInitWorkspace
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "project registered: %s (%s)\n", p.ID, p.Meta.Name)
+	if p.WorkspaceID != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "  workspace: %s\n", p.WorkspaceID)
+	}
+	return nil
+}
+
+// assignProjectWorkspace sends PUT /api/projects/<id>/workspace to link the
+// project to a workspace. get-or-create semantics: the server creates a DB row
+// for the slug even when no workspace.yaml exists.
+func assignProjectWorkspace(c *client.Client, projectID, workspaceSlug string) error {
+	var result projectspec.Project
+	if err := c.Do("PUT", "/api/projects/"+projectID+"/workspace", map[string]string{"workspace_id": workspaceSlug}, &result); err != nil {
+		return fmt.Errorf("assign workspace %q: %w", workspaceSlug, err)
+	}
+	return nil
 }
 
 func runProjectList(cmd *cobra.Command, args []string) error {

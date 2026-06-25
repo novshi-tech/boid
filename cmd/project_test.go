@@ -160,3 +160,27 @@ func TestRenderProjectBehaviors_Empty(t *testing.T) {
 		t.Errorf("expected 'no behaviors' message, got:\n%s", got)
 	}
 }
+
+// TestProjectAddCmd_HasWorkspaceFlag verifies that the --workspace flag is
+// registered on `boid project add`.
+func TestProjectAddCmd_HasWorkspaceFlag(t *testing.T) {
+	f := projectAddCmd.Flags().Lookup("workspace")
+	if f == nil {
+		t.Fatal("--workspace flag not registered on project add")
+	}
+	if f.DefValue != "" {
+		t.Errorf("expected empty default for --workspace, got %q", f.DefValue)
+	}
+}
+
+// TestProjectInitSubCmd_HasWorkspaceFlag verifies that --workspace is
+// registered on `boid project init`.
+func TestProjectInitSubCmd_HasWorkspaceFlag(t *testing.T) {
+	f := projectInitSubCmd.Flags().Lookup("workspace")
+	if f == nil {
+		t.Fatal("--workspace flag not registered on project init")
+	}
+	if f.DefValue != "" {
+		t.Errorf("expected empty default for --workspace, got %q", f.DefValue)
+	}
+}
