@@ -11,6 +11,21 @@ import (
 	"github.com/novshi-tech/boid/internal/config"
 )
 
+// writeKitYAML creates kitsDir/<kitName>/kit.yaml with the given content.
+// It is used by secret-scan tests to simulate files written by the sandbox.
+func writeKitYAML(t *testing.T, kitsDir, kitName, content string) string {
+	t.Helper()
+	dir := filepath.Join(kitsDir, kitName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	path := filepath.Join(dir, "kit.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	return path
+}
+
 // withIsolatedConfigHome routes XDG_CONFIG_HOME (and HOME, as a fallback for
 // os.UserConfigDir) to a per-test tempdir and clears env vars that could leak
 // into the default-harness resolver. It returns the config dir so tests can
@@ -260,5 +275,180 @@ func TestKitInitCmd_SkipsAutostart(t *testing.T) {
 	if got := kitInitCmd.Annotations[annotationSkipAutostart]; got != "skip" {
 		t.Errorf("annotation %q on kit init: got %q, want %q",
 			annotationSkipAutostart, got, "skip")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Secret scan / rollback tests (PR5)
+// ---------------------------------------------------------------------------
+
+// TestScanNewKitDirs_CleanYAML verifies that a newly generated kit dir with
+// clean (no-secret) YAML is accepted, and the function reports the kit name.
+func TestScanNewKitDirs_CleanYAML(t *testing.T) {
+	kitsDir := t.TempDir()
+
+	// Pre-existing kit (must NOT be scanned or removed).
+	writeKitYAML(t, kitsDir, "old-kit", "name: old-kit\ntools: []\n")
+	existing, err := listKitDirs(kitsDir)
+	if err != nil {
+		t.Fatalf("listKitDirs: %v", err)
+	}
+
+	// New kit with clean YAML — no secrets.
+	writeKitYAML(t, kitsDir, "new-kit", "name: new-kit\ntools:\n  - name: hello\n    cmd: echo hello\n")
+
+	var out bytes.Buffer
+	if err := scanNewKitDirs(kitsDir, existing, &out); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "new-kit") {
+		t.Errorf("output should mention generated kit; got: %s", out.String())
+	}
+
+	// old-kit and new-kit must both still exist.
+	for _, name := range []string{"old-kit", "new-kit"} {
+		if _, err := os.Stat(filepath.Join(kitsDir, name)); err != nil {
+			t.Errorf("kit dir %q should still exist: %v", name, err)
+		}
+	}
+}
+
+// TestScanNewKitDirs_SecretYAMLRollback verifies that when the generated kit
+// dir contains a secret-like value the directory is deleted and an error is
+// returned (rollback).
+func TestScanNewKitDirs_SecretYAMLRollback(t *testing.T) {
+	kitsDir := t.TempDir()
+
+	existing, err := listKitDirs(kitsDir)
+	if err != nil {
+		t.Fatalf("listKitDirs: %v", err)
+	}
+
+	// Write a kit yaml with a high-entropy token (≥32 chars of [A-Za-z0-9_-]).
+	secretToken := "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" // 40 chars, token-like
+	writeKitYAML(t, kitsDir, "leaked-kit",
+		"name: leaked-kit\nenv:\n  GITHUB_TOKEN: "+secretToken+"\n")
+
+	var out bytes.Buffer
+	err = scanNewKitDirs(kitsDir, existing, &out)
+	if err == nil {
+		t.Fatal("expected error due to secret finding, got nil")
+	}
+	if !strings.Contains(err.Error(), "secret scan") {
+		t.Errorf("error should mention secret scan; got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "rolled back") {
+		t.Errorf("error should mention rollback; got: %v", err)
+	}
+
+	// The leaked kit directory must be gone (rollback).
+	if _, statErr := os.Stat(filepath.Join(kitsDir, "leaked-kit")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Error("leaked-kit dir should have been removed by rollback")
+	}
+}
+
+// TestScanNewKitDirs_ExistingKitNotScanned verifies that pre-existing kit
+// directories (present before the sandbox run) are never scanned, even when
+// they contain secret-like content.
+func TestScanNewKitDirs_ExistingKitNotScanned(t *testing.T) {
+	kitsDir := t.TempDir()
+
+	// Write a pre-existing kit with a secret-like value.
+	secretToken := "ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+	writeKitYAML(t, kitsDir, "pre-existing-kit",
+		"name: pre-existing-kit\nenv:\n  TOKEN: "+secretToken+"\n")
+
+	// Snapshot — pre-existing-kit is now in the baseline.
+	existing, err := listKitDirs(kitsDir)
+	if err != nil {
+		t.Fatalf("listKitDirs: %v", err)
+	}
+
+	// Add a clean new kit after the snapshot.
+	writeKitYAML(t, kitsDir, "new-clean-kit", "name: new-clean-kit\ntools: []\n")
+
+	var out bytes.Buffer
+	if err := scanNewKitDirs(kitsDir, existing, &out); err != nil {
+		t.Fatalf("pre-existing kit should not cause scan failure: %v", err)
+	}
+
+	// pre-existing-kit must remain intact.
+	if _, statErr := os.Stat(filepath.Join(kitsDir, "pre-existing-kit")); statErr != nil {
+		t.Errorf("pre-existing-kit should not be touched: %v", statErr)
+	}
+	if !strings.Contains(out.String(), "new-clean-kit") {
+		t.Errorf("output should mention new-clean-kit; got: %s", out.String())
+	}
+}
+
+// TestRunKitInit_SecretScanRollback verifies the end-to-end integration: when
+// the sandbox stub writes a secret-containing YAML to a new kit dir, runKitInit
+// returns an error and the kit dir is rolled back.
+func TestRunKitInit_SecretScanRollback(t *testing.T) {
+	withIsolatedConfigHome(t)
+	dataDir := withIsolatedDataHome(t)
+
+	if err := config.SetDefaultHarness("claude"); err != nil {
+		t.Fatalf("SetDefaultHarness: %v", err)
+	}
+
+	kitsDir := filepath.Join(dataDir, "boid", "kits")
+
+	orig := kitInitExecFn
+	kitInitExecFn = func(argv0 string, argv []string, envv []string) error {
+		// Simulate the sandbox writing a kit yaml with a secret token.
+		secretToken := "ghp_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+		writeKitYAML(t, kitsDir, "sandbox-generated-kit",
+			"name: sandbox-generated-kit\nenv:\n  SECRET: "+secretToken+"\n")
+		return nil
+	}
+	t.Cleanup(func() { kitInitExecFn = orig })
+
+	in := strings.NewReader("")
+	var out bytes.Buffer
+	err := runKitInit(in, &out)
+	if err == nil {
+		t.Fatal("expected error from secret scan, got nil")
+	}
+	if !strings.Contains(err.Error(), "secret scan") {
+		t.Errorf("error should mention secret scan; got: %v", err)
+	}
+
+	// The generated kit dir must have been rolled back.
+	if _, statErr := os.Stat(filepath.Join(kitsDir, "sandbox-generated-kit")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Error("sandbox-generated-kit should have been rolled back")
+	}
+}
+
+// TestRunKitInit_SecretScanClean verifies that when the sandbox writes clean
+// YAML, runKitInit succeeds and reports the generated kit name.
+func TestRunKitInit_SecretScanClean(t *testing.T) {
+	withIsolatedConfigHome(t)
+	dataDir := withIsolatedDataHome(t)
+
+	if err := config.SetDefaultHarness("claude"); err != nil {
+		t.Fatalf("SetDefaultHarness: %v", err)
+	}
+
+	kitsDir := filepath.Join(dataDir, "boid", "kits")
+
+	orig := kitInitExecFn
+	kitInitExecFn = func(argv0 string, argv []string, envv []string) error {
+		writeKitYAML(t, kitsDir, "clean-kit", "name: clean-kit\ntools: []\n")
+		return nil
+	}
+	t.Cleanup(func() { kitInitExecFn = orig })
+
+	in := strings.NewReader("")
+	var out bytes.Buffer
+	if err := runKitInit(in, &out); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out.String(), "clean-kit") {
+		t.Errorf("output should mention clean-kit; got: %s", out.String())
+	}
+	if _, statErr := os.Stat(filepath.Join(kitsDir, "clean-kit")); statErr != nil {
+		t.Errorf("clean-kit dir should still exist: %v", statErr)
 	}
 }
