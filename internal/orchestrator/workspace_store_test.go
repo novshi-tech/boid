@@ -175,6 +175,83 @@ func TestWorkspaceStore_RemoveNotExist(t *testing.T) {
 	}
 }
 
+func TestWorkspaceStore_EnsureDefault_CreatesEmptyWhenMissing(t *testing.T) {
+	t.Parallel()
+	store, dir := newTestStore(t)
+
+	if err := store.EnsureDefault(); err != nil {
+		t.Fatalf("EnsureDefault: %v", err)
+	}
+
+	// File must exist after EnsureDefault.
+	path := filepath.Join(dir, DefaultWorkspaceSlug+".yaml")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("default.yaml not created: %v", err)
+	}
+
+	// Load must succeed and return an empty meta (no Kits / Env / Capabilities).
+	meta, err := store.Load(DefaultWorkspaceSlug)
+	if err != nil {
+		t.Fatalf("Load(default): %v", err)
+	}
+	if len(meta.Kits) != 0 {
+		t.Errorf("Kits: got %v, want empty", meta.Kits)
+	}
+	if len(meta.Env) != 0 {
+		t.Errorf("Env: got %v, want empty", meta.Env)
+	}
+	if meta.Capabilities.Docker != nil {
+		t.Errorf("Capabilities.Docker: got %v, want nil", meta.Capabilities.Docker)
+	}
+}
+
+func TestWorkspaceStore_EnsureDefault_PreservesExisting(t *testing.T) {
+	t.Parallel()
+	store, _ := newTestStore(t)
+
+	original := &WorkspaceMeta{
+		Kits: []string{"user-edited"},
+		Env:  map[string]string{"USER_SET": "yes"},
+	}
+	if err := store.Save(DefaultWorkspaceSlug, original); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if err := store.EnsureDefault(); err != nil {
+		t.Fatalf("EnsureDefault: %v", err)
+	}
+
+	meta, err := store.Load(DefaultWorkspaceSlug)
+	if err != nil {
+		t.Fatalf("Load(default): %v", err)
+	}
+	if len(meta.Kits) != 1 || meta.Kits[0] != "user-edited" {
+		t.Errorf("user edits clobbered: Kits = %v", meta.Kits)
+	}
+	if meta.Env["USER_SET"] != "yes" {
+		t.Errorf("user edits clobbered: Env[USER_SET] = %q", meta.Env["USER_SET"])
+	}
+}
+
+func TestWorkspaceStore_Remove_RejectsDefault(t *testing.T) {
+	t.Parallel()
+	store, _ := newTestStore(t)
+
+	if err := store.EnsureDefault(); err != nil {
+		t.Fatalf("EnsureDefault: %v", err)
+	}
+
+	err := store.Remove(DefaultWorkspaceSlug)
+	if err == nil {
+		t.Fatal("Remove(default): expected error, got nil")
+	}
+
+	// The file must still exist.
+	if _, loadErr := store.Load(DefaultWorkspaceSlug); loadErr != nil {
+		t.Errorf("default.yaml was deleted despite rejected Remove: %v", loadErr)
+	}
+}
+
 func TestWorkspaceStore_SaveAtomic_TmpFileInSameDir(t *testing.T) {
 	t.Parallel()
 	// This test verifies that the atomic write uses a tmp file in the same

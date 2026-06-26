@@ -97,10 +97,14 @@ func (s *WorkspaceStore) Save(slug string, meta *WorkspaceMeta) error {
 
 // Remove deletes the YAML file for the given slug.
 // Returns an error wrapping os.ErrNotExist when the file does not exist.
+// The reserved DefaultWorkspaceSlug cannot be removed.
 // It does not check whether any project references this workspace.
 func (s *WorkspaceStore) Remove(slug string) error {
 	if err := ValidWorkspaceSlug(slug); err != nil {
 		return err
+	}
+	if slug == DefaultWorkspaceSlug {
+		return fmt.Errorf("workspace %q is reserved and cannot be removed", slug)
 	}
 	path := filepath.Join(s.dir, slug+".yaml")
 	if err := os.Remove(path); err != nil {
@@ -110,6 +114,25 @@ func (s *WorkspaceStore) Remove(slug string) error {
 		return fmt.Errorf("workspace %q: remove: %w", slug, err)
 	}
 	return nil
+}
+
+// EnsureDefault writes an empty WorkspaceMeta to the DefaultWorkspaceSlug
+// path if no file exists yet. It is safe to call repeatedly and a no-op once
+// the file exists (the existing content — including user edits — is left
+// untouched). Returns nil when the workspace dir cannot be determined yet
+// (DefaultWorkspaceDir failure): callers are expected to surface that via
+// the first Load/Save attempt rather than at boot.
+func (s *WorkspaceStore) EnsureDefault() error {
+	if s.dir == "" {
+		return fmt.Errorf("workspace store: dir not configured")
+	}
+	path := filepath.Join(s.dir, DefaultWorkspaceSlug+".yaml")
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("workspace %q: stat: %w", DefaultWorkspaceSlug, err)
+	}
+	return s.Save(DefaultWorkspaceSlug, &WorkspaceMeta{})
 }
 
 // List returns the slug of every workspace stored in the directory, sorted

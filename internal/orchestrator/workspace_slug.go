@@ -2,6 +2,13 @@ package orchestrator
 
 import "fmt"
 
+// DefaultWorkspaceSlug is the reserved slug for the implicit "default"
+// workspace that every project belongs to when no explicit assignment is
+// chosen. It is auto-created at daemon startup, used as the fallback target
+// for `project add` / `project migrate` when --workspace is omitted, and
+// guarded against deletion by WorkspaceStore.Remove.
+const DefaultWorkspaceSlug = "default"
+
 // ValidWorkspaceSlug checks that s is a valid workspace slug.
 // A valid slug consists of lowercase ASCII letters, digits, and hyphens,
 // is between 1 and 64 characters long, and contains no other characters.

@@ -77,6 +77,19 @@ func (s *ProjectAppService) CreateProject(workDir string) (*orchestrator.Project
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 
+	// Assign to the default workspace eagerly so the project is always
+	// linked. The caller may overwrite this with `boid workspace assign`
+	// (or the --workspace flag on `project add`) immediately after. A
+	// failure here is non-fatal: daemon startup runs the same migration
+	// idempotently, so the project will be linked on next boot.
+	if err := s.Projects.SetProjectWorkspace(project.ID, orchestrator.DefaultWorkspaceSlug); err != nil {
+		slog.Warn("CreateProject: default workspace assignment failed (project will be linked on next daemon start)",
+			"project_id", project.ID, "error", err)
+	} else {
+		project.WorkspaceID = orchestrator.DefaultWorkspaceSlug
+		s.Meta.SetWorkspaceID(project.ID, orchestrator.DefaultWorkspaceSlug)
+	}
+
 	project.Meta = *meta
 	return project, nil
 }

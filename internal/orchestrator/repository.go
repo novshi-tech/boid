@@ -103,6 +103,14 @@ func (r *ProjectRepository) DeleteProject(id string) error {
 	return DeleteProject(r.db, id)
 }
 
+// AssignDefaultWorkspaceToUnlinked inserts a project_workspaces row pointing
+// at workspaceID for every project that does not yet have one. Returns the
+// number of rows inserted. See the package-level function for the underlying
+// statement.
+func (r *ProjectRepository) AssignDefaultWorkspaceToUnlinked(workspaceID string) (int, error) {
+	return AssignDefaultWorkspaceToUnlinked(r.db, workspaceID)
+}
+
 // TaskGCStore handles GC of tasks and their related data.
 type TaskGCStore struct {
 	conn              *sql.DB

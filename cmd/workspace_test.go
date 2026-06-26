@@ -135,6 +135,23 @@ func TestWorkspaceShowWarning_MissingYAML(t *testing.T) {
 	}
 }
 
+// TestWorkspaceRemove_RejectsDefault verifies the CLI-layer guard that
+// stops `boid workspace remove default` before any DB or filesystem
+// modification. The domain-layer guard (WorkspaceStore.Remove) is the
+// last line of defense; this is the first.
+func TestWorkspaceRemove_RejectsDefault(t *testing.T) {
+	cmd := workspaceRemoveCmd
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	err := runWorkspaceRemove(cmd, []string{orchestrator.DefaultWorkspaceSlug})
+	if err == nil {
+		t.Fatal("expected error rejecting default workspace, got nil")
+	}
+	if !strings.Contains(err.Error(), "reserved") {
+		t.Errorf("expected 'reserved' in error message, got %q", err.Error())
+	}
+}
+
 // TestWorkspaceRemove_SlugValidation verifies that invalid slugs are rejected.
 func TestWorkspaceRemove_SlugValidation(t *testing.T) {
 	cases := []struct {
