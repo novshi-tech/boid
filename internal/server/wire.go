@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -109,17 +110,54 @@ func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) 
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
 	if errs := store.LoadAll(projects); len(errs) > 0 {
-		var msg strings.Builder
-		msg.WriteString("daemon startup refused: failed to load project metadata\n")
-		for _, e := range errs {
-			msg.WriteString("  - ")
-			msg.WriteString(e.Error())
-			msg.WriteString("\n")
-		}
-		msg.WriteString("Run `boid project migrate <dir>` for each affected project to migrate to the new schema.\n")
-		return nil, fmt.Errorf("%s", msg.String())
+		return nil, buildProjectLoadStartupError(errs)
 	}
 	return store, nil
+}
+
+// startupError holds the human-readable aggregate startup error text while
+// also exposing its causes via Unwrap() []error so that callers (e.g. the
+// boid start parent) can errors.As a *orchestrator.ProjectMigrationError
+// out of it and drive auto-migration without parsing strings.
+type startupError struct {
+	aggregate string
+	causes    []error
+}
+
+func (e *startupError) Error() string  { return e.aggregate }
+func (e *startupError) Unwrap() []error { return e.causes }
+
+// buildProjectLoadStartupError renders the legacy multi-line error message
+// (byte-identical to the pre-typed-error version) while attaching the
+// per-project causes so callers can errors.As the typed migration error.
+//
+// Per-project text lines retain the historical `  - <err.Error()>\n` shape;
+// because *ProjectMigrationError formats with the `project "<id>": ...`
+// prefix when ProjectID is set (via FormatMigrationIssue), the rendered
+// output matches what users have been seeing in boid.log.
+func buildProjectLoadStartupError(errs []error) error {
+	var msg strings.Builder
+	msg.WriteString("daemon startup refused: failed to load project metadata\n")
+	migAgg := &orchestrator.ProjectMigrationError{}
+	causes := make([]error, 0, len(errs)+1)
+	for _, e := range errs {
+		msg.WriteString("  - ")
+		msg.WriteString(e.Error())
+		msg.WriteString("\n")
+
+		var migErr *orchestrator.ProjectMigrationError
+		if errors.As(e, &migErr) {
+			migAgg.Projects = append(migAgg.Projects, migErr.Projects...)
+		} else {
+			causes = append(causes, e)
+		}
+	}
+	msg.WriteString("Run `boid project migrate <dir>` for each affected project to migrate to the new schema.\n")
+	if len(migAgg.Projects) > 0 {
+		// Put migration error first so errors.As walks find it quickly.
+		causes = append([]error{migAgg}, causes...)
+	}
+	return &startupError{aggregate: msg.String(), causes: causes}
 }
 
 // runtimesDirFor returns the runtimes root directory for the given config.

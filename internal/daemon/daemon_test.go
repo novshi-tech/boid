@@ -102,10 +102,11 @@ func TestIsChild_True(t *testing.T) {
 // TestMain short-circuits the re-executed test binary so it exits immediately
 // when BOID_DAEMON_CHILD=1 is detected, preventing recursive test execution.
 func TestSpawn_PIDIsPositive(t *testing.T) {
-	pid, err := Spawn(os.Args[:1])
+	pid, statusR, err := Spawn(os.Args[:1])
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	defer statusR.Close()
 	if pid <= 0 {
 		t.Fatalf("Spawn() returned pid %d, want > 0", pid)
 	}
