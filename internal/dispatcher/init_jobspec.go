@@ -129,8 +129,11 @@ func BuildInitJobSpec(in InitJobInput) *orchestrator.JobSpec {
 		// No TaskID / ProjectID / HandlerID — init jobs are not tied to the
 		// task state machine.
 		Visibility: orchestrator.Visibility{
-			// No ProjectDir: the sandbox gets a fresh tmpfs HOME (init scripts
-			// scan the full host root via ProfileInit, not a project dir).
+			// No ProjectDir: ProfileInit scans the full host root via the plan's
+			// ro-rbind, not a project dir. The builder layers a tmpfs over
+			// HOME/.boid only (not over HOME) so kit init / workspace configure
+			// can still see ~/.volta, ~/.local/bin and other host tooling that
+			// lives under HOME — see BuildSandboxSpec's ProfileInit branch.
 			Writable:           false,
 			AdditionalBindings: bindings,
 		},
