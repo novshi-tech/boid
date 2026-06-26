@@ -226,7 +226,7 @@ func RunInnerChild(specPath, statePath string) (exitCode int, retErr error) {
 		return 1, err
 	}
 
-	if err := pivotInto(root); err != nil {
+	if err := pivotInto(root, spec.Profile == sandbox.ProfileInit); err != nil {
 		st.Fail("inner-child", "pivot-root", err)
 		return 1, err
 	}
@@ -274,20 +274,6 @@ func setupMountNamespace(spec sandbox.Spec, root string, st *State) error {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return fmt.Errorf("mkdir root: %w", err)
 	}
-
-	// ProfileInit mounts the entire host root as a read-only rbind. After that
-	// rbind, `root` appears to be the host filesystem (ro), so pivotInto's
-	// MkdirAll for `.oldroot` would hit EROFS. Pre-create `.oldroot` on the
-	// host filesystem now — we're still looking at the real `/tmp/boid-root-*/`
-	// directory here (before the tmpfs is mounted on it). After the rbind,
-	// `root + "/.oldroot"` resolves to the host's `/tmp/boid-root-*/.oldroot`
-	// which we just created, so pivotInto can use it without hitting EROFS.
-	if spec.Profile == sandbox.ProfileInit {
-		if err := os.MkdirAll(filepath.Join(root, ".oldroot"), 0o755); err != nil {
-			return fmt.Errorf("pre-create .oldroot on host: %w", err)
-		}
-	}
-
 	if err := unix.Mount("tmpfs", root, "tmpfs", 0, ""); err != nil {
 		return fmt.Errorf("mount tmpfs root: %w", err)
 	}
@@ -385,8 +371,34 @@ func applyMount(root string, m sandbox.Mount) error {
 	return nil
 }
 
-// pivotInto pivots into root and detaches the old root. Mirrors §3 工程 7.
-func pivotInto(root string) error {
+// pivotInto changes the process root to root.
+//
+// For ProfileInit (hasHostRootRBind == true) the plan mounts the entire host
+// root as a read-only rbind ON TOP of the tmpfs at root. This makes root
+// appear as the host filesystem (ro), so pivot_root's put_old MkdirAll would
+// hit EROFS. We use chroot instead: it requires only CAP_SYS_CHROOT (held via
+// user-namespace uid 0 mapping) and is sufficient for ProfileInit because the
+// host filesystem is intentionally accessible — security isolation comes from
+// the mount namespace and the writable-path allowlist, not from detaching the
+// old root.
+//
+// For all other profiles we use pivot_root which fully detaches the old root.
+func pivotInto(root string, hasHostRootRBind bool) error {
+	if hasHostRootRBind {
+		// chroot path for ProfileInit.
+		if err := os.Chdir(root); err != nil {
+			return fmt.Errorf("chdir to root: %w", err)
+		}
+		if err := unix.Chroot(root); err != nil {
+			return fmt.Errorf("chroot: %w", err)
+		}
+		if err := os.Chdir("/"); err != nil {
+			return fmt.Errorf("chdir / after chroot: %w", err)
+		}
+		return nil
+	}
+
+	// pivot_root path for all other profiles.
 	oldRoot := filepath.Join(root, ".oldroot")
 	if err := os.MkdirAll(oldRoot, 0o755); err != nil {
 		return fmt.Errorf("mkdir .oldroot: %w", err)
