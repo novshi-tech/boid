@@ -274,6 +274,20 @@ func setupMountNamespace(spec sandbox.Spec, root string, st *State) error {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return fmt.Errorf("mkdir root: %w", err)
 	}
+
+	// ProfileInit mounts the entire host root as a read-only rbind. After that
+	// rbind, `root` appears to be the host filesystem (ro), so pivotInto's
+	// MkdirAll for `.oldroot` would hit EROFS. Pre-create `.oldroot` on the
+	// host filesystem now — we're still looking at the real `/tmp/boid-root-*/`
+	// directory here (before the tmpfs is mounted on it). After the rbind,
+	// `root + "/.oldroot"` resolves to the host's `/tmp/boid-root-*/.oldroot`
+	// which we just created, so pivotInto can use it without hitting EROFS.
+	if spec.Profile == sandbox.ProfileInit {
+		if err := os.MkdirAll(filepath.Join(root, ".oldroot"), 0o755); err != nil {
+			return fmt.Errorf("pre-create .oldroot on host: %w", err)
+		}
+	}
+
 	if err := unix.Mount("tmpfs", root, "tmpfs", 0, ""); err != nil {
 		return fmt.Errorf("mount tmpfs root: %w", err)
 	}
