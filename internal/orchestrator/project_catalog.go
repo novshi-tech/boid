@@ -82,6 +82,36 @@ func SetProjectWorkspace(dbtx db.DBTX, projectID, workspaceID string) error {
 	return nil
 }
 
+// AssignDefaultWorkspaceToUnlinked inserts a project_workspaces row pointing
+// at workspaceID for every project that does not yet have one. Used at daemon
+// startup to migrate legacy unlinked projects to the default workspace. The
+// INSERT ... SELECT pattern keeps the operation idempotent and atomic in a
+// single statement.
+//
+// Returns (number of rows inserted, error). Pass the DefaultWorkspaceSlug
+// to land projects in the implicit default workspace.
+func AssignDefaultWorkspaceToUnlinked(dbtx db.DBTX, workspaceID string) (int, error) {
+	if workspaceID == "" {
+		return 0, fmt.Errorf("assign default workspace: workspaceID is empty")
+	}
+	if err := ValidWorkspaceSlug(workspaceID); err != nil {
+		return 0, fmt.Errorf("assign default workspace: %w", err)
+	}
+	res, err := dbtx.Exec(
+		`INSERT INTO project_workspaces (project_id, workspace_id)
+		 SELECT p.id, ?
+		 FROM projects p
+		 LEFT JOIN project_workspaces pw ON pw.project_id = p.id
+		 WHERE pw.project_id IS NULL`,
+		workspaceID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("assign default workspace: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // ListWorkspaces returns all configured workspaces with project counts.
 func ListWorkspaces(dbtx db.DBTX) ([]*WorkspaceSummary, error) {
 	rows, err := dbtx.Query(

@@ -53,8 +53,11 @@ func TestProjectAPI_CreateAndGet(t *testing.T) {
 	if created.ID != "test-project" {
 		t.Errorf("created project ID = %q, want %q", created.ID, "test-project")
 	}
-	if created.WorkspaceID != "" {
-		t.Errorf("created workspace_id = %q, want empty", created.WorkspaceID)
+	// New projects are eagerly linked to the default workspace so the
+	// "未登録" state never happens. The caller may overwrite immediately
+	// after with a PUT /workspace request.
+	if created.WorkspaceID != orchestrator.DefaultWorkspaceSlug {
+		t.Errorf("created workspace_id = %q, want %q", created.WorkspaceID, orchestrator.DefaultWorkspaceSlug)
 	}
 
 	var got orchestrator.Project
@@ -64,8 +67,8 @@ func TestProjectAPI_CreateAndGet(t *testing.T) {
 	if got.ID != "test-project" {
 		t.Errorf("got project ID = %q, want %q", got.ID, "test-project")
 	}
-	if got.WorkspaceID != "" {
-		t.Errorf("got workspace_id = %q, want empty", got.WorkspaceID)
+	if got.WorkspaceID != orchestrator.DefaultWorkspaceSlug {
+		t.Errorf("got workspace_id = %q, want %q", got.WorkspaceID, orchestrator.DefaultWorkspaceSlug)
 	}
 }
 

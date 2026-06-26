@@ -41,7 +41,7 @@ var workspaceAssignCmd = &cobra.Command{
 
 var workspaceClearCmd = &cobra.Command{
 	Use:   "clear <project-ref>",
-	Short: "Clear a project's workspace assignment",
+	Short: "Reset a project's workspace assignment to the default workspace",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runWorkspaceClear,
 }
@@ -299,13 +299,17 @@ func runWorkspaceClear(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve project: %w", err)
 	}
 
+	// "Clear" now resets to the default workspace rather than removing the
+	// project_workspaces row. Every project belongs to exactly one workspace
+	// — "unassigned" is no longer a representable state.
 	var project orchestrator.Project
-	if err := c.Do("PUT", "/api/projects/"+p.ID+"/workspace", map[string]string{"workspace_id": ""}, &project); err != nil {
+	if err := c.Do("PUT", "/api/projects/"+p.ID+"/workspace",
+		map[string]string{"workspace_id": orchestrator.DefaultWorkspaceSlug}, &project); err != nil {
 		return fmt.Errorf("clear workspace: %w", err)
 	}
 
 	return renderOutput(cmd, &project, func() error {
-		fmt.Fprintf(cmd.OutOrStdout(), "workspace cleared: %s\n", project.ID)
+		fmt.Fprintf(cmd.OutOrStdout(), "workspace reset to %s: %s\n", orchestrator.DefaultWorkspaceSlug, project.ID)
 		return nil
 	})
 }
@@ -356,6 +360,14 @@ func runWorkspaceRemove(cmd *cobra.Command, args []string) error {
 	slug := args[0]
 	if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
 		return err
+	}
+
+	// CLI entry-point guard (3-layer defense; the WorkspaceStore.Remove
+	// domain layer enforces the same rule). The reserved default workspace
+	// cannot be removed because every project would otherwise become
+	// unlinked.
+	if slug == orchestrator.DefaultWorkspaceSlug {
+		return fmt.Errorf("workspace %q is reserved and cannot be removed", slug)
 	}
 
 	c := client.NewUnixClient(client.DefaultSocketPath())

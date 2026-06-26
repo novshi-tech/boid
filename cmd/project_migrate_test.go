@@ -168,6 +168,34 @@ task_behaviors:
       - github.com/novshi-tech/boid-kits/node
 `
 
+// TestProjectMigrate_NoWorkspaceFlag_FallsBackToDefault verifies that running
+// migrate without --workspace and without an existing project_workspaces row
+// falls back to the implicit default workspace slug instead of erroring.
+func TestProjectMigrate_NoWorkspaceFlag_FallsBackToDefault(t *testing.T) {
+	dir := setupMigrateProject(t, testLegacyProjectYAML)
+	dbFile := setupMigrateDBFile(t)
+	cfgDir := t.TempDir()
+	dataDir := t.TempDir()
+
+	err := invokeMigrate(t, dir, migrateOpts{
+		// workspace is intentionally empty.
+		apply:         true,
+		dbPath:        dbFile,
+		xdgConfigHome: cfgDir,
+		xdgDataHome:   dataDir,
+	})
+	if err != nil {
+		t.Fatalf("apply with default fallback: unexpected error: %v", err)
+	}
+
+	wsPath := filepath.Join(cfgDir, "boid", "workspaces")
+	store := orchestrator.NewWorkspaceStore(wsPath)
+	_, err = store.Load(orchestrator.DefaultWorkspaceSlug)
+	if err != nil {
+		t.Fatalf("default workspace.yaml not produced: %v", err)
+	}
+}
+
 // TestProjectMigrate_DryRun verifies that dry-run mode does not write any files.
 func TestProjectMigrate_DryRun(t *testing.T) {
 	dir := setupMigrateProject(t, testLegacyProjectYAML)

@@ -56,6 +56,16 @@ func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) 
 	wsStore := orchestrator.NewWorkspaceStore("")
 	store.SetWorkspaceStore(wsStore)
 
+	// Ensure the implicit default workspace exists on disk before the
+	// validation pass below scans the directory. The file is created empty;
+	// users can later edit it via `boid workspace configure default`. We
+	// log but do not block daemon startup on EnsureDefault failure since
+	// the next Load attempt will surface the problem with a sharper error.
+	if err := wsStore.EnsureDefault(); err != nil {
+		slog.Warn("EnsureDefault failed (default workspace may be missing)",
+			"error", err)
+	}
+
 	// Validate all workspace.yaml files at startup. ErrNotExist means no
 	// workspace directory yet — that is the degraded window and is fine.
 	// Any other error (parse failure, permission error) is a startup blocker.
@@ -79,6 +89,19 @@ func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) 
 			msg.WriteString("Run `boid workspace configure <slug>` to fix the affected workspace.\n")
 			return nil, fmt.Errorf("%s", msg.String())
 		}
+	}
+
+	// Migrate any legacy unlinked projects (no project_workspaces row) into
+	// the default workspace so every project lives under exactly one
+	// workspace from this point on. Idempotent: skips projects already
+	// linked. A failure here is non-fatal — the runner.go fallback still
+	// routes secrets to the default namespace.
+	if n, err := projectRepo.AssignDefaultWorkspaceToUnlinked(orchestrator.DefaultWorkspaceSlug); err != nil {
+		slog.Warn("AssignDefaultWorkspaceToUnlinked failed",
+			"workspace_id", orchestrator.DefaultWorkspaceSlug, "error", err)
+	} else if n > 0 {
+		slog.Info("migrated unlinked projects into default workspace",
+			"workspace_id", orchestrator.DefaultWorkspaceSlug, "count", n)
 	}
 
 	projects, err := projectRepo.ListProjects()

@@ -170,17 +170,13 @@ func runProjectMigrate(cmd *cobra.Command, args []string) error {
 		workspaceSlug = project.WorkspaceID
 	}
 	if workspaceSlug == "" {
-		// List available workspaces as guidance.
-		wsStore := orchestrator.NewWorkspaceStore("")
-		slugs, _ := wsStore.List()
-		msg := "migrate: workspace slug could not be resolved.\n" +
-			"  Use --workspace <slug> to specify the workspace.\n"
-		if len(slugs) > 0 {
-			msg += "  Available workspaces: " + strings.Join(slugs, ", ")
-		} else {
-			msg += "  No workspaces are configured yet."
-		}
-		return fmt.Errorf("%s", msg)
+		// Fall back to the implicit default workspace so every project ends
+		// up linked after migration. Surface the choice in the dry-run plan
+		// so the user notices and can override with --workspace if wanted.
+		workspaceSlug = orchestrator.DefaultWorkspaceSlug
+		fmt.Fprintf(cmd.OutOrStdout(),
+			"migrate: no --workspace flag and no existing assignment; defaulting to %q workspace.\n",
+			workspaceSlug)
 	}
 	if err := orchestrator.ValidWorkspaceSlug(workspaceSlug); err != nil {
 		return fmt.Errorf("migrate: %w", err)
