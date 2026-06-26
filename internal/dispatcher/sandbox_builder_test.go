@@ -1462,6 +1462,70 @@ func TestBuildSandboxSpec_ProfileInit_IsThreaded(t *testing.T) {
 	}
 }
 
+// TestBuildSandboxSpec_ProfileInit_DoesNotShadowHomeTmpfs guards against a
+// regression where boid kit init / workspace configure could not detect host
+// tools that live under HOME (volta, ~/.local/bin/go, nvm, ...). ProfileInit
+// already rbinds the entire host root read-only; layering a tmpfs over the
+// whole of HOME on top of that hides exactly the binaries the scan is supposed
+// to find. The builder must instead tmpfs only `<HOME>/.boid` so context-file
+// writes stay isolated while the rest of HOME remains visible through the
+// host-root rbind.
+func TestBuildSandboxSpec_ProfileInit_DoesNotShadowHomeTmpfs(t *testing.T) {
+	homeDir := hostHomeDir()
+	if homeDir == "" {
+		t.Skip("hostHomeDir() returned empty; cannot exercise mount layout")
+	}
+	spec := &orchestrator.JobSpec{
+		SandboxProfile: int(sandbox.ProfileInit),
+	}
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	for _, m := range result.Mounts {
+		if m.Type == sandbox.MountTmpfs && m.Target == homeDir {
+			t.Errorf("found tmpfs mount targeting whole HOME (%s); ProfileInit must not shadow HOME — that hides ~/.volta, ~/.local/bin, etc. which kit init needs to scan", homeDir)
+		}
+	}
+	wantBoidTmpfs := homeDir + "/.boid"
+	foundBoidTmpfs := false
+	for _, m := range result.Mounts {
+		if m.Type == sandbox.MountTmpfs && m.Target == wantBoidTmpfs {
+			foundBoidTmpfs = true
+			break
+		}
+	}
+	if !foundBoidTmpfs {
+		t.Errorf("expected tmpfs mount targeting %s so context/output writes have writable storage, got mounts=%+v", wantBoidTmpfs, result.Mounts)
+	}
+}
+
+// TestBuildSandboxSpec_ProfileDefault_NoProject_KeepsHomeTmpfs guards the
+// non-ProfileInit branch so that the ProfileInit fix above does not silently
+// remove the HOME tmpfs for the default profile, which still wants HOME
+// isolated when no project is bound in.
+func TestBuildSandboxSpec_ProfileDefault_NoProject_KeepsHomeTmpfs(t *testing.T) {
+	homeDir := hostHomeDir()
+	if homeDir == "" {
+		t.Skip("hostHomeDir() returned empty; cannot exercise mount layout")
+	}
+	spec := &orchestrator.JobSpec{} // ProfileDefault, no project
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	found := false
+	for _, m := range result.Mounts {
+		if m.Type == sandbox.MountTmpfs && m.Target == homeDir {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("ProfileDefault with no project should still tmpfs HOME (%s); got mounts=%+v", homeDir, result.Mounts)
+	}
+}
+
 // TestBuildSandboxSpec_ProfileDefault_ZeroValue verifies that the zero value of
 // JobSpec.SandboxProfile maps to sandbox.ProfileDefault in the resulting spec,
 // preserving backward compatibility for callers that do not set the field.

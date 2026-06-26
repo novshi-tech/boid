@@ -198,6 +198,28 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 			rt.WorkspacePeers,
 			spec.Visibility.UseWorktree,
 		)...)
+	} else if spec.SandboxProfile == int(sandbox.ProfileInit) {
+		// ProfileInit (boid kit init / workspace configure): the plan rbinds the
+		// entire host root read-only precisely so the scan can discover host
+		// state, and most of the interesting tooling lives under HOME
+		// (`~/.volta/bin/volta`, `~/.local/bin/go`, `~/.nvm/versions/...`, ...).
+		// Layering a full HOME tmpfs on top would shadow exactly those paths and
+		// make `which volta` / `ls ~/.volta/bin` return nothing — defeating the
+		// whole point of ProfileInit. Layer a tmpfs over `<HOME>/.boid` only so
+		// context-file writes ($HOME/.boid/{context,output}/*) still land on
+		// writable storage without hiding the rest of HOME.
+		//
+		// The tmpfs target must exist on the host (mounts cannot create their
+		// own mountpoint), so make sure `<HOME>/.boid` is present before the
+		// runner pivots in. The daemon process runs as the same uid that owns
+		// `<HOME>`, so the mkdir succeeds without elevation.
+		if err := os.MkdirAll(homeDir+"/.boid", 0o755); err != nil {
+			return sandbox.Spec{}, fmt.Errorf("ensure %s/.boid: %w", homeDir, err)
+		}
+		mounts = append(mounts, sandbox.Mount{
+			Target: homeDir + "/.boid",
+			Type:   sandbox.MountTmpfs,
+		})
 	} else {
 		// No project visible: HOME is a fresh tmpfs.
 		mounts = append(mounts, sandbox.Mount{
