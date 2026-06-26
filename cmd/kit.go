@@ -134,10 +134,17 @@ func runKitInit(in io.Reader, out io.Writer) error {
 	//    socket is also empty — runner.go:183 skips registration for ProfileInit.
 	//    Adapter bindings (claude/codex/opencode each declare ~/.claude etc.) are
 	//    resolved inside BuildSandboxSpec via registry.For(spec.HarnessType).Bindings().
+	//
+	//    ProxyPort, if any, must be wired so the in-sandbox HTTPS_PROXY env vars
+	//    point at the daemon's egress proxy. ProfileInit puts the sandbox in a
+	//    fresh netns whose nftables rules only permit CONNECT to the proxy port,
+	//    so without this the AI agent harnesses fail to open any socket and
+	//    surface `FailedToOpenSocket` instead of reaching api.anthropic.com.
 	rt := dispatcher.SandboxRuntimeInfo{
 		JobID:        jobID,
 		BoidBinary:   boidBinary,
 		ServerSocket: "", // daemon not required for kit init
+		ProxyPort:    resolveDaemonProxyPort(out),
 		Foreground:   true,
 	}
 
