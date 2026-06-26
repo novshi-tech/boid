@@ -62,11 +62,19 @@ func BuildPlan(spec Spec) *Plan {
 		)
 	}
 
-	// DNS
-	plan.Files = append(plan.Files, FileWrite{
-		Path:    "/run/systemd/resolve/stub-resolv.conf",
-		Content: "nameserver 10.0.2.3",
-	})
+	// DNS: inject a stub resolv.conf pointing at the pasta gateway DNS.
+	// ProfileInit mounts the entire host root read-only, so /run/systemd/resolve/
+	// is inside the rbind and the file write would fail with EPERM. Skip the
+	// write for ProfileInit — the host DNS configuration is already visible via
+	// the rbind, and the proxy port is always 0 for init jobs (no network
+	// filtering) so pasta routes DNS through the host resolver without needing a
+	// stub file.
+	if spec.Profile != ProfileInit {
+		plan.Files = append(plan.Files, FileWrite{
+			Path:    "/run/systemd/resolve/stub-resolv.conf",
+			Content: "nameserver 10.0.2.3",
+		})
+	}
 
 	// Network filtering (nftables) — drops everything except the proxy hosts.
 	if spec.ProxyPort > 0 {

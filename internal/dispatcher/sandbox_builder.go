@@ -556,11 +556,15 @@ func additionalBindingMounts(bindings []orchestrator.BindMount) []sandbox.Mount 
 		if !explicitTarget {
 			target = bm.Source
 		}
-		// Target が明示され、 展開後 source と等値になった binding は skip。
-		// worktree=false の task で ${PROJECT_WORKDIR}/x → ${WORKTREE}/x が同じ
-		// パスに潰れるケースで、 既に projectVisibilityMounts が見せている path
-		// に対する冗長な self-mount を避けるため。
-		if explicitTarget && filepath.Clean(bm.Source) == filepath.Clean(target) {
+		// Target が明示され、展開後 source と等値になった **読み取り専用** binding は
+		// skip する。 worktree=false の task で ${PROJECT_WORKDIR}/x → ${WORKTREE}/x
+		// が同じパスに潰れるケースで、 既に projectVisibilityMounts が見せているパスへの
+		// 冗長な self-mount を避けるため。
+		// 書き込み可能 (Mode=="rw") な binding は skip しない。 ProfileInit のような
+		// 「ホスト root を ro-rbind した上でサブディレクトリを rw で上書きする」
+		// ユースケースで Source==Target になることがあり、 そこでは rw マウントが
+		// 必要なため、 Mode でガードする。
+		if explicitTarget && filepath.Clean(bm.Source) == filepath.Clean(target) && bm.Mode != "rw" {
 			continue
 		}
 		m := sandbox.Mount{
