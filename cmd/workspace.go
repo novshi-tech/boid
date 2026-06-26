@@ -426,6 +426,12 @@ func runWorkspaceConfigure(cmd *cobra.Command, args []string) error {
 		Env: map[string]string{
 			"BOID_WORKSPACE_SLUG": slug,
 		},
+		// Bootstrap prompt — matches a trigger phrase from
+		// boid-workspace-configure SKILL.md frontmatter. Embedding the slug
+		// lets the skill skip the "which workspace" question and dive
+		// straight into the project scan, mirroring how `boid kit init`
+		// kicks the kit-init skill on launch.
+		Instruction: fmt.Sprintf("workspace %q の boid workspace configure を実行して", slug),
 	})
 
 	// 9. Build the SandboxRuntimeInfo.
