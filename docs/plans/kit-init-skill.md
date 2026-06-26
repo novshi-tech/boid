@@ -180,6 +180,8 @@ internal/skills/data/
 
 `workspace-configure` 側に templates は不要 (kit カタログを読むだけで雛形は持たない)。
 
+**SKILL.md 作成手順**: PR4 / PR7 で SKILL.md を新規作成する際は、 `/skill-creator:skill-creator` スキルを参照する。 frontmatter 規約 (name / description) ・ 起動条件の書き方 ・ description の triggering accuracy 向上 ・ skill 評価フローまで含めて skill-creator が提供する流儀に揃える。 既存の `boid-orchestrate` / `boid-task` / `boid-web` SKILL.md も同じパターンで書かれている前提で、 不整合があれば skill-creator のガイドに合わせる。
+
 #### 3.2 既存 `skills.DeployAll` を流用 + CLI 側でも呼ぶ (Codex 第 1 ラウンド指摘 1 対応)
 
 `internal/skills/deploy.go:13` の `//go:embed` ディレクティブに 2 ディレクトリ追加すれば、 daemon 起動時に `~/.local/share/boid/skills/` 配下へ展開される (`internal/server/server.go:68`)。 adapter は `~/.local/share/boid/skills/<name>` を `~/.claude/skills/<name>` に bind する (`internal/adapters/claude/bindings.go:53` 他)。
@@ -250,15 +252,20 @@ additional_bindings:
 
 **設計**:
 
-- `~/.config/boid/config.yaml` (新規) または既存設定ファイルに `default_harness: claude` キーを追加
+- `~/.config/boid/config.yaml` (新規) または既存設定ファイルに `default_harness: claude` キーを保存
 - 環境変数 `BOID_DEFAULT_HARNESS=claude` で override 可
-- 解決順: env > config file > built-in default (`claude`)
+- 解決順: env > config file > **init wizard で対話的に質問**
 - 未インストール harness が選ばれた場合は CLI で early error + インストール案内
+
+**未設定時の挙動** (nose 第 1 ラウンド直 review 反映): config file にも env にも `default_harness` が無い場合、 **`boid kit init` の冒頭で対話プロンプトを出して聞き、 入力結果を `~/.config/boid/config.yaml` に永続化する**。 「組み込み `claude` 固定」 路線は採らない (multi-harness 化が進んだ現在、 default を勝手に決め打ちすると codex / opencode ユーザの導線が悪い)。
+
+オンボーディングの最初のコマンドが `boid kit init` であり、 そこに wizard 形式のステップが入る (本 plan の「オンボーディング 3 段」 の 1 段目)。 既存の `internal/initwizard/wizard.go` は project init 用 (`boid project init` から呼ばれる) なので、 default_harness の質問は `cmd/kit.go` 側で完結させるか、 `initwizard` を再利用するかは PR2 設計時に判断。
 
 **実装**:
 
-- `internal/config` パッケージに `DefaultHarness() string` 追加
-- `cmd/kit.go` / `cmd/workspace.go` が呼び出す
+- `internal/config` パッケージに `DefaultHarness() (string, error)` 追加 (未設定時は sentinel error を返す)
+- `cmd/kit.go` の `runKitInit` 冒頭で `DefaultHarness()` を呼び、 未設定なら対話プロンプト → 入力検証 → config.yaml 書き込み
+- `cmd/workspace.go` の `runWorkspaceConfigure` は **kit init 経由で既に設定済**を前提 (未設定時は「先に `boid kit init` を実行してください」 で stop)
 - 既存 `config.yaml` 系のパース体系を流用 (`internal/config/load.go` 周辺、 実装時に確認)
 
 **範囲外**: 「対話モードでどう起動するか」 は `internal/adapters/<harness>/run.go` の既存 `Run` を流用 (multi-harness task hook plan で揃った経路を再利用)。 ハーネス別の prompt 形式は adapter 側が吸収する。
@@ -345,7 +352,6 @@ $ boid workspace configure dev
 
 ## オープンな宿題
 
-- `default_harness` 未設定時の挙動 (init wizard 中で聞く? built-in `claude` 固定?)
 - 雛形の `meta.signals` フィールド設計 (`workspace configure` がカタログマッチングで読む構造、 PR4 設計時に詰める)
 - e2e で対話 harness を fake する手段 (claude-stub を作るか、 ProfileInit のサンドボックスのみ検証して agent 部分は skip するか)
 
@@ -359,3 +365,6 @@ $ boid workspace configure dev
 - **第 3 ラウンド** (2026-06-26) — Codex 第 2 ラウンドレビュー反映:
   - 指摘 1: `cmd/root.go:22` の `PersistentPreRunE` が `client.EnsureRunning` を強制呼出し、 daemon を自動起動してしまう (= 初手オンボーディング設計と矛盾) → §2.4 **「root command の `EnsureRunning` を bypass する」 節を新設**。 `kitInitCmd` に `Annotations: {annotationSkipAutostart: "skip"}` を付ける設計を明示。 `workspace configure` は通常通り autostart を残す
   - 指摘 2: `boid workspace show <slug> --json` は現行 CLI に存在しない flag。 JSON 出力は root persistent flag の `--output` / `-o` 経由 (`cmd/root.go:36` + `cmd/output.go:24`) → §3.4 と「第 2 ラウンド」 節の表記を **`-o json` に統一**
+- **第 4 ラウンド** (2026-06-26) — nose 直 review 反映:
+  - skill 作成時の参照: §3.1 末尾に **PR4 / PR7 で SKILL.md を作成する際は `/skill-creator:skill-creator` を参照する**旨を追記。 frontmatter 規約・ 起動条件 ・ description 精度 ・ 評価フローを揃える
+  - `default_harness` 未設定時の挙動: 「オープンな宿題」 から削除し、 §4 で **「`boid kit init` の冒頭で対話プロンプトで聞き、 `~/.config/boid/config.yaml` に永続化する」 路線で決着**。 「built-in `claude` 固定」 は採らない (multi-harness 化が進んだ現在、 default を勝手に決め打ちすると codex / opencode ユーザの導線が悪い)。 `workspace configure` は kit init 経由で既に設定済を前提
