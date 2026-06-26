@@ -100,6 +100,36 @@ func TestBuildPlan_ProfileInit_NoExtraBindsByDefault(t *testing.T) {
 	}
 }
 
+// TestBuildPlan_DNS_SkippedForProfileInit verifies that the DNS stub file write
+// is omitted for ProfileInit (host root is rbind read-only so writing
+// /run/systemd/resolve/stub-resolv.conf would fail with EPERM) and present for
+// ProfileDefault (where /run is not mounted and the runner can create the file
+// inside the fresh tmproot).
+func TestBuildPlan_DNS_SkippedForProfileInit(t *testing.T) {
+	dnsPath := "/run/systemd/resolve/stub-resolv.conf"
+
+	// ProfileInit: DNS file must NOT be present.
+	initPlan := sandbox.BuildPlan(sandbox.Spec{Profile: sandbox.ProfileInit})
+	for _, f := range initPlan.Files {
+		if f.Path == dnsPath {
+			t.Errorf("ProfileInit: DNS file %s should not be in plan.Files (host root is rbind ro)", dnsPath)
+		}
+	}
+
+	// ProfileDefault: DNS file MUST be present.
+	defaultPlan := sandbox.BuildPlan(sandbox.Spec{})
+	foundDNS := false
+	for _, f := range defaultPlan.Files {
+		if f.Path == dnsPath {
+			foundDNS = true
+			break
+		}
+	}
+	if !foundDNS {
+		t.Errorf("ProfileDefault: DNS file %s not found in plan.Files", dnsPath)
+	}
+}
+
 // TestBuildPlan_CallerMountsAppended verifies that caller-supplied spec.Mounts
 // are appended after the profile-specific base mounts in both profiles.
 func TestBuildPlan_CallerMountsAppended(t *testing.T) {

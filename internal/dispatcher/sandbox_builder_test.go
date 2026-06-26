@@ -769,6 +769,25 @@ func TestAdditionalBindingMounts_SkipExplicitSelfMount(t *testing.T) {
 	}
 }
 
+// rw な Source==Target binding は self-mount skip の対象外。
+// ProfileInit のように「ホスト root を ro-rbind した上でサブディレクトリを
+// rw で上書きする」ユースケースで必要となる。
+func TestAdditionalBindingMounts_RWExplicitSelfMount_NotSkipped(t *testing.T) {
+	bindings := []orchestrator.BindMount{
+		// Mode=="rw" な explicit self-mount は skip しない (ProfileInit kits dir)
+		{Source: "/data/boid/kits", Target: "/data/boid/kits", Mode: "rw"},
+		// Mode=="" (read-only) な explicit self-mount は従来通り skip
+		{Source: "/data/boid/kits", Target: "/data/boid/kits"},
+	}
+	mounts := additionalBindingMounts(bindings)
+	if len(mounts) != 1 {
+		t.Fatalf("expected 1 mount (ro self-mount skipped, rw kept), got %d: %+v", len(mounts), mounts)
+	}
+	if mounts[0].Source != "/data/boid/kits" || mounts[0].ReadOnly {
+		t.Errorf("expected rw mount for /data/boid/kits, got %+v", mounts[0])
+	}
+}
+
 // expandWorktreeBindings は dispatch 時に ${WORKTREE} と ${PROJECT_WORKDIR} を
 // per-job 値で展開する。
 func TestExpandWorktreeBindings(t *testing.T) {
