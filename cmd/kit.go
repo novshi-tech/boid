@@ -2,14 +2,21 @@ package cmd
 
 import (
 	"bufio"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/config"
+	"github.com/novshi-tech/boid/internal/dispatcher"
 	orchestrator "github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/skills"
 	"github.com/spf13/cobra"
 )
 
@@ -18,23 +25,16 @@ var kitCmd = &cobra.Command{
 	Short: "Manage kits",
 }
 
-// kitInitCmd is a stub for the kit init command. The full implementation
-// (environment scan + kit.yaml generation) will be added in a subsequent PR.
+// kitInitCmd generates kit.yaml files for this machine by launching a sandboxed
+// agent session in ProfileInit mode. The agent scans the host filesystem and
+// writes generated kit.yaml files to ~/.local/share/boid/kits/.
 //
-// When the full implementation dispatches a sandbox-based generation script,
-// the JobSpec must set:
-//   SandboxProfile: int(sandbox.ProfileInit)
-// This causes BuildPlan to mount the entire host root read-only (so the
-// generation script can detect installed tools) and skips broker registration
-// / socket mount (init scripts do not invoke boid host-commands).
-//
-// The `boid.autostart=skip` annotation opts this command out of the root
-// PersistentPreRunE EnsureRunning hook so the first-time onboarding flow can
-// run before a daemon exists. PR3 will add the sandboxed generation step;
-// for now PR2 only resolves and persists default_harness.
+// The command opts out of the root PersistentPreRunE EnsureRunning hook so
+// first-time onboarding works without a running daemon (daemon 未起動な初手
+// オンボーディングでも動く).
 var kitInitCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Generate kit.yaml for this machine (stub — full implementation in a future PR)",
+	Short: "Generate kit.yaml for this machine",
 	Args:  cobra.NoArgs,
 	Annotations: map[string]string{
 		annotationSkipAutostart: "skip",
@@ -44,11 +44,19 @@ var kitInitCmd = &cobra.Command{
 	},
 }
 
-// runKitInit resolves the default harness (prompting the user on first run)
-// and prints a stub line indicating where PR3 will pick up. It writes prompts
-// to out and reads the user's response from in, so tests can drive it
-// without touching the real terminal.
+// kitInitExecFn is the final exec call that replaces the current process with
+// the sandbox runner. It is a package-level variable so tests can override it
+// to intercept the launch without actually running a sandbox.
+var kitInitExecFn = func(argv0 string, argv []string, envv []string) error {
+	return syscall.Exec(argv0, argv, envv)
+}
+
+// runKitInit resolves the default harness, deploys embedded skills to the host,
+// and launches a sandboxed agent session (ProfileInit) that writes kit.yaml
+// files to ~/.local/share/boid/kits/. The sandbox has read-only access to the
+// full host root and read-write access to the kits directory.
 func runKitInit(in io.Reader, out io.Writer) error {
+	// 1. Resolve the default harness (prompting on first run).
 	harness, err := config.DefaultHarness()
 	switch {
 	case err == nil:
@@ -67,8 +75,69 @@ func runKitInit(in io.Reader, out io.Writer) error {
 	}
 
 	fmt.Fprintf(out, "default harness: %s\n", harness)
-	fmt.Fprintln(out, "boid kit init: 生成スキルは今後の PR で実装予定です")
-	return nil
+
+	// 2. Deploy embedded skills to the host so the adapter can bind-mount them
+	//    into the sandbox even when the daemon has never been started.
+	skillsDir := defaultSkillsDir()
+	if err := skills.DeployAll(skillsDir); err != nil {
+		return fmt.Errorf("deploy skills: %w", err)
+	}
+
+	// 3. Ensure the kits directory exists so we can bind-mount it.
+	kitsDir := defaultKitsDir()
+	if err := os.MkdirAll(kitsDir, 0o755); err != nil {
+		return fmt.Errorf("create kits dir: %w", err)
+	}
+
+	// 4. Resolve the boid binary path (runner-outer is re-exec'd via this path).
+	boidBinary, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve boid binary: %w", err)
+	}
+
+	// 5. Build the JobSpec via BuildInitJobSpec.
+	//    The harness adapter (claude/codex/opencode) ignores Argv and builds its
+	//    own; we pass a placeholder so the shell fall-through has something
+	//    meaningful to log. The skill prompt is delivered through the adapter's
+	//    default SKILL.md bootstrap (PR4 fills in the boid-kit-init SKILL.md).
+	jobID := fmt.Sprintf("kit-init-%s", randomJobSuffix())
+	spec := dispatcher.BuildInitJobSpec(dispatcher.InitJobInput{
+		Profile:      sandbox.ProfileInit,
+		WritableDirs: []string{kitsDir},
+		Argv:         []string{"boid-kit-init"},
+		DisplayName:  "boid kit init",
+		HarnessType:  harness,
+	})
+
+	// 6. Build the SandboxRuntimeInfo.
+	//    ServerSocket is intentionally empty: kit init does not need daemon API
+	//    access (it is designed to run before the daemon exists). The broker
+	//    socket is also empty — runner.go:183 skips registration for ProfileInit.
+	//    Adapter bindings (claude/codex/opencode each declare ~/.claude etc.) are
+	//    resolved inside BuildSandboxSpec via registry.For(spec.HarnessType).Bindings().
+	rt := dispatcher.SandboxRuntimeInfo{
+		JobID:        jobID,
+		BoidBinary:   boidBinary,
+		ServerSocket: "", // daemon not required for kit init
+		Foreground:   true,
+	}
+
+	sbSpec, err := dispatcher.BuildSandboxSpec(spec, rt)
+	if err != nil {
+		return fmt.Errorf("build sandbox spec: %w", err)
+	}
+
+	sb, err := dispatcher.NewSandboxPreparer().PrepareSandbox(sbSpec)
+	if err != nil {
+		return fmt.Errorf("prepare sandbox: %w", err)
+	}
+	if sb == nil || sb.SpecPath == "" {
+		return fmt.Errorf("prepare sandbox: missing spec path")
+	}
+
+	// 7. Exec the runner-outer in place of this process (foreground mode).
+	runnerArgs := []string{boidBinary, "runner-outer", "--spec", sb.SpecPath, "--state", sb.StatePath}
+	return kitInitExecFn(boidBinary, runnerArgs, os.Environ())
 }
 
 // promptDefaultHarness reads a harness identifier from in, re-prompting on
@@ -184,6 +253,36 @@ func reloadProjects() {
 		return
 	}
 	fmt.Println("projects reloaded")
+}
+
+// defaultSkillsDir returns the host path where embedded skills are deployed.
+// This mirrors the path used by the daemon server (internal/server/server.go)
+// which derives it as filepath.Dir(cfg.DBPath) + "/skills", and defaultDBPath()
+// places the DB at ~/.local/share/boid/boid.db.
+func defaultSkillsDir() string {
+	dataDir := os.Getenv("XDG_DATA_HOME")
+	if dataDir == "" {
+		home, _ := os.UserHomeDir()
+		dataDir = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(dataDir, "boid", "skills")
+}
+
+// randomJobSuffix returns a short random-enough suffix for use in job IDs.
+// It reads 4 bytes from /dev/urandom and encodes them as hex; on any error
+// it falls back to a fixed placeholder (collisions are harmless for ephemeral
+// foreground jobs).
+func randomJobSuffix() string {
+	f, err := os.Open("/dev/urandom")
+	if err != nil {
+		return "0000"
+	}
+	defer f.Close()
+	b := make([]byte, 4)
+	if _, err := io.ReadFull(f, b); err != nil {
+		return "0000"
+	}
+	return hex.EncodeToString(b)
 }
 
 func init() {

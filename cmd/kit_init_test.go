@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,8 +24,34 @@ func withIsolatedConfigHome(t *testing.T) string {
 	return dir
 }
 
+// withStubSandboxLaunch replaces kitInitExecFn with a no-op stub that records
+// the argv it receives and returns nil. Restored automatically via t.Cleanup.
+// Returns a pointer to the captured argv0 so tests can assert it.
+func withStubSandboxLaunch(t *testing.T) *string {
+	t.Helper()
+	captured := ""
+	orig := kitInitExecFn
+	kitInitExecFn = func(argv0 string, argv []string, envv []string) error {
+		captured = argv0
+		return nil
+	}
+	t.Cleanup(func() { kitInitExecFn = orig })
+	return &captured
+}
+
+// withIsolatedDataHome routes XDG_DATA_HOME to a per-test tempdir so
+// skills.DeployAll and kits-dir creation land in the temp tree.
+func withIsolatedDataHome(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dir)
+	return dir
+}
+
 func TestRunKitInit_PromptsAndPersists(t *testing.T) {
 	dir := withIsolatedConfigHome(t)
+	withIsolatedDataHome(t)
+	withStubSandboxLaunch(t)
 
 	in := strings.NewReader("claude\n")
 	var out bytes.Buffer
@@ -37,7 +64,6 @@ func TestRunKitInit_PromptsAndPersists(t *testing.T) {
 		"No default harness configured",
 		"saved default harness: claude",
 		"default harness: claude",
-		"生成スキルは今後の PR で実装予定",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q\n---\n%s", want, got)
@@ -61,6 +87,9 @@ func TestRunKitInit_PromptsAndPersists(t *testing.T) {
 
 func TestRunKitInit_ReusesExistingValue(t *testing.T) {
 	withIsolatedConfigHome(t)
+	withIsolatedDataHome(t)
+	withStubSandboxLaunch(t)
+
 	if err := config.SetDefaultHarness("opencode"); err != nil {
 		t.Fatalf("SetDefaultHarness: %v", err)
 	}
@@ -82,6 +111,8 @@ func TestRunKitInit_ReusesExistingValue(t *testing.T) {
 
 func TestRunKitInit_RetriesOnInvalidInput(t *testing.T) {
 	withIsolatedConfigHome(t)
+	withIsolatedDataHome(t)
+	withStubSandboxLaunch(t)
 
 	in := strings.NewReader("bad name\n2bad\nclaude\n")
 	var out bytes.Buffer
@@ -106,6 +137,8 @@ func TestRunKitInit_RetriesOnInvalidInput(t *testing.T) {
 
 func TestRunKitInit_GivesUpAfterMaxAttempts(t *testing.T) {
 	withIsolatedConfigHome(t)
+	// No stub for exec fn — we expect the function to return an error before
+	// reaching the sandbox launch step.
 
 	in := strings.NewReader("bad name\nworse!\n2bad\n")
 	var out bytes.Buffer
@@ -120,6 +153,8 @@ func TestRunKitInit_GivesUpAfterMaxAttempts(t *testing.T) {
 
 func TestRunKitInit_EmptyStdinFailsCleanly(t *testing.T) {
 	withIsolatedConfigHome(t)
+	// No stub for exec fn — we expect the function to return an error before
+	// reaching the sandbox launch step.
 
 	in := strings.NewReader("")
 	var out bytes.Buffer
@@ -134,6 +169,9 @@ func TestRunKitInit_EmptyStdinFailsCleanly(t *testing.T) {
 
 func TestRunKitInit_EnvVarTakesPrecedence(t *testing.T) {
 	withIsolatedConfigHome(t)
+	withIsolatedDataHome(t)
+	withStubSandboxLaunch(t)
+
 	t.Setenv(config.EnvDefaultHarness, "codex")
 
 	in := strings.NewReader("") // should never be read
@@ -156,6 +194,66 @@ func TestRunKitInit_EnvVarTakesPrecedence(t *testing.T) {
 	}
 }
 
+// TestRunKitInit_ExecFnCalled verifies that runKitInit reaches the sandbox
+// launch step (kitInitExecFn is called) when the harness is already configured.
+func TestRunKitInit_ExecFnCalled(t *testing.T) {
+	withIsolatedConfigHome(t)
+	dataDir := withIsolatedDataHome(t)
+
+	if err := config.SetDefaultHarness("claude"); err != nil {
+		t.Fatalf("SetDefaultHarness: %v", err)
+	}
+
+	var gotArgv0 string
+	orig := kitInitExecFn
+	kitInitExecFn = func(argv0 string, argv []string, envv []string) error {
+		gotArgv0 = argv0
+		return nil
+	}
+	t.Cleanup(func() { kitInitExecFn = orig })
+
+	in := strings.NewReader("")
+	var out bytes.Buffer
+	if err := runKitInit(in, &out); err != nil {
+		t.Fatalf("runKitInit: %v", err)
+	}
+
+	if gotArgv0 == "" {
+		t.Error("kitInitExecFn was not called — sandbox launch did not happen")
+	}
+
+	// Skills should have been deployed to the data dir.
+	skillsDir := filepath.Join(dataDir, "boid", "skills")
+	if _, err := os.Stat(filepath.Join(skillsDir, "boid-kit-init", "SKILL.md")); err != nil {
+		t.Errorf("boid-kit-init skill not deployed: %v", err)
+	}
+}
+
+// TestRunKitInit_ExecFnError verifies that errors from kitInitExecFn are
+// propagated back to the caller.
+func TestRunKitInit_ExecFnError(t *testing.T) {
+	withIsolatedConfigHome(t)
+	withIsolatedDataHome(t)
+
+	if err := config.SetDefaultHarness("claude"); err != nil {
+		t.Fatalf("SetDefaultHarness: %v", err)
+	}
+
+	wantErr := errors.New("exec failed")
+	orig := kitInitExecFn
+	kitInitExecFn = func(argv0 string, argv []string, envv []string) error {
+		return wantErr
+	}
+	t.Cleanup(func() { kitInitExecFn = orig })
+
+	in := strings.NewReader("")
+	var out bytes.Buffer
+	err := runKitInit(in, &out)
+	if err == nil {
+		t.Fatal("expected error from kitInitExecFn to propagate")
+	}
+}
+
 // kitInitCmd must opt out of EnsureRunning so the first onboarding command
 // works before a daemon exists.
 func TestKitInitCmd_SkipsAutostart(t *testing.T) {
@@ -164,4 +262,3 @@ func TestKitInitCmd_SkipsAutostart(t *testing.T) {
 			annotationSkipAutostart, got, "skip")
 	}
 }
-
