@@ -89,6 +89,22 @@ sandbox:
 
 ---
 
+## default_harness — デフォルト harness
+
+```yaml
+default_harness: claude   # claude / codex / opencode のいずれか
+```
+
+| キー | 型 | デフォルト | 説明 |
+|---|---|---|---|
+| `default_harness` | string | — | `boid kit init` / `boid workspace configure` が起動する harness |
+
+`boid kit init` 実行時に未設定の場合、対話プロンプトで聞いてこのキーに永続化します。環境変数 `BOID_DEFAULT_HARNESS` で一時 override できます（config より優先）。
+
+詳細は [オンボーディング](../guide/onboarding.md) を参照してください。
+
+---
+
 ## task_ask — ブロッキング Q&A
 
 ```yaml
