@@ -1,10 +1,234 @@
 ---
 name: boid-kit-init
-description: TODO (PR4): このファイルに boid kit init スキャン手順を実装する
+description: >
+  このマシンで利用可能なツール群をスキャンして kit.yaml を生成する。
+  「boid kit init を実行して」「kit を初期化して」「kit.yaml を生成して」
+  「ローカル環境の kit を作りたい」「Node.js / Go / Docker / gh を kit に登録して」
+  など、ホスト環境のスキャンと kit.yaml 生成が必要なときに使用する。
+  project は見ない — project とのマッチングは boid-workspace-configure の責務。
 ---
 
-# boid-kit-init (TODO: PR4 で実装)
+# boid-kit-init — ホスト環境スキャン & kit.yaml 生成スキル
 
-このスキルは PR4 で実装予定です。
+**役割**: いまこのマシンで利用できるツール群を収拾して、`~/.local/share/boid/kits/<name>/kit.yaml`
+を生成する。project は見ない（project とのマッチングは `/boid-workspace-configure` の責務）。
 
-現時点では sandbox 起動確認のための placeholder です。
+---
+
+## secret-free 規約 (最重要)
+
+kit.yaml に生のシークレット値を書いてはならない。
+
+- `host_commands[*].env` の値は `secret:<key>` 参照のみ（例: `GH_TOKEN: "secret:"`）
+- 生の API キー・トークン・パスワード・高エントロピー文字列は **絶対に書かない**
+- 生値を書いた場合、後段 scan (`orchestrator.ScanSecretsFile`) が検知して rollback + exit 1 になる
+
+---
+
+## 全体フロー
+
+```
+1. スキャン       — PATH binary + $HOME 配下ディレクトリをチェック
+2. 検出結果確認   — 何が見つかったかユーザに提示、生成する kit を合意
+3. 衝突確認       — 既存 kit がある場合は上書き可否をユーザに確認
+4. 雛形読み込み   — templates/<name>.yaml.tmpl を Read
+5. 変数置換       — 検出した実値で {{変数名}} を置換
+6. kit.yaml 書き込み — ~/.local/share/boid/kits/<name>/kit.yaml に書く
+7. 結果サマリ     — 生成した kit 一覧を出力
+```
+
+---
+
+## Step 1: スキャン
+
+### 1.1 PATH binary の確認
+
+```bash
+which volta 2>/dev/null
+which node 2>/dev/null
+which npm 2>/dev/null
+which nvm 2>/dev/null
+which go 2>/dev/null
+which gh 2>/dev/null
+which docker 2>/dev/null
+which podman 2>/dev/null
+which git 2>/dev/null
+```
+
+### 1.2 $HOME 配下の標準ディレクトリチェック
+
+```bash
+# volta
+ls "$HOME/.volta/bin/" 2>/dev/null | head -5
+echo "VOLTA_HOME=${VOLTA_HOME:-}"
+
+# nvm
+ls "$HOME/.nvm/versions/node/" 2>/dev/null | head -5
+
+# go
+go version 2>/dev/null
+echo "GOPATH=${GOPATH:-$(go env GOPATH 2>/dev/null)}"
+echo "GOROOT=${GOROOT:-$(go env GOROOT 2>/dev/null)}"
+
+# docker socket
+ls /var/run/docker.sock 2>/dev/null
+ls "${XDG_RUNTIME_DIR}/docker.sock" 2>/dev/null
+ls "${XDG_RUNTIME_DIR}/cetusguard/docker.sock" 2>/dev/null
+```
+
+### 1.3 検出ヒューリスティック
+
+| ツール | 検出シグナル | 生成する kit |
+|---|---|---|
+| volta | `which volta` 成功 **または** `$HOME/.volta/bin/node` が存在 | `node` (volta variant) |
+| nvm | `$HOME/.nvm/versions/node/` に 1 件以上 **かつ** `volta` なし | `node` (nvm variant) — 雛形なし時は手書き案内 |
+| system node | `which node` 成功 **かつ** volta/nvm なし | `node` (system variant) — 雛形なし時は手書き案内 |
+| go | `which go` 成功 | `go-dev` |
+| gh | `which gh` 成功 | `github-cli` |
+| docker socket | `/var/run/docker.sock` または `$XDG_RUNTIME_DIR/cetusguard/docker.sock` が存在 | `docker` |
+| podman | `which podman` 成功 | `docker` (podman variant) — `github-cli` 雛形のコメント参照 |
+
+---
+
+## Step 2: 検出結果の提示と合意
+
+スキャン結果をユーザに見せ、どの kit を生成するか確認する。
+
+```
+検出結果:
+  ✓ volta   → node kit (volta variant)  を生成します
+  ✓ go      → go-dev kit を生成します
+  ✓ gh      → github-cli kit を生成します
+  ✗ docker  → socket が見つかりません (スキップ)
+
+上記 3 個を生成してよいですか?
+```
+
+---
+
+## Step 3: 衝突確認 (既存 kit がある場合)
+
+対象の kit dir (`~/.local/share/boid/kits/<name>/`) が既に存在する場合:
+
+```bash
+# 生成日時を確認
+grep "generated_at" ~/.local/share/boid/kits/<name>/kit.yaml 2>/dev/null
+```
+
+`generated_at` フィールドが見つかれば、その日付でユーザに確認する:
+
+```
+2025-10-15 に生成された node kit があります。上書きしますか?
+  A. 上書きする
+  B. スキップする (既存を保持)
+```
+
+`generated_at` がなければ (手書き kit の場合) より慎重に確認する:
+
+```
+手動で作成された node kit があります。上書きすると変更が失われます。続けますか?
+  A. 上書きする
+  B. スキップする (既存を保持)
+```
+
+---
+
+## Step 4: 雛形の読み込みと変数置換
+
+### 雛形ファイルの場所
+
+```
+~/.claude/skills/boid-kit-init/templates/<name>.yaml.tmpl
+```
+
+Read ツールで読み込む:
+
+```
+Read("~/.claude/skills/boid-kit-init/templates/node.yaml.tmpl")
+Read("~/.claude/skills/boid-kit-init/templates/go-dev.yaml.tmpl")
+Read("~/.claude/skills/boid-kit-init/templates/github-cli.yaml.tmpl")
+Read("~/.claude/skills/boid-kit-init/templates/docker.yaml.tmpl")
+```
+
+### 変数置換
+
+雛形内の `{{変数名}}` を検出した実値で置換する (Go の text/template engine は使わない — テキスト置換のみ)。
+
+各雛形ファイルの先頭コメントに置換変数の一覧と取得方法が書いてある。
+
+### 置換後の確認
+
+`secret:` 参照が正しく使われているか確認する。生のシークレット値が混入していないか必ずチェックする。
+
+---
+
+## Step 5: kit.yaml の書き込み
+
+```bash
+# ディレクトリ作成 (親 dir は RW bind 済)
+mkdir -p ~/.local/share/boid/kits/<name>
+
+# kit.yaml 書き込み (Write ツール使用)
+```
+
+Write ツールで `~/.local/share/boid/kits/<name>/kit.yaml` に書く。
+
+`meta` セクションに生成情報を付ける:
+
+```yaml
+meta:
+  name: <kit 名>
+  description: <説明>
+  category: <language|vcs|ci|agent|workflow|utility>
+  generated_at: "YYYY-MM-DD"
+  generated_by: boid-kit-init
+```
+
+---
+
+## Step 6: 結果サマリ
+
+```
+[生成完了]
+  ~/.local/share/boid/kits/node/kit.yaml
+  ~/.local/share/boid/kits/go-dev/kit.yaml
+  ~/.local/share/boid/kits/github-cli/kit.yaml
+
+[スキップ]
+  docker  (socket が見つかりません)
+
+次のステップ:
+  - workspace と project を紐付けるには: boid workspace configure <slug>
+  - 生成した kit を確認: boid kit list
+```
+
+---
+
+## よくある落とし穴
+
+### volta が見つかるが $VOLTA_HOME が未設定の場合
+
+```bash
+# $VOLTA_HOME 未設定時は $HOME/.volta を使う
+VOLTA_HOME="${VOLTA_HOME:-$HOME/.volta}"
+ls "$VOLTA_HOME/bin/node" 2>/dev/null || echo "volta binary が見当たりません"
+```
+
+### GH_TOKEN が環境変数に生値で入っている場合
+
+環境変数に生の GitHub トークンがあっても、kit.yaml には **絶対に書かない**。
+代わりに `secret:` 参照を使う。gh CLI は `~/.config/gh/hosts.yml` に認証情報を持っているため、
+サンドボックス内では `gh auth token` または `GH_TOKEN` の `secret:` 参照で解決される。
+
+### docker socket が cetusguard 経由の場合
+
+boid では cetusguard proxy 経由でのアクセスを推奨する (素 socket の直結は行わない)。
+`$XDG_RUNTIME_DIR/cetusguard/docker.sock` が存在すれば docker.yaml.tmpl の cetusguard 変数を使う。
+
+---
+
+## 関連スキル・コマンド
+
+- `/boid-workspace-configure` — workspace と project のマッチング (kit init 後に実行)
+- `boid kit list` — 生成した kit を確認
+- `boid kit show <name>` — kit の詳細確認

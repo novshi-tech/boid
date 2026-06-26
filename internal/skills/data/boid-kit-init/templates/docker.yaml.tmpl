@@ -1,0 +1,47 @@
+# Template for: docker
+# Detection signal:
+#   cetusguard variant: $XDG_RUNTIME_DIR/cetusguard/docker.sock が存在
+#   direct variant:     /var/run/docker.sock が存在
+#   podman variant:     `which podman` 成功 ($XDG_RUNTIME_DIR/podman/podman.sock 等)
+#
+# Variables to substitute:
+#   {{docker_binary}}  = docker (または podman) binary の絶対パス
+#                        確認: which docker || which podman
+#   {{docker_sock}}    = Docker socket の絶対パス
+#                        cetusguard: $XDG_RUNTIME_DIR/cetusguard/docker.sock
+#                        direct:     /var/run/docker.sock
+#                        podman:     $XDG_RUNTIME_DIR/podman/podman.sock
+#                                    または $XDG_RUNTIME_DIR/containers/podman/machine/qemu/podman.sock
+#   {{xdg_runtime_dir}} = $XDG_RUNTIME_DIR の値
+#                         確認: echo $XDG_RUNTIME_DIR
+#
+# cetusguard variant を推奨 (素 socket の直結より攻撃面が狭い)。
+# cetusguard が未設定の場合は下記コメント部を外して direct variant に切り替える。
+
+meta:
+  name: docker
+  description: |
+    サンドボックス内から cetusguard proxy 経由でホストの Docker API に
+    アクセスする。ホスト側で cetusguard 常駐が必要。
+    backend は docker でも podman でも可 (Docker API 互換)。
+  category: tool
+  generated_at: "YYYY-MM-DD"
+  generated_by: boid-kit-init
+
+# cetusguard variant (推奨):
+additional_bindings:
+  - source: {{docker_sock}}
+    mode: rw
+
+env:
+  DOCKER_HOST: "unix://{{docker_sock}}"
+  CONTAINER_HOST: "unix://{{docker_sock}}"
+  TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE: "{{docker_sock}}"
+  TESTCONTAINERS_RYUK_DISABLED: "false"
+
+# direct variant (cetusguard なしの場合はこちらに切り替える):
+# additional_bindings:
+#   - source: /var/run/docker.sock
+#     mode: rw
+# env:
+#   DOCKER_HOST: "unix:///var/run/docker.sock"

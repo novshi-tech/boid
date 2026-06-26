@@ -1,0 +1,37 @@
+# Template for: go-dev
+# Detection signal: `which go` succeeded
+# Variables to substitute:
+#   {{go_binary}}  = go binary の絶対パス
+#                    確認: which go
+#   {{gopath}}     = GOPATH
+#                    確認: go env GOPATH
+#   {{goroot}}     = GOROOT
+#                    確認: go env GOROOT
+#   {{go_version}} = Go のバージョン
+#                    確認: go version | awk '{print $3}'
+#
+# Note: go install でインストールしたツール (~/$GOPATH/bin) もバインドが必要な場合は
+#   additional_bindings に {{gopath}}/bin を追加する。
+#   ただしサンドボックス内からの go install は CGO や外部 module zip のため
+#   制限される場合がある (sandbox egress 制約)。
+
+meta:
+  name: go-dev
+  description: "Go development toolchain ({{go_version}})"
+  category: language
+  generated_at: "YYYY-MM-DD"
+  generated_by: boid-kit-init
+
+host_commands:
+  go:
+    path: {{go_binary}}
+    args: []
+
+env:
+  GOPATH: {{gopath}}
+  GOROOT: {{goroot}}
+  PATH: "{{gopath}}/bin:${PATH}"
+
+additional_bindings:
+  - {{goroot}}
+  - {{gopath}}/bin

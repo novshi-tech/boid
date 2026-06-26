@@ -1,0 +1,36 @@
+# Template for: github-cli
+# Detection signal: `which gh` succeeded
+# Variables to substitute:
+#   {{gh_binary}} = gh binary の絶対パス
+#                   確認: which gh
+#
+# Note: GH_TOKEN は secret: 参照を使う。生値は絶対に書かない。
+#   gh CLI は ~/.config/gh/hosts.yml に認証情報を持つ。
+#   サンドボックス内では GH_TOKEN env または gh auth token で解決される。
+#
+#   allow リストは実際に必要なサブコマンドのみ残す (ホワイトリスト制)。
+#   追加が必要なら手動で kit.yaml を編集する。
+
+meta:
+  name: github-cli
+  description: GitHub CLI (gh) をサンドボックスに提供する
+  category: ci
+  generated_at: "YYYY-MM-DD"
+  generated_by: boid-kit-init
+
+host_commands:
+  gh:
+    path: {{gh_binary}}
+    allow:
+      - pr
+      - issue
+      - repo
+      - release
+      - run
+      - workflow
+      - label
+      - milestone
+      - api
+      - auth
+    env:
+      GH_TOKEN: "secret:"
