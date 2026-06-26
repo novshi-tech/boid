@@ -43,11 +43,18 @@
 │ boid kit init       │ (CLI)                                  │
 │                                                              │
 │  ┌────────────────────────────────────────────────────────┐  │
-│  │ BuildKitInitJobSpec (dispatcher 新関数)                │  │
+│  │ skills.DeployAll(defaultSkillsDir())                   │  │
+│  │   - daemon 未起動でも skill を host 展開 (冪等)        │  │
+│  │   - 第 1 ラウンド指摘 1 対応                            │  │
+│  └─────────────────────┬──────────────────────────────────┘  │
+│                        │                                     │
+│                        ▼                                     │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │ BuildInitJobSpec (dispatcher 新関数)                   │  │
 │  │   - SandboxProfile = ProfileInit                       │  │
 │  │   - Argv = [harness binary, ...skill 起動 prompt]      │  │
 │  │   - Writable = [~/.local/share/boid/kits]              │  │
-│  │   - Bindings = 通常 skills + 雛形ディレクトリ           │  │
+│  │   - Bindings = 通常 skills (展開済を bind)              │  │
 │  └─────────────────────┬──────────────────────────────────┘  │
 │                        │                                     │
 │                        ▼                                     │
@@ -56,6 +63,8 @@
 │  │   - host root を ro rbind (ProfileInit 分岐)           │  │
 │  │   - 親 dir RW bind で書き込み許可                       │  │
 │  │   - broker socket mount しない                          │  │
+│  │   - ServerSocket: kit init は空 / configure は         │  │
+│  │     client.DefaultSocketPath() (§2.3)                  │  │
 │  └─────────────────────┬──────────────────────────────────┘  │
 │                        │                                     │
 │                        ▼                                     │
@@ -80,6 +89,7 @@
 
 - writable: `~/.config/boid/workspaces/<slug>.yaml` の親 dir RW bind (yaml は host 側で pre-create してから RW bind)
 - 追加 bind: 紐付け済み project 群を ReadOnly bind (`package.json` / `go.mod` / hook script の read 用)
+- **ServerSocket: `client.DefaultSocketPath()` を設定** (skill が `boid workspace show` / `boid kit list` 等 daemon API を叩くため、 §2.3 参照)
 - skill: `boid-workspace-configure`
 - 後段 scan の対象: 書かれた `workspace.yaml` 単体
 
@@ -97,6 +107,7 @@ type InitJobInput struct {
     ReadOnlyBinds  []string         // configure の場合 project 群
     Argv           []string         // harness binary + prompt
     DisplayName    string
+    Env            map[string]string // skill に渡す追加 env (BOID_WORKSPACE_SLUG 等)
 }
 
 func BuildInitJobSpec(in InitJobInput) JobSpec { ... }
@@ -105,15 +116,26 @@ func BuildInitJobSpec(in InitJobInput) JobSpec { ... }
 `runKitInit` / `runWorkspaceConfigure` (cmd 側) が:
 
 1. `default_harness` を解決 (§4)
-2. `InitJobInput` を組み立て
-3. `BuildInitJobSpec` で JobSpec 作成
-4. `RunOuter` で sandbox + harness を foreground 起動 (`cmd/exec.go:139-156` と同じ)
-5. exit 後、 書かれた yaml 群を scan (§6)
+2. **embed 済み skill を host 側に展開** (§3.2、 daemon 起動状態に依存しない)
+3. `InitJobInput` を組み立て
+4. `BuildInitJobSpec` で JobSpec 作成
+5. `SandboxRuntimeInfo` を組み立て、 **`workspace configure` のみ `ServerSocket: client.DefaultSocketPath()` を設定** (§2.3)
+6. `RunOuter` で sandbox + harness を foreground 起動 (`cmd/exec.go:139-156` と同じ)
+7. exit 後、 書かれた yaml 群を scan (§6)
 
 #### 2.2 触らないところ
 
 - `Broker` 登録は `runner.go:180-183` で ProfileInit ガード済 → CLI 側で broker 関連スキップだけ追加 (`brokerSocket = ""`, `brokerToken = ""`)
 - 既存 `SessionJobInput` / `BuildExecJobSpec` には**触らない** (exec 経路の余計な regression を避ける)。 似た構造を持つ別関数として並べる方が安全
+
+#### 2.3 ServerSocket 配線 (Codex 第 1 ラウンド指摘 3 対応)
+
+| コマンド | ServerSocket | 理由 |
+|---|---|---|
+| `boid kit init` | **不要** (空文字、 bind しない) | host scan + kit.yaml write のみ。 daemon API を叩かない設計 (daemon 未起動な初手オンボーディングでも動かす要求) |
+| `boid workspace configure <slug>` | **必須** (`client.DefaultSocketPath()`) | skill が `boid project list` / `boid kit list` 等 daemon API を叩く |
+
+`sandbox_builder.go:257-264` の既存ロジック (`rt.ServerSocket != ""` のときだけ `/run/boid/server.sock` を bind + `BOID_SOCKET` env 注入) をそのまま使う。 `kit init` 側で空文字にすれば bind されず、 daemon 未起動でも sandbox 起動が走る。 環境固有な socket path (custom `BOID_SOCKET` 等) もこの経由で正しく反映される。
 
 ### 3. skill embed 戦略
 
@@ -139,9 +161,15 @@ internal/skills/data/
 
 `workspace-configure` 側に templates は不要 (kit カタログを読むだけで雛形は持たない)。
 
-#### 3.2 既存 `skills.DeployAll` を流用
+#### 3.2 既存 `skills.DeployAll` を流用 + CLI 側でも呼ぶ (Codex 第 1 ラウンド指摘 1 対応)
 
-`internal/skills/deploy.go:13` の `//go:embed` ディレクティブに 2 ディレクトリ追加するだけで、 既存の deploy パイプライン (server 起動時に `~/.local/share/boid/skills/` 配下に展開、 claude/codex/opencode adapter が `~/.claude/skills/` に bind) が自動で配布する。
+`internal/skills/deploy.go:13` の `//go:embed` ディレクティブに 2 ディレクトリ追加すれば、 daemon 起動時に `~/.local/share/boid/skills/` 配下へ展開される (`internal/server/server.go:68`)。 adapter は `~/.local/share/boid/skills/<name>` を `~/.claude/skills/<name>` に bind する (`internal/adapters/claude/bindings.go:53` 他)。
+
+**ただし**: `boid kit init` はオンボーディング初手になり得るため、 **daemon 未起動 → skill 未展開 → adapter bind 先が空ディレクトリ → harness が SKILL.md を見つけられない**、 という詰みパスがある。
+
+対策: CLI 側 (`runKitInit` / `runWorkspaceConfigure`) で sandbox 起動直前に **`skills.DeployAll(defaultSkillsDir())` を idempotent に呼ぶ**。 `DeployAll` は冪等で内容変更検出付き (`deploy.go` 既存実装)、 daemon が後から起動しても再展開で上書き競合は起きない (host 側 `~/.local/share/boid/skills/` 1 経路に集約されている)。
+
+副次的に、 既存 `boid exec` 経路で daemon が一度も起動してない状態だと同じ詰みパスがあったはずだが、 そちらは通常 daemon 起動済を前提とするので顕在化していなかった。 本 plan で `kit init` を入り口に据えるなら CLI 展開を入れる。
 
 #### 3.3 SKILL.md 内容 (`boid-kit-init`)
 
@@ -160,14 +188,16 @@ internal/skills/data/
 
 - **役割宣言**: 「workspace に紐付け済み project 群をスキャンし、 必要 kit を workspace.yaml `kits:` に追加」
 - **入力**: `BOID_WORKSPACE_SLUG` 環境変数 (CLI が JobSpec.Env に注入)
-- **手順**:
-  1. `boid project list --workspace <slug>` で紐付け project 列挙
+- **手順** (Codex 第 1 ラウンド指摘 2 対応で訂正、 `boid project list --workspace <slug>` は現行存在しないため):
+  1. **`boid workspace show <slug> --json`** で `WorkspaceShowView.projects[]` を取得 → `WorkDir` 抽出 (`cmd/workspace.go:181-265` 既存経路、 daemon API + workspace.yaml を統合した view が返る)
   2. 各 project の `package.json` / `go.mod` / `task_behaviors[].hooks` script を read
-  3. `boid kit list` でカタログ列挙、 各 kit の `meta` を read してマッチング
+  3. **`boid kit list`** でカタログ列挙 (`cmd/kit.go:36-54`)、 各 kit dir の `kit.yaml` を直接 read してマッチング (CLI 経由の `boid kit show` は未実装、 本 plan で必要なら追加検討)
   4. workspace.yaml 既存内容を read (あれば diff 提示)
   5. workspace.yaml に `kits:` array 追加 (env / capabilities は user 既存値温存)
 - **足りない kit のガイダンス**: 「project が gh 要求してるけど github-cli kit がカタログに無い、 `boid kit init` 再実行してね」 を出力
 - **secret-free 規約**: workspace.yaml `env:` には plain k/v のみ、 secret は kit 側で完結
+
+**`boid project list --workspace` を新設する案 (採否は実装時判断)**: skill 側手順をより素直にするため、 `cmd/project.go:62` の `projectListCmd` に `--workspace <slug>` flag を足して `GET /api/projects?workspace_id=<slug>` を叩く方が SKILL.md は短く書ける (server 側 query は `internal/api/project.go:85` で対応済)。 ただし `workspace show --json` の view を流用すれば本 plan の射程内で完結する。 PR4 設計時に skill 側コードを書きながら判断する。
 
 #### 3.5 雛形 (`kit.yaml.tmpl`) 構文
 
@@ -299,3 +329,11 @@ $ boid workspace configure dev
 - `default_harness` 未設定時の挙動 (init wizard 中で聞く? built-in `claude` 固定?)
 - 雛形の `meta.signals` フィールド設計 (`workspace configure` がカタログマッチングで読む構造、 PR4 設計時に詰める)
 - e2e で対話 harness を fake する手段 (claude-stub を作るか、 ProfileInit のサンドボックスのみ検証して agent 部分は skip するか)
+
+## 改訂履歴
+
+- **第 1 ラウンド** (2026-06-26) — 設計プラン初稿
+- **第 2 ラウンド** (2026-06-26) — Codex 第 1 ラウンドレビュー反映:
+  - 指摘 1: `DeployAll` が daemon 起動依存だと初手オンボーディングで詰む点 → §3.2 で **CLI 側でも `skills.DeployAll` を冪等に呼ぶ**設計を明示、 §1 アーキテクチャ図にもステップ追加
+  - 指摘 2: `boid project list --workspace <slug>` が現行 CLI に存在しない点 → §3.4 を **`boid workspace show <slug> --json` 経由**に訂正、 補助オプションで `project list --workspace` 新設検討の余地を残す
+  - 指摘 3: workspace configure が daemon API を叩く前提なのに `ServerSocket` mount 配線が無い点 → §2.1 で `InitJobInput.Env` 追加、 §2.3 **「ServerSocket 配線」 節を新設** (`kit init` は空 / `configure` は `client.DefaultSocketPath()`)、 §1 アーキテクチャ図にも反映
