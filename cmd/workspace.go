@@ -4,13 +4,18 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/config"
+	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/skills"
 	"github.com/spf13/cobra"
 )
 
@@ -46,20 +51,37 @@ var workspaceClearCmd = &cobra.Command{
 	RunE:  runWorkspaceClear,
 }
 
-// workspaceConfigureCmd is a stub for the workspace configure command. The
-// full implementation (project scan + kit matching) will be added in a later PR.
+// workspaceConfigureExecFn runs the sandbox runner as a child process (fork+wait) and
+// waits for it to complete. It is a package-level variable so tests can
+// override it to intercept the launch without actually running a sandbox.
 //
-// When the full implementation dispatches a sandbox-based configuration script,
-// the JobSpec must set:
-//   SandboxProfile: int(sandbox.ProfileInit)
-// This causes BuildPlan to mount the entire host root read-only (so the
-// configuration script can detect installed tools) and skips broker registration
-// / socket mount (configure scripts do not invoke boid host-commands).
+// Unlike syscall.Exec, this does NOT replace the current process — the caller
+// regains control after the child exits, allowing post-run scanning logic to
+// execute.
+var workspaceConfigureExecFn = func(argv0 string, argv []string, envv []string) error {
+	cmd := exec.Command(argv0, argv[1:]...)
+	cmd.Env = envv
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// workspaceConfigureCmd launches a sandboxed agent session (ProfileInit) that
+// reads the assigned projects and writes a workspace.yaml via the
+// boid-workspace-configure skill. After the sandbox exits, the generated yaml
+// is scanned for secrets; if any are found the original file is restored from
+// backup and an error is returned.
+//
+// Unlike boid kit init, this command requires the daemon (workspace show + kit
+// list are daemon API calls) and therefore does NOT carry annotationSkipAutostart.
 var workspaceConfigureCmd = &cobra.Command{
 	Use:   "configure <slug>",
-	Short: "Configure a workspace (scan projects + kit matching — stub, full implementation in a later PR)",
+	Short: "Configure a workspace via interactive agent session (boid-workspace-configure skill)",
 	Args:  cobra.ExactArgs(1),
-	RunE:  runWorkspaceConfigure,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runWorkspaceConfigure(cmd, args)
+	},
 }
 
 var workspaceRemoveCmd = &cobra.Command{
@@ -320,10 +342,29 @@ func runWorkspaceConfigure(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
 	out := cmd.OutOrStdout()
+	c := client.NewUnixClient(client.DefaultSocketPath())
 
-	// Show assigned projects.
+	// 1. Resolve default harness (workspace configure requires one; kit init sets
+	//    it on first run, so by the time configure is called it should be set).
+	harness, err := config.DefaultHarness()
+	if err != nil {
+		if errors.Is(err, config.ErrDefaultHarnessNotSet) {
+			return fmt.Errorf("default harness not configured — run `boid kit init` first to set it")
+		}
+		return fmt.Errorf("resolve default harness: %w", err)
+	}
+	fmt.Fprintf(out, "default harness: %s\n", harness)
+
+	// 2. Deploy embedded skills to the host (idempotent) so the adapter can
+	//    bind-mount them into the sandbox.
+	skillsDir := defaultSkillsDir()
+	if err := skills.DeployAll(skillsDir); err != nil {
+		return fmt.Errorf("deploy skills: %w", err)
+	}
+
+	// 3. Fetch assigned projects from the daemon to gather their WorkDirs for
+	//    read-only bind mounts so the skill can read package.json / go.mod etc.
 	var projects []*orchestrator.Project
 	if err := c.Do("GET", "/api/projects?workspace_id="+slug, nil, &projects); err != nil {
 		return fmt.Errorf("list projects: %w", err)
@@ -340,19 +381,176 @@ func runWorkspaceConfigure(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintln(out)
 
-	// Create skeleton workspace.yaml if missing.
+	// 4. Determine the workspace.yaml path and ensure the parent dir exists.
 	store := orchestrator.NewWorkspaceStore("")
-	_, err := store.Load(slug)
-	if errors.Is(err, os.ErrNotExist) || (err != nil && strings.Contains(err.Error(), os.ErrNotExist.Error())) {
-		empty := &orchestrator.WorkspaceMeta{}
-		if saveErr := store.Save(slug, empty); saveErr != nil {
-			return fmt.Errorf("create workspace.yaml: %w", saveErr)
-		}
-		fmt.Fprintf(out, "Created skeleton workspace.yaml for %q.\n", slug)
+	wsDir, err := orchestrator.DefaultWorkspaceDir()
+	if err != nil {
+		return fmt.Errorf("workspace dir: %w", err)
+	}
+	if err := os.MkdirAll(wsDir, 0o755); err != nil {
+		return fmt.Errorf("create workspace dir: %w", err)
+	}
+	wsYAML := filepath.Join(wsDir, slug+".yaml")
+
+	// 5. Backup existing workspace.yaml (if any) and ensure the file exists
+	//    (touch) so it can be bind-mounted into the sandbox.
+	bakPath, err := backupWorkspaceYAML(wsYAML)
+	if err != nil {
+		return fmt.Errorf("backup workspace.yaml: %w", err)
 	}
 
-	fmt.Fprintln(out, "Note: full configure (project scan + kit matching) will be available in a future PR.")
-	fmt.Fprintf(out, "Edit the workspace.yaml manually or wait for `boid workspace configure` to be fully implemented.\n")
+	// 6. Resolve the boid binary path (runner-outer is re-exec'd via this path).
+	boidBinary, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve boid binary: %w", err)
+	}
+
+	// 7. Collect WorkDirs from the assigned projects as read-only binds so the
+	//    skill can read package.json / go.mod / hook scripts without write access.
+	var roBinds []string
+	for _, p := range projects {
+		if p.WorkDir != "" {
+			roBinds = append(roBinds, p.WorkDir)
+		}
+	}
+
+	// 8. Build the JobSpec via BuildInitJobSpec.
+	jobID := fmt.Sprintf("workspace-configure-%s", randomJobSuffix())
+	spec := dispatcher.BuildInitJobSpec(dispatcher.InitJobInput{
+		Profile:        sandbox.ProfileInit,
+		PreCreateFiles: []string{wsYAML}, // single file RW bind
+		ReadOnlyBinds:  roBinds,
+		Argv:           []string{"boid-workspace-configure"},
+		DisplayName:    "boid workspace configure " + slug,
+		HarnessType:    harness,
+		Env: map[string]string{
+			"BOID_WORKSPACE_SLUG": slug,
+		},
+	})
+
+	// 9. Build the SandboxRuntimeInfo.
+	//    ServerSocket is set so the skill can call daemon APIs (boid workspace
+	//    show, boid kit list, etc.).
+	rt := dispatcher.SandboxRuntimeInfo{
+		JobID:        jobID,
+		BoidBinary:   boidBinary,
+		ServerSocket: client.DefaultSocketPath(), // daemon API required
+		Foreground:   true,
+	}
+
+	sbSpec, err := dispatcher.BuildSandboxSpec(spec, rt)
+	if err != nil {
+		restoreWorkspaceYAML(wsYAML, bakPath)
+		return fmt.Errorf("build sandbox spec: %w", err)
+	}
+
+	sb, err := dispatcher.NewSandboxPreparer().PrepareSandbox(sbSpec)
+	if err != nil {
+		restoreWorkspaceYAML(wsYAML, bakPath)
+		return fmt.Errorf("prepare sandbox: %w", err)
+	}
+	if sb == nil || sb.SpecPath == "" {
+		restoreWorkspaceYAML(wsYAML, bakPath)
+		return fmt.Errorf("prepare sandbox: missing spec path")
+	}
+
+	// 10. Run the runner-outer as a child process and wait for completion.
+	runnerArgs := []string{boidBinary, "runner-outer", "--spec", sb.SpecPath, "--state", sb.StatePath}
+	if execErr := workspaceConfigureExecFn(boidBinary, runnerArgs, os.Environ()); execErr != nil {
+		// Sandbox failed — restore backup.
+		restoreWorkspaceYAML(wsYAML, bakPath)
+		return execErr
+	}
+
+	// 11. Scan the written workspace.yaml for secrets.
+	//     On finding(s): restore backup + return error.
+	//     On clean: delete backup, print summary, reload projects.
+	if err := scanWorkspaceYAML(wsYAML, bakPath, out, store, slug); err != nil {
+		return err
+	}
+
+	// 12. Reload projects so the daemon picks up kit changes in workspace.yaml.
+	reloadProjects()
+	return nil
+}
+
+// backupWorkspaceYAML ensures the workspace yaml file exists (creating it if
+// absent with mode 0o600) and writes a backup copy to <path>.bak.<unixtime>
+// if the file already had content. Returns the backup path (may be empty if
+// the original did not exist) and any error.
+func backupWorkspaceYAML(wsYAML string) (bakPath string, err error) {
+	existing, readErr := os.ReadFile(wsYAML)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return "", fmt.Errorf("read workspace.yaml: %w", readErr)
+	}
+
+	if !errors.Is(readErr, os.ErrNotExist) && len(existing) > 0 {
+		// File exists with content — create a backup.
+		bakPath = fmt.Sprintf("%s.bak.%d", wsYAML, os.Getpid())
+		if err := os.WriteFile(bakPath, existing, 0o600); err != nil {
+			return "", fmt.Errorf("write backup: %w", err)
+		}
+	}
+
+	// Touch the file (create empty or leave existing in place — truncate only
+	// if it did not exist yet so the sandbox can overwrite via RW bind).
+	if errors.Is(readErr, os.ErrNotExist) {
+		if err := os.WriteFile(wsYAML, []byte{}, 0o600); err != nil {
+			return bakPath, fmt.Errorf("touch workspace.yaml: %w", err)
+		}
+	}
+	return bakPath, nil
+}
+
+// restoreWorkspaceYAML restores wsYAML from bakPath (if a backup exists) or
+// removes wsYAML if there was no backup (the file was newly created by touch).
+// Errors are swallowed — this is best-effort rollback called on failure paths.
+func restoreWorkspaceYAML(wsYAML, bakPath string) {
+	if bakPath == "" {
+		// No pre-existing content — remove the touch-created file.
+		_ = os.Remove(wsYAML)
+		return
+	}
+	bak, err := os.ReadFile(bakPath)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(wsYAML, bak, 0o600)
+	_ = os.Remove(bakPath)
+}
+
+// scanWorkspaceYAML scans the single workspace.yaml file for secrets.
+// On clean: deletes backup and prints a kit summary.
+// On findings: restores backup from bakPath and returns an error.
+func scanWorkspaceYAML(wsYAML, bakPath string, out interface{ Write([]byte) (int, error) }, store *orchestrator.WorkspaceStore, slug string) error {
+	findings, err := orchestrator.ScanSecretsFile(wsYAML)
+	if err != nil {
+		restoreWorkspaceYAML(wsYAML, bakPath)
+		return fmt.Errorf("secret scan: %w", err)
+	}
+
+	if len(findings) > 0 {
+		restoreWorkspaceYAML(wsYAML, bakPath)
+		var sb strings.Builder
+		sb.WriteString("secret scan: suspicious values detected in generated workspace.yaml — rolled back\n")
+		for _, f := range findings {
+			sb.WriteString("  ")
+			sb.WriteString(f.String())
+			sb.WriteString("\n")
+		}
+		return errors.New(strings.TrimRight(sb.String(), "\n"))
+	}
+
+	// Clean — remove backup.
+	if bakPath != "" {
+		_ = os.Remove(bakPath)
+	}
+
+	// Print kit summary from the written workspace.yaml.
+	meta, loadErr := store.Load(slug)
+	if loadErr == nil && meta != nil {
+		fmt.Fprintf(out, "kits: %s\n", formatStringSlice(meta.Kits))
+	}
 	return nil
 }
 
