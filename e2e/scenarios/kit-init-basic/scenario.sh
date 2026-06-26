@@ -2,23 +2,33 @@
 # kit-init-basic: boid kit init の sandbox 起動 + 正常終了を検証する。
 #
 # 戦略: BOID_DEFAULT_HARNESS=shell を設定し、 Argv=["boid-kit-init"] を
-# シェルアダプタに渡す。 ProfileInit sandbox の PATH には boid バイナリと
-# 同じディレクトリ (E2E_BIN_DIR) が先頭に置かれるため、 その場所に
-# 偽の boid-kit-init スクリプトを置けばサンドボックス内で実行される。
+# シェルアダプタに渡す。
 #
-# 偽スクリプトは kits ディレクトリ配下に最小限の kit.yaml を書き exit 0
-# するだけ。 post-run の secret scan は clean に通過し、 CLI が
+# ProfileInit sandbox はホスト root を ro-rbind するが、 /tmp は新規 tmpfs で
+# 上書きされる。 boid バイナリは単体ファイルのみ bind されるため、 E2E_BIN_DIR
+# 配下の他ファイルは sandbox 内から見えない。
+#
+# 代わりに: kits dir を sandbox に rw bind してあるので、 $KITS_DIR/bin/ に
+# 偽の boid-kit-init を置く。 PATH には $KITS_DIR/bin が含まれるため sandbox
+# 内から実行される。 bin/ を先に作成しておくことで listKitDirs の baseline
+# snapshot に入り、 scanNewKitDirs が bin/ を新規 kit として誤検知しない。
+#
+# 偽スクリプトは $KITS_DIR/fake-kit/kit.yaml を書き exit 0 する。
+# post-run の secret scan は clean に通過し、 CLI が
 # "generated kits: fake-kit" を出力して正常終了する。
 set -euo pipefail
 
 # -------------------------------------------------------------------
-# 1. Fake harness: sandbox の PATH は E2E_BIN_DIR が先頭なので
-#    そこに boid-kit-init スクリプトを置く。
+# 1. Prepare kits dir and place fake boid-kit-init inside bin/.
+#    Creating kitsDir/bin/ before running `boid kit init` ensures it
+#    appears in the baseline snapshot (listKitDirs), so scanNewKitDirs
+#    does not treat bin/ as a newly generated kit.
 # -------------------------------------------------------------------
 FAKE_KIT_NAME="fake-kit"
 KITS_DIR="$XDG_DATA_HOME/boid/kits"
+mkdir -p "$KITS_DIR/bin"
 
-cat > "$E2E_BIN_DIR/boid-kit-init" <<'SCRIPT'
+cat > "$KITS_DIR/bin/boid-kit-init" <<'SCRIPT'
 #!/usr/bin/env bash
 # Fake boid-kit-init: called by the shell adapter inside the ProfileInit sandbox.
 # It creates a minimal kit.yaml so scanNewKitDirs succeeds, then exits 0.
@@ -34,8 +44,8 @@ YAML
 echo "fake boid-kit-init: wrote fake-kit/kit.yaml"
 exit 0
 SCRIPT
-chmod +x "$E2E_BIN_DIR/boid-kit-init"
-e2e_log "placed fake boid-kit-init in $E2E_BIN_DIR"
+chmod +x "$KITS_DIR/bin/boid-kit-init"
+e2e_log "placed fake boid-kit-init in $KITS_DIR/bin"
 
 # -------------------------------------------------------------------
 # 2. Set BOID_DEFAULT_HARNESS=shell so the prompt is skipped and the
