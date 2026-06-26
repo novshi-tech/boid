@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -111,17 +112,53 @@ type legacyKitMeta struct {
 	Category    string `yaml:"category"`
 }
 
-func runProjectMigrate(cmd *cobra.Command, args []string) error {
-	dir, err := filepath.Abs(args[0])
-	if err != nil {
-		return fmt.Errorf("resolve dir: %w", err)
-	}
+// MigrateProjectOptions controls a single project migration run. It is the
+// daemon-free surface that `cmd/start.go --auto-migrate` calls in-process
+// once per affected project, and that `runProjectMigrate` populates from
+// cobra flags.
+type MigrateProjectOptions struct {
+	// Dir is the absolute project root path (parent of .boid/).
+	Dir string
+	// Workspace overrides the workspace slug. Empty falls back to the
+	// project's existing project_workspaces entry, then to the implicit
+	// default workspace.
+	Workspace string
+	// Apply switches from dry-run (false) to actually writing files.
+	Apply bool
+	// OnCollision controls secret-key collisions when copying from the old
+	// namespace into the new one. Empty defaults to "refuse".
+	OnCollision string
+	// DBPath / KeyFilePath override the XDG-derived defaults; empty uses
+	// the defaults so production callers can pass zero-value options.
+	DBPath      string
+	KeyFilePath string
+	// Out receives the dry-run / progress text. nil → io.Discard.
+	Out io.Writer
+}
 
-	// Validate --on-collision flag.
-	switch migrateOnCollision {
+// MigrateProject is the daemon-free implementation of `boid project migrate`.
+// It can be called in-process from the boid start auto-migrate path or from
+// cobra's runProjectMigrate (which is now a thin wrapper).
+func MigrateProject(opts MigrateProjectOptions) error {
+	out := opts.Out
+	if out == nil {
+		out = io.Discard
+	}
+	dir := opts.Dir
+	if dir == "" {
+		return fmt.Errorf("migrate: Dir is required")
+	}
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("migrate: Dir must be absolute, got %q", dir)
+	}
+	onCollision := opts.OnCollision
+	if onCollision == "" {
+		onCollision = "refuse"
+	}
+	switch onCollision {
 	case "refuse", "skip", "overwrite":
 	default:
-		return fmt.Errorf("--on-collision must be one of: refuse, skip, overwrite (got %q)", migrateOnCollision)
+		return fmt.Errorf("--on-collision must be one of: refuse, skip, overwrite (got %q)", onCollision)
 	}
 
 	// ---- Phase 1: Read legacy project.yaml -----------------------------------
@@ -137,7 +174,7 @@ func runProjectMigrate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Open DB (direct, no daemon).
-	dbPath := migrateDBPath
+	dbPath := opts.DBPath
 	if dbPath == "" {
 		dbPath = defaultDBPath()
 	}
@@ -165,7 +202,7 @@ func runProjectMigrate(cmd *cobra.Command, args []string) error {
 	}
 	plan.project = project
 
-	workspaceSlug := migrateWorkspace
+	workspaceSlug := opts.Workspace
 	if workspaceSlug == "" && project != nil && project.WorkspaceID != "" {
 		workspaceSlug = project.WorkspaceID
 	}
@@ -174,7 +211,7 @@ func runProjectMigrate(cmd *cobra.Command, args []string) error {
 		// up linked after migration. Surface the choice in the dry-run plan
 		// so the user notices and can override with --workspace if wanted.
 		workspaceSlug = orchestrator.DefaultWorkspaceSlug
-		fmt.Fprintf(cmd.OutOrStdout(),
+		fmt.Fprintf(out,
 			"migrate: no --workspace flag and no existing assignment; defaulting to %q workspace.\n",
 			workspaceSlug)
 	}
@@ -184,35 +221,54 @@ func runProjectMigrate(cmd *cobra.Command, args []string) error {
 	plan.workspaceSlug = workspaceSlug
 
 	// ---- Compute what changes will be made -----------------------------------
-	if err := computeMigratePlan(plan, boidDB, migrateKeyFilePath); err != nil {
+	if err := computeMigratePlan(plan, boidDB, opts.KeyFilePath); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
 	// ---- Phase 3: Print plan (dry-run output) --------------------------------
-	printMigratePlan(cmd, plan)
+	printMigratePlan(out, plan, opts.Apply)
 
 	// Check for collisions before apply.
-	if len(plan.secretCollisions) > 0 && migrateOnCollision == "refuse" {
-		fmt.Fprintln(cmd.OutOrStdout())
-		fmt.Fprintln(cmd.OutOrStdout(), "ERROR: secret collisions detected. Migration aborted.")
-		fmt.Fprintln(cmd.OutOrStdout(), "  Use --on-collision skip  to copy non-conflicting keys")
-		fmt.Fprintln(cmd.OutOrStdout(), "  Use --on-collision overwrite  to overwrite all (DANGEROUS)")
+	if len(plan.secretCollisions) > 0 && onCollision == "refuse" {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "ERROR: secret collisions detected. Migration aborted.")
+		fmt.Fprintln(out, "  Use --on-collision skip  to copy non-conflicting keys")
+		fmt.Fprintln(out, "  Use --on-collision overwrite  to overwrite all (DANGEROUS)")
 		return fmt.Errorf("secret collisions require --on-collision flag")
 	}
 
 	// ---- Phase 4: Apply (only when --apply is set) --------------------------
-	if !migrateApply {
-		fmt.Fprintln(cmd.OutOrStdout())
-		fmt.Fprintln(cmd.OutOrStdout(), "(dry-run) Pass --apply to execute the migration.")
+	if !opts.Apply {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "(dry-run) Pass --apply to execute the migration.")
 		return nil
 	}
 
-	if err := applyMigratePlan(plan, boidDB, migrateKeyFilePath); err != nil {
+	if err := applyMigratePlan(plan, boidDB, opts.KeyFilePath, onCollision, out); err != nil {
 		return fmt.Errorf("migrate: apply: %w", err)
 	}
 
-	fmt.Fprintln(cmd.OutOrStdout(), "Migration complete.")
+	fmt.Fprintln(out, "Migration complete.")
 	return nil
+}
+
+// runProjectMigrate is the cobra adapter for the daemon-free MigrateProject
+// implementation. It parses CLI flags into MigrateProjectOptions and
+// delegates.
+func runProjectMigrate(cmd *cobra.Command, args []string) error {
+	dir, err := filepath.Abs(args[0])
+	if err != nil {
+		return fmt.Errorf("resolve dir: %w", err)
+	}
+	return MigrateProject(MigrateProjectOptions{
+		Dir:         dir,
+		Workspace:   migrateWorkspace,
+		Apply:       migrateApply,
+		OnCollision: migrateOnCollision,
+		DBPath:      migrateDBPath,
+		KeyFilePath: migrateKeyFilePath,
+		Out:         cmd.OutOrStdout(),
+	})
 }
 
 // errProjectNotFound is a helper to detect "not found" errors from GetProject.
@@ -422,10 +478,9 @@ func computeRemoveKeys(meta *orchestrator.LegacyProjectMeta) []string {
 }
 
 // printMigratePlan prints a human-readable summary of what the migration will do.
-func printMigratePlan(cmd *cobra.Command, plan *migratePlan) {
-	out := cmd.OutOrStdout()
+func printMigratePlan(out io.Writer, plan *migratePlan, apply bool) {
 	mode := "dry-run"
-	if migrateApply {
+	if apply {
 		mode = "apply"
 	}
 	fmt.Fprintf(out, "=== boid project migrate [%s] ===\n", mode)
@@ -498,8 +553,9 @@ func printMigratePlan(cmd *cobra.Command, plan *migratePlan) {
 }
 
 // applyMigratePlan executes the migration plan: writes workspace.yaml, legacy
-// kit.yaml, updates project.yaml, and copies secrets.
-func applyMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string) error {
+// kit.yaml, updates project.yaml, and copies secrets. onCollision and out
+// are forwarded to migrateSecrets when a secret namespace move is needed.
+func applyMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath, onCollision string, out io.Writer) error {
 	wsStore := orchestrator.NewWorkspaceStore("")
 
 	// 1. Write workspace.yaml.
@@ -536,7 +592,7 @@ func applyMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string) erro
 
 	// 5. Copy secrets.
 	if plan.oldNamespace != "" && plan.oldNamespace != plan.newNamespace && len(plan.secretKeys) > 0 {
-		if err := migrateSecrets(plan, boidDB, keyFilePath); err != nil {
+		if err := migrateSecrets(plan, boidDB, keyFilePath, onCollision, out); err != nil {
 			return fmt.Errorf("migrate secrets: %w", err)
 		}
 	}
@@ -652,8 +708,8 @@ func stripBehaviorKits(taskBehaviorsNode *yaml.Node, strip map[string]bool) {
 }
 
 // migrateSecrets copies secrets from the old namespace to the new namespace,
-// respecting the --on-collision policy.
-func migrateSecrets(plan *migratePlan, boidDB *db.DB, keyFilePath string) error {
+// respecting the onCollision policy. Progress output is written to out.
+func migrateSecrets(plan *migratePlan, boidDB *db.DB, keyFilePath, onCollision string, out io.Writer) error {
 	kfPath := keyFilePath
 	if kfPath == "" {
 		kfPath = defaultKeyFilePath()
@@ -663,7 +719,7 @@ func migrateSecrets(plan *migratePlan, boidDB *db.DB, keyFilePath string) error 
 		return fmt.Errorf("load key file: %w", err)
 	}
 	if key == nil {
-		fmt.Println("warning: key file not found; skipping secret migration")
+		fmt.Fprintln(out, "warning: key file not found; skipping secret migration")
 		return nil
 	}
 
@@ -680,9 +736,9 @@ func migrateSecrets(plan *migratePlan, boidDB *db.DB, keyFilePath string) error 
 
 	for _, k := range plan.secretKeys {
 		if collisionSet[k] {
-			switch migrateOnCollision {
+			switch onCollision {
 			case "skip":
-				fmt.Printf("  skip (collision): %s\n", k)
+				fmt.Fprintf(out, "  skip (collision): %s\n", k)
 				continue
 			case "overwrite":
 				// Fall through to copy.
@@ -699,7 +755,7 @@ func migrateSecrets(plan *migratePlan, boidDB *db.DB, keyFilePath string) error 
 		if err := store.Set(plan.newNamespace, k, val); err != nil {
 			return fmt.Errorf("set secret %q in %q: %w", k, plan.newNamespace, err)
 		}
-		fmt.Printf("  copied: %s\n", k)
+		fmt.Fprintf(out, "  copied: %s\n", k)
 	}
 	return nil
 }
