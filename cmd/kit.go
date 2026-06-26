@@ -44,6 +44,13 @@ var kitInitCmd = &cobra.Command{
 	},
 }
 
+// kitInitExecFn is the final exec call that replaces the current process with
+// the sandbox runner. It is a package-level variable so tests can override it
+// to intercept the launch without actually running a sandbox.
+var kitInitExecFn = func(argv0 string, argv []string, envv []string) error {
+	return syscall.Exec(argv0, argv, envv)
+}
+
 // runKitInit resolves the default harness, deploys embedded skills to the host,
 // and launches a sandboxed agent session (ProfileInit) that writes kit.yaml
 // files to ~/.local/share/boid/kits/. The sandbox has read-only access to the
@@ -90,18 +97,16 @@ func runKitInit(in io.Reader, out io.Writer) error {
 
 	// 5. Build the JobSpec via BuildInitJobSpec.
 	//    The harness adapter (claude/codex/opencode) ignores Argv and builds its
-	//    own; we pass a no-op placeholder so the shell fall-through has something
-	//    meaningful to log. The skill prompt itself is delivered through
-	//    BOID_USER_ANSWER (runner-inner-child threads it into RunContext.UserAnswer)
-	//    which we do not set here — the agent uses the SKILL.md default bootstrap
-	//    once PR4 fills in the boid-kit-init SKILL.md.
+	//    own; we pass a placeholder so the shell fall-through has something
+	//    meaningful to log. The skill prompt is delivered through the adapter's
+	//    default SKILL.md bootstrap (PR4 fills in the boid-kit-init SKILL.md).
 	jobID := fmt.Sprintf("kit-init-%s", randomJobSuffix())
 	spec := dispatcher.BuildInitJobSpec(dispatcher.InitJobInput{
-		Profile:     sandbox.ProfileInit,
+		Profile:      sandbox.ProfileInit,
 		WritableDirs: []string{kitsDir},
-		Argv:        []string{"boid-kit-init"},
-		DisplayName: "boid kit init",
-		HarnessType: harness,
+		Argv:         []string{"boid-kit-init"},
+		DisplayName:  "boid kit init",
+		HarnessType:  harness,
 	})
 
 	// 6. Build the SandboxRuntimeInfo.
@@ -132,7 +137,7 @@ func runKitInit(in io.Reader, out io.Writer) error {
 
 	// 7. Exec the runner-outer in place of this process (foreground mode).
 	runnerArgs := []string{boidBinary, "runner-outer", "--spec", sb.SpecPath, "--state", sb.StatePath}
-	return syscall.Exec(boidBinary, runnerArgs, os.Environ())
+	return kitInitExecFn(boidBinary, runnerArgs, os.Environ())
 }
 
 // promptDefaultHarness reads a harness identifier from in, re-prompting on
