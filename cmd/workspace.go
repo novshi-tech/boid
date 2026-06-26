@@ -431,10 +431,16 @@ func runWorkspaceConfigure(cmd *cobra.Command, args []string) error {
 	// 9. Build the SandboxRuntimeInfo.
 	//    ServerSocket is set so the skill can call daemon APIs (boid workspace
 	//    show, boid kit list, etc.).
+	//
+	//    ProxyPort must be wired the same as `boid kit init` — ProfileInit
+	//    sandboxes can only egress through the daemon proxy port; without
+	//    HTTPS_PROXY, AI agent harnesses fail with FailedToOpenSocket and
+	//    nothing reaches api.anthropic.com.
 	rt := dispatcher.SandboxRuntimeInfo{
 		JobID:        jobID,
 		BoidBinary:   boidBinary,
 		ServerSocket: client.DefaultSocketPath(), // daemon API required
+		ProxyPort:    resolveDaemonProxyPort(out),
 		Foreground:   true,
 	}
 
