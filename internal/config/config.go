@@ -16,6 +16,12 @@ type Config struct {
 	Notify  NotifyConfig  `yaml:"notify"`
 	Sandbox SandboxConfig `yaml:"sandbox"`
 	TaskAsk TaskAskConfig `yaml:"task_ask"`
+
+	// DefaultHarness is the harness identifier (claude, codex, opencode, ...)
+	// used by sub-commands that need to launch an interactive agent without
+	// a project-level harness context (e.g. `boid kit init`). Empty means
+	// "ask the user on first use" — see DefaultHarness() for the resolver.
+	DefaultHarness string `yaml:"default_harness"`
 }
 
 // TaskAskConfig holds settings for the blocking `boid task ask` Q&A RPC.
@@ -119,6 +125,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		TaskAsk struct {
 			DisconnectGrace string `yaml:"disconnect_grace"`
 		} `yaml:"task_ask"`
+		DefaultHarness string `yaml:"default_harness"`
 	}
 	if err := value.Decode(&raw); err != nil {
 		return err
@@ -159,6 +166,8 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		}
 		c.TaskAsk.DisconnectGrace = d
 	}
+
+	c.DefaultHarness = raw.DefaultHarness
 
 	return nil
 }

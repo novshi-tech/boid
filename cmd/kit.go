@@ -1,10 +1,14 @@
 package cmd
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/config"
 	orchestrator "github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
 )
@@ -23,14 +27,79 @@ var kitCmd = &cobra.Command{
 // This causes BuildPlan to mount the entire host root read-only (so the
 // generation script can detect installed tools) and skips broker registration
 // / socket mount (init scripts do not invoke boid host-commands).
+//
+// The `boid.autostart=skip` annotation opts this command out of the root
+// PersistentPreRunE EnsureRunning hook so the first-time onboarding flow can
+// run before a daemon exists. PR3 will add the sandboxed generation step;
+// for now PR2 only resolves and persists default_harness.
 var kitInitCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Generate kit.yaml for this machine (stub — full implementation in a future PR)",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("boid kit init: 生成スキルは今後の PR で実装予定です")
-		return nil
+	Annotations: map[string]string{
+		annotationSkipAutostart: "skip",
 	},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runKitInit(cmd.InOrStdin(), cmd.OutOrStdout())
+	},
+}
+
+// runKitInit resolves the default harness (prompting the user on first run)
+// and prints a stub line indicating where PR3 will pick up. It writes prompts
+// to out and reads the user's response from in, so tests can drive it
+// without touching the real terminal.
+func runKitInit(in io.Reader, out io.Writer) error {
+	harness, err := config.DefaultHarness()
+	switch {
+	case err == nil:
+		// already configured
+	case errors.Is(err, config.ErrDefaultHarnessNotSet):
+		harness, err = promptDefaultHarness(in, out)
+		if err != nil {
+			return err
+		}
+		if err := config.SetDefaultHarness(harness); err != nil {
+			return fmt.Errorf("save default harness: %w", err)
+		}
+		fmt.Fprintf(out, "saved default harness: %s\n", harness)
+	default:
+		return fmt.Errorf("resolve default harness: %w", err)
+	}
+
+	fmt.Fprintf(out, "default harness: %s\n", harness)
+	fmt.Fprintln(out, "boid kit init: 生成スキルは今後の PR で実装予定です")
+	return nil
+}
+
+// promptDefaultHarness reads a harness identifier from in, re-prompting on
+// invalid input. It returns an error if in closes before a valid answer is
+// given (non-TTY pipelines should set BOID_DEFAULT_HARNESS instead).
+//
+// Suggested choices are listed in the prompt but the input is not enum-checked
+// beyond ValidateHarnessName — so locally-named harnesses (forks) work too.
+func promptDefaultHarness(in io.Reader, out io.Writer) (string, error) {
+	fmt.Fprintln(out, "No default harness configured.")
+	fmt.Fprintln(out, "Choose the agent harness to use for boid generation skills.")
+	fmt.Fprintln(out, "Suggested: claude, codex, opencode")
+
+	scanner := bufio.NewScanner(in)
+	const maxAttempts = 3
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		fmt.Fprint(out, "default harness> ")
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return "", fmt.Errorf("read default harness: %w", err)
+			}
+			return "", fmt.Errorf("no default harness provided (set %s to skip the prompt)", config.EnvDefaultHarness)
+		}
+		answer := strings.TrimSpace(scanner.Text())
+		if err := config.ValidateHarnessName(answer); err != nil {
+			fmt.Fprintf(out, "  %v\n", err)
+			continue
+		}
+		return answer, nil
+	}
+	return "", fmt.Errorf("default harness not provided after %d attempts", maxAttempts)
 }
 
 var kitListCmd = &cobra.Command{
