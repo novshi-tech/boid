@@ -133,9 +133,28 @@ func BuildInitJobSpec(in InitJobInput) JobSpec { ... }
 | コマンド | ServerSocket | 理由 |
 |---|---|---|
 | `boid kit init` | **不要** (空文字、 bind しない) | host scan + kit.yaml write のみ。 daemon API を叩かない設計 (daemon 未起動な初手オンボーディングでも動かす要求) |
-| `boid workspace configure <slug>` | **必須** (`client.DefaultSocketPath()`) | skill が `boid project list` / `boid kit list` 等 daemon API を叩く |
+| `boid workspace configure <slug>` | **必須** (`client.DefaultSocketPath()`) | skill が `boid workspace show` / `boid kit list` 等 daemon API を叩く |
 
 `sandbox_builder.go:257-264` の既存ロジック (`rt.ServerSocket != ""` のときだけ `/run/boid/server.sock` を bind + `BOID_SOCKET` env 注入) をそのまま使う。 `kit init` 側で空文字にすれば bind されず、 daemon 未起動でも sandbox 起動が走る。 環境固有な socket path (custom `BOID_SOCKET` 等) もこの経由で正しく反映される。
+
+#### 2.4 root command の `EnsureRunning` を bypass する (Codex 第 2 ラウンド指摘 1 対応)
+
+`cmd/root.go:22` の `PersistentPreRunE` が全サブコマンドで `client.EnsureRunning` を呼び、 未起動 daemon を**自動起動**してしまう。 `boid kit init` は「daemon 未起動な初手オンボーディングでも動く」 設計のため、 **`annotationSkipAutostart` (= `"boid.autostart"="skip"`、 `cmd/root.go:13`) を `kitInitCmd` に付ける**必要がある。
+
+```go
+var kitInitCmd = &cobra.Command{
+    Use: "init",
+    // ...
+    Annotations: map[string]string{annotationSkipAutostart: "skip"},
+}
+```
+
+`boid workspace configure <slug>` は daemon API を叩くため annotation 不要 (= 通常通り autostart が走る、 これは要件と一致)。 これにより:
+
+- `kit init` → daemon の状態に関わらず host scan + kit.yaml 生成だけで完結
+- `workspace configure` → daemon が無ければ autostart で立ち上げ、 紐付け project リスト等を取得して configure 続行
+
+annotation 系の他コマンド (`start` / `stop` / `gc` 等) と同じパターンに揃う。
 
 ### 3. skill embed 戦略
 
@@ -188,8 +207,8 @@ internal/skills/data/
 
 - **役割宣言**: 「workspace に紐付け済み project 群をスキャンし、 必要 kit を workspace.yaml `kits:` に追加」
 - **入力**: `BOID_WORKSPACE_SLUG` 環境変数 (CLI が JobSpec.Env に注入)
-- **手順** (Codex 第 1 ラウンド指摘 2 対応で訂正、 `boid project list --workspace <slug>` は現行存在しないため):
-  1. **`boid workspace show <slug> --json`** で `WorkspaceShowView.projects[]` を取得 → `WorkDir` 抽出 (`cmd/workspace.go:181-265` 既存経路、 daemon API + workspace.yaml を統合した view が返る)
+- **手順** (Codex 第 1 ラウンド指摘 2 対応で訂正、 `boid project list --workspace <slug>` は現行存在しないため、 + 第 2 ラウンド指摘 2 で `--json` flag を `-o json` に訂正):
+  1. **`boid workspace show <slug> -o json`** で `WorkspaceShowView.projects[]` を取得 → `WorkDir` 抽出 (`cmd/workspace.go:181-265` 既存経路、 daemon API + workspace.yaml を統合した view が返る。 JSON 出力は root persistent flag `--output` / `-o` で制御、 `cmd/root.go:36` + `cmd/output.go:24`)
   2. 各 project の `package.json` / `go.mod` / `task_behaviors[].hooks` script を read
   3. **`boid kit list`** でカタログ列挙 (`cmd/kit.go:36-54`)、 各 kit dir の `kit.yaml` を直接 read してマッチング (CLI 経由の `boid kit show` は未実装、 本 plan で必要なら追加検討)
   4. workspace.yaml 既存内容を read (あれば diff 提示)
@@ -197,7 +216,7 @@ internal/skills/data/
 - **足りない kit のガイダンス**: 「project が gh 要求してるけど github-cli kit がカタログに無い、 `boid kit init` 再実行してね」 を出力
 - **secret-free 規約**: workspace.yaml `env:` には plain k/v のみ、 secret は kit 側で完結
 
-**`boid project list --workspace` を新設する案 (採否は実装時判断)**: skill 側手順をより素直にするため、 `cmd/project.go:62` の `projectListCmd` に `--workspace <slug>` flag を足して `GET /api/projects?workspace_id=<slug>` を叩く方が SKILL.md は短く書ける (server 側 query は `internal/api/project.go:85` で対応済)。 ただし `workspace show --json` の view を流用すれば本 plan の射程内で完結する。 PR4 設計時に skill 側コードを書きながら判断する。
+**`boid project list --workspace` を新設する案 (採否は実装時判断)**: skill 側手順をより素直にするため、 `cmd/project.go:62` の `projectListCmd` に `--workspace <slug>` flag を足して `GET /api/projects?workspace_id=<slug>` を叩く方が SKILL.md は短く書ける (server 側 query は `internal/api/project.go:85` で対応済)。 ただし `workspace show -o json` の view を流用すれば本 plan の射程内で完結する。 PR4 設計時に skill 側コードを書きながら判断する。
 
 #### 3.5 雛形 (`kit.yaml.tmpl`) 構文
 
@@ -335,5 +354,8 @@ $ boid workspace configure dev
 - **第 1 ラウンド** (2026-06-26) — 設計プラン初稿
 - **第 2 ラウンド** (2026-06-26) — Codex 第 1 ラウンドレビュー反映:
   - 指摘 1: `DeployAll` が daemon 起動依存だと初手オンボーディングで詰む点 → §3.2 で **CLI 側でも `skills.DeployAll` を冪等に呼ぶ**設計を明示、 §1 アーキテクチャ図にもステップ追加
-  - 指摘 2: `boid project list --workspace <slug>` が現行 CLI に存在しない点 → §3.4 を **`boid workspace show <slug> --json` 経由**に訂正、 補助オプションで `project list --workspace` 新設検討の余地を残す
+  - 指摘 2: `boid project list --workspace <slug>` が現行 CLI に存在しない点 → §3.4 を **`boid workspace show <slug> -o json` 経由**に訂正、 補助オプションで `project list --workspace` 新設検討の余地を残す
   - 指摘 3: workspace configure が daemon API を叩く前提なのに `ServerSocket` mount 配線が無い点 → §2.1 で `InitJobInput.Env` 追加、 §2.3 **「ServerSocket 配線」 節を新設** (`kit init` は空 / `configure` は `client.DefaultSocketPath()`)、 §1 アーキテクチャ図にも反映
+- **第 3 ラウンド** (2026-06-26) — Codex 第 2 ラウンドレビュー反映:
+  - 指摘 1: `cmd/root.go:22` の `PersistentPreRunE` が `client.EnsureRunning` を強制呼出し、 daemon を自動起動してしまう (= 初手オンボーディング設計と矛盾) → §2.4 **「root command の `EnsureRunning` を bypass する」 節を新設**。 `kitInitCmd` に `Annotations: {annotationSkipAutostart: "skip"}` を付ける設計を明示。 `workspace configure` は通常通り autostart を残す
+  - 指摘 2: `boid workspace show <slug> --json` は現行 CLI に存在しない flag。 JSON 出力は root persistent flag の `--output` / `-o` 経由 (`cmd/root.go:36` + `cmd/output.go:24`) → §3.4 と「第 2 ラウンド」 節の表記を **`-o json` に統一**
