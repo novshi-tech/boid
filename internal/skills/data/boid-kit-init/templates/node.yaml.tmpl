@@ -1,0 +1,39 @@
+# Template for: node (volta variant)
+# Detection signal: `which volta` succeeded OR $HOME/.volta/bin/node exists
+# Variables to substitute:
+#   {{volta_home}}   = $VOLTA_HOME or $HOME/.volta
+#                      確認: echo "${VOLTA_HOME:-$HOME/.volta}"
+#   {{node_version}} = 現在の node バージョン
+#                      確認: volta list node 2>/dev/null | head -3
+#                            または node --version
+#   {{npm_version}}  = 現在の npm バージョン
+#                      確認: npm --version
+#
+# Note: nvm / system node の場合は paths を適宜変更する
+#   nvm:         ~/.nvm/versions/node/<version>/bin/node
+#   system node: /usr/bin/node (which node で確認)
+
+meta:
+  name: node
+  description: "Node.js toolchain (volta-managed, v{{node_version}})"
+  category: language
+  generated_at: "YYYY-MM-DD"
+  generated_by: boid-kit-init
+
+host_commands:
+  node:
+    path: {{volta_home}}/bin/node
+    args: []
+  npm:
+    path: {{volta_home}}/bin/npm
+    args: []
+  npx:
+    path: {{volta_home}}/bin/npx
+    args: []
+
+env:
+  VOLTA_HOME: {{volta_home}}
+  PATH: "{{volta_home}}/bin:${PATH}"
+
+additional_bindings:
+  - {{volta_home}}

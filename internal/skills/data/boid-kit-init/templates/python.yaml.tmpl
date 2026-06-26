@@ -1,0 +1,41 @@
+# Template for: python
+# Detection signal: `which python3` または `which python` 成功
+# Variables to substitute:
+#   {{python_binary}}  = python3 binary の絶対パス
+#                        確認: which python3 || which python
+#   {{python_version}} = Python バージョン
+#                        確認: python3 --version | awk '{print $2}'
+#   {{pip_binary}}     = pip3 binary の絶対パス
+#                        確認: which pip3 || which pip
+#   {{venv_dir}}       = プロジェクト仮想環境のパス (任意)
+#                        例: $HOME/.venvs/default または /opt/venv
+#                        不要なら additional_bindings の venv 行を削除する
+#
+# Note: pyenv を使用している場合:
+#   {{python_binary}} = $HOME/.pyenv/versions/<version>/bin/python3
+#   additional_bindings に $HOME/.pyenv を追加する
+#
+# Note: conda/mamba の場合:
+#   {{python_binary}} = $CONDA_PREFIX/bin/python3
+#   additional_bindings に $CONDA_PREFIX を追加する
+
+meta:
+  name: python
+  description: "Python development toolchain (v{{python_version}})"
+  category: language
+  generated_at: "YYYY-MM-DD"
+  generated_by: boid-kit-init
+
+host_commands:
+  python3:
+    path: {{python_binary}}
+    args: []
+  pip3:
+    path: {{pip_binary}}
+    args: []
+
+additional_bindings:
+  - {{python_binary}}
+  - {{pip_binary}}
+  # 仮想環境を使う場合はコメントアウトを外す:
+  # - {{venv_dir}}
