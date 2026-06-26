@@ -126,6 +126,11 @@ func runKitInit(in io.Reader, out io.Writer) error {
 		DisplayName:  "boid kit init",
 		HarnessType:  harness,
 		Env:          sandboxEnv,
+		// Bootstrap prompt — matches a trigger phrase from boid-kit-init
+		// SKILL.md frontmatter so the embedded skill auto-loads the moment
+		// the harness opens, instead of leaving the user staring at an empty
+		// prompt with no clue what to type next.
+		Instruction: "boid kit init を実行して",
 	})
 
 	// 6. Build the SandboxRuntimeInfo.

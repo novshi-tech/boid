@@ -51,6 +51,15 @@ type InitJobInput struct {
 	// BOID_WORKSPACE_SLUG to the skill.
 	Env map[string]string
 
+	// Instruction is the optional bootstrap prompt the agent should pick up
+	// on launch. Mirrors SessionJobInput.Instruction: when non-empty it is
+	// delivered through Env (BOID_USER_ANSWER) so the harness adapter
+	// receives it as the first turn of user input — for ProfileInit jobs
+	// this is how `boid kit init` / `boid workspace configure` kicks the
+	// embedded skill ("boid kit init を実行して" etc.) without making the
+	// user type anything after the harness opens.
+	Instruction string
+
 	// HarnessType selects the agent adapter. Must be one of "claude" /
 	// "codex" / "opencode" / "shell". Validated by the caller.
 	HarnessType string
@@ -69,6 +78,16 @@ func BuildInitJobSpec(in InitJobInput) *orchestrator.JobSpec {
 	env := cloneStringMap(in.Env)
 	if env == nil {
 		env = map[string]string{}
+	}
+
+	// Instruction is delivered through Env (BOID_USER_ANSWER), mirroring
+	// the SessionJobInput plumbing. The runner-inner-child threads
+	// BOID_USER_ANSWER into RunContext.UserAnswer so the harness adapter
+	// uses it as the first turn of input instead of opening to an empty
+	// prompt — the only way kit init / workspace configure skills can
+	// auto-trigger without the user having to know what to type.
+	if in.Instruction != "" {
+		env["BOID_USER_ANSWER"] = in.Instruction
 	}
 
 	// Build the additional bindings from the caller-supplied writable dirs,
