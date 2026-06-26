@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -17,6 +16,7 @@ import (
 	"github.com/novshi-tech/boid/internal/daemon"
 	"github.com/novshi-tech/boid/internal/server"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 const (
@@ -36,14 +36,19 @@ var startCmd = &cobra.Command{
 	// `boid start` errors (e.g. the migration block) are user-facing
 	// remediation text and the usage dump just buries the actionable lines.
 	SilenceUsage: true,
-	RunE:         runStart,
+	// Suppress cobra's automatic `Error: <err>` line so main.go's stderr
+	// print is the single source of the final error text. Otherwise
+	// migration messages get duplicated (cobra + main both print).
+	SilenceErrors: true,
+	RunE:          runStart,
 }
 
 var (
-	startDBPath      string
-	startSocketPath  string
-	startKitsDir     string
-	startKeyFilePath string
+	startDBPath       string
+	startSocketPath   string
+	startKitsDir      string
+	startKeyFilePath  string
+	startAutoMigrate  bool
 )
 
 func init() {
@@ -52,6 +57,8 @@ func init() {
 	startCmd.Flags().StringVar(&startSocketPath, "socket-path", "", "Path to the UNIX socket")
 	startCmd.Flags().StringVar(&startKitsDir, "kits-dir", "", "Base directory for installed kits")
 	startCmd.Flags().StringVar(&startKeyFilePath, "key-file-path", "", "Path to the secret encryption key file")
+	startCmd.Flags().BoolVar(&startAutoMigrate, "auto-migrate", false,
+		"When project.yaml schema migration is needed, run `boid project migrate <dir> --apply` for each affected project automatically and respawn the daemon (skips the confirmation prompt on TTY too)")
 	rootCmd.AddCommand(startCmd)
 }
 
@@ -175,11 +182,12 @@ func runStart(cmd *cobra.Command, args []string) error {
 //  2. fd 3 status pipe  — EOF (= success) or structured JSON (= failure)
 //  3. child liveness    — child exited without writing fd 3 (crash)
 //
-// The outer timeout (daemonSocketTimeout + grace) prevents the loop from
-// blocking forever if all three signals stall. Structured migration
-// failures are surfaced to the user with project paths and the canonical
-// `boid project migrate <dir> --apply` remediation; the user never has to
-// grep boid.log to find the cause.
+// On structured migration failure, the parent invokes
+// handleMigrationFailure which (subject to --auto-migrate or TTY prompt)
+// runs `boid project migrate <dir> --apply` in-process for each project
+// and respawns the daemon at most once. On any other failure (or if
+// migrate auto-resolution declines or fails), the cause is surfaced
+// directly to the user — no boid.log grep needed.
 func runDaemonParent(cfg server.Config) error {
 	// 既存サーバが生きていれば二重起動を拒否する。socket ファイルが残って
 	// いるだけ (ECONNREFUSED) の場合は stale とみなし、子プロセスに clean up
@@ -188,13 +196,66 @@ func runDaemonParent(cfg server.Config) error {
 		return fmt.Errorf("boid server already running (socket: %s)", cfg.SocketPath)
 	}
 
+	logPath := daemon.LogFilePath()
+	retries := 0
+	for {
+		result, err := spawnAndWaitForStartup(cfg, logPath)
+		if err != nil {
+			return err
+		}
+		if result.success {
+			fmt.Printf("boid server started (pid: %d, socket: %s, http: %s)\n",
+				result.pid, cfg.SocketPath, cfg.HTTPAddr)
+			return nil
+		}
+		// userErr non-nil = no structured status; report and exit.
+		if result.userErr != nil {
+			return result.userErr
+		}
+		// Structured failure; branch on kind.
+		if result.status.Kind != daemon.StartupKindMigration {
+			return formatNonMigrationFailure(result.status, logPath)
+		}
+		// Migration failure → try to auto-resolve.
+		retry, herr := handleMigrationFailure(
+			os.Stderr,
+			os.Stdin,
+			result.status,
+			logPath,
+			startAutoMigrate,
+			term.IsTerminal(int(os.Stdin.Fd())),
+			defaultMigratePrompter,
+			MigrateProject,
+		)
+		if !retry {
+			return herr
+		}
+		if retries >= 1 {
+			return fmt.Errorf("daemon still failing after auto-migrate; check logs at %s", logPath)
+		}
+		retries++
+		// Loop back to respawn.
+	}
+}
+
+// startupResult is the outcome of one spawn → wait cycle.
+type startupResult struct {
+	success bool
+	pid     int
+	status  *daemon.StartupStatus // non-nil when the child wrote fd 3
+	userErr error                 // non-nil for environment-level failures (timeout, crash without status)
+}
+
+// spawnAndWaitForStartup spawns the daemon child and runs the four-way
+// select on socket / status / liveness / outer-timeout. Returns once one
+// of the wait paths resolves; cleans up its goroutines via the deferred
+// context cancel and statusR close.
+func spawnAndWaitForStartup(cfg server.Config, logPath string) (*startupResult, error) {
 	pid, statusR, err := daemon.Spawn(os.Args)
 	if err != nil {
-		return fmt.Errorf("spawn daemon: %w", err)
+		return nil, fmt.Errorf("spawn daemon: %w", err)
 	}
 	defer statusR.Close()
-
-	logPath := daemon.LogFilePath()
 
 	// Channel for socket-readiness polling.
 	socketCh := make(chan error, 1)
@@ -203,21 +264,20 @@ func runDaemonParent(cfg server.Config) error {
 	}()
 
 	// Channel for the structured startup status (fd 3 pipe).
-	type startupResult struct {
-		status *daemon.StartupStatus // non-nil = structured failure
-		err    error                 // non-nil = decode error (rare)
+	type statusResult struct {
+		status *daemon.StartupStatus
+		err    error
 	}
-	resCh := make(chan startupResult, 1)
+	resCh := make(chan statusResult, 1)
 	go func() {
 		s, err := daemon.ReadStartupStatus(statusR)
 		switch {
 		case errors.Is(err, daemon.ErrStartupOK):
-			// EOF without payload — startup succeeded.
-			resCh <- startupResult{}
+			resCh <- statusResult{}
 		case err != nil:
-			resCh <- startupResult{err: err}
+			resCh <- statusResult{err: err}
 		default:
-			resCh <- startupResult{status: s}
+			resCh <- statusResult{status: s}
 		}
 	}()
 
@@ -246,8 +306,7 @@ func runDaemonParent(cfg server.Config) error {
 		}
 	}()
 
-	// Outer timeout — should not fire if the socket / status / dead
-	// signals work correctly, but acts as a backstop.
+	// Outer timeout — backstop in case all three signals stall.
 	timeoutCh := time.After(daemonSocketTimeout + 5*time.Second)
 
 	for socketCh != nil || resCh != nil {
@@ -255,45 +314,50 @@ func runDaemonParent(cfg server.Config) error {
 		case err := <-socketCh:
 			socketCh = nil
 			if err == nil {
-				fmt.Printf("boid server started (pid: %d, socket: %s, http: %s)\n",
-					pid, cfg.SocketPath, cfg.HTTPAddr)
-				return nil
+				return &startupResult{success: true, pid: pid}, nil
 			}
-			// socket polling timed out (10s); keep waiting for the status
-			// pipe or liveness signal to give a more specific cause.
+			// socket polling timed out; wait for status/dead to give a
+			// more specific cause.
 		case res := <-resCh:
 			resCh = nil
 			if res.err != nil {
-				return fmt.Errorf("daemon startup status decode failed: %w (logs: %s)",
-					res.err, logPath)
+				return &startupResult{
+					pid: pid,
+					userErr: fmt.Errorf("daemon startup status decode failed: %w (logs: %s)",
+						res.err, logPath),
+				}, nil
 			}
 			if res.status != nil {
-				return formatStartupFailure(res.status, logPath)
+				return &startupResult{pid: pid, status: res.status}, nil
 			}
-			// EOF = startup OK; keep waiting for socket to confirm.
+			// EOF without payload → success; keep waiting on socket.
 		case <-deadCh:
-			return fmt.Errorf("daemon process exited unexpectedly (pid: %d); check logs at %s",
-				pid, logPath)
+			return &startupResult{
+				pid: pid,
+				userErr: fmt.Errorf("daemon process exited unexpectedly (pid: %d); check logs at %s",
+					pid, logPath),
+			}, nil
 		case <-timeoutCh:
-			return fmt.Errorf("daemon did not start within %s (pid: %d); check logs at %s",
-				daemonSocketTimeout+5*time.Second, pid, logPath)
+			return &startupResult{
+				pid: pid,
+				userErr: fmt.Errorf("daemon did not start within %s (pid: %d); check logs at %s",
+					daemonSocketTimeout+5*time.Second, pid, logPath),
+			}, nil
 		}
 	}
 
-	// Both signals reported "fine" but the socket never came up; treat as
-	// a soft failure with log fallback.
-	return fmt.Errorf("daemon startup completed but socket %s never became reachable; check logs at %s",
-		cfg.SocketPath, logPath)
+	return &startupResult{
+		pid: pid,
+		userErr: fmt.Errorf("daemon startup completed but socket %s never became reachable; check logs at %s",
+			cfg.SocketPath, logPath),
+	}, nil
 }
 
-// formatStartupFailure renders a user-facing message for a structured
-// startup failure. Migration cases include the per-project remediation
-// command line so the user can copy-paste; other failures echo the
-// daemon's error text and point at the log file.
-func formatStartupFailure(s *daemon.StartupStatus, logPath string) error {
+// formatNonMigrationFailure renders a user-facing message for structured
+// startup failures that are NOT migration-related. Migration failures go
+// through handleMigrationFailure instead.
+func formatNonMigrationFailure(s *daemon.StartupStatus, logPath string) error {
 	switch s.Kind {
-	case daemon.StartupKindMigration:
-		return formatMigrationFailure(s, logPath)
 	case daemon.StartupKindOther:
 		if s.Message == "" {
 			return fmt.Errorf("daemon startup failed (no detail); check logs at %s", logPath)
@@ -303,35 +367,6 @@ func formatStartupFailure(s *daemon.StartupStatus, logPath string) error {
 		return fmt.Errorf("daemon reported unknown startup status kind %q; check logs at %s",
 			s.Kind, logPath)
 	}
-}
-
-// formatMigrationFailure builds the human-facing migration error for the
-// boid start parent. The body lists every affected project and prints the
-// exact `boid project migrate <dir> --apply` lines the user needs to run.
-//
-// The output target on auto-mode (Phase A) is "actionable without grep":
-// the user sees the dirs and the remediation in one block.
-func formatMigrationFailure(s *daemon.StartupStatus, logPath string) error {
-	var b strings.Builder
-	fmt.Fprintf(&b, "boid start: %d project(s) need migration to the new project.yaml schema.\n\n",
-		len(s.Projects))
-	for _, p := range s.Projects {
-		if p.ID != "" {
-			fmt.Fprintf(&b, "  - %s\n    %s\n", p.Dir, p.ID)
-		} else {
-			fmt.Fprintf(&b, "  - %s\n", p.Dir)
-		}
-		for _, m := range p.Messages {
-			fmt.Fprintf(&b, "      %s\n", m)
-		}
-	}
-	b.WriteString("\nRun the following to migrate, then re-run `boid start`:\n\n")
-	for _, p := range s.Projects {
-		fmt.Fprintf(&b, "  boid project migrate %s --apply\n", p.Dir)
-	}
-	b.WriteString("\nDry-run first (without --apply) to inspect the plan.\n")
-	b.WriteString("Full daemon log: " + logPath + "\n")
-	return errors.New(b.String())
 }
 
 
