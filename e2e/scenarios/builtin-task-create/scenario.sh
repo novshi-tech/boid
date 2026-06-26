@@ -4,22 +4,17 @@ set -euo pipefail
 PROJECT_DIR="$E2E_WORKSPACE_DIR/app"
 
 # Set up workspace for new schema (PR4 hard cutover).
-# behavior_kits scopes each kit to a specific behavior so that:
-#   parent      → builtin-task-create kit (spawn 4 child tasks)
-#   hook-parent → hook-task-create kit (spawn 1 hook task)
-#   child       → no kit (otherwise the kit's spawn hook fires recursively
-#                 when each child enters executing)
+# Kits are tool-supply only (env/host_commands/bindings) and do not provide
+# hooks under the current schema. The spawn hooks live in project.yaml's
+# task_behaviors and reference scripts under .boid/hooks/, so the kits here
+# are empty placeholders that the workspace must list to satisfy the
+# project's kit references.
 WS_SLUG="builtin-task-create"
 mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
 cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
 kits:
   - builtin-task-create
   - hook-task-create
-behavior_kits:
-  parent:
-    - builtin-task-create
-  hook-parent:
-    - hook-task-create
 YAML
 
 e2e_log "registering project from $PROJECT_DIR"

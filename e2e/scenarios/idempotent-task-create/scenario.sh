@@ -4,17 +4,14 @@ set -euo pipefail
 PROJECT_DIR="$E2E_WORKSPACE_DIR/app"
 
 # Set up workspace for new schema (PR4 hard cutover).
-# behavior_kits scopes the kit's spawn hook to the parent behavior only;
-# child behavior must not pick it up or the hook recurses on every spawned
-# subtask.
+# The kit is a tool-supply placeholder (no env/host_commands/bindings) and
+# does not provide hooks under the current schema. The spawn hook lives in
+# project.yaml's task_behaviors and references a script under .boid/hooks/.
 WS_SLUG="idempotent-task-create"
 mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
 cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
 kits:
   - idempotent-task-create
-behavior_kits:
-  parent:
-    - idempotent-task-create
 YAML
 
 e2e_log "registering project from $PROJECT_DIR"
