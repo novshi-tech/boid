@@ -220,12 +220,19 @@ func (s *ProjectStore) Remove(id string) {
 
 // LoadAll reads project.yaml for each registered project and records each
 // project's workspaceID so that GetWithWorkspace can hydrate at call time.
+//
+// Per-project errors are returned in the original order. When the inner
+// error is a *ProjectMigrationError, the candidate's project ID is stamped
+// onto every Issue in the returned error so downstream callers (e.g. the
+// boid start parent picking issues out via errors.As) can drive
+// auto-migration without parsing strings. Non-migration errors retain the
+// legacy `project "<id>": <wrapped>` form.
 func (s *ProjectStore) LoadAll(projects []*Project) []error {
 	var errs []error
 	for _, candidate := range projects {
 		if _, err := s.Load(candidate.WorkDir); err != nil {
 			s.Remove(candidate.ID)
-			errs = append(errs, fmt.Errorf("project %q: %w", candidate.ID, err))
+			errs = append(errs, wrapPerProjectLoadErr(candidate.ID, err))
 			continue
 		}
 		// Record workspace association (empty for unlinked projects).
@@ -234,4 +241,25 @@ func (s *ProjectStore) LoadAll(projects []*Project) []error {
 		s.mu.Unlock()
 	}
 	return errs
+}
+
+// wrapPerProjectLoadErr attaches the project ID to a per-project load
+// error. Migration errors are preserved as the typed *ProjectMigrationError
+// (with ProjectID filled on each Issue) so callers can errors.As them out;
+// other errors are wrapped with the legacy `project "<id>": <inner>` text.
+func wrapPerProjectLoadErr(projectID string, err error) error {
+	var migErr *ProjectMigrationError
+	if errors.As(err, &migErr) {
+		stamped := &ProjectMigrationError{
+			Projects: make([]ProjectMigrationIssue, len(migErr.Projects)),
+		}
+		for i, p := range migErr.Projects {
+			if p.ProjectID == "" {
+				p.ProjectID = projectID
+			}
+			stamped.Projects[i] = p
+		}
+		return stamped
+	}
+	return fmt.Errorf("project %q: %w", projectID, err)
 }

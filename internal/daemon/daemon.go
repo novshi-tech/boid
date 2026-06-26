@@ -134,27 +134,55 @@ func RedirectToLogRotating(logPath string) error {
 
 // Spawn forks a daemon child by re-executing the current binary with the same
 // arguments and with BOID_DAEMON_CHILD=1 added to the environment.
-// It releases the child (no wait) and returns the child PID.
-func Spawn(args []string) (int, error) {
+//
+// It also wires a one-shot status pipe on the child's fd 3 so the child can
+// surface its startup outcome to the parent without depending on log file
+// scraping. The parent receives the read-end (statusR). EOF on the read-end
+// means the child closed fd 3 without writing — which the child does on
+// successful startup (see RedirectToLogRotating callers in cmd/start.go).
+// A JSON payload on the read-end means startup failed; the parent decodes
+// it (see internal/daemon/startup_status.go) to drive auto-migration or
+// surface the cause.
+//
+// Spawn closes its own copy of the write-end before returning so that EOF
+// arrives at statusR even if the child exits without explicitly closing
+// fd 3 (e.g. crash). The caller is responsible for closing statusR.
+func Spawn(args []string) (int, *os.File, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return 0, fmt.Errorf("resolve executable: %w", err)
+		return 0, nil, fmt.Errorf("resolve executable: %w", err)
+	}
+
+	statusR, statusW, err := os.Pipe()
+	if err != nil {
+		return 0, nil, fmt.Errorf("create status pipe: %w", err)
 	}
 
 	env := append(os.Environ(), daemonEnvKey+"=1")
 
+	// Files index = fd number in the child. fds 0/1/2 inherit from the
+	// parent (RedirectToLogRotating swaps them to the log pipe before the
+	// daemon writes anything). fd 3 is the status pipe write-end.
 	proc, err := os.StartProcess(exe, args, &os.ProcAttr{
 		Env:   env,
-		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
+		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr, statusW},
 	})
 	if err != nil {
-		return 0, fmt.Errorf("start daemon process: %w", err)
+		statusR.Close()
+		statusW.Close()
+		return 0, nil, fmt.Errorf("start daemon process: %w", err)
 	}
 	pid := proc.Pid
 	if err := proc.Release(); err != nil {
-		return 0, fmt.Errorf("release daemon process: %w", err)
+		statusR.Close()
+		statusW.Close()
+		return 0, nil, fmt.Errorf("release daemon process: %w", err)
 	}
-	return pid, nil
+	// Close the parent's copy of the write-end so that EOF arrives at the
+	// read-end when the child exits without writing (or after the child
+	// itself closes fd 3 on success).
+	statusW.Close()
+	return pid, statusR, nil
 }
 
 // WaitForSocket polls socketPath using net.Dial until a connection succeeds or

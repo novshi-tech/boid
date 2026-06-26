@@ -96,8 +96,8 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 		}
 	}
 
-	if err := rejectRemovedProjectFields(dir, raw); err != nil {
-		return nil, err
+	if migErr := rejectRemovedProjectFields(dir, raw); migErr != nil {
+		return nil, migErr
 	}
 
 	if err := rejectRemovedBehaviorFields("project.yaml", raw); err != nil {
@@ -230,10 +230,14 @@ func migrationGuidance(dir string) string {
 
 // rejectRemovedProjectFields scans the raw YAML map for top-level keys and
 // task_behaviors-level kits that have been removed from the new project.yaml
-// schema. Returns a descriptive error with migration guidance when any are
-// found; collects all violations before returning so the user sees them all at
-// once.
-func rejectRemovedProjectFields(dir string, raw map[string]any) error {
+// schema. Returns a *ProjectMigrationError (single-issue) when any violation
+// is found; collects all violations so the user sees them all at once.
+// Returns nil when there are no violations.
+//
+// The Error() output of the returned value is byte-identical to the legacy
+// string-error form so existing tests that check via strings.Contains pass
+// unchanged.
+func rejectRemovedProjectFields(dir string, raw map[string]any) *ProjectMigrationError {
 	var msgs []string
 
 	// Check top-level removed keys.
@@ -264,8 +268,12 @@ func rejectRemovedProjectFields(dir string, raw map[string]any) error {
 	if len(msgs) == 0 {
 		return nil
 	}
-	combined := strings.Join(msgs, "\n")
-	return fmt.Errorf("%s\n%s", combined, migrationGuidance(dir))
+	return &ProjectMigrationError{
+		Projects: []ProjectMigrationIssue{{
+			Dir:      dir,
+			Messages: msgs,
+		}},
+	}
 }
 
 // removedBehaviorFieldGuidance maps each removed task_behaviors.<name>.<field>
