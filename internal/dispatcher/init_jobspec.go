@@ -1,0 +1,124 @@
+package dispatcher
+
+import (
+	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
+)
+
+// InitJobInput carries the resolved data needed to build a sandbox JobSpec for
+// init-style commands (boid kit init, boid workspace configure) that scan the
+// host filesystem and write machine-local yaml files without going through the
+// task state machine or daemon broker.
+//
+// The shape mirrors SessionJobInput but is distinct by design so exec / session
+// jobs are never accidentally given ProfileInit semantics and vice versa.
+type InitJobInput struct {
+	// Profile selects the sandbox filesystem layout. Must be sandbox.ProfileInit
+	// for kit-init / workspace-configure (host root ro-rbind, broker skipped).
+	Profile sandbox.Profile
+
+	// WritableDirs is the list of host directories to bind read-write into the
+	// sandbox so the agent can write generated yaml files. Each entry must be an
+	// absolute host path; it is bind-mounted at the same path inside the
+	// sandbox. The directory must already exist on the host before dispatch
+	// (caller is responsible for mkdir).
+	WritableDirs []string
+
+	// PreCreateFiles is the list of host file paths that the caller has already
+	// created (touch) and should be exposed read-write inside the sandbox. Used
+	// by workspace-configure to expose a single writable <slug>.yaml without
+	// making the entire parent directory writable.
+	PreCreateFiles []string
+
+	// ReadOnlyBinds is additional host paths to bind read-only into the
+	// sandbox. Used by workspace-configure to give the agent access to linked
+	// project directories (package.json / go.mod / hook scripts) without
+	// granting write access.
+	ReadOnlyBinds []string
+
+	// Argv is the literal program + arguments to exec inside the sandbox.
+	// For agent harnesses (claude / codex / opencode) the adapter builds its
+	// own argv from its CLI conventions and may ignore this; it is still
+	// required so the shell adapter fall-through path works and so the runner
+	// can record a meaningful command in diagnostics.
+	Argv []string
+
+	// DisplayName is the human-readable label shown in the TUI / Web UI.
+	DisplayName string
+
+	// Env carries additional environment variables to inject into the sandbox
+	// on top of the standard HOME / PATH / TERM set. Used to pass context like
+	// BOID_WORKSPACE_SLUG to the skill.
+	Env map[string]string
+
+	// HarnessType selects the agent adapter. Must be one of "claude" /
+	// "codex" / "opencode" / "shell". Validated by the caller.
+	HarnessType string
+}
+
+// BuildInitJobSpec converts an InitJobInput into a JobSpec suitable for
+// ProfileInit sandbox dispatch. It does not touch broker state, host-command
+// registration, or the task state machine — those are all skipped for
+// init-style jobs (see sandbox_builder.go:257-264 for the ServerSocket guard,
+// and runner.go:183 for the broker-registration ProfileInit guard).
+//
+// The returned JobSpec is passed to BuildSandboxSpec + NewSandboxPreparer to
+// produce the launch artefacts, then handed to runner-outer via syscall.Exec
+// (foreground mode, same as boid exec).
+func BuildInitJobSpec(in InitJobInput) *orchestrator.JobSpec {
+	env := cloneStringMap(in.Env)
+	if env == nil {
+		env = map[string]string{}
+	}
+
+	// Build the additional bindings from the caller-supplied writable dirs,
+	// pre-created files, and read-only extra binds.
+	var bindings []orchestrator.BindMount
+	for _, dir := range in.WritableDirs {
+		bindings = append(bindings, orchestrator.BindMount{
+			Source: dir,
+			Target: dir,
+			Mode:   "rw",
+		})
+	}
+	for _, file := range in.PreCreateFiles {
+		bindings = append(bindings, orchestrator.BindMount{
+			Source: file,
+			Target: file,
+			Mode:   "rw",
+			IsFile: true,
+		})
+	}
+	for _, path := range in.ReadOnlyBinds {
+		bindings = append(bindings, orchestrator.BindMount{
+			Source: path,
+			Target: path,
+			// Mode "" → read-only (default)
+		})
+	}
+
+	displayName := in.DisplayName
+	if displayName == "" {
+		displayName = "boid init"
+	}
+
+	return &orchestrator.JobSpec{
+		DisplayName: displayName,
+		Kind:        orchestrator.JobKindExec,
+		HarnessType: in.HarnessType,
+		Argv:        in.Argv,
+		// No TaskID / ProjectID / HandlerID — init jobs are not tied to the
+		// task state machine.
+		Visibility: orchestrator.Visibility{
+			// No ProjectDir: the sandbox gets a fresh tmpfs HOME (init scripts
+			// scan the full host root via ProfileInit, not a project dir).
+			Writable:           false,
+			AdditionalBindings: bindings,
+		},
+		// No BuiltinPolicies / HostCommands / SecretNamespace — broker is
+		// skipped for ProfileInit jobs (runner.go:183 guard).
+		Env:            env,
+		Interactive:    true,          // foreground TTY
+		SandboxProfile: int(in.Profile), // sandbox.Profile — int to avoid circular import
+	}
+}
