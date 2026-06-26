@@ -109,13 +109,23 @@ func runKitInit(in io.Reader, out io.Writer) error {
 	//    own; we pass a placeholder so the shell fall-through has something
 	//    meaningful to log. The skill prompt is delivered through the adapter's
 	//    default SKILL.md bootstrap (PR4 fills in the boid-kit-init SKILL.md).
+	//
+	//    XDG_DATA_HOME is forwarded into the sandbox so the skill agent (and the
+	//    shell-adapter fake in e2e) can locate the kits directory without
+	//    assuming ~/.local/share when XDG_DATA_HOME is overridden (e.g. in the
+	//    E2E test harness).
 	jobID := fmt.Sprintf("kit-init-%s", randomJobSuffix())
+	sandboxEnv := map[string]string{}
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		sandboxEnv["XDG_DATA_HOME"] = xdg
+	}
 	spec := dispatcher.BuildInitJobSpec(dispatcher.InitJobInput{
 		Profile:      sandbox.ProfileInit,
 		WritableDirs: []string{kitsDir},
 		Argv:         []string{"boid-kit-init"},
 		DisplayName:  "boid kit init",
 		HarnessType:  harness,
+		Env:          sandboxEnv,
 	})
 
 	// 6. Build the SandboxRuntimeInfo.
