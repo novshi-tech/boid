@@ -33,5 +33,5 @@ env:
   PATH: "{{gopath}}/bin:${PATH}"
 
 additional_bindings:
-  - {{goroot}}
-  - {{gopath}}/bin
+  - source: {{goroot}}
+  - source: {{gopath}}/bin
