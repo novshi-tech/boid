@@ -117,8 +117,35 @@ func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) 
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
-	if errs := store.LoadAll(projects); len(errs) > 0 {
-		return nil, buildProjectLoadStartupError(errs)
+	errs := store.LoadAll(projects)
+	// project.yaml が無くなった project は「dir が物理削除された stale 登録」
+	// と判定して DB から自動 prune + 起動を継続する。 schema migration error は
+	// 従来通り fail-fast (--auto-migrate で auto-resolve)、 parse error 等の
+	// 他の load 失敗も fail-fast (config bug を masking しないため)。
+	//
+	// daemon が起動失敗していると `boid project rm` が socket を叩けず詰むので、
+	// ENOENT のときに限り auto-prune するのが詰み回避策。 project.yaml は
+	// project の source of truth なので、 dir が消えた DB row を消すのは
+	// データ破壊リスクなし。
+	remaining := errs[:0]
+	for _, e := range errs {
+		var missErr *orchestrator.ProjectMissingError
+		if errors.As(e, &missErr) {
+			slog.Warn("project dir missing; auto-pruning stale DB row",
+				"project_id", missErr.ProjectID, "dir", missErr.Dir)
+			if delErr := projectRepo.DeleteProject(missErr.ProjectID); delErr != nil {
+				// DB 削除自体に失敗したらそれは fail-fast 対象 (DB が壊れている
+				// 可能性)。 元の missing error を fallthrough させる。
+				slog.Error("failed to auto-prune stale project; falling back to startup failure",
+					"project_id", missErr.ProjectID, "error", delErr)
+				remaining = append(remaining, e)
+			}
+			continue
+		}
+		remaining = append(remaining, e)
+	}
+	if len(remaining) > 0 {
+		return nil, buildProjectLoadStartupError(remaining)
 	}
 	return store, nil
 }
@@ -160,8 +187,12 @@ func buildProjectLoadStartupError(errs []error) error {
 			causes = append(causes, e)
 		}
 	}
-	msg.WriteString("Run `boid project migrate <dir>` for each affected project to migrate to the new schema.\n")
+	// migration ヒント行は実際に migration error が混じっているときだけ出す。
+	// schema migration じゃない load 失敗 (parse error 等) に対して
+	// 「Run boid project migrate <dir>」 を表示するのは misleading で、
+	// --auto-migrate も migration error 以外には効かない。
 	if len(migAgg.Projects) > 0 {
+		msg.WriteString("Run `boid project migrate <dir>` for each affected project to migrate to the new schema.\n")
 		// Put migration error first so errors.As walks find it quickly.
 		causes = append([]error{migAgg}, causes...)
 	}

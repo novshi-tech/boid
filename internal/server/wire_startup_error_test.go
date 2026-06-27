@@ -87,3 +87,26 @@ func TestBuildProjectLoadStartupError_ErrorsAs(t *testing.T) {
 		t.Fatalf("non-migration error text missing from aggregate: %s", err.Error())
 	}
 }
+
+// TestBuildProjectLoadStartupError_NoMigrationHint guards the regression
+// where the migration guidance line ("Run `boid project migrate <dir>` ...")
+// was always emitted, even when none of the failures were migration errors.
+// That was actively misleading — it told users to run `boid project migrate`
+// for things like permission errors that migrate could not fix, and made it
+// look like the --auto-migrate flag should apply to all startup failures
+// when in fact it only handles ProjectMigrationError.
+//
+// When all the errors are non-migration (e.g. parse failure), the aggregate
+// text must NOT include the migration hint.
+func TestBuildProjectLoadStartupError_NoMigrationHint(t *testing.T) {
+	parseErr := errors.New(`project "abc": .boid/project.yaml: parse: yaml: line 3: invalid syntax`)
+	err := buildProjectLoadStartupError([]error{parseErr})
+	got := err.Error()
+	if strings.Contains(got, "boid project migrate") {
+		t.Fatalf("aggregate text must omit migration hint when no migration errors present, got:\n%s", got)
+	}
+	// Sanity: parse error itself should still surface.
+	if !strings.Contains(got, "invalid syntax") {
+		t.Fatalf("parse error text missing from aggregate: %s", got)
+	}
+}

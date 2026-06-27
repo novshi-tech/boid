@@ -232,7 +232,7 @@ func (s *ProjectStore) LoadAll(projects []*Project) []error {
 	for _, candidate := range projects {
 		if _, err := s.Load(candidate.WorkDir); err != nil {
 			s.Remove(candidate.ID)
-			errs = append(errs, wrapPerProjectLoadErr(candidate.ID, err))
+			errs = append(errs, wrapPerProjectLoadErr(candidate.ID, candidate.WorkDir, err))
 			continue
 		}
 		// Record workspace association (empty for unlinked projects).
@@ -244,10 +244,21 @@ func (s *ProjectStore) LoadAll(projects []*Project) []error {
 }
 
 // wrapPerProjectLoadErr attaches the project ID to a per-project load
-// error. Migration errors are preserved as the typed *ProjectMigrationError
-// (with ProjectID filled on each Issue) so callers can errors.As them out;
-// other errors are wrapped with the legacy `project "<id>": <inner>` text.
-func wrapPerProjectLoadErr(projectID string, err error) error {
+// error. Three classifications:
+//   - *ProjectMigrationError: schema migration is needed. Preserved as the
+//     typed error with ProjectID filled on each Issue so callers can drive
+//     auto-migration via errors.As.
+//   - fs.ErrNotExist (project.yaml missing): returned as
+//     *ProjectMissingError so the boid start parent / server wire can
+//     auto-prune the stale DB row instead of refusing startup.
+//   - everything else: wrapped with the legacy `project "<id>": <inner>`
+//     text. Parse errors, permission errors, etc. remain fail-fast because
+//     they can mask real config bugs.
+//
+// dir is the project work directory, used to populate
+// ProjectMissingError.Dir for diagnostics. It is ignored on the other two
+// branches.
+func wrapPerProjectLoadErr(projectID, dir string, err error) error {
 	var migErr *ProjectMigrationError
 	if errors.As(err, &migErr) {
 		stamped := &ProjectMigrationError{
@@ -260,6 +271,13 @@ func wrapPerProjectLoadErr(projectID string, err error) error {
 			stamped.Projects[i] = p
 		}
 		return stamped
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return &ProjectMissingError{
+			ProjectID: projectID,
+			Dir:       dir,
+			Err:       err,
+		}
 	}
 	return fmt.Errorf("project %q: %w", projectID, err)
 }
