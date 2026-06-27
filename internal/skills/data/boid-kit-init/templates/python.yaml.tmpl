@@ -1,41 +1,92 @@
-# Template for: python
-# Detection signal: `which python3` または `which python` 成功
-# Variables to substitute:
-#   {{python_binary}}  = python3 binary の絶対パス
-#                        確認: which python3 || which python
-#   {{python_version}} = Python バージョン
-#                        確認: python3 --version | awk '{print $2}'
-#   {{pip_binary}}     = pip3 binary の絶対パス
-#                        確認: which pip3 || which pip
-#   {{venv_dir}}       = プロジェクト仮想環境のパス (任意)
-#                        例: $HOME/.venvs/default または /opt/venv
-#                        不要なら additional_bindings の venv 行を削除する
+# Template for: python (uv variant)
+# Detection signal: `which uv` 成功 (uv variant — 推奨)
+#                   `which python3` または `which python` 成功 (system variant)
+# Variables to substitute (uv variant):
+#   {{uv_binary}}    = uv binary の絶対パス
+#                      確認: which uv
+#   {{uv_version}}   = uv のバージョン
+#                      確認: uv --version | awk '{print $2}'
+#   {{uv_cache_dir}} = uv の cache dir
+#                      確認: 環境変数 $UV_CACHE_DIR があればそれ
+#                            なければ $HOME/.cache/uv
+#   {{uv_data_dir}}  = uv の data dir (uv 管理 Python / uv tool のインストール先)
+#                      確認: 環境変数 $UV_DATA_DIR があればそれ
+#                            なければ $HOME/.local/share/uv
 #
-# Note: pyenv を使用している場合:
-#   {{python_binary}} = $HOME/.pyenv/versions/<version>/bin/python3
-#   additional_bindings に $HOME/.pyenv を追加する
+# Note: uv は単一バイナリの Python パッケージマネージャ (Astral 製) で、
+#   pip / venv / pyenv / poetry / pip-tools を 1 つに統合する。
+#   この kit は uv 経由で Python 環境を完結させる前提。
+#   uv 経由で Python 自体も install されるので system python kit は不要。
 #
-# Note: conda/mamba の場合:
-#   {{python_binary}} = $CONDA_PREFIX/bin/python3
-#   additional_bindings に $CONDA_PREFIX を追加する
+# Note: uv の cache / data dir は rw bind が必須。
+#   cache: PyPI download cache (~/.cache/uv)
+#   data : uv 管理 Python と `uv tool install` の置き場 (~/.local/share/uv)
+#
+# Note: uv は PyPI と python-build-standalone を download するため、
+#   sandbox の egress allowlist (config.yaml の sandbox.allowed_domains)
+#   に以下が必要になる場合がある:
+#     - pypi.org
+#     - files.pythonhosted.org
+#     - github.com (python-build-standalone リリース取得)
+#     - objects.githubusercontent.com (リリースアセット実体)
+#
+# Note: プロジェクト仮想環境は通常 worktree 直下の .venv/。 worktree が
+#   rw で bind されていれば追加 binding は不要。
+#
+# Note: uv self / uv publish は外向きの危険操作のため allow から外している。
+#   必要なら手動で kit.yaml に追加する。
+#
+# === system / pyenv / conda variant に切替する場合 ===
+# system python (uv なし):
+#   host_commands:
+#     python3:
+#       path: {{python_binary}}     # 例: /usr/bin/python3
+#     pip3:
+#       path: {{pip_binary}}        # 例: /usr/bin/pip3
+#   additional_bindings:
+#     - {{python_binary}}
+#     - {{pip_binary}}
+#     # 仮想環境を使う場合: ~/.venvs/<name> など
+# pyenv:
+#   python_binary = $HOME/.pyenv/versions/<version>/bin/python3
+#   additional_bindings に $HOME/.pyenv 全体を追加
+# conda / mamba:
+#   python_binary = $CONDA_PREFIX/bin/python3
+#   additional_bindings に $CONDA_PREFIX を追加
 
 meta:
   name: python
-  description: "Python development toolchain (v{{python_version}})"
+  description: "Python toolchain (uv-managed, uv v{{uv_version}})"
   category: language
   generated_at: "YYYY-MM-DD"
   generated_by: boid-kit-init
 
 host_commands:
-  python3:
-    path: {{python_binary}}
-    args: []
-  pip3:
-    path: {{pip_binary}}
-    args: []
+  uv:
+    path: {{uv_binary}}
+    allow:
+      - run
+      - sync
+      - lock
+      - add
+      - remove
+      - build
+      - pip
+      - venv
+      - tool
+      - python
+      - init
+      - export
+      - tree
+      - cache
+      - version
+    env:
+      UV_CACHE_DIR: {{uv_cache_dir}}
+      UV_DATA_DIR: {{uv_data_dir}}
+      UV_NO_PROGRESS: "1"
 
 additional_bindings:
-  - {{python_binary}}
-  - {{pip_binary}}
-  # 仮想環境を使う場合はコメントアウトを外す:
-  # - {{venv_dir}}
+  - source: {{uv_cache_dir}}
+    mode: rw
+  - source: {{uv_data_dir}}
+    mode: rw

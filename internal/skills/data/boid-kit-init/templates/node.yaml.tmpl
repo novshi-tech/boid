@@ -12,6 +12,12 @@
 # Note: nvm / system node の場合は paths を適宜変更する
 #   nvm:         ~/.nvm/versions/node/<version>/bin/node
 #   system node: /usr/bin/node (which node で確認)
+#
+# Note: pnpm / yarn は volta が install 済の場合のみ host_commands に残す。
+#   未インストールなら該当エントリを削除する。
+#   確認: ls "${VOLTA_HOME:-$HOME/.volta}/bin/pnpm" 2>/dev/null
+#         ls "${VOLTA_HOME:-$HOME/.volta}/bin/yarn" 2>/dev/null
+#   バージョンも添える場合: volta list pnpm / volta list yarn
 
 meta:
   name: node
@@ -29,6 +35,13 @@ host_commands:
     args: []
   npx:
     path: {{volta_home}}/bin/npx
+    args: []
+  # pnpm / yarn は volta install 済の場合のみ残す (上記 Note 参照)
+  pnpm:
+    path: {{volta_home}}/bin/pnpm
+    args: []
+  yarn:
+    path: {{volta_home}}/bin/yarn
     args: []
 
 env:
