@@ -288,14 +288,27 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	}
 
 	// Server socket (exec jobs that need to talk to boid daemon).
+	//
+	// ProfileInit (boid kit init / workspace configure) は host `/` を read-only
+	// rbind しているので、 /run/boid/server.sock を target にすると applyMount の
+	// MkdirAll が /run/boid を ro な /run 配下に作ろうとして EPERM になる
+	// (host 側に /run/boid ディレクトリは通常存在しない — daemon socket は
+	// /run/user/<uid>/boid.sock 等)。 host root rbind が socket をすでに host
+	// 側 path 経由で露出しているので、 ProfileInit では追加 bind を張らず
+	// BOID_SOCKET だけ host path に向ける。 通常 profile (task/exec) ではこれま
+	// で通り /run/boid/server.sock に bind する。
 	if rt.ServerSocket != "" {
-		mounts = append(mounts, sandbox.Mount{
-			Source: rt.ServerSocket,
-			Target: "/run/boid/server.sock",
-			Type:   sandbox.MountBind,
-			IsFile: true,
-		})
-		env["BOID_SOCKET"] = "/run/boid/server.sock"
+		if spec.SandboxProfile == int(sandbox.ProfileInit) {
+			env["BOID_SOCKET"] = rt.ServerSocket
+		} else {
+			mounts = append(mounts, sandbox.Mount{
+				Source: rt.ServerSocket,
+				Target: "/run/boid/server.sock",
+				Type:   sandbox.MountBind,
+				IsFile: true,
+			})
+			env["BOID_SOCKET"] = "/run/boid/server.sock"
+		}
 	}
 
 	// Docker proxy socket (per-sandbox docker proxy for capabilities.docker).

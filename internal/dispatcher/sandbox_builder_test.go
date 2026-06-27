@@ -1500,6 +1500,64 @@ func TestBuildSandboxSpec_ProfileInit_DoesNotShadowHomeTmpfs(t *testing.T) {
 	}
 }
 
+// TestBuildSandboxSpec_ProfileInit_ServerSocket_NoBind guards against the
+// regression where ProfileInit (boid kit init / workspace configure) attaches
+// a bind at /run/boid/server.sock and dies on `mkdir /run/boid: permission
+// denied` because the host root is rbind'd read-only and /run/boid does not
+// exist on the host (the daemon socket lives under /run/user/<uid>/). For
+// ProfileInit we point BOID_SOCKET at the host socket path directly and skip
+// the bind — the host root rbind already exposes the socket at that path.
+func TestBuildSandboxSpec_ProfileInit_ServerSocket_NoBind(t *testing.T) {
+	hostSock := "/run/user/1000/boid.sock"
+	spec := &orchestrator.JobSpec{
+		SandboxProfile: int(sandbox.ProfileInit),
+	}
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{ServerSocket: hostSock})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	for _, m := range result.Mounts {
+		if m.Target == "/run/boid/server.sock" {
+			t.Errorf("ProfileInit: must NOT bind /run/boid/server.sock (mkdir /run/boid fails under host root ro-rbind); got mount %+v", m)
+		}
+	}
+	if got := result.Env["BOID_SOCKET"]; got != hostSock {
+		t.Errorf("ProfileInit: BOID_SOCKET = %q, want %q (host socket path)", got, hostSock)
+	}
+}
+
+// TestBuildSandboxSpec_ProfileDefault_ServerSocket_Binds verifies the default
+// profile keeps binding the daemon socket at /run/boid/server.sock so regular
+// task/exec sandboxes — which do NOT rbind host root — still get a stable
+// in-sandbox path for the socket.
+func TestBuildSandboxSpec_ProfileDefault_ServerSocket_Binds(t *testing.T) {
+	hostSock := "/run/user/1000/boid.sock"
+	spec := &orchestrator.JobSpec{} // ProfileDefault
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{ServerSocket: hostSock})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	var found *sandbox.Mount
+	for i := range result.Mounts {
+		if result.Mounts[i].Target == "/run/boid/server.sock" {
+			found = &result.Mounts[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("ProfileDefault: expected bind at /run/boid/server.sock, got mounts=%+v", result.Mounts)
+	}
+	if found.Source != hostSock {
+		t.Errorf("ProfileDefault: server.sock bind Source = %q, want %q", found.Source, hostSock)
+	}
+	if !found.IsFile {
+		t.Errorf("ProfileDefault: server.sock bind IsFile = false, want true")
+	}
+	if got := result.Env["BOID_SOCKET"]; got != "/run/boid/server.sock" {
+		t.Errorf("ProfileDefault: BOID_SOCKET = %q, want /run/boid/server.sock", got)
+	}
+}
+
 // TestBuildSandboxSpec_ProfileDefault_NoProject_KeepsHomeTmpfs guards the
 // non-ProfileInit branch so that the ProfileInit fix above does not silently
 // remove the HOME tmpfs for the default profile, which still wants HOME
