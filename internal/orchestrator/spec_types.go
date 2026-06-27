@@ -19,6 +19,32 @@ type BindMount struct {
 	Optional bool   `yaml:"optional,omitempty" json:"optional,omitempty"` // if true, skip mount when Source does not exist on the host
 }
 
+// UnmarshalYAML accepts two equivalent forms so handwritten and
+// generated kit.yaml can use whichever is more convenient:
+//
+//	additional_bindings:
+//	  - /host/path              # short form: equivalent to {source: "/host/path"}
+//	  - source: /host/path      # struct form: required when mode/target/is_file/etc. are set
+//	    mode: rw
+//
+// Without this, yaml.v3 rejects the short form with
+// "cannot unmarshal !!str into orchestrator.BindMount" and the single
+// kit's parse error cascades into project meta hydration falling back to
+// raw meta, silently dropping host_commands from *unrelated* kits.
+func (b *BindMount) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		b.Source = node.Value
+		return nil
+	}
+	type bindMountAlias BindMount
+	var aux bindMountAlias
+	if err := node.Decode(&aux); err != nil {
+		return err
+	}
+	*b = BindMount(aux)
+	return nil
+}
+
 // HookFile describes a single hook file to bind-mount into the sandbox.
 type HookFile struct {
 	Source     string // host-side absolute path
