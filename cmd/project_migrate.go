@@ -110,6 +110,11 @@ type legacyKitMeta struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
 	Category    string `yaml:"category"`
+	// SourceProjectID records which project this auto-generated legacy kit was
+	// produced from. It lets a re-run of `boid project migrate` recognise the
+	// same kit dir as its own (idempotent overwrite) and avoid colliding with
+	// another project that happened to slugify to the same name.
+	SourceProjectID string `yaml:"source_project_id,omitempty"`
 }
 
 // MigrateProjectOptions controls a single project migration run. It is the
@@ -325,14 +330,15 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string) er
 	needsLegacyKit := len(meta.HostCommands) > 0 || len(meta.AdditionalBindings) > 0
 	if needsLegacyKit {
 		kitsBaseDir := defaultKitsDir()
-		kitName := "legacy-" + meta.ID
+		kitName := legacyKitNameFor(meta.Name, meta.ID, kitsBaseDir)
 		legacyKitDir := filepath.Join(kitsBaseDir, kitName)
 
 		kitMeta := &legacyKitYAML{
 			Meta: legacyKitMeta{
-				Name:        kitName,
-				Description: "Auto-migrated from project.yaml of " + meta.Name,
-				Category:    "legacy",
+				Name:            kitName,
+				Description:     "Auto-migrated from project.yaml of " + meta.Name,
+				Category:        "legacy",
+				SourceProjectID: meta.ID,
 			},
 			HostCommands:       meta.HostCommands,
 			AdditionalBindings: meta.AdditionalBindings,
@@ -767,4 +773,102 @@ func stringSet(ss []string) map[string]bool {
 		m[s] = true
 	}
 	return m
+}
+
+// legacyKitNameFor returns the kit-name to use for a project's auto-generated
+// legacy kit. It prefers a slug of the human-readable project name (so the kit
+// is easy to spot in `boid kit list` / on disk) and only falls back to the raw
+// project ID when the name has no usable characters. When the chosen base
+// collides on disk with a legacy kit produced from a *different* project, a
+// short ID suffix is appended; a re-migration of the same project always lands
+// on the same dir (idempotent).
+//
+// Output is always a valid kit name per orchestrator.ValidKitName: lowercase
+// ASCII letters / digits / hyphens, 1–64 chars.
+func legacyKitNameFor(projectName, projectID, kitsBaseDir string) string {
+	// Reserve room for "legacy-" prefix (7) and the disambiguation suffix
+	// "-xxxxxxxx" (9) so the final name still fits the 64-char kit-name limit
+	// even when we have to append the suffix.
+	const maxBase = 64 - 7 - 9
+
+	slug := slugifyForKitName(projectName)
+	if slug == "" {
+		slug = idSuffix(projectID, 8)
+	}
+	if slug == "" {
+		// Last-resort fallback: should be unreachable because ReadProjectMetaLegacy
+		// rejects empty IDs, but keeps ValidKitName happy if invariants ever shift.
+		slug = "project"
+	}
+	if len(slug) > maxBase {
+		slug = strings.TrimRight(slug[:maxBase], "-")
+		if slug == "" {
+			slug = idSuffix(projectID, 8)
+		}
+	}
+
+	base := "legacy-" + slug
+	if !legacyKitDirBelongsToOtherProject(filepath.Join(kitsBaseDir, base), projectID) {
+		return base
+	}
+
+	suffix := idSuffix(projectID, 8)
+	if suffix == "" {
+		suffix = "x"
+	}
+	return base + "-" + suffix
+}
+
+// slugifyForKitName converts an arbitrary project name to a kit-name-safe slug:
+// lowercase, ASCII letters / digits / hyphens only, with non-conforming runes
+// replaced by '-', runs of '-' collapsed, and leading/trailing '-' trimmed.
+// Returns "" when the input collapses to nothing (e.g. all-CJK names) — callers
+// fall back to an ID-derived suffix in that case.
+func slugifyForKitName(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	out := b.String()
+	for strings.Contains(out, "--") {
+		out = strings.ReplaceAll(out, "--", "-")
+	}
+	return strings.Trim(out, "-")
+}
+
+// idSuffix returns the first n hyphen-stripped characters of id, lowercased.
+// Used as a deterministic short disambiguator derived from the project ID.
+func idSuffix(id string, n int) string {
+	s := strings.ToLower(strings.ReplaceAll(id, "-", ""))
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}
+
+// legacyKitDirBelongsToOtherProject returns true when dir exists, contains a
+// readable kit.yaml whose source_project_id is set to a value *different* from
+// the given projectID. It returns false (= safe to (re)use the dir) when:
+//   - the dir does not exist,
+//   - kit.yaml is missing or unparseable (treat as unowned for forward-compat),
+//   - source_project_id is empty (kits written by an older boid),
+//   - source_project_id matches projectID (same project re-migrating).
+func legacyKitDirBelongsToOtherProject(dir, projectID string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, "kit.yaml"))
+	if err != nil {
+		return false
+	}
+	var existing legacyKitYAML
+	if err := yaml.Unmarshal(data, &existing); err != nil {
+		return false
+	}
+	if existing.Meta.SourceProjectID == "" {
+		return false
+	}
+	return existing.Meta.SourceProjectID != projectID
 }
