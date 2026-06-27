@@ -1,6 +1,7 @@
 package orchestrator_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -153,6 +154,53 @@ func TestProjectStore_LoadAll(t *testing.T) {
 	}
 	if _, ok := s.Get("proj-b"); !ok {
 		t.Fatal("expected proj-b to be loaded")
+	}
+}
+
+// TestProjectStore_LoadAll_MissingDirReturnsTypedError pins the
+// classification that lets the boid start parent / server wire auto-prune
+// stale project DB rows instead of refusing daemon startup. When the
+// candidate's WorkDir has no .boid/project.yaml on disk, LoadAll must
+// return a *ProjectMissingError (not a plain fmt.Errorf wrap), so callers
+// can errors.As it out and decide to delete the row.
+//
+// This separates the "dir physically gone" case (data-safe to prune) from
+// other load failures (parse errors, permission errors) that remain
+// fail-fast because they can mask real config bugs.
+func TestProjectStore_LoadAll_MissingDirReturnsTypedError(t *testing.T) {
+	dir1 := t.TempDir()
+	setupProjectDir(t, dir1, "proj-a", "Project A")
+
+	// dir2 exists but has no .boid/project.yaml — simulates a project whose
+	// directory was wiped (e.g. test artifact under /tmp).
+	dir2 := t.TempDir()
+
+	s := orchestrator.NewProjectStore(nil)
+	errs := s.LoadAll([]*projectspec.Project{
+		{ID: "proj-a", WorkDir: dir1},
+		{ID: "proj-b", WorkDir: dir2},
+	})
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error (proj-b missing), got %d: %v", len(errs), errs)
+	}
+	var missErr *orchestrator.ProjectMissingError
+	if !errors.As(errs[0], &missErr) {
+		t.Fatalf("expected *ProjectMissingError for missing dir, got %T: %v", errs[0], errs[0])
+	}
+	if missErr.ProjectID != "proj-b" {
+		t.Errorf("ProjectID = %q, want %q", missErr.ProjectID, "proj-b")
+	}
+	if missErr.Dir != dir2 {
+		t.Errorf("Dir = %q, want %q", missErr.Dir, dir2)
+	}
+	// errors.Is(fs.ErrNotExist) must still resolve through Unwrap so callers
+	// that key off the standard sentinel keep working.
+	if !errors.Is(missErr, os.ErrNotExist) {
+		t.Errorf("errors.Is(*ProjectMissingError, os.ErrNotExist) = false, want true")
+	}
+	// The healthy project should still be loaded.
+	if _, ok := s.Get("proj-a"); !ok {
+		t.Error("proj-a should be loaded despite proj-b being missing")
 	}
 }
 
