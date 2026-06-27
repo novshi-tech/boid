@@ -323,15 +323,19 @@ func TestProjectMigrate_Apply_LegacyKit(t *testing.T) {
 		t.Fatalf("apply: unexpected error: %v", err)
 	}
 
-	kitPath := filepath.Join(dataDir, "boid", "kits", "legacy-proj-abc123", "kit.yaml")
+	kitPath := filepath.Join(dataDir, "boid", "kits", "legacy-my-project", "kit.yaml")
 	data, err := os.ReadFile(kitPath)
 	if err != nil {
 		t.Fatalf("legacy kit.yaml not found at %s: %v", kitPath, err)
 	}
 	kitContent := string(data)
 
-	if !strings.Contains(kitContent, "legacy-proj-abc123") {
+	if !strings.Contains(kitContent, "legacy-my-project") {
 		t.Errorf("kit.yaml missing kit name:\n%s", kitContent)
+	}
+	// source_project_id must be embedded so re-runs are idempotent.
+	if !strings.Contains(kitContent, "source_project_id: proj-abc123") {
+		t.Errorf("kit.yaml missing source_project_id:\n%s", kitContent)
 	}
 	if !strings.Contains(kitContent, "gh") {
 		t.Errorf("kit.yaml missing host_commands 'gh':\n%s", kitContent)
@@ -373,9 +377,178 @@ env:
 		t.Fatalf("apply: unexpected error: %v", err)
 	}
 
-	kitDir := filepath.Join(dataDir, "boid", "kits", "legacy-proj-minimal")
+	kitDir := filepath.Join(dataDir, "boid", "kits", "legacy-minimal-project")
 	if _, err := os.Stat(kitDir); !os.IsNotExist(err) {
 		t.Errorf("legacy kit dir unexpectedly created: %s", kitDir)
+	}
+}
+
+// TestProjectMigrate_LegacyKitName_SlugifiesProjectName verifies that the
+// auto-generated legacy kit dir is named after a slug of the project's
+// human-readable name, not the (UUID) project ID. Real project IDs are 36-char
+// UUIDs which produced unreadable "legacy-<uuid>" names before this change.
+func TestProjectMigrate_LegacyKitName_SlugifiesProjectName(t *testing.T) {
+	projectYAML := `id: 11111111-2222-3333-4444-555555555555
+name: My Web App
+host_commands:
+  gh:
+    allow:
+      - pr
+`
+	dir := setupMigrateProject(t, projectYAML)
+	dbFile := setupMigrateDBFile(t)
+	cfgDir := t.TempDir()
+	dataDir := t.TempDir()
+
+	err := invokeMigrate(t, dir, migrateOpts{
+		workspace:     "ws",
+		apply:         true,
+		dbPath:        dbFile,
+		xdgConfigHome: cfgDir,
+		xdgDataHome:   dataDir,
+	})
+	if err != nil {
+		t.Fatalf("apply: unexpected error: %v", err)
+	}
+
+	want := filepath.Join(dataDir, "boid", "kits", "legacy-my-web-app", "kit.yaml")
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("expected slug-based legacy kit at %s: %v", want, err)
+	}
+
+	// The UUID-shaped fallback must NOT have been created.
+	bad := filepath.Join(dataDir, "boid", "kits", "legacy-11111111-2222-3333-4444-555555555555")
+	if _, err := os.Stat(bad); !os.IsNotExist(err) {
+		t.Errorf("UUID-shaped legacy kit dir was created (regression): %s", bad)
+	}
+}
+
+// TestProjectMigrate_LegacyKitName_NonASCIIFallsBackToID verifies that a
+// project name with no ASCII letters/digits (e.g. all CJK) falls back to an
+// ID-derived suffix so we always produce a valid kit name.
+func TestProjectMigrate_LegacyKitName_NonASCIIFallsBackToID(t *testing.T) {
+	projectYAML := `id: deadbeef-1234-5678-9abc-def012345678
+name: "日本語プロジェクト"
+host_commands:
+  gh:
+    allow:
+      - pr
+`
+	dir := setupMigrateProject(t, projectYAML)
+	dbFile := setupMigrateDBFile(t)
+	cfgDir := t.TempDir()
+	dataDir := t.TempDir()
+
+	err := invokeMigrate(t, dir, migrateOpts{
+		workspace:     "ws",
+		apply:         true,
+		dbPath:        dbFile,
+		xdgConfigHome: cfgDir,
+		xdgDataHome:   dataDir,
+	})
+	if err != nil {
+		t.Fatalf("apply: unexpected error: %v", err)
+	}
+
+	// First 8 hyphen-stripped chars of the ID.
+	want := filepath.Join(dataDir, "boid", "kits", "legacy-deadbeef", "kit.yaml")
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("expected ID-fallback legacy kit at %s: %v", want, err)
+	}
+}
+
+// TestProjectMigrate_LegacyKitName_Idempotent verifies that re-running migrate
+// on the same project lands on the same legacy kit dir (matching
+// source_project_id) instead of appending an ever-growing suffix.
+func TestProjectMigrate_LegacyKitName_Idempotent(t *testing.T) {
+	projectYAML := `id: 99999999-aaaa-bbbb-cccc-dddddddddddd
+name: Reuse Project
+host_commands:
+  gh:
+    allow:
+      - pr
+`
+	dir := setupMigrateProject(t, projectYAML)
+	dbFile := setupMigrateDBFile(t)
+	cfgDir := t.TempDir()
+	dataDir := t.TempDir()
+
+	for i := 0; i < 2; i++ {
+		err := invokeMigrate(t, dir, migrateOpts{
+			workspace:     "ws",
+			apply:         true,
+			dbPath:        dbFile,
+			xdgConfigHome: cfgDir,
+			xdgDataHome:   dataDir,
+		})
+		if err != nil {
+			t.Fatalf("apply iteration %d: %v", i, err)
+		}
+	}
+
+	kitsDir := filepath.Join(dataDir, "boid", "kits")
+	entries, err := os.ReadDir(kitsDir)
+	if err != nil {
+		t.Fatalf("read kits dir: %v", err)
+	}
+	var legacyDirs []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "legacy-") {
+			legacyDirs = append(legacyDirs, e.Name())
+		}
+	}
+	if len(legacyDirs) != 1 || legacyDirs[0] != "legacy-reuse-project" {
+		t.Fatalf("expected exactly one legacy kit dir 'legacy-reuse-project', got %v", legacyDirs)
+	}
+}
+
+// TestProjectMigrate_LegacyKitName_CollisionAppendsIDSuffix verifies that when
+// a *different* project already owns the slug-based dir, the new project gets
+// an ID-suffixed name instead of clobbering the prior kit.
+func TestProjectMigrate_LegacyKitName_CollisionAppendsIDSuffix(t *testing.T) {
+	projectYAML := `id: 22222222-3333-4444-5555-666666666666
+name: Shared Name
+host_commands:
+  gh:
+    allow:
+      - pr
+`
+	dir := setupMigrateProject(t, projectYAML)
+	dbFile := setupMigrateDBFile(t)
+	cfgDir := t.TempDir()
+	dataDir := t.TempDir()
+
+	// Pre-create a legacy kit owned by a different project at the slug path.
+	preDir := filepath.Join(dataDir, "boid", "kits", "legacy-shared-name")
+	if err := os.MkdirAll(preDir, 0o755); err != nil {
+		t.Fatalf("pre mkdir: %v", err)
+	}
+	prior := []byte("meta:\n  name: legacy-shared-name\n  description: other\n  category: legacy\n  source_project_id: 00000000-0000-0000-0000-000000000000\n")
+	if err := os.WriteFile(filepath.Join(preDir, "kit.yaml"), prior, 0o644); err != nil {
+		t.Fatalf("pre write: %v", err)
+	}
+
+	err := invokeMigrate(t, dir, migrateOpts{
+		workspace:     "ws",
+		apply:         true,
+		dbPath:        dbFile,
+		xdgConfigHome: cfgDir,
+		xdgDataHome:   dataDir,
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	// Prior owner's kit.yaml must be untouched.
+	priorYAML, _ := os.ReadFile(filepath.Join(preDir, "kit.yaml"))
+	if !strings.Contains(string(priorYAML), "00000000-0000-0000-0000-000000000000") {
+		t.Errorf("prior kit.yaml was overwritten:\n%s", priorYAML)
+	}
+
+	// New project gets a suffixed dir.
+	want := filepath.Join(dataDir, "boid", "kits", "legacy-shared-name-22222222", "kit.yaml")
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("expected suffixed legacy kit at %s: %v", want, err)
 	}
 }
 
