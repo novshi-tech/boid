@@ -46,11 +46,19 @@ type appRuntime struct {
 }
 
 func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) (*orchestrator.ProjectStore, error) {
-	var registry *orchestrator.KitRegistry
+	// resolver は KitResolver 型 (interface) を使い、 cfg.KitsDir 未設定時は
+	// untyped nil interface を渡す。 *KitRegistry 型のローカル変数を経由すると
+	// Go の typed-nil 罠で interface 値が non-nil (内部 type=*KitRegistry,
+	// value=nil) となり、 spec_loader の `resolver == nil` check をすり抜けて
+	// resolveKitRef → KitRegistry.Resolve で nil pointer dereference する。
+	// testutil の Server fixture は KitsDir を渡さないので、 internal/api /
+	// internal/server / cmd の rerun・hook・detail 系 test が main で軒並み
+	// panic していた真因。
+	var resolver orchestrator.KitResolver
 	if cfg.KitsDir != "" {
-		registry = orchestrator.NewRegistry(cfg.KitsDir)
+		resolver = orchestrator.NewRegistry(cfg.KitsDir)
 	}
-	store := orchestrator.NewProjectStore(registry)
+	store := orchestrator.NewProjectStore(resolver)
 
 	// Wire workspace store so GetWithWorkspace can hydrate workspace.yaml data
 	// (capabilities, kits, env) at dispatch time.

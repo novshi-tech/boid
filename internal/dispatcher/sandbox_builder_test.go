@@ -1539,3 +1539,92 @@ func TestBuildSandboxSpec_ProfileDefault_ZeroValue(t *testing.T) {
 		t.Errorf("sandbox.Spec.Profile = %v, want ProfileDefault (%v)", result.Profile, sandbox.ProfileDefault)
 	}
 }
+
+// TestBuildSandboxSpec_ProfileInit_HarnessKeepsAdditionalBindings guards the
+// kit-init / workspace-configure regression where, for harness in
+// claude/codex/opencode, BuildSandboxSpec dropped Visibility.AdditionalBindings
+// entirely in favour of the adapter-declared bindings. That made `boid kit
+// init` unable to write `~/.local/share/boid/kits/<name>/kit.yaml` because the
+// rw kits dir bind never landed in the sandbox; the agent only saw the host
+// root ro-rbind layer and EROFS-ed on first write.
+//
+// For ProfileInit jobs the additional bindings carry the writable / extra-ro
+// paths that the init skill *must* see, so they need to be appended alongside
+// the harness bindings rather than replaced by them.
+func TestBuildSandboxSpec_ProfileInit_HarnessKeepsAdditionalBindings(t *testing.T) {
+	homeDir := hostHomeDir()
+	if homeDir == "" {
+		t.Skip("hostHomeDir() returned empty; cannot exercise mount layout")
+	}
+	kitsDir := homeDir + "/.local/share/boid/kits"
+	spec := &orchestrator.JobSpec{
+		SandboxProfile: int(sandbox.ProfileInit),
+		HarnessType:    "claude",
+		Visibility: orchestrator.Visibility{
+			AdditionalBindings: []orchestrator.BindMount{
+				{Source: kitsDir, Target: kitsDir, Mode: "rw"},
+			},
+		},
+	}
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	foundKitsRW := false
+	for _, m := range result.Mounts {
+		if m.Target == kitsDir && m.Type == sandbox.MountBind && !m.ReadOnly {
+			foundKitsRW = true
+			break
+		}
+	}
+	if !foundKitsRW {
+		t.Errorf("ProfileInit + harness=claude must keep AdditionalBindings: expected rw bind at %s, got mounts=%+v", kitsDir, result.Mounts)
+	}
+	// Sanity: harness bindings must still be present too (we add on top, not
+	// replace). Look for the ~/.claude rw bind that claude.Adapter.Bindings
+	// declares — its Target is empty so additionalBindingMounts() falls back
+	// to Source.
+	claudeDir := homeDir + "/.claude"
+	foundClaude := false
+	for _, m := range result.Mounts {
+		if m.Target == claudeDir && m.Type == sandbox.MountBind {
+			foundClaude = true
+			break
+		}
+	}
+	if !foundClaude {
+		t.Errorf("ProfileInit + harness=claude must also keep claude adapter bindings: expected bind at %s, got mounts=%+v", claudeDir, result.Mounts)
+	}
+}
+
+// TestBuildSandboxSpec_ProfileDefault_HarnessIgnoresAdditionalBindings guards
+// the opposite direction: the kit-init fix above must only widen ProfileInit.
+// On ProfileDefault (regular tasks / hooks / exec) the adapter-declared
+// bindings remain the exclusive source for harness=claude — Phase 3-c's
+// kit-free dispatch path. Mixing in expandedBindings on the default profile
+// would let boid-kits' declared additional_bindings sneak back in and undo
+// the kit-free design.
+func TestBuildSandboxSpec_ProfileDefault_HarnessIgnoresAdditionalBindings(t *testing.T) {
+	homeDir := hostHomeDir()
+	if homeDir == "" {
+		t.Skip("hostHomeDir() returned empty; cannot exercise mount layout")
+	}
+	stranger := "/srv/some-kit-binding"
+	spec := &orchestrator.JobSpec{
+		HarnessType: "claude",
+		Visibility: orchestrator.Visibility{
+			AdditionalBindings: []orchestrator.BindMount{
+				{Source: stranger, Target: stranger, Mode: "rw"},
+			},
+		},
+	}
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	for _, m := range result.Mounts {
+		if m.Target == stranger {
+			t.Errorf("ProfileDefault + harness=claude must drop AdditionalBindings, but found mount at %s: %+v", stranger, m)
+		}
+	}
+}
