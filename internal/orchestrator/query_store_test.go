@@ -244,6 +244,42 @@ func TestDeleteProject_WithTasks(t *testing.T) {
 	}
 }
 
+// TestDeleteProject_WithOrphanJobs verifies that DeleteProject cleans up jobs
+// that reference the project but have no task_id (sessions / standalone hooks
+// not tied to a task). Without this, the jobs.project_id FOREIGN KEY refuses
+// the project delete, and the daemon's auto-prune of a stale (project.yaml
+// missing) DB row falls back to a startup failure on the next `boid start`.
+func TestDeleteProject_WithOrphanJobs(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	// task_id NULL の job (session / standalone hook) を直接 INSERT。
+	// dispatcher の API を引き込まずに済むよう生 SQL で組み立てる。
+	if _, err := d.Conn.Exec(
+		`INSERT INTO jobs (id, task_id, project_id, status) VALUES (?, NULL, ?, 'completed')`,
+		"orphan-job-1", "proj-1",
+	); err != nil {
+		t.Fatalf("insert orphan job: %v", err)
+	}
+
+	if err := orchestrator.DeleteProject(d.Conn, "proj-1"); err != nil {
+		t.Fatalf("delete project with orphan job: %v", err)
+	}
+
+	if _, err := orchestrator.GetProject(d.Conn, "proj-1"); err == nil {
+		t.Fatal("expected project to be deleted")
+	}
+
+	var remaining int
+	if err := d.Conn.QueryRow(`SELECT COUNT(*) FROM jobs WHERE project_id = ?`, "proj-1").Scan(&remaining); err != nil {
+		t.Fatalf("count remaining jobs: %v", err)
+	}
+	if remaining != 0 {
+		t.Fatalf("expected orphan jobs to be cleaned up, got %d", remaining)
+	}
+}
+
 func TestDeleteProject_NotFound(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	err := orchestrator.DeleteProject(d.Conn, "nonexistent")
