@@ -214,6 +214,94 @@ meta:
 
 ---
 
+## Step 7: legacy-* kit の整理 (任意)
+
+過去の `boid project migrate` は project.yaml の `host_commands` / `additional_bindings` を
+そのまま吸い出した `legacy-*` kit を `~/.local/share/boid/kits/` に残す。 これらは
+内容が分かりにくいため、 生成した正規 kit と見比べて整理を提案する。
+
+### 7.1 列挙
+
+```bash
+ls ~/.local/share/boid/kits/ | grep '^legacy-' || true
+```
+
+該当なしならスキップ。
+
+### 7.2 各 legacy kit を分類
+
+それぞれ `~/.local/share/boid/kits/<legacy-name>/kit.yaml` を Read し、 中身を
+**今回生成した正規 kit** (`github-cli` / `docker` / `dotnet-dev` / `go-dev` / `node` / `python`) と
+見比べて以下のいずれかに分類する:
+
+| 分類 | 判定基準 | 推奨アクション |
+|---|---|---|
+| (a) テンプレと同等 | host_commands / additional_bindings が、 正規 kit の内容と意味的に同じ (allow パターンの微差は許容) | **削除 (replaced_by 付き)**: 正規 kit で完全に置き換え可能 |
+| (b) テンプレ近似だが固有項目あり | テンプレ機能 + 独自 host_commands or bindings (例: `gh` + 独自 bind `/var/data`) | **改名**: 内容を表す名前に rename (例: `legacy-my-web-app` → `my-web-app-tools`) |
+| (c) 雑多に複数機能を混載 | gh + docker + 独自 bind 等が混ざる | **そのまま** か、 分割提案を案内 |
+
+### 7.3 ユーザに提案 + 承諾を取る
+
+候補ごとに 1 件ずつ確認する (まとめて y/N にしない):
+
+```
+legacy-my-web-app の中身:
+  host_commands.gh.allow=[pr, issue]
+  additional_bindings=なし
+
+→ 今回生成した `github-cli` kit と同等です。 削除して github-cli に
+  置き換えますか? [y/N]
+```
+
+### 7.4 アクション適用
+
+承諾を得たら kit dir を直接操作する (workspace.yaml には触らない — それは
+CLI 側の post-step が機械的にやる):
+
+**削除** (置き換え or 単純削除):
+```bash
+rm -rf ~/.local/share/boid/kits/legacy-my-web-app
+```
+
+**改名**:
+```bash
+mv ~/.local/share/boid/kits/legacy-my-web-app ~/.local/share/boid/kits/<new-name>
+```
+
+新名は `boid kit list` で重複しないことを事前確認する。 衝突したら別名を
+ユーザに問い直す。
+
+### 7.5 cleanup-result.json を書き出す
+
+実施したアクションを `~/.local/share/boid/kits/.kit-init-cleanup-result.json` に
+記録する。 これは `boid kit init` コマンド (CLI 側) がサンドボックス退場後に
+読み取り、 全 workspace.yaml の `kits:` 参照を機械的に書き換えるための JSON。
+
+書式:
+```json
+{
+  "renamed": [
+    {"from": "legacy-my-web-app", "to": "my-web-app-tools"}
+  ],
+  "deleted": [
+    {"name": "legacy-other", "replaced_by": "github-cli"}
+  ]
+}
+```
+
+ルール:
+- 整理を 1 件も実施しなかった場合はファイルを書き出さなくて良い (CLI 側は欠落を許容)
+- 削除のみ (置き換え無し) なら `replaced_by` を省略する。 該当 workspace の `kits:` から単純に消える
+- 同じ kit を rename と delete に同時に登録しない (矛盾)
+- ファイル自体は CLI 側が処理完了後に削除する。 スキル側で消す必要はない
+
+### 7.6 制約
+
+- **workspace.yaml には触らない**。 kit init サンドボックスは workspace dir (`~/.config/boid/workspaces/`) に書き込み権限がない。 必ず cleanup-result.json 経由で CLI 側に委ねる
+- 削除した kit を別 workspace が参照していた場合も、 CLI 側の post-step が全 workspace を横断して参照を整理する
+
+---
+
 ## よくある落とし穴
 
 ### volta が見つかるが $VOLTA_HOME が未設定の場合

@@ -185,7 +185,17 @@ func runKitInit(in io.Reader, out io.Writer) error {
 	// 9. Scan YAML files in any newly generated kit directories for secrets.
 	//    If findings are detected the generated directories are removed and an
 	//    error is returned so the caller sees a clear failure message.
-	return scanNewKitDirs(kitsDir, existingKitDirs, out)
+	if err := scanNewKitDirs(kitsDir, existingKitDirs, out); err != nil {
+		return err
+	}
+
+	// 10. Apply the legacy-* cleanup the skill recorded inside kitsDir, if any.
+	//     This rewrites workspace.kits references for any legacy kit the skill
+	//     renamed or deleted — work the sandbox cannot do itself because
+	//     workspace.yaml lives outside its writable bind. A missing result file
+	//     is fine (the skill performed no cleanup); the file is consumed on
+	//     success so a second run does not re-apply the same mapping.
+	return applyKitCleanupResult(kitsDir, "", out)
 }
 
 // listKitDirs returns the set of direct subdirectory names that exist under
