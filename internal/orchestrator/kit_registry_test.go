@@ -125,6 +125,26 @@ func TestRegistry_Remove_NotInstalled(t *testing.T) {
 	}
 }
 
+// TestRegistry_Resolve_NilReceiver guards the typed-nil regression that
+// caused internal/api / internal/server / cmd test panics on main when
+// cfg.KitsDir was empty. wire.go used to declare `var registry *KitRegistry`
+// and pass it to NewProjectStore — when KitsDir was unset, the *KitRegistry
+// stayed nil and got boxed into a non-nil KitResolver interface. The
+// resolveKitRef nil-check was bypassed and Resolve was invoked on a nil
+// receiver, crashing every ApplyAction that hit a project linked to a
+// workspace (i.e. every default test setup post-#641).
+//
+// Resolve must return a clean error on a nil receiver — defense in depth so
+// any caller that still passes a typed-nil pointer surfaces a kit-not-
+// configured error rather than panicking.
+func TestRegistry_Resolve_NilReceiver(t *testing.T) {
+	var reg *kit.KitRegistry // typed nil
+	_, err := reg.Resolve("anything")
+	if err == nil {
+		t.Fatal("expected error from nil-receiver Resolve, got nil")
+	}
+}
+
 func TestValidKitName(t *testing.T) {
 	valid := []string{"go", "go-tools", "node-lts", "a", "123", "go123"}
 	for _, s := range valid {

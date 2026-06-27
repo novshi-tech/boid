@@ -244,6 +244,18 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	//     Phase 3-e collapses both.
 	if len(harnessBindings) > 0 {
 		mounts = append(mounts, additionalBindingMounts(harnessBindings)...)
+		// ProfileInit (boid kit init / workspace configure) は host root を
+		// ro-rbind した上で「書き込み先 (WritableDirs / PreCreateFiles) と追加 RO
+		// bind (ReadOnlyBinds)」 を Visibility.AdditionalBindings 経由で渡してくる。
+		// harness adapter (claude/codex/opencode) は agent CLI のための bindings
+		// しか返さないので、 init 用 binding と経路が別。 両者を上乗せ mount しない
+		// と agent はサンドボックスに kits dir が見えず、 ho-rbind の read-only
+		// filesystem に阻まれて kit.yaml を書けない。 Target が claude.json 等と
+		// 衝突することは仕様上ない (init binding の Source は ~/.local/share/boid/
+		// kits ・ ~/.local/share/boid/workspaces ・ project workdir 群)。
+		if spec.SandboxProfile == int(sandbox.ProfileInit) {
+			mounts = append(mounts, additionalBindingMounts(expandedBindings)...)
+		}
 	} else {
 		mounts = append(mounts, additionalBindingMounts(expandedBindings)...)
 		for _, kitRoot := range spec.Visibility.KitRoots {

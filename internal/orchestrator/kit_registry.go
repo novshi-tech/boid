@@ -19,7 +19,17 @@ func NewRegistry(baseDir string) *KitRegistry {
 
 // Resolve returns the absolute filesystem path for a kit directory.
 // The name must be a valid kit name (see ValidKitName).
+//
+// nil receiver は「 KitsDir 未設定 (typed-nil pointer が KitResolver interface
+// に boxed されて呼び出し側の `resolver == nil` を素通りした) 」 状態を意味する。
+// 呼び出し側 (resolveKitRef) の nil check を信頼すべきだが、 caller 全てに
+// untyped nil interface 渡しを徹底するのは現実的でないので defensive guard で
+// 戻り値の error に倒す。 #635 (KitRegistry 簡素化) で typed nil 罠を踏み、
+// internal/api / internal/server の test panic を起こしていた退行のガード。
 func (r *KitRegistry) Resolve(name string) (string, error) {
+	if r == nil {
+		return "", fmt.Errorf("kit %q: registry not configured (KitsDir empty)", name)
+	}
 	if err := ValidKitName(name); err != nil {
 		return "", fmt.Errorf("kit %q: %w", name, err)
 	}
