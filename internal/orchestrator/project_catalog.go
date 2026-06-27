@@ -138,6 +138,8 @@ func ListWorkspaces(dbtx db.DBTX) ([]*WorkspaceSummary, error) {
 
 // DeleteProject removes a project by ID.
 // All tasks (and their dependent records) belonging to the project are deleted first.
+// Standalone jobs (task_id NULL session / hook) are also swept by project_id so
+// the jobs.project_id FK constraint does not refuse the project delete.
 func DeleteProject(dbtx db.DBTX, id string) error {
 	tasks, err := ListTasks(dbtx, TaskFilter{ProjectID: id})
 	if err != nil {
@@ -147,6 +149,13 @@ func DeleteProject(dbtx db.DBTX, id string) error {
 		if err := DeleteTask(dbtx, t.ID); err != nil {
 			return fmt.Errorf("delete task %s: %w", t.ID, err)
 		}
+	}
+	// task に紐付かない jobs (task_id NULL の session / standalone hook) を
+	// 削除しないと jobs.project_id の FK 制約で project 削除が失敗する。
+	// task 紐付きは上の DeleteTask で既に消えているが、 念のため
+	// project_id ベースで一括削除する (二重削除は冪等)。
+	if _, err := dbtx.Exec(`DELETE FROM jobs WHERE project_id = ?`, id); err != nil {
+		return fmt.Errorf("delete project jobs: %w", err)
 	}
 	res, err := dbtx.Exec(`DELETE FROM projects WHERE id = ?`, id)
 	if err != nil {
