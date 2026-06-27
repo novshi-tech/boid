@@ -53,6 +53,7 @@ which gh 2>/dev/null
 which docker 2>/dev/null
 which podman 2>/dev/null
 which git 2>/dev/null
+which dotnet 2>/dev/null
 ```
 
 ### 1.2 $HOME 配下の標準ディレクトリチェック
@@ -74,6 +75,13 @@ echo "GOROOT=${GOROOT:-$(go env GOROOT 2>/dev/null)}"
 ls /var/run/docker.sock 2>/dev/null
 ls "${XDG_RUNTIME_DIR}/docker.sock" 2>/dev/null
 ls "${XDG_RUNTIME_DIR}/cetusguard/docker.sock" 2>/dev/null
+
+# dotnet
+dotnet --version 2>/dev/null
+echo "DOTNET_ROOT=${DOTNET_ROOT:-}"
+ls /usr/lib/dotnet 2>/dev/null | head -3
+ls /usr/share/dotnet 2>/dev/null | head -3
+ls "$HOME/.dotnet/" 2>/dev/null | head -3
 ```
 
 ### 1.3 検出ヒューリスティック
@@ -87,6 +95,7 @@ ls "${XDG_RUNTIME_DIR}/cetusguard/docker.sock" 2>/dev/null
 | gh | `which gh` 成功 | `github-cli` |
 | docker socket | `/var/run/docker.sock` または `$XDG_RUNTIME_DIR/cetusguard/docker.sock` が存在 | `docker` |
 | podman | `which podman` 成功 | `docker` (podman variant) — `github-cli` 雛形のコメント参照 |
+| dotnet | `which dotnet` 成功 | `dotnet-dev` |
 
 ---
 
@@ -148,6 +157,7 @@ Read("~/.claude/skills/boid-kit-init/templates/node.yaml.tmpl")
 Read("~/.claude/skills/boid-kit-init/templates/go-dev.yaml.tmpl")
 Read("~/.claude/skills/boid-kit-init/templates/github-cli.yaml.tmpl")
 Read("~/.claude/skills/boid-kit-init/templates/docker.yaml.tmpl")
+Read("~/.claude/skills/boid-kit-init/templates/dotnet-dev.yaml.tmpl")
 ```
 
 ### 変数置換
