@@ -245,8 +245,8 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	if len(harnessBindings) > 0 {
 		mounts = append(mounts, additionalBindingMounts(harnessBindings)...)
 		// ProfileInit (boid kit init / workspace configure) は host root を
-		// ro-rbind した上で「書き込み先 (WritableDirs / PreCreateFiles) と追加 RO
-		// bind (ReadOnlyBinds)」 を Visibility.AdditionalBindings 経由で渡してくる。
+		// ro-rbind した上で「書き込み先 (WritableDirs) と追加 RO bind
+		// (ReadOnlyBinds)」 を Visibility.AdditionalBindings 経由で渡してくる。
 		// harness adapter (claude/codex/opencode) は agent CLI のための bindings
 		// しか返さないので、 init 用 binding と経路が別。 両者を上乗せ mount しない
 		// と agent はサンドボックスに kits dir が見えず、 ho-rbind の read-only

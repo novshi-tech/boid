@@ -393,7 +393,11 @@ func runWorkspaceConfigure(cmd *cobra.Command, args []string) error {
 	wsYAML := filepath.Join(wsDir, slug+".yaml")
 
 	// 5. Backup existing workspace.yaml (if any) and ensure the file exists
-	//    (touch) so it can be bind-mounted into the sandbox.
+	//    (touch) with mode 0o600 so the post-sandbox secret scan always has a
+	//    file to read and so the agent's umask cannot widen the mode. The
+	//    binding itself is now on the parent dir (WritableDirs), not the file
+	//    — Write/Edit's atomic rename needs the parent writable, and a
+	//    single-file IsFile bind would block it with EROFS.
 	bakPath, err := backupWorkspaceYAML(wsYAML)
 	if err != nil {
 		return fmt.Errorf("backup workspace.yaml: %w", err)
@@ -416,13 +420,20 @@ func runWorkspaceConfigure(cmd *cobra.Command, args []string) error {
 
 	// 8. Build the JobSpec via BuildInitJobSpec.
 	jobID := fmt.Sprintf("workspace-configure-%s", randomJobSuffix())
+	// The parent dir (~/.config/boid/workspaces/) is bind-mounted rw rather
+	// than just the target <slug>.yaml. A single-file IsFile bind would block
+	// the atomic write pattern (write to <name>.tmp.<pid>.<rand> in the parent
+	// dir, then rename) used by harness-side file editors with EROFS, which
+	// pinned the skill to shell-only writes and broke harness-agnosticism.
+	// The blast radius is contained: this dir only holds per-slug workspace
+	// yamls, and the post-sandbox secret scan still vetoes any leaked secret.
 	spec := dispatcher.BuildInitJobSpec(dispatcher.InitJobInput{
-		Profile:        sandbox.ProfileInit,
-		PreCreateFiles: []string{wsYAML}, // single file RW bind
-		ReadOnlyBinds:  roBinds,
-		Argv:           []string{"boid-workspace-configure"},
-		DisplayName:    "boid workspace configure " + slug,
-		HarnessType:    harness,
+		Profile:       sandbox.ProfileInit,
+		WritableDirs:  []string{wsDir},
+		ReadOnlyBinds: roBinds,
+		Argv:          []string{"boid-workspace-configure"},
+		DisplayName:   "boid workspace configure " + slug,
+		HarnessType:   harness,
 		Env: map[string]string{
 			"BOID_WORKSPACE_SLUG": slug,
 		},

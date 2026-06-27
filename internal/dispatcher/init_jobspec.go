@@ -21,14 +21,12 @@ type InitJobInput struct {
 	// sandbox so the agent can write generated yaml files. Each entry must be an
 	// absolute host path; it is bind-mounted at the same path inside the
 	// sandbox. The directory must already exist on the host before dispatch
-	// (caller is responsible for mkdir).
+	// (caller is responsible for mkdir). Per-file binds are intentionally not
+	// supported: harness-side file editors do atomic writes (write to
+	// `<name>.tmp.<pid>.<rand>` in the parent dir, then rename) which would
+	// fail with EROFS on a single-file IsFile bind and force the skill into
+	// shell-only writes, breaking harness-agnosticism.
 	WritableDirs []string
-
-	// PreCreateFiles is the list of host file paths that the caller has already
-	// created (touch) and should be exposed read-write inside the sandbox. Used
-	// by workspace-configure to expose a single writable <slug>.yaml without
-	// making the entire parent directory writable.
-	PreCreateFiles []string
 
 	// ReadOnlyBinds is additional host paths to bind read-only into the
 	// sandbox. Used by workspace-configure to give the agent access to linked
@@ -98,14 +96,6 @@ func BuildInitJobSpec(in InitJobInput) *orchestrator.JobSpec {
 			Source: dir,
 			Target: dir,
 			Mode:   "rw",
-		})
-	}
-	for _, file := range in.PreCreateFiles {
-		bindings = append(bindings, orchestrator.BindMount{
-			Source: file,
-			Target: file,
-			Mode:   "rw",
-			IsFile: true,
 		})
 	}
 	for _, path := range in.ReadOnlyBinds {
