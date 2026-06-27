@@ -54,14 +54,19 @@ which docker 2>/dev/null
 which podman 2>/dev/null
 which git 2>/dev/null
 which dotnet 2>/dev/null
+which uv 2>/dev/null
+which python3 2>/dev/null
+which python 2>/dev/null
 ```
 
 ### 1.2 $HOME 配下の標準ディレクトリチェック
 
 ```bash
-# volta
-ls "$HOME/.volta/bin/" 2>/dev/null | head -5
+# volta (node + pnpm / yarn のチェックも兼ねる)
+ls "$HOME/.volta/bin/" 2>/dev/null | head -10
 echo "VOLTA_HOME=${VOLTA_HOME:-}"
+ls "${VOLTA_HOME:-$HOME/.volta}/bin/pnpm" 2>/dev/null
+ls "${VOLTA_HOME:-$HOME/.volta}/bin/yarn" 2>/dev/null
 
 # nvm
 ls "$HOME/.nvm/versions/node/" 2>/dev/null | head -5
@@ -82,6 +87,17 @@ echo "DOTNET_ROOT=${DOTNET_ROOT:-}"
 ls /usr/lib/dotnet 2>/dev/null | head -3
 ls /usr/share/dotnet 2>/dev/null | head -3
 ls "$HOME/.dotnet/" 2>/dev/null | head -3
+
+# uv
+uv --version 2>/dev/null
+echo "UV_CACHE_DIR=${UV_CACHE_DIR:-$HOME/.cache/uv}"
+echo "UV_DATA_DIR=${UV_DATA_DIR:-$HOME/.local/share/uv}"
+ls "$HOME/.local/bin/uv" 2>/dev/null
+ls "$HOME/.cargo/bin/uv" 2>/dev/null
+
+# python
+python3 --version 2>/dev/null
+python --version 2>/dev/null
 ```
 
 ### 1.3 検出ヒューリスティック
@@ -96,6 +112,10 @@ ls "$HOME/.dotnet/" 2>/dev/null | head -3
 | docker socket | `/var/run/docker.sock` または `$XDG_RUNTIME_DIR/cetusguard/docker.sock` が存在 | `docker` |
 | podman | `which podman` 成功 | `docker` (podman variant) — `github-cli` 雛形のコメント参照 |
 | dotnet | `which dotnet` 成功 | `dotnet-dev` |
+| uv | `which uv` 成功 **または** `$HOME/.local/bin/uv` / `$HOME/.cargo/bin/uv` が存在 | `python` (uv variant — 推奨) |
+| system python | `which python3` または `which python` 成功 **かつ** `uv` なし | `python` (system variant) — 雛形コメント参照 |
+| pyenv | `$HOME/.pyenv/versions/` に 1 件以上 **かつ** `uv` なし | `python` (pyenv variant) — 雛形コメント参照 |
+| conda / mamba | `$CONDA_PREFIX` が設定済 **かつ** `uv` なし | `python` (conda variant) — 雛形コメント参照 |
 
 ---
 
@@ -158,6 +178,7 @@ Read("~/.claude/skills/boid-kit-init/templates/go-dev.yaml.tmpl")
 Read("~/.claude/skills/boid-kit-init/templates/github-cli.yaml.tmpl")
 Read("~/.claude/skills/boid-kit-init/templates/docker.yaml.tmpl")
 Read("~/.claude/skills/boid-kit-init/templates/dotnet-dev.yaml.tmpl")
+Read("~/.claude/skills/boid-kit-init/templates/python.yaml.tmpl")
 ```
 
 ### 変数置換
