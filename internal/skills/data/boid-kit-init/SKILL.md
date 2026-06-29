@@ -25,6 +25,28 @@ kit.yaml に生のシークレット値を書いてはならない。
 
 ---
 
+## host_commands と additional_bindings の使い分け (設計原則)
+
+| 仕組み | 用途 | 使うべき場面 |
+|---|---|---|
+| `additional_bindings` + `env.PATH` | サンドボックス内で **直接実行** されるローカルツールチェイン | 言語ランタイム (node / go / python / dotnet)、 パッケージマネージャ (npm / uv / cargo) |
+| `host_commands` | サンドボックス境界を越えて **ホスト側で実行** されるコマンド | ホストの credential が必要 (`gh`)、 ホスト daemon との通信 (`docker`)、 ホストの特権が必要 (`systemctl`) |
+
+判定の指針: 「サンドボックス内で動かしたい」 ものか 「**ホストでしか動かせない (もしくは動かしたくない)**」 ものか。
+
+- node / npm / npx / pnpm / yarn → サンドボックス内 → `additional_bindings` + PATH
+- go → サンドボックス内 → `additional_bindings` + PATH
+- uv / pip / python → サンドボックス内 → `additional_bindings` + PATH
+- dotnet → サンドボックス内 → `additional_bindings`
+- gh → ホストの GitHub credential が必要 → `host_commands` (`secret:` 参照付き)
+- docker → ホスト daemon 通信 → socket bind か `host_commands` (proxy 経由推奨)
+
+ローカルなツールチェインを `host_commands` に登録すると、 サブコマンド毎にホスト側へ broker dispatch される。 これは設計意図と逆 (ローカル実行は sandbox の egress allowlist で十分制御できる) であり、 host_commands の趣旨である **「選択的に通したい外部境界」** を曖昧にしてしまう。
+
+新しいテンプレを追加するときはまずこの表で判定すること。
+
+---
+
 ## 全体フロー
 
 ```
