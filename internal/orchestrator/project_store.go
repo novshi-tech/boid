@@ -34,6 +34,18 @@ func (s *ProjectStore) SetWorkspaceStore(ws *WorkspaceStore) {
 	s.workspaceStore = ws
 }
 
+// WorkspaceStore returns the configured workspace store (or nil when none
+// has been wired). Exposed so server-side wiring can hand the same store
+// to dispatcher.Runner for workspace-scoped proxy allowlist resolution at
+// dispatch time, without having to construct a second one.
+//
+// Note: callers that pass the result into an interface-typed field should
+// guard against the typed-nil trap by checking the concrete return for nil
+// before assigning — see internal/server/wire.go (resolveDispatcherWorkspaceLookup).
+func (s *ProjectStore) WorkspaceStore() *WorkspaceStore {
+	return s.workspaceStore
+}
+
 // Load reads project.yaml from the work_dir and stores the meta in memory.
 func (s *ProjectStore) Load(workDir string) (*ProjectMeta, error) {
 	meta, err := ReadProjectMetaWithKits(workDir, s.resolver)

@@ -36,6 +36,23 @@ type ProjectLookup interface {
 	ListProjects() ([]*orchestrator.Project, error)
 }
 
+// WorkspaceLookup reads a WorkspaceMeta for a given slug. Satisfied by
+// *orchestrator.WorkspaceStore; kept as an interface so tests can stub it
+// without touching disk. Load is expected to return os.ErrNotExist-wrapped
+// errors when the workspace file is missing — Runner treats that as the
+// "degraded window" and falls back to the global floor.
+type WorkspaceLookup interface {
+	Load(slug string) (*orchestrator.WorkspaceMeta, error)
+}
+
+// ProxyAllocator returns the loopback port of an HTTP(S) egress proxy bound
+// to the given workspace, after applying allowed as its allowlist. The
+// listener is long-lived: subsequent calls for the same workspace reuse the
+// port and live-swap the allowlist. Satisfied by *sandbox.ProxyManager.
+type ProxyAllocator interface {
+	GetOrCreate(workspaceID string, allowed []string) (int, error)
+}
+
 // JobEventSink lets the runner report job lifecycle events to a subscriber
 // (typically the web SSE hub) without taking a hard dependency on it.
 // All methods are best-effort: implementations should not block or fail
@@ -62,9 +79,23 @@ type Runner struct {
 	Worktrees    *WorktreeManager
 	TaskLookup   TaskLookup
 	Projects     ProjectLookup
+	// Workspaces resolves WorkspaceMeta at dispatch time for the workspace
+	// the dispatched project is linked to. When nil (test wiring, missing
+	// disk) the runner falls back to the global floor for proxy allowlist
+	// resolution. Together with ProxyAllocator it implements the
+	// workspace-scoped proxy egress allowlist (project-workspace-allowed-domains).
+	Workspaces     WorkspaceLookup
+	ProxyAllocator ProxyAllocator
 	BoidBinary     string
 	ServerSocket   string
+	// ProxyPort is the default-workspace proxy port (back-compat fallback
+	// when the per-workspace allocator path isn't wired or returns an
+	// error). Workspaces with no overrides reuse this port via the
+	// allocator's GetOrCreate("default", ...) entry.
 	ProxyPort      *int
+	// AllowedDomains is the daemon-wide proxy egress allowlist (the floor
+	// from config.yaml sandbox.allowed_domains + boid defaults). Workspace
+	// overrides are added on top via orchestrator.ResolveAllowedDomains.
 	AllowedDomains  []string
 	RuntimesDir     string
 	AttachmentsRoot string
@@ -225,18 +256,24 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 	}
 
+	// Workspace-scoped proxy resolution. Both the resolved allowlist and
+	// the resolved port may differ per-workspace; see resolveWorkspaceProxy
+	// for the cascade (floor → workspace overrides) and the fallback rules
+	// when any step fails.
+	allowedDomains, proxyPort := r.resolveWorkspaceProxy(workspaceID)
+
 	rtInfo := SandboxRuntimeInfo{
 		JobID:                j.ID,
 		BoidBinary:           r.BoidBinary,
 		ServerSocket:         r.ServerSocket,
-		ProxyPort:            r.proxyPort(),
+		ProxyPort:            proxyPort,
 		BrokerSocket:         brokerSocket,
 		BrokerToken:          brokerToken,
 		WorktreeDir:          worktreePath,
 		WorkspacePeers:       workspacePeers,
 		ResolvedHostCommands: resolvedHostCommands,
 		DockerEnabled:        spec.Visibility.DockerEnabled,
-		AllowedDomains:       r.AllowedDomains,
+		AllowedDomains:       allowedDomains,
 		AttachmentsRoot:      r.AttachmentsRoot,
 	}
 	// Server socket is only exposed to jobs that have no broker policies
@@ -372,6 +409,49 @@ func (r *Runner) proxyPort() int {
 		return 0
 	}
 	return *r.ProxyPort
+}
+
+// resolveWorkspaceProxy returns the proxy egress allowlist and the loopback
+// port that should be passed to the sandbox for a job running under the
+// given workspace.
+//
+// Cascade:
+//  1. Start from the daemon-wide floor (r.AllowedDomains).
+//  2. If ProxyAllocator and a non-empty workspaceID are present, load the
+//     workspace.yaml (best-effort: ErrNotExist is the documented degraded
+//     window, other errors are warned). Add the workspace AllowedDomains
+//     on top of the floor via orchestrator.ResolveAllowedDomains.
+//  3. Ask ProxyAllocator.GetOrCreate to bind (or live-update) a listener
+//     for the workspace with that resolved list, and return its port.
+//
+// Fallback: if any step fails — allocator unwired, workspaceID empty,
+// allocator returns an error — the function returns the floor and the
+// default-workspace port (r.proxyPort()). Dispatch is never blocked on a
+// proxy-resolution problem.
+func (r *Runner) resolveWorkspaceProxy(workspaceID string) ([]string, int) {
+	if r.ProxyAllocator == nil || workspaceID == "" {
+		return r.AllowedDomains, r.proxyPort()
+	}
+	var wsMeta *orchestrator.WorkspaceMeta
+	if r.Workspaces != nil {
+		loaded, err := r.Workspaces.Load(workspaceID)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				slog.Warn("workspace load for proxy allowlist failed; using floor only",
+					"workspace_id", workspaceID, "error", err)
+			}
+		} else {
+			wsMeta = loaded
+		}
+	}
+	resolved := orchestrator.ResolveAllowedDomains(r.AllowedDomains, wsMeta)
+	port, err := r.ProxyAllocator.GetOrCreate(workspaceID, resolved)
+	if err != nil {
+		slog.Warn("workspace proxy listener allocation failed; falling back to default proxy",
+			"workspace_id", workspaceID, "error", err)
+		return r.AllowedDomains, r.proxyPort()
+	}
+	return resolved, port
 }
 
 // startDockerProxy creates a per-sandbox docker proxy socket and starts the

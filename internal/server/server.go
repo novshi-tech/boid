@@ -32,14 +32,14 @@ type Config struct {
 }
 
 type Server struct {
-	cfg         Config
-	db          *sql.DB
-	store       *orchestrator.ProjectStore
-	broker      *sandbox.Broker
-	secretStore *dispatcher.SecretStore
-	proxy       *sandbox.Proxy
-	proxyPort   int
-	router      chi.Router
+	cfg          Config
+	db           *sql.DB
+	store        *orchestrator.ProjectStore
+	broker       *sandbox.Broker
+	secretStore  *dispatcher.SecretStore
+	proxyManager *sandbox.ProxyManager
+	proxyPort    int // port of the default-workspace listener (back-compat /api/proxy surface)
+	router       chi.Router
 	unixLn      net.Listener
 	tcpLn       net.Listener
 	httpServer  *http.Server
@@ -99,13 +99,13 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	srv := &Server{
-		cfg:         cfg,
-		db:          conn,
-		store:       store,
-		broker:      broker,
-		secretStore: secretStore,
-		proxy:       sandbox.WireProxy(cfg.AllowedDomains),
-		router:      chi.NewRouter(),
+		cfg:          cfg,
+		db:           conn,
+		store:        store,
+		broker:       broker,
+		secretStore:  secretStore,
+		proxyManager: sandbox.NewProxyManager(),
+		router:       chi.NewRouter(),
 		httpServer: &http.Server{
 			Handler: nil,
 		},
@@ -154,14 +154,19 @@ func (s *Server) Start(ctx context.Context) error {
 		slog.Info("broker started", "socket", s.broker.SocketPath)
 	}
 
-	// Start proxy
-	if s.proxy != nil {
-		port, err := s.proxy.Start(ctx)
+	// Start proxy manager and the default-workspace listener. The default
+	// listener's port is exposed via /api/proxy (back-compat) and used by
+	// CLI flows that do not flow through dispatch (e.g. `boid exec`,
+	// ProfileInit sandboxes). Per-workspace listeners are lazily allocated
+	// at dispatch time — see Runner.Dispatch.
+	if s.proxyManager != nil {
+		s.proxyManager.Start(ctx)
+		port, err := s.proxyManager.GetOrCreate(orchestrator.DefaultWorkspaceSlug, s.cfg.AllowedDomains)
 		if err != nil {
-			return fmt.Errorf("start proxy: %w", err)
+			return fmt.Errorf("start default proxy: %w", err)
 		}
 		s.proxyPort = port
-		slog.Info("proxy started", "port", port)
+		slog.Info("proxy started", "port", port, "workspace", orchestrator.DefaultWorkspaceSlug)
 	}
 
 	// Remove stale socket
@@ -220,8 +225,8 @@ func (s *Server) Stop() error {
 			errs = append(errs, err)
 		}
 	}
-	if s.proxy != nil {
-		s.proxy.Stop()
+	if s.proxyManager != nil {
+		s.proxyManager.StopAll()
 	}
 	if s.broker != nil {
 		s.broker.Stop()

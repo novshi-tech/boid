@@ -23,13 +23,23 @@ type WireConfig struct {
 	// ServerSocket is the host path to the daemon UNIX socket (for boid exec
 	// jobs that talk to boid over HTTP from inside the sandbox).
 	ServerSocket string
-	// ProxyPort, when non-zero, enables HTTP(S) proxy environment variables
-	// pointing at host-gateway:<ProxyPort>.
+	// ProxyPort points at the default-workspace proxy port. Used as the
+	// fallback when ProxyAllocator is not wired (or fails). Sandboxes
+	// linked to a workspace get a per-workspace port via ProxyAllocator.
 	ProxyPort *int
-	// AllowedDomains is the proxy egress allowlist. Plumbed through to
-	// environment.yaml so agents can see which hosts the proxy will let
-	// through without having to probe with a 403-burning fetch.
+	// AllowedDomains is the daemon-wide proxy egress allowlist floor
+	// (config.yaml sandbox.allowed_domains + boid built-in defaults).
+	// Workspaces add entries on top via workspace.yaml; they cannot remove
+	// floor entries (orchestrator.ResolveAllowedDomains enforces this).
 	AllowedDomains []string
+	// Workspaces is the WorkspaceLookup used at dispatch time to discover
+	// each workspace's AllowedDomains overrides. nil disables workspace
+	// hydration and the runner stays on the floor only.
+	Workspaces WorkspaceLookup
+	// ProxyAllocator is the per-workspace proxy listener registry. nil
+	// disables workspace-scoped proxy allocation and the runner serves
+	// every sandbox via the default-workspace listener.
+	ProxyAllocator ProxyAllocator
 	// RuntimesDir is the root directory where per-sandbox runtime directories
 	// are created. When non-empty and DockerEnabled, the runner pre-allocates a
 	// runtime directory here to host the per-sandbox docker proxy socket and
@@ -48,10 +58,12 @@ func Wire(cfg WireConfig) *Runner {
 		Runtime:         cfg.Runtime,
 		Broker:          cfg.Broker,
 		Sandbox:         cfg.Sandbox,
-		SecretStore:    cfg.SecretStore,
+		SecretStore:     cfg.SecretStore,
 		Worktrees:       cfg.Worktrees,
 		TaskLookup:      cfg.TaskLookup,
 		Projects:        cfg.Projects,
+		Workspaces:      cfg.Workspaces,
+		ProxyAllocator:  cfg.ProxyAllocator,
 		BoidBinary:      cfg.BoidBinary,
 		ServerSocket:    cfg.ServerSocket,
 		ProxyPort:       cfg.ProxyPort,

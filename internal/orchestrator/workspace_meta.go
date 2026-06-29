@@ -1,5 +1,7 @@
 package orchestrator
 
+import "strings"
+
 // WorkspaceMeta holds the machine-local workspace configuration that is
 // stored in ~/.config/boid/workspaces/<slug>.yaml.
 //
@@ -23,4 +25,56 @@ type WorkspaceMeta struct {
 	// Capabilities declares optional sandbox capability flags for this
 	// workspace. Uses the same Capabilities type as ProjectMeta.
 	Capabilities Capabilities `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
+
+	// AllowedDomains is the workspace-scoped HTTP(S) proxy egress allowlist.
+	// Domains listed here are ADDED to the daemon-wide allowlist
+	// (config.yaml sandbox.allowed_domains); the workspace cannot remove
+	// entries from the global floor — that floor exists to keep
+	// pypi/github/etc reachable for tool installation.
+	//
+	// Same matching rules as the global list (see sandbox.Proxy):
+	//   - "registry-1.docker.io"  exact match
+	//   - ".cosmos.azure.com"     suffix match (matches "<sub>.cosmos.azure.com")
+	AllowedDomains []string `yaml:"allowed_domains,omitempty" json:"allowed_domains,omitempty"`
+}
+
+// ResolveAllowedDomains returns the effective proxy egress allowlist for a
+// sandbox launched under workspace. The result is the additive union of the
+// daemon-wide floor (config.yaml sandbox.allowed_domains, plus boid built-in
+// defaults) and the workspace's AllowedDomains. The workspace cannot remove
+// entries from the floor: that guarantee keeps tool-install endpoints
+// (pypi.org, github.com, …) reachable across every workspace.
+//
+// Duplicate entries are de-duplicated (case-insensitive) while preserving
+// first-seen order. The function is a free function (rather than a method on
+// WorkspaceMeta) so that callers may pass a nil workspace to mean "no
+// workspace overrides" without having to construct an empty struct.
+//
+// Future extension point: a third parameter for kit-supplied domains is
+// expected here (see [[project-workspace-allowed-domains]]); when added it
+// will slot in between the floor and the workspace overrides with the same
+// additive semantics.
+func ResolveAllowedDomains(globalFloor []string, workspace *WorkspaceMeta) []string {
+	seen := make(map[string]struct{}, len(globalFloor))
+	out := make([]string, 0, len(globalFloor))
+	add := func(d string) {
+		key := strings.ToLower(strings.TrimSpace(d))
+		if key == "" {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, d)
+	}
+	for _, d := range globalFloor {
+		add(d)
+	}
+	if workspace != nil {
+		for _, d := range workspace.AllowedDomains {
+			add(d)
+		}
+	}
+	return out
 }
