@@ -301,8 +301,15 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string) er
 	newWS := *existingWS
 
 	// Collect all kit refs from project top level and all behaviors.
-	// Normalize to simple name form (last segment).
-	kitRefStrs := collectKitNames(meta)
+	// Normalize to simple name form (last segment). Invalid refs (whose
+	// derived name fails ValidKitName, e.g. a bare "github.com") fail the
+	// migration outright rather than silently producing an unloadable kit
+	// slug in workspace.yaml — past versions did the latter and left
+	// invalid kit dirs that later tripped boid-kit-init cleanup.
+	kitRefStrs, err := collectKitNames(meta)
+	if err != nil {
+		return fmt.Errorf("collect kit names: %w", err)
+	}
 	existingKitSet := stringSet(existingWS.Kits)
 	for _, name := range kitRefStrs {
 		if !existingKitSet[name] {
@@ -428,33 +435,51 @@ func loadKeyFileIfExists(path string) ([]byte, error) {
 
 // collectKitNames collects unique kit ref names from the legacy meta,
 // normalising them to a simple single-segment name (last part of the path).
-func collectKitNames(meta *orchestrator.LegacyProjectMeta) []string {
+// Returns an error if any ref derives a name that is not a valid kit slug;
+// the caller should refuse the migration in that case rather than write a
+// broken slug into workspace.yaml.
+func collectKitNames(meta *orchestrator.LegacyProjectMeta) ([]string, error) {
 	seen := make(map[string]bool)
 	var result []string
-	add := func(ref string) {
-		name := kitRefToName(ref)
+	add := func(ref, source string) error {
+		name, err := kitRefToName(ref)
+		if err != nil {
+			return fmt.Errorf("%s: %w", source, err)
+		}
 		if !seen[name] {
 			seen[name] = true
 			result = append(result, name)
 		}
+		return nil
 	}
 	for _, r := range meta.Kits {
-		add(r.Ref)
-	}
-	for _, b := range meta.TaskBehaviors {
-		for _, r := range b.Kits {
-			add(r.Ref)
+		if err := add(r.Ref, "kits"); err != nil {
+			return nil, err
 		}
 	}
-	return result
+	for bname, b := range meta.TaskBehaviors {
+		for _, r := range b.Kits {
+			if err := add(r.Ref, fmt.Sprintf("task_behaviors.%s.kits", bname)); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return result, nil
 }
 
 // kitRefToName returns the simple name for a kit ref. For a full path like
 // "github.com/novshi-tech/boid-kits/go" this returns "go". For a simple name
-// like "go" this returns "go".
-func kitRefToName(ref string) string {
+// like "go" this returns "go". Returns an error if the derived name is not a
+// valid kit slug per orchestrator.ValidKitName — e.g. a bare "github.com"
+// ref would otherwise produce a literal "github.com" kit slug (the dot is
+// rejected by ValidKitName, and a kit dir at that path is not loadable).
+func kitRefToName(ref string) (string, error) {
 	parts := strings.Split(ref, "/")
-	return parts[len(parts)-1]
+	name := parts[len(parts)-1]
+	if err := orchestrator.ValidKitName(name); err != nil {
+		return "", fmt.Errorf("kit ref %q yields invalid kit slug %q: %w", ref, name, err)
+	}
+	return name, nil
 }
 
 // computeRemoveKeys returns the list of top-level project.yaml keys that should
