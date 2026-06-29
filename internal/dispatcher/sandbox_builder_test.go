@@ -1655,24 +1655,27 @@ func TestBuildSandboxSpec_ProfileInit_HarnessKeepsAdditionalBindings(t *testing.
 	}
 }
 
-// TestBuildSandboxSpec_ProfileDefault_HarnessIgnoresAdditionalBindings guards
-// the opposite direction: the kit-init fix above must only widen ProfileInit.
-// On ProfileDefault (regular tasks / hooks / exec) the adapter-declared
-// bindings remain the exclusive source for harness=claude — Phase 3-c's
-// kit-free dispatch path. Mixing in expandedBindings on the default profile
-// would let boid-kits' declared additional_bindings sneak back in and undo
-// the kit-free design.
-func TestBuildSandboxSpec_ProfileDefault_HarnessIgnoresAdditionalBindings(t *testing.T) {
+// TestBuildSandboxSpec_ProfileDefault_HarnessKeepsAdditionalBindings ensures
+// workspace kit-declared additional_bindings reach the sandbox even when the
+// harness adapter (claude/codex/opencode) also declares its own bindings.
+// The 2026-06-26 workspace+kit reorg made kits a per-user place to declare
+// host-side tool bindings (~/.volta, ~/.nuget, /opt/google/chrome, ...); the
+// original Phase 3-c kit-free dispatch path used to drop them on the claude/
+// codex/opencode harness path on the assumption that kits only existed in
+// boid-kits and supplied agent CLI plumbing — that assumption no longer
+// holds, so they must apply on top of harness bindings rather than be
+// replaced by them.
+func TestBuildSandboxSpec_ProfileDefault_HarnessKeepsAdditionalBindings(t *testing.T) {
 	homeDir := hostHomeDir()
 	if homeDir == "" {
 		t.Skip("hostHomeDir() returned empty; cannot exercise mount layout")
 	}
-	stranger := "/srv/some-kit-binding"
+	kitBind := "/srv/some-kit-binding"
 	spec := &orchestrator.JobSpec{
 		HarnessType: "claude",
 		Visibility: orchestrator.Visibility{
 			AdditionalBindings: []orchestrator.BindMount{
-				{Source: stranger, Target: stranger, Mode: "rw"},
+				{Source: kitBind, Target: kitBind, Mode: "rw"},
 			},
 		},
 	}
@@ -1680,9 +1683,28 @@ func TestBuildSandboxSpec_ProfileDefault_HarnessIgnoresAdditionalBindings(t *tes
 	if err != nil {
 		t.Fatalf("BuildSandboxSpec: %v", err)
 	}
+	foundKit := false
 	for _, m := range result.Mounts {
-		if m.Target == stranger {
-			t.Errorf("ProfileDefault + harness=claude must drop AdditionalBindings, but found mount at %s: %+v", stranger, m)
+		if m.Target == kitBind && m.Type == sandbox.MountBind && !m.ReadOnly {
+			foundKit = true
+			break
 		}
+	}
+	if !foundKit {
+		t.Errorf("ProfileDefault + harness=claude must keep workspace kit AdditionalBindings: expected rw bind at %s, got mounts=%+v", kitBind, result.Mounts)
+	}
+	// Sanity: harness bindings must still be present — we add on top, not
+	// replace. Look for the ~/.claude rw bind that claude.Adapter.Bindings
+	// declares.
+	claudeDir := homeDir + "/.claude"
+	foundClaude := false
+	for _, m := range result.Mounts {
+		if m.Target == claudeDir && m.Type == sandbox.MountBind {
+			foundClaude = true
+			break
+		}
+	}
+	if !foundClaude {
+		t.Errorf("ProfileDefault + harness=claude must also keep claude adapter bindings: expected bind at %s, got mounts=%+v", claudeDir, result.Mounts)
 	}
 }
