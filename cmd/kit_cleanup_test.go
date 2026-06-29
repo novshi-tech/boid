@@ -231,8 +231,8 @@ func TestApplyKitCleanupResult_NoMatchLeavesWorkspaceUntouched(t *testing.T) {
 }
 
 // TestApplyKitCleanupResult_InvalidNameFails verifies that a result file with
-// an invalid kit slug is rejected (we never write a malformed name into
-// workspace.yaml).
+// an invalid kit slug on the *write side* (Renamed.To / Deleted.ReplacedBy)
+// is rejected — we never want a malformed name written into workspace.yaml.
 func TestApplyKitCleanupResult_InvalidNameFails(t *testing.T) {
 	kitsDir := t.TempDir()
 	wsDir := t.TempDir()
@@ -256,5 +256,85 @@ func TestApplyKitCleanupResult_InvalidNameFails(t *testing.T) {
 	// On rejection the workspace must remain unchanged.
 	if got := loadWorkspaceKits(t, wsDir, "my-ws"); !reflect.DeepEqual(got, []string{"legacy-x"}) {
 		t.Errorf("workspace was modified despite validation failure: %v", got)
+	}
+}
+
+// TestApplyKitCleanupResult_InvalidMatchSideIsNoOp verifies that an invalid
+// slug on the *match side* (Renamed.From / Deleted.Name) does not block
+// the cleanup: such entries can never match an existing valid kit, so they
+// are effectively no-ops. We refuse to turn an upstream skill bug into a
+// fatal block on `boid kit init` when the safe thing is to just ignore the
+// bogus entry. The cleanup file is still consumed (removed) so the bad
+// entry does not re-trigger on the next run.
+func TestApplyKitCleanupResult_InvalidMatchSideIsNoOp(t *testing.T) {
+	kitsDir := t.TempDir()
+	wsDir := t.TempDir()
+	writeWorkspaceYAML(t, wsDir, "my-ws", []string{"github-cli"})
+
+	// Bypass writeCleanupResult to embed a name that would fail ValidKitName
+	// (contains "."). The matching side of a Deleted entry only does string
+	// equality against workspace.kits, so this must not be fatal.
+	if err := os.WriteFile(
+		filepath.Join(kitsDir, cleanupResultFilename),
+		[]byte(`{"deleted":[{"name":"github.com"},{"name":"legacy-x","replaced_by":"github-cli"}],"renamed":[{"from":"BAD FROM","to":"new-tools"}]}`),
+		0o644,
+	); err != nil {
+		t.Fatalf("write bogus result: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := applyKitCleanupResult(kitsDir, wsDir, &buf); err != nil {
+		t.Fatalf("apply should tolerate invalid match-side names: %v", err)
+	}
+
+	// Workspace is unchanged because none of the bogus match-side slugs hit.
+	if got := loadWorkspaceKits(t, wsDir, "my-ws"); !reflect.DeepEqual(got, []string{"github-cli"}) {
+		t.Errorf("workspace kits = %v, want [github-cli]", got)
+	}
+	// Result file is consumed so the bogus entry does not re-trigger.
+	if _, err := os.Stat(filepath.Join(kitsDir, cleanupResultFilename)); !os.IsNotExist(err) {
+		t.Errorf("result file should have been removed: %v", err)
+	}
+}
+
+// TestApplyKitCleanupResult_EmptyMatchSideFails verifies that an empty
+// match-side slug *is* still rejected — an empty string in workspace.kits
+// is technically possible and we don't want a runaway match.
+func TestApplyKitCleanupResult_EmptyMatchSideFails(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "empty deleted name",
+			body: `{"deleted":[{"name":""}]}`,
+			want: "deleted[0].name",
+		},
+		{
+			name: "empty renamed from",
+			body: `{"renamed":[{"from":"","to":"new"}]}`,
+			want: "renamed[0].from",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			kitsDir := t.TempDir()
+			wsDir := t.TempDir()
+			writeWorkspaceYAML(t, wsDir, "my-ws", []string{"keep"})
+			if err := os.WriteFile(
+				filepath.Join(kitsDir, cleanupResultFilename),
+				[]byte(tc.body),
+				0o644,
+			); err != nil {
+				t.Fatalf("write bad result: %v", err)
+			}
+
+			var buf bytes.Buffer
+			err := applyKitCleanupResult(kitsDir, wsDir, &buf)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("expected error mentioning %q, got: %v", tc.want, err)
+			}
+		})
 	}
 }

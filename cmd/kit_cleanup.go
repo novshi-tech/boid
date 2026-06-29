@@ -120,21 +120,27 @@ func applyKitCleanupResult(kitsDir, workspacesDir string, out io.Writer) error {
 	return nil
 }
 
-// validateCleanupResult rejects entries with empty / invalid kit names so we
-// never write garbage to workspace.yaml. All names must pass ValidKitName so
-// the slug we splice in is later loadable via WorkspaceStore.
+// validateCleanupResult rejects entries that would let us write garbage into
+// workspace.yaml. The "write side" of each mapping (Renamed.To /
+// Deleted.ReplacedBy) must pass ValidKitName so the slug we splice in is
+// later loadable via WorkspaceStore. The "match side" (Renamed.From /
+// Deleted.Name) is only ever compared for string equality against existing
+// workspace.kits entries, so an invalid slug there just means "no match" —
+// a stricter check would turn an upstream skill bug into a fatal block on
+// `boid kit init` for what is otherwise a safe no-op. We still require the
+// match side to be non-empty so a `""` entry can't silently mass-match.
 func validateCleanupResult(r KitCleanupResult) error {
 	for i, x := range r.Renamed {
-		if err := orchestrator.ValidKitName(x.From); err != nil {
-			return fmt.Errorf("renamed[%d].from: %w", i, err)
+		if x.From == "" {
+			return fmt.Errorf("renamed[%d].from: empty", i)
 		}
 		if err := orchestrator.ValidKitName(x.To); err != nil {
 			return fmt.Errorf("renamed[%d].to: %w", i, err)
 		}
 	}
 	for i, x := range r.Deleted {
-		if err := orchestrator.ValidKitName(x.Name); err != nil {
-			return fmt.Errorf("deleted[%d].name: %w", i, err)
+		if x.Name == "" {
+			return fmt.Errorf("deleted[%d].name: empty", i)
 		}
 		if x.ReplacedBy != "" {
 			if err := orchestrator.ValidKitName(x.ReplacedBy); err != nil {
