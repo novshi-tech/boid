@@ -189,6 +189,7 @@ Read("~/.config/boid/workspaces/<slug>.yaml")
 - `kits:` 配列: 既存の kit を保持しつつ、新たに必要な kit を末尾に追加する (重複は追加しない)
 - `env:` セクション: **ユーザが既に設定した値を絶対に変更しない**
 - `capabilities:` セクション: **ユーザが既に設定した値を絶対に変更しない**
+- `allowed_domains:` セクション: **ユーザが既に設定した値を絶対に変更しない** (詳細は 6.5)
 - 他のフィールドも温存する
 
 ### 6.3 書き込み形式
@@ -208,9 +209,56 @@ kits:
 #   KEY: value
 
 # capabilities: (既存のユーザ設定があればそのまま保持)
+
+# allowed_domains: (既存のユーザ設定があればそのまま保持)
+# allowed_domains:
+#   - .example.com
 ```
 
 `kits:` が空になる場合でも `kits: []` を明示的に書かない (omitempty により省略される)。
+
+### 6.4 workspace スキーマ (フィールド一覧)
+
+`WorkspaceMeta` が受け付けるトップレベルキーは以下のみ。これ以外のキー
+(`network:` 等) はパース時に黙って捨てられるので、間違って書かないこと。
+
+| キー | 型 | 用途 |
+|---|---|---|
+| `kits` | `[]string` | このスキルの主目的 |
+| `env` | `map[string]string` | 全サンドボックスへ注入する env (secret-free 規約) |
+| `capabilities` | object | サンドボックス能力フラグ (例: `docker: {}`) |
+| `allowed_domains` | `[]string` | workspace スコープの proxy egress 許可 (詳細は次節) |
+
+### 6.5 allowed_domains について
+
+workspace スコープで HTTP(S) proxy の egress 許可ドメインを追加できる。
+**トップレベル**の `allowed_domains:` に書く。`network.allowed_domains` の
+ような **ネスト構造は受け付けない** ので注意 (LLM が config.yaml の
+`sandbox.network` の癖に引っ張られて間違いやすい)。
+
+```yaml
+# 良い例 — workspace.yaml はトップレベル
+allowed_domains:
+  - .cosmos.azure.com
+  - api.openai.com
+
+# 悪い例 — このネスト書きは黙って無視される
+network:
+  allowed_domains:
+    - .cosmos.azure.com
+```
+
+意味論:
+- daemon-wide の floor (config.yaml `sandbox.allowed_domains` + boid 既定)
+  に **加算** される。workspace 側で floor を **削れない**。
+- 重複は大文字小文字を無視して dedup される (先勝ち)。
+- マッチ規則は floor と同じ:
+  - `registry-1.docker.io` … 完全一致
+  - `.cosmos.azure.com` … サフィックス一致 (`<sub>.cosmos.azure.com`)
+
+このスキルの責務は **既存値の温存** であって新規追加ではない。ユーザが
+明示的に「`<domain>` を allow に追加して」と頼まない限り、`allowed_domains`
+を勝手に編集しない。
 
 ### 6.4 secret-free チェック
 
