@@ -329,15 +329,25 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	boidBin, _ := os.Executable()
 	projectCatalog := orchestrator.DBProjectCatalog{DB: srv.db}
 	taskLookup := orchestrator.DBTaskLookup{DB: srv.db}
+	// Workspace lookup is plumbed through the interface field on
+	// dispatcher.WireConfig (WorkspaceLookup). Go's typed-nil trap would
+	// turn a nil *orchestrator.WorkspaceStore into a non-nil interface
+	// value that panics on the first Load call — guard explicitly.
+	var wsLookup dispatcher.WorkspaceLookup
+	if ws := store.WorkspaceStore(); ws != nil {
+		wsLookup = ws
+	}
 	runner := dispatcher.Wire(dispatcher.WireConfig{
-		DB:             srv.db,
-		Runtime:        jobRuntime,
-		Broker:         broker,
-		Sandbox:        dispatcher.NewSandboxPreparer(),
-		SecretStore:    secretStore,
-		Worktrees:      wtMgr,
-		TaskLookup:     taskLookup,
-		Projects:       projectCatalog,
+		DB:              srv.db,
+		Runtime:         jobRuntime,
+		Broker:          broker,
+		Sandbox:         dispatcher.NewSandboxPreparer(),
+		SecretStore:     secretStore,
+		Worktrees:       wtMgr,
+		TaskLookup:      taskLookup,
+		Projects:        projectCatalog,
+		Workspaces:      wsLookup,
+		ProxyAllocator:  srv.proxyManager,
 		BoidBinary:      boidBin,
 		ServerSocket:    cfg.SocketPath,
 		ProxyPort:       &srv.proxyPort,

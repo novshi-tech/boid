@@ -12,14 +12,47 @@ import (
 )
 
 type Proxy struct {
+	// allowedDomains is the egress allowlist consulted by isDomainAllowed.
+	// It is mutated via SetAllowed at sandbox-dispatch time so per-workspace
+	// allowlists can be applied to a long-lived listener. Reads from inside
+	// CONNECT/HTTP handlers are guarded by allowedMu (RLock); writes are
+	// guarded by allowedMu (Lock). Already-established CONNECT tunnels are
+	// hijacked TCP connections that bypass this list once allowed, so
+	// SetAllowed never tears down an in-flight connection.
 	allowedDomains []string
-	listener       net.Listener
-	server         *http.Server
-	mu             sync.Mutex
+	allowedMu      sync.RWMutex
+
+	listener net.Listener
+	server   *http.Server
+	mu       sync.Mutex
 }
 
 func NewProxy(allowedDomains []string) *Proxy {
-	return &Proxy{allowedDomains: allowedDomains}
+	return &Proxy{allowedDomains: append([]string(nil), allowedDomains...)}
+}
+
+// SetAllowed replaces the proxy egress allowlist atomically. Subsequent
+// CONNECT and HTTP-forward requests use the new list. Existing CONNECT
+// tunnels (hijacked TCP connections) are unaffected — that is intentional:
+// once an egress decision has been made for a long-lived TLS connection,
+// pulling its destination out of the allowlist mid-stream would surface as
+// an opaque socket close to the sandbox. Sandboxes that reconnect after
+// SetAllowed will be re-validated against the new list.
+func (p *Proxy) SetAllowed(domains []string) {
+	p.allowedMu.Lock()
+	p.allowedDomains = append([]string(nil), domains...)
+	p.allowedMu.Unlock()
+}
+
+// snapshotAllowed returns a private copy of the current allowlist for the
+// duration of a single request check. The slice never escapes the calling
+// goroutine, so callers can iterate without holding the lock.
+func (p *Proxy) snapshotAllowed() []string {
+	p.allowedMu.RLock()
+	defer p.allowedMu.RUnlock()
+	out := make([]string, len(p.allowedDomains))
+	copy(out, p.allowedDomains)
+	return out
 }
 
 func (p *Proxy) Start(ctx context.Context) (int, error) {
@@ -141,7 +174,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 // Entries starting with "." match as a suffix (e.g. ".docker.io" matches "registry-1.docker.io").
 func (p *Proxy) isDomainAllowed(domain string) bool {
 	domain = strings.ToLower(domain)
-	for _, d := range p.allowedDomains {
+	for _, d := range p.snapshotAllowed() {
 		d = strings.ToLower(d)
 		if strings.HasPrefix(d, ".") {
 			if strings.HasSuffix(domain, d) || domain == d[1:] {

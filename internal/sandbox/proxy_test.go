@@ -184,6 +184,112 @@ func TestProxy_HTTPForward_Blocked(t *testing.T) {
 	}
 }
 
+func TestProxy_SetAllowed_LiveUpdate(t *testing.T) {
+	// Verify that SetAllowed swaps the allowlist of an already-listening
+	// proxy: a previously-blocked domain becomes allowed (and vice versa)
+	// without restarting the listener.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Local TCP target so CONNECT can complete.
+	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen target: %v", err)
+	}
+	defer targetLn.Close()
+	go func() {
+		for {
+			conn, err := targetLn.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+	_, targetPort, _ := net.SplitHostPort(targetLn.Addr().String())
+	connectTarget := fmt.Sprintf("127.0.0.1:%s", targetPort)
+
+	// Initially block 127.0.0.1.
+	proxy := sandbox.NewProxy([]string{"allowed.com"})
+	port, err := proxy.Start(ctx)
+	if err != nil {
+		t.Fatalf("start proxy: %v", err)
+	}
+	defer proxy.Stop()
+	proxyAddr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	resp, conn, err := sendCONNECT(proxyAddr, connectTarget, 5*time.Second)
+	if err != nil {
+		t.Fatalf("sendCONNECT (before): %v", err)
+	}
+	conn.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("before SetAllowed: status = %d, want 403", resp.StatusCode)
+	}
+
+	// Live-swap the allowlist to include 127.0.0.1.
+	proxy.SetAllowed([]string{"127.0.0.1"})
+
+	resp2, conn2, err := sendCONNECT(proxyAddr, connectTarget, 5*time.Second)
+	if err != nil {
+		t.Fatalf("sendCONNECT (after): %v", err)
+	}
+	defer conn2.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("after SetAllowed: status = %d, want 200", resp2.StatusCode)
+	}
+
+	// And swap it back away.
+	proxy.SetAllowed([]string{"only.this.one"})
+	resp3, conn3, err := sendCONNECT(proxyAddr, connectTarget, 5*time.Second)
+	if err != nil {
+		t.Fatalf("sendCONNECT (after revoke): %v", err)
+	}
+	conn3.Close()
+	if resp3.StatusCode != http.StatusForbidden {
+		t.Errorf("after revoke: status = %d, want 403", resp3.StatusCode)
+	}
+}
+
+func TestProxy_SetAllowed_RaceSafe(t *testing.T) {
+	// Hammer SetAllowed and isDomainAllowed concurrently to surface any
+	// data race under `go test -race`. The test is purely about
+	// concurrency safety; correctness of the allow/deny decision is
+	// covered by the other tests in this file.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	proxy := sandbox.NewProxy([]string{"a.example.com", "b.example.com"})
+	port, err := proxy.Start(ctx)
+	if err != nil {
+		t.Fatalf("start proxy: %v", err)
+	}
+	defer proxy.Stop()
+	proxyAddr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			proxy.SetAllowed([]string{"a.example.com", fmt.Sprintf("d%d.example.com", i)})
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		resp, conn, err := sendCONNECT(proxyAddr, "a.example.com:443", 2*time.Second)
+		if err != nil {
+			t.Fatalf("sendCONNECT[%d]: %v", i, err)
+		}
+		conn.Close()
+		// Status should always be one of the two well-defined responses.
+		if resp.StatusCode != http.StatusOK &&
+			resp.StatusCode != http.StatusForbidden &&
+			resp.StatusCode != http.StatusBadGateway {
+			t.Fatalf("unexpected status %d", resp.StatusCode)
+		}
+	}
+	<-done
+}
+
 func TestProxy_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
