@@ -96,7 +96,17 @@ func (h *ProjectHandler) Get(w http.ResponseWriter, r *http.Request) {
 	if project == nil {
 		return
 	}
-	writeJSON(w, http.StatusOK, project)
+	// resolveRef → ResolveProjectRef uses bare hydration (workspace kits not
+	// merged) so name-matching stays cheap. The canonical GET endpoint is
+	// expected to return a sandbox-ready snapshot — re-fetch with workspace
+	// hydration so callers (cmd/exec.go, project show, etc.) see kit-merged
+	// Meta.AdditionalBindings / Env / HostCommands.
+	hydrated, err := h.Service.GetProject(project.ID)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, hydrated)
 }
 
 func (h *ProjectHandler) SetWorkspace(w http.ResponseWriter, r *http.Request) {
