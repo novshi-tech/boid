@@ -229,43 +229,29 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	}
 
 	// Additional bindings and kit roots:
-	//   * When the adapter declares Bindings() (claude/codex/opencode in
-	//     Phase 3-c) those are the only source of bind-mounts for the agent
-	//     — boid-kits' run-agent.sh / additional_bindings / KitRoots are
-	//     ignored on this kit-free dispatch path that Phase 3-c introduced
-	//     and Phase 3-e will lean on when the kit is retired entirely.
-	//   * For every other job (boid exec, gate hooks, non-agent shell hooks
-	//     dispatched via the shell adapter, kits that have not migrated to
-	//     adapter-driven Bindings yet) the kit-declared bindings + KitRoots
-	//     still apply. The dispatch is keyed on `len(harnessBindings) > 0`
-	//     rather than `spec.HarnessType != ""` because shell adapter is
-	//     declared (HarnessType="shell") but intentionally returns nil
-	//     Bindings — we want those jobs on the legacy kit path until
-	//     Phase 3-e collapses both.
-	if len(harnessBindings) > 0 {
-		mounts = append(mounts, additionalBindingMounts(harnessBindings)...)
-		// ProfileInit (boid kit init / workspace configure) は host root を
-		// ro-rbind した上で「書き込み先 (WritableDirs) と追加 RO bind
-		// (ReadOnlyBinds)」 を Visibility.AdditionalBindings 経由で渡してくる。
-		// harness adapter (claude/codex/opencode) は agent CLI のための bindings
-		// しか返さないので、 init 用 binding と経路が別。 両者を上乗せ mount しない
-		// と agent はサンドボックスに kits dir が見えず、 ho-rbind の read-only
-		// filesystem に阻まれて kit.yaml を書けない。 Target が claude.json 等と
-		// 衝突することは仕様上ない (init binding の Source は ~/.local/share/boid/
-		// kits ・ ~/.local/share/boid/workspaces ・ project workdir 群)。
-		if spec.SandboxProfile == int(sandbox.ProfileInit) {
-			mounts = append(mounts, additionalBindingMounts(expandedBindings)...)
-		}
-	} else {
-		mounts = append(mounts, additionalBindingMounts(expandedBindings)...)
-		for _, kitRoot := range spec.Visibility.KitRoots {
-			mounts = append(mounts, sandbox.Mount{
-				Source:   kitRoot,
-				Target:   kitRoot,
-				Type:     sandbox.MountBind,
-				ReadOnly: true,
-			})
-		}
+	//   * The harness adapter (claude / codex / opencode) declares the
+	//     agent-CLI bindings it needs (~/.claude, ~/.local/bin, ...). Those
+	//     go in directly.
+	//   * On top, workspace kit-declared additional_bindings carry
+	//     environment-specific tooling paths (~/.volta, ~/.nuget, /opt/google/
+	//     chrome, /usr/lib/dotnet, ...). The original Phase 3-c "kit-free
+	//     dispatch path" used to drop these on the assumption that kits only
+	//     existed in boid-kits and only supplied agent CLI plumbing — but the
+	//     2026-06-26 workspace+kit reorg made kits a per-user place to declare
+	//     host-side tool bindings, so they must apply on top of harness
+	//     bindings rather than be replaced by them.
+	//   * KitRoots is the legacy "expose the whole kit directory tree" case
+	//     used by shell-adapter jobs that have not migrated to adapter-driven
+	//     Bindings yet; preserve it whenever set so those jobs keep working.
+	mounts = append(mounts, additionalBindingMounts(harnessBindings)...)
+	mounts = append(mounts, additionalBindingMounts(expandedBindings)...)
+	for _, kitRoot := range spec.Visibility.KitRoots {
+		mounts = append(mounts, sandbox.Mount{
+			Source:   kitRoot,
+			Target:   kitRoot,
+			Type:     sandbox.MountBind,
+			ReadOnly: true,
+		})
 	}
 
 	// Per-task attachments dir — clipboard-pasted screenshots / text uploaded
