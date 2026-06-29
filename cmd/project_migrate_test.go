@@ -897,3 +897,69 @@ task_behaviors:
 		t.Errorf("project.yaml still has behavior-level kits:\n%s", updatedYAML)
 	}
 }
+
+// TestProjectMigrate_InvalidKitRef_Refuses verifies that a legacy project.yaml
+// whose kit ref derives a slug rejected by orchestrator.ValidKitName (e.g. a
+// bare "github.com" that yields the literal "github.com" — `.` is invalid)
+// fails the migration with a clear error instead of silently producing an
+// unloadable kit slug in workspace.yaml. Older versions tolerated this and
+// left invalid kit dirs that later tripped boid-kit-init cleanup.
+func TestProjectMigrate_InvalidKitRef_Refuses(t *testing.T) {
+	cases := []struct {
+		name   string
+		yaml   string
+		wantIn string // substring expected in the error
+	}{
+		{
+			name: "top-level kits ref",
+			yaml: `id: proj-bad
+name: Bad Top
+kits:
+  - github.com
+`,
+			wantIn: "kits",
+		},
+		{
+			name: "behavior kits ref",
+			yaml: `id: proj-bad-b
+name: Bad Behavior
+task_behaviors:
+  dev:
+    traits:
+      - artifact
+    kits:
+      - github.com
+`,
+			wantIn: "task_behaviors.dev.kits",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := setupMigrateProject(t, tc.yaml)
+			dbFile := setupMigrateDBFile(t)
+			cfgDir := t.TempDir()
+			dataDir := t.TempDir()
+
+			err := invokeMigrate(t, dir, migrateOpts{
+				workspace:     "bad-ws",
+				apply:         true,
+				dbPath:        dbFile,
+				xdgConfigHome: cfgDir,
+				xdgDataHome:   dataDir,
+			})
+			if err == nil {
+				t.Fatalf("expected migrate to refuse invalid ref, got nil")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tc.wantIn) || !strings.Contains(msg, "github.com") {
+				t.Errorf("error should name source (%q) and ref (%q), got: %v", tc.wantIn, "github.com", err)
+			}
+
+			// On refusal nothing should be written: no workspace.yaml created.
+			wsPath := filepath.Join(cfgDir, "boid", "workspaces", "bad-ws.yaml")
+			if _, statErr := os.Stat(wsPath); !os.IsNotExist(statErr) {
+				t.Errorf("workspace.yaml should not be written on refusal, got stat err: %v", statErr)
+			}
+		})
+	}
+}

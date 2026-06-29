@@ -395,23 +395,44 @@ meta:
 
 ---
 
-## Step 7: legacy-* kit の整理 (任意)
+## Step 7: project migrate 由来の整理対象 kit の整理 (任意)
 
 過去の `boid project migrate` は project.yaml の `host_commands` / `additional_bindings` を
-そのまま吸い出した `legacy-*` kit を `~/.local/share/boid/kits/` に残す。 これらは
-内容が分かりにくいため、 生成した正規 kit と見比べて整理を提案する。
+そのまま吸い出した `legacy-*` kit を `~/.local/share/boid/kits/` に残す。 加えて
+古い migrate ロジックは `kits:` フィールドに書かれた kit ref の末尾 segment を
+そのまま kit dir 名にしていたため、 以下のような **`legacy-` 接頭辞ではない整理対象 kit** も
+混在し得る:
+
+- project の base 名 (例: `ubs-apps-msgraph`, `atl-khi-azure-devops`)
+- 統合サービス名 (例: `azure-devops`)
+- まれに `ValidKitName` (lowercase + 数字 + `-`、 1–64 文字) を **満たさない** 不正名
+  (例: `github.com` — `.` は不正、 過去の migrate バグで漏れた)
+
+これらは内容が分かりにくく、 生成した正規 kit と機能重複も多いので整理を提案する。
 
 ### 7.1 列挙
 
+整理対象は **`legacy-*` だけでなく、 正規 kit と既存 integration kit を除いた残り全て** を候補に挙げる。
+正規 kit は本スキルが今回 Step 3〜5 で生成したもの (`github-cli` / `docker` / `dotnet-dev` / `go-dev` / `node` / `python` 等)、
+ユーザが意図して育てている integration kit (例: `board` / `atl` / `playwright` 等) はユーザ確認のうえスキップする。
+
 ```bash
+# legacy-* (明示的な migrate 由来)
 ls ~/.local/share/boid/kits/ | grep '^legacy-' || true
+
+# それ以外の全 kit (= 正規 kit や整備済 integration kit を除いた整理候補)
+ls ~/.local/share/boid/kits/
 ```
 
 該当なしならスキップ。
 
-### 7.2 各 legacy kit を分類
+不正名 kit (`ValidKitName` 違反、 例えば `.` 入り) を見つけた場合は **必ず整理対象に含める**
+(放置すると workspace.yaml 側の参照も読めない)。 cleanup-result.json の `deleted[].name` /
+`renamed[].from` には不正名をそのまま書いて構わない (CLI 側は match 側の不正名を tolerate する)。
 
-それぞれ `~/.local/share/boid/kits/<legacy-name>/kit.yaml` を Read し、 中身を
+### 7.2 各候補 kit を分類
+
+それぞれ `~/.local/share/boid/kits/<name>/kit.yaml` を Read し、 中身を
 **今回生成した正規 kit** (`github-cli` / `docker` / `dotnet-dev` / `go-dev` / `node` / `python`) と
 見比べて以下のいずれかに分類する:
 
@@ -475,6 +496,10 @@ mv ~/.local/share/boid/kits/legacy-my-web-app ~/.local/share/boid/kits/<new-name
 - 削除のみ (置き換え無し) なら `replaced_by` を省略する。 該当 workspace の `kits:` から単純に消える
 - 同じ kit を rename と delete に同時に登録しない (矛盾)
 - ファイル自体は CLI 側が処理完了後に削除する。 スキル側で消す必要はない
+- **`deleted[].name` / `renamed[].from`** (整理対象の元名) には、 `ValidKitName` に通らない
+  不正名 (例: `github.com`) を書いてよい。 CLI 側は文字列等値で workspace.kits を整理するだけなので tolerate する
+- **`deleted[].replaced_by` / `renamed[].to`** (workspace.kits に新規書き込む側) は必ず
+  `ValidKitName` を満たす slug にする。 CLI 側が validate して reject する
 
 ### 7.6 制約
 
