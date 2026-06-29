@@ -2,18 +2,22 @@
 # Detection signal: `which uv` 成功 (uv variant — 推奨)
 #                   `which python3` または `which python` 成功 (system variant)
 # Variables to substitute (uv variant):
-#   {{uv_binary}}    = uv binary の絶対パス
-#                      確認: which uv
-#   {{uv_version}}   = uv のバージョン
-#                      確認: uv --version | awk '{print $2}'
-#   {{uv_cache_dir}} = uv の cache dir
-#                      確認: 環境変数 $UV_CACHE_DIR があればそれ
-#                            なければ $HOME/.cache/uv
-#   {{uv_data_dir}}  = uv の data dir (uv 管理 Python / uv tool のインストール先)
-#                      確認: 環境変数 $UV_DATA_DIR があればそれ
-#                            なければ $HOME/.local/share/uv
+#   {{uv_binary}}     = uv binary の絶対パス
+#                       確認: which uv
+#   {{uv_binary_dir}} = uv binary の親ディレクトリ (PATH 用)
+#                       確認: dirname "$(which uv)"
+#   {{uv_version}}    = uv のバージョン
+#                       確認: uv --version | awk '{print $2}'
+#   {{uv_cache_dir}}  = uv の cache dir
+#                       確認: 環境変数 $UV_CACHE_DIR があればそれ
+#                             なければ $HOME/.cache/uv
+#   {{uv_data_dir}}   = uv の data dir (uv 管理 Python / uv tool のインストール先)
+#                       確認: 環境変数 $UV_DATA_DIR があればそれ
+#                             なければ $HOME/.local/share/uv
 #
-# Note: uv は単一バイナリの Python パッケージマネージャ (Astral 製) で、
+# Note: uv は **サンドボックス内で直接実行する**。 host_commands には登録しない
+#   (ローカルなツールチェインであり、 ホストの credential や特権を必要としないため)。
+#   uv は単一バイナリの Python パッケージマネージャ (Astral 製) で、
 #   pip / venv / pyenv / poetry / pip-tools を 1 つに統合する。
 #   この kit は uv 経由で Python 環境を完結させる前提。
 #   uv 経由で Python 自体も install されるので system python kit は不要。
@@ -33,26 +37,22 @@
 # Note: プロジェクト仮想環境は通常 worktree 直下の .venv/。 worktree が
 #   rw で bind されていれば追加 binding は不要。
 #
-# Note: uv self / uv publish は外向きの危険操作のため allow から外している。
-#   必要なら手動で kit.yaml に追加する。
-#
 # === system / pyenv / conda variant に切替する場合 ===
-# system python (uv なし):
-#   host_commands:
-#     python3:
-#       path: {{python_binary}}     # 例: /usr/bin/python3
-#     pip3:
-#       path: {{pip_binary}}        # 例: /usr/bin/pip3
+# いずれも host_commands は使わない。 binary を bind し PATH を通す方式に統一する。
+#
+# system python (uv なし) — 例: /usr/bin/python3:
+#   {{python_binary}}     = which python3
+#   {{python_binary_dir}} = dirname "$(which python3)"  # 通常 /usr/bin
+#   env:
+#     PATH: "{{python_binary_dir}}:${PATH}"
 #   additional_bindings:
-#     - {{python_binary}}
-#     - {{pip_binary}}
-#     # 仮想環境を使う場合: ~/.venvs/<name> など
+#     - source: {{python_binary}}
+#     - source: {{pip_binary}}        # 例: /usr/bin/pip3 (which pip3)
+#     # 仮想環境を使う場合: ~/.venvs/<name> など (rw bind)
 # pyenv:
-#   python_binary = $HOME/.pyenv/versions/<version>/bin/python3
-#   additional_bindings に $HOME/.pyenv 全体を追加
+#   $HOME/.pyenv 全体を bind し、 $HOME/.pyenv/shims を PATH に追加
 # conda / mamba:
-#   python_binary = $CONDA_PREFIX/bin/python3
-#   additional_bindings に $CONDA_PREFIX を追加
+#   $CONDA_PREFIX を bind し、 $CONDA_PREFIX/bin を PATH に追加
 
 meta:
   name: python
@@ -61,31 +61,14 @@ meta:
   generated_at: "YYYY-MM-DD"
   generated_by: boid-kit-init
 
-host_commands:
-  uv:
-    path: {{uv_binary}}
-    allow:
-      - run
-      - sync
-      - lock
-      - add
-      - remove
-      - build
-      - pip
-      - venv
-      - tool
-      - python
-      - init
-      - export
-      - tree
-      - cache
-      - version
-    env:
-      UV_CACHE_DIR: {{uv_cache_dir}}
-      UV_DATA_DIR: {{uv_data_dir}}
-      UV_NO_PROGRESS: "1"
+env:
+  UV_CACHE_DIR: {{uv_cache_dir}}
+  UV_DATA_DIR: {{uv_data_dir}}
+  UV_NO_PROGRESS: "1"
+  PATH: "{{uv_binary_dir}}:${PATH}"
 
 additional_bindings:
+  - source: {{uv_binary}}
   - source: {{uv_cache_dir}}
     mode: rw
   - source: {{uv_data_dir}}
