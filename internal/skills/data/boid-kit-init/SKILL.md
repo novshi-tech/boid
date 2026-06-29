@@ -5,6 +5,9 @@ description: >
   「boid kit init を実行して」「kit を初期化して」「kit.yaml を生成して」
   「ローカル環境の kit を作りたい」「Node.js / Go / Docker / gh を kit に登録して」
   など、ホスト環境のスキャンと kit.yaml 生成が必要なときに使用する。
+  また「az を kit にして」「atl コマンドを登録して」「playwright-cli の kit を作って」
+  のような、 既知テンプレに無い個別コマンドの ad-hoc kit 化リクエストにも応じる
+  (Step 2.5)。
   project は見ない — project とのマッチングは boid-workspace-configure の責務。
 ---
 
@@ -153,6 +156,141 @@ python --version 2>/dev/null
   ✗ docker  → socket が見つかりません (スキップ)
 
 上記 3 個を生成してよいですか?
+```
+
+---
+
+## Step 2.5: ad-hoc 個別コマンドの kit 化 (リクエスト時のみ)
+
+ユーザが特定のコマンドを名指しで kit 化してほしいと言ってきたとき
+(例: 「`az` を kit にして」「`atl` コマンドの kit を作って」「`playwright-cli` 登録して」)、
+Step 1 の自動スキャンに該当が無くてもこの Step で 1 個ずつ kit を組み立てる。
+**ユーザ要求が無いときは Step 2.5 を勝手に走らせない** (PATH 全体スキャンはノイズに
+なるので、 アドホック起動のみ)。
+
+### 2.5.1 既知テンプレ該当チェック
+
+まず Step 1 の検出ヒューリスティック表を見て、 要求されたコマンドが既知テンプレで
+覆えるかチェックする:
+
+- 該当する (例: ユーザが「`node` を kit にして」と言った) → 既知パスへ流す
+  (Step 4 で `templates/<name>.yaml.tmpl` を使う)
+- 該当しない (例: `az` / `atl` / `azcopy` / `freee` / `msgraph` / `playwright-cli`
+  / `terraform` 等) → 以下の ad-hoc フローへ
+
+汎用性が高そうなコマンドは「既知テンプレに足すべきかも」 と一言添えるのは可
+(ただし本セッションでテンプレ追加までやらない — それは boid 本体側の改修)。
+
+### 2.5.2 binary 確認
+
+```bash
+which <command>
+<command> --version 2>/dev/null || <command> version 2>/dev/null || true
+```
+
+binary が無ければユーザに「`<command>` が PATH 上に見当たりません。 インストール
+してから再実行してください」 と返してこの Step を中断する。
+
+### 2.5.3 host_commands vs additional_bindings の判定
+
+上の「host_commands と additional_bindings の使い分け」 表に従って判定する。
+迷ったら直接ユーザに聞く:
+
+```
+`az` をどう扱いますか?
+  A. host_commands  ホスト側で実行・ ホストの credential (~/.azure/ 等) を使う
+                    Azure CLI のようなクラウド認証系はだいたいこちら
+  B. additional_bindings  サンドボックス内に bind して直接実行
+                          静的に動くツールチェイン (playwright-cli の中身等) はこちら
+```
+
+判定の典型例:
+
+| コマンド | 経路 | 理由 |
+|---|---|---|
+| az | host_commands | `~/.azure/` の auth が必要、 ホスト credential |
+| azcopy | host_commands | Azure auth に依存 |
+| atl | host_commands | ホストの atl 設定 (~/.atl など) を使う |
+| terraform | host_commands or additional_bindings | provider credential を使うなら host、 static なら bindings |
+| playwright-cli | additional_bindings | Chromium バイナリ等を bind すれば動く (host 特権不要) |
+| freee / msgraph | host_commands | ホストの OAuth token を使う |
+
+### 2.5.4 対話で yaml フィールドを詰める
+
+**host_commands 経路** の対話項目:
+
+- **kit name** (default: binary 名と同じ。 既存と衝突するなら別名)
+- **path** (default: `which <command>` の結果)
+- **allow パターン** (default: `["*"]` ではなく **使うサブコマンドのホワイトリスト** を推奨)
+  - わからない場合は `<command> --help` の出力を見せて 3-5 個を選んでもらう
+  - 後で追加が必要になったら kit.yaml を手編集する旨を案内
+- **必要な env** (default: なし)
+  - 環境変数が必要なら **必ず `secret:<key>` 参照のみ**
+  - 生値を入力されたら警告して `secret:<key>` に置換するよう案内
+  - 不要なら `env:` セクション自体を省く
+
+**additional_bindings 経路** の対話項目:
+
+- **kit name** (default: binary 名)
+- **bind 元 path** (default: which 結果の親ディレクトリ、 または `$HOME/.<tool>` 等)
+- **PATH env への追加** (default: bind 元と同じ path)
+- **mode** (default: 省略 = readonly。 書き込みが必要なときだけ `mode: rw`)
+- **必要な env** (なし or `secret:<key>` のみ)
+
+### 2.5.5 ad-hoc kit.yaml の組み立て例
+
+**host_commands 例** (`az` を ad-hoc 登録):
+
+```yaml
+meta:
+  name: azure-cli
+  description: Azure CLI (az) をホスト経由で提供する
+  category: utility
+  generated_at: "YYYY-MM-DD"
+  generated_by: boid-kit-init
+
+host_commands:
+  az:
+    path: /usr/bin/az
+    allow:
+      - account
+      - login
+      - storage
+      - vm
+    # env が必要な場合のみ。 生値は絶対書かない。
+    # env:
+    #   AZURE_CLIENT_ID: "secret:"
+```
+
+**additional_bindings 例** (`playwright-cli` を ad-hoc 登録):
+
+```yaml
+meta:
+  name: playwright-cli
+  description: playwright-cli をサンドボックスに直接 bind
+  category: utility
+  generated_at: "YYYY-MM-DD"
+  generated_by: boid-kit-init
+
+env:
+  PATH: "/opt/playwright/bin:${PATH}"
+
+additional_bindings:
+  - source: /opt/playwright
+  # 書き込みが必要なら mode: rw を追加
+```
+
+### 2.5.6 既存衝突確認 → 書き込み
+
+組み立てた yaml は通常の Step 3 (衝突確認) → Step 5 (書き込み) → Step 6
+(サマリ) の経路に合流させる。 ad-hoc 生成も `generated_by: boid-kit-init` を
+付け、 結果サマリには **「ad-hoc 生成」** とラベルを添えて自動スキャン分と
+区別する:
+
+```
+[生成完了]
+  ~/.local/share/boid/kits/node/kit.yaml      (auto)
+  ~/.local/share/boid/kits/azure-cli/kit.yaml (ad-hoc)
 ```
 
 ---
