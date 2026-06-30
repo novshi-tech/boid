@@ -380,6 +380,53 @@ func TestProjectVisibilityMounts_WorktreeMode_OrigGitReadOnly(t *testing.T) {
 	}
 }
 
+// worktree モードでは origProjectDir/.boid が effectiveDir/.boid に bind される。
+// project の .boid は git untracked が前提で worktree checkout に含まれないため、
+// この bind が kit hooks / skills を worktree タスクへ供給する唯一の経路となる。
+// writable タスクでは書き込み可、readonly タスクでは ro。
+func TestProjectVisibilityMounts_WorktreeMode_BoidBind(t *testing.T) {
+	const origProject = "/home/user/project"
+	const worktreeDir = "/home/user/worktrees/task1"
+
+	findBoid := func(mounts []sandbox.Mount) *sandbox.Mount {
+		for i := range mounts {
+			if mounts[i].Target == worktreeDir+"/.boid" {
+				return &mounts[i]
+			}
+		}
+		return nil
+	}
+
+	// writable タスク: .boid は origProjectDir から bind され書き込み可。
+	wMounts := projectVisibilityMounts(origProject, worktreeDir, "/home/user", true, nil, true)
+	w := findBoid(wMounts)
+	if w == nil {
+		t.Fatal(".boid bind not found in writable worktree mounts")
+	}
+	if w.Source != origProject+"/.boid" {
+		t.Errorf(".boid source = %q, want %q", w.Source, origProject+"/.boid")
+	}
+	if w.Type != sandbox.MountBind {
+		t.Errorf(".boid type = %v, want MountBind", w.Type)
+	}
+	if w.ReadOnly {
+		t.Error(".boid bind must be writable for a writable task")
+	}
+	if w.Guard == "" {
+		t.Error(".boid bind must have a Guard")
+	}
+
+	// readonly タスク: .boid は依然 bind されるが ro。
+	roMounts := projectVisibilityMounts(origProject, worktreeDir, "/home/user", false, nil, true)
+	ro := findBoid(roMounts)
+	if ro == nil {
+		t.Fatal(".boid bind not found in read-only worktree mounts")
+	}
+	if !ro.ReadOnly {
+		t.Error(".boid bind must be ReadOnly for a read-only task")
+	}
+}
+
 // boid と git は ResolveHostCommands に含まれない（専用の bind mount が別途生成される）。
 // その他の host commands はホスト実パスに bind mount される。
 func TestHostCommandMounts_BoidAndGitExcluded(t *testing.T) {
