@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,18 +11,39 @@ import (
 	"time"
 
 	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/db"
+	"github.com/novshi-tech/boid/internal/db/migrate"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
+// newSecretTestDB returns a fresh in-memory SQLite with migrations applied,
+// scoped to the test. We can't use testutil.NewTestDB here because
+// testutil imports internal/server (testutil/server.go), which would create an
+// import cycle when used from inside the server package.
+func newSecretTestDB(t *testing.T) *db.DB {
+	t.Helper()
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := migrate.Apply(d.Conn); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	return d
+}
+
 type capturingBroker struct {
-	token string
-	ctx   sandbox.TokenContext
+	token    string
+	ctx      sandbox.TokenContext
+	resolver dispatcher.SecretResolver
 }
 
 func (b *capturingBroker) RegisterCommands(commands map[string]orchestrator.CommandDef, builtinPolicies map[string]sandbox.BuiltinPolicy, ctx sandbox.TokenContext, resolve dispatcher.SecretResolver) string {
 	b.ctx = ctx
+	b.resolver = resolve
 	if b.token == "" {
 		b.token = "token-1"
 	}
@@ -59,6 +81,21 @@ func (r stubProjectRepo) ListWorkspaces() ([]*orchestrator.WorkspaceSummary, err
 
 func (r stubProjectRepo) DeleteProject(id string) error { return nil }
 
+// stubMetaResolver returns a hydrated ProjectMeta whose SecretNamespace mirrors
+// the project's workspace id — same contract as orchestrator.ProjectStore's
+// GetWithWorkspace, simplified for the broker register tests.
+type stubMetaResolver struct {
+	namespaces map[string]string // project_id → SecretNamespace
+}
+
+func (r stubMetaResolver) GetWithWorkspace(_ context.Context, projectID string) (*orchestrator.ProjectMeta, error) {
+	ns, ok := r.namespaces[projectID]
+	if !ok {
+		return nil, fmt.Errorf("project %q: meta not loaded", projectID)
+	}
+	return &orchestrator.ProjectMeta{SecretNamespace: ns}, nil
+}
+
 func TestBrokerRegistry_RegisterBrokerCommands_ResolvesWorkspaceScope(t *testing.T) {
 	broker := &capturingBroker{}
 	registry := brokerRegistry{
@@ -90,6 +127,88 @@ func TestBrokerRegistry_RegisterBrokerCommands_ResolvesWorkspaceScope(t *testing
 	sort.Strings(allowed)
 	if !reflect.DeepEqual(allowed, []string{"proj-1", "proj-2"}) {
 		t.Fatalf("allowed project ids = %v, want [proj-1 proj-2]", allowed)
+	}
+}
+
+// Regression: `/api/broker/register` (the path `boid exec` takes) used to
+// hard-code namespace="default" when resolving secret: env values, so any
+// project whose secrets live in a workspace namespace would see host_commands
+// rejected with "required secret(s) unavailable" even after `boid secret set
+// --namespace <workspace>`. The dispatcher path in
+// internal/dispatcher/runner.go already routed via spec.SecretNamespace; only
+// this broker register path was missing the hydration.
+func TestBrokerRegistry_RegisterBrokerCommands_ResolvesSecretInWorkspaceNamespace(t *testing.T) {
+	d := newSecretTestDB(t)
+	secrets, err := dispatcher.NewSecretStore(d.Conn, dispatcher.GenerateKey())
+	if err != nil {
+		t.Fatalf("NewSecretStore: %v", err)
+	}
+	// Same key in two namespaces so a wrong-namespace lookup would silently
+	// return the "default" value instead of failing — we want to assert that
+	// resolution explicitly picks the workspace value.
+	if err := secrets.Set("ws-1", "MY_TOKEN", "ws-value"); err != nil {
+		t.Fatalf("Set ws-1: %v", err)
+	}
+	if err := secrets.Set("default", "MY_TOKEN", "default-value"); err != nil {
+		t.Fatalf("Set default: %v", err)
+	}
+
+	broker := &capturingBroker{}
+	registry := brokerRegistry{
+		broker: broker,
+		projects: stubProjectRepo{projects: []*orchestrator.Project{
+			{ID: "proj-1", WorkDir: "/workspace/proj-1", WorkspaceID: "ws-1"},
+		}},
+		metaStore:   stubMetaResolver{namespaces: map[string]string{"proj-1": "ws-1"}},
+		secretStore: secrets,
+	}
+
+	if _, err := registry.RegisterBrokerCommands(nil, nil, "proj-1"); err != nil {
+		t.Fatalf("RegisterBrokerCommands: %v", err)
+	}
+	if broker.resolver == nil {
+		t.Fatal("resolver must be set when secretStore is configured")
+	}
+	got, err := broker.resolver("MY_TOKEN")
+	if err != nil {
+		t.Fatalf("resolver(MY_TOKEN): %v", err)
+	}
+	if got != "ws-value" {
+		t.Fatalf("resolver returned %q (default namespace), want %q (workspace ws-1)", got, "ws-value")
+	}
+}
+
+// Project with no workspace assignment should fall back to the "default"
+// namespace so legacy / unlinked projects keep working.
+func TestBrokerRegistry_RegisterBrokerCommands_FallsBackToDefaultWhenSecretNamespaceEmpty(t *testing.T) {
+	d := newSecretTestDB(t)
+	secrets, err := dispatcher.NewSecretStore(d.Conn, dispatcher.GenerateKey())
+	if err != nil {
+		t.Fatalf("NewSecretStore: %v", err)
+	}
+	if err := secrets.Set("default", "MY_TOKEN", "default-value"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	broker := &capturingBroker{}
+	registry := brokerRegistry{
+		broker: broker,
+		projects: stubProjectRepo{projects: []*orchestrator.Project{
+			{ID: "proj-x", WorkDir: "/workspace/proj-x"},
+		}},
+		metaStore:   stubMetaResolver{namespaces: map[string]string{"proj-x": ""}},
+		secretStore: secrets,
+	}
+
+	if _, err := registry.RegisterBrokerCommands(nil, nil, "proj-x"); err != nil {
+		t.Fatalf("RegisterBrokerCommands: %v", err)
+	}
+	got, err := broker.resolver("MY_TOKEN")
+	if err != nil {
+		t.Fatalf("resolver(MY_TOKEN): %v", err)
+	}
+	if got != "default-value" {
+		t.Fatalf("resolver returned %q, want %q (default namespace fallback)", got, "default-value")
 	}
 }
 
