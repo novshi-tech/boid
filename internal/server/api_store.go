@@ -1,7 +1,9 @@
 package server
 
 import (
+	"context"
 	"database/sql"
+	"log/slog"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -14,6 +16,14 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
+
+// projectMetaResolver hydrates a project's runtime meta (including the
+// workspace-derived SecretNamespace) so the broker register handler can route
+// secret lookups to the correct namespace. *orchestrator.ProjectStore satisfies
+// this; tests pass an in-memory stub.
+type projectMetaResolver interface {
+	GetWithWorkspace(ctx context.Context, projectID string) (*orchestrator.ProjectMeta, error)
+}
 
 type apiTxStore struct {
 	tasks   *orchestrator.TaskRepository
@@ -107,6 +117,7 @@ func (t apiTransactor) WithinTx(fn func(api.TxStore) error) error {
 type brokerRegistry struct {
 	broker      dispatcher.CommandBroker
 	projects    api.ProjectRepository
+	metaStore   projectMetaResolver
 	secretStore *dispatcher.SecretStore
 }
 
@@ -146,8 +157,28 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 
 	var resolve dispatcher.SecretResolver
 	if r.secretStore != nil {
+		// Hydrate the project meta so we route secret lookups to the
+		// workspace-derived SecretNamespace. Before this hydration was added
+		// the namespace was hard-coded to "default", which broke `boid exec`
+		// for any project whose secrets live in a workspace namespace (the
+		// dispatcher path in internal/dispatcher/runner.go already routed
+		// correctly via spec.SecretNamespace; only the broker register path
+		// was missing it).
+		ns := ""
+		if r.metaStore != nil {
+			meta, mErr := r.metaStore.GetWithWorkspace(context.Background(), projectID)
+			if mErr == nil && meta != nil {
+				ns = meta.SecretNamespace
+			} else if mErr != nil {
+				slog.Warn("failed to hydrate project meta for secret resolution; falling back to default namespace",
+					"project_id", projectID, "error", mErr)
+			}
+		}
+		if ns == "" {
+			ns = "default"
+		}
 		resolve = func(key string) (string, error) {
-			return r.secretStore.Get("default", key)
+			return r.secretStore.Get(ns, key)
 		}
 	}
 	token := r.broker.RegisterCommands(resolved, builtinPolicies, ctx, resolve)

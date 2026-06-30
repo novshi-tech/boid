@@ -637,7 +637,12 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	})
 
 	brokerHandler := &api.BrokerHandler{
-		Registry: brokerRegistry{broker: newCommandBroker(srv.broker), projects: runtime.projectRepo, secretStore: srv.secretStore},
+		Registry: brokerRegistry{
+			broker:      newCommandBroker(srv.broker),
+			projects:    runtime.projectRepo,
+			metaStore:   srv.Store(),
+			secretStore: srv.secretStore,
+		},
 	}
 	r.Mount("/api/broker", brokerHandler.Routes())
 
