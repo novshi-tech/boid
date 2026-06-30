@@ -623,6 +623,65 @@ func TestResolveUpstream_dockerHost_priority_over_candidates(t *testing.T) {
 	}
 }
 
+// TestResolveUpstream_picksPodmanSocketWhenDockerAbsent verifies the
+// public ResolveUpstream entry point falls back to the rootless podman socket
+// at $XDG_RUNTIME_DIR/podman/podman.sock when no docker.sock candidate exists.
+// This is the common case on hosts that ship podman by default (Fedora,
+// Ubuntu with podman installed) and have no docker daemon.
+func TestResolveUpstream_picksPodmanSocketWhenDockerAbsent(t *testing.T) {
+	dir := t.TempDir()
+	// Create the rootless podman socket layout under a fake XDG_RUNTIME_DIR
+	// but deliberately omit docker.sock so the resolver must fall through.
+	podmanDir := filepath.Join(dir, "podman")
+	if err := os.MkdirAll(podmanDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	podmanSock := filepath.Join(podmanDir, "podman.sock")
+	if err := os.WriteFile(podmanSock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+	t.Setenv("DOCKER_HOST", "")
+
+	got, err := ResolveUpstream("")
+	if err != nil {
+		t.Fatalf("ResolveUpstream: %v", err)
+	}
+	if got != podmanSock {
+		t.Errorf("expected %q, got %q", podmanSock, got)
+	}
+}
+
+// TestResolveUpstream_prefersDockerOverPodman verifies docker.sock keeps
+// its existing priority when both docker and podman sockets are present
+// — adding podman fallback must not regress hosts that intentionally use
+// the docker daemon.
+func TestResolveUpstream_prefersDockerOverPodman(t *testing.T) {
+	dir := t.TempDir()
+	dockerSock := filepath.Join(dir, "docker.sock")
+	if err := os.WriteFile(dockerSock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	podmanDir := filepath.Join(dir, "podman")
+	if err := os.MkdirAll(podmanDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	podmanSock := filepath.Join(podmanDir, "podman.sock")
+	if err := os.WriteFile(podmanSock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+	t.Setenv("DOCKER_HOST", "")
+
+	got, err := ResolveUpstream("")
+	if err != nil {
+		t.Fatalf("ResolveUpstream: %v", err)
+	}
+	if got != dockerSock {
+		t.Errorf("expected docker.sock %q to win over podman, got %q", dockerSock, got)
+	}
+}
+
 // --- helpers for ledger-aware proxy tests ---
 
 // newProxyWithLedger starts a proxy with an attached ledger and returns its socket path.
