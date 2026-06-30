@@ -506,7 +506,22 @@ func projectVisibilityMounts(
 		})
 	}
 
-	// 5) .boid: allow writes (e.g. project.yaml) — no separate read-only bind.
+	// 5) .boid bind-mount from the live project dir. This is the only path that
+	// makes kit hooks / skills visible to worktree tasks: the project's .boid is
+	// untracked by git, so the worktree checkout does not contain it (the
+	// worktree manager only creates an empty .boid as a bind target). Writable
+	// when the task is writable so agents can edit project.yaml etc.; read-only
+	// otherwise so the hooks/skills an agent runs under cannot be tampered with.
+	boidSource := origProjectDir + "/.boid"
+	if boidSource != "/.boid" { // ignore when origProjectDir is empty
+		out = append(out, sandbox.Mount{
+			Source:   boidSource,
+			Target:   effectiveDir + "/.boid",
+			Type:     sandbox.MountBind,
+			ReadOnly: !writable,
+			Guard:    dirGuardExpr(boidSource),
+		})
+	}
 
 	// 6) .git ro re-bind: prevents .git/config, .git/hooks/*, etc. from being
 	// modified directly inside the sandbox. The broker runs in a separate mount
