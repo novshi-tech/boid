@@ -44,8 +44,12 @@ func TestExpandScaffoldTemplate_WithAgent(t *testing.T) {
 		if instr["agent"] != "claude-code" {
 			t.Errorf("%s.default_instruction.agent = %v, want 'claude-code'", key, instr["agent"])
 		}
-		if instr["type"] != "execution" {
-			t.Errorf("%s.default_instruction.type = %v, want 'execution'", key, instr["type"])
+		// `type:` is no longer emitted — the Instruction struct has no Type
+		// field, so the legacy key was silently dropped on load and is now
+		// removed from the template per docs/inspection/consolidated-fixes.md
+		// P0-7.
+		if v, exists := instr["type"]; exists {
+			t.Errorf("%s.default_instruction.type = %v, want absent (Instruction has no Type field)", key, v)
 		}
 	}
 }
@@ -87,9 +91,10 @@ func TestExpandScaffoldTemplate_AgentEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestWizardRun_Basic verifies the wizard generates a portable project.yaml
-// containing only id / name / worktree / task_behaviors. Per the kit /
-// workspace / project reorg, project.yaml must NOT contain kits, env,
-// host_commands, additional_bindings, secret_namespace, or capabilities.
+// containing only id / name / worktree / default_task_behavior /
+// task_behaviors. Per the kit / workspace / project reorg, project.yaml must
+// NOT contain kits, env, host_commands, additional_bindings,
+// secret_namespace, or capabilities.
 func TestWizardRun_Basic(t *testing.T) {
 	projectDir := t.TempDir()
 
@@ -112,10 +117,11 @@ func TestWizardRun_Basic(t *testing.T) {
 	}
 
 	var proj struct {
-		ID            string         `yaml:"id"`
-		Name          string         `yaml:"name"`
-		Worktree      bool           `yaml:"worktree"`
-		TaskBehaviors map[string]any `yaml:"task_behaviors"`
+		ID                  string         `yaml:"id"`
+		Name                string         `yaml:"name"`
+		Worktree            bool           `yaml:"worktree"`
+		DefaultTaskBehavior string         `yaml:"default_task_behavior"`
+		TaskBehaviors       map[string]any `yaml:"task_behaviors"`
 	}
 	if err := yaml.Unmarshal(data, &proj); err != nil {
 		t.Fatalf("parse project.yaml: %v", err)
@@ -130,11 +136,32 @@ func TestWizardRun_Basic(t *testing.T) {
 	if !proj.Worktree {
 		t.Error("worktree must be true")
 	}
+	if proj.DefaultTaskBehavior != "supervisor" {
+		t.Errorf("default_task_behavior = %q, want %q (silences daemon deprecation warning)", proj.DefaultTaskBehavior, "supervisor")
+	}
 
-	// Embedded template always produces both behaviors.
+	// Embedded template always produces both behaviors with a usable agent.
 	for _, key := range []string{"supervisor", "executor"} {
-		if _, ok := proj.TaskBehaviors[key]; !ok {
+		entry, ok := proj.TaskBehaviors[key].(map[string]any)
+		if !ok {
 			t.Errorf("expected %q behavior in task_behaviors", key)
+			continue
+		}
+		instr, ok := entry["default_instruction"].(map[string]any)
+		if !ok {
+			t.Errorf("%s.default_instruction missing or not a map", key)
+			continue
+		}
+		// agent must be set — empty Instruction.Agent disables agent-hook
+		// synthesis (see internal/orchestrator/evaluator.go) which leaves
+		// tasks unable to dispatch.
+		if got := instr["agent"]; got != "claude-code" {
+			t.Errorf("%s.default_instruction.agent = %v, want %q", key, got, "claude-code")
+		}
+		// type: execution is no longer emitted (Instruction has no Type
+		// field; the legacy key was a silently-dropped artifact).
+		if v, exists := instr["type"]; exists {
+			t.Errorf("%s.default_instruction.type = %v, want absent", key, v)
 		}
 	}
 
@@ -223,6 +250,52 @@ func TestWizardRun_EmbeddedBehaviors(t *testing.T) {
 	}
 
 	assertNoMachineLocalKeys(t, data)
+}
+
+// TestWizardRun_AgentOverride verifies that callers (e.g. cmd-layer
+// `boid project init --agent <name>`) can override the default agent that
+// gets baked into each behavior's default_instruction.
+func TestWizardRun_AgentOverride(t *testing.T) {
+	projectDir := t.TempDir()
+
+	input := "agent-override\n"
+	var out bytes.Buffer
+
+	w := &initwizard.Wizard{
+		In:    strings.NewReader(input),
+		Out:   &out,
+		Agent: "codex",
+	}
+
+	if err := w.Run(projectDir); err != nil {
+		t.Fatalf("Run: %v\nOutput:\n%s", err, out.String())
+	}
+
+	data, err := os.ReadFile(filepath.Join(projectDir, ".boid", "project.yaml"))
+	if err != nil {
+		t.Fatalf("read project.yaml: %v", err)
+	}
+
+	var proj struct {
+		TaskBehaviors map[string]any `yaml:"task_behaviors"`
+	}
+	if err := yaml.Unmarshal(data, &proj); err != nil {
+		t.Fatalf("parse project.yaml: %v", err)
+	}
+
+	for _, key := range []string{"supervisor", "executor"} {
+		entry, ok := proj.TaskBehaviors[key].(map[string]any)
+		if !ok {
+			t.Fatalf("expected %q behavior in task_behaviors", key)
+		}
+		instr, ok := entry["default_instruction"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s.default_instruction missing", key)
+		}
+		if got := instr["agent"]; got != "codex" {
+			t.Errorf("%s.default_instruction.agent = %v, want %q", key, got, "codex")
+		}
+	}
 }
 
 func TestWizardRun_ExistingProjectYAML(t *testing.T) {

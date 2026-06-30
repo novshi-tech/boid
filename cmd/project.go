@@ -18,6 +18,9 @@ import (
 var projectAddWorkspace string
 var projectInitWorkspace string
 
+// --agent flag value for project init; empty falls back to initwizard.DefaultAgent.
+var projectInitAgent string
+
 var projectCmd = &cobra.Command{
 	Use:   "project",
 	Short: "Manage projects",
@@ -43,9 +46,10 @@ var projectInitSubCmd = &cobra.Command{
 	Short: "Initialize a new boid project interactively and register it",
 	Long: `Initialize a new boid project in the current directory (or [dir]).
 
-Runs an interactive wizard to set the project name, select kits, choose a
-task behavior provider, and generate .boid/project.yaml, then registers the
-project with the running boid daemon.
+Prompts for a project name, then writes .boid/project.yaml with the canonical
+supervisor / executor task_behaviors (worktree=true, agent=claude-code by
+default) and registers the project with the running boid daemon. Kit
+selection has moved to ` + "`boid workspace configure`" + `.
 
 Optionally assigns the project to a workspace (get-or-create: creates a DB
 row for the slug even if no workspace.yaml exists yet).
@@ -54,6 +58,7 @@ Example:
   boid project init                              # initialize in current dir
   boid project init ./my-project                 # initialize in ./my-project
   boid project init . --workspace main           # also assign to workspace "main"
+  boid project init . --agent codex              # bake a non-default agent
 `,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runProjectInit,
@@ -98,6 +103,7 @@ var projectBehaviorsCmd = &cobra.Command{
 func init() {
 	projectAddCmd.Flags().StringVar(&projectAddWorkspace, "workspace", "", "Assign the project to a workspace after registration (get-or-create)")
 	projectInitSubCmd.Flags().StringVar(&projectInitWorkspace, "workspace", "", "Assign the project to a workspace after initialization (get-or-create)")
+	projectInitSubCmd.Flags().StringVar(&projectInitAgent, "agent", "", "Harness agent baked into each behavior's default_instruction (default: claude-code)")
 
 	projectCmd.AddCommand(projectAddCmd, projectInitSubCmd, projectListCmd, projectRemoveCmd, projectReloadCmd, projectShowCmd, projectBehaviorsCmd)
 	rootCmd.AddCommand(projectCmd)
@@ -162,8 +168,9 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	}
 
 	w := &initwizard.Wizard{
-		In:  os.Stdin,
-		Out: cmd.OutOrStdout(),
+		In:    os.Stdin,
+		Out:   cmd.OutOrStdout(),
+		Agent: projectInitAgent,
 	}
 
 	if err := w.Run(projectDir); err != nil {

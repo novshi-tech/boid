@@ -26,12 +26,32 @@ type ScaffoldTemplateData struct {
 
 // Wizard runs the project initialization flow. After the kit/workspace/project
 // reorg, project.yaml is portable: it holds only id / name / worktree /
-// task_behaviors. Kit selection has moved to `boid workspace configure`, so the
-// wizard no longer prompts for kits.
+// task_behaviors / default_task_behavior. Kit selection has moved to
+// `boid workspace configure`, so the wizard no longer prompts for kits.
+//
+// Agent is the harness agent name baked into each behavior's
+// default_instruction.agent. Empty falls back to "claude-code" (the only
+// agent that is universally available; codex / opencode require explicit
+// opt-in by the user via direct project.yaml edit or workspace setup).
 type Wizard struct {
-	In  io.Reader
-	Out io.Writer
+	In    io.Reader
+	Out   io.Writer
+	Agent string
 }
+
+// DefaultAgent is the harness agent that the wizard bakes into every
+// behavior's default_instruction.agent when the caller does not override
+// Wizard.Agent. It must match a name handled by harnessTypeForAgent in
+// internal/orchestrator/planner.go; empty would synthesize no agent hook
+// and leave new tasks unable to dispatch.
+const DefaultAgent = "claude-code"
+
+// DefaultTaskBehavior is the canonical behavior the wizard names as the
+// project-wide default. It must exist in the generated task_behaviors map.
+// Omitting this from project.yaml triggers a daemon-side deprecation warning
+// even though the daemon currently falls back to "supervisor" — keeping it
+// explicit silences the warning and documents intent.
+const DefaultTaskBehavior = "supervisor"
 
 // projectFileOut is the output structure for project.yaml.
 //
@@ -40,10 +60,11 @@ type Wizard struct {
 // `additional_bindings`, `secret_namespace`, or `capabilities`. Those have
 // moved to workspace.yaml / kit.yaml.
 type projectFileOut struct {
-	ID            string         `yaml:"id"`
-	Name          string         `yaml:"name"`
-	Worktree      bool           `yaml:"worktree"`
-	TaskBehaviors map[string]any `yaml:"task_behaviors,omitempty"`
+	ID                  string         `yaml:"id"`
+	Name                string         `yaml:"name"`
+	Worktree            bool           `yaml:"worktree"`
+	DefaultTaskBehavior string         `yaml:"default_task_behavior,omitempty"`
+	TaskBehaviors       map[string]any `yaml:"task_behaviors,omitempty"`
 }
 
 // ExpandScaffoldTemplate executes the built-in default_behaviors.tmpl with data
@@ -78,9 +99,15 @@ func (w *Wizard) Run(projectDir string) error {
 	// [2] Generate project ID and expand built-in scaffold template.
 	projectID := uuid.New().String()
 
+	agent := w.Agent
+	if agent == "" {
+		agent = DefaultAgent
+	}
+
 	tplData := ScaffoldTemplateData{
 		ProjectID:   projectID,
 		ProjectName: name,
+		Agent:       agent,
 	}
 
 	taskBehaviors, err := ExpandScaffoldTemplate(tplData)
@@ -95,10 +122,11 @@ func (w *Wizard) Run(projectDir string) error {
 	}
 
 	proj := projectFileOut{
-		ID:            projectID,
-		Name:          name,
-		Worktree:      true,
-		TaskBehaviors: taskBehaviors,
+		ID:                  projectID,
+		Name:                name,
+		Worktree:            true,
+		DefaultTaskBehavior: DefaultTaskBehavior,
+		TaskBehaviors:       taskBehaviors,
 	}
 
 	data, err := yaml.Marshal(proj)
