@@ -506,18 +506,7 @@ func projectVisibilityMounts(
 		})
 	}
 
-	// 5) .boid bind-mount (read-only) so agents can read kit hooks /
-	// gates / skills, but cannot modify them.
-	boidSource := origProjectDir + "/.boid"
-	if boidSource != "/.boid" { // ignore when origProjectDir is empty
-		out = append(out, sandbox.Mount{
-			Source:   boidSource,
-			Target:   effectiveDir + "/.boid",
-			Type:     sandbox.MountBind,
-			ReadOnly: true,
-			Guard:    dirGuardExpr(boidSource),
-		})
-	}
+	// 5) .boid: allow writes (e.g. project.yaml) — no separate read-only bind.
 
 	// 6) .git ro re-bind: prevents .git/config, .git/hooks/*, etc. from being
 	// modified directly inside the sandbox. The broker runs in a separate mount
