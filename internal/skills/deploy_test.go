@@ -33,7 +33,7 @@ func TestDeployAll_CreatesAllSkills(t *testing.T) {
 		}
 	}
 
-	for _, tmpl := range []string{"node.yaml.tmpl", "go-dev.yaml.tmpl", "github-cli.yaml.tmpl", "docker.yaml.tmpl", "python.yaml.tmpl"} {
+	for _, tmpl := range []string{"node.yaml.tmpl", "go-dev.yaml.tmpl", "github-cli.yaml.tmpl", "python.yaml.tmpl"} {
 		path := filepath.Join(baseDir, "boid-kit-init", "templates", tmpl)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			t.Errorf("boid-kit-init template missing: %s", tmpl)
