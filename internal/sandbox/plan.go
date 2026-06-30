@@ -44,7 +44,12 @@ func BuildPlan(spec Spec) *Plan {
 		)
 	} else {
 		// ProfileDefault: the standard small set of host system directories.
-		for _, d := range []string{"/bin", "/sbin", "/lib", "/lib64", "/usr", "/etc"} {
+		// /opt holds third-party packages whose /usr/bin/* wrappers shell out
+		// back to /opt/<pkg>/... (az → /opt/az/bin/python3, google-chrome →
+		// /opt/google/chrome/chrome, etc.); without binding it those wrappers
+		// fail with "No such file or directory" even though the wrapper itself
+		// is visible via /usr. Guarded so hosts without /opt skip cleanly.
+		for _, d := range []string{"/bin", "/sbin", "/lib", "/lib64", "/usr", "/etc", "/opt"} {
 			plan.Mounts = append(plan.Mounts, Mount{
 				Source: d,
 				Target: d,

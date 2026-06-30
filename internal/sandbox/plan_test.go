@@ -24,7 +24,7 @@ func TestBuildPlan_ProfileDefault_BaseSystemDirs(t *testing.T) {
 	// Each of the standard system dirs must appear as a mount target.
 	wantTargets := map[string]bool{
 		"/bin": false, "/sbin": false, "/lib": false,
-		"/lib64": false, "/usr": false, "/etc": false,
+		"/lib64": false, "/usr": false, "/etc": false, "/opt": false,
 		"/dev": false, "/proc": false, "/tmp": false,
 	}
 	for _, m := range plan.Mounts {
