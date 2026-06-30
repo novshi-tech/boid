@@ -1,6 +1,5 @@
 executor:
   default_instruction:
-    type: execution
 {{- if .Agent}}
     agent: {{.Agent}}
 {{- end}}
@@ -12,7 +11,6 @@ executor:
       the branch into the base branch locally.
 supervisor:
   default_instruction:
-    type: execution
 {{- if .Agent}}
     agent: {{.Agent}}
 {{- end}}
