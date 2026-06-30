@@ -100,6 +100,9 @@ ls "$HOME/.nvm/versions/node/" 2>/dev/null | head -5
 go version 2>/dev/null
 echo "GOPATH=${GOPATH:-$(go env GOPATH 2>/dev/null)}"
 echo "GOROOT=${GOROOT:-$(go env GOROOT 2>/dev/null)}"
+# パッケージキャッシュ (永続 bind 対象)。 dispatch 跨ぎで効かせるため rw bind する。
+echo "GOMODCACHE=$(go env GOMODCACHE 2>/dev/null)"
+echo "GOCACHE=$(go env GOCACHE 2>/dev/null)"
 
 # docker socket
 ls /var/run/docker.sock 2>/dev/null
