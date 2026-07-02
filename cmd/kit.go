@@ -108,7 +108,8 @@ func runKitInit(in io.Reader, out io.Writer) error {
 	//    The harness adapter (claude/codex/opencode) ignores Argv and builds its
 	//    own; we pass a placeholder so the shell fall-through has something
 	//    meaningful to log. The skill prompt is delivered through the adapter's
-	//    default SKILL.md bootstrap (PR4 fills in the boid-kit-init SKILL.md).
+	//    default SKILL.md bootstrap (boid-sandbox-configure SKILL.md, kit-init
+	//    mode — selected because BOID_WORKSPACE_SLUG is unset here).
 	//
 	//    XDG_DATA_HOME is forwarded into the sandbox so the skill agent (and the
 	//    shell-adapter fake in e2e) can locate the kits directory without
@@ -126,10 +127,10 @@ func runKitInit(in io.Reader, out io.Writer) error {
 		DisplayName:  "boid kit init",
 		HarnessType:  harness,
 		Env:          sandboxEnv,
-		// Bootstrap prompt — matches a trigger phrase from boid-kit-init
-		// SKILL.md frontmatter so the embedded skill auto-loads the moment
-		// the harness opens, instead of leaving the user staring at an empty
-		// prompt with no clue what to type next.
+		// Bootstrap prompt — matches a trigger phrase from the
+		// boid-sandbox-configure SKILL.md frontmatter so the embedded skill
+		// auto-loads the moment the harness opens, instead of leaving the
+		// user staring at an empty prompt with no clue what to type next.
 		Instruction: "boid kit init を実行して",
 	})
 
