@@ -14,6 +14,7 @@ require (
 	golang.org/x/net v0.42.0
 	golang.org/x/sys v0.41.0
 	golang.org/x/term v0.40.0
+	golang.org/x/tools v0.35.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.34.5
 	rsc.io/qr v0.2.0
@@ -42,6 +43,7 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
+	golang.org/x/mod v0.26.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	modernc.org/libc v1.55.3 // indirect
 	modernc.org/mathutil v1.6.0 // indirect
