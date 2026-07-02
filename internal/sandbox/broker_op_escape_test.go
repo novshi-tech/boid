@@ -5,7 +5,6 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
-	"sort"
 	"strings"
 	"testing"
 
@@ -23,6 +22,10 @@ import (
 // the forcing function that turns "add an op → write an escape test (or justify
 // skipping it)" into a mechanical check rather than a review-time judgement.
 //
+// Scope: the manifest covers the two op enums (BoidOp / GitOp). The broker also
+// dispatches FetchRequest, which has no op enum and is deliberately out of scope
+// here — its guard belongs with the fetch broker tests, not this manifest.
+//
 // The three *_PolicyReject tests below were added alongside the meta test to
 // close the gaps it surfaced: task_get / task_notify / task_delete previously
 // had no broker test at all (they appeared only in TestOpConstantsMirror).
@@ -39,11 +42,21 @@ func TestBroker_BoidTaskDelete_PolicyReject(t *testing.T) {
 	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskDelete, TaskID: "t1"})
 }
 
+// task_ask is a blocking RPC, but the policy gate fires before the blocking
+// path, so a plain policy-reject is clean (verified: the gate rejects and the
+// broker returns synchronously without holding the connection).
+func TestBroker_BoidTaskAsk_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskAsk, Question: "Q?"})
+}
+
 // assertBoidOpRejectedByPolicy registers a boid policy that allows only an
 // unrelated op (job_done), then asserts the given request is rejected by the
 // policy gate — before any op-specific dispatch — and never reaches the
-// executor. This exercises the single choke point (broker.go:296) that all
-// boid ops share.
+// executor. This exercises the single choke point (broker.go handleBoidBuiltin's
+// allowsBuiltinOp check) that all boid ops share. The assertion pins the
+// "not allowed by policy" gate message specifically, so a different rejection
+// reason (e.g. the earlier hasBuiltinPolicy "command not allowed: boid" path)
+// would not masquerade as gate coverage.
 func assertBoidOpRejectedByPolicy(t *testing.T, req *sandbox.BoidRequest) {
 	t.Helper()
 	exec := &fakeBoidExecutor{}
@@ -62,7 +75,7 @@ func assertBoidOpRejectedByPolicy(t *testing.T, req *sandbox.BoidRequest) {
 		Token:   token,
 		Boid:    req,
 	})
-	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "not allowed") {
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "not allowed by policy") {
 		t.Fatalf("op %q: expected policy rejection, got exit=%d stderr=%q", req.Op, resp.ExitCode, resp.Stderr)
 	}
 	if len(exec.calls) != 0 {
@@ -99,13 +112,15 @@ var opEscapeCoverage = map[string]opCoverage{
 	"BoidOpTaskList":   {escapeTest: "TestBroker_BoidTaskList_ProjectIDDenied"},
 	"BoidOpTaskNotify": {escapeTest: "TestBroker_BoidTaskNotify_PolicyReject"},
 	"BoidOpTaskAnswer": {escapeTest: "TestBroker_BoidTaskAnswer_PolicyReject"},
-	"BoidOpTaskAsk":    {escapeTest: "TestBroker_TaskAsk_RejectsEmptyQuestion"},
+	"BoidOpTaskAsk":    {escapeTest: "TestBroker_BoidTaskAsk_PolicyReject"},
 	"BoidOpTaskDelete": {escapeTest: "TestBroker_BoidTaskDelete_PolicyReject"},
 
-	// --- GitOp ---
-	"GitOpFetch":      {escapeTest: "TestBroker_GitDirectExec_DeniedSubcommand"},
-	"GitOpPush":       {escapeTest: "TestBroker_GitDirectExec_DeniedGlobalOptions"},
-	"GitOpPushDelete": {escapeTest: "TestBroker_GitSubmodule_IsRejected"},
+	// --- GitOp --- each entry points at a test that sends GitRequest{Op: <op>}
+	// and asserts the git op gate rejects it ("not allowed by policy") or, for
+	// clone_local, that the peer-authorization guard rejects a non-peer source.
+	"GitOpFetch":      {escapeTest: "TestBroker_GitBuiltinRejectsHookRoleFetch"},
+	"GitOpPush":       {escapeTest: "TestBroker_GitBuiltinRejectsHookRolePush"},
+	"GitOpPushDelete": {escapeTest: "TestBroker_GitPush_RejectsForceAndDeleteRefspecs"},
 	"GitOpCloneLocal": {escapeTest: "TestValidateGitCloneLocal_SourceMustBePeer"},
 }
 
@@ -171,6 +186,12 @@ func opConstantNames(t *testing.T) map[string]bool {
 			if !ok {
 				continue
 			}
+			// Requires an explicit type on the ValueSpec. This holds for the
+			// current string-enum style where every constant is written as
+			// `X BoidOp = "..."`. If these are ever converted to grouped iota
+			// form (`X GitOp = iota; Y; Z`), the type-inheriting entries would
+			// carry no Type field and be silently dropped — switch to go/types
+			// resolution if that happens.
 			typeIdent, ok := vs.Type.(*ast.Ident)
 			if !ok {
 				continue
@@ -217,16 +238,5 @@ func packageTestFuncNames(t *testing.T) map[string]bool {
 	if len(funcs) == 0 {
 		t.Fatal("no Test funcs discovered — parser assumption broke")
 	}
-	// Deterministic failure output aid (not strictly required).
-	_ = sortedKeys(funcs)
 	return funcs
-}
-
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
