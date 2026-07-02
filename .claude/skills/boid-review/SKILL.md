@@ -2,18 +2,20 @@
 name: boid-review
 description: >
   Use when reviewing a boid PR or the current diff before merging, through the
-  wiring-and-claim lens. Covers the two classes that generic /code-review misses:
-  (1) whether one end of a wiring seam was changed while the other end silently
-  drifted out of sync — diffs touching adapter / Bindings / sandbox builder /
-  spec hydrate / policy & builtin op / JobSpec / HarnessType propagation /
-  session jsonl env strip /
-  proxy & allowed_domains / embedded-skill bind / brokered git. (2) whether a
-  claim such as "equivalent", "compatible", "passthrough", or "preserves the
-  Phase N precondition" is actually backed by evidence in the diff. Reach for it
-  on requests like "review this before merging", "check nothing in the wiring
-  broke", "verify this compatible/equivalent claim is real", "look at the
-  adapter/binding/HarnessType/allowed_domains PR", "it says it preserves the
-  precondition — prove it from the diff", "worried the floor/bind got dropped".
+  wiring-claim-and-test lens. Covers the classes that generic /code-review
+  misses: (1) whether one end of a wiring seam was changed while the other end
+  silently drifted out of sync — diffs touching adapter / Bindings / sandbox
+  builder / spec hydrate / policy & builtin op / JobSpec / HarnessType
+  propagation / session jsonl env strip / proxy & allowed_domains /
+  embedded-skill bind / brokered git. (2) whether a claim such as "equivalent",
+  "compatible", "passthrough", or "preserves the Phase N precondition" is
+  actually backed by evidence in the diff. (3) whether new or changed behavior
+  was shipped with no test exercising it and no stated reason for the absence.
+  Reach for it on requests like "review this before merging", "check nothing in
+  the wiring broke", "verify this compatible/equivalent claim is real", "look at
+  the adapter/binding/HarnessType/allowed_domains PR", "it says it preserves the
+  precondition — prove it from the diff", "worried the floor/bind got dropped",
+  "did this feature ship without tests", "check the new op/handler has a test".
   Also the pre-merge check when integrating a child task's PR. Complements
   /code-review rather than replacing it.
 ---
@@ -36,9 +38,11 @@ The three-part set: an intentional rewrite + a wrong claim + no test crossing th
 The 1-turn smoke passed; only another kit carrying `additional_bindings` died silently in
 the crossfire. See the appendix of `docs/plans/quality-gates.md`.
 
-**This skill is the reviewer lens for exactly that class.** General bug / cleanup review
-is `/code-review`'s job and this skill does not replace it. Run both before merging (order
-in Step 0 below).
+**This skill is the reviewer lens for exactly that class** — and for its sibling, a feature
+whose new behavior ships with no test and no stated reason (Lens 4), which the coverage
+mechanisms don't enforce either. Both are dangers that live in the **absence** the diff
+doesn't show, not in the lines it does. General bug / cleanup review is `/code-review`'s job
+and this skill does not replace it. Run both before merging (order in Step 0 below).
 
 ## Step 0 — get the general review done first
 
@@ -98,12 +102,49 @@ entry in this skill's `references/wiring-seams.md` should be updated **in the sa
 Otherwise the catalog rots and the next reviewer trusts a stale invariant. Flag a diff that
 changed a seam but didn't touch the corresponding doc (minor, but catch it).
 
+## Lens 4 — test-sync (behavior shipped without a test)
+
+The other lenses ask "is there a test?" only when a **catalog seam** was touched (Lens 1) or a
+**claim** was made (Lens 2). A plain feature — a new builtin op and its handler, a new state
+transition, a new API field with logic behind it — added with **no test and no stated reason**
+slips past all of them. No other gate owns this hole: the coverage floors aren't enforced (CI's
+`-coverprofile` only visualizes), `/code-review`'s charter is correctness + cleanup rather than
+missing tests, and the TDD rule in `CLAUDE.md` isn't enforced at review time. This lens is that
+gate — and it is the **same shape of absence** as Lens 1: the danger isn't in what the diff
+shows, it's in the test that isn't there.
+
+Scope it tightly — this is **not** a general coverage watchdog:
+
+- **In scope**: new or changed *behavior* shipped with neither a test that exercises it nor a
+  stated reason for the absence. Ask concretely:
+
+  > "This diff adds/changes behavior B. Which test exercises B? If none, did the author say why?"
+
+- **Out of scope** (never flag): pure refactors, renames, docs- or config-only changes, and
+  trivial glue with no branching logic. If existing behavior stays covered by a test the diff
+  updates, that counts as covered.
+- **A stated reason is an acknowledgment only if it addresses coverage, not just local
+  runnability.** Accept it when the author says *where* the behavior is exercised instead (an e2e
+  scenario, an integration test) or why a unit test genuinely cannot exist. **Watch the common
+  trap**: "this package imports sqlite, so it can't build in the sandbox" justifies not *running*
+  the test locally — but `internal/db` and its dependents are still tested **in CI**, so the test
+  should be written and left for CI (see `boid-add-builtin` and the sqlite note). "I can't run it
+  here" is a deferral of verification to CI, **not** license to omit the test. Only when the
+  reason truly accounts for the missing coverage is it an acknowledgment rather than a gap; a
+  bare, silent omission always is.
+
+**Why it matters**: the same principle as Lens 1 turned on the author's own change. A feature
+compiles, passes the 1-turn smoke, and looks complete in the diff — while the behavior it added
+has no regression guard at all. The next change that breaks it will do so invisibly. Report it
+the way Lens 1 reports a missing guard: name the behavior, name the test that isn't there, one
+sentence.
+
 ## Output format
 
 A **GO / NO-GO** plus a list of evidence-backed findings. Each finding:
 
 - `file:symbol` (function or type name, not a line number — lines rot)
-- which lens (wiring / claim / sync)
+- which lens (wiring / claim / sync / test-sync)
 - the broken invariant or over-broad claim, in one sentence
 - **the specific proof that is missing** (e.g. "no test for end B", "no evidence in the
   diff for equivalence item X")
