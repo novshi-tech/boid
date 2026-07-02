@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 )
 
 // Server is a Docker API proxy that filters and forwards requests to an upstream
@@ -22,7 +21,6 @@ type Server struct {
 	transport *http.Transport
 	srv       *http.Server
 	ledger    *Ledger
-	mu        sync.Mutex
 }
 
 // New creates a Server that forwards to the given upstream Unix socket path.

@@ -79,10 +79,10 @@ func TestWorkspaceConfigureStub_CreatesSkeletonYAML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	// The file should exist and be readable YAML (even if minimal).
+	// The file should exist and be readable YAML. yaml.Marshal of an empty
+	// WorkspaceMeta with omitempty still produces "{}\n", so it is never empty.
 	if len(data) == 0 {
-		// yaml.Marshal of empty struct may produce just "{}\\n", which is valid.
-		// Actually the empty WorkspaceMeta with omitempty will produce "{}\n".
+		t.Fatalf("workspace yaml is empty")
 	}
 	// Verify it can be loaded back.
 	meta, err := store.Load(slug)
