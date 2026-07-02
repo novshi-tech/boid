@@ -1,0 +1,38 @@
+version: "2"
+
+# boid の lint 設定 (品質ゲート Tier 2)。
+# 方針: 初回は厳しすぎない linter セットから。厳しすぎると既存コードで大量 finding が出て
+#       形骸化するため、機構ガードとして底上げになる範囲に絞る。
+#       enforcement は CI 一択 (sandbox 内は sqlite build 制約で golangci-lint を回せない)。
+#       コミットフックは使わない (brokered git が core.hooksPath=/dev/null で hook 無効化)。
+#
+# errcheck は初回セットに含めない。既存コードで 329 件 (大半は Close / fmt.Fprint* /
+# templ Render 等の best-effort 出力) と大量に出て、機械的な `_ =` 埋めは Decode /
+# MkdirAll / rand.Read 等の「本当に握りつぶすとバグになる少数」まで隠す。導入は負債を
+# 段階的に払ったうえでの follow-up とする (docs/plans/quality-gates.md Tier 2 参照)。
+#
+# gofmt / フォーマット系も初回セットに含めない。gofmt 出力は Go のバージョンで揺れ、
+# CI の golangci-lint が同梱する formatter とローカル/CI の go toolchain がズレると
+# spurious diff を生む。フォーマットの enforcement が必要なら go.mod と同一 toolchain の
+# `gofmt -l` を別ステップで足す方が堅い (Tier 0 系の話で、本 Tier の範囲外)。
+
+linters:
+  default: none
+  enable:
+    - govet         # go vet 相当 (CI の go vet step と重複するが lint 経路でも担保)
+    - ineffassign   # 使われない代入
+    - staticcheck   # staticcheck + gosimple の統合 (v2)。バグ検出コアと安全な簡略化
+    - unused        # 未使用の定数/変数/関数/型
+
+  settings:
+    staticcheck:
+      # 初回導入ではバグ検出コア (SA*) と安全な簡略化 (S*) に絞る。
+      # スタイル/命名系 (ST*) と quickfix 提案 (QF*) は指摘が多く形骸化を招くため除外。
+      # 厳格化は傾向が見えてから段階的に。
+      checks:
+        - all
+        - -ST1*  # stylecheck (命名規約・コメント書式・レシーバ一貫性・重複 import 等)
+        - -QF1*  # quickfix 提案 (De Morgan / tagged switch / 型省略 等)
+
+  exclusions:
+    generated: lax

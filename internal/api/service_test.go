@@ -18,8 +18,7 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-func strPtr(s string) *string { return &s }
-func boolPtr(b bool) *bool    { return &b }
+func boolPtr(b bool) *bool { return &b }
 
 // newCmd is a tiny wrapper around exec.Command that exists so the Phase 2-2
 // test helpers can stay consistent if we ever need to inject a shared env.

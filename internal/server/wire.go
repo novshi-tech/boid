@@ -535,11 +535,6 @@ func projectResolverFor(svc *api.ProjectAppService) sandbox.ProjectResolver {
 	}
 }
 
-// jobDispatcher abstracts the Dispatch method of *dispatcher.Runner for testability.
-type jobDispatcher interface {
-	Dispatch(ctx context.Context, spec *orchestrator.JobSpec, cleanup orchestrator.CleanupFunc) (string, error)
-}
-
 // sessionDispatcherAdapter implements api.SessionDispatcher by translating
 // StartSessionRequest into a SessionJobInput and handing it to the runner.
 // Phase 3-d (PR1) wired this in alongside the legacy ExecuteCommand path so

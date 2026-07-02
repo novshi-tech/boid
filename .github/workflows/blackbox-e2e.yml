@@ -83,6 +83,27 @@ jobs:
         # orchestrator/dispatcher が主戦場。-race は遅いので unit と別ジョブで並列実行。
         run: go test -race ./...
 
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: golangci-lint
+        # 品質ゲート Tier 2。設定は .golangci.yml (govet / ineffassign / staticcheck /
+        # unused の控えめなセット)。enforcement は CI 一択 (sandbox 内は sqlite build
+        # 制約で golangci-lint を回せない)。version は再現性のため固定する。
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.1.6
+
   e2e:
     name: Black-box E2E
     runs-on: ubuntu-24.04

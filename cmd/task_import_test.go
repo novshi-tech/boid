@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -198,7 +197,7 @@ func TestRunTaskImport_ErrorsToStderr(t *testing.T) {
 	}
 
 	// remote_id なし → ImportTasks がエラーにする
-	line := fmt.Sprintf(`{"project_id":"err-proj","title":"No Remote","behavior":"dev"}`)
+	line := `{"project_id":"err-proj","title":"No Remote","behavior":"dev"}`
 
 	tmpFile := filepath.Join(t.TempDir(), "tasks.jsonl")
 	if err := os.WriteFile(tmpFile, []byte(line), 0o644); err != nil {

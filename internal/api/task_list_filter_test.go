@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -42,19 +41,6 @@ func (s *filterTaskService) DuplicateTask(id string, autoStart bool) (*orchestra
 }
 func (s *filterTaskService) RerunTask(id string, req RerunTaskRequest) (*orchestrator.Task, error) {
 	return nil, nil
-}
-
-func listFilterRequest(t *testing.T, handler http.Handler, query string) (*httptest.ResponseRecorder, []*orchestrator.Task) {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/"+query, nil)
-	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
-
-	var tasks []*orchestrator.Task
-	if err := json.NewDecoder(rr.Body).Decode(&tasks); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	return rr, tasks
 }
 
 func TestTaskHandler_List_BehaviorFilter(t *testing.T) {

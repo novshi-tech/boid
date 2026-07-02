@@ -18,7 +18,7 @@ func fakeStatus(dirs ...string) *daemon.StartupStatus {
 		ps[i] = daemon.StartupMigrationProject{
 			Dir:      d,
 			ID:       fmt.Sprintf("id-%d", i+1),
-			Messages: []string{fmt.Sprintf(`project.yaml: top-level "kits" is no longer supported.`)},
+			Messages: []string{`project.yaml: top-level "kits" is no longer supported.`},
 		}
 	}
 	return &daemon.StartupStatus{Kind: daemon.StartupKindMigration, Projects: ps}

@@ -6,8 +6,6 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-func boolRef(b bool) *bool { return &b }
-
 // TestCreateTask_ExplicitReadonlyTrue_OverridesExecutorDefault verifies that
 // passing Readonly: ptr(true) on an executor request overrides the behavior
 // default (executor → readonly=false).

@@ -19,8 +19,7 @@ func withChiURLParam(req *http.Request, key, val string) *http.Request {
 }
 
 type fieldTaskStore struct {
-	tasks   map[string]*orchestrator.Task
-	actions map[string][]*orchestrator.Action
+	tasks map[string]*orchestrator.Task
 }
 
 func (s *fieldTaskStore) CreateTask(task *orchestrator.Task) error { return nil }
