@@ -173,6 +173,47 @@ run_scenario() {
   )
 }
 
+# Automatic retry for the e2e gate's own reliability (docs/plans/quality-gates.md
+# 前提 P). A single scenario flake must not paint a 60-minute job red — but a
+# retry is a VISIBILITY tool, never a mask. Every retry is logged loudly with the
+# grep-able "[e2e][retry]" marker, a retry that then passes is reported as a FLAKE
+# to investigate (not swallowed), and a scenario that fails all attempts still
+# fails the run. Default: 2 attempts (1 retry). Set E2E_MAX_ATTEMPTS=1 to disable.
+E2E_MAX_ATTEMPTS="${E2E_MAX_ATTEMPTS:-2}"
+
+retried_scenarios=()
+failed_scenarios=()
+
 for scenario in "${scenarios[@]}"; do
-  run_scenario "$scenario"
+  attempt=1
+  while true; do
+    if run_scenario "$scenario"; then
+      if [[ $attempt -gt 1 ]]; then
+        # Passed only after a retry: this IS a flake. Surface it — do not ignore.
+        printf '[e2e][retry] FLAKE: scenario %q passed on attempt %d/%d. This is a real flake; investigate the root cause, do not rely on the retry.\n' \
+          "$scenario" "$attempt" "$E2E_MAX_ATTEMPTS" >&2
+        retried_scenarios+=("$scenario")
+      fi
+      break
+    fi
+    if [[ $attempt -ge $E2E_MAX_ATTEMPTS ]]; then
+      printf '[e2e][retry] scenario %q FAILED after %d attempt(s) — real failure.\n' \
+        "$scenario" "$attempt" >&2
+      failed_scenarios+=("$scenario")
+      break
+    fi
+    printf '[e2e][retry] scenario %q failed on attempt %d; retrying (attempt %d/%d). A retry that then passes is reported as a FLAKE below, not swallowed.\n' \
+      "$scenario" "$attempt" $((attempt + 1)) "$E2E_MAX_ATTEMPTS" >&2
+    attempt=$((attempt + 1))
+  done
 done
+
+# Machine-grep-able summary so CI-log aggregation can measure retry frequency
+# without a dedicated basis (per plan: "CI ログ集計で足りる").
+printf '[e2e][retry] summary: retried=%d (%s) failed=%d (%s)\n' \
+  "${#retried_scenarios[@]}" "${retried_scenarios[*]:-none}" \
+  "${#failed_scenarios[@]}" "${failed_scenarios[*]:-none}" >&2
+
+if [[ ${#failed_scenarios[@]} -gt 0 ]]; then
+  e2e_fail "e2e scenarios failed after retries: ${failed_scenarios[*]}"
+fi
