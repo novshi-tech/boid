@@ -33,6 +33,29 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: go vet
+        run: go vet ./...
+
+      - name: Check internal architecture (forbidden imports)
+        # ドキュメント上の規律だった禁止 import グラフ検査を CI enforcement に接続。
+        run: bash scripts/check-internal-architecture.sh
+
+      - name: Check templ generated code is up to date
+        # web/templates/*_templ.go は checked-in。.templ とのズレを CI で落とす。
+        # sandbox 内では templ が使えないため CI 側ゲートが必須の面。
+        # generator バージョンは go.mod の a-h/templ と揃える (ズレると spurious diff)。
+        run: |
+          go install github.com/a-h/templ/cmd/templ@v0.3.1001
+          templ generate
+          # git diff は tracked ファイルの変更のみ。新規 .templ に対応する未コミット
+          # _templ.go (untracked) も drift なので git status で両方拾う。
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::templ generated code is out of date. Run 'templ generate' and commit the result." >&2
+            git status --porcelain >&2
+            git diff >&2
+            exit 1
+          fi
+
       - name: Run unit tests
         run: go test ./...
 
@@ -41,6 +64,24 @@ jobs:
         # 直接 exec するため通常の go test ./... からは分離している。CI では
         # 本物の git が利用可能なので、ここで明示的に走らせる。
         run: go test -tags=e2e ./internal/sandbox/...
+
+  race:
+    name: Race detector
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests with race detector
+        # CLAUDE.md の規律 (go test -race) を CI enforcement に接続。並行処理だらけの
+        # orchestrator/dispatcher が主戦場。-race は遅いので unit と別ジョブで並列実行。
+        run: go test -race ./...
 
   e2e:
     name: Black-box E2E
