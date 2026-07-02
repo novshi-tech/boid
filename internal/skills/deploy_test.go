@@ -16,7 +16,7 @@ func TestDeployAll_CreatesAllSkills(t *testing.T) {
 		t.Fatalf("DeployAll: %v", err)
 	}
 
-	for _, skillName := range []string{"boid-web", "boid-orchestrate", "boid-task", "boid-kit-init", "boid-workspace-configure"} {
+	for _, skillName := range []string{"boid-web", "boid-orchestrate", "boid-task", "boid-sandbox-configure"} {
 		content, err := os.ReadFile(filepath.Join(baseDir, skillName, "SKILL.md"))
 		if err != nil {
 			t.Fatalf("read %s/SKILL.md: %v", skillName, err)
@@ -34,9 +34,9 @@ func TestDeployAll_CreatesAllSkills(t *testing.T) {
 	}
 
 	for _, tmpl := range []string{"node.yaml.tmpl", "go-dev.yaml.tmpl", "github-cli.yaml.tmpl", "python.yaml.tmpl"} {
-		path := filepath.Join(baseDir, "boid-kit-init", "templates", tmpl)
+		path := filepath.Join(baseDir, "boid-sandbox-configure", "templates", tmpl)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
-			t.Errorf("boid-kit-init template missing: %s", tmpl)
+			t.Errorf("boid-sandbox-configure template missing: %s", tmpl)
 		}
 	}
 }

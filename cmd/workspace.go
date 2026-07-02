@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -69,15 +70,18 @@ var workspaceConfigureExecFn = func(argv0 string, argv []string, envv []string) 
 
 // workspaceConfigureCmd launches a sandboxed agent session (ProfileInit) that
 // reads the assigned projects and writes a workspace.yaml via the
-// boid-workspace-configure skill. After the sandbox exits, the generated yaml
-// is scanned for secrets; if any are found the original file is restored from
-// backup and an error is returned.
+// boid-sandbox-configure skill (workspace-configure mode). After the sandbox
+// exits, the generated yaml is scanned for secrets; if any are found the
+// original file is restored from backup and an error is returned.
 //
-// Unlike boid kit init, this command requires the daemon (workspace show + kit
-// list are daemon API calls) and therefore does NOT carry annotationSkipAutostart.
+// Unlike boid kit init, the *host-side* CLI requires the daemon (it fetches
+// the assigned project list via GET /api/projects before dispatch, and calls
+// reloadProjects() after) and therefore does NOT carry annotationSkipAutostart.
+// The sandboxed skill itself no longer talks to the daemon — see the
+// ServerSocket comment on the SandboxRuntimeInfo below.
 var workspaceConfigureCmd = &cobra.Command{
 	Use:   "configure <slug>",
-	Short: "Configure a workspace via interactive agent session (boid-workspace-configure skill)",
+	Short: "Configure a workspace via interactive agent session (boid-sandbox-configure skill, workspace-configure mode)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runWorkspaceConfigure(cmd, args)
@@ -418,6 +422,15 @@ func runWorkspaceConfigure(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// 7.5. Encode the assigned project list (id + work_dir only) as JSON so
+	//      the sandboxed skill can read it from $BOID_WORKSPACE_PROJECTS
+	//      instead of calling `boid workspace show` — the sandbox has no
+	//      daemon socket (see ServerSocket below).
+	projectsJSON, err := projectsEnvJSON(projects)
+	if err != nil {
+		return fmt.Errorf("encode workspace projects: %w", err)
+	}
+
 	// 8. Build the JobSpec via BuildInitJobSpec.
 	jobID := fmt.Sprintf("workspace-configure-%s", randomJobSuffix())
 	// The parent dir (~/.config/boid/workspaces/) is bind-mounted rw rather
@@ -436,27 +449,40 @@ func runWorkspaceConfigure(cmd *cobra.Command, args []string) error {
 		HarnessType:   harness,
 		Env: map[string]string{
 			"BOID_WORKSPACE_SLUG": slug,
+			// project id + work_dir list, injected so the skill never needs
+			// to reach the daemon from inside the sandbox (see ServerSocket
+			// below). Populated even when empty ("[]") so the skill can
+			// distinguish "no projects assigned" from "env missing".
+			"BOID_WORKSPACE_PROJECTS": projectsJSON,
 		},
-		// Bootstrap prompt — matches a trigger phrase from
-		// boid-workspace-configure SKILL.md frontmatter. Embedding the slug
-		// lets the skill skip the "which workspace" question and dive
-		// straight into the project scan, mirroring how `boid kit init`
-		// kicks the kit-init skill on launch.
+		// Bootstrap prompt — matches a trigger phrase from the
+		// boid-sandbox-configure SKILL.md frontmatter (workspace-configure
+		// mode). Embedding the slug lets the skill skip the "which
+		// workspace" question and dive straight into the project scan,
+		// mirroring how `boid kit init` kicks its own mode on launch.
 		Instruction: fmt.Sprintf("workspace %q の boid workspace configure を実行して", slug),
 	})
 
 	// 9. Build the SandboxRuntimeInfo.
-	//    ServerSocket is set so the skill can call daemon APIs (boid workspace
-	//    show, boid kit list, etc.).
+	//    ServerSocket is intentionally empty: the sandboxed skill no longer
+	//    calls any daemon API. The only in-sandbox daemon dependency was
+	//    `boid workspace show` for the assigned project list, which is now
+	//    injected via BOID_WORKSPACE_PROJECTS above (this same host-side
+	//    runWorkspaceConfigure call already fetched it at step 3, before
+	//    dispatch). `boid kit list` never needed the daemon — it reads
+	//    ~/.local/share/boid/kits/ directly, which is already visible via
+	//    ProfileInit's read-only host-root rbind. Leaving this empty is a
+	//    minimum-privilege cut: it closes the "compromised agent spawns a
+	//    task/session and fires a forged kit right here" self-launch path.
 	//
-	//    ProxyPort must be wired the same as `boid kit init` — ProfileInit
+	//    ProxyPort must still be wired the same as `boid kit init` — ProfileInit
 	//    sandboxes can only egress through the daemon proxy port; without
 	//    HTTPS_PROXY, AI agent harnesses fail with FailedToOpenSocket and
 	//    nothing reaches api.anthropic.com.
 	rt := dispatcher.SandboxRuntimeInfo{
 		JobID:        jobID,
 		BoidBinary:   boidBinary,
-		ServerSocket: client.DefaultSocketPath(), // daemon API required
+		ServerSocket: "", // daemon not required inside the sandbox
 		ProxyPort:    resolveDaemonProxyPort(out),
 		Foreground:   true,
 	}
@@ -540,6 +566,32 @@ func restoreWorkspaceYAML(wsYAML, bakPath string) {
 	}
 	_ = os.WriteFile(wsYAML, bak, 0o600)
 	_ = os.Remove(bakPath)
+}
+
+// workspaceProjectEnv is the minimal per-project shape injected into the
+// workspace-configure sandbox as JSON via $BOID_WORKSPACE_PROJECTS. Only ID
+// and WorkDir are carried — the sandbox has no business seeing the rest of
+// orchestrator.Project (ProjectMeta, timestamps, etc.).
+type workspaceProjectEnv struct {
+	ID      string `json:"id"`
+	WorkDir string `json:"work_dir"`
+}
+
+// projectsEnvJSON marshals the assigned projects into the compact JSON array
+// the boid-sandbox-configure skill (workspace-configure mode) reads from
+// $BOID_WORKSPACE_PROJECTS in place of a `boid workspace show` daemon call.
+// An empty/nil slice marshals to "[]" (never "null") so the skill can tell
+// "no projects assigned" apart from "env var missing".
+func projectsEnvJSON(projects []*orchestrator.Project) (string, error) {
+	entries := make([]workspaceProjectEnv, 0, len(projects))
+	for _, p := range projects {
+		entries = append(entries, workspaceProjectEnv{ID: p.ID, WorkDir: p.WorkDir})
+	}
+	b, err := json.Marshal(entries)
+	if err != nil {
+		return "", fmt.Errorf("marshal workspace projects: %w", err)
+	}
+	return string(b), nil
 }
 
 // scanWorkspaceYAML scans the single workspace.yaml file for secrets.
