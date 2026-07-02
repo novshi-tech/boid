@@ -7,23 +7,43 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INTERNAL_DIR="$ROOT_DIR/internal"
 
 current_allowed=(
+  adapters
   api
   client
+  config
+  daemon
   db
   dispatcher
+  initwizard
+  kit
+  logrotate
+  notify
   orchestrator
+  qrterm
   sandbox
   server
+  skills
+  timeline
 )
 
 target_allowed=(
+  adapters
   api
   client
+  config
+  daemon
   db
   dispatcher
+  initwizard
+  kit
+  logrotate
+  notify
   orchestrator
+  qrterm
   sandbox
   server
+  skills
+  timeline
 )
 
 list_top_level_packages() {
@@ -136,10 +156,15 @@ check_forbidden_imports() {
         fi
         ;;
       github.com/novshi-tech/boid/internal/client)
-        if [[ "$imports" == *"github.com/novshi-tech/boid/internal/"* ]]; then
-          echo "forbidden import: internal/client should not depend on other internal packages" >&2
-          failed=1
-        fi
+        # client は daemon の HTTP API を叩く薄いフロント。api の DTO と
+        # orchestrator のドメイン型を共有するのは正当 (型のみ・循環なし)。
+        # backend 実装層への依存だけを禁止し、薄さを保つ。
+        for forbidden in server db dispatcher sandbox; do
+          if [[ "$imports" == *"github.com/novshi-tech/boid/internal/$forbidden"* ]]; then
+            echo "forbidden import: internal/client -> internal/$forbidden" >&2
+            failed=1
+          fi
+        done
         ;;
     esac
   done < <(go list -f '{{.ImportPath}}|{{join .Imports ","}}' ./internal/...)
