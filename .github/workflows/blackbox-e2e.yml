@@ -57,7 +57,17 @@ jobs:
           fi
 
       - name: Run unit tests
-        run: go test ./...
+        # -coverprofile で総カバレッジを可視化する (品質ゲート Tier 1.5)。
+        # ./... 全体を単一 profile にマージし、次 step で total 行を出力する。
+        # ハード床 (coverage floor) はまだ張らない — まず可視化、傾向を見てから
+        # 判断する (数字合わせテストの誘発を避けるため)。
+        run: go test -coverprofile=coverage.out ./...
+
+      - name: Report total coverage
+        # go tool cover -func の末尾 total 行だけを目立たせて出す。
+        # CI ログ集計で拾えるよう grep しやすい固定プレフィックスを付ける。
+        run: |
+          echo "[coverage] $(go tool cover -func=coverage.out | tail -1)"
 
       - name: Run e2e-tagged in-process tests
         # //go:build e2e が付いたテストは /usr/bin/git などホスト側バイナリを
