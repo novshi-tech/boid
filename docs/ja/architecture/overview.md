@@ -160,11 +160,11 @@ Linux のサンドボックスを直に組む層です。
 
 orchestrator のドメイン型を見ない (依存方向の制約)。 入力は dispatcher が渡す primitive (BindMount のリスト、 CommandDef のリスト等)。
 
-### internal/kit
+### kit (orchestrator に統合済み)
 
-kit リポジトリの clone・配置、 `kit.yaml` の読み込み、 `detect.sh` の実行を行います。
+kit は再利用可能なツール供給単位 (`host_commands` / `env` / `additional_bindings`) です。 かつて存在した独立の `internal/kit` パッケージ (clone・`detect.sh` 実行等) は撤去され、 `kit.yaml` の読み込みと解決は `internal/orchestrator` に畳み込まれています。
 
-エントリ: [`internal/kit/registry.go`](https://github.com/novshi-tech/boid/blob/main/internal/kit/registry.go)
+エントリ: [`internal/orchestrator/kit_registry.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/kit_registry.go) (`~/.local/share/boid/kits/<name>/` からのフラット解決) と [`internal/orchestrator/kit_name.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/kit_name.go) (名前バリデーション)
 
 ### internal/db
 

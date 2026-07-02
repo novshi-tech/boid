@@ -15,7 +15,6 @@ current_allowed=(
   db
   dispatcher
   initwizard
-  kit
   logrotate
   notify
   orchestrator
@@ -35,7 +34,6 @@ target_allowed=(
   db
   dispatcher
   initwizard
-  kit
   logrotate
   notify
   orchestrator
