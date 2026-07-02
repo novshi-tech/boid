@@ -117,7 +117,7 @@ func SessionList(sessions []SessionView, projectFilter string) templ.Component {
 					var templ_7745c5c3_Var3 templ.SafeURL
 					templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/jobs/" + s.ID))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `sessions.templ`, Line: 73, Col: 43}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/sessions.templ`, Line: 73, Col: 43}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 					if templ_7745c5c3_Err != nil {
@@ -130,7 +130,7 @@ func SessionList(sessions []SessionView, projectFilter string) templ.Component {
 					var templ_7745c5c3_Var4 string
 					templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(sessionLabel(s))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `sessions.templ`, Line: 78, Col: 52}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/sessions.templ`, Line: 78, Col: 52}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 					if templ_7745c5c3_Err != nil {
@@ -148,7 +148,7 @@ func SessionList(sessions []SessionView, projectFilter string) templ.Component {
 						var templ_7745c5c3_Var5 string
 						templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(sessionProjectLabel(s))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `sessions.templ`, Line: 82, Col: 64}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/sessions.templ`, Line: 82, Col: 64}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 						if templ_7745c5c3_Err != nil {
@@ -166,7 +166,7 @@ func SessionList(sessions []SessionView, projectFilter string) templ.Component {
 					var templ_7745c5c3_Var6 string
 					templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(sessionSinceUnix(s.CreatedAt))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `sessions.templ`, Line: 84, Col: 98}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/sessions.templ`, Line: 84, Col: 98}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 					if templ_7745c5c3_Err != nil {
@@ -179,7 +179,7 @@ func SessionList(sessions []SessionView, projectFilter string) templ.Component {
 					var templ_7745c5c3_Var7 string
 					templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(sessionElapsed(s.CreatedAt))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `sessions.templ`, Line: 84, Col: 130}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/sessions.templ`, Line: 84, Col: 130}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 					if templ_7745c5c3_Err != nil {
@@ -249,7 +249,7 @@ func SessionNew(projects []*orchestrator.Project, selectedProjectID string, erro
 				var templ_7745c5c3_Var10 string
 				templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(errorMsg)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `sessions.templ`, Line: 128, Col: 39}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/sessions.templ`, Line: 128, Col: 39}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 				if templ_7745c5c3_Err != nil {
@@ -272,7 +272,7 @@ func SessionNew(projects []*orchestrator.Project, selectedProjectID string, erro
 				var templ_7745c5c3_Var11 string
 				templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(p.ID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `sessions.templ`, Line: 137, Col: 27}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/sessions.templ`, Line: 137, Col: 27}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 				if templ_7745c5c3_Err != nil {
@@ -295,7 +295,7 @@ func SessionNew(projects []*orchestrator.Project, selectedProjectID string, erro
 				var templ_7745c5c3_Var12 string
 				templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(taskNewProjectLabel(p))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `sessions.templ`, Line: 137, Col: 94}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/sessions.templ`, Line: 137, Col: 94}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 				if templ_7745c5c3_Err != nil {
@@ -318,7 +318,7 @@ func SessionNew(projects []*orchestrator.Project, selectedProjectID string, erro
 				var templ_7745c5c3_Var13 templ.SafeURL
 				templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/projects/" + selectedProjectID + "/sessions/start"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `sessions.templ`, Line: 145, Col: 81}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/sessions.templ`, Line: 145, Col: 81}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 				if templ_7745c5c3_Err != nil {
