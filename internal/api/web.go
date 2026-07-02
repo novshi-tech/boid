@@ -831,7 +831,7 @@ type pairResponse struct {
 func (h *WebManagementHandler) PostPair(w http.ResponseWriter, r *http.Request) {
 	var req auth.PairRequest
 	if r.Body != nil {
-		json.NewDecoder(r.Body).Decode(&req) //nolint: errcheck — label is optional
+		_ = json.NewDecoder(r.Body).Decode(&req) // label is optional
 	}
 	code, err := h.Pairing.Issue(r.Context(), req.Label)
 	if err != nil {
@@ -848,7 +848,7 @@ func (h *WebManagementHandler) PostPair(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp) // best-effort; client may have disconnected
 }
 
 type deviceResponse struct {
@@ -879,7 +879,7 @@ func (h *WebManagementHandler) GetDevices(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp) // best-effort; client may have disconnected
 }
 
 func (h *WebManagementHandler) DeleteDevice(w http.ResponseWriter, r *http.Request) {

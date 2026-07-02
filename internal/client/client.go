@@ -80,7 +80,7 @@ func (c *Client) Do(method, path string, body any, result any) error {
 
 	if resp.StatusCode >= 400 {
 		var errResp map[string]string
-		json.NewDecoder(resp.Body).Decode(&errResp)
+		_ = json.NewDecoder(resp.Body).Decode(&errResp) // best-effort; fall back to HTTP status below
 		if msg, ok := errResp["error"]; ok {
 			return fmt.Errorf("%s", msg)
 		}
@@ -118,7 +118,7 @@ func (c *Client) DoWithContentType(method, path, contentType string, body []byte
 
 	if resp.StatusCode >= 400 {
 		var errResp map[string]string
-		json.NewDecoder(resp.Body).Decode(&errResp)
+		_ = json.NewDecoder(resp.Body).Decode(&errResp) // best-effort; fall back to HTTP status below
 		if msg, ok := errResp["error"]; ok {
 			return fmt.Errorf("%s", msg)
 		}

@@ -383,7 +383,7 @@ func (s *TaskGCStore) cleanWorktrees(olderThan time.Duration) {
 			slog.Warn("gc worktrees: git worktree remove failed, attempting manual cleanup",
 				"task_id", w.taskID, "error", err, "output", strings.TrimSpace(string(out)))
 			os.RemoveAll(w.path)
-			exec.Command(s.gcGitBin(), "-C", projectDir, "worktree", "prune").Run()
+			_ = exec.Command(s.gcGitBin(), "-C", projectDir, "worktree", "prune").Run() // best-effort cleanup
 		}
 
 		cmd = exec.Command(s.gcGitBin(), "-C", projectDir, "branch", "-D", w.branch)

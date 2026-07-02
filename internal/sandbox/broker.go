@@ -194,7 +194,7 @@ func (b *Broker) handleConn(conn net.Conn) {
 	}
 
 	resp := b.handle(ctx, &req)
-	json.NewEncoder(conn).Encode(resp)
+	_ = json.NewEncoder(conn).Encode(resp) // best-effort; peer may have hung up
 }
 
 // isBlockingAskRequest reports whether req is a `boid task ask` builtin call,
@@ -671,6 +671,8 @@ func sanitizeStdin(def CommandDef, stdin []byte) []byte {
 
 func generateToken() string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("generateToken: crypto/rand: " + err.Error())
+	}
 	return hex.EncodeToString(b)
 }

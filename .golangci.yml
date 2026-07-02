@@ -6,10 +6,13 @@ version: "2"
 #       enforcement は CI 一択 (sandbox 内は sqlite build 制約で golangci-lint を回せない)。
 #       コミットフックは使わない (brokered git が core.hooksPath=/dev/null で hook 無効化)。
 #
-# errcheck は初回セットに含めない。既存コードで 329 件 (大半は Close / fmt.Fprint* /
-# templ Render 等の best-effort 出力) と大量に出て、機械的な `_ =` 埋めは Decode /
-# MkdirAll / rand.Read 等の「本当に握りつぶすとバグになる少数」まで隠す。導入は負債を
-# 段階的に払ったうえでの follow-up とする (docs/plans/quality-gates.md Tier 2 参照)。
+# errcheck を有効化 (2026-07-02 の follow-up)。儀式的な best-effort 呼び出し
+# (Close / fmt.Fprint* / os.Remove* / os.Std* 等) は golangci-lint の
+# std-error-handling プリセット (旧 EXC0001 の正規表現) でまとめて除外する。
+# これにより「握りつぶすと実害が出る少数」(json Decode / rand.Read / conn.Exec 等)
+# だけが残り、そこは実処理・panic・意図的無視の明示 (`_ =`) で個別に手当てした。
+# test ファイルは errcheck 対象外 (setup のエラー無視は低リスクで、機械的 `_ =`
+# 埋めがプランの嫌う形骸化 churn になるため。docs/plans/quality-gates.md Tier 2 参照)。
 #
 # gofmt / フォーマット系も初回セットに含めない。gofmt 出力は Go のバージョンで揺れ、
 # CI の golangci-lint が同梱する formatter とローカル/CI の go toolchain がズレると
@@ -19,12 +22,20 @@ version: "2"
 linters:
   default: none
   enable:
+    - errcheck      # チェックされていないエラー戻り値 (儀式系は下記 preset で除外)
     - govet         # go vet 相当 (CI の go vet step と重複するが lint 経路でも担保)
     - ineffassign   # 使われない代入
     - staticcheck   # staticcheck + gosimple の統合 (v2)。バグ検出コアと安全な簡略化
     - unused        # 未使用の定数/変数/関数/型
 
   settings:
+    errcheck:
+      # std-error-handling preset は関数名の正規表現でしか除外できず、これらは
+      # そこに載らない best-effort 呼び出し。templ の Render は http.ResponseWriter
+      # への描画で client 切断時のみ失敗する best-effort、CloseNow は Close 亜種。
+      exclude-functions:
+        - (github.com/a-h/templ.Component).Render
+        - (*github.com/coder/websocket.Conn).CloseNow
     staticcheck:
       # 初回導入ではバグ検出コア (SA*) と安全な簡略化 (S*) に絞る。
       # スタイル/命名系 (ST*) と quickfix 提案 (QF*) は指摘が多く形骸化を招くため除外。
@@ -36,3 +47,12 @@ linters:
 
   exclusions:
     generated: lax
+    presets:
+      # errcheck の儀式系除外 (旧 EXC0001): Close / Flush / fmt.Fprint* /
+      # os.Remove(All) / os.Std(out|err) / os.(Un)Setenv 等の best-effort 呼び出し。
+      - std-error-handling
+    rules:
+      # test の setup は err 無視が慣例で低リスク。機械的 `_ =` 埋めを避ける。
+      - path: _test\.go
+        linters:
+          - errcheck

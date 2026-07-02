@@ -598,13 +598,13 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		if addr := srv.TCPAddr(); addr != "" {
 			fmt.Fprintf(w, `{"status":"ok","http_addr":%q}`, addr)
 		} else {
-			w.Write([]byte(`{"status":"ok"}`))
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		}
 	})
 
 	r.Post("/api/shutdown", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}

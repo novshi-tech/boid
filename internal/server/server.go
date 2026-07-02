@@ -177,7 +177,7 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("listen unix: %w", err)
 	}
 	s.unixLn = unixLn
-	go s.httpServer.Serve(unixLn)
+	go func() { _ = s.httpServer.Serve(unixLn) }() // returns ErrServerClosed on Stop
 
 	tcpLn, err := net.Listen("tcp", s.cfg.HTTPAddr)
 	if err != nil {
@@ -195,7 +195,7 @@ func (s *Server) Start(ctx context.Context) error {
 		tcpHandler = s.router
 	}
 	s.tcpServer = &http.Server{Handler: tcpHandler}
-	go s.tcpServer.Serve(tcpLn)
+	go func() { _ = s.tcpServer.Serve(tcpLn) }() // returns ErrServerClosed on Stop
 
 	return nil
 }
