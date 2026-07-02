@@ -1,0 +1,110 @@
+-- index: idx_project_workspaces_workspace_id
+CREATE INDEX idx_project_workspaces_workspace_id
+    ON project_workspaces(workspace_id);
+
+-- index: idx_tasks_ref_parent
+CREATE UNIQUE INDEX idx_tasks_ref_parent ON tasks(ref, parent_id) WHERE ref != '';
+
+-- table: actions
+CREATE TABLE actions (
+    id         TEXT PRIMARY KEY,
+    task_id    TEXT NOT NULL REFERENCES tasks(id),
+    type       TEXT NOT NULL,
+    payload    TEXT NOT NULL DEFAULT '{}',
+    created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+, from_status TEXT NOT NULL DEFAULT '', to_status   TEXT NOT NULL DEFAULT '');
+
+-- table: jobs
+CREATE TABLE "jobs" (
+    id              TEXT PRIMARY KEY,
+    task_id         TEXT REFERENCES tasks(id),
+    project_id      TEXT NOT NULL REFERENCES projects(id),
+    handler_id      TEXT NOT NULL DEFAULT '',
+    role            TEXT NOT NULL DEFAULT 'hook',
+    runtime_id      TEXT NOT NULL DEFAULT '',
+    interactive     INTEGER NOT NULL DEFAULT 0,
+    tty             INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'running',
+    exit_code       INTEGER,
+    output          TEXT NOT NULL DEFAULT '',
+    execution_state TEXT NOT NULL DEFAULT '',
+    created_at      DATETIME NOT NULL DEFAULT (datetime('now')),
+    updated_at      DATETIME NOT NULL DEFAULT (datetime('now'))
+, display_name TEXT NOT NULL DEFAULT '');
+
+-- table: project_workspaces
+CREATE TABLE project_workspaces (
+    project_id    TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    workspace_id  TEXT NOT NULL
+);
+
+-- table: projects
+CREATE TABLE projects (
+    id         TEXT PRIMARY KEY,
+    work_dir   TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+);
+
+-- table: schema_migrations
+CREATE TABLE schema_migrations (
+			version    TEXT PRIMARY KEY,
+			applied_at DATETIME NOT NULL DEFAULT (datetime('now'))
+		);
+
+-- table: secrets
+CREATE TABLE "secrets" (
+    id              TEXT PRIMARY KEY,
+    namespace       TEXT NOT NULL DEFAULT 'default',
+    key             TEXT NOT NULL,
+    value_encrypted BLOB NOT NULL,
+    created_at      DATETIME NOT NULL DEFAULT (datetime('now')),
+    updated_at      DATETIME NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(namespace, key)
+);
+
+-- table: tasks
+CREATE TABLE tasks (
+    id            TEXT PRIMARY KEY,
+    project_id    TEXT NOT NULL REFERENCES projects(id),
+    remote_id     TEXT NOT NULL DEFAULT '',
+    title         TEXT NOT NULL,
+    description   TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'pending',
+    behavior      TEXT NOT NULL,
+    payload       TEXT NOT NULL DEFAULT '{}',
+    created_at    DATETIME NOT NULL DEFAULT (datetime('now')),
+    updated_at    DATETIME NOT NULL DEFAULT (datetime('now'))
+, auto_start BOOLEAN NOT NULL DEFAULT FALSE, traits TEXT NOT NULL DEFAULT '[]', readonly BOOLEAN NOT NULL DEFAULT FALSE, worktree BOOLEAN NOT NULL DEFAULT FALSE, branch_prefix TEXT NOT NULL DEFAULT '', base_branch TEXT NOT NULL DEFAULT '', ref TEXT NOT NULL DEFAULT '', parent_id TEXT NOT NULL DEFAULT '', instructions TEXT NOT NULL DEFAULT '{}');
+
+-- table: web_devices
+CREATE TABLE web_devices (
+  id           TEXT PRIMARY KEY,
+  label        TEXT,
+  cookie_hash  BLOB NOT NULL,
+  created_at   TIMESTAMP NOT NULL,
+  last_seen_at TIMESTAMP NOT NULL,
+  revoked_at   TIMESTAMP
+);
+
+-- table: web_pairing_codes
+CREATE TABLE web_pairing_codes (
+  code_hash   BLOB PRIMARY KEY,
+  label       TEXT,
+  created_at  TIMESTAMP NOT NULL,
+  expires_at  TIMESTAMP NOT NULL,
+  consumed_at TIMESTAMP
+);
+
+-- table: worktrees
+CREATE TABLE worktrees (
+    id          TEXT PRIMARY KEY,
+    task_id     TEXT NOT NULL UNIQUE REFERENCES tasks(id),
+    project_id  TEXT NOT NULL REFERENCES projects(id),
+    path        TEXT NOT NULL,
+    branch      TEXT NOT NULL,
+    base_branch TEXT NOT NULL,
+    created_at  DATETIME NOT NULL DEFAULT (datetime('now')),
+    cleaned_at  DATETIME
+);
+
