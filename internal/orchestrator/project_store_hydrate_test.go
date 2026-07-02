@@ -375,7 +375,7 @@ func TestGetWithWorkspace_AdditionalBindingsMerge(t *testing.T) {
 	// Per-behavior: task hooks read behavior.AdditionalBindings via planner.go.
 	build, ok := meta.TaskBehaviors["build"]
 	if !ok {
-		t.Fatalf("behavior dev missing from hydrated meta: %+v", meta.TaskBehaviors)
+		t.Fatalf("behavior build missing from hydrated meta: %+v", meta.TaskBehaviors)
 	}
 	if _, ok := findBindingBySource(build.AdditionalBindings, "/opt/volta"); !ok {
 		t.Fatalf("workspace kit binding missing from behavior build.AdditionalBindings: %+v", build.AdditionalBindings)
