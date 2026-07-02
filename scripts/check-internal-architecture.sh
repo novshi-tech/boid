@@ -156,9 +156,16 @@ check_forbidden_imports() {
         fi
         ;;
       github.com/novshi-tech/boid/internal/client)
-        # client は daemon の HTTP API を叩く薄いフロント。api の DTO と
-        # orchestrator のドメイン型を共有するのは正当 (型のみ・循環なし)。
-        # backend 実装層への依存だけを禁止し、薄さを保つ。
+        # client は daemon の HTTP API を叩く薄いフロント。不変条件は:
+        #   - 型の共有は許可: api の DTO / orchestrator のドメイン型を import して
+        #     リクエスト/レスポンスをマーシャルするのは正当 (バケツリレー回避)。
+        #   - 振る舞いへの直接依存は禁止: client は必ず API を叩く。内部パッケージの
+        #     関数/挙動をローカルで呼んではならない。
+        # import グラフでは「型 import」と「振る舞い呼び出し」を区別できないため、
+        # ここでは振る舞いのみを持つ backend 層 (server/db/dispatcher/sandbox) の
+        # import を hard ban する (これらは client が要する型を持たない)。api /
+        # orchestrator 内の振る舞い関数の呼び出し禁止は識別子単位の静的解析が要り、
+        # 本スクリプトの粒度では担保できない (レビュー/規約で補完)。
         for forbidden in server db dispatcher sandbox; do
           if [[ "$imports" == *"github.com/novshi-tech/boid/internal/$forbidden"* ]]; then
             echo "forbidden import: internal/client -> internal/$forbidden" >&2
