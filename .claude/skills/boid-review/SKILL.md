@@ -97,12 +97,13 @@ diff — it declares "everything that must not change". A reviewer naturally loo
 changed, but the danger hides on the side the author asserted "does not change" without
 evidence. Same principle as "don't take a claim at face value".
 
-## Lens 3 — memory / catalog sync
+## Lens 3 — catalog sync
 
-If the diff changed a wiring seam, the corresponding wiring-map memory **and** the relevant
-entry in this skill's `references/wiring-seams.md` should be updated **in the same PR**.
-Otherwise the catalog rots and the next reviewer trusts a stale invariant. Flag a diff that
-changed a seam but didn't touch the corresponding doc (minor, but catch it).
+If the diff changed a wiring seam, the relevant entry in this skill's
+`references/wiring-seams.md` should be updated **in the same PR** (along with any project-side
+notes that mirror the wiring map). Otherwise the catalog rots and the next reviewer trusts a
+stale invariant. Flag a diff that changed a seam but didn't touch the corresponding doc (minor,
+but catch it).
 
 ## Lens 4 — test-sync (behavior shipped without a test)
 
