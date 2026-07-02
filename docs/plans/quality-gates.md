@@ -112,16 +112,18 @@ binding 組み立てロジック (`expandWorktreeBindings` / `additionalBindingM
 
 2026-07-02 棚卸しで見えた空白。 カバレッジ計測自体がないため空白が不可視になっている点も含めて対処する。
 
+**進捗 (2026-07-02)**: 可視化 (PR #695) / `adapters` 穴埋め (PR #696) / `kit` 空パッケージ削除 (下記参照) を landed。
+
 ### 可視化 (先行)
 
-- CI の unit ジョブに `-coverprofile` を足し、 総カバレッジをログ出力する。 **初回からハード床 (coverage floor) は張らない** — 床は数字合わせのテストを誘発して形骸化する。 まず可視化、 床は傾向が見えてから判断。
+- CI の unit ジョブに `-coverprofile` を足し、 総カバレッジをログ出力する。 **初回からハード床 (coverage floor) は張らない** — 床は数字合わせのテストを誘発して形骸化する。 まず可視化、 床は傾向が見えてから判断。 **実装済 (PR #695)**: unit ジョブの `go test` に `-coverprofile=coverage.out ./...` + 次 step で `[coverage]` プレフィックス付き total 行出力。
 
 ### 優先度つきパッケージ計画
 
 | パッケージ | 現状 | 優先度・方針 |
 |---|---|---|
-| `internal/adapters` | **テストゼロ** | **高**。 harness adapter は Phase 3-b/3-c の退行多発地帯 (env strip [[phase3b-session-jsonl-not-persisted]]、 Bindings() 統合 [[phase3c-codex-opencode-prototype]])。 Bindings() の出力・env strip/inject・resume 引数組み立てを table test で固める |
-| `internal/kit` | `detect_test.go` / `requirements_test.go` が **1 行スタブ** | **高**。 kit init は直近の主力機能 ([[project-kit-init-skill-plan]])。 detect / requirements の実テストを書く。 スタブ放置は 「テストがある」 という誤情報になる分ゼロより悪い |
+| `internal/adapters` | ~~テストゼロ~~ 既存テストあり (claude/codex/opencode/shell の run/bindings、 Phase 3-c/3-d で追加)。 `registry`/`sigutil`/`claude.Bindings` が 0% だった | **実装済 (PR #696)**。 `registry.For` (0→100%)・ `sigutil.ForwardAndWait` (0→87%、 全 adapter 共通のシグナル/終了コア)・ `claude.Bindings` (0→カバー)・ `shell.Usage`/`Bindings`/`envSlice` を穴埋め。 `Run()` は実ハーネス fork のため unit 対象外 (e2e 領域) |
+| ~~`internal/kit`~~ (削除済) | `detect.go`/`requirements.go` は **中身が空** (`package kit` のみ)・ テストも 1 行スタブ | **実装済 (dead-code 削除)**。 detect/requirements の機能自体が PR #635 で撤去され、 空パッケージだけが残存 (import ゼロ・ docs は存在しない `registry.go` を参照)。 プランの「実テストを書く」は対象消失で不可能。 誠実な解決として**空パッケージごと削除** + arch allowlist / docs を修正。 生きた kit ロジック (`kit.yaml` 解決・ `ValidKitName`) は `internal/orchestrator` に畳み込み済で `kit_registry_test.go` がカバー済 |
 | `internal/db` (top-level) | `db.go` 未テスト (migrate 配下のみ) | **中**。 Tier 1 #4 の golden schema と同時に着手 |
 | `internal/notify` | 薄い (120 行) | **中**。 e2e もゼロの面なので unit 側で担保。 通知 payload 組み立てと failure path |
 | `internal/logrotate` | 薄い (240 行) | **中**。 ローテーション境界とエラー時の挙動 (ログ喪失系は事故ると診断手段が消える) |
@@ -196,7 +198,7 @@ lint は 「意図的な分岐 + 間違った claim」 は catch できないが
 1. **Tier 0 + 前提 P** — 並行で即。 各 PR 1 本。 既存違反の掃除込みでも軽い。
 2. **Tier 1 #1** — binding 上流ガード + 貫通結合テストを 1 PR。
 3. **Tier 1 #2 / #4** — op↔escape 不変条件、 DB golden schema。 各 1 PR、 並行可。
-4. **Tier 1.5 高優先** — `adapters` / `kit` の実テスト。 各 1 PR。 カバレッジ可視化は Tier 0 に同梱でも可。
+4. ~~**Tier 1.5 高優先** — `adapters` / `kit` の実テスト。 各 1 PR。 カバレッジ可視化は Tier 0 に同梱でも可。~~ **実装済 (2026-07-02, PR #695 可視化 / #696 adapters / kit は空パッケージ削除)**。
 5. **Tier 1 #3** — multi-harness e2e シナリオ。
 6. ~~**Tier 2** — golangci-lint CI 追加。 並行可。~~ **実装済 (2026-07-02)**。
 7. **Tier 1 構造的ねじれの解消** — binding 系を触る PR のついでに段階的に。

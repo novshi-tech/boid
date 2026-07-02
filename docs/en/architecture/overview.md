@@ -47,7 +47,7 @@ internal/
   orchestrator/       - state machine, ProjectStore, persistence and evaluation
   dispatcher/         - hook job launching, sandbox plan building, worktree management
   sandbox/            - mount namespace + chroot, host-command broker, HTTP proxy
-  kit/                - cloning, loading, and detection for kit repositories
+  adapters/           - harness adapters (claude / codex / opencode / shell) + registry
   initwizard/         - interactive setup for `boid project init` (the old `boid init` has been removed)
   logrotate/          - size-based rotation for the daemon log
   qrterm/             - terminal-side QR rendering
@@ -156,11 +156,11 @@ The Linux sandbox itself.
 
 Does not see orchestrator types (the layering rule). Inputs come in as primitives prepared by dispatcher.
 
-### internal/kit
+### kit (folded into orchestrator)
 
-Clones kit repositories, reads `kit.yaml`, and runs `detect.sh`.
+A kit is a reusable unit that supplies tools (`host_commands` / `env` / `additional_bindings`). The former standalone `internal/kit` package (repo clone, `detect.sh` execution, etc.) has been removed; `kit.yaml` reading and resolution now live inside `internal/orchestrator`.
 
-Entry: [`internal/kit/registry.go`](https://github.com/novshi-tech/boid/blob/main/internal/kit/registry.go).
+Entry: [`internal/orchestrator/kit_registry.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/kit_registry.go) (flat resolution from `~/.local/share/boid/kits/<name>/`) and [`internal/orchestrator/kit_name.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/kit_name.go) (name validation).
 
 ### internal/db
 
