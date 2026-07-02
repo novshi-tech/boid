@@ -294,6 +294,104 @@ func TestGetWithWorkspace_WorkspaceHostCommandConflict(t *testing.T) {
 	}
 }
 
+// setupKitDir writes a kit fixture at baseDir/<slug>/kit.yaml. baseDir is used
+// as the KitRegistry root so refs resolve by slug.
+func setupKitDir(t *testing.T, baseDir, slug, content string) {
+	t.Helper()
+	kitDir := filepath.Join(baseDir, slug)
+	if err := os.MkdirAll(kitDir, 0o755); err != nil {
+		t.Fatalf("mkdir kit dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write kit.yaml: %v", err)
+	}
+}
+
+// setupProjectWithBehavior writes a project.yaml carrying one task behavior so
+// the per-behavior workspace-kit merge path in GetWithWorkspace is exercised
+// (setupProjectDir writes a behavior-less project).
+func setupProjectWithBehavior(t *testing.T, dir, id, behavior string) {
+	t.Helper()
+	boidDir := filepath.Join(dir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	yaml := "id: " + id + "\nname: " + id + "\ntask_behaviors:\n  " + behavior + ":\n    name: " + behavior + "\n"
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write project.yaml: %v", err)
+	}
+}
+
+func findBindingBySource(mounts []orchestrator.BindMount, src string) (orchestrator.BindMount, bool) {
+	for _, m := range mounts {
+		if m.Source == src {
+			return m, true
+		}
+	}
+	return orchestrator.BindMount{}, false
+}
+
+// TestGetWithWorkspace_AdditionalBindingsMerge is the upstream half of Tier 1
+// #1 (docs/plans/quality-gates.md). It guards the 2026-06-29 regression where
+// workspace-kit additional_bindings were silently dropped during hydration.
+// The hydrated meta must expose the kit binding both at the top level (session
+// jobs read meta.AdditionalBindings directly) AND inside each task behavior
+// (task hooks read behavior.AdditionalBindings via the planner). Neither was
+// asserted before this test — project_store_hydrate_test only covered Env.
+func TestGetWithWorkspace_AdditionalBindingsMerge(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	setupProjectWithBehavior(t, projectDir, "proj-bind", "build")
+
+	kitsDir := t.TempDir()
+	setupKitDir(t, kitsDir, "volta", `additional_bindings:
+  - source: /opt/volta
+    target: /opt/volta
+    mode: rw
+`)
+
+	wsDir := t.TempDir()
+	setupWorkspaceDir(t, wsDir, "bindws", `kits:
+  - volta
+`)
+
+	s := orchestrator.NewProjectStore(orchestrator.NewRegistry(kitsDir))
+	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
+	loadProjectIntoStore(t, s, []*orchestrator.Project{
+		{ID: "proj-bind", WorkDir: projectDir, WorkspaceID: "bindws"},
+	})
+
+	meta, err := s.GetWithWorkspace(context.Background(), "proj-bind")
+	if err != nil {
+		t.Fatalf("GetWithWorkspace: %v", err)
+	}
+
+	// Top-level: session jobs bypass behaviors and read this field.
+	if _, ok := findBindingBySource(meta.AdditionalBindings, "/opt/volta"); !ok {
+		t.Fatalf("workspace kit binding missing from meta.AdditionalBindings: %+v", meta.AdditionalBindings)
+	}
+
+	// Per-behavior: task hooks read behavior.AdditionalBindings via planner.go.
+	build, ok := meta.TaskBehaviors["build"]
+	if !ok {
+		t.Fatalf("behavior dev missing from hydrated meta: %+v", meta.TaskBehaviors)
+	}
+	if _, ok := findBindingBySource(build.AdditionalBindings, "/opt/volta"); !ok {
+		t.Fatalf("workspace kit binding missing from behavior build.AdditionalBindings: %+v", build.AdditionalBindings)
+	}
+
+	// The cached meta must not be mutated by hydration (bindings only appear on
+	// the returned copy).
+	cached, ok := s.Get("proj-bind")
+	if !ok {
+		t.Fatal("expected cached meta to exist")
+	}
+	if _, ok := findBindingBySource(cached.AdditionalBindings, "/opt/volta"); ok {
+		t.Fatalf("cached meta must not gain workspace kit binding: %+v", cached.AdditionalBindings)
+	}
+}
+
 // TestLoadAll_RecordsWorkspaceID verifies that LoadAll correctly records the
 // workspaceID for each project, enabling GetWithWorkspace to find it.
 func TestLoadAll_RecordsWorkspaceID(t *testing.T) {
