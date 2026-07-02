@@ -85,6 +85,9 @@ func csrfExempt(r *http.Request) bool {
 
 func generateCSRFToken() string {
 	b := make([]byte, 32)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// A broken CSRF token would silently weaken auth; fail loud instead.
+		panic("generateCSRFToken: crypto/rand: " + err.Error())
+	}
 	return hex.EncodeToString(b)
 }

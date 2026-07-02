@@ -26,7 +26,7 @@ boid リポジトリ全体の品質ガードを設計するメモ。 旧名 `sup
 | web UI: templ 生成コード drift | `_templ.go` はコミット済、 同期チェックなし | **Tier 0** |
 | DB マイグレーション | forward-only 27 本、 手書き columnExists のみ。 golden schema なし | **Tier 1 #4** |
 | パッケージ単体テストの空白 (adapters ゼロ、 kit スタブ等) | カバレッジ計測もなし | **Tier 1.5** |
-| lint (errcheck/staticcheck 等) | ゼロ | **Tier 2** (実装済 2026-07-02: govet/ineffassign/staticcheck/unused。 errcheck・gofmt は宣言つき見送り) |
+| lint (errcheck/staticcheck 等) | ゼロ | **Tier 2** (実装済 2026-07-02: govet/ineffassign/staticcheck/unused/**errcheck**。 gofmt は宣言つき見送り) |
 | e2e インフラの信頼性 (flake) | リトライ機構なし。 1 flake で 60 分ジョブ全赤 | **前提 P** (Tier 0 と並行) |
 | 意図的分岐 + 誤った claim | reviewer 依存 | **Tier 3** |
 | web UI: 静的 JS (`web/static/*.js` 3 ファイル) | テスト・lint なし | **スコープ外** (面が小さい。 増えたら再考) |
@@ -134,13 +134,19 @@ binding 組み立てロジック (`expandWorktreeBindings` / `additionalBindingM
 
 **実装済 (2026-07-02)**。 `.golangci.yml` 新規 + `blackbox-e2e.yml` に `lint` ジョブ追加 (`golangci/golangci-lint-action@v7`、 version `v2.1.6` 固定)。
 
-初回 linter セット (控えめ):
-- `govet` / `ineffassign` / `staticcheck` (SA* バグ検出コア + S* 安全な簡略化) / `unused`。 gosimple は staticcheck v2 の S* に統合済みなので別途は入れない。
+linter セット (控えめ):
+- `errcheck` (儀式系は `std-error-handling` preset で除外、 詳細後述) / `govet` / `ineffassign` / `staticcheck` (SA* バグ検出コア + S* 安全な簡略化) / `unused`。 gosimple は staticcheck v2 の S* に統合済みなので別途は入れない。
 - staticcheck は `-ST1*` (stylecheck: 命名規約・コメント書式・重複 import 等) と `-QF1*` (quickfix 提案: De Morgan / tagged switch / 型省略) を除外。 バグ寄りに絞って形骸化を防ぐ。
 
 初回掃除 (同 PR): この控えめセットでも既存コードで数件出たので同時に潰した — 未使用のテストヘルパー/フィールド/型 (`unused`)、 不要な `fmt.Sprintf` (S1039)、 空の if ブランチ (SA9003)、 未使用フィールド `dockerproxy.Server.mu`。
 
-**errcheck は初回セットに含めない (2026-07-02 決定)**: 有効化すると既存コードで **329 件**。 内訳は `Close` 96 / `fmt.Fprint*` 175 / templ `Render` 24 / `Write*` 7 と、 大半が best-effort な出力・クローズ。 機械的な `_ =` 埋めは、 その中に紛れる「本当に握りつぶすとバグになる少数」 (`Decode` 3 / `Encode` 3 / `MkdirAll` 1 / `rand.Read` 2 / `Rollback` 2 / `RemoveAll` 2 / `Serve` 2 等) まで無差別に隠す。 `exclude-functions` はインターフェース受け (`(io.Closer).Close`) では具象型の `Close` にマッチせず、 型ごと列挙は脆い。 これは 「無言の欠落」 ではなく **宣言された非目標** として follow-up に回す。 導入するなら (a) 儀式的関数をテキスト規則で除外して意味のある ~30 件だけ手当てするか、 (b) 負債を段階的に払ってから全面有効化する。
+**errcheck は 2026-07-02 の follow-up で導入済**: 当初は「329 件出て、機械的 `_ =` 埋めが握りつぶすとバグになる少数まで隠す」「`exclude-functions` の `(io.Closer).Close` は具象型 `Close` にマッチせず型列挙は脆い」として初回セットから外していた。 その後の再調査で、 上記悲観は **errcheck 単体**の話で、 golangci-lint v2 の **`std-error-handling` プリセット** (旧 EXC0001 の正規表現) を使えば `Close` / `fmt.Fprint*` / `os.Remove(All)` / `os.Std(out\|err)` / `os.(Un)Setenv` を型列挙なしでまとめて除外できると判明。 これで非 test の findings が **381→61 件**に落ちた。
+
+採った方針 (上記 (a) の精緻版):
+- errcheck を enable + `exclusions.presets: [std-error-handling]` で儀式系を機械除外。
+- `exclude-functions` に `(github.com/a-h/templ.Component).Render` (best-effort な HTML 描画、preset の正規表現に載らない) と `(*github.com/coder/websocket.Conn).CloseNow` (Close 亜種) を追加。
+- test ファイルは `exclusions.rules` の `path: _test\.go` で errcheck 対象外。 setup の err 無視は低リスクで、 機械的 `_ =` 埋めがプランの嫌う形骸化 churn になるため (preset 後も test 側に 220 件残っていた)。
+- 残る非 test ~37 件を個別に手当て: **実処理**が要るもの (DB pragma の `conn.Exec` はループで error 返却、 crypto/rand の `rand.Read` はトークン helper で entropy 失敗時 panic)、 **best-effort として明示無視** (`_ =` / `_, _ =`: ResponseWriter への Encode/Write、 proxy pump の io.Copy、 worktree cleanup の `exec.Cmd.Run`、 commit 後 no-op の `tx.Rollback`、 shutdown 時 `Serve`)。 既存の壊れた `//nolint: errcheck` (コロン後スペースで無効化されていた) も `_ =` に正規化。
 
 **gofmt / フォーマット系も初回セットに含めない (2026-07-02 決定)**: gofmt 出力は Go のバージョンで揺れる (go1.25 は struct タグ整列アルゴリズムが変わり、 repo は go1.24 整形なので 66 ファイルに差分が出る)。 golangci-lint 同梱 formatter とローカル/CI toolchain がズレると spurious diff や `golangci-lint fmt` の巻き添え整形を招く。 フォーマットの enforcement が必要なら go.mod と同一 toolchain の `gofmt -l` を別ステップで足す方が堅い (Tier 0 系の話で、 本 Tier の範囲外)。
 
@@ -175,7 +181,7 @@ lint は 「意図的な分岐 + 間違った claim」 は catch できないが
 | G2 配線図 memory | Tier 3 | G1 を補佐 |
 | G3 互換性 claim semantic check | Tier 3 | G1 の review skill に統合 |
 | G4 cross-feature e2e matrix | Tier 1 #3 | multi-harness × kit binding の e2e |
-| G5 golangci-lint | Tier 2 | 機構底上げとして CI 追加 (**実装済 2026-07-02**、 errcheck/gofmt は宣言つき見送り) |
+| G5 golangci-lint | Tier 2 | 機構底上げとして CI 追加 (**実装済 2026-07-02**、 errcheck も follow-up で導入済、 gofmt は宣言つき見送り) |
 | G6 mutation testing | 見送り | — |
 | (新) 既存規律の CI 接続 (arch script / vet / **race** / **templ drift**) | Tier 0 | 最優先 (即効) |
 | (新) e2e flake 対策 | 前提 P | ゲート信頼性の前提。 Tier 0 と並行 |
@@ -203,7 +209,8 @@ lint は 「意図的な分岐 + 間違った claim」 は catch できないが
 - Tier 1 #1 の貫通結合テストを `dispatcher` に置くか `orchestrator` に置くか (どちらも db import で CI 限定)。 純関数切り出しと同時にやるか別 PR か。
 - Tier 1 #2 の 「op ↔ テスト対応」 の突き合わせ方式 (naming convention で機械照合 vs 明示 manifest)。
 - Tier 1.5 のカバレッジ可視化の出し方 (ログのみ vs PR コメント)。 床を張るかの判断時期。
-- ~~Tier 2 の初回 linter セット。~~ **解決 (2026-07-02)**: govet / ineffassign / staticcheck (SA*+S*、 ST*/QF* 除外) / unused。 errcheck (329 件) と gofmt (バージョン揺れ) は宣言つき見送り (Tier 2 節参照)。 残論点は errcheck をいつ・どう入れるか (テキスト除外で ~30 件手当て vs 段階的に負債返済)。
+- ~~Tier 2 の初回 linter セット。~~ **解決 (2026-07-02)**: govet / ineffassign / staticcheck (SA*+S*、 ST*/QF* 除外) / unused。 gofmt (バージョン揺れ) は宣言つき見送り (Tier 2 節参照)。
+- ~~errcheck をいつ・どう入れるか (テキスト除外で ~30 件手当て vs 段階的に負債返済)。~~ **解決・導入済 (2026-07-02 follow-up)**: `std-error-handling` preset で儀式系を機械除外 + test 除外 + 残 ~37 件を個別手当て (実処理/明示無視)。 Tier 2 節参照。
 - Tier 3 G1 の reviewer モデル / effort デフォルト (max は token 重い、 high で足りるか)、 false positive 時の NO-GO override 経路。
 - Tier 3 G2 の 「触る配線図」 declare 形式 (memory ref のリスト? plan doc に明示?) と腐り対策の enforcement。
 

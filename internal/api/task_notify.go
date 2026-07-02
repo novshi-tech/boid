@@ -433,6 +433,8 @@ func (s *TaskAppService) AnswerTask(ctx context.Context, taskID, questionID, ans
 // newQuestionID generates a random hex identifier for a Q&A turn.
 func newQuestionID() string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("newQuestionID: crypto/rand: " + err.Error())
+	}
 	return hex.EncodeToString(b)
 }

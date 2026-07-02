@@ -46,7 +46,7 @@ func (s *Store) ConsumePairingCode(ctx context.Context, codeHash []byte) (label 
 	if err != nil {
 		return "", fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // no-op once committed
 
 	var lbl sql.NullString
 	var expiresAt time.Time

@@ -66,7 +66,7 @@ func (p *Proxy) Start(ctx context.Context) (int, error) {
 		Handler: http.HandlerFunc(p.serveHTTP),
 	}
 
-	go p.server.Serve(ln)
+	go func() { _ = p.server.Serve(ln) }() // returns ErrServerClosed on Stop
 	go func() {
 		<-ctx.Done()
 		p.Stop()
@@ -123,16 +123,16 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	buf.WriteString("HTTP/1.1 200 Connection established\r\n\r\n")
+	_, _ = buf.WriteString("HTTP/1.1 200 Connection established\r\n\r\n")
 	buf.Flush()
 
 	done := make(chan struct{})
 	go func() {
-		io.Copy(targetConn, clientConn)
+		_, _ = io.Copy(targetConn, clientConn) // best-effort pump; either side may close
 		done <- struct{}{}
 	}()
 	go func() {
-		io.Copy(clientConn, targetConn)
+		_, _ = io.Copy(clientConn, targetConn) // best-effort pump; either side may close
 		done <- struct{}{}
 	}()
 
@@ -167,7 +167,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	_, _ = io.Copy(w, resp.Body) // best-effort; client may have disconnected
 }
 
 // isDomainAllowed checks if a domain matches the allowed list.

@@ -282,7 +282,7 @@ func applyMigration(conn *sql.DB, m migration) error {
 	if err != nil {
 		return fmt.Errorf("begin migration %s: %w", m.version, err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // no-op once committed
 
 	if m.skip != nil {
 		skip, err := m.skip(tx)

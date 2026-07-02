@@ -94,7 +94,7 @@ func defaultDBPath() string {
 		dataDir = filepath.Join(home, ".local", "share")
 	}
 	dir := filepath.Join(dataDir, "boid")
-	os.MkdirAll(dir, 0o755)
+	_ = os.MkdirAll(dir, 0o755) // best-effort; a real failure surfaces at DB open
 	return filepath.Join(dir, "boid.db")
 }
 

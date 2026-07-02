@@ -356,12 +356,12 @@ func (m *WorktreeManager) Create(projectDir, projectID, taskID, baseBranch strin
 	headCmd := exec.Command(m.gitBin(), "-C", wtPath, "symbolic-ref", "HEAD")
 	headOut, headErr := headCmd.CombinedOutput()
 	if headErr != nil {
-		exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", wtPath).Run()
+		_ = exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", wtPath).Run() // best-effort cleanup
 		return nil, fmt.Errorf("worktree HEAD check failed: %w", headErr)
 	}
 	expectedRef := "refs/heads/" + branch
 	if actualRef := strings.TrimSpace(string(headOut)); actualRef != expectedRef {
-		exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", wtPath).Run()
+		_ = exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", wtPath).Run() // best-effort cleanup
 		return nil, fmt.Errorf("worktree HEAD mismatch: expected %s, got %s", expectedRef, actualRef)
 	}
 
@@ -369,7 +369,7 @@ func (m *WorktreeManager) Create(projectDir, projectID, taskID, baseBranch strin
 	// even when the project's .boid is untracked (otherwise readonly worktree
 	// mounts fail with EROFS during the bind setup).
 	if err := os.MkdirAll(filepath.Join(wtPath, ".boid"), 0o755); err != nil {
-		exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", wtPath).Run()
+		_ = exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", wtPath).Run() // best-effort cleanup
 		return nil, fmt.Errorf("ensure .boid dir: %w", err)
 	}
 
@@ -381,7 +381,7 @@ func (m *WorktreeManager) Create(projectDir, projectID, taskID, baseBranch strin
 		BaseBranch: resolvedBase,
 	}
 	if err := CreateWorktree(m.DB, w); err != nil {
-		exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", wtPath).Run()
+		_ = exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", wtPath).Run() // best-effort cleanup
 		return nil, fmt.Errorf("record worktree: %w", err)
 	}
 
@@ -403,7 +403,7 @@ func (m *WorktreeManager) Remove(projectDir, taskID string, deleteBranch bool) e
 		slog.Warn("git worktree remove failed, attempting manual cleanup",
 			"error", err, "output", strings.TrimSpace(string(out)))
 		os.RemoveAll(w.Path)
-		exec.Command(m.gitBin(), "-C", projectDir, "worktree", "prune").Run()
+		_ = exec.Command(m.gitBin(), "-C", projectDir, "worktree", "prune").Run() // best-effort cleanup
 	}
 
 	// Only delete boid/* branches. Non-boid branches (e.g. base_branch of a
@@ -559,12 +559,12 @@ func (m *WorktreeManager) Recreate(projectDir string, taskID string) (*Worktree,
 
 	// Same rationale as Create: bind-mount target must exist on a readonly worktree.
 	if err := os.MkdirAll(filepath.Join(w.Path, ".boid"), 0o755); err != nil {
-		exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", w.Path).Run()
+		_ = exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", w.Path).Run() // best-effort cleanup
 		return nil, fmt.Errorf("ensure .boid dir: %w", err)
 	}
 
 	if err := ClearWorktreeCleaned(m.DB, taskID); err != nil {
-		exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", w.Path).Run()
+		_ = exec.Command(m.gitBin(), "-C", projectDir, "worktree", "remove", "--force", w.Path).Run() // best-effort cleanup
 		return nil, fmt.Errorf("clear worktree cleaned: %w", err)
 	}
 

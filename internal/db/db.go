@@ -37,9 +37,17 @@ func Open(path string) (*DB, error) {
 	conn.SetMaxIdleConns(1)
 	conn.SetConnMaxLifetime(0)
 
-	conn.Exec("PRAGMA journal_mode=WAL")
-	conn.Exec("PRAGMA foreign_keys=ON")
-	conn.Exec("PRAGMA busy_timeout=5000")
+	// A silently-failed PRAGMA would leave the DB in an unsafe mode (no WAL / FK
+	// off), so surface it rather than swallow.
+	for _, pragma := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA foreign_keys=ON",
+		"PRAGMA busy_timeout=5000",
+	} {
+		if _, err := conn.Exec(pragma); err != nil {
+			return nil, fmt.Errorf("%s: %w", pragma, err)
+		}
+	}
 	return &DB{Conn: conn}, nil
 }
 
@@ -55,7 +63,7 @@ func InTxDB(conn *sql.DB, fn func(DBTX) error) error {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	if err := fn(tx); err != nil {
-		tx.Rollback()
+		_ = tx.Rollback() // best-effort; fn's error is the one that matters
 		return err
 	}
 	return tx.Commit()

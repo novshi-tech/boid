@@ -37,7 +37,7 @@ func NewTestServer(t *testing.T) *TestServer {
 		t.Fatalf("start server: %v", err)
 	}
 
-	t.Cleanup(func() { srv.Stop() })
+	t.Cleanup(func() { _ = srv.Stop() })
 
 	return &TestServer{
 		Server: srv,
