@@ -9,8 +9,8 @@
 | `internal/sandbox/broker.go` | `Handle()` / `Register()` / `allowsBuiltinOp` helper |
 | `internal/sandbox/git_builtin.go` | Example handler with policy check at the top |
 | `internal/orchestrator/spec_loader.go` | `validateBuiltinHostConflict` — prevents re-declaring builtin names in `host_commands` |
-| `internal/orchestrator/planner.go` | Builtin name lists in `PlanHook` / `PlanGate` |
-| `internal/dispatcher/command_job.go` | Builtin name list in `BuildCommandJobSpec` |
+| `internal/orchestrator/planner.go` | Builtin name list in `PlanHook` |
+| `internal/dispatcher/session_job.go` | Builtin name list in `BuildSessionJobSpec` (reused by `BuildExecJobSpec`) |
 
 ## Key types and functions for builtin implementation
 
@@ -76,7 +76,7 @@ func policyFor(role Role, name string, pctx PolicyContext) BuiltinPolicy
 
 **Role branching: none** — all roles share the same policy (`_ Role`).
 
-Allowed ops (14 total):
+Allowed ops (16 total):
 
 | Op | Notes |
 |----|-------|
@@ -85,6 +85,7 @@ Allowed ops (14 total):
 | `job_show` | |
 | `job_log` | |
 | `action_send` | |
+| `agent_stop` | |
 | `task_create` | |
 | `task_get` | |
 | `task_update` | |
@@ -93,17 +94,24 @@ Allowed ops (14 total):
 | `task_list` | |
 | `task_notify` | |
 | `task_answer` | |
+| `task_ask` | |
 | `task_delete` | |
 
 ### git builtin
 
 **Role branching: none** — all roles share the same policy (`_ Role`).
 
-Allowed ops: `fetch`, `push`, `push_delete`.
+Allowed ops: `fetch`, `push`, `push_delete`, `clone_local`.
 
-Git fetch/push from hook is permitted — dev workflow is intentionally delegated to the agent side
-(see `project_hostcmd_security_decision`). Role branching may be reintroduced in `policyFor`
-if future requirements demand it.
+Git fetch/push from hook is permitted — the dev workflow is intentionally delegated to the agent
+side. Role branching may be reintroduced in `policyFor` if future requirements demand it.
+
+### fetch builtin
+
+**Role branching: none** — all roles share the same policy (`_ Role`).
+
+Allowed op: `get` (broker-mediated HTTP GET only). No cwd restriction, since fetch performs no
+local filesystem operations; the SSRF guard lives in the handler.
 
 ## Test file locations
 
