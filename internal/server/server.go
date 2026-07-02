@@ -231,7 +231,17 @@ func (s *Server) Stop() error {
 	if s.broker != nil {
 		s.broker.Stop()
 	}
-	os.Remove(s.cfg.SocketPath)
+	// Do NOT os.Remove(s.cfg.SocketPath) here. The UNIX socket file was already
+	// unlinked by httpServer.Close() above (net.UnixListener.Close unlinks its
+	// own socket exactly once via the fd it owns). A blind path-based removal is
+	// unsafe across a fast restart: `httpServer.Close()` unlinks our socket early,
+	// so a successor daemon can create a brand-new socket at the same path (tmpfs
+	// even reuses the inode number) while this Stop() is still draining
+	// workflow.Shutdown()/db.Close() — a variable-length wait gated on killing
+	// in-flight hooks. If we then removed the path, we would delete the *successor's*
+	// live socket, leaving clients with ENOENT. That is the daemon-restart-resume
+	// flake. Any stale socket from an unclean crash is cleared by Start's
+	// os.Remove(s.cfg.SocketPath) before it re-listens.
 
 	if len(errs) > 0 {
 		return fmt.Errorf("stop errors: %v", errs)
