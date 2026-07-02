@@ -26,12 +26,11 @@ go build ./...       # build
 
 ## Coding conventions
 
-- **TDD.** Write the test first, watch it fail, then implement.
-- **Minimal external dependencies.** Reach for the standard library first; if you must add a dependency, explain why in the PR.
-- **Commit prefixes:** `feat:` / `fix:` / `refactor:` / `test:` / `docs:`.
-- **Respect package layering.** Don't break the dependency direction between orchestrator and sandbox / dispatcher (details in the planned architecture chapter).
-- **Comments.** Explain *why*, not *what*. If the code itself answers a question, the comment should not.
-- **Error handling.** Reject unexpected values early. For recoverable failures, wrap the error so the caller can decide.
+Project-wide conventions — TDD, commit prefixes, keeping external dependencies minimal — live in `CLAUDE.md` at the repository root; we don't repeat general coding practice here.
+
+The one boid-specific rule that matters most is **package layering**: don't break the dependency direction between orchestrator and sandbox / dispatcher. This boundary was broken once during a large refactor, so we now check it mechanically with `scripts/check-internal-architecture.sh` (run in CI) and `internal/client/architecture_test.go`.
+
+Changes that span a wiring seam, or that claim something is "equivalent to" / "compatible with" an existing path, are exactly the class mechanisms can miss — run them through the `boid-review` skill's review lens before merging.
 
 ## E2E tests
 

@@ -32,10 +32,17 @@ task_behaviors:
 
         1. Find its PR via `gh pr list --head boid/<task_id8>` (first 8
            chars of the child task id).
-        2. If open and mergeable: `gh pr merge --merge --delete-branch`,
-           then `git fetch origin && git pull --ff-only origin main`,
-           verify, and continue.
-        3. If not mergeable:
+        2. Review before merging. Run the `boid-review` skill on the PR —
+           it applies boid's wiring-invariant + claim-discipline lenses
+           that catch the "intentional change + wrong claim" class that
+           lint and tests structurally miss. Run `/code-review` too for generic
+           bugs. Merge only on a GO verdict. On NO-GO, `boid task reopen
+           <child_id> -m "<the finding>"` instead of merging. A clear false
+           positive may be overridden, but say why in the merge note.
+        3. If open, mergeable, and reviewed GO: `gh pr merge --merge
+           --delete-branch`, then `git fetch origin && git pull --ff-only
+           origin main`, verify, and continue.
+        4. If not mergeable:
            - Plain conflict / CI failure with a focused fix:
              `boid task reopen <child_id> -m "<instruction>"` and
              resume monitoring.
