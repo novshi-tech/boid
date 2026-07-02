@@ -134,6 +134,43 @@ func TestPlanHook_UsesScriptPathDirectlyAndSetsKitRoots(t *testing.T) {
 	}
 }
 
+// PlanHook must carry behavior.AdditionalBindings through to
+// Visibility.AdditionalBindings. This is the task-hook counterpart of the
+// session path's binding passthrough (dispatcher.TestBindingPassthrough_*):
+// a workspace-kit binding merged into the behavior would silently vanish from
+// every task hook if the planner dropped it here, which is the exact shape of
+// the 2026-06-29 regression on the hook side. KitRoots is covered above; this
+// pins the sibling field.
+func TestPlanHook_CarriesAdditionalBindings(t *testing.T) {
+	projectDir := t.TempDir()
+	kitHooksDir := filepath.Join(projectDir, "hooks")
+	if err := os.MkdirAll(kitHooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := filepath.Join(kitHooksDir, "run.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/bash\n"), 0o755); err != nil {
+		t.Fatalf("write hook: %v", err)
+	}
+
+	binding := BindMount{Source: "/opt/volta", Target: "/opt/volta", Mode: "rw"}
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{
+		AdditionalBindings: []BindMount{binding},
+	}, &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
+
+	req, _, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook:      Hook{ID: "run", ScriptPath: scriptPath},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if len(req.Visibility.AdditionalBindings) != 1 || req.Visibility.AdditionalBindings[0] != binding {
+		t.Errorf("Visibility.AdditionalBindings = %+v, want [%+v]", req.Visibility.AdditionalBindings, binding)
+	}
+}
+
 // Agent-bearing hooks (HarnessType != "") request an interactive PTY:
 // agent runners (claude code etc.) are launched via real PTY sessions and
 // rely on daemon-side SIGUSR1 (on `boid task notify --ask` or `boid job

@@ -20,7 +20,7 @@ boid リポジトリ全体の品質ガードを設計するメモ。 旧名 `sup
 |---|---|---|
 | 配線パス (hydrate → sandbox builder の binding 等) | 下流のみ事後ガード (PR #674)。 上流・貫通はゼロ | **Tier 1 #1** (第一号 = binding) |
 | broker policy / builtin op / escape guard | policy drift テストあり (`policy_translate_test.go`)。 op↔escape e2e の対応保証なし | **Tier 1 #2** |
-| multi-harness (codex/opencode) | e2e シナリオゼロ | **Tier 1 #3** |
+| sandbox 構築の入口 (exec / agent / hook) 別 JobSpec 組み立て | builder unit ゼロ (`BuildExecJobSpec` 未テスト)。binding マージは 1 箇所集約 | **Tier 1 #3** (e2e でなく入口別 builder unit に再設計) |
 | 並行処理 (orchestrator/dispatcher/api) | `-race` は CLAUDE.md 記載のみ、 CI 未実行 | **Tier 0** |
 | アーキ境界 (禁止 import) | スクリプトあり、 未配線 | **Tier 0** |
 | web UI: templ 生成コード drift | `_templ.go` はコミット済、 同期チェックなし | **Tier 0** |
@@ -91,9 +91,17 @@ boid のセキュリティモデルの中核。 policy drift テスト (`interna
 - 最小実装: op 一覧 (policy table) と escape テストの対応を突き合わせる meta テスト。 新 op 追加時に 「対応テストを書くか、 明示的に免除リストに載せる」 を強制。
 - [[sandbox-cannot-build-sqlite-packages]] の wantOps / drift test 更新規律を機構に昇格させるイメージ。
 
-### #3 multi-harness × 複数 kit の e2e マトリクス
+### #3 sandbox 構築の入口別ガード (旧「multi-harness e2e マトリクス」を再設計)
 
-`e2e/scenarios/` は 37 本中 16 本が docker-proxy 系に偏り、 codex/opencode harness を使うシナリオがゼロ (binding 退行の死角)。 fake harness で 「kit init で作った binding が claude/codex/opencode 各 harness で見える」 matrix を 1 シナリオで ([[boid-e2e-from-sandbox-uses-ci]] のとおり requires-sandbox は CI のみ)。 旧プランの G4 はここに統合。
+**当初案 (fake harness の e2e マトリクス) は費用対効果で却下**。理由: binding のマージ処理は分岐しておらず、`sandbox_builder.go:147` の `registry.For(spec.HarnessType).Bindings()` **1 箇所に集約**されている (exec / agent / hook / init 全ジョブが同じ `BuildSandboxSpec` を通る)。「sandbox 構築のコードパスが harness ごとに N 本ある」わけではなく、**1 本の関数を HarnessType で分岐させている**だけ。よって e2e で実 harness (or fake harness) を N 種類起こすより、以下の 2 層 unit で本質を突く方が安く確実 ([[boid-e2e-from-sandbox-uses-ci]] のとおり e2e requires-sandbox は CI 限定という制約も回避できる):
+
+1. **共有 `BuildSandboxSpec` を HarnessType クラスで parametrize** — 実装済。shell クラス (`TestBuildSandboxSpec_ShellHarnessKeepsKitRoots`、harness binding 空) と agent クラス (`TestBuildSandboxSpec_Profile{Init,Default}_HarnessKeepsAdditionalBindings`、harness binding + kit binding 共存)。**2026-06-29 退行は agent クラスでしか再現しない** (exec/shell は `if len(harnessBindings) > 0` に入らない) ので、両クラスをテスト行列に入れるのが要。
+2. **入口別の JobSpec builder unit** — **実装済 (下記)**。`BuildSandboxSpec` のテストは spec を手組みするので「入口が spec を正しく組めているか」を見られない。過去のバグ (2026-06-29 binding 退行、Phase 3-d の「HarnessType 設定漏れで exec 127」[[phase3d-pr1-hook-hang]]) はまさにこの入口層に巣食っていた。3 入口それぞれの契約を直接アサート:
+   - `BuildExecJobSpec` (`boid exec`) — **従来テストゼロだった**。HarnessType を **shell に強制** (caller 値を無視) / Kind=Exec / Argv / Interactive / binding overlay を維持 (shell 経路は harness binding 空なので退行を独自に踏まないぶん自前ガードが要る) / DisplayName=argv[0] fallback。
+   - `BuildSessionJobSpec` (`boid agent`) — HarnessType passthrough / Kind=Session / Interactive 常時 true / binding・KitRoots・secret・docker の overlay 伝播 / Writable=!Readonly / Instruction→BOID_USER_ANSWER / Model→BOID_MODEL / DisplayName fallback。seam の binding 伝播は `TestBindingPassthrough_HydrateToSandboxSpec` (#690) が別途カバー済で、本 unit はフィールド契約を補完。
+   - `PlanHook` (task hook) — HarnessType マッピング (`harnessTypeForAgent`)・KitRoots・Writable・Docker・HostCommands は既存。**AdditionalBindings→Visibility 伝播**を追加 (`TestPlanHook_CarriesAdditionalBindings`)。
+
+旧プランの G4 (cross-feature e2e) はこの unit 群に置換。実 multi-harness の e2e は [[next-session-multi-harness-phase1]] のとおり boid 全体に実 LLM CI が無く、当初から取り下げ済 (再掲)。
 
 ### #4 DB スキーマの golden 比較
 
@@ -182,7 +190,7 @@ lint は 「意図的な分岐 + 間違った claim」 は catch できないが
 | G1 強制レビューゲート | Tier 3 | skill 版で軽く、 機構化は見送り |
 | G2 配線図 memory | Tier 3 | G1 を補佐 |
 | G3 互換性 claim semantic check | Tier 3 | G1 の review skill に統合 |
-| G4 cross-feature e2e matrix | Tier 1 #3 | multi-harness × kit binding の e2e |
+| G4 cross-feature e2e matrix | Tier 1 #3 | e2e を却下し入口別 builder unit に再設計 (binding マージは 1 箇所集約のため) |
 | G5 golangci-lint | Tier 2 | 機構底上げとして CI 追加 (**実装済 2026-07-02**、 errcheck も follow-up で導入済、 gofmt は宣言つき見送り) |
 | G6 mutation testing | 見送り | — |
 | (新) 既存規律の CI 接続 (arch script / vet / **race** / **templ drift**) | Tier 0 | 最優先 (即効) |
@@ -199,7 +207,7 @@ lint は 「意図的な分岐 + 間違った claim」 は catch できないが
 2. **Tier 1 #1** — binding 上流ガード + 貫通結合テストを 1 PR。
 3. **Tier 1 #2 / #4** — op↔escape 不変条件、 DB golden schema。 各 1 PR、 並行可。
 4. ~~**Tier 1.5 高優先** — `adapters` / `kit` の実テスト。 各 1 PR。 カバレッジ可視化は Tier 0 に同梱でも可。~~ **実装済 (2026-07-02, PR #695 可視化 / #696 adapters / kit は空パッケージ削除)**。
-5. **Tier 1 #3** — multi-harness e2e シナリオ。
+5. ~~**Tier 1 #3** — multi-harness e2e シナリオ。~~ **実装済 (入口別 builder unit に再設計)**: `session_job_test.go` (`BuildExecJobSpec` / `BuildSessionJobSpec`) + `planner_test.go` の `TestPlanHook_CarriesAdditionalBindings`。e2e マトリクスは費用対効果で却下 (#3 節参照)。
 6. ~~**Tier 2** — golangci-lint CI 追加。 並行可。~~ **実装済 (2026-07-02)**。
 7. **Tier 1 構造的ねじれの解消** — binding 系を触る PR のついでに段階的に。
 8. **Tier 3** — 機構が固まってから。 G1 skill 版 → (必要なら) G2 memory 整備。
