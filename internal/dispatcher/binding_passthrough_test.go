@@ -17,7 +17,7 @@ import (
 //	project.yaml + workspace kit fixture
 //	  → ProjectStore.GetWithWorkspace           (upstream hydrate)
 //	  → meta.AdditionalBindings assert
-//	  → orchestrator.JobSpec.Visibility.AdditionalBindings   (the seam)
+//	  → BuildSessionJobSpec                      (the real meta→JobSpec seam)
 //	  → BuildSandboxSpec                         (downstream)
 //	  → sandbox mounts contain BOTH the kit bind AND the harness bind
 //
@@ -60,14 +60,17 @@ func TestBindingPassthrough_HydrateToSandboxSpec(t *testing.T) {
 		t.Fatalf("upstream: kit binding %s missing from hydrated meta.AdditionalBindings: %+v", kitBind, meta.AdditionalBindings)
 	}
 
-	// --- the seam: hydrated bindings feed the JobSpec. This mirrors the
-	// session dispatch path (session_job.go reads meta.AdditionalBindings). ---
-	spec := &orchestrator.JobSpec{
-		HarnessType: "claude",
-		Visibility: orchestrator.Visibility{
-			AdditionalBindings: meta.AdditionalBindings,
-		},
-	}
+	// --- the seam: drive the real session dispatch conversion. BuildSessionJobSpec
+	// is the production meta→JobSpec function that server/wire.go feeds
+	// meta.AdditionalBindings into for POST /sessions and `boid agent`. Using it
+	// here (rather than hand-building the JobSpec) means a regression that drops
+	// AdditionalBindings from that conversion is also caught. ---
+	spec := BuildSessionJobSpec(SessionJobInput{
+		ProjectID:          "proj-thru",
+		ProjectWorkDir:     projectDir,
+		HarnessType:        "claude",
+		AdditionalBindings: meta.AdditionalBindings,
+	})
 
 	// --- downstream: build the sandbox spec ---
 	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
