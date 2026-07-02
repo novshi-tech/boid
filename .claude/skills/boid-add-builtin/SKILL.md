@@ -14,7 +14,7 @@ Each step lists the relevant existing implementation to reference.
 
 For a quick look at code details and file paths, see [references/key-files.md](references/key-files.md).
 
-`git` and `boid` are always available without any declaration in project.yaml / kit.yaml.
+`git`, `boid`, and `fetch` are always available without any declaration in project.yaml / kit.yaml.
 New builtins follow the same convention — they are always injected by the planner
 (the `builtin_commands` config key has been removed).
 
@@ -129,25 +129,33 @@ func ociPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 
 ---
 
-## Step 4 — Wire into the planner
+## Step 4 — Wire into the builtin lists
 
-Add the new builtin to the builtin lists in `PlanHook` / `PlanGate` (`internal/orchestrator/planner.go`):
+The builtin name list is injected in **two** places; add the new name to both. Both pass
+`RoleHook` — there is no separate "gate" role (that mechanism was removed).
+
+1. `PlanHook` in `internal/orchestrator/planner.go` (the task-hook dispatch path):
 
 ```go
-// PlanHook
-BuiltinPolicies: DefaultBuiltinPolicies(RoleHook,
-    []string{"boid", "git", "oci"},
-    PolicyContext{ProjectDir: proj.WorkDir},
-),
-// PlanGate
-BuiltinPolicies: DefaultBuiltinPolicies(RoleGate,
-    []string{"boid", "git", "oci"},
-    PolicyContext{ProjectDir: proj.WorkDir},
+BuiltinPolicies: DefaultBuiltinPolicies(
+    RoleHook,
+    []string{"boid", "git", "fetch", "oci"},
+    PolicyContext{ProjectDir: proj.WorkDir, HomeDir: sandboxHomeDir()},
 ),
 ```
 
-Also update `BuildCommandJobSpec` in `internal/dispatcher/command_job.go` with the same list.
-Add the new builtin name to `validateBuiltinHostConflict` in `internal/orchestrator/spec_loader.go` to prevent re-declaring it via `host_commands`.
+2. `BuildSessionJobSpec` in `internal/dispatcher/session_job.go` (the session / `boid exec`
+   path — `BuildExecJobSpec` reuses it):
+
+```go
+builtinPolicies := orchestrator.DefaultBuiltinPolicies(
+    orchestrator.RoleHook,
+    []string{"boid", "git", "fetch", "oci"},
+    orchestrator.PolicyContext{ProjectDir: input.ProjectWorkDir},
+)
+```
+
+Then add the new builtin name to `validateBuiltinHostConflict` in `internal/orchestrator/spec_loader.go` to prevent re-declaring it via `host_commands`.
 
 ---
 
@@ -192,7 +200,7 @@ URLs or resources that must be protected from tampering.
 ### 6a. Add matrix tests to `policy_test.go`
 
 ```go
-// hook×oci AllowedOps must be non-empty (all roles share the same policy).
+// hook×oci must allow the run op.
 func TestDefaultBuiltinPolicies_HookOciHasRun(t *testing.T) {
     policies := DefaultBuiltinPolicies(RoleHook, []string{"oci"}, PolicyContext{})
     if !policies["oci"].Allows(string(OciOpRun)) {
@@ -200,21 +208,14 @@ func TestDefaultBuiltinPolicies_HookOciHasRun(t *testing.T) {
     }
 }
 
-// gate×oci must include {run}.
-func TestDefaultBuiltinPolicies_GateOciHasRun(t *testing.T) {
-    policies := DefaultBuiltinPolicies(RoleGate, []string{"oci"}, PolicyContext{})
-    if !policies["oci"].Allows(string(OciOpRun)) {
-        t.Error("gate×oci should allow run")
-    }
-}
-
-// empty role must equal gate policy (test-compatibility convention).
-func TestDefaultBuiltinPolicies_EmptyRoleEqualsGate_Oci(t *testing.T) {
-    pctx := PolicyContext{}
-    gate := DefaultBuiltinPolicies(RoleGate, []string{"oci"}, pctx)
-    empty := DefaultBuiltinPolicies("", []string{"oci"}, pctx)
-    if !opsEqual(gate["oci"].AllowedOps, empty["oci"].AllowedOps) {
-        t.Error("default oci policy should equal gate oci policy")
+// oci policy is identical regardless of role (no role branching). Mirrors the
+// existing TestDefaultBuiltinPolicies_FetchRoleInvariant convention: the empty
+// test-only role must resolve to the same ops as RoleHook.
+func TestDefaultBuiltinPolicies_OciRoleInvariant(t *testing.T) {
+    pHook := DefaultBuiltinPolicies(RoleHook, []string{"oci"}, PolicyContext{})["oci"]
+    pEmpty := DefaultBuiltinPolicies("", []string{"oci"}, PolicyContext{})["oci"]
+    if !opsEqual(pHook.AllowedOps, pEmpty.AllowedOps) {
+        t.Errorf("oci policy should be role-invariant; hook=%v empty=%v", pHook.AllowedOps, pEmpty.AllowedOps)
     }
 }
 ```
@@ -240,7 +241,7 @@ Check these items when the new builtin involves external communication or host r
 - [ ] **Secret leakage**: do error messages or slog calls expose secrets or credentials?
 - [ ] **Trusted snapshot**: can an agent tamper with external URLs or resource references? (see `captureGitBinding` pattern)
 - [ ] **Minimal host access**: are host resources (files, network, processes) used to the minimum required?
-- [ ] **Default role test**: is there an `EmptyRoleEqualsGate` equivalent test confirming the empty-role policy matches gate?
+- [ ] **Role-invariant test**: is there a `RoleInvariant` equivalent test confirming the empty-role policy matches the hook-role policy? (see `TestDefaultBuiltinPolicies_FetchRoleInvariant`)
 
 ---
 
@@ -250,5 +251,5 @@ Check these items when the new builtin involves external communication or host r
 |-----------|-----------|
 | broker has no knowledge of role | Role decisions are centralized in `DefaultBuiltinPolicies`; broker consults only the policy table |
 | policy is stamped at registration | Eliminates role evaluation at dispatch time; keeps broker simple |
-| `default` = gate | Test compatibility. In production Role is always set, but empty role matches gate (most permissive) by convention |
-| no role branching by default | Current `boid` and `git` builtins are role-agnostic; git fetch/push are permitted from all roles. Add a role `switch` only when a new builtin genuinely needs role-specific restrictions (see `project_hostcmd_security_decision`) |
+| empty role == hook role | Policies are role-invariant, so the empty test-only role resolves to the same policy as `RoleHook`. There is no separate "gate" role — that mechanism was removed |
+| no role branching by default | Current `boid`, `git`, and `fetch` builtins are role-agnostic; git fetch/push are permitted from the hook role because the dev workflow is intentionally delegated to the agent side. Add a role `switch` only when a new builtin genuinely needs role-specific restrictions |
