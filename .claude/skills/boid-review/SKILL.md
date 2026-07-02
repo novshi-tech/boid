@@ -20,7 +20,7 @@ description: >
   /code-review rather than replacing it.
 ---
 
-# boid-review — pre-merge review for wiring & claims
+# boid-review — pre-merge review for wiring, claims & tests
 
 ## What this skill catches
 
@@ -48,8 +48,8 @@ and this skill does not replace it. Run both before merging (order in Step 0 bel
 
 Before applying the wiring and claim lenses, confirm the ordinary correctness review is
 done. If it isn't, run `/code-review` first (effort medium–high depending on diff size) to
-surface bugs and cleanups. This skill layers a **second** lens — wiring invariants and
-claim discipline — on top of that. Don't mix the roles: general style nits are the
+surface bugs and cleanups. This skill layers a second pass — wiring invariants, claim
+discipline, and test-sync — on top of that. Don't mix the roles: general style nits are the
 territory of lint and `/code-review`, and are not repeated here.
 
 ## Step 1 — gather the materials
@@ -61,6 +61,8 @@ territory of lint and `/code-review`, and are not repeated here.
    "unchanged", "Phase N precondition", "preserves …". These are the input to lens 2.
 3. **Identify the seams touched.** Cross-reference the changed files against the catalog in
    `references/wiring-seams.md` and write down every seam that hits.
+4. **List the new or changed behaviors.** For each, note whether the diff adds or updates a
+   `_test.go` (or an e2e scenario) that exercises it. This is the input to lens 4.
 
 If the materials can't be gathered (empty diff, unreadable PR body, etc.), report that
 honestly. **Do not hand out a green GO with the evidence missing** — silence reads as
@@ -115,8 +117,8 @@ shows, it's in the test that isn't there.
 
 Scope it tightly — this is **not** a general coverage watchdog:
 
-- **In scope**: new or changed *behavior* shipped with neither a test that exercises it nor a
-  stated reason for the absence. Ask concretely:
+- **In scope**: new or changed *behavior* shipped with neither a test (new or existing) that
+  exercises it nor a stated reason for the absence. Ask concretely:
 
   > "This diff adds/changes behavior B. Which test exercises B? If none, did the author say why?"
 
@@ -127,8 +129,8 @@ Scope it tightly — this is **not** a general coverage watchdog:
   runnability.** Accept it when the author says *where* the behavior is exercised instead (an e2e
   scenario, an integration test) or why a unit test genuinely cannot exist. **Watch the common
   trap**: "this package imports sqlite, so it can't build in the sandbox" justifies not *running*
-  the test locally — but `internal/db` and its dependents are still tested **in CI**, so the test
-  should be written and left for CI (see `boid-add-builtin` and the sqlite note). "I can't run it
+  the test locally — but CI runs `go test ./...` on a host runner, so `internal/db` and its
+  dependents are still tested there; the test should be written and left for CI. "I can't run it
   here" is a deferral of verification to CI, **not** license to omit the test. Only when the
   reason truly accounts for the missing coverage is it an acknowledgment rather than a gap; a
   bare, silent omission always is.
