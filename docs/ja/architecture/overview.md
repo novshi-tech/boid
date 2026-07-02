@@ -47,7 +47,7 @@ internal/
   orchestrator/       - 状態機械、 ProjectStore、 task / job / project の永続化と評価
   dispatcher/         - hook のジョブ起動、サンドボックスの組み立て、 worktree 管理
   sandbox/            - mount namespace + chroot 実装、 host command broker、 HTTP プロキシ
-  kit/                - kit リポジトリの clone・読み込み・detect
+  adapters/           - harness アダプタ (claude / codex / opencode / shell) + registry
   initwizard/         - boid project init の対話セットアップ (旧 boid init は廃止済み)
   logrotate/          - daemon ログのサイズローテーション
   qrterm/             - ターミナルへの QR コード描画
