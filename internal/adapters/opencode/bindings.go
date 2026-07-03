@@ -19,11 +19,19 @@ var resolveCommand = func(name string) (string, error) {
 }
 
 // Bindings declares the host bind-mounts opencode.Adapter.Run() needs inside
-// the sandbox. opencode keeps state in three trees:
+// the sandbox. opencode keeps state in four trees:
 //
 //   - ~/.opencode/                 — package install + bin/ (rw, node_modules)
 //   - ~/.config/opencode/          — opencode.jsonc config + node_modules (rw)
 //   - ~/.local/share/opencode/     — auth.json, sqlite, repos snapshot (rw)
+//   - ~/.local/state/opencode/     — model.json (selected model), kv.json (UI
+//                                    settings), frecency/prompt history (rw)
+//
+// The state tree matters for parity with the host: opencode persists the
+// most-recently-selected model in ~/.local/state/opencode/model.json and picks
+// its default from that "recent" list at startup. Without this bind the sandbox
+// opencode can't see it and falls back to a built-in default, so the model and
+// UI settings the user chose on the host silently don't apply inside boid.
 //
 // The resolved binary parent dir is added on top so a plain `opencode` on
 // PATH (e.g. ~/.local/bin/opencode dropped by a packaged install) lands
@@ -53,6 +61,11 @@ func (a *Adapter) Bindings(homeDir string) []adapters.BindMount {
 		},
 		{
 			Source:   homeDir + "/.local/share/opencode",
+			Mode:     "rw",
+			Optional: true,
+		},
+		{
+			Source:   homeDir + "/.local/state/opencode",
 			Mode:     "rw",
 			Optional: true,
 		},
