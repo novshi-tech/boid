@@ -42,6 +42,7 @@ func addAgentSessionFlags(cmd *cobra.Command, f *agentSessionFlags) {
 	cmd.Flags().StringVar(&f.model, "model", "", "override the harness binary's default model")
 	cmd.Flags().StringVar(&f.displayName, "name", "", "human-readable session label (default: \"<harness> session\")")
 	cmd.Flags().BoolVar(&f.noAttach, "no-attach", false, "print the job id and exit instead of attaching to the PTY")
+	_ = cmd.RegisterFlagCompletionFunc("project", completeProjectRefs)
 }
 
 func init() {
