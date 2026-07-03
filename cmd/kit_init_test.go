@@ -239,8 +239,8 @@ func TestRunKitInit_ExecFnCalled(t *testing.T) {
 
 	// Skills should have been deployed to the data dir.
 	skillsDir := filepath.Join(dataDir, "boid", "skills")
-	if _, err := os.Stat(filepath.Join(skillsDir, "boid-kit-init", "SKILL.md")); err != nil {
-		t.Errorf("boid-kit-init skill not deployed: %v", err)
+	if _, err := os.Stat(filepath.Join(skillsDir, "boid-sandbox-configure", "SKILL.md")); err != nil {
+		t.Errorf("boid-sandbox-configure skill not deployed: %v", err)
 	}
 }
 

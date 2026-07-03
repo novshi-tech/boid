@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -265,6 +266,70 @@ func TestRestoreWorkspaceYAML_WithBak_RestoresContent(t *testing.T) {
 	// Backup must be removed after restore.
 	if _, statErr := os.Stat(bakPath); !errors.Is(statErr, os.ErrNotExist) {
 		t.Error("backup file should have been removed after restore")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// projectsEnvJSON tests (BOID_WORKSPACE_PROJECTS injection — daemon socket
+// removal from the workspace-configure sandbox)
+// ---------------------------------------------------------------------------
+
+func TestProjectsEnvJSON_EmptyList(t *testing.T) {
+	got, err := projectsEnvJSON(nil)
+	if err != nil {
+		t.Fatalf("projectsEnvJSON(nil): %v", err)
+	}
+	if got != "[]" {
+		t.Errorf("got %q, want %q (never \"null\" — the skill must be able to tell "+
+			"\"no projects assigned\" apart from \"env var missing\")", got, "[]")
+	}
+
+	got, err = projectsEnvJSON([]*orchestrator.Project{})
+	if err != nil {
+		t.Fatalf("projectsEnvJSON([]): %v", err)
+	}
+	if got != "[]" {
+		t.Errorf("got %q, want %q", got, "[]")
+	}
+}
+
+func TestProjectsEnvJSON_MapsIDAndWorkDir(t *testing.T) {
+	projects := []*orchestrator.Project{
+		{
+			ID:          "proj-1",
+			WorkspaceID: "myws",
+			WorkDir:     "/home/user/repo-a",
+			Meta:        orchestrator.ProjectMeta{},
+		},
+		{ID: "proj-2", WorkDir: "/home/user/repo-b"},
+	}
+
+	got, err := projectsEnvJSON(projects)
+	if err != nil {
+		t.Fatalf("projectsEnvJSON: %v", err)
+	}
+
+	var decoded []workspaceProjectEnv
+	if err := json.Unmarshal([]byte(got), &decoded); err != nil {
+		t.Fatalf("decode: %v (raw: %s)", err, got)
+	}
+	want := []workspaceProjectEnv{
+		{ID: "proj-1", WorkDir: "/home/user/repo-a"},
+		{ID: "proj-2", WorkDir: "/home/user/repo-b"},
+	}
+	if len(decoded) != len(want) {
+		t.Fatalf("got %d entries, want %d: %s", len(decoded), len(want), got)
+	}
+	for i := range want {
+		if decoded[i] != want[i] {
+			t.Errorf("entry %d: got %+v, want %+v", i, decoded[i], want[i])
+		}
+	}
+
+	// WorkspaceID / Meta must NOT leak into the sandbox-facing payload — only
+	// "id" and "work_dir" keys are allowed.
+	if strings.Contains(got, "workspace_id") || strings.Contains(got, "meta") {
+		t.Errorf("projectsEnvJSON leaked extra fields: %s", got)
 	}
 }
 
