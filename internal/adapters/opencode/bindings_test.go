@@ -58,6 +58,34 @@ func TestBindings_SurfacesEachEmbeddedSkillAtClaudeSkillsPath(t *testing.T) {
 	}
 }
 
+// opencode persists its selected model and UI settings under the XDG state
+// dir (~/.local/state/opencode/model.json etc.). This tree must be bound rw so
+// the model the user picked on the host applies inside the sandbox instead of
+// silently falling back to opencode's built-in default. Regression guard for
+// the "wrong default model inside boid agent opencode" bug.
+func TestBindings_BindsStateTreeReadWrite(t *testing.T) {
+	withMissingOpencode(t)
+	home := "/home/test"
+	mounts := New().Bindings(home)
+
+	want := home + "/.local/state/opencode"
+	for _, m := range mounts {
+		if m.Source == want {
+			if m.Target != "" {
+				t.Errorf("state tree: Target=%q, want \"\" (same-path mount)", m.Target)
+			}
+			if m.Mode != "rw" {
+				t.Errorf("state tree: Mode=%q, want \"rw\" (model/UI state must persist back to host)", m.Mode)
+			}
+			if !m.Optional {
+				t.Errorf("state tree: Optional=false, want true so a missing host dir is skipped")
+			}
+			return
+		}
+	}
+	t.Errorf("no binding with Source=%q in %v", want, mounts)
+}
+
 func TestBindings_NoTargetCollisions(t *testing.T) {
 	withMissingOpencode(t)
 	home := "/home/test"
