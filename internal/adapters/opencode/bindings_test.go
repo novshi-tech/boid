@@ -2,10 +2,31 @@ package opencode
 
 import (
 	"errors"
+	"io/fs"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/skills"
 )
+
+type fakeDirEntry struct {
+	name  string
+	isDir bool
+}
+
+func (f fakeDirEntry) Name() string               { return f.name }
+func (f fakeDirEntry) IsDir() bool                { return f.isDir }
+func (f fakeDirEntry) Type() fs.FileMode          { return 0 }
+func (f fakeDirEntry) Info() (fs.FileInfo, error) { return nil, nil }
+
+// withFakeSkillsDir overrides readSkillsDir for deterministic test runs.
+func withFakeSkillsDir(t *testing.T, entries []fs.DirEntry, err error) {
+	t.Helper()
+	saved := readSkillsDir
+	readSkillsDir = func(string) ([]fs.DirEntry, error) {
+		return entries, err
+	}
+	t.Cleanup(func() { readSkillsDir = saved })
+}
 
 // Override resolveCommand for deterministic test runs: this test should pass
 // regardless of whether the host has opencode installed.
@@ -101,5 +122,85 @@ func TestBindings_NoTargetCollisions(t *testing.T) {
 			t.Errorf("duplicate mount target %q (sources: %q and %q)", key, prev, m.Source)
 		}
 		seen[key] = m.Source
+	}
+}
+
+// Host skills under ~/.claude/skills (bitbucket, jira, google-* etc.) must be
+// surfaced individually as optional ro binds so opencode's skill
+// auto-detection sees them, matching claude's own convention. Names that
+// collide with an embedded skill are skipped -- the embedded bind is
+// authoritative and a second mount at the same target would fail.
+func TestBindings_HostSkillsBoundIndividually(t *testing.T) {
+	withMissingOpencode(t)
+	home := "/home/test"
+	names := skills.EmbeddedSkillNames()
+	if len(names) == 0 {
+		t.Fatal("EmbeddedSkillNames returned empty; nothing to test")
+	}
+	embeddedName := names[0]
+
+	withFakeSkillsDir(t, []fs.DirEntry{
+		fakeDirEntry{name: "bitbucket", isDir: true},
+		fakeDirEntry{name: "jira", isDir: true},
+		fakeDirEntry{name: embeddedName, isDir: true},
+	}, nil)
+
+	mounts := New().Bindings(home)
+
+	for _, name := range []string{"bitbucket", "jira"} {
+		wantSrc := home + "/.claude/skills/" + name
+		found := false
+		for _, m := range mounts {
+			if m.Source == wantSrc {
+				found = true
+				if m.Target != "" {
+					t.Errorf("host skill %q: Target=%q, want \"\" (same-path mount)", name, m.Target)
+				}
+				if m.Mode != "" {
+					t.Errorf("host skill %q: Mode=%q, want \"\" (ro)", name, m.Mode)
+				}
+				if !m.Optional {
+					t.Errorf("host skill %q: Optional=false, want true", name)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("host skill %q: no binding with Source=%q in %v", name, wantSrc, mounts)
+		}
+	}
+
+	// The entry colliding with an embedded skill name must not produce a
+	// second mount at the host path -- the embedded bind is authoritative.
+	collidingSrc := home + "/.claude/skills/" + embeddedName
+	for _, m := range mounts {
+		if m.Source == collidingSrc {
+			t.Errorf("embedded-colliding skill %q: unexpected extra binding %+v", embeddedName, m)
+		}
+	}
+}
+
+// A ReadDir failure (e.g. ~/.claude/skills absent) must not disturb the
+// existing embedded-skill bindings -- it should just yield zero additional
+// host-skill bindings.
+func TestBindings_SkillsDirReadErrorLeavesExistingBindingsIntact(t *testing.T) {
+	withMissingOpencode(t)
+	home := "/home/test"
+	withFakeSkillsDir(t, nil, errors.New("test stub: read dir failed"))
+
+	mounts := New().Bindings(home)
+
+	prefix := home + "/.claude/skills/"
+	names := skills.EmbeddedSkillNames()
+	embeddedTargets := map[string]bool{}
+	for _, name := range names {
+		embeddedTargets[prefix+name] = true
+	}
+
+	for _, m := range mounts {
+		if m.Source != "" && len(m.Source) > len(prefix) && m.Source[:len(prefix)] == prefix {
+			if !embeddedTargets[m.Source] {
+				t.Errorf("unexpected host-skill binding present despite ReadDir error: %+v", m)
+			}
+		}
 	}
 }

@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 
@@ -18,6 +19,9 @@ var resolveCommand = func(name string) (string, error) {
 	return filepath.EvalSymlinks(p)
 }
 
+// readSkillsDir is overridable for tests.
+var readSkillsDir = os.ReadDir
+
 // Bindings declares the host bind-mounts opencode.Adapter.Run() needs inside
 // the sandbox. opencode keeps state in four trees:
 //
@@ -25,7 +29,7 @@ var resolveCommand = func(name string) (string, error) {
 //   - ~/.config/opencode/          — opencode.jsonc config + node_modules (rw)
 //   - ~/.local/share/opencode/     — auth.json, sqlite, repos snapshot (rw)
 //   - ~/.local/state/opencode/     — model.json (selected model), kv.json (UI
-//                                    settings), frecency/prompt history (rw)
+//     settings), frecency/prompt history (rw)
 //
 // The state tree matters for parity with the host: opencode persists the
 // most-recently-selected model in ~/.local/state/opencode/model.json and picks
@@ -82,12 +86,38 @@ func (a *Adapter) Bindings(homeDir string) []adapters.BindMount {
 	// task hook bootstrap prompt references the same canonical path across
 	// claude / codex / opencode.
 	skillsBase := homeDir + "/.local/share/boid/skills"
+	embedded := make(map[string]bool, len(skills.EmbeddedSkillNames()))
 	for _, name := range skills.EmbeddedSkillNames() {
+		embedded[name] = true
 		out = append(out, adapters.BindMount{
 			Source:   skillsBase + "/" + name,
 			Target:   homeDir + "/.claude/skills/" + name,
 			Optional: true,
 		})
+	}
+	// Host skills under ~/.claude/skills (bitbucket, jira, google-* etc.) are
+	// surfaced individually as optional ro binds, one entry per subdirectory,
+	// so opencode's skill auto-detection sees them too. This must NOT be a
+	// single bind of the whole ~/.claude/skills directory: the sandbox layers
+	// mounts onto a tmpfs root, and the embedded skill binds above land at
+	// ~/.claude/skills/<name> — mounting the parent dir ro either shadows
+	// those embedded binds (if mounted after) or makes their target
+	// MkdirAll fail with EROFS (if mounted before, since the parent is
+	// already read-only). Per-entry binds sidestep both failure modes by
+	// mounting siblings rather than nesting inside each other. Entries that
+	// collide with an embedded skill name are skipped — the embedded bind
+	// above is authoritative.
+	hostSkillsDir := homeDir + "/.claude/skills"
+	if entries, err := readSkillsDir(hostSkillsDir); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() || embedded[entry.Name()] {
+				continue
+			}
+			out = append(out, adapters.BindMount{
+				Source:   hostSkillsDir + "/" + entry.Name(),
+				Optional: true,
+			})
+		}
 	}
 	return out
 }
