@@ -71,6 +71,7 @@ func defaultAllowedDomains() []string {
 		"api.openai.com",
 		"auth.openai.com",
 		"chatgpt.com",
+		".models.dev", // opencode model metadata registry
 		// Go
 		"proxy.golang.org",
 		"sum.golang.org",
