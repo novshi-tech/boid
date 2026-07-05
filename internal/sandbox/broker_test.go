@@ -438,7 +438,6 @@ func TestBroker_GitFallsBackToHostCommandWhenBuiltinNotAllowed(t *testing.T) {
 		Command: "/usr/bin/git",
 		Args:    []string{"push", "origin", "HEAD"},
 		Token:   token,
-		Git:     &sandbox.GitRequest{Op: sandbox.GitOpPush, Remote: "origin"},
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)

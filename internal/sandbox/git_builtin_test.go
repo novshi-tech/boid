@@ -56,10 +56,7 @@ func TestBroker_GitBuiltinPushUsesTrustedSnapshot(t *testing.T) {
 		Command: "git",
 		Cwd:     repo,
 		Token:   token,
-		Git: &sandbox.GitRequest{
-			Op:     sandbox.GitOpPush,
-			Remote: "origin",
-		},
+		Args:    []string{"push", "origin"},
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("git push exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
@@ -106,11 +103,7 @@ func TestBroker_GitBuiltinPush_RecapturesRemoteAddedAfterRegistration(t *testing
 		Command: "git",
 		Cwd:     repo,
 		Token:   token,
-		Git: &sandbox.GitRequest{
-			Op:       sandbox.GitOpPush,
-			Remote:   "origin",
-			Refspecs: []string{"main"},
-		},
+		Args:    []string{"push", "origin", "main"},
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("explicit-remote push exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
@@ -141,7 +134,7 @@ func TestBroker_GitBuiltinPush_BareRecapturesSingleRemote(t *testing.T) {
 		Command: "git",
 		Cwd:     repo,
 		Token:   token,
-		Git:     &sandbox.GitRequest{Op: sandbox.GitOpPush},
+		Args:    []string{"push"},
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("bare push exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
@@ -176,10 +169,7 @@ func TestBroker_GitBuiltinFetchWorks(t *testing.T) {
 		Command: "git",
 		Cwd:     repo,
 		Token:   token,
-		Git: &sandbox.GitRequest{
-			Op:     sandbox.GitOpFetch,
-			Remote: "origin",
-		},
+		Args:    []string{"fetch", "origin"},
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("git fetch exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
@@ -210,10 +200,7 @@ func TestBroker_GitBuiltinRestrictsWorktree(t *testing.T) {
 		Command: "git",
 		Cwd:     other,
 		Token:   token,
-		Git: &sandbox.GitRequest{
-			Op:     sandbox.GitOpFetch,
-			Remote: "origin",
-		},
+		Args:    []string{"fetch", "origin"},
 	})
 	if resp.ExitCode != 1 {
 		t.Fatalf("exit code = %d, want 1", resp.ExitCode)
@@ -240,13 +227,7 @@ func TestBroker_GitBuiltinRejectsUnknownRemote(t *testing.T) {
 		Command: "git",
 		Cwd:     repo,
 		Token:   token,
-		Git: &sandbox.GitRequest{
-			Op:     sandbox.GitOpPush,
-			Remote: remote,
-			Refspecs: []string{
-				"main",
-			},
-		},
+		Args:    []string{"push", remote, "main"},
 	})
 	if resp.ExitCode != 1 {
 		t.Fatalf("exit code = %d, want 1", resp.ExitCode)
@@ -276,10 +257,7 @@ func TestBroker_GitBuiltinRejectsHookRolePush(t *testing.T) {
 		Command: "git",
 		Cwd:     repo,
 		Token:   token,
-		Git: &sandbox.GitRequest{
-			Op:     sandbox.GitOpPush,
-			Remote: "origin",
-		},
+		Args:    []string{"push", "origin"},
 	})
 	if resp.ExitCode != 1 {
 		t.Fatalf("exit code = %d, want 1", resp.ExitCode)
@@ -310,10 +288,7 @@ func TestBroker_GitBuiltinRejectsHookRoleFetch(t *testing.T) {
 		Command: "git",
 		Cwd:     repo,
 		Token:   token,
-		Git: &sandbox.GitRequest{
-			Op:     sandbox.GitOpFetch,
-			Remote: "origin",
-		},
+		Args:    []string{"fetch", "origin"},
 	})
 	if resp.ExitCode != 1 {
 		t.Fatalf("exit code = %d, want 1", resp.ExitCode)
@@ -653,10 +628,7 @@ func TestBroker_GitBuiltin_HardeningArgs(t *testing.T) {
 		Command: "git",
 		Cwd:     repo,
 		Token:   token,
-		Git: &sandbox.GitRequest{
-			Op:     sandbox.GitOpPush,
-			Remote: "origin",
-		},
+		Args:    []string{"push", "origin"},
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("git push with hardening args failed: exit=%d stderr=%s", resp.ExitCode, resp.Stderr)
