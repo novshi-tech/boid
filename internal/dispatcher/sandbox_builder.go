@@ -37,14 +37,6 @@ type SandboxRuntimeInfo struct {
 	// visibility/authorization does not leak into orchestrator.JobSpec.
 	WorkspacePeers map[string]string
 
-	// StagingDir, when non-empty, is added to CleanupPaths so the sandbox
-	// setup script removes it on teardown in addition to the caller-supplied
-	// CleanupFunc.
-	StagingDir string
-
-	// RootDir, when non-empty, overrides the default per-sandbox ROOT.
-	RootDir string
-
 	// Foreground indicates whether the job runs in the foreground (user-facing
 	// stdout/stderr, no trap-based completion callback). boid exec sets this
 	// to true; hook/gate jobs leave it false so stdout is captured and a
@@ -57,15 +49,12 @@ type SandboxRuntimeInfo struct {
 	// the job declares no host commands.
 	ResolvedHostCommands map[string]orchestrator.CommandDef
 
-	// DockerEnabled, when true, indicates capabilities.docker is declared in
-	// project.yaml.
-	DockerEnabled bool
-
 	// ProxySocketPath, when non-empty, is the host-side Unix socket path of the
 	// per-sandbox docker proxy. sandbox_builder bind-mounts it into the sandbox
 	// at the fixed sandbox path (see dockerProxySandboxSocket) and injects
 	// DOCKER_HOST / CONTAINER_HOST / TESTCONTAINERS_* env vars.
-	// Set by the runner before BuildSandboxSpec when DockerEnabled is true.
+	// Set by the runner before BuildSandboxSpec when capabilities.docker is
+	// declared in project.yaml.
 	ProxySocketPath string
 
 	// AllowedDomains is the proxy egress allowlist. It is purely informational
@@ -401,11 +390,6 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		mounts = append(mounts, hostCommandMounts(rt.BoidBinary, rt.ResolvedHostCommands)...)
 	}
 
-	var cleanup []string
-	if rt.StagingDir != "" {
-		cleanup = append(cleanup, rt.StagingDir)
-	}
-
 	tty := spec.Interactive
 
 	// Resolve harness-specific extras before assembling the Spec. For
@@ -437,8 +421,6 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		// stdout-capture file), reproducing the former EXIT-trap behaviour.
 		Foreground:       rt.Foreground,
 		PayloadPatchPath: homeDir + "/.boid/output/payload_patch.json",
-		RootDir:          rt.RootDir,
-		CleanupPaths:     cleanup,
 		HarnessType:      harness,
 		UserAnswer:       userAnswer,
 		Profile:          sandbox.Profile(spec.SandboxProfile),

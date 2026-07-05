@@ -272,7 +272,6 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		WorktreeDir:          worktreePath,
 		WorkspacePeers:       workspacePeers,
 		ResolvedHostCommands: resolvedHostCommands,
-		DockerEnabled:        spec.Visibility.DockerEnabled,
 		AllowedDomains:       allowedDomains,
 		AttachmentsRoot:      r.AttachmentsRoot,
 	}
@@ -536,7 +535,7 @@ func (r *Runner) trackDockerState(runtimeID string, ds *dockerProxyState) {
 	r.dockerStates[runtimeID] = ds
 }
 
-func (r *Runner) redockeyDockerState(oldID, newID string) {
+func (r *Runner) rekeyDockerState(oldID, newID string) {
 	r.dockerMu.Lock()
 	defer r.dockerMu.Unlock()
 	if r.dockerStates == nil {
@@ -741,7 +740,7 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 	// After Start, handle.ID may differ only if the runtime didn't honour DesiredID
 	// (e.g. a test stub). In that case, re-key the dockerState entry.
 	if desiredRuntimeID != "" && handle.ID != desiredRuntimeID {
-		r.redockeyDockerState(desiredRuntimeID, handle.ID)
+		r.rekeyDockerState(desiredRuntimeID, handle.ID)
 	}
 
 	job.RuntimeID = handle.ID

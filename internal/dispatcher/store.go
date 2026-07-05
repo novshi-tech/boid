@@ -423,38 +423,22 @@ type jobColumns struct {
 	hasDisplayName    bool
 }
 
+// inspectJobColumns runs PRAGMA table_info(jobs) once and checks membership
+// against the resulting column set, rather than re-scanning the pragma output
+// per column. Not cached across calls: a migration can ALTER TABLE mid-process,
+// and inspectJobColumns is called per-query, so staleness would be silent.
 func inspectJobColumns(dbtx db.DBTX) (jobColumns, error) {
-	hasHookID, err := jobColumnExists(dbtx, "hook_id")
+	present, err := jobColumnSet(dbtx)
 	if err != nil {
-		return jobColumns{}, fmt.Errorf("detect jobs.hook_id: %w", err)
-	}
-	hasRuntimeID, err := jobColumnExists(dbtx, "runtime_id")
-	if err != nil {
-		return jobColumns{}, fmt.Errorf("detect jobs.runtime_id: %w", err)
-	}
-	hasInteractive, err := jobColumnExists(dbtx, "interactive")
-	if err != nil {
-		return jobColumns{}, fmt.Errorf("detect jobs.interactive: %w", err)
-	}
-	hasTTY, err := jobColumnExists(dbtx, "tty")
-	if err != nil {
-		return jobColumns{}, fmt.Errorf("detect jobs.tty: %w", err)
-	}
-	hasExecutionState, err := jobColumnExists(dbtx, "execution_state")
-	if err != nil {
-		return jobColumns{}, fmt.Errorf("detect jobs.execution_state: %w", err)
-	}
-	hasDisplayName, err := jobColumnExists(dbtx, "display_name")
-	if err != nil {
-		return jobColumns{}, fmt.Errorf("detect jobs.display_name: %w", err)
+		return jobColumns{}, fmt.Errorf("detect jobs columns: %w", err)
 	}
 	return jobColumns{
-		hasHookID:         hasHookID,
-		hasRuntimeID:      hasRuntimeID,
-		hasInteractive:    hasInteractive,
-		hasTTY:            hasTTY,
-		hasExecutionState: hasExecutionState,
-		hasDisplayName:    hasDisplayName,
+		hasHookID:         present["hook_id"],
+		hasRuntimeID:      present["runtime_id"],
+		hasInteractive:    present["interactive"],
+		hasTTY:            present["tty"],
+		hasExecutionState: present["execution_state"],
+		hasDisplayName:    present["display_name"],
 	}, nil
 }
 
@@ -501,13 +485,14 @@ func joinWithSeparator(values []string, sep string) string {
 	return out
 }
 
-func jobColumnExists(dbtx db.DBTX, column string) (bool, error) {
+func jobColumnSet(dbtx db.DBTX) (map[string]bool, error) {
 	rows, err := dbtx.Query(`PRAGMA table_info(jobs)`)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer rows.Close()
 
+	present := make(map[string]bool)
 	for rows.Next() {
 		var (
 			cid       int
@@ -518,11 +503,9 @@ func jobColumnExists(dbtx db.DBTX, column string) (bool, error) {
 			pk        int
 		)
 		if err := rows.Scan(&cid, &name, &typeName, &notNull, &dfltValue, &pk); err != nil {
-			return false, err
+			return nil, err
 		}
-		if name == column {
-			return true, nil
-		}
+		present[name] = true
 	}
-	return false, rows.Err()
+	return present, rows.Err()
 }

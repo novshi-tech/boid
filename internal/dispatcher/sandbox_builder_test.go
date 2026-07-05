@@ -1063,24 +1063,6 @@ func TestContextFiles_NoPayloadFilesWhenPrimaryInputEmpty(t *testing.T) {
 	}
 }
 
-// TestSandboxRuntimeInfo_DockerEnabled verifies that SandboxRuntimeInfo carries
-// a DockerEnabled field that can be set from Visibility.DockerEnabled, and that
-// BuildSandboxSpec accepts it without error. Phase 2 PR will wire this to
-// actually mount the docker proxy socket.
-func TestSandboxRuntimeInfo_DockerEnabled(t *testing.T) {
-	spec := &orchestrator.JobSpec{
-		Visibility: orchestrator.Visibility{DockerEnabled: true},
-	}
-	rtInfo := SandboxRuntimeInfo{DockerEnabled: true}
-	if _, err := BuildSandboxSpec(spec, rtInfo); err != nil {
-		t.Fatalf("BuildSandboxSpec with DockerEnabled=true: %v", err)
-	}
-	rtInfoOff := SandboxRuntimeInfo{DockerEnabled: false}
-	if _, err := BuildSandboxSpec(spec, rtInfoOff); err != nil {
-		t.Fatalf("BuildSandboxSpec with DockerEnabled=false: %v", err)
-	}
-}
-
 // TestBuildSandboxSpec_DockerProxy_EnvAndMount verifies that when
 // ProxySocketPath is set (DockerEnabled), BuildSandboxSpec injects the docker
 // env vars and bind-mounts the proxy socket at the fixed sandbox path.
@@ -1090,7 +1072,6 @@ func TestBuildSandboxSpec_DockerProxy_EnvAndMount(t *testing.T) {
 		Visibility: orchestrator.Visibility{DockerEnabled: true},
 	}
 	rt := SandboxRuntimeInfo{
-		DockerEnabled:   true,
 		ProxySocketPath: hostSocketPath,
 	}
 	result, err := BuildSandboxSpec(spec, rt)
@@ -1132,12 +1113,13 @@ func TestBuildSandboxSpec_DockerProxy_EnvAndMount(t *testing.T) {
 
 // TestBuildSandboxSpec_DockerProxy_DisabledWhenNoSocketPath verifies that
 // without ProxySocketPath no docker env vars are injected and no proxy socket
-// is mounted — even when DockerEnabled is true (proxy failed to start upstream).
+// is mounted — even when Visibility.DockerEnabled is true (proxy failed to
+// start upstream).
 func TestBuildSandboxSpec_DockerProxy_DisabledWhenNoSocketPath(t *testing.T) {
 	spec := &orchestrator.JobSpec{
 		Visibility: orchestrator.Visibility{DockerEnabled: true},
 	}
-	rt := SandboxRuntimeInfo{DockerEnabled: true, ProxySocketPath: ""}
+	rt := SandboxRuntimeInfo{ProxySocketPath: ""}
 	result, err := BuildSandboxSpec(spec, rt)
 	if err != nil {
 		t.Fatalf("BuildSandboxSpec: %v", err)
