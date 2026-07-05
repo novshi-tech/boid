@@ -49,6 +49,25 @@ func detailTimelineGroups(detail *TaskDetailView) []timeline.StatusGroup {
 	return timeline.Build(detail.Task, detail.Actions, infos)
 }
 
+// toJobViews converts Job records into the JobView shape used by the task
+// detail templates.
+func toJobViews(jobs []*Job) []*templates.JobView {
+	views := make([]*templates.JobView, 0, len(jobs))
+	for _, job := range jobs {
+		views = append(views, &templates.JobView{
+			ID:        job.ID,
+			HandlerID: job.HandlerID,
+			Role:      job.Role,
+			Status:    string(job.Status),
+			ExitCode:  job.ExitCode,
+			CreatedAt: job.CreatedAt,
+			UpdatedAt: job.UpdatedAt,
+			Output:    job.Output,
+		})
+	}
+	return views
+}
+
 
 type WebHandler struct {
 	Service           WebService
@@ -91,6 +110,38 @@ func (h *WebHandler) Routes() chi.Router {
 	return r
 }
 
+// redirectTask redirects the client to the task detail page.
+func redirectTask(w http.ResponseWriter, r *http.Request, id string) {
+	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
+}
+
+// redirectTaskErr redirects the client to the task detail page with err
+// surfaced via the ?error= query parameter.
+func redirectTaskErr(w http.ResponseWriter, r *http.Request, id string, err error) {
+	http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+}
+
+// redirectOrHXRedirect redirects to target. htmx form posts get the
+// HX-Redirect response header plus a 200 status instead of a 3xx response,
+// since htmx does not follow standard redirects for non-GET requests.
+func redirectOrHXRedirect(w http.ResponseWriter, r *http.Request, target string) {
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", target)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+// renderTaskNewErr re-renders the "new task" form with msg surfaced as a
+// validation error, preserving the previously submitted form values.
+func (h *WebHandler) renderTaskNewErr(w http.ResponseWriter, r *http.Request, msg string, form url.Values) {
+	projects, _ := h.Service.ListProjects()
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusBadRequest)
+	templates.TaskNew(projects, msg, form).Render(r.Context(), w)
+}
+
 func (h *WebHandler) TaskNew(w http.ResponseWriter, r *http.Request) {
 	projects, _ := h.Service.ListProjects()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -99,19 +150,13 @@ func (h *WebHandler) TaskNew(w http.ResponseWriter, r *http.Request) {
 
 func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 	if err := parseTaskForm(r); err != nil {
-		projects, _ := h.Service.ListProjects()
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusBadRequest)
-		templates.TaskNew(projects, "リクエストの解析に失敗しました", nil).Render(r.Context(), w)
+		h.renderTaskNewErr(w, r, "リクエストの解析に失敗しました", nil)
 		return
 	}
 
 	title := strings.TrimSpace(r.FormValue("title"))
 	if title == "" {
-		projects, _ := h.Service.ListProjects()
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusBadRequest)
-		templates.TaskNew(projects, "タイトルは必須です", r.PostForm).Render(r.Context(), w)
+		h.renderTaskNewErr(w, r, "タイトルは必須です", r.PostForm)
 		return
 	}
 
@@ -134,10 +179,7 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 	if agent != "" || model != "" {
 		instsJSON, err := json.Marshal(orchestrator.Instructions{{Agent: agent, Model: model}})
 		if err != nil {
-			projects, _ := h.Service.ListProjects()
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusBadRequest)
-			templates.TaskNew(projects, err.Error(), r.PostForm).Render(r.Context(), w)
+			h.renderTaskNewErr(w, r, err.Error(), r.PostForm)
 			return
 		}
 		req.Instructions = instsJSON
@@ -152,27 +194,18 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 	uploads := taskFormAttachments(r)
 	if len(uploads) > 0 {
 		if h.AttachmentsRoot == "" {
-			projects, _ := h.Service.ListProjects()
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusBadRequest)
-			templates.TaskNew(projects, "添付ファイルを保存する場所が設定されていません", r.PostForm).Render(r.Context(), w)
+			h.renderTaskNewErr(w, r, "添付ファイルを保存する場所が設定されていません", r.PostForm)
 			return
 		}
 		if err := ValidateAttachmentHeaders(uploads); err != nil {
-			projects, _ := h.Service.ListProjects()
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusBadRequest)
-			templates.TaskNew(projects, err.Error(), r.PostForm).Render(r.Context(), w)
+			h.renderTaskNewErr(w, r, err.Error(), r.PostForm)
 			return
 		}
 	}
 
 	task, err := h.Service.CreateTask(req)
 	if err != nil {
-		projects, _ := h.Service.ListProjects()
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusBadRequest)
-		templates.TaskNew(projects, err.Error(), r.PostForm).Render(r.Context(), w)
+		h.renderTaskNewErr(w, r, err.Error(), r.PostForm)
 		return
 	}
 
@@ -181,7 +214,7 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 			// Task is already created — surface the error via ?error= so the
 			// user sees the task page with the failure context and can decide
 			// whether to retry, delete, or proceed.
-			http.Redirect(w, r, "/tasks/"+task.ID+"?error="+url.QueryEscape("attachment save failed: "+err.Error()), http.StatusSeeOther)
+			redirectTaskErr(w, r, task.ID, fmt.Errorf("attachment save failed: %w", err))
 			return
 		}
 	} else if h.AttachmentsRoot != "" {
@@ -192,7 +225,7 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 		_, _ = EnsureAttachmentsDir(h.AttachmentsRoot, task.ID)
 	}
 
-	http.Redirect(w, r, "/tasks/"+task.ID, http.StatusSeeOther)
+	redirectTask(w, r, task.ID)
 }
 
 // parseTaskForm dispatches on Content-Type so the same handler accepts both
@@ -353,19 +386,7 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	jobs := make([]*templates.JobView, 0, len(detail.Jobs))
-	for _, job := range detail.Jobs {
-		jobs = append(jobs, &templates.JobView{
-			ID:        job.ID,
-			HandlerID: job.HandlerID,
-			Role:      job.Role,
-			Status:    string(job.Status),
-			ExitCode:  job.ExitCode,
-			CreatedAt: job.CreatedAt,
-			UpdatedAt: job.UpdatedAt,
-			Output:    job.Output,
-		})
-	}
+	jobs := toJobViews(detail.Jobs)
 	tab := r.URL.Query().Get("tab")
 	if tab == "" {
 		tab = "timeline"
@@ -413,19 +434,7 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	jobs := make([]*templates.JobView, 0, len(detail.Jobs))
-	for _, job := range detail.Jobs {
-		jobs = append(jobs, &templates.JobView{
-			ID:        job.ID,
-			HandlerID: job.HandlerID,
-			Role:      job.Role,
-			Status:    string(job.Status),
-			ExitCode:  job.ExitCode,
-			CreatedAt: job.CreatedAt,
-			UpdatedAt: job.UpdatedAt,
-			Output:    job.Output,
-		})
-	}
+	jobs := toJobViews(detail.Jobs)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	kind := r.URL.Query().Get("kind")
@@ -446,14 +455,14 @@ func (h *WebHandler) PostAction(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	actionType := r.FormValue("type")
 	if actionType == "" {
-		http.Redirect(w, r, "/tasks/"+id+"?error=type+is+required", http.StatusSeeOther)
+		redirectTaskErr(w, r, id, errors.New("type is required"))
 		return
 	}
 	if err := h.Service.ApplyAction(id, actionType); err != nil {
-		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		redirectTaskErr(w, r, id, err)
 		return
 	}
-	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
+	redirectTask(w, r, id)
 }
 
 func (h *WebHandler) GetTaskEdit(w http.ResponseWriter, r *http.Request) {
@@ -464,7 +473,7 @@ func (h *WebHandler) GetTaskEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if detail.Task.Status != orchestrator.TaskStatusPending {
-		http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
+		redirectTask(w, r, id)
 		return
 	}
 	projects, _ := h.Service.ListProjects()
@@ -531,42 +540,37 @@ func (h *WebHandler) PostEdit(w http.ResponseWriter, r *http.Request) {
 		target = "/tasks/" + id + "/edit?error=" + url.QueryEscape(err.Error())
 	}
 
-	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Redirect", target)
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	redirectOrHXRedirect(w, r, target)
 }
 
 func (h *WebHandler) PostDuplicate(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	newID, err := h.Service.DuplicateTask(id)
 	if err != nil {
-		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		redirectTaskErr(w, r, id, err)
 		return
 	}
-	http.Redirect(w, r, "/tasks/"+newID, http.StatusSeeOther)
+	redirectTask(w, r, newID)
 }
 
 func (h *WebHandler) PostRerun(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.Service.RerunTask(id, RerunTaskRequest{}); err != nil {
-		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		redirectTaskErr(w, r, id, err)
 		return
 	}
-	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
+	redirectTask(w, r, id)
 }
 
 func (h *WebHandler) ReopenForm(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	detail, err := h.Service.GetTaskDetail(id)
 	if err != nil {
-		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		redirectTaskErr(w, r, id, err)
 		return
 	}
 	if detail.Task.Status != orchestrator.TaskStatusDone && detail.Task.Status != orchestrator.TaskStatusAborted {
-		http.Redirect(w, r, "/tasks/"+id+"?error=reopen+is+only+available+for+done+or+aborted+tasks", http.StatusSeeOther)
+		redirectTaskErr(w, r, id, errors.New("reopen is only available for done or aborted tasks"))
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -576,15 +580,15 @@ func (h *WebHandler) ReopenForm(w http.ResponseWriter, r *http.Request) {
 func (h *WebHandler) PostReopen(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		redirectTaskErr(w, r, id, err)
 		return
 	}
 	message := strings.TrimSpace(r.FormValue("message"))
 	if err := h.Service.ReopenTask(id, ReopenTaskRequest{Message: message}); err != nil {
-		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		redirectTaskErr(w, r, id, err)
 		return
 	}
-	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
+	redirectTask(w, r, id)
 }
 
 // QuestionPage renders the dedicated Q&A turn page at
@@ -642,7 +646,7 @@ func (h *WebHandler) QuestionPage(w http.ResponseWriter, r *http.Request) {
 func (h *WebHandler) PostAnswer(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := parseTaskForm(r); err != nil {
-		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		redirectTaskErr(w, r, id, err)
 		return
 	}
 	questionID := r.FormValue("question_id")
@@ -657,15 +661,15 @@ func (h *WebHandler) PostAnswer(w http.ResponseWriter, r *http.Request) {
 	uploads := taskFormAttachments(r)
 	if len(uploads) > 0 {
 		if h.AttachmentsRoot == "" {
-			http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape("attachments root not configured"), http.StatusSeeOther)
+			redirectTaskErr(w, r, id, errors.New("attachments root not configured"))
 			return
 		}
 		if err := ValidateAttachmentHeaders(uploads); err != nil {
-			http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+			redirectTaskErr(w, r, id, err)
 			return
 		}
 		if _, err := SaveMultipartAttachments(h.AttachmentsRoot, id, uploads); err != nil {
-			http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape("attachment save failed: "+err.Error()), http.StatusSeeOther)
+			redirectTaskErr(w, r, id, fmt.Errorf("attachment save failed: %w", err))
 			return
 		}
 	}
@@ -674,12 +678,7 @@ func (h *WebHandler) PostAnswer(w http.ResponseWriter, r *http.Request) {
 	if err := h.Service.AnswerTask(r.Context(), id, questionID, answer); err != nil {
 		target = "/tasks/" + id + "?error=" + url.QueryEscape(err.Error())
 	}
-	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Redirect", target)
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	redirectOrHXRedirect(w, r, target)
 }
 
 // PostDelete deletes the task and redirects to the task list.
@@ -688,7 +687,7 @@ func (h *WebHandler) PostAnswer(w http.ResponseWriter, r *http.Request) {
 func (h *WebHandler) PostDelete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.Service.DeleteTask(id, false); err != nil {
-		http.Redirect(w, r, "/tasks/"+id+"?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		redirectTaskErr(w, r, id, err)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -719,7 +718,7 @@ func (h *WebHandler) PostHookReplay(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/tasks/"+id+"/hooks?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, "/tasks/"+id, http.StatusSeeOther)
+	redirectTask(w, r, id)
 }
 
 func (h *WebHandler) JobDetail(w http.ResponseWriter, r *http.Request) {
@@ -790,12 +789,7 @@ func (h *WebHandler) PostStartSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jobURL := "/jobs/" + result.JobID
-	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Redirect", jobURL)
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	http.Redirect(w, r, jobURL, http.StatusSeeOther)
+	redirectOrHXRedirect(w, r, jobURL)
 }
 
 
