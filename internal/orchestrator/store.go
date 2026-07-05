@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"regexp"
@@ -17,6 +18,11 @@ import (
 )
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// ErrTaskNotFound is returned by scanTask (and propagated by GetTask,
+// FindTaskByRemote, FindTaskByRef) when no matching task row exists. Callers
+// should check for it with errors.Is rather than matching on error strings.
+var ErrTaskNotFound = errors.New("task not found")
 
 // ParentIDSentinelRoot is a sentinel value for CreateTaskRequest.ParentID that
 // explicitly requests root-task creation. When this value is detected at an
@@ -387,7 +393,7 @@ func FindTaskByRemote(dbtx db.DBTX, remoteID string) (*Task, error) {
 	)
 	t, err := scanTask(row)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, ErrTaskNotFound) {
 			return nil, nil
 		}
 		return nil, err
@@ -406,7 +412,7 @@ func FindTaskByRef(dbtx db.DBTX, ref, parentID string) (*Task, error) {
 	if isUUID(ref) {
 		t, err := GetTask(dbtx, ref)
 		if err != nil {
-			if strings.Contains(err.Error(), "not found") {
+			if errors.Is(err, ErrTaskNotFound) {
 				return nil, nil
 			}
 			return nil, err
@@ -419,7 +425,7 @@ func FindTaskByRef(dbtx db.DBTX, ref, parentID string) (*Task, error) {
 	)
 	t, err := scanTask(row)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, ErrTaskNotFound) {
 			return nil, nil
 		}
 		return nil, err
@@ -491,7 +497,7 @@ func scanTask(s taskScanner) (*Task, error) {
 		&t.TotalChildCount, &t.DoneChildCount, &t.AbortedChildCount, &t.OpenChildCount,
 	); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("task not found")
+			return nil, ErrTaskNotFound
 		}
 		return nil, fmt.Errorf("scan task: %w", err)
 	}
