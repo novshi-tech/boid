@@ -23,9 +23,8 @@ type ProjectReloadResult struct {
 }
 
 type TaskDetailView struct {
-	Task              *orchestrator.Task
-	Actions           []*orchestrator.Action
-	Jobs              []*Job
-	AvailableActions  []string             `json:"available_actions"`
-	Dependents        []*orchestrator.Task `json:"dependents,omitempty"`
+	Task             *orchestrator.Task
+	Actions          []*orchestrator.Action
+	Jobs             []*Job
+	AvailableActions []string `json:"available_actions"`
 }

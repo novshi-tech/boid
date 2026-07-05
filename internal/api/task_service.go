@@ -111,7 +111,6 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	if req.RemoteID != nil {
 		task.RemoteID = *req.RemoteID
 	}
-	payloadUpdated := false
 	if len(req.Payload) > 0 {
 		if err := orchestrator.RejectPayloadInstructions(req.Payload); err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
@@ -147,7 +146,6 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: "payload merge: " + err.Error()}
 		}
 		task.Payload = merged
-		payloadUpdated = true
 	}
 	if req.ParentID != nil {
 		task.ParentID = *req.ParentID
@@ -178,9 +176,6 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	}
 	if instructionsBefore != nil {
 		s.auditInstructionsChange(task.ID, instructionsBefore, task.Instructions)
-	}
-	if payloadUpdated && s.Workflow != nil {
-		go s.Workflow.TriggerDependents(context.Background(), id)
 	}
 	if req.AutoStart != nil && *req.AutoStart && task.Status == orchestrator.TaskStatusPending && s.Workflow != nil {
 		result, err := s.Workflow.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
@@ -348,16 +343,10 @@ func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 		enrichJobDisplayName(j, task.Behavior, s.Meta)
 	}
 
-	dependents, err := s.Tasks.FindDependentTasks(task.ID)
-	if err != nil {
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
-	}
-
 	return &TaskDetailView{
 		Task:             task,
 		Actions:          actions,
 		Jobs:             jobs,
 		AvailableActions: orchestrator.DefaultMachine().AvailableActions(task.Status),
-		Dependents:       dependents,
 	}, nil
 }

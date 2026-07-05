@@ -43,8 +43,6 @@ func (w *recordingWorkflow) CompleteJob(_ context.Context, _ string, _ api.JobDo
 	return &api.Job{}, nil
 }
 
-func (w *recordingWorkflow) TriggerDependents(_ context.Context, _ string) {}
-
 func (w *recordingWorkflow) StopAgent(_ string) {}
 
 // recordingLifecycle implements api.JobLifecycle for boid_executor tests.
@@ -158,9 +156,6 @@ func (s *capturingTaskStore) FindTaskByRef(ref, parentID string) (*orchestrator.
 			return t, nil
 		}
 	}
-	return nil, nil
-}
-func (s *capturingTaskStore) FindDependentTasks(taskID string) ([]*orchestrator.Task, error) {
 	return nil, nil
 }
 func (s *capturingTaskStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {
@@ -1345,8 +1340,7 @@ func (w *askWorkflowStub) ApplyAction(_ context.Context, taskID string, req api.
 func (w *askWorkflowStub) CompleteJob(_ context.Context, _ string, _ api.JobDoneRequest) (*api.Job, error) {
 	return &api.Job{}, nil
 }
-func (w *askWorkflowStub) TriggerDependents(_ context.Context, _ string) {}
-func (w *askWorkflowStub) StopAgent(_ string)                            {}
+func (w *askWorkflowStub) StopAgent(_ string) {}
 
 func (w *askWorkflowStub) lastAskQID() string {
 	w.mu.Lock()

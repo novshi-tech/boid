@@ -134,7 +134,6 @@ type WebService interface {
 type WorkflowService interface {
 	ApplyAction(ctx context.Context, taskID string, req ApplyActionRequest) (*ActionApplication, error)
 	CompleteJob(ctx context.Context, jobID string, req JobDoneRequest) (*Job, error)
-	TriggerDependents(ctx context.Context, taskID string)
 	// StopAgent asks the agent backing runtimeID to terminate gracefully,
 	// without tearing down the surrounding runner-inner-child. The broker's
 	// `boid job done` call still fires normally, preserving any payload
@@ -152,7 +151,6 @@ type TaskStore interface {
 	DeleteTask(id string) error
 	FindTaskByRemote(remoteID string) (*orchestrator.Task, error)
 	FindTaskByRef(ref, parentID string) (*orchestrator.Task, error)
-	FindDependentTasks(taskID string) ([]*orchestrator.Task, error)
 	// ListChildren returns direct children (one level only) of the given parent
 	// task, ordered by created_at ASC. Returns an empty slice (not nil) when the
 	// task has no children. Used by finalizeTerminal to sweep boid/<id8> branches

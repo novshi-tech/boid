@@ -55,10 +55,6 @@ func (r *TaskRepository) FindTaskByRef(ref, parentID string) (*Task, error) {
 	return FindTaskByRef(r.db, ref, parentID)
 }
 
-func (r *TaskRepository) FindDependentTasks(_ string) ([]*Task, error) {
-	return nil, nil
-}
-
 func (r *TaskRepository) ListChildren(parentID string) ([]*Task, error) {
 	return ListChildren(r.db, parentID)
 }

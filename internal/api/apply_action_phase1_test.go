@@ -36,9 +36,6 @@ func (s *recordingTxStore) FindTaskByRemote(remoteID string) (*orchestrator.Task
 func (s *recordingTxStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {
 	return nil, nil
 }
-func (s *recordingTxStore) FindDependentTasks(taskID string) ([]*orchestrator.Task, error) {
-	return nil, nil
-}
 func (s *recordingTxStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {
 	return nil, nil
 }
