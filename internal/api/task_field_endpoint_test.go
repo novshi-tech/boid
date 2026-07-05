@@ -40,9 +40,6 @@ func (s *fieldTaskStore) FindTaskByRemote(_ string) (*orchestrator.Task, error) 
 func (s *fieldTaskStore) FindTaskByRef(_, _ string) (*orchestrator.Task, error) {
 	return nil, nil
 }
-func (s *fieldTaskStore) FindDependentTasks(_ string) ([]*orchestrator.Task, error) {
-	return nil, nil
-}
 func (s *fieldTaskStore) ListChildren(_ string) ([]*orchestrator.Task, error) {
 	return nil, nil
 }

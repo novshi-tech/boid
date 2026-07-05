@@ -162,8 +162,6 @@ func (s *stubWorkflowService) CompleteJob(ctx context.Context, jobID string, req
 	return &Job{ID: jobID, Status: JobStatusCompleted, ExitCode: req.ExitCode}, nil
 }
 
-func (s *stubWorkflowService) TriggerDependents(ctx context.Context, taskID string) {}
-
 func (s *stubWorkflowService) StopAgent(runtimeID string) {
 	s.stoppedAgentRuntimes = append(s.stoppedAgentRuntimes, runtimeID)
 }

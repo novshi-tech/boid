@@ -59,10 +59,6 @@ func (s apiTxStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task, err
 	return s.tasks.FindTaskByRef(ref, parentID)
 }
 
-func (s apiTxStore) FindDependentTasks(taskID string) ([]*orchestrator.Task, error) {
-	return s.tasks.FindDependentTasks(taskID)
-}
-
 func (s apiTxStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {
 	return s.tasks.ListChildren(parentID)
 }

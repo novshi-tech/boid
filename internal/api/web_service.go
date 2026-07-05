@@ -74,14 +74,12 @@ func (s *WebAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 		enrichJobDisplayName(j, task.Behavior, s.Meta)
 	}
 	jobs := rawJobs
-	dependents, _ := s.Tasks.FindDependentTasks(task.ID)
 
 	return &TaskDetailView{
 		Task:             task,
 		Actions:          actions,
 		Jobs:             jobs,
 		AvailableActions: orchestrator.DefaultMachine().AvailableActions(task.Status),
-		Dependents:       dependents,
 	}, nil
 }
 
