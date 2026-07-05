@@ -19,7 +19,6 @@ type ExecRequest struct {
 	Stdin     []byte        `json:"stdin,omitempty"`
 	Token     string        `json:"token"`
 	Boid      *BoidRequest  `json:"boid,omitempty"`
-	Git       *GitRequest   `json:"git,omitempty"`
 	Fetch     *FetchRequest `json:"fetch,omitempty"`
 	Streaming bool          `json:"streaming,omitempty"`
 }

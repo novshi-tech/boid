@@ -429,7 +429,7 @@ func TestHandleGitBuiltinRequest_OpNotAllowed(t *testing.T) {
 	resp := handleGitBuiltinRequest(&ExecRequest{
 		Command: "git",
 		Cwd:     tmp,
-		Git:     &GitRequest{Op: GitOpPush, Remote: "origin"},
+		Args:    []string{"push", "origin"},
 	}, entry)
 	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "not allowed by policy") {
 		t.Fatalf("got exit=%d stderr=%q, want ExitCode=1 and 'not allowed by policy'", resp.ExitCode, resp.Stderr)
@@ -459,8 +459,8 @@ func TestValidateGitCloneLocal_SourceMustBePeer(t *testing.T) {
 	}
 
 	// source not in peers → rejected
-	req := &GitRequest{Op: GitOpCloneLocal, Source: "/tmp/notapeer", Dest: filepath.Join(worktree, "clone")}
-	resp := handleGitBuiltinRequest(&ExecRequest{Command: "git", Cwd: worktree, Git: req}, entry)
+	dest := filepath.Join(worktree, "clone")
+	resp := handleGitBuiltinRequest(&ExecRequest{Command: "git", Cwd: worktree, Args: []string{"clone", "--local", "/tmp/notapeer", dest}}, entry)
 	if resp.ExitCode == 0 {
 		t.Fatal("expected error: source not in workspace peers")
 	}
@@ -490,8 +490,7 @@ func TestValidateGitCloneLocal_DestMustBeInWorktree(t *testing.T) {
 	}
 
 	// dest outside worktree → rejected
-	req := &GitRequest{Op: GitOpCloneLocal, Source: peerDir, Dest: "/tmp/outside"}
-	resp := handleGitBuiltinRequest(&ExecRequest{Command: "git", Cwd: worktree, Git: req}, entry)
+	resp := handleGitBuiltinRequest(&ExecRequest{Command: "git", Cwd: worktree, Args: []string{"clone", "--local", peerDir, "/tmp/outside"}}, entry)
 	if resp.ExitCode == 0 {
 		t.Fatal("expected error: dest outside worktree")
 	}
@@ -522,16 +521,15 @@ func TestValidateGitCloneLocal_PathTraversal(t *testing.T) {
 
 	// source with path traversal attempting to escape peer
 	traversalSrc := peerDir + "/../../../etc"
-	req := &GitRequest{Op: GitOpCloneLocal, Source: traversalSrc, Dest: filepath.Join(worktree, "clone")}
-	resp := handleGitBuiltinRequest(&ExecRequest{Command: "git", Cwd: worktree, Git: req}, entry)
+	dest := filepath.Join(worktree, "clone")
+	resp := handleGitBuiltinRequest(&ExecRequest{Command: "git", Cwd: worktree, Args: []string{"clone", "--local", traversalSrc, dest}}, entry)
 	if resp.ExitCode == 0 {
 		t.Fatal("expected error: path traversal in source")
 	}
 
 	// dest with path traversal attempting to escape worktree
 	traversalDest := worktree + "/../../../tmp/evil"
-	req2 := &GitRequest{Op: GitOpCloneLocal, Source: peerDir, Dest: traversalDest}
-	resp2 := handleGitBuiltinRequest(&ExecRequest{Command: "git", Cwd: worktree, Git: req2}, entry)
+	resp2 := handleGitBuiltinRequest(&ExecRequest{Command: "git", Cwd: worktree, Args: []string{"clone", "--local", peerDir, traversalDest}}, entry)
 	if resp2.ExitCode == 0 {
 		t.Fatal("expected error: path traversal in dest")
 	}
@@ -556,8 +554,8 @@ func TestValidateGitCloneLocal_EmptyPeersRejects(t *testing.T) {
 		Git: &GitBinding{WorktreeRoot: worktree},
 	}
 
-	req := &GitRequest{Op: GitOpCloneLocal, Source: peerDir, Dest: filepath.Join(worktree, "clone")}
-	resp := handleGitBuiltinRequest(&ExecRequest{Command: "git", Cwd: worktree, Git: req}, entry)
+	dest := filepath.Join(worktree, "clone")
+	resp := handleGitBuiltinRequest(&ExecRequest{Command: "git", Cwd: worktree, Args: []string{"clone", "--local", peerDir, dest}}, entry)
 	if resp.ExitCode == 0 {
 		t.Fatal("expected error: no workspace peers")
 	}
