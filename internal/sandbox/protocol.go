@@ -12,11 +12,14 @@ import (
 // and is passed through verbatim to the executor, which unmarshals it and
 // fills in context-derived defaults (ProjectID, ParentID).
 
+// ExecRequest carries a broker-mediated host command invocation. The broker
+// never wires caller-provided stdin into the host process (see the host
+// command gate in broker.go / broker_streaming_linux.go); host commands
+// always run with stdin connected to /dev/null.
 type ExecRequest struct {
 	Command   string        `json:"command"`
 	Args      []string      `json:"args"`
 	Cwd       string        `json:"cwd,omitempty"`
-	Stdin     []byte        `json:"stdin,omitempty"`
 	Token     string        `json:"token"`
 	Boid      *BoidRequest  `json:"boid,omitempty"`
 	Fetch     *FetchRequest `json:"fetch,omitempty"`

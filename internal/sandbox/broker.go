@@ -546,14 +546,8 @@ func isWithinRoot(path, root string) bool {
 }
 
 func (b *Broker) execCommand(req *ExecRequest, def CommandDef, entry *tokenEntry) *ExecResponse {
-	req.Stdin = sanitizeStdin(def, req.Stdin)
-
-	if msg := def.MissingSecretsMessage(); msg != "" {
+	if msg, ok := gateHostCommand(def, req.Args); !ok {
 		return &ExecResponse{ExitCode: 1, Stderr: msg}
-	}
-
-	if !CheckPolicy(def, req.Args) {
-		return &ExecResponse{ExitCode: 1, Stderr: "arguments not allowed"}
 	}
 
 	binary := def.Path
@@ -568,9 +562,6 @@ func (b *Broker) execCommand(req *ExecRequest, def CommandDef, entry *tokenEntry
 	cwd := resolveHostCommandCwd(req.Cwd, entry)
 	if cwd != "" {
 		cmd.Dir = cwd
-	}
-	if len(req.Stdin) > 0 {
-		cmd.Stdin = bytes.NewReader(req.Stdin)
 	}
 
 	cmd.Env = hostCommandEnv(def.Env)
@@ -655,18 +646,31 @@ func (e *tokenEntry) allowsBuiltinOp(name, op string) bool {
 	return policy.Allows(op)
 }
 
-// sanitizeStdin drops stdin payload for host commands that have not opted in
-// via AllowStdin. The previous behavior was to reject the call, but inherited
-// stdin (e.g., a hook script invoked as `printf '%s' '{}' | hook.sh` whose
-// child commands inherit the same pipe FD) would cause unrelated host command
-// invocations to fail. Dropping silently keeps the contract that AllowStdin=false
-// commands never observe caller-provided stdin while tolerating the FD inheritance
-// pattern that is common in shell pipelines.
-func sanitizeStdin(def CommandDef, stdin []byte) []byte {
-	if !def.AllowStdin {
-		return nil
+// gateHostCommand runs the common pre-exec policy checks shared by the
+// non-streaming and streaming host-command paths: reject rules, missing
+// declared secrets, and the allow/deny argument policy. Reject rules are
+// checked first so a matching invocation gets the actionable "rejected:
+// <reason>" message instead of the generic "arguments not allowed" one.
+// Returns (stderr, true) when the call is allowed to proceed — stderr is then
+// meaningless and should be ignored by the caller — or (stderr, false) with
+// the message to surface when the call is blocked.
+func gateHostCommand(def CommandDef, args []string) (string, bool) {
+	joined := strings.Join(args, " ")
+	for _, rule := range def.RejectRules {
+		if globMatch(rule.Match, joined) {
+			return fmt.Sprintf("host_commands.%s: rejected: %s", def.Name, rule.Reason), false
+		}
 	}
-	return stdin
+
+	if msg := def.MissingSecretsMessage(); msg != "" {
+		return msg, false
+	}
+
+	if !CheckPolicy(def, args) {
+		return "arguments not allowed", false
+	}
+
+	return "", true
 }
 
 func generateToken() string {

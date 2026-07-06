@@ -434,12 +434,14 @@ func TestBroker_StreamingANSIStripped(t *testing.T) {
 	}
 }
 
-// TestBroker_StreamingStdinPassthrough verifies that stdin bytes provided in
-// the request reach the host command when AllowStdin is true.
-func TestBroker_StreamingStdinPassthrough(t *testing.T) {
+// TestBroker_StreamingNeverWiresStdin verifies that the streaming host-command
+// path never connects caller-supplied stdin to the host process: `cat` runs
+// with stdin detached (connected to /dev/null), exits immediately with 0, and
+// produces no stdout, instead of hanging or echoing any input.
+func TestBroker_StreamingNeverWiresStdin(t *testing.T) {
 	sockPath, token := startStreamingBroker(t,
 		map[string]sandbox.CommandDef{
-			"/bin/cat": {Name: "cat", Path: "/bin/cat", AllowedPatterns: []string{"*"}, AllowStdin: true},
+			"/bin/cat": {Name: "cat", Path: "/bin/cat", AllowedPatterns: []string{"*"}},
 		},
 		sandbox.TokenContext{JobID: "j7", TaskID: "t7", ProjectID: "p7", Role: "hook"},
 	)
@@ -453,7 +455,6 @@ func TestBroker_StreamingStdinPassthrough(t *testing.T) {
 	req := sandbox.ExecRequest{
 		Command:   "/bin/cat",
 		Token:     token,
-		Stdin:     []byte("hello from stdin\n"),
 		Streaming: true,
 	}
 	if err := json.NewEncoder(conn).Encode(&req); err != nil {
@@ -480,7 +481,7 @@ func TestBroker_StreamingStdinPassthrough(t *testing.T) {
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
-	if !strings.Contains(buf.String(), "hello from stdin") {
-		t.Errorf("stdout %q does not contain stdin input", buf.String())
+	if buf.String() != "" {
+		t.Errorf("stdout = %q, want empty (stdin never wired)", buf.String())
 	}
 }

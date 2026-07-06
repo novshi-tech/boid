@@ -22,6 +22,7 @@ has the same shape:
 5. [workspace allowed_domains (proxy)](#5-workspace-allowed_domains)
 6. [brokered git remote snapshot](#6-brokered-git-remote-snapshot)
 7. [embedded-skill bind (adapter.Bindings)](#7-embedded-skill-bind)
+8. [host_commands CommandDef mirror (spec → broker gate)](#8-host_commands-commanddef-mirror)
 
 ---
 
@@ -168,3 +169,32 @@ Whether the embedded skills appear at `~/.claude/skills/<name>` inside each harn
   suspected of collateral damage to the other two — this is exactly the regression mechanism of
   seam 1.
 - Guard: `internal/adapters/claude/bindings_test.go` and the bindings tests of each adapter.
+
+## 8. host_commands CommandDef mirror
+
+Whether a host_commands policy field declared in YAML actually reaches the broker's
+enforcement gate. Two mirror structs exist on purpose (orchestrator cannot be imported
+by sandbox), so every new policy field must be threaded through each hop by hand.
+
+- **End A (spec)**: `HostCommandSpec` / orchestrator `CommandDef` and `ToCommandDef` in
+  `internal/orchestrator/spec_types.go` (transport shape).
+- **End B (enforcement)**: sandbox `CommandDef` in `internal/sandbox/policy.go` and the
+  shared pre-exec gate `gateHostCommand` in `internal/sandbox/broker.go` (used by both
+  the non-streaming and the streaming path).
+- **Hops in between**: the single type-conversion seam `toSandboxCommandDefs` in
+  `internal/server/broker_adapter.go`, and the whole-struct copy in `ResolveHostCommands`
+  (`internal/dispatcher/host_commands.go`) which passes fields through only as long as it
+  stays a struct copy (`cd := def`).
+- **Invariant**: a field added to `HostCommandSpec` must appear in **both** CommandDef
+  mirrors, in `ToCommandDef`, and in `toSandboxCommandDefs`; enforcement must live in
+  `gateHostCommand` so the streaming and non-streaming paths cannot drift apart.
+- **Guard**: `TestToSandboxCommandDefs_FieldPassthrough` (`internal/server/broker_adapter_test.go`),
+  `TestResolveHostCommands_RejectRulesPassthrough` (`internal/dispatcher/host_commands_test.go`),
+  and the per-path enforcement tests in `internal/sandbox/broker_reject_test.go` /
+  `broker_reject_streaming_test.go`.
+- **When you touch it**: adding or removing a host_commands policy field means updating
+  every hop above plus the passthrough tests; enforcement added to only one of the two
+  exec paths (streaming vs non-streaming) is the classic one-ended break here. The
+  agent-facing surface (`buildEnvironmentYAML` in `internal/dispatcher/sandbox_builder.go`)
+  intentionally shows a **subset** (no path/env) — don't "fix" that asymmetry, but do keep
+  reject rules visible to the agent.
