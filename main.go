@@ -54,6 +54,16 @@ func shimMain() {
 		os.Exit(1)
 	}
 
+	// Shim-side fast path: reject obviously-doomed invocations locally so we
+	// don't pay for a broker round trip. The broker remains the authority and
+	// enforces the same rules again; this only saves a hop and produces the
+	// identical "host_commands.<name>: rejected: <reason>" message.
+	command := sandbox.CommandFromArgv0(os.Args[0])
+	if msg, rejected := sandbox.EarlyRejectFromEnv(command, os.Args[1:]); rejected {
+		fmt.Fprintln(os.Stderr, msg)
+		os.Exit(1)
+	}
+
 	resp, err := sandbox.ShimExec(brokerSocket, os.Args[0], os.Args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "boid shim: %v\n", err)

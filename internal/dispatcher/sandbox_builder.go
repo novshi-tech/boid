@@ -147,6 +147,9 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		pathBindings = harnessBindings
 	}
 	env["PATH"] = buildPATH(pathBindings, rt.ResolvedHostCommands, rt.BoidBinary)
+	if rules := buildHostCommandRulesEnv(rt.ResolvedHostCommands); rules != "" {
+		env[sandbox.HostCommandRulesEnv] = rules
+	}
 	env["BOID_HOST_IP"] = hostGatewayIP
 	if rt.ProxyPort > 0 {
 		applyProxyEnv(env, rt.ProxyPort)
@@ -661,6 +664,38 @@ func hostCommandMounts(boidBinary string, resolved map[string]orchestrator.Comma
 		})
 	}
 	return out
+}
+
+// buildHostCommandRulesEnv builds the compact JSON payload for
+// sandbox.HostCommandRulesEnv from the dispatcher's resolved (abs-path-keyed)
+// host command defs, keyed instead by command name (the basename the shim
+// sees via CommandFromArgv0). Only commands that declare at least one reject
+// rule are included; when none do, an empty string is returned so the caller
+// skips setting the env var entirely. json.Marshal of a map produces
+// lexicographically sorted keys, so output is deterministic.
+func buildHostCommandRulesEnv(hostCommands map[string]orchestrator.CommandDef) string {
+	if len(hostCommands) == 0 {
+		return ""
+	}
+	rules := map[string][]sandbox.RejectRule{}
+	for _, def := range hostCommands {
+		if len(def.RejectRules) == 0 {
+			continue
+		}
+		converted := make([]sandbox.RejectRule, len(def.RejectRules))
+		for i, r := range def.RejectRules {
+			converted[i] = sandbox.RejectRule{Match: r.Match, Reason: r.Reason}
+		}
+		rules[def.Name] = converted
+	}
+	if len(rules) == 0 {
+		return ""
+	}
+	encoded, err := json.Marshal(rules)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }
 
 // buildPATH prepends additional-binding bin directories, host command

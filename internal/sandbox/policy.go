@@ -7,11 +7,12 @@ import (
 
 // RejectRule declares a pattern that rejects an invocation with a
 // human-readable reason. Match is a glob over the joined args string with the
-// same semantics as allow/deny patterns (globMatch below). Transport shape
-// only for now; CheckPolicy does not evaluate reject rules yet.
+// same semantics as allow/deny patterns (globMatch below). Enforced by
+// gateHostCommand (broker.go) as the authority, and mirrored by the shim's
+// EarlyReject fast path (shim_reject.go), which needs the json tags.
 type RejectRule struct {
-	Match  string
-	Reason string
+	Match  string `json:"match"`
+	Reason string `json:"reason"`
 }
 
 // CommandDef is the canonical sandbox-side policy for brokered host commands.

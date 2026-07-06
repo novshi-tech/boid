@@ -1745,3 +1745,70 @@ func TestBuildSandboxSpec_ProfileDefault_HarnessKeepsAdditionalBindings(t *testi
 		t.Errorf("ProfileDefault + harness=claude must also keep claude adapter bindings: expected bind at %s, got mounts=%+v", claudeDir, result.Mounts)
 	}
 }
+
+// TestBuildSandboxSpec_HostCommandRulesEnv_SetWhenRejectRulesPresent verifies
+// that BOID_HOST_COMMAND_RULES is set to a JSON map keyed by command Name
+// (not the abs path key of ResolvedHostCommands) whenever at least one
+// resolved host command declares reject rules.
+func TestBuildSandboxSpec_HostCommandRulesEnv_SetWhenRejectRulesPresent(t *testing.T) {
+	spec := &orchestrator.JobSpec{}
+	rt := SandboxRuntimeInfo{
+		ResolvedHostCommands: map[string]orchestrator.CommandDef{
+			"/usr/bin/gh": {
+				Name: "gh",
+				RejectRules: []orchestrator.RejectRule{
+					{Match: "*--body-file*", Reason: "sandbox paths are not visible on the host"},
+				},
+			},
+			"/usr/bin/git": {
+				Name: "git",
+			},
+		},
+	}
+	result, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+
+	got := result.Env[sandbox.HostCommandRulesEnv]
+	if got == "" {
+		t.Fatalf("expected %s to be set, got empty", sandbox.HostCommandRulesEnv)
+	}
+	want := `{"gh":[{"match":"*--body-file*","reason":"sandbox paths are not visible on the host"}]}`
+	if got != want {
+		t.Errorf("%s = %q, want %q", sandbox.HostCommandRulesEnv, got, want)
+	}
+}
+
+// TestBuildSandboxSpec_HostCommandRulesEnv_AbsentWhenNoRejectRules verifies
+// the env var is not set at all (not even as "{}") when no resolved host
+// command declares reject rules.
+func TestBuildSandboxSpec_HostCommandRulesEnv_AbsentWhenNoRejectRules(t *testing.T) {
+	spec := &orchestrator.JobSpec{}
+	rt := SandboxRuntimeInfo{
+		ResolvedHostCommands: map[string]orchestrator.CommandDef{
+			"/usr/bin/git": {Name: "git"},
+			"/usr/bin/gh":  {Name: "gh"},
+		},
+	}
+	result, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	if _, ok := result.Env[sandbox.HostCommandRulesEnv]; ok {
+		t.Errorf("expected %s to be absent, got %q", sandbox.HostCommandRulesEnv, result.Env[sandbox.HostCommandRulesEnv])
+	}
+}
+
+// TestBuildSandboxSpec_HostCommandRulesEnv_AbsentWhenNoHostCommands verifies
+// the env var is not set when the job declares no host commands at all.
+func TestBuildSandboxSpec_HostCommandRulesEnv_AbsentWhenNoHostCommands(t *testing.T) {
+	spec := &orchestrator.JobSpec{}
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	if _, ok := result.Env[sandbox.HostCommandRulesEnv]; ok {
+		t.Errorf("expected %s to be absent, got %q", sandbox.HostCommandRulesEnv, result.Env[sandbox.HostCommandRulesEnv])
+	}
+}
