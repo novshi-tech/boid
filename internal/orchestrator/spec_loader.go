@@ -805,8 +805,27 @@ func interpolateEnvMap(m map[string]string) {
 func interpolateHostCommands(cmds HostCommands) {
 	for name, spec := range cmds {
 		spec.Path = interpolateEnv(spec.Path)
-		interpolateEnvMap(spec.Env)
+		interpolateHostCommandEnvMap(spec.Env)
 		cmds[name] = spec
+	}
+}
+
+// interpolateHostCommandEnvMap expands ${VAR} from the host environment like
+// interpolateEnvMap, but preserves ${boid:...} context variables literally —
+// they are resolved per dispatch at token-registration time by
+// dispatcher.ResolveHostCommands (e.g. ${boid:repo_slug} from the project's
+// origin remote), not from the daemon's environment. Without this carve-out,
+// os.Expand would swallow them at load time (no env var named "boid:..."
+// exists) and the placeholder would silently expand to "". Same pattern as
+// interpolateBindMountField's ${WORKTREE} / ${PROJECT_WORKDIR} preservation.
+func interpolateHostCommandEnvMap(m map[string]string) {
+	for k, v := range m {
+		m[k] = os.Expand(v, func(name string) string {
+			if strings.HasPrefix(name, "boid:") {
+				return "${" + name + "}"
+			}
+			return os.Getenv(name)
+		})
 	}
 }
 
