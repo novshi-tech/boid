@@ -164,6 +164,9 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 			if err := validateBuiltinHostConflict("workspace kits", out.HostCommands); err != nil {
 				return nil, fmt.Errorf("project %q: %w", projectID, err)
 			}
+			if err := validateRejectRules(out.HostCommands); err != nil {
+				return nil, fmt.Errorf("project %q: workspace kits: %w", projectID, err)
+			}
 
 			// Merge workspace kits into each TaskBehavior so kit-provided
 			// env / bindings / host_commands / KitRoots surface at dispatch

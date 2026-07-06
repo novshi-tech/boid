@@ -49,7 +49,19 @@ func toSandboxCommandDefs(commands map[string]orchestrator.CommandDef) map[strin
 			AllowedSubcommands: def.AllowedSubcommands,
 			AllowStdin:         def.AllowStdin,
 			Env:                def.Env,
+			RejectRules:        toSandboxRejectRules(def.RejectRules),
 		}
+	}
+	return out
+}
+
+func toSandboxRejectRules(rules []orchestrator.RejectRule) []sandbox.RejectRule {
+	if len(rules) == 0 {
+		return nil
+	}
+	out := make([]sandbox.RejectRule, len(rules))
+	for i, r := range rules {
+		out[i] = sandbox.RejectRule{Match: r.Match, Reason: r.Reason}
 	}
 	return out
 }
