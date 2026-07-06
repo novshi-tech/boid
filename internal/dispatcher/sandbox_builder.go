@@ -914,9 +914,17 @@ type environmentSession struct {
 }
 
 type environmentHostCommand struct {
-	Name  string   `yaml:"name"`
-	Allow []string `yaml:"allow,omitempty"`
-	Deny  []string `yaml:"deny,omitempty"`
+	Name   string                  `yaml:"name"`
+	Allow  []string                `yaml:"allow,omitempty"`
+	Deny   []string                `yaml:"deny,omitempty"`
+	Reject []environmentRejectRule `yaml:"reject,omitempty"`
+}
+
+// environmentRejectRule mirrors orchestrator.RejectRule so agents can read,
+// per host command, which arg shapes are rejected and what to do instead.
+type environmentRejectRule struct {
+	Match  string `yaml:"match"`
+	Reason string `yaml:"reason"`
 }
 
 type environmentDoc struct {
@@ -946,7 +954,10 @@ type environmentDoc struct {
 // scalar in the YAML output so LLMs see it as one paragraph per bullet.
 const environmentNotes = `- 内部 git は host へ broker dispatch されます。 -C と -u フラグは弾かれます。 push の remote snapshot はトークン登録時に固定で、 後から gh repo create で足した remote は再 capture が必要です。
 - 内部 fetch も host へ broker dispatch され、 network.allowed_domains の許可ドメインに対してのみ動作します。
-- host 側 gh CLI 経由のコマンドは --body-file のサンドボックスパスが見えません。 --body "$(cat)" で stdin から渡してください。
+- host_commands (gh 等) は host 側でリポジトリの checkout ディレクトリではなく中立ディレクトリで実行されます。 cwd から repo を推定する動作 (gh の暗黙 -R 等) には依存できません。 repo 文脈が必要なコマンドは kit 側の env 設定 (例: gh の GH_REPO) で渡されます。
+- host_commands には stdin が渡りません。 stdin 経由でファイル内容や長文を渡す設計は使えません。
+- host 側 gh CLI 経由のコマンドは --body-file のサンドボックスパスが見えません。 --body "$(cat <file>)" のように内容を展開して渡してください。
+- host_commands の reject ルールに一致した呼び出しは "host_commands.<name>: rejected: <reason>" 形式のメッセージで拒否されます。 各コマンドの reject (下記 host_commands セクション) に記載の reason を読み、 代替手段に従ってください。
 - Claude の WebFetch ツールはサンドボックス内では無効化されています。 Web ページを読む場合は /boid-web スキル経由で。
 - additional_bindings の mode が "ro" のパスへの書き込みは EROFS / EACCES で失敗します。 project_dir.writable=false の場合も同様です。
 `
@@ -1063,10 +1074,15 @@ func convertHostCommands(commands map[string]orchestrator.CommandDef) []environm
 		sort.Strings(allow)
 		deny := append([]string(nil), def.DeniedPatterns...)
 		sort.Strings(deny)
+		var reject []environmentRejectRule
+		for _, r := range def.RejectRules {
+			reject = append(reject, environmentRejectRule{Match: r.Match, Reason: r.Reason})
+		}
 		out = append(out, environmentHostCommand{
-			Name:  name,
-			Allow: allow,
-			Deny:  deny,
+			Name:   name,
+			Allow:  allow,
+			Deny:   deny,
+			Reject: reject,
 		})
 	}
 	return out
@@ -1146,4 +1162,3 @@ func shellQuoteDir(s string) string {
 	}
 	return s
 }
-

@@ -1418,6 +1418,54 @@ func TestBuildEnvironmentYAML_HostCommandsSortedDeterministic(t *testing.T) {
 	}
 }
 
+// TestBuildEnvironmentYAML_HostCommandsRejectSurfaced verifies that reject
+// rules configured on a host command (match glob + reason) are surfaced in
+// environment.yaml so the agent can read, per command, which arg shapes are
+// rejected and what to do instead — without a --body-file trial-and-error
+// round trip.
+func TestBuildEnvironmentYAML_HostCommandsRejectSurfaced(t *testing.T) {
+	in := EnvironmentInput{
+		HostCommands: map[string]orchestrator.CommandDef{
+			"gh": {
+				Name:               "gh",
+				AllowedSubcommands: []string{"pr", "issue"},
+				RejectRules: []orchestrator.RejectRule{
+					{Match: "*--body-file*", Reason: `sandbox paths are not visible on the host; use --body "$(cat <file>)"`},
+				},
+			},
+			"aws": {Name: "aws"},
+		},
+	}
+	doc := parsedEnvDoc(t, in)
+	hc, ok := doc["host_commands"].([]any)
+	if !ok || len(hc) != 2 {
+		t.Fatalf("host_commands = %v, want 2 entries", doc["host_commands"])
+	}
+	// aws sorts first and has no reject rules configured.
+	aws := hc[0].(map[string]any)
+	if aws["name"] != "aws" {
+		t.Fatalf("hc[0].name = %v, want aws", aws["name"])
+	}
+	if _, present := aws["reject"]; present {
+		t.Errorf("aws host_command should omit reject when none configured, got %v", aws["reject"])
+	}
+	gh := hc[1].(map[string]any)
+	if gh["name"] != "gh" {
+		t.Fatalf("hc[1].name = %v, want gh", gh["name"])
+	}
+	reject, ok := gh["reject"].([]any)
+	if !ok || len(reject) != 1 {
+		t.Fatalf("gh.reject = %v, want 1 entry", gh["reject"])
+	}
+	rule := reject[0].(map[string]any)
+	if rule["match"] != "*--body-file*" {
+		t.Errorf("reject[0].match = %v, want *--body-file*", rule["match"])
+	}
+	if rule["reason"] == "" || rule["reason"] == nil {
+		t.Errorf("reject[0].reason should be non-empty, got %v", rule["reason"])
+	}
+}
+
 
 // Regression: hook scripts in worktree mode had argv[0] set to the host-side
 // projectDir/.boid/hooks/<id>.sh path, which is NOT mounted inside the sandbox
