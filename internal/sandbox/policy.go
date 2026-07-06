@@ -5,6 +5,15 @@ import (
 	"strings"
 )
 
+// RejectRule declares a pattern that rejects an invocation with a
+// human-readable reason. Match is a glob over the joined args string with the
+// same semantics as allow/deny patterns (globMatch below). Transport shape
+// only for now; CheckPolicy does not evaluate reject rules yet.
+type RejectRule struct {
+	Match  string
+	Reason string
+}
+
 // CommandDef is the canonical sandbox-side policy for brokered host commands.
 // Dispatcher and orchestrator mirror this shape as transport data, but the
 // policy semantics live here.
@@ -16,6 +25,7 @@ type CommandDef struct {
 	AllowedSubcommands []string
 	AllowStdin         bool
 	Env                map[string]string
+	RejectRules        []RejectRule
 	// MissingSecrets lists "ENV_NAME (secret:key)" entries for env vars that
 	// the kit declared via the "secret:" prefix but failed to resolve at
 	// register time. When non-empty, the broker rejects exec requests for

@@ -640,6 +640,80 @@ func TestMergeKitMetaIntoBehavior(t *testing.T) {
 		}
 	})
 
+	t.Run("reject rules merge whole-value", func(t *testing.T) {
+		// mergeHostCommands replaces whole HostCommandSpec values by name, so
+		// a behavior-level gh entry (including its reject list) wins wholesale
+		// over the kit's gh entry — reject lists are never element-merged.
+		base := projectspec.TaskBehavior{
+			HostCommands: projectspec.HostCommands{
+				"gh": {
+					Allow:  []string{"pr"},
+					Reject: []projectspec.RejectRule{{Match: "*--body-file*", Reason: "from-behavior"}},
+				},
+			},
+		}
+		kit := &projectspec.KitMeta{
+			HostCommands: projectspec.HostCommands{
+				"gh": {
+					Allow:  []string{"issue"},
+					Reject: []projectspec.RejectRule{{Match: "* --web*", Reason: "from-kit"}},
+				},
+				"aws": {
+					Reject: []projectspec.RejectRule{{Match: "s3 rm *", Reason: "kit-only"}},
+				},
+			},
+		}
+
+		result := mergeKitsIntoBehavior(t, base, []*projectspec.KitMeta{kit}, []string{"mykit"})
+		gh := result.HostCommands["gh"]
+		if len(gh.Reject) != 1 || gh.Reject[0].Reason != "from-behavior" {
+			t.Fatalf("behavior reject list should win wholesale over kit: %+v", gh.Reject)
+		}
+		aws := result.HostCommands["aws"]
+		if len(aws.Reject) != 1 || aws.Reject[0].Reason != "kit-only" {
+			t.Fatalf("kit-only reject list should pass through: %+v", aws.Reject)
+		}
+	})
+
+}
+
+// TestReadKitMeta_StdinDeprecationWarning verifies that loading a kit that
+// declares stdin: true emits the deprecation warning (once per kit dir per
+// daemon run) and still parses the field for the compat period.
+func TestReadKitMeta_StdinDeprecationWarning(t *testing.T) {
+	buf := captureSlog(t)
+
+	dir := t.TempDir()
+	kitDir := filepath.Join(dir, "kits", "ghkit")
+	if err := os.MkdirAll(kitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeKitYAML(t, kitDir, `
+host_commands:
+  gh:
+    allow: [pr]
+    stdin: true
+`)
+
+	meta, err := projectspec.ReadKitMeta(kitDir)
+	if err != nil {
+		t.Fatalf("ReadKitMeta: %v", err)
+	}
+	if !meta.HostCommands["gh"].Stdin {
+		t.Fatal("stdin: true must still parse during the deprecation period")
+	}
+	if !strings.Contains(buf.String(), "host_commands.gh: stdin: true is deprecated") {
+		t.Fatalf("expected stdin deprecation warning, got log: %s", buf.String())
+	}
+
+	// Second load of the same kit dir must not re-emit (once per daemon run).
+	buf.Reset()
+	if _, err := projectspec.ReadKitMeta(kitDir); err != nil {
+		t.Fatalf("ReadKitMeta (2nd): %v", err)
+	}
+	if strings.Contains(buf.String(), "stdin: true is deprecated") {
+		t.Fatalf("stdin deprecation warning must fire once per load location, got: %s", buf.String())
+	}
 }
 
 func TestResolveKitAgent(t *testing.T) {

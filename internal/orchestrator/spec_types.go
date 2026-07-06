@@ -51,6 +51,16 @@ type HookFile struct {
 	TargetName string // filename inside sandbox .boid/hooks/
 }
 
+// RejectRule declares a pattern that rejects an invocation with a
+// human-readable reason. Match is a glob over the joined args string with the
+// same semantics as allow/deny patterns (globMatch in internal/sandbox/policy.go).
+// Reason is surfaced to the agent so it can self-correct. This type is
+// vocabulary/transport only for now; enforcement is wired up separately.
+type RejectRule struct {
+	Match  string `yaml:"match" json:"match"`
+	Reason string `yaml:"reason" json:"reason"`
+}
+
 // CommandDef is the orchestrator-side transport shape for sandbox command policy input.
 // Dispatcher and sandbox mirror this shape; sandbox owns the enforcement semantics.
 type CommandDef struct {
@@ -61,15 +71,20 @@ type CommandDef struct {
 	AllowedSubcommands []string          `json:"allowed_subcommands,omitempty"`
 	AllowStdin         bool              `json:"allow_stdin,omitempty"`
 	Env                map[string]string `json:"env,omitempty"`
+	RejectRules        []RejectRule      `json:"reject_rules,omitempty"`
 }
 
 // HostCommandSpec is the simplified YAML DSL for declaring host commands.
 type HostCommandSpec struct {
-	Allow []string          `yaml:"allow,omitempty" json:"allow,omitempty"`
-	Deny  []string          `yaml:"deny,omitempty" json:"deny,omitempty"`
-	Stdin bool              `yaml:"stdin,omitempty" json:"stdin,omitempty"`
-	Path  string            `yaml:"path,omitempty" json:"path,omitempty"`
-	Env   map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	Allow []string `yaml:"allow,omitempty" json:"allow,omitempty"`
+	Deny  []string `yaml:"deny,omitempty" json:"deny,omitempty"`
+	// Stdin is deprecated: it is still parsed for backward compatibility but
+	// will be ignored in a future release (loading a spec with stdin: true
+	// emits a deprecation warning).
+	Stdin  bool              `yaml:"stdin,omitempty" json:"stdin,omitempty"`
+	Path   string            `yaml:"path,omitempty" json:"path,omitempty"`
+	Env    map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	Reject []RejectRule      `yaml:"reject,omitempty" json:"reject,omitempty"`
 }
 
 // ToCommandDef converts a HostCommandSpec into a CommandDef for internal use.
@@ -90,6 +105,7 @@ func (s HostCommandSpec) ToCommandDef(name string) CommandDef {
 		DeniedPatterns:     s.Deny,
 		AllowStdin:         s.Stdin,
 		Env:                s.Env,
+		RejectRules:        s.Reject,
 	}
 }
 

@@ -392,6 +392,119 @@ func TestGetWithWorkspace_AdditionalBindingsMerge(t *testing.T) {
 	}
 }
 
+// TestGetWithWorkspace_RejectRulesHydrated verifies that host_commands reject
+// rules declared in a workspace kit survive hydration into both the top-level
+// meta.HostCommands (session jobs) and each behavior's HostCommands (task
+// hooks) — the same dual surface guarded for additional_bindings above.
+func TestGetWithWorkspace_RejectRulesHydrated(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	setupProjectWithBehavior(t, projectDir, "proj-reject", "build")
+
+	kitsDir := t.TempDir()
+	setupKitDir(t, kitsDir, "ghkit", `host_commands:
+  gh:
+    allow: [pr, issue]
+    reject:
+      - match: "*--body-file*"
+        reason: "sandbox paths are not visible on the host"
+`)
+
+	wsDir := t.TempDir()
+	setupWorkspaceDir(t, wsDir, "rejectws", `kits:
+  - ghkit
+`)
+
+	s := orchestrator.NewProjectStore(orchestrator.NewRegistry(kitsDir))
+	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
+	loadProjectIntoStore(t, s, []*orchestrator.Project{
+		{ID: "proj-reject", WorkDir: projectDir, WorkspaceID: "rejectws"},
+	})
+
+	meta, err := s.GetWithWorkspace(context.Background(), "proj-reject")
+	if err != nil {
+		t.Fatalf("GetWithWorkspace: %v", err)
+	}
+
+	want := orchestrator.RejectRule{Match: "*--body-file*", Reason: "sandbox paths are not visible on the host"}
+	gh := meta.HostCommands["gh"]
+	if len(gh.Reject) != 1 || gh.Reject[0] != want {
+		t.Fatalf("top-level reject rules not hydrated: %+v", gh.Reject)
+	}
+
+	build, ok := meta.TaskBehaviors["build"]
+	if !ok {
+		t.Fatalf("behavior build missing from hydrated meta: %+v", meta.TaskBehaviors)
+	}
+	bgh := build.HostCommands["gh"]
+	if len(bgh.Reject) != 1 || bgh.Reject[0] != want {
+		t.Fatalf("behavior reject rules not hydrated: %+v", bgh.Reject)
+	}
+}
+
+// TestGetWithWorkspace_RejectRuleValidation verifies that reject rules with an
+// empty match or empty reason are rejected at hydration time with an error
+// naming the offending command and rule index.
+func TestGetWithWorkspace_RejectRuleValidation(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		kitYAML string
+		wantErr string
+	}{
+		{
+			name: "empty match",
+			kitYAML: `host_commands:
+  gh:
+    reject:
+      - reason: "no match given"
+`,
+			wantErr: "host_commands.gh.reject[0]: match is required",
+		},
+		{
+			name: "empty reason",
+			kitYAML: `host_commands:
+  gh:
+    reject:
+      - match: "*--body-file*"
+`,
+			wantErr: "host_commands.gh.reject[0]: reason is required",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			projectDir := t.TempDir()
+			setupProjectDir(t, projectDir, "proj-rejval", "Reject Validation Project")
+
+			kitsDir := t.TempDir()
+			setupKitDir(t, kitsDir, "badkit", tc.kitYAML)
+
+			wsDir := t.TempDir()
+			setupWorkspaceDir(t, wsDir, "rejvalws", `kits:
+  - badkit
+`)
+
+			s := orchestrator.NewProjectStore(orchestrator.NewRegistry(kitsDir))
+			s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
+			loadProjectIntoStore(t, s, []*orchestrator.Project{
+				{ID: "proj-rejval", WorkDir: projectDir, WorkspaceID: "rejvalws"},
+			})
+
+			_, err := s.GetWithWorkspace(context.Background(), "proj-rejval")
+			if err == nil {
+				t.Fatalf("expected reject rule validation error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got: %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
 // TestLoadAll_RecordsWorkspaceID verifies that LoadAll correctly records the
 // workspaceID for each project, enabling GetWithWorkspace to find it.
 func TestLoadAll_RecordsWorkspaceID(t *testing.T) {

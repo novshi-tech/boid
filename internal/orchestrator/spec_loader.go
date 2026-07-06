@@ -535,6 +535,9 @@ func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, er
 		if err := validateBuiltinHostConflict(fmt.Sprintf("behavior %q", name), behavior.HostCommands); err != nil {
 			return nil, err
 		}
+		if err := validateRejectRules(behavior.HostCommands); err != nil {
+			return nil, fmt.Errorf("behavior %q: %w", name, err)
+		}
 
 		meta.TaskBehaviors[name] = behavior
 	}
@@ -615,6 +618,8 @@ func ReadKitMeta(dir string) (*KitMeta, error) {
 	interpolateHostCommands(meta.HostCommands)
 	interpolateEnvMap(meta.Env)
 
+	warnDeprecatedStdin(fmt.Sprintf("kit.yaml (%s)", dir), dir, meta.HostCommands)
+
 	meta.KitRoot = dir
 
 	if _, ok := rawTop["scripts"]; ok {
@@ -656,6 +661,8 @@ func ReadProjectLocalMeta(dir string) (*ProjectLocalMeta, error) {
 	interpolateBindMounts(meta.AdditionalBindings)
 	interpolateHostCommands(meta.HostCommands)
 	interpolateEnvMap(meta.Env)
+
+	warnDeprecatedStdin(projectLocalFilename+" ("+dir+")", dir, meta.HostCommands)
 
 	if err := validateProjectLocalMeta(&meta); err != nil {
 		return nil, err
@@ -931,4 +938,50 @@ func validateBuiltinHostConflict(scope string, hostCommands HostCommands) error 
 		}
 	}
 	return nil
+}
+
+// validateRejectRules rejects host_commands reject entries that lack a match
+// pattern or a reason. A reject rule without a reason would surface a bare
+// rejection to the agent with no way to self-correct, so both fields are
+// mandatory.
+func validateRejectRules(hostCommands HostCommands) error {
+	names := make([]string, 0, len(hostCommands))
+	for name := range hostCommands {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		for i, rule := range hostCommands[name].Reject {
+			if rule.Match == "" {
+				return fmt.Errorf("host_commands.%s.reject[%d]: match is required", name, i)
+			}
+			if rule.Reason == "" {
+				return fmt.Errorf("host_commands.%s.reject[%d]: reason is required", name, i)
+			}
+		}
+	}
+	return nil
+}
+
+// stdinDeprecationWarned tracks which (dir, command) pairs have already
+// received the stdin deprecation warning this daemon run. Resets on daemon
+// restart. Same idiom as commandsDeprecationWarned above.
+var stdinDeprecationWarned sync.Map
+
+// warnDeprecatedStdin emits a deprecation warning for host_commands entries
+// that still declare stdin: true. The field is parsed and honored for now;
+// enforcement removal lands in a later release. dir is the deduplication key
+// so the same file does not re-emit on every reload.
+func warnDeprecatedStdin(scope, dir string, hostCommands HostCommands) {
+	for name, spec := range hostCommands {
+		if !spec.Stdin {
+			continue
+		}
+		key := dir + "@" + name
+		if _, loaded := stdinDeprecationWarned.LoadOrStore(key, true); loaded {
+			continue
+		}
+		slog.Warn(fmt.Sprintf("host_commands.%s: stdin: true is deprecated and will be ignored in a future release", name),
+			"location", scope)
+	}
 }
