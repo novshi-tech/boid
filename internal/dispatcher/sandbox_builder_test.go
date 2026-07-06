@@ -12,6 +12,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// fakeGetOriginURL is a shared ResolveHostCommands getOriginURL stub for
+// tests in this file that don't exercise ${boid:repo_slug} expansion; none
+// of their Env values contain the placeholder, so it is never actually
+// invoked, but every call site still needs a non-nil func.
+func fakeGetOriginURL(string) (string, error) {
+	return "", fmt.Errorf("getOriginURL should not be called")
+}
+
 // Interactive=true の hook job は PTY 上で動かす必要があるため、 PrimaryInput を
 // stdin に pipe したり stdout を capture file へ落としたりすると claude code 等の
 // TUI が isatty() で非対話判定して落ちる。 Interactive 時は両方とも抑止し、
@@ -437,7 +445,7 @@ func TestHostCommandMounts_BoidAndGitExcluded(t *testing.T) {
 		"gh":  {},
 		"git": {},
 	}
-	resolved, err := ResolveHostCommands([]string{"boid", "git"}, hostCmds, "", fakeLookPath)
+	resolved, err := ResolveHostCommands([]string{"boid", "git"}, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
@@ -464,7 +472,7 @@ func TestHostCommandMounts_NotFound(t *testing.T) {
 		return "", fmt.Errorf("not found")
 	}
 	hostCmds := map[string]orchestrator.CommandDef{"missing-cmd": {}}
-	_, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath)
+	_, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err == nil {
 		t.Error("expected error for missing host command, got nil")
 	}
@@ -476,7 +484,7 @@ func TestHostCommandMounts_BindsAtHostPath(t *testing.T) {
 		return "/usr/local/bin/" + name, nil
 	}
 	hostCmds := map[string]orchestrator.CommandDef{"gh": {}}
-	resolved, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath)
+	resolved, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
@@ -505,7 +513,7 @@ func TestHostCommandMounts_Dedup(t *testing.T) {
 		return "/usr/bin/" + name, nil
 	}
 	hostCmds := map[string]orchestrator.CommandDef{"gh": {}}
-	resolved, err := ResolveHostCommands([]string{"gh"}, hostCmds, "", fakeLookPath)
+	resolved, err := ResolveHostCommands([]string{"gh"}, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
@@ -531,7 +539,7 @@ func TestHostCommandMounts_PathSpecified_SkipsLookPath(t *testing.T) {
 	hostCmds := map[string]orchestrator.CommandDef{
 		"run-e2e": {Path: scriptPath},
 	}
-	resolved, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath)
+	resolved, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
@@ -574,7 +582,7 @@ func TestHostCommandMounts_RelativePathResolvedFromProjectDir(t *testing.T) {
 	}
 	resolved, err := ResolveHostCommands(nil, hostCmds, projectDir, func(string) (string, error) {
 		return "", fmt.Errorf("lookPath should not be called")
-	})
+	}, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
@@ -593,7 +601,7 @@ func TestHostCommandMounts_PathEmpty_UsesLookPath(t *testing.T) {
 		return "/usr/bin/" + name, nil
 	}
 	hostCmds := map[string]orchestrator.CommandDef{"gh": {}}
-	resolved, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath)
+	resolved, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
@@ -616,7 +624,7 @@ func TestHostCommandMounts_PathDoesNotExist_Error(t *testing.T) {
 	hostCmds := map[string]orchestrator.CommandDef{
 		"run-e2e": {Path: missingPath},
 	}
-	_, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath)
+	_, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err == nil {
 		t.Fatal("expected error for non-existent path, got nil")
 	}
@@ -639,7 +647,7 @@ func TestHostCommandMounts_MixedBuiltinAndPathCommand(t *testing.T) {
 	hostCmds := map[string]orchestrator.CommandDef{
 		"run-e2e": {Path: scriptPath},
 	}
-	resolved, err := ResolveHostCommands([]string{"jq"}, hostCmds, "", fakeLookPath)
+	resolved, err := ResolveHostCommands([]string{"jq"}, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}

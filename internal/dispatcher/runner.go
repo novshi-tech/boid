@@ -197,6 +197,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			spec.HostCommands,
 			projectWorkDir,
 			exec.LookPath,
+			GitOriginURL,
 		)
 		if err != nil {
 			r.failJob(j, err)

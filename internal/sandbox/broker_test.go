@@ -53,10 +53,9 @@ func testGateBoidPolicies() map[string]sandbox.BuiltinPolicy {
 }
 
 // testCtx is the shared TokenContext for broker unit tests that do not care
-// about host-command cwd resolution. ProjectDir is left empty here so that
-// those tests fall back to req.Cwd (i.e. whatever the shim would have sent);
-// tests that exercise cwd resolution set ProjectDir/WorktreeDir to a real
-// directory inline.
+// about the token's host-side context. Host commands always run with a
+// neutral cwd (os.TempDir()) regardless of ProjectDir/WorktreeDir; see
+// TestBroker_HostCommandCwdIsNeutralRegardlessOfWorktree.
 var testCtx = sandbox.TokenContext{
 	JobID:     "job-1",
 	TaskID:    "task-1",
@@ -169,51 +168,39 @@ func runBrokerPwd(t *testing.T, tc sandbox.TokenContext, shimCwd string) string 
 	return strings.TrimSpace(resp.Stdout)
 }
 
-// TestBroker_HostCommandRunsInWorktreeRoot ensures that when the token context
-// advertises a worktree, the broker runs host commands inside it regardless of
-// what cwd the sandbox-side shim reports. gate jobs depend on this: their
-// sandbox cwd is a tmpfs HOME that on the host side is the user's real HOME
-// (no repo metadata), so tools like `gh pr create` would otherwise fail with
-// "not a git repository".
-func TestBroker_HostCommandRunsInWorktreeRoot(t *testing.T) {
-	worktree := t.TempDir()
+// TestBroker_HostCommandCwdIsNeutralRegardlessOfWorktree pins down the cwd
+// neutralization contract: host commands never run in the project/worktree
+// checkout, even when the token context advertises one, because container
+// backends have no host checkout to place them in. Any repo context a host
+// command needs comes from ${boid:repo_slug} env expansion at
+// token-registration time (dispatcher.ResolveHostCommands), not from cwd.
+func TestBroker_HostCommandCwdIsNeutralRegardlessOfWorktree(t *testing.T) {
 	tc := sandbox.TokenContext{
 		JobID:       "job-host-cwd",
 		TaskID:      "task-host-cwd",
 		ProjectID:   "proj-1",
 		Role:        testRoleGate,
-		ProjectDir:  t.TempDir(), // must be ignored when WorktreeDir is set
-		WorktreeDir: worktree,
+		ProjectDir:  t.TempDir(),
+		WorktreeDir: t.TempDir(),
 	}
 	got := runBrokerPwd(t, tc, "/home/someone")
-	if got != worktree {
-		t.Errorf("host command cwd = %q, want worktree root %q", got, worktree)
+	wantEval, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Fatalf("eval symlinks on os.TempDir(): %v", err)
+	}
+	gotEval, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		t.Fatalf("eval symlinks on host command cwd %q: %v", got, err)
+	}
+	if gotEval != wantEval {
+		t.Errorf("host command cwd = %q, want neutral temp dir %q", got, wantEval)
 	}
 }
 
-// TestBroker_HostCommandFallsBackToProjectDir covers the no-worktree case: a
-// job without a task worktree still gets its host commands rooted in the
-// project work dir (the broker's default host-side context).
-func TestBroker_HostCommandFallsBackToProjectDir(t *testing.T) {
-	projectDir := t.TempDir()
-	tc := sandbox.TokenContext{
-		JobID:      "job-proj-cwd",
-		TaskID:     "task-proj-cwd",
-		ProjectID:  "proj-1",
-		Role:       testRoleHook,
-		ProjectDir: projectDir,
-	}
-	got := runBrokerPwd(t, tc, "/home/someone")
-	if got != projectDir {
-		t.Errorf("host command cwd = %q, want project dir %q", got, projectDir)
-	}
-}
-
-// TestBroker_HostCommandRespectsRequestCwdWhenContextEmpty ensures the shim's
-// reported cwd is honoured when neither worktree nor project is known — this
-// is the `boid exec` path where the sandbox maps into the real project tree
-// and sandbox cwd is already meaningful on the host.
-func TestBroker_HostCommandRespectsRequestCwdWhenContextEmpty(t *testing.T) {
+// TestBroker_HostCommandCwdIgnoresRequestCwd ensures the shim's reported cwd
+// (req.Cwd) is never used to place a host command, even when neither
+// worktree nor project dir is known on the token context.
+func TestBroker_HostCommandCwdIgnoresRequestCwd(t *testing.T) {
 	shimCwd := t.TempDir()
 	tc := sandbox.TokenContext{
 		JobID:     "job-shim-cwd",
@@ -222,8 +209,8 @@ func TestBroker_HostCommandRespectsRequestCwdWhenContextEmpty(t *testing.T) {
 		Role:      testRoleHook,
 	}
 	got := runBrokerPwd(t, tc, shimCwd)
-	if got != shimCwd {
-		t.Errorf("host command cwd = %q, want shim cwd %q", got, shimCwd)
+	if got == shimCwd {
+		t.Errorf("host command cwd = %q, must not equal shim cwd %q", got, shimCwd)
 	}
 }
 

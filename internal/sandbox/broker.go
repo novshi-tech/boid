@@ -559,10 +559,7 @@ func (b *Broker) execCommand(req *ExecRequest, def CommandDef, entry *tokenEntry
 		binary = resolved
 	}
 	cmd := exec.Command(binary, req.Args...)
-	cwd := resolveHostCommandCwd(req.Cwd, entry)
-	if cwd != "" {
-		cmd.Dir = cwd
-	}
+	cmd.Dir = hostCommandCwd()
 
 	cmd.Env = hostCommandEnv(def.Env)
 
@@ -604,27 +601,17 @@ func hostCommandEnv(defEnv map[string]string) []string {
 	return out
 }
 
-// resolveHostCommandCwd decides the working directory for a host command.
-// Host commands run on the host, not inside the sandbox. The sandbox-side cwd
-// (req.Cwd) aligns with host-side paths for hook jobs (worktree is mounted at
-// the same path inside and outside the sandbox) but not for gate jobs, where
-// the sandbox cwd falls through to a tmpfs HOME — on the host that path is
-// the user's real HOME and carries no repo metadata.
+// hostCommandCwd returns the working directory for a host command process.
 //
-// The token's host-side context (WorktreeDir / ProjectDir) is always
-// independent of sandbox visibility (Visibility.ProjectDir), so we can lean
-// on it directly: prefer the task worktree, then the project work dir, then
-// fall back to what the sandbox reported.
-func resolveHostCommandCwd(requestedCwd string, entry *tokenEntry) string {
-	if entry != nil {
-		if entry.Context.WorktreeDir != "" {
-			return entry.Context.WorktreeDir
-		}
-		if entry.Context.ProjectDir != "" {
-			return entry.Context.ProjectDir
-		}
-	}
-	return requestedCwd
+// Contract: host commands must not depend on a repo checkout being present
+// on the host side. Neither the sandbox-side cwd (req.Cwd) nor the token's
+// host-side context (WorktreeDir / ProjectDir) are consulted here — container
+// backends have no host checkout at all, so any repo context a host command
+// needs must come from ${boid:repo_slug} env expansion at token-registration
+// time (see dispatcher.ResolveHostCommands), not from cwd. A neutral,
+// always-present directory keeps host commands portable across runtimes.
+func hostCommandCwd() string {
+	return os.TempDir()
 }
 
 func (e *tokenEntry) hasBuiltinPolicy(name string) bool {
