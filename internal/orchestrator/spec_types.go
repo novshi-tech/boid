@@ -69,7 +69,6 @@ type CommandDef struct {
 	AllowedPatterns    []string          `json:"allowed_patterns,omitempty"`
 	DeniedPatterns     []string          `json:"denied_patterns,omitempty"`
 	AllowedSubcommands []string          `json:"allowed_subcommands,omitempty"`
-	AllowStdin         bool              `json:"allow_stdin,omitempty"`
 	Env                map[string]string `json:"env,omitempty"`
 	RejectRules        []RejectRule      `json:"reject_rules,omitempty"`
 }
@@ -103,7 +102,6 @@ func (s HostCommandSpec) ToCommandDef(name string) CommandDef {
 		AllowedSubcommands: subcommands,
 		AllowedPatterns:    patterns,
 		DeniedPatterns:     s.Deny,
-		AllowStdin:         s.Stdin,
 		Env:                s.Env,
 		RejectRules:        s.Reject,
 	}

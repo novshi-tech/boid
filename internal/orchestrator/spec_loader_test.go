@@ -823,9 +823,6 @@ host_commands:
 		if len(ghDef.DeniedPatterns) != 1 {
 			t.Fatalf("unexpected denied patterns: %+v", ghDef.DeniedPatterns)
 		}
-		if !ghDef.AllowStdin {
-			t.Fatal("expected AllowStdin=true")
-		}
 
 		awsDef := defs["aws"]
 		if len(awsDef.AllowedSubcommands) != 1 || awsDef.AllowedSubcommands[0] != "s3" {

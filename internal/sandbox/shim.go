@@ -37,7 +37,7 @@ func shimBinaryPath(argv0 string) string {
 // ShimExec sends a host command request to the broker using the streaming
 // protocol so that stdout/stderr is forwarded in real-time and signals
 // (Ctrl-C) are propagated to the host process group.
-func ShimExec(brokerSocket, argv0 string, args []string, stdin []byte) (*ExecResponse, error) {
+func ShimExec(brokerSocket, argv0 string, args []string) (*ExecResponse, error) {
 	cwd, _ := os.Getwd()
 	token := os.Getenv("BOID_BROKER_TOKEN")
 
@@ -46,7 +46,6 @@ func ShimExec(brokerSocket, argv0 string, args []string, stdin []byte) (*ExecRes
 		Args:      args,
 		Cwd:       cwd,
 		Token:     token,
-		Stdin:     stdin,
 		Streaming: true,
 	}
 	return sendStreamingExecRequest(brokerSocket, req)

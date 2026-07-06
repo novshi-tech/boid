@@ -969,8 +969,9 @@ func validateRejectRules(hostCommands HostCommands) error {
 var stdinDeprecationWarned sync.Map
 
 // warnDeprecatedStdin emits a deprecation warning for host_commands entries
-// that still declare stdin: true. The field is parsed and honored for now;
-// enforcement removal lands in a later release. dir is the deduplication key
+// that still declare stdin: true. The field is still parsed but has no
+// effect: the broker never wires caller stdin into a host command (see
+// gateHostCommand in internal/sandbox/broker.go). dir is the deduplication key
 // so the same file does not re-emit on every reload.
 func warnDeprecatedStdin(scope, dir string, hostCommands HostCommands) {
 	for name, spec := range hostCommands {
@@ -981,7 +982,7 @@ func warnDeprecatedStdin(scope, dir string, hostCommands HostCommands) {
 		if _, loaded := stdinDeprecationWarned.LoadOrStore(key, true); loaded {
 			continue
 		}
-		slog.Warn(fmt.Sprintf("host_commands.%s: stdin: true is deprecated and will be ignored in a future release", name),
+		slog.Warn(fmt.Sprintf("host_commands.%s: stdin: true is deprecated and has no effect; host commands never receive caller stdin", name),
 			"location", scope)
 	}
 }

@@ -23,7 +23,6 @@ type CommandDef struct {
 	AllowedPatterns    []string
 	DeniedPatterns     []string
 	AllowedSubcommands []string
-	AllowStdin         bool
 	Env                map[string]string
 	RejectRules        []RejectRule
 	// MissingSecrets lists "ENV_NAME (secret:key)" entries for env vars that

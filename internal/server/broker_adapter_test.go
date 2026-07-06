@@ -19,7 +19,6 @@ func TestToSandboxCommandDefs_FieldPassthrough(t *testing.T) {
 			AllowedPatterns:    []string{"pr create *"},
 			DeniedPatterns:     []string{"repo delete *"},
 			AllowedSubcommands: []string{"pr", "issue"},
-			AllowStdin:         true,
 			Env:                map[string]string{"GH_TOKEN": "tok"},
 			RejectRules: []orchestrator.RejectRule{
 				{Match: "*--body-file*", Reason: "sandbox paths are not visible on the host"},
@@ -33,7 +32,7 @@ func TestToSandboxCommandDefs_FieldPassthrough(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing gh entry: %+v", out)
 	}
-	if got.Name != "gh" || got.Path != "/usr/bin/gh" || !got.AllowStdin {
+	if got.Name != "gh" || got.Path != "/usr/bin/gh" {
 		t.Fatalf("scalar fields dropped in conversion: %+v", got)
 	}
 	if len(got.AllowedPatterns) != 1 || len(got.DeniedPatterns) != 1 || len(got.AllowedSubcommands) != 2 {

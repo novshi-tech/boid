@@ -3,7 +3,6 @@
 package sandbox
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,15 +49,8 @@ func (b *Broker) handleStreamingExec(conn net.Conn, req *ExecRequest) {
 // a separate stderr pipe, process-group isolation (D-2), and an exit chunk for
 // proper exit-code propagation (D-3).
 func (b *Broker) execCommandStreaming(conn net.Conn, req *ExecRequest, def CommandDef, entry *tokenEntry) {
-	req.Stdin = sanitizeStdin(def, req.Stdin)
-
-	if msg := def.MissingSecretsMessage(); msg != "" {
+	if msg, ok := gateHostCommand(def, req.Args); !ok {
 		sendStreamError(conn, msg, 1)
-		return
-	}
-
-	if !CheckPolicy(def, req.Args) {
-		sendStreamError(conn, "arguments not allowed", 1)
 		return
 	}
 
@@ -107,15 +99,12 @@ func (b *Broker) execCommandStreaming(conn net.Conn, req *ExecRequest, def Comma
 	}
 
 	cmd.Stdout = pts
-	if len(req.Stdin) > 0 {
-		cmd.Stdin = bytes.NewReader(req.Stdin)
-	} else {
-		// Non-interactive: connect /dev/null so bash doesn't hang on reads.
-		devNull, nullErr := os.Open("/dev/null")
-		if nullErr == nil {
-			cmd.Stdin = devNull
-			defer devNull.Close()
-		}
+	// The broker never wires caller-provided stdin into the host process (see
+	// ExecRequest doc comment). Connect /dev/null so bash doesn't hang on reads.
+	devNull, nullErr := os.Open("/dev/null")
+	if nullErr == nil {
+		cmd.Stdin = devNull
+		defer devNull.Close()
 	}
 
 	// Setsid: new session → new process group (PGID == PID).

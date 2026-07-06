@@ -47,7 +47,6 @@ func toSandboxCommandDefs(commands map[string]orchestrator.CommandDef) map[strin
 			AllowedPatterns:    def.AllowedPatterns,
 			DeniedPatterns:     def.DeniedPatterns,
 			AllowedSubcommands: def.AllowedSubcommands,
-			AllowStdin:         def.AllowStdin,
 			Env:                def.Env,
 			RejectRules:        toSandboxRejectRules(def.RejectRules),
 		}
