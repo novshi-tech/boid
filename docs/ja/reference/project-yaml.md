@@ -178,7 +178,11 @@ host_commands:
   gh:
     allow: [pr, issue, run]
     deny: ["* delete*"]
-    stdin: false
+    env:
+      GH_REPO: ${boid:repo_slug}
+    reject:
+      - match: "*--body-file*"
+        reason: 'サンドボックスのファイルパスは host からは見えない。--body "$(cat <file>)" で内容を渡す'
   aws:
     path: /usr/local/bin/aws
     env:
@@ -191,13 +195,21 @@ host_commands:
 |---|---|---|
 | `allow` | string のリスト | 許可するサブコマンドまたはグロブパターン (`* ?` 含むパターンとして自動判別) |
 | `deny` | string のリスト | 拒否するパターン (allow より優先) |
-| `stdin` | bool | このコマンドへ標準入力を渡してよいか |
+| `reject` | RejectRule のリスト | `match` (glob) にマッチした呼び出しを `reason` 付きで拒否する。 `reason` は必須で、 拒否時に `host_commands.<name>: rejected: <reason>` としてエージェントへ返る (下記「host command の実行契約」参照) |
+| `stdin` | bool | **非推奨**。 パースはされるが常に無視される (下記「host command の実行契約」参照) |
 | `path` | string | バイナリの絶対パス (host の `$PATH` 解決を上書きしたい場合) |
-| `env` | map (string → string) | このコマンド呼び出し時に追加する環境変数 |
+| `env` | map (string → string) | このコマンド呼び出し時に追加する環境変数。 値に `${boid:repo_slug}` と書くとコンテキスト変数として展開される (下記「host command の実行契約」参照) |
 
 特殊な使い方として、 `path` に kit / プロジェクト内の相対パスを書くと、その path のコマンドだけがサンドボックスから host へ流れます (例: `path: e2e/run.sh`)。
 
 > **予約名:** `git`、`boid`、`fetch` はサンドボックス組み込みコマンドです。 `host_commands` に宣言しても無視されます。
+
+#### host command の実行契約
+
+- **stdin は渡らない** — サンドボックス shim は stdin を読まず、 broker も受け取っても捨てる。 `stdin: true` は設定として受理されるが効果はない (deprecation warning が出る)。 ファイル内容や長文をコマンドへ渡したい場合は stdin ではなく引数 (例: `--body "$(cat <file>)"`) を使う
+- **cwd は中立ディレクトリ固定** — host command は host 側で project/worktree の checkout ディレクトリではなく中立ディレクトリ (`os.TempDir()`) で実行される。 cwd から repo を推定する動作 (`gh` の暗黙 `-R` 等) には依存できない
+- **repo 文脈は env で渡す** — cwd 推定の代わりに、 `env:` の値に `${boid:repo_slug}` と書くとトークン登録時に project の origin remote から導出した `host/owner/repo` 形式の文字列に展開される。 `gh` であれば `GH_REPO: ${boid:repo_slug}` で従来どおり透過的に動く
+- **reject ルール** — `match` (allow/deny と同じ glob 意味論、 joined args に対して) にマッチした呼び出しは shim (早期) と broker (権威) の両方で拒否され、 `host_commands.<name>: rejected: <reason>` というメッセージがエージェントに返る。 `reason` は代替手段を書くこと (単に「使えません」ではなく次に何をすべきか)
 
 `local/<name>` 形式の kit 参照 (例: `local/my-kit`) は、 プロジェクトルート相対でローカル kit ディレクトリを解決します。 リモートレジストリに公開せずに kit を開発する場合に便利です。
 

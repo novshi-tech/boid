@@ -173,7 +173,11 @@ host_commands:
   gh:
     allow: [pr, issue, run]
     deny: ["* delete*"]
-    stdin: false
+    env:
+      GH_REPO: ${boid:repo_slug}
+    reject:
+      - match: "*--body-file*"
+        reason: 'Sandbox file paths are not visible on the host. Use --body "$(cat <file>)" instead.'
   aws:
     path: /usr/local/bin/aws
     env:
@@ -186,13 +190,21 @@ Each entry (a `HostCommandSpec`) has:
 |---|---|---|
 | `allow` | list of string | Allowed subcommands or glob patterns (entries containing `*` or `?` are treated as patterns). |
 | `deny` | list of string | Patterns that override `allow`. |
-| `stdin` | bool | Whether stdin may be passed to this command. |
+| `reject` | list of RejectRule | Rejects invocations whose args match the glob in `match`, with a mandatory `reason`. The rejection surfaces to the agent as `host_commands.<name>: rejected: <reason>` (see "Host command execution contract" below). |
+| `stdin` | bool | **Deprecated.** Still parsed but always ignored (see "Host command execution contract" below). |
 | `path` | string | Absolute path of the binary, overriding `$PATH` lookup. |
-| `env` | map (string → string) | Extra environment variables to set when invoking this command. |
+| `env` | map (string → string) | Extra environment variables to set when invoking this command. A value of `${boid:repo_slug}` expands to a context variable (see "Host command execution contract" below). |
 
 A specialised use: setting `path` to a relative path inside the project or a kit forwards only that exact path to the host (for example `path: e2e/run.sh`).
 
 > **Reserved names:** `git`, `boid`, and `fetch` are built-in sandbox commands. Declaring them in `host_commands` has no effect — they are always routed internally.
+
+#### Host command execution contract
+
+- **stdin never reaches the command** — the sandbox shim does not read stdin, and the broker discards anything it receives. `stdin: true` is still accepted (parsed) but has no effect (a deprecation warning is logged). To pass file contents or long text to a command, use an argument instead of stdin (e.g. `--body "$(cat <file>)"`).
+- **cwd is a fixed neutral directory** — host commands run on the host in a neutral directory (`os.TempDir()`), never the project/worktree checkout. Do not rely on behavior that infers the repo from cwd (e.g. `gh`'s implicit `-R`).
+- **repo context is passed via env** — instead of cwd inference, an `env:` value of `${boid:repo_slug}` expands to a `host/owner/repo` string derived from the project's origin remote at token registration time. For `gh`, `GH_REPO: ${boid:repo_slug}` keeps the previous transparent behavior.
+- **reject rules** — an invocation whose joined args match `match` (same glob semantics as allow/deny) is rejected by both the shim (early) and the broker (authoritative), surfacing `host_commands.<name>: rejected: <reason>` to the agent. Write `reason` as actionable guidance (what to do instead), not just "not allowed".
 
 `local/<name>` kit references (e.g. `local/my-kit`) resolve to a kit directory relative to the project root, allowing local kit development without publishing to a remote registry.
 

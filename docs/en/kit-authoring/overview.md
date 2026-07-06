@@ -50,6 +50,11 @@ commands:                       # (optional) commands callable via boid exec ins
 host_commands:                  # (optional) commands forwarded out of the sandbox to the host
   gh:
     allow: [pr, issue]
+    env:
+      GH_REPO: ${boid:repo_slug}  # host commands run in a neutral cwd, so pass repo context via env
+    reject:
+      - match: "*--body-file*"    # sandbox file paths are not visible on the host
+        reason: 'Sandbox file paths are not visible on the host. Use --body "$(cat <file>)" instead.'
 
 additional_bindings:            # (optional) extra mounts into the sandbox
   - source: ${HOME}/.config/my-tool

@@ -10,6 +10,15 @@
 #
 #   allow リストは実際に必要なサブコマンドのみ残す (ホワイトリスト制)。
 #   追加が必要なら手動で kit.yaml を編集する。
+#
+#   gh は host 側で中立ディレクトリ (repo checkout でない cwd) から実行される
+#   ため、GH_REPO を env で明示して repo 文脈を渡す。${boid:repo_slug} は
+#   token 登録時に project の origin remote から `host/owner/repo` 形式で
+#   自動導出される。
+#
+#   --body-file はサンドボックス内のファイルパスを host 側 gh プロセスが読め
+#   ないため reject ルールで明示拒否し、代替手段 (--body "$(cat <file>)") を
+#   reason で案内する。
 
 meta:
   name: github-cli
@@ -34,3 +43,7 @@ host_commands:
       - auth
     env:
       GH_TOKEN: "secret:"
+      GH_REPO: ${boid:repo_slug}
+    reject:
+      - match: "*--body-file*"
+        reason: 'サンドボックスのファイルパスは host からは見えない。--body "$(cat <file>)" で内容を渡す'

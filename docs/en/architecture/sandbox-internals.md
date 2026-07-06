@@ -251,6 +251,8 @@ The broker lives in `internal/sandbox/broker.go` and is responsible for:
 
 The token is issued at sandbox start and passed in via environment variables such as `BOID_BROKER_TOKEN`. Outside the sandbox the token is unknown, so even if the broker socket path leaks, another job's commands cannot be authorised.
 
+Host commands run on the host in a neutral directory (`os.TempDir()`), never the project/worktree checkout, and stdin is never forwarded. Commands that need repo context (e.g. `gh`) get it via a kit `env:` entry of `${boid:repo_slug}` (see "Host command execution contract" in the [`project.yaml` reference](../reference/project-yaml.md)).
+
 ## Cleanup
 
 Cleanup runs in **`runner-outer`** (Go code) after pasta returns:
