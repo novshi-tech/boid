@@ -716,6 +716,46 @@ host_commands:
 	}
 }
 
+// TestReadKitMeta_HostCommandEnvPreservesBoidContextVars pins the load-time /
+// dispatch-time split for host command env values: ${VAR} expands from the
+// daemon environment at kit load, but ${boid:...} context variables must
+// survive load literally so dispatcher.ResolveHostCommands can expand them
+// per dispatch. Regression guard for os.Expand swallowing ${boid:repo_slug}
+// into "" (no env var of that name exists).
+func TestReadKitMeta_HostCommandEnvPreservesBoidContextVars(t *testing.T) {
+	t.Setenv("KIT_TEST_TOKEN_VALUE", "expanded-ok")
+
+	dir := t.TempDir()
+	kitDir := filepath.Join(dir, "kits", "ghkit")
+	if err := os.MkdirAll(kitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeKitYAML(t, kitDir, `
+host_commands:
+  gh:
+    allow: [pr]
+    env:
+      GH_REPO: ${boid:repo_slug}
+      GH_TOKEN: ${KIT_TEST_TOKEN_VALUE}
+      FUTURE: prefix-${boid:some_future_var}-suffix
+`)
+
+	meta, err := projectspec.ReadKitMeta(kitDir)
+	if err != nil {
+		t.Fatalf("ReadKitMeta: %v", err)
+	}
+	env := meta.HostCommands["gh"].Env
+	if got := env["GH_REPO"]; got != "${boid:repo_slug}" {
+		t.Errorf("GH_REPO: ${boid:repo_slug} must survive kit load literally, got %q", got)
+	}
+	if got := env["GH_TOKEN"]; got != "expanded-ok" {
+		t.Errorf("GH_TOKEN: plain env interpolation must still work, got %q", got)
+	}
+	if got := env["FUTURE"]; got != "prefix-${boid:some_future_var}-suffix" {
+		t.Errorf("unknown ${boid:...} vars must also survive load, got %q", got)
+	}
+}
+
 func TestResolveKitAgent(t *testing.T) {
 	tests := []struct {
 		name string
