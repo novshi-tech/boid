@@ -1,6 +1,6 @@
 # host command の契約締め (container-based-boid 移行戦略 1)
 
-ステータス: 実装済み (PR #715-#716-#717 + shim/docs PRs)
+ステータス: 実装済み (PR #715–#719)
 作成日: 2026-07-06
 親ドキュメント: [container-based-boid.md](container-based-boid.md) — 移行戦略 1
 
