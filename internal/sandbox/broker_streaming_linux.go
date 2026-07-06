@@ -65,10 +65,7 @@ func (b *Broker) execCommandStreaming(conn net.Conn, req *ExecRequest, def Comma
 	}
 
 	cmd := exec.Command(binary, req.Args...)
-	cwd := resolveHostCommandCwd(req.Cwd, entry)
-	if cwd != "" {
-		cmd.Dir = cwd
-	}
+	cmd.Dir = hostCommandCwd()
 
 	// Build environment: inherit host env minus BOID_* internal markers,
 	// then overlay def.Env. Always set TERM so child programs behave
