@@ -292,6 +292,16 @@ var releaseCommitRe = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 // signalled to stop) and it must actually wait / re-verify. All git checks are
 // best-effort: any inconclusive result (missing repo, exec/network error,
 // timeout) skips the check so infrastructure hiccups never block a real done.
+//
+// Before checking, we `git fetch origin` in the project work_dir (see
+// gitFetchOrigin): sandbox-internal clones (git-gateway-cutover) never share
+// an object database with the project work_dir, so a commit the agent made
+// inside the sandbox is only visible here once it has been pushed to origin
+// and fetched back. This makes the semantics "only commits pushed to origin
+// pass release verification" (docs/plans/git-gateway-cutover.md PR1) — a
+// change that is a no-op in the current shared-worktree world (the fetch adds
+// objects but never removes ones already present locally) and load-bearing
+// once sandbox clones land.
 func (s *TaskAppService) verifyDoneClaim(ctx context.Context, task *orchestrator.Task) *StatusError {
 	if task.OpenChildCount > 0 {
 		return &StatusError{
@@ -312,6 +322,7 @@ func (s *TaskAppService) verifyDoneClaim(ctx context.Context, task *orchestrator
 	if err != nil || proj == nil || proj.WorkDir == "" {
 		return nil
 	}
+	gitFetchOrigin(ctx, proj.WorkDir)
 	if exists, conclusive := gitObjectExists(ctx, proj.WorkDir, commit); conclusive && !exists {
 		return &StatusError{
 			Code: http.StatusConflict,
@@ -363,6 +374,26 @@ func releaseClaim(payload json.RawMessage) (commit, branch string, pushed bool) 
 		commit = "" // only verify well-formed object names
 	}
 	return commit, strings.TrimSpace(p.Artifact.Report.Release.Branch), p.Artifact.Report.Release.Pushed
+}
+
+// gitFetchOrigin best-effort runs `git fetch origin` in workdir before the
+// cat-file / ls-remote checks below. It never blocks the caller: any failure
+// (no origin remote, network error, timeout, binary missing) is logged and
+// swallowed, and the subsequent checks simply run against whatever is already
+// in the local object database — exactly as they did before this call existed.
+// See verifyDoneClaim for why this fetch is necessary once sandbox-internal
+// clones (git-gateway-cutover) no longer share an object store with the
+// project work_dir.
+func gitFetchOrigin(ctx context.Context, workdir string) {
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, "git", "-C", workdir, "fetch", "--quiet", "origin")
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		slog.Warn("notify: git fetch origin failed before release verification; falling back to local git data",
+			"workdir", workdir, "error", err, "stderr", strings.TrimSpace(errb.String()))
+	}
 }
 
 // gitObjectExists reports whether hash resolves to an object in the repo at
