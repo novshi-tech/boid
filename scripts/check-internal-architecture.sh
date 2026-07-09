@@ -14,6 +14,7 @@ current_allowed=(
   daemon
   db
   dispatcher
+  gitgateway
   initwizard
   logrotate
   notify
@@ -33,6 +34,7 @@ target_allowed=(
   daemon
   db
   dispatcher
+  gitgateway
   initwizard
   logrotate
   notify
@@ -152,6 +154,21 @@ check_forbidden_imports() {
           echo "forbidden import: internal/db should not depend on other internal packages" >&2
           failed=1
         fi
+        ;;
+      github.com/novshi-tech/boid/internal/gitgateway)
+        # gitgateway (docs/plans/git-gateway-cutover.md PR3) is a standalone,
+        # inert reverse-proxy package. It must not pull in the sqlite-backed
+        # internal/db (directly or via dispatcher/api/server), so a sandbox
+        # test run — which cannot build internal/db — can still build and
+        # test this package. Secret resolution and notification are
+        # expressed as small function/interface seams instead of importing
+        # internal/dispatcher.SecretStore directly.
+        for forbidden in db dispatcher api server sandbox; do
+          if [[ "$imports" == *"github.com/novshi-tech/boid/internal/$forbidden"* ]]; then
+            echo "forbidden import: internal/gitgateway -> internal/$forbidden" >&2
+            failed=1
+          fi
+        done
         ;;
       github.com/novshi-tech/boid/internal/client)
         # client は daemon の HTTP API を叩く薄いフロント。不変条件は:
