@@ -494,8 +494,14 @@ type Project struct {
 	WorkspaceID string      `json:"workspace_id"`
 	WorkDir     string      `json:"work_dir"`
 	Meta        ProjectMeta `json:"meta"`
-	CreatedAt   time.Time   `json:"created_at"`
-	UpdatedAt   time.Time   `json:"updated_at"`
+	// UpstreamURL is the project's git remote origin, captured and normalized
+	// to HTTPS (SSH → HTTPS) at `project add` / `project reload` time (see
+	// docs/plans/git-gateway-cutover.md PR2). Empty until captured; daemon
+	// startup backfills it for projects registered before this field existed.
+	// Not read from project.yaml — this is DB-only, machine-local state.
+	UpstreamURL string    `json:"upstream_url,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type WorkspaceSummary struct {

@@ -234,6 +234,7 @@ func writeBoidProjectWithID(t *testing.T, id, name string) string {
 	t.Helper()
 
 	dir := t.TempDir()
+	testutil.InitGitRepoWithOrigin(t, dir)
 	boidDir := filepath.Join(dir, ".boid")
 	hooksDir := filepath.Join(boidDir, "hooks")
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {

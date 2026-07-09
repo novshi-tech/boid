@@ -256,6 +256,43 @@ func TestMigration0023_RenamesConsumerToAgent(t *testing.T) {
 	}
 }
 
+// TestMigration0028_AddsProjectsUpstreamURL covers PR2 of
+// docs/plans/git-gateway-cutover.md: the projects.upstream_url column must
+// exist after migration and default to NULL (nullable — existing rows are
+// backfilled separately, not by the migration itself).
+func TestMigration0028_AddsProjectsUpstreamURL(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	if err := Apply(d.Conn); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	assertVersionRecorded(t, d.Conn, "0028_add_projects_upstream_url")
+
+	hasColumn, err := columnExists(d.Conn, "projects", "upstream_url")
+	if err != nil {
+		t.Fatalf("check projects.upstream_url: %v", err)
+	}
+	if !hasColumn {
+		t.Fatal("expected projects.upstream_url to exist")
+	}
+
+	if _, err := d.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('p1', '/tmp/p1')`); err != nil {
+		t.Fatalf("insert project without upstream_url: %v", err)
+	}
+	var upstreamURL sql.NullString
+	if err := d.Conn.QueryRow(`SELECT upstream_url FROM projects WHERE id = 'p1'`).Scan(&upstreamURL); err != nil {
+		t.Fatalf("query upstream_url: %v", err)
+	}
+	if upstreamURL.Valid {
+		t.Errorf("expected upstream_url to default to NULL, got %q", upstreamURL.String)
+	}
+}
+
 func assertVersionRecorded(t *testing.T, conn *sql.DB, version string) {
 	t.Helper()
 

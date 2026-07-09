@@ -39,6 +39,39 @@ func TestRenderProjectDetail_BasicFields(t *testing.T) {
 	}
 }
 
+func TestRenderProjectDetail_UpstreamURL_Set(t *testing.T) {
+	p := &projectspec.Project{
+		ID:          "proj-abc",
+		WorkDir:     "/home/user/repo",
+		UpstreamURL: "https://github.com/owner/repo.git",
+		Meta:        projectspec.ProjectMeta{Name: "My Project"},
+	}
+
+	got := captureStdout(t, func() {
+		renderProjectDetail(p)
+	})
+
+	if !strings.Contains(got, "UpstreamURL: https://github.com/owner/repo.git") {
+		t.Errorf("output missing captured UpstreamURL\n%s", got)
+	}
+}
+
+func TestRenderProjectDetail_UpstreamURL_Empty(t *testing.T) {
+	p := &projectspec.Project{
+		ID:      "proj-abc",
+		WorkDir: "/home/user/repo",
+		Meta:    projectspec.ProjectMeta{Name: "My Project"},
+	}
+
+	got := captureStdout(t, func() {
+		renderProjectDetail(p)
+	})
+
+	if !strings.Contains(got, "UpstreamURL: (none") {
+		t.Errorf("output missing empty-UpstreamURL guidance\n%s", got)
+	}
+}
+
 func TestRenderProjectDetail_MetaSections(t *testing.T) {
 	p := &projectspec.Project{
 		ID: "proj-meta",

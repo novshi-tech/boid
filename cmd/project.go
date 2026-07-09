@@ -235,7 +235,11 @@ func runProjectList(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 		for _, p := range projects {
-			fmt.Fprintf(cmd.OutOrStdout(), "%-20s %s  (%s)\n", p.ID, p.Meta.Name, p.WorkDir)
+			fmt.Fprintf(cmd.OutOrStdout(), "%-20s %s  (%s)", p.ID, p.Meta.Name, p.WorkDir)
+			if p.UpstreamURL != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "  upstream=%s", p.UpstreamURL)
+			}
+			fmt.Fprintln(cmd.OutOrStdout())
 		}
 		return nil
 	})
@@ -313,6 +317,11 @@ func renderProjectDetail(p *projectspec.Project) {
 	fmt.Printf("Name:        %s\n", p.Meta.Name)
 	fmt.Printf("WorkDir:     %s\n", p.WorkDir)
 	fmt.Printf("WorkspaceID: %s\n", p.WorkspaceID)
+	if p.UpstreamURL != "" {
+		fmt.Printf("UpstreamURL: %s\n", p.UpstreamURL)
+	} else {
+		fmt.Printf("UpstreamURL: (none — add a git remote and run `boid project reload`)\n")
+	}
 	fmt.Printf("CreatedAt:   %s\n", formatTime(p.CreatedAt))
 	fmt.Printf("UpdatedAt:   %s\n", formatTime(p.UpdatedAt))
 

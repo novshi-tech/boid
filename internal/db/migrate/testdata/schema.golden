@@ -44,7 +44,7 @@ CREATE TABLE projects (
     work_dir   TEXT NOT NULL,
     created_at DATETIME NOT NULL DEFAULT (datetime('now')),
     updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
-);
+, upstream_url TEXT);
 
 -- table: schema_migrations
 CREATE TABLE schema_migrations (

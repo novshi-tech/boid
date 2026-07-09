@@ -147,7 +147,36 @@ func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) 
 	if len(remaining) > 0 {
 		return nil, buildProjectLoadStartupError(remaining)
 	}
+
+	backfillUpstreamURLs(projectRepo, projects)
+
 	return store, nil
+}
+
+// backfillUpstreamURLs captures upstream_url for any project registered
+// before PR2 (docs/plans/git-gateway-cutover.md) added the column. Idempotent
+// — projects that already have a value are skipped — so it is safe to run on
+// every daemon startup. Capture failures (no git repo / no origin remote) are
+// logged as warnings, never fatal to startup: the project keeps dispatching
+// exactly as it did before this column existed until a remote is added and
+// `boid project reload` (or the next startup) captures it.
+func backfillUpstreamURLs(projectRepo *orchestrator.ProjectRepository, projects []*orchestrator.Project) {
+	for _, p := range projects {
+		if p.UpstreamURL != "" {
+			continue
+		}
+		url, err := dispatcher.CaptureUpstreamURL(p.WorkDir)
+		if err != nil {
+			slog.Warn("project has no upstream_url and none could be captured; add a git remote and run `boid project reload`",
+				"project_id", p.ID, "work_dir", p.WorkDir, "error", err)
+			continue
+		}
+		if err := projectRepo.SetProjectUpstreamURL(p.ID, url); err != nil {
+			slog.Warn("failed to persist backfilled upstream_url", "project_id", p.ID, "error", err)
+			continue
+		}
+		slog.Info("backfilled project upstream_url", "project_id", p.ID, "upstream_url", url)
+	}
 }
 
 // startupError holds the human-readable aggregate startup error text while
@@ -411,6 +440,10 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Projects: projectRepo,
 		Meta:     store,
 		Hydrator: store, // workspace-aware hydration for GET /api/projects/{id}
+		// upstream_url capture (docs/plans/git-gateway-cutover.md PR2):
+		// `project add` rejects projects with no git origin remote, and
+		// `project reload` re-captures on every call.
+		CaptureUpstreamURL: dispatcher.CaptureUpstreamURL,
 	}
 	boidCfg, err := config.Load()
 	if err != nil {

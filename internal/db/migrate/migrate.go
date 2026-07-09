@@ -216,6 +216,13 @@ func Apply(conn *sql.DB) error {
 				return columnExists(tx, "jobs", "display_name")
 			},
 		},
+		{
+			version: "0028_add_projects_upstream_url",
+			path:    "migrations/0028_add_projects_upstream_url.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnExists(tx, "projects", "upstream_url")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

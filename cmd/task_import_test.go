@@ -233,6 +233,7 @@ func TestRunTaskImport_ErrorsToStderr(t *testing.T) {
 func writeImportTestProject(t *testing.T, id, name string) string {
 	t.Helper()
 	dir := t.TempDir()
+	testutil.InitGitRepoWithOrigin(t, dir)
 	boidDir := filepath.Join(dir, ".boid")
 	if err := os.MkdirAll(boidDir, 0o755); err != nil {
 		t.Fatalf("mkdir .boid: %v", err)
