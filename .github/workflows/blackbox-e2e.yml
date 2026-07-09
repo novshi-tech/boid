@@ -73,7 +73,9 @@ jobs:
         # //go:build e2e が付いたテストは /usr/bin/git などホスト側バイナリを
         # 直接 exec するため通常の go test ./... からは分離している。CI では
         # 本物の git が利用可能なので、ここで明示的に走らせる。
-        run: go test -tags=e2e ./internal/sandbox/...
+        # e2e/upstream (docs/plans/git-gateway-cutover.md PR7a) は実
+        # git-http-backend 相手の clone/push 往復試験のため同じ理由でここに属す。
+        run: go test -tags=e2e ./internal/sandbox/... ./e2e/upstream/...
 
   race:
     name: Race detector

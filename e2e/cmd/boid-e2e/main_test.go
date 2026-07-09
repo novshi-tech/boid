@@ -89,6 +89,14 @@ func TestRunListJobs_RequiresTaskID(t *testing.T) {
 	}
 }
 
+func TestRunUpstreamServe_RequiresDir(t *testing.T) {
+	// Argument validation happens before upstream.New is called, so this
+	// must fail without needing a real git binary or network listener.
+	if err := runUpstreamServe(nil); err == nil {
+		t.Fatal("expected error for missing --dir")
+	}
+}
+
 func TestCountJobsByRole(t *testing.T) {
 	jobs := []map[string]any{
 		{"role": "hook"},
