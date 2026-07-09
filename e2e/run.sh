@@ -93,6 +93,10 @@ run_scenario() {
           printf '[e2e] ===== server.stderr.log (tail) =====\n' >&2
           tail -n 200 "$E2E_LOG_DIR/server.stderr.log" >&2 || true
         fi
+        if [[ -f "$E2E_LOG_DIR/upstream.stderr.log" ]]; then
+          printf '[e2e] ===== upstream.stderr.log (tail) =====\n' >&2
+          tail -n 200 "$E2E_LOG_DIR/upstream.stderr.log" >&2 || true
+        fi
         local daemon_log="$HOME/.local/state/boid/boid.log"
         if [[ -f "$daemon_log" ]]; then
           printf '[e2e] ===== %s (tail) =====\n' "$daemon_log" >&2
@@ -106,6 +110,11 @@ run_scenario() {
       fi
 
       "$E2E_BIN_DIR/boid" stop >/dev/null 2>&1 || true
+
+      if [[ -n "${E2E_UPSTREAM_PID:-}" ]]; then
+        kill "$E2E_UPSTREAM_PID" >/dev/null 2>&1 || true
+        wait "$E2E_UPSTREAM_PID" 2>/dev/null || true
+      fi
 
       if [[ $exit_code -ne 0 || $KEEP_TEMP -eq 1 ]]; then
         printf '[e2e] temp root preserved at %s\n' "$ROOT" >&2
@@ -150,6 +159,12 @@ run_scenario() {
     if [[ -d "$scenario_dir/workspace" ]]; then
       e2e_log "copying scenario workspace"
       cp -R "$scenario_dir/workspace/." "$E2E_WORKSPACE_DIR/"
+    fi
+
+    if [[ -f "$scenario_dir/skip-e2e-upstream" ]]; then
+      e2e_log "skipping fixture upstream setup (skip-e2e-upstream marker present)"
+    else
+      e2e_setup_fixture_upstream "$E2E_WORKSPACE_DIR"
     fi
 
     e2e_log "starting boid server"

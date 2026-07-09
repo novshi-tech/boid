@@ -53,3 +53,87 @@ e2e_wait_for_file() {
     sleep "$interval"
   done
 }
+
+# e2e_setup_fixture_upstream <workspace_dir>
+#
+# docs/plans/git-gateway-cutover.md PR7a: gives every scenario project a
+# real, reachable git origin *before* `boid project add` runs, so that the
+# post-cutover world ("origin の無い project は登録拒否", PR2) is already
+# true during e2e today, instead of relying only on the fake host git
+# shim's hardcoded https://example.invalid/e2e/fake-repo.git placeholder
+# (e2e/fixtures/hostbin/git). That placeholder is left completely untouched
+# by this function — it still governs what `boid project add` actually
+# captures as upstream_url, since the boid daemon resolves `git` via $PATH
+# and the shim is first on it (see the fake git script's own comment).
+# What this function changes is that the project directories themselves
+# gain a real remote pointing at a real, running server, which is the part
+# that matters once cutover (PR6) starts actually cloning from origin.
+#
+# Starts one fixture upstream HTTP server (e2e/upstream, bare repos served
+# via `git http-backend`) per scenario invocation, scoped to the scenario's
+# own $E2E_ROOT so it shuts down with everything else (matches this
+# harness's existing full per-scenario isolation: fresh tmpdir, fresh
+# daemon, ...).
+#
+# For every subdirectory of workspace_dir containing .boid/project.yaml,
+# this creates a bare repo on the fixture server named after the
+# directory's basename, git-inits the directory for real if it is not
+# already a repo, commits its current contents, and pushes to the fixture
+# origin. Real git is always invoked via its absolute path (/usr/bin/git)
+# rather than through $PATH, exactly like the existing git-peer-clone-local
+# scenario already does for its peer project — this bypasses the fake host
+# git shim, which is for the boid *daemon's* own git invocations, not this
+# harness-level setup.
+e2e_setup_fixture_upstream() {
+  local workspace_dir="$1"
+
+  local project_dirs=()
+  while IFS= read -r -d '' project_yaml; do
+    project_dirs+=("$(dirname "$(dirname "$project_yaml")")")
+  done < <(find "$workspace_dir" -mindepth 3 -maxdepth 3 -name project.yaml -print0 | sort -z)
+
+  if [[ ${#project_dirs[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  local upstream_dir="$E2E_ROOT/upstream-repos"
+  local ready_file="$E2E_ROOT/upstream.addr"
+  mkdir -p "$upstream_dir"
+
+  local repo_names=()
+  local project_dir repo_name
+  for project_dir in "${project_dirs[@]}"; do
+    repo_names+=("$(basename "$project_dir")")
+  done
+
+  e2e_log "starting fixture upstream server for: ${repo_names[*]}"
+  "$E2E_BIN_DIR/boid-e2e" upstream-serve \
+    --dir "$upstream_dir" \
+    --ready-file "$ready_file" \
+    "${repo_names[@]}" \
+    >"$E2E_LOG_DIR/upstream.stdout.log" \
+    2>"$E2E_LOG_DIR/upstream.stderr.log" &
+  E2E_UPSTREAM_PID=$!
+
+  e2e_wait_for_file "$ready_file" 10
+  local upstream_addr
+  upstream_addr="$(cat "$ready_file")"
+  e2e_log "fixture upstream server listening on $upstream_addr"
+
+  for project_dir in "${project_dirs[@]}"; do
+    repo_name="$(basename "$project_dir")"
+    local origin_url="http://${upstream_addr}/${repo_name}.git"
+    (
+      cd "$project_dir"
+      if [[ ! -d .git ]]; then
+        /usr/bin/git init -q -b main
+        /usr/bin/git config user.name "E2E Fixture"
+        /usr/bin/git config user.email "e2e-fixture@boid.test"
+      fi
+      /usr/bin/git add -A
+      /usr/bin/git commit -q -m "e2e fixture upstream seed" --allow-empty
+      /usr/bin/git remote add origin "$origin_url"
+      /usr/bin/git push -q -u origin HEAD
+    )
+  done
+}

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/novshi-tech/boid/e2e/upstream"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -53,6 +54,8 @@ func run(args []string) error {
 		return runWSJobOutput(args[1:])
 	case "fake-docker":
 		return runFakeDocker(args[1:])
+	case "upstream-serve":
+		return runUpstreamServe(args[1:])
 	default:
 		return usageError(fmt.Sprintf("unknown command %q", args[0]))
 	}
@@ -415,7 +418,57 @@ func printJSON(v any) error {
 }
 
 func usageError(msg string) error {
-	return errors.New(msg + "\nusage: boid-e2e <wait-unix-socket|wait-health|get-task|wait-task-status|list-jobs|wait-job-count|assert-job-role-count|ws-job-output|fake-docker> ...")
+	return errors.New(msg + "\nusage: boid-e2e <wait-unix-socket|wait-health|get-task|wait-task-status|list-jobs|wait-job-count|assert-job-role-count|ws-job-output|fake-docker|upstream-serve> ...")
+}
+
+// runUpstreamServe starts a fixture upstream git-over-HTTP server
+// (e2e/upstream) for the e2e harness (docs/plans/git-gateway-cutover.md
+// PR7a). It pre-creates a bare repo for every name given as a positional
+// argument, writes the bound "host:port" to --ready-file (if set) so the
+// calling shell can pick it up without a race, and then blocks until
+// SIGINT/SIGTERM.
+//
+// Usage: boid-e2e upstream-serve --dir <path> [--addr host:port]
+//
+//	[--ready-file <path>] [--git-bin <path>] <repo-name>...
+func runUpstreamServe(args []string) error {
+	fs := flag.NewFlagSet("upstream-serve", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	dir := fs.String("dir", "", "parent directory for bare repositories (required)")
+	addr := fs.String("addr", "127.0.0.1:0", "listen address")
+	readyFile := fs.String("ready-file", "", "file to write the bound host:port to once listening")
+	gitBin := fs.String("git-bin", "", "path to the real git binary (default /usr/bin/git)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *dir == "" {
+		return usageError("upstream-serve requires --dir")
+	}
+
+	u, err := upstream.New(upstream.Options{Dir: *dir, Addr: *addr, GitBin: *gitBin})
+	if err != nil {
+		return fmt.Errorf("upstream-serve: %w", err)
+	}
+	defer u.Close()
+
+	for _, name := range fs.Args() {
+		if _, err := u.NewRepo(name); err != nil {
+			return fmt.Errorf("upstream-serve: create repo %q: %w", name, err)
+		}
+	}
+
+	if *readyFile != "" {
+		if err := os.WriteFile(*readyFile, []byte(u.Addr()), 0o644); err != nil {
+			return fmt.Errorf("upstream-serve: write ready file: %w", err)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "[upstream] listening on %s (dir=%s)\n", u.Addr(), *dir)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	<-ctx.Done()
+	return nil
 }
 
 // runFakeDocker starts a minimal Docker API-compatible HTTP server on a Unix
