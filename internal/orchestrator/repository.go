@@ -99,6 +99,12 @@ func (r *ProjectRepository) DeleteProject(id string) error {
 	return DeleteProject(r.db, id)
 }
 
+// SetProjectUpstreamURL updates a project's captured upstream_url. See the
+// package-level function for the underlying statement.
+func (r *ProjectRepository) SetProjectUpstreamURL(id, upstreamURL string) error {
+	return SetProjectUpstreamURL(r.db, id, upstreamURL)
+}
+
 // AssignDefaultWorkspaceToUnlinked inserts a project_workspaces row pointing
 // at workspaceID for every project that does not yet have one. Returns the
 // number of rows inserted. See the package-level function for the underlying

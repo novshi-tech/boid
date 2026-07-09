@@ -107,6 +107,7 @@ func TestResolveProjectRefIO_NotFound(t *testing.T) {
 func writeProjectRefTestProject(t *testing.T, name string) string {
 	t.Helper()
 	dir := t.TempDir()
+	testutil.InitGitRepoWithOrigin(t, dir)
 	boidDir := filepath.Join(dir, ".boid")
 	if err := os.MkdirAll(boidDir, 0o755); err != nil {
 		t.Fatalf("mkdir .boid: %v", err)

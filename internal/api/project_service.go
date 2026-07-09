@@ -24,6 +24,12 @@ type ProjectAppService struct {
 	// injected) go through GetWithWorkspace instead of the bare Meta.Get path.
 	// Wired in internal/server/wire.go alongside the workspace store.
 	Hydrator orchestrator.MetaHydrator
+	// CaptureUpstreamURL reads a project work_dir's git origin remote and
+	// normalizes it to HTTPS (docs/plans/git-gateway-cutover.md PR2). Wired
+	// in internal/server/wire.go to dispatcher.CaptureUpstreamURL. When nil
+	// (e.g. in tests that do not exercise this path), upstream_url capture
+	// is skipped entirely rather than panicking.
+	CaptureUpstreamURL func(workDir string) (string, error)
 }
 
 // hydrateProject fills project.Meta from the cached raw meta. Use this when
@@ -72,6 +78,28 @@ func (s *ProjectAppService) CreateProject(workDir string) (*orchestrator.Project
 		ID:      meta.ID,
 		WorkDir: workDir,
 	}
+
+	// Capture the project's git origin remote as upstream_url (SSH → HTTPS
+	// normalized). docs/plans/git-gateway-cutover.md PR2 makes this mandatory:
+	// a project with no remote cannot be registered ("新しい意味論"). Reject
+	// with a clear remediation message rather than silently registering a
+	// project that will need a remote before it can ever dispatch under the
+	// eventual gateway cutover.
+	if s.CaptureUpstreamURL != nil {
+		upstreamURL, err := s.CaptureUpstreamURL(workDir)
+		if err != nil {
+			s.Meta.Remove(meta.ID)
+			return nil, &StatusError{
+				Code: http.StatusBadRequest,
+				Message: fmt.Sprintf(
+					"project %q has no git remote configured (%v); add one (e.g. `git remote add origin <url>`) and re-run `boid project add`",
+					meta.ID, err,
+				),
+			}
+		}
+		project.UpstreamURL = upstreamURL
+	}
+
 	if err := s.Projects.CreateProject(project); err != nil {
 		s.Meta.Remove(meta.ID)
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
@@ -227,13 +255,40 @@ func (s *ProjectAppService) ReloadProjects() (*ProjectReloadResult, error) {
 	}
 
 	errs := s.Meta.LoadAll(projects)
-	if len(errs) == 0 {
-		return &ProjectReloadResult{Status: "ok"}, nil
-	}
 
-	messages := make([]string, 0, len(errs))
+	var messages []string
 	for _, err := range errs {
 		messages = append(messages, err.Error())
+	}
+
+	// Re-capture upstream_url for every project on reload (docs/plans/
+	// git-gateway-cutover.md PR2: "capture タイミング: project add / project
+	// reload 時"). This both keeps upstream_url in sync with a project's
+	// current origin remote and heals rows left NULL by the startup backfill
+	// (e.g. a remote added after registration). Capture failures are logged
+	// and surfaced as reload warnings, never fatal to the reload as a whole.
+	if s.CaptureUpstreamURL != nil {
+		for _, p := range projects {
+			upstreamURL, err := s.CaptureUpstreamURL(p.WorkDir)
+			if err != nil {
+				slog.Warn("project reload: could not capture upstream_url; add a git remote and reload again",
+					"project_id", p.ID, "work_dir", p.WorkDir, "error", err)
+				messages = append(messages, fmt.Sprintf("project %q: upstream_url not captured: %v", p.ID, err))
+				continue
+			}
+			if upstreamURL == p.UpstreamURL {
+				continue
+			}
+			if err := s.Projects.SetProjectUpstreamURL(p.ID, upstreamURL); err != nil {
+				slog.Warn("project reload: failed to persist captured upstream_url",
+					"project_id", p.ID, "error", err)
+				messages = append(messages, fmt.Sprintf("project %q: failed to persist upstream_url: %v", p.ID, err))
+			}
+		}
+	}
+
+	if len(messages) == 0 {
+		return &ProjectReloadResult{Status: "ok"}, nil
 	}
 	return &ProjectReloadResult{
 		Status: "partial",

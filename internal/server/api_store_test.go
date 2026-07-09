@@ -81,6 +81,8 @@ func (r stubProjectRepo) ListWorkspaces() ([]*orchestrator.WorkspaceSummary, err
 
 func (r stubProjectRepo) DeleteProject(id string) error { return nil }
 
+func (r stubProjectRepo) SetProjectUpstreamURL(projectID, upstreamURL string) error { return nil }
+
 // stubMetaResolver returns a hydrated ProjectMeta whose SecretNamespace mirrors
 // the project's workspace id — same contract as orchestrator.ProjectStore's
 // GetWithWorkspace, simplified for the broker register tests.

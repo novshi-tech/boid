@@ -18,8 +18,8 @@ func CreateProject(dbtx db.DBTX, project *Project) error {
 	project.CreatedAt = now
 	project.UpdatedAt = now
 	_, err := dbtx.Exec(
-		`INSERT INTO projects (id, work_dir, created_at, updated_at) VALUES (?, ?, ?, ?)`,
-		project.ID, project.WorkDir, project.CreatedAt, project.UpdatedAt,
+		`INSERT INTO projects (id, work_dir, upstream_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+		project.ID, project.WorkDir, nullableString(project.UpstreamURL), project.CreatedAt, project.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert project: %w", err)
@@ -27,10 +27,43 @@ func CreateProject(dbtx db.DBTX, project *Project) error {
 	return nil
 }
 
+// SetProjectUpstreamURL updates a project's captured upstream_url (see
+// docs/plans/git-gateway-cutover.md PR2: project → upstream URL mapping).
+// Used by `project add` / `project reload` capture and the daemon-startup
+// backfill for projects registered before this column existed.
+func SetProjectUpstreamURL(dbtx db.DBTX, id, upstreamURL string) error {
+	now := time.Now().UTC()
+	res, err := dbtx.Exec(
+		`UPDATE projects SET upstream_url = ?, updated_at = ? WHERE id = ?`,
+		nullableString(upstreamURL), now, id,
+	)
+	if err != nil {
+		return fmt.Errorf("set project upstream_url: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set project upstream_url: rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("set project upstream_url: project %q not found", id)
+	}
+	return nil
+}
+
+// nullableString maps an empty string to SQL NULL so upstream_url reads back
+// as "" (via scanProject's sql.NullString handling) rather than storing an
+// empty string literal that would be indistinguishable from NULL in intent.
+func nullableString(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 // GetProject retrieves a project by ID.
 func GetProject(dbtx db.DBTX, id string) (*Project, error) {
 	row := dbtx.QueryRow(
-		`SELECT p.id, p.work_dir, pw.workspace_id, p.created_at, p.updated_at
+		`SELECT p.id, p.work_dir, pw.workspace_id, p.upstream_url, p.created_at, p.updated_at
 		 FROM projects p
 		 LEFT JOIN project_workspaces pw ON pw.project_id = p.id
 		 WHERE p.id = ?`, id,
@@ -41,7 +74,7 @@ func GetProject(dbtx db.DBTX, id string) (*Project, error) {
 // ListProjects returns all projects ordered by creation time.
 func ListProjects(dbtx db.DBTX) ([]*Project, error) {
 	rows, err := dbtx.Query(
-		`SELECT p.id, p.work_dir, pw.workspace_id, p.created_at, p.updated_at
+		`SELECT p.id, p.work_dir, pw.workspace_id, p.upstream_url, p.created_at, p.updated_at
 		 FROM projects p
 		 LEFT JOIN project_workspaces pw ON pw.project_id = p.id
 		 ORDER BY p.created_at`,
@@ -171,7 +204,8 @@ func DeleteProject(dbtx db.DBTX, id string) error {
 func scanProject(scanner projectScanner) (*Project, error) {
 	var project Project
 	var workspaceID sql.NullString
-	if err := scanner.Scan(&project.ID, &project.WorkDir, &workspaceID, &project.CreatedAt, &project.UpdatedAt); err != nil {
+	var upstreamURL sql.NullString
+	if err := scanner.Scan(&project.ID, &project.WorkDir, &workspaceID, &upstreamURL, &project.CreatedAt, &project.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("project not found")
 		}
@@ -179,6 +213,9 @@ func scanProject(scanner projectScanner) (*Project, error) {
 	}
 	if workspaceID.Valid {
 		project.WorkspaceID = workspaceID.String
+	}
+	if upstreamURL.Valid {
+		project.UpstreamURL = upstreamURL.String
 	}
 	return &project, nil
 }
@@ -193,4 +230,24 @@ func scanProjects(rows *sql.Rows) ([]*Project, error) {
 		projects = append(projects, project)
 	}
 	return projects, rows.Err()
+}
+
+// RequireUpstreamURL returns an error when project has no upstream_url
+// captured. This is the "既存 project の...欠落 project は...dispatch 時エラー"
+// building block described in docs/plans/git-gateway-cutover.md's
+// "本計画で確定する設計 § 1" — it is intentionally NOT wired into any dispatch
+// path yet. Wiring it in now would reject every current e2e project fixture
+// (none has a real git remote until PR7a's fixture-upstream-server harness
+// lands) ahead of the plan's own PR ordering (PR2 → ... → PR7a → PR6). It is
+// exposed and tested here so PR6 (cutover, where dispatch starts needing
+// upstream_url to build the gateway clone URL) has a ready-made, already
+// covered building block to call.
+func RequireUpstreamURL(project *Project) error {
+	if project == nil {
+		return fmt.Errorf("require upstream_url: project is nil")
+	}
+	if project.UpstreamURL == "" {
+		return fmt.Errorf("project %q has no upstream_url configured; add a git remote (git remote add origin <url>) and run `boid project reload`", project.ID)
+	}
+	return nil
 }

@@ -73,6 +73,28 @@ if [[ "$subcmd" == "worktree" ]]; then
       fi
       ;;
   esac
+elif [[ "$subcmd" == "config" ]]; then
+  # git config --get remote.origin.url — used by internal/dispatcher.
+  # GitOriginURL / CaptureUpstreamURL for PR2 upstream_url capture
+  # (docs/plans/git-gateway-cutover.md). Fake git has no real remote state
+  # (scenario fixtures are plain directories, not git repos — no /usr/bin/git
+  # init happens for them), so report a fixed placeholder for any
+  # remote.origin.url lookup. This is a stand-in for PR7a's real
+  # fixture-upstream-server harness, just enough for `project add` / `project
+  # reload` to see *some* origin during e2e. Anything else: "not found",
+  # matching real git's exit 1 for a missing config key.
+  key=""
+  for arg in "${args[@]:$((idx + 1))}"; do
+    case "$arg" in
+      --get|-*) ;;
+      *) key="$arg" ;;
+    esac
+  done
+  if [[ "$key" == "remote.origin.url" ]]; then
+    printf 'https://example.invalid/e2e/fake-repo.git\n'
+    exit 0
+  fi
+  exit 1
 elif [[ "$subcmd" == "symbolic-ref" ]]; then
   # git symbolic-ref [--quiet] HEAD  →  "refs/heads/<branch>" or nothing for detached
   head_dir="${cdir:-$PWD}"

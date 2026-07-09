@@ -24,6 +24,7 @@ func writeHookProject(t *testing.T, projectID, projectName string) (workDir stri
 	if err := os.MkdirAll(hooksScriptDir, 0o755); err != nil {
 		t.Fatalf("mkdir kit hooks: %v", err)
 	}
+	testutil.InitGitRepoWithOrigin(t, workDir)
 	kitYAML := "hooks:\n  - id: main-hook\n"
 	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitYAML), 0o644); err != nil {
 		t.Fatalf("write kit.yaml: %v", err)

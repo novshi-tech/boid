@@ -170,6 +170,10 @@ type ProjectRepository interface {
 	SetProjectWorkspace(projectID, workspaceID string) error
 	ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error)
 	DeleteProject(id string) error
+	// SetProjectUpstreamURL persists a project's captured upstream_url (see
+	// docs/plans/git-gateway-cutover.md PR2). Used by ReloadProjects'
+	// recapture and by the daemon-startup backfill.
+	SetProjectUpstreamURL(projectID, upstreamURL string) error
 }
 
 // ProjectWorkDirLookup provides read access to a project's working directory.

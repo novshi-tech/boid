@@ -25,6 +25,7 @@ func createInspectProject(t *testing.T, ts *testutil.TestServer) {
 func writeInspectTestProject(t *testing.T, id, name string) string {
 	t.Helper()
 	dir := t.TempDir()
+	testutil.InitGitRepoWithOrigin(t, dir)
 	boidDir := dir + "/.boid"
 	if err := os.MkdirAll(boidDir, 0o755); err != nil {
 		t.Fatalf("mkdir .boid: %v", err)
