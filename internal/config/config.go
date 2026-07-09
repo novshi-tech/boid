@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/novshi-tech/boid/internal/gitgateway"
 	"gopkg.in/yaml.v3"
 )
 
@@ -16,6 +17,7 @@ type Config struct {
 	Notify  NotifyConfig  `yaml:"notify"`
 	Sandbox SandboxConfig `yaml:"sandbox"`
 	TaskAsk TaskAskConfig `yaml:"task_ask"`
+	Gateway GatewayConfig `yaml:"gateway"`
 
 	// DefaultHarness is the harness identifier (claude, codex, opencode, ...)
 	// used by sub-commands that need to launch an interactive agent without
@@ -37,6 +39,18 @@ type TaskAskConfig struct {
 // SandboxConfig holds sandbox-related settings.
 type SandboxConfig struct {
 	AllowedDomains []string `yaml:"allowed_domains"`
+}
+
+// GatewayConfig configures the git gateway's per-host forge credential
+// injection (docs/plans/git-gateway-cutover.md PR4: 「config.yaml の gateway
+// ブロックは forge 種別と secret key 参照のみ持つ」). Only the forge kind and
+// a secret-store key reference are ever written here — the plaintext PAT
+// itself lives in the secret store (`boid secret set <key> <value>`), never
+// in config.yaml. gitgateway.HostForgeConfig's own yaml tags already match
+// this shape (host/forge/secret_key), so it is reused directly rather than
+// duplicated here.
+type GatewayConfig struct {
+	Hosts []gitgateway.HostForgeConfig `yaml:"hosts,omitempty"`
 }
 
 // NotifyConfig holds settings for agent-driven notifications.
@@ -125,6 +139,9 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		TaskAsk struct {
 			DisconnectGrace string `yaml:"disconnect_grace"`
 		} `yaml:"task_ask"`
+		Gateway struct {
+			Hosts []gitgateway.HostForgeConfig `yaml:"hosts"`
+		} `yaml:"gateway"`
 		DefaultHarness string `yaml:"default_harness"`
 	}
 	if err := value.Decode(&raw); err != nil {
@@ -166,6 +183,22 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		}
 		c.TaskAsk.DisconnectGrace = d
 	}
+
+	for _, h := range raw.Gateway.Hosts {
+		if h.Host == "" {
+			return fmt.Errorf("gateway.hosts: entry missing required \"host\" field")
+		}
+		if h.SecretKey == "" {
+			return fmt.Errorf("gateway.hosts: host %q: missing required \"secret_key\" field", h.Host)
+		}
+		switch h.Forge {
+		case gitgateway.ForgeGitHub, gitgateway.ForgeBitbucket:
+		default:
+			return fmt.Errorf("gateway.hosts: host %q: unrecognized forge %q (want %q or %q)",
+				h.Host, h.Forge, gitgateway.ForgeGitHub, gitgateway.ForgeBitbucket)
+		}
+	}
+	c.Gateway.Hosts = raw.Gateway.Hosts
 
 	c.DefaultHarness = raw.DefaultHarness
 

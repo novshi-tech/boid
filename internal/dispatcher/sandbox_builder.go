@@ -71,6 +71,27 @@ type SandboxRuntimeInfo struct {
 	// allowed to be missing — the sandbox setup script handles that via the
 	// Guard expression so attachments are optional per task.
 	AttachmentsRoot string
+
+	// GatewayURL is the git gateway's sandbox-facing base URL
+	// (http://10.0.2.2:<port>), set by Runner from the daemon's own
+	// gateway listener (docs/plans/git-gateway-cutover.md PR4: gateway
+	// lifecycle + dispatch wiring). Empty when the gateway isn't wired.
+	//
+	// PR4 is inert: BuildSandboxSpec does not thread this into env or mounts
+	// yet — nothing inside the sandbox reads it. The env var advertise
+	// (e.g. GIT_HTTP_GATEWAY_URL) is explicitly deferred to the cutover PR
+	// (PR6); the runner clone sequence that would consume it is PR5.
+	GatewayURL string
+
+	// GatewayJobToken is this job's git gateway token, registered against
+	// the gateway's Registry at dispatch time (self project fetch/fetch+push,
+	// workspace peers and workspace extra_repos fetch-only) and unregistered
+	// when the job completes (see Runner.registerGatewayToken /
+	// Runner.UnregisterJob). Empty when the gateway isn't wired.
+	//
+	// Same PR4-is-inert caveat as GatewayURL: carried here for PR5/PR6 to
+	// consume, not yet used by BuildSandboxSpec.
+	GatewayJobToken string
 }
 
 // BuildSandboxSpec turns a business-level JobSpec and dispatcher-side runtime

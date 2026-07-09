@@ -2,6 +2,8 @@ package dispatcher
 
 import (
 	"database/sql"
+
+	"github.com/novshi-tech/boid/internal/gitgateway"
 )
 
 type WireConfig struct {
@@ -50,6 +52,15 @@ type WireConfig struct {
 	// runner threads it through SandboxRuntimeInfo so BuildSandboxSpec can
 	// add the read-only bind to `~/.boid/attachments` for every harness.
 	AttachmentsRoot string
+	// GitGateway is the git gateway's job-token registry
+	// (docs/plans/git-gateway-cutover.md PR4). nil disables gateway token
+	// registration entirely.
+	GitGateway *gitgateway.Registry
+	// GatewayURL points at the daemon's own gateway listener address string,
+	// filled in by Server.Start once the gateway's TCP listener is bound
+	// (same late-binding pattern as ProxyPort). nil disables gateway URL
+	// propagation into SandboxRuntimeInfo.
+	GatewayURL *string
 }
 
 func Wire(cfg WireConfig) *Runner {
@@ -70,5 +81,7 @@ func Wire(cfg WireConfig) *Runner {
 		AllowedDomains:  cfg.AllowedDomains,
 		RuntimesDir:     cfg.RuntimesDir,
 		AttachmentsRoot: cfg.AttachmentsRoot,
+		GitGateway:      cfg.GitGateway,
+		GatewayURL:      cfg.GatewayURL,
 	}
 }

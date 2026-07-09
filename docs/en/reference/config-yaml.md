@@ -87,6 +87,31 @@ See [Sandbox Internals](../architecture/sandbox-internals.md) for details on the
 
 ---
 
+## gateway — git gateway
+
+```yaml
+gateway:
+  hosts:
+    - host: github.com
+      forge: github        # github or bitbucket
+      secret_key: gh-pat    # key registered via `boid secret set gh-pat <PAT>`
+    - host: bitbucket.org
+      forge: bitbucket
+      secret_key: bb-token
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `hosts[].host` | string | — | Upstream git host name (e.g. `github.com`) |
+| `hosts[].forge` | string | — | `github` or `bitbucket` (selects the Basic-auth username convention) |
+| `hosts[].secret_key` | string | — | Secret store reference key; the actual token is registered separately with `boid secret set <key> <value>` |
+
+**Never write a plaintext PAT/token here.** The real token lives only in the secret store (namespace `default`); `secret_key` is just a reference name into it.
+
+This block configures the git gateway (the authenticating reverse proxy between credential-less git inside the sandbox and the upstream forge) on a per-host basis. The daemon always starts the gateway server itself, but as of 2026-07 no job routes through it yet — `docs/plans/git-gateway-cutover.md` PR4 only wires the lifecycle + registration; actual cloning lands in a later PR.
+
+---
+
 ## task_ask — Blocking Q&A
 
 ```yaml

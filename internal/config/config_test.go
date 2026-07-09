@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/novshi-tech/boid/internal/gitgateway"
 )
 
 func TestLoadFromPath_FileNotExist_ReturnsDefaults(t *testing.T) {
@@ -142,6 +144,98 @@ gc:
 	_, err := loadFromPath(path)
 	if err == nil {
 		t.Fatal("expected error for invalid duration, got nil")
+	}
+}
+
+func TestLoadFromPath_GatewayHosts(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+gateway:
+  hosts:
+    - host: github.com
+      forge: github
+      secret_key: gh-pat
+    - host: bitbucket.org
+      forge: bitbucket
+      secret_key: bb-token
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Gateway.Hosts) != 2 {
+		t.Fatalf("Gateway.Hosts = %#v, want 2 entries", cfg.Gateway.Hosts)
+	}
+	gh := cfg.Gateway.Hosts[0]
+	if gh.Host != "github.com" || gh.Forge != gitgateway.ForgeGitHub || gh.SecretKey != "gh-pat" {
+		t.Errorf("Gateway.Hosts[0] = %#v, want {github.com github gh-pat}", gh)
+	}
+	bb := cfg.Gateway.Hosts[1]
+	if bb.Host != "bitbucket.org" || bb.Forge != gitgateway.ForgeBitbucket || bb.SecretKey != "bb-token" {
+		t.Errorf("Gateway.Hosts[1] = %#v, want {bitbucket.org bitbucket bb-token}", bb)
+	}
+	// config.yaml never carries a plaintext token; Scheme is a test-only
+	// override (yaml:"-") and must stay unset from a real config file.
+	if gh.Scheme != "" {
+		t.Errorf("Gateway.Hosts[0].Scheme = %q, want empty (not yaml-settable)", gh.Scheme)
+	}
+}
+
+func TestLoadFromPath_GatewayHosts_UnrecognizedForgeRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+gateway:
+  hosts:
+    - host: gitlab.com
+      forge: gitlab
+      secret_key: gl-pat
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadFromPath(path); err == nil {
+		t.Fatal("expected error for unrecognized forge, got nil")
+	}
+}
+
+func TestLoadFromPath_GatewayHosts_MissingSecretKeyRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+gateway:
+  hosts:
+    - host: github.com
+      forge: github
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadFromPath(path); err == nil {
+		t.Fatal("expected error for missing secret_key, got nil")
+	}
+}
+
+// An unset gateway block must not error and must leave Hosts empty — the
+// gateway is still constructed (PR4's lifecycle wiring is unconditional) but
+// with no forge credentials configured.
+func TestLoadFromPath_GatewayHosts_UnsetIsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("gc:\n  interval: 6h\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Gateway.Hosts) != 0 {
+		t.Errorf("Gateway.Hosts = %#v, want empty", cfg.Gateway.Hosts)
 	}
 }
 

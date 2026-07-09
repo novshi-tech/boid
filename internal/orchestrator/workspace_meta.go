@@ -36,6 +36,19 @@ type WorkspaceMeta struct {
 	//   - "registry-1.docker.io"  exact match
 	//   - ".cosmos.azure.com"     suffix match (matches "<sub>.cosmos.azure.com")
 	AllowedDomains []string `yaml:"allowed_domains,omitempty" json:"allowed_domains,omitempty"`
+
+	// ExtraRepos is the workspace-scoped, read-only allowlist of additional
+	// git repositories outside this workspace's own projects that jobs may
+	// fetch (never push) via the git gateway — e.g. a private go module
+	// dependency (docs/plans/git-gateway-cutover.md 「workspace peer」節:
+	// 「workspace 設定に read-only の追加許可 repo」). Entries are upstream
+	// URLs in any form dispatcher.NormalizeOriginURL accepts (HTTPS or SSH);
+	// dispatcher resolves each into a gitgateway.RepoKey at dispatch time and
+	// grants it PermFetch alongside this workspace's own projects and peers.
+	// Same additive, floor-cannot-shrink relationship to the (currently
+	// nonexistent) global floor as AllowedDomains — there is no write grant
+	// here, fetch-only by construction.
+	ExtraRepos []string `yaml:"extra_repos,omitempty" json:"extra_repos,omitempty"`
 }
 
 // ResolveAllowedDomains returns the effective proxy egress allowlist for a

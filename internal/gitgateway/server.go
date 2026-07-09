@@ -70,6 +70,7 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 			if s.credentials != nil {
 				if err := s.credentials.Inject(pr.Out, info.host); err != nil {
 					slog.Warn("gitgateway: credential injection failed; forwarding without auth", "host", info.host, "err", err)
+					s.notifier.NotifyCredentialError(info.host, info.repo, err)
 				}
 			}
 		},
