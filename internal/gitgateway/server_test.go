@@ -223,10 +223,12 @@ func TestServeHTTP_NotifiesOnUpstream401(t *testing.T) {
 	var notifiedHost string
 	var notifiedRepo RepoKey
 	notified := make(chan struct{}, 1)
-	notifier := UpstreamAuthFailureNotifierFunc(func(host string, repo RepoKey) {
-		notifiedHost, notifiedRepo = host, repo
-		notified <- struct{}{}
-	})
+	notifier := NotifierFuncs{
+		UpstreamAuthFailure: func(host string, repo RepoKey) {
+			notifiedHost, notifiedRepo = host, repo
+			notified <- struct{}{}
+		},
+	}
 
 	gwURL, token, host, key := newTestGateway(t, upstream, "owner", "repo", PermFetch, "expired-pat", notifier)
 
@@ -249,6 +251,80 @@ func TestServeHTTP_NotifiesOnUpstream401(t *testing.T) {
 	}
 	if notifiedRepo != key {
 		t.Fatalf("notified repo = %q, want %q", notifiedRepo, key)
+	}
+}
+
+// TestServeHTTP_NotifiesCredentialErrorDistinctlyFromUpstream401 proves the
+// gateway distinguishes a config problem (credential injection itself fails)
+// from an upstream 401 (docs/plans/git-gateway-cutover.md PR4, flagged in
+// PR3's review). The SecretResolver here deliberately errors — standing in
+// for a misconfigured/missing secret_key reference (docs/plans/git-gateway-cutover.md
+// PR4 実装ヒント: 「config error 判定は secret resolver が error を返した /
+// 空文字を返したで判別」) — so Inject fails before the request ever reaches
+// upstream; the request is still forwarded (fail-open, matching the doc's
+// 「gateway 自体は落とさない」), unauthenticated, and the upstream's response
+// (200, since this test upstream requires no auth) must NOT trigger
+// NotifyUpstreamAuthFailure.
+func TestServeHTTP_NotifiesCredentialErrorDistinctlyFromUpstream401(t *testing.T) {
+	var gotAuth string
+	upstream := newCapturingUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	})
+	host := upstreamHost(t, upstream)
+	key := NewRepoKey(host, "owner", "repo")
+
+	reg := NewRegistry()
+	token := reg.Register(map[RepoKey]Permission{key: PermFetch})
+	creds := NewCredentialProvider([]HostForgeConfig{
+		{Host: host, Forge: ForgeGitHub, SecretKey: "gh-pat", Scheme: "http"},
+	}, func(string) (string, error) { return "", fmt.Errorf("secret store: key %q not found", "gh-pat") })
+
+	var credErrHost string
+	var credErrRepo RepoKey
+	var credErr error
+	credNotified := make(chan struct{}, 1)
+	var upstreamNotified bool
+	notifier := NotifierFuncs{
+		UpstreamAuthFailure: func(string, RepoKey) { upstreamNotified = true },
+		CredentialError: func(host string, repo RepoKey, err error) {
+			credErrHost, credErrRepo, credErr = host, repo, err
+			credNotified <- struct{}{}
+		},
+	}
+
+	gw := NewServer(reg, creds, notifier)
+	gwSrv := httptest.NewServer(gw)
+	t.Cleanup(gwSrv.Close)
+
+	resp, err := http.Get(gwSrv.URL + routePath(token, host, "owner", "repo.git", "info/refs") + "?service=git-upload-pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (fail-open: request still forwarded, unauthenticated)", resp.StatusCode)
+	}
+	if gotAuth != "" {
+		t.Fatalf("upstream saw Authorization = %q, want none (Inject should have failed)", gotAuth)
+	}
+
+	select {
+	case <-credNotified:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for NotifyCredentialError to be called")
+	}
+	if credErrHost != host {
+		t.Fatalf("credential error host = %q, want %q", credErrHost, host)
+	}
+	if credErrRepo != key {
+		t.Fatalf("credential error repo = %q, want %q", credErrRepo, key)
+	}
+	if credErr == nil {
+		t.Fatal("credential error should be non-nil")
+	}
+	if upstreamNotified {
+		t.Fatal("NotifyUpstreamAuthFailure should not fire for a credential-injection error (200 from upstream, not 401)")
 	}
 }
 

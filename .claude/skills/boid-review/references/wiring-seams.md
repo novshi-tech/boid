@@ -23,6 +23,7 @@ has the same shape:
 6. [brokered git remote snapshot](#6-brokered-git-remote-snapshot)
 7. [embedded-skill bind (adapter.Bindings)](#7-embedded-skill-bind)
 8. [host_commands CommandDef mirror (spec → broker gate)](#8-host_commands-commanddef-mirror)
+9. [gitgateway RepoKey normalization](#9-gitgateway-repokey-normalization)
 
 ---
 
@@ -198,3 +199,35 @@ by sandbox), so every new policy field must be threaded through each hop by hand
   agent-facing surface (`buildEnvironmentYAML` in `internal/dispatcher/sandbox_builder.go`)
   intentionally shows a **subset** (no path/env) — don't "fix" that asymmetry, but do keep
   reject rules visible to the agent.
+
+## 9. gitgateway RepoKey normalization
+
+Whether a repo identity resolves to the *same* `gitgateway.RepoKey` on both the register side
+(dispatch-time allowlist construction) and the lookup side (an incoming gateway request), despite
+the two sides starting from different string shapes (a captured `upstream_url` vs. a URL path
+segment, either of which may or may not carry a `.git` suffix).
+
+- **End A (register)**: `repoKeyFromUpstreamURL` in `internal/dispatcher/gitgateway_wire.go`,
+  called from `Runner.buildGatewayRepos` for the self project, workspace peers, and workspace
+  `extra_repos`. It splits a `host/owner/repo` slug (from `repoSlugFromOriginURL`) and always
+  finishes with `gitgateway.NewRepoKey(host, owner, repo)` — never a raw
+  `gitgateway.RepoKey(string(...))` conversion.
+- **End B (lookup)**: `parsePath` + `route.repoKey()` in `internal/gitgateway/route.go`, invoked
+  from `Server.ServeHTTP` for every incoming gateway request. `repoKey()` also always finishes
+  with `gitgateway.NewRepoKey(r.host, r.owner, r.repo)`.
+- **Invariant**: `NewRepoKey` is the *only* place that decides suffix normalization (it strips a
+  trailing `.git` from the repo segment). Both ends must route through it — if either end ever
+  starts building a `RepoKey` by any other means (string concatenation, a different
+  suffix-stripping rule, case-folding a host differently), the two sides drift apart and
+  `Registry.Authorize` silently 403s a request that should have been allowed (or worse, allows one
+  that shouldn't be, if the drift happens to collide with a different repo's key).
+- **Guard**: `TestServeHTTP_AcceptsBothGitSuffixForms` (`internal/gitgateway/server_test.go`)
+  proves the lookup side accepts both suffix forms; `TestRepoKeyFromUpstreamURL_HTTPS` /
+  `_SSH` (`internal/dispatcher/gitgateway_wire_test.go`) prove the register side normalizes both
+  URL forms to the identical key `NewRepoKey` would produce from the same host/owner/repo.
+  `TestDispatch_RegistersAndUnregistersGatewayToken` closes the loop end-to-end through the real
+  `Dispatch` → `Registry.Register` → `Registry.Lookup` path.
+- **When you touch it**: if you touch `repoKeyFromUpstreamURL`, `route.repoKey()`, or
+  `NewRepoKey` itself, verify neither register nor lookup ever constructs a `RepoKey` by any path
+  that bypasses `NewRepoKey`, and that a repo registered via one URL form (e.g. SSH) is reachable
+  via a gateway path using the other form (e.g. HTTPS, with or without `.git`).

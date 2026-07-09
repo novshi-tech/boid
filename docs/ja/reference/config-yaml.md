@@ -89,6 +89,31 @@ sandbox:
 
 ---
 
+## gateway — git gateway
+
+```yaml
+gateway:
+  hosts:
+    - host: github.com
+      forge: github        # github / bitbucket のいずれか
+      secret_key: gh-pat    # boid secret set gh-pat <PAT> で登録した key
+    - host: bitbucket.org
+      forge: bitbucket
+      secret_key: bb-token
+```
+
+| キー | 型 | デフォルト | 説明 |
+|---|---|---|---|
+| `hosts[].host` | string | — | upstream の git ホスト名（例: `github.com`） |
+| `hosts[].forge` | string | — | `github` または `bitbucket`（Basic 認証の username 規約を決定） |
+| `hosts[].secret_key` | string | — | secret store 参照キー（実 token は `boid secret set <key> <value>` で別途登録） |
+
+**平文の PAT / token をここに書いてはいけません**。実 token は namespace `default` の secret store にのみ保存され、`secret_key` はそこへの参照名に過ぎません。
+
+このブロックは git gateway（sandbox 内 credential レス git と上流フォージの間の認証注入リバースプロキシ）の per-host 設定です。daemon 起動時に必ず gateway サーバ自体は立ち上がりますが、2026-07 時点ではまだどのジョブもこれを経由しません（`docs/plans/git-gateway-cutover.md` PR4 は inert な配線のみ、実際の clone は後続 PR）。
+
+---
+
 ## default_harness — デフォルト harness
 
 ```yaml

@@ -20,6 +20,7 @@ import (
 	"github.com/novshi-tech/boid/internal/api/auth"
 	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/dispatcher"
+	"github.com/novshi-tech/boid/internal/gitgateway"
 	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
@@ -366,6 +367,14 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	if ws := store.WorkspaceStore(); ws != nil {
 		wsLookup = ws
 	}
+
+	// git gateway registry (docs/plans/git-gateway-cutover.md PR4): built
+	// early and shared with the runner so Dispatch/UnregisterJob can
+	// Register/Unregister job tokens. The gateway's HTTP handler (which
+	// needs boidCfg + notifySvc, built further down) shares this same
+	// Registry — see the gitgateway.NewServer(...) call below.
+	srv.gatewayRegistry = gitgateway.NewRegistry()
+
 	runner := dispatcher.Wire(dispatcher.WireConfig{
 		DB:              srv.db,
 		Runtime:         jobRuntime,
@@ -383,6 +392,8 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		AllowedDomains:  cfg.AllowedDomains,
 		RuntimesDir:     runtimesDirFor(cfg),
 		AttachmentsRoot: dataHomeFor(cfg),
+		GitGateway:      srv.gatewayRegistry,
+		GatewayURL:      &srv.gatewayURL,
 	})
 
 	lifecycle := jobLifecycleAdapter{runner: runner}
@@ -454,6 +465,23 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Command:   boidCfg.Notify.Command,
 		PublicURL: boidCfg.Web.PublicURL,
 	}
+
+	// git gateway HTTP handler (docs/plans/git-gateway-cutover.md PR4). Only
+	// the listener bind (127.0.0.1:0) is deferred to Server.Start — the
+	// handler itself, and the Registry it shares with the runner above, are
+	// ready as soon as config + notifySvc are. The secret resolver closure
+	// keeps internal/gitgateway free of any internal/dispatcher (and
+	// therefore internal/db) import, per that package's own layering rule
+	// (scripts/check-internal-architecture.sh).
+	gwResolver := func(key string) (string, error) {
+		if secretStore == nil {
+			return "", fmt.Errorf("git gateway: secret store not configured")
+		}
+		return secretStore.Get("default", key)
+	}
+	gwCreds := gitgateway.NewCredentialProvider(boidCfg.Gateway.Hosts, gwResolver)
+	gwHandler := gitgateway.NewServer(srv.gatewayRegistry, gwCreds, gatewayNotifier{notify: notifySvc})
+	srv.gatewayHTTPServer = &http.Server{Handler: gwHandler}
 
 	taskSvc := &api.TaskAppService{
 		Tasks:              taskRepo,

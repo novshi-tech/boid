@@ -16,6 +16,7 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/db/migrate"
 	"github.com/novshi-tech/boid/internal/dispatcher"
+	"github.com/novshi-tech/boid/internal/gitgateway"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/skills"
@@ -50,7 +51,29 @@ type Server struct {
 	tcpServer  *http.Server
 	gcLoop     *orchestrator.GCLoop // nil if GC is disabled
 	workflow   *api.TaskWorkflowService
-	mu         sync.Mutex
+
+	// gitgateway 4-point set (docs/plans/git-gateway-cutover.md PR4): the
+	// authenticating reverse proxy sandboxes will eventually clone through
+	// (PR5) and cutover env-var-advertise (PR6). Inert in this PR — nothing
+	// dispatches through it yet, but the daemon builds, listens, and tears it
+	// down like every other subserver.
+	//
+	// gatewayRegistry is constructed early in New() (buildRuntime) and shared
+	// with dispatcher.Runner so Dispatch/UnregisterJob can
+	// Register/Unregister job tokens; gatewayHTTPServer wraps the
+	// gitgateway.Server handler (built once config + notify are available)
+	// and is only bound to a listener in Start().
+	gatewayRegistry   *gitgateway.Registry
+	gatewayHTTPServer *http.Server
+	gatewayLn         net.Listener
+	// gatewayURL is the sandbox-facing base URL (http://10.0.2.2:<port>),
+	// populated by Start() once the listener is bound. Empty before Start
+	// completes. Runner holds a pointer to this string (WireConfig.GatewayURL)
+	// so SandboxRuntimeInfo.GatewayURL reflects it at dispatch time — the
+	// same late-binding-via-pointer trick as proxyPort.
+	gatewayURL string
+
+	mu sync.Mutex
 }
 
 func New(cfg Config) (*Server, error) {
@@ -169,6 +192,28 @@ func (s *Server) Start(ctx context.Context) error {
 		slog.Info("proxy started", "port", port, "workspace", orchestrator.DefaultWorkspaceSlug)
 	}
 
+	// git gateway: bind its listener before the UNIX/TCP listeners below so
+	// srv.gatewayURL (and, via the WireConfig.GatewayURL pointer,
+	// SandboxRuntimeInfo.GatewayURL) is populated by the time the first job
+	// dispatches. Bound on 127.0.0.1 like the egress proxy
+	// (internal/sandbox/proxy.go) — sandboxes reach the host loopback via
+	// the slirp-provided 10.0.2.2 alias, so the URL exposed to dispatch uses
+	// that address instead of 127.0.0.1. Nothing inside the sandbox talks to
+	// this yet (PR4 is inert — see docs/plans/git-gateway-cutover.md PR4);
+	// the runner clone sequence (PR5) and env var advertise (PR6) are future
+	// work.
+	if s.gatewayHTTPServer != nil {
+		gwLn, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return fmt.Errorf("listen git gateway: %w", err)
+		}
+		s.gatewayLn = gwLn
+		port := gwLn.Addr().(*net.TCPAddr).Port
+		s.gatewayURL = fmt.Sprintf("http://10.0.2.2:%d", port)
+		go func() { _ = s.gatewayHTTPServer.Serve(gwLn) }() // returns ErrServerClosed on Stop
+		slog.Info("git gateway started", "addr", gwLn.Addr().String(), "sandbox_url", s.gatewayURL)
+	}
+
 	// Remove stale socket
 	os.Remove(s.cfg.SocketPath)
 
@@ -212,6 +257,11 @@ func (s *Server) Stop() error {
 	}
 	if s.tcpServer != nil {
 		if err := s.tcpServer.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if s.gatewayHTTPServer != nil {
+		if err := s.gatewayHTTPServer.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -273,4 +323,14 @@ func (s *Server) TCPAddr() string {
 		return s.tcpLn.Addr().String()
 	}
 	return ""
+}
+
+// GatewayURL returns the git gateway's sandbox-facing base URL
+// (http://10.0.2.2:<port>), or "" before Start has bound its listener.
+// docs/plans/git-gateway-cutover.md PR4 wires this into
+// SandboxRuntimeInfo.GatewayURL (via dispatcher.WireConfig.GatewayURL), but
+// nothing consumes it yet — the sandbox env var advertise and the runner
+// clone sequence are PR6/PR5.
+func (s *Server) GatewayURL() string {
+	return s.gatewayURL
 }

@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/novshi-tech/boid/internal/gitgateway"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/dockerproxy"
@@ -101,6 +102,21 @@ type Runner struct {
 	AttachmentsRoot string
 	JobEvents      JobEventSink // optional; nil disables job lifecycle broadcasts
 
+	// GitGateway is the git gateway's job-token registry
+	// (docs/plans/git-gateway-cutover.md PR4: gateway lifecycle + dispatch
+	// wiring). nil disables gateway token registration entirely — Dispatch
+	// and UnregisterJob treat that as a no-op rather than panicking (test
+	// wiring, or a daemon build without the gateway constructed). PR4 is
+	// inert: registration happens, but nothing inside the sandbox talks to
+	// the gateway yet (that's PR5/PR6).
+	GitGateway *gitgateway.Registry
+	// GatewayURL points at the daemon's own gateway listener address string,
+	// filled in by Server.Start once the gateway's TCP listener is bound —
+	// the same late-binding-via-pointer pattern as ProxyPort, since the
+	// gateway (like the default proxy listener) is only known once Start
+	// has run. nil disables gateway URL propagation into SandboxRuntimeInfo.
+	GatewayURL *string
+
 	tokenMu       sync.Mutex
 	jobTokens     map[string]string
 	waiterMu      sync.Mutex
@@ -110,6 +126,8 @@ type Runner struct {
 	taskRuntimes  map[string]map[string]struct{}
 	dockerMu      sync.Mutex
 	dockerStates  map[string]*dockerProxyState // keyed by runtimeID
+	gatewayMu     sync.Mutex
+	gatewayTokens map[string]string // jobID -> git gateway job token
 }
 
 // Dispatch launches a sandbox for the given JobSpec. The optional cleanup
@@ -262,6 +280,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// for the cascade (floor → workspace overrides) and the fallback rules
 	// when any step fails.
 	allowedDomains, proxyPort := r.resolveWorkspaceProxy(workspaceID)
+	gatewayURL, gatewayToken := r.registerGatewayToken(j.ID, spec, workspaceID)
 
 	rtInfo := SandboxRuntimeInfo{
 		JobID:                j.ID,
@@ -275,6 +294,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		ResolvedHostCommands: resolvedHostCommands,
 		AllowedDomains:       allowedDomains,
 		AttachmentsRoot:      r.AttachmentsRoot,
+		GatewayURL:           gatewayURL,
+		GatewayJobToken:      gatewayToken,
 	}
 	// Server socket is only exposed to jobs that have no broker policies
 	// attached — i.e. boid exec invocations that need to talk to the daemon
@@ -931,7 +952,8 @@ func (r *Runner) WaitForJobCtx(ctx context.Context, jobID string) (JobCompletion
 	}
 }
 
-// UnregisterJob removes the broker token associated with the given job.
+// UnregisterJob removes the broker token and the git gateway job token
+// associated with the given job.
 func (r *Runner) UnregisterJob(jobID string) {
 	r.tokenMu.Lock()
 	token, ok := r.jobTokens[jobID]
@@ -943,6 +965,18 @@ func (r *Runner) UnregisterJob(jobID string) {
 	if ok && r.Broker != nil {
 		r.Broker.UnregisterCommandToken(token)
 		slog.Info("unregistered broker token", "job_id", jobID)
+	}
+
+	r.gatewayMu.Lock()
+	gwToken, gwOK := r.gatewayTokens[jobID]
+	if gwOK {
+		delete(r.gatewayTokens, jobID)
+	}
+	r.gatewayMu.Unlock()
+
+	if gwOK && r.GitGateway != nil {
+		r.GitGateway.Unregister(gwToken)
+		slog.Info("unregistered git gateway token", "job_id", jobID)
 	}
 }
 

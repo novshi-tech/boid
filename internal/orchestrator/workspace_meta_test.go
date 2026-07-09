@@ -94,6 +94,53 @@ allowed_domains:
 	}
 }
 
+func TestWorkspaceMeta_ExtraReposRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	const input = `
+extra_repos:
+  - https://github.com/example/private-lib.git
+  - git@bitbucket.org:example/other-lib.git
+`
+	var meta WorkspaceMeta
+	if err := yaml.Unmarshal([]byte(input), &meta); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got, want := len(meta.ExtraRepos), 2; got != want {
+		t.Fatalf("ExtraRepos length = %d, want %d", got, want)
+	}
+	if meta.ExtraRepos[0] != "https://github.com/example/private-lib.git" ||
+		meta.ExtraRepos[1] != "git@bitbucket.org:example/other-lib.git" {
+		t.Errorf("ExtraRepos = %v", meta.ExtraRepos)
+	}
+
+	// Re-marshal and reparse to ensure stability.
+	data, err := yaml.Marshal(&meta)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var meta2 WorkspaceMeta
+	if err := yaml.Unmarshal(data, &meta2); err != nil {
+		t.Fatalf("Unmarshal round-trip: %v", err)
+	}
+	if len(meta2.ExtraRepos) != 2 {
+		t.Errorf("round-trip lost ExtraRepos: %v", meta2.ExtraRepos)
+	}
+}
+
+func TestWorkspaceMeta_ExtraReposOmittedWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	meta := WorkspaceMeta{}
+	data, err := yaml.Marshal(&meta)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if s := string(data); s != "{}\n" {
+		t.Errorf("expected empty yaml to omit extra_repos, got: %q", s)
+	}
+}
+
 func TestResolveAllowedDomains(t *testing.T) {
 	t.Parallel()
 
