@@ -49,6 +49,13 @@ func releasePayload(commit, branch string, pushed bool) json.RawMessage {
 	return b
 }
 
+// TestVerifyDoneClaim's cases with a non-empty commit and non-nil Projects
+// (e.g. "real commit passes", "fabricated commit blocked") now also exercise
+// the git-gateway-cutover PR1 `gitFetchOrigin` step against this repo's real
+// origin. That fetch is best-effort (see gitFetchOrigin), so these cases pass
+// the same way whether or not the environment has network access to origin —
+// a failed fetch just falls back to whatever objects are already local, which
+// is always sufficient here since the test repo already has the object.
 func TestVerifyDoneClaim(t *testing.T) {
 	root := repoRootForTest(t)
 	head := mustOut(t, exec.Command("git", "-C", root, "rev-parse", "HEAD"))
@@ -96,6 +103,19 @@ func TestReleaseClaim(t *testing.T) {
 	if c3, _, _ := releaseClaim(nil); c3 != "" {
 		t.Fatalf("empty payload should yield empty commit, got %q", c3)
 	}
+}
+
+// TestGitFetchOrigin only exercises the graceful-degradation path (no origin
+// remote to fetch from): it must return promptly without panicking rather than
+// blocking the caller. The "fetch actually pulls new objects" behavior is
+// exercised indirectly by TestVerifyDoneClaim's "real commit passes" case,
+// which runs against this repo's real origin.
+func TestGitFetchOrigin(t *testing.T) {
+	ctx := context.Background()
+	// t.TempDir() is not a git repository at all, so `git fetch origin` fails
+	// immediately (no repo, let alone a remote named origin). gitFetchOrigin
+	// must swallow this rather than propagating an error to the caller.
+	gitFetchOrigin(ctx, t.TempDir())
 }
 
 func TestGitObjectExists(t *testing.T) {

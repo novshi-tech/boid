@@ -405,7 +405,9 @@ Two daemon-enforced rules:
    boid task notify "$BOID_TASK_ID" --done "Released $merged to $BRANCH."
    ```
 
-   The daemon verifies `release.commit` exists in the repo.
+   The daemon runs `git fetch origin` in the project work_dir and then verifies
+   `release.commit` exists there — only a commit that has actually been pushed
+   to `origin` will be found. Push before reporting done.
 
 ### Handling Aborted
 

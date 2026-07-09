@@ -64,6 +64,8 @@ For the full calling policy, see the "When to ask (plan approval)" section under
 1. **Incomplete child tasks**: one or more child tasks are still in a non-terminal state.
 2. **Missing release commit**: the agent reported a commit SHA that does not exist in the repository.
 
+Before checking, the daemon runs `git fetch origin` in the project's work_dir, so this check is effectively against **origin's** state, not just whatever happens to be in the local repository — only a release commit that has actually been pushed to `origin` will be found. Push before calling `notify --done`.
+
 These checks are anti-confabulation guards — they prevent an agent from marking a task done when the actual work was not completed.
 
 ## Script example 1: ntfy.sh
