@@ -222,10 +222,16 @@ PR7b → PR8。PR3〜PR5 は inert なので個別に安全に land できる。
    (対象: novshi-tech の全 repo + read-only 依存があればそれも)
 2. skill-only metaproject (khi) の private repo 化と `project reload`
    (全 project の upstream_url capture 確認は PR2 の backfill ログで)
-3. **ワークフロー変化の周知**: cutover 後は対話セッション (`boid agent claude`)
+3. **host 側 daemon からの fetch 疎通確認** (release 検証の前提条件):
+   全 project について daemon 実行ユーザで `git -C <work_dir> fetch origin` が
+   成功することを確認する。private origin の SSH key / HTTPS token を持たない構成では
+   PR1 で fetch 化した `verifyDoneClaim` が cutover 後に永久失敗 → `notify --done`
+   永久ブロック (「落とし穴・注意」節参照)。cutover 前は fetch 失敗が benign なので
+   顕在化せず、PR6 マージ時にまとめて刺さる — 事前に必ず踏む
+4. **ワークフロー変化の周知**: cutover 後は対話セッション (`boid agent claude`)
    の編集もホスト work_dir に直接反映されず、push して初めて共有される。
    「done 前に push」の現行規律がそのまま前提になる
-4. ロールバック手段の確認: cutover (PR6) は Phase 3-a と同じ
+5. ロールバック手段の確認: cutover (PR6) は Phase 3-a と同じ
    「並走なし一気切替 + git revert 猶予」。PR6 単体 revert で旧経路に戻れる状態を
    PR8 (削除) まで維持する — **PR8 は PR6 の安定稼働を数日確認してから**
 
@@ -252,3 +258,14 @@ PR7b → PR8。PR3〜PR5 は inert なので個別に安全に land できる。
   混乱を生まないか instruction 文言を確認
 - sqlite 依存層 (PR2) と sandbox runner の E2E (PR6/7) は sandbox 内で
   検証不可 — CI (blackbox-e2e.yml) が正
+- **release 検証 fetch は cutover 後 host 側 daemon で走る** (PR6 でのみ顕在化・PR1 レビューで指摘):
+  PR1 で `verifyDoneClaim` に足した `git fetch origin` は daemon プロセスで実行される
+  (gateway は sandbox 側専用のため経由できない)。cutover 前の shared-worktree 世界では
+  fetch 失敗は benign (commit がローカル `.git` に既にある) だが、cutover と同時に
+  「fetch → cat-file」の順が意味論の中核になるため、host ユーザが private origin の
+  credentials (SSH key / HTTPS token) を持たない構成では fetch 永久失敗 →
+  `notify --done` 永久ブロックが起きうる。dogfood チェックリスト (PR6 マージ前) に
+  「host 側 daemon から各 project の origin に fetch できること」の確認手順を含める。
+  gateway 経由 fetch (daemon → gateway → 上流) にする案は architectural には整合するが、
+  daemon が自分の gateway の client になる循環になるため、初期スコープでは
+  host credentials 前提で回避する
