@@ -76,6 +76,30 @@ func NewCredentialProvider(hosts []HostForgeConfig, resolver SecretResolver) *Cr
 	return &CredentialProvider{hosts: m, resolver: resolver}
 }
 
+// Configured reports whether c has any secret resolver wired at all. It
+// distinguishes two very different failure modes at the caller (Server.ServeHTTP):
+//
+//   - resolver == nil: the daemon has no secret store configured at all
+//     (internal/server/wire.go builds a CredentialProvider with a nil
+//     resolver when config.KeyFilePath is unset) — a systemic
+//     "credentials aren't set up yet" state that is true for every host and
+//     every request, not specific to this one.
+//   - resolver present but returns an error for a specific key: an ordinary
+//     per-key miss (e.g. a HostForgeConfig.SecretKey reference that was
+//     never `boid secret set`), which Inject still surfaces per-request via
+//     its usual error return.
+//
+// This distinction exists so ServeHTTP can fail fast (403/503, no upstream
+// contact) for the former without spamming NotifyCredentialError on every
+// gateway request once real (non-inert) traffic starts flowing
+// (docs/plans/git-gateway-cutover.md PR5 review: 「PR5 で clone が実行され
+// 始めると user-visible noise になる」), while leaving the latter's existing
+// fail-open + notify behavior (docs/plans/git-gateway-cutover.md PR4/PR3)
+// completely unchanged.
+func (c *CredentialProvider) Configured() bool {
+	return c != nil && c.resolver != nil
+}
+
 // SchemeFor returns the upstream request scheme for host: the configured
 // override if present, otherwise "https".
 func (c *CredentialProvider) SchemeFor(host string) string {

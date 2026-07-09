@@ -74,6 +74,60 @@ func TestRepoKeyFromUpstreamURL_TooManyPathSegmentsReturnsError(t *testing.T) {
 	}
 }
 
+// --- buildGatewayCloneURL ---
+
+func TestBuildGatewayCloneURL_BuildsFullURL(t *testing.T) {
+	r := &Runner{
+		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
+			{ID: "proj-1", UpstreamURL: "https://github.com/owner/repo.git"},
+		}},
+	}
+	spec := &orchestrator.JobSpec{ProjectID: "proj-1"}
+
+	got := r.buildGatewayCloneURL(spec, "http://10.0.2.2:12345", "job-token-abc")
+	want := "http://10.0.2.2:12345/j/job-token-abc/github.com/owner/repo.git"
+	if got != want {
+		t.Errorf("buildGatewayCloneURL = %q, want %q", got, want)
+	}
+}
+
+func TestBuildGatewayCloneURL_EmptyWhenGatewayUnwired(t *testing.T) {
+	r := &Runner{
+		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
+			{ID: "proj-1", UpstreamURL: "https://github.com/owner/repo.git"},
+		}},
+	}
+	spec := &orchestrator.JobSpec{ProjectID: "proj-1"}
+
+	if got := r.buildGatewayCloneURL(spec, "", "job-token-abc"); got != "" {
+		t.Errorf("buildGatewayCloneURL with empty gatewayURL = %q, want empty", got)
+	}
+	if got := r.buildGatewayCloneURL(spec, "http://10.0.2.2:1", ""); got != "" {
+		t.Errorf("buildGatewayCloneURL with empty gatewayToken = %q, want empty", got)
+	}
+}
+
+func TestBuildGatewayCloneURL_EmptyWhenUpstreamURLMissing(t *testing.T) {
+	r := &Runner{
+		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
+			{ID: "proj-1"}, // no UpstreamURL captured
+		}},
+	}
+	spec := &orchestrator.JobSpec{ProjectID: "proj-1"}
+
+	if got := r.buildGatewayCloneURL(spec, "http://10.0.2.2:1", "tok"); got != "" {
+		t.Errorf("buildGatewayCloneURL with no upstream_url = %q, want empty", got)
+	}
+}
+
+func TestBuildGatewayCloneURL_NilProjectsReturnsEmpty(t *testing.T) {
+	r := &Runner{}
+	spec := &orchestrator.JobSpec{ProjectID: "proj-1"}
+	if got := r.buildGatewayCloneURL(spec, "http://10.0.2.2:1", "tok"); got != "" {
+		t.Errorf("buildGatewayCloneURL with nil Projects = %q, want empty", got)
+	}
+}
+
 // --- buildGatewayRepos ---
 
 func TestBuildGatewayRepos_SelfProjectWritableGetsFetchPush(t *testing.T) {
@@ -223,6 +277,49 @@ func (r *gwFakeRuntime) Signal(_ context.Context, _ string, _ syscall.Signal) er
 	return nil
 }
 
+// gwFakeRuntimeStartError is a JobRuntime stub whose Start always fails, so
+// tests can exercise Dispatch's post-token-registration error path (the
+// docs/plans/git-gateway-cutover.md PR5 token-leak fix guard below): by the
+// time launchSandbox calls Runtime.Start, both the broker token and the git
+// gateway job token have already been registered.
+type gwFakeRuntimeStartError struct{}
+
+func (r *gwFakeRuntimeStartError) Start(_ context.Context, _ RuntimeStartSpec) (*RuntimeHandle, error) {
+	return nil, fmt.Errorf("boom: runtime start failed")
+}
+func (r *gwFakeRuntimeStartError) Attach(_ context.Context, _ string, _ RuntimeAttachRequest) error {
+	return ErrRuntimeUnsupported
+}
+func (r *gwFakeRuntimeStartError) Resize(_ context.Context, _ string, _ TerminalSize) error {
+	return ErrRuntimeUnsupported
+}
+func (r *gwFakeRuntimeStartError) Wait(_ context.Context, _ string) (RuntimeExit, error) {
+	return RuntimeExit{}, ErrRuntimeUnsupported
+}
+func (r *gwFakeRuntimeStartError) Stop(_ context.Context, _ string) error { return nil }
+func (r *gwFakeRuntimeStartError) Signal(_ context.Context, _ string, _ syscall.Signal) error {
+	return nil
+}
+
+// gwFakeFailingBroker is a minimal CommandBroker stub that hands out a fresh
+// token on every RegisterCommands call and records both registrations and
+// unregistrations, so a test can assert every token that went out also came
+// back.
+type gwFakeFailingBroker struct {
+	registered   []string
+	unregistered []string
+}
+
+func (b *gwFakeFailingBroker) RegisterCommands(_ map[string]orchestrator.CommandDef, _ map[string]sandbox.BuiltinPolicy, _ sandbox.TokenContext, _ SecretResolver) string {
+	token := fmt.Sprintf("broker-tok-%d", len(b.registered)+1)
+	b.registered = append(b.registered, token)
+	return token
+}
+func (b *gwFakeFailingBroker) UnregisterCommandToken(token string) {
+	b.unregistered = append(b.unregistered, token)
+}
+func (b *gwFakeFailingBroker) SocketPath() string { return "/tmp/fake-broker.sock" }
+
 // TestDispatch_RegistersAndUnregistersGatewayToken is the Dispatch-level
 // guard for the gateway wiring seam: it proves Dispatch actually reaches
 // registerGatewayToken (not just that the helper works in isolation — see
@@ -312,4 +409,70 @@ func TestDispatch_GatewayUnwired_NoTokenNoPanic(t *testing.T) {
 		t.Fatal("gatewayTokens should stay empty when GitGateway is unwired")
 	}
 	r.UnregisterJob(jobID) // must not panic
+}
+
+// TestDispatch_RuntimeStartError_UnregistersBrokerAndGatewayTokens is the
+// regression guard for the PR4-review token-leak fix
+// (docs/plans/git-gateway-cutover.md PR5 scope, "Dispatch エラーパスの token
+// leak"): before this fix, a Runtime.Start failure — which happens well
+// after both the broker token (RegisterCommands) and the git gateway job
+// token (registerGatewayToken) are registered — left both tokens tracked in
+// r.jobTokens / r.gatewayTokens forever, since only a successful launch ever
+// scheduled UnregisterJob. Dispatch's defer now calls UnregisterJob
+// unconditionally on any non-nil return error, so both tokens must come
+// back out here.
+func TestDispatch_RuntimeStartError_UnregistersBrokerAndGatewayTokens(t *testing.T) {
+	d := newGatewayTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{
+		ID: "proj-1", WorkDir: "/tmp", UpstreamURL: "https://github.com/owner/repo.git",
+	}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	gwURL := "http://10.0.2.2:9"
+	registry := gitgateway.NewRegistry()
+	broker := &gwFakeFailingBroker{}
+	r := &Runner{
+		DB:         d.Conn,
+		Projects:   orchestrator.DBProjectCatalog{DB: d.Conn},
+		Sandbox:    &gwFakeSandboxPrep{dir: t.TempDir()},
+		Runtime:    &gwFakeRuntimeStartError{},
+		Broker:     broker,
+		BoidBinary: "/boid",
+		GitGateway: registry,
+		GatewayURL: &gwURL,
+	}
+
+	spec := &orchestrator.JobSpec{
+		ProjectID:  "proj-1",
+		Argv:       []string{"echo", "hi"},
+		Kind:       orchestrator.JobKindHook,
+		Visibility: orchestrator.Visibility{Writable: true},
+		// A resolvable host command (path exists) so Dispatch's broker
+		// registration branch actually fires and leaves a broker token to
+		// leak, alongside the git gateway token registerGatewayToken always
+		// registers when GitGateway is wired.
+		HostCommands: map[string]orchestrator.CommandDef{
+			"echo-tool": {Path: "/bin/echo"},
+		},
+	}
+
+	_, err := r.Dispatch(context.Background(), spec, nil)
+	if err == nil {
+		t.Fatal("expected Dispatch to return an error when Runtime.Start fails")
+	}
+
+	if len(broker.registered) == 0 {
+		t.Fatal("test setup invalid: broker token was never registered, so there is nothing to prove got unregistered")
+	}
+	if len(broker.unregistered) != len(broker.registered) {
+		t.Errorf("broker.unregistered = %v, want every registered token (%v) unregistered on Dispatch failure",
+			broker.unregistered, broker.registered)
+	}
+	if len(r.gatewayTokens) != 0 {
+		t.Errorf("gatewayTokens leaked after Dispatch failure: %#v", r.gatewayTokens)
+	}
+	if len(r.jobTokens) != 0 {
+		t.Errorf("jobTokens (broker) leaked after Dispatch failure: %#v", r.jobTokens)
+	}
 }

@@ -16,9 +16,14 @@ import (
 // packfile POSTs are streamed straight through to the upstream forge
 // (docs/plans/git-gateway-cutover.md PR3: 「ボディは無バッファ転送必須」).
 //
-// Server is inert in this PR: nothing constructs or listens on one from the
-// running daemon yet (that wiring, plus config.yaml/SandboxRuntimeInfo
-// plumbing, is PR4).
+// Server has been wired into the running daemon since PR4
+// (docs/plans/git-gateway-cutover.md): internal/server/wire.go constructs
+// one (Registry + CredentialProvider + notifier) and Server.Start/Stop own
+// its listener lifecycle alongside the daemon's other subservers. PR5 is the
+// first PR whose traffic actually reaches it in practice (the runner's
+// sandbox-internal clone sequence, gated behind the still-inert
+// sandbox.CloneSpec opt-in) — until a caller sets that, this handler serves
+// zero real requests.
 type Server struct {
 	registry    *Registry
 	credentials *CredentialProvider
@@ -122,6 +127,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !allowed {
 		http.Error(w, "forbidden: repo/operation not permitted for this job token", http.StatusForbidden)
+		return
+	}
+
+	// Systemic "no secret resolver at all" case (docs/plans/git-gateway-cutover.md
+	// PR5 review): reject before ever contacting the upstream or invoking
+	// the notifier, distinct from the ordinary per-key-miss path (a
+	// configured resolver that errors for one specific key), which still
+	// falls through to Rewrite's existing fail-open + NotifyCredentialError
+	// behavior below unchanged. s.credentials == nil is a deliberate
+	// no-auth-injection test/upstream mode (see NewServer's doc comment) and
+	// is intentionally NOT covered by this check.
+	if s.credentials != nil && !s.credentials.Configured() {
+		http.Error(w, "service unavailable: git gateway has no secret resolver configured", http.StatusServiceUnavailable)
 		return
 	}
 

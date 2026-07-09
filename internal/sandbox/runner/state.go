@@ -74,6 +74,7 @@ type specDump struct {
 	Mounts       []mountDump       `json:"mounts"`
 	NFTRules     [][]string        `json:"nft_rules"`
 	Env          map[string]string `json:"env"`
+	Clone        *cloneDump        `json:"clone,omitempty"`
 }
 
 type mountDump struct {
@@ -83,6 +84,51 @@ type mountDump struct {
 	ReadOnly bool   `json:"ro,omitempty"`
 	Slave    bool   `json:"slave,omitempty"`
 	Guard    string `json:"guard,omitempty"`
+}
+
+// cloneDump is the redacted, JSON-friendly view of a sandbox.CloneSpec.
+// Only present (non-nil) in specDump when the sequence is actually enabled
+// (docs/plans/git-gateway-cutover.md PR5: 「失敗時の診断: runner-state.json
+// に clone / 解決の結果を残す」).
+type cloneDump struct {
+	URL                 string `json:"url,omitempty"` // job token redacted, see redactCloneURLToken
+	ReferenceDir        string `json:"reference_dir,omitempty"`
+	TargetDir           string `json:"target_dir,omitempty"`
+	RealGitBin          string `json:"real_git_bin,omitempty"`
+	Branch              string `json:"branch,omitempty"`
+	BaseBranch          string `json:"base_branch,omitempty"`
+	CheckoutOnly        bool   `json:"checkout_only,omitempty"`
+	ForkPoint           string `json:"fork_point,omitempty"`
+	BaseBranchForkPoint string `json:"base_branch_fork_point,omitempty"`
+}
+
+// redactCloneURLToken replaces the job-token path segment of a gitgateway
+// clone URL ("http://host:port/j/<token>/<host>/<owner>/<repo>.git") with
+// "<redacted>" so runner-state.json never leaks a live gateway job token
+// (docs/plans/git-gateway-cutover.md 「落とし穴・注意」: 「clone の URL に
+// job token が入る...診断出力 (runner-state.json) への token 混入は redact
+// 対象に含める」). The token is expected to remain in the sandbox's own
+// .git/config — that copy is required for the agent's own subsequent
+// fetch/push to keep authenticating through the gateway for the life of the
+// job, and is scoped/expired the same way (job-scoped token,
+// unregistered on job completion); only the daemon-retained diagnostic dump
+// is redacted here.
+//
+// A URL that doesn't match the expected "/j/<token>/" shape is returned
+// unchanged rather than guessed-at, so a malformed/non-gateway URL is never
+// silently mangled in the diagnostic dump.
+func redactCloneURLToken(url string) string {
+	const marker = "/j/"
+	i := strings.Index(url, marker)
+	if i < 0 {
+		return url
+	}
+	rest := url[i+len(marker):]
+	slash := strings.Index(rest, "/")
+	if slash < 0 {
+		return url
+	}
+	return url[:i+len(marker)] + "<redacted>" + rest[slash:]
 }
 
 // buildSpecDump composes the redacted spec view. pastaCmdline is the resolved
@@ -104,6 +150,20 @@ func buildSpecDump(spec sandbox.Spec, pastaCmdline []string) specDump {
 	for _, r := range plan.NFTRules {
 		nft = append(nft, r.Args)
 	}
+	var cloneDumpPtr *cloneDump
+	if spec.Clone.Enabled {
+		cloneDumpPtr = &cloneDump{
+			URL:                 redactCloneURLToken(spec.Clone.URL),
+			ReferenceDir:        spec.Clone.ReferenceDir,
+			TargetDir:           spec.Clone.TargetDir,
+			RealGitBin:          spec.Clone.RealGitBin,
+			Branch:              spec.Clone.Branch,
+			BaseBranch:          spec.Clone.BaseBranch,
+			CheckoutOnly:        spec.Clone.CheckoutOnly,
+			ForkPoint:           spec.Clone.ForkPoint,
+			BaseBranchForkPoint: spec.Clone.BaseBranchForkPoint,
+		}
+	}
 	return specDump{
 		ID:           spec.ID,
 		HarnessType:  string(spec.HarnessType),
@@ -120,6 +180,7 @@ func buildSpecDump(spec sandbox.Spec, pastaCmdline []string) specDump {
 		Mounts:       mounts,
 		NFTRules:     nft,
 		Env:          redactEnv(spec.Env),
+		Clone:        cloneDumpPtr,
 	}
 }
 

@@ -328,6 +328,91 @@ func TestServeHTTP_NotifiesCredentialErrorDistinctlyFromUpstream401(t *testing.T
 	}
 }
 
+// TestServeHTTP_NoResolverConfiguredRejectsWithoutNotifying is the guard for
+// the "KeyFilePath 未設定時の CredentialError 抑制" fix
+// (docs/plans/git-gateway-cutover.md PR5 review, flagged in the PR4 review):
+// when the daemon has no secret store at all (internal/server/wire.go's
+// gwCreds is built with a nil resolver in that case), a valid, authorized
+// request must be rejected outright — no upstream contact, no
+// NotifyCredentialError spam — rather than falling into the ordinary
+// per-key-miss fail-open + notify path exercised by
+// TestServeHTTP_NotifiesCredentialErrorDistinctlyFromUpstream401 above.
+func TestServeHTTP_NoResolverConfiguredRejectsWithoutNotifying(t *testing.T) {
+	upstream := newCapturingUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("upstream should not be contacted when no secret resolver is configured")
+	})
+	host := upstreamHost(t, upstream)
+	key := NewRepoKey(host, "owner", "repo")
+
+	reg := NewRegistry()
+	token := reg.Register(map[RepoKey]Permission{key: PermFetch})
+	// hosts is non-empty (a real gateway config would declare the forge for
+	// this host) but resolver is nil — exactly wire.go's KeyFilePath-unset
+	// shape.
+	creds := NewCredentialProvider([]HostForgeConfig{
+		{Host: host, Forge: ForgeGitHub, SecretKey: "gh-pat", Scheme: "http"},
+	}, nil)
+
+	var credNotified, upstreamNotified bool
+	notifier := NotifierFuncs{
+		CredentialError:     func(string, RepoKey, error) { credNotified = true },
+		UpstreamAuthFailure: func(string, RepoKey) { upstreamNotified = true },
+	}
+
+	gw := NewServer(reg, creds, notifier)
+	gwSrv := httptest.NewServer(gw)
+	t.Cleanup(gwSrv.Close)
+
+	resp, err := http.Get(gwSrv.URL + routePath(token, host, "owner", "repo.git", "info/refs") + "?service=git-upload-pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (rejected before contacting upstream)", resp.StatusCode)
+	}
+	if credNotified {
+		t.Error("NotifyCredentialError should not fire for the systemic no-resolver case")
+	}
+	if upstreamNotified {
+		t.Error("NotifyUpstreamAuthFailure should not fire (upstream was never contacted)")
+	}
+}
+
+// TestServeHTTP_NilCredentialsStillProxiesUnauthenticated proves the
+// deliberate no-auth-injection test/upstream mode (Server.credentials ==
+// nil, per NewServer's doc comment) is NOT affected by the no-resolver
+// rejection above: it must keep forwarding requests unauthenticated exactly
+// as before PR5.
+func TestServeHTTP_NilCredentialsStillProxiesUnauthenticated(t *testing.T) {
+	upstream := newCapturingUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	host := upstreamHost(t, upstream)
+	key := NewRepoKey(host, "owner", "repo")
+
+	reg := NewRegistry()
+	token := reg.Register(map[RepoKey]Permission{key: PermFetch})
+
+	gw := NewServer(reg, nil, nil)
+	gwSrv := httptest.NewServer(gw)
+	t.Cleanup(gwSrv.Close)
+
+	resp, err := http.Get(gwSrv.URL + routePath(token, host, "owner", "repo.git", "info/refs") + "?service=git-upload-pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	// A nil CredentialProvider makes SchemeFor default to "https", so this
+	// http-only test upstream will refuse the TLS handshake the proxy
+	// attempts — the point of this test is only that the request reaches
+	// the proxy at all (no premature 503), which a non-404/401/403 outcome
+	// here (bad gateway from the scheme mismatch) already demonstrates.
+	if resp.StatusCode == http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want anything but 503 (nil credentials must not trigger the no-resolver rejection)", resp.StatusCode)
+	}
+}
+
 // --- streaming / transport-transparency tests ---
 
 // TestServeHTTP_StreamsRequestBodyWithoutBuffering proves the gateway does

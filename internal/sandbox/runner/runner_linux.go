@@ -247,6 +247,17 @@ func RunInnerChild(specPath, statePath string) (exitCode int, retErr error) {
 		_ = os.Symlink(s.LinkTarget, s.LinkPath)
 	}
 
+	// Sandbox-internal clone + branch resolution (docs/plans/git-gateway-cutover.md
+	// PR5). No-op unless spec.Clone.Enabled — false for every JobSpec until
+	// the PR6 cutover, so this is inert on the default dispatch path.
+	if spec.Clone.Enabled {
+		if err := performClone(spec.Clone, st); err != nil {
+			st.Fail("inner-child", "clone", err)
+			return 1, err
+		}
+		st.OK("inner-child", "clone")
+	}
+
 	// Resolve the agent argv against the sandbox PATH.
 	if p := spec.Env["PATH"]; p != "" {
 		_ = os.Setenv("PATH", p)
