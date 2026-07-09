@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -92,6 +93,15 @@ type SandboxRuntimeInfo struct {
 	// Same PR4-is-inert caveat as GatewayURL: carried here for PR5/PR6 to
 	// consume, not yet used by BuildSandboxSpec.
 	GatewayJobToken string
+
+	// GatewayCloneURL is the full gateway clone URL for spec's own project
+	// (GatewayURL + "/j/" + GatewayJobToken + "/<host>/<owner>/<repo>.git"),
+	// built by Runner.buildGatewayCloneURL (docs/plans/git-gateway-cutover.md
+	// PR5). Empty unless spec.Visibility.Clone is non-nil (the opt-in
+	// sandbox-clone path) — computing it is otherwise wasted work, since
+	// nothing would consume it. BuildSandboxSpec only reads this when
+	// spec.Visibility.Clone != nil.
+	GatewayCloneURL string
 }
 
 // BuildSandboxSpec turns a business-level JobSpec and dispatcher-side runtime
@@ -240,6 +250,14 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 			Type:   sandbox.MountTmpfs,
 		})
 	}
+
+	// Sandbox-internal clone mounts (docs/plans/git-gateway-cutover.md PR5):
+	// RO bind of the host project `.git` (for `git clone --reference`) and
+	// the workspace peers' `.git` dirs, plus a real (non-shimmed) git binary
+	// the runner's own clone/branch-resolution invocations use. Entirely
+	// opt-in: nil unless spec.Visibility.Clone is set, so the existing
+	// worktree/project mount layout above is completely unaffected.
+	mounts = append(mounts, cloneMounts(spec, rt)...)
 
 	// Additional bindings and kit roots:
 	//   * The harness adapter (claude / codex / opencode) declares the
@@ -448,13 +466,22 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		HarnessType:      harness,
 		UserAnswer:       userAnswer,
 		Profile:          sandbox.Profile(spec.SandboxProfile),
+		Clone:            buildCloneSpec(spec, rt),
 	}
 	return out, nil
 }
 
-// resolveWorkDir returns the initial cd target inside the sandbox. Prefer the
-// resolved worktree dir, otherwise the project dir, otherwise home.
+// resolveWorkDir returns the initial cd target inside the sandbox. The
+// sandbox-clone opt-in path (spec.Visibility.Clone != nil,
+// docs/plans/git-gateway-cutover.md PR5) takes priority over the worktree
+// path since its bind mount above never exposes ProjectDir/WorktreeDir at
+// all — the only filesystem the clone-mode sandbox has is
+// sandboxCloneTargetDir. Otherwise prefer the resolved worktree dir,
+// then the project dir, then home — unchanged from before PR5.
 func resolveWorkDir(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) string {
+	if spec.Visibility.Clone != nil {
+		return sandboxCloneTargetDir
+	}
 	if spec.Visibility.UseWorktree && rt.WorktreeDir != "" {
 		return rt.WorktreeDir
 	}
@@ -462,6 +489,125 @@ func resolveWorkDir(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) string {
 		return spec.Visibility.ProjectDir
 	}
 	return hostHomeDir()
+}
+
+// sandbox-internal neutral paths used by the opt-in clone sequence
+// (docs/plans/git-gateway-cutover.md PR5). Fixed rather than derived so the
+// runner (which reads sandbox.CloneSpec back out of the JSON spec file) and
+// dispatcher (which generates the matching mounts) always agree without
+// having to thread the values through some other channel.
+const (
+	// sandboxCloneTargetDir is the neutral clone destination
+	// (docs/plans/git-gateway-cutover.md: 「clone 先は sandbox 内の中立 path
+	// /workspace」), replacing the worktree-mode Source==Target host path.
+	sandboxCloneTargetDir = "/workspace"
+
+	// sandboxCloneReferenceDir is where the host project's `.git` is RO
+	// bind-mounted for use as `git clone --reference`.
+	sandboxCloneReferenceDir = "/mnt/refs/self.git"
+
+	// sandboxClonePeerReferenceDirFmt is the Sprintf pattern (keyed by peer
+	// project ID) for RO bind-mounting workspace peers' `.git` dirs.
+	// Nothing consumes these yet in PR5 — dynamic peer clone is later work
+	// (docs/plans/container-based-boid.md 「workspace peer プロジェクト」) —
+	// this only makes the mounts constructible, per PR5's scope.
+	sandboxClonePeerReferenceDirFmt = "/mnt/refs/peers/%s.git"
+
+	// sandboxRealGitBin is the fixed sandbox-internal path of a real
+	// (non-shimmed) git binary, bind-mounted read-only alongside boid's
+	// git-shim overlay (/usr/bin/git, /bin/git) so the runner's own
+	// clone/branch-resolution git invocations bypass the broker-dispatch
+	// git builtin. PR6 removes the shim entirely; until then this is the
+	// only genuine git binary inside the sandbox.
+	sandboxRealGitBin = "/run/boid/real-git"
+)
+
+// cloneMounts returns the RO reference-repo and real-git-binary mounts for
+// the opt-in sandbox-clone path (docs/plans/git-gateway-cutover.md PR5).
+// Returns nil (no mounts) unless spec.Visibility.Clone is set, so the
+// default dispatch path's mount list is completely unaffected.
+func cloneMounts(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) []sandbox.Mount {
+	if spec == nil || spec.Visibility.Clone == nil {
+		return nil
+	}
+	var out []sandbox.Mount
+
+	if projectDir := spec.Visibility.ProjectDir; projectDir != "" {
+		gitDir := projectDir + "/.git"
+		out = append(out, sandbox.Mount{
+			Source:     gitDir,
+			Target:     sandboxCloneReferenceDir,
+			Type:       sandbox.MountBind,
+			ReadOnly:   true,
+			DetectType: true,
+			Guard:      existsGuardExpr(gitDir),
+		})
+	}
+
+	peerIDs := make([]string, 0, len(rt.WorkspacePeers))
+	for id := range rt.WorkspacePeers {
+		peerIDs = append(peerIDs, id)
+	}
+	sort.Strings(peerIDs)
+	for _, id := range peerIDs {
+		gitDir := rt.WorkspacePeers[id] + "/.git"
+		out = append(out, sandbox.Mount{
+			Source:     gitDir,
+			Target:     fmt.Sprintf(sandboxClonePeerReferenceDirFmt, id),
+			Type:       sandbox.MountBind,
+			ReadOnly:   true,
+			DetectType: true,
+			Guard:      existsGuardExpr(gitDir),
+		})
+	}
+
+	if git := realGitBinPath(); git != "" {
+		out = append(out, sandbox.Mount{
+			Source:   git,
+			Target:   sandboxRealGitBin,
+			Type:     sandbox.MountBind,
+			IsFile:   true,
+			ReadOnly: true,
+			Guard:    existsGuardExpr(git),
+		})
+	}
+
+	return out
+}
+
+// realGitBinPath resolves the host's real git binary path via $PATH,
+// falling back to the conventional /usr/bin/git if lookup fails (e.g. a
+// minimal PATH in a test process) rather than erroring — cloneMounts' Guard
+// makes a missing path a harmless no-op mount rather than a hard failure.
+func realGitBinPath() string {
+	if p, err := exec.LookPath("git"); err == nil {
+		return p
+	}
+	return "/usr/bin/git"
+}
+
+// buildCloneSpec translates spec.Visibility.Clone (the orchestrator-level
+// declaration) plus dispatcher-resolved runtime facts (rt.GatewayCloneURL)
+// into the sandbox.CloneSpec the runner consumes. Returns the zero value
+// (Enabled == false) when spec.Visibility.Clone is nil — see CloneSpec's own
+// doc comment for why that is a complete no-op for the runner.
+func buildCloneSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox.CloneSpec {
+	if spec == nil || spec.Visibility.Clone == nil {
+		return sandbox.CloneSpec{}
+	}
+	cd := spec.Visibility.Clone
+	return sandbox.CloneSpec{
+		Enabled:             true,
+		URL:                 rt.GatewayCloneURL,
+		ReferenceDir:        sandboxCloneReferenceDir,
+		TargetDir:           sandboxCloneTargetDir,
+		RealGitBin:          sandboxRealGitBin,
+		Branch:              cd.Branch,
+		BaseBranch:          cd.BaseBranch,
+		CheckoutOnly:        cd.CheckoutOnly,
+		ForkPoint:           cd.ForkPoint,
+		BaseBranchForkPoint: cd.BaseBranchForkPoint,
+	}
 }
 
 // projectVisibilityMounts returns the canonical mount layout that lets the

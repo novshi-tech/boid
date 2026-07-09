@@ -102,6 +102,30 @@ func TestCredentialProviderSchemeFor(t *testing.T) {
 	}
 }
 
+func TestCredentialProviderConfigured(t *testing.T) {
+	withResolver := NewCredentialProvider([]HostForgeConfig{
+		{Host: "github.com", Forge: ForgeGitHub, SecretKey: "gh-pat"},
+	}, func(string) (string, error) { return "x", nil })
+	if !withResolver.Configured() {
+		t.Error("Configured() = false, want true when a resolver is wired")
+	}
+
+	// internal/server/wire.go builds exactly this shape when
+	// config.KeyFilePath (and therefore the secret store) is unset —
+	// hosts may still be configured, but there is no resolver at all.
+	noResolver := NewCredentialProvider([]HostForgeConfig{
+		{Host: "github.com", Forge: ForgeGitHub, SecretKey: "gh-pat"},
+	}, nil)
+	if noResolver.Configured() {
+		t.Error("Configured() = true, want false when resolver is nil")
+	}
+
+	var nilProvider *CredentialProvider
+	if nilProvider.Configured() {
+		t.Error("Configured() = true, want false for a nil *CredentialProvider")
+	}
+}
+
 func TestNilCredentialProviderFailsClosed(t *testing.T) {
 	var cp *CredentialProvider
 	req, _ := http.NewRequest(http.MethodGet, "http://github.com/o/r.git/info/refs", nil)

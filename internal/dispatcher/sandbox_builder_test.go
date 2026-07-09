@@ -435,6 +435,157 @@ func TestProjectVisibilityMounts_WorktreeMode_BoidBind(t *testing.T) {
 	}
 }
 
+// --- opt-in sandbox-clone path (docs/plans/git-gateway-cutover.md PR5) ---
+
+func TestCloneMounts_NilWhenNoCloneDeclaration(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		ProjectID:  "proj-1",
+		Visibility: orchestrator.Visibility{ProjectDir: "/home/user/project"},
+	}
+	if mounts := cloneMounts(spec, SandboxRuntimeInfo{}); mounts != nil {
+		t.Fatalf("cloneMounts = %#v, want nil when Visibility.Clone is unset", mounts)
+	}
+}
+
+func TestCloneMounts_IncludesSelfReferenceAndPeers(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Visibility: orchestrator.Visibility{
+			ProjectDir: "/home/user/project",
+			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+		},
+	}
+	rt := SandboxRuntimeInfo{
+		WorkspacePeers: map[string]string{"peer-1": "/home/user/peer"},
+	}
+	mounts := cloneMounts(spec, rt)
+
+	findTarget := func(target string) *sandbox.Mount {
+		for i := range mounts {
+			if mounts[i].Target == target {
+				return &mounts[i]
+			}
+		}
+		return nil
+	}
+
+	self := findTarget(sandboxCloneReferenceDir)
+	if self == nil {
+		t.Fatal("self project .git reference mount not found")
+	}
+	if self.Source != "/home/user/project/.git" {
+		t.Errorf("self reference source = %q, want %q", self.Source, "/home/user/project/.git")
+	}
+	if !self.ReadOnly {
+		t.Error("self reference mount must be read-only")
+	}
+	if self.Guard == "" {
+		t.Error("self reference mount must have a Guard (graceful degradation when .git is missing)")
+	}
+
+	peerTarget := fmt.Sprintf(sandboxClonePeerReferenceDirFmt, "peer-1")
+	peer := findTarget(peerTarget)
+	if peer == nil {
+		t.Fatal("workspace peer .git reference mount not found")
+	}
+	if peer.Source != "/home/user/peer/.git" {
+		t.Errorf("peer reference source = %q, want %q", peer.Source, "/home/user/peer/.git")
+	}
+	if !peer.ReadOnly {
+		t.Error("peer reference mount must be read-only")
+	}
+
+	realGit := findTarget(sandboxRealGitBin)
+	if realGit == nil {
+		t.Fatal("real (non-shimmed) git binary mount not found")
+	}
+	if !realGit.ReadOnly || !realGit.IsFile {
+		t.Errorf("real git bin mount = %+v, want ReadOnly+IsFile", realGit)
+	}
+}
+
+func TestBuildCloneSpec_NilWhenNoCloneDeclaration(t *testing.T) {
+	spec := &orchestrator.JobSpec{ProjectID: "proj-1"}
+	got := buildCloneSpec(spec, SandboxRuntimeInfo{GatewayCloneURL: "http://10.0.2.2:9/j/tok/github.com/o/r.git"})
+	if got.Enabled {
+		t.Fatalf("buildCloneSpec = %+v, want Enabled=false when Visibility.Clone is unset", got)
+	}
+}
+
+func TestBuildCloneSpec_PopulatesFromDeclarationAndRuntimeInfo(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Visibility: orchestrator.Visibility{
+			Clone: &orchestrator.CloneDeclaration{
+				Branch:              "boid/abcd1234",
+				BaseBranch:          "main",
+				ForkPoint:           "boid/parent1234",
+				BaseBranchForkPoint: "origin/main",
+			},
+		},
+	}
+	rt := SandboxRuntimeInfo{GatewayCloneURL: "http://10.0.2.2:9/j/tok/github.com/o/r.git"}
+	got := buildCloneSpec(spec, rt)
+
+	want := sandbox.CloneSpec{
+		Enabled:             true,
+		URL:                 rt.GatewayCloneURL,
+		ReferenceDir:        sandboxCloneReferenceDir,
+		TargetDir:           sandboxCloneTargetDir,
+		RealGitBin:          sandboxRealGitBin,
+		Branch:              "boid/abcd1234",
+		BaseBranch:          "main",
+		ForkPoint:           "boid/parent1234",
+		BaseBranchForkPoint: "origin/main",
+	}
+	if got != want {
+		t.Errorf("buildCloneSpec = %+v, want %+v", got, want)
+	}
+}
+
+func TestResolveWorkDir_CloneEnabled_ReturnsCloneTargetDir(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		Visibility: orchestrator.Visibility{
+			ProjectDir:  "/home/user/project",
+			UseWorktree: true,
+			Clone:       &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main"},
+		},
+	}
+	rt := SandboxRuntimeInfo{WorktreeDir: "/home/user/worktrees/task1"}
+	if got := resolveWorkDir(spec, rt); got != sandboxCloneTargetDir {
+		t.Errorf("resolveWorkDir = %q, want %q (clone path takes priority)", got, sandboxCloneTargetDir)
+	}
+}
+
+// TestBuildSandboxSpec_CloneNil_UnaffectedByPR5 is the regression guard for
+// PR5's inertness claim: a JobSpec that never sets Visibility.Clone (i.e.
+// every JobSpec dispatcher builds today) must produce byte-identical mounts
+// and WorkDir to before PR5 — no clone mounts, no Clone.Enabled, no
+// behavioural change at all.
+func TestBuildSandboxSpec_CloneNil_UnaffectedByPR5(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		ProjectID:  "proj-1",
+		Argv:       []string{"/bin/true"},
+		Visibility: orchestrator.Visibility{ProjectDir: "/home/user/project", Writable: true},
+	}
+	rt := SandboxRuntimeInfo{JobID: "job-1"}
+	out, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	if out.Clone.Enabled {
+		t.Errorf("Clone.Enabled = true, want false when Visibility.Clone is nil")
+	}
+	if out.WorkDir != "/home/user/project" {
+		t.Errorf("WorkDir = %q, want project dir unchanged", out.WorkDir)
+	}
+	for _, m := range out.Mounts {
+		if m.Target == sandboxCloneReferenceDir || m.Target == sandboxRealGitBin {
+			t.Errorf("unexpected clone mount present when Visibility.Clone is nil: %+v", m)
+		}
+	}
+}
+
 // boid と git は ResolveHostCommands に含まれない（専用の bind mount が別途生成される）。
 // その他の host commands はホスト実パスに bind mount される。
 func TestHostCommandMounts_BoidAndGitExcluded(t *testing.T) {

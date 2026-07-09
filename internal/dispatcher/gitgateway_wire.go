@@ -118,6 +118,37 @@ func (r *Runner) buildGatewayRepos(spec *orchestrator.JobSpec, workspaceID strin
 	return repos
 }
 
+// buildGatewayCloneURL builds the full gateway clone URL for spec's own
+// project — "<gatewayURL>/j/<gatewayToken>/<host>/<owner>/<repo>.git" —
+// which the opt-in sandbox-clone path (docs/plans/git-gateway-cutover.md
+// PR5) threads through SandboxRuntimeInfo.GatewayCloneURL for the runner to
+// `git clone`. Returns "" (and logs a warning on a resolution failure) when
+// any input is missing: gatewayURL/gatewayToken empty (gateway unwired),
+// Projects unset, or the project's own upstream_url is empty/unparseable.
+// Callers only invoke this when spec.Visibility.Clone != nil, so the lookup
+// never runs for the default (non-opt-in) dispatch path.
+func (r *Runner) buildGatewayCloneURL(spec *orchestrator.JobSpec, gatewayURL, gatewayToken string) string {
+	if spec == nil || gatewayURL == "" || gatewayToken == "" || r.Projects == nil {
+		return ""
+	}
+	self, err := r.Projects.GetProject(spec.ProjectID)
+	if err != nil || self == nil || self.UpstreamURL == "" {
+		slog.Warn("git gateway: cannot build clone URL, project has no captured upstream_url",
+			"project_id", spec.ProjectID)
+		return ""
+	}
+	key, err := repoKeyFromUpstreamURL(self.UpstreamURL)
+	if err != nil {
+		slog.Warn("git gateway: cannot build clone URL, upstream_url did not parse",
+			"project_id", spec.ProjectID, "upstream_url", self.UpstreamURL, "error", err)
+		return ""
+	}
+	// gatewayURL (Server.GatewayURL(), e.g. "http://10.0.2.2:<port>") never
+	// has a trailing slash; gitgateway.PathPrefix ("/j/") already supplies
+	// the leading one, matching the route gitgateway.parsePath expects.
+	return gatewayURL + gitgateway.PathPrefix + gatewayToken + "/" + string(key) + ".git"
+}
+
 // repoKeyFromUpstreamURL parses a captured upstream_url (or a workspace
 // extra_repos entry, in any form repoSlugFromOriginURL accepts — HTTPS or
 // SSH) into a gitgateway.RepoKey. It always routes through

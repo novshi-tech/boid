@@ -473,11 +473,21 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// keeps internal/gitgateway free of any internal/dispatcher (and
 	// therefore internal/db) import, per that package's own layering rule
 	// (scripts/check-internal-architecture.sh).
-	gwResolver := func(key string) (string, error) {
-		if secretStore == nil {
-			return "", fmt.Errorf("git gateway: secret store not configured")
+	//
+	// gwResolver is deliberately left nil (rather than a closure that always
+	// errors) when secretStore itself is unconfigured (KeyFilePath unset):
+	// CredentialProvider.Configured() reports false in that case, and
+	// Server.ServeHTTP rejects gateway requests outright without ever
+	// calling Inject or the notifier — see that method's doc comment
+	// (docs/plans/git-gateway-cutover.md PR5 review: 「KeyFilePath 未設定時
+	// の CredentialError 抑制」, distinct from an ordinary per-key miss on an
+	// otherwise-configured store, which still fails open + notifies as
+	// before).
+	var gwResolver gitgateway.SecretResolver
+	if secretStore != nil {
+		gwResolver = func(key string) (string, error) {
+			return secretStore.Get("default", key)
 		}
-		return secretStore.Get("default", key)
 	}
 	gwCreds := gitgateway.NewCredentialProvider(boidCfg.Gateway.Hosts, gwResolver)
 	gwHandler := gitgateway.NewServer(srv.gatewayRegistry, gwCreds, gatewayNotifier{notify: notifySvc})

@@ -133,7 +133,7 @@ type Runner struct {
 // Dispatch launches a sandbox for the given JobSpec. The optional cleanup
 // callback (typically provided by orchestrator's PlanHook for
 // staging dir teardown) runs after the sandbox process has exited.
-func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, cleanup orchestrator.CleanupFunc) (string, error) {
+func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, cleanup orchestrator.CleanupFunc) (jobID string, dispatchErr error) {
 	if spec == nil {
 		return "", fmt.Errorf("job spec is required")
 	}
@@ -158,6 +158,26 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		ExecutionState: spec.ExecutionState,
 	}
 	j.ID = uuid.New().String()
+
+	// Dispatch エラー経路の token leak 対策 (docs/plans/git-gateway-cutover.md
+	// PR5 スコープ・PR4 レビュー判断メモ): the broker token (r.trackToken)
+	// and the git gateway job token (r.registerGatewayToken) are both
+	// registered part-way through this function, well before the sandbox
+	// actually launches. Every prior version of this function relied on
+	// launchSandbox succeeding (which schedules UnregisterJob via
+	// cleanupSandboxAfterWait / watchRuntime) to ever revoke them — a
+	// failure in ResolveHostCommands, BuildSandboxSpec, PrepareSandbox or
+	// Runtime.Start after that point leaked both tokens for the rest of the
+	// daemon's lifetime. UnregisterJob is a no-op for a jobID that was never
+	// registered, so unconditionally calling it here on any error path is
+	// the symmetric fix: one deferred call covers every return site,
+	// present and future, instead of requiring each new early-return to
+	// remember its own cleanup.
+	defer func() {
+		if dispatchErr != nil {
+			r.UnregisterJob(j.ID)
+		}
+	}()
 
 	// Phase 2-2 case 1 HEAD guard: supervisors running in the project dir
 	// (worktree=false) must find the project HEAD still on the base_branch
@@ -282,6 +302,16 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	allowedDomains, proxyPort := r.resolveWorkspaceProxy(workspaceID)
 	gatewayURL, gatewayToken := r.registerGatewayToken(j.ID, spec, workspaceID)
 
+	// gatewayCloneURL is only worth resolving (an extra Projects lookup)
+	// when the opt-in sandbox-clone path is actually declared
+	// (docs/plans/git-gateway-cutover.md PR5). Every JobSpec dispatcher
+	// builds today leaves Visibility.Clone nil, so this stays "" in
+	// production until the PR6 cutover engages it.
+	var gatewayCloneURL string
+	if spec.Visibility.Clone != nil {
+		gatewayCloneURL = r.buildGatewayCloneURL(spec, gatewayURL, gatewayToken)
+	}
+
 	rtInfo := SandboxRuntimeInfo{
 		JobID:                j.ID,
 		BoidBinary:           r.BoidBinary,
@@ -296,6 +326,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		AttachmentsRoot:      r.AttachmentsRoot,
 		GatewayURL:           gatewayURL,
 		GatewayJobToken:      gatewayToken,
+		GatewayCloneURL:      gatewayCloneURL,
 	}
 	// Server socket is only exposed to jobs that have no broker policies
 	// attached — i.e. boid exec invocations that need to talk to the daemon

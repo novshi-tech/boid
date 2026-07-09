@@ -97,4 +97,10 @@ type Spec struct {
 	// preserves the existing behaviour. Set to ProfileInit for kit-init /
 	// workspace-configure generation scripts that need to read the full host FS.
 	Profile Profile
+
+	// Clone declares the opt-in sandbox-internal clone + branch resolution
+	// sequence runner-inner-child performs before handing off to the
+	// harness (docs/plans/git-gateway-cutover.md PR5). Zero value
+	// (Clone.Enabled == false) is a no-op — see CloneSpec's doc comment.
+	Clone CloneSpec
 }

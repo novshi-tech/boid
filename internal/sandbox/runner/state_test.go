@@ -140,6 +140,97 @@ func TestState_NDJSONAppend(t *testing.T) {
 	}
 }
 
+func TestRedactCloneURLToken(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "well-formed gateway URL",
+			in:   "http://10.0.2.2:12345/j/deadbeefdeadbeef/github.com/owner/repo.git",
+			want: "http://10.0.2.2:12345/j/<redacted>/github.com/owner/repo.git",
+		},
+		{
+			name: "no /j/ marker returned unchanged",
+			in:   "https://github.com/owner/repo.git",
+			want: "https://github.com/owner/repo.git",
+		},
+		{
+			name: "empty string",
+			in:   "",
+			want: "",
+		},
+		{
+			name: "trailing /j/ with nothing after it returned unchanged",
+			in:   "http://10.0.2.2:1/j/",
+			want: "http://10.0.2.2:1/j/",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := redactCloneURLToken(tc.in)
+			if got != tc.want {
+				t.Errorf("redactCloneURLToken(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if tc.in != "" && strings.Contains(tc.in, "deadbeefdeadbeef") && strings.Contains(got, "deadbeefdeadbeef") {
+				t.Errorf("token leaked into redacted output: %q", got)
+			}
+		})
+	}
+}
+
+// TestBuildSpecDump_CloneRedactsTokenAndCapturesDeclaration is the
+// runner-state.json guard for docs/plans/git-gateway-cutover.md PR5's token
+// redact heads-up (PR4 review): the clone URL's job token must never appear
+// verbatim in the diagnostic dump, while the rest of the branch declaration
+// (used to diagnose a failed clone/resolve) is preserved.
+func TestBuildSpecDump_CloneRedactsTokenAndCapturesDeclaration(t *testing.T) {
+	const token = "secrettoken1234567890"
+	spec := sandbox.Spec{
+		ID: "job-clone",
+		Clone: sandbox.CloneSpec{
+			Enabled:      true,
+			URL:          "http://10.0.2.2:9/j/" + token + "/github.com/owner/repo.git",
+			ReferenceDir: "/mnt/refs/self.git",
+			TargetDir:    "/workspace",
+			RealGitBin:   "/run/boid/real-git",
+			Branch:       "boid/abcd1234",
+			BaseBranch:   "main",
+			ForkPoint:    "boid/parent12",
+		},
+	}
+	dump := buildSpecDump(spec, nil)
+
+	if dump.Clone == nil {
+		t.Fatal("expected non-nil Clone dump when spec.Clone.Enabled")
+	}
+	if strings.Contains(dump.Clone.URL, token) {
+		t.Errorf("job token leaked into runner-state.json dump: %q", dump.Clone.URL)
+	}
+	if dump.Clone.TargetDir != "/workspace" || dump.Clone.Branch != "boid/abcd1234" || dump.Clone.BaseBranch != "main" {
+		t.Errorf("clone dump did not preserve declaration fields: %+v", dump.Clone)
+	}
+
+	// The whole marshalled dump must not contain the token either (belt and
+	// suspenders: proves no other field aliases spec.Clone.URL verbatim).
+	encoded, err := json.Marshal(dump)
+	if err != nil {
+		t.Fatalf("marshal dump: %v", err)
+	}
+	if strings.Contains(string(encoded), token) {
+		t.Errorf("job token leaked somewhere in the marshalled spec dump: %s", encoded)
+	}
+}
+
+func TestBuildSpecDump_CloneDisabledOmitsCloneField(t *testing.T) {
+	spec := sandbox.Spec{ID: "job-no-clone"}
+	dump := buildSpecDump(spec, nil)
+	if dump.Clone != nil {
+		t.Errorf("expected nil Clone dump when spec.Clone.Enabled is false, got %+v", dump.Clone)
+	}
+}
+
 func TestState_NilSafe(t *testing.T) {
 	// OpenState("") returns nil; all methods must be no-ops.
 	var st *State = OpenState("")
