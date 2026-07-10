@@ -72,14 +72,14 @@ type dockerProxyState struct {
 }
 
 type Runner struct {
-	DB           *sql.DB
-	Runtime      JobRuntime
-	Broker       CommandBroker
-	Sandbox      SandboxPreparer
-	SecretStore  *SecretStore
-	Worktrees    *WorktreeManager
-	TaskLookup   TaskLookup
-	Projects     ProjectLookup
+	DB          *sql.DB
+	Runtime     JobRuntime
+	Broker      CommandBroker
+	Sandbox     SandboxPreparer
+	SecretStore *SecretStore
+	Worktrees   *WorktreeManager
+	TaskLookup  TaskLookup
+	Projects    ProjectLookup
 	// Workspaces resolves WorkspaceMeta at dispatch time for the workspace
 	// the dispatched project is linked to. When nil (test wiring, missing
 	// disk) the runner falls back to the global floor for proxy allowlist
@@ -93,14 +93,14 @@ type Runner struct {
 	// when the per-workspace allocator path isn't wired or returns an
 	// error). Workspaces with no overrides reuse this port via the
 	// allocator's GetOrCreate("default", ...) entry.
-	ProxyPort      *int
+	ProxyPort *int
 	// AllowedDomains is the daemon-wide proxy egress allowlist (the floor
 	// from config.yaml sandbox.allowed_domains + boid defaults). Workspace
 	// overrides are added on top via orchestrator.ResolveAllowedDomains.
 	AllowedDomains  []string
 	RuntimesDir     string
 	AttachmentsRoot string
-	JobEvents      JobEventSink // optional; nil disables job lifecycle broadcasts
+	JobEvents       JobEventSink // optional; nil disables job lifecycle broadcasts
 
 	// GitGateway is the git gateway's job-token registry
 	// (docs/plans/git-gateway-cutover.md PR4: gateway lifecycle + dispatch
@@ -179,36 +179,22 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 	}()
 
-	// Phase 2-2 case 1 HEAD guard: supervisors running in the project dir
-	// (worktree=false) must find the project HEAD still on the base_branch
-	// they were created for. If the user (or a parallel process) moved the
-	// branch between task creation and now, refuse to dispatch — running a
-	// supervisor against an unexpected branch is the precise foot-gun the
-	// Phase 2-2 design exists to prevent. The check is best-effort: failing
-	// to look up the task or the project (test wiring without stubs, etc.)
-	// degrades to a no-op rather than blocking the dispatch.
-	if err := r.enforceCaseOneHeadInvariant(spec); err != nil {
-		if cleanup != nil {
-			cleanup()
-		}
-		return "", err
-	}
-
-	// Resolve the worktree path before sandbox construction, so the mount
-	// layout sees the correct project root.
-	worktreePath, err := r.resolveWorktree(spec)
-	if err != nil {
-		if cleanup != nil {
-			cleanup()
-		}
-		return "", err
-	}
-	// resolvedWorktreePath passes the existing worktree path to the broker
-	// TokenContext.WorktreeDir without allocating a new one.
-	resolvedWorktreePath := worktreePath
-	if resolvedWorktreePath == "" {
-		resolvedWorktreePath = r.existingWorktreePath(spec)
-	}
+	// Worktree allocation and the Phase 2-2 case 1 HEAD guard are both
+	// retired as of docs/plans/git-gateway-cutover.md PR6 (cutover): every
+	// project-visible job now clones inside the sandbox instead of sharing a
+	// host git worktree (see Visibility.Clone, set by
+	// orchestrator.BuildCloneDeclaration / dispatcher.buildSessionCloneDeclaration),
+	// so there is no host worktree path to resolve and no host HEAD whose
+	// drift needs guarding against — the runner resolves the declared branch
+	// fresh against its own clone every dispatch. r.resolveWorktree /
+	// r.enforceCaseOneHeadInvariant / r.existingWorktreePath and the
+	// WorktreeManager they call into are intentionally left defined (dead
+	// code on this path) rather than deleted — that's PR8's job, so a git
+	// revert of this PR restores the call sites cleanly.
+	//
+	// worktreePath / resolvedWorktreePath therefore stay permanently empty in
+	// production; TokenContext.WorktreeDir below is always "".
+	var worktreePath, resolvedWorktreePath string
 
 	if err := CreateJob(r.DB, j); err != nil {
 		if cleanup != nil {
@@ -263,6 +249,13 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			WorktreeDir:       resolvedWorktreePath,
 			WorkspacePeers:    workspacePeers,
 		}
+		// SandboxRoot (docs/plans/git-gateway-cutover.md PR6 cutover): clone-mode
+		// jobs have no host ProjectDir/WorktreeDir the sandbox's own filesystem
+		// corresponds to — their cwd is always the fixed sandbox-internal
+		// sandboxCloneTargetDir ("/workspace"). See broker.entryRoot.
+		if spec.Visibility.Clone != nil {
+			tokenCtx.SandboxRoot = sandboxCloneTargetDir
+		}
 		var resolve SecretResolver
 		if r.SecretStore != nil {
 			ns := spec.SecretNamespace
@@ -303,30 +296,95 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	gatewayURL, gatewayToken := r.registerGatewayToken(j.ID, spec, workspaceID)
 
 	// gatewayCloneURL is only worth resolving (an extra Projects lookup)
-	// when the opt-in sandbox-clone path is actually declared
-	// (docs/plans/git-gateway-cutover.md PR5). Every JobSpec dispatcher
-	// builds today leaves Visibility.Clone nil, so this stays "" in
-	// production until the PR6 cutover engages it.
-	var gatewayCloneURL string
+	// when the opt-in sandbox-clone path is actually declared. As of the PR6
+	// cutover, planner.go / session_job.go set Visibility.Clone for every
+	// project-visible job, so this now runs on the main dispatch path.
+	var gatewayCloneURL, cloneWorkspaceDir string
+	var peerAdvertise map[string]PeerAdvertise
 	if spec.Visibility.Clone != nil {
+		// Dispatch-time upstream_url requirement (docs/plans/git-gateway-cutover.md
+		// 「本計画で確定する設計 § 1」: 「欠落 project は... dispatch 時エラー」).
+		// A project with no captured upstream_url would otherwise silently
+		// produce an empty GatewayCloneURL and fail deep inside the sandbox
+		// with an opaque "git clone ''" error; failing fast here surfaces a
+		// clear, actionable message to the dispatch caller instead.
+		//
+		// Every branch below must either succeed or hard-error — a silent
+		// skip (`if err == nil && proj != nil` optimism) is exactly the
+		// PR6 Opus review #4 concern: it would let a torn Projects registry
+		// (project row missing / GetProject errored) fall through to a
+		// runtime "git clone ''" failure inside the sandbox. The only
+		// tolerated case is r.Projects == nil, which corresponds to
+		// dispatcher unit tests that don't wire a Projects lookup at all
+		// (the tests exercise argv/cleanup/spec plumbing, not gateway
+		// resolution) — those specs also leave Visibility.Clone nil, so in
+		// production this branch always runs with r.Projects non-nil.
+		if r.Projects != nil {
+			proj, perr := r.Projects.GetProject(spec.ProjectID)
+			switch {
+			case perr != nil:
+				err := fmt.Errorf("clone-mode dispatch: look up project %q: %w", spec.ProjectID, perr)
+				r.failJob(j, err)
+				if cleanup != nil {
+					cleanup()
+				}
+				return "", err
+			case proj == nil:
+				err := fmt.Errorf("clone-mode dispatch: project %q not found (registry drift?); rerun `boid project add` or check `boid project list`", spec.ProjectID)
+				r.failJob(j, err)
+				if cleanup != nil {
+					cleanup()
+				}
+				return "", err
+			default:
+				if err := orchestrator.RequireUpstreamURL(proj); err != nil {
+					r.failJob(j, err)
+					if cleanup != nil {
+						cleanup()
+					}
+					return "", err
+				}
+			}
+		}
 		gatewayCloneURL = r.buildGatewayCloneURL(spec, gatewayURL, gatewayToken)
+		peerAdvertise = r.buildPeerAdvertise(workspacePeers, gatewayURL, gatewayToken)
+
+		// /workspace host-backed runtime dir (docs/plans/git-gateway-cutover.md
+		// PR6 cutover; container-based-boid.md 2026-07-08 decision: clone
+		// lands on a runtime-dir bind mount by default, not tmpfs). Keyed by
+		// j.ID (already a fresh UUID unique to this dispatch) rather than
+		// sharing the docker-proxy's separate runtimeID/desiredRuntimeID —
+		// the two concerns don't need to share a directory, and job.ID is
+		// already at hand here with no extra allocation. Rides the existing
+		// runtimes/ GC (24h loop, 30 day threshold) like every other
+		// runtime-dir artifact; no bespoke cleanup is added.
+		if r.RuntimesDir != "" {
+			cloneWorkspaceDir = filepath.Join(r.RuntimesDir, j.ID, "workspace")
+			if err := os.MkdirAll(cloneWorkspaceDir, 0o755); err != nil {
+				slog.Warn("git gateway: failed to create clone workspace dir; falling back to sandbox-local tmpfs",
+					"job_id", j.ID, "dir", cloneWorkspaceDir, "error", err)
+				cloneWorkspaceDir = ""
+			}
+		}
 	}
 
 	rtInfo := SandboxRuntimeInfo{
-		JobID:                j.ID,
-		BoidBinary:           r.BoidBinary,
-		ServerSocket:         r.ServerSocket,
-		ProxyPort:            proxyPort,
-		BrokerSocket:         brokerSocket,
-		BrokerToken:          brokerToken,
-		WorktreeDir:          worktreePath,
-		WorkspacePeers:       workspacePeers,
-		ResolvedHostCommands: resolvedHostCommands,
-		AllowedDomains:       allowedDomains,
-		AttachmentsRoot:      r.AttachmentsRoot,
-		GatewayURL:           gatewayURL,
-		GatewayJobToken:      gatewayToken,
-		GatewayCloneURL:      gatewayCloneURL,
+		JobID:                  j.ID,
+		BoidBinary:             r.BoidBinary,
+		ServerSocket:           r.ServerSocket,
+		ProxyPort:              proxyPort,
+		BrokerSocket:           brokerSocket,
+		BrokerToken:            brokerToken,
+		WorktreeDir:            worktreePath,
+		WorkspacePeers:         workspacePeers,
+		WorkspacePeerAdvertise: peerAdvertise,
+		ResolvedHostCommands:   resolvedHostCommands,
+		AllowedDomains:         allowedDomains,
+		AttachmentsRoot:        r.AttachmentsRoot,
+		GatewayURL:             gatewayURL,
+		GatewayJobToken:        gatewayToken,
+		GatewayCloneURL:        gatewayCloneURL,
+		CloneWorkspaceDir:      cloneWorkspaceDir,
 	}
 	// Server socket is only exposed to jobs that have no broker policies
 	// attached — i.e. boid exec invocations that need to talk to the daemon
@@ -380,6 +438,13 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 // caller fails the job dispatch with the message so the orchestrator surfaces
 // "project dir was moved out from under us" to the user instead of silently
 // running against the wrong branch.
+//
+// Retired (no longer called from Dispatch) as of docs/plans/git-gateway-cutover.md
+// PR6 cutover — the clone model has no host HEAD to drift out from under a
+// dispatch. Left defined rather than deleted so this PR's revert unit stays
+// small; deletion is PR8's job alongside WorktreeManager.
+//
+//nolint:unused // PR8 deletes this together with WorktreeManager (see doc comment)
 func (r *Runner) enforceCaseOneHeadInvariant(spec *orchestrator.JobSpec) error {
 	if spec == nil || spec.Visibility.UseWorktree {
 		return nil

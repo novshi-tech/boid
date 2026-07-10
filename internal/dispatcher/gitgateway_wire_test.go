@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -232,6 +233,62 @@ func TestBuildGatewayRepos_NilProjectsReturnsNil(t *testing.T) {
 	r := &Runner{}
 	if repos := r.buildGatewayRepos(&orchestrator.JobSpec{ProjectID: "proj-1"}, "ws-1"); repos != nil {
 		t.Fatalf("repos = %#v, want nil when Projects is unwired", repos)
+	}
+}
+
+// --- buildPeerAdvertise (docs/plans/git-gateway-cutover.md PR6 cutover
+// 「5. peer advertise の変更」) ---
+
+func TestBuildPeerAdvertise_ResolvesNameCloneURLAndReferencePath(t *testing.T) {
+	r := &Runner{
+		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
+			{ID: "peer-1", UpstreamURL: "https://github.com/owner/peer-repo.git"},
+		}},
+	}
+	got := r.buildPeerAdvertise(map[string]string{"peer-1": "/host/peer-1"}, "http://10.0.2.2:12345", "job-token-abc")
+	adv, ok := got["peer-1"]
+	if !ok {
+		t.Fatalf("buildPeerAdvertise = %#v, want an entry for peer-1", got)
+	}
+	if adv.Name != "peer-repo" {
+		t.Errorf("Name = %q, want peer-repo", adv.Name)
+	}
+	if want := "http://10.0.2.2:12345/j/job-token-abc/github.com/owner/peer-repo.git"; adv.CloneURL != want {
+		t.Errorf("CloneURL = %q, want %q", adv.CloneURL, want)
+	}
+	if want := "/mnt/refs/peers/peer-1.git"; adv.ReferencePath != want {
+		t.Errorf("ReferencePath = %q, want %q", adv.ReferencePath, want)
+	}
+}
+
+func TestBuildPeerAdvertise_SkipsPeerWithNoUpstreamURL(t *testing.T) {
+	r := &Runner{
+		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
+			{ID: "peer-1"}, // no UpstreamURL captured
+		}},
+	}
+	got := r.buildPeerAdvertise(map[string]string{"peer-1": "/host/peer-1"}, "http://10.0.2.2:1", "tok")
+	if got != nil {
+		t.Fatalf("buildPeerAdvertise = %#v, want nil when the only peer has no upstream_url", got)
+	}
+}
+
+func TestBuildPeerAdvertise_NilWhenGatewayUnwiredOrNoProjects(t *testing.T) {
+	peers := map[string]string{"peer-1": "/host/peer-1"}
+	r := &Runner{Projects: fakeProjectLookup{projects: []*orchestrator.Project{
+		{ID: "peer-1", UpstreamURL: "https://github.com/owner/peer-repo.git"},
+	}}}
+	if got := r.buildPeerAdvertise(peers, "", "tok"); got != nil {
+		t.Errorf("buildPeerAdvertise with empty gatewayURL = %#v, want nil", got)
+	}
+	if got := r.buildPeerAdvertise(peers, "http://10.0.2.2:1", ""); got != nil {
+		t.Errorf("buildPeerAdvertise with empty gatewayToken = %#v, want nil", got)
+	}
+	if got := (&Runner{}).buildPeerAdvertise(peers, "http://10.0.2.2:1", "tok"); got != nil {
+		t.Errorf("buildPeerAdvertise with nil Projects = %#v, want nil", got)
+	}
+	if got := r.buildPeerAdvertise(nil, "http://10.0.2.2:1", "tok"); got != nil {
+		t.Errorf("buildPeerAdvertise with no peers = %#v, want nil", got)
 	}
 }
 
@@ -474,5 +531,128 @@ func TestDispatch_RuntimeStartError_UnregistersBrokerAndGatewayTokens(t *testing
 	}
 	if len(r.jobTokens) != 0 {
 		t.Errorf("jobTokens (broker) leaked after Dispatch failure: %#v", r.jobTokens)
+	}
+}
+
+// --- Dispatch clone-mode upstream_url guard (Opus review #4) ---
+
+// erroringProjectLookup is a ProjectLookup that fails GetProject with a
+// canned error, simulating a torn Projects registry / DB read failure mid-
+// dispatch. Used only in the clone-mode fail-loud tests below.
+type erroringProjectLookup struct {
+	err error
+}
+
+func (e erroringProjectLookup) GetProject(_ string) (*orchestrator.Project, error) {
+	return nil, e.err
+}
+
+func (e erroringProjectLookup) ListProjects() ([]*orchestrator.Project, error) {
+	return nil, nil
+}
+
+// TestDispatch_CloneMode_ProjectLookupError_FailsLoud pins the fail-loud
+// contract for a torn Projects registry: when a Visibility.Clone-declaring
+// spec dispatches and GetProject returns an error, Dispatch must surface a
+// clear message (naming the project ID) rather than silently skipping the
+// upstream_url check and continuing on to a runtime "git clone" failure
+// deep in the sandbox (docs/plans/git-gateway-cutover.md PR6 cutover, Opus
+// review #4).
+func TestDispatch_CloneMode_ProjectLookupError_FailsLoud(t *testing.T) {
+	d := newGatewayTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{
+		ID: "proj-1", WorkDir: "/tmp", UpstreamURL: "https://github.com/owner/repo.git",
+	}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	r := &Runner{
+		DB:         d.Conn,
+		Projects:   erroringProjectLookup{err: fmt.Errorf("db read failed")},
+		Sandbox:    &gwFakeSandboxPrep{dir: t.TempDir()},
+		Runtime:    &gwFakeRuntime{},
+		BoidBinary: "/boid",
+	}
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"echo", "hi"},
+		Kind:      orchestrator.JobKindHook,
+		Visibility: orchestrator.Visibility{
+			Clone: &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+		},
+	}
+	_, err := r.Dispatch(context.Background(), spec, nil)
+	if err == nil {
+		t.Fatal("Dispatch: expected error when Projects.GetProject fails for a clone-mode job")
+	}
+	if !strings.Contains(err.Error(), "look up project") {
+		t.Errorf("error = %q, want to mention \"look up project\"", err.Error())
+	}
+	if !strings.Contains(err.Error(), "proj-1") {
+		t.Errorf("error = %q, want to name the project id proj-1", err.Error())
+	}
+}
+
+// TestDispatch_CloneMode_ProjectNotFound_FailsLoud pins the same contract
+// for a nil-project-row case (registry drift: the caller has a project ID
+// that no longer resolves).
+func TestDispatch_CloneMode_ProjectNotFound_FailsLoud(t *testing.T) {
+	d := newGatewayTestDB(t)
+	r := &Runner{
+		DB:         d.Conn,
+		Projects:   fakeProjectLookup{projects: nil}, // GetProject returns (nil, nil)
+		Sandbox:    &gwFakeSandboxPrep{dir: t.TempDir()},
+		Runtime:    &gwFakeRuntime{},
+		BoidBinary: "/boid",
+	}
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project (DB row for CreateJob FK): %v", err)
+	}
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"echo", "hi"},
+		Kind:      orchestrator.JobKindHook,
+		Visibility: orchestrator.Visibility{
+			Clone: &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+		},
+	}
+	_, err := r.Dispatch(context.Background(), spec, nil)
+	if err == nil {
+		t.Fatal("Dispatch: expected error when Projects.GetProject returns (nil, nil) for a clone-mode job")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %q, want to mention \"not found\"", err.Error())
+	}
+}
+
+// TestDispatch_CloneMode_MissingUpstreamURL_FailsLoud pins the case where
+// the project row exists but has no upstream_url captured yet (pre-PR2
+// project that skipped backfill). RequireUpstreamURL fires and surfaces a
+// clear message.
+func TestDispatch_CloneMode_MissingUpstreamURL_FailsLoud(t *testing.T) {
+	d := newGatewayTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	r := &Runner{
+		DB:         d.Conn,
+		Projects:   orchestrator.DBProjectCatalog{DB: d.Conn},
+		Sandbox:    &gwFakeSandboxPrep{dir: t.TempDir()},
+		Runtime:    &gwFakeRuntime{},
+		BoidBinary: "/boid",
+	}
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"echo", "hi"},
+		Kind:      orchestrator.JobKindHook,
+		Visibility: orchestrator.Visibility{
+			Clone: &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+		},
+	}
+	_, err := r.Dispatch(context.Background(), spec, nil)
+	if err == nil {
+		t.Fatal("Dispatch: expected error when the project has no captured upstream_url")
+	}
+	if !strings.Contains(err.Error(), "upstream_url") {
+		t.Errorf("error = %q, want to mention \"upstream_url\"", err.Error())
 	}
 }

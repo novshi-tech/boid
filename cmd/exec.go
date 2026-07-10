@@ -80,7 +80,7 @@ func runExec(cobraCmd *cobra.Command, args []string) error {
 		interactive = true
 	}
 
-	spec := dispatcher.BuildExecJobSpec(dispatcher.SessionJobInput{
+	spec, err := dispatcher.BuildExecJobSpec(dispatcher.SessionJobInput{
 		ProjectID:          project.ID,
 		ProjectWorkDir:     project.WorkDir,
 		Readonly:           execReadonly,
@@ -91,6 +91,9 @@ func runExec(cobraCmd *cobra.Command, args []string) error {
 		DockerEnabled:      project.Meta.Capabilities.Docker != nil,
 		DisplayName:        execName,
 	}, args, interactive)
+	if err != nil {
+		return fmt.Errorf("build exec job spec: %w", err)
+	}
 
 	var brokerSocket, brokerToken string
 	var resolvedHostCommands map[string]orchestrator.CommandDef

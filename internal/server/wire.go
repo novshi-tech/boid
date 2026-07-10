@@ -632,7 +632,7 @@ func (a *sessionDispatcherAdapter) StartSession(ctx context.Context, req api.Sta
 	if req.HarnessType == "shell" {
 		argv = []string{"/bin/bash"}
 	}
-	spec := dispatcher.BuildSessionJobSpec(dispatcher.SessionJobInput{
+	spec, err := dispatcher.BuildSessionJobSpec(dispatcher.SessionJobInput{
 		ProjectID:          project.ID,
 		ProjectWorkDir:     project.WorkDir,
 		HarnessType:        req.HarnessType,
@@ -647,6 +647,9 @@ func (a *sessionDispatcherAdapter) StartSession(ctx context.Context, req api.Sta
 		SecretNamespace:    meta.SecretNamespace,
 		DockerEnabled:      meta.Capabilities.Docker != nil,
 	})
+	if err != nil {
+		return nil, &api.StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+	}
 	jobID, err := a.runner.Dispatch(ctx, spec, nil)
 	if err != nil {
 		return nil, &api.StatusError{Code: http.StatusInternalServerError, Message: err.Error()}

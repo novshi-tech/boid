@@ -119,6 +119,11 @@ e2e_setup_fixture_upstream() {
   local upstream_addr
   upstream_addr="$(cat "$ready_file")"
   e2e_log "fixture upstream server listening on $upstream_addr"
+  # docs/plans/git-gateway-cutover.md PR6 cutover (PR7a Opus heads-up):
+  # export the resolved addr so PR7b's new scenarios (gateway-clone-based
+  # assertions) can reach the fixture upstream directly without re-deriving
+  # it from the ready file themselves.
+  export E2E_UPSTREAM_ADDR="$upstream_addr"
 
   for project_dir in "${project_dirs[@]}"; do
     repo_name="$(basename "$project_dir")"

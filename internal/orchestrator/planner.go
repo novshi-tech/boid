@@ -85,31 +85,35 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 	}
 
 	spec := &JobSpec{
-		TaskID:      event.TaskID,
-		ProjectID:   event.ProjectID,
-		HandlerID:   event.Hook.ID,
-		DisplayName: event.Hook.Name,
-		Kind:        JobKindHook,
-		HarnessType: harnessType,
+		TaskID:       event.TaskID,
+		ProjectID:    event.ProjectID,
+		HandlerID:    event.Hook.ID,
+		DisplayName:  event.Hook.Name,
+		Kind:         JobKindHook,
+		HarnessType:  harnessType,
 		Argv:         argv,
 		Instruction:  instruction,
 		Task:         snapshotTask(task),
 		PrimaryInput: payload,
 		Visibility: Visibility{
 			ProjectDir:         proj.WorkDir,
-			UseWorktree:        task.Worktree,
 			AdditionalBindings: behavior.AdditionalBindings,
 			Writable:           !IsReadonly(task),
 			KitRoots:           behavior.KitRoots,
 			ForkPoint:          meta.ForkPoint,
 			DockerEnabled:      meta.Capabilities.Docker != nil,
+			// Clone replaces UseWorktree for real dispatch (docs/plans/
+			// git-gateway-cutover.md PR6 cutover): dispatcher no longer
+			// resolves a host-repo worktree, it clones inside the sandbox
+			// and resolves the declared branch there.
+			Clone: BuildCloneDeclaration(task, parent, meta.ForkPoint),
 		},
 		BuiltinPolicies: DefaultBuiltinPolicies(
 			RoleHook,
 			[]string{"boid", "git", "fetch"},
 			PolicyContext{ProjectDir: proj.WorkDir, HomeDir: sandboxHomeDir()},
 		),
-		HostCommands: behavior.HostCommands.ToCommandDefs(),
+		HostCommands:    behavior.HostCommands.ToCommandDefs(),
 		SecretNamespace: meta.SecretNamespace,
 		Env:             mergeStringMaps(behavior.Env, taskBusinessEnv(task, parent)),
 		ExecutionState:  string(task.Status),

@@ -109,12 +109,21 @@ run_scenario() {
         done
       fi
 
-      "$E2E_BIN_DIR/boid" stop >/dev/null 2>&1 || true
-
+      # docs/plans/git-gateway-cutover.md PR6 cutover (PR7a Opus heads-up):
+      # kill the fixture upstream server BEFORE `boid stop`, not after. Post-
+      # cutover, an in-flight sandbox job may still be mid `git clone`/fetch
+      # against this upstream when the scenario ends; killing it first makes
+      # that connection fail fast (refused/reset) so the job winds down
+      # immediately instead of hanging on a live-but-abandoned socket while
+      # `boid stop` waits for it — the previous order (stop, then kill
+      # upstream) left the upstream server alive exactly while the daemon was
+      # trying to shut down around such a job.
       if [[ -n "${E2E_UPSTREAM_PID:-}" ]]; then
         kill "$E2E_UPSTREAM_PID" >/dev/null 2>&1 || true
         wait "$E2E_UPSTREAM_PID" 2>/dev/null || true
       fi
+
+      "$E2E_BIN_DIR/boid" stop >/dev/null 2>&1 || true
 
       if [[ $exit_code -ne 0 || $KEEP_TEMP -eq 1 ]]; then
         printf '[e2e] temp root preserved at %s\n' "$ROOT" >&2

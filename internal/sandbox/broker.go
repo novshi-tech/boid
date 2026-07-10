@@ -71,7 +71,16 @@ func (b *Broker) Register(commands map[string]CommandDef, builtinPolicies map[st
 		Commands:        commands,
 		BuiltinPolicies: builtinPolicies,
 	}
-	if entry.hasBuiltinPolicy("git") {
+	// Remote snapshot capture is retired under the clone model
+	// (docs/plans/git-gateway-cutover.md PR6: "broker.go:76 の remote
+	// snapshot capture の停止"). ctx.SandboxRoot is only set for clone-mode
+	// jobs, whose git runs for real inside the sandbox — the host-side git
+	// builtin (and its remote-snapshot allowlist) is unreachable for them
+	// once the git shim is gone, so there is nothing useful to capture.
+	// The captureGitBinding call itself is left in place (unused by
+	// clone-mode jobs) rather than deleted — internal/sandbox/git_builtin.go
+	// and its "git" builtin policy registration are PR8 deletions, not PR6's.
+	if entry.hasBuiltinPolicy("git") && ctx.SandboxRoot == "" {
 		var err error
 		entry.Git, err = captureGitBinding(ctx.ProjectDir, ctx.WorktreeDir)
 		logGitBindingSnapshot(ctx, entry.Git, err)
@@ -528,9 +537,17 @@ func validateBoidBuiltinCwd(cwd string, entry *tokenEntry) error {
 	return fmt.Errorf("boid builtin is restricted to the current project or worktree")
 }
 
+// entryRoot returns the directory a "boid" builtin call's cwd argument must
+// fall under. Clone-mode jobs (docs/plans/git-gateway-cutover.md PR6 cutover)
+// have no host-side ProjectDir/WorktreeDir the sandbox's own filesystem
+// corresponds to — their cwd is always the sandbox-internal "/workspace" —
+// so SandboxRoot takes priority when set.
 func entryRoot(entry *tokenEntry) string {
 	if entry == nil {
 		return ""
+	}
+	if entry.Context.SandboxRoot != "" {
+		return entry.Context.SandboxRoot
 	}
 	if entry.Context.WorktreeDir != "" {
 		return entry.Context.WorktreeDir

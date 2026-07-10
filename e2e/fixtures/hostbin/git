@@ -76,13 +76,19 @@ if [[ "$subcmd" == "worktree" ]]; then
 elif [[ "$subcmd" == "config" ]]; then
   # git config --get remote.origin.url — used by internal/dispatcher.
   # GitOriginURL / CaptureUpstreamURL for PR2 upstream_url capture
-  # (docs/plans/git-gateway-cutover.md). Fake git has no real remote state
-  # (scenario fixtures are plain directories, not git repos — no /usr/bin/git
-  # init happens for them), so report a fixed placeholder for any
-  # remote.origin.url lookup. This is a stand-in for PR7a's real
-  # fixture-upstream-server harness, just enough for `project add` / `project
-  # reload` to see *some* origin during e2e. Anything else: "not found",
-  # matching real git's exit 1 for a missing config key.
+  # (docs/plans/git-gateway-cutover.md).
+  #
+  # docs/plans/git-gateway-cutover.md PR6 cutover (PR7a Opus heads-up,
+  # brought forward from PR7b since cutover needs it now): shell out to the
+  # REAL git first. Scenarios seeded by e2e_setup_fixture_upstream
+  # (e2e/lib/common.sh) `git init` + `git remote add origin` + push for real
+  # against the fixture upstream server, so `/usr/bin/git -C "$cdir" config
+  # --get remote.origin.url` reports the actual reachable origin URL there —
+  # exercising the real path (wiring-seams.md seam 9) instead of a fixed
+  # placeholder. Scenarios that never called e2e_setup_fixture_upstream (no
+  # real .git / no origin configured) fall back to the historical fixed
+  # placeholder unchanged, so this stays backward compatible with every
+  # scenario that doesn't care about a real upstream.
   key=""
   for arg in "${args[@]:$((idx + 1))}"; do
     case "$arg" in
@@ -91,6 +97,11 @@ elif [[ "$subcmd" == "config" ]]; then
     esac
   done
   if [[ "$key" == "remote.origin.url" ]]; then
+    real_dir="${cdir:-$PWD}"
+    if real_url="$(/usr/bin/git -C "$real_dir" config --get remote.origin.url 2>/dev/null)" && [[ -n "$real_url" ]]; then
+      printf '%s\n' "$real_url"
+      exit 0
+    fi
     printf 'https://example.invalid/e2e/fake-repo.git\n'
     exit 0
   fi

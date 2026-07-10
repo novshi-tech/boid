@@ -150,24 +150,22 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 	const maxCycles = 10
 	current := task
 
-	// Branch lock — held for the entire executing lifetime so concurrent root
-	// tasks on the same base_branch serialize while child tasks (boid/<id8>)
-	// always run in parallel. Idempotent: re-spawned dispatch loops for an
-	// already-locked task no-op. Only acquired when task.Status == executing;
-	// terminal-task dispatch loops skip acquisition. Readonly tasks (supervisor)
-	// skip acquisition: their sandbox hooks run on a readonly mount so no
-	// write-level conflict exists, and git operations self-serialize via
-	// .git/index.lock. Skipping lets supervisors and executors share the same
-	// base_branch without the supervisor blocking the executor.
-	if s.Locks != nil && current.Status == orchestrator.TaskStatusExecuting && !current.Readonly {
-		headBranch := orchestrator.ComputeHeadBranch(current)
-		if err := s.Locks.AcquireForTask(ctx, current.ProjectID, headBranch, current.ID); err != nil {
-			slog.Warn("dispatch loop: branch lock acquire failed",
-				"task_id", current.ID, "project_id", current.ProjectID, "error", err)
-			s.abortOnDispatchError(ctx, current, fmt.Errorf("branch lock: %w", err))
-			return
-		}
-	}
+	// Branch lock acquisition is retired as of docs/plans/git-gateway-cutover.md
+	// PR6 (cutover): each job now clones the project fresh inside the sandbox
+	// instead of sharing a host git worktree, so the physical constraint that
+	// motivated serializing same-branch tasks (only one worktree can check out
+	// a given branch at a time) no longer exists. Concurrent same-branch pushes
+	// are instead resolved the ordinary git way — the second push hits a
+	// non-fast-forward reject and that session pulls (fetch + merge/rebase)
+	// before retrying — which also resolves the branch-lock head-of-line
+	// blocking a long-lived supervisor could previously cause (see
+	// khi-supervisor-branch-lock-headline-block in memory).
+	//
+	// s.Locks / BranchLockManager (internal/orchestrator/project_lock.go) are
+	// intentionally left wired (releaseProjectLock below stays, and is a
+	// documented no-op when nothing was ever acquired) rather than deleted —
+	// that's PR8's job alongside the rest of the worktree machinery, so a git
+	// revert of this PR restores locking cleanly.
 
 	for cycle := 0; cycle < maxCycles; cycle++ {
 		result, err := s.Coordinator.DispatchAndAdvance(ctx, current, meta, sm)

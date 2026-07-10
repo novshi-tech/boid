@@ -149,6 +149,46 @@ func (r *Runner) buildGatewayCloneURL(spec *orchestrator.JobSpec, gatewayURL, ga
 	return gatewayURL + gitgateway.PathPrefix + gatewayToken + "/" + string(key) + ".git"
 }
 
+// buildPeerAdvertise resolves the {name, clone URL, reference path} view of
+// workspacePeers exposed via environment.yaml `workspace_projects`
+// (docs/plans/git-gateway-cutover.md PR6 cutover 「5. peer advertise の変
+// 更」 — replaces the pre-cutover host path enumeration). Returns nil when
+// the gateway isn't wired (gatewayURL/gatewayToken empty) or Projects is
+// unset; an individual peer with no resolvable upstream_url is skipped
+// (with a warning) rather than aborting the whole map — same
+// fail-soft posture as buildGatewayRepos.
+func (r *Runner) buildPeerAdvertise(workspacePeers map[string]string, gatewayURL, gatewayToken string) map[string]PeerAdvertise {
+	if len(workspacePeers) == 0 || gatewayURL == "" || gatewayToken == "" || r.Projects == nil {
+		return nil
+	}
+	out := make(map[string]PeerAdvertise, len(workspacePeers))
+	for peerID := range workspacePeers {
+		proj, err := r.Projects.GetProject(peerID)
+		if err != nil || proj == nil || proj.UpstreamURL == "" {
+			continue
+		}
+		key, err := repoKeyFromUpstreamURL(proj.UpstreamURL)
+		if err != nil {
+			slog.Warn("git gateway: cannot build peer advertise, upstream_url did not parse",
+				"peer_project_id", peerID, "upstream_url", proj.UpstreamURL, "error", err)
+			continue
+		}
+		name := string(key)
+		if parts := strings.Split(name, "/"); len(parts) == 3 {
+			name = parts[2]
+		}
+		out[peerID] = PeerAdvertise{
+			Name:          name,
+			CloneURL:      gatewayURL + gitgateway.PathPrefix + gatewayToken + "/" + string(key) + ".git",
+			ReferencePath: fmt.Sprintf(sandboxClonePeerReferenceDirFmt, peerID),
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // repoKeyFromUpstreamURL parses a captured upstream_url (or a workspace
 // extra_repos entry, in any form repoSlugFromOriginURL accepts — HTTPS or
 // SSH) into a gitgateway.RepoKey. It always routes through

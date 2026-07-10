@@ -252,7 +252,14 @@ func TestBuildSandboxSpec_KitRootParentNotBound(t *testing.T) {
 // /usr/bin/git と /bin/git が boid バイナリ bind で上書きされることを検証する。
 // これにより絶対パスで実体 git を呼び出す迂回が防止される。
 // boid バイナリ自身はホスト実パスのまま bind mount される（/opt/boid/bin/boid は廃止）。
-func TestBuildSandboxSpec_GitShimBindMounts(t *testing.T) {
+// TestBuildSandboxSpec_BoidBinaryBindMountOnly is the PR6 cutover rewrite of
+// the former "GitShimBindMounts" test: the git-shim PATH overlay
+// (/usr/bin/git, /bin/git bound to the boid binary) is retired — sandbox git
+// is now always the real binary visible via the base rbind of /usr/bin — so
+// this asserts the boid binary itself is still bind-mounted (for host
+// command shims) while /usr/bin/git and /bin/git are conspicuously absent
+// regardless of whether BoidBinary is set.
+func TestBuildSandboxSpec_BoidBinaryBindMountOnly(t *testing.T) {
 	const boidBin = "/usr/local/bin/boid"
 	spec := &orchestrator.JobSpec{}
 	rt := SandboxRuntimeInfo{BoidBinary: boidBin}
@@ -261,16 +268,14 @@ func TestBuildSandboxSpec_GitShimBindMounts(t *testing.T) {
 		t.Fatalf("BuildSandboxSpec: %v", err)
 	}
 
-	var boidMount, usrBinGit, binGit *sandbox.Mount
+	var boidMount *sandbox.Mount
 	for i := range result.Mounts {
 		m := &result.Mounts[i]
 		switch m.Target {
 		case boidBin:
 			boidMount = m
-		case "/usr/bin/git":
-			usrBinGit = m
-		case "/bin/git":
-			binGit = m
+		case "/usr/bin/git", "/bin/git":
+			t.Errorf("git-shim overlay mount must not exist post-cutover (docs/plans/git-gateway-cutover.md PR6): target=%q", m.Target)
 		case "/opt/boid/bin/boid":
 			t.Errorf("/opt/boid/bin/boid must not exist as mount target in new design")
 		}
@@ -287,30 +292,7 @@ func TestBuildSandboxSpec_GitShimBindMounts(t *testing.T) {
 		t.Error("boid binary mount should be ReadOnly")
 	}
 
-	if usrBinGit == nil {
-		t.Fatal("/usr/bin/git mount not found in Spec.Mounts")
-	}
-	if usrBinGit.Source != boidBin {
-		t.Errorf("/usr/bin/git source = %q, want %q", usrBinGit.Source, boidBin)
-	}
-	if !usrBinGit.ReadOnly {
-		t.Error("/usr/bin/git mount should be ReadOnly")
-	}
-	if !usrBinGit.IsFile {
-		t.Error("/usr/bin/git mount should have IsFile=true")
-	}
-
-	if binGit == nil {
-		t.Fatal("/bin/git mount not found in Spec.Mounts")
-	}
-	if binGit.Source != boidBin {
-		t.Errorf("/bin/git source = %q, want %q", binGit.Source, boidBin)
-	}
-	if binGit.Guard == "" {
-		t.Error("/bin/git mount must have a Guard (conditional on host /bin/git existence)")
-	}
-
-	// BoidBinary 未設定時はオーバーライド mount が存在しないことを確認。
+	// BoidBinary 未設定時も同様に git override mount が存在しないことを確認。
 	noGit, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
 	if err != nil {
 		t.Fatalf("BuildSandboxSpec (no BoidBinary): %v", err)
@@ -495,12 +477,56 @@ func TestCloneMounts_IncludesSelfReferenceAndPeers(t *testing.T) {
 		t.Error("peer reference mount must be read-only")
 	}
 
-	realGit := findTarget(sandboxRealGitBin)
-	if realGit == nil {
-		t.Fatal("real (non-shimmed) git binary mount not found")
+	// PR6 cutover removed the separate real-git-binary mount: the git shim
+	// overlay it existed to route around (/usr/bin/git, /bin/git bound to
+	// the boid binary) is itself retired, so the sandbox's own /usr/bin/git
+	// (visible via the base rbind) is already the real binary. Assert its
+	// absence explicitly so a future regression that re-introduces it here
+	// is caught.
+	if m := findTarget("/run/boid/real-git"); m != nil {
+		t.Errorf("unexpected real-git-binary mount present post-cutover: %+v", m)
 	}
-	if !realGit.ReadOnly || !realGit.IsFile {
-		t.Errorf("real git bin mount = %+v, want ReadOnly+IsFile", realGit)
+}
+
+func TestCloneMounts_IncludesWorkspaceBindWhenCloneWorkspaceDirSet(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Visibility: orchestrator.Visibility{
+			Clone: &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+		},
+	}
+	rt := SandboxRuntimeInfo{CloneWorkspaceDir: "/data/boid/runtimes/job-1/workspace"}
+	mounts := cloneMounts(spec, rt)
+
+	var workspace *sandbox.Mount
+	for i := range mounts {
+		if mounts[i].Target == sandboxCloneTargetDir {
+			workspace = &mounts[i]
+		}
+	}
+	if workspace == nil {
+		t.Fatal("/workspace bind mount not found when rt.CloneWorkspaceDir is set")
+	}
+	if workspace.Source != rt.CloneWorkspaceDir {
+		t.Errorf("workspace bind source = %q, want %q", workspace.Source, rt.CloneWorkspaceDir)
+	}
+	if workspace.ReadOnly {
+		t.Error("workspace bind must be read-write (readonly is enforced by the gateway, not the local filesystem)")
+	}
+}
+
+func TestCloneMounts_OmitsWorkspaceBindWhenCloneWorkspaceDirUnset(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Visibility: orchestrator.Visibility{
+			Clone: &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+		},
+	}
+	mounts := cloneMounts(spec, SandboxRuntimeInfo{})
+	for _, m := range mounts {
+		if m.Target == sandboxCloneTargetDir {
+			t.Errorf("unexpected /workspace bind when rt.CloneWorkspaceDir is empty: %+v", m)
+		}
 	}
 }
 
@@ -532,7 +558,6 @@ func TestBuildCloneSpec_PopulatesFromDeclarationAndRuntimeInfo(t *testing.T) {
 		URL:                 rt.GatewayCloneURL,
 		ReferenceDir:        sandboxCloneReferenceDir,
 		TargetDir:           sandboxCloneTargetDir,
-		RealGitBin:          sandboxRealGitBin,
 		Branch:              "boid/abcd1234",
 		BaseBranch:          "main",
 		ForkPoint:           "boid/parent1234",
@@ -580,9 +605,46 @@ func TestBuildSandboxSpec_CloneNil_UnaffectedByPR5(t *testing.T) {
 		t.Errorf("WorkDir = %q, want project dir unchanged", out.WorkDir)
 	}
 	for _, m := range out.Mounts {
-		if m.Target == sandboxCloneReferenceDir || m.Target == sandboxRealGitBin {
+		if m.Target == sandboxCloneReferenceDir || m.Target == sandboxCloneTargetDir {
 			t.Errorf("unexpected clone mount present when Visibility.Clone is nil: %+v", m)
 		}
+	}
+}
+
+// TestBuildSandboxSpec_CloneEnabled_SkipsProjectVisibilityMounts is the PR6
+// cutover regression guard for the PR5 Opus review's double-mount concern:
+// when Visibility.Clone is set, BuildSandboxSpec must not also emit
+// projectVisibilityMounts' host ProjectDir bind (Source==Target==ProjectDir)
+// — that mount layout belongs exclusively to the retired worktree/project
+// path. A clone-mode job's only view of ProjectDir on the host is the
+// read-only `.git` reference bind at sandboxCloneReferenceDir (for `git
+// clone --reference`), never a live bind of the working tree itself.
+func TestBuildSandboxSpec_CloneEnabled_SkipsProjectVisibilityMounts(t *testing.T) {
+	const projectDir = "/home/user/project"
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"/bin/true"},
+		Visibility: orchestrator.Visibility{
+			ProjectDir: projectDir,
+			Writable:   true,
+			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+		},
+	}
+	rt := SandboxRuntimeInfo{JobID: "job-1", CloneWorkspaceDir: "/data/boid/runtimes/job-1/workspace"}
+	out, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	for _, m := range out.Mounts {
+		if m.Source == projectDir && m.Target == projectDir {
+			t.Errorf("unexpected host ProjectDir bind present when Visibility.Clone is set: %+v", m)
+		}
+	}
+	if out.WorkDir != sandboxCloneTargetDir {
+		t.Errorf("WorkDir = %q, want %q (clone target)", out.WorkDir, sandboxCloneTargetDir)
+	}
+	if !out.Clone.Enabled {
+		t.Error("Clone.Enabled = false, want true")
 	}
 }
 
@@ -1446,6 +1508,50 @@ func TestBuildEnvironmentYAML_FilesystemReflectsVisibility(t *testing.T) {
 	second := binds[1].(map[string]any)
 	if second["mode"] != "rw" {
 		t.Errorf("second binding mode = %v, want rw", second["mode"])
+	}
+}
+
+// TestBuildEnvironmentYAML_WorkspaceProjectsUsesPeerAdvertise is the PR6
+// cutover regression guard for docs/plans/git-gateway-cutover.md 「5. peer
+// advertise の変更」: `workspace_projects` entries must carry
+// {name, clone_url, reference_path} — never a host filesystem path — and a
+// peer with no advertise entry (e.g. gateway unwired) must be omitted rather
+// than falling back to the retired host-path form.
+func TestBuildEnvironmentYAML_WorkspaceProjectsUsesPeerAdvertise(t *testing.T) {
+	doc := parsedEnvDoc(t, EnvironmentInput{
+		Visibility: orchestrator.Visibility{ProjectDir: "/workspace/proj"},
+		WorkspacePeers: map[string]string{
+			"peer-1": "/host/peer-1", // host path present but must not leak into the doc
+			"peer-2": "/host/peer-2", // no advertise entry below -> must be omitted
+		},
+		WorkspacePeerAdvertise: map[string]PeerAdvertise{
+			"peer-1": {
+				Name:          "peer-repo",
+				CloneURL:      "http://10.0.2.2:9/j/tok/github.com/o/peer-repo.git",
+				ReferencePath: "/mnt/refs/peers/peer-1.git",
+			},
+		},
+	})
+	raw, _ := yaml.Marshal(doc)
+	if strings.Contains(string(raw), "/host/peer-1") || strings.Contains(string(raw), "/host/peer-2") {
+		t.Fatalf("environment.yaml must not leak a host peer path:\n%s", raw)
+	}
+	projects, ok := doc["workspace_projects"].([]any)
+	if !ok || len(projects) != 1 {
+		t.Fatalf("workspace_projects = %v, want exactly 1 entry (peer-2 has no advertise data)", doc["workspace_projects"])
+	}
+	entry := projects[0].(map[string]any)
+	if entry["name"] != "peer-repo" {
+		t.Errorf("name = %v, want peer-repo", entry["name"])
+	}
+	if entry["clone_url"] != "http://10.0.2.2:9/j/tok/github.com/o/peer-repo.git" {
+		t.Errorf("clone_url = %v", entry["clone_url"])
+	}
+	if entry["reference_path"] != "/mnt/refs/peers/peer-1.git" {
+		t.Errorf("reference_path = %v", entry["reference_path"])
+	}
+	if _, hasPath := entry["path"]; hasPath {
+		t.Errorf("workspace_projects entry must not have a legacy 'path' field: %v", entry)
 	}
 }
 

@@ -1,5 +1,29 @@
 package api
 
+// Branch-lock acquisition retirement (docs/plans/git-gateway-cutover.md PR6
+// cutover, 2026-07-10): runDispatchLoop no longer calls
+// orchestrator.BranchLockManager.AcquireForTask — every project-visible job
+// now clones the project fresh inside the sandbox instead of sharing a host
+// git worktree, so the physical "only one worktree can check out a branch"
+// constraint that motivated same-branch serialization no longer exists. Same-
+// branch concurrent pushes are now resolved the ordinary git way (non-fast-
+// forward reject, then fetch + merge/rebase + retry). This also removes the
+// long-lived-supervisor head-of-line blocking documented in memory as
+// khi-supervisor-branch-lock-headline-block.
+//
+// s.Locks / BranchLockManager itself is left wired (releaseProjectLock stays
+// a documented no-op call on every executing-leaving path) — only the
+// ACQUIRE call site is gone. Deleting project_lock.go and this file outright
+// is PR8's job, alongside the rest of the worktree-era machinery, so a git
+// revert of this PR restores locking cleanly.
+//
+// The tests below were rewritten (not deleted) to assert the *new* behavior:
+// AcquireForTask is never reached regardless of task shape (root/child,
+// readonly/writable, worktree true/false, hookless), and same-base_branch
+// tasks that used to serialize now run fully concurrently. The plain
+// "lock released on $transition" tests were left as-is: ReleaseForTask on an
+// unheld task is a documented no-op, so they still pass and still exercise
+// the surrounding status-transition behavior.
 import (
 	"context"
 	"errors"
@@ -68,10 +92,10 @@ func anyMeta(behaviorName string) *orchestrator.ProjectMeta {
 	}
 }
 
-// TestBranchLock_RunDispatchLoop_AcquiresAndReleasesOnDone verifies the
-// happy path: the lock is acquired at runDispatchLoop entry and released
-// once the task reaches done via auto-advance + finalizeTerminal.
-func TestBranchLock_RunDispatchLoop_AcquiresAndReleasesOnDone(t *testing.T) {
+// TestBranchLock_RunDispatchLoop_NeverHeldOnDone verifies the happy path
+// runs to completion (done via auto-advance + finalizeTerminal) without ever
+// holding the branch lock, now that AcquireForTask is retired.
+func TestBranchLock_RunDispatchLoop_NeverHeldOnDone(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:         "task-1",
 		ProjectID:  "proj-1",
@@ -222,10 +246,11 @@ func TestBranchLock_ReadonlySup_WritableExec_SameBaseBranch_Parallel(t *testing.
 	<-doneExec
 }
 
-// TestBranchLock_RunDispatchLoop_AcquiresForWorktreeTask verifies that
-// worktree=true tasks also acquire the branch lock (they have unique boid/<id8>
-// keys so they succeed immediately without blocking siblings).
-func TestBranchLock_RunDispatchLoop_AcquiresForWorktreeTask(t *testing.T) {
+// TestBranchLock_RunDispatchLoop_NeverAcquiresForWorktreeTask verifies that
+// a worktree=true child task — which pre-cutover would have acquired the
+// branch lock under its unique boid/<id8> key — does not acquire it now that
+// AcquireForTask is retired (see package doc comment).
+func TestBranchLock_RunDispatchLoop_NeverAcquiresForWorktreeTask(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "abcd1234-0000-0000-0000-000000000000",
 		ProjectID: "proj-1",
@@ -259,18 +284,19 @@ func TestBranchLock_RunDispatchLoop_AcquiresForWorktreeTask(t *testing.T) {
 		t.Fatal("dispatch coordinator never entered")
 	}
 
-	if !locks.IsHeldForTask(task.ID) {
-		t.Fatal("worktree=true task must hold the branch lock (unique boid/<id8> key)")
+	if locks.IsHeldForTask(task.ID) {
+		t.Fatal("worktree=true task must not acquire the branch lock (AcquireForTask is retired)")
 	}
 
 	close(holding.release)
 	<-done
 }
 
-// TestBranchLock_RunDispatchLoop_AcquiresForHooklessBehavior verifies that
-// behaviors without hooks still acquire the branch lock (hook presence no
-// longer gates locking; branch identity does).
-func TestBranchLock_RunDispatchLoop_AcquiresForHooklessBehavior(t *testing.T) {
+// TestBranchLock_RunDispatchLoop_NeverAcquiresForHooklessBehavior verifies
+// that a hookless behavior — which pre-cutover would have acquired the
+// branch lock like any other task — does not acquire it now that
+// AcquireForTask is retired (see package doc comment).
+func TestBranchLock_RunDispatchLoop_NeverAcquiresForHooklessBehavior(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:         "task-smoke",
 		ProjectID:  "proj-1",
@@ -309,17 +335,18 @@ func TestBranchLock_RunDispatchLoop_AcquiresForHooklessBehavior(t *testing.T) {
 		t.Fatal("dispatch coordinator never entered")
 	}
 
-	if !locks.IsHeldForTask(task.ID) {
-		t.Fatal("hookless behavior must still hold the branch lock")
+	if locks.IsHeldForTask(task.ID) {
+		t.Fatal("hookless behavior must not acquire the branch lock (AcquireForTask is retired)")
 	}
 
 	close(holding.release)
 	<-done
 }
 
-// TestBranchLock_RunDispatchLoop_HeldDuringDispatch verifies that the lock
-// remains held while the dispatch coordinator is in flight.
-func TestBranchLock_RunDispatchLoop_HeldDuringDispatch(t *testing.T) {
+// TestBranchLock_RunDispatchLoop_NeverHeldDuringDispatch verifies that the
+// lock is never held — before, during, or after — while the dispatch
+// coordinator is in flight, now that AcquireForTask is retired.
+func TestBranchLock_RunDispatchLoop_NeverHeldDuringDispatch(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:         "task-1",
 		ProjectID:  "proj-1",
@@ -352,22 +379,26 @@ func TestBranchLock_RunDispatchLoop_HeldDuringDispatch(t *testing.T) {
 		t.Fatal("dispatch coordinator never entered")
 	}
 
-	if !locks.IsHeldForTask(task.ID) {
-		t.Fatal("expected lock held while dispatch coordinator is running")
+	if locks.IsHeldForTask(task.ID) {
+		t.Fatal("expected lock never held while dispatch coordinator is running (AcquireForTask is retired)")
 	}
 
 	close(holding.release)
 	<-done
 
 	if locks.IsHeldForTask(task.ID) {
-		t.Fatal("expected lock released after dispatch loop completed")
+		t.Fatal("expected lock still not held after dispatch loop completed")
 	}
 }
 
-// TestBranchLock_SameBaseBranch_Serializes is the central correctness test:
-// two root sup tasks on the same project and same base_branch serialize.
-// Once task A reaches done and releases the lock, task B proceeds.
-func TestBranchLock_SameBaseBranch_Serializes(t *testing.T) {
+// TestBranchLock_SameBaseBranch_NoLongerSerializes is the central regression
+// test for the retirement: two root sup tasks on the same project and same
+// base_branch used to serialize (task B blocked until task A released the
+// lock); post-cutover both enter dispatch concurrently with no ordering
+// dependency at all. This is the fix for the long-lived-supervisor head-of-
+// line blocking documented in memory as
+// khi-supervisor-branch-lock-headline-block.
+func TestBranchLock_SameBaseBranch_NoLongerSerializes(t *testing.T) {
 	locks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
 
 	taskA := &orchestrator.Task{
@@ -389,25 +420,10 @@ func TestBranchLock_SameBaseBranch_Serializes(t *testing.T) {
 		Locks:       locks,
 	}
 
-	doneA := make(chan struct{})
-	go func() {
-		defer close(doneA)
-		svcA.runDispatchLoop(context.Background(), taskA, anyMeta("impl"), orchestrator.DefaultMachine())
-	}()
-
-	select {
-	case <-holdingA.enter:
-	case <-time.After(time.Second):
-		t.Fatal("task A dispatch did not enter")
-	}
-	if !locks.IsHeldForTask("task-a") {
-		t.Fatal("task A should hold the lock")
-	}
-
 	taskB := &orchestrator.Task{
 		ID:         "task-b",
 		ProjectID:  "proj-1",
-		BaseBranch: "main", // same base_branch → same lock key
+		BaseBranch: "main", // same base_branch — used to be the same lock key
 		Status:     orchestrator.TaskStatusExecuting,
 		Behavior:   "impl",
 		Payload:    []byte(`{}`),
@@ -423,40 +439,35 @@ func TestBranchLock_SameBaseBranch_Serializes(t *testing.T) {
 		Locks:       locks,
 	}
 
+	doneA := make(chan struct{})
 	doneB := make(chan struct{})
+	go func() {
+		defer close(doneA)
+		svcA.runDispatchLoop(context.Background(), taskA, anyMeta("impl"), orchestrator.DefaultMachine())
+	}()
 	go func() {
 		defer close(doneB)
 		svcB.runDispatchLoop(context.Background(), taskB, anyMeta("impl"), orchestrator.DefaultMachine())
 	}()
 
-	select {
-	case <-holdingB.enter:
-		t.Fatal("task B entered dispatch while task A held the lock on the same branch")
-	case <-time.After(80 * time.Millisecond):
-		// expected — B is blocked at AcquireForTask
+	// Both must enter concurrently — neither blocks on the other, unlike the
+	// pre-cutover behavior where B would have waited for A's lock release.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-holdingA.enter:
+		case <-holdingB.enter:
+		case <-time.After(time.Second):
+			t.Fatal("same base_branch tasks should enter dispatch concurrently now that AcquireForTask is retired")
+		}
+	}
+	if locks.IsHeldForTask("task-a") || locks.IsHeldForTask("task-b") {
+		t.Fatal("neither task should hold the branch lock")
 	}
 
 	close(holdingA.release)
-	<-doneA
-	if locks.IsHeldForTask("task-a") {
-		t.Fatal("task A lock should be released after done")
-	}
-
-	select {
-	case <-holdingB.enter:
-		// expected
-	case <-time.After(time.Second):
-		t.Fatal("task B never entered dispatch after A released")
-	}
-	if !locks.IsHeldForTask("task-b") {
-		t.Fatal("task B should hold the lock after acquiring")
-	}
 	close(holdingB.release)
+	<-doneA
 	<-doneB
-
-	if locks.IsHeldForTask("task-b") {
-		t.Fatal("task B lock should be released after done")
-	}
 }
 
 // TestBranchLock_DifferentBaseBranches_Parallel verifies that two root sup

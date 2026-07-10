@@ -24,6 +24,7 @@ has the same shape:
 7. [embedded-skill bind (adapter.Bindings)](#7-embedded-skill-bind)
 8. [host_commands CommandDef mirror (spec → broker gate)](#8-host_commands-commanddef-mirror)
 9. [gitgateway RepoKey normalization](#9-gitgateway-repokey-normalization)
+10. [sandbox-clone declaration path](#10-sandbox-clone-declaration-path)
 
 ---
 
@@ -145,6 +146,17 @@ reaches the per-workspace proxy.
 
 The binding snapshot that decides which remotes a brokered git push/fetch may reach.
 
+**Retired for clone-mode jobs as of docs/plans/git-gateway-cutover.md PR6 (cutover, 2026-07-10)**:
+`internal/sandbox/broker.go`'s `Register` now skips `captureGitBinding` whenever
+`ctx.SandboxRoot != ""` (clone-mode jobs — see seam 10). The git-shim PATH overlay that used to
+route sandbox git through this snapshot is also gone (no `/usr/bin/git`/`/bin/git` override mount),
+so the snapshot mechanism is unreachable dead code on the main dispatch path. It survives untouched
+for two reasons: (1) `internal/sandbox/git_builtin.go` and the `"git"` `BuiltinPolicy` registration
+are explicitly deferred to PR8 (this PR's scope excludes deletion), and (2) it documents what to
+delete together in PR8. Do not "fix" a remote-snapshot bug on this path for a clone-mode job — check
+whether `ctx.SandboxRoot` is set before spending time on it; if it is, the snapshot was never
+consulted in the first place.
+
 - **End**: `internal/sandbox/git_builtin.go`. The binding's remote set is snapshotted **once** at
   token-registration time.
 - **Invariant**: known remotes are resolved from the snapshot (no re-capture = the trusted-snapshot
@@ -154,7 +166,8 @@ The binding snapshot that decides which remotes a brokered git push/fetch may re
   rejected "for just one project".
 - **When you touch it**: if you touch the git builtin, the snapshot, or remote resolution, verify
   you haven't broken the trusted-snapshot guarantee (known remotes are not re-fetched) and that
-  re-capture happens only on a miss.
+  re-capture happens only on a miss. For clone-mode jobs, verify the `ctx.SandboxRoot != ""` guard in
+  `broker.go`'s `Register` is still what disables this path — don't accidentally re-enable it.
 
 ## 7. embedded-skill bind
 
@@ -231,3 +244,55 @@ segment, either of which may or may not carry a `.git` suffix).
   `NewRepoKey` itself, verify neither register nor lookup ever constructs a `RepoKey` by any path
   that bypasses `NewRepoKey`, and that a repo registered via one URL form (e.g. SSH) is reachable
   via a gateway path using the other form (e.g. HTTPS, with or without `.git`).
+
+## 10. sandbox-clone declaration path
+
+Whether a task/hook/session/exec job's branch declaration actually reaches the runner's clone
+sequence, and whether the mount side stays in lockstep with the declaration side. Added by PR5
+(`docs/plans/git-gateway-cutover.md`), engaged for real dispatch by PR6 (cutover).
+
+- **End A (declare)**: `orchestrator.BuildCloneDeclaration` (`internal/orchestrator/head_branch.go`,
+  called from `PlanHook` in `planner.go`) for task/hook jobs, and
+  `dispatcher.buildSessionCloneDeclaration` (`internal/dispatcher/session_job.go`) for
+  session/exec jobs. Both populate `orchestrator.Visibility.Clone` (`*CloneDeclaration`) with
+  `Branch` / `BaseBranch` / `CheckoutOnly` / `ForkPoint` / `BaseBranchForkPoint` — a pure
+  declaration, no git executed yet.
+- **End B (translate)**: `dispatcher.buildCloneSpec` (`internal/dispatcher/sandbox_builder.go`)
+  converts the declaration + `Runner`-resolved facts (`rt.GatewayCloneURL`) into
+  `sandbox.CloneSpec`, which `BuildSandboxSpec` attaches to `sandbox.Spec.Clone`.
+- **End C (mount)**: `dispatcher.cloneMounts` (same file) — a **parallel, independently-gated**
+  wire that must agree with End B on the same `spec.Visibility.Clone != nil` condition. It builds
+  the RO `.git` reference-dir binds (self + workspace peers, at `sandboxCloneReferenceDir` /
+  `sandboxClonePeerReferenceDirFmt`) and the `/workspace` bind from `rt.CloneWorkspaceDir`
+  (`Runner.Dispatch` pre-allocates `<RuntimesDir>/<job.ID>/workspace` and mkdir's it before
+  `BuildSandboxSpec` runs). `BuildSandboxSpec`'s project-visibility switch must also route to the
+  clone-only tmpfs-HOME branch (skipping `projectVisibilityMounts`) whenever `Clone != nil` — see
+  the PR5 Opus review's double-mount concern.
+- **End D (execute)**: `runner.performClone` (`internal/sandbox/runner/clone.go`), invoked from
+  `RunInnerChild` (`internal/sandbox/runner/runner_linux.go`) only when `spec.Clone.Enabled`. Clones
+  from `cs.URL` (the gateway clone URL, carrying a live job token — redacted via
+  `redactCloneURLToken` before it reaches any error string or `runner-state.json`), optionally with
+  `--reference cs.ReferenceDir`, into `cs.TargetDir` (`/workspace`), then resolves
+  `Branch`/`BaseBranch`/`ForkPoint` against the fresh clone (mirrors
+  `dispatcher.WorktreeManager.Create`'s host-side resolution logic 1:1, minus the pre-fetch — a
+  fresh clone already has every remote ref).
+- **Invariant**: (1) End A's `CheckoutOnly` is true for a root task (`ParentID == ""`) **or** any
+  task with `Worktree == false` — the clone-mode equivalent of the retired worktree=false
+  "run directly in project dir" case (docs/plans/git-gateway-cutover.md). (2) End B/C's
+  `spec.Visibility.Clone != nil` gate must be checked identically everywhere it appears
+  (`resolveWorkDir`, the mount switch, `cloneMounts`, `buildCloneSpec`) — a mismatch between any
+  two of these is exactly the double-mount / no-mount class of bug. (3) End D never gets a real
+  git binary path threaded to it anymore post-cutover (`CloneSpec.RealGitBin` is left unset) — the
+  sandbox's own `git` on `$PATH` is the real binary once the git-shim overlay is retired (seam 6's
+  note); don't reintroduce a bind for this.
+- **Past break**: none yet (PR5 was inert; PR6 is this seam's first real-dispatch exercise) — this
+  entry exists so the *next* touch has a map, not so it documents a regression already found.
+- **Guard**: `TestCloneMounts_*` / `TestBuildCloneSpec_*` / `TestResolveWorkDir_CloneEnabled_*` /
+  `TestBuildSandboxSpec_CloneEnabled_SkipsProjectVisibilityMounts` (`internal/dispatcher/
+  sandbox_builder_test.go`), `TestPerformClone_*` (`internal/sandbox/runner/clone_test.go`,
+  `clone_e2e_test.go`), `TestBuildCloneDeclaration_*` (`internal/orchestrator/head_branch_test.go`
+  — add if missing when you next touch End A).
+- **When you touch it**: if you touch any of the four ends, verify the other three still agree —
+  in particular, a change to `Visibility.Clone`'s shape (End A) must be reflected in both
+  `buildCloneSpec` (End B) and `performClone`'s resolution logic (End D), and a change to the mount
+  layout (End C) must not reintroduce a host `ProjectDir`/`WorktreeDir` bind for a clone-mode job.
