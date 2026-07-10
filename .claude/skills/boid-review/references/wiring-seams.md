@@ -25,6 +25,7 @@ has the same shape:
 8. [host_commands CommandDef mirror (spec → broker gate)](#8-host_commands-commanddef-mirror)
 9. [gitgateway RepoKey normalization](#9-gitgateway-repokey-normalization)
 10. [sandbox-clone declaration path](#10-sandbox-clone-declaration-path)
+11. [exec stdin-forward opt-in](#11-exec-stdin-forward-opt-in)
 
 ---
 
@@ -296,3 +297,35 @@ sequence, and whether the mount side stays in lockstep with the declaration side
   in particular, a change to `Visibility.Clone`'s shape (End A) must be reflected in both
   `buildCloneSpec` (End B) and `performClone`'s resolution logic (End D), and a change to the mount
   layout (End C) must not reintroduce a host `ProjectDir`/`WorktreeDir` bind for a clone-mode job.
+
+## 11. exec stdin-forward opt-in
+
+Whether the non-interactive (no-PTY) runtime transport allocates a live stdin-forwarding pipe only
+for `boid exec`, never for a hook job. Added by PR #735 (git gateway cutover's exec-via-Dispatch).
+
+- **End A (decide)**: `Runner.launchSandbox` in `internal/dispatcher/runner.go` sets
+  `RuntimeStartSpec.StdinForward: job.Role == string(orchestrator.JobKindExec)` when calling
+  `r.Runtime.Start`. This is the sole place that decides whether a dispatched job gets a live
+  stdin pipe.
+- **End B (act)**: `LocalRuntime.Start`'s non-interactive branch in
+  `internal/dispatcher/runtime_local_linux.go` only opens the `stdinReader`/`stdinWriter` pipe pair
+  when `spec.StdinForward` is true; otherwise `cmd.Stdin` is left unset (Go routes it to the null
+  device). `localRuntimeSession.writeStdin` / `closeStdin` (same file) are the Attach-side write/EOF
+  path that only has an effect when that pipe exists.
+- **Invariant**: a non-interactive `JobKindExec` job **always** gets a live stdin pipe (so
+  `echo hi | boid exec cat` reaches the child); every other non-interactive job (hook) **never**
+  does — a hook script's `read` on stdin must keep observing an immediate EOF, the pre-existing
+  contract. Interactive (PTY) jobs are unaffected either way (`StdinForward` is ignored when
+  `Interactive` is true — the PTY master already carries stdin).
+- **Past break**: none yet — this seam was introduced whole by PR #735, not discovered as a
+  regression in an existing one.
+- **Guard**: End A = `TestDispatch_ExecKindNonInteractive_SetsStdinForward` /
+  `TestDispatch_HookKindNonInteractive_LeavesStdinForwardFalse`
+  (`internal/dispatcher/runner_dispatch_test.go`). End B =
+  `TestLocalRuntimeStdinForward_DeliversPipedInput` /
+  `TestLocalRuntimeNonInteractiveWithoutStdinForward_DiscardsInput`
+  (`internal/dispatcher/runtime_local_linux_test.go`).
+- **When you touch it**: if you touch `launchSandbox`'s `RuntimeStartSpec` construction, add a new
+  `JobKind`, or touch the non-interactive branch of `LocalRuntime.Start`, verify the two-sided
+  contract still holds for **both** kinds in the same test run — a fix verified only against exec
+  (or only against hook) is exactly the shape of break this seam exists to catch.

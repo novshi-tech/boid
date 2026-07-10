@@ -44,8 +44,16 @@ type localRuntimeSession struct {
 	transcriptFile *os.File
 	transcriptPath string
 
+	// stdinWriter is the write-end of the non-interactive stdin forwarding
+	// pipe (nil unless RuntimeStartSpec.StdinForward was set — see its doc
+	// comment). Attach's input-forwarding goroutine writes into it; closeStdin
+	// closes it (idempotently) once, propagating a real EOF to the child so
+	// pipe-oriented commands (`cat`, `wc`, ...) see their stdin end cleanly.
+	stdinWriter    *os.File
+	stdinCloseOnce sync.Once
+
 	mu          sync.Mutex
-	writerMu    sync.Mutex // protects concurrent writes to master
+	writerMu    sync.Mutex // protects concurrent writes to master / stdinWriter
 	transcript  bytes.Buffer
 	cols, rows  int // current PTY size = the width the transcript is recorded at
 	subscribers map[int]chan []byte
@@ -82,6 +90,7 @@ func (r *LocalRuntime) Start(_ context.Context, spec RuntimeStartSpec) (*Runtime
 
 	var reader *os.File
 	var cmd *exec.Cmd
+	var stdinWriter *os.File // non-nil only for the non-interactive StdinForward branch below
 
 	if spec.Interactive {
 		master, slave, err := openPTY()
@@ -132,7 +141,35 @@ func (r *LocalRuntime) Start(_ context.Context, spec RuntimeStartSpec) (*Runtime
 			return nil, fmt.Errorf("open pipe: %w", err)
 		}
 
+		// Stdin forwarding pipe: only allocated when the caller asked for it
+		// (RuntimeStartSpec.StdinForward — `boid exec` on the non-interactive
+		// transport). Every other non-interactive job (hooks) keeps cmd.Stdin
+		// unset, which Go routes to the null device — a probing `read` gets an
+		// immediate EOF exactly as before this change.
+		var stdinReader *os.File
+		if spec.StdinForward {
+			stdinReader, stdinWriter, err = os.Pipe()
+			if err != nil {
+				pr.Close()
+				pw.Close()
+				transcriptFile.Close()
+				return nil, fmt.Errorf("open stdin pipe: %w", err)
+			}
+		}
+
 		cmd = exec.Command("bash", "-lc", spec.Command)
+		if stdinReader != nil {
+			cmd.Stdin = stdinReader
+		}
+		// cmd.Stdout and cmd.Stderr deliberately share one pipe: hook jobs have
+		// always been recorded this way (single transcript.log, single replay
+		// stream for reconnect/web UI), and this branch also serves `boid exec`
+		// on the non-interactive (no PTY) transport since PR #735 — where the
+		// merge is a known, documented behavior change from the pre-cutover
+		// syscall.Exec path (which inherited the CLI's already-separated
+		// fd1/fd2). See cmd/exec.go's execCmd doc comment (Opus review finding
+		// #1 on PR #735) for why splitting this is a protocol change, not a
+		// one-line fix, and is deliberately not attempted here.
 		cmd.Stdout = pw
 		cmd.Stderr = pw
 		// TERM=dumb: same suppression as the interactive branch above. Even
@@ -146,13 +183,37 @@ func (r *LocalRuntime) Start(_ context.Context, spec RuntimeStartSpec) (*Runtime
 		if err := cmd.Start(); err != nil {
 			pr.Close()
 			pw.Close()
+			if stdinReader != nil {
+				stdinReader.Close()
+			}
+			if stdinWriter != nil {
+				stdinWriter.Close()
+			}
 			transcriptFile.Close()
 			return nil, fmt.Errorf("start process: %w", err)
 		}
 		if err := pw.Close(); err != nil {
 			pr.Close()
+			if stdinReader != nil {
+				stdinReader.Close()
+			}
+			if stdinWriter != nil {
+				stdinWriter.Close()
+			}
 			transcriptFile.Close()
 			return nil, fmt.Errorf("close pipe write end: %w", err)
+		}
+		if stdinReader != nil {
+			// The child has its own dup'd copy from Start(); the parent's
+			// read-end reference is no longer needed (mirrors pw.Close() above).
+			if err := stdinReader.Close(); err != nil {
+				pr.Close()
+				if stdinWriter != nil {
+					stdinWriter.Close()
+				}
+				transcriptFile.Close()
+				return nil, fmt.Errorf("close stdin pipe read end: %w", err)
+			}
 		}
 		reader = pr
 	}
@@ -161,6 +222,7 @@ func (r *LocalRuntime) Start(_ context.Context, spec RuntimeStartSpec) (*Runtime
 		id:             runtimeID,
 		cmd:            cmd,
 		master:         reader,
+		stdinWriter:    stdinWriter,
 		interactive:    spec.Interactive,
 		transcriptFile: transcriptFile,
 		transcriptPath: transcriptPath,
@@ -217,11 +279,18 @@ func (r *LocalRuntime) Attach(ctx context.Context, runtimeID string, req Runtime
 	errCh := make(chan error, 1)
 	if req.Input != nil {
 		go func() {
+			// closeStdin propagates a real EOF to the child's stdin once this
+			// attach's input side ends (client detached, client's own stdin hit
+			// EOF, or a read error) — a no-op unless the session was started with
+			// StdinForward (see localRuntimeSession.closeStdin). Interactive (PTY)
+			// sessions never set stdinWriter, so this has no effect there either;
+			// the PTY stays open across repeated attach/detach cycles as before.
+			defer session.closeStdin()
 			buf := make([]byte, 4096)
 			for {
 				n, readErr := req.Input.Read(buf)
 				if n > 0 {
-					if writeErr := session.writeMaster(buf[:n]); writeErr != nil && !errors.Is(writeErr, os.ErrClosed) {
+					if writeErr := session.writeStdin(buf[:n]); writeErr != nil && !errors.Is(writeErr, os.ErrClosed) {
 						errCh <- writeErr
 						return
 					}
@@ -426,6 +495,13 @@ func (s *localRuntimeSession) waitLoop() {
 
 	_ = s.master.Close()
 	_ = s.transcriptFile.Close()
+	// Defensive cleanup: if StdinForward was set but nobody ever attached
+	// with input (or the attach's own closeStdin call raced with process
+	// exit), the write end would otherwise stay open for the lifetime of
+	// this session struct — LocalRuntime keeps sessions in memory
+	// indefinitely for replay, so that fd would leak until daemon restart.
+	// No-op (nil / already closed) in every other case.
+	s.closeStdin()
 	close(s.done)
 }
 
@@ -580,6 +656,38 @@ func (s *localRuntimeSession) writeMaster(data []byte) error {
 	defer s.writerMu.Unlock()
 	_, err := s.master.Write(data)
 	return err
+}
+
+// writeStdin is Attach's input-forwarding entry point: it writes to the PTY
+// master for interactive sessions (same as writeMaster) or to the dedicated
+// stdin-forwarding pipe for a non-interactive session started with
+// StdinForward. When neither applies (non-interactive, no forwarding
+// configured) it silently discards the write — the historical no-op
+// behavior for hook jobs, which never forward real input.
+func (s *localRuntimeSession) writeStdin(data []byte) error {
+	if s.interactive {
+		return s.writeMaster(data)
+	}
+	if s.stdinWriter == nil {
+		return nil
+	}
+	s.writerMu.Lock()
+	defer s.writerMu.Unlock()
+	_, err := s.stdinWriter.Write(data)
+	return err
+}
+
+// closeStdin closes the stdin-forwarding pipe's write end exactly once,
+// propagating EOF to the child process. No-op when the session has no
+// forwarding pipe (interactive sessions, or non-interactive sessions started
+// without StdinForward).
+func (s *localRuntimeSession) closeStdin() {
+	if s.stdinWriter == nil {
+		return
+	}
+	s.stdinCloseOnce.Do(func() {
+		_ = s.stdinWriter.Close()
+	})
 }
 
 func (s *localRuntimeSession) isRunning() bool {

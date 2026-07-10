@@ -842,6 +842,12 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 		Interactive: spec.TTY,
 		TTY:         spec.TTY,
 		DesiredID:   desiredRuntimeID,
+		// StdinForward: only `boid exec` (job.Role == JobKindExec) ever needs a
+		// live stdin forwarder on the non-interactive (pipe) transport — a hook
+		// job reading stdin must keep seeing an immediate EOF (see
+		// RuntimeStartSpec.StdinForward's doc comment). No-op when TTY/Interactive
+		// is true (the PTY branch ignores this field).
+		StdinForward: job.Role == string(orchestrator.JobKindExec),
 	})
 	if err != nil {
 		if desiredRuntimeID != "" {

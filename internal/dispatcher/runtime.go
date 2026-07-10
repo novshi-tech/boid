@@ -23,6 +23,16 @@ type RuntimeStartSpec struct {
 	Command     string
 	Interactive bool
 	TTY         bool
+	// StdinForward requests a dedicated stdin pipe for a non-interactive
+	// (Interactive=false) session, so a later Attach's RuntimeAttachRequest.Input
+	// can feed real bytes to the child process — `boid exec` piped from a
+	// non-TTY stdin (e.g. `echo hi | boid exec cat`) needs this; a hook job
+	// never does. False (the default, every hook job) keeps stdin on the null
+	// device exactly as before: a hook script that probes stdin must keep
+	// seeing an immediate EOF, not block forever waiting for a forwarder that
+	// will never attach. Ignored when Interactive is true — PTY sessions
+	// always support input via the PTY master, forwarding or not.
+	StdinForward bool
 	// DesiredID, when non-empty, asks the runtime to use this UUID as its
 	// session identifier instead of generating a fresh one. The caller uses
 	// this to pre-allocate a runtime directory (e.g. for a per-sandbox docker

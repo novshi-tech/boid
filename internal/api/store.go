@@ -264,3 +264,59 @@ type StartSessionResult struct {
 type SessionDispatcher interface {
 	StartSession(ctx context.Context, req StartSessionRequest) (*StartSessionResult, error)
 }
+
+// StartExecRequest is the body of POST /api/projects/{id}/exec. `boid exec`
+// used to be a client-side-only path (the CLI built its own SandboxRuntimeInfo
+// and syscall.Exec'd straight into the sandbox launcher), which is exactly why
+// it never picked up the git gateway cutover's Dispatch()-only wiring
+// (registerGatewayToken / GatewayURL / GatewayCloneURL) — see
+// docs/plans/git-gateway-cutover.md. This request type is the daemon-side
+// entry point that routes exec through the same Runner.Dispatch() path as
+// every session, so any future dispatch-time wiring lands on both by
+// construction instead of needing a second, easy-to-forget call site.
+//
+// Unlike sessions (fixed harness_type, agent-driven argv), exec runs an
+// arbitrary user-supplied argv with no HarnessAdapter agent — see
+// dispatcher.BuildExecJobSpec, which forces HarnessType="shell" underneath.
+type StartExecRequest struct {
+	// ProjectID is taken from the URL for the project-scoped route; there is
+	// no top-level /api/exec (every exec is inherently project-scoped —
+	// `boid exec -p <ref> -- argv...`), so the handler always fills this in
+	// from chi.URLParam before it reaches the dispatcher.
+	ProjectID string `json:"project_id"`
+
+	// Argv is the literal program + arguments to run inside the sandbox.
+	// Required, non-empty.
+	Argv []string `json:"argv"`
+
+	// Readonly, when true, mounts the project workspace read-only. Exec
+	// defaults to writable, matching the CLI's --readonly flag default.
+	Readonly bool `json:"readonly,omitempty"`
+
+	// Interactive requests a PTY-backed sandbox. The CLI computes this from
+	// isatty(stdin) && isatty(stdout) (see cmd/exec.go) — both, not stdin
+	// alone, because a PTY is only correct when the whole terminal round-trip
+	// is real; `boid exec -- cmd | grep pattern` must NOT get a PTY even
+	// though its own stdin is a real terminal, or the PTY's line-discipline
+	// framing would corrupt the piped bytes grep receives. false selects the
+	// plain-pipe transport (see runtime_local_linux.go's non-interactive
+	// branch and its StdinForward stdin-piping addition).
+	Interactive bool `json:"interactive,omitempty"`
+
+	// DisplayName is the human-readable label persisted to jobs.display_name.
+	// Empty falls back to argv[0] (dispatcher.BuildExecJobSpec).
+	DisplayName string `json:"display_name,omitempty"`
+}
+
+// StartExecResult is the response shape for POST /api/projects/{id}/exec.
+type StartExecResult struct {
+	JobID     string `json:"job_id"`
+	AttachURL string `json:"attach_url"`
+}
+
+// ExecDispatcher launches a JobKindExec job (arbitrary argv, shell harness,
+// no HarnessAdapter agent) through Runner.Dispatch() and returns the runtime
+// job id. Implemented by internal/server's sessionDispatcherAdapter.
+type ExecDispatcher interface {
+	StartExec(ctx context.Context, req StartExecRequest) (*StartExecResult, error)
+}

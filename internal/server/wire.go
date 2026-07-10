@@ -606,11 +606,14 @@ func projectResolverFor(svc *api.ProjectAppService) sandbox.ProjectResolver {
 	}
 }
 
-// sessionDispatcherAdapter implements api.SessionDispatcher by translating
-// StartSessionRequest into a SessionJobInput and handing it to the runner.
-// Phase 3-d (PR1) wired this in alongside the legacy ExecuteCommand path so
-// the new entry can coexist with the existing Commands buttons until PR2
-// removes them.
+// sessionDispatcherAdapter implements api.SessionDispatcher (and, since the
+// git gateway cutover's exec-via-Dispatch PR, api.ExecDispatcher too) by
+// translating the request into a SessionJobInput and handing it to the
+// runner. Phase 3-d (PR1) wired the session half in alongside the legacy
+// ExecuteCommand path so the new entry can coexist with the existing
+// Commands buttons until PR2 removes them; StartExec reuses the same struct
+// because both entry points share identical project-hydration + Dispatch()
+// plumbing — see StartExec's doc comment for why exec needed this at all.
 type sessionDispatcherAdapter struct {
 	service *api.ProjectAppService
 	runner  *dispatcher.Runner
@@ -655,6 +658,53 @@ func (a *sessionDispatcherAdapter) StartSession(ctx context.Context, req api.Sta
 		return nil, &api.StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 	return &api.StartSessionResult{
+		JobID:     jobID,
+		AttachURL: fmt.Sprintf("/jobs/%s", jobID),
+	}, nil
+}
+
+// StartExec implements api.ExecDispatcher: it builds an exec JobSpec
+// (dispatcher.BuildExecJobSpec — HarnessType forced to "shell", Argv the
+// caller's literal argv) and hands it to the same Runner.Dispatch() every
+// session goes through. This is the git gateway cutover fix: routing exec
+// through Dispatch means registerGatewayToken / buildGatewayCloneURL /
+// RequireUpstreamURL all run automatically, exactly as they do for a
+// session — no separate wiring for exec to fall out of sync with (the bug
+// this PR fixes: `boid exec` never picked up the PR6 gateway wiring because
+// it bypassed Dispatch() entirely).
+//
+// Unlike StartSession, no host_commands / broker registration happens
+// client-side here — Dispatch() handles broker registration internally, so
+// the old cmd/exec.go's manual POST /api/broker/register call (and the
+// project-fixed, non-unique "exec-<project-id>" job id that leaked broker
+// tokens across invocations) is gone: every exec now gets Dispatch()'s
+// normal fresh UUID job id and its normal UnregisterJob cleanup.
+func (a *sessionDispatcherAdapter) StartExec(ctx context.Context, req api.StartExecRequest) (*api.StartExecResult, error) {
+	project, err := a.service.GetProject(req.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	meta := project.Meta
+
+	spec, err := dispatcher.BuildExecJobSpec(dispatcher.SessionJobInput{
+		ProjectID:          project.ID,
+		ProjectWorkDir:     project.WorkDir,
+		Readonly:           req.Readonly,
+		DisplayName:        req.DisplayName,
+		Env:                meta.Env,
+		HostCommands:       meta.HostCommands,
+		AdditionalBindings: meta.AdditionalBindings,
+		SecretNamespace:    meta.SecretNamespace,
+		DockerEnabled:      meta.Capabilities.Docker != nil,
+	}, req.Argv, req.Interactive)
+	if err != nil {
+		return nil, &api.StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+	}
+	jobID, err := a.runner.Dispatch(ctx, spec, nil)
+	if err != nil {
+		return nil, &api.StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return &api.StartExecResult{
 		JobID:     jobID,
 		AttachURL: fmt.Sprintf("/jobs/%s", jobID),
 	}, nil
@@ -724,6 +774,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	projectHandler := &api.ProjectHandler{
 		Service:           runtime.projectSvc,
 		SessionDispatcher: sessionAdapter,
+		ExecDispatcher:    sessionAdapter,
 	}
 	r.Mount("/api/projects", projectHandler.Routes())
 

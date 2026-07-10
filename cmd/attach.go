@@ -53,6 +53,25 @@ func attachToJob(jobID string) error {
 		return errors.New("job is not attachable")
 	}
 
+	return attachLive(jobID)
+}
+
+// attachLive opens a live attach to jobID (PTY or plain-pipe transport,
+// whichever the job was dispatched with) and blocks until the remote side
+// closes the stream (job exited — LocalRuntime.Attach replays the transcript
+// snapshot even if the job already finished by the time this runs, so there
+// is no race to worry about here) or the local user detaches (Ctrl-]).
+//
+// Callers must already know the job is attachable (RuntimeID set). attachToJob
+// checks job.Status / job.RuntimeID first, since a `boid attach <job-id>`
+// invocation might target an already-finished or bogus id. `boid exec`
+// (cmd/exec.go) skips that check: it always attaches to a job it just
+// created via POST .../exec, whose RuntimeID is guaranteed set by the time
+// the daemon responds (Runner.Dispatch's launchSandbox persists RuntimeID
+// before returning).
+func attachLive(jobID string) error {
+	c := client.NewUnixClient(client.DefaultSocketPath())
+
 	stdin := io.Reader(os.Stdin)
 	restore, err := makeRawInput(os.Stdin)
 	if err != nil {

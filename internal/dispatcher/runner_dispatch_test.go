@@ -147,3 +147,76 @@ func TestDispatch_NormalPath_JobIsRunning(t *testing.T) {
 		t.Errorf("result ExitCode = %d, want 0", result.ExitCode)
 	}
 }
+
+// TestDispatch_ExecKindNonInteractive_SetsStdinForward is the git gateway
+// cutover's exec-via-Dispatch regression guard: a non-interactive
+// JobKindExec job (`boid exec` piped from a non-TTY stdin) must ask the
+// runtime for stdin forwarding, so live piped input reaches the sandboxed
+// command (see runtime_local_linux.go's StdinForward branch).
+func TestDispatch_ExecKindNonInteractive_SetsStdinForward(t *testing.T) {
+	r, d := newDispatchRunner(t)
+	r.Sandbox = newFakeSandboxPrep(t)
+	runtime := newStatefulRuntime()
+	r.Runtime = runtime
+
+	spec := &orchestrator.JobSpec{
+		ProjectID:   "proj-1",
+		Argv:        []string{"cat"},
+		Kind:        orchestrator.JobKindExec,
+		HarnessType: "shell",
+		Interactive: false,
+	}
+
+	jobID, err := r.Dispatch(context.Background(), spec, nil)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	job, err := dispatcher.GetJob(d.Conn, jobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	startSpec, ok := runtime.StartSpec(job.RuntimeID)
+	if !ok {
+		t.Fatalf("no RuntimeStartSpec recorded for runtime %q", job.RuntimeID)
+	}
+	if !startSpec.StdinForward {
+		t.Error("StdinForward = false, want true for a non-interactive JobKindExec dispatch")
+	}
+}
+
+// TestDispatch_HookKindNonInteractive_LeavesStdinForwardFalse guards the
+// other side of the same carve-out: a non-interactive hook job must NOT ask
+// for stdin forwarding — a hook script probing stdin must keep observing an
+// immediate EOF (see RuntimeStartSpec.StdinForward's doc comment), not block
+// on a forwarder nothing will ever attach with real input.
+func TestDispatch_HookKindNonInteractive_LeavesStdinForwardFalse(t *testing.T) {
+	r, d := newDispatchRunner(t)
+	r.Sandbox = newFakeSandboxPrep(t)
+	runtime := newStatefulRuntime()
+	r.Runtime = runtime
+
+	spec := &orchestrator.JobSpec{
+		ProjectID:   "proj-1",
+		Argv:        []string{"echo", "hi"},
+		Kind:        orchestrator.JobKindHook,
+		Interactive: false,
+	}
+
+	jobID, err := r.Dispatch(context.Background(), spec, nil)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	job, err := dispatcher.GetJob(d.Conn, jobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	startSpec, ok := runtime.StartSpec(job.RuntimeID)
+	if !ok {
+		t.Fatalf("no RuntimeStartSpec recorded for runtime %q", job.RuntimeID)
+	}
+	if startSpec.StdinForward {
+		t.Error("StdinForward = true, want false for a hook job")
+	}
+}

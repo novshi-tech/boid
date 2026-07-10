@@ -440,8 +440,20 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	if !spec.Interactive && len(spec.PrimaryInput) > 0 {
 		stdinBytes = append(stdinBytes, spec.PrimaryInput...)
 	}
+	// stdout capture is a batch pattern: the leaf command's stdout is
+	// redirected to a sandbox-internal file and read back after the process
+	// exits (postJobDone's resolveJobOutput fallback), never streamed live.
+	// That is exactly right for hook jobs (headless, nobody is watching in
+	// real time) but wrong for `boid exec`: the whole point of the git
+	// gateway cutover's Dispatch() migration is that exec now runs through
+	// the same LocalRuntime pipe/PTY transport as a session job, and its
+	// live output must reach the CLI's attach stream, not a file nobody
+	// reads until completion. So JobKindExec is excluded regardless of
+	// Interactive — see dispatcher.BuildExecJobSpec / runtime_local_linux.go's
+	// non-interactive branch, which now streams stdout+stderr through the
+	// plain pipe transport for this exact case.
 	var stdoutCapture string
-	if !rt.Foreground && !spec.Interactive {
+	if !rt.Foreground && !spec.Interactive && spec.Kind != orchestrator.JobKindExec {
 		stdoutCapture = "/tmp/boid-output"
 	}
 
