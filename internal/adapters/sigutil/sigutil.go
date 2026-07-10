@@ -63,7 +63,7 @@ func ForwardAndWait(cmd *exec.Cmd, label string) (exitCode int, stoppedByDaemon 
 		case werr := <-done:
 			if werr != nil {
 				if ee, ok := werr.(*exec.ExitError); ok {
-					exitCode = ee.ExitCode()
+					exitCode = exitCodeFromExitError(ee)
 				} else {
 					return 0, stoppedByDaemon, fmt.Errorf("wait %s: %w", label, werr)
 				}
@@ -74,4 +74,21 @@ func ForwardAndWait(cmd *exec.Cmd, label string) (exitCode int, stoppedByDaemon 
 			return exitCode, stoppedByDaemon, nil
 		}
 	}
+}
+
+// exitCodeFromExitError extracts a shell-convention exit code from a
+// completed child's *exec.ExitError: 128+signal when the child was killed by
+// a signal (e.g. SIGKILL → 137), matching how a real shell reports it and how
+// the pre-cutover syscall.Exec path behaved. ee.ExitCode() alone returns -1
+// for a signal-terminated child; a caller that does os.Exit(ee.ExitCode())
+// truncates that -1 to 255, losing which signal actually killed the process
+// (Opus review finding #3 on PR #735). Mirrors the identical convention in
+// internal/dispatcher/runtime_local_linux.go's exitCode() and
+// internal/sandbox/runner/runner_linux.go's commandExitCode(), which apply it
+// on their own (different) child-process exit paths.
+func exitCodeFromExitError(ee *exec.ExitError) int {
+	if status, ok := ee.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+		return 128 + int(status.Signal())
+	}
+	return ee.ExitCode()
 }

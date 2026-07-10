@@ -89,3 +89,33 @@ func TestForwardAndWait_StopSignalNormalisesExit(t *testing.T) {
 		t.Errorf("exitCode = %d, want 0 (normalised)", code)
 	}
 }
+
+// TestForwardAndWait_SignalExitUsesShellConvention is the Opus review finding
+// #3 regression guard (PR #735): a child killed by a real signal (not the
+// daemon's SIGUSR1 stop path) must surface as 128+signal (bash convention,
+// e.g. SIGKILL → 137), not exec.ExitError.ExitCode()'s bare -1 — which a
+// caller doing os.Exit(-1) would truncate to 255, losing which signal killed
+// the process.
+func TestForwardAndWait_SignalExitUsesShellConvention(t *testing.T) {
+	cmd := exec.Command("/bin/sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		_ = cmd.Process.Kill() // SIGKILL, delivered directly to the child (not via our own PID's SIGUSR1 path)
+	}()
+
+	code, stopped, err := ForwardAndWait(cmd, "sleep")
+	if err != nil {
+		t.Fatalf("ForwardAndWait: %v", err)
+	}
+	if stopped {
+		t.Errorf("stoppedByDaemon = true, want false (this was a direct SIGKILL, not the daemon stop path)")
+	}
+	const wantCode = 128 + int(syscall.SIGKILL)
+	if code != wantCode {
+		t.Errorf("exitCode = %d, want %d (128+SIGKILL, shell convention)", code, wantCode)
+	}
+}
