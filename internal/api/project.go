@@ -11,6 +11,7 @@ import (
 type ProjectHandler struct {
 	Service           ProjectService
 	SessionDispatcher SessionDispatcher // optional; nil disables the start-session endpoint
+	ExecDispatcher    ExecDispatcher    // optional; nil disables the exec endpoint
 }
 
 type projectCandidate struct {
@@ -49,6 +50,7 @@ func (h *ProjectHandler) Routes() chi.Router {
 	r.Post("/reload", h.Reload)
 	r.Put("/{id}/workspace", h.SetWorkspace)
 	r.Post("/{id}/sessions", h.StartSession)
+	r.Post("/{id}/exec", h.StartExec)
 	r.Get("/{id}", h.Get)
 	r.Delete("/{id}", h.Delete)
 	return r
@@ -168,6 +170,39 @@ func (h *ProjectHandler) StartSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.SessionDispatcher.StartSession(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
+// StartExec handles POST /api/projects/{id}/exec. The project is resolved
+// from the URL ref the same way every other project route does; the body
+// specifies argv and the optional readonly / interactive / display_name
+// knobs. Unlike StartSession there is no top-level /api/exec — every exec is
+// project-scoped by construction (`boid exec -p <ref> -- argv...`).
+func (h *ProjectHandler) StartExec(w http.ResponseWriter, r *http.Request) {
+	if h.ExecDispatcher == nil {
+		writeError(w, http.StatusNotImplemented, "exec dispatcher not wired")
+		return
+	}
+	ref := chi.URLParam(r, "id")
+	project := h.resolveRef(w, ref)
+	if project == nil {
+		return
+	}
+	var req StartExecRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.Argv) == 0 {
+		writeError(w, http.StatusBadRequest, "argv is required")
+		return
+	}
+	req.ProjectID = project.ID
+	result, err := h.ExecDispatcher.StartExec(r.Context(), req)
 	if err != nil {
 		writeServiceError(w, err)
 		return

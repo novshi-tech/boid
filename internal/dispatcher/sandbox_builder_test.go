@@ -63,6 +63,40 @@ func TestBuildSandboxSpec_NonInteractiveKeepsStdinPipeAndStdoutCapture(t *testin
 	}
 }
 
+// git gateway cutover: boid exec は Runner.Dispatch() 経由の JobKindExec job に
+// なった。非対話 (パイプ) exec でも live streaming が必要なので、hook と違い
+// stdout capture file には落とさない — see sandbox_builder.go's stdoutCapture
+// comment for the full rationale.
+func TestBuildSandboxSpec_ExecNonInteractiveSkipsStdoutCapture(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		Kind:        orchestrator.JobKindExec,
+		Interactive: false,
+	}
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{Foreground: false})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	if result.StdoutCaptureFile != "" {
+		t.Errorf("StdoutCaptureFile = %q, want empty (exec must stream live, not capture to a file)", result.StdoutCaptureFile)
+	}
+}
+
+// Hook jobs (Kind unset / JobKindHook) keep the pre-existing batch-capture
+// behavior untouched by the JobKindExec carve-out above.
+func TestBuildSandboxSpec_HookNonInteractiveStillCapturesStdout(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		Kind:        orchestrator.JobKindHook,
+		Interactive: false,
+	}
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{Foreground: false})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	if result.StdoutCaptureFile != "/tmp/boid-output" {
+		t.Errorf("StdoutCaptureFile = %q, want /tmp/boid-output (hook behavior must be unchanged)", result.StdoutCaptureFile)
+	}
+}
+
 // TTY はspec.Interactive のみで決まる。Instruction の有無や PrimaryInput(stdin)
 // は Phase 2 以降では TTY に影響しない。
 func TestBuildSandboxSpec_TTYFollowsInteractiveOnly(t *testing.T) {

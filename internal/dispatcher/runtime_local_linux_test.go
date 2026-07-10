@@ -475,3 +475,104 @@ func TestLocalRuntimeWriteInputParallelNoRace(t *testing.T) {
 	rt.Stop(ctx, handle.ID)
 	rt.Wait(context.Background(), handle.ID)
 }
+
+// TestLocalRuntimeStdinForward_DeliversPipedInput verifies that a
+// non-interactive session started with StdinForward: true actually reads
+// bytes fed through Attach's RuntimeAttachRequest.Input — the capability
+// `boid exec` needs for piped invocations like `echo hi | boid exec cat`.
+// Without StdinForward (the hook default) this same input would be silently
+// discarded (see TestLocalRuntimeNonInteractiveWithoutStdinForward_DiscardsInput).
+func TestLocalRuntimeStdinForward_DeliversPipedInput(t *testing.T) {
+	rt := &dispatcher.LocalRuntime{RootDir: t.TempDir()}
+
+	handle, err := rt.Start(context.Background(), dispatcher.RuntimeStartSpec{
+		Command:      "cat",
+		Interactive:  false,
+		TTY:          false,
+		StdinForward: true,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var out bytes.Buffer
+	attachErrCh := make(chan error, 1)
+	go func() {
+		attachErrCh <- rt.Attach(ctx, handle.ID, dispatcher.RuntimeAttachRequest{
+			Input:  strings.NewReader("piped stdin\n"),
+			Output: &out,
+		})
+	}()
+
+	if _, err := rt.Wait(context.Background(), handle.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	select {
+	case err := <-attachErrCh:
+		if err != nil {
+			t.Fatalf("Attach: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for attach to finish")
+	}
+
+	if !strings.Contains(out.String(), "piped stdin") {
+		t.Fatalf("attach output = %q, want cat to echo the forwarded stdin", out.String())
+	}
+}
+
+// TestLocalRuntimeNonInteractiveWithoutStdinForward_DiscardsInput pins the
+// hook-job-compatible default: StdinForward: false (the zero value) must
+// keep behaving exactly like before this change — `cat`'s stdin resolves to
+// the null device (immediate EOF), so it exits having echoed nothing, even
+// though Attach was given real bytes to forward.
+func TestLocalRuntimeNonInteractiveWithoutStdinForward_DiscardsInput(t *testing.T) {
+	rt := &dispatcher.LocalRuntime{RootDir: t.TempDir()}
+
+	handle, err := rt.Start(context.Background(), dispatcher.RuntimeStartSpec{
+		Command:     "cat; printf DONE",
+		Interactive: false,
+		TTY:         false,
+		// StdinForward left false (zero value): matches every hook job.
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var out bytes.Buffer
+	attachErrCh := make(chan error, 1)
+	go func() {
+		attachErrCh <- rt.Attach(ctx, handle.ID, dispatcher.RuntimeAttachRequest{
+			Input:  strings.NewReader("should be discarded"),
+			Output: &out,
+		})
+	}()
+
+	if _, err := rt.Wait(context.Background(), handle.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	select {
+	case err := <-attachErrCh:
+		if err != nil {
+			t.Fatalf("Attach: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for attach to finish")
+	}
+
+	got := out.String()
+	if strings.Contains(got, "should be discarded") {
+		t.Fatalf("attach output = %q, forwarded input leaked into a job without StdinForward", got)
+	}
+	if !strings.Contains(got, "DONE") {
+		t.Fatalf("attach output = %q, want DONE (cat must see immediate EOF on the null device)", got)
+	}
+}
