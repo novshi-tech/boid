@@ -143,6 +143,16 @@ func isRealTerminal(f *os.File) bool {
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
+// execExitCodeUnknown is the sentinel fetchExecExitCode/pollExecExitCode
+// reports when polling gives up without ever observing a terminal job
+// status. Deliberately non-zero: the job's zero-value ExitCode looks
+// identical to a genuine successful exit (0), and reporting it here would
+// have `boid exec` os.Exit(0) — a false success — for a job whose real
+// outcome is simply unknown. Fail-safe (unknown ⇒ failure) matches this
+// project's other default-safety choices (e.g. task.readonly defaulting to
+// true) — see Opus review finding #5 on PR #735.
+const execExitCodeUnknown = 1
+
 // fetchExecExitCode reads back the completed job's exit code. In the
 // overwhelmingly common case this needs exactly one GET: postJobDone's HTTP
 // round-trip to the broker (which durably persists job.ExitCode via
@@ -162,23 +172,37 @@ func isRealTerminal(f *os.File) bool {
 // synchronously, so this polls briefly rather than trusting a single read.
 func fetchExecExitCode(jobID string) (int, error) {
 	c := client.NewUnixClient(client.DefaultSocketPath())
+	return pollExecExitCode(jobID, func() (api.Job, error) {
+		var job api.Job
+		err := c.Do("GET", "/api/jobs/"+jobID, nil, &job)
+		return job, err
+	}, time.Sleep)
+}
 
+// pollExecExitCode holds fetchExecExitCode's polling loop with the GET call
+// and the sleep both injected, so the give-up path (see execExitCodeUnknown)
+// is unit-testable without a running daemon or real wall-clock waits.
+func pollExecExitCode(jobID string, fetch func() (api.Job, error), sleep func(time.Duration)) (int, error) {
 	const maxAttempts = 20
 	const pollInterval = 100 * time.Millisecond
 
-	var job api.Job
 	for attempt := 0; ; attempt++ {
-		if err := c.Do("GET", "/api/jobs/"+jobID, nil, &job); err != nil {
+		job, err := fetch()
+		if err != nil {
 			return 0, err
 		}
 		if job.Status == api.JobStatusCompleted || job.Status == api.JobStatusFailed {
 			return job.ExitCode, nil
 		}
 		if attempt >= maxAttempts-1 {
-			// Give up waiting for the fallback path and report whatever exit
-			// code is on record (0 if none) rather than blocking forever.
-			return job.ExitCode, nil
+			// Give up waiting for the fallback path. Do NOT report job.ExitCode
+			// here — it is still the zero value (job never reached a terminal
+			// status), which would read as a false "succeeded" to the caller's
+			// os.Exit(). Fail loud instead: a clear stderr message plus a
+			// non-zero sentinel (see execExitCodeUnknown).
+			fmt.Fprintf(os.Stderr, "boid exec: gave up waiting for job %s to report a definitive exit code; reporting failure\n", jobID)
+			return execExitCodeUnknown, nil
 		}
-		time.Sleep(pollInterval)
+		sleep(pollInterval)
 	}
 }
