@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# --check-file <host-path>: a plain host-side file existence check (exit 0 if
+# present, 1 otherwise), with no logging. This exists so a sandboxed hook
+# script can observe a release signal the host-side scenario.sh writes
+# directly to the host filesystem (docs/plans/git-gateway-cutover.md PR6
+# cutover: the sandbox's own view of the project is a fresh clone, not a
+# live bind mount of the host project dir, so a plain `[[ -f ... ]]` inside
+# the sandbox against a path under the project dir can never see a file the
+# host writes there after dispatch). This command itself always runs on the
+# host (host_commands are broker-executed host subprocesses), so it sees the
+# real host filesystem regardless of the sandbox's own isolated view. See
+# e2e/scenarios/readonly-hook-gate and daemon-restart-resume's hook scripts
+# for the calling convention (a tight poll loop calling this repeatedly).
+if [[ "${1:-}" == "--check-file" ]]; then
+  if [[ -f "${2:?--check-file requires a path argument}" ]]; then
+    exit 0
+  fi
+  exit 1
+fi
+
 log_file="${E2E_STATE_DIR:?}/fake-hook-cmd.log"
 {
   printf 'cmd=fake-hook-cmd\n'

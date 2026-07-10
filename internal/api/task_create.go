@@ -131,10 +131,29 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 			req.RemoteID = parent.RemoteID
 		}
 	}
-	if baseBranch == "" && (res.BehaviorName == "supervisor" || res.BehaviorName == "executor") {
-		// P1 priority 2: root canonical task with no base_branch → expand
-		// ${current_branch}. Detached HEAD is surfaced as a 400. Non-canonical
-		// behaviors are allowed an empty baseBranch (they bypass ClassifyBaseBranch).
+	if baseBranch == "" {
+		// P1 priority 2: a task with no base_branch → expand ${current_branch}.
+		// Detached HEAD is surfaced as a 400.
+		//
+		// This used to be restricted to the canonical "supervisor"/"executor"
+		// behaviors, on the theory that non-canonical (custom) behaviors were
+		// allowed an empty baseBranch outright — see
+		// classifyAndApplyBaseBranchCase's early return, which still applies
+		// only to those two names (deciding worktree=true/false via
+		// ClassifyBaseBranch is a canonical-behavior-only concern). That was
+		// fine pre-cutover: worktree=false + empty BaseBranch just meant "run
+		// in the project dir as-is". Post-cutover
+		// (docs/plans/git-gateway-cutover.md PR6), every project-visible
+		// dispatch needs a resolvable base_branch to build its sandbox-internal
+		// CloneDeclaration (dispatcher.BuildCloneDeclaration reads
+		// task.BaseBranch directly, with no non-canonical fallback), so an
+		// empty BaseBranch on a non-canonical task now hard-fails the clone
+		// deep inside the sandbox ("spec.Clone is enabled but
+		// URL/TargetDir/Branch/BaseBranch must all be set") instead of
+		// degrading gracefully. Expanding ${current_branch} regardless of
+		// behavior name closes that gap; it only ever fires when baseBranch
+		// was empty to begin with, so canonical-behavior tasks (which already
+		// took this path) are unaffected.
 		if s.Projects != nil {
 			proj, projErr := s.Projects.GetProject(req.ProjectID)
 			if projErr != nil {

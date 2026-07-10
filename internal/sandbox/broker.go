@@ -514,15 +514,35 @@ func validateBoidBuiltinCwd(cwd string, entry *tokenEntry) error {
 	if !filepath.IsAbs(cwd) {
 		return fmt.Errorf("cwd must be absolute")
 	}
-	info, err := os.Stat(cwd)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("cwd does not exist")
+
+	// Clone-mode jobs (docs/plans/git-gateway-cutover.md PR6 cutover) declare
+	// cwd as the sandbox-internal "/workspace" (sandboxCloneTargetDir) —
+	// entryRoot already special-cases this via entry.Context.SandboxRoot
+	// (see its own doc comment: "clone-mode jobs have no host-side
+	// ProjectDir/WorktreeDir the sandbox's own filesystem corresponds to").
+	// The broker itself always runs on the host, outside any sandbox mount
+	// namespace, so os.Stat(cwd) below can never see that path — it would
+	// either ENOENT ("cwd does not exist" on a host with no coincidental
+	// "/workspace" directory) or, worse, silently validate against an
+	// unrelated host directory that happens to share the name. Skip the
+	// filesystem check entirely for clone-mode entries and fall through to
+	// the same path-membership validation every other cwd already goes
+	// through (entryRoot / isWithinRoot below) — this is exactly what let
+	// every clone-mode hook's `boid job done` (postJobDone) silently fail
+	// validation and get swallowed as a non-fatal error, which the daemon's
+	// "runtime exited without boid job done" fallback then mistook for a
+	// crash rather than the hook's real (successful) exit code.
+	if entry == nil || entry.Context.SandboxRoot == "" {
+		info, err := os.Stat(cwd)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("cwd does not exist")
+			}
+			return fmt.Errorf("stat cwd: %w", err)
 		}
-		return fmt.Errorf("stat cwd: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("cwd must be a directory")
+		if !info.IsDir() {
+			return fmt.Errorf("cwd must be a directory")
+		}
 	}
 
 	if entry != nil {

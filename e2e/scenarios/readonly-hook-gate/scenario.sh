@@ -42,5 +42,11 @@ touch "$RELEASE_FILE"
 task_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 20s --interval 100ms "$task_id" done)"
 printf '%s\n' "$task_json"
 e2e_assert_contains "$task_json" '"status":"done"'
-e2e_assert_contains "$task_json" '"fs_status":"readonly"'
+# task.readonly's semantics changed under the git gateway cutover (PR6):
+# readonly now means transport-RO (gateway denies push/fetch-write), not
+# filesystem-RO (docs/plans/git-gateway-cutover.md: "readonly の意味論変更:
+# FS-RO → transport-RO"). The sandbox-internal clone is always locally
+# writable regardless of task.readonly, so the correct expectation here is
+# "writable", not the pre-cutover "readonly".
+e2e_assert_contains "$task_json" '"fs_status":"writable"'
 e2e_assert_contains "$task_json" 'verify-readonly'

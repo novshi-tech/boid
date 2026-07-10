@@ -421,22 +421,30 @@ func usageError(msg string) error {
 	return errors.New(msg + "\nusage: boid-e2e <wait-unix-socket|wait-health|get-task|wait-task-status|list-jobs|wait-job-count|assert-job-role-count|ws-job-output|fake-docker|upstream-serve> ...")
 }
 
-// runUpstreamServe starts a fixture upstream git-over-HTTP server
+// runUpstreamServe starts a fixture upstream git-over-HTTPS server
 // (e2e/upstream) for the e2e harness (docs/plans/git-gateway-cutover.md
 // PR7a). It pre-creates a bare repo for every name given as a positional
-// argument, writes the bound "host:port" to --ready-file (if set) so the
-// calling shell can pick it up without a race, and then blocks until
-// SIGINT/SIGTERM.
+// argument, writes the self-signed TLS certificate it serves with to
+// --cert-file (if set — see upstream.New's doc comment for why the fixture
+// serves real TLS at all) and the bound "host:port" to --ready-file (if
+// set), then blocks until SIGINT/SIGTERM.
+//
+// --cert-file is written before --ready-file so the calling shell — which
+// synchronizes on the ready file via e2e_wait_for_file — is guaranteed to
+// see the cert file already in place (e2e/lib/common.sh reads it right
+// after the ready-file wait returns, to configure SSL_CERT_FILE before
+// starting the boid daemon).
 //
 // Usage: boid-e2e upstream-serve --dir <path> [--addr host:port]
 //
-//	[--ready-file <path>] [--git-bin <path>] <repo-name>...
+//	[--ready-file <path>] [--cert-file <path>] [--git-bin <path>] <repo-name>...
 func runUpstreamServe(args []string) error {
 	fs := flag.NewFlagSet("upstream-serve", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	dir := fs.String("dir", "", "parent directory for bare repositories (required)")
 	addr := fs.String("addr", "127.0.0.1:0", "listen address")
 	readyFile := fs.String("ready-file", "", "file to write the bound host:port to once listening")
+	certFile := fs.String("cert-file", "", "file to write the server's self-signed TLS certificate (PEM) to")
 	gitBin := fs.String("git-bin", "", "path to the real git binary (default /usr/bin/git)")
 
 	if err := fs.Parse(args); err != nil {
@@ -458,6 +466,11 @@ func runUpstreamServe(args []string) error {
 		}
 	}
 
+	if *certFile != "" {
+		if err := os.WriteFile(*certFile, u.CertPEM(), 0o644); err != nil {
+			return fmt.Errorf("upstream-serve: write cert file: %w", err)
+		}
+	}
 	if *readyFile != "" {
 		if err := os.WriteFile(*readyFile, []byte(u.Addr()), 0o644); err != nil {
 			return fmt.Errorf("upstream-serve: write ready file: %w", err)
