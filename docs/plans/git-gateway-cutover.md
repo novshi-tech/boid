@@ -269,3 +269,110 @@ PR7b → PR8。PR3〜PR5 は inert なので個別に安全に land できる。
   gateway 経由 fetch (daemon → gateway → 上流) にする案は architectural には整合するが、
   daemon が自分の gateway の client になる循環になるため、初期スコープでは
   host credentials 前提で回避する
+
+---
+
+## post-cutover 改善候補 (動作確認後に対応)
+
+PR6 マージ後、現行 config surface で dogfood を続けつつ、以下 3 件は
+cutover 本体と切り離して個別 PR で改善候補として残す (2026-07-10 nose 判断)。
+実装優先度は「n=1 の個人利用では顕在化しないが、顧客展開・複数 organization
+運用で必須になる」順。
+
+### 1. workspace-scoped PAT namespace 方式
+
+**問題**: 現行の `gateway.hosts[]` は daemon global に `host → secret_key` を
+mapping する方式で、**同じ github.com に対して workspace ごとに token を
+切り替えられない**。顧客展開で複数 organization を 1 daemon で束ねると、
+どの workspace も同一 PAT で認証注入され、service account の identity 分離が
+できない。
+
+**解決方針**: workspace = 顧客 = secret namespace = identity として扱う。
+
+- **config.yaml (全 workspace 共通、キー名の契約)**:
+
+  ```yaml
+  gateway:
+    hosts:
+      - host: github.com
+        forge: github
+        secret_key: gh-pat        # workspace 横断で共通のキー名
+  ```
+
+- **workspace.yaml (顧客ごとの identity)**:
+
+  ```yaml
+  secret_namespace: customer-a
+  ```
+
+- **登録**:
+
+  ```bash
+  boid secret set --namespace customer-a gh-pat <PAT-A>
+  boid secret set --namespace customer-b gh-pat <PAT-B>
+  boid secret set gh-pat <PAT-personal>   # namespace = default (fallback)
+  ```
+
+- **解決**: dispatcher が workspace 情報を gateway resolver に渡し、
+  `secretStore.Get(<workspace_namespace>, <secret_key>)` で lookup。
+  `secret_namespace` 指定なしの workspace は `default` fallback で
+  backward-compatible (PR4 の現行実装がそのまま動く)。
+
+**config 直積 (host + owner glob matching) を採らない理由**: config surface に
+workspace concept を持ち込むと「workspace = identity、config = 接続契約」の
+layering が崩れる。namespace = identity の 1 軸で分離する方が symmetric で、
+かつ secret store には既に namespace 概念が存在する (`boid secret set` の CLI が
+既にサポート) — 新軸を足すのでなく既存軸の露出。
+
+**実装スコープ**: dispatcher の resolver 呼出しに workspace scope を渡す配線、
+workspace.yaml に `secret_namespace` フィールド追加、対応する e2e シナリオ。
+
+### 2. config surface 圧縮 — forge → host 導出
+
+**問題**: `gateway.hosts[]` の各エントリで `host` と `forge` を両方書いているが、
+SaaS Cloud 前提 (github.com / bitbucket.org) では forge が host を一意に決めるため
+**冗長**。現行 boid のスコープでは Enterprise 対応は入っていない。
+
+**解決方針**: forge を primary key にし、host は forge から default 導出
+(Enterprise 対応時のみ override 可)。
+
+```yaml
+gateway:
+  forges:
+    github:
+      secret_key: gh-pat            # host: github.com が default
+    bitbucket:
+      secret_key: bb-token           # host: bitbucket.org が default
+    github-enterprise:                # 将来 Enterprise を足すとき
+      host: github.corp.example.com
+      secret_key: ghe-pat
+```
+
+**後方互換**: 現行の `hosts: [...]` を deprecation warning 付きで 1 リリース残し、
+`forges:` map に自動変換 (host 名で forge 判定できる)。
+
+**実装スコープ**: `internal/config/config.go` の UnmarshalYAML と test、
+docs (`docs/*/reference/config-yaml.md`) 更新。
+
+### 3. `.boid/` gitignore contract の user-facing 明文化
+
+**問題**: post-cutover は `.boid/` (project.yaml、hooks/*.sh 等) が sandbox 内
+clone 経由でしか届かない。`.gitignore` で `.boid/` を除外している project は
+cutover 後の dispatch で hook スクリプトが消える (PR6 Opus レビュー finding #7)。
+boid 本体は `.boid/project.yaml` を tracked にしているので dogfood は動くが、
+user 側の project は個別確認が要る。
+
+**解決方針**: dogfood チェックリスト (本 doc の上節) に以下を明示追加 (計画書
+更新のみ、コード変更なし)。cutover 後に既存 project へ配布する onboarding
+文書 (CLAUDE.md 等) にも「`.boid/` は commit 対象」を明記する。
+
+```bash
+# 各 project で
+git check-ignore .boid          # 何も出力されなければ tracked (OK)
+git check-ignore .boid/hooks    # 同上
+```
+
+出力があった project は `.gitignore` から `.boid/` を除外するか、
+`.boid/hooks/*.sh` だけ tracked にする。
+
+**依存**: 実装 (コード変更) 不要、本 doc の反映と onboarding 文書更新のみ。
