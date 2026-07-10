@@ -161,6 +161,15 @@ func (r *LocalRuntime) Start(_ context.Context, spec RuntimeStartSpec) (*Runtime
 		if stdinReader != nil {
 			cmd.Stdin = stdinReader
 		}
+		// cmd.Stdout and cmd.Stderr deliberately share one pipe: hook jobs have
+		// always been recorded this way (single transcript.log, single replay
+		// stream for reconnect/web UI), and this branch also serves `boid exec`
+		// on the non-interactive (no PTY) transport since PR #735 — where the
+		// merge is a known, documented behavior change from the pre-cutover
+		// syscall.Exec path (which inherited the CLI's already-separated
+		// fd1/fd2). See cmd/exec.go's execCmd doc comment (Opus review finding
+		// #1 on PR #735) for why splitting this is a protocol change, not a
+		// one-line fix, and is deliberately not attempted here.
 		cmd.Stdout = pw
 		cmd.Stderr = pw
 		// TERM=dumb: same suppression as the interactive branch above. Even
