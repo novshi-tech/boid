@@ -22,7 +22,10 @@ RUN_ALL=1
 usage() {
   cat <<'EOF'
 usage: ./e2e/run.sh [--keep-temp] [scenario]
-If no scenario is provided, all scenarios under e2e/scenarios/ are run.
+If no scenario is provided, all scenarios under e2e/scenarios/ are run,
+except those carrying a `skip` marker file (its contents are the tracked
+reason — see e.g. e2e/scenarios/worktree-lifecycle/skip). Requesting a
+scenario by name always runs it regardless of that marker.
 EOF
 }
 
@@ -45,10 +48,29 @@ while [[ $# -gt 0 ]]; do
 done
 
 scenarios=()
+skipped_names=()
+skipped_reasons=()
 if [[ $RUN_ALL -eq 1 ]]; then
   mapfile -t scenario_dirs < <(find "$SCENARIOS_ROOT" -mindepth 1 -maxdepth 1 -type d | sort)
   for scenario_dir in "${scenario_dirs[@]}"; do
-    scenarios+=("$(basename "$scenario_dir")")
+    scenario_name="$(basename "$scenario_dir")"
+    # `skip` (distinct from skip-e2e-upstream, which only skips the fixture
+    # upstream helper for a scenario that still runs) opts a scenario out of
+    # the default "run everything" pass entirely. Every skip must carry a
+    # reason and a tracking destination (a future PR, an issue, ...) in the
+    # marker file's own contents — silently dropping a known-broken scenario
+    # from the suite with no visible trace is exactly the kind of cap
+    # docs/plans/quality-gates.md's "no silent caps" principle rules out.
+    # Requesting a scenario by name (RUN_ALL=0) bypasses this: an explicit
+    # request is assumed to be a developer deliberately debugging it.
+    if [[ -f "$scenario_dir/skip" ]]; then
+      reason="$(<"$scenario_dir/skip")"
+      skipped_names+=("$scenario_name")
+      skipped_reasons+=("$reason")
+      printf '[e2e][skip] scenario %q skipped: %s\n' "$scenario_name" "$reason" >&2
+      continue
+    fi
+    scenarios+=("$scenario_name")
   done
 else
   scenarios=("$REQUESTED_SCENARIO")
@@ -277,6 +299,14 @@ done
 printf '[e2e][retry] summary: retried=%d (%s) failed=%d (%s)\n' \
   "${#retried_scenarios[@]}" "${retried_scenarios[*]:-none}" \
   "${#failed_scenarios[@]}" "${failed_scenarios[*]:-none}" >&2
+
+# Always printed (success or failure) — an explicitly skipped scenario is
+# never silent, per docs/plans/quality-gates.md's "no silent caps" principle.
+# Each skipped scenario's own reason was already logged individually above
+# at collection time; this is just the aggregate count/name list for
+# CI-log aggregation, mirroring the retry summary's shape.
+printf '[e2e][skip] summary: skipped=%d (%s)\n' \
+  "${#skipped_names[@]}" "${skipped_names[*]:-none}" >&2
 
 if [[ ${#failed_scenarios[@]} -gt 0 ]]; then
   e2e_fail "e2e scenarios failed after retries: ${failed_scenarios[*]}"
