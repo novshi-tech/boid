@@ -12,7 +12,15 @@ package upstream
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/cgi"
@@ -48,14 +56,15 @@ type Options struct {
 	GitBin string
 }
 
-// Upstream is a fixture git-over-HTTP server backed by real bare
+// Upstream is a fixture git-over-HTTPS server backed by real bare
 // repositories.
 type Upstream struct {
-	dir    string
-	ownDir bool
-	ln     net.Listener
-	srv    *http.Server
-	gitBin string
+	dir     string
+	ownDir  bool
+	ln      net.Listener
+	srv     *http.Server
+	gitBin  string
+	certPEM []byte
 
 	closeOnce sync.Once
 	closeErr  error
@@ -108,6 +117,26 @@ func New(opts Options) (*Upstream, error) {
 		return nil, fmt.Errorf("upstream: listen %s: %w", addr, err)
 	}
 
+	// TLS (docs/plans/git-gateway-cutover.md; PR #736 follow-up): the git
+	// gateway's outbound transport defaults every unconfigured host to
+	// https (internal/gitgateway/credentials.go's CredentialProvider.SchemeFor
+	// — deliberately production-correct, "every real forge is https", left
+	// untouched). A plain-HTTP fixture upstream therefore made every
+	// project-visible dispatch fail deep inside the sandbox with a TLS
+	// handshake error instead of the scheme mismatch a caller could react
+	// to. Serving real (self-signed) TLS here, with the harness trusting
+	// the generated cert via SSL_CERT_FILE (e2e/lib/common.sh), closes that
+	// gap with zero changes to gateway/production code — see
+	// generateSelfSignedCert's doc comment.
+	cert, certPEM, err := generateSelfSignedCert()
+	if err != nil {
+		ln.Close()
+		if ownDir {
+			_ = os.RemoveAll(dir)
+		}
+		return nil, fmt.Errorf("upstream: generate TLS certificate: %w", err)
+	}
+
 	handler := &cgi.Handler{
 		Path: backend,
 		Dir:  dir,
@@ -125,14 +154,77 @@ func New(opts Options) (*Upstream, error) {
 		},
 	}
 
-	srv := &http.Server{Handler: handler}
-	u := &Upstream{dir: dir, ownDir: ownDir, ln: ln, srv: srv, gitBin: gitBin}
+	srv := &http.Server{
+		Handler:   handler,
+		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}},
+	}
+	u := &Upstream{dir: dir, ownDir: ownDir, ln: ln, srv: srv, gitBin: gitBin, certPEM: certPEM}
 
 	go func() {
-		_ = srv.Serve(ln)
+		// cert/key are already in TLSConfig.Certificates, so certFile/keyFile
+		// are left empty per ServeTLS's own documented convention for that case.
+		_ = srv.ServeTLS(ln, "", "")
 	}()
 
 	return u, nil
+}
+
+// generateSelfSignedCert creates an in-memory self-signed TLS certificate
+// valid for "127.0.0.1", "::1", and "localhost" (the only hosts the fixture
+// upstream server ever binds to — see New's addr default), so it can serve
+// real HTTPS. Returns the tls.Certificate ready to plug into a
+// tls.Config, and the PEM-encoded certificate (never the private key) so
+// e2e/lib/common.sh can hand it to the daemon via SSL_CERT_FILE without any
+// gateway/production code changes — see New's doc comment for why that
+// matters.
+func generateSelfSignedCert() (tls.Certificate, []byte, error) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, nil, fmt.Errorf("generate key: %w", err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return tls.Certificate{}, nil, fmt.Errorf("generate serial number: %w", err)
+	}
+
+	template := x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "boid-e2e-fixture-upstream"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		DNSNames:              []string{"localhost"},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		return tls.Certificate{}, nil, fmt.Errorf("create certificate: %w", err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+
+	keyDER, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		return tls.Certificate{}, nil, fmt.Errorf("marshal private key: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return tls.Certificate{}, nil, fmt.Errorf("build tls certificate from generated key pair: %w", err)
+	}
+	return cert, certPEM, nil
+}
+
+// CertPEM returns the PEM-encoded self-signed certificate this Upstream
+// serves TLS with (never the private key). Callers that need clients
+// (real git, or Go's own default cert pool via SSL_CERT_FILE) to trust this
+// server write it to a file — see e2e/lib/common.sh's e2e_setup_fixture_upstream.
+func (u *Upstream) CertPEM() []byte {
+	return u.certPEM
 }
 
 // Serve is the test-oriented constructor: it fails t via Fatalf on error and
@@ -159,7 +251,7 @@ func (u *Upstream) Addr() string {
 
 // BaseURL returns "http://<addr>".
 func (u *Upstream) BaseURL() string {
-	return "http://" + u.Addr()
+	return "https://" + u.Addr()
 }
 
 // Dir returns the parent directory bare repositories are stored under.
@@ -197,10 +289,13 @@ func (u *Upstream) Close() error {
 
 // InitBareRepo creates (idempotently) a bare git repository at
 // <dir>/<name>.git using gitBin (empty resolves to the same default New
-// uses), with `http.receivepack` enabled. It is exported as a standalone
-// function (not tied to a running Upstream) so both Upstream.NewRepo and
-// the e2e harness's one-shot `boid-e2e upstream-serve` startup share one
-// implementation.
+// uses), with `http.receivepack` enabled. name may itself contain slashes
+// (e.g. "owner/repo") to mirror a real host's /owner/repo.git URL shape —
+// the parent directory is created first since `git init --bare` does not
+// reliably create more than one missing path component on every git
+// version. It is exported as a standalone function (not tied to a running
+// Upstream) so both Upstream.NewRepo and the e2e harness's one-shot
+// `boid-e2e upstream-serve` startup share one implementation.
 func InitBareRepo(gitBin, dir, name string) (string, error) {
 	if gitBin == "" {
 		gitBin = resolveGitBin()
@@ -210,6 +305,9 @@ func InitBareRepo(gitBin, dir, name string) (string, error) {
 		return repoPath, nil
 	} else if !os.IsNotExist(err) {
 		return "", fmt.Errorf("upstream: stat %s: %w", repoPath, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
+		return "", fmt.Errorf("upstream: mkdir parent of %s: %w", repoPath, err)
 	}
 
 	initCmd := exec.Command(gitBin, "init", "--quiet", "--bare", "-b", "main", repoPath)

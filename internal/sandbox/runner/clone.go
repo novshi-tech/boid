@@ -5,10 +5,35 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
+
+// clearDirContents removes every entry inside dir but leaves dir's own
+// directory entry in place — unlike os.RemoveAll(dir), which also removes
+// dir itself as its final step. Returns nil (nothing to clear) if dir does
+// not exist yet (the very first dispatch against a fresh runtime directory).
+//
+// This matters when dir is itself a mount point: see performCloneSteps's
+// call site for why /workspace (the sandbox-internal clone target) always
+// is one in production/e2e.
+func clearDirContents(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // performClone executes the sandbox-internal clone + branch-resolution
 // launch sequence declared by cs (docs/plans/git-gateway-cutover.md PR5:
@@ -57,11 +82,29 @@ func performCloneSteps(cs sandbox.CloneSpec, st *State) error {
 		git = "git"
 	}
 
-	// reopen: idempotent by re-clone. Wipe any leftover TargetDir from a
-	// previous attempt (or a prior job invocation reusing the same sandbox
-	// root) before cloning fresh.
-	if err := os.RemoveAll(cs.TargetDir); err != nil {
-		return fmt.Errorf("runner clone: remove existing target dir %s: %w", cs.TargetDir, err)
+	// reopen: idempotent by re-clone. Wipe any leftover TargetDir contents
+	// from a previous attempt (or a prior job invocation reusing the same
+	// sandbox root) before cloning fresh.
+	//
+	// This clears the *contents* of TargetDir rather than removing TargetDir
+	// itself (os.RemoveAll(cs.TargetDir) would attempt that as its final
+	// step): TargetDir is the sandbox-internal clone mount point
+	// (sandboxCloneTargetDir, "/workspace"), which dispatcher's
+	// cloneMounts bind-mounts from a host-backed per-job runtime directory
+	// (dispatcher.buildSandboxSpec's RuntimesDir-backed clone workspace —
+	// docs/plans/git-gateway-cutover.md PR6 cutover, container-based-boid.md
+	// 2026-07-08 decision: "clone lands on a runtime-dir bind mount by
+	// default, not tmpfs"). Removing an active mount point's own directory
+	// entry is refused by the kernel with EBUSY ("device or resource busy")
+	// — this fired on *every* clone-enabled dispatch, reopen or not, once
+	// RuntimesDir was configured (the production/e2e default), and was
+	// masked by an unrelated e2e/run.sh bug that hid failing scenarios
+	// behind a false-positive "pass" (see docs/plans/git-gateway-cutover.md
+	// and PR #736). clone_test.go's
+	// TestClearDirContentsPreservesDirEntryButRemovesChildren pins that
+	// TargetDir's own directory entry survives.
+	if err := clearDirContents(cs.TargetDir); err != nil {
+		return fmt.Errorf("runner clone: clear existing target dir %s: %w", cs.TargetDir, err)
 	}
 
 	args := []string{"clone"}

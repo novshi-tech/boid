@@ -84,6 +84,26 @@ e2e_wait_for_file() {
 # scenario already does for its peer project — this bypasses the fake host
 # git shim, which is for the boid *daemon's* own git invocations, not this
 # harness-level setup.
+#
+# E2E_FIXTURE_UPSTREAM_OWNER prefixes every fixture repo path with a fixed
+# synthetic "owner" segment (http://host:port/<owner>/<repo>.git) instead of
+# the flat http://host:port/<repo>.git this function originally produced.
+# The flat form has exactly two URL path segments (host + repo); the git
+# gateway's repoKeyFromUpstreamURL (internal/dispatcher/gitgateway_wire.go)
+# is deliberately GitHub/Bitbucket-shaped and requires exactly three
+# (host/owner/repo — see its doc comment), so every fixture-seeded project's
+# upstream_url has always failed that parse ("does not resolve to
+# host/owner/repo") since PR6 started requiring a resolvable gatewayCloneURL
+# for every project-visible dispatch. That failure was silently masked by a
+# separate run.sh bug (fixed alongside this one) that swallowed a failing
+# scenario's exit status, so it went unnoticed since PR6 merged — see
+# docs/plans/git-gateway-cutover.md and PR #735's discussion for the full
+# trail. Adding the owner segment here is the fix: git-http-backend serves
+# nested repo paths natively (GIT_PROJECT_ROOT-relative), so this needs no
+# change on the serving side (e2e/upstream), only here and in the
+# `upstream-serve` positional repo names below, which must match.
+readonly E2E_FIXTURE_UPSTREAM_OWNER="e2e-fixture"
+
 e2e_setup_fixture_upstream() {
   local workspace_dir="$1"
 
@@ -98,36 +118,56 @@ e2e_setup_fixture_upstream() {
 
   local upstream_dir="$E2E_ROOT/upstream-repos"
   local ready_file="$E2E_ROOT/upstream.addr"
+  local cert_file="$E2E_ROOT/upstream.crt"
   mkdir -p "$upstream_dir"
 
   local repo_names=()
   local project_dir repo_name
   for project_dir in "${project_dirs[@]}"; do
-    repo_names+=("$(basename "$project_dir")")
+    repo_names+=("${E2E_FIXTURE_UPSTREAM_OWNER}/$(basename "$project_dir")")
   done
 
   e2e_log "starting fixture upstream server for: ${repo_names[*]}"
   "$E2E_BIN_DIR/boid-e2e" upstream-serve \
     --dir "$upstream_dir" \
     --ready-file "$ready_file" \
+    --cert-file "$cert_file" \
     "${repo_names[@]}" \
     >"$E2E_LOG_DIR/upstream.stdout.log" \
     2>"$E2E_LOG_DIR/upstream.stderr.log" &
   E2E_UPSTREAM_PID=$!
 
+  # --cert-file is written by upstream-serve strictly before --ready-file
+  # (see e2e/cmd/boid-e2e/main.go's runUpstreamServe doc comment), so once
+  # the ready-file wait below returns, cert_file is guaranteed to exist too —
+  # no separate wait needed for it.
   e2e_wait_for_file "$ready_file" 10
   local upstream_addr
   upstream_addr="$(cat "$ready_file")"
-  e2e_log "fixture upstream server listening on $upstream_addr"
+  e2e_log "fixture upstream server listening on $upstream_addr (TLS, cert=$cert_file)"
   # docs/plans/git-gateway-cutover.md PR6 cutover (PR7a Opus heads-up):
   # export the resolved addr so PR7b's new scenarios (gateway-clone-based
   # assertions) can reach the fixture upstream directly without re-deriving
   # it from the ready file themselves.
   export E2E_UPSTREAM_ADDR="$upstream_addr"
 
+  # Trust the fixture's self-signed certificate (docs/plans/git-gateway-cutover.md
+  # PR #736 follow-up): the git gateway's outbound transport defaults every
+  # unconfigured host to https (internal/gitgateway/credentials.go's
+  # CredentialProvider.SchemeFor — deliberately production-correct, left
+  # untouched), so the fixture now serves real TLS instead of plain HTTP (see
+  # e2e/upstream/upstream.go's New doc comment). SSL_CERT_FILE is exported so
+  # the boid daemon (started later in run.sh, inheriting this shell's
+  # environment) trusts it via Go's default x509 cert pool — zero gateway/
+  # production code changes. GIT_SSL_CAINFO covers the harness's own `git
+  # push` below, which talks to the fixture directly as a real git client
+  # (not through boid at all).
+  export SSL_CERT_FILE="$cert_file"
+  export GIT_SSL_CAINFO="$cert_file"
+
   for project_dir in "${project_dirs[@]}"; do
     repo_name="$(basename "$project_dir")"
-    local origin_url="http://${upstream_addr}/${repo_name}.git"
+    local origin_url="https://${upstream_addr}/${E2E_FIXTURE_UPSTREAM_OWNER}/${repo_name}.git"
     (
       cd "$project_dir"
       if [[ ! -d .git ]]; then

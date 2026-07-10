@@ -1,0 +1,1 @@
+test fixture: intentionally always-failing scenario used by run_sh_skip_marker_test.sh to prove the `skip` marker prevents execution entirely in a full ("run everything") invocation.

@@ -648,6 +648,60 @@ func TestBroker_BoidBuiltinPolicy_HookRole(t *testing.T) {
 	}
 }
 
+// TestBroker_BoidBuiltinPolicy_CloneModeCwdNotOnHost is the regression guard
+// for a real bug found alongside PR #736 (git gateway cutover): a clone-mode
+// job's cwd (sandboxCloneTargetDir, "/workspace") only exists inside the
+// sandbox's own mount namespace — the broker itself always runs on the host,
+// outside any sandbox — so validateBoidBuiltinCwd's os.Stat(cwd) check
+// always failed for clone-mode `boid job_done` calls with "cwd does not
+// exist" (or, worse, would have silently matched an unrelated host
+// directory that happened to share the sandbox-internal name). This made
+// every clone-mode hook's completion report (postJobDone) silently fail
+// broker validation and get swallowed as a non-fatal error, which the
+// daemon's "runtime exited without boid job done" fallback then mistook for
+// a crash — even though the hook itself had already exited 0 successfully.
+//
+// entryRoot (see its own doc comment) already special-cased SandboxRoot for
+// the path-membership check; this test pins that the *filesystem*
+// existence check is skipped for the same case, using a cwd
+// ("/workspace") that is guaranteed not to exist in the test process's own
+// filesystem.
+func TestBroker_BoidBuiltinPolicy_CloneModeCwdNotOnHost(t *testing.T) {
+	const sandboxWorkspace = "/workspace"
+	if _, err := os.Stat(sandboxWorkspace); err == nil {
+		t.Skipf("test host coincidentally has a real %s directory; this test needs it to be absent", sandboxWorkspace)
+	}
+
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	hookCtx := sandbox.TokenContext{
+		JobID:       "j1",
+		TaskID:      "t1",
+		ProjectID:   "p1",
+		Role:        testRoleHook,
+		SandboxRoot: sandboxWorkspace,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, testHookBoidPolicies(), hookCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     sandboxWorkspace,
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:       sandbox.BoidOpJobDone,
+			JobID:    "j1",
+			ExitCode: 0,
+			Output:   "done",
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s, want 0 (clone-mode cwd must not be filesystem-validated on the host)", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 || exec.calls[0].Op != sandbox.BoidOpJobDone {
+		t.Fatalf("expected exactly one dispatched job_done call, got %+v", exec.calls)
+	}
+}
+
 // task_ask leaves TaskID empty in the shim; the broker fills it from the token
 // context (the agent's own task) before dispatching to the executor, and passes
 // the question through. The executor (not the broker) blocks for the answer.

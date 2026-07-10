@@ -1,9 +1,12 @@
 package upstream
 
 import (
+	"crypto/x509"
+	"encoding/pem"
 	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 func mustListen(t *testing.T) net.Listener {
@@ -67,6 +70,45 @@ func TestInitBareRepo_InvalidGitBin(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := InitBareRepo("/no/such/git-binary-anywhere", dir, "app"); err == nil {
 		t.Fatal("expected error for a nonexistent git binary, got nil")
+	}
+}
+
+// TestGenerateSelfSignedCert_ValidForLoopback pins the TLS fixture added
+// alongside PR #736's follow-up (gateway/credentials.go's CredentialProvider
+// defaults every unconfigured host to https, so a plain-HTTP fixture
+// upstream failed every project-visible dispatch with a TLS handshake
+// error). Runs without a real git binary (unlike upstream_e2e_test.go's
+// TestServeClonePush, which drives an actual clone/push against this same
+// cert) so it's part of the default `go test ./...` coverage.
+func TestGenerateSelfSignedCert_ValidForLoopback(t *testing.T) {
+	cert, certPEM, err := generateSelfSignedCert()
+	if err != nil {
+		t.Fatalf("generateSelfSignedCert: %v", err)
+	}
+	if len(cert.Certificate) == 0 {
+		t.Fatal("tls.Certificate has no certificate bytes")
+	}
+	if len(certPEM) == 0 {
+		t.Fatal("certPEM is empty")
+	}
+
+	block, _ := pem.Decode(certPEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		t.Fatalf("certPEM did not decode to a CERTIFICATE block: %+v", block)
+	}
+	parsed, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse generated certificate: %v", err)
+	}
+	if err := parsed.VerifyHostname("127.0.0.1"); err != nil {
+		t.Errorf("certificate not valid for 127.0.0.1 (the fixture upstream's default bind address): %v", err)
+	}
+	if err := parsed.VerifyHostname("localhost"); err != nil {
+		t.Errorf("certificate not valid for localhost: %v", err)
+	}
+	now := time.Now()
+	if now.Before(parsed.NotBefore) || now.After(parsed.NotAfter) {
+		t.Errorf("certificate not currently valid: NotBefore=%v NotAfter=%v now=%v", parsed.NotBefore, parsed.NotAfter, now)
 	}
 }
 
