@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -37,5 +38,65 @@ func TestPerformClone_MissingRequiredFieldsErrors(t *testing.T) {
 		if err := performClone(cs, nil); err == nil {
 			t.Errorf("case %d: expected error for incomplete CloneSpec %+v", i, cs)
 		}
+	}
+}
+
+// TestClearDirContentsPreservesDirEntryButRemovesChildren pins the fix for
+// a real bug found alongside PR #736 ("runner clone: remove existing target
+// dir /workspace: unlinkat //workspace: device or resource busy"), which
+// fired on *every* clone-enabled dispatch (not just reopen) once the daemon
+// had RuntimesDir configured — the production/e2e default.
+//
+// TargetDir (sandboxCloneTargetDir, "/workspace" in production) is a mount
+// point in the real sandbox: dispatcher's cloneMounts bind-mounts it from a
+// host-backed per-job runtime directory. os.RemoveAll(dir)'s final rmdir on
+// an active mount point is refused by the kernel with EBUSY. clearDirContents
+// must remove every entry *inside* dir while leaving dir's own directory
+// entry untouched — verified here via os.SameFile, which compares the
+// underlying identity (inode+device on Linux), not merely that os.Stat still
+// succeeds (a remove-then-recreate would also satisfy that weaker check).
+func TestClearDirContentsPreservesDirEntryButRemovesChildren(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write file.txt: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "subdir", "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	before, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat before: %v", err)
+	}
+
+	if err := clearDirContents(dir); err != nil {
+		t.Fatalf("clearDirContents: %v", err)
+	}
+
+	after, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat after: %v", err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("clearDirContents replaced dir's own directory entry instead of only clearing its contents (would EBUSY on a real mount point)")
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir after clear: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("dir still has entries after clearDirContents: %v", entries)
+	}
+}
+
+// TestClearDirContentsMissingDirIsNoop pins the first-dispatch case: a fresh
+// runtime directory whose TargetDir has never been created yet must not
+// error — the very first clone attempt for a job (not just a "reopen") hits
+// this path unconditionally.
+func TestClearDirContentsMissingDirIsNoop(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "does-not-exist")
+	if err := clearDirContents(dir); err != nil {
+		t.Fatalf("clearDirContents on a missing dir: %v", err)
 	}
 }
