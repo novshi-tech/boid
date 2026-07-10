@@ -1,1 +1,15 @@
-# Tool-supply kit (no env/host_commands/additional_bindings)
+# docs/plans/git-gateway-cutover.md PR6 cutover follow-up: the hook
+# (block-and-done.sh) needs to observe a release signal the host-side
+# scenario.sh writes directly to the host filesystem, which a sandboxed
+# clone can never see on its own (it's an isolated copy, not a live bind
+# mount of the host project dir). fake-hook-cmd's --check-file mode runs on
+# the host (host_commands are broker-executed host subprocesses) so it can;
+# E2E_WORKSPACE_DIR is threaded through so the hook can build the host-side
+# absolute path to check.
+env:
+  E2E_WORKSPACE_DIR: ${E2E_WORKSPACE_DIR}
+host_commands:
+  fake-hook-cmd:
+    path: ${E2E_BIN_DIR}/fake-hook-cmd
+    allow:
+      - "*"
