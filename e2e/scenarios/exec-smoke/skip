@@ -1,1 +1,0 @@
-PR #735 (boid exec を Runner.Dispatch() 経由の Job にする) がこのブランチ (#736) にまだ merge されていないため、旧 `boid exec` (client-side syscall.Exec 経路) の gateway 配線漏れ (spec.Clone is enabled but URL/.../BaseBranch must all be set, url="") がそのまま再現するだけ。これはまさに #736 の一連の修正が解消する対象そのものだが、exec 自体の Dispatch 化は別 PR (#735) のスコープなので、そちらが main に merge された後に改めて検証し skip を解除する。
