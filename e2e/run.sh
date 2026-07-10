@@ -7,6 +7,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/common.sh"
 
+# SCENARIOS_ROOT defaults to the real e2e/scenarios/ directory but can be
+# overridden via E2E_SCENARIOS_ROOT — used by
+# e2e/selftest/run_sh_exit_status_test.sh (the regression guard for the
+# run.sh exit-status-propagation bug) to point run.sh at a throwaway
+# fixture scenario without ever touching the real scenario set CI runs by
+# default.
+SCENARIOS_ROOT="${E2E_SCENARIOS_ROOT:-$SCRIPT_DIR/scenarios}"
+
 KEEP_TEMP=0
 REQUESTED_SCENARIO=""
 RUN_ALL=1
@@ -38,7 +46,7 @@ done
 
 scenarios=()
 if [[ $RUN_ALL -eq 1 ]]; then
-  mapfile -t scenario_dirs < <(find "$SCRIPT_DIR/scenarios" -mindepth 1 -maxdepth 1 -type d | sort)
+  mapfile -t scenario_dirs < <(find "$SCENARIOS_ROOT" -mindepth 1 -maxdepth 1 -type d | sort)
   for scenario_dir in "${scenario_dirs[@]}"; do
     scenarios+=("$(basename "$scenario_dir")")
   done
@@ -66,7 +74,7 @@ e2e_run go build -o "$BUILD_ROOT/boid-e2e" "$REPO_ROOT/e2e/cmd/boid-e2e"
 
 run_scenario() {
   local scenario="$1"
-  local scenario_dir="$SCRIPT_DIR/scenarios/$scenario"
+  local scenario_dir="$SCENARIOS_ROOT/$scenario"
 
   [[ -d "$scenario_dir" ]] || e2e_fail "scenario not found: $scenario"
   [[ -f "$scenario_dir/scenario.sh" ]] || e2e_fail "scenario script not found: $scenario_dir/scenario.sh"
