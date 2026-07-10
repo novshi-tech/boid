@@ -23,6 +23,34 @@ import (
 // POST /api/projects/{id}/exec, which dispatches through the exact same
 // Runner.Dispatch() a session does — see internal/server/wire.go's
 // sessionDispatcherAdapter.StartExec.
+//
+// Known behavior change vs. the pre-cutover path (Opus review finding #1 on
+// PR #735): for a non-interactive (no PTY) exec — i.e. whenever isatty(stdin)
+// && isatty(stdout) is false, see isRealTerminal below — stdout and stderr
+// are merged into a single stream by the daemon before attachLive writes it
+// to os.Stdout. `boid exec -- cmd 2>/dev/null` therefore cannot drop stderr,
+// and `boid exec -- go test ./... | grep FAIL` will see stderr bytes mixed
+// into what grep reads. The pre-cutover syscall.Exec path did not have this
+// limitation: it replaced the CLI process in place, so the child inherited
+// the CLI's fd1/fd2 already separated by the caller's own shell redirection.
+//
+// This is a real regression, not a design choice: the merge happens because
+// internal/dispatcher/runtime_local_linux.go's non-interactive branch backs
+// both cmd.Stdout and cmd.Stderr with the same single pipe (see its comment
+// for why), and the daemon↔CLI attach transport (job_runtime_routes.go's
+// hijacked HTTP connection, consumed by internal/client.AttachJob) is an
+// unframed raw byte stream — RuntimeAttachRequest already carries a separate
+// Error io.Writer, but job_runtime_routes.go wires it to the very same
+// connection as Output, and even a runtime implementation that did write
+// through it separately would still land on the wire indistinguishable from
+// Output once both hit the same duplex byte stream. Actually separating them
+// needs on-wire framing (a stream tag per chunk) plumbed through the runtime
+// interface, the hijacked-connection protocol, the client's demuxer, and the
+// on-disk transcript format the log-replay path (JobLogReader/showLogPager)
+// also reads — a protocol change, not a one-file fix. The interactive (PTY)
+// branch is intentionally unaffected either way: a real terminal always
+// presents one merged stream to begin with, which is the correct, expected
+// terminal behavior, not a limitation.
 var execCmd = &cobra.Command{
 	Use:           "exec -p <ref> -- <argv...>",
 	Short:         "Run an arbitrary command inside a project sandbox",
