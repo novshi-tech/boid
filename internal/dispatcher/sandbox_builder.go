@@ -1277,12 +1277,10 @@ func buildEnvironmentYAML(in EnvironmentInput) string {
 		}
 		sort.Strings(peerIDs)
 		for _, id := range peerIDs {
-			adv := in.WorkspacePeerAdvertise[id]
-			doc.WorkspaceProjects = append(doc.WorkspaceProjects, workspaceProjectEntry{
-				Name:          adv.Name,
-				CloneURL:      adv.CloneURL,
-				ReferencePath: adv.ReferencePath,
-			})
+			// PeerAdvertise and workspaceProjectEntry share the same field
+			// shape (name/clone URL/reference path) by design — a direct
+			// type conversion, not a struct literal copy.
+			doc.WorkspaceProjects = append(doc.WorkspaceProjects, workspaceProjectEntry(in.WorkspacePeerAdvertise[id]))
 		}
 	}
 

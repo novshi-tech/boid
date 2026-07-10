@@ -26,6 +26,15 @@ func hostHEADBranch(gitBin, projectDir string) string {
 // This lives in dispatcher (not orchestrator) because it is an execution
 // concern: orchestrator only expresses "this job wants a worktree"; the
 // machinery that allocates one belongs next to the sandbox launch.
+//
+// Retired (no longer called from Dispatch) as of docs/plans/git-gateway-cutover.md
+// PR6 cutover — every project-visible job clones inside the sandbox instead.
+// Left defined (dead code on this path) rather than deleted so this PR's
+// revert unit stays small; deletion is PR8's job alongside WorktreeManager.
+// allocateWorktree itself stays reachable via its own direct test callers
+// (worktree_resolver_test.go), so only this wrapper is flagged unused.
+//
+//nolint:unused // PR8 deletes this together with WorktreeManager (see doc comment)
 func (r *Runner) resolveWorktree(spec *orchestrator.JobSpec) (string, error) {
 	if spec == nil || !spec.Visibility.UseWorktree || r.Worktrees == nil {
 		return "", nil
@@ -37,6 +46,13 @@ func (r *Runner) resolveWorktree(spec *orchestrator.JobSpec) (string, error) {
 // or recreating anything. Gate jobs pass this as the starting hint to
 // ensureHostGateWorktree; hook jobs pass it to the broker TokenContext so
 // broker-side git commands know where to operate.
+//
+// Retired (no longer called from Dispatch) as of docs/plans/git-gateway-cutover.md
+// PR6 cutover — TokenContext.WorktreeDir is always empty now (see Dispatch's
+// worktreePath/resolvedWorktreePath comment). Left defined rather than
+// deleted so this PR's revert unit stays small; deletion is PR8's job.
+//
+//nolint:unused // PR8 deletes this together with WorktreeManager (see doc comment)
 func (r *Runner) existingWorktreePath(spec *orchestrator.JobSpec) string {
 	if spec == nil || r.Worktrees == nil || spec.TaskID == "" {
 		return ""

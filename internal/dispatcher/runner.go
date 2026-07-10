@@ -411,6 +411,13 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 // caller fails the job dispatch with the message so the orchestrator surfaces
 // "project dir was moved out from under us" to the user instead of silently
 // running against the wrong branch.
+//
+// Retired (no longer called from Dispatch) as of docs/plans/git-gateway-cutover.md
+// PR6 cutover — the clone model has no host HEAD to drift out from under a
+// dispatch. Left defined rather than deleted so this PR's revert unit stays
+// small; deletion is PR8's job alongside WorktreeManager.
+//
+//nolint:unused // PR8 deletes this together with WorktreeManager (see doc comment)
 func (r *Runner) enforceCaseOneHeadInvariant(spec *orchestrator.JobSpec) error {
 	if spec == nil || spec.Visibility.UseWorktree {
 		return nil
