@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"fmt"
 	"os/exec"
 	"strings"
 
@@ -69,7 +70,14 @@ type SessionJobInput struct {
 // (JobKindSession, adapter-bound HarnessType). The result is fed straight to
 // dispatcher.Runner which builds the sandbox and hands the agent process to
 // adapter.Run().
-func BuildSessionJobSpec(input SessionJobInput) *orchestrator.JobSpec {
+//
+// Returns an error when the sandbox-internal clone declaration cannot be
+// built for a non-empty ProjectWorkDir — see buildSessionCloneDeclaration's
+// doc comment. The caller (WebUI POST /sessions, `boid exec` CLI) must
+// surface that as a user-visible error rather than silently degrading, since
+// the cutover contract (docs/plans/git-gateway-cutover.md PR6) requires a
+// clone-based dispatch for every project-visible job.
+func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 	builtinPolicies := orchestrator.DefaultBuiltinPolicies(
 		orchestrator.RoleHook,
 		[]string{"boid", "git", "fetch"},
@@ -90,6 +98,16 @@ func BuildSessionJobSpec(input SessionJobInput) *orchestrator.JobSpec {
 		displayName = input.HarnessType + " session"
 	}
 
+	// Clone (docs/plans/git-gateway-cutover.md PR6 cutover): sessions and
+	// exec have no Task, so there is no explicit base_branch to declare —
+	// clone the project's current default branch with no branch created
+	// (CheckoutOnly). A resolution failure is a hard error, not a silent
+	// fallback: see buildSessionCloneDeclaration.
+	cloneDecl, err := buildSessionCloneDeclaration(input.ProjectWorkDir)
+	if err != nil {
+		return nil, err
+	}
+
 	spec := &orchestrator.JobSpec{
 		ProjectID:   input.ProjectID,
 		DisplayName: displayName,
@@ -103,15 +121,7 @@ func BuildSessionJobSpec(input SessionJobInput) *orchestrator.JobSpec {
 			Writable:           !input.Readonly,
 			KitRoots:           input.KitRoots,
 			DockerEnabled:      input.DockerEnabled,
-			// Clone (docs/plans/git-gateway-cutover.md PR6 cutover): sessions
-			// and exec have no Task, so there is no explicit base_branch to
-			// declare. "全 project 可視 job が clone になる" applies to them
-			// too — clone the project's current default branch with no
-			// branch created (CheckoutOnly), mirroring "default branch を
-			// clone・branch 作成なし" from the plan. See
-			// resolveSessionBaseBranch's doc comment for the graceful
-			// fallback when the host dir has no resolvable HEAD.
-			Clone: buildSessionCloneDeclaration(input.ProjectWorkDir),
+			Clone:              cloneDecl,
 		},
 		BuiltinPolicies: builtinPolicies,
 		HostCommands:    hostCommands,
@@ -126,27 +136,55 @@ func BuildSessionJobSpec(input SessionJobInput) *orchestrator.JobSpec {
 	if input.Instruction != "" {
 		spec.Env["BOID_USER_ANSWER"] = input.Instruction
 	}
-	return spec
+	return spec, nil
 }
+
+// resolveSessionBaseBranchFn is the injection point for
+// buildSessionCloneDeclaration's HEAD resolver. Production points at
+// resolveSessionBaseBranch (which shells out to real git); tests override it
+// with a stub so the field-passthrough contracts don't have to bring up a
+// real git repo per test. Reassigned only from tests, non-parallel — the
+// session_job_test.go stubSessionBaseBranch helper documents the discipline.
+var resolveSessionBaseBranchFn = resolveSessionBaseBranch
 
 // buildSessionCloneDeclaration returns the Clone declaration for a task-less
 // job (`boid agent` / `boid exec`): CheckoutOnly on whatever branch the host
-// project directory's HEAD currently resolves to. Returns nil (falling back
-// to BuildSandboxSpec's legacy project-dir-bind path) when projectWorkDir has
-// no resolvable HEAD — e.g. not a git repository at all — which in practice
-// only happens for hand-built test fixtures; every real project registered
-// post-PR2 has a git repo with an origin (upstream_url is mandatory at
-// registration), so HEAD always resolves.
-func buildSessionCloneDeclaration(projectWorkDir string) *orchestrator.CloneDeclaration {
-	branch := resolveSessionBaseBranch(projectWorkDir)
+// project directory's HEAD currently resolves to.
+//
+// Returns (nil, nil) only when projectWorkDir is empty — the "no project
+// visible" state, in which BuildSandboxSpec's own "no project visible"
+// branch takes over cleanly. When projectWorkDir is set but HEAD cannot be
+// resolved (detached HEAD, corrupted repo, git absent), this returns an
+// error rather than silently degrading to nil.
+//
+// Rationale: pre-cutover, a nil Clone from this function silently fell
+// through to the projectVisibilityMounts branch (a live host RW bind of
+// ProjectDir plus the git shim overlay) — that path is now retired
+// (docs/plans/git-gateway-cutover.md PR6 cutover) and re-entering it would
+// bypass RequireUpstreamURL, gateway auth, and the whole clone-mode
+// contract. Detached HEAD is a real state that happens on real repos
+// outside hand-built test fixtures (mid-rebase, bisect, or someone
+// checked out a tag or a raw SHA), so degrading here would be a cutover
+// bypass in exactly the situations it's most important to catch.
+func buildSessionCloneDeclaration(projectWorkDir string) (*orchestrator.CloneDeclaration, error) {
+	if projectWorkDir == "" {
+		return nil, nil
+	}
+	branch := resolveSessionBaseBranchFn(projectWorkDir)
 	if branch == "" {
-		return nil
+		return nil, fmt.Errorf(
+			"cannot resolve default branch of project dir %q for sandbox-internal clone "+
+				"(detached HEAD, not a git repository, or a corrupted checkout); "+
+				"check out a branch (`git checkout <branch>`) or verify the project dir "+
+				"is a valid clone with a default branch before starting a session/exec",
+			projectWorkDir,
+		)
 	}
 	return &orchestrator.CloneDeclaration{
 		Branch:       branch,
 		BaseBranch:   branch,
 		CheckoutOnly: true,
-	}
+	}, nil
 }
 
 // resolveSessionBaseBranch resolves the branch a task-less job should clone
@@ -156,7 +194,8 @@ func buildSessionCloneDeclaration(projectWorkDir string) *orchestrator.CloneDecl
 // root-task shortcut it replaces. Tolerates both real git's `--short` output
 // ("main") and a detached/prefixed form ("refs/heads/main") defensively,
 // since e2e's fake host git shim (e2e/fixtures/hostbin/git) does not honour
-// --short. Returns "" when HEAD cannot be resolved at all.
+// --short. Returns "" when HEAD cannot be resolved at all (caller
+// buildSessionCloneDeclaration turns that into a hard error).
 func resolveSessionBaseBranch(projectWorkDir string) string {
 	if projectWorkDir == "" {
 		return ""
@@ -180,14 +219,19 @@ func resolveSessionBaseBranch(projectWorkDir string) string {
 //   - DisplayName falls back to argv[0] when the caller leaves it empty
 //
 // HarnessType in input is ignored and forced to "shell"; argv must be non-empty.
-func BuildExecJobSpec(input SessionJobInput, argv []string, interactive bool) *orchestrator.JobSpec {
+// Propagates any error from BuildSessionJobSpec (in particular a session
+// clone-declaration failure — see buildSessionCloneDeclaration).
+func BuildExecJobSpec(input SessionJobInput, argv []string, interactive bool) (*orchestrator.JobSpec, error) {
 	input.HarnessType = "shell"
 	if input.DisplayName == "" && len(argv) > 0 {
 		input.DisplayName = argv[0]
 	}
-	spec := BuildSessionJobSpec(input)
+	spec, err := BuildSessionJobSpec(input)
+	if err != nil {
+		return nil, err
+	}
 	spec.Kind = orchestrator.JobKindExec
 	spec.Argv = argv
 	spec.Interactive = interactive
-	return spec
+	return spec, nil
 }

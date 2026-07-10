@@ -308,8 +308,35 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		// produce an empty GatewayCloneURL and fail deep inside the sandbox
 		// with an opaque "git clone ''" error; failing fast here surfaces a
 		// clear, actionable message to the dispatch caller instead.
+		//
+		// Every branch below must either succeed or hard-error — a silent
+		// skip (`if err == nil && proj != nil` optimism) is exactly the
+		// PR6 Opus review #4 concern: it would let a torn Projects registry
+		// (project row missing / GetProject errored) fall through to a
+		// runtime "git clone ''" failure inside the sandbox. The only
+		// tolerated case is r.Projects == nil, which corresponds to
+		// dispatcher unit tests that don't wire a Projects lookup at all
+		// (the tests exercise argv/cleanup/spec plumbing, not gateway
+		// resolution) — those specs also leave Visibility.Clone nil, so in
+		// production this branch always runs with r.Projects non-nil.
 		if r.Projects != nil {
-			if proj, perr := r.Projects.GetProject(spec.ProjectID); perr == nil && proj != nil {
+			proj, perr := r.Projects.GetProject(spec.ProjectID)
+			switch {
+			case perr != nil:
+				err := fmt.Errorf("clone-mode dispatch: look up project %q: %w", spec.ProjectID, perr)
+				r.failJob(j, err)
+				if cleanup != nil {
+					cleanup()
+				}
+				return "", err
+			case proj == nil:
+				err := fmt.Errorf("clone-mode dispatch: project %q not found (registry drift?); rerun `boid project add` or check `boid project list`", spec.ProjectID)
+				r.failJob(j, err)
+				if cleanup != nil {
+					cleanup()
+				}
+				return "", err
+			default:
 				if err := orchestrator.RequireUpstreamURL(proj); err != nil {
 					r.failJob(j, err)
 					if cleanup != nil {

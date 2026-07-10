@@ -70,8 +70,9 @@ tools:
   - git
   - python3
 workspace_projects:
-  - path: /home/user/shared-lib
-    name: shared-lib
+  - name: shared-lib
+    clone_url: http://10.0.2.2:9001/j/<token>/github.com/owner/shared-lib.git
+    reference_path: /mnt/refs/peers/<peer-project-id>.git
 ```
 
 | Field | Description |
@@ -80,4 +81,4 @@ workspace_projects:
 | worktree | Legacy field, always `false` post-cutover. Every job now sees a fresh sandbox-internal clone of the project (see `filesystem.project_dir`), not a shared host git worktree — commits are only visible to other sessions/hosts once pushed. `readonly: true` no longer means the filesystem is read-only; it means `git push` is rejected by the git gateway (fetch still works). |
 | network.restricted | Whether external network access is restricted |
 | tools | Available commands |
-| workspace_projects | Other projects in the same workspace (read-only) |
+| workspace_projects | Other projects in the same workspace (fetch-only from this job's perspective). Post-cutover each entry advertises the **name** (repo basename), the **clone_url** through the git gateway (fetch-only for peers — writing to a peer means creating a cross-project child task instead), and the **reference_path** — a read-only bind-mounted `.git` directory usable as `git clone --reference <reference_path> <clone_url>` for object-sharing acceleration. There is **no legacy `path:` field** — peers are no longer exposed as a live host filesystem path; if you need to see a peer's working tree, `git clone` it. Peers whose upstream_url could not be resolved are silently omitted from the list. |
