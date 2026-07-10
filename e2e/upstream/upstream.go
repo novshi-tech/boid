@@ -197,10 +197,13 @@ func (u *Upstream) Close() error {
 
 // InitBareRepo creates (idempotently) a bare git repository at
 // <dir>/<name>.git using gitBin (empty resolves to the same default New
-// uses), with `http.receivepack` enabled. It is exported as a standalone
-// function (not tied to a running Upstream) so both Upstream.NewRepo and
-// the e2e harness's one-shot `boid-e2e upstream-serve` startup share one
-// implementation.
+// uses), with `http.receivepack` enabled. name may itself contain slashes
+// (e.g. "owner/repo") to mirror a real host's /owner/repo.git URL shape —
+// the parent directory is created first since `git init --bare` does not
+// reliably create more than one missing path component on every git
+// version. It is exported as a standalone function (not tied to a running
+// Upstream) so both Upstream.NewRepo and the e2e harness's one-shot
+// `boid-e2e upstream-serve` startup share one implementation.
 func InitBareRepo(gitBin, dir, name string) (string, error) {
 	if gitBin == "" {
 		gitBin = resolveGitBin()
@@ -210,6 +213,9 @@ func InitBareRepo(gitBin, dir, name string) (string, error) {
 		return repoPath, nil
 	} else if !os.IsNotExist(err) {
 		return "", fmt.Errorf("upstream: stat %s: %w", repoPath, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
+		return "", fmt.Errorf("upstream: mkdir parent of %s: %w", repoPath, err)
 	}
 
 	initCmd := exec.Command(gitBin, "init", "--quiet", "--bare", "-b", "main", repoPath)

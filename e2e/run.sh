@@ -188,10 +188,42 @@ run_scenario() {
     e2e_run "$E2E_BIN_DIR/boid-e2e" wait-health --timeout 15s --interval 100ms "$BOID_SOCKET"
 
     e2e_log "running scenario: $scenario"
+    # Two independent bugs used to hide behind this one line
+    # (`(source scenario.sh) > >(tee log) 2>&1`):
+    #
+    # 1. Redirecting a compound command's own stdout/stderr to a process
+    #    substitution discards its exit status entirely — bash reports the
+    #    whole statement as successful even when the sourced scenario.sh
+    #    calls `exit 1` (e.g. via e2e_assert_contains / e2e_fail), because
+    #    the redirection target is an asynchronous process substitution
+    #    rather than a plain file. Fixed by moving the redirection *inside*
+    #    the subshell via `exec` instead of wrapping the subshell invocation
+    #    in one: the compound command the caller evaluates is now just
+    #    `(...)` with no redirection of its own, so `$?` right after it is
+    #    exactly the sourced script's exit status.
+    #
+    # 2. That alone is still not sufficient: run_scenario is called as
+    #    `if run_scenario "$scenario"; then ...`, and POSIX/bash suspend the
+    #    errexit *action* (not the -e option's value) for every command run
+    #    while evaluating an if/while/until condition — including commands
+    #    inside subshells that re-assert `set -e` themselves, since the
+    #    suspension is a separate internal "are we evaluating a condition"
+    #    flag, not the errexit option. So even with fix #1, a failing
+    #    scenario would fall through to "scenario completed successfully"
+    #    and this subshell would exit with whatever its own *last* command
+    #    naturally returns (0), silently discarding the real failure.
+    #    Capturing the exit code explicitly and calling `exit` with it
+    #    sidesteps errexit's suppressed-in-a-condition semantics entirely:
+    #    `exit N` always terminates immediately regardless of -e's state.
     (
+      exec > >(tee "$E2E_LOG_DIR/scenario.log") 2>&1
       # shellcheck source=/dev/null
       source "$scenario_dir/scenario.sh"
-    ) > >(tee "$E2E_LOG_DIR/scenario.log") 2>&1
+    )
+    scenario_exit_code=$?
+    if [[ $scenario_exit_code -ne 0 ]]; then
+      exit "$scenario_exit_code"
+    fi
 
     e2e_log "scenario completed successfully"
   )
