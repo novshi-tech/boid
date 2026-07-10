@@ -267,7 +267,8 @@ Key fields:
 - `instructions` — 1-entry array for dynamic instruction generation (see above);
   2+ entries = complete replacement.
 - `auto_start: true` — start immediately.
-- `base_branch` — worktree fork point. Inherits project-top if omitted.
+- `base_branch` — the branch the child's own clone forks from. Inherits
+  project-top if omitted.
 
 Full reference: [references/builtins.md](references/builtins.md).
 
@@ -531,17 +532,19 @@ Enforce in your own control flow — the daemon does not:
 
 *Triggered when `environment.yaml` `readonly: false`.*
 
-An executor **implements**: edits files in its worktree, runs tests, commits, and
-exits. The parent supervisor handles integration — the executor only commits and
-reports.
+An executor **implements**: edits files in its own fresh clone of the project,
+runs tests, commits, pushes, and exits. The parent supervisor handles
+integration — the executor only commits, pushes, and reports.
 
 ### Workflow
 
 1. **Read** — title + description in `task.yaml`, the active instruction at the
-   tail of `instructions.yaml`. Confirm worktree path and writability via
-   `environment.yaml`.
-2. **Implement** — make the code / test / doc changes. Stay inside the executor's
-   worktree.
+   tail of `instructions.yaml`. Confirm the project path and writability via
+   `environment.yaml` (`filesystem.project_dir`, `filesystem.writable`) — the
+   sandbox clones the project fresh for this job; the filesystem you see is
+   that clone's working tree, not the host repo.
+2. **Implement** — make the code / test / doc changes. Stay inside the project
+   clone.
 3. **Verify** — run the project's quick verification (tests + lint) before
    committing. The active instruction usually names the verification command.
 4. **Release** — follow the release steps in the active instruction (e.g. `git add`
@@ -558,7 +561,7 @@ artifact:
     evidence:
       pr_url: "<if applicable>"
       commit_sha: "<if applicable>"
-      worktree_branch: "<branch name, if applicable>"
+      branch: "<branch name, if applicable>"
     verification:
       tests_passed: true
       ci_status: "<green|red|pending|unknown>"
@@ -574,10 +577,14 @@ and reopens you.
 
 ### Executor rules
 
-- Only edit files inside your worktree (path in `environment.yaml`). Anything
-  outside is lost when the worktree is removed on `done`.
+- Only edit files inside your project clone (path in `environment.yaml`).
+  Anything outside is lost when the job's sandbox is torn down.
 - Follow constraints in `environment.yaml` (`network.restricted`, `tools`).
-- **Always commit before exiting.** Uncommitted changes vanish with the worktree.
+- **Always commit AND push before exiting.** This job's clone is thrown away
+  when it ends — commits that were never pushed to origin are gone, and are
+  never visible to any other session or to the host, even if the job itself
+  looked successful. "Uncommitted changes vanish" is no longer the whole
+  story: unpushed *commits* vanish too.
 - Do not spawn child tasks. Decomposition belongs to the supervisor.
 - Do not write to `instructions` in the task payload — it is delivered as the
   read-only file `instructions.yaml`.

@@ -77,7 +77,7 @@ workspace_projects:
 | Field | Description |
 |-----------|------|
 | readonly | Whether the project directory is writable |
-| worktree | Whether running in git worktree mode |
+| worktree | Legacy field, always `false` post-cutover. Every job now sees a fresh sandbox-internal clone of the project (see `filesystem.project_dir`), not a shared host git worktree — commits are only visible to other sessions/hosts once pushed. `readonly: true` no longer means the filesystem is read-only; it means `git push` is rejected by the git gateway (fetch still works). |
 | network.restricted | Whether external network access is restricted |
 | tools | Available commands |
 | workspace_projects | Other projects in the same workspace (read-only) |

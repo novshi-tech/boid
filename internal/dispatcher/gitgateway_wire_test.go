@@ -235,6 +235,62 @@ func TestBuildGatewayRepos_NilProjectsReturnsNil(t *testing.T) {
 	}
 }
 
+// --- buildPeerAdvertise (docs/plans/git-gateway-cutover.md PR6 cutover
+// 「5. peer advertise の変更」) ---
+
+func TestBuildPeerAdvertise_ResolvesNameCloneURLAndReferencePath(t *testing.T) {
+	r := &Runner{
+		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
+			{ID: "peer-1", UpstreamURL: "https://github.com/owner/peer-repo.git"},
+		}},
+	}
+	got := r.buildPeerAdvertise(map[string]string{"peer-1": "/host/peer-1"}, "http://10.0.2.2:12345", "job-token-abc")
+	adv, ok := got["peer-1"]
+	if !ok {
+		t.Fatalf("buildPeerAdvertise = %#v, want an entry for peer-1", got)
+	}
+	if adv.Name != "peer-repo" {
+		t.Errorf("Name = %q, want peer-repo", adv.Name)
+	}
+	if want := "http://10.0.2.2:12345/j/job-token-abc/github.com/owner/peer-repo.git"; adv.CloneURL != want {
+		t.Errorf("CloneURL = %q, want %q", adv.CloneURL, want)
+	}
+	if want := "/mnt/refs/peers/peer-1.git"; adv.ReferencePath != want {
+		t.Errorf("ReferencePath = %q, want %q", adv.ReferencePath, want)
+	}
+}
+
+func TestBuildPeerAdvertise_SkipsPeerWithNoUpstreamURL(t *testing.T) {
+	r := &Runner{
+		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
+			{ID: "peer-1"}, // no UpstreamURL captured
+		}},
+	}
+	got := r.buildPeerAdvertise(map[string]string{"peer-1": "/host/peer-1"}, "http://10.0.2.2:1", "tok")
+	if got != nil {
+		t.Fatalf("buildPeerAdvertise = %#v, want nil when the only peer has no upstream_url", got)
+	}
+}
+
+func TestBuildPeerAdvertise_NilWhenGatewayUnwiredOrNoProjects(t *testing.T) {
+	peers := map[string]string{"peer-1": "/host/peer-1"}
+	r := &Runner{Projects: fakeProjectLookup{projects: []*orchestrator.Project{
+		{ID: "peer-1", UpstreamURL: "https://github.com/owner/peer-repo.git"},
+	}}}
+	if got := r.buildPeerAdvertise(peers, "", "tok"); got != nil {
+		t.Errorf("buildPeerAdvertise with empty gatewayURL = %#v, want nil", got)
+	}
+	if got := r.buildPeerAdvertise(peers, "http://10.0.2.2:1", ""); got != nil {
+		t.Errorf("buildPeerAdvertise with empty gatewayToken = %#v, want nil", got)
+	}
+	if got := (&Runner{}).buildPeerAdvertise(peers, "http://10.0.2.2:1", "tok"); got != nil {
+		t.Errorf("buildPeerAdvertise with nil Projects = %#v, want nil", got)
+	}
+	if got := r.buildPeerAdvertise(nil, "http://10.0.2.2:1", "tok"); got != nil {
+		t.Errorf("buildPeerAdvertise with no peers = %#v, want nil", got)
+	}
+}
+
 // --- Dispatch-level gateway lifecycle wiring ---
 
 // gwFakeSandboxPrep is a minimal SandboxPreparer stub, mirroring

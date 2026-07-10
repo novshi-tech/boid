@@ -42,7 +42,7 @@ Reads YAML/JSON from stdin (or `-f <file>`). Prints `task created: <id> (<status
 | `description` | Delivered to the child as the active instruction. |
 | `auto_start` | `true` to start immediately. |
 | `parent_id` | Auto-filled from `BOID_TASK_ID`. Set explicitly only to attach under a different parent. |
-| `base_branch` | Branch to fork the worktree from. Inherits the project-top `base_branch`, else the daemon's current HEAD. |
+| `base_branch` | Branch the task's own project clone forks from. Inherits the project-top `base_branch`, else the daemon's current HEAD. |
 | `project_id` | Project to create in. Defaults to the same project as the parent. |
 | `behavior_spec` | Inline behavior definition. Not normally needed — prefer named behaviors from `project.yaml`. |
 | `ref` | Child ref name within the parent scope. |
@@ -96,7 +96,7 @@ Three modes:
 boid task reopen <task-id> [-m "<new instruction>"]
 ```
 
-Transitions `done → executing` with the new instruction appended to `instructions.yaml`. Used by the supervisor to ask a `done` child to take another pass (rebase, fix CI, address review feedback). The same task ID and worktree are reused.
+Transitions `done → executing` with the new instruction appended to `instructions.yaml`. Used by the supervisor to ask a `done` child to take another pass (rebase, fix CI, address review feedback). The same task ID and branch are reused — no new branch is cut — but the job re-clones the project fresh, so only work that was **committed and pushed** on the previous pass is there when the reopened agent starts.
 
 Reopen always spawns a **fresh agent process** — the harness session from the
 previous turn is not carried over (no `claude --resume` / `codex exec resume` /

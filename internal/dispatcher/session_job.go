@@ -1,6 +1,11 @@
 package dispatcher
 
-import "github.com/novshi-tech/boid/internal/orchestrator"
+import (
+	"os/exec"
+	"strings"
+
+	"github.com/novshi-tech/boid/internal/orchestrator"
+)
 
 // SessionJobInput carries the resolved data needed to build a Session
 // (HarnessAdapter-backed, task-less) JobSpec. Phase 3-d (PR1) introduced
@@ -98,6 +103,15 @@ func BuildSessionJobSpec(input SessionJobInput) *orchestrator.JobSpec {
 			Writable:           !input.Readonly,
 			KitRoots:           input.KitRoots,
 			DockerEnabled:      input.DockerEnabled,
+			// Clone (docs/plans/git-gateway-cutover.md PR6 cutover): sessions
+			// and exec have no Task, so there is no explicit base_branch to
+			// declare. "全 project 可視 job が clone になる" applies to them
+			// too — clone the project's current default branch with no
+			// branch created (CheckoutOnly), mirroring "default branch を
+			// clone・branch 作成なし" from the plan. See
+			// resolveSessionBaseBranch's doc comment for the graceful
+			// fallback when the host dir has no resolvable HEAD.
+			Clone: buildSessionCloneDeclaration(input.ProjectWorkDir),
 		},
 		BuiltinPolicies: builtinPolicies,
 		HostCommands:    hostCommands,
@@ -113,6 +127,46 @@ func BuildSessionJobSpec(input SessionJobInput) *orchestrator.JobSpec {
 		spec.Env["BOID_USER_ANSWER"] = input.Instruction
 	}
 	return spec
+}
+
+// buildSessionCloneDeclaration returns the Clone declaration for a task-less
+// job (`boid agent` / `boid exec`): CheckoutOnly on whatever branch the host
+// project directory's HEAD currently resolves to. Returns nil (falling back
+// to BuildSandboxSpec's legacy project-dir-bind path) when projectWorkDir has
+// no resolvable HEAD — e.g. not a git repository at all — which in practice
+// only happens for hand-built test fixtures; every real project registered
+// post-PR2 has a git repo with an origin (upstream_url is mandatory at
+// registration), so HEAD always resolves.
+func buildSessionCloneDeclaration(projectWorkDir string) *orchestrator.CloneDeclaration {
+	branch := resolveSessionBaseBranch(projectWorkDir)
+	if branch == "" {
+		return nil
+	}
+	return &orchestrator.CloneDeclaration{
+		Branch:       branch,
+		BaseBranch:   branch,
+		CheckoutOnly: true,
+	}
+}
+
+// resolveSessionBaseBranch resolves the branch a task-less job should clone
+// and check out, since (unlike a hook/task job) there is no Task.BaseBranch
+// to declare. Reads the host project dir's current HEAD — the same source
+// dispatcher.hostHEADBranch (worktree_resolver.go) reads for the worktree=false
+// root-task shortcut it replaces. Tolerates both real git's `--short` output
+// ("main") and a detached/prefixed form ("refs/heads/main") defensively,
+// since e2e's fake host git shim (e2e/fixtures/hostbin/git) does not honour
+// --short. Returns "" when HEAD cannot be resolved at all.
+func resolveSessionBaseBranch(projectWorkDir string) string {
+	if projectWorkDir == "" {
+		return ""
+	}
+	out, err := exec.Command("git", "-C", projectWorkDir, "symbolic-ref", "--quiet", "--short", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	branch := strings.TrimSpace(string(out))
+	return strings.TrimPrefix(branch, "refs/heads/")
 }
 
 // BuildExecJobSpec is the shell-harness variant of BuildSessionJobSpec used by

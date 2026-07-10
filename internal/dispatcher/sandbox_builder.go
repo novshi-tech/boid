@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -102,6 +103,30 @@ type SandboxRuntimeInfo struct {
 	// nothing would consume it. BuildSandboxSpec only reads this when
 	// spec.Visibility.Clone != nil.
 	GatewayCloneURL string
+
+	// WorkspacePeerAdvertise is the {name, clone URL, reference path} view of
+	// WorkspacePeers exposed to the agent via environment.yaml's
+	// `workspace_projects` (docs/plans/git-gateway-cutover.md PR6 cutover
+	// 「5. peer advertise の変更」 — replaces the pre-cutover host path
+	// enumeration). Built by Runner.buildPeerAdvertise, keyed by peer project
+	// ID; nil when the gateway isn't wired or no peer has a resolvable
+	// upstream_url. Distribution stays file-based (environment.yaml) for now
+	// — RPC-based advertise is a later container-migration step (「タスクコン
+	// テキストの伝搬」), out of scope here.
+	WorkspacePeerAdvertise map[string]PeerAdvertise
+
+	// CloneWorkspaceDir is the host-side runtime dir path
+	// (`<RuntimesDir>/<runtime_id>/workspace`) that BuildSandboxSpec bind-
+	// mounts at the sandbox-internal clone target (/workspace) when
+	// spec.Visibility.Clone is set (docs/plans/git-gateway-cutover.md PR6
+	// cutover — 「一時領域の実体はホスト側 runtime dir の bind mount を既定と
+	// する」, 2026-07-08 decision in container-based-boid.md). Allocated and
+	// mkdir'd by Runner.Dispatch before BuildSandboxSpec runs, the same way
+	// startDockerProxy pre-creates its runtime dir. Empty when RuntimesDir is
+	// unset (e.g. minimal test wiring) — cloneMounts then skips the bind and
+	// the clone lands on the sandbox's own tmpfs root instead, a safe but
+	// non-default degrade (working tree + build artifacts in RAM).
+	CloneWorkspaceDir string
 }
 
 // BuildSandboxSpec turns a business-level JobSpec and dispatcher-side runtime
@@ -212,7 +237,21 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	if spec.Visibility.UseWorktree && rt.WorktreeDir != "" {
 		effectiveProject = rt.WorktreeDir
 	}
-	if effectiveProject != "" {
+	switch {
+	case spec.Visibility.Clone != nil:
+		// Sandbox-clone path (docs/plans/git-gateway-cutover.md PR6 cutover,
+		// PR5 Opus review note): skip projectVisibilityMounts entirely.
+		// cloneMounts (below) mounts the reference `.git` dirs and the clone
+		// target at the neutral /workspace path; there is no host ProjectDir
+		// or WorktreeDir bind for this job at all, so binding effectiveProject
+		// here too would double-mount the same host path at two sandbox
+		// targets for no reason. HOME still gets a private tmpfs, exactly
+		// like the "no project visible" case below.
+		mounts = append(mounts, sandbox.Mount{
+			Target: homeDir,
+			Type:   sandbox.MountTmpfs,
+		})
+	case effectiveProject != "":
 		mounts = append(mounts, projectVisibilityMounts(
 			projectDir,
 			effectiveProject,
@@ -221,7 +260,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 			rt.WorkspacePeers,
 			spec.Visibility.UseWorktree,
 		)...)
-	} else if spec.SandboxProfile == int(sandbox.ProfileInit) {
+	case spec.SandboxProfile == int(sandbox.ProfileInit):
 		// ProfileInit (boid kit init / workspace configure): the plan rbinds the
 		// entire host root read-only precisely so the scan can discover host
 		// state, and most of the interesting tooling lives under HOME
@@ -243,7 +282,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 			Target: homeDir + "/.boid",
 			Type:   sandbox.MountTmpfs,
 		})
-	} else {
+	default:
 		// No project visible: HOME is a fresh tmpfs.
 		mounts = append(mounts, sandbox.Mount{
 			Target: homeDir,
@@ -340,29 +379,39 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 
 	argv := append([]string(nil), spec.Argv...)
 
-	// Hook scripts live at projectDir/.boid/hooks/<id>.(sh|py) on the host but
-	// the .boid directory is bind-mounted inside the sandbox at
-	// worktreeDir/.boid (not at projectDir/.boid). Remap argv[0] when running
-	// in worktree mode so the runner-inner-child can exec the script.
-	if spec.Visibility.UseWorktree && rt.WorktreeDir != "" && projectDir != "" && len(argv) > 0 {
+	// Hook scripts live at projectDir/.boid/hooks/<id>.(sh|py) on the host.
+	// The sandbox never sees that host path directly (worktree mode bind-
+	// mounts .boid at the worktree dir; clone mode has no host path visible
+	// at all — .boid ships inside the cloned repo, see
+	// docs/plans/git-gateway-cutover.md PR6 cutover and the .boid
+	// git-tracking convention it depends on). Remap argv[0] to wherever the
+	// script actually lands inside the sandbox so the runner-inner-child can
+	// exec it.
+	if projectDir != "" && len(argv) > 0 {
 		boidInProject := projectDir + "/.boid/"
-		if strings.HasPrefix(argv[0], boidInProject) {
-			argv[0] = rt.WorktreeDir + "/.boid/" + argv[0][len(boidInProject):]
+		if rest, ok := strings.CutPrefix(argv[0], boidInProject); ok {
+			switch {
+			case spec.Visibility.Clone != nil:
+				argv[0] = sandboxCloneTargetDir + "/.boid/" + rest
+			case spec.Visibility.UseWorktree && rt.WorktreeDir != "":
+				argv[0] = rt.WorktreeDir + "/.boid/" + rest
+			}
 		}
 	}
 
 	// Context files: task.yaml / instructions.yaml / environment.yaml / payload.json.
 	envInput := EnvironmentInput{
-		Visibility:      spec.Visibility,
-		WorkspacePeers:  rt.WorkspacePeers,
-		BuiltinPolicies: spec.BuiltinPolicies,
-		HostCommands:    spec.HostCommands,
-		ProxyPort:       rt.ProxyPort,
-		HostGatewayIP:   hostGatewayIP,
-		AllowedDomains:  rt.AllowedDomains,
-		Kind:            spec.Kind,
-		HarnessType:     spec.HarnessType,
-		DisplayName:     spec.DisplayName,
+		Visibility:             spec.Visibility,
+		WorkspacePeers:         rt.WorkspacePeers,
+		WorkspacePeerAdvertise: rt.WorkspacePeerAdvertise,
+		BuiltinPolicies:        spec.BuiltinPolicies,
+		HostCommands:           spec.HostCommands,
+		ProxyPort:              rt.ProxyPort,
+		HostGatewayIP:          hostGatewayIP,
+		AllowedDomains:         rt.AllowedDomains,
+		Kind:                   spec.Kind,
+		HarnessType:            spec.HarnessType,
+		DisplayName:            spec.DisplayName,
 	}
 	files = append(files, contextFiles(
 		homeDir,
@@ -397,6 +446,16 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	}
 
 	// boid binary bind + host command mounts.
+	//
+	// The git-shim PATH overlay (/usr/bin/git, /bin/git bound to the boid
+	// binary) is retired as of docs/plans/git-gateway-cutover.md PR6
+	// cutover: sandbox git is now always the real binary visible via the
+	// base rbind of /usr — every job clones inside the sandbox (PR6) rather
+	// than sharing a host worktree, so there is no shared `.git` for a
+	// sandbox-side git invocation to escape through and no reason to route
+	// git through the broker any more. internal/sandbox/git_builtin.go and
+	// its "git" BuiltinPolicy registration are left in place (unreachable
+	// dead code, not deleted) — that removal is PR8's job.
 	if rt.BoidBinary != "" {
 		// boid バイナリをホスト実パスのまま bind mount する。
 		mounts = append(mounts, sandbox.Mount{
@@ -405,26 +464,6 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 			Type:     sandbox.MountBind,
 			IsFile:   true,
 			ReadOnly: true,
-		})
-		// 実 git バイナリをサンドボックス FS から排除するため、boid shim で上書き。
-		// base rbind (/usr) より後に適用されるのでこの mount が優先される。
-		mounts = append(mounts, sandbox.Mount{
-			Source:   rt.BoidBinary,
-			Target:   "/usr/bin/git",
-			Type:     sandbox.MountBind,
-			IsFile:   true,
-			ReadOnly: true,
-		})
-		// /bin/git: non-usrmerge 環境では /bin が独立ディレクトリになるため個別に上書き。
-		// usrmerge (シンボリックリンク) でも /bin mount は独立した mount point なので必要。
-		// Guard: /bin/git が存在しないホストではスキップ。
-		mounts = append(mounts, sandbox.Mount{
-			Source:   rt.BoidBinary,
-			Target:   "/bin/git",
-			Type:     sandbox.MountBind,
-			IsFile:   true,
-			ReadOnly: true,
-			Guard:    "-f /bin/git",
 		})
 		// 各 host command の解決済み絶対パスに boid バイナリを bind mount し
 		// shim 化する。解決は dispatcher 入り口 (runner / API / cmd exec) で
@@ -512,20 +551,23 @@ const (
 	// (docs/plans/container-based-boid.md 「workspace peer プロジェクト」) —
 	// this only makes the mounts constructible, per PR5's scope.
 	sandboxClonePeerReferenceDirFmt = "/mnt/refs/peers/%s.git"
-
-	// sandboxRealGitBin is the fixed sandbox-internal path of a real
-	// (non-shimmed) git binary, bind-mounted read-only alongside boid's
-	// git-shim overlay (/usr/bin/git, /bin/git) so the runner's own
-	// clone/branch-resolution git invocations bypass the broker-dispatch
-	// git builtin. PR6 removes the shim entirely; until then this is the
-	// only genuine git binary inside the sandbox.
-	sandboxRealGitBin = "/run/boid/real-git"
 )
 
-// cloneMounts returns the RO reference-repo and real-git-binary mounts for
-// the opt-in sandbox-clone path (docs/plans/git-gateway-cutover.md PR5).
-// Returns nil (no mounts) unless spec.Visibility.Clone is set, so the
-// default dispatch path's mount list is completely unaffected.
+// cloneMounts returns the mounts for the opt-in sandbox-clone path
+// (docs/plans/git-gateway-cutover.md PR5/PR6): the RO reference-repo binds
+// (self + workspace peers) used for `git clone --reference`, plus the
+// host-backed /workspace bind the clone actually lands on. Returns nil (no
+// mounts) unless spec.Visibility.Clone is set, so the default dispatch
+// path's mount list is completely unaffected.
+//
+// PR6 cutover removed the separate real-git-binary bind
+// (sandboxRealGitBin/"/run/boid/real-git") that PR5 needed: that bind
+// existed only to give the runner's own git invocations a way around the
+// git-shim overlay (/usr/bin/git, /bin/git bound to the boid binary). PR6
+// retires the shim overlay itself (see the "boid binary bind + host command
+// mounts" section below), so the sandbox's own /usr/bin/git — visible via
+// the base rbind of /usr — is already the real binary; performClone's bare
+// "git" $PATH lookup resolves correctly with no extra mount needed.
 func cloneMounts(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) []sandbox.Mount {
 	if spec == nil || spec.Visibility.Clone == nil {
 		return nil
@@ -561,28 +603,47 @@ func cloneMounts(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) []sandbox.Mo
 		})
 	}
 
-	if git := realGitBinPath(); git != "" {
+	// /workspace bind (docs/plans/git-gateway-cutover.md PR6 cutover;
+	// container-based-boid.md 2026-07-08 decision: "一時領域の実体はホスト側
+	// runtime dir の bind mount を既定とする"). rt.CloneWorkspaceDir is a
+	// fresh, job-scoped `<RuntimesDir>/<runtime_id>/workspace` directory
+	// Runner.Dispatch pre-creates, so it already exists on the host before
+	// the mount is applied — no DetectType/Guard needed, unlike the
+	// reference-dir binds above (whose host source may legitimately be
+	// absent, e.g. a project with no peers). Always read-write: under the
+	// clone model readonly is enforced by the gateway (transport-RO), not
+	// the local filesystem (docs/plans/git-gateway-cutover.md 「3. readonly
+	// の意味論変更: FS-RO → transport-RO」). Empty CloneWorkspaceDir (e.g.
+	// RuntimesDir unset in minimal test wiring) skips the bind — the clone
+	// then simply lands on the sandbox's own tmpfs root, a safe non-default
+	// degrade.
+	if rt.CloneWorkspaceDir != "" {
 		out = append(out, sandbox.Mount{
-			Source:   git,
-			Target:   sandboxRealGitBin,
-			Type:     sandbox.MountBind,
-			IsFile:   true,
-			ReadOnly: true,
-			Guard:    existsGuardExpr(git),
+			Source: rt.CloneWorkspaceDir,
+			Target: sandboxCloneTargetDir,
+			Type:   sandbox.MountBind,
 		})
 	}
 
 	return out
 }
 
-// realGitBinPath resolves the host's real git binary path via $PATH,
-// falling back to the conventional /usr/bin/git if lookup fails (e.g. a
-// minimal PATH in a test process) rather than erroring — cloneMounts' Guard
-// makes a missing path a harmless no-op mount rather than a hard failure.
+// realGitBinPath resolves the host's real git binary path via $PATH. Kept as
+// a dispatch-time diagnostic (docs/plans/git-gateway-cutover.md PR6, PR5
+// Opus review note): post-cutover, git is a hard dependency for every
+// sandbox-internal clone (the sandbox's own /usr/bin/git is an rbind of the
+// daemon host's), so a LookPath failure here — meaning the daemon host has
+// no git on PATH at all — is surfaced loudly rather than silently papered
+// over, unlike PR5 where the same fallback was a harmless optimization
+// (the shimmed /usr/bin/git still worked via the broker-dispatched git
+// builtin regardless of this function's result). Nothing binds the
+// returned path anywhere anymore; buildCloneSpec calls this purely for the
+// warning side effect.
 func realGitBinPath() string {
 	if p, err := exec.LookPath("git"); err == nil {
 		return p
 	}
+	slog.Warn("realGitBinPath: git not found on daemon host PATH; sandbox-internal clone will fail once dispatched")
 	return "/usr/bin/git"
 }
 
@@ -595,13 +656,13 @@ func buildCloneSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox.C
 	if spec == nil || spec.Visibility.Clone == nil {
 		return sandbox.CloneSpec{}
 	}
+	realGitBinPath() // dispatch-time warning only; see doc comment above.
 	cd := spec.Visibility.Clone
 	return sandbox.CloneSpec{
 		Enabled:             true,
 		URL:                 rt.GatewayCloneURL,
 		ReferenceDir:        sandboxCloneReferenceDir,
 		TargetDir:           sandboxCloneTargetDir,
-		RealGitBin:          sandboxRealGitBin,
 		Branch:              cd.Branch,
 		BaseBranch:          cd.BaseBranch,
 		CheckoutOnly:        cd.CheckoutOnly,
@@ -1013,9 +1074,33 @@ func marshalInstructionsYAML(list []orchestrator.RoutedInstruction) string {
 	return string(out)
 }
 
+// PeerAdvertise is the {name, clone URL, reference path} view of a workspace
+// peer project exposed via environment.yaml (docs/plans/git-gateway-cutover.md
+// PR6 cutover 「5. peer advertise の変更」). Built by Runner.buildPeerAdvertise
+// from the peer's captured upstream_url + this job's gateway token; it
+// intentionally carries no host filesystem path — clone-mode jobs have no
+// host path visible for a peer project any more, only the sandbox-internal
+// RO reference dir (ReferencePath) and the gateway clone URL an agent would
+// `git clone` from if it wants to see the peer's working tree.
+type PeerAdvertise struct {
+	// Name is the peer's repo name (the last segment of its upstream_url's
+	// host/owner/repo form), used purely for display/discoverability.
+	Name string
+	// CloneURL is the full gateway clone URL for this peer, scoped fetch-only
+	// to this job's gateway token (docs/plans/container-based-boid.md
+	// 「workspace peer プロジェクト」: peers are fetch-only; writing to a peer
+	// means a cross-project child task instead).
+	CloneURL string
+	// ReferencePath is the sandbox-internal RO bind-mount path of the peer's
+	// `.git` (sandboxClonePeerReferenceDirFmt), usable as `git clone
+	// --reference` when an agent does clone the peer.
+	ReferencePath string
+}
+
 type workspaceProjectEntry struct {
-	Path string `yaml:"path"`
-	Name string `yaml:"name"`
+	Name          string `yaml:"name"`
+	CloneURL      string `yaml:"clone_url,omitempty"`
+	ReferencePath string `yaml:"reference_path,omitempty"`
 }
 
 // EnvironmentInput is the single input bundle for buildEnvironmentYAML. It is
@@ -1023,10 +1108,14 @@ type workspaceProjectEntry struct {
 // called. Centralising the inputs in one struct keeps the call sites in
 // BuildSandboxSpec / tests stable as the YAML layout grows new fields.
 type EnvironmentInput struct {
-	Visibility      orchestrator.Visibility
-	WorkspacePeers  map[string]string
-	BuiltinPolicies map[string]orchestrator.BuiltinPolicy
-	HostCommands    map[string]orchestrator.CommandDef
+	Visibility     orchestrator.Visibility
+	WorkspacePeers map[string]string
+	// WorkspacePeerAdvertise, when non-nil, drives the workspace_projects
+	// listing (docs/plans/git-gateway-cutover.md PR6 cutover). See
+	// SandboxRuntimeInfo.WorkspacePeerAdvertise's doc comment.
+	WorkspacePeerAdvertise map[string]PeerAdvertise
+	BuiltinPolicies        map[string]orchestrator.BuiltinPolicy
+	HostCommands           map[string]orchestrator.CommandDef
 
 	// Network plumbing. ProxyPort=0 means no proxy (and therefore no egress
 	// restriction wired by dispatcher). HostGatewayIP is the address agents
@@ -1119,7 +1208,7 @@ type environmentDoc struct {
 // the sandbox implementation, not of any single job) so we keep it as a
 // package constant rather than rebuilding it per call. Use a literal block
 // scalar in the YAML output so LLMs see it as one paragraph per bullet.
-const environmentNotes = `- 内部 git は host へ broker dispatch されます。 -C と -u フラグは弾かれます。 push の remote snapshot はトークン登録時に固定で、 後から gh repo create で足した remote は再 capture が必要です。
+const environmentNotes = `- git はサンドボックス内の実バイナリで動作します（host への broker dispatch はありません）。 project はジョブ開始時に git gateway 経由で新規 clone されたコピーで、 origin は gateway を指しています。 commit した変更は push するまで他セッション・他ホストに共有されません。 readonly な job では push が gateway 側で拒否されます (fetch はできます)。
 - 内部 fetch も host へ broker dispatch され、 network.allowed_domains の許可ドメインに対してのみ動作します。
 - host_commands (gh 等) は host 側でリポジトリの checkout ディレクトリではなく中立ディレクトリで実行されます。 cwd から repo を推定する動作 (gh の暗黙 -R 等) には依存できません。 repo 文脈が必要なコマンドは kit 側の env 設定 (例: gh の GH_REPO) で渡されます。
 - host_commands には stdin が渡りません。 stdin 経由でファイル内容や長文を渡す設計は使えません。
@@ -1173,17 +1262,26 @@ func buildEnvironmentYAML(in EnvironmentInput) string {
 	// own project filesystem. Gate jobs (ProjectDir=="") get neither peer
 	// mounts nor peer listings, even though broker-side auth still covers
 	// them via AllowedProjectIDs.
+	//
+	// docs/plans/git-gateway-cutover.md PR6 cutover 「5. peer advertise の
+	// 変更」: the listing is {name, clone_url, reference_path}
+	// (WorkspacePeerAdvertise), never a host filesystem path — clone-mode
+	// jobs have no host path for a peer project to enumerate in the first
+	// place. A peer with no advertise entry (gateway unwired, or the peer's
+	// own upstream_url missing/unparseable) is simply omitted rather than
+	// falling back to the retired host-path form.
 	if in.Visibility.ProjectDir != "" {
-		peerIDs := make([]string, 0, len(in.WorkspacePeers))
-		for id := range in.WorkspacePeers {
+		peerIDs := make([]string, 0, len(in.WorkspacePeerAdvertise))
+		for id := range in.WorkspacePeerAdvertise {
 			peerIDs = append(peerIDs, id)
 		}
 		sort.Strings(peerIDs)
 		for _, id := range peerIDs {
-			dir := in.WorkspacePeers[id]
+			adv := in.WorkspacePeerAdvertise[id]
 			doc.WorkspaceProjects = append(doc.WorkspaceProjects, workspaceProjectEntry{
-				Path: dir,
-				Name: filepath.Base(dir),
+				Name:          adv.Name,
+				CloneURL:      adv.CloneURL,
+				ReferencePath: adv.ReferencePath,
 			})
 		}
 	}
