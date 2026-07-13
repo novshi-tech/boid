@@ -1,0 +1,8 @@
+id: git-gateway-readonly-push-denied
+name: Git Gateway Readonly Push Denied
+worktree: true
+base_branch: main
+task_behaviors:
+  supervisor:
+    hooks:
+      - id: readonly-push

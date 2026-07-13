@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# docs/plans/git-gateway-cutover.md PR7b — 新規シナリオ 2/5:
+# 「readonly job の push が拒否される」の検証。
+#
+# task.readonly の意味論変更 (docs/plans/git-gateway-cutover.md
+# 「readonly の意味論変更: FS-RO → transport-RO」) の下では、readonly
+# task の sandbox clone は「ローカルに書ける (自分のコピー) が push が
+# gateway で拒否される」となる。したがってこの hook は:
+#   (a) ローカル commit を作れる (writable)
+#   (b) `git push origin HEAD` は gateway が 403 を返して失敗する
+#       (PermFetch のみ登録された job token → git-receive-pack 拒否;
+#        internal/gitgateway/server.go の "forbidden: repo/operation ...")
+#
+# 両方成立して初めて transport-RO が正しく動いてることになる。
+# 片方でも崩れたら hook 側で e2e が非ゼロ exit して task が failed になる。
+
+git config user.name  "Boid E2E Readonly"
+git config user.email "e2e-readonly@boid.test"
+
+printf 'attempted push from readonly hook at %s\n' "$(date -Ins)" > readonly-push.txt
+git add readonly-push.txt
+
+if ! git commit -q -m "readonly push denial test"; then
+  printf 'FAIL: local commit unexpectedly failed inside a writable clone\n' >&2
+  exit 1
+fi
+local_commit="$(git rev-parse HEAD)"
+
+# Push should fail. Capture stderr so we can pin that the failure is a
+# gateway 403 (not e.g. a DNS/network error, which would silently mimic
+# a successful denial while actually being a wiring bug).
+push_stderr_file="$(mktemp)"
+if git push origin HEAD 2>"$push_stderr_file"; then
+  printf 'FAIL: git push origin HEAD unexpectedly succeeded for a readonly task\n' >&2
+  cat "$push_stderr_file" >&2
+  exit 1
+fi
+push_stderr="$(cat "$push_stderr_file")"
+rm -f "$push_stderr_file"
+
+# git's HTTP transport prints the upstream status code in one of the
+# following forms depending on version — "error: RPC failed; HTTP 403"
+# or "The requested URL returned error: 403". Either way "403" appears.
+if ! printf '%s' "$push_stderr" | grep -q '403'; then
+  printf 'FAIL: push failed but stderr did not mention HTTP 403 — likely a wiring bug rather than a gateway denial\n' >&2
+  printf '%s\n' "$push_stderr" >&2
+  exit 1
+fi
+
+# fetch must still succeed on the same origin (PermFetch is granted).
+# Uses "origin main" explicitly instead of a bare "origin" to avoid any
+# "no refspec" edge cases on unusual git versions.
+if ! git fetch -q origin main; then
+  printf 'FAIL: git fetch origin main unexpectedly failed for a readonly task (fetch should be allowed)\n' >&2
+  exit 1
+fi
+
+mkdir -p "$HOME/.boid/output"
+cat > "$HOME/.boid/output/payload_patch.json" <<EOF
+{"payload_patch":{"artifact":{"source":"readonly-push","local_commit":"${local_commit}","push_denied":true,"fetch_ok":true}}}
+EOF

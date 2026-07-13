@@ -1,0 +1,4 @@
+This scenario dispatches a real hook inside a boid sandbox (clone-mode
+under /workspace/<name>) and therefore needs the full sandbox prerequisite
+set (pasta/unshare/nft + user namespaces). See e2e/run.sh's
+requires-sandbox handling.
