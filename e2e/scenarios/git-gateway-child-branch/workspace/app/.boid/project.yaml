@@ -1,0 +1,18 @@
+id: git-gateway-child-branch
+name: git-gateway-child-branch
+worktree: true
+base_branch: main
+task_behaviors:
+  parent:
+    readonly: false
+    hooks:
+      - id: spawn-child
+        traits:
+          produces: [artifact]
+  child:
+    readonly: false
+    hooks:
+      - id: verify-child-branch
+        traits:
+          consumes: ["artifact?"]
+          produces: [artifact]
