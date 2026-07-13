@@ -1,0 +1,9 @@
+id: git-gateway-forbidden-repo-unauthorized
+name: git-gateway-forbidden-repo-unauthorized
+# This project dir exists so that e2e_setup_fixture_upstream seeds a bare
+# upstream repo for it (docs/plans/git-gateway-cutover.md PR7a — the
+# harness auto-seeds every subdir of workspace with a .boid/project.yaml).
+# scenario.sh deliberately does NOT `boid project add` this dir, so boid
+# never learns about it and the gateway registry never grants any job
+# token access to its repo path. Attempts to reach it via its constructed
+# gateway URL must therefore be denied with 403.

@@ -1,0 +1,11 @@
+id: git-gateway-forbidden-repo
+name: git-gateway-forbidden-repo
+worktree: true
+base_branch: main
+task_behaviors:
+  executor:
+    hooks:
+      - id: forbidden-repo
+        traits:
+          consumes: ["artifact?"]
+          produces: [artifact]
