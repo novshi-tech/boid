@@ -442,3 +442,36 @@ refactor の主目的で、peer 側はディレクトリ命名の一貫性向上
 (`Visibility.ProjectName` 追加)、`internal/orchestrator/planner.go` /
 `internal/dispatcher/session_job.go` / `internal/server/wire.go`
 (`ProjectName` の配線)。DB 変更なし。
+
+**副作用: broker cwd 検証の narrowing** (PR #737 review): 旧挙動では
+broker `TokenContext.SandboxRoot` が `/workspace` (bare parent) だったため
+`isWithinRoot` 判定で `/workspace/<peer>/` からの `boid` builtin 呼び出しも
+許可されていた。新挙動では SandboxRoot が `/workspace/<self-name>` に
+narrow され、peer clone dir 内から `boid task create` 等を呼ぶと
+「boid builtin is restricted to the current project or worktree」で reject
+される。これは意図した tightening — peer に書き込みたい場合は
+cross-project child task を作るのが本則
+(`docs/plans/container-based-boid.md` 「workspace peer プロジェクト」)。
+regression pin は `internal/sandbox/broker_test.go` の
+`TestBroker_BoidBuiltinPolicy_CloneMode_PeerCwdIsRejected`。
+
+**`<name>` の path 安全性フィルタ** (PR #737 review): `sandboxCloneDir` は
+入力 name が `""` / `"."` / `".."` / path separator (`/`) / NUL byte / `..`
+prefix を含む場合、bare parent dir (`/workspace`) にフォールバックする。
+project.yaml の `meta.name` は user-authored config で厳密には信頼境界外
+ではないが、accident な `../` / `/etc/passwd` などが `/workspace` の外に
+逃げるのを防ぐ defense-in-depth。関連して `projectDirName` は空 workDir を
+渡された時に `filepath.Base("")` = `"."` を素通しさせず空文字を返し、
+`sandboxCloneDir` 側の fallback に落とす。
+
+**残タスク候補 (post-cutover 改善)**:
+
+- **workspace peer の `meta.name` サポート**: 上記のとおり peer 側は
+  `Runner.Projects` の hydrate 不足で常に basename fallback。`Runner` に
+  `MetaHydrator` 依存を足せば self と対称になる。
+- **peer basename 衝突時の suffix 付与**: 数 project 同居で peer basename
+  が self / 他 peer と衝突すると `clone_dir` に同一 path が advertise さ
+  れる (advertise は suggestion なので runtime clash はしないが、agent が
+  そのまま clone すれば EBUSY を踏む)。`/workspace/frontend-2` 等の
+  suffix 付与、あるいは advertise 側で衝突検出して warn する等の
+  post-cutover 改善候補。

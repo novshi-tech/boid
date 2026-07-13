@@ -702,6 +702,65 @@ func TestBroker_BoidBuiltinPolicy_CloneModeCwdNotOnHost(t *testing.T) {
 	}
 }
 
+// TestBroker_BoidBuiltinPolicy_CloneMode_PeerCwdIsRejected pins a
+// deliberate — and now documented — side effect of the workspace 親化リフ
+// ァクタリング (nose 2026-07-13 decision, PR #737): SandboxRoot narrowed
+// from the bare "/workspace" parent to a name-scoped subdirectory
+// "/workspace/<name>", so an agent calling a `boid` builtin from a peer's
+// clone dir "/workspace/<peer>/" is now rejected by validateBoidBuiltinCwd
+// with "boid builtin is restricted to the current project or worktree".
+// This is intentional (cross-project child task is the proper route to
+// touch a peer, docs/plans/git-gateway-cutover.md 「post-cutover 改善候
+// 補 §4」), but silent tightening on a security-adjacent path was flagged
+// in PR #737 review as needing an explicit regression pin — this test is
+// that pin. If a future change intentionally widens the check again (e.g.
+// permits every /workspace/* subdir uniformly), update the doc note and
+// flip this test accordingly.
+func TestBroker_BoidBuiltinPolicy_CloneMode_PeerCwdIsRejected(t *testing.T) {
+	const selfCloneDir = "/workspace/bm-next"
+	const peerCloneDir = "/workspace/bm-next-lp"
+	// Same host-doesn't-actually-have-/workspace guard as the sibling
+	// TestBroker_BoidBuiltinPolicy_CloneModeCwdNotOnHost test: SandboxRoot
+	// short-circuits os.Stat, so the test host coincidentally having a
+	// real /workspace doesn't matter for the reject path, but we keep the
+	// skip for parallel-run robustness with that test.
+	if _, err := os.Stat(peerCloneDir); err == nil {
+		t.Skipf("test host coincidentally has a real %s directory; this test needs it to be absent", peerCloneDir)
+	}
+
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	hookCtx := sandbox.TokenContext{
+		JobID:       "j1",
+		TaskID:      "t1",
+		ProjectID:   "p1",
+		Role:        testRoleHook,
+		SandboxRoot: selfCloneDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, testHookBoidPolicies(), hookCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     peerCloneDir,
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:       sandbox.BoidOpJobDone,
+			JobID:    "j1",
+			ExitCode: 0,
+			Output:   "done",
+		},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatalf("exit code = 0, want non-zero (peer clone dir must be rejected under name-scoped SandboxRoot)")
+	}
+	if !strings.Contains(resp.Stderr, "restricted to the current project or worktree") {
+		t.Errorf("stderr = %q, want to contain the standard reject phrase (\"restricted to the current project or worktree\")", resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Errorf("executor calls = %+v, want 0 (the reject path must not reach the executor)", exec.calls)
+	}
+}
+
 // task_ask leaves TaskID empty in the shim; the broker fills it from the token
 // context (the agent's own task) before dispatching to the executor, and passes
 // the question through. The executor (not the broker) blocks for the answer.

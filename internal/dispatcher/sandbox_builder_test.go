@@ -784,6 +784,44 @@ func TestSandboxCloneDir_EmptyNameDegradesToParent(t *testing.T) {
 	}
 }
 
+// TestSandboxCloneDir_RejectsUnsafeNames is the PR #737 review guard for the
+// defense-in-depth filter on project.yaml's `meta.name`: an accidental
+// path-escape or a stray `filepath.Base("")` result ("." — the shape
+// projectDirName used to leak when workDir was empty) must never turn into a
+// live subpath under /workspace. Each of these degrades to the bare parent
+// dir instead.
+func TestSandboxCloneDir_RejectsUnsafeNames(t *testing.T) {
+	cases := []struct {
+		name string
+	}{
+		{"."},           // filepath.Base("") — legacy "empty workDir" hole
+		{".."},          // literal parent
+		{"../etc"},      // ../ escape
+		{"foo/bar"},     // path separator
+		{"foo\x00"},     // NUL byte
+		{"/etc/passwd"}, // absolute path
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sandboxCloneDir(tc.name); got != sandboxCloneTargetDir {
+				t.Errorf("sandboxCloneDir(%q) = %q, want %q (unsafe name should fall back to the bare parent dir)",
+					tc.name, got, sandboxCloneTargetDir)
+			}
+		})
+	}
+}
+
+// TestProjectDirName_EmptyWorkDirReturnsEmptyNotDot pins the fix for a
+// legacy hole: filepath.Base("") returns ".", which would then flow into
+// sandboxCloneDir and produce "/workspace/." — a live subdir, not the
+// intended fallback to the bare parent. projectDirName must return the
+// empty string instead so downstream defenses catch it.
+func TestProjectDirName_EmptyWorkDirReturnsEmptyNotDot(t *testing.T) {
+	if got := projectDirName("", ""); got != "" {
+		t.Errorf("projectDirName(\"\", \"\") = %q, want \"\" (must not leak filepath.Base(\"\")==\".\")", got)
+	}
+}
+
 func TestCloneDirNameForVisibility_PrefersProjectName(t *testing.T) {
 	v := orchestrator.Visibility{ProjectDir: "/home/user/checkout-dir", ProjectName: "bm-next"}
 	if got := cloneDirNameForVisibility(v); got != "bm-next" {

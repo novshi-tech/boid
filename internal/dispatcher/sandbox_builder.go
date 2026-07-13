@@ -591,11 +591,41 @@ const (
 // resolution failure upstream) degrades gracefully to the bare parent dir
 // itself, reproducing the pre-refactor flat "/workspace" layout instead of
 // producing a malformed path like "/workspace/" or panicking.
+//
+// Defensive filter (PR #737 review): a name that is empty, ".", or contains
+// a path separator / NUL byte / ".." prefix is treated as unusable and
+// falls back to the bare parent dir. project.yaml's `meta.name` is
+// user-authored so the trust boundary is loose, but an accidental "../" or
+// "/" would escape /workspace entirely — the defensive branch turns any
+// such name into the same graceful degrade as an empty name (no
+// /workspace/.. clone escape, no /workspace/. no-op subdir). See also
+// `isSafeCloneDirName`.
 func sandboxCloneDir(name string) string {
-	if name == "" {
+	if !isSafeCloneDirName(name) {
 		return sandboxCloneTargetDir
 	}
 	return sandboxCloneTargetDir + "/" + name
+}
+
+// isSafeCloneDirName reports whether name is a usable single-segment leaf
+// directory name under sandboxCloneTargetDir. It rejects empty / "." / ".."
+// / any name containing a path separator or NUL, and any name starting with
+// "..". `project.yaml`'s `meta.name` is trusted (user-authored config,
+// convention: kebab-case) so this is a defense-in-depth filter rather than
+// a security boundary — its job is to keep an accidental typo or a stray
+// filepath.Base call ("." for an empty path) from producing a malformed
+// clone target like `/workspace/.` or `/workspace/../etc`.
+func isSafeCloneDirName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	if strings.ContainsAny(name, "/\x00") {
+		return false
+	}
+	if strings.HasPrefix(name, "..") {
+		return false
+	}
+	return true
 }
 
 // projectDirName resolves the leaf directory name a project's sandbox clone
@@ -604,9 +634,17 @@ func sandboxCloneDir(name string) string {
 // here), falling back to filepath.Base(workDir) when the project has no
 // name. Shared by the self-project resolution (cloneDirNameForVisibility)
 // and the workspace-peer resolution (Runner.buildPeerAdvertise).
+//
+// filepath.Base("") returns ".", so an empty workDir would leak "." here;
+// projectDirName intentionally returns "" in that case instead so the
+// downstream sandboxCloneDir defensive filter degrades cleanly to the bare
+// parent dir rather than emitting "/workspace/.".
 func projectDirName(name, workDir string) string {
 	if name != "" {
 		return name
+	}
+	if workDir == "" {
+		return ""
 	}
 	return filepath.Base(workDir)
 }
