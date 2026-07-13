@@ -1,0 +1,11 @@
+id: git-gateway-reopen-reclone
+name: git-gateway-reopen-reclone
+worktree: true
+base_branch: main
+task_behaviors:
+  executor:
+    hooks:
+      - id: reopen-reclone
+        traits:
+          consumes: ["artifact?"]
+          produces: [artifact]
