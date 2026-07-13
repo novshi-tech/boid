@@ -1,8 +1,0 @@
-id: git-peer-clone-local
-name: Git Peer Clone Local
-worktree: true
-base_branch: main
-task_behaviors:
-  executor:
-    hooks:
-      - id: test-peer-clone-local

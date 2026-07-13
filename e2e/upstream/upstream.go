@@ -34,11 +34,11 @@ import (
 )
 
 // defaultGitBin is the conventional real-git path already relied on
-// elsewhere in this repo's e2e harness (e.g.
-// e2e/scenarios/git-peer-clone-local/scenario.sh) to bypass the fake host
-// git shim installed at the front of $PATH during e2e runs
-// (e2e/fixtures/hostbin/git). CLAUDE.md restricts this project to Linux,
-// and CI runs Ubuntu, where this path is stable.
+// elsewhere in this repo's e2e harness (see e2e/lib/common.sh's
+// e2e_setup_fixture_upstream, which also invokes real git via /usr/bin/git)
+// to bypass the fake host git shim installed at the front of $PATH during
+// e2e runs (e2e/fixtures/hostbin/git). CLAUDE.md restricts this project
+// to Linux, and CI runs Ubuntu, where this path is stable.
 const defaultGitBin = "/usr/bin/git"
 
 // Options configures a fixture upstream git server.

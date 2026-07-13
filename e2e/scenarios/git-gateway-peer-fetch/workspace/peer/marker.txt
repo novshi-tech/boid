@@ -1,0 +1,1 @@
+peer project marker — visible to executor task via gateway peer fetch (PR7b-3).

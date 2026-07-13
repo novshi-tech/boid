@@ -80,10 +80,9 @@ e2e_wait_for_file() {
 # directory's basename, git-inits the directory for real if it is not
 # already a repo, commits its current contents, and pushes to the fixture
 # origin. Real git is always invoked via its absolute path (/usr/bin/git)
-# rather than through $PATH, exactly like the existing git-peer-clone-local
-# scenario already does for its peer project — this bypasses the fake host
-# git shim, which is for the boid *daemon's* own git invocations, not this
-# harness-level setup.
+# rather than through $PATH — this bypasses the fake host git shim, which
+# is for the boid *daemon's* own git invocations, not this harness-level
+# setup.
 #
 # E2E_FIXTURE_UPSTREAM_OWNER prefixes every fixture repo path with a fixed
 # synthetic "owner" segment (http://host:port/<owner>/<repo>.git) instead of
