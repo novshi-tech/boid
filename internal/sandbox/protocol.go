@@ -157,9 +157,10 @@ type TokenContext struct {
 	// within a known peer project are permitted as clone sources.
 	WorkspacePeers map[string]string
 	// SandboxRoot is the sandbox-internal (not host-side) root directory a
-	// clone-mode job's filesystem lives under — the fixed neutral path
-	// "/workspace" (docs/plans/git-gateway-cutover.md PR6 cutover), set by
-	// dispatcher when spec.Visibility.Clone != nil. Unlike ProjectDir /
+	// clone-mode job's filesystem lives under — a name-scoped subdirectory
+	// of the neutral parent path "/workspace" (docs/plans/git-gateway-cutover.md
+	// PR6 cutover; workspace 親化リファクタリング, nose 2026-07-13 decision),
+	// set by dispatcher when spec.Visibility.Clone != nil. Unlike ProjectDir /
 	// WorktreeDir this is never a host path: clone-mode jobs have no host
 	// directory the sandbox's own filesystem corresponds to, so cwd-based
 	// authorization (validateBoidBuiltinCwd's entryRoot) must compare against

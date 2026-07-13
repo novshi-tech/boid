@@ -23,6 +23,12 @@ type SessionJobInput struct {
 	ProjectID      string
 	ProjectWorkDir string
 
+	// ProjectName is project.yaml's `meta.name` (see
+	// orchestrator.Visibility.ProjectName's doc comment). The caller fills
+	// this from the same workspace-hydrated ProjectMeta it already reads
+	// Env/HostCommands/AdditionalBindings/KitRoots from.
+	ProjectName string
+
 	// HarnessType selects the agent adapter the runner-inner-child will
 	// dispatch through. Must be one of "claude" / "codex" / "opencode" /
 	// "shell" (validated by the caller; BuildSessionJobSpec does not police it).
@@ -116,6 +122,7 @@ func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 		Argv:        input.Argv, // consumed by shell adapter only; agent adapters ignore it
 		Visibility: orchestrator.Visibility{
 			ProjectDir:         input.ProjectWorkDir,
+			ProjectName:        input.ProjectName,
 			UseWorktree:        false,
 			AdditionalBindings: input.AdditionalBindings,
 			Writable:           !input.Readonly,

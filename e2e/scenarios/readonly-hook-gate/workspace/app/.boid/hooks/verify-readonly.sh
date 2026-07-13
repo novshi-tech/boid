@@ -16,7 +16,8 @@ done
 # task.readonly's semantics changed under the git gateway cutover (PR6):
 # readonly now means transport-RO (the gateway denies push/fetch-write),
 # not filesystem-RO (docs/plans/git-gateway-cutover.md: "readonly の意味論
-# 変更: FS-RO → transport-RO"). The sandbox-internal clone at /workspace is
+# 変更: FS-RO → transport-RO"). The sandbox-internal clone (under
+# /workspace/<name>, see the workspace 親化リファクタリング) is
 # always locally writable regardless of task.readonly, so this check is
 # expected to observe "writable" even for a readonly task — that's the
 # new, correct semantics, not a bug.

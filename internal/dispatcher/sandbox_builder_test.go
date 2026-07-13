@@ -522,24 +522,33 @@ func TestCloneMounts_IncludesSelfReferenceAndPeers(t *testing.T) {
 	}
 }
 
+// TestCloneMounts_IncludesWorkspaceBindWhenCloneWorkspaceDirSet is also the
+// regression guard for the workspace 親化リファクタリング (nose 2026-07-13
+// decision): the /workspace bind mount must land at the name-scoped
+// subdirectory (sandboxCloneDir(spec.Visibility.ProjectName)), not the bare
+// /workspace parent, so two different projects never collide on the exact
+// same sandbox-internal path.
 func TestCloneMounts_IncludesWorkspaceBindWhenCloneWorkspaceDirSet(t *testing.T) {
 	spec := &orchestrator.JobSpec{
 		ProjectID: "proj-1",
 		Visibility: orchestrator.Visibility{
-			Clone: &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+			ProjectDir:  "/home/user/project",
+			ProjectName: "bm-next",
+			Clone:       &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
 		},
 	}
 	rt := SandboxRuntimeInfo{CloneWorkspaceDir: "/data/boid/runtimes/job-1/workspace"}
 	mounts := cloneMounts(spec, rt)
 
+	const wantTarget = "/workspace/bm-next"
 	var workspace *sandbox.Mount
 	for i := range mounts {
-		if mounts[i].Target == sandboxCloneTargetDir {
+		if mounts[i].Target == wantTarget {
 			workspace = &mounts[i]
 		}
 	}
 	if workspace == nil {
-		t.Fatal("/workspace bind mount not found when rt.CloneWorkspaceDir is set")
+		t.Fatalf("mount with Target %q not found among %#v", wantTarget, mounts)
 	}
 	if workspace.Source != rt.CloneWorkspaceDir {
 		t.Errorf("workspace bind source = %q, want %q", workspace.Source, rt.CloneWorkspaceDir)
@@ -549,16 +558,46 @@ func TestCloneMounts_IncludesWorkspaceBindWhenCloneWorkspaceDirSet(t *testing.T)
 	}
 }
 
+// TestCloneMounts_WorkspaceBindFallsBackToProjectDirBasenameWhenNameEmpty
+// pins the fallback half of the workspace 親化リファクタリング decision: a
+// project with no `name:` in project.yaml still gets a distinct, deterministic
+// leaf directory — filepath.Base(ProjectDir) — instead of colliding on the
+// bare /workspace parent.
+func TestCloneMounts_WorkspaceBindFallsBackToProjectDirBasenameWhenNameEmpty(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Visibility: orchestrator.Visibility{
+			ProjectDir: "/home/user/sumiron-project", // no ProjectName set
+			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+		},
+	}
+	rt := SandboxRuntimeInfo{CloneWorkspaceDir: "/data/boid/runtimes/job-1/workspace"}
+	mounts := cloneMounts(spec, rt)
+
+	const wantTarget = "/workspace/sumiron-project"
+	found := false
+	for _, m := range mounts {
+		if m.Target == wantTarget {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("mount with Target %q not found among %#v", wantTarget, mounts)
+	}
+}
+
 func TestCloneMounts_OmitsWorkspaceBindWhenCloneWorkspaceDirUnset(t *testing.T) {
 	spec := &orchestrator.JobSpec{
 		ProjectID: "proj-1",
 		Visibility: orchestrator.Visibility{
-			Clone: &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+			ProjectDir:  "/home/user/project",
+			ProjectName: "bm-next",
+			Clone:       &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
 		},
 	}
 	mounts := cloneMounts(spec, SandboxRuntimeInfo{})
 	for _, m := range mounts {
-		if m.Target == sandboxCloneTargetDir {
+		if m.Target == "/workspace/bm-next" || m.Target == sandboxCloneTargetDir {
 			t.Errorf("unexpected /workspace bind when rt.CloneWorkspaceDir is empty: %+v", m)
 		}
 	}
@@ -576,6 +615,8 @@ func TestBuildCloneSpec_PopulatesFromDeclarationAndRuntimeInfo(t *testing.T) {
 	spec := &orchestrator.JobSpec{
 		ProjectID: "proj-1",
 		Visibility: orchestrator.Visibility{
+			ProjectDir:  "/home/user/project",
+			ProjectName: "bm-next",
 			Clone: &orchestrator.CloneDeclaration{
 				Branch:              "boid/abcd1234",
 				BaseBranch:          "main",
@@ -587,11 +628,13 @@ func TestBuildCloneSpec_PopulatesFromDeclarationAndRuntimeInfo(t *testing.T) {
 	rt := SandboxRuntimeInfo{GatewayCloneURL: "http://10.0.2.2:9/j/tok/github.com/o/r.git"}
 	got := buildCloneSpec(spec, rt)
 
+	// TargetDir is name-scoped under the /workspace parent dir (workspace 親化
+	// リファクタリング, nose 2026-07-13 decision) — see cloneDirNameForVisibility.
 	want := sandbox.CloneSpec{
 		Enabled:             true,
 		URL:                 rt.GatewayCloneURL,
 		ReferenceDir:        sandboxCloneReferenceDir,
-		TargetDir:           sandboxCloneTargetDir,
+		TargetDir:           "/workspace/bm-next",
 		Branch:              "boid/abcd1234",
 		BaseBranch:          "main",
 		ForkPoint:           "boid/parent1234",
@@ -602,6 +645,11 @@ func TestBuildCloneSpec_PopulatesFromDeclarationAndRuntimeInfo(t *testing.T) {
 	}
 }
 
+// TestResolveWorkDir_CloneEnabled_ReturnsCloneTargetDir pins both that the
+// clone path takes priority over the worktree path, and (workspace 親化リ
+// ファクタリング, nose 2026-07-13 decision) that the returned WorkDir is
+// name-scoped — here via the ProjectDir-basename fallback, since no
+// ProjectName is set.
 func TestResolveWorkDir_CloneEnabled_ReturnsCloneTargetDir(t *testing.T) {
 	spec := &orchestrator.JobSpec{
 		Visibility: orchestrator.Visibility{
@@ -611,8 +659,28 @@ func TestResolveWorkDir_CloneEnabled_ReturnsCloneTargetDir(t *testing.T) {
 		},
 	}
 	rt := SandboxRuntimeInfo{WorktreeDir: "/home/user/worktrees/task1"}
-	if got := resolveWorkDir(spec, rt); got != sandboxCloneTargetDir {
-		t.Errorf("resolveWorkDir = %q, want %q (clone path takes priority)", got, sandboxCloneTargetDir)
+	const want = "/workspace/project"
+	if got := resolveWorkDir(spec, rt); got != want {
+		t.Errorf("resolveWorkDir = %q, want %q (clone path takes priority, name-scoped)", got, want)
+	}
+}
+
+// TestResolveWorkDir_CloneEnabled_PrefersProjectNameOverBasename is the
+// counterpart proving ProjectName — when set — wins over the ProjectDir
+// basename fallback (workspace 親化リファクタリング, nose 2026-07-13
+// decision: "project.Name (kebab-case)。空なら filepath.Base(host path) に
+// フォールバック").
+func TestResolveWorkDir_CloneEnabled_PrefersProjectNameOverBasename(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		Visibility: orchestrator.Visibility{
+			ProjectDir:  "/home/user/some-other-basename",
+			ProjectName: "bm-next",
+			Clone:       &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main"},
+		},
+	}
+	const want = "/workspace/bm-next"
+	if got := resolveWorkDir(spec, SandboxRuntimeInfo{}); got != want {
+		t.Errorf("resolveWorkDir = %q, want %q (ProjectName should win over ProjectDir basename)", got, want)
 	}
 }
 
@@ -674,11 +742,85 @@ func TestBuildSandboxSpec_CloneEnabled_SkipsProjectVisibilityMounts(t *testing.T
 			t.Errorf("unexpected host ProjectDir bind present when Visibility.Clone is set: %+v", m)
 		}
 	}
-	if out.WorkDir != sandboxCloneTargetDir {
-		t.Errorf("WorkDir = %q, want %q (clone target)", out.WorkDir, sandboxCloneTargetDir)
+	// WorkDir is name-scoped (workspace 親化リファクタリング, nose 2026-07-13
+	// decision) — here via the ProjectDir-basename fallback ("project"),
+	// since spec.Visibility.ProjectName is unset above.
+	const wantWorkDir = "/workspace/project"
+	if out.WorkDir != wantWorkDir {
+		t.Errorf("WorkDir = %q, want %q (clone target, name-scoped)", out.WorkDir, wantWorkDir)
 	}
 	if !out.Clone.Enabled {
 		t.Error("Clone.Enabled = false, want true")
+	}
+}
+
+// --- workspace 親化リファクタリング helpers (nose 2026-07-13 decision) ---
+
+func TestProjectDirName_PrefersExplicitName(t *testing.T) {
+	if got := projectDirName("bm-next", "/home/user/some-other-dir"); got != "bm-next" {
+		t.Errorf("projectDirName = %q, want %q", got, "bm-next")
+	}
+}
+
+func TestProjectDirName_FallsBackToWorkDirBasenameWhenNameEmpty(t *testing.T) {
+	if got := projectDirName("", "/home/user/sumiron-project"); got != "sumiron-project" {
+		t.Errorf("projectDirName = %q, want %q", got, "sumiron-project")
+	}
+}
+
+func TestSandboxCloneDir_NameScoped(t *testing.T) {
+	if got := sandboxCloneDir("bm-next"); got != "/workspace/bm-next" {
+		t.Errorf("sandboxCloneDir(%q) = %q, want %q", "bm-next", got, "/workspace/bm-next")
+	}
+}
+
+// TestSandboxCloneDir_EmptyNameDegradesToParent pins the defensive fallback:
+// an unresolved (empty) name must not produce a malformed path like
+// "/workspace/" — it degrades to the bare parent dir, reproducing the
+// pre-refactor flat layout.
+func TestSandboxCloneDir_EmptyNameDegradesToParent(t *testing.T) {
+	if got := sandboxCloneDir(""); got != sandboxCloneTargetDir {
+		t.Errorf("sandboxCloneDir(\"\") = %q, want %q", got, sandboxCloneTargetDir)
+	}
+}
+
+func TestCloneDirNameForVisibility_PrefersProjectName(t *testing.T) {
+	v := orchestrator.Visibility{ProjectDir: "/home/user/checkout-dir", ProjectName: "bm-next"}
+	if got := cloneDirNameForVisibility(v); got != "bm-next" {
+		t.Errorf("cloneDirNameForVisibility = %q, want %q", got, "bm-next")
+	}
+}
+
+func TestCloneDirNameForVisibility_FallsBackToProjectDirBasename(t *testing.T) {
+	v := orchestrator.Visibility{ProjectDir: "/home/user/sumiron-project"}
+	if got := cloneDirNameForVisibility(v); got != "sumiron-project" {
+		t.Errorf("cloneDirNameForVisibility = %q, want %q", got, "sumiron-project")
+	}
+}
+
+// TestBuildSandboxSpec_CloneEnabled_ArgvRewriteUsesNameScopedDir pins that the
+// argv[0] rewrite for hook scripts shipped inside the cloned repo
+// (projectDir/.boid/hooks/<id>.sh on the host) lands at the name-scoped
+// sandbox path, not the bare /workspace parent.
+func TestBuildSandboxSpec_CloneEnabled_ArgvRewriteUsesNameScopedDir(t *testing.T) {
+	const projectDir = "/home/user/project"
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{projectDir + "/.boid/hooks/verify.sh"},
+		Visibility: orchestrator.Visibility{
+			ProjectDir:  projectDir,
+			ProjectName: "bm-next",
+			Writable:    true,
+			Clone:       &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+		},
+	}
+	out, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{JobID: "job-1"})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	const want = "/workspace/bm-next/.boid/hooks/verify.sh"
+	if len(out.Argv) == 0 || out.Argv[0] != want {
+		t.Errorf("Argv[0] = %v, want [%q, ...]", out.Argv, want)
 	}
 }
 
@@ -1543,6 +1685,33 @@ func TestBuildEnvironmentYAML_FilesystemReflectsVisibility(t *testing.T) {
 	if second["mode"] != "rw" {
 		t.Errorf("second binding mode = %v, want rw", second["mode"])
 	}
+	if _, has := fs["clone_dir"]; has {
+		t.Errorf("clone_dir = %v, want omitted when EnvironmentInput.CloneDir is empty (non-clone-mode dispatch)", fs["clone_dir"])
+	}
+}
+
+// TestBuildEnvironmentYAML_FilesystemCloneDirSetUnderCloneMode is the
+// workspace 親化リファクタリング (nose 2026-07-13 decision) regression guard
+// for the self-project half of the /workspace/<name> advertise: under
+// clone-mode dispatch, filesystem.clone_dir must carry the sandbox-internal
+// path (never the host ProjectDir, which project_dir already exposes for
+// unrelated readonly/gating purposes and is not actually mounted under
+// clone-mode).
+func TestBuildEnvironmentYAML_FilesystemCloneDirSetUnderCloneMode(t *testing.T) {
+	doc := parsedEnvDoc(t, EnvironmentInput{
+		Visibility: orchestrator.Visibility{ProjectDir: "/home/user/bm-next", ProjectName: "bm-next"},
+		CloneDir:   "/workspace/bm-next",
+	})
+	fs, ok := doc["filesystem"].(map[string]any)
+	if !ok {
+		t.Fatalf("filesystem section missing")
+	}
+	if fs["clone_dir"] != "/workspace/bm-next" {
+		t.Errorf("clone_dir = %v, want /workspace/bm-next", fs["clone_dir"])
+	}
+	if fs["project_dir"] != "/home/user/bm-next" {
+		t.Errorf("project_dir = %v, want the host path unchanged", fs["project_dir"])
+	}
 }
 
 // TestBuildEnvironmentYAML_WorkspaceProjectsUsesPeerAdvertise is the PR6
@@ -1563,6 +1732,7 @@ func TestBuildEnvironmentYAML_WorkspaceProjectsUsesPeerAdvertise(t *testing.T) {
 				Name:          "peer-repo",
 				CloneURL:      "http://10.0.2.2:9/j/tok/github.com/o/peer-repo.git",
 				ReferencePath: "/mnt/refs/peers/peer-1.git",
+				CloneDir:      "/workspace/bm-next-lp",
 			},
 		},
 	})
@@ -1583,6 +1753,13 @@ func TestBuildEnvironmentYAML_WorkspaceProjectsUsesPeerAdvertise(t *testing.T) {
 	}
 	if entry["reference_path"] != "/mnt/refs/peers/peer-1.git" {
 		t.Errorf("reference_path = %v", entry["reference_path"])
+	}
+	// clone_dir is the workspace 親化リファクタリング (nose 2026-07-13
+	// decision) addition: the suggested sandbox-internal directory an agent
+	// should clone this peer into, e.g. under /workspace alongside the self
+	// project, rather than $HOME or /tmp (both tmpfs, RAM-backed).
+	if entry["clone_dir"] != "/workspace/bm-next-lp" {
+		t.Errorf("clone_dir = %v, want /workspace/bm-next-lp", entry["clone_dir"])
 	}
 	if _, hasPath := entry["path"]; hasPath {
 		t.Errorf("workspace_projects entry must not have a legacy 'path' field: %v", entry)

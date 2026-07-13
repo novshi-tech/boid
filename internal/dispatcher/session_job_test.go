@@ -58,6 +58,7 @@ func sampleSessionInput() SessionJobInput {
 	return SessionJobInput{
 		ProjectID:      "proj-1",
 		ProjectWorkDir: "/work/proj-1",
+		ProjectName:    "proj-one",
 		HarnessType:    "claude",
 		AdditionalBindings: []orchestrator.BindMount{
 			{Source: "/opt/volta", Target: "/opt/volta", Mode: "rw"},
@@ -92,6 +93,14 @@ func TestBuildSessionJobSpec_FieldContracts(t *testing.T) {
 	}
 	if spec.Visibility.ProjectDir != in.ProjectWorkDir {
 		t.Errorf("Visibility.ProjectDir = %q, want %q", spec.Visibility.ProjectDir, in.ProjectWorkDir)
+	}
+	// ProjectName drives the sandbox-internal /workspace/<name> clone dir
+	// (workspace 親化リファクタリング, nose 2026-07-13 decision); a drop here
+	// would silently collapse every session/exec job back onto the bare
+	// /workspace parent dir, reintroducing the Claude Code session-log
+	// collision this refactor exists to fix.
+	if spec.Visibility.ProjectName != in.ProjectName {
+		t.Errorf("Visibility.ProjectName = %q, want %q", spec.Visibility.ProjectName, in.ProjectName)
 	}
 	if spec.Visibility.UseWorktree {
 		t.Error("Visibility.UseWorktree = true, want false (sessions never use a worktree)")

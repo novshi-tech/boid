@@ -117,7 +117,7 @@ type SandboxRuntimeInfo struct {
 
 	// CloneWorkspaceDir is the host-side runtime dir path
 	// (`<RuntimesDir>/<runtime_id>/workspace`) that BuildSandboxSpec bind-
-	// mounts at the sandbox-internal clone target (/workspace) when
+	// mounts at the sandbox-internal clone target (/workspace/<name>) when
 	// spec.Visibility.Clone is set (docs/plans/git-gateway-cutover.md PR6
 	// cutover — 「一時領域の実体はホスト側 runtime dir の bind mount を既定と
 	// する」, 2026-07-08 decision in container-based-boid.md). Allocated and
@@ -392,7 +392,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		if rest, ok := strings.CutPrefix(argv[0], boidInProject); ok {
 			switch {
 			case spec.Visibility.Clone != nil:
-				argv[0] = sandboxCloneTargetDir + "/.boid/" + rest
+				argv[0] = sandboxCloneDir(cloneDirNameForVisibility(spec.Visibility)) + "/.boid/" + rest
 			case spec.Visibility.UseWorktree && rt.WorktreeDir != "":
 				argv[0] = rt.WorktreeDir + "/.boid/" + rest
 			}
@@ -400,6 +400,10 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	}
 
 	// Context files: task.yaml / instructions.yaml / environment.yaml / payload.json.
+	var selfCloneDir string
+	if spec.Visibility.Clone != nil {
+		selfCloneDir = sandboxCloneDir(cloneDirNameForVisibility(spec.Visibility))
+	}
 	envInput := EnvironmentInput{
 		Visibility:             spec.Visibility,
 		WorkspacePeers:         rt.WorkspacePeers,
@@ -412,6 +416,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		Kind:                   spec.Kind,
 		HarnessType:            spec.HarnessType,
 		DisplayName:            spec.DisplayName,
+		CloneDir:               selfCloneDir,
 	}
 	files = append(files, contextFiles(
 		homeDir,
@@ -526,12 +531,13 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 // sandbox-clone opt-in path (spec.Visibility.Clone != nil,
 // docs/plans/git-gateway-cutover.md PR5) takes priority over the worktree
 // path since its bind mount above never exposes ProjectDir/WorktreeDir at
-// all — the only filesystem the clone-mode sandbox has is
-// sandboxCloneTargetDir. Otherwise prefer the resolved worktree dir,
-// then the project dir, then home — unchanged from before PR5.
+// all — the only filesystem the clone-mode sandbox has is the name-scoped
+// subdirectory of sandboxCloneTargetDir (see sandboxCloneDir). Otherwise
+// prefer the resolved worktree dir, then the project dir, then home —
+// unchanged from before PR5.
 func resolveWorkDir(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) string {
 	if spec.Visibility.Clone != nil {
-		return sandboxCloneTargetDir
+		return sandboxCloneDir(cloneDirNameForVisibility(spec.Visibility))
 	}
 	if spec.Visibility.UseWorktree && rt.WorktreeDir != "" {
 		return rt.WorktreeDir
@@ -548,9 +554,20 @@ func resolveWorkDir(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) string {
 // dispatcher (which generates the matching mounts) always agree without
 // having to thread the values through some other channel.
 const (
-	// sandboxCloneTargetDir is the neutral clone destination
-	// (docs/plans/git-gateway-cutover.md: 「clone 先は sandbox 内の中立 path
-	// /workspace」), replacing the worktree-mode Source==Target host path.
+	// sandboxCloneTargetDir is the neutral clone destination's *parent*
+	// directory (docs/plans/git-gateway-cutover.md: 「clone 先は sandbox 内
+	// の中立 path /workspace」; workspace 親化リファクタリング, nose
+	// 2026-07-13 decision: every job actually clones into a per-project
+	// subdirectory of this parent — sandboxCloneDir(name) — rather than
+	// directly at this path. Two problems motivated the parent-dir switch:
+	// (1) every project shared the exact same absolute sandbox cwd
+	// ("/workspace"), so Claude Code's `~/.claude/projects/-workspace/`
+	// session-log slug collided across every boid project; (2) an agent
+	// dynamically cloning a workspace peer had no obvious place to put it
+	// other than $HOME or /tmp (both tmpfs, RAM-backed) — /workspace/<peer>
+	// is the natural spot once /workspace is a parent dir. See
+	// PeerAdvertise.CloneDir / environmentFilesystem.CloneDir for how peers
+	// and the self project each learn their own suggested directory name.
 	sandboxCloneTargetDir = "/workspace"
 
 	// sandboxCloneReferenceDir is where the host project's `.git` is RO
@@ -564,6 +581,48 @@ const (
 	// this only makes the mounts constructible, per PR5's scope.
 	sandboxClonePeerReferenceDirFmt = "/mnt/refs/peers/%s.git"
 )
+
+// sandboxCloneDir returns the absolute sandbox-internal directory a project
+// actually clones into: sandboxCloneTargetDir ("/workspace") plus the
+// resolved leaf name, e.g. "/workspace/bm-next" (workspace 親化リファクタリ
+// ング, nose 2026-07-13 decision). name is expected to come from
+// projectDirName, which never returns empty for a project with a non-empty
+// WorkDir — but an empty name here (Projects unwired, or some other
+// resolution failure upstream) degrades gracefully to the bare parent dir
+// itself, reproducing the pre-refactor flat "/workspace" layout instead of
+// producing a malformed path like "/workspace/" or panicking.
+func sandboxCloneDir(name string) string {
+	if name == "" {
+		return sandboxCloneTargetDir
+	}
+	return sandboxCloneTargetDir + "/" + name
+}
+
+// projectDirName resolves the leaf directory name a project's sandbox clone
+// lands under (workspace 親化リファクタリング, nose 2026-07-13 decision):
+// project.Name when set (expected kebab-case by convention, not enforced
+// here), falling back to filepath.Base(workDir) when the project has no
+// name. Shared by the self-project resolution (cloneDirNameForVisibility)
+// and the workspace-peer resolution (Runner.buildPeerAdvertise).
+func projectDirName(name, workDir string) string {
+	if name != "" {
+		return name
+	}
+	return filepath.Base(workDir)
+}
+
+// cloneDirNameForVisibility resolves the leaf directory name spec's own
+// project clones into under the sandbox's /workspace parent dir. v.
+// ProjectName is business data threaded through JobSpec.Visibility by
+// orchestrator.PlanHook / dispatcher.BuildSessionJobSpec — both already read
+// the workspace-hydrated ProjectMeta.Name at JobSpec-build time (see
+// orchestrator.Visibility.ProjectName's doc comment for why that is the
+// correct place to resolve it, rather than a second, dispatcher-side
+// Projects.GetProject lookup). v.ProjectDir is the same host path already
+// used everywhere else in this file.
+func cloneDirNameForVisibility(v orchestrator.Visibility) string {
+	return projectDirName(v.ProjectName, v.ProjectDir)
+}
 
 // cloneMounts returns the mounts for the opt-in sandbox-clone path
 // (docs/plans/git-gateway-cutover.md PR5/PR6): the RO reference-repo binds
@@ -632,7 +691,7 @@ func cloneMounts(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) []sandbox.Mo
 	if rt.CloneWorkspaceDir != "" {
 		out = append(out, sandbox.Mount{
 			Source: rt.CloneWorkspaceDir,
-			Target: sandboxCloneTargetDir,
+			Target: sandboxCloneDir(cloneDirNameForVisibility(spec.Visibility)),
 			Type:   sandbox.MountBind,
 		})
 	}
@@ -674,7 +733,7 @@ func buildCloneSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox.C
 		Enabled:             true,
 		URL:                 rt.GatewayCloneURL,
 		ReferenceDir:        sandboxCloneReferenceDir,
-		TargetDir:           sandboxCloneTargetDir,
+		TargetDir:           sandboxCloneDir(cloneDirNameForVisibility(spec.Visibility)),
 		Branch:              cd.Branch,
 		BaseBranch:          cd.BaseBranch,
 		CheckoutOnly:        cd.CheckoutOnly,
@@ -1107,12 +1166,22 @@ type PeerAdvertise struct {
 	// `.git` (sandboxClonePeerReferenceDirFmt), usable as `git clone
 	// --reference` when an agent does clone the peer.
 	ReferencePath string
+	// CloneDir is the suggested absolute sandbox-internal directory for this
+	// peer, e.g. "/workspace/bm-next-lp" (workspace 親化リファクタリング,
+	// nose 2026-07-13 decision). It is only a suggestion — nothing enforces
+	// an agent actually clones the peer here — but using the same leaf name
+	// projectDirName would resolve for the peer's own project (were it
+	// dispatching as self) keeps the directory name stable regardless of
+	// which project happens to be the one dispatching, and keeps it off
+	// $HOME/tmp (both tmpfs, RAM-backed).
+	CloneDir string
 }
 
 type workspaceProjectEntry struct {
 	Name          string `yaml:"name"`
 	CloneURL      string `yaml:"clone_url,omitempty"`
 	ReferencePath string `yaml:"reference_path,omitempty"`
+	CloneDir      string `yaml:"clone_dir,omitempty"`
 }
 
 // EnvironmentInput is the single input bundle for buildEnvironmentYAML. It is
@@ -1141,6 +1210,16 @@ type EnvironmentInput struct {
 	Kind        orchestrator.JobKind
 	HarnessType string
 	DisplayName string
+
+	// CloneDir is this job's own project's absolute sandbox-internal clone
+	// directory, e.g. "/workspace/bm-next" (workspace 親化リファクタリング,
+	// nose 2026-07-13 decision). Empty unless Visibility.Clone is set — the
+	// `filesystem.project_dir` field already carries the *host* path for
+	// descriptive purposes, but under clone-mode dispatch the host path is
+	// not actually visible inside the sandbox at all, so agents need this
+	// separate field to know where their own project's working tree
+	// actually lives.
+	CloneDir string
 }
 
 // environmentBindingEntry mirrors a BindMount in a yaml-friendly shape.
@@ -1174,6 +1253,13 @@ type environmentFilesystem struct {
 	Worktree           bool                      `yaml:"worktree"`
 	AdditionalBindings []environmentBindingEntry `yaml:"additional_bindings,omitempty"`
 	KitRoots           []string                  `yaml:"kit_roots,omitempty"`
+	// CloneDir is the sandbox-internal absolute path this job's own project
+	// actually cloned into (e.g. "/workspace/bm-next"), set only under
+	// clone-mode dispatch (workspace 親化リファクタリング, nose 2026-07-13
+	// decision). ProjectDir above stays the *host* path (still useful for
+	// readonly/gating semantics); this field is the sandbox-internal
+	// counterpart an agent can actually `cd` into or reference.
+	CloneDir string `yaml:"clone_dir,omitempty"`
 }
 
 type environmentSession struct {
@@ -1257,6 +1343,7 @@ func buildEnvironmentYAML(in EnvironmentInput) string {
 			Worktree:           in.Visibility.UseWorktree,
 			AdditionalBindings: convertBindings(in.Visibility.AdditionalBindings),
 			KitRoots:           append([]string(nil), in.Visibility.KitRoots...),
+			CloneDir:           in.CloneDir,
 		},
 		HostCommands: convertHostCommands(in.HostCommands),
 		Notes:        environmentNotes,

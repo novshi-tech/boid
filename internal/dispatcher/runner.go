@@ -251,10 +251,12 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 		// SandboxRoot (docs/plans/git-gateway-cutover.md PR6 cutover): clone-mode
 		// jobs have no host ProjectDir/WorktreeDir the sandbox's own filesystem
-		// corresponds to — their cwd is always the fixed sandbox-internal
-		// sandboxCloneTargetDir ("/workspace"). See broker.entryRoot.
+		// corresponds to — their cwd is always the name-scoped subdirectory of
+		// the sandbox-internal sandboxCloneTargetDir ("/workspace/<name>", see
+		// sandboxCloneDir / cloneDirNameForVisibility — workspace 親化リファ
+		// クタリング, nose 2026-07-13 decision). See broker.entryRoot.
 		if spec.Visibility.Clone != nil {
-			tokenCtx.SandboxRoot = sandboxCloneTargetDir
+			tokenCtx.SandboxRoot = sandboxCloneDir(cloneDirNameForVisibility(spec.Visibility))
 		}
 		var resolve SecretResolver
 		if r.SecretStore != nil {

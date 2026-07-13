@@ -88,8 +88,9 @@ func performCloneSteps(cs sandbox.CloneSpec, st *State) error {
 	//
 	// This clears the *contents* of TargetDir rather than removing TargetDir
 	// itself (os.RemoveAll(cs.TargetDir) would attempt that as its final
-	// step): TargetDir is the sandbox-internal clone mount point
-	// (sandboxCloneTargetDir, "/workspace"), which dispatcher's
+	// step): TargetDir is the sandbox-internal clone mount point — a
+	// name-scoped subdirectory of sandboxCloneTargetDir ("/workspace/<name>",
+	// workspace 親化リファクタリング, nose 2026-07-13 decision) — which dispatcher's
 	// cloneMounts bind-mounts from a host-backed per-job runtime directory
 	// (dispatcher.buildSandboxSpec's RuntimesDir-backed clone workspace —
 	// docs/plans/git-gateway-cutover.md PR6 cutover, container-based-boid.md
