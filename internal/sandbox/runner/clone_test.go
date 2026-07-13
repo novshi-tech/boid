@@ -47,8 +47,9 @@ func TestPerformClone_MissingRequiredFieldsErrors(t *testing.T) {
 // fired on *every* clone-enabled dispatch (not just reopen) once the daemon
 // had RuntimesDir configured — the production/e2e default.
 //
-// TargetDir (sandboxCloneTargetDir, "/workspace" in production) is a mount
-// point in the real sandbox: dispatcher's cloneMounts bind-mounts it from a
+// TargetDir ("/workspace/<name>" in production — a name-scoped subdirectory
+// of sandboxCloneTargetDir, workspace 親化リファクタリング, nose 2026-07-13
+// decision) is a mount point in the real sandbox: dispatcher's cloneMounts bind-mounts it from a
 // host-backed per-job runtime directory. os.RemoveAll(dir)'s final rmdir on
 // an active mount point is refused by the kernel with EBUSY. clearDirContents
 // must remove every entry *inside* dir while leaving dir's own directory

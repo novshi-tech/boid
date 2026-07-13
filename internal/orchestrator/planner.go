@@ -97,6 +97,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		PrimaryInput: payload,
 		Visibility: Visibility{
 			ProjectDir:         proj.WorkDir,
+			ProjectName:        meta.Name,
 			AdditionalBindings: behavior.AdditionalBindings,
 			Writable:           !IsReadonly(task),
 			KitRoots:           behavior.KitRoots,

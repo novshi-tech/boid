@@ -114,6 +114,21 @@ type Visibility struct {
 	// Empty means the project filesystem is not visible.
 	ProjectDir string
 
+	// ProjectName is project.yaml's `meta.name` (kebab-case by convention,
+	// not enforced), threaded through from the workspace-hydrated
+	// ProjectMeta at JobSpec-build time (PlanHook / BuildSessionJobSpec).
+	// dispatcher uses it — falling back to filepath.Base(ProjectDir) when
+	// empty — to name the sandbox-internal clone directory under the
+	// /workspace parent dir (workspace 親化リファクタリング, nose
+	// 2026-07-13 decision): every project previously shared the exact same
+	// sandbox cwd ("/workspace"), which collided Claude Code's
+	// `~/.claude/projects/-workspace/` session-log slug across every boid
+	// project. Empty is a legitimate value (a project with no `name:` in
+	// project.yaml, or a dispatch path — e.g. gate/hook jobs with no
+	// project visible at all — that never resolves one); dispatcher's
+	// fallback degrades gracefully rather than erroring.
+	ProjectName string
+
 	// UseWorktree asks dispatcher to replace ProjectDir with a per-task git
 	// worktree obtained from its WorktreeManager.
 	UseWorktree bool

@@ -134,6 +134,49 @@ func TestPlanHook_UsesScriptPathDirectlyAndSetsKitRoots(t *testing.T) {
 	}
 }
 
+// TestPlanHook_SetsVisibilityProjectNameFromMeta is the workspace 親化リファ
+// クタリング (nose 2026-07-13 decision) regression guard for the self-project
+// half of the sandbox-internal /workspace/<name> clone dir: PlanHook must
+// thread project.yaml's `meta.name` through to Visibility.ProjectName so
+// dispatcher can derive the name-scoped clone dir directly from JobSpec,
+// without a second (and — see dispatcher.cloneDirNameForVisibility's doc
+// comment — unreliable) Projects lookup.
+func TestPlanHook_SetsVisibilityProjectNameFromMeta(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	proj := &Project{ID: "proj-1", WorkDir: projectDir}
+	task := &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting}
+	meta := &ProjectMeta{
+		ID:            proj.ID,
+		Name:          "bm-next",
+		TaskBehaviors: map[string]TaskBehavior{task.Behavior: {}},
+	}
+	planner := &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj}},
+		Tasks:    stubTaskLookup{task: task},
+		Adapter:  stubHarnessAdapter{},
+	}
+
+	req, cleanup, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook:      Hook{ID: "hook-1", ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh")},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if req.Visibility.ProjectName != "bm-next" {
+		t.Errorf("Visibility.ProjectName = %q, want %q", req.Visibility.ProjectName, "bm-next")
+	}
+}
+
 // PlanHook must carry behavior.AdditionalBindings through to
 // Visibility.AdditionalBindings. This is the task-hook counterpart of the
 // session path's binding passthrough (dispatcher.TestBindingPassthrough_*):

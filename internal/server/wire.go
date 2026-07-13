@@ -638,6 +638,7 @@ func (a *sessionDispatcherAdapter) StartSession(ctx context.Context, req api.Sta
 	spec, err := dispatcher.BuildSessionJobSpec(dispatcher.SessionJobInput{
 		ProjectID:          project.ID,
 		ProjectWorkDir:     project.WorkDir,
+		ProjectName:        meta.Name,
 		HarnessType:        req.HarnessType,
 		Argv:               argv,
 		Instruction:        req.Instruction,
@@ -689,6 +690,7 @@ func (a *sessionDispatcherAdapter) StartExec(ctx context.Context, req api.StartE
 	spec, err := dispatcher.BuildExecJobSpec(dispatcher.SessionJobInput{
 		ProjectID:          project.ID,
 		ProjectWorkDir:     project.WorkDir,
+		ProjectName:        meta.Name,
 		Readonly:           req.Readonly,
 		DisplayName:        req.DisplayName,
 		Env:                meta.Env,

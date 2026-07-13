@@ -242,7 +242,7 @@ func TestBuildGatewayRepos_NilProjectsReturnsNil(t *testing.T) {
 func TestBuildPeerAdvertise_ResolvesNameCloneURLAndReferencePath(t *testing.T) {
 	r := &Runner{
 		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
-			{ID: "peer-1", UpstreamURL: "https://github.com/owner/peer-repo.git"},
+			{ID: "peer-1", WorkDir: "/host/peer-1", UpstreamURL: "https://github.com/owner/peer-repo.git"},
 		}},
 	}
 	got := r.buildPeerAdvertise(map[string]string{"peer-1": "/host/peer-1"}, "http://10.0.2.2:12345", "job-token-abc")
@@ -258,6 +258,13 @@ func TestBuildPeerAdvertise_ResolvesNameCloneURLAndReferencePath(t *testing.T) {
 	}
 	if want := "/mnt/refs/peers/peer-1.git"; adv.ReferencePath != want {
 		t.Errorf("ReferencePath = %q, want %q", adv.ReferencePath, want)
+	}
+	// CloneDir (workspace 親化リファクタリング, nose 2026-07-13 decision):
+	// fakeProjectLookup never populates Meta (mirroring the real
+	// DBProjectCatalog gap documented on buildPeerAdvertise's CloneDir
+	// assignment), so this degrades to filepath.Base(WorkDir).
+	if want := "/workspace/peer-1"; adv.CloneDir != want {
+		t.Errorf("CloneDir = %q, want %q", adv.CloneDir, want)
 	}
 }
 

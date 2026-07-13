@@ -149,14 +149,15 @@ func (r *Runner) buildGatewayCloneURL(spec *orchestrator.JobSpec, gatewayURL, ga
 	return gatewayURL + gitgateway.PathPrefix + gatewayToken + "/" + string(key) + ".git"
 }
 
-// buildPeerAdvertise resolves the {name, clone URL, reference path} view of
-// workspacePeers exposed via environment.yaml `workspace_projects`
-// (docs/plans/git-gateway-cutover.md PR6 cutover 「5. peer advertise の変
-// 更」 — replaces the pre-cutover host path enumeration). Returns nil when
-// the gateway isn't wired (gatewayURL/gatewayToken empty) or Projects is
-// unset; an individual peer with no resolvable upstream_url is skipped
-// (with a warning) rather than aborting the whole map — same
-// fail-soft posture as buildGatewayRepos.
+// buildPeerAdvertise resolves the {name, clone URL, reference path, clone
+// dir} view of workspacePeers exposed via environment.yaml
+// `workspace_projects` (docs/plans/git-gateway-cutover.md PR6 cutover 「5.
+// peer advertise の変更」 — replaces the pre-cutover host path enumeration;
+// CloneDir added by the workspace 親化リファクタリング, nose 2026-07-13
+// decision). Returns nil when the gateway isn't wired (gatewayURL/
+// gatewayToken empty) or Projects is unset; an individual peer with no
+// resolvable upstream_url is skipped (with a warning) rather than aborting
+// the whole map — same fail-soft posture as buildGatewayRepos.
 func (r *Runner) buildPeerAdvertise(workspacePeers map[string]string, gatewayURL, gatewayToken string) map[string]PeerAdvertise {
 	if len(workspacePeers) == 0 || gatewayURL == "" || gatewayToken == "" || r.Projects == nil {
 		return nil
@@ -181,6 +182,22 @@ func (r *Runner) buildPeerAdvertise(workspacePeers map[string]string, gatewayURL
 			Name:          name,
 			CloneURL:      gatewayURL + gitgateway.PathPrefix + gatewayToken + "/" + string(key) + ".git",
 			ReferencePath: fmt.Sprintf(sandboxClonePeerReferenceDirFmt, peerID),
+			// proj.Meta.Name is read here for forward-compatibility with a
+			// future workspace-hydrating ProjectLookup, but r.Projects is
+			// currently always wired to orchestrator.DBProjectCatalog (a
+			// bare `SELECT ... FROM projects` with no project.yaml read), so
+			// proj.Meta is always the zero value in production today — this
+			// always degrades to projectDirName's filepath.Base(WorkDir)
+			// fallback in practice. Full project.Name support for peers
+			// would need Runner to hold a MetaHydrator (like
+			// orchestrator.DispatchPlanner.Hydrator); tracked as a
+			// post-cutover improvement candidate rather than done here, to
+			// keep this refactor's blast radius to the directory-layout
+			// change it set out to make. The *self* project's name doesn't
+			// have this gap — see cloneDirNameForVisibility, which reads
+			// Visibility.ProjectName, already hydrated at JobSpec-build time
+			// by orchestrator.PlanHook / dispatcher.BuildSessionJobSpec.
+			CloneDir: sandboxCloneDir(projectDirName(proj.Meta.Name, proj.WorkDir)),
 		}
 	}
 	if len(out) == 0 {

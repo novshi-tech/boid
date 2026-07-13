@@ -516,16 +516,17 @@ func validateBoidBuiltinCwd(cwd string, entry *tokenEntry) error {
 	}
 
 	// Clone-mode jobs (docs/plans/git-gateway-cutover.md PR6 cutover) declare
-	// cwd as the sandbox-internal "/workspace" (sandboxCloneTargetDir) —
-	// entryRoot already special-cases this via entry.Context.SandboxRoot
-	// (see its own doc comment: "clone-mode jobs have no host-side
-	// ProjectDir/WorktreeDir the sandbox's own filesystem corresponds to").
-	// The broker itself always runs on the host, outside any sandbox mount
-	// namespace, so os.Stat(cwd) below can never see that path — it would
-	// either ENOENT ("cwd does not exist" on a host with no coincidental
-	// "/workspace" directory) or, worse, silently validate against an
-	// unrelated host directory that happens to share the name. Skip the
-	// filesystem check entirely for clone-mode entries and fall through to
+	// cwd as a sandbox-internal, name-scoped subdirectory of "/workspace"
+	// (dispatcher.sandboxCloneDir — workspace 親化リファクタリング,
+	// nose 2026-07-13 decision) — entryRoot already special-cases this via
+	// entry.Context.SandboxRoot (see its own doc comment: "clone-mode jobs
+	// have no host-side ProjectDir/WorktreeDir the sandbox's own filesystem
+	// corresponds to"). The broker itself always runs on the host, outside
+	// any sandbox mount namespace, so os.Stat(cwd) below can never see that
+	// path — it would either ENOENT ("cwd does not exist" on a host with no
+	// coincidental directory of that name) or, worse, silently validate
+	// against an unrelated host directory that happens to share the name.
+	// Skip the filesystem check entirely for clone-mode entries and fall through to
 	// the same path-membership validation every other cwd already goes
 	// through (entryRoot / isWithinRoot below) — this is exactly what let
 	// every clone-mode hook's `boid job done` (postJobDone) silently fail
@@ -560,8 +561,9 @@ func validateBoidBuiltinCwd(cwd string, entry *tokenEntry) error {
 // entryRoot returns the directory a "boid" builtin call's cwd argument must
 // fall under. Clone-mode jobs (docs/plans/git-gateway-cutover.md PR6 cutover)
 // have no host-side ProjectDir/WorktreeDir the sandbox's own filesystem
-// corresponds to — their cwd is always the sandbox-internal "/workspace" —
-// so SandboxRoot takes priority when set.
+// corresponds to — their cwd is always a name-scoped subdirectory of the
+// sandbox-internal "/workspace" (workspace 親化リファクタリング, nose
+// 2026-07-13 decision) — so SandboxRoot takes priority when set.
 func entryRoot(entry *tokenEntry) string {
 	if entry == nil {
 		return ""
