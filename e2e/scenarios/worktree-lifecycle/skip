@@ -1,1 +1,0 @@
-PR7b で書き直し予定: このシナリオは退役済みの host-side `git worktree add`/`remove` (WorktreeManager) を fake-git.log 経由で検証しているだけで、git gateway cutover (PR6) 以降のサンドボックス内 clone モデルとは無関係。branch 解決自体は正しく動く (docs/plans/git-gateway-cutover.md PR6 cutover; PR #736 で修正した BaseBranch 未解決バグの検証時に確認済み) が、このシナリオ自体のアサーションが前提とするメカニズムがもう存在しないため、内容を書き直すまで skip する。
