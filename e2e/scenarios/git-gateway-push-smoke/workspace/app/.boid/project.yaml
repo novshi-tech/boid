@@ -1,0 +1,8 @@
+id: git-gateway-push-smoke
+name: Git Gateway Push Smoke
+worktree: true
+base_branch: main
+task_behaviors:
+  executor:
+    hooks:
+      - id: gateway-push
