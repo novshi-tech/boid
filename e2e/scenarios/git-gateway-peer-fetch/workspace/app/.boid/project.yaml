@@ -1,0 +1,8 @@
+id: git-gateway-peer-fetch
+name: Git Gateway Peer Fetch (self)
+worktree: true
+base_branch: main
+task_behaviors:
+  executor:
+    hooks:
+      - id: peer-fetch
