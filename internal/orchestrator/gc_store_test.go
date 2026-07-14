@@ -2,9 +2,7 @@ package orchestrator_test
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -12,36 +10,6 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/testutil"
 )
-
-const gcTestGitBin = "/usr/bin/git"
-
-// initGitRepoForGC creates a temporary git repository with an initial commit.
-func initGitRepoForGC(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	for _, args := range [][]string{
-		{"init"},
-		{"config", "user.email", "test@test.com"},
-		{"config", "user.name", "Test"},
-	} {
-		cmd := exec.Command(gcTestGitBin, args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			if strings.Contains(string(out), "cwd does not exist") {
-				t.Skip("git not available outside worktree in this environment")
-			}
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	f := filepath.Join(dir, "README.md")
-	os.WriteFile(f, []byte("# test"), 0o644)
-	exec.Command(gcTestGitBin, "-C", dir, "add", ".").Run()
-	cmd := exec.Command(gcTestGitBin, "-C", dir, "commit", "-m", "initial")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git commit: %v\n%s", err, out)
-	}
-	return dir
-}
 
 func TestGCTasks_DeletesDoneAndAborted(t *testing.T) {
 	d := testutil.NewTestDB(t)
