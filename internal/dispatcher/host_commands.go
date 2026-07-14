@@ -172,8 +172,13 @@ func warnUnknownBoidVars(name string, env map[string]string) {
 // of shim mount targets; sharing a single resolved view guarantees that the
 // `os.Executable()` value the shim sends will match a key the broker holds.
 //
-// Builtins ("boid", "git") are excluded — they have dedicated mounts and
-// builtin policies elsewhere.
+// The names "boid", "git", and "fetch" are excluded, each for a different
+// reason: "boid" has a dedicated bind mount + builtin policy elsewhere;
+// "fetch" is a broker builtin (`FetchRequest`) without a host binary at all;
+// "git" is neither a broker builtin nor a shim — it's a real binary reached
+// via the base rbind of /usr, but the name is reserved here so a user
+// `host_commands.git:` entry doesn't try to overlay a shim onto that path
+// and break the sandbox-side git that the git gateway clone flow depends on.
 //
 // `projectDir` is used to resolve relative paths declared in
 // host_commands.<name>.path, and as the working directory for the origin URL

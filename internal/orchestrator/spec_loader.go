@@ -947,13 +947,18 @@ func mergeHostCommands(base, overlay HostCommands) HostCommands {
 	return result
 }
 
-// validateBuiltinHostConflict rejects host_commands entries for names that are
-// always available as builtins (git, boid). Those names are broker-mediated by
-// the sandbox runtime and cannot be redirected to a host binary.
+// validateBuiltinHostConflict rejects host_commands entries for names that
+// the sandbox reserves. "boid" is a broker-mediated builtin with a dedicated
+// bind. "fetch" is a broker builtin (`FetchRequest`). "git" is neither — it
+// is a real binary reached via the base rbind of /usr — but the name stays
+// reserved because a user `host_commands.git:` entry would try to overlay a
+// shim onto that path and break the sandbox-side git the git gateway clone
+// flow depends on. Redirecting any of these to a host binary is rejected at
+// config load.
 func validateBuiltinHostConflict(scope string, hostCommands HostCommands) error {
 	for _, name := range []string{"git", "boid", "fetch"} {
 		if _, conflict := hostCommands[name]; conflict {
-			return fmt.Errorf("%s: %q is a builtin command and cannot be declared in host_commands", scope, name)
+			return fmt.Errorf("%s: %q is a reserved builtin/sandbox name and cannot be declared in host_commands", scope, name)
 		}
 	}
 	return nil

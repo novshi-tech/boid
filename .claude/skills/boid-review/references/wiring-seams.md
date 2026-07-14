@@ -20,12 +20,11 @@ has the same shape:
 3. [HarnessType propagation (JobSpec builder → registry.For)](#3-harnesstype-propagation)
 4. [session jsonl persistence (env strip)](#4-session-jsonl-persistence)
 5. [workspace allowed_domains (proxy)](#5-workspace-allowed_domains)
-6. [brokered git remote snapshot](#6-brokered-git-remote-snapshot)
-7. [embedded-skill bind (adapter.Bindings)](#7-embedded-skill-bind)
-8. [host_commands CommandDef mirror (spec → broker gate)](#8-host_commands-commanddef-mirror)
-9. [gitgateway RepoKey normalization](#9-gitgateway-repokey-normalization)
-10. [sandbox-clone declaration path](#10-sandbox-clone-declaration-path)
-11. [exec stdin-forward opt-in](#11-exec-stdin-forward-opt-in)
+6. [embedded-skill bind (adapter.Bindings)](#6-embedded-skill-bind)
+7. [host_commands CommandDef mirror (spec → broker gate)](#7-host_commands-commanddef-mirror)
+8. [gitgateway RepoKey normalization](#8-gitgateway-repokey-normalization)
+9. [sandbox-clone declaration path](#9-sandbox-clone-declaration-path)
+10. [exec stdin-forward opt-in](#10-exec-stdin-forward-opt-in)
 
 ---
 
@@ -143,34 +142,7 @@ reaches the per-workspace proxy.
   `resolveWorkspaceProxy`, verify the floor is preserved, the composition is additive (not a
   replacement), and dispatch doesn't stall on the fallback path.
 
-## 6. brokered git remote snapshot
-
-The binding snapshot that decides which remotes a brokered git push/fetch may reach.
-
-**Retired for clone-mode jobs as of docs/plans/git-gateway-cutover.md PR6 (cutover, 2026-07-10)**:
-`internal/sandbox/broker.go`'s `Register` now skips `captureGitBinding` whenever
-`ctx.SandboxRoot != ""` (clone-mode jobs — see seam 10). The git-shim PATH overlay that used to
-route sandbox git through this snapshot is also gone (no `/usr/bin/git`/`/bin/git` override mount),
-so the snapshot mechanism is unreachable dead code on the main dispatch path. It survives untouched
-for two reasons: (1) `internal/sandbox/git_builtin.go` and the `"git"` `BuiltinPolicy` registration
-are explicitly deferred to PR8 (this PR's scope excludes deletion), and (2) it documents what to
-delete together in PR8. Do not "fix" a remote-snapshot bug on this path for a clone-mode job — check
-whether `ctx.SandboxRoot` is set before spending time on it; if it is, the snapshot was never
-consulted in the first place.
-
-- **End**: `internal/sandbox/git_builtin.go`. The binding's remote set is snapshotted **once** at
-  token-registration time.
-- **Invariant**: known remotes are resolved from the snapshot (no re-capture = the trusted-snapshot
-  guarantee). Re-capture **only** when a remote is not in the snapshot. The log line
-  `snapshot ready ... remotes=N` is the evidence.
-- **Past break**: a remote added later (e.g. via `gh repo create`) isn't in the snapshot, so push is
-  rejected "for just one project".
-- **When you touch it**: if you touch the git builtin, the snapshot, or remote resolution, verify
-  you haven't broken the trusted-snapshot guarantee (known remotes are not re-fetched) and that
-  re-capture happens only on a miss. For clone-mode jobs, verify the `ctx.SandboxRoot != ""` guard in
-  `broker.go`'s `Register` is still what disables this path — don't accidentally re-enable it.
-
-## 7. embedded-skill bind
+## 6. embedded-skill bind
 
 Whether the embedded skills appear at `~/.claude/skills/<name>` inside each harness's sandbox.
 
@@ -185,7 +157,7 @@ Whether the embedded skills appear at `~/.claude/skills/<name>` inside each harn
   seam 1.
 - Guard: `internal/adapters/claude/bindings_test.go` and the bindings tests of each adapter.
 
-## 8. host_commands CommandDef mirror
+## 7. host_commands CommandDef mirror
 
 Whether a host_commands policy field declared in YAML actually reaches the broker's
 enforcement gate. Two mirror structs exist on purpose (orchestrator cannot be imported
@@ -214,7 +186,7 @@ by sandbox), so every new policy field must be threaded through each hop by hand
   intentionally shows a **subset** (no path/env) — don't "fix" that asymmetry, but do keep
   reject rules visible to the agent.
 
-## 9. gitgateway RepoKey normalization
+## 8. gitgateway RepoKey normalization
 
 Whether a repo identity resolves to the *same* `gitgateway.RepoKey` on both the register side
 (dispatch-time allowlist construction) and the lookup side (an incoming gateway request), despite
@@ -246,7 +218,7 @@ segment, either of which may or may not carry a `.git` suffix).
   that bypasses `NewRepoKey`, and that a repo registered via one URL form (e.g. SSH) is reachable
   via a gateway path using the other form (e.g. HTTPS, with or without `.git`).
 
-## 10. sandbox-clone declaration path
+## 9. sandbox-clone declaration path
 
 Whether a task/hook/session/exec job's branch declaration actually reaches the runner's clone
 sequence, and whether the mount side stays in lockstep with the declaration side. Added by PR5
@@ -284,8 +256,8 @@ sequence, and whether the mount side stays in lockstep with the declaration side
   (`resolveWorkDir`, the mount switch, `cloneMounts`, `buildCloneSpec`) — a mismatch between any
   two of these is exactly the double-mount / no-mount class of bug. (3) End D never gets a real
   git binary path threaded to it anymore post-cutover (`CloneSpec.RealGitBin` is left unset) — the
-  sandbox's own `git` on `$PATH` is the real binary once the git-shim overlay is retired (seam 6's
-  note); don't reintroduce a bind for this.
+  sandbox's own `git` on `$PATH` is the real binary now that the git-shim overlay is retired
+  (git gateway cutover PR6/PR8); don't reintroduce a bind for this.
 - **Past break**: none yet (PR5 was inert; PR6 is this seam's first real-dispatch exercise) — this
   entry exists so the *next* touch has a map, not so it documents a regression already found.
 - **Guard**: `TestCloneMounts_*` / `TestBuildCloneSpec_*` / `TestResolveWorkDir_CloneEnabled_*` /
@@ -298,7 +270,7 @@ sequence, and whether the mount side stays in lockstep with the declaration side
   `buildCloneSpec` (End B) and `performClone`'s resolution logic (End D), and a change to the mount
   layout (End C) must not reintroduce a host `ProjectDir`/`WorktreeDir` bind for a clone-mode job.
 
-## 11. exec stdin-forward opt-in
+## 10. exec stdin-forward opt-in
 
 Whether the non-interactive (no-PTY) runtime transport allocates a live stdin-forwarding pipe only
 for `boid exec`, never for a hook job. Added by PR #735 (git gateway cutover's exec-via-Dispatch).

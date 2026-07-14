@@ -3,9 +3,7 @@
 // このファイルは実 git バイナリを直接 exec し、実リポジトリ相手に
 // clone/checkout/branch 解決する end-to-end 試験。ホスト環境 (本物の git /
 // サンドボックス外 / 書き込み可能な TempDir) を前提とするため、通常の
-// go test ./... からは //go:build e2e タグで除外する
-// (internal/sandbox の git_builtin_test.go / git_builtin_logic_test.go の
-// 分割と同じ理由・同じ規約)。CI では
+// go test ./... からは //go:build e2e タグで除外する。CI では
 // go test -tags=e2e ./internal/sandbox/... で走らせる。
 // 実 git を呼ばない純粋ロジック試験は clone_test.go を参照。
 package runner

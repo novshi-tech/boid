@@ -1,10 +1,9 @@
 //go:build e2e
 
 // This file drives a real git binary against a real repository (clone,
-// commit, push, fetch) over the fixture HTTP server, so — like
-// internal/sandbox/git_builtin_test.go — it is excluded from plain `go test
-// ./...` and run explicitly in CI via `go test -tags=e2e
-// ./internal/sandbox/... ./e2e/upstream/...`.
+// commit, push, fetch) over the fixture HTTP server, so it is excluded from
+// plain `go test ./...` and run explicitly in CI via
+// `go test -tags=e2e ./internal/sandbox/... ./e2e/upstream/...`.
 package upstream_test
 
 import (
