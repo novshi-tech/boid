@@ -81,7 +81,7 @@ task_behaviors:
         Implement what the task describes, commit on the current branch, and exit.
 ```
 
-- **`worktree: true`** — executor タスクが専用の git worktree で動くことを示す
+- **`worktree: true`** — executor タスクが専用の isolated branch (sandbox 内 clone 上) で動くことを示す
 - **`task_behaviors`** — タスクの動作を定義する (詳細は [概念 / behavior](../guide/concepts.md#behavior))
 
 登録済みプロジェクトの一覧 / 詳細は次で確認できます:

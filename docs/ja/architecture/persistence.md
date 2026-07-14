@@ -22,7 +22,6 @@
 | `tasks` | タスクの本体 (最も大きいテーブル) | 1 タスク |
 | `actions` | 状態遷移の監査ログ | 1 アクション |
 | `jobs` | handler の実行記録 | handler 1 回の実行 |
-| `worktrees` | タスク用に作成された git worktree | 1 worktree |
 | `secrets` | 暗号化された secret 値 | 1 namespace × 1 key |
 | `web_devices` | Web UI のペアリング済みデバイス | 1 デバイス |
 | `web_pairing_codes` | 発行済みのペアリングコード | 1 コード |
@@ -45,8 +44,8 @@
 | `instructions` | TEXT (JSON) | Instruction の配列 (最後の要素が active、 reopen で append される) |
 | `auto_start` | BOOLEAN | 作成時に自動 start するか |
 | `traits` | TEXT (JSON 配列) | このタスクの behavior が宣言する trait |
-| `readonly` / `worktree` | BOOLEAN | サンドボックスのモード |
-| `branch_prefix` / `base_branch` | TEXT | worktree 設定 |
+| `readonly` / `worktree` | BOOLEAN | サンドボックスのモード (`worktree` はこのタスクを専用 branch (`boid/<id8>`) 上で走らせるかを表す業務フラグ。実行時の実体は sandbox 内 clone のブランチ宣言 — [git gateway](../reference/project-yaml.md#git-gateway--sandbox-内-clone) 参照。ホスト側の git worktree はもう作られない) |
+| `branch_prefix` / `base_branch` | TEXT | branch 設定 |
 | `ref` / `parent_id` | TEXT | 親タスク参照 (任意) |
 | `created_at` / `updated_at` | DATETIME | 作成 / 更新時刻 |
 
@@ -97,22 +96,6 @@ handler (hook) の 1 回の実行記録です。
 
 `task_id` が NULLABLE なのは、 `boid exec` でタスクに紐付かないコマンドを動かしたときの記録もここに入るためです。
 
-## `worktrees`
-
-project トップで `worktree: true` を宣言したプロジェクトの executor タスクごとに作られる git worktree のメタです。
-
-| カラム | 型 | 役割 |
-|---|---|---|
-| `id` | TEXT PK | worktree ID |
-| `task_id` | TEXT FK → tasks.id (UNIQUE) | 1 タスク 1 worktree |
-| `project_id` | TEXT FK → projects.id | プロジェクト |
-| `path` | TEXT | host 上の worktree のパス |
-| `branch` | TEXT | ブランチ名 |
-| `base_branch` | TEXT | ベースブランチ |
-| `created_at` / `cleaned_at` | DATETIME | 作成時刻 / 片付け時刻 |
-
-`cleaned_at` が NULL = 現在 live な worktree。 削除済みでも行は残し、後追いの監査に使えるようにしています。
-
 ## `secrets`
 
 API トークンなどを暗号化して保存します。鍵は `~/.local/share/boid/secret.key` にあり、 daemon が起動時に読み込みます。
@@ -153,7 +136,9 @@ migrations/
 ├── 0024_drop_tasks_remote_unique.sql   (remote_id の部分インデックスを削除)
 ├── 0025_drop_tasks_datasource_id.sql   (datasource_id カラムを削除)
 ├── 0026_drop_tasks_depends_on.sql      (depends_on_payload と task_dependencies テーブルを削除)
-└── 0027_add_jobs_display_name.sql      (jobs.display_name TEXT を追加)
+├── 0027_add_jobs_display_name.sql      (jobs.display_name TEXT を追加)
+├── 0028_add_projects_upstream_url.sql  (projects.upstream_url TEXT を追加。git gateway が clone 元を解決するのに使う)
+└── 0029_drop_worktrees_table.sql       (worktrees テーブルを削除。host git worktree 割り当ては廃止、sandbox 内 clone に置換済み)
 ```
 
 特徴:

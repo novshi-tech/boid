@@ -47,15 +47,15 @@ boid が管理するディスクデータは2種類ある:
 | ディレクトリ | 管理主体 | GC 対象 |
 |---|---|---|
 | `~/.local/share/boid/runtimes/<runtime_id>/` | boid | daemon が自動削除（24h 毎）|
-| `~/.claude/projects/-home-...-worktrees-boid-<taskid>/` | Claude Code | **boid 管轄外**・手動管理が必要 |
+| `~/.claude/projects/-workspace-<project-name>-.../`（project ごと） | Claude Code | **boid 管轄外**・手動管理が必要 |
 
 `~/.claude/projects/` 配下の `*.jsonl` は Claude Code 本体が書き込むセッションログであり、boid が手を出すのは越権行為となる。
-手動で削除する場合は `rm -rf ~/.claude/projects/-home-*-worktrees-boid-*` を実行すること（他のプロジェクトのログを巻き込まないよう注意）。
+git gateway cutover (2026-07) 後はジョブの cwd が sandbox 内の `/workspace/<project-name>`（project 名ベース、task ID を含まない）になったため、同一 project の複数タスクが同じログディレクトリに集約される。手動で削除する場合は実際に一度 dispatch した上で `~/.claude/projects/` 配下の該当ディレクトリを確認し、他プロジェクトのログを巻き込まないよう注意して削除すること。
 
 ### 自動 GC
 
 boid daemon 起動時に GC goroutine が立ち上がり、起動 **10 秒後**に初回実行、以降 **24 時間ごと**に **30 日より古いデータ**を自動削除する。
-削除対象は `runtimes/<runtime_id>/` ディレクトリに加え、終端状態の tasks/actions/jobs（DB レコード）・worktree ディレクトリ・`/tmp/boid-*` ・失効済みデバイスも含む。
+削除対象は `runtimes/<runtime_id>/` ディレクトリに加え、終端状態の tasks/actions/jobs（DB レコード）・`/tmp/boid-*` ・失効済みデバイスも含む。
 手動実行は引き続き `boid gc` で可能。設定は `docs/ja/reference/config-yaml.md` を参照。
 
 ## Web UI

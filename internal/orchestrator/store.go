@@ -500,7 +500,7 @@ func DeleteTask(dbtx db.DBTX, id string) error {
 	if _, err := GetTask(dbtx, id); err != nil {
 		return err
 	}
-	for _, table := range []string{"actions", "jobs", "worktrees"} {
+	for _, table := range []string{"actions", "jobs"} {
 		if _, err := dbtx.Exec(`DELETE FROM `+table+` WHERE task_id = ?`, id); err != nil {
 			return fmt.Errorf("delete %s: %w", table, err)
 		}

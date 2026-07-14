@@ -75,14 +75,13 @@ hook の実行コンテキストには次の環境変数が設定されます。
 
 ### 作業ディレクトリ
 
-- **worktree を持つタスク** (root case 2/3、 または child タスク) は、 hook の cwd は **その worktree のルート** です
-- **worktree を持たないタスク** (root case 1: `base_branch` が project HEAD と一致、 または project トップ `worktree:` 未設定の executor) は、 cwd は **プロジェクトルート** (`project.yaml` がある親ディレクトリ) です
+project が可視なタスクの hook cwd は、 sandbox 内に git gateway 経由で新規 clone された project のコピーのルートです (`/workspace/<project-name>` 相当。 host 側の project ディレクトリそのものではありません)。 root / child、 case 1/2/3 いずれでも同じ — 違いは clone の中でどの branch を checkout するか (case 1 は `base_branch` を直接、 child は `boid/<task_id8>` を新規作成) だけです。 詳細は [`project.yaml` リファレンス / worktree](project-yaml.md#worktree) を参照してください。
 
 これにより、 `git`、 `gh`、ビルドコマンド等は明示的にディレクトリ指定せずに使えます。
 
 ### ファイルシステムアクセス
 
-hook はサンドボックス内で動きます。 読み書き可能なのは worktree (または readonly = true な supervisor タスクではどこも書けない) のみ。 kit が `additional_bindings` で宣言したパスは追加でマウントされます。 host のホーム / SSH 鍵 / 他プロジェクトは見えません。
+hook はサンドボックス内で動きます。 読み書き可能なのは sandbox 内の clone (または readonly = true な supervisor タスクではどこも書けない — この場合も clone 自体はローカルに存在するが、 push が git gateway 側で拒否される) のみ。 kit が `additional_bindings` で宣言したパスは追加でマウントされます。 host のホーム / SSH 鍵 / 他プロジェクトは見えません。
 
 ## 出力
 

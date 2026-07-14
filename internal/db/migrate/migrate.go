@@ -223,6 +223,18 @@ func Apply(conn *sql.DB) error {
 				return columnExists(tx, "projects", "upstream_url")
 			},
 		},
+		{
+			// docs/plans/git-gateway-cutover.md PR8: host git worktree
+			// allocation is retired (PR6 cutover moved every project-visible
+			// job to a sandbox-internal clone), so the worktrees table has
+			// had no writer since PR6 landed.
+			version: "0029_drop_worktrees_table",
+			path:    "migrations/0029_drop_worktrees_table.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				exists, err := tableExists(tx, "worktrees")
+				return !exists, err
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {
