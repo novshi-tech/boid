@@ -7,9 +7,12 @@ import (
 )
 
 func TestCredentialProviderInjectGitHub(t *testing.T) {
-	resolver := func(key string) (string, error) {
+	resolver := func(namespace, key string) (string, error) {
 		if key != "gh-pat" {
 			t.Fatalf("resolver called with unexpected key %q", key)
+		}
+		if namespace != "ws-1" {
+			t.Fatalf("resolver called with unexpected namespace %q, want ws-1", namespace)
 		}
 		return "sekrit-token", nil
 	}
@@ -18,7 +21,7 @@ func TestCredentialProviderInjectGitHub(t *testing.T) {
 	}, resolver)
 
 	req, _ := http.NewRequest(http.MethodGet, "http://github.com/owner/repo.git/info/refs", nil)
-	if err := cp.Inject(req, "github.com"); err != nil {
+	if err := cp.Inject(req, "github.com", "ws-1"); err != nil {
 		t.Fatalf("Inject: %v", err)
 	}
 	user, pass, ok := req.BasicAuth()
@@ -34,13 +37,13 @@ func TestCredentialProviderInjectGitHub(t *testing.T) {
 }
 
 func TestCredentialProviderInjectBitbucket(t *testing.T) {
-	resolver := func(key string) (string, error) { return "bb-token", nil }
+	resolver := func(namespace, key string) (string, error) { return "bb-token", nil }
 	cp := NewCredentialProvider([]HostForgeConfig{
 		{Host: "bitbucket.org", Forge: ForgeBitbucket, SecretKey: "bb-api-token"},
 	}, resolver)
 
 	req, _ := http.NewRequest(http.MethodGet, "http://bitbucket.org/team/repo.git/info/refs", nil)
-	if err := cp.Inject(req, "bitbucket.org"); err != nil {
+	if err := cp.Inject(req, "bitbucket.org", "default"); err != nil {
 		t.Fatalf("Inject: %v", err)
 	}
 	user, pass, ok := req.BasicAuth()
@@ -56,9 +59,9 @@ func TestCredentialProviderInjectBitbucket(t *testing.T) {
 }
 
 func TestCredentialProviderInjectUnknownHost(t *testing.T) {
-	cp := NewCredentialProvider(nil, func(string) (string, error) { return "x", nil })
+	cp := NewCredentialProvider(nil, func(string, string) (string, error) { return "x", nil })
 	req, _ := http.NewRequest(http.MethodGet, "http://example.com/o/r.git/info/refs", nil)
-	if err := cp.Inject(req, "example.com"); err == nil {
+	if err := cp.Inject(req, "example.com", "default"); err == nil {
 		t.Fatal("expected error for unconfigured host")
 	}
 }
@@ -67,10 +70,10 @@ func TestCredentialProviderInjectResolverError(t *testing.T) {
 	wantErr := errors.New("secret not found")
 	cp := NewCredentialProvider([]HostForgeConfig{
 		{Host: "github.com", Forge: ForgeGitHub, SecretKey: "missing"},
-	}, func(string) (string, error) { return "", wantErr })
+	}, func(string, string) (string, error) { return "", wantErr })
 
 	req, _ := http.NewRequest(http.MethodGet, "http://github.com/o/r.git/info/refs", nil)
-	if err := cp.Inject(req, "github.com"); err == nil {
+	if err := cp.Inject(req, "github.com", "default"); err == nil {
 		t.Fatal("expected error to propagate from resolver")
 	}
 }
@@ -80,8 +83,47 @@ func TestCredentialProviderInjectNilResolver(t *testing.T) {
 		{Host: "github.com", Forge: ForgeGitHub, SecretKey: "gh-pat"},
 	}, nil)
 	req, _ := http.NewRequest(http.MethodGet, "http://github.com/o/r.git/info/refs", nil)
-	if err := cp.Inject(req, "github.com"); err == nil {
+	if err := cp.Inject(req, "github.com", "default"); err == nil {
 		t.Fatal("expected error when no resolver is configured")
+	}
+}
+
+// TestCredentialProviderInjectNamespaceRoutesToDifferentSecret proves the
+// namespace parameter actually reaches the resolver and selects a distinct
+// secret per namespace — the crux of post-cutover 改善 §1 (workspace-scoped
+// PAT namespace): two workspaces sharing one gateway host config must be
+// able to authenticate with two different PATs.
+func TestCredentialProviderInjectNamespaceRoutesToDifferentSecret(t *testing.T) {
+	secrets := map[string]string{
+		"ws-a": "pat-for-ws-a",
+		"ws-b": "pat-for-ws-b",
+	}
+	resolver := func(namespace, key string) (string, error) {
+		if key != "gh-pat" {
+			t.Fatalf("resolver called with unexpected key %q", key)
+		}
+		v, ok := secrets[namespace]
+		if !ok {
+			t.Fatalf("resolver called with unexpected namespace %q", namespace)
+		}
+		return v, nil
+	}
+	cp := NewCredentialProvider([]HostForgeConfig{
+		{Host: "github.com", Forge: ForgeGitHub, SecretKey: "gh-pat"},
+	}, resolver)
+
+	for namespace, wantToken := range secrets {
+		req, _ := http.NewRequest(http.MethodGet, "http://github.com/owner/repo.git/info/refs", nil)
+		if err := cp.Inject(req, "github.com", namespace); err != nil {
+			t.Fatalf("Inject(namespace=%q): %v", namespace, err)
+		}
+		_, pass, ok := req.BasicAuth()
+		if !ok {
+			t.Fatalf("namespace %q: expected Basic auth to be set", namespace)
+		}
+		if pass != wantToken {
+			t.Fatalf("namespace %q: password = %q, want %q", namespace, pass, wantToken)
+		}
 	}
 }
 
@@ -89,7 +131,7 @@ func TestCredentialProviderSchemeFor(t *testing.T) {
 	cp := NewCredentialProvider([]HostForgeConfig{
 		{Host: "github.com", Forge: ForgeGitHub, SecretKey: "gh-pat"},
 		{Host: "127.0.0.1:9999", Forge: ForgeGitHub, SecretKey: "gh-pat", Scheme: "http"},
-	}, func(string) (string, error) { return "x", nil })
+	}, func(string, string) (string, error) { return "x", nil })
 
 	if got := cp.SchemeFor("github.com"); got != "https" {
 		t.Fatalf("SchemeFor(github.com) = %q, want https", got)
@@ -105,7 +147,7 @@ func TestCredentialProviderSchemeFor(t *testing.T) {
 func TestCredentialProviderConfigured(t *testing.T) {
 	withResolver := NewCredentialProvider([]HostForgeConfig{
 		{Host: "github.com", Forge: ForgeGitHub, SecretKey: "gh-pat"},
-	}, func(string) (string, error) { return "x", nil })
+	}, func(string, string) (string, error) { return "x", nil })
 	if !withResolver.Configured() {
 		t.Error("Configured() = false, want true when a resolver is wired")
 	}
@@ -129,7 +171,7 @@ func TestCredentialProviderConfigured(t *testing.T) {
 func TestNilCredentialProviderFailsClosed(t *testing.T) {
 	var cp *CredentialProvider
 	req, _ := http.NewRequest(http.MethodGet, "http://github.com/o/r.git/info/refs", nil)
-	if err := cp.Inject(req, "github.com"); err == nil {
+	if err := cp.Inject(req, "github.com", "default"); err == nil {
 		t.Fatal("expected error injecting via nil CredentialProvider")
 	}
 	if got := cp.SchemeFor("github.com"); got != "https" {

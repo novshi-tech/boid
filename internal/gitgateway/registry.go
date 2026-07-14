@@ -25,13 +25,20 @@ func (p Permission) Allows(op Operation) bool {
 }
 
 // Entry is one job token's authorization: which repos it may reach and at
-// what permission level. docs/plans/git-gateway-cutover.md PR3 の許可集合
-// (自 project は fetch+push or fetch のみ、workspace peer は fetch のみ、
-// read-only 追加許可 repo も fetch のみ) はすべて呼び出し側 (PR4 の dispatch
-// 配線) が Repos map の構築時に表現する — Registry 自体は集合の形を知らない。
+// what permission level, plus the secret-store namespace credential
+// resolution should use for this token. docs/plans/git-gateway-cutover.md
+// PR3 の許可集合 (自 project は fetch+push or fetch のみ、workspace peer は
+// fetch のみ、read-only 追加許可 repo も fetch のみ) はすべて呼び出し側
+// (PR4 の dispatch 配線) が Repos map の構築時に表現する — Registry 自体は
+// 集合の形を知らない。Namespace follows the same pattern (post-cutover 改善
+// §1 workspace-scoped PAT namespace): the caller passes it in at Register
+// time (from orchestrator.JobSpec.SecretNamespace), and Registry just carries
+// it alongside Repos for Server.ServeHTTP to pass through to
+// CredentialProvider.Inject.
 type Entry struct {
-	Token string
-	Repos map[RepoKey]Permission
+	Token     string
+	Namespace string
+	Repos     map[RepoKey]Permission
 }
 
 // Registry is the job-token → allowed-repo-set store. It is a deliberately
@@ -50,24 +57,26 @@ func NewRegistry() *Registry {
 	return &Registry{entries: make(map[string]*Entry)}
 }
 
-// Register creates a new entry with a freshly generated token and returns it.
-func (r *Registry) Register(repos map[RepoKey]Permission) string {
+// Register creates a new entry with a freshly generated token, scoped to
+// namespace (the registering job's orchestrator.JobSpec.SecretNamespace —
+// post-cutover 改善 §1), and returns the token.
+func (r *Registry) Register(repos map[RepoKey]Permission, namespace string) string {
 	token := GenerateToken()
-	r.RegisterToken(token, repos)
+	r.RegisterToken(token, repos, namespace)
 	return token
 }
 
-// RegisterToken creates (or replaces) an entry under an explicit token. This
-// is useful for callers (and tests) that already have a token value to
-// correlate with — e.g. PR4 dispatch, which will want the gateway job token
-// alongside the job id in logs.
-func (r *Registry) RegisterToken(token string, repos map[RepoKey]Permission) {
+// RegisterToken creates (or replaces) an entry under an explicit token,
+// scoped to namespace. This is useful for callers (and tests) that already
+// have a token value to correlate with — e.g. PR4 dispatch, which will want
+// the gateway job token alongside the job id in logs.
+func (r *Registry) RegisterToken(token string, repos map[RepoKey]Permission, namespace string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.entries == nil {
 		r.entries = make(map[string]*Entry)
 	}
-	r.entries[token] = &Entry{Token: token, Repos: repos}
+	r.entries[token] = &Entry{Token: token, Repos: repos, Namespace: namespace}
 }
 
 // Unregister revokes a token. A subsequent Lookup/Authorize for it reports
@@ -78,10 +87,12 @@ func (r *Registry) Unregister(token string) {
 	delete(r.entries, token)
 }
 
-// Lookup returns the entry for token, if any. A nil Registry behaves as an
-// always-empty one (every token reports invalid) rather than panicking, so a
-// Server constructed without a registry fails closed with 401s instead of
-// crashing.
+// Lookup returns the entry for token, if any — including Entry.Namespace,
+// which Server.ServeHTTP reads after a successful Authorize to pass the
+// right namespace into CredentialProvider.Inject. A nil Registry behaves as
+// an always-empty one (every token reports invalid) rather than panicking,
+// so a Server constructed without a registry fails closed with 401s instead
+// of crashing.
 func (r *Registry) Lookup(token string) (Entry, bool) {
 	if r == nil {
 		return Entry{}, false

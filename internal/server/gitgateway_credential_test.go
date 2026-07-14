@@ -45,7 +45,7 @@ func TestGitGateway_NoSecretStoreRejectsValidTokenWithout503(t *testing.T) {
 	repoKey := gitgateway.NewRepoKey("github.com", "owner", "repo")
 	token := srv.gatewayRegistry.Register(map[gitgateway.RepoKey]gitgateway.Permission{
 		repoKey: gitgateway.PermFetch,
-	})
+	}, "default")
 
 	gwURL := srv.GatewayURL()
 	const wantPrefix = "http://10.0.2.2:"

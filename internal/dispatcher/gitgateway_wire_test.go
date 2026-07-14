@@ -446,6 +446,64 @@ func TestDispatch_RegistersAndUnregistersGatewayToken(t *testing.T) {
 	}
 }
 
+// TestDispatch_RegistersGatewayTokenWithSecretNamespace is the Dispatch-level
+// guard for post-cutover 改善 §1 (workspace-scoped PAT namespace): it proves
+// registerGatewayToken passes spec.SecretNamespace through to
+// gitgateway.Registry.Register (internal/dispatcher/gitgateway_wire.go's
+// r.GitGateway.Register(repos, spec.SecretNamespace) call), so the real
+// Registry entry created by a live Dispatch carries the namespace that
+// Server.ServeHTTP will later read back out via Lookup to scope credential
+// resolution. spec.SecretNamespace itself is populated upstream of Dispatch
+// by orchestrator.ProjectStore.GetWithWorkspace (already-landed wiring —
+// this test only pins the one remaining hop: JobSpec field → Registry
+// entry).
+func TestDispatch_RegistersGatewayTokenWithSecretNamespace(t *testing.T) {
+	d := newGatewayTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{
+		ID: "proj-1", WorkDir: "/tmp", UpstreamURL: "https://github.com/owner/repo.git",
+	}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	gwURL := "http://10.0.2.2:9"
+	registry := gitgateway.NewRegistry()
+	r := &Runner{
+		DB:         d.Conn,
+		Projects:   orchestrator.DBProjectCatalog{DB: d.Conn},
+		Sandbox:    &gwFakeSandboxPrep{dir: t.TempDir()},
+		Runtime:    &gwFakeRuntime{},
+		BoidBinary: "/boid",
+		GitGateway: registry,
+		GatewayURL: &gwURL,
+	}
+
+	spec := &orchestrator.JobSpec{
+		ProjectID:       "proj-1",
+		Argv:            []string{"echo", "hi"},
+		Kind:            orchestrator.JobKindHook,
+		Visibility:      orchestrator.Visibility{Writable: true},
+		SecretNamespace: "ws-scoped-pat",
+	}
+
+	jobID, err := r.Dispatch(context.Background(), spec, nil)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	token, ok := r.gatewayTokens[jobID]
+	if !ok || token == "" {
+		t.Fatalf("gatewayTokens[%q] not registered", jobID)
+	}
+
+	entry, valid := registry.Lookup(token)
+	if !valid {
+		t.Fatal("registry.Lookup: token registered by Dispatch was not found in the real Registry")
+	}
+	if entry.Namespace != "ws-scoped-pat" {
+		t.Errorf("entry.Namespace = %q, want %q (spec.SecretNamespace should have been threaded through Register)", entry.Namespace, "ws-scoped-pat")
+	}
+}
+
 // TestDispatch_GatewayUnwired_NoTokenNoPanic verifies the nil-GitGateway path
 // (test wiring / a daemon build without the gateway constructed) leaves
 // SandboxRuntimeInfo's gateway fields empty and Dispatch/UnregisterJob do not

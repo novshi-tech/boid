@@ -11,9 +11,12 @@ import (
 
 // registerGatewayToken registers this job's git gateway job token (self
 // project fetch or fetch+push per Visibility.Writable, workspace peers and
-// workspace extra_repos fetch-only) and returns the gateway's sandbox-facing
-// base URL alongside the token, tracking the token so UnregisterJob can
-// revoke it when the job completes.
+// workspace extra_repos fetch-only), scoped to spec.SecretNamespace (post-
+// cutover 改善 §1 workspace-scoped PAT namespace — SecretNamespace is
+// already hydrated to the workspace ID by orchestrator.ProjectStore
+// .GetWithWorkspace by the time a JobSpec reaches Dispatch), and returns the
+// gateway's sandbox-facing base URL alongside the token, tracking the token
+// so UnregisterJob can revoke it when the job completes.
 //
 // Both return values are empty when the gateway isn't wired (r.GitGateway ==
 // nil). PR4 is inert (docs/plans/git-gateway-cutover.md): SandboxRuntimeInfo
@@ -24,7 +27,7 @@ func (r *Runner) registerGatewayToken(jobID string, spec *orchestrator.JobSpec, 
 		return "", ""
 	}
 	repos := r.buildGatewayRepos(spec, workspaceID)
-	token = r.GitGateway.Register(repos)
+	token = r.GitGateway.Register(repos, spec.SecretNamespace)
 
 	r.gatewayMu.Lock()
 	if r.gatewayTokens == nil {

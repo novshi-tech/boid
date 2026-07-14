@@ -37,8 +37,9 @@ type Server struct {
 type routeInfoKey struct{}
 
 type routeInfo struct {
-	host string
-	repo RepoKey
+	host      string
+	repo      RepoKey
+	namespace string
 }
 
 // NewServer builds a Server. credentials may be nil (requests are proxied
@@ -73,7 +74,7 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
 			pr.Out.Host = info.host
 			if s.credentials != nil {
-				if err := s.credentials.Inject(pr.Out, info.host); err != nil {
+				if err := s.credentials.Inject(pr.Out, info.host, info.namespace); err != nil {
 					slog.Warn("gitgateway: credential injection failed; forwarding without auth", "host", info.host, "err", err)
 					s.notifier.NotifyCredentialError(info.host, info.repo, err)
 				}
@@ -130,6 +131,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// entry is guaranteed present here (tokenValid == true above already
+	// proved rt.token resolves in the registry); this second Lookup only
+	// exists to recover Entry.Namespace, which Authorize's bool-returning
+	// signature doesn't expose — namespace scopes the credential resolution
+	// below (post-cutover 改善 §1 workspace-scoped PAT namespace).
+	entry, _ := s.registry.Lookup(rt.token)
+	namespace := entry.Namespace
+
 	// Systemic "no secret resolver at all" case (docs/plans/git-gateway-cutover.md
 	// PR5 review): reject before ever contacting the upstream or invoking
 	// the notifier, distinct from the ordinary per-key-miss path (a
@@ -147,6 +156,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// (".git"-suffixed) form; Rewrite reads it back off pr.In.URL.Path.
 	r.URL.Path = rt.upstreamPath()
 
-	ctx := context.WithValue(r.Context(), routeInfoKey{}, routeInfo{host: rt.host, repo: repo})
+	ctx := context.WithValue(r.Context(), routeInfoKey{}, routeInfo{host: rt.host, repo: repo, namespace: namespace})
 	s.proxy.ServeHTTP(w, r.WithContext(ctx))
 }
