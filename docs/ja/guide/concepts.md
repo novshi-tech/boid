@@ -85,11 +85,11 @@ hook を 1 度実行した記録のこと。 job には独自の status (`runnin
 
 ## セッション (session)
 
-**セッション**は、 タスクに紐づかない対話的ジョブです。 `boid agent <harness>` で起動し、 ターミナルに PTY が attach されます。 `harness` には `claude` / `codex` / `opencode` / `shell` のいずれかを指定します。
+**セッション**は、 タスクに紐づかない対話的ジョブです。 `boid agent <harness>` で起動し、 ターミナルに PTY が attach されます。 `harness` には `claude` / `codex` / `opencode` のいずれかを指定します。 サンドボックス内で対話シェルを開きたいだけの場合は `boid exec -p <project> -- bash` を使います (`boid agent shell` は git gateway cutover 後に退役しました)。
 
 ```bash
 boid agent claude   -p <project>   # Claude Code セッションを起動
-boid agent shell    -p <project>   # シェルセッションを起動
+boid exec           -p <project> -- bash   # サンドボックス内でシェルを開く
 boid agent claude   -p <project> --resume <session-id>   # 既存セッションに再接続
 ```
 

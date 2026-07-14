@@ -111,8 +111,9 @@ func TestRun_EmptyArgv(t *testing.T) {
 // receives SIGUSR1 while a shell-adapter child is alive, sigutil.ForwardAndWait
 // translates that into a child SIGTERM, normalises the resulting exit (143)
 // into 0, and sets Result.StoppedByDaemon=true. This is the same contract
-// the claude / codex / opencode adapters honour — `boid agent shell` relies
-// on it so a daemon-driven stop surfaces as paused, not failed.
+// the claude / codex / opencode adapters honour — an interactive
+// `boid exec -- bash` relies on it so a daemon-driven stop surfaces as
+// paused, not failed.
 //
 // We fork /bin/sleep directly (not via a shell) so the SIGTERM the adapter
 // forwards reaches a process whose default disposition is "terminate" with

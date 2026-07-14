@@ -2,7 +2,11 @@
 // jobs that do not embed an agent harness. It is the fall-through adapter
 // the runner-inner-child uses when JobSpec.HarnessType resolves to "shell"
 // — non-agent hook scripts (e2e fixture kits, custom user hooks without an
-// `agent:` declaration) and `boid exec`-style argv launches.
+// `agent:` declaration) and `boid exec`-style argv launches. The historical
+// `boid agent shell` session variant that also routed through this adapter
+// was retired: sessions now only accept the agent harnesses (claude / codex /
+// opencode), and the shell-inside-a-project-sandbox use case is served by
+// `boid exec -p <project> -- bash` (same adapter, same Runner.Dispatch()).
 //
 // Phase 3-d (session 概念 + shell adapter 1 等市民化) introduced this
 // adapter so every job — agent or not — flows through the same Run() pipeline
@@ -21,10 +25,11 @@
 //
 // Signal handling is shared with the agent adapters via sigutil.ForwardAndWait:
 // SIGUSR1 → child SIGTERM (out-of-band daemon stop), SIGWINCH passthrough
-// (PTY resize for `boid agent shell` interactive sessions), and stop-signal
-// exit normalisation (143 → 0 with StoppedByDaemon=true). Hook / exec callers
-// observe no behaviour change because the daemon never sends SIGUSR1 to those
-// runtimes — the forwarding loop simply idles until cmd.Wait() returns.
+// (PTY resize for interactive `boid exec` invocations that allocate a real
+// terminal), and stop-signal exit normalisation (143 → 0 with
+// StoppedByDaemon=true). Hook / non-interactive exec callers observe no
+// behaviour change because the daemon never sends SIGUSR1 to those runtimes —
+// the forwarding loop simply idles until cmd.Wait() returns.
 package shell
 
 import (
