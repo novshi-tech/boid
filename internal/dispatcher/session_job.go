@@ -86,7 +86,7 @@ type SessionJobInput struct {
 func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 	builtinPolicies := orchestrator.DefaultBuiltinPolicies(
 		orchestrator.RoleHook,
-		[]string{"boid", "git", "fetch"},
+		[]string{"boid", "fetch"},
 		orchestrator.PolicyContext{ProjectDir: input.ProjectWorkDir},
 	)
 	hostCommands := orchestrator.HostCommands(input.HostCommands).ToCommandDefs()

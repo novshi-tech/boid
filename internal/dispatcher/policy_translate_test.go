@@ -25,10 +25,6 @@ func TestOpConstantsMirror(t *testing.T) {
 		{orchestrator.OpBoidTaskAnswer, string(sandbox.BoidOpTaskAnswer)},
 		{orchestrator.OpBoidTaskAsk, string(sandbox.BoidOpTaskAsk)},
 		{orchestrator.OpBoidTaskDelete, string(sandbox.BoidOpTaskDelete)},
-		{orchestrator.OpGitFetch, string(sandbox.GitOpFetch)},
-		{orchestrator.OpGitPush, string(sandbox.GitOpPush)},
-		{orchestrator.OpGitPushDelete, string(sandbox.GitOpPushDelete)},
-		{orchestrator.OpGitCloneLocal, string(sandbox.GitOpCloneLocal)},
 	}
 	for _, p := range pairs {
 		if p.orchestratorConst != p.sandboxConst {
@@ -43,8 +39,8 @@ func TestPoliciesToSandbox_RoundTrip(t *testing.T) {
 			AllowedOps:      []string{orchestrator.OpBoidJobDone, orchestrator.OpBoidTaskGet},
 			AllowedCwdRoots: []string{"/tmp", "/workspace"},
 		},
-		"git": {
-			AllowedOps: []string{orchestrator.OpGitFetch, orchestrator.OpGitPush},
+		"fetch": {
+			AllowedOps: []string{orchestrator.OpFetchGet},
 		},
 		"empty": {},
 	}
@@ -58,8 +54,8 @@ func TestPoliciesToSandbox_RoundTrip(t *testing.T) {
 	if len(out["boid"].AllowedCwdRoots) != 2 {
 		t.Errorf("boid policy AllowedCwdRoots = %v, want 2 entries", out["boid"].AllowedCwdRoots)
 	}
-	if !out["git"].Allows(string(sandbox.GitOpFetch)) {
-		t.Error("git policy should allow fetch")
+	if !out["fetch"].Allows(orchestrator.OpFetchGet) {
+		t.Error("fetch policy should allow get")
 	}
 }
 

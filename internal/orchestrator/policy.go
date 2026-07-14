@@ -51,8 +51,8 @@ func (p BuiltinPolicy) AllowsCwd(cwd string) bool {
 }
 
 // DefaultBuiltinPolicies creates per-command BuiltinPolicy values for the
-// given role and command names. "boid" and "git" are always available as
-// builtins; pass them explicitly via names.
+// given role and command names. "boid" is always available as a builtin;
+// pass it explicitly via names.
 func DefaultBuiltinPolicies(role Role, names []string, pctx PolicyContext) map[string]BuiltinPolicy {
 	if len(names) == 0 {
 		return nil
@@ -68,8 +68,6 @@ func policyFor(role Role, name string, pctx PolicyContext) BuiltinPolicy {
 	switch name {
 	case "boid":
 		return boidPolicy(role, pctx)
-	case "git":
-		return gitPolicy(role, pctx)
 	case "fetch":
 		return fetchPolicy(role, pctx)
 	default:
@@ -104,22 +102,6 @@ func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 			OpBoidTaskAsk,
 			OpBoidTaskDelete,
 		),
-		AllowedCwdRoots: cwds,
-	}
-}
-
-func gitPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
-	// AllowedCwdRoots は /tmp と自タスクの ProjectDir のみを許可する。
-	// WorktreeRoot 配下は validateGitBuiltinCwd が独立して許可するため不要。
-	// HomeDir は意図的に除外: HomeDir 配下には同一 workspace の peer project が
-	// 存在し得る。HomeDir を追加すると peer project 配下の cwd が通り、
-	// git plumbing 経由で peer project に書き込めてしまう (GitHub Issue 相当)。
-	cwds := []string{"/tmp"}
-	if pctx.ProjectDir != "" {
-		cwds = append(cwds, pctx.ProjectDir)
-	}
-	return BuiltinPolicy{
-		AllowedOps:      sortedOps(OpGitFetch, OpGitPush, OpGitPushDelete, OpGitCloneLocal),
 		AllowedCwdRoots: cwds,
 	}
 }

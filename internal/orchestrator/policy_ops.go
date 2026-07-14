@@ -23,10 +23,5 @@ const (
 	OpBoidTaskAsk    = "task_ask"
 	OpBoidTaskDelete = "task_delete"
 
-	OpGitFetch      = "fetch"
-	OpGitPush       = "push"
-	OpGitPushDelete = "push_delete"
-	OpGitCloneLocal = "clone_local"
-
 	OpFetchGet = "get"
 )

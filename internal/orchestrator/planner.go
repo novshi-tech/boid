@@ -111,7 +111,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		},
 		BuiltinPolicies: DefaultBuiltinPolicies(
 			RoleHook,
-			[]string{"boid", "git", "fetch"},
+			[]string{"boid", "fetch"},
 			PolicyContext{ProjectDir: proj.WorkDir, HomeDir: sandboxHomeDir()},
 		),
 		HostCommands:    behavior.HostCommands.ToCommandDefs(),

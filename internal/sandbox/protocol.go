@@ -194,15 +194,6 @@ func (c TokenContext) AllowsProject(projectID string) bool {
 // verbatim (tests and UUID-only callers).
 type ProjectResolver func(ref string) (uuid string, err error)
 
-type GitOp string
-
-const (
-	GitOpFetch      GitOp = "fetch"
-	GitOpPush       GitOp = "push"
-	GitOpPushDelete GitOp = "push_delete"
-	GitOpCloneLocal GitOp = "clone_local"
-)
-
 // BuiltinPolicy defines which operations are permitted for a named builtin command.
 // It is stamped at token registration time by the planner and checked at dispatch time
 // by the broker, keeping all role-based authorization logic outside the broker itself.
@@ -235,25 +226,4 @@ func (p BuiltinPolicy) AllowsCwd(cwd string) bool {
 		}
 	}
 	return false
-}
-
-type GitRequest struct {
-	Op             GitOp    `json:"op"`
-	Remote         string   `json:"remote,omitempty"`
-	Refspecs       []string `json:"refspecs,omitempty"`
-	DryRun         bool     `json:"dry_run,omitempty"`
-	Verbose        bool     `json:"verbose,omitempty"`
-	Quiet          bool     `json:"quiet,omitempty"`
-	Prune          bool     `json:"prune,omitempty"`
-	Tags           bool     `json:"tags,omitempty"`
-	Force          bool     `json:"force,omitempty"`
-	Porcelain      bool     `json:"porcelain,omitempty"`
-	ForceWithLease bool     `json:"force_with_lease,omitempty"`
-	Delete         bool     `json:"delete,omitempty"`
-	SetUpstream    bool     `json:"set_upstream,omitempty"`
-	// Source and Dest are used exclusively for GitOpCloneLocal.
-	// Source is the peer project path to clone from; Dest is the destination
-	// directory within the current worktree. Both are validated by the broker.
-	Source string `json:"source,omitempty"`
-	Dest   string `json:"dest,omitempty"`
 }
