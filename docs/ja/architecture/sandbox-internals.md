@@ -8,7 +8,7 @@
 
 サンドボックスは 4 つの境界をまとめて作ります。
 
-1. **ファイルシステム** — 書き込み可能な領域を worktree (もしくはプロジェクトルート) に絞る
+1. **ファイルシステム** — 書き込み可能な領域を sandbox 内 clone (project が可視でないジョブではプロジェクトルート) に絞る
 2. **ネットワーク** — 組み込みリストと `config.yaml` の `sandbox.allowed_domains` に含まれるドメインしか出ていけない
 3. **ユーザ ID** — ホストの root には触れない (rootless)
 4. **コマンド** — host で動かすコマンドは kit の `host_commands` で宣言された分だけ通る
@@ -77,7 +77,7 @@ pasta の user+net namespace の内側で動きます。 この時点では**内
 
 主要ステップ:
 
-- **bind mount** — kit の `additional_bindings`、 worktree、 `/usr` や `/lib` 等のシステムディレクトリを `$ROOT` 配下に bind / rbind マウント。 これがサンドボックス内から見えるファイルセットを決めます
+- **bind mount** — kit の `additional_bindings`、 sandbox 内 clone の runtime dir (project が可視な場合)、 `/usr` や `/lib` 等のシステムディレクトリを `$ROOT` 配下に bind / rbind マウント。 これがサンドボックス内から見えるファイルセットを決めます
 - **`pivot_root`** — `$ROOT` を新しいルートに切り替える。 旧ルートは `/.old_root` にピボットしてから umount + rmdir する
 - **コンテキストファイル書き出し** — `$HOME/.boid/context/{task,instructions,environment,payload}.{yaml,json}` に spec の内容を書き出す (pivot_root 後)
 - **シンボリックリンク** — `boid` shim を `/opt/boid/bin/<command>` 等にリンク
@@ -251,7 +251,7 @@ broker は `internal/sandbox/broker.go` にあり、次の責務を持ちます:
 
 トークンは sandbox 起動時に発行され、 sandbox 内の環境変数 `BOID_BROKER_TOKEN` 等で受け渡されます。 sandbox の外からはトークンを知ることができないため、たとえ broker socket のパスが漏れても、別 job のコマンドを許可させることはできません。
 
-host command は host 側で project/worktree の checkout ディレクトリではなく中立ディレクトリ (`os.TempDir()`) で実行されます。 stdin も渡りません。 repo 文脈が必要なコマンド (`gh` 等) は kit の `env:` に `${boid:repo_slug}` を書いて渡します (詳細は [`project.yaml` リファレンス](../reference/project-yaml.md) の「host command の実行契約」)。
+host command は host 側で project の checkout ディレクトリではなく中立ディレクトリ (`os.TempDir()`) で実行されます。 stdin も渡りません。 repo 文脈が必要なコマンド (`gh` 等) は kit の `env:` に `${boid:repo_slug}` を書いて渡します (詳細は [`project.yaml` リファレンス](../reference/project-yaml.md) の「host command の実行契約」)。
 
 ## 後片付け
 
@@ -277,8 +277,12 @@ if exitCode == 0 { os.Remove(statePath) }  // state は失敗時のみ保全
 
 ## サンドボックス内から呼べる boid builtin 一覧
 
-サンドボックス内のハンドラ (hook / exec) は `boid`、`git`、`fetch` の 3 つの builtin を呼ぶことができます。
+サンドボックス内のハンドラ (hook / exec) は `boid`、`fetch` の 2 つの builtin を呼ぶことができます。
 いずれも自動的に注入されるため、 `project.yaml` / `kit.yaml` での宣言は不要です。
+
+`git` は broker builtin ではありません。 サンドボックス内の実バイナリ (`/usr` の base rbind 経由) として動作し、
+project の clone・fetch・push はすべて sandbox 内の git が git gateway (認証注入リバースプロキシ) 経由で行います
+(host への broker dispatch は無し)。 詳細は [`project.yaml` リファレンス](../reference/project-yaml.md#git-gateway--sandbox-内-clone) を参照してください。
 
 ### boid builtin
 
@@ -304,17 +308,6 @@ role 分岐はなく、全 role で同じ op セットが許可されます。
 
 > **注記:** `task.reopen` だけが歴史的事情で `.` 区切りになっています。 他の op は `_` 区切りです。
 
-### git builtin
-
-全 role で同じ op セットが許可されます。
-
-| Op | 対応 CLI | 用途 |
-|---|---|---|
-| `fetch` | `git fetch ...` | リモートから取得する |
-| `push` | `git push ...` | リモートへ反映する |
-| `push_delete` | `git push origin --delete <branch>` | リモートブランチを削除する |
-| `clone_local` | `git clone --local ...` | ローカルリポジトリを clone する (peer ブランチ参照用) |
-
 ### fetch builtin
 
 `boid fetch <url>` はサンドボックス内からプロキシ allowlist を通じて HTTP GET を行います。 `curl` / `wget` を `host_commands` で宣言せずに web リソースを取得したいときに使います。
@@ -325,9 +318,9 @@ role 分岐はなく、全 role で同じ op セットが許可されます。
 
 ### 設計上の注記
 
-- **role 分岐なし** — `boid` / `git` / `fetch` ポリシーは `_ Role` で受け、全 role に同一 op セットを与えます。
+- **role 分岐なし** — `boid` / `fetch` ポリシーは `_ Role` で受け、全 role に同一 op セットを与えます。
   新しい builtin で role 固有の制限が必要になった場合のみ、 `policyFor` 内に `switch` を追加してください。
-- **情報源** — `internal/orchestrator/policy.go` の `boidPolicy` / `gitPolicy` / `fetchPolicy` 関数が source of truth です。
+- **情報源** — `internal/orchestrator/policy.go` の `boidPolicy` / `fetchPolicy` 関数が source of truth です。
 - **サンドボックス側 enum 定義** — `internal/sandbox/protocol.go`
 - **workspace / project 越えのアクセス** は broker (`internal/sandbox/broker.go` `handleBoidBuiltin`) が
   `entry.Context.AllowsProject(...)` 等で拒否します。 上記 op セットはこのチェックをバイパスしません。

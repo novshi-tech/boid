@@ -48,15 +48,11 @@ boid start
 | パス | 管理主体 | 自動 GC |
 |---|---|---|
 | `~/.local/share/boid/runtimes/<id>/` | `boid` | あり (24h ごと、 30d より古いものを削除) |
-| `~/.claude/projects/-home-...-worktrees-boid-<taskid>/` | Claude Code | **なし** — 手動でクリーンアップ |
+| `~/.claude/projects/-workspace-<project-name>-.../` (project ごと) | Claude Code | **なし** — 手動でクリーンアップ |
 
-前者は自動 GC されます。後者は Claude Code 自身が書き込むもので、 `boid` は手を出しません。 `~/.claude/projects/` が肥大化しているなら手動で消します:
+前者は自動 GC されます。後者は Claude Code 自身が書き込むもので、 `boid` は手を出しません。
 
-```bash
-rm -rf ~/.claude/projects/-home-*-worktrees-boid-*
-```
-
-(他プロジェクトのエントリを巻き込まないよう注意してください。)
+> **注意 (git gateway cutover 後の変化)**: cutover 前はタスクごとの host git worktree パス (`-home-...-worktrees-boid-<taskid>-` 形式) が cwd だったため、 セッションログはタスク単位で分かれていました。 cutover 後はジョブの cwd が sandbox 内の `/workspace/<project-name>` (project 名ベース、 task ID を含まない) になったため、 **同一 project の複数タスクが同じログディレクトリに集約されます**。 具体的なディレクトリ名は実際にタスクを 1 つ dispatch してから `~/.claude/projects/` を確認してください。 `~/.claude/projects/` が肥大化しているなら、 巻き込みたくない他プロジェクトのエントリがないか確認した上で該当ディレクトリを手動で削除します。
 
 GC 設定は `~/.config/boid/config.yaml`:
 
@@ -67,7 +63,7 @@ gc:
   older_than: 720h    # 30 日
 ```
 
-**GC が実際に削除するもの:** `runtimes/<runtime_id>/` ディレクトリに加え、 DB 上の終端済みタスク / アクション / ジョブ、 worktree ディレクトリ、 `/tmp/boid-*` 一時ファイル、 revoke 済みデバイスも削除されます。 初回 GC はデーモン起動直後ではなく、**起動から 10 秒後**に実行されます。
+**GC が実際に削除するもの:** `runtimes/<runtime_id>/` ディレクトリに加え、 DB 上の終端済みタスク / アクション / ジョブ、 `/tmp/boid-*` 一時ファイル、 revoke 済みデバイスも削除されます。 初回 GC はデーモン起動直後ではなく、**起動から 10 秒後**に実行されます。
 
 ## hook 内で "permission denied" や "unknown command" が出る
 

@@ -293,6 +293,52 @@ func TestMigration0028_AddsProjectsUpstreamURL(t *testing.T) {
 	}
 }
 
+// TestMigration0029_DropsWorktreesTable covers PR8 of
+// docs/plans/git-gateway-cutover.md: the worktrees table is retired (host git
+// worktree allocation was replaced by sandbox-internal clone in PR6) and must
+// be gone after migration, both for a fresh database and for a legacy
+// database that still has the table from before this migration existed.
+func TestMigration0029_DropsWorktreesTable(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	if err := Apply(d.Conn); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	assertVersionRecorded(t, d.Conn, "0029_drop_worktrees_table")
+
+	exists, err := tableExists(d.Conn, "worktrees")
+	if err != nil {
+		t.Fatalf("check worktrees table: %v", err)
+	}
+	if exists {
+		t.Fatal("expected worktrees table to be dropped")
+	}
+}
+
+// TestMigration0029_IdempotentOnAlreadyDroppedTable verifies the migration is
+// safe to run again (e.g. a fresh 0001_initial database created after this
+// migration was added never has a worktrees table to begin with).
+func TestMigration0029_IdempotentOnAlreadyDroppedTable(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	if err := Apply(d.Conn); err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	if err := Apply(d.Conn); err != nil {
+		t.Fatalf("second apply (idempotent): %v", err)
+	}
+	assertVersionRecorded(t, d.Conn, "0029_drop_worktrees_table")
+}
+
 func assertVersionRecorded(t *testing.T, conn *sql.DB, version string) {
 	t.Helper()
 

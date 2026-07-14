@@ -156,13 +156,13 @@ linter セット (控えめ):
 - errcheck を enable + `exclusions.presets: [std-error-handling]` で儀式系を機械除外。
 - `exclude-functions` に `(github.com/a-h/templ.Component).Render` (best-effort な HTML 描画、preset の正規表現に載らない) と `(*github.com/coder/websocket.Conn).CloseNow` (Close 亜種) を追加。
 - test ファイルは `exclusions.rules` の `path: _test\.go` で errcheck 対象外。 setup の err 無視は低リスクで、 機械的 `_ =` 埋めがプランの嫌う形骸化 churn になるため (preset 後も test 側に 220 件残っていた)。
-- 残る非 test ~37 件を個別に手当て: **実処理**が要るもの (DB pragma の `conn.Exec` はループで error 返却、 crypto/rand の `rand.Read` はトークン helper で entropy 失敗時 panic)、 **best-effort として明示無視** (`_ =` / `_, _ =`: ResponseWriter への Encode/Write、 proxy pump の io.Copy、 worktree cleanup の `exec.Cmd.Run`、 commit 後 no-op の `tx.Rollback`、 shutdown 時 `Serve`)。 既存の壊れた `//nolint: errcheck` (コロン後スペースで無効化されていた) も `_ =` に正規化。
+- 残る非 test ~37 件を個別に手当て: **実処理**が要るもの (DB pragma の `conn.Exec` はループで error 返却、 crypto/rand の `rand.Read` はトークン helper で entropy 失敗時 panic)、 **best-effort として明示無視** (`_ =` / `_, _ =`: ResponseWriter への Encode/Write、 proxy pump の io.Copy、 commit 後 no-op の `tx.Rollback`、 shutdown 時 `Serve`)。 既存の壊れた `//nolint: errcheck` (コロン後スペースで無効化されていた) も `_ =` に正規化。 (worktree cleanup の `exec.Cmd.Run` は git gateway cutover PR8-B で worktree_manager ごと削除済み。)
 
 **gofmt / フォーマット系も初回セットに含めない (2026-07-02 決定)**: gofmt 出力は Go のバージョンで揺れる (go1.25 は struct タグ整列アルゴリズムが変わり、 repo は go1.24 整形なので 66 ファイルに差分が出る)。 golangci-lint 同梱 formatter とローカル/CI toolchain がズレると spurious diff や `golangci-lint fmt` の巻き添え整形を招く。 フォーマットの enforcement が必要なら go.mod と同一 toolchain の `gofmt -l` を別ステップで足す方が堅い (Tier 0 系の話で、 本 Tier の範囲外)。
 
 実装メモ (サンドボックス制約が効く):
 - 型情報込みの lint は `internal/db` を import するパッケージがサンドボックス内でビルド不可なため、 enforcement は CI ジョブ一択 ([[sandbox-cannot-build-sqlite-packages]])。 `host_commands` 経由のホスト側実行は [[no-project-specific-kits]] の趣旨からも見送り。 (2026-07-02 補足: `storage.googleapis.com` が egress allowlist に載って以降は sandbox 内でも sqlite パッケージが build 可能になり、 lint も回せる。 ただし enforcement の正は引き続き CI。)
-- **コミットフックは使わない (2026-07-02 決定)**: brokered git は `core.hooksPath=/dev/null` で git hook を意図的に無効化している (`internal/sandbox/git_builtin.go:400,628`。 sandbox 書込可能な `.git/hooks` × host 側実行 = escape になるため、 `git_shim.go:395` は `core.hookspath` 設定も弾く)。 つまりエージェント発コミット (= この repo のコミットの大半) に pre-commit は構造的に効かず、 hook ゲートは 「カバレッジの錯覚」 を生むだけ。 push 前の早期フィードバックは dev-pr-flow skill / task_behaviors の default_instruction に手順として書く (`gofmt -l` + ビルド可能サブセットの `go vet`)。 プロンプトが versioned で可視な分、 opaque な hook 失敗よりエージェントに効く。
+- **コミットフックは使わない (2026-07-02 決定、根拠は git gateway cutover 後も維持)**: 当初の根拠は brokered git が `core.hooksPath=/dev/null` で git hook を意図的に無効化していたこと (「sandbox 書込可能な `.git/hooks` × host 側実行 = escape になるため」)。 git gateway cutover (PR8-A) で brokered git 自体が廃止され、 sandbox 内 git は普通の実バイナリになったため hooks は構造的には動くようになった — が、 hooks は sandbox 内 clone にしか適用されず host 側の統合には効かないままなので、 「エージェント発コミットに pre-commit は構造的に効かない、 hook ゲートは 『カバレッジの錯覚』 を生むだけ」 という判断そのものは維持する。 push 前の早期フィードバックは dev-pr-flow skill / task_behaviors の default_instruction に手順として書く (`gofmt -l` + ビルド可能サブセットの `go vet`)。 プロンプトが versioned で可視な分、 opaque な hook 失敗よりエージェントに効く。
 
 lint は 「意図的な分岐 + 間違った claim」 は catch できないが、 Tier 1 と組で底上げになる。 別軸として並行可。
 
@@ -176,7 +176,7 @@ lint は 「意図的な分岐 + 間違った claim」 は catch できないが
 
 ## 見送り (宣言つき)
 
-- **commit hook ゲート**: brokered git が hook を無効化するためエージェント発コミットに効かない (Tier 2 実装メモ参照)。 早期フィードバックは skill / default_instruction の手順で代替。
+- **commit hook ゲート**: sandbox 内 clone で完結し host 側統合に効かないためエージェント発コミットに構造的に効かない (Tier 2 実装メモ参照。 当初は brokered git の hooks 無効化が根拠だったが、 git gateway cutover 後も判断維持)。 早期フィードバックは skill / default_instruction の手順で代替。
 - **mutation testing (旧 G6)**: hot path 限定でも運用負担大。
 - **静的 JS のテスト/lint**: 対象 3 ファイルで面が小さい。 JS が増えたら再考。
 - **docs ja↔en 同期の機械検証**: ツール投資が割に合わない。 PR flow の規律 (両言語同時更新) で担保。
