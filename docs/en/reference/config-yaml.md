@@ -91,24 +91,56 @@ See [Sandbox Internals](../architecture/sandbox-internals.md) for details on the
 
 ```yaml
 gateway:
-  hosts:
-    - host: github.com
-      forge: github        # github or bitbucket
-      secret_key: gh-pat    # key registered via `boid secret set gh-pat <PAT>`
-    - host: bitbucket.org
-      forge: bitbucket
-      secret_key: bb-token
+  forges:
+    github:
+      secret_key: gh-pat        # optional; default: github-pat
+    bitbucket:
+      secret_key: bb-token      # optional; default: bitbucket-token
+    # example of adding a custom forge id (e.g. GitHub Enterprise):
+    github-enterprise:
+      host: github.corp.example.com
+      forge: github              # github or bitbucket (selects the Basic-auth username convention)
+      secret_key: ghe-pat
 ```
+
+`gateway.forges` holds a credential config per forge id (the map key). `github` and `bitbucket` are **built-in ids**: `host` / `forge` / `secret_key` all have defaults, so the gateway works for them with nothing written to `config.yaml` at all (see below). Any other id (e.g. `github-enterprise`) is a custom forge and must declare both `host` and `secret_key` explicitly.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `hosts[].host` | string | — | Upstream git host name (e.g. `github.com`) |
-| `hosts[].forge` | string | — | `github` or `bitbucket` (selects the Basic-auth username convention) |
-| `hosts[].secret_key` | string | — | Secret store reference key; the actual token is registered separately with `boid secret set <key> <value>` |
+| `forges.<id>.host` | string | built-in ids only (`github`→`github.com`, `bitbucket`→`bitbucket.org`) | Upstream git host name. Required for custom ids |
+| `forges.<id>.forge` | string | built-in ids only (same as the id) | `github` or `bitbucket` (selects the Basic-auth username convention). Required for custom ids |
+| `forges.<id>.secret_key` | string | built-in ids only (`github`→`github-pat`, `bitbucket`→`bitbucket-token`) | Secret store reference key; the actual token is registered separately with `boid secret set <key> <value>`. Required for custom ids |
 
 **Never write a plaintext PAT/token here.** The real token lives only in the secret store (namespace `default`); `secret_key` is just a reference name into it.
 
-This block configures the git gateway (the authenticating reverse proxy between credential-less git inside the sandbox and the upstream forge) on a per-host basis. The daemon always starts the gateway server itself, but as of 2026-07 no job routes through it yet — `docs/plans/git-gateway-cutover.md` PR4 only wires the lifecycle + registration; actual cloning lands in a later PR.
+This block configures the git gateway (the authenticating reverse proxy between credential-less git inside the sandbox and the upstream forge) on a per-forge basis. Cloning, fetching, and pushing for a project all happen through this gateway from git running inside the sandbox (see the [`project.yaml` reference](./project-yaml.md#git-gateway--in-sandbox-clone) for details).
+
+### Built-in defaults (github / bitbucket)
+
+Even with no `gateway` block at all, `DefaultConfig()` returns both the `github` and `bitbucket` forges pre-populated. That means:
+
+```bash
+boid secret set github-pat <PAT>
+```
+
+is enough to activate the gateway for github.com with zero edits to `~/.config/boid/config.yaml` (and likewise for bitbucket via `bitbucket-token`). A forge whose secret hasn't been `boid secret set` yet still fails open per-key, exactly as before (the gateway itself never goes down over it).
+
+Only add `secret_key` under an id in `config.yaml` when you want to override it.
+
+### The deprecated `gateway.hosts` form
+
+The array-based `gateway.hosts` schema from right after the cutover is still parsed, **as a one-release grace period**. Loading it logs a `slog.Warn` deprecation warning and converts it into the `forges` map internally.
+
+```yaml
+# Deprecated, scheduled for removal in a future release — migrate to gateway.forges.
+gateway:
+  hosts:
+    - host: github.com
+      forge: github
+      secret_key: gh-pat
+```
+
+If both `forges` and `hosts` are present, **`forges` wins**; any `hosts` entry for a host already configured via `forges` is ignored (with a warning logged).
 
 ---
 

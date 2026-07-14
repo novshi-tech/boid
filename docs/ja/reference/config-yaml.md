@@ -93,24 +93,56 @@ sandbox:
 
 ```yaml
 gateway:
-  hosts:
-    - host: github.com
-      forge: github        # github / bitbucket のいずれか
-      secret_key: gh-pat    # boid secret set gh-pat <PAT> で登録した key
-    - host: bitbucket.org
-      forge: bitbucket
-      secret_key: bb-token
+  forges:
+    github:
+      secret_key: gh-pat        # 省略可。デフォルト: github-pat
+    bitbucket:
+      secret_key: bb-token      # 省略可。デフォルト: bitbucket-token
+    # カスタム forge id を足す例（GitHub Enterprise 等）:
+    github-enterprise:
+      host: github.corp.example.com
+      forge: github              # github / bitbucket のいずれか（Basic 認証の username 規約を決定）
+      secret_key: ghe-pat
 ```
+
+`gateway.forges` は forge id（map key）ごとに credential 設定を持ちます。`github` と `bitbucket` は **built-in id** で、`host` / `forge` / `secret_key` にデフォルトが用意されているため、`config.yaml` に何も書かなくても最初から有効です（後述）。built-in 以外の id（`github-enterprise` など）はカスタム forge 扱いになり、`host` と `secret_key` を明示する必要があります。
 
 | キー | 型 | デフォルト | 説明 |
 |---|---|---|---|
-| `hosts[].host` | string | — | upstream の git ホスト名（例: `github.com`） |
-| `hosts[].forge` | string | — | `github` または `bitbucket`（Basic 認証の username 規約を決定） |
-| `hosts[].secret_key` | string | — | secret store 参照キー（実 token は `boid secret set <key> <value>` で別途登録） |
+| `forges.<id>.host` | string | built-in id のみデフォルトあり（`github`→`github.com`、`bitbucket`→`bitbucket.org`） | upstream の git ホスト名。カスタム id では必須 |
+| `forges.<id>.forge` | string | built-in id のみデフォルトあり（id と同名） | `github` または `bitbucket`（Basic 認証の username 規約を決定）。カスタム id では必須 |
+| `forges.<id>.secret_key` | string | built-in id のみデフォルトあり（`github`→`github-pat`、`bitbucket`→`bitbucket-token`） | secret store 参照キー（実 token は `boid secret set <key> <value>` で別途登録）。カスタム id では必須 |
 
 **平文の PAT / token をここに書いてはいけません**。実 token は namespace `default` の secret store にのみ保存され、`secret_key` はそこへの参照名に過ぎません。
 
-このブロックは git gateway（sandbox 内 credential レス git と上流フォージの間の認証注入リバースプロキシ）の per-host 設定です。daemon 起動時に必ず gateway サーバ自体は立ち上がりますが、2026-07 時点ではまだどのジョブもこれを経由しません（`docs/plans/git-gateway-cutover.md` PR4 は inert な配線のみ、実際の clone は後続 PR）。
+このブロックは git gateway（sandbox 内 credential レス git と上流フォージの間の認証注入リバースプロキシ）の per-forge 設定です。project の clone・fetch・push はすべて sandbox 内の git がこの gateway 経由で行います（詳細は [`project.yaml` リファレンス](./project-yaml.md#git-gateway--sandbox-内-clone)）。
+
+### 内蔵デフォルト（github / bitbucket）
+
+`gateway` ブロックを一切書かなくても、`DefaultConfig()` が `github` / `bitbucket` の2 forge を最初から埋めた状態を返します。つまり:
+
+```bash
+boid secret set github-pat <PAT>
+```
+
+を実行した瞬間から、`~/.config/boid/config.yaml` に何も書かずとも github.com に対する gateway が動作します（bitbucket も同様に `bitbucket-token` を set するだけ）。secret がまだ `boid secret set` されていない forge は、これまでどおり per-key miss として fail-open します（gateway 自体は落ちません）。
+
+`config.yaml` で `secret_key` を変えたい場合だけ、該当 id の下に書けば上書きされます。
+
+### 旧 `gateway.hosts` 記法（非推奨）
+
+cutover 直後の schema だった `gateway.hosts` の配列形式も、**次回リリースまでの猶予**として引き続きパースされます。読み込み時に `slog.Warn` で deprecation warning を出し、内部的には `forges` map に変換されます。
+
+```yaml
+# 非推奨。次のリリースで削除予定 — gateway.forges に移行してください。
+gateway:
+  hosts:
+    - host: github.com
+      forge: github
+      secret_key: gh-pat
+```
+
+`forges` と `hosts` を同時に書いた場合は **`forges` が優先**され、同じ host を指す `hosts` 側のエントリは無視されます（warning ログ付き）。
 
 ---
 
