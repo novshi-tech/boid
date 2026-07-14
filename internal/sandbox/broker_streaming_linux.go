@@ -17,12 +17,12 @@ import (
 )
 
 // handleStreamingExec routes a streaming ExecRequest.
-// Boid/git builtins are handled synchronously via Handle and converted to
+// The boid builtin is handled synchronously via Handle and converted to
 // stream format. Regular host commands are executed with a PTY for stdout
 // so the child process sees a TTY and uses line buffering (D-1).
 func (b *Broker) handleStreamingExec(conn net.Conn, req *ExecRequest) {
-	// Boid/git builtins are fast; re-use the non-streaming path.
-	if req.Boid != nil || filepath.Base(req.Command) == "git" {
+	// Boid builtin is fast; re-use the non-streaming path.
+	if req.Boid != nil {
 		resp := b.Handle(req)
 		sendStreamResponse(conn, resp)
 		return

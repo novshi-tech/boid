@@ -20,7 +20,6 @@ type tokenEntry struct {
 	Context         TokenContext
 	Commands        map[string]CommandDef
 	BuiltinPolicies map[string]BuiltinPolicy
-	Git             *GitBinding
 }
 
 type Broker struct {
@@ -70,20 +69,6 @@ func (b *Broker) Register(commands map[string]CommandDef, builtinPolicies map[st
 		Context:         ctx,
 		Commands:        commands,
 		BuiltinPolicies: builtinPolicies,
-	}
-	// Remote snapshot capture is retired under the clone model
-	// (docs/plans/git-gateway-cutover.md PR6: "broker.go:76 の remote
-	// snapshot capture の停止"). ctx.SandboxRoot is only set for clone-mode
-	// jobs, whose git runs for real inside the sandbox — the host-side git
-	// builtin (and its remote-snapshot allowlist) is unreachable for them
-	// once the git shim is gone, so there is nothing useful to capture.
-	// The captureGitBinding call itself is left in place (unused by
-	// clone-mode jobs) rather than deleted — internal/sandbox/git_builtin.go
-	// and its "git" builtin policy registration are PR8 deletions, not PR6's.
-	if entry.hasBuiltinPolicy("git") && ctx.SandboxRoot == "" {
-		var err error
-		entry.Git, err = captureGitBinding(ctx.ProjectDir, ctx.WorktreeDir)
-		logGitBindingSnapshot(ctx, entry.Git, err)
 	}
 	b.registry[token] = entry
 	return token
@@ -269,19 +254,11 @@ func (b *Broker) handle(ctx context.Context, req *ExecRequest) *ExecResponse {
 		return handleFetchBuiltin(req, entry)
 	}
 
-	// Git builtin: shim mount target's basename is the only stable name we
-	// have on the broker side. The mount target equals the host's git binary
-	// (e.g. /usr/bin/git), so basename(req.Command) == "git" identifies it.
-	if filepath.Base(req.Command) == "git" {
-		if entry.hasBuiltinPolicy("git") {
-			return handleGitBuiltinRequest(req, entry)
-		}
-		if def, ok := entry.Commands[req.Command]; ok {
-			return b.execCommand(req, def, entry)
-		}
-		return &ExecResponse{ExitCode: 1, Stderr: "command not allowed: git"}
-	}
-
+	// git is no longer a broker builtin (docs/plans/git-gateway-cutover.md
+	// PR8): sandbox git is the real binary visible via the base rbind of
+	// /usr, so a "git"-named command reaching the broker at all would only
+	// happen via an explicit host_commands entry — same handling as any
+	// other command name.
 	def, ok := entry.Commands[req.Command]
 	if !ok {
 		return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("command not allowed: %s", filepath.Base(req.Command))}

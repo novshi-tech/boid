@@ -25,14 +25,12 @@ func main() {
 		os.Exit(resp.ExitCode)
 	}
 	if command != "boid" {
-		if command == "git" {
-			exitCode, err := sandbox.RunGitShim(os.Args[1:])
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-			os.Exit(exitCode)
-		}
+		// The "git" PATH-overlay shim (boid binary bind-mounted at
+		// /usr/bin/git, /bin/git) is retired as of docs/plans/git-gateway-cutover.md
+		// PR6/PR8: sandbox git is now always the real binary via the base
+		// rbind of /usr, so no invocation ever reaches this entrypoint named
+		// "git" any more — every non-boid command falls through to the
+		// generic host-command shim below.
 		shimMain()
 		return
 	}

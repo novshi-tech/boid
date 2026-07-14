@@ -465,14 +465,13 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	// boid binary bind + host command mounts.
 	//
 	// The git-shim PATH overlay (/usr/bin/git, /bin/git bound to the boid
-	// binary) is retired as of docs/plans/git-gateway-cutover.md PR6
-	// cutover: sandbox git is now always the real binary visible via the
-	// base rbind of /usr — every job clones inside the sandbox (PR6) rather
-	// than sharing a host worktree, so there is no shared `.git` for a
-	// sandbox-side git invocation to escape through and no reason to route
-	// git through the broker any more. internal/sandbox/git_builtin.go and
-	// its "git" BuiltinPolicy registration are left in place (unreachable
-	// dead code, not deleted) — that removal is PR8's job.
+	// binary) was retired in docs/plans/git-gateway-cutover.md PR6 cutover:
+	// sandbox git is now always the real binary visible via the base rbind
+	// of /usr — every job clones inside the sandbox rather than sharing a
+	// host worktree, so there is no shared `.git` for a sandbox-side git
+	// invocation to escape through and no reason to route git through the
+	// broker any more. The broker-side git builtin and its "git"
+	// BuiltinPolicy registration were subsequently deleted in PR8.
 	if rt.BoidBinary != "" {
 		// boid バイナリをホスト実パスのまま bind mount する。
 		mounts = append(mounts, sandbox.Mount{

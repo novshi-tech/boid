@@ -2,8 +2,9 @@
 set -euo pipefail
 
 # sandbox 内でワークスペースピアプロジェクトへの書き込みが阻止されることを確認する。
-# broker cwd policy の単体テスト (internal/sandbox/git_builtin_test.go, policy_test.go)
-# と合わせて「peer project への書き込みを構造的に塞ぐ」修正の E2E 検証となる。
+# broker cwd policy の単体テスト (internal/sandbox/broker_test.go の
+# TestBroker_BoidBuiltinPolicy_CloneMode_PeerCwdIsRejected 等) と合わせて
+# 「peer project への書き込みを構造的に塞ぐ」修正の E2E 検証となる。
 
 APP_DIR="$E2E_WORKSPACE_DIR/app"
 PEER_DIR="$E2E_WORKSPACE_DIR/peer"

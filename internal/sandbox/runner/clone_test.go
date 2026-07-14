@@ -11,13 +11,12 @@ import (
 // These are logic-only unit tests that never exec a real git binary — both
 // return before performCloneSteps reaches its first runGit call. The
 // end-to-end sequence (real git clone/checkout against a real fixture repo)
-// is covered by clone_e2e_test.go (//go:build e2e), mirroring the existing
-// internal/sandbox split between git_builtin_logic_test.go (pure logic) and
-// git_builtin_test.go (e2e, real git exec) — real git subprocess calls
-// assume a host environment (writable TempDir, unrestricted git), which the
-// default `go test ./...` run does not guarantee (docs/plans/git-gateway-cutover.md
-// PR5: this package's own dev loop can run inside a boid sandbox, whose git
-// is itself broker-dispatched and policy-restricted).
+// is covered by clone_e2e_test.go (//go:build e2e). Real git subprocess
+// calls assume a host environment (writable TempDir, unrestricted git),
+// which the default `go test ./...` run does not guarantee — historically
+// this package's dev loop could run inside a boid sandbox whose git was
+// broker-dispatched and policy-restricted (docs/plans/git-gateway-cutover.md
+// PR5 note; the broker-mediated git builtin itself was retired in PR8).
 
 func TestPerformClone_DisabledIsNoOp(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "workspace")

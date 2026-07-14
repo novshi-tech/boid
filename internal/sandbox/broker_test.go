@@ -406,11 +406,14 @@ func TestBroker_PerCommandEnv(t *testing.T) {
 	}
 }
 
-func TestBroker_GitFallsBackToHostCommandWhenBuiltinNotAllowed(t *testing.T) {
+// TestBroker_GitNamedHostCommandDispatchesLikeAnyOther pins down that a
+// "git"-named command has no special dispatch in the broker any more
+// (docs/plans/git-gateway-cutover.md PR8: the git builtin and its dedicated
+// dispatch branch in Broker.handle are retired) — it is looked up in the
+// token's Commands map exactly like any other host command, keyed by the
+// absolute shim mount target.
+func TestBroker_GitNamedHostCommandDispatchesLikeAnyOther(t *testing.T) {
 	broker := &sandbox.Broker{}
-	// Commands map is keyed by the absolute shim mount target (= host git
-	// binary path). When the entry has no git builtin policy attached, the
-	// broker falls through to host_commands lookup.
 	token := broker.Register(map[string]sandbox.CommandDef{
 		"/usr/bin/git": {
 			Name:               "git",

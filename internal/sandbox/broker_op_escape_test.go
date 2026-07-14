@@ -12,7 +12,7 @@ import (
 )
 
 // This file implements Tier 1 #2 of docs/plans/quality-gates.md: the builtin
-// op ↔ escape-guard invariant gate. Every brokered op (BoidOp / GitOp) is a
+// op ↔ escape-guard invariant gate. Every brokered op (BoidOp) is a
 // security-relevant surface — it must pass through the AllowedOps policy gate
 // (broker.go handleBoidBuiltin) before any op-specific dispatch. The meta test
 // below enumerates the op constants straight from protocol.go via the AST, so a
@@ -22,7 +22,8 @@ import (
 // the forcing function that turns "add an op → write an escape test (or justify
 // skipping it)" into a mechanical check rather than a review-time judgement.
 //
-// Scope: the manifest covers the two op enums (BoidOp / GitOp). The broker also
+// Scope: the manifest covers the BoidOp enum (GitOp was retired alongside the
+// git builtin — docs/plans/git-gateway-cutover.md PR8). The broker also
 // dispatches FetchRequest, which has no op enum and is deliberately out of scope
 // here — its guard belongs with the fetch broker tests, not this manifest.
 //
@@ -93,9 +94,9 @@ type opCoverage struct {
 	exempt string
 }
 
-// opEscapeCoverage maps every BoidOp / GitOp constant name to its guard test.
-// Keyed by the Go constant identifier (e.g. "BoidOpJobDone"), which the meta
-// test cross-checks against protocol.go. When you add an op, add a line here.
+// opEscapeCoverage maps every BoidOp constant name to its guard test. Keyed
+// by the Go constant identifier (e.g. "BoidOpJobDone"), which the meta test
+// cross-checks against protocol.go. When you add an op, add a line here.
 var opEscapeCoverage = map[string]opCoverage{
 	// --- BoidOp ---
 	"BoidOpJobDone":    {escapeTest: "TestBroker_BoidBuiltinRejectsWrongJobAndCwd"},
@@ -114,14 +115,6 @@ var opEscapeCoverage = map[string]opCoverage{
 	"BoidOpTaskAnswer": {escapeTest: "TestBroker_BoidTaskAnswer_PolicyReject"},
 	"BoidOpTaskAsk":    {escapeTest: "TestBroker_BoidTaskAsk_PolicyReject"},
 	"BoidOpTaskDelete": {escapeTest: "TestBroker_BoidTaskDelete_PolicyReject"},
-
-	// --- GitOp --- each entry points at a test that sends GitRequest{Op: <op>}
-	// and asserts the git op gate rejects it ("not allowed by policy") or, for
-	// clone_local, that the peer-authorization guard rejects a non-peer source.
-	"GitOpFetch":      {escapeTest: "TestBroker_GitBuiltinRejectsHookRoleFetch"},
-	"GitOpPush":       {escapeTest: "TestBroker_GitBuiltinRejectsHookRolePush"},
-	"GitOpPushDelete": {escapeTest: "TestBroker_GitPush_RejectsForceAndDeleteRefspecs"},
-	"GitOpCloneLocal": {escapeTest: "TestValidateGitCloneLocal_SourceMustBePeer"},
 }
 
 // TestOpEscapeCoverage_ManifestComplete asserts opEscapeCoverage covers exactly
@@ -145,7 +138,7 @@ func TestOpEscapeCoverage_ManifestComplete(t *testing.T) {
 	}
 	for name := range opEscapeCoverage {
 		if _, ok := declared[name]; !ok {
-			t.Errorf("opEscapeCoverage has stale entry %q: no such BoidOp/GitOp constant in protocol.go", name)
+			t.Errorf("opEscapeCoverage has stale entry %q: no such BoidOp constant in protocol.go", name)
 		}
 	}
 }
@@ -167,7 +160,7 @@ func TestOpEscapeCoverage_NamedTestsExist(t *testing.T) {
 }
 
 // opConstantNames parses protocol.go and returns the set of const identifiers
-// whose declared type is BoidOp or GitOp.
+// whose declared type is BoidOp.
 func opConstantNames(t *testing.T) map[string]bool {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -189,14 +182,14 @@ func opConstantNames(t *testing.T) map[string]bool {
 			// Requires an explicit type on the ValueSpec. This holds for the
 			// current string-enum style where every constant is written as
 			// `X BoidOp = "..."`. If these are ever converted to grouped iota
-			// form (`X GitOp = iota; Y; Z`), the type-inheriting entries would
+			// form (`X BoidOp = iota; Y; Z`), the type-inheriting entries would
 			// carry no Type field and be silently dropped — switch to go/types
 			// resolution if that happens.
 			typeIdent, ok := vs.Type.(*ast.Ident)
 			if !ok {
 				continue
 			}
-			if typeIdent.Name != "BoidOp" && typeIdent.Name != "GitOp" {
+			if typeIdent.Name != "BoidOp" {
 				continue
 			}
 			for _, n := range vs.Names {
@@ -205,7 +198,7 @@ func opConstantNames(t *testing.T) map[string]bool {
 		}
 	}
 	if len(names) == 0 {
-		t.Fatal("no BoidOp/GitOp constants found in protocol.go — parser assumption broke")
+		t.Fatal("no BoidOp constants found in protocol.go — parser assumption broke")
 	}
 	return names
 }
