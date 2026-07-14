@@ -98,15 +98,31 @@ var builtinForges = map[string]gitgateway.HostForgeConfig{
 // resolveForgeConfig fills in built-in defaults (when id names one of
 // builtinForges) and validates the result, returning the fully-resolved
 // gitgateway.HostForgeConfig for a single gateway.forges entry.
+//
+// For built-in ids ("github" / "bitbucket"), the host and forge fields are
+// fixed — they identify what the id *means* — so only secret_key may be
+// overridden by the user. Writing `forges: {github: {host: "typo.example.com"}}`
+// is almost certainly a mistake (silently pointing the "github" slot at some
+// unrelated host would break Basic-auth username selection), so this rejects
+// any explicit host/forge value on a built-in id that doesn't match its
+// defaults, instead of silently letting it through. Custom ids must supply
+// host / forge / secret_key themselves (no defaults apply).
 func resolveForgeConfig(id string, fc ForgeConfig) (gitgateway.HostForgeConfig, error) {
 	h := gitgateway.HostForgeConfig{Host: fc.Host, Forge: fc.Forge, SecretKey: fc.SecretKey}
 	if def, ok := builtinForges[id]; ok {
-		if h.Host == "" {
-			h.Host = def.Host
+		if fc.Host != "" && fc.Host != def.Host {
+			return gitgateway.HostForgeConfig{}, fmt.Errorf(
+				"gateway.forges[%q]: built-in id has fixed host %q; drop the \"host\" field (only \"secret_key\" is overridable on built-in ids). "+
+					"To point at a different host, add a custom forge id instead (e.g. \"github-enterprise\").",
+				id, def.Host)
 		}
-		if h.Forge == "" {
-			h.Forge = def.Forge
+		if fc.Forge != "" && fc.Forge != def.Forge {
+			return gitgateway.HostForgeConfig{}, fmt.Errorf(
+				"gateway.forges[%q]: built-in id has fixed forge %q; drop the \"forge\" field (only \"secret_key\" is overridable on built-in ids)",
+				id, def.Forge)
 		}
+		h.Host = def.Host
+		h.Forge = def.Forge
 		if h.SecretKey == "" {
 			h.SecretKey = def.SecretKey
 		}
@@ -131,9 +147,15 @@ func resolveForgeConfig(id string, fc ForgeConfig) (gitgateway.HostForgeConfig, 
 // HostConfigs resolves g.Forges into the flat gitgateway.HostForgeConfig
 // list gitgateway.NewCredentialProvider consumes (internal/server/wire.go),
 // applying built-in defaults per resolveForgeConfig. Entries are returned in
-// id-sorted order for determinism. g is assumed already validated —
-// Config.UnmarshalYAML validates every entry at load time — so a resolution
-// failure here is skipped defensively rather than surfaced as an error.
+// id-sorted order for determinism.
+//
+// INVARIANT: callers must only invoke this on a GatewayConfig that has
+// already been validated by Config.UnmarshalYAML — that is the sole place
+// gateway.forges entries are validated, so on a validated config every
+// entry resolves successfully. A resolution failure here is defensive-only
+// (a hand-built GatewayConfig that skipped validation) and is skipped
+// silently rather than surfaced as an error, since HostConfigs has no error
+// return and never should have one under the invariant.
 func (g GatewayConfig) HostConfigs() []gitgateway.HostForgeConfig {
 	ids := make([]string, 0, len(g.Forges))
 	for id := range g.Forges {
@@ -298,25 +320,37 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	}
 
 	// Start from the built-in defaults (github/bitbucket), then let the
-	// user's gateway.forges entries override/extend them by id.
+	// user's gateway.forges entries override/extend them by id. userForges
+	// tracks which ids were user-explicit (vs. seeded from defaults), which
+	// the legacy gateway.hosts loop below uses to decide whether a
+	// legacy-hosts entry for a built-in host should merge into the built-in
+	// slot (preserving its secret_key) or be dropped as a duplicate.
 	forges := make(map[string]ForgeConfig, len(defaults.Gateway.Forges)+len(raw.Gateway.Forges))
 	for id, fc := range defaults.Gateway.Forges {
 		forges[id] = fc
 	}
+	userForges := make(map[string]struct{}, len(raw.Gateway.Forges))
 	for id, fc := range raw.Gateway.Forges {
 		forges[id] = fc
+		userForges[id] = struct{}{}
 	}
 
-	// Resolve gateway.forges first (fully validating it) so the legacy
-	// gateway.hosts loop below can apply the "forges > hosts" priority rule
-	// per-host.
-	resolvedHosts := make(map[string]struct{}, len(forges))
+	// Resolve gateway.forges first (fully validating it, including built-in
+	// host/forge override rejection). Build host -> forge id lookup so the
+	// legacy gateway.hosts loop can apply the right priority rule per host:
+	// forges wins for user-explicit entries; but a legacy hosts entry that
+	// matches a *built-in default host* which the user hasn't explicitly
+	// configured via forges must MERGE into the built-in slot, not be
+	// dropped — otherwise the legacy entry's non-default secret_key gets
+	// silently lost to the built-in "github-pat" / "bitbucket-token"
+	// default (the regression this fix targets).
+	resolvedHosts := make(map[string]string, len(forges))
 	for id, fc := range forges {
 		h, err := resolveForgeConfig(id, fc)
 		if err != nil {
 			return err
 		}
-		resolvedHosts[h.Host] = struct{}{}
+		resolvedHosts[h.Host] = id
 	}
 
 	if len(raw.Gateway.Hosts) > 0 {
@@ -335,7 +369,22 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 				return fmt.Errorf("gateway.hosts: host %q: unrecognized forge %q (want %q or %q)",
 					h.Host, h.Forge, gitgateway.ForgeGitHub, gitgateway.ForgeBitbucket)
 			}
-			if _, dup := resolvedHosts[h.Host]; dup {
+			if existingID, dup := resolvedHosts[h.Host]; dup {
+				_, userExplicit := userForges[existingID]
+				_, isBuiltin := builtinForges[existingID]
+				if isBuiltin && !userExplicit {
+					// Legacy entry targets a built-in host that the user
+					// hasn't explicitly configured via gateway.forges.
+					// Merge it into the built-in slot so the legacy
+					// secret_key wins over the built-in default. This is
+					// the "byte-for-byte legacy compat" path — nose's
+					// actual config.yaml (hosts-only, GH_TOKEN /
+					// BB_TOKEN keys) must keep working for one release.
+					slog.Warn("gateway.hosts entry merged into built-in forge slot (legacy secret_key preserved over built-in default)",
+						"host", h.Host, "forge_id", existingID)
+					forges[existingID] = ForgeConfig{Host: h.Host, Forge: h.Forge, SecretKey: h.SecretKey}
+					continue
+				}
 				slog.Warn("gateway.hosts entry ignored: host is already configured via gateway.forges", "host", h.Host)
 				continue
 			}
@@ -343,7 +392,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 			// entries already carry host/forge/secret_key fully resolved,
 			// so no built-in defaulting ever applies to them.
 			forges[h.Host] = ForgeConfig{Host: h.Host, Forge: h.Forge, SecretKey: h.SecretKey}
-			resolvedHosts[h.Host] = struct{}{}
+			resolvedHosts[h.Host] = h.Host
 		}
 	}
 	c.Gateway = GatewayConfig{Forges: forges}

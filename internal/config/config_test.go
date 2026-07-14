@@ -442,6 +442,150 @@ gateway:
 	}
 }
 
+// Regression: nose's real ~/.config/boid/config.yaml sets github.com's
+// secret_key via the legacy hosts: form (e.g. GH_TOKEN, not the built-in
+// default github-pat). Before this fix the built-in default seed collided
+// with the legacy entry in the dup-check and silently discarded the
+// legacy secret_key — every credential lookup then went to the built-in
+// default key, missed, and fell open. The legacy hosts entry MUST override
+// the built-in slot's secret_key when the user hasn't explicitly configured
+// that built-in id via gateway.forges. See UnmarshalYAML's "byte-for-byte
+// legacy compat" comment.
+func TestLoadFromPath_GatewayHosts_LegacyPreservesBuiltinGitHubSecretKey(t *testing.T) {
+	buf := captureSlog(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+gateway:
+  hosts:
+    - host: github.com
+      forge: github
+      secret_key: GH_TOKEN
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	gh := hostConfig(t, cfg, "github.com")
+	if gh.SecretKey != "GH_TOKEN" {
+		t.Errorf("github.com SecretKey = %q, want %q (legacy hosts value must win over built-in default \"github-pat\")",
+			gh.SecretKey, "GH_TOKEN")
+	}
+	if gh.Forge != gitgateway.ForgeGitHub {
+		t.Errorf("github.com Forge = %q, want %q", gh.Forge, gitgateway.ForgeGitHub)
+	}
+	// bitbucket built-in must still resolve (untouched by the github override).
+	bb := hostConfig(t, cfg, "bitbucket.org")
+	if bb.SecretKey != "bitbucket-token" {
+		t.Errorf("bitbucket.org SecretKey = %q, want built-in default %q", bb.SecretKey, "bitbucket-token")
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("merged into built-in forge slot")) {
+		t.Errorf("expected a warning that the legacy entry was merged into the built-in slot, got: %s", buf.String())
+	}
+}
+
+func TestLoadFromPath_GatewayHosts_LegacyPreservesBuiltinBitbucketSecretKey(t *testing.T) {
+	captureSlog(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+gateway:
+  hosts:
+    - host: bitbucket.org
+      forge: bitbucket
+      secret_key: BB_TOKEN
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	bb := hostConfig(t, cfg, "bitbucket.org")
+	if bb.SecretKey != "BB_TOKEN" {
+		t.Errorf("bitbucket.org SecretKey = %q, want %q (legacy hosts value must win over built-in default \"bitbucket-token\")",
+			bb.SecretKey, "BB_TOKEN")
+	}
+	if bb.Forge != gitgateway.ForgeBitbucket {
+		t.Errorf("bitbucket.org Forge = %q, want %q", bb.Forge, gitgateway.ForgeBitbucket)
+	}
+}
+
+// Built-in id "github" has a fixed host (github.com). Writing a different
+// host under it is almost certainly a mistake — it would silently break
+// Basic-auth username selection — so it must be rejected up front, not
+// silently accepted. Same for "bitbucket".
+func TestLoadFromPath_GatewayForges_BuiltinHostOverrideRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+gateway:
+  forges:
+    github:
+      host: typo.example.com
+      secret_key: gh-pat
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadFromPath(path); err == nil {
+		t.Fatal("expected error for host override on built-in id \"github\", got nil")
+	}
+}
+
+func TestLoadFromPath_GatewayForges_BuiltinForgeOverrideRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+gateway:
+  forges:
+    github:
+      forge: bitbucket
+      secret_key: gh-pat
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadFromPath(path); err == nil {
+		t.Fatal("expected error for forge override on built-in id \"github\", got nil")
+	}
+}
+
+// The rejection is against changing a built-in id's host / forge. Writing
+// them redundantly with values that already match the built-in defaults
+// (e.g. `github: {host: github.com}`) must still be accepted — otherwise
+// migrating from `hosts:` by literally moving entries under `forges:` would
+// spuriously fail.
+func TestLoadFromPath_GatewayForges_BuiltinRedundantHostAllowed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+gateway:
+  forges:
+    github:
+      host: github.com
+      forge: github
+      secret_key: gh-pat
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	gh := hostConfig(t, cfg, "github.com")
+	if gh.SecretKey != "gh-pat" {
+		t.Errorf("github.com SecretKey = %q, want %q", gh.SecretKey, "gh-pat")
+	}
+}
+
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	if !cfg.GC.Enabled {
