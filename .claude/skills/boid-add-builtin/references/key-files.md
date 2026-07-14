@@ -6,8 +6,8 @@
 |------|------|
 | `internal/sandbox/protocol.go` | Defines `BuiltinPolicy`, `ExecRequest`, Op types and constants |
 | `internal/orchestrator/policy.go` | `DefaultBuiltinPolicies` / `policyFor` — the policy table |
-| `internal/sandbox/broker.go` | `Handle()` / `Register()` / `allowsBuiltinOp` helper |
-| `internal/sandbox/git_builtin.go` | Example handler with policy check at the top |
+| `internal/sandbox/broker.go` | `Handle()` / `Register()` / `allowsBuiltinOp` helper, plus `handleBoidBuiltin` (example handler with policy check at the top) |
+| `internal/sandbox/fetch_builtin.go` | Smaller single-op builtin — good reference for the minimum shape |
 | `internal/orchestrator/spec_loader.go` | `validateBuiltinHostConflict` — prevents re-declaring builtin names in `host_commands` |
 | `internal/orchestrator/planner.go` | Builtin name list in `PlanHook` |
 | `internal/dispatcher/session_job.go` | Builtin name list in `BuildSessionJobSpec` (reused by `BuildExecJobSpec`) |
@@ -23,7 +23,7 @@ type ExecRequest struct {
     Token   string
     Cwd     string
     Boid    *BoidRequest  // boid builtin
-    Git     *GitRequest   // git builtin
+    Fetch   *FetchRequest // fetch builtin
     // Add new builtin fields here
 }
 ```
@@ -55,8 +55,10 @@ type tokenEntry struct {
     Context         TokenContext
     Commands        map[string]CommandDef
     BuiltinPolicies map[string]BuiltinPolicy
-    Git             *GitBinding  // snapshot for git
-    // Add a new builtin's binding only if needed
+    // Add a new builtin's snapshot binding here only if needed. The retired `git`
+    // builtin used `Git *GitBinding` to capture the remote URL at registration
+    // time so an agent could not tamper with it later; today the git gateway
+    // handles the same enforcement at the proxy layer.
 }
 ```
 
@@ -97,15 +99,6 @@ Allowed ops (16 total):
 | `task_ask` | |
 | `task_delete` | |
 
-### git builtin
-
-**Role branching: none** — all roles share the same policy (`_ Role`).
-
-Allowed ops: `fetch`, `push`, `push_delete`, `clone_local`.
-
-Git fetch/push from hook is permitted — the dev workflow is intentionally delegated to the agent
-side. Role branching may be reintroduced in `policyFor` if future requirements demand it.
-
 ### fetch builtin
 
 **Role branching: none** — all roles share the same policy (`_ Role`).
@@ -118,5 +111,6 @@ local filesystem operations; the SSRF guard lives in the handler.
 | Test | File |
 |------|------|
 | policy matrix | `internal/orchestrator/policy_test.go` |
-| git handler | `internal/sandbox/git_builtin_test.go` |
+| fetch handler | `internal/sandbox/fetch_builtin_test.go` |
+| broker helpers / token registration | `internal/sandbox/broker_test.go` |
 | new builtin handler | `internal/sandbox/<name>_builtin_test.go` (create new) |

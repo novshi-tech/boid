@@ -8,7 +8,7 @@ The intended readers are contributors who touch `internal/sandbox/`, anyone debu
 
 The sandbox draws four boundaries simultaneously:
 
-1. **Filesystem.** Writable areas are confined to the worktree (or the project root).
+1. **Filesystem.** Writable areas are confined to the in-sandbox project clone (or, for jobs where no project is visible, the project root).
 2. **Network.** Only domains in the built-in allowlist or `config.yaml`'s `sandbox.allowed_domains` can be reached.
 3. **User ID.** The host's `root` is unreachable (rootless).
 4. **Commands.** Only host commands declared in the kit's `host_commands` cross the boundary.
@@ -77,11 +77,11 @@ Runs in the new user+mount namespace (uid 0). Builds the sandbox filesystem and 
 
 Main steps:
 
-- **bind mounts** — the kit's `additional_bindings`, the worktree, and system directories (`/usr`, `/lib`, etc.) are bind-mounted (or rbind-mounted) into `$ROOT`. This determines the file set visible inside the sandbox.
+- **bind mounts** — the kit's `additional_bindings`, the in-sandbox clone's runtime directory (when the project is visible), and system directories (`/usr`, `/lib`, etc.) are bind-mounted (or rbind-mounted) into `$ROOT`. This determines the file set visible inside the sandbox.
 - **`pivot_root`** — switches the root to `$ROOT`; the old root is pivoted to `/.old_root` then unmounted and removed.
 - **context files** — after `pivot_root`, writes `$HOME/.boid/context/{task,instructions,environment,payload}.{yaml,json}` from the spec.
 - **symlinks** — the `boid` shim is symlinked at `/opt/boid/bin/<command>` etc.
-- **`adapter.Run()`** — invokes the HarnessAdapter (claude / codex / opencode / shell) to exec the agent, relay the stop signal (SIGUSR1 → SIGTERM to the agent), normalise the exit code, and post the broker job-done via `brokerclient`.
+- **`adapter.Run()`** — invokes the HarnessAdapter (claude / codex / opencode / shell) to exec the agent, relay the stop signal (SIGUSR1 → SIGTERM to the agent), normalise the exit code, and post the broker job-done via `brokerclient`. (`shell` is the fall-through adapter used by `boid exec` and non-agent hook scripts; the `boid agent shell` session variant was retired after the git gateway cutover.)
 
 From inside the sandbox:
 
@@ -251,7 +251,7 @@ The broker lives in `internal/sandbox/broker.go` and is responsible for:
 
 The token is issued at sandbox start and passed in via environment variables such as `BOID_BROKER_TOKEN`. Outside the sandbox the token is unknown, so even if the broker socket path leaks, another job's commands cannot be authorised.
 
-Host commands run on the host in a neutral directory (`os.TempDir()`), never the project/worktree checkout, and stdin is never forwarded. Commands that need repo context (e.g. `gh`) get it via a kit `env:` entry of `${boid:repo_slug}` (see "Host command execution contract" in the [`project.yaml` reference](../reference/project-yaml.md)).
+Host commands run on the host in a neutral directory (`os.TempDir()`), never any project checkout, and stdin is never forwarded. Commands that need repo context (e.g. `gh`) get it via a kit `env:` entry of `${boid:repo_slug}` (see "Host command execution contract" in the [`project.yaml` reference](../reference/project-yaml.md)).
 
 ## Cleanup
 
@@ -304,17 +304,6 @@ All roles (hook) share the same allowed op set — there is no role branching.
 
 > **Note:** `task.reopen` uses a `.` separator for historical reasons; all other ops use `_`.
 
-### git builtin
-
-All roles share the same allowed op set.
-
-| Op | Corresponding CLI | Purpose |
-|---|---|---|
-| `fetch` | `git fetch ...` | Fetch from remote |
-| `push` | `git push ...` | Push to remote |
-| `push_delete` | `git push origin --delete <branch>` | Delete a remote branch |
-| `clone_local` | `git clone --local ...` | Clone a local repository (for peer-branch access) |
-
 ### fetch builtin
 
 `boid fetch <url>` performs an HTTP GET from inside the sandbox through the proxy allowlist. Useful for retrieving web resources without requiring `host_commands` for `curl`/`wget`.
@@ -325,9 +314,9 @@ All roles share the same allowed op set.
 
 ### Design notes
 
-- **No role branching** — `boid`, `git`, and `fetch` policies use `_ Role`; every role gets the same op set.
+- **No role branching** — `boid` and `fetch` policies use `_ Role`; every role gets the same op set.
   Add a role `switch` inside `policyFor` only when a new builtin genuinely needs role-specific restrictions.
-- **Source of truth** — `internal/orchestrator/policy.go`, functions `boidPolicy` / `gitPolicy` / `fetchPolicy`.
+- **Source of truth** — `internal/orchestrator/policy.go`, functions `boidPolicy` / `fetchPolicy`.
 - **Sandbox-side enum** — `internal/sandbox/protocol.go`.
 - **Cross-workspace access** is denied by the broker (`internal/sandbox/broker.go` `handleBoidBuiltin`)
   via `entry.Context.AllowsProject(...)` and similar guards — the op set above does not bypass these checks.

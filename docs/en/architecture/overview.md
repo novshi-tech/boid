@@ -45,7 +45,8 @@ internal/
   server/             - HTTP / UNIX listeners and chi router wiring
   api/                - HTTP handlers and TaskWorkflowService
   orchestrator/       - state machine, ProjectStore, persistence and evaluation
-  dispatcher/         - hook job launching, sandbox plan building, worktree management
+  dispatcher/         - hook job launching, sandbox plan building
+  gitgateway/         - git gateway (auth-injecting reverse proxy); the sole transport for the in-sandbox clone
   sandbox/            - mount namespace + chroot, host-command broker, HTTP proxy
   adapters/           - harness adapters (claude / codex / opencode / shell) + registry
   initwizard/         - interactive setup for `boid project init` (the old `boid init` has been removed)
@@ -139,11 +140,10 @@ The bridge layer for job execution.
 - **broker** — wraps `sandbox.Broker` and exposes `RunJob` for running one hook.
 - **sandbox_builder** — turns `orchestrator.ProjectMeta` into a primitive sandbox plan.
 - **policy_translate** — maps a kit's `host_commands` declaration to sandbox-side `CommandDef`s.
-- **runner / runtime** — runs jobs and collects results.
-- **worktree_manager** — creates, recreates, and tears down git worktrees for executor tasks when the project has `worktree: true` at the top level.
+- **runner / runtime** — runs jobs and collects results. Project-visible jobs clone the project into the sandbox through the git gateway (no host-side git worktree is created).
 - **secret_store** — encrypts and serves stored secret values.
 
-Entry: [`internal/dispatcher/runner.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/runner.go), [`internal/dispatcher/worktree_manager.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/worktree_manager.go).
+Entry: [`internal/dispatcher/runner.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/runner.go), [`internal/sandbox/runner/clone.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/runner/clone.go) (in-sandbox clone + branch resolution).
 
 ### internal/sandbox
 
@@ -191,7 +191,7 @@ Job logs (stderr) are stored in SQLite and surfaced via `boid job show <job-id>`
 | Change which hooks fire | [`internal/orchestrator/evaluator.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/evaluator.go) |
 | Trace the whole dispatch cycle | `runDispatchLoop` in [`internal/api/service.go`](https://github.com/novshi-tech/boid/blob/main/internal/api/service.go) |
 | Trace a single job | [`internal/dispatcher/runner.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/runner.go) |
-| Worktree handling | [`internal/dispatcher/worktree_manager.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/worktree_manager.go) |
+| Trace in-sandbox clone branch resolution | [`internal/sandbox/runner/clone.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/runner/clone.go), [`internal/orchestrator/head_branch.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/head_branch.go) (`BuildCloneDeclaration`) |
 | Host command policy | [`internal/dispatcher/policy_translate.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/policy_translate.go) |
 | Sandbox boundary | [`internal/sandbox/broker.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/broker.go) |
 | Web UI auth | files under [`internal/api/`](https://github.com/novshi-tech/boid/blob/main/internal/api/) prefixed `web_auth_` |

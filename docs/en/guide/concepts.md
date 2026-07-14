@@ -18,7 +18,7 @@ Tasks are created with `boid task create` and observed with `boid task list`, `b
 A directory that contains a `.boid/project.yaml` file. The project file declares:
 
 - An `id` (the unique identifier `boid` uses for the project) and a `name` (display name).
-- An optional project-top `worktree: true` flag that gives each executor task its own git worktree.
+- An optional project-top `worktree: true` flag — whether to give each executor task its own dedicated branch (see [Worktree](#worktree) below).
 - The list of **kits** the project uses (`kits:`).
 - One or more **task_behaviors** — a map of behavior names to `default_instruction` templates. Names are free-form (free naming). Each behavior can set `readonly`; the default when omitted is `true` (fail-safe).
 
@@ -111,7 +111,7 @@ To stop a session, exit the agent or run `boid agent stop <job-id>`. Closing the
 
 The isolated environment that hooks execute inside. Internally it is built from a Linux mount namespace plus a chroot, and applies these constraints:
 
-- Reads and writes are confined to the worktree (or the project root, for tasks that do not get a worktree — supervisor tasks, and executor tasks in projects that do not set `worktree: true`).
+- For project-visible jobs, reads and writes are confined to the sandbox-internal copy of the project cloned through the git gateway (see [Worktree](#worktree)).
 - Outbound network connections are limited to a built-in allowlist (`defaultAllowedDomains` in `cmd/start.go`) merged with any extra entries in `sandbox.allowed_domains` from `~/.config/boid/config.yaml`. There is no per-kit domain declaration — the allowlist is global.
 - Other parts of the host filesystem (your home directory, SSH keys, other projects) are not visible.
 
@@ -121,20 +121,22 @@ Some commands legitimately need to reach outside the sandbox (for example `git p
 
 ## Worktree
 
-For projects that opt in with project-top `worktree: true`, **executor and supervisor** tasks receive dedicated **git worktrees**. A worktree is a git feature that lets you check out multiple branches of the same repository into separate directories simultaneously, so changes stay isolated per task.
+For projects that opt in with project-top `worktree: true`, **executor and supervisor** tasks receive a dedicated **branch**.
 
-Worktree allocation varies by task kind:
+> **Implementation note (git gateway cutover, 2026-07)**: the name is `worktree` for historical reasons, but the implementation no longer uses `git worktree` (the git feature that checks out multiple branches of a repository into separate directories at once). Every project-visible job — regardless of the `worktree` value — freshly clones the project into the sandbox through the git gateway and checks out the branch the dispatcher declared. No per-job worktree directory is created on the host, and nothing is written to the host repo's `.git`; results become visible to other sessions only after a commit is pushed. See [`project.yaml` reference / git gateway](../reference/project-yaml.md#git-gateway--in-sandbox-clone) for the full contract.
+
+Branch allocation varies by task kind (the table itself is unchanged by the clone model):
 
 | Task kind | HEAD branch | Fork point | Read-only |
 |---|---|---|---|
 | **root sup / root exec** | `task.BaseBranch` | n/a | sup=true / exec=false |
 | **child sup / child exec** | `boid/<task_id8>` | **parent task's HEAD branch** | sup=true / exec=false |
 
-- **Root tasks** (no parent): if `base_branch` matches the project's current HEAD (case 1), no worktree is allocated and the task runs in the project root. If they differ (cases 2/3), a dedicated worktree is created with `base_branch` as its HEAD.
-- **Child tasks** (have a parent): always receive a `boid/<task_id8>` branch worktree. The fork point is the **parent task's HEAD branch** — only the immediate parent is referenced (1 hop).
+- **Root tasks** (no parent): if `base_branch` matches the project's current HEAD (case 1), the clone checks out `base_branch` directly with no new branch created. When they differ (cases 2/3), the clone checks out `base_branch` as HEAD (creating it if needed).
+- **Child tasks** (have a parent): always create a new `boid/<task_id8>` branch and check it out. The fork point is the **parent task's HEAD branch** — only the immediate parent is referenced (1 hop). The parent branch must already be pushed to origin, since the clone only sees origin's pushed refs.
 - `base_branch` propagates to all child tasks as the PR target and is passed to executors as the `BOID_BASE_BRANCH` environment variable.
 
-The hook runs inside the worktree, its commits are pushed, and (if needed) a PR is created. Once the task is done, the worktree is cleaned up. Within the same project, tasks that share the same HEAD branch are serialised in FIFO order. See [`project.yaml` reference / HEAD branch lock](../reference/project-yaml.md#head-branch-lock-1-active-task-per-project--head-branch) for details.
+Hooks run inside the sandbox-internal clone, their commits are pushed, and (if needed) a PR is created. When the task ends, the clone is cleaned up together with the sandbox runtime directory by the regular runtime GC — there is no dedicated worktree cleanup path anymore. The former FIFO serialisation of tasks sharing the same HEAD branch is also retired: multiple tasks targeting the same branch dispatch in parallel now. Concurrent pushes are resolved by the normal git workflow (non-fast-forward reject → fetch + merge/rebase → re-push).
 
 ## Action
 
@@ -153,7 +155,7 @@ The long-running `boid` server process. It owns:
 - A UNIX socket for the CLI and an HTTP listener for the Web UI.
 - Exclusive access to the SQLite database.
 - The dispatch loop that fires hooks in order.
-- The lifecycle of worktrees and sandboxes (creation and cleanup).
+- The lifecycle of sandboxes (including the in-sandbox project clone for project-visible jobs) — creation and cleanup.
 
 Started with `boid start`, stopped with `boid stop`. Most subcommands launch the daemon automatically if it is not already running.
 

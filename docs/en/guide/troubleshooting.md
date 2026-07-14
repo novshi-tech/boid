@@ -50,15 +50,11 @@ Local data accumulates in two places:
 | Path | Owned by | Auto-GC |
 |---|---|---|
 | `~/.local/share/boid/runtimes/<id>/` | `boid` | Yes (every 24h, removes >30d) |
-| `~/.claude/projects/-home-...-worktrees-boid-<taskid>/` | Claude Code | **No** — manual cleanup only |
+| `~/.claude/projects/-workspace-<project-name>-.../` (per project) | Claude Code | **No** — manual cleanup only |
 
-The first is GC'd automatically. The second is written by Claude Code itself; `boid` does not touch it. If your `~/.claude/projects/` is huge, clean it manually:
+The first is GC'd automatically. The second is written by Claude Code itself; `boid` does not touch it.
 
-```bash
-rm -rf ~/.claude/projects/-home-*-worktrees-boid-*
-```
-
-(Be careful — there are likely entries for other projects that should not be deleted.)
+> **Note (change after the git gateway cutover)**: before the cutover, each task's cwd was its per-task host git worktree path (`-home-...-worktrees-boid-<taskid>-` shape), so session logs were split by task. After the cutover, the job cwd is the sandbox-internal `/workspace/<project-name>` (project-name based, no task ID), so **multiple tasks in the same project now aggregate into the same session-log directory**. Dispatch one task once to see the actual directory name in `~/.claude/projects/`. If that directory bloats, verify no other-project entries would be caught in the wildcard and then delete the specific directory manually.
 
 GC settings live in `~/.config/boid/config.yaml`:
 
@@ -69,7 +65,7 @@ gc:
   older_than: 720h    # 30 days
 ```
 
-**What the daemon GC actually removes:** In addition to `runtimes/<runtime_id>/` directories, the GC pass also cleans up: terminal tasks/actions/jobs from the database, worktree directories, `/tmp/boid-*` temporary files, and revoked devices. The first GC run happens **10 seconds after daemon start**, not immediately on startup.
+**What the daemon GC actually removes:** In addition to `runtimes/<runtime_id>/` directories, the GC pass also cleans up: terminal tasks/actions/jobs from the database, `/tmp/boid-*` temporary files, and revoked devices. The first GC run happens **10 seconds after daemon start**, not immediately on startup.
 
 ## "permission denied" or "unknown command" inside a hook
 
