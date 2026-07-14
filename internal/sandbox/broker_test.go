@@ -54,7 +54,7 @@ func testGateBoidPolicies() map[string]sandbox.BuiltinPolicy {
 
 // testCtx is the shared TokenContext for broker unit tests that do not care
 // about the token's host-side context. Host commands always run with a
-// neutral cwd (os.TempDir()) regardless of ProjectDir/WorktreeDir; see
+// neutral cwd (os.TempDir()) regardless of ProjectDir; see
 // TestBroker_HostCommandCwdIsNeutralRegardlessOfWorktree.
 var testCtx = sandbox.TokenContext{
 	JobID:     "job-1",
@@ -169,19 +169,18 @@ func runBrokerPwd(t *testing.T, tc sandbox.TokenContext, shimCwd string) string 
 }
 
 // TestBroker_HostCommandCwdIsNeutralRegardlessOfWorktree pins down the cwd
-// neutralization contract: host commands never run in the project/worktree
-// checkout, even when the token context advertises one, because container
-// backends have no host checkout to place them in. Any repo context a host
-// command needs comes from ${boid:repo_slug} env expansion at
-// token-registration time (dispatcher.ResolveHostCommands), not from cwd.
+// neutralization contract: host commands never run in the project checkout,
+// even when the token context advertises one, because container backends
+// have no host checkout to place them in. Any repo context a host command
+// needs comes from ${boid:repo_slug} env expansion at token-registration
+// time (dispatcher.ResolveHostCommands), not from cwd.
 func TestBroker_HostCommandCwdIsNeutralRegardlessOfWorktree(t *testing.T) {
 	tc := sandbox.TokenContext{
-		JobID:       "job-host-cwd",
-		TaskID:      "task-host-cwd",
-		ProjectID:   "proj-1",
-		Role:        testRoleGate,
-		ProjectDir:  t.TempDir(),
-		WorktreeDir: t.TempDir(),
+		JobID:      "job-host-cwd",
+		TaskID:     "task-host-cwd",
+		ProjectID:  "proj-1",
+		Role:       testRoleGate,
+		ProjectDir: t.TempDir(),
 	}
 	got := runBrokerPwd(t, tc, "/home/someone")
 	wantEval, err := filepath.EvalSymlinks(os.TempDir())
@@ -568,7 +567,6 @@ func TestBroker_GetContext(t *testing.T) {
 		AllowedProjectIDs: []string{"proj-7", "proj-8"},
 		Role:              testRoleGate,
 		ProjectDir:        "/workspace/proj-7",
-		WorktreeDir:       "/workspace/proj-7-wt",
 	}
 
 	token := broker.Register(map[string]sandbox.CommandDef{

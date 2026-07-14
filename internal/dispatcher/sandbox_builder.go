@@ -20,7 +20,7 @@ import (
 // SandboxRuntimeInfo carries the dispatcher-internal facts that are required
 // to turn an orchestrator.JobSpec into a sandbox.Spec but that orchestrator
 // never needs to know: job id, broker plumbing, proxy port, boid binary
-// location, server socket path, resolved worktree directory, staging dirs.
+// location, server socket path, staging dirs.
 type SandboxRuntimeInfo struct {
 	JobID        string
 	BoidBinary   string
@@ -29,10 +29,6 @@ type SandboxRuntimeInfo struct {
 
 	BrokerSocket string
 	BrokerToken  string
-
-	// WorktreeDir is set by dispatcher when Visibility.UseWorktree is true,
-	// having been resolved through its WorktreeManager. Empty otherwise.
-	WorktreeDir string
 
 	// WorkspacePeers maps peer project IDs (same workspace, excluding self) to
 	// host paths. Dispatcher resolves this from its ProjectLookup so peer
@@ -139,7 +135,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	}
 
 	homeDir := hostHomeDir()
-	workDir := resolveWorkDir(spec, rt)
+	workDir := resolveWorkDir(spec)
 	expandedBindings := expandWorktreeBindings(
 		spec.Visibility.AdditionalBindings,
 		workDir,
@@ -231,34 +227,29 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		env["BOID_BROKER_TOKEN"] = rt.BrokerToken
 	}
 
-	// Project / worktree / workspace peers / .boid layer.
+	// Project / workspace peers / .boid layer.
 	projectDir := spec.Visibility.ProjectDir
-	effectiveProject := projectDir
-	if spec.Visibility.UseWorktree && rt.WorktreeDir != "" {
-		effectiveProject = rt.WorktreeDir
-	}
 	switch {
 	case spec.Visibility.Clone != nil:
 		// Sandbox-clone path (docs/plans/git-gateway-cutover.md PR6 cutover,
 		// PR5 Opus review note): skip projectVisibilityMounts entirely.
 		// cloneMounts (below) mounts the reference `.git` dirs and the clone
 		// target at the neutral /workspace path; there is no host ProjectDir
-		// or WorktreeDir bind for this job at all, so binding effectiveProject
-		// here too would double-mount the same host path at two sandbox
-		// targets for no reason. HOME still gets a private tmpfs, exactly
-		// like the "no project visible" case below.
+		// bind for this job at all, so binding projectDir here too would
+		// double-mount the same host path at two sandbox targets for no
+		// reason. HOME still gets a private tmpfs, exactly like the "no
+		// project visible" case below.
 		mounts = append(mounts, sandbox.Mount{
 			Target: homeDir,
 			Type:   sandbox.MountTmpfs,
 		})
-	case effectiveProject != "":
+	case projectDir != "":
 		mounts = append(mounts, projectVisibilityMounts(
 			projectDir,
-			effectiveProject,
+			projectDir,
 			homeDir,
 			spec.Visibility.Writable,
 			rt.WorkspacePeers,
-			spec.Visibility.UseWorktree,
 		)...)
 	case spec.SandboxProfile == int(sandbox.ProfileInit):
 		// ProfileInit (boid kit init / workspace configure): the plan rbinds the
@@ -380,22 +371,18 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	argv := append([]string(nil), spec.Argv...)
 
 	// Hook scripts live at projectDir/.boid/hooks/<id>.(sh|py) on the host.
-	// The sandbox never sees that host path directly (worktree mode bind-
-	// mounts .boid at the worktree dir; clone mode has no host path visible
-	// at all — .boid ships inside the cloned repo, see
-	// docs/plans/git-gateway-cutover.md PR6 cutover and the .boid
-	// git-tracking convention it depends on). Remap argv[0] to wherever the
-	// script actually lands inside the sandbox so the runner-inner-child can
-	// exec it.
-	if projectDir != "" && len(argv) > 0 {
+	// Under clone-mode dispatch the sandbox never sees that host path
+	// directly — clone mode has no host path visible at all, .boid ships
+	// inside the cloned repo (see docs/plans/git-gateway-cutover.md PR6
+	// cutover and the .boid git-tracking convention it depends on). Remap
+	// argv[0] to wherever the script actually lands inside the sandbox so
+	// the runner-inner-child can exec it. The non-clone (plain project
+	// bind-mount) path needs no remap: projectDir is bind-mounted at the
+	// same host path inside the sandbox, so argv[0] already resolves as-is.
+	if projectDir != "" && spec.Visibility.Clone != nil && len(argv) > 0 {
 		boidInProject := projectDir + "/.boid/"
 		if rest, ok := strings.CutPrefix(argv[0], boidInProject); ok {
-			switch {
-			case spec.Visibility.Clone != nil:
-				argv[0] = sandboxCloneDir(cloneDirNameForVisibility(spec.Visibility)) + "/.boid/" + rest
-			case spec.Visibility.UseWorktree && rt.WorktreeDir != "":
-				argv[0] = rt.WorktreeDir + "/.boid/" + rest
-			}
+			argv[0] = sandboxCloneDir(cloneDirNameForVisibility(spec.Visibility)) + "/.boid/" + rest
 		}
 	}
 
@@ -528,18 +515,14 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 
 // resolveWorkDir returns the initial cd target inside the sandbox. The
 // sandbox-clone opt-in path (spec.Visibility.Clone != nil,
-// docs/plans/git-gateway-cutover.md PR5) takes priority over the worktree
-// path since its bind mount above never exposes ProjectDir/WorktreeDir at
+// docs/plans/git-gateway-cutover.md PR5) takes priority over the plain
+// project-dir path since its bind mount above never exposes ProjectDir at
 // all — the only filesystem the clone-mode sandbox has is the name-scoped
 // subdirectory of sandboxCloneTargetDir (see sandboxCloneDir). Otherwise
-// prefer the resolved worktree dir, then the project dir, then home —
-// unchanged from before PR5.
-func resolveWorkDir(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) string {
+// prefer the project dir, then home.
+func resolveWorkDir(spec *orchestrator.JobSpec) string {
 	if spec.Visibility.Clone != nil {
 		return sandboxCloneDir(cloneDirNameForVisibility(spec.Visibility))
-	}
-	if spec.Visibility.UseWorktree && rt.WorktreeDir != "" {
-		return rt.WorktreeDir
 	}
 	if spec.Visibility.ProjectDir != "" {
 		return spec.Visibility.ProjectDir
@@ -780,13 +763,12 @@ func buildCloneSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox.C
 }
 
 // projectVisibilityMounts returns the canonical mount layout that lets the
-// sandbox see the project (or its worktree) and workspace peers, under a
-// tmpfs HOME that shadows host files but re-mounts the project on top.
+// sandbox see the project and workspace peers, under a tmpfs HOME that
+// shadows host files but re-mounts the project on top.
 func projectVisibilityMounts(
 	origProjectDir, effectiveDir, homeDir string,
 	writable bool,
 	peers map[string]string,
-	worktree bool,
 ) []sandbox.Mount {
 	var out []sandbox.Mount
 
@@ -827,12 +809,11 @@ func projectVisibilityMounts(
 		})
 	}
 
-	// 5) .boid bind-mount from the live project dir. This is the only path that
-	// makes kit hooks / skills visible to worktree tasks: the project's .boid is
-	// untracked by git, so the worktree checkout does not contain it (the
-	// worktree manager only creates an empty .boid as a bind target). Writable
-	// when the task is writable so agents can edit project.yaml etc.; read-only
-	// otherwise so the hooks/skills an agent runs under cannot be tampered with.
+	// 5) .boid bind-mount from the live project dir, so kit hooks / skills
+	// are visible even though the tmpfs HOME above shadows the rest of the
+	// host tree. Writable when the task is writable so agents can edit
+	// project.yaml etc.; read-only otherwise so the hooks/skills an agent
+	// runs under cannot be tampered with.
 	boidSource := origProjectDir + "/.boid"
 	if boidSource != "/.boid" { // ignore when origProjectDir is empty
 		out = append(out, sandbox.Mount{
@@ -847,8 +828,8 @@ func projectVisibilityMounts(
 	// 6) .git ro re-bind: prevents .git/config, .git/hooks/*, etc. from being
 	// modified directly inside the sandbox. The broker runs in a separate mount
 	// namespace and is unaffected, so broker-mediated git operations continue to
-	// work. DetectType handles both the directory case (main worktrees) and the
-	// file case (linked worktrees where .git is a gitdir pointer).
+	// work. DetectType handles both the directory case and the file case
+	// (a gitdir pointer file).
 	// Only needed when the effective dir is writable; read-only mounts already
 	// protect .git.
 	if writable {
@@ -860,21 +841,6 @@ func projectVisibilityMounts(
 			ReadOnly:   true,
 			DetectType: true,
 			Guard:      existsGuardExpr(gitEntry),
-		})
-	}
-
-	// 7) worktree-mode: re-expose origProjectDir/.git read-only so the linked
-	// worktree's gitdir pointer can be resolved (e.g. git status, log) while
-	// preventing direct writes to the main .git/config. Always read-only since
-	// the broker handles all writes outside the sandbox mount namespace.
-	if worktree {
-		gitDir := origProjectDir + "/.git"
-		out = append(out, sandbox.Mount{
-			Source:   gitDir,
-			Target:   gitDir,
-			Type:     sandbox.MountBind,
-			ReadOnly: true,
-			Guard:    dirGuardExpr(gitDir),
 		})
 	}
 
@@ -1362,7 +1328,12 @@ func buildEnvironmentYAML(in EnvironmentInput) string {
 
 	doc := environmentDoc{
 		Readonly: readonly,
-		Worktree: in.Visibility.UseWorktree,
+		// Worktree is permanently false as of docs/plans/git-gateway-cutover.md
+		// PR8: host git worktree allocation is retired (every project-visible
+		// job clones fresh inside the sandbox instead, PR6 cutover). The field
+		// itself stays in the YAML schema — see environmentDoc's doc comment —
+		// for skill/agent backward compatibility.
+		Worktree: false,
 		Tools:    builtinTools(in.BuiltinPolicies),
 
 		Sandbox: environmentSandbox{
@@ -1375,9 +1346,10 @@ func buildEnvironmentYAML(in EnvironmentInput) string {
 			AllowedDomains: append([]string(nil), in.AllowedDomains...),
 		},
 		Filesystem: environmentFilesystem{
-			ProjectDir:         in.Visibility.ProjectDir,
-			Writable:           in.Visibility.Writable,
-			Worktree:           in.Visibility.UseWorktree,
+			ProjectDir: in.Visibility.ProjectDir,
+			Writable:   in.Visibility.Writable,
+			// Permanently false — see doc.Worktree above.
+			Worktree:           false,
 			AdditionalBindings: convertBindings(in.Visibility.AdditionalBindings),
 			KitRoots:           append([]string(nil), in.Visibility.KitRoots...),
 			CloneDir:           in.CloneDir,

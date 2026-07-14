@@ -13,11 +13,7 @@ type WireConfig struct {
 	Sandbox     SandboxPreparer
 	SecretStore *SecretStore
 
-	// Worktrees resolves per-task git worktrees when a JobSpec declares
-	// Visibility.UseWorktree. Pass nil to disable worktree-backed jobs.
-	Worktrees  *WorktreeManager
-	TaskLookup TaskLookup
-	Projects   ProjectLookup
+	Projects ProjectLookup
 
 	// BoidBinary is the host path to the boid executable that should be
 	// bind-mounted into sandboxes.
@@ -70,8 +66,6 @@ func Wire(cfg WireConfig) *Runner {
 		Broker:          cfg.Broker,
 		Sandbox:         cfg.Sandbox,
 		SecretStore:     cfg.SecretStore,
-		Worktrees:       cfg.Worktrees,
-		TaskLookup:      cfg.TaskLookup,
 		Projects:        cfg.Projects,
 		Workspaces:      cfg.Workspaces,
 		ProxyAllocator:  cfg.ProxyAllocator,

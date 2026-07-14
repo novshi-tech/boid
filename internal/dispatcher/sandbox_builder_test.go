@@ -338,11 +338,11 @@ func TestBuildSandboxSpec_BoidBinaryBindMountOnly(t *testing.T) {
 	}
 }
 
-// writable worktree では .git が ro 再 bind されることを確認する。
+// writable project では .git が ro 再 bind されることを確認する。
 // これにより sandbox 内プロセスが .git/config 等を直接書き換えられない。
 func TestProjectVisibilityMounts_GitROBind_Writable(t *testing.T) {
 	const effectiveDir = "/home/user/project"
-	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", true, nil, false)
+	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", true, nil)
 
 	var gitMount *sandbox.Mount
 	for i := range mounts {
@@ -374,7 +374,7 @@ func TestProjectVisibilityMounts_GitROBind_Writable(t *testing.T) {
 // read-only project では .git の ro re-bind は追加しない（既に親が read-only）。
 func TestProjectVisibilityMounts_GitROBind_ReadOnly(t *testing.T) {
 	const effectiveDir = "/home/user/project"
-	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", false, nil, false)
+	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", false, nil)
 
 	for _, m := range mounts {
 		if m.Target == effectiveDir+"/.git" && m.ReadOnly && m.DetectType {
@@ -383,38 +383,14 @@ func TestProjectVisibilityMounts_GitROBind_ReadOnly(t *testing.T) {
 	}
 }
 
-// worktree モードでは origProjectDir/.git も ro で bind される。
-func TestProjectVisibilityMounts_WorktreeMode_OrigGitReadOnly(t *testing.T) {
+// .boid bind: project の .boid は origProjectDir から effectiveDir/.boid に
+// bind される。writable タスクでは書き込み可、readonly タスクでは ro。
+func TestProjectVisibilityMounts_BoidBind(t *testing.T) {
 	const origProject = "/home/user/project"
-	const worktreeDir = "/home/user/worktrees/task1"
-	mounts := projectVisibilityMounts(origProject, worktreeDir, "/home/user", true, nil, true)
-
-	var origGitMount *sandbox.Mount
-	for i := range mounts {
-		if mounts[i].Target == origProject+"/.git" {
-			origGitMount = &mounts[i]
-			break
-		}
-	}
-	if origGitMount == nil {
-		t.Fatal("origProjectDir/.git mount not found in worktree mounts")
-	}
-	if !origGitMount.ReadOnly {
-		t.Error("origProjectDir/.git mount must be ReadOnly in worktree mode")
-	}
-}
-
-// worktree モードでは origProjectDir/.boid が effectiveDir/.boid に bind される。
-// project の .boid は git untracked が前提で worktree checkout に含まれないため、
-// この bind が kit hooks / skills を worktree タスクへ供給する唯一の経路となる。
-// writable タスクでは書き込み可、readonly タスクでは ro。
-func TestProjectVisibilityMounts_WorktreeMode_BoidBind(t *testing.T) {
-	const origProject = "/home/user/project"
-	const worktreeDir = "/home/user/worktrees/task1"
 
 	findBoid := func(mounts []sandbox.Mount) *sandbox.Mount {
 		for i := range mounts {
-			if mounts[i].Target == worktreeDir+"/.boid" {
+			if mounts[i].Target == origProject+"/.boid" {
 				return &mounts[i]
 			}
 		}
@@ -422,10 +398,10 @@ func TestProjectVisibilityMounts_WorktreeMode_BoidBind(t *testing.T) {
 	}
 
 	// writable タスク: .boid は origProjectDir から bind され書き込み可。
-	wMounts := projectVisibilityMounts(origProject, worktreeDir, "/home/user", true, nil, true)
+	wMounts := projectVisibilityMounts(origProject, origProject, "/home/user", true, nil)
 	w := findBoid(wMounts)
 	if w == nil {
-		t.Fatal(".boid bind not found in writable worktree mounts")
+		t.Fatal(".boid bind not found in writable project mounts")
 	}
 	if w.Source != origProject+"/.boid" {
 		t.Errorf(".boid source = %q, want %q", w.Source, origProject+"/.boid")
@@ -441,10 +417,10 @@ func TestProjectVisibilityMounts_WorktreeMode_BoidBind(t *testing.T) {
 	}
 
 	// readonly タスク: .boid は依然 bind されるが ro。
-	roMounts := projectVisibilityMounts(origProject, worktreeDir, "/home/user", false, nil, true)
+	roMounts := projectVisibilityMounts(origProject, origProject, "/home/user", false, nil)
 	ro := findBoid(roMounts)
 	if ro == nil {
-		t.Fatal(".boid bind not found in read-only worktree mounts")
+		t.Fatal(".boid bind not found in read-only project mounts")
 	}
 	if !ro.ReadOnly {
 		t.Error(".boid bind must be ReadOnly for a read-only task")
@@ -646,21 +622,19 @@ func TestBuildCloneSpec_PopulatesFromDeclarationAndRuntimeInfo(t *testing.T) {
 }
 
 // TestResolveWorkDir_CloneEnabled_ReturnsCloneTargetDir pins both that the
-// clone path takes priority over the worktree path, and (workspace 親化リ
-// ファクタリング, nose 2026-07-13 decision) that the returned WorkDir is
-// name-scoped — here via the ProjectDir-basename fallback, since no
+// clone path takes priority over the plain-project-dir path, and (workspace
+// 親化リファクタリング, nose 2026-07-13 decision) that the returned WorkDir
+// is name-scoped — here via the ProjectDir-basename fallback, since no
 // ProjectName is set.
 func TestResolveWorkDir_CloneEnabled_ReturnsCloneTargetDir(t *testing.T) {
 	spec := &orchestrator.JobSpec{
 		Visibility: orchestrator.Visibility{
-			ProjectDir:  "/home/user/project",
-			UseWorktree: true,
-			Clone:       &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main"},
+			ProjectDir: "/home/user/project",
+			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main"},
 		},
 	}
-	rt := SandboxRuntimeInfo{WorktreeDir: "/home/user/worktrees/task1"}
 	const want = "/workspace/project"
-	if got := resolveWorkDir(spec, rt); got != want {
+	if got := resolveWorkDir(spec); got != want {
 		t.Errorf("resolveWorkDir = %q, want %q (clone path takes priority, name-scoped)", got, want)
 	}
 }
@@ -679,7 +653,7 @@ func TestResolveWorkDir_CloneEnabled_PrefersProjectNameOverBasename(t *testing.T
 		},
 	}
 	const want = "/workspace/bm-next"
-	if got := resolveWorkDir(spec, SandboxRuntimeInfo{}); got != want {
+	if got := resolveWorkDir(spec); got != want {
 		t.Errorf("resolveWorkDir = %q, want %q (ProjectName should win over ProjectDir basename)", got, want)
 	}
 }
@@ -1318,34 +1292,37 @@ func TestExpandWorktreeBindings(t *testing.T) {
 }
 
 // worktree=true と worktree=false で同じ project.yaml 宣言が:
-// - worktree=true: worktree path に bind される
-// - worktree=false: skip される (self-mount 回避)
+// - clone-mode (Visibility.Clone set): ${WORKTREE} resolves to the
+//   sandbox-internal clone dir, distinct from ${PROJECT_WORKDIR} (the host
+//   path) — src and tgt expand to different paths and the bind is kept
+// - non-clone (plain project mount): ${WORKTREE} == ${PROJECT_WORKDIR} ==
+//   the host project dir — src and tgt collapse to the same path and the
+//   bind is skipped as a redundant self-mount
 // という End-to-End 挙動を BuildSandboxSpec 越しに検証する。
 func TestBuildSandboxSpec_WorktreeBindingExpansion(t *testing.T) {
 	const projectDir = "/host/proj"
-	const worktreeDir = "/runtime/worktrees/proj/task1"
 	binding := orchestrator.BindMount{
 		Source: "${PROJECT_WORKDIR}/global.json",
 		Target: "${WORKTREE}/global.json",
 		IsFile: true,
 	}
 
-	// worktree=true: src と tgt が別 path に展開され bind される
-	specWT := &orchestrator.JobSpec{
+	// clone-mode: src と tgt が別 path (host vs sandbox-internal clone dir) に
+	// 展開され bind される
+	specClone := &orchestrator.JobSpec{
 		Visibility: orchestrator.Visibility{
 			ProjectDir:         projectDir,
-			UseWorktree:        true,
 			AdditionalBindings: []orchestrator.BindMount{binding},
+			Clone:              &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main"},
 		},
 	}
-	rtWT := SandboxRuntimeInfo{WorktreeDir: worktreeDir}
-	resWT, err := BuildSandboxSpec(specWT, rtWT)
+	resClone, err := BuildSandboxSpec(specClone, SandboxRuntimeInfo{})
 	if err != nil {
-		t.Fatalf("BuildSandboxSpec(worktree=true): %v", err)
+		t.Fatalf("BuildSandboxSpec(clone-mode): %v", err)
 	}
 	var found bool
-	for _, m := range resWT.Mounts {
-		if m.Source == "/host/proj/global.json" && m.Target == "/runtime/worktrees/proj/task1/global.json" {
+	for _, m := range resClone.Mounts {
+		if m.Source == "/host/proj/global.json" && m.Target == "/workspace/proj/global.json" {
 			found = true
 			if !m.IsFile {
 				t.Error("expected IsFile=true for global.json bind")
@@ -1354,25 +1331,25 @@ func TestBuildSandboxSpec_WorktreeBindingExpansion(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("worktree=true: expected bind from %s to %s, got mounts:\n%+v",
-			"/host/proj/global.json", "/runtime/worktrees/proj/task1/global.json", resWT.Mounts)
+		t.Errorf("clone-mode: expected bind from %s to %s, got mounts:\n%+v",
+			"/host/proj/global.json", "/workspace/proj/global.json", resClone.Mounts)
 	}
 
-	// worktree=false: src と tgt が同じ path に潰れ、 explicit-self-mount として skip される
-	specNoWT := &orchestrator.JobSpec{
+	// 非 clone (project 直接 mount): src と tgt が同じ path に潰れ、
+	// explicit-self-mount として skip される
+	specPlain := &orchestrator.JobSpec{
 		Visibility: orchestrator.Visibility{
 			ProjectDir:         projectDir,
-			UseWorktree:        false,
 			AdditionalBindings: []orchestrator.BindMount{binding},
 		},
 	}
-	resNoWT, err := BuildSandboxSpec(specNoWT, SandboxRuntimeInfo{})
+	resPlain, err := BuildSandboxSpec(specPlain, SandboxRuntimeInfo{})
 	if err != nil {
-		t.Fatalf("BuildSandboxSpec(worktree=false): %v", err)
+		t.Fatalf("BuildSandboxSpec(non-clone): %v", err)
 	}
-	for _, m := range resNoWT.Mounts {
+	for _, m := range resPlain.Mounts {
 		if m.Source == "/host/proj/global.json" && m.IsFile {
-			t.Errorf("worktree=false: self-mount should be skipped, got mount %+v", m)
+			t.Errorf("non-clone: self-mount should be skipped, got mount %+v", m)
 		}
 	}
 }
@@ -1597,7 +1574,6 @@ func TestBuildEnvironmentYAML_BackcompatTopLevelFields(t *testing.T) {
 		Visibility: orchestrator.Visibility{
 			ProjectDir: "/workspace/proj",
 			Writable:   false,
-			UseWorktree: true,
 		},
 		ProxyPort: 9001,
 	})
@@ -1605,8 +1581,11 @@ func TestBuildEnvironmentYAML_BackcompatTopLevelFields(t *testing.T) {
 	if doc["readonly"] != true {
 		t.Errorf("top-level readonly = %v, want true (skills match on this key)", doc["readonly"])
 	}
-	if doc["worktree"] != true {
-		t.Errorf("top-level worktree = %v, want true", doc["worktree"])
+	// worktree is permanently false as of git gateway cutover PR8 (host
+	// worktree allocation retired) — the field stays in the schema for
+	// skill/agent backward compatibility, see buildEnvironmentYAML.
+	if doc["worktree"] != false {
+		t.Errorf("top-level worktree = %v, want false (permanently retired)", doc["worktree"])
 	}
 	network, ok := doc["network"].(map[string]any)
 	if !ok {
@@ -1692,7 +1671,6 @@ func TestBuildEnvironmentYAML_FilesystemReflectsVisibility(t *testing.T) {
 		Visibility: orchestrator.Visibility{
 			ProjectDir:         "/workspace/proj",
 			Writable:           true,
-			UseWorktree:        false,
 			AdditionalBindings: bindings,
 			KitRoots:           kits,
 		},
@@ -1973,43 +1951,13 @@ func TestBuildEnvironmentYAML_HostCommandsRejectSurfaced(t *testing.T) {
 }
 
 
-// Regression: hook scripts in worktree mode had argv[0] set to the host-side
-// projectDir/.boid/hooks/<id>.sh path, which is NOT mounted inside the sandbox
-// (the .boid dir is bind-mounted at worktreeDir/.boid, not projectDir/.boid).
-// BuildSandboxSpec must remap argv[0] so the runner-inner-child can exec it.
-func TestBuildSandboxSpec_WorktreeHookArgvRemapped(t *testing.T) {
-	const (
-		projectDir  = "/tmp/test-project"
-		worktreeDir = "/tmp/boid-worktrees/abc123"
-		hookScript  = projectDir + "/.boid/hooks/my-hook.sh"
-	)
-	spec := &orchestrator.JobSpec{
-		HarnessType: "shell",
-		Argv:        []string{hookScript},
-		Visibility: orchestrator.Visibility{
-			ProjectDir:  projectDir,
-			UseWorktree: true,
-		},
-	}
-	rt := SandboxRuntimeInfo{WorktreeDir: worktreeDir}
-
-	result, err := BuildSandboxSpec(spec, rt)
-	if err != nil {
-		t.Fatalf("BuildSandboxSpec: %v", err)
-	}
-
-	wantArgv0 := worktreeDir + "/.boid/hooks/my-hook.sh"
-	if len(result.Argv) == 0 {
-		t.Fatal("Argv is empty")
-	}
-	if result.Argv[0] != wantArgv0 {
-		t.Errorf("Argv[0] = %q, want %q", result.Argv[0], wantArgv0)
-	}
-}
-
-// When UseWorktree is false, argv[0] must not be remapped even if it looks
-// like a .boid hook path.
-func TestBuildSandboxSpec_NonWorktreeHookArgvUnchanged(t *testing.T) {
+// Non-clone dispatch (plain project bind-mount, spec.Visibility.Clone == nil)
+// must not remap argv[0] even if it looks like a .boid hook path — projectDir
+// is bind-mounted at the same host path inside the sandbox, so the host-side
+// argv[0] already resolves as-is. See
+// TestBuildSandboxSpec_CloneEnabled_ArgvRewriteUsesNameScopedDir for the
+// clone-mode remap case.
+func TestBuildSandboxSpec_NonCloneHookArgvUnchanged(t *testing.T) {
 	const (
 		projectDir = "/tmp/test-project"
 		hookScript = projectDir + "/.boid/hooks/my-hook.sh"
@@ -2018,13 +1966,11 @@ func TestBuildSandboxSpec_NonWorktreeHookArgvUnchanged(t *testing.T) {
 		HarnessType: "shell",
 		Argv:        []string{hookScript},
 		Visibility: orchestrator.Visibility{
-			ProjectDir:  projectDir,
-			UseWorktree: false,
+			ProjectDir: projectDir,
 		},
 	}
-	rt := SandboxRuntimeInfo{WorktreeDir: "/tmp/boid-worktrees/abc123"}
 
-	result, err := BuildSandboxSpec(spec, rt)
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
 	if err != nil {
 		t.Fatalf("BuildSandboxSpec: %v", err)
 	}

@@ -60,7 +60,6 @@ type gcResponse struct {
 	Tasks      int64 `json:"tasks"`
 	Jobs       int64 `json:"jobs"`
 	Actions    int64 `json:"actions"`
-	Worktrees  int64 `json:"worktrees"`
 	Runtimes   int64 `json:"runtimes"`
 	SandboxTmp int64 `json:"sandbox_tmp"`
 	Devices    int64 `json:"devices"`
@@ -93,7 +92,6 @@ func (h *GCHandler) Run(w http.ResponseWriter, r *http.Request) {
 		Tasks:      result.Tasks,
 		Jobs:       result.Jobs,
 		Actions:    result.Actions,
-		Worktrees:  result.Worktrees,
 		Runtimes:   result.Runtimes,
 		SandboxTmp: result.SandboxTmp,
 		Devices:    result.Devices,

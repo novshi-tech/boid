@@ -121,13 +121,6 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 		})
 	}
 
-	// job_failed moves the task out of executing — release the project lock so
-	// queued tasks on the same project can advance. Idempotent.
-	if newTask.Status != orchestrator.TaskStatusExecuting {
-		s.releaseProjectLock(newTask.ID)
-	}
-
 	slog.Info("job done: job_failed applied", "job_id", job.ID, "new_status", newTask.Status)
-	s.cleanupWorktree(newTask.ID, job.ProjectID, newTask.Status)
 	return job, nil
 }

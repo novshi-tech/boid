@@ -97,13 +97,6 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 
-	// Release the project lock whenever the action moves the task out of
-	// executing (ask, done, abort, ...). Idempotent — safe when the task did
-	// not hold the lock (e.g. readonly/worktree tasks, or repeated abort).
-	if newTask.Status != orchestrator.TaskStatusExecuting {
-		s.releaseProjectLock(newTask.ID)
-	}
-
 	if s.Hub != nil {
 		s.Hub.Broadcast(newTask.ID, TaskEvent{
 			Kind: "action",
@@ -113,8 +106,6 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 			},
 		})
 	}
-
-	s.cleanupWorktree(newTask.ID, task.ProjectID, newTask.Status)
 
 	if s.Coordinator != nil {
 		dispatchCtx := s.dispatchCtx
@@ -146,26 +137,22 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	}, nil
 }
 
+// runDispatchLoop drives the coordinator through consecutive hook fires until
+// the task reaches a terminal or awaiting status, or the task stalls (no
+// transition this cycle). Branch-level serialization (the former
+// BranchLockManager) was retired in docs/plans/git-gateway-cutover.md PR6:
+// each job now clones the project fresh inside the sandbox instead of
+// sharing a host git worktree, so the physical constraint that motivated
+// serializing same-branch tasks (only one worktree can check out a given
+// branch at a time) no longer exists. Concurrent same-branch pushes are
+// instead resolved the ordinary git way — the second push hits a
+// non-fast-forward reject and that session pulls (fetch + merge/rebase)
+// before retrying — which also resolves the branch-lock head-of-line
+// blocking a long-lived supervisor could previously cause (see
+// khi-supervisor-branch-lock-headline-block in memory).
 func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine) {
 	const maxCycles = 10
 	current := task
-
-	// Branch lock acquisition is retired as of docs/plans/git-gateway-cutover.md
-	// PR6 (cutover): each job now clones the project fresh inside the sandbox
-	// instead of sharing a host git worktree, so the physical constraint that
-	// motivated serializing same-branch tasks (only one worktree can check out
-	// a given branch at a time) no longer exists. Concurrent same-branch pushes
-	// are instead resolved the ordinary git way — the second push hits a
-	// non-fast-forward reject and that session pulls (fetch + merge/rebase)
-	// before retrying — which also resolves the branch-lock head-of-line
-	// blocking a long-lived supervisor could previously cause (see
-	// khi-supervisor-branch-lock-headline-block in memory).
-	//
-	// s.Locks / BranchLockManager (internal/orchestrator/project_lock.go) are
-	// intentionally left wired (releaseProjectLock below stays, and is a
-	// documented no-op when nothing was ever acquired) rather than deleted —
-	// that's PR8's job alongside the rest of the worktree machinery, so a git
-	// revert of this PR restores locking cleanly.
 
 	for cycle := 0; cycle < maxCycles; cycle++ {
 		result, err := s.Coordinator.DispatchAndAdvance(ctx, current, meta, sm)
@@ -247,9 +234,6 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 		if current.Status == orchestrator.TaskStatusAwaiting {
 			slog.Info("dispatch loop: task is awaiting user answer, skipping auto-advance",
 				"task_id", current.ID, "would_advance_to", result.NewStatus)
-			// awaiting means the task left executing — release the project
-			// lock so other tasks can run. answer will re-acquire on resume.
-			s.releaseProjectLock(current.ID)
 			return
 		}
 
@@ -316,9 +300,8 @@ func (s *TaskWorkflowService) recordDispatchError(taskID string, taskStatus orch
 }
 
 // abortOnDispatchError records a dispatch_error action for the audit trail and
-// then transitions the task to aborted so the branch lock is released and
-// terminal cleanup (worktree removal, lifecycle window) runs. Safe to call
-// even when the lock was never acquired — releaseProjectLock is idempotent.
+// then transitions the task to aborted so terminal cleanup (lifecycle window)
+// runs.
 //
 // When the dispatch context has been canceled (typically because the daemon
 // is shutting down via SIGTERM), the abort is recorded with
@@ -410,75 +393,19 @@ func (s *TaskWorkflowService) persistFiredEvents(taskID string, status orchestra
 
 // finalizeTerminal runs the per-task cleanup required once a task has reached
 // a terminal status. No-op for non-terminal tasks. Safe to call multiple
-// times: cleanupWorktree skips already-removed worktrees and
-// CleanupTaskWindow atomically drains runtimes.
+// times: CleanupTaskWindow atomically drains runtimes.
 //
-// Branch lifecycle: cleanupWorktree intentionally does NOT delete this task's
-// boid/<id8> branch. Instead, sweepChildBranches deletes the boid/* branches
-// of this task's direct children — children retain their branches through
-// their own finalize so that this (parent) supervisor can merge them into the
-// base branch before they're swept. The sweep is one level deep: nested
-// supervisors get cleaned in the same way when their own parent terminates.
+// Worktree disk cleanup and boid/<id8> branch sweeping (the former
+// cleanupWorktree / sweepChildBranches, backed by dispatcher.WorktreeManager)
+// were retired in docs/plans/git-gateway-cutover.md PR8: every project-visible
+// job clones fresh inside the sandbox (PR6 cutover), so no host worktree or
+// host-local boid/<id8> branch is ever created for a task's dispatch — there
+// is nothing left on the host repo for a terminal task to clean up.
 func (s *TaskWorkflowService) finalizeTerminal(ctx context.Context, task *orchestrator.Task) {
 	if task.Status != orchestrator.TaskStatusDone && task.Status != orchestrator.TaskStatusAborted {
 		return
 	}
-	// Release the executing-lifetime project lock first so a queued waiter on
-	// the same project can acquire while the cleanup below is still in flight.
-	// Idempotent — safe if the task never acquired the lock.
-	s.releaseProjectLock(task.ID)
-	s.cleanupWorktree(task.ID, task.ProjectID, task.Status)
-	s.sweepChildBranches(task.ID, task.ProjectID)
 	if s.Lifecycle != nil {
 		s.Lifecycle.CleanupTaskWindow(task.ID)
-	}
-}
-
-func (s *TaskWorkflowService) cleanupWorktree(taskID, projectID string, status orchestrator.TaskStatus) {
-	if s.Projects == nil || s.Worktrees == nil || projectID == "" {
-		return
-	}
-
-	project, err := s.Projects.GetProject(projectID)
-	if err != nil {
-		slog.Warn("worktree cleanup project lookup failed", "task_id", taskID, "project_id", projectID, "error", err)
-		return
-	}
-	if err := s.Worktrees.CleanupForTask(taskID, project.WorkDir, string(status)); err != nil {
-		slog.Warn("worktree cleanup failed", "task_id", taskID, "project_id", projectID, "error", err)
-	}
-}
-
-// sweepChildBranches deletes the boid/<id8> branches of the given task's
-// direct children. No-op when the task has no children (executor / leaf
-// task), no recorded children with worktrees, or required services are
-// missing. Errors are logged and non-fatal: branch retention is a hygiene
-// concern, not a correctness one.
-func (s *TaskWorkflowService) sweepChildBranches(parentTaskID, projectID string) {
-	if s.Projects == nil || s.Worktrees == nil || s.Tasks == nil || projectID == "" {
-		return
-	}
-	children, err := s.Tasks.ListChildren(parentTaskID)
-	if err != nil {
-		slog.Warn("sweep child branches: list children failed",
-			"parent_task_id", parentTaskID, "error", err)
-		return
-	}
-	if len(children) == 0 {
-		return
-	}
-	project, err := s.Projects.GetProject(projectID)
-	if err != nil {
-		slog.Warn("sweep child branches: project lookup failed",
-			"parent_task_id", parentTaskID, "project_id", projectID, "error", err)
-		return
-	}
-	taskIDs := make([]string, 0, len(children))
-	for _, c := range children {
-		taskIDs = append(taskIDs, c.ID)
-	}
-	if err := s.Worktrees.SweepChildBranches(project.WorkDir, taskIDs); err != nil {
-		slog.Warn("sweep child branches failed",
-			"parent_task_id", parentTaskID, "project_id", projectID, "error", err)
 	}
 }

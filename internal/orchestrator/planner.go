@@ -103,10 +103,9 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 			KitRoots:           behavior.KitRoots,
 			ForkPoint:          meta.ForkPoint,
 			DockerEnabled:      meta.Capabilities.Docker != nil,
-			// Clone replaces UseWorktree for real dispatch (docs/plans/
-			// git-gateway-cutover.md PR6 cutover): dispatcher no longer
-			// resolves a host-repo worktree, it clones inside the sandbox
-			// and resolves the declared branch there.
+			// docs/plans/git-gateway-cutover.md PR6 cutover: dispatcher no
+			// longer resolves a host-repo worktree, it clones inside the
+			// sandbox and resolves the declared branch there.
 			Clone: BuildCloneDeclaration(task, parent, meta.ForkPoint),
 		},
 		BuiltinPolicies: DefaultBuiltinPolicies(

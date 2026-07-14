@@ -29,27 +29,3 @@ func (r *JobRepository) ListJobsFiltered(filter JobFilter) ([]*Job, error) {
 func (r *JobRepository) UpdateJob(job *Job) error {
 	return UpdateJob(r.db, job)
 }
-
-type WorktreeRepository struct {
-	db db.DBTX
-}
-
-func NewWorktreeRepository(db db.DBTX) *WorktreeRepository {
-	return &WorktreeRepository{db: db}
-}
-
-func (r *WorktreeRepository) CreateWorktree(worktree *Worktree) error {
-	return CreateWorktree(r.db, worktree)
-}
-
-func (r *WorktreeRepository) GetWorktreeByTask(taskID string) (*Worktree, error) {
-	return GetWorktreeByTask(r.db, taskID)
-}
-
-func (r *WorktreeRepository) MarkWorktreeCleaned(taskID string) error {
-	return MarkWorktreeCleaned(r.db, taskID)
-}
-
-func (r *WorktreeRepository) ListActiveWorktrees() ([]*Worktree, error) {
-	return ListActiveWorktrees(r.db)
-}

@@ -497,8 +497,8 @@ func validateBoidBuiltinCwd(cwd string, entry *tokenEntry) error {
 	// (dispatcher.sandboxCloneDir — workspace 親化リファクタリング,
 	// nose 2026-07-13 decision) — entryRoot already special-cases this via
 	// entry.Context.SandboxRoot (see its own doc comment: "clone-mode jobs
-	// have no host-side ProjectDir/WorktreeDir the sandbox's own filesystem
-	// corresponds to"). The broker itself always runs on the host, outside
+	// have no host-side ProjectDir the sandbox's own filesystem corresponds
+	// to"). The broker itself always runs on the host, outside
 	// any sandbox mount namespace, so os.Stat(cwd) below can never see that
 	// path — it would either ENOENT ("cwd does not exist" on a host with no
 	// coincidental directory of that name) or, worse, silently validate
@@ -537,19 +537,16 @@ func validateBoidBuiltinCwd(cwd string, entry *tokenEntry) error {
 
 // entryRoot returns the directory a "boid" builtin call's cwd argument must
 // fall under. Clone-mode jobs (docs/plans/git-gateway-cutover.md PR6 cutover)
-// have no host-side ProjectDir/WorktreeDir the sandbox's own filesystem
-// corresponds to — their cwd is always a name-scoped subdirectory of the
-// sandbox-internal "/workspace" (workspace 親化リファクタリング, nose
-// 2026-07-13 decision) — so SandboxRoot takes priority when set.
+// have no host-side ProjectDir the sandbox's own filesystem corresponds to —
+// their cwd is always a name-scoped subdirectory of the sandbox-internal
+// "/workspace" (workspace 親化リファクタリング, nose 2026-07-13 decision) —
+// so SandboxRoot takes priority when set.
 func entryRoot(entry *tokenEntry) string {
 	if entry == nil {
 		return ""
 	}
 	if entry.Context.SandboxRoot != "" {
 		return entry.Context.SandboxRoot
-	}
-	if entry.Context.WorktreeDir != "" {
-		return entry.Context.WorktreeDir
 	}
 	return entry.Context.ProjectDir
 }
@@ -621,7 +618,7 @@ func hostCommandEnv(defEnv map[string]string) []string {
 //
 // Contract: host commands must not depend on a repo checkout being present
 // on the host side. Neither the sandbox-side cwd (req.Cwd) nor the token's
-// host-side context (WorktreeDir / ProjectDir) are consulted here — container
+// host-side context (ProjectDir) is consulted here — container
 // backends have no host checkout at all, so any repo context a host command
 // needs must come from ${boid:repo_slug} env expansion at token-registration
 // time (see dispatcher.ResolveHostCommands), not from cwd. A neutral,
