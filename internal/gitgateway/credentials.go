@@ -28,16 +28,22 @@ func usernameForForge(f Forge) (string, error) {
 	}
 }
 
-// SecretResolver resolves a secret-store key reference to its plaintext
-// value. config.yaml (PR4) carries only the key reference — never the
-// plaintext token (docs/plans/git-gateway-cutover.md: 「config.yaml の
-// gateway ブロックは forge 種別と secret key 参照のみ持つ」). This is a
-// plain function type, mirroring internal/sandbox.SecretResolver's shape, so
-// PR4 can adapt internal/dispatcher.SecretStore.Get to it with a one-line
-// closure instead of gitgateway importing the dispatcher package (which
-// would drag the sqlite-backed internal/db build into this otherwise
-// db-free package).
-type SecretResolver func(key string) (string, error)
+// SecretResolver resolves a secret-store key reference, scoped to a
+// namespace, to its plaintext value. config.yaml (PR4) carries only the key
+// reference — never the plaintext token (docs/plans/git-gateway-cutover.md:
+// 「config.yaml の gateway ブロックは forge 種別と secret key 参照のみ持つ」).
+// This is a plain function type, mirroring internal/sandbox.SecretResolver's
+// shape (modulo the namespace parameter added for post-cutover 改善 §1
+// workspace-scoped PAT namespace support), so callers can adapt
+// internal/dispatcher.SecretStore.Get to it with a one-line closure instead
+// of gitgateway importing the dispatcher package (which would drag the
+// sqlite-backed internal/db build into this otherwise db-free package).
+// namespace is the job token's Registry-recorded namespace (Entry.Namespace,
+// itself sourced from orchestrator.JobSpec.SecretNamespace at register time);
+// an empty namespace is the pre-namespacing behavior and resolvers are
+// expected to fall back to a "default" namespace for it (mirroring
+// internal/dispatcher.SecretStore.Get's own normalizeNamespace).
+type SecretResolver func(namespace, key string) (string, error)
 
 // HostForgeConfig declares how the gateway authenticates requests to one
 // upstream host: which forge convention to use and which secret-store key
@@ -112,14 +118,16 @@ func (c *CredentialProvider) SchemeFor(host string) string {
 	return "https"
 }
 
-// Inject resolves host's configured secret and sets Basic auth on req using
-// the forge's username convention. It returns an error (and leaves req
-// unmodified) if host has no configured forge, no resolver is set, or the
-// secret can't be resolved — callers log this rather than fail the request
-// outright, since a misconfigured host is a config problem, not grounds to
-// crash the gateway (docs/plans/git-gateway-cutover.md: 「gateway 自体は
-// 落とさない」, said of upstream 401s but applied here in the same spirit).
-func (c *CredentialProvider) Inject(req *http.Request, host string) error {
+// Inject resolves host's configured secret — scoped to namespace, the
+// requesting job token's workspace-derived secret namespace (post-cutover
+// 改善 §1) — and sets Basic auth on req using the forge's username
+// convention. It returns an error (and leaves req unmodified) if host has no
+// configured forge, no resolver is set, or the secret can't be resolved —
+// callers log this rather than fail the request outright, since a
+// misconfigured host is a config problem, not grounds to crash the gateway
+// (docs/plans/git-gateway-cutover.md: 「gateway 自体は落とさない」, said of
+// upstream 401s but applied here in the same spirit).
+func (c *CredentialProvider) Inject(req *http.Request, host, namespace string) error {
 	if c == nil {
 		return fmt.Errorf("gitgateway: no credential provider configured")
 	}
@@ -130,9 +138,9 @@ func (c *CredentialProvider) Inject(req *http.Request, host string) error {
 	if c.resolver == nil {
 		return fmt.Errorf("gitgateway: no secret resolver configured for host %q", host)
 	}
-	token, err := c.resolver(cfg.SecretKey)
+	token, err := c.resolver(namespace, cfg.SecretKey)
 	if err != nil {
-		return fmt.Errorf("gitgateway: resolve secret %q for host %q: %w", cfg.SecretKey, host, err)
+		return fmt.Errorf("gitgateway: resolve secret %q for host %q (namespace %q): %w", cfg.SecretKey, host, namespace, err)
 	}
 	username, err := usernameForForge(cfg.Forge)
 	if err != nil {

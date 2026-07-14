@@ -470,10 +470,17 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// の CredentialError 抑制」, distinct from an ordinary per-key miss on an
 	// otherwise-configured store, which still fails open + notifies as
 	// before).
+	//
+	// The namespace parameter (post-cutover 改善 §1 workspace-scoped PAT
+	// namespace) is passed straight through to secretStore.Get, which
+	// already normalizes "" to "default" (SecretStore.normalizeNamespace),
+	// so a job token registered with no SecretNamespace (workspace-unlinked
+	// project) keeps resolving against the pre-namespacing "default"
+	// namespace exactly as before this change.
 	var gwResolver gitgateway.SecretResolver
 	if secretStore != nil {
-		gwResolver = func(key string) (string, error) {
-			return secretStore.Get("default", key)
+		gwResolver = func(namespace, key string) (string, error) {
+			return secretStore.Get(namespace, key)
 		}
 	}
 	gwCreds := gitgateway.NewCredentialProvider(boidCfg.Gateway.Hosts, gwResolver)

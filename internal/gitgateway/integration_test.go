@@ -108,10 +108,10 @@ func TestIntegration_CloneCommitPushFetch(t *testing.T) {
 	repoKey := NewRepoKey(host, "owner", "repo")
 
 	reg := NewRegistry()
-	token := reg.Register(map[RepoKey]Permission{repoKey: PermFetchPush})
+	token := reg.Register(map[RepoKey]Permission{repoKey: PermFetchPush}, "default")
 	creds := NewCredentialProvider([]HostForgeConfig{
 		{Host: host, Forge: ForgeGitHub, SecretKey: "gh-pat", Scheme: "http"},
-	}, func(string) (string, error) { return "unused-in-this-test", nil })
+	}, func(string, string) (string, error) { return "unused-in-this-test", nil })
 	gw := NewServer(reg, creds, nil)
 	gwSrv := httptest.NewServer(gw)
 	t.Cleanup(gwSrv.Close)
@@ -168,10 +168,10 @@ func TestIntegration_FetchOnlyTokenRejectsPush(t *testing.T) {
 	repoKey := NewRepoKey(host, "owner", "repo")
 
 	reg := NewRegistry()
-	token := reg.Register(map[RepoKey]Permission{repoKey: PermFetch}) // fetch-only, e.g. a readonly job or workspace peer
+	token := reg.Register(map[RepoKey]Permission{repoKey: PermFetch}, "default") // fetch-only, e.g. a readonly job or workspace peer
 	creds := NewCredentialProvider([]HostForgeConfig{
 		{Host: host, Forge: ForgeGitHub, SecretKey: "gh-pat", Scheme: "http"},
-	}, func(string) (string, error) { return "unused", nil })
+	}, func(string, string) (string, error) { return "unused", nil })
 	gw := NewServer(reg, creds, nil)
 	gwSrv := httptest.NewServer(gw)
 	t.Cleanup(gwSrv.Close)
@@ -207,10 +207,10 @@ func TestIntegration_ForbiddenRepoRejectsClone(t *testing.T) {
 	// clone, mirroring "許可外の repo... は 403" (workspace peer / read-only
 	// extra-repo allowlists that don't include this repo).
 	reg := NewRegistry()
-	token := reg.Register(map[RepoKey]Permission{NewRepoKey(host, "owner", "other"): PermFetch})
+	token := reg.Register(map[RepoKey]Permission{NewRepoKey(host, "owner", "other"): PermFetch}, "default")
 	creds := NewCredentialProvider([]HostForgeConfig{
 		{Host: host, Forge: ForgeGitHub, SecretKey: "gh-pat", Scheme: "http"},
-	}, func(string) (string, error) { return "unused", nil })
+	}, func(string, string) (string, error) { return "unused", nil })
 	gw := NewServer(reg, creds, nil)
 	gwSrv := httptest.NewServer(gw)
 	t.Cleanup(gwSrv.Close)
@@ -236,7 +236,7 @@ func TestIntegration_InvalidTokenRejectsClone(t *testing.T) {
 
 	creds := NewCredentialProvider([]HostForgeConfig{
 		{Host: host, Forge: ForgeGitHub, SecretKey: "gh-pat", Scheme: "http"},
-	}, func(string) (string, error) { return "unused", nil })
+	}, func(string, string) (string, error) { return "unused", nil })
 	gw := NewServer(NewRegistry(), creds, nil)
 	gwSrv := httptest.NewServer(gw)
 	t.Cleanup(gwSrv.Close)

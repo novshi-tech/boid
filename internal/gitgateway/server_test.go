@@ -38,17 +38,20 @@ func upstreamHost(t *testing.T, srv *httptest.Server) string {
 // newTestGateway wires a Registry + a CredentialProvider pointed (with
 // Scheme "http") at upstream, and returns the gateway's own httptest.Server
 // plus the job token and repo key already registered for repo with perm.
+// The token is registered under the "default" namespace; tests that care
+// about namespace routing build their own Registry/CredentialProvider
+// directly instead (see TestServeHTTP_RoutesCredentialsByTokenNamespace).
 func newTestGateway(t *testing.T, upstream *httptest.Server, owner, repo string, perm Permission, secretValue string, notifier UpstreamAuthFailureNotifier) (gwURL, token string, host string, key RepoKey) {
 	t.Helper()
 	host = upstreamHost(t, upstream)
 	key = NewRepoKey(host, owner, repo)
 
 	reg := NewRegistry()
-	token = reg.Register(map[RepoKey]Permission{key: perm})
+	token = reg.Register(map[RepoKey]Permission{key: perm}, "default")
 
 	creds := NewCredentialProvider([]HostForgeConfig{
 		{Host: host, Forge: ForgeGitHub, SecretKey: "gh-pat", Scheme: "http"},
-	}, func(string) (string, error) { return secretValue, nil })
+	}, func(namespace, key string) (string, error) { return secretValue, nil })
 
 	gw := NewServer(reg, creds, notifier)
 	gwSrv := httptest.NewServer(gw)
@@ -275,10 +278,10 @@ func TestServeHTTP_NotifiesCredentialErrorDistinctlyFromUpstream401(t *testing.T
 	key := NewRepoKey(host, "owner", "repo")
 
 	reg := NewRegistry()
-	token := reg.Register(map[RepoKey]Permission{key: PermFetch})
+	token := reg.Register(map[RepoKey]Permission{key: PermFetch}, "default")
 	creds := NewCredentialProvider([]HostForgeConfig{
 		{Host: host, Forge: ForgeGitHub, SecretKey: "gh-pat", Scheme: "http"},
-	}, func(string) (string, error) { return "", fmt.Errorf("secret store: key %q not found", "gh-pat") })
+	}, func(string, string) (string, error) { return "", fmt.Errorf("secret store: key %q not found", "gh-pat") })
 
 	var credErrHost string
 	var credErrRepo RepoKey
@@ -345,7 +348,7 @@ func TestServeHTTP_NoResolverConfiguredRejectsWithoutNotifying(t *testing.T) {
 	key := NewRepoKey(host, "owner", "repo")
 
 	reg := NewRegistry()
-	token := reg.Register(map[RepoKey]Permission{key: PermFetch})
+	token := reg.Register(map[RepoKey]Permission{key: PermFetch}, "default")
 	// hosts is non-empty (a real gateway config would declare the forge for
 	// this host) but resolver is nil — exactly wire.go's KeyFilePath-unset
 	// shape.
@@ -392,7 +395,7 @@ func TestServeHTTP_NilCredentialsStillProxiesUnauthenticated(t *testing.T) {
 	key := NewRepoKey(host, "owner", "repo")
 
 	reg := NewRegistry()
-	token := reg.Register(map[RepoKey]Permission{key: PermFetch})
+	token := reg.Register(map[RepoKey]Permission{key: PermFetch}, "default")
 
 	gw := NewServer(reg, nil, nil)
 	gwSrv := httptest.NewServer(gw)
@@ -566,5 +569,66 @@ func TestServeHTTP_Expect100ContinuePassthrough(t *testing.T) {
 	}
 	if !bytes.Equal(receivedBody, body) {
 		t.Fatalf("upstream received %d bytes, want %d", len(receivedBody), len(body))
+	}
+}
+
+// --- workspace-scoped PAT namespace (post-cutover 改善 §1) ---
+
+// TestServeHTTP_RoutesCredentialsByTokenNamespace is the end-to-end guard for
+// post-cutover 改善 §1 (workspace-scoped PAT namespace): a single gateway
+// Server, with one shared HostForgeConfig/SecretResolver, must route two
+// different job tokens — registered under two different Registry namespaces
+// — to two different upstream Basic-auth credentials. This is the shape a
+// real daemon reaches once two workspaces each `boid secret set --namespace
+// <ws> gh-pat <PAT>`: same gateway host config, different PAT per workspace,
+// selected purely by which job token made the request.
+func TestServeHTTP_RoutesCredentialsByTokenNamespace(t *testing.T) {
+	var gotAuth string
+	upstream := newCapturingUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	})
+	host := upstreamHost(t, upstream)
+	key := NewRepoKey(host, "owner", "repo")
+
+	secretsByNamespace := map[string]string{
+		"ws-a": "pat-for-ws-a",
+		"ws-b": "pat-for-ws-b",
+	}
+	resolver := func(namespace, key string) (string, error) {
+		if key != "gh-pat" {
+			t.Fatalf("resolver called with unexpected key %q", key)
+		}
+		v, ok := secretsByNamespace[namespace]
+		if !ok {
+			t.Fatalf("resolver called with unexpected namespace %q", namespace)
+		}
+		return v, nil
+	}
+	creds := NewCredentialProvider([]HostForgeConfig{
+		{Host: host, Forge: ForgeGitHub, SecretKey: "gh-pat", Scheme: "http"},
+	}, resolver)
+
+	reg := NewRegistry()
+	tokenA := reg.Register(map[RepoKey]Permission{key: PermFetch}, "ws-a")
+	tokenB := reg.Register(map[RepoKey]Permission{key: PermFetch}, "ws-b")
+
+	gw := NewServer(reg, creds, nil)
+	gwSrv := httptest.NewServer(gw)
+	t.Cleanup(gwSrv.Close)
+
+	for token, wantNamespace := range map[string]string{tokenA: "ws-a", tokenB: "ws-b"} {
+		resp, err := http.Get(gwSrv.URL + routePath(token, host, "owner", "repo.git", "info/refs") + "?service=git-upload-pack")
+		if err != nil {
+			t.Fatalf("GET (namespace %s): %v", wantNamespace, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("namespace %s: status = %d, want 200", wantNamespace, resp.StatusCode)
+		}
+		wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+secretsByNamespace[wantNamespace]))
+		if gotAuth != wantAuth {
+			t.Fatalf("namespace %s: upstream saw Authorization = %q, want %q", wantNamespace, gotAuth, wantAuth)
+		}
 	}
 }

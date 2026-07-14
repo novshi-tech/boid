@@ -9,7 +9,7 @@ func TestRegistryAuthorize(t *testing.T) {
 	reg := NewRegistry()
 	token := reg.Register(map[RepoKey]Permission{
 		repo: PermFetchPush,
-	})
+	}, "ws-1")
 
 	t.Run("valid token, allowed repo, fetch", func(t *testing.T) {
 		allowed, valid := reg.Authorize(token, repo, OpFetch)
@@ -54,7 +54,7 @@ func TestRegistryAuthorize(t *testing.T) {
 func TestRegistryFetchOnlyPermissionRejectsPush(t *testing.T) {
 	repo := NewRepoKey("bitbucket.org", "team", "repo")
 	reg := NewRegistry()
-	token := reg.Register(map[RepoKey]Permission{repo: PermFetch})
+	token := reg.Register(map[RepoKey]Permission{repo: PermFetch}, "default")
 
 	if allowed, valid := reg.Authorize(token, repo, OpFetch); !valid || !allowed {
 		t.Fatalf("fetch should be allowed: (%v, %v)", allowed, valid)
@@ -67,11 +67,60 @@ func TestRegistryFetchOnlyPermissionRejectsPush(t *testing.T) {
 func TestRegistryRegisterTokenUsesExplicitToken(t *testing.T) {
 	repo := NewRepoKey("github.com", "owner", "repo")
 	reg := NewRegistry()
-	reg.RegisterToken("explicit-token", map[RepoKey]Permission{repo: PermFetch})
+	reg.RegisterToken("explicit-token", map[RepoKey]Permission{repo: PermFetch}, "default")
 
 	allowed, valid := reg.Authorize("explicit-token", repo, OpFetch)
 	if !valid || !allowed {
 		t.Fatalf("Authorize with explicit token = (%v, %v), want (true, true)", allowed, valid)
+	}
+}
+
+// TestRegistryRegisterAndLookupPreserveNamespace is the guard for post-cutover
+// 改善 §1 (workspace-scoped PAT namespace): Register must record the
+// namespace it was given, and Lookup must return it back out unchanged, so
+// Server.ServeHTTP can route CredentialProvider.Inject to the right
+// workspace's secret.
+func TestRegistryRegisterAndLookupPreserveNamespace(t *testing.T) {
+	repo := NewRepoKey("github.com", "owner", "repo")
+	reg := NewRegistry()
+
+	tokenA := reg.Register(map[RepoKey]Permission{repo: PermFetch}, "ws-a")
+	tokenB := reg.Register(map[RepoKey]Permission{repo: PermFetch}, "ws-b")
+
+	entryA, ok := reg.Lookup(tokenA)
+	if !ok {
+		t.Fatal("Lookup(tokenA) not found")
+	}
+	if entryA.Namespace != "ws-a" {
+		t.Errorf("entryA.Namespace = %q, want ws-a", entryA.Namespace)
+	}
+
+	entryB, ok := reg.Lookup(tokenB)
+	if !ok {
+		t.Fatal("Lookup(tokenB) not found")
+	}
+	if entryB.Namespace != "ws-b" {
+		t.Errorf("entryB.Namespace = %q, want ws-b", entryB.Namespace)
+	}
+}
+
+// TestRegistryRegisterEmptyNamespacePreserved pins the backward-compatibility
+// fallback: a token registered with an empty namespace (workspace-unlinked
+// project — orchestrator.JobSpec.SecretNamespace is "" in that case) must
+// keep Namespace == "" through Register/Lookup; normalizing "" to "default"
+// is dispatcher.SecretStore.Get's job (normalizeNamespace), not the
+// Registry's.
+func TestRegistryRegisterEmptyNamespacePreserved(t *testing.T) {
+	repo := NewRepoKey("github.com", "owner", "repo")
+	reg := NewRegistry()
+	token := reg.Register(map[RepoKey]Permission{repo: PermFetch}, "")
+
+	entry, ok := reg.Lookup(token)
+	if !ok {
+		t.Fatal("Lookup(token) not found")
+	}
+	if entry.Namespace != "" {
+		t.Errorf("entry.Namespace = %q, want empty string preserved as-is", entry.Namespace)
 	}
 }
 

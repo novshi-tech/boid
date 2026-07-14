@@ -25,6 +25,7 @@ has the same shape:
 8. [gitgateway RepoKey normalization](#8-gitgateway-repokey-normalization)
 9. [sandbox-clone declaration path](#9-sandbox-clone-declaration-path)
 10. [exec stdin-forward opt-in](#10-exec-stdin-forward-opt-in)
+11. [gitgateway SecretResolver namespace threading](#11-gitgateway-secretresolver-namespace-threading)
 
 ---
 
@@ -301,3 +302,46 @@ for `boid exec`, never for a hook job. Added by PR #735 (git gateway cutover's e
   `JobKind`, or touch the non-interactive branch of `LocalRuntime.Start`, verify the two-sided
   contract still holds for **both** kinds in the same test run — a fix verified only against exec
   (or only against hook) is exactly the shape of break this seam exists to catch.
+
+## 11. gitgateway SecretResolver namespace threading
+
+Whether a workspace-scoped PAT namespace, chosen at dispatch time, actually reaches the
+`SecretResolver` call that resolves the upstream Basic-auth token — namespace propagation
+across register → store → recover → resolve (four ends, three hops between them), where
+any hop that drops the namespace silently collapses every workspace back onto the
+`"default"` secret namespace. Added by post-cutover 改善 §1 (workspace-scoped PAT
+namespace).
+
+- **End A (register)**: `Runner.registerGatewayToken` in `internal/dispatcher/gitgateway_wire.go`
+  calls `r.GitGateway.Register(repos, spec.SecretNamespace)` — `spec.SecretNamespace` is already
+  hydrated to the workspace ID upstream by `orchestrator.ProjectStore.GetWithWorkspace` (a
+  pre-existing seam, unchanged here).
+- **End B (store)**: `gitgateway.Registry.Register` / `RegisterToken` in
+  `internal/gitgateway/registry.go` persist the namespace on `Entry.Namespace` alongside `Repos`.
+- **End C (recover)**: `Server.ServeHTTP` in `internal/gitgateway/server.go` — after
+  `Registry.Authorize` confirms the token, a second `Registry.Lookup(rt.token)` recovers
+  `Entry.Namespace` (`Authorize`'s bool-returning signature does not expose it) and stashes it on
+  the request-scoped `routeInfo`, which the `ReverseProxy.Rewrite` hook reads back to call
+  `CredentialProvider.Inject(pr.Out, info.host, info.namespace)`.
+- **End D (resolve)**: `gitgateway.SecretResolver` (`func(namespace, key string) (string, error)`,
+  `internal/gitgateway/credentials.go`) — the closure built in `internal/server/wire.go`
+  (`gwResolver`) passes `namespace` straight through to `secretStore.Get(namespace, key)`, which
+  itself normalizes `""` to `"default"` (`dispatcher.SecretStore.normalizeNamespace`) — so an
+  empty namespace (a workspace-unlinked project) still resolves against the pre-namespacing
+  `"default"` secret namespace unchanged.
+- **Invariant**: the namespace a token was registered with (End A/B) is exactly the namespace
+  `Inject` resolves credentials against for every request authorized under that token (End C/D) —
+  no hop may substitute, drop, or hardcode a different namespace (in particular, don't
+  reintroduce a hardcoded `"default"` in the `gwResolver` closure the way the pre-fix code did).
+- **Guard**: `TestRegistryRegisterAndLookupPreserveNamespace` / `_EmptyNamespacePreserved`
+  (`internal/gitgateway/registry_test.go`, End B), `TestCredentialProviderInjectNamespaceRoutesToDifferentSecret`
+  (`internal/gitgateway/credentials_test.go`, End D in isolation),
+  `TestServeHTTP_RoutesCredentialsByTokenNamespace` (`internal/gitgateway/server_test.go`) closes
+  End B→C→D end-to-end through a real `Registry` + `Server`, and
+  `TestDispatch_RegistersGatewayTokenWithSecretNamespace` (`internal/dispatcher/gitgateway_wire_test.go`)
+  closes End A→B through a real `Dispatch`.
+- **When you touch it**: if you touch `registerGatewayToken`, `Registry.Register`/`RegisterToken`,
+  `Server.ServeHTTP`'s post-`Authorize` block, or the `gwResolver` closure in
+  `internal/server/wire.go`, verify a token registered under namespace X still resolves
+  credentials under namespace X — a change to any one hop without updating the others
+  reintroduces the "every workspace shares one PAT" bug this seam exists to prevent.
