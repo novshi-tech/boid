@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +10,17 @@ import (
 
 	"github.com/novshi-tech/boid/internal/gitgateway"
 )
+
+// captureSlog redirects the default slog logger to an in-memory buffer for
+// the duration of the test. Helper for verifying deprecation warnings.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
 
 func TestLoadFromPath_FileNotExist_ReturnsDefaults(t *testing.T) {
 	cfg, err := loadFromPath(filepath.Join(t.TempDir(), "nonexistent.yaml"))
@@ -147,17 +160,67 @@ gc:
 	}
 }
 
-func TestLoadFromPath_GatewayHosts(t *testing.T) {
+// hostConfig looks up a single resolved gitgateway.HostForgeConfig by host
+// from GatewayConfig.HostConfigs(), failing the test if it is absent.
+func hostConfig(t *testing.T, cfg *Config, host string) gitgateway.HostForgeConfig {
+	t.Helper()
+	for _, h := range cfg.Gateway.HostConfigs() {
+		if h.Host == host {
+			return h
+		}
+	}
+	t.Fatalf("HostConfigs() has no entry for host %q; got %#v", host, cfg.Gateway.HostConfigs())
+	return gitgateway.HostForgeConfig{}
+}
+
+// An unset gateway block must not error, and the built-in github/bitbucket
+// forges must resolve out of the box — the whole point of the post-cutover
+// §2 default-embedding is that a brand new user gets a working gateway from
+// `boid secret set github-pat <PAT>` alone, with zero config.yaml edits.
+func TestLoadFromPath_Gateway_UnsetUsesBuiltinDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("gc:\n  interval: 6h\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	hosts := cfg.Gateway.HostConfigs()
+	if len(hosts) != 2 {
+		t.Fatalf("HostConfigs() = %#v, want 2 built-in entries", hosts)
+	}
+	gh := hostConfig(t, cfg, "github.com")
+	if gh.Forge != gitgateway.ForgeGitHub || gh.SecretKey != "github-pat" {
+		t.Errorf("github.com entry = %#v, want forge=github secret_key=github-pat", gh)
+	}
+	bb := hostConfig(t, cfg, "bitbucket.org")
+	if bb.Forge != gitgateway.ForgeBitbucket || bb.SecretKey != "bitbucket-token" {
+		t.Errorf("bitbucket.org entry = %#v, want forge=bitbucket secret_key=bitbucket-token", bb)
+	}
+}
+
+func TestDefaultConfig_GatewayBuiltins(t *testing.T) {
+	cfg := DefaultConfig()
+	hosts := cfg.Gateway.HostConfigs()
+	if len(hosts) != 2 {
+		t.Fatalf("DefaultConfig().Gateway.HostConfigs() = %#v, want 2 built-in entries", hosts)
+	}
+}
+
+// gateway.forges is the new (post-cutover §2) schema: a map keyed by forge
+// id instead of a host/forge/secret_key triple list. Built-in ids only need
+// a secret_key override; host and forge convention default.
+func TestLoadFromPath_GatewayForges_OverrideBuiltinSecretKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := `
 gateway:
-  hosts:
-    - host: github.com
-      forge: github
+  forges:
+    github:
       secret_key: gh-pat
-    - host: bitbucket.org
-      forge: bitbucket
+    bitbucket:
       secret_key: bb-token
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -168,25 +231,145 @@ gateway:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(cfg.Gateway.Hosts) != 2 {
-		t.Fatalf("Gateway.Hosts = %#v, want 2 entries", cfg.Gateway.Hosts)
+	gh := hostConfig(t, cfg, "github.com")
+	if gh.Forge != gitgateway.ForgeGitHub || gh.SecretKey != "gh-pat" {
+		t.Errorf("github.com entry = %#v, want forge=github secret_key=gh-pat", gh)
 	}
-	gh := cfg.Gateway.Hosts[0]
-	if gh.Host != "github.com" || gh.Forge != gitgateway.ForgeGitHub || gh.SecretKey != "gh-pat" {
-		t.Errorf("Gateway.Hosts[0] = %#v, want {github.com github gh-pat}", gh)
-	}
-	bb := cfg.Gateway.Hosts[1]
-	if bb.Host != "bitbucket.org" || bb.Forge != gitgateway.ForgeBitbucket || bb.SecretKey != "bb-token" {
-		t.Errorf("Gateway.Hosts[1] = %#v, want {bitbucket.org bitbucket bb-token}", bb)
+	bb := hostConfig(t, cfg, "bitbucket.org")
+	if bb.Forge != gitgateway.ForgeBitbucket || bb.SecretKey != "bb-token" {
+		t.Errorf("bitbucket.org entry = %#v, want forge=bitbucket secret_key=bb-token", bb)
 	}
 	// config.yaml never carries a plaintext token; Scheme is a test-only
 	// override (yaml:"-") and must stay unset from a real config file.
 	if gh.Scheme != "" {
-		t.Errorf("Gateway.Hosts[0].Scheme = %q, want empty (not yaml-settable)", gh.Scheme)
+		t.Errorf("github.com entry Scheme = %q, want empty (not yaml-settable)", gh.Scheme)
+	}
+}
+
+// A custom (non-built-in) forge id, e.g. for a GitHub Enterprise host, must
+// declare host/forge/secret_key explicitly since none of them can be
+// derived from an arbitrary id.
+func TestLoadFromPath_GatewayForges_CustomID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+gateway:
+  forges:
+    github-enterprise:
+      host: github.corp.example.com
+      forge: github
+      secret_key: ghe-pat
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ghe := hostConfig(t, cfg, "github.corp.example.com")
+	if ghe.Forge != gitgateway.ForgeGitHub || ghe.SecretKey != "ghe-pat" {
+		t.Errorf("github.corp.example.com entry = %#v, want forge=github secret_key=ghe-pat", ghe)
+	}
+	// Built-in defaults must still be present alongside the custom id.
+	if len(cfg.Gateway.HostConfigs()) != 3 {
+		t.Errorf("HostConfigs() = %#v, want 3 entries (2 built-in + 1 custom)", cfg.Gateway.HostConfigs())
+	}
+}
+
+func TestLoadFromPath_GatewayForges_CustomIDMissingHostRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+gateway:
+  forges:
+    github-enterprise:
+      forge: github
+      secret_key: ghe-pat
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadFromPath(path); err == nil {
+		t.Fatal("expected error for missing host on custom id, got nil")
+	}
+}
+
+func TestLoadFromPath_GatewayForges_CustomIDMissingSecretKeyRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+gateway:
+  forges:
+    github-enterprise:
+      host: github.corp.example.com
+      forge: github
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadFromPath(path); err == nil {
+		t.Fatal("expected error for missing secret_key on custom id, got nil")
+	}
+}
+
+func TestLoadFromPath_GatewayForges_UnrecognizedForgeRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+gateway:
+  forges:
+    gitlab:
+      host: gitlab.com
+      forge: gitlab
+      secret_key: gl-pat
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadFromPath(path); err == nil {
+		t.Fatal("expected error for unrecognized forge, got nil")
+	}
+}
+
+// The deprecated gateway.hosts list (docs/plans/git-gateway-cutover.md PR4's
+// original schema) must keep working for one release, folded into the same
+// resolved HostConfigs() list, while logging a deprecation warning.
+func TestLoadFromPath_GatewayHosts_LegacyStillParses(t *testing.T) {
+	buf := captureSlog(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+gateway:
+  hosts:
+    - host: gitlab.example.com
+      forge: github
+      secret_key: gl-pat
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	gl := hostConfig(t, cfg, "gitlab.example.com")
+	if gl.Forge != gitgateway.ForgeGitHub || gl.SecretKey != "gl-pat" {
+		t.Errorf("gitlab.example.com entry = %#v, want forge=github secret_key=gl-pat", gl)
+	}
+	// Built-in defaults must still resolve alongside the legacy entry.
+	if len(cfg.Gateway.HostConfigs()) != 3 {
+		t.Errorf("HostConfigs() = %#v, want 3 entries (2 built-in + 1 legacy)", cfg.Gateway.HostConfigs())
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("gateway.hosts is deprecated")) {
+		t.Errorf("expected a gateway.hosts deprecation warning, got log output: %s", buf.String())
 	}
 }
 
 func TestLoadFromPath_GatewayHosts_UnrecognizedForgeRejected(t *testing.T) {
+	captureSlog(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := `
@@ -205,6 +388,7 @@ gateway:
 }
 
 func TestLoadFromPath_GatewayHosts_MissingSecretKeyRejected(t *testing.T) {
+	captureSlog(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := `
@@ -221,21 +405,184 @@ gateway:
 	}
 }
 
-// An unset gateway block must not error and must leave Hosts empty — the
-// gateway is still constructed (PR4's lifecycle wiring is unconditional) but
-// with no forge credentials configured.
-func TestLoadFromPath_GatewayHosts_UnsetIsEmpty(t *testing.T) {
+// When both the new gateway.forges and the deprecated gateway.hosts
+// configure the same host, forges must win and the hosts entry must be
+// ignored (with a warning), per the "forges > hosts" priority rule.
+func TestLoadFromPath_Gateway_ForgesOverridesHostsForSameHost(t *testing.T) {
+	buf := captureSlog(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte("gc:\n  interval: 6h\n"), 0o644); err != nil {
+	content := `
+gateway:
+  forges:
+    github:
+      secret_key: from-forges
+  hosts:
+    - host: github.com
+      forge: github
+      secret_key: from-hosts
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	gh := hostConfig(t, cfg, "github.com")
+	if gh.SecretKey != "from-forges" {
+		t.Errorf("github.com entry SecretKey = %q, want %q (forges must win)", gh.SecretKey, "from-forges")
+	}
+	if len(cfg.Gateway.HostConfigs()) != 2 {
+		t.Errorf("HostConfigs() = %#v, want 2 entries (github.com deduped, bitbucket.org built-in)", cfg.Gateway.HostConfigs())
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("already configured via gateway.forges")) {
+		t.Errorf("expected a warning that the gateway.hosts entry was ignored, got log output: %s", buf.String())
+	}
+}
+
+// Regression: nose's real ~/.config/boid/config.yaml sets github.com's
+// secret_key via the legacy hosts: form (e.g. GH_TOKEN, not the built-in
+// default github-pat). Before this fix the built-in default seed collided
+// with the legacy entry in the dup-check and silently discarded the
+// legacy secret_key — every credential lookup then went to the built-in
+// default key, missed, and fell open. The legacy hosts entry MUST override
+// the built-in slot's secret_key when the user hasn't explicitly configured
+// that built-in id via gateway.forges. See UnmarshalYAML's "byte-for-byte
+// legacy compat" comment.
+func TestLoadFromPath_GatewayHosts_LegacyPreservesBuiltinGitHubSecretKey(t *testing.T) {
+	buf := captureSlog(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+gateway:
+  hosts:
+    - host: github.com
+      forge: github
+      secret_key: GH_TOKEN
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	gh := hostConfig(t, cfg, "github.com")
+	if gh.SecretKey != "GH_TOKEN" {
+		t.Errorf("github.com SecretKey = %q, want %q (legacy hosts value must win over built-in default \"github-pat\")",
+			gh.SecretKey, "GH_TOKEN")
+	}
+	if gh.Forge != gitgateway.ForgeGitHub {
+		t.Errorf("github.com Forge = %q, want %q", gh.Forge, gitgateway.ForgeGitHub)
+	}
+	// bitbucket built-in must still resolve (untouched by the github override).
+	bb := hostConfig(t, cfg, "bitbucket.org")
+	if bb.SecretKey != "bitbucket-token" {
+		t.Errorf("bitbucket.org SecretKey = %q, want built-in default %q", bb.SecretKey, "bitbucket-token")
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("merged into built-in forge slot")) {
+		t.Errorf("expected a warning that the legacy entry was merged into the built-in slot, got: %s", buf.String())
+	}
+}
+
+func TestLoadFromPath_GatewayHosts_LegacyPreservesBuiltinBitbucketSecretKey(t *testing.T) {
+	captureSlog(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+gateway:
+  hosts:
+    - host: bitbucket.org
+      forge: bitbucket
+      secret_key: BB_TOKEN
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	bb := hostConfig(t, cfg, "bitbucket.org")
+	if bb.SecretKey != "BB_TOKEN" {
+		t.Errorf("bitbucket.org SecretKey = %q, want %q (legacy hosts value must win over built-in default \"bitbucket-token\")",
+			bb.SecretKey, "BB_TOKEN")
+	}
+	if bb.Forge != gitgateway.ForgeBitbucket {
+		t.Errorf("bitbucket.org Forge = %q, want %q", bb.Forge, gitgateway.ForgeBitbucket)
+	}
+}
+
+// Built-in id "github" has a fixed host (github.com). Writing a different
+// host under it is almost certainly a mistake — it would silently break
+// Basic-auth username selection — so it must be rejected up front, not
+// silently accepted. Same for "bitbucket".
+func TestLoadFromPath_GatewayForges_BuiltinHostOverrideRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+gateway:
+  forges:
+    github:
+      host: typo.example.com
+      secret_key: gh-pat
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadFromPath(path); err == nil {
+		t.Fatal("expected error for host override on built-in id \"github\", got nil")
+	}
+}
+
+func TestLoadFromPath_GatewayForges_BuiltinForgeOverrideRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+gateway:
+  forges:
+    github:
+      forge: bitbucket
+      secret_key: gh-pat
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadFromPath(path); err == nil {
+		t.Fatal("expected error for forge override on built-in id \"github\", got nil")
+	}
+}
+
+// The rejection is against changing a built-in id's host / forge. Writing
+// them redundantly with values that already match the built-in defaults
+// (e.g. `github: {host: github.com}`) must still be accepted — otherwise
+// migrating from `hosts:` by literally moving entries under `forges:` would
+// spuriously fail.
+func TestLoadFromPath_GatewayForges_BuiltinRedundantHostAllowed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+gateway:
+  forges:
+    github:
+      host: github.com
+      forge: github
+      secret_key: gh-pat
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := loadFromPath(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(cfg.Gateway.Hosts) != 0 {
-		t.Errorf("Gateway.Hosts = %#v, want empty", cfg.Gateway.Hosts)
+	gh := hostConfig(t, cfg, "github.com")
+	if gh.SecretKey != "gh-pat" {
+		t.Errorf("github.com SecretKey = %q, want %q", gh.SecretKey, "gh-pat")
 	}
 }
 

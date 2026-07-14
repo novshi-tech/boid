@@ -483,7 +483,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 			return secretStore.Get(namespace, key)
 		}
 	}
-	gwCreds := gitgateway.NewCredentialProvider(boidCfg.Gateway.Hosts, gwResolver)
+	gwCreds := gitgateway.NewCredentialProvider(boidCfg.Gateway.HostConfigs(), gwResolver)
 	gwHandler := gitgateway.NewServer(srv.gatewayRegistry, gwCreds, gatewayNotifier{notify: notifySvc})
 	srv.gatewayHTTPServer = &http.Server{Handler: gwHandler}
 

@@ -2,8 +2,10 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/gitgateway"
@@ -41,16 +43,132 @@ type SandboxConfig struct {
 	AllowedDomains []string `yaml:"allowed_domains"`
 }
 
-// GatewayConfig configures the git gateway's per-host forge credential
-// injection (docs/plans/git-gateway-cutover.md PR4: 「config.yaml の gateway
-// ブロックは forge 種別と secret key 参照のみ持つ」). Only the forge kind and
-// a secret-store key reference are ever written here — the plaintext PAT
-// itself lives in the secret store (`boid secret set <key> <value>`), never
-// in config.yaml. gitgateway.HostForgeConfig's own yaml tags already match
-// this shape (host/forge/secret_key), so it is reused directly rather than
-// duplicated here.
+// ForgeConfig configures the git gateway's credential injection for a
+// single forge id (the map key in GatewayConfig.Forges). Only the forge
+// kind and a secret-store key reference are ever written here — the
+// plaintext PAT itself lives in the secret store (`boid secret set <key>
+// <value>`), never in config.yaml.
+//
+// Built-in ids ("github", "bitbucket") default every field left empty here
+// (see builtinForges): host, Basic-auth forge convention, and secret-store
+// key all resolve without the user writing anything, so `gateway.forges:
+// {github: {}}` — or omitting the id entirely, since DefaultConfig
+// pre-populates both built-ins — is enough for `boid secret set github-pat
+// <PAT>` to light up the gateway for github.com. Custom ids (e.g.
+// "github-enterprise") must set Host explicitly, and Forge must name one of
+// gitgateway's recognized conventions since that convention is not itself
+// derivable from an arbitrary id.
+type ForgeConfig struct {
+	// Host is the upstream host as it appears in the gateway route path
+	// (e.g. "github.com"). Optional for built-in ids; required otherwise.
+	Host string `yaml:"host,omitempty"`
+	// Forge selects the Basic-auth username convention
+	// (gitgateway.ForgeGitHub / gitgateway.ForgeBitbucket). Optional for
+	// built-in ids; required otherwise.
+	Forge gitgateway.Forge `yaml:"forge,omitempty"`
+	// SecretKey is a reference into the secret store
+	// (internal/dispatcher/secret_store.go); never a plaintext token.
+	// Optional for built-in ids (defaults below); required otherwise.
+	SecretKey string `yaml:"secret_key,omitempty"`
+}
+
+// GatewayConfig configures the git gateway's per-forge credential injection
+// (post-cutover §2: config surface を forges map に圧縮 + github/bitbucket
+// を内蔵デフォルト化). Forges maps a forge id to its credential config;
+// Config.UnmarshalYAML also accepts the deprecated pre-forges-map
+// `gateway.hosts` list (docs/plans/git-gateway-cutover.md PR4's original
+// schema) and folds it into this map, so GatewayConfig itself only ever
+// needs to carry the one shape.
 type GatewayConfig struct {
-	Hosts []gitgateway.HostForgeConfig `yaml:"hosts,omitempty"`
+	// Forges maps a forge id (e.g. "github", "bitbucket", or a custom id
+	// like "github-enterprise") to its credential config. Built-in ids
+	// "github" and "bitbucket" are pre-populated by DefaultConfig with
+	// host/forge/secret_key defaults already filled in — see builtinForges.
+	Forges map[string]ForgeConfig `yaml:"forges,omitempty"`
+}
+
+// builtinForges lists the forge ids DefaultConfig pre-populates and the
+// defaults resolveForgeConfig fills in for any field a built-in id's
+// ForgeConfig leaves empty.
+var builtinForges = map[string]gitgateway.HostForgeConfig{
+	"github":    {Host: "github.com", Forge: gitgateway.ForgeGitHub, SecretKey: "github-pat"},
+	"bitbucket": {Host: "bitbucket.org", Forge: gitgateway.ForgeBitbucket, SecretKey: "bitbucket-token"},
+}
+
+// resolveForgeConfig fills in built-in defaults (when id names one of
+// builtinForges) and validates the result, returning the fully-resolved
+// gitgateway.HostForgeConfig for a single gateway.forges entry.
+//
+// For built-in ids ("github" / "bitbucket"), the host and forge fields are
+// fixed — they identify what the id *means* — so only secret_key may be
+// overridden by the user. Writing `forges: {github: {host: "typo.example.com"}}`
+// is almost certainly a mistake (silently pointing the "github" slot at some
+// unrelated host would break Basic-auth username selection), so this rejects
+// any explicit host/forge value on a built-in id that doesn't match its
+// defaults, instead of silently letting it through. Custom ids must supply
+// host / forge / secret_key themselves (no defaults apply).
+func resolveForgeConfig(id string, fc ForgeConfig) (gitgateway.HostForgeConfig, error) {
+	h := gitgateway.HostForgeConfig{Host: fc.Host, Forge: fc.Forge, SecretKey: fc.SecretKey}
+	if def, ok := builtinForges[id]; ok {
+		if fc.Host != "" && fc.Host != def.Host {
+			return gitgateway.HostForgeConfig{}, fmt.Errorf(
+				"gateway.forges[%q]: built-in id has fixed host %q; drop the \"host\" field (only \"secret_key\" is overridable on built-in ids). "+
+					"To point at a different host, add a custom forge id instead (e.g. \"github-enterprise\").",
+				id, def.Host)
+		}
+		if fc.Forge != "" && fc.Forge != def.Forge {
+			return gitgateway.HostForgeConfig{}, fmt.Errorf(
+				"gateway.forges[%q]: built-in id has fixed forge %q; drop the \"forge\" field (only \"secret_key\" is overridable on built-in ids)",
+				id, def.Forge)
+		}
+		h.Host = def.Host
+		h.Forge = def.Forge
+		if h.SecretKey == "" {
+			h.SecretKey = def.SecretKey
+		}
+	}
+	if h.Host == "" {
+		return gitgateway.HostForgeConfig{}, fmt.Errorf(
+			"gateway.forges[%q]: missing required \"host\" field (only built-in ids %q/%q default it)",
+			id, "github", "bitbucket")
+	}
+	if h.SecretKey == "" {
+		return gitgateway.HostForgeConfig{}, fmt.Errorf("gateway.forges[%q]: missing required \"secret_key\" field", id)
+	}
+	switch h.Forge {
+	case gitgateway.ForgeGitHub, gitgateway.ForgeBitbucket:
+	default:
+		return gitgateway.HostForgeConfig{}, fmt.Errorf("gateway.forges[%q]: unrecognized forge %q (want %q or %q)",
+			id, h.Forge, gitgateway.ForgeGitHub, gitgateway.ForgeBitbucket)
+	}
+	return h, nil
+}
+
+// HostConfigs resolves g.Forges into the flat gitgateway.HostForgeConfig
+// list gitgateway.NewCredentialProvider consumes (internal/server/wire.go),
+// applying built-in defaults per resolveForgeConfig. Entries are returned in
+// id-sorted order for determinism.
+//
+// INVARIANT: callers must only invoke this on a GatewayConfig that has
+// already been validated by Config.UnmarshalYAML — that is the sole place
+// gateway.forges entries are validated, so on a validated config every
+// entry resolves successfully. A resolution failure here is defensive-only
+// (a hand-built GatewayConfig that skipped validation) and is skipped
+// silently rather than surfaced as an error, since HostConfigs has no error
+// return and never should have one under the invariant.
+func (g GatewayConfig) HostConfigs() []gitgateway.HostForgeConfig {
+	ids := make([]string, 0, len(g.Forges))
+	for id := range g.Forges {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]gitgateway.HostForgeConfig, 0, len(ids))
+	for _, id := range ids {
+		if h, err := resolveForgeConfig(id, g.Forges[id]); err == nil {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // NotifyConfig holds settings for agent-driven notifications.
@@ -81,6 +199,15 @@ func DefaultConfig() *Config {
 		},
 		TaskAsk: TaskAskConfig{
 			DisconnectGrace: 30 * time.Minute,
+		},
+		Gateway: GatewayConfig{
+			// Built in so `boid secret set github-pat <PAT>` (or
+			// bitbucket-token) lights up the gateway with zero
+			// config.yaml edits — see ForgeConfig's doc comment.
+			Forges: map[string]ForgeConfig{
+				"github":    {},
+				"bitbucket": {},
+			},
 		},
 	}
 }
@@ -140,6 +267,14 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 			DisconnectGrace string `yaml:"disconnect_grace"`
 		} `yaml:"task_ask"`
 		Gateway struct {
+			Forges map[string]ForgeConfig `yaml:"forges"`
+			// Hosts is the deprecated pre-forges-map schema
+			// (docs/plans/git-gateway-cutover.md PR4). Still parsed for
+			// one release as a compatibility shim — see the Gateway
+			// handling below, which logs a deprecation warning and folds
+			// it into Forges.
+			//
+			// Deprecated: use Forges.
 			Hosts []gitgateway.HostForgeConfig `yaml:"hosts"`
 		} `yaml:"gateway"`
 		DefaultHarness string `yaml:"default_harness"`
@@ -184,21 +319,83 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		c.TaskAsk.DisconnectGrace = d
 	}
 
-	for _, h := range raw.Gateway.Hosts {
-		if h.Host == "" {
-			return fmt.Errorf("gateway.hosts: entry missing required \"host\" field")
+	// Start from the built-in defaults (github/bitbucket), then let the
+	// user's gateway.forges entries override/extend them by id. userForges
+	// tracks which ids were user-explicit (vs. seeded from defaults), which
+	// the legacy gateway.hosts loop below uses to decide whether a
+	// legacy-hosts entry for a built-in host should merge into the built-in
+	// slot (preserving its secret_key) or be dropped as a duplicate.
+	forges := make(map[string]ForgeConfig, len(defaults.Gateway.Forges)+len(raw.Gateway.Forges))
+	for id, fc := range defaults.Gateway.Forges {
+		forges[id] = fc
+	}
+	userForges := make(map[string]struct{}, len(raw.Gateway.Forges))
+	for id, fc := range raw.Gateway.Forges {
+		forges[id] = fc
+		userForges[id] = struct{}{}
+	}
+
+	// Resolve gateway.forges first (fully validating it, including built-in
+	// host/forge override rejection). Build host -> forge id lookup so the
+	// legacy gateway.hosts loop can apply the right priority rule per host:
+	// forges wins for user-explicit entries; but a legacy hosts entry that
+	// matches a *built-in default host* which the user hasn't explicitly
+	// configured via forges must MERGE into the built-in slot, not be
+	// dropped — otherwise the legacy entry's non-default secret_key gets
+	// silently lost to the built-in "github-pat" / "bitbucket-token"
+	// default (the regression this fix targets).
+	resolvedHosts := make(map[string]string, len(forges))
+	for id, fc := range forges {
+		h, err := resolveForgeConfig(id, fc)
+		if err != nil {
+			return err
 		}
-		if h.SecretKey == "" {
-			return fmt.Errorf("gateway.hosts: host %q: missing required \"secret_key\" field", h.Host)
-		}
-		switch h.Forge {
-		case gitgateway.ForgeGitHub, gitgateway.ForgeBitbucket:
-		default:
-			return fmt.Errorf("gateway.hosts: host %q: unrecognized forge %q (want %q or %q)",
-				h.Host, h.Forge, gitgateway.ForgeGitHub, gitgateway.ForgeBitbucket)
+		resolvedHosts[h.Host] = id
+	}
+
+	if len(raw.Gateway.Hosts) > 0 {
+		slog.Warn("gateway.hosts is deprecated and will be removed in a future release; use gateway.forges instead " +
+			"(see docs/ja/reference/config-yaml.md#gateway--git-gateway)")
+		for _, h := range raw.Gateway.Hosts {
+			if h.Host == "" {
+				return fmt.Errorf("gateway.hosts: entry missing required \"host\" field")
+			}
+			if h.SecretKey == "" {
+				return fmt.Errorf("gateway.hosts: host %q: missing required \"secret_key\" field", h.Host)
+			}
+			switch h.Forge {
+			case gitgateway.ForgeGitHub, gitgateway.ForgeBitbucket:
+			default:
+				return fmt.Errorf("gateway.hosts: host %q: unrecognized forge %q (want %q or %q)",
+					h.Host, h.Forge, gitgateway.ForgeGitHub, gitgateway.ForgeBitbucket)
+			}
+			if existingID, dup := resolvedHosts[h.Host]; dup {
+				_, userExplicit := userForges[existingID]
+				_, isBuiltin := builtinForges[existingID]
+				if isBuiltin && !userExplicit {
+					// Legacy entry targets a built-in host that the user
+					// hasn't explicitly configured via gateway.forges.
+					// Merge it into the built-in slot so the legacy
+					// secret_key wins over the built-in default. This is
+					// the "byte-for-byte legacy compat" path — nose's
+					// actual config.yaml (hosts-only, GH_TOKEN /
+					// BB_TOKEN keys) must keep working for one release.
+					slog.Warn("gateway.hosts entry merged into built-in forge slot (legacy secret_key preserved over built-in default)",
+						"host", h.Host, "forge_id", existingID)
+					forges[existingID] = ForgeConfig{Host: h.Host, Forge: h.Forge, SecretKey: h.SecretKey}
+					continue
+				}
+				slog.Warn("gateway.hosts entry ignored: host is already configured via gateway.forges", "host", h.Host)
+				continue
+			}
+			// Use the host itself as the synthetic forges id: legacy
+			// entries already carry host/forge/secret_key fully resolved,
+			// so no built-in defaulting ever applies to them.
+			forges[h.Host] = ForgeConfig{Host: h.Host, Forge: h.Forge, SecretKey: h.SecretKey}
+			resolvedHosts[h.Host] = h.Host
 		}
 	}
-	c.Gateway.Hosts = raw.Gateway.Hosts
+	c.Gateway = GatewayConfig{Forges: forges}
 
 	c.DefaultHarness = raw.DefaultHarness
 
