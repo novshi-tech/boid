@@ -14,9 +14,15 @@ Each step lists the relevant existing implementation to reference.
 
 For a quick look at code details and file paths, see [references/key-files.md](references/key-files.md).
 
-`git`, `boid`, and `fetch` are always available without any declaration in project.yaml / kit.yaml.
+`boid` and `fetch` are always available without any declaration in project.yaml / kit.yaml.
 New builtins follow the same convention — they are always injected by the planner
 (the `builtin_commands` config key has been removed).
+
+> **Historical note**: `git` used to be a builtin as well. The git gateway cutover (2026-07)
+> retired the sandbox-side `git` builtin — `git` is now a credential-less binary running inside
+> the sandbox, and all fetch/push traffic goes through the daemon-hosted git gateway (auth-injecting
+> reverse proxy). Removing the `git` builtin is why the examples below reference `boid` and `fetch`
+> as the current-generation reference implementations.
 
 ---
 
@@ -60,7 +66,7 @@ func handleOciBuiltinRequest(req *ExecRequest, entry *tokenEntry) *ExecResponse 
     if !entry.hasBuiltinPolicy("oci") {
         return &ExecResponse{ExitCode: 1, Stderr: "command not allowed: oci"}
     }
-    // Validate cwd (see validateGitBuiltinCwd in git_builtin.go for reference)
+    // Validate cwd (see validateBoidBuiltinCwd in broker.go for reference)
     if err := validateOciBuiltinCwd(req.Cwd, entry); err != nil {
         return &ExecResponse{ExitCode: 1, Stderr: err.Error()}
     }
@@ -81,7 +87,7 @@ func handleOciBuiltinRequest(req *ExecRequest, entry *tokenEntry) *ExecResponse 
 Role-based authorization is fully handled by the planner's `DefaultBuiltinPolicies`; the broker
 only consults that result.
 
-Reference: `handleGitBuiltinRequest` in `internal/sandbox/git_builtin.go`.
+Reference: `handleBoidBuiltin` in `internal/sandbox/broker.go` (and `handleFetchBuiltin` in `internal/sandbox/fetch_builtin.go` for a smaller, single-op builtin).
 
 ---
 
@@ -94,8 +100,8 @@ func policyFor(role Role, name string, pctx PolicyContext) BuiltinPolicy {
     switch name {
     case "boid":
         return boidPolicy(role, pctx)
-    case "git":
-        return gitPolicy(role, pctx)
+    case "fetch":
+        return fetchPolicy(role, pctx)
     case "oci":
         return ociPolicy(role, pctx) // add this
     default:
@@ -124,7 +130,7 @@ func ociPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 **Required**:
 - Write a **rationale comment** explaining why ops are allowed (and under what constraints)
 - Default: all roles share the same policy (`_ Role`). Only add a role `switch` when role-specific
-  restrictions are genuinely needed — current `boid` and `git` builtins are role-agnostic as a reference
+  restrictions are genuinely needed — current `boid` and `fetch` builtins are role-agnostic as a reference
 - Note any security concerns or related issues alongside the policy
 
 ---
@@ -139,7 +145,7 @@ The builtin name list is injected in **two** places; add the new name to both. B
 ```go
 BuiltinPolicies: DefaultBuiltinPolicies(
     RoleHook,
-    []string{"boid", "git", "fetch", "oci"},
+    []string{"boid", "fetch", "oci"},
     PolicyContext{ProjectDir: proj.WorkDir, HomeDir: sandboxHomeDir()},
 ),
 ```
@@ -150,7 +156,7 @@ BuiltinPolicies: DefaultBuiltinPolicies(
 ```go
 builtinPolicies := orchestrator.DefaultBuiltinPolicies(
     orchestrator.RoleHook,
-    []string{"boid", "git", "fetch", "oci"},
+    []string{"boid", "fetch"},
     orchestrator.PolicyContext{ProjectDir: input.ProjectWorkDir},
 )
 ```
@@ -175,6 +181,7 @@ func (b *Broker) Handle(req *ExecRequest) *ExecResponse {
         }
         return &ExecResponse{ExitCode: 1, Stderr: "command not allowed: oci"}
     }
+
     // ...
 }
 ```
@@ -189,9 +196,11 @@ if entry.hasBuiltinPolicy("oci") {
 }
 ```
 
-git's `captureGitBinding` uses a trusted snapshot taken at registration time so that an agent
-cannot tamper with the remote URL later. Add a capture only when the builtin references external
-URLs or resources that must be protected from tampering.
+Add a capture only when the builtin references external URLs or resources that must be protected
+from tampering — the pattern is a trusted snapshot taken at token-registration time so an agent
+cannot tamper with the value later. (The retired `git` builtin's `captureGitBinding` was the
+canonical example of this pattern before the git gateway cutover replaced it with a URL rewrite at
+the gateway layer.)
 
 ---
 
@@ -228,7 +237,7 @@ Minimum scenarios to cover:
 - An allowed op passes through
 - Missing or out-of-range cwd returns an error
 
-Reference: test helpers in `internal/sandbox/git_builtin_test.go` (`initGitRepo`, `gateGitPolicies`, etc.).
+Reference: test helpers in `internal/sandbox/broker_test.go` and `internal/sandbox/fetch_builtin_test.go` for token registration, policy plumbing, and cwd validation patterns.
 
 ---
 
@@ -239,7 +248,7 @@ Check these items when the new builtin involves external communication or host r
 - [ ] **Least privilege**: does hook receive more permissions than necessary? Hook should be read-only / notify-only by default
 - [ ] **Workspace isolation**: does the implementation respect existing workspace isolation (e.g. `entry.Context.AllowedProjectIDs`)?
 - [ ] **Secret leakage**: do error messages or slog calls expose secrets or credentials?
-- [ ] **Trusted snapshot**: can an agent tamper with external URLs or resource references? (see `captureGitBinding` pattern)
+- [ ] **Trusted snapshot**: can an agent tamper with external URLs or resource references? Capture a snapshot at token registration time (as the retired `captureGitBinding` did) or move the enforcement to a proxy layer (as the git gateway does).
 - [ ] **Minimal host access**: are host resources (files, network, processes) used to the minimum required?
 - [ ] **Role-invariant test**: is there a `RoleInvariant` equivalent test confirming the empty-role policy matches the hook-role policy? (see `TestDefaultBuiltinPolicies_FetchRoleInvariant`)
 
@@ -252,4 +261,4 @@ Check these items when the new builtin involves external communication or host r
 | broker has no knowledge of role | Role decisions are centralized in `DefaultBuiltinPolicies`; broker consults only the policy table |
 | policy is stamped at registration | Eliminates role evaluation at dispatch time; keeps broker simple |
 | empty role == hook role | Policies are role-invariant, so the empty test-only role resolves to the same policy as `RoleHook`. There is no separate "gate" role — that mechanism was removed |
-| no role branching by default | Current `boid`, `git`, and `fetch` builtins are role-agnostic; git fetch/push are permitted from the hook role because the dev workflow is intentionally delegated to the agent side. Add a role `switch` only when a new builtin genuinely needs role-specific restrictions |
+| no role branching by default | Current `boid` and `fetch` builtins are role-agnostic. Add a role `switch` only when a new builtin genuinely needs role-specific restrictions |

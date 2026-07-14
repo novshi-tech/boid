@@ -75,14 +75,13 @@ Any variables declared in the kit's `kit.yaml` are also exported.
 
 ### Working directory
 
-- **Tasks with a worktree** (root case 2/3, or any child task) run with the cwd set to **the worktree root**.
-- **Tasks without a worktree** (root case 1: `base_branch` matches the project HEAD, or executor in a project without `worktree:`) run with the cwd set to **the project root** (the directory containing `project.yaml`).
+For project-visible tasks the hook's cwd is the root of a fresh clone of the project made via the git gateway into the sandbox (`/workspace/<project-name>`, not the host's project directory). The path is the same for every combination of root/child and case 1/2/3 — what differs is which branch is checked out inside the clone (case 1 checks out `base_branch` as-is; a child task creates and checks out `boid/<task_id8>`). See [`project.yaml` reference / Task kinds and HEAD branch](project-yaml.md#task-kinds-and-head-branch) for details.
 
-This means commands like `git`, `gh`, and language toolchains do not need explicit directory arguments.
+Commands like `git`, `gh`, and language toolchains therefore do not need explicit directory arguments.
 
 ### File system access
 
-Hooks run inside the sandbox. They can read and write only inside the worktree (and nowhere if `readonly: true`). Paths declared in the kit's `additional_bindings` are mounted in addition. The host's home directory, SSH keys, and other projects are not visible.
+Hooks run inside the sandbox. They can read and write only inside the in-sandbox clone (or nowhere writable at all for `readonly: true` behaviors — the local clone itself still exists but pushes are refused at the git gateway). Paths declared in the kit's `additional_bindings` are mounted in addition. The host's home directory, SSH keys, and other projects are not visible.
 
 ## Outputs
 

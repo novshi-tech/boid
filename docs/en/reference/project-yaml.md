@@ -27,7 +27,7 @@ task_behaviors:
 |---|---|---|---|
 | `id` | string | yes | Unique identifier for this project inside `boid`. Tasks reference it via `project_id`. |
 | `name` | string | yes | Display name shown in UIs. |
-| `worktree` | bool | `false` | If `true`, allocates a dedicated git worktree for executor and supervisor tasks. **Root tasks** (`parent_id == ""`) use `base_branch` directly as the worktree HEAD; case 1 (`base_branch` matches the project HEAD) runs in the project root with no worktree. **Child tasks** always get a `boid/<task_id8>` branch worktree. See [Task kinds and worktree HEAD](#task-kinds-and-worktree-head). |
+| `worktree` | bool | `false` | If `true`, allocates a dedicated **isolated branch** to executor and supervisor tasks. **Root tasks** (no parent) use `base_branch` as HEAD directly (case 1 = when `base_branch` matches the project HEAD, no new branch is created — `base_branch` is checked out as-is). **Child tasks** (have a parent) always create a new `boid/<task_id8>` branch. Implemented as a branch declaration on the in-sandbox clone; no host-side git worktree is created (see [git gateway / in-sandbox clone](#git-gateway--in-sandbox-clone)). See [Task kinds and HEAD branch](#task-kinds-and-head-branch) for the full breakdown. |
 | `base_branch` | string | (see below) | The PR target branch, resolved at task creation and stored in the row. **When omitted**: root tasks expand to the daemon's current HEAD branch (`${current_branch}` equivalent) at creation time — a detached-HEAD repository returns 400. Child tasks inherit the parent's `base_branch`. Supports `${TASK_REMOTE_ID}` and `${current_branch}` expansion (see [Dynamic base_branch](#dynamic-base_branch)). |
 | `fork_point` | string | (falls back to `origin/HEAD`) | Fork origin for case 3 (when `base_branch` does not yet exist locally or on `origin`). Any ref resolvable by `git rev-parse --verify` (branch / tag / SHA / `origin/main`). Falls back to `refs/remotes/origin/HEAD`; errors if neither is resolvable. |
 | `kits` | list of KitRef | no | Kits loaded for this project. |
@@ -38,6 +38,17 @@ task_behaviors:
 | `secret_namespace` | string | no | Namespace under which this project's secrets are resolved. |
 | `capabilities` | Capabilities | no | Declares optional sandbox capabilities. The only supported capability today is `docker`. |
 | `default_task_behavior` | string | no | The behavior to use when `boid task create` omits `--behavior`. When unset, the daemon falls back to `supervisor` if that behavior exists (with a deprecation warning); if neither is configured, `boid task create` returns an error. |
+
+## git gateway / in-sandbox clone
+
+Every project-visible job (whether a hook, a session, or `boid exec`) freshly clones the project into the sandbox through the **git gateway** — a credential-injecting reverse proxy hosted inside the daemon. The host-side project directory is never bind-mounted, and no host-side git worktree is created.
+
+- The clone's origin points at the gateway. Inside the sandbox git is a plain, credential-less binary; the gateway is what proxies fetch/push to the upstream (GitHub etc.) with the token injected.
+- **The only way results are shared is a push to origin**: uncommitted (or committed-but-unpushed) work is invisible to any other session or host. "Push before done" becomes a hard prerequisite.
+- Under a `readonly: true` behavior, the local clone can still be written; the gateway rejects `git-receive-pack` (push) while leaving `git-upload-pack` (fetch) allowed. Read/write enforcement is now symmetric — "can't cross the boundary" instead of "can't touch the disk."
+- `reopen` is realised as "re-clone + branch checkout"; only committed (+pushed) content is guaranteed to survive.
+- Multiple tasks that target the same project × same HEAD branch dispatch **in parallel** now — each holds its own independent clone (the former per-branch FIFO lock is retired). Concurrent pushes resolve via the normal git flow (non-fast-forward reject → fetch + merge/rebase → re-push).
+- A workspace peer project is fetch-only from inside the sandbox (clone / reference). To write to a peer, spawn a cross-project child task on that project.
 
 ## `task_behaviors.<name>`
 
@@ -68,9 +79,9 @@ The fields below used to live under `task_behaviors.<name>.*`. They have been mo
 | Field | Status / Location |
 |---|---|
 | `readonly` | Re-enabled at the behavior level in Track A2. Defaults to `true` (fail-safe); set `readonly: false` for writable behaviors. |
-| `worktree` | Project-top `worktree:` combined with the 3-case `base_branch` classification. Executor gets a worktree when project-top `worktree: true`. Supervisor: no worktree in case 1 (`base_branch` = HEAD or omitted); readonly worktree in cases 2 and 3. |
+| `worktree` | Project-top `worktree:` combined with the 3-case `base_branch` classification. Under the git gateway, "worktree" now means "isolated branch on the in-sandbox clone" — no host-side git worktree is created. See [git gateway / in-sandbox clone](#git-gateway--in-sandbox-clone). |
 | `base_branch` | Project-top `base_branch:`. |
-| `branch_prefix` | Not configurable. Worktree branches are always created under `boid/`. |
+| `branch_prefix` | Not configurable. Child-task branches are always created under `boid/`. |
 | `default_payload` | Removed. Provide payload at task creation time instead. |
 
 ### Dynamic `base_branch`
@@ -90,32 +101,22 @@ See [docs/workflows.md](../../workflows.md) for end-to-end examples (Workflow 3 
 
 For how `worktree: true` behaves, see [Concepts / Worktree](../guide/concepts.md#worktree).
 
-### Task kinds and worktree HEAD
+### Task kinds and HEAD branch
 
-When `worktree: true` is set, the HEAD branch and fork point differ by task kind:
+Under `worktree: true`, the HEAD branch and fork point differ by task kind. The table itself is unchanged by the clone model — what changed is *how* the task reaches that branch (host worktree → in-sandbox clone + checkout):
 
 | Task kind | HEAD branch | Fork point | Read-only |
 |---|---|---|---|
 | **root sup / root exec** | `task.BaseBranch` | n/a | sup=true / exec=false |
 | **child sup / child exec** | `boid/<task_id8>` | **parent task's HEAD branch** | sup=true / exec=false |
 
-- **Root tasks** (`parent_id == ""`): placed directly on `base_branch`. When `base_branch` matches the project HEAD (case 1), no worktree is created and the task runs in the project root. When they differ (cases 2/3), a dedicated worktree is created with `base_branch` as its HEAD.
-- **Child tasks** (have a parent): always get a `boid/<task_id8>` branch worktree. The fork point is the **parent task's HEAD branch** (the parent's `base_branch` if the parent is a root task; `boid/<parent_id8>` if the parent is itself a child task). Only the immediate parent is referenced (1 hop).
+- **Root tasks** (`parent_id == ""`): placed directly on `base_branch`. When `base_branch` matches the project HEAD (case 1), the sandbox-internal clone checks out `base_branch` as-is with no new branch. When they differ (cases 2/3), the clone checks out `base_branch` as HEAD (creating it if needed).
+- **Child tasks** (have a parent): always create and check out a new `boid/<task_id8>` branch. The fork point is the **parent task's HEAD branch** (the parent's `base_branch` if the parent is a root task; `boid/<parent_id8>` if the parent is itself a child task). Only the immediate parent is referenced (1 hop) — **the parent branch must already be pushed to origin**, since the sandbox-internal clone only sees origin's pushed refs.
 - `task.BaseBranch` propagates to all child tasks as the PR target and is passed to executors via the `BOID_BASE_BRANCH` environment variable.
 
-### HEAD branch lock (1 active task per project × HEAD branch)
+### Concurrent tasks on the same HEAD branch
 
-To prevent two tasks from sharing the same working copy simultaneously, `boid` holds a **`<projectID>:<HEAD branch>`** lock for every executing task:
-
-| Task kind | HEAD branch | Lock key |
-|---|---|---|
-| root sup / root exec | `task.BaseBranch` | `<projectID>:<baseBranch>` |
-| child sup / child exec | `boid/<task_id8>` | `<projectID>:boid/<task_id8>` |
-
-- **Serialised**: two root tasks in the same project with the same `base_branch` queue in FIFO order — the second waits until the first reaches a terminal state.
-- **Parallel-safe**: root tasks with different `base_branch` values, root + child combinations, and any two child tasks are all allowed to run simultaneously.
-- The lock is held for the full executing lifetime. When a task enters `awaiting` (via `boid task ask` or `boid task notify --ask`), the lock is **released** so that other tasks on the same branch can proceed; the lock is re-acquired when the task resumes (via `answer`). It is finally released on a terminal transition.
-- No validation at task-creation time — the lock is acquired when the task transitions to `executing`.
+Previously multiple tasks targeting `<projectID>:<HEAD branch>` were serialised by a FIFO lock (a single host git worktree could not host two tasks simultaneously). **That serialisation lock was retired by the git gateway cutover**: each task now holds an independent in-sandbox clone, so multiple tasks against the same branch dispatch in parallel. Concurrent pushes are resolved by the normal git flow — the second push gets a non-fast-forward reject, and the caller fetches + merges/rebases + re-pushes.
 
 ### Base synchronisation and merge responsibility
 
@@ -124,12 +125,12 @@ To prevent two tasks from sharing the same working copy simultaneously, `boid` h
 ```
 A (executor) done → A's PR is merged into base
                          ↓
-            sub-sup: git fetch && merge → updates own branch (boid/<subid8>)
+            sub-sup: git fetch && merge → updates own branch (boid/<subid8>) and pushes
                          ↓
-            sub-sup dispatches B → B's worktree forks from the updated boid/<subid8>
+            sub-sup dispatches B → B's in-sandbox clone forks from the updated boid/<subid8>
 ```
 
-The merge command, timing, and target are the **responsibility of the project instruction**, not of any skill or boid core component. Core's only contribution is passing `BOID_BASE_BRANCH` and `BOID_PARENT_BRANCH` environment variables to executors.
+The merge command, timing, and target are the **responsibility of the project instruction**, not of any skill or boid core component. Core's only contribution is passing `BOID_BASE_BRANCH` and `BOID_PARENT_BRANCH` environment variables to executors. Note that the child branch must be **pushed** before the sub-sup dispatches its next child — the child's clone only sees origin's pushed refs.
 
 ### `default_instruction`
 
@@ -202,7 +203,7 @@ A specialised use: setting `path` to a relative path inside the project or a kit
 #### Host command execution contract
 
 - **stdin never reaches the command** — the sandbox shim does not read stdin, and the broker discards anything it receives. `stdin: true` is still accepted (parsed) but has no effect (a deprecation warning is logged). To pass file contents or long text to a command, use an argument instead of stdin (e.g. `--body "$(cat <file>)"`).
-- **cwd is a fixed neutral directory** — host commands run on the host in a neutral directory (`os.TempDir()`), never the project/worktree checkout. Do not rely on behavior that infers the repo from cwd (e.g. `gh`'s implicit `-R`).
+- **cwd is a fixed neutral directory** — host commands run on the host in a neutral directory (`os.TempDir()`), never in any project checkout. Do not rely on behavior that infers the repo from cwd (e.g. `gh`'s implicit `-R`).
 - **repo context is passed via env** — instead of cwd inference, an `env:` value of `${boid:repo_slug}` expands to a `host/owner/repo` string derived from the project's origin remote at token registration time. For `gh`, `GH_REPO: ${boid:repo_slug}` keeps the previous transparent behavior.
 - **reject rules** — an invocation whose joined args match `match` (same glob semantics as allow/deny) is rejected by both the shim (early) and the broker (authoritative), surfacing `host_commands.<name>: rejected: <reason>` to the agent. Write `reason` as actionable guidance (what to do instead), not just "not allowed".
 
@@ -276,7 +277,7 @@ Migration:
 | Old | New |
 |---|---|
 | `boid exec <project_id> <command-name>` invokes a named registered command | `boid exec -p <project_id> -- <argv...>` runs an arbitrary argv directly |
-| Web UI **Commands** button starts a claude session | `/sessions/new` lets you pick the harness (claude / codex / opencode / shell) and starts a session. The same path is exposed as `POST /api/projects/{id}/sessions`. |
+| Web UI **Commands** button starts a claude session | `/sessions/new` lets you pick the harness (claude / codex / opencode) and starts a session. The same path is exposed as `POST /api/projects/{id}/sessions`. |
 | Task-detail **Commands** button runs behavior commands | Long-running task flows belong in behavior hooks. One-off runs that don't need a task can use `boid exec`. |
 
 ## capabilities
@@ -352,15 +353,16 @@ The `host_commands` / `additional_bindings` / `env` / `secret_namespace` fields 
 
 ## Example: a real project
 
-An excerpt from `.boid/project.yaml` in the `boid` repository itself, showing the two behaviors (`supervisor`, `executor`) with `worktree: true` declared at the project top level so each executor task runs in its own git worktree.
+An excerpt from `.boid/project.yaml` in the `boid` repository itself, showing the two behaviors (`supervisor`, `executor`) with `worktree: true` declared at the project top level so each executor task gets its own isolated branch on the in-sandbox clone.
 
 ```yaml
 id: boid
 name: boid
 
-# Project-top worktree flag: allocates worktrees by task kind.
-# Root task HEAD = base_branch (case 1 → project root, cases 2/3 → worktree).
-# Child tasks always get a boid/<id8> worktree.
+# Project-top worktree flag: allocates an isolated branch by task kind.
+# Root task HEAD = base_branch (case 1 → checked out as-is; cases 2/3 → checked out / created).
+# Child tasks always create a new boid/<id8> branch.
+# Both resolve on the in-sandbox clone — no host-side git worktree is created.
 worktree: true
 
 kits:

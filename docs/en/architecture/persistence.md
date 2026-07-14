@@ -22,7 +22,6 @@ The full schema lives in [`internal/db/migrate/migrations/`](https://github.com/
 | `tasks` | The task itself (the largest table) | One task |
 | `actions` | Audit log of state transitions | One action |
 | `jobs` | Handler execution records | One handler run |
-| `worktrees` | Git worktrees created for tasks | One worktree |
 | `secrets` | Encrypted secret values | One namespace × key |
 | `web_devices` | Paired Web UI devices | One device |
 | `web_pairing_codes` | Issued pairing codes | One code |
@@ -45,8 +44,8 @@ Key columns:
 | `instructions` | TEXT (JSON) | An array of `Instruction`s; the last element is the active one and `reopen` appends to it. |
 | `auto_start` | BOOLEAN | Whether to start automatically on create. |
 | `traits` | TEXT (JSON array) | Trait names declared by the behavior. |
-| `readonly` / `worktree` | BOOLEAN | Sandbox mode flags. |
-| `branch_prefix` / `base_branch` | TEXT | Worktree settings. |
+| `readonly` / `worktree` | BOOLEAN | Sandbox mode flags. `worktree` is now a business flag that marks whether this task should run on a dedicated branch (`boid/<id8>`); the runtime realises it as a branch declaration on the in-sandbox clone — see [git gateway](../reference/project-yaml.md#git-gateway--in-sandbox-clone). Host-side git worktrees are no longer created. |
+| `branch_prefix` / `base_branch` | TEXT | Branch settings. |
 | `ref` / `parent_id` | TEXT | Optional parent reference. |
 | `created_at` / `updated_at` | DATETIME | Timestamps. |
 
@@ -97,22 +96,6 @@ The `output` column holds the handler's full stderr; stdout is consumed by the p
 
 `task_id` is nullable because runs initiated via `boid exec` (commands not bound to a task) are also recorded here.
 
-## `worktrees`
-
-Metadata for the per-task git worktrees created for executor tasks when the project has `worktree: true` at the top level.
-
-| Column | Type | Role |
-|---|---|---|
-| `id` | TEXT PK | Worktree ID. |
-| `task_id` | TEXT FK → tasks.id (UNIQUE) | One worktree per task. |
-| `project_id` | TEXT FK → projects.id | Project. |
-| `path` | TEXT | Path on the host. |
-| `branch` | TEXT | Branch name. |
-| `base_branch` | TEXT | Base branch. |
-| `created_at` / `cleaned_at` | DATETIME | Created and (when removed) cleaned-up timestamps. |
-
-`cleaned_at IS NULL` means the worktree is currently live. We retain the row after cleanup so the audit trail stays intact.
-
 ## `secrets`
 
 Encrypted storage for API tokens and similar values. The encryption key lives at `~/.local/share/boid/secret.key` and is loaded by the daemon at startup.
@@ -153,7 +136,9 @@ migrations/
 ├── 0024_drop_tasks_remote_unique.sql   (removes the partial index on remote_id)
 ├── 0025_drop_tasks_datasource_id.sql   (drops datasource_id column)
 ├── 0026_drop_tasks_depends_on.sql      (drops depends_on_payload + task_dependencies table)
-└── 0027_add_jobs_display_name.sql      (adds jobs.display_name TEXT)
+├── 0027_add_jobs_display_name.sql      (adds jobs.display_name TEXT)
+├── 0028_add_projects_upstream_url.sql  (adds projects.upstream_url TEXT; git gateway uses it to resolve the clone origin)
+└── 0029_drop_worktrees_table.sql       (drops the worktrees table; host git worktree assignment retired, replaced by in-sandbox clones)
 ```
 
 Notes:
