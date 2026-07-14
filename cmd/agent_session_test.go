@@ -9,7 +9,7 @@ import "testing"
 // unnoticed since `go build`/`go vet` don't catch a missing completion
 // wiring.
 func TestAgentSessionSubcommandsHaveProjectCompletion(t *testing.T) {
-	for _, harness := range []string{"claude", "codex", "opencode", "shell"} {
+	for _, harness := range []string{"claude", "codex", "opencode"} {
 		t.Run(harness, func(t *testing.T) {
 			sub, _, err := agentCmd.Find([]string{harness})
 			if err != nil {

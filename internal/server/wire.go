@@ -614,19 +614,21 @@ func (a *sessionDispatcherAdapter) StartSession(ctx context.Context, req api.Sta
 	// .hydrateProjectWithWorkspace) so Capabilities / Env / SecretNamespace
 	// reflect the linked workspace.yaml.
 	meta := project.Meta
-	// shell sessions get a hard-coded interactive bash. Agent harnesses
-	// (claude / codex / opencode) build their own argv from CLI conventions
-	// and ignore SessionJobInput.Argv entirely.
-	var argv []string
-	if req.HarnessType == "shell" {
-		argv = []string{"/bin/bash"}
-	}
+	// HarnessType validation happens up at the HTTP handlers (see
+	// api.validateHarnessType in session.go, called by SessionHandler /
+	// ProjectHandler / WebHandler before dispatch), so by the time execution
+	// reaches here it is already one of claude / codex / opencode. The old
+	// `boid agent shell` session variant that forced argv=/bin/bash was
+	// retired — `boid exec -p <project> -- bash` runs the shell adapter
+	// through the same Runner.Dispatch() with an interactive PTY, so there
+	// is no use case left for a session-mode shell. SessionJobInput.Argv is
+	// left nil for the agent adapters (they build their own argv from CLI
+	// conventions and ignore the field entirely — see the field's doc).
 	spec, err := dispatcher.BuildSessionJobSpec(dispatcher.SessionJobInput{
 		ProjectID:          project.ID,
 		ProjectWorkDir:     project.WorkDir,
 		ProjectName:        meta.Name,
 		HarnessType:        req.HarnessType,
-		Argv:               argv,
 		Instruction:        req.Instruction,
 		Readonly:           req.Readonly,
 		Model:              req.Model,

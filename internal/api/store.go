@@ -219,8 +219,12 @@ type StartSessionRequest struct {
 	ProjectID string `json:"project_id"`
 
 	// HarnessType selects the agent adapter. Must be one of "claude",
-	// "codex", "opencode", or "shell" — the shell harness drops the user
-	// into an interactive bash inside the project sandbox (`boid agent shell`).
+	// "codex", or "opencode". The historical "shell" session variant was
+	// retired after the git gateway cutover — `boid exec -p <project> -- bash`
+	// runs the shell adapter through the same Runner.Dispatch() with an
+	// interactive PTY, so there is no session use case left for it.
+	// sessionDispatcherAdapter.StartSession rejects any other value at the
+	// API boundary.
 	HarnessType string `json:"harness_type"`
 
 	// Instruction is the optional bootstrap prompt for the first turn. Empty

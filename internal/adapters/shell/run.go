@@ -39,15 +39,15 @@ import (
 // the hook before it can speak. The shrunken byte-equivalent runExecArgv
 // path PR1 retired never set Setsid for the same reason.
 //
-// Trade-off without Setsid: if `boid agent shell` ever exposes a SIGUSR1-
-// based daemon stop to an interactive bash session, the SIGUSR1 will also
-// reach bash directly (bash's default disposition is "terminate"). The race
-// is harmless in practice because sigutil's exit-code normalisation maps any
-// stop-signal exit to 0 with StoppedByDaemon=true regardless of whether bash
-// died from our forwarded SIGTERM or from the racing SIGUSR1; the boid side
-// reads "session paused" the same way. Hook / exec runtimes observe no
-// behaviour change either way — the daemon never sends SIGUSR1 to them so
-// the forwarding loop simply idles until cmd.Wait() returns.
+// Trade-off without Setsid: if an interactive `boid exec -- bash` ever
+// receives a SIGUSR1-based daemon stop, the SIGUSR1 will also reach bash
+// directly (bash's default disposition is "terminate"). The race is harmless
+// in practice because sigutil's exit-code normalisation maps any stop-signal
+// exit to 0 with StoppedByDaemon=true regardless of whether bash died from
+// our forwarded SIGTERM or from the racing SIGUSR1; the boid side reads
+// "session paused" the same way. Non-interactive exec and hook runtimes
+// observe no behaviour change either way — the daemon never sends SIGUSR1
+// to them so the forwarding loop simply idles until cmd.Wait() returns.
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
 	if len(rc.Argv) == 0 {
 		return adapters.Result{}, errors.New("shell adapter: RunContext.Argv is empty")

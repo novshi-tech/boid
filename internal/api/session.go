@@ -60,15 +60,19 @@ func (h *SessionHandler) dispatch(w http.ResponseWriter, r *http.Request, req St
 }
 
 // validateHarnessType returns "" when harness is allowed for a session, or
-// the bad-request message otherwise. shell is accepted as the first-class
-// "drop me into a sandbox shell" entry point — see `boid agent shell`.
+// the bad-request message otherwise. Only the agent harnesses are accepted;
+// the historical "shell" session variant was retired after the git gateway
+// cutover — use `boid exec -p <project> -- bash` for a shell inside the
+// project sandbox.
 func validateHarnessType(harness string) string {
 	switch harness {
-	case "claude", "codex", "opencode", "shell":
+	case "claude", "codex", "opencode":
 		return ""
 	case "":
-		return "harness_type is required (claude / codex / opencode / shell)"
+		return "harness_type is required (claude / codex / opencode)"
+	case "shell":
+		return "harness_type \"shell\" was retired: use `boid exec -p <project> -- bash` to open a shell inside the project sandbox"
 	default:
-		return fmt.Sprintf("unsupported harness_type %q (allowed: claude / codex / opencode / shell)", harness)
+		return fmt.Sprintf("unsupported harness_type %q (allowed: claude / codex / opencode)", harness)
 	}
 }

@@ -85,11 +85,11 @@ A record of a single hook invocation. Each job carries its own status (`running`
 
 ## Session
 
-A **session** is an interactive job that is not tied to any task. You start one with `boid agent <harness>`, which attaches a PTY to your terminal. Valid harness values are `claude`, `codex`, `opencode`, and `shell`.
+A **session** is an interactive job that is not tied to any task. You start one with `boid agent <harness>`, which attaches a PTY to your terminal. Valid harness values are `claude`, `codex`, and `opencode`. To just open an interactive shell inside a project sandbox, use `boid exec -p <project> -- bash` (the former `boid agent shell` variant was retired after the git gateway cutover).
 
 ```bash
 boid agent claude   -p <project>                        # start a Claude Code session
-boid agent shell    -p <project>                        # start a shell session
+boid exec           -p <project> -- bash                # open a shell inside the sandbox
 boid agent claude   -p <project> --resume <session-id> # reattach to an existing session
 ```
 

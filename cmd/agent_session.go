@@ -25,6 +25,15 @@ import (
 //
 // Sessions always start fresh: the session-id resume path was removed
 // repo-wide so harnesses dispatch a brand-new process each time.
+//
+// The historical `boid agent shell` subcommand was retired after the git
+// gateway cutover: `boid exec -p <project> -- bash` runs the same shell
+// adapter through the same Runner.Dispatch() and gained the interactive PTY
+// path in the same cutover, so keeping two entry points for the same job
+// shape was pure duplication (the session variant even had to special-case
+// HarnessType=="shell" to synthesize an argv, since the shell adapter needs
+// one). The shell adapter itself stays — it still backs `boid exec` and
+// non-agent hook scripts — only the session-mode entry is gone.
 
 type agentSessionFlags struct {
 	projectRef  string
@@ -46,7 +55,7 @@ func addAgentSessionFlags(cmd *cobra.Command, f *agentSessionFlags) {
 }
 
 func init() {
-	for _, harness := range []string{"claude", "codex", "opencode", "shell"} {
+	for _, harness := range []string{"claude", "codex", "opencode"} {
 		h := harness // capture
 		flags := &agentSessionFlags{}
 		c := &cobra.Command{
