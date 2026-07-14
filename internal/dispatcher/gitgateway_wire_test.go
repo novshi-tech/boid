@@ -260,11 +260,68 @@ func TestBuildPeerAdvertise_ResolvesNameCloneURLAndReferencePath(t *testing.T) {
 		t.Errorf("ReferencePath = %q, want %q", adv.ReferencePath, want)
 	}
 	// CloneDir (workspace 親化リファクタリング, nose 2026-07-13 decision):
-	// fakeProjectLookup never populates Meta (mirroring the real
-	// DBProjectCatalog gap documented on buildPeerAdvertise's CloneDir
-	// assignment), so this degrades to filepath.Base(WorkDir).
+	// r.Hydrator is unset (nil) here, mirroring a daemon build that hasn't
+	// wired one — fakeProjectLookup never populates Meta either (mirroring
+	// the real DBProjectCatalog gap documented on buildPeerAdvertise), so
+	// this degrades to filepath.Base(WorkDir).
 	if want := "/workspace/peer-1"; adv.CloneDir != want {
 		t.Errorf("CloneDir = %q, want %q", adv.CloneDir, want)
+	}
+}
+
+// fakeMetaHydrator implements orchestrator.MetaHydrator for buildPeerAdvertise
+// tests (post-cutover 改善候補 §4 残タスク 1: workspace peer の meta.name
+// サポート). Mirrors internal/api/service_test.go's stubMetaHydrator.
+type fakeMetaHydrator struct {
+	metas map[string]*orchestrator.ProjectMeta
+	err   error
+}
+
+func (f fakeMetaHydrator) GetWithWorkspace(_ context.Context, projectID string) (*orchestrator.ProjectMeta, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.metas[projectID], nil
+}
+
+func TestBuildPeerAdvertise_HydratorResolvesMetaName(t *testing.T) {
+	r := &Runner{
+		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
+			{ID: "peer-1", WorkDir: "/host/peer-1", UpstreamURL: "https://github.com/owner/peer-repo.git"},
+		}},
+		Hydrator: fakeMetaHydrator{metas: map[string]*orchestrator.ProjectMeta{
+			"peer-1": {Name: "foo"},
+		}},
+	}
+	got := r.buildPeerAdvertise(map[string]string{"peer-1": "/host/peer-1"}, "http://10.0.2.2:12345", "job-token-abc")
+	adv, ok := got["peer-1"]
+	if !ok {
+		t.Fatalf("buildPeerAdvertise = %#v, want an entry for peer-1", got)
+	}
+	if want := "/workspace/foo"; adv.CloneDir != want {
+		t.Errorf("CloneDir = %q, want %q (hydrator's meta.name must win over basename)", adv.CloneDir, want)
+	}
+	// Name (repo-slug based) and CloneURL are unaffected by the hydrator —
+	// only CloneDir consults it.
+	if adv.Name != "peer-repo" {
+		t.Errorf("Name = %q, want peer-repo", adv.Name)
+	}
+}
+
+func TestBuildPeerAdvertise_HydratorErrorFallsBackToBasename(t *testing.T) {
+	r := &Runner{
+		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
+			{ID: "peer-1", WorkDir: "/host/peer-1", UpstreamURL: "https://github.com/owner/peer-repo.git"},
+		}},
+		Hydrator: fakeMetaHydrator{err: fmt.Errorf("workspace.yaml broken")},
+	}
+	got := r.buildPeerAdvertise(map[string]string{"peer-1": "/host/peer-1"}, "http://10.0.2.2:12345", "job-token-abc")
+	adv, ok := got["peer-1"]
+	if !ok {
+		t.Fatalf("buildPeerAdvertise = %#v, want an entry for peer-1 even when hydration fails (fail-soft, not skip)", got)
+	}
+	if want := "/workspace/peer-1"; adv.CloneDir != want {
+		t.Errorf("CloneDir = %q, want %q (hydrator error must fail soft to basename fallback)", adv.CloneDir, want)
 	}
 }
 

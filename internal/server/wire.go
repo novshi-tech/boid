@@ -376,6 +376,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Sandbox:         dispatcher.NewSandboxPreparer(),
 		SecretStore:     secretStore,
 		Projects:        projectCatalog,
+		Hydrator:        store, // workspace-aware hydration for peer meta.name (buildPeerAdvertise)
 		Workspaces:      wsLookup,
 		ProxyAllocator:  srv.proxyManager,
 		BoidBinary:      boidBin,

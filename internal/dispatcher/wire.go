@@ -4,6 +4,7 @@ import (
 	"database/sql"
 
 	"github.com/novshi-tech/boid/internal/gitgateway"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 type WireConfig struct {
@@ -14,6 +15,11 @@ type WireConfig struct {
 	SecretStore *SecretStore
 
 	Projects ProjectLookup
+	// Hydrator is optional workspace-hydrated ProjectMeta lookup, threaded
+	// straight to Runner.Hydrator (see its doc comment). nil disables
+	// workspace-peer meta.name resolution; buildPeerAdvertise falls back to
+	// filepath.Base(WorkDir).
+	Hydrator orchestrator.MetaHydrator
 
 	// BoidBinary is the host path to the boid executable that should be
 	// bind-mounted into sandboxes.
@@ -67,6 +73,7 @@ func Wire(cfg WireConfig) *Runner {
 		Sandbox:         cfg.Sandbox,
 		SecretStore:     cfg.SecretStore,
 		Projects:        cfg.Projects,
+		Hydrator:        cfg.Hydrator,
 		Workspaces:      cfg.Workspaces,
 		ProxyAllocator:  cfg.ProxyAllocator,
 		BoidBinary:      cfg.BoidBinary,

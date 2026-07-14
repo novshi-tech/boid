@@ -72,6 +72,15 @@ type Runner struct {
 	Sandbox     SandboxPreparer
 	SecretStore *SecretStore
 	Projects    ProjectLookup
+	// Hydrator optionally resolves a project's workspace-hydrated
+	// ProjectMeta (project.yaml `meta.name` plus workspace merge) by project
+	// ID. It is used only for workspace-peer name resolution in
+	// buildPeerAdvertise — the self project's name is already resolved at
+	// JobSpec-build time via Visibility.ProjectName and does not need this.
+	// nil (test wiring, or a daemon build that doesn't wire it) makes
+	// buildPeerAdvertise degrade to the pre-existing basename fallback, same
+	// as orchestrator.DispatchPlanner.Hydrator's nil behavior.
+	Hydrator orchestrator.MetaHydrator
 	// Workspaces resolves WorkspaceMeta at dispatch time for the workspace
 	// the dispatched project is linked to. When nil (test wiring, missing
 	// disk) the runner falls back to the global floor for proxy allowlist

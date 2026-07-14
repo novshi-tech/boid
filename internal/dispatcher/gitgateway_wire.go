@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -158,6 +159,20 @@ func (r *Runner) buildGatewayCloneURL(spec *orchestrator.JobSpec, gatewayURL, ga
 // gatewayToken empty) or Projects is unset; an individual peer with no
 // resolvable upstream_url is skipped (with a warning) rather than aborting
 // the whole map — same fail-soft posture as buildGatewayRepos.
+//
+// CloneDir's meta.name resolution (post-cutover 改善候補 §4 残タスク 1,
+// docs/plans/git-gateway-cutover.md): r.Projects (orchestrator.
+// DBProjectCatalog) is a bare `SELECT ... FROM projects` that never reads
+// project.yaml, so proj.Meta is always the zero value — resolving the name
+// from proj alone would always degrade to projectDirName's
+// filepath.Base(WorkDir) fallback. When r.Hydrator is set, it is consulted
+// instead (GetWithWorkspace parses project.yaml and merges workspace.yaml),
+// giving peers the same meta.name support the self project already has via
+// Visibility.ProjectName (cloneDirNameForVisibility). r.Hydrator == nil, or
+// a hydration error for a given peer, fails soft to the basename fallback
+// with a warning rather than skipping the peer or the whole map — advertise
+// is best-effort and the job must still be able to dispatch on the self
+// project alone.
 func (r *Runner) buildPeerAdvertise(workspacePeers map[string]string, gatewayURL, gatewayToken string) map[string]PeerAdvertise {
 	if len(workspacePeers) == 0 || gatewayURL == "" || gatewayToken == "" || r.Projects == nil {
 		return nil
@@ -178,26 +193,20 @@ func (r *Runner) buildPeerAdvertise(workspacePeers map[string]string, gatewayURL
 		if parts := strings.Split(name, "/"); len(parts) == 3 {
 			name = parts[2]
 		}
+		metaName := proj.Meta.Name
+		if r.Hydrator != nil {
+			if hydrated, hErr := r.Hydrator.GetWithWorkspace(context.Background(), peerID); hErr != nil {
+				slog.Warn("git gateway: peer meta hydration failed, falling back to basename for clone dir",
+					"peer_project_id", peerID, "error", hErr)
+			} else if hydrated != nil {
+				metaName = hydrated.Name
+			}
+		}
 		out[peerID] = PeerAdvertise{
 			Name:          name,
 			CloneURL:      gatewayURL + gitgateway.PathPrefix + gatewayToken + "/" + string(key) + ".git",
 			ReferencePath: fmt.Sprintf(sandboxClonePeerReferenceDirFmt, peerID),
-			// proj.Meta.Name is read here for forward-compatibility with a
-			// future workspace-hydrating ProjectLookup, but r.Projects is
-			// currently always wired to orchestrator.DBProjectCatalog (a
-			// bare `SELECT ... FROM projects` with no project.yaml read), so
-			// proj.Meta is always the zero value in production today — this
-			// always degrades to projectDirName's filepath.Base(WorkDir)
-			// fallback in practice. Full project.Name support for peers
-			// would need Runner to hold a MetaHydrator (like
-			// orchestrator.DispatchPlanner.Hydrator); tracked as a
-			// post-cutover improvement candidate rather than done here, to
-			// keep this refactor's blast radius to the directory-layout
-			// change it set out to make. The *self* project's name doesn't
-			// have this gap — see cloneDirNameForVisibility, which reads
-			// Visibility.ProjectName, already hydrated at JobSpec-build time
-			// by orchestrator.PlanHook / dispatcher.BuildSessionJobSpec.
-			CloneDir: sandboxCloneDir(projectDirName(proj.Meta.Name, proj.WorkDir)),
+			CloneDir:      sandboxCloneDir(projectDirName(metaName, proj.WorkDir)),
 		}
 	}
 	if len(out) == 0 {
