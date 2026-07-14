@@ -75,7 +75,7 @@ hook の実行コンテキストには次の環境変数が設定されます。
 
 ### 作業ディレクトリ
 
-project が可視なタスクの hook cwd は、 sandbox 内に git gateway 経由で新規 clone された project のコピーのルートです (`/workspace/<project-name>` 相当。 host 側の project ディレクトリそのものではありません)。 root / child、 case 1/2/3 いずれでも同じ — 違いは clone の中でどの branch を checkout するか (case 1 は `base_branch` を直接、 child は `boid/<task_id8>` を新規作成) だけです。 詳細は [`project.yaml` リファレンス / worktree](project-yaml.md#worktree) を参照してください。
+project が可視なタスクの hook cwd は、 sandbox 内に git gateway 経由で新規 clone された project のコピーのルートです (`/workspace/<project-name>` 相当。 host 側の project ディレクトリそのものではありません)。 root / child、 case 1/2/3 いずれでも同じ — 違いは clone の中でどの branch を checkout するか (case 1 は `base_branch` を直接、 child は `boid/<task_id8>` を新規作成) だけです。 詳細は [`project.yaml` リファレンス / タスク種別と HEAD branch](project-yaml.md#タスク種別と-head-branch) を参照してください。
 
 これにより、 `git`、 `gh`、ビルドコマンド等は明示的にディレクトリ指定せずに使えます。
 

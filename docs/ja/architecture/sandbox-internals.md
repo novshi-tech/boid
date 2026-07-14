@@ -251,7 +251,7 @@ broker は `internal/sandbox/broker.go` にあり、次の責務を持ちます:
 
 トークンは sandbox 起動時に発行され、 sandbox 内の環境変数 `BOID_BROKER_TOKEN` 等で受け渡されます。 sandbox の外からはトークンを知ることができないため、たとえ broker socket のパスが漏れても、別 job のコマンドを許可させることはできません。
 
-host command は host 側で project/worktree の checkout ディレクトリではなく中立ディレクトリ (`os.TempDir()`) で実行されます。 stdin も渡りません。 repo 文脈が必要なコマンド (`gh` 等) は kit の `env:` に `${boid:repo_slug}` を書いて渡します (詳細は [`project.yaml` リファレンス](../reference/project-yaml.md) の「host command の実行契約」)。
+host command は host 側で project の checkout ディレクトリではなく中立ディレクトリ (`os.TempDir()`) で実行されます。 stdin も渡りません。 repo 文脈が必要なコマンド (`gh` 等) は kit の `env:` に `${boid:repo_slug}` を書いて渡します (詳細は [`project.yaml` リファレンス](../reference/project-yaml.md) の「host command の実行契約」)。
 
 ## 後片付け
 

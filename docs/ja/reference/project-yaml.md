@@ -208,7 +208,7 @@ host_commands:
 #### host command の実行契約
 
 - **stdin は渡らない** — サンドボックス shim は stdin を読まず、 broker も受け取っても捨てる。 `stdin: true` は設定として受理されるが効果はない (deprecation warning が出る)。 ファイル内容や長文をコマンドへ渡したい場合は stdin ではなく引数 (例: `--body "$(cat <file>)"`) を使う
-- **cwd は中立ディレクトリ固定** — host command は host 側で project/worktree の checkout ディレクトリではなく中立ディレクトリ (`os.TempDir()`) で実行される。 cwd から repo を推定する動作 (`gh` の暗黙 `-R` 等) には依存できない
+- **cwd は中立ディレクトリ固定** — host command は host 側で project の checkout ディレクトリではなく中立ディレクトリ (`os.TempDir()`) で実行される。 cwd から repo を推定する動作 (`gh` の暗黙 `-R` 等) には依存できない
 - **repo 文脈は env で渡す** — cwd 推定の代わりに、 `env:` の値に `${boid:repo_slug}` と書くとトークン登録時に project の origin remote から導出した `host/owner/repo` 形式の文字列に展開される。 `gh` であれば `GH_REPO: ${boid:repo_slug}` で従来どおり透過的に動く
 - **reject ルール** — `match` (allow/deny と同じ glob 意味論、 joined args に対して) にマッチした呼び出しは shim (早期) と broker (権威) の両方で拒否され、 `host_commands.<name>: rejected: <reason>` というメッセージがエージェントに返る。 `reason` は代替手段を書くこと (単に「使えません」ではなく次に何をすべきか)
 

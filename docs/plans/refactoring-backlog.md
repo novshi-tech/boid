@@ -124,27 +124,16 @@ op ごとの前処理をバリデータテーブルへ、少なくとも import 
 注意: builtin op を触る場合は policy_test.go の wantOps + dispatcher drift test の
 更新が必要 (メモリ `sandbox-cannot-build-sqlite-packages` の末尾)。
 
-### M3. git builtin フラグ集合の二重管理解消
+### ~~M3. git builtin フラグ集合の二重管理解消~~ (obsoleted by git gateway cutover PR8-A)
 
-`internal/sandbox/git_builtin.go:398-497` `buildGitBuiltinArgs` と
-`git_shim.go:422-473` `parseGitSyncFlags` が同じフラグ集合 (DryRun/Verbose/Quiet/...) を
-それぞれ列挙しており、フラグ追加時に両側の同期が必要。
-`{flag, field, argForm}` のスペックテーブル 1 つを parse / build 両方から参照する形へ。
-関連: `(req, binding, remoteName, remote)` の引き回しは `resolvedRemote` struct に縮約可
-(呼び出し箇所が多く優先度は下)。
+`internal/sandbox/git_builtin.go` / `git_shim.go` は git gateway cutover PR8-A で
+削除済み (2026-07-14)。対象コードが存在しないため本項は obsolete。
 
-### M4. worktree_manager の git exec ヘルパ集約
+### ~~M4. worktree_manager の git exec ヘルパ集約~~ (obsoleted by git gateway cutover PR8-B)
 
-`internal/dispatcher/worktree_manager.go`:
-
-- best-effort な `worktree remove --force` が 7 箇所 → `forceRemoveWorktree(projectDir, path)`
-- `rev-parse --verify` 系 11 箇所 → `branchExists(dir, ref)`
-- 「fetch origin → 失敗時 local フォールバック」が `Create` (314-329) /
-  `resolveForkPoint` (241-255) / `Recreate` (509-526) でほぼ同型 →
-  `fetchWithLocalFallback(dir, branch)`
-
-さらに `resolveForkPoint` と `Create` 内 fork 分岐の二重化も上記ヘルパ導入後に一本化。
-`worktree_manager_test.go` (約 1,930 行) が回帰網。
+`internal/dispatcher/worktree_manager.go` は git gateway cutover PR8-B で
+削除済み (2026-07-14)。host worktree 割当機構自体が廃止 (sandbox 内 clone に置換)
+されたため本項は obsolete。
 
 ### M5. `cmd/kit.go` と `cmd/workspace.go` の sandbox 起動シーケンス共通化
 
