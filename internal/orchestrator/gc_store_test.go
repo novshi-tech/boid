@@ -702,6 +702,173 @@ func TestGC_RuntimesDirCleanup_CallsRuntimeReaperBeforeRemoval(t *testing.T) {
 	}
 }
 
+// TestGC_RuntimesDirCleanup_CloneWorkspaceDir verifies that GC also removes
+// the job.id-keyed git-gateway clone workspace dir
+// (`<RuntimesDir>/<job.id>/workspace`, see dispatcher.Runner.Dispatch's
+// clone-mode path) alongside the runtime_id-keyed sandbox scaffolding dir.
+// Before the fix, cleanRuntimes only ever looked up `<RuntimesDir>/<runtime_id>`
+// and never touched `<RuntimesDir>/<job.id>`, so clone workspaces leaked
+// forever regardless of task status.
+func TestGC_RuntimesDirCleanup_CloneWorkspaceDir(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	runtimesDir := t.TempDir()
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-clone", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	doneTask := &orchestrator.Task{ProjectID: "proj-clone", Title: "Done Task", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	const runtimeID = "runtime-clone-test"
+	job := &dispatcher.Job{
+		TaskID:    doneTask.ID,
+		ProjectID: "proj-clone",
+		HandlerID: "test",
+		RuntimeID: runtimeID,
+		Status:    dispatcher.JobStatusCompleted,
+	}
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	runtimeDir := makeRuntimeDir(t, runtimesDir, runtimeID)
+	cloneWorkspaceParent := makeRuntimeDir(t, runtimesDir, job.ID) // `<job.id>/workspace` lives under this
+
+	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, nil, "", runtimesDir)
+	result, err := gcStore.GC(0, false)
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if result.Runtimes != 2 {
+		t.Fatalf("expected 2 runtime dirs deleted (runtime_id + job.id), got %d", result.Runtimes)
+	}
+	if _, err := os.Stat(runtimeDir); !os.IsNotExist(err) {
+		t.Errorf("runtime_id-keyed dir should be removed, err: %v", err)
+	}
+	if _, err := os.Stat(cloneWorkspaceParent); !os.IsNotExist(err) {
+		t.Errorf("job.id-keyed clone workspace dir should be removed, err: %v", err)
+	}
+}
+
+// TestGC_RuntimesDirCleanup_TasklessJobCompleted verifies that ad-hoc
+// task-less jobs (e.g. `boid agent claude -p <project>`, which has no
+// task_id) are GC'd based on the job's own terminal status, since there is
+// no task row to join against. Before the fix, cleanRuntimes's INNER JOIN on
+// tasks silently excluded these jobs forever, leaking both the runtime dir
+// and the DB row regardless of age.
+func TestGC_RuntimesDirCleanup_TasklessJobCompleted(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	runtimesDir := t.TempDir()
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-taskless", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	const runtimeID = "runtime-taskless-done"
+	job := &dispatcher.Job{
+		ProjectID: "proj-taskless",
+		HandlerID: "test",
+		Role:      "session",
+		RuntimeID: runtimeID,
+		Status:    dispatcher.JobStatusCompleted,
+	}
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
+		t.Fatalf("create taskless job: %v", err)
+	}
+	if _, err := d.Conn.Exec(`UPDATE jobs SET updated_at = ? WHERE id = ?`, time.Now().UTC().Add(-60*24*time.Hour), job.ID); err != nil {
+		t.Fatalf("backdate job: %v", err)
+	}
+
+	runtimeDir := makeRuntimeDir(t, runtimesDir, runtimeID)
+	cloneWorkspaceParent := makeRuntimeDir(t, runtimesDir, job.ID)
+
+	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, nil, "", runtimesDir)
+	result, err := gcStore.GC(30*24*time.Hour, false)
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if result.Jobs != 1 {
+		t.Fatalf("expected 1 taskless job deleted, got %d", result.Jobs)
+	}
+	if result.Runtimes != 2 {
+		t.Fatalf("expected 2 runtime dirs deleted, got %d", result.Runtimes)
+	}
+	if _, err := os.Stat(runtimeDir); !os.IsNotExist(err) {
+		t.Errorf("runtime_id-keyed dir should be removed, err: %v", err)
+	}
+	if _, err := os.Stat(cloneWorkspaceParent); !os.IsNotExist(err) {
+		t.Errorf("job.id-keyed clone workspace dir should be removed, err: %v", err)
+	}
+
+	var count int
+	if err := d.Conn.QueryRow(`SELECT COUNT(*) FROM jobs WHERE id = ?`, job.ID).Scan(&count); err != nil {
+		t.Fatalf("query jobs: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("taskless job DB row should be deleted, still found %d rows", count)
+	}
+}
+
+// TestGC_RuntimesDirCleanup_TasklessJobRunning_NotRemoved verifies that an
+// active (still-running) task-less job is never touched by GC, regardless of
+// age — mirrors the manual dogfood check of confirming an in-flight `boid
+// agent claude -p` session survives `boid gc`.
+func TestGC_RuntimesDirCleanup_TasklessJobRunning_NotRemoved(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	runtimesDir := t.TempDir()
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-taskless-run", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	const runtimeID = "runtime-taskless-running"
+	job := &dispatcher.Job{
+		ProjectID: "proj-taskless-run",
+		HandlerID: "test",
+		Role:      "session",
+		RuntimeID: runtimeID,
+		Status:    dispatcher.JobStatusRunning,
+	}
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
+		t.Fatalf("create taskless job: %v", err)
+	}
+	// Backdate heavily — age alone must not make GC touch a running job.
+	if _, err := d.Conn.Exec(`UPDATE jobs SET updated_at = ? WHERE id = ?`, time.Now().UTC().Add(-60*24*time.Hour), job.ID); err != nil {
+		t.Fatalf("backdate job: %v", err)
+	}
+
+	runtimeDir := makeRuntimeDir(t, runtimesDir, runtimeID)
+	cloneWorkspaceParent := makeRuntimeDir(t, runtimesDir, job.ID)
+
+	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, nil, "", runtimesDir)
+	result, err := gcStore.GC(30*24*time.Hour, false)
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if result.Jobs != 0 {
+		t.Fatalf("running taskless job must not be deleted, got %d jobs deleted", result.Jobs)
+	}
+	if result.Runtimes != 0 {
+		t.Fatalf("running taskless job's runtime dirs must survive, got %d deleted", result.Runtimes)
+	}
+	if _, err := os.Stat(runtimeDir); err != nil {
+		t.Errorf("runtime_id-keyed dir should still exist: %v", err)
+	}
+	if _, err := os.Stat(cloneWorkspaceParent); err != nil {
+		t.Errorf("job.id-keyed clone workspace dir should still exist: %v", err)
+	}
+
+	var count int
+	if err := d.Conn.QueryRow(`SELECT COUNT(*) FROM jobs WHERE id = ?`, job.ID).Scan(&count); err != nil {
+		t.Fatalf("query jobs: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("running taskless job DB row must survive, found %d rows", count)
+	}
+}
+
 // TestGC_RuntimesDirCleanup_ReaperErrorContinues verifies that a RuntimeReaper
 // error does not abort cleanup — the runtime directory is still removed and GC
 // continues with remaining runtimes.

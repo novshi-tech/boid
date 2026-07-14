@@ -214,19 +214,32 @@ func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool) (*GCResult, error
 	return result, nil
 }
 
-// cleanRuntimes deletes runtime directories for GC target tasks.
+// cleanRuntimes deletes runtime directories for GC target jobs: both the
+// runtime_id-keyed sandbox scaffolding dir (`<RuntimesDir>/<runtime_id>`)
+// and the job.id-keyed git-gateway clone workspace dir
+// (`<RuntimesDir>/<job.id>/workspace`, see dispatcher.Runner.Dispatch's
+// clone-mode path — the two use different directory naming schemes, so both
+// must be checked). Covers task-bound jobs (GC'd via the owning task's
+// terminal status, as before) and task-less jobs — ad-hoc `boid agent
+// claude -p`/`boid exec` sessions with no task_id, which the previous INNER
+// JOIN on tasks silently excluded forever regardless of the job's own
+// status or age. Task-less jobs are instead GC'd by their own terminal
+// status (completed/failed) and updated_at.
 // Errors are logged as warnings; failures do not block subsequent DB deletion.
 // Returns the number of runtime directories successfully deleted.
 func (s *TaskGCStore) cleanRuntimes(olderThan time.Duration) int {
 	query := `
-		SELECT DISTINCT j.runtime_id
+		SELECT j.id, j.runtime_id
 		FROM jobs j
-		JOIN tasks t ON t.id = j.task_id
-		WHERE j.runtime_id != ''
-		  AND t.status IN ('done', 'aborted')`
+		LEFT JOIN tasks t ON t.id = j.task_id
+		WHERE (
+		  (j.task_id IS NOT NULL AND t.status IN ('done', 'aborted'))
+		  OR
+		  (j.task_id IS NULL AND j.status IN ('completed', 'failed'))
+		)`
 	var args []any
 	if olderThan > 0 {
-		query += ` AND t.updated_at < ?`
+		query += ` AND COALESCE(t.updated_at, j.updated_at) < ?`
 		args = append(args, time.Now().UTC().Add(-olderThan))
 	}
 
@@ -237,14 +250,18 @@ func (s *TaskGCStore) cleanRuntimes(olderThan time.Duration) int {
 	}
 	defer rows.Close()
 
-	var runtimeIDs []string
+	type gcJob struct {
+		id        string
+		runtimeID string
+	}
+	var jobs []gcJob
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var j gcJob
+		if err := rows.Scan(&j.id, &j.runtimeID); err != nil {
 			slog.Warn("gc runtimes: scan failed", "error", err)
 			return 0
 		}
-		runtimeIDs = append(runtimeIDs, id)
+		jobs = append(jobs, j)
 	}
 	if err := rows.Err(); err != nil {
 		slog.Warn("gc runtimes: rows error", "error", err)
@@ -252,22 +269,40 @@ func (s *TaskGCStore) cleanRuntimes(olderThan time.Duration) int {
 	}
 
 	count := 0
-	for _, id := range runtimeIDs {
-		dir := filepath.Join(s.runtimesDir, id)
+	seen := make(map[string]bool)
+	remove := func(dir string, reap bool) {
+		if dir == "" || seen[dir] {
+			return
+		}
+		seen[dir] = true
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			return
+		}
 		// Reap docker resources before removing the directory so the ledger
 		// is still readable (safety net for jobs whose cleanupSandboxAfterWait
-		// didn't complete, e.g. after a daemon restart).
-		if s.RuntimeReaper != nil {
+		// didn't complete, e.g. after a daemon restart). Only the
+		// runtime_id-keyed sandbox dir can hold docker state.
+		if reap && s.RuntimeReaper != nil {
 			if err := s.RuntimeReaper(dir); err != nil {
-				slog.Warn("gc docker reap failed", "runtime_id", id, "error", err)
+				slog.Warn("gc docker reap failed", "dir", dir, "error", err)
 			}
 		}
 		if err := os.RemoveAll(dir); err != nil {
-			slog.Warn("gc runtimes: remove failed", "runtime_id", id, "error", err)
-			continue
+			slog.Warn("gc runtimes: remove failed", "dir", dir, "error", err)
+			return
 		}
-		slog.Info("gc runtime removed", "runtime_id", id)
+		slog.Info("gc runtime removed", "dir", dir)
 		count++
+	}
+
+	for _, j := range jobs {
+		if j.runtimeID != "" {
+			remove(filepath.Join(s.runtimesDir, j.runtimeID), true)
+		}
+		// job.id-keyed dir: houses the git-gateway clone workspace. Not
+		// every job creates one (only clone-mode dispatch does), so this is
+		// a no-op when absent.
+		remove(filepath.Join(s.runtimesDir, j.id), false)
 	}
 	return count
 }
