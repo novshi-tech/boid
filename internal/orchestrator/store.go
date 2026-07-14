@@ -324,6 +324,21 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 	subquery := `SELECT id FROM tasks WHERE ` + taskCond
 	result := &GCResult{}
 
+	// Task-less jobs (ad-hoc `boid agent`/`boid exec` sessions with no
+	// task_id, e.g. `boid agent claude -p <project>`) have no task row to
+	// join against, so they are GC'd separately by their own terminal
+	// status (jobs.status) and age (jobs.updated_at) instead of a task's.
+	// actions/worktrees don't need this: both have a NOT NULL task_id FK,
+	// so every row is task-bound and already covered above.
+	var tasklessCond string
+	var tasklessArgs []any
+	if olderThan > 0 {
+		tasklessCond = `task_id IS NULL AND status IN ('completed', 'failed') AND updated_at < ?`
+		tasklessArgs = []any{time.Now().UTC().Add(-olderThan)}
+	} else {
+		tasklessCond = `task_id IS NULL AND status IN ('completed', 'failed')`
+	}
+
 	if dryRun {
 		row := dbtx.QueryRow(`SELECT COUNT(*) FROM tasks WHERE `+taskCond, condArgs...)
 		if err := row.Scan(&result.Tasks); err != nil {
@@ -354,6 +369,20 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 		if err := row.Scan(&result.Runtimes); err != nil {
 			return nil, fmt.Errorf("count runtimes: %w", err)
 		}
+
+		var tasklessJobs int64
+		row = dbtx.QueryRow(`SELECT COUNT(*) FROM jobs WHERE `+tasklessCond, tasklessArgs...)
+		if err := row.Scan(&tasklessJobs); err != nil {
+			return nil, fmt.Errorf("count taskless jobs: %w", err)
+		}
+		result.Jobs += tasklessJobs
+
+		var tasklessRuntimes int64
+		row = dbtx.QueryRow(`SELECT COUNT(DISTINCT runtime_id) FROM jobs WHERE runtime_id != '' AND `+tasklessCond, tasklessArgs...)
+		if err := row.Scan(&tasklessRuntimes); err != nil {
+			return nil, fmt.Errorf("count taskless runtimes: %w", err)
+		}
+		result.Runtimes += tasklessRuntimes
 		return result, nil
 	}
 
@@ -376,7 +405,14 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 		}
 	}
 
-	res, err := dbtx.Exec(`DELETE FROM tasks WHERE `+taskCond, condArgs...)
+	res, err := dbtx.Exec(`DELETE FROM jobs WHERE `+tasklessCond, tasklessArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("delete taskless jobs: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	result.Jobs += n
+
+	res, err = dbtx.Exec(`DELETE FROM tasks WHERE `+taskCond, condArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("delete tasks: %w", err)
 	}
