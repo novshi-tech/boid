@@ -297,7 +297,9 @@ cutover 本体と切り離して個別 PR で改善候補として残す (2026-0
 実装優先度は「n=1 の個人利用では顕在化しないが、顧客展開・複数 organization
 運用で必須になる」順。
 
-### 1. workspace-scoped PAT namespace 方式
+### 1. workspace-scoped PAT namespace 方式 — 実装済み
+
+**ステータス**: 実装済み (PR #753、2026-07-14)。
 
 **問題**: 現行の `gateway.hosts[]` は daemon global に `host → secret_key` を
 mapping する方式で、**同じ github.com に対して workspace ごとに token を
@@ -342,8 +344,44 @@ layering が崩れる。namespace = identity の 1 軸で分離する方が symm
 かつ secret store には既に namespace 概念が存在する (`boid secret set` の CLI が
 既にサポート) — 新軸を足すのでなく既存軸の露出。
 
-**実装スコープ**: dispatcher の resolver 呼出しに workspace scope を渡す配線、
-workspace.yaml に `secret_namespace` フィールド追加、対応する e2e シナリオ。
+**実装した wiring (PR #753)**: gateway 経由の secret 解決を
+namespace-scoped にする 4-hop relay を通した。
+
+1. **register**: `dispatcher.registerGatewayToken` が
+   `spec.SecretNamespace` を `gitgateway.Registry.Register(repos, namespace)`
+   に渡す (`SecretNamespace` 自体は `orchestrator.ProjectStore
+   .GetWithWorkspace` が `workspaceID` を auto inject する既存経路 —
+   本 PR 前から namespaced)。
+2. **store**: `gitgateway.Registry.Entry` に `Namespace` フィールドを追加、
+   Register/RegisterToken が受け取り保持する。
+3. **recover**: `gitgateway.Server.ServeHTTP` が `Authorize` 成功後に
+   `Registry.Lookup` で `Entry.Namespace` を引く (`Authorize` の
+   bool-returning シグネチャからは取れない) — request-scoped `routeInfo`
+   経由で `ReverseProxy.Rewrite` hook に渡す。
+4. **resolve**: `gitgateway.SecretResolver` シグネチャを
+   `func(namespace, key)` に変更、`internal/server/wire.go` の
+   `gwResolver` closure が namespace を `secretStore.Get(namespace, key)`
+   にそのまま透過。ハードコードされていた `"default"` は撤去。
+
+**当初計画から外したもの (今回スコープ外)**:
+
+- **workspace.yaml の user-facing `secret_namespace:` field 追加**:
+  `SecretNamespace = workspaceID` の auto injection で足りるため、user が
+  明示指定できる override は現状不要と判断 (2026-07-14 決定)。将来
+  「1 workspace が複数 identity を切り替えたい」等が出てきたら別 PR。
+  現状は workspace ID をそのまま secret store namespace として扱う。
+- **専用 e2e シナリオ**: unit + integration test (`internal/gitgateway/
+  server_test.go` の `TestServeHTTP_RoutesCredentialsByTokenNamespace`) で
+  namespace routing の end-to-end (register→store→recover→resolve の
+  4 ends、その間 3 hops) を検証済みのため、e2e/scenarios/ 追加は見送り。
+
+**空 namespace の後方互換**: `SecretNamespace == ""` (workspace 未 link
+project) は `dispatcher.SecretStore.normalizeNamespace` が `"default"` に
+fallback する既存挙動を保持 — 本 PR 前と完全に同じ経路で secret 解決される。
+
+**catalog entry**: `.claude/skills/boid-review/references/wiring-seams.md`
+の #11 (gitgateway SecretResolver namespace threading) に 4-hop relay を
+記録。
 
 ### 2. config surface 圧縮 — forge → host 導出
 

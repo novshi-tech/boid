@@ -306,10 +306,11 @@ for `boid exec`, never for a hook job. Added by PR #735 (git gateway cutover's e
 ## 11. gitgateway SecretResolver namespace threading
 
 Whether a workspace-scoped PAT namespace, chosen at dispatch time, actually reaches the
-`SecretResolver` call that resolves the upstream Basic-auth token — a three-hop relay
-(register → registry storage → lookup at request time) where any hop that drops the
-namespace silently collapses every workspace back onto the `"default"` secret namespace.
-Added by post-cutover 改善 §1 (workspace-scoped PAT namespace).
+`SecretResolver` call that resolves the upstream Basic-auth token — namespace propagation
+across register → store → recover → resolve (four ends, three hops between them), where
+any hop that drops the namespace silently collapses every workspace back onto the
+`"default"` secret namespace. Added by post-cutover 改善 §1 (workspace-scoped PAT
+namespace).
 
 - **End A (register)**: `Runner.registerGatewayToken` in `internal/dispatcher/gitgateway_wire.go`
   calls `r.GitGateway.Register(repos, spec.SecretNamespace)` — `spec.SecretNamespace` is already
