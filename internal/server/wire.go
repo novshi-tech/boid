@@ -345,12 +345,6 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	jobStore := jobStoreAdapter{repo: jobRepo}
 	tx := apiTransactor{db: srv.db}
 
-	wtRootDir := filepath.Join(filepath.Dir(cfg.DBPath), "worktrees")
-	if err := os.MkdirAll(wtRootDir, 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir worktrees: %w", err)
-	}
-	wtMgr := &dispatcher.WorktreeManager{RootDir: wtRootDir, DB: srv.db}
-
 	jobRuntime, err := newJobRuntime(cfg)
 	if err != nil {
 		return nil, err
@@ -381,8 +375,6 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Broker:          broker,
 		Sandbox:         dispatcher.NewSandboxPreparer(),
 		SecretStore:     secretStore,
-		Worktrees:       wtMgr,
-		TaskLookup:      taskLookup,
 		Projects:        projectCatalog,
 		Workspaces:      wsLookup,
 		ProxyAllocator:  srv.proxyManager,
@@ -411,10 +403,6 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// surface in task timelines without polling. Completion broadcasts live
 	// in TaskWorkflowService.CompleteJob (where exit-code semantics are known).
 	runner.JobEvents = hubJobEventSink{hub: hub}
-	// Branch lock — held by the workflow service for the full executing
-	// lifetime of each task. Root tasks on the same base_branch serialize;
-	// child tasks (boid/<id8>) always run in parallel.
-	projectLocks := orchestrator.NewBranchLockManager(orchestrator.NewInMemoryWorktreeLockManager())
 	workflow := &api.TaskWorkflowService{
 		Tasks:       taskRepo,
 		Jobs:        jobStore,
@@ -423,9 +411,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Meta:        store,
 		Coordinator: &orchestrator.Coordinator{Evaluator: &orchestrator.Evaluator{}, HookExecutor: adapter, Waiter: adapter, MaxDepth: 5, LifecycleStore: taskRepo},
 		Lifecycle:   lifecycle,
-		Worktrees:   wtMgr,
 		Hub:         hub,
-		Locks:       projectLocks,
 		Adapter:     claudeAdapter,
 	}
 	workflow.InitDispatch(context.Background())
@@ -792,18 +778,9 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	taskHandler := &api.TaskHandler{Service: runtime.taskSvc, Hooks: runtime.workflow, Notifier: runtime.taskSvc, Answerer: runtime.taskSvc}
 	r.Mount("/api/tasks", taskHandler.Routes())
 
-	gcStore := orchestrator.NewTaskGCStoreWithWorktree(
-		srv.db,
-		func(projectID string) (string, error) {
-			proj, err := orchestrator.GetProject(srv.db, projectID)
-			if err != nil {
-				return "", err
-			}
-			return proj.WorkDir, nil
-		},
-		"",
-		runtimesDirFor(srv.cfg),
-	).WithSandboxTmpDir(os.TempDir()).
+	gcStore := orchestrator.NewTaskGCStore(srv.db).
+		WithRuntimesDir(runtimesDirFor(srv.cfg)).
+		WithSandboxTmpDir(os.TempDir()).
 		WithRuntimeReaper(makeDockerRuntimeReaper()).
 		WithAttachmentsRoot(dataHomeFor(srv.cfg))
 	gcAppService := &api.GCAppService{Store: gcStore, DeviceStore: runtime.authStore}

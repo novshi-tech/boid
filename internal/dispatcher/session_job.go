@@ -123,7 +123,6 @@ func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 		Visibility: orchestrator.Visibility{
 			ProjectDir:         input.ProjectWorkDir,
 			ProjectName:        input.ProjectName,
-			UseWorktree:        false,
 			AdditionalBindings: input.AdditionalBindings,
 			Writable:           !input.Readonly,
 			KitRoots:           input.KitRoots,
@@ -196,13 +195,12 @@ func buildSessionCloneDeclaration(projectWorkDir string) (*orchestrator.CloneDec
 
 // resolveSessionBaseBranch resolves the branch a task-less job should clone
 // and check out, since (unlike a hook/task job) there is no Task.BaseBranch
-// to declare. Reads the host project dir's current HEAD — the same source
-// dispatcher.hostHEADBranch (worktree_resolver.go) reads for the worktree=false
-// root-task shortcut it replaces. Tolerates both real git's `--short` output
-// ("main") and a detached/prefixed form ("refs/heads/main") defensively,
-// since e2e's fake host git shim (e2e/fixtures/hostbin/git) does not honour
-// --short. Returns "" when HEAD cannot be resolved at all (caller
-// buildSessionCloneDeclaration turns that into a hard error).
+// to declare. Reads the host project dir's current HEAD. Tolerates both real
+// git's `--short` output ("main") and a detached/prefixed form
+// ("refs/heads/main") defensively, since e2e's fake host git shim
+// (e2e/fixtures/hostbin/git) does not honour --short. Returns "" when HEAD
+// cannot be resolved at all (caller buildSessionCloneDeclaration turns that
+// into a hard error).
 func resolveSessionBaseBranch(projectWorkDir string) string {
 	if projectWorkDir == "" {
 		return ""

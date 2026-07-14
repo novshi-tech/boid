@@ -23,12 +23,6 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox/dockerproxy"
 )
 
-// TaskLookup mirrors the subset of orchestrator.TaskLookup the dispatcher
-// needs for worktree resolution. Kept as an interface so tests can stub it.
-type TaskLookup interface {
-	GetTask(id string) (*orchestrator.Task, error)
-}
-
 // ProjectLookup lets dispatcher resolve ProjectID → WorkspaceID and enumerate
 // workspace peers, so workspace-peer authorization and peer-visibility
 // concerns stay inside dispatcher instead of leaking into JobSpec.
@@ -77,8 +71,6 @@ type Runner struct {
 	Broker      CommandBroker
 	Sandbox     SandboxPreparer
 	SecretStore *SecretStore
-	Worktrees   *WorktreeManager
-	TaskLookup  TaskLookup
 	Projects    ProjectLookup
 	// Workspaces resolves WorkspaceMeta at dispatch time for the workspace
 	// the dispatched project is linked to. When nil (test wiring, missing
@@ -179,23 +171,6 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 	}()
 
-	// Worktree allocation and the Phase 2-2 case 1 HEAD guard are both
-	// retired as of docs/plans/git-gateway-cutover.md PR6 (cutover): every
-	// project-visible job now clones inside the sandbox instead of sharing a
-	// host git worktree (see Visibility.Clone, set by
-	// orchestrator.BuildCloneDeclaration / dispatcher.buildSessionCloneDeclaration),
-	// so there is no host worktree path to resolve and no host HEAD whose
-	// drift needs guarding against — the runner resolves the declared branch
-	// fresh against its own clone every dispatch. r.resolveWorktree /
-	// r.enforceCaseOneHeadInvariant / r.existingWorktreePath and the
-	// WorktreeManager they call into are intentionally left defined (dead
-	// code on this path) rather than deleted — that's PR8's job, so a git
-	// revert of this PR restores the call sites cleanly.
-	//
-	// worktreePath / resolvedWorktreePath therefore stay permanently empty in
-	// production; TokenContext.WorktreeDir below is always "".
-	var worktreePath, resolvedWorktreePath string
-
 	if err := CreateJob(r.DB, j); err != nil {
 		if cleanup != nil {
 			cleanup()
@@ -246,13 +221,11 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			AllowedProjectIDs: allowedProjectIDs(spec.ProjectID, workspacePeers),
 			Role:              j.Role,
 			ProjectDir:        projectWorkDir,
-			WorktreeDir:       resolvedWorktreePath,
-			WorkspacePeers:    workspacePeers,
 		}
 		// SandboxRoot (docs/plans/git-gateway-cutover.md PR6 cutover): clone-mode
-		// jobs have no host ProjectDir/WorktreeDir the sandbox's own filesystem
-		// corresponds to — their cwd is always the name-scoped subdirectory of
-		// the sandbox-internal sandboxCloneTargetDir ("/workspace/<name>", see
+		// jobs have no host ProjectDir the sandbox's own filesystem corresponds
+		// to — their cwd is always the name-scoped subdirectory of the
+		// sandbox-internal sandboxCloneTargetDir ("/workspace/<name>", see
 		// sandboxCloneDir / cloneDirNameForVisibility — workspace 親化リファ
 		// クタリング, nose 2026-07-13 decision). See broker.entryRoot.
 		if spec.Visibility.Clone != nil {
@@ -377,7 +350,6 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		ProxyPort:              proxyPort,
 		BrokerSocket:           brokerSocket,
 		BrokerToken:            brokerToken,
-		WorktreeDir:            worktreePath,
 		WorkspacePeers:         workspacePeers,
 		WorkspacePeerAdvertise: peerAdvertise,
 		ResolvedHostCommands:   resolvedHostCommands,
@@ -427,60 +399,6 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		return "", err
 	}
 	return r.launchSandbox(ctx, j, sbSpec, cleanup, desiredRuntimeID)
-}
-
-// enforceCaseOneHeadInvariant verifies the Phase 2-2 case 1 HEAD guard:
-// when a supervisor task is scheduled to run in the project dir (no worktree)
-// the project HEAD must still match the task's BaseBranch. The guard is
-// degraded to a no-op when dependencies are unwired (TaskLookup or Projects
-// absent — typical in unit tests that only exercise Dispatch's argv plumbing)
-// so the existing test suite stays untouched.
-//
-// Returns a non-nil error only when the invariant is genuinely violated. The
-// caller fails the job dispatch with the message so the orchestrator surfaces
-// "project dir was moved out from under us" to the user instead of silently
-// running against the wrong branch.
-//
-// Retired (no longer called from Dispatch) as of docs/plans/git-gateway-cutover.md
-// PR6 cutover — the clone model has no host HEAD to drift out from under a
-// dispatch. Left defined rather than deleted so this PR's revert unit stays
-// small; deletion is PR8's job alongside WorktreeManager.
-//
-//nolint:unused // PR8 deletes this together with WorktreeManager (see doc comment)
-func (r *Runner) enforceCaseOneHeadInvariant(spec *orchestrator.JobSpec) error {
-	if spec == nil || spec.Visibility.UseWorktree {
-		return nil
-	}
-	if spec.TaskID == "" || r.TaskLookup == nil || r.Projects == nil || r.Worktrees == nil {
-		return nil
-	}
-	task, err := r.TaskLookup.GetTask(spec.TaskID)
-	if err != nil || task == nil {
-		// Task not found mid-flight: not our error to surface here. The
-		// downstream sandbox build will catch the inconsistency.
-		return nil
-	}
-	canonical, _ := orchestrator.CanonicalBehaviorName(task.Behavior)
-	if canonical != "supervisor" {
-		return nil
-	}
-	if task.BaseBranch == "" {
-		return nil
-	}
-	proj, err := r.Projects.GetProject(spec.ProjectID)
-	if err != nil || proj == nil || proj.WorkDir == "" {
-		return nil
-	}
-	if err := r.Worktrees.EnforceHeadOnBaseBranch(proj.WorkDir, task.BaseBranch); err != nil {
-		slog.Warn("supervisor HEAD guard rejected dispatch",
-			"task_id", spec.TaskID,
-			"project_dir", proj.WorkDir,
-			"base_branch", task.BaseBranch,
-			"error", err,
-		)
-		return err
-	}
-	return nil
 }
 
 func (r *Runner) resolveProjectRuntime(projectID string) (string, string, error) {

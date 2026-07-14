@@ -102,9 +102,6 @@ func TestBuildSessionJobSpec_FieldContracts(t *testing.T) {
 	if spec.Visibility.ProjectName != in.ProjectName {
 		t.Errorf("Visibility.ProjectName = %q, want %q", spec.Visibility.ProjectName, in.ProjectName)
 	}
-	if spec.Visibility.UseWorktree {
-		t.Error("Visibility.UseWorktree = true, want false (sessions never use a worktree)")
-	}
 	if !reflect.DeepEqual(spec.Visibility.AdditionalBindings, in.AdditionalBindings) {
 		t.Errorf("Visibility.AdditionalBindings = %+v, want %+v (must carry the project/kit binding overlay)", spec.Visibility.AdditionalBindings, in.AdditionalBindings)
 	}

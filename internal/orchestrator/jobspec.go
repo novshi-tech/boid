@@ -129,16 +129,12 @@ type Visibility struct {
 	// fallback degrades gracefully rather than erroring.
 	ProjectName string
 
-	// UseWorktree asks dispatcher to replace ProjectDir with a per-task git
-	// worktree obtained from its WorktreeManager.
-	UseWorktree bool
-
 	// AdditionalBindings lists extra host bind-mounts (e.g. kit-provided CLIs
 	// like the claude binary) that must be visible inside the sandbox.
 	AdditionalBindings []BindMount
 
-	// Writable permits writes to ProjectDir / the resolved worktree. When
-	// ProjectDir is empty, this field has no effect.
+	// Writable permits writes to ProjectDir. When ProjectDir is empty, this
+	// field has no effect.
 	Writable bool
 
 	// KitRoots lists the kit root directories to bind-mount at their original
@@ -147,7 +143,7 @@ type Visibility struct {
 	KitRoots []string
 
 	// ForkPoint is ProjectMeta.ForkPoint passed through to the dispatcher.
-	// Used as the start point when a worktree's base_branch does not exist
+	// Used as the start point when a task's base_branch does not exist
 	// (ClassifyBaseBranch case 3). Empty means dispatcher falls back to
 	// refs/remotes/origin/HEAD.
 	ForkPoint string
@@ -156,17 +152,13 @@ type Visibility struct {
 	// project.yaml. Dispatcher uses this to start a per-sandbox docker proxy.
 	DockerEnabled bool
 
-	// Clone is the opt-in sandbox-internal-clone counterpart to UseWorktree
-	// (docs/plans/git-gateway-cutover.md PR5 「5. branch 宣言の JobSpec
-	// 化」). nil (the zero value) is the default and leaves dispatch
-	// completely unaffected: the existing UseWorktree / host-repo-resolved
-	// branch path is used exactly as before. When non-nil, dispatcher stops
-	// resolving the branch itself (rev-parse / merge-base / checkout -B
-	// against the host repo, as worktree_manager.go does today) and instead
-	// carries this declaration through to the sandbox so the runner can
-	// resolve it after cloning inside the sandbox. Only test callers
-	// populate this until the PR6 cutover wires the planner to do so for
-	// real dispatch.
+	// Clone declares the sandbox-internal-clone branch state for real dispatch
+	// (docs/plans/git-gateway-cutover.md PR5 「5. branch 宣言の JobSpec 化」・
+	// PR6 cutover). nil leaves dispatch unaffected (test-only JobSpecs that
+	// don't exercise clone-mode). When non-nil, dispatcher does not resolve
+	// the branch itself against a host repo — it carries this declaration
+	// through to the sandbox so the runner resolves it (rev-parse /
+	// merge-base / checkout -B) after cloning inside the sandbox.
 	Clone *CloneDeclaration
 }
 
@@ -174,44 +166,36 @@ type Visibility struct {
 // clone should end up in, without resolving it — resolution (rev-parse /
 // merge-base / checkout -B) is deferred to the runner, which performs it
 // against the freshly cloned repo (docs/plans/git-gateway-cutover.md: 「dispatcher
-// は JobSpec に宣言のみ載せる...runner が clone 完了後に解決」). Field names
-// mirror dispatcher.CreateOpts / dispatcher.Worktree 1:1 so the two
-// resolution paths (host-worktree vs sandbox-clone) stay easy to compare —
-// see internal/dispatcher/worktree_manager.go for the host-side equivalent
-// this declaration is meant to eventually replace.
+// は JobSpec に宣言のみ載せる...runner が clone 完了後に解決」).
 type CloneDeclaration struct {
-	// Branch is the branch the runner ends up on inside the clone. Mirrors
-	// dispatcher.Worktree.Branch: equal to BaseBranch for a root task
-	// (CheckoutOnly=true, dispatcher.CreateOpts.CheckoutBranch equivalent),
-	// or "boid/<id8>" for a child task.
+	// Branch is the branch the runner ends up on inside the clone: equal to
+	// BaseBranch for a root task (CheckoutOnly=true), or "boid/<id8>" for a
+	// child task.
 	Branch string
 
 	// BaseBranch is the upstream branch this task's work is based on
-	// (task.BaseBranch). Always required — mirrors the baseBranch parameter
-	// dispatcher.WorktreeManager.Create takes today.
+	// (task.BaseBranch). Always required.
 	BaseBranch string
 
-	// CheckoutOnly mirrors dispatcher.CreateOpts.CheckoutBranch != "": when
-	// true, Branch is checked out directly (a root task occupying
-	// BaseBranch) rather than created fresh from ForkPoint.
+	// CheckoutOnly: when true, Branch is checked out directly (a root task
+	// occupying BaseBranch) rather than created fresh from ForkPoint.
 	CheckoutOnly bool
 
-	// ForkPoint mirrors dispatcher.CreateOpts.ForkPoint: the start point for
-	// `checkout -B Branch <ForkPoint>` when CheckoutOnly is false. Empty
-	// means fork from BaseBranch itself. For a child task this is typically
-	// the parent's own working branch (dispatcher.ComputeForkPoint(parent)),
-	// which — unlike the worktree world — must already be pushed to origin
-	// for a fresh clone to see it (docs/plans/container-based-boid.md 「成果
-	// 共有は origin 経由のみ」); this is a deliberate, documented consequence
-	// of the clone model, not something this declaration works around.
+	// ForkPoint is the start point for `checkout -B Branch <ForkPoint>` when
+	// CheckoutOnly is false. Empty means fork from BaseBranch itself. For a
+	// child task this is typically the parent's own working branch
+	// (dispatcher.ComputeForkPoint(parent)), which must already be pushed to
+	// origin for a fresh clone to see it (docs/plans/container-based-boid.md
+	// 「成果共有は origin 経由のみ」); this is a deliberate, documented
+	// consequence of the clone model, not something this declaration works
+	// around.
 	ForkPoint string
 
-	// BaseBranchForkPoint mirrors dispatcher.CreateOpts.BaseBranchForkPoint /
-	// Visibility.ForkPoint (ClassifyBaseBranch case 3): the start point used
-	// to create BaseBranch locally when it exists on neither the clone's
-	// origin nor locally. Empty falls back to refs/remotes/origin/HEAD,
-	// resolved by the runner after clone (no extra fetch needed: `git
-	// clone` already brings every remote branch's ref).
+	// BaseBranchForkPoint mirrors Visibility.ForkPoint (ClassifyBaseBranch
+	// case 3): the start point used to create BaseBranch locally when it
+	// exists on neither the clone's origin nor locally. Empty falls back to
+	// refs/remotes/origin/HEAD, resolved by the runner after clone (no extra
+	// fetch needed: `git clone` already brings every remote branch's ref).
 	BaseBranchForkPoint string
 }
 

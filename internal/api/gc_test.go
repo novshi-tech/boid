@@ -35,7 +35,7 @@ func TestGCHandler_Run(t *testing.T) {
 		{
 			name:        "default older_than",
 			body:        `{}`,
-			storeResult: &orchestrator.GCResult{Tasks: 3, Jobs: 5, Actions: 8, Worktrees: 1},
+			storeResult: &orchestrator.GCResult{Tasks: 3, Jobs: 5, Actions: 8},
 			wantStatus:  http.StatusOK,
 			wantTasks:   3,
 		},

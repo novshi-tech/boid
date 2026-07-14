@@ -224,165 +224,6 @@ func TestGCTasks_NothingToDelete(t *testing.T) {
 	}
 }
 
-func TestGCTasks_WorktreeDiskCleanup(t *testing.T) {
-	d := testutil.NewTestDB(t)
-	repo := initGitRepoForGC(t)
-	wtRoot := t.TempDir()
-
-	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: repo}); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-
-	doneTask := &orchestrator.Task{
-		ProjectID: "proj-1",
-		Title:     "Done Task",
-		Behavior:  "dev",
-		Status:    orchestrator.TaskStatusDone,
-	}
-	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-
-	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: d.Conn, GitBin: gcTestGitBin}
-	w, err := mgr.Create(repo, "proj-1", doneTask.ID, "HEAD", dispatcher.CreateOpts{})
-	if err != nil {
-		t.Fatalf("create worktree: %v", err)
-	}
-
-	// worktree ディレクトリが存在することを確認
-	if _, err := os.Stat(w.Path); err != nil {
-		t.Fatalf("worktree dir should exist before GC: %v", err)
-	}
-
-	resolveProjectDir := func(projectID string) (string, error) {
-		proj, err := orchestrator.GetProject(d.Conn, projectID)
-		if err != nil {
-			return "", err
-		}
-		return proj.WorkDir, nil
-	}
-	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, resolveProjectDir, gcTestGitBin, "")
-
-	result, err := gcStore.GC(0, false)
-	if err != nil {
-		t.Fatalf("gc: %v", err)
-	}
-	if result.Tasks != 1 {
-		t.Fatalf("expected 1 deleted task, got %d", result.Tasks)
-	}
-
-	// worktree ディレクトリが削除されていることを確認
-	if _, err := os.Stat(w.Path); !os.IsNotExist(err) {
-		t.Errorf("worktree dir should be removed after GC, err: %v", err)
-	}
-}
-
-func TestGCTasks_WorktreeDiskCleanup_DoneDeletesBranch(t *testing.T) {
-	d := testutil.NewTestDB(t)
-	repo := initGitRepoForGC(t)
-	wtRoot := t.TempDir()
-
-	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-gcd1", WorkDir: repo}); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-
-	doneTask := &orchestrator.Task{
-		ProjectID: "proj-gcd1",
-		Title:     "Done Task Branch Delete",
-		Behavior:  "dev",
-		Status:    orchestrator.TaskStatusDone,
-	}
-	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-
-	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: d.Conn, GitBin: gcTestGitBin}
-	w, err := mgr.Create(repo, "proj-gcd1", doneTask.ID, "HEAD", dispatcher.CreateOpts{})
-	if err != nil {
-		t.Fatalf("create worktree: %v", err)
-	}
-
-	resolveProjectDir := func(projectID string) (string, error) {
-		proj, err := orchestrator.GetProject(d.Conn, projectID)
-		if err != nil {
-			return "", err
-		}
-		return proj.WorkDir, nil
-	}
-	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, resolveProjectDir, gcTestGitBin, "")
-
-	result, err := gcStore.GC(0, false)
-	if err != nil {
-		t.Fatalf("gc: %v", err)
-	}
-	if result.Tasks != 1 {
-		t.Fatalf("expected 1 deleted task, got %d", result.Tasks)
-	}
-
-	// worktree ディレクトリが削除されていることを確認
-	if _, err := os.Stat(w.Path); !os.IsNotExist(err) {
-		t.Errorf("worktree dir should be removed after GC, err: %v", err)
-	}
-
-	// ブランチが削除されていることを確認
-	out, err := exec.Command(gcTestGitBin, "-C", repo, "branch", "--list", w.Branch).CombinedOutput()
-	if err != nil {
-		t.Fatalf("git branch --list: %v", err)
-	}
-	if len(out) > 0 {
-		t.Errorf("branch should be deleted after GC of done task, got: %q", string(out))
-	}
-}
-
-func TestGCTasks_WorktreeDiskCleanup_DryRun(t *testing.T) {
-	d := testutil.NewTestDB(t)
-	repo := initGitRepoForGC(t)
-	wtRoot := t.TempDir()
-
-	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: repo}); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-
-	doneTask := &orchestrator.Task{
-		ProjectID: "proj-1",
-		Title:     "Done Task",
-		Behavior:  "dev",
-		Status:    orchestrator.TaskStatusDone,
-	}
-	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-
-	mgr := &dispatcher.WorktreeManager{RootDir: wtRoot, DB: d.Conn, GitBin: gcTestGitBin}
-	w, err := mgr.Create(repo, "proj-1", doneTask.ID, "HEAD", dispatcher.CreateOpts{})
-	if err != nil {
-		t.Fatalf("create worktree: %v", err)
-	}
-
-	resolveProjectDir := func(projectID string) (string, error) {
-		proj, err := orchestrator.GetProject(d.Conn, projectID)
-		if err != nil {
-			return "", err
-		}
-		return proj.WorkDir, nil
-	}
-	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, resolveProjectDir, gcTestGitBin, "")
-
-	// dry-run: ディスク操作はスキップされる
-	result, err := gcStore.GC(0, true)
-	if err != nil {
-		t.Fatalf("gc dry-run: %v", err)
-	}
-	if result.Tasks != 1 {
-		t.Fatalf("dry-run: expected 1 task, got %d", result.Tasks)
-	}
-
-	// worktree ディレクトリが残っていることを確認（dry-run なので削除されない）
-	if _, err := os.Stat(w.Path); err != nil {
-		t.Errorf("worktree dir should still exist after dry-run GC: %v", err)
-	}
-}
-
 func TestGCTasks_AllDone(t *testing.T) {
 	d := testutil.NewTestDB(t)
 
@@ -527,7 +368,7 @@ func TestGC_RuntimesDirCleanup(t *testing.T) {
 
 	runtimeDir := makeRuntimeDir(t, runtimesDir, runtimeID)
 
-	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, nil, "", runtimesDir)
+	gcStore := orchestrator.NewTaskGCStore(d.Conn).WithRuntimesDir(runtimesDir)
 	result, err := gcStore.GC(0, false)
 	if err != nil {
 		t.Fatalf("gc: %v", err)
@@ -569,7 +410,7 @@ func TestGC_RuntimesDirCleanup_DryRun(t *testing.T) {
 
 	runtimeDir := makeRuntimeDir(t, runtimesDir, runtimeID)
 
-	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, nil, "", runtimesDir)
+	gcStore := orchestrator.NewTaskGCStore(d.Conn).WithRuntimesDir(runtimesDir)
 	result, err := gcStore.GC(0, true)
 	if err != nil {
 		t.Fatalf("gc dry-run: %v", err)
@@ -624,7 +465,7 @@ func TestGC_RuntimesDirCleanup_OlderThanFilter(t *testing.T) {
 	oldRuntimeDir := makeRuntimeDir(t, runtimesDir, oldRuntimeID)
 	recentRuntimeDir := makeRuntimeDir(t, runtimesDir, recentRuntimeID)
 
-	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, nil, "", runtimesDir)
+	gcStore := orchestrator.NewTaskGCStore(d.Conn).WithRuntimesDir(runtimesDir)
 	result, err := gcStore.GC(30*24*time.Hour, false)
 	if err != nil {
 		t.Fatalf("gc: %v", err)
@@ -672,7 +513,7 @@ func TestGC_RuntimesDirCleanup_CallsRuntimeReaperBeforeRemoval(t *testing.T) {
 
 	var reaperCalled []string
 	var dirExistedOnReap bool
-	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, nil, "", runtimesDir).
+	gcStore := orchestrator.NewTaskGCStore(d.Conn).WithRuntimesDir(runtimesDir).
 		WithRuntimeReaper(func(dir string) error {
 			reaperCalled = append(reaperCalled, dir)
 			// Directory must still exist when the reaper is called.
@@ -736,7 +577,7 @@ func TestGC_RuntimesDirCleanup_CloneWorkspaceDir(t *testing.T) {
 	runtimeDir := makeRuntimeDir(t, runtimesDir, runtimeID)
 	cloneWorkspaceParent := makeRuntimeDir(t, runtimesDir, job.ID) // `<job.id>/workspace` lives under this
 
-	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, nil, "", runtimesDir)
+	gcStore := orchestrator.NewTaskGCStore(d.Conn).WithRuntimesDir(runtimesDir)
 	result, err := gcStore.GC(0, false)
 	if err != nil {
 		t.Fatalf("gc: %v", err)
@@ -784,7 +625,7 @@ func TestGC_RuntimesDirCleanup_TasklessJobCompleted(t *testing.T) {
 	runtimeDir := makeRuntimeDir(t, runtimesDir, runtimeID)
 	cloneWorkspaceParent := makeRuntimeDir(t, runtimesDir, job.ID)
 
-	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, nil, "", runtimesDir)
+	gcStore := orchestrator.NewTaskGCStore(d.Conn).WithRuntimesDir(runtimesDir)
 	result, err := gcStore.GC(30*24*time.Hour, false)
 	if err != nil {
 		t.Fatalf("gc: %v", err)
@@ -842,7 +683,7 @@ func TestGC_RuntimesDirCleanup_TasklessJobRunning_NotRemoved(t *testing.T) {
 	runtimeDir := makeRuntimeDir(t, runtimesDir, runtimeID)
 	cloneWorkspaceParent := makeRuntimeDir(t, runtimesDir, job.ID)
 
-	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, nil, "", runtimesDir)
+	gcStore := orchestrator.NewTaskGCStore(d.Conn).WithRuntimesDir(runtimesDir)
 	result, err := gcStore.GC(30*24*time.Hour, false)
 	if err != nil {
 		t.Fatalf("gc: %v", err)
@@ -896,7 +737,7 @@ func TestGC_RuntimesDirCleanup_ReaperErrorContinues(t *testing.T) {
 	}
 	runtimeDir := makeRuntimeDir(t, runtimesDir, runtimeID)
 
-	gcStore := orchestrator.NewTaskGCStoreWithWorktree(d.Conn, nil, "", runtimesDir).
+	gcStore := orchestrator.NewTaskGCStore(d.Conn).WithRuntimesDir(runtimesDir).
 		WithRuntimeReaper(func(dir string) error {
 			return os.ErrInvalid // simulate reap failure
 		})

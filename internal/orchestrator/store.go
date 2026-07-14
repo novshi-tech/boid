@@ -284,14 +284,13 @@ type GCResult struct {
 	Tasks      int64
 	Jobs       int64
 	Actions    int64
-	Worktrees  int64
 	Runtimes   int64
 	SandboxTmp int64 // leaked /tmp/boid-* sandbox artifacts removed
 	Devices    int64 // revoked web devices deleted
 }
 
 // GCTasks deletes terminal tasks older than olderThan and their related data
-// (actions, jobs, worktrees). If dryRun is true, counts only without deleting.
+// (actions, jobs). If dryRun is true, counts only without deleting.
 // olderThan=0 disables the time filter (all matching tasks are affected).
 // Must be called within a transaction for atomicity.
 func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bool) (*GCResult, error) {
@@ -328,8 +327,8 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 	// task_id, e.g. `boid agent claude -p <project>`) have no task row to
 	// join against, so they are GC'd separately by their own terminal
 	// status (jobs.status) and age (jobs.updated_at) instead of a task's.
-	// actions/worktrees don't need this: both have a NOT NULL task_id FK,
-	// so every row is task-bound and already covered above.
+	// actions doesn't need this: it has a NOT NULL task_id FK, so every row
+	// is task-bound and already covered above.
 	var tasklessCond string
 	var tasklessArgs []any
 	if olderThan > 0 {
@@ -344,7 +343,7 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 		if err := row.Scan(&result.Tasks); err != nil {
 			return nil, fmt.Errorf("count tasks: %w", err)
 		}
-		for _, table := range []string{"actions", "jobs", "worktrees"} {
+		for _, table := range []string{"actions", "jobs"} {
 			row := dbtx.QueryRow(
 				`SELECT COUNT(*) FROM `+table+` WHERE task_id IN (`+subquery+`)`,
 				condArgs...,
@@ -358,8 +357,6 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 				result.Actions = n
 			case "jobs":
 				result.Jobs = n
-			case "worktrees":
-				result.Worktrees = n
 			}
 		}
 		row = dbtx.QueryRow(
@@ -386,7 +383,7 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 		return result, nil
 	}
 
-	for _, table := range []string{"actions", "jobs", "worktrees"} {
+	for _, table := range []string{"actions", "jobs"} {
 		res, err := dbtx.Exec(
 			`DELETE FROM `+table+` WHERE task_id IN (`+subquery+`)`,
 			condArgs...,
@@ -400,8 +397,6 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 			result.Actions = n
 		case "jobs":
 			result.Jobs = n
-		case "worktrees":
-			result.Worktrees = n
 		}
 	}
 

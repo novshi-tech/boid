@@ -58,18 +58,6 @@ type BrokerRegistry interface {
 	RegisterBrokerCommands(commands map[string]orchestrator.HostCommandSpec, builtinPolicies map[string]sandbox.BuiltinPolicy, projectID string) (*BrokerRegisterResponse, error)
 }
 
-type WorktreeCleaner interface {
-	CleanupForTask(taskID, projectDir, newStatus string) error
-	// SweepChildBranches deletes the boid/<id8> branches associated with the
-	// given child task IDs. Called by finalizeTerminal once a supervisor task
-	// reaches a terminal state — its children's branches were retained through
-	// CleanupForTask so the supervisor could merge them into the base branch;
-	// now that the supervisor is done, the merged refs are safe to drop.
-	// Branches that don't exist (already deleted, never created) are silently
-	// skipped. Non-boid/* branches (root-task base branches) are never deleted.
-	SweepChildBranches(projectDir string, taskIDs []string) error
-}
-
 type ProjectService interface {
 	CreateProject(workDir string) (*orchestrator.Project, error)
 	ListProjects(workspaceID string) ([]*orchestrator.Project, error)

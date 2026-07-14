@@ -132,23 +132,23 @@ func performCloneSteps(cs sandbox.CloneSpec, st *State) error {
 	return nil
 }
 
-// resolveCloneBranch performs the runner-side counterpart of
-// dispatcher.WorktreeManager.Create's branch resolution
-// (internal/dispatcher/worktree_manager.go), operating on a fresh clone
-// rather than a long-lived host repo. Because the clone is fresh, no local
-// branches other than the checked-out default branch exist yet, so — unlike
-// the worktree side — there is no "a stale local branch already exists" case
-// to reconcile; every candidate is either a remote-tracking ref `git clone`
-// already fetched, or a brand-new local branch this function creates.
+// resolveCloneBranch resolves and checks out the task's working branch inside
+// a fresh sandbox-internal clone (docs/plans/git-gateway-cutover.md PR5/PR6:
+// dispatcher declares the branch, the runner resolves it after cloning).
+// Because the clone is fresh, no local branches other than the checked-out
+// default branch exist yet, so there is no "a stale local branch already
+// exists" case to reconcile; every candidate is either a remote-tracking ref
+// `git clone` already fetched, or a brand-new local branch this function
+// creates.
 func resolveCloneBranch(git string, cs sandbox.CloneSpec, st *State) error {
 	dir := cs.TargetDir
 	baseLocal := strings.TrimPrefix(cs.BaseBranch, "origin/")
 	baseRef := "origin/" + baseLocal
 
 	if _, err := runGit(git, dir, "rev-parse", "--verify", "--quiet", baseRef); err != nil {
-		// Case 3 equivalent (dispatcher.WorktreeManager.ensureBaseBranchExists):
-		// BaseBranch exists on neither origin nor locally yet. Create it
-		// from BaseBranchForkPoint or refs/remotes/origin/HEAD.
+		// ClassifyBaseBranch case 3: BaseBranch exists on neither origin nor
+		// locally yet. Create it from BaseBranchForkPoint or
+		// refs/remotes/origin/HEAD.
 		start, source, ferr := resolveCloneForkStart(git, dir, cs.BaseBranchForkPoint)
 		if ferr != nil {
 			return fmt.Errorf("runner clone: resolve base branch %q: %w", cs.BaseBranch, ferr)
@@ -184,10 +184,8 @@ func resolveCloneBranch(git string, cs sandbox.CloneSpec, st *State) error {
 }
 
 // resolveCloneForkStart picks the start point for creating BaseBranch
-// locally when it does not exist on origin (or locally) yet. Mirrors
-// dispatcher.WorktreeManager.resolveCase3ForkStart, minus the pre-fetch: a
-// fresh clone already has every remote branch's objects and refs, so there
-// is nothing left to fetch.
+// locally when it does not exist on origin (or locally) yet. No pre-fetch is
+// needed: a fresh clone already has every remote branch's objects and refs.
 func resolveCloneForkStart(git, dir, forkPoint string) (start, source string, err error) {
 	if forkPoint != "" {
 		if _, verr := runGit(git, dir, "rev-parse", "--verify", "--quiet", forkPoint); verr == nil {
@@ -202,13 +200,10 @@ func resolveCloneForkStart(git, dir, forkPoint string) (start, source string, er
 }
 
 // resolveCloneRef resolves an arbitrary ref/branch-name declaration (as used
-// for ForkPoint) against the fresh clone at dir. It mirrors
-// dispatcher.WorktreeManager.resolveForkPoint's remote-backed case, minus
-// the "boid/<id8>" local-only-branch special case: worktree-local boid/<id8>
-// branches live only in a host worktree and are never pushed, so a fresh
-// clone (which only ever sees origin's pushed refs) genuinely cannot
-// resolve them until the referenced branch has been pushed — a documented
-// consequence of the clone model's "push only" sharing semantics
+// for ForkPoint) against the fresh clone at dir. A "boid/<id8>" child-task
+// branch that has not been pushed to origin yet genuinely cannot resolve
+// here, since a fresh clone only ever sees origin's pushed refs — a
+// documented consequence of the clone model's "push only" sharing semantics
 // (docs/plans/container-based-boid.md 「意味論の変化」), not a bug here.
 func resolveCloneRef(git, dir, ref string) (string, error) {
 	if _, err := runGit(git, dir, "rev-parse", "--verify", "--quiet", ref); err == nil {

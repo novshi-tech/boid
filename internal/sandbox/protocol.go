@@ -147,24 +147,19 @@ type TokenContext struct {
 	// ProjectDir is the project's host-side work directory. Independent of
 	// spec.Visibility.ProjectDir (which drives sandbox mount layout and is
 	// intentionally empty for gate jobs): host-side operations the broker
-	// performs on behalf of the sandbox (git binding, host-command cwd) have
-	// their own notion of "which project are we operating on" that doesn't
-	// care whether the sandbox itself can see the tree.
-	ProjectDir  string
-	WorktreeDir string
-	// WorkspacePeers maps peer project IDs to their host-side work directories.
-	// Used by the broker to validate git clone --local source paths: only paths
-	// within a known peer project are permitted as clone sources.
-	WorkspacePeers map[string]string
+	// performs on behalf of the sandbox (host-command cwd) have their own
+	// notion of "which project are we operating on" that doesn't care
+	// whether the sandbox itself can see the tree.
+	ProjectDir string
 	// SandboxRoot is the sandbox-internal (not host-side) root directory a
 	// clone-mode job's filesystem lives under — a name-scoped subdirectory
 	// of the neutral parent path "/workspace" (docs/plans/git-gateway-cutover.md
 	// PR6 cutover; workspace 親化リファクタリング, nose 2026-07-13 decision),
-	// set by dispatcher when spec.Visibility.Clone != nil. Unlike ProjectDir /
-	// WorktreeDir this is never a host path: clone-mode jobs have no host
-	// directory the sandbox's own filesystem corresponds to, so cwd-based
-	// authorization (validateBoidBuiltinCwd's entryRoot) must compare against
-	// this sandbox-side path instead. Empty for every non-clone job.
+	// set by dispatcher when spec.Visibility.Clone != nil. Unlike ProjectDir
+	// this is never a host path: clone-mode jobs have no host directory the
+	// sandbox's own filesystem corresponds to, so cwd-based authorization
+	// (validateBoidBuiltinCwd's entryRoot) must compare against this
+	// sandbox-side path instead. Empty for every non-clone job.
 	SandboxRoot string
 }
 

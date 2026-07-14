@@ -7,7 +7,6 @@ import (
 	"syscall"
 
 	"github.com/novshi-tech/boid/internal/adapters"
-	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 type TaskWorkflowService struct {
@@ -18,12 +17,7 @@ type TaskWorkflowService struct {
 	Meta        MetaStore
 	Coordinator DispatchCoordinator
 	Lifecycle   JobLifecycle
-	Worktrees   WorktreeCleaner
 	Hub         *TaskEventHub
-	// Locks pins the branch lock to the executing lifetime of each task.
-	// Optional: when nil, no branch locking is performed (matches pre-P0-2
-	// behaviour for tests that don't exercise concurrency).
-	Locks *orchestrator.BranchLockManager
 	// Adapter is the harness adapter used to query post-run usage. Phase 3-b
 	// dropped the StopAgent role: graceful stop is delivered as a SIGUSR1
 	// directly via Lifecycle.SignalJobRuntime, which claude.Adapter.Run()'s
@@ -50,15 +44,6 @@ func (s *TaskWorkflowService) Shutdown() {
 		s.dispatchCancel()
 	}
 	s.dispatchWG.Wait()
-}
-
-// releaseProjectLock drops the executing-lifetime branch lock for the given
-// task. Safe to call multiple times; safe when the task never acquired a lock.
-func (s *TaskWorkflowService) releaseProjectLock(taskID string) {
-	if s.Locks == nil || taskID == "" {
-		return
-	}
-	s.Locks.ReleaseForTask(taskID)
 }
 
 // StopAgent gracefully stops the agent backing runtimeID by delivering
