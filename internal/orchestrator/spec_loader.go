@@ -117,34 +117,22 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 		return nil, err
 	}
 
-	// Resolve hook ScriptPaths from the project's .boid/hooks/ directory.
-	// Non-agent hooks (Kind != "agent") require an argv source: either an
-	// inline `command:` (script-hook-removal PR1, docs/plans/script-hook-removal.md)
-	// or a backing .boid/hooks/<id>.(sh|py) file resolved into ScriptPath.
-	// Agent-kind hooks omit both and are dispatched to the HarnessAdapter
-	// directly. This whole loop is scoped for removal in PR3 once every
-	// remaining script hook has been migrated to Command; until then both
-	// argv sources must load side by side.
-	projectHooksDir := filepath.Join(dir, ".boid", "hooks")
+	// Validate hook kind/agent/command invariants at load time. This is
+	// defense-in-depth alongside the runtime check in
+	// DispatchPlanner.validateHookCommandFields (see validateHookKind's doc
+	// comment): load-time rejects malformed YAML shapes, runtime catches
+	// programmatic construction / kit-merge drift. Prior to
+	// docs/plans/script-hook-removal.md PR3 this loop also resolved each
+	// hook's backing .boid/hooks/<id>.(sh|py) script into a runtime-only
+	// field on Hook; that field and its resolution were removed once every
+	// hook had migrated to the inline `command:` field or agent-kind
+	// dispatch.
 	for name, behavior := range meta.TaskBehaviors {
 		for i := range behavior.Hooks {
-			h := &behavior.Hooks[i]
-			if err := validateHookKind(h); err != nil {
+			if err := validateHookKind(&behavior.Hooks[i]); err != nil {
 				return nil, fmt.Errorf("project.yaml: task_behaviors.%s: %w", name, err)
 			}
-			if h.Kind == HandlerKindAgent {
-				continue // agent hooks do not need a script path
-			}
-			if h.Command != "" {
-				continue // inline command hooks do not need a script path
-			}
-			scriptPath, err := ResolveHookScript(projectHooksDir, h.ID)
-			if err != nil {
-				return nil, fmt.Errorf("project.yaml: task_behaviors.%s: hook %q: %w", name, h.ID, err)
-			}
-			h.ScriptPath = scriptPath
 		}
-		meta.TaskBehaviors[name] = behavior
 	}
 
 	if meta.ID == "" {

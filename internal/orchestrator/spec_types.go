@@ -45,12 +45,6 @@ func (b *BindMount) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
-// HookFile describes a single hook file to bind-mount into the sandbox.
-type HookFile struct {
-	Source     string // host-side absolute path
-	TargetName string // filename inside sandbox .boid/hooks/
-}
-
 // RejectRule declares a pattern that rejects an invocation with a
 // human-readable reason. Match is a glob over the joined args string with the
 // same semantics as allow/deny patterns (globMatch in internal/sandbox/policy.go).
@@ -276,12 +270,10 @@ type Hook struct {
 	Requires   []string      `yaml:"requires" json:"requires"`
 	Agent      string        `yaml:"agent,omitempty" json:"agent,omitempty"`
 	Kit        string        `yaml:"-" json:"kit,omitempty"`
-	ScriptPath string        `yaml:"-" json:"-"`
-	// Command is an inline shell command, run via `sh -c`. It is the
-	// script-hook-removal (docs/plans/script-hook-removal.md) replacement for
-	// ScriptPath: mutually exclusive with both ScriptPath and Agent, and not
-	// allowed on agent-kind hooks. See DispatchPlanner.PlanHook for the argv
-	// selection and validateHookCommandFields for the exclusivity rules.
+	// Command is an inline shell command, run via `sh -c`
+	// (docs/plans/script-hook-removal.md). Mutually exclusive with Agent, and
+	// not allowed on agent-kind hooks. See DispatchPlanner.PlanHook for the
+	// argv selection and validateHookCommandFields for the exclusivity rules.
 	Command string `yaml:"command,omitempty" json:"command,omitempty"`
 }
 
@@ -399,9 +391,8 @@ type TaskBehavior struct {
 	Traits             []string     `yaml:"traits" json:"traits"`
 	DefaultInstruction *Instruction `yaml:"default_instruction,omitempty" json:"default_instruction,omitempty"`
 
-	// Hooks is parsed from project.yaml task_behaviors.<name>.hooks at load time.
-	// ScriptPath on each Hook is resolved separately by ReadProjectMeta (not stored
-	// in YAML). Env, HostCommands, AdditionalBindings, and KitRoots are
+	// Hooks is parsed from project.yaml task_behaviors.<name>.hooks at load
+	// time. Env, HostCommands, AdditionalBindings, and KitRoots are
 	// runtime-overlay fields populated by ReadProjectMetaWithKits after merging
 	// kit data and project-level overlays. These are not serialized to YAML.
 	Hooks              []Hook            `yaml:"hooks,omitempty" json:"-"`

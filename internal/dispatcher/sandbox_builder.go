@@ -370,22 +370,6 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 
 	argv := append([]string(nil), spec.Argv...)
 
-	// Hook scripts live at projectDir/.boid/hooks/<id>.(sh|py) on the host.
-	// Under clone-mode dispatch the sandbox never sees that host path
-	// directly — clone mode has no host path visible at all, .boid ships
-	// inside the cloned repo (see docs/plans/git-gateway-cutover.md PR6
-	// cutover and the .boid git-tracking convention it depends on). Remap
-	// argv[0] to wherever the script actually lands inside the sandbox so
-	// the runner-inner-child can exec it. The non-clone (plain project
-	// bind-mount) path needs no remap: projectDir is bind-mounted at the
-	// same host path inside the sandbox, so argv[0] already resolves as-is.
-	if projectDir != "" && spec.Visibility.Clone != nil && len(argv) > 0 {
-		boidInProject := projectDir + "/.boid/"
-		if rest, ok := strings.CutPrefix(argv[0], boidInProject); ok {
-			argv[0] = sandboxCloneDir(cloneDirNameForVisibility(spec.Visibility)) + "/.boid/" + rest
-		}
-	}
-
 	// Context files: task.yaml / instructions.yaml / environment.yaml / payload.json.
 	var selfCloneDir string
 	if spec.Visibility.Clone != nil {

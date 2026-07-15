@@ -39,17 +39,16 @@ type DispatchPlanner struct {
 
 // PlanHook renders a hook fire event into a JobSpec.
 //
-// Agent-kind hooks (Hook.Kind == HandlerKindAgent) may omit ScriptPath and
-// Command — the HarnessAdapter builds its own argv from CLI conventions, so
-// an empty Argv flows through fine. Non-agent hooks (shell-bound) still
-// require a resolved Command or ScriptPath. The Evaluator may synthesize a
-// script-less agent hook when the behavior declares none of its own (Phase
-// 3-e kit-retirement fallback); the relaxed validation here is what makes
-// those virtual hooks dispatch-ready.
+// Agent-kind hooks (Hook.Kind == HandlerKindAgent) may omit Command — the
+// HarnessAdapter builds its own argv from CLI conventions, so an empty Argv
+// flows through fine. Non-agent hooks (shell-bound) require a resolved
+// Command. The Evaluator may synthesize a command-less agent hook when the
+// behavior declares none of its own (Phase 3-e kit-retirement fallback); the
+// relaxed validation here is what makes those virtual hooks dispatch-ready.
 //
-// Command is the script-hook-removal (docs/plans/script-hook-removal.md PR1)
-// inline-command replacement for ScriptPath: see validateHookCommandFields
-// for the exclusivity rules between Command / ScriptPath / Agent / Kind.
+// Command is an inline shell command (docs/plans/script-hook-removal.md):
+// see validateHookCommandFields for the exclusivity rules between Command /
+// Agent / Kind.
 func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc, error) {
 	if event == nil {
 		return nil, nil, fmt.Errorf("hook event is required")
@@ -82,11 +81,9 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 	var argv []string
 	switch {
 	case event.Hook.Command != "":
-		// script-hook-removal PR1: inline command hook, run via the shell
-		// adapter exactly like a ScriptPath hook would be.
+		// script-hook-removal (docs/plans/script-hook-removal.md): inline
+		// command hook, run via the shell adapter.
 		argv = []string{"sh", "-c", event.Hook.Command}
-	case event.Hook.ScriptPath != "":
-		argv = []string{event.Hook.ScriptPath}
 	case event.Hook.Kind == HandlerKindAgent:
 		// argv stays nil; the HarnessAdapter builds its own from CLI
 		// conventions.
@@ -143,18 +140,15 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 }
 
 // validateHookCommandFields enforces the mutual-exclusion invariants between
-// Hook.Command, Hook.ScriptPath, Hook.Agent, and Hook.Kind introduced by the
-// script-hook-removal migration (docs/plans/script-hook-removal.md PR1):
+// Hook.Command, Hook.Agent, and Hook.Kind (docs/plans/script-hook-removal.md):
 //
 //  1. Kind == HandlerKindAgent hooks do not take Command — agent hooks are
 //     dispatched to a HarnessAdapter, which builds its own argv.
 //  2. Agent and Command are mutually exclusive — an agent-routed hook and an
 //     inline-command hook are different dispatch shapes.
-//  3. ScriptPath and Command are mutually exclusive — exactly one argv source
-//     may be declared (double-specification is rejected rather than silently
-//     preferring one).
-//  4. A non-agent hook must resolve to at least one of Command or ScriptPath
-//     — otherwise the shell adapter has nothing to exec.
+//  3. A non-agent hook with neither Command nor Agent has no argv source to
+//     resolve — the shell adapter has nothing to exec and there is no
+//     HarnessAdapter to route to.
 func validateHookCommandFields(h *Hook) error {
 	if h.Kind == HandlerKindAgent && h.Command != "" {
 		return fmt.Errorf("hook %q: agent-kind hooks do not take 'command' (agent hooks are dispatched to a HarnessAdapter)", h.ID)
@@ -162,15 +156,8 @@ func validateHookCommandFields(h *Hook) error {
 	if h.Agent != "" && h.Command != "" {
 		return fmt.Errorf("hook %q: 'agent' and 'command' are mutually exclusive", h.ID)
 	}
-	if h.ScriptPath != "" && h.Command != "" {
-		// ScriptPath is not a YAML key (Hook.ScriptPath is `yaml:"-"`,
-		// resolved by ReadProjectMeta from .boid/hooks/<id>.(sh|py)); this
-		// error message points at the on-disk file so users are not sent
-		// hunting for a non-existent `script:` YAML entry.
-		return fmt.Errorf("hook %q: 'command' is mutually exclusive with a resolved .boid/hooks/%s.(sh|py) script file (both were set)", h.ID, h.ID)
-	}
-	if h.Kind != HandlerKindAgent && h.Command == "" && h.ScriptPath == "" {
-		return fmt.Errorf("hook %q: no command or script path resolved", h.ID)
+	if h.Kind != HandlerKindAgent && h.Command == "" && h.Agent == "" {
+		return fmt.Errorf("hook %q: no command or agent resolved", h.ID)
 	}
 	return nil
 }

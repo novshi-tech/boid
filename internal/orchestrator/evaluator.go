@@ -29,7 +29,7 @@ func extractInstructionAgents(instructions Instructions) map[string]bool {
 // (typical after the boid-kits claude-code/codex retirement landed in PR
 // #604), the evaluator synthesizes a virtual agent-kind hook for the active
 // instruction's agent. The runner-inner-child hands every agent-kind job to
-// its HarnessAdapter directly, so a hook with no ScriptPath is dispatch-ready
+// its HarnessAdapter directly, so a hook with no Argv is dispatch-ready
 // — see planner.PlanHook and adapters.HarnessAdapter.Run. The synthesis is
 // gated to known harness agents (claude-code / codex / opencode) so unknown
 // agent names do not collide with the shell adapter's Argv requirement.
