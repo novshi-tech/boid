@@ -74,8 +74,8 @@ func TestDispatchPlannerInjectsDefaultBuiltinsForHook(t *testing.T) {
 		TaskID:    "task-1",
 		ProjectID: "proj-1",
 		Hook: Hook{
-			ID:         "hook-1",
-			ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
+			ID:      "hook-1",
+			Command: "true",
 		},
 	})
 	if err != nil {
@@ -96,19 +96,11 @@ func TestDispatchPlannerInjectsDefaultBuiltinsForHook(t *testing.T) {
 	}
 }
 
-// PlanHook uses Hook.ScriptPath directly as Argv[0] and surfaces KitRoots
-// from the behavior in Visibility.KitRoots. No staging directory is created.
-func TestPlanHook_UsesScriptPathDirectlyAndSetsKitRoots(t *testing.T) {
+// PlanHook surfaces KitRoots from the behavior in Visibility.KitRoots and
+// returns a nil cleanup func: Command hooks require no staging directory.
+func TestPlanHook_SetsKitRootsFromBehavior(t *testing.T) {
 	projectDir := t.TempDir()
 	kitRoot := t.TempDir()
-	kitHooksDir := filepath.Join(kitRoot, "hooks")
-	if err := os.MkdirAll(kitHooksDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	scriptPath := filepath.Join(kitHooksDir, "run-agent.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/bash\n"), 0o755); err != nil {
-		t.Fatalf("write kit hook: %v", err)
-	}
 
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{
 		KitRoots: []string{kitRoot},
@@ -118,16 +110,13 @@ func TestPlanHook_UsesScriptPathDirectlyAndSetsKitRoots(t *testing.T) {
 		EventID:   "event-1",
 		TaskID:    "task-1",
 		ProjectID: "proj-1",
-		Hook:      Hook{ID: "run-agent", ScriptPath: scriptPath},
+		Hook:      Hook{ID: "run-agent", Command: "true"},
 	})
 	if err != nil {
 		t.Fatalf("PlanHook: %v", err)
 	}
 	if cleanup != nil {
 		t.Error("PlanHook should return nil cleanup (no staging dir)")
-	}
-	if len(req.Argv) == 0 || req.Argv[0] != scriptPath {
-		t.Errorf("Argv[0] = %q, want %q", req.Argv[0], scriptPath)
 	}
 	if len(req.Visibility.KitRoots) != 1 || req.Visibility.KitRoots[0] != kitRoot {
 		t.Errorf("KitRoots = %v, want [%s]", req.Visibility.KitRoots, kitRoot)
@@ -164,7 +153,7 @@ func TestPlanHook_SetsVisibilityProjectNameFromMeta(t *testing.T) {
 		EventID:   "event-1",
 		TaskID:    "task-1",
 		ProjectID: "proj-1",
-		Hook:      Hook{ID: "hook-1", ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh")},
+		Hook:      Hook{ID: "hook-1", Command: "true"},
 	})
 	if err != nil {
 		t.Fatalf("PlanHook: %v", err)
@@ -186,14 +175,6 @@ func TestPlanHook_SetsVisibilityProjectNameFromMeta(t *testing.T) {
 // pins the sibling field.
 func TestPlanHook_CarriesAdditionalBindings(t *testing.T) {
 	projectDir := t.TempDir()
-	kitHooksDir := filepath.Join(projectDir, "hooks")
-	if err := os.MkdirAll(kitHooksDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	scriptPath := filepath.Join(kitHooksDir, "run.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/bash\n"), 0o755); err != nil {
-		t.Fatalf("write hook: %v", err)
-	}
 
 	binding := BindMount{Source: "/opt/volta", Target: "/opt/volta", Mode: "rw"}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{
@@ -204,7 +185,7 @@ func TestPlanHook_CarriesAdditionalBindings(t *testing.T) {
 		EventID:   "event-1",
 		TaskID:    "task-1",
 		ProjectID: "proj-1",
-		Hook:      Hook{ID: "run", ScriptPath: scriptPath},
+		Hook:      Hook{ID: "run", Command: "true"},
 	})
 	if err != nil {
 		t.Fatalf("PlanHook: %v", err)
@@ -258,9 +239,9 @@ func TestPlanHook_AgentHookInteractive(t *testing.T) {
 				TaskID:    "task-1",
 				ProjectID: "proj-1",
 				Hook: Hook{
-					ID:         "hook-1",
-					ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
-					Agent:      tc.agent,
+					ID:    "hook-1",
+					Kind:  HandlerKindAgent,
+					Agent: tc.agent,
 				},
 			})
 			if err != nil {
@@ -279,8 +260,8 @@ func TestPlanHook_AgentHookInteractive(t *testing.T) {
 	}
 }
 
-// Phase 3-e fallback: PlanHook must accept an agent-kind Hook with empty
-// ScriptPath — that's the shape the Evaluator synthesizes when the behavior
+// Phase 3-e fallback: PlanHook must accept an agent-kind Hook with no Command
+// set — that's the shape the Evaluator synthesizes when the behavior
 // declares no hook of its own and the active instruction targets a known
 // harness. The resulting JobSpec carries an empty Argv (the HarnessAdapter
 // builds its own argv from CLI conventions) but a populated HarnessType so
@@ -307,7 +288,6 @@ func TestPlanHook_AcceptsScriptlessAgentHook(t *testing.T) {
 			ID:    "agent:claude-code",
 			Kind:  HandlerKindAgent,
 			Agent: "claude-code",
-			// ScriptPath intentionally empty.
 		},
 	})
 	if err != nil {
@@ -333,8 +313,8 @@ func TestPlanHook_AcceptsScriptlessAgentHook(t *testing.T) {
 	}
 }
 
-// Non-agent hooks (Kind == "") still require a Command or ScriptPath: the
-// shell adapter has no way to build an Argv on their behalf.
+// Non-agent hooks (Kind == "") with neither Command nor Agent are rejected
+// up front: the shell adapter has no way to build an Argv on their behalf.
 func TestPlanHook_RejectsScriptlessNonAgentHook(t *testing.T) {
 	projectDir := t.TempDir()
 	planner := newPlannerForTest(
@@ -353,10 +333,10 @@ func TestPlanHook_RejectsScriptlessNonAgentHook(t *testing.T) {
 		},
 	})
 	if err == nil {
-		t.Fatal("PlanHook accepted a non-agent hook with empty Command and ScriptPath; want error")
+		t.Fatal("PlanHook accepted a non-agent hook with empty Command and Agent; want error")
 	}
-	if !strings.Contains(err.Error(), "no command or script path resolved") {
-		t.Errorf("error = %v, want one mentioning 'no command or script path resolved'", err)
+	if !strings.Contains(err.Error(), "no command or agent resolved") {
+		t.Errorf("error = %v, want one mentioning 'no command or agent resolved'", err)
 	}
 }
 
@@ -394,35 +374,6 @@ func TestPlanHook_UsesCommandBuildsShArgv(t *testing.T) {
 		if req.Argv[i] != wantArgv[i] {
 			t.Errorf("Argv[%d] = %q, want %q", i, req.Argv[i], wantArgv[i])
 		}
-	}
-}
-
-// Command and ScriptPath are mutually exclusive: double-specifying both argv
-// sources on the same hook is rejected rather than silently preferring one.
-func TestPlanHook_RejectsCommandAndScriptPathTogether(t *testing.T) {
-	projectDir := t.TempDir()
-	scriptPath := filepath.Join(projectDir, ".boid", "hooks", "hook-1.sh")
-	planner := newPlannerForTest(
-		&Project{ID: "proj-1", WorkDir: projectDir},
-		TaskBehavior{},
-		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Status: TaskStatusExecuting},
-	)
-
-	_, _, err := planner.PlanHook(&HookFireEvent{
-		EventID:   "event-1",
-		TaskID:    "task-1",
-		ProjectID: "proj-1",
-		Hook: Hook{
-			ID:         "double-specified",
-			ScriptPath: scriptPath,
-			Command:    "echo hi",
-		},
-	})
-	if err == nil {
-		t.Fatal("PlanHook accepted a hook with both ScriptPath and Command set; want error")
-	}
-	if !strings.Contains(err.Error(), "mutually exclusive") {
-		t.Errorf("error = %v, want one mentioning 'mutually exclusive'", err)
 	}
 }
 
@@ -507,7 +458,7 @@ func TestPlanHook_DockerEnabled_WhenCapabilitySet(t *testing.T) {
 		EventID:   "ev-1",
 		TaskID:    "task-1",
 		ProjectID: "proj-1",
-		Hook:      Hook{ID: "h-1", ScriptPath: filepath.Join(projectDir, ".boid/hooks/h-1.sh")},
+		Hook:      Hook{ID: "h-1", Command: "true"},
 	})
 	if cleanup != nil {
 		defer cleanup()
@@ -535,7 +486,7 @@ func TestPlanHook_DockerEnabled_WhenCapabilityNotSet(t *testing.T) {
 		EventID:   "ev-1",
 		TaskID:    "task-1",
 		ProjectID: "proj-1",
-		Hook:      Hook{ID: "h-1", ScriptPath: filepath.Join(projectDir, ".boid/hooks/h-1.sh")},
+		Hook:      Hook{ID: "h-1", Command: "true"},
 	})
 	if cleanup != nil {
 		defer cleanup()
@@ -571,9 +522,9 @@ func TestPlanHook_Instruction_MatchingAgent(t *testing.T) {
 		TaskID:    "task-1",
 		ProjectID: "proj-1",
 		Hook: Hook{
-			ID:         "hook-1",
-			ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
-			Agent:      "claude-code",
+			ID:    "hook-1",
+			Kind:  HandlerKindAgent,
+			Agent: "claude-code",
 		},
 	})
 	if err != nil {
@@ -616,8 +567,8 @@ func TestPlanHook_TaskSnapshot(t *testing.T) {
 		TaskID:    "task-1",
 		ProjectID: "proj-1",
 		Hook: Hook{
-			ID:         "hook-1",
-			ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
+			ID:      "hook-1",
+			Command: "true",
 		},
 	})
 	if err != nil {
@@ -658,9 +609,9 @@ func TestPlanHook_PrimaryInput_FilteredByConsumes(t *testing.T) {
 		TaskID:    "task-1",
 		ProjectID: "proj-1",
 		Hook: Hook{
-			ID:         "hook-1",
-			ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
-			Traits:     HandlerTraits{Consumes: []TraitType{TraitArtifact}},
+			ID:      "hook-1",
+			Command: "true",
+			Traits:  HandlerTraits{Consumes: []TraitType{TraitArtifact}},
 		},
 	})
 	if err != nil {
@@ -705,8 +656,8 @@ func TestDispatchPlanner_PropagatesBaseBranchEnv(t *testing.T) {
 		TaskID:    "task-1",
 		ProjectID: "proj-1",
 		Hook: Hook{
-			ID:         "hook-1",
-			ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
+			ID:      "hook-1",
+			Command: "true",
 		},
 	})
 	if err != nil {
@@ -728,8 +679,8 @@ func TestDispatchPlanner_PropagatesBaseBranchEnv(t *testing.T) {
 		TaskID:    "task-1",
 		ProjectID: "proj-1",
 		Hook: Hook{
-			ID:         "hook-2",
-			ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
+			ID:      "hook-2",
+			Command: "true",
 		},
 	})
 	if err != nil {
@@ -760,8 +711,8 @@ func TestPlanHook_PropagatesHostCommands(t *testing.T) {
 		TaskID:    "task-1",
 		ProjectID: "proj-1",
 		Hook: Hook{
-			ID:         "hook-1",
-			ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
+			ID:      "hook-1",
+			Command: "true",
 		},
 	})
 	if err != nil {
@@ -812,8 +763,8 @@ func TestPlanHook_WritableControlledByTaskReadonly(t *testing.T) {
 				TaskID:    "task-1",
 				ProjectID: "proj-1",
 				Hook: Hook{
-					ID:         "hook-1",
-					ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh"),
+					ID:      "hook-1",
+					Command: "true",
 				},
 			})
 			if err != nil {
@@ -841,7 +792,6 @@ func TestDispatchPlanner_PropagatesAwaitingEnv(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	scriptPath := filepath.Join(projectDir, ".boid/hooks", "hook-1.sh")
 
 	// Legacy records still hold a session_id; deserialisation must skip it
 	// silently rather than fail, and PlanHook must not surface it as env.
@@ -859,7 +809,7 @@ func TestDispatchPlanner_PropagatesAwaitingEnv(t *testing.T) {
 		EventID:   "event-1",
 		TaskID:    "task-1",
 		ProjectID: "proj-1",
-		Hook:      Hook{ID: "hook-1", ScriptPath: scriptPath},
+		Hook:      Hook{ID: "hook-1", Command: "true"},
 	})
 	if err != nil {
 		t.Fatalf("PlanHook: %v", err)
@@ -882,7 +832,7 @@ func TestDispatchPlanner_PropagatesAwaitingEnv(t *testing.T) {
 		EventID:   "event-2",
 		TaskID:    "task-1",
 		ProjectID: "proj-1",
-		Hook:      Hook{ID: "hook-1", ScriptPath: scriptPath},
+		Hook:      Hook{ID: "hook-1", Command: "true"},
 	})
 	if err != nil {
 		t.Fatalf("PlanHook (plain): %v", err)
@@ -906,7 +856,6 @@ func TestDispatchPlanner_NoParentBranchEnv(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	scriptPath := filepath.Join(projectDir, ".boid/hooks", "hook-1.sh")
 
 	task := &Task{
 		ID:         "child0001234567",
@@ -925,7 +874,7 @@ func TestDispatchPlanner_NoParentBranchEnv(t *testing.T) {
 		EventID:   "event-1",
 		TaskID:    task.ID,
 		ProjectID: "proj-1",
-		Hook:      Hook{ID: "hook-1", ScriptPath: scriptPath},
+		Hook:      Hook{ID: "hook-1", Command: "true"},
 	})
 	if err != nil {
 		t.Fatalf("PlanHook: %v", err)
@@ -958,7 +907,7 @@ func TestDispatchPlanner_BaseBranchEnvRetained_WithParent(t *testing.T) {
 		EventID:   "event-1",
 		TaskID:    "child12345678901",
 		ProjectID: "proj-1",
-		Hook:      Hook{ID: "hook-1", ScriptPath: filepath.Join(projectDir, ".boid/hooks", "hook-1.sh")},
+		Hook:      Hook{ID: "hook-1", Command: "true"},
 	})
 	if err != nil {
 		t.Fatalf("PlanHook: %v", err)
