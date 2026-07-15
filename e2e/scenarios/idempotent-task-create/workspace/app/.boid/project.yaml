@@ -9,20 +9,28 @@ task_behaviors:
 
           # Simulate supervisor resume: call boid task create twice with the same ref.
           # The second call must return the same task ID (get-or-create idempotency).
-
-          id1=$(boid task create 2>/dev/null <<'YAML' | awk '{print $3}'
+          #
+          # Two-stage capture (not `boid ... | awk`): `sh -c` runs under dash,
+          # which does not support `pipefail`, so a piped `boid task create`
+          # failure would be masked by awk's success and this hook would exit 0
+          # with id1="" / id2="". Splitting the pipe means the boid failure is
+          # captured by `set -e` at the assignment, and the printf | awk pipe
+          # cannot fail (both sides are trivial).
+          out1=$(boid task create 2>/dev/null <<'YAML'
           title: Step A
           behavior: child
           ref: step-a
           YAML
           )
+          id1=$(printf '%s\n' "$out1" | awk '{print $3}')
 
-          id2=$(boid task create 2>/dev/null <<'YAML' | awk '{print $3}'
+          out2=$(boid task create 2>/dev/null <<'YAML'
           title: Step A
           behavior: child
           ref: step-a
           YAML
           )
+          id2=$(printf '%s\n' "$out2" | awk '{print $3}')
 
           mkdir -p "$HOME/.boid/output"
           cat > "$HOME/.boid/output/payload_patch.json" <<EOF

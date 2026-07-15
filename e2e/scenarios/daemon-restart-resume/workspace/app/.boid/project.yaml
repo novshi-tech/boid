@@ -10,7 +10,7 @@ task_behaviors:
           # The release file is written by the host-side scenario.sh directly into
           # the host project directory. Under the git gateway cutover (PR6), this
           # sandbox's own view of the project is a fresh clone (not a live bind mount
-          # of the host dir), so a plain `[ -f ... ]` against a local relative path
+          # of the host dir), so a plain `[[ -f ... ]]` against a local relative path
           # would never see it. fake-hook-cmd --check-file runs on the host (it's a
           # broker-executed host_command) and checks the real host-side path instead.
           RELEASE_FILE_HOST="${E2E_WORKSPACE_DIR:?}/app/.boid/release-block-and-done"

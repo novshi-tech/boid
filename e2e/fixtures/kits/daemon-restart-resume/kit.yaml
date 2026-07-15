@@ -1,5 +1,5 @@
 # docs/plans/git-gateway-cutover.md PR6 cutover follow-up: the hook
-# (block-and-done.sh) needs to observe a release signal the host-side
+# (block-and-done inline command in project.yaml) needs to observe a release signal the host-side
 # scenario.sh writes directly to the host filesystem, which a sandboxed
 # clone can never see on its own (it's an isolated copy, not a live bind
 # mount of the host project dir). fake-hook-cmd's --check-file mode runs on
