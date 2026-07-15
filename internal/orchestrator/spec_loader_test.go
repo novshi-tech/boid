@@ -83,21 +83,25 @@ task_behaviors:
 
 // TestReadProjectMeta_HookCommandField verifies that ReadProjectMeta parses
 // the new hooks[].command inline field (script-hook-removal PR1,
-// docs/plans/script-hook-removal.md) from YAML into Hook.Command.
+// docs/plans/script-hook-removal.md) from YAML into Hook.Command AND that
+// the loader's script-resolution loop skips a Command-only non-agent hook
+// so it does not require a backing .boid/hooks/<id>.sh file to exist.
 //
-// The hook below declares kind: agent solely so the loader's existing
-// ScriptPath-resolution loop (spec_loader.go, unchanged by this PR — that
-// removal is scoped to PR3) skips over it without requiring a backing
-// .boid/hooks/<id>.sh file; this test only exercises YAML→struct field
-// wiring for Command, not the Command/Kind exclusivity rule enforced at
-// dispatch time by DispatchPlanner.PlanHook (see TestPlanHook_* in
-// planner_test.go for that).
+// This is the load-time counterpart of the PR3-scoped ScriptPath removal:
+// during the PR1→PR3 interim, both argv sources must load side by side, and
+// this test pins the new skip. The dispatch-time exclusivity rules for
+// Command / ScriptPath / Agent / Kind live in DispatchPlanner.PlanHook (see
+// TestPlanHook_* in planner_test.go).
 func TestReadProjectMeta_HookCommandField(t *testing.T) {
 	dir := t.TempDir()
 	boidDir := filepath.Join(dir, ".boid")
 	if err := os.MkdirAll(boidDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
+	// Intentionally do NOT create .boid/hooks/assert-clone-cwd.sh — the
+	// loader must skip ResolveHookScript for a Command-only hook rather than
+	// error out with "script not found". This is the reason the coordinator
+	// flagged the loader skip as PR1-blocking for PR2a〜PR2d migration.
 
 	yaml := `
 id: test-proj
@@ -106,7 +110,6 @@ task_behaviors:
   dev:
     hooks:
       - id: assert-clone-cwd
-        kind: agent
         command: |
           set -eu
           echo assert-clone-cwd ok
@@ -127,9 +130,16 @@ task_behaviors:
 	if len(behavior.Hooks) != 1 {
 		t.Fatalf("hooks = %+v, want 1 entry", behavior.Hooks)
 	}
+	got := behavior.Hooks[0]
 	const wantCommand = "set -eu\necho assert-clone-cwd ok\n"
-	if behavior.Hooks[0].Command != wantCommand {
-		t.Errorf("hook.Command = %q, want %q", behavior.Hooks[0].Command, wantCommand)
+	if got.Command != wantCommand {
+		t.Errorf("hook.Command = %q, want %q", got.Command, wantCommand)
+	}
+	if got.ScriptPath != "" {
+		t.Errorf("hook.ScriptPath = %q, want empty (loader must not resolve a script for Command-only hooks)", got.ScriptPath)
+	}
+	if got.Kind != "" {
+		t.Errorf("hook.Kind = %q, want empty (this hook is non-agent, Command-only)", got.Kind)
 	}
 }
 

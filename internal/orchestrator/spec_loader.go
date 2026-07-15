@@ -118,8 +118,13 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	}
 
 	// Resolve hook ScriptPaths from the project's .boid/hooks/ directory.
-	// Non-agent hooks (Kind != "agent") require a script file; agent-kind hooks
-	// may omit the script and are dispatched to the HarnessAdapter directly.
+	// Non-agent hooks (Kind != "agent") require an argv source: either an
+	// inline `command:` (script-hook-removal PR1, docs/plans/script-hook-removal.md)
+	// or a backing .boid/hooks/<id>.(sh|py) file resolved into ScriptPath.
+	// Agent-kind hooks omit both and are dispatched to the HarnessAdapter
+	// directly. This whole loop is scoped for removal in PR3 once every
+	// remaining script hook has been migrated to Command; until then both
+	// argv sources must load side by side.
 	projectHooksDir := filepath.Join(dir, ".boid", "hooks")
 	for name, behavior := range meta.TaskBehaviors {
 		for i := range behavior.Hooks {
@@ -129,6 +134,9 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 			}
 			if h.Kind == HandlerKindAgent {
 				continue // agent hooks do not need a script path
+			}
+			if h.Command != "" {
+				continue // inline command hooks do not need a script path
 			}
 			scriptPath, err := ResolveHookScript(projectHooksDir, h.ID)
 			if err != nil {
