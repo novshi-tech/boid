@@ -4,3 +4,12 @@ task_behaviors:
   slow:
     hooks:
       - id: slow-hook
+        command: |
+          set -eu
+          # Slow hook used to verify Web UI / TUI can attach to a running
+          # hook job's PTY. Real TUI programs (claude code, vim, less) write
+          # to /dev/tty rather than stdout, so we mirror that pattern here:
+          # write the verification marker to /dev/tty so it travels through
+          # the PTY master and reaches the WS attach subscriber.
+          echo "hello-hook-pty" > /dev/tty
+          sleep 8
