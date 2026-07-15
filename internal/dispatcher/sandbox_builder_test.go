@@ -808,32 +808,6 @@ func TestCloneDirNameForVisibility_FallsBackToProjectDirBasename(t *testing.T) {
 	}
 }
 
-// TestBuildSandboxSpec_CloneEnabled_ArgvRewriteUsesNameScopedDir pins that the
-// argv[0] rewrite for hook scripts shipped inside the cloned repo
-// (projectDir/.boid/hooks/<id>.sh on the host) lands at the name-scoped
-// sandbox path, not the bare /workspace parent.
-func TestBuildSandboxSpec_CloneEnabled_ArgvRewriteUsesNameScopedDir(t *testing.T) {
-	const projectDir = "/home/user/project"
-	spec := &orchestrator.JobSpec{
-		ProjectID: "proj-1",
-		Argv:      []string{projectDir + "/.boid/hooks/verify.sh"},
-		Visibility: orchestrator.Visibility{
-			ProjectDir:  projectDir,
-			ProjectName: "bm-next",
-			Writable:    true,
-			Clone:       &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
-		},
-	}
-	out, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{JobID: "job-1"})
-	if err != nil {
-		t.Fatalf("BuildSandboxSpec: %v", err)
-	}
-	const want = "/workspace/bm-next/.boid/hooks/verify.sh"
-	if len(out.Argv) == 0 || out.Argv[0] != want {
-		t.Errorf("Argv[0] = %v, want [%q, ...]", out.Argv, want)
-	}
-}
-
 // boid と git は ResolveHostCommands に含まれない（専用の bind mount が別途生成される）。
 // その他の host commands はホスト実パスに bind mount される。
 func TestHostCommandMounts_BoidAndGitExcluded(t *testing.T) {
@@ -1948,38 +1922,6 @@ func TestBuildEnvironmentYAML_HostCommandsRejectSurfaced(t *testing.T) {
 	}
 }
 
-
-// Non-clone dispatch (plain project bind-mount, spec.Visibility.Clone == nil)
-// must not remap argv[0] even if it looks like a .boid hook path — projectDir
-// is bind-mounted at the same host path inside the sandbox, so the host-side
-// argv[0] already resolves as-is. See
-// TestBuildSandboxSpec_CloneEnabled_ArgvRewriteUsesNameScopedDir for the
-// clone-mode remap case.
-func TestBuildSandboxSpec_NonCloneHookArgvUnchanged(t *testing.T) {
-	const (
-		projectDir = "/tmp/test-project"
-		hookScript = projectDir + "/.boid/hooks/my-hook.sh"
-	)
-	spec := &orchestrator.JobSpec{
-		HarnessType: "shell",
-		Argv:        []string{hookScript},
-		Visibility: orchestrator.Visibility{
-			ProjectDir: projectDir,
-		},
-	}
-
-	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
-	if err != nil {
-		t.Fatalf("BuildSandboxSpec: %v", err)
-	}
-
-	if len(result.Argv) == 0 {
-		t.Fatal("Argv is empty")
-	}
-	if result.Argv[0] != hookScript {
-		t.Errorf("Argv[0] = %q, want %q (must not be remapped)", result.Argv[0], hookScript)
-	}
-}
 
 // TestBuildSandboxSpec_ProfileInit_IsThreaded verifies that
 // JobSpec.SandboxProfile == sandbox.ProfileInit is correctly threaded through

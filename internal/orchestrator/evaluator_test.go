@@ -223,9 +223,6 @@ func TestEvaluate_SynthesizesAgentHook_WhenBehaviorHasNone(t *testing.T) {
 	if got.Agent != "claude-code" {
 		t.Errorf("synthesized hook Agent = %q, want claude-code", got.Agent)
 	}
-	if got.ScriptPath != "" {
-		t.Errorf("synthesized hook ScriptPath = %q, want empty (adapter builds its own argv)", got.ScriptPath)
-	}
 	if got.ID == "" {
 		t.Error("synthesized hook ID must be non-empty (used as HandlerID for action logging)")
 	}
