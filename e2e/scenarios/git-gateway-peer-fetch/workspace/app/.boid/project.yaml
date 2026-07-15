@@ -6,3 +6,83 @@ task_behaviors:
   executor:
     hooks:
       - id: peer-fetch
+        # NOTE: hooks[].command runs via `sh -c` (planner.go) and the sandbox
+        # bind-mounts the host's /bin/sh, which is dash — dash lacks `[[ ]]` and
+        # `set -o pipefail`. Wrap the body in `bash <<'BOID_HOOK_SCRIPT'` (quoted
+        # delimiter, so dash passes it through unexpanded and bash does the
+        # `$VAR` expansion itself once it reads its own stdin).
+        command: |
+          bash <<'BOID_HOOK_SCRIPT'
+          set -euo pipefail
+
+          # docs/plans/git-gateway-cutover.md PR7b — 新規シナリオ 3/5:
+          # 「peer は fetch のみ」の検証 (git-peer-clone-local の cutover 対応置換)。
+          #
+          # workspace peer への job token 許可は常に PermFetch のみ
+          # (internal/dispatcher/gitgateway_wire.go の buildGatewayRepos:
+          # 「workspace peers: every other project sharing workspaceID, PermFetch
+          # only」)。 self が writable な executor task であっても、peer への push は
+          # gateway が 403 で拒否する。
+          #
+          # peer の clone URL は environment.yaml の `workspace_projects[].clone_url`
+          # で advertise される (sandbox_builder.go の buildEnvironmentYAML)。
+          # yaml parser 無しの環境なので grep+sed で 1 個目の clone_url 行を拾う
+          # (このシナリオでは peer は 1 つ)。
+          #
+          # アサーション (hook 内):
+          #   (a) peer を gateway URL で clone できる (PermFetch)
+          #   (b) clone された peer に peer/marker.txt が入っている (fetch の中身確認)
+          #   (c) peer clone への push は gateway 403 で失敗する (fetch-only)
+
+          ENV_YAML="$HOME/.boid/context/environment.yaml"
+          [[ -f "$ENV_YAML" ]] || { printf 'FAIL: environment.yaml not found at %s\n' "$ENV_YAML" >&2; exit 1; }
+
+          peer_clone_url="$(grep -E '^\s*clone_url:' "$ENV_YAML" | head -1 | sed -E 's/^[[:space:]]*clone_url:[[:space:]]*//')"
+          if [[ -z "$peer_clone_url" ]]; then
+            printf 'FAIL: no clone_url advertised in environment.yaml — peer advertise wiring broken\n' >&2
+            printf '=== environment.yaml ===\n' >&2
+            cat "$ENV_YAML" >&2
+            exit 1
+          fi
+
+          PEER_CLONE_DIR="$PWD/peer-clone"
+          if ! git clone -q "$peer_clone_url" "$PEER_CLONE_DIR"; then
+            printf 'FAIL: git clone via gateway peer URL failed (fetch should be allowed)\n' >&2
+            exit 1
+          fi
+
+          if [[ ! -f "$PEER_CLONE_DIR/marker.txt" ]]; then
+            printf 'FAIL: peer marker.txt not found in cloned peer — fetch delivered no content\n' >&2
+            ls -la "$PEER_CLONE_DIR" >&2 || true
+            exit 1
+          fi
+
+          # Attempt a push to the peer — expected to be denied (PermFetch only).
+          git -C "$PEER_CLONE_DIR" config user.name  "Boid E2E Peer"
+          git -C "$PEER_CLONE_DIR" config user.email "e2e-peer@boid.test"
+          printf 'unauthorized change from self project\n' > "$PEER_CLONE_DIR/violation.txt"
+          git -C "$PEER_CLONE_DIR" add violation.txt
+          git -C "$PEER_CLONE_DIR" commit -q -m "push should be denied"
+
+          push_stderr_file="$(mktemp)"
+          if git -C "$PEER_CLONE_DIR" push origin HEAD 2>"$push_stderr_file"; then
+            printf 'FAIL: git push to peer unexpectedly succeeded — peer must be fetch-only\n' >&2
+            cat "$push_stderr_file" >&2
+            exit 1
+          fi
+          push_stderr="$(cat "$push_stderr_file")"
+          rm -f "$push_stderr_file"
+
+          if ! printf '%s' "$push_stderr" | grep -q '403'; then
+            printf 'FAIL: push to peer failed but stderr did not mention HTTP 403 — probable wiring bug\n' >&2
+            printf '%s\n' "$push_stderr" >&2
+            exit 1
+          fi
+
+          marker_head="$(git -C "$PEER_CLONE_DIR" rev-parse origin/main)"
+
+          mkdir -p "$HOME/.boid/output"
+          cat > "$HOME/.boid/output/payload_patch.json" <<EOF
+          {"payload_patch":{"artifact":{"source":"peer-fetch","peer_clone_url_seen":true,"peer_marker_present":true,"peer_push_denied":true,"peer_origin_main":"${marker_head}"}}}
+          EOF
+          BOID_HOOK_SCRIPT
