@@ -427,10 +427,12 @@ func TestPlanHook_RejectsCommandAndScriptPathTogether(t *testing.T) {
 }
 
 // Agent and Command are mutually exclusive: an agent-routed hook and an
-// inline-command hook are different dispatch shapes (this is distinct from
-// the Kind == HandlerKindAgent + Command case below — a hook can declare
-// Agent without declaring kind: agent, e.g. a hook that has drifted out of
-// sync with its kind).
+// inline-command hook are different dispatch shapes. This is defense-in-depth
+// against callers that construct HookFireEvent programmatically and bypass
+// ReadProjectMeta / validateHookKind (the latter separately rejects an
+// `agent:` field without `kind: agent` at load time, so YAML-authored hooks
+// cannot reach this shape); PlanHook is the last line of enforcement before
+// the JobSpec is handed to the shell adapter.
 func TestPlanHook_RejectsCommandAndAgentTogether(t *testing.T) {
 	projectDir := t.TempDir()
 	planner := newPlannerForTest(

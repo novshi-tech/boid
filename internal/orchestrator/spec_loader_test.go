@@ -143,6 +143,45 @@ task_behaviors:
 	}
 }
 
+// TestReadProjectMeta_RejectsAgentKindHookWithCommand verifies the load-time
+// counterpart of DispatchPlanner.validateHookCommandFields rule #1: an
+// agent-kind hook must not carry an inline `command:`, because agent hooks
+// are dispatched to a HarnessAdapter that builds its own argv, leaving the
+// inline command with nowhere to run. Load-time rejection catches YAML
+// authoring mistakes long before dispatch; the runtime check in PlanHook
+// remains as defense-in-depth against programmatic construction and
+// kit-merge drift (see spec_loader.go:validateHookKind for the paired
+// rationale).
+func TestReadProjectMeta_RejectsAgentKindHookWithCommand(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	yaml := `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev:
+    hooks:
+      - id: agent-with-command
+        kind: agent
+        command: echo hi
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	_, err := projectspec.ReadProjectMeta(dir)
+	if err == nil {
+		t.Fatal("ReadProjectMeta accepted agent-kind hook with command; want error")
+	}
+	if !strings.Contains(err.Error(), "does not allow 'command:'") {
+		t.Errorf("error = %v, want one mentioning that kind: agent does not allow command", err)
+	}
+}
+
 func TestReadProjectMeta_RejectedKeys(t *testing.T) {
 	// These keys have been removed from project.yaml in the new schema.
 	// Each one should produce a guidance error.

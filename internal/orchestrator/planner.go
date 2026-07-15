@@ -90,6 +90,14 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 	case event.Hook.Kind == HandlerKindAgent:
 		// argv stays nil; the HarnessAdapter builds its own from CLI
 		// conventions.
+	default:
+		// validateHookCommandFields (~40 lines above) is the primary guard
+		// for this invariant; this default arm turns any future validation
+		// drift — a bypass path or a rule regression — into an explicit
+		// error at the source, instead of an argv=nil JobSpec that would
+		// crash the shell adapter with an index-out-of-range panic on
+		// exec.CommandContext(ctx, argv[0], ...).
+		return nil, nil, fmt.Errorf("hook %q: no argv source (validation drift)", event.Hook.ID)
 	}
 
 	spec := &JobSpec{
@@ -155,7 +163,11 @@ func validateHookCommandFields(h *Hook) error {
 		return fmt.Errorf("hook %q: 'agent' and 'command' are mutually exclusive", h.ID)
 	}
 	if h.ScriptPath != "" && h.Command != "" {
-		return fmt.Errorf("hook %q: 'script' and 'command' are mutually exclusive (double-specified)", h.ID)
+		// ScriptPath is not a YAML key (Hook.ScriptPath is `yaml:"-"`,
+		// resolved by ReadProjectMeta from .boid/hooks/<id>.(sh|py)); this
+		// error message points at the on-disk file so users are not sent
+		// hunting for a non-existent `script:` YAML entry.
+		return fmt.Errorf("hook %q: 'command' is mutually exclusive with a resolved .boid/hooks/%s.(sh|py) script file (both were set)", h.ID, h.ID)
 	}
 	if h.Kind != HandlerKindAgent && h.Command == "" && h.ScriptPath == "" {
 		return fmt.Errorf("hook %q: no command or script path resolved", h.ID)
